@@ -26,6 +26,15 @@ extern "C" {
 int dsd_rdio_upload_names_same_file(const char* job_path, const char* path, int win);
 
 /*
+ * Whether @p name (a final path component) is one of the private upload inputs dsd-neo makes in --rdio-mode both: it
+ * ends in ".rdio-upload-audio" or ".rdio-upload-meta" (exact case) after at least one other character. Neither
+ * suffix is one an rdio-scanner watch reads (6.6.3 and v8 look at the last extension only: ".json" for a
+ * trunk-recorder watch, ".mp3" for SDRTrunk and DSDPlus, the configured one, ".wav" by default, for the default
+ * type). The leftover cleanup removes only names this answers 1 for.
+ */
+int dsd_rdio_upload_private_name(const char* name);
+
+/*
  * For tests: @p observer (NULL for none) sees every upload job as it is released, sent, dropped or abandoned at the
  * stop, with what is left of its API key and URL copies after their wipe, just before the job is freed. A build with
  * no libcurl queues no jobs and never calls it.

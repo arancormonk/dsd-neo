@@ -1039,6 +1039,51 @@ expect_rename_noreplace_in(const char* dir) {
     return ok ? 0 : 1;
 }
 
+/* Issue #888: a hard link names the same file under a second name, never over an existing one (EEXIST, both files as
+   they were), and keeps every byte once the first name is removed. */
+static int
+expect_hard_link_in(const char* dir) {
+    char from[512];
+    char taken[512];
+    char to[512];
+    DSD_SNPRINTF(from, sizeof from, "%s%sdsd_neo_link_from.tmp", dir, dir[0] ? "/" : "");
+    DSD_SNPRINTF(taken, sizeof taken, "%s%sdsd_neo_link_taken.tmp", dir, dir[0] ? "/" : "");
+    DSD_SNPRINTF(to, sizeof to, "%s%sdsd_neo_link_to.tmp", dir, dir[0] ? "/" : "");
+    (void)dsd_remove_file(from);
+    (void)dsd_remove_file(taken);
+    (void)dsd_remove_file(to);
+    if (write_text_file(from, "from") != 0 || write_text_file(taken, "taken") != 0) {
+        (void)dsd_remove_file(from);
+        (void)dsd_remove_file(taken);
+        return 1;
+    }
+    int ok = 1;
+    int same = 0;
+    errno = 0;
+    ok = ok && dsd_hard_link(from, taken) == -1 && errno == EEXIST;
+    ok = ok && file_text_is(from, "from") && file_text_is(taken, "taken");
+    ok = ok && dsd_hard_link(from, to) == 0 && file_text_is(to, "from");
+    ok = ok && dsd_path_same_file(from, to, &same) == 0 && same == 1;
+    ok = ok && dsd_remove_file(from) == 0 && file_text_is(to, "from");
+    errno = 0;
+    ok = ok && dsd_hard_link(from, taken) == -1 && errno == ENOENT;
+    (void)dsd_remove_file(from);
+    (void)dsd_remove_file(taken);
+    (void)dsd_remove_file(to);
+    return ok ? 0 : 1;
+}
+
+static int
+expect_hard_link(void) {
+    int rc = 0;
+    errno = 0;
+    rc |= dsd_hard_link(NULL, "x") == -1 && errno == EINVAL ? 0 : 1;
+    errno = 0;
+    rc |= dsd_hard_link("x", "") == -1 && errno == EINVAL ? 0 : 1;
+    rc |= expect_hard_link_in("");
+    return rc;
+}
+
 static int
 expect_rename_noreplace(void) {
     int rc = 0;
@@ -1242,6 +1287,10 @@ expect_named_dir_helpers(const char* dir, const char* leaf, const char* excl_lea
     rc |= expect_non_ascii_folders(dir);
     if (expect_rename_noreplace_in(dir) != 0) {
         DSD_FPRINTF(stderr, "non-ASCII: dsd_rename_noreplace failed in the folder\n");
+        rc = 1;
+    }
+    if (expect_hard_link_in(dir) != 0) {
+        DSD_FPRINTF(stderr, "non-ASCII: dsd_hard_link failed in the folder\n");
         rc = 1;
     }
     (void)dsd_remove_file(file);
@@ -1772,6 +1821,7 @@ main(void) {
     rc |= expect_null_device_is_readable();
     rc |= expect_private_exclusive_create();
     rc |= expect_rename_noreplace();
+    rc |= expect_hard_link();
     rc |= expect_non_ascii_dir_helpers();
     rc |= expect_rename_noreplace_utf8_names();
     rc |= expect_move_helpers_across_directories();

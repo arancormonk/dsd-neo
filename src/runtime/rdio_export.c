@@ -76,6 +76,27 @@ dsd_rdio_upload_names_same_file(const char* job_path, const char* path, int win)
     }
 }
 
+#define DSD_RDIO_PRIVATE_AUDIO_SUFFIX ".rdio-upload-audio"
+#define DSD_RDIO_PRIVATE_META_SUFFIX  ".rdio-upload-meta"
+
+static int
+dsd_rdio_name_has_suffix(const char* name, const char* suffix) {
+    const size_t n = strlen(name);
+    const size_t k = strlen(suffix);
+    return n > k && strcmp(name + n - k, suffix) == 0;
+}
+
+int
+dsd_rdio_upload_private_name(const char* name) {
+    if (name == NULL) {
+        return 0;
+    }
+    return dsd_rdio_name_has_suffix(name, DSD_RDIO_PRIVATE_AUDIO_SUFFIX)
+           || dsd_rdio_name_has_suffix(name, DSD_RDIO_PRIVATE_META_SUFFIX);
+}
+
+static int dsd_rdio_path_with_suffix(const char* wav_path, const char* suffix, char* out, size_t out_size);
+
 #ifdef USE_CURL
 typedef struct {
     int system_id;
@@ -89,8 +110,14 @@ typedef struct dsd_rdio_upload_job {
     dsd_rdio_api_config api;
     int remove_meta_on_success;
     int remove_wav_on_success;
+    /* 1 when wav_path and meta_path are the job's own private inputs (--rdio-mode both), which the job's release
+       removes however it ends; the two removals on success are then off. */
+    int private_inputs;
+    /* What the upload reads: the published pair, or the job's private copies of it. */
     char wav_path[DSD_RDIO_PATH_MAX];
     char meta_path[DSD_RDIO_PATH_MAX];
+    /* The published WAV, the file dsd_rdio_upload_holds() names whatever the upload reads. */
+    char public_wav_path[DSD_RDIO_PATH_MAX];
     struct dsd_rdio_upload_job* next;
 } dsd_rdio_upload_job;
 
@@ -103,12 +130,27 @@ dsd_rdio_upload_set_release_observer(dsd_rdio_upload_release_observer observer) 
     g_rdio_upload_release_observer = observer;
 }
 
-/* An upload job's end, sent, dropped or abandoned at the stop: its copies of the API key and URL (a URL can carry
- * credentials) are wiped before the memory goes back. */
+static void
+dsd_rdio_remove_after_upload(const char* path, const char* kind) {
+    if (!path || path[0] == '\0') {
+        return;
+    }
+    if (dsd_remove_file(path) != 0 && errno != ENOENT) {
+        LOG_WARN("Rdio API upload: failed to delete %s %s: %s\n", kind ? kind : "file", path, strerror(errno));
+    }
+}
+
+/* An upload job's end, sent, failed, dropped or abandoned at the stop, or never queued: its private inputs go (a
+ * removal that fails leaves a leftover the next run's first export there removes), and its copies of the API key and
+ * URL (a URL can carry credentials) are wiped before the memory goes back. */
 static void
 dsd_rdio_upload_job_free(dsd_rdio_upload_job* job) {
     if (!job) {
         return;
+    }
+    if (job->private_inputs) {
+        dsd_rdio_remove_after_upload(job->wav_path, "private upload audio");
+        dsd_rdio_remove_after_upload(job->meta_path, "private upload metadata");
     }
     DSD_SECURE_ZERO(&job->api, sizeof job->api);
     if (g_rdio_upload_release_observer) {
@@ -122,6 +164,9 @@ dsd_rdio_upload_job_free(dsd_rdio_upload_job* job) {
  * asks dsd_rdio_upload_holds() from its own thread at any time, a shutdown included. 0 = not initialized,
  * 1 = initializing, 2 = ready, 3 = its init failed, for good: no worker starts and nothing is held. */
 static dsd_mutex_t g_rdio_upload_mutex;
+/* Taken before g_rdio_upload_mutex, never after it: one export at a time makes its private inputs, clears their folder
+ * of leftovers first when this run has not, and queues the job. Initialized with the queue's mutex. */
+static dsd_mutex_t g_rdio_private_mutex;
 static atomic_int g_rdio_upload_mutex_state = 0;
 static dsd_cond_t g_rdio_upload_cond;
 static dsd_thread_t g_rdio_upload_worker;
@@ -142,17 +187,15 @@ static size_t g_rdio_upload_aborted = 0;
 
 #define DSD_RDIO_UPLOAD_CANCELLED (-2)
 
-static int dsd_rdio_upload_trunk_recorder(const dsd_rdio_api_config* api, const char* wav_path, const char* meta_path);
+/* The files one upload reads, and the file names its form parts carry: NULL for the file's own name. */
+typedef struct {
+    const char* wav_path;
+    const char* meta_path;
+    const char* wav_name;
+    const char* meta_name;
+} dsd_rdio_upload_inputs;
 
-static void
-dsd_rdio_remove_after_upload(const char* path, const char* kind) {
-    if (!path || path[0] == '\0') {
-        return;
-    }
-    if (dsd_remove_file(path) != 0 && errno != ENOENT) {
-        LOG_WARN("Rdio API upload: failed to delete %s %s: %s\n", kind ? kind : "file", path, strerror(errno));
-    }
-}
+static int dsd_rdio_upload_trunk_recorder(const dsd_rdio_api_config* api, const dsd_rdio_upload_inputs* inputs);
 
 /* 0 when the queue's mutex is ready, -1 when its init failed. */
 static int
@@ -166,7 +209,7 @@ dsd_rdio_upload_mutex_ensure(void) {
     }
     int expected = 0;
     if (atomic_compare_exchange_strong(&g_rdio_upload_mutex_state, &expected, 1)) {
-        const int ok = dsd_mutex_init(&g_rdio_upload_mutex) == 0;
+        const int ok = dsd_mutex_init(&g_rdio_upload_mutex) == 0 && dsd_mutex_init(&g_rdio_private_mutex) == 0;
         atomic_store(&g_rdio_upload_mutex_state, ok ? 2 : 3);
         return ok ? 0 : -1;
     }
@@ -174,6 +217,25 @@ dsd_rdio_upload_mutex_ensure(void) {
         dsd_thread_yield();
     }
     return state == 2 ? 0 : -1;
+}
+
+/* What @p job uploads. Private inputs go up under the published pair's names, so the server files the call as it would
+   the pair itself; @p meta_name_buf holds the sidecar's. */
+static void
+dsd_rdio_job_upload_inputs(const dsd_rdio_upload_job* job, dsd_rdio_upload_inputs* out, char* meta_name_buf,
+                           size_t meta_name_buf_size) {
+    const int win = DSD_PLATFORM_WIN_NATIVE;
+    out->wav_path = job->wav_path;
+    out->meta_path = job->meta_path;
+    out->wav_name = NULL;
+    out->meta_name = NULL;
+    if (!job->private_inputs) {
+        return;
+    }
+    out->wav_name = dsd_rdio_path_file_name(job->public_wav_path, win);
+    if (dsd_rdio_path_with_suffix(job->public_wav_path, ".json", meta_name_buf, meta_name_buf_size) == 0) {
+        out->meta_name = dsd_rdio_path_file_name(meta_name_buf, win);
+    }
 }
 
 static DSD_THREAD_RETURN_TYPE
@@ -208,7 +270,10 @@ static DSD_THREAD_RETURN_TYPE
         g_rdio_upload_in_flight = job;
         dsd_mutex_unlock(&g_rdio_upload_mutex);
 
-        const int upload_rc = dsd_rdio_upload_trunk_recorder(&job->api, job->wav_path, job->meta_path);
+        char meta_name[DSD_RDIO_PATH_MAX];
+        dsd_rdio_upload_inputs inputs;
+        dsd_rdio_job_upload_inputs(job, &inputs, meta_name, sizeof meta_name);
+        const int upload_rc = dsd_rdio_upload_trunk_recorder(&job->api, &inputs);
         if (upload_rc == 0) {
             if (job->remove_meta_on_success) {
                 dsd_rdio_remove_after_upload(job->meta_path, "metadata");
@@ -288,16 +353,27 @@ dsd_rdio_wipe_queued_secrets_locked(void) {
     }
 }
 
-static void
-dsd_rdio_clear_upload_queue_locked(void) {
-    while (g_rdio_upload_head != NULL) {
-        dsd_rdio_upload_job* next = g_rdio_upload_head->next;
-        dsd_rdio_upload_job_free(g_rdio_upload_head);
-        g_rdio_upload_head = next;
-    }
+/* Empty the queue, handing back its jobs for dsd_rdio_free_upload_jobs() after the unlock: their release removes
+   files, which the recording store's dsd_rdio_upload_holds() should not wait behind. */
+static dsd_rdio_upload_job*
+dsd_rdio_detach_upload_queue_locked(void) {
+    dsd_rdio_upload_job* jobs = g_rdio_upload_head;
+    g_rdio_upload_head = NULL;
     g_rdio_upload_tail = NULL;
     g_rdio_upload_depth = 0;
+    return jobs;
 }
+
+static void
+dsd_rdio_free_upload_jobs(dsd_rdio_upload_job* jobs) {
+    while (jobs != NULL) {
+        dsd_rdio_upload_job* next = jobs->next;
+        dsd_rdio_upload_job_free(jobs);
+        jobs = next;
+    }
+}
+
+static void dsd_rdio_forget_cleared_folders(void);
 
 void
 dsd_rdio_upload_cancel(void) {
@@ -352,10 +428,13 @@ dsd_rdio_upload_shutdown(void) {
     dsd_mutex_lock(&g_rdio_upload_mutex);
     /* After a drain the queue is empty; anything left was abandoned by a cancel. */
     const size_t not_sent = g_rdio_upload_depth + g_rdio_upload_aborted;
-    dsd_rdio_clear_upload_queue_locked();
+    dsd_rdio_upload_job* dropped = dsd_rdio_detach_upload_queue_locked();
     g_rdio_upload_stop_requested = 0;
     g_rdio_upload_aborted = 0;
     dsd_mutex_unlock(&g_rdio_upload_mutex);
+    dsd_rdio_free_upload_jobs(dropped);
+    /* The run is over, and with it every private input it made: the next one clears its folders again. */
+    dsd_rdio_forget_cleared_folders();
     if (not_sent > 0U) {
         LOG_WARN("Rdio API upload: stopped by the user; %lu pending upload(s) not sent, their files kept\n",
                  (unsigned long)not_sent);
@@ -375,9 +454,9 @@ dsd_rdio_upload_holds(const char* path) {
     }
     dsd_mutex_lock(&g_rdio_upload_mutex);
     int held = g_rdio_upload_in_flight != NULL
-               && dsd_rdio_upload_names_same_file(g_rdio_upload_in_flight->wav_path, path, win);
+               && dsd_rdio_upload_names_same_file(g_rdio_upload_in_flight->public_wav_path, path, win);
     for (const dsd_rdio_upload_job* job = g_rdio_upload_head; job != NULL && !held; job = job->next) {
-        held = dsd_rdio_upload_names_same_file(job->wav_path, path, win);
+        held = dsd_rdio_upload_names_same_file(job->public_wav_path, path, win);
     }
     dsd_mutex_unlock(&g_rdio_upload_mutex);
     return held;
@@ -432,6 +511,7 @@ dsd_rdio_copy_upload_paths(dsd_rdio_upload_job* job, const char* wav_path, const
     }
     int wn = DSD_SNPRINTF(job->wav_path, sizeof(job->wav_path), "%s", wav_path);
     int mn = DSD_SNPRINTF(job->meta_path, sizeof(job->meta_path), "%s", meta_path);
+    (void)DSD_SNPRINTF(job->public_wav_path, sizeof(job->public_wav_path), "%s", wav_path);
     if (wn < 0 || mn < 0 || (size_t)wn >= sizeof(job->wav_path) || (size_t)mn >= sizeof(job->meta_path)) {
         LOG_ERROR("Rdio export: upload path too long\n");
         return -1;
@@ -493,10 +573,233 @@ dsd_rdio_enqueue_upload_job(dsd_rdio_upload_job* job, const char* wav_path) {
     return 0;
 }
 
-/* Queue an upload of @p wav_path with the checked @p api: 0 when it was queued. */
+#define DSD_RDIO_PRIVATE_NAME_TRIES  64U
+#define DSD_RDIO_CLEARED_FOLDERS_MAX 64U
+
+/* A folder this run has cleared of leftover private inputs, by its canonical spelling. */
+typedef struct dsd_rdio_cleared_folder {
+    struct dsd_rdio_cleared_folder* next;
+    char path[DSD_RDIO_PATH_MAX];
+} dsd_rdio_cleared_folder;
+
+/* Each folder is cleared once per run, before the first private input made there, so no job this run queued can lose
+   its inputs to the cleanup. Under g_rdio_private_mutex. */
+static dsd_rdio_cleared_folder* g_rdio_cleared_folders = NULL;
+static size_t g_rdio_cleared_folder_count = 0;
+
+static void
+dsd_rdio_forget_cleared_folders(void) {
+    if (dsd_rdio_upload_mutex_ensure() != 0) {
+        return;
+    }
+    dsd_mutex_lock(&g_rdio_private_mutex);
+    while (g_rdio_cleared_folders != NULL) {
+        dsd_rdio_cleared_folder* next = g_rdio_cleared_folders->next;
+        free(g_rdio_cleared_folders);
+        g_rdio_cleared_folders = next;
+    }
+    g_rdio_cleared_folder_count = 0;
+    dsd_mutex_unlock(&g_rdio_private_mutex);
+}
+
+/* A copy of the file at @p src, created at @p dst, which must not exist (EEXIST); owner-only. */
+static int
+dsd_rdio_copy_file(const char* src, const char* dst) {
+    FILE* in = dsd_fopen_existing_regular_file(src, "rb");
+    if (!in) {
+        return -1;
+    }
+    FILE* out = dsd_fopen_private(dst, "wbx");
+    if (!out) {
+        const int err = errno;
+        (void)fclose(in);
+        errno = err;
+        return -1;
+    }
+    unsigned char buf[16384];
+    int err = 0;
+    size_t n = 0;
+    while (err == 0 && (n = fread(buf, 1, sizeof buf, in)) > 0) {
+        if (fwrite(buf, 1, n, out) != n) {
+            err = errno != 0 ? errno : EIO;
+        }
+    }
+    if (err == 0 && ferror(in)) {
+        err = errno != 0 ? errno : EIO;
+    }
+    if (fclose(out) != 0 && err == 0) {
+        err = errno != 0 ? errno : EIO;
+    }
+    (void)fclose(in);
+    if (err != 0) {
+        (void)dsd_remove_file(dst);
+        errno = err == EEXIST ? EIO : err;
+        return -1;
+    }
+    return 0;
+}
+
+/* The job's own name for the published WAV at @p src: a hard link, or a copy where the file system has none. */
+static int
+dsd_rdio_link_or_copy(const char* src, const char* dst) {
+    if (dsd_hard_link(src, dst) == 0) {
+        return 0;
+    }
+    if (errno == EEXIST) {
+        return -1;
+    }
+    return dsd_rdio_copy_file(src, dst);
+}
+
+/* Try @p index's names for the private pair of @p wav_path: "<base>.rdio-upload-audio" and "<base>.rdio-upload-meta"
+   for 0, "<base>.<index>.rdio-upload-…" after it. */
+static int
+dsd_rdio_private_input_paths(dsd_rdio_upload_job* job, const char* wav_path, unsigned int index) {
+    char tag[24] = "";
+    if (index > 0U) {
+        DSD_SNPRINTF(tag, sizeof tag, ".%u", index);
+    }
+    char suffix[64];
+    DSD_SNPRINTF(suffix, sizeof suffix, "%s%s", tag, DSD_RDIO_PRIVATE_AUDIO_SUFFIX);
+    if (dsd_rdio_path_with_suffix(wav_path, suffix, job->wav_path, sizeof job->wav_path) != 0) {
+        return -1;
+    }
+    DSD_SNPRINTF(suffix, sizeof suffix, "%s%s", tag, DSD_RDIO_PRIVATE_META_SUFFIX);
+    return dsd_rdio_path_with_suffix(wav_path, suffix, job->meta_path, sizeof job->meta_path);
+}
+
+/* --rdio-mode both: the job's own inputs, a hard link (or copy) of the published WAV and a copy of its sidecar, under
+   names no rdio-scanner watch reads (dsd_rdio_upload_private_name()). A DirWatch that deletes the published pair
+   after taking it then leaves this upload its bytes. A name in use (a leftover, or a WAV name published twice) moves
+   on to the next index. On a failure nothing is left behind. */
+static int
+dsd_rdio_make_private_inputs(dsd_rdio_upload_job* job, const char* wav_path, const char* meta_path) {
+    int err = EEXIST;
+    for (unsigned int index = 0; index < DSD_RDIO_PRIVATE_NAME_TRIES && err == EEXIST; index++) {
+        if (dsd_rdio_private_input_paths(job, wav_path, index) != 0) {
+            err = ENAMETOOLONG;
+            break;
+        }
+        if (dsd_rdio_link_or_copy(wav_path, job->wav_path) != 0) {
+            err = errno;
+            continue;
+        }
+        if (dsd_rdio_copy_file(meta_path, job->meta_path) == 0) {
+            job->private_inputs = 1;
+            return 0;
+        }
+        err = errno;
+        dsd_rdio_remove_after_upload(job->wav_path, "private upload audio");
+    }
+    LOG_ERROR("Rdio export: unable to make the upload's own copy of %s: %s\n", wav_path, strerror(err));
+    return -1;
+}
+
+static int
+dsd_rdio_job_owns_private_name(const dsd_rdio_upload_job* job, const char* name, int win) {
+    return job != NULL && job->private_inputs
+           && (dsd_rdio_upload_names_same_file(job->wav_path, name, win)
+               || dsd_rdio_upload_names_same_file(job->meta_path, name, win));
+}
+
+/* Whether a job of this run, queued or in flight, uploads from a private input named @p name. */
+static int
+dsd_rdio_upload_owns_private_name(const char* name) {
+    const int win = DSD_PLATFORM_WIN_NATIVE;
+    dsd_mutex_lock(&g_rdio_upload_mutex);
+    int owned = dsd_rdio_job_owns_private_name(g_rdio_upload_in_flight, name, win);
+    for (const dsd_rdio_upload_job* job = g_rdio_upload_head; job != NULL && !owned; job = job->next) {
+        owned = dsd_rdio_job_owns_private_name(job, name, win);
+    }
+    dsd_mutex_unlock(&g_rdio_upload_mutex);
+    return owned;
+}
+
+typedef struct {
+    const char* folder; /* "" for the current folder, else ending in its separator */
+    unsigned long removed;
+} dsd_rdio_leftover_walk;
+
+static int
+dsd_rdio_remove_leftover_visit(const char* name, void* user) {
+    dsd_rdio_leftover_walk* walk = (dsd_rdio_leftover_walk*)user;
+    if (!dsd_rdio_upload_private_name(name) || dsd_rdio_upload_owns_private_name(name)) {
+        return 0;
+    }
+    char path[DSD_RDIO_PATH_MAX];
+    const int n = DSD_SNPRINTF(path, sizeof path, "%s%s", walk->folder, name);
+    if (n < 0 || (size_t)n >= sizeof path) {
+        return 0;
+    }
+    if (dsd_remove_file(path) == 0) {
+        walk->removed++;
+    } else if (errno != ENOENT) {
+        LOG_WARN("Rdio export: failed to delete leftover private upload input %s: %s\n", path, strerror(errno));
+    }
+    return 0;
+}
+
+/* The folder part of @p path with its trailing separator, "" for a bare file name. */
+static int
+dsd_rdio_path_folder(const char* path, char* out, size_t out_size) {
+    const size_t len = (size_t)(dsd_rdio_path_file_name(path, DSD_PLATFORM_WIN_NATIVE) - path);
+    if (len >= out_size) {
+        return -1;
+    }
+    DSD_MEMCPY(out, path, len);
+    out[len] = '\0';
+    return 0;
+}
+
+static int
+dsd_rdio_folder_cleared_locked(const char* key) {
+    for (const dsd_rdio_cleared_folder* f = g_rdio_cleared_folders; f != NULL; f = f->next) {
+        if ((DSD_PLATFORM_WIN_NATIVE ? dsd_strcasecmp(f->path, key) : strcmp(f->path, key)) == 0) {
+            return 1;
+        }
+    }
+    return 0;
+}
+
+/* Once per run per folder, before the first private input made there: remove what a run that ended without its
+   cleanup (killed, or a removal that failed) left in it. Only names dsd_rdio_upload_private_name() matches, in that
+   folder alone (no subfolder), and none a job of this run uploads from. Under g_rdio_private_mutex. */
+static void
+dsd_rdio_clear_leftovers_locked(const char* wav_path) {
+    char folder[DSD_RDIO_PATH_MAX];
+    char key[DSD_RDIO_PATH_MAX];
+    if (dsd_rdio_path_folder(wav_path, folder, sizeof folder) != 0) {
+        return;
+    }
+    const char* list_dir = folder[0] != '\0' ? folder : ".";
+    if (dsd_path_canonical(list_dir, key, sizeof key) != 0) {
+        DSD_SNPRINTF(key, sizeof key, "%s", list_dir);
+    }
+    if (dsd_rdio_folder_cleared_locked(key) || g_rdio_cleared_folder_count >= DSD_RDIO_CLEARED_FOLDERS_MAX) {
+        return;
+    }
+    dsd_rdio_cleared_folder* entry = (dsd_rdio_cleared_folder*)calloc(1, sizeof(*entry));
+    if (!entry) {
+        return;
+    }
+    DSD_SNPRINTF(entry->path, sizeof entry->path, "%s", key);
+    entry->next = g_rdio_cleared_folders;
+    g_rdio_cleared_folders = entry;
+    g_rdio_cleared_folder_count++;
+
+    dsd_rdio_leftover_walk walk = {folder, 0UL};
+    (void)dsd_dir_list(list_dir, dsd_rdio_remove_leftover_visit, &walk);
+    if (walk.removed > 0UL) {
+        LOG_INFO("Rdio export: removed %lu private upload input(s) an earlier run left in %s\n", walk.removed,
+                 list_dir);
+    }
+}
+
+/* Queue an upload of @p wav_path with the checked @p api: 0 when it was queued. With @p private_inputs
+   (--rdio-mode both) the job uploads from its own copies of the pair (dsd_rdio_make_private_inputs()). */
 static int
 dsd_rdio_enqueue_api_job(const dsd_rdio_api_config* api, const char* wav_path, const char* meta_path,
-                         int remove_meta_on_success, int remove_wav_on_success) {
+                         int remove_meta_on_success, int remove_wav_on_success, int private_inputs) {
     if (dsd_rdio_upload_worker_init() != 0) {
         LOG_ERROR("Rdio export: failed to initialize background upload worker\n");
         return -1;
@@ -505,16 +808,29 @@ dsd_rdio_enqueue_api_job(const dsd_rdio_api_config* api, const char* wav_path, c
     if (dsd_rdio_build_upload_job(api, wav_path, meta_path, remove_meta_on_success, remove_wav_on_success, &job) != 0) {
         return -1;
     }
-    if (dsd_rdio_enqueue_upload_job(job, wav_path) != 0) {
-        dsd_rdio_upload_job_free(job);
-        return -1;
+    if (!private_inputs) {
+        if (dsd_rdio_enqueue_upload_job(job, wav_path) != 0) {
+            dsd_rdio_upload_job_free(job);
+            return -1;
+        }
+        return 0;
     }
-    return 0;
+    dsd_mutex_lock(&g_rdio_private_mutex);
+    dsd_rdio_clear_leftovers_locked(wav_path);
+    int rc = dsd_rdio_make_private_inputs(job, wav_path, meta_path);
+    if (rc == 0) {
+        rc = dsd_rdio_enqueue_upload_job(job, wav_path);
+    }
+    if (rc != 0) {
+        dsd_rdio_upload_job_free(job);
+    }
+    dsd_mutex_unlock(&g_rdio_private_mutex);
+    return rc;
 }
 
 static int
 dsd_rdio_enqueue_api_upload(const dsd_opts* opts, int system_id, const char* wav_path, const char* meta_path,
-                            int remove_meta_on_success, int remove_wav_on_success) {
+                            int remove_meta_on_success, int remove_wav_on_success, int private_inputs) {
     if (!opts || !wav_path || !meta_path) {
         return -1;
     }
@@ -523,7 +839,8 @@ dsd_rdio_enqueue_api_upload(const dsd_opts* opts, int system_id, const char* wav
     dsd_rdio_copy_api_config(&api, opts, system_id);
     int rc = -1;
     if (dsd_rdio_validate_api_config(&api) == 0) {
-        rc = dsd_rdio_enqueue_api_job(&api, wav_path, meta_path, remove_meta_on_success, remove_wav_on_success);
+        rc = dsd_rdio_enqueue_api_job(&api, wav_path, meta_path, remove_meta_on_success, remove_wav_on_success,
+                                      private_inputs);
     }
     /* The job holds its own copy now: this one goes. */
     DSD_SECURE_ZERO(&api, sizeof api);
@@ -561,9 +878,10 @@ dsd_rdio_mode_wants_api(int mode) {
     return mode == DSD_RDIO_MODE_API || mode == DSD_RDIO_MODE_BOTH;
 }
 
+/* @p wav_path without a final ".wav" (any case), then @p suffix. */
 static int
-dsd_rdio_make_sidecar_path(const char* wav_path, char* out_meta_path, size_t out_meta_path_size) {
-    if (!wav_path || !out_meta_path || out_meta_path_size == 0) {
+dsd_rdio_path_with_suffix(const char* wav_path, const char* suffix, char* out, size_t out_size) {
+    if (!wav_path || !suffix || !out || out_size == 0) {
         return -1;
     }
 
@@ -576,12 +894,17 @@ dsd_rdio_make_sidecar_path(const char* wav_path, char* out_meta_path, size_t out
         *dot = '\0';
     }
 
-    int n = DSD_SNPRINTF(out_meta_path, out_meta_path_size, "%s.json", base_path);
-    if (n < 0 || (size_t)n >= out_meta_path_size) {
+    int n = DSD_SNPRINTF(out, out_size, "%s%s", base_path, suffix);
+    if (n < 0 || (size_t)n >= out_size) {
         return -1;
     }
 
     return 0;
+}
+
+static int
+dsd_rdio_make_sidecar_path(const char* wav_path, char* out_meta_path, size_t out_meta_path_size) {
+    return dsd_rdio_path_with_suffix(wav_path, ".json", out_meta_path, out_meta_path_size);
 }
 
 static uint16_t
@@ -1313,8 +1636,8 @@ dsd_rdio_configure_curl_request(CURL* curl, curl_mime* mime, const char* endpoin
 }
 
 static void
-dsd_rdio_add_mime_parts(curl_mime* mime, const dsd_rdio_api_config* api, const char* system_str, const char* wav_path,
-                        const char* meta_path) {
+dsd_rdio_add_mime_parts(curl_mime* mime, const dsd_rdio_api_config* api, const char* system_str,
+                        const dsd_rdio_upload_inputs* inputs) {
     curl_mimepart* part = NULL;
 
     part = curl_mime_addpart(mime);
@@ -1327,20 +1650,25 @@ dsd_rdio_add_mime_parts(curl_mime* mime, const dsd_rdio_api_config* api, const c
 
     part = curl_mime_addpart(mime);
     curl_mime_name(part, "audio");
-    curl_mime_filedata(part, wav_path);
+    curl_mime_filedata(part, inputs->wav_path);
+    if (inputs->wav_name) {
+        curl_mime_filename(part, inputs->wav_name);
+    }
     curl_mime_type(part, "audio/wav");
 
     part = curl_mime_addpart(mime);
     curl_mime_name(part, "meta");
-    curl_mime_filedata(part, meta_path);
+    curl_mime_filedata(part, inputs->meta_path);
+    if (inputs->meta_name) {
+        curl_mime_filename(part, inputs->meta_name);
+    }
     curl_mime_type(part, "application/json");
 }
 
 static int
-dsd_rdio_upload_attempt_once(const dsd_rdio_api_config* api, const char* endpoint, const char* wav_path,
-                             const char* meta_path, int timeout_ms, const char* system_str, CURLcode* out_res,
-                             long* out_http_code) {
-    if (!api || !endpoint || !wav_path || !meta_path || !system_str || !out_res || !out_http_code) {
+dsd_rdio_upload_attempt_once(const dsd_rdio_api_config* api, const char* endpoint, const dsd_rdio_upload_inputs* inputs,
+                             int timeout_ms, const char* system_str, CURLcode* out_res, long* out_http_code) {
+    if (!api || !endpoint || !inputs || !system_str || !out_res || !out_http_code) {
         return -1;
     }
 
@@ -1357,7 +1685,7 @@ dsd_rdio_upload_attempt_once(const dsd_rdio_api_config* api, const char* endpoin
         return -1;
     }
 
-    dsd_rdio_add_mime_parts(mime, api, system_str, wav_path, meta_path);
+    dsd_rdio_add_mime_parts(mime, api, system_str, inputs);
     dsd_rdio_configure_curl_request(curl, mime, endpoint, timeout_ms);
 
     *out_res = dsd_curl_perform_cancellable(curl, dsd_rdio_cancel_pred, NULL);
@@ -1383,8 +1711,7 @@ dsd_rdio_upload_attempt_outcome(CURLcode res, long http_code) {
 
 /* The upload's attempts to @p endpoint (built from the API URL), as dsd_rdio_upload_trunk_recorder() returns them. */
 static int
-dsd_rdio_upload_attempts(const dsd_rdio_api_config* api, const char* endpoint, const char* wav_path,
-                         const char* meta_path) {
+dsd_rdio_upload_attempts(const dsd_rdio_api_config* api, const char* endpoint, const dsd_rdio_upload_inputs* inputs) {
     int timeout_ms = 0;
     int attempts = 0;
     if (dsd_rdio_normalize_upload_options(api, &timeout_ms, &attempts) != 0) {
@@ -1404,8 +1731,7 @@ dsd_rdio_upload_attempts(const dsd_rdio_api_config* api, const char* endpoint, c
         }
         CURLcode res = CURLE_FAILED_INIT;
         long http_code = 0;
-        if (dsd_rdio_upload_attempt_once(api, endpoint, wav_path, meta_path, timeout_ms, system_str, &res, &http_code)
-            != 0) {
+        if (dsd_rdio_upload_attempt_once(api, endpoint, inputs, timeout_ms, system_str, &res, &http_code) != 0) {
             return -1;
         }
 
@@ -1425,8 +1751,8 @@ dsd_rdio_upload_attempts(const dsd_rdio_api_config* api, const char* endpoint, c
 }
 
 static int
-dsd_rdio_upload_trunk_recorder(const dsd_rdio_api_config* api, const char* wav_path, const char* meta_path) {
-    if (!api || !wav_path || !meta_path) {
+dsd_rdio_upload_trunk_recorder(const dsd_rdio_api_config* api, const dsd_rdio_upload_inputs* inputs) {
+    if (!api || !inputs || !inputs->wav_path || !inputs->meta_path) {
         return -1;
     }
 
@@ -1440,7 +1766,7 @@ dsd_rdio_upload_trunk_recorder(const dsd_rdio_api_config* api, const char* wav_p
     if (dsd_rdio_build_api_endpoint(api, endpoint, sizeof(endpoint)) != 0) {
         LOG_ERROR("Rdio API upload: endpoint too long\n");
     } else {
-        rc = dsd_rdio_upload_attempts(api, endpoint, wav_path, meta_path);
+        rc = dsd_rdio_upload_attempts(api, endpoint, inputs);
     }
     DSD_SECURE_ZERO(endpoint, sizeof endpoint);
     return rc;
@@ -1562,8 +1888,10 @@ dsd_rdio_export_call_fallback(const dsd_opts* opts, const Event_History_I* event
             && atomic_exchange(&g_rdio_delete_after_upload_dirwatch_warned, 1) == 0) {
             LOG_WARN("Rdio API delete-after-upload ignored when DirWatch export is active\n");
         }
+        /* Beside DirWatch the job uploads from its own copies, which a watch that deletes the pair cannot take. */
         if (dsd_rdio_enqueue_api_upload(opts, dsd_rdio_call_system_id(opts, dsd_rdio_staged_row(event_struct)),
-                                        wav_path, meta_path, remove_meta_on_success, remove_wav_on_success)
+                                        wav_path, meta_path, remove_meta_on_success, remove_wav_on_success,
+                                        wants_dirwatch)
             != 0) {
             return -1;
         }

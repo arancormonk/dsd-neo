@@ -7,6 +7,7 @@
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/synctype_ids.h>
+#include <dsd-neo/platform/atomic_compat.h>
 #include <dsd-neo/platform/file_compat.h>
 #include <dsd-neo/platform/platform.h>
 #include <dsd-neo/platform/sockets.h>
@@ -380,6 +381,8 @@ expect_sidecar_times(const char* label, const char* body, long long start, long 
 }
 
 #if defined(USE_CURL) && !DSD_PLATFORM_WIN_NATIVE
+#define RDIO_TEST_REQUESTS_MAX 4
+
 typedef struct {
     dsd_socket_t listen_sock;
     dsd_thread_t thread;
@@ -395,6 +398,19 @@ typedef struct {
     char meta[4096];
     // The upload's "system" part, or "" when the request carried none.
     char system[32];
+    // Per request, in arrival order (the first RDIO_TEST_REQUESTS_MAX): the "meta" part, the "audio" part's bytes, and
+    // the file names the two parts carry.
+    int requests_seen;
+    char req_meta[RDIO_TEST_REQUESTS_MAX][1024];
+    unsigned char req_audio[RDIO_TEST_REQUESTS_MAX][256];
+    size_t req_audio_len[RDIO_TEST_REQUESTS_MAX];
+    char req_audio_name[RDIO_TEST_REQUESTS_MAX][128];
+    char req_meta_name[RDIO_TEST_REQUESTS_MAX][128];
+    // When set, the first request is accepted (first_accepted) and left unread until release_first is set: the worker
+    // stays inside that upload meanwhile.
+    int hold_first;
+    atomic_int first_accepted;
+    atomic_int release_first;
 } rdio_test_http_server;
 
 // Find @p needle in the first @p hay_len bytes of @p hay. The request is not a string: the WAV in its "audio" part,
@@ -413,30 +429,61 @@ rdio_test_find_bytes(const char* hay, size_t hay_len, const char* needle) {
     return NULL;
 }
 
-// Copy the body of the request's multipart part named by @p name_attr (`name="meta"`) into @p out.
+// The body of the request's multipart part named by @p name_attr (`name="meta"`), copied into @p out (at most
+// @p out_size bytes, not terminated): its length, or 0 when the request has no such part.
+static size_t
+rdio_test_capture_part_bytes(const char* request, size_t used, const char* name_attr, unsigned char* out,
+                             size_t out_size) {
+    const char* part = rdio_test_find_bytes(request, used, name_attr);
+    if (!part) {
+        return 0;
+    }
+    const size_t part_off = (size_t)(part - request);
+    const char* body = rdio_test_find_bytes(part, used - part_off, "\r\n\r\n");
+    if (!body) {
+        return 0;
+    }
+    body += 4;
+    const size_t body_off = (size_t)(body - request);
+    const char* end = rdio_test_find_bytes(body, used - body_off, "\r\n--");
+    if (!end) {
+        return 0;
+    }
+    size_t len = (size_t)(end - body);
+    if (len > out_size) {
+        len = out_size;
+    }
+    DSD_MEMCPY(out, body, len);
+    return len;
+}
+
+// Copy the body of the request's multipart part named by @p name_attr (`name="meta"`) into @p out, as a string.
 static void
 rdio_test_capture_part(const char* request, size_t used, const char* name_attr, char* out, size_t out_size) {
+    const size_t len = rdio_test_capture_part_bytes(request, used, name_attr, (unsigned char*)out, out_size - 1U);
+    out[len] = '\0';
+}
+
+// The `filename="..."` the request's part named by @p name_attr carries, or "" when it carries none.
+static void
+rdio_test_capture_part_file_name(const char* request, size_t used, const char* name_attr, char* out, size_t out_size) {
     out[0] = '\0';
     const char* part = rdio_test_find_bytes(request, used, name_attr);
     if (!part) {
         return;
     }
     const size_t part_off = (size_t)(part - request);
-    const char* body = rdio_test_find_bytes(part, used - part_off, "\r\n\r\n");
-    if (!body) {
+    const char* line_end = rdio_test_find_bytes(part, used - part_off, "\r\n");
+    const char* name = rdio_test_find_bytes(part, used - part_off, "filename=\"");
+    if (!name || !line_end || name > line_end) {
         return;
     }
-    body += 4;
-    const size_t body_off = (size_t)(body - request);
-    const char* end = rdio_test_find_bytes(body, used - body_off, "\r\n--");
-    if (!end) {
-        return;
+    name += strlen("filename=\"");
+    size_t len = 0;
+    while (name + len < line_end && name[len] != '"' && len + 1U < out_size) {
+        len++;
     }
-    size_t len = (size_t)(end - body);
-    if (len >= out_size) {
-        len = out_size - 1U;
-    }
-    DSD_MEMCPY(out, body, len);
+    DSD_MEMCPY(out, name, len);
     out[len] = '\0';
 }
 
@@ -497,6 +544,16 @@ rdio_test_http_serve_one(rdio_test_http_server* server, dsd_socket_t client) {
     }
     rdio_test_capture_part(request, used, "name=\"meta\"", server->meta, sizeof(server->meta));
     rdio_test_capture_part(request, used, "name=\"system\"", server->system, sizeof(server->system));
+    const int seen = server->requests_seen++;
+    if (seen < RDIO_TEST_REQUESTS_MAX) {
+        rdio_test_capture_part(request, used, "name=\"meta\"", server->req_meta[seen], sizeof(server->req_meta[seen]));
+        server->req_audio_len[seen] = rdio_test_capture_part_bytes(
+            request, used, "name=\"audio\"", server->req_audio[seen], sizeof(server->req_audio[seen]));
+        rdio_test_capture_part_file_name(request, used, "name=\"audio\"", server->req_audio_name[seen],
+                                         sizeof(server->req_audio_name[seen]));
+        rdio_test_capture_part_file_name(request, used, "name=\"meta\"", server->req_meta_name[seen],
+                                         sizeof(server->req_meta_name[seen]));
+    }
 
     const char default_response[] = "HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nOK";
     const char* response = server->response[0] ? server->response : default_response;
@@ -550,6 +607,13 @@ rdio_test_http_server_thread(void* arg) {
             break;
         }
         server->saw_request = 1;
+        if (i == 0 && server->hold_first) {
+            atomic_store(&server->first_accepted, 1);
+            const uint64_t t0 = dsd_realtime_mono_ms();
+            while (atomic_load(&server->release_first) == 0 && dsd_realtime_mono_ms() - t0 < 10000U) {
+                dsd_sleep_ms(1U);
+            }
+        }
         if (rdio_test_http_serve_one(server, client) == 0) {
             server->requests_done++;
         }
@@ -563,14 +627,17 @@ rdio_test_http_server_thread(void* arg) {
 }
 
 static int
-rdio_test_http_server_start_n(rdio_test_http_server* server, char* out_api_url, size_t out_api_url_size,
-                              const char* response, int no_request_expected, unsigned int accept_timeout_ms,
-                              int requests_expected) {
+rdio_test_http_server_start_cfg(rdio_test_http_server* server, char* out_api_url, size_t out_api_url_size,
+                                const char* response, int no_request_expected, unsigned int accept_timeout_ms,
+                                int requests_expected, int hold_first) {
     if (!server || !out_api_url || out_api_url_size == 0) {
         return 1;
     }
 
     DSD_MEMSET(server, 0, sizeof(*server));
+    server->hold_first = hold_first;
+    atomic_store(&server->first_accepted, 0);
+    atomic_store(&server->release_first, 0);
     server->listen_sock = DSD_INVALID_SOCKET;
     server->rc = 1;
     server->no_request_expected = no_request_expected;
@@ -634,6 +701,14 @@ rdio_test_http_server_start_n(rdio_test_http_server* server, char* out_api_url, 
     }
 
     return 0;
+}
+
+static int
+rdio_test_http_server_start_n(rdio_test_http_server* server, char* out_api_url, size_t out_api_url_size,
+                              const char* response, int no_request_expected, unsigned int accept_timeout_ms,
+                              int requests_expected) {
+    return rdio_test_http_server_start_cfg(server, out_api_url, out_api_url_size, response, no_request_expected,
+                                           accept_timeout_ms, requests_expected, 0);
 }
 
 static int
@@ -3576,6 +3651,564 @@ test_analog_api_upload_holds(void) {
 #endif
 }
 
+#if defined(USE_CURL) && !DSD_PLATFORM_WIN_NATIVE
+static int
+rdio_test_has_suffix(const char* name, const char* suffix) {
+    const size_t n = strlen(name);
+    const size_t k = strlen(suffix);
+    return n > k && strcmp(name + n - k, suffix) == 0;
+}
+
+// dsd_dir_list() visitor: counts a folder's files, and among them the upload's private inputs, told by the suffixes
+// dsd-neo gives them.
+typedef struct {
+    int files;
+    int private_inputs;
+} rdio_dir_census;
+
+static int
+rdio_census_visit(const char* name, void* user) {
+    rdio_dir_census* census = (rdio_dir_census*)user;
+    census->files++;
+    if (rdio_test_has_suffix(name, ".rdio-upload-audio") || rdio_test_has_suffix(name, ".rdio-upload-meta")) {
+        census->private_inputs++;
+    }
+    return 0;
+}
+
+// The private upload inputs in @p dir, or -1 when it cannot be listed; @p out_files, when given, gets every file.
+static int
+rdio_test_private_inputs_in(const char* dir, int* out_files) {
+    rdio_dir_census census = {0, 0};
+    if (dsd_dir_list(dir, rdio_census_visit, &census) != 0) {
+        return -1;
+    }
+    if (out_files) {
+        *out_files = census.files;
+    }
+    return census.private_inputs;
+}
+
+// Remove every file in a test folder, then the folder.
+static int
+rdio_test_remove_visit(const char* name, void* user) {
+    char path[DSD_TEST_PATH_MAX];
+    if (dsd_test_path_join(path, sizeof(path), (const char*)user, name) == 0) {
+        (void)remove(path);
+    }
+    return 0;
+}
+
+static void
+rdio_test_remove_dir_tree(const char* dir) {
+    if (dir && dir[0] != '\0') {
+        (void)dsd_dir_list(dir, rdio_test_remove_visit, (void*)dir);
+        remove_empty_dir(dir);
+    }
+}
+
+// One "both" call in @p dir: @p leaf.wav holding @p audio, published with talkgroup @p tg; 0 when its upload was queued.
+static int
+rdio_both_publish(const dsd_opts* opts, Event_History_I* hist, const char* dir, const char* leaf, const char* audio,
+                  uint32_t tg, char* out_wav, char* out_json) {
+    char wav_leaf[64];
+    char json_leaf[64];
+    DSD_SNPRINTF(wav_leaf, sizeof(wav_leaf), "%s.wav", leaf);
+    DSD_SNPRINTF(json_leaf, sizeof(json_leaf), "%s.json", leaf);
+    if (dsd_test_path_join(out_wav, DSD_TEST_PATH_MAX, dir, wav_leaf) != 0
+        || dsd_test_path_join(out_json, DSD_TEST_PATH_MAX, dir, json_leaf) != 0
+        || write_bytes_file(out_wav, (const unsigned char*)audio, strlen(audio)) != 0) {
+        return 1;
+    }
+    hist->Event_History_Items[0].event_start_time = (time_t)1699999985;
+    hist->Event_History_Items[0].event_time = (time_t)1700000000;
+    hist->Event_History_Items[0].target_id = tg;
+    int queued = 0;
+    if (dsd_rdio_export_call_ex(opts, hist, out_wav, 0, 0, &queued) != 0 || !queued) {
+        DSD_FPRINTF(stderr, "both: %s was not queued\n", leaf);
+        return 1;
+    }
+    return 0;
+}
+
+// The server's request @p i carried @p audio under @p audio_name, and a meta part naming talkgroup @p tg under
+// @p meta_name.
+static int
+rdio_both_expect_request(const char* label, const rdio_test_http_server* server, int i, const char* audio,
+                         const char* audio_name, const char* meta_name, uint32_t tg) {
+    int rc = 0;
+    if (server->req_audio_len[i] != strlen(audio) || memcmp(server->req_audio[i], audio, strlen(audio)) != 0) {
+        DSD_FPRINTF(stderr, "%s: request %d audio part has %zu bytes, not the call's %zu\n", label, i,
+                    server->req_audio_len[i], strlen(audio));
+        rc = 1;
+    }
+    char want_tg[48];
+    DSD_SNPRINTF(want_tg, sizeof(want_tg), "\"talkgroup\": %u,", tg);
+    rc |= expect_body_has(label, server->req_meta[i], want_tg);
+    if (strcmp(server->req_audio_name[i], audio_name) != 0 || strcmp(server->req_meta_name[i], meta_name) != 0) {
+        DSD_FPRINTF(stderr, "%s: request %d parts named '%s' and '%s', want '%s' and '%s'\n", label, i,
+                    server->req_audio_name[i], server->req_meta_name[i], audio_name, meta_name);
+        rc = 1;
+    }
+    return rc;
+}
+#endif
+
+// Issue #888 B15: in --rdio-mode both a DirWatch with delete-after on the same folder takes each public pair once its
+// sidecar is there. With the first upload held by the server, the second call is published and its public pair
+// deleted, as that watch does: its queued upload still carries its own audio and metadata, under the public file
+// names. Delete-after-upload is on and ignored beside DirWatch: the first call's public pair stays, and once the
+// uploads are over no private input is left and nothing is held.
+static int
+test_both_mode_upload_survives_dirwatch_delete(void) {
+#if !defined(USE_CURL) || DSD_PLATFORM_WIN_NATIVE
+    return 0;
+#else
+    static const char* const audio[2] = {"RIFF-both-call-one-audio", "RIFF-both-call-two-audio-bytes"};
+    rdio_test_http_server server;
+    char api_url[128] = {0};
+    char dir[DSD_TEST_PATH_MAX] = {0};
+    char wav[2][DSD_TEST_PATH_MAX] = {{0}};
+    char json[2][DSD_TEST_PATH_MAX] = {{0}};
+    dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(*opts));
+    Event_History_I* hist = (Event_History_I*)calloc(1, sizeof(*hist));
+    if (!opts || !hist || !dsd_test_mkdtemp(dir, sizeof(dir), "dsdneo_rdio_both_race")
+        || rdio_test_http_server_start_cfg(&server, api_url, sizeof(api_url), NULL, 0, 5000U, 2, 1) != 0) {
+        rdio_test_remove_dir_tree(dir);
+        free(hist);
+        free(opts);
+        return 1;
+    }
+    rdio_cancel_opts(opts, api_url, 5000, 1);
+    opts->rdio_mode = DSD_RDIO_MODE_BOTH;
+
+    int rc = rdio_both_publish(opts, hist, dir, "both_race_0", audio[0], 1201, wav[0], json[0]);
+    const uint64_t t0 = dsd_realtime_mono_ms();
+    while (rc == 0 && atomic_load(&server.first_accepted) == 0) {
+        if (dsd_realtime_mono_ms() - t0 > 5000U) {
+            DSD_FPRINTF(stderr, "both race: the first upload never started\n");
+            rc = 1;
+        }
+        dsd_sleep_ms(1U);
+    }
+    rc |= rdio_both_publish(opts, hist, dir, "both_race_1", audio[1], 1202, wav[1], json[1]);
+    if (rc == 0 && dsd_rdio_upload_holds(wav[1]) != 1) {
+        DSD_FPRINTF(stderr, "both race: the queued call's public WAV is not held\n");
+        rc = 1;
+    }
+    // The watch ingests the second pair and deletes it while the first upload is still going.
+    (void)remove(json[1]);
+    (void)remove(wav[1]);
+    atomic_store(&server.release_first, 1);
+    dsd_rdio_upload_shutdown();
+    if (dsd_thread_join(server.thread) != 0 || server.rc != 0 || server.requests_seen != 2) {
+        DSD_FPRINTF(stderr, "both race: the server saw %d of 2 complete uploads\n", server.requests_done);
+        rc = 1;
+    } else {
+        rc |= rdio_both_expect_request("both race", &server, 0, audio[0], "both_race_0.wav", "both_race_0.json", 1201);
+        rc |= rdio_both_expect_request("both race", &server, 1, audio[1], "both_race_1.wav", "both_race_1.json", 1202);
+    }
+    if (!file_exists(wav[0]) || !file_exists(json[0])) {
+        DSD_FPRINTF(stderr, "both race: the first call's public pair was not kept\n");
+        rc = 1;
+    }
+    int files = 0;
+    if (rdio_test_private_inputs_in(dir, &files) != 0 || files != 2) {
+        DSD_FPRINTF(stderr, "both race: %d files left, want the first call's public pair only\n", files);
+        rc = 1;
+    }
+    if (dsd_rdio_upload_holds(wav[0]) != 0 || dsd_rdio_upload_holds(wav[1]) != 0) {
+        DSD_FPRINTF(stderr, "both race: held after the session\n");
+        rc = 1;
+    }
+    rdio_test_remove_dir_tree(dir);
+    dsd_socket_cleanup();
+    free(hist);
+    free(opts);
+    return rc;
+#endif
+}
+
+// Issue #888 B15: the names of the private upload inputs the leftover cleanup may remove, under any platform's rules.
+static int
+test_upload_private_name_rule(void) {
+    static const struct {
+        const char* name;
+        int want;
+    } cases[] = {
+        {"call.rdio-upload-audio", 1},
+        {"call.rdio-upload-meta", 1},
+        {"call.12.rdio-upload-audio", 1},
+        {"x.rdio-upload-meta", 1},
+        {".rdio-upload-audio", 0},
+        {"rdio-upload-meta", 0},
+        {"call.rdio-upload-audio.wav", 0},
+        {"call.rdio-upload-meta.json", 0},
+        {"call.RDIO-UPLOAD-AUDIO", 0},
+        {"call.wav", 0},
+        {"call.json", 0},
+        {"call.audio", 0},
+        {"call.meta", 0},
+        {"", 0},
+    };
+
+    int rc = 0;
+    for (size_t i = 0; i < sizeof(cases) / sizeof(cases[0]); i++) {
+        if (dsd_rdio_upload_private_name(cases[i].name) != cases[i].want) {
+            DSD_FPRINTF(stderr, "private name rule: '%s' should be %d\n", cases[i].name, cases[i].want);
+            rc = 1;
+        }
+    }
+    if (dsd_rdio_upload_private_name(NULL) != 0) {
+        DSD_FPRINTF(stderr, "private name rule: NULL names no private input\n");
+        rc = 1;
+    }
+    return rc;
+}
+
+// Issue #888 B15: a "both" upload the server refuses, after every attempt, leaves the public pair for DirWatch and no
+// private input. A call whose WAV is gone before the export queues nothing, leaves its sidecar, and makes no private
+// input either.
+static int
+test_both_mode_failed_upload_removes_private_inputs(void) {
+#if !defined(USE_CURL) || DSD_PLATFORM_WIN_NATIVE
+    return 0;
+#else
+    rdio_test_http_server server;
+    char api_url[128] = {0};
+    char dir[DSD_TEST_PATH_MAX] = {0};
+    char wav[DSD_TEST_PATH_MAX] = {0};
+    char json[DSD_TEST_PATH_MAX] = {0};
+    char gone_wav[DSD_TEST_PATH_MAX] = {0};
+    char gone_json[DSD_TEST_PATH_MAX] = {0};
+    const char* refused = "HTTP/1.1 500 Internal Server Error\r\nContent-Length: 0\r\nConnection: close\r\n\r\n";
+    dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(*opts));
+    Event_History_I* hist = (Event_History_I*)calloc(1, sizeof(*hist));
+    if (!opts || !hist || !dsd_test_mkdtemp(dir, sizeof(dir), "dsdneo_rdio_both_fail")
+        || rdio_test_http_server_start_n(&server, api_url, sizeof(api_url), refused, 0, 5000U, 2) != 0) {
+        rdio_test_remove_dir_tree(dir);
+        free(hist);
+        free(opts);
+        return 1;
+    }
+    rdio_cancel_opts(opts, api_url, 5000, 2);
+    opts->rdio_mode = DSD_RDIO_MODE_BOTH;
+
+    int rc = rdio_both_publish(opts, hist, dir, "both_fail", "RIFF-both-refused", 1201, wav, json);
+    int queued = 0;
+    if (dsd_test_path_join(gone_wav, sizeof(gone_wav), dir, "both_gone.wav") != 0
+        || dsd_test_path_join(gone_json, sizeof(gone_json), dir, "both_gone.json") != 0
+        || dsd_rdio_export_call_ex(opts, hist, gone_wav, 0, 0, &queued) == 0 || queued) {
+        DSD_FPRINTF(stderr, "both failure: a call with no WAV was queued\n");
+        rc = 1;
+    }
+    dsd_rdio_upload_shutdown();
+    if (dsd_thread_join(server.thread) != 0 || server.requests_seen != 2) {
+        DSD_FPRINTF(stderr, "both failure: the server saw %d of 2 attempts\n", server.requests_seen);
+        rc = 1;
+    }
+    int files = 0;
+    if (!file_exists(wav) || !file_exists(json) || !file_exists(gone_json)
+        || rdio_test_private_inputs_in(dir, &files) != 0 || files != 3) {
+        DSD_FPRINTF(stderr, "both failure: %d files left, want the public pair and the lone sidecar\n", files);
+        rc = 1;
+    }
+    rdio_test_remove_dir_tree(dir);
+    dsd_socket_cleanup();
+    free(hist);
+    free(opts);
+    return rc;
+#endif
+}
+
+// Issue #888 B15 against a stalled endpoint, for @p mode: while the first upload hangs, every public WAV is held, and
+// "both" has made each queued call its two private inputs (API-only none). The user's Stop aborts the one in flight
+// and the shutdown drops the rest: every public pair stays, none is held, and no private input is left.
+static int
+stalled_uploads_then_stop(const char* label, int mode) {
+#if !defined(USE_CURL) || DSD_PLATFORM_WIN_NATIVE
+    (void)label;
+    (void)mode;
+    return 0;
+#else
+    dsd_socket_t stalled = DSD_INVALID_SOCKET;
+    char api_url[128] = {0};
+    char dir[DSD_TEST_PATH_MAX] = {0};
+    char wav[3][DSD_TEST_PATH_MAX] = {{0}};
+    char json[3][DSD_TEST_PATH_MAX] = {{0}};
+    dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(*opts));
+    Event_History_I* hist = (Event_History_I*)calloc(1, sizeof(*hist));
+    if (!opts || !hist || !dsd_test_mkdtemp(dir, sizeof(dir), "dsdneo_rdio_both_stop")
+        || rdio_test_stalled_server_start(&stalled, api_url, sizeof(api_url)) != 0) {
+        rdio_test_remove_dir_tree(dir);
+        free(hist);
+        free(opts);
+        return 1;
+    }
+    rdio_cancel_opts(opts, api_url, 30000, 1);
+    opts->rdio_api_delete_after_upload = 0;
+    opts->rdio_mode = mode;
+    int rc = 0;
+    for (int i = 0; i < 3 && rc == 0; i++) {
+        char leaf[32];
+        DSD_SNPRINTF(leaf, sizeof(leaf), "stop_%d", i);
+        rc |= rdio_both_publish(opts, hist, dir, leaf, "RIFF-stalled-call", (uint32_t)(1201 + i), wav[i], json[i]);
+        if (rc == 0 && i == 0 && rdio_test_wait_for_connection(stalled, 5000U) <= 0) {
+            DSD_FPRINTF(stderr, "%s: the first upload never started\n", label);
+            rc = 1;
+        }
+    }
+    const int want_private = mode == DSD_RDIO_MODE_BOTH ? 6 : 0;
+    const int private_inputs = rdio_test_private_inputs_in(dir, NULL);
+    if (private_inputs != want_private) {
+        DSD_FPRINTF(stderr, "%s: %d private inputs while uploading, want %d\n", label, private_inputs, want_private);
+        rc = 1;
+    }
+    for (int i = 0; i < 3 && rc == 0; i++) {
+        if (dsd_rdio_upload_holds(wav[i]) != 1) {
+            DSD_FPRINTF(stderr, "%s: public WAV %d is not held\n", label, i);
+            rc = 1;
+        }
+    }
+    dsd_rdio_upload_cancel();
+    dsd_rdio_upload_shutdown();
+    int files = 0;
+    if (rdio_test_private_inputs_in(dir, &files) != 0 || files != 6) {
+        DSD_FPRINTF(stderr, "%s: %d files left after the Stop, want the three public pairs only\n", label, files);
+        rc = 1;
+    }
+    for (int i = 0; i < 3; i++) {
+        if (!file_exists(wav[i]) || !file_exists(json[i]) || dsd_rdio_upload_holds(wav[i]) != 0) {
+            DSD_FPRINTF(stderr, "%s: public pair %d after the Stop: deleted or held\n", label, i);
+            rc = 1;
+        }
+    }
+    rdio_test_remove_dir_tree(dir);
+    (void)dsd_socket_close(stalled);
+    dsd_socket_cleanup();
+    free(hist);
+    free(opts);
+    return rc;
+#endif
+}
+
+static int
+test_both_mode_stop_removes_private_inputs(void) {
+    int rc = 0;
+    rc |= stalled_uploads_then_stop("both Stop", DSD_RDIO_MODE_BOTH);
+    rc |= stalled_uploads_then_stop("API-only Stop", DSD_RDIO_MODE_API);
+    return rc;
+}
+
+// Issue #888 B15: an upload the full queue refuses leaves no private input. Behind a stalled upload, the one in
+// flight and a full queue hold two private inputs each; the next call is refused with its public pair alone.
+static int
+test_both_mode_refused_upload_leaves_no_private_inputs(void) {
+#if !defined(USE_CURL) || DSD_PLATFORM_WIN_NATIVE
+    return 0;
+#else
+    enum { calls = 130 };
+
+    dsd_socket_t stalled = DSD_INVALID_SOCKET;
+    char api_url[128] = {0};
+    char dir[DSD_TEST_PATH_MAX] = {0};
+    dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(*opts));
+    Event_History_I* hist = (Event_History_I*)calloc(1, sizeof(*hist));
+    if (!opts || !hist || !dsd_test_mkdtemp(dir, sizeof(dir), "dsdneo_rdio_both_full")
+        || rdio_test_stalled_server_start(&stalled, api_url, sizeof(api_url)) != 0) {
+        rdio_test_remove_dir_tree(dir);
+        free(hist);
+        free(opts);
+        return 1;
+    }
+    rdio_cancel_opts(opts, api_url, 30000, 1);
+    opts->rdio_mode = DSD_RDIO_MODE_BOTH;
+    hist->Event_History_Items[0].target_id = 1201;
+    int rc = 0;
+    int queued_count = 0;
+    int last_queued = 1;
+    for (int i = 0; i < calls && rc == 0; i++) {
+        char leaf[32];
+        char wav[DSD_TEST_PATH_MAX];
+        DSD_SNPRINTF(leaf, sizeof(leaf), "full_%03d.wav", i);
+        if (dsd_test_path_join(wav, sizeof(wav), dir, leaf) != 0
+            || write_bytes_file(wav, (const unsigned char*)"RIFF-full", 9U) != 0) {
+            rc = 1;
+            break;
+        }
+        int queued = 0;
+        (void)dsd_rdio_export_call_ex(opts, hist, wav, 0, 0, &queued);
+        queued_count += queued;
+        last_queued = queued;
+        if (i == 0 && (!queued || rdio_test_wait_for_connection(stalled, 5000U) <= 0)) {
+            DSD_FPRINTF(stderr, "both full queue: the first upload never started\n");
+            rc = 1;
+        }
+    }
+    int files = 0;
+    const int private_inputs = rdio_test_private_inputs_in(dir, &files);
+    if (rc == 0 && (queued_count != 129 || last_queued || private_inputs != 2 * 129 || files != 2 * calls + 2 * 129)) {
+        DSD_FPRINTF(stderr, "both full queue: %d queued, %d private inputs of %d files\n", queued_count, private_inputs,
+                    files);
+        rc = 1;
+    }
+    dsd_rdio_upload_cancel();
+    dsd_rdio_upload_shutdown();
+    if (rdio_test_private_inputs_in(dir, &files) != 0 || files != 2 * calls) {
+        DSD_FPRINTF(stderr, "both full queue: %d files left after the Stop, want the public pairs only\n", files);
+        rc = 1;
+    }
+    rdio_test_remove_dir_tree(dir);
+    (void)dsd_socket_close(stalled);
+    dsd_socket_cleanup();
+    free(hist);
+    free(opts);
+    return rc;
+#endif
+}
+
+#if defined(USE_CURL) && !DSD_PLATFORM_WIN_NATIVE
+static int
+rdio_test_touch(const char* dir, const char* leaf) {
+    char path[DSD_TEST_PATH_MAX];
+    return dsd_test_path_join(path, sizeof(path), dir, leaf) != 0
+           || write_bytes_file(path, (const unsigned char*)"x", 1U) != 0;
+}
+
+static int
+rdio_test_present(const char* dir, const char* leaf) {
+    char path[DSD_TEST_PATH_MAX];
+    return dsd_test_path_join(path, sizeof(path), dir, leaf) == 0 && file_exists(path);
+}
+
+// Each of @p leaves is in @p dir (want 1) or is not (want 0).
+static int
+rdio_test_expect_leaves(const char* label, const char* dir, const char* const* leaves, size_t count, int want) {
+    int rc = 0;
+    for (size_t i = 0; i < count; i++) {
+        if (rdio_test_present(dir, leaves[i]) != want) {
+            DSD_FPRINTF(stderr, "%s: %s %s\n", label, leaves[i], want ? "was removed" : "was left");
+            rc = 1;
+        }
+    }
+    return rc;
+}
+
+static const char* const k_rdio_leftovers[] = {"old.rdio-upload-audio", "old.rdio-upload-meta",
+                                               "old.7.rdio-upload-meta"};
+static const char* const k_rdio_planted[] = {"planted.rdio-upload-audio"};
+static const char* const k_rdio_not_leftovers[] = {"user.audio", "user.meta", "keep.rdio-upload-audio.wav",
+                                                   "keep.json",  "keep.wav",  "keep.RDIO-UPLOAD-META"};
+
+// The first run of the leftover test: API-only and DirWatch-only exports leave the leftovers alone, the first "both"
+// export clears them, and a second one in the same folder and run does not clear again.
+static int
+rdio_leftover_first_run(const dsd_opts* base, Event_History_I* hist, const char* dir, const char* other) {
+    rdio_test_http_server server;
+    char wav[DSD_TEST_PATH_MAX];
+    char json[DSD_TEST_PATH_MAX];
+    dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(*opts));
+    if (!opts) {
+        return 1;
+    }
+    *opts = *base;
+    if (rdio_test_http_server_start_n(&server, opts->rdio_api_url, sizeof(opts->rdio_api_url), NULL, 0, 5000U, 3)
+        != 0) {
+        free(opts);
+        return 1;
+    }
+    const size_t n_left = sizeof(k_rdio_leftovers) / sizeof(k_rdio_leftovers[0]);
+    opts->rdio_mode = DSD_RDIO_MODE_API;
+    int rc = rdio_both_publish(opts, hist, dir, "api_only", "RIFF-api-only", 1201, wav, json);
+    opts->rdio_mode = DSD_RDIO_MODE_DIRWATCH;
+    if (rdio_test_touch(dir, "dirwatch_only.wav") != 0 || dsd_test_path_join(wav, sizeof(wav), dir, "dirwatch_only.wav")
+        || dsd_rdio_export_call(opts, hist, wav, 0) != 0) {
+        rc = 1;
+    }
+    rc |= rdio_test_expect_leaves("leftovers, API and DirWatch only", dir, k_rdio_leftovers, n_left, 1);
+    opts->rdio_mode = DSD_RDIO_MODE_BOTH;
+    rc |= rdio_both_publish(opts, hist, dir, "both_first", "RIFF-both-first", 1202, wav, json);
+    rc |= rdio_test_expect_leaves("leftovers, first both export", dir, k_rdio_leftovers, n_left, 0);
+    // Made after this run cleared the folder: this run does not clear it again.
+    rc |= rdio_test_touch(dir, "planted.rdio-upload-audio");
+    rc |= rdio_both_publish(opts, hist, dir, "both_second", "RIFF-both-second", 1203, wav, json);
+    dsd_rdio_upload_shutdown();
+    if (dsd_thread_join(server.thread) != 0 || server.rc != 0) {
+        DSD_FPRINTF(stderr, "leftovers: the server saw %d of 3 uploads\n", server.requests_done);
+        rc = 1;
+    } else if (strcmp(server.req_audio_name[0], "api_only.wav") != 0 || server.req_audio_len[0] != 13U) {
+        DSD_FPRINTF(stderr, "leftovers: the API-only upload sent '%s' (%zu bytes)\n", server.req_audio_name[0],
+                    server.req_audio_len[0]);
+        rc = 1;
+    }
+    rc |= rdio_test_expect_leaves("leftovers, first run", dir, k_rdio_planted, 1U, 1);
+    rc |= rdio_test_expect_leaves("leftovers, another folder", other, k_rdio_leftovers, n_left, 1);
+    free(opts);
+    return rc;
+}
+#endif
+
+// Issue #888 B15: what a killed run left behind goes when the next run first exports to that folder in "both" mode,
+// once per run and folder: only dsd-neo's own private names, in that folder only, and never in API-only or
+// DirWatch-only mode.
+static int
+test_both_mode_clears_leftovers_once_per_run(void) {
+#if !defined(USE_CURL) || DSD_PLATFORM_WIN_NATIVE
+    return 0;
+#else
+    char dir[DSD_TEST_PATH_MAX] = {0};
+    char other[DSD_TEST_PATH_MAX] = {0};
+    char wav[DSD_TEST_PATH_MAX];
+    char json[DSD_TEST_PATH_MAX];
+    dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(*opts));
+    Event_History_I* hist = (Event_History_I*)calloc(1, sizeof(*hist));
+    const size_t n_left = sizeof(k_rdio_leftovers) / sizeof(k_rdio_leftovers[0]);
+    const size_t n_keep = sizeof(k_rdio_not_leftovers) / sizeof(k_rdio_not_leftovers[0]);
+    if (!opts || !hist || !dsd_test_mkdtemp(dir, sizeof(dir), "dsdneo_rdio_leftovers")
+        || !dsd_test_mkdtemp(other, sizeof(other), "dsdneo_rdio_leftovers_other")) {
+        rdio_test_remove_dir_tree(dir);
+        free(hist);
+        free(opts);
+        return 1;
+    }
+    int rc = 0;
+    for (size_t i = 0; rc == 0 && i < n_left; i++) {
+        rc |= rdio_test_touch(dir, k_rdio_leftovers[i]) | rdio_test_touch(other, k_rdio_leftovers[i]);
+    }
+    for (size_t i = 0; rc == 0 && i < n_keep; i++) {
+        rc |= rdio_test_touch(dir, k_rdio_not_leftovers[i]);
+    }
+    if (rc == 0) {
+        rdio_cancel_opts(opts, "http://127.0.0.1:9", 5000, 1);
+        rc |= rdio_leftover_first_run(opts, hist, dir, other);
+    }
+    rdio_test_http_server server;
+    if (rc == 0 && rdio_test_http_server_start(&server, opts->rdio_api_url, sizeof(opts->rdio_api_url)) == 0) {
+        // The next run's first "both" export there clears what the last one made after its own clearing.
+        opts->rdio_mode = DSD_RDIO_MODE_BOTH;
+        rc |= rdio_both_publish(opts, hist, dir, "next_run", "RIFF-next-run", 1204, wav, json);
+        rc |= rdio_test_expect_leaves("leftovers, next run", dir, k_rdio_planted, 1U, 0);
+        dsd_rdio_upload_shutdown();
+        if (dsd_thread_join(server.thread) != 0 || server.rc != 0) {
+            rc = 1;
+        }
+    } else {
+        rc = 1;
+    }
+    rc |= rdio_test_expect_leaves("leftovers, not ours", dir, k_rdio_not_leftovers, n_keep, 1);
+    if (rdio_test_private_inputs_in(dir, NULL) != 0) {
+        DSD_FPRINTF(stderr, "leftovers: private inputs left after the last run\n");
+        rc = 1;
+    }
+    rdio_test_remove_dir_tree(dir);
+    rdio_test_remove_dir_tree(other);
+    dsd_socket_cleanup();
+    free(hist);
+    free(opts);
+    return rc;
+#endif
+}
+
 int
 main(void) {
     int rc = 0;
@@ -3622,5 +4255,11 @@ main(void) {
     rc |= test_api_upload_holds_until_the_delete_is_over();
     rc |= test_analog_api_upload_contract();
     rc |= test_analog_api_upload_holds();
+    rc |= test_upload_private_name_rule();
+    rc |= test_both_mode_upload_survives_dirwatch_delete();
+    rc |= test_both_mode_failed_upload_removes_private_inputs();
+    rc |= test_both_mode_stop_removes_private_inputs();
+    rc |= test_both_mode_refused_upload_leaves_no_private_inputs();
+    rc |= test_both_mode_clears_leftovers_once_per_run();
     return rc;
 }

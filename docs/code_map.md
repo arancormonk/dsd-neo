@@ -1719,6 +1719,10 @@ Tests: `tests/engine/test_engine_trunk_scan.c` (`ENGINE_TRUNK_SCAN`) and
     takes `MOVEFILE_REPLACE_EXISTING` only. Both refuse a directory source with EISDIR before anything moves (a
     link is a link, as `lstat()` and `dsd_path_type_nofollow()` say) (issue #661: per-call WAV publication;
     issue #828: a store file kept aside; #832: import and replay publication)
+  - Hard link (issue #888): `dsd_hard_link()` gives a file a second name, `link()` on POSIX, `CreateHardLinkW/A()` on
+    Windows (one call for the pair, as `dsd_win32_path_wide()` picks), never over an existing name (EEXIST) and never
+    a copy; a file system without links fails and the caller copies (the rdio-scanner exporter's private inputs).
+    Tests: `PLATFORM_FILE_COMPAT` (also in the non-ASCII folders)
   - No-follow existence probe (issue #828): `dsd_path_exists_nofollow()` answers for the name itself (`lstat()`,
     `GetFileAttributes()`): 1 for any type, a dangling link included; 0 only for a confirmed absence (ENOENT,
     ENOTDIR); -1 with errno when it cannot tell (EACCES on an unsearchable parent), which a caller that must not lose
@@ -1734,7 +1738,8 @@ Tests: `tests/engine/test_engine_trunk_scan.c` (`ENGINE_TRUNK_SCAN`) and
     invalid name or split at a different separator. Every Windows path helper follows it: `dsd_stat_path()`,
     `dsd_fopen_private()` (every mode), `dsd_fopen_existing_regular_file()`, `dsd_fopen_private_append_regular()`,
     `dsd_fopen_existing_local_file()`,
-    `dsd_rename_noreplace()` and `dsd_replace_file_with_temp()` (UTF-8 only when both names are), `dsd_dir_list()`
+    `dsd_rename_noreplace()`, `dsd_replace_file_with_temp()` and `dsd_hard_link()` (UTF-8 only when both names are),
+    `dsd_dir_list()`
     (names come back in the folder's encoding), `dsd_path_exists_nofollow()`, `dsd_path_canonical()`,
     `dsd_remove_file()`, `dsd_path_free_bytes()`, `dsd_mkdir()`, `dsd_mkdtemp()`, `dsd_mkstemp()`, the runtime's
     `dsd_path_fopen_user_read_file()` and the tests' `dsd_test_rmdir()`. `PLATFORM_FILE_COMPAT` runs Latin, CJK and
@@ -5291,6 +5296,21 @@ suite runs under this compiler.
     worker may still run, so only the queued jobs' API copies are wiped, under the queue's mutex; the queued jobs are
     not freed, and the job in flight and the worker's endpoint copy are left to the worker. Uploads are kept while a
     journal is set:
+    Private job inputs (issue #888 B15): in `--rdio-mode both` the sidecar is public before the queued job runs, and
+    a DirWatch with delete-after on that folder removes the pair once it takes it. So at enqueue, and only in `both`
+    mode, `dsd_rdio_make_private_inputs()` gives the job its own inputs beside the pair: a hard link of the WAV
+    (`dsd_hard_link()`, a copy where the file system has none) and a copy of the sidecar, named
+    `<base>[.<N>].rdio-upload-audio` / `.rdio-upload-meta` (the first free N), which no 6.6.3 or v8 watch reads (they
+    look at the last extension only: `.json`, `.mp3`, or the default type's configured one, `.wav` by default). The
+    worker uploads from them under the published names (`curl_mime_filename()`), and the job's release
+    (`dsd_rdio_upload_job_free()`: sent, failed, cancelled, dropped at shutdown, or never queued) removes them; the
+    public pair is published at close as before, the job's `public_wav_path` is what `dsd_rdio_upload_holds()` names,
+    and API-only and DirWatch-only runs make no private inputs. A run that ends without that release (killed, a
+    removal that failed, a failed join) leaves them behind: the first `both` export into a folder in each run (the
+    per-run list resets at `dsd_rdio_upload_shutdown()`) first removes, from that folder alone, every name
+    `dsd_rdio_upload_private_name()` (`rdio_export_internal.h`) matches that no queued or in-flight job uploads from.
+    The clearing, the copies and the enqueue run under `g_rdio_private_mutex`, taken before the queue's mutex. A
+    copy that cannot be made fails the export (no job, journal `rdio` false), as a full queue does.
     `dsd_rdio_journal_keeps_uploads()` reads 1 in a run that names a recording journal and turns
     `rdio_api_delete_after_upload` on, and `dsd_rdio_export_call_ex()` then queues the job without the delete (the
     decision travels in the job, so the worker never reads the options). The option value is unchanged, so the exit's
@@ -5301,8 +5321,11 @@ suite runs under this compiler.
     during the drain, holds with a blocked uploader through 140 later publications, release after the delete, the name
     rule under POSIX and Windows rules on every host; analog sidecar fields, kHz and fallback talkgroups, stable tags,
     the analog system in the sidecar and the form part, the NFM upload's completion, failure, journal retention,
-    BOTH mode and holds), `CORE_RECEIVE` and `CORE_WAV_JOURNAL` (NFM exports through the real closer, the per-run skip
-    line), `ANDROID_ENGINE_STOP_JVM` (the cause each Android caller passes).
+    BOTH mode and holds; issue #888 B15: a held first upload while the second pair is deleted as a watch would, the
+    second request's audio, meta and part names, private inputs gone after success, refusal, Stop and a full queue,
+    the leftover clearing once per run and folder, the private-name rule), `CORE_RECEIVE` and `CORE_WAV_JOURNAL` (NFM
+    exports through the real closer, the per-run skip line), `ANDROID_ENGINE_STOP_JVM` (the cause each Android caller
+    passes).
   - RadioReference.com import client (`src/runtime/radioreference/`): SOAP envelope builder, expat response parser,
     worker-thread client with cancellation, and the generators that turn fetched systems into the channel-map and
     talkgroup CSVs `src/core/file/dsd_import.c` already parses. UI-agnostic C API in

@@ -254,6 +254,23 @@ int dsd_replace_file_with_temp(const char* tmp_path, const char* final_path);
 int dsd_rename_noreplace(const char* from, const char* to, int* out_source_left);
 
 /**
+ * @brief Give the file at @p existing a second name, @p new_path (a hard link): link() on POSIX, CreateHardLink() on
+ * Windows.
+ *
+ * Both names then name one file, so removing either leaves the other with every byte. Never copies and never replaces
+ * an existing @p new_path (EEXIST). A file system without hard links (FAT, exFAT, some network and Android shared
+ * storage) or another volume fails, with errno set (EXDEV, EPERM, ENOTSUP, EMLINK on POSIX; on Windows a code from the
+ * native error, EIO for one with no POSIX counterpart): a caller that needs the bytes there copies them instead. On
+ * Windows the pair takes one call, as dsd_win32_path_wide() picks: CreateHardLinkW() when both names are UTF-8,
+ * CreateHardLinkA() otherwise.
+ *
+ * @param existing  Existing file.
+ * @param new_path  New name, on the same volume.
+ * @return 0 on success, -1 on error with errno set (EINVAL for NULL or an empty path).
+ */
+int dsd_hard_link(const char* existing, const char* new_path);
+
+/**
  * @brief Whether a name exists, without following a symbolic link at it.
  *
  * Answers for the name itself: lstat() on POSIX, GetFileAttributes() on Windows, both of which describe a link or
