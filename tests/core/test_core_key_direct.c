@@ -237,6 +237,52 @@ stopped_session_snapshot_keeps_no_key(void) {
     freeState(&state);
 }
 
+/* The NXDN/dPMR working register (nxdn_payload_mi) holds the scrambler key at a scrambled call's start and the
+   scrambler state run on from it after, so every snapshot key wipe clears it with R: a reader's own wipe, a reader that
+   withholds keys, and the stop. An IV a VCALL_IV carried over the air (nxdn_iv_on_air) is no key and stays. */
+static void
+snapshot_wipes_nxdn_key_register(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    const unsigned long long key = 0x1F2E3ULL;
+    const unsigned long long on_air_iv = 0x1122334455667788ULL;
+
+    initOpts(&opts);
+    initState(&state);
+    state.R = key;
+    state.nxdn_payload_mi = key; /* nxdn_reset_payload_seed_if_forced(): the key loaded as the seed */
+    state.nxdn_iv_on_air = 0U;
+    dsd_app_frontend_runtime_start(&opts, &state);
+    const dsd_state* snapshot = dsd_app_get_latest_snapshot();
+    check(snapshot && snapshot->nxdn_payload_mi == key, "a running session's snapshot has the scrambler register");
+    dsd_app_snapshot_consumer_wipe_keys();
+    check(snapshot && snapshot->nxdn_payload_mi == 0ULL && snapshot->R == 0ULL,
+          "a reader's wipe clears the scrambler register with the key");
+    dsd_app_snapshot_consumer_withhold_keys(1);
+    snapshot = dsd_app_get_latest_snapshot();
+    check(snapshot && snapshot->nxdn_payload_mi == 0ULL, "a reader that withholds keys holds no scrambler register");
+    dsd_app_snapshot_consumer_withhold_keys(0);
+    snapshot = dsd_app_get_latest_snapshot();
+    check(snapshot && snapshot->nxdn_payload_mi == key, "its next read with keys copies the register again");
+    dsd_app_frontend_runtime_stop();
+    snapshot = dsd_app_get_latest_snapshot();
+    check(snapshot && snapshot->nxdn_payload_mi == 0ULL, "a stopped session's snapshot keeps no scrambler register");
+    state.R = 0ULL;
+    freeState(&state);
+
+    initOpts(&opts);
+    initState(&state);
+    state.R = key;
+    state.nxdn_payload_mi = on_air_iv; /* a CRC-verified VCALL_IV */
+    state.nxdn_iv_on_air = 1U;
+    dsd_app_frontend_runtime_start(&opts, &state);
+    dsd_app_frontend_runtime_stop();
+    snapshot = dsd_app_get_latest_snapshot();
+    check(snapshot && snapshot->R == 0ULL && snapshot->nxdn_payload_mi == on_air_iv && snapshot->nxdn_iv_on_air == 1U,
+          "a stopped session's snapshot keeps an IV received over the air");
+    freeState(&state);
+}
+
 static int
 opts_secrets_are_empty(const dsd_opts* opts) {
     for (size_t i = 0; i < sizeof opts->rdio_api_key; ++i) {
@@ -996,6 +1042,7 @@ int
 main(void) {
     bootstrap_snapshot_secrets();
     stopped_session_snapshot_keeps_no_key();
+    snapshot_wipes_nxdn_key_register();
     stopped_session_opts_snapshot_keeps_no_api_key();
     zero_key_voice();
     presence_follows_material();

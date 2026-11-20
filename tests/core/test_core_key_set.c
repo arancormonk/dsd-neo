@@ -737,8 +737,8 @@ test_forget_slot_wipes_on_the_change_to_none(void) {
     return failed;
 }
 
-/* The final teardown wipes the keys the state holds, the autoload's copies of them included, whether or not a keyring
-   armed the no-carrier unload. */
+/* The final teardown wipes the keys the state holds, the autoload's copies of them and the NXDN scrambler register
+   loaded from the key included, whether or not a keyring armed the no-carrier unload. */
 static int
 test_free_state_wipes_keys(void) {
     dsd_state* state = (dsd_state*)calloc(1, sizeof(*state));
@@ -749,6 +749,7 @@ test_free_state_wipes_keys(void) {
     seed_slot_keyed_from_tg(state);
     state->keyloader = 0;
     state->R = 0x0102030405ULL;
+    state->nxdn_payload_mi = state->R; /* the NXDN scrambler's seed, loaded from the key */
     state->rkey_array[123] = 0x33ULL;
     state->aes_key[0] = 0x5AU;
     freeState(state);
@@ -758,7 +759,7 @@ test_free_state_wipes_keys(void) {
         failed |= autoload[i] != 0U;
     }
     if (failed || state->K != 0ULL || state->K1 != 0ULL || state->H != 0ULL || state->R != 0ULL
-        || state->rkey_array[123] != 0ULL || state->aes_key[0] != 0U) {
+        || state->nxdn_payload_mi != 0ULL || state->rkey_array[123] != 0ULL || state->aes_key[0] != 0U) {
         DSD_FPRINTF(stderr, "freeState left key material in the state\n");
         failed = 1;
     }

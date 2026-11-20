@@ -70,6 +70,10 @@ dsd_key_state_secure_wipe(dsd_state* state) {
     DSD_SECURE_ZERO(&state->R, sizeof(state->R));
     DSD_SECURE_ZERO(&state->RR, sizeof(state->RR));
     DSD_SECURE_ZERO(&state->H, sizeof(state->H));
+    /* The NXDN/dPMR working register: the scrambler key (R) a scrambled call loads into it, or the scrambler state run
+       on from it. An IV received over the air is no secret, but the state is going away with it. */
+    DSD_SECURE_ZERO(&state->nxdn_payload_mi, sizeof(state->nxdn_payload_mi));
+    state->nxdn_iv_on_air = 0U;
     DSD_SECURE_ZERO(&state->dmr_tg_autoload, sizeof(state->dmr_tg_autoload));
     DSD_SECURE_ZERO(state->A1, sizeof(state->A1));
     DSD_SECURE_ZERO(state->A2, sizeof(state->A2));

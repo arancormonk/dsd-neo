@@ -1965,9 +1965,10 @@ suite runs under this compiler.
   (`dsd_dmr_tg_autoload_hand_back()`), so no call keeps another talkgroup's key. `freeState()` wipes the state's keys
   (`dsd_key_state_secure_wipe()`), the autoload's copies included, whatever armed them, and with them the vendor and
   static keys and keystreams (`csi_ee_key`, `static_ks_bits`, the Vertex map), the working keystreams (`ks_octetL/R`,
-  `ks_bitstreamL/R`) and the Retevis AP RC2 key schedule (`retevis_rc2_context_release()`); `freeOpts()` wipes the
-  options' API keys, rdio-scanner URL and API token before the CLI and the Android session free them, and the RTL
-  stream's copy of the options is wiped before it is freed. Each slot also keeps the talkgroup its own
+  `ks_bitstreamL/R`), the NXDN/dPMR working register a scrambled call loads from `R` (`nxdn_payload_mi`) and the
+  Retevis AP RC2 key schedule (`retevis_rc2_context_release()`); `freeOpts()` wipes the options' API keys,
+  rdio-scanner URL and API token before the CLI and the Android session free them, and the RTL stream's copy of the
+  options is wiped before it is freed. Each slot also keeps the talkgroup its own
   call last keyed from (`slot_tg`): a frame of a call no LC has named yet (an identity-less epoch, as a colour code
   change reopens a call) keys from it again, or from talkgroup 0's own key, else from none, never from the other slot's.
   The slot's terminator, the no-carrier pass and every move off the carrier forget it with the rest of the left calls'
@@ -5410,8 +5411,10 @@ registry lock, so `dsd_app_telemetry_observer_remove()` returns only once no cal
 callback must not block, submit commands, add/remove observers, or take the P25 SM tick guard. Live event-history rows
 are read under `dsd_event_history_transaction_begin()`, as every other cross-thread reader does.
 
-**Key copies:** the state snapshots carry the scalar and AES keys, the talkgroup autoload's copies of them and the
-CSI key, which the terminal UI shows redacted unless `--show-keys`. A publish overwrites them with the live values.
+**Key copies:** the state snapshots carry the scalar and AES keys, the talkgroup autoload's copies of them, the
+CSI key, which the terminal UI shows redacted unless `--show-keys`, and the NXDN/dPMR working register
+(`nxdn_payload_mi`), which a scrambled call loads from `R` and runs the scrambler on from; every snapshot wipe clears it
+unless it holds an IV received over the air (`nxdn_iv_on_air`). A publish overwrites them with the live values.
 The snapshots outlive the session (`snapshot.h`), so `dsd_app_frontend_runtime_stop()` wipes them, once the hooks are
 cleared and nothing can publish them again (`dsd_app_snapshot_wipe_keys()`, `DSD_SECURE_ZERO`): the published copy at
 once, the consumer's at its own thread's next read, which then copies the published state again. The terminal UI
