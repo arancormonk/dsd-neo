@@ -742,13 +742,21 @@ typedef struct {
     time_t start_time;
     uint32_t talkgroup;
     uint32_t source;
-    uint32_t freq_hz;
+    uint32_t freq_hz; /* dsd_rdio_usable_freq_hz(): 0 when unknown or not storable */
     int system_id;
     int encrypted;
     const char* talkgroup_tag;
     const char* short_name;
     char analog_tag[64]; /* an analog call's frequency tag, when talkgroup_tag names it */
 } dsd_rdio_meta_fields;
+
+/* The Hz the sidecar's freq and freqList carry (issue #888 B5, B13, D8): from 1 MHz (included) up to what the signed
+   32-bit frequency columns of rdio-scanner's MySQL/MariaDB and PostgreSQL databases store; a frequency outside that is
+   unknown (0), so the whole call is not refused for it. */
+static uint32_t
+dsd_rdio_usable_freq_hz(int64_t freq_hz) {
+    return (freq_hz >= 1000000 && freq_hz <= (int64_t)INT32_MAX) ? (uint32_t)freq_hz : 0U;
+}
 
 /* The row a recording is exported from: the slot's staged row, or none. */
 static const Event_History*
@@ -847,8 +855,8 @@ dsd_rdio_meta_fields_from_event(const dsd_opts* opts, const Event_History* event
     }
     out->start_time = dsd_rdio_recording_start(event, opened, started);
     // The frequency the call was heard on. Never event->channel: that is a trunk channel number,
-    // an LCN or a dPMR colour code, not Hz. A frequency the sidecar's field cannot hold is unknown.
-    out->freq_hz = (event->freq_hz > 0 && event->freq_hz <= (int64_t)UINT32_MAX) ? (uint32_t)event->freq_hz : 0U;
+    // an LCN or a dPMR colour code, not Hz.
+    out->freq_hz = dsd_rdio_usable_freq_hz(event->freq_hz);
     out->short_name = event->sysid_string;
     if (event->systype == DSD_SYNC_ANALOG) {
         dsd_rdio_analog_meta_fields(opts, event, out);
@@ -913,7 +921,11 @@ dsd_rdio_write_meta_json(FILE* fp, const dsd_opts* opts, const dsd_rdio_meta_fie
         DSD_FPRINTF(fp, "{\"pos\":0,\"src\":%u}", fields->source);
     }
     DSD_FPRINTF(fp, "],\n");
-    DSD_FPRINTF(fp, "  \"freq\": %u,\n", fields->freq_hz > 1000000U ? fields->freq_hz : 0U);
+    DSD_FPRINTF(fp, "  \"freq\": %u,\n", fields->freq_hz);
+    if (fields->freq_hz > 0U) {
+        // rdio-scanner v8 reads the frequency from the list only; 6.6.3 reads either.
+        DSD_FPRINTF(fp, "  \"freqList\": [{\"pos\": 0, \"freq\": %u}],\n", fields->freq_hz);
+    }
     DSD_FPRINTF(fp, "  \"system\": %d,\n", fields->system_id > 0 ? fields->system_id : 0);
     DSD_FPRINTF(fp, "  \"short_name\": \"");
     dsd_rdio_json_write_escaped(fp, fields->short_name);

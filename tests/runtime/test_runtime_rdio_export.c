@@ -1550,7 +1550,8 @@ test_sidecar_service_name_keeps_numeric_identity(void) {
 
 // The sidecar's freq is the frequency the call was heard on (Event_History::freq_hz). A row's channel is a trunk
 // channel number, an LCN or a dPMR colour code, never Hz, and must not be read as one even when it is large enough to
-// pass the 1 MHz floor. A frequency that does not fit the field, or sits below the floor, is reported as 0.
+// pass the 1 MHz floor. A frequency below 1 MHz, or one rdio-scanner's signed 32-bit frequency columns cannot store
+// (issue #888 B5, B13), is reported as 0, and only a usable one is listed in freqList (D5, D8).
 static int
 test_sidecar_freq_comes_from_the_row_frequency(void) {
     static Event_History_I hist;
@@ -1560,12 +1561,19 @@ test_sidecar_freq_comes_from_the_row_frequency(void) {
         uint32_t channel;
         int64_t freq_hz;
         const char* want;
+        const char* want_list; /* NULL: no freqList key */
     } cases[] = {
-        {"channel number without a frequency", 851012500U, 0, "\"freq\": 0,"},
-        {"row frequency beside a channel number", 0x10C8U, 453212500, "\"freq\": 453212500,"},
-        {"frequency past 32 bits", 0U, INT64_C(5000000000), "\"freq\": 0,"},
-        {"negative frequency", 0U, -851012500, "\"freq\": 0,"},
-        {"sub-MHz frequency", 0U, 999999, "\"freq\": 0,"},
+        {"channel number without a frequency", 851012500U, 0, "\"freq\": 0,", NULL},
+        {"row frequency beside a channel number", 0x10C8U, 453212500, "\"freq\": 453212500,",
+         "\"freqList\": [{\"pos\": 0, \"freq\": 453212500}],"},
+        {"frequency past 32 bits", 0U, INT64_C(5000000000), "\"freq\": 0,", NULL},
+        {"negative frequency", 0U, -851012500, "\"freq\": 0,", NULL},
+        {"sub-MHz frequency", 0U, 999999, "\"freq\": 0,", NULL},
+        {"exactly 1 MHz", 0U, 1000000, "\"freq\": 1000000,", "\"freqList\": [{\"pos\": 0, \"freq\": 1000000}],"},
+        {"signed 32-bit limit", 0U, INT64_C(2147483647), "\"freq\": 2147483647,",
+         "\"freqList\": [{\"pos\": 0, \"freq\": 2147483647}],"},
+        {"one above the signed 32-bit limit", 0U, INT64_C(2147483648), "\"freq\": 0,", NULL},
+        {"2.4 GHz", 0U, INT64_C(2400000000), "\"freq\": 0,", NULL},
     };
 
     int rc = 0;
@@ -1581,6 +1589,11 @@ test_sidecar_freq_comes_from_the_row_frequency(void) {
         }
         if (!strstr(body, cases[i].want)) {
             DSD_FPRINTF(stderr, "%s: sidecar missing %s\n%s\n", cases[i].label, cases[i].want, body);
+            rc = 1;
+        }
+        if (cases[i].want_list ? !strstr(body, cases[i].want_list) : strstr(body, "freqList") != NULL) {
+            DSD_FPRINTF(stderr, "%s: freqList should %s\n%s\n", cases[i].label,
+                        cases[i].want_list ? cases[i].want_list : "be absent", body);
             rc = 1;
         }
     }
@@ -1731,7 +1744,8 @@ test_analog_sidecar_fields(void) {
 
 // Issue #668 D3/D5: the talkgroup comes from the frequency, in whole kHz; a call with none (audio input) takes
 // --rdio-analog-talkgroup, and with neither it is not exported. The frequency wins over the fallback. Below 1 MHz the
-// sidecar's freq is 0 but the call is still exported under its kHz; a frequency past 32 bits still names its kHz.
+// sidecar's freq is 0 but the call is still exported under its kHz; a frequency past signed 32 bits (issue #888 B13)
+// still names its kHz with freq 0.
 static int
 test_analog_talkgroup_sources(void) {
     static const struct {
@@ -1757,6 +1771,9 @@ test_analog_talkgroup_sources(void) {
         {"the largest fallback", 0, 2147483647, 1, "\"talkgroup\": 2147483647,", "\"freq\": 0,", "NFM"},
         {"below the 1 MHz floor", 530000, 0, 1, "\"talkgroup\": 530,", "\"freq\": 0,", "NFM 0.5300 MHz"},
         {"past 32 bits", INT64_C(5000000000), 0, 1, "\"talkgroup\": 5000000,", "\"freq\": 0,", "NFM 5000.0000 MHz"},
+        {"exactly 1 MHz", 1000000, 0, 1, "\"talkgroup\": 1000,", "\"freq\": 1000000,", "NFM 1.0000 MHz"},
+        {"past signed 32-bit Hz", INT64_C(3000000000), 0, 1, "\"talkgroup\": 3000000,", "\"freq\": 0,",
+         "NFM 3000.0000 MHz"},
         {"no frequency, no fallback", 0, 0, 0, NULL, NULL, NULL},
         {"under 1 kHz, no fallback", 999, 0, 0, NULL, NULL, NULL},
         {"negative frequency, no fallback", -154437500, 0, 0, NULL, NULL, NULL},
