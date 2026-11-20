@@ -1322,6 +1322,36 @@ test_input_reopen_recovery(void) {
 }
 
 /*
+ * A held read (dsd_audio_read_held(), the hunt's read that never waits) that brings frames clears the recovery streak,
+ * as a blocking read does: a hunt that reads only through it after a route change otherwise left the streak up, and the
+ * next unrelated disconnect waited out the backoff though the device was ready. An empty poll proves nothing and
+ * leaves the streak.
+ */
+static void
+test_held_read_clears_the_recovery_streak(void) {
+    dsd_audio_params params = valid_params(8000, 1);
+    int16_t buffer[4] = {0};
+    reset_fakes();
+    g.device_rate = 8000;
+    g.device_channels = 1;
+    dsd_audio_stream* stream = dsd_audio_open_input(&params);
+    assert(stream != NULL);
+    g.read_result_pending = 1;
+    g.read_result = AAUDIO_ERROR_DISCONNECTED;
+    assert(dsd_audio_read_held(stream, buffer, 4) == -1);
+    assert(stream->recovery_streak == 1);
+
+    g.read_result_pending = 1;
+    g.read_result = AAUDIO_OK; /* nothing held */
+    assert(dsd_audio_read_held(stream, buffer, 4) == 0);
+    assert(stream->recovery_streak == 1);
+
+    assert(dsd_audio_read_held(stream, buffer, 4) == 4);
+    assert(stream->recovery_streak == 0);
+    dsd_audio_close(stream);
+}
+
+/*
  * A frame count that would wrap the sample count is refused, not truncated.
  *
  * Every other size in the backend goes through size_mul_nonzero(); this one used to
@@ -1892,6 +1922,7 @@ main(void) {
     test_open_failure_paths();
     test_input_stream();
     test_input_reopen_recovery();
+    test_held_read_clears_the_recovery_streak();
     test_write_rejects_overflowing_frame_count();
     test_drain_paths();
     test_async_output_setup_and_pump();

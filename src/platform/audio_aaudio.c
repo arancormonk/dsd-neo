@@ -1548,6 +1548,10 @@ dsd_audio_read_held(dsd_audio_stream* stream, int16_t* buffer, size_t frames) {
             set_error_aaudio(res);
             return -1;
         }
+        if (res > 0) {
+            /* The device delivers again, as a blocking read's frames prove: an empty poll proves nothing. */
+            stream->recovery_streak = 0;
+        }
         got += (size_t)res;
     }
     stream->device_frames += (uint64_t)got;
