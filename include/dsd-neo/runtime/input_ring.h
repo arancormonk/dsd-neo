@@ -43,6 +43,10 @@ struct input_ring_state {
        commit, holding generation_m. Unset (NULL) outside tests. */
     void (*test_commit_hook)(void* arg) = nullptr;
     void* test_commit_arg = nullptr;
+    /* Likewise for input_ring_request_discard(): called, with test_discard_arg, right before it moves
+       discard_generation, holding generation_m. */
+    void (*test_discard_hook)(void* arg) = nullptr;
+    void* test_discard_arg = nullptr;
     /* Stream positions in floats, counted since init: what the producer committed and what the consumer released
        (read, committed or discarded). The consumer is at stream position consumed_total, the sample at tail. */
     std::atomic<uint64_t> produced_total{0U};
@@ -97,6 +101,9 @@ input_ring_request_discard(struct input_ring_state* r) {
         return;
     }
     std::lock_guard<std::mutex> lock(r->generation_m);
+    if (r->test_discard_hook) {
+        r->test_discard_hook(r->test_discard_arg);
+    }
     (void)r->discard_generation.fetch_add(1, std::memory_order_acq_rel);
 }
 

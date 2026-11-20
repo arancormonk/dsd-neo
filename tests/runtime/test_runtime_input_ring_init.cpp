@@ -169,6 +169,13 @@ test_guard_and_wrap_contracts(void) {
 
 namespace {
 
+/* What the discard seam saw, as a purge request moved the generation. */
+struct discard_seam_probe {
+    struct input_ring_state* ring;
+    int calls;
+    int lock_free_to_others; /* another thread could take generation_m there */
+};
+
 /* What the commit seam saw, between a conditional commit's check and its publication. */
 struct commit_seam_probe {
     struct input_ring_state* ring;
@@ -179,16 +186,31 @@ struct commit_seam_probe {
 
 } // namespace
 
-static void
-commit_seam(void* arg) {
-    commit_seam_probe* probe = static_cast<commit_seam_probe*>(arg);
-    std::thread other([probe]() {
-        if (probe->ring->generation_m.try_lock()) {
-            probe->lock_free_to_others = 1;
-            probe->ring->generation_m.unlock();
+/* Whether another thread could take @p ring's generation_m now. */
+static int
+generation_lock_free_to_others(struct input_ring_state* ring) {
+    int free_to_others = 0;
+    std::thread other([ring, &free_to_others] {
+        if (ring->generation_m.try_lock()) {
+            free_to_others = 1;
+            ring->generation_m.unlock();
         }
     });
     other.join();
+    return free_to_others;
+}
+
+static void
+discard_seam(void* arg) {
+    discard_seam_probe* probe = static_cast<discard_seam_probe*>(arg);
+    probe->calls++;
+    probe->lock_free_to_others |= generation_lock_free_to_others(probe->ring);
+}
+
+static void
+commit_seam(void* arg) {
+    commit_seam_probe* probe = static_cast<commit_seam_probe*>(arg);
+    probe->lock_free_to_others = generation_lock_free_to_others(probe->ring);
     probe->purge = std::thread([probe]() {
         input_ring_request_discard(probe->ring);
         probe->produced_at_purge.store(probe->ring->produced_total.load(std::memory_order_acquire));
@@ -227,12 +249,34 @@ test_purge_waits_for_a_conditional_commit(void) {
     return rc;
 }
 
+/* A purge request holds generation_m while it moves the generation, so it can never move it between a conditional
+   commit's check and its publication, which hold the same lock. */
+static int
+test_purge_moves_the_generation_under_its_lock(void) {
+    struct input_ring_state ring_storage{};
+    struct input_ring_state* ring = &ring_storage;
+    int rc = expect_int("discard seam ring init", input_ring_init(ring, 8), 0);
+    discard_seam_probe probe{ring, 0, 0};
+    ring->test_discard_hook = discard_seam;
+    ring->test_discard_arg = &probe;
+    const uint64_t generation = input_ring_discard_generation(ring);
+    input_ring_request_discard(ring);
+    ring->test_discard_hook = NULL;
+    ring->test_discard_arg = NULL;
+    rc |= expect_int("the discard seam runs", probe.calls, 1);
+    rc |= expect_int("no other thread takes the lock as the purge moves the generation", probe.lock_free_to_others, 0);
+    rc |= expect_int("which then moves", input_ring_discard_generation(ring) == generation + 1U, 1);
+    input_ring_destroy(ring);
+    return rc;
+}
+
 int
 main(void) {
     int rc = 0;
 
     rc |= test_guard_and_wrap_contracts();
     rc |= test_purge_waits_for_a_conditional_commit();
+    rc |= test_purge_moves_the_generation_under_its_lock();
 
     rc |= expect_int("init(NULL, 8)", input_ring_init(NULL, 8), -1);
 
