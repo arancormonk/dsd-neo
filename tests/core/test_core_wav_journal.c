@@ -4060,6 +4060,122 @@ test_playback_files_record_apart(void) {
     return rc;
 }
 
+/* --- Issue #888 B21: a played SDRTrunk export is filed at its first frame. --- */
+
+enum {
+    STAMPED_FRAMES = 100, /* 2 s of audio: the sidecar's duration */
+};
+
+/* The recording's clock, not the rig's: its first frame in Unix milliseconds, 20 ms a frame after it. Its last frame
+   falls two seconds on, in second k_stamped_first_ms / 1000 + 2. */
+static const uint64_t k_stamped_first_ms = 1600000000250ULL;
+
+/* An SDRTrunk export as SDRTrunk writes it: a clear DMR group call, every voice frame with its own Unix-millisecond
+   "time" (a JSON number) before its "hex". */
+static int
+stamped_write_export(const char* path) {
+    static char json[STAMPED_FRAMES * 64 + 256];
+    size_t len = 0;
+    int n =
+        DSD_SNPRINTF(json, sizeof json,
+                     "{\"protocol\":\"DMR\",\"version\":2,\"call_type\":\"GROUP\",\"from\":\"5678\",\"to\":\"1234\","
+                     "\"encrypted\":false,\"frames\":[");
+    if (n <= 0) {
+        return 1;
+    }
+    len = (size_t)n;
+    for (int i = 0; i < STAMPED_FRAMES; i++) {
+        n = DSD_SNPRINTF(json + len, sizeof json - len, "%s{\"time\":%llu,\"hex\":\"%s\"}", i > 0 ? "," : "",
+                         (unsigned long long)(k_stamped_first_ms + (uint64_t)i * 20ULL), k_playback_dmr_hex);
+        if (n <= 0 || (size_t)n >= sizeof json - len) {
+            return 1;
+        }
+        len += (size_t)n;
+    }
+    n = DSD_SNPRINTF(json + len, sizeof json - len, "]}");
+    if (n <= 0 || (size_t)n >= sizeof json - len) {
+        return 1;
+    }
+    len += (size_t)n;
+    FILE* f = dsd_fopen_private(path, "wb");
+    if (f == NULL) {
+        return 1;
+    }
+    int rc = fwrite(json, 1, len, f) != len ? 1 : 0;
+    rc |= fclose(f) != 0 ? 1 : 0;
+    return rc;
+}
+
+/* The sidecar of the journal's first published recording, read into @p body (empty when there is none). */
+static void
+stamped_read_sidecar(const rig* r, char* body, size_t cap) {
+    body[0] = '\0';
+    const char* pub = record(&g_j, "publish", 0);
+    char sidecar[DSD_TEST_PATH_MAX * 2];
+    if (pub == NULL || dsd_test_path_join(sidecar, sizeof sidecar, r->dir, field_s(pub, "file")) != 0
+        || strlen(sidecar) <= 4) {
+        return;
+    }
+    const size_t stem = strlen(sidecar) - 4; /* the ".wav" the sidecar's ".json" replaces */
+    DSD_SNPRINTF(sidecar + stem, sizeof sidecar - stem, "%s", ".json");
+    FILE* f = dsd_fopen_existing_regular_file(sidecar, "rb");
+    if (f != NULL) {
+        const size_t got = fread(body, 1, cap - 1, f);
+        body[got] = '\0';
+        (void)fclose(f);
+    }
+}
+
+/* -P -r named.mbe, an export whose frames span two seconds of its own clock: the recording is filed at its first
+   frame's second, through the run's end and the real close and export, and its stop is that start plus the WAV's
+   length. Before, every frame's stamp replaced the row's, so the recording started at its last frame and ended a
+   duration after that. The rig's clock is years from the recording's: the WAV's open time on it is not the start. */
+static int
+test_playback_export_starts_at_its_first_frame(void) {
+    int rc = 0;
+    rig r;
+    rc |= rig_open(&r, "dsdneo_journal_playback_start");
+    r.opts->audio_out = 0;
+    r.opts->playfiles = 1;
+    r.opts->rdio_mode = DSD_RDIO_MODE_DIRWATCH;
+    r.opts->rdio_system_id = 48;
+    submit(&r, DSD_APP_CMD_WAV_START);
+    char path[DSD_TEST_PATH_MAX * 2];
+    rc |=
+        expect_int("-r export start: input written",
+                   dsd_test_path_join(path, sizeof path, r.dir, "named.mbe") == 0 ? stamped_write_export(path) : 1, 0);
+    char* argv[2] = {"dsd-neo", path};
+    r.state->optind = 1;
+    playMbeFiles(r.opts, r.state, 2, argv);
+    playback_end_run(&r);
+
+    reload(&r);
+    const long long start = (long long)(k_stamped_first_ms / 1000ULL);
+    const char* pub = record(&g_j, "publish", 0);
+    rc |= expect_true("-r export start: one recording published", pub != NULL && record(&g_j, "publish", 1) == NULL);
+    rc |= expect_int("-r export start: the recording holds every frame", pub ? field_ll(pub, "duration_ms") : -1,
+                     (long long)STAMPED_FRAMES * 20);
+    rc |= expect_int("-r export start: the journal's start is the first frame's second",
+                     pub ? field_ll(pub, "start") : -1, start);
+    static char body[8192];
+    stamped_read_sidecar(&r, body, sizeof body);
+    char want[64];
+    DSD_SNPRINTF(want, sizeof want, "\"start_time\": %lld,", start);
+    rc |= expect_true("-r export start: the sidecar's start_time is the first frame's second",
+                      strstr(body, want) != NULL);
+    DSD_SNPRINTF(want, sizeof want, "\"stop_time\": %lld,", start + (long long)(STAMPED_FRAMES * 20 / 1000));
+    rc |= expect_true("-r export start: the sidecar's stop_time is its start plus the WAV's length",
+                      strstr(body, want) != NULL);
+    if (strstr(body, "\"start_time\"") == NULL) {
+        DSD_FPRINTF(stderr, "  sidecar: none\n");
+    } else if (rc != 0) {
+        DSD_FPRINTF(stderr, "  sidecar: %s\n", body);
+    }
+    r.opts->rdio_mode = DSD_RDIO_MODE_OFF;
+    rig_close(&r);
+    return rc;
+}
+
 int
 main(void) {
     dsd_neo_config_init();
@@ -4128,6 +4244,7 @@ main(void) {
     rc |= test_edacs_grant_leaves_owned_audio_to_its_row();
     rc |= test_tetra_first_call_leaves_unowned_audio();
     rc |= test_playback_files_record_apart();
+    rc |= test_playback_export_starts_at_its_first_frame();
     if (rc == 0) {
         printf("CORE_WAV_JOURNAL: OK\n");
     }

@@ -2044,7 +2044,8 @@ suite runs under this compiler.
   `IO_UDP_SOCKET_BACKENDS`, `DSP_SYMBOL_REPLAY`, and the `DECODE_IQ_STDOUT_*` end-to-end cases.
 - `src/core/file/dsd_file.c` reads SDRTrunk JSON MBE exports. Its file-local crypto context owns NXDN SACCH
   position/session tracking and DMR AES late-entry context; playback does not call protocol-layer state-mutating
-  IV expansion. Voice bits are FEC-decoded before decryption and then passed to the normal vocoder/output path.
+  IV expansion. Voice bits are FEC-decoded before decryption and then passed to the normal vocoder/output path. The
+  row's `event_time` is the recording's start, from the first frame `time` that parses (issue #888 B21, below).
 - API note: the high-pass filter in `<dsd-neo/core/audio_filters.h>` is `dsd_hpf()`. It was renamed from
   `hpf()` because codec2 exports a symbol of that name and Android links codec2 statically, which turns the
   duplicate into a link error. It is the only filter in that header that is prefixed: codec2 exports none of
@@ -2415,7 +2416,10 @@ suite runs under this compiler.
   `event_time` is the row's last activity, the segment's end by the time its WAV closes. It is only the fallback for a
   row with no start (a `--playfiles` row, whose stamp is on the file's clock, so the open time is not compared with it),
   and decode time comes after that; `dsd_rdio_recording_start()` is the rule, which the recording journal's `start`
-  shares (below). `stop_time` adds the WAV length to the start (`RUNTIME_RDIO_EXPORT`, `CORE_MBE_FILE_IO`,
+  shares (below). A played SDRTrunk export's row is stamped once, from its first voice frame whose `time` (Unix
+  milliseconds, parsed whole) is valid, so the recording is filed at its start, not its last frame; a stamp that fails
+  clears the row's until one parses (issue #888 B21; `CORE_WAV_JOURNAL` through `playMbeFiles()`, the run's end and the
+  sidecar, `CORE_MBE_FILE_IO`). `stop_time` adds the WAV length to the start (`RUNTIME_RDIO_EXPORT`, `CORE_MBE_FILE_IO`,
   `CORE_INIT_STATE`, `UI_MENU_SERVICES`, and `CORE_CALL_ALERT_HISTORY` through the real event layer). The WAV name stays
   on `event_time`. Its service, system, target and source components are made file-safe
   (`wav_rename_sanitize_component()`: `/`, `\`, `:`, `*`, `?`, `"`, `<`, `>`, `|`, control characters, dots and spaces

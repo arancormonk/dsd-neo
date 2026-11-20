@@ -786,6 +786,44 @@ test_sdrtrunk_json_metadata_protocols_and_time(void) {
     return rc;
 }
 
+/* Issue #888 B21: a played recording's row is stamped from its first frame "time" that is a whole Unix-millisecond
+   integer, and later frames leave it. A value with trailing text, one too long for 64 bits (whose first ten digits
+   once passed for seconds) and one under a second name no start and are skipped. */
+static int
+test_sdrtrunk_json_time_is_the_first_valid_frame(void) {
+    int rc = 0;
+    static dsd_opts opts;
+    static dsd_state state;
+    static Event_History_I history[2];
+    static const char json[] =
+        "{\"protocol\":\"DMR\",\"version\":2,\"call_type\":\"GROUP\",\"from\":\"5678\",\"to\":\"1234\","
+        "\"encrypted\":false,\"frames\":[{\"time\":1700000000000x},{\"time\":170000000000000000000000},"
+        "{\"time\":999},{\"time\":1700000123456},{\"time\":1700000125456},{\"time\":1700000127456}]}";
+
+    DSD_MEMSET(&opts, 0, sizeof opts);
+    DSD_MEMSET(&state, 0, sizeof state);
+    DSD_MEMSET(history, 0, sizeof history);
+    opts.playfiles = 1;
+    state.event_history_s = history;
+    rc |= run_sdrtrunk_json(json, &opts, &state);
+    rc |= expect_u64("sdrtrunk start is the first valid frame's second",
+                     (uint64_t)history[0].Event_History_Items[0].event_time, 1700000123ULL);
+    dsd_state_ext_free_all(&state);
+
+    /* A file whose stamps all fail keeps none, not the row's earlier one. */
+    static const char json_bad[] = "{\"protocol\":\"DMR\",\"version\":2,\"call_type\":\"GROUP\",\"from\":\"5678\","
+                                   "\"to\":\"1234\",\"encrypted\":false,\"frames\":[{\"time\":12x},{\"time\":999}]}";
+    DSD_MEMSET(&state, 0, sizeof state);
+    DSD_MEMSET(history, 0, sizeof history);
+    state.event_history_s = history;
+    history[0].Event_History_Items[0].event_time = (time_t)1700000123;
+    rc |= run_sdrtrunk_json(json_bad, &opts, &state);
+    rc |= expect_u64("sdrtrunk stamps that all fail leave no start",
+                     (uint64_t)history[0].Event_History_Items[0].event_time, 0ULL);
+    dsd_state_ext_free_all(&state);
+    return rc;
+}
+
 /* Issue #637: an SDRTrunk DMR recording carries no colour code, so playback never stands one in: an enabled DCC
    filter stays Checking and no DCC service name is given, whatever placeholder the reader starts from. */
 static int
@@ -4454,6 +4492,7 @@ main(void) {
     rc |= test_sdrtrunk_json_dmr_replay_oversized_key_id_ignores_a_matching_map_row();
     rc |= test_sdrtrunk_json_p25p2_encryption_metadata_updates_event();
     rc |= test_sdrtrunk_json_invalid_numeric_fields_reset_to_zero();
+    rc |= test_sdrtrunk_json_time_is_the_first_valid_frame();
     rc |= test_sdrtrunk_json_protocol_token_alone_creates_no_capture();
     rc |= test_sdrtrunk_json_second_protocol_gets_its_own_capture();
     rc |= test_sdrtrunk_json_hex_voice_writes_unencrypted_mbe_records();

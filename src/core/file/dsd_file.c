@@ -2312,7 +2312,9 @@ typedef struct {
     uint8_t ks_available;
     uint8_t is_dmra;
     uint8_t dmra_le;
-    uint8_t show_time;
+    // Whether the row carries this file's recording start yet, the first frame "time" that parsed (issue #888 B21),
+    // printed once.
+    uint8_t time_stamped;
     uint8_t alg_id;
     uint8_t alg_seen;
     uint16_t key_id;
@@ -2355,7 +2357,7 @@ sdrtrunk_json_context_init(sdrtrunk_json_context* ctx) {
     ctx->ks_available = 0;
     ctx->is_dmra = 1;
     ctx->dmra_le = 0;
-    ctx->show_time = 1;
+    ctx->time_stamped = 0;
     ctx->alg_id = 0;
     ctx->alg_seen = 0;
     ctx->key_id = 0;
@@ -3051,6 +3053,26 @@ sdrtrunk_json_handle_hex(dsd_opts* opts, dsd_state* state, const char* token, ch
     return 1;
 }
 
+/* A frame's "time": when SDRTrunk heard it, in Unix milliseconds (VoiceFrame), as a whole decimal integer. Returns 0
+   with the second it falls in, or -1 for a value that is not one, names no second after the epoch, or does not fit. */
+static int
+sdrtrunk_json_parse_time(const char* value, time_t* out) {
+    uint64_t ms = 0;
+    if (dsd_parse_uint64_strict(value, 10, UINT64_MAX, &ms) != 0) {
+        return -1;
+    }
+    const uint64_t seconds = ms / 1000U;
+    const time_t stamp = (time_t)seconds;
+    if (seconds == 0U || (uint64_t)stamp != seconds) {
+        return -1;
+    }
+    *out = stamp;
+    return 0;
+}
+
+/* The row of a played recording is stamped once, from its first frame's "time" that parses: the recording's start, on
+   the recording's own clock. Later frames leave it, so the recording is not filed at its last frame (issue #888 B21);
+   the row of a --playfiles call keeps no end (see dsd_rdio_recording_start()). */
 static int
 sdrtrunk_json_handle_time(const char* token, char** str_saveptr, dsd_state* state, sdrtrunk_json_context* ctx) {
     if (strncmp("time", token, 4) != 0) {
@@ -3058,30 +3080,26 @@ sdrtrunk_json_handle_time(const char* token, char** str_saveptr, dsd_state* stat
     }
 
     const char* value = sdrtrunk_json_next_value(str_saveptr);
-    if (!value) {
+    if (!value || ctx->time_stamped != 0U) {
         return 1;
     }
-
-    char time_str[20];
-    DSD_MEMSET(time_str, 0, sizeof(time_str));
-    DSD_STRNCPY(time_str, value, 10);
-    long event_seconds = 0;
-    (void)dsd_parse_long_strict(time_str, 10, 0L, LONG_MAX, &event_seconds);
-    time_t event_time = (time_t)event_seconds;
+    // Until one parses, a value that does not clears the stamp, as it always has: the row keeps no earlier file's.
+    time_t event_time = 0;
+    ctx->time_stamped = sdrtrunk_json_parse_time(value, &event_time) == 0 ? 1U : 0U;
     dsd_event_history_transaction transaction;
     dsd_event_history_transaction_begin(state, &transaction);
     state->event_history_s[0].Event_History_Items[0].event_time = event_time;
     dsd_event_history_mark_dirty(&state->event_history_s[0]);
     dsd_event_history_transaction_end(&transaction);
+    if (ctx->time_stamped == 0U) {
+        return 1;
+    }
 
     char timestr[9];
     char datestr[11];
     (void)dsd_format_local_datetime(event_time, DSD_LOCAL_DATETIME_TIME_COLON, timestr, sizeof timestr);
     (void)dsd_format_local_datetime(event_time, DSD_LOCAL_DATETIME_DATE_HYPHEN, datestr, sizeof datestr);
-    if (ctx->show_time == 1) {
-        DSD_FPRINTF(stderr, " Date: %s Time: %s", datestr, timestr);
-    }
-    ctx->show_time = 0;
+    DSD_FPRINTF(stderr, " Date: %s Time: %s", datestr, timestr);
     return 1;
 }
 
