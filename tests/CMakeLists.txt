@@ -9394,7 +9394,10 @@ add_test(NAME CORE_MBE_FILE_IO COMMAND dsd-neo_test_core_mbe_file_io)
 add_executable(dsd-neo_test_core_wav_size_probe core/test_core_wav_size_probe.c)
 target_include_directories(
     dsd-neo_test_core_wav_size_probe
-    PRIVATE ${PROJECT_SOURCE_DIR}/include ${PROJECT_SOURCE_DIR}/src ${PROJECT_SOURCE_DIR}/tests/test_support
+    PRIVATE
+        ${PROJECT_SOURCE_DIR}/include
+        ${PROJECT_SOURCE_DIR}/src
+        ${PROJECT_SOURCE_DIR}/tests/test_support
 )
 if(NOT APPLE AND (CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang"))
     target_link_libraries(
@@ -24045,6 +24048,27 @@ if(DSD_HAS_RADIO)
         EXT .amb
         MIN_FILES 1
         MIN_FRAMES 160
+    )
+    # rdio-scanner DirWatch export of a digital call with no talkgroup (issue #888): the synthetic YSF call names no
+    # target or source. Replayed, it is exported under its frequency in kHz, labelled by its protocol and MHz; decoded
+    # from the replay's discriminator audio (an audio input, no frequency) under --rdio-unknown-talkgroup, labelled by
+    # its protocol alone, with freq 0 and no freqList; without the option it is recorded but not exported, said once.
+    # tests/rdio_dirwatch_check.cmake reads the finalized WAV/JSON pairs and the journal.
+    add_test(
+        NAME DECODE_IQ_YSF_RDIO_DIRWATCH_UNKNOWN_TG
+        COMMAND
+            ${CMAKE_COMMAND} "-DDSD_BIN=$<TARGET_FILE:dsd-neo>" "-DMODE=-fy"
+            "-DFIXTURE=${_DSD_NEO_IQ_FIXTURE_DIR}/ysf_synth.iq.json"
+            "-DEXPECTED=FN: [1-8]/8 "
+            "-DWORK_DIR=${CMAKE_CURRENT_BINARY_DIR}/rdio_dirwatch/DECODE_IQ_YSF_RDIO_DIRWATCH_UNKNOWN_TG"
+            "-DRF_SIDECAR=talkgroup=851375,talkgroup_tag=YSF 851.3750 MHz,freq=851375000,system=7,short_name=YSF,srcList=[],emergency=false,encrypted=false"
+            "-DAUDIO_TALKGROUP=4242"
+            "-DAUDIO_SIDECAR=talkgroup_tag=YSF,freq=0,system=7,short_name=YSF,srcList=[]"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/rdio_dirwatch_check.cmake"
+    )
+    set_tests_properties(
+        DECODE_IQ_YSF_RDIO_DIRWATCH_UNKNOWN_TG
+        PROPERTIES LABELS "iq-decode" TIMEOUT 360
     )
     # The digital voice chain (issue #653): tests/iq_voice_chain_check.cmake replays a fixture with per-call WAVs (-P)
     # under integer output to stdout, float output (-y) to stdout and the null output, and requires byte-identical
