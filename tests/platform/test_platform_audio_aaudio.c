@@ -93,6 +93,10 @@ static struct {
     int32_t write_frame_limit;
     int read_calls;
     int read_result_pending;
+    /* Reads the pending result waits behind, and the most frames one read returns (0: all asked), so a read can
+       return some frames and the next fail. */
+    int read_result_delay;
+    int32_t read_frame_limit;
     aaudio_result_t read_result;
     int64_t frames_written;
     int64_t frames_read;
@@ -433,9 +437,12 @@ AAudioStream_read(AAudioStream* stream, void* buffer, int32_t frames, int64_t ti
     (void)timeout_ns;
     g.read_calls++;
 
-    if (g.read_result_pending) {
+    if (g.read_result_pending && g.read_result_delay-- <= 0) {
         g.read_result_pending = 0;
         return g.read_result;
+    }
+    if (g.read_frame_limit > 0 && frames > g.read_frame_limit) {
+        frames = g.read_frame_limit;
     }
     if (g.overrun_at_read > 0) {
         g.overrun_at_read--;
@@ -1184,6 +1191,23 @@ test_input_stream(void) {
                         (unsigned long long)(stream->device_frames - before));
         }
         assert(stream->device_frames == before);
+        /* Nor does a device read that returned some frames before the next failed. */
+        while (audio_input_carry_left(stream->input_carry) > 0U) {
+            assert(dsd_audio_read(stream, more, 1U) == 1);
+        }
+        const uint64_t short_before = stream->device_frames;
+        g.read_frame_limit = 2;
+        g.read_result_pending = 1;
+        g.read_result_delay = 1;
+        g.read_result = AAUDIO_ERROR_INTERNAL;
+        assert(dsd_audio_read(stream, more, 4U) == -1);
+        g.read_frame_limit = 0;
+        g.read_result_delay = 0;
+        if (stream->device_frames != short_before) {
+            DSD_FPRINTF(stderr, "a read that failed after a short one counted %llu input frames (expected 0)\n",
+                        (unsigned long long)(stream->device_frames - short_before));
+        }
+        assert(stream->device_frames == short_before);
         if (dropped != 256 || got != 4 || next[0] != 20000) {
             DSD_FPRINTF(stderr,
                         "an uncounted overrun's discard dropped %d frames, next %d (expected 256, then 20000)\n",

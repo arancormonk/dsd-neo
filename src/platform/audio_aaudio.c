@@ -1496,7 +1496,6 @@ dsd_audio_read(dsd_audio_stream* stream, int16_t* buffer, size_t frames) {
         if (res > 0) {
             remaining -= (size_t)res;
             cursor += (size_t)res * stride;
-            stream->device_frames += (uint64_t)res;
             stream->recovery_streak = 0;
             continue;
         }
@@ -1518,8 +1517,9 @@ dsd_audio_read(dsd_audio_stream* stream, int16_t* buffer, size_t frames) {
         return -1;
     }
 
-    /* Read from the device by a discard but never counted there: they count as a read that succeeds returns them. */
-    stream->device_frames += (uint64_t)carried;
+    /* Every frame the read returns counts once it succeeds, those a discard kept (read from the device but never counted
+       there) included; a read that fails returns none, so counts none. */
+    stream->device_frames += (uint64_t)frames;
     return (int)frames;
 }
 
