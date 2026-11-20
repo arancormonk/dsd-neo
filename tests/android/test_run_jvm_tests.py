@@ -182,6 +182,20 @@ class CollectorChoice(unittest.TestCase):
         # kotlinc puts JAVA_OPTS's words on java's command line, where the launcher expands one too.
         self.assertNotIn(self.SERIAL, self.kotlinc_options({"JAVA_OPTS": "@jvm.args"}))
 
+    def test_a_hotspot_options_file_is_left_its_collector(self):
+        # HotSpot reads -XX:Flags= and -XX:VMOptionsFile= wherever it takes options, JAVA_TOOL_OPTIONS included, and a
+        # G1 in either file beside the serial collector stops the JVM.
+        for option in ("-XX:Flags=/home/tester/.hotspotrc", "-XX:VMOptionsFile=/home/tester/vm.options"):
+            for name in ("JAVA_TOOL_OPTIONS", "JDK_JAVA_OPTIONS", "_JAVA_OPTIONS"):
+                with self.subTest(option=option, name=name):
+                    environ = {name: f"-Xss1M {option}"}
+                    self.assertNotIn(self.SERIAL, self.kotlinc_options(environ))
+                    self.assertNotIn(self.SERIAL, self.cached_argv(environ))
+                    argv = runner.test_command(JAVA_EXE, "tests.jar", "UsbBrokerTest.kt", environ)
+                    self.assertNotIn(self.SERIAL, argv)
+            with self.subTest(option=option, name="JAVA_OPTS"):
+                self.assertNotIn(self.SERIAL, self.kotlinc_options({"JAVA_OPTS": option}))
+
     def test_an_argument_file_only_where_the_launcher_expands_it(self):
         # The JVM-wide options expand no argument file, and "@@" is a literal "@" to the launcher.
         literal = ({"JAVA_TOOL_OPTIONS": "@jvm.args"}, {"_JAVA_OPTIONS": "@jvm.args"}, {"JDK_JAVA_OPTIONS": "@@x"})
