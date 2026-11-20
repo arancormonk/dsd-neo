@@ -633,7 +633,7 @@ test_tcp_input_open_and_close_socket_ownership(void) {
     g_tcp_input_open_calls = 0;
     g_tcp_input_close_calls = 0;
     dsd_net_audio_input_hooks_set(
-        (dsd_net_audio_input_hooks){.tcp_open = test_tcp_input_open, .tcp_close = test_tcp_input_close});
+        &(dsd_net_audio_input_hooks){.tcp_open = test_tcp_input_open, .tcp_close = test_tcp_input_close});
 
     opts->audio_in_type = AUDIO_IN_TCP;
     opts->tcp_sockfd = sockfd;
@@ -655,7 +655,7 @@ test_tcp_input_open_and_close_socket_ownership(void) {
     closeAudioInDevice(opts);
     rc |= expect_int_eq("repeated device close does not re-close TCP input context", g_tcp_input_close_calls, 1);
 
-    dsd_net_audio_input_hooks_set((dsd_net_audio_input_hooks){0});
+    dsd_net_audio_input_hooks_set(NULL);
     g_expected_tcp_input_ctx = NULL;
     g_expected_tcp_sockfd = DSD_INVALID_SOCKET;
     free(state);

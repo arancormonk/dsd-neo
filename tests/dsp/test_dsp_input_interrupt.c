@@ -164,7 +164,7 @@ init_udp_session(dsd_opts* opts, dsd_state* state, int silent_waits, int stop_af
     dsd_net_audio_input_hooks hooks;
     DSD_MEMSET(&hooks, 0, sizeof hooks);
     hooks.udp_read_sample_wait = fake_udp_read_sample_wait;
-    dsd_net_audio_input_hooks_set(hooks);
+    dsd_net_audio_input_hooks_set(&hooks);
 }
 
 /* Silence for a stream pause, a command queued: the hunt read leaves with no sample, after the pause and not before. */
@@ -341,7 +341,7 @@ init_tcp_session(dsd_opts* opts, dsd_state* state, int m17) {
     hooks.tcp_read_sample_wait = fake_tcp_read_sample;
     hooks.tcp_close = fake_tcp_close;
     hooks.tcp_connect = fake_tcp_connect;
-    dsd_net_audio_input_hooks_set(hooks);
+    dsd_net_audio_input_hooks_set(&hooks);
 }
 
 /* An M17 session retries a lost TCP server without end; in the hunt, a queued command ends the retry for now, with
@@ -475,7 +475,7 @@ main(void) {
     test_idle_nfm_radio_yields_without_shutdown();
 #endif
     dsd_runtime_set_controls_pending(NULL);
-    dsd_net_audio_input_hooks_set((dsd_net_audio_input_hooks){0});
+    dsd_net_audio_input_hooks_set(NULL);
     printf("DSP_INPUT_INTERRUPT: OK\n");
     return 0;
 }

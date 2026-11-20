@@ -2588,7 +2588,7 @@ test_ui_io_command_queue_applies_local_input_and_network_payloads(void) {
     hooks.udp_stop = udp_input_stop;
     hooks.udp_read_sample = udp_input_read_sample;
     hooks.udp_read_sample_wait = udp_input_read_sample_wait;
-    dsd_net_audio_input_hooks_set(hooks);
+    dsd_net_audio_input_hooks_set(&hooks);
     const int udp_port = free_loopback_udp_port();
     rc |= expect_true("a free loopback udp port", udp_port > 0);
     struct HostPortPayload udp = {0};
@@ -2640,7 +2640,7 @@ test_ui_io_command_queue_applies_local_input_and_network_payloads(void) {
         rc |= expect_int_eq("local input temp directory removed", dsd_test_temp_cwd_leave(&cwd), 0);
     }
     closeAudioInDevice(opts);
-    dsd_net_audio_input_hooks_set((dsd_net_audio_input_hooks){0});
+    dsd_net_audio_input_hooks_set(NULL);
 
     free_test_runtime(&runtime);
     return rc;

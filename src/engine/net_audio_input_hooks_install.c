@@ -27,5 +27,5 @@ dsd_engine_net_audio_input_hooks_install(void) {
     hooks.udp_discard_through = udp_input_discard_through;
     hooks.tcp_connect = ConnectBounded;
 
-    dsd_net_audio_input_hooks_set(hooks);
+    dsd_net_audio_input_hooks_set(&hooks);
 }

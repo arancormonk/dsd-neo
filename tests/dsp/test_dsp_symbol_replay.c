@@ -2617,7 +2617,7 @@ test_rx_tone_tcp_reconnect_starts_a_new_reception(void) {
     hooks.tcp_connect = fake_tcp_connect;
     hooks.tcp_close = fake_tcp_close;
     hooks.tcp_read_sample_wait = fake_tcp_read_sample;
-    dsd_net_audio_input_hooks_set(hooks);
+    dsd_net_audio_input_hooks_set(&hooks);
     g_tcp_opens = 0;
     g_tcp_drops_left = 1;
     g_tcp_sample_n = 0;
@@ -2642,7 +2642,7 @@ test_rx_tone_tcp_reconnect_starts_a_new_reception(void) {
     assert(last_call_block()->input == DSD_ANALOG_CALL_RECEPTION);
     stop_call_capture();
 
-    dsd_net_audio_input_hooks_set((dsd_net_audio_input_hooks){0});
+    dsd_net_audio_input_hooks_set(NULL);
     (void)dsd_socket_close(opts.tcp_sockfd);
     opts.tcp_sockfd = 0;
     opts.tcp_in_ctx = NULL;
@@ -3168,7 +3168,7 @@ run_udp_backlog_through_getsymbol(int boundary) {
     dsd_net_audio_input_hooks hooks;
     DSD_MEMSET(&hooks, 0, sizeof(hooks));
     hooks.udp_read_sample = fake_udp_read_sample;
-    dsd_net_audio_input_hooks_set(hooks);
+    dsd_net_audio_input_hooks_set(&hooks);
     dsd_analog_rx_test_set_clock(fake_now_ms);
     g_fake_now_ms = 1600000U;
     g_udp_base_ms = g_fake_now_ms;
@@ -3222,7 +3222,7 @@ run_udp_backlog_through_getsymbol(int boundary) {
     assert(locked_n - heard_n <= 48U * (uint64_t)(DSD_ANALOG_CTCSS_LOCK_P95_MS + DSD_ANALOG_RX_TAP_READ_MS));
 
     raw_wav_stall_end(&opts);
-    dsd_net_audio_input_hooks_set((dsd_net_audio_input_hooks){0});
+    dsd_net_audio_input_hooks_set(NULL);
     dsd_analog_rx_test_set_clock(NULL);
     dsd_state_ext_free_all(&state);
 }
@@ -4677,7 +4677,7 @@ test_pcm_tcp_reconnect_is_a_new_stream(void) {
     hooks.tcp_connect = fake_tcp_connect;
     hooks.tcp_close = fake_tcp_close;
     hooks.tcp_read_sample_wait = fake_tcp_read_sample;
-    dsd_net_audio_input_hooks_set(hooks);
+    dsd_net_audio_input_hooks_set(&hooks);
     g_tcp_opens = 0;
     g_tcp_drops_left = 0;
     g_tcp_sample_n = 0;
@@ -4692,7 +4692,7 @@ test_pcm_tcp_reconnect_is_a_new_stream(void) {
     assert(exitflag == 0 && g_tcp_opens == 1);
     assert(opts.pcm_input_generation != generation);
 
-    dsd_net_audio_input_hooks_set((dsd_net_audio_input_hooks){0});
+    dsd_net_audio_input_hooks_set(NULL);
     (void)dsd_socket_close(opts.tcp_sockfd);
     opts.tcp_sockfd = 0;
     opts.tcp_in_ctx = NULL;
@@ -4733,7 +4733,7 @@ tcp_samples_taken(int rate_hz, int drops, float* out, int count) {
     hooks.tcp_connect = fake_tcp_connect;
     hooks.tcp_close = fake_tcp_close;
     hooks.tcp_read_sample_wait = fake_tcp_read_sample;
-    dsd_net_audio_input_hooks_set(hooks);
+    dsd_net_audio_input_hooks_set(&hooks);
     g_tcp_opens = 0;
     g_tcp_drops_left = drops;
     g_tcp_sample_n = 0;
@@ -4750,7 +4750,7 @@ tcp_samples_taken(int rate_hz, int drops, float* out, int count) {
         out[n] = state.matched_filter.raw[idx];
     }
 
-    dsd_net_audio_input_hooks_set((dsd_net_audio_input_hooks){0});
+    dsd_net_audio_input_hooks_set(NULL);
     (void)dsd_socket_close(opts.tcp_sockfd);
     opts.tcp_sockfd = 0;
     opts.tcp_in_ctx = NULL;
@@ -4915,7 +4915,7 @@ test_pcm_noise_squelch_holds_the_backlog(void) {
     dsd_net_audio_input_hooks hooks;
     DSD_MEMSET(&hooks, 0, sizeof(hooks));
     hooks.udp_read_sample = fake_pcm_udp_read_sample;
-    dsd_net_audio_input_hooks_set(hooks);
+    dsd_net_audio_input_hooks_set(&hooks);
     dsd_analog_rx_test_set_clock(fake_now_ms);
     pcm_tap_init(&g_pcm_udp_src, 41U, 12500.0, 0.0, 0.0);
     g_fake_now_ms = 2600000U;
@@ -4959,7 +4959,7 @@ test_pcm_noise_squelch_holds_the_backlog(void) {
     opts.rtl_squelch_mode = DSD_SQUELCH_MODE_LEVEL;
     g_chain_removes_tone = 1;
     dsd_udp_audio_hooks_set((dsd_udp_audio_hooks){0});
-    dsd_net_audio_input_hooks_set((dsd_net_audio_input_hooks){0});
+    dsd_net_audio_input_hooks_set(NULL);
     dsd_analog_rx_test_set_clock(NULL);
     dsd_state_ext_free_all(&state);
 }

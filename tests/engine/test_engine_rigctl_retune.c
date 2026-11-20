@@ -1227,11 +1227,11 @@ watchdog_post_while_tcp_reconnects(int when) {
     g_reconnect.listener = DSD_INVALID_SOCKET;
     g_reconnect.server = DSD_INVALID_SOCKET;
     g_reconnect.first_value = -1;
-    dsd_net_audio_input_hooks_set((dsd_net_audio_input_hooks){.tcp_connect = reconnect_connect,
-                                                              .tcp_open = reconnect_open,
-                                                              .tcp_close = reconnect_close,
-                                                              .tcp_read_sample_wait = reconnect_read,
-                                                              .tcp_discard_through = reconnect_discard});
+    dsd_net_audio_input_hooks_set(&(dsd_net_audio_input_hooks){.tcp_connect = reconnect_connect,
+                                                               .tcp_open = reconnect_open,
+                                                               .tcp_close = reconnect_close,
+                                                               .tcp_read_sample_wait = reconnect_read,
+                                                               .tcp_discard_through = reconnect_discard});
     opts->tcp_in_ctx = (tcp_input_ctx*)&g_reconnect.ctx;
     opts->tcp_sockfd = DSD_INVALID_SOCKET;
     dsd_frame_sync_off_thread_tunes_reset(state);
@@ -1270,7 +1270,7 @@ watchdog_post_while_tcp_reconnects(int when) {
                                      && g_reconnect.first_value == RECONNECT_NEW_VALUE);
     }
     reconnect_close(opts->tcp_in_ctx);
-    dsd_net_audio_input_hooks_set((dsd_net_audio_input_hooks){0});
+    dsd_net_audio_input_hooks_set(NULL);
     opts->tcp_in_ctx = NULL;
     if (opts->tcp_sockfd != DSD_INVALID_SOCKET) {
         (void)dsd_socket_close(opts->tcp_sockfd);

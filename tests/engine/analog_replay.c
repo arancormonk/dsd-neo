@@ -2049,7 +2049,7 @@ analog_scene_count_udp_reads(void) {
     hooks.tcp_discard_through = tcp_input_discard_through;
     hooks.udp_discard_through = udp_input_discard_through;
     hooks.tcp_connect = ConnectBounded;
-    dsd_net_audio_input_hooks_set(hooks);
+    dsd_net_audio_input_hooks_set(&hooks);
 }
 
 /* Waits until the decoder took @p count of the scene's samples, for at most ANALOG_SCENE_UDP_DRAIN_MS. */

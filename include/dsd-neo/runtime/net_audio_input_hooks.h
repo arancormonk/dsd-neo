@@ -45,7 +45,8 @@ typedef struct {
     dsd_socket_t (*tcp_connect)(const char* host, int port, int resolve, dsd_socket_cancel_fn cancelled, void* context);
 } dsd_net_audio_input_hooks;
 
-void dsd_net_audio_input_hooks_set(dsd_net_audio_input_hooks hooks);
+/* Install @p hooks (copied); NULL installs none. */
+void dsd_net_audio_input_hooks_set(const dsd_net_audio_input_hooks* hooks);
 
 tcp_input_ctx* dsd_net_audio_input_hook_tcp_open(dsd_socket_t sockfd, int samplerate);
 void dsd_net_audio_input_hook_tcp_close(tcp_input_ctx* ctx);

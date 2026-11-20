@@ -2821,9 +2821,9 @@ encoder_udp_tone_db(double hz, double amplitude, int rate_hz, int volume, double
     opts.audio_in_type = AUDIO_IN_UDP;
     opts.input_volume_multiplier = volume;
     start_tone(hz, amplitude, rate_hz);
-    dsd_net_audio_input_hooks_set((dsd_net_audio_input_hooks){.udp_read_sample = fake_udp_tone_read});
+    dsd_net_audio_input_hooks_set(&(dsd_net_audio_input_hooks){.udp_read_sample = fake_udp_tone_read});
     const double level = encoder_read_db(&opts, &state, rate_hz, amplitude, peak);
-    dsd_net_audio_input_hooks_set((dsd_net_audio_input_hooks){0});
+    dsd_net_audio_input_hooks_set(NULL);
     return level;
 }
 
@@ -2867,7 +2867,7 @@ test_encoder_silent_udp_gives_way_to_a_queued_command(void) {
     dsd_net_audio_input_hooks hooks;
     DSD_MEMSET(&hooks, 0, sizeof hooks);
     hooks.udp_read_sample_wait = fake_udp_silent_wait;
-    dsd_net_audio_input_hooks_set(hooks);
+    dsd_net_audio_input_hooks_set(&hooks);
     dsd_runtime_set_controls_pending(fake_controls_pending);
     g_silent_pending = 1;
     g_silent_waits = 0;
@@ -2911,7 +2911,7 @@ test_encoder_silent_udp_gives_way_to_a_queued_command(void) {
     }
     dsd_runtime_set_publish_pending(NULL);
     g_silent_pending = 0;
-    dsd_net_audio_input_hooks_set((dsd_net_audio_input_hooks){0});
+    dsd_net_audio_input_hooks_set(NULL);
     return rc;
 }
 
@@ -3832,12 +3832,12 @@ mic_encode(dsd_opts* opts, dsd_state* state, const mic_segment* script, size_t l
     g_codec2_encode_count = 0;
     DSD_MEMSET(g_codec2_encode_peaks, 0, sizeof g_codec2_encode_peaks);
     DSD_MEMSET(g_codec2_encode_rms, 0, sizeof g_codec2_encode_rms);
-    dsd_net_audio_input_hooks_set((dsd_net_audio_input_hooks){.udp_read_sample = fake_udp_mic_read});
+    dsd_net_audio_input_hooks_set(&(dsd_net_audio_input_hooks){.udp_read_sample = fake_udp_mic_read});
     exitflag = 0;
     (void)encodeM17STR(opts, state);
     exitflag = 0;
     g_mic_frame_at[g_mic_iters] = g_codec2_encode_count;
-    dsd_net_audio_input_hooks_set((dsd_net_audio_input_hooks){0});
+    dsd_net_audio_input_hooks_set(NULL);
     g_mic_state = NULL;
 }
 

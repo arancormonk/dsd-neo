@@ -14777,7 +14777,7 @@ live_session_start(dsd_opts* opts, dsd_state* state, int output_kind, uint64_t s
         g_live_realtime_ms = __real_dsd_realtime_mono_ms();
         g_live_fake_realtime = 1;
         opts->audio_in_type = AUDIO_IN_UDP;
-        dsd_net_audio_input_hooks_set((dsd_net_audio_input_hooks){.udp_read_sample_wait = live_udp_read_sample_wait});
+        dsd_net_audio_input_hooks_set(&(dsd_net_audio_input_hooks){.udp_read_sample_wait = live_udp_read_sample_wait});
     } else {
         g_live_output_kind = output_kind;
         opts->audio_in_type = AUDIO_IN_RTL;
@@ -14802,7 +14802,7 @@ live_session_stop(dsd_opts* opts, dsd_state* state) {
     g_live_fake_realtime = 0;
     dsd_app_frontend_runtime_stop();
     dsd_frame_sync_hooks_set(NULL);
-    dsd_net_audio_input_hooks_set((dsd_net_audio_input_hooks){0});
+    dsd_net_audio_input_hooks_set(NULL);
     dsd_rtl_stream_io_hooks_set(NULL);
     dsd_rtl_stream_metrics_hooks_set(NULL);
     dsd_trunk_tuning_hooks_set((dsd_trunk_tuning_hooks){0});

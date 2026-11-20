@@ -298,7 +298,7 @@ main(void) {
     hooks.udp_stop = udp_input_stop;
     hooks.tcp_discard_through = tcp_input_discard_through;
     hooks.udp_discard_through = udp_input_discard_through;
-    dsd_net_audio_input_hooks_set(hooks);
+    dsd_net_audio_input_hooks_set(&hooks);
 
     test_tcp_reader_kept();
     test_tcp_reader_kept_marked_after();

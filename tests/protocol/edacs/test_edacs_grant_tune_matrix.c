@@ -472,7 +472,7 @@ edacs_install_net_audio_hooks(void) {
     hooks.tcp_read_sample_wait = edacs_fake_tcp_read_sample;
     hooks.tcp_close = edacs_fake_tcp_close;
     hooks.udp_read_sample = edacs_fake_udp_read_sample;
-    dsd_net_audio_input_hooks_set(hooks);
+    dsd_net_audio_input_hooks_set(&hooks);
 }
 
 static void
@@ -602,7 +602,7 @@ edacs_reset_audio_hook_state(void) {
     g_udp_blast_max_gain_db = -1000.0f;
     DSD_MEMSET(g_udp_blast_bytes, 0, sizeof(g_udp_blast_bytes));
     DSD_MEMSET(g_udp_blast_first, 0, sizeof(g_udp_blast_first));
-    dsd_net_audio_input_hooks_set((dsd_net_audio_input_hooks){0});
+    dsd_net_audio_input_hooks_set(NULL);
     dsd_udp_audio_hooks_set((dsd_udp_audio_hooks){0});
 #ifdef USE_RADIO
     g_rtl_read_count = 0;
@@ -4268,7 +4268,7 @@ main(void) {
 
     dsd_trunk_tuning_hooks_set((dsd_trunk_tuning_hooks){0});
     dsd_rigctl_query_hooks_set((dsd_rigctl_query_hooks){0});
-    dsd_net_audio_input_hooks_set((dsd_net_audio_input_hooks){0});
+    dsd_net_audio_input_hooks_set(NULL);
     dsd_udp_audio_hooks_set((dsd_udp_audio_hooks){0});
 #ifdef USE_RADIO
     dsd_rtl_stream_io_hooks_set(NULL);

@@ -13,8 +13,8 @@
 static dsd_net_audio_input_hooks g_net_audio_input_hooks = {0};
 
 void
-dsd_net_audio_input_hooks_set(dsd_net_audio_input_hooks hooks) {
-    g_net_audio_input_hooks = hooks;
+dsd_net_audio_input_hooks_set(const dsd_net_audio_input_hooks* hooks) {
+    g_net_audio_input_hooks = hooks ? *hooks : (dsd_net_audio_input_hooks){0};
 }
 
 tcp_input_ctx*

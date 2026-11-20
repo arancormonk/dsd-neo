@@ -126,7 +126,7 @@ install_fake_hooks(void) {
     hooks.udp_stop = fake_udp_stop;
     hooks.tcp_open = fake_tcp_open;
     hooks.tcp_close = fake_tcp_close;
-    dsd_net_audio_input_hooks_set(hooks);
+    dsd_net_audio_input_hooks_set(&hooks);
     g_udp_log[0] = '\0';
     g_udp_fail_port = -1;
     g_udp_fail_all = 0;

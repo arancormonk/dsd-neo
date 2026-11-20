@@ -431,7 +431,7 @@ main(void) {
     rc |= run_reconnect_ends_the_reception(SERVE_ONE_BYTE, 5, "a candidate, reconnected to one byte");
     rc |= test_a_reconnect_with_no_reception_waits();
     dsd_frame_sync_hooks_set(NULL);
-    dsd_net_audio_input_hooks_set((dsd_net_audio_input_hooks){0});
+    dsd_net_audio_input_hooks_set(NULL);
     dsd_socket_cleanup();
     if (rc == 0) {
         printf("ENGINE_PCM_INPUT_WAIT: OK\n");

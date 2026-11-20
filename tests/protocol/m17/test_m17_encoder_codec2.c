@@ -224,7 +224,7 @@ run_encoder(uint8_t dt) {
     g_noise = 0x9E3779B97F4A7C15ULL;
     g_ip_count = 0;
     g_monitor_count = 0;
-    dsd_net_audio_input_hooks_set((dsd_net_audio_input_hooks){.udp_read_sample = fake_udp_mic_read});
+    dsd_net_audio_input_hooks_set(&(dsd_net_audio_input_hooks){.udp_read_sample = fake_udp_mic_read});
     dsd_m17_udp_hooks_set((dsd_m17_udp_hooks){.connect = fake_m17_connect, .blaster = fake_m17_blaster});
     dsd_udp_audio_hooks_set((dsd_udp_audio_hooks){.blast = fake_udp_audio_blast});
     exitflag = 0;
@@ -232,7 +232,7 @@ run_encoder(uint8_t dt) {
     exitflag = 0;
     g_ip_at[g_iters] = g_ip_count;
     g_monitor_at[g_iters] = g_monitor_count;
-    dsd_net_audio_input_hooks_set((dsd_net_audio_input_hooks){0});
+    dsd_net_audio_input_hooks_set(NULL);
     dsd_m17_udp_hooks_set((dsd_m17_udp_hooks){0});
     dsd_udp_audio_hooks_set((dsd_udp_audio_hooks){0});
     dsd_state_ext_free_all(&state);

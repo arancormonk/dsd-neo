@@ -881,14 +881,14 @@ install_udp_input_hooks(void) {
     hooks.udp_stop = udp_input_stop;
     hooks.udp_read_sample = udp_input_read_sample;
     hooks.udp_read_sample_wait = udp_input_read_sample_wait;
-    dsd_net_audio_input_hooks_set(hooks);
+    dsd_net_audio_input_hooks_set(&hooks);
 }
 
 static void
 clear_net_audio_input_hooks(void) {
     dsd_net_audio_input_hooks none;
     DSD_MEMSET(&none, 0, sizeof none);
-    dsd_net_audio_input_hooks_set(none);
+    dsd_net_audio_input_hooks_set(&none);
 }
 
 /* A UDP socket bound on a loopback port the system picked, which the caller closes. */
