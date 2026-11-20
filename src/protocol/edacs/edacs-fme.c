@@ -1397,8 +1397,10 @@ edacs_try_tune_voice_call(dsd_opts* opts, dsd_state* state, int lcn, int is_digi
     /* Audio in the slot file that no active call owns closes before the grant's call is observed (issue #888): the
        tune flushes it only when it moves the receiver, and the grant's row would otherwise name it, published and
        exported by the analog rotation below or by the digital call's commit. It closes as the ended epoch's that has
-       yet to commit, else as no row's, unexported; an active outgoing call keeps it for the commit this observation
-       brings. */
+       yet to commit, else as no row's, unexported. An active outgoing call keeps it: the commit this observation
+       brings closes it under its row, or, when the call state merges the grant into it (a group grant from an active
+       all-call's LID), the analog rotation below closes it from the all-call's staged row and exports it as that
+       call's. */
     dsd_event_flush_orphan_recordings(opts, state);
     if (dsd_call_state_observe(state, &observation, DSD_CALL_BOUNDARY_CONTINUE) > 0) {
         dsd_event_sync_slot(opts, state, 0U);

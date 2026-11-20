@@ -2580,17 +2580,20 @@ suite runs under this compiler.
     nothing. An accepted EDACS voice grant (`edacs_try_tune_voice_call()`) runs the flush itself before it observes the
     granted call, whatever its tune moved (issue #888): the grant's row would otherwise name the audio no call owns, and
     the analog rotation after the sync (or a ProVoice call's commit) would publish and export it as the granted call's.
-    An outgoing call still active keeps its file, which the commit that the incoming observation brings closes under
-    its row. A TETRA call admitted on a slot with no active call (`calls_publish()` in `tetra_calls.c`: the anonymous
-    call once signalling proves the carrier, a call record's or the direct-mode call's first publication) runs the
-    flush before it observes the call (issue #888), so the speech that reached the slot file before (ahead of the
-    proof or the DM-SETUP, or trailing an ended call) closes as no row's or the held epoch's, unexported, and the
-    first call's recording holds its own audio alone; a call already active (a republication, a reallocation) runs
-    nothing. Each `-r` playback file (`mbe_file_end_replayed_call()` in `dsd_mbe.c`, once per file opened, after it
-    ends and commits the previous file's call) runs the flush too (issue #888): a raw `.imb`/`.amb`/`.dmb` file plays
-    with no call, so its audio would otherwise join the next file's, and an SDRTrunk export's named call would commit
-    and export it as its own; each file is a recording of its own (the last file's no-call audio closes at the run's
-    no-carrier pass). Where the receiver is comes from `dsd_engine_receiver_hz()` before the tune, the reading
+    An outgoing call still active keeps its file: the commit that the incoming observation brings closes it under its
+    row, or, when the call state merges the grant into it (a group grant from the LID of an active all-call), the analog
+    rotation closes it early from its staged row (no target, the LID), which names a call, so that all-call audio is
+    exported under the kHz fallback, pending, and linked by the merged call's commit. A TETRA call admitted on a slot
+    with no active call (`calls_publish()` in `tetra_calls.c`: the anonymous call once signalling proves the carrier, a
+    call record's or the direct-mode call's first publication) runs the flush before it observes the call (issue #888),
+    so the speech that reached the slot file before (ahead of the proof or the DM-SETUP, or trailing an ended call)
+    closes as no row's or the held epoch's, unexported, and the first call's recording holds its own audio alone; a call
+    already active (a republication, a reallocation) runs nothing. Each `-r` playback file
+    (`mbe_file_end_replayed_call()` in `dsd_mbe.c`, once per file opened, after it ends and commits the previous file's
+    call) runs the flush too (issue #888): a raw `.imb`/`.amb`/`.dmb` file plays with no call, so its audio would
+    otherwise join the next file's, and an SDRTrunk export's named call would commit and export it as its own; each file
+    is a recording of its own (the last file's no-call audio closes at the run's no-carrier pass). Where the receiver is
+    comes from `dsd_engine_receiver_hz()` before the tune, the reading
     `dsd_engine_receiver_frequency()` gives every judge of a move: on a rigctl peer, the frequency it last confirmed on
     this connection (`opts->rigctl_sent_freq_hz`; 0, unknown and so a leave, after a connect or reconnect before
     anything was sent, never the tuner frequency a reconnect leaves naming the old peer's); on an RTL stream tuned
@@ -2673,10 +2676,14 @@ suite runs under this compiler.
   WAV, an active call's file or across a stream gap, at a trunk-scan dwell hop and operator advance, a retry park
   ending the call heard since a failed park, and at an EDACS grant on the carrier the receiver is on (an analog group
   call, an analog all-call and a ProVoice call, journal on and off: the earlier audio published once as no row's and
-  unexported, the granted call's recording only its own; an outgoing call still active keeps its audio under its
-  row, exported), and at the first TETRA call admitted after speech its file took with no call (an anonymous call
-  once the carrier is proven, a direct-mode call once named, through the real speech path, journal on and off: the
-  earlier speech one recording of no row's, unexported, the call's only its own under its row), and at each `-r`
+  unexported, the granted call's recording only its own, an all-call's exported under its LCN's kHz with its label and
+  LID; an outgoing call still active keeps its audio under its row, exported; a group grant from an active all-call's
+  LID merges into it, and the all-call segment is exported under the kHz fallback from its LID, pending and linked),
+  and at the first TETRA call admitted after speech its file took with no call (an anonymous call once the carrier is
+  proven, a direct-mode call once named, through the real speech path, journal on and off: the earlier speech one
+  recording of no row's, unexported, the call's only its own under its row; a faded identity-less call held for its
+  drop verdict, then a new call admitted: the held call's audio its own recording, pending on its epoch, unexported
+  and unlinked at its drop, the new call's only its own, exported), and at each `-r`
   playback file (two raw `.amb` files, an SDRTrunk export naming a call, a raw `.amb`, through `playMbeFiles()` and
   the run's end, journal on and off: each file one recording, the raw files' no row's and unexported, the named call's
   only its own, exported under its row); the write and pending-list seams in

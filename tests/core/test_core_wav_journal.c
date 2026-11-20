@@ -3597,6 +3597,28 @@ edacs_grant_incoming_audio(rig* r, edacs_grant_kind kind) {
     edacs_write_analog_wav(r->opts, r->state, analog[0], analog[1], analog[2]);
 }
 
+/* The sidecar of the EDACS all-call recording @p pub (LCN 4, from LID @p lid): exported under LCN 4's frequency in kHz,
+   its generated label and its caller, as a call with no talkgroup is (issue #888). */
+static int
+expect_edacs_all_call_sidecar(const char* what, const rig* r, const char* pub, unsigned lid) {
+    char body[4096];
+    read_published_sidecar(r, pub, body, sizeof body);
+    char src[64];
+    DSD_SNPRINTF(src, sizeof src, "\"srcList\": [{\"pos\":0,\"src\":%u}],", lid);
+    const char* const want[] = {"\"talkgroup\": 452412,", "\"talkgroup_tag\": \"EDACS 452.4125 MHz\",", src,
+                                "\"freq\": 452412500,"};
+    int rc = 0;
+    char tag[200];
+    for (size_t i = 0; i < sizeof want / sizeof want[0]; i++) {
+        DSD_SNPRINTF(tag, sizeof tag, "%s: the sidecar holds %s", what, want[i]);
+        rc |= expect_true(tag, strstr(body, want[i]) != NULL);
+    }
+    if (rc != 0) {
+        DSD_FPRINTF(stderr, "  %s sidecar: %s\n", what, body);
+    }
+    return rc;
+}
+
 /* Audio in slot 1's file that no call owns (100 ms at 8 kHz), then a grant on the carrier the receiver is on: the grant
    closes that audio as no row's, unexported, before it observes the incoming call, which records only its own audio
    under its row. Without it the grant's row named the earlier audio, and the analog rotation (or the digital call's
@@ -3649,6 +3671,11 @@ test_edacs_grant_closes_unowned_audio_first(void) {
                 rc |= expect_int(tag, own ? field_ll(own, "rate") : -9, digital ? 8000 : EDACS_ANALOG_RATE_HZ);
                 DSD_SNPRINTF(tag, sizeof tag, "%s: under its row", k_kind[kind]);
                 rc |= expect_int(tag, own ? field_ll(own, "row") : -9, (long long)r.state->event_history_s[0].push_seq);
+                if (kind == EDACS_GRANT_ALL_CALL) {
+                    /* The all-call names no talkgroup: exported under LCN 4's frequency in kHz, by its generated
+                       label, from its caller. */
+                    rc |= expect_edacs_all_call_sidecar(k_kind[kind], &r, own, 1010U);
+                }
             }
             const edacs_grant_files files = edacs_grant_list(&r, (edacs_grant_kind)kind, 800);
             DSD_SNPRINTF(tag, sizeof tag, "%s: the earlier audio is published once", k_kind[kind]);
@@ -3693,6 +3720,41 @@ test_edacs_grant_leaves_owned_audio_to_its_row(void) {
     rc |= expect_int("owned: published once", files.prefill, 1);
     rc |= expect_int("owned: exported with its row", files.prefill_sidecar, 1);
     rc |= expect_int("owned: not under the incoming call's name", files.prefill_named, 0);
+    edacs_grant_rig_close(&r);
+    return rc;
+}
+
+/* An all-call from LID 1010, then a group grant to TG 321 from the same LID on the same LCN: the call state merges the
+   grant into the active all-call, so no orphan audio is left to close, and the analog rotation closes the all-call's
+   segment early from its staged row (no target, source LID 1010). That row names a call, so the segment, all-call
+   audio, is exported under LCN 4's frequency in kHz from LID 1010, pending, and linked by the merged call's commit. */
+static int
+test_edacs_same_lid_group_after_all_call(void) {
+    rig r;
+    int rc = rig_open(&r, "dsdneo_journal_edacs_same_lid");
+    edacs_grant_rig(&r);
+    submit(&r, DSD_APP_CMD_WAV_START);
+    edacs_grant_send(&r, EDACS_GRANT_ALL_CALL);
+    const uint64_t epoch = call_epoch(&r);
+    rc |= expect_true("same LID: the all-call made its call", epoch != 0U);
+    char all_call[64];
+    slot_id(&r, 0, all_call, sizeof all_call);
+    edacs_grant_incoming_audio(&r, EDACS_GRANT_ALL_CALL);
+    clock_at(g_now_s + 1);
+    const unsigned long long msg1 = ((1010ULL & 0x3F80ULL) << 11U) | (4ULL << 12U) | (1ULL << 11U) | 321ULL;
+    const unsigned long long msg2 = (1010ULL & 0x7FULL) << 17U;
+    edacs_process_valid_frame(r.opts, r.state, msg1, msg2);
+    rc |= expect_int("same LID: the group grant merged into the all-call", (long long)call_epoch(&r), (long long)epoch);
+    edacs_grant_incoming_audio(&r, EDACS_GRANT_GROUP);
+    clock_at(g_now_s + 2);
+    end_call(&r, DSD_CALL_END_EXPLICIT);
+
+    reload(&r);
+    const char* pub = publish_of(all_call);
+    rc |= expect_int("same LID: the all-call segment holds its own audio", pub ? field_ll(pub, "duration_ms") : -9, 60);
+    rc |= expect_edacs_all_call_sidecar("same LID", &r, pub, 1010U);
+    rc |= expect_pending_then_linked("same LID", all_call, epoch, &r.state->event_history_s[0],
+                                     r.state->event_history_s[0].push_seq);
     edacs_grant_rig_close(&r);
     return rc;
 }
@@ -3891,6 +3953,66 @@ test_tetra_first_call_leaves_unowned_audio(void) {
             rig_close(&r);
         }
     }
+    return rc;
+}
+
+/* An identity-less TETRA call (anonymous, admitted once signalling proved the carrier) fades: its row is held for the
+   reacquisition window, the drop verdict pending, and its audio stays in slot 1's file. Speech then admits a new call
+   on the slot: the admission closes the held call's audio as its own recording, pending on its epoch and unexported
+   (unlinked when that row is dropped), and the new call's recording holds only its own audio, under its row, exported
+   as its own. */
+static int
+test_tetra_held_call_then_readmitted(void) {
+    rig r;
+    int rc = rig_open(&r, "dsdneo_journal_tetra_held");
+    tetra_first_rig(&r, TETRA_FIRST_ANON);
+    submit(&r, DSD_APP_CMD_WAV_START);
+    tetra_first_admit(&r, TETRA_FIRST_ANON);
+    tetra_first_speech(&r, 3);
+    const uint64_t held_epoch = call_epoch(&r);
+    rc |= expect_true("tetra held: its speech admitted the first call", held_epoch != 0U);
+    char held[64];
+    slot_id(&r, 0, held, sizeof held);
+    clock_at(g_now_s + 1);
+    end_call(&r, DSD_CALL_END_SYNC_LOSS);
+    rc |= expect_int("tetra held: the faded call's audio stays in the slot file",
+                     (long long)dsd_wav_segment_frames(r.opts->wav_out_f), 3LL * TETRA_FIRST_BURST_FRAMES);
+    clock_at(g_now_s + 1);
+    tetra_first_admit(&r, TETRA_FIRST_ANON);
+    tetra_first_speech(&r, 2);
+    const uint64_t epoch = call_epoch(&r);
+    rc |= expect_true("tetra held: speech admitted a new call", epoch != 0U && epoch != held_epoch);
+    char own_id[64];
+    slot_id(&r, 0, own_id, sizeof own_id);
+    clock_at(g_now_s + 2);
+    end_call(&r, DSD_CALL_END_TERMINATOR);
+
+    reload(&r);
+    const char* left = publish_of(held);
+    const char* own = publish_of(own_id);
+    rc |= expect_true("tetra held: the held call's audio is published", left != NULL);
+    rc |= expect_true("tetra held: in a file of its own", own != NULL && strcmp(own_id, held) != 0);
+    rc |= expect_true("tetra held: pending on its epoch, unexported",
+                      left && strcmp(field_s(left, "pending"), "true") == 0
+                          && field_ll(left, "epoch") == (long long)held_epoch
+                          && strcmp(field_s(left, "rdio"), "false") == 0);
+    rc |= expect_int("tetra held: holding its audio", left ? field_ll(left, "duration_ms") : -9, 180);
+    rc |= expect_int("tetra held: the new call's recording holds only its audio",
+                     own ? field_ll(own, "duration_ms") : -9, 120);
+    rc |= expect_int("tetra held: under the new call's row", own ? field_ll(own, "row") : -9,
+                     (long long)r.state->event_history_s[0].push_seq);
+    rc |= expect_int("tetra held: never linked to a row", count_for_id(&g_j, "link", held), 0);
+    rc |=
+        expect_int("tetra held: unlinked once its identity-less row is dropped", count_for_id(&g_j, "unlink", held), 1);
+    char body[4096];
+    read_published_sidecar(&r, left, body, sizeof body);
+    rc |= expect_str("tetra held: no sidecar for the held call's audio", body, "");
+    read_published_sidecar(&r, own, body, sizeof body);
+    rc |= expect_true("tetra held: the new call is exported under the fallback talkgroup",
+                      strstr(body, "\"talkgroup\": 4242,") != NULL);
+    r.opts->rdio_mode = DSD_RDIO_MODE_OFF;
+    r.opts->rdio_unknown_talkgroup = 0;
+    rig_close(&r);
     return rc;
 }
 
@@ -4476,7 +4598,9 @@ main(void) {
     rc |= test_d7_stream_off_stays_local();
     rc |= test_edacs_grant_closes_unowned_audio_first();
     rc |= test_edacs_grant_leaves_owned_audio_to_its_row();
+    rc |= test_edacs_same_lid_group_after_all_call();
     rc |= test_tetra_first_call_leaves_unowned_audio();
+    rc |= test_tetra_held_call_then_readmitted();
     rc |= test_playback_files_record_apart();
     rc |= test_playback_export_starts_at_its_first_frame();
     rc |= test_playback_two_calls_in_one_file();
