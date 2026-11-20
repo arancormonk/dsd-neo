@@ -1363,6 +1363,10 @@ An explicit target option overrides the corresponding session default, and leavi
 the target restores the baseline. For example, a target can use `--enc-follow`,
 `--no-force-key`, or its own `--scan-max-visit-ms`. The manual editor's restriction
 on saved-system Extra arguments does not apply to a CSV's validated scoped options.
+A manual list refuses a saved system with Extra arguments, with one exception: an NFM or AM system
+whose Extra arguments are only its own channel width (`--nfm-bandwidth-hz N` for NFM,
+`--am-bandwidth-hz N` for AM), as **Save as system** from Signal search writes them. The list
+scans that system at that width.
 Imported targets are read-only in the editor; use **Update from file** in the
 imports library to replace their contents.
 

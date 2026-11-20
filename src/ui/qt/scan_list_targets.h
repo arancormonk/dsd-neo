@@ -41,5 +41,11 @@ QString scan_list_settings_error(const QVariantMap& list);
  * digital entry. @p systemDecodeFlag is the saved system's decodeFlag for a system entry, ignored otherwise. An analog
  * entry carries no keys, talkgroups, decryption profile or modulation. */
 int scan_list_entry_analog_kind(const QVariantMap& entry, const QString& systemDecodeFlag);
+/** Issue #890: the channel width in Hz a saved analog system of demodulator @p kind (dsd_analog_demod) carries into a
+ * manual scan list, from its Extra arguments @p extraArgs, which must be exactly that kind's one width option
+ * (--nfm-bandwidth-hz N for NFM, --am-bandwidth-hz N for AM, or the --name=N form) in whole Hz within the range a
+ * target's options column takes (dsd_scan_options_parse()). 0 for anything else, which a manual list refuses. A Signal
+ * search save keeps its measured width this way. */
+int scan_list_saved_system_width_hz(const QString& extraArgs, int kind);
 } // namespace dsd_qt
 #endif

@@ -155,7 +155,8 @@ entryAnalogKind(const QVariantMap& entry, const SavedSystemsModel* systems) {
 }
 
 /* The enabled analog entries of a manual list, each named as the editor shows it: a saved system by its name, a
-   frequency entry by its name, else its frequency. None sets a width of its own. */
+   frequency entry by its name, else its frequency. A saved system's own width is the one its Extra arguments carry
+   into the list (scan_list_saved_system_width_hz(), issue #890); a frequency entry sets none. */
 QList<AnalogTarget>
 manualAnalogTargets(const QVariantMap& list, const SavedSystemsModel* systems) {
     QList<AnalogTarget> analog;
@@ -165,10 +166,11 @@ manualAnalogTargets(const QVariantMap& list, const SavedSystemsModel* systems) {
         if (kind < 0) {
             continue;
         }
-        const QString name = entry.value("kind").toString() == QStringLiteral("system") && systems
-                                 ? systems->getByUid(entry.value("systemUid").toString()).value("name").toString()
-                                 : entry.value("name").toString();
-        analog.append({name.isEmpty() ? entry.value("freqMhz").toString() + QStringLiteral(" MHz") : name, kind, 0});
+        const bool system = entry.value("kind").toString() == QStringLiteral("system") && systems;
+        const QVariantMap saved = system ? systems->getByUid(entry.value("systemUid").toString()) : QVariantMap();
+        const QString name = system ? saved.value("name").toString() : entry.value("name").toString();
+        analog.append({name.isEmpty() ? entry.value("freqMhz").toString() + QStringLiteral(" MHz") : name, kind,
+                       scan_list_saved_system_width_hz(saved.value("extraArgs").toString(), kind)});
     }
     return analog;
 }

@@ -1,13 +1,20 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
+#include <QByteArray>
 #include <QChar>
 #include <QMap>
 #include <QPair>
 #include <QRegularExpression>
 #include <QSet>
+#include <QString>
+#include <QStringList>
 #include <QVariant>
+#include <Qt>
 #include <algorithm>
 #include <cmath>
+#include <dsd-neo/core/safe_api.h>
 #include <dsd-neo/runtime/analog_channel.h>
+#include <dsd-neo/runtime/scan_mode.h>
+#include <dsd-neo/runtime/scan_options.h>
 #include <utility>
 #include "radio_settings.h"
 #include "scan_entry_name.h"
@@ -41,6 +48,8 @@ struct Target {
     bool trunk = false;
     /* An nfm or am entry (issue #526): carrier squelch only, so no keys, talkgroups or modulation. */
     bool analog = false;
+    /* A saved analog system's own channel width (scan_list_saved_system_width_hz()), 0 for none. */
+    int widthHz = 0;
 };
 
 QString
@@ -77,6 +86,25 @@ analogKindForFlag(const QString& decodeFlag) {
     return flag == QStringLiteral("-fM") ? DSD_ANALOG_DEMOD_AM : -1;
 }
 
+/* The width option of analog demodulator @p kind, as the CLI and a target's options column spell it. */
+QString
+widthOptionName(int kind) {
+    return kind == DSD_ANALOG_DEMOD_AM ? QStringLiteral("--am-bandwidth-hz") : QStringLiteral("--nfm-bandwidth-hz");
+}
+
+/* Whether a manual list can carry saved system @p sys's Extra arguments: none, or (issue #890) exactly the width option
+   of its analog kind @p kind (-1 for a digital system), as a Signal search save keeps its measured width. That width
+   becomes @p target's own. */
+bool
+carriesExtraArgs(const QVariantMap& sys, int kind, Target& target) {
+    const QString extra = sys.value("extraArgs").toString();
+    if (extra.trimmed().isEmpty()) {
+        return true;
+    }
+    target.widthHz = kind >= 0 ? scan_list_saved_system_width_hz(extra, kind) : 0;
+    return target.widthHz > 0;
+}
+
 QString
 validateIdentity(const QVariantMap& sys, const QVariantMap& entry, QSet<QString>& seen, QSet<QString>& ids,
                  Target& target) {
@@ -88,14 +116,15 @@ validateIdentity(const QVariantMap& sys, const QVariantMap& entry, QSet<QString>
     if (!types.contains(target.decode)) {
         return QStringLiteral("This decode mode cannot be used in a scan list.");
     }
-    if (!sys.value("extraArgs").toString().trimmed().isEmpty()) {
+    const int kind = analogKindForFlag(target.decode);
+    target.analog = kind >= 0;
+    if (!carriesExtraArgs(sys, kind, target)) {
         return QStringLiteral("This saved system has standalone Extra arguments. Remove them to use it in a manual "
                               "list, or import a target CSV with supported switches in its options column.");
     }
     if (!radio_settings_valid(sys.value("radioSettings"))) {
         return QStringLiteral("This saved system has invalid Radio settings.");
     }
-    target.analog = analogKindForFlag(target.decode) >= 0;
     target.trunk = sys.value("trunking").toBool();
     if (target.analog && target.trunk) {
         return QStringLiteral("Analog entries are conventional only; turn trunking off for this saved system.");
@@ -332,6 +361,9 @@ appendTarget(const QVariantMap& entry, const QVariantList& systems, const QVaria
     if (!error.isEmpty()) {
         return sys.value("name").toString() + QStringLiteral(": ") + error;
     }
+    if (target.widthHz > 0) {
+        options << widthOptionName(analogKindForFlag(target.decode)) << QString::number(target.widthHz);
+    }
     const auto radio = sys.value("radioSettings").toMap();
     if (radio.contains("squelch")) {
         options << QStringLiteral("--squelch") << radio.value("squelch").toString();
@@ -372,6 +404,39 @@ scan_list_settings_error(const QVariantMap& list) {
         }
     }
     return {};
+}
+
+int
+scan_list_saved_system_width_hz(const QString& extraArgs, int kind) {
+    if (kind != DSD_ANALOG_DEMOD_FM && kind != DSD_ANALOG_DEMOD_AM) {
+        return 0;
+    }
+    /* Split at blanks as a standalone session splits its Extra arguments, so a quoted value is no width here either. */
+    const QStringList tokens = extraArgs.split(QRegularExpression(QStringLiteral("\\s+")), Qt::SkipEmptyParts);
+    const QString option = widthOptionName(kind);
+    QString value;
+    if (tokens.size() == 2 && tokens.at(0) == option) {
+        value = tokens.at(1);
+    } else if (tokens.size() == 1 && tokens.at(0).startsWith(option + QLatin1Char('='))) {
+        value = tokens.at(0).mid(option.size() + 1);
+    } else {
+        return 0;
+    }
+    static const QRegularExpression wholeHz(QStringLiteral("^[0-9]{1,9}$"));
+    if (!wholeHz.match(value).hasMatch()) {
+        return 0;
+    }
+    /* The bounds are the target options parser's own, which reads the row this width is written to. */
+    const QByteArray text = (option + QLatin1Char(' ') + value).toUtf8();
+    const unsigned int mode = kind == DSD_ANALOG_DEMOD_AM ? DSD_SCAN_MODE_AM : DSD_SCAN_MODE_NFM;
+    dsd_scan_options parsed;
+    DSD_MEMSET(&parsed, 0, sizeof parsed);
+    char error[192];
+    const int rc = dsd_scan_options_parse(text.constData(), mode, 1, &parsed, error, sizeof error);
+    const int hz = rc == 0 && parsed.values.present == DSD_SCAN_OPT_BANDWIDTH && parsed.values.channel_bw_kind == kind
+                       ? parsed.values.channel_bw_hz
+                       : 0;
+    return hz > 0 ? hz : 0;
 }
 
 int
