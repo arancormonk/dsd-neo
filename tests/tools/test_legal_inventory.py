@@ -791,6 +791,31 @@ class NoticeStagingTests(unittest.TestCase):
         self.assertEqual(sorted(path.name for path in self.work.iterdir()), sorted(before + [stage.name]))
         self.assertTrue((beside / "keep/mine.txt").is_file())
 
+    def scratch_folders(self):
+        """The folders a staging run made beside the stage for its fresh documentation and left behind."""
+        return sorted(path.name for path in self.work.iterdir() if path.name.startswith(".stage-doc-"))
+
+    @unittest.skipIf(os.name == "nt" or os.geteuid() == 0, "needs a folder the run cannot write")
+    def test_android_staging_leaves_no_scratch_folder_whatever_step_fails(self):
+        # The run removes the folder it staged the documentation in whichever of its steps fails, not only the notice
+        # script: here, publishing to the package's documentation folder fails.
+        build, share, docs, args = self.android_fixture()
+        result = self.run_cmake(*args)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        (docs / "LICENSE").unlink()
+        docs.chmod(0o555)
+        self.addCleanup(docs.chmod, 0o755)
+        result = self.run_cmake(*args)
+        self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertEqual(self.scratch_folders(), [], result.stdout + result.stderr)
+        docs.chmod(0o755)
+        # A package document where the licence texts' folder goes.
+        source = self.work / "package/assets/doc/dsd-neo"
+        source.mkdir(parents=True)
+        (source / "licenses").write_text("a file where a folder goes\n", encoding="utf-8")
+        result = self.run_cmake(*args)
+        self.assertEqual(self.scratch_folders(), [], result.stdout + result.stderr)
+
     def test_android_staging_keeps_the_package_source_documentation(self):
         # A file android/package/ puts in the documentation folder reaches the APK and its index, in a clean build and
         # in an incremental one, and a generated notice of the same name takes its place.
