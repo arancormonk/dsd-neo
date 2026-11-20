@@ -17042,6 +17042,8 @@ enum {
                             once, not -t later */
     YC_SYNC_LOST_CONTENT, /* the sync lost mid-call (an M17 or D-STAR call whose syncs stamp no anchor): noCarrier()
                              keeps the row while its last checked content is inside -t, then steps */
+    YC_LISTENING,         /* the whole-second -t since the landing run out, but the input came back from the retune's
+                             mute under -t ago: no yield (none spent) until -t since then has run out, then steps */
 };
 
 /* The row's -t run out: the hangtime anchor and the last checked content 11 s back (the rig's -t is 10 s). */
@@ -17072,6 +17074,10 @@ yc_setup(dsd_opts* opts, dsd_state* state, int which, long int base_hz) {
     if (which == YC_UNLANDED) {
         dsd_engine_scan_landing_forget(state);
     }
+    if (which == YC_LISTENING) {
+        g_rtl_listening_rc = 1;
+        g_rtl_listening_since_ns = (uint64_t)((dsd_decode_now_mono_s() - 2.0) * 1e9);
+    }
     if (which != YC_QUIET_FIRST) { /* a quiet row steps on its result long before -t runs out */
         yc_age(state, which != YC_ANCHOR_FRESH);
     }
@@ -17083,6 +17089,7 @@ yc_clear(dsd_opts* opts, dsd_state* state, int which) {
     opts->scan_voice_only = 0;
     opts->frame_x2tdma = 0;
     opts->frame_provoice = 0;
+    g_rtl_listening_rc = 0;
     if (which == YC_WALK_AWAITED) {
         dsd_engine_manual_tune_supersede(state);
         while (dsd_engine_manual_tune_poll(NULL, NULL) != DSD_MANUAL_TUNE_NONE) {}
@@ -17147,10 +17154,36 @@ yc_check_one_rule(dsd_opts* opts, dsd_state* state, int which) {
     return rc;
 }
 
+/* YC_LISTENING: rejected syncs keep coming on a row whose input came back from the retune's mute 2 s ago, after the
+   landing 11 s ago. noCarrier() would refuse to step before -t since then, so the frame loop does not yield for it (a
+   yield spent there is owed no second time for this landing and anchor); once -t since the input's return has run out
+   it yields and noCarrier() steps. */
+static int
+yc_check_listening(dsd_opts* opts, dsd_state* state) {
+    int rc = 0;
+    char label[160];
+    DSD_SNPRINTF(label, sizeof label, "listening under -t: no yield, no step (frames %d, tunes %d)", g_frame_count,
+                 g_rtl_tune_calls);
+    rc |= expect_true(label, g_frame_count == 6 && g_rtl_tune_calls == 0);
+    noCarrier(opts, state);
+    rc |= expect_true("listening under -t: noCarrier() keeps the row", g_rtl_tune_calls == 0);
+    /* The input came back 10.5 s ago, still after the landing: -t since then has run out. */
+    g_rtl_listening_since_ns = (uint64_t)((dsd_decode_now_mono_s() - 10.5) * 1e9);
+    run_synced_frames(opts, state, 5, -1);
+    DSD_SNPRINTF(label, sizeof label, "listened for -t: yields at the first boundary (frames %d)", g_frame_count);
+    rc |= expect_true(label, g_frame_count == 1);
+    noCarrier(opts, state);
+    rc |= expect_true("listened for -t: and steps", g_rtl_tune_calls == 1);
+    return rc;
+}
+
 /* What the case expects once its frames ran: 1 when a yield and a step are owed. */
 static int
 yc_check(dsd_opts* opts, dsd_state* state, int which) {
     int rc = 0;
+    if (which == YC_LISTENING) {
+        return yc_check_listening(opts, state);
+    }
     if (which == YC_PARTIAL || which == YC_UNCHECKED_FRAMES) {
         return yc_check_held_then_steps(opts, state, which);
     }
@@ -17260,7 +17293,7 @@ yc_case(int which, int on) {
 static int
 test_y_frames_with_no_checked_content_leave(void) {
     int rc = 0;
-    for (int which = YC_NOISE; which <= YC_SYNC_LOST_CONTENT; which++) {
+    for (int which = YC_NOISE; which <= YC_LISTENING; which++) {
         if (which != YC_QUIET_FIRST) {
             rc |= yc_case(which, 0);
         }

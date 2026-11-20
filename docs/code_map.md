@@ -680,9 +680,11 @@ Generated (do not edit/commit):
       in `live_scanner_frame_boundary_yields()`) ends the loop for `noCarrier()` to step only when the pure predicate
       `live_scanner_y_frames_carry_nothing()` holds: -Y owns the step (no trunk scan, a user list, no voice gate owning
       it, tone gate OFF, no analog carrier, which never reads open while synced), the hangtime rule `noCarrier()`
-      applies is due (`now - last_cc_sync_time > -t`; the DMR, P25 Phase 1 and 2, ProVoice and EDACS hunts stamp that
-      anchor on raw syncs, so those rows keep their old timing; the one anchor rule, which the countdown publishes too:
-      `test_y_one_hangtime_deadline()`), and the row's frames no longer hold it (`live_scanner_y_frames_hold_row()`, the one rule `noCarrier()`'s hangtime step
+      applies is due (`no_carrier_hangtime_ran_out()`: `now - last_cc_sync_time > -t`, and `-t` since the input came
+      back from the landing's retune mute when that came after the anchor, so the one yield owed for a landing and
+      anchor is never spent before `noCarrier()` would step: case `YC_LISTENING`; the DMR, P25 Phase 1 and 2, ProVoice
+      and EDACS hunts stamp that anchor on raw syncs, so those rows keep their old timing; the one anchor rule, which
+      the countdown publishes too: `test_y_one_hangtime_deadline()`), and the row's frames no longer hold it (`live_scanner_y_frames_hold_row()`, the one rule `noCarrier()`'s hangtime step
       applies as well, so a sync lost mid-call never skips a row whose checked content is inside `-t`: case
       `YC_SYNC_LOST_CONTENT`): no content a protocol's CRC/FEC gate passed for `-t` (`dsd_state::scan_y_content_m`),
       nor the last frame of a protocol with no such gate (`dsd_state::scan_y_unchecked_m`), and the latest open
