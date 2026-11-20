@@ -458,6 +458,11 @@ struct rtl_device {
     struct input_ring_state* input_ring = nullptr;
     struct dsd_iq_capture_writer* iq_capture_writer = nullptr;
     std::atomic<uint64_t> capture_mute_pending_bytes{0U};
+    /* RESETs recorded in the capture (rtl_device_record_capture_reset(), under the input ring's generation_m), and the
+       count the SoapySDR reader last followed: a replay restarts its Fs/4 rotation at a RESET, so the reader restarts
+       its own before its first record after one (soapy_follow_capture_reset()). */
+    std::atomic<uint64_t> capture_reset_seq{0U};
+    uint64_t reader_capture_reset_seen = 0U;
     uint64_t replay_initial_center_frequency_hz = 0U;
     uint64_t replay_initial_capture_center_frequency_hz = 0U;
     dsd_iq_replay_source* replay_src = nullptr;
@@ -1324,6 +1329,35 @@ rtl_submit_capture_bytes(struct rtl_device* s, const void* data, size_t bytes) {
 
 static inline void rtl_record_capture_mute(struct rtl_device* s, uint64_t duration_bytes, const char* reason);
 
+/* Called by the reader with the ring's generation_m held, before it records a read or a MUTE: a RESET recorded since
+ * its last record restarts its Fs/4 rotation at phase 0, as the replay's does at that RESET, so the two stay in step
+ * over what follows it in the capture. */
+static inline void
+soapy_follow_capture_reset(struct rtl_device* s) {
+    const uint64_t seq = s->capture_reset_seq.load(std::memory_order_acquire);
+    if (seq != s->reader_capture_reset_seen) {
+        s->reader_capture_reset_seen = seq;
+        s->rot_phase = 0;
+    }
+}
+
+#ifdef USE_SOAPYSDR
+/* A reader's MUTE of @p bytes, ordered with a RESET as its reads are (soapy_follow_capture_reset()). */
+static void
+soapy_record_reader_mute(struct rtl_device* s, uint64_t bytes, const char* reason) {
+    if (!s || !s->iq_capture_writer) {
+        return;
+    }
+    if (!s->input_ring) {
+        rtl_record_capture_mute(s, bytes, reason);
+        return;
+    }
+    std::lock_guard<std::mutex> lock(s->input_ring->generation_m);
+    soapy_follow_capture_reset(s);
+    rtl_record_capture_mute(s, bytes, reason);
+}
+#endif
+
 /* Record @p bytes of a read taken as of @p generation in the I/Q capture, unless a retune's purge came since: the
  * purge comes before the retune's RETUNE record, so holding the ring's generation lock (as a purge request does) keeps
  * a read the purge overtook out of the capture, where a replay would take it for the new frequency's input. Such a read
@@ -1338,12 +1372,11 @@ rtl_submit_capture_bytes_as_of(struct rtl_device* s, const void* data, size_t by
         rtl_submit_capture_bytes(s, data, bytes);
         return;
     }
-    {
-        std::lock_guard<std::mutex> lock(s->input_ring->generation_m);
-        if (input_ring_discard_generation_matches(s->input_ring, generation)) {
-            rtl_submit_capture_bytes(s, data, bytes);
-            return;
-        }
+    std::lock_guard<std::mutex> lock(s->input_ring->generation_m);
+    soapy_follow_capture_reset(s);
+    if (input_ring_discard_generation_matches(s->input_ring, generation)) {
+        rtl_submit_capture_bytes(s, data, bytes);
+        return;
     }
     rtl_record_capture_mute(s, (uint64_t)bytes, "retune_reconfigure");
 }
@@ -5391,7 +5424,7 @@ soapy_read_stream_locked(struct rtl_device* dev, void* buffs[1], size_t mtu_elem
  * rotation moves on by that one sample here too, as the replay's does over the MUTE, keeping the two in step. */
 static void
 soapy_note_driver_overflow(struct rtl_device* dev) {
-    rtl_record_capture_mute(dev, rtl_capture_event_alignment_bytes(dev), RTL_CAPTURE_MUTE_REASON_DRIVER_OVERFLOW);
+    soapy_record_reader_mute(dev, rtl_capture_event_alignment_bytes(dev), RTL_CAPTURE_MUTE_REASON_DRIVER_OVERFLOW);
     rtl_finish_capture_mute_span(dev);
     if (fs4_shift_capture_active(dev)) {
         dev->rot_phase = rtl_capture_phase_advance_pairs(dev->rot_phase & 3, 1U);
@@ -5449,11 +5482,11 @@ soapy_consume_mute_prefix(struct rtl_device* dev, size_t frame_elems, int apply_
     if (consumed_mute_bytes > mute_bytes) {
         consumed_mute_bytes = mute_bytes;
     }
+    if (drop_elems > 0U) {
+        soapy_record_reader_mute(dev, soapy_capture_event_bytes(dev, drop_elems), "retune_mute");
+    }
     if (apply_rot && drop_elems > 0U) {
         dev->rot_phase = rtl_capture_phase_advance_pairs(dev->rot_phase & 3, drop_elems);
-    }
-    if (drop_elems > 0U) {
-        rtl_record_capture_mute(dev, soapy_capture_event_bytes(dev, drop_elems), "retune_mute");
     }
     dev->mute.fetch_sub(consumed_mute_bytes, std::memory_order_relaxed);
     if (consumed_mute_bytes >= mute_bytes) {
@@ -5468,11 +5501,11 @@ soapy_handle_reconfigure_hold(struct rtl_device* dev, size_t kept_elems, int app
     if (!rtl_capture_reconfigure_hold_active(dev)) {
         return 0;
     }
+    if (kept_elems > 0U) {
+        soapy_record_reader_mute(dev, soapy_capture_event_bytes(dev, kept_elems), "retune_reconfigure");
+    }
     if (apply_rot && kept_elems > 0U) {
         dev->rot_phase = rtl_capture_phase_advance_pairs(dev->rot_phase & 3, kept_elems);
-    }
-    if (kept_elems > 0U) {
-        rtl_record_capture_mute(dev, soapy_capture_event_bytes(dev, kept_elems), "retune_reconfigure");
     }
     return 1;
 }
@@ -5786,6 +5819,9 @@ rtl_device_test_soapy_cf32_ingest(const rtl_device_test_soapy_cf32_request* requ
     const uint64_t generation = input_ring_discard_generation(&ring);
     if (request->purge_before_write) {
         input_ring_request_discard(&ring);
+    }
+    if (request->reset_rate_hz != 0U) {
+        (void)rtl_device_record_capture_reset(&dev, 100000000U, 100000000U, request->reset_rate_hz, "retune");
     }
     soapy_submit_samples(&dev, 0U, request->pairs, cf32_buf, cs16_buf, request->fs4_shift ? 1 : 0, generation);
     size_t count = std::min(input_ring_used(&ring), *output_count);
@@ -13688,7 +13724,17 @@ rtl_device_record_capture_reset(struct rtl_device* dev, uint64_t center_frequenc
     event.capture_center_frequency_hz = capture_center_frequency_hz;
     event.sample_rate_hz = sample_rate_hz;
     rtl_copy_event_reason(event.reason, sizeof(event.reason), reason ? reason : "reset");
-    return rtl_record_capture_event(dev, &event);
+    if (!dev->input_ring) {
+        const int rc = rtl_record_capture_event(dev, &event);
+        dev->capture_reset_seq.fetch_add(1U, std::memory_order_acq_rel);
+        return rc;
+    }
+    /* Under the lock the reader records under, so its records fall wholly before or after this RESET, and it
+       restarts its rotation exactly at it (soapy_follow_capture_reset()). */
+    std::lock_guard<std::mutex> lock(dev->input_ring->generation_m);
+    const int rc = rtl_record_capture_event(dev, &event);
+    dev->capture_reset_seq.fetch_add(1U, std::memory_order_acq_rel);
+    return rc;
 }
 
 uint32_t

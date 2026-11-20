@@ -282,6 +282,8 @@ typedef struct {
     /* Optional outputs: the ring's producer drops and its pending gap marks after the read. */
     uint64_t* out_drops;
     size_t* out_gap_marks;
+    /* Nonzero: a retune's RESET at this capture rate, recorded after the purge and before the reader wrote the read. */
+    uint32_t reset_rate_hz;
 } rtl_device_test_soapy_cf32_request;
 
 /* Returns 1, and leaves the outputs alone, when the build has no SoapySDR. */

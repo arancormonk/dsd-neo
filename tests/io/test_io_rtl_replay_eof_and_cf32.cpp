@@ -3232,7 +3232,7 @@ test_soapy_cf32_read_enters_bounded(void) {
             DSD_SNPRINTF(label, sizeof(label), "bounded Soapy CF32 read (fs/4 %s, phase %d)", fs4 ? "on" : "off",
                          start_phase);
             rtl_device_test_soapy_cf32_request request{
-                samples.data(), payload.size() / 2U, 64U, 54U, fs4, start_phase, 0, NULL, NULL, NULL};
+                samples.data(), payload.size() / 2U, 64U, 54U, fs4, start_phase, 0, NULL, NULL, NULL, 0};
             std::vector<float> output(payload.size() + 8U);
             size_t count = output.size();
             int phase = -1;
@@ -3255,7 +3255,8 @@ test_soapy_cf32_read_enters_bounded(void) {
 /* One SoapySDR CF32 read of @p pairs into a capture, purged before its write or not: what the capture holds after.
    Returns 0, 1 on a failure, or 2 when the build has no SoapySDR. */
 static int
-capture_one_soapy_read(size_t pairs, int purge, dsd_iq_replay_config* out_cfg) {
+capture_one_soapy_read(size_t pairs, int purge, uint32_t reset_rate_hz, int start_phase, int* out_phase,
+                       dsd_iq_replay_config* out_cfg) {
     char temp_dir[DSD_TEST_PATH_MAX];
     if (!dsd_test_mkdtemp(temp_dir, sizeof(temp_dir), "dsdneo_soapy_purge_capture")) {
         return 1;
@@ -3276,11 +3277,15 @@ capture_one_soapy_read(size_t pairs, int purge, dsd_iq_replay_config* out_cfg) {
         return 1;
     }
     const std::vector<float> samples(pairs * 2U, 0.25f);
-    rtl_device_test_soapy_cf32_request request{samples.data(), pairs, 256U, 0U, 1, 0, purge, writer, NULL, NULL};
+    rtl_device_test_soapy_cf32_request request{samples.data(), pairs, 256U, 0U,           1, start_phase, purge,
+                                               writer,         NULL,  NULL, reset_rate_hz};
     std::vector<float> output(samples.size() + 8U);
     size_t count = output.size();
     int phase = -1;
     const int hook_rc = rtl_device_test_soapy_cf32_ingest(&request, output.data(), &count, &phase);
+    if (out_phase) {
+        *out_phase = phase;
+    }
     dsd_iq_capture_final_stats stats;
     DSD_MEMSET(&stats, 0, sizeof(stats));
     dsd_iq_capture_close(writer, &stats);
@@ -3298,7 +3303,7 @@ test_soapy_read_across_a_retune_purge_keeps_its_duration(void) {
     int rc = 0;
     for (int purge = 0; purge <= 1; purge++) {
         dsd_iq_replay_config cfg;
-        const int crc = capture_one_soapy_read(5U, purge, &cfg);
+        const int crc = capture_one_soapy_read(5U, purge, 0, 0, NULL, &cfg);
         if (crc == 2) {
             DSD_FPRINTF(stderr, "SKIP: Soapy purge capture: no SoapySDR in this build\n");
             return rc;
@@ -3317,6 +3322,25 @@ test_soapy_read_across_a_retune_purge_keeps_its_duration(void) {
         }
         dsd_iq_replay_config_clear(&cfg);
     }
+    /* A retune's purge and RESET land between the read and its write: the capture holds the RESET, then the read's
+       MUTE. A replay restarts its Fs/4 rotation at 0 there and steps over the MUTE's 5 pairs, to phase 1; the live
+       reader restarts at the same RESET and ends on the same phase, whatever phase it started from. */
+    for (int start_phase = 0; start_phase < 4; start_phase++) {
+        dsd_iq_replay_config cfg;
+        int phase = -1;
+        const int crc = capture_one_soapy_read(5U, 1, 1536000U, start_phase, &phase, &cfg);
+        rc |= expect_int_eq("the RESET capture reads back", crc, 0);
+        if (crc != 0) {
+            return rc;
+        }
+        rc |= expect_int_eq("a RESET and a MUTE", (int)cfg.event_count, 2);
+        if (cfg.event_count == 2U && cfg.events) {
+            rc |= expect_int_eq("the RESET first", (int)cfg.events[0].kind, (int)DSD_IQ_EVENT_RESET);
+            rc |= expect_int_eq("then the MUTE", (int)cfg.events[1].kind, (int)DSD_IQ_EVENT_MUTE);
+        }
+        rc |= expect_int_eq("the live rotation ends where the replay's does", phase, 5 & 3);
+        dsd_iq_replay_config_clear(&cfg);
+    }
     return rc;
 }
 
@@ -3326,7 +3350,7 @@ test_soapy_read_across_a_retune_purge_never_commits(void) {
     int rc = 0;
     for (int purge = 0; purge <= 1; purge++) {
         rtl_device_test_soapy_cf32_request request{
-            samples.data(), samples.size() / 2U, 256U, 0U, 0, 0, purge, NULL, NULL, NULL};
+            samples.data(), samples.size() / 2U, 256U, 0U, 0, 0, purge, NULL, NULL, NULL, 0};
         std::vector<float> output(samples.size() + 8U);
         size_t count = output.size();
         int phase = -1;
@@ -3347,8 +3371,8 @@ test_soapy_read_across_a_retune_purge_never_commits(void) {
     for (int start_phase = 0; start_phase < 4; start_phase++) {
         uint64_t drops = UINT64_MAX;
         size_t gap_marks = SIZE_MAX;
-        rtl_device_test_soapy_cf32_request request{thirty.data(), 30U, 32U,  0U,     1,
-                                                   start_phase,   1,   NULL, &drops, &gap_marks};
+        rtl_device_test_soapy_cf32_request request{thirty.data(), 30U,    32U,        0U, 1, start_phase, 1,
+                                                   NULL,          &drops, &gap_marks, 0};
         std::vector<float> output(thirty.size() + 8U);
         size_t count = output.size();
         int phase = -1;
@@ -3366,7 +3390,8 @@ test_soapy_read_across_a_retune_purge_never_commits(void) {
     for (int purge = 0; purge <= 1; purge++) {
         uint64_t drops = UINT64_MAX;
         size_t gap_marks = SIZE_MAX;
-        rtl_device_test_soapy_cf32_request request{thirty.data(), 30U, 2U, 0U, 1, 1, purge, NULL, &drops, &gap_marks};
+        rtl_device_test_soapy_cf32_request request{thirty.data(), 30U,  2U,     0U,         1, 1,
+                                                   purge,         NULL, &drops, &gap_marks, 0};
         std::vector<float> output(thirty.size() + 8U);
         size_t count = output.size();
         int phase = -1;

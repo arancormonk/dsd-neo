@@ -3930,8 +3930,10 @@ suite runs under this compiler.
     generation under `soapy_lock` right before `readStream()`, the native Airspy reader as its callback starts; both
     record a read in the I/Q capture under the same lock, only while the generation holds (a purge comes before the
     retune's RETUNE record), and a stale read leaves a `retune_reconfigure` MUTE of its length there instead. A
-    stale read is dropped whole: counted and stepped over by the Fs/4 rotation, with no gap mark. Test:
-    `RUNTIME_INPUT_RING_INIT`, `IO_RTL_REPLAY_EOF_AND_CF32`.
+    stale read is dropped whole: counted and stepped over by the Fs/4 rotation, with no gap mark. A replay restarts
+    its Fs/4 rotation at a RESET; the SoapySDR reader restarts its own before its first record after one, which
+    `rtl_device_record_capture_reset()` records under `generation_m` (`capture_reset_seq`), so its reads and MUTEs
+    fall wholly before or after the RESET. Test: `RUNTIME_INPUT_RING_INIT`, `IO_RTL_REPLAY_EOF_AND_CF32`.
   - Decode clock (`include/dsd-neo/runtime/decode_clock.h`, `src/runtime/decode_clock.c`): an injectable clock for
     decode decisions and decoded-output timestamps (`dsd_decode_time()`, `dsd_decode_now_mono_{s,ms,ns}()`,
     `dsd_decode_now_realtime_s()`) with SYSTEM (platform clocks, default), REPLAY (`anchor + media_ns`, anchor floored
