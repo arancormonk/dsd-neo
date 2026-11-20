@@ -70,7 +70,7 @@ Column behavior:
 | `notes` | No | Ignored by DSD-neo. Use it for local notes. |
 | `modulation` | No | Demod hint for this target. Empty preserves global/default handling. `auto` uses target defaults even when a global `-m` lock is set. Both P25 types accept `auto`, `c4fm`, `cqpsk`; DMR and both NXDN rates accept `auto`, `gfsk`. A simplex digital target takes only `auto`, its class's own modulation (C4FM for YSF, M17 and dPMR, GMSK for D-STAR, pi/4-DQPSK for TETRA DMO). An analog (`nfm-conventional`, `am-conventional`) target takes none. |
 | `rtl_gain` | No | RTL-family tuner gain for this target. Empty uses the configured gain, including one set live during the scan. `0` or `auto` requests device automatic gain. `1..49` requests manual dB gain. |
-| `keys_hex_csv` | No | Per-target hex key file (`-K` format), resolved relative to the target CSV. Parking the target installs its set; leaving it restores the global keys. A row may fill both key columns; they load into one set. Empty uses the global keys. An analog target decrypts nothing and rejects this and the other key columns. |
+| `keys_hex_csv` | No | Per-target hex key file (`-K` format), resolved relative to the target CSV. Parking the target installs its set; leaving it restores the global keys. A row may fill both key columns; they load into one set. Empty uses the global keys. An analog target decrypts nothing and rejects this and the other key columns, and so does every simplex digital target ([Keys](#keys)). |
 | `keys_dec_csv` | No | Per-target decimal key file (`-k` format), resolved relative to the target CSV. Empty uses the global keys. |
 | `single_key_dec` | No | Embedded `-b` Motorola Basic Privacy key number (`0..255`). Explicit `0` is an active override. It may be combined with `single_key_hex`, but not either key-file column. |
 | `single_key_hex` | No | Embedded `-H` key. It accepts an optional `0x`, ignores ASCII whitespace, and requires exactly 10, 32, or 64 hex digits. It may be combined with `single_key_dec`, but not either key-file column. |
@@ -1072,6 +1072,75 @@ no pick. Checking the list itself (Qt, `--validate-config`) does not look at the
   than about 400 ms can pass a busy channel without one, so give `tetra-dmo-conventional` targets a `dwell_ms` of 500
   or more.
 
+### What holds a simplex target
+
+A simplex target stays past its idle dwell only on content its protocol checked, heard on that target's own visit: a
+frame read while another target was on air, or while the retune was still in flight, holds nothing. Sync words alone
+never hold one.
+
+| Type | Holds on | Never holds on |
+|------|----------|----------------|
+| `ysf-conventional` | a header (FI 0) or communication (FI 1) frame whose FICH passed its CRC | a terminator (FI 2), a test frame (FI 3), a failed FICH |
+| `dstar-conventional` | an RF header, a slow-data header or a D-PRS record whose CRC passed | the resynchronization words, however many in a row |
+| `dpmr-conventional` | a Communications_Start header whose CRC-8 passed; a voice frame whose two CCH halves passed their CRC-7 as a pair (frames 0/1 or 2/3) | a frame with a failed or unpaired half |
+| `m17-conventional` | a link setup frame whose CRC passed, one rebuilt whole from the six LICH chunks, a packet whose CRC passed, two clean LICHs in a row | a BERT test frame, an LSF that `-F` decodes despite a failed CRC |
+| `tetra-dmo-conventional` | a DSB whose SCH/S and SCH/H passed carrying DM-SETUP, DM-CONNECT ACK or DM-OCCUPIED; direct mode speech whose CRC passed and that re-encodes cleanly; short data whose FCS did not fail; an encrypted DM-2-C DSB | trunked (TMO) traffic, a DSB only the soft decision decoded, DM-RESERVED, a DM-SETUP PRES or gateway set-up before its call's DM-CONNECT ACK or DM-OCCUPIED |
+
+- **D-STAR hold limit.** A D-STAR radio repeats its header in the slow data, but it may send text or position data
+  instead for a while. If that lasts longer than the target's activity hold, the hold can run out in the middle of a
+  call. Raise the target's `activity_hold_ms` if your D-STAR calls get cut that way.
+- **Test transmissions.** On a `ysf`, `m17` or `tetra-dmo` row of a `-Y` list, and on the matching trunk-scan target,
+  a YSF test frame, an M17 BERT frame and trunked TETRA traffic only show the channel is that mode: they do not keep
+  the row and do not count as activity for [Skipping silent channels](#skipping-silent-channels). A `-Y` row with no
+  mode still counts them, as before.
+- **TETRA slot filter.** The DMR/P25 receive slot filter does not apply to TETRA DMO.
+
+### The policy table
+
+Every hold on a simplex target, a protocol report or decoded voice under `--scan-voice-only`, goes through one set of
+rules:
+
+| Family | Talkgroup and radio lists | Data calls | Private or group calls | Encryption |
+|--------|---------------------------|------------|------------------------|------------|
+| YSF | not used (callsigns) | DT 1 is data | CM 3 is private, CM 0 and 1 group | never encrypted |
+| D-STAR | not used (callsigns) | the header's DATA flag; a D-PRS record follows its transmission | never known | never encrypted |
+| M17 | not used (callsigns); the receive CAN filter still applies | packet mode and data streams | never known | the checked LSF's encryption type |
+| dPMR | the 24-bit called and calling IDs as numbers (the dial string is only shown) | the checked communications mode | never known (dPMR has no group bit) | scrambled (Version 3) |
+| TETRA DMO | the GSSI or ISSI and the source ISSI from the call set-up | short data and circuit mode data | the set-up's call type | the call's security class |
+
+- A setting that limits a field holds nothing while that field is unknown: with data calls off (`--no-data-calls`,
+  the default) a call of unknown kind does not hold, with `--enc-lockout` a call of unknown encryption does not hold,
+  and with group or private calls switched off a call of unknown party does not hold. So an M17 target under
+  `--no-data-calls` holds on its LICH only after a checked link setup said the stream is voice, and a dPMR or D-STAR
+  target, whose calls never say their party, holds nothing while group or private calls are switched off.
+- dPMR and TETRA DMO calls go through the talkgroup and radio lists like DMR calls. A report with no target ID (a
+  dPMR frame that names only the caller, an encrypted DM-2-C burst) holds nothing while a talkgroup Hold or the allow
+  list is on, or when the radio list blocks its known source.
+- The M17 CAN filter: with a receive CAN set, a target holds only on a checked LSF of that CAN; an LSF of another CAN,
+  and LICH frames before any checked LSF, hold nothing.
+- A talkgroup Hold keeps a `tetra-dmo` target or row past its visit cap only while a direct mode call on the held
+  talkgroup is heard on this visit; a trunked call on the same talkgroup does not.
+
+### Voice-only scanning
+
+With `--scan-voice-only` a target holds only on speech its decoder decoded cleanly on this visit, clear or decrypted,
+and only voice of the target's own mode counts: a YSF target takes YSF voice, a `tetra-dmo` target only direct mode
+TETRA speech. Encrypted voice without a key never counts, in any mode. Voice heard
+on the visit before (on another target, or before this target's retune landed) holds nothing. TETRA voice that is
+muted for policy or encryption is never decoded, so it never holds a target.
+
+### Keys
+
+| Type | Keys in the target's row |
+|------|--------------------------|
+| `ysf-conventional`, `dstar-conventional`, `tetra-dmo-conventional` | none: these modes are not decrypted, so every key option and key column is refused |
+| `dpmr-conventional` | only a scoped `-R` scrambler key (1 to 32767) in `options`, with `-4`, `--no-force-key`, `--key-profile-ref` and `--no-decryption-keys`, as a saved NXDN-scrambler system carries them; no key column or key file |
+| `m17-conventional` | none of its own: the session's keys apply, and any key option or key column is refused |
+
+A live key change from the Qt/Android key sheet follows the same table. The refusal says why, for example
+`-R: a tetra-dmo row or target takes no key setting: it decrypts nothing`. `-Y` rows of these modes follow the same
+rules.
+
 ## Skipping silent channels
 
 Skip-silent lets a scan leave a silent conventional channel early (issue #834). When the receiver lands on a
@@ -1367,7 +1436,8 @@ with trunk scan.
 
 The optional `options` column accepts the same [scoped switches](csv-formats.md#scoped-row-options) as conventional
 channel maps. The target `type` validates protocol-specific switches. A DMR system can use `-K Keys.csv -G Groups.csv
--0 -F`; a conventional NXDN target can use `-R 1`. Relative paths refer to the target-list directory.
+-0 -F`; a conventional NXDN target can use `-R 1`, and so can a `dpmr-conventional` one, the only key a simplex
+digital target takes ([Keys](#keys)). Relative paths refer to the target-list directory.
 Unspecified settings inherit the configured defaults, and `--no-force-key` can disable inherited forcing.
 A row's `-e` / `--no-data-calls` and `--enc-lockout` / `--enc-follow` override the CLI/config data-call and
 encrypted-call policy while that target is parked. The terminal `d`/`e` toggles still edit the configured global

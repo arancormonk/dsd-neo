@@ -2690,10 +2690,15 @@ channel is delayed.
     active target. Both P25 types accept `auto`, `c4fm`, or `cqpsk`; DMR and NXDN `auto` or `gfsk`; the simplex digital
     types only `auto`. Optional `keys_hex_csv`/`keys_dec_csv` columns load a per-target key set, while
     `single_key_dec`/`single_key_hex` embed `-b`/`-H` equivalents; a target cannot mix direct and file key sources.
-    Leaving the target restores the global keys.
+    Leaving the target restores the global keys. The simplex digital types take no key columns: YSF, D-STAR and TETRA
+    DMO targets no key setting at all, M17 targets none of their own (the session's keys apply), and dPMR targets only
+    `-R` (with `-4`, `--no-force-key`, `--key-profile-ref`, `--no-decryption-keys`) in `options`; see
+    [Keys](trunk-scan.md#keys).
   - Idle dwell: `--trunk-scan-dwell-ms <250..600000>` (default `3000`).
   - Conventional digital activity hold (DMR, P25, both NXDN rates and the simplex digital types), and an analog
-    target's hold after its carrier drops: `--trunk-scan-activity-hold-ms <250..600000>` (default `1200`).
+    target's hold after its carrier drops: `--trunk-scan-activity-hold-ms <250..600000>` (default `1200`). A simplex
+    digital target holds only on content its protocol checked, through the same talkgroup, data, private-call and
+    encryption rules: [What holds a simplex target](trunk-scan.md#what-holds-a-simplex-target).
   - Maximum time per visit: `--scan-max-visit-ms <ms>` (`0` disables, otherwise `1000..3600000`; default `0`).
     Unlike the activity hold above it applies to every target type, trunked and conventional, and it is a ceiling
     rather than a reason to stay: it can cut an ongoing call short, which is the point on a busy system that would
@@ -2706,7 +2711,8 @@ channel is delayed.
   - Voice-only scan (`--scan-voice-only`): digital conventional targets hold only from decoded voice, with `dwell_ms` as
     the qualify window and `activity_hold_ms` as the hold; trunked targets are unchanged (control-only rotates after
     dwell) and show no `Voice:` marker on the status line, and an `nfm-conventional` or `am-conventional` target keeps
-    holding on its carrier. A conventional target shows `VOICE` while its call is active and `TAIL` after the call ends
+    holding on its carrier. Only voice of the target's own mode counts (a `tetra-dmo-conventional` target takes only
+    direct mode speech). A conventional target shows `VOICE` while its call is active and `TAIL` after the call ends
     while the hold remains.
   - Silent-channel skip (`--scan-skip-silent`, `--no-scan-skip-silent`; config `[trunking] scan_skip_silent`): a
     conventional target that a quick signal check finds silent is left at once instead of after its idle dwell.

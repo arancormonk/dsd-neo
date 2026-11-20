@@ -348,6 +348,20 @@ Import previews summarize the row's filters and naming-rule count. Live **This c
 **Use default** inherits the configured value and **List value** restores the imported row. These edits never
 rewrite the imported CSV or change a permanent target ID.
 
+### Simplex digital rows and keys
+
+The key switches follow each mode's key matrix (issue #890), on `-Y` rows and trunk-scan targets alike:
+
+- `ysf`, `dstar` and `tetra-dmo` rows (and `ysf-conventional`, `dstar-conventional`, `tetra-dmo-conventional`
+  targets) take no key setting at all: these modes are not decrypted.
+- `m17` rows (and `m17-conventional` targets) take no key setting of their own: the session's keys apply.
+- `dpmr` rows (and `dpmr-conventional` targets) take only `-R` (a scrambler key, 1 to 32767), `-4`, `--no-force-key`,
+  `--key-profile-ref` and `--no-decryption-keys`.
+
+Every other key or forcing switch, and every legacy key column (`keys_hex_csv`, `keys_dec_csv`, `single_key_hex`,
+`single_key_dec`), is refused on those rows, the switch named with why (`-R: a tetra-dmo row or target takes no key
+setting: it decrypts nothing`), a key column without echoing the cell.
+
 ### Analog rows
 
 `nfm` and `am` channel-map rows and `nfm-conventional` and `am-conventional` trunk-scan targets accept only the options

@@ -412,12 +412,25 @@ Generated (do not edit/commit):
     without a key never earns any: such a call holds a target only in normal scanning, from its checked call signalling.
     Every producer keeps checked media only while a scan that reads it runs (`dsd_scan_uses_checked_media()` in
     `tuner_owner.h`: the -Y scan or the trunk scan owns the tuner, so not while a trunk scan is paused); otherwise the
-    voice path takes no lock and reads no clock for it. The probe's policy applies the encrypted-call tuning rule before
+    voice path takes no lock and reads no clock for it. The probe's policy table applies the encrypted-call tuning rule before
     anything needs a target (`dsd_tg_policy_encrypted_tune_denied()`): an encrypted call with no talkgroup yet, or an
     M17 call, holds nothing under it. Never the media mark `dsd_call_state_update_media()` makes before the decode,
     which playback, the -Y call count and the history keep. Each checked frame carries its scan observation origin
     (below); the probe counts only media whose origin is the reception in force now, so a call another visit heard,
     ended or not, holds nothing whatever its decode times say, and a frame of another origin starts the span again.
+    Issue #890 family binding: the probe takes only calls of the row's family
+    (`scan_voice_call_of_row_family()`: the class `dsd_scan_mode_active()` names, every protocol on an untyped row;
+    on a `tetra-dmo` row only direct mode speech, `dsd_call_snapshot::checked_media_tetra_direct`, which
+    `dsd_call_state_note_checked_media_tetra()` sets from the burst's mode and a frame of the other mode restarts), and
+    judges each through the policy table (`dsd_scan_activity_policy_allows()`, also the simplex reports' rule): known
+    data/party/encryption restrictions and an unknown field a restriction depends on (F9: withheld), no talkgroup
+    policy for the callsign families (YSF, D-STAR, M17), and for the numeric ones nothing anonymous under a Hold, the
+    allow list or a blocked known source. A dPMR call keeps its IDs as dial-string text only, so its voice reaches the
+    table anonymous (a decided limit: under a Hold or the allow list voice-only holds no dPMR row; its protocol
+    reports carry the numeric IDs). `dsd_scan_tg_hold_call_active()` takes only a call of the row's family too, and on
+    a `tetra-dmo` row only an admitted direct mode talkspurt whose checked speech is of this visit (F7), for both the
+    -Y and the trunk-scan visit cap. TETRA voice the gate mutes for policy or encryption is never decoded, so it never
+    earns checked media.
   - Scan observation origin (issue #890; `include/dsd-neo/core/state.h`): `dsd_state::scan_landing_visit` is the
     epoch of the scan landing in force (written only by `scan_landing.h`, at a landing's install and forget; 0 while
     none is: a tune in flight, failed or forgotten), and `processFrame()` copies it into `frame_dispatch_scan_visit`
@@ -438,6 +451,9 @@ Generated (do not edit/commit):
     connection, so the peer's frequency is unconfirmed until the next park. Tests: `ENGINE_TRUNK_SCAN`
     (`test_conventional_activity_binds_its_visit`, `test_conventional_voice_gate_media_binds_its_visit`),
     `ENGINE_SCAN_VOICE_GATE` (`test_unchecked_media_never_qualifies`, `test_probe_binds_media_to_its_visit`),
+    `ENGINE_SCAN_VOICE_GATE` also covers the issue #890 policy table and family binding below
+    (`test_policy_table_rows`, `test_voice_probe_binds_the_row_family`,
+    `test_tg_hold_on_a_dmo_row_needs_its_dmo_talkspurt`),
     `CORE_MBE_TRANSFORM_CONTEXT` (`test_process_mbe_frame_dstar_checked_media_follows_the_decode`),
     `M17_STATE_DISPATCH`. The same file owns the scan-timing publication
     (`dsd_scan_timing_clear()` / `dsd_scan_timing_publish()`) and the -Y timing tick `dsd_engine_scan_y_timing_tick()`,
@@ -1391,7 +1407,27 @@ the CLI/config options live in `docs/trunk-scan.md`; `include/dsd-neo/engine/tru
   P25 machine under the real guard; run under `tsan-debug`), `RUNTIME_TRUNK_SCAN_HOOKS`.
 - Conventional activity reports: `dsd_engine_trunk_scan_dmr_conventional_activity()`,
   `dsd_engine_trunk_scan_nxdn_conventional_activity()`, and `dsd_engine_trunk_scan_p25_conventional_activity()`,
-  reached from protocol code through the runtime hooks.
+  reached from protocol code through the runtime hooks, and `dsd_engine_trunk_scan_digital_conventional_activity()`
+  for the simplex digital families (issue #890): the report's protocol names the family
+  (`trunk_scan_digital_family()`: YSF, D-STAR, dPMR, M17, TETRA DMO; any other protocol claims none), and every entry
+  point shares `trunk_scan_conventional_report_target()` (receive policy on the report's protocol and slot, the parked
+  target of the family, voice-only off, `trunk_scan_observation_on_target()`); the simplex one then asks the policy
+  table (`dsd_scan_activity_policy_allows()`, `src/engine/scan_voice_gate.c`). Tests: `ENGINE_TRUNK_SCAN`
+  (`test_digital_activity_holds_its_family`, `test_digital_activity_binds_its_visit`).
+- Simplex key matrix (issue #890, `dsd_scan_mode_key_capability()` in `src/runtime/scan_mode.c`): FULL (untyped, P25,
+  DMR, NXDN), SCRAMBLER (dPMR: `-R` up to 32767, `-4`, `--no-force-key`, `--key-profile-ref`, `--no-decryption-keys`),
+  SESSION (M17: none of its own) and NONE (YSF, D-STAR, TETRA DMO, analog). Enforced at the options parser
+  (`KEYED_MODES` and the key-field refusal naming why in `option_mode_allowed()`, `src/runtime/scan_options.c`), the
+  legacy key columns (`scan_reject_unkeyed_key_columns()` here, `chan_import_row_mode()` for `-Y` maps,
+  `dsd_scan_mode_key_refusal()` the reason), the key material check (`dsd_scan_keys_compatible()`,
+  `src/core/util/scan_profile.c`: NONE and SESSION refuse every source, a key loader and a clear-keys one included;
+  SCRAMBLER takes only one 15-bit scalar or a clear-keys source) and the live replacement
+  (`validate_target_decryption()`: NONE and SESSION refuse every field, SCRAMBLER a force other than 0 or 1). The Qt
+  scan-list catalog's `ScanProtocolKeys` mirrors it. M17 decrypts with the shared `dsd_state::R`, which the per-target
+  key swap restores to the session's whenever an M17 target lands. Tests: `RUNTIME_SCAN_OPTIONS`
+  (`check_key_matrix_options`), `CORE_SCAN_PROFILE` (`test_simplex_classes_follow_the_key_matrix`), `ENGINE_TRUNK_SCAN`
+  (`test_simplex_targets_follow_the_key_matrix`, `test_live_key_changes_follow_the_key_matrix`,
+  `test_keyed_dpmr_alternates_with_m17`, `test_simplex_targets_merge_across_lists`), `CORE_CSV_IMPORT`.
 - Analog targets (`DSD_TRUNK_SCAN_TARGET_NFM_CONVENTIONAL` = 8 and `DSD_TRUNK_SCAN_TARGET_AM_CONVENTIONAL` = 9, issue
   #526): every exhaustive type switch classifies both types (conventional, no GFSK or P25 symbol rate, no conventional
   family a protocol report can claim), `trunk_scan_target_mode()` maps them to `DSD_SCAN_MODE_NFM` and
@@ -5904,6 +5940,23 @@ the implementations from `dsd_engine_trunk_scan_init()` and clears them again on
   as clear for this policy.
   Phase 2 XCCH reports only after MAC_PTT crypto resolution; Phase 1 late joins use the decoded service encryption
   bit while crypto classification is unknown. `p25_sm_note_conventional_activity()` rejects stale/unidentified calls.
+- `dsd_trunk_scan_hook_digital_conventional_activity()` (issue #890) — the simplex digital families' report: a
+  protocol (DSD_SYNC_* of the family), a slot (-1: none the DMR/P25 slot filter reads) and a
+  `dsd_trunk_scan_activity_identity` (target, source, is_private, encrypted, data_call and the
+  `DSD_SCAN_ACTIVITY_KNOWN_*` bits saying which are known). Unlike the three above it notes no Signal search evidence
+  (each simplex protocol notes its own). Callers, each where the checked fields are known: YSF
+  `ysf_report_scan_activity()` (a FICH whose CRC passed, FI 0 or 1; DT 1 data, CM 3 private, CM 2 party unknown),
+  D-STAR `dstar_report_scan_activity()` (RF header, slow-data header and D-PRS record CRCs; a D-PRS record is bound
+  from its first byte to `dstar_tx_seq`, the reception and the scan visit by `dstar_sd_binding`; never the resync
+  streak), dPMR `dpmr_report_scan_activity()` (a Communications_Start header, and an FS2 frame whose CCH halves pass
+  as a bound pair, with the raw 24-bit IDs and no party), M17 `m17_report_scan_activity()` (direct and rebuilt LSF,
+  packet CRC, a clean LICH pair; only `m17_lsf_checked` values; the receive CAN gate `m17_can_en` kept; never BERT)
+  and TETRA `tetra_calls.c` (`dmo_scan_report()`: DSB DM-SETUP, DM-CONNECT ACK, DM-OCCUPIED, DM-2-C opaque
+  presence, SDS after its FCS check and before the notice dedupe, and DMO speech through
+  `tetra_calls_dmo_speech_activity()`; never TMO, soft-only DSBs, DM-RESERVED, DM-SETUP PRES or gateway set-up).
+  Tests: `RUNTIME_TRUNK_SCAN_HOOKS`, `YSF_DCH_DECODE`, `DSTAR_PROCESS`, `DSTAR_DPRS`, `DPMR_REFERENCE_VECTORS`,
+  `M17_FRAME_CUT`, `TETRA_CALLS`, `TETRA_BURST_VERDICT` (recorded through
+  `tests/test_support/scan_activity_capture.h`).
 - `dsd_trunk_scan_hook_active_chan_csv()` — the parked target's channel-map path, which `opts->chan_in_file` cannot
   answer while scanning (`src/protocol/nxdn/nxdn_trunk_diag.c`)
 - `dsd_trunk_scan_hook_enc_lockout_clear_snapshots()` — scrub the encrypted-target lockout ledger parked in every
@@ -14168,8 +14221,11 @@ Private per-protocol modules worth knowing about:
   dropped as cut returns 0. `dispatch_m17.c` reports the confirmation on an EOT, and
   `dsd_frame_sync.c` reads the raw state to decide whether to keep extending a candidate chain. Strong evidence is a
   CRC-16 that passed: the LSF frame's, an LSF rebuilt from LICH chunks when all six were heard under one binding
-  (`M17finalizeLICH()`, issue #890), a packet's, and a PRBS9 BERT lock; a LICH whose four Golay(24,12) words cleared is
-  weak and confirms on the second frame running; an LSF `-F` decodes despite a failed CRC is no evidence.
+  (`M17finalizeLICH()`, issue #890), a packet's, and a PRBS9 BERT lock (`M17_EVIDENCE_TEST`: it confirms as a CRC does,
+  but on a row of the `m17` class, `dsd_scan_mode_active()`, a test transmission notes no PROVEN content, issue #890
+  F3; YSF's `ysf_note_checked_content()` does the same for a test frame, FI 3, on a `ysf` row); a LICH whose four
+  Golay(24,12) words cleared is weak and confirms on the second frame running; an LSF `-F` decodes despite a failed CRC
+  is no evidence.
   `dsd_state::m17_lsf_checked` marks that an LSF whose CRC passed set the live CAN (0 included), encryption, stream
   type and IV for this transmission, and while it stands a relaxed (`-F`) LSF is shown and replaces none of them.
   `m17_confirm_reset()` is the one M17 transmission boundary (decided, issue #890: nothing of transmission A is ever
@@ -14602,9 +14658,12 @@ Private per-protocol modules worth knowing about:
   (a clear DMO call PDU or short data whose FCS did not fail, from `tetra_calls_dmo_pdu()`) or DMO_SPEECH (direct
   mode speech with its CRC and re-encode check). The notes raise the open burst's level
   (`tetra_confirm_note_proof()`); a burst whose read was lost closes NONE, and a carrier reset forgets the last one.
-  `tetra_frame_leave()` reports checked content (`tetra_burst_proof_is_content()`: TMO and every DMO level) as one
-  PROVEN content note, so `-Y` rows under `-fT` hold on checked TETRA content and TETRA is off the unchecked list in
-  `processFrame()`. The accessor is what a typed row or a trunk-scan DMO target can read (PR B of issue #890).
+  `tetra_frame_leave()` reports checked content (`tetra_burst_proof_is_row_content()`: on an untyped row
+  `tetra_burst_proof_is_content()`, TMO and every DMO level; on a row of the `tetra-dmo` class,
+  `dsd_scan_mode_active()`, only the DMO levels, so trunked traffic proves the profile only) as one PROVEN content
+  note, so `-Y` rows under `-fT` hold on checked TETRA content and TETRA is off the unchecked list in
+  `processFrame()`. A trunk-scan DMO target holds on the call PDUs, speech and short data the call records report
+  (`dmo_scan_report()`, issue #890).
   `tetra_confirm_burst_current()` is 0 once the open burst's read is lost: the carrier was reset since it began, or
   `dsd_state_frame_read_lost()` against the carrier count captured at `tetra_confirm_burst_begin()` (a carrier
   boundary or an input interruption inside the read).
