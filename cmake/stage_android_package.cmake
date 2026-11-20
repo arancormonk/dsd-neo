@@ -112,12 +112,29 @@ if(DEFINED _DSD_FRESH_DIR)
     # package's folder in line with it.
     set(_fresh_dir "${_DSD_FRESH_DIR}")
     # The notices first, into the empty folder, and android/package/'s own documentation
-    # after them, below.
-    file(COPY "${REPO_DIR}/legal" DESTINATION "${_fresh_dir}")
-    file(COPY "${REPO_DIR}/LICENSES/" DESTINATION "${_fresh_dir}/licenses")
+    # after them, below. file(COPY) would give each folder the mode of its source, and an
+    # installed notice folder may be read-only: the copies are this run's own, so it can
+    # write into them.
+    set(_folder_modes
+        DIRECTORY_PERMISSIONS
+        OWNER_READ
+        OWNER_WRITE
+        OWNER_EXECUTE
+        GROUP_READ
+        GROUP_EXECUTE
+        WORLD_READ
+        WORLD_EXECUTE
+    )
+    file(COPY "${REPO_DIR}/legal" DESTINATION "${_fresh_dir}" ${_folder_modes})
+    file(
+        COPY "${REPO_DIR}/LICENSES/"
+        DESTINATION "${_fresh_dir}/licenses"
+        ${_folder_modes}
+    )
     file(
         COPY "${MBELIB_NOTICE_DIR}/"
         DESTINATION "${_fresh_dir}/licenses/mbelib-neo"
+        ${_folder_modes}
     )
 
     file(

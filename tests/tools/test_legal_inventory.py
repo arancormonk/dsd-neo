@@ -925,6 +925,27 @@ class NoticeStagingTests(unittest.TestCase):
         self.assertIn(f"{self.mbe / 'legal'} is a symbolic link", " ".join((result.stdout + result.stderr).split()))
         self.assertEqual(self.scratch_folders(), [])
 
+    @unittest.skipIf(os.name == "nt" or os.geteuid() == 0, "needs a folder the run cannot write")
+    def test_android_staging_merges_package_documents_into_read_only_notice_folders(self):
+        # An installed notice folder may be read-only; its copy is the staging's own, so a package document that takes
+        # no notice's path is still merged into it, and the installed folders keep their modes.
+        build, share, docs, args = self.android_fixture()
+        source = self.work / "package/assets/doc/dsd-neo/licenses/mbelib-neo/legal"
+        source.mkdir(parents=True)
+        (source / "extra.md").write_text("from the package source\n", encoding="utf-8")
+        for folder in (self.mbe / "legal", self.mbe):
+            folder.chmod(0o555)
+            self.addCleanup(folder.chmod, 0o755)
+        result = self.run_cmake(*args)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertEqual((docs / "licenses/mbelib-neo/legal/extra.md").read_text(encoding="utf-8"),
+                         "from the package source\n")
+        self.assertIn("licenses/mbelib-neo/legal/extra.md",
+                      (docs / "notice-index.txt").read_text(encoding="utf-8").splitlines())
+        for folder in (self.mbe / "legal", self.mbe):
+            self.assertEqual(folder.stat().st_mode & 0o777, 0o555)
+        self.assertEqual(self.scratch_folders(), [])
+
     def test_android_staging_reads_folder_paths_literally(self):
         # A package or stage folder whose path holds pattern characters, or a package folder given relative to the
         # working folder, keeps the package's documents in the APK and its index, and a link there is still refused.
