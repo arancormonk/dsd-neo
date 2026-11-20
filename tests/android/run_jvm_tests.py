@@ -1776,10 +1776,10 @@ def cached_compiler():
     return jars
 
 
-def jvm_option_words(text):
+def jvm_option_words(text, quotes="\"'"):
     """@p text split into arguments as HotSpot splits JAVA_TOOL_OPTIONS (and the launcher JDK_JAVA_OPTIONS): at
-    whitespace outside quotes, a single- or double-quoted run taken as it is and its quotes dropped, anywhere in a
-    word (-XX:+"UseG1GC" is -XX:+UseG1GC; -Dname="-XX:+UseG1GC" is one property)."""
+    whitespace outside quotes, a run in one of @p quotes taken as it is and its quotes dropped, anywhere in a word
+    (-XX:+"UseG1GC" is -XX:+UseG1GC; -Dname="-XX:+UseG1GC" is one property)."""
     words, word, quote, quoted = [], [], None, False
     for char in text:
         if quote:
@@ -1787,7 +1787,7 @@ def jvm_option_words(text):
                 quote = None
             else:
                 word.append(char)
-        elif char in "\"'":
+        elif char in quotes:
             quote, quoted = char, True
         elif char.isspace():
             if word or quoted:
@@ -1800,25 +1800,35 @@ def jvm_option_words(text):
     return words
 
 
-def selects_collector(options):
-    """Whether the JVM options @p options select a garbage collector: one whole argument -XX:+Use...GC."""
-    return any(COLLECTOR_SELECTION.fullmatch(word) for word in jvm_option_words(options))
+def selects_collector(words):
+    """Whether the JVM arguments @p words select a garbage collector: one whole argument -XX:+Use...GC."""
+    return any(COLLECTOR_SELECTION.fullmatch(word) for word in words)
 
 
-def jvm_options(environ, given=""):
-    """JVM_OPTIONS for a JVM started with the options @p given under @p environ, without the serial collector when
+def java_opts_words(text, kotlinc):
+    """@p text, JAVA_OPTS, split as the @p kotlinc launcher puts it on the java command line: bin/kotlinc expands it
+    unquoted, so the shell splits it at whitespace and its quotes are literal; kotlinc.bat hands it to java.exe, whose
+    command line takes double quotes only."""
+    if str(kotlinc).lower().endswith(".bat"):
+        return jvm_option_words(text, quotes='"')
+    return text.split()
+
+
+def jvm_options(environ, given=()):
+    """JVM_OPTIONS for a JVM started with the arguments @p given under @p environ, without the serial collector when
     @p given or the JVM-wide options in @p environ select a collector already."""
-    selected = [given, *(environ.get(name, "") for name in JVM_WIDE_OPTIONS)]
-    if any(selects_collector(options) for options in selected):
-        return tuple(option for option in JVM_OPTIONS if not selects_collector(option))
+    wide = [jvm_option_words(environ.get(name, "")) for name in JVM_WIDE_OPTIONS]
+    if any(selects_collector(words) for words in [list(given), *wide]):
+        return tuple(option for option in JVM_OPTIONS if not selects_collector([option]))
     return JVM_OPTIONS
 
 
-def kotlinc_environment(environ):
-    """@p environ with jvm_options() in JAVA_OPTS, for the kotlinc launcher: after the options already set there, or
+def kotlinc_environment(environ, kotlinc):
+    """@p environ with jvm_options() in JAVA_OPTS, for the @p kotlinc launcher: after the options already set there, or
     after the launchers' default when none are."""
     given = environ.get("JAVA_OPTS", "").strip()
-    return {**environ, "JAVA_OPTS": " ".join((given or KOTLINC_DEFAULT_JAVA_OPTS, *jvm_options(environ, given)))}
+    words = java_opts_words(given, kotlinc)
+    return {**environ, "JAVA_OPTS": " ".join((given or KOTLINC_DEFAULT_JAVA_OPTS, *jvm_options(environ, words)))}
 
 
 def compile_command(java, kotlinc, cached, files, output, environ):
@@ -1827,7 +1837,7 @@ def compile_command(java, kotlinc, cached, files, output, environ):
     as arguments itself."""
     if kotlinc:
         argv = [kotlinc, "-include-runtime", *map(str, files), "-d", str(output)]
-        return argv, kotlinc_environment(environ), str(output)
+        return argv, kotlinc_environment(environ, kotlinc), str(output)
     classpath = os.pathsep.join(map(str, cached))
     argv = [
         java, *jvm_options(environ), "-cp", classpath, "org.jetbrains.kotlin.cli.jvm.K2JVMCompiler",

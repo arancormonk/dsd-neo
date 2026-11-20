@@ -144,6 +144,19 @@ class CollectorChoice(unittest.TestCase):
                 self.assertNotIn(self.SERIAL, self.cached_argv(environ))
                 self.assertNotIn(self.SERIAL, runner.test_command(JAVA_EXE, "tests.jar", "UsbBrokerTest.kt", environ))
 
+    def test_java_opts_quotes_are_literal_to_the_launcher(self):
+        # kotlinc's launcher passes JAVA_OPTS's words on as they are: an apostrophe there is part of a property.
+        options = self.kotlinc_options({"JAVA_OPTS": "-Downer=O'Brien -XX:+UseG1GC"})
+        self.assertIn("-XX:+UseG1GC", options)
+        self.assertNotIn(self.SERIAL, options)
+        # bin/kotlinc: the shell splits the unquoted expansion at whitespace, quotes and all.
+        for java_opts, selected in (("-Downer=O'Brien -XX:+UseG1GC", True), ('"-XX:+UseG1GC"', False)):
+            with self.subTest(java_opts=java_opts):
+                _argv, env, _runtime = runner.compile_command(
+                    JAVA_EXE, "/opt/kotlinc/bin/kotlinc", None, FILES, OUTPUT, {"JAVA_OPTS": java_opts}
+                )
+                self.assertEqual(self.SERIAL not in env["JAVA_OPTS"].split(), selected)
+
     def test_a_quoted_property_value_selects_no_collector(self):
         # One system property whose value happens to name a collector: the JVM selects none by it.
         environ = {"JAVA_TOOL_OPTIONS": '-Dorg.gradle.jvmargs="-XX:+UseG1GC"'}
