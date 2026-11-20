@@ -5252,7 +5252,8 @@ test_radio_policy_follow(void) {
    DM-OCCUPIED report the call they set up; a DM-SETUP PRES (only a presence check, EN 300 396-3 clause 6.2) reports
    nothing until the call's DM-CONNECT ACK; a DMAC-DATA call PDU, an end and DM-RESERVED report nothing; short data
    whose FCS passed (or carries none) reports a data call, every copy (the notice's repeat suppression does not apply),
-   and short data whose FCS failed nothing. DMO speech reports with the identity of the call set up for its
+   and short data whose FCS failed nothing, the good copy after it again. A gateway set-up holds nothing, and a DM-2-C
+   DMAC-SYNC under a DMO reserved system code holds nothing. DMO speech reports with the identity of the call set up for its
    transmission, and anonymous when none was. */
 static void
 test_direct_mode_reports_to_trunk_scan(void) {
@@ -5311,6 +5312,51 @@ test_direct_mode_reports_to_trunk_scan(void) {
     dsd_test_scan_activity_reset();
     send_dmo_sds(&s, 201u, 300u, 4u, data, 16, 0, 1, 1 + 4 + 3);
     assert(g_test_scan_activity.count == 0);
+    /* A bad copy, then the good one: the good one reports (issue #890 F2). */
+    bits_of_value(data, 0x4321u, 16);
+    send_dmo_sds(&s, 202u, 300u, 4u, data, 16, 0, 1, 1 + 4 + 3);
+    assert(g_test_scan_activity.count == 0);
+    send_dmo_sds(&s, 202u, 300u, 4u, data, 16, 0, 1, -1);
+    assert(g_test_scan_activity.count == 1 && g_test_scan_activity.last.source == 202u);
+
+    /* One call's presence check, then its connect acknowledgement: only the acknowledgement holds. */
+    dsd_test_scan_activity_reset();
+    dmo_dsb_msg(&s, TETRA_DMO_AIE_DM1, TETRA_DMO_MSG_SETUP_PRES);
+    assert(g_test_scan_activity.count == 0);
+    dmo_dsb_msg(&s, TETRA_DMO_AIE_DM1, TETRA_DMO_MSG_CONNECT_ACK);
+    assert(g_test_scan_activity.count == 1 && g_test_scan_activity.last.source == 100u);
+
+    /* A gateway set-up (DM-GSETUP, EN 300 396-5 clause 14.6.1) holds nothing; its call's DM-OCCUPIED does. */
+    tetra_dmo_sync_h_t gw;
+    DSD_MEMSET(&gw, 0, sizeof gw);
+    gw.has_addrs = 1;
+    gw.md_ok = 1;
+    gw.msg_type = TETRA_DMO_MSG_GATEWAY;
+    gw.e[TETRA_DMO_E_GW_SUBTYPE] = TETRA_DMO_GW_SETUP;
+    gw.src = 500u;
+    gw.dst = 0x800002u;
+    dsd_test_scan_activity_reset();
+    tetra_calls_dmo_pdu(s.opts, s.state, TETRA_DMO_AIE_DM1, &gw);
+    assert(g_test_scan_activity.count == 0);
+    gw.msg_type = TETRA_DMO_MSG_OCCUPIED;
+    tetra_calls_dmo_pdu(s.opts, s.state, TETRA_DMO_AIE_DM1, &gw);
+    assert(g_test_scan_activity.count == 1 && g_test_scan_activity.last.source == 500u);
+
+    /* A DMO reserved system code (EN 300 396-3 clause 9.3.29): a DM-2-C DMAC-SYNC, whose content cannot be examined,
+       holds nothing and opens no call; a clear one, examined, holds as under a recognised code. */
+    tetra_dmo_sync_h_t opaque;
+    DSD_MEMSET(&opaque, 0, sizeof opaque);
+    const uint32_t reserved[] = {0xAu, 0xBu, 0xEu, 0xFu};
+    for (size_t i = 0; i < sizeof(reserved) / sizeof(reserved[0]); i++) {
+        dsd_test_scan_activity_reset();
+        tetra_calls_dmo_sync_pdu(s.opts, s.state, TETRA_DMO_AIE_DM2C, reserved[i], &opaque);
+        assert(g_test_scan_activity.count == 0);
+        tetra_calls_dmo_sync_pdu(s.opts, s.state, TETRA_DMO_AIE_DM1, reserved[i], &gw);
+        assert(g_test_scan_activity.count == 1);
+    }
+    dsd_test_scan_activity_reset();
+    tetra_calls_dmo_sync_pdu(s.opts, s.state, TETRA_DMO_AIE_DM2C, 0xCu, &opaque);
+    assert(g_test_scan_activity.count == 1 && g_test_scan_activity.last.encrypted == 1U);
     dsd_trunk_scan_hooks_set(NULL);
     session_close(&s);
 }

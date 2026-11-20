@@ -6205,6 +6205,8 @@ static int
 expect_link_setup_unknown(const char* boundary, const dsd_state* state) {
     uint8_t zero_meta[sizeof(state->m17_meta)];
     DSD_MEMSET(zero_meta, 0, sizeof(zero_meta));
+    uint8_t zero_head[sizeof(state->m17_lsf_checked_head)];
+    DSD_MEMSET(zero_head, 0, sizeof(zero_head));
     int err = 0;
     if (state->m17_lsf_checked != 0U || state->m17_str_dt != (uint8_t)TEST_STREAM_TYPE_UNKNOWN || state->m17_can != 0U
         || state->m17_enc != 0U || state->m17_enc_st != 0U || state->m17_payload_decrypted != 0U
@@ -6214,6 +6216,12 @@ expect_link_setup_unknown(const char* boundary, const dsd_state* state) {
                     boundary, (unsigned)state->m17_lsf_checked, (unsigned)state->m17_str_dt, (unsigned)state->m17_can,
                     (unsigned)state->m17_enc, (unsigned)state->m17_enc_st, (unsigned)state->m17_payload_decrypted,
                     (unsigned)state->m17_signature_advertised, (unsigned)state->m17_meta[0]);
+        err = 1;
+    }
+    /* The scan side's copy of the checked LSF and its dispute go with it (issue #890). */
+    if (state->m17_lsf_disputed != 0U || memcmp(state->m17_lsf_checked_head, zero_head, sizeof(zero_head)) != 0) {
+        DSD_FPRINTF(stderr, "%s: scan binding left: disputed %u head[0] %02X\n", boundary,
+                    (unsigned)state->m17_lsf_disputed, (unsigned)state->m17_lsf_checked_head[0]);
         err = 1;
     }
     return err;
@@ -6316,6 +6324,8 @@ test_link_setup_boundaries_clear_the_same_set(void) {
         uint8_t held[M17_LICH_BITS];
         build_encoded_lich_chunk(lsf_bits, 1U, held);
         (void)m17_process_lich(state, opts, held);
+        /* A binding a scan hold already counts as disputed (another transmission's LICH, issue #890). */
+        state->m17_lsf_disputed = 1U;
         const char* label;
         switch (boundary) {
             case 0: {

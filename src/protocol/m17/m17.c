@@ -354,17 +354,43 @@ m17_lich_note_chunk(const dsd_opts* opts, dsd_state* state, uint8_t counter) {
     a->held |= (uint8_t)(1U << counter);
 }
 
+/* A clean LICH chunk @p counter whose bits of the LSF's DST, SRC and TYPE (bits 0-111, M17 spec 2.0.11, Link Setup
+   Frame; the LICH carries the transmission's LSF, 40 bits a frame) disagree with the checked LSF bound to the
+   transmission is another transmission's (its EOT and its LSF frame went unheard) or a Golay miscorrection: either
+   way the binding is disputed (dsd_state::m17_lsf_disputed), so a scan hold takes nothing of the last checked LSF's
+   CAN, encryption or type for it until an LSF is checked again. The decoder's checked fields stay (a relaxed LSF still
+   replaces none of them). The META bits are left out: a transmission's META may change from LSF to LSF (text, GNSS). */
+static void
+m17_lich_note_other_link(dsd_state* state, uint8_t counter, const uint8_t* chunk) {
+    if (state->m17_lsf_checked == 0U || state->m17_lsf_disputed != 0U) {
+        return;
+    }
+    const size_t head_bits = sizeof(state->m17_lsf_checked_head) * 8U;
+    for (size_t i = 0; i < M17_LICH_CHUNK_BITS; i++) {
+        const size_t bit = ((size_t)counter * M17_LICH_CHUNK_BITS) + i;
+        if (bit >= head_bits) {
+            return;
+        }
+        const uint8_t checked = (uint8_t)((state->m17_lsf_checked_head[bit / 8U] >> (7U - (bit % 8U))) & 1U);
+        if ((chunk[i] & 1U) != checked) {
+            state->m17_lsf_disputed = 1U;
+            return;
+        }
+    }
+}
+
 /* Checked M17 content to trunk scan's policy table (issue #890): an LSF whose CRC passed (its frame's, or rebuilt whole
    from the LICH), a packet whose CRC passed (@p packet) or a stream frame whose clean LICH completed a pair. What the
    report says of the call is only the checked link setup bound to the transmission (dsd_state::m17_lsf_checked: its
-   CAN, 0 included, its encryption type and its stream or packet type, M17 spec 2.0.11, Link Setup Frame); before one,
+   CAN, 0 included, its encryption type and its stream or packet type, M17 spec 2.0.11, Link Setup Frame), and not once
+   a clean LICH chunk disputed it (m17_lich_note_other_link()); before one,
    the report is anonymous and its fields unknown, so a scan restriction that depends on them holds nothing until the
    LSF is checked. The receive side's own CAN gate (dsd_state::m17_can_en, m17_can_filter_allows()) is kept: a CAN it
    refuses never holds, nor an unknown CAN while it is set. M17 names stations by 48-bit callsigns, outside talkgroup
    policy, and has no party bit. A BERT frame (a test) and an LSF -F decodes despite a failed CRC never report. */
 static void
 m17_report_scan_activity(const dsd_opts* opts, const dsd_state* state, int packet) {
-    const int checked = state->m17_lsf_checked != 0U;
+    const int checked = state->m17_lsf_checked != 0U && state->m17_lsf_disputed == 0U;
     if (state->m17_can_en >= 0 && (!checked || !m17_can_filter_allows(state->m17_can_en, state->m17_can))) {
         return;
     }
@@ -596,6 +622,10 @@ M17decodeLSF(const dsd_opts* opts, dsd_state* state, int publish_canonical, cons
     }
     if (publish_canonical != 0) {
         state->m17_lsf_checked = 1U;
+        state->m17_lsf_disputed = 0U;
+        for (size_t i = 0; i < sizeof(state->m17_lsf_checked_head); i++) {
+            state->m17_lsf_checked_head[i] = (uint8_t)convert_bits_into_output(&state->m17_lsf[i * 8U], 8);
+        }
         /* Only an LSF whose CRC passed names the carrier's CAN: -F decodes one that failed, never as identity. It
            is noted before the call is published, so a CAN that moves the received identity to another epoch
            opens the call on that reception, the one the same LSF's META position is admitted against. */
@@ -1124,6 +1154,7 @@ m17_process_lich(dsd_state* state, const dsd_opts* opts, const uint8_t* lich_bit
         if (lich_reserve != 0U) {
             DSD_FPRINTF(stderr, "LICH RSV:%02X ", lich_reserve);
         }
+        m17_lich_note_other_link(state, lich_counter, lich_decoded);
         m17_lich_note_chunk(opts, state, lich_counter);
         for (int i = 0; i < M17_LICH_CHUNK_BITS; i++) {
             state->m17_lsf[((size_t)lich_counter * M17_LICH_CHUNK_BITS) + i] = lich_decoded[i];
@@ -2152,7 +2183,11 @@ m17_finalize_lsf_crc(const dsd_opts* opts, dsd_state* state, const uint8_t* lsf_
          * call is published: a signal search reads the callsigns and CAN from that call when it hears the
          * confirmation, and this LSF may be the only one the transmission delivers. */
         m17_confirm_note_evidence(opts, state, M17_EVIDENCE_STRONG);
-        m17_report_scan_activity(opts, state, 0);
+        /* A scan hold only from an LSF M17decodeLSF() applied (issue #890), as M17finalizeLICH() reports: one whose
+           TYPE or addresses are unusable binds nothing to the transmission. */
+        if (applied) {
+            m17_report_scan_activity(opts, state, 0);
+        }
     }
 
     if (opts->payload == 1) {
@@ -4758,6 +4793,8 @@ typedef struct {
     uint8_t lsf[360];
     uint8_t meta[16];
     uint8_t checked;
+    uint8_t checked_head[14];
+    uint8_t disputed;
     uint8_t str_dt;
     uint8_t can;
     uint8_t enc;
@@ -4768,12 +4805,16 @@ typedef struct {
 
 _Static_assert(sizeof(((m17_link_setup_held*)0)->lsf) == sizeof(((dsd_state*)0)->m17_lsf), "the LSF bits fit");
 _Static_assert(sizeof(((m17_link_setup_held*)0)->meta) == sizeof(((dsd_state*)0)->m17_meta), "the META fits");
+_Static_assert(sizeof(((m17_link_setup_held*)0)->checked_head) == sizeof(((dsd_state*)0)->m17_lsf_checked_head),
+               "the checked LSF head fits");
 
 static void
 m17_link_setup_hold(const dsd_state* state, m17_link_setup_held* held) {
     DSD_MEMCPY(held->lsf, state->m17_lsf, sizeof(held->lsf));
     DSD_MEMCPY(held->meta, state->m17_meta, sizeof(held->meta));
     held->checked = state->m17_lsf_checked;
+    DSD_MEMCPY(held->checked_head, state->m17_lsf_checked_head, sizeof(held->checked_head));
+    held->disputed = state->m17_lsf_disputed;
     held->str_dt = state->m17_str_dt;
     held->can = state->m17_can;
     held->enc = state->m17_enc;
@@ -4787,6 +4828,8 @@ m17_link_setup_give_back(dsd_state* state, const m17_link_setup_held* held) {
     DSD_MEMCPY(state->m17_lsf, held->lsf, sizeof(held->lsf));
     DSD_MEMCPY(state->m17_meta, held->meta, sizeof(held->meta));
     state->m17_lsf_checked = held->checked;
+    DSD_MEMCPY(state->m17_lsf_checked_head, held->checked_head, sizeof(held->checked_head));
+    state->m17_lsf_disputed = held->disputed;
     state->m17_str_dt = held->str_dt;
     state->m17_can = held->can;
     state->m17_enc = held->enc;

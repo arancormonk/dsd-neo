@@ -3309,6 +3309,13 @@ struct dsd_state {
      *   frame number of it is used once and in order (an unsigned stream through the counter's wrap, a signed one
      *   only rising), so a datagram delivered again or late is dropped before anything (m17_ip_take_stream_frame()). */
     uint8_t m17_lsf_checked;
+    /* The checked LSF's DST, SRC and TYPE (its first 112 bits, packed MSB first), and whether a clean LICH chunk of the
+     * stream has since disagreed with them (m17_process_lich(), issue #890): another transmission whose boundary went
+     * unheard, or a Golay miscorrection. A disputed binding is no identity of the call for a scan hold (its report is
+     * anonymous until an LSF is checked again); the decoder's checked fields are left as they are. Meaningful only
+     * while m17_lsf_checked is set. */
+    uint8_t m17_lsf_checked_head[14];
+    uint8_t m17_lsf_disputed;
     uint16_t m17_signature_voice_next;
     uint8_t m17_signature_voice_gap;
     uint8_t m17_tx_ended;

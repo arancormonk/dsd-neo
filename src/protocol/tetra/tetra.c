@@ -702,7 +702,7 @@ static void
 tetra_dmo_log_sync(dsd_opts* opts, const tetra_state_t* ts, const tetra_dmo_sync_s_t* s, const tetra_dmo_sync_h_t* h,
                    int h_ok, dsd_state* state) {
     if (h_ok) {
-        tetra_calls_dmo_pdu(opts, state, s->enc_state, h);
+        tetra_calls_dmo_sync_pdu(opts, state, s->enc_state, s->system_code, h);
     }
     char line[384];
     int n = DSD_SNPRINTF(line, sizeof(line), "[TETRA DMO DSB] sys=%u comm=%u ch=%u slot=%u frame=%u enc=%u",

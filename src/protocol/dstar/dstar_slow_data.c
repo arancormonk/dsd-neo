@@ -514,10 +514,10 @@ dstar_dprs_complete(const dsd_opts* opts, dsd_state* state, const dstar_dprs_ass
     }
     dstar_confirm_note_evidence(opts, state, DSTAR_EVIDENCE_STRONG);
     /* A record proves the DV transmission it rides in, bound from its first byte to that transmission and the scan
-       visit (dstar_sd_binding_holds() above, issue #890 F4); it is no call of its own, so it is the transmission's
-       voice when a checked voice header named the transmission's call, and of unknown kind before one did. */
-    dsd_call_snapshot bound;
-    dstar_report_scan_activity(opts, state, dstar_sd_bound_call(state, &a->bind, &bound), 0);
+       visit (dstar_sd_binding_holds() above, issue #890 F4). It is no call of its own: presence of the DV
+       transmission, never a data call, whether or not a checked header named the transmission's call, so it holds
+       under --no-data-calls. */
+    dstar_report_scan_activity(opts, state, 1, 0);
     dstar_aprs_position pos;
     if (!dstar_aprs_parse(a->text + DSTAR_DPRS_PREFIX_LEN, (size_t)a->len - DSTAR_DPRS_PREFIX_LEN - 1U, &pos)) {
         DSD_FPRINTF(stderr, " D-PRS (NO POSITION)");

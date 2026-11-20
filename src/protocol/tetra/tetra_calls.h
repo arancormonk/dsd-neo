@@ -380,6 +380,14 @@ int tetra_calls_traffic(const dsd_state* state, tetra_chan_alloc* out);
  * never a reservation, an end or a DMAC-DATA call PDU. @p opts may be NULL.
  */
 void tetra_calls_dmo_pdu(dsd_opts* opts, dsd_state* state, int sync_enc_state, const tetra_dmo_sync_h_t* h);
+/**
+ * @brief tetra_calls_dmo_pdu() for a DMAC-SYNC whose SCH/S carried DMO system code @p system_code (EN 300 396-3 clause
+ * 9.3.29). A DMO reserved code (1010, 1011, 1110, 1111) counts only once the PDU's content was examined: a DM-2-C
+ * DMAC-SYNC, whose message type and addresses are encrypted, cannot be, so under such a code it proves the TETRA profile
+ * only and holds no scan target. tetra_calls_dmo_pdu() is this with a recognised code.
+ */
+void tetra_calls_dmo_sync_pdu(dsd_opts* opts, dsd_state* state, int sync_enc_state, uint32_t system_code,
+                              const tetra_dmo_sync_h_t* h);
 
 /**
  * @brief Direct mode speech whose CRC passed and that re-encodes like speech (a good frame, no concealment), as a scan

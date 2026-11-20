@@ -59,12 +59,15 @@ dsd_test_scan_activity_install(void) {
     dsd_test_scan_activity_reset();
 }
 
-/** The hook itself, recording, for a test that compiles protocol sources without the runtime's trunk_scan_hooks.c. */
+/** The hook itself, recording, for a test that compiles protocol sources without the runtime's trunk_scan_hooks.c; it
+ * drops a NULL identity as dsd_trunk_scan_hook_digital_conventional_activity() does. */
 #define DSD_TEST_SCAN_ACTIVITY_DEFINE_HOOK()                                                                           \
     void dsd_trunk_scan_hook_digital_conventional_activity(const dsd_opts* opts, const dsd_state* state, int protocol, \
                                                            int slot,                                                   \
                                                            const dsd_trunk_scan_activity_identity* identity) {         \
-        dsd_test_scan_activity_record(opts, state, protocol, slot, identity);                                          \
+        if (identity != NULL) {                                                                                        \
+            dsd_test_scan_activity_record(opts, state, protocol, slot, identity);                                      \
+        }                                                                                                              \
     }
 
 #endif /* DSD_NEO_TESTS_TEST_SUPPORT_SCAN_ACTIVITY_CAPTURE_H_ */

@@ -2241,30 +2241,58 @@ dmo_call_of_transmission(dsd_opts* opts, dsd_state* state, tetra_state_t* ts, co
     return 0;
 }
 
+/* Whether DMO system code @p code is one EN 300 396-3 clause 9.3.29 defines (1100 ETS 300 396-3, 1101 EN 300 396-3
+   V1.2.1 on), as against a DMO reserved one (1010, 1011, 1110, 1111), which a DM-MS takes only after examining the
+   PDU's content. */
+static int
+dmo_system_code_recognised(uint32_t code) {
+    return code == 0xCu || code == 0xDu;
+}
+
+/* A DM-2-C DMAC-SYNC, whose addresses and message type are encrypted too: an encrypted transmission, of no one known.
+   Under a DMO reserved system code nothing of the PDU could be examined (EN 300 396-3 clause 9.3.29): the profile only,
+   no call and no scan hold. */
+static void
+dmo_opaque_pdu(dsd_opts* opts, dsd_state* state, tetra_state_t* ts, uint32_t system_code) {
+    if (!dmo_system_code_recognised(system_code)) {
+        tetra_confirm_note_proof(state, DSD_TETRA_BURST_PROOF_PROFILE);
+        return;
+    }
+    tetra_dmo_call_t* const d = &ts->calls.dmo;
+    /* Checked, but what it is no one can tell: a transmission or a reservation (tetra.h). */
+    tetra_confirm_note_proof(state, DSD_TETRA_BURST_PROOF_DMO_OPAQUE);
+    (void)dmo_call_of_transmission(opts, state, ts, NULL);
+    dmo_call_forget(d);
+    d->active = 1;
+    d->in_tx = (uint8_t)(ts->dmo_tx_crypt != (uint8_t)TETRA_DMO_CRYPT_UNKNOWN);
+    d->seen_m = dsd_decode_now_mono_s();
+    dmo_publish(opts, state, ts);
+    /* Encrypted direct mode presence of no one known (EN 300 396-3 clause 8.5.3): it may be a reservation. It is no
+       data call of its own (presence, as a D-PRS record is), so it holds under --no-data-calls; whether an encrypted
+       call may hold is the encrypted-call tuning rule's. */
+    dsd_trunk_scan_activity_identity identity;
+    DSD_MEMSET(&identity, 0, sizeof(identity));
+    identity.known = DSD_SCAN_ACTIVITY_KNOWN_ENCRYPTED | DSD_SCAN_ACTIVITY_KNOWN_DATA;
+    identity.encrypted = 1U;
+    dmo_scan_report(opts, state, &identity);
+}
+
 void
 tetra_calls_dmo_pdu(dsd_opts* opts, dsd_state* state, int sync_enc_state, const tetra_dmo_sync_h_t* h) {
+    tetra_calls_dmo_sync_pdu(opts, state, sync_enc_state, 0xDu, h);
+}
+
+void
+tetra_calls_dmo_sync_pdu(dsd_opts* opts, dsd_state* state, int sync_enc_state, uint32_t system_code,
+                         const tetra_dmo_sync_h_t* h) {
     tetra_state_t* const ts = tetra_st(state);
     if (!ts || !h) {
         return;
     }
     tetra_dmo_call_t* const d = &ts->calls.dmo;
     if (!h->has_addrs) {
-        /* DM-2-C encrypts the addresses and the message type too: an encrypted transmission, of no one known. */
         if (sync_enc_state == TETRA_DMO_AIE_DM2C) {
-            /* Checked, but what it is no one can tell: a transmission or a reservation (tetra.h). */
-            tetra_confirm_note_proof(state, DSD_TETRA_BURST_PROOF_DMO_OPAQUE);
-            (void)dmo_call_of_transmission(opts, state, ts, NULL);
-            dmo_call_forget(d);
-            d->active = 1;
-            d->in_tx = (uint8_t)(ts->dmo_tx_crypt != (uint8_t)TETRA_DMO_CRYPT_UNKNOWN);
-            d->seen_m = dsd_decode_now_mono_s();
-            dmo_publish(opts, state, ts);
-            /* Encrypted direct mode presence of no one known (EN 300 396-3 clause 8.5.3): it may be a reservation. */
-            dsd_trunk_scan_activity_identity identity;
-            DSD_MEMSET(&identity, 0, sizeof(identity));
-            identity.known = DSD_SCAN_ACTIVITY_KNOWN_ENCRYPTED;
-            identity.encrypted = 1U;
-            dmo_scan_report(opts, state, &identity);
+            dmo_opaque_pdu(opts, state, ts, system_code);
         }
         return;
     }

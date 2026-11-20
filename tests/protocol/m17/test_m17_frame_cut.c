@@ -949,6 +949,29 @@ test_checked_content_reports_to_trunk_scan(void) {
     assert(g_test_scan_activity.count == 1 && DSD_SYNC_IS_M17(g_test_scan_activity.protocol));
     assert(g_test_scan_activity.last.known == bound && g_test_scan_activity.last.encrypted == 0U
            && g_test_scan_activity.last.data_call == 0U);
+    /* A link setup whose CRC passed but whose TYPE sets a reserved bit is not applied: it reports nothing. */
+    {
+        prepare(opts, state);
+        dsd_test_scan_activity_install();
+        uint8_t reserved_bits[TEST_M17_LSF_BITS];
+        uint8_t packed[M17_LSF_BYTES];
+        DSD_MEMSET(reserved_bits, 0, sizeof reserved_bits);
+        m17_load_lsf_callsigns(reserved_bits, m17_encode_b40_callsign(0ULL, "AB1CD"),
+                               m17_encode_b40_callsign(0ULL, "EF2GH"));
+        write_bits(reserved_bits + 96, m17_compose_frame_info(1U, 2U, 0U, 0U, 5U, 0U, 0U) | 0x8000U, 16U);
+        (void)m17_attach_lsf_crc(reserved_bits, packed);
+        state->synctype = DSD_SYNC_M17_LSF_POS;
+        load_lsf_frame(reserved_bits);
+        (void)processM17LSF(opts, state);
+        assert(state->m17_lsf_checked == 0U);
+        assert(g_test_scan_activity.count == 0);
+        finish(state);
+        prepare(opts, state);
+        dsd_test_scan_activity_install();
+        state->synctype = DSD_SYNC_M17_LSF_POS;
+        load_lsf_frame(lsf_bits);
+        assert(processM17LSF(opts, state) == 1);
+    }
     /* Stream frames after it: the first clean LICH starts a pair, the second completes it, with the LSF's values. */
     dsd_test_scan_activity_reset();
     state->synctype = DSD_SYNC_M17_STR_POS;
@@ -958,7 +981,55 @@ test_checked_content_reports_to_trunk_scan(void) {
     load_stream_frame(lsf_bits, 1U, 1U);
     assert(processM17STR(opts, state) == 1);
     assert(g_test_scan_activity.count == after_first + 1 && g_test_scan_activity.last.known == bound);
-    finish(state);
+
+    /* The next transmission, another station's on CAN 7 (its EOT and LSF frame missed): its first LICH chunk disagrees
+       with the checked LSF, so the binding goes and its pair reports anonymous, never the last LSF's CAN or type. */
+    {
+        uint8_t other_bits[TEST_M17_LSF_BITS];
+        uint8_t packed[M17_LSF_BYTES];
+        DSD_MEMSET(other_bits, 0, sizeof other_bits);
+        m17_load_lsf_callsigns(other_bits, m17_encode_b40_callsign(0ULL, "XY9ZZ"),
+                               m17_encode_b40_callsign(0ULL, "QR7ST"));
+        write_bits(other_bits + 96, m17_compose_frame_info(1U, 2U, 0U, 0U, 7U, 0U, 0U), 16U);
+        (void)m17_attach_lsf_crc(other_bits, packed);
+        dsd_test_scan_activity_reset();
+        state->synctype = DSD_SYNC_M17_STR_POS;
+        load_stream_frame(other_bits, 0U, 0U);
+        (void)processM17STR(opts, state);
+        assert(state->m17_lsf_checked == 1U && state->m17_lsf_disputed == 1U);
+        load_stream_frame(other_bits, 1U, 1U);
+        (void)processM17STR(opts, state);
+        assert(g_test_scan_activity.count >= 1 && g_test_scan_activity.last.known == 0U);
+        /* The same transmission's chunks agree and keep a binding. */
+        finish(state);
+        prepare(opts, state);
+        dsd_test_scan_activity_install();
+        state->synctype = DSD_SYNC_M17_LSF_POS;
+        load_lsf_frame(lsf_bits);
+        (void)processM17LSF(opts, state);
+        state->synctype = DSD_SYNC_M17_STR_POS;
+        for (uint16_t fn = 0U; fn < 6U; fn++) {
+            load_stream_frame(lsf_bits, (uint8_t)fn, fn);
+            (void)processM17STR(opts, state);
+            assert(state->m17_lsf_checked == 1U && state->m17_lsf_disputed == 0U);
+        }
+        /* A disputed binding is withdrawn from the CAN filter too: an unknown CAN under a filter holds nothing. */
+        state->m17_can_en = 5;
+        uint8_t other_bits2[TEST_M17_LSF_BITS];
+        uint8_t packed2[M17_LSF_BYTES];
+        DSD_MEMSET(other_bits2, 0, sizeof other_bits2);
+        m17_load_lsf_callsigns(other_bits2, m17_encode_b40_callsign(0ULL, "XY9ZZ"),
+                               m17_encode_b40_callsign(0ULL, "QR7ST"));
+        write_bits(other_bits2 + 96, m17_compose_frame_info(1U, 2U, 0U, 0U, 5U, 0U, 0U), 16U);
+        (void)m17_attach_lsf_crc(other_bits2, packed2);
+        dsd_test_scan_activity_reset();
+        load_stream_frame(other_bits2, 0U, 6U);
+        (void)processM17STR(opts, state);
+        load_stream_frame(other_bits2, 1U, 7U);
+        (void)processM17STR(opts, state);
+        assert(state->m17_lsf_disputed == 1U && g_test_scan_activity.count == 0);
+        finish(state);
+    }
 
     /* Late entry: no LSF frame. The pair reports anonymous; the rebuilt LSF, whole and checked, binds the values. */
     prepare(opts, state);

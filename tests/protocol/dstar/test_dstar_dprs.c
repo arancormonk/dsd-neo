@@ -1040,8 +1040,8 @@ test_missed_first_block_starts_a_new_message(void) {
 }
 
 /* Issue #890 D4: a slow-data header and a D-PRS record whose CRC passed report the transmission to trunk scan's policy
-   table, with the header's DATA flag and, for a record, the kind the transmission's named voice call gives it (unknown
-   when no checked header named one: a record is no call of its own). A record whose CRC failed reports nothing, and so
+   table, with the header's DATA flag; a record is no call of its own, known non-data presence of its DV
+   transmission, named call or not. A record whose CRC failed reports nothing, and so
    does one whose first byte was read on another scan visit (F4: bound to the transmission and the visit). */
 static void
 test_checked_slow_data_reports_to_trunk_scan(void) {
@@ -1084,7 +1084,9 @@ test_checked_slow_data_reports_to_trunk_scan(void) {
     open_anonymous_call(&r);
     send_gps(&r, k_vector, strlen(k_vector), 0);
     expect_int("a late-entry record reports", g_test_scan_activity.count, 1);
-    expect_int("of unknown kind", g_test_scan_activity.last.known & DSD_SCAN_ACTIVITY_KNOWN_DATA, 0);
+    expect_int("known no data call", g_test_scan_activity.last.known & DSD_SCAN_ACTIVITY_KNOWN_DATA,
+               DSD_SCAN_ACTIVITY_KNOWN_DATA);
+    expect_int("presence, not data", g_test_scan_activity.last.data_call, 0);
     dsd_test_scan_activity_reset();
     r.state->scan_landing_visit = 5U;
     send_gps(&r, k_vector, 25U, 0);

@@ -563,9 +563,11 @@ ysf_emit_audio_from_temp(dsd_opts* opts, dsd_state* state, bool bypassed_vocoder
 
 /* A checked FICH's call to trunk scan's policy table (issue #890): header (FI 0) and communication (FI 1) frames
    are a call, a terminator (FI 2) and a test (FI 3) frame none. YSF names its stations by callsign, so the identity
-   is its kind alone: DT 1 is data (V/D type 1 and 2 and full-rate voice are voice), CM 3 an individual call, CM 0
-   (group/CQ) and 1 (radio ID) a group one, CM 2 (reserved) of unknown party; YSF carries no encryption. No DG-ID is
-   read (a decided limit). Yaesu "Amateur Radio Digital Standards" Rev 1.02, FICH. */
+   is its kind alone: DT 1 is data (V/D type 1 and 2 and full-rate voice are voice), and the call mode (Yaesu "Amateur
+   Radio Digital Standards" Rev 1.02, section 4 (4), Table 4-1, CM) says 00 Group/CQ mode (a group call) and 11
+   Individual mode (a private one); 01 Radio ID mode, which addresses a destination radio ID (Table 4-2, CSD1 with
+   CM=1) and is neither, and 10 (reserve) leave the party unknown. YSF carries no encryption. No DG-ID is read (a
+   decided limit). */
 static void
 ysf_report_scan_activity(const dsd_opts* opts, const dsd_state* state, const ysf_fich_info* info) {
     if (info->fi > 1U) {
@@ -575,7 +577,7 @@ ysf_report_scan_activity(const dsd_opts* opts, const dsd_state* state, const ysf
     DSD_MEMSET(&identity, 0, sizeof(identity));
     identity.known = DSD_SCAN_ACTIVITY_KNOWN_DATA | DSD_SCAN_ACTIVITY_KNOWN_ENCRYPTED;
     identity.data_call = (uint8_t)(info->dt == 1U);
-    if (info->cm != 2U) {
+    if (info->cm == 0U || info->cm == 3U) {
         identity.is_private = (uint8_t)(info->cm == 3U);
         identity.known |= DSD_SCAN_ACTIVITY_KNOWN_PARTY;
     }

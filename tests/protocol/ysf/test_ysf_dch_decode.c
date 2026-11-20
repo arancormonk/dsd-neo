@@ -2187,8 +2187,8 @@ ysf_scan_frame(uint32_t fi, uint32_t dt, uint32_t cm, int bad_fich, dsd_scan_mod
 }
 
 /* Issue #890: a FICH whose CRC passed reports its frame to trunk scan's policy table when it is a header (FI 0) or a
-   communication frame (FI 1): DT 1 a data call, CM 3 an individual one, CM 2 of unknown party, never encrypted. A
-   terminator (FI 2), a test frame (FI 3) and a failed FICH report nothing. */
+   communication frame (FI 1): DT 1 a data call, CM 3 an individual one, CM 1 (radio ID) and CM 2 of unknown party,
+   never encrypted. A terminator (FI 2), a test frame (FI 3) and a failed FICH report nothing. */
 static void
 test_process_ysf_reports_checked_calls_to_trunk_scan(void) {
     InitAllFecFunction();
@@ -2204,6 +2204,9 @@ test_process_ysf_reports_checked_calls_to_trunk_scan(void) {
     assert(g_test_scan_activity.count == 1 && g_test_scan_activity.last.data_call == 0U
            && g_test_scan_activity.last.is_private == 0U);
     (void)ysf_scan_frame(0U, 1U, 2U, 0, DSD_SCAN_MODE_INHERIT, &moved);
+    assert(g_test_scan_activity.count == 1 && (g_test_scan_activity.last.known & DSD_SCAN_ACTIVITY_KNOWN_PARTY) == 0U);
+    /* Radio ID mode (CM 1) addresses a destination radio ID: neither a group nor an individual call. */
+    (void)ysf_scan_frame(0U, 1U, 1U, 0, DSD_SCAN_MODE_INHERIT, &moved);
     assert(g_test_scan_activity.count == 1 && (g_test_scan_activity.last.known & DSD_SCAN_ACTIVITY_KNOWN_PARTY) == 0U);
     (void)ysf_scan_frame(2U, 1U, 0U, 0, DSD_SCAN_MODE_INHERIT, &moved);
     assert(g_test_scan_activity.count == 0);
