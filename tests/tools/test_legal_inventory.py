@@ -977,9 +977,11 @@ class NoticeStagingTests(unittest.TestCase):
         package = self.work / "package"
         (package / "assets/doc/dsd-neo/extra.txt").parent.mkdir(parents=True)
         (package / "assets/doc/dsd-neo/extra.txt").write_text("from the package source\n", encoding="utf-8")
+        # Windows forbids * and ? in a file name, so there the folders take the bracket pattern characters alone.
+        pattern = " [qa]" if os.name == "nt" else " [qa]*?"
         for label, package_name, source, stage_name in (
-                ("a package folder with pattern characters", "package [qa]*?", None, "stage"),
-                ("a stage folder with pattern characters", "package", None, "stage [qa]*?"),
+                ("a package folder with pattern characters", "package" + pattern, None, "stage"),
+                ("a stage folder with pattern characters", "package", None, "stage" + pattern),
                 ("a relative package folder", "package", "package", "stage")):
             with self.subTest(case=label):
                 if package.name != package_name:
