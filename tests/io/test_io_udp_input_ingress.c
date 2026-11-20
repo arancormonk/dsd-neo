@@ -185,8 +185,9 @@ test_mark_is_complete_after_a_stall(void) {
     return rc;
 }
 
-/* Issue #834: the counts the UI shows follow a ring that never empties. 2000 datagrams wait in the ring (a mark moved
-   them in), and 1500 samples are read: the counters are copied within a bounded run of reads, not only when the ring
+/* Issue #834: the counts the UI shows follow a ring that never empties. 2000 datagrams wait in the ring (marks moved
+   them in: each mark's drain is bounded by the socket's receive buffer as the system granted it, so marks are taken
+   until all 2000 are in), and 1500 samples are read: the counters are copied within a bounded run of reads, not only when the ring
    empties, which a sender that keeps it filled never lets happen. */
 static int
 test_counters_follow_a_ring_that_never_empties(void) {
@@ -201,7 +202,10 @@ test_counters_follow_a_ring_that_never_empties(void) {
     }
     udp_input_test_queue_datagrams(2000);
     dsd_input_cut cut;
-    dsd_input_backlog_mark(&cut);
+    DSD_MEMSET(&cut, 0, sizeof cut);
+    for (int marks = 0; marks < 2000 && (marks == 0 || (cut.measured == 1U && cut.arrived < 2000U)); marks++) {
+        dsd_input_backlog_mark(&cut);
+    }
     int rc = expect("the datagrams wait in the ring", cut.measured == 1U && cut.arrived == 2000U);
     for (int i = 0; rc == 0 && i < 1500; i++) {
         int16_t s = 0;
