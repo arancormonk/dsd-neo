@@ -11,6 +11,7 @@
 
 #include <dsd-neo/core/call_state.h>
 #include <dsd-neo/core/events.h>
+#include <dsd-neo/core/gps.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/time_format.h>
@@ -67,7 +68,8 @@ dsd_unicode_supported(void) {
 
 void
 // NOLINTNEXTLINE(misc-use-internal-linkage)
-lip_pdu_decoder(const dsd_opts* opts, dsd_state* state, const uint8_t* bits, size_t bit_count, uint32_t src) {
+lip_pdu_decoder(const dsd_opts* opts, dsd_state* state, const uint8_t* bits, size_t bit_count,
+                const dsd_gps_address* src) {
     (void)bit_count;
     (void)src;
     (void)opts;
@@ -141,7 +143,7 @@ main(void) {
     DSD_MEMSET(pdu, 0, sizeof pdu);
     int idx = 0;
     pdu[idx++] = 0x07; // response (fmt)
-    pdu[idx++] = 24;   // message_len placeholder
+    pdu[idx++] = 0;    // the document length, set below
     pdu[idx++] = 0x22; // typical pattern in responses
     pdu[idx++] = 0x00;
 
@@ -167,6 +169,8 @@ main(void) {
     pdu[idx++] = 0x00; // contributes to month/day/hour
     pdu[idx++] = 0x00; // minute
     pdu[idx++] = 0x00; // second
+
+    pdu[1] = (uint8_t)(idx - 2); // the whole document: one cut short gives no position
 
     // Call under test
     dmr_lrrp(&opts, &st, (uint16_t)idx, /*source=*/123, /*dest=*/456, pdu, 1);

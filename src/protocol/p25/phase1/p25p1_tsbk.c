@@ -296,6 +296,7 @@ tsbk_handle_mfid90_grant(dsd_opts* opts, dsd_state* state, const uint8_t tsbk_by
     if (opts->trunk_enable == 1 && freq != 0) {
         p25_sm_seed_cc_from_current_tuner_if_unknown(opts, state);
         p25_sm_event_t ev = p25_sm_ev_group_grant(channel, 0, sg, source_address, service_options);
+        ev.identity_checked = P25_SM_IDENTITY_CHECKED_ALL; // the TSBK passed its CRC-16
         p25_sm_event(p25_sm_get_ctx(), opts, state, &ev);
     }
     // The grant names the supergroup (a CRC-good block: tsbk_dispatch_message()): its row stays, its members do not.
@@ -322,11 +323,13 @@ tsbk_handle_mfid90_grant_update(dsd_opts* opts, dsd_state* state, const uint8_t 
     if (opts->trunk_enable == 1 && ch1 != 0 && freq1 != 0) {
         p25_sm_seed_cc_from_current_tuner_if_unknown(opts, state);
         p25_sm_event_t ev = p25_sm_ev_group_grant_update(ch1, 0, sg1, /*src*/ 0, P25_SM_SVC_UNKNOWN);
+        ev.identity_checked = P25_SM_IDENTITY_CHECKED_ALL; // the TSBK passed its CRC-16
         p25_sm_event(p25_sm_get_ctx(), opts, state, &ev);
     }
     if (opts->trunk_enable == 1 && ch2 != 0 && freq2 != 0) {
         p25_sm_seed_cc_from_current_tuner_if_unknown(opts, state);
         p25_sm_event_t ev = p25_sm_ev_group_grant_update(ch2, 0, sg2, /*src*/ 0, P25_SM_SVC_UNKNOWN);
+        ev.identity_checked = P25_SM_IDENTITY_CHECKED_ALL; // the TSBK passed its CRC-16
         p25_sm_event(p25_sm_get_ctx(), opts, state, &ev);
     }
     // Each supergroup the update names keeps its row (a CRC-good block); the second only with its own channel.
@@ -380,6 +383,7 @@ tsbk_handle_individual_data_channel_grant(dsd_opts* opts, dsd_state* state,
         }
         if (tsbk_can_tune_data_grant(opts, state, freq)) {
             p25_sm_event_t ev = p25_sm_ev_indiv_data_grant(channel, 0, target, source, P25_SM_SVC_UNKNOWN);
+            ev.identity_checked = P25_SM_IDENTITY_CHECKED_ALL; // the TSBK passed its CRC-16
             p25_sm_event(p25_sm_get_ctx(), opts, state, &ev);
         }
     }
@@ -401,6 +405,7 @@ tsbk_handle_group_data_channel_grant(dsd_opts* opts, dsd_state* state, const uin
     }
     if (tsbk_channel_is_present(channel) && tsbk_can_tune_data_grant(opts, state, freq)) {
         p25_sm_event_t ev = p25_sm_ev_group_data_grant(channel, 0, group, src, svc_bits);
+        ev.identity_checked = P25_SM_IDENTITY_CHECKED_ALL; // the TSBK passed its CRC-16
         p25_sm_event(p25_sm_get_ctx(), opts, state, &ev);
     }
     return 1;

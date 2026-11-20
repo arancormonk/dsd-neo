@@ -276,6 +276,8 @@ typedef struct {
     double media_started_m;
     /** Most recent decoded-media update in this logical transmission (monotonic seconds), or 0. */
     double media_updated_m;
+    /** The reception generation when this epoch began (dsd_state_reception_generation()). */
+    uint64_t rx_gen;
     dsd_call_phase phase;
     int protocol; /**< DSD_SYNC_* value, or DSD_SYNC_NONE when unobserved. */
     dsd_call_kind kind;
@@ -337,11 +339,12 @@ typedef struct {
     uint32_t rx_id_epoch;
     /**
      * The received identity record (dsd_state::rx_id) as it stood when this epoch ended, captured at that transition
-     * while the record was still the one of the carrier the call began on (rx_id_epoch); otherwise, and while the
-     * call is active, empty (family DSD_RXID_FAMILY_NONE). Call history freezes an ended call's system and site at it,
-     * so identity received after the last render and before the end counts, and identity received after the end, or
-     * on another carrier, does not. Reacquisition compares reacquire_rx_id instead, which outlives a record that moved
-     * before the end.
+     * while the reception was still the one the call began on (the same reception generation, rx_gen: no reset, other
+     * record, retune or change of P25 phase in between); otherwise, and while the call is active, empty (family
+     * DSD_RXID_FAMILY_NONE). Either way it describes the reception of rx_gen, never another. Call history freezes an
+     * ended call's system and site at it, so identity received after the last render and before the end counts, and
+     * identity received after the end, or on another carrier, does not. Reacquisition compares reacquire_rx_id instead,
+     * which outlives a record that moved before the end.
      */
     dsd_received_identity ended_rx_id;
     /**

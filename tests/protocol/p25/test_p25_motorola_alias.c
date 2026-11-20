@@ -231,7 +231,7 @@ p2_send_harris(dsd_opts* opts, dsd_state* st, int currentslot, const char text[7
     p2_send_bits(opts, st, currentslot, bits, 10U, crc_ok);
 }
 
-/* Harris 0xAA GPS location: a zero payload is a valid 0, 0 fix. */
+/* Harris 0xAA GPS location: 22 N, 45 E with quality %01 (fix) in the 14-octet body (TIA-102.AABF-D-1 §7.3.35-36). */
 static void
 p2_send_harris_gps(dsd_opts* opts, dsd_state* st, int currentslot, int crc_ok) {
     uint8_t bits[24 * 8];
@@ -239,6 +239,9 @@ p2_send_harris_gps(dsd_opts* opts, dsd_state* st, int currentslot, int crc_ok) {
     set_bits(bits, 0, 8, 0xAAU);
     set_bits(bits, 8, 8, 0xA4U);
     set_bits(bits, 16, 8, 17U);
+    set_bits(bits, 24U + (3U * 8U), 8, 22U);
+    set_bits(bits, 24U + (7U * 8U), 8, 45U);
+    set_bits(bits, 24U + (13U * 8U), 8, 0x10U);
     p2_send_bits(opts, st, currentslot, bits, 17U, crc_ok);
 }
 

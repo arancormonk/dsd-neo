@@ -26,7 +26,8 @@ namespace dsd_qt {
 // promise erasure: only redacted text may enter the ring or the writer queue.
 //
 // The persistent tail is two append-only segments (tail.prev.log, then tail.log), each at
-// most kSegmentLimit bytes. Records are appended, never rewritten, and synced at most once a
+// most kSegmentLimit bytes. Records are appended, never rewritten (except by the load, which scrubs stored records
+// with redactStored() and writes back a segment that changed, issue #800), and synced at most once a
 // second, except during the startup window after a session attempt, when every append is
 // synced so a phone that falls over seconds after Play keeps its start sequence (issue #745).
 //
@@ -144,6 +145,12 @@ class DiagnosticsLog {
     void setIoFaultForTest(IoFault fault);
     static void setLoadHookForTest(LoadHook hook);
     static QString redact(QString text);
+    // redact() for a record loaded from a stored tail (issue #800, D10): it also removes a record under a label an
+    // older build printed a received position or a part of one with, whichever build wrote it.
+    static QString redactStored(const QString& text);
+    // Test seam: whether a record carries a producer's label for a received position (issue #800, D10), the rule the
+    // redaction rests on, without the backstop shapes.
+    static bool namesPositionProducerForTest(const QString& text);
     // Test seam: how many producer error lines are listed, and how many have only %d and %u conversions and so count.
     static std::pair<int, int> producerLineCountsForTest();
     // Test seam: how many signed-measurement templates are listed, and how many the builder accepted (each needs a

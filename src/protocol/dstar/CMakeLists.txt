@@ -7,6 +7,7 @@ target_sources(
         dstar_confirm.c
         dstar_header.c
         dstar_header_utils.c
+        dstar_sd_state.c
         dstar_slow_data.c
 )
 

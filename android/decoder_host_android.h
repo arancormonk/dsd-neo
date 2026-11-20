@@ -469,7 +469,8 @@ class DecoderHostAndroid : public dsd_qt::DecoderHost {
     void noteRecordingShareFailed(const QString& path);
     /** @brief A share's copy step ended (@p staged: the platform took it): its store hold @p hold goes. */
     void endRecordingShare(const QString& path, int hold, bool staged);
-    /** @brief At start, on the transfer worker: remove the share copies past their day (RecordingShare.clean()). */
+    /** @brief At start, on the transfer worker: remove the share copies past their day (RecordingShare.clean()) and
+     * the diagnostics share copies past their hour (DiagnosticsShare.clean(), issue #800). */
     void startRecordingShareClean();
     /** @brief How a transfer job reaches its host; defined in decoder_host_android_recordings.cpp. */
     struct TransferLink;
@@ -596,6 +597,9 @@ class DecoderHostAndroid : public dsd_qt::DecoderHost {
     static bool platformShareRecording(const QString& path, const QString& title);
     /** @brief RecordingShare.clean() on the calling (worker) thread: the share copies past their day go. */
     static void platformCleanRecordingShares();
+    /** @brief DiagnosticsShare.clean() on the calling (worker) thread: the diagnostics share copies past their hour go,
+     * an older build's among them (issue #800, D10). */
+    static void platformCleanDiagnosticsShares();
     /** @brief RecordingShare.takeFailure(): the oldest share that failed after canShare(), or empty. */
     static QString platformTakeRecordingShareFailure();
     /**

@@ -69,10 +69,12 @@ enum {
     P25_SM_PTT_SIGNATURE_BYTES = 17,
 };
 
-/** Return non-zero only for a subscriber source ID, excluding network controllers. */
+/** Return non-zero only for a subscriber source ID: not 0, and not a special address ($FFFFFC-$FFFFFF: FNE use, System
+ * Default, Registration Default, ALL units; TIA-102.AABC-D Table 2.3.30-1), as dsd_position_source_names_radio()
+ * reads a P25 source. */
 static inline int
 p25_source_id_is_subscriber(uint64_t source) {
-    return source != 0U && source != 0xFFFFFDU && source != 0xFFFFFFU;
+    return source != 0U && !(source >= 0xFFFFFCU && source <= 0xFFFFFFU);
 }
 
 typedef enum {
@@ -83,6 +85,43 @@ typedef enum {
     P25_SM_GRANT_PROVENANCE_ASSIGNMENT,
     P25_SM_GRANT_PROVENANCE_UPDATE,
 } p25_sm_grant_provenance_e;
+
+/* ============================================================================
+ * Identity provenance (issue #800, spec 2.19)
+ * ============================================================================ */
+
+/* Which identity fields came from content whose own check passed: the source, the target (talkgroup or destination)
+ * and the kind (group or private). The message that names a value sets that field's bit from its own check, and a
+ * message that inherits the field keeps that bit. A later message naming the same value sets the bit when its check
+ * passed and never clears it; one that omits the field (0 or absent) leaves it; one naming another value replaces the
+ * field and its bit. A new call epoch, a release or a reset clears all three; a failed check never sets one. */
+enum {
+    P25_SM_IDENTITY_CHECKED_SOURCE = 0x01,
+    P25_SM_IDENTITY_CHECKED_TARGET = 0x02,
+    P25_SM_IDENTITY_CHECKED_KIND = 0x04,
+    P25_SM_IDENTITY_CHECKED_ALL = 0x07,
+};
+
+/** 1 when a source named only by its home SUID (@p wacn, @p sysid) is a local radio of the current reception: the
+ * reception's checked network status (dsd_state::rx_id, DSD_RXID_P25_WACN) names exactly that WACN and System ID. A
+ * home of another system, or a reception whose system is not known yet, gives 0 (fail closed, issue #800): such an ID
+ * is not a local working address, so it never earns a checked source (p25_sm_event_t::source_nonlocal). */
+int p25_sm_suid_home_is_local(const dsd_state* state, uint32_t wacn, uint32_t sysid);
+
+/* The identity of a slot's canonical call as the state machine and the Phase 2 voice users last named it, and which of
+ * its fields are checked, under which reception. */
+typedef struct {
+    uint64_t epoch;   // Canonical call epoch the identity was published under; 0 = none
+    uint64_t rx_gen;  // dsd_state_reception_generation() at the last publication: the checked flags were earned
+                      // under it and count only there, and attribution binds to it
+    uint32_t source;  // Source RID, 0 = none
+    uint32_t target;  // Talkgroup (group) or destination RID (private)
+    int32_t protocol; // DSD_SYNC_* of the published call
+    uint8_t kind;     // dsd_call_kind of the published call
+    uint8_t is_group; // 1 when target is a talkgroup
+    uint8_t checked;  // P25_SM_IDENTITY_CHECKED_* bits
+    uint8_t reserved[1];
+} p25_sm_published_identity;
 
 /* ============================================================================
  * Events
@@ -127,6 +166,15 @@ typedef struct {
     uint32_t grant_seq;                                // IDLE: the slot's grant_seq when the IDLE was observed
     int grant_seq_valid;                               // 1 when grant_seq is set
     int preempt_only; // GRANT announced on a voice channel for another carrier: considered only as a preemption
+    // P25_SM_IDENTITY_CHECKED_* bits for src, tg/dst and is_group: which of them came from a message whose own check
+    // the producer ran and saw pass. Unchecked (0) unless the producer sets it; the builders below never do. A Phase 2
+    // MAC_SIGNAL whose CRC failed (-F) leaves it 0 and is still followed, as documented for -F.
+    uint8_t identity_checked;
+    // 1 when the source field names the talker only by an ID that is not a complete local address of this reception: a
+    // home SUID of another (or a not yet known) system (p25_sm_suid_home_is_local()), or a Phase 1 link control that
+    // needs a Source ID Extension. The value stays for display; as evidence it is a special address's: never checked,
+    // and it takes the source's flag away (spec 2.19, issue #800).
+    uint8_t source_nonlocal;
 } p25_sm_event_t;
 
 /* ============================================================================
@@ -154,8 +202,6 @@ typedef struct {
     // locked-out slot's MAC repeats, an encryption-lockout reprobe assignment
     // -- can neither restart nor erase the countdown by construction.
     double last_followed_m;
-    // Group identity retained while the TDMA media rejection latch is set.
-    uint32_t rejected_target_id;
     // The call this slot has followed since followed_since_m: target, kind and carrier. A repeat or a re-grant of
     // the same call keeps the stamp, so preemption dwell runs from when the call was first followed; a different
     // call, a physical retune or a release restarts it (p25_sm_clear_followed_history()).
@@ -169,8 +215,8 @@ typedef struct {
     int keyid;               // Current key ID for this slot
     int tg;                  // Current talkgroup for this slot
     int grant_active;        // 1 if this TDMA slot has an accepted grant context
-    long freq_hz;            // Accepted grant RF frequency
     int channel;             // Accepted grant channel number
+    long freq_hz;            // Accepted grant RF frequency
     int target_id;           // Policy-selected target ID, or OTA target when no policy remap
     int ota_tg;              // OTA talkgroup for group grants
     int src;                 // Source RID
@@ -183,15 +229,17 @@ typedef struct {
                              // ledger by a clear-claiming grant. The SM has no positive evidence
                              // for it, so it may acquire but may not outlive the hangtime the last
                              // followed transmission set.
+    // Group identity retained while the TDMA media rejection latch is set.
+    uint32_t rejected_target_id;
     double last_grant_m;     // Monotonic timestamp of last accepted grant for this slot
     uint32_t grant_seq;      // SM-wide sequence number of the last_grant_m stamp. Orders a grant against an
                              // IDLE observed at the same clock reading, which time alone cannot (issue #747).
+    int acquire_ended;       // 1 once a voice start or stop ended the wait acquire_since_m began. A flag, not a time
+                             // comparison: the grant, its voice and its end can share one decode-clock reading.
     double acquire_since_m;  // Start of the wait for this assignment's voice. Repeats of the grant keep it, in update
                              // or assignment form; a new follow, a voice start or stop since it, or a slot cleared
                              // after voice restarts it. Bounds how long a voiceless assignment holds the slot against
                              // preemption.
-    int acquire_ended;       // 1 once a voice start or stop ended the wait acquire_since_m began. A flag, not a time
-                             // comparison: the grant, its voice and its end can share one decode-clock reading.
     double crypto_attempt_m; // Monotonic start of the current crypto classification attempt
     double last_end_m;       // Monotonic timestamp of the last accepted MAC_END_PTT
     int last_end_tg;         // Talkgroup carried by the last accepted MAC_END_PTT
@@ -200,12 +248,17 @@ typedef struct {
     int facch_end_tg;        // Identity carried by the qualifying FACCH END_PTT
     int facch_end_src;
     uint8_t ptt_signature[P25_SM_PTT_SIGNATURE_BYTES]; // Last accepted raw P25P2 MAC_PTT signature
-    double ptt_last_seen_m;                            // Last observation of that PTT, including retransmissions
     int ptt_signature_valid;                           // 1 while no accepted call boundary/replacement intervened
+    double ptt_last_seen_m;                            // Last observation of that PTT, including retransmissions
     uint64_t ptt_canonical_epoch;                      // Canonical epoch that most recently accepted a MAC_PTT
     double last_enc_suppress_m; // Monotonic timestamp of the last enc-lockout suppression action on this slot.
                                 // The suppressed transmission occupies the carrier with no assignment, epoch,
                                 // or audio trace, so this is the only evidence of it that survives the teardown.
+    uint8_t identity_checked;   // P25_SM_IDENTITY_CHECKED_* bits for src, ota_tg/dst and is_group (assignment)
+    /* dsd_state_reception_generation() the assignment's flags were earned under: they count only there. A grant
+       stores it after the retune it causes, so its checked talker carries to the channel it sends the receiver to. */
+    uint64_t identity_rx_gen;
+    p25_sm_published_identity published; // Identity last published for this slot's canonical call
 } p25_sm_slot_ctx_t;
 
 typedef struct {
@@ -661,6 +714,53 @@ int p25_sm_slot_grant_since(int slot, uint32_t grant_seq);
 uint32_t p25_sm_slot_grant_seq(int slot);
 
 /**
+ * @brief The checked identity of a slot's ACTIVE canonical call a report of @p report_protocol may borrow (issue #800,
+ * spec 2.19).
+ *
+ * The identity counts only while the slot's canonical call is ACTIVE, is the epoch the state machine last published
+ * an identity for, still has that identity's source, target and kind, all three came from checked content (a field
+ * inherited from an earlier assignment keeps that assignment's verdict, and only under the reception it was accepted
+ * under), and it names a source; and only by the attribution rule (dsd_position_attribution_grant()): the call is of
+ * the report's protocol class (a Phase 1 call never names a Phase 2 report's sender) and the reception has not changed
+ * since the flags were earned.
+ *
+ * @param state Decoder state (canonical call state).
+ * @param slot Slot index (0 or 1).
+ * @param report_protocol DSD_SYNC_* of the report that borrows the identity.
+ * @param[out] out The published identity; zeroed when none counts.
+ * @return 1 when the call's source, target and kind are checked provenance, 0 otherwise.
+ */
+int p25_sm_checked_call_identity(const dsd_state* state, int slot, int report_protocol, p25_sm_published_identity* out);
+
+/**
+ * @brief Whether the state machine's record of the slot's call at @p epoch has withdrawn the talker @p source (issue
+ * #800, fail closed): it names another source, or names @p source without its checked flag as it counts now (a special
+ * address or a non-local source in a later message's source field, a repeated grant naming another talker, a
+ * reception change). Evidence another record keeps of that talker (the Phase 1 voice-user LC record,
+ * p25_p1_lc_attribution) no longer names a report's sender then. 0 when the record holds no identity of that call.
+ */
+int p25_sm_call_source_withdrawn(const dsd_state* state, int slot, uint64_t epoch, uint32_t source);
+
+/**
+ * @brief Record an identity a decoded message named for a slot's canonical call (issue #800, spec 2.19).
+ *
+ * For a message that observes the canonical call itself (a Phase 2 MAC_SIGNAL voice user), after that observation.
+ * Each field it names with the value the ACTIVE call now holds takes @p checked when the call is a new epoch or the
+ * value changed, and gains it otherwise; a field it leaves 0 keeps what it had. The slot's assignment takes it too: a
+ * message naming the assignment's kind and target applies its fields there with @p checked, so a later source-less
+ * voice start inherits this talker; one naming another kind or target drops the assignment's source.
+ *
+ * @param state Decoder state (canonical call state).
+ * @param slot Slot index (0 or 1).
+ * @param source Source RID the message named; 0 when none.
+ * @param target Talkgroup (group) or destination RID (private) the message named; 0 when none.
+ * @param is_group 1 for a group call, 0 for a private call.
+ * @param checked P25_SM_IDENTITY_CHECKED_* bits: the message's own check (0 when it failed).
+ */
+void p25_sm_note_call_identity(const dsd_state* state, int slot, uint32_t source, uint32_t target, int is_group,
+                               uint8_t checked);
+
+/**
  * @brief Check whether a voice-user observation re-describes a call that just ended.
  *
  * After an accepted MAC_END_PTT the FNE keeps describing the completed call
@@ -729,7 +829,8 @@ int p25_sm_emit_ptt(dsd_opts* opts, dsd_state* state, int slot);
  * The state machine reopens the call epoch from the retained carrier
  * assignment, re-evaluates policy/crypto, and never invokes the tuner for an
  * accepted identity on the current carrier. Trunk-follow mode rejects the
- * event when no traffic-channel assignment is active.
+ * event when no traffic-channel assignment is active. The identity is
+ * unchecked provenance; see p25_sm_emit_voice_start().
  * @return 1 when downstream media handling may proceed; 0 when the event was rejected.
  */
 int p25_sm_emit_ptt_call(dsd_opts* opts, dsd_state* state, int slot, int tg, int dst, int src, int is_group,
@@ -745,9 +846,19 @@ int p25_sm_emit_ptt_call(dsd_opts* opts, dsd_state* state, int slot, int tg, int
 int p25_sm_emit_active(dsd_opts* opts, dsd_state* state, int slot);
 
 /**
+ * @brief Emit a voice start the caller built: a P25_SM_EV_PTT or P25_SM_EV_ACTIVE event, with or without an in-band
+ *        identity, whose p25_sm_event_t.identity_checked the caller set from the check it ran on the message.
+ *
+ * Decoders use this form. The convenience emitters below publish their identity as unchecked (spec 2.19).
+ * @return 1 when downstream media handling may proceed; 0 when the event was rejected.
+ */
+int p25_sm_emit_voice_start(dsd_opts* opts, dsd_state* state, const p25_sm_event_t* ev);
+
+/**
  * @brief Emit an ACTIVE event carrying an authoritative in-band call identity.
  *
- * Trunk-follow mode rejects the event when no traffic-channel assignment is active.
+ * Trunk-follow mode rejects the event when no traffic-channel assignment is active. The identity is unchecked
+ * provenance; see p25_sm_emit_voice_start().
  * @return 1 when downstream media handling may proceed; 0 when the event was rejected.
  */
 int p25_sm_emit_active_call(dsd_opts* opts, dsd_state* state, int slot, int tg, int dst, int src, int is_group,
@@ -772,7 +883,8 @@ int64_t p25_conventional_grant_frequency(const dsd_state* state, int slot, uint3
  * @brief Emit an ACTIVE call whose message type carries no source field.
  *
  * See p25_sm_ev_active_call_source_absent(): the voice start must not inherit
- * the preceding assignment's talker for these calls.
+ * the preceding assignment's talker for these calls. The identity is
+ * unchecked provenance; see p25_sm_emit_voice_start().
  */
 int p25_sm_emit_active_call_source_absent(dsd_opts* opts, dsd_state* state, int slot, int tg, int dst, int is_group,
                                           int svc_bits);

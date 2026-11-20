@@ -42,11 +42,16 @@ Generated (do not edit/commit):
 - Path: `src/engine` (including `src/engine/dispatch`), `include/dsd-neo/engine`
 - Targets: `dsd-neo_engine`, `dsd-neo_dispatch`
 - Responsibilities:
-  - Top-level decode runner and lifecycle (wires core/runtime/IO/protocol state machines). At the end of a run
+  - Top-level decode runner and lifecycle (wires core/runtime/IO/protocol state machines). At the end of a run that
+    started decoding (its input opened and its start hook, when it has one, ran and succeeded)
     `dsd_engine_run_with_lifecycle()` commits the session's last calls (`dsd_engine_finalize_calls()`: end the slots
-    as sync loss, commit their rows, retire the held VOICE_END alerts) and publishes telemetry before it calls the
-    frontends' stop hooks, so a frontend that records calls gets the final transmission; `dsd_engine_cleanup()`
-    repeats the step, which then finds nothing left to do
+    as sync loss, commit their rows, retire the held VOICE_END alerts) and publishes telemetry, then calls the
+    frontends' stop hook when a start hook ran, so a frontend that records calls gets the final transmission; a
+    frontend with only a start hook (Android) gets the final publish too, which its history tap reads after the stop
+    (bug B1, issue #800), and so does an embedder that attached telemetry itself and passed no hooks (the published
+    position feed then reads as stopped, with the run's last records). A start hook that fails adds no publish and no
+    stop call. `dsd_engine_cleanup()` repeats the step, which then finds nothing left to do. At the start of every run the
+    engine also starts the run's position feed (`dsd_position_feed_start()`, below), beside the debug start time
   - Output files of a session that never runs (#782): the bootstrap opens the `-c` symbol capture, `-w` static WAV
     and `-6` raw WAV while it parses, and only `dsd_engine_cleanup()` closed them. `-P` opens its per-call WAVs only
     at the run's start (issue #708), so a configure leaves none. `dsd_engine_release_outputs()` closes them (and any
@@ -1920,14 +1925,28 @@ suite runs under this compiler.
   dispatch, `dmr_udp_service_dispatch()`: the destination port when a decoder claims it, else a source port that names
   its service (4005, the radio's fixed ARS port per the MOTOTRBO ARS specification 4.4.2, and the ETSI radio-network
   defaults 5016/5017; a policy, so an ARS server on an already claimed port still selects that port's decoder).
-  `--lrrp-extra-port` ports are part of it. The compressed path passes the data header's LLIDs as the radios and a
-  NULL IPv4 header (9361/49198 then print the LLIDs), and appends the decoder's slot string to its notice. TS 102 361-3
+  `--lrrp-extra-port` ports are part of it. The IPv4 path dispatches only a whole datagram
+  (`decode_ip_pdu_whole()`, issue #800 fail closed), judged against exactly the user data its caller hands over: the
+  DMR packet's octets less the CRC32 and the pad octets (`dmr_block_type1_checked_len()`), a P25 packet's user data left
+  at the cursor after its optional headers, never a pad or CRC octet (`p25_pdu_payload_span()`; a packet shorter than
+  its header, CRC32 and pad octets has none, `p25_pdu_payload_len()`; test `CORE_NMEA_SENTENCE`). An IPv4 fragment (More Fragments set or a nonzero offset) is not
+  reassembled, and a datagram whose total length the PDU does not hold, or whose UDP length runs past it (an ICMP error
+  quoting the first octets of a returned datagram among them), is cut short; none of them names ports, reaches a
+  service decoder or gives a position, and its notice says `IP Fragment; not decoded;`, `Incomplete Datagram; not
+  decoded;` or `Truncated UDP;`. An ICMP message's data is decoded as a datagram only for the error types that quote
+  the invoking datagram (`decode_ip_pdu_icmp_quotes_datagram()`: 3, 4, 5, 11, 12); an Echo Request or Reply (or any
+  other type) carries opaque data, so a report copied into it is never one (test `DMR_LIP_CARRIERS`). The compressed
+  path passes the data header's LLIDs as the radios and a NULL IPv4 header (9361/49198 then print the LLIDs), and
+  appends the decoder's slot string to its notice. TS 102 361-3
   leaves SPID/DPID 95-127 to the manufacturer with a per-radio linkage (table 7.17 note 2), so no index is mapped by
   default: `dsd_opts::dmr_udp_comp_ports` (`--dmr-udp-comp-port`, `mode.dmr_udp_comp_ports`,
   `<dsd-neo/core/udp_comp_ports.h>`) supplies a site's linkage, and an unlinked index is decoded only when its payload
   is exactly one ARS message of that specification's section 3.4 (`dmr_ars_record_is_exact()`; a TMS ack shares the
   0xBF header octet and differs by length; length-value sizes are octets). The SAP length handed to every SAP decoder
-  is what the blocks carried (`data_byte_ctr`) less the CRC32 and the pad octets (TS 102 361-1 9.3.22); the decrypt
+  is what the blocks carried (`data_byte_ctr`) less the CRC32 and the pad octets (TS 102 361-1 9.3.22); a pad count
+  larger than the octets the blocks hold after the CRC32 (after the MNIS header's 7 for MNIS) leaves no user data at all,
+  whatever the header's check said, so no SAP or MNIS decoder (LRRP, LIP, LOCN among them) reads a packet whose lengths
+  disagree (`dmr_block_type1_checked_len()`, issue #800 fail closed; test `DMR_EVENT_CRC`); the decrypt
   window and the AES-ECB block count are bounded the same way. A standard header resets confirmed mode, the MNIS
   P_HEAD flag and the assembler's arming, which only DPF 0-3 with blocks to follow and DD/R_HEAD with appended blocks
   set; `data_block_crc_valid` holds the header plus 127 block verdicts.
@@ -1964,8 +1983,11 @@ suite runs under this compiler.
   slot's call (the DMR/NXDN encryption lockout, an operator's slot lockout or skip) go through
   `dsd_event_note_current_call()`, never a raw `Items[0].internal_str` write, and it declines when the slot has no call
   to carry the note (none observed, or one that ended and committed its row). Detail a protocol decodes without naming
-  its call -- D-STAR slow-data text and APRS, the NXDN alias and DCR call sign memory -- reaches a row only through
-  `dsd_event_set_open_call_detail()`, which writes it only while the slot's call is ACTIVE and its epoch is open, and
+  its call -- D-STAR slow-data text and APRS (and those only through the call their transmission's checked header named,
+  `dstar_slow_data.c`), the NXDN alias and DCR call sign memory -- reaches a row only through
+  `dsd_event_set_open_call_detail()`, which writes it only while the slot's call is ACTIVE, its epoch is open and it is
+  a call of the detail's own protocol family (the caller passes the sync type it decoded under: D-STAR text never
+  lands on a DMR call still open on the slot), and
   `dsd_event_enrich_*()` declines a row-0 write while the call's epoch is not yet open (the live alias display and the
   call's CRC verdict still follow). DMR embedded talker alias and GPS LCs reach enrichment only when their 5-bit
   checksum passed (`dmr_flco.c`, all modes): a failed one still claims its FLCO, so it is never read as a voice LC, but
@@ -2277,20 +2299,25 @@ suite runs under this compiler.
   else the Type-D SRV_INFO site, and the Type-D system ID), the EDACS site, area and system (`sys_id1`..`_3`), the TETRA
   MCC and MNC (`sys_id1`, `_2`; a direct mode carrier marks `sys_id3` 1 instead). A part not received takes the value a
   row had before one was decoded (0, so `P25_<NAC>` without a WACN and `EDACS_SITE_000`); dPMR, M17, YSF, D-STAR and
-  X2-TDMA rows carry none. The row takes the parts whole from the record of the carrier the call began on (the record's
-  epoch is the call's `dsd_call_snapshot::rx_id_epoch`): the record keeps them one consistent observation, and a note
+  X2-TDMA rows carry none. The row takes the parts whole from the record of the reception the call began on (the
+  reception generation is the call's `dsd_call_snapshot::rx_gen`, `dsd_state_reception_generation()`: a retune or a
+  change of P25 phase keeps the record's epoch but is another reception, issue #800): the record keeps them one
+  consistent observation, and a note
   naming another system, site or access code (an IDAS SCCH site ID that disagrees with the Type-D system ID, another
   EDACS or P25 system, another NAC on the carrier) moves the record's epoch, so the row keeps the identity it was heard
   under, never a mix. While the call is ACTIVE it takes the live record; once it has ENDED, the record the canonical
   layer captured at the end transition (`dsd_call_state_end_ex()` copies `dsd_state::rx_id` into
-  `dsd_call_snapshot::ended_rx_id` while its epoch is still the call's, else captures none): identity received after the
+  `dsd_call_snapshot::ended_rx_id` while the reception generation is still the call's, else captures none, so a call
+  that ends unrendered after a retune keeps none of the next carrier's system or scope, only its own frequency, test
+  `CORE_EVENT_POSITION` `test_ended_scope_of_the_calls_own_reception()`): identity received after the
   last active render and before the end (a Phase 2 MAC_IDLE handles its broadcast before `p25_sm_emit_idle_at()` ends
   the call) counts, identity received after the end does not. A record of another carrier, or no capture, leaves the row
   what it took last, so a held drop verdict or the finalize pass that runs after a retune, a `-Y` hop or a trunk-scan
   switch never takes the next carrier's. Direct mode empties the record, so the end also notes whether a TETRA call
   ended on a direct mode carrier (`dsd_call_snapshot::ended_tetra_direct`), and the ended row keeps its DMO mark from
   that. The synthetic snapshot a noncanonical P25 encryption lockout notice renders
-  (`p25_lockout_snapshot_from_observation()`) takes the current record's epoch, as the grant was heard on this carrier
+  (`p25_lockout_snapshot_from_observation()`) takes the current record's epoch and reception generation, as the grant
+  was heard on this carrier
   (`P25_P1_LOCKOUT_EVENTS`). Test: `CORE_CALL_ALERT_HISTORY` (`test_system_identity_*`).
 - History site and call channel (issue #799; `dsd_events.c`). Beside the `sys_id` slots a row keeps the whole site it
   was heard on, `Event_History::site_id` (a `dsd_received_identity` holding only the site parts,
@@ -2466,13 +2493,369 @@ suite runs under this compiler.
 - State extension slots (`<dsd-neo/core/state_ext.h>`): engine owns 0, 1, 3 and 7; core 2, 4, 5 and 8, and 13 and 14
   (taken from the io range): 13 is `DSD_STATE_EXT_CORE_VOICE_LEVEL`, the digital voice chain's per-slot speech AGC and
   the reception it runs for, the talkers both slots remember, and the DMR superframe mixer's one-channel limiter (issue
-  #518), and 14 `DSD_STATE_EXT_CORE_UNIT_ACTIVITY`, the session's unit activity ring (below);
+  #518), and 14 `DSD_STATE_EXT_CORE_UNIT_ACTIVITY`, the session's unit activity ring (below), and 17 (taken from the ui
+  range): `DSD_STATE_EXT_CORE_POSITION_FEED`, the run's verified position feed (below);
   runtime 6, and 15 (taken from the io range): `DSD_STATE_EXT_RUNTIME_CONFIG_INPUT`, the loaded config's `[input]` an
   I/Q replay session saves (issue #743); DSP 9, 10 and 11 (taken from the core range as runtime took 6 from the engine's): 9 is
   `DSD_STATE_EXT_DSP_ANALOG_RX`, the analog receive working state, 10 `DSD_STATE_EXT_DSP_ANALOG_AUDIO`, the analog
   monitor's audio chains, and 11 `DSD_STATE_EXT_DSP_ANALOG_SINK`, the analog sinks' converters to the sink rate;
   app-control owns 16, from the ui range: `DSD_STATE_EXT_APP_SCAN_ENTRY`, the frequency entry whose go-to still waits on
-  its tune (issue #644). `CORE_STATE_EXT` pins these six.
+  its tune (issue #644); protocols own 24-31, among them 30, `DSD_STATE_EXT_PROTO_DSTAR_SLOW_DATA`, the D-STAR
+  slow-data assemblies (`src/protocol/dstar/dstar_sd_state.h`), and 31, `DSD_STATE_EXT_PROTO_M17_GNSS`, the M17 GNSS
+  META repeat state (`m17.c` `m17_gnss_state`), both issue #800. `CORE_STATE_EXT` pins these nine.
+- API note: the verified position feed (`<dsd-neo/core/position.h>`, `src/core/gps/position_feed.c`, state extension
+  17, issue #800). Producers fill one `dsd_position_fix` (from `dsd_position_fix_init()`'s unknown sentinels; fixed
+  point: degrees x 1e7, decimetres, 0.1 km/h, 0.1 degree) and call `dsd_position_admit()` with the verdicts of the
+  checks they ran: `pos_verified` (the position's own CRC/FEC check) and `source_verified` (source, target and
+  group/private from checked provenance). Admission refuses without `pos_verified`, when the receive policy rejects
+  the protocol and slot, when a multi-fragment report's first fragment was heard under another reception generation
+  (`dsd_position_origin_capture()`/`_matches()`: the reception generation, `dsd_state_reception_generation()`, which
+  moves with the received identity's epoch, every applied trunking retune and every change of P25 phase, together with
+  the trunk tuning generation), or
+  for a value out of range or exactly (0,0); it clears an unverified or hashed identity (the format `kind` stays) and
+  a source that names no radio (`dsd_position_source_names_radio()`: a P25 special address, `$FFFFFC`-`$FFFFFF`,
+  destination kept),
+  freezes the reception scope (the alias scope, else a feed-only EDACS, control-channel or tuned-frequency scope;
+  none for M17/D-STAR), the sender scope (TETRA's calling party network when sent), the identity discriminator (the
+  tuned frequency for a P25 NAC scope) and the label (a local sender, whose sender scope equals the reception scope of
+  any kind, feed-only and none included, through the scoped lookup call rows use, the radio list first; a foreign
+  sender, with its own different scope, only through a label learned in that scope,
+  `dsd_tg_policy_lookup_learned_label()`), and
+  stamps the process-wide `rev`, `proc_instance`, `rx_time_s` and `rx_clock`. Only an admitted report may reach `-L`
+  or history. The feed keeps an admitted report unless it repeats its track's last kept one (every observable field
+  equal, where it was heard included: protocol class, slot, tuned frequency, reception scope and label, so the same fix
+  on the other slot, another visited network or the other P25 phase is a new record (Phase 1 and Phase 2 TDMA slot 1
+  publish one slot value; a radio that changes phase keeps both records, while both polarities of one phase fold;
+  where either report's reception scope is unknown, only the same reception generation is one place, so two
+  conventional receptions no scope names, a colour code apart, keep both records); kept less than 30 s ago on the
+  decode clock; anonymous sources never
+  fold; 256 tracks, the least recently kept forgotten). Admission publishes the over-the-air slot, not the
+  producer's lane (`pos_publish_slot()`, by `dsd_receive_identity_current()`): the single-slot DMR decoder's one lane
+  takes the slot its CACH proved, and a report heard while none is proven (an inbound burst has no CACH) gets slot 0
+  with `DSD_POS_FLAG_SLOT_UNKNOWN`, which is never the same place as another report (test
+  `DMR_EMBEDDED_GPS_ATTRIBUTION`). The ring holds 1,024 records by seq, created by `dsd_position_feed_start()` at every run start
+  (never on the decode path; a new `stream_id`, seq from 1) and freed with the extensions; without one admission
+  still works and nothing is kept. The `stream_id` is the process instance (a nonce) plus the process's run count, so
+  it never repeats in the process and a restarted process's runs have other streams: the API's `pos_stream` and
+  `pos_seq` cursor never matches a report of an earlier process. `dsd_position_feed_copy_since()` is the allocation-free read by seq (stream, held
+  seqs, `more`, `lost`). Test: `CORE_POSITION_FEED`.
+- API note: history rows carry the admitted fix (`Event_History::pos`, a padding-free `dsd_event_pos`, issue #800).
+  Only the position writers in `<dsd-neo/core/events.h>` set it, always together with `gps_s` and only from an
+  admitted record: `dsd_event_enrich_position()` (the slot's ACTIVE call of an epoch),
+  `dsd_event_enrich_position_closing()` with `dsd_event_capture_closing_call()` (the call a P25 Phase 1 terminator
+  ends before it dispatches its own link control; both take the `dsd_opts` the event log is written through, and a
+  position written into a row that already committed appends the row's `GPS:` line to `-J` with the row's own stamp,
+  `dsd_event_pos_log_committed()`, as a late alias does; test `P25_P1_HARRIS_GPS`; the `-J` and terminal history GPS
+  detail lines take their label from `dsd_event_gps_detail_label()`, none when `gps_s` already starts with `GPS:`, as
+  DMR embedded GPS, UDT NMEA, Motorola APX and M17 text does, so the line has one; tests `P25_P1_HARRIS_GPS`,
+  `DMR_FLCO_MONO_CRC_SCOPE`),
+  `dsd_event_set_open_call_position()` (D-STAR slow data, through the call its transmission's header named),
+  `dsd_event_stage_position()` (the next data notice;
+  `Event_History_Staged::pos_fix` keeps the whole record) and
+  `dsd_event_emit_data_notice_with_position()`. Each applies the typed-source rule (the same protocol class,
+  `dsd_position_attribution_class()`: P25 Phase 1 and Phase 2 apart, so an anonymous Phase 2 report never lands on an
+  anonymous Phase 1 call still open on the slot; the
+  report's source ID and callsign, compared as call identity text, equal to the call's or the notice's; an anonymous
+  report only where no source is named, and only while none is: `pos.anonymous` marks it, and a row that names its
+  source later -- a fill in the same epoch or a reacquired segment's -- drops it with its GPS text,
+  `dsd_event_pos_requalify_row()`, as History's fold does, `drop_anonymous_gps_of_named()`; a notice given a report
+  whose identity admission cleared drops its own source and target), requires the report to have been heard where
+  the row was, and lets only a newer `rev` replace a position. Where it was heard is one reception rule
+  (`dsd_position_same_reception()`, `<dsd-neo/core/position.h>`, fail closed), used by every row writer, the
+  reacquisition merge and the attribution rule: two receptions (`dsd_position_reception`: scope, NAC discriminator,
+  protocol class, reception generation, the tuned frequency it was read with) of two known protocol classes that differ
+  (P25 Phase 1 and Phase 2, `dsd_sync_protocol_class()`), or of two known tuned frequencies that differ (two carriers
+  of one system, whose scope, a P25 WACN and SYSID, names no carrier: `dsd_position_reception::tuned_hz`, a row's
+  `dsd_event_rx_scope::tuned_hz`, a report's `freq_hz`), are never one; else they are one when both scopes are known
+  and equal, or when they
+  share the reception generation (`dsd_state_reception_generation()`: the received identity's epoch, plus the applied
+  trunking retunes, `dsd_state::rx_tune_seq`, and the P25 phase changes, `dsd_state::rx_phase_seq`, both of which keep
+  the system the record holds) and nothing says otherwise (an unknown scope, or one scope only refining the other: a
+  NAC then the WACN and SYSID, an EDACS site then its system); two families, two tuned frequencies or two values of one
+  kind are two receptions within one generation, and an unknown side never matches across generations, so a NAC heard
+  before a retune and a WACN and SYSID learned after it are two receptions, not a refinement. The row side is the row's
+  own `Event_History::rx_scope` (with the generation it was read under, `rx_gen`) and sync type, never the closing
+  call's: a terminator's
+  GPS decoded after its segment merged into a row heard on another carrier is refused there. The sender scope in
+  `pos.scope` is only the track key. A call row takes
+  its reception identity by the `site_id` rule (re-read from the live record on every render while active on the carrier it
+  began on, so a scope learned mid-call replaces a weaker one; else kept, or the record as the call ended with the
+  row's frequency; the reacquisition merge folds in a reacquired segment's identity when it is stronger and of the
+  same family, or as strong and names more, by the strength rule History's merge uses, so a NAC-only row learns the
+  WACN and SYSID read after a sync loss, but only when the row and the segment were heard on one reception by the
+  reception rule, read on both as they were before anything is adopted: a stronger identity never overrides two known,
+  different tuned frequencies or NAC discriminators, so a row committed on one carrier keeps its frequency and
+  reception and refuses the other carrier's GPS, `watchdog_event_rx_scope_learns()`), a notice at emit. The text-only GPS writers (`dsd_event_enrich_gps()`, `dsd_event_stage_gps()`,
+  `dsd_event_set_open_call_detail(GPS)`) drop the position with the text they replace. Push and the snapshot copy
+  move `pos` with the row; the reacquisition merge takes text and position from the side with the greater `rev`, but a
+  segment's GPS (a position, GPS text, a sender scope) only when it was heard on the row's reception by the reception
+  rule, after the merge folds in what the segment learned: a segment whose reception is unknown (a reacquisition with
+  only a colour code after a reset) or another merges as a call and keeps its GPS off the row (test
+  `CORE_EVENT_POSITION`).
+  Every data notice stamps its reception identity, its sender identity (`pos.scope`, the reception's scope when it has
+  no position) and its site (`site_id`, by the call rows' rule). The API row gains `"pos"` (lat/lon from the fixed point, `err_m`,
+  `flags`, `rev`) and the event fingerprint hashes it, both only while `pos.valid`. Tests: `CORE_EVENT_POSITION`,
+  `API_FEED`, `APP_CONTROL_SNAPSHOT_EVENT_HISTORY`.
+- API note: position producers (issue #800). Each decoder that reads a position fills one `dsd_position_fix` (its
+  `dsd_position_kind`) and admits it with verdicts from checks it ran itself: a zero `event_crc_invalid` proves
+  nothing where no CRC scope exists (P25 link control and MAC, NXDN, M17, D-STAR, TETRA). Only an admitted record
+  gets its GPS text, history position, `-L` row and feed record; a refused report prints its fields without
+  coordinates (`(refused)`), and a report whose check failed or that `-F` accepted as RAS prints only that
+  (`Position: (suppressed; CRC ERR)`, `(suppressed; RAS)`): its other content (an MNIS LOCN report's text, an LRRP
+  document's time, radius, altitude, speed and track, a LOCN time, a LIP report's motion, error, reason and time, a UDT
+  NMEA report's speed, time and course, an embedded GPS LC's position error and protect flag, an L3Harris update's
+  quality, which an unchecked one, a soft-decoded half among them, reports only as `Harris GPS: not used (unchecked)`)
+  prints only with `-Z`, by one rule
+  (`dsd_gps_report_content_printable()`, `<dsd-neo/core/gps.h>`; tests `DMR_EVENT_CRC`, `DMR_LRRP_CRC_GATING`,
+  `DMR_LIP_CARRIERS`, `DMR_EMBEDDED_GPS_ATTRIBUTION`, `CORE_GPS_LRRP_CRC_GATING`, `P25_P1_HARRIS_GPS`). Every producer
+  prints
+  a report's coordinates only after admission admitted it (fail closed: M17 GNSS META `GPS: (refused);`, ASCII NMEA
+  sentences, D-STAR GPS blocks only under `-Z`); a raw dump that can hold a position prints only with `-Z`. Raw fields are checked
+  before they are converted (degrees, minutes 0-59, fractions, a boundary degree only with zero minutes, dates per
+  month, times of day): a bad coordinate refuses the report, any other bad field becomes unknown and is never folded
+  (a heading outside 0-3599 tenths of a degree, a time past 23:59:59). The record names the destination
+  (`target_id`, `DSD_POS_FLAG_TARGET_GROUP`) wherever the same checked carrier that names the source names one, so the
+  same fix sent to two destinations is two records; it stays 0 only where no checked destination exists (a USBD
+  hash, an M17 or D-STAR callsign destination, which the numeric record has no field for, a TETRA SDS whose MAC
+  address does not say group). Per kind, position check / source check:
+  - DMR LRRP and LOCN (`dmr_pdu.c`), LIP over UDT or UDP and binary UDT NMEA (`dsd_gps.c`): the data packet's header,
+    CRC32 and block CRCs, or the UDT's CRCs, and not RAS / the same packet (its source, target and G/I bit as the
+    checked standard header gave them: `dmr_data_checked_group`, which an MNIS DPF 15 header leaves alone; a UDT
+    report takes the UDT header's source, destination and I/G bit as a `dsd_gps_address`, LIP over UDP the
+    datagram's source and destination, qualified as a group like LRRP's). LRRP
+    reads its numeric fields as variable-length (uintvar, ufloatvar, sfloatvar) and decodes tokens 0x51, 0x53, 0x55,
+    0x67, 0x69, 0x6B, 0x6C and document type 0x13 (of several shapes the lowest rank gives the position, but a shape
+    at exactly 0, 0 never displaces another); a token without a confirmed layout (0x50, 0x52, 0x54, 0x68, 0x6A, unknown) ends the position
+    parse, and a resync-guessed position is never published. Every caller hands `dmr_lrrp()` its whole checked payload
+    (an MNIS one of any length; only the console echo of a LOCN report's text is bounded), and a position comes only
+    from the whole declared document: one that declares more than the payload holds gives none (`Position suppressed
+    (incomplete document)`), since the shape that ranks highest may be in the part missing. The LRRP summary (the
+    packet's notice text) carries the speed and heading of an admitted report only, as admission left them; a failed,
+    refused or incomplete report's motion prints only in the `-Z` details (tests `DMR_EVENT_CRC`,
+    `DMR_LRRP_RESPONSE_TOKEN_LENGTHS`). An MNIS payload (`dmr_block_type1_handle_mnis()`) ends where the packet CRC32's
+    span ends: Motorola's compressed data leaves the octet just before the CRC32 out of the CRC
+    (`dmr_block_type1_update_crc()`), so that octet is never payload, and no DMR packet service reads past the span its
+    CRC covered (`dmr_block_type1_checked_len()`). A checked MNIS LOCN report's text (`LOCN Text:`) prints only once
+    `dmr_locn()` admitted its position, else only with `-Z`. UDT NMEA needs Q=1 and the format's fields (80 bits
+    short, 112 long) inside the UDT's user data, its pad nibbles left out (`nmea_iec_61162_1()` takes that length, and a
+    short report is read no further than its 80 bits). These go to their own data notice
+    (`dsd_event_stage_position()`), never onto a talking radio's voice row. LOCN is `FORMAT_PROVISIONAL` (no
+    specification) and is read from whole user octets only (defined short data, DPF 13: the header's bit padding comes
+    off first, so a digit the padding would complete was never sent); a valid `A` date and time is its fix time (`fix_time_s`, read as UTC, its two-digit year in the
+    century closest to the decode clock's date as an RMC's), else the fix time is
+    unknown, so two reports that differ only in time are not folded as a repeat.
+  - DMR USBD LIP (`dmr_dburst.c`): the burst CRC and an MS-sourced repeater-mode data sync (`dmr_burst_origin`,
+    `dmr_data_burst_handler_origin()`): a BS-sourced burst is a Poll Request (no position), a direct-mode or unknown
+    one is not decoded. The source is an 8-bit hash (`SOURCE_HASHED`): its own anonymous notice
+    `USBD LIP Poll Response; SRC(Hash): NNN;`, never `-L`. `lip_parse_short_report()` and its text and `-L` helpers are
+    shared with TETRA.
+  - DMR embedded GPS (`dmr_embedded_gps()`): the embedded LC checksum (`WEAK_CHECK`) / a checked, non-RAS full LC of
+    the same transmission named the call's source (`dmr_lc_attribution[slot]`, learned in `dmr_flco.c` bound to the
+    transmission and the reception, cleared at every voice LC header and carrier change), else unverified; the
+    destination and group flag that LC named while the call still has that target. By the attribution rule below: a
+    relock onto another colour code, or another site named on the carrier, keeps the call but leaves the next fix
+    anonymous until a checked full LC under the new reception names the talker (test `DMR_EMBEDDED_GPS_ATTRIBUTION`).
+  - P25 Phase 1 L3Harris and Motorola APX (MFID $90 LCO $06, `FORMAT_PROVISIONAL`) link control (`p25_lcw.c`,
+    `nmea_harris()`, `apx_embedded_gps()` with a `dsd_gps_report_ctx`): a hard RS decode of the LDU1 or TDULC LC (a
+    soft-erasure retry is unchecked); L3Harris pairs Part A (LCO 42 or 44) only with the Part B of its parity (43 or
+    45) on the same call epoch and source within 2 s on the decode clock, in storage of its own
+    (`p25_p1_harris_gps_part_a`), and needs quality %01 or %10 / a hard-decoded voice-user LC of the same ACTIVE Phase 1
+    call (`p25_p1_lc_attribution`, by the attribution rule below: a checked NID naming another NAC, or another system
+    named, without the call ending leaves the report anonymous, in the call and in its terminator).
+    Every Phase 1 LC verdict (identity events, preemption candidates, the checked-identity record, the GPS position)
+    depends on that hard decode (`p25_lcw_ctx.lc_hard`). A terminator's GPS LC belongs to the call that terminator
+    ended (`dsd_event_capture_closing_call()` before `p25_sm_emit_tdu()`). Phase 2 L3Harris (`p25p2_vpdu.c`): MAC CRC
+    and the whole segment (17 octets; the shifted `80 AA A4 11` form 18, and never from a FACCH) /
+    `p25_sm_checked_call_identity()` (P25 SM below), by the attribution rule below: never from a Phase 1 call still
+    open on the slot, never across a reception change.
+  - Attribution rule (`<dsd-neo/core/position_attribution.h>`, `src/core/gps/position_attribution.c`). Every producer
+    that names a report's sender from a call rather than from the report (DMR embedded GPS, P25 Phase 1 GPS link
+    control and Motorola APX, P25 Phase 2 L3Harris MAC) records its evidence with `dsd_position_attribution_learn()`
+    when a checked message of the call names it, and borrows it only through `dsd_position_attribution_grant()`:
+    the call is open (ACTIVE, or the call the report's own terminator just ended,
+    `dsd_position_attribution_call_from_closing()`); its protocol class (`dsd_position_attribution_class()`: P25 Phase 1 and Phase 2 apart, else the
+    protocol family) is the report's and the evidence's; it is the epoch the evidence was learned in, or for DMR the
+    transmission (a healed fade keeps it); the reception generation (`dsd_state_reception_generation()`, moved by
+    another access code, system, site or family, an applied trunking retune or a change of P25 phase: a Phase 1 call
+    left open across Phase 2 frames names no later report's sender) is the one it was learned under (the reception
+    rule, `dsd_position_same_reception()`, on the generation alone: the evidence keeps no scope); for DMR, the
+    burst carrying the report has the evidence's burst identity (`dsd_position_attribution::air`,
+    `dsd_position_dmr_air_same()`: the sender kind by its sync word and the single-slot decoder's over-the-air slot), so
+    a repeater-mode burst after a direct-mode call whose terminator was missed is not that call's, whatever the call
+    layer kept (test `DMR_EMBEDDED_GPS_ATTRIBUTION`); and no burst of another sender kind came between on the
+    evidence's lane: every DMR burst counts by its sync word alone (`dmr_note_burst_slot()` in `dmr_flco.c`), and
+    revokes the embedded GPS evidence and the data header binding (`dmr_data_air`) of another sender kind held on that
+    burst's lanes (`dsd_position_dmr_note_lane_burst()`: the evidence lane is lane 0 where the single-slot output folds
+    the burst's LCs, the data lane the burst's slot). A burst a reader reads is noted once its slot is known
+    (`dmr_note_burst_lane()`: `dmr_data_sync()` after the CACH, the MS voice bootstrap, the BS burst readers); one no
+    reader reads, or reads the slot of, is noted by its sync word (`dmr_note_unread_burst()`: an MS or direct-mode burst
+    before anything of it is read, so also one whose slot type fails; a repeater's burst whose CACH fails, on both
+    lanes; an MS or direct-mode burst the dispatcher holds back unread under trunking or with stereo and mono off,
+    `dispatch_dmr.c`). So a return to direct mode after a repeater-mode burst is not the direct-mode call either
+    (`test_direct_mode_after_an_interruption()`, `test_unread_burst_interrupts_its_lane()`, `DMR_DATA_HEADER_AIR`,
+    `DMR_SYNC_DISPATCH`). Another lane's bursts never touch it, and the reception generation does not move with a DMR
+    burst mode. The lanes are the decoder's, not the air's: an MS-sourced burst carries no CACH, so the decoder reads it
+    on lane 0, the lane a repeater's slot 1 (TS1) bursts are on as well. MS-sourced bursts and BS slot 1 bursts
+    therefore revoke each other's evidence and data bindings (fail closed: only a sender is dropped), while BS slot 2
+    bursts keep lane 1 of their own; a direct-mode burst's voice and LCs are on lane 0 too, a direct-mode slot 2
+    burst's data on lane 1. A carrier with BS-sourced bursts on slot
+    2 and MS-sourced ones interleaved keeps each lane's evidence (`test_two_lanes_of_two_sender_kinds()`); and the
+    call still names the evidence's source, and its target for the target. Anything else leaves the report anonymous.
+    The P25 trunk SM binds its published record to the generation of its last publication
+    (`p25_sm_published_identity::rx_gen`, which the attribution rule reads; a flag kept from a publication of another
+    generation is dropped when the record is published again; its flags count only under that generation) and binds
+    the slot's assignment the same way (`identity_rx_gen`, rebound by every message applied after the generation moved:
+    `p25_slot_bind_reception()`), and every path that reuses a stored flag (an addressless or source-less voice start
+    inheriting the canonical call's talker, or the assignment's source, target or kind) reads it through
+    `p25_sm_verdicts_now()`, which counts none earned under another reception generation, so Phase 1 frames heard
+    between two Phase 2 messages of one call end the talker's verdict (test `P25_P2_HARRIS_GPS`
+    `test_phase_change_reuse()`). The one carry is a grant's: `p25_grant_store_slot_context()` runs after the retune
+    the grant causes (`p25_grant_try_tune_vc()`, which applies to the reception at once on the decoder thread), so the
+    grant's checked talker counts on the channel it sends the receiver to, and only there
+    (`test_grant_carry_across_its_retune()`). The other
+    producers name the sender from the report's own carrier
+    (a data header bound to its assembly by an origin, an LSF, a TETRA SDS), which admission's origin check binds to
+    the reception. Test: `CORE_POSITION_ATTRIBUTION` (a matrix per producer), with the per-producer tests above.
+  - A P25 special address (`$FFFFFC`-`$FFFFFF`: FNE use, System Default, Registration Default, ALL units; the table
+    the unit activity log uses) names no radio wherever a report's source comes from
+    (`dsd_position_source_names_radio()`, `p25_source_id_is_subscriber()`): admission clears such a source and keeps the
+    destination, so a checked report from a fixed network endpoint (P25 SAP 0/4 IP data takes the low 24 address bits
+    as the source: LRRP, LOCN, LIP over UDP from 10.255.255.253) is anonymous. The sender is sanitised once, where the
+    packet is read and before any text or record is made of it (`decode_ip_pdu()`; the MDPU header and its extended
+    address in `p25p1_pdu_data.c`), so the notice row, its text (`LIP SRC:`, the LRRP summary, `EXT ADD SRC:`) and the
+    report all name no sender; only the raw header dump prints the address as sent. DMR addressing is unchanged.
+    Test: `DMR_LIP_CARRIERS`.
+  - ASCII NMEA (`nmea_sentence_checker()`, the RMC/GGA parser in the core-private `src/core/gps/nmea_sentence.{h,c}`;
+    P25 SAP 48, NXDN data format 0x06): the packet check plus each sentence's own checksum; the first RMC with status
+    A and mode A, D, F, R, P or none, else the first GGA with quality 1-5, at a position other than exactly 0, 0 (a
+    sentence there is kept as text but chosen as no report), is the report / the same packet, whose
+    header also names the destination (`dmr_lrrp_target`; a P25 LLID is a radio, an NXDN header a group for call
+    type 0 or 1, kept in `dmr_data_checked_group`). The RMC date's two-digit year is read in the century that puts the
+    date closest to its reception on the decode clock, so within 50 years of it (`dsd_gps_two_digit_year_date()`; a
+    replayed capture keeps its own century; with no century within 50 years, such as 29 February 00 received in 2080,
+    the fix time is unknown). The checked sentences' text reaches the console (`NMEA:`) and the notice only from a
+    packet whose report admission admitted (`nmea_packet_text()`, after admission): a CRC-failed packet's says
+    `NMEA withheld (CRC ERR)`, and one with no measured fix or a refused report (a status V RMC, an RMC at exactly
+    0, 0 alone) `NMEA withheld (no admitted position)`, since its sentences can hold the coordinates the decoder
+    rejected. A payload is NMEA
+    when the parser frames it so (`nmea_payload_framed()`: line ends, then `$` or `!`), and then none of it is ever
+    plain text (P25 SAP 48's text fallback), whether or not its sentences pass. A SAP 48 packet whose CRC failed (`-F`)
+    takes neither branch (`p25_handle_sap48_location_data()`, fail closed): a damaged first octet makes an NMEA report
+    read as text, and the service's text can hold a position in any form, so its payload is never printed, staged or
+    kept as text or GPS; its notice says `P25 Location Service: payload withheld (CRC ERR);` (the raw MPDU dump stays
+    with `-Z`; test `CORE_NMEA_SENTENCE`). Nor does one whose MDPU header was heard on another reception than the one
+    the receiver is on now (`p25_mdpu_origin`: a retune, target switch or change of P25 phase since the header): the
+    header and block CRCs are separate checks, so neither branch stages anything, the packet gives no notice, and the
+    console says `P25 Location Service: payload withheld (reception changed);`. The sentences and the report are read
+    from the whole payload (up to `NMEA_PAYLOAD_MAX_BYTES`, more than any P25 packet or NXDN data call carries; only
+    the kept text is bounded).
+  - NXDN GPS (`nxdn_gps_report()`, `FORMAT_PROVISIONAL`): the data CRC32 and the full report length / the checked data
+    call header bound to the same assembly (`nxdn_data_call.c`: `nxdn_data_origin`, `nxdn_data_header_ms`,
+    `nxdn_data_carrier_seq`; a message lost on a channel that can carry a header -- a failed FACCH2/UDCH,
+    FACCH3/UDCH2 or CAC CRC, a FACCH1 none of whose copies passed -- a rejected header, another reception or carrier,
+    or 2 s on the decode clock drop it). A payload with no bound header gives no position. The same header
+    names its destination. Its own notice.
+  - M17 GNSS META (`m17.c`; `m17_parse_gnss_meta()` and `m17_parse_extended_callsign_meta()` take the 14 META bytes, no
+    packet specifier): an LSF or LSD (RF, or an IP stream or packet frame) whose CRC passed, never the encoder's
+    monitor; one report per transmission and META content (keyed by the slot 0 call epoch, plus the stream ID on IP,
+    so any end of the call -- stream EOT, EOTX, DISC, an MPKT's end, a timeout, a lost sync -- starts another
+    transmission; by the whole checked LSF (sender, destination and type word), an IP stream frame's CRC-covered frame
+    number (a stream whose frame number starts again at or below the last one heard, its EOT missed, is another
+    transmission) and the reception generation, except that a byte-identical copy of any of the last 16 network frames
+    (stream frame or MPKT) whose META was admitted or repeated -- a duplicated datagram, the latest frame's or a late one
+    from a slower network path, its length and 64-bit FNV-1a digest equal, heard on the same reception within
+    `DSD_POSITION_REPEAT_MS` -- is always a repeat, never a restart, after an EOT or an MPKT's end too
+    (`m17_gnss_is_duplicate()`); this repeat state lives in the M17 state extension, slot 31, `m17_gnss_state`, freed
+    with the run; one that cannot be created admits no META position), so two stations, or one station sending to another destination,
+    reusing one stream ID with no call between them, or one report heard again on another reception, are two reports;
+    the published target stays unknown). The epoch is the call
+    the same LSF observed: an LSF that observes none (a stream of data type 0) is bound to no transmission, whatever M17
+    call is still ACTIVE on the slot, so each such RF report is admitted again and none touches that call's row. An LSD
+    assembled from LICH chunks (`m17_lich_assembly`) is bound from its first chunk to the transmission (the ACTIVE M17
+    call's epoch, 0 none; an LSF frame, a packet frame, an EOT and the carrier's end empty it), the confirmation
+    (`m17_confirmed`) and the reception generation; a chunk heard after any of them changed resets it, and only an LSD
+    holding all six chunks under one binding, its CRC passed, names a call or carries a position (`-F` may still show
+    the rest). The LSF's CAN is noted (`dsd_rxid_note_access()`) before
+    its call is published, so a CAN that moves the received identity's epoch opens the call on the reception its META
+    position is admitted against. A packet never carries a position (0x91 is shown as an unknown protocol). D-STAR D-PRS (`dstar_slow_data.c`): a whole GPS-A record (at most 300 bytes,
+    `dstar_dprs_assembly`; both slow-data assemblies live in the D-STAR state extension, slot 30, `dstar_sd_st()`,
+    created at first use, never in public `dsd_state`; if it cannot be created no record or message is assembled) whose CRC-16/X.25 over the text after `$$CRCxxxx,` matches. Each slow-data block goes by
+    its own mini-header, except a rebroadcast header's own nine blocks (`dstar_sd_first_block()`): the header CRC covers
+    their octets but not their mini-headers, so none of them is ever text or GPS data, whatever type its mini-header
+    names; the block after them is read like any other. Only GPS blocks (0x3n) feed the record and the `GPS DATA:`
+    display (a raw dump, `-Z` only: a part of a record not yet checked or admitted), the `_UNK:` dump shows only blocks
+    of no known kind (never a GPS, text or filler block, nor a header's own blocks, so GPS bytes reach the output only through `-Z` or an admitted
+    position), only text blocks
+    (0x40-0x43) the 20-character message (`dstar_text_assembly`), each at its place. Both assemblies follow one binding
+    rule (fail closed, `dstar_sd_binding` in `dstar_sd_state.h`): from its first byte or block an assembly is bound to the
+    transmission (`dstar_tx_seq`, advanced by every RF header, decoded or not, and the carrier's end:
+    `dstar_tx_begin()`), the call a checked header of that transmission named on the current reception
+    (`dstar_tx_named_call()`: `dstar_tx_call_epoch` while `dstar_tx_call_origin`, the reception the header was heard on,
+    still matches; 0 none, and 0 once a retune, target switch, another system's frame or another protocol's frame (an
+    M17 frame between two D-STAR ones, `dsd_rxid_note_sync()`) moved the reception generation, whatever call stays
+    ACTIVE across it), the confirmation (`dstar_confirmed`) and the reception generation; a byte or block heard after any of them changed
+    resets it (a fresh text assembly starts from an empty message, so a new transmission whose block 0 was missed shows
+    none of the last message's characters; a text block whose place is at or before one heard since the last block 0
+    starts the next message, its block 0 missed, the same way), and a D-PRS record is checked against its binding before its CRC counts as
+    evidence. What an assembly
+    produces reaches only that named call (`dstar_sd_bound_call()`): the record's source is the call's callsign and
+    the row takes its position only through it, and only when the record's own CRC-covered APRS source, its -SSID
+    aside, is that callsign too (`dstar_dprs_source_is()`: another station's record, heard while a call whose
+    boundaries were missed stays ACTIVE, is not the call's; otherwise the feed takes the record anonymous), and the message reaches
+    the row only when every block, its first (place 0) among them, was heard while the transmission was confirmed.
+    Otherwise slow data is display text alone. Both header paths (`dstar_header_decode_soft()` and the slow-data
+    header) put a checked header on the call through `dstar_header_observe()`, which takes the MY field (with its
+    suffix) as the source only when its first eight octets name a station: a suffix alone is no caller. Every header
+    field either path acts on (the callsigns, and the DATA flag that keeps a slow-data header with it set from naming a
+    voice call) is read from the bytes its CRC covered, never from the printable display copy. A checked RF header with DATA
+    set opens its data call but names no call for slow data; a checked slow-data
+    header with DATA set names no call and opens none, and revokes what a header heard before named
+    (`dstar_tx_unname()`: `dstar_tx_call_epoch` cleared; the record and message assembled under that naming drop at
+    their next use by the binding rule, while an anonymous one, assembled while nothing was named, goes on), so a voice
+    call left ACTIVE after its terminator and the next RF header were missed never takes that transmission's slow data. A record that loses its CR ends at the next `$$CRC`, or at the 300-byte bound, whose last bytes still go
+    on to the hunt for a `$$CRC` that straddles it. TETRA LIP (`tetra_mle.c` `sds_lip_*`, SDS PID 10, direct or
+    concatenated): the MAC block CRCs and the LLC FCS when sent, on a proven carrier; the calling party SSI, with the
+    sender's own MCC/MNC as the sender scope when sent.
+  - DMR packet binding (`dmr_data_header_binds()` in `dmr_block.c`, fail closed). A data block, and a DPF 15 header
+    that extends a standard one, belongs to the standard data header that armed its lane only when it came on the
+    reception that header's origin still matches and in a burst of the same identity (`dmr_data_air[slot]`,
+    `dsd_position_dmr_air()`): the sender kind by its sync word (BS-sourced, MS-sourced, direct mode) and, on the
+    single-slot decoder, the over-the-air slot (proven by the CACH, named by a direct-mode sync word; an MS-sourced burst
+    has none to prove, decided limit; a BS-sourced lane still Checking binds nothing). Otherwise the packet is dropped
+    (`Data block not from its header's slot or reception; packet dropped;`), so a header's radio never names another
+    transmission's blocks; an MBC header clears the origin, so no data block binds to it (test `DMR_DATA_HEADER_AIR`,
+    through the real single-slot data path).
+  - Origin and `-L`. Multi-fragment producers capture the origin with the first fragment (`dmr_data_origin[slot]` at the
+    DMR data header, `p25_mdpu_origin` at a P25 Phase 1 MDPU header block in `p25_mpdu_collect_blocks()`,
+    `nxdn_data_origin`, the L3Harris Part A, the D-PRS record, each TETRA MAC-fragmented TM-SDU
+    (`tetra_mac_fragment::origin`, which `tetra_mac_sdu::origin` carries to the MLE) and each TETRA concatenation, whose
+    first part keeps its own first fragment's) and pass it to admission (LRRP
+    and LOCN through `dmr_pdu_position_origin()`, LIP over UDT or UDP and UDT NMEA through `dsd_gps.c`'s
+    `gps_packet_origin()`, both picking the DMR or the P25 one by the sync type), which refuses the report when a
+    retune, target switch, reception change or change of P25 phase came in between (the L3Harris Part B also refuses
+    to pair: `GPS Part A of another reception`). Such a report publishes nothing of its own under the
+    reception the receiver is on now: no text, no staged GPS and no notice of its own (`nmea_sentence_checker()` and
+    `sds_lip_report()` test the origin before they stage anything; the other producers stage only what admission
+    admitted, and the data notice of a DMR or P25 packet names only its checked header). `-L` rows: LRRP and LOCN through
+    `dmr_pdu_write_location_row()`, LIP through `lip_write_location_row()`, the rest through `dsd_gps.c`'s writers,
+    always from the admitted record (its source, 0 when admission cleared it); NMEA and NXDN rows need a source.
+    Position error 7 (LIP, embedded GPS) is kept and marked `VALIDITY_UNKNOWN`. `EMERGENCY` comes from the L3Harris E
+    bit and from a LIP short report's reason for sending 2 (`lip_parse_short_report()`, so DMR and TETRA alike; never
+    from user-defined data, and never from a USBD reply, whose 3-bit reason table has no emergency code). The records keyed to a call epoch or
+    transmission (the DMR checked-LC source, `p25_p1_lc_attribution`, the L3Harris Part A, the call a D-STAR header
+    named, `dstar_tx_call_epoch`) stay in their protocols, and the call state knows none of them: it never gives out
+    an epoch twice on one state (`dsd_state::call_epoch_floor`; a new call-state extension, as another engine run on a
+    reused state makes, goes on from the last one's epochs), so a record the last run left matches no call of the next.
+    A new transmission whose own header failed its check names no source: every DMR voice LC header clears the slot's
+    checked-LC record, every P25 Phase 1 HDU clears `p25_p1_lc_attribution` and the L3Harris Part A, and every D-STAR RF
+    header, whatever its CRC, begins another transmission (`dstar_tx_begin()`: the half-assembled D-PRS record and text
+    message are dropped) whose slow data reaches no call, its D-PRS records anonymous, until a checked header, on RF or
+    in the slow data, names the transmission's MY callsign on the reception the slow data is heard on
+    (`dstar_tx_named_call()`; a checked header with a blank MY
+    field names no one and leaves them anonymous too). Tests:
+    `CORE_POSITION_FEED`, `CORE_CALL_STATE_ALLOC`, `CORE_NMEA_SENTENCE`, `CORE_GPS_LRRP_CRC_GATING`, `DMR_EVENT_CRC`,
+    `DMR_USBD_INBOUND_SYNC`, `P25_P1_HARRIS_GPS`, `P25_P2_HARRIS_GPS`, `P25_P1_MDPU_HELPERS`, `P25_P1_TDULC`,
+    `NXDN_GPS_DISPATCH`, `M17_GNSS_POSITION`, `DSTAR_DPRS`, `TETRA_LIP`.
 - API note: the unit activity ring (`<dsd-neo/core/unit_activity.h>`, `src/core/util/unit_activity.c`, state
   extension 14) is the session's log of trunking unit events: registrations, deregistrations, talkgroup joins, denies,
   queued and waiting responses, radio commands, status and message reports. Protocol producers push one plain record
@@ -3579,7 +3962,13 @@ suite runs under this compiler.
   every retune of an advance failed puts back the record the advance started with (the coordinator's `rollback_rx_id`,
   taken with the scratch snapshot, again after a forced release); `processFrame()` calls `dsd_rxid_note_sync()` before
   each dispatched frame, so a frame of another protocol family (YSF, D-STAR, X2-TDMA included, which note nothing) drops
-  the record; the no-carrier pass's last step (`dsd_engine_no_carrier_identity_stale()`, under the guard; a pass that
+  the record, and a frame of another protocol than the last one's (`dsd_state::rx_sync_protocol`: the family, or for a
+  protocol that notes nothing the protocol itself) moves the epoch even when neither noted anything (issue #800, fail
+  closed: a D-STAR call, an M17 BERT frame and D-STAR again are three receptions, so a D-STAR header's naming and every
+  multi-fragment report's origin end at the switch; both P25 phases, every DMR burst and both polarities are one
+  protocol, but a P25 sync of the other phase than the last P25 sync moves `dsd_state::rx_phase_seq`, and so the
+  reception generation, keeping the record; an applied retune starts the carrier reached's phase afresh, so a Phase 2
+  voice channel a Phase 1 control channel granted moves the generation once, by the retune); the no-carrier pass's last step (`dsd_engine_no_carrier_identity_stale()`, under the guard; a pass that
   finds it taken leaves the step to the next, as it leaves the playout drain) marks every part stale and keeps the
   values; every accepted trunk retune, a voice channel grant (`dsd_engine_update_vc_tune_state()`) or a control channel
   return or hunt step (`dsd_engine_trunk_tune_to_cc_request()`), requests `dsd_rxid_trunk_tune()`, which drops the
@@ -6440,6 +6829,15 @@ the stream-notice hooks' pattern: one that fails to initialize leaves the hook u
   prints apart (`Seed: BEE00.348.293 (set)`). Tests: `APP_CONTROL_SITE_IDENTITY_VIEW`, `UI_NCURSES_PRINTER_HELPERS`,
   `UI_NCURSES_VISUALIZERS_HELPERS`, `UI_NCURSES_P25_DISPLAY_HELPERS`, `UI_QT_METRICS_MODEL`,
   `APP_CONTROL_SNAPSHOT_EVENT_HISTORY` (the record rides the snapshot).
+- Positions (issue #800): `include/dsd-neo/app_control/position_view.h`, `src/app_control/position_view.c` and the
+  private `position_ring.h`. One static published ring of 1,024 records in `ui_snapshot.c`, beside `g_pub_eh`: the
+  publish hop copies the feed records above the last one it published under `g_mu`, the consumer hop copies none, and
+  nothing allocates. A run's first publish replaces the previous run's records, and a publish with no live feed keeps
+  the last run's, so its final publish (Engine above) stays readable after the stop. `dsd_app_position_copy_since()`
+  reads it from any thread with a cursor of the reader's own (`stream_id`, `last_seq`, `oldest_seq`/`newest_seq`,
+  `more`, `lost`, `reset`) and the clock sample stored with the ring (`stream_id`, `decode_now_s`, `clock_source`,
+  `running`, which the exit flag clears at the final publish), so a frontend ages a replay's fix on the replay clock
+  only while that run is going. Test: `APP_CONTROL_POSITION_VIEW`.
 - Unit activity: `include/dsd-neo/app_control/unit_activity_view.h` and `src/app_control/unit_activity_view.c` read
   a snapshot's unit activity ring (Core) for every frontend (the Qt Activity screen, the terminal panel), so both say
   the same thing.
@@ -6577,7 +6975,18 @@ the stream-notice hooks' pattern: one that fails to initialize leaves the hook u
     restart drops above. A collection reports the entries it found as its total. `status.scan_avoids` is the held
     summary; `get {"what":"scan_avoids","offset","limit"}` (`dsd_api_feed_scan_avoids_page()`, limit 1..64) takes a
     reference under the lock and formats its page (the view's labels, each entry's `scan_avoid_remove` identity) on
-    the session thread outside every lock, so the replaced block is freed by its last reader
+    the session thread outside every lock, so the replaced block is freed by its last reader. Positions (issue #800):
+    `track_positions()` follows the decoder's live feed (`dsd_position_feed_copy_since()`) at every publish, as
+    `track_events()` follows the rings, and builds and broadcasts `position` lines (topic `positions`, `pos_stream` as
+    a decimal string, `pos_seq`) only while a client subscribes; with none it moves its cursor to the newest seq. A
+    new stream is followed from its first record. `dsd_api_feed_start()` takes the baseline from the published ring
+    (`dsd_app_position_copy_since()`), so a server started during a run sends none of the run's earlier records.
+    There is no backlog and no `get`: a batch can hold records kept since the previous publish, before a session
+    subscribed, so each session keeps its own cutoff (`pos_after_rev`, `dsd_position_last_rev()` when it subscribed to
+    positions) and `dsd_api_broadcast_positions()` queues it only the lines whose record `rev` is later (tests
+    `API_SERVER`, `API_FEED`). A line that cannot be built or appended stops the batch, and the feed's cursor moves only
+    past the lines gathered, so the next publish retries the rest. A gap in `pos_seq` is a report kept while
+    unsubscribed or overwritten in the 1,024-record ring between two publishes
   - `api_commands.c`: one table entry per `DSD_APP_CMD_*` (`API_COMMANDS` reads `commands.h` at run time and fails on a
     command without one), mapping `params` onto the exact payload through the same app-control submit functions the
     frontends use; each entry names its submit function and, for a string command, the longest value its handler
@@ -12255,6 +12664,85 @@ Private per-protocol modules worth knowing about:
   that release is never received, so that call keeps whatever name its row had. The fast release is kept (maintainer
   decision): it returns the tuner to the control channel early, and an alias sent before the second END, or on a
   channel the fast release does not close, still names the call (see the Motorola alias invariant under Core).
+- P25 identity provenance (`p25_trunk_sm.c`, `<dsd-neo/protocol/p25/p25_trunk_sm.h>`, issue #800). Each slot's
+  assignment and each `p25_sm_event_t` carry `identity_checked`: `P25_SM_IDENTITY_CHECKED_SOURCE`, `_TARGET` and
+  `_KIND` (group or private), set only from the check the producer ran on the message (a grant's or MAC message's own
+  CRC, a link control's hard RS decode). One rule holds for every field, in the slot's assignment and in the record of
+  its canonical call (`p25_sm_published_identity`): the message that names a value sets that field's flag from its
+  own check; a later message naming the same value sets the flag when its check passed and never clears it, without
+  a new epoch or a new crypto classification; a message that omits the field (0 or absent) leaves the field and its
+  flag as they are; a message naming a different value replaces the field and its flag takes that message's verdict;
+  a new call epoch, a release or a reset clears all three. A failed check never sets a flag, and a field inherited
+  from an earlier assignment keeps that assignment's flag. Every site that sets or confirms identity applies it
+  through `p25_sm_identity_claim` (only the fields the message itself named): new grants (`p25_grant_store_slot_context`,
+  a new assignment), duplicate grants (`p25_grant_duplicate_apply_identity()` → `p25_slot_apply_identity_claim()`: a
+  repeat matched on the same carrier, slot and talkgroup that names another talker, or one matched on an FDMA carrier
+  by the target its call is judged by that names another target or kind, replaces that field in the assignment with
+  its own verdict, so the earlier value's flag never names the next report; during voice the call then republishes
+  with the new talker, a new canonical epoch, and `p25_grant_duplicate_start_new_call()` drops everything call-specific
+  the earlier talker left on the slot (ALG ID, key ID and MI, service options, talker alias) and classifies the new
+  call from the repeat's own service options alone, encryption pending when it carries none; test
+  `P25_P2_HARRIS_GPS`), voice starts that change the call (`p25_voice_start_commit_identity`) and ones that change
+  nothing (`p25_voice_start_promote_identity`), the trunk-off publication (`p25_sm_conventional_note_identity`), and
+  Phase 2 MAC_SIGNAL voice users that observe the canonical call themselves (`p25p2_vpdu_observe_voice()` →
+  `p25_sm_note_call_identity()`, with the MAC CRC verdict). A voice user also updates the slot's assignment
+  (`p25_slot_note_voice_user()`): naming the assignment's kind and target, it applies there as a repeated grant does,
+  so a later source-less MAC_ACTIVE inherits the latest talker with that voice user's verdict, never the grant's; naming
+  another kind or target, it drops the assignment's source, which no longer says who is talking. An addressless voice
+  start (a MAC_ACTIVE with no voice user) takes the canonical call's talker only while that call is the assignment's
+  (same kind and target, `p25_voice_assignment_call_src()`), so a talker of another talkgroup is never paired with
+  the assignment's talkgroup.
+  The record holds the call's current source, target and kind, its protocol and the reception generation its flags
+  were earned under (`rx_gen`); `p25_sm_merge_published_identity()` keeps a flag only within the same epoch, reception
+  generation and value, and an assignment's verdicts are carried into it only under the reception generation the
+  assignment was accepted under (`identity_rx_gen`; a grant's, after the retune it causes). Decoders publish through `p25_sm_emit_voice_start()` with the bits they set; the
+  older convenience emitters publish unchecked, and the event builders default to unchecked.
+  `p25_sm_checked_call_identity()` returns the record only while the call is ACTIVE on that epoch with that source,
+  target and kind, all three checked and a source named, and by the attribution rule (Core, position producers) for the
+  report's protocol class: a Phase 1 call never names a Phase 2 report's sender, and a NAC or system change without the
+  call ending withholds the record until a checked message names the call again. Position producers attribute a Phase 2
+  report only through it (Core, position producers), so a call followed from a CRC-failed grant under `-F` names no
+  radio on its positions until a checked message names the unchecked fields (a MAC_PTT, MAC_ACTIVE or voice user, or a
+  checked repeat of the grant); a private call's destination comes only from its grant. Phase 1 positions use the
+  hard-decoded voice-user LC record (`p25_p1_lc_attribution`, `p25_lcw.c` `p25_lcw_note_checked_identity()`), which
+  follows the same rule and fails closed: any later voice user of the call (LCO $00, $03, $4A, LCGRGR) that does not
+  record a radio takes the record away, unless it only repeats the record's source by a soft decode or names source 0
+  (an omitted field). That is one naming a special address, a source that is not a complete local address (the Source
+  ID Extension Required flag, octet 3 bit 0, or LCO $4A, whose Source ID always needs the extension), another radio by
+  a soft decode, or a radio the call does not hold, whether or not a trunked assignment keeps the earlier talker for
+  display (test `P25_P1_HARRIS_GPS`). The LC record also counts only while the state machine's record of the same
+  call has not withdrawn that talker (`p25_sm_call_source_withdrawn()`: it names another source, or that one without
+  its checked flag as it counts now), so any checked message the state machine applies to the call, a repeated grant
+  naming a special address or a non-local source among them, revokes the LC evidence as well (test
+  `P25_P1_HARRIS_GPS` `test_repeat_grant_withdraws_evidence()`). A link control
+  counts as hard-decoded only when no soft-erasure retry recovered it and the caller's `irrecoverable_errors` verdict is
+  0 (`p25_lcw()`, `p25_lcw_from_tdulc()`). A special address (`0xFFFFFC`-`0xFFFFFF`) is never a checked source
+  (`p25_source_id_is_subscriber()`): not in a claim, not in the LC record, not as the source of a SAP 48 NMEA packet, so
+  a report during such a call or from such an LLID is kept anonymous (and admission clears one that reaches a report
+  another way, `dsd_position_source_names_radio()`). A message whose source field holds one is no evidence for any
+  talker either (fail closed, `p25_sm_identity_claim::source_placeholder`): the call may keep the assignment's talker
+  for display, as before, but that talker loses its checked flag in the assignment and in the record, so a dispatcher
+  or network PTT after a checked talker leaves the next report anonymous until a checked message names a radio. The
+  identity tracking reads every source field as received (raw, before the display sanitises it): a MAC_SIGNAL voice
+  user passes its raw source to `p25_sm_note_call_identity()`, so a special address there withdraws the flag rather
+  than reading as an omitted field. A source that is not a complete local address of the reception is read the same
+  way (`p25_sm_event_t::source_nonlocal`): its value stays for display, but it is never checked and it takes the
+  source's flag away. That is a unit named only by its home SUID whose WACN and System ID are not the reception's
+  checked network status (`p25_sm_suid_home_is_local()`, so also while the reception's system is not known): the
+  Phase 2 extended VCH unit-to-unit grant (0xC4/0xC6, which carries the source SUID alone); and a Phase 1 voice-user
+  LC that needs a Source ID Extension (LCO $00 and LCGRGR with S set, LCO $4A). A message that carries a working
+  source address as well as the home SUID names the talker by the working address, which is local: the extended voice
+  users (Group and Unit to Unit Voice Channel User - Extended, 0x21/0x22, as MAC_SIGNAL and inside
+  MAC_PTT/MAC_ACTIVE: `p25p2_mac_decode_voice_identity()`, `p25p2_vpdu_observe_voice()`), as the extended grants that
+  carry one do; the SUID is only shown (`SUID:`), so a roaming radio's checked voice user names it like any other.
+  A foreign unit's home ID alone therefore never names a report's sender, a sender scope or a local radio-list label.
+  The
+  verdicts are bound to their reception: a claim applied after the reception generation moved (another access code
+  or system, a retune, a change of P25 phase) first drops every flag the assignment earned under the old one and
+  rebinds `identity_rx_gen` (`p25_slot_bind_reception()`: voice
+  starts, promotions, repeated grants, voice users), so a checked PTT naming the talker under the new reception names
+  the next report, and nothing checked under the old one is inherited. Tests: `P25_P2_HARRIS_GPS`,
+  `P25_P2_XCCH_HELPERS`.
 - `src/protocol/dmr/dmr_confidence.{c,h}` — colour-code and voice-burst confidence, so a burst has to be corroborated
   before DMR decodes or unmutes it. Every evidence point also stamps `dsd_state::dmr_confidence_lock_m` with the
   decode time (never cleared, not even by `dmr_confidence_reset()`), which a startup control-channel hunt reads as
@@ -12365,7 +12853,8 @@ Private per-protocol modules worth knowing about:
   protocol has a per-frame check: a D-STAR
   superframe costs 1992 symbols and a ProVoice frame 736, and the AMBE/IMBE error counts they leave in
   `dsd_state::errs`/`errs2` are soft corrections, not verdicts. D-STAR confirms on a CRC-16/X.25 — the RF header via
-  `processDSTAR_HD()`, or the header rebroadcast in `dstar_slow_data.c` — and both confirm on a second frame arriving
+  `processDSTAR_HD()`, the header rebroadcast in `dstar_slow_data.c`, or a whole D-PRS (GPS-A) record whose `$$CRCxxxx`
+  matches its text (issue #800; the `$$CRC` literal alone proves nothing) — and both confirm on a second frame arriving
   behind its own exact sync word before the carrier drops. `processDSTAR()` and `processProVoice()` return the answer,
   the dispatch handlers map it to `dsd_frame_verdict`, and the engine clears it with the carrier through the exported
   `dstar_confirm_reset()`/`provoice_confirm_reset()`.
@@ -12604,7 +13093,8 @@ evidence (`air_ksg`: per network, the set of KSG numbers its signalling named; `
 the encryption mode
 of the last addressed MAC-RESOURCE, the reassembly contexts (one message each, keyed by its reference, its transport
 and its sender's TETRA subscriber identity: the SSI with the network a calling party of type 2 names in its extension
-and one of type 1 leaves to the current network, EN 300 392-2 clause 14.2.3 and tables 14.43, 14.44) and the D-MM
+and one of type 1 leaves to the current network, EN 300 392-2 clause 14.2.3 and tables 14.43, 14.44, and the party
+its MAC address names, so two messages' parts to two parties never make one message) and the D-MM
 STATUS the frontends show. What a BSCH of
 another cell or network forgets is decided in one place (`bsch_identity_change()` in `tetra_bsch.c`, before the new
 identity is taken, so what ends carries the network it was decoded on). The SYSINFO part belongs to the cell: a BSCH
@@ -12634,13 +13124,18 @@ its SYSINFO names another location area, whose call identifiers may differ (clau
 here tunes: a followed call of the last network is followed on as a channel without a call record until the grant
 timeout or the hangtime ends it. A fragmented TM-SDU (clause 23.4.3.1.1) is rebuilt per
 timeslot, the one the TDMA clock gives its first fragment: before the clock is set (a new carrier before its BSCH) a
-first fragment is not kept, since a continuation of any timeslot could join it (`start_fragment()`). It is dropped
+first fragment is not kept, since a continuation of any timeslot could join it (`start_fragment()`). The first fragment
+captures the reception it came from (`dsd_position_origin_capture()`), and a MAC-FRAG or MAC-END heard under another
+one (a retune however made, the trunking state machine's Next Channel with no carrier boundary among them, a trunk-scan
+switch, a received identity change) drops the TM-SDU instead of continuing it (`fragment_continues()`, issue #800, fail
+closed), so nothing rebuilt from two receptions reaches the MLE. It is dropped
 after N.203, four slots of its timeslot without a fragment, counted on the TDMA clock: the slots of
 the timeslot that went by undecoded count too (`catch_up_fragment()` in `tetra_mac.c`), so a late continuation cannot
 join an expired prefix. Tests: `TETRA_MAC_PDUS`, `TETRA_MLE_PDUS`, `TETRA_SDS_PDUS`, `TETRA_CMCE_PDUS`,
 `TETRA_MM_DISPATCH`, `TETRA_MLE_CMCE` (the SDS-TL, text and reassembly cases, the sender's identity, the reassembly
 a network change drops),
-`TETRA_MAC_STATE`, `TETRA_MAC_FRAGMENTS` (the TM-SDU a network change drops, none without a timeslot),
+`TETRA_MAC_STATE`, `TETRA_MAC_FRAGMENTS` (the TM-SDU a network change drops, none without a timeslot), `TETRA_LIP`
+(a LIP report in a TM-SDU whose fragments straddle a retune or identity change gives nothing),
 `TETRA_TDMA_CLOCK`, `TETRA_CALLS` (the
 network, cell and location area boundaries), `TETRA_VOICE_PIPELINE` (the speech a cell or network change starts
 over).
@@ -13373,7 +13868,20 @@ single "current call".
   clauses 6.3.4 and 9.7.10, annex B: the CRC of `tetra_llc_fcs32()` over the DM-SDU elements before it; the parser
   records the verdict, `tetra_dmo_sync_h_t::fcs_state`): short data whose FCS fails, or whose DM-SDU the block ends in
   before its FCS, is discarded (clause 6.3.2), neither noted nor kept as the last one noted, since the channel CRC does
-  not stand in for it. Cell reselection is not noted: it concerns one MS at a time.
+  not stand in for it. Cell reselection is not noted: it concerns one MS at a time. An SDS under PID 10 holds a LIP
+  PDU (issue #800, `sds_lip_*` in `tetra_mle.c`): whole, or a complete concatenated message that completed on the
+  reception its first part arrived on (a reassembly begun on another reception is dropped before a new part is taken,
+  so a message sent again whole completes), its parts addressed to one party, by value and identity space
+  (`tetra_calls_addressed_party()`: an SSI, an SMI and a USSI of one value are three parties, so their parts never
+  join; parts addressed by an event label alone name no party, so their message's position is refused as `recipient
+  unknown`). A repeated part 1 is a duplicate only with
+  the same bits and the same payload PID; under another PID it is another message's part 1 and discards the one held. Its notice reads `SDS SRC: <ssi>; TGT: <ssi>; LIP: <what>;` and carries the
+  position of an admitted short report (Core, position producers); a long report, another PDU type, a truncated one,
+  one after a reserved calling party type and one on an unproven carrier give no position. The track is the calling
+  party's own network (MCC/MNC) when it is sent, else the decoded one; a foreign sender is named only by a label
+  learned for its network. The destination's group or individual kind is not known (the MAC address does not say),
+  so the record names no target (`target_id` 0, never `TARGET_GROUP`; the notice still shows the address). Test:
+  `TETRA_LIP`.
 
 Tests: `TETRA_CALLS` (records, attachment, policy, hold, preemption, lockout, renaming, the followed call's in the
 first block on its carrier included, identifier reuse, another calling party or its network included, a released,
@@ -14881,10 +15389,13 @@ Qt Quick frontend (`src/ui/qt`):
     stamp>`, the recording journal's `instance`, `slot` and `row` joined. A merge, load folding and a notice heard again
     add the absorbed fragments; an index (fragment -> uid) is rebuilt at load and kept by every ingest, fold, trim and
     clear. `uidForFragment()` (issue #809: a Signal search recording names its call by fragment) reads it: the uid of
-    the row holding the fragment now, the row it merged into, or 0 once that row is trimmed or the log cleared; a
+    the row holding the fragment now, the row it merged into, or 0 once that row is trimmed or the log cleared, or
+    while the fragment is withdrawn from it (issue #800: its reading named another call, `FragmentPart::withdrawn`); a
     double, which QML reads exactly. Rows older builds wrote have no fragments, and no recordings. The `recordings` and
     `hasRecording` roles ask a `CallRecordingProvider` (the call recording store; none, and so no recordings, until one
-    is set with `setRecordingProvider()`) by the row's fragments; the provider names the fragments whose recordings
+    is set with `setRecordingProvider()`) by the row's fragments, a withdrawn one left out (`recording_fragments()`, as
+    the export's recording names are): the row keeps its key only to know its later readings, and a reading that agrees
+    again gives its recording back; the provider names the fragments whose recordings
     changed through `recordingFragmentsChanged()`, and the rows holding them re-read the two roles. A recording the
     store knows before its row exists shows when the row arrives. The provider also names many rows' recordings in one
     read (`recordingEntryNames()`, the recording store below), for a History export.
@@ -15430,11 +15941,16 @@ Qt Quick frontend (`src/ui/qt`):
     one that names Capacity Max with the mask, channel and stamps unchanged. H1: an update for a fragment is applied to
     the row that holds it, found through `m_fragmentIndex` (`rowHoldingFragment()`), and only then to a row it merges
     with, because a fragment that no longer passes the merge test with the row it was folded into would otherwise be
-    dropped. Decided limits: L7, with a split on conflicting parts a fragment that knows fewer parts (none, or the
+    dropped. Issue #800: so is any reading of a held fragment, an update or not: the seen key holds the row's start,
+    which the core can fill in or move later (`watchdog_event_merge_stamps()`; a row with no start reads its end), so
+    a reading the seen store takes for new is still the fragment its row holds by ring identity, and merging it by
+    content could land it on another row or log a second one. Decided limits: L7, with a split on conflicting parts a
+    fragment that knows fewer parts (none, or the
     system without the site) joins whichever compatible row it meets first, so a live session (oldest first) and a
     backlog (newest first) can group the same three fragments differently; L8, a fragment that later learns parts
     conflicting with the row it already folded into has its identity discarded whole, with its channel, never picked
-    part by part, and is not split back out of the row. Persistence: the row's `site` object (one key per part; the DMR
+    part by part, and is not split back out of the row (a row whose only fragment it is follows that fragment's newest
+    reading, issue #800). Persistence: the row's `site` object (one key per part; the DMR
     texts as strings) and `cch`/`cchKind`/`cchWhen`/`cchSeq`/`cchSlot` (the seen store keeps the part mask `sm`, the
     text digest `stx` (written even when 0), and `cch`/`cchKind`; an entry without `stx`, from an older build, takes the
     first digest read without counting it as an advance, and that read saves the seen store (`SeenSettled`; when the
@@ -15470,6 +15986,146 @@ Qt Quick frontend (`src/ui/qt`):
     mode (`Analog NFM`, `Analog AM`, `Analog`) on the Encrypted/Unencrypted line (index 11); every line keeps its place,
     so `siteLineIndex` stays 9. Tests: `UI_QT_CALL_HISTORY_MODEL`, `UI_QT_QML_CALL_LISTS` (`tst_call_log_follow.qml`,
     `tst_monitor_recent_calls.qml`, `tst_monitor_call_identity.qml`), `UI_QT_QML_BACK_MODALS`.
+  - Call history texts, position and identity (issue #800; `call_history_model.{h,cpp}`, `call_history_merge.h`,
+    `call_history_payload.{h,cpp}`).
+    - Payload: every row, voice and notice alike, keeps its message text (`messageText`, with its provenance) and its
+      GPS text with the structured position (`gpsText`, `Row::Position`: lat/lon x 1e7, error, flags, kind, rev,
+      process instance, receive time), read from `Event_History::text_message`, `gps_s` and `pos`; the ring's position
+      only while `pos.valid` and its values pass `call_history_position_values_valid()`. `DetailRole` joins the two
+      texts with ` · `; a row an older build stored keeps its one text as `legacyDetail`.
+    - Identity: `Row` keeps the raw identity apart from display names: `protocol` (the sync type), `sourceText` and
+      `targetText` (raw `src_str`/`tgt_str`, kept only for protocols that name calls by text -- M17, D-STAR, YSF,
+      dPMR -- by `call_history_identity_text_is_raw()`: the EDACS `LID_<id>`, `LID_UNK` and AFS labels render a number
+      or its absence, and M17's `UNKNOWN` source names nobody), `sourceScope` (`pos.scope` and its discriminator, set
+      with or without a position) and `rxScope` (`rx_scope`). Merging (`rows_mergeable()`) treats two different known raw source texts as
+      two calls whatever their aliases (B3), compares the raw target text before a name (`row_destination()`, B4; two known raw target texts
+      that differ are two calls with a talkgroup too, `rows_identity_compatible()`), and
+      requires compatible protocol families (`call_history_protocol_family()`, the core's `dsd_sync_protocol_family()`
+      plus YSF, dPMR and X2-TDMA polarities) and scopes (`call_history_scopes_compatible()`, B5): an unknown scope
+      matches any; two scopes of the same strength (`call_history_scope_strength()`: feed-only frequency, then NAC /
+      Capacity Plus / EDACS, then a full system) must be equal, except that one known in part
+      (`call_history_scope_covers()`: an EDACS scope's site or system still 0, a P25 NAC scope with no tuned frequency)
+      joins one that knows those parts with the same values, and the row keeps the fuller
+      (`call_history_scope_learns()`; an EDACS site-only and a system-only identity stay two); a weaker one joins a
+      stronger one of its family, and the row keeps the stronger. So two conventional systems on two frequencies, or two P25 channels sharing a NAC, are two
+      rows, while a trunked call over several voice channels stays one. Rows saved without identity merge as before.
+      Fail closed (gate g62-r7): the row learns the fuller or stronger scope, and takes a fragment's fix, only from a
+      fragment heard on the row's reception (`fragment_same_reception()`, read on the row as it was before the reading
+      folds in anything): one protocol class (`call_history_position_class()`, the core's
+      `dsd_position_attribution_class()`: P25 Phase 1 and Phase 2 apart, a sync type known on both) and the core's
+      reception rule (`call_history_same_reception()`, `dsd_position_same_reception()` on History's rows: never on two
+      known carriers, `Row::rxHz`, the tuned frequency the reception was read with, which goes with `rxScope` and not
+      with the newest fragment's `freqHz`; else both scopes
+      known and equal with one discriminator, or the same reception generation of one ring, `Row::rxGen` and
+      `rxRing`, with nothing that says otherwise; two families, two tuned frequencies or two values of one kind are two
+      receptions, and an unknown side never matches across generations or decoder runs). A merged row stays anchored
+      to its first fragment still folded in (gate g62-r8), chosen from the parts as they stand once the reading is in
+      (gate g62-r9: a withdrawn fragment restored at its own place ahead of the others is the anchor again, so the row
+      returns to its reception and phase and takes that fragment's new fix): a new reading of that fragment is judged as
+      the row's own reception, and the row keeps its sync type and reception (`take_anchor_reception()`), so an update of its span or
+      alias neither withdraws its fix nor moves it to another fragment's phase; after every fold the fixes the row
+      keeps are only those of fragments heard on its reception now (`requalify_row_gps()`), so a row rebuilt onto the
+      other P25 phase (its anchor withdrawn) keeps no fix of the first. The merge of the conversation is
+      not gated: a call heard on 450 MHz with only a tuned-frequency scope and a fragment under a NAC on 451 MHz are one
+      row, which keeps its 450 MHz reception and none of the other carrier's fix; a Phase 1 row takes no Phase 2 fix.
+    - Fold (`foldRow()`, `rebuild_from_parts()`, `fold_gps()`): one model holds what every fragment gave. Each
+      fragment's contribution is a `Row::FragmentPart`, keyed by its fragment key (its ring identity, so two rings'
+      fragments with the same start, push stamp and slot are never taken for one): span, crypto and emergency flags,
+      frequency and access code, site and call channel, reception scope, receive evidence, service and the name it
+      gave, decode session, its sender (source number and text, sender system), sync type, numeric target and target
+      text, its source label and its text message, each with its provenance. Fail closed (gate g62-r5): a fragment's later reading
+      replaces its part whole (`merge_parts()`; a reading older by `Row::fragmentVers` changes nothing), so nothing an
+      earlier reading gave outlives it (a message, sender, destination, name, site text or anything else the ring
+      entry no longer carries is gone), and every row field a part gives is rebuilt from the parts on every fold
+      (`foldRow()`): what the row's other parts gave (`rest_of_row()`, which leaves out every part the reading gives
+      again), then each part the reading gives (`fold_reading_parts()`), so what the row held stays ahead of what an
+      update now says (a conflicting site is discarded); a row whose only fragment it is follows it. The sync type, the
+      numeric target and the raw destination are the call's, not the sender's: they fold from every part of the call
+      (`fold_call_identity()`; the core fills a committed call's unknown target in place on reacquisition,
+      `watchdog_event_merge_identity_fields()`, and the row takes it with the name the part gave, notifying `tg`), so a senderless fragment's destination keeps a later fragment naming another
+      destination off the row, and with the destination the row takes the name it gave its part when the row's own
+      name is only a label (a channel or a placeholder, not its service). A part gives the sender, label and message
+      only when it names the row's radio (`fold_part()`,
+      `part_gives_sender()`: the radio the row named, while a part still names it; the first a part names when the row
+      named none), so an anonymous fragment never enriches a named row, and one naming another radio (another number,
+      callsign or sender system) keeps them to itself; when the only part naming the row's radio goes, the row names
+      no radio again, and no other radio's part names it. Its other fields fold from every part of the call. An update
+      found by its fragment, which is not merged again, is judged against what the row's other fragments gave
+      (`fragment_call_compatible()`: one receive service by the merge's own rule, `receive_services_compatible()`, so a
+      fragment that merged with its over-the-air slot pending and is then proven on another slot is another service's;
+      protocol family, reception and sender system, numeric target and raw target text, a target either side does not
+      know no conflict), never against
+      its own earlier readings: one that names another call (another system, or a callsign or dial-string destination
+      other than the row's) is withdrawn (`withdraw_parts()`) and gives nothing, and the row is rebuilt from the rest,
+      every field it gave taken back together (its sender and radio, label, message, destination, session, frequency,
+      code, site, service, flags, span and reception scope), then re-sorted; its GPS unit goes too, and so do its
+      recordings (`recording_fragments()`). A later reading that agrees again gives its part back (`merge_parts()`).
+      The parts are persisted (`fp`, `pv` 2 for a part that holds its sender; a part an earlier build stored without
+      one takes the row's). A row an older build stored without parts is converted into the same model when it is
+      loaded (`row_from_json()`, `ensure_parts()`, `legacy_part_of()`): one part per fragment, each holding the row's
+      values, and a value that carries provenance (frequency, code, channel, label, message) only in the part of the
+      fragment its slot and push stamp name; a row with no fragments gets one part under a key of its own
+      (`legacy|` and its seen key, `legacy_part_key()`, stored in `fp` like a fragment key), so two such rows a load
+      merge folds together are two parts and the row keeps what either gave (the later row's source and emergency
+      flag). So withdrawing such a fragment takes back only those values: its
+      sender and the rest stay, as nothing tells which fragment gave them. The GPS units are kept per fragment beside
+      the parts (`Row::gpsOthers`, each a fragment's by its ring identity: its run's session ordinal, slot and push
+      stamp, `call_history_same_fragment()`, never its start, which the core can fill in or move; only for a unit of an
+      unknown run, an older store's, does the start guard the push stamp), and a reading
+      gives its own only when it names the row's radio and was heard on the row's reception (`fold_gps()`,
+      `fragment_same_reception()`). The texts anonymous fragments gave are
+      dropped when the row learns its radio. The reception scope folds by strength from a fragment heard on the row's
+      reception, whoever sent it. The message follows provenance; GPS text and position move as one, by `call_history_gps_adopts()`: the
+      greatest `(session ordinal, rev)` wins, a keyed fragment beats an unkeyed one (older rows, text-only GPS), and
+      unkeyed ones follow provenance. Two readings of one fragment are ordered first by `gpsVer` (the ring's
+      `commit_rev` when it was read, which every committed-row change moves and nothing resets): the later reading
+      wins with or without a position, so the core's text-only GPS write applies while an older spill line (keyed or
+      text-only) replayed over a newer save never does. A store without `gpsVer` falls back to the keys, and the same
+      fragment read again with no key takes what it says. The row keeps every fragment's GPS unit, the latest reading
+      of each (`Row::gpsOthers` beside the one shown), and shows the best of them: when the shown fragment's newer
+      reading drops its fix, the best remaining fragment's fix shows, whatever order the readings arrive in and after
+      a reload. A later reading of one fragment with neither GPS text nor a position (the core withdrew its report)
+      withdraws that fragment's unit (`call_history_gps_withdraws()`), so its fix is neither shown nor saved; a named
+      row drops only its anonymous units. A whole reading older than one the row already folded from
+      the same fragment (`Row::fragmentVers`, the ring's `commit_rev` of the newest reading of each fragment) is stale
+      and folds in nothing (`foldRow()`), so an older spill line never brings back a label, message, frequency or code
+      the fragment has replaced since. The session ordinal is persisted per ring
+      (`callHistory/sessionOrd/next` and `/rings`, the newest 64), given the first time a ring is read; the background
+      tap takes a reserved block of 1,024 (`kTapOrdinalBlock`, saved before it starts) and hands its ring map back at
+      every stop, so a later run's fix wins whatever order the fragments are read in.
+    - Re-ingest and notices: `SeenState` keeps digests of the GPS text, message and position (`gpx`, `msx`, `psx`),
+      so a late fix or message on a committed row is read again; an entry from an older build reads 0, so such a row
+      is read once more. It also keeps a digest of the raw identity (`idx`, `call_history_identity_digest()`: sync
+      type, `rx_scope` and whether it was read, `pos.scope` with its discriminator, `src_str`, `tgt_str`), so a row
+      whose system the core resolves in place is read again and its fragment checked against the row again; an entry
+      without one (an older build's, or `load()`'s seed) takes the first read's without counting it as a change, as
+      the site text digest does. A repeated notice (`notices_same_delivery()`) must match the texts, the fix
+      (coordinates, error, flags, kind), the raw target and identity. Against a notice an older build stored (one
+      `detail`, no message or GPS text) the texts compared are the ones that build would have stored
+      (`notice_texts_same()`: the message, else the GPS text, and that as the name of a notice with no summary), so a
+      replay after an upgrade gives the stored row its parts rather than logging it again, and the name this build
+      gives the delivery (an unsummarised notice's whole detail line, `absorbRepeatedNotice()`, notifying `name`), so
+      a later replay, with neither row legacy any more, still finds it; two rows of this build compare their whole
+      detail line. A fold looks a row's fragments up among its parts through an index
+      (`PartLookup`) once both are more than a few, and takes a reading's parts out of the rest or withdraws them in one
+      pass (`rest_of_row()`, `withdraw_parts()`), so a long call of many short fragments folds in time linear in its
+      parts, not quadratic; the recording roles read a row's parts once per ask to leave its withdrawn fragments out
+      (`recording_fragments()`), not once per fragment (`UI_QT_CALL_HISTORY_MODEL` counts the parts read). Persistence: row keys `proto`, `srcText`, `tgtText`, `sscope`,
+      `rx`, `rxGen`/`rxRing` (the reception generation the reception was read under and its ring, hex; both or neither),
+      `rxHz` (the tuned frequency the reception was read with, while known),
+      `msg`/`msgWhen`/`msgSeq`/`msgSlot`, `gps`/`gpsWhen`/`gpsSeq`/`gpsSlot`/`gpsOrd`/`gpsVer` and
+      `pos{lat,lon,err,flags,kind,rev,inst,rxt}`, `gpsAlt` (the other fragments' GPS units, each with those keys) and
+      `frv` (fragment key to reading version), `fp` (the fragment parts of a voice row of two or more fragments, each
+      under its key `fr` with the row's own keys, `x` when withdrawn; a one-fragment row is its own part), each only
+      when known (`detail` only for a legacy text); spill lines
+      add `ord`, which with the fragment's `frv` gives a spilled reading back its GPS run and version when it carries
+      no GPS to store them with (`spilled_reading_provenance()`), so a fix the core withdrew while the app was away is
+      withdrawn from the row when the spill folds, as the same reading read live does. An impossible stored position loads as none, its text kept. A stored scope loads as not known when a
+      part is missing or no whole number (`json_field_fits()` judges the conversion apart from the range) or no record
+      could hold it (`scope_values_valid()`: a discriminator only on a P25 NAC scope and within 0..2^32-1 Hz, `b` 0 on
+      a NAC or frequency scope, a frequency scope's frequency known, EDACS parts 0 or `0x10000 |` the number), and a
+      stored `proto` that is no whole number loads as not known. Tests: `UI_QT_CALL_HISTORY_MODEL`,
+      `UI_QT_CALL_HISTORY_MERGE`, `UI_QT_CALL_HISTORY_TAP`.
   - Replay: `MetricsModel::replayInput` (`controlChanged`, beside `tunerControlled`) is `dsd_opts_input_is_iq_replay()`
     on the snapshot `radioInput` reads, the predicate app-control refuses tunes on. The Spectrum screen is view-only
     while it holds, whatever the session's intent, so `tuneTo()`, the tap, the rail, stepping and "Go to" do nothing.
@@ -16936,15 +17592,58 @@ Qt Quick frontend (`src/ui/qt`):
   exemption kind with each echo marker and key form. A producer line whose code is a key option with a value of at most two digits would
   still be kept. Keep `kProducerLines` and `kMeasurementTemplates` in step with those producers' format strings, give
   a new producer of a signed number a line in the corpus, and keep the key-option pattern in step with
-  `src/runtime/cli/args.c`. The persistent
-  tail (issue #745) is two append-only segments, `tail.prev.log` then `tail.log`, each at most
-  `DiagnosticsLog::kSegmentLimit` (128 KiB). The writer appends whole records and never rewrites a file. It drains every
+  `src/runtime/cli/args.c`. Received positions (issue #800, D10): after the key rule, `redact()` replaces a whole
+  record that shows a position received over the air with `[redacted position]` (`holdsReceivedPosition()`). The rule
+  rests on the producer's label, never on the shape of what the air delivered (a part of a report can look like
+  anything): a line matching `kPositionMarkers`, one entry per producer's position, position-message or report-text
+  print (`Lat:`/`Lon:`, `GPS` with D-STAR's `GPS DATA:` slow-data blocks and the M17 GNSS line, which also carries
+  its radius, source and station type, `GNSS`, `LRRP` with each line of an LRRP report's details (`LRRP Time:`,
+  `LRRP Radius:`, `LRRP Alt Accuracy:`, `LRRP Speed:`, `LRRP Track:`), `LOCN` with the MNIS `LOCN Text:` report text,
+  `NMEA` with the checked sentences' `NMEA:` line, LIP, `Location Service` with the P25 SAP 48 plain text
+  (`P25 Location Service Text:`), `Position`, APRS and D-PRS, Cellocator, D-STAR `_UNK:` blocks, and every USBD
+  payload line (`USBD - Service`), printed without `-Z`: fail closed, a reserved or manufacturer-specific service's
+  bytes are not known to hold no position). As a backstop, a line no label covers still goes when it matches
+  `kPositionShapes` (raw RMC/GGA/GLL/GNS/VTG sentences, `$$CRC`, the LOCN hemisphere form, the D-PRS
+  `ddmm.hhN?dddmm.hhE` form), holds a pair of decimal degrees with at least four places (not followed by a unit), or a
+  degrees-and-minutes pair (the minutes' fraction optional, as the NMEA parser reads it); no shape exempts anything.
+  Payload bytes printed on such a line go with it. A stored tail is redacted again when it is loaded: `loadSegments()`
+  passes every record of both segments of both logs (`tail`, `host`) through `DiagnosticsLog::redactStored()`
+  (`storedRecords()`) before the rings are seeded or a legacy tail is split, and writes the scrubbed records back over
+  any segment they changed (`replaceStoredRecords()`; removed when the rewrite fails; the split writes only scrubbed
+  records), so an older build's log never reaches Copy or Share with one and no position line stays on the device
+  until rotation (test `UI_QT_DIAGNOSTICS_LOG`, `storedPositionsLeaveTheFiles()`). Fail closed: a stored record carries no mark of the build that wrote it, so
+  the load also removes every record under a label an older build (v2.10.0, the first with a saved tail, onward)
+  printed a received position or a part of one with (`kLegacyPositionForms`: `UTF8 Text:` from the P25 SAP 48 plain
+  text and the MNIS LOCN text, D-STAR `TEXT:` from the fixed-form GPS data blocks, the LRRP `Time: yyyy.mm.dd`,
+  `Radius:`, `Alt Accuracy:`, `Speed:` and `Track:` lines, the M17 GNSS `Radius:` line, a checked NMEA sentence of
+  any type printed bare, and the raw dumps older builds printed without `-Z`: DMR `Short Data Raw:` with a LOCN
+  position's bracketed bytes and NXDN `UDCH Data:` with a data call's bytes and their ASCII form), whichever build
+  wrote it; a current build's text message or `-Z` dump under the same label (DMR or UDT `UTF8 Text:`, D-STAR
+  `TEXT:`, `Short Data Raw:`, `UDCH Data:`) is kept live and dropped on reload. The list is built from every
+  default-mode print of a received position, a part of one or the raw bytes of a message that carries one, v2.10.0
+  through this build; keep it in step when a release changes such a print's label. Raw dumps under generic prefixes
+  (`-Z`: DMR PDU, DMR `Short Data Raw`, NXDN `UDCH Data` and `DATA:`, P25 MBT, M17 LSF and packet bytes) are kept
+  live and can hold an encoded position; without `-Z` every line that prints a received position, a part of one or
+  the raw bytes of a message that can carry one carries a label. Keep
+  `kPositionMarkers` in step with the producers' print text, give a new position print a label and a line in
+  `UI_QT_DIAGNOSTICS_LOG` (`receivedPositionsAreRemoved()`), and drive a new producer of received report text through
+  its real path in `realProducersLabelReceivedPositions()` (`DiagnosticsLog::namesPositionProducerForTest()`), and a
+  new producer of a received position in `everyProducerLabelsEveryPartOfItsReport()`, which checks that every line
+  holding any field of the report (coordinates, time, radius or error, altitude, speed, heading, reason, source)
+  carries the label.
+  The persistent tail (issue #745) is two append-only segments, `tail.prev.log` then `tail.log`, each at most
+  `DiagnosticsLog::kSegmentLimit` (128 KiB). The writer appends whole records and never rewrites a file (only the load
+  does, below). It drains every
   250 ms and syncs at most once a second, except inside the startup window. `flush()` returns whether everything before
   it is appended and synced, with an optional bound. A segment is synced before it rotates. Loading:
   - drops a crash's unterminated last record;
   - deletes orphaned QSaveFile temporaries of `tail.log` and `tail.prev.log` (and of the host pair below);
   - expires each segment after seven days;
-  - splits an older build's single tail at line starts.
+  - splits an older build's single tail at line starts;
+  - scrubs every stored record (`storedRecords()`, issue #800, D10) and writes back a segment the scrub changed, with
+    its old modification time, so the scrub never restarts the seven days (`replaceStoredRecords()`; the segment is
+    removed when the rewrite fails); a segment file that exists but cannot be read is removed (fail closed: it cannot
+    be scrubbed).
 
   Host, session and process records (issue #782) also go to a store of their own, so decoder output cannot push them
   out: `m_hostRing` (`kHostRingLimit`, 500) and the segment pair `host.prev.log`/`host.log`, each at most

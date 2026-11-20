@@ -14,6 +14,8 @@
 #include <dsd-neo/core/events.h>
 #include <dsd-neo/core/gps.h>
 #include <dsd-neo/core/opts.h>
+#include <dsd-neo/core/position.h>
+#include <dsd-neo/core/position_attribution.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/core/time_format.h>
@@ -234,34 +236,40 @@ test_packed_nmea_formats(const dsd_opts* opts, dsd_state* st) {
         DSD_MEMSET(st->event_history_s[0].Event_History_Items[0].gps_s, 0,
                    sizeof st->event_history_s[0].Event_History_Items[0].gps_s);
         const uint64_t revision = st->event_history_s[0].revision;
-        nmea_iec_61162_1(opts, st, bits, 900001U, 2);
+        nmea_iec_61162_1(opts, st, bits, NMEA_UDT_LONG_BITS, &(const dsd_gps_address){.source_id = 900001U}, 2);
 
         rc |= expect_has_substr(st->dmr_embedded_gps[0], "41.500000", "nmea-iec-lat");
         rc |= expect_has_substr(st->dmr_embedded_gps[0], "87.250000", "nmea-iec-lon");
-        rc |= expect_has_substr(st->event_history_s[0].Event_History_Items[0].gps_s, "41.500000", "nmea-iec-event-lat");
-        rc |= expect_i("nmea-iec-history-revision", st->event_history_s[0].revision == revision + 1U, 1);
+        // The UDT's own notice takes the admitted report (staged with its text); the speaker's call row is left alone.
+        const dsd_position_fix* staged = dsd_event_staged_position(st, 0U);
+        rc |= expect_i("nmea-iec-staged",
+                       staged->rev != 0U && staged->lat_e7 == 415000000 && staged->lon_e7 == 872500000
+                           && staged->source_id == 900001U && staged->heading_ddeg == 1230U,
+                       1);
+        rc |= expect_has_substr(dsd_event_staged_gps(st, 0U), "41.500000", "nmea-iec-staged-text");
+        rc |= expect_i("nmea-iec-call-row-untouched", st->event_history_s[0].Event_History_Items[0].gps_s[0], '\0');
+        rc |= expect_i("nmea-iec-history-revision", st->event_history_s[0].revision == revision, 1);
+        dsd_event_stage_clear(st, 0U);
     }
 
     {
-        uint8_t bits[160];
-        DSD_MEMSET(bits, 0, sizeof bits);
-        set_bits_msb(bits, (int)sizeof bits, 0, 0x2AA4U, 16);
-        set_bits_msb(bits, (int)sizeof bits, 40, 5000U, 16);
-        bits[56] = 1U; // negative latitude
-        set_bits_msb(bits, (int)sizeof bits, 57, 30U, 7);
-        set_bits_msb(bits, (int)sizeof bits, 64, 41U, 8);
-        set_bits_msb(bits, (int)sizeof bits, 72, 2500U, 16);
-        bits[88] = 1U; // negative longitude
-        set_bits_msb(bits, (int)sizeof bits, 89, 15U, 7);
-        set_bits_msb(bits, (int)sizeof bits, 96, 87U, 8);
-        set_bits_msb(bits, (int)sizeof bits, 104, 3661U, 16);
-        set_bits_msb(bits, (int)sizeof bits, 135, 270U, 9);
+        // L3Harris GPS update body (TIA-102.AABF-D-1 §7.3.35-36): 41°30.5000' S (0x9E = south, 30 minutes),
+        // 87°15.2500' W (0x8F = west, 15 minutes), 01:01:01 UTC, heading 270.0 degrees (0x0A8C tenths), quality %01.
+        const uint8_t bits[DSD_HARRIS_GPS_BODY_OCTETS] = {0x13, 0x88, 0x9E, 41U,  0x09, 0xC4, 0x8F,
+                                                          87U,  0x0E, 0x4D, 0x8C, 0x00, 0x0A, 0x10};
+        dsd_gps_report_ctx ctx = {
+            .protocol = DSD_SYNC_P25P1_POS,
+            .slot = 1U,
+            .source_id = 900002U,
+            .source_verified = 1U,
+            .pos_verified = 1U,
+        };
 
         DSD_MEMSET(st->dmr_embedded_gps[1], 0, sizeof st->dmr_embedded_gps[1]);
         DSD_MEMSET(st->event_history_s[1].Event_History_Items[0].gps_s, 0,
                    sizeof st->event_history_s[1].Event_History_Items[0].gps_s);
         st->event_history_s[1].Event_History_Items[0].source_id = 900002U;
-        nmea_harris(opts, st, bits, 900002U, 2);
+        (void)nmea_harris(opts, st, bits, &ctx);
 
         rc |= expect_has_substr(st->dmr_embedded_gps[1], "-41.508333", "harris-nmea-lat");
         rc |= expect_has_substr(st->dmr_embedded_gps[1], "-87.254167", "harris-nmea-lon");
@@ -272,7 +280,8 @@ test_packed_nmea_formats(const dsd_opts* opts, dsd_state* st) {
         DSD_SNPRINTF(st->event_history_s[1].Event_History_Items[0].gps_s,
                      sizeof st->event_history_s[1].Event_History_Items[0].gps_s, "%s", "existing call GPS");
         const uint64_t revision = st->event_history_s[1].revision;
-        nmea_harris(opts, st, bits, 900003U, 2);
+        ctx.source_id = 900003U;
+        (void)nmea_harris(opts, st, bits, &ctx);
         rc |= expect_i("harris-mismatched-source-preserves-gps",
                        strcmp(st->event_history_s[1].Event_History_Items[0].gps_s, "existing call GPS"), 0);
         rc |= expect_i("harris-mismatched-source-preserves-revision", st->event_history_s[1].revision == revision, 1);
@@ -280,7 +289,7 @@ test_packed_nmea_formats(const dsd_opts* opts, dsd_state* st) {
         (void)dsd_call_state_end(st, 1U, 0.0);
         st->event_history_s[1].Event_History_Items[0].gps_s[0] = '\0';
         const uint64_t ownerless_revision = st->event_history_s[1].revision;
-        nmea_harris(opts, st, bits, 900003U, 2);
+        (void)nmea_harris(opts, st, bits, &ctx);
         rc |= expect_i("ownerless-harris-does-not-stage-gps", st->event_history_s[1].Event_History_Items[0].gps_s[0],
                        '\0');
         rc |= expect_i("ownerless-harris-preserves-revision", st->event_history_s[1].revision == ownerless_revision, 1);
@@ -319,7 +328,13 @@ test_lip_and_vendor_gps(const dsd_opts* opts, dsd_state* st) {
         rc |= expect_has_substr(st->dmr_embedded_gps[1], "S", "lip-south");
         rc |= expect_has_substr(st->dmr_embedded_gps[1], "W", "lip-west");
         rc |= expect_has_substr(st->dmr_embedded_gps[1], "Err: 2000m", "lip-position-error");
-        rc |= expect_has_substr(st->event_history_s[1].Event_History_Items[0].gps_s, "090; LIP:", "lip-event");
+        // A hashed reply never enriches the slot's call (spec 2.14): it waits for the burst's own notice, anonymous.
+        rc |= expect_i("lip-event-not-on-call", st->event_history_s[1].Event_History_Items[0].gps_s[0], '\0');
+        const dsd_position_fix* staged = dsd_event_staged_position(st, 1U);
+        rc |= expect_i("lip-staged-hashed",
+                       staged->rev != 0U && staged->kind == DSD_POS_LIP_USBD && staged->source_id == 0U
+                           && (staged->flags & DSD_POS_FLAG_SOURCE_HASHED) != 0U && staged->age_class == 2U,
+                       1);
         set_bits_msb(bits, (int)sizeof bits, 65, 1U, 4);
         lip_protocol_decoder(opts, st, bits);
         rc |= expect_has_substr(st->dmr_embedded_gps[1], "Dir: 22", "T3 direction=1");
@@ -335,17 +350,25 @@ test_lip_and_vendor_gps(const dsd_opts* opts, dsd_state* st) {
         DSD_MEMSET(st->event_history_s[1].Event_History_Items[0].gps_s, 0,
                    sizeof st->event_history_s[1].Event_History_Items[0].gps_s);
         bits[1] = 1U;  // res_a
-        bits[23] = 1U; // expired/last fix
+        bits[23] = 1U; // no documented meaning: not read as "last fix"
         bits[24] = 1U; // negative latitude
         set_bits_msb(bits, (int)sizeof bits, 25, 0x200000U, 23);
         bits[48] = 1U; // west longitude encoding
         set_bits_msb(bits, (int)sizeof bits, 49, 0x300000U, 23);
 
-        apx_embedded_gps(opts, st, bits);
+        const dsd_gps_report_ctx ctx = {
+            .protocol = DSD_SYNC_P25P1_POS,
+            .slot = 1U,
+            .source_id = 0x102030U,
+            .source_verified = 1U,
+            .pos_verified = 1U,
+        };
+        (void)apx_embedded_gps(opts, st, bits, &ctx);
 
         rc |= expect_has_substr(st->dmr_embedded_gps[1], "GPS:", "apx-gps-string");
-        rc |= expect_has_substr(st->dmr_embedded_gps[1], "Last Fix", "apx-expired");
-        rc |= expect_has_substr(st->event_history_s[1].Event_History_Items[0].gps_s, "Last Fix", "apx-event");
+        rc |= expect_i("apx-no-last-fix-reading", strstr(st->dmr_embedded_gps[1], "Last Fix") == NULL, 1);
+        rc |= expect_has_substr(st->event_history_s[1].Event_History_Items[0].gps_s, "(-22.500003, -112.499992)",
+                                "apx-event");
     }
 
     return rc;
@@ -364,20 +387,27 @@ test_lip_ownership(const dsd_opts* opts, dsd_state* st) {
     set_bits_msb(bits, sizeof bits, 68, 32, 8);
     st->currentslot = 1;
     seed_active_call(st, 1, 123456);
-    lip_pdu_decoder(opts, st, bits, sizeof bits, 123456);
-    int rc = expect_has_substr(st->event_history_s[1].Event_History_Items[0].gps_s, "LIP:", "T3 matching LIP owner");
+    dsd_event_stage_clear(st, 1U);
+    st->event_history_s[1].Event_History_Items[0].gps_s[0] = '\0';
+    lip_pdu_decoder(opts, st, bits, sizeof bits, &(const dsd_gps_address){.source_id = 123456});
+    // One history writer: the carrier's notice (staged here), not the speaker's call row.
+    int rc = expect_i("T3 matching LIP owner staged", dsd_event_staged_position(st, 1U)->source_id == 123456U, 1);
+    rc |= expect_has_substr(dsd_event_staged_gps(st, 1U), "LIP:", "T3 matching LIP owner text");
+    rc |= expect_i("T3 matching LIP owner call row", st->event_history_s[1].Event_History_Items[0].gps_s[0], '\0');
+    dsd_event_stage_clear(st, 1U);
     seed_active_call(st, 1, 999);
     DSD_SNPRINTF(st->event_history_s[1].Event_History_Items[0].gps_s,
                  sizeof st->event_history_s[1].Event_History_Items[0].gps_s, "%s", "existing call GPS");
     st->event_crc_invalid[1] = 1;
-    lip_pdu_decoder(opts, st, bits, sizeof bits, 123456);
+    lip_pdu_decoder(opts, st, bits, sizeof bits, &(const dsd_gps_address){.source_id = 123456});
     rc |= expect_i("T3 foreign LIP owner",
                    strcmp(st->event_history_s[1].Event_History_Items[0].gps_s, "existing call GPS"), 0);
+    rc |= expect_i("T3 CRC-failed LIP stages nothing", dsd_event_staged_position(st, 1U)->rev == 0U, 1);
     st->event_crc_invalid[1] = 0;
     seed_active_call(st, 1, 987654);
     DSD_SNPRINTF(st->event_history_s[1].Event_History_Items[0].gps_s,
                  sizeof st->event_history_s[1].Event_History_Items[0].gps_s, "%s", "existing call GPS");
-    lip_pdu_decoder(opts, st, bits, sizeof bits, 0);
+    lip_pdu_decoder(opts, st, bits, sizeof bits, &(const dsd_gps_address){.source_id = 0});
     rc |= expect_i("T3 unknown LIP owner",
                    strcmp(st->event_history_s[1].Event_History_Items[0].gps_s, "existing call GPS"), 0);
     return rc;
@@ -389,6 +419,7 @@ test_lip_position_errors(const dsd_opts* opts, dsd_state* st) {
     const char* expected[] = {"Err: 2m", "Err: 200000m", "Err: >200km", "Unknown Pos Err"};
     uint8_t bits[96] = {0};
     set_bits_msb(bits, sizeof bits, 69, 5U, 3);
+    set_bits_msb(bits, sizeof bits, 31, 0x200000U, 24); // 22.5 N: (0, 0) is no position
     int rc = 0;
     for (size_t i = 0; i < sizeof codes; ++i) {
         set_bits_msb(bits, sizeof bits, 55, codes[i], 3);
@@ -403,6 +434,11 @@ test_lip_position_errors(const dsd_opts* opts, dsd_state* st) {
             return 1;
         }
         rc |= expect_has_substr(st->dmr_embedded_gps[st->currentslot], expected[i], "T3 LIP position error");
+        // D11: code 7 may be an old fix (validity unknown); 6 is a lower bound.
+        const uint16_t flags = dsd_event_staged_position(st, (uint8_t)(st->currentslot & 1))->flags;
+        rc |=
+            expect_i("T3 LIP position error 7 validity", (flags & DSD_POS_FLAG_VALIDITY_UNKNOWN) != 0U, codes[i] == 7);
+        rc |= expect_i("T3 LIP position error 6 bound", (flags & DSD_POS_FLAG_ERR_LOWER_BOUND) != 0U, codes[i] == 6);
         if (codes[i] == 5) {
             rc |= expect_has_substr(output, "Less than or equal to 200000m", "T3 LIP code-5 console");
             rc |= expect_has_substr(output, "Reserved (5)", "T3 USBD reason");
@@ -436,12 +472,15 @@ test_nxdn_gps_report_paths(const dsd_opts* opts, dsd_state* st) {
                sizeof st->event_history_s[0].Event_History_Items[0].gps_s);
     reset_watchdog_capture();
 
-    nxdn_gps_report(opts, st, bits, 900003U);
+    nxdn_gps_report(opts, st, bits, sizeof bits, 900003U, NULL);
 
-    rc |= expect_has_substr(st->event_history_s[0].Event_History_Items[0].gps_s, "41.", "nxdn-gps-lat");
-    rc |= expect_has_substr(st->event_history_s[0].Event_History_Items[0].gps_s, "87.", "nxdn-gps-lon");
+    /* A data report goes to its own notice row only: the same radio's active call row is left alone. */
+    rc |= expect_i("nxdn-gps-not-on-call-row", st->event_history_s[0].Event_History_Items[0].gps_s[0], '\0');
+    rc |= expect_has_substr(g_watchdog_gps, "41.", "nxdn-gps-lat");
+    rc |= expect_has_substr(g_watchdog_gps, "87.", "nxdn-gps-lon");
     rc |= expect_i("nxdn-watchdog-calls", g_watchdog_calls, 1);
-    rc |= expect_u32("nxdn-watchdog-src", g_watchdog_src, 1234U);
+    /* The notice names the source of the header bound to the report (the caller's), as the record does. */
+    rc |= expect_u32("nxdn-watchdog-src", g_watchdog_src, 900003U);
     rc |= expect_u32("nxdn-watchdog-dst", g_watchdog_dst, 5678U);
     rc |= expect_u32("nxdn-watchdog-slot", g_watchdog_slot, 0U);
     rc |= expect_u32("nxdn-source-reset", st->dmr_lrrp_source[0], 0U);
@@ -452,7 +491,7 @@ test_nxdn_gps_report_paths(const dsd_opts* opts, dsd_state* st) {
     st->dmr_lrrp_source[0] = 1234U;
     st->dmr_lrrp_target[0] = 5678U;
     reset_watchdog_capture();
-    nxdn_gps_report(opts, st, bits, 900004U);
+    nxdn_gps_report(opts, st, bits, sizeof bits, 900004U, NULL);
     rc |= expect_has_substr(g_watchdog_gps, "41.", "mismatched-nxdn-data-event-lat");
     rc |= expect_has_substr(g_watchdog_gps, "87.", "mismatched-nxdn-data-event-lon");
     rc |= expect_i("mismatched-nxdn-preserves-active-gps",
@@ -464,7 +503,7 @@ test_nxdn_gps_report_paths(const dsd_opts* opts, dsd_state* st) {
     st->dmr_lrrp_source[0] = 1234U;
     st->dmr_lrrp_target[0] = 5678U;
     reset_watchdog_capture();
-    nxdn_gps_report(opts, st, bits, 900003U);
+    nxdn_gps_report(opts, st, bits, sizeof bits, 900003U, NULL);
     rc |= expect_has_substr(g_watchdog_gps, "41.", "standalone-nxdn-data-event-lat");
     rc |= expect_has_substr(g_watchdog_gps, "87.", "standalone-nxdn-data-event-lon");
     rc |= expect_i("standalone-nxdn-does-not-stage-gps", st->event_history_s[0].Event_History_Items[0].gps_s[0], '\0');
@@ -473,7 +512,7 @@ test_nxdn_gps_report_paths(const dsd_opts* opts, dsd_state* st) {
     set_bits_msb(bits, (int)sizeof bits, 184, 9900U, 16);
     st->dmr_lrrp_source[0] = 4444U;
     st->dmr_lrrp_target[0] = 5555U;
-    nxdn_gps_report(opts, st, bits, 0U);
+    nxdn_gps_report(opts, st, bits, sizeof bits, 0U, NULL);
     rc |= expect_u32("nxdn-invalid-source-reset", st->dmr_lrrp_source[0], 0U);
     rc |= expect_u32("nxdn-invalid-target-reset", st->dmr_lrrp_target[0], 0U);
 
@@ -507,6 +546,17 @@ main(void) {
     uint8_t lc_bits[80];
     DSD_MEMSET(lc_bits, 0, sizeof lc_bits);
     st.currentslot = 0;
+    set_bits_msb(lc_bits, (int)sizeof lc_bits, 48, 0x200000U, 24); // 22.5 N, 0 E: (0, 0) is no position
+    // The slot's call 900001's source was named by a checked full LC of this transmission: the embedded fix is its.
+    {
+        seed_active_call(&st, 0U, 900001U);
+        dsd_position_attribution_call call;
+        if (!dsd_position_attribution_call_from_slot(&st, 0U, &call)
+            || !dsd_position_attribution_learn(&st, &call, 900001U, 0U, 0, DSD_POSITION_ATTRIBUTION_BIND_TRANSMISSION,
+                                               &st.dmr_lc_attribution[0])) {
+            return 100;
+        }
+    }
 
     // pos_err == 5: less than or equal to 200km (200000m)
     {
@@ -540,6 +590,13 @@ main(void) {
         set_pos_err(lc_bits, 7);
         dmr_embedded_gps(&opts, &st, lc_bits);
         rc |= expect_has_substr(st.dmr_embedded_gps[0], "Unknown Pos Err", "pos_err=7");
+        // D11: the call's row keeps the fix with its validity unknown, on the weak 5-bit check.
+        const Event_History* row = &st.event_history_s[0].Event_History_Items[0];
+        rc |=
+            expect_i("pos_err=7 row", row->pos.valid == 1U && row->pos.lat_e7 == 225000000 && row->pos.lon_e7 == 0, 1);
+        rc |=
+            expect_i("pos_err=7 flags", row->pos.flags, (int)(DSD_POS_FLAG_WEAK_CHECK | DSD_POS_FLAG_VALIDITY_UNKNOWN));
+        rc |= expect_has_substr(row->gps_s, "fix may be old or invalid", "pos_err=7 row text");
     }
 
     // NMEA sentence checker: valid sentence
@@ -553,10 +610,12 @@ main(void) {
         if (st.event_history_s != NULL) {
             dsd_event_stage_text(&st, 0, "");
         }
-        uint8_t ok = nmea_sentence_checker(&opts, &st, bits, 0, len_bytes);
+        uint8_t ok = nmea_sentence_checker(&opts, &st, bits, 0, len_bytes, 1, NULL);
         rc |= expect_u8("nmea-valid", ok, 1U);
         if (st.event_history_s != NULL) {
-            rc |= expect_has_substr(dsd_event_staged_text(&st, 0), "$GPRMC,TEST*71", "nmea-valid-text");
+            // A checked sentence with no measured fix: its text is withheld like any unadmitted report's (issue #800).
+            rc |= expect_has_substr(dsd_event_staged_text(&st, 0), "NMEA withheld (no admitted position)",
+                                    "nmea-valid-text");
         } else {
             DSD_FPRINTF(stderr, "%s\n", "nmea-valid-text: event_history_s is NULL");
             rc |= 1;
@@ -576,7 +635,7 @@ main(void) {
         if (st.event_history_s != NULL) {
             dsd_event_stage_text(&st, 0, "");
         }
-        uint8_t ok = nmea_sentence_checker(&opts, &st, bits, 0, len_bytes);
+        uint8_t ok = nmea_sentence_checker(&opts, &st, bits, 0, len_bytes, 1, NULL);
         rc |= expect_u8("nmea-invalid", ok, 0U);
         if (st.event_history_s != NULL) {
             rc |= expect_i("nmea-invalid-text-empty", dsd_event_staged_text(&st, 0)[0], 0);
@@ -600,7 +659,7 @@ main(void) {
         if (st.event_history_s != NULL) {
             dsd_event_stage_text(&st, 0, "");
         }
-        uint8_t ok = nmea_sentence_checker(&opts, &st, bits, 0, len_bytes);
+        uint8_t ok = nmea_sentence_checker(&opts, &st, bits, 0, len_bytes, 1, NULL);
         rc |= expect_u8("nmea-missing-star", ok, 0U);
         rc |= expect_i("nmea-missing-star-watchdog", g_watchdog_calls, 0);
         if (st.event_history_s != NULL) {
@@ -623,7 +682,7 @@ main(void) {
         st.event_history_s = NULL;
         st.dmr_lrrp_source[0] = 777U;
         st.dmr_lrrp_target[0] = 888U;
-        uint8_t ok = nmea_sentence_checker(&opts, &st, bits, 0, len_bytes);
+        uint8_t ok = nmea_sentence_checker(&opts, &st, bits, 0, len_bytes, 1, NULL);
         rc |= expect_u8("nmea-no-events-valid", ok, 1U);
         rc |= expect_u32("nmea-no-events-src-reset", st.dmr_lrrp_source[0], 0U);
         rc |= expect_u32("nmea-no-events-tgt-reset", st.dmr_lrrp_target[0], 0U);

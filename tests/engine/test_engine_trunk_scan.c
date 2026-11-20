@@ -7969,12 +7969,19 @@ test_target_switch_forgets_the_received_identity(void) {
         test_rc = 1;
     }
     dsd_rxid_note_p25_network(&state, 0xBEE00U, 0x1A3U);
+    // A's DMR checked-LC record (issue #800) names a radio of a's carrier: b's embedded GPS fixes never take it.
+    state.dmr_lc_attribution[0].transmission = 1U;
+    state.dmr_lc_attribution[0].source = 1001U;
     state.symbol_clock = 7000U;
     trunk_scan_test_set_now(0.26);
     dsd_engine_trunk_scan_tick(&opts, &state);
     if (dsd_engine_trunk_scan_active_index(&state) != 1 || state.rx_id.valid != 0U) {
         DSD_FPRINTF(stderr, "rx-id: the switch to b kept the record: active=%zu valid=%08X\n",
                     dsd_engine_trunk_scan_active_index(&state), (unsigned)state.rx_id.valid);
+        test_rc = 1;
+    }
+    if (state.dmr_lc_attribution[0].transmission != 0U || state.dmr_lc_attribution[0].source != 0U) {
+        DSD_FPRINTF(stderr, "rx-id: the switch to b kept a's DMR checked-LC record\n");
         test_rc = 1;
     }
     /* What the frame sync and the decoders hold buffered from a is no frame of b's. */

@@ -9,6 +9,7 @@
 #include <dsd-neo/core/events.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/opts_fwd.h>
+#include <dsd-neo/core/position.h>
 #include <dsd-neo/core/safe_api.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/state_ext.h>
@@ -507,11 +508,11 @@ newest_row(const dsd_state* state, uint8_t slot) {
 // Issue #746: a SAP 3 (compressed UDP/IPv4) PDU through the real header, assembler and decoders. `user` octets
 // follow the header; `blocks` rate-1/2 blocks carry them, the pad octets the header announces and the CRC32.
 static void
-send_sap3(dsd_opts* opts, dsd_state* state, const uint8_t* user, size_t user_len, uint8_t blocks, int payload_ok) {
+send_sap3_poc(dsd_opts* opts, dsd_state* state, const uint8_t* user, size_t user_len, uint8_t blocks, uint8_t poc,
+              int payload_ok) {
     uint8_t pdu[48] = {0};
     const size_t total = (size_t)blocks * 12U;
-    assert(blocks >= 1 && blocks <= 4 && user_len + 4U <= total);
-    const uint8_t poc = (uint8_t)(total - 4U - user_len);
+    assert(blocks >= 1 && blocks <= 4 && user_len + 4U <= total && poc < 32U);
     uint8_t hdr[12] = {0x02, 0, 0, 0, 42, 0, 0, 24, (uint8_t)(0x80U | blocks), 0, 0, 0};
     hdr[0] = (uint8_t)(hdr[0] | ((poc & 0x10U) ? 0x10U : 0U));
     hdr[1] = (uint8_t)(0x30U | (poc & 0x0FU));
@@ -522,6 +523,11 @@ send_sap3(dsd_opts* opts, dsd_state* state, const uint8_t* user, size_t user_len
     for (uint8_t b = 0; b < blocks; ++b) {
         dmr_block_assembler(opts, state, pdu + (size_t)b * 12U, 12, 0x07, 1);
     }
+}
+
+static void
+send_sap3(dsd_opts* opts, dsd_state* state, const uint8_t* user, size_t user_len, uint8_t blocks, int payload_ok) {
+    send_sap3_poc(opts, state, user, user_len, blocks, (uint8_t)((size_t)blocks * 12U - 4U - user_len), payload_ok);
 }
 
 // The same, RC4-encrypted behind a Motorola encryption P_HEAD (DPF 15, MFID 0x10, ALG 1, ENC 1).
@@ -610,7 +616,7 @@ test_sap3_ars_real_path(dsd_opts* opts, dsd_state* state) {
 static int
 test_sap3_lrrp_location_rows(dsd_opts* opts, dsd_state* state) {
     // POINT_2D response, as DMR_LRRP_EVENT_CRC_GATING sends it over IPv4: lat 11.25, lon 45.
-    static const uint8_t lrrp_doc[] = {0x07, 12, 0x22, 0, 0x66, 0x10, 0, 0, 0, 0x20, 0, 0, 0};
+    static const uint8_t lrrp_doc[] = {0x07, 11, 0x22, 0, 0x66, 0x10, 0, 0, 0, 0x20, 0, 0, 0};
     char path[DSD_TEST_PATH_MAX];
     int fd = dsd_test_mkstemp(path, sizeof path, "dmr-sap3-lrrp");
     if (fd < 0 || dsd_close(fd) != 0) {
@@ -652,6 +658,473 @@ test_sap3_lrrp_location_rows(dsd_opts* opts, dsd_state* state) {
     if (remove(path) != 0) {
         rc = 1;
     }
+    return rc;
+}
+
+// Issue #800 spec 2.3 step 3: a position report is admitted against the reception its packet's data header was heard
+// on. A retune completed between the header and the last block refuses it (no -L row); the same packet without one
+// is admitted. `retune` advances the tuning generation before the last block.
+static void
+send_lrrp_packet(dsd_opts* opts, dsd_state* state, int retune) {
+    // Compressed UDP/IPv4 on the LRRP port with a POINT_2D response (lat 11.25, lon 45), in three blocks.
+    static const uint8_t lrrp_doc[] = {0x07, 11, 0x22, 0, 0x66, 0x10, 0, 0, 0, 0x20, 0, 0, 0};
+    uint8_t pdu[36] = {0x00, 0x20, 0x00, 0x3F, 0x00, 0x0F, 0xA1};
+    DSD_MEMCPY(pdu + 7, lrrp_doc, sizeof lrrp_doc);
+    const uint8_t poc = (uint8_t)(sizeof pdu - 4U - 7U - sizeof lrrp_doc);
+    uint8_t hdr[12] = {(uint8_t)(0x02U | ((poc & 0x10U) ? 0x10U : 0U)),
+                       (uint8_t)(0x30U | (poc & 0x0FU)),
+                       0,
+                       0,
+                       42,
+                       0,
+                       0,
+                       24,
+                       0x83,
+                       0,
+                       0,
+                       0};
+    crc32(pdu, sizeof pdu);
+    header(opts, state, hdr, 1);
+    for (size_t b = 0; b < 3U; ++b) {
+        if (retune && b == 2U) {
+            dsd_trunk_tuning_generation_advance();
+        }
+        dmr_block_assembler(opts, state, pdu + b * 12U, 12, 0x07, 1);
+    }
+}
+
+// The same for an MNIS LOCN report: a standard header, the DPF 15 MNIS extension, then three data blocks; @p corrupt
+// fails the packet CRC32.
+static void
+send_locn_packet_crc(dsd_opts* opts, dsd_state* state, int retune, int group, int corrupt) {
+    static const uint8_t locn[] = "A123456070826N2230.0000E04500.0000";
+    uint8_t pdu[46] = {0x1F, 0x10, 0x02, 0x01, 0x01, 0x00, 0x01};
+    DSD_MEMCPY(pdu + 7, locn, sizeof locn - 1U);
+    // 46 octets less the 7-octet MNIS header, the report and the CRC32: one pad octet.
+    uint8_t hdr[12] = {(uint8_t)(group ? 0x82U : 0x02U), 0x91, 0, 0, 42, 0, 0, 24, 0x84, 0, 0, 0};
+    uint8_t ext[12] = {0};
+    // The MNIS CRC32 leaves out the first three octets and the one before the CRC (dmr_block_type1_update_crc()).
+    uint8_t span[42] = {0};
+    DSD_MEMCPY(span, pdu + 3, 38);
+    crc32(span, sizeof span);
+    DSD_MEMCPY(pdu + 42, span + 38, 4);
+    pdu[45] ^= (uint8_t)(corrupt ? 1U : 0U);
+    DSD_MEMCPY(ext, pdu, 10);
+    header(opts, state, hdr, 1);
+    header(opts, state, ext, 1);
+    for (size_t b = 0; b < 3U; ++b) {
+        if (retune && b == 2U) {
+            dsd_trunk_tuning_generation_advance();
+        }
+        dmr_block_assembler(opts, state, pdu + 10U + b * 12U, 12, 0x07, 1);
+    }
+}
+
+static void
+send_locn_packet_to(dsd_opts* opts, dsd_state* state, int retune, int group) {
+    send_locn_packet_crc(opts, state, retune, group, 0);
+}
+
+static void
+send_locn_packet(dsd_opts* opts, dsd_state* state, int retune) {
+    send_locn_packet_to(opts, state, retune, 0);
+}
+
+// Issue #800, fail closed: a position report whose packet failed its check (accepted under -F) prints only that its
+// position was suppressed, never a part of it: an MNIS LOCN report's text, coordinates and time stay off the console
+// unless the payload option (-Z) asks for the packet's content. A clean packet prints them.
+static int
+test_failed_locn_prints_no_content(dsd_opts* opts, dsd_state* state) {
+    int rc = 0;
+    opts->aggressive_framesync = 0;
+    opts->dmr_crc_relaxed_default = 0;
+    state->currentslot = 0;
+    for (int run = 0; run < 3; run++) {
+        const int corrupt = run < 2;
+        opts->payload = run == 1 ? 1 : 0;
+        dsd_test_capture_stderr cap;
+        char out[8192];
+        out[0] = '\0';
+        if (dsd_test_capture_stderr_begin(&cap, "dmr_failed_locn") != 0) {
+            return 1;
+        }
+        send_locn_packet_crc(opts, state, 0, 0, corrupt);
+        dsd_test_capture_stderr_end(&cap);
+        if (dsd_test_capture_stderr_read(&cap, out, sizeof out) != 0) {
+            return 1;
+        }
+        const int shows = strstr(out, "LOCN Text:") != NULL || strstr(out, "2230") != NULL
+                          || strstr(out, "04500") != NULL || strstr(out, "12:34:56") != NULL;
+        const int want = !corrupt || opts->payload == 1;
+        if (shows != want || (corrupt && strstr(out, "Position suppressed (CRC ERR)") == NULL)) {
+            DSD_FPRINTF(stderr, "\nLOCN %s, -Z %d: content shown %d (want %d): %s\n", corrupt ? "CRC ERR" : "clean",
+                        opts->payload, shows, want, out);
+            rc = 1;
+        }
+    }
+    opts->payload = 0;
+    opts->aggressive_framesync = 1;
+    return rc;
+}
+
+/* The newest kept position report, or a zeroed one. */
+static dsd_position_fix
+newest_kept_position(dsd_state* state) {
+    static dsd_position_fix kept[64];
+    dsd_position_feed_meta meta;
+    const int n = dsd_position_feed_copy_since(state, 0U, kept, 64U, &meta);
+    dsd_position_fix none;
+    DSD_MEMSET(&none, 0, sizeof none);
+    return n > 0 ? kept[n - 1] : none;
+}
+
+// Issue #800: a position report's group flag is the checked data header's G/I bit. The MNIS extension header (DPF 15)
+// that follows a group-addressed header clears the decryption-key lookup's group qualifier; the LOCN report still
+// names its talkgroup as a group. So does an LRRP report whose qualifier was cleared after its header.
+static int
+test_position_group_from_checked_header(dsd_opts* opts, dsd_state* state) {
+    int rc = 0;
+    opts->aggressive_framesync = 1;
+    opts->dmr_crc_relaxed_default = 0;
+    state->currentslot = 0;
+    if (dsd_position_feed_start(state) != 0) {
+        return 1;
+    }
+    for (int group = 0; group <= 1; group++) {
+        send_locn_packet_to(opts, state, 0, group);
+        const dsd_position_fix locn = newest_kept_position(state);
+        const int marked = (locn.flags & DSD_POS_FLAG_TARGET_GROUP) != 0U;
+        if (locn.kind != DSD_POS_DMR_LOCN || locn.target_id != 42U || marked != group) {
+            DSD_FPRINTF(stderr, "\nMNIS LOCN %s: kind %u target %u group flag %d\n", group ? "group" : "individual",
+                        (unsigned)locn.kind, (unsigned)locn.target_id, marked);
+            rc = 1;
+        }
+    }
+    // A group-addressed LRRP header, its decryption-key qualifier cleared before the blocks arrive.
+    static const uint8_t lrrp_doc[] = {0x07, 11, 0x22, 0, 0x66, 0x10, 0, 0, 0, 0x30, 0, 0, 0};
+    uint8_t pdu[36] = {0x00, 0x20, 0x00, 0x3F, 0x00, 0x0F, 0xA1};
+    DSD_MEMCPY(pdu + 7, lrrp_doc, sizeof lrrp_doc);
+    const uint8_t poc = (uint8_t)(sizeof pdu - 4U - 7U - sizeof lrrp_doc);
+    uint8_t hdr[12] = {(uint8_t)(0x82U | ((poc & 0x10U) ? 0x10U : 0U)),
+                       (uint8_t)(0x30U | (poc & 0x0FU)),
+                       0,
+                       0,
+                       42,
+                       0,
+                       0,
+                       24,
+                       0x83,
+                       0,
+                       0,
+                       0};
+    crc32(pdu, sizeof pdu);
+    header(opts, state, hdr, 1);
+    state->dmr_data_target_is_group[0] = 0U;
+    for (size_t b = 0; b < 3U; ++b) {
+        dmr_block_assembler(opts, state, pdu + b * 12U, 12, 0x07, 1);
+    }
+    const dsd_position_fix lrrp = newest_kept_position(state);
+    if (lrrp.kind != DSD_POS_DMR_LRRP || lrrp.target_id != 42U || (lrrp.flags & DSD_POS_FLAG_TARGET_GROUP) == 0U) {
+        DSD_FPRINTF(stderr, "\nLRRP group header: kind %u target %u flags %04X\n", (unsigned)lrrp.kind,
+                    (unsigned)lrrp.target_id, (unsigned)lrrp.flags);
+        rc = 1;
+    }
+    return rc;
+}
+
+static int
+test_position_origin_across_retune(dsd_opts* opts, dsd_state* state) {
+    char path[DSD_TEST_PATH_MAX];
+    int fd = dsd_test_mkstemp(path, sizeof path, "dmr-position-origin");
+    if (fd < 0 || dsd_close(fd) != 0) {
+        return 1;
+    }
+    DSD_SNPRINTF(opts->lrrp_out_file, sizeof opts->lrrp_out_file, "%s", path);
+    opts->lrrp_file_output = 1;
+    opts->aggressive_framesync = 1;
+    opts->dmr_crc_relaxed_default = 0;
+    state->currentslot = 0;
+    int rc = 0;
+    for (int kind = 0; kind < 2 && rc == 0; ++kind) {
+        for (int retune = 0; retune <= 1; ++retune) {
+            int before = count_location_rows(path);
+            if (kind == 0) {
+                send_lrrp_packet(opts, state, retune);
+            } else {
+                send_locn_packet(opts, state, retune);
+            }
+            int after = count_location_rows(path);
+            int expected = retune ? 0 : 1;
+            if (before < 0 || after < 0 || after != before + expected) {
+                DSD_FPRINTF(stderr, "\n%s %s -L rows: expected %d new, before=%d after=%d\n", kind ? "LOCN" : "LRRP",
+                            retune ? "after a retune" : "clean", expected, before, after);
+                rc = 1;
+                break;
+            }
+        }
+    }
+    opts->lrrp_file_output = 0;
+    if (remove(path) != 0) {
+        rc = 1;
+    }
+    return rc;
+}
+
+/* One MNIS packet through the real headers and assembler: a standard header (@p poc pad octets), the DPF 15 MNIS
+ * extension carrying octets 0-9, then @p blocks rate-1/2 blocks. @p pdu holds 10 + 12 x @p blocks octets: the 7-octet
+ * MNIS header, the service payload, the pad octets, the octet before the CRC32 and the CRC32, which this computes over
+ * Motorola's span (octets 3 up to that octet, dmr_block_type1_update_crc()). @p corrupt fails it. */
+static void
+send_mnis_packet(dsd_opts* opts, dsd_state* state, uint8_t* pdu, size_t blocks, uint8_t poc, int corrupt) {
+    const size_t total = 10U + 12U * blocks;
+    assert(blocks >= 1U && blocks <= 30U && poc < 32U);
+    uint8_t span[384];
+    assert(total - 4U <= sizeof span);
+    DSD_MEMCPY(span, pdu + 3, total - 8U);
+    crc32_long(span, total - 4U);
+    DSD_MEMCPY(pdu + total - 4U, span + total - 8U, 4);
+    pdu[total - 1U] ^= (uint8_t)(corrupt ? 1U : 0U);
+    uint8_t hdr[12] = {(uint8_t)(0x02U | ((poc & 0x10U) ? 0x10U : 0U)),
+                       (uint8_t)(0x90U | (poc & 0x0FU)),
+                       0,
+                       0,
+                       42,
+                       0,
+                       0,
+                       24,
+                       (uint8_t)(0x80U | (blocks + 1U)),
+                       0,
+                       0,
+                       0};
+    uint8_t ext[12] = {0};
+    DSD_MEMCPY(ext, pdu, 10);
+    header(opts, state, hdr, 1);
+    header(opts, state, ext, 1);
+    for (size_t b = 0; b < blocks; ++b) {
+        dmr_block_assembler(opts, state, pdu + 10U + b * 12U, 12, 0x07, 1);
+    }
+}
+
+/* Issue #800, fail closed: Motorola's compressed MNIS data leaves the octet just before the CRC32 out of the CRC, so it
+ * is never payload. With no pad octets it follows the LOCN text directly; a longitude whose fourth fraction digit would
+ * be that octet is cut short, and the report gives no position whatever the octet holds (with it, 0 read as 45 E and
+ * 9 as 45.0000150 E). The same report with its last digit inside the checked span gives its position. */
+static int
+test_mnis_unchecked_trailer(dsd_opts* opts, dsd_state* state) {
+    static const uint8_t cut[] = " A123456070826N2230.0000E04500.000";
+    static const uint8_t whole[] = "A123456070826N2230.0000E04500.0000";
+    static const uint8_t trailers[] = {0x30, 0x39};
+    opts->aggressive_framesync = 1;
+    opts->dmr_crc_relaxed_default = 0;
+    opts->payload = 0;
+    state->currentslot = 0;
+    int rc = 0;
+    for (size_t t = 0; t < 3U; ++t) {
+        const int checked = t == 2U;
+        uint8_t pdu[46] = {0x1F, 0x10, 0x02, 0x01, 0x01, 0x00, 0x01};
+        // Octets 7-40; octet 41 is the one the CRC leaves out.
+        DSD_MEMCPY(pdu + 7, checked ? whole : cut, sizeof whole - 1U);
+        pdu[41] = checked ? 0x00 : trailers[t];
+        const uint64_t before = state->event_history_s[0].push_seq;
+        send_mnis_packet(opts, state, pdu, 3U, 0U, 0);
+        const Event_History* notice = newest_row(state, 0);
+        const int ok = state->event_history_s[0].push_seq == before + 1U
+                       && (checked ? notice->pos.valid == 1U && notice->pos.lon_e7 == 450000000
+                                   : notice->pos.valid == 0U && notice->gps_s[0] == '\0');
+        if (!ok) {
+            DSD_FPRINTF(stderr, "\nMNIS LOCN, %s %02X: position valid %u (%d, %d)\n",
+                        checked ? "last digit checked, trailer" : "last digit in the unchecked octet", pdu[41],
+                        (unsigned)notice->pos.valid, notice->pos.lat_e7, notice->pos.lon_e7);
+            rc = 1;
+        }
+    }
+    return rc;
+}
+
+/* Issue #800, fail closed: a checked MNIS LOCN report's text is a position in any form, so the console shows it only
+ * once its position was admitted, or with -Z. A clean packet whose position admission refuses (0, 0) prints only that
+ * the position was suppressed. */
+static int
+test_mnis_locn_text_needs_admission(dsd_opts* opts, dsd_state* state) {
+    static const char* const reports[] = {"A123456070826N0000.0000E00000.0000", "A123456070826N2230.0000E04500.0000"};
+    opts->aggressive_framesync = 1;
+    opts->dmr_crc_relaxed_default = 0;
+    state->currentslot = 0;
+    int rc = 0;
+    for (size_t r = 0; r < 2U; ++r) {
+        for (int payload = 0; payload <= 1; ++payload) {
+            opts->payload = payload;
+            uint8_t pdu[46] = {0x1F, 0x10, 0x02, 0x01, 0x01, 0x00, 0x01};
+            DSD_MEMCPY(pdu + 7, reports[r], strlen(reports[r]));
+            dsd_test_capture_stderr cap;
+            char out[8192];
+            out[0] = '\0';
+            if (dsd_test_capture_stderr_begin(&cap, "dmr_locn_text_admission") != 0) {
+                return 1;
+            }
+            send_mnis_packet(opts, state, pdu, 3U, 1U, 0);
+            dsd_test_capture_stderr_end(&cap);
+            if (dsd_test_capture_stderr_read(&cap, out, sizeof out) != 0) {
+                return 1;
+            }
+            const int shows = strstr(out, "LOCN Text:") != NULL;
+            const int want = r == 1U || payload == 1;
+            if (shows != want || (r == 0U && strstr(out, "Position suppressed (not usable)") == NULL)) {
+                DSD_FPRINTF(stderr, "\nLOCN %s, -Z %d: text shown %d (want %d): %s\n", r == 0U ? "(0, 0)" : "admitted",
+                            payload, shows, want, out);
+                rc = 1;
+            }
+        }
+    }
+    opts->payload = 0;
+    return rc;
+}
+
+/* An MNIS LRRP response document of more than 150 octets: a point-2d (11.25, 45) near its start, 150 one-octet
+ * tokens, then a circle-2d (22.5, 22.5) with a 10 m radius, which ranks above the point. @p declared_extra adds to the
+ * document length it declares (a document the payload holds only part of). Returns the octets used. */
+static size_t
+build_long_lrrp(uint8_t* pdu, size_t cap, uint32_t declared_extra) {
+    static const uint8_t point[] = {0x66, 0x10, 0, 0, 0, 0x20, 0, 0, 0};
+    static const uint8_t circle[] = {0x51, 0x20, 0, 0, 0, 0x10, 0, 0, 0, 0x0A, 0x00};
+    const size_t filler = 150U;
+    const uint32_t doc_len = (uint32_t)(sizeof point + filler + sizeof circle) + declared_extra;
+    assert(3U + sizeof point + filler + sizeof circle <= cap);
+    size_t n = 0;
+    pdu[n++] = 0x07;
+    pdu[n++] = (uint8_t)(0x80U | (doc_len >> 7));
+    pdu[n++] = (uint8_t)(doc_len & 0x7FU);
+    DSD_MEMCPY(pdu + n, point, sizeof point);
+    n += sizeof point;
+    DSD_MEMSET(pdu + n, 0x38, filler); // opaque one-octet tokens
+    n += filler;
+    DSD_MEMCPY(pdu + n, circle, sizeof circle);
+    n += sizeof circle;
+    return n;
+}
+
+/* Issue #800, fail closed: an MNIS LRRP document is parsed whole, however long, and the best-ranked shape gives the
+ * position (here the circle past octet 150, never the point before it); a document that declares more than the
+ * checked payload holds gives no position. */
+static int
+test_mnis_long_lrrp_document(dsd_opts* opts, dsd_state* state) {
+    enum { kBlocks = 16 };
+
+    opts->aggressive_framesync = 1;
+    opts->dmr_crc_relaxed_default = 0;
+    opts->payload = 0;
+    state->currentslot = 0;
+    int rc = 0;
+    for (uint32_t extra = 0; extra <= 5U; extra += 5U) {
+        uint8_t pdu[10U + 12U * kBlocks] = {0x1F, 0x10, 0x02, 0x01, 0x11, 0x00, 0x01};
+        const size_t doc = build_long_lrrp(pdu + 7, sizeof pdu - 7U - 5U, extra);
+        const uint8_t poc = (uint8_t)(sizeof pdu - 7U - doc - 5U);
+        const uint64_t before = state->event_history_s[0].push_seq;
+        send_mnis_packet(opts, state, pdu, kBlocks, poc, 0);
+        const Event_History* notice = newest_row(state, 0);
+        const int emitted = state->event_history_s[0].push_seq == before + 1U;
+        const int circle =
+            notice->pos.valid == 1U && notice->pos.lat_e7 == 225000000 && notice->pos.lon_e7 == 225000000;
+        const int none = notice->pos.valid == 0U && notice->gps_s[0] == '\0';
+        if (!emitted || (extra == 0U ? !circle : !none)) {
+            DSD_FPRINTF(stderr, "\nLong MNIS LRRP (declared +%u): emitted %d, position valid %u (%d, %d)\n",
+                        (unsigned)extra, emitted, (unsigned)notice->pos.valid, notice->pos.lat_e7, notice->pos.lon_e7);
+            rc = 1;
+        }
+    }
+    return rc;
+}
+
+/* Issue #800, fail closed: a data header whose pad octet count is more than its packet's blocks hold after the CRC32
+ * leaves no user data, so a checked packet's octets never reach a position decoder under lengths that disagree. Two
+ * rate-1/2 blocks carry 20 octets after the CRC32 (the MNIS header's 7 and Motorola's unchecked octet less): a
+ * compressed UDP/IPv4 LRRP report (SAP 3) and an MNIS LRRP report each give their position with the pad count that
+ * fits, and none, in a notice or -L, when the header declares 31 pad octets. */
+static int
+test_impossible_padding_gives_no_position(dsd_opts* opts, dsd_state* state) {
+    static const uint8_t lrrp_doc[] = {0x07, 11, 0x22, 0, 0x66, 0x10, 0, 0, 0, 0x20, 0, 0, 0};
+    char path[DSD_TEST_PATH_MAX];
+    int fd = dsd_test_mkstemp(path, sizeof path, "dmr-impossible-poc");
+    if (fd < 0 || dsd_close(fd) != 0) {
+        return 1;
+    }
+    DSD_SNPRINTF(opts->lrrp_out_file, sizeof opts->lrrp_out_file, "%s", path);
+    opts->lrrp_file_output = 1;
+    opts->aggressive_framesync = 1;
+    opts->dmr_crc_relaxed_default = 0;
+    opts->payload = 0;
+    state->currentslot = 0;
+    int rc = 0;
+    for (int mnis = 0; mnis <= 1; ++mnis) {
+        for (int impossible = 0; impossible <= 1; ++impossible) {
+            const int rows_before = count_location_rows(path);
+            const uint64_t before = state->event_history_s[0].push_seq;
+            if (mnis) {
+                uint8_t pdu[34] = {0x1F, 0x10, 0x02, 0x01, 0x11, 0x00, 0x01};
+                DSD_MEMCPY(pdu + 7, lrrp_doc, sizeof lrrp_doc);
+                send_mnis_packet(opts, state, pdu, 2U, impossible ? 31U : 9U, 0);
+            } else {
+                uint8_t user[20] = {0x00, 0x20, 0x00, 0x3F, 0x00, 0x0F, 0xA1};
+                DSD_MEMCPY(user + 7, lrrp_doc, sizeof lrrp_doc);
+                send_sap3_poc(opts, state, user, sizeof user, 2, impossible ? 31U : 0U, 1);
+            }
+            const int rows = count_location_rows(path) - rows_before;
+            const Event_History* notice = newest_row(state, 0);
+            const int emitted = state->event_history_s[0].push_seq == before + 1U;
+            const int located = notice->pos.valid == 1U && notice->pos.lat_e7 == 112500000
+                                && notice->pos.lon_e7 == 450000000 && rows == 1;
+            // SAP 3 has no datagram left to decode, so it adds no notice; an MNIS packet's notice names its endpoints.
+            const int none =
+                rows == 0 && (!emitted || (notice->pos.valid == 0U && notice->gps_s[0] == '\0')) && emitted == mnis;
+            if (rows_before < 0 || (impossible ? !none : !(located && emitted))) {
+                DSD_FPRINTF(stderr, "\n%s LRRP, %s pad count: emitted %d, -L rows %d, position valid %u (%d, %d)\n",
+                            mnis ? "MNIS" : "SAP 3", impossible ? "impossible" : "fitting", emitted, rows,
+                            (unsigned)notice->pos.valid, notice->pos.lat_e7, notice->pos.lon_e7);
+                rc = 1;
+            }
+        }
+    }
+    opts->lrrp_file_output = 0;
+    if (remove(path) != 0) {
+        rc = 1;
+    }
+    return rc;
+}
+
+/* Issue #800, fail closed: the LRRP summary is the packet's notice text, so it carries the speed and heading of an
+ * admitted report only. A report whose packet failed its CRC32 (decoded under -F) shows neither, with -Z or without;
+ * the explicit payload diagnostics keep them under -Z. */
+static int
+test_lrrp_summary_motion(dsd_opts* opts, dsd_state* state) {
+    // POINT_2D (11.25, 45), speed 10 m/s (36 km/h), direction 45 x 2 degrees.
+    static const uint8_t lrrp_doc[] = {0x07, 16, 0x22, 0, 0x66, 0x10, 0, 0, 0, 0x20, 0, 0, 0, 0x6C, 0x0A, 0, 0x56, 45};
+    opts->aggressive_framesync = 0;
+    opts->dmr_crc_relaxed_default = 1;
+    state->currentslot = 0;
+    int rc = 0;
+    for (int corrupt = 0; corrupt <= 1; ++corrupt) {
+        for (int payload = 0; payload <= 1; ++payload) {
+            opts->payload = payload;
+            uint8_t user[32] = {0x00, 0x20, 0x00, 0x3F, 0x00, 0x0F, 0xA1};
+            DSD_MEMCPY(user + 7, lrrp_doc, sizeof lrrp_doc);
+            const uint64_t before = state->event_history_s[0].push_seq;
+            send_sap3(opts, state, user, 7U + sizeof lrrp_doc, 3, !corrupt);
+            const Event_History* notice = newest_row(state, 0);
+            const int motion = strstr(notice->event_string, "km/h") != NULL
+                               || strstr(state->dmr_lrrp_gps[0], "km/h") != NULL
+                               || strstr(state->dmr_lrrp_gps[0], " 90") != NULL;
+            const int want = !corrupt;
+            if (state->event_history_s[0].push_seq != before + 1U || motion != want
+                || (want && strstr(notice->event_string, "36.00 km/h") == NULL)) {
+                DSD_FPRINTF(stderr, "\nLRRP summary, %s, -Z %d: motion %d (want %d): '%s'\n",
+                            corrupt ? "CRC ERR" : "clean", payload, motion, want, notice->event_string);
+                rc = 1;
+            }
+        }
+    }
+    opts->payload = 0;
+    opts->dmr_crc_relaxed_default = 0;
+    opts->aggressive_framesync = 1;
     return rc;
 }
 
@@ -821,9 +1294,10 @@ main(void) {
         }
     }
     fclose(log);
-    // The RAS-accepted header's event is [RAS] in -J, not [CRC ERR].
+    // The RAS-accepted header's event is [RAS] in -J, not [CRC ERR]. The clean captured LRRP report's notice carries
+    // its admitted position, so it adds its GPS line (issue #800).
     assert(marked + ras + clean > 0U);
-    assert(marked == 11 && ras == 1 && clean == 9 && marked_text == 3);
+    assert(marked == 11 && ras == 1 && clean == 10 && marked_text == 3);
     assert(remove(path) == 0);
     opts->event_out_file[0] = '\0';
     test_ras_data_provenance(opts, state);
@@ -831,6 +1305,14 @@ main(void) {
     int rc = test_mnis_location_file(opts, state);
     rc |= test_sap3_ars_real_path(opts, state);
     rc |= test_sap3_lrrp_location_rows(opts, state);
+    rc |= test_position_origin_across_retune(opts, state);
+    rc |= test_position_group_from_checked_header(opts, state);
+    rc |= test_failed_locn_prints_no_content(opts, state);
+    rc |= test_mnis_unchecked_trailer(opts, state);
+    rc |= test_mnis_locn_text_needs_admission(opts, state);
+    rc |= test_mnis_long_lrrp_document(opts, state);
+    rc |= test_impossible_padding_gives_no_position(opts, state);
+    rc |= test_lrrp_summary_motion(opts, state);
     rc |= test_confirmed_127_blocks(opts, state);
     rc |= test_t3_mbc_grant_channel_provenance(opts, state);
     dsd_state_ext_free_all(state);

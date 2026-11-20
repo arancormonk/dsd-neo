@@ -5,6 +5,7 @@
 
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/state_fwd.h"
+#include "dstar_sd_state.h"
 
 #include <assert.h>
 #include <dsd-neo/core/audio.h>
@@ -14,6 +15,7 @@
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/safe_api.h>
 #include <dsd-neo/core/state.h>
+#include <dsd-neo/core/state_ext.h>
 #include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/core/vocoder.h>
 #include <dsd-neo/protocol/dstar/dstar.h>
@@ -550,6 +552,45 @@ test_header_split_by_a_carrier_boundary_decodes_nothing(void) {
     assert(slow_data_calls == 0);
 }
 
+/* Issue #800 2.10: every RF header opens a transmission (dsd_state::dstar_tx_seq), whether its CRC passed or not, so
+ * what slow data the one before it left half assembled -- a D-PRS record (one missing only its CR would otherwise be
+ * finished by this transmission and published as its position) or a text message -- is forgotten, and no slow data
+ * reaches a call until a checked header names the transmission's MY callsign (dsd_state::dstar_tx_call_epoch; the
+ * real header decode names it: DSTAR_DPRS). */
+static void
+test_every_header_forgets_a_half_collected_dprs_record(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    for (int verified = 0; verified <= 1; verified++) {
+        DSD_MEMSET(&opts, 0, sizeof(opts));
+        DSD_MEMSET(&state, 0, sizeof(state));
+        opts.floating_point = 1;
+        opts.pulse_digi_out_channels = 1;
+        reset_counters();
+        header_decode_soft_result = verified;
+        dstar_sd_state* sd = dstar_sd_st(&state);
+        assert(sd != NULL);
+        sd->dprs.collecting = 1U;
+        sd->dprs.len = 12U;
+        sd->dprs.bind.call_epoch = 7U;
+        DSD_MEMCPY(sd->dprs.text, "$$CRC9E3E,N0", 12U);
+        sd->text.places = 1U;
+        state.dstar_tx_seq = 3U;
+        state.dstar_tx_call_epoch = 7U;
+
+        assert(processDSTAR_HD(&opts, &state) == verified);
+        /* The stub decode names no callsign, so neither outcome names the transmission. */
+        assert(state.dstar_tx_seq == 4U);
+        assert(state.dstar_tx_call_epoch == 0U);
+        assert(sd->dprs.collecting == 0U);
+        assert(sd->dprs.len == 0U);
+        assert(sd->dprs.bind.call_epoch == 0U);
+        assert(sd->text.places == 0U);
+        dsd_state_ext_free_all(&state);
+    }
+    header_decode_soft_result = 1;
+}
+
 int
 main(void) {
     test_voice_process_without_telemetry();
@@ -563,6 +604,7 @@ main(void) {
     test_voice_superframe_cut_by_an_input_interruption_is_dropped();
     test_header_cut_by_an_input_interruption_decodes_nothing();
     test_header_split_by_a_carrier_boundary_decodes_nothing();
+    test_every_header_forgets_a_half_collected_dprs_record();
     printf("DSTAR_PROCESS: OK\n");
     return 0;
 }

@@ -18,6 +18,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include "dsd-neo/core/position.h"
 #include "dsd-neo/core/safe_api.h"
 #include "test_env.h"
 #include "test_support.h"
@@ -98,18 +99,22 @@ dsd_event_sync_slot(dsd_opts* opts, dsd_state* state, uint8_t slot) {
 
 void
 // NOLINTNEXTLINE(misc-use-internal-linkage)
-utf8_to_text(dsd_state* state, uint8_t wr, uint16_t len, uint8_t* input) {
+utf8_to_text_labelled(dsd_state* state, uint8_t wr, uint16_t len, const uint8_t* input, const char* label) {
     (void)state;
     (void)wr;
     (void)len;
     (void)input;
+    (void)label;
     g_utf8_calls++;
 }
 
 uint8_t
 // NOLINTNEXTLINE(misc-use-internal-linkage)
-nmea_sentence_checker(const dsd_opts* opts, dsd_state* state, const uint8_t* input, uint8_t slot, int len_bytes) {
+nmea_sentence_checker(const dsd_opts* opts, dsd_state* state, const uint8_t* input, uint8_t slot, int len_bytes,
+                      int packet_verified, const dsd_position_origin* origin) {
     (void)opts;
+    (void)packet_verified;
+    (void)origin;
     (void)state;
     (void)slot;
     if (input == NULL || len_bytes < 6) {
@@ -129,6 +134,12 @@ nmea_sentence_checker(const dsd_opts* opts, dsd_state* state, const uint8_t* inp
     const dsd_call_observation observation = dsd_call_observation_data(0, slot, 0U, 0U);
     (void)dsd_event_emit_data_notice((dsd_opts*)opts, state, slot, &observation, "NMEA");
     return 1;
+}
+
+int
+// NOLINTNEXTLINE(misc-use-internal-linkage)
+nmea_payload_framed(const uint8_t* input, int len_bytes) {
+    return input != NULL && len_bytes > 0 && convert_bits_into_output(input, 8) == (uint64_t)'$';
 }
 
 int

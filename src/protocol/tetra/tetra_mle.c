@@ -9,7 +9,10 @@
  * chain of length-delimited type-3/4 elements); MLE PDUs follow Annex E.2.1 (no type-3/4 elements).
  */
 
+#include <dsd-neo/core/events.h>
+#include <dsd-neo/core/gps.h>
 #include <dsd-neo/core/opts_fwd.h>
+#include <dsd-neo/core/position.h>
 #include <dsd-neo/core/safe_api.h>
 #include <dsd-neo/core/state_fwd.h>
 #include <dsd-neo/core/utf16.h>
@@ -24,6 +27,7 @@
 #include <string.h>
 
 #include "tetra_calls.h"
+#include "tetra_confirm.h"
 #include "tetra_log.h"
 #include "tetra_mle_pdu.h"
 #include "tetra_mm_pdu.h"
@@ -684,6 +688,7 @@ parse_cmce_d_facility(tetra_bit_reader* r, const mle_ctx* ctx) {
 
 #define SDS_PID_SIMPLE_TEXT           2u
 #define SDS_PID_SIMPLE_IMMEDIATE_TEXT 9u
+#define SDS_PID_LIP                   10u
 #define SDS_PID_CONCAT                12u
 #define SDS_PID_TEXT                  130u
 #define SDS_PID_IMMEDIATE_TEXT        137u
@@ -855,6 +860,7 @@ sds_decode_text(tetra_bit_reader* r, int timestamp_allowed, tetra_sds_text* t) {
 typedef struct {
     uint8_t* assembled;
     int assembled_bits;
+    dsd_position_origin origin; /* where the message's first part to arrive was received, when complete */
     uint8_t received;
     uint8_t assembled_pid;
     uint8_t complete; /* this part completed the message */
@@ -882,10 +888,21 @@ typedef struct {
     uint8_t type;     /* 1 for an SSI or TSI calling party; the reserved type identifier otherwise */
 } sds_concat_sender;
 
+/* The party a concatenation part is addressed to: the identity its MAC PDU names in the clear and its identity space
+ * (tetra_calls_addressed_party(): an SSI, an SMI, or none known: an event label alone, an encrypted short identity). A
+ * message's parts are its sender's to one party: parts of two messages that share a sender and reference but go to two
+ * parties -- an SMI and an SSI of one value among them -- are never assembled into one. */
+typedef struct {
+    uint32_t value;
+    uint8_t space; /* tetra_calls_party */
+} sds_concat_party;
+
 /* One message being reassembled; the parts are stored packed, MSB first. */
 typedef struct {
-    uint64_t updated_ms; /* decode-clock time of the last accepted part */
+    uint64_t updated_ms;        /* decode-clock time of the last accepted part */
+    dsd_position_origin origin; /* the reception the first part to arrive came from (dsd_position_origin_capture()) */
     sds_concat_sender src;
+    sds_concat_party dst;
     uint16_t part_bits[SDS_CONCAT_PARTS];
     uint16_t reference;
     uint8_t valid;
@@ -906,6 +923,7 @@ struct tetra_sds_concat_store {
 typedef struct {
     tetra_bit_reader data; /* the part's user data */
     sds_concat_sender src;
+    sds_concat_party dst;
     int payload_pid; /* -1 except in part 1 */
     uint16_t reference;
     uint8_t with_transport;
@@ -938,19 +956,34 @@ sds_concat_same_sender(const sds_concat_sender* a, const sds_concat_sender* b) {
     return a->type == b->type && a->ssi == b->ssi && a->network == b->network;
 }
 
-/* The context collecting @p part's message: the matching one, else a free one, else the stalest. Contexts idle for
- * longer than SDS_CONCAT_TIMEOUT_MS are dropped on the way. */
+static int
+sds_concat_same_party(const sds_concat_party* a, const sds_concat_party* b) {
+    return a->space == b->space && a->value == b->value;
+}
+
+/* The context collecting @p part's message (the same sender, addressed party, reference and transport): the matching
+ * one, else a free one, else the stalest. Contexts idle for longer than SDS_CONCAT_TIMEOUT_MS are dropped on the way,
+ * and so are those begun on another reception (a retune, a trunk-scan target switch or a received identity change
+ * since their first part): their parts are another reception's message, which a part heard now never completes. */
+static int
+sds_concat_stale(const dsd_state* state, const sds_concat_ctx* c, uint64_t now_ms) {
+    return c->valid
+           && (now_ms - c->updated_ms > SDS_CONCAT_TIMEOUT_MS
+               || (c->received_count > 0 && !dsd_position_origin_matches(state, &c->origin)));
+}
+
 static sds_concat_ctx*
-sds_concat_find(struct tetra_sds_concat_store* store, const sds_concat_part* part, uint64_t now_ms) {
+sds_concat_find(const dsd_state* state, struct tetra_sds_concat_store* store, const sds_concat_part* part,
+                uint64_t now_ms) {
     sds_concat_ctx* free_ctx = NULL;
     sds_concat_ctx* oldest = &store->ctx[0];
     for (unsigned i = 0; i < SDS_CONCAT_CONTEXTS; i++) {
         sds_concat_ctx* c = &store->ctx[i];
-        if (c->valid && now_ms - c->updated_ms > SDS_CONCAT_TIMEOUT_MS) {
+        if (sds_concat_stale(state, c, now_ms)) {
             sds_concat_clear(c);
         }
-        if (c->valid && sds_concat_same_sender(&c->src, &part->src) && c->reference == part->reference
-            && c->with_transport == part->with_transport) {
+        if (c->valid && sds_concat_same_sender(&c->src, &part->src) && sds_concat_same_party(&c->dst, &part->dst)
+            && c->reference == part->reference && c->with_transport == part->with_transport) {
             return c;
         }
         if (!c->valid && !free_ctx) {
@@ -964,6 +997,7 @@ sds_concat_find(struct tetra_sds_concat_store* store, const sds_concat_part* par
     sds_concat_clear(c);
     c->valid = 1;
     c->src = part->src;
+    c->dst = part->dst;
     c->reference = part->reference;
     c->with_transport = part->with_transport;
     c->total = part->total;
@@ -992,7 +1026,8 @@ sds_concat_assemble(const sds_concat_ctx* c, int* nbits) {
 }
 
 /* Store one part. An identical repeat is a duplicate; a different part under the same sequence number, or a changed
- * part count, discards the whole message. */
+ * part count, discards the whole message. Part 1 is identical only with its payload PID too: the PID says what the
+ * whole message is (a LIP PDU under PID 10), so a part 1 of the same bits under another PID is another message's. */
 static int
 sds_concat_store_part(sds_concat_ctx* c, const sds_concat_part* part) {
     uint8_t packed[SDS_CONCAT_PART_BYTES];
@@ -1008,7 +1043,8 @@ sds_concat_store_part(sds_concat_ctx* c, const sds_concat_part* part) {
         return SDS_CONCAT_REJECTED;
     }
     if (sds_concat_has_part(c, index)) {
-        if (c->part_bits[index] != (uint16_t)part_bits || memcmp(c->data[index], packed, sizeof packed) != 0) {
+        if (c->part_bits[index] != (uint16_t)part_bits || memcmp(c->data[index], packed, sizeof packed) != 0
+            || (part->sequence == 1 && (int)c->payload_pid != part->payload_pid)) {
             sds_concat_clear(c);
             return SDS_CONCAT_REJECTED;
         }
@@ -1035,16 +1071,26 @@ tetra_mle_forget_reassembly(dsd_state* state) {
     }
 }
 
-/* Add one well-formed part (sds_read_concat_control()) to the reassembly in @p ts and report the message state in
- * @p status. */
+/* Add one well-formed part (sds_read_concat_control()) to the reassembly of @p ctx's TETRA state and report the message
+ * state in @p status. A message's first part to arrive notes the reception it came from, which a complete message
+ * keeps; a part heard on another reception starts the message over (sds_concat_find()), so the parts of one message
+ * all come from one reception. */
 static int
-sds_concat_submit(tetra_state_t* ts, const sds_concat_part* part, sds_concat_status* status) {
-    struct tetra_sds_concat_store* store = sds_concat_store(ts);
+sds_concat_submit(const mle_ctx* ctx, const sds_concat_part* part, sds_concat_status* status) {
+    struct tetra_sds_concat_store* store = sds_concat_store(ctx->ts);
     if (!store) {
         return SDS_CONCAT_REJECTED;
     }
     const uint64_t now_ms = dsd_decode_now_mono_ms();
-    sds_concat_ctx* c = sds_concat_find(store, part, now_ms);
+    sds_concat_ctx* c = sds_concat_find(ctx->state, store, part, now_ms);
+    if (c->received_count == 0) {
+        /* The part's own reception: a part rebuilt from MAC fragments came from its first fragment's. */
+        if (ctx->sdu && ctx->sdu->origin) {
+            c->origin = *ctx->sdu->origin;
+        } else {
+            dsd_position_origin_capture(ctx->opts, ctx->state, &c->origin);
+        }
+    }
     c->updated_ms = now_ms;
     const int result = sds_concat_store_part(c, part);
     status->received = c->received_count;
@@ -1053,6 +1099,7 @@ sds_concat_submit(tetra_state_t* ts, const sds_concat_part* part, sds_concat_sta
     }
     status->assembled = sds_concat_assemble(c, &status->assembled_bits);
     status->assembled_pid = c->payload_pid;
+    status->origin = c->origin;
     sds_concat_clear(c);
     return status->assembled ? SDS_CONCAT_COMPLETE : SDS_CONCAT_REJECTED;
 }
@@ -1197,6 +1244,8 @@ sds_decode_user_data(tetra_bit_reader* ud, tetra_sds_data* d) {
     if (!tetra_bits_ok(ud)) {
         return 0;
     }
+    d->payload_pos = ud->pos;
+    d->payload_bits = tetra_bits_left(ud);
     if (pid == SDS_PID_CONCAT || pid == SDS_PID_CONCAT_TL) {
         return sds_decode_concat(ud, pid, d);
     }
@@ -1293,12 +1342,13 @@ sds_reassemble(const mle_ctx* ctx, tetra_sds_data* d, sds_concat_status* concat)
     DSD_MEMSET(&part, 0, sizeof part);
     part.data = tetra_bits_reader(ctx->bits, d->concat.data_pos + d->concat.data_bits, d->concat.data_pos);
     part.src = sds_concat_sender_of(ctx->ts, &d->calling);
+    part.dst.space = (uint8_t)tetra_calls_addressed_party(ctx->sdu, &part.dst.value);
     part.payload_pid = d->concat.payload_pid;
     part.reference = d->concat.reference;
     part.with_transport = d->concat.with_transport;
     part.total = d->concat.total;
     part.sequence = d->concat.sequence;
-    const int result = sds_concat_submit(ctx->ts, &part, concat);
+    const int result = sds_concat_submit(ctx, &part, concat);
     concat->duplicate = (uint8_t)(result == SDS_CONCAT_DUPLICATE);
     concat->complete = (uint8_t)(result == SDS_CONCAT_COMPLETE);
     if (concat->complete) {
@@ -1335,10 +1385,174 @@ sds_notice(const mle_ctx* ctx, const tetra_sds_data* d, const sds_concat_status*
     tetra_calls_notice(ctx->opts, ctx->state, 0, d->calling.ssi, dst, notice, d->text.len > 0 ? d->text.text : NULL);
 }
 
+/* A location information protocol PDU (TS 100 392-18-1) in an SDS message under PID 10, with no SDS-TL header (EN 300
+ * 392-2 table 29.21 note 2, table 29.49): the PDU starts right after the PID. What it was, and for a short location
+ * report the admitted record and its text. */
+typedef struct {
+    char what[64];        /* "short location report", "long location report (not decoded)", ... */
+    char position[32];    /* why a short report's position is left out ("refused", ...); empty when admitted */
+    char text[192];       /* lip_short_report_text() of an admitted report */
+    dsd_position_fix fix; /* the admitted record */
+    uint8_t short_report; /* a short location report was decoded */
+    uint8_t admitted;     /* ...and admitted */
+} sds_lip;
+
+/* The SDS message's LIP PDU, when it is one: a whole message under PID 10, or a complete concatenated message whose
+ * payload PID is 10 (clause 29.5.14.1: concatenation carries messages of any PID), with the reception its first part
+ * came from (for a whole message rebuilt from MAC fragments, its first fragment's; NULL for one block's). */
+static int
+sds_lip_pdu(const mle_ctx* ctx, const tetra_sds_data* d, const sds_concat_status* concat, const uint8_t** bits,
+            int* nbits, const dsd_position_origin** origin) {
+    if (d->concat_present) {
+        if (!concat->complete || concat->assembled_pid != SDS_PID_LIP) {
+            return 0;
+        }
+        *bits = concat->assembled;
+        *nbits = concat->assembled_bits;
+        *origin = &concat->origin;
+        return 1;
+    }
+    if (d->sdti != 3 || !d->pid_present || d->pid != SDS_PID_LIP) {
+        return 0;
+    }
+    *bits = ctx->bits + d->payload_pos;
+    *nbits = d->payload_bits;
+    *origin = ctx->sdu ? ctx->sdu->origin : NULL; /* a TM-SDU rebuilt from fragments keeps its first one's */
+    return 1;
+}
+
+/* Admit a short location report as the SDS sender's. The MAC block CRC passed before the MLE was reached, and the LLC
+ * FCS too when the PDU carried one (tetra_mac.c llc_deliver()); like the notice that goes with it, the report is
+ * published only once an earlier CRC-passed block proved the carrier. The sender and its network come from the same
+ * checked SDS: a calling party of type 2 sends its own MCC and MNC (table 14.44), which names the sender's network;
+ * type 1 is the network the decoder is on. The record names no target: the MAC address the SDS came with does not say
+ * whether its SSI is a radio or a group, and a record's target is a radio unless marked a talkgroup (issue #800, fail
+ * closed: the notice still shows the address). */
+static int
+sds_lip_admit(const mle_ctx* ctx, const tetra_sds_data* d, const lip_short_report* r, const dsd_position_origin* origin,
+              sds_lip* out) {
+    dsd_position_fix* const fix = &out->fix;
+    if (!d->calling.ssi_valid) {
+        /* A reserved calling party type (table 14.43) has no address of known length: nothing after it, the report
+         * included, can be placed. */
+        DSD_SNPRINTF(out->position, sizeof out->position, "%s", "calling party type reserved");
+        return 0;
+    }
+    if (!ctx->opts) {
+        DSD_SNPRINTF(out->position, sizeof out->position, "%s", "refused");
+        return 0;
+    }
+    if (!tetra_confirm_carrier_proven(ctx->state)) {
+        DSD_SNPRINTF(out->position, sizeof out->position, "%s", "carrier not proven");
+        return 0;
+    }
+    if (d->concat_present && tetra_calls_addressed_party(ctx->sdu, NULL) == TETRA_CALLS_PARTY_NONE) {
+        /* Parts are assembled per addressed party (sds_concat_find()); with none named, nothing shows that the parts
+           of the message went to one party, so they may be two reports' halves. */
+        DSD_SNPRINTF(out->position, sizeof out->position, "%s", "recipient unknown");
+        return 0;
+    }
+    dsd_position_fix_init(fix);
+    lip_short_report_to_fix(r, fix);
+    fix->kind = DSD_POS_TETRA_LIP;
+    fix->protocol = (uint8_t)tetra_calls_protocol(ctx->state);
+    fix->slot = 0U;
+    fix->source_id = d->calling.ssi;
+    if (d->calling.type == 2U && d->calling.extension_valid) {
+        fix->sender_scope.kind = DSD_POS_SCOPE_TETRA;
+        fix->sender_scope.a = d->calling.extension >> 14;     /* MCC, 10 bits */
+        fix->sender_scope.b = d->calling.extension & 0x3FFFu; /* MNC, 14 bits */
+    }
+    if (dsd_position_admit(ctx->opts, ctx->state, fix, 1, 1, origin) == DSD_POSITION_REFUSED) {
+        DSD_SNPRINTF(out->position, sizeof out->position, "%s", "refused");
+        return 0;
+    }
+    lip_short_report_text(r, out->text, sizeof out->text);
+    return 1;
+}
+
+/* Decode the LIP PDU @p bits: a short location report (table 6.1) is admitted; a long one, and the other PDU types,
+ * are named and left undecoded. */
+static void
+sds_lip_decode(const mle_ctx* ctx, const tetra_sds_data* d, const uint8_t* bits, int nbits,
+               const dsd_position_origin* origin, sds_lip* out) {
+    tetra_bit_reader rd = tetra_bits_reader(bits, nbits, 0);
+    const uint32_t type = tetra_bits_read(&rd, 2); /* table 6.91 */
+    if (!tetra_bits_ok(&rd)) {
+        DSD_SNPRINTF(out->what, sizeof out->what, "truncated (%d bits)", nbits);
+    } else if (type == 0u) {
+        lip_short_report r;
+        if (lip_parse_short_report(bits, (size_t)nbits, &r) != 1) {
+            DSD_SNPRINTF(out->what, sizeof out->what, "short location report truncated (%d bits)", nbits);
+            return;
+        }
+        DSD_SNPRINTF(out->what, sizeof out->what, "%s", "short location report");
+        out->short_report = 1;
+        out->admitted = (uint8_t)sds_lip_admit(ctx, d, &r, origin, out);
+    } else if (type == 1u) {
+        /* Table 6.92: PDU type extension 0011 is the long location report (table 6.2). */
+        const uint32_t extension = tetra_bits_read(&rd, 4);
+        if (!tetra_bits_ok(&rd)) {
+            DSD_SNPRINTF(out->what, sizeof out->what, "truncated (%d bits)", nbits);
+        } else if (extension == 3u) {
+            DSD_SNPRINTF(out->what, sizeof out->what, "%s", "long location report (not decoded)");
+        } else {
+            DSD_SNPRINTF(out->what, sizeof out->what, "PDU type extension %u (not decoded)", (unsigned)extension);
+        }
+    } else {
+        DSD_SNPRINTF(out->what, sizeof out->what, "reserved PDU type %u (not decoded)", (unsigned)type);
+    }
+}
+
+/* A LIP message: printed, with its position only when admitted; the admitted record goes with the message's data
+ * notice into the event history (staged right before it), and to the location file. */
+static void
+sds_lip_report(const mle_ctx* ctx, const tetra_sds_data* d, const uint8_t* bits, int nbits,
+               const dsd_position_origin* origin) {
+    const uint32_t dst = tetra_calls_addressed_ssi(ctx->sdu);
+    if (origin != NULL && !dsd_position_origin_matches(ctx->state, origin)) {
+        /* The message's first part came from another reception (a retune or a trunk scan switch since): nothing of it,
+           its notice included, belongs to the one the receiver is on now. */
+        DSD_FPRINTF(stderr, "[TETRA SDS LIP] CC=%d src_SSI=%u dst_SSI=%u withheld (reception changed)\n", ctx->cc,
+                    d->calling.ssi, (unsigned)dst);
+        return;
+    }
+    sds_lip lip;
+    DSD_MEMSET(&lip, 0, sizeof lip);
+    sds_lip_decode(ctx, d, bits, nbits, origin, &lip);
+    if (lip.admitted) {
+        DSD_FPRINTF(stderr, "[TETRA SDS LIP] CC=%d src_SSI=%u dst_SSI=%u %s; %s\n", ctx->cc, d->calling.ssi,
+                    (unsigned)dst, lip.what, lip.text);
+    } else if (lip.short_report) {
+        DSD_FPRINTF(stderr, "[TETRA SDS LIP] CC=%d src_SSI=%u dst_SSI=%u %s; Position: (%s)\n", ctx->cc, d->calling.ssi,
+                    (unsigned)dst, lip.what, lip.position);
+    } else {
+        DSD_FPRINTF(stderr, "[TETRA SDS LIP] CC=%d src_SSI=%u dst_SSI=%u %s\n", ctx->cc, d->calling.ssi, (unsigned)dst,
+                    lip.what);
+    }
+    char notice[128];
+    DSD_SNPRINTF(notice, sizeof notice, "SDS SRC: %u; TGT: %u; LIP: %s;", (unsigned)d->calling.ssi, (unsigned)dst,
+                 lip.what);
+    if (lip.admitted) {
+        (void)dsd_event_stage_position(ctx->state, 0U, &lip.fix, lip.text);
+    }
+    tetra_calls_notice(ctx->opts, ctx->state, 0, d->calling.ssi, dst, notice, NULL);
+    if (lip.admitted) {
+        lip_write_location_row(ctx->opts, &lip.fix);
+    }
+}
+
 static void
 sds_report(const mle_ctx* ctx, const tetra_sds_data* d, const sds_concat_status* concat) {
     DSD_FPRINTF(stderr, "[TETRA CMCE D-SDS-DATA] CC=%d src_SSI=%u CPTI=%u SDTI=%u data_bits=%d\n", ctx->cc,
                 d->calling.ssi, d->calling.type, d->sdti, d->data_bits);
+    const uint8_t* lip_bits = NULL;
+    int lip_nbits = 0;
+    const dsd_position_origin* origin = NULL;
+    if (sds_lip_pdu(ctx, d, concat, &lip_bits, &lip_nbits, &origin)) {
+        sds_lip_report(ctx, d, lip_bits, lip_nbits, origin);
+        return;
+    }
     sds_notice(ctx, d, concat);
 }
 

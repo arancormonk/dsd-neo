@@ -23,7 +23,9 @@
  * starts it again: the old session's calls keep its attribution, the new session's take theirs. A spilled row keeps
  * its site and call channel (issue #799), within the spill's size per row. A site text digest an older build's seen
  * entry takes from the tap's read reaches the seen store through the spill, so a text that changes alone after it is
- * read again at the next launch (issue #40). The deliberate failures' warnings are
+ * read again at the next launch (issue #40). Issue #800, 2.7: a run the tap read first keeps a session ordinal no later
+ * run's comes before, even when the process dies before its spill folds and the fold fails once after a newer run: the
+ * merged call shows the newer run's fix, though the older run's revs are higher. The deliberate failures' warnings are
  * counted, not printed. */
 
 #include <QByteArray>
@@ -45,8 +47,10 @@
 #include <QSettings>
 #include <QStandardPaths>
 #include <QString>
+#include <QStringList>
 #include <QTemporaryDir>
 #include <QVariant>
+#include <QVariantMap>
 #include <Qt>
 #include <QtGlobal>
 #include <atomic>
@@ -56,6 +60,7 @@
 #include <dsd-neo/core/init.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/opts_fwd.h>
+#include <dsd-neo/core/position.h>
 #include <dsd-neo/core/received_identity.h>
 #include <dsd-neo/core/safe_api.h>
 #include <dsd-neo/core/state.h>
@@ -206,6 +211,42 @@ struct Decoder {
         item->site_id = site;
         item->call_channel_kind = kind;
         item->channel = channel;
+    }
+
+    /** Give the newest committed row GPS text and the admitted position it describes (issue #800). */
+    void
+    gpsNewest(int slot, const char* text, int32_t lat_e7, uint64_t rev) {
+        Event_History* item = &state->event_history_s[slot].Event_History_Items[1];
+        DSD_SNPRINTF(item->gps_s, sizeof(item->gps_s), "%s", text);
+        item->pos.valid = 1U;
+        item->pos.lat_e7 = lat_e7;
+        item->pos.lon_e7 = 450000000;
+        item->pos.kind = DSD_POS_DMR_EMBEDDED;
+        item->pos.rev = rev;
+    }
+
+    /** The core withdraws the newest committed row's report in place: its GPS text and position cleared together. */
+    void
+    clearGpsNewest(int slot) {
+        Event_History_I* ring = &state->event_history_s[slot];
+        Event_History* item = &ring->Event_History_Items[1];
+        item->gps_s[0] = '\0';
+        DSD_MEMSET(&item->pos, 0, sizeof(item->pos));
+        ring->commit_rev++;
+        ring->revision++;
+    }
+
+    /** Give the newest committed row a known reception, as the core stamps it (Event_History::rx_scope): one tuned
+     * frequency, read under the record's first epoch. */
+    void
+    heardNewest(int slot) {
+        Event_History* item = &state->event_history_s[slot].Event_History_Items[1];
+        item->rx_scope.scope.kind = DSD_POS_SCOPE_FEED_TUNED_FREQ;
+        item->rx_scope.scope.a = 450000000U;
+        item->rx_scope.resolved = 1U;
+        item->rx_scope.rx_gen = 1U;
+        item->rx_scope.epoch_known = 1U;
+        item->freq_hz = 450000000;
     }
 
     /** Commit a data notice the way dsd_event_emit_data_notice() does. */
@@ -1014,6 +1055,134 @@ test_failed_spill_read_keeps_the_spill(void) {
     expect("read error: reported only for the failed read", g_spillReadWarnings == 1);
 }
 
+/* Issue #800, 2.7. The tap reads a run's two fragments of one call in the background (fixes with revs 5 and 9) and the
+ * process dies: its settings keep only what was saved when the tap started. The relaunch's fold of the spill fails, a
+ * newer run's fragment of the same call (rev 2) is ingested live, and the next fold adds the older run's two. The
+ * merged call shows the newer run's fix: the tap's ring took an ordinal from the block set aside before it ran. */
+void
+test_failed_spill_read_after_a_newer_run(void) {
+    resetStorage();
+    const time_t when = 1755000000;
+    const uint32_t tg = 80701U;
+    const uint32_t src = 8701U;
+    const QStringList ordinalKeys = {QStringLiteral("callHistory/sessionOrd/next"),
+                                     QStringLiteral("callHistory/sessionOrd/rings")};
+    QVariantMap atTapStart;
+    {
+        Decoder first;
+        CallHistoryModel model;
+        start_tap(model);
+        set_app_state(Qt::ApplicationSuspended);
+        {
+            QSettings settings;
+            for (const QString& key : ordinalKeys) {
+                atTapStart.insert(key, settings.value(key));
+            }
+        }
+        // Every fragment is heard on one known reception: two runs' epochs say nothing of each other, so only that
+        // lets one run's fix onto a row another run's fragment holds (call_history_same_reception()).
+        first.commit(0, tg, src, when);
+        first.heardNewest(0);
+        first.gpsNewest(0, "GPS: A", 225000000, 5U);
+        first.commit(0, tg, src, when + 6);
+        first.heardNewest(0);
+        first.gpsNewest(0, "GPS: B", 226000000, 9U);
+        first.publish();
+        for (int poll = 0; poll < 6; poll++) {
+            model.waitForBackgroundPollForTest();
+        }
+        expect("2.7: the older run's fragments are spilled", spill_lines() == 2);
+    }
+    // What a process killed in the background leaves: the settings as they were when the tap started.
+    {
+        QSettings settings;
+        for (const QString& key : ordinalKeys) {
+            if (atTapStart.value(key).isValid()) {
+                settings.setValue(key, atTapStart.value(key));
+            } else {
+                settings.remove(key);
+            }
+        }
+    }
+    set_app_state(Qt::ApplicationActive);
+    g_spillReadWarnings = 0;
+    CallHistoryModel::failNextSpillReadAfterLinesForTest(0);
+    {
+        Decoder second;
+        CallHistoryModel model;
+        expect("2.7: the failed fold adds nothing", model.count() == 0 && g_spillReadWarnings == 1);
+        second.commit(0, tg, src, when + 12);
+        second.heardNewest(0);
+        second.gpsNewest(0, "GPS: C", 227000000, 2U);
+        second.publish();
+        gui_ingest(model);
+        expect("2.7: the newer run's fragment is logged",
+               model.count() == 1
+                   && model.data(model.index(0), CallHistoryModel::DetailRole).toString() == QStringLiteral("GPS: C"));
+    }
+    expect("2.7: the spill waits for a whole read", spill_lines() == 2);
+    {
+        CallHistoryModel retried;
+        expect("2.7: the retried fold joins the older run's fragments to the call", retried.count() == 1);
+        expect("2.7: the newer run's fix wins over the older run's higher revs",
+               retried.count() == 1
+                   && retried.data(retried.index(0), CallHistoryModel::DetailRole).toString()
+                          == QStringLiteral("GPS: C"));
+        retried.saveNow();
+        settle_save(retried);
+    }
+    CallHistoryModel last;
+    expect("2.7: a reload keeps the newer run's fix",
+           last.count() == 1
+               && last.data(last.index(0), CallHistoryModel::DetailRole).toString() == QStringLiteral("GPS: C"));
+}
+
+/* Issue #800, 2.7: the core withdraws a committed fragment's fix (its GPS text and position cleared) while the app is
+ * away. The tap spills that reading with no GPS to carry its run and version; folded on the return, or by the relaunch
+ * after the process died in the background, it is still its fragment's reading and withdraws the fix, as the same
+ * reading read live does: the old fix neither shows nor is saved. */
+void
+test_background_gps_withdrawal(void) {
+    const time_t when = 1755100000;
+    for (int death = 0; death < 2; death++) {
+        resetStorage();
+        Decoder decoder;
+        {
+            CallHistoryModel model;
+            start_tap(model);
+            decoder.commit(0, 80801U, 8801U, when);
+            decoder.gpsNewest(0, "GPS: withdrawn", 225000000, 5U);
+            decoder.publish();
+            gui_ingest(model);
+            expect("withdrawal: the fix shows before the suspend",
+                   model.count() == 1
+                       && model.data(model.index(0), CallHistoryModel::DetailRole).toString()
+                              == QStringLiteral("GPS: withdrawn"));
+            set_app_state(Qt::ApplicationSuspended);
+            decoder.clearGpsNewest(0);
+            decoder.publish();
+            for (int poll = 0; poll < 6; poll++) {
+                model.waitForBackgroundPollForTest();
+            }
+            expect("withdrawal: the tap spills the cleared reading", spill_lines() == 1);
+            if (death == 0) {
+                set_app_state(Qt::ApplicationActive);
+                gui_ingest(model);
+                expect("withdrawal: the return takes the fix back",
+                       model.count() == 1
+                           && model.data(model.index(0), CallHistoryModel::DetailRole).toString().isEmpty());
+                model.saveNow();
+                settle_save(model);
+            }
+        } // with death: the process dies in the background, and the relaunch folds the spill
+        set_app_state(Qt::ApplicationActive);
+        CallHistoryModel relaunched;
+        expect(death == 0 ? "withdrawal: the saved row keeps no fix" : "withdrawal: the relaunch's fold takes it back",
+               relaunched.count() == 1
+                   && relaunched.data(relaunched.index(0), CallHistoryModel::DetailRole).toString().isEmpty());
+    }
+}
+
 /* The row with talkgroup @p tg, or -1. */
 int
 row_of_tg(const CallHistoryModel& model, qulonglong tg) {
@@ -1237,6 +1406,8 @@ main(int argc, char** argv) {
     test_session_fields_change_together_while_hidden();
     test_tap_attributes_by_row_stamp();
     test_tap_saves_a_settled_site_text_digest();
+    test_failed_spill_read_after_a_newer_run();
+    test_background_gps_withdrawal();
 
     QDir(dataDir).removeRecursively();
     if (g_failures != 0) {

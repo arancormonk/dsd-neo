@@ -11,6 +11,7 @@
 * 2025-05 DSD-FME Florida Man Edition
 *-----------------------------------------------------------------------------*/
 
+#include <ctype.h>
 #include <dsd-neo/core/access_code.h>
 #include <dsd-neo/core/analog_mode.h>
 #include <dsd-neo/core/audio.h>
@@ -21,6 +22,8 @@
 #include <dsd-neo/core/events.h>
 #include <dsd-neo/core/file_io.h>
 #include <dsd-neo/core/opts.h>
+#include <dsd-neo/core/position.h>
+#include <dsd-neo/core/position_attribution.h>
 #include <dsd-neo/core/receive.h>
 #include <dsd-neo/core/receive_types.h>
 #include <dsd-neo/core/received_identity.h>
@@ -52,6 +55,10 @@
 #include "dsd-neo/core/state_fwd.h"
 #include "dsd-neo/runtime/call_alert.h"
 #include "dsd_event_staging.h"
+
+/* A row stays comparable byte for byte (watchdog_event_commit_candidate()): its position has no padding. */
+_Static_assert(sizeof(dsd_event_pos) == 64U, "dsd_event_pos must stay free of padding");
+_Static_assert(sizeof(dsd_event_rx_scope) == 40U, "dsd_event_rx_scope must stay free of padding");
 
 enum {
     DSD_EVENT_SUBTYPE_DMR_DATA_BURST = 6,
@@ -136,6 +143,9 @@ init_event_history(Event_History_I* event_struct, uint8_t start, uint8_t stop) {
         event_struct->Event_History_Items[i].text_message[0] = '\0';
         event_struct->Event_History_Items[i].event_string[0] = '\0';
         event_struct->Event_History_Items[i].internal_str[0] = '\0';
+        DSD_MEMSET(&event_struct->Event_History_Items[i].pos, 0, sizeof(event_struct->Event_History_Items[i].pos));
+        DSD_MEMSET(&event_struct->Event_History_Items[i].rx_scope, 0,
+                   sizeof(event_struct->Event_History_Items[i].rx_scope));
     }
     if (stop > 1U) {
         // The reset reached committed rows, not just the staged one.
@@ -233,6 +243,8 @@ push_event_history(Event_History_I* event_struct) {
         copy_str_field(event_struct->Event_History_Items[i].internal_str,
                        event_struct->Event_History_Items[i - 1].internal_str,
                        sizeof event_struct->Event_History_Items[i].internal_str);
+        event_struct->Event_History_Items[i].pos = event_struct->Event_History_Items[i - 1].pos;
+        event_struct->Event_History_Items[i].rx_scope = event_struct->Event_History_Items[i - 1].rx_scope;
     }
     event_struct->push_seq++;
     event_struct->commit_rev++;
@@ -394,7 +406,8 @@ watchdog_event_write_log_entry(const dsd_opts* opts, uint8_t slot, uint8_t swrit
                                     row->crc_invalid);
     watchdog_event_write_log_detail(event_log_file, stamp, "Talker Alias: ", row->alias, wanted.alias,
                                     row->crc_invalid);
-    watchdog_event_write_log_detail(event_log_file, stamp, "GPS: ", row->gps_s, wanted.gps, row->crc_invalid);
+    watchdog_event_write_log_detail(event_log_file, stamp, dsd_event_gps_detail_label(row->gps_s), row->gps_s,
+                                    wanted.gps, row->crc_invalid);
     watchdog_event_write_log_detail(event_log_file, stamp, "DSD-neo: ", row->internal_str, wanted.internal,
                                     row->crc_invalid);
     fflush(event_log_file);
@@ -1086,6 +1099,38 @@ watchdog_event_merge_stamps(Event_History* retained, const Event_History* staged
     }
 }
 
+/* Whether a row names its source (issue #800): a source ID, or a source text that is identity. EDACS writes its numeric
+ * source, or its absence, as a LID_ label: a rendering, not a name. */
+static int
+dsd_event_row_names_source(const Event_History* item) {
+    if (item->source_id != 0U) {
+        return 1;
+    }
+    if (DSD_SYNC_IS_EDACS(item->systype)) {
+        return 0;
+    }
+    for (size_t i = 0U; i < sizeof(item->src_str) && item->src_str[i] != '\0'; i++) {
+        if (!isspace((unsigned char)item->src_str[i])) {
+            return 1;
+        }
+    }
+    return 0;
+}
+
+/* A row's position was admitted against the source the row named then (dsd_event_pos_source_compatible()), and a known
+ * source never changes within a call (another source opens another epoch): only a fill can follow. An anonymous report
+ * qualifies only while the row names no source, so once the row names one (a voice-user LC after the report, a
+ * reacquired segment's source) the report and its GPS text go. Returns 1 when dropped. */
+static int
+dsd_event_pos_requalify_row(Event_History* item) {
+    if (item->pos.valid == 0U || item->pos.anonymous == 0U || !dsd_event_row_names_source(item)) {
+        return 0;
+    }
+    item->gps_s[0] = '\0';
+    dsd_event_pos_drop_position(&item->pos);
+    return 1;
+}
+
 // Scalar identity a later segment may only fill in, never overwrite: the first segment that
 // decoded a value is as authoritative as any later one.
 static void
@@ -1118,6 +1163,7 @@ watchdog_event_merge_identity_fields(Event_History* retained, const Event_Histor
     watchdog_event_merge_text(retained->t_mode, staged->t_mode, sizeof(retained->t_mode));
     watchdog_event_merge_text(retained->s_mode, staged->s_mode, sizeof(retained->s_mode));
     watchdog_event_merge_channel_label(retained, staged);
+    (void)dsd_event_pos_requalify_row(retained);
 }
 
 // The channel kind a row's site check reads: a row's kind means something only beside its channel.
@@ -1146,6 +1192,142 @@ watchdog_event_merge_site(Event_History* retained, const Event_History* staged) 
     dsd_rxid_site_union(&retained->site_id, &staged->site_id, &retained->site_id);
 }
 
+/* A row's reception as the reception rule reads it (dsd_position_same_reception()): its scope and carrier once
+ * resolved, else unknown, the generation it was read under when known, and the protocol class of the row's protocol
+ * @p systype (P25 Phase 1 and Phase 2 apart; none for a row of no protocol). */
+static void
+watchdog_event_row_reception(const dsd_event_rx_scope* rx, int systype, dsd_position_reception* out) {
+    DSD_MEMSET(out, 0, sizeof(*out));
+    if (rx->resolved) {
+        out->scope.kind = rx->scope.kind;
+        out->scope.a = rx->scope.a;
+        out->scope.b = rx->scope.b;
+        out->identity_freq_hz = rx->identity_freq_hz;
+        out->tuned_hz = rx->tuned_hz;
+    }
+    out->rx_gen = rx->rx_gen;
+    out->epoch_known = rx->epoch_known;
+    out->protocol_class = systype >= 0 ? dsd_position_attribution_class(systype) : 0; /* DSD_SYNC_NONE is -1 */
+}
+
+/* Whether the segment's GPS (its position, or GPS text without one) may land on the row it merges into (issue #800,
+ * fail closed): it was heard on the reception the row was, by the reception rule every position writer applies
+ * (dsd_position_same_reception()), once the row has taken what the segment learned
+ * (watchdog_event_rx_scope_learns()). A side whose reception is unknown is not the row's: the call rows still merge, the
+ * GPS stays where it was heard. */
+static int
+watchdog_event_rx_scope_admits_position(const Event_History* row, const Event_History* segment) {
+    dsd_position_reception r;
+    dsd_position_reception s;
+    watchdog_event_row_reception(&row->rx_scope, row->systype, &r);
+    watchdog_event_row_reception(&segment->rx_scope, segment->systype, &s);
+    return dsd_position_same_reception(&r, &s);
+}
+
+// GPS text and position come from one side, so they never disagree (issue #800). Nothing of the segment's GPS lands on
+// a row heard on another or an unknown reception (watchdog_event_rx_scope_admits_position()). With a position on either
+// side the newer report (greater rev: process-wide and monotonic, so a wall clock step cannot keep an older fix)
+// supplies both; a side without one never displaces a position. With none on either side the text merges as other
+// progressive detail, and a sender identity the row lacks is filled in. Returns 1 when the row's GPS text changed.
+static uint8_t
+watchdog_event_merge_gps(Event_History* retained, const Event_History* staged) {
+    const uint64_t retained_rev = retained->pos.valid ? retained->pos.rev : 0U;
+    const uint64_t staged_rev = staged->pos.valid ? staged->pos.rev : 0U;
+    if (!watchdog_event_rx_scope_admits_position(retained, staged)) {
+        return 0U;
+    }
+    if (retained_rev == 0U && staged_rev == 0U) {
+        if (retained->pos.scope.kind == (uint8_t)DSD_POS_SCOPE_NONE) {
+            retained->pos.scope = staged->pos.scope;
+            retained->pos.identity_freq_hz = staged->pos.identity_freq_hz;
+        }
+        return (uint8_t)watchdog_event_merge_text_progressive(retained->gps_s, staged->gps_s, sizeof(retained->gps_s),
+                                                              0);
+    }
+    if (staged_rev <= retained_rev) {
+        return 0U;
+    }
+    const int changed = strncmp(retained->gps_s, staged->gps_s, sizeof(retained->gps_s)) != 0;
+    copy_str_field(retained->gps_s, staged->gps_s, sizeof(retained->gps_s));
+    retained->pos = staged->pos;
+    return changed ? 1U : 0U;
+}
+
+/* How strongly a reception identity names a system (issue #800, B5; the rule History's merge applies too): 0 none; 1 a
+ * feed-only fallback (the control channel's or the tuned frequency); 2 a scope that is not unique (a conventional P25
+ * NAC with its tuned frequency, a Capacity Plus site and colour code, an EDACS site or system); 3 a full system scope
+ * (P25 WACN and SYSID, a Tier III or Connect Plus network, NXDN, TETRA). */
+static int
+watchdog_event_rx_scope_strength(const dsd_event_rx_scope* rx) {
+    switch (rx->scope.kind) {
+        case DSD_POS_SCOPE_NONE: return 0;
+        case DSD_POS_SCOPE_FEED_CC_FREQ:
+        case DSD_POS_SCOPE_FEED_TUNED_FREQ: return 1;
+        case DSD_POS_SCOPE_P25_NAC:
+        case DSD_POS_SCOPE_FEED_EDACS: return 2;
+        case DSD_POS_SCOPE_DMR:
+            /* a = (dsd_rxid_dmr_trunk << 8) | Tier III model (<dsd-neo/core/alias_learn.h>). */
+            return (rx->scope.a >> 8) == (uint32_t)DSD_RXID_DMR_TRUNK_CAPACITY_PLUS ? 2 : 3;
+        default: return 3;
+    }
+}
+
+/* The system family of a reception identity: P25 for both P25 kinds; 0 for a feed-only fallback, which any family can
+ * have. */
+static int
+watchdog_event_rx_scope_family(const dsd_event_rx_scope* rx) {
+    if (watchdog_event_rx_scope_strength(rx) <= 1) {
+        return 0;
+    }
+    return rx->scope.kind == (uint8_t)DSD_POS_SCOPE_P25_NAC ? (int)DSD_POS_SCOPE_P25 : (int)rx->scope.kind;
+}
+
+/* Whether identity @p y names everything @p x names: the same kind, and each part @p x knows with the value @p x gives
+ * it (an EDACS scope knows its site and its system apart, each 0 until known; a P25 NAC scope its tuned frequency, 0
+ * when none was known). Every other kind is known whole or not at all. */
+static int
+watchdog_event_rx_scope_covers(const dsd_event_rx_scope* x, const dsd_event_rx_scope* y) {
+    if (x->scope.kind != y->scope.kind) {
+        return 0;
+    }
+    if (x->scope.kind == (uint8_t)DSD_POS_SCOPE_FEED_EDACS) {
+        return (x->scope.a == 0U || x->scope.a == y->scope.a) && (x->scope.b == 0U || x->scope.b == y->scope.b)
+               && x->identity_freq_hz == y->identity_freq_hz;
+    }
+    if (x->scope.kind == (uint8_t)DSD_POS_SCOPE_P25_NAC) {
+        return x->scope.a == y->scope.a && x->scope.b == y->scope.b
+               && (x->identity_freq_hz == 0 || x->identity_freq_hz == y->identity_freq_hz);
+    }
+    return x->scope.a == y->scope.a && x->scope.b == y->scope.b && x->identity_freq_hz == y->identity_freq_hz;
+}
+
+/* Whether a row heard under @p held learns more of where it was heard from a reacquired segment's @p seen. Only on the
+ * reception the row was heard on, by the one reception rule (dsd_position_same_reception()) read on the two as they
+ * were, before anything is adopted: another tuned frequency or NAC discriminator, another system, or a side whose
+ * reception is unknown in another or an unknown generation is another reception, and a stronger identity never
+ * overrides it (issue #800, fail closed). On it, the row learns when it has read none yet, when @p seen is a stronger
+ * identity of the same family (a NAC, then the WACN and SYSID learned after the sync loss), or when it is as strong and
+ * names everything @p held does and more. Another system's identity, or a weaker one, leaves the row's. */
+static int
+watchdog_event_rx_scope_learns(const Event_History* held_row, const Event_History* seen_row) {
+    const dsd_event_rx_scope* held = &held_row->rx_scope;
+    const dsd_event_rx_scope* seen = &seen_row->rx_scope;
+    if (!seen->resolved || !watchdog_event_rx_scope_admits_position(held_row, seen_row)) {
+        return 0;
+    }
+    if (!held->resolved) {
+        return 1;
+    }
+    const int sh = watchdog_event_rx_scope_strength(held);
+    const int ss = watchdog_event_rx_scope_strength(seen);
+    if (ss != sh) {
+        const int fh = watchdog_event_rx_scope_family(held);
+        const int fs = watchdog_event_rx_scope_family(seen);
+        return ss > sh && (fh == 0 || fh == fs);
+    }
+    return ss != 0 && watchdog_event_rx_scope_covers(held, seen) && !watchdog_event_rx_scope_covers(seen, held);
+}
+
 // Fold the staged row into the row already in history: this is the same transmission, and
 // everything the reacquired segment learned -- a late-decoded SRC, the system identifiers, an
 // alias, GPS, a text message, the crypto header that finally arrived -- has to survive.
@@ -1166,6 +1348,9 @@ watchdog_event_merge_staged_into(Event_History* retained, const Event_History* s
     watchdog_event_merge_identity_fields(retained, staged);
     watchdog_event_merge_system_identity(retained, staged);
     watchdog_event_merge_site(retained, staged);
+    if (watchdog_event_rx_scope_learns(retained, staged)) {
+        retained->rx_scope = staged->rx_scope; /* where the transmission was heard, as fully as it is known */
+    }
     /* A segment that confirmed the service the interrupted one never did names the row; one that confirmed nothing
        only fills a name the row lacks (issue #637). The access code and the over-the-air slot are proven apart (the
        single-slot DMR decoder can confirm the code first), so each is folded in on its own; a slot name only fills a
@@ -1179,8 +1364,7 @@ watchdog_event_merge_staged_into(Event_History* retained, const Event_History* s
 
     added->alias =
         (uint8_t)watchdog_event_merge_text_progressive(retained->alias, staged->alias, sizeof(retained->alias), 1);
-    added->gps =
-        (uint8_t)watchdog_event_merge_text_progressive(retained->gps_s, staged->gps_s, sizeof(retained->gps_s), 0);
+    added->gps = watchdog_event_merge_gps(retained, staged);
     added->text_message = (uint8_t)watchdog_event_merge_text_progressive(retained->text_message, staged->text_message,
                                                                          sizeof(retained->text_message), 0);
     added->internal = (uint8_t)watchdog_event_merge_text_progressive(retained->internal_str, staged->internal_str,
@@ -1706,16 +1890,16 @@ watchdog_event_current_init_base(const dsd_state* state, uint8_t slot, const dsd
 // 0 is "not received", as before any was decoded.
 //
 // They come from the received identity record of the call's protocol family, never from decoder state a seed, a
-// preset, a control-channel anchor or another carrier writes. The row takes them whole from the record of the carrier
-// the call began on (the record's epoch is the call's dsd_call_snapshot::rx_id_epoch): the record keeps them one
+// preset, a control-channel anchor or another carrier writes. The row takes them whole from the record of the reception
+// the call began on (its generation is the call's dsd_call_snapshot::rx_gen): the record keeps them one
 // consistent observation, a part it does not hold being one this carrier has not sent, or one a newer part invalidated
 // (an IDAS site ID that disagreed with the Type-D system ID, another EDACS or P25 system), so the row drops it too.
 // While the call is active it takes the live record; once it has ended, the record the canonical layer captured at the
 // end transition (dsd_call_snapshot::ended_rx_id), so a part received after the last active render and before the end
-// (a Phase 2 MAC_IDLE handles its broadcast before the call ends) counts. A record of another carrier (reset since the
-// call began: a boundary, a trunk-scan switch, another protocol in between), or no capture, leaves the row what it took
-// last: a held drop-verdict or the finalize pass may run after a retune, a -Y hop or a trunk-scan switch, when the
-// record already describes the next carrier.
+// (a Phase 2 MAC_IDLE handles its broadcast before the call ends) counts. A record of another reception (reset since
+// the call began: a boundary, a trunk-scan switch, another protocol; or kept across a retune or a change of P25 phase,
+// issue #800), or no capture, leaves the row what it took last: a held drop-verdict or the finalize pass may run after
+// a retune, a -Y hop or a trunk-scan switch, when the record already describes the next carrier.
 //
 // The row's site identity (Event_History::site_id: the site parts of the same record, which the event line prints
 // from) is taken, frozen and left alone by exactly the same rule, beside the sys ids.
@@ -1797,18 +1981,27 @@ watchdog_event_system_direct_mode(uint32_t sys[5], dsd_received_identity* site) 
     DSD_MEMSET(site, 0, sizeof(*site));
 }
 
+/* A TETRA direct mode carrier (mobile to mobile, through a DM-REP or a DM-GATE): no network, no site. */
+static int
+watchdog_event_tetra_direct_mode(const dsd_state* state, int protocol) {
+    const uint8_t mode = state->tetra_pub.mode;
+    return DSD_SYNC_IS_TETRA(protocol) && mode >= DSD_TETRA_MODE_DMO_DIRECT
+           && mode <= DSD_TETRA_MODE_DMO_REPEATER_GATEWAY;
+}
+
 static void
 watchdog_event_system_from_record(const dsd_state* state, const dsd_call_snapshot* call, dsd_rxid_family family,
                                   uint32_t sys[5], dsd_received_identity* site) {
     if (DSD_SYNC_IS_TETRA(call->protocol)) {
-        const uint8_t mode = state->tetra_pub.mode;
-        if (mode >= DSD_TETRA_MODE_DMO_DIRECT && mode <= DSD_TETRA_MODE_DMO_REPEATER_GATEWAY) {
+        if (watchdog_event_tetra_direct_mode(state, call->protocol)) {
             watchdog_event_system_direct_mode(sys, site);
             return;
         }
         sys[2] = 0U;
     }
-    if (state->rx_id.epoch == call->rx_id_epoch) {
+    /* The live record only while the reception is the one the call began on (its generation): a retune or a change of
+       P25 phase keeps the record's epoch, and the system it then holds is another reception's. */
+    if (dsd_state_reception_generation(state) == call->rx_gen) {
         watchdog_event_system_take(&state->rx_id, family, sys);
         watchdog_event_site_take(&state->rx_id, family, site);
     }
@@ -1859,6 +2052,58 @@ watchdog_event_current_load_system(const dsd_opts* opts, const dsd_state* state,
     ctx->sys_id3 = sys[2];
     ctx->sys_id4 = sys[3];
     ctx->sys_id5 = sys[4];
+}
+
+/* The reception identity of a row (dsd_event_rx_scope) from @p rx, with @p tuned_hz as the carrier, for a scope of the
+ * tuned frequency and the P25 NAC discriminator, and the reception generation @p rx was read under (@p gen); no scope
+ * for the callsign protocols (M17, D-STAR), whose positions carry none either. */
+static void
+watchdog_event_rx_scope_take(dsd_event_rx_scope* out, int protocol, const dsd_received_identity* rx, uint32_t tuned_hz,
+                             uint64_t gen) {
+    DSD_MEMSET(out, 0, sizeof(*out));
+    out->resolved = 1U;
+    out->rx_gen = gen;
+    out->epoch_known = 1U;
+    out->tuned_hz = (int64_t)tuned_hz;
+    if (DSD_SYNC_IS_M17(protocol) || DSD_SYNC_IS_DSTAR(protocol)) {
+        return;
+    }
+    (void)dsd_position_scope_from_rxid(rx, tuned_hz, &out->scope);
+    out->identity_freq_hz = out->scope.kind == (uint8_t)DSD_POS_SCOPE_P25_NAC ? (int64_t)tuned_hz : 0;
+}
+
+/* The row's reception identity, by the rule its site follows (watchdog_event_current_load_system()). While the call is
+ * active on the reception it began on (its generation, dsd_state_reception_generation()), the live record (with the
+ * tuned frequency) is read again on every render: the record fills in without moving its epoch, so a scope learned
+ * mid-call (a network after the NAC, an EDACS system after the site) replaces a weaker one. Otherwise this epoch's row
+ * keeps what it read; a row that never read one takes the record as the call ended, with the frequency this render
+ * gives the row (@p row_hz). Playing back files no scope is read: the row has only the generation its call began on. */
+static void
+watchdog_event_current_load_rx_scope(const dsd_opts* opts, const dsd_state* state, const dsd_call_snapshot* call,
+                                     Event_History* item, int staged_is_own, int64_t row_hz) {
+    if (call == NULL || call->epoch == 0U || opts->playfiles != 0) {
+        DSD_MEMSET(&item->rx_scope, 0, sizeof(item->rx_scope));
+        if (call != NULL && call->epoch != 0U) {
+            item->rx_scope.rx_gen = call->rx_gen;
+            item->rx_scope.epoch_known = 1U;
+        }
+        return;
+    }
+    /* The live record only while the reception is still the one the call began on: the same generation, so a scope a
+       retune or a change of P25 phase brought (the record keeps its epoch across both) is never the row's. */
+    const uint64_t gen = dsd_state_reception_generation(state);
+    if (call->phase == DSD_CALL_PHASE_ACTIVE && gen == call->rx_gen) {
+        watchdog_event_rx_scope_take(&item->rx_scope, call->protocol, &state->rx_id, dsd_opts_tuned_freq_hz(opts), gen);
+        return;
+    }
+    if (staged_is_own && item->rx_scope.resolved) {
+        return;
+    }
+    DSD_MEMSET(&item->rx_scope, 0, sizeof(item->rx_scope));
+    if (call->phase == DSD_CALL_PHASE_ENDED) {
+        const uint32_t hz = (row_hz > 0 && row_hz <= (int64_t)UINT32_MAX) ? (uint32_t)row_hz : 0U;
+        watchdog_event_rx_scope_take(&item->rx_scope, call->protocol, &call->ended_rx_id, hz, call->rx_gen);
+    }
 }
 
 static void
@@ -2235,6 +2480,7 @@ watchdog_event_current_update_item(const dsd_opts* opts, dsd_state* state, uint8
     item->channel_label_resolved = ctx->channel_label_resolved;
     item->operator_tuned = ctx->operator_tuned;
     item->scan_member = ctx->scan_member;
+    (void)dsd_event_pos_requalify_row(item);
     (void)state;
     (void)slot;
 }
@@ -3213,6 +3459,7 @@ watchdog_event_current_impl(const dsd_opts* opts, dsd_state* state, uint8_t slot
     watchdog_event_current_load_labels(opts, state, effective_call, &candidate, staged_is_own, &ctx);
     watchdog_event_current_load_channel_label(opts, state, &candidate, staged_is_own, &ctx);
     watchdog_event_current_load_tuning(opts, state, effective_call, &candidate, staged_is_own, &ctx);
+    watchdog_event_current_load_rx_scope(opts, state, effective_call, &candidate, staged_is_own, ctx.freq_hz);
     watchdog_event_current_apply_code_identity(&ctx);
 
     const char* sys_string = dsd_synctype_to_string(ctx.protocol);
@@ -3321,9 +3568,11 @@ watchdog_event_slot_call_is_open(const dsd_call_snapshot* call, const dsd_call_e
 // up next, not to the ended call's row. Opening the epoch first would not help either way, since no
 // call for the transmission has been observed. Slow data and aliases repeat, so declined detail
 // lands once the call is open. While the previous call is still active, the next transmission's
-// detail cannot be told apart from its own: none of these messages names its call.
+// detail cannot be told apart from its own: none of these messages names its call. A call of another
+// protocol family is never the detail's (a DMR call still open while D-STAR slow data decodes).
 int
-dsd_event_set_open_call_detail(dsd_state* state, uint8_t slot, dsd_event_detail_field field, const char* value) {
+dsd_event_set_open_call_detail(dsd_state* state, uint8_t slot, int protocol, dsd_event_detail_field field,
+                               const char* value) {
     if (!state || !state->event_history_s || slot > 1U || !value
         || (field != DSD_EVENT_DETAIL_ALIAS && field != DSD_EVENT_DETAIL_GPS && field != DSD_EVENT_DETAIL_TEXT)) {
         return -1;
@@ -3333,7 +3582,9 @@ dsd_event_set_open_call_detail(dsd_state* state, uint8_t slot, dsd_event_detail_
         return 0;
     }
     dsd_call_state_ext_lock(ext);
-    if (!watchdog_event_slot_call_is_open(&ext->calls.slots[slot], &ext->events[slot])) {
+    const dsd_call_snapshot* call = &ext->calls.slots[slot];
+    if (!watchdog_event_slot_call_is_open(call, &ext->events[slot])
+        || dsd_sync_protocol_family(call->protocol) != dsd_sync_protocol_family(protocol)) {
         dsd_call_state_ext_unlock(ext);
         return 0;
     }
@@ -3343,6 +3594,7 @@ dsd_event_set_open_call_detail(dsd_state* state, uint8_t slot, dsd_event_detail_
         DSD_SNPRINTF(item->alias, sizeof(item->alias), "%s", value);
     } else if (field == DSD_EVENT_DETAIL_GPS) {
         DSD_SNPRINTF(item->gps_s, sizeof(item->gps_s), "%s", value);
+        dsd_event_pos_drop_position(&item->pos); /* text without a position */
     } else {
         DSD_SNPRINTF(item->text_message, sizeof(item->text_message), "%s", value);
     }
@@ -3601,6 +3853,7 @@ dsd_event_enrich_apply(dsd_state* state, uint8_t slot, Event_History* item, cons
         DSD_SNPRINTF(state->generic_talker_alias[slot], sizeof(state->generic_talker_alias[slot]), "%s", value);
     } else if (kind == DSD_EVENT_ENRICH_GPS) {
         DSD_SNPRINTF(item->gps_s, sizeof(item->gps_s), "%s", value);
+        dsd_event_pos_drop_position(&item->pos); /* text without a position */
     } else {
         DSD_SNPRINTF(item->text_message, sizeof(item->text_message), "%s", value);
     }
@@ -3785,6 +4038,253 @@ dsd_event_enrich_text(dsd_state* state, uint8_t slot, uint64_t epoch, const char
     return dsd_event_enrich_epoch(NULL, state, slot, epoch, text, DSD_EVENT_ENRICH_TEXT);
 }
 
+/* ---- Position writers (issue #800) ---- */
+
+/* An admitted report that names no source a row could check: hashed, unverified, or neither ID nor callsign. */
+static int
+dsd_event_pos_fix_anonymous(const dsd_position_fix* fix) {
+    if ((fix->flags & (uint16_t)(DSD_POS_FLAG_SOURCE_HASHED | DSD_POS_FLAG_SOURCE_UNVERIFIED)) != 0U) {
+        return 1;
+    }
+    return fix->source_id == 0U && fix->source_text[0] == '\0';
+}
+
+/* The report's callsign against the subject's (a call's or a notice's), both compared as a call keeps identity text
+ * (whitespace runs one space). The report keeps DSD_POSITION_SOURCE_TEXT_SIZE - 1 bytes: a report cut there matches
+ * the subject's longer callsign by its prefix. */
+static int
+dsd_event_pos_callsign_matches(const char* text, const char* callsign) {
+    char subject[DSD_CALL_IDENTITY_TEXT_SIZE];
+    char mine[DSD_CALL_IDENTITY_TEXT_SIZE];
+    dsd_call_state_normalize_identity_text(subject, text);
+    dsd_call_state_normalize_identity_text(mine, callsign);
+    const size_t n = strnlen(mine, sizeof mine);
+    if (n == 0U || strncmp(subject, mine, n) != 0) {
+        return 0;
+    }
+    /* Cut: all DSD_POSITION_SOURCE_TEXT_SIZE - 1 bytes used and the last one part of the callsign, not padding. */
+    const size_t raw = strnlen(callsign, DSD_POSITION_SOURCE_TEXT_SIZE);
+    const int cut = raw == DSD_POSITION_SOURCE_TEXT_SIZE - 1U && !isspace((unsigned char)callsign[raw - 1U]);
+    return subject[n] == '\0' || cut;
+}
+
+/* A report of @p fix_protocol may describe a subject of @p protocol: one protocol class, as attribution compares
+ * them (dsd_position_attribution_class(): P25 Phase 1 and Phase 2 apart, else the protocol family). A Phase 2 report
+ * never lands on a Phase 1 call still open on the slot, named or anonymous. */
+static int
+dsd_event_pos_same_class(int protocol, int fix_protocol) {
+    return dsd_position_protocol_family(protocol) >= 0
+           && dsd_position_attribution_class(protocol) == dsd_position_attribution_class(fix_protocol);
+}
+
+/* The typed-source rule (spec 2.7): the report may describe the subject (a call or a notice) of @p protocol, numeric
+ * @p source_id and callsign @p text: the same protocol class (dsd_event_pos_same_class()), the same source ID and
+ * callsign where the report names them, and an anonymous report only for a subject that names no source (spec
+ * 2.14). */
+static int
+dsd_event_pos_source_compatible(int protocol, uint64_t source_id, const char* text, const dsd_position_fix* fix) {
+    if (!dsd_event_pos_same_class(protocol, fix->protocol)) {
+        return 0;
+    }
+    if (dsd_event_pos_fix_anonymous(fix)) {
+        return source_id == 0U && text[0] == '\0';
+    }
+    if (fix->source_id != 0U && source_id != (uint64_t)fix->source_id) {
+        return 0;
+    }
+    return fix->source_text[0] == '\0' || dsd_event_pos_callsign_matches(text, fix->source_text);
+}
+
+/* The report was heard where the row was, by the reception rule (dsd_position_same_reception(), fail closed): the
+ * row's own reception -- a row a reacquired segment merged into keeps the one it was heard on, never the closing
+ * call's -- and the report's reception scope, discriminator and origin epoch. The sender scope is only the track key.
+ * And it is newer than the row's position. */
+static int
+dsd_event_pos_row_takes(const Event_History* item, const dsd_position_fix* fix) {
+    dsd_position_reception row_rx;
+    dsd_position_reception fix_rx;
+    watchdog_event_row_reception(&item->rx_scope, item->systype, &row_rx);
+    dsd_position_fix_reception(fix, &fix_rx);
+    if (!dsd_position_same_reception(&row_rx, &fix_rx)) {
+        return 0;
+    }
+    return !item->pos.valid || fix->rev > item->pos.rev;
+}
+
+/* Text and position in one step. */
+static void
+dsd_event_pos_write(Event_History* item, const dsd_position_fix* fix, const char* gps_text) {
+    DSD_SNPRINTF(item->gps_s, sizeof(item->gps_s), "%s", gps_text);
+    dsd_event_pos_set_from_fix(&item->pos, fix);
+}
+
+/* A notice that takes a report was heard where the report was (its origin, for a multi-fragment one). */
+static void
+dsd_event_pos_write_notice(Event_History* item, const dsd_position_fix* fix, const char* gps_text) {
+    dsd_event_pos_write(item, fix, gps_text);
+    DSD_MEMSET(&item->rx_scope, 0, sizeof(item->rx_scope));
+    item->rx_scope.scope = fix->reception_scope;
+    item->rx_scope.identity_freq_hz = fix->reception_scope.kind == (uint8_t)DSD_POS_SCOPE_P25_NAC ? fix->freq_hz : 0;
+    item->rx_scope.tuned_hz = fix->freq_hz;
+    item->rx_scope.rx_gen = fix->origin_gen;
+    item->rx_scope.epoch_known = 1U;
+    item->rx_scope.resolved = 1U;
+}
+
+static int
+dsd_event_pos_call_compatible(const dsd_call_snapshot* call, const dsd_position_fix* fix) {
+    return dsd_event_pos_source_compatible(call->protocol, call->ota_source_id, call->source_text, fix);
+}
+
+/* Caller holds the call-state lock: the epoch's call (ACTIVE, or ENDED when @p allow_ended) is the slot's canonical
+ * call and the receive policy publishes it. */
+static int
+dsd_event_pos_call_open_for(const dsd_call_snapshot* call, uint64_t epoch, int allow_ended) {
+    if (call->epoch != epoch || call->receive_verdict == DSD_RECEIVE_CHECKING
+        || call->receive_verdict == DSD_RECEIVE_REJECTED) {
+        return 0;
+    }
+    return call->phase == DSD_CALL_PHASE_ACTIVE || (allow_ended && call->phase == DSD_CALL_PHASE_ENDED);
+}
+
+/* A position written into row @p item after the row committed: its event log line went out without it, so append the
+ * row's GPS line with the row's own stamp, as a late alias does (dsd_event_enrich_committed_alias()). opts NULL writes
+ * no log line. */
+static void
+dsd_event_pos_log_committed(const dsd_opts* opts, uint8_t slot, const Event_History* item) {
+    if (opts == NULL) {
+        return;
+    }
+    watchdog_event_merge_added added;
+    DSD_MEMSET(&added, 0, sizeof added);
+    added.gps = 1U;
+    watchdog_event_write_log_entry(opts, slot, (uint8_t)(dsd_event_systype_has_slots(item->systype) ? 1U : 0U),
+                                   "Enriched: ", NULL, item, &added);
+}
+
+/* Caller holds the call-state lock. Write the report into the epoch's row, or decline. */
+static int
+dsd_event_enrich_position_locked(const dsd_opts* opts, dsd_state* state, uint8_t slot, dsd_call_state_ext* ext,
+                                 uint64_t epoch, const dsd_position_fix* fix, const char* gps_text) {
+    dsd_call_snapshot* call = &ext->calls.slots[slot];
+    uint8_t history_index = 0U;
+    const dsd_event_enrich_target target =
+        dsd_event_enrich_find_row(state, slot, epoch, &ext->events[slot], &history_index);
+    if (target == DSD_EVENT_ENRICH_TARGET_UNOPENED) {
+        dsd_event_enrich_unopened(state, slot, ext, call, gps_text, DSD_EVENT_ENRICH_GPS);
+    }
+    if (target != DSD_EVENT_ENRICH_TARGET_ROW) {
+        return 0;
+    }
+    Event_History_I* event_struct = &state->event_history_s[slot];
+    Event_History* item = &event_struct->Event_History_Items[history_index];
+    /* The transmission's CRC provenance marks the call and its row whether or not the row takes the position, as
+       every enrichment of a found row does. */
+    const uint8_t crc_flags = state->event_crc_invalid[slot];
+    const uint8_t crc_before = item->crc_invalid;
+    if (crc_flags) {
+        dsd_event_enrich_mark_crc(ext, call, item, crc_flags);
+    }
+    if (!dsd_event_pos_row_takes(item, fix)) {
+        if (item->crc_invalid != crc_before) {
+            if (history_index != 0U) {
+                event_struct->commit_rev++; /* the committed row's marking changed */
+            }
+            dsd_event_history_mark_dirty(event_struct);
+        }
+        return 0;
+    }
+    dsd_event_pos_write(item, fix, gps_text);
+    if (history_index != 0U) {
+        event_struct->commit_rev++; /* late enrichment of a committed row */
+        dsd_event_pos_log_committed(opts, slot, item);
+    }
+    dsd_event_history_mark_dirty(event_struct);
+    return 1;
+}
+
+static int
+dsd_event_enrich_position_impl(const dsd_opts* opts, dsd_state* state, uint8_t slot, uint64_t epoch, int allow_ended,
+                               const dsd_position_fix* fix, const char* gps_text) {
+    if (!state || !state->event_history_s || slot >= DSD_CALL_STATE_SLOT_COUNT || epoch == 0U
+        || !dsd_event_pos_fix_admitted(fix) || !gps_text) {
+        return -1;
+    }
+    dsd_call_state_ext* ext = dsd_call_state_ext_get(state, 0);
+    if (!ext) {
+        return 0;
+    }
+    dsd_call_state_ext_lock(ext);
+    const dsd_call_snapshot* call = &ext->calls.slots[slot];
+    int written = 0;
+    if (dsd_event_pos_call_open_for(call, epoch, allow_ended) && dsd_event_pos_call_compatible(call, fix)) {
+        written = dsd_event_enrich_position_locked(opts, state, slot, ext, epoch, fix, gps_text);
+    }
+    dsd_call_state_ext_unlock(ext);
+    return written;
+}
+
+int
+dsd_event_enrich_position(const dsd_opts* opts, dsd_state* state, uint8_t slot, uint64_t epoch,
+                          const dsd_position_fix* fix, const char* gps_text) {
+    return dsd_event_enrich_position_impl(opts, state, slot, epoch, 0, fix, gps_text);
+}
+
+int
+dsd_event_capture_closing_call(const dsd_state* state, uint8_t slot, dsd_event_closing_call* out) {
+    if (!state || !out || slot >= DSD_CALL_STATE_SLOT_COUNT) {
+        return -1;
+    }
+    DSD_MEMSET(out, 0, sizeof(*out));
+    dsd_call_snapshot call;
+    if (dsd_call_state_get(state, slot, &call) <= 0 || call.epoch == 0U || call.phase != DSD_CALL_PHASE_ACTIVE) {
+        return 0;
+    }
+    out->epoch = call.epoch;
+    out->source_id = call.ota_source_id;
+    out->target_id = call.ota_target_id;
+    out->protocol = call.protocol;
+    out->slot = slot;
+    out->valid = 1U;
+    return 1;
+}
+
+int
+dsd_event_enrich_position_closing(const dsd_opts* opts, dsd_state* state, const dsd_event_closing_call* closing,
+                                  const dsd_position_fix* fix, const char* gps_text) {
+    if (!closing) {
+        return -1;
+    }
+    if (!closing->valid) {
+        return (!state || !dsd_event_pos_fix_admitted(fix) || !gps_text) ? -1 : 0;
+    }
+    return dsd_event_enrich_position_impl(opts, state, closing->slot, closing->epoch, 1, fix, gps_text);
+}
+
+int
+dsd_event_set_open_call_position(dsd_state* state, uint8_t slot, const dsd_position_fix* fix, const char* gps_text) {
+    if (!state || !state->event_history_s || slot > 1U || !dsd_event_pos_fix_admitted(fix) || !gps_text) {
+        return -1;
+    }
+    dsd_call_state_ext* ext = dsd_call_state_ext_get(state, 0);
+    if (!ext) {
+        return 0;
+    }
+    dsd_call_state_ext_lock(ext);
+    const dsd_call_snapshot* call = &ext->calls.slots[slot];
+    Event_History_I* event_struct = &state->event_history_s[slot];
+    Event_History* item = &event_struct->Event_History_Items[0];
+    int written = 0;
+    if (watchdog_event_slot_call_is_open(call, &ext->events[slot]) && dsd_event_pos_call_compatible(call, fix)
+        && dsd_event_pos_row_takes(item, fix)) {
+        dsd_event_pos_write(item, fix, gps_text);
+        dsd_event_history_mark_dirty(event_struct);
+        written = 1;
+    }
+    dsd_call_state_ext_unlock(ext);
+    return written;
+}
+
 void
 dsd_event_history_reset(dsd_state* state) {
     if (state == NULL || state->event_history_s == NULL) {
@@ -3965,10 +4465,87 @@ dsd_event_data_notice_args_valid(const dsd_opts* opts, const dsd_state* state, u
     return category == DSD_EVENT_CATEGORY_DATA || category == DSD_EVENT_CATEGORY_CONTROL;
 }
 
+/* A notice's GPS: the text, with the admitted report it describes when there is one (@p fix, rev set). The report goes
+ * in only when its typed source is the notice's own; otherwise neither the text nor the position does, so the two never
+ * disagree. */
+static void
+watchdog_event_notice_set_gps(Event_History* item, const dsd_call_observation* observation, const char* gps,
+                              const dsd_position_fix* fix) {
+    if (fix == NULL || !dsd_event_pos_fix_admitted(fix)) { /* No report, or one admission never saw: text only. */
+        DSD_SNPRINTF(item->gps_s, sizeof(item->gps_s), "%s", gps);
+        return;
+    }
+    const int cleared = (fix->flags & (uint16_t)(DSD_POS_FLAG_SOURCE_HASHED | DSD_POS_FLAG_SOURCE_UNVERIFIED)) != 0U;
+    if (cleared && dsd_event_pos_same_class(observation->protocol, fix->protocol)) {
+        /* Admission cleared the report's identity: the notice names nobody either, and keeps the position. */
+        item->source_id = 0U;
+        item->target_id = 0U;
+        item->src_str[0] = '\0';
+        item->tgt_str[0] = '\0';
+        dsd_event_pos_write_notice(item, fix, gps);
+        return;
+    }
+    if (dsd_event_pos_source_compatible(observation->protocol, observation->ota_source_id, observation->source_text,
+                                        fix)) {
+        dsd_event_pos_write_notice(item, fix, gps);
+    }
+}
+
+/* The site a notice was heard on, by the call rows' rule (watchdog_event_current_load_system()): the site parts of the
+ * received identity when it is a record of the notice's family; none playing back files, for M17, dPMR, a protocol of
+ * no family and a TETRA direct mode carrier. Zero when none. */
+static void
+watchdog_event_notice_site(const dsd_opts* opts, const dsd_state* state, int protocol, dsd_received_identity* site) {
+    const dsd_rxid_family family = dsd_rxid_family_for_sync(protocol);
+    if (opts->playfiles != 0 || family == DSD_RXID_FAMILY_NONE || family == DSD_RXID_FAMILY_OTHER
+        || DSD_SYNC_IS_M17(protocol) || DSD_SYNC_IS_DPMR(protocol)) {
+        return;
+    }
+    if (watchdog_event_tetra_direct_mode(state, protocol)) {
+        return;
+    }
+    watchdog_event_site_take(&state->rx_id, family, site);
+}
+
+/* A notice's identity, stamped at emit so a saved notice row can rebuild its track (spec 2.7): the sender scope its
+ * position carries, else the scope of the reception it was heard on (none for the callsign protocols), and its site. */
+static void
+watchdog_event_notice_stamp_identity(const dsd_opts* opts, const dsd_state* state, Event_History* item,
+                                     const dsd_call_observation* observation) {
+    if (!item->rx_scope.resolved && opts->playfiles == 0 && dsd_position_protocol_family(observation->protocol) >= 0) {
+        watchdog_event_rx_scope_take(&item->rx_scope, observation->protocol, &state->rx_id,
+                                     dsd_opts_tuned_freq_hz(opts), dsd_state_reception_generation(state));
+    }
+    if (!item->pos.valid) {
+        item->pos.scope = item->rx_scope.scope;
+        item->pos.identity_freq_hz = item->rx_scope.identity_freq_hz;
+    }
+    watchdog_event_notice_site(opts, state, observation->protocol, &item->site_id);
+}
+
+/* The notice's payload: the staged one (consumed) or the caller's own GPS, then its identity. */
+static void
+watchdog_event_notice_payload(const dsd_opts* opts, const dsd_state* state, Event_History_I* event_struct,
+                              Event_History* item, const dsd_call_observation* observation, const char* gps,
+                              const dsd_position_fix* fix) {
+    if (gps == NULL) {
+        const Event_History_Staged* staged = &event_struct->staged;
+        watchdog_event_notice_set_gps(item, observation, staged->gps_s, &staged->pos_fix);
+        DSD_SNPRINTF(item->text_message, sizeof item->text_message, "%s", staged->text_message);
+        dsd_event_staging_clear_locked(event_struct);
+    } else {
+        watchdog_event_notice_set_gps(item, observation, gps, fix);
+    }
+    watchdog_event_notice_stamp_identity(opts, state, item, observation);
+}
+
+/* gps NULL consumes the slot's staged payload; otherwise the notice carries @p gps (with the admitted @p fix it
+ * describes, or NULL) and the staging is left alone. */
 static int
 dsd_event_emit_data_notice_impl(dsd_opts* opts, dsd_state* state, uint8_t slot, const dsd_call_observation* observation,
                                 dsd_event_category category, const char* notice, const char* gps,
-                                int consume_staged_payload) {
+                                const dsd_position_fix* fix) {
+    const int consume_staged_payload = gps == NULL;
     if (!dsd_event_data_notice_args_valid(opts, state, slot, observation, category, notice)) {
         return -1;
     }
@@ -4023,13 +4600,7 @@ dsd_event_emit_data_notice_impl(dsd_opts* opts, dsd_state* state, uint8_t slot, 
     item->event_time = watchdog_event_decode_second();
     DSD_SNPRINTF(item->src_str, sizeof(item->src_str), "%s", observation->source_text);
     DSD_SNPRINTF(item->tgt_str, sizeof(item->tgt_str), "%s", observation->target_text);
-    if (consume_staged_payload) {
-        DSD_SNPRINTF(item->gps_s, sizeof item->gps_s, "%s", event_struct->staged.gps_s);
-        DSD_SNPRINTF(item->text_message, sizeof item->text_message, "%s", event_struct->staged.text_message);
-        dsd_event_staging_clear_locked(event_struct);
-    } else {
-        DSD_SNPRINTF(item->gps_s, sizeof(item->gps_s), "%s", gps);
-    }
+    watchdog_event_notice_payload(opts, state, event_struct, item, observation, gps, fix);
 
     char timestr[9];
     char datestr[11];
@@ -4060,7 +4631,7 @@ int
 dsd_event_emit_data_notice_classified(dsd_opts* opts, dsd_state* state, uint8_t slot,
                                       const dsd_call_observation* observation, dsd_event_category category,
                                       const char* notice) {
-    return dsd_event_emit_data_notice_impl(opts, state, slot, observation, category, notice, NULL, 1);
+    return dsd_event_emit_data_notice_impl(opts, state, slot, observation, category, notice, NULL, NULL);
 }
 
 int
@@ -4076,7 +4647,17 @@ dsd_event_emit_data_notice_classified_with_gps(dsd_opts* opts, dsd_state* state,
     if (gps == NULL) {
         return -1;
     }
-    return dsd_event_emit_data_notice_impl(opts, state, slot, observation, category, notice, gps, 0);
+    return dsd_event_emit_data_notice_impl(opts, state, slot, observation, category, notice, gps, NULL);
+}
+
+int
+dsd_event_emit_data_notice_with_position(dsd_opts* opts, dsd_state* state, uint8_t slot,
+                                         const dsd_call_observation* observation, dsd_event_category category,
+                                         const char* notice, const dsd_position_fix* fix, const char* gps_text) {
+    if (!dsd_event_pos_fix_admitted(fix) || gps_text == NULL) {
+        return -1;
+    }
+    return dsd_event_emit_data_notice_impl(opts, state, slot, observation, category, notice, gps_text, fix);
 }
 
 int

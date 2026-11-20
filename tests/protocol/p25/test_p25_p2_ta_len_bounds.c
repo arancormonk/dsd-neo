@@ -20,6 +20,7 @@
 #include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
 
+#include <dsd-neo/core/gps.h>
 #if defined(__GNUC__) && !defined(__cplusplus)
 #pragma GCC diagnostic push
 #pragma GCC diagnostic ignored "-Wmissing-prototypes"
@@ -73,14 +74,14 @@ l3h_embedded_alias_decode(dsd_opts* opts, dsd_state* state, uint8_t slot, int16_
     (void)input;
 }
 
-void
+int
 // NOLINTNEXTLINE(misc-use-internal-linkage)
-nmea_harris(dsd_opts* opts, dsd_state* state, uint8_t* input, uint32_t src, int slot) {
+nmea_harris(const dsd_opts* opts, dsd_state* state, const uint8_t* body, const dsd_gps_report_ctx* ctx) {
     (void)opts;
     (void)state;
-    (void)input;
-    (void)src;
-    (void)slot;
+    (void)body;
+    (void)ctx;
+    return 0;
 }
 
 static int

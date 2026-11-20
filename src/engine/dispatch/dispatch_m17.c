@@ -50,6 +50,7 @@ dsd_dispatch_handle_m17(dsd_opts* opts, dsd_state* state) {
             dsd_event_sync_slot(opts, state, 0U);
         }
         DSD_MEMSET(state->m17_lsf, 0, sizeof(state->m17_lsf));
+        DSD_MEMSET(&state->m17_lich, 0, sizeof(state->m17_lich));
         state->m17_pbc_ct = 0;
         state->m17_polarity = 0;
         state->m17_pre_run = 0;

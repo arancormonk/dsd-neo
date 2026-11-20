@@ -41,6 +41,13 @@
  * call recordings find it (call_recording_provider.h). While the app is in the background, where
  * Qt pauses this model's thread, CallHistoryTap keeps reading the ring and spills what it finds;
  * the model folds that in when it reads again. A save counts only when both stores committed.
+ *
+ * Issue #800: a row keeps its text message, its GPS text and the admitted position that text describes, voice rows as
+ * well as notices, and a late enrichment of a committed call is read again. A merged row's GPS text and position come
+ * together from one fragment, the newest by its run's session ordinal and the position's rev, never by its stamps. The
+ * row also keeps its raw identity (sync type, source and target text, sender and reception system), and fragments
+ * whose known identities differ never merge: two callsign callers, two textual destinations under one service name,
+ * two conventional systems on two frequencies.
  */
 
 #ifndef DSD_NEO_SRC_UI_QT_CALL_HISTORY_MODEL_H_
@@ -68,9 +75,11 @@
 #include <dsd-neo/core/received_identity.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/state_fwd.h>
+#include <limits>
 #include <memory>
 #include <stdint.h>
 
+#include "call_history_merge.h"
 #include "heard_talkgroup_source.h"
 
 #ifdef DSD_NEO_TEST_HOOKS
@@ -113,7 +122,7 @@ class CallHistoryModel : public QAbstractListModel, public HeardTalkgroupSource 
         DayLabelRole,   // "TODAY" / "YESTERDAY" / "MON 3 AUG", "TIME UNKNOWN" with no start — drives list sections
         TimeTextRole,   // "12:04", empty with no start
         KindRole,       // RowKind: voice call or data/control notice
-        DetailRole,     // notice payload: decoded text message or GPS string
+        DetailRole,     // the row's text message and GPS text, joined (issue #800: voice rows too); else empty
         ChannelRole,    // scan channel the row was heard on (-Y row name or trunk-scan target id), else empty
         SourceNameRole, // resolved source label, falling back to the OTA source text
         SessionRole,    // decode session that logged the row, or last extended it (see session())
@@ -238,7 +247,7 @@ class CallHistoryModel : public QAbstractListModel, public HeardTalkgroupSource 
 
     /**
      * @brief The uid of the row that holds the ring fragment @p fragment now, or 0 when none does (never logged,
-     * trimmed, cleared).
+     * trimmed, cleared) or the fragment is withdrawn from it (issue #800: another call's, FragmentPart::withdrawn).
      *
      * Issue #809: a Signal search recording names its call by fragment; the row it merged into is the one found. A
      * double because QML reads it as a JS number, which holds every uid this model hands out exactly.
@@ -377,6 +386,9 @@ class CallHistoryModel : public QAbstractListModel, public HeardTalkgroupSource 
     /** @brief Make the next fold's read of the spill fail after @p lines lines, as a device error there would. */
     static void failNextSpillReadAfterLinesForTest(int lines);
 
+    /** @brief The fragment parts the folds' part lookups read or indexed since the last call, which resets it. */
+    static qint64 takePartLookupStepsForTest();
+
     /** @brief Start the debounced save now, as its timer would. */
     void
     startSaveForTest() {
@@ -457,6 +469,109 @@ class CallHistoryModel : public QAbstractListModel, public HeardTalkgroupSource 
     void rowPositionsChanged();
 
   public:
+    /**
+     * @brief The admitted position a row carries (issue #800): Event_History::pos while it is valid, read through
+     *        call_history_position_values_valid(). Everything but valid is meaningful only while valid is set.
+     */
+    struct Position {
+        bool valid = false;
+        qint32 latE7 = 0;  // degrees x 1e7, north positive
+        qint32 lonE7 = 0;  // degrees x 1e7, east positive
+        quint32 errM = 0;  // metres, 0 when not known
+        quint16 flags = 0; // dsd_position_flag
+        quint8 kind = 0;   // dsd_position_kind
+        quint64 rev = 0;   // orders positions within one run
+        quint64 procInstance = 0;
+        qint64 rxTimeS = 0;     // when it was received; display only, never orders
+        bool anonymous = false; // names no source a row could check (Event_History::pos.anonymous)
+    };
+
+    /** @brief One fragment's GPS text and the position it describes, with the fragment and reading they came from
+     * (issue #800, 2.7): its start, push stamp and slot, its run's session ordinal and the ring's commit_rev when it
+     * was read (Row::gpsWhen..gpsVer, gpsSlot). */
+    struct GpsUnit {
+        QString text;
+        Position pos;
+        qint64 when = 0;
+        qulonglong seq = 0;
+        int slot = 0;
+        qint64 ord = 0;
+        quint64 ver = 0;
+    };
+
+    /**
+     * @brief What one fragment's readings gave its voice row besides its GPS unit (issue #800): its span, crypto
+     * and emergency flags, frequency and access code, site and call channel, reception scope, receive evidence,
+     * service and name, decode session, its sender (source number and text, sender system), sync type and target text, its source
+     * label and its text message, each with the provenance the row's own fields carry. A row keeps one per fragment
+     * (Row::parts), keyed by the fragment's ring identity, and is always the fold of its parts not withdrawn
+     * (rebuild_from_parts()), so when a fragment turns out to be another call's (fragment_call_compatible()) the row
+     * rebuilds every field it gave from its other fragments' by the rules a merge folds them with. A fragment's part is
+     * its newest reading, whole: nothing of an earlier reading outlives it.
+     */
+    struct FragmentPart {
+        /* The fragment's key (call_history_fragment_key()); for the part standing for what a row an older build stored
+         * without fragments held, a key of that row's own (`legacy|` and its seen key, legacy_part_key()), so two such
+         * rows folded together stay two parts. Empty only in a part an earlier build of this one stored. */
+        QString fragment;
+        /* The fragment's reading named another call than the row's: kept so the row knows the fragment, never
+         * folded. */
+        bool withdrawn = false;
+        bool enc = false;
+        bool emergency = false;
+        bool receiveKnown = false;
+        /* Whether rxGen is known (Row::rxGenKnown). */
+        bool rxGenKnown = false;
+        uint8_t callChannelKind = 0;
+        qint64 when = 0;
+        qint64 end = 0;
+        int durationSecs = -1;
+        int receiveKind = 6;
+        int receiveValue = 0;
+        int receiveSlot = 0;
+        int freqSlot = 0;
+        qint64 freqHz = 0;
+        qint64 freqWhen = 0;
+        qulonglong freqSeq = 0;
+        int codeKind = 0;
+        int code = 0;
+        qint64 acWhen = 0;
+        qulonglong acSeq = 0;
+        int acSlot = 0;
+        int cchSlot = 0;
+        uint32_t callChannel = 0;
+        /* The reception generation the reception was read under, and the ring it counts in (Row::rxGen). */
+        quint64 rxGen = 0;
+        /* The tuned frequency the reception was read with (Row::rxHz). */
+        qint64 rxHz = 0;
+        qint64 cchWhen = 0;
+        qulonglong cchSeq = 0;
+        dsd_received_identity siteId = {};
+        CallHistoryScope rxScope;
+        quint64 rxRing = 0;
+        QString name;
+        QString service;
+        /* The decode session the reading came from (Row::session): the row is the newest session's of its parts. */
+        qint64 session = 0;
+        /* The sender and the call it names (Row's fields of the same names): the numeric target is the call's, as
+         * the target text is, and a fragment whose later reading learns it gives it to the row. */
+        int protocol = -1;
+        qulonglong tg = 0;
+        qulonglong src = 0;
+        QString sourceText;
+        QString targetText;
+        CallHistoryScope sourceScope;
+        /* The source label and the text message, each with the fragment it came from. */
+        QString sourceName;
+        qint64 sourceNameWhen = 0;
+        qulonglong sourceNameSeq = 0;
+        int sourceNameSlot = 0;
+        int msgSlot = 0;
+        QString messageText;
+        qint64 msgWhen = 0;
+        qulonglong msgSeq = 0;
+    };
+
     /** @brief One logged call or notice. Public only so file-local helpers can build one. */
     struct Row {
         qint64 when = 0;
@@ -481,7 +596,9 @@ class CallHistoryModel : public QAbstractListModel, public HeardTalkgroupSource 
         QString systemName;
         QString systemUid;
         int kind = KindVoice;
-        QString detail;
+        /* Issue #800: the sync type the row was decoded from (Event_History::systype; -1 when not known), part of the
+         * raw identity described below. Kept beside kind so the two pack together. */
+        int protocol = -1;
         /* The scan channel the row was heard on: a -Y row name or a trunk-scan
          * target id. Empty when the receiver was not scanning. It is not the
          * system: the system is the saved entry the session runs, and stays so
@@ -548,7 +665,89 @@ class CallHistoryModel : public QAbstractListModel, public HeardTalkgroupSource 
         /* Every ring fragment the row absorbed, as call_history_fragment_key()s: its own, and each one a merge folded
          * in (load folding too). Persisted (`fr`); rows older builds wrote have none, and no recordings either. */
         QStringList fragments;
+        /* Issue #800. The version of the newest reading of each fragment the row folded in: the ring's commit_rev when
+         * it was read, which every change of a committed ring row moves and nothing resets. A reading of a fragment
+         * older than one the row already holds (a spill line replayed over a newer save) is stale and folds in
+         * nothing (foldRow()), so no older label, message, frequency or code comes back. Persisted (`frv`) for the
+         * fragments whose version is known. */
+        QHash<QString, quint64> fragmentVers;
+        /* Issue #800. What each fragment gave a voice row (FragmentPart), one per fragment, so a fragment found to be
+         * another call's is taken back and the row rebuilt from the rest. Persisted (`fp`) for a row of two or more
+         * parts; a one-fragment row is its own part. A row an older build stored without them is given one per
+         * fragment before it next folds (ensure_parts()): each holds the row's values, and the values that carry a
+         * fragment's provenance only in the part of that fragment. */
+        QList<FragmentPart> parts;
+        /* Issue #800. The row's raw identity, beside the display labels above: the sync type it was decoded from
+         * (protocol, above), the source and target text as received (src_str, tgt_str:
+         * callsigns, dial strings), the sender's system (pos.scope with its discriminator) and where it was heard
+         * (rx_scope, once resolved). A merge never joins two that differ (rows_mergeable(); systems only when known at
+         * one strength, call_history_scopes_compatible(), and the row keeps the stronger), and a
+         * fragment gives the row its text and position only when its identity agrees (fragment_identity_compatible()).
+         * Persisted (`proto`, `srcText`, `tgtText`, `sscope`, `rx`) when known; rows older builds stored know none. */
+        QString sourceText;
+        QString targetText;
+        CallHistoryScope sourceScope;
+        CallHistoryScope rxScope;
+        /* Issue #800. The reception generation rxScope was read under (Event_History::rx_scope.rx_gen, while
+         * rxGenKnown: dsd_state_reception_generation()) and the ring that generation counts in
+         * (Event_History_I::instance; 0 when not known): with rxScope, the reception the core's reception rule reads
+         * (call_history_same_reception()). A fragment gives the row its position, and the row learns a stronger scope
+         * from it, only when it was heard on the row's reception, by one protocol class (fragment_same_reception()).
+         * Persisted (`rxGen`, `rxRing`) while known. */
+        quint64 rxRing = 0;
+        quint64 rxGen = 0;
+        bool rxGenKnown = false;
+        /* Issue #800. The tuned frequency rxScope was read with (Event_History::rx_scope.tuned_hz; 0 when unknown):
+         * two carriers are two receptions, also of one system whose scope names no carrier. Unlike freqHz, which a
+         * merge takes from the newest fragment, it goes with rxScope. Persisted (`rxHz`) while known. */
+        qint64 rxHz = 0;
+        /* Issue #800, B2. The text message the row carries (Event_History::text_message), from the newest fragment
+         * that had one, with that fragment's provenance. Persisted (`msg`, `msg*`). */
+        QString messageText;
+        qint64 msgWhen = 0;
+        qulonglong msgSeq = 0;
+        int msgSlot = 0;
+        /* The GPS unit's fragment slot (with gpsWhen and gpsSeq below), beside msgSlot so the two pack together. */
+        int gpsSlot = 0;
+        /* Issue #800, 2.7 and B2. The row's GPS text (Event_History::gps_s) and the admitted position it describes, as
+         * one unit from one fragment: the one with the greatest (gpsOrd, pos.rev) (call_history_gps_adopts()). gpsOrd
+         * is the session ordinal of that fragment's run (sessionOrdinalFor()); a fresh fragment carries its own.
+         * gpsVer is the ring's commit_rev when that fragment was read (0: not known), which orders two readings of the
+         * same fragment. Persisted (`gps`, `gps*`, `pos`) while known. */
+        QString gpsText;
+        Position pos;
+        qint64 gpsWhen = 0;
+        qulonglong gpsSeq = 0;
+        qint64 gpsOrd = 0;
+        quint64 gpsVer = 0;
+        /* The GPS units of the row's other fragments, one per fragment, beside the one shown above, which is the best
+         * of them all (call_history_gps_adopts()). So a fragment whose newer reading loses its fix gives way to the
+         * best remaining fragment's, whatever order the readings arrive in. Persisted (`gpsAlt`) when there are any. */
+        QList<GpsUnit> gpsOthers;
+        /* Detail text a store an older build wrote held (the notice's message or GPS string), shown while the row
+         * has neither of the two above. */
+        QString legacyDetail;
     };
+
+    /**
+     * @brief The session ordinals the model has given decoder runs (issue #800, 2.7): ring identity
+     * (Event_History_I::instance) to ordinal, the next ordinal to give, and the first the holder may not give.
+     *
+     * An ordinal is given the first time a ring is read and never again: persisted with the model's settings and with
+     * each fragment's position, kept across reloads and retried spill reads. Runs are sequential in one app, so the
+     * ordinals follow the runs' real order whatever order their rows are read in. The background tap gives ordinals
+     * from a block the model set aside for it (startBackgroundCapture()), so a ring it meets first takes one that no
+     * later run's can come before, even if the process dies before the spill is folded.
+     */
+    struct SessionOrdinals {
+        QHash<quint64, qint64> rings;
+        qint64 next = 1;
+        qint64 limit = std::numeric_limits<qint64>::max();
+    };
+
+    /** @brief The ordinal of ring @p ring in @p ordinals, given now when it has none; 0 for ring 0 (no identity), or
+     * when the holder's block is used up. */
+    static qint64 sessionOrdinalFor(SessionOrdinals& ordinals, quint64 ring);
 
   private:
     friend class CallHistoryTap;
@@ -594,6 +793,13 @@ class CallHistoryModel : public QAbstractListModel, public HeardTalkgroupSource 
          * without counting as an advance, and the seen store is saved with it (SeenSettled). */
         uint32_t siteText = 0;
         bool siteTextKnown = false;
+        /* Issue #800, B2: digests of the GPS text, the text message (call_history_text_digest()) and the position
+         * (call_history_position_digest()) last read, each 0 for none. The core writes them into a committed voice row
+         * in place (a late enrichment), so any change is an advance. An entry an older build stored keeps none and
+         * reads 0, so a row whose GPS or message that build left out is read again once. */
+        uint32_t gpsText = 0;
+        uint32_t messageText = 0;
+        uint32_t position = 0;
         /* The session the ring row was last read in. The map keeps the newest sessions'
          * entries, not the newest stamps: a replay's rows are older than live ones. */
         qint64 session = 0;
@@ -604,6 +810,13 @@ class CallHistoryModel : public QAbstractListModel, public HeardTalkgroupSource 
         /* For a notice heard again: the logged notice (by keyFor()) it took as its twin, else empty.
          * Persisted, so a relaunched model knows the twins its ring has taken (m_noticeTwinsTaken). */
         QString twin;
+        /* Issue #800: the digest of the raw identity last read (call_history_identity_digest()). The core can resolve
+         * a committed voice row's reception or sender system in place, and the fragment must then be read again (its
+         * texts and position are checked against the row again, foldRow()), so any change is an advance. Not
+         * known in an entry an older build stored or one load() seeded: the first read then takes the digest without
+         * counting as an advance, as the site text digest's (SeenSettled). Last, so load()'s seed leaves it unknown. */
+        uint32_t identity = 0;
+        bool identityKnown = false;
     };
 
     /**
@@ -646,6 +859,7 @@ class CallHistoryModel : public QAbstractListModel, public HeardTalkgroupSource 
         qint64 session = 0;
         QString sessionLabel;
         QString systemUid;                     // the attribution uid, empty unless the session is single-system
+        qint64 sessionOrd = 0;                 // the walked ring's session ordinal (SessionOrdinals), 0 when none
         bool cleared = false;                  // the clear mark covers this ring...
         qulonglong clearedThrough = 0U;        // ...up to this push stamp of the walked slot
         bool* seenSettled = nullptr;           // set when a seen entry changed with nothing to ingest (SeenSettled)
@@ -672,6 +886,8 @@ class CallHistoryModel : public QAbstractListModel, public HeardTalkgroupSource 
                         bool voice);
     static bool absorbSeenReceive(SeenState& seen, const SeenState& read);
     static bool absorbSeenSite(SeenState& seen, const SeenState& read);
+    static bool absorbSeenTexts(SeenState& seen, const SeenState& read);
+    static bool absorbSeenCall(SeenState& seen, const SeenState& read);
 
     /**
      * @brief Walk one slot's ring for rows not seen before, or seen but advanced, appending them to @p fresh.
@@ -806,6 +1022,16 @@ class CallHistoryModel : public QAbstractListModel, public HeardTalkgroupSource 
     QByteArray stopBackgroundCapture();
     /** @brief Take the ring position the tap read last as this model's last read, if the tap read any. */
     void takeTapReadPosition(bool read, const qulonglong pushSeq[2], quint64 ring);
+    /** @brief Take the session ordinals @p ordinals gave rings this model has none for (the tap's, a spill line's). */
+    void adoptSessionOrdinals(const QHash<quint64, qint64>& ordinals);
+    /** @brief adoptSessionOrdinals() for one ring (a spill line's): ring 0 or an ordinal below 1 is none. */
+    void adoptSessionOrdinal(quint64 ring, qint64 ordinal);
+    /** @brief Record ordinal @p ordinal for ring @p ring if it has none; @return whether it was recorded. */
+    bool noteSessionOrdinal(quint64 ring, qint64 ordinal);
+    /** @brief The session ordinal of ring @p ring, given and saved now when it has none (SessionOrdinals). */
+    qint64 sessionOrdinal(quint64 ring);
+    void saveSessionOrdinals();
+    void loadSessionOrdinals();
     /** @brief Fold the spill into the log, then @p unwritten (the lines the tap could not write to it), idempotently by
      * fragment; @return whether the row count changed. */
     bool foldSpill(const QByteArray& unwritten = QByteArray());
@@ -914,6 +1140,9 @@ class CallHistoryModel : public QAbstractListModel, public HeardTalkgroupSource 
     qint64 m_spillFoldedBytes = -1;
     quint64 m_spillFoldGeneration = 0;
     bool m_handoffOwed = false;
+    /* Issue #800, 2.7: the session ordinal of every ring read (SessionOrdinals). Persisted
+       (callHistory/sessionOrd/next, /rings). */
+    SessionOrdinals m_sessionOrdinals;
     /* Bumped by every clearAll(): a tap started before a clear settled no mark the model may adopt. */
     quint64 m_clearRev = 0;
     quint64 m_tapClearRev = 0;

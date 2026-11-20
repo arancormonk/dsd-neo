@@ -1,12 +1,15 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 /* Copyright (C) 2026 by arancormonk <180709949+arancormonk@users.noreply.github.com> */
-/* Issue #550: LOCN and IP/UDP LRRP location rows honor the dispatch CRC verdict. */
+/* Issue #550: LOCN and IP/UDP LRRP location rows honor the dispatch CRC verdict. Issue #800: only a report whose
+ * checks passed is staged as the notice's position, and a failed LOCN keeps its coordinates out of the text. */
 
 #include <dsd-neo/core/crc_provenance.h>
 #include <dsd-neo/core/events.h>
 #include <dsd-neo/core/gps.h>
 #include <dsd-neo/core/opts.h>
+#include <dsd-neo/core/position.h>
 #include <dsd-neo/core/state.h>
+#include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/core/time_format.h>
 #include <dsd-neo/platform/file_compat.h>
 #include <dsd-neo/protocol/dmr/dmr.h>
@@ -70,7 +73,8 @@ dsd_unicode_supported(void) {
 }
 
 void
-lip_pdu_decoder(const dsd_opts* opts, dsd_state* state, const uint8_t* bits, size_t bit_count, uint32_t src) {
+lip_pdu_decoder(const dsd_opts* opts, dsd_state* state, const uint8_t* bits, size_t bit_count,
+                const dsd_gps_address* src) {
     (void)bit_count;
     (void)src;
     (void)opts;
@@ -156,10 +160,34 @@ expect_rows(const char* path, int expected, const char* src, const char* lat, co
     return 1;
 }
 
+// Whether the slot holds a staged, admitted position of `kind` at (lat_e7, lon_e7) when `want` is set, none otherwise.
+static int
+expect_staged(const dsd_state* state, int want, uint8_t kind, int32_t lat_e7, int32_t lon_e7, const char* tag) {
+    const dsd_position_fix* fix = dsd_event_staged_position(state, 0);
+    if (!want) {
+        if (fix->rev != 0U) {
+            DSD_FPRINTF(stderr, "\n%s: a position was staged\n", tag);
+            return 0;
+        }
+        return 1;
+    }
+    if (fix->rev == 0U || fix->kind != kind || fix->lat_e7 != lat_e7 || fix->lon_e7 != lon_e7) {
+        DSD_FPRINTF(stderr, "\n%s: staged rev %llu kind %u at (%d, %d)\n", tag, (unsigned long long)fix->rev,
+                    (unsigned)fix->kind, (int)fix->lat_e7, (int)fix->lon_e7);
+        return 0;
+    }
+    const uint16_t provisional = (uint16_t)DSD_POS_FLAG_FORMAT_PROVISIONAL;
+    if (((fix->flags & provisional) != 0U) != (kind == DSD_POS_DMR_LOCN)) {
+        DSD_FPRINTF(stderr, "\n%s: flags %04X\n", tag, (unsigned)fix->flags);
+        return 0;
+    }
+    return 1;
+}
+
 static uint16_t
 build_ipv4_udp_lrrp(uint8_t packet[64], uint16_t port) {
     // POINT_2D response from DMR_LRRP_CRC_GATING: lat 11.25, lon 45.
-    static const uint8_t payload[] = {0x07, 12, 0x22, 0, 0x66, 0x10, 0, 0, 0, 0x20, 0, 0, 0};
+    static const uint8_t payload[] = {0x07, 11, 0x22, 0, 0x66, 0x10, 0, 0, 0, 0x20, 0, 0, 0};
     const uint16_t udp_len = (uint16_t)(8 + sizeof payload);
     const uint16_t ip_len = (uint16_t)(20 + udp_len);
     DSD_MEMSET(packet, 0, 64);
@@ -193,13 +221,20 @@ run_cases(dsd_opts* opts, dsd_state* state, const char* path) {
         state->event_crc_invalid[0] = invalid;
         state->dmr_lrrp_source[0] = 123456;
         state->dmr_lrrp_gps[0][0] = '\0';
+        dsd_event_stage_clear(state, 0);
         dmr_locn(opts, state, (uint16_t)(sizeof locn - 1), locn);
         if (!expect_rows(path, !invalid, "00123456", "22.50000", "45.00000", "LOCN")) {
             return 1 + (1 - invalid) * 2;
         }
-        if (!strstr(state->dmr_lrrp_gps[0], "NMEA / LOCN") || !strstr(state->dmr_lrrp_gps[0], "(22.50000, 45.00000)")) {
-            DSD_FPRINTF(stderr, "\nLOCN: missing decoded state: %s\n", state->dmr_lrrp_gps[0]);
+        // A failed check keeps the coordinates out of the notice text and stages no position (issue #800).
+        const char* want = invalid ? "NMEA / LOCN; Source: 123456 Position suppressed (CRC ERR);"
+                                   : "NMEA / LOCN; Source: 123456 (22.50000, 45.00000)";
+        if (strcmp(state->dmr_lrrp_gps[0], want) != 0) {
+            DSD_FPRINTF(stderr, "\nLOCN: got '%s', want '%s'\n", state->dmr_lrrp_gps[0], want);
             return 2 + (1 - invalid) * 2;
+        }
+        if (!expect_staged(state, !invalid, DSD_POS_DMR_LOCN, 225000000, 450000000, "LOCN")) {
+            return 7 + (1 - invalid);
         }
     }
     state->currentslot = 0;
@@ -210,12 +245,18 @@ run_cases(dsd_opts* opts, dsd_state* state, const char* path) {
             return 100;
         }
         state->event_crc_invalid[0] = (uint8_t)invalid;
+        dsd_event_stage_clear(state, 0);
         dmr_sd_pdu_process(opts, state, (uint16_t)(sizeof locn - 1), locn, 1U);
         if (!expect_rows(path, !invalid, "00123456", "22.50000", "45.00000", "T4 short-data LOCN")) {
             return 20;
         }
         if (!strstr(state->dmr_lrrp_gps[0], "NMEA / LOCN")) {
             return 21;
+        }
+        // The short-data path stages only an admitted position, never the LOCN text alone.
+        if (!expect_staged(state, !invalid, DSD_POS_DMR_LOCN, 225000000, 450000000, "T4 short-data LOCN")
+            || (invalid && dsd_event_staged_gps(state, 0)[0] != '\0')) {
+            return 22;
         }
     }
     static const uint16_t ports[] = {4001, 49198};
@@ -243,6 +284,7 @@ run_cases(dsd_opts* opts, dsd_state* state, const char* path) {
             DSD_SNPRINTF(tag, sizeof tag, "UDP/%u %s", (unsigned)ports[i], scopes[c].tag);
             state->event_crc_invalid[0] = scopes[c].scope;
             state->dmr_lrrp_gps[0][0] = '\0';
+            dsd_event_stage_clear(state, 0);
             decode_ip_pdu(opts, state, len, packet);
             if (!expect_rows(path, scopes[c].scope == 0U, "00000111", "11.25000", "45.00000", tag)) {
                 return 30 + (int)(i * 8U + c * 2U);
@@ -252,8 +294,85 @@ run_cases(dsd_opts* opts, dsd_state* state, const char* path) {
                             state->dmr_lrrp_gps[0]);
                 return 31 + (int)(i * 8U + c * 2U);
             }
+            if (!expect_staged(state, scopes[c].scope == 0U, DSD_POS_DMR_LRRP, 112500000, 450000000, tag)) {
+                return 60 + (int)(i * 8U + c);
+            }
         }
     }
+    return 0;
+}
+
+/* Issue #800 D10: the raw dump of an unsupported short-data format holds the LOCN bytes, one bracketed byte at a time,
+ * which no redaction of the diagnostics log can read as a position. It is printed only with the payload option (-Z),
+ * like every other payload dump. */
+static int
+short_data_raw_dump_needs_payload_option(dsd_opts* opts, dsd_state* state) {
+    static const uint8_t locn[] = "A123456070826N2230.0000E04500.0000";
+    for (int payload = 0; payload <= 1; ++payload) {
+        opts->payload = payload;
+        state->currentslot = 0;
+        state->data_header_format[0] = 13;
+        state->data_header_dd_format[0] = 0x00;
+        state->event_crc_invalid[0] = 0U;
+        dsd_event_stage_clear(state, 0);
+        dsd_test_capture_stderr cap;
+        if (dsd_test_capture_stderr_begin(&cap, "short_data_raw") != 0) {
+            return 110;
+        }
+        dmr_sd_pdu_process(opts, state, (uint16_t)(sizeof locn - 1), locn, 1U);
+        (void)dsd_test_capture_stderr_end(&cap);
+        static char output[8192];
+        if (dsd_test_capture_stderr_read(&cap, output, sizeof output) != 0) {
+            return 111;
+        }
+        const int dumped = strstr(output, "Short Data Raw") != NULL || strstr(output, "[4E][32][32][33][30]") != NULL;
+        if (dumped != payload) {
+            DSD_FPRINTF(stderr, "\nShort Data Raw with -Z %d: %s\n", payload, output);
+            return 112 + payload;
+        }
+    }
+    opts->payload = 0;
+    return 0;
+}
+
+/* Issue #800: the defined short data header's bit padding is not user data. LOCN reads only whole user octets: with
+ * four pad bits the last octet's low nibble is padding, so the longitude's last digit was never sent (no position); with
+ * none, or a pad that leaves whole octets, the full report is the position. Padding longer than the data reads nothing. */
+static int
+short_data_locn_excludes_bit_padding(dsd_opts* opts, dsd_state* state, const char* path) {
+    static const uint8_t locn[] = "A123456070826N2230.0000E04500.0000";
+
+    static const struct {
+        uint8_t pad_bits;
+        uint16_t len;
+        int rows;
+    } cases[] = {
+        {0U, sizeof locn - 1U, 1}, {4U, sizeof locn - 1U, 0},   {8U, sizeof locn - 1U, 0},
+        {8U, sizeof locn, 1},      {255U, sizeof locn - 1U, 0},
+    };
+
+    for (size_t i = 0; i < sizeof cases / sizeof cases[0]; ++i) {
+        if (!truncate_output(path)) {
+            return 120;
+        }
+        state->currentslot = 0;
+        state->data_header_format[0] = 13;
+        state->data_header_dd_format[0] = 0x00;
+        state->data_header_bit_padding[0] = cases[i].pad_bits;
+        state->event_crc_invalid[0] = 0U;
+        state->dmr_lrrp_source[0] = 123456U + (uint32_t)i; /* another radio each time: never a repeat */
+        dsd_event_stage_clear(state, 0);
+        dmr_sd_pdu_process(opts, state, cases[i].len, locn, 1U);
+        char want_src[16];
+        DSD_SNPRINTF(want_src, sizeof want_src, "%08u", 123456U + (unsigned)i);
+        if (!expect_rows(path, cases[i].rows, want_src, "22.50000", "45.00000", "LOCN bit padding")
+            || !expect_staged(state, cases[i].rows, DSD_POS_DMR_LOCN, 225000000, 450000000, "LOCN bit padding")) {
+            DSD_FPRINTF(stderr, "\nLOCN bit padding case %zu\n", i);
+            return 121 + (int)i;
+        }
+    }
+    state->data_header_bit_padding[0] = 0U;
+    state->dmr_lrrp_source[0] = 123456U;
     return 0;
 }
 
@@ -281,7 +400,14 @@ main(void) {
     opts.aggressive_framesync = 0;
     opts.dmr_crc_relaxed_default = 1;
     state.currentslot = 0;
+    state.lastsynctype = DSD_SYNC_DMR_BS_DATA_POS;
     int rc = run_cases(&opts, &state, path);
+    if (rc == 0) {
+        rc = short_data_raw_dump_needs_payload_option(&opts, &state);
+    }
+    if (rc == 0) {
+        rc = short_data_locn_excludes_bit_padding(&opts, &state, path);
+    }
     remove(path);
     free(state.event_history_s);
     state.event_history_s = NULL;

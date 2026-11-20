@@ -29,14 +29,24 @@
 #include <condition_variable>
 #include <cstdio>
 #include <dsd-neo/app_control/frontend_runtime.h>
+#include <dsd-neo/core/events.h>
+#include <dsd-neo/core/gps.h>
 #include <dsd-neo/core/init.h>
 #include <dsd-neo/core/key_set.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/opts_fwd.h>
+#include <dsd-neo/core/position.h>
 #include <dsd-neo/core/safe_api.h>
 #include <dsd-neo/core/state.h>
+#include <dsd-neo/core/state_ext.h>
 #include <dsd-neo/core/state_fwd.h>
+#include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/platform/file_compat.h>
+#include <dsd-neo/protocol/dmr/dmr.h>
+#include <dsd-neo/protocol/dmr/dmr_utils_api.h>
+#include <dsd-neo/protocol/dstar/dstar.h>
+#include <dsd-neo/protocol/m17/m17_parse.h>
+#include <dsd-neo/protocol/p25/p25_pdu.h>
 #include <dsd-neo/runtime/cli.h>
 #include <dsd-neo/runtime/decode_clock.h>
 #include <dsd-neo/runtime/log.h>
@@ -51,6 +61,8 @@
 #include "diagnostics_log.h"
 extern "C" int dsd_test_diagnostics_drain(dsd_opts*, dsd_state*);
 #include "../../src/app_control/commands_internal.h"
+#include "../../src/protocol/m17/m17_algorithms.h"
+#include "../../src/protocol/m17/m17_internal.h"
 #include "session_args.h"
 #include "teardown_trace.h"
 extern "C" int dsd_test_diagnostics_direct_key_applied(dsd_opts*, dsd_state*, int, const char*);
@@ -1668,7 +1680,8 @@ negativeMeasurementsDoNotCarryKeys() {
  * negative values and every precision that producer prints. The producers were found by a format-string sweep of src/
  * and the Android native code (the gate r3 fix report lists them); each line here is rendered from the producer's own
  * format (file and function named beside it), stderr ones through the stream capture and runtime-log ones through the
- * log tap, and each must reach the log unchanged, live and from a saved record. */
+ * log tap, and each must reach the log unchanged, live and from a saved record. The position templates' lines are not
+ * kept since issue #800 (D10): receivedPositionsAreRemoved() holds them. */
 static void
 measurementCorpusSurvives() {
     const QString deg = QString::fromUtf8("\xC2\xB0");
@@ -1692,27 +1705,9 @@ measurementCorpusSurvives() {
         // demod_pipeline.cpp: the CQPSK I/Q debug dump.
         QStringLiteral("[IQ] (0.52,-0.25|-25") + deg + QStringLiteral(",0.58) (-0.31,-1.92|-99") + deg
             + QStringLiteral(",1.94) "),
-        // dsd_gps.c: LIP, the three Lat/Lon reports, NMEA, Harris and NXDN, with either degree glyph.
-        QStringLiteral("Src: 1234; Lat: 32.12345") + deg + QStringLiteral("S Lon: 115.12345") + deg
-            + QStringLiteral("W (-32.12345, -115.12345); Spd: 0 km/h; Dir: 0") + deg,
-        QStringLiteral(" Lat: 32.12345 degS Lon: 115.12345 degW (-32.12345, -115.12345)"),
-        QStringLiteral(" Lat: -32.12345") + deg + QStringLiteral("S Lon: -115.12345") + deg
-            + QStringLiteral("W (-32.12345, -115.12345) "),
-        QStringLiteral(" GPS: -32.123450") + deg + QStringLiteral(", -115.123450") + deg
-            + QStringLiteral("; SPD: 0 knots; 0.000000 kph;"),
-        QStringLiteral(" Harris GPS: -32.123456 deg, -115.123456 deg; HEADING: 090 deg; TIME: 12:00:00 UTC;"),
-        QStringLiteral(" GPS: (-32.123456") + deg + QStringLiteral(", -115.123456") + deg
-            + QStringLiteral(") Speed: 0.0 k/h; COG: 0.0; Elevation: -25; Date: 2026/10/28; Time: 12:00;"),
-        // dmr_pdu.c dmr_lrrp_print_details() (J3) and the NMEA LOCN report.
-        QStringLiteral(" Lat: -32.12345 Lon: -115.12345 (-32.12345, -115.12345)"),
-        QStringLiteral(" Altitude: -25.50m"),
-        QStringLiteral(" NMEA / LOCN; Source: 1234; 2026/10/28 12:00:00 (-32.12345") + deg
-            + QStringLiteral(", -115.12345") + deg + QStringLiteral(");"),
-        QStringLiteral(" NMEA / LOCN; Source: 1234; (-32.12345 deg, -115.12345 deg);"),
         // m17.c: power, the UDP result, GNSS.
         QStringLiteral(" PWR: -51.2 dB SQL HIT: 0;"),
         QStringLiteral(" UDP IP Frame CRC: BEEF; UDP RETURN: -1: LEN: 25; SENT: 61;"),
-        QStringLiteral(" GPS: (-32.123450, -115.123450); Altitude: -25.5 m; Speed: 0.0 km/h; Bearing: 0 Degrees;"),
         // dmr_csbk.c: the broadcast local time and offset.
         QStringLiteral(" Date: 10.28; UTC Time: 02:15:00; Local: -3:15:00; Offset: -5;"),
         QStringLiteral(" UTC Time: 02:15:00; Local: -10:15:00; Offset: -12;"),
@@ -1807,6 +1802,758 @@ measurementCorpusSurvives() {
     const auto counts = DiagnosticsLog::measurementTemplateCountsForTest();
     check(counts.first == 44 && counts.second == counts.first,
           "a measurement template was refused or the list changed");
+}
+
+/* Issue #800, D10: no record that holds a position received over the air reaches the log, a copy or a share of it, live
+ * through the stream capture or stored, and a tail an older build stored with positions in it is redacted as it is
+ * loaded. Every producer's position line (the measurement templates', which still leave the key scan, so a key beside
+ * one still drops the record as a key), a label line with no coordinates, raw NMEA and APRS text, and a bare pair of
+ * decimal degrees or of degrees and minutes; every USBD line goes with its payload bytes, the LIP service's and, fail
+ * closed, any other service's. Lines that hold no position (a frequency, a site's location ID, slicer statistics) and
+ * byte dumps of PDUs that carry none (CSBK, voice) are kept as they were. */
+static void
+receivedPositionsAreRemoved() {
+    static const char kPosition[] = "[redacted position]";
+    const QString deg = QString::fromUtf8("\xC2\xB0");
+    const QStringList positionLines = {
+        // dsd_gps.c: LIP, the three Lat/Lon reports, NMEA, Harris and NXDN, with either degree glyph.
+        QStringLiteral("Src: 1234; Lat: 32.12345") + deg + QStringLiteral("S Lon: 115.12345") + deg
+            + QStringLiteral("W (-32.12345, -115.12345); Spd: 0 km/h; Dir: 0") + deg,
+        QStringLiteral(" Lat: 32.12345 degS Lon: 115.12345 degW (-32.12345, -115.12345)"),
+        QStringLiteral(" Lat: -32.12345") + deg + QStringLiteral("S Lon: -115.12345") + deg
+            + QStringLiteral("W (-32.12345, -115.12345) "),
+        QStringLiteral(" GPS: -32.123450") + deg + QStringLiteral(", -115.123450") + deg
+            + QStringLiteral("; SPD: 0 knots; 0.000000 kph;"),
+        QStringLiteral(" Harris GPS: -32.123456 deg, -115.123456 deg; HEADING: 090 deg; TIME: 12:00:00 UTC;"),
+        QStringLiteral(" GPS: (-32.123456") + deg + QStringLiteral(", -115.123456") + deg
+            + QStringLiteral(") Speed: 0.0 k/h; COG: 0.0; Elevation: -25; Date: 2026/10/28; Time: 12:00;"),
+        // dmr_pdu.c dmr_lrrp_print_details() (J3) and the NMEA LOCN report.
+        QStringLiteral(" Lat: -32.12345 Lon: -115.12345 (-32.12345, -115.12345)"),
+        QStringLiteral(" Altitude: -25.50m"),
+        QStringLiteral(" NMEA / LOCN; Source: 1234; 2026/10/28 12:00:00 (-32.12345") + deg
+            + QStringLiteral(", -115.12345") + deg + QStringLiteral(");"),
+        QStringLiteral(" NMEA / LOCN; Source: 1234; (-32.12345 deg, -115.12345 deg);"),
+        // m17.c GNSS, and the D-STAR, LIP, USBD, L3Harris, NMEA and APRS lines.
+        QStringLiteral(" GPS: (-32.123450, -115.123450); Altitude: -25.5 m; Speed: 0.0 km/h; Bearing: 0 Degrees;"),
+        QStringLiteral("Lat: 22.30.00N Lon: 45.00.00E"),
+        QStringLiteral("Location Information Protocol; Short Location Report; Src: 1234; Lat: 22.50000") + deg
+            + QStringLiteral(" N Lon: 45.00000") + deg + QStringLiteral(" E (22.50000, 45.00000); Spd: 0 km/h;"),
+        QStringLiteral("  Position Error: Less than 20m"),
+        QStringLiteral("LIP: truncated;"),
+        QStringLiteral(" USBD - Service: Location Information Protocol (0) - Payload: [0D][00][1A][2B][3C][4D][5E][6F]"
+                       "[70][81][92][A]"),
+        // dmr_dburst.c prints every USBD's payload without -Z, and a reserved or manufacturer-specific service's bytes
+        // are not known to hold no position (TS 102 361-1 table 9.55): fail closed, its line goes too.
+        QStringLiteral(" USBD - Service: Standard Service 1 (1) - Payload: [0D][00][1A][2B][3C][4D][5E][6F][70][81]"
+                       "[92][A]"),
+        QStringLiteral(" USBD - Service: Reserved (standard) (12) - Payload: [4E][32][32][33][30][2E][30][45][30][34]"
+                       "[35][0]"),
+        QStringLiteral(" L3Harris GPS Location"),
+        QStringLiteral("$GPRMC,120000,A,2230.000,N,04500.000,E,0.0,0.0,171126,,,A*6C"),
+        QStringLiteral(" APRS - N0CALL>API51,DSTAR*:!2230.00N/04500.00E>test"),
+        QStringLiteral(" TIME: 12:00:00 UTC; (22.500000, 45.000000)"),
+        QStringLiteral(" Report 7: !2230.00N/04500.00E>"),
+        // dmr_block.c MNIS LOCN: the report's own text, the hemisphere before each number, the fields in either order
+        // and with anything between them (dmr_locn_parse_fields() takes both).
+        QStringLiteral(" UTF8 Text: A123456070826N2230.0000E04500.0000"),
+        QStringLiteral(" UTF8 Text: E04500.0000N2230.0000"),
+        QStringLiteral(" UTF8 Text: W04500.0000-_A123456070826_S2230.0000"),
+        QStringLiteral(" UTF8 Text: N2230.0000,E04500.0000"),
+        // NMEA minutes with no fraction (nmea_parse_coordinate() reads them), and D-PRS with an overlay symbol table.
+        QStringLiteral(" 2230,N,04500,E,0.0"),
+        QStringLiteral(" 1200z2230.00N104500.00E>test"),
+        QStringLiteral(" 2230.00SD04500.00W-"),
+        // dstar_slow_data.c GPS data blocks, a part of a D-PRS record or NMEA sentence each.
+        QStringLiteral(" GPS DATA: N/04500.00E>test"),
+        QStringLiteral(" GPS DATA: 12  z2230.00N/04500.00"),
+        QStringLiteral(" GPS DATA: EA mobile"),
+        QStringLiteral(" _UNK:  GPS DATA: .00N/04500.00E>test"),
+        QStringLiteral(" _UNK:  .00N/04500.00E>test"),
+    };
+    QTemporaryDir dir;
+    {
+        QByteArray bytes;
+        for (const auto& line : positionLines) {
+            bytes += line.toUtf8() + '\n';
+        }
+        const auto records = streamRecords(bytes, dir.path());
+        check(records.size() == positionLines.size(), "a position line was lost or split by the stream capture");
+        for (qsizetype i = 0; i < std::min(records.size(), positionLines.size()); ++i) {
+            checkLabelled(records.at(i) == QLatin1String(kPosition), "position kept: " + positionLines.at(i).toUtf8());
+            checkLabelled(DiagnosticsLog::redact(QStringLiteral("[stderr] [info] ") + positionLines.at(i)) == kPosition,
+                          "stored position kept: " + positionLines.at(i).toUtf8());
+        }
+    }
+    // The key rule is as it was: a key beside a position drops the record as a key.
+    check(DiagnosticsLog::redact(QStringLiteral("[stderr] [info]  Lat: -32.12345 Lon: -115.12345 (-32.12345, "
+                                                "-115.12345) -1 9"))
+              == kDropped,
+          "a key beside a position is not dropped as a key");
+    // A tail an older build stored, positions in it: the reloaded log, and so its copy and share, hold none.
+    {
+        QTemporaryDir old;
+        const QString kept = QStringLiteral("[stderr] [info] Sync: +DMR  slot1 [VOICE] ");
+        QByteArray stored;
+        for (const auto& line : positionLines) {
+            stored += QStringLiteral("[stderr] [info] ").toUtf8() + line.toUtf8() + '\n';
+        }
+        stored += kept.toUtf8() + '\n';
+        QFile tail(old.filePath("tail.log"));
+        check(tail.open(QIODevice::WriteOnly) && tail.write(stored) == stored.size(), "older tail written");
+        tail.close();
+        DiagnosticsLog reloaded(old.path());
+        DiagnosticsLogModel model(&reloaded);
+        const QString text = model.allText();
+        check(text.count(QLatin1String(kPosition)) == positionLines.size(), "a stored position survived the reload");
+        for (const auto& line : positionLines) {
+            checkLabelled(!text.contains(line), "reloaded position kept: " + line.toUtf8());
+        }
+        check(text.contains(kept), "the reload dropped a line with no position");
+    }
+    // Byte dumps that belong to no position-bearing PDU are kept: CSBK and voice bytes, the -Z payload lines that come
+    // before any decode (DMR "Short Data Raw" and NXDN "UDCH Data" among them: live only, see
+    // storedLegacyPositionFormsAreRemoved()).
+    const QStringList keptLines = {
+        QStringLiteral(" CSBK 3D 00 1A 2B 3C 4D 5E 6F 70 81"),
+        QStringLiteral(" DMR PDU Payload [01][02][03][04][05][06][07][08][09][0A][0B][0C]"),
+        QStringLiteral(" Short Data Raw: [4E][32][32][33][30][2E][30][30][30][30][45][30][34][35]"),
+        QStringLiteral(" UDCH Data: ASCII - 04500.000,E,1,08,0.9,"),
+        QStringLiteral(" pkt:  0D 00 1A 2B 3C 4D"),
+        QStringLiteral("WARNING: Scan channel 3 (851.012500 MHz): --squelch-db"),
+        QStringLiteral("Retune 146.520000 MHz to 146.540000 MHz."),
+        QStringLiteral("Location ID [000123] SVC [0001] RST [000000] "),
+        QStringLiteral(" Location Registration;"),
+        QStringLiteral("[SYNC] range:[-2.9,2.9] dc:-0.05 ratio(1:3)=2400:2400"),
+        QStringLiteral("  IDEN [1] Type [1] Base Freq [34040000] (170200000 Hz) TX Offset [-25] Spacing [100]"),
+        QStringLiteral("  Location ID [012345] CC1 [001][0001] CC2 [002][0002] Status: "),
+        // TETRA SDS data notices, NXDN's -Z data call dump and M17 arbitrary data are not D-STAR GPS data.
+        QStringLiteral("SDS SRC: 1001; TGT: 2002; DATA: 0x0A0B;"),
+        QStringLiteral("SDS SRC: 1001; TGT: 2002; DATA: 12 bits;"),
+        QStringLiteral(" DATA: 0A1B2C3D"),
+        QStringLiteral(" A_DATA: 01 02 03"),
+    };
+    for (const auto& line : keptLines) {
+        const QString record = QStringLiteral("[stderr] [info] ") + line;
+        checkLabelled(DiagnosticsLog::redact(record) == record, "a line with no position changed: " + line.toUtf8());
+    }
+}
+
+// Issue #800, D10, fail closed: the text older builds printed a received position or a part of one with, under labels
+// the current producers no longer use. A stored tail holding them reloads with none of them, in the main ring and in
+// the host ring alike, so no Copy or Share after an upgrade discloses one; a stored line with no position survives.
+static void
+storedLegacyPositionFormsAreRemoved() {
+    static const char kPosition[] = "[redacted position]";
+    const QString deg = QString::fromUtf8("\xC2\xB0");
+    const QStringList legacyLines = {
+        // p25p1_pdu_data.c SAP 48 location service plain text, two decimal places, and dmr_block.c MNIS LOCN text.
+        QStringLiteral(" UTF8 Text: 22.50,45.00"),
+        QStringLiteral(" UTF8 Text: LOC 22 30 N 45 00 E"),
+        // dstar_slow_data.c fixed-form GPS data blocks printed as text.
+        QStringLiteral(" TEXT: 0,N,04500.0,E,0.0,0"),
+        // dmr_pdu.c dmr_lrrp_print_details(): each part of a report on a line of its own.
+        QStringLiteral(" Time: 2026.11.18 12:00:00"),
+        QStringLiteral(" Radius: 12.00m"),
+        QStringLiteral(" Alt Accuracy: 3.00m"),
+        QStringLiteral(" Speed: 1.00 mph 1.61 km/h 0.45 m/s"),
+        QStringLiteral(" Track: 90") + deg,
+        // m17.c GNSS packet radius line.
+        QStringLiteral("      Radius: 12.0; M17 Client; Mobile Station;"),
+        // dsd_gps.c nmea_sentence_checker(): a checked sentence of a type the shapes do not name.
+        QStringLiteral(" $PXXXX,22.5,45.0*3A"),
+        // Raw dumps older builds printed without -Z (this build prints them only with it): dmr_pdu.c
+        // dmr_sd_pdu_print_raw() before the LOCN decode, its bytes bracketed; nxdn_deperm.c nxdn_print_udch_data(), the
+        // UDCH bytes and then their ASCII form, which can hold a part of an NMEA sentence or of a report no shape names.
+        QStringLiteral(" Short Data Raw: [4E][32][32][33][30][2E][30][30][30][30][45][30][34][35][30][30][2E][30]"),
+        QStringLiteral(" Short Data Raw: [00][01]"),
+        QStringLiteral(" UDCH Data: 2430343530302E3030302C452C312C30382C302E392C"),
+        QStringLiteral(" UDCH Data: ASCII - 04500.000,E,1,08,0.9,"),
+        QStringLiteral(" UDCH Data: ASCII - $GPGGA,120000,2230.0"),
+    };
+    for (const auto& line : legacyLines) {
+        const QString record = QStringLiteral("[stderr] [info] ") + line;
+        checkLabelled(DiagnosticsLog::redactStored(record) == kPosition, "stored legacy form kept: " + line.toUtf8());
+    }
+    // The key rule stays first, and a line with no position under no legacy label is kept as redact() keeps it.
+    check(DiagnosticsLog::redactStored(QStringLiteral("[stderr] [info]  UTF8 Text: -1 9")) == kDropped,
+          "a key beside a legacy label is not dropped as a key");
+    const QString kept = QStringLiteral("[stderr] [info] Sync: +DMR  slot1 [VOICE] ");
+    check(DiagnosticsLog::redactStored(kept) == kept, "a stored line with no position changed");
+    // Live records keep the current producers' text messages and -Z dumps: the legacy forms are judged only on load.
+    const QString liveText = QStringLiteral("[stderr] [info]  UTF8 Text: hello");
+    check(DiagnosticsLog::redact(liveText) == liveText, "a live text message was redacted");
+    const QString liveDump = QStringLiteral("[stderr] [info]  Short Data Raw: [00][01]");
+    check(DiagnosticsLog::redact(liveDump) == liveDump, "a live -Z dump was redacted");
+
+    QTemporaryDir old;
+    QByteArray stored;
+    for (const auto& line : legacyLines) {
+        stored += QStringLiteral("[stderr] [info] ").toUtf8() + line.toUtf8() + '\n';
+    }
+    stored += kept.toUtf8() + '\n';
+    QByteArray host;
+    for (const auto& line : legacyLines) {
+        host += QStringLiteral("[host] [info] ").toUtf8() + line.toUtf8() + '\n';
+    }
+    const std::pair<const char*, QByteArray> files[] = {{"tail.log", stored}, {"host.log", host}};
+    for (const auto& entry : files) {
+        QFile file(old.filePath(QString::fromLatin1(entry.first)));
+        check(file.open(QIODevice::WriteOnly) && file.write(entry.second) == entry.second.size(),
+              "older store written");
+    }
+    DiagnosticsLog reloaded(old.path());
+    const QString text = QString::fromUtf8(exportOf(reloaded));
+    check(text.count(QLatin1String(kPosition)) == 2 * legacyLines.size(), "a stored legacy form survived the reload");
+    for (const auto& line : legacyLines) {
+        checkLabelled(!text.contains(line), "reloaded legacy form kept: " + line.toUtf8());
+    }
+    check(text.contains(kept), "the reload dropped a line with no position");
+}
+
+// Issue #800, D10, fail closed: the load scrubs the stored segments themselves, not only the rings Copy and Share read.
+// After an upgrade no saved file of either log (tail, host; current and previous segment) still holds a line the load
+// removed, and the split of an older build's oversized tail writes none back; a line with no position stays on disk.
+static void
+storedPositionsLeaveTheFiles() {
+    static const char kPosition[] = "[redacted position]";
+    const QStringList positionLines = {
+        QStringLiteral(" UTF8 Text: 22.50,45.00"),              // a legacy label
+        QStringLiteral(" Short Data Raw: [00][01]"),            // a legacy raw dump
+        QStringLiteral(" Lat: 22.50000 Lon: 45.00000"),         // a current label
+        QStringLiteral(" $GPRMC,120000,A,2230.0000,N,04500.0"), // a position's shape
+    };
+    const QByteArray kept = "[stderr] [info] Sync: +DMR  slot1 [VOICE] ";
+    const auto storeOf = [&](const char* prefix) {
+        QByteArray store;
+        for (const auto& line : positionLines) {
+            store += QByteArray(prefix) + line.toUtf8() + '\n';
+        }
+        return store + kept + '\n';
+    };
+    const auto checkScrubbed = [&](const QString& path, const char* what) {
+        const QByteArray text = readFile(path);
+        for (const auto& line : positionLines) {
+            checkLabelled(!text.contains(line.toUtf8()), QByteArray(what) + " kept on disk: " + line.toUtf8());
+        }
+        checkLabelled(text.count(kPosition) == positionLines.size(), QByteArray(what) + " lost its placeholders");
+        checkLabelled(text.contains(kept), QByteArray(what) + " lost a line with no position");
+    };
+    {
+        QTemporaryDir dir;
+        const char* const names[] = {"tail.prev.log", "tail.log", "host.prev.log", "host.log"};
+        for (const char* name : names) {
+            writeFile(dir.filePath(QString::fromLatin1(name)), storeOf("[stderr] [info] "));
+        }
+        g_clock = 0;
+        DiagnosticsLog log(dir.path(), manualOptions());
+        for (const char* name : names) {
+            checkScrubbed(dir.filePath(QString::fromLatin1(name)), name);
+        }
+    }
+    {
+        // An older build's single tail over a segment, position lines throughout: the split writes scrubbed records.
+        QTemporaryDir dir;
+        QByteArray legacy;
+        for (int i = 0; legacy.size() < 200LL * 1024; ++i) {
+            legacy += QStringLiteral("[host] [info] legacy %1 ").arg(i).toUtf8() + QByteArray(400, 'l') + '\n';
+            if (i % 50 == 0) {
+                legacy += storeOf("[stderr] [info] ");
+            }
+        }
+        writeFile(dir.filePath("tail.log"), legacy);
+        g_clock = 0;
+        DiagnosticsLog log(dir.path(), manualOptions());
+        const QByteArray saved = readFile(dir.filePath("tail.prev.log")) + readFile(dir.filePath("tail.log"));
+        check(QFileInfo(dir.filePath("tail.log")).size() <= DiagnosticsLog::kSegmentLimit, "legacy tail not split");
+        check(saved.contains("legacy 0 ") || saved.contains(kPosition), "the split wrote nothing");
+        for (const auto& line : positionLines) {
+            checkLabelled(!saved.contains(line.toUtf8()), "split kept on disk: " + line.toUtf8());
+        }
+    }
+    {
+        // A scrubbed segment keeps its modification time: six days old before the load, six days old after it, so it
+        // still expires on day seven.
+        QTemporaryDir dir;
+        const QString path = dir.filePath("tail.prev.log");
+        writeFile(path, storeOf("[stderr] [info] "));
+        const QDateTime sixDaysAgo = QFileInfo(path).lastModified().addDays(-6);
+        {
+            QFile file(path);
+            check(file.open(QIODevice::Append) && file.setFileTime(sixDaysAgo, QFileDevice::FileModificationTime),
+                  "fixture time not set");
+        }
+        g_clock = 0;
+        DiagnosticsLog log(dir.path(), manualOptions());
+        checkScrubbed(path, "aged segment");
+        check(qAbs(QFileInfo(path).lastModified().secsTo(sixDaysAgo)) <= 1, "the scrub restarted the expiry");
+    }
+    {
+        // A segment that cannot be read cannot be scrubbed, so it goes. Where the file stays readable (run as root),
+        // the case is skipped.
+        QTemporaryDir dir;
+        const QString path = dir.filePath("tail.log");
+        writeFile(path, storeOf("[stderr] [info] "));
+        check(QFile::setPermissions(path, QFileDevice::Permissions()), "fixture permissions not set");
+        QFile probe(path);
+        if (probe.open(QIODevice::ReadOnly)) {
+            probe.close();
+        } else {
+            g_clock = 0;
+            DiagnosticsLog log(dir.path(), manualOptions());
+            check(!QFileInfo::exists(path), "an unreadable segment stayed on disk");
+        }
+        (void)QFile::setPermissions(path, QFileDevice::ReadOwner | QFileDevice::WriteOwner);
+    }
+}
+
+namespace producers {
+
+/* A decoder rig: heap state as the decoder keeps it, with event history and the position feed. */
+struct Rig {
+    dsd_opts* opts = static_cast<dsd_opts*>(calloc(1, sizeof(dsd_opts)));
+    dsd_state* state = static_cast<dsd_state*>(calloc(1, sizeof(dsd_state)));
+    Event_History_I* history = static_cast<Event_History_I*>(calloc(2U, sizeof(Event_History_I)));
+
+    Rig() {
+        check(opts != nullptr && state != nullptr && history != nullptr, "producer rig allocated");
+        if (state == nullptr || history == nullptr) {
+            return;
+        }
+        for (uint8_t slot = 0U; slot < 2U; slot++) {
+            init_event_history(&history[slot], 0, 255);
+        }
+        state->event_history_s = history;
+        check(dsd_position_feed_start(state) == 0, "producer rig feed starts");
+    }
+
+    ~Rig() {
+        if (state != nullptr) {
+            dsd_state_ext_free_all(state);
+        }
+        free(history);
+        free(state);
+        free(opts);
+    }
+
+    Rig(const Rig&) = delete;
+    Rig& operator=(const Rig&) = delete;
+
+    int
+    admitted() const {
+        static dsd_position_fix fixes[8];
+        dsd_position_feed_meta meta;
+        return dsd_position_feed_copy_since(state, 0U, fixes, 8U, &meta);
+    }
+};
+
+/* What @p run prints to stderr, a newline after it (the decoder ends each frame's line). */
+QByteArray
+printed(const std::function<void()>& run) {
+    dsd_test_capture_stderr cap;
+    if (dsd_test_capture_stderr_begin(&cap, "diag-producer") != 0) {
+        check(false, "stderr capture starts");
+        return {};
+    }
+    run();
+    (void)dsd_test_capture_stderr_end(&cap);
+    static char text[16384];
+    check(dsd_test_capture_stderr_read(&cap, text, sizeof(text)) == 0, "stderr capture read");
+    return QByteArray(text) + '\n';
+}
+
+uint16_t
+x25(const QByteArray& text) {
+    uint16_t crc = 0xFFFFU;
+    for (const char c : text) {
+        crc ^= static_cast<uint8_t>(c);
+        for (int b = 0; b < 8; b++) {
+            crc = (crc & 1U) != 0U ? static_cast<uint16_t>((crc >> 1) ^ 0x8408U) : static_cast<uint16_t>(crc >> 1);
+        }
+    }
+    return static_cast<uint16_t>(~crc);
+}
+
+/* One D-STAR slow-data superframe whose GPS blocks carry @p chunk (at most 50 bytes), scrambled and bit-ordered as
+ * processDSTAR_SD() reads it; the rest is filler. */
+void
+sendDstarSuperframe(Rig& rig, const QByteArray& chunk) {
+    static const uint8_t kScrambler[24] = {0, 0, 0, 0, 1, 1, 1, 0, 1, 1, 1, 1, 0, 0, 1, 0, 1, 1, 0, 0, 1, 0, 0, 1};
+    uint8_t bytes[60];
+    DSD_MEMSET(bytes, 0x66, sizeof(bytes));
+    for (qsizetype at = 0, block = 0; at < chunk.size(); block++) {
+        const qsizetype n = std::min<qsizetype>(5, chunk.size() - at);
+        uint8_t* b = bytes + (block * 6);
+        b[0] = static_cast<uint8_t>(0x30U | static_cast<unsigned>(n));
+        DSD_MEMCPY(b + 1, chunk.constData() + at, static_cast<size_t>(n));
+        at += n;
+    }
+    uint8_t bits[480];
+    for (int byteIdx = 0; byteIdx < 60; byteIdx++) {
+        const uint8_t byte = bytes[59 - byteIdx];
+        for (int bit = 0; bit < 8; bit++) {
+            const int pos = 479 - ((byteIdx * 8) + bit);
+            bits[pos] = static_cast<uint8_t>(((byte >> (7 - bit)) & 1U) ^ kScrambler[pos % 24]);
+        }
+    }
+    processDSTAR_SD(rig.opts, rig.state, bits);
+}
+
+void
+dmrHeader(Rig& rig, const uint8_t* header, int crcOk) {
+    uint8_t bytes[12];
+    uint8_t bits[96];
+    DSD_MEMCPY(bytes, header, sizeof(bytes));
+    for (size_t i = 0; i < 96U; ++i) {
+        bits[i] = static_cast<uint8_t>((bytes[i / 8U] >> (7U - i % 8U)) & 1U);
+    }
+    dmr_dheader(rig.opts, rig.state, bytes, bits, static_cast<uint32_t>(crcOk), 0);
+}
+
+/* An MNIS LOCN report through the real DMR data path: a standard header, the DPF 15 MNIS extension and three data
+ * blocks, the MNIS CRC32 over its span. */
+void
+sendMnisLocn(Rig& rig, const char* report) {
+    uint8_t pdu[46] = {0x1F, 0x10, 0x02, 0x01, 0x01, 0x00, 0x01};
+    DSD_MEMCPY(pdu + 7, report, strlen(report));
+    const uint8_t header[12] = {0x02, 0x91, 0, 0, 42, 0, 0, 24, 0x84, 0, 0, 0};
+    uint8_t span[42] = {0};
+    DSD_MEMCPY(span, pdu + 3, 38);
+    uint8_t bits[8 * 42];
+    for (size_t i = 0; i < sizeof(span) * 8U; ++i) {
+        bits[i] = static_cast<uint8_t>((span[(i / 8U) ^ 1U] >> (7U - i % 8U)) & 1U);
+    }
+    const uint32_t crc = ComputeCrc32Bit(bits, static_cast<uint32_t>(sizeof(span) * 8U - 32U));
+    for (size_t i = 0; i < 4U; ++i) {
+        pdu[42 + i] = static_cast<uint8_t>(crc >> (24U - i * 8U));
+    }
+    dmrHeader(rig, header, 1);
+    dmrHeader(rig, pdu, 1);
+    for (size_t b = 0; b < 3U; ++b) {
+        dmr_block_assembler(rig.opts, rig.state, pdu + 10U + b * 12U, 12, 0x07, 1);
+    }
+}
+
+/* NMEA sentences with their checksums, one bit per byte as nmea_sentence_checker() reads a payload. */
+void
+sendNmea(Rig& rig, const QList<QByteArray>& bodies) {
+    QByteArray payload;
+    for (const QByteArray& body : bodies) {
+        uint8_t sum = 0U;
+        for (const char c : body) {
+            sum ^= static_cast<uint8_t>(c);
+        }
+        payload += '$' + body + '*' + QByteArray::number(sum, 16).rightJustified(2, '0').toUpper() + "\r\n";
+    }
+    std::vector<uint8_t> bits(static_cast<size_t>(payload.size()) * 8U);
+    for (size_t i = 0; i < bits.size(); i++) {
+        bits[i] = static_cast<uint8_t>(
+            (static_cast<uint8_t>(payload.at(static_cast<qsizetype>(i / 8U))) >> (7U - i % 8U)) & 1U);
+    }
+    (void)nmea_sentence_checker(rig.opts, rig.state, bits.data(), 0U, static_cast<int>(payload.size()), 1, nullptr);
+}
+
+/* Every record of @p bytes that holds any of @p parts (bytes of the report) carries its producer's label, so the
+ * redaction removes it whole, live and stored; returns how many there were. */
+int
+checkReportRecords(const QByteArray& bytes, const QStringList& parts, const char* what) {
+    QTemporaryDir dir;
+    int found = 0;
+    for (const QString& record : streamRecords(bytes, dir.path())) {
+        if (record == QLatin1String("[redacted position]")) {
+            found++;
+            continue;
+        }
+        const bool holds =
+            std::any_of(parts.cbegin(), parts.cend(), [&record](const QString& part) { return record.contains(part); });
+        checkLabelled(!holds, QByteArray(what) + ": a record of the report was kept: " + record.toUtf8());
+    }
+    for (const QByteArray& line : bytes.split('\n')) {
+        const QString text = QString::fromUtf8(line);
+        const bool holds =
+            std::any_of(parts.cbegin(), parts.cend(), [&text](const QString& part) { return text.contains(part); });
+        if (holds) {
+            checkLabelled(DiagnosticsLog::namesPositionProducerForTest(text),
+                          QByteArray(what) + ": a record of the report carries no producer label: " + line);
+        }
+    }
+    return found;
+}
+
+} // namespace producers
+
+/* Issue #800, D10: the redaction rests on the producer's label, not on the shape of what the air delivered. Each
+ * decoder that prints received report text is driven through its real path, and every line it prints that holds a
+ * byte of the report carries its producer's label: a CRC-valid D-STAR D-PRS report split across superframes, whose GPS
+ * data blocks print a part of the record each with the payload option (-Z: "12  z2230.00N/04500.00", "EA mobile", no
+ * shape gives them away) and none of it without, an MNIS LOCN report's own text, and the checked NMEA sentences of a
+ * data payload. */
+static void
+realProducersLabelReceivedPositions() {
+    using namespace producers;
+    const QStringList dprsParts = {QStringLiteral("2230"), QStringLiteral("4500"), QStringLiteral("mobile"),
+                                   QStringLiteral("API51")};
+    for (int payload = 0; payload <= 1; payload++) {
+        Rig rig;
+        rig.opts->payload = payload;
+        rig.state->synctype = DSD_SYNC_DSTAR_VOICE_POS;
+        const QByteArray body("N0CALL>API51,DSTAR*:/1012  z2230.00N/04500.00EA mobile\r");
+        const QByteArray record =
+            "$$CRC" + QByteArray::number(x25(body), 16).rightJustified(4, '0').toUpper() + ',' + body;
+        const qsizetype first = record.indexOf("12  z");
+        const qsizetype second = record.indexOf("EA mobile");
+        const QByteArray bytes = printed([&]() {
+            sendDstarSuperframe(rig, record.left(first));
+            DSD_FPRINTF(stderr, "\n");
+            sendDstarSuperframe(rig, record.mid(first, second - first));
+            DSD_FPRINTF(stderr, "\n");
+            sendDstarSuperframe(rig, record.mid(second));
+        });
+        check(rig.admitted() == 1, "D-STAR: the split report is a checked position");
+        if (payload == 0) {
+            // Without -Z no GPS data block prints: a partial record is a raw dump, and nothing of it is left to redact.
+            check(!bytes.contains("GPS DATA:") && !bytes.contains("12  z2230.00N/04500.00")
+                      && !bytes.contains("EA mobile"),
+                  "D-STAR: without -Z the GPS data blocks print nothing");
+            (void)checkReportRecords(bytes, dprsParts, "D-STAR default");
+            continue;
+        }
+        check(bytes.contains("12  z2230.00N/04500.00") && bytes.contains("EA mobile"),
+              "D-STAR: with -Z the GPS data blocks print a part of the record each");
+        check(checkReportRecords(bytes, dprsParts, "D-STAR -Z") >= 3, "D-STAR: each GPS data line is removed");
+    }
+    {
+        Rig rig;
+        rig.opts->aggressive_framesync = 1;
+        rig.state->lastsynctype = DSD_SYNC_DMR_BS_DATA_POS;
+        const QByteArray bytes = printed([&]() { sendMnisLocn(rig, "A120000171126N2230.0000E04500.0000"); });
+        check(rig.admitted() == 1, "LOCN: the report is a checked position");
+        check(checkReportRecords(bytes, {QStringLiteral("2230"), QStringLiteral("4500"), QStringLiteral("A120000")},
+                                 "LOCN")
+                  >= 2,
+              "LOCN: the report's text and its decode are removed");
+    }
+    {
+        Rig rig;
+        rig.state->lastsynctype = DSD_SYNC_P25P1_POS;
+        const QByteArray bytes = printed([&]() {
+            sendNmea(rig, {QByteArray("GPGSA,A,3,04,05,,09,12,,,24,,,,,2.5,1.3,2.1"),
+                           QByteArray("GPRMC,120000,A,2230.000,N,04500.000,E,0.0,0.0,171126,,,A")});
+        });
+        check(checkReportRecords(
+                  bytes,
+                  {QStringLiteral("2230"), QStringLiteral("4500"), QStringLiteral("GPGSA"), QStringLiteral("GPRMC")},
+                  "NMEA")
+                  >= 1,
+              "NMEA: the checked sentences are removed");
+    }
+}
+
+namespace producers {
+
+/* @p width bits of @p value, most significant first, into one-bit-per-byte @p bits at @p offset. */
+void
+putBits(uint8_t* bits, size_t offset, unsigned width, uint32_t value) {
+    for (unsigned i = 0; i < width; ++i) {
+        bits[offset + i] = static_cast<uint8_t>((value >> (width - 1U - i)) & 1U);
+    }
+}
+
+/* A P25 Phase 1 SAP 48 (location service) packet from LLID 1234 carrying @p payload, decoded inside a passed CRC
+ * scope as the MDPU decodes it. */
+void
+sendP25Sap48(Rig& rig, const QByteArray& payload) {
+    static uint8_t pdu[512];
+    DSD_MEMSET(pdu, 0, sizeof(pdu));
+    pdu[0] = 0x10; /* fmt 16, io 0: the LLID is the source */
+    pdu[1] = 48;   /* SAP 48 location service */
+    pdu[4] = 0x04;
+    pdu[5] = 0xD2; /* LLID 1234 */
+    pdu[6] = 0x05;
+    DSD_MEMCPY(pdu + 12, payload.constData(), static_cast<size_t>(payload.size()));
+    rig.state->event_crc_invalid[0] = 0U;
+    p25_decode_pdu_data(rig.opts, rig.state, pdu, static_cast<int>(12 + payload.size() + 4));
+}
+
+/* A CRC-valid RF M17 voice LSF from N0CALL whose GNSS META (subtype 1) holds every field: 22.5, 45, altitude 1000 m,
+ * 145.5 km/h, bearing 300, radius code 3, an OpenRTX handheld. */
+void
+sendM17Gnss(Rig& rig) {
+    uint8_t meta[M17_META_BYTES] = {0x12U, 0xF7U, 0x2CU, 0x20U, 0x00U, 0x00U, 0x20U,
+                                    0x00U, 0x00U, 0x0BU, 0xB8U, 0x12U, 0x30U, 0x00U};
+    uint8_t bits[M17_LSF_BYTES * 8];
+    uint8_t packed[M17_LSF_BYTES];
+    DSD_MEMSET(bits, 0, sizeof(bits));
+    m17_load_lsf_callsigns(bits, m17_encode_b40_callsign(0ULL, "CQCQCQ"), m17_encode_b40_callsign(0ULL, "N0CALL"));
+    putBits(bits, 96, 16, m17_compose_frame_info(1U, 2U, 0U, 1U, 5U, 0U, 0U));
+    for (size_t i = 0; i < M17_META_BYTES; i++) {
+        putBits(bits, 112U + (i * 8U), 8, meta[i]);
+    }
+    const uint16_t crc = m17_attach_lsf_crc(bits, packed);
+    DSD_MEMCPY(rig.state->m17_lsf, bits, sizeof(bits));
+    check(m17_finalize_lsf_crc(rig.opts, rig.state, packed, crc) == 0, "M17: the LSF passes its CRC");
+}
+
+/* Octets from hex text. */
+QByteArray
+fromHex(const char* hex) {
+    return QByteArray::fromHex(QByteArray(hex));
+}
+
+} // namespace producers
+
+/* Issue #800, D10 (g62 gate r4): every producer of a received position is driven through its real print path, without
+ * -Z, and every line it prints that holds any field of the report -- a coordinate, the fix time, the radius or error,
+ * the altitude and its accuracy, the speed and heading, the reason and the time elapsed, the source and station type
+ * -- carries its producer's label, so the diagnostics log removes it whole. Each part is a value of that report only:
+ * a line without a label that held one would keep it in Copy or Share. Among them the P25 location service's plain
+ * text ("51.50,12.34": no label of its own before, and too few decimals for the shape backstop), each line of an LRRP
+ * report's details, and the M17 GNSS radius line. */
+static void
+everyProducerLabelsEveryPartOfItsReport() {
+    using namespace producers;
+    {
+        Rig rig;
+        rig.state->lastsynctype = DSD_SYNC_P25P1_POS;
+        const QByteArray bytes = printed([&]() { sendP25Sap48(rig, QByteArray("51.50,12.34")); });
+        check(bytes.contains("51.50,12.34"), "P25 SAP 48: the plain text is shown");
+        check(checkReportRecords(bytes, {QStringLiteral("51.50"), QStringLiteral("12.34")}, "P25 SAP 48 text") >= 1,
+              "P25 SAP 48: the plain text line is removed");
+    }
+    {
+        Rig rig;
+        rig.state->lastsynctype = DSD_SYNC_P25P1_POS;
+        const QByteArray bytes = printed([&]() {
+            sendP25Sap48(rig, QByteArray("$GPRMC,120000,A,2230.0000,N,04500.0000,E,010.0,090.0,150626,,,A*7F\r\n"));
+        });
+        check(rig.admitted() == 1, "P25 SAP 48: the NMEA report is a checked position");
+        check(checkReportRecords(bytes,
+                                 {QStringLiteral("2230"), QStringLiteral("4500"), QStringLiteral("22.5"),
+                                  QStringLiteral("45.0"), QStringLiteral("18.5"), QStringLiteral("90.0")},
+                                 "P25 SAP 48 NMEA")
+                  >= 1,
+              "P25 SAP 48: the NMEA lines are removed");
+    }
+    {
+        /* LRRP circle-3d with its time, radius, altitude, altitude accuracy, speed and heading (a Capacity Max
+           report's layout, synthetic coordinates). */
+        Rig rig;
+        rig.state->lastsynctype = DSD_SYNC_DMR_BS_DATA_POS;
+        QByteArray doc = fromHex("0D252203000001341FA0491E4C552000000020000000407C815C144A5B6C0067566970404C653C");
+        const QByteArray bytes = printed([&]() {
+            dmr_lrrp(rig.opts, rig.state, static_cast<uint16_t>(doc.size()), 123U, 456U,
+                     reinterpret_cast<const uint8_t*>(doc.constData()), 1U);
+        });
+        check(rig.admitted() == 1, "LRRP: the report is a checked position");
+        check(bytes.contains("64.97") && bytes.contains("74.71") && bytes.contains("m/s"),
+              "LRRP: the report's details are shown");
+        check(checkReportRecords(bytes,
+                                 {QStringLiteral("2024."), QStringLiteral("22.5"), QStringLiteral("45.0"),
+                                  QStringLiteral("64.97"), QStringLiteral("220.16"), QStringLiteral("74.71"),
+                                  QStringLiteral("m/s"), QStringLiteral("km/h"), QStringLiteral("210")},
+                                 "LRRP")
+                  >= 6,
+              "LRRP: each detail line is removed");
+    }
+    {
+        Rig rig;
+        rig.state->m17_can_en = -1;
+        rig.opts->aggressive_framesync = 1;
+        const QByteArray bytes = printed([&]() { sendM17Gnss(rig); });
+        check(rig.admitted() == 1, "M17: the GNSS META is a checked position");
+        check(bytes.contains("Radius") && bytes.contains("OpenRTX"), "M17: the radius and the source are shown");
+        check(checkReportRecords(bytes,
+                                 {QStringLiteral("22.5"), QStringLiteral("45.0"), QStringLiteral("1000.0"),
+                                  QStringLiteral("145.5"), QStringLiteral("Radius"), QStringLiteral("OpenRTX"),
+                                  QStringLiteral("Handheld")},
+                                 "M17 GNSS")
+                  >= 1,
+              "M17: the GNSS lines are removed");
+    }
+    {
+        /* LIP short report: 22.5 S, 45 W, position error code 0, reason 32 (an immediate request's response). */
+        Rig rig;
+        rig.state->lastsynctype = DSD_SYNC_DMR_BS_DATA_POS;
+        uint8_t bits[76] = {0};
+        putBits(bits, 4, 1, 1);
+        putBits(bits, 5, 24, 0xC00000U);
+        putBits(bits, 29, 1, 1);
+        putBits(bits, 30, 23, 0x600000U);
+        putBits(bits, 68, 8, 32);
+        const dsd_gps_address addr = {1234U, 5678U, 0U};
+        const QByteArray bytes = printed([&]() { lip_pdu_decoder(rig.opts, rig.state, bits, sizeof(bits), &addr); });
+        check(rig.admitted() == 1, "LIP: the report is a checked position");
+        check(checkReportRecords(bytes,
+                                 {QStringLiteral("22.5"), QStringLiteral("45.0"), QStringLiteral("Less than"),
+                                  QStringLiteral("immediate"), QStringLiteral("< 5s")},
+                                 "LIP")
+                  >= 2,
+              "LIP: the report and its error line are removed");
+    }
+    {
+        /* Binary UDT NMEA, long form: 22 30 S, 45 W, 11:22:33 UTC. */
+        Rig rig;
+        rig.state->lastsynctype = DSD_SYNC_DMR_BS_DATA_POS;
+        uint8_t nmea[192] = {0};
+        putBits(nmea, 3, 1, 1);
+        putBits(nmea, 11, 7, 22);
+        putBits(nmea, 18, 6, 30);
+        putBits(nmea, 38, 8, 45);
+        putBits(nmea, 66, 5, 11);
+        putBits(nmea, 71, 6, 22);
+        putBits(nmea, 77, 6, 33);
+        const dsd_gps_address addr = {1234U, 5678U, 0U};
+        const QByteArray bytes =
+            printed([&]() { nmea_iec_61162_1(rig.opts, rig.state, nmea, NMEA_UDT_LONG_BITS, &addr, 2); });
+        check(rig.admitted() == 1, "UDT NMEA: the report is a checked position");
+        check(checkReportRecords(
+                  bytes,
+                  {QStringLiteral("22.5"), QStringLiteral("45.0"), QStringLiteral("knots"), QStringLiteral("11:22:33")},
+                  "UDT NMEA")
+                  >= 1,
+              "UDT NMEA: the report line is removed");
+    }
+    {
+        /* NXDN GPS report: 10 N, 22 30 E, 2025/06/21. */
+        Rig rig;
+        rig.state->lastsynctype = DSD_SYNC_NXDN_POS;
+        uint8_t bits[DSD_NXDN_GPS_REPORT_BITS] = {0};
+        putBits(bits, 168U - 16U, 16, 2230U);
+        putBits(bits, 200U - 16U, 16, 1000U);
+        putBits(bits, 152U - 16U, 7, 25U);
+        putBits(bits, 159U - 16U, 4, 6U);
+        putBits(bits, 163U - 16U, 5, 20U);
+        const QByteArray bytes =
+            printed([&]() { nxdn_gps_report(rig.opts, rig.state, bits, sizeof(bits), 1234U, nullptr); });
+        check(rig.admitted() == 1, "NXDN: the report is a checked position");
+        check(checkReportRecords(
+                  bytes,
+                  {QStringLiteral("22.5"), QStringLiteral("10.0"), QStringLiteral("k/h"), QStringLiteral("2025/")},
+                  "NXDN GPS")
+                  >= 1,
+              "NXDN: the report line is removed");
+    }
+    {
+        /* L3Harris GPS update body: 22 30 S, 45 W, a fix, on a checked Phase 2 MAC. */
+        Rig rig;
+        rig.state->lastsynctype = DSD_SYNC_P25P2_POS;
+        const uint8_t body[DSD_HARRIS_GPS_BODY_OCTETS] = {0x00, 0x00, 0x9E, 22,   0x00, 0x00, 0x80,
+                                                          45,   0x00, 0x00, 0x00, 0x00, 0x00, 0x10};
+        dsd_gps_report_ctx ctx;
+        DSD_MEMSET(&ctx, 0, sizeof(ctx));
+        ctx.protocol = DSD_SYNC_P25P2_POS;
+        ctx.slot = 1U;
+        ctx.source_id = 234567U;
+        ctx.source_verified = 1U;
+        ctx.pos_verified = 1U;
+        const QByteArray bytes = printed([&]() { (void)nmea_harris(rig.opts, rig.state, body, &ctx); });
+        check(rig.admitted() == 1, "Harris: the report is a checked position");
+        check(checkReportRecords(bytes,
+                                 {QStringLiteral("22.5"), QStringLiteral("45.0"), QStringLiteral("knots"),
+                                  QStringLiteral("SATS"), QStringLiteral("HEADING")},
+                                 "Harris GPS")
+                  >= 1,
+              "Harris: the report line is removed");
+    }
 }
 
 /* J2: a number leaves the key scan only as a labelled producer field, so the forms a command line takes still drop:
@@ -2738,6 +3485,11 @@ main(int argc, char** argv) {
     negativeMeasurementsSurvive();
     negativeMeasurementsDoNotCarryKeys();
     measurementCorpusSurvives();
+    receivedPositionsAreRemoved();
+    storedLegacyPositionFormsAreRemoved();
+    storedPositionsLeaveTheFiles();
+    realProducersLabelReceivedPositions();
+    everyProducerLabelsEveryPartOfItsReport();
     measurementExemptionsKeepKeyForms();
     syncLabelsSurvive();
     everyExemptionYieldsToArgumentEcho();

@@ -1483,7 +1483,7 @@ you see. An empty cell means there is no value.
 | `site` | The site line, such as `DMR · Con+ · Net 3 · Site 5`. |
 | `analog_mode` | `NFM` or `AM` for an analog call, `analog` when the mode is not known (audio input), and empty for digital. |
 | `encrypted`, `emergency` | `1` or `0`. |
-| `message` | The text of an SMS or GPS notice, or other notice detail. Line breaks inside it are kept in the quoted field. |
+| `message` | The row's text message and GPS text, joined with ` · ` when it has both: an SMS or GPS notice's, other notice detail, or what a call carried during it. Line breaks inside it are kept in the quoted field. |
 | `recordings` | The row's call recordings, oldest first, each as the entry name that **Export as zip** gives it on Call recordings (`<folder name>/<file>`; when two recordings share a name the zip calls the second `… (2)`, and the CSV keeps the stored name), joined with ` | ` (space, pipe, space). Inside a name, each backslash is written as two backslashes and each pipe as a backslash and a pipe, so the list splits without a doubt: split on a pipe that has a space on both sides and is not preceded by a backslash, then undo the escapes. Empty when there is none. |
 
 Limits:

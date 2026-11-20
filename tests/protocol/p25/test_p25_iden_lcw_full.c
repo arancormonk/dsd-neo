@@ -14,6 +14,7 @@
 
 #include <assert.h>
 #include <dsd-neo/core/csv_import.h>
+#include <dsd-neo/core/gps.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/protocol/p25/p25_frequency.h>
@@ -72,22 +73,24 @@ tait_iso7_embedded_alias_decode(dsd_opts* opts, dsd_state* state, uint8_t slot, 
     (void)input;
 }
 
-void
+int
 // NOLINTNEXTLINE(misc-use-internal-linkage)
-apx_embedded_gps(dsd_opts* opts, dsd_state* state, uint8_t* lc_bits) {
+apx_embedded_gps(const dsd_opts* opts, dsd_state* state, const uint8_t lc_bits[], const dsd_gps_report_ctx* ctx) {
     (void)opts;
     (void)state;
     (void)lc_bits;
+    (void)ctx;
+    return 0;
 }
 
-void
+int
 // NOLINTNEXTLINE(misc-use-internal-linkage)
-nmea_harris(dsd_opts* opts, dsd_state* state, uint8_t* input, uint32_t src, int slot) {
+nmea_harris(const dsd_opts* opts, dsd_state* state, const uint8_t* body, const dsd_gps_report_ctx* ctx) {
     (void)opts;
     (void)state;
-    (void)input;
-    (void)src;
-    (void)slot;
+    (void)body;
+    (void)ctx;
+    return 0;
 }
 
 // Alias decode helper stubs referenced by VPDU handler

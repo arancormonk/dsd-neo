@@ -15,6 +15,7 @@
 
 #include <dsd-neo/core/call_state.h>
 #include <dsd-neo/core/opts_fwd.h>
+#include <dsd-neo/core/position.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/state_ext.h>
 #include <dsd-neo/core/state_fwd.h>
@@ -39,6 +40,22 @@ void push_event_history(Event_History_I* event_struct);
 static inline int
 dsd_event_systype_has_slots(int systype) {
     return DSD_SYNC_IS_DMR_BS(systype) || DSD_SYNC_IS_P25P2(systype) || DSD_SYNC_IS_X2TDMA(systype);
+}
+
+/**
+ * The label a row's GPS detail line (the event log's and the terminal history's) puts before Event_History::gps_s:
+ * "GPS: ", or none when the text already starts with that label (DMR embedded GPS, UDT NMEA, Motorola APX and M17 GNSS
+ * keep "GPS: " in their text, which History shows on its own), so the line carries exactly one.
+ */
+static inline const char*
+dsd_event_gps_detail_label(const char* gps_text) {
+    static const char k_label[] = "GPS:";
+    for (size_t i = 0U; i + 1U < sizeof k_label; i++) {
+        if (gps_text == NULL || gps_text[i] != k_label[i]) {
+            return "GPS: ";
+        }
+    }
+    return "";
 }
 
 /** Opaque guard for serializing event-history mutations with telemetry snapshots. */
@@ -139,6 +156,21 @@ void dsd_event_stage_gps(dsd_state* state, uint8_t slot, const char* gps);
 const char* dsd_event_staged_text(const dsd_state* state, uint8_t slot);
 const char* dsd_event_staged_gps(const dsd_state* state, uint8_t slot);
 void dsd_event_stage_clear(dsd_state* state, uint8_t slot);
+/**
+ * Stage an admitted position report and its text for the slot's next data notice (dsd_event_emit_data_notice() or
+ * dsd_event_emit_data_notice_classified()), replacing any staged GPS text and position: the two are staged together.
+ * dsd_event_stage_gps() stages text without a position and clears a staged one. @p fix must be the record
+ * dsd_position_admit() returned for an admitted report (its rev is set); @p gps_text is the text shown as the row's
+ * GPS. The notice checks the report's typed source against its own observation when it emits (see
+ * dsd_event_emit_data_notice_with_position()). Takes the history transaction internally.
+ *
+ * @return 1 when staged, -1 for invalid arguments (NULL, no history, a slot outside DSD_CALL_STATE_SLOT_COUNT, or a
+ *         report that was not admitted), which leaves the staging alone.
+ */
+int dsd_event_stage_position(dsd_state* state, uint8_t slot, const dsd_position_fix* fix, const char* gps_text);
+/** The admitted report staged for the slot's next data notice; a record with rev 0 when none is (or without history or
+ * for an invalid slot). Borrowed like the other staging getters. */
+const dsd_position_fix* dsd_event_staged_position(const dsd_state* state, uint8_t slot);
 
 void write_event_to_log_file(const dsd_opts* opts, dsd_state* state, uint8_t slot, uint8_t swrite,
                              const char* event_string);
@@ -169,8 +201,10 @@ typedef enum {
 /**
  * Write a protocol's decoded detail into the row of the slot's open call.
  *
- * Written only while the slot's canonical call is active and its epoch has been opened, so the staged row is that
- * call's own. Otherwise the detail is declined: decoded before any call for the transmission was observed (an RF
+ * Written only while the slot's canonical call is active, its epoch has been opened and it is a call of the detail's
+ * own protocol family (@p protocol, the sync type the detail was decoded under: dsd_sync_protocol_family()), so the
+ * staged row is that call's own. Another protocol's call still open on the slot is no call of the detail: D-STAR slow
+ * data decoded under one unconfirmed sync never reaches a DMR call's row. Otherwise the detail is declined: decoded before any call for the transmission was observed (an RF
  * header that failed its CRC, late entry, an alias ahead of the call message), or after the call ended, it has no row
  * to go to, and written into the staged row it would become a detail-only row or land on another call's row. Slow data
  * and aliases repeat, so declined detail lands once the call is open. Callers must not hold an event-history
@@ -178,7 +212,8 @@ typedef enum {
  *
  * @return 1 when written, 0 when declined, -1 for invalid arguments.
  */
-int dsd_event_set_open_call_detail(dsd_state* state, uint8_t slot, dsd_event_detail_field field, const char* value);
+int dsd_event_set_open_call_detail(dsd_state* state, uint8_t slot, int protocol, dsd_event_detail_field field,
+                                   const char* value);
 void dsd_event_sync_slot(dsd_opts* opts, dsd_state* state, uint8_t slot);
 /**
  * Re-judge the rdio-scanner export of slot @p slot's staged row now, as its next render would (issue #773 D7), so a
@@ -248,6 +283,34 @@ int dsd_event_emit_data_notice_classified(dsd_opts* opts, dsd_state* state, uint
 int dsd_event_emit_data_notice_classified_with_gps(dsd_opts* opts, dsd_state* state, uint8_t slot,
                                                    const dsd_call_observation* observation, dsd_event_category category,
                                                    const char* notice, const char* gps);
+/**
+ * Commit a data/control notice whose GPS is an admitted position report: the row takes @p gps_text and the report's
+ * position together. The staged payload and the active row are left unchanged.
+ *
+ * Build the observation from the same report (ota_source_id = fix->source_id, source_text = fix->source_text, or the
+ * same checked header the report's identity came from), and stage or emit right after admission. The report must be of
+ * the notice's protocol family, and then:
+ * - a report whose identity admission cleared (DSD_POS_FLAG_SOURCE_UNVERIFIED or _HASHED) makes the notice anonymous:
+ *   the row's source and target (IDs and texts) are cleared and it keeps the position. Leave that source out of
+ *   @p notice too;
+ * - otherwise the report's source must be the notice's own: the same numeric source (observation->ota_source_id) when
+ *   it names one, the same callsign (observation->source_text) when it names one, and a report naming neither only
+ *   with an observation naming no source. Any other report leaves the notice without GPS text and without a position
+ *   (the notice itself is still committed).
+ *
+ * Every data notice (this one, the staged ones and the text-only GPS ones) stamps where it was heard
+ * (Event_History::rx_scope: the report's reception scope when it carries a position, else the live record's scope;
+ * nothing playing back files; none for M17 and D-STAR), its sender identity (Event_History::pos.scope: the report's
+ * sender scope, else the reception scope) and its site (Event_History::site_id) by the rule a call row's site follows
+ * (none playing back files, for M17, dPMR and a TETRA direct mode carrier).
+ *
+ * @return 0 when handled (committed, or declined by the receive policy), -1 for invalid arguments: those of
+ *         dsd_event_emit_data_notice_classified_with_gps(), a NULL @p fix or @p gps_text, or a report that was not
+ *         admitted.
+ */
+int dsd_event_emit_data_notice_with_position(dsd_opts* opts, dsd_state* state, uint8_t slot,
+                                             const dsd_call_observation* observation, dsd_event_category category,
+                                             const char* notice, const dsd_position_fix* fix, const char* gps_text);
 /** Commit a data notice. Equivalent to dsd_event_emit_data_notice_classified() with the DATA category. */
 int dsd_event_emit_data_notice(dsd_opts* opts, dsd_state* state, uint8_t slot, const dsd_call_observation* observation,
                                const char* notice);
@@ -266,8 +329,86 @@ int dsd_event_enrich_alias(dsd_state* state, uint8_t slot, uint64_t epoch, const
  * does the same without the log line. Call it after the alias has updated the learned policy row.
  */
 int dsd_event_enrich_alias_ex(const dsd_opts* opts, dsd_state* state, uint8_t slot, uint64_t epoch, const char* alias);
+/** Text-only GPS enrichment of the epoch's row (no structured position): the row's position, if it had one, is
+ * dropped with the text it replaces. Producers of position reports use dsd_event_enrich_position(). */
 int dsd_event_enrich_gps(dsd_state* state, uint8_t slot, uint64_t epoch, const char* gps);
 int dsd_event_enrich_text(dsd_state* state, uint8_t slot, uint64_t epoch, const char* text);
+
+/**
+ * @brief Enrich the row of the slot's ACTIVE call of epoch @p epoch with an admitted position report: the row's GPS
+ * text becomes @p gps_text and its position the report's, in one step.
+ *
+ * Written only when all of these hold (else declined: only the CRC provenance below may change):
+ * - the slot's canonical call is epoch @p epoch, ACTIVE, and not held or rejected by the receive policy;
+ * - the epoch has a row: its staged row once a sync opened the epoch, or the row it already committed (a mid-call
+ *   notice). An epoch no sync has opened yet takes only the CRC provenance, as dsd_event_enrich_gps() does;
+ * - the report's typed source is compatible with the call's: the same protocol family; the same numeric source
+ *   (dsd_call_snapshot::ota_source_id) when the report names one (a call with source 0 takes no named report); the
+ *   same callsign (dsd_call_snapshot::source_text, both compared as the call layer keeps identity text, whitespace
+ *   runs one space; a callsign using all DSD_POSITION_SOURCE_TEXT_SIZE - 1 bytes, its last not a space, matches by
+ *   prefix) when it names one; an anonymous report (hashed, unverified, or neither ID nor callsign) only on a call that
+ *   names no source (spec 2.14);
+ * - the report was heard where the call was, by the reception rule (dsd_position_same_reception()) on the report's
+ *   reception (its scope with its P25 NAC discriminator, its protocol class and the reception generation of its
+ *   origin, dsd_position_fix::origin_gen) and the row's (Event_History::rx_scope with the row's sync type): of one
+ *   protocol class, and either both scopes known and equal or one reception generation with nothing that says
+ *   otherwise (dsd_state_reception_generation(): a retune or a change of P25 phase is another); an unknown row scope
+ *   matches only within the generation it was read under. The
+ *   report's sender scope is never compared (it is only the track key): a TETRA radio of a foreign network heard here
+ *   enriches its own call;
+ * - the report is newer (greater rev) than the position the row holds, if any.
+ *
+ * @p fix must be the record dsd_position_admit() returned for an admitted report (rev set). The CRC provenance of the
+ * slot (dsd_state::event_crc_invalid) marks the call and the epoch's row as every enrichment does, whether or not the
+ * row takes the position. A position written into a row already committed (its event log line written without it)
+ * appends that row's `GPS:` line to the event log of @p opts (an "Enriched:" continuation with the row's own stamp, as
+ * dsd_event_enrich_alias_ex() does for a late alias); @p opts NULL writes no log line. Callers must not hold the
+ * call-state lock or a history transaction. Decoder thread.
+ *
+ * @return 1 when written, 0 when declined, -1 for invalid arguments (NULLs, no history, slot >= 2, epoch 0, or a report
+ *         that was not admitted).
+ */
+int dsd_event_enrich_position(const dsd_opts* opts, dsd_state* state, uint8_t slot, uint64_t epoch,
+                              const dsd_position_fix* fix, const char* gps_text);
+
+/** A call captured just before it ends, for detail decoded after the end in the same message (spec N2: a P25 Phase 1
+ * TDULC ends the call before it dispatches its own link control). */
+typedef struct dsd_event_closing_call {
+    uint64_t epoch;     /**< the call's epoch; 0 when nothing was captured */
+    uint64_t source_id; /**< the call's dsd_call_snapshot::ota_source_id when captured; 0 = none */
+    uint64_t target_id; /**< the call's dsd_call_snapshot::ota_target_id when captured; 0 = none */
+    int protocol;       /**< the call's DSD_SYNC_* value */
+    uint8_t slot;       /**< the slot it was captured on */
+    uint8_t valid;      /**< 1 when the slot had an ACTIVE call to capture */
+} dsd_event_closing_call;
+
+/**
+ * @brief Capture the slot's ACTIVE call into @p out, just before the code that ends it, for
+ * dsd_event_enrich_position_closing(). @p out is zeroed (valid 0) when the slot has no active call.
+ *
+ * @return 1 when captured, 0 when there was no active call, -1 for NULL arguments or slot >= 2.
+ */
+int dsd_event_capture_closing_call(const dsd_state* state, uint8_t slot, dsd_event_closing_call* out);
+
+/**
+ * @brief dsd_event_enrich_position() for the call @p closing captured, which may have ended since (ENDED, its row
+ * staged or committed): every other condition is the same, including the typed-source rule against that call. Use it
+ * only for the message that ended the call (the P25 Phase 1 terminator's own GPS link control); any later message
+ * enriches ACTIVE calls only. A capture with valid 0, or a slot whose call has since moved to another epoch, declines.
+ */
+int dsd_event_enrich_position_closing(const dsd_opts* opts, dsd_state* state, const dsd_event_closing_call* closing,
+                                      const dsd_position_fix* fix, const char* gps_text);
+
+/**
+ * @brief dsd_event_set_open_call_detail(DSD_EVENT_DETAIL_GPS) with an admitted position report: written into the
+ * slot's open call's row (ACTIVE, epoch opened, not held or rejected by the receive policy) with its text, under the
+ * typed-source, same-reception and newest-rev rules of dsd_event_enrich_position(). For detail that does not name its
+ * call (D-STAR slow-data DPRS). dsd_event_set_open_call_detail(DSD_EVENT_DETAIL_GPS) writes text without a position
+ * and drops the row's position.
+ *
+ * @return 1 when written, 0 when declined, -1 for invalid arguments (as dsd_event_enrich_position()).
+ */
+int dsd_event_set_open_call_position(dsd_state* state, uint8_t slot, const dsd_position_fix* fix, const char* gps_text);
 
 #ifdef __cplusplus
 }

@@ -282,6 +282,53 @@ test_phase1_link_control(dsd_opts* opts, dsd_state* st) {
     return rc;
 }
 
+/* Motorola Group Regroup Channel Update (LCGRGU, MFID $90 opcode $01): supergroup @p sg on @p ch. */
+static void
+lcw_regroup_update(dsd_opts* opts, dsd_state* st, int ch, int sg) {
+    uint8_t lcw[72];
+    DSD_MEMSET(lcw, 0, sizeof(lcw));
+    set_bits(lcw, 0, 8, 0x01);
+    set_bits(lcw, 8, 8, 0x90);
+    set_bits(lcw, 24, 16, (unsigned)sg);
+    set_bits(lcw, 56, 16, (unsigned)ch);
+    p25_lcw(opts, st, lcw, 0);
+}
+
+/* A preemption candidate from a link control carries the identity verdict of its decode (spec 2.20): checked after a
+ * hard RS decode, unchecked after a soft-erasure retry, for 0x42, 0x44 without -j and LCGRGU alike. */
+static int
+test_phase1_link_control_soft_provenance(dsd_opts* opts, dsd_state* st) {
+    static const char* const forms[] = {"0x42", "0x44 without -j", "LCGRGU"};
+    int rc = 0;
+    for (int form = 0; form < 3; form++) {
+        for (int soft = 0; soft < 2; soft++) {
+            fresh_site(opts, st);
+            opts->p25_lcw_retune = form == 1 ? 0 : 1;
+            set_dwell_cooldown_ms("750", "1000");
+            set_clock_s(600.0 + 10.0 * (2 * form + soft));
+            follow(opts, st, 100, CH_HELD);
+            set_clock_s(602.0 + 10.0 * (2 * form + soft));
+            st->p25_p1_lcw_soft = (uint8_t)soft;
+            if (form == 0) {
+                lcw_group_update_pair(opts, st, CH_OTHER, 300, CH_PRIO, 200);
+            } else if (form == 1) {
+                lcw_group_update_explicit(opts, st, CH_PRIO, 200);
+            } else {
+                lcw_regroup_update(opts, st, CH_PRIO, 200);
+            }
+            st->p25_p1_lcw_soft = 0U;
+            char label[96];
+            DSD_SNPRINTF(label, sizeof label, "p1 %s (%s decode): preempts", forms[form], soft ? "soft" : "hard");
+            rc |= expect_true(label, following(200, FREQ_PRIO));
+            DSD_SNPRINTF(label, sizeof label, "p1 %s (%s decode): identity verdict", forms[form],
+                         soft ? "soft" : "hard");
+            rc |= expect_true(label, p25_sm_get_ctx()->slots[0].identity_checked
+                                         == (soft ? 0U : (uint8_t)P25_SM_IDENTITY_CHECKED_ALL));
+        }
+    }
+    return rc;
+}
+
 /* 0x42 carries no service options, so with encrypted calls not tuned each pair is a silent probe unless a clear patch
  * key says otherwise. As on Phase 2 the audible call goes first: a probe for the priority-100 talkgroup listed first
  * must not take the receiver from the clear priority-60 patch listed beside it. */
@@ -981,6 +1028,7 @@ main(void) {
     rc |= test_phase2_ranking(&opts, &st);
     rc |= test_phase1_link_control(&opts, &st);
     rc |= test_phase1_link_control_probe_order(&opts, &st);
+    rc |= test_phase1_link_control_soft_provenance(&opts, &st);
     rc |= test_hangtime(&opts, &st);
     rc |= test_dwell_from_follow(&opts, &st);
     rc |= test_cooldown_survives_reload(&opts, &st);

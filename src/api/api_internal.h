@@ -15,6 +15,9 @@
 #include <stdint.h>
 
 #include "json.h"
+#ifdef DSD_NEO_TEST_HOOKS
+#include <dsd-neo/core/state.h> /* Event_History for the row encoder hooks */
+#endif
 
 #ifdef __cplusplus
 extern "C" {
@@ -29,9 +32,10 @@ enum {
     DSD_API_TOPIC_QUALITY = 1u << 4,
     DSD_API_TOPIC_STATUS = 1u << 5,
     DSD_API_TOPIC_RESULT = 1u << 6,
+    DSD_API_TOPIC_POSITIONS = 1u << 7, /**< the verified position feed (issue #800) */
 };
 
-enum { DSD_API_TOPIC_COUNT = 7 };
+enum { DSD_API_TOPIC_COUNT = 8 };
 
 /**
  * Decryption requests the API submits carry this bit in their request id, so
@@ -67,6 +71,23 @@ int dsd_api_response_end(dsd_json_buf* out, dsd_json_writer* w);
 
 /** Append @p line (including its trailing newline) to every session subscribed to @p topic. */
 void dsd_api_broadcast(const char* line, size_t len, uint32_t topic);
+
+/** One line of a positions batch: where it starts in the batch and the rev of the record it carries. */
+typedef struct {
+    size_t offset;
+    uint64_t rev;
+} dsd_api_position_line;
+
+/**
+ * @brief Send a positions batch to every session subscribed to the positions topic, each only the lines after its own
+ * cutoff.
+ *
+ * @p data holds @p count whole lines (@p len bytes), @p lines[i] the start and record rev of line i, in feed order (so
+ * in increasing rev). A session gets the lines whose rev is greater than dsd_position_last_rev() when it subscribed to
+ * positions: none of the records kept before its subscribe response, which the batch can hold when they were kept
+ * since the decoder's previous publish (issue #800, the topic has no backlog).
+ */
+void dsd_api_broadcast_positions(const char* data, size_t len, const dsd_api_position_line* lines, size_t count);
 
 /** Nonzero when at least one authenticated session is subscribed to @p topic. */
 int dsd_api_topic_interest(uint32_t topic);
@@ -110,6 +131,14 @@ void dsd_api_feed_scan_avoids_page(dsd_json_writer* w, uint64_t offset, size_t l
 void dsd_api_feed_test_on_page_pinned(void (*hook)(void));
 /** Fail the feed's next @p count scan avoid block allocations (decode thread). */
 void dsd_api_feed_test_fail_block_allocs(int count);
+/** The JSON object {"row":{...}} the event topic writes for @p e (slot 0, push 1, ring 1) into @p out. 0, or -1 when it
+    does not fit or fails. */
+int dsd_api_feed_test_encode_event_row(const Event_History* e, char* out, size_t cap);
+/** The fingerprint the event topic compares to tell an update of a committed row. */
+uint64_t dsd_api_feed_test_row_fingerprint(const Event_History* e);
+/** Fail the @p nth position line the feed gathers from now (1: the next one; 0: none), as a failed build or append
+    would (decode thread). */
+void dsd_api_feed_test_fail_position_line(int nth);
 #endif
 
 /* ---- commands ---- */

@@ -14,6 +14,7 @@
 #include <QDateTime>
 #include <QFile>
 #include <QGuiApplication>
+#include <QHash>
 #include <QIODevice>
 #include <QJsonArray>
 #include <QJsonDocument>
@@ -23,6 +24,7 @@
 #include <QLocale>
 #include <QMap>
 #include <QPair>
+#include <QSet>
 #include <QStringView>
 #include <QVariant>
 #include <QVariantList>
@@ -54,6 +56,7 @@
 #include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/runtime/analog_tones.h>
 #include "call_history_merge.h"
+#include "call_history_payload.h"
 #include "call_history_tap.h"
 #include "call_recording_provider.h"
 #include "dsd-neo/core/state_fwd.h"
@@ -80,6 +83,13 @@ constexpr const char kClearPendingKey[] = "callHistory/clear/pending";
 constexpr const char kClearPushSeqKey[2][32] = {"callHistory/clear/pushSeq0", "callHistory/clear/pushSeq1"};
 /* Absent in a mark written before marks named their ring, which then reads 0. */
 constexpr const char kClearRingKey[] = "callHistory/clear/ring";
+/* Issue #800: the session ordinals given to rings (SessionOrdinals): the next to give, and "ring:ordinal" pairs, the
+   ring in hex (a nonce can use all 64 bits). */
+constexpr const char kSessionOrdNextKey[] = "callHistory/sessionOrd/next";
+constexpr const char kSessionOrdRingsKey[] = "callHistory/sessionOrd/rings";
+/* The ordinals set aside for each start of the background tap: it gives one to each new ring it meets while the app is
+   away, which is rarely more than one. Ordinals are 64-bit, so the unused rest of a block costs nothing. */
+constexpr qint64 kTapOrdinalBlock = 1024;
 /* Older builds persisted Clear as a decode-time watermark; read once to retire it. */
 constexpr const char kLegacyClearedThroughKey[] = "callHistory/clearedThrough";
 constexpr int kMaxRows = 1000;
@@ -100,12 +110,19 @@ constexpr qint64 kSaveBudgetBytesPerSec = 16LL * 1024;
 /* A save that failed (a full disk) is retried without waiting for another change, kSaveDelayMs after the first
  * failure and twice as long after each further one, up to this. */
 constexpr int kSaveRetryMaxMs = 3 * 60 * 1000;
+/* The `pv` a stored fragment part (row_parts_to_json()) carries when it holds its sender, call identity, label and
+   message (issue #800); parts an earlier build stored have none. */
+constexpr int kPartVersionSender = 2;
+
 /* How far down the log a live fragment looks for the call it continues: fragments arrive while
  * their call is among the newest rows. */
 constexpr int kMergeScanRows = 32;
 
 #ifdef DSD_NEO_TEST_HOOKS
 std::atomic<void (*)(const QThread*)> g_store_build_observer{nullptr};
+/* The fragment parts the part lookups read or index (PartLookup, part_index(), fragment_withdrawn(),
+ * recording_fragments()), for the cost of a fold and of the recording roles. */
+std::atomic<qint64> g_part_lookup_steps{0};
 /* The lines the next spill fold reads before its read fails (-1: it does not). */
 std::atomic<int> g_spill_read_fail_after{-1};
 
@@ -234,6 +251,7 @@ CallHistoryModel::CallHistoryModel(QObject* parent) : QAbstractListModel(parent)
      * Clear must survive an Activity restart while the service's ring still holds the
      * cleared rows. */
     loadSessionState();
+    loadSessionOrdinals();
     m_saveTimer.setSingleShot(true);
     m_saveTimer.setInterval(kSaveDelayMs);
     connect(&m_saveTimer, &QTimer::timeout, this, [this]() { startAsyncSave(); });
@@ -288,6 +306,79 @@ CallHistoryModel::loadSessionState() {
     if (m_settings.contains(QLatin1String(kLegacyClearedThroughKey))) {
         m_settings.remove(QLatin1String(kLegacyClearedThroughKey));
     }
+}
+
+qint64
+CallHistoryModel::sessionOrdinal(quint64 ring) {
+    const qint64 next = m_sessionOrdinals.next;
+    const qint64 ordinal = sessionOrdinalFor(m_sessionOrdinals, ring);
+    if (m_sessionOrdinals.next != next) {
+        saveSessionOrdinals();
+    }
+    return ordinal;
+}
+
+bool
+CallHistoryModel::noteSessionOrdinal(quint64 ring, qint64 ordinal) {
+    if (ring == 0U || ordinal < 1 || m_sessionOrdinals.rings.contains(ring)) {
+        return false;
+    }
+    m_sessionOrdinals.rings.insert(ring, ordinal);
+    if (ordinal < std::numeric_limits<qint64>::max()) {
+        m_sessionOrdinals.next = qMax(m_sessionOrdinals.next, ordinal + 1);
+    }
+    return true;
+}
+
+void
+CallHistoryModel::adoptSessionOrdinals(const QHash<quint64, qint64>& ordinals) {
+    bool changed = false;
+    for (auto it = ordinals.constBegin(); it != ordinals.constEnd(); ++it) {
+        changed = noteSessionOrdinal(it.key(), it.value()) || changed;
+    }
+    if (changed) {
+        bound_session_ordinals(m_sessionOrdinals.rings);
+        saveSessionOrdinals();
+    }
+}
+
+void
+CallHistoryModel::adoptSessionOrdinal(quint64 ring, qint64 ordinal) {
+    if (noteSessionOrdinal(ring, ordinal)) {
+        bound_session_ordinals(m_sessionOrdinals.rings);
+        saveSessionOrdinals();
+    }
+}
+
+void
+CallHistoryModel::saveSessionOrdinals() {
+    QStringList rings;
+    for (auto it = m_sessionOrdinals.rings.constBegin(); it != m_sessionOrdinals.rings.constEnd(); ++it) {
+        rings.append(QString::number(it.key(), 16) + QLatin1Char(':') + QString::number(it.value()));
+    }
+    m_settings.setValue(QLatin1String(kSessionOrdNextKey), m_sessionOrdinals.next);
+    m_settings.setValue(QLatin1String(kSessionOrdRingsKey), rings);
+}
+
+void
+CallHistoryModel::loadSessionOrdinals() {
+    m_sessionOrdinals = SessionOrdinals();
+    m_sessionOrdinals.next = qMax<qint64>(m_settings.value(QLatin1String(kSessionOrdNextKey)).toLongLong(), 1);
+    const QStringList rings = m_settings.value(QLatin1String(kSessionOrdRingsKey)).toStringList();
+    for (const QString& entry : rings) {
+        const qsizetype colon = entry.indexOf(QLatin1Char(':'));
+        bool ringOk = false;
+        bool ordOk = false;
+        const quint64 ring = colon > 0 ? entry.left(colon).toULongLong(&ringOk, 16) : 0U;
+        const qint64 ordinal = colon > 0 ? entry.mid(colon + 1).toLongLong(&ordOk) : 0;
+        if (ringOk && ordOk && ring != 0U && ordinal >= 1) {
+            m_sessionOrdinals.rings.insert(ring, ordinal);
+            if (ordinal < std::numeric_limits<qint64>::max()) {
+                m_sessionOrdinals.next = qMax(m_sessionOrdinals.next, ordinal + 1);
+            }
+        }
+    }
+    bound_session_ordinals(m_sessionOrdinals.rings);
 }
 
 void
@@ -413,7 +504,7 @@ row_role_value(const CallHistoryModel::Row& row, int role) {
         case CallHistoryModel::DayLabelRole: return day_label(row.when);
         case CallHistoryModel::TimeTextRole: return time_text(row.when);
         case CallHistoryModel::KindRole: return row.kind;
-        case CallHistoryModel::DetailRole: return row.detail;
+        case CallHistoryModel::DetailRole: return row_detail_text(row);
         case CallHistoryModel::ChannelRole: return row.channel;
         case CallHistoryModel::ServiceNameRole: return row.service;
         case CallHistoryModel::ReceivedToneRole: {
@@ -424,6 +515,45 @@ row_role_value(const CallHistoryModel::Row& row, int role) {
         case CallHistoryModel::SessionRole: return row.session;
         default: return row_carrier_value(row, role);
     }
+}
+
+/** @brief Whether fragment @p fragment's part in @p row is withdrawn (issue #800): its reading named another call than
+ * the row's, so the row keeps its key only to know its later readings. For one lookup; recording_fragments() for all. */
+bool
+fragment_withdrawn(const CallHistoryModel::Row& row, const QString& fragment) {
+    return std::any_of(row.parts.cbegin(), row.parts.cend(), [&fragment](const CallHistoryModel::FragmentPart& part) {
+#ifdef DSD_NEO_TEST_HOOKS
+        g_part_lookup_steps.fetch_add(1, std::memory_order_relaxed);
+#endif
+        return part.withdrawn && part.fragment == fragment;
+    });
+}
+
+/** @brief The fragments whose recordings are @p row's: every fragment it holds but the withdrawn ones, whose
+ * recordings belong to another call. Its parts are read once, whatever the number of fragments: both recording roles
+ * ask on the GUI thread, for a long call of many short fragments too. */
+QStringList
+recording_fragments(const CallHistoryModel::Row& row) {
+    QSet<QString> withdrawn;
+    for (const CallHistoryModel::FragmentPart& part : row.parts) {
+#ifdef DSD_NEO_TEST_HOOKS
+        g_part_lookup_steps.fetch_add(1, std::memory_order_relaxed);
+#endif
+        if (part.withdrawn) {
+            withdrawn.insert(part.fragment);
+        }
+    }
+    if (withdrawn.isEmpty()) {
+        return row.fragments;
+    }
+    QStringList fragments;
+    fragments.reserve(row.fragments.size());
+    for (const QString& fragment : row.fragments) {
+        if (!withdrawn.contains(fragment)) {
+            fragments.append(fragment);
+        }
+    }
+    return fragments;
 }
 
 } // namespace
@@ -439,13 +569,14 @@ CallHistoryModel::data(const QModelIndex& index, int role) const {
         // A trunk-scan target's id is the app's uid for its entry: shown as the entry's name (setChannelNames()).
         case NameRole: return !row.channel.isEmpty() && row.name == row.channel ? channelDisplayName(row) : row.name;
         case ChannelRole: return channelDisplayName(row);
-        case RecordingsRole:
-            return m_recordings != nullptr && !row.fragments.isEmpty()
-                       ? m_recordings->recordingsForFragments(row.fragments)
-                       : QVariantList();
-        case HasRecordingRole:
-            return m_recordings != nullptr && !row.fragments.isEmpty()
-                   && m_recordings->hasRecordingForFragments(row.fragments);
+        case RecordingsRole: {
+            const QStringList fragments = m_recordings != nullptr ? recording_fragments(row) : QStringList();
+            return !fragments.isEmpty() ? m_recordings->recordingsForFragments(fragments) : QVariantList();
+        }
+        case HasRecordingRole: {
+            const QStringList fragments = m_recordings != nullptr ? recording_fragments(row) : QStringList();
+            return !fragments.isEmpty() && m_recordings->hasRecordingForFragments(fragments);
+        }
         default: return row_role_value(row, role);
     }
 }
@@ -472,7 +603,12 @@ CallHistoryModel::recordingsForUid(qint64 uid) const {
 double
 CallHistoryModel::uidForFragment(const QString& fragment) const {
     const auto it = m_fragmentIndex.constFind(fragment);
-    return it != m_fragmentIndex.constEnd() ? static_cast<double>(it.value()) : 0.0;
+    if (it == m_fragmentIndex.constEnd()) {
+        return 0.0;
+    }
+    // A withdrawn fragment is another call's: the row only keeps its key, so its recording names no row.
+    const int row = rowForUid(it.value());
+    return row >= 0 && !fragment_withdrawn(m_rows.at(row), fragment) ? static_cast<double>(it.value()) : 0.0;
 }
 
 QVariantMap
@@ -560,7 +696,7 @@ CallHistoryModel::exportRows(const QList<int>& sourceRows) const {
             continue;
         }
         rows.append(export_row_at(*this, index(source)));
-        fragments.append(m_rows.at(source).fragments);
+        fragments.append(recording_fragments(m_rows.at(source)));
     }
     if (m_recordings == nullptr) {
         return rows;
@@ -935,6 +1071,24 @@ notice_summary(const Event_History* item) {
     return text.trimmed();
 }
 
+/** @brief The digest of a ring item's raw identity (call_history_identity_digest()), read from its fields as they are:
+ * the walk reads every committed row, and nothing is formatted here. */
+uint32_t
+item_identity_digest(const Event_History* item) {
+    CallHistoryScope rx;
+    rx.kind = item->rx_scope.scope.kind;
+    rx.a = item->rx_scope.scope.a;
+    rx.b = item->rx_scope.scope.b;
+    rx.freqHz = item->rx_scope.identity_freq_hz;
+    CallHistoryScope sender;
+    sender.kind = item->pos.scope.kind;
+    sender.a = item->pos.scope.a;
+    sender.b = item->pos.scope.b;
+    sender.freqHz = item->pos.identity_freq_hz;
+    return call_history_identity_digest(item->systype, item->rx_scope.resolved != 0U, rx, sender, item->src_str,
+                                        sizeof(item->src_str), item->tgt_str, sizeof(item->tgt_str));
+}
+
 /** @brief The frequency and access code a ring item was heard with; 0 for whatever is unknown. */
 struct ItemCarrier {
     qint64 freqHz = 0;
@@ -1007,13 +1161,9 @@ row_take_name(CallHistoryModel::Row& row, const Event_History* item) {
          * "LRRP position"); the payload — the decoded message or GPS string —
          * rides in detail so the delegate can show both. */
         row.name = notice_summary(item);
-        if (item->text_message[0] != '\0') {
-            row.detail = QString::fromUtf8(item->text_message);
-        } else if (item->gps_s[0] != '\0') {
-            row.detail = QString::fromUtf8(item->gps_s);
-        }
         if (row.name.isEmpty()) {
-            row.name = !row.detail.isEmpty() ? row.detail : QStringLiteral("Data message");
+            const QString detail = row_detail_text(row);
+            row.name = !detail.isEmpty() ? detail : QStringLiteral("Data message");
         }
     } else if (item->service_label[0] != '\0') {
         row.name = QString::fromUtf8(item->service_label);
@@ -1043,7 +1193,6 @@ row_from_item(const Event_History* item, const QString& sessionLabel, const QStr
     row.enc = item->enc != 0U;
     row.emergency = item->emergency != 0U;
     row.kind = item->category == DSD_EVENT_CATEGORY_VOICE ? CallHistoryModel::KindVoice : CallHistoryModel::KindNotice;
-    row_take_name(row, item);
     /* The system is the saved entry this session runs, for every row alike, so
      * the system filter keeps listing what the Home screen lists. The scan channel
      * the row was heard on (a -Y row name or a trunk-scan target id) rides its own
@@ -1082,6 +1231,8 @@ row_from_item(const Event_History* item, const QString& sessionLabel, const QStr
     row.sourceNameWhen = row.when;
     row.sourceNameSeq = seq;
     row.sourceNameSlot = slot;
+    row_take_payload(row, item);
+    row_take_name(row, item);
     row_take_carrier(row, item);
     row_take_site(row, item);
     if (row.kind == CallHistoryModel::KindVoice) {
@@ -1117,6 +1268,48 @@ CallHistoryModel::absorbSeenSite(SeenState& seen, const SeenState& read) {
     const bool texted =
         call_history_seen_absorb_site_text(&seen.siteText, &seen.siteTextKnown, read.siteText, read.siteTextKnown);
     return sited || texted;
+}
+
+// Fold the end, source, crypto verdict, emergency, source label, frequency and access code @p read gained into @p seen,
+// each by its own ratchet; returns whether it gained any.
+bool
+CallHistoryModel::absorbSeenCall(SeenState& seen, const SeenState& read) {
+    int64_t storedEnd = seen.end;
+    uint64_t storedSrc = seen.src;
+    bool storedEnc = seen.enc;
+    const bool advanced = call_history_seen_absorb(&storedEnd, &storedSrc, &storedEnc, read.end, read.src, read.enc,
+                                                   &seen.emergency, read.emergency);
+    const bool labelAdvanced =
+        !read.sourceName.isEmpty() && read.sourceName != seen.sourceName && read.src == storedSrc;
+    int64_t storedFreqHz = seen.freqHz;
+    int storedAcKind = seen.acKind;
+    int storedAc = seen.ac;
+    const bool filled =
+        call_history_seen_absorb_fill(&storedFreqHz, &storedAcKind, &storedAc, read.freqHz, read.acKind, read.ac);
+    if (labelAdvanced) {
+        seen.sourceName = read.sourceName;
+    }
+    seen.end = storedEnd;
+    seen.src = storedSrc;
+    seen.enc = storedEnc;
+    seen.freqHz = storedFreqHz;
+    seen.acKind = storedAcKind;
+    seen.ac = storedAc;
+    return advanced || labelAdvanced || filled;
+}
+
+// Record the GPS text, text message, position and raw identity @p read carries in @p seen; returns whether any changed
+// (issue #800). An identity digest not known on either side is no change (SeenState::identity).
+bool
+CallHistoryModel::absorbSeenTexts(SeenState& seen, const SeenState& read) {
+    const bool changed =
+        read.gpsText != seen.gpsText || read.messageText != seen.messageText || read.position != seen.position;
+    seen.gpsText = read.gpsText;
+    seen.messageText = read.messageText;
+    seen.position = read.position;
+    const bool resolved =
+        call_history_seen_absorb_site_text(&seen.identity, &seen.identityKnown, read.identity, read.identityKnown);
+    return changed || resolved;
 }
 
 int
@@ -1160,35 +1353,22 @@ CallHistoryModel::noteSeen(SeenMap& seenMap, qint64 session, const QString& key,
     if (!voice) {
         return SeenUnchanged;
     }
-    int64_t storedEnd = seen->end;
-    uint64_t storedSrc = seen->src;
-    bool storedEnc = seen->enc;
-    const bool advanced = call_history_seen_absorb(&storedEnd, &storedSrc, &storedEnc, read.end, read.src, read.enc,
-                                                   &seen->emergency, read.emergency);
-    const bool labelAdvanced =
-        !read.sourceName.isEmpty() && read.sourceName != seen->sourceName && read.src == storedSrc;
-    int64_t storedFreqHz = seen->freqHz;
-    int storedAcKind = seen->acKind;
-    int storedAc = seen->ac;
-    const bool filled =
-        call_history_seen_absorb_fill(&storedFreqHz, &storedAcKind, &storedAc, read.freqHz, read.acKind, read.ac);
+    const bool advanced = absorbSeenCall(*seen, read);
     const bool received = absorbSeenReceive(*seen, read);
-    const bool digestAdopted = !seen->siteTextKnown && read.siteTextKnown;
+    const bool digestAdopted =
+        (!seen->siteTextKnown && read.siteTextKnown) || (!seen->identityKnown && read.identityKnown);
     const bool sited = absorbSeenSite(*seen, read);
-    if (!advanced && !labelAdvanced && !filled && !received && !sited) {
+    const bool texted = absorbSeenTexts(*seen, read);
+    if (!advanced && !received && !sited && !texted) {
         return digestAdopted ? SeenSettled : SeenUnchanged;
     }
-    if (labelAdvanced) {
-        seen->sourceName = read.sourceName;
-    }
-    seen->end = storedEnd;
-    seen->src = storedSrc;
-    seen->enc = storedEnc;
-    seen->freqHz = storedFreqHz;
-    seen->acKind = storedAcKind;
-    seen->ac = storedAc;
     return SeenAdvanced;
 }
+
+namespace {
+// What a ring reading gives its row besides its texts and position (defined with the merge's fold below).
+CallHistoryModel::FragmentPart fragment_part_of(const CallHistoryModel::Row& row, const QString& fragment);
+} // namespace
 
 void
 CallHistoryModel::walkRing(const Event_History_I& ring, int slot, const RingWalk& walk, QList<FreshRow>& fresh) {
@@ -1235,6 +1415,13 @@ CallHistoryModel::walkRing(const Event_History_I& ring, int slot, const RingWalk
         const ItemChannel channel = item_call_channel(item);
         read.callChannel = channel.channel;
         read.callChannelKind = channel.kind;
+        read.gpsText = call_history_text_digest(item->gps_s, sizeof(item->gps_s));
+        read.messageText = call_history_text_digest(item->text_message, sizeof(item->text_message));
+        read.position =
+            call_history_position_digest(item_position_valid(item), item->pos.lat_e7, item->pos.lon_e7, item->pos.err_m,
+                                         item->pos.flags, item->pos.kind, item->pos.rev, item->pos.proc_instance);
+        read.identity = item_identity_digest(item);
+        read.identityKnown = true;
         // Must match keyFor() on the equivalent Row, or a relaunched UI would
         // re-ingest every row its predecessor already logged.
         const QString key = seen_key(slot, seq, read.when, item->target_id, kind);
@@ -1250,8 +1437,15 @@ CallHistoryModel::walkRing(const Event_History_I& ring, int slot, const RingWalk
         }
         FreshRow row;
         row.row = row_from_item(item, walk.sessionLabel, walk.systemUid, slot, seq);
+        row.row.rxRing = instance;
         row.row.session = walk.session;
+        row.row.gpsOrd = walk.sessionOrd;
+        row.row.gpsVer = static_cast<quint64>(ring.commit_rev);
         row.row.fragments.append(call_history_fragment_key(instance, slot, seq));
+        row.row.fragmentVers.insert(row.row.fragments.constLast(), static_cast<quint64>(ring.commit_rev));
+        if (kind == KindVoice) {
+            row.row.parts.append(fragment_part_of(row.row, row.row.fragments.constLast()));
+        }
         row.isUpdate = verdict == SeenAdvanced;
         row.again = verdict == SeenAgain;
         row.key = key;
@@ -1276,32 +1470,13 @@ CallHistoryModel::collectFresh(const dsd_state* snapshot, const bool scan[2], co
             continue;
         }
         walk.clearedThrough = m_clear.pushSeq[slot];
+        walk.sessionOrd = sessionOrdinal(static_cast<quint64>(snapshot->event_history_s[slot].instance));
         walkRing(snapshot->event_history_s[slot], slot, walk, fresh);
     }
     return fresh;
 }
 
 namespace {
-
-/* Two fragments are one service when their confirmed identities and labels agree. A fragment committed before its
-   access code or tone was confirmed carries no identity yet, and its label is at most a weaker (slot) name: it joins
-   the confirmed fragment, which tryMerge() lets name the row. Two unconfirmed fragments must agree on the label. The
-   over-the-air slot is proven on its own (receiveSlot, 0 while pending on the single-slot DMR decoder): two proven
-   slots that differ are two services whatever the codes, and a pending slot's fragment may carry no slot name. */
-bool
-receive_services_compatible(const CallHistoryModel::Row& a, const CallHistoryModel::Row& b) {
-    if (a.receiveSlot != 0 && b.receiveSlot != 0 && a.receiveSlot != b.receiveSlot) {
-        return false;
-    }
-    /* One fragment proved its slot and the other had it pending (FDMA rows carry no slot at all, on either side). */
-    const bool slotJustProven = (a.receiveSlot != 0) != (b.receiveSlot != 0);
-    if (a.receiveKnown && b.receiveKnown) {
-        /* The same confirmed service may gain the name it lacked (a name added, then the call reacquired). */
-        return a.receiveKind == b.receiveKind && a.receiveValue == b.receiveValue
-               && (a.service == b.service || slotJustProven || a.service.isEmpty() || b.service.isEmpty());
-    }
-    return a.receiveKnown || b.receiveKnown || a.service == b.service || slotJustProven;
-}
 
 /* Fold the identity evidence @p row carries into @p existing, which tryMerge() matched to it: a confirmed code the row
    holds and the row lacks, and a slot the row has proven, each on its own. Returns 1 when the row's service label,
@@ -1337,6 +1512,16 @@ row_textual_destination(const CallHistoryModel::Row& row) {
     return row.name;
 }
 
+/**
+ * @brief A row's destination as a merge compares it: the target text as received (issue #800, B4), else its textual
+ * destination by name (rows older builds stored keep no target text).
+ */
+QString
+row_destination(const CallHistoryModel::Row& row) {
+    const QString raw = row.targetText.simplified();
+    return !raw.isEmpty() ? raw : row_textual_destination(row);
+}
+
 /** @brief Whether two rows with no talkgroup (tg == 0) name the same destination; any rows with one do. */
 bool
 target_less_rows_same_destination(const CallHistoryModel::Row& existing, const CallHistoryModel::Row& row) {
@@ -1346,10 +1531,11 @@ target_less_rows_same_destination(const CallHistoryModel::Row& existing, const C
     // Textual targets (M17/D-STAR/YSF callsigns, dPMR dial strings) all share
     // tg == 0, so the numeric check cannot tell two destinations apart;
     // the target text is their identity. A name that is only a label (a service
-    // or channel name) is no destination of its own. Analog rows never get here
-    // (rows_mergeable()).
-    const QString existingTarget = row_textual_destination(existing);
-    const QString rowTarget = row_textual_destination(row);
+    // or channel name) is no destination of its own, but the target text a row
+    // keeps beside it still is (issue #800, B4: one caller's two M17 destinations
+    // under one named CAN). Analog rows never get here (rows_mergeable()).
+    const QString existingTarget = row_destination(existing);
+    const QString rowTarget = row_destination(row);
     if (!existingTarget.isEmpty() && !rowTarget.isEmpty() && existingTarget != rowTarget) {
         return false;
     }
@@ -1358,6 +1544,14 @@ target_less_rows_same_destination(const CallHistoryModel::Row& existing, const C
     // keep a talkgroup, so their retunes still fold.
     return existing.src != 0 || row.src != 0 || existing.freqHz == 0 || row.freqHz == 0
            || existing.freqHz == row.freqHz;
+}
+
+/** @brief Whether two rows were heard on one site under one channel numbering (issue #799) and their known identities
+ * agree (rows_identity_compatible()). */
+bool
+rows_systems_compatible(const CallHistoryModel::Row& existing, const CallHistoryModel::Row& row) {
+    return dsd_call_site_compatible(&existing.siteId, existing.callChannelKind, &row.siteId, row.callChannelKind) != 0
+           && rows_identity_compatible(existing, row);
 }
 
 /** @brief Whether two voice rows are one conversation the merge may fold together. */
@@ -1380,7 +1574,8 @@ rows_mergeable(const CallHistoryModel::Row& existing, const CallHistoryModel::Ro
         return false;
     }
     // Two sites, or two channel numberings, are two calls (issue #799): a radio that roams calls again on another site.
-    if (dsd_call_site_compatible(&existing.siteId, existing.callChannelKind, &row.siteId, row.callChannelKind) == 0) {
+    // So are two systems, protocols or callsign callers (issue #800).
+    if (!rows_systems_compatible(existing, row)) {
         return false;
     }
     if (!target_less_rows_same_destination(existing, row)) {
@@ -1461,15 +1656,6 @@ same_reception_row(const QList<CallHistoryModel::Row>& rows, const CallHistoryMo
     return first;
 }
 
-CallHistoryProvenance
-provenance(qint64 when, qulonglong seq, int slot) {
-    CallHistoryProvenance from;
-    from.when = static_cast<int64_t>(when);
-    from.seq = static_cast<uint64_t>(seq);
-    from.slot = slot;
-    return from;
-}
-
 /**
  * @brief Adopt @p row's source label when it is the later of the two.
  *
@@ -1533,6 +1719,16 @@ fold_carrier(CallHistoryModel::Row& existing, const CallHistoryModel::Row& row) 
     }
 }
 
+/** @brief Give @p to the call channel of @p from, with the fragment it came from. */
+void
+take_call_channel(CallHistoryModel::Row& to, const CallHistoryModel::Row& from) {
+    to.callChannel = from.callChannel;
+    to.callChannelKind = from.callChannelKind;
+    to.cchWhen = from.cchWhen;
+    to.cchSeq = from.cchSeq;
+    to.cchSlot = from.cchSlot;
+}
+
 /**
  * @brief Fold @p row's site and call channel into @p existing (issue #799).
  *
@@ -1549,12 +1745,632 @@ fold_site(CallHistoryModel::Row& existing, const CallHistoryModel::Row& row) {
                                  provenance(existing.cchWhen, existing.cchSeq, existing.cchSlot),
                                  call_history_call_channel_known(row.callChannelKind, row.callChannel),
                                  provenance(row.cchWhen, row.cchSeq, row.cchSlot))) {
-        existing.callChannel = row.callChannel;
-        existing.callChannelKind = row.callChannelKind;
-        existing.cchWhen = row.cchWhen;
-        existing.cchSeq = row.cchSeq;
-        existing.cchSlot = row.cchSlot;
+        take_call_channel(existing, row);
     }
+}
+
+/** @brief Give @p to the site and call channel of @p from, with the fragment the channel came from. */
+void
+take_site(CallHistoryModel::Row& to, const CallHistoryModel::Row& from) {
+    to.siteId = from.siteId;
+    take_call_channel(to, from);
+}
+
+using FragmentPart = CallHistoryModel::FragmentPart;
+
+/** @brief Fold @p row's span and its crypto and emergency flags into @p existing, as a merge does. The row keeps its
+ * end, so one plausibility rule decides on every fold and update: a span past the cap reads unknown, and a later update
+ * of an earlier fragment cannot rebuild a duration from that fragment alone. With neither end known the duration stays
+ * unknown; a side whose end is unknown still counts from its start, so both ends are read before the start moves (a
+ * start-less row's end is its start). */
+void
+fold_span(CallHistoryModel::Row& existing, const CallHistoryModel::Row& row) {
+    const qint64 start = qMin(existing.when, row.when);
+    const qint64 end = qMax(row_end_secs(existing), row_end_secs(row));
+    const bool endKnown = existing.end > 0 || row.end > 0;
+    existing.when = start;
+    if (endKnown) {
+        existing.end = end;
+        existing.durationSecs = call_history_duration_secs(start, end);
+    }
+    existing.enc = existing.enc || row.enc;
+    existing.emergency = existing.emergency || row.emergency;
+}
+
+/** @brief Fold the receive evidence and service of @p row into @p existing, and the service name it now earns. */
+void
+fold_receive(CallHistoryModel::Row& existing, const CallHistoryModel::Row& row) {
+    if (receive_adopt_identity(existing, row)) {
+        existing.service = row.service;
+        /* A service name outranks every other name a row has (row_take_name()). */
+        if (!row.service.isEmpty()) {
+            existing.name = row.service;
+        }
+    }
+}
+
+/** @brief Give @p part the text message of @p row, with the fragment it came from. */
+void
+take_part_message(FragmentPart& part, const CallHistoryModel::Row& row) {
+    part.messageText = row.messageText;
+    part.msgWhen = row.msgWhen;
+    part.msgSeq = row.msgSeq;
+    part.msgSlot = row.msgSlot;
+}
+
+/** @brief Give @p to the sender, call identity, source label and text message of part @p from. */
+void
+take_part_sender(FragmentPart& to, const FragmentPart& from) {
+    to.protocol = from.protocol;
+    to.tg = from.tg;
+    to.src = from.src;
+    to.sourceText = from.sourceText;
+    to.targetText = from.targetText;
+    to.sourceScope = from.sourceScope;
+    to.sourceName = from.sourceName;
+    to.sourceNameWhen = from.sourceNameWhen;
+    to.sourceNameSeq = from.sourceNameSeq;
+    to.sourceNameSlot = from.sourceNameSlot;
+    to.messageText = from.messageText;
+    to.msgWhen = from.msgWhen;
+    to.msgSeq = from.msgSeq;
+    to.msgSlot = from.msgSlot;
+}
+
+/** @brief What a one-fragment reading @p row gives its row (Row::parts), as fragment @p fragment. */
+FragmentPart
+fragment_part_of(const CallHistoryModel::Row& row, const QString& fragment) {
+    FragmentPart part;
+    part.fragment = fragment;
+    part.enc = row.enc;
+    part.emergency = row.emergency;
+    part.when = row.when;
+    part.end = row.end;
+    part.durationSecs = row.durationSecs;
+    part.receiveKnown = row.receiveKnown;
+    part.receiveKind = row.receiveKind;
+    part.receiveValue = row.receiveValue;
+    part.receiveSlot = row.receiveSlot;
+    part.freqHz = row.freqHz;
+    part.freqWhen = row.freqWhen;
+    part.freqSeq = row.freqSeq;
+    part.freqSlot = row.freqSlot;
+    part.codeKind = row.codeKind;
+    part.code = row.code;
+    part.acWhen = row.acWhen;
+    part.acSeq = row.acSeq;
+    part.acSlot = row.acSlot;
+    part.siteId = row.siteId;
+    part.callChannel = row.callChannel;
+    part.callChannelKind = row.callChannelKind;
+    part.cchWhen = row.cchWhen;
+    part.cchSeq = row.cchSeq;
+    part.cchSlot = row.cchSlot;
+    part.rxScope = row.rxScope;
+    part.rxRing = row.rxRing;
+    part.rxGen = row.rxGen;
+    part.rxGenKnown = row.rxGenKnown;
+    part.rxHz = row.rxHz;
+    part.name = row.name;
+    part.service = row.service;
+    part.session = row.session;
+    part.protocol = row.protocol;
+    part.tg = row.tg;
+    part.src = row.src;
+    part.sourceText = row.sourceText;
+    part.targetText = row.targetText;
+    part.sourceScope = row.sourceScope;
+    part.sourceName = row.sourceName;
+    part.sourceNameWhen = row.sourceNameWhen;
+    part.sourceNameSeq = row.sourceNameSeq;
+    part.sourceNameSlot = row.sourceNameSlot;
+    take_part_message(part, row);
+    return part;
+}
+
+/** @brief A voice row holding only @p part's fields, so the merge's own rules fold it. */
+CallHistoryModel::Row
+row_of_part(const FragmentPart& part) {
+    CallHistoryModel::Row row;
+    row.enc = part.enc;
+    row.emergency = part.emergency;
+    row.when = part.when;
+    row.end = part.end;
+    row.durationSecs = part.durationSecs;
+    row.receiveKnown = part.receiveKnown;
+    row.receiveKind = part.receiveKind;
+    row.receiveValue = part.receiveValue;
+    row.receiveSlot = part.receiveSlot;
+    row.freqHz = part.freqHz;
+    row.freqWhen = part.freqWhen;
+    row.freqSeq = part.freqSeq;
+    row.freqSlot = part.freqSlot;
+    row.codeKind = part.codeKind;
+    row.code = part.code;
+    row.acWhen = part.acWhen;
+    row.acSeq = part.acSeq;
+    row.acSlot = part.acSlot;
+    row.siteId = part.siteId;
+    row.callChannel = part.callChannel;
+    row.callChannelKind = part.callChannelKind;
+    row.cchWhen = part.cchWhen;
+    row.cchSeq = part.cchSeq;
+    row.cchSlot = part.cchSlot;
+    row.rxScope = part.rxScope;
+    row.rxRing = part.rxRing;
+    row.rxGen = part.rxGen;
+    row.rxGenKnown = part.rxGenKnown;
+    row.rxHz = part.rxHz;
+    row.name = part.name;
+    row.service = part.service;
+    row.session = part.session;
+    row.protocol = part.protocol;
+    row.tg = part.tg;
+    row.src = part.src;
+    row.sourceText = part.sourceText;
+    row.targetText = part.targetText;
+    row.sourceScope = part.sourceScope;
+    row.sourceName = part.sourceName;
+    row.sourceNameWhen = part.sourceNameWhen;
+    row.sourceNameSeq = part.sourceNameSeq;
+    row.sourceNameSlot = part.sourceNameSlot;
+    row.messageText = part.messageText;
+    row.msgWhen = part.msgWhen;
+    row.msgSeq = part.msgSeq;
+    row.msgSlot = part.msgSlot;
+    return row;
+}
+
+/** @brief The fields a fragment's part folds into its row (FragmentPart), from @p from: the reception scope by
+ * strength, only from a fragment heard on the row's reception (reception_learns()), the receive evidence and service,
+ * the frequency and access code, the site and channel, the span and flags.
+ */
+void
+fold_part_fields(CallHistoryModel::Row& existing, const CallHistoryModel::Row& from) {
+    if (reception_learns(existing, from)) {
+        take_reception(existing, from);
+    }
+    fold_receive(existing, from);
+    fold_carrier(existing, from);
+    fold_site(existing, from);
+    fold_span(existing, from);
+    // A call heard again in a later session is part of that session too: its views show the merged row, and a full
+    // log keeps it as that session's.
+    existing.session = qMax(existing.session, from.session);
+}
+
+/** @brief The index of fragment @p fragment's part in @p row, or -1. For one lookup; PartLookup for many. */
+qsizetype
+part_index(const CallHistoryModel::Row& row, const QString& fragment) {
+    for (qsizetype i = 0; i < row.parts.size(); i++) {
+#ifdef DSD_NEO_TEST_HOOKS
+        g_part_lookup_steps.fetch_add(1, std::memory_order_relaxed);
+#endif
+        if (row.parts.at(i).fragment == fragment) {
+            return i;
+        }
+    }
+    return -1;
+}
+
+/**
+ * @brief Many lookups of fragments' parts in one row's parts: an index by fragment key, built once, when both the
+ * lookups and the parts are many, so a fold that looks every fragment of a long call up walks its parts once rather
+ * than once per fragment (a call of N short fragments would otherwise cost N^3 over its folds); a plain scan for a few,
+ * which costs less than building the index.
+ */
+class PartLookup {
+  public:
+    PartLookup(const QList<FragmentPart>& parts, qsizetype lookups) : m_parts(parts) {
+        if (lookups > kScanLimit && parts.size() > kScanLimit) {
+            m_index.reserve(parts.size());
+            for (qsizetype i = 0; i < parts.size(); i++) {
+                m_index.insert(parts.at(i).fragment, i);
+            }
+            m_indexed = true;
+#ifdef DSD_NEO_TEST_HOOKS
+            g_part_lookup_steps.fetch_add(parts.size(), std::memory_order_relaxed);
+#endif
+        }
+    }
+
+    /** @brief The index of fragment @p fragment's part, or -1. */
+    qsizetype
+    find(const QString& fragment) const {
+        if (m_indexed) {
+            return m_index.value(fragment, -1);
+        }
+        for (qsizetype i = 0; i < m_parts.size(); i++) {
+#ifdef DSD_NEO_TEST_HOOKS
+            g_part_lookup_steps.fetch_add(1, std::memory_order_relaxed);
+#endif
+            if (m_parts.at(i).fragment == fragment) {
+                return i;
+            }
+        }
+        return -1;
+    }
+
+    /** @brief Note that fragment @p fragment's part now sits at @p at of the parts this lookup reads. */
+    void
+    added(const QString& fragment, qsizetype at) {
+        if (m_indexed) {
+            m_index.insert(fragment, at);
+        }
+    }
+
+  private:
+    static constexpr qsizetype kScanLimit = 8;
+    const QList<FragmentPart>& m_parts;
+    QHash<QString, qsizetype> m_index;
+    bool m_indexed = false;
+};
+
+/** @brief Whether every fragment of @p row has its part, so the row can be rebuilt from them. */
+bool
+parts_complete(const CallHistoryModel::Row& row) {
+    if (row.fragments.isEmpty()) {
+        return false;
+    }
+    const PartLookup lookup(row.parts, row.fragments.size());
+    return std::all_of(row.fragments.cbegin(), row.fragments.cend(),
+                       [&lookup](const QString& fragment) { return lookup.find(fragment) >= 0; });
+}
+
+/** @brief Put the parts of @p row into @p existing: a fragment's part is replaced whole by a reading that is not older
+ * (Row::fragmentVers), and by any reading once withdrawn (a reading that agrees again starts afresh), else it is added.
+ * A reading is the fragment's whole ring entry as it now stands, so nothing of an earlier reading outlives it: a
+ * message, sender, destination or name it no longer carries is gone from the part (issue #800, fail closed). */
+void
+merge_parts(CallHistoryModel::Row& existing, const CallHistoryModel::Row& row) {
+    QList<FragmentPart> parts = existing.parts;
+    PartLookup lookup(parts, row.parts.size());
+    for (const FragmentPart& part : row.parts) {
+        const qsizetype held = lookup.find(part.fragment);
+        if (held < 0) {
+            lookup.added(part.fragment, parts.size());
+            parts.append(part);
+        } else if (parts.at(held).withdrawn
+                   || row.fragmentVers.value(part.fragment, 0U) >= existing.fragmentVers.value(part.fragment, 0U)) {
+            parts[held] = part;
+        }
+    }
+    existing.parts = std::move(parts);
+}
+
+/** @brief Whether a value whose provenance has push stamp @p seq and slot @p slot is fragment @p fragment's, by the slot
+ * and push stamp its key (call_history_fragment_key()) holds. */
+bool
+fragment_stamp_matches(const QString& fragment, qulonglong seq, int slot) {
+    const QStringList parts = fragment.split(QLatin1Char(':'));
+    bool slotOk = false;
+    bool seqOk = false;
+    return parts.size() == 3 && parts.at(1).toInt(&slotOk) == slot && slotOk && parts.at(2).toULongLong(&seqOk) == seq
+           && seqOk;
+}
+
+/** @brief The key of the part standing for a row an older build stored without fragments: `legacy|` and the row's seen
+ * key (seen_key()), which no fragment key (call_history_fragment_key(), `:`-separated) can be. */
+QString
+legacy_part_key(const CallHistoryModel::Row& row) {
+    return QStringLiteral("legacy|") + seen_key(row.slot, row.seq, row.when, row.tg, row.kind);
+}
+
+/** @brief Whether @p fragment is a legacy_part_key(). */
+bool
+is_legacy_part_key(const QString& fragment) {
+    return fragment.startsWith(QLatin1String("legacy|"));
+}
+
+/**
+ * @brief The part a row an older build stored gives fragment @p fragment (ensure_parts()): the row's values, except
+ * that a value carrying a fragment's provenance (frequency, access code, call channel, source label, text message) is
+ * this fragment's only when the provenance names it (its slot and push stamp). Nothing else tells which fragment gave
+ * what, so a withdrawal of such a fragment takes back only those. The part of a row with no fragments (a
+ * legacy_part_key(), or an empty key) keeps every value.
+ */
+FragmentPart
+legacy_part_of(const CallHistoryModel::Row& row, const QString& fragment) {
+    FragmentPart part = fragment_part_of(row, fragment);
+    if (fragment.isEmpty() || is_legacy_part_key(fragment)) {
+        return part;
+    }
+    if (!fragment_stamp_matches(fragment, row.freqSeq, row.freqSlot)) {
+        part.freqHz = 0;
+    }
+    if (!fragment_stamp_matches(fragment, row.acSeq, row.acSlot)) {
+        part.codeKind = 0;
+        part.code = 0;
+    }
+    if (!fragment_stamp_matches(fragment, row.cchSeq, row.cchSlot)) {
+        part.callChannel = 0U;
+        part.callChannelKind = DSD_CALL_CHANNEL_NONE;
+    }
+    if (!fragment_stamp_matches(fragment, row.sourceNameSeq, row.sourceNameSlot)) {
+        part.sourceName.clear();
+    }
+    if (!fragment_stamp_matches(fragment, row.msgSeq, row.msgSlot)) {
+        part.messageText.clear();
+    }
+    return part;
+}
+
+/** @brief Give a voice row that lacks them its parts (legacy_part_of()): one per fragment it holds without one, or,
+ * for a row with no fragments and no parts, one standing for all it holds, under the row's own key
+ * (legacy_part_key()); a part an earlier build stored with no key takes that key. On load (row_from_json()) and before
+ * every fold, so the row is always the fold of its parts, and two such rows folded together are two parts. */
+void
+ensure_parts(CallHistoryModel::Row& row) {
+    if (row.kind != CallHistoryModel::KindVoice) {
+        return;
+    }
+    if (row.fragments.isEmpty()) {
+        if (row.parts.isEmpty()) {
+            row.parts.append(legacy_part_of(row, legacy_part_key(row)));
+        } else if (part_index(row, QString()) >= 0) {
+            QList<FragmentPart> parts = row.parts;
+            parts[part_index(row, QString())].fragment = legacy_part_key(row);
+            row.parts = std::move(parts);
+        }
+        return;
+    }
+    PartLookup lookup(row.parts, row.fragments.size());
+    for (const QString& fragment : row.fragments) {
+        if (lookup.find(fragment) < 0) {
+            lookup.added(fragment, row.parts.size());
+            row.parts.append(legacy_part_of(row, fragment));
+        }
+    }
+}
+
+/** @brief Clear @p row's sender: its source number, text and system, its source label and its text message. */
+void
+clear_sender(CallHistoryModel::Row& row) {
+    row.src = 0;
+    row.sourceText.clear();
+    row.sourceScope = CallHistoryScope();
+    row.sourceName.clear();
+    row.messageText.clear();
+}
+
+/** @brief Whose sender a rebuild keeps (rebuild_from_parts()): the radio the row names, while a part still names it. */
+struct SenderRule {
+    /* The part naming the row's radio, as a row; null when none does. */
+    const CallHistoryModel::Row* anchor = nullptr;
+    /* The row named a radio no part names any longer: a part naming another radio gives no sender. */
+    bool radioGone = false;
+};
+
+/** @brief Whether part @p from may give @p rebuilt its sender, source label and message under @p rule: it names the
+ * anchor's radio; with the row's radio gone, it names none; with no radio known, it agrees with the row. */
+bool
+part_gives_sender(const CallHistoryModel::Row& rebuilt, const CallHistoryModel::Row& from, const SenderRule& rule) {
+    if (rule.anchor != nullptr) {
+        return row_names_source(from) && fragment_identity_compatible(*rule.anchor, from)
+               && fragment_identity_compatible(rebuilt, from);
+    }
+    return (!rule.radioGone || !row_names_source(from)) && fragment_identity_compatible(rebuilt, from);
+}
+
+/**
+ * @brief Fold the call identity part @p from gives into @p rebuilt, whoever sent it: the sync type, the numeric target
+ * and the raw destination the row does not know yet (fragment_call_compatible() already found them agreeing), and with
+ * a target or destination the name it gave the part (row_take_name(): its alias, target text or placeholder) when the
+ * row's own name is only a label (a channel or a placeholder, not its service). A target or destination is the call's,
+ * not the sender's: the core fills a committed call's unknown target in place (watchdog_event_merge_identity_fields()),
+ * and a senderless fragment's keeps a later fragment naming another destination off the row (rows_mergeable()).
+ */
+void
+fold_call_identity(CallHistoryModel::Row& rebuilt, const CallHistoryModel::Row& from) {
+    if (call_history_protocol_family(rebuilt.protocol) < 0) {
+        rebuilt.protocol = from.protocol;
+    }
+    const bool nameIsLabel = rebuilt.service.isEmpty() || rebuilt.name != rebuilt.service;
+    if (rebuilt.tg == 0U && from.tg != 0U) {
+        rebuilt.tg = from.tg;
+        if (nameIsLabel) {
+            rebuilt.name = from.name;
+        }
+    }
+    const QString destination = from.targetText.simplified();
+    if (destination.isEmpty() || !rebuilt.targetText.simplified().isEmpty()) {
+        return;
+    }
+    rebuilt.targetText = from.targetText;
+    if (nameIsLabel && from.name.simplified() == destination) {
+        rebuilt.name = from.name;
+    }
+}
+
+/**
+ * @brief Fold part @p from into @p rebuilt by the merge's rules: nothing from a part that names another call than the
+ * parts before it; its call identity always (fold_call_identity()); its sender, source label and message only when
+ * @p rule lets it (part_gives_sender()); its other fields always.
+ */
+void
+fold_part(CallHistoryModel::Row& rebuilt, const CallHistoryModel::Row& from, const SenderRule& rule) {
+    if (!fragment_call_compatible(rebuilt, from)) {
+        return;
+    }
+    fold_call_identity(rebuilt, from);
+    if (part_gives_sender(rebuilt, from, rule)) {
+        merge_source_label(rebuilt, from);
+        fold_message(rebuilt, from);
+        fill_identity(rebuilt, from);
+        if (rebuilt.src == 0) {
+            rebuilt.src = from.src;
+        }
+    }
+    fold_part_fields(rebuilt, from);
+}
+
+/** @brief Give @p existing the fields its parts give it (FragmentPart), from @p rebuilt. */
+void
+take_part_fields(CallHistoryModel::Row& existing, const CallHistoryModel::Row& rebuilt) {
+    existing.enc = rebuilt.enc;
+    existing.emergency = rebuilt.emergency;
+    existing.when = rebuilt.when;
+    existing.end = rebuilt.end;
+    existing.durationSecs = rebuilt.durationSecs;
+    existing.receiveKnown = rebuilt.receiveKnown;
+    existing.receiveKind = rebuilt.receiveKind;
+    existing.receiveValue = rebuilt.receiveValue;
+    existing.receiveSlot = rebuilt.receiveSlot;
+    take_freq(existing, rebuilt);
+    take_access_code(existing, rebuilt);
+    take_site(existing, rebuilt);
+    take_reception(existing, rebuilt);
+    existing.name = rebuilt.name;
+    existing.service = rebuilt.service;
+    existing.session = rebuilt.session;
+    existing.protocol = rebuilt.protocol;
+    existing.tg = rebuilt.tg;
+    existing.src = rebuilt.src;
+    existing.sourceText = rebuilt.sourceText;
+    existing.targetText = rebuilt.targetText;
+    existing.sourceScope = rebuilt.sourceScope;
+    existing.sourceName = rebuilt.sourceName;
+    existing.sourceNameWhen = rebuilt.sourceNameWhen;
+    existing.sourceNameSeq = rebuilt.sourceNameSeq;
+    existing.sourceNameSlot = rebuilt.sourceNameSlot;
+    take_message(existing, rebuilt);
+}
+
+/** @brief The index of the first part not withdrawn in @p parts that names a source, and the radio @p radio names when
+ * it is not null; -1 when none does. */
+qsizetype
+anchor_part(const QList<FragmentPart>& parts, const CallHistoryModel::Row* radio) {
+    for (qsizetype i = 0; i < parts.size(); i++) {
+        const CallHistoryModel::Row from = row_of_part(parts.at(i));
+        if (!parts.at(i).withdrawn && row_names_source(from)
+            && (radio == nullptr || fragment_identity_compatible(*radio, from))) {
+            return i;
+        }
+    }
+    return -1;
+}
+
+/**
+ * @brief Rebuild what @p existing's fragments gave it (FragmentPart) from the parts not withdrawn, folded in their
+ * order by the merge's rules (fold_part()). The row keeps the radio @p radio names (the row's as it was; null for none):
+ * only parts naming it give the sender, label and message, the first of them first. When no part names it any longer,
+ * the row names no radio, and no part naming another one gives it one: a fragment of another radio gave the row
+ * nothing of its sender, and does not now. With @p radio null, the first part naming a radio gives it. False, changing
+ * nothing, when a fragment has no part or none is left.
+ */
+bool
+rebuild_from_parts(CallHistoryModel::Row& existing, const CallHistoryModel::Row* radio) {
+    if (!parts_complete(existing) && !existing.fragments.isEmpty()) {
+        return false;
+    }
+    const bool keepRadio = radio != nullptr && row_names_source(*radio);
+    const qsizetype anchorAt = anchor_part(existing.parts, keepRadio ? radio : nullptr);
+    const CallHistoryModel::Row anchor =
+        anchorAt >= 0 ? row_of_part(existing.parts.at(anchorAt)) : CallHistoryModel::Row();
+    SenderRule rule;
+    rule.anchor = anchorAt >= 0 ? &anchor : nullptr;
+    rule.radioGone = keepRadio && anchorAt < 0;
+    CallHistoryModel::Row rebuilt;
+    bool any = false;
+    for (qsizetype i = 0; i < existing.parts.size(); i++) {
+        if (existing.parts.at(i).withdrawn) {
+            continue;
+        }
+        const CallHistoryModel::Row from = row_of_part(existing.parts.at(i));
+        if (any) {
+            fold_part(rebuilt, from, rule);
+            continue;
+        }
+        rebuilt = from;
+        any = true;
+        // The first part keeps its sender only when it may give one: the anchor, or any part with no radio known.
+        if (i != anchorAt && !part_gives_sender(CallHistoryModel::Row(), from, rule)) {
+            clear_sender(rebuilt);
+        }
+    }
+    if (!any) {
+        return false;
+    }
+    take_part_fields(existing, rebuilt);
+    return true;
+}
+
+/** @brief The keys of the parts reading @p reading gives (ensure_parts() gave it one per fragment, or its legacy
+ * part), in its order. */
+QStringList
+reading_part_keys(const CallHistoryModel::Row& reading) {
+    QStringList keys;
+    keys.reserve(reading.parts.size());
+    for (const FragmentPart& part : reading.parts) {
+        keys.append(part.fragment);
+    }
+    return keys;
+}
+
+/** @brief Fold the parts @p existing holds under keys @p keys, a reading's (merge_parts() put them there), into
+ * @p existing, which holds what the row's other parts gave (rest_of_row()), as a merge folds a fragment: the row's
+ * radio, when it names one, stays its own. Every part the reading gave folds, a legacy row's own part with the rest. */
+void
+fold_reading_parts(CallHistoryModel::Row& existing, const QStringList& keys) {
+    const PartLookup lookup(existing.parts, keys.size());
+    for (const QString& fragment : keys) {
+        const qsizetype held = lookup.find(fragment);
+        if (held < 0 || existing.parts.at(held).withdrawn) {
+            continue;
+        }
+        const FragmentPart part = existing.parts.at(held);
+        const CallHistoryModel::Row anchor = existing;
+        SenderRule rule;
+        rule.anchor = row_names_source(anchor) ? &anchor : nullptr;
+        fold_part(existing, row_of_part(part), rule);
+    }
+}
+
+/** @brief Mark the parts of fragments @p fragments in @p existing withdrawn (their reading names another call than the
+ * row's), adding a withdrawn marker for a fragment that has none: each is kept so the row knows the fragment, and folds
+ * nothing until a reading agrees again (merge_parts()). One pass over the parts, whatever the number of fragments. */
+void
+withdraw_parts(CallHistoryModel::Row& existing, const QStringList& fragments) {
+    QSet<QString> missing(fragments.cbegin(), fragments.cend());
+    QList<FragmentPart> parts = existing.parts;
+    for (FragmentPart& part : parts) {
+#ifdef DSD_NEO_TEST_HOOKS
+        g_part_lookup_steps.fetch_add(1, std::memory_order_relaxed);
+#endif
+        if (missing.remove(part.fragment)) {
+            part.withdrawn = true;
+        }
+    }
+    for (const QString& fragment : fragments) {
+        if (missing.remove(fragment)) {
+            FragmentPart marker;
+            marker.fragment = fragment;
+            marker.withdrawn = true;
+            parts.append(marker);
+        }
+    }
+    existing.parts = std::move(parts);
+}
+
+/** @brief Make @p rest what its parts but those under keys @p own gave it (rebuild_from_parts(), keeping the row's
+ * radio): every part a reading gives again is left out, so no earlier reading of it stays in what the reading is
+ * judged against or folded onto. False when no other part is left, so nothing of the row disagrees with the reading. */
+bool
+rest_of_row(CallHistoryModel::Row& rest, const QStringList& own) {
+    // One pass over the parts, whatever the number of keys: a stored row of a long call folds as one reading at load.
+    const QSet<QString> keys(own.cbegin(), own.cend());
+    QList<FragmentPart> parts = rest.parts;
+    for (FragmentPart& part : parts) {
+#ifdef DSD_NEO_TEST_HOOKS
+        g_part_lookup_steps.fetch_add(1, std::memory_order_relaxed);
+#endif
+        if (keys.contains(part.fragment)) {
+            part.withdrawn = true;
+        }
+    }
+    rest.parts = std::move(parts);
+    const CallHistoryModel::Row radio = rest;
+    return rebuild_from_parts(rest, &radio);
 }
 
 /**
@@ -1570,6 +2386,175 @@ fill_carrier(CallHistoryModel::Row& existing, const CallHistoryModel::Row& row) 
     }
     if (!call_history_access_code_known(existing.codeKind) && call_history_access_code_known(row.codeKind)) {
         take_access_code(existing, row);
+    }
+}
+
+/** @brief Whether @p row is a notice an older build stored: one detail (legacyDetail), no text message or GPS text. */
+bool
+notice_is_legacy(const CallHistoryModel::Row& row) {
+    return row.messageText.isEmpty() && row.gpsText.isEmpty() && !row.legacyDetail.isEmpty();
+}
+
+/** @brief The one detail an older build stored for notice @p row: its text message when it has one, else its GPS text
+ * (that build's row_take_name()). */
+QString
+legacy_notice_detail(const CallHistoryModel::Row& row) {
+    return row.messageText.isEmpty() ? row.gpsText : row.messageText;
+}
+
+/** @brief The name an older build gave notice @p row: its summary, or with none its one detail
+ * (legacy_notice_detail()) where this build names it by its whole detail line. */
+QString
+legacy_notice_name(const CallHistoryModel::Row& row) {
+    const QString detail = row_detail_text(row);
+    return !detail.isEmpty() && row.name == detail ? legacy_notice_detail(row) : row.name;
+}
+
+/**
+ * @brief Whether notices @p a and @p b carry one name and detail (issue #800, B2). Two rows of this build compare their
+ * whole detail line; against a row an older build stored, the other row's text is what that build would have stored
+ * (legacy_notice_detail(), legacy_notice_name()), so a replay after an upgrade finds the stored row and gives it its
+ * parts (absorbRepeatedNotice()).
+ */
+bool
+notice_texts_same(const CallHistoryModel::Row& a, const CallHistoryModel::Row& b) {
+    const bool aLegacy = notice_is_legacy(a);
+    const bool bLegacy = notice_is_legacy(b);
+    if (aLegacy == bLegacy) {
+        return a.name == b.name && row_detail_text(a) == row_detail_text(b);
+    }
+    const CallHistoryModel::Row& legacy = aLegacy ? a : b;
+    const CallHistoryModel::Row& current = aLegacy ? b : a;
+    return legacy.name == legacy_notice_name(current) && legacy.legacyDetail == legacy_notice_detail(current);
+}
+
+/**
+ * @brief Whether notice @p row is the delivery the logged notice @p existing is, decoded again: field for field, the
+ * fix included (issue #800: the same text with another position is another delivery); the texts as notice_texts_same()
+ * compares them.
+ */
+bool
+notices_same_delivery(const CallHistoryModel::Row& existing, const CallHistoryModel::Row& row) {
+    return existing.when == row.when && existing.tg == row.tg && existing.src == row.src
+           && notice_texts_same(existing, row) && positions_same_fix(existing.pos, row.pos)
+           && existing.systemName == row.systemName && existing.systemUid == row.systemUid
+           && existing.channel == row.channel && receive_services_compatible(existing, row)
+           && rows_identity_compatible(existing, row) && !raw_texts_differ(existing.targetText, row.targetText);
+}
+
+/**
+ * @brief Whether @p row is a reading of one fragment that is older than a reading of it @p existing already folded in
+ * (Row::fragmentVers): the ring's commit_rev when each was read orders two readings of one fragment.
+ */
+bool
+reading_is_stale(const CallHistoryModel::Row& existing, const CallHistoryModel::Row& row) {
+    if (row.fragments.size() != 1) {
+        return false;
+    }
+    const auto read = row.fragmentVers.constFind(row.fragments.constFirst());
+    const auto held = existing.fragmentVers.constFind(row.fragments.constFirst());
+    return read != row.fragmentVers.constEnd() && held != existing.fragmentVers.constEnd()
+           && held.value() > read.value();
+}
+
+/** @brief The newest reading's version of each fragment in @p held or @p read. Built aside, as the fragment list is
+ * (unionFragments()). */
+QHash<QString, quint64>
+newest_fragment_versions(const QHash<QString, quint64>& held, const QHash<QString, quint64>& read) {
+    QHash<QString, quint64> versions = held;
+    for (auto it = read.constBegin(); it != read.constEnd(); ++it) {
+        quint64& version = versions[it.key()];
+        version = qMax(version, it.value());
+    }
+    return versions;
+}
+
+/** @brief The fragment key of @p row's anchor: its first part not withdrawn, whose sync type and reception the rebuilt
+ * row takes (rebuild_from_parts()); empty when none. */
+QString
+anchor_fragment(const CallHistoryModel::Row& row) {
+    const auto anchor =
+        std::find_if(row.parts.cbegin(), row.parts.cend(), [](const FragmentPart& part) { return !part.withdrawn; });
+    return anchor != row.parts.cend() ? anchor->fragment : QString();
+}
+
+/**
+ * @brief Give @p row the sync type and reception its parts give it in their order, the anchor first (rebuild_from_parts(),
+ * fold_part_fields()): the anchor's, with a stronger scope of the same reception a later part learned
+ * (reception_learns()). A rebuild that folds a new reading of the anchor after the rest (what the row held stays ahead
+ * of an update) would otherwise leave the row where the rest alone was heard (issue #800).
+ */
+void
+take_anchor_reception(CallHistoryModel::Row& row) {
+    qsizetype anchorAt = -1;
+    CallHistoryModel::Row anchored;
+    for (qsizetype i = 0; i < row.parts.size(); i++) {
+        if (row.parts.at(i).withdrawn) {
+            continue;
+        }
+        const CallHistoryModel::Row from = row_of_part(row.parts.at(i));
+        if (anchorAt < 0) {
+            anchorAt = i;
+            anchored = from;
+        } else if (reception_learns(anchored, from)) {
+            take_reception(anchored, from);
+        }
+    }
+    if (anchorAt >= 0) {
+        row.protocol = anchored.protocol;
+        take_reception(row, anchored);
+    }
+}
+
+/**
+ * @brief Take from @p row every GPS unit a fragment gave that was not heard where the row now is (issue #800, fail
+ * closed): a rebuild can change the row's sync type or reception (its anchor withdrawn, or another one first), and a
+ * fix kept from a fragment of the other P25 phase or another reception is then not the row's. The anchor's own unit
+ * stays; a fragment withdrawn from the row already took its unit back. A unit is its fragment's by the fragment's run
+ * (its ring's session ordinal in @p ordinals), slot and push stamp. One pass over the parts.
+ */
+void
+requalify_row_gps(CallHistoryModel::Row& row, const QHash<quint64, qint64>& ordinals) {
+    const QString anchor = anchor_fragment(row);
+    if (anchor.isEmpty() || !row_gps_known(row)) {
+        return;
+    }
+    QSet<QString> elsewhere;
+    for (const FragmentPart& part : row.parts) {
+        if (part.withdrawn || part.fragment == anchor) {
+            continue;
+        }
+        const QStringList key = part.fragment.split(QLatin1Char(':'));
+        bool ringOk = false;
+        bool slotOk = false;
+        bool seqOk = false;
+        const quint64 ring = key.size() == 3 ? key.at(0).toULongLong(&ringOk, 16) : 0U;
+        const int slot = key.size() == 3 ? key.at(1).toInt(&slotOk) : 0;
+        const qulonglong seq = key.size() == 3 ? key.at(2).toULongLong(&seqOk) : 0U;
+        if (ringOk && slotOk && seqOk && !fragment_same_reception(row, row_of_part(part))) {
+            elsewhere.insert(gps_fragment_stamp(ordinals.value(ring, 0), slot, seq));
+        }
+    }
+    drop_gps_units_of_stamps(row, elsewhere);
+}
+
+/**
+ * @brief Rebuild @p existing from @p rest (rest_of_row(): what its parts but the reading's, keys @p own, gave) and then
+ * the reading's parts, which merge_parts() or withdraw_parts() put in @p existing: what the row held stays ahead of
+ * what an update now says (a conflicting site is discarded, the row's radio stays its own), and a withdrawn reading
+ * (@p callOk false) leaves the rest alone. A new reading of the row's anchor (@p readsAnchor) leaves the row where the
+ * anchor was heard, not where the rest alone was (take_anchor_reception()).
+ */
+void
+fold_reading_after_rest(CallHistoryModel::Row& existing, CallHistoryModel::Row& rest, const QStringList& own,
+                        bool callOk, bool readsAnchor) {
+    rest.parts = existing.parts;
+    if (callOk) {
+        fold_reading_parts(rest, own);
+    }
+    take_part_fields(existing, rest);
+    if (readsAnchor && callOk) {
+        take_anchor_reception(existing);
     }
 }
 
@@ -1601,47 +2586,65 @@ CallHistoryModel::tryMerge(const Row& row, int scanRows, bool sameReception) {
 
 void
 CallHistoryModel::foldRow(Row& existing, const Row& row) {
-    // A row keeps one radio and that radio's name. The merge never folds two known sources, but an update found by
-    // its fragment (ingestRow()) is not merged again: a fragment of unknown source that joined one radio's row and
-    // then learned another radio keeps the row's radio, so it must not bring that other radio's name.
-    if (existing.src == 0 || row.src == 0 || existing.src == row.src) {
-        merge_source_label(existing, row);
+    // A reading of a fragment older than one the row already folded (a spill line replayed over a newer save) knows
+    // nothing the newer one did not, and what it says otherwise is older: it changes nothing.
+    if (reading_is_stale(existing, row)) {
+        unionFragments(existing, row.fragments);
+        return;
     }
-    if (receive_adopt_identity(existing, row)) {
-        existing.service = row.service;
-        /* A service name outranks every other name a row has (row_take_name()). */
-        if (!row.service.isEmpty()) {
-            existing.name = row.service;
-        }
+    // The row is the fold of its fragments' parts (FragmentPart), each what one fragment's readings gave, keyed by its
+    // ring identity: so whatever a fragment gave (its sender, label, message, destination and call fields) is that
+    // fragment's, and goes or changes with it alone.
+    ensure_parts(existing);
+    Row reading = row;
+    ensure_parts(reading);
+    const bool namedBefore = row_names_source(existing);
+    // A reading is judged against what the row's other parts gave, never against its own earlier readings (an update
+    // found by its fragment, ingestRow(), is not merged again). One that names another call (another system, or another
+    // raw destination) gives nothing and takes back what its earlier readings gave; a later reading that agrees again
+    // gives its part back (merge_parts()). Every row field a part gives is rebuilt from the parts on every fold.
+    const QStringList own = reading_part_keys(reading);
+    Row rest = existing;
+    const bool restKnown = rest_of_row(rest, own);
+    const bool callOk = !restKnown || fragment_call_compatible(rest, reading);
+    if (callOk) {
+        merge_parts(existing, reading);
+    } else {
+        withdraw_parts(existing, own);
     }
-    fold_carrier(existing, row);
-    fold_site(existing, row);
+    // The row's anchor (its first fragment still folded in) gives it its sync type and reception: a new reading of the
+    // anchor is the row's own reception read again, so an update of its span or alias leaves the row where it was heard.
+    // The anchor is the one the parts give once this reading is in (issue #800, fail closed): a withdrawn fragment
+    // restored at its own place ahead of the others (merge_parts()) is the row's anchor again, so the row goes back to
+    // where it was heard and its fix with it.
+    const QString anchor = anchor_fragment(existing);
+    const bool readsAnchor = !anchor.isEmpty() && own.contains(anchor);
+    // A fix lands only where it was heard (issue #800, fail closed): on the row's reception, by one protocol class
+    // (fragment_same_reception()). For any fragment but the anchor that is the reception the row's other fragments,
+    // the anchor first, were heard on, read as they were before this reading folds in anything (a stronger scope it
+    // brings is the reading's own). A conversation may still merge across carriers or both P25 phases; its fixes do
+    // not.
+    const bool positionHere = !restKnown || readsAnchor || fragment_same_reception(rest, reading);
+    if (restKnown) {
+        fold_reading_after_rest(existing, rest, own, callOk, readsAnchor);
+    } else {
+        (void)rebuild_from_parts(existing, nullptr);
+    }
+    // The GPS units are kept per fragment beside the parts (Row::gpsOthers): a reading gives its own only when it names
+    // the row's radio (fragment_identity_compatible(): an anonymous fragment never enriches a named row, and one naming
+    // another radio keeps its fix to itself) and was heard where the row was (positionHere), else its earlier unit goes.
+    fold_gps(existing, reading, callOk && positionHere && fragment_identity_compatible(existing, reading),
+             !namedBefore && row_names_source(existing));
+    // A rebuild may have moved the row to another sync type or reception: every fix it keeps is one heard there.
+    requalify_row_gps(existing, m_sessionOrdinals.rings);
     // The same analog reception read again: a row an older build stored learns the mode it did not keep.
     if (existing.analog && dsd_analog_mode_known(existing.analogMode) == 0) {
         existing.analogMode = row.analogMode;
     }
-    // The row keeps its end, so one plausibility rule decides on every fold and update: a span past the cap reads
-    // unknown, and a later update of an earlier fragment cannot rebuild a duration from that fragment alone. With
-    // neither end known the duration stays unknown; a side whose end is unknown still counts from its start, so both
-    // ends are read before the start moves (a start-less row's end is its start).
-    const qint64 start = qMin(existing.when, row.when);
-    const qint64 end = qMax(row_end_secs(existing), row_end_secs(row));
-    const bool endKnown = existing.end > 0 || row.end > 0;
-    existing.when = start;
-    if (endKnown) {
-        existing.end = end;
-        existing.durationSecs = call_history_duration_secs(start, end);
-    }
-    existing.enc = existing.enc || row.enc;
-    existing.emergency = existing.emergency || row.emergency;
-    if (existing.src == 0) {
-        existing.src = row.src;
-    }
-    // A call heard again in a later session is part of that session too: its views show
-    // the merged row, and a full log keeps it as that session's.
-    existing.session = qMax(existing.session, row.session);
-    // The fragment's recordings are the merged row's now.
+    drop_anonymous_gps_of_named(existing);
+    // The fragment's recordings are the merged row's now (none while it is withdrawn: recording_fragments()).
     unionFragments(existing, row.fragments);
+    existing.fragmentVers = newest_fragment_versions(existing.fragmentVers, row.fragmentVers);
 }
 
 int
@@ -1663,10 +2666,8 @@ int
 CallHistoryModel::findRepeatedNotice(const Row& row) const {
     for (int i = 0; i < m_rows.size(); i++) {
         const Row& existing = m_rows.at(i);
-        if (existing.kind == KindNotice && existing.when == row.when && existing.tg == row.tg && existing.src == row.src
-            && existing.name == row.name && existing.detail == row.detail && existing.systemName == row.systemName
-            && existing.systemUid == row.systemUid && existing.channel == row.channel
-            && receive_services_compatible(existing, row) && !m_noticeTwinsTaken.contains(keyFor(existing))) {
+        if (existing.kind == KindNotice && notices_same_delivery(existing, row)
+            && !m_noticeTwinsTaken.contains(keyFor(existing))) {
             return i;
         }
     }
@@ -1692,11 +2693,27 @@ CallHistoryModel::absorbRepeatedNotice(const Row& row) {
     // A notice logged before rows carried a frequency and access code gains them here, when a fresh ring
     // delivers it again (a replay after an upgrade).
     fill_carrier(logged, row);
+    // A notice an older build stored keeps its detail as one text: the repeat (the same detail) gives it its parts, and
+    // the name this build gives the delivery (notice_texts_same() matched the older one against it): an unsummarised
+    // notice is named by its whole detail line now, so a later replay, neither row legacy any more, compares the two
+    // as rows of this build and finds it.
+    if (logged.messageText.isEmpty() && !row_gps_known(logged)) {
+        take_message(logged, row);
+        take_gps(logged, row);
+        if (!notice_is_legacy(logged)) {
+            logged.name = row.name;
+            logged.legacyDetail.clear();
+        }
+    }
+    fill_identity(logged, row);
+    drop_anonymous_gps_of_named(logged);
     // Its fragment is the logged notice's now, so a spill folded twice finds it there (foldSpill()).
     unionFragments(logged, row.fragments);
     (void)receive_adopt_identity(logged, row);
     const QModelIndex idx = index(repeated);
-    Q_EMIT dataChanged(idx, idx, {SessionRole, FreqHzRole, AccessCodeRole, AccessCodeTextRole, ReceivedToneRole});
+    Q_EMIT dataChanged(
+        idx, idx,
+        {SessionRole, FreqHzRole, AccessCodeRole, AccessCodeTextRole, ReceivedToneRole, DetailRole, NameRole});
     return true;
 }
 
@@ -1712,23 +2729,32 @@ CallHistoryModel::keyFor(const Row& row) {
 
 void
 CallHistoryModel::settleMerged(int merged) {
-    static const QVector<int> mergeRoles = {WhenRole,         SrcRole,          SourceNameRole, EncRole,
-                                            DurationSecsRole, DayLabelRole,     TimeTextRole,   EmergencyRole,
-                                            SessionRole,      FreqHzRole,       AccessCodeRole, AccessCodeTextRole,
-                                            ServiceNameRole,  ReceivedToneRole, NameRole,       RecordingsRole,
-                                            HasRecordingRole, SiteTextRole,     AnalogModeRole};
+    static const QVector<int> mergeRoles = {
+        WhenRole,           TgRole,          SrcRole,          SourceNameRole, EncRole,        DurationSecsRole,
+        DayLabelRole,       TimeTextRole,    EmergencyRole,    SessionRole,    FreqHzRole,     AccessCodeRole,
+        AccessCodeTextRole, ServiceNameRole, ReceivedToneRole, NameRole,       RecordingsRole, HasRecordingRole,
+        SiteTextRole,       AnalogModeRole,  DetailRole};
     (void)nameChannel(m_rows[merged]);
     const QModelIndex idx = index(merged);
     Q_EMIT dataChanged(idx, idx, mergeRoles);
-    // A merge can only pull the absorbing row's start earlier, which may
-    // now sort below newer rows beneath it; restore the newest-first
-    // invariant the insertion scan and day sections depend on.
+    // A merge pulls the absorbing row's start earlier, which may now sort below newer rows beneath it; a fragment taken
+    // back (another call's, withdraw_parts()) can move it later, above older rows. Restore the
+    // newest-first invariant the insertion scan and day sections depend on.
     int newPos = merged;
     while (newPos + 1 < m_rows.size() && m_rows.at(newPos + 1).when > m_rows.at(merged).when) {
         newPos++;
     }
-    if (newPos != merged) {
+    if (newPos == merged) {
+        while (newPos > 0 && m_rows.at(newPos - 1).when < m_rows.at(merged).when) {
+            newPos--;
+        }
+    }
+    if (newPos > merged) {
         beginMoveRows(QModelIndex(), merged, merged, QModelIndex(), newPos + 1);
+        m_rows.move(merged, newPos);
+        endMoveRows();
+    } else if (newPos < merged) {
+        beginMoveRows(QModelIndex(), merged, merged, QModelIndex(), newPos);
         m_rows.move(merged, newPos);
         endMoveRows();
     }
@@ -1756,7 +2782,10 @@ CallHistoryModel::ingestRow(const Row& row, bool isUpdate, bool again) {
     // An update refines the row that already holds its fragment, found by the fragment (issue #799, H1). Merged again
     // by its content it could miss that row once it brings what the row's other fragments disagree with (a site the
     // core filled in later), and be dropped. A row an older build stored keeps no fragments, and is found by merging.
-    int merged = isUpdate ? rowHoldingFragment(row) : -1;
+    // A reading the seen store takes for new is still that row's when its fragment is held (issue #800, 2.7): the
+    // fragment's ring identity is stable, while its seen key holds its start, which the core can fill in or move later
+    // (watchdog_event_merge_stamps()); merged by content it could land on another row or log a second one.
+    int merged = rowHoldingFragment(row);
     if (merged >= 0) {
         foldRow(m_rows[merged], row);
     } else {
@@ -2024,6 +3053,7 @@ CallHistoryModel::clearAll() {
     if (resumeTap) {
         const CallHistoryTap::Result tapped = m_tap->stop();
         takeTapReadPosition(tapped.read, tapped.pushSeq, tapped.ring);
+        adoptSessionOrdinals(tapped.ordinals);
     } else if (tapWasRunning) {
         handOffBackgroundCapture();
     }
@@ -2073,12 +3103,6 @@ CallHistoryModel::clearAll() {
 
 namespace {
 
-/** @brief A stored integer, or @p fallback when the key is missing (a store an older build wrote). */
-qint64
-json_i64_or(const QJsonObject& obj, const char* key, qint64 fallback) {
-    return obj.contains(QLatin1String(key)) ? obj.value(QLatin1String(key)).toVariant().toLongLong() : fallback;
-}
-
 /**
  * @brief A stored access code as {kind, value}, or {0, 0} when it is missing or does not fit the ring's fields.
  *
@@ -2092,25 +3116,6 @@ json_access_code(const QJsonObject& obj, const char* kindKey, const char* codeKe
         return qMakePair(0, 0);
     }
     return qMakePair(static_cast<int>(kind), static_cast<int>(code));
-}
-
-/**
- * @brief A stored integer that fits @p T, or false when the key is missing, holds no integer or does not fit.
- *
- * For values a ring row carries in fields of that width, so a hand-edited store cannot wrap one into another value.
- */
-template <typename T>
-bool
-json_field_fits(const QJsonObject& obj, const char* key, T* out) {
-    constexpr qint64 kNone = std::numeric_limits<qint64>::min();
-    const QJsonValue value = obj.value(QLatin1String(key));
-    const qint64 n = value.isDouble() ? value.toInteger(kNone) : kNone;
-    if (n < static_cast<qint64>(std::numeric_limits<T>::min())
-        || n > static_cast<qint64>(std::numeric_limits<T>::max())) {
-        return false;
-    }
-    *out = static_cast<T>(n);
-    return true;
 }
 
 /* Issue #799: a row's site is stored by its parts (`site`), each key only with its part. The DMR texts are stored as
@@ -2362,6 +3367,78 @@ row_end_from_json(CallHistoryModel::Row& row, const QJsonObject& obj) {
     row.end = row.kind == CallHistoryModel::KindVoice && row.when > 0 && end >= row.when ? end : 0;
 }
 
+/** @brief One stored fragment part (row_parts_to_json()), read as the row's own fields are. A part stored without its
+ * sender (`pv` missing: an earlier build of #800's parts) takes it from @p row as legacy_part_of() gives it. */
+FragmentPart
+part_from_json(const QJsonObject& entry, const QString& fragment, const CallHistoryModel::Row& row) {
+    CallHistoryModel::Row fields;
+    fields.when = json_i64_or(entry, "when", 0);
+    const qint64 end = json_i64_or(entry, "end", 0);
+    fields.end = fields.when > 0 && end >= fields.when ? end : 0;
+    fields.durationSecs = static_cast<int>(qBound<qint64>(-1, json_i64_or(entry, "durationSecs", -1),
+                                                          static_cast<qint64>(std::numeric_limits<int>::max())));
+    fields.enc = entry.value(QLatin1String("enc")).toBool();
+    fields.emergency = entry.value(QLatin1String("em")).toBool();
+    fields.name = entry.value(QLatin1String("name")).toString();
+    fields.service = entry.value(QLatin1String("service")).toString();
+    fields.receiveKind = entry.value(QLatin1String("receiveKind")).toInt(DSD_RECEIVE_NONE);
+    fields.receiveValue = entry.value(QLatin1String("receiveValue")).toInt();
+    fields.receiveKnown = entry.value(QLatin1String("receiveKnown")).toBool();
+    fields.receiveSlot = entry.value(QLatin1String("receiveSlot")).toInt();
+    fields.session = json_i64_or(entry, "session", row.session);
+    row_carrier_from_json(fields, entry);
+    row_site_from_json(fields, entry);
+    if (entry.value(QLatin1String("pv")).toInt() < kPartVersionSender) {
+        fields.rxScope = stored_scope_from_json(entry, "rx");
+        FragmentPart part = fragment_part_of(fields, fragment);
+        take_part_sender(part, legacy_part_of(row, fragment));
+        return part;
+    }
+    // The sender, call identity and message, as a row's (`proto`, `srcText`, `tgtText`, `sscope`, `rx`, `msg*`).
+    row_payload_from_json(fields, entry);
+    fields.src = static_cast<qulonglong>(qMax<qint64>(json_i64_or(entry, "src", 0), 0));
+    // A part an earlier build of this one stored keeps no target: every part of a row then had the row's.
+    fields.tg = static_cast<qulonglong>(qMax<qint64>(json_i64_or(entry, "tg", static_cast<qint64>(row.tg)), 0));
+    fields.sourceName = entry.value(QLatin1String("srcName")).toString();
+    fields.sourceNameWhen = json_i64_or(entry, "srcNameWhen", fields.when);
+    fields.sourceNameSeq = static_cast<qulonglong>(json_i64_or(entry, "srcNameSeq", 0));
+    fields.sourceNameSlot = static_cast<int>(json_i64_or(entry, "srcNameSlot", 0));
+    return fragment_part_of(fields, fragment);
+}
+
+/** @brief A stored voice row's fragment parts: one per fragment it holds, the first stored for each; a row of one
+ * fragment with none stored is its own part. A part of a fragment the row does not hold is dropped. */
+QList<FragmentPart>
+row_parts_from_json(const CallHistoryModel::Row& row, const QJsonObject& obj) {
+    QList<FragmentPart> parts;
+    if (row.kind != CallHistoryModel::KindVoice) {
+        return parts;
+    }
+    for (const auto& value : obj.value(QLatin1String("fp")).toArray()) {
+        const QJsonObject entry = value.toObject();
+        const QString fragment = entry.value(QLatin1String("fr")).toString();
+        // A legacy part (or one an earlier build stored with no key) stands for what a row stored without fragments
+        // held (ensure_parts()).
+        if ((!fragment.isEmpty() && !is_legacy_part_key(fragment) && !row.fragments.contains(fragment))
+            || std::any_of(parts.cbegin(), parts.cend(),
+                           [&fragment](const FragmentPart& held) { return held.fragment == fragment; })) {
+            continue;
+        }
+        FragmentPart part;
+        if (entry.value(QLatin1String("x")).toBool()) {
+            part.fragment = fragment;
+            part.withdrawn = true;
+        } else {
+            part = part_from_json(entry, fragment, row);
+        }
+        parts.append(part);
+    }
+    if (parts.isEmpty() && row.fragments.size() == 1) {
+        parts.append(fragment_part_of(row, row.fragments.constFirst()));
+    }
+    return parts;
+}
+
 /** @brief One stored row. */
 CallHistoryModel::Row
 row_from_json(const QJsonObject& obj) {
@@ -2378,7 +3455,6 @@ row_from_json(const QJsonObject& obj) {
     row.systemUid = obj.value(QLatin1String("systemUid")).toString();
     row.kind = obj.value(QLatin1String("kind")).toInt(CallHistoryModel::KindVoice);
     row_end_from_json(row, obj);
-    row.detail = obj.value(QLatin1String("detail")).toString();
     row.channel = obj.value(QLatin1String("channel")).toString();
     row.channelName = obj.value(QLatin1String("channelName")).toString();
     row.service = obj.value(QLatin1String("service")).toString();
@@ -2404,6 +3480,8 @@ row_from_json(const QJsonObject& obj) {
     if (row.kind == CallHistoryModel::KindVoice) {
         row_site_from_json(row, obj);
     }
+    row_payload_from_json(row, obj);
+    drop_anonymous_gps_of_named(row);
     // Issue #708; absent in stores older builds wrote (a uid is then assigned at load).
     row.uid = qMax<qint64>(json_i64_or(obj, "uid", 0), 0);
     for (const auto& fragment : obj.value(QLatin1String("fr")).toArray()) {
@@ -2412,6 +3490,18 @@ row_from_json(const QJsonObject& obj) {
             row.fragments.append(key);
         }
     }
+    // Issue #800: the newest reading's version of each of those fragments; absent in stores older builds wrote.
+    const QJsonObject versions = obj.value(QLatin1String("frv")).toObject();
+    for (auto it = versions.constBegin(); it != versions.constEnd(); ++it) {
+        const qint64 version = it.value().toInteger(0);
+        if (version > 0 && row.fragments.contains(it.key())) {
+            row.fragmentVers.insert(it.key(), static_cast<quint64>(version));
+        }
+    }
+    row.parts = row_parts_from_json(row, obj);
+    // A row an older build stored without parts is converted into the same model now (issue #800): a load merge folds
+    // it as a part of its own, as every later fold does.
+    ensure_parts(row);
     return row;
 }
 
@@ -2431,6 +3521,67 @@ row_carrier_to_json(const CallHistoryModel::Row& row, QJsonObject& obj) {
         obj.insert(QLatin1String("acSeq"), static_cast<qint64>(row.acSeq));
         obj.insert(QLatin1String("acSlot"), row.acSlot);
     }
+}
+
+/** @brief Store a voice row's fragment parts (`fp`, Row::parts) when it has two or more; each part as the row's own
+ * fields are stored, under its fragment key (`fr`), with `x` when withdrawn, and `pv` for a part that holds its
+ * sender. */
+void
+row_parts_to_json(const CallHistoryModel::Row& row, QJsonObject& obj) {
+    if (row.kind != CallHistoryModel::KindVoice || row.parts.size() < 2) {
+        return;
+    }
+    QJsonArray stored;
+    for (const FragmentPart& part : row.parts) {
+        QJsonObject entry;
+        entry.insert(QLatin1String("fr"), part.fragment);
+        if (part.withdrawn) {
+            entry.insert(QLatin1String("x"), true);
+            stored.append(entry);
+            continue;
+        }
+        const CallHistoryModel::Row fields = row_of_part(part);
+        entry.insert(QLatin1String("when"), fields.when);
+        if (fields.end > 0) {
+            entry.insert(QLatin1String("end"), fields.end);
+        }
+        entry.insert(QLatin1String("durationSecs"), fields.durationSecs);
+        if (fields.enc) {
+            entry.insert(QLatin1String("enc"), true);
+        }
+        if (fields.emergency) {
+            entry.insert(QLatin1String("em"), true);
+        }
+        entry.insert(QLatin1String("name"), fields.name);
+        if (!fields.service.isEmpty()) {
+            entry.insert(QLatin1String("service"), fields.service);
+        }
+        if (fields.receiveKnown) {
+            entry.insert(QLatin1String("receiveKind"), fields.receiveKind);
+            entry.insert(QLatin1String("receiveValue"), fields.receiveValue);
+            entry.insert(QLatin1String("receiveKnown"), true);
+        }
+        if (fields.receiveSlot != 0) {
+            entry.insert(QLatin1String("receiveSlot"), fields.receiveSlot);
+        }
+        row_carrier_to_json(fields, entry);
+        row_site_to_json(fields, entry);
+        row_payload_to_json(fields, entry);
+        entry.insert(QLatin1String("tg"), static_cast<qint64>(fields.tg));
+        if (fields.src != 0U) {
+            entry.insert(QLatin1String("src"), static_cast<qint64>(fields.src));
+        }
+        if (!fields.sourceName.isEmpty()) {
+            entry.insert(QLatin1String("srcName"), fields.sourceName);
+            entry.insert(QLatin1String("srcNameWhen"), fields.sourceNameWhen);
+            entry.insert(QLatin1String("srcNameSeq"), static_cast<qint64>(fields.sourceNameSeq));
+            entry.insert(QLatin1String("srcNameSlot"), fields.sourceNameSlot);
+        }
+        entry.insert(QLatin1String("session"), fields.session);
+        entry.insert(QLatin1String("pv"), kPartVersionSender);
+        stored.append(entry);
+    }
+    obj.insert(QLatin1String("fp"), stored);
 }
 
 /** @brief One row as the rows store and the spill write it. */
@@ -2456,9 +3607,6 @@ row_to_json(const CallHistoryModel::Row& row) {
     obj.insert(QLatin1String("systemName"), row.systemName);
     obj.insert(QLatin1String("systemUid"), row.systemUid);
     obj.insert(QLatin1String("kind"), row.kind);
-    if (!row.detail.isEmpty()) {
-        obj.insert(QLatin1String("detail"), row.detail);
-    }
     if (!row.channel.isEmpty()) {
         obj.insert(QLatin1String("channel"), row.channel);
     }
@@ -2487,12 +3635,21 @@ row_to_json(const CallHistoryModel::Row& row) {
     obj.insert(QLatin1String("session"), row.session);
     row_carrier_to_json(row, obj);
     row_site_to_json(row, obj);
+    row_payload_to_json(row, obj);
     if (row.uid > 0) {
         obj.insert(QLatin1String("uid"), row.uid);
     }
     if (!row.fragments.isEmpty()) {
         obj.insert(QLatin1String("fr"), QJsonArray::fromStringList(row.fragments));
     }
+    if (!row.fragmentVers.isEmpty()) {
+        QJsonObject versions;
+        for (auto it = row.fragmentVers.constBegin(); it != row.fragmentVers.constEnd(); ++it) {
+            versions.insert(it.key(), static_cast<qint64>(it.value()));
+        }
+        obj.insert(QLatin1String("frv"), versions);
+    }
+    row_parts_to_json(row, obj);
     return obj;
 }
 
@@ -2511,6 +3668,10 @@ CallHistoryModel::load() {
         // onto rows already in the log, even if the settings that hold it were lost.
         m_session = qMax(m_session, row.session);
         m_nextUid = qMax(m_nextUid, row.uid + 1);
+        // Likewise the session ordinals (issue #800): never given again to a later run, even if the settings were lost.
+        if (row.gpsOrd < std::numeric_limits<qint64>::max()) {
+            m_sessionOrdinals.next = qMax(m_sessionOrdinals.next, row.gpsOrd + 1);
+        }
         rows.append(row);
     }
     m_nextUid = qMax(m_nextUid, m_settings.value(QLatin1String(kNextUidKey)).toLongLong());
@@ -2526,6 +3687,7 @@ CallHistoryModel::load() {
         // fragment's start, so its seed's key is no ring row's, and a merged call whose seen entries were
         // evicted or lost is logged again as new rows, one per fragment.
         // The seed's site text digest is the text the row shows, as a ring walk reads it: a relaunch re-reads nothing.
+        // So are its GPS text, message and position digests (issue #800).
         m_seen.insert(keyFor(*it), SeenState{it->when,
                                              row_end_secs(*it),
                                              it->src,
@@ -2543,6 +3705,9 @@ CallHistoryModel::load() {
                                              it->callChannelKind,
                                              call_history_site_text_digest(&it->siteId),
                                              true,
+                                             row_text_digest(it->gpsText),
+                                             row_text_digest(it->messageText),
+                                             row_position_digest(it->pos),
                                              it->session,
                                              0U,
                                              QString()});
@@ -2605,6 +3770,19 @@ CallHistoryModel::seenEntryFromJson(const QJsonObject& obj) {
     if (!state.siteTextKnown) {
         state.siteText = 0U;
     }
+    // Issue #800: absent when there is none, and in stores older builds wrote; a value that does not fit reads as none.
+    const auto digest = [&obj](const char* key) {
+        uint32_t value = 0U;
+        return json_field_fits(obj, key, &value) ? value : 0U;
+    };
+    state.gpsText = digest("gpx");
+    state.messageText = digest("msx");
+    state.position = digest("psx");
+    // Absent in stores older builds wrote: not known, so the first read takes one (SeenState::identity).
+    state.identityKnown = json_field_fits(obj, "idx", &state.identity);
+    if (!state.identityKnown) {
+        state.identity = 0U;
+    }
     if (!json_field_fits(obj, "cch", &state.callChannel) || !json_field_fits(obj, "cchKind", &state.callChannelKind)
         || !call_history_call_channel_known(state.callChannelKind, state.callChannel)) {
         state.callChannel = 0U;
@@ -2643,6 +3821,11 @@ CallHistoryModel::setStoreBuildObserverForTest(void (*observer)(const QThread* t
 void
 CallHistoryModel::failNextSpillReadAfterLinesForTest(int lines) {
     g_spill_read_fail_after.store(lines);
+}
+
+qint64
+CallHistoryModel::takePartLookupStepsForTest() {
+    return g_part_lookup_steps.exchange(0);
 }
 #endif
 
@@ -2717,6 +3900,17 @@ CallHistoryModel::seenEntryToJson(const SeenState& state) {
     if (state.callChannel != 0U || state.callChannelKind != DSD_CALL_CHANNEL_NONE) {
         obj.insert(QLatin1String("cch"), static_cast<qint64>(state.callChannel));
         obj.insert(QLatin1String("cchKind"), state.callChannelKind);
+    }
+    const auto digest = [&obj](const char* key, uint32_t value) {
+        if (value != 0U) {
+            obj.insert(QLatin1String(key), static_cast<qint64>(value));
+        }
+    };
+    digest("gpx", state.gpsText);
+    digest("msx", state.messageText);
+    digest("psx", state.position);
+    if (state.identityKnown) {
+        obj.insert(QLatin1String("idx"), static_cast<qint64>(state.identity));
     }
     obj.insert(QLatin1String("session"), state.session);
     obj.insert(QLatin1String("ring"), QString::number(state.ring, 16));
@@ -2890,6 +4084,14 @@ CallHistoryModel::startBackgroundCapture() {
     context.sessionLabel = m_sessionLabel;
     context.sessionUid = m_sessionUid;
     context.clear = m_clear;
+    // A block of ordinals for the rings the tap meets first, set aside and saved before it runs: a process killed while
+    // it is away leaves rows whose ordinals no later run's can come before, however the spill is read back.
+    context.ordinals = m_sessionOrdinals;
+    context.ordinals.limit = m_sessionOrdinals.next <= std::numeric_limits<qint64>::max() - kTapOrdinalBlock
+                                 ? m_sessionOrdinals.next + kTapOrdinalBlock
+                                 : std::numeric_limits<qint64>::max();
+    m_sessionOrdinals.next = context.ordinals.limit;
+    saveSessionOrdinals();
     m_tapClearRev = m_clearRev;
     if (!m_tap->start(std::move(context))) {
         qWarning("call history: the background capture could not start");
@@ -2952,6 +4154,8 @@ CallHistoryModel::stopBackgroundCapture() {
     const CallHistoryTap::Result tapped = m_tap->stop();
     // A clear before the next ingest covers what the tap read.
     takeTapReadPosition(tapped.read, tapped.pushSeq, tapped.ring);
+    // Before any spill line folds: the ordinals the tap gave are the rings' for good.
+    adoptSessionOrdinals(tapped.ordinals);
     // A clear this model made before it had read any ring binds to what the first read finds (settleClear()). The
     // tap made that first read, so its binding is the one: binding later, here, would hide what the ring took in
     // between. A clear made after the tap started supersedes whatever the tap settled.
@@ -2962,6 +4166,30 @@ CallHistoryModel::stopBackgroundCapture() {
     }
     return tapped.unwritten;
 }
+
+namespace {
+
+/**
+ * @brief Give a spilled reading @p row the GPS provenance the walk gave it (issue #800, 2.7), which a row stores only
+ * with GPS text or a position (row_payload_to_json()): its run's session ordinal (@p ordinal, the line's `ord`) and the
+ * ring's commit_rev when it was read (its fragment's version). So a reading whose GPS the core cleared while the app
+ * was away is still its fragment's (call_history_same_fragment()), and withdraws that fragment's fix when folded, as
+ * the same reading read live does.
+ */
+void
+spilled_reading_provenance(CallHistoryModel::Row& row, qint64 ordinal) {
+    if (row.fragments.size() != 1) {
+        return;
+    }
+    if (row.gpsOrd <= 0 && ordinal > 0) {
+        row.gpsOrd = ordinal;
+    }
+    if (row.gpsVer == 0U) {
+        row.gpsVer = row.fragmentVers.value(row.fragments.constFirst(), 0U);
+    }
+}
+
+} // namespace
 
 bool
 CallHistoryModel::foldSpill(const QByteArray& unwritten) {
@@ -3065,8 +4293,12 @@ CallHistoryModel::foldSpillLine(const QByteArray& line, bool cleared, quint64* t
         foldSettledSeen(key, obj, folded);
         return false;
     }
-    const Row row = row_from_json(rowObj);
+    Row row = row_from_json(rowObj);
     const SeenState seen = seenEntryFromJson(obj.value(QLatin1String("seen")).toObject());
+    // The ordinal the tap gave the row's ring is that ring's (issue #800): kept as it was, never given again.
+    const qint64 ordinal = json_i64_or(obj, "ord", 0);
+    adoptSessionOrdinal(seen.ring, ordinal);
+    spilled_reading_provenance(row, ordinal);
     if (spilledRowCleared(cleared, row, seen)) {
         // Cleared after the tap found it.
         return false;
@@ -3161,6 +4393,10 @@ CallHistoryModel::spillLine(const FreshRow& fresh) {
     obj.insert(QLatin1String("key"), fresh.key);
     obj.insert(QLatin1String("seen"), seenEntryToJson(fresh.seen));
     obj.insert(QLatin1String("row"), row_to_json(fresh.row));
+    // The session ordinal of the ring the tap read the row from (issue #800), whether or not the row has a position.
+    if (fresh.row.gpsOrd > 0) {
+        obj.insert(QLatin1String("ord"), fresh.row.gpsOrd);
+    }
     if (fresh.isUpdate) {
         obj.insert(QLatin1String("upd"), true);
     }

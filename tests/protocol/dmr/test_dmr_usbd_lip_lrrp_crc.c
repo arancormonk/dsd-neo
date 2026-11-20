@@ -15,7 +15,6 @@
 #include <dsd-neo/core/state_ext.h>
 #include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/fec/block_codes.h>
-#include <dsd-neo/fec/bptc.h>
 #include <dsd-neo/platform/file_compat.h>
 #include <dsd-neo/protocol/dmr/dmr.h>
 #include <dsd-neo/protocol/dmr/dmr_utils_api.h>
@@ -25,6 +24,7 @@
 #include <string.h>
 #include "dmr_bptc_test_encoder.h"
 #include "dsd-neo/core/opts_fwd.h"
+#include "dsd-neo/core/position.h"
 #include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
 #include "test_support.h"
@@ -93,7 +93,8 @@ expect_rows(const char* path, int expected, const char* src, const char* lat, co
     return 1;
 }
 
-// A clean voice call on slot 1, so a failed USBD that reached the LIP decoder would enrich it and mark it.
+// A clean voice call on slot 1 from radio 218, whose number is also the reply's hash: a USBD reply must neither enrich
+// nor mark it (spec 2.14).
 static void
 open_clean_call(dsd_opts* opts, dsd_state* state) {
     dsd_call_observation observation;
@@ -108,50 +109,98 @@ open_clean_call(dsd_opts* opts, dsd_state* state) {
     dsd_event_sync_slot(opts, state, 1U);
 }
 
+static void
+encode_usbd(const uint8_t bytes[10], int corrupt, const uint8_t reserved[3], uint8_t info[196]) {
+    uint8_t payload[96] = {0};
+    unpack(bytes, payload, 10U);
+    uint16_t crc = (uint16_t)(ComputeCrcCCITT(payload) ^ 0x3333U);
+    for (unsigned i = 0; i < 16; ++i) {
+        payload[80 + i] = (uint8_t)((crc >> (15U - i)) & 1U);
+    }
+    // Flip the Time Elapsed LSB after the CRC: FEC stays valid, the CRC fails, no asserted field changes.
+    payload[5] ^= (uint8_t)corrupt;
+    dmr_test_encode_bptc_196x96(payload, reserved, info);
+}
+
+typedef struct {
+    int aggressive;
+    int relaxed;
+    int corrupt;
+    uint8_t reserved[3];
+    dmr_burst_origin origin;
+    int published; // admitted: GPS text and a notice of its own
+    const char* tag;
+} usbd_case;
+
+/* The fields a notice writes: equal when no notice was written over the row. */
+static int
+notice_row_unchanged(const Event_History* a, const Event_History* b) {
+    return a->write == b->write && a->systype == b->systype && a->subtype == b->subtype && a->category == b->category
+           && a->source_id == b->source_id && a->target_id == b->target_id && a->event_time == b->event_time
+           && a->event_start_time == b->event_start_time && memcmp(a->gps_s, b->gps_s, sizeof a->gps_s) == 0
+           && memcmp(a->event_string, b->event_string, sizeof a->event_string) == 0
+           && memcmp(a->text_message, b->text_message, sizeof a->text_message) == 0
+           && memcmp(a->internal_str, b->internal_str, sizeof a->internal_str) == 0
+           && memcmp(&a->pos, &b->pos, sizeof a->pos) == 0;
+}
+
+static int
+check_case(const dsd_state* state, const usbd_case* c, const Event_History* notice_before) {
+    const Event_History_I* history = &state->event_history_s[1];
+    const Event_History* call_row = &history->Event_History_Items[0];
+    const Event_History* notice = &history->Event_History_Items[1];
+    dsd_call_snapshot call;
+    if (dsd_call_state_get(state, 1U, &call) <= 0 || call.crc_invalid != 0U || call_row->gps_s[0] != '\0'
+        || call_row->pos.valid != 0U) {
+        DSD_FPRINTF(stderr, "\n%s: the active call was enriched or marked: %s\n", c->tag, call_row->gps_s);
+        return 0;
+    }
+    const char* gps = state->dmr_embedded_gps[1];
+    if (!c->published) {
+        if (gps[0] != '\0' || !notice_row_unchanged(notice, notice_before)) {
+            DSD_FPRINTF(stderr, "\n%s: an unpublished reply left text or a notice: %s\n", c->tag, gps);
+            return 0;
+        }
+        return 1;
+    }
+    if (!strstr(gps, "218; LIP:") || !strstr(gps, "22.50000") || !strstr(gps, "S ") || !strstr(gps, "45.00000")
+        || !strstr(gps, "W;") || !strstr(gps, "Err: 20m")) {
+        DSD_FPRINTF(stderr, "\n%s: unexpected GPS state: %s\n", c->tag, gps);
+        return 0;
+    }
+    // Its own notice: anonymous (the hash is no radio ID), the hash shown as a hash, the position kept.
+    if (notice->source_id != 0U || !strstr(notice->event_string, "SRC(Hash): 218;") || strcmp(notice->gps_s, gps) != 0
+        || notice->pos.valid != 1U || notice->pos.lat_e7 != -225000000 || notice->pos.lon_e7 != -450000000
+        || notice->pos.kind != DSD_POS_LIP_USBD || (notice->pos.flags & DSD_POS_FLAG_SOURCE_HASHED) == 0U) {
+        DSD_FPRINTF(stderr, "\n%s: unexpected notice: src=%u valid=%u lat=%d lon=%d '%s' / '%s'\n", c->tag,
+                    notice->source_id, notice->pos.valid, notice->pos.lat_e7, notice->pos.lon_e7, notice->event_string,
+                    notice->gps_s);
+        return 0;
+    }
+    return 1;
+}
+
 static int
 run_cases(dsd_opts* opts, dsd_state* state, const char* path) {
     // Same LIP vector as CORE_GPS_LRRP_CRC_GATING: 22.5 S, 45 W, hash 218, speed 20.
     static const uint8_t lip_bytes[10] = {0x07, 0x80, 0x00, 0x01, 0xC0, 0x00, 0x00, 0x4A, 0x00, 0xDA};
-    uint8_t good[96] = {0};
-    unpack(lip_bytes, good, sizeof lip_bytes);
-    uint16_t crc = (uint16_t)(ComputeCrcCCITT(good) ^ 0x3333U);
-    for (unsigned i = 0; i < 16; ++i) {
-        good[80 + i] = (uint8_t)((crc >> (15U - i)) & 1U);
-    }
 
-    // decodes: strict CRC publishes no failed DMR data, so a failed USBD is not decoded at all; -F decodes it marked.
-    static const struct {
-        int aggressive;
-        int relaxed;
-        int corrupt;
-        uint8_t reserved[3];
-        int rows;
-        int decodes;
-        const char* tag;
-    } cases[] = {
-        {1, 0, 0, {0, 0, 0}, 1, 1, "Strict clean USBD"},
-        {1, 0, 1, {0, 0, 0}, 0, 0, "Strict CRC-failed USBD"},
-        {0, 1, 1, {0, 0, 1}, 0, 1, "Relaxed RAS CRC-failed USBD"},
-        {0, 1, 0, {0, 0, 0}, 1, 1, "Relaxed clean USBD"},
+    // Strict CRC publishes no failed DMR data, so a failed USBD is not decoded at all; -F decodes it and withholds the
+    // position (spec 2.11). Only an inbound burst is a reply (spec 2.13). A hashed source is never written to -L (D8).
+    static const usbd_case cases[] = {
+        {1, 0, 0, {0, 0, 0}, DMR_BURST_ORIGIN_MS, 1, "Strict clean USBD"},
+        {1, 0, 1, {0, 0, 0}, DMR_BURST_ORIGIN_MS, 0, "Strict CRC-failed USBD"},
+        {0, 1, 1, {0, 0, 1}, DMR_BURST_ORIGIN_MS, 0, "Relaxed RAS CRC-failed USBD"},
+        {0, 1, 0, {0, 0, 0}, DMR_BURST_ORIGIN_MS, 1, "Relaxed clean USBD"},
+        {1, 0, 0, {0, 0, 0}, DMR_BURST_ORIGIN_BS, 0, "Outbound USBD (a Poll Request)"},
+        {1, 0, 0, {0, 0, 0}, DMR_BURST_ORIGIN_DIRECT_TS1, 0, "Direct mode slot 1 USBD"},
+        {1, 0, 0, {0, 0, 0}, DMR_BURST_ORIGIN_DIRECT_TS2, 0, "Direct mode slot 2 USBD"},
+        {1, 0, 0, {0, 0, 0}, DMR_BURST_ORIGIN_UNKNOWN, 0, "Unknown-origin USBD"},
     };
 
-    char clean_gps[sizeof state->dmr_embedded_gps[1]];
     for (size_t i = 0; i < sizeof cases / sizeof cases[0]; ++i) {
-        uint8_t payload[96];
         uint8_t info[196];
-        DSD_MEMCPY(payload, good, sizeof payload);
-        // Flip the Time Elapsed LSB before encoding: FEC stays valid, the CRC fails, no asserted field changes.
-        payload[5] ^= (uint8_t)cases[i].corrupt;
-        dmr_test_encode_bptc_196x96(payload, cases[i].reserved, info);
-        uint8_t deint[196];
-        uint8_t decoded[96];
-        uint8_t reserved[3];
-        BPTCDeInterleaveDMRData(info, deint);
-        if (BPTC_196x96_Extract_Data(deint, decoded, reserved) != 0 || memcmp(decoded, payload, sizeof payload) != 0
-            || memcmp(reserved, cases[i].reserved, sizeof reserved) != 0) {
-            DSD_FPRINTF(stderr, "%s: BPTC round-trip failed\n", cases[i].tag);
-            return 2;
-        }
+        encode_usbd(lip_bytes, cases[i].corrupt, cases[i].reserved, info);
         if (!truncate_output(path)) {
             return 100;
         }
@@ -164,37 +213,37 @@ run_cases(dsd_opts* opts, dsd_state* state, const char* path) {
         state->data_conf_data[1] = 0;
         state->data_header_format[1] = 1;
         DSD_MEMSET(state->dmr_embedded_gps[1], 0, sizeof state->dmr_embedded_gps[1]);
-        if (!cases[i].decodes) {
-            open_clean_call(opts, state);
-        }
-        dmr_data_burst_handler(opts, state, info, 0x0B, NULL);
+        open_clean_call(opts, state);
+        const Event_History notice_before = state->event_history_s[1].Event_History_Items[1];
+        dmr_data_burst_handler_origin(opts, state, info, 0x0B, NULL, cases[i].origin);
         if (state->event_crc_invalid[1] != 0) {
             DSD_FPRINTF(stderr, "\n%s: CRC flag was not restored\n", cases[i].tag);
             return 10 + (int)i * 3;
         }
-        if (!expect_rows(path, cases[i].rows, "00000218", "-22.500000", "-45.000000", 20, 0, cases[i].tag)) {
+        if (!expect_rows(path, 0, NULL, NULL, NULL, 0, 0, cases[i].tag)) {
             return 11 + (int)i * 3;
         }
-        const char* gps = state->dmr_embedded_gps[1];
-        if (i == 0) {
-            if (!strstr(gps, "218; LIP:") || !strstr(gps, "22.50000") || !strstr(gps, "S") || !strstr(gps, "45.00000")
-                || !strstr(gps, "W") || !strstr(gps, "Err: 20m")) {
-                DSD_FPRINTF(stderr, "\n%s: unexpected GPS state: %s\n", cases[i].tag, gps);
-                return 12;
-            }
-            DSD_MEMCPY(clean_gps, gps, sizeof clean_gps);
-        } else if (!cases[i].decodes) {
-            dsd_call_snapshot call;
-            if (gps[0] != '\0' || dsd_call_state_get(state, 1U, &call) <= 0 || call.crc_invalid != 0U
-                || state->event_history_s[1].Event_History_Items[0].gps_s[0] != '\0') {
-                DSD_FPRINTF(stderr, "\n%s: a strict CRC failure was decoded or marked the call: %s\n", cases[i].tag,
-                            gps);
-                return 12 + (int)i * 3;
-            }
-        } else if (memcmp(gps, clean_gps, sizeof clean_gps) != 0) {
-            DSD_FPRINTF(stderr, "\n%s: decoded GPS state changed: %s\n", cases[i].tag, gps);
+        if (!check_case(state, &cases[i], &notice_before)) {
             return 12 + (int)i * 3;
         }
+    }
+
+    // A Poll Request read as a reply would be the point (0, 0) with the polled radio's low byte as its "hash": even an
+    // inbound burst of that shape is no position (admission refuses exactly (0, 0)).
+    static const uint8_t request_bytes[10] = {0x04, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x12, 0x34, 0x56};
+    uint8_t info[196];
+    static const uint8_t no_reserved[3] = {0, 0, 0};
+    encode_usbd(request_bytes, 0, no_reserved, info);
+    opts->aggressive_framesync = 1;
+    opts->dmr_crc_relaxed_default = 0;
+    DSD_MEMSET(state->dmr_embedded_gps[1], 0, sizeof state->dmr_embedded_gps[1]);
+    if (!truncate_output(path)) {
+        return 100;
+    }
+    dmr_data_burst_handler_origin(opts, state, info, 0x0B, NULL, DMR_BURST_ORIGIN_MS);
+    if (!expect_rows(path, 0, NULL, NULL, NULL, 0, 0, "Zero position") || state->dmr_embedded_gps[1][0] != '\0') {
+        DSD_FPRINTF(stderr, "\nZero position: published: %s\n", state->dmr_embedded_gps[1]);
+        return 60;
     }
     return 0;
 }

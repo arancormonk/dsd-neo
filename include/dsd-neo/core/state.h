@@ -20,6 +20,8 @@
 #include <dsd-neo/core/opts_fwd.h>
 #include <dsd-neo/core/p25_patch.h>
 #include <dsd-neo/core/p25p2_playout.h>
+#include <dsd-neo/core/position.h>
+#include <dsd-neo/core/position_attribution.h>
 #include <dsd-neo/core/receive_types.h>
 #include <dsd-neo/core/state_ext.h>
 #include <dsd-neo/core/state_fwd.h>
@@ -555,6 +557,26 @@ typedef struct {
     uint8_t bits[P25_APX_ALIAS_STORE_BITS];
 } p25_apx_alias_rx_state_t;
 
+/**
+ * The P25 Phase 1 L3Harris GPS update Part A (MFID $A4 LCO 42 or 44, TIA-102.AABF-D-1 §7.3.35) waiting for its Part B
+ * (issue #800). It owns its storage, so a talker alias between the two halves cannot wipe it (spec N3). It pairs only
+ * with the Part B of its own parity (42 with 43, 44 with 45; D14) heard on the same call epoch (never outside a call)
+ * and source within the pairing window on the decode clock, and the report keeps the reception it began on
+ * (@c origin). Any newer Part A replaces it; a Part B of the other parity, its use, another call epoch or source and
+ * expiry clear it. Epochs are never given out twice on one state (dsd_state::call_epoch_floor), so one left by another
+ * engine run matches no call of the next.
+ */
+typedef struct {
+    uint8_t valid;
+    uint8_t even;            /* 1 for LCO 44 (even-numbered update), 0 for LCO 42 */
+    uint8_t hard;            /* its link control passed a hard RS decode (not a soft-erasure retry) */
+    uint8_t octets[7];       /* Part A octets 2-8 */
+    uint32_t source;         /* the bound call's source; 0 when none */
+    uint64_t epoch;          /* the bound call's epoch; 0 when no call was open */
+    uint64_t stored_mono_ms; /* dsd_decode_now_mono_ms() when stored */
+    dsd_position_origin origin;
+} p25_p1_harris_gps_part_a;
+
 /** Fragments in one Kenwood NXDN talker alias, and the text octets they carry (the last two octets of fragment 4 are
  * not text). */
 #define NXDN_ALIAS_FRAGMENTS  4
@@ -597,6 +619,21 @@ typedef struct dmr_talker_alias_assembly {
     uint8_t piece[4][7]; /* each piece's bits as stored (header 48 or 49, a block 56), packed MSB first */
 } dmr_talker_alias_assembly;
 
+/**
+ * The M17 LSF being assembled from LICH chunks (src/protocol/m17/m17.c, issue #800): which chunks it holds (bit n: chunk
+ * n of six) and what its first chunk was heard under -- the transmission (the slot 0 ACTIVE M17 call's epoch, 0 none;
+ * an LSF frame, a packet frame, an EOT and the carrier's end begin another and empty the assembly), whether the
+ * transmission was confirmed (dsd_state::m17_confirmed) and the reception (dsd_position_origin_capture()). A chunk heard
+ * when any of them has changed resets the assembly; only one holding all six chunks under one binding, its CRC passed,
+ * names a call or carries a position.
+ */
+typedef struct m17_lich_assembly {
+    uint8_t held;
+    uint8_t confirmed;
+    uint64_t call_epoch;
+    dsd_position_origin origin;
+} m17_lich_assembly;
+
 typedef struct {
     uint8_t mask;
     char last_alias[40];
@@ -623,6 +660,59 @@ typedef enum DSD_ATTR_PACKED {
     DSD_EVENT_CATEGORY_CONTROL = 4,
     DSD_EVENT_CATEGORY_SYSTEM = 5
 } dsd_event_category;
+
+/**
+ * The admitted position report a history row carries (issue #800), set together with the row's gps_s text by the
+ * position writers in <dsd-neo/core/events.h> and only from a report dsd_position_admit() admitted. Laid out without
+ * padding, so a row stays comparable byte for byte.
+ *
+ * scope and identity_freq_hz are the row's sender identity (D7, the track key): the admitted report's sender scope
+ * and identity discriminator, or, on a data notice without a position, the scope of the reception the notice was heard
+ * on, stamped at emit. They may be set while valid is 0. Everything else is meaningful only while valid is 1. Where the
+ * row was heard is Event_History::rx_scope.
+ */
+typedef struct {
+    uint64_t proc_instance;   /**< dsd_position_fix::proc_instance of the report */
+    uint64_t rev;             /**< dsd_position_fix::rev; the newest rev wins wherever two positions meet */
+    int64_t rx_time_s;        /**< dsd_position_fix::rx_time_s (display only; never orders) */
+    int64_t identity_freq_hz; /**< dsd_position_fix::identity_freq_hz: the discriminator of a P25 NAC scope, else 0 */
+    int32_t lat_e7;           /**< degrees x 1e7, north positive */
+    int32_t lon_e7;           /**< degrees x 1e7, east positive */
+    uint32_t err_m;           /**< metres; DSD_POSITION_ERR_UNKNOWN (0) */
+    uint16_t flags;           /**< dsd_position_flag */
+    uint8_t valid;            /**< 1 while the row carries an admitted position */
+    uint8_t rx_clock;         /**< dsd_position_fix::rx_clock */
+    uint8_t kind;             /**< dsd_position_kind */
+    uint8_t anonymous;        /**< 1 when the report names no source a row could check (hashed, unverified, or no ID
+                                   and no callsign): it stays only while the row names no source either */
+    uint8_t pad[2];           /**< always 0 */
+    dsd_position_scope scope; /**< the sender scope (see above); DSD_POS_SCOPE_NONE when none was stamped */
+} dsd_event_pos;
+
+/**
+ * Where a history row's call or notice was heard (issue #800, D7): the reception's scope (the alias scope, else a
+ * feed-only EDACS, control-channel or tuned-frequency scope; dsd_position_scope_from_rxid()), its identity
+ * discriminator (the tuned frequency for a P25 NAC scope, else 0), the tuned frequency it was read with and the
+ * reception generation it was read under. A
+ * call row takes it by the rule its site follows (Event_History::site_id: the live record only while the call is
+ * active on the carrier it began on, the record as the call ended once it has), pinned once resolved; a data notice at
+ * emit. A position lands on a row, or merges into it, only under the reception rule (dsd_position_same_reception()):
+ * both scopes known and equal on one carrier, or the same generation with nothing that says otherwise; an unknown side
+ * never matches across generations. Laid out without padding.
+ */
+typedef struct {
+    int64_t identity_freq_hz; /**< the tuned frequency for a DSD_POS_SCOPE_P25_NAC scope, else 0 */
+    /** The tuned frequency the reception was read with, whatever its scope (0 when unknown): two carriers are two
+     * receptions, also of one system whose scope names no carrier. */
+    int64_t tuned_hz;
+    /** The reception generation the reception was read under (dsd_state_reception_generation(): the record's epoch,
+     * the retunes and the P25 phase changes). */
+    uint64_t rx_gen;
+    dsd_position_scope scope; /**< DSD_POS_SCOPE_NONE when none is known */
+    uint8_t resolved;         /**< 1 once the row's reception was read (a none scope included); pinned from then */
+    uint8_t epoch_known;      /**< 1 when rx_gen was read (playing back files: the call's own, with no scope) */
+    uint8_t pad[2];           /**< always 0 */
+} dsd_event_rx_scope;
 
 //event history (each item)
 // NOLINTBEGIN(clang-analyzer-optin.performance.Padding)
@@ -725,6 +815,12 @@ typedef struct {
     char text_message[2000]; // If this event is a decoded text message, then it goes here
     char event_string[2000]; //user legible and printable string for the event that happened
     char internal_str[2000]; //string that relates to a DSD-neo generated event (ENC LO, error notices, etc)
+    // The admitted position gps_s describes, and the row's sender identity (issue #800). gps_s and pos are written
+    // in one step by the position writers (<dsd-neo/core/events.h>); a text-only GPS write leaves pos without a
+    // position (valid 0), so the two never disagree.
+    dsd_event_pos pos;
+    // The reception identity of the row's call or notice (issue #800), beside the sender identity in pos.scope.
+    dsd_event_rx_scope rx_scope;
 } Event_History;
 
 //event history for number of each items above
@@ -736,6 +832,9 @@ typedef struct {
 typedef struct {
     char gps_s[2000];
     char text_message[2000];
+    // The admitted report gps_s describes (dsd_event_stage_position()), whole: the next data notice checks its typed
+    // source against the notice's own before the row takes it. rev 0 = none; a text-only stage clears it.
+    dsd_position_fix pos_fix;
 } Event_History_Staged;
 
 /* The one comparison of the two P25p1 demodulator chains an acquisition gets (frame sync's
@@ -1340,6 +1439,11 @@ struct dsd_state {
     uint8_t event_crc_invalid[2];
     // DMR header-chain DSD_CRC_* bits (failed, or RAS-accepted), retained until the protocol resets the assembly.
     uint8_t data_header_crc_invalid[2];
+    /* The last call epoch each slot's call state gave out (src/core/util/call_state.c), kept on the state across the
+       call-state extension's life: a new extension (another engine run on this state) goes on from it, so an epoch is
+       never given out twice on one state. A record a protocol keys to a call epoch or transmission (issue #800) thus
+       never matches a later run's call, and the call state needs to know nothing of those records. */
+    uint64_t call_epoch_floor[2];
     // Codec2 contexts (NULL when codec2 unavailable; unconditional for ABI stability)
     struct CODEC2* codec2_3200; // M17 fullrate
     struct CODEC2* codec2_1600; // M17 halfrate
@@ -1843,6 +1947,13 @@ struct dsd_state {
      * (CAC, FACCH2/UDCH, SACCH, site information) writes it. Every write of a value sets it (the (unsigned)-1 resets
      * need not), and only a RAN is read as the carrier's access code (issue #575). */
     uint8_t nxdn_last_ran_stand_in;
+    /* The NXDN data call header bound to the assembly in dmr_pdu_sf[0] (src/protocol/nxdn/nxdn_data_call.c, issue
+     * #800 B6): the reception (origin) and carrier (carrier_seq) the checked header was heard on, and when (decode
+     * clock). A payload assembles under the header only while all three still hold; a failed FACCH2/UDCH or
+     * FACCH3/UDCH2 CRC and a rejected header drop it. origin.valid is 0 when no header is bound. */
+    dsd_position_origin nxdn_data_origin;
+    uint64_t nxdn_data_header_ms;
+    uint32_t nxdn_data_carrier_seq;
     unsigned int nxdn_cipher_type;
     unsigned int nxdn_key;
 
@@ -2060,6 +2171,35 @@ struct dsd_state {
     char dmr_embedded_gps[2][600];    //2 slots by 99 char string for string embedded gps
     char dmr_lrrp_gps[2][600];        //2 slots by 99 char string for string lrrp gps
     char dmr_site_parms[200];         //string for site/net info depending on type of DMR system (TIII or Con+)
+    /* Per slot: the reception the last checked or accepted DMR data or UDT header (dmr_dheader()) began its assembly
+       on, captured with that first fragment (dsd_position_origin_capture()). A position report the assembly carries
+       (LIP, binary UDT NMEA) is admitted against it, so a retune or target switch before the last block refuses it. */
+    dsd_position_origin dmr_data_origin[2];
+    /* Per slot: the identity of the burst that standard header came in (dsd_position_dmr_air()). Its blocks, and a
+       proprietary header that extends it, are taken only from a burst of the same sender kind on the same over-the-air
+       slot, on the reception dmr_data_origin still matches (issue #800, fail closed): the single-slot decoder carries
+       both slots on one lane, and two independently checked bursts are not one transmission by their CRCs alone. */
+    uint8_t dmr_data_air[2];
+    /* Per slot: whether the target of the data header that began the assembly is a talkgroup, as its check left it
+       (issue #800): the DMR standard data header's G/I bit, an NXDN data call header's call type (broadcast or
+       group); 0 for a P25 data packet (its LLID names a radio). Position producers (LRRP, LOCN, LIP over UDP, ASCII
+       NMEA, NXDN GPS) qualify the header's target by it. dmr_data_target_is_group is not it: a Motorola proprietary
+       header (MNIS) clears that one for the decryption-key lookup, and NXDN and P25 headers keep it 0. Cleared with
+       the header's source and target. */
+    uint8_t dmr_data_checked_group[2];
+    /* The reception the current P25 Phase 1 multi-block packet (processMPDU()) began on, captured when its header
+       block was read. A position report the packet carries (LRRP, SAP 48 NMEA) is admitted against it, so a retune or
+       received-identity change before the last block refuses it. */
+    dsd_position_origin p25_mdpu_origin;
+    /* Per slot: the evidence a checked full LC (a voice LC header or a late-entry embedded LC whose own check passed,
+       not a RAS acceptance; dmr_flco) gave for the source of the slot's ACTIVE call, and for its target while the call
+       had that target, bound to the call's transmission and the reception it was heard under. The embedded GPS LC
+       borrows it only through dsd_position_attribution_grant() (<dsd-neo/core/position_attribution.h>): never across a
+       relock to another colour code, another system or another transmission.
+       Cleared by every voice LC header (a new transmission: only that header, checked, names its source) and at every
+       carrier change (dsd_state_note_carrier_change(): a carrier boundary, a trunk-scan target switch, a scan step, a
+       user's move); one left by another engine run matches no call of the next (dsd_state::call_epoch_floor). */
+    dsd_position_attribution dmr_lc_attribution[2];
 
     //Generic Talker Alias String
     char generic_talker_alias[2][500];
@@ -2231,9 +2371,15 @@ struct dsd_state {
     unsigned int p25_p1_soft_hamming_ok; // soft Hamming corrections
     unsigned int p25_p1_soft_golay_ok;   // soft Golay corrections (hard would have failed)
     unsigned int p25_p1_soft_rs_ok;      // soft RS erasure corrections (hard would have failed)
-    /* 1 while the LDU1 link control being handled passed only a soft-erasure RS retry: its service options are not
-       checked evidence that the call is encrypted (dsd_call_crypto_update::enc_observed). */
+    /* 1 while the LDU1 or TDULC link control being handled passed only a soft-erasure RS retry: its service options
+       are not checked evidence that the call is encrypted (dsd_call_crypto_update::enc_observed), and its GPS and
+       voice-user identity are not checked provenance (issue #800, spec 2.20). */
     uint8_t p25_p1_lcw_soft;
+    p25_p1_harris_gps_part_a p25_p1_harris_part_a; /* L3Harris GPS Part A waiting for its Part B */
+    /* The identity a P25 Phase 1 voice-user link control (LCO 0x00, 0x03, Motorola LCGRGR) that passed a hard RS decode
+       named for slot 0's ACTIVE Phase 1 call: the evidence a GPS link control of that call borrows its source, target
+       and group flag by (dsd_position_attribution_grant()). Cleared by every HDU. */
+    dsd_position_attribution p25_p1_lc_attribution;
     unsigned int p25_p2_soft_ess_ok; // soft ESS corrections
     unsigned int p25_p2_soft_ess_max_depth;
     unsigned int p25_p1_soft_combined_ok;
@@ -2833,9 +2979,22 @@ struct dsd_state {
     uint8_t dstar_confirmed;
     uint8_t dstar_confirm_weak_streak;
     uint8_t dstar_confirm_frame_evidence;
+    /* The D-STAR transmission (issue #800). dstar_tx_seq advances at every transmission boundary: an RF header, decoded
+     * or not, and the carrier's end (dstar_confirm_reset(), noCarrier()); the slow-data assemblies, in their protocol
+     * extension (src/protocol/dstar/dstar_sd_state.h), are bound to it and reset when it moves. dstar_tx_call_epoch is the slot 0 call a header of this
+     * transmission whose CRC passed named with a MY callsign; 0 until one has, after an RF header (the call left ACTIVE,
+     * its terminator missed, may be another radio's), and after a checked header whose MY field is blank. Slow data
+     * reaches a call (its text, a D-PRS source, a D-PRS position) only when that call is the one named here.
+     * dstar_tx_call_origin is the reception that header was heard on: once the reception generation moves (a retune,
+     * another system's frame noted between the header and the slow data), the header names no call any more
+     * (dstar_slow_data.c dstar_tx_named_call()), whatever stays ACTIVE. */
+    uint32_t dstar_tx_seq;
+    uint64_t dstar_tx_call_epoch;
+    dsd_position_origin dstar_tx_call_origin;
 
     //M17 Storage
     uint8_t m17_lsf[360];
+    m17_lich_assembly m17_lich; /* what the LICH chunks in m17_lsf were heard under */
     uint8_t m17_pkt[850];
 
     // Soft symbol buffer for Viterbi decoding (M17, NXDN, etc.)
@@ -3184,6 +3343,25 @@ struct dsd_state {
        thread where no watchdog tick runs; outside every snapshot copy range (ui_snapshot.c pins it), so no frontend
        copy reads it. */
     uint8_t rx_id_trunk_tune_pending;
+    /* The protocol the last frame sync named (dsd_rxid_note_sync()): rx_id's family for a protocol that sends identity,
+       the protocol itself for one that sends none (D-STAR, YSF, X2-TDMA); 0 since the last dsd_rxid_reset(). A sync of
+       another protocol moves rx_id's epoch even when neither sent any identity (issue #800, fail closed). Decoder
+       thread; outside every snapshot copy range. */
+    uint16_t rx_sync_protocol;
+    /* The P25 phase the last frame sync named (1 or 2; 0 after a sync of another protocol, since the last
+       dsd_rxid_reset() or since an applied trunking retune): dsd_rxid_note_sync(). Decoder thread; outside every
+       snapshot copy range. */
+    uint8_t rx_p25_phase;
+    /* Moves with every change of P25 phase between two P25 syncs (dsd_rxid_note_sync()), never back: a part of the
+       reception generation (dsd_state_reception_generation()), so a transmission of the other phase on the carrier is
+       another reception for every multi-part report, sender evidence and history row, while the system the two phases
+       share stays in rx_id (issue #800, fail closed). Never reset (a trunk-scan rollback restores rx_id, not this).
+       Decoder thread; outside every snapshot copy range. */
+    uint32_t rx_phase_seq;
+    /* Moves with every accepted trunking retune the decoder thread applies to rx_id (dsd_rxid_trunk_tune()), never
+       back: the other part of the reception generation that is not rx_id's epoch, which such a retune keeps (only the
+       access code goes). Decoder thread; outside every snapshot copy range. */
+    uint32_t rx_tune_seq;
 
     // Extension slots for module-owned per-state allocations (see core/state_ext.h).
     void* state_ext[DSD_STATE_EXT_MAX];
@@ -3223,6 +3401,23 @@ struct dsd_state {
    (input_interrupted: a Signal search left it, or a live read gave up on a stalled input), after which getSymbol()
    stood erasures in for every symbol. Either way part of the frame is not the transmission's, so nothing of it may
    decode, play or publish. */
+/**
+ * The reception generation @p state is in now (issue #800): the received identity's epoch (dsd_received_identity::epoch)
+ * in the low 32 bits; in the high 32, the accepted trunking retunes applied to it (rx_tune_seq) plus the P25 phase
+ * changes (rx_phase_seq), both only ever moving forward, so the sum is equal only while neither moved. Equal
+ * generations are one uninterrupted reception: no retune, no other system, access code or protocol, no other P25 phase
+ * in between. Every position origin (dsd_position_origin), sender evidence (dsd_position_attribution) and history row
+ * (dsd_event_rx_scope) compares it. 0 for NULL. Decoder thread.
+ */
+static inline uint64_t
+dsd_state_reception_generation(const dsd_state* state) {
+    if (state == NULL) {
+        return 0U;
+    }
+    const uint64_t carrier = (uint64_t)(uint32_t)(state->rx_tune_seq + state->rx_phase_seq);
+    return (carrier << 32) | (uint64_t)state->rx_id.epoch;
+}
+
 static inline int
 dsd_state_frame_read_lost(const dsd_state* state, uint32_t carrier_seq) {
     return state->carrier_seq != carrier_seq || state->input_interrupted != 0;
@@ -3318,6 +3513,10 @@ dsd_state_note_carrier_change(dsd_state* state) {
     state->carrier_change_symbol_clock = state->symbol_clock + (state->symbol_read_active != 0U ? 1U : 0U);
     state->carrier_change_seen = 1U;
     dsd_state_forget_sync_join_histories(state);
+    /* The DMR checked-LC source names a radio of the carrier left (another system after a target switch or a move):
+       no embedded GPS fix of the next reception is attributed by it (issue #800). */
+    dsd_position_attribution_clear(&state->dmr_lc_attribution[0]);
+    dsd_position_attribution_clear(&state->dmr_lc_attribution[1]);
 }
 
 /* Whether a frame whose sync ends on the latest symbol and that reads up to @p lookback symbols back (its sync word

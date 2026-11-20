@@ -61,6 +61,8 @@ dmr_bootstrap_ms_if_enabled(dsd_opts* opts, dsd_state* state) {
         dmrMSBootstrap(opts, state);
         return DSD_FRAME_VERDICT_PRODUCTIVE;
     }
+    /* Unread, but its sync word still names its sender kind on its lane (issue #800, fail closed). */
+    dmr_note_unread_burst(opts, state);
     return DSD_FRAME_VERDICT_WITHHELD;
 }
 
@@ -97,7 +99,9 @@ dmr_handle_voice(dsd_opts* opts, dsd_state* state) {
         return DSD_FRAME_VERDICT_PRODUCTIVE;
     }
     /* Stereo off on an MS voice sync with mono off: nothing above ran, and nothing read the
-     * frame. Productive is the status quo for a path that consumes nothing either way. */
+     * frame. Productive is the status quo for a path that consumes nothing either way. Its sync
+     * word still names its sender kind on its lane (issue #800, fail closed). */
+    dmr_note_unread_burst(opts, state);
     return DSD_FRAME_VERDICT_PRODUCTIVE;
 }
 
@@ -109,6 +113,7 @@ dmr_handle_ms_data(dsd_opts* opts, dsd_state* state) {
         dmrMSData(opts, state);
         return DSD_FRAME_VERDICT_PRODUCTIVE;
     }
+    dmr_note_unread_burst(opts, state); /* unread, but its sync word names its sender kind (issue #800) */
     return DSD_FRAME_VERDICT_WITHHELD;
 }
 

@@ -16,9 +16,9 @@
  * handler consumes (issues #391, #421).
  *
  * Two kinds of evidence answer that. A CRC-16/X.25 is proof on its own, and D-STAR offers
- * two of them: the RF header, and the header rebroadcast that ICOM radios fold into slow
- * data through a transmission. So is the "$$CRC" fixed-form literal, which needs the 0x35
- * type byte and forty more exact bits behind it.
+ * three of them: the RF header, the header rebroadcast that ICOM radios fold into slow
+ * data through a transmission, and a whole D-PRS (GPS-A) record whose "$$CRCxxxx" matches
+ * the CRC of its text. The "$$CRC" literal alone proves nothing (issue #800 2.10).
  *
  * A superframe that carries only filler proves none of that, so it counts as weak evidence
  * and has to repeat. That is a real check rather than a guess about quality: two counted
@@ -47,14 +47,30 @@ extern "C" {
 /** @brief How much a passing check is worth. */
 typedef enum {
     DSTAR_EVIDENCE_WEAK = 1,  /**< A superframe that decoded but checked nothing. */
-    DSTAR_EVIDENCE_STRONG = 2 /**< A CRC-16/X.25: RF header or slow-data header. Also "$$CRC". */
+    DSTAR_EVIDENCE_STRONG = 2 /**< A CRC-16/X.25: RF header, slow-data header or a whole D-PRS record. */
 } dstar_evidence;
 
 /** @brief Frames of weak evidence in a row that together confirm a transmission. */
 #define DSTAR_CONFIRM_WEAK_OBSERVES 2U
 
-/** @brief Forget everything learned about the current transmission. */
+/** @brief Forget everything learned about the current transmission (dstar_tx_begin() included): the carrier ended. */
 void dstar_confirm_reset(dsd_state* state);
+
+/**
+ * @brief A transmission boundary (an RF header, decoded or not, or the carrier's end): the next transmission begins.
+ * Advances dsd_state::dstar_tx_seq, so every slow-data assembly bound to the transmission before resets
+ * (dstar_sd_state.h dstar_sd_binding); clears the call a header named (dsd_state::dstar_tx_call_epoch), the D-PRS
+ * record and the text message being assembled. Confirmation is left to dstar_confirm_reset().
+ */
+void dstar_tx_begin(dsd_state* state);
+
+/**
+ * @brief The transmission names no call any more, within it (a checked header that names no voice call, issue #800):
+ * clears dsd_state::dstar_tx_call_epoch and the reception it holds on. A D-PRS record or text message assembled under
+ * that naming resets at its next use (its dstar_sd_binding names a call no longer named); one assembled while no call
+ * was named goes on. The transmission and its confirmation stay.
+ */
+void dstar_tx_unname(dsd_state* state);
 
 /** @brief Start a frame's evidence accounting; call once before decoding its contents. */
 void dstar_confirm_begin_frame(dsd_state* state);

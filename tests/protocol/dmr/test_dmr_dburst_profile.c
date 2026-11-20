@@ -4,13 +4,16 @@
  */
 
 #include <dsd-neo/core/bit_packing.h>
+#include <dsd-neo/core/call_state.h>
 #include <dsd-neo/core/crc_provenance.h>
+#include <dsd-neo/core/events.h>
 
 #include <dsd-neo/core/gps.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/opts_fwd.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/state_fwd.h>
+#include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/fec/bptc.h>
 #include <dsd-neo/platform/file_compat.h>
 #include <dsd-neo/protocol/dmr/dmr.h>
@@ -41,6 +44,12 @@ static uint8_t g_block_assembler_last_burst;
 static uint8_t g_block_assembler_last_type;
 static uint8_t g_block_assembler_last_bytes[25];
 static int g_lip_calls;
+static int g_lip_writes_gps;
+static int g_notice_calls;
+static int g_notice_protocol;
+static uint64_t g_notice_source;
+static char g_notice_text[128];
+static dmr_burst_origin g_capture_origin;
 static int g_reset_blocks_calls;
 static uint32_t g_bptc_extract_errors;
 static uint8_t g_bptc_reserved[3];
@@ -75,6 +84,12 @@ reset_handler_counters(void) {
     g_block_assembler_last_type = 0;
     DSD_MEMSET(g_block_assembler_last_bytes, 0, sizeof(g_block_assembler_last_bytes));
     g_lip_calls = 0;
+    g_lip_writes_gps = 0;
+    g_notice_calls = 0;
+    g_notice_protocol = -1;
+    g_notice_source = UINT64_MAX;
+    g_notice_text[0] = '\0';
+    g_capture_origin = DMR_BURST_ORIGIN_UNKNOWN;
     g_reset_blocks_calls = 0;
     g_bptc_extract_errors = 0;
     DSD_MEMSET(g_bptc_reserved, 0, sizeof(g_bptc_reserved));
@@ -329,9 +344,27 @@ dsd_scan_mode_configured_relaxed_crc(const dsd_opts* opts, const dsd_state* stat
 void
 lip_protocol_decoder(const dsd_opts* opts, dsd_state* state, const uint8_t* lc_bits) {
     (void)opts;
-    (void)state;
     (void)lc_bits;
     g_lip_calls++;
+    // An admitted reply leaves its text for the burst's own notice.
+    if (g_lip_writes_gps) {
+        DSD_SNPRINTF(state->dmr_embedded_gps[state->currentslot & 1], sizeof state->dmr_embedded_gps[0], "%s",
+                     "218; LIP: test");
+    }
+}
+
+int
+// NOLINTNEXTLINE(misc-use-internal-linkage)
+dsd_event_emit_data_notice(dsd_opts* opts, dsd_state* state, uint8_t slot, const dsd_call_observation* observation,
+                           const char* notice) {
+    (void)opts;
+    (void)state;
+    (void)slot;
+    g_notice_calls++;
+    g_notice_protocol = observation->protocol;
+    g_notice_source = observation->ota_source_id;
+    DSD_SNPRINTF(g_notice_text, sizeof g_notice_text, "%s", notice);
+    return 0;
 }
 
 static int
@@ -533,20 +566,21 @@ test_handler_dispatch_paths(void) {
     rc |= expect_u8("full-rate-block-burst", g_block_assembler_last_burst, 0x0AU);
     rc |= expect_u8("full-rate-block-len", g_block_assembler_last_len, 24U);
 
+    // An inbound (MS-sourced) USBD is a LIP Poll Response.
     prepare_handler_state(&opts, &state, info, 0x0BU, 0U, 1U, 0);
-    dmr_data_burst_handler(&opts, &state, info, 0x0BU, NULL);
+    dmr_data_burst_handler_origin(&opts, &state, info, 0x0BU, NULL, DMR_BURST_ORIGIN_MS);
     rc |= expect_u8("usbd-lip-call", (uint8_t)g_lip_calls, 1U);
     rc |= expect_str("usbd-subtype", state.fsubtype, " USBD ");
 
     // The stub CRC fails every USBD: strict mode publishes no failed DMR data, mixed mode follows the data gates.
     prepare_handler_state(&opts, &state, info, 0x0BU, 0U, 1U, 0);
     opts.aggressive_framesync = 1;
-    dmr_data_burst_handler(&opts, &state, info, 0x0BU, NULL);
+    dmr_data_burst_handler_origin(&opts, &state, info, 0x0BU, NULL, DMR_BURST_ORIGIN_MS);
     rc |= expect_u8("usbd-strict-crc-fail-no-lip", (uint8_t)g_lip_calls, 0U);
     prepare_handler_state(&opts, &state, info, 0x0BU, 0U, 1U, 0);
     opts.aggressive_framesync = 1;
     opts.dmr_crc_relaxed_default = 1;
-    dmr_data_burst_handler(&opts, &state, info, 0x0BU, NULL);
+    dmr_data_burst_handler_origin(&opts, &state, info, 0x0BU, NULL, DMR_BURST_ORIGIN_MS);
     rc |= expect_u8("usbd-relaxed-default-lip", (uint8_t)g_lip_calls, 1U);
 
     prepare_handler_state(&opts, &state, info, 0xEBU, 0U, 1U, 0);
@@ -647,10 +681,11 @@ test_bptc_ras_and_usbd_services(void) {
     rc |= expect_u8("ras-ordinary-header-byte1-0x68-call", (uint8_t)g_dheader_calls, 1U);
     rc |= expect_u8("ras-ordinary-header-byte1-0x68-classified-ras", g_dheader_last_crc_flags, DSD_CRC_RAS_UNVERIFIED);
 
-    // A USBD carries payload in byte 1: 0x68 there stays RAS, and the relaxed path hands it to LIP.
+    // A USBD carries payload in byte 1: 0x68 there stays RAS, and the relaxed path hands an inbound one to LIP.
     prepare_handler_state(&opts, &state, info, 0x0BU, 0U, 1U, 0);
     g_bptc_reserved[2] = 1U;
     write_byte_bits(g_bptc_bits, 8U, 0x68U);
+    g_capture_origin = DMR_BURST_ORIGIN_MS;
     {
         char out[4096];
         if (capture_handler_stderr(&opts, &state, info, 0x0BU, out, sizeof(out)) != 0) {
@@ -676,7 +711,7 @@ test_bptc_ras_and_usbd_services(void) {
 
     prepare_handler_state(&opts, &state, info, 0x0BU, 0U, 1U, 0);
     write_byte_bits(g_bptc_bits, 0U, 0x90U);
-    dmr_data_burst_handler(&opts, &state, info, 0x0BU, NULL);
+    dmr_data_burst_handler_origin(&opts, &state, info, 0x0BU, NULL, DMR_BURST_ORIGIN_MS);
     rc |= expect_u8("usbd-reserved-service-no-lip", (uint8_t)g_lip_calls, 0U);
     rc |= expect_str("usbd-reserved-service-subtype", state.fsubtype, " USBD ");
     return rc;
@@ -811,7 +846,7 @@ capture_handler_stderr(dsd_opts* opts, dsd_state* state, uint8_t info[196], uint
         return 1;
     }
 
-    dmr_data_burst_handler(opts, state, info, databurst, NULL);
+    dmr_data_burst_handler_origin(opts, state, info, databurst, NULL, g_capture_origin);
 
     if (dsd_test_capture_stderr_end(&cap) != 0) {
         (void)remove(cap.path);
@@ -899,6 +934,69 @@ test_dsp_structured_output_records_are_line_separated(void) {
     return rc;
 }
 
+/* Spec 2.13: a LIP Poll Request (outbound, BS-sourced sync) and a Poll Response (inbound, MS-sourced sync) share USBD
+   service 0 (TS 102 361-4 Tables 6.77 / 6.79). Only an inbound burst reaches the reply decoder; a request prints its
+   polled radio; a direct-mode or unknown sync is undirected and never a position. A decoded reply is its own anonymous
+   data notice with the hash shown as a hash. */
+static int
+test_usbd_direction(void) {
+    int rc = 0;
+    static dsd_opts opts;
+    static dsd_state state;
+    uint8_t info[196];
+    char out[4096];
+
+    static const struct {
+        dmr_burst_origin origin;
+        int lip_calls;
+        const char* printed;
+        const char* tag;
+    } cases[] = {
+        {DMR_BURST_ORIGIN_MS, 1, "", "usbd-ms-reply"},
+        {DMR_BURST_ORIGIN_BS, 0, "LIP Poll Request; TGT: 1193046; Response Delay: 1; PC: 0;", "usbd-bs-request"},
+        {DMR_BURST_ORIGIN_DIRECT_TS1, 0, "undirected USBD", "usbd-direct-ts1"},
+        {DMR_BURST_ORIGIN_DIRECT_TS2, 0, "undirected USBD", "usbd-direct-ts2"},
+        {DMR_BURST_ORIGIN_UNKNOWN, 0, "undirected USBD", "usbd-unknown-origin"},
+    };
+
+    for (size_t i = 0; i < sizeof cases / sizeof cases[0]; ++i) {
+        prepare_handler_state(&opts, &state, info, 0x0BU, 0U, 1U, 0);
+        g_capture_origin = cases[i].origin;
+        g_lip_writes_gps = 1;
+        // Poll Request layout: service 0, response delay 01, PC 0, payload 0, polled radio 0x123456 at bit 56.
+        write_byte_bits(g_bptc_bits, 0U, 0x04U);
+        write_byte_bits(g_bptc_bits, 56U, 0x12U);
+        write_byte_bits(g_bptc_bits, 64U, 0x34U);
+        write_byte_bits(g_bptc_bits, 72U, 0x56U);
+        if (capture_handler_stderr(&opts, &state, info, 0x0BU, out, sizeof(out)) != 0) {
+            DSD_FPRINTF(stderr, "%s: capture failed\n", cases[i].tag);
+            return 1;
+        }
+        rc |= expect_u8(cases[i].tag, (uint8_t)g_lip_calls, (uint8_t)cases[i].lip_calls);
+        rc |= expect_true(cases[i].tag, strstr(out, cases[i].printed) != NULL);
+        if (cases[i].lip_calls != 0) {
+            rc |= expect_u8("usbd-reply-notice", (uint8_t)g_notice_calls, 1U);
+            rc |= expect_true("usbd-reply-notice-anonymous", g_notice_source == 0U);
+            rc |= expect_true("usbd-reply-notice-inbound", g_notice_protocol == DSD_SYNC_DMR_MS_DATA);
+            rc |= expect_true("usbd-reply-notice-hash", strstr(g_notice_text, "SRC(Hash): 086;") != NULL);
+        } else {
+            rc |= expect_u8("usbd-no-reply-no-notice", (uint8_t)g_notice_calls, 0U);
+            rc |= expect_true("usbd-no-reply-no-gps", state.dmr_embedded_gps[1][0] == '\0');
+        }
+    }
+    // A reply the decoder did not admit (no text) is no notice, and the slot keeps the text it had.
+    prepare_handler_state(&opts, &state, info, 0x0BU, 0U, 1U, 0);
+    DSD_SNPRINTF(state.dmr_embedded_gps[1], sizeof state.dmr_embedded_gps[1], "%s", "earlier fix");
+    dmr_data_burst_handler_origin(&opts, &state, info, 0x0BU, NULL, DMR_BURST_ORIGIN_MS);
+    rc |= expect_u8("usbd-refused-reply-no-notice", (uint8_t)g_notice_calls, 0U);
+    rc |= expect_str("usbd-refused-reply-keeps-text", state.dmr_embedded_gps[1], "earlier fix");
+    // The plain handler names no origin: never a reply.
+    prepare_handler_state(&opts, &state, info, 0x0BU, 0U, 1U, 0);
+    dmr_data_burst_handler(&opts, &state, info, 0x0BU, NULL);
+    rc |= expect_u8("usbd-plain-handler-no-reply", (uint8_t)g_lip_calls, 0U);
+    return rc;
+}
+
 int
 main(void) {
     int rc = 0;
@@ -910,6 +1008,7 @@ main(void) {
     rc |= test_trellis_candidate_and_fallback_paths();
     rc |= test_console_dumps_use_real_newlines();
     rc |= test_dsp_structured_output_records_are_line_separated();
+    rc |= test_usbd_direction();
     if (rc == 0) {
         printf("DMR_DBURST_PROFILE: OK\n");
     }

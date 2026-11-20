@@ -21,6 +21,7 @@
 
 #include <dsd-neo/api/api.h>
 #include <dsd-neo/app_control/commands.h>
+#include <dsd-neo/core/position.h>
 #include <dsd-neo/core/safe_api.h>
 #include <dsd-neo/platform/atomic_compat.h>
 #include <dsd-neo/platform/platform.h>
@@ -79,6 +80,7 @@ typedef struct api_session {
     dsd_mutex_t mu; /* guards outbox, topics, authenticated and closing */
     dsd_json_buf outbox;
     uint32_t topics;
+    uint64_t pos_after_rev; /* positions: the cutoff, dsd_position_last_rev() when the session subscribed to them */
     int authenticated;
     int closing;
     /* Session thread only. */
@@ -200,6 +202,7 @@ dsd_api_topic_name(uint32_t bit) {
         case DSD_API_TOPIC_QUALITY: return "quality";
         case DSD_API_TOPIC_STATUS: return "status";
         case DSD_API_TOPIC_RESULT: return "result";
+        case DSD_API_TOPIC_POSITIONS: return "positions";
         default: return NULL;
     }
 }
@@ -315,6 +318,36 @@ dsd_api_broadcast(const char* line, size_t len, uint32_t topic) {
         dsd_mutex_lock(&s->mu);
         if (s->authenticated && s->closing == SESSION_OPEN && (s->topics & topic) != 0U) {
             (void)session_queue_locked(s, line, len);
+        }
+        dsd_mutex_unlock(&s->mu);
+    }
+    dsd_mutex_unlock(&srv->mu);
+}
+
+/* The first line of a positions batch after @p after_rev (count when none): lines are in increasing rev. */
+static size_t
+positions_first_after(const dsd_api_position_line* lines, size_t count, uint64_t after_rev) {
+    size_t first = 0U;
+    while (first < count && lines[first].rev <= after_rev) {
+        first++;
+    }
+    return first;
+}
+
+void
+dsd_api_broadcast_positions(const char* data, size_t len, const dsd_api_position_line* lines, size_t count) {
+    api_server* srv = g_srv;
+    if (srv == NULL || data == NULL || lines == NULL || count == 0U) {
+        return;
+    }
+    dsd_mutex_lock(&srv->mu);
+    for (api_session* s = srv->sessions; s != NULL; s = s->next) {
+        dsd_mutex_lock(&s->mu);
+        if (s->authenticated && s->closing == SESSION_OPEN && (s->topics & DSD_API_TOPIC_POSITIONS) != 0U) {
+            const size_t first = positions_first_after(lines, count, s->pos_after_rev);
+            if (first < count && lines[first].offset < len) {
+                (void)session_queue_locked(s, data + lines[first].offset, len - lines[first].offset);
+            }
         }
         dsd_mutex_unlock(&s->mu);
     }
@@ -486,6 +519,10 @@ handle_subscribe(api_session* s, const dsd_json_node* id, const dsd_json_node* p
     }
     dsd_mutex_lock(&s->mu);
     const uint32_t changed = add ? (mask & ~s->topics) : (mask & s->topics);
+    if (add && (changed & DSD_API_TOPIC_POSITIONS) != 0U) {
+        /* No backlog: the records admitted until now are before this subscription (dsd_api_broadcast_positions()). */
+        s->pos_after_rev = dsd_position_last_rev();
+    }
     s->topics = add ? (s->topics | mask) : (s->topics & ~mask);
     topic_interest_apply(changed, add);
     const uint32_t now = s->topics;
