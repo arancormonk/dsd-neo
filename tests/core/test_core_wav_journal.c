@@ -3135,7 +3135,7 @@ test_d7_wav_stop_mid_call(void) {
         {"source-only NXDN call on an audio input", DSD_SYNC_NXDN_POS, 1234U, 0, 4242U, NULL},
         /* Anonymous-voice protocols, whose identity-less rows the event layer always keeps. */
         {"X2-TDMA call heard on 452.3125 MHz", DSD_SYNC_X2TDMA_VOICE_POS, 0U, 452312500, 452312U, NULL},
-        /* The event layer's standalone ProVoice row names no EDACS site, so its label keeps "ProVoice". */
+        /* The event layer's standalone ProVoice row carries no EDACS grant's LCN, so its label keeps "ProVoice". */
         {"standalone ProVoice call heard on 452.3125 MHz", DSD_SYNC_PROVOICE_POS, 0U, 452312500, 452312U,
          "\"talkgroup_tag\": \"ProVoice 452.3125 MHz\","},
         {"identity-less DMR call", DSD_SYNC_DMR_BS_VOICE_POS, 0U, 452312500, 0U, NULL},

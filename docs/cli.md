@@ -731,10 +731,10 @@ What the sidecar holds:
   `--nac-name`), else the channel's name from a `-Y` channel map or a `--trunk-scan` row, else the protocol, its
   access code and the frequency: `NXDN RAN 9 452.3125 MHz`, `DMR CC 3 452.3125 MHz`, `P25 NAC 2A3 452.3125 MHz`,
   `M17 CAN 3 433.4750 MHz`. Unknown parts are left out (`NXDN RAN 9`, `D-STAR 145.6700 MHz`, `X2-TDMA`). A ProVoice
-  call on an EDACS site is labelled `EDACS`, like the analog calls on its channel (`EDACS 851.0125 MHz`), so the
-  talkgroup they share keeps one label; ProVoice on its own stays `ProVoice`. A name of `-` counts as no name. The label
-  never holds a callsign or a radio ID, and never `PRIVATE` or `GROUP`: every call on one frequency shares its
-  talkgroup, and rdio-scanner can rename a talkgroup after each call's label.
+  call an EDACS grant named (its row carries the LCN) is labelled `EDACS`, like the analog calls on its channel
+  (`EDACS 851.0125 MHz`), so the talkgroup they share keeps one label; ProVoice on its own stays `ProVoice`. A name of
+  `-` counts as no name. The label never holds a callsign or a radio ID, and never `PRIVATE` or `GROUP`: every call on
+  one frequency shares its talkgroup, and rdio-scanner can rename a talkgroup after each call's label.
 - `srcList` names the radio when its ID decoded and fits 32 bits; `short_name` is the call's system (as in the file
   name, `NXDN_RAN_9`), else the protocol (`X2-TDMA`); `emergency` and `encrypted` are the call's.
 - `freq` and `freqList` follow the analog rule: the frequency in Hz from 1 MHz up to 2147.483647 MHz, else `freq` 0
@@ -775,8 +775,11 @@ Limits:
   recording closes, which takes a moment on the decoder for a long recording. So does the first export's check for
   copies an earlier run left in that folder. At a call's commit both run under the lock that guards the call state,
   so the P25 watchdog thread, which takes that lock too, waits for them as well. A copy that cannot be made is not
-  uploaded: the WAV and JSON are still published for the DirWatch, and an error is logged. On Windows, a DirWatch that
-  deletes a call's files can fail while the API upload is still reading its hard link, as before.
+  uploaded: the WAV and JSON are still published for the DirWatch, and an error is logged. A default-type (audio file)
+  rdio-scanner watch on `.wav` files with "delete after" in the same folder can still take the WAV before the upload's
+  own copy is made; that upload is then lost, with an error logged, so use a trunk-recorder-type watch there. On
+  Windows, a DirWatch that deletes a call's files can fail while the API upload is still reading its hard link, as
+  before.
 
 ## IQ Capture And Replay
 

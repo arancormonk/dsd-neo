@@ -2411,16 +2411,17 @@ suite runs under this compiler.
   so the next candidate is taken. A digital row exported under the fallback number (`target_id` 0, issue #888 D3,
   `dsd_rdio_fallback_tag()`) is labelled by its service name, else its channel label, else `<protocol> <access code>
   <MHz> MHz` built into `generated_tag` with the unknown parts left out (`NXDN RAN 9 452.3125 MHz`, `NXDN RAN 9`,
-  `X2-TDMA`); the protocol word is `dsd_rdio_row_protocol_word()`'s: `EDACS` for a ProVoice row whose `sysid_string`
-  names an EDACS site (`EDACS_SITE_` and a site other than `000`, which the event layer writes while no site has been
-  decoded and on every standalone ProVoice row), so an EDACS channel's digital and analog calls share one label as
-  they share one kHz talkgroup, else `dsd_rdio_protocol_word()`'s (the same rule names a row with no system string in
-  `short_name`); the access code is spelled as `src/app_control/access_code_view.c` spells it (`RAN`, `CC` and `CAN` in
-  decimal, `NAC` as three uppercase hex digits, each only within its protocol's range; runtime cannot call it), and the
-  MHz part appears only when the kHz rule gives a number. Never per-call identity text or `PRIVATE`/`GROUP`: every
-  unnumbered call on a frequency shares its talkgroup. Which close may give a row the fallback number is the export
-  mode's (`dsd_wav_export_mode`) and `dsd_rdio_call_fallback_eligible()`'s, under "rdio-scanner export verdict"
-  below. A conventional analog row (`DSD_SYNC_ANALOG`, issue #668) takes its own branch in
+  `X2-TDMA`); the protocol word is `dsd_rdio_row_protocol_word()`'s: `EDACS` for a ProVoice call an EDACS grant named
+  (its row carries the LCN, `Event_History::channel`, which only EDACS sets for ProVoice: `edacs_voice_observation()`;
+  a standalone ProVoice row has channel 0, and its `sysid_string` and received-identity family are EDACS's too, so
+  neither tells the two apart), so an EDACS channel's digital and analog calls share one label as they share one kHz
+  talkgroup, whether or not a site was decoded, else `dsd_rdio_protocol_word()`'s (the same rule names a row with no
+  system string in `short_name`); the access code is spelled as `src/app_control/access_code_view.c` spells it (`RAN`,
+  `CC` and `CAN` in decimal, `NAC` as three uppercase hex digits, each only within its protocol's range; runtime cannot
+  call it), and the MHz part appears only when the kHz rule gives a number. Never per-call identity text or
+  `PRIVATE`/`GROUP`: every unnumbered call on a frequency shares its talkgroup. Which close may give a row the fallback
+  number is the export mode's (`dsd_wav_export_mode`) and `dsd_rdio_call_fallback_eligible()`'s, under "rdio-scanner
+  export verdict" below. A conventional analog row (`DSD_SYNC_ANALOG`, issue #668) takes its own branch in
   `dsd_rdio_meta_fields_from_event()`: talkgroup `dsd_rdio_analog_talkgroup()` (the frequency in kHz, rounded down,
   else `opts->rdio_analog_talkgroup`), worked out at export time only and never stored in `Event_History::target_id`;
   tag the channel label, else `<sysid_string> <MHz to 4 decimals> MHz` (below 1 MHz too: `AM 0.5300 MHz`), else the
@@ -5422,8 +5423,8 @@ suite runs under this compiler.
     gone after success, refusal, Stop and a full queue, the private inputs in place before the sidecar appears (a watch
     that deletes the pair at that moment, `dsd_rdio_set_sidecar_published_observer()`), the leftover clearing once per
     run and folder by token and age, the private-name and token rules; the fallback number and its eligibility, the
-    generated label (`EDACS` for a ProVoice call on an EDACS site), `freq`/`freqList` at their bounds, emergency, the
-    protocol `short_name`, `"-"` tags, UTF-8 strings, and a fallback call's API `meta` and `system` parts),
+    generated label (`EDACS` for a ProVoice call an EDACS grant named), `freq`/`freqList` at their bounds, emergency,
+    the protocol `short_name`, `"-"` tags, UTF-8 strings, and a fallback call's API `meta` and `system` parts),
     `CORE_RECEIVE` and `CORE_WAV_JOURNAL` (NFM exports through the real closer, the per-run skip line),
     `ANDROID_ENGINE_STOP_JVM` (the cause each Android caller passes).
   - RadioReference.com import client (`src/runtime/radioreference/`): SOAP envelope builder, expat response parser,

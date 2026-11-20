@@ -1248,28 +1248,12 @@ dsd_rdio_protocol_word(int systype) {
     return "";
 }
 
-/* Whether @p sysid, a row's system string, names an EDACS site: "EDACS_SITE_" and a site number other than 000, which
-   the event layer writes while no site has been decoded, as on every standalone ProVoice row. */
-static int
-dsd_rdio_sysid_names_edacs_site(const char* sysid) {
-    static const char prefix[] = "EDACS_SITE_";
-    if (strncmp(sysid, prefix, sizeof prefix - 1U) != 0) {
-        return 0;
-    }
-    for (const char* p = sysid + sizeof prefix - 1U; *p >= '0' && *p <= '9'; p++) {
-        if (*p != '0') {
-            return 1;
-        }
-    }
-    return 0;
-}
-
-/* The protocol's word for @p event (dsd_rdio_protocol_word()), but "EDACS" for a ProVoice call heard on an EDACS site
-   (issue #888): its digital calls then share the analog calls' word, as they share their channel's kHz talkgroup.
-   Standalone ProVoice keeps "ProVoice". */
+/* The protocol's word for @p event (dsd_rdio_protocol_word()), but "EDACS" for a ProVoice call an EDACS grant named
+   (issue #888): its row carries the grant's LCN, a channel no standalone ProVoice call has. An EDACS channel's digital
+   calls then share its analog calls' word, as they share its kHz talkgroup. Standalone ProVoice keeps "ProVoice". */
 static const char*
 dsd_rdio_row_protocol_word(const Event_History* event) {
-    if (DSD_SYNC_IS_PROVOICE(event->systype) && dsd_rdio_sysid_names_edacs_site(event->sysid_string)) {
+    if (DSD_SYNC_IS_PROVOICE(event->systype) && event->channel != 0U) {
         return "EDACS";
     }
     return dsd_rdio_protocol_word(event->systype);

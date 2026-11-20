@@ -2422,30 +2422,33 @@ test_fallback_call_label(void) {
     return rc;
 }
 
-// Issue #888 D3: a ProVoice call on an EDACS site (its row's system string names one: EDACS_SITE_ and a site other than
-// 000) is labelled, and short-named when it has no system string, "EDACS", as the analog calls on its channel are, so
-// the kHz talkgroup they share keeps one label. A standalone ProVoice call keeps "ProVoice": its row's system string
-// is the event layer's "EDACS_SITE_000_..." (no EDACS site decoded), or none.
+// Issue #888 D3: a ProVoice call an EDACS grant named (its row carries the grant's LCN) is labelled, and short-named
+// when it has no system string, "EDACS", as the analog calls on its channel are, so the kHz talkgroup they share keeps
+// one label, whether or not a site was decoded. A standalone ProVoice call (channel 0) keeps "ProVoice", whatever its
+// system string.
 static int
 test_fallback_edacs_provoice_label(void) {
     static const struct {
         const char* label;
         int systype;
+        uint32_t channel;
         int64_t freq_hz;
         const char* sysid;
         const char* want_tag;
         const char* want_short_name;
     } cases[] = {
-        {"EDACS ProVoice", DSD_SYNC_PROVOICE_POS, 851012500, "EDACS_SITE_012_Digital_Call", "EDACS 851.0125 MHz",
+        {"EDACS ProVoice", DSD_SYNC_PROVOICE_POS, 4U, 851012500, "EDACS_SITE_012_Digital_Call", "EDACS 851.0125 MHz",
          "EDACS_SITE_012_Digital_Call"},
-        {"EDACS ProVoice, inverted", DSD_SYNC_PROVOICE_NEG, 851012500, "EDACS_SITE_001_Digital_Emergency_Call",
+        {"EDACS ProVoice, inverted", DSD_SYNC_PROVOICE_NEG, 7U, 851012500, "EDACS_SITE_001_Digital_Emergency_Call",
          "EDACS 851.0125 MHz", "EDACS_SITE_001_Digital_Emergency_Call"},
-        {"EDACS analog all-call", DSD_SYNC_EDACS_POS, 851012500, "EDACS_SITE_012_Analog_Call", "EDACS 851.0125 MHz",
+        {"EDACS ProVoice, no site decoded", DSD_SYNC_PROVOICE_POS, 4U, 851012500, "EDACS_SITE_000_Digital_Call",
+         "EDACS 851.0125 MHz", "EDACS_SITE_000_Digital_Call"},
+        {"EDACS ProVoice, no system string", DSD_SYNC_PROVOICE_NEG, 4U, 0, "", "EDACS", "EDACS"},
+        {"EDACS analog all-call", DSD_SYNC_EDACS_POS, 4U, 851012500, "EDACS_SITE_012_Analog_Call", "EDACS 851.0125 MHz",
          "EDACS_SITE_012_Analog_Call"},
-        {"standalone ProVoice", DSD_SYNC_PROVOICE_POS, 851012500, "EDACS_SITE_000_Analog_Call", "ProVoice 851.0125 MHz",
-         "EDACS_SITE_000_Analog_Call"},
-        {"standalone ProVoice, no system string", DSD_SYNC_PROVOICE_NEG, 0, "", "ProVoice", "ProVoice"},
-        {"not an EDACS site", DSD_SYNC_PROVOICE_POS, 851012500, "SITE_012", "ProVoice 851.0125 MHz", "SITE_012"},
+        {"standalone ProVoice", DSD_SYNC_PROVOICE_POS, 0U, 851012500, "EDACS_SITE_000_Analog_Call",
+         "ProVoice 851.0125 MHz", "EDACS_SITE_000_Analog_Call"},
+        {"standalone ProVoice, no system string", DSD_SYNC_PROVOICE_NEG, 0U, 0, "", "ProVoice", "ProVoice"},
     };
 
     static Event_History_I hist;
@@ -2455,6 +2458,7 @@ test_fallback_edacs_provoice_label(void) {
         unnumbered_row(&hist, cases[i].systype, cases[i].freq_hz, DSD_ACCESS_CODE_NONE, 0);
         Event_History* item = &hist.Event_History_Items[0];
         item->source_id = 4321U;
+        item->channel = cases[i].channel;
         DSD_SNPRINTF(item->sysid_string, sizeof item->sysid_string, "%s", cases[i].sysid);
         DSD_MEMSET(&opts, 0, sizeof(opts));
         opts.rdio_mode = DSD_RDIO_MODE_DIRWATCH;
