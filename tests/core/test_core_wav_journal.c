@@ -27,6 +27,7 @@
 #include <dsd-neo/core/state_fwd.h>
 #include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/core/time_format.h>
+#include <dsd-neo/core/vocoder.h>
 #include <dsd-neo/core/wav_journal.h>
 #include <dsd-neo/core/wav_recording.h>
 #include <dsd-neo/engine/analog_call.h>
@@ -3860,6 +3861,205 @@ test_tetra_first_call_leaves_unowned_audio(void) {
     return rc;
 }
 
+/* --- Issue #888 B20: each file -r plays is a recording of its own; none joins another file's audio. --- */
+
+/* A clean AMBE 3600x2450 frame as SDRTrunk records DMR voice (36 dibits, two per hex digit; see CORE_MBE_FILE_IO). */
+static const char k_playback_dmr_hex[] = "3ABF032D9ADEE4CB50";
+
+enum {
+    PLAYBACK_FILES = 4,
+    PLAYBACK_NAMED = 2, /* the SDRTrunk export: the named call */
+};
+
+/* The files -r plays, in order: raw AMBE, raw AMBE, an SDRTrunk export naming a call, raw AMBE. Each has its own
+   frame count, so a recording's length tells whose audio it holds. */
+static const char* const k_playback_names[PLAYBACK_FILES] = {"first.amb", "second.amb", "named.mbe", "last.amb"};
+static const int k_playback_frames[PLAYBACK_FILES] = {5, 2, 3, 4}; /* the export's 3: its three frames */
+
+/* The SDRTrunk export: a clear DMR group call to talkgroup 1234 from radio 5678, three voice frames. */
+static int
+playback_write_named(FILE* f) {
+    char json[512];
+    const int len = DSD_SNPRINTF(
+        json, sizeof json,
+        "{\"version\":\"2\",\"protocol\":\"DMR\",\"call_type\":\"GROUP\",\"encrypted\":\"false\","
+        "\"to\":\"1234\",\"from\":\"5678\",\"frames\":[{\"hex\":\"%s\"},{\"hex\":\"%s\"},{\"hex\":\"%s\"}]}",
+        k_playback_dmr_hex, k_playback_dmr_hex, k_playback_dmr_hex);
+    return (len <= 0 || (size_t)len >= sizeof json || fwrite(json, 1, (size_t)len, f) != (size_t)len) ? 1 : 0;
+}
+
+/* A raw AMBE file of @p frames frames: the cookie, then one 8-byte record (an error byte, the 49 parameter bits) per
+   frame. */
+static int
+playback_write_raw(FILE* f, int frames) {
+    static const unsigned char frame[8] = {0x80U, 0x5AU, 0x3CU, 0x71U, 0x0FU, 0xA5U, 0x2EU, 0x01U};
+    int rc = fwrite(".amb", 1, 4, f) != 4 ? 1 : 0;
+    for (int i = 0; i < frames; i++) {
+        rc |= fwrite(frame, 1, sizeof frame, f) != sizeof frame ? 1 : 0;
+    }
+    return rc;
+}
+
+/* Write file @p n of the playback run into the rig's folder at @p path. */
+static int
+playback_write_file(const rig* r, int n, char* path, size_t cap) {
+    if (dsd_test_path_join(path, cap, r->dir, k_playback_names[n]) != 0) {
+        return 1;
+    }
+    FILE* f = dsd_fopen_private(path, "wb");
+    if (f == NULL) {
+        return 1;
+    }
+    int rc = n == PLAYBACK_NAMED ? playback_write_named(f) : playback_write_raw(f, k_playback_frames[n]);
+    rc |= fclose(f) != 0 ? 1 : 0;
+    return rc;
+}
+
+/* The published recordings in the rig's folder: how many hold each file's audio alone (and of those, how many have an
+   rdio-scanner sidecar), and how many hold anything else (two files' audio together). */
+typedef struct {
+    const char* dir;
+    int file[PLAYBACK_FILES];
+    int sidecar[PLAYBACK_FILES];
+    int other;
+} playback_files;
+
+static int
+playback_files_cb(const char* name, void* user) {
+    playback_files* files = (playback_files*)user;
+    const size_t len = strlen(name);
+    if (len < 4 || strcmp(name + len - 4, ".wav") != 0 || strncmp(name, "TEMP_", 5) == 0) {
+        return 0;
+    }
+    char path[DSD_TEST_PATH_MAX * 2];
+    if (dsd_test_path_join(path, sizeof path, files->dir, name) != 0) {
+        return 0;
+    }
+    SF_INFO info;
+    DSD_MEMSET(&info, 0, sizeof info);
+    SNDFILE* f = sf_open(path, SFM_READ, &info);
+    if (f != NULL) {
+        (void)sf_close(f);
+    }
+    for (int n = 0; n < PLAYBACK_FILES; n++) {
+        if (info.frames == (sf_count_t)k_playback_frames[n] * 160) {
+            files->file[n]++;
+            char sidecar[DSD_TEST_PATH_MAX * 2];
+            DSD_SNPRINTF(sidecar, sizeof sidecar, "%.*s.json", (int)(strlen(path) - 4), path);
+            FILE* s = dsd_fopen_existing_regular_file(sidecar, "rb");
+            if (s != NULL) {
+                files->sidecar[n]++;
+                (void)fclose(s);
+            }
+            return 0;
+        }
+    }
+    files->other++;
+    return 0;
+}
+
+/* The run ends as the engine ends it: the last calls finalize at no carrier, then the slot files close and publish. */
+static void
+playback_end_run(rig* r) {
+    dsd_event_sync_slot(r->opts, r->state, 0);
+    dsd_event_sync_slot(r->opts, r->state, 1);
+    noCarrier(r->opts, r->state);
+    dsd_event_sync_slot(r->opts, r->state, 0);
+    dsd_event_sync_slot(r->opts, r->state, 1);
+    dsd_event_flush_pending_alerts(r->opts, r->state);
+    r->opts->wav_out_f = close_and_publish_call_wav(r->opts->wav_out_f, r->opts, r->state, 0, r->opts->wav_out_file,
+                                                    r->opts->wav_out_dir, r->opts->wav_out_open_time);
+    r->opts->wav_out_fR = close_and_publish_call_wav(r->opts->wav_out_fR, r->opts, r->state, 1, r->opts->wav_out_fileR,
+                                                     r->opts->wav_out_dir, r->opts->wav_out_open_timeR);
+}
+
+/* The journal's publish lines: the named call's own audio under its row; each raw file's audio once, as no row's,
+   unexported. */
+static int
+playback_check_journal(const rig* r, uint64_t named_row) {
+    reload(r);
+    int rc = 0;
+    int seen[PLAYBACK_FILES] = {0};
+    const char* pub = NULL;
+    for (int i = 0; (pub = record(&g_j, "publish", i)) != NULL; i++) {
+        const long long ms = field_ll(pub, "duration_ms");
+        int n = 0;
+        while (n < PLAYBACK_FILES && ms != (long long)k_playback_frames[n] * 20) {
+            n++;
+        }
+        char tag[160];
+        DSD_SNPRINTF(tag, sizeof tag, "-r playback: the %lld ms recording holds one file's audio (row %s)", ms,
+                     field_s(pub, "row"));
+        if (n >= PLAYBACK_FILES) {
+            rc |= expect_true(tag, 0);
+            continue;
+        }
+        seen[n]++;
+        DSD_SNPRINTF(tag, sizeof tag, "-r playback: %s", k_playback_names[n]);
+        if (n == PLAYBACK_NAMED) {
+            rc |= expect_int(tag, field_ll(pub, "row"), (long long)named_row);
+        } else {
+            rc |= expect_orphan(tag, pub, 0, (long long)k_playback_frames[n] * 20);
+        }
+    }
+    for (int n = 0; n < PLAYBACK_FILES; n++) {
+        char tag[160];
+        DSD_SNPRINTF(tag, sizeof tag, "-r playback: %s published once", k_playback_names[n]);
+        rc |= expect_int(tag, seen[n], 1);
+    }
+    return rc;
+}
+
+/* -P -r first.amb second.amb named.mbe last.amb: raw playback writes the slot file with no call, so before the fix
+   the first two files' audio shared one file, and the named call's commit published it with the named call's own
+   audio as one recording, exported under the call's row. Each file boundary now closes the audio no call owns, so
+   every file is a recording of its own and the named call's export holds its own audio alone. Journal on and off. */
+static int
+test_playback_files_record_apart(void) {
+    int rc = 0;
+    for (int with_journal = 1; with_journal >= 0; with_journal--) {
+        rig r;
+        rc |= rig_open_ex(&r, "dsdneo_journal_playback", with_journal);
+        r.opts->audio_out = 0;
+        r.opts->playfiles = 1;
+        r.opts->rdio_mode = DSD_RDIO_MODE_DIRWATCH;
+        r.opts->rdio_system_id = 48;
+        submit(&r, DSD_APP_CMD_WAV_START);
+        char paths[PLAYBACK_FILES][DSD_TEST_PATH_MAX * 2];
+        char* argv[PLAYBACK_FILES + 1] = {"dsd-neo"};
+        for (int n = 0; n < PLAYBACK_FILES; n++) {
+            rc |= expect_int("-r playback: input written", playback_write_file(&r, n, paths[n], sizeof paths[n]), 0);
+            argv[n + 1] = paths[n];
+        }
+        r.state->optind = 1;
+        playMbeFiles(r.opts, r.state, PLAYBACK_FILES + 1, argv);
+        playback_end_run(&r);
+
+        if (with_journal) {
+            rc |= playback_check_journal(&r, r.state->event_history_s[0].push_seq);
+        }
+        playback_files files;
+        DSD_MEMSET(&files, 0, sizeof files);
+        files.dir = r.dir;
+        (void)dsd_dir_list(r.dir, playback_files_cb, &files);
+        for (int n = 0; n < PLAYBACK_FILES; n++) {
+            char tag[160];
+            DSD_SNPRINTF(tag, sizeof tag, "-r playback (journal %s): %s is one recording of its own",
+                         with_journal ? "on" : "off", k_playback_names[n]);
+            rc |= expect_int(tag, files.file[n], 1);
+            DSD_SNPRINTF(tag, sizeof tag, "-r playback (journal %s): %s %s", with_journal ? "on" : "off",
+                         k_playback_names[n], n == PLAYBACK_NAMED ? "is exported" : "is not exported");
+            rc |= expect_int(tag, files.sidecar[n], n == PLAYBACK_NAMED ? 1 : 0);
+        }
+        rc |= expect_int(with_journal ? "-r playback (journal on): no recording joins two files"
+                                      : "-r playback (journal off): no recording joins two files",
+                         files.other, 0);
+        r.opts->rdio_mode = DSD_RDIO_MODE_OFF;
+        rig_close(&r);
+    }
+    return rc;
+}
+
 int
 main(void) {
     dsd_neo_config_init();
@@ -3927,6 +4127,7 @@ main(void) {
     rc |= test_edacs_grant_closes_unowned_audio_first();
     rc |= test_edacs_grant_leaves_owned_audio_to_its_row();
     rc |= test_tetra_first_call_leaves_unowned_audio();
+    rc |= test_playback_files_record_apart();
     if (rc == 0) {
         printf("CORE_WAV_JOURNAL: OK\n");
     }

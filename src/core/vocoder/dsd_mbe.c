@@ -2537,12 +2537,17 @@ mbe_post_audio_and_recording(dsd_opts* opts, dsd_state* state, const mbe_frame_c
 // call open and its protocol set at EOF, and a raw .imb/.amb/.dmb that follows
 // publishes neither, so the output gates would judge it on the previous file's
 // talkgroup, or as an unclassified live P25 call. Start each file as a fresh
-// -r run does: no call and no protocol.
+// -r run does: no call and no protocol. Nor does a file record into another's
+// recording (issue #888): a raw file plays with no call, so the audio it left
+// in the slot file closes here, unexported and as no row's (or as the ended
+// call's whose row has yet to commit), instead of joining the next file's, or
+// a named call's commit publishing it as that call's.
 static void
 mbe_file_end_replayed_call(dsd_opts* opts, dsd_state* state) {
     if (dsd_call_state_end(state, 0U, 0.0) > 0) {
         dsd_event_sync_slot(opts, state, 0U);
     }
+    dsd_event_flush_orphan_recordings(opts, state);
     state->synctype = DSD_SYNC_NONE;
     state->lastsynctype = DSD_SYNC_NONE;
     // A file is a reception of its own: its first frame starts from clear high-pass state (issue #653) and the start

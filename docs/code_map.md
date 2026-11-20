@@ -2551,7 +2551,11 @@ suite runs under this compiler.
     flush before it observes the call (issue #888), so the speech that reached the slot file before (ahead of the
     proof or the DM-SETUP, or trailing an ended call) closes as no row's or the held epoch's, unexported, and the
     first call's recording holds its own audio alone; a call already active (a republication, a reallocation) runs
-    nothing. Where the receiver is comes from `dsd_engine_receiver_hz()` before the tune, the reading
+    nothing. Each `-r` playback file (`mbe_file_end_replayed_call()` in `dsd_mbe.c`, once per file opened, after it
+    ends and commits the previous file's call) runs the flush too (issue #888): a raw `.imb`/`.amb`/`.dmb` file plays
+    with no call, so its audio would otherwise join the next file's, and an SDRTrunk export's named call would commit
+    and export it as its own; each file is a recording of its own (the last file's no-call audio closes at the run's
+    no-carrier pass). Where the receiver is comes from `dsd_engine_receiver_hz()` before the tune, the reading
     `dsd_engine_receiver_frequency()` gives every judge of a move: on a rigctl peer, the frequency it last confirmed on
     this connection (`opts->rigctl_sent_freq_hz`; 0, unknown and so a leave, after a connect or reconnect before
     anything was sent, never the tuner frequency a reconnect leaves naming the old peer's); on an RTL stream tuned
@@ -2637,8 +2641,10 @@ suite runs under this compiler.
   unexported, the granted call's recording only its own; an outgoing call still active keeps its audio under its
   row, exported), and at the first TETRA call admitted after speech its file took with no call (an anonymous call
   once the carrier is proven, a direct-mode call once named, through the real speech path, journal on and off: the
-  earlier speech one recording of no row's, unexported, the call's only its own under its row); the write and
-  pending-list seams in
+  earlier speech one recording of no row's, unexported, the call's only its own under its row), and at each `-r`
+  playback file (two raw `.amb` files, an SDRTrunk export naming a call, a raw `.amb`, through `playMbeFiles()` and
+  the run's end, journal on and off: each file one recording, the raw files' no row's and unexported, the named call's
+  only its own, exported under its row); the write and pending-list seams in
   `src/core/file/wav_journal_test_support.h`), `ENGINE_NO_CARRIER_RESET` (the orphan close at the direct and trunk
   control-channel returns, a hunt's control-channel tune and the trunk follow, none at a refused one or a grant on the
   carrier the receiver is on), `ENGINE_TRUNK_RETUNE_REGRESSION` and `ENGINE_TRUNK_SCAN` (each trunk tune's and switch's
