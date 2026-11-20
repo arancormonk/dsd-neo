@@ -4528,7 +4528,8 @@ live_scanner_y_frames_carry_nothing(const dsd_opts* opts, const dsd_state* state
 
 /* What the frames since the last boundary noted, for the -Y step: checked content and an unchecked protocol's frame
    become their time (the frame's end), and a verdict still open (PARTIAL) the end of its hold, bounded by
-   SCAN_QUIET_PENDING_MAX_MS. */
+   SCAN_QUIET_PENDING_MAX_MS. Proof dominates, as in dsd_engine_scan_quiet_note_evidence(): checked content resolves
+   the open verdict, so the hold it started ends there, and a PARTIAL note of the same frame starts none. */
 static void
 live_scanner_y_note_frame_content(dsd_state* state, double now_m) {
     if (state->scan_y_content_seq == state->scan_y_content_seen
@@ -4543,6 +4544,9 @@ live_scanner_y_note_frame_content(dsd_state* state, double now_m) {
     if (state->scan_y_content_seq != state->scan_y_content_seen) {
         state->scan_y_content_seen = state->scan_y_content_seq;
         state->scan_y_content_m = now_m;
+        state->scan_y_partial_seen = state->scan_y_partial_seq;
+        state->scan_y_partial_hold_ms = 0U;
+        state->scan_y_partial_until_m = -1.0;
     }
     if (state->scan_y_partial_seq != state->scan_y_partial_seen) {
         state->scan_y_partial_seen = state->scan_y_partial_seq;

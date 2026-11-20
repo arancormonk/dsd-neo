@@ -17105,6 +17105,9 @@ enum {
                              keeps the row while its last checked content is inside -t, then steps */
     YC_LISTENING,         /* the whole-second -t since the landing run out, but the input came back from the retune's
                              mute under -t ago: no yield (none spent) until -t since then has run out, then steps */
+    YC_PROOF_ENDS_HOLD,   /* an open verdict's hold, then a frame whose checks pass resolves it: the hold ends there,
+                             so once that content is -t old the row yields at once, not at the old deadline */
+    YC_PROOF_SAME_FRAME,  /* one frame noting an open verdict and passing checks: proof dominates, no hold starts */
 };
 
 /* The row's -t run out: the hangtime anchor and the last checked content 11 s back (the rig's -t is 10 s). */
@@ -17238,12 +17241,37 @@ yc_check_listening(dsd_opts* opts, dsd_state* state) {
     return rc;
 }
 
+/* YC_PROOF_ENDS_HOLD, YC_PROOF_SAME_FRAME: checked content resolves the open verdict, as the quiet check's own note
+   does (dsd_engine_scan_quiet_note_evidence()): no hold is left, so once the content and the anchor are -t old the
+   frames yield at the first boundary and noCarrier() steps, with no wait for the deadline the verdict asked for. */
+static int
+yc_check_proof_ends_hold(dsd_opts* opts, dsd_state* state, int which) {
+    const char* what =
+        which == YC_PROOF_ENDS_HOLD ? "proof after an open verdict" : "proof in the open verdict's frame";
+    char label[160];
+    DSD_SNPRINTF(label, sizeof label, "%s: no hold left (until %.3f, now %.3f)", what, state->scan_y_partial_until_m,
+                 dsd_decode_now_mono_s());
+    int rc = expect_true(label, state->scan_y_partial_until_m < 0.0 && g_rtl_tune_calls == 0);
+    yc_age(state, 1);
+    run_synced_frames(opts, state, 5, -1);
+    DSD_SNPRINTF(label, sizeof label, "%s: the content -t old, yields at the first boundary (frames %d)", what,
+                 g_frame_count);
+    rc |= expect_true(label, g_frame_count == 1);
+    noCarrier(opts, state);
+    DSD_SNPRINTF(label, sizeof label, "%s: and steps", what);
+    rc |= expect_true(label, g_rtl_tune_calls == 1);
+    return rc;
+}
+
 /* What the case expects once its frames ran: 1 when a yield and a step are owed. */
 static int
 yc_check(dsd_opts* opts, dsd_state* state, int which) {
     int rc = 0;
     if (which == YC_LISTENING) {
         return yc_check_listening(opts, state);
+    }
+    if (which == YC_PROOF_ENDS_HOLD || which == YC_PROOF_SAME_FRAME) {
+        return yc_check_proof_ends_hold(opts, state, which);
     }
     if (which == YC_PARTIAL || which == YC_UNCHECKED_FRAMES) {
         return yc_check_held_then_steps(opts, state, which);
@@ -17307,6 +17335,15 @@ yc_run_frames(dsd_opts* opts, dsd_state* state, int which) {
     } else if (which == YC_PARTIAL || which == YC_PARTIAL_DEADLINE) {
         /* A hold longer than any gate's: the rule caps it at SCAN_QUIET_PENDING_MAX_MS. */
         run_synced_frames_noting(opts, state, 5, -1, DSD_CONTENT_EVIDENCE_PARTIAL, 5000U);
+    } else if (which == YC_PROOF_ENDS_HOLD) {
+        /* A late-entry D-STAR superframe's open verdict (840 ms), then the frame that resolves it. */
+        run_synced_frames_noting(opts, state, 2, -1, DSD_CONTENT_EVIDENCE_PARTIAL, 840U);
+        run_synced_frames_noting(opts, state, 0, -1, DSD_CONTENT_EVIDENCE_PROVEN, 0U);
+    } else if (which == YC_PROOF_SAME_FRAME) {
+        /* The frame's open verdict, noted beside its passing checks before the boundary reads either. */
+        state->scan_y_partial_seq++;
+        state->scan_y_partial_hold_ms = 840U;
+        run_synced_frames_noting(opts, state, 0, -1, DSD_CONTENT_EVIDENCE_PROVEN, 0U);
     } else {
         run_synced_frames(opts, state, 5, -1);
     }
@@ -17354,7 +17391,7 @@ yc_case(int which, int on) {
 static int
 test_y_frames_with_no_checked_content_leave(void) {
     int rc = 0;
-    for (int which = YC_NOISE; which <= YC_LISTENING; which++) {
+    for (int which = YC_NOISE; which <= YC_PROOF_SAME_FRAME; which++) {
         if (which != YC_QUIET_FIRST) {
             rc |= yc_case(which, 0);
         }

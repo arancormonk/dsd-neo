@@ -696,7 +696,10 @@ Generated (do not edit/commit):
       deadline (`scan_y_timing_fill_hangtime()` extends the anchor's window to
       `dsd_engine_scan_y_frames_hold_until_m()` on the decode-mono clock;
       `test_y_hangtime_publishes_the_deadline_the_step_keeps()`). PARTIAL never counts as content, it only delays
-      the step to the end of its hold, so a D-STAR voice superframe still waiting on its header is not cut; nor does an X2-TDMA, ProVoice or TETRA frame, which `processFrame()` notes as it dispatches one
+      the step to the end of its hold, so a D-STAR voice superframe still waiting on its header is not cut; checked
+      content resolves the open verdict, so its hold ends at the proof and a PARTIAL note of the proving frame starts
+      none (`live_scanner_y_note_frame_content()`, as `dsd_engine_scan_quiet_note_evidence()`; cases
+      `YC_PROOF_ENDS_HOLD`, `YC_PROOF_SAME_FRAME`); nor does an X2-TDMA, ProVoice or TETRA frame, which `processFrame()` notes as it dispatches one
       (`scan_y_unchecked_seq`, before the handler, so a first candidate holds the row too) and which holds the row
       only while such frames keep coming, so the default set's -Y row on NXDN48 or dPMR noise leaves like a typed
       one), nothing keeps the row
