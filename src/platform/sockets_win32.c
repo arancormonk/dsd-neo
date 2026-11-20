@@ -114,6 +114,10 @@ socket_wait_connect(dsd_socket_t sock, uint64_t deadline_ms, dsd_socket_cancel_f
             }
             return code;
         }
+        /* Expired with the wait: no further check runs, so no blocking callback starts past the deadline. */
+        if (dsd_time_monotonic_ms() >= deadline_ms) {
+            break;
+        }
     }
     return WSAETIMEDOUT;
 }

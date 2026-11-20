@@ -21,6 +21,7 @@
 #include <dsd-neo/dsp/symbol.h>
 #include <dsd-neo/platform/sockets.h>
 #include <dsd-neo/platform/timing.h>
+#include <dsd-neo/runtime/config.h>
 #include <dsd-neo/runtime/control_pump.h>
 #include <dsd-neo/runtime/decode_clock.h>
 #include <dsd-neo/runtime/exitflag.h>
@@ -36,6 +37,7 @@
 #include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
 #include "dsd-neo/platform/platform.h"
+#include "test_env.h"
 #if !DSD_PLATFORM_WIN_NATIVE
 #include <sys/socket.h>
 #endif
@@ -627,7 +629,13 @@ test_slow_reads_that_succeed_service_the_beat(void) {
    process. A case that leaves the connection open closes it (close_owned_tcp_socket()). */
 static void
 open_owned_tcp_socket(void) {
+    /* Connect, open and reads are the fakes': only a handle this test may close is needed. A local socket on POSIX, so
+       the test needs no IPv4 permission. */
+#if DSD_PLATFORM_WIN_NATIVE
     g_tcp_connect_result = dsd_socket_create(AF_INET, SOCK_STREAM, 0);
+#else
+    g_tcp_connect_result = dsd_socket_create(AF_UNIX, SOCK_STREAM, 0);
+#endif
     assert(g_tcp_connect_result != DSD_INVALID_SOCKET);
 }
 
@@ -700,6 +708,24 @@ test_a_tcp_reconnect_services_the_beat(void) {
                     g_services_before_connect);
         g_failures++;
     }
+
+    /* A retune in the backoff of a reconnect whose server stays away: the old connection's staged samples and resampler
+       history go all the same (a carrier the receiver left), and the input ends as for any lost server. */
+    install_watchdog_service();
+    init_tcp_session(opts, state, 0);
+    opts->input_upsample_prev_valid = 1;
+    opts->input_upsample_len = 4;
+    opts->input_upsample_pos = 1;
+    g_beat = BEAT_MOVES;
+    (void)getSymbol(opts, state, 0);
+    if (opts->input_upsample_prev_valid != 0 || opts->input_upsample_len != 0 || state->symbolcnt != 0U) {
+        DSD_FPRINTF(stderr,
+                    "FAIL: a reconnect that failed after a retune kept the old connection's staging (history %d, "
+                    "staged %d, symbols %u)\n",
+                    opts->input_upsample_prev_valid, opts->input_upsample_len, (unsigned)state->symbolcnt);
+        g_failures++;
+    }
+    g_beat = BEAT_NONE;
 
     /* A queued command (or shutdown) wins over a beat: the reconnect gives way without running the tick, so no tune
        starts on a receiver being replaced, and the beat stays asked for. */
@@ -912,6 +938,11 @@ test_an_idle_rtl_hunt_read_leaves_when_its_tick_retunes(void) {
 
 int
 main(void) {
+    /* The reconnect cases time their services against the 300 ms backoff: pinned here, whatever the environment says. */
+    if (dsd_test_setenv("DSD_NEO_TCPIN_BACKOFF_MS", "300", 1) != 0) {
+        return 1;
+    }
+    dsd_neo_config_init();
     dsd_runtime_set_controls_pending(fake_controls_pending);
     test_a_silent_hunt_read_leaves_for_a_queued_command();
     test_a_silent_read_with_nothing_queued_waits();

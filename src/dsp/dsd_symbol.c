@@ -2953,6 +2953,10 @@ symbol_tcp_backoff(int backoff_ms, dsd_socket_cancel_fn cancelled, void* context
         }
         const uint64_t left = deadline_ms - now_ms;
         dsd_sleep_ms((unsigned int)(left < SYMBOL_INPUT_WAIT_SLICE_MS ? left : SYMBOL_INPUT_WAIT_SLICE_MS));
+        /* Expired: no further check runs, so no tick starts past the deadline. */
+        if (dsd_realtime_mono_ms() >= deadline_ms) {
+            return 0;
+        }
     }
 }
 
@@ -3061,17 +3065,13 @@ symbol_tcp_reconnect_read(dsd_opts* opts, dsd_state* state, float* sample_out, c
         work->hunting ? symbol_tcp_reconnect_cancelled_hunting : symbol_tcp_reconnect_cancelled_decoding;
     symbol_tcp_reconnect_ctx context = {opts, state, 0};
     const int reconnected = symbol_tcp_reconnect(opts, state, cancelled, &context);
+    /* A P25 tick moved the chain while the reconnect waited: the old connection's staged tail and resampler history
+       are a carrier the receiver left, and go whatever the reconnect's outcome. */
+    if (context.moved) {
+        dsd_opts_reset_pcm_input_state(opts);
+    }
     if (reconnected < 0) {
         return symbol_tcp_reconnect_gave_up(opts, state);
-    }
-    if (reconnected > 0 && context.moved) {
-        /* A P25 tick moved the chain while the reconnect waited: the new connection's samples are the next hunt's,
-           which takes the tuning generation and the decode time after the tune, as any hand-back does. The old
-           connection's staged tail and resampler history go now (a carrier the receiver left), so the next hunt's first
-           sample is the new connection's alone. */
-        dsd_opts_reset_pcm_input_state(opts);
-        state->input_interrupted = 1;
-        return 0;
     }
     if (dsd_pcm_input_take_staged_tail_sample(opts, sample_out, 1)) {
         return 1;
@@ -3083,6 +3083,12 @@ symbol_tcp_reconnect_read(dsd_opts* opts, dsd_state* state, float* sample_out, c
         frame_sync_take_unflushed_retunes(opts, state);
         if (state->input_drop_pending) {
             dsd_symbol_apply_input_drop(opts, state);
+        }
+        if (context.moved) {
+            /* The new connection's samples are the next hunt's, which takes the tuning generation and the decode time
+               after the tune, as any hand-back does. */
+            state->input_interrupted = 1;
+            return 0;
         }
     }
     /* The new connection is waited on as any other: one that stays quiet, or sends a part of a sample, leaves the

@@ -1510,8 +1510,11 @@ fake_watchdog_service(dsd_opts* opts, dsd_state* state) {
 static void
 fake_entry_tick(dsd_opts* opts, dsd_state* state) {
     (void)opts;
-    (void)state;
     watchdog_tick_effect();
+    if (g_watchdog_tick_wall_stamp != 0) {
+        state->last_cc_sync_time = g_watchdog_tick_wall_stamp;
+        state->last_cc_sync_time_m = g_watchdog_tick_mono_stamp;
+    }
 }
 
 static const uint64_t k_watchdog_t0_ns = 2000000000000ULL;
@@ -1682,6 +1685,39 @@ test_a_sync_follows_a_wall_clock_set_back(void) {
     watchdog_case_done(opts, state);
 }
 
+/* The entry tick's grace (a tick that settled a tune and stamped the control channel's sync, moving nothing) is this
+   call's: the sync that follows keeps its wall stamp. The baseline the sync compares against is taken before the
+   entry tick. */
+static void
+test_an_entry_tick_grace_keeps_its_wall_stamp(void) {
+    dsd_opts* opts = NULL;
+    dsd_state* state = NULL;
+    watchdog_case_init(&opts, &state, 100, 0);
+    opts->trunk_enable = 1;
+    state->lastsynctype = DSD_SYNC_P25P1_POS;
+    dsd_frame_sync_test_reset_p25_trunk_tick_state();
+    dsd_frame_sync_hooks_set(&(dsd_frame_sync_hooks){
+        .p25_sm_try_tick = fake_entry_tick,
+        .p25_sm_release = fake_p25_sm_release,
+        .p25_sm_vc_no_sync = fake_p25_sm_vc_no_sync,
+        .no_carrier = fake_no_carrier,
+    });
+    g_watchdog_tick_wall_stamp = (time_t)(k_watchdog_t1_ns / 1000000000ULL);
+    g_watchdog_tick_mono_stamp = (double)k_watchdog_t1_ns / 1e9;
+    const int sync = getFrameSync(opts, state);
+    if (!DSD_SYNC_IS_P25P1(sync) || g_watchdog_ticks != 1) {
+        DSD_FPRINTF(stderr, "FAIL: the word after the entry tick's grace was not found (sync %d, ticks %d)\n", sync,
+                    g_watchdog_ticks);
+        g_watchdog_failures++;
+    }
+    if (state->last_cc_sync_time != g_watchdog_tick_wall_stamp) {
+        DSD_FPRINTF(stderr, "FAIL: the sync put the entry tick's grace stamp back from %lld to %lld\n",
+                    (long long)g_watchdog_tick_wall_stamp, (long long)state->last_cc_sync_time);
+        g_watchdog_failures++;
+    }
+    watchdog_case_done(opts, state);
+}
+
 /* The entry tick (frame_sync_maybe_tick_p25_trunk_sm(), the decoder's own once a second) that lands a tune hands back
    before reading anything, as the checkpoint does. */
 static void
@@ -1740,6 +1776,7 @@ main(void) {
     test_a_sync_never_moves_the_control_channel_stamp_back();
     test_a_sync_moves_neither_control_channel_stamp_back();
     test_a_sync_follows_a_wall_clock_set_back();
+    test_an_entry_tick_grace_keeps_its_wall_stamp();
     test_an_entry_tick_retune_hands_back();
     assert(g_watchdog_failures == 0);
     return 0;

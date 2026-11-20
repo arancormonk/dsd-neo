@@ -3791,6 +3791,16 @@ frame_sync_runtime_init(frame_sync_runtime_ctx* rt, const dsd_opts* opts, const 
     rt->modulation[7] = 0;
 }
 
+/* The window's context started over within the call (a CQPSK trial's pass end, a hunt-chain handback, a P25p1 word
+   hint): what the call began with stays, the control channel's wall stamp as getFrameSync() found it before its entry
+   tick (frame_sync_note_cc_sync()). */
+static void
+frame_sync_runtime_restart(frame_sync_runtime_ctx* rt, const dsd_opts* opts, const dsd_state* state) {
+    const time_t cc_stamp_at_entry = rt->cc_stamp_at_entry;
+    frame_sync_runtime_init(rt, opts, state);
+    rt->cc_stamp_at_entry = cc_stamp_at_entry;
+}
+
 static int
 frame_sync_capture_tetra_dibits_aged(const frame_sync_runtime_ctx* rt, uint8_t* dst, int count, int newest_age) {
     int oldest_age;
@@ -5928,12 +5938,12 @@ frame_sync_maybe_dump_unsynced_dmr(const dsd_opts* opts, const dsd_state* state)
 static int
 frame_sync_pass_end_step(dsd_opts* opts, dsd_state* state, frame_sync_runtime_ctx* rt, time_t now) {
     if (frame_sync_p25p1_mod_compare_trial_pass_ended(opts, state, rt->synctest_pos)) {
-        frame_sync_runtime_init(rt, opts, state);
+        frame_sync_runtime_restart(rt, opts, state);
         return 0;
     }
     const int timeout_step = frame_sync_handle_no_sync_timeout(opts, state, rt, now);
     if (timeout_step == FRAME_SYNC_HUNT_CHAIN_HANDBACK) {
-        frame_sync_runtime_init(rt, opts, state);
+        frame_sync_runtime_restart(rt, opts, state);
         return 0;
     }
     if (timeout_step != 0) {
@@ -5955,7 +5965,7 @@ frame_sync_pass_end_step(dsd_opts* opts, dsd_state* state, frame_sync_runtime_ct
      * and the hunt goes on in the same dwell. */
     const int budget_step = frame_sync_hunt_budget_exit(opts, state, now);
     if (budget_step == FRAME_SYNC_HUNT_CHAIN_HANDBACK) {
-        frame_sync_runtime_init(rt, opts, state);
+        frame_sync_runtime_restart(rt, opts, state);
         return 0;
     }
     return budget_step != 0;
@@ -5999,6 +6009,7 @@ int
 getFrameSync(dsd_opts* opts, dsd_state* state) {
     const time_t now = dsd_decode_time();
     const double nowm = dsd_decode_now_mono_s();
+    const time_t cc_stamp_at_entry = state ? state->last_cc_sync_time : 0; /* before the entry tick's grace */
     int ended = DSD_SYNC_NONE;
     if (frame_sync_entry_ends_call(opts, state, now, &ended)) {
         return ended;
@@ -6008,9 +6019,9 @@ getFrameSync(dsd_opts* opts, dsd_state* state) {
     frame_sync_p25p1_mod_compare_note(opts, state);
     frame_sync_sps_hunt_note_handler_consumption(state);
     frame_sync_ensure_enabled_sps_profile(opts, state);
-
     frame_sync_runtime_ctx rt;
     frame_sync_runtime_init(&rt, opts, state);
+    rt.cc_stamp_at_entry = cc_stamp_at_entry;
     /* The last call's history, when it ended on a no-sync exit and the stream went on unbroken from there. */
     frame_sync_history_resume(&rt, state);
 
@@ -6073,7 +6084,7 @@ getFrameSync(dsd_opts* opts, dsd_state* state) {
                 return sync_type;
             }
             if (frame_sync_p25p1_word_hint(opts, state, &rt)) {
-                frame_sync_runtime_init(&rt, opts, state);
+                frame_sync_runtime_restart(&rt, opts, state);
                 continue;
             }
         }
