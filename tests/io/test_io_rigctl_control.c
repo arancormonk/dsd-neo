@@ -19,6 +19,7 @@
 #include <dsd-neo/platform/sockets.h>
 #include <dsd-neo/runtime/analog_channel.h>
 #include <dsd-neo/runtime/config.h>
+#include <dsd-neo/runtime/decode_clock.h>
 #include <dsd-neo/runtime/log.h>
 #include <dsd-neo/runtime/scan_mode.h>
 #include <limits.h>
@@ -47,6 +48,12 @@ static size_t g_command_count;
 static const char* g_responses[MAX_RESPONSES];
 /* A reply's length when it holds a NUL (0: up to its first NUL). */
 static size_t g_response_lens[MAX_RESPONSES];
+/* How long after the read before it each reply arrives, in ms of the test's real clock (0: at once). A read that waits
+   for a reply's arrival (dsd_socket_wait(), or dsd_socket_recv() under the socket timeout) moves the clock on. */
+static uint64_t g_response_delay_ms[MAX_RESPONSES];
+static uint64_t g_now_ms;
+/* The longest wait the last dsd_socket_wait() was given. */
+static unsigned int g_last_wait_ms;
 static size_t g_response_count;
 static size_t g_response_index;
 static dsd_socket_t g_create_result;
@@ -140,6 +147,9 @@ reset_stubs(void) {
     g_rtl_last_applied_freq = 0U;
     DSD_MEMSET(&g_config, 0, sizeof(g_config));
     g_config.rigctl_rcvtimeo_ms = 1500;
+    DSD_MEMSET(g_response_delay_ms, 0, sizeof(g_response_delay_ms));
+    g_now_ms = 1000000U;
+    g_last_wait_ms = 0U;
     g_session_request = 0;
     g_session_request_state = NULL;
     g_channel_modes_present = 0;
@@ -183,6 +193,13 @@ push_response(const char* response) {
     assert(g_response_count < MAX_RESPONSES);
     g_response_lens[g_response_count] = 0U;
     g_responses[g_response_count++] = response;
+}
+
+/* A reply that arrives @p delay_ms after the read before it. */
+static void
+push_response_after(const char* response, uint64_t delay_ms) {
+    g_response_delay_ms[g_response_count] = delay_ms;
+    push_response(response);
 }
 
 /* A reply of @p len bytes, NULs included. */
@@ -329,6 +346,31 @@ dsd_socket_send(dsd_socket_t sock, const void* buf, size_t len, int flags) {
     return (int)len;
 }
 
+uint64_t
+dsd_realtime_mono_ms(void) {
+    return g_now_ms;
+}
+
+/* Readable once the next reply has arrived within @p timeout_ms, or at once with none queued (the peer closed, so the
+   read reports it); else the wait runs out. */
+int
+dsd_socket_wait(dsd_socket_t sock, int events, unsigned int timeout_ms) {
+    (void)sock;
+    assert(events == DSD_SOCKET_WAIT_READ);
+    g_last_wait_ms = timeout_ms;
+    if (g_response_index >= g_response_count) {
+        return DSD_SOCKET_WAIT_READ;
+    }
+    if (g_response_delay_ms[g_response_index] > timeout_ms) {
+        g_now_ms += timeout_ms;
+        g_response_delay_ms[g_response_index] -= timeout_ms;
+        return 0;
+    }
+    g_now_ms += g_response_delay_ms[g_response_index];
+    g_response_delay_ms[g_response_index] = 0U;
+    return DSD_SOCKET_WAIT_READ;
+}
+
 int
 dsd_socket_recv(dsd_socket_t sock, void* buf, size_t len, int flags) {
     (void)sock;
@@ -336,6 +378,16 @@ dsd_socket_recv(dsd_socket_t sock, void* buf, size_t len, int flags) {
     if (!buf || len == 0U || g_response_index >= g_response_count) {
         return 0;
     }
+    /* A reply not waited for blocks the read until it arrives, or for the socket's receive timeout. */
+    const uint64_t delay_ms = g_response_delay_ms[g_response_index];
+    const unsigned int socket_timeout_ms = (unsigned int)g_config.rigctl_rcvtimeo_ms;
+    if (delay_ms > socket_timeout_ms) {
+        g_now_ms += socket_timeout_ms;
+        g_response_delay_ms[g_response_index] -= socket_timeout_ms;
+        return -1;
+    }
+    g_now_ms += delay_ms;
+    g_response_delay_ms[g_response_index] = 0U;
     const size_t given_len = g_response_lens[g_response_index];
     const char* response = g_responses[g_response_index++];
     size_t response_len = given_len != 0U ? given_len : strlen(response);
@@ -1438,6 +1490,47 @@ test_set_freq_reads_a_split_reply_whole(void) {
     assert(!SetFreq(132, 851012500L));
     assert(RigctlConfirmedFreq(132) == 0U);
     assert(g_response_index == 2U);
+    return 0;
+}
+
+/* A frequency reply has one receive timeout for the whole line, from the request's first read: a peer that sends its
+ * reply in pieces, each inside the socket timeout but slower than it all told, holds SetFreq() (and the decoder) for
+ * one timeout, not one per piece, and the request's outcome is unknown. Each read waits only for the time left. */
+static int
+test_set_freq_bounds_a_slow_split_reply_by_one_timeout(void) {
+    reset_stubs();
+    push_response("RPRT 0\n");
+    assert(SetFreq(133, 851012500L));
+    const uint64_t started = g_now_ms;
+
+    /* Pieces at 900, 1400 and 1700 ms: the newline comes after the 1500 ms timeout. */
+    push_response_after("RPRT", 900U);
+    push_response_after(" 0", 500U);
+    push_response_after("\n", 300U);
+    assert(!SetFreq(133, 851025000L));
+    assert(RigctlConfirmedFreq(133) == 0U);
+    assert(g_now_ms - started == 1500U);
+    assert(g_last_wait_ms == 100U);
+    assert(g_response_index == 3U); /* the late newline stays unread */
+
+    /* Pieces that never end the line stop at the timeout, not at the buffer's end. */
+    reset_stubs();
+    for (int i = 0; i < 8; i++) {
+        push_response_after("0", 400U);
+    }
+    const uint64_t begun = g_now_ms;
+    assert(!SetFreq(134, 851012500L));
+    assert(g_now_ms - begun == 1500U);
+    assert(g_response_index == 3U);
+
+    /* Pieces that end the line within the timeout still confirm. */
+    reset_stubs();
+    push_response_after("RPRT", 700U);
+    push_response_after(" 0", 700U);
+    push_response_after("\n", 50U);
+    assert(SetFreq(135, 851012500L));
+    assert(RigctlConfirmedFreq(135) == 851012500U);
+    assert(g_last_wait_ms == 100U);
     return 0;
 }
 
@@ -3191,6 +3284,7 @@ main(void) {
     rc |= test_full_size_replies_stay_in_bounds();
     rc |= test_set_freq_takes_only_a_complete_rprt();
     rc |= test_set_freq_reads_a_split_reply_whole();
+    rc |= test_set_freq_bounds_a_slow_split_reply_by_one_timeout();
     rc |= test_get_current_freq_parses_first_line_and_errors();
     rc |= test_io_control_set_freq_validation_and_rigctl_dispatch();
     rc |= test_io_control_set_freq_asks_the_fm_monitor_passband();

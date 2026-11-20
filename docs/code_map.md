@@ -7918,7 +7918,9 @@ the stream-notice hooks' pattern: one that fails to initialize leaves the hook u
   leg marks through `io_control_set_freq_tagged()`'s `rigctl_mark`). A
   refused request or a lost reply installs nothing. Only a complete numeric RPRT line says what a frequency request did
   (`rigctl_read_freq_reply()`: read up to its newline over as many reads as TCP splits it into, so `RPRT 0` and its
-  newline apart still confirm and no newline is left for the next request's reply; exactly `RPRT`, a space, an
+  newline apart still confirm and no newline is left for the next request's reply, with one receive timeout for the
+  whole line on the real clock, each read waiting only for what is left of it, so a reply in slow pieces holds the
+  decoder no longer than none at all; exactly `RPRT`, a space, an
   optional minus and digits, then the newline, which must be the last byte received, so a NUL and more bytes after it
   are not one line): `RPRT 0` confirms and a non-zero status refuses, which leaves the peer where it last confirmed.
   Any other reply (garbled, cut short by EOF, the timeout or a full buffer, more than one line), or none, leaves the
@@ -7927,7 +7929,8 @@ the stream-notice hooks' pattern: one that fails to initialize leaves the hook u
   takes `RigctlConfirmedFreq()` (0) as `rigctl_sent_freq_hz` (the legacy leg also forgets `s_last_rigctl_freq`), so
   the next tune drops what the input held and counts as a carrier move, even a tune back to the frequency confirmed
   before (`IO_RIGCTL_CONTROL` `test_set_freq_takes_only_a_complete_rprt()` and
-  `test_set_freq_reads_a_split_reply_whole()`, `ENGINE_RIGCTL_RETUNE`
+  `test_set_freq_reads_a_split_reply_whole()`, `test_set_freq_bounds_a_slow_split_reply_by_one_timeout()`,
+  `ENGINE_RIGCTL_RETUNE`
   `test_an_unreadable_tune_reply_leaves_the_frequency_unknown()`). A limit, as before #834: a reply that comes after
   its request timed out stays on the connection and is read as the next request's, whichever command that is (a
   frequency, a passband or a reading), so a late `RPRT 0` can confirm a request the peer then refuses; nothing tells

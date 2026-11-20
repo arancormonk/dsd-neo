@@ -25,6 +25,7 @@
 #include <dsd-neo/platform/sockets.h>
 #include <dsd-neo/runtime/analog_channel.h>
 #include <dsd-neo/runtime/config.h>
+#include <dsd-neo/runtime/decode_clock.h>
 #include <dsd-neo/runtime/log.h>
 #include <dsd-neo/runtime/rigctl_passband.h>
 #include <errno.h>
@@ -112,6 +113,25 @@ Connect(char* hostname, int portno) {
     return sockfd;
 }
 
+/* The receive timeout every connection Connect() and ConnectBounded() make runs with: DSD_NEO_RIGCTL_RCVTIMEO, else
+   DSD_NEO_TCP_RCVTIMEO, else 1500 ms. */
+static unsigned int
+connect_recv_timeout_ms(void) {
+    int to_ms = 1500;
+    const dsdneoRuntimeConfig* cfg = dsd_neo_get_config();
+    if (!cfg) {
+        dsd_neo_config_init();
+        cfg = dsd_neo_get_config();
+    }
+    if (cfg) {
+        to_ms = cfg->rigctl_rcvtimeo_ms;
+        if (!cfg->rigctl_rcvtimeo_is_set && cfg->tcp_rcvtimeo_is_set) {
+            to_ms = cfg->tcp_rcvtimeo_ms;
+        }
+    }
+    return to_ms > 0 ? (unsigned int)to_ms : 1500U;
+}
+
 /* The receive timeout, keepalive and options every connection Connect() and ConnectBounded() make runs with. */
 static int
 connect_apply_options(dsd_socket_t sockfd) {
@@ -126,19 +146,7 @@ connect_apply_options(dsd_socket_t sockfd) {
 #endif
     /* Apply small receive timeout so control I/O can't wedge the app. Default 1500ms. */
     {
-        int to_ms = 1500;
-        const dsdneoRuntimeConfig* cfg = dsd_neo_get_config();
-        if (!cfg) {
-            dsd_neo_config_init();
-            cfg = dsd_neo_get_config();
-        }
-        if (cfg) {
-            to_ms = cfg->rigctl_rcvtimeo_ms;
-            if (!cfg->rigctl_rcvtimeo_is_set && cfg->tcp_rcvtimeo_is_set) {
-                to_ms = cfg->tcp_rcvtimeo_ms;
-            }
-        }
-        (void)dsd_socket_set_recv_timeout(sockfd, (unsigned int)to_ms);
+        (void)dsd_socket_set_recv_timeout(sockfd, connect_recv_timeout_ms());
         int nodelay = 1;
         (void)dsd_socket_setsockopt(sockfd, IPPROTO_TCP, TCP_NODELAY, &nodelay, sizeof(nodelay));
     }
@@ -343,17 +351,31 @@ enum { RIGCTL_FREQ_UNKNOWN = 0, RIGCTL_FREQ_CONFIRMED = 1, RIGCTL_FREQ_REFUSED =
 /* Read the reply into @p buf (BUFSIZE + 1 bytes) up to its first newline, over as many reads as TCP splits it into
    (a peer's "RPRT 0" and its newline can arrive apart, and a newline left unread would be taken for the next
    request's reply), and say what it states: exactly one line "RPRT", a space, an optional minus and digits, then the
-   newline (after an optional CR). A reply that ends (EOF), times out or fills the buffer before its newline, one with
-   anything else in it (another line, a NUL: the line must end the bytes received), or none is unknown. A reply that
-   comes after its request timed out is read as the next request's: as on every rigctl request, the client cannot
-   tell. */
+   newline (after an optional CR). The whole line has one receive timeout (connect_recv_timeout_ms()), on the real
+   clock from the first read: each read waits only for what is left of it, so a peer that sends its reply in slow
+   pieces holds the decoder no longer than one that sends nothing. A reply that ends (EOF), runs out of that time or
+   fills the buffer before its newline, one with anything else in it (another line, a NUL: the line must end the bytes
+   received), or none is unknown. A reply that comes after its request timed out is read as the next request's: as on
+   every rigctl request, the client cannot tell. */
 static int
 rigctl_read_freq_reply(dsd_socket_t sockfd, char* buf) {
     size_t len = 0U;
     buf[0] = '\0';
+    const uint64_t deadline_ms = dsd_realtime_mono_ms() + connect_recv_timeout_ms();
     while (memchr(buf, '\n', len) == NULL) {
         if (len >= BUFSIZE) {
             return RIGCTL_FREQ_UNKNOWN;
+        }
+        const uint64_t now_ms = dsd_realtime_mono_ms();
+        if (now_ms >= deadline_ms) {
+            return RIGCTL_FREQ_UNKNOWN;
+        }
+        const int ready = dsd_socket_wait(sockfd, DSD_SOCKET_WAIT_READ, (unsigned int)(deadline_ms - now_ms));
+        if (ready < 0) {
+            return RIGCTL_FREQ_UNKNOWN;
+        }
+        if (ready == 0) {
+            continue; /* the time ran out, or a signal cut the wait short: the deadline decides */
         }
         const int n = dsd_socket_recv(sockfd, buf + len, BUFSIZE - len, 0);
         if (n <= 0) {
