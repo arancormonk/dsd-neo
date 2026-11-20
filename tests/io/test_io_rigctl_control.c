@@ -1342,10 +1342,10 @@ test_full_size_replies_stay_in_bounds(void) {
     return 0;
 }
 
-/* Issue #834: only a complete numeric RPRT line, taken with one read, says what a frequency request did: "RPRT 0"
- * confirms, a non-zero status refuses and leaves the peer where it last confirmed, and anything else (a
- * garbled or malformed line, a line cut short, more than one line, no reply) leaves where the peer is unknown: it may
- * have moved, so the next request goes out whatever it asks for. */
+/* Issue #834: only a complete numeric RPRT line says what a frequency request did: "RPRT 0" confirms, a non-zero
+ * status refuses and leaves the peer where it last confirmed, and anything else (a garbled or malformed line, a line
+ * cut short, more than one line, no reply) leaves where the peer is unknown: it may have moved, so the next request
+ * goes out whatever it asks for. */
 static int
 test_set_freq_takes_only_a_complete_rprt(void) {
     reset_stubs();
@@ -1363,7 +1363,7 @@ test_set_freq_takes_only_a_complete_rprt(void) {
     const size_t sent = g_command_count;
     assert(SetFreq(130, 851025000L) && g_command_count == sent);
 
-    /* One read takes the reply: a line it cut short ("RPRT "), or one whose status a newline splits, says nothing. */
+    /* A line cut short before the peer goes quiet ("RPRT "), or one whose status a newline splits, says nothing. */
     static const char* const k_unknown[] = {"?\n",       "RPRT x\n", "RPRT 0", "RPRT 0 1\n", "RPRT 0\nRPRT 0\n",
                                             "RPRT\n",    "",         "RPRT ",  "RPRT \n0\n", "RPRT \n-1\n",
                                             "RPRT +0\n", "RPRT  0\n"};
@@ -1390,6 +1390,54 @@ test_set_freq_takes_only_a_complete_rprt(void) {
     push_response_len(k_nul_then_more, sizeof k_nul_then_more - 1U);
     assert(!SetFreq(130, 851500000L));
     assert(RigctlConfirmedFreq(130) == 0U);
+    return 0;
+}
+
+/* A frequency reply TCP splits over several reads is read up to its newline before it is judged: "RPRT 0" and its
+ * newline apart still confirm, a split refusal still refuses, and the newline is not left over for the next request's
+ * reply. A reply that fills the buffer with no newline is unknown, and nothing past the buffer is read for it. */
+static int
+test_set_freq_reads_a_split_reply_whole(void) {
+    reset_stubs();
+    push_response("RPRT 0");
+    push_response("\n");
+    assert(SetFreq(131, 851012500L));
+    assert(RigctlConfirmedFreq(131) == 851012500U);
+    assert(g_response_index == 2U);
+    /* The next request takes its own reply, not the first one's newline. */
+    push_response("RPRT 0\n");
+    assert(SetFreq(131, 851025000L));
+    assert(RigctlConfirmedFreq(131) == 851025000U);
+
+    /* Split inside its first word, and a refusal split around its status and CR. */
+    push_response("RP");
+    push_response("RT 0\r\n");
+    assert(SetFreq(131, 851037500L));
+    assert(RigctlConfirmedFreq(131) == 851037500U);
+    push_response("RPRT");
+    push_response(" -1");
+    push_response("\r\n");
+    assert(!SetFreq(131, 851050000L));
+    assert(RigctlConfirmedFreq(131) == 851037500U);
+    assert(g_response_index == g_response_count);
+
+    /* A NUL before the newline is still not one line, over two reads as in one. */
+    static const char k_nul[] = "RPRT 0\0";
+    push_response_len(k_nul, sizeof k_nul - 1U);
+    push_response("\n");
+    assert(!SetFreq(131, 851062500L));
+    assert(RigctlConfirmedFreq(131) == 0U);
+
+    /* A full buffer with no newline: unknown, and the reply queued after it stays unread. */
+    reset_stubs();
+    static char k_full[1024];
+    DSD_MEMSET(k_full, '0', sizeof k_full);
+    push_response_len(k_full, 512U);
+    push_response_len(k_full, sizeof k_full);
+    push_response("RPRT 0\n");
+    assert(!SetFreq(132, 851012500L));
+    assert(RigctlConfirmedFreq(132) == 0U);
+    assert(g_response_index == 2U);
     return 0;
 }
 
@@ -3142,6 +3190,7 @@ main(void) {
     rc |= test_rebind_forgets_the_frequency_a_reused_number_would_match();
     rc |= test_full_size_replies_stay_in_bounds();
     rc |= test_set_freq_takes_only_a_complete_rprt();
+    rc |= test_set_freq_reads_a_split_reply_whole();
     rc |= test_get_current_freq_parses_first_line_and_errors();
     rc |= test_io_control_set_freq_validation_and_rigctl_dispatch();
     rc |= test_io_control_set_freq_asks_the_fm_monitor_passband();

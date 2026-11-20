@@ -340,20 +340,29 @@ static uint32_t s_last_freq = 0U;
    status, then the newline) says anything; any other reply, or none, leaves where the peer is unknown. */
 enum { RIGCTL_FREQ_UNKNOWN = 0, RIGCTL_FREQ_CONFIRMED = 1, RIGCTL_FREQ_REFUSED = 2 };
 
-/* Read the reply into @p buf (BUFSIZE + 1 bytes) with one read, as every request here does, and say what it states:
-   exactly one line "RPRT", a space, an optional minus and digits, then the newline (after an optional CR). A reply cut
-   short, one with anything else in it (another line, a NUL: the line must end the bytes received), or none is
-   unknown. A reply that comes after its request timed out is read as the next request's: as on every rigctl request,
-   the client cannot tell. */
+/* Read the reply into @p buf (BUFSIZE + 1 bytes) up to its first newline, over as many reads as TCP splits it into
+   (a peer's "RPRT 0" and its newline can arrive apart, and a newline left unread would be taken for the next
+   request's reply), and say what it states: exactly one line "RPRT", a space, an optional minus and digits, then the
+   newline (after an optional CR). A reply that ends (EOF), times out or fills the buffer before its newline, one with
+   anything else in it (another line, a NUL: the line must end the bytes received), or none is unknown. A reply that
+   comes after its request timed out is read as the next request's: as on every rigctl request, the client cannot
+   tell. */
 static int
 rigctl_read_freq_reply(dsd_socket_t sockfd, char* buf) {
-    const int n = dsd_socket_recv(sockfd, buf, BUFSIZE, 0);
-    if (n <= 0) {
-        buf[0] = '\0';
-        return RIGCTL_FREQ_UNKNOWN;
+    size_t len = 0U;
+    buf[0] = '\0';
+    while (memchr(buf, '\n', len) == NULL) {
+        if (len >= BUFSIZE) {
+            return RIGCTL_FREQ_UNKNOWN;
+        }
+        const int n = dsd_socket_recv(sockfd, buf + len, BUFSIZE - len, 0);
+        if (n <= 0) {
+            return RIGCTL_FREQ_UNKNOWN;
+        }
+        len += (size_t)n;
+        buf[len] = '\0';
     }
-    buf[n] = '\0';
-    if (strlen(buf) != (size_t)n || strncmp(buf, "RPRT ", 5) != 0) {
+    if (strlen(buf) != len || strncmp(buf, "RPRT ", 5) != 0) {
         return RIGCTL_FREQ_UNKNOWN;
     }
     const char* p = buf + 5;
