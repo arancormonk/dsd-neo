@@ -2162,9 +2162,17 @@ suite runs under this compiler.
   LC replaced was another protocol's, so after a DMR epoch the same transmission's voice opened the values stay
   carried), and an NXDN VCALL_IV or SCCH republish describes no call there.
   The event rows follow the same rule (`dsd_call_state_update_is_protocols()`, `call_state_internal.h`): an
-  alias, position or text a protocol decoded reaches only its own protocol's call row (`dsd_event_enrich_alias()`,
-  `_alias_ex()`, `_gps()`, `_text()`, `dsd_event_set_open_call_detail()` take the writer's protocol; an admitted position
-  report goes through `dsd_event_enrich_position()`, which checks the report's own protocol family), so a P25 Motorola,
+  alias or text a protocol decoded reaches only its own protocol's call row (`dsd_event_enrich_alias()`,
+  `_alias_ex()`, `_gps()`, `_text()`, `dsd_event_set_open_call_detail()` take the writer's protocol, P25 Phase 1 and
+  Phase 2 one protocol as above). An admitted position goes by a narrower rule: only a call of the report's own
+  attribution class takes it (`dsd_event_pos_same_class()`: the protocol family, except that P25 Phase 1 and Phase 2
+  are apart, so a Phase 2 report never lands on a Phase 1 call still open on the slot, even one naming the same
+  radio), and then only under the typed-source and reception rules. Three writers put one on a call row:
+  `dsd_event_enrich_position()` (the slot's ACTIVE call of the report's epoch), `dsd_event_enrich_position_closing()`
+  (the call a P25 Phase 1 TDULC itself ended) and `dsd_event_set_open_call_position()` (D-STAR slow data, the call its
+  header named). A report a data packet carries (DMR LRRP, LIP over a UDT or over UDP packet data from DMR or P25,
+  UDT and ASCII NMEA, USBD LIP, TETRA LIP) never touches a call row: `dsd_event_stage_position()` stages it for the
+  next data notice its carrier emits, a notice of the carrier's protocol. So a P25 Motorola,
   Harris or Tait alias, a DMR talker alias, a position report, D-STAR slow data or an NXDN alias decoded before its own
   call opened leaves another protocol's open call alone; the P25 aliases that take their
   talker from the slot's call (Harris, Tait, and the Motorola source match) take it only from a P25 call, so no other
@@ -2181,7 +2189,7 @@ suite runs under this compiler.
   (a header opened the call, no voice frame followed) or that repeats an earlier end binds no call, never the call
   still open, so L3Harris halves in successive TDULCs never pair.
   Tests: `CORE_CALL_STATE`, `DMR_SEARCH_CALL_NOTES`, `NXDN_ENC_CLASS`, `P25_P1_TDULC`, `CORE_ALIAS_HANGTIME`,
-  `DSTAR_HEADER_UTILS`, `NXDN_ALIAS_DECODE`.
+  `DSTAR_HEADER_UTILS`, `NXDN_ALIAS_DECODE`, `DMR_LIP_CARRIERS`, `P25_P1_HARRIS_GPS`.
 - API note (received crypto): `dsd_call_snapshot::crypto_received` (`DSD_CALL_CRYPTO_RX_ALG`, `_KID`) with
   `received_algid`/`received_kid` say which of a call's ALG ID and key id were decoded from over-the-air signalling
   that passed its check, beside the live `algid`/`kid` every crypto update rewrites. Only an update whose `received`
