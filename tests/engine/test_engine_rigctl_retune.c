@@ -1829,6 +1829,38 @@ test_an_unreadable_tune_reply_leaves_the_frequency_unknown(void) {
            | unknown_frequency_case(leg_io_control, "io_control") | unknown_frequency_case(leg_scan, "scan");
 }
 
+/* The legacy rigctl leg (the untyped -Y step, the no-carrier control-channel return) skips a frequency it last sent
+   only while the peer still confirms it (RigctlConfirmedFreq()): a manual tune to another frequency whose reply the
+   client could not read may have moved the peer, so the next return to the cached frequency goes out again. */
+static int
+test_the_legacy_leg_resends_after_an_unknown_manual_tune(void) {
+    rig_case c;
+    if (rig_case_open(&c, AUDIO_IN_STDIN) != 0) {
+        return expect_true("legacy cache: the peer", 0);
+    }
+    dsd_opts* opts = c.opts;
+    dsd_state* state = c.state;
+    int rc =
+        expect_true("legacy cache: the return reaches the control channel", leg_no_carrier_return(opts, state, CC_HZ));
+    int taken = atomic_load(&c.rig.f_taken);
+    rc |= expect_true("legacy cache: a repeat of the return sends nothing",
+                      leg_no_carrier_return(opts, state, CC_HZ) && atomic_load(&c.rig.f_taken) == taken);
+
+    atomic_store(&c.rig.f_mode, RIG_MOVES_GARBLED); /* the peer moves to B, and its reply cannot be read */
+    rc |= expect_true("legacy cache: the manual tune to B is not confirmed", !leg_io_control(opts, state, VC1_HZ));
+    rc |= expect_true("legacy cache: the peer's frequency is unknown", RigctlConfirmedFreq(opts->rigctl_sockfd) == 0U);
+    taken = atomic_load(&c.rig.f_taken);
+    rc |= expect_true("legacy cache: the return to the control channel is taken",
+                      leg_no_carrier_return(opts, state, CC_HZ));
+    char label[160];
+    DSD_SNPRINTF(label, sizeof label, "legacy cache: the return goes out again (sent %d), and the peer confirms it",
+                 atomic_load(&c.rig.f_taken) - taken);
+    rc |= expect_true(label, atomic_load(&c.rig.f_taken) == taken + 1
+                                 && RigctlConfirmedFreq(opts->rigctl_sockfd) == (uint32_t)CC_HZ);
+    rig_case_close(&c);
+    return rc;
+}
+
 /* A peer that is slow to answer a passband request (M) is still on the old frequency while it does: the old channel's
    audio that reaches the input then goes at the next read with what was queued before the tune, and the new channel's,
    which reached it before the frequency's reply, is read. Every rigctl leg asks for a passband here (a -B on audio
@@ -2265,6 +2297,7 @@ main(void) {
     rc |= test_readers_carry_out_the_drop();
     rc |= test_wav_input_unchanged();
     rc |= test_an_unreadable_tune_reply_leaves_the_frequency_unknown();
+    rc |= test_the_legacy_leg_resends_after_an_unknown_manual_tune();
     dsd_socket_cleanup();
     if (rc == 0) {
         DSD_FPRINTF(stderr, "ENGINE_RIGCTL_RETUNE: OK\n");

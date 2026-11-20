@@ -9626,6 +9626,7 @@ if(NOT APPLE AND (CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang"))
             "-Wl,--wrap=rtl_stream_input_listening_since_ns"
             "-Wl,--wrap=rtl_stream_request_demod_profile"
             "-Wl,--wrap=SetFreq"
+            "-Wl,--wrap=RigctlConfirmedFreq"
             "-Wl,--wrap=SetModulation"
             "-Wl,--wrap=SetModulationKind"
             "-Wl,--wrap=SetScanRowModulation"

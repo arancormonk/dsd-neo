@@ -391,6 +391,9 @@ static int g_rigctl_io_fake = 0;
 static uint32_t g_rigctl_io_freq = 0U;
 
 static long int g_rigctl_setfreq_freq = 0;
+/* The frequency the stand-in peer last confirmed (RigctlConfirmedFreq()), which the legacy leg's cache holds on: every
+   stand-in failure is a complete refusal, which leaves it. */
+static uint32_t g_rigctl_confirmed_hz = 0U;
 // The -B requests the legacy rigctl leg makes (issue #589); the peer takes each one.
 static int g_rigctl_setmod_calls = 0;
 static int g_rigctl_setmod_bw = 0;
@@ -1109,7 +1112,18 @@ __wrap_SetFreq(dsd_socket_t sockfd, long int freq) {
     (void)sockfd;
     g_rigctl_setfreq_calls++;
     g_rigctl_setfreq_freq = freq;
+    if (g_rigctl_setfreq_ok) {
+        g_rigctl_confirmed_hz = (uint32_t)freq;
+    }
     return g_rigctl_setfreq_ok ? true : false;
+}
+
+uint32_t __wrap_RigctlConfirmedFreq(dsd_socket_t sockfd);
+
+uint32_t
+__wrap_RigctlConfirmedFreq(dsd_socket_t sockfd) {
+    (void)sockfd;
+    return g_rigctl_confirmed_hz;
 }
 
 int __real_io_control_set_freq_tagged(dsd_opts* opts, const dsd_state* state, uint32_t freq_hz,

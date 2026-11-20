@@ -9925,7 +9925,10 @@ Runtime controls (via `include/dsd-neo/io/rtl_stream_c.h`):
     direct control-channel return) skips a repeat of the frequency it last sent, and so does its RTL twin
     (`no_carrier_tune_rtl_if_needed()`). Both caches hold only until the trunk tuning hooks issue another request
     (`dsd_trunk_tuning_last_request()`): a grant or a control-channel hunt moves the radio without writing them, and a
-    return to the cached frequency after it must be sent (`ENGINE_NO_CARRIER_RESET`). An accepted direct return records
+    return to the cached frequency after it must be sent (`ENGINE_NO_CARRIER_RESET`). The rigctl cache also holds only
+    while the peer still confirms that frequency (`RigctlConfirmedFreq()`): a manual tune, which does not write it,
+    moved the peer, or left where it is unknown when its reply could not be read (`ENGINE_RIGCTL_RETUNE`
+    `test_the_legacy_leg_resends_after_an_unknown_manual_tune()`). An accepted direct return records
     the control channel in `opts->rtlsdr_center_freq`, as a hook tune does, so a control message decoded next is not
     attributed to the voice channel. The rigctl cache holds for one connection:
     `dsd_engine_rigctl_tune_cache_forget()` (`trunk_tuning.h`) empties it when rigctl reconnects (issue #589), since the

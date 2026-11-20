@@ -1452,7 +1452,11 @@ no_carrier_tune_rigctl_if_needed(dsd_opts* opts, dsd_state* state, long int freq
         (void)SetModulationKind(opts->rigctl_sockfd, DSD_ANALOG_DEMOD_FM, 0);
     }
     legacy_tune_caches_expire_if_stale();
-    if (freq != s_last_rigctl_freq) {
+    /* The frequency this leg sent last is skipped only while the peer still confirms it (RigctlConfirmedFreq()): a
+       request another leg made (a manual tune) moved the peer, or left where it is unknown when its reply could not be
+       read. */
+    if (freq != s_last_rigctl_freq || freq <= 0
+        || (unsigned long)freq != (unsigned long)RigctlConfirmedFreq(opts->rigctl_sockfd)) {
         const uint32_t sent_before_hz = opts->rigctl_sent_freq_hz;
         /* Immediately before the frequency is sent: the peer may move and send new audio before it answers, and was on
            the old frequency while it answered the passband request above. */
