@@ -481,6 +481,25 @@ test_crc7_and_air_interface_id_helpers(void) {
     rc |= expect_int("aiid-first-digit", strcmp(id, "1000000"), 0);
     dpmr_convert_air_interface_id(1464110U, id);
     rc |= expect_int("aiid-first-digit-with-star", strcmp(id, "100000*"), 0);
+    /* TS 102 658 Table A.2's examples. */
+    dpmr_convert_air_interface_id(0x1B91FDU, id);
+    rc |= expect_int("aiid-table-a2-1234567", strcmp(id, "1234567"), 0);
+    dpmr_convert_air_interface_id(0x02C00AU, id);
+    rc |= expect_int("aiid-table-a2-012345*", strcmp(id, "012345*"), 0);
+    dpmr_convert_air_interface_id(0xDF6767U, id);
+    rc |= expect_int("aiid-table-a2-999****", strcmp(id, "999****"), 0);
+    /* Issue #890: the All Talkgroup IDs above the dialled range (A.1.2.3.3, Tables A.3 and A.4). */
+    dpmr_convert_air_interface_id(0xF8339CU, id);
+    rc |= expect_int("aiid-all-call-prefix-0", strcmp(id, "0******"), 0);
+    dpmr_convert_air_interface_id(0xF833A5U, id);
+    rc |= expect_int("aiid-all-call-prefix-9", strcmp(id, "9******"), 0);
+    dpmr_convert_air_interface_id(0xF833A6U, id);
+    rc |= expect_int("aiid-all-call", strcmp(id, "*******"), 0);
+    /* Any other ID past "999****" is no dialled string: shown raw. */
+    dpmr_convert_air_interface_id(0xDF6768U, id);
+    rc |= expect_int("aiid-past-dialled-range", strcmp(id, "#DF6768"), 0);
+    dpmr_convert_air_interface_id(0xF833A7U, id);
+    rc |= expect_int("aiid-past-all-call", strcmp(id, "#F833A7"), 0);
     return rc;
 }
 
@@ -1190,6 +1209,34 @@ test_process_dpmr_voice_weak_frames_confirm_only_when_they_run(void) {
     return rc;
 }
 
+/* Issue #890: the frame's line prints the identity the frame itself bound. Publication comes first, so the first good
+   0/1 pair of a late entry prints its called ID, not the CRC ERR fields of the call snapshot before it. */
+static int
+test_frame_prints_the_identity_it_bound(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    int rc = 0;
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    DSD_MEMSET(&state, 0, sizeof(state));
+    state.synctype = DSD_SYNC_DPMR_FS2_POS;
+    state.dpmr_color_code = -1;
+    state.dPMRVoiceFS2Frame.ColorCode[0] = (unsigned int)(-1);
+    reset_capture();
+    g_second_half_frame_one = 1;
+    dsd_test_capture_stderr cap;
+    char printed[1024];
+    if (dsd_test_capture_stderr_begin(&cap, "dpmr_frame_ids") != 0) {
+        return 1;
+    }
+    (void)processdPMRvoice(&opts, &state);
+    if (dsd_test_capture_stderr_end(&cap) != 0 || dsd_test_capture_stderr_read(&cap, printed, sizeof(printed)) != 0) {
+        return 1;
+    }
+    rc |= expect_text("bound-id-printed", printed, "TG=0000000", 1);
+    rc |= expect_text("no-crc-err-for-the-bound-id", printed, "TG=(CRC ERR)", 0);
+    return rc;
+}
+
 /* Issue #890: a checked end frame forgets the transmission's confirmation (dsd_dispatch_handle_dpmr() calls
    dpmr_confirm_reset()). A false FS2 on the carrier's tail with one CRC-valid half then opens no row and plays nothing;
    only a running second frame confirms again. */
@@ -1237,6 +1284,7 @@ main(void) {
     rc |= test_crc7_and_air_interface_id_helpers();
     rc |= test_process_dpmr_voice_weak_frames_confirm_only_when_they_run();
     rc |= test_frame_after_a_checked_end_must_reconfirm();
+    rc |= test_frame_prints_the_identity_it_bound();
     rc |= test_superframe_part_updates_called_and_calling_ids();
     rc |= test_service_and_kind_come_from_the_checked_half();
     rc |= test_scrambler_reloads_only_at_a_checked_frame_zero();

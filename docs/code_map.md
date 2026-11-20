@@ -9147,7 +9147,8 @@ the stream-notice hooks' pattern: one that fails to initialize leaves the hook u
   halves pass the CRC-7 so. A frame that passes is accepted as `DSD_SYNC_DPMR_FS1_*`/`FS3_*` on its last symbol
   (lock and `lastsynctype`, no warm start), with its bits in `checked_*`; the stream must be the one the word was read
   on (clock epoch, input, carrier count, SPS profile, polarity) and an input interruption forgets the candidate
-  (`frame_sync_dpmr_forget()`). On non-dPMR input the matcher's added cost is one 24-symbol compare per window while
+  (`frame_sync_dpmr_forget()`). The symbol-timing diagnostic does not measure these accepts: their trailing dibits
+  are payload, not the word. On non-dPMR input the matcher's added cost is one 24-symbol compare per window while
   dPMR runs on 2400/4; no symbol is taken from the hunt that was not before. A decided limit: a real FS2 inside a
   false FS1's 132 symbols (an exact 24-symbol word, one window in 2^24) is not taken. Test: `FRAME_SYNC_DPMR`.
 - M17 sync acceptance (`frame_sync_try_m17()` in `dsd_frame_sync.c`). The windows are sign-sliced, so the eight-symbol
@@ -14031,12 +14032,16 @@ Private per-protocol modules worth knowing about:
   ends the call before it, forgets its scrambling and closes its capture, then opens its call once (`BEGIN`) with
   its checked called/calling IDs (target/source text), service options, emergency, kind (voice, or data for modes
   010 to 100), channel code and scrambling (Version 3); every other checked header (requests, ACKs, maintenance,
-  status messages) confirms the transmission and reports PROVEN content without a call. A header that repeats the open
-  call's (same called/calling IDs, service options and colour code) k message frames (192 symbols each) after the last
-  call header on the same stream, k from 1 to the frames that header said follow it (its WU; 1 after a normal header, so
-  a lost header does not split the call), goes on with that call (`dpmr_header_continues_call()`, CONTINUE, no end or
-  capture close): a radio waking powersaving receivers sends its header several times back to back (TS 102 658 5.5.19.1,
-  Table 5.71: MI_TYPE 111, WU counting down to the normal header), as the off-air `dpmr` fixture's nine do.
+  status messages) confirms the transmission and reports PROVEN content without a call. A header that repeats the
+  open call's (same called/calling IDs and service options; colour codes that do not differ, a code the run has not
+  read yet being missing, since the channel code is sent outside the MI's CRC) k message frames (k x 192 symbols,
+  within one) after the last call header on the same stream, k from 1 to that header's WU (1 when it is 0), goes on
+  with that call (`dpmr_header_continues_call()`, CONTINUE, no end or capture close), so a header lost in the run does
+  not split it: a radio waking powersaving receivers sends its header several times back to back (TS 102 658
+  5.5.19.1, Table 5.71: MI_TYPE 111, WU counting down to the normal header), as the off-air `dpmr` fixture's nine do.
+  IDs print as dialled strings (`dpmr_convert_air_interface_id()`): the B2 place values, "n******" and "*******" for
+  the All Talkgroup IDs F8339C..F833A6 (A.1.2.3.3, Tables A.3, A.4), and '#' with six hex digits for an ID no dialled
+  string maps to. An FS2 frame publishes before it prints, so its line shows the identity it bound.
   `-Z` prints each FS2 frame's two CCH CRC-7 verdicts (`CCH OK/ERR`). A checked end frame reports
   PROVEN, ends the dPMR call as `DSD_CALL_END_TERMINATOR`, forgets the transmission's confirmation and scrambling
   (`dpmr_confirm_reset()`, so a false FS2 on the carrier's tail must prove itself again) and closes the capture; nothing

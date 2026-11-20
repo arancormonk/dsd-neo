@@ -3081,11 +3081,16 @@ frame_sync_try_protocol_matches_inner(frame_sync_match_ctx* ctx) {
  * are inside the sync word whatever matched -- no protocol's word is shorter -- so no
  * per-protocol window table has to be kept in step with the matchers above.
  *
- * In-frame resyncs a protocol handler does privately do not come through here. */
+ * In-frame resyncs a protocol handler does privately do not come through here, and neither are a dPMR header or end
+ * frame measured: they are accepted on their frame's last symbol (src/dsp/frame_sync_dpmr.c), 132 or 36 symbols after
+ * the word, so the trailing dibits are payload, no template. */
 static int
 frame_sync_try_protocol_matches_any(frame_sync_match_ctx* ctx) {
     const int sync_type = frame_sync_try_protocol_matches_inner(ctx);
-    if (sync_type != DSD_SYNC_NONE && frame_sync_match_window_ready(ctx, DSD_SYMBOL_TIMING_TEMPLATE_SYMS)) {
+    const int accepted_after_frame = sync_type == DSD_SYNC_DPMR_FS1_POS || sync_type == DSD_SYNC_DPMR_FS1_NEG
+                                     || sync_type == DSD_SYNC_DPMR_FS3_POS || sync_type == DSD_SYNC_DPMR_FS3_NEG;
+    if (sync_type != DSD_SYNC_NONE && !accepted_after_frame
+        && frame_sync_match_window_ready(ctx, DSD_SYMBOL_TIMING_TEMPLATE_SYMS)) {
         dsd_symbol_timing_report_sync(ctx->state, sync_type, ctx->synctest8);
     }
     /* The P25 anchors' words are tried last, once no matcher of any protocol matched exactly: an exact word never loses

@@ -25,6 +25,7 @@
 #include <dsd-neo/dsp/sync_calibration.h>
 #include <stdint.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include "dpmr_spec_encoder.h"
 #include "dsd-neo/core/opts_fwd.h"
@@ -32,6 +33,7 @@
 #include "dsd-neo/core/state_fwd.h"
 #include "frame_sync_internal.h"
 #include "frame_sync_state_buffers.h"
+#include "test_support.h"
 
 #if defined(__GNUC__) && !defined(__cplusplus)
 #pragma GCC diagnostic push
@@ -187,6 +189,11 @@ end_info(uint8_t* info17) {
     dpmr_spec_put(info17, 0, 2, 1U);
     dpmr_spec_put(info17, 8, 5, 21U);
 }
+
+/* One decoder for every case, on the heap (AGENTS.md: dsd_state and dsd_opts are heap-allocated), set up afresh by
+   setup() and its buffers freed at each case's end. */
+static dsd_opts* g_opts;
+static dsd_state* g_state;
 
 typedef enum { MODE_DPMR, MODE_DPMR_NXDN48, MODE_AUTO } hunt_mode;
 
@@ -356,10 +363,8 @@ test_crc_conventions_off_air(void) {
 static void
 test_header_both_polarities(void) {
     for (int inverted = 0; inverted <= 1; inverted++) {
-        static dsd_opts opts;
-        static dsd_state state;
         uint8_t info[DPMR_SPEC_MI_BITS];
-        setup(&opts, &state, MODE_DPMR, inverted);
+        setup(g_opts, g_state, MODE_DPMR, inverted);
         stream_reset();
         g_inverted = inverted;
         dpmr_spec_header_bits(&k_voice_header, info);
@@ -367,18 +372,18 @@ test_header_both_polarities(void) {
         put_header(DPMR_FRAME_SYNC_1, info, NULL, 0, 0);
         const int end = g_len;
         put_filler(200);
-        const int sync = hunt(&opts, &state, g_len);
+        const int sync = hunt(g_opts, g_state, g_len);
         assert(sync == (inverted ? DSD_SYNC_DPMR_FS1_NEG : DSD_SYNC_DPMR_FS1_POS));
         assert(g_pos == end);
-        assert(state.dpmr_sync.checked_kind == DSD_DPMR_SYNC_FRAME_HEADER);
-        assert(state.dpmr_sync.checked_copies == (DSD_DPMR_SYNC_COPY_0 | DSD_DPMR_SYNC_COPY_1));
-        assert(state.dpmr_sync.checked_clock == state.symbol_clock);
-        assert(checked_bits_equal(&state, info, DPMR_SPEC_MI_BITS));
+        assert(g_state->dpmr_sync.checked_kind == DSD_DPMR_SYNC_FRAME_HEADER);
+        assert(g_state->dpmr_sync.checked_copies == (DSD_DPMR_SYNC_COPY_0 | DSD_DPMR_SYNC_COPY_1));
+        assert(g_state->dpmr_sync.checked_clock == g_state->symbol_clock);
+        assert(checked_bits_equal(g_state, info, DPMR_SPEC_MI_BITS));
         uint8_t cc[24];
         dpmr_spec_put(cc, 0, 24, 0x5D5D55U);
-        assert(memcmp(state.dpmr_sync.checked_cc, cc, sizeof cc) == 0);
-        assert(state.lastsynctype == sync);
-        free_state_buffers(&state);
+        assert(memcmp(g_state->dpmr_sync.checked_cc, cc, sizeof cc) == 0);
+        assert(g_state->lastsynctype == sync);
+        free_state_buffers(g_state);
     }
 }
 
@@ -386,8 +391,6 @@ test_header_both_polarities(void) {
    found. */
 static void
 test_header_copies(void) {
-    static dsd_opts opts;
-    static dsd_state state;
     uint8_t info[DPMR_SPEC_MI_BITS];
     uint8_t other[DPMR_SPEC_MI_BITS];
     dpmr_spec_header_bits(&k_voice_header, info);
@@ -396,28 +399,28 @@ test_header_copies(void) {
     dpmr_spec_header_bits(&bad, other);
 
     for (int which = 0; which <= 1; which++) {
-        setup(&opts, &state, MODE_DPMR, 0);
+        setup(g_opts, g_state, MODE_DPMR, 0);
         stream_reset();
         put_filler(60);
         put_header(DPMR_FRAME_SYNC_1, info, NULL, which == 0 ? 2 : 0, which == 1 ? 2 : 0);
         put_filler(100);
-        assert(hunt(&opts, &state, g_len) == DSD_SYNC_DPMR_FS1_POS);
-        assert(state.dpmr_sync.checked_copies == (which == 0 ? DSD_DPMR_SYNC_COPY_1 : DSD_DPMR_SYNC_COPY_0));
-        assert(checked_bits_equal(&state, info, DPMR_SPEC_MI_BITS));
-        free_state_buffers(&state);
+        assert(hunt(g_opts, g_state, g_len) == DSD_SYNC_DPMR_FS1_POS);
+        assert(g_state->dpmr_sync.checked_copies == (which == 0 ? DSD_DPMR_SYNC_COPY_1 : DSD_DPMR_SYNC_COPY_0));
+        assert(checked_bits_equal(g_state, info, DPMR_SPEC_MI_BITS));
+        free_state_buffers(g_state);
     }
 
     /* Neither copy good. */
-    setup(&opts, &state, MODE_DPMR, 0);
+    setup(g_opts, g_state, MODE_DPMR, 0);
     stream_reset();
     put_filler(60);
     put_header(DPMR_FRAME_SYNC_1, info, NULL, 2, 2);
     put_filler(100);
-    assert(hunt(&opts, &state, g_len) == DSD_SYNC_NONE);
-    free_state_buffers(&state);
+    assert(hunt(g_opts, g_state, g_len) == DSD_SYNC_NONE);
+    free_state_buffers(g_state);
 
     /* Two good copies naming different callers, then a good header. */
-    setup(&opts, &state, MODE_DPMR, 0);
+    setup(g_opts, g_state, MODE_DPMR, 0);
     stream_reset();
     put_filler(60);
     put_header(DPMR_FRAME_SYNC_1, info, other, 0, 0);
@@ -426,59 +429,55 @@ test_header_copies(void) {
     put_header(DPMR_FRAME_SYNC_1, other, NULL, 0, 0);
     const int good_end = g_len;
     put_filler(100);
-    assert(hunt(&opts, &state, g_len) == DSD_SYNC_DPMR_FS1_POS);
+    assert(hunt(g_opts, g_state, g_len) == DSD_SYNC_DPMR_FS1_POS);
     assert(g_pos == good_end && g_pos > conflict_end);
-    assert(checked_bits_equal(&state, other, DPMR_SPEC_MI_BITS));
-    free_state_buffers(&state);
+    assert(checked_bits_equal(g_state, other, DPMR_SPEC_MI_BITS));
+    free_state_buffers(g_state);
 }
 
 /* An input interruption inside the header (a Signal search leaving it, a stream gap) cuts it: the hunt does not take
    it up afterwards, though its symbols go on. */
 static void
 test_header_cut_by_an_interruption(void) {
-    static dsd_opts opts;
-    static dsd_state state;
     uint8_t info[DPMR_SPEC_MI_BITS];
     dpmr_spec_header_bits(&k_voice_header, info);
-    setup(&opts, &state, MODE_DPMR, 0);
+    setup(g_opts, g_state, MODE_DPMR, 0);
     stream_reset();
     put_filler(60);
     put_header(DPMR_FRAME_SYNC_1, info, NULL, 0, 0);
     put_filler(200);
     g_interrupt_at = g_len - 200 - 30; /* inside MI1 */
-    assert(hunt(&opts, &state, g_len) == DSD_SYNC_NONE);
-    assert(state.input_interrupted == 1);
-    state.input_interrupted = 0; /* the engine loop takes it up */
-    assert(hunt(&opts, &state, g_len) == DSD_SYNC_NONE);
-    free_state_buffers(&state);
+    assert(hunt(g_opts, g_state, g_len) == DSD_SYNC_NONE);
+    assert(g_state->input_interrupted == 1);
+    g_state->input_interrupted = 0; /* the engine loop takes it up */
+    assert(hunt(g_opts, g_state, g_len) == DSD_SYNC_NONE);
+    free_state_buffers(g_state);
 }
 
 /* FS4 is FS1's symbol-wise complement (6.1.4 NOTE): the configured polarity decides which a word is. A header under
    the other polarity, or an FS4 before a header's bits, is no FS1. */
 static void
 test_fs1_fs4_alias(void) {
-    static dsd_opts opts;
-    static dsd_state state;
     uint8_t info[DPMR_SPEC_MI_BITS];
     dpmr_spec_header_bits(&k_voice_header, info);
     for (int configured = 0; configured <= 1; configured++) {
-        setup(&opts, &state, MODE_DPMR, configured);
+        setup(g_opts, g_state, MODE_DPMR, configured);
         stream_reset();
         g_inverted = !configured; /* the stream in the other polarity */
         put_filler(60);
         put_header(DPMR_FRAME_SYNC_1, info, NULL, 0, 0);
         put_filler(100);
-        assert(hunt(&opts, &state, g_len) == DSD_SYNC_NONE);
-        free_state_buffers(&state);
+        assert(hunt(g_opts, g_state, g_len) == DSD_SYNC_NONE);
+        free_state_buffers(g_state);
     }
     /* FS4 in the configured (positive) polarity, then a header's bits. */
-    setup(&opts, &state, MODE_DPMR, 0);
+    setup(g_opts, g_state, MODE_DPMR, 0);
     stream_reset();
     put_filler(60);
     put_header(DPMR_FRAME_SYNC_4, info, NULL, 0, 0);
     put_filler(100);
-    assert(hunt(&opts, &state, g_len) == DSD_SYNC_NONE);
-    free_state_buffers(&state);
+    assert(hunt(g_opts, g_state, g_len) == DSD_SYNC_NONE);
+    free_state_buffers(g_state);
 }
 
 /* A transmission in both polarities and both end frame layouts: header, a superframe (two FS2 frames), end frame. The
@@ -488,11 +487,9 @@ test_transmission_ends_on_its_end_frame(void) {
     for (int run = 0; run < 4; run++) {
         const int inverted = run & 1;
         const int layout = run >> 1;
-        static dsd_opts opts;
-        static dsd_state state;
         uint8_t info[DPMR_SPEC_MI_BITS];
         uint8_t end[DPMR_SPEC_END_BITS];
-        setup(&opts, &state, MODE_DPMR, inverted);
+        setup(g_opts, g_state, MODE_DPMR, inverted);
         stream_reset();
         g_inverted = inverted;
         dpmr_spec_header_bits(&k_voice_header, info);
@@ -508,18 +505,18 @@ test_transmission_ends_on_its_end_frame(void) {
         const int fs1 = inverted ? DSD_SYNC_DPMR_FS1_NEG : DSD_SYNC_DPMR_FS1_POS;
         const int fs2s = inverted ? DSD_SYNC_DPMR_FS2_NEG : DSD_SYNC_DPMR_FS2_POS;
         const int fs3s = inverted ? DSD_SYNC_DPMR_FS3_NEG : DSD_SYNC_DPMR_FS3_POS;
-        assert(hunt(&opts, &state, g_len) == fs1);
+        assert(hunt(g_opts, g_state, g_len) == fs1);
         for (int frame = 0; frame < 2; frame++) {
-            assert(hunt(&opts, &state, g_len) == fs2s);
-            read_fs2_body(&opts, &state);
+            assert(hunt(g_opts, g_state, g_len) == fs2s);
+            read_fs2_body(g_opts, g_state);
         }
-        assert(hunt(&opts, &state, g_len) == fs3s);
+        assert(hunt(g_opts, g_state, g_len) == fs3s);
         assert(g_pos == end_at);
-        assert(state.dpmr_sync.checked_kind == DSD_DPMR_SYNC_FRAME_END);
-        assert(state.dpmr_sync.checked_copies == (DSD_DPMR_SYNC_COPY_0 | DSD_DPMR_SYNC_COPY_1));
-        assert(checked_bits_equal(&state, end, DPMR_SPEC_END_BITS));
-        assert(hunt(&opts, &state, g_len) == DSD_SYNC_NONE);
-        free_state_buffers(&state);
+        assert(g_state->dpmr_sync.checked_kind == DSD_DPMR_SYNC_FRAME_END);
+        assert(g_state->dpmr_sync.checked_copies == (DSD_DPMR_SYNC_COPY_0 | DSD_DPMR_SYNC_COPY_1));
+        assert(checked_bits_equal(g_state, end, DPMR_SPEC_END_BITS));
+        assert(hunt(g_opts, g_state, g_len) == DSD_SYNC_NONE);
+        free_state_buffers(g_state);
     }
 }
 
@@ -527,8 +524,6 @@ test_transmission_ends_on_its_end_frame(void) {
    end frame, its FS3 twelve symbols after the header (F8). One END copy is enough: the second alone, in either layout. */
 static void
 test_status_header_then_end_frame(void) {
-    static dsd_opts opts;
-    static dsd_state state;
     uint8_t info[DPMR_SPEC_MI_BITS];
     uint8_t end[DPMR_SPEC_END_BITS];
     dpmr_spec_header status = k_voice_header;
@@ -537,62 +532,60 @@ test_status_header_then_end_frame(void) {
     dpmr_spec_header_bits(&status, info);
     end_info(end);
     for (int layout = END_ONE_RUN; layout <= END_FRESH_COPIES; layout++) {
-        setup(&opts, &state, MODE_DPMR, 0);
+        setup(g_opts, g_state, MODE_DPMR, 0);
         stream_reset();
         put_filler(80);
         put_header(DPMR_FRAME_SYNC_1, info, NULL, 0, 0);
         put_end(DPMR_FRAME_SYNC_3, end, layout, 2, 0);
         const int end_at = g_len;
         put_filler(200);
-        assert(hunt(&opts, &state, g_len) == DSD_SYNC_DPMR_FS1_POS);
-        assert(hunt(&opts, &state, g_len) == DSD_SYNC_DPMR_FS3_POS);
+        assert(hunt(g_opts, g_state, g_len) == DSD_SYNC_DPMR_FS1_POS);
+        assert(hunt(g_opts, g_state, g_len) == DSD_SYNC_DPMR_FS3_POS);
         assert(g_pos == end_at);
-        assert(state.dpmr_sync.checked_copies == DSD_DPMR_SYNC_COPY_1);
-        assert(checked_bits_equal(&state, end, DPMR_SPEC_END_BITS));
-        free_state_buffers(&state);
+        assert(g_state->dpmr_sync.checked_copies == DSD_DPMR_SYNC_COPY_1);
+        assert(checked_bits_equal(g_state, end, DPMR_SPEC_END_BITS));
+        free_state_buffers(g_state);
     }
 
     /* A header whose message type no END follows (an ACK, Table 5.3): no FS3 is looked for behind it. */
     dpmr_spec_header ack = k_voice_header;
     ack.mt = 3U;
     dpmr_spec_header_bits(&ack, info);
-    setup(&opts, &state, MODE_DPMR, 0);
+    setup(g_opts, g_state, MODE_DPMR, 0);
     stream_reset();
     put_filler(80);
     put_header(DPMR_FRAME_SYNC_1, info, NULL, 0, 0);
     put_end(DPMR_FRAME_SYNC_3, end, END_ONE_RUN, 0, 0);
     put_filler(200);
-    assert(hunt(&opts, &state, g_len) == DSD_SYNC_DPMR_FS1_POS);
-    assert(hunt(&opts, &state, g_len) == DSD_SYNC_NONE);
-    free_state_buffers(&state);
+    assert(hunt(g_opts, g_state, g_len) == DSD_SYNC_DPMR_FS1_POS);
+    assert(hunt(g_opts, g_state, g_len) == DSD_SYNC_NONE);
+    free_state_buffers(g_state);
 }
 
 /* An end frame whose END copies both fail is no FS3, and neither is a good end frame where none can be (no FS2 frame
    or header before it). */
 static void
 test_unchecked_or_misplaced_end_frames(void) {
-    static dsd_opts opts;
-    static dsd_state state;
     uint8_t end[DPMR_SPEC_END_BITS];
     end_info(end);
-    setup(&opts, &state, MODE_DPMR, 0);
+    setup(g_opts, g_state, MODE_DPMR, 0);
     stream_reset();
     put_filler(80);
     put_fs2_frame(DPMR_FRAME_SYNC_2);
     put_end(DPMR_FRAME_SYNC_3, end, END_ONE_RUN, 2, 2);
     put_filler(200);
-    assert(hunt(&opts, &state, g_len) == DSD_SYNC_DPMR_FS2_POS);
-    read_fs2_body(&opts, &state);
-    assert(hunt(&opts, &state, g_len) == DSD_SYNC_NONE);
-    free_state_buffers(&state);
+    assert(hunt(g_opts, g_state, g_len) == DSD_SYNC_DPMR_FS2_POS);
+    read_fs2_body(g_opts, g_state);
+    assert(hunt(g_opts, g_state, g_len) == DSD_SYNC_NONE);
+    free_state_buffers(g_state);
 
-    setup(&opts, &state, MODE_DPMR, 0);
+    setup(g_opts, g_state, MODE_DPMR, 0);
     stream_reset();
     put_filler(80);
     put_end(DPMR_FRAME_SYNC_3, end, END_ONE_RUN, 0, 0);
     put_filler(200);
-    assert(hunt(&opts, &state, g_len) == DSD_SYNC_NONE);
-    free_state_buffers(&state);
+    assert(hunt(g_opts, g_state, g_len) == DSD_SYNC_NONE);
+    free_state_buffers(g_state);
 }
 
 /* The off-air recording's key-up (tests/fixtures/iq/dpmr.iq): nine Communications_Start headers back to back, one
@@ -601,11 +594,9 @@ test_unchecked_or_misplaced_end_frames(void) {
    own, accepted on its last symbol. */
 static void
 test_powersave_headers_back_to_back(void) {
-    static dsd_opts opts;
-    static dsd_state state;
     uint8_t info[9][DPMR_SPEC_MI_BITS];
     int ends[9];
-    setup(&opts, &state, MODE_DPMR, 1);
+    setup(g_opts, g_state, MODE_DPMR, 1);
     stream_reset();
     g_inverted = 1;
     put_filler(80);
@@ -626,13 +617,13 @@ test_powersave_headers_back_to_back(void) {
     }
     put_filler(200);
     for (int h = 0; h < 9; h++) {
-        assert(hunt(&opts, &state, g_len) == DSD_SYNC_DPMR_FS1_NEG);
+        assert(hunt(g_opts, g_state, g_len) == DSD_SYNC_DPMR_FS1_NEG);
         assert(g_pos == ends[h]);
         assert(h == 0 || ends[h] - ends[h - 1] == 192);
-        assert(checked_bits_equal(&state, info[h], DPMR_SPEC_MI_BITS));
+        assert(checked_bits_equal(g_state, info[h], DPMR_SPEC_MI_BITS));
     }
-    assert(hunt(&opts, &state, g_len) == DSD_SYNC_NONE);
-    free_state_buffers(&state);
+    assert(hunt(g_opts, g_state, g_len) == DSD_SYNC_NONE);
+    free_state_buffers(g_state);
 }
 
 /* An end frame sent the 11.6 way (each copy from a fresh scrambler) whose second copy took bit errors, one at most in
@@ -642,8 +633,6 @@ test_powersave_headers_back_to_back(void) {
    frame's: the frame is not two copies that disagree. */
 static void
 test_end_second_copy_agreeing_reading_wins(void) {
-    static dsd_opts opts;
-    static dsd_state state;
     uint8_t end[DPMR_SPEC_END_BITS];
     uint8_t wire[DPMR_SPEC_END_WIRE];
     uint8_t hit[DPMR_SPEC_END_WIRE];
@@ -668,7 +657,7 @@ test_end_second_copy_agreeing_reading_wins(void) {
         }
     }
     assert(found);
-    setup(&opts, &state, MODE_DPMR, 0);
+    setup(g_opts, g_state, MODE_DPMR, 0);
     stream_reset();
     put_filler(80);
     put_fs2_frame(DPMR_FRAME_SYNC_2);
@@ -677,13 +666,13 @@ test_end_second_copy_agreeing_reading_wins(void) {
     put_bits(hit, DPMR_SPEC_END_WIRE);
     const int end_at = g_len;
     put_filler(200);
-    assert(hunt(&opts, &state, g_len) == DSD_SYNC_DPMR_FS2_POS);
-    read_fs2_body(&opts, &state);
-    assert(hunt(&opts, &state, g_len) == DSD_SYNC_DPMR_FS3_POS);
+    assert(hunt(g_opts, g_state, g_len) == DSD_SYNC_DPMR_FS2_POS);
+    read_fs2_body(g_opts, g_state);
+    assert(hunt(g_opts, g_state, g_len) == DSD_SYNC_DPMR_FS3_POS);
     assert(g_pos == end_at);
-    assert(state.dpmr_sync.checked_copies == (DSD_DPMR_SYNC_COPY_0 | DSD_DPMR_SYNC_COPY_1));
-    assert(checked_bits_equal(&state, end, DPMR_SPEC_END_BITS));
-    free_state_buffers(&state);
+    assert(g_state->dpmr_sync.checked_copies == (DSD_DPMR_SYNC_COPY_0 | DSD_DPMR_SYNC_COPY_1));
+    assert(checked_bits_equal(g_state, end, DPMR_SPEC_END_BITS));
+    free_state_buffers(g_state);
 }
 
 /* NXDN48's frame sync word as transmitted: the first positive reading of the matcher's. */
@@ -694,9 +683,7 @@ static const char k_nxdn_fsw[] = "3131331131";
 static void
 test_nxdn48_inside_a_rejected_candidate(void) {
     for (int m = 0; m <= 1; m++) {
-        static dsd_opts opts;
-        static dsd_state state;
-        setup(&opts, &state, m == 0 ? MODE_AUTO : MODE_DPMR_NXDN48, 0);
+        setup(g_opts, g_state, m == 0 ? MODE_AUTO : MODE_DPMR_NXDN48, 0);
         stream_reset();
         put_filler(100);
         put_word(k_nxdn_fsw);
@@ -706,9 +693,9 @@ test_nxdn48_inside_a_rejected_candidate(void) {
         put_word(k_nxdn_fsw); /* 192 symbols after the first, 16 into the candidate's frame */
         const int nxdn_at = g_len;
         put_filler(300);
-        assert(hunt(&opts, &state, g_len) == DSD_SYNC_NXDN_POS);
+        assert(hunt(g_opts, g_state, g_len) == DSD_SYNC_NXDN_POS);
         assert(g_pos == nxdn_at);
-        free_state_buffers(&state);
+        free_state_buffers(g_state);
     }
 }
 
@@ -716,12 +703,10 @@ test_nxdn48_inside_a_rejected_candidate(void) {
    frame straight after a false one's. */
 static void
 test_frames_after_a_rejected_candidate(void) {
-    static dsd_opts opts;
-    static dsd_state state;
     uint8_t info[DPMR_SPEC_MI_BITS];
     dpmr_spec_header_bits(&k_voice_header, info);
 
-    setup(&opts, &state, MODE_DPMR, 0);
+    setup(g_opts, g_state, MODE_DPMR, 0);
     stream_reset();
     put_filler(80);
     put_word(DPMR_FRAME_SYNC_1);
@@ -729,11 +714,11 @@ test_frames_after_a_rejected_candidate(void) {
     put_header(DPMR_FRAME_SYNC_1, info, NULL, 0, 0);
     const int header_end = g_len;
     put_filler(200);
-    assert(hunt(&opts, &state, g_len) == DSD_SYNC_DPMR_FS1_POS);
+    assert(hunt(g_opts, g_state, g_len) == DSD_SYNC_DPMR_FS1_POS);
     assert(g_pos == header_end);
-    free_state_buffers(&state);
+    free_state_buffers(g_state);
 
-    setup(&opts, &state, MODE_DPMR, 0);
+    setup(g_opts, g_state, MODE_DPMR, 0);
     stream_reset();
     put_filler(80);
     put_word(DPMR_FRAME_SYNC_1);
@@ -741,17 +726,15 @@ test_frames_after_a_rejected_candidate(void) {
     put_fs2_frame(DPMR_FRAME_SYNC_2);
     const int fs2_at = g_len - FS2_BODY;
     put_filler(200);
-    assert(hunt(&opts, &state, g_len) == DSD_SYNC_DPMR_FS2_POS);
+    assert(hunt(g_opts, g_state, g_len) == DSD_SYNC_DPMR_FS2_POS);
     assert(g_pos == fs2_at);
-    free_state_buffers(&state);
+    free_state_buffers(g_state);
 }
 
 /* Receiver noise with FS1 words planted in it every 500 symbols: no header and no end frame is accepted. */
 static void
 test_noise_accepts_no_header_or_end(void) {
-    static dsd_opts opts;
-    static dsd_state state;
-    setup(&opts, &state, MODE_DPMR, 0);
+    setup(g_opts, g_state, MODE_DPMR, 0);
     stream_reset();
     uint32_t seed = 0x890DU;
     while (g_len < STREAM_MAX - 600) {
@@ -764,19 +747,69 @@ test_noise_accepts_no_header_or_end(void) {
     }
     int fs2 = 0;
     while (g_pos < g_len) {
-        const int sync = hunt(&opts, &state, g_len);
+        const int sync = hunt(g_opts, g_state, g_len);
         assert(sync == DSD_SYNC_NONE || sync == DSD_SYNC_DPMR_FS2_POS);
         if (sync == DSD_SYNC_DPMR_FS2_POS) {
             fs2++;
-            read_fs2_body(&opts, &state);
+            read_fs2_body(g_opts, g_state);
         }
     }
     (void)fs2;
-    free_state_buffers(&state);
+    free_state_buffers(g_state);
+}
+
+/* Run with DSD_NEO_DEBUG_SYMBOL_TIMING=1 (FRAME_SYNC_DPMR_SYMBOL_TIMING): the symbol-timing diagnostic measures each
+   accept on the trailing dibits of its sync word. A header and an end frame are accepted on their frame's last symbol,
+   132 and 36 symbols past the word, where those dibits are payload: they are not measured; the FS2s between them are. */
+static void
+test_symbol_timing_skips_delayed_accepts(void) {
+    uint8_t info[DPMR_SPEC_MI_BITS];
+    uint8_t end[DPMR_SPEC_END_BITS];
+    dpmr_spec_header_bits(&k_voice_header, info);
+    end_info(end);
+    setup(g_opts, g_state, MODE_DPMR, 0);
+    stream_reset();
+    put_filler(80);
+    put_header(DPMR_FRAME_SYNC_1, info, NULL, 0, 0);
+    put_fs2_frame(DPMR_FRAME_SYNC_2);
+    put_fs2_frame(DPMR_FRAME_SYNC_2);
+    put_end(DPMR_FRAME_SYNC_3, end, END_ONE_RUN, 0, 0);
+    put_filler(200);
+    dsd_test_capture_stderr cap;
+    char printed[4096];
+    assert(dsd_test_capture_stderr_begin(&cap, "dpmr_symbol_timing") == 0);
+    const int fs1 = hunt(g_opts, g_state, g_len);
+    int fs2 = 0;
+    for (int frame = 0; frame < 2; frame++) {
+        fs2 += hunt(g_opts, g_state, g_len) == DSD_SYNC_DPMR_FS2_POS;
+        read_fs2_body(g_opts, g_state);
+    }
+    const int fs3 = hunt(g_opts, g_state, g_len);
+    assert(dsd_test_capture_stderr_end(&cap) == 0);
+    assert(dsd_test_capture_stderr_read(&cap, printed, sizeof printed) == 0);
+    assert(fs1 == DSD_SYNC_DPMR_FS1_POS && fs2 == 2 && fs3 == DSD_SYNC_DPMR_FS3_POS);
+    char want[48];
+    DSD_SNPRINTF(want, sizeof want, "SYMTIMING: sync=%d ", DSD_SYNC_DPMR_FS2_POS);
+    assert(strstr(printed, want) != NULL);
+    DSD_SNPRINTF(want, sizeof want, "SYMTIMING: sync=%d ", DSD_SYNC_DPMR_FS1_POS);
+    assert(strstr(printed, want) == NULL);
+    DSD_SNPRINTF(want, sizeof want, "SYMTIMING: sync=%d ", DSD_SYNC_DPMR_FS3_POS);
+    assert(strstr(printed, want) == NULL);
+    free_state_buffers(g_state);
 }
 
 int
-main(void) {
+main(int argc, char** argv) {
+    g_opts = (dsd_opts*)calloc(1U, sizeof(*g_opts));
+    g_state = (dsd_state*)calloc(1U, sizeof(*g_state));
+    assert(g_opts != NULL && g_state != NULL);
+    if (argc > 1 && strcmp(argv[1], "symbol-timing") == 0) {
+        test_symbol_timing_skips_delayed_accepts();
+        free(g_state);
+        free(g_opts);
+        printf("FRAME_SYNC_DPMR_SYMBOL_TIMING: OK\n");
+        return 0;
+    }
     test_wire_codecs();
     test_crc_conventions_off_air();
     test_powersave_headers_back_to_back();
@@ -791,6 +824,8 @@ main(void) {
     test_nxdn48_inside_a_rejected_candidate();
     test_frames_after_a_rejected_candidate();
     test_noise_accepts_no_header_or_end();
+    free(g_state);
+    free(g_opts);
     printf("FRAME_SYNC_DPMR: OK\n");
     return 0;
 }

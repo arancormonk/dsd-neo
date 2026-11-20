@@ -18316,6 +18316,15 @@ target_link_libraries(
         ${LIBSNDFILE_LIBRARIES}
 )
 add_test(NAME FRAME_SYNC_DPMR COMMAND dsd-neo_test_frame_sync_dpmr)
+# A dPMR header or end frame is accepted on its frame's last symbol, so the symbol-timing diagnostic does not measure it.
+add_test(
+    NAME FRAME_SYNC_DPMR_SYMBOL_TIMING
+    COMMAND dsd-neo_test_frame_sync_dpmr symbol-timing
+)
+set_tests_properties(
+    FRAME_SYNC_DPMR_SYMBOL_TIMING
+    PROPERTIES ENVIRONMENT "DSD_NEO_DEBUG_SYMBOL_TIMING=1"
+)
 
 # The P25 Phase 1 sync anchor: a sync word within the tolerance at the position a validated frame ends, and only there,
 # on the stream that frame was read on.

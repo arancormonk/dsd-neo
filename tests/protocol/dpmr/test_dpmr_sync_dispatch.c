@@ -654,6 +654,59 @@ test_dispatch_powersave_headers_with_lost_ones(void) {
     }
 }
 
+/* Issue #890: the channel code is sent apart from the MI's CRC, so a header of the run may pass with it unread. A repeat
+   that then reads it is the same call (and supplies the code), whatever code an earlier call left; only a repeat whose
+   known code differs from the run's is another call. */
+static void
+test_dispatch_header_run_learns_its_colour_code(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    dsd_call_snapshot call;
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    DSD_MEMSET(&state, 0, sizeof(state));
+    state.dpmr_color_code = 40; /* an earlier call's */
+    state.symbol_clock = 7000U;
+    plant_checked_header(&state, 0x0U, 0U, 0U);
+    put_bits(state.dpmr_sync.checked_bits, 61, 3, 7U);
+    put_bits(state.dpmr_sync.checked_bits, 64, 8, 2U);
+    put_bits(state.dpmr_sync.checked_cc, 0, 24, 0U); /* unread: no colour code */
+    (void)dsd_dispatch_handle_dpmr(&opts, &state);
+    assert(dsd_call_state_get(&state, 0U, &call) > 0);
+    const uint64_t epoch = call.epoch;
+
+    state.symbol_clock += 192U;
+    plant_checked_header(&state, 0x0U, 0U, 0U); /* colour code 12 */
+    put_bits(state.dpmr_sync.checked_bits, 61, 3, 7U);
+    put_bits(state.dpmr_sync.checked_bits, 64, 8, 1U);
+    (void)dsd_dispatch_handle_dpmr(&opts, &state);
+    assert(dsd_call_state_get(&state, 0U, &call) > 0 && call.epoch == epoch);
+    assert(state.dpmr_color_code == 12);
+
+    /* The normal header, its colour code another: two known codes that differ. */
+    state.symbol_clock += 192U;
+    plant_checked_header(&state, 0x0U, 0U, 0U);
+    put_bits(state.dpmr_sync.checked_cc, 0, 24, 0x5D7755U); /* colour code 13 */
+    (void)dsd_dispatch_handle_dpmr(&opts, &state);
+    assert(dsd_call_state_get(&state, 0U, &call) > 0 && call.epoch != epoch);
+}
+
+/* Issue #890: a header to the All Call address names the All Talkgroup string, not a place-value conversion of it
+   (TS 102 658 A.1.2.3.3, Table A.4). */
+static void
+test_dispatch_all_call_header(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    dsd_call_snapshot call;
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    DSD_MEMSET(&state, 0, sizeof(state));
+    state.dpmr_color_code = -1;
+    plant_checked_header(&state, 0x0U, 0U, 0U);
+    put_bits(state.dpmr_sync.checked_bits, 4, 24, 0xF833A6U);
+    (void)dsd_dispatch_handle_dpmr(&opts, &state);
+    assert(dsd_call_state_get(&state, 0U, &call) > 0);
+    assert(strcmp(call.target_text, "*******") == 0);
+}
+
 int
 main(void) {
     test_sync_pattern_lengths();
@@ -667,6 +720,8 @@ main(void) {
     test_dispatch_checked_header_opens_its_call();
     test_dispatch_powersave_headers_open_one_call();
     test_dispatch_powersave_headers_with_lost_ones();
+    test_dispatch_header_run_learns_its_colour_code();
+    test_dispatch_all_call_header();
     test_dispatch_voice_verdicts_follow_the_cch_crc();
     test_dispatch_voice_sync_alone_opens_no_call();
     test_dispatch_boundaries_forget_the_scrambling();

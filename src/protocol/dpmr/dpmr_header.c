@@ -226,7 +226,9 @@ dpmr_header_follows_call_header(const dsd_state* state) {
     return frames >= 1U && frames <= most && since + 1U >= at && since <= at + 1U;
 }
 
-/* Whether the open dPMR call is the one @p header names: its called and calling IDs, service and colour code. */
+/* Whether the open dPMR call is the one @p header names: its called and calling IDs, service and colour code. The
+   channel code travels outside the MI's CRC and may be unread in one header of the run and read in the next: a code
+   unknown on either side is missing, and only two known codes that differ are two calls. */
 static int
 dpmr_header_names_open_call(const dsd_state* state, const dpmr_header* header) {
     dsd_call_snapshot call;
@@ -240,7 +242,8 @@ dpmr_header_names_open_call(const dsd_state* state, const dpmr_header* header) {
     dpmr_convert_air_interface_id(header->called_id, called);
     dpmr_convert_air_interface_id(header->calling_id, calling);
     return strcmp(call.target_text, called) == 0 && strcmp(call.source_text, calling) == 0
-           && (header->color_code < 0 || header->color_code == state->dpmr_color_code);
+           && (header->color_code < 0 || state->dpmr_sync.call_header_color_code < 0
+               || header->color_code == state->dpmr_sync.call_header_color_code);
 }
 
 int
@@ -250,7 +253,7 @@ dpmr_header_continues_call(const dsd_state* state, const dpmr_header* header) {
 }
 
 static void
-dpmr_note_call_header(dsd_state* state, const dpmr_header* header) {
+dpmr_note_call_header(dsd_state* state, const dpmr_header* header, int continues) {
     dsd_dpmr_sync_mark* mark = &state->dpmr_sync.call_header;
     mark->clock = state->symbol_clock;
     mark->epoch = state->symbol_clock_epoch;
@@ -261,6 +264,10 @@ dpmr_note_call_header(dsd_state* state, const dpmr_header* header) {
     mark->inverted = (uint8_t)(state->synctype == DSD_SYNC_DPMR_FS1_NEG);
     /* How many header frames this one says follow it: a powersave header's WU (Table 5.71), none for a normal one. */
     state->dpmr_sync.call_header_wu = header->mi_type == 7U ? (uint8_t)(header->mi_detail & 0xFU) : 0U;
+    /* The run's colour code: a new call's header's own (or none); a repeat keeps it, or supplies the one it lacked. */
+    if (!continues || state->dpmr_sync.call_header_color_code < 0) {
+        state->dpmr_sync.call_header_color_code = header->color_code;
+    }
 }
 
 void
@@ -279,7 +286,7 @@ dpmr_process_header(dsd_opts* opts, dsd_state* state, const dpmr_header* header,
     dpmr_confirm_note_evidence(state, DPMR_EVIDENCE_STRONG);
     if (dpmr_header_opens_call(header)) {
         dpmr_publish_header_call(opts, state, header, continues);
-        dpmr_note_call_header(state, header);
+        dpmr_note_call_header(state, header, continues);
         /* The search and a scan quiet check hear it after the call is published (dpmr_confirm_end_frame()). */
         dpmr_confirm_end_frame(opts, state);
     } else {

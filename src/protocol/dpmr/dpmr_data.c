@@ -126,6 +126,32 @@ dpmr_convert_air_interface_id(uint32_t ai_id, char id[8]) {
      * decimal-spaced and the trailing ones base-11, which is what lets a dialled
      * '*' ride in the same address space as the digits. */
     static const uint32_t k_place_value[7] = {1464100U, 146410U, 14641U, 1331U, 121U, 11U, 1U};
+    /* The All Talkgroup IDs lie above the place-value range (A.1.2.3.3): F8339C to F833A5 are "n******", All Call
+     * within prefix n (Table A.3), and F833A6 is "*******", All Call to every prefix (Table A.4). */
+    static const uint32_t k_all_call_prefix0 = 0xF8339CU;
+    static const uint32_t k_all_call = 0xF833A6U;
+    /* The largest dialled string, "999****" (Table A.2: DF6767); no other ID above it is a dialled string. */
+    static const uint32_t k_dialled_max = 0xDF6767U;
+    if (ai_id >= k_all_call_prefix0 && ai_id <= k_all_call) {
+        for (size_t i = 0U; i < 7U; i++) {
+            id[i] = '*';
+        }
+        if (ai_id != k_all_call) {
+            id[0] = (char)('0' + (ai_id - k_all_call_prefix0));
+        }
+        id[7] = '\0';
+        return;
+    }
+    if (ai_id > k_dialled_max) {
+        /* No dialled string: the raw 24-bit ID, marked as such. */
+        static const char k_hex[] = "0123456789ABCDEF";
+        id[0] = '#';
+        for (size_t i = 0U; i < 6U; i++) {
+            id[1U + i] = k_hex[(ai_id >> (20U - (4U * i))) & 0xFU];
+        }
+        id[7] = '\0';
+        return;
+    }
     uint32_t remaining = ai_id;
 
     for (size_t i = 0U; i < 7U; i++) {
