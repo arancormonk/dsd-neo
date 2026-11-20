@@ -1625,7 +1625,8 @@ started together included: **App default** is then 72 kHz, the bandwidth TETRA d
 at, and the editor's note says so. A list with its own bandwidth other than 72 kHz is
 refused at start with the fix (set 72 kHz or App default), and the editor says so under
 the Bandwidth choice. A TETRA DMO entry that is switched off is not scanned, so it does
-not count.
+not count. **Scan with other lists** judges each list with the ones already switched on,
+so it does not offer a list the start would refuse for its bandwidth.
 
 Each system's group file becomes a scoped `-G` option. The list's group file is
 only the fallback for entries without their own file. Key CSVs retain their
