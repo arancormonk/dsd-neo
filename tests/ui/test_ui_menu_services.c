@@ -43,6 +43,7 @@
 #include <dsd-neo/platform/file_compat.h>
 #include <dsd-neo/platform/input_backlog.h>
 #include <dsd-neo/platform/posix_compat.h>
+#include <dsd-neo/protocol/dmr/dmr_trunk_sm.h>
 #include <dsd-neo/protocol/p25/p25_cc_candidates.h>
 #include <dsd-neo/protocol/p25/p25_sm_watchdog.h>
 #include <dsd-neo/protocol/p25/p25_trunk_sm.h>
@@ -647,6 +648,17 @@ dsd_engine_carrier_boundary(dsd_opts* opts, dsd_state* state, dsd_carrier_bounda
     g_carrier_boundary_calls++;
     g_carrier_boundary_kind = (int)kind;
     g_carrier_boundary_guarded = guard_held;
+}
+
+/* DMR's receiver attribution, which a rigctl tune whose reply was lost forgets: the DMR machine is not this test's. */
+dmr_sm_ctx_t*
+dmr_sm_get_ctx(void) {
+    return NULL;
+}
+
+void
+dmr_sm_note_receiver_unknown(dmr_sm_ctx_t* ctx) {
+    (void)ctx;
 }
 
 /* A rigctl peer's confirmed move (issue #834): the engine's timeline is not this test's. */

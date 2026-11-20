@@ -45,6 +45,7 @@
 #include <dsd-neo/platform/input_backlog.h>
 #include <dsd-neo/platform/platform.h>
 #include <dsd-neo/platform/posix_compat.h>
+#include <dsd-neo/protocol/dmr/dmr_trunk_sm.h>
 #include <dsd-neo/protocol/p25/p25_cc_candidates.h>
 #include <dsd-neo/protocol/p25/p25_frequency.h>
 #include <dsd-neo/protocol/p25/p25_sm_watchdog.h>
@@ -2820,6 +2821,11 @@ svc_io_control_tune(dsd_opts* opts, dsd_state* state, uint32_t hz, uint64_t* out
     /* With rigctl in use io_control tunes the peer alone (no RTL leg), and 0 is its RPRT 0. */
     if (rc == 0 && opts->use_rigctl == 1) {
         dsd_engine_note_rigctl_retune(opts, state, sent_before_hz, (long int)hz, &mark);
+    } else if (opts->use_rigctl == 1 && sent_before_hz != 0U && opts->rigctl_sent_freq_hz == 0U) {
+        /* A request whose reply could not be read may have moved the peer, where it was known: DMR no longer takes the
+           receiver to be where it last put it (a control channel it parked on), so its hunt sends that channel again
+           rather than listening on. A complete refusal left the peer, and DMR's attribution, where they were. */
+        dmr_sm_note_receiver_unknown(dmr_sm_get_ctx());
     }
     return rc;
 }

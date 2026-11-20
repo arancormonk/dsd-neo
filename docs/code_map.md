@@ -1291,8 +1291,11 @@ An operator move (`dmr_sm_cold_start_note_retune()`, outside a startup hunt) giv
 receiver attribution (`cc_rx_freq_hz` and the per-generation rigctl reading `rx_seen_hz`) and listens for a full
 window that starts once a tune it superseded has settled (`cc_tune_superseded`, a settle tune replacing a failure,
 as a startup hunt settles): at the move when nothing gated frames, else when the settle released them, whichever tune
-it waited for. A replaced rigctl connection drops the attribution too (`dmr_sm_note_receiver_unknown()`); a rigctl
-read that failed is not repeated for `DMR_RX_QUERY_RETRY_S` of real time. Under `--trunk-scan`, Return to CC restarts
+it waited for. A replaced rigctl connection drops the attribution too (`dmr_sm_note_receiver_unknown()`), and so does
+an app-control tune whose rigctl reply could not be read where the peer's frequency was known (`svc_io_control_tune()`:
+it may have moved the peer, so a hunt with one candidate sends it again instead of listening on), while a complete
+refusal keeps it (`ENGINE_RIGCTL_RETUNE` `test_an_unknown_manual_tune_forgets_dmr_receiver()`); a rigctl read that
+failed is not repeated for `DMR_RX_QUERY_RETRY_S` of real time. Under `--trunk-scan`, Return to CC restarts
 the parked target's own acquisition on its control channel instead, unless a park the coordinator tracks is still
 pending. Each target's `dmr_sm_ctx_t` also holds its per-slot call identities (talkgroup priority and preemption,
 below), which the switch's acquisition restarts. A Capacity Plus status follow is the machine's call

@@ -1861,6 +1861,41 @@ test_the_legacy_leg_resends_after_an_unknown_manual_tune(void) {
     return rc;
 }
 
+/* DMR's attribution of the receiver (the control channel it parked on, dmr_sm_ctx_t::cc_rx_freq_hz) holds only while
+   the rigctl peer's position is known: a manual tune whose reply could not be read may have moved the peer, so the
+   machine forgets where the receiver is and its hunt sends the control channel again, rather than listening on as if
+   still there. A complete refusal leaves the peer where it was, and the attribution with it. */
+static int
+test_an_unknown_manual_tune_forgets_dmr_receiver(void) {
+    rig_case c;
+    if (rig_case_open(&c, AUDIO_IN_PULSE) != 0) {
+        return expect_true("dmr receiver: the peer", 0);
+    }
+    dsd_opts* opts = c.opts;
+    dsd_state* state = c.state;
+    dmr_sm_init(opts, state);
+    dmr_sm_ctx_t* ctx = dmr_sm_get_ctx();
+    int rc = expect_true("dmr receiver: the peer is on the control channel", leg_io_control(opts, state, CC_HZ));
+    dmr_sm_begin_cc_acquisition(ctx, opts, state, CC_HZ, 0U);
+    rc |= expect_true("dmr receiver: DMR parks there", ctx->cc_rx_freq_hz == CC_HZ);
+
+    atomic_store(&c.rig.f_mode, RIG_REFUSES);
+    rc |= expect_true("dmr receiver: a manual tune the peer refuses", !leg_io_control(opts, state, VC1_HZ));
+    rc |= expect_true("dmr receiver: a refusal keeps where the receiver is",
+                      ctx->cc_rx_freq_hz == CC_HZ && opts->rigctl_sent_freq_hz == (uint32_t)CC_HZ);
+
+    atomic_store(&c.rig.f_mode, RIG_MOVES_GARBLED);
+    rc |= expect_true("dmr receiver: a manual tune whose reply is lost", !leg_io_control(opts, state, VC1_HZ));
+    char label[160];
+    DSD_SNPRINTF(label, sizeof label,
+                 "dmr receiver: the receiver is no longer taken to be on the control channel (%ld)",
+                 ctx->cc_rx_freq_hz);
+    rc |= expect_true(label, ctx->cc_rx_freq_hz == 0 && opts->rigctl_sent_freq_hz == 0U);
+    dmr_sm_init(opts, state);
+    rig_case_close(&c);
+    return rc;
+}
+
 /* A peer that is slow to answer a passband request (M) is still on the old frequency while it does: the old channel's
    audio that reaches the input then goes at the next read with what was queued before the tune, and the new channel's,
    which reached it before the frequency's reply, is read. Every rigctl leg asks for a passband here (a -B on audio
@@ -2298,6 +2333,7 @@ main(void) {
     rc |= test_wav_input_unchanged();
     rc |= test_an_unreadable_tune_reply_leaves_the_frequency_unknown();
     rc |= test_the_legacy_leg_resends_after_an_unknown_manual_tune();
+    rc |= test_an_unknown_manual_tune_forgets_dmr_receiver();
     dsd_socket_cleanup();
     if (rc == 0) {
         DSD_FPRINTF(stderr, "ENGINE_RIGCTL_RETUNE: OK\n");
