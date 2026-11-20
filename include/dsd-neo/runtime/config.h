@@ -704,6 +704,9 @@ typedef struct dsdneoUserConfig {
        had. */
     int rdio_analog_system_id;
     int rdio_analog_talkgroup;
+    /* The talkgroup of a digital call with no talkgroup and no frequency, 0..2147483647 (0: not exported) (issue
+       #888). The loader refuses a value outside the range and keeps the one it had. */
+    int rdio_unknown_talkgroup;
     int unknown_talkgroups_only; /* bool: record only talkgroups without a row (opts->record_unknown_only) */
     /* The longest pause in ms one analog call and its recording survive (opts->analog_record_max_gap_ms; issue #756):
        0..10000, 200 or less is off. The loader refuses a value outside the range and keeps the one it had. */

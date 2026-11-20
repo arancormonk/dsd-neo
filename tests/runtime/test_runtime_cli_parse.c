@@ -8429,6 +8429,48 @@ test_rdio_analog_options(void) {
     return test_rc;
 }
 
+/* Issue #888: --rdio-unknown-talkgroup (0..2147483647) takes a whole number in range, 0 included to reset; anything
+ * else, past the range or past int's, is refused, never clamped. Left out, it is 0. */
+static int
+test_rdio_unknown_talkgroup_option(void) {
+    static const struct {
+        const char* value;
+        int want_rc;
+        int want_talkgroup;
+        const char* want_text;
+    } cases[] = {
+        {NULL, DSD_PARSE_CONTINUE, 0, NULL},
+        {"4242", DSD_PARSE_CONTINUE, 4242, NULL},
+        {"0", DSD_PARSE_CONTINUE, 0, NULL},
+        {"2147483647", DSD_PARSE_CONTINUE, 2147483647, NULL},
+        {"2147483648", DSD_PARSE_ERROR, 0, "Invalid --rdio-unknown-talkgroup value \"2147483648\""},
+        {"4294971538", DSD_PARSE_ERROR, 0, "Invalid --rdio-unknown-talkgroup value \"4294971538\""},
+        {"-1", DSD_PARSE_ERROR, 0, "Invalid --rdio-unknown-talkgroup value \"-1\""},
+        {"9x", DSD_PARSE_ERROR, 0, "Invalid --rdio-unknown-talkgroup value \"9x\""},
+        {"", DSD_PARSE_ERROR, 0, "Invalid --rdio-unknown-talkgroup value \"\""},
+    };
+
+    int test_rc = 0;
+    for (size_t i = 0; i < sizeof cases / sizeof cases[0]; i++) {
+        const char* const args[] = {"dsd-neo", cases[i].value ? "--rdio-unknown-talkgroup" : "-P", cases[i].value,
+                                    NULL};
+        am_cli_run run;
+        if (am_cli_parse(args, 0, &run) != 0) {
+            return 1;
+        }
+        const int text_ok = !cases[i].want_text || strstr(run.err, cases[i].want_text) != NULL;
+        if (run.rc != cases[i].want_rc || run.opts->rdio_unknown_talkgroup != cases[i].want_talkgroup || !text_ok
+            || (cases[i].want_rc == DSD_PARSE_ERROR && run.exit_rc != 1)) {
+            DSD_FPRINTF(stderr, "--rdio-unknown-talkgroup %s: rc=%d talkgroup=%d exit_rc=%d\n%s\n",
+                        cases[i].value ? cases[i].value : "(left out)", run.rc, run.opts->rdio_unknown_talkgroup,
+                        run.exit_rc, run.err);
+            test_rc = 1;
+        }
+        am_cli_free(&run);
+    }
+    return test_rc;
+}
+
 /* What -h prints, read back from a file stdout points at meanwhile. Returns 0 when @p out holds it. */
 static int
 help_text(char* out, size_t out_size) {
@@ -8497,6 +8539,7 @@ test_value_options_refuse_a_missing_value(void) {
         "--rdio-upload-retries",
         "--rdio-analog-system-id",
         "--rdio-analog-talkgroup",
+        "--rdio-unknown-talkgroup",
         "--frame-log",
         "--p25-sm-log",
         "--input-volume",
@@ -12267,6 +12310,127 @@ bootstrap_with_ini(const char* ini, const char* const* args, int nargs, int* exi
     return boot;
 }
 
+/* --print-config of a bootstrap of @p ini plus the @p nargs arguments @p args (as bootstrap_with_ini() takes them):
+   what it printed, read back from a file stdout points at meanwhile. Returns 0 when @p out holds it and the bootstrap
+   exited 0. */
+static int
+print_config_with_ini(const char* ini, const char* const* args, int nargs, char* out, size_t out_size) {
+    char path[DSD_TEST_PATH_MAX];
+    int fd = dsd_test_mkstemp(path, sizeof path, "runtime_cli_print_config");
+    if (fd < 0) {
+        return -1;
+    }
+    dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(dsd_opts));
+    dsd_state* state = (dsd_state*)calloc(1, sizeof(dsd_state));
+    (void)fflush(stdout);
+    const int saved = dsd_dup(DSD_STDOUT_FILENO);
+    if (!opts || !state || saved < 0 || dsd_dup2(fd, DSD_STDOUT_FILENO) < 0) {
+        if (saved >= 0) {
+            dsd_close(saved);
+        }
+        dsd_close(fd);
+        (void)remove(path);
+        free(opts);
+        free(state);
+        return -1;
+    }
+    dsd_close(fd);
+    initOpts(opts);
+    initState(state);
+    int exit_rc = -1;
+    char err[4096];
+    const int boot = bootstrap_with_ini(ini, args, nargs, &exit_rc, err, sizeof err, opts, state);
+    (void)fflush(stdout);
+    (void)dsd_dup2(saved, DSD_STDOUT_FILENO);
+    dsd_close(saved);
+    freeState(state);
+    free(opts);
+    free(state);
+    const int read_rc = read_file_to_buffer(path, out, out_size);
+    (void)remove(path);
+    if (boot != DSD_BOOTSTRAP_EXIT || exit_rc != 0) {
+        DSD_FPRINTF(stderr, "--print-config: bootstrap rc=%d exit=%d\n%s\n", boot, exit_rc, err);
+        return -1;
+    }
+    return read_rc;
+}
+
+/* Issue #888: the command line's --rdio-unknown-talkgroup wins over the config's, 0 included, which turns a config's
+   positive value off for the run; the config saved from that run leaves the key out. --print-config shows a positive
+   value and omits an effective 0. -h lists the option. */
+static int
+test_bootstrap_rdio_unknown_talkgroup_cli_over_ini(void) {
+    static const char ini[] = "[recording]\nrdio_unknown_talkgroup = 4242\n";
+
+    static const struct {
+        const char* args[4];
+        int nargs;
+        int want;
+    } cases[] = {
+        {{"--config", "{ini}"}, 2, 4242},
+        {{"--config", "{ini}", "--rdio-unknown-talkgroup", "0"}, 4, 0},
+        {{"--config", "{ini}", "--rdio-unknown-talkgroup", "77"}, 4, 77},
+    };
+
+    int rc = 0;
+    for (size_t i = 0; i < sizeof cases / sizeof cases[0]; i++) {
+        dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(dsd_opts));
+        dsd_state* state = (dsd_state*)calloc(1, sizeof(dsd_state));
+        dsdneoUserConfig* snap = (dsdneoUserConfig*)calloc(1, sizeof(*snap));
+        if (!opts || !state || !snap) {
+            free(opts);
+            free(state);
+            free(snap);
+            return 1;
+        }
+        initOpts(opts);
+        initState(state);
+        int exit_rc = -1;
+        char err[4096];
+        const int boot = bootstrap_with_ini(ini, cases[i].args, cases[i].nargs, &exit_rc, err, sizeof err, opts, state);
+        dsd_snapshot_opts_to_user_config(opts, state, snap);
+        if (boot != DSD_BOOTSTRAP_CONTINUE || opts->rdio_unknown_talkgroup != cases[i].want
+            || snap->rdio_unknown_talkgroup != cases[i].want) {
+            DSD_FPRINTF(stderr, "case %zu: bootstrap rc=%d exit=%d talkgroup=%d saved=%d (want %d)\n%s\n", i, boot,
+                        exit_rc, opts->rdio_unknown_talkgroup, snap->rdio_unknown_talkgroup, cases[i].want, err);
+            rc = 1;
+        }
+        freeState(state);
+        free(opts);
+        free(state);
+        free(snap);
+
+        static char printed[65536];
+        const char* print_args[5];
+        for (int a = 0; a < cases[i].nargs; a++) {
+            print_args[a] = cases[i].args[a];
+        }
+        print_args[cases[i].nargs] = "--print-config";
+        if (print_config_with_ini(ini, print_args, cases[i].nargs + 1, printed, sizeof printed) != 0) {
+            rc = 1;
+            continue;
+        }
+        char want_line[64];
+        DSD_SNPRINTF(want_line, sizeof want_line, "rdio_unknown_talkgroup = %d\n", cases[i].want);
+        const int shown = strstr(printed, "rdio_unknown_talkgroup") != NULL;
+        if (cases[i].want > 0 ? strstr(printed, want_line) == NULL : shown) {
+            DSD_FPRINTF(stderr, "case %zu: --print-config %s rdio_unknown_talkgroup (want %d):\n%s\n", i,
+                        shown ? "shows" : "omits", cases[i].want, printed);
+            rc = 1;
+        }
+    }
+
+    static char help[65536];
+    if (help_text(help, sizeof help) != 0
+        || strstr(help, "--rdio-unknown-talkgroup <N>  rdio-scanner talkgroup for digital calls with no talkgroup and "
+                        "no known frequency\n")
+               == NULL) {
+        DSD_FPRINTF(stderr, "-h does not list --rdio-unknown-talkgroup\n");
+        rc = 1;
+    }
+    return rc;
+}
+
 #ifdef USE_RADIO
 /* Issue #743 (D8): a config that runs an I/Q stream with [trunking] enabled, [trunking] scanner or [trunk_scan] enabled
    is refused at startup with exit 1, naming the key and the fix, before anything opens: the bootstrap returns before
@@ -13461,6 +13625,8 @@ main(void) {
     rc |= test_analog_record_max_gap_option();
     rc |= test_analog_record_preroll_option();
     rc |= test_rdio_analog_options();
+    rc |= test_rdio_unknown_talkgroup_option();
+    rc |= test_bootstrap_rdio_unknown_talkgroup_cli_over_ini();
     rc |= test_help_describes_recording_options();
     rc |= test_value_options_refuse_a_missing_value();
     rc |= test_wide_values_clamp_before_narrowing();

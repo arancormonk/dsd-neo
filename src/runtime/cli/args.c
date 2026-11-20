@@ -2237,6 +2237,14 @@ cli_parse_tetra_net(const char* spec, dsd_opts* opts) {
             }                                                                                                          \
             continue;                                                                                                  \
         }                                                                                                              \
+        if (strcmp(argv[i], "--rdio-unknown-talkgroup") == 0) {                                                        \
+            if (!cli_has_value("--rdio-unknown-talkgroup", i, argc, out_exit_rc)                                       \
+                || !cli_parse_int_range_option("--rdio-unknown-talkgroup", DSD_PARSE_ARGS_NEXT_ARG(), 0, 2147483647,   \
+                                               &opts->rdio_unknown_talkgroup, out_exit_rc)) {                          \
+                return DSD_PARSE_ERROR;                                                                                \
+            }                                                                                                          \
+            continue;                                                                                                  \
+        }                                                                                                              \
         if (strcmp(argv[i], "--record-unknown-only") == 0) {                                                           \
             recording_cli.record_unknown_only = 1;                                                                     \
             continue;                                                                                                  \
