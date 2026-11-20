@@ -16,6 +16,7 @@
 #include <dsd-neo/core/events.h>
 #include <dsd-neo/core/gps.h>
 #include <dsd-neo/core/opts.h>
+#include <dsd-neo/core/position.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/state_ext.h>
 #include <dsd-neo/core/synctype_ids.h>
@@ -220,21 +221,33 @@ test_enrichment_skips_another_protocols_call(dsd_opts* opts) {
     free_fixture(state);
 
     /* Positions: DMR embedded GPS and LIP, P25 Motorola and Harris GPS, NXDN GPS, DMR UDT NMEA. Each payload is a
-       valid position at 0, 0; the open call is another protocol's (with the source the report names, where it names
-       one). */
+       valid fix the feed admits (22.5 S 45 W, or 22.5 N for the P25 reports), decoded on its own protocol's carrier;
+       the open call is another protocol's (with the source the report names, where it names one). */
     static const struct {
         const char* name;
         int call_protocol;
+        int report_protocol;
         int writer;
     } gps[] = {
-        {"dmr embedded gps", DSD_SYNC_P25P1_POS, 0}, {"p25 apx gps", DSD_SYNC_DMR_BS_VOICE_POS, 1},
-        {"p25 harris gps", DSD_SYNC_NXDN_POS, 2},    {"nxdn gps", DSD_SYNC_DMR_BS_VOICE_POS, 3},
-        {"dmr lip report", DSD_SYNC_P25P1_POS, 4},   {"dmr udt nmea", DSD_SYNC_NXDN_POS, 5},
+        {"dmr embedded gps", DSD_SYNC_P25P1_POS, DSD_SYNC_DMR_BS_VOICE_POS, 0},
+        {"p25 apx gps", DSD_SYNC_DMR_BS_VOICE_POS, DSD_SYNC_P25P1_POS, 1},
+        {"p25 harris gps", DSD_SYNC_NXDN_POS, DSD_SYNC_P25P1_POS, 2},
+        {"nxdn gps", DSD_SYNC_DMR_BS_VOICE_POS, DSD_SYNC_NXDN_POS, 3},
+        {"dmr lip report", DSD_SYNC_P25P1_POS, DSD_SYNC_DMR_BS_DATA_POS, 4},
+        {"dmr udt nmea", DSD_SYNC_NXDN_POS, DSD_SYNC_DMR_BS_DATA_POS, 5},
     };
 
     for (size_t i = 0; i < sizeof(gps) / sizeof(gps[0]); i++) {
         const uint32_t src = 5555U;
         state = foreign_call_fixture(opts, gps[i].call_protocol, 0U, 100U, src);
+        if (state == NULL || dsd_position_feed_start(state) != 0) {
+            DSD_FPRINTF(stderr, "FAIL: %s fixture\n", gps[i].name);
+            g_fail = 1;
+            free_fixture(state);
+            continue;
+        }
+        state->synctype = gps[i].report_protocol;
+        state->lastsynctype = gps[i].report_protocol;
         DSD_MEMSET(bits, 0, sizeof(bits));
         /* The P25 link-control reports as a checked message of the report's source would carry them, to the slot's
            ACTIVE call; the carried reports addressed from that source. */
@@ -245,20 +258,65 @@ test_enrichment_skips_another_protocols_call(dsd_opts* opts) {
         p25_ctx.pos_verified = 1U;
         p25_ctx.source_verified = 1U;
         const dsd_gps_address addr = {src, 0U, 0U};
+        /* L3Harris body: 22 30 N, 45 E, 02:00:00, heading 90.0, at rest, quality %01, 5 satellites. */
+        static const uint8_t harris[14] = {0, 0, 30, 22, 0, 0, 0, 45, 0x1C, 0x20, 0x84, 0x00, 0x03, 0x15};
         switch (gps[i].writer) {
-            case 0: dmr_embedded_gps(opts, state, bits); break;
-            case 1: (void)apx_embedded_gps(opts, state, bits, &p25_ctx); break;
-            case 2: (void)nmea_harris(opts, state, bits, &p25_ctx); break;
-            case 3: nxdn_gps_report(opts, state, bits, sizeof(bits), src, NULL); break;
+            case 0:
+                /* Embedded GPS LC (FLCO 0x08): 20 m, 22.5 S, 45 W. */
+                set_bits(bits, 2, 6, 0x08);
+                set_bits(bits, 20, 3, 1);
+                set_bits(bits, 23, 1, 1);
+                set_bits(bits, 24, 24, 0xC00000);
+                set_bits(bits, 48, 1, 1);
+                set_bits(bits, 49, 23, 0x600000);
+                dmr_embedded_gps(opts, state, bits);
+                break;
+            case 1:
+                /* MFID $90 LCO $06: latitude magnitude 0x200000 (22.5 N), longitude magnitude 0x300000 (67.5 E). */
+                set_bits(bits, 0, 8, 0x06);
+                set_bits(bits, 8, 8, 0x90);
+                set_bits(bits, 24, 24, 0x200000);
+                set_bits(bits, 48, 24, 0x300000);
+                (void)apx_embedded_gps(opts, state, bits, &p25_ctx);
+                break;
+            case 2: (void)nmea_harris(opts, state, harris, &p25_ctx); break;
+            case 3:
+                /* After the 0xFFFC marker: longitude and latitude DDDMM/DDMM, then the date. */
+                set_bits(bits, 168 - 16, 16, 2230U);
+                set_bits(bits, 200 - 16, 16, 1000U);
+                set_bits(bits, 152 - 16, 7, 25U);
+                set_bits(bits, 159 - 16, 4, 6U);
+                set_bits(bits, 163 - 16, 5, 20U);
+                nxdn_gps_report(opts, state, bits, sizeof(bits), src, NULL);
+                break;
             case 4:
-                state->lastsynctype =
-                    DSD_SYNC_DMR_BS_DATA_POS; // carried by a DMR data frame (a zeroed state reads P25)
+                /* LIP short location report: 22.5 S, 45 W. */
+                set_bits(bits, 4, 1, 1);
+                set_bits(bits, 5, 24, 0xC00000);
+                set_bits(bits, 29, 1, 1);
+                set_bits(bits, 30, 23, 0x600000);
+                set_bits(bits, 68, 8, 32);
                 lip_pdu_decoder(opts, state, bits, 76U, &addr);
                 break;
-            default: nmea_iec_61162_1(opts, state, bits, sizeof(bits), &addr, 1); break;
+            default:
+                /* Long-form binary NMEA: 22 30 S, 45 W. */
+                set_bits(bits, 3, 1, 1);
+                set_bits(bits, 11, 7, 22);
+                set_bits(bits, 18, 6, 30);
+                set_bits(bits, 38, 8, 45);
+                set_bits(bits, 66, 5, 11);
+                set_bits(bits, 71, 6, 22);
+                set_bits(bits, 77, 6, 33);
+                nmea_iec_61162_1(opts, state, bits, NMEA_UDT_LONG_BITS, &addr, 2);
+                break;
         }
+        dsd_position_fix fix;
+        dsd_position_feed_meta meta;
+        DSD_SNPRINTF(label, sizeof(label), "%s is admitted", gps[i].name);
+        expect_true(label, dsd_position_feed_copy_since(state, 0U, &fix, 1U, &meta) == 1);
         DSD_SNPRINTF(label, sizeof(label), "%s leaves the other protocol's call row alone", gps[i].name);
-        expect_true(label, state->event_history_s[0].Event_History_Items[0].gps_s[0] == '\0');
+        const Event_History* row = &state->event_history_s[0].Event_History_Items[0];
+        expect_true(label, row->gps_s[0] == '\0' && row->pos.valid == 0U);
         free_fixture(state);
     }
 }
