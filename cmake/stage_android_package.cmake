@@ -165,6 +165,38 @@ endif()
 set(DSD_MBELIB_NOTICE_DIR "${MBELIB_NOTICE_DIR}")
 include("${REPO_DIR}/cmake/MbelibNotices.cmake")
 
+# Every copy below writes through a symbolic link as through a folder, to wherever it
+# points, so none may be in the documentation's path: in android/package/'s documentation
+# or on the way to it, or in the staged package's.
+function(_dsd_refuse_links root relative)
+    set(_path "${root}")
+    string(REPLACE "/" ";" _parts "${relative}")
+    foreach(_part IN LISTS _parts)
+        string(APPEND _path "/${_part}")
+        if(IS_SYMLINK "${_path}")
+            set(_link "${_path}")
+            break()
+        endif()
+    endforeach()
+    if(NOT DEFINED _link AND IS_DIRECTORY "${_path}")
+        file(GLOB_RECURSE _entries LIST_DIRECTORIES true "${_path}/*")
+        foreach(_entry IN LISTS _entries)
+            if(IS_SYMLINK "${_entry}")
+                set(_link "${_entry}")
+                break()
+            endif()
+        endforeach()
+    endif()
+    if(DEFINED _link)
+        message(
+            FATAL_ERROR
+            "${_link} is a symbolic link. The APK's documentation is staged only through real folders and files: replace it with the folder or file it points to."
+        )
+    endif()
+endfunction()
+_dsd_refuse_links("${SOURCE_DIR}" "assets/doc/dsd-neo")
+_dsd_refuse_links("${_stage}" "assets/doc/dsd-neo")
+
 # The package's documentation folder comes from the fresh one alone, below.
 file(
     COPY "${SOURCE_DIR}/"

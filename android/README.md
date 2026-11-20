@@ -931,6 +931,8 @@ every other release asset. `cmake/stage_android_package.cmake` copies
 notices into `assets/doc/dsd-neo/`, and runs on every build, so edits under
 `android/package/` reach the APK without re-running CMake. Add new package files
 to `android/package/` as usual — never to the staged copy, which is overwritten.
+Keep them real files: a symbolic link in `android/package/assets/doc/dsd-neo/`,
+or on the way to it, fails the staging, which writes nothing through a link.
 The staging also writes `assets/doc/dsd-neo/notice-index.txt`, the list of every
 file in that folder; the app's "Open source licenses" screen lists the files it
 names, after the location of the Qt source code, and opens one at a time. The

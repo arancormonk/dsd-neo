@@ -816,6 +816,61 @@ class NoticeStagingTests(unittest.TestCase):
         result = self.run_cmake(*args)
         self.assertEqual(self.scratch_folders(), [], result.stdout + result.stderr)
 
+    @unittest.skipIf(os.name == "nt", "needs symbolic links")
+    def test_android_staging_refuses_symbolic_links_in_the_documentation_path(self):
+        # A link in android/package/'s documentation, on the way to it, or in the staged package's documentation
+        # path is refused before anything is written, so nothing is written through it to where it points.
+        build, share, docs, args = self.android_fixture()
+        package = self.work / "package"
+        stage = docs.parents[2]
+        outside = self.work / "outside"
+
+        def reset():
+            for path in (package / "assets", stage, outside):
+                if path.is_symlink() or path.is_file():
+                    path.unlink()
+                elif path.exists():
+                    shutil.rmtree(path)
+            outside.mkdir()
+            (outside / "target.txt").write_text("not the staging's\n", encoding="utf-8")
+
+        def folder_link(path):
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.symlink_to(outside, target_is_directory=True)
+
+        def file_link(path):
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.symlink_to(outside / "target.txt")
+
+        def staged_link(relative):
+            def make():
+                result = self.run_cmake(*args)
+                self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+                path = stage / relative
+                shutil.rmtree(path)
+                folder_link(path)
+            return make
+
+        for label, link in (
+                ("a folder in the package documentation",
+                 lambda: folder_link(package / "assets/doc/dsd-neo/licenses")),
+                ("a file of a notice's name", lambda: file_link(package / "assets/doc/dsd-neo/LICENSE")),
+                ("another file", lambda: file_link(package / "assets/doc/dsd-neo/extra.txt")),
+                ("the package documentation folder", lambda: folder_link(package / "assets/doc/dsd-neo")),
+                ("a folder on the way to it", lambda: folder_link(package / "assets")),
+                ("a folder on the staged path", staged_link("assets/doc")),
+                ("a folder in the staged documentation", staged_link("assets/doc/dsd-neo/licenses"))):
+            with self.subTest(case=label):
+                reset()
+                link()
+                result = self.run_cmake(*args)
+                self.assertEqual(sorted(path.name for path in outside.iterdir()), ["target.txt"])
+                self.assertEqual((outside / "target.txt").read_text(encoding="utf-8"), "not the staging's\n")
+                self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
+                # CMake wraps a long message: compare it as one line.
+                self.assertIn("is a symbolic link", " ".join((result.stdout + result.stderr).split()))
+                self.assertEqual(self.scratch_folders(), [])
+
     def test_android_staging_keeps_the_package_source_documentation(self):
         # A file android/package/ puts in the documentation folder reaches the APK and its index, in a clean build and
         # in an incremental one, and a generated notice of the same name takes its place.
