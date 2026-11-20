@@ -1032,6 +1032,25 @@ test_write_query_follows_the_setter(void) {
         expect_eq("the same answer at both limits", (double)within_max_hz, (double)within_below_hz);
         rtl_device_test_soapy_gain_device_free(dev);
     }
+
+    /* A rate advertised just above UINT32_MAX that rounds back to it is within a UINT32_MAX limit, as a fractional
+       endpoint that rounds to any smaller limit is within that one, and converts to it. */
+    static const double below_top[] = {(double)UINT32_MAX - 10.0};
+    static const rtl_device_test_soapy_range at_top[] = {{(double)UINT32_MAX + 0.25, (double)UINT32_MAX + 0.25, 0.0}};
+    rtl_device_test_soapy_gain_fake fake = {};
+    fake.driver_key = "generic";
+    fake.listed_rates = below_top;
+    fake.listed_rate_count = 1U;
+    fake.rate_ranges = at_top;
+    fake.rate_range_count = 1U;
+    rtl_device* dev = rtl_device_test_soapy_gain_device(&fake, 0);
+    if (dev) {
+        uint32_t within_hz = 0U;
+        expect_true("a rate that rounds to UINT32_MAX answers the bounded query",
+                    rtl_device_rate_written_within(dev, UINT32_MAX - 1U, UINT32_MAX, &within_hz) == 0);
+        expect_eq("as UINT32_MAX", (double)within_hz, (double)UINT32_MAX);
+        rtl_device_test_soapy_gain_device_free(dev);
+    }
 }
 
 /* A device that advertises only 10 MS/s but delivers 2 MS/s, 500 kHz below the top of the tuning range: no advertised

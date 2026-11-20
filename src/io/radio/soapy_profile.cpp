@@ -600,33 +600,40 @@ soapy_nearest_sample_rate(double requested, const std::vector<double>& listed_ra
 /* The point of @p range nearest @p requested among those that round (llround()) to @p max_rate or less, in
  * @p out_point: a point the range holds, which a write of it keeps. A stepped range's points are its grid, whose last
  * one within the limit is found by stepping down from the limit; a continuous range is cut at the limit's whole hertz,
- * or at its own maximum when that rounds within it. False when the range has no such point. */
+ * or at its own maximum when that rounds within it. False when the range has no such point. Values are compared with
+ * the cap's rounding boundary as doubles: a driver's range ends need not fit a 64-bit integer. */
 static bool
 range_point_within(const SoapyRange& range, double requested, double max_rate, double* out_point) {
-    if (!(range.maximum >= range.minimum) || std::llround(range.minimum) > std::llround(max_rate)) {
+    const double cap_boundary = max_rate + 0.5;
+    if (!(range.maximum >= range.minimum) || !(range.minimum < cap_boundary)) {
         return false;
     }
     if (!(range.step > 0.0)) {
-        const double top = std::llround(range.maximum) <= std::llround(max_rate)
-                               ? range.maximum
-                               : std::max(range.minimum, std::min(range.maximum, max_rate));
+        const double top =
+            range.maximum < cap_boundary ? range.maximum : std::max(range.minimum, std::min(range.maximum, max_rate));
         *out_point = std::min(std::max(requested, range.minimum), top);
         return true;
     }
     /* The highest point within the cap: the range's last point as range_last_point() gives it (a step that passes the
        maximum by rounding error is the maximum, which the setter keeps), else the grid point at or below the cap's
-       rounding boundary, stepped down while it rounds over the cap. A grid finer than a double resolves at that
-       magnitude has no distinguishable point below the boundary to step to; its largest representable value below
-       the boundary stands for it. */
-    const double cap_boundary = max_rate + 0.5;
+       rounding boundary, stepped down while it rounds over the cap. Each grid point is the setter's own
+       minimum + index * step. A grid finer than a double resolves at that magnitude has no distinguishable point below
+       the boundary to step to; its largest representable value below the boundary stands for it. */
     double top = range_last_point(range);
-    if (std::llround(top) > std::llround(max_rate)) {
-        top = range.minimum + std::floor((cap_boundary - range.minimum) / range.step) * range.step;
-        for (int i = 0; i < 2 && top > range.minimum && std::llround(top) > std::llround(max_rate); i++) {
-            const double lower = top - range.step;
-            top = lower < top ? std::max(lower, range.minimum) : std::nextafter(cap_boundary, 0.0);
+    if (!(top < cap_boundary)) {
+        double index = std::floor((cap_boundary - range.minimum) / range.step);
+        top = range.minimum + index * range.step;
+        for (int i = 0; i < 2 && top > range.minimum && !(top < cap_boundary); i++) {
+            const double lower_index = index - 1.0;
+            const double lower = range.minimum + lower_index * range.step;
+            if (!(lower_index < index) || !(lower < top)) {
+                top = std::nextafter(cap_boundary, 0.0);
+                break;
+            }
+            index = lower_index;
+            top = std::max(lower, range.minimum);
         }
-        if (std::llround(top) > std::llround(max_rate)) {
+        if (!(top < cap_boundary)) {
             top = std::max(range.minimum, std::nextafter(cap_boundary, 0.0));
         }
     }

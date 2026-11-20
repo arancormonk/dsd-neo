@@ -6,6 +6,7 @@
  * Copyright (C) 2026 by arancormonk <180709949+arancormonk@users.noreply.github.com>
  */
 
+#include <cfloat>
 #include <cmath>
 #include <cstdint>
 #include <cstdio>
@@ -269,6 +270,35 @@ test_nearest_rate_within_limit(void) {
     rc |= expect_double("a listed rate nearer than every range point wins",
                         dsdneo::soapy_nearest_sample_rate_within(2900000.0, 4000003.0, far_listed, halves, &found),
                         3072025.0);
+    /* A stepped range whose maximum no 64-bit integer holds is still cut at the cap. */
+    const std::vector<dsdneo::SoapyRange> wide = {{1e6, 1e19, 1000.0}};
+    rc |= expect_double("a range past every integer is cut at the cap",
+                        dsdneo::soapy_nearest_sample_rate_within(3e6, 2250000.0, {}, wide, &found), 2250000.0);
+    rc |= expect_true("and its point is found", found);
+    const std::vector<dsdneo::SoapyRange> widest = {{1e6, DBL_MAX, 1000.0}};
+    rc |= expect_double("so is one up to the largest double",
+                        dsdneo::soapy_nearest_sample_rate_within(3e6, 2e6, {}, widest, &found), 2e6);
+    rc |= expect_true("and its point is found", found);
+    /* A point below the cap is the grid point the setter itself computes (minimum + index * step), so a write of the
+       answer programs it, for steps a double holds only approximately. */
+    const std::vector<dsdneo::SoapyRange> inexact_a = {{1000000.5, 5000000.0, 249999.99999999994}};
+    const std::vector<dsdneo::SoapyRange> inexact_b = {{1000003.5, 3000000.0, std::nextafter(62500.0, 0.0)}};
+
+    const struct {
+        const std::vector<dsdneo::SoapyRange>* ranges;
+        double requested;
+        double cap;
+    } inexact[] = {{&inexact_a, 3e6, 2250000.0}, {&inexact_b, 2.5e6, 2125003.0}};
+
+    for (const auto& c : inexact) {
+        const double point = dsdneo::soapy_nearest_sample_rate_within(c.requested, c.cap, {}, *c.ranges, &found);
+        bool adjusted = false;
+        const double written = dsdneo::soapy_nearest_sample_rate(point, {}, *c.ranges, &adjusted);
+        rc |= expect_true("an inexact grid's point is found", found);
+        rc |= expect_true("and rounds within the cap", std::llround(point) <= std::llround(c.cap));
+        rc |= expect_true("and a write of it programs the same whole hertz",
+                          std::llround(written) == std::llround(point));
+    }
     return rc;
 }
 
