@@ -3925,6 +3925,84 @@ test_both_mode_upload_survives_dirwatch_delete(void) {
 #endif
 }
 
+#if defined(USE_CURL) && !DSD_PLATFORM_WIN_NATIVE
+// A DirWatch with delete-after that takes the pair the moment its sidecar is in place (the sidecar-published seam):
+// the private inputs it found then, and the public pair removed, as that watch does.
+static struct {
+    const char* dir;
+    const char* wav;
+    int seen;
+    int private_inputs;
+} g_rdio_eager_watch;
+
+static void
+rdio_eager_watch_takes_pair(const char* meta_path) {
+    g_rdio_eager_watch.seen++;
+    g_rdio_eager_watch.private_inputs = rdio_test_private_inputs_in(g_rdio_eager_watch.dir, NULL);
+    (void)remove(meta_path);
+    (void)remove(g_rdio_eager_watch.wav);
+}
+#endif
+
+// Issue #888 B15: in --rdio-mode both the upload's private inputs exist before the public sidecar does, so a DirWatch
+// with delete-after that takes the pair as soon as the sidecar appears (before a slow WAV copy where the drive has no
+// hard links, or the first export's leftover scan, could finish) still leaves the upload its audio and metadata.
+// Before, the sidecar was published first: the watch's delete left the job no WAV to link, and nothing was uploaded.
+static int
+test_both_mode_private_inputs_precede_the_sidecar(void) {
+#if !defined(USE_CURL) || DSD_PLATFORM_WIN_NATIVE
+    return 0;
+#else
+    static const char* const audio = "RIFF-both-eager-watch-audio";
+    rdio_test_http_server server;
+    char api_url[128] = {0};
+    char dir[DSD_TEST_PATH_MAX] = {0};
+    char wav[DSD_TEST_PATH_MAX] = {0};
+    char json[DSD_TEST_PATH_MAX] = {0};
+    dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(*opts));
+    Event_History_I* hist = (Event_History_I*)calloc(1, sizeof(*hist));
+    if (!opts || !hist || !dsd_test_mkdtemp(dir, sizeof(dir), "dsdneo_rdio_both_eager")
+        || dsd_test_path_join(wav, sizeof(wav), dir, "both_eager.wav") != 0
+        || rdio_test_http_server_start_n(&server, api_url, sizeof(api_url), NULL, 0, 5000U, 1) != 0) {
+        rdio_test_remove_dir_tree(dir);
+        free(hist);
+        free(opts);
+        return 1;
+    }
+    rdio_cancel_opts(opts, api_url, 5000, 1);
+    opts->rdio_mode = DSD_RDIO_MODE_BOTH;
+    DSD_MEMSET(&g_rdio_eager_watch, 0, sizeof g_rdio_eager_watch);
+    g_rdio_eager_watch.dir = dir;
+    g_rdio_eager_watch.wav = wav;
+    dsd_rdio_set_sidecar_published_observer(rdio_eager_watch_takes_pair);
+    int rc = rdio_both_publish(opts, hist, dir, "both_eager", audio, 1203, wav, json);
+    dsd_rdio_set_sidecar_published_observer(NULL);
+    if (g_rdio_eager_watch.seen != 1 || g_rdio_eager_watch.private_inputs != 2) {
+        DSD_FPRINTF(stderr, "both eager watch: the sidecar appeared %d time(s) with %d private inputs, want 1 with 2\n",
+                    g_rdio_eager_watch.seen, g_rdio_eager_watch.private_inputs);
+        rc = 1;
+    }
+    dsd_rdio_upload_shutdown();
+    if (dsd_thread_join(server.thread) != 0 || server.rc != 0 || server.requests_seen != 1) {
+        DSD_FPRINTF(stderr, "both eager watch: the server saw %d of 1 complete upload\n", server.requests_done);
+        rc = 1;
+    } else {
+        rc |=
+            rdio_both_expect_request("both eager watch", &server, 0, audio, "both_eager.wav", "both_eager.json", 1203);
+    }
+    int files = -1;
+    if (rdio_test_private_inputs_in(dir, &files) != 0 || files != 0) {
+        DSD_FPRINTF(stderr, "both eager watch: %d files left, want none\n", files);
+        rc = 1;
+    }
+    rdio_test_remove_dir_tree(dir);
+    dsd_socket_cleanup();
+    free(hist);
+    free(opts);
+    return rc;
+#endif
+}
+
 // Issue #888 B15: the names of the private upload inputs the leftover cleanup may remove, under any platform's rules.
 static int
 test_upload_private_name_rule(void) {
@@ -4450,6 +4528,7 @@ main(void) {
     rc |= test_analog_api_upload_holds();
     rc |= test_upload_private_name_rule();
     rc |= test_both_mode_upload_survives_dirwatch_delete();
+    rc |= test_both_mode_private_inputs_precede_the_sidecar();
     rc |= test_both_mode_failed_upload_removes_private_inputs();
     rc |= test_both_mode_stop_removes_private_inputs();
     rc |= test_both_mode_refused_upload_leaves_no_private_inputs();

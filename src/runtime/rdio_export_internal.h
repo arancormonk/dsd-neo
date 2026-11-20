@@ -56,6 +56,13 @@ typedef void (*dsd_rdio_upload_release_observer)(const char* api_key, size_t api
                                                  size_t api_url_size);
 void dsd_rdio_upload_set_release_observer(dsd_rdio_upload_release_observer observer);
 
+/*
+ * For tests: @p observer (NULL for none) sees each rdio-scanner sidecar the moment it is in place under its public
+ * name, its path in @p meta_path, as a DirWatch could first take the pair. Called on the exporting thread.
+ */
+typedef void (*dsd_rdio_sidecar_published_observer)(const char* meta_path);
+void dsd_rdio_set_sidecar_published_observer(dsd_rdio_sidecar_published_observer observer);
+
 #ifdef __cplusplus
 }
 #endif

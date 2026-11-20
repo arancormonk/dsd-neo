@@ -5381,9 +5381,12 @@ suite runs under this compiler.
     warns only when the apply newly combines them (tests: `RUNTIME_CLI_PARSE`, `APP_CONTROL_RECORDING`,
     `RUNTIME_RDIO_EXPORT`).
     Private job inputs (issue #888 B15): in `--rdio-mode both` the sidecar is public before the queued job runs, and
-    a DirWatch with delete-after on that folder removes the pair once it takes it. So at enqueue, and only in `both`
-    mode, `dsd_rdio_make_private_inputs()` gives the job its own inputs beside the pair: a hard link of the WAV
-    (`dsd_hard_link()`, a copy where the file system has none) and a copy of the sidecar, named
+    a DirWatch with delete-after on that folder removes the pair once it takes it. So only in `both` mode,
+    `dsd_rdio_make_private_inputs()` gives the job its own inputs beside the pair before the public sidecar is in place
+    (`dsd_rdio_export_api()`: the sidecar is written and closed as its temp file, the job's copy of it is made from
+    that file, then the WAV's, and only then is the temp file renamed to the public name and the job queued), so a
+    watch that takes and deletes the pair the moment the sidecar appears never beats them: a copy of the sidecar and a
+    hard link of the WAV (`dsd_hard_link()`, a copy where the file system has none), named
     `<base>.<token>[.<N>].rdio-upload-audio` / `.rdio-upload-meta` (the token: 16 uppercase hex digits drawn once per
     process with `dsd_nonce_fill()`; N the first free index, 1 to 63), which no 6.6.3 or v8 watch reads (they
     look at the last extension only: `.json`, `.mp3`, or the default type's configured one, `.wav` by default). The
@@ -5392,23 +5395,28 @@ suite runs under this compiler.
     public pair is published at close as before, the job's `public_wav_path` is what `dsd_rdio_upload_holds()` names,
     and API-only and DirWatch-only runs make no private inputs. A run that ends without that release (killed, a
     removal that failed, a failed join) leaves them behind: the first `both` export into a folder in each run (the
-    per-run list, under `g_rdio_private_mutex`, resets at `dsd_rdio_upload_shutdown()`) first removes, from that
-    folder alone, names `dsd_rdio_upload_private_name()` (`rdio_export_internal.h`) matches, never one carrying this
-    process's token (`dsd_rdio_upload_private_name_token()`), and another run's (another token, or none) only when its
-    modification time is older than `dsd_rdio_leftover_min_age_s()`: a day, or (queue max + 1) x attempts x
-    (timeout + 150 ms backoff) at this run's settings when that is longer. So a second run exporting to the same
-    folder keeps its live inputs. The age is wall-clock (`dsd_realtime_time()` against `st_mtime` from
-    `dsd_stat_path()`), not a decode decision. A copy that cannot be made fails the export (no job, journal `rdio`
-    false), as a full queue does.
+    per-run list, under `g_rdio_private_mutex`, resets at `dsd_rdio_upload_shutdown()`), once its job's inputs exist and
+    its sidecar is public, removes from that folder alone names `dsd_rdio_upload_private_name()`
+    (`rdio_export_internal.h`) matches, never one carrying this process's token
+    (`dsd_rdio_upload_private_name_token()`), and another run's (another token, or none) only when its modification time
+    is older than `dsd_rdio_leftover_min_age_s()`: a day, or (queue max + 1) x attempts x (timeout + 150 ms backoff) at
+    this run's settings when that is longer. So a second run exporting to the same folder keeps its live inputs. The age
+    is wall-clock (`dsd_realtime_time()` against `st_mtime` from `dsd_stat_path()`), not a decode decision. A copy that
+    cannot be made fails the export (no job, journal `rdio` false), as a full queue does; the public pair is still
+    published. Accepted limit: the copy fallback and the leftover scan run in the export, on the closing thread, and a
+    commit rotation closes under the call-state lock (`dsd_event_sync_slot()`), so on a drive with no hard links a long
+    recording's copy, or a first export's scan of a large folder, also holds off the P25 watchdog thread, which takes
+    that lock. Moving them to the worker would reopen the race above.
     Tests: `RUNTIME_RDIO_EXPORT` (stalled endpoint, cancel before and during the drain, holds with a blocked uploader
     through 140 later publications, release after the delete, the name rule under POSIX and Windows rules on every host;
     analog sidecar fields, kHz and fallback talkgroups, stable tags, the analog system in the sidecar and the form part,
     the NFM upload's completion, failure, journal retention, BOTH mode and holds; issue #888 B15: a held first upload
     while the second pair is deleted as a watch would, the second request's audio, meta and part names, private inputs
-    gone after success, refusal, Stop and a full queue, the leftover clearing once per run and folder by token and age,
-    the private-name and token rules; the fallback number and its eligibility, the generated label, `freq`/`freqList` at
-    their bounds, emergency, the protocol `short_name`, `"-"` tags, UTF-8 strings, and a fallback call's API `meta` and
-    `system` parts),
+    gone after success, refusal, Stop and a full queue, the private inputs in place before the sidecar appears (a watch
+    that deletes the pair at that moment, `dsd_rdio_set_sidecar_published_observer()`), the leftover clearing once per
+    run and folder by token and age, the private-name and token rules; the fallback number and its eligibility, the
+    generated label (`EDACS` for a ProVoice call on an EDACS site), `freq`/`freqList` at their bounds, emergency, the
+    protocol `short_name`, `"-"` tags, UTF-8 strings, and a fallback call's API `meta` and `system` parts),
     `CORE_RECEIVE` and `CORE_WAV_JOURNAL` (NFM exports through the real closer, the per-run skip line),
     `ANDROID_ENGINE_STOP_JVM` (the cause each Android caller passes).
   - RadioReference.com import client (`src/runtime/radioreference/`): SOAP envelope builder, expat response parser,

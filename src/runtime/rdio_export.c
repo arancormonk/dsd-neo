@@ -662,7 +662,7 @@ typedef struct dsd_rdio_cleared_folder {
     char path[DSD_RDIO_PATH_MAX];
 } dsd_rdio_cleared_folder;
 
-/* Each folder is cleared once per run, before the first private input made there. Under g_rdio_private_mutex. */
+/* Each folder is cleared once per run, at the first job with private inputs there. Under g_rdio_private_mutex. */
 static dsd_rdio_cleared_folder* g_rdio_cleared_folders = NULL;
 static size_t g_rdio_cleared_folder_count = 0;
 
@@ -750,28 +750,29 @@ dsd_rdio_private_input_paths(dsd_rdio_upload_job* job, const char* wav_path, uns
     return dsd_rdio_path_with_suffix(wav_path, suffix, job->meta_path, sizeof job->meta_path);
 }
 
-/* --rdio-mode both: the job's own inputs, a hard link (or copy) of the published WAV and a copy of its sidecar, under
-   names no rdio-scanner watch reads (dsd_rdio_upload_private_name()). A DirWatch that deletes the published pair
-   after taking it then leaves this upload its bytes. A name in use (a leftover, or a WAV name published twice) moves
-   on to the next index. On a failure nothing is left behind. */
+/* --rdio-mode both: the job's own inputs, a copy of the sidecar (from @p meta_src, its temp file, before the public one
+   is in place) and a hard link (or copy) of the published WAV, under names no rdio-scanner watch reads
+   (dsd_rdio_upload_private_name()). A DirWatch that deletes the published pair after taking it then leaves this upload
+   its bytes. A name in use (a leftover, or a WAV name published twice) moves on to the next index. On a failure nothing
+   is left behind. */
 static int
-dsd_rdio_make_private_inputs(dsd_rdio_upload_job* job, const char* wav_path, const char* meta_path) {
+dsd_rdio_make_private_inputs(dsd_rdio_upload_job* job, const char* wav_path, const char* meta_src) {
     int err = EEXIST;
     for (unsigned int index = 0; index < DSD_RDIO_PRIVATE_NAME_TRIES && err == EEXIST; index++) {
         if (dsd_rdio_private_input_paths(job, wav_path, index) != 0) {
             err = ENAMETOOLONG;
             break;
         }
-        if (dsd_rdio_link_or_copy(wav_path, job->wav_path) != 0) {
+        if (dsd_rdio_copy_file(meta_src, job->meta_path) != 0) {
             err = errno;
             continue;
         }
-        if (dsd_rdio_copy_file(meta_path, job->meta_path) == 0) {
+        if (dsd_rdio_link_or_copy(wav_path, job->wav_path) == 0) {
             job->private_inputs = 1;
             return 0;
         }
         err = errno;
-        dsd_rdio_remove_after_upload(job->wav_path, "private upload audio");
+        dsd_rdio_remove_after_upload(job->meta_path, "private upload metadata");
     }
     LOG_ERROR("Rdio export: unable to make the upload's own copy of %s: %s\n", wav_path, strerror(err));
     return -1;
@@ -857,7 +858,7 @@ dsd_rdio_leftover_min_age_s(const dsd_rdio_api_config* api) {
     return (int64_t)(lifetime_s > day_s ? lifetime_s : day_s);
 }
 
-/* Once per run per folder, before the first private input made there: remove what a run that ended without its
+/* Once per run per folder, after the first job's private inputs there exist: remove what a run that ended without its
    cleanup (killed, or a removal that failed) left in it. Only names dsd_rdio_upload_private_name() matches, in that
    folder alone (no subfolder), never one with this process's token, and another run's only once it is older than
    dsd_rdio_leftover_min_age_s(), so a second run exporting to the same folder keeps its live inputs. The age is a wall
@@ -895,51 +896,32 @@ dsd_rdio_clear_leftovers(const char* wav_path, const dsd_rdio_api_config* api) {
     }
 }
 
-/* Queue an upload of @p wav_path with the checked @p api: 0 when it was queued. With @p private_inputs
-   (--rdio-mode both) the job uploads from its own copies of the pair (dsd_rdio_make_private_inputs()). */
+/* The upload job of @p wav_path and @p meta_path, its API config checked, into @p out_job: 0, or -1 with none. With
+   @p private_meta_src (--rdio-mode both: the sidecar's temp file) the job uploads from its own copies of the pair
+   (dsd_rdio_make_private_inputs()), made here, before the public sidecar is in place. */
 static int
-dsd_rdio_enqueue_api_job(const dsd_rdio_api_config* api, const char* wav_path, const char* meta_path,
-                         int remove_meta_on_success, int remove_wav_on_success, int private_inputs) {
-    if (dsd_rdio_upload_worker_init() != 0) {
-        LOG_ERROR("Rdio export: failed to initialize background upload worker\n");
-        return -1;
-    }
-    dsd_rdio_upload_job* job = NULL;
-    if (dsd_rdio_build_upload_job(api, wav_path, meta_path, remove_meta_on_success, remove_wav_on_success, &job) != 0) {
-        return -1;
-    }
-    if (!private_inputs) {
-        if (dsd_rdio_enqueue_upload_job(job, wav_path) != 0) {
-            dsd_rdio_upload_job_free(job);
-            return -1;
-        }
-        return 0;
-    }
-    dsd_rdio_clear_leftovers(wav_path, api);
-    if (dsd_rdio_make_private_inputs(job, wav_path, meta_path) != 0
-        || dsd_rdio_enqueue_upload_job(job, wav_path) != 0) {
-        dsd_rdio_upload_job_free(job);
-        return -1;
-    }
-    return 0;
-}
-
-static int
-dsd_rdio_enqueue_api_upload(const dsd_opts* opts, int system_id, const char* wav_path, const char* meta_path,
-                            int remove_meta_on_success, int remove_wav_on_success, int private_inputs) {
-    if (!opts || !wav_path || !meta_path) {
-        return -1;
-    }
-
+dsd_rdio_prepare_api_job(const dsd_opts* opts, int system_id, const char* wav_path, const char* meta_path,
+                         const char* private_meta_src, int remove_meta_on_success, int remove_wav_on_success,
+                         dsd_rdio_upload_job** out_job) {
+    *out_job = NULL;
     dsd_rdio_api_config api;
     dsd_rdio_copy_api_config(&api, opts, system_id);
     int rc = -1;
     if (dsd_rdio_validate_api_config(&api) == 0) {
-        rc = dsd_rdio_enqueue_api_job(&api, wav_path, meta_path, remove_meta_on_success, remove_wav_on_success,
-                                      private_inputs);
+        if (dsd_rdio_upload_worker_init() != 0) {
+            LOG_ERROR("Rdio export: failed to initialize background upload worker\n");
+        } else {
+            rc = dsd_rdio_build_upload_job(&api, wav_path, meta_path, remove_meta_on_success, remove_wav_on_success,
+                                           out_job);
+        }
     }
     /* The job holds its own copy now: this one goes. */
     DSD_SECURE_ZERO(&api, sizeof api);
+    if (rc == 0 && private_meta_src && dsd_rdio_make_private_inputs(*out_job, wav_path, private_meta_src) != 0) {
+        dsd_rdio_upload_job_free(*out_job);
+        *out_job = NULL;
+        rc = -1;
+    }
     return rc;
 }
 #else
@@ -1607,9 +1589,17 @@ dsd_rdio_write_meta_json(FILE* fp, const dsd_opts* opts, const dsd_rdio_meta_fie
     DSD_FPRINTF(fp, "}\n");
 }
 
+static dsd_rdio_sidecar_published_observer g_rdio_sidecar_published_observer = NULL;
+
+void
+dsd_rdio_set_sidecar_published_observer(dsd_rdio_sidecar_published_observer observer) {
+    g_rdio_sidecar_published_observer = observer;
+}
+
+/* Flush, sync and close the temp sidecar @p fp at @p temp_meta_path; on a failure it is removed. */
 static int
-dsd_rdio_finalize_meta_file(FILE* fp, const char* temp_meta_path, const char* out_meta_path) {
-    if (!fp || !temp_meta_path || !out_meta_path) {
+dsd_rdio_close_temp_meta_file(FILE* fp, const char* temp_meta_path) {
+    if (!fp || !temp_meta_path) {
         return -1;
     }
     if (fflush(fp) != 0) {
@@ -1633,19 +1623,30 @@ dsd_rdio_finalize_meta_file(FILE* fp, const char* temp_meta_path, const char* ou
         (void)dsd_remove_file(temp_meta_path);
         return -1;
     }
+    return 0;
+}
 
+/* Put the closed temp sidecar @p temp_meta_path in place under its public name @p out_meta_path, where a DirWatch can
+   take the pair; on a failure the temp file is removed. */
+static int
+dsd_rdio_publish_temp_meta_file(const char* temp_meta_path, const char* out_meta_path) {
     if (dsd_replace_file_with_temp(temp_meta_path, out_meta_path) != 0) {
         LOG_ERROR("Rdio export: failed renaming %s -> %s: %s\n", temp_meta_path, out_meta_path, strerror(errno));
         (void)dsd_remove_file(temp_meta_path);
         return -1;
     }
+    if (g_rdio_sidecar_published_observer) {
+        g_rdio_sidecar_published_observer(out_meta_path);
+    }
     return 0;
 }
 
+/* Write the sidecar of @p wav_path's call to a closed temp file, @p temp_meta_path, beside its public name
+   @p out_meta_path, which dsd_rdio_publish_temp_meta_file() then puts it under. */
 static int
 dsd_rdio_write_trunk_recorder_meta(const dsd_opts* opts, const Event_History_I* event_struct, time_t opened,
                                    time_t started, int allow_fallback, const char* wav_path, char* out_meta_path,
-                                   size_t out_meta_path_size) {
+                                   size_t out_meta_path_size, char* temp_meta_path, size_t temp_meta_path_size) {
     if (!opts || !wav_path || wav_path[0] == '\0') {
         return -1;
     }
@@ -1670,14 +1671,13 @@ dsd_rdio_write_trunk_recorder_meta(const dsd_opts* opts, const Event_History_I* 
     unsigned int duration_s = dsd_rdio_wav_duration_s(wav_path);
     time_t stop_time = fields.start_time + (time_t)duration_s;
 
-    char temp_meta_path[DSD_RDIO_PATH_MAX];
     FILE* fp = NULL;
-    if (dsd_rdio_open_temp_meta_file(out_meta_path, temp_meta_path, sizeof(temp_meta_path), &fp) != 0) {
+    if (dsd_rdio_open_temp_meta_file(out_meta_path, temp_meta_path, temp_meta_path_size, &fp) != 0) {
         return -1;
     }
 
     dsd_rdio_write_meta_json(fp, opts, &fields, stop_time);
-    return dsd_rdio_finalize_meta_file(fp, temp_meta_path, out_meta_path);
+    return dsd_rdio_close_temp_meta_file(fp, temp_meta_path);
 }
 
 #ifdef USE_CURL
@@ -1972,6 +1972,55 @@ rdio_api_removes_wav(const dsd_opts* opts, int wants_dirwatch) {
 }
 #endif
 
+/* The API side of an export whose sidecar waits, written and closed, at @p temp_meta_path: the sidecar is put in place
+   under @p meta_path whatever becomes of the upload, then the upload is queued (*@p api_queued set). Beside DirWatch
+   the job uploads from its own copies of the pair, made before the public sidecar appears, so a watch that takes and
+   deletes the pair the moment its sidecar is there cannot take them first; a job whose copies cannot be made is not
+   queued. */
+static int
+dsd_rdio_export_api(const dsd_opts* opts, const Event_History_I* event_struct, const char* wav_path,
+                    const char* meta_path, const char* temp_meta_path, int* api_queued) {
+#ifndef USE_CURL
+    (void)opts;
+    (void)event_struct;
+    (void)wav_path;
+    (void)api_queued;
+    if (dsd_rdio_publish_temp_meta_file(temp_meta_path, meta_path) != 0) {
+        return -1;
+    }
+    LOG_WARN("Rdio API upload requested but this build was compiled without libcurl support\n");
+    return -1;
+#else
+    const int wants_dirwatch = dsd_rdio_mode_wants_dirwatch(opts->rdio_mode);
+    if (opts->rdio_api_delete_after_upload && wants_dirwatch
+        && atomic_exchange(&g_rdio_delete_after_upload_dirwatch_warned, 1) == 0) {
+        LOG_WARN("Rdio API delete-after-upload ignored when DirWatch export is active\n");
+    }
+    dsd_rdio_upload_job* job = NULL;
+    const int prepared = dsd_rdio_prepare_api_job(
+        opts, dsd_rdio_call_system_id(opts, dsd_rdio_staged_row(event_struct)), wav_path, meta_path,
+        wants_dirwatch ? temp_meta_path : NULL, !wants_dirwatch, rdio_api_removes_wav(opts, wants_dirwatch), &job);
+    if (dsd_rdio_publish_temp_meta_file(temp_meta_path, meta_path) != 0) {
+        dsd_rdio_upload_job_free(job);
+        return -1;
+    }
+    if (prepared != 0) {
+        return -1;
+    }
+    if (job->private_inputs) {
+        dsd_rdio_clear_leftovers(wav_path, &job->api);
+    }
+    if (dsd_rdio_enqueue_upload_job(job, wav_path) != 0) {
+        dsd_rdio_upload_job_free(job);
+        return -1;
+    }
+    if (api_queued) {
+        *api_queued = 1;
+    }
+    return 0;
+#endif
+}
+
 int
 dsd_rdio_export_call_ex(const dsd_opts* opts, const Event_History_I* event_struct, const char* wav_path, time_t opened,
                         time_t started, int* api_queued) {
@@ -1998,36 +2047,14 @@ dsd_rdio_export_call_fallback(const dsd_opts* opts, const Event_History_I* event
     }
 
     char meta_path[DSD_RDIO_PATH_MAX];
+    char temp_meta_path[DSD_RDIO_PATH_MAX];
     if (dsd_rdio_write_trunk_recorder_meta(opts, event_struct, opened, started, allow_fallback, wav_path, meta_path,
-                                           sizeof(meta_path))
+                                           sizeof(meta_path), temp_meta_path, sizeof(temp_meta_path))
         != 0) {
         return -1;
     }
-
     if (dsd_rdio_mode_wants_api(mode)) {
-#ifndef USE_CURL
-        LOG_WARN("Rdio API upload requested but this build was compiled without libcurl support\n");
-        return -1;
-#else
-        int wants_dirwatch = dsd_rdio_mode_wants_dirwatch(mode);
-        int remove_meta_on_success = !wants_dirwatch;
-        int remove_wav_on_success = rdio_api_removes_wav(opts, wants_dirwatch);
-        if (opts->rdio_api_delete_after_upload && wants_dirwatch
-            && atomic_exchange(&g_rdio_delete_after_upload_dirwatch_warned, 1) == 0) {
-            LOG_WARN("Rdio API delete-after-upload ignored when DirWatch export is active\n");
-        }
-        /* Beside DirWatch the job uploads from its own copies, which a watch that deletes the pair cannot take. */
-        if (dsd_rdio_enqueue_api_upload(opts, dsd_rdio_call_system_id(opts, dsd_rdio_staged_row(event_struct)),
-                                        wav_path, meta_path, remove_meta_on_success, remove_wav_on_success,
-                                        wants_dirwatch)
-            != 0) {
-            return -1;
-        }
-        if (api_queued) {
-            *api_queued = 1;
-        }
-#endif
+        return dsd_rdio_export_api(opts, event_struct, wav_path, meta_path, temp_meta_path, api_queued);
     }
-
-    return 0;
+    return dsd_rdio_publish_temp_meta_file(temp_meta_path, meta_path);
 }
