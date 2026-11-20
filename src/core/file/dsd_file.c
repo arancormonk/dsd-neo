@@ -922,8 +922,6 @@ dsd_wav_temp_token_text(char* out, size_t out_size) {
     return 0;
 }
 
-static long wav_file_get_size_or_negative(const char* filename);
-
 /* The last path component of @p path, either separator. */
 static const char*
 wav_temp_basename(const char* path) {
@@ -1048,7 +1046,7 @@ open_wav_file(char* dir, char* temp_filename, size_t temp_filename_size, uint16_
         }
         /* An open that created the file and then failed (a full disk) leaves it empty: nothing to keep. No file holds
            the name after that, so no later close may try to publish it. */
-        if (wav_file_get_size_or_negative(temp_filename) == 0) {
+        if (dsd_wav_file_size_or_negative(temp_filename) == 0) {
             (void)dsd_remove_file(temp_filename);
         }
         wav_journal_segment_error("open", temp_filename, dir);
@@ -1274,8 +1272,8 @@ wav_rename_build_final_filename(char* out, size_t out_cap, const char* dir, cons
     }
 }
 
-static long
-wav_file_get_size_or_negative(const char* filename) {
+int64_t
+dsd_wav_file_size_or_negative(const char* filename) {
     if (!filename || filename[0] == '\0') {
         return -1;
     }
@@ -1284,11 +1282,12 @@ wav_file_get_size_or_negative(const char* filename) {
     if (file == NULL) {
         return -1;
     }
-    if (fseek(file, 0, SEEK_END) != 0) {
+    /* 64-bit positions: long is 32 bits on Windows, which loses a recording past 2 GiB. */
+    if (dsd_fseek64(file, 0, SEEK_END) != 0) {
         fclose(file);
         return -1;
     }
-    long size = ftell(file);
+    const int64_t size = dsd_ftell64(file);
     fclose(file);
     return size;
 }
@@ -1498,7 +1497,7 @@ wav_close_and_publish(SNDFILE* wav_file, const dsd_opts* opts, const char* wav_o
     DSD_MEMSET(new_filename, 0, sizeof(new_filename));
     wav_rename_build_final_filename(new_filename, sizeof(new_filename), dir, &metadata);
 
-    long size = wav_file_get_size_or_negative(wav_out_filename);
+    const int64_t size = dsd_wav_file_size_or_negative(wav_out_filename);
     if (size == 44) {
         wav_close_discard_empty(wav_out_filename, &journal);
         wav_file = NULL;
@@ -1517,7 +1516,7 @@ wav_close_and_publish(SNDFILE* wav_file, const dsd_opts* opts, const char* wav_o
         return NULL;
     }
 
-    long final_size = wav_file_get_size_or_negative(new_filename);
+    const int64_t final_size = dsd_wav_file_size_or_negative(new_filename);
     if (final_size == 44) {
         wav_close_discard_empty(new_filename, &journal);
         wav_file = NULL;
@@ -1561,7 +1560,7 @@ discard_analog_wav_file(SNDFILE* wav_file, const char* wav_out_filename) {
        file: none of it was to be kept. Nothing is journaled; what its open or a write reported stays. */
     (void)wav_segment_close(wav_file, NULL);
     if (wav_out_filename != NULL && wav_out_filename[0] != '\0' && dsd_remove_file(wav_out_filename) != 0
-        && wav_file_get_size_or_negative(wav_out_filename) >= 0) {
+        && dsd_wav_file_size_or_negative(wav_out_filename) >= 0) {
         LOG_WARN("Unused call recording %s could not be removed\n", wav_out_filename);
     }
     return NULL;

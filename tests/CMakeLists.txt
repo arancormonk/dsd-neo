@@ -9389,6 +9389,37 @@ else()
 endif()
 add_test(NAME CORE_MBE_FILE_IO COMMAND dsd-neo_test_core_mbe_file_io)
 
+# Issue #888: the per-call WAV size probe measures a recording past 2 GiB (a sparse file) as its real 64-bit size.
+add_executable(dsd-neo_test_core_wav_size_probe core/test_core_wav_size_probe.c)
+target_include_directories(
+    dsd-neo_test_core_wav_size_probe
+    PRIVATE ${PROJECT_SOURCE_DIR}/include ${PROJECT_SOURCE_DIR}/src ${PROJECT_SOURCE_DIR}/tests/test_support
+)
+if(NOT APPLE AND (CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang"))
+    target_link_libraries(
+        dsd-neo_test_core_wav_size_probe
+        PRIVATE
+            "-Wl,--start-group"
+            ${_DSD_RUNTIME_CLI_PARSE_LIBS}
+            "-Wl,--end-group"
+            ${LIBS}
+            dsd-neo_fec
+            dsd-neo_test_support
+            dsd-neo_test_speech_level
+    )
+else()
+    target_link_libraries(
+        dsd-neo_test_core_wav_size_probe
+        PRIVATE
+            ${_DSD_RUNTIME_CLI_PARSE_LIBS}
+            ${LIBS}
+            dsd-neo_fec
+            dsd-neo_test_support
+            dsd-neo_test_speech_level
+    )
+endif()
+add_test(NAME CORE_WAV_SIZE_PROBE COMMAND dsd-neo_test_core_wav_size_probe)
+
 # Speech level parity (issue #518): one deterministic talker (test_support/speech_synth.h) played as digital voice and
 # as analog FM and AM comes out at the speech AGC's -20 dBFS active speech level (P.56), digital and analog alike. The
 # tool writes the talker, encodes it with mbelib-neo's IMBE 4400, AMBE+2 2450 and AMBE 2400 encoders into the .imb,
