@@ -871,6 +871,42 @@ class NoticeStagingTests(unittest.TestCase):
                 self.assertIn("is a symbolic link", " ".join((result.stdout + result.stderr).split()))
                 self.assertEqual(self.scratch_folders(), [])
 
+    @unittest.skipIf(os.name == "nt", "needs symbolic links")
+    def test_android_staging_refuses_a_linked_package_or_stage_folder(self):
+        # The source and stage folders themselves are checked too: a stage folder that links to another package tree
+        # would have its notices overwritten and its stale files removed there.
+        build, share, docs, args = self.android_fixture()
+        package = self.work / "package"
+        stage = docs.parents[2]
+        other = self.work / "other-package"
+        (other / "assets/doc/dsd-neo").mkdir(parents=True)
+        (other / "assets/doc/dsd-neo/stale.txt").write_text("another tree's file\n", encoding="utf-8")
+        (other / "keep.txt").write_text("another tree's file\n", encoding="utf-8")
+
+        def tree(root):
+            return sorted((p.relative_to(root).as_posix(), p.read_bytes()) for p in root.rglob("*") if p.is_file())
+
+        before = tree(other)
+        real_package = self.work / "real-package"
+        for label, link in (("the stage folder", lambda: stage.symlink_to(other, target_is_directory=True)),
+                            ("the package folder",
+                             lambda: (package.rename(real_package),
+                                      package.symlink_to(real_package, target_is_directory=True)))):
+            with self.subTest(case=label):
+                link()
+                try:
+                    result = self.run_cmake(*args)
+                    self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
+                    self.assertIn("is a symbolic link", " ".join((result.stdout + result.stderr).split()))
+                    self.assertEqual(tree(other), before)
+                    self.assertEqual(self.scratch_folders(), [])
+                finally:
+                    for path in (stage, package):
+                        if path.is_symlink():
+                            path.unlink()
+                    if real_package.exists():
+                        real_package.rename(package)
+
     def test_android_staging_keeps_the_package_source_documentation(self):
         # A file android/package/ puts in the documentation folder reaches the APK and its index, in a clean build and
         # in an incremental one, and a generated notice of the same name takes its place.

@@ -932,7 +932,8 @@ notices into `assets/doc/dsd-neo/`, and runs on every build, so edits under
 `android/package/` reach the APK without re-running CMake. Add new package files
 to `android/package/` as usual — never to the staged copy, which is overwritten.
 Keep them real files: a symbolic link in `android/package/assets/doc/dsd-neo/`,
-or on the way to it, fails the staging, which writes nothing through a link.
+or on the way to it, `android/package/` or the staged package folder itself
+included, fails the staging, which writes nothing through a link.
 A file there at the path of a staged notice, or under it, is left out: the
 notices always come from the repository, the build and mbelib, whatever the
 file's timestamp.

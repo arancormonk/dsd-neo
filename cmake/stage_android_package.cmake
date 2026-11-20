@@ -195,12 +195,18 @@ set(DSD_MBELIB_NOTICE_DIR "${MBELIB_NOTICE_DIR}")
 include("${REPO_DIR}/cmake/MbelibNotices.cmake")
 
 # Every copy below writes through a symbolic link as through a folder, to wherever it
-# points, so none may be in the documentation's path: in android/package/'s documentation
-# or on the way to it, or in the staged package's.
+# points, so none may be in the documentation's path: the source and stage folders
+# themselves, android/package/'s documentation or the way to it, or the staged package's.
 function(_dsd_refuse_links root relative)
-    set(_path "${root}")
+    get_filename_component(_path "${root}" ABSOLUTE)
+    if(IS_SYMLINK "${_path}")
+        set(_link "${_path}")
+    endif()
     string(REPLACE "/" ";" _parts "${relative}")
     foreach(_part IN LISTS _parts)
+        if(DEFINED _link)
+            break()
+        endif()
         string(APPEND _path "/${_part}")
         if(IS_SYMLINK "${_path}")
             set(_link "${_path}")
