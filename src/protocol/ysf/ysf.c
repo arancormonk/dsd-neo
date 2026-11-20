@@ -546,7 +546,7 @@ ysf_emit_audio_from_temp(dsd_opts* opts, dsd_state* state, bool bypassed_vocoder
 }
 
 static void
-ysf_parse_fich(dsd_opts* opts, dsd_state* state, ysf_fich_info* info, uint8_t* last_dt, uint8_t* last_fi) {
+ysf_parse_fich(dsd_opts* opts, dsd_state* state, ysf_fich_info* info) {
     uint8_t fichrawdibits[100];
     DSD_MEMSET(fichrawdibits, 0, sizeof(fichrawdibits));
     DSD_MEMSET(info->fich_decode, 0, sizeof(info->fich_decode));
@@ -596,21 +596,19 @@ ysf_parse_fich(dsd_opts* opts, dsd_state* state, ysf_fich_info* info, uint8_t* l
         state->ysf_dt = info->dt;
         state->ysf_fi = info->fi;
         state->ysf_cm = info->cm;
-
-        *last_dt = info->dt;
-        *last_fi = info->fi;
         return;
     }
 
     /* A failed FICH lays the frame out as the last one that verified, which is this transmission's only once one of its
        own FICHs verified (ysf_fich_confirmed, cleared with the carrier): before that it is an earlier transmission's
        layout, or none, and a sync word matched on noise after a V/D call played that call's layout as voice and opened
-       a call. Such a frame lays nothing out, and the hunt reads on through it. */
+       a call. Such a frame lays nothing out, and the hunt reads on through it. The layout is the decoder state's own
+       (state->ysf_dt/ysf_fi, written above and reset with the flag), so each carrier falls back to its own. */
     if (state->ysf_fich_confirmed == 0) {
         return;
     }
-    info->dt = *last_dt;
-    info->fi = *last_fi;
+    info->dt = state->ysf_dt;
+    info->fi = state->ysf_fi;
 }
 
 static void
@@ -1032,13 +1030,11 @@ ysf_arm_next_sync_anchor(dsd_state* state, bool payload_read) {
 
 int
 processYSF(dsd_opts* opts, dsd_state* state) {
-    static uint8_t last_dt;
-    static uint8_t last_fi;
     ysf_fich_info info;
 
     ysf_note_sync_anchor(state);
     info.carrier_seq = state->carrier_seq;
-    ysf_parse_fich(opts, state, &info, &last_dt, &last_fi);
+    ysf_parse_fich(opts, state, &info);
     if (dsd_state_frame_read_lost(state, info.carrier_seq)) {
         /* The FICH was split or cut: no call observation on the fallback dt/fi, and no payload laid out on them. The
            frame is dropped, as on a sync loss. */
