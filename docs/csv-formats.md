@@ -355,7 +355,7 @@ The key switches follow each mode's key matrix (issue #890), on `-Y` rows and tr
 - `ysf`, `dstar` and `tetra-dmo` rows (and `ysf-conventional`, `dstar-conventional`, `tetra-dmo-conventional`
   targets) take no key setting at all: these modes are not decrypted.
 - `m17` rows (and `m17-conventional` targets) take no key setting of their own: the session's keys apply.
-- `dpmr` rows (and `dpmr-conventional` targets) take only `-R` (a scrambler key, 1 to 32767), `-4`, `--no-force-key`,
+- `dpmr` rows (and `dpmr-conventional` targets) take only `-R` (a scrambler key, 0 to 32767), `-4`, `--no-force-key`,
   `--key-profile-ref` and `--no-decryption-keys`.
 
 Every other key or forcing switch, and every legacy key column (`keys_hex_csv`, `keys_dec_csv`, `single_key_hex`,

@@ -1102,17 +1102,23 @@ rules:
 
 | Family | Talkgroup and radio lists | Data calls | Private or group calls | Encryption |
 |--------|---------------------------|------------|------------------------|------------|
-| YSF | not used (callsigns) | DT 1 is data | CM 3 is private, CM 0 and 1 group | never encrypted |
-| D-STAR | not used (callsigns) | the header's DATA flag; a D-PRS record follows its transmission | never known | never encrypted |
+| YSF | not used (callsigns) | DT 1 is data | CM 3 (individual) is private, CM 0 (group/CQ) group, CM 1 (radio ID) never known | never encrypted |
+| D-STAR | not used (callsigns) | the header's DATA flag; a D-PRS record is never data (presence of its voice transmission) | never known | never encrypted |
 | M17 | not used (callsigns); the receive CAN filter still applies | packet mode and data streams | never known | the checked LSF's encryption type |
-| dPMR | the 24-bit called and calling IDs as numbers (the dial string is only shown) | the checked communications mode | never known (dPMR has no group bit) | scrambled (Version 3) |
-| TETRA DMO | the GSSI or ISSI and the source ISSI from the call set-up | short data and circuit mode data | the set-up's call type | the call's security class |
+| dPMR | the 24-bit called and calling IDs as numbers (the dial string is only shown) | the checked communications mode | never known (dPMR has no group bit) | scrambled, as the decoder reads it (Version 3, which TS 102 658 calls manufacturer specific) |
+| TETRA DMO | the GSSI or ISSI and the source ISSI from the call set-up | short data and circuit mode data; an encrypted DM-2-C burst is never data (presence) | the set-up's call type | the call's security class; a DM-2-C burst is encrypted |
 
 - A setting that limits a field holds nothing while that field is unknown: with data calls off (`--no-data-calls`,
   the default) a call of unknown kind does not hold, with `--enc-lockout` a call of unknown encryption does not hold,
   and with group or private calls switched off a call of unknown party does not hold. So an M17 target under
   `--no-data-calls` holds on its LICH only after a checked link setup said the stream is voice, and a dPMR or D-STAR
-  target, whose calls never say their party, holds nothing while group or private calls are switched off.
+  target, whose calls never say their party, holds nothing while group or private calls are switched off. Presence
+  is not a call of unknown kind: a D-PRS record and an encrypted DM-2-C burst are known not to be data calls, so they
+  hold under the default `--no-data-calls`; `--enc-lockout` still stops a DM-2-C burst, which is encrypted.
+- A TETRA DMO burst under a DMO reserved system code (1010, 1011, 1110, 1111) counts only when its content could be
+  read: an encrypted DM-2-C burst under such a code holds nothing.
+- M17: a clean LICH that disagrees with the checked link setup's callsigns or type (another transmission whose end
+  was missed) makes its reports anonymous until a link setup is checked again.
 - dPMR and TETRA DMO calls go through the talkgroup and radio lists like DMR calls. A report with no target ID (a
   dPMR frame that names only the caller, an encrypted DM-2-C burst) holds nothing while a talkgroup Hold or the allow
   list is on, or when the radio list blocks its known source.
@@ -1134,7 +1140,7 @@ muted for policy or encryption is never decoded, so it never holds a target.
 | Type | Keys in the target's row |
 |------|--------------------------|
 | `ysf-conventional`, `dstar-conventional`, `tetra-dmo-conventional` | none: these modes are not decrypted, so every key option and key column is refused |
-| `dpmr-conventional` | only a scoped `-R` scrambler key (1 to 32767) in `options`, with `-4`, `--no-force-key`, `--key-profile-ref` and `--no-decryption-keys`, as a saved NXDN-scrambler system carries them; no key column or key file |
+| `dpmr-conventional` | only a scoped `-R` scrambler key (0 to 32767) in `options`, with `-4`, `--no-force-key`, `--key-profile-ref` and `--no-decryption-keys`, as a saved NXDN-scrambler system carries them; no key column or key file |
 | `m17-conventional` | none of its own: the session's keys apply, and any key option or key column is refused |
 
 A live key change from the Qt/Android key sheet follows the same table. The refusal says why, for example

@@ -5945,14 +5945,19 @@ the implementations from `dsd_engine_trunk_scan_init()` and clears them again on
   `dsd_trunk_scan_activity_identity` (target, source, is_private, encrypted, data_call and the
   `DSD_SCAN_ACTIVITY_KNOWN_*` bits saying which are known). Unlike the three above it notes no Signal search evidence
   (each simplex protocol notes its own). Callers, each where the checked fields are known: YSF
-  `ysf_report_scan_activity()` (a FICH whose CRC passed, FI 0 or 1; DT 1 data, CM 3 private, CM 2 party unknown),
+  `ysf_report_scan_activity()` (a FICH whose CRC passed, FI 0 or 1; DT 1 data, CM 0 group, CM 3 private, CM 1 radio
+  ID and CM 2 party unknown),
   D-STAR `dstar_report_scan_activity()` (RF header, slow-data header and D-PRS record CRCs; a D-PRS record is bound
-  from its first byte to `dstar_tx_seq`, the reception and the scan visit by `dstar_sd_binding`; never the resync
-  streak), dPMR `dpmr_report_scan_activity()` (a Communications_Start header, and an FS2 frame whose CCH halves pass
+  from its first byte to `dstar_tx_seq`, the reception and the scan visit by `dstar_sd_binding`, and known non-data
+  presence; the RF header's DATA flag through `dstar_header_decode_soft_data()`; never the resync streak), dPMR
+  `dpmr_report_scan_activity()` (a Communications_Start header, and an FS2 frame whose CCH halves pass
   as a bound pair, with the raw 24-bit IDs and no party), M17 `m17_report_scan_activity()` (direct and rebuilt LSF,
-  packet CRC, a clean LICH pair; only `m17_lsf_checked` values; the receive CAN gate `m17_can_en` kept; never BERT)
+  packet CRC, a clean LICH pair; only `m17_lsf_checked` values an applied LSF bound, withdrawn while a clean LICH
+  chunk disputes the checked DST/SRC/TYPE (`m17_lsf_disputed`, a missed boundary); the receive CAN gate `m17_can_en`
+  kept; never BERT)
   and TETRA `tetra_calls.c` (`dmo_scan_report()`: DSB DM-SETUP, DM-CONNECT ACK, DM-OCCUPIED, DM-2-C opaque
-  presence, SDS after its FCS check and before the notice dedupe, and DMO speech through
+  presence (known encrypted, known non-data; under a DMO reserved system code, `tetra_calls_dmo_sync_pdu()`, EN 300
+  396-3 clause 9.3.29, the profile only), SDS after its FCS check and before the notice dedupe, and DMO speech through
   `tetra_calls_dmo_speech_activity()`; never TMO, soft-only DSBs, DM-RESERVED, DM-SETUP PRES or gateway set-up).
   Tests: `RUNTIME_TRUNK_SCAN_HOOKS`, `YSF_DCH_DECODE`, `DSTAR_PROCESS`, `DSTAR_DPRS`, `DPMR_REFERENCE_VECTORS`,
   `M17_FRAME_CUT`, `TETRA_CALLS`, `TETRA_BURST_VERDICT` (recorded through
