@@ -1955,6 +1955,144 @@ test_direct_mode_calls(void) {
     session_close(&s);
 }
 
+/* Bits @p at.. of @p bits set to the @p n low bits of @p value, first bit highest. */
+static void
+put_bits(uint8_t* bits, int at, int n, uint32_t value) {
+    for (int i = 0; i < n; i++) {
+        bits[at + i] = (uint8_t)((value >> (n - 1 - i)) & 1u);
+    }
+}
+
+/* A DSB of the k_dmo_sch_s and k_dmo_sch_h vectors carrying DM-RESERVED (EN 300 396-3 table 27) in frame @p frame from
+ * source @p src to 0x800001, with channel reservation type @p type and reservation time remaining @p time (units of 6
+ * frames): its SCH/S and SCH/H applied and handed to the call records as the decoder does. */
+static void
+dmo_dsb_reserved(session* s, uint32_t src, uint32_t type, uint32_t time, uint8_t frame) {
+    uint8_t bits[128];
+    DSD_MEMSET(bits, 0, sizeof bits);
+    bits_of(k_dmo_sch_s, bits);
+    tetra_dmo_sync_s_t sync_s;
+    (void)tetra_dmo_parse_sync_s(bits, &sync_s);
+    sync_s.frame = frame;
+    DSD_MEMSET(bits, 0, sizeof bits);
+    bits_of(k_dmo_sch_h, bits);
+    put_bits(bits, 42, 24, src);
+    put_bits(bits, 90, 5, TETRA_DMO_MSG_RESERVED);
+    put_bits(bits, 95, 1, type);
+    put_bits(bits, 96, 6, time);
+    put_bits(bits, 102, 1, 0u); /* timing flag */
+    put_bits(bits, 103, 1, 0u); /* requests flag: no requests bitmap */
+    put_bits(bits, 104, 1, 0u); /* changeover requests flag */
+    put_bits(bits, 105, 3, 4u); /* power class 4 */
+    put_bits(bits, 108, 1, 0u); /* power control */
+    put_bits(bits, 109, 2, 0u); /* priority: normal */
+    tetra_dmo_sync_h_t sync_h;
+    (void)tetra_dmo_parse_sync_h(bits, 0, &sync_h);
+    assert(sync_h.has_addrs && sync_h.md_ok && sync_h.msg_type == TETRA_DMO_MSG_RESERVED && sync_h.src == src
+           && sync_h.dst == 0x800001u && sync_h.e[TETRA_DMO_E_RESERVATION_TYPE] == type
+           && sync_h.e[TETRA_DMO_E_RESERVATION] == time);
+    tetra_dmo_apply_sync(s->state, &sync_s, &sync_h);
+    tetra_calls_dmo_pdu(s->opts, s->state, sync_s.enc_state, &sync_h);
+}
+
+/* A DM-RESERVED of the call on the channel after a call transaction (EN 300 396-3 clause 8.4.6.1) says its master has
+ * stopped transmitting (clause 8.6.2, case 3): when the DM-TX CEASED that ended the transmission went unheard, the
+ * transmission's canonical call ends there as at that DM-TX CEASED, and its colour code and protection with it, while
+ * the call stays open for the reservation, so the master's next transmission goes on with it. Reservation time
+ * remaining 0 is the end of the reservation, and of the call, only in a frame 6, 12 or 18 (clauses 9.6.15, 8.4.3.3 e);
+ * in another frame the reservation runs to the end of the next one. */
+static void
+test_direct_mode_reservation_retires_the_transmission(void) {
+    session s = session_open();
+    session_history(&s);
+    dmo_dsb(&s, TETRA_DMO_AIE_DM1);
+    dsd_call_snapshot call = canonical(s.state);
+    assert(call.phase == DSD_CALL_PHASE_ACTIVE && call.ota_source_id == 100u);
+    const uint64_t first = call.epoch;
+    const tetra_state_t* ts = tetra_st_existing(s.state);
+
+    /* Frame 3: the reservation runs on. */
+    dmo_dsb_reserved(&s, 100u, 0u, 5u, 3u);
+    call = canonical(s.state);
+    if (call.phase != DSD_CALL_PHASE_ENDED) {
+        DSD_FPRINTF(stderr, "FAIL DM-RESERVED after a missed DM-TX CEASED: the transmission's call stays %d\n",
+                    (int)call.phase);
+    }
+    assert(call.phase == DSD_CALL_PHASE_ENDED && call.epoch == first && call.end_reason == DSD_CALL_END_TERMINATOR);
+    assert(ts->calls.dmo.active && !ts->calls.dmo.in_tx && ts->calls.published == TETRA_PUB_NONE);
+    assert(!ts->dmo_dcc_valid && tetra_dmo_call_crypt(s.state) == TETRA_DMO_CRYPT_UNKNOWN);
+    /* Further reservation signalling opens nothing. */
+    dmo_dsb_reserved(&s, 100u, 0u, 4u, 6u);
+    assert(canonical(s.state).phase == DSD_CALL_PHASE_ENDED && ts->calls.published == TETRA_PUB_NONE);
+    /* The master's next transmission is a call of its own on the record the reservation kept open. */
+    dmo_dsb(&s, TETRA_DMO_AIE_DM1);
+    call = canonical(s.state);
+    assert(call.phase == DSD_CALL_PHASE_ACTIVE && call.epoch != first && call.ota_source_id == 100u);
+    assert(ts->calls.dmo.in_tx && ts->dmo_dcc_valid);
+    session_close(&s);
+
+    /* Zero in frame 5 ends the transmission, not the reservation; zero in frame 12 ends the call too. */
+    s = session_open();
+    session_history(&s);
+    dmo_dsb(&s, TETRA_DMO_AIE_DM1);
+    ts = tetra_st_existing(s.state);
+    dmo_dsb_reserved(&s, 100u, 0u, 0u, 5u);
+    assert(canonical(s.state).phase == DSD_CALL_PHASE_ENDED && ts->calls.dmo.active);
+    dmo_dsb_reserved(&s, 100u, 0u, 0u, 12u);
+    assert(canonical(s.state).phase == DSD_CALL_PHASE_ENDED && !ts->calls.dmo.active);
+    session_close(&s);
+
+    /* With no transmission heard ending, the end of the reservation in frame 18 ends the call at once. */
+    s = session_open();
+    session_history(&s);
+    dmo_dsb(&s, TETRA_DMO_AIE_DM1);
+    ts = tetra_st_existing(s.state);
+    dmo_dsb_reserved(&s, 100u, 0u, 0u, 18u);
+    call = canonical(s.state);
+    assert(call.phase == DSD_CALL_PHASE_ENDED && call.end_reason == DSD_CALL_END_TERMINATOR && !ts->calls.dmo.active);
+    assert(tetra_dmo_call_crypt(s.state) == TETRA_DMO_CRYPT_UNKNOWN);
+    session_close(&s);
+}
+
+/* What a DM-RESERVED leaves as it was: one during a call set-up through a gateway (channel reservation type 1, EN 300
+ * 396-3 clause 9.6.2) keeps the set-up and its transmission; one whose source is not the call's master is another
+ * call's (clause 8.5.2.1.1: a DM-RESERVED carries the source of the set-up that started the transmission); one outside a
+ * DSB is none; and one on a channel with no call opens none, nor any traffic. */
+static void
+test_direct_mode_reservation_keeps(void) {
+    session s = session_open();
+    session_history(&s);
+    dmo_dsb(&s, TETRA_DMO_AIE_DM1);
+    const uint64_t epoch = canonical(s.state).epoch;
+    const tetra_state_t* ts = tetra_st_existing(s.state);
+    dmo_dsb_reserved(&s, 100u, 1u, 5u, 6u);
+    dsd_call_snapshot call = canonical(s.state);
+    assert(call.phase == DSD_CALL_PHASE_ACTIVE && call.epoch == epoch && call.crypto == DSD_CALL_CRYPTO_CLEAR);
+    assert(ts->calls.dmo.in_tx && ts->dmo_dcc_valid && tetra_dmo_call_crypt(s.state) == TETRA_DMO_CRYPT_CLEAR);
+    dmo_dsb_reserved(&s, 200u, 0u, 5u, 6u);
+    call = canonical(s.state);
+    assert(call.phase == DSD_CALL_PHASE_ACTIVE && call.epoch == epoch && call.ota_source_id == 100u);
+    assert(ts->dmo_dcc_valid && tetra_dmo_call_crypt(s.state) == TETRA_DMO_CRYPT_CLEAR);
+    dmo_dsb_reserved(&s, 200u, 0u, 0u, 6u);
+    assert(canonical(s.state).phase == DSD_CALL_PHASE_ACTIVE && canonical(s.state).epoch == epoch);
+    /* DM-RESERVED goes in a DSB (clause 8.4.6.1): a DMAC-DATA of that message type, or a DSB whose frame number held a
+       reserved value, is not taken for one. */
+    dmo_data(&s, TETRA_DMO_MSG_RESERVED, 100u, 0x800001u, 0);
+    dmo_dsb_reserved(&s, 100u, 0u, 5u, 0u);
+    assert(canonical(s.state).phase == DSD_CALL_PHASE_ACTIVE && canonical(s.state).epoch == epoch);
+    assert(ts->calls.dmo.in_tx && tetra_dmo_call_crypt(s.state) == TETRA_DMO_CRYPT_CLEAR);
+    session_close(&s);
+
+    s = session_open();
+    session_history(&s);
+    dmo_dsb_reserved(&s, 100u, 0u, 5u, 6u);
+    ts = tetra_st_existing(s.state);
+    call = canonical(s.state);
+    assert(call.phase != DSD_CALL_PHASE_ACTIVE && ts->calls.published == TETRA_PUB_NONE && !ts->calls.dmo.active);
+    assert(tetra_dmo_call_crypt(s.state) == TETRA_DMO_CRYPT_UNKNOWN);
+    session_close(&s);
+}
+
 /* A direct mode transmission keeps its source and security class (EN 300 396-3 clauses 8.2.4, 8.5.3), so one of
  * another class is another call even when neither call names the other's parties: a clear call after an encrypted DM-2-C
  * one whose end went unheard, and a DM-2-C call after a clear one, each open a canonical call of their own instead of
@@ -4890,6 +5028,8 @@ main(void) {
     test_direct_mode_calls();
     test_direct_mode_idle_ends_the_transmission();
     test_direct_mode_transmissions_apart();
+    test_direct_mode_reservation_retires_the_transmission();
+    test_direct_mode_reservation_keeps();
     test_direct_mode_short_data();
     test_direct_mode_short_data_fcs();
     test_direct_mode_short_data_repeats();

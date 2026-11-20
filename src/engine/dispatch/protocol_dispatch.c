@@ -50,8 +50,8 @@ process_frame_apply_off_thread_retunes(dsd_state* state) {
 
 /* Whether a frame of @p synctype can be a call's for the -Y stay's call marker: a ProVoice frame only. An X2-TDMA burst
    is not (one voice sync on noise is taken too; an X2-TDMA call moves the marker as its decoder corroborates the
-   superframe and the call store begins it), nor a TETRA burst, whose CRC an idle control channel's signalling passes
-   too (a TETRA call moves it as the call store begins it, dsd_call_state_observe()). */
+   superframe and the call store begins it). TETRA has its content check (a TETRA call moves the marker as the call
+   store begins it, dsd_call_state_observe()). */
 static int
 process_frame_may_be_a_call(int synctype) {
     return DSD_SYNC_IS_PROVOICE(synctype);
@@ -103,9 +103,9 @@ processFrame(dsd_opts* opts, dsd_state* state) {
     const dsd_protocol_handler* handler = dsd_find_protocol_handler(state->synctype);
     if (handler != NULL && handler->handle_frame != NULL) {
         /* A frame whose protocol has no content check the -Y step could read (issue #834): one store, whatever the
-           settings, so a real call of it keeps its -Y row while its frames come, its first candidate included. */
-        const int unchecked = DSD_SYNC_IS_X2TDMA(state->synctype) || DSD_SYNC_IS_PROVOICE(state->synctype)
-                              || DSD_SYNC_IS_TETRA(state->synctype);
+           settings, so a real call of it keeps its -Y row while its frames come, its first candidate included. Not
+           TETRA: its bursts report the content their CRCs checked themselves (tetra_burst_proof(), issue #890). */
+        const int unchecked = DSD_SYNC_IS_X2TDMA(state->synctype) || DSD_SYNC_IS_PROVOICE(state->synctype);
         if (unchecked) {
             state->scan_y_unchecked_seq++;
         }

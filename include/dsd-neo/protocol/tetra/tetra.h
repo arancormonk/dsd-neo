@@ -15,6 +15,39 @@ extern "C" {
 int processTetraFrame(dsd_opts* opts, dsd_state* state);
 int processTetraSBFrame(dsd_opts* opts, dsd_state* state);
 
+/* What the last TETRA burst proved about the channel (issue #890), strongest first among what its blocks reached:
+ *
+ * - DMO_SPEECH: direct mode speech whose CRC passed and that re-encodes like speech (EN 300 395-2 clauses 5.5, 5.6).
+ * - DMO_SERVICE: a direct mode PDU of a call or of short data whose CRC passed and that was read in the clear: DM-SETUP,
+ *   DM-SETUP PRES, DM-CONNECT ACK, DM-OCCUPIED, DM-GSETUP, or DM-SDS DATA / UDATA whose FCS did not fail, in a DSB's
+ *   SCH/H or a DNB's DMAC-DATA (EN 300 396-3 clause 9.4).
+ * - DMO_OPAQUE: a DMAC-SYNC whose SCH/H passed its CRC under DM-2-C, which encrypts its message type (EN 300 396-3
+ *   clause 8.5.3): an encrypted direct mode transmission, or a reservation, that no one can tell apart.
+ * - TMO: a trunked mode block whose CRC passed: a BSCH (the home cell's or another's), a downlink MAC block, an uplink
+ *   SCH/HU or MAC block, or trunked speech.
+ * - PROFILE: a CRC passed, but on nothing of the above: a DSB of which only SCH/S decoded (its SCH/H failed, or only the
+ *   soft decision decoded it and SCH/H went by unread), a presence signal, or a direct mode PDU that sets up no call
+ *   (DM-RESERVED and the other reservation, end and request signalling).
+ * - NONE: no CRC passed, or the burst was read across a carrier boundary or cut by an input interruption.
+ *
+ * A burst is one or the other mode, so the order only ranks the blocks of one burst. */
+typedef enum {
+    DSD_TETRA_BURST_PROOF_NONE = 0,
+    DSD_TETRA_BURST_PROOF_PROFILE,
+    DSD_TETRA_BURST_PROOF_TMO,
+    DSD_TETRA_BURST_PROOF_DMO_OPAQUE,
+    DSD_TETRA_BURST_PROOF_DMO_SERVICE,
+    DSD_TETRA_BURST_PROOF_DMO_SPEECH,
+} dsd_tetra_burst_proof;
+
+/* What the last burst processTetraFrame() or processTetraSBFrame() closed proved (dsd_tetra_burst_proof), NONE after a
+ * carrier reset or for a session without TETRA state. Decoder thread. */
+dsd_tetra_burst_proof tetra_burst_proof(const dsd_state* state);
+
+/* 1 for a proof of checked content on the channel, which a -Y row holds on (DSD_CONTENT_EVIDENCE_PROVEN): TMO and every
+ * DMO proof; 0 for PROFILE and NONE. */
+int tetra_burst_proof_is_content(dsd_tetra_burst_proof proof);
+
 /* Run the BSCH-set TDMA clock to the slot of the normal downlink burst being decoded; call it straight after the
  * burst's training sequence. */
 void tetra_tdma_advance_ndb(dsd_state* state);

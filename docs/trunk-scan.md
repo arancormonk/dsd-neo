@@ -1138,7 +1138,8 @@ brackets below), and the log says how to fix it; see
   width set is checked at its 6 kHz default. The same goes for the `-8` analog monitor beside a digital decoder: with
   no NFM width set, the rows and targets it plays on get no check.
 - An untyped `-Y` row under a decoder set that holds ProVoice, X2-TDMA or TETRA, which have no known channel width for
-  the check (`modes`). Auto (`-fa`, the default) holds ProVoice and X2-TDMA, so untyped rows under Auto are never
+  the check (`modes`). TETRA frames are still checked for the `-Y` hangtime (see below); only this quiet check has no
+  TETRA width. Auto (`-fa`, the default) holds ProVoice and X2-TDMA, so untyped rows under Auto are never
   checked. Type the rows (a `mode` column), or choose decoders without those modes. An untyped row also gets no check
   while the M17 encoder runs, or when none of the decoders in use is one the check knows (P25, DMR, NXDN, YSF, M17,
   dPMR or D-STAR).
@@ -1228,8 +1229,12 @@ passed since the radio started listening again after the retune: a retune mutes 
 second on a HackRF at its lowest rates), and a row is never left before it has been heard for `-t`. The Scan Timing
 countdown shows that later deadline. A frame whose verdict is still open (one that passed part of its
 checks and waits on the rest, or a dPMR frame type that carries no check of its own) holds the row up to 1 s after each
-such frame, so a late-joined D-STAR call waiting for its header is not cut. ProVoice, X2-TDMA and TETRA frames, which
-have no such check, keep the row while they keep coming. DMR, P25, ProVoice and EDACS syncs restart the hangtime
+such frame, so a late-joined D-STAR call waiting for its header is not cut. ProVoice and X2-TDMA frames, which have
+no such check, keep the row while they keep coming. TETRA bursts keep it only when their checks passed on something
+the channel carries: trunked signalling or speech (an idle control channel included, under `-fT`), a direct mode call
+or short data message, an encrypted DM-2-C direct mode burst, or direct mode speech. A burst that failed its checks,
+a direct mode burst of which only the first half decoded, and a direct mode channel reservation do not keep it, so a
+reserved channel with no talker is left once `-t` has run out. DMR, P25, ProVoice and EDACS syncs restart the hangtime
 themselves, as before. NXDN on a conventional `-Y` scan holds the row its two extra seconds only after a frame whose own
 check passed: one short check that a noise frame passes by chance does not count, and neither does a run of failed
 control-channel checks. The one exception is the start of an NXDN48 call whose first frame passed a strong check on

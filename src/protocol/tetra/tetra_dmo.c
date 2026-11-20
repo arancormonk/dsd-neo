@@ -80,7 +80,7 @@ typedef struct {
 /* EN 300 396-3 table 27, DM-RESERVED. The dual watch synchronization and two-frequency call flags at its end were not
  * in the first edition, so they are not read. */
 static const dmo_step k_reserved_md[] = {
-    DMO_SKIP(1), /* channel reservation type */
+    DMO_EL(TETRA_DMO_E_RESERVATION_TYPE, 1),
     DMO_EL(TETRA_DMO_E_RESERVATION, 6),
     DMO_EL(TETRA_DMO_E_TIMING_FLAG, 1),
     DMO_EL(TETRA_DMO_E_REQUESTS_FLAG, 1),
@@ -837,8 +837,9 @@ dmo_describe_call(const tetra_dmo_sync_h_t* h, dmo_text* t) {
 
 static void
 dmo_describe_reserved(const tetra_dmo_sync_h_t* h, dmo_text* t) {
-    dmo_put(t, "reserved %u frames prio=%s pwr=%u", (h->e[TETRA_DMO_E_RESERVATION] * 6u),
-            DMO_NAME(k_priority, h->e[TETRA_DMO_E_PRIORITY]), (unsigned)h->e[TETRA_DMO_E_POWER_CLASS]);
+    dmo_put(t, "reserved%s %u frames prio=%s pwr=%u", h->e[TETRA_DMO_E_RESERVATION_TYPE] ? " (gateway set-up)" : "",
+            (h->e[TETRA_DMO_E_RESERVATION] * 6u), DMO_NAME(k_priority, h->e[TETRA_DMO_E_PRIORITY]),
+            (unsigned)h->e[TETRA_DMO_E_POWER_CLASS]);
 }
 
 static void
@@ -1403,9 +1404,43 @@ dmo_apply_setup(tetra_state_t* ts, const tetra_dmo_sync_s_t* s, const tetra_dmo_
     dmo_set_crypt(ts, dmo_closure(crypt) >= dmo_closure(tx) ? crypt : tx);
 }
 
+tetra_dmo_reservation_e
+tetra_dmo_reservation(const tetra_dmo_sync_h_t* h) {
+    /* DM-RESERVED goes in a DSB (clause 8.4.6.1): one with no frame number, in a DMAC-DATA or a DSB whose frame number
+     * held a reserved value, is not taken for one. */
+    if (!h || !h->has_addrs || h->msg_type != TETRA_DMO_MSG_RESERVED || !h->md_ok || h->sync_frame == 0u) {
+        return TETRA_DMO_RSV_NONE;
+    }
+    /* Clause 9.6.15 and clause 8.4.3.3 e): 0 sent in a frame 6, 12 or 18 is the end of the reservation time, the end of
+     * the call; sent in another frame it still runs to the end of the next one (clause 8.4.5.1.8 note 2). */
+    const uint8_t fn = h->sync_frame;
+    if (h->e[TETRA_DMO_E_RESERVATION] == 0u && (fn == 6u || fn == 12u || fn == 18u)) {
+        return TETRA_DMO_RSV_ENDED;
+    }
+    /* Clause 9.6.2: 1 is a reservation a gateway holds during a call set-up through it (EN 300 396-5), not one after a
+     * transmission. */
+    return h->e[TETRA_DMO_E_RESERVATION_TYPE] != 0u ? TETRA_DMO_RSV_GATEWAY_SETUP : TETRA_DMO_RSV_AFTER_TX;
+}
+
+/* A DM-RESERVED of the transmission in progress after it, or at the end of the call (tetra_dmo_reservation()): the
+ * master is no longer transmitting (EN 300 396-3 clause 8.6.2, case 3, a DM-TX CEASED that went unheard), so the
+ * transmission is over as at that DM-TX CEASED. Only the master's: its source address and MNI are those of the
+ * set-up that started the transmission (clause 8.5.2.1.1), which the transmission's colour code seed names. A
+ * reservation during a gateway set-up leaves the set-up as it was, and one of another source is another call's. */
+static void
+dmo_apply_reserved(tetra_state_t* ts, const tetra_dmo_sync_s_t* s, const tetra_dmo_sync_h_t* h) {
+    const tetra_dmo_reservation_e rsv = tetra_dmo_reservation(h);
+    if (rsv != TETRA_DMO_RSV_AFTER_TX && rsv != TETRA_DMO_RSV_ENDED) {
+        return;
+    }
+    if (ts->dmo_tx_crypt != (uint8_t)TETRA_DMO_CRYPT_UNKNOWN && dmo_source_seed(s, h) == ts->dmo_tx_seed) {
+        dmo_transmission_over(ts);
+    }
+}
+
 /* A DMAC-SYNC that sets up or occupies the channel defines the protection of the traffic that follows (EN 300 396-3
- * clause 8.5.3); the end of a transmission leaves it unknown until the next talker's. Any other message's security
- * class applies to that message alone. */
+ * clause 8.5.3); the end of a transmission leaves it unknown until the next talker's, and so does a DM-RESERVED of the
+ * transmission after it (dmo_apply_reserved()). Any other message's security class applies to that message alone. */
 static void
 dmo_apply_call(tetra_state_t* ts, const tetra_dmo_sync_s_t* s, const tetra_dmo_sync_h_t* h) {
     const int role = dmo_sync_role(h);
@@ -1415,6 +1450,8 @@ dmo_apply_call(tetra_state_t* ts, const tetra_dmo_sync_s_t* s, const tetra_dmo_s
         dmo_learn_dcc(ts, s, h);
     } else if (role == DMO_ROLE_END) {
         dmo_transmission_over(ts);
+    } else if (h->msg_type == TETRA_DMO_MSG_RESERVED) {
+        dmo_apply_reserved(ts, s, h);
     }
 }
 
@@ -1434,6 +1471,8 @@ dmo_apply_sync(dsd_state* state, tetra_state_t* ts, const tetra_dmo_sync_s_t* s,
     ts->dmo_since_sync = 0;
     if (h) {
         dmo_settle(h, s->enc_state);
+        /* The DSB's frame number, which a DM-RESERVED's reservation time remaining counts from (clause 9.6.15). */
+        h->sync_frame = s->frame;
     }
     if (h && h->has_addrs) {
         dmo_apply_call(ts, s, h);

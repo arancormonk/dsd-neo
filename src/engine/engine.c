@@ -1811,8 +1811,8 @@ no_carrier_hangtime_ran_out(const dsd_opts* opts, const dsd_state* state, time_t
    decides, before its time. Heard voice is the voice gate's alone. */
 /* Whether what the -Y row's frames said still holds it (issue #834; docs/trunk-scan.md), one rule for the frame
    boundary and noCarrier(), beside the hangtime anchor each checks itself: -t has not passed since the last checked
-   content or the last frame of a protocol with no content check (X2-TDMA, ProVoice, TETRA, whose frames hold the row
-   while they keep coming), or the latest open verdict's hold has not ended, a deadline of its own
+   content or the last frame of a protocol with no content check (X2-TDMA, ProVoice, whose frames hold the row while
+   they keep coming), or the latest open verdict's hold has not ended, a deadline of its own
    (SCAN_QUIET_PENDING_MAX_MS at most) that adds no -t. */
 static int
 live_scanner_y_frames_hold_row(const dsd_opts* opts, const dsd_state* state, double now_m) {

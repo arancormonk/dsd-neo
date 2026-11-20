@@ -2483,7 +2483,9 @@ channel is delayed.
   leaves once `-t` has passed since it landed or since its last checked frame (on an RTL-SDR-family receiver, also
   not before `-t` has passed since the radio started listening again after the retune's short mute). A frame whose verdict is still open (one
   waiting on part of its checks, or a dPMR frame type with no check of its own) holds the row up to 1 s after each such
-  frame; ProVoice, X2-TDMA and TETRA frames, which have no such check, hold it while they come; DMR, P25, ProVoice and
+  frame; ProVoice and X2-TDMA frames, which have no such check, hold it while they come; TETRA bursts hold it only when
+  their checks passed on trunked signalling or speech, a direct mode call, short data, encrypted DM-2-C burst or
+  speech (not on a failed burst, a half-decoded direct mode burst or a channel reservation); DMR, P25, ProVoice and
   EDACS syncs restart `-t` as before ([details](trunk-scan.md#skipping-silent-channels)). For NXDN the hold is
   refreshed only by a frame whose own content passed its CRC (a lone short CRC that a noise frame passes by chance does
   not count), so an open squelch on an empty channel no longer parks the scan. The one exception: when an NXDN48

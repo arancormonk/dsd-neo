@@ -105,9 +105,10 @@ typedef enum {
     TETRA_DMO_E_POWER_CONTROL,
     TETRA_DMO_E_DUAL_WATCH,
     TETRA_DMO_E_TWO_FREQ,
-    TETRA_DMO_E_CIRCUIT_MODE, /* 0 TETRA speech, 1..7 circuit mode data, 8 proprietary speech */
-    TETRA_DMO_E_PRIORITY,     /* 0 normal, 1 high, 2 pre-emptive, 3 emergency */
-    TETRA_DMO_E_RESERVATION,  /* reservation time remaining, units of 6 frames */
+    TETRA_DMO_E_CIRCUIT_MODE,     /* 0 TETRA speech, 1..7 circuit mode data, 8 proprietary speech */
+    TETRA_DMO_E_PRIORITY,         /* 0 normal, 1 high, 2 pre-emptive, 3 emergency */
+    TETRA_DMO_E_RESERVATION,      /* reservation time remaining, units of 6 frames */
+    TETRA_DMO_E_RESERVATION_TYPE, /* channel reservation type: 0 after a call transaction, 1 during a gateway set-up */
     TETRA_DMO_E_REQUESTS_FLAG,
     TETRA_DMO_E_TIMING_CHANGE, /* timing change announced or required */
     TETRA_DMO_E_TIMING_ADJUST, /* timing adjustment code; the delay is the code times 5 symbols */
@@ -180,6 +181,8 @@ typedef struct {
     uint8_t null_pdu; /* DMAC-DATA: a Null PDU, nothing follows */
     uint8_t num_schf; /* DMAC-SYNC with frag_flag: SCH/F slots that follow */
     uint8_t frame_countdown;
+    uint8_t sync_frame; /* DMAC-SYNC: the frame number 1..18 of the DSB that carried it, from its SCH/S, set by
+                           tetra_dmo_apply_sync(); 0 for DMAC-DATA or a frame number not known */
     uint8_t dst_type;
     uint8_t src_type;
     uint8_t dst_encrypted; /* DM-2-B: the destination address is encrypted; dst reads 0 */
@@ -278,6 +281,20 @@ void tetra_dmo_apply_sync(dsd_state* state, const tetra_dmo_sync_s_t* s, tetra_d
 
 /* How the traffic of the current direct mode call is protected; UNKNOWN outside direct mode. */
 tetra_dmo_crypt_e tetra_dmo_call_crypt(const dsd_state* state);
+
+/* What a DM-RESERVED says of the call it is sent for (EN 300 396-3 clauses 9.4.1, 9.6.2, 9.6.15, 8.4.3.3). */
+typedef enum {
+    TETRA_DMO_RSV_NONE = 0,      /* not a DM-RESERVED of a DSB, or its message dependent elements were not read */
+    TETRA_DMO_RSV_AFTER_TX,      /* the channel is reserved after a call transaction: that transmission is over */
+    TETRA_DMO_RSV_GATEWAY_SETUP, /* the channel is reserved during a call set-up through a gateway */
+    TETRA_DMO_RSV_ENDED,         /* the reservation, and with it the call, is over: reservation time remaining 0 sent in
+                                    a frame 6, 12 or 18 */
+} tetra_dmo_reservation_e;
+
+/* The reservation @p h describes. Reservation time remaining counts to the end of a frame 6, 12 or 18 (clause 9.6.15),
+ * so 0 ends the reservation only when sent in one of those frames (@p h->sync_frame); in any other frame, or with the
+ * frame not known, the reservation runs to the end of the next one (clause 8.4.5.1.8 note 2). */
+tetra_dmo_reservation_e tetra_dmo_reservation(const tetra_dmo_sync_h_t* h);
 
 /* The carrier was left: forget its DM colour code (and its seed) and the protection of its call, so no normal burst of
  * the next carrier is descrambled with them and its traffic is not classified by them, and direct mode itself: the next

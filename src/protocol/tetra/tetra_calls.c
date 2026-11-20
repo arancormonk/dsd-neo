@@ -1929,7 +1929,7 @@ tetra_calls_on_label_pdu(const dsd_opts* opts, dsd_state* state, uint16_t event_
 
 /* ---- Direct mode (EN 300 396-3) ------------------------------------------------------------------------------- */
 
-enum { DMO_PDU_OTHER = 0, DMO_PDU_CALL, DMO_PDU_END, DMO_PDU_SDS };
+enum { DMO_PDU_OTHER = 0, DMO_PDU_CALL, DMO_PDU_END, DMO_PDU_SDS, DMO_PDU_RESERVED };
 
 /* What a DM-MAC message does to the call on the channel (EN 300 396-3 clause 9.3.19, EN 300 396-5 clause 14.6.1). A
  * gateway message counts only once its subtype's elements were read. */
@@ -1945,6 +1945,7 @@ dmo_pdu_kind(const tetra_dmo_sync_h_t* h) {
         case TETRA_DMO_MSG_DISCONNECT: return DMO_PDU_END;
         case TETRA_DMO_MSG_SDS_UDATA:
         case TETRA_DMO_MSG_SDS_DATA: return DMO_PDU_SDS;
+        case TETRA_DMO_MSG_RESERVED: return DMO_PDU_RESERVED;
         case TETRA_DMO_MSG_GATEWAY:
             if (!h->md_ok) {
                 return DMO_PDU_OTHER;
@@ -2077,6 +2078,41 @@ dmo_sds_notice(dsd_opts* opts, dsd_state* state, tetra_state_t* ts, const tetra_
     calls_emit_notice(opts, state, 0, h->src, dst, notice, NULL);
 }
 
+/* A DM-RESERVED is for the call on the channel (EN 300 396-3 clause 8.5.2.1.1, note 5): the call is open and the
+ * reservation's source address is the call's, the master's, which a DM-RESERVED shall carry as the set-up that started
+ * the transmission did. */
+static int
+dmo_reserved_for_call(const tetra_dmo_call_t* d, const tetra_dmo_sync_h_t* h) {
+    return d->active && d->src == h->src;
+}
+
+/* A DM-RESERVED whose SCH/H passed its CRC (tetra_dmo_reservation()). It never opens traffic or a call, and one for
+ * another call changes nothing here. For the call on the channel it is the call's signalling, which keeps the call
+ * open (tetra_dmo_call_t::seen_m). A reservation during a gateway set-up (clause 9.6.2) leaves the set-up as it was.
+ * After a call transaction the master has stopped transmitting (EN 300 396-3 clause 8.6.2, case 3; clause 8.4.3.3 d):
+ * its transmission's canonical call ends as at the DM-TX CEASED that may have gone unheard, while the call stays open
+ * for the reservation, so the master's next transmission goes on with it. At the end of the reservation (time
+ * remaining 0 sent in a frame 6, 12 or 18, clause 8.4.3.3 e) the call ends too. */
+static void
+dmo_reserved(dsd_opts* opts, dsd_state* state, tetra_state_t* ts, const tetra_dmo_sync_h_t* h) {
+    tetra_dmo_call_t* const d = &ts->calls.dmo;
+    const tetra_dmo_reservation_e rsv = tetra_dmo_reservation(h);
+    if (rsv == TETRA_DMO_RSV_NONE || !dmo_reserved_for_call(d, h)) {
+        return;
+    }
+    d->seen_m = dsd_decode_now_mono_s();
+    if (rsv == TETRA_DMO_RSV_GATEWAY_SETUP) {
+        return;
+    }
+    if (ts->calls.published == TETRA_PUB_DMO) {
+        calls_end_published(opts, state, ts, DSD_CALL_END_TERMINATOR);
+    }
+    d->in_tx = 0;
+    if (rsv == TETRA_DMO_RSV_ENDED) {
+        d->active = 0;
+    }
+}
+
 /* The direct mode call canonical slot 0 shows ends when the channel's traffic is another transmission's now
  * (tetra_state_t::dmo_tx_seq): a transmission keeps its source and security class (EN 300 396-3 clauses 8.2.4,
  * 8.5.3), so what describes another is another call, which an identity the two calls do not both know could not tell
@@ -2112,6 +2148,8 @@ tetra_calls_dmo_pdu(dsd_opts* opts, dsd_state* state, int sync_enc_state, const 
     if (!h->has_addrs) {
         /* DM-2-C encrypts the addresses and the message type too: an encrypted transmission, of no one known. */
         if (sync_enc_state == TETRA_DMO_AIE_DM2C) {
+            /* Checked, but what it is no one can tell: a transmission or a reservation (tetra.h). */
+            tetra_confirm_note_proof(state, DSD_TETRA_BURST_PROOF_DMO_OPAQUE);
             (void)dmo_call_of_transmission(opts, state, ts, 0u);
             dmo_call_forget(d);
             d->active = 1;
@@ -2123,6 +2161,7 @@ tetra_calls_dmo_pdu(dsd_opts* opts, dsd_state* state, int sync_enc_state, const 
     }
     switch (dmo_pdu_kind(h)) {
         case DMO_PDU_CALL:
+            tetra_confirm_note_proof(state, DSD_TETRA_BURST_PROOF_DMO_SERVICE);
             (void)dmo_call_of_transmission(opts, state, ts, h->src);
             dmo_call_from(d, h);
             d->in_tx = (uint8_t)(d->in_tx || ts->dmo_tx_crypt != (uint8_t)TETRA_DMO_CRYPT_UNKNOWN);
@@ -2135,7 +2174,14 @@ tetra_calls_dmo_pdu(dsd_opts* opts, dsd_state* state, int sync_enc_state, const 
                 calls_end_published(opts, state, ts, DSD_CALL_END_TERMINATOR);
             }
             break;
-        case DMO_PDU_SDS: dmo_sds_notice(opts, state, ts, h); break;
+        case DMO_PDU_SDS:
+            /* Short data whose FCS failed is discarded (clause 6.3.2): no service of the channel's. */
+            if (h->fcs_state != TETRA_DMO_FCS_FAILED) {
+                tetra_confirm_note_proof(state, DSD_TETRA_BURST_PROOF_DMO_SERVICE);
+            }
+            dmo_sds_notice(opts, state, ts, h);
+            break;
+        case DMO_PDU_RESERVED: dmo_reserved(opts, state, ts, h); break;
         default: break;
     }
 }

@@ -160,9 +160,13 @@ typedef struct {
     uint8_t rx_qual_valid; /* rx_qual_start holds the last qualifying AACH or CC authorisation (T.212) */
     uint32_t rx_run_start; /* tdma_slot_start of the last AACH rx_run counted */
     uint32_t rx_qual_start;
-    uint8_t burst_open;   /* a burst is being decoded (tetra_confirm_burst_begin() to _end()) */
-    uint8_t burst_stale;  /* the carrier was reset while the burst was open: its blocks are the last carrier's */
-    uint8_t burst_proven; /* the open (or last) burst decoded a block whose CRC passed */
+    uint32_t burst_carrier_seq; /* dsd_state::carrier_seq as the open burst began: a read that crossed a carrier
+                                   boundary or an input interruption is lost (dsd_state_frame_read_lost()) */
+    uint8_t burst_open;         /* a burst is being decoded (tetra_confirm_burst_begin() to _end()) */
+    uint8_t burst_stale;        /* the carrier was reset while the burst was open: its blocks are the last carrier's */
+    uint8_t burst_proven;       /* the open (or last) burst decoded a block whose CRC passed */
+    uint8_t burst_proof;        /* the strongest dsd_tetra_burst_proof the open burst's blocks reached */
+    uint8_t last_proof; /* what the last closed burst proved (tetra_burst_proof()); NONE after a carrier reset */
 } tetra_confirm_t;
 
 /** One way the air interface encryption of downlink signalling may be undone (tetra_air_sig.c): an operator's 80-bit

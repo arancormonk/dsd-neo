@@ -3395,7 +3395,7 @@ struct dsd_state {
     uint32_t scan_y_partial_seen;
     uint32_t scan_y_partial_hold_ms;
     double scan_y_partial_until_m;
-    /* A frame of a protocol with no content check for the -Y step (X2-TDMA, ProVoice, TETRA): scan_y_unchecked_seq moves
+    /* A frame of a protocol with no content check for the -Y step (X2-TDMA, ProVoice): scan_y_unchecked_seq moves
      * as processFrame() dispatches one, and the -Y frame boundary turns a move into scan_y_unchecked_m, its decode-mono
      * time (-1.0 for none). Such a frame is no content either: it only keeps the frame-boundary step from deciding on
      * a row while those frames keep coming, since their content cannot be told from noise. It moves before the handler,

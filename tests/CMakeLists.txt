@@ -9622,6 +9622,7 @@ target_include_directories(
         ${PROJECT_SOURCE_DIR}/src/engine
         ${PROJECT_SOURCE_DIR}/src/protocol/dmr
         ${PROJECT_SOURCE_DIR}/src/protocol/tetra
+        ${PROJECT_SOURCE_DIR}/tests/protocol/tetra
 )
 if(NOT APPLE AND (CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang"))
     target_compile_definitions(
@@ -9663,6 +9664,10 @@ if(NOT APPLE AND (CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang"))
             "-Wl,--wrap=rtl_stream_get_last_applied_freq"
             "-Wl,--wrap=getFrameSync"
             "-Wl,--wrap=processFrame"
+            # Real TETRA bursts a scripted frame decodes read their symbols here (issue #890).
+            "-Wl,--wrap=getDibitAndSoftSymbol"
+            "-Wl,--wrap=get_dibit_and_analog_signal"
+            "-Wl,--wrap=skipDibit"
             "-Wl,--wrap=p25_sm_tick_guard_enter"
             "-Wl,--wrap=p25_sm_tick_guard_try_enter"
             "-Wl,--wrap=dsd_engine_manual_tune_supersede"
@@ -17820,6 +17825,44 @@ target_link_libraries(
 )
 add_test(NAME TETRA_BURST_VERDICT COMMAND dsd-neo_test_tetra_burst_verdict)
 set_tests_properties(TETRA_BURST_VERDICT PROPERTIES LABELS "protocol;tetra")
+
+# Synchronisation bursts whose read a carrier boundary crossed or an input interruption cut (issue #890), served through
+# GNU ld --wrap seams around the symbol readers and decoded by the real decoder.
+if(NOT APPLE AND NOT WIN32 AND (CMAKE_C_COMPILER_ID MATCHES "GNU|Clang"))
+    add_executable(
+        dsd-neo_test_tetra_burst_cut
+        protocol/tetra/test_tetra_burst_cut.c
+        ${PROJECT_SOURCE_DIR}/src/engine/dispatch/dispatch_tetra.c
+    )
+    target_include_directories(
+        dsd-neo_test_tetra_burst_cut
+        PRIVATE
+            ${PROJECT_SOURCE_DIR}/include
+            ${PROJECT_SOURCE_DIR}/src/protocol/tetra
+            ${PROJECT_SOURCE_DIR}/src/engine/dispatch
+    )
+    target_link_libraries(
+        dsd-neo_test_tetra_burst_cut
+        PRIVATE
+            "-Wl,--start-group"
+            dsd-neo_proto_tetra
+            dsd-neo_core
+            dsd-neo_proto_dmr
+            "-Wl,--end-group"
+            dsd-neo_fec
+            dsd-neo_test_support
+            ${LIBS}
+    )
+    target_link_options(
+        dsd-neo_test_tetra_burst_cut
+        PRIVATE
+            -Wl,--wrap=get_dibit_and_analog_signal
+            -Wl,--wrap=getDibitAndSoftSymbol
+            -Wl,--wrap=skipDibit
+    )
+    add_test(NAME TETRA_BURST_CUT COMMAND dsd-neo_test_tetra_burst_cut)
+    set_tests_properties(TETRA_BURST_CUT PROPERTIES LABELS "protocol;tetra")
+endif()
 
 unset(_dsd_tetra_target)
 unset(_dsd_tetra_test_name)

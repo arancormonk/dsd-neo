@@ -699,10 +699,13 @@ Generated (do not edit/commit):
       the step to the end of its hold, so a D-STAR voice superframe still waiting on its header is not cut; checked
       content resolves the open verdict, so its hold ends at the proof and a PARTIAL note of the proving frame starts
       none (`live_scanner_y_note_frame_content()`, as `dsd_engine_scan_quiet_note_evidence()`; cases
-      `YC_PROOF_ENDS_HOLD`, `YC_PROOF_SAME_FRAME`); nor does an X2-TDMA, ProVoice or TETRA frame, which `processFrame()` notes as it dispatches one
+      `YC_PROOF_ENDS_HOLD`, `YC_PROOF_SAME_FRAME`); nor does an X2-TDMA or ProVoice frame, which `processFrame()` notes as it dispatches one
       (`scan_y_unchecked_seq`, before the handler, so a first candidate holds the row too) and which holds the row
       only while such frames keep coming, so the default set's -Y row on NXDN48 or dPMR noise leaves like a typed
-      one), nothing keeps the row
+      one; a TETRA burst is no unchecked frame since issue #890: its decoder notes PROVEN content for checked content
+      alone, `tetra_burst_proof_is_content()` in `tetra_frame_leave()`, so failed bursts, a soft-only DSB, a DSB whose
+      SCH/H failed and DM-RESERVED hold nothing: `ENGINE_NO_CARRIER_RESET`
+      `test_y_tetra_holds_only_on_checked_content()`, real bursts through the real decoder), nothing keeps the row
       (`live_scanner_y_frame_step_may_decide()`: hold, awaited tune, typed step in flight, avoided row, no other row),
       and it has not yielded for this stay and anchor yet (`dsd_engine_scan_owner::y_frame_yield_epoch`,
       `y_frame_yield_mark_ms`), so a `noCarrier()` that kept the row is never repeated per frame. The stay is the
@@ -748,7 +751,7 @@ Generated (do not edit/commit):
       `NXDN_DEPERM_PRIMITIVES` (`test_cac_fail_run_on_conventional_scan_keeps_anchor()`), `DECODE_IQ_Y_CALL_HOLD`
       (`tests/y_call_hold_check.py` over the `dsd-neo_test_y_call_hold_replay` host: every real call fixture kept while
       its frames come and left once it ends, typed and as an untyped `-fa` row, at -t 1 and typed at -t 2), and
-      `ENGINE_PROTOCOL_DISPATCH` (the unchecked-frame note for X2-TDMA, ProVoice and TETRA only).
+      `ENGINE_PROTOCOL_DISPATCH` (the unchecked-frame note for X2-TDMA and ProVoice only).
     - Reason model and publication (issue #834 R6, `scan_quiet_timing_fill()`): both timing writers
       (`trunk_scan_publish_timing()` through `trunk_scan_timing_fill_quiet()`, the -Y `dsd_engine_scan_y_timing_tick()`
       through `scan_y_timing_fill_quiet()`) fill `dsd_scan_timing_publication::quiet_status` (NONE, CHECKING, NO_CHECK)
@@ -13939,7 +13942,20 @@ Private per-protocol modules worth knowing about:
   `processTetraSBFrame()` return it and `dsd_dispatch_handle_tetra()` maps it to `PROFILE_PROVEN` or `UNPRODUCTIVE`.
   The carrier's evidence (CRC-passed BSCH and MAC blocks, and the followed call's signalling) gates trunking and
   speech; see TETRA below. The engine clears it with the carrier through `tetra_confirm_reset()`, exported in
-  `<dsd-neo/protocol/tetra/tetra.h>`.
+  `<dsd-neo/protocol/tetra/tetra.h>`. Burst proof (issue #890): each burst closes with what it proved of the channel,
+  `tetra_burst_proof()` (`dsd_tetra_burst_proof` in `<dsd-neo/protocol/tetra/tetra.h>`): NONE, PROFILE (a CRC passed on
+  nothing below: a DSB of which only SCH/S decoded, soft-only or with its SCH/H failed, a presence signal, a direct
+  mode PDU that sets up no call, DM-RESERVED included), TMO (any trunked CRC-16 block, a foreign cell's BSCH and
+  trunked speech included), DMO_OPAQUE (a DM-2-C DMAC-SYNC: transmission or reservation, no one can tell), DMO_SERVICE
+  (a clear DMO call PDU or short data whose FCS did not fail, from `tetra_calls_dmo_pdu()`) or DMO_SPEECH (direct
+  mode speech with its CRC and re-encode check). The notes raise the open burst's level
+  (`tetra_confirm_note_proof()`); a burst whose read was lost closes NONE, and a carrier reset forgets the last one.
+  `tetra_frame_leave()` reports checked content (`tetra_burst_proof_is_content()`: TMO and every DMO level) as one
+  PROVEN content note, so `-Y` rows under `-fT` hold on checked TETRA content and TETRA is off the unchecked list in
+  `processFrame()`. The accessor is what a typed row or a trunk-scan DMO target can read (PR B of issue #890).
+  `tetra_confirm_burst_current()` is 0 once the open burst's read is lost: the carrier was reset since it began, or
+  `dsd_state_frame_read_lost()` against the carrier count captured at `tetra_confirm_burst_begin()` (a carrier
+  boundary or an input interruption inside the read).
 
 ### TETRA
 
@@ -14419,8 +14435,13 @@ it, and nothing in it is global. TETRA is not a trunk-scan target type; trunk sc
   `tetra_process_sb()`). A tune completed inside a burst (a grant in its first block) leaves the rest of that
   burst on the carrier left: `tetra_confirm_burst_current()` turns 0, the MAC stops parsing the block and the
   normal-burst decoder skips the second half, and nothing the burst decoded counts for the new carrier, though the
-  burst's verdict still does. Nothing here frees or replaces the state extension: the MAC holds its `tetra_state_t`
-  pointer across these calls, so every reset clears fields.
+  burst's verdict still does. A synchronisation burst reads its tail before it acts (the DSB's SCH/H and the 15 dibits
+  after it, an SB's broadcast block and block 2 before its BSCH is parsed), so `tetra_dmo_process_dsb()` and
+  `tetra_process_sb()` check `tetra_confirm_burst_current()` after the read: a replay retune or an input interruption
+  inside it leaves the mode, DM colour code, protection, call, network, received identity and polarity of the burst
+  off the carrier the receiver is on now, and `tetra_frame_leave()` publishes nothing of a lost burst
+  (`TETRA_BURST_CUT`, through `--wrap` seams around the symbol readers). Nothing here frees or replaces the state
+  extension: the MAC holds its `tetra_state_t` pointer across these calls, so every reset clears fields.
 - Leaving a call (`sm_unfollow()`) ends its canonical call as a teardown and clears its talkgroup-policy route
   (`tetra_calls_unfollowed()`; with NULL options after the engine ended the canonical calls itself). Its call record
   stays until its release or its ageing; the follow gate reads only the state machine, so no stale record gates a
@@ -14787,7 +14808,15 @@ single "current call".
   even where neither names the other's parties (a clear call after an encrypted DM-2-C one, or the other way, and a
   DM-2-C one after a DM-2-A or DM-2-B one, which encrypt the air interface too). A call
   its set-up announced before any transmission began (DM-SETUP PRES, whose calling party's DM-CONNECT ACK starts the
-  traffic, clause 6.2; DM-GSETUP) takes the first transmission of its source as its own. The event history names the network (`TETRA_<mcc>_<mnc>_CC_<cc>` or `TETRA_DMO`,
+  traffic, clause 6.2; DM-GSETUP) takes the first transmission of its source as its own. DM-RESERVED
+  (`tetra_dmo_reservation()`, `dmo_reserved()`, `dmo_apply_reserved()`; EN 300 396-3 clauses 8.4.3.3, 8.6.2, 9.6.2,
+  9.6.15) is read from DSBs only and never opens traffic; for the call on the channel (its source the call's, clause
+  8.5.2.1.1, and the transmission's source and MNI for its colour code and protection) one after a call transaction
+  ends the transmission as its unheard DM-TX CEASED would (the canonical call ends as a terminator, the colour code and
+  protection go), keeping the call record open for the reservation; reservation time remaining 0 sent in a frame 6, 12
+  or 18 (`tetra_dmo_sync_h_t::sync_frame`) ends the call too, while 0 in another frame runs to the next one; a gateway
+  set-up's reservation (type 1) keeps the set-up.
+  The event history names the network (`TETRA_<mcc>_<mnc>_CC_<cc>` or `TETRA_DMO`,
   `dsd_events.c`), the access code is the colour code (`access_code.c`), and `call_state.c` gives TETRA its own call
   family.
 - Direct mode protection (`tetra_dmo.c`, `tetra_state_t::dmo_crypt`, `tetra_dmo_call_crypt()`) is that of the traffic
