@@ -134,6 +134,12 @@ var DECODE_MODES = [
         hint: "NXDN 9600 — wideband NEXEDGE."
     },
     {
+        // -fm, lowercase: -fM is AM. Issue #890: a dPMR system can be saved, and so join a
+        // scan list, like the other simplex modes.
+        label: "dPMR", short: "dPMR", flag: "-fm",
+        hint: "dPMR — digital PMR446 and 6.25 kHz business radio."
+    },
+    {
         label: "D-STAR", short: "D-STAR", flag: "-fd",
         hint: "D-STAR — ham digital voice."
     },

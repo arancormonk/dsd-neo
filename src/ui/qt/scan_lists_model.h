@@ -8,14 +8,19 @@
 #include <QString>
 #include <QStringList>
 #include <QVariant>
+#include <QVariantList>
 #include <QVariantMap>
 #include <functional>
 #include <utility>
+#include "scan_protocol_catalog.h"
 
 namespace dsd_qt {
 class ScanListsModel : public QAbstractListModel {
     Q_OBJECT
     Q_PROPERTY(int count READ count NOTIFY countChanged)
+    /** @brief The protocols a frequency entry can run, in picker order (issue #890, scan_protocols_variant()): the one
+     *  list the scan list editor reads its protocol ids, labels and capabilities from. */
+    Q_PROPERTY(QVariantList protocols READ protocols CONSTANT)
   public:
     explicit ScanListsModel(QObject* parent = nullptr);
     int rowCount(const QModelIndex& parent = QModelIndex()) const override;
@@ -25,6 +30,25 @@ class ScanListsModel : public QAbstractListModel {
     int
     count() const {
         return m_rows.size();
+    }
+
+    QVariantList
+    protocols() const {
+        return scan_protocols_variant();
+    }
+
+    /** @brief The protocol a saved system's decode flags select (scan_protocol_for_flag()), as protocols lists it;
+     *  an empty map for flags a scan list does not map. */
+    Q_INVOKABLE QVariantMap
+    protocolForFlag(const QString& decodeFlag) const {
+        return scan_protocol_variant(scan_protocol_for_flag(decodeFlag));
+    }
+
+    /** @brief The protocol an engine target type names, read whole (scan_protocol_for_type()), as protocols lists it;
+     *  an empty map for a type the catalog does not have. */
+    Q_INVOKABLE QVariantMap
+    protocolForType(const QString& type) const {
+        return scan_protocol_variant(scan_protocol_for_type(type));
     }
 
     Q_INVOKABLE QVariantMap get(int row) const;

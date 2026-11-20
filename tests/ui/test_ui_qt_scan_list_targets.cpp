@@ -19,17 +19,255 @@
 #include "../test_support/qt_test_paths.h"
 #include "json_store.h"
 #include "saved_systems_model.h"
+#include "scan_entry_name.h"
 #include "scan_list_targets.h"
+#include "scan_protocol_catalog.h"
 #include "session_args.h"
 using namespace dsd_qt;
 static int failures;
 
 static void
-check(bool ok) {
+check_at(bool ok, int line) {
     if (!ok) {
         ++failures;
-        std::fputs("scan-list assertion failed\n", stderr);
+        std::fprintf(stderr, "scan-list assertion failed at line %d\n", line);
     }
+}
+
+#define check(...) check_at((__VA_ARGS__), __LINE__)
+
+/* Issue #890: the scan-list protocol catalog, in picker order, with each protocol's decode flag, engine type, label,
+   width and capabilities; lookups never split a type at its first hyphen and keep the decode flags' case. */
+static void
+test_protocol_catalog() {
+    const QStringList ids{"p25", "dmr", "nxdn", "nxdn48", "dpmr", "dstar", "ysf", "m17", "tetra_dmo", "nfm", "am"};
+    const QStringList labels{"P25",        "DMR", "NXDN96",    "NXDN48",       "dPMR",       "D-STAR",
+                             "YSF (C4FM)", "M17", "TETRA DMO", "NFM (analog)", "AM (analog)"};
+    const QStringList flags{"-ft", "-fs", "-fn", "-fi", "-fm", "-fd", "-fy", "-fz", "-fT", "-fA", "-fM"};
+    const QList<int> widths{12500, 12500, 12500, 6250, 6250, 6250, 12500, 12500, 25000, 12500, 6000};
+    const QVariantList variant = scan_protocols_variant();
+    check(variant.size() == ids.size() && scan_protocols().size() == static_cast<size_t>(ids.size()));
+    for (qsizetype i = 0; i < ids.size() && i < variant.size(); ++i) {
+        const QVariantMap p = variant.at(i).toMap();
+        check(p.value("id").toString() == ids.at(i) && p.value("label").toString() == labels.at(i)
+              && p.value("decodeFlag").toString() == flags.at(i) && p.value("widthHz").toInt() == widths.at(i));
+        const ScanProtocol* byFlag = scan_protocol_for_flag(flags.at(i));
+        check(byFlag != nullptr && QLatin1String(byFlag->id) == ids.at(i));
+        check(scan_protocol_by_id(ids.at(i)) == byFlag);
+        check(scan_protocol_for_type(p.value("type").toString()) == byFlag);
+        check(scan_entry_protocol_label(ids.at(i)) == labels.at(i));
+    }
+    // The new families are conventional only, take no modulation, and follow the key matrix.
+    for (const char* id : {"dpmr", "dstar", "ysf", "m17", "tetra_dmo"}) {
+        const ScanProtocol* p = scan_protocol_by_id(QString::fromLatin1(id));
+        check(p != nullptr && !p->trunking && !p->modulation && !p->analog);
+    }
+    check(scan_protocol_by_id("dpmr")->keys == ScanProtocolKeys::Scrambler);
+    check(scan_protocol_by_id("m17")->keys == ScanProtocolKeys::Session);
+    for (const char* id : {"dstar", "ysf", "tetra_dmo", "nfm", "am"}) {
+        check(scan_protocol_by_id(QString::fromLatin1(id))->keys == ScanProtocolKeys::None);
+    }
+    for (const char* id : {"p25", "dmr", "nxdn", "nxdn48"}) {
+        check(scan_protocol_by_id(QString::fromLatin1(id))->keys == ScanProtocolKeys::Full);
+    }
+    // Types are read whole: tetra-dmo-conventional is TETRA DMO, and no new family has a trunked spelling.
+    check(scan_protocol_type(*scan_protocol_by_id("tetra_dmo"), false) == "tetra-dmo-conventional");
+    check(scan_entry_type_label("tetra-dmo-conventional") == "TETRA DMO");
+    check(scan_entry_type_label("DPMR-Conventional") == "dPMR");
+    check(scan_entry_type_label("nxdn-trunk") == "NXDN96" && scan_entry_type_label("nxdn48-trunk") == "NXDN48");
+    for (const char* type : {"tetra-dmo-trunk", "ysf-trunk", "dstar-trunk", "tetra-conventional", "tetra", "edacs"}) {
+        check(scan_protocol_for_type(QString::fromLatin1(type)) == nullptr);
+    }
+    check(scan_entry_protocol_label("edacs").isEmpty() && scan_entry_protocol_label("TETRA_DMO").isEmpty());
+    // Decode flags keep their case: -fm dPMR, -fM AM, -ft P25, -fT TETRA; P25's compound aliases are P25.
+    check(QLatin1String(scan_protocol_for_flag("-fm")->id) == QLatin1String("dpmr"));
+    check(QLatin1String(scan_protocol_for_flag("-fM")->id) == QLatin1String("am"));
+    check(QLatin1String(scan_protocol_for_flag(" -fT ")->id) == QLatin1String("tetra_dmo"));
+    for (const char* p25 : {"-ft", "-f1", "-mq", "-^", "-ft -^", "-mq -^", "-^ -ft", "-^ -mq"}) {
+        check(scan_protocol_for_flag(QString::fromLatin1(p25)) == scan_protocol_by_id("p25"));
+    }
+    for (const char* none : {"", "-fa", "-FT", "-fp", "-fe", "-fT -xd", "-fs -Y"}) {
+        check(scan_protocol_for_flag(QString::fromLatin1(none)) == nullptr);
+    }
+    // A channel map's mode names the scan class; the frequency-entry id and D-STAR's spelled-out name also count.
+    check(scan_protocol_for_mode("nxdn96") == scan_protocol_by_id("nxdn"));
+    check(scan_protocol_for_mode("TETRA-DMO") == scan_protocol_by_id("tetra_dmo"));
+    check(scan_protocol_for_mode("d-star") == scan_protocol_by_id("dstar"));
+    check(scan_protocol_for_mode("-fm") == scan_protocol_by_id("dpmr")
+          && scan_protocol_for_mode("-fM") == scan_protocol_by_id("am"));
+    check(scan_entry_protocol_for_flag("-fz") == "m17" && scan_entry_protocol_for_flag("-fa").isEmpty());
+}
+
+/* Issue #890: saved systems and frequency entries of YSF, D-STAR, dPMR, M17 and TETRA DMO become conventional targets,
+   trunking refused; their rows take no modulation (a stale saved one is refused) and keys only by the matrix. */
+static void
+test_simplex_digital_targets() {
+    QVariantMap entry{{"uid", "entry"}, {"kind", "system"}, {"systemUid", "sys"}, {"enabled", true}};
+    QVariantMap list{{"uid", "list"}, {"sourceType", "usb"}, {"entries", QVariantList{entry}}};
+    QVariantMap sys{{"uid", "sys"}, {"name", "Simplex"}, {"decodeFlag", "-fy"}, {"freqMhz", "145.5"}};
+    auto build = [&]() { return scan_list_targets(list, QVariantList{sys}); };
+    const QList<QPair<QString, QString>> families{
+        {"-fy", "ysf"}, {"-fd", "dstar"}, {"-fm", "dpmr"}, {"-fz", "m17"}, {"-fT", "tetra-dmo"}};
+    for (const auto& family : families) {
+        sys["decodeFlag"] = family.first;
+        sys["trunking"] = false;
+        const auto conventional = build();
+        check(conventional.ok
+              && conventional.csv.endsWith(
+                  (QStringLiteral("entry,%1-conventional,145500000,,,,,,,,,,\"Simplex\",\n").arg(family.second))
+                      .toUtf8()));
+        const QString label = QString::fromLatin1(scan_protocol_for_flag(family.first)->label);
+        sys["trunking"] = true;
+        const auto trunked = build();
+        check(!trunked.ok
+              && trunked.error
+                     == QStringLiteral("Simplex: %1 entries are conventional only; turn trunking off for this saved "
+                                       "system.")
+                            .arg(label));
+        sys["trunking"] = false;
+        // A channel map has no trunked type to go to either.
+        sys["chanCsvPath"] = "/imports/channels.csv";
+        check(!build().ok
+              && build().error
+                     == QStringLiteral("Simplex: %1 entries take no channel map; remove it from this saved system.")
+                            .arg(label));
+        sys.remove("chanCsvPath");
+        // No modulation: one left in the entry from another protocol is not written, and a modulation saved in the
+        // system's Radio settings is refused.
+        entry["modulation"] = "gfsk";
+        list["entries"] = QVariantList{entry};
+        check(build().ok && !build().csv.contains("gfsk"));
+        entry.remove("modulation");
+        list["entries"] = QVariantList{entry};
+        sys["radioSettings"] = QVariantMap{{"modulation", 0}};
+        check(!build().ok
+              && build().error
+                     == QStringLiteral("Simplex: %1 entries take no modulation: clear the modulation saved in this "
+                                       "system's Radio settings.")
+                            .arg(label));
+        sys["radioSettings"] = QVariantMap{{"squelch", "auto+12"}};
+        check(build().ok && build().csv.endsWith(",\"Simplex\",--squelch auto+12\n"));
+        sys.remove("radioSettings");
+        // An unnamed system is named for its protocol.
+        sys["name"] = "";
+        check(build().ok && build().csv.contains((",\"" + label + QString::fromUtf8(" · 145.5 MHz\",")).toUtf8()));
+        sys["name"] = "Simplex";
+    }
+    // Frequency entries of each family, in one list, beside P25.
+    QVariantList entries;
+    const QStringList protocols{"ysf", "dstar", "dpmr", "m17", "tetra_dmo", "p25"};
+    for (int i = 0; i < protocols.size(); ++i) {
+        entries << QVariantMap{
+            {"uid", QStringLiteral("f%1").arg(i)}, {"kind", "freq"},       {"protocol", protocols[i]},
+            {"freqMhz", QString::number(430 + i)}, {"modulation", "c4fm"}, {"enabled", true}};
+    }
+    list["entries"] = entries;
+    const auto mixed = build();
+    check(mixed.ok && mixed.targetCount == 6);
+    check(mixed.csv.contains("f0,ysf-conventional,430000000,,,,,,,,,,\"YSF (C4FM) · 430 MHz\",\n")
+          && mixed.csv.contains("f1,dstar-conventional,431000000,,,,,,,,,,\"D-STAR · 431 MHz\",\n")
+          && mixed.csv.contains("f2,dpmr-conventional,432000000,,,,,,,,,,\"dPMR · 432 MHz\",\n")
+          && mixed.csv.contains("f3,m17-conventional,433000000,,,,,,,,,,\"M17 · 433 MHz\",\n")
+          && mixed.csv.contains("f4,tetra-dmo-conventional,434000000,,,,,,,,,,\"TETRA DMO · 434 MHz\",\n")
+          && mixed.csv.contains("f5,p25-conventional,435000000,,,,,,,,c4fm,,\"P25 · 435 MHz\",\n"));
+    list["entries"] = QVariantList{entry};
+
+    // Keys. YSF, D-STAR and TETRA DMO decrypt nothing: a saved system's key settings have nothing to act on, so none
+    // reaches the row, and none of its key files has to exist or fit a cell. Its talkgroup file still goes.
+    for (const char* flag : {"-fy", "-fd", "-fT"}) {
+        sys["decodeFlag"] = QString::fromLatin1(flag);
+        sys["encKeyType"] = "basic";
+        sys["encKeyValue"] = "7";
+        sys["encForceKey"] = 1;
+        sys["keyCsvPath"] = "/imports/old,keys.csv";
+        sys["keysHexCsvPath"] = "/imports/hex.csv";
+        sys["dmrTgKeyCsvPath"] = "/imports/tg.csv";
+        sys["decryptionProfileRef"] = "profile-ref";
+        sys["groupCsvPath"] = "/imports/groups.csv";
+        const auto keyless = build();
+        check(keyless.ok && keyless.paths == QStringList{"/imports/groups.csv"});
+        check(keyless.csv.endsWith(",\"Simplex\",-G \"/imports/groups.csv\"\n") && !keyless.csv.contains("old,keys")
+              && !keyless.csv.contains("hex.csv") && !keyless.csv.contains("tg.csv") && !keyless.csv.contains("-b")
+              && !keyless.csv.contains("-4") && !keyless.csv.contains("profile-ref"));
+        for (const auto& field : {"encKeyType", "encKeyValue", "encForceKey", "keyCsvPath", "keysHexCsvPath",
+                                  "dmrTgKeyCsvPath", "decryptionProfileRef", "groupCsvPath"}) {
+            sys.remove(field);
+        }
+    }
+    // dPMR takes its scoped -R scrambler key and nothing else; a legacy NXDN / dPMR scrambler system keeps working,
+    // force choice and all.
+    sys["decodeFlag"] = "-fm";
+    sys["encKeyType"] = "scrambler";
+    sys["encKeyValue"] = "17";
+    sys["encForceKey"] = 1;
+    check(build().ok && build().csv.endsWith(",\"Simplex\",-R 17 -4\n"));
+    sys.remove("encForceKey");
+    for (const auto& material : {qMakePair(QStringLiteral("basic"), QStringLiteral("7")),
+                                 qMakePair(QStringLiteral("hex"), QStringLiteral("0000001F00")),
+                                 qMakePair(QStringLiteral("rc4"), QStringLiteral("0123456789")),
+                                 qMakePair(QStringLiteral("m17Scrambler"), QStringLiteral("123"))}) {
+        sys["encKeyType"] = material.first;
+        sys["encKeyValue"] = material.second;
+        check(!build().ok && build().error == QStringLiteral("Simplex: dPMR entries take only a scrambler key."));
+    }
+    sys.remove("encKeyType");
+    sys.remove("encKeyValue");
+    for (const auto& field : {"keyCsvPath", "keysHexCsvPath", "keysDecCsvPath", "dmrTgKeyCsvPath"}) {
+        sys[field] = "/imports/keys.csv";
+        check(!build().ok
+              && build().error == QStringLiteral("Simplex: dPMR entries take only a scrambler key, not a key file."));
+        sys.remove(field);
+    }
+    // A no-keys profile on dPMR clears the session's keys for the row, as on any keyed protocol.
+    sys["decryptionClearKeys"] = true;
+    sys["decryptionProfileRef"] = "none-ref";
+    check(build().ok && build().csv.contains("--no-decryption-keys")
+          && build().csv.contains("--key-profile-ref none-ref"));
+    sys.remove("decryptionClearKeys");
+    sys.remove("decryptionProfileRef");
+    // M17 takes none of its own: the session's keys apply, and a saved system that carries any is refused, so a key
+    // the person set is never silently dropped.
+    sys["decodeFlag"] = "-fz";
+    const QString m17Refusal =
+        QStringLiteral("Simplex: M17 entries use the session's keys, never their own. Remove the "
+                       "key or decryption profile from this saved system, or set the key in the "
+                       "app's decoder options.");
+    const QList<QPair<QString, QVariant>> m17Keys{{"encKeyType", "m17Scrambler"},
+                                                  {"encKeyValue", "123"},
+                                                  {"keyCsvPath", "/imports/keys.csv"},
+                                                  {"keysHexCsvPath", "/imports/hex.csv"},
+                                                  {"keysDecCsvPath", "/imports/dec.csv"},
+                                                  {"decryptionProfileRef", "m17-ref"},
+                                                  {"decryptionSelectionMode", "direct"},
+                                                  {"decryptionClearKeys", true},
+                                                  {"encForceKey", 1},
+                                                  {"decryptionForce", 1}};
+    for (const auto& key : m17Keys) {
+        sys[key.first] = key.second;
+        check(!build().ok && build().error == m17Refusal);
+        sys.remove(key.first);
+    }
+    sys["groupCsvPath"] = "/imports/groups.csv";
+    check(build().ok && build().csv.endsWith(",\"Simplex\",-G \"/imports/groups.csv\"\n"));
+    sys.remove("groupCsvPath");
+
+    // The entry's own decryption choice applies only where the editor offers it.
+    const QVariantMap freq{{"kind", "freq"}};
+    for (const char* id : {"p25", "dmr", "nxdn", "nxdn48", "dpmr"}) {
+        QVariantMap e = freq;
+        e["protocol"] = QString::fromLatin1(id);
+        check(scan_list_entry_takes_keys(e, QString()));
+    }
+    for (const char* id : {"dstar", "ysf", "m17", "tetra_dmo", "nfm", "am"}) {
+        QVariantMap e = freq;
+        e["protocol"] = QString::fromLatin1(id);
+        check(!scan_list_entry_takes_keys(e, QString()));
+    }
+    const QVariantMap systemEntry{{"kind", "system"}};
+    check(!scan_list_entry_takes_keys(systemEntry, "-fT") && scan_list_entry_takes_keys(systemEntry, "-fm")
+          && scan_list_entry_takes_keys(systemEntry, "-ft -^"));
+    check(scan_list_entry_protocol(systemEntry, "-fz") == scan_protocol_by_id("m17")
+          && scan_list_entry_protocol(freq, "-fz") == nullptr);
 }
 
 int
@@ -59,8 +297,10 @@ main(int argc, char** argv) {
     sys["name"] = "  ";
     check(build().ok && build().csv.contains(",\"P25 · 851.5 MHz\",") && !build().csv.contains("\"\","));
     sys["name"] = "Example";
+    /* Issue #890: -fd, -fy, -fm, -fz and -fT map (test_simplex_digital_targets()); Auto, EDACS and compound flags do
+       not. */
     for (const auto& flag :
-         QStringList{"", "-Y", "-fd", "-fy", "-fm", "-fe", "-mq -Y", "-mq -^ --show-keys", "-fs -^"}) {
+         QStringList{"", "-Y", "-fa", "-fe", "-fp", "-ft -fT", "-mq -Y", "-mq -^ --show-keys", "-fs -^"}) {
         sys["decodeFlag"] = flag;
         check(!build().ok && build().error.contains("Example"));
     }
@@ -118,11 +358,14 @@ main(int argc, char** argv) {
         entry.remove("gainDb");
         list["entries"] = QVariantList{entry};
     }
-    // Only the exact analog flags: the digital-only -fa (auto) and a lowercase -fm stay refused.
-    for (const auto& flag : QStringList{"-fa", "-fm", "-fA -fM"}) {
+    // Only the exact analog flags: the digital-only -fa (auto) and both together stay refused; a lowercase -fm is dPMR
+    // (issue #890), a digital entry.
+    for (const auto& flag : QStringList{"-fa", "-fA -fM", "-fa -fA"}) {
         sys["decodeFlag"] = flag;
         check(!build().ok);
     }
+    sys["decodeFlag"] = "-fm";
+    check(build().ok && build().csv.contains("dpmr-conventional,851500000,"));
     // A saved analog system with a channel map is told to remove it: no trunked type would take it either.
     sys["decodeFlag"] = "-fM";
     sys["trunking"] = false;
@@ -407,5 +650,7 @@ main(int argc, char** argv) {
     raw["gainDb"] = 60;
     const auto rawTargets = scan_list_targets(savedList, QVariantList{raw});
     check(!rawTargets.ok && rawTargets.error.contains("Gain must be 0..49 dB"));
+    test_protocol_catalog();
+    test_simplex_digital_targets();
     return failures ? 1 : 0;
 }

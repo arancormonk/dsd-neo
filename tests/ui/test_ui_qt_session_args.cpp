@@ -2398,6 +2398,85 @@ test_scan_hold_option(void) {
                .isEmpty());
 }
 
+/* Issue #890 (D3): one effective rate for a scan session with TETRA DMO targets. App default runs at the 72 kHz TETRA
+   decodes at, whatever the app's own default; an explicit TETRA rate is kept; any other explicit rate is refused before
+   launch with the fix named. Without TETRA targets nothing changes. The same answer feeds the argv and the join
+   check. */
+static void
+test_scan_list_tetra_rate(void) {
+    using dsd_qt::session_args_scan_build_lists;
+    using dsd_qt::session_args_scan_join_conflict;
+    using dsd_qt::session_args_scan_list_bandwidth_khz;
+    using dsd_qt::session_args_scan_list_rate_error;
+    SessionArgPrefs prefs;
+    prefs.bandwidthKhz = 48;
+    const QString refusal =
+        QStringLiteral("This scan has TETRA DMO targets, which decode only at a bandwidth of 72 kHz. "
+                       "Set this list's bandwidth to 72 kHz or App default, or remove the TETRA "
+                       "DMO targets.");
+    for (const char* source : {"usb", "rtltcp", "airspy"}) {
+        QVariantMap list{{"sourceType", source}, {"host", "localhost"}, {"port", 1234}, {"bandwidthKhz", -1}};
+        const QString what = QString::fromLatin1(source);
+        // Default P25 list (and a TETRA companion): 72 kHz for the whole session; without TETRA the app's 48.
+        expect(qPrintable(what + ": App default without TETRA is the app's"),
+               session_args_scan_list_bandwidth_khz(list, false, 48) == 48);
+        expect(qPrintable(what + ": App default with TETRA is 72 kHz"),
+               session_args_scan_list_bandwidth_khz(list, true, 48) == 72
+                   && session_args_scan_list_rate_error(list, true, 48).isEmpty());
+        QString error;
+        QStringList args = session_args_scan_build_lists(list, "430", {"/a.csv", "/b.csv"}, prefs, &error, true);
+        expect(qPrintable(what + ": App default with TETRA builds at 72 kHz"),
+               error.isEmpty() && input_spec(args).contains(QStringLiteral(":430M:"))
+                   && input_spec(args).contains(":72:"));
+        args = session_args_scan_build_lists(list, "430", {"/a.csv"}, prefs, &error, false);
+        expect(qPrintable(what + ": App default without TETRA builds at 48 kHz"),
+               error.isEmpty() && input_spec(args).contains(":48:") && !input_spec(args).contains(":72:"));
+        // Explicit 72: kept, with or without TETRA.
+        list["bandwidthKhz"] = 72;
+        expect(qPrintable(what + ": explicit 72 kHz with TETRA"),
+               session_args_scan_list_bandwidth_khz(list, true, 48) == 72
+                   && session_args_scan_list_rate_error(list, true, 48).isEmpty());
+        args = session_args_scan_build_lists(list, "430", {"/a.csv"}, prefs, &error, true);
+        expect(qPrintable(what + ": explicit 72 kHz builds"), error.isEmpty() && input_spec(args).contains(":72:"));
+        // Explicit 48: fine without TETRA (a TETRA entry switched off is left out of the CSV, so it does not count);
+        // refused with TETRA, before any argv is built.
+        list["bandwidthKhz"] = 48;
+        expect(qPrintable(what + ": explicit 48 kHz without TETRA"),
+               session_args_scan_list_rate_error(list, false, 48).isEmpty()
+                   && !session_args_scan_build_lists(list, "430", {"/a.csv"}, prefs, &error, false).isEmpty()
+                   && error.isEmpty());
+        expect(qPrintable(what + ": explicit 48 kHz with TETRA is refused"),
+               session_args_scan_list_rate_error(list, true, 48) == refusal
+                   && session_args_scan_build_lists(list, "430", {"/a.csv"}, prefs, &error, true).isEmpty()
+                   && error == refusal);
+        // An app default that TETRA cannot run at does not matter: App default is 72 kHz for it.
+        list["bandwidthKhz"] = -1;
+        expect(qPrintable(what + ": App default with TETRA ignores the app's 24 kHz"),
+               session_args_scan_list_bandwidth_khz(list, true, 24) == 72
+                   && session_args_scan_list_rate_error(list, true, 24).isEmpty());
+    }
+    // The join check reads the same answer: Default joins explicit 72 in a TETRA session (both run 72), not outside
+    // one (Default runs the app's 48); explicit 48 never joins a TETRA session's Default.
+    const QVariantMap base{{"sourceType", "usb"}, {"gainDb", -1},       {"ppm", ""},           {"bandwidthKhz", -1},
+                           {"biasTee", -1},       {"voiceOnly", false}, {"skipSilent", false}, {"defaultDwellMs", 0},
+                           {"defaultHoldMs", 0},  {"groupCsvPath", ""}, {"srcCsvPath", ""}};
+    QVariantMap at72 = base;
+    at72["bandwidthKhz"] = 72;
+    QVariantMap at48 = base;
+    at48["bandwidthKhz"] = 48;
+    expect("Default joins explicit 72 kHz with TETRA",
+           session_args_scan_join_conflict(base, at72, prefs, true).isEmpty());
+    expect("Default does not join explicit 72 kHz without TETRA",
+           session_args_scan_join_conflict(base, at72, prefs, false) == QStringLiteral("Different bandwidth"));
+    expect("Default joins explicit 48 kHz without TETRA",
+           session_args_scan_join_conflict(base, at48, prefs, false).isEmpty());
+    expect("Default does not join explicit 48 kHz with TETRA",
+           session_args_scan_join_conflict(base, at48, prefs, true) == QStringLiteral("Different bandwidth")
+               && session_args_scan_join_conflict(at48, base, prefs, true) == QStringLiteral("Different bandwidth"));
+    expect("explicit 72 and 48 never join",
+           session_args_scan_join_conflict(at72, at48, prefs, false) == QStringLiteral("Different bandwidth"));
+}
+
 int
 main(int argc, char** argv) {
     QCoreApplication app(argc, argv);
@@ -2453,6 +2532,7 @@ main(int argc, char** argv) {
     test_grouped_hex_keys();
     test_scan_lists_argv();
     test_scan_join_conflict();
+    test_scan_list_tetra_rate();
     if (g_failures != 0) {
         DSD_FPRINTF(stderr, "%d failure(s)\n", g_failures);
         return 1;

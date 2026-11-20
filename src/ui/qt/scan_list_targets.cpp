@@ -19,6 +19,7 @@
 #include "radio_settings.h"
 #include "scan_entry_name.h"
 #include "scan_list_targets.h"
+#include "scan_protocol_catalog.h"
 #include "session_args.h"
 #include "stored_int.h"
 
@@ -45,6 +46,8 @@ validGain(const QVariant& value) {
 
 struct Target {
     QString decode, type, freq, hzText, id, modulation;
+    /* The catalog protocol its decode flags select (scan_protocol_for_flag()): its type, label, modulation and keys. */
+    const ScanProtocol* protocol = nullptr;
     bool trunk = false;
     /* An nfm or am entry (issue #526): carrier squelch only, so no keys, talkgroups or modulation. */
     bool analog = false;
@@ -66,9 +69,8 @@ resolveSystem(const QVariantMap& entry, const QVariantList& systems, QVariantMap
         }
     } else if (entry.value("kind") == "freq") {
         sys = entry;
-        const QMap<QString, QString> protocols{{"p25", "-ft"},  {"dmr", "-fs"}, {"nxdn48", "-fi"},
-                                               {"nxdn", "-fn"}, {"nfm", "-fA"}, {"am", "-fM"}};
-        sys["decodeFlag"] = protocols.value(entry.value("protocol").toString());
+        const ScanProtocol* protocol = scan_protocol_by_id(entry.value("protocol").toString());
+        sys["decodeFlag"] = protocol ? QString::fromLatin1(protocol->decodeFlag) : QString();
         sys["trunking"] = false;
     } else {
         return QStringLiteral("Choose a saved system or a frequency entry.");
@@ -103,15 +105,12 @@ QString
 validateIdentity(const QVariantMap& sys, const QVariantMap& entry, QSet<QString>& seen, QSet<QString>& ids,
                  Target& target) {
     target.decode = sys.value("decodeFlag").toString().simplified();
-    const QMap<QString, QString> types{{"-ft", "p25"},    {"-f1", "p25"},    {"-mq", "p25"},    {"-^", "p25"},
-                                       {"-fs", "dmr"},    {"-fi", "nxdn48"}, {"-fn", "nxdn"},   {"-ft -^", "p25"},
-                                       {"-mq -^", "p25"}, {"-^ -ft", "p25"}, {"-^ -mq", "p25"}, {"-fA", "nfm"},
-                                       {"-fM", "am"}};
-    if (!types.contains(target.decode)) {
+    target.protocol = scan_protocol_for_flag(target.decode);
+    if (target.protocol == nullptr) {
         return QStringLiteral("This decode mode cannot be used in a scan list.");
     }
     const int kind = analogKindForFlag(target.decode);
-    target.analog = kind >= 0;
+    target.analog = target.protocol->analog;
     if (!carriesExtraArgs(sys, kind, target)) {
         return QStringLiteral("This saved system has standalone Extra arguments. Remove them to use it in a manual "
                               "list, or import a target CSV with supported switches in its options column.");
@@ -123,8 +122,12 @@ validateIdentity(const QVariantMap& sys, const QVariantMap& entry, QSet<QString>
     if (target.analog && target.trunk) {
         return QStringLiteral("Analog entries are conventional only; turn trunking off for this saved system.");
     }
-    target.type =
-        types.value(target.decode) + (target.trunk ? QStringLiteral("-trunk") : QStringLiteral("-conventional"));
+    /* Issue #890: YSF, D-STAR, dPMR, M17 and TETRA DMO have no trunked target type. */
+    if (target.trunk && !target.protocol->trunking) {
+        return QStringLiteral("%1 entries are conventional only; turn trunking off for this saved system.")
+            .arg(QLatin1String(target.protocol->label));
+    }
+    target.type = scan_protocol_type(*target.protocol, target.trunk);
     target.freq = sys.value("freqMhz").toString().trimmed();
     const double hz = target.freq.toDouble() * 1000000.0;
     if (!session_args_freq_valid(target.freq) || !std::isfinite(hz) || hz < 1 || hz > 4294967295.0) {
@@ -152,6 +155,10 @@ collectPaths(const QVariantMap& sys, const Target& target, ScanListTargets& out)
         /* Analog entries are conventional only, so no trunked type would take the map either. */
         return QStringLiteral("Analog entries take no channel map; remove it from this saved system.");
     }
+    if (!chan.isEmpty() && !target.protocol->trunking) {
+        return QStringLiteral("%1 entries take no channel map; remove it from this saved system.")
+            .arg(QLatin1String(target.protocol->label));
+    }
     if (!chan.isEmpty() && !target.trunk) {
         return QStringLiteral("remove the channel map or use a trunked type");
     }
@@ -163,8 +170,15 @@ collectPaths(const QVariantMap& sys, const Target& target, ScanListTargets& out)
     if (target.analog) {
         return {};
     }
-    for (const auto& field : {"chanCsvPath", "groupCsvPath", "keyCsvPath", "p25BandplanCsvPath", "keysHexCsvPath",
-                              "keysDecCsvPath", "dmrTgKeyCsvPath"}) {
+    /* Issue #890: a protocol that decrypts nothing (YSF, D-STAR, TETRA DMO) passes no key or key-map file
+       (buildOptions(), targetCells()), so none of those paths reaches the list either. */
+    QStringList fields{QStringLiteral("chanCsvPath"), QStringLiteral("groupCsvPath"),
+                       QStringLiteral("p25BandplanCsvPath")};
+    if (target.protocol->keys != ScanProtocolKeys::None) {
+        fields << QStringLiteral("keyCsvPath") << QStringLiteral("keysHexCsvPath") << QStringLiteral("keysDecCsvPath")
+               << QStringLiteral("dmrTgKeyCsvPath");
+    }
+    for (const QString& field : fields) {
         const QString path = sys.value(field).toString();
         if (!safePath(path)) {
             return QStringLiteral("CSV paths cannot contain comma, quote, CR or LF.");
@@ -219,10 +233,65 @@ validateDirectKeyChoice(const QVariantMap& sys, const QString& keyType, const QS
     return {};
 }
 
+/* Whether saved system @p sys (its decryption profile merged in) carries any key setting a row would pass: a direct
+   key, a key or key-map file, a profile, a force choice, or the clear-keys choice. */
+bool
+carriesKeys(const QVariantMap& sys) {
+    for (const auto& field : {"encKeyType", "encKeyValue", "keyCsvPath", "keysHexCsvPath", "keysDecCsvPath",
+                              "dmrTgKeyCsvPath", "decryptionProfileRef", "decryptionSelectionMode"}) {
+        if (!sys.value(field).toString().isEmpty()) {
+            return true;
+        }
+    }
+    int force = 0;
+    return sys.value("decryptionClearKeys").toBool() || (stored_int(sys.value("encForceKey", 0), &force) && force != 0)
+           || (sys.contains("decryptionForce") && stored_int(sys.value("decryptionForce"), &force) && force != 0);
+}
+
+/* Issue #890: why @p protocol's row cannot take the keys @p sys carries (its key matrix, ScanProtocolKeys), or empty.
+   dPMR takes only its scoped -R scrambler key, of the direct or a profile's key, so a legacy system saved with the
+   NXDN / dPMR scrambler keeps working; never a key or key-map file. M17 takes none of its own: the session's keys
+   apply. */
 QString
-buildOptions(const QVariantMap& sys, QStringList& options) {
+keyMatrixError(const QVariantMap& sys, const ScanProtocol& protocol) {
+    if (protocol.keys == ScanProtocolKeys::Session && carriesKeys(sys)) {
+        return QStringLiteral("%1 entries use the session's keys, never their own. Remove the key or decryption "
+                              "profile from this saved system, or set the key in the app's decoder options.")
+            .arg(QLatin1String(protocol.label));
+    }
+    if (protocol.keys != ScanProtocolKeys::Scrambler) {
+        return {};
+    }
+    const QString keyType = sys.value("encKeyType").toString();
+    if (!keyType.isEmpty() && keyType != QLatin1String("scrambler")) {
+        return QStringLiteral("%1 entries take only a scrambler key.").arg(QLatin1String(protocol.label));
+    }
+    for (const auto& field : {"keyCsvPath", "keysHexCsvPath", "keysDecCsvPath", "dmrTgKeyCsvPath"}) {
+        if (!sys.value(field).toString().isEmpty()) {
+            return QStringLiteral("%1 entries take only a scrambler key, not a key file.")
+                .arg(QLatin1String(protocol.label));
+        }
+    }
+    return {};
+}
+
+QString
+buildOptions(const QVariantMap& sys, const ScanProtocol& protocol, QStringList& options) {
     if (sys.value("decodeFlag").toString().simplified().split(QLatin1Char(' ')).contains(QStringLiteral("-^"))) {
         options << QStringLiteral("-^");
+    }
+    const QString matrixError = keyMatrixError(sys, protocol);
+    if (!matrixError.isEmpty()) {
+        return matrixError;
+    }
+    /* A protocol with no keys of its own (YSF, D-STAR, TETRA DMO, M17) passes only the talkgroup file: whatever key
+       setting a saved system still holds has nothing to act on there (M17's were refused above). */
+    if (protocol.keys == ScanProtocolKeys::None || protocol.keys == ScanProtocolKeys::Session) {
+        const QString group = sys.value("groupCsvPath").toString();
+        if (!group.isEmpty()) {
+            options << QStringLiteral("-G") << (QStringLiteral("\"") + group + QStringLiteral("\""));
+        }
+        return {};
     }
     if (!session_args_profile_compatible(sys)) {
         return QStringLiteral("The decryption profile protocol does not match this scan entry.");
@@ -269,9 +338,15 @@ validateTuning(const QVariantMap& entry, const QVariantMap& sys, Target& target)
     }
     /* An analog channel has no digital modulation: the editor hides the choice, so one left from another protocol is
        not the entry's. */
-    target.modulation = target.analog ? QString() : entry.value("modulation").toString();
+    /* Issue #890: nor has a protocol whose class runs its own (dPMR, D-STAR, YSF, M17, TETRA DMO). */
+    target.modulation = target.protocol->modulation ? entry.value("modulation").toString() : QString();
     const auto radio = sys.value("radioSettings").toMap();
-    if (!target.analog && target.modulation.isEmpty() && radio.contains("modulation")) {
+    if (!target.analog && !target.protocol->modulation && radio.contains("modulation")) {
+        return QStringLiteral("%1 entries take no modulation: clear the modulation saved in this system's Radio "
+                              "settings.")
+            .arg(QLatin1String(target.protocol->label));
+    }
+    if (target.protocol->modulation && target.modulation.isEmpty() && radio.contains("modulation")) {
         target.modulation = QStringList{"c4fm", "cqpsk", "gfsk"}.at(radio.value("modulation").toInt());
     }
     if (target.modulation.isEmpty() && target.decode.split(QLatin1Char(' ')).contains(QStringLiteral("-mq"))) {
@@ -294,8 +369,7 @@ validateTuning(const QVariantMap& entry, const QVariantMap& sys, Target& target)
    cell stays one plain quoted cell; the engine sanitizes and truncates the rest. */
 QString
 targetLabel(const QVariantMap& sys, const Target& target) {
-    QString label =
-        scan_entry_name(sys.value("name").toString(), target.type.section(QLatin1Char('-'), 0, 0), target.freq);
+    QString label = scan_entry_name(sys.value("name").toString(), QLatin1String(target.protocol->id), target.freq);
     label.replace(QLatin1Char('"'), QLatin1Char('\''));
     label.replace(QLatin1Char('\r'), QLatin1Char(' '));
     label.replace(QLatin1Char('\n'), QLatin1Char(' '));
@@ -308,7 +382,10 @@ targetCells(const QVariantMap& entry, const QVariantMap& sys, const Target& targ
         entry.value("gainDb", -1).toInt() >= 0 ? entry.value("gainDb").toInt() : sys.value("gainDb", -1).toInt();
     const int dwell = entry.value("dwellMs", 0).toInt();
     const int hold = entry.value("holdMs", 0).toInt();
-    const QString keyCsv = target.analog ? QString() : sys.value("keyCsvPath").toString();
+    /* The legacy key file columns follow the key matrix: only a protocol with full keys takes one (dPMR's and M17's are
+       refused, buildOptions()). */
+    const QString keyCsv =
+        target.protocol->keys == ScanProtocolKeys::Full ? sys.value("keyCsvPath").toString() : QString();
     const QStringList cells{target.id,
                             target.type,
                             target.hzText,
@@ -347,7 +424,7 @@ appendTarget(const QVariantMap& entry, const QVariantList& systems, const QVaria
     /* An analog channel carries no keys, talkgroups or encryption (issue #526): the editor hides decryption for it, and
        a saved analog system's key and group settings have nothing to act on, so its options stay empty. */
     if (error.isEmpty() && !target.analog) {
-        error = buildOptions(sys, options);
+        error = buildOptions(sys, *target.protocol, options);
     }
     if (error.isEmpty()) {
         error = validateTuning(entry, sys, target);
@@ -465,6 +542,21 @@ scan_list_entry_analog_kind(const QVariantMap& entry, const QString& systemDecod
         return protocol == QStringLiteral("am") ? DSD_ANALOG_DEMOD_AM : -1;
     }
     return entry.value("kind") == "system" ? analogKindForFlag(systemDecodeFlag) : -1;
+}
+
+const ScanProtocol*
+scan_list_entry_protocol(const QVariantMap& entry, const QString& systemDecodeFlag) {
+    if (entry.value("kind") == "freq") {
+        return scan_protocol_by_id(entry.value("protocol").toString());
+    }
+    return entry.value("kind") == "system" ? scan_protocol_for_flag(systemDecodeFlag) : nullptr;
+}
+
+bool
+scan_list_entry_takes_keys(const QVariantMap& entry, const QString& systemDecodeFlag) {
+    const ScanProtocol* protocol = scan_list_entry_protocol(entry, systemDecodeFlag);
+    return protocol == nullptr || protocol->keys == ScanProtocolKeys::Full
+           || protocol->keys == ScanProtocolKeys::Scrambler;
 }
 
 ScanListTargets

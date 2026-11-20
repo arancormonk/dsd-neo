@@ -1994,7 +1994,7 @@ app_produced_decode_flags(TestHost& host) {
     // The wizard's decode chips (qml/Util.js DECODE_MODES), the older saves it still labels (LEGACY_DECODE_LABELS), the
     // "-f1 -mq" chip saved_systems_model.cpp migrates on load, and a scan list's frequency entries
     // (scan_list_targets.cpp resolveSystem()): QML and file-local code a test cannot call, so listed here.
-    QStringList flags{"",    "-ft", "-mq", "-fs", "-fi", "-fn", "-fd",
+    QStringList flags{"",    "-ft", "-mq", "-fs", "-fi", "-fn", "-fm",    "-fd",
                       "-fy", "-fz", "-fT", "-fA", "-fM", "-f1", "-f1 -mq"};
     // The RadioReference generator, through the function the import calls, for every protocol and answer.
     for (int protocol = 0; protocol < DSD_RR_PROTO_UNSUPPORTED; ++protocol) {

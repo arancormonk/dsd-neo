@@ -68,8 +68,20 @@ class ScanListStarter : public QObject {
      * made; empty for neither. A saved edit changes neither: they are what the running session scans.
      */
     Q_INVOKABLE QString sessionCsvPath(const QVariantMap& list) const;
-    /** @brief Why @p other cannot scan in one session with @p primary, or empty; see session_args_scan_join_conflict(). */
+    /** @brief Why @p other cannot scan in one session with @p primary, or empty; see session_args_scan_join_conflict().
+     *  The two are judged as one session: App default is 72 kHz when either has a TETRA DMO target. */
     Q_INVOKABLE QString joinConflict(const QVariantMap& primary, const QVariantMap& other) const;
+    /**
+     * @brief Whether @p list has a target the engine can visit that is TETRA DMO (issue #890, D3): an enabled entry
+     * (a disabled one is left out of the CSV it builds) whose protocol is TETRA DMO, a frequency entry's or a saved
+     * TETRA system's, or a tetra-dmo-conventional row of its imported target CSV.
+     */
+    Q_INVOKABLE bool hasTetraTargets(const QVariantMap& list) const;
+    /**
+     * @brief The DSP bandwidth, in kHz, @p list scans at on its own (session_args_scan_list_bandwidth_khz()): its own,
+     * else 72 kHz with a TETRA DMO target (hasTetraTargets()), else the app's. The editor's App default note.
+     */
+    Q_INVOKABLE int bandwidthKhz(const QVariantMap& list) const;
     static int maxLists();
     static QString draftRefusal();
 
@@ -96,18 +108,22 @@ class ScanListStarter : public QObject {
     /* @p companionPaths: the target CSVs of the other lists a session started from @p list scans (issue #697), each
        one more --trunk-scan after the list's own. The result's "csvPath" is the list's own CSV. */
     /* @p listNumber: the list's number in the session, which names its CSV when its own name gives nothing. */
-    QVariantMap prepare(const QVariantMap& list, bool materialize, const QString& recordingFolder = QString(),
-                        bool recordingUnavailable = false, const QStringList& companionPaths = QStringList(),
-                        int listNumber = 1) const;
-    QVariantMap prepareCsv(const QVariantMap& list, bool materialize, const QString& recordingFolder,
+    /* @p tetraTargets: whether the session it starts has a TETRA DMO target in any list (sessionHasTetra()), so App
+       default runs at 72 kHz and another explicit bandwidth is refused (issue #890, D3). */
+    QVariantMap prepare(const QVariantMap& list, bool materialize, bool tetraTargets,
+                        const QString& recordingFolder = QString(), bool recordingUnavailable = false,
+                        const QStringList& companionPaths = QStringList(), int listNumber = 1) const;
+    QVariantMap prepareCsv(const QVariantMap& list, bool materialize, bool tetraTargets, const QString& recordingFolder,
                            bool recordingUnavailable, const QStringList& companionPaths, int listNumber) const;
+    /* Whether any list of @p lists has a TETRA DMO target (hasTetraTargets()): the whole session's rate follows it. */
+    bool sessionHasTetra(const QVariantList& lists) const;
     /* Issue #697: an imported target CSV copied to the list's own file (scan_list_csv_path()), its companions still
        resolving, so the decoder names the list after it; @p source itself when no copy can be made. */
     static QString listCopyOf(const QVariantMap& list, const QString& source, int listNumber);
     /* start()'s prepare: with the list's call recording folder when @p host can record it (@p recording set, the
        folder's session begun). */
     QVariantMap prepareForStart(const QVariantMap& list, const DecoderHost* host, bool* recording,
-                                const QStringList& companionPaths) const;
+                                const QStringList& companionPaths, bool tetraTargets) const;
     /* Start the first of @p lists with @p companionPaths, the others' CSVs, built already; held on @p holdTargetId
        when it is not empty. */
     QVariantMap startPrepared(const QVariantList& lists, DecoderHost* host, const QStringList& companionPaths,
@@ -116,9 +132,9 @@ class ScanListStarter : public QObject {
     void retainProfiles(const QVariantMap& list) const;
     /* startLists()' checks before anything is written: each list's own, then whether it joins the first. Their
        warnings, each named by its list, go to @p warnings. */
-    QString checkLists(const QVariantList& lists, QStringList* warnings) const;
+    QString checkLists(const QVariantList& lists, bool tetraTargets, QStringList* warnings) const;
     /* Write each list's CSV (@p paths, in order) and check them together; @p total is their target count. */
-    QString materializeLists(const QVariantList& lists, QStringList* paths, int* total) const;
+    QString materializeLists(const QVariantList& lists, bool tetraTargets, QStringList* paths, int* total) const;
     /* The recording session prepareForStart() began ends when the start did not happen and no session runs. */
     void endUnstartedRecording(bool recording, bool started, const DecoderHost* host) const;
     std::function<bool(const QString&)> m_targetFileLookup;
