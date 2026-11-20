@@ -2323,12 +2323,16 @@ suite runs under this compiler.
   `processFrame()` and the next `getFrameSync()`; D-STAR's `processDSTAR()` syncs after every voice frame. Notes for the
   slot's call (the DMR/NXDN encryption lockout, an operator's slot lockout or skip) go through
   `dsd_event_note_current_call()`, never a raw `Items[0].internal_str` write, and it declines when the slot has no call
-  to carry the note (none observed, or one that ended and committed its row). Detail a protocol decodes without naming
-  its call -- D-STAR slow-data text and APRS (and those only through the call their transmission's checked header named,
-  `dstar_slow_data.c`), the NXDN alias and DCR call sign memory -- reaches a row only through
-  `dsd_event_set_open_call_detail()`, which writes it only while the slot's call is ACTIVE, its epoch is open and it is
-  a call of the detail's own protocol (the caller passes the sync type it decoded under, checked by
-  `dsd_call_state_update_is_protocols()`: D-STAR text never lands on a DMR call still open on the slot), and
+  to carry the note (none observed, or one that ended and committed its row). Text and aliases a protocol decodes
+  without naming its call -- D-STAR slow-data text (only through the call its transmission's checked header named,
+  `dstar_slow_data.c`), the NXDN alias and DCR call sign memory -- reach a row only through
+  `dsd_event_set_open_call_detail()`, which writes them only while the slot's call is ACTIVE, its epoch is open and it
+  is a call of the detail's own protocol (the caller passes the sync type it decoded under, checked by
+  `dsd_call_state_update_is_protocols()`: D-STAR text never lands on a DMR call still open on the slot). A D-STAR
+  D-PRS (APRS) position takes the position path instead: `dstar_dprs_publish()` writes a CRC-valid, admitted record
+  through `dsd_event_set_open_call_position()` only when the call its transmission's checked header named is open and
+  the record's own APRS source is that call's callsign (`dstar_sd_bound_call()`, `dstar_dprs_source_is()`); a record
+  from another station leaves the row untouched, even on an open D-STAR call, and the feed takes it anonymous. And
   `dsd_event_enrich_*()` declines a row-0 write while the call's epoch is not yet open (the live alias display and the
   call's CRC verdict still follow). DMR embedded talker alias and GPS LCs reach enrichment only when their 5-bit
   checksum passed (`dmr_flco.c`, all modes): a failed one still claims its FLCO, so it is never read as a voice LC, but
