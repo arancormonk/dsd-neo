@@ -230,8 +230,8 @@ dsd-neo -ft -i rtl:0:851.0125M:22:0:48:0:2 \
   (Phase 1) or its ESS (Phase 2) passed the Reed-Solomon check. It
   must be heard on the target's own visit: a call from the target before, or voice decoded while the scan is still
   tuning to the target, holds nothing. The per-target `dwell_ms` is the qualify window in which voice must appear and
-  `activity_hold_ms` the hold after the last voice frame, including when a terminator closes the call before the next scan tick; trunked
-  targets are unchanged (control-only rotates after dwell). The scanner-wide
+  `activity_hold_ms` the hold after the last voice frame, including when a terminator closes the call before the next
+  scan tick; trunked targets are unchanged (control-only rotates after dwell). The scanner-wide
   `--scan-voice-qualify-ms` and `--scan-voice-hold-ms` timings apply to the `-Y` conventional scan only, not to
   trunk-scan targets; a conventional target can carry its own intervals in its `options` column (see
   [Per-target options](#per-target-options)).

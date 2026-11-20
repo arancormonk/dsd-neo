@@ -736,8 +736,9 @@ Generated (do not edit/commit):
       the step to the end of its hold, so a D-STAR voice superframe still waiting on its header is not cut; checked
       content resolves the open verdict, so its hold ends at the proof and a PARTIAL note of the proving frame starts
       none (`live_scanner_y_note_frame_content()`, as `dsd_engine_scan_quiet_note_evidence()`; cases
-      `YC_PROOF_ENDS_HOLD`, `YC_PROOF_SAME_FRAME`); nor does an X2-TDMA or ProVoice frame, which `processFrame()` notes as it dispatches one
-      (`scan_y_unchecked_seq`, before the handler, so a first candidate holds the row too) and which holds the row
+      `YC_PROOF_ENDS_HOLD`, `YC_PROOF_SAME_FRAME`); nor does an X2-TDMA or ProVoice frame, which `processFrame()` notes
+      as it dispatches one (`scan_y_unchecked_seq`, before the handler, so a first candidate holds the row too) and
+      which holds the row
       only while such frames keep coming, so the default set's -Y row on NXDN48 or dPMR noise leaves like a typed
       one; a TETRA burst is no unchecked frame since issue #890: its decoder notes PROVEN content for checked content
       alone, `tetra_burst_proof_is_content()` in `tetra_frame_leave()`, so failed bursts, a soft-only DSB, a DSB whose
@@ -1658,8 +1659,9 @@ Tests: `tests/engine/test_engine_trunk_scan.c` (`ENGINE_TRUNK_SCAN`) and
   wrap (`dsd_state_rolling_dibits()` at the next call's start); a broken first read drops it with the history. A frame
   decoder that read into the hunt's symbols hands them back the same way (`dsd_frame_sync_hand_back_symbols()`, no
   pass position, `own_symbols` 0): D-STAR reads the start of each resynchronization word to tell it from the end
-  pattern, and the hunt matches the word where it ends. Every clear of the rolling buffers (initState, noCarrier, an NXDN reset) and every wrap puts a buffer's pointer
-  at `DSD_ROLLING_DIBIT_FLOOR` (200), and what lies before it is the clear's zeros or a wrap's stale dibits, which pass
+  pattern, and the hunt matches the word where it ends. Every clear of the rolling buffers (initState, noCarrier, an
+  NXDN reset) and every wrap puts a buffer's pointer at `DSD_ROLLING_DIBIT_FLOOR` (200), and what lies before it is the
+  clear's zeros or a wrap's stale dibits, which pass
   Golay and Hamming as codewords; `dsd_state_rolling_dibits()` counts what was written since. A DMR or X2-TDMA sync is
   still accepted, and each accept notes how many of the oldest read-back dibits are not the stream's
   (`dsd_state_note_sync_readback()`, `dsd_state::sync_readback_invalid`, read by a decoder before it reads a symbol
@@ -13935,8 +13937,9 @@ Private per-protocol modules worth knowing about:
   after it; no CRC covers it, so it is no evidence. A limit: in MMDVMHost's placement the voice frame holding the
   pattern's first half plays before the data frame after it completes the match (20 ms of bit sync decoded as voice).
   The whole read behind a header runs on the header's carrier count (issue #575): a carrier boundary or an input
-  interruption in voice frame 0, the word's data frame or the superframe drops what follows. The data frame after a superframe's last voice frame, which the hunt
-  matches the next word in, is read one symbol at a time while an end can still be there (it or the 24 symbols after
+  interruption in voice frame 0, the word's data frame or the superframe drops what follows. The data frame after a
+  superframe's last voice frame, which the hunt matches the next word in, is read one symbol at a time while an end can
+  still be there (it or the 24 symbols after
   it) and the symbols read go back to the hunt (`dsd_frame_sync_hand_back_symbols()`): a word after its 12th symbol, so
   the hunt matches it where it ends, as before (`DSTAR_PROCESS`, `FRAME_SYNC_HISTORY_CARRY`). The header's soft costs
   follow the slicer's polarity (`gmsk_soft_symbol_to_viterbi_cost()`: a +header reads a high symbol as 0), so a
@@ -21856,8 +21859,9 @@ Extra arguments are exactly its own kind's width option (`--nfm-bandwidth-hz N` 
 `scan_list_saved_system_width_hz()` reads that width, checked by the target options parser
 (`dsd_scan_options_parse()`) so its bounds are the row's own. It shares its token matching
 (`scan_list_width_options()`) with the starter's configured width (`configuredAnalogWidthHz()`): the saved width must be
-the only option and fill every token, while the configured width is the last option, as on the command line. The generator writes it to the row's `options` column,
-and the starter's DSP-rate warning (`analogRateWarning()`) holds the entry to it. Any other text, the other kind's
+the only option and fill every token, while the configured width is the last option, as on the command line. The
+generator writes it to the row's `options` column, and the starter's DSP-rate warning (`analogRateWarning()`) holds the
+entry to it. Any other text, the other kind's
 option, or a digital system with any Extra arguments stays refused (`UI_QT_SCAN_LIST_TARGETS`,
 `UI_QT_SCAN_LIST_ROUNDTRIP`). A standalone start passes the same text through unchanged.
 
