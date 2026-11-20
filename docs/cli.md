@@ -374,14 +374,15 @@ Windows console runs:
   it changes the value. INI: `[recording] analog_preroll_ms`. What it holds, and the limits, are under [Where an NFM
   recording starts](#where-an-nfm-recording-starts---analog-record-preroll-ms).
 - `--rdio-mode <off|dirwatch|api|both>` Enable rdio-scanner export from finalized per-call WAV calls, digital calls and
-  conventional analog calls ([Analog calls in rdio-scanner](#analog-calls-in-rdio-scanner))
+  conventional analog calls ([Analog calls in rdio-scanner](#analog-calls-in-rdio-scanner), [Digital calls with no
+  talkgroup in rdio-scanner](#digital-calls-with-no-talkgroup-in-rdio-scanner))
   - With `both`, each queued API upload works from its own copies of the call's WAV and JSON, made beside them as
-    `<name>.<run id>.rdio-upload-audio` and `<name>.<run id>.rdio-upload-meta` (a hard link where the drive supports
-    one, else a copy) and removed when that upload ends, sent or not. A DirWatch with "delete after" on the same
-    folder can then take the WAV and JSON without costing the API upload its files. No rdio-scanner watch reads those
-    names. Copies another run left behind (it was killed, say) are removed the next time a `both` run exports a call
-    to that folder, once they are more than a day old (longer with long upload timeouts), so two runs can share a
-    folder.
+    `<name>.<id>.rdio-upload-audio` and `<name>.<id>.rdio-upload-meta`, where `<id>` is a random id drawn once a run
+    (a hard link where the drive supports one, else a copy), and removed when that upload ends, sent or not. A
+    DirWatch with "delete after" on the same folder can then take the WAV and JSON without costing the API upload its
+    files. No rdio-scanner watch reads those names. Copies another run left behind (it was killed, say) are removed
+    the next time a `both` run exports a call to that folder, once they are more than a day old (longer with long
+    upload timeouts), so another run exporting to the same folder keeps its pending uploads.
 - `--rdio-system-id <N>` Set rdio-scanner system ID (required for API upload mode)
 - `--rdio-analog-system-id <N>` rdio-scanner system ID for conventional NFM calls, 0 to 65535. 0, the default, uses
   `--rdio-system-id`. With it set, API uploads of NFM calls work even when `--rdio-system-id` is not set. INI:
@@ -389,6 +390,11 @@ Windows console runs:
 - `--rdio-analog-talkgroup <N>` rdio-scanner talkgroup for NFM calls heard with no known frequency (an audio input),
   0 to 2147483647. 0, the default, leaves those calls unexported. A call with a frequency always uses the frequency in
   kHz. INI: `[recording] rdio_analog_talkgroup`. Both values are refused outside their range, never clamped.
+- `--rdio-unknown-talkgroup <N>` rdio-scanner talkgroup for digital calls that carry no talkgroup and were heard with
+  no known frequency (an audio input, or played files), 0 to 2147483647. 0, the default, leaves those calls
+  unexported. A call with a frequency always uses the frequency in kHz. It is refused outside its range, never
+  clamped. INI: `[recording] rdio_unknown_talkgroup`. See [Digital calls with no talkgroup in
+  rdio-scanner](#digital-calls-with-no-talkgroup-in-rdio-scanner).
 - `--rdio-api-url <url>` Set rdio-scanner API base URL (default `http://127.0.0.1:3000`)
 - `--rdio-api-key <key>` Set API key for `/api/trunk-recorder-call-upload`
 - `--rdio-upload-timeout-ms <ms>` API timeout per call (default 5000 ms)
@@ -410,6 +416,10 @@ Windows console runs:
   supplies the next superframe's context. For example:
   `dsd-neo -o null -w decoded.wav -H '<key>' --dmr-force-algid 25 -r call.mbe`.
   These are known-key playback modes, not key recovery.
+  With `-P`, each played file is a recording of its own, and each call in an SDRTrunk export is recorded under its own
+  history row, filed at its first frame's `time`. Played calls carry no frequency or access code, so in rdio-scanner
+  a call with no talkgroup uses `--rdio-unknown-talkgroup` ([Digital calls with no talkgroup in
+  rdio-scanner](#digital-calls-with-no-talkgroup-in-rdio-scanner)).
 - `-c <file>` Save symbol captures to a .bin file
 - `--symbol-capture-format <soft|legacy>` Select the current soft/v2 writer. `legacy` remains accepted as an alias; it
   does not reactivate the removed one-byte writer.
@@ -680,6 +690,84 @@ does.
   encrypted calls are followed), NXDN, dPMR and X2-TDMA, in both output formats. YSF, D-STAR and ProVoice are not
   affected. SDRTrunk JSON playback ignores it. WAV recordings and MBE capture (`-d`) follow the same verdict.
   Keystream exhaustion keeps a frame muted even under reverse mute.
+
+### Digital calls with no talkgroup in rdio-scanner
+
+rdio-scanner refuses a call with no talkgroup number. Some digital calls never carry one, and some carry one that did
+not decode, so with `--rdio-mode` set dsd-neo gives such a call a number for the export, as it does for analog calls
+([Analog calls in rdio-scanner](#analog-calls-in-rdio-scanner)). These calls have no talkgroup number:
+
+- Every D-STAR, YSF, dPMR and X2-TDMA call, and every ProVoice call outside EDACS. D-STAR and YSF name callsigns, not
+  numbers.
+- M17 calls to the broadcast address, or to a callsign whose encoded address is above 4294967295 (32 bits). A
+  callsign below that is the call's talkgroup, as before.
+- An NXDN call to group 0 (an unaddressed call, heard on its RAN alone), an EDACS system all-call, TETRA speech before
+  the call setup that names it, and a DMR, NXDN or P25 call whose talkgroup did not decode or was protected.
+
+Which calls get a number:
+
+- Voice calls only. A call is exported once its history row is kept, as any call is. A recording that closes before
+  that (a WAV stop in the middle of a call, the last close when dsd-neo stops) is exported only when the call names a
+  radio or a talkgroup (a number or a callsign), or when its protocol never names one (X2-TDMA, ProVoice on its own).
+  So a WAV stop in the middle of a call heard with no identity at all does not export that recording. Audio no call
+  owns, a call whose row was cleared from the history, and a faded call that is held and then dropped are never
+  exported.
+- The talkgroup is the frequency the call was heard on, in kHz, rounded down: 452.3125 MHz is talkgroup `452312`. On
+  a trunked system that is the voice channel's frequency.
+- A call heard with no known frequency (an audio input such as PulseAudio, UDP, TCP or a WAV file, or files played
+  with `-r`) is exported under `--rdio-unknown-talkgroup <n>` when it is set. A trunked call followed through rigctl
+  still knows its voice channel's frequency. With neither, the call is recorded but not exported, and the first time
+  that happens in a run one log line says so.
+- The number is used only for the export. The call history, the journal, the file name, the app and the talkgroup
+  rules (`stream=off` and the rest) still see no talkgroup, so no talkgroup row ever matches the number.
+
+What the sidecar holds:
+
+- The talkgroup label (`talkgroup_tag`) is the service name (`--ran-name`, `--dcc-name`, `--slot-name`,
+  `--nac-name`), else the channel's name from a `-Y` channel map or a `--trunk-scan` row, else the protocol, its
+  access code and the frequency: `NXDN RAN 9 452.3125 MHz`, `DMR CC 3 452.3125 MHz`, `P25 NAC 2A3 452.3125 MHz`,
+  `M17 CAN 3 433.4750 MHz`. Unknown parts are left out (`NXDN RAN 9`, `D-STAR 145.6700 MHz`, `X2-TDMA`). A name of
+  `-` counts as no name. The label never holds a callsign or a radio ID, and never `PRIVATE` or `GROUP`: every call on
+  one frequency shares its talkgroup, and rdio-scanner can rename a talkgroup after each call's label.
+- `srcList` names the radio when its ID decoded and fits 32 bits; `short_name` is the call's system (as in the file
+  name, `NXDN_RAN_9`), else the protocol (`X2-TDMA`); `emergency` and `encrypted` are the call's.
+- `freq` and `freqList` follow the analog rule: the frequency in Hz from 1 MHz up to 2147.483647 MHz, else `freq` 0
+  and no `freqList`.
+
+Which rdio-scanner system a call lands in:
+
+- API uploads go to `--rdio-system-id`, like every digital call.
+- rdio-scanner 6 files every call in a DirWatch folder under that folder's system.
+- rdio-scanner 8 (tested with 8.0.0-beta.1) picks the system by `short_name`, which names the access code, so calls
+  with two access codes on one frequency can land in two systems there.
+
+Limits:
+
+- A talkgroup number in kHz can equal a real talkgroup in the same rdio-scanner system. The call is then filed under
+  that talkgroup, and rdio-scanner 6 with auto-populate on renames that talkgroup after the call's label. It can
+  happen with DMR and TETRA talkgroups (24 bits), P25 radio IDs on private calls, EDACS extended private calls (20
+  bits) and M17 callsign numbers. It cannot happen with NXDN or P25 groups (at most 65535) on a frequency above
+  65.536 MHz.
+- With auto-populate off, rdio-scanner drops a call whose talkgroup it does not know, so add the kHz talkgroups (and
+  the `--rdio-unknown-talkgroup` one) to the system first. An API key limited to some talkgroups must allow them too.
+- All calls on one frequency share one talkgroup, whatever their access code or service name, and all frequencies in
+  one whole kHz share one too. In rdio-scanner 6, different service names on one frequency relabel the shared
+  talkgroup with each call. rdio-scanner 8 keeps the first label a talkgroup got, so a service name you add later
+  does not replace a generated label such as `NXDN RAN 9 452.3125 MHz`; rename it in rdio-scanner.
+- Duplicates: two such calls on one frequency that start in the same second (the two slots of a DMR channel, or two
+  segments of one call) share a talkgroup and a `start_time`, so rdio-scanner can drop the second as a duplicate. In
+  rdio-scanner 6 only `disableDuplicateDetection` lets both through (see the duplicate limit under [Analog calls in
+  rdio-scanner](#analog-calls-in-rdio-scanner)).
+- With `--rdio-mode both` feeding one rdio-scanner 8 database, the API upload and the DirWatch copy of a call are read
+  seconds apart, and rdio-scanner 8 stamps each with its read time, so both are stored. Use one of the two per
+  rdio-scanner 8 database.
+- A radio or talkgroup ID above 2147483647 (an M17 callsign number in the upper half of the 32-bit range, or an ID
+  from an SDRTrunk recording) is sent as decoded. rdio-scanner's default SQLite database stores it; its MySQL,
+  MariaDB and PostgreSQL databases cannot.
+- `--rdio-mode both` on a drive without hard links copies each call's WAV and JSON when the recording closes, which
+  takes a moment on the decoder for a long recording. A copy that cannot be made is not uploaded: the WAV and JSON
+  are still published for the DirWatch, and an error is logged. On Windows, a DirWatch that deletes a call's files
+  can fail while the API upload is still reading its hard link, as before.
 
 ## IQ Capture And Replay
 
@@ -2145,7 +2233,8 @@ picked up, as before.
 
 With `--rdio-mode` set, each analog recording (NFM, AM, or an audio input's) is exported like a digital call's: a
 DirWatch sidecar, an API upload, or both. rdio-scanner needs a talkgroup number, and an analog call has none, so
-dsd-neo gives it one:
+dsd-neo gives it one (a digital call with no talkgroup gets one the same way: [Digital calls with no talkgroup in
+rdio-scanner](#digital-calls-with-no-talkgroup-in-rdio-scanner)):
 
 - The talkgroup is the frequency the call was heard on, in kHz, rounded down: 154.4375 MHz is talkgroup `154437`.
   This is rdio-scanner's own way of numbering conventional channels. The number is used only for the export; the call
@@ -2154,16 +2243,20 @@ dsd-neo gives it one:
   exported under `--rdio-analog-talkgroup <n>` when it is set, and are not exported otherwise. The first time that
   happens in a run, one log line says so.
 - The talkgroup label (`talkgroup_tag`) is the channel's name from a `-Y` channel map or a `--trunk-scan` row, else the
-  call's mode and frequency (`NFM 154.4375 MHz`, `AM 119.1000 MHz`), else the mode alone (`ANALOG` on an audio input).
+  call's mode and frequency (`NFM 154.4375 MHz`, `AM 119.1000 MHz`, and below 1 MHz `AM 0.5300 MHz`), else the mode
+  alone (`ANALOG` on an audio input).
   It is never a tone's service name: rdio-scanner can rename a talkgroup after each call's label, and every service on
   one frequency shares that frequency's talkgroup. The service name stays in the file name and the call history.
-- The sidecar lists no radio (`srcList` is empty), is never encrypted, has the call's mode as its `short_name` (`NFM`,
-  `AM` or `ANALOG`), and its `freq` is the call's frequency (0 below 1 MHz or when it is not known).
+- The sidecar lists no radio (`srcList` is empty), is never encrypted, and has the call's mode as its `short_name`
+  (`NFM`, `AM` or `ANALOG`). Its `freq` is the call's frequency in Hz, also listed in `freqList`, from 1 MHz (1 MHz
+  itself included) up to 2147.483647 MHz, the most rdio-scanner's MySQL, MariaDB and PostgreSQL databases can store.
+  Below 1 MHz, above that, or when the frequency is not known, `freq` is 0 and there is no `freqList`; the talkgroup
+  and the label still name the frequency.
 - `--rdio-analog-system-id <n>` sends analog calls to their own rdio-scanner system: the sidecar's `system` and the API
   upload's `system` field use it. In DirWatch mode rdio-scanner ignores the sidecar's `system`. rdio-scanner 6 files
   every call in a watched folder under that folder's system, so to keep analog calls apart there, run them in a separate
-  dsd-neo session that writes to a second folder. rdio-scanner 7 picks the system by `short_name`, which is already the
-  mode.
+  dsd-neo session that writes to a second folder. rdio-scanner 8 (tested with 8.0.0-beta.1) picks the system by
+  `short_name`, which is already the mode.
 - An analog call has no talkgroup or radio list row, so `stream=off` never applies to it.
 
 Limits:
@@ -2173,11 +2266,13 @@ Limits:
   together, are not.
 - rdio-scanner drops a call it takes for a duplicate: same system and talkgroup, starting within its duplicate
   detection time frame (500 ms by default; `duplicateDetectionTimeFrame` and `disableDuplicateDetection` in its
-  options). The sidecar's `start_time` is in whole seconds, so two transmissions on one channel that start in the same
-  second can be dropped by the server. Shorten or turn off the duplicate detection if that happens. trunk-recorder
-  sends whole seconds too.
-- rdio-scanner 7 (not released yet) ignores the sidecar's top-level `freq` and files a call at the time it arrives,
-  not at its `start_time`. dsd-neo does not work around that.
+  options). The sidecar's `start_time` is in whole seconds, and rdio-scanner 6 compares those seconds, so two
+  transmissions on one channel that start in the same second match whatever the time frame is, even 0. Shortening it
+  does not help. Only `disableDuplicateDetection` lets both through, and it lets real duplicates through too (the same
+  call sent twice). trunk-recorder sends whole seconds too.
+- rdio-scanner 8 (tested with 8.0.0-beta.1) reads the frequency from `freqList` only, not the top-level `freq`
+  (dsd-neo writes both). It files a call at the time it reads it, not at its `start_time`, and compares those read
+  times, and the site, for duplicates. dsd-neo does not work around that.
 
 #### Analog calls need a squelch on a radio input
 

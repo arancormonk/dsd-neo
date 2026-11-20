@@ -2394,15 +2394,34 @@ suite runs under this compiler.
   NAC prints `---` (`P25_---`, `P25_45564006---_10_10`, `NAC: ---;`), three wide like the code, so the long form keeps
   its field positions; an unknown CAN prints `--` (`M17_CAN_--`, `CAN: --;`). The NXDN event line names the call's own
   `channel` and the row's `freq_hz`, never the global last grant (`nxdn_grant_chan`/`_freq`, which left the render env).
-  The rdio-scanner sidecar's `freq` is `freq_hz` (clamped to `uint32_t`, still 0 below 1 MHz); it was the channel number
-  before. Its `talkgroup_tag` is the row's first name (service, talkgroup name, target string, channel label), else
-  `PRIVATE` for a private call (`gi` 1), `GROUP` for a group call (`gi` 0), and empty for a call of no known kind
-  (`gi` -1; issue #668 B3, which rdio-scanner ignores as a label). A conventional analog row (`DSD_SYNC_ANALOG`, issue
-  #668) takes its own branch in `dsd_rdio_meta_fields_from_event()`: talkgroup `dsd_rdio_analog_talkgroup()` (the
-  frequency in kHz, rounded down, else `opts->rdio_analog_talkgroup`), worked out at export time only and never
-  stored in `Event_History::target_id`; tag the channel label, else `<sysid_string> <MHz to 4 decimals> MHz`, else
-  the mode word, never the service name; no source; never encrypted. The sidecar's `system`, and the API upload's,
-  is `dsd_rdio_call_system_id()`: `opts->rdio_analog_system_id` for an analog row when set, else `rdio_system_id`.
+  The rdio-scanner sidecar's `freq` is `freq_hz` when it is 1,000,000 to 2,147,483,647 Hz (`dsd_rdio_usable_freq_hz()`:
+  1 MHz itself kept, up to what rdio-scanner's signed 32-bit MySQL/MariaDB/PostgreSQL columns store), else 0, never
+  an omitted key (issue #888 B5, B13, D8); it was the channel number before. A `freqList` of one entry,
+  `[{"pos": 0, "freq": <Hz>}]`, follows it only when `freq` is above 0: rdio-scanner 8 reads the list alone, 6.6.3
+  either (D5). Decoded source and target IDs stay as decoded, above 2147483647 included. `emergency` is the row's
+  (B6). `short_name` is `sysid_string`, else the protocol word (`dsd_rdio_protocol_word()` from the
+  `DSD_SYNC_IS_*` predicates: `P25` for both phases, `DMR`, `NXDN`, `D-STAR`, `YSF`, `dPMR`, `M17`, `X2-TDMA`,
+  `ProVoice`, `EDACS`, `TETRA`), so a v8 DirWatch, which resolves the system from `short_name`, finds one for an
+  X2-TDMA row (B8). Every string is written as valid UTF-8 (`dsd_rdio_json_write_escaped()`, B11): well-formed UTF-8 as
+  it is, ASCII escaped where JSON needs it, each maximal ill-formed run (a name cut mid-character) as one U+FFFD. A
+  numbered digital call's `talkgroup_tag` (`dsd_rdio_numbered_tag()`) is the row's first usable name (service,
+  talkgroup name, target string, channel label), else `PRIVATE` for a private call (`gi` 1), `GROUP` for a group
+  call (`gi` 0), and empty for a call of no known kind (`gi` -1; issue #668 B3, which rdio-scanner ignores as a
+  label). A name of `"-"` is unusable in every chain (`dsd_rdio_tag_usable()`, B10): both servers drop it as a label,
+  so the next candidate is taken. A digital row exported under the fallback number (`target_id` 0, issue #888 D3,
+  `dsd_rdio_fallback_tag()`) is labelled by its service name, else its channel label, else `<protocol> <access code>
+  <MHz> MHz` built into `generated_tag` with the unknown parts left out (`NXDN RAN 9 452.3125 MHz`, `NXDN RAN 9`,
+  `X2-TDMA`); the access code is spelled as `src/app_control/access_code_view.c` spells it (`RAN`, `CC` and `CAN` in
+  decimal, `NAC` as three uppercase hex digits, each only within its protocol's range; runtime cannot call it), and the
+  MHz part appears only when the kHz rule gives a number. Never per-call identity text or `PRIVATE`/`GROUP`: every
+  unnumbered call on a frequency shares its talkgroup. Which close may give a row the fallback number is the export
+  mode's (`dsd_wav_export_mode`) and `dsd_rdio_call_fallback_eligible()`'s, under "rdio-scanner export verdict"
+  below. A conventional analog row (`DSD_SYNC_ANALOG`, issue #668) takes its own branch in
+  `dsd_rdio_meta_fields_from_event()`: talkgroup `dsd_rdio_analog_talkgroup()` (the frequency in kHz, rounded down,
+  else `opts->rdio_analog_talkgroup`), worked out at export time only and never stored in `Event_History::target_id`;
+  tag the channel label, else `<sysid_string> <MHz to 4 decimals> MHz` (below 1 MHz too: `AM 0.5300 MHz`), else the
+  mode word, never the service name; no source; never encrypted. The sidecar's `system`, and the API upload's, is
+  `dsd_rdio_call_system_id()`: `opts->rdio_analog_system_id` for an analog row when set, else `rdio_system_id`.
   Its `start_time` is the closing segment's `event_start_time`, or the WAV's open stamp when that is later
   (per-call WAV switched on mid-call). Every per-call WAV open sets `opts->wav_out_open_time`/`wav_out_open_timeR`
   from the decode clock, and the close passes the stamp to `dsd_rdio_export_call()`. A per-call WAV's temp name
@@ -2425,10 +2444,11 @@ suite runs under this compiler.
   and decode time comes after that; `dsd_rdio_recording_start()` is the rule, which the recording journal's `start`
   shares (below). A played SDRTrunk export's row is stamped once per call, from its first voice frame whose `time`
   (Unix milliseconds, parsed whole) is valid, so the recording is filed at its start, not its last frame; a stamp that
-  fails clears the row's until one parses. A record that begins another call in the same file is stamped afresh (issue #888 B21; `CORE_WAV_JOURNAL` through `playMbeFiles()`, the run's end and the
-  sidecar, `CORE_MBE_FILE_IO`). `stop_time` adds the WAV length to the start (`RUNTIME_RDIO_EXPORT`, `CORE_MBE_FILE_IO`,
-  `CORE_INIT_STATE`, `UI_MENU_SERVICES`, and `CORE_CALL_ALERT_HISTORY` through the real event layer). The WAV name stays
-  on `event_time`. Its service, system, target and source components are made file-safe
+  fails clears the row's until one parses. A record that begins another call in the same file is stamped afresh
+  (issue #888 B21; `CORE_WAV_JOURNAL` through `playMbeFiles()`, the run's end and the sidecar, `CORE_MBE_FILE_IO`).
+  `stop_time` adds the WAV length to the start (`RUNTIME_RDIO_EXPORT`, `CORE_MBE_FILE_IO`, `CORE_INIT_STATE`,
+  `UI_MENU_SERVICES`, and `CORE_CALL_ALERT_HISTORY` through the real event layer). The WAV name stays on `event_time`.
+  Its service, system, target and source components are made file-safe
   (`wav_rename_sanitize_component()`: `/`, `\`, `:`, `*`, `?`, `"`, `<`, `>`, `|`, control characters, dots and spaces
   become `_`; issue #708, B3: the `/` of an M17 or D-STAR callsign failed the publish and kept the temp file; every
   byte that is no part of a well-formed UTF-8 character becomes `_` too, by the journal's own test
@@ -2700,9 +2720,13 @@ suite runs under this compiler.
   would number had it a frequency or the option (`dsd_rdio_call_fallback_eligible()`). An analog export keeps the #708
   contract: the upload is queued before the journal's `publish` record (its `rdio` flag), the queue holds the file, and
   a journal suppresses delete-after-upload. Neither field is shown, persisted or part of the control API's row
-  fingerprint; exports already queued are not recalled. Tests: `CORE_CALL_ALERT_HISTORY`, `CORE_MBE_FILE_IO`,
-  `CORE_WAV_JOURNAL` (the close paths, `test_d7_*`), `CORE_RECEIVE` (the skip line), `ENGINE_NO_CARRIER_RESET`,
-  `ENGINE_TRUNK_SCAN`, `APP_CONTROL_SNAPSHOT_EVENT_HISTORY`.
+  fingerprint; exports already queued are not recalled. Tests: `CORE_CALL_ALERT_HISTORY` (and M17 through the real
+  observation and commit rotation: a destination at `UINT32_MAX` numbered as decoded, one above it and the broadcast
+  address under the kHz fallback, a source above it listing no radio), `CORE_MBE_FILE_IO`, `CORE_WAV_JOURNAL` (the
+  close paths, `test_d7_*`; a TETRA anonymous call exported under the fallback once the carrier is proven, its earlier
+  speech not; a played SDRTrunk call with no talkgroup under `--rdio-unknown-talkgroup` with no tuner frequency or
+  code, and kept local without it), `CORE_RECEIVE` (the skip line), `ENGINE_NO_CARRIER_RESET`, `ENGINE_TRUNK_SCAN`,
+  `APP_CONTROL_SNAPSHOT_EVENT_HISTORY`, and end to end `DECODE_IQ_YSF_RDIO_DIRWATCH_UNKNOWN_TG` (`docs/testing.md`).
 - History system and site (`dsd_events.c`, `watchdog_event_current_load_system()`): a voice row's system and site slots
   come from the received identity record of the call's protocol family, never from decoder state a seed, a preset, a
   control-channel anchor or another carrier wrote: P25 WACN, SYSID, RFSS and SITE (`sys_id1`, `_2`, `_4`, `_5`), the DMR
@@ -5316,7 +5340,12 @@ suite runs under this compiler.
     The WAV close calls it only for a row whose `stream` verdict allows it (Core, "rdio-scanner export verdict").
     Conventional analog (NFM) rows are exported under `dsd_rdio_analog_talkgroup()` and `dsd_rdio_call_system_id()`
     (issue #668; Core, sidecar fields); the call's system is resolved before the API settings are validated and
-    copied into the job, so an analog system with a base system of 0 still uploads.
+    copied into the job, so an analog system with a base system of 0 still uploads. A digital row with no talkgroup
+    is exported only through `dsd_rdio_export_call_fallback()` with `allow_fallback` set, under
+    `dsd_rdio_call_talkgroup()`'s number (its frequency in kHz when 1..2147483647, else
+    `opts->rdio_unknown_talkgroup`), labelled by `dsd_rdio_fallback_tag()` (issue #888 D2, D3; Core, sidecar fields
+    and "rdio-scanner export verdict"); `dsd_rdio_export_call()` and `_ex()` pass 0, so they never number one, and the
+    writer's `talkgroup == 0` check stays as a backstop (no sidecar, -1).
     `dsd_engine_cleanup()` calls `dsd_rdio_upload_shutdown()` after the final calls close, and it drains the queue, so
     a normal end (replay EOF, input closed, USB detach) and the CLI (SIGINT, the terminal UI's `q`, the API's `quit`)
     still upload the last calls. Only a stop or restart the user starts in the app calls `dsd_rdio_upload_cancel()` (issue #718
@@ -5340,6 +5369,13 @@ suite runs under this compiler.
     worker may still run, so only the queued jobs' API copies are wiped, under the queue's mutex; the queued jobs are
     not freed, and the job in flight and the worker's endpoint copy are left to the worker. Uploads are kept while a
     journal is set:
+    `dsd_rdio_journal_keeps_uploads()` reads 1 in a run that names a recording journal and turns
+    `rdio_api_delete_after_upload` on, and `dsd_rdio_export_call_ex()` then queues the job without the delete (the
+    decision travels in the job, so the worker never reads the options). The option value is unchanged, so the exit's
+    autosave and the menu's Save config keep it. `dsd_rdio_warn_journal_keeps_uploads()` logs one LOG_WARN: the
+    bootstrap calls it once the config and the command line are applied, and a live config apply after staging, which
+    warns only when the apply newly combines them (tests: `RUNTIME_CLI_PARSE`, `APP_CONTROL_RECORDING`,
+    `RUNTIME_RDIO_EXPORT`).
     Private job inputs (issue #888 B15): in `--rdio-mode both` the sidecar is public before the queued job runs, and
     a DirWatch with delete-after on that folder removes the pair once it takes it. So at enqueue, and only in `both`
     mode, `dsd_rdio_make_private_inputs()` gives the job its own inputs beside the pair: a hard link of the WAV
@@ -5360,19 +5396,15 @@ suite runs under this compiler.
     folder keeps its live inputs. The age is wall-clock (`dsd_realtime_time()` against `st_mtime` from
     `dsd_stat_path()`), not a decode decision. A copy that cannot be made fails the export (no job, journal `rdio`
     false), as a full queue does.
-    `dsd_rdio_journal_keeps_uploads()` reads 1 in a run that names a recording journal and turns
-    `rdio_api_delete_after_upload` on, and `dsd_rdio_export_call_ex()` then queues the job without the delete (the
-    decision travels in the job, so the worker never reads the options). The option value is unchanged, so the exit's
-    autosave and the menu's Save config keep it. `dsd_rdio_warn_journal_keeps_uploads()` logs one LOG_WARN: the
-    bootstrap calls it once the config and the command line are applied, and a live config apply after staging, which
-    warns only when the apply newly combines them (tests: `RUNTIME_CLI_PARSE`, `APP_CONTROL_RECORDING`,
-    `RUNTIME_RDIO_EXPORT`). Tests: `RUNTIME_RDIO_EXPORT` (stalled endpoint, cancel before and
-    during the drain, holds with a blocked uploader through 140 later publications, release after the delete, the name
-    rule under POSIX and Windows rules on every host; analog sidecar fields, kHz and fallback talkgroups, stable tags,
-    the analog system in the sidecar and the form part, the NFM upload's completion, failure, journal retention,
-    BOTH mode and holds; issue #888 B15: a held first upload while the second pair is deleted as a watch would, the
-    second request's audio, meta and part names, private inputs gone after success, refusal, Stop and a full queue,
-    the leftover clearing once per run and folder by token and age, the private-name and token rules),
+    Tests: `RUNTIME_RDIO_EXPORT` (stalled endpoint, cancel before and during the drain, holds with a blocked uploader
+    through 140 later publications, release after the delete, the name rule under POSIX and Windows rules on every host;
+    analog sidecar fields, kHz and fallback talkgroups, stable tags, the analog system in the sidecar and the form part,
+    the NFM upload's completion, failure, journal retention, BOTH mode and holds; issue #888 B15: a held first upload
+    while the second pair is deleted as a watch would, the second request's audio, meta and part names, private inputs
+    gone after success, refusal, Stop and a full queue, the leftover clearing once per run and folder by token and age,
+    the private-name and token rules; the fallback number and its eligibility, the generated label, `freq`/`freqList` at
+    their bounds, emergency, the protocol `short_name`, `"-"` tags, UTF-8 strings, and a fallback call's API `meta` and
+    `system` parts),
     `CORE_RECEIVE` and `CORE_WAV_JOURNAL` (NFM exports through the real closer, the per-run skip line),
     `ANDROID_ENGINE_STOP_JVM` (the cause each Android caller passes).
   - RadioReference.com import client (`src/runtime/radioreference/`): SOAP envelope builder, expat response parser,
