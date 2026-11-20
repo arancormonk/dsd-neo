@@ -41,6 +41,7 @@
 #include <dsd-neo/engine/channel_scan.h>
 #include <dsd-neo/engine/engine.h>
 #include <dsd-neo/engine/frame_processing.h>
+#include <dsd-neo/engine/protocol_dispatch.h>
 #include <dsd-neo/engine/scan_entry.h>
 #include <dsd-neo/engine/scan_voice_gate.h>
 #include <dsd-neo/engine/trunk_scan.h>
@@ -56,6 +57,7 @@
 #include <dsd-neo/protocol/p25/p25_frequency.h>
 #include <dsd-neo/protocol/p25/p25_sm_watchdog.h>
 #include <dsd-neo/protocol/p25/p25_trunk_sm.h>
+#include <dsd-neo/protocol/tetra/tetra.h>
 #include <dsd-neo/protocol/tetra/tetra_dmo.h>
 #include <dsd-neo/protocol/tetra/tetra_fec.h>
 #include <dsd-neo/protocol/tetra/tetra_voice.h>
@@ -1025,9 +1027,21 @@ enum { YT_TAIL_DIBITS = 123, YT_BLOCK1_DIBITS = 60 };
 static int g_frame_tetra = YT_NONE;
 static uint8_t g_yt_tail[YT_TAIL_DIBITS];
 static int g_yt_tail_pos = -1; /* -1: the real readers */
+/* The tail symbol whose read the cut runs at (-1: none): with g_yt_cut_interrupt an input interruption, else the
+   carrier boundary a replay retune runs there (dsd_engine_carrier_boundary(): the carrier forgotten, the count moved). */
+static int g_yt_cut_at = -1;
+static int g_yt_cut_interrupt = 0;
 
 static int
-yt_next_dibit(void) {
+yt_next_dibit(dsd_state* state) {
+    if (g_yt_tail_pos == g_yt_cut_at) {
+        if (g_yt_cut_interrupt) {
+            state->input_interrupted = 1;
+        } else {
+            tetra_forget_carrier(state);
+            state->carrier_seq++;
+        }
+    }
     return g_yt_tail_pos < YT_TAIL_DIBITS ? (g_yt_tail[g_yt_tail_pos++] & 3) : 0;
 }
 
@@ -1042,7 +1056,7 @@ __wrap_getDibitAndSoftSymbol(dsd_opts* opts, dsd_state* state, float* out_soft_s
     if (g_yt_tail_pos < 0) {
         return __real_getDibitAndSoftSymbol(opts, state, out_soft_symbol);
     }
-    const int d = yt_next_dibit();
+    const int d = yt_next_dibit(state);
     if (out_soft_symbol) {
         *out_soft_symbol = yt_level(d);
     }
@@ -1054,7 +1068,7 @@ __wrap_get_dibit_and_analog_signal(dsd_opts* opts, dsd_state* state, int* out_an
     if (g_yt_tail_pos < 0) {
         return __real_get_dibit_and_analog_signal(opts, state, out_analog_signal);
     }
-    const int d = yt_next_dibit();
+    const int d = yt_next_dibit(state);
     if (out_analog_signal) {
         *out_analog_signal = (int)yt_level(d);
     }
@@ -1068,7 +1082,7 @@ __wrap_skipDibit(dsd_opts* opts, dsd_state* state, int count) {
         return;
     }
     for (int i = 0; i < count; i++) {
-        (void)yt_next_dibit();
+        (void)yt_next_dibit(state);
     }
 }
 
@@ -17602,6 +17616,46 @@ test_y_tetra_holds_only_on_checked_content(void) {
     return rc;
 }
 
+/* Issue #890: a TETRA synchronisation burst whose BSCH passed, dispatched through the real processFrame(), with a carrier
+   boundary (a replay retune) or an input interruption inside its block 2 read. The decoder drops it (TETRA_BURST_CUT
+   pins what it leaves), and the frame settles as any frame cut so (process_frame_settle_verdict()): UNPRODUCTIVE across
+   the boundary, WITHHELD for the interruption, never PROFILE_PROVEN, with no proof and no checked content noted. Uncut,
+   the same burst is PROFILE_PROVEN and checked TMO content. */
+static int
+test_tetra_cut_burst_settles_unproven(void) {
+    int rc = 0;
+    for (int cut = 0; cut <= 2; cut++) {
+        dsd_opts* opts = NULL;
+        dsd_state* state = NULL;
+        if (init_test_runtime(&opts, &state) != 0) {
+            return 1;
+        }
+        opts->frame_tetra = 1;
+        g_frame_tetra = YT_TMO;
+        g_yt_cut_at = cut == 0 ? -1 : 15 + 40;
+        g_yt_cut_interrupt = cut == 2;
+        yt_process_burst(opts, state);
+        g_yt_cut_at = -1;
+        g_yt_cut_interrupt = 0;
+        g_frame_tetra = YT_NONE;
+        const int want = cut == 0   ? DSD_FRAME_VERDICT_PROFILE_PROVEN
+                         : cut == 1 ? DSD_FRAME_VERDICT_UNPRODUCTIVE
+                                    : DSD_FRAME_VERDICT_WITHHELD;
+        const int proven = cut == 0;
+        char label[200];
+        DSD_SNPRINTF(label, sizeof label,
+                     "TETRA burst cut %d settles: verdict %d (want %d), proof %d, content %u, unchecked %u", cut,
+                     state->sps_hunt_last_frame_verdict, want, (int)tetra_burst_proof(state),
+                     (unsigned)state->scan_y_content_seq, (unsigned)state->scan_y_unchecked_seq);
+        rc |= expect_true(
+            label, state->sps_hunt_last_frame_verdict == want
+                       && tetra_burst_proof(state) == (proven ? DSD_TETRA_BURST_PROOF_TMO : DSD_TETRA_BURST_PROOF_NONE)
+                       && state->scan_y_content_seq == (proven ? 1U : 0U) && state->scan_y_unchecked_seq == 0U);
+        free_test_runtime(opts, state);
+    }
+    return rc;
+}
+
 static int
 test_scan_quiet_decisions(void) {
     int rc = 0;
@@ -17641,6 +17695,7 @@ test_scan_quiet_decisions(void) {
     rc |= test_y_quiet_released_hold_republished();
     rc |= test_y_frames_with_no_checked_content_leave();
     rc |= test_y_tetra_holds_only_on_checked_content();
+    rc |= test_tetra_cut_burst_settles_unproven();
     rc |= test_y_quiet_open_analog_carrier_stays();
     rc |= test_y_quiet_typed_row_judges_the_monitor(12500);
     rc |= test_y_quiet_typed_row_judges_the_monitor(0);

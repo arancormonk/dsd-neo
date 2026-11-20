@@ -14439,8 +14439,12 @@ it, and nothing in it is global. TETRA is not a trunk-scan target type; trunk sc
   after it, an SB's broadcast block and block 2 before its BSCH is parsed), so `tetra_dmo_process_dsb()` and
   `tetra_process_sb()` check `tetra_confirm_burst_current()` after the read: a replay retune or an input interruption
   inside it leaves the mode, DM colour code, protection, call, network, received identity and polarity of the burst
-  off the carrier the receiver is on now, and `tetra_frame_leave()` publishes nothing of a lost burst
-  (`TETRA_BURST_CUT`, through `--wrap` seams around the symbol readers). Nothing here frees or replaces the state
+  off the carrier the receiver is on now, and `tetra_frame_leave()` publishes nothing of a lost burst, an interrupted
+  one on the same carrier included, so the publication stays as it was until the next burst that is not lost
+  (`TETRA_BURST_CUT`, through `--wrap` seams around the symbol readers). A lost burst closes with proof NONE whatever
+  its blocks proved before the loss, a first block whose grant retuned the receiver included; through `processFrame()`
+  it settles UNPRODUCTIVE across a boundary and WITHHELD for an interruption (`process_frame_settle_verdict()`;
+  `ENGINE_NO_CARRIER_RESET` `test_tetra_cut_burst_settles_unproven()`). Nothing here frees or replaces the state
   extension: the MAC holds its `tetra_state_t` pointer across these calls, so every reset clears fields.
 - Leaving a call (`sm_unfollow()`) ends its canonical call as a teardown and clears its talkgroup-policy route
   (`tetra_calls_unfollowed()`; with NULL options after the engine ended the canonical calls itself). Its call record

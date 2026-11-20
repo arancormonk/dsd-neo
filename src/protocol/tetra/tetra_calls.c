@@ -2083,6 +2083,8 @@ dmo_sds_notice(dsd_opts* opts, dsd_state* state, tetra_state_t* ts, const tetra_
  * the transmission did. */
 static int
 dmo_reserved_for_call(const tetra_dmo_call_t* d, const tetra_dmo_sync_h_t* h) {
+    /* The source only: dmo_apply_reserved() matches the MNI too, through the colour code seed. They differ only for a
+       PDU of the same source under another MNI, which clause 8.5.2.1.1 forbids, and then at most one call ends early. */
     return d->active && d->src == h->src;
 }
 
