@@ -510,6 +510,13 @@ test_basic_privacy_packet_keys_from_its_destination(void) {
                              bp_packet_decrypts(&state, 1U, 200U, manual), 1);
         }
         rc |= expect_int("bp packet: the working key stays the voice's", (int)state.K, (int)manual);
+        /* A packet of another ALG reads no Basic Privacy key. */
+        dmr_block_crypto_ctx aes;
+        state.currentslot = 0;
+        state.payload_algid = 4;
+        dmr_block_crypto_load_ctx(&state, 0U, 48U, &aes);
+        rc |= expect_int("aes packet: no bp key", aes.bp_key == 0ULL, 1);
+        state.payload_algid = 0;
     }
     return rc;
 }

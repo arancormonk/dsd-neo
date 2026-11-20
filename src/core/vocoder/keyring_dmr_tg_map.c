@@ -352,6 +352,18 @@ keyring_dmr_tg_autoload_preview(const dsd_state* state, uint8_t slot, uint32_t t
     }
 }
 
+unsigned long long int
+keyring_dmr_tg_autoload_basic_key(const dsd_state* state, uint8_t slot, uint32_t tg) {
+    if (state == NULL) {
+        return 0ULL;
+    }
+    uint32_t source = 0U;
+    if (keyring_dmr_tg_autoload_source(state, slot & 1U, tg, &source)) {
+        return state->rkey_array[keyring_dmr_tg_key_cell(source)] & 0xFF; // as keyring_dmr_tg_autoload_key_of()
+    }
+    return dsd_dmr_tg_autoload_holds(state) ? state->dmr_tg_autoload.baseline[0] : state->K;
+}
+
 int
 keyring_dmr_tg_autoload_key_present(const dsd_state* state, uint8_t slot, uint32_t tg) {
     if (state == NULL) {

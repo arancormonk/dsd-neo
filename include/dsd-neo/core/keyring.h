@@ -193,6 +193,10 @@ int keyring_dmr_tg_autoload_apply(dsd_state* state, uint8_t slot, uint32_t tg, u
 void keyring_dmr_tg_autoload_preview(const dsd_state* state, uint8_t slot, uint32_t tg, unsigned long long int words[6],
                                      uint8_t flags[2]);
 
+/** The Basic Privacy key index (K) alone that keyring_dmr_tg_autoload_preview() leaves, read without copying any other
+ *  key word: the talkgroup's own key, else the key the autoload replaced, else the working key. 0 with no @p state. */
+unsigned long long int keyring_dmr_tg_autoload_basic_key(const dsd_state* state, uint8_t slot, uint32_t tg);
+
 /** Whether keyring_dmr_tg_autoload_preview() leaves a Basic Privacy or Hytera key. */
 int keyring_dmr_tg_autoload_key_present(const dsd_state* state, uint8_t slot, uint32_t tg);
 

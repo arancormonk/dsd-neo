@@ -107,20 +107,17 @@ dmr_block_alg_key_need(int alg) {
 }
 
 /* The Basic Privacy key a packet of lane @p slot decrypts with. Where the talkgroup key autoload keys the voice (no
-   forced key), it is the key the packet's own destination leaves (keyring_dmr_tg_autoload_preview(): that
+   forced key), it is the key the packet's own destination leaves (keyring_dmr_tg_autoload_basic_key(): that
    destination's key, else the key the autoload replaced, the operator's), as for a call's LC (dmr_flco.c), never the
    shared working key, which the last voice frame of either slot keyed: the other slot's call on a talkgroup with no
-   key gives the operator's key back there. A forced key keys every packet, as it keys every frame. */
+   key gives the operator's key back there. A forced key keys every packet, as it keys every frame. Only the index is
+   read: no other key word is copied. */
 static unsigned long long
 dmr_block_bp_key(const dsd_state* state, uint8_t slot) {
     if (state->M != 0) {
         return state->K;
     }
-    unsigned long long int words[6];
-    uint8_t flags[2];
-    const uint32_t target = (uint32_t)state->dmr_lrrp_target[slot & 1U];
-    keyring_dmr_tg_autoload_preview(state, slot, target, words, flags);
-    return words[0];
+    return keyring_dmr_tg_autoload_basic_key(state, slot, (uint32_t)state->dmr_lrrp_target[slot & 1U]);
 }
 
 void
@@ -161,7 +158,7 @@ dmr_block_crypto_load_ctx(const dsd_state* state, uint8_t slot, uint16_t receive
                                          dmr_block_alg_key_need(ctx->alg), ctx->signaled_kid, &ctx->mapped);
     ctx->rkey = dmr_block_rkey_at(state, ctx->kid);
     ctx->rkey_present = keyring_kid_scalar_present(state, ctx->kid);
-    ctx->bp_key = dmr_block_bp_key(state, id_slot);
+    ctx->bp_key = ctx->alg == 0 ? dmr_block_bp_key(state, id_slot) : 0ULL; // ALG 0: Moto BP alone reads it
 
     ctx->aes_key_loaded =
         dmr_block_load_aes_key(state, ctx->kid, dsd_key_need_aes_width(dmr_block_alg_key_need(ctx->alg)), ctx->aes_key);

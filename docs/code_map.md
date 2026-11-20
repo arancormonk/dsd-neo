@@ -1988,7 +1988,8 @@ suite runs under this compiler.
   slot and talkgroup leave (`keyring_dmr_tg_autoload_preview()`, `dmr_flco_call_key_of()`,
   `dmr_flco_missing_alg_key_can_decrypt()`). So is a Basic Privacy data packet (`dmr_block_bp_key()`,
   `dmr_block_crypto.c`): it decrypts with the key its data header's destination leaves (that talkgroup's key, else the
-  operator's), never the working key the other slot's voice last keyed. Only an LC whose check passed (a RAS acceptance under `-F` included) arms or
+  operator's), never the working key the other slot's voice last keyed, read as the key index alone
+  (`keyring_dmr_tg_autoload_basic_key()`, no other key word copied) and only for an ALG 0 packet. Only an LC whose check passed (a RAS acceptance under `-F` included) arms or
   releases the lockout (`dmr_flco_apply_enc_lockout()`) or has its talkgroup's key printed (`dmr_flco_call_key_of()`):
   one whose checksum failed may name another call's talkgroup, so its key line shows the working key. The terminal UI's slot row shows the key its own call keyed from
   (`slot_key`, `dsd_dmr_slot_call_key()`, since the UI snapshot holds no keyring), or none, and the Loaded lines and the
