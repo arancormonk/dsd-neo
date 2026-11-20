@@ -7,6 +7,7 @@
 #include <QList>
 #include <QMap>
 #include <QPair>
+#include <QRegularExpression>
 #include <QString>
 #include <QStringList>
 #include <QVariant>
@@ -14,7 +15,10 @@
 #include <QVariantMap>
 #include <QtGlobal>
 #include <cstdio>
+#include <dsd-neo/core/safe_api.h>
 #include <dsd-neo/runtime/analog_channel.h>
+#include <dsd-neo/runtime/scan_mode.h>
+#include <dsd-neo/runtime/scan_options.h>
 #include <utility>
 #include "../test_support/qt_test_paths.h"
 #include "json_store.h"
@@ -25,6 +29,8 @@
 #include "session_args.h"
 using namespace dsd_qt;
 static int failures;
+/* A 64-digit hex key: the AES width every class that takes -H takes. */
+#define kHex64 "00112233445566778899AABBCCDDEEFF00112233445566778899AABBCCDDEEFF"
 
 static void
 check_at(bool ok, int line) {
@@ -109,6 +115,7 @@ test_nxdn_row_keys() {
         for (const bool trunk : {false, true}) {
             QVariantMap sys{
                 {"uid", "sys"}, {"name", "Site"}, {"decodeFlag", flag}, {"freqMhz", "451.5"}, {"trunking", trunk}};
+            const QString site = QStringLiteral("Site: ") + QLatin1String(scan_protocol_for_flag(flag)->label);
             auto build = [&]() { return scan_list_targets(list, QVariantList{sys}); };
             check(build().ok);
             // Refused, each by name.
@@ -116,20 +123,23 @@ test_nxdn_row_keys() {
             sys["encKeyValue"] = "7";
             check(!build().ok
                   && build().error
-                         == QStringLiteral("Site: NXDN entries take no Motorola Basic Privacy key, which is DMR's. "
-                                           "Choose another key type for this saved system or its decryption "
-                                           "profile."));
+                         == site
+                                + QStringLiteral(" entries take no Motorola Basic Privacy key, only a Hytera / AES, "
+                                                 "RC4 / DES or scrambler key. Choose another key type for this saved "
+                                                 "system or its decryption profile."));
             sys.remove("encKeyType");
             sys.remove("encKeyValue");
             sys["dmrTgKeyCsvPath"] = "/imports/tg.csv";
             check(!build().ok
                   && build().error
-                         == QStringLiteral("Site: NXDN entries take no DMR talkgroup key map. Remove it from this "
-                                           "saved system's decryption profile."));
+                         == site
+                                + QStringLiteral(" entries take no DMR talkgroup key map. Remove it from this saved "
+                                                 "system's decryption profile."));
             sys.remove("dmrTgKeyCsvPath");
-            const QString algorithm = QStringLiteral("Site: NXDN entries take privacy forcing only, not an algorithm "
-                                                     "fallback. Change the Force key setting of this saved system or "
-                                                     "its decryption profile.");
+            const QString algorithm = site
+                                      + QStringLiteral(" entries take privacy forcing only, not an algorithm "
+                                                       "fallback. Change the Force key setting of this saved "
+                                                       "system or its decryption profile.");
             sys["encKeyType"] = "scrambler";
             sys["encKeyValue"] = "17";
             sys["encForceKey"] = 2;
@@ -147,8 +157,14 @@ test_nxdn_row_keys() {
             for (const auto& key : {qMakePair(QStringLiteral("hex"), QByteArray("-H ")),
                                     qMakePair(QStringLiteral("rc4"), QByteArray("-1 "))}) {
                 sys["encKeyType"] = key.first;
-                sys["encKeyValue"] = key.first == QLatin1String("hex") ? "0000001F00" : "0123456789";
+                sys["encKeyValue"] = key.first == QLatin1String("hex") ? kHex64 : "0123456789";
                 check(build().ok && build().csv.contains(",\"Site\"," + key.second));
+            }
+            // The key width the engine's NXDN class takes: an AES key of 64 hex digits, no other.
+            for (const char* narrow : {"0000001F00", "0123456789ABCDEF0123456789ABCDEF"}) {
+                sys["encKeyType"] = "hex";
+                sys["encKeyValue"] = narrow;
+                check(!build().ok && build().error == QStringLiteral("Site: NXDN AES needs 64 hex digits."));
             }
             sys.remove("encKeyType");
             sys.remove("encKeyValue");
@@ -281,14 +297,27 @@ test_simplex_digital_targets() {
                                  qMakePair(QStringLiteral("m17Scrambler"), QStringLiteral("123"))}) {
         sys["encKeyType"] = material.first;
         sys["encKeyValue"] = material.second;
-        check(!build().ok && build().error == QStringLiteral("Simplex: dPMR entries take only a scrambler key."));
+        const QString refusal =
+            material.first == QLatin1String("m17Scrambler")
+                ? QStringLiteral("Simplex: Invalid direct key shape for the selected type.")
+                : QStringLiteral("Simplex: dPMR entries take no %1 key, only a scrambler key. Choose another key type "
+                                 "for this saved system or its decryption profile.")
+                      .arg(material.first == QLatin1String("basic") ? QStringLiteral("Motorola Basic Privacy")
+                           : material.first == QLatin1String("hex") ? QStringLiteral("Hytera / AES")
+                                                                    : QStringLiteral("RC4 / DES"));
+        check(!build().ok && build().error == refusal);
     }
     sys.remove("encKeyType");
     sys.remove("encKeyValue");
     for (const auto& field : {"keyCsvPath", "keysHexCsvPath", "keysDecCsvPath", "dmrTgKeyCsvPath"}) {
         sys[field] = "/imports/keys.csv";
         check(!build().ok
-              && build().error == QStringLiteral("Simplex: dPMR entries take only a scrambler key, not a key file."));
+              && build().error
+                     == (QByteArray(field) == "dmrTgKeyCsvPath"
+                             ? QStringLiteral("Simplex: dPMR entries take no DMR talkgroup key map. Remove it from "
+                                              "this saved system's decryption profile.")
+                             : QStringLiteral("Simplex: dPMR entries take no key file. Remove it from this saved "
+                                              "system or its decryption profile.")));
         sys.remove(field);
     }
     // Forcing: privacy forcing (-4, direct choice 1 or a profile's 1) and no forcing pass; an algorithm fallback (the
@@ -376,6 +405,172 @@ test_simplex_digital_targets() {
           && scan_list_entry_takes_keys(systemEntry, "-ft -^"));
     check(scan_list_entry_protocol(systemEntry, "-fz") == scan_protocol_by_id("m17")
           && scan_list_entry_protocol(freq, "-fz") == nullptr);
+}
+
+namespace {
+/* One key or force setting a saved system can hold: the fields that carry it, the switch it puts in a row
+   (ScanKeySwitch), that switch as the engine's scoped options take it alone, and how the generated row shows it. */
+struct KeySetting {
+    const char* name;
+    QVariantMap fields;
+    unsigned bit;
+    const char* engineText;
+    QRegularExpression rowShows;
+};
+
+QList<KeySetting>
+keySettings() {
+    const auto row = [](const char* pattern) { return QRegularExpression(QString::fromLatin1(pattern)); };
+    return {
+        {"basic key", {{"encKeyType", "basic"}, {"encKeyValue", "7"}}, ScanKeyBasic, "-b 7", row(",-b 7\n")},
+        /* 64 hex digits, the width every class that takes -H takes (P25 also 32, DMR also 10 and 32). */
+        {"hex key",
+         {{"encKeyType", "hex"}, {"encKeyValue", kHex64}},
+         ScanKeyHex,
+         "-H " kHex64,
+         row(",-H " kHex64 "\n")},
+        {"rc4 key",
+         {{"encKeyType", "rc4"}, {"encKeyValue", "0123456789"}},
+         ScanKeyRc4,
+         "-1 0123456789",
+         row(",-1 0123456789\n")},
+        {"scrambler key",
+         {{"encKeyType", "scrambler"}, {"encKeyValue", "17"}},
+         ScanKeyScrambler,
+         "-R 17",
+         row(",-R 17\n")},
+        {"hex key file",
+         {{"keysHexCsvPath", "/imports/hex.csv"}},
+         ScanKeyHexFile,
+         "-K /imports/hex.csv",
+         row(",-K \"/imports/hex.csv\"\n")},
+        {"decimal key file",
+         {{"keysDecCsvPath", "/imports/dec.csv"}},
+         ScanKeyDecFile,
+         "-k /imports/dec.csv",
+         row(",-k \"/imports/dec.csv\"\n")},
+        {"legacy hex key column",
+         {{"keyCsvPath", "/imports/keys.csv"}, {"keyCsvHex", true}},
+         ScanKeyHexFile,
+         "-K /imports/keys.csv",
+         row(",/imports/keys.csv,,")},
+        {"legacy decimal key column",
+         {{"keyCsvPath", "/imports/keys.csv"}, {"keyCsvHex", false}},
+         ScanKeyDecFile,
+         "-k /imports/keys.csv",
+         row(",,/imports/keys.csv,")},
+        {"DMR talkgroup key map",
+         {{"dmrTgKeyCsvPath", "/imports/tg.csv"}},
+         ScanKeyDmrMap,
+         "--dmr-tg-key-csv /imports/tg.csv",
+         row(",--dmr-tg-key-csv \"/imports/tg.csv\"\n")},
+        {"no DMR talkgroup key map",
+         {{"dmrTgKeyClear", true}},
+         ScanKeyDmrMapClear,
+         "--dmr-tg-key-clear",
+         row(",--dmr-tg-key-clear\n")},
+        {"no keys",
+         {{"decryptionClearKeys", true}},
+         ScanKeyClear,
+         "--no-decryption-keys",
+         row(",--no-decryption-keys\n")},
+        {"profile reference",
+         {{"decryptionProfileRef", "ref-1"}},
+         ScanKeyProfileRef,
+         "--key-profile-ref ref-1",
+         row(",--key-profile-ref ref-1\n")},
+        {"direct privacy forcing", {{"encForceKey", 1}}, ScanKeyForcePrivacy, "-4", row(",-4\n")},
+        {"profile privacy forcing", {{"decryptionForce", 1}}, ScanKeyForcePrivacy, "-4", row(",-4\n")},
+        {"Basic Privacy fallback", {{"encForceKey", 2}}, ScanKeyForceBasic, "-0", row(",-0\n")},
+        {"algorithm fallback",
+         {{"decryptionForce", 0x21}},
+         ScanKeyForceAlgid,
+         "--dmr-force-algid 21",
+         row(",--dmr-force-algid 21\n")},
+        {"no forcing", {{"decryptionForce", 0}}, ScanKeyNoForce, "--no-force-key", row(",--no-force-key\n")},
+        {"talkgroup file",
+         {{"groupCsvPath", "/imports/groups.csv"}},
+         ScanKeyGroup,
+         "-G /imports/groups.csv",
+         row(",-G \"/imports/groups.csv\"\n")},
+    };
+}
+
+/* Whether the engine's scoped options take @p text alone on a conventional row of scan class @p mode. */
+bool
+engineTakes(const char* text, dsd_scan_mode mode) {
+    dsd_scan_options parsed;
+    DSD_MEMSET(&parsed, 0, sizeof parsed);
+    char error[192];
+    const bool taken =
+        dsd_scan_options_parse(text, static_cast<unsigned int>(mode), 1, &parsed, error, sizeof error) == 0;
+    DSD_SECURE_ZERO(&parsed, sizeof parsed);
+    return taken;
+}
+} // namespace
+
+/* Issue #890: one table says which key and force switches each protocol's row takes (ScanProtocol::keySwitches), and
+   it is the engine's. Every protocol × every key or force setting a saved system can hold: the table agrees with the
+   engine's own scoped-option parser (dsd_scan_options_parse()) for the protocol's class, and Qt's answer follows the
+   table: a switch the row takes reaches it, one it does not is refused by name before anything is written (or, for a
+   protocol whose editor hides decryption, never written), so a generated list can never carry a switch the engine
+   would refuse it for. On an engine without the issue #890 key matrix (task B3: -4 for dPMR, no key settings for
+   M17, YSF and D-STAR) only those cells may differ, and they are named; with it, every cell must agree. */
+static void
+test_key_switch_table_matches_engine() {
+    dsd_scan_mode dpmr = DSD_SCAN_MODE_INHERIT;
+    check(dsd_scan_mode_parse("dpmr", &dpmr) == 0);
+    const bool keyMatrix = engineTakes("-4", dpmr);
+    if (!keyMatrix) {
+        std::fprintf(stderr, "NOTE: the engine has no issue #890 key matrix yet (task B3): its own cells are "
+                             "allowed to differ\n");
+    }
+    const auto b3Cell = [](const ScanProtocol& p, unsigned bit) {
+        const QLatin1String id(p.id);
+        return (id == QLatin1String("dpmr") && bit == ScanKeyForcePrivacy)
+               || ((id == QLatin1String("m17") || id == QLatin1String("ysf") || id == QLatin1String("dstar"))
+                   && (bit & (ScanKeyClear | ScanKeyProfileRef | ScanKeyNoForce)) != 0U);
+    };
+    const QVariantMap entry{{"uid", "entry"}, {"kind", "system"}, {"systemUid", "sys"}, {"enabled", true}};
+    const QVariantMap list{{"uid", "list"}, {"sourceType", "usb"}, {"entries", QVariantList{entry}}};
+    for (const ScanProtocol& protocol : scan_protocols()) {
+        dsd_scan_mode mode = DSD_SCAN_MODE_INHERIT;
+        const bool classKnown = dsd_scan_mode_parse(protocol.scanClass, &mode) == 0;
+        if (!classKnown) {
+            std::fprintf(stderr, "NOTE: the engine has no scan class '%s' yet (task B1): its row is not compared\n",
+                         protocol.scanClass);
+        }
+        for (const KeySetting& setting : keySettings()) {
+            const bool tableTakes = (protocol.keySwitches & setting.bit) != 0U;
+            // The table is the engine's.
+            if (classKnown && engineTakes(setting.engineText, mode) != tableTakes) {
+                const bool allowed = !keyMatrix && b3Cell(protocol, setting.bit);
+                check(allowed);
+                if (!allowed) {
+                    std::fprintf(stderr, "%s row, %s: the engine %s it, the table %s\n", protocol.id, setting.name,
+                                 tableTakes ? "refuses" : "takes", tableTakes ? "takes it" : "does not");
+                }
+            }
+            // Qt follows the table.
+            QVariantMap sys{{"uid", "sys"}, {"name", "Row"}, {"decodeFlag", protocol.decodeFlag}, {"freqMhz", "451.5"}};
+            for (auto it = setting.fields.cbegin(); it != setting.fields.cend(); ++it) {
+                sys.insert(it.key(), it.value());
+            }
+            const auto built = scan_list_targets(list, QVariantList{sys});
+            const bool shown = built.ok && setting.rowShows.match(QString::fromUtf8(built.csv)).hasMatch();
+            /* Refused where the row has keys of its own (or M17's, the session's); a reset is never refused, and a
+               protocol whose editor hides decryption, or an analog one, passes none of it. */
+            const bool hidden = protocol.keys == ScanProtocolKeys::None || setting.bit == ScanKeyDmrMapClear
+                                || setting.bit == ScanKeyGroup;
+            const bool answer = tableTakes ? shown : !shown && (hidden ? built.ok : !built.ok);
+            check(answer);
+            if (!answer) {
+                std::fprintf(stderr, "%s row, %s: table %s, Qt %s (%s)\n", protocol.id, setting.name,
+                             tableTakes ? "takes it" : "does not",
+                             built.ok ? (shown ? "wrote it" : "dropped it") : "refused it", qPrintable(built.error));
+            }
+        }
+    }
 }
 
 int
@@ -594,6 +789,8 @@ main(int argc, char** argv) {
         check(!build().ok);
     }
     sys.remove("groupCsvPath");
+    // Basic Privacy and every force choice are DMR's (the engine's class masks, ScanProtocol::keySwitches).
+    sys["decodeFlag"] = "-fs";
     sys["encKeyType"] = "basic";
     sys["encKeyValue"] = "7";
     check(build().ok && build().csv.contains("-b ") && !build().csv.contains("single_key"));
@@ -615,6 +812,8 @@ main(int argc, char** argv) {
     sys["decryptionForce"] = (qlonglong(1) << 32) + 1;
     check(build().ok && !build().csv.contains("-4") && !build().csv.contains("--no-force-key"));
     sys.remove("decryptionForce");
+    sys.remove("encKeyType");
+    sys.remove("encKeyValue");
     // Every preserved column and every direct-key family, without printing values.
     sys["decodeFlag"] = "-ft";
     sys["trunking"] = true;
@@ -624,15 +823,27 @@ main(int argc, char** argv) {
     sys["gainDb"] = 27;
     check(build().ok && build().csv.contains("/imports/channels.csv") && build().csv.contains("/imports/bandplan.csv")
           && build().csv.contains("-G \"/imports/group list.csv\"") && build().csv.contains(",27,"));
+    // A P25 row takes the Hytera / AES and RC4 / DES keys; Basic Privacy (DMR's) and the scrambler (NXDN's and
+    // dPMR's) are refused by name.
     const QStringList keyTypes{"basic", "hex", "rc4", "scrambler"};
     const QStringList keyValues{"7", "0000001F00", "0123456789", "17"};
     const QStringList keyFlags{"-b ", "-H ", "-1 ", "-R "};
+    const QList<bool> p25Takes{false, false, true, false};
     for (int i = 0; i < keyTypes.size(); ++i) {
         sys["encKeyType"] = keyTypes[i];
         sys["encKeyValue"] = keyValues[i];
-        check(build().ok && build().csv.contains(keyFlags[i].toUtf8()));
+        check(build().ok == p25Takes[i] && (!p25Takes[i] || build().csv.contains(keyFlags[i].toUtf8())));
+        check(p25Takes[i]
+              || build().error.contains(i == 1 ? "P25 AES needs 32 or 64 hex digits." : "P25 entries take no "));
         sys["encKeyValue"] = "invalid";
         check(!build().ok);
+    }
+    // A 10-digit key (above) is DMR's Hytera key, never P25's: its AES keys are 32 or 64 hex digits, as the engine
+    // reads them.
+    for (const char* hex : {"0123456789ABCDEF0123456789ABCDEF", kHex64}) {
+        sys["encKeyType"] = "hex";
+        sys["encKeyValue"] = hex;
+        check(build().ok && build().csv.contains(QByteArray("-H ") + hex));
     }
     sys.remove("encKeyType");
     sys.remove("encKeyValue");
@@ -761,5 +972,6 @@ main(int argc, char** argv) {
     test_protocol_catalog();
     test_simplex_digital_targets();
     test_nxdn_row_keys();
+    test_key_switch_table_matches_engine();
     return failures ? 1 : 0;
 }

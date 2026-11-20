@@ -192,7 +192,7 @@ collectPaths(const QVariantMap& sys, const Target& target, ScanListTargets& out)
 }
 
 void
-appendProfileOptions(const QVariantMap& sys, QStringList& options) {
+appendProfileOptions(const QVariantMap& sys, const ScanProtocol& protocol, QStringList& options) {
     for (const auto& file : {qMakePair(QStringLiteral("keysHexCsvPath"), QStringLiteral("-K")),
                              qMakePair(QStringLiteral("keysDecCsvPath"), QStringLiteral("-k")),
                              qMakePair(QStringLiteral("dmrTgKeyCsvPath"), QStringLiteral("--dmr-tg-key-csv"))}) {
@@ -200,7 +200,7 @@ appendProfileOptions(const QVariantMap& sys, QStringList& options) {
             options << file.second << ('"' + sys.value(file.first).toString() + '"');
         }
     }
-    if (sys.value("dmrTgKeyClear").toBool() && sys.value("decodeFlag").toString() == "-fs") {
+    if (sys.value("dmrTgKeyClear").toBool() && (protocol.keySwitches & ScanKeyDmrMapClear) != 0U) {
         options << "--dmr-tg-key-clear";
     }
     if (sys.value("decryptionClearKeys").toBool()) {
@@ -245,71 +245,113 @@ carriesKeys(const QVariantMap& sys) {
                     [&sys](const char* field) { return !sys.value(field).toString().isEmpty(); })) {
         return true;
     }
+    /* A profile's force choice is the profile's, whatever its value: --no-force-key is a setting of its own too. */
     int force = 0;
     return sys.value("decryptionClearKeys").toBool() || (stored_int(sys.value("encForceKey", 0), &force) && force != 0)
-           || (sys.contains("decryptionForce") && stored_int(sys.value("decryptionForce"), &force) && force != 0);
+           || (sys.contains("decryptionForce") && stored_int(sys.value("decryptionForce"), &force));
 }
 
-/* Whether @p sys forces an algorithm, which only a DMR row takes: the direct key's force choice 2 (-0), or its
-   profile's algorithm fallback (decryptionForce above 1, --dmr-force-algid). A value past int's range adds no option
-   (appendProfileOptions()), so it forces nothing here either. */
-bool
-forcesAlgorithm(const QVariantMap& sys) {
+/* The force switches saved system @p sys would put in a row (ScanKeySwitch bits): the direct key's force choice (1 is
+   -4, 2 is -0) and its profile's (0 is --no-force-key, 1 is -4, above 1 --dmr-force-algid). A value that is not a
+   stored int adds no option (appendProfileOptions()), nor does a direct choice outside 0..2, which buildKeyOptions()
+   refuses with its own reason. */
+unsigned
+requestedForceSwitches(const QVariantMap& sys) {
+    unsigned wanted = 0U;
     int force = 0;
-    return (stored_int(sys.value("encForceKey", 0), &force) && force == 2)
-           || (sys.contains("decryptionForce") && stored_int(sys.value("decryptionForce"), &force) && force > 1);
-}
-
-/* The refusal for a row that would force a DMR algorithm (forcesAlgorithm()): only privacy forcing (-4) and no forcing
-   (--no-force-key) reach it. */
-QString
-algorithmForceError(const ScanProtocol& protocol) {
-    return QStringLiteral("%1 entries take privacy forcing only, not an algorithm fallback. Change the Force key "
-                          "setting of this saved system or its decryption profile.")
-        .arg(QLatin1String(protocol.label));
-}
-
-/* dPMR's row (ScanProtocolKeys::Scrambler) takes only its scoped -R scrambler key, of the direct or a profile's key, so
-   a legacy system saved with the NXDN / dPMR scrambler keeps working; never a key or key-map file, nor an algorithm
-   fallback. */
-QString
-scramblerRowError(const QVariantMap& sys, const ScanProtocol& protocol) {
-    const QString keyType = sys.value("encKeyType").toString();
-    if (!keyType.isEmpty() && keyType != QLatin1String("scrambler")) {
-        return QStringLiteral("%1 entries take only a scrambler key.").arg(QLatin1String(protocol.label));
+    if (stored_int(sys.value("encForceKey", 0), &force)) {
+        wanted |= force == 1 ? ScanKeyForcePrivacy : force == 2 ? ScanKeyForceBasic : 0U;
     }
-    for (const auto& field : {"keyCsvPath", "keysHexCsvPath", "keysDecCsvPath", "dmrTgKeyCsvPath"}) {
-        if (!sys.value(field).toString().isEmpty()) {
-            return QStringLiteral("%1 entries take only a scrambler key, not a key file.")
-                .arg(QLatin1String(protocol.label));
+    if (sys.contains("decryptionForce") && stored_int(sys.value("decryptionForce"), &force)) {
+        wanted |= force == 0 ? ScanKeyNoForce : force == 1 ? ScanKeyForcePrivacy : force > 1 ? ScanKeyForceAlgid : 0U;
+    }
+    return wanted;
+}
+
+/* The key switches saved system @p sys (its decryption profile merged in) would put in a row, as ScanKeySwitch bits:
+   its direct key by type, its key files (the legacy key column too, by its hex choice), a DMR talkgroup key map, the
+   clear-keys choice, its profile's reference and each force choice. The talkgroup file and the DMR key map's reset
+   are not key settings a row is refused for: they go where the row takes them. */
+unsigned
+requestedKeySwitches(const QVariantMap& sys) {
+    static const QMap<QString, unsigned> types{
+        {"basic", ScanKeyBasic}, {"hex", ScanKeyHex}, {"rc4", ScanKeyRc4}, {"scrambler", ScanKeyScrambler}};
+    const auto set = [&sys](const char* field) { return !sys.value(field).toString().isEmpty(); };
+    unsigned wanted = types.value(sys.value("encKeyType").toString(), 0U);
+    wanted |= set("keysHexCsvPath") ? ScanKeyHexFile : 0U;
+    wanted |= set("keysDecCsvPath") ? ScanKeyDecFile : 0U;
+    if (set("keyCsvPath")) {
+        wanted |= sys.value("keyCsvHex").toBool() ? ScanKeyHexFile : ScanKeyDecFile;
+    }
+    wanted |= set("dmrTgKeyCsvPath") ? ScanKeyDmrMap : 0U;
+    wanted |= sys.value("decryptionClearKeys").toBool() ? ScanKeyClear : 0U;
+    wanted |= set("decryptionProfileRef") ? ScanKeyProfileRef : 0U;
+    return wanted | requestedForceSwitches(sys);
+}
+
+/* The direct key types a row of @p taken (ScanKeySwitch bits) takes, as the key editor names them: "a scrambler key",
+   "a Hytera / AES or RC4 / DES key". */
+QString
+takenKeyTypes(unsigned taken) {
+    QStringList names;
+    for (const auto& type : {qMakePair(unsigned{ScanKeyBasic}, QStringLiteral("Motorola Basic Privacy")),
+                             qMakePair(unsigned{ScanKeyHex}, QStringLiteral("Hytera / AES")),
+                             qMakePair(unsigned{ScanKeyRc4}, QStringLiteral("RC4 / DES")),
+                             qMakePair(unsigned{ScanKeyScrambler}, QStringLiteral("scrambler"))}) {
+        if ((taken & type.first) != 0U) {
+            names << type.second;
         }
     }
-    return forcesAlgorithm(sys) ? algorithmForceError(protocol) : QString();
+    const QString last = names.isEmpty() ? QString() : names.takeLast();
+    return QStringLiteral("a ")
+           + (names.isEmpty() ? last : names.join(QStringLiteral(", ")) + QStringLiteral(" or ") + last)
+           + QStringLiteral(" key");
 }
 
-/* An NXDN48 or NXDN96 row takes what the engine's scoped options give its class (scan_options.c): -H, -1, -R, the key
-   files -K and -k, -G, --no-decryption-keys, --key-profile-ref, -4 and --no-force-key. Basic Privacy (-b), a DMR
-   talkgroup key map (--dmr-tg-key-csv) and an algorithm fallback (-0, --dmr-force-algid) are DMR's only, so a saved
-   NXDN system carrying one would make the engine refuse the whole list: it is refused here, by name, first. */
+/* Why @p protocol's row cannot take the key switches @p refused (ScanKeySwitch bits its row does not take), named by
+   the setting that would carry them, with the fix. */
 QString
-nxdnRowError(const QVariantMap& sys) {
-    if (sys.value("encKeyType").toString() == QLatin1String("basic")) {
-        return QStringLiteral("NXDN entries take no Motorola Basic Privacy key, which is DMR's. Choose another key "
-                              "type for this saved system or its decryption profile.");
+refusedKeySwitchError(const ScanProtocol& protocol, unsigned refused) {
+    const QLatin1String label(protocol.label);
+    for (const auto& type : {qMakePair(unsigned{ScanKeyBasic}, QStringLiteral("Motorola Basic Privacy")),
+                             qMakePair(unsigned{ScanKeyHex}, QStringLiteral("Hytera / AES")),
+                             qMakePair(unsigned{ScanKeyRc4}, QStringLiteral("RC4 / DES")),
+                             qMakePair(unsigned{ScanKeyScrambler}, QStringLiteral("scrambler"))}) {
+        if ((refused & type.first) != 0U) {
+            return QStringLiteral("%1 entries take no %2 key, only %3. Choose another key type for this saved system "
+                                  "or its decryption profile.")
+                .arg(label, type.second, takenKeyTypes(protocol.keySwitches));
+        }
     }
-    if (!sys.value("dmrTgKeyCsvPath").toString().isEmpty()) {
-        return QStringLiteral("NXDN entries take no DMR talkgroup key map. Remove it from this saved system's "
-                              "decryption profile.");
+    if ((refused & (ScanKeyHexFile | ScanKeyDecFile)) != 0U) {
+        return QStringLiteral("%1 entries take no key file. Remove it from this saved system or its decryption "
+                              "profile.")
+            .arg(label);
     }
-    return forcesAlgorithm(sys) ? QStringLiteral("NXDN entries take privacy forcing only, not an algorithm fallback. "
-                                                 "Change the Force key setting of this saved system or its "
-                                                 "decryption profile.")
-                                : QString();
+    if ((refused & ScanKeyDmrMap) != 0U) {
+        return QStringLiteral("%1 entries take no DMR talkgroup key map. Remove it from this saved system's "
+                              "decryption profile.")
+            .arg(label);
+    }
+    if ((refused & (ScanKeyForcePrivacy | ScanKeyForceBasic | ScanKeyForceAlgid)) != 0U) {
+        return (protocol.keySwitches & ScanKeyForcePrivacy) != 0U
+                   ? QStringLiteral("%1 entries take privacy forcing only, not an algorithm fallback. Change the Force "
+                                    "key setting of this saved system or its decryption profile.")
+                         .arg(label)
+                   : QStringLiteral("%1 entries take no forcing. Change the Force key setting of this saved system or "
+                                    "its decryption profile.")
+                         .arg(label);
+    }
+    return QStringLiteral("%1 entries take no decryption profile of their own. Change this saved system's decryption "
+                          "profile.")
+        .arg(label);
 }
 
-/* Issue #890: why @p protocol's row cannot take the keys @p sys carries (its key matrix, ScanProtocolKeys, and the
-   switches the engine's scoped options give its class), or empty. M17 takes none of its own: the session's keys
-   apply. */
+/* Issue #890: why @p protocol's row cannot take the keys @p sys carries, or empty: its key matrix (ScanProtocolKeys)
+   and the switches the engine's scoped options give its class (ScanProtocol::keySwitches), one table for every
+   protocol, so no row reaches the engine with a switch it would refuse the whole list for. M17 takes none of its own:
+   the session's keys apply. A protocol that decrypts nothing (YSF, D-STAR, TETRA DMO) passes none of a saved system's
+   key settings, which the editor hides for it (buildOptions()). */
 QString
 keyMatrixError(const QVariantMap& sys, const ScanProtocol& protocol) {
     if (protocol.keys == ScanProtocolKeys::Session && carriesKeys(sys)) {
@@ -317,10 +359,11 @@ keyMatrixError(const QVariantMap& sys, const ScanProtocol& protocol) {
                               "profile from this saved system, or set the key in the app's decoder options.")
             .arg(QLatin1String(protocol.label));
     }
-    if (protocol.keys == ScanProtocolKeys::Scrambler) {
-        return scramblerRowError(sys, protocol);
+    if (protocol.keys == ScanProtocolKeys::None || protocol.keys == ScanProtocolKeys::Session) {
+        return {};
     }
-    return QLatin1String(protocol.profileProtocol) == QLatin1String("nxdn") ? nxdnRowError(sys) : QString();
+    const unsigned refused = requestedKeySwitches(sys) & ~protocol.keySwitches;
+    return refused != 0U ? refusedKeySwitchError(protocol, refused) : QString();
 }
 
 /* The saved system's talkgroup file as a scoped -G option, quoted (its path holds no comma, quote or line break). */
@@ -332,11 +375,11 @@ appendGroupOption(const QVariantMap& sys, QStringList& options) {
     }
 }
 
-/* The key options of a row whose protocol takes keys (P25, DMR, NXDN, and dPMR's scrambler, whose other material
-   keyMatrixError() refused): its profile and direct key checked, then -G, the direct key, the profile's options and the
-   force choice. */
+/* The key options of a row whose protocol takes keys (P25, DMR, NXDN, dPMR), every switch of which keyMatrixError()
+   checked against the protocol's table: its profile and direct key checked, then -G, the direct key, the profile's
+   options and the force choice. */
 QString
-buildKeyOptions(const QVariantMap& sys, QStringList& options) {
+buildKeyOptions(const QVariantMap& sys, const ScanProtocol& protocol, QStringList& options) {
     if (!session_args_profile_compatible(sys)) {
         return QStringLiteral("The decryption profile protocol does not match this scan entry.");
     }
@@ -347,6 +390,11 @@ buildKeyOptions(const QVariantMap& sys, QStringList& options) {
     const QString keyType = sys.value("encKeyType").toString();
     const QString key = sys.value("encKeyValue").toString();
     QString keyError = validateDirectKeyChoice(sys, keyType, key);
+    if (keyError.isEmpty()) {
+        /* The key widths the engine's class takes (option_hytera_width(), scan_options.c): a P25 AES key is 32 or 64
+           hex digits, an NXDN one 64, as the key editor holds a profile to. */
+        keyError = session_args_key_protocol_error(QLatin1String(protocol.profileProtocol), keyType, key);
+    }
     if (!keyError.isEmpty()) {
         return keyError;
     }
@@ -363,7 +411,7 @@ buildKeyOptions(const QVariantMap& sys, QStringList& options) {
         }
         options << flags.value(keyType) << session_args_key_value_normalize(keyType, key);
     }
-    appendProfileOptions(sys, options);
+    appendProfileOptions(sys, protocol, options);
     if (force) {
         options << (force == 1 ? QStringLiteral("-4") : QStringLiteral("-0"));
     }
@@ -382,10 +430,12 @@ buildOptions(const QVariantMap& sys, const ScanProtocol& protocol, QStringList& 
     /* A protocol with no keys of its own (YSF, D-STAR, TETRA DMO, M17) passes only the talkgroup file: whatever key
        setting a saved system still holds has nothing to act on there (M17's were refused above). */
     if (protocol.keys == ScanProtocolKeys::None || protocol.keys == ScanProtocolKeys::Session) {
-        appendGroupOption(sys, options);
+        if ((protocol.keySwitches & ScanKeyGroup) != 0U) {
+            appendGroupOption(sys, options);
+        }
         return {};
     }
-    return buildKeyOptions(sys, options);
+    return buildKeyOptions(sys, protocol, options);
 }
 
 /* The modulation @p target's row writes: the entry's own, else the saved system's Radio settings', else CQPSK for the

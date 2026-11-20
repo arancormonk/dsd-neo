@@ -22606,18 +22606,24 @@ starter read it; app-control's document inspection (`trunk_scan_document.cpp`) s
 Qt. dPMR, D-STAR, YSF, M17 and TETRA DMO are conventional only: a saved system of theirs with trunking on is refused
 (`<label> entries are conventional only`), so is a channel map, and their rows never write a modulation (the editor
 hides the choice, an entry's hidden one is not written, a modulation saved in the system's Radio settings is refused).
-The key matrix (`ScanProtocolKeys`, `keyMatrixError()`, `scan_list_entry_takes_keys()`): P25 and DMR take every key
-setting as before; NXDN48 and NXDN96 take what the engine's scoped options give their class (`scan_options.c`: `-H`,
-`-1`, `-R`, `-K`, `-k`, `-G`, `--no-decryption-keys`, `--key-profile-ref`, `-4`, `--no-force-key`), so a saved NXDN
-system's Basic Privacy key, DMR talkgroup key map or algorithm fallback is refused by name (`nxdnRowError()`) instead of
-failing the whole list in the engine; dPMR only its scoped `-R` scrambler (a direct or profile key, so a legacy NXDN /
-dPMR scrambler system keeps working; any other key type or a key or key-map file is refused, and so is an algorithm
-fallback, `-0` or `--dmr-force-algid`, which only a DMR row takes; privacy forcing `-4` and `--no-force-key` pass, as
-the engine takes them); M17 none of its own (a saved system with any key setting is refused, naming the session's keys);
-YSF, D-STAR and TETRA DMO, like NFM and AM, decrypt nothing, so the editor hides the decryption choice, the starter
-resolves none of their profiles (an entry's hidden profile is no use, `DecryptionProfilesModel::useCount()`), and their
-rows pass only the talkgroup file. The editor shows M17 a note that the session's keys apply. The wizard has a dPMR chip
-(`-fm`, `qml/Util.js`).
+The key matrix is one table: each catalog protocol's `keySwitches` (`ScanKeySwitch` bits) are the key and force switches
+the engine's scoped options give its class (`scan_options.c` with the issue #890 matrix): P25 `-H` (32 or 64 hex
+digits), `-1`, `-K`, `-k`; DMR every DMR switch (`-b`, `-H`, `-1`, `-K`, `-k`, `--dmr-tg-key-csv`, `--dmr-tg-key-clear`,
+`-4`, `-0`, `--dmr-force-algid`); NXDN48 and NXDN96 `-H` (64 hex digits), `-1`, `-R`, `-K`, `-k`, `-4`; dPMR `-R` and
+`-4`; every keyed class `--no-decryption-keys`, `--key-profile-ref`, `--no-force-key`; every digital class `-G`.
+`keyMatrixError()` reads the switches a saved system's key settings would write (`requestedKeySwitches()`, the legacy
+key columns as key files) and refuses, by name and before any file is written, any its protocol's row does not take
+(`refusedKeySwitchError()`: "<label> entries take no <type> key, only ...", "... no key file", "... no DMR talkgroup key
+map", "... privacy forcing only, not an algorithm fallback", "... no forcing"); the hex width follows
+`session_args_key_protocol_error()`. M17 takes none of its own (a saved system with any key setting, a profile's force
+value included, is refused, naming the session's keys); YSF, D-STAR and TETRA DMO, like NFM and AM, decrypt nothing, so
+the editor hides the decryption choice, the starter resolves none of their profiles (an entry's hidden profile is no
+use, `DecryptionProfilesModel::useCount()`), and their rows pass only the talkgroup file. `UI_QT_SCAN_LIST_TARGETS`
+(`test_key_switch_table_matches_engine()`) walks every protocol and every key or force setting: the table must agree
+with `dsd_scan_options_parse()` for the class, and Qt must write a switch the row takes and never one it does not; on an
+engine without the B3 matrix only its own cells (dPMR `-4`; M17, YSF, D-STAR key settings) may differ, and a class the
+engine lacks (`tetra-dmo` before B1) is skipped, each with a NOTE line. The editor shows M17 a note that the session's
+keys apply. The wizard has a dPMR chip (`-fm`, `qml/Util.js`).
 
 TETRA list rate (issue #890, D3): `ScanListStarter::hasTetraTargets()` reads whether a list has a target the engine can
 visit that is TETRA DMO: an enabled entry (a switched-off one is left out of the CSV) of the protocol, a frequency

@@ -1629,9 +1629,12 @@ the Bandwidth choice. A TETRA DMO entry that is switched off is not scanned, so 
 not count. **Scan with other lists** judges each list with the ones already switched on,
 so it does not offer a list the start would refuse for its bandwidth.
 
-An NXDN48 or NXDN96 system takes the keys an NXDN target's options column takes: a Motorola
-Basic Privacy key, a DMR talkgroup key map or an algorithm fallback in its Force key setting
-(all DMR's only) is refused with the reason, before the list is written; privacy forcing passes.
+Every saved system takes only the keys its target type's options column takes, and any other
+key setting is refused with the reason before the list is written. P25 takes Hytera / AES (32
+or 64 hex digits) and RC4 / DES keys and key files, but no Basic Privacy key, scrambler or
+Force key setting; NXDN48 and NXDN96 take Hytera / AES (64 hex digits), RC4 / DES and scrambler
+keys, key files and privacy forcing, but no Basic Privacy key, DMR talkgroup key map or algorithm
+fallback; DMR takes every key setting.
 
 Each system's group file becomes a scoped `-G` option. The list's group file is
 only the fallback for entries without their own file. Key CSVs retain their

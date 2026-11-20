@@ -1064,8 +1064,11 @@ main(int argc, char** argv) {
     list["entries"] = QVariantList{QVariantMap{
         {"uid", "keyed"}, {"kind", "system"}, {"systemUid", systems.get(0).value("uid")}, {"enabled", true}}};
     ScanListStarter keyedStarter(nullptr, &systems);
+    // A key setting a P25 row cannot take (Basic Privacy is DMR's) is refused by name before anything is written,
+    // as the engine would refuse the row, and the last valid CSV stays.
     const auto rejected = keyedStarter.build(list);
-    check(!rejected.value("ok").toBool() && rejected.value("error").toString().startsWith("Scan list rejected: "));
+    check(!rejected.value("ok").toBool()
+          && rejected.value("error").toString().contains("P25 entries take no Motorola Basic Privacy key"));
     check(file.open(QIODevice::ReadOnly));
     check(file.readAll() == lastValidCsv);
     file.close();
@@ -1088,10 +1091,10 @@ main(int argc, char** argv) {
     }
     systems.update(0, {{"encForceKey", 2}});
     const QString nxdnForce = keyedStarter.build(list).value("error").toString();
-    check(nxdnForce.contains("NXDN entries take privacy forcing only") && !nxdnForce.contains("Scan list rejected"));
+    check(nxdnForce.contains("NXDN48 entries take privacy forcing only") && !nxdnForce.contains("Scan list rejected"));
     systems.update(0, {{"encForceKey", 0}, {"encKeyType", "basic"}, {"encKeyValue", "7"}});
     const QString nxdnBasic = keyedStarter.build(list).value("error").toString();
-    check(nxdnBasic.contains("NXDN entries take no Motorola Basic Privacy key")
+    check(nxdnBasic.contains("NXDN48 entries take no Motorola Basic Privacy key")
           && !nxdnBasic.contains("Scan list rejected"));
     systems.update(0, {{"decodeFlag", "-ft"}, {"encKeyType", "rc4"}, {"encKeyValue", directKey}});
     // RadioReference's combined P25 flags pass the real target parser with their scoped preference.
