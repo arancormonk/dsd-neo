@@ -2865,6 +2865,32 @@ target_include_directories(
 )
 add_test(NAME NXDN_FRAME_ROUTING COMMAND dsd-neo_test_nxdn_frame_routing)
 
+# The same cases with the LimaZulu tweak compiled in (-DLZ=ON), which every other build leaves out: its voice-frame
+# branch runs before the confirmation gate, so a build-time constant selects it (docs/testing.md).
+add_executable(
+    dsd-neo_test_nxdn_frame_routing_lz
+    protocol/nxdn/test_nxdn_frame_routing.c
+    ${PROJECT_SOURCE_DIR}/src/protocol/nxdn/nxdn_frame.c
+    ${PROJECT_SOURCE_DIR}/src/protocol/nxdn/nxdn_confirm.c
+    ${PROJECT_SOURCE_DIR}/src/runtime/signal_search_hooks.c
+    ${PROJECT_SOURCE_DIR}/src/runtime/trunk_tuning_hooks.c
+)
+target_compile_definitions(
+    dsd-neo_test_nxdn_frame_routing_lz
+    PRIVATE LIMAZULUTWEAKS
+)
+target_link_libraries(
+    dsd-neo_test_nxdn_frame_routing_lz
+    PRIVATE dsd-neo_test_receive_support
+)
+target_include_directories(
+    dsd-neo_test_nxdn_frame_routing_lz
+    PRIVATE
+        ${PROJECT_SOURCE_DIR}/include
+        ${PROJECT_SOURCE_DIR}/src/protocol/nxdn
+)
+add_test(NAME NXDN_FRAME_ROUTING_LZ COMMAND dsd-neo_test_nxdn_frame_routing_lz)
+
 add_executable(
     dsd-neo_test_nxdn_confirm
     protocol/nxdn/test_nxdn_confirm.c
@@ -21423,6 +21449,7 @@ set(_DSD_NEO_BIT_PACKING_TEST_TARGETS
     dsd-neo_test_nxdn_alias_fallback
     dsd-neo_test_nxdn_element_bounds
     dsd-neo_test_nxdn_frame_routing
+    dsd-neo_test_nxdn_frame_routing_lz
     dsd-neo_test_nxdn_grant_policy
     dsd-neo_test_nxdn_grant_tune_matrix
     dsd-neo_test_nxdn_crc32_bits
@@ -21499,6 +21526,7 @@ set(_DSD_NEO_DECODE_CLOCK_TEST_TARGETS
     dsd-neo_test_dmr_tms_utf16le
     dsd-neo_test_dmr_udp_comp_header
     dsd-neo_test_nxdn_frame_routing
+    dsd-neo_test_nxdn_frame_routing_lz
     dsd-neo_test_p25_p1_hdu_helpers
     dsd-neo_test_p25_p1_ldu1_helpers
     dsd-neo_test_p25_p1_ldu2_helpers

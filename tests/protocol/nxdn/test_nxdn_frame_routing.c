@@ -26,6 +26,19 @@
 #include "nxdn_confirm.h"
 #include "nxdn_internal.h"
 
+#ifdef LIMAZULUTWEAKS
+#include <dsd-neo/core/keyring.h>
+
+/* The LimaZulu tweak's key load (NXDN_FRAME_ROUTING_LZ): no key for the frequency's hash here. */
+int
+keyring_load_scalar_key(dsd_state* state, int slot, int key_id) {
+    (void)state;
+    (void)slot;
+    (void)key_id;
+    return 0;
+}
+#endif
+
 static dsd_opts g_opts;
 static dsd_state g_state;
 static int g_lfsr_calls;
