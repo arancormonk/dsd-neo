@@ -2879,8 +2879,9 @@ struct dsd_state {
     uint32_t carrier_seq;
     /* The symbol_clock of the last symbol not wholly the new carrier's when the receiver last left a carrier
        (dsd_state_note_carrier_change(): a carrier boundary or a trunk-scan target switch; one more than the clock when
-       the change split the symbol being read), valid once carrier_change_seen is set. What the frame sync's history and the
-       decoders' rolling buffers hold from before it is the carrier left's (dsd_state_carrier_settling()). */
+       the change split the symbol being read, set back by the frame-sync hunt when that read left with none), valid
+       once carrier_change_seen is set. What the frame sync's history and the decoders' rolling buffers hold from before
+       it is the carrier left's (dsd_state_carrier_settling()). */
     uint64_t carrier_change_symbol_clock;
     uint8_t carrier_change_seen;
     /* The frame processFrame() is dispatching (issue #661): its synctype, which a decoder borrowing another protocol's

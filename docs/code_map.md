@@ -4566,7 +4566,8 @@ suite runs under this compiler.
   gate starts at dispatch; what a frame reads back from before its sync (DMR's 66 buffered dibits, X2-TDMA's 144, a
   TETRA burst's block 1 in the hunt's history) was read earlier, so the boundary and a trunk-scan target switch also
   mark the symbol clock (`dsd_state_note_carrier_change()`; a change that runs while `getSymbol()` reads a symbol,
-  `dsd_state::symbol_read_active`, counts that split symbol as the carrier left's, one between reads none), and each
+  `dsd_state::symbol_read_active`, counts that split symbol as the carrier left's, one between reads none, and one in a
+  read that then commits no symbol, a hunt read handed back after a P25 tick's retune, none either), and each
   protocol's matcher in `getFrameSync()` waits until what its frame reads back (`k_frame_sync_tries`, then the matched
   burst's own, `frame_sync_burst_settling()`: its sync window; DMR 90, X2-TDMA data 90 and voice 144, TETRA control 57,
   synchronisation 79 and normal bursts 126, EDACS 48) is the new carrier's (`dsd_state_carrier_settling()`;

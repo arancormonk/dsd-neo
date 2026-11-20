@@ -15026,7 +15026,7 @@ live_trunk_scan_advanced(const dsd_opts* opts, const dsd_state* state) {
 enum {
     WD6_SPS = 10,          /* 48 kHz over 4800 symbols/s */
     WD6_BEAT_SYMBOL = 150, /* the read the beat is posted at: before the hunt's 300-symbol checkpoint */
-    WD6_WORD_SYMBOL = 162, /* the control channel's word starts here: 12 symbols after the beat */
+    WD6_WORD_GAP = 12,     /* the control channel's word starts this many symbols after the beat */
     WD6_STREAM_SYMBOLS = 900,
     WD6_VOICE_CHANNEL = 0x1234,
 };
@@ -15056,10 +15056,14 @@ enum { WD6_VC_WORD_SYMBOL = 60 };
 
 static int g_wd6_vc_word = 0;
 
+/* Where the control channel's word starts: WD6_WORD_GAP symbols after the beat, or at the beat's own symbol (the zero-gap
+   cases: the word's first symbol is the one the handed-back read never committed). */
+static long g_wd6_word_symbol = WD6_BEAT_SYMBOL + WD6_WORD_GAP;
+
 static int
 wd6_level(long symbol) {
-    if (symbol >= WD6_WORD_SYMBOL && symbol < WD6_WORD_SYMBOL + 24) {
-        return P25P1_SYNC[symbol - WD6_WORD_SYMBOL] == '1' ? 3 : -3;
+    if (symbol >= g_wd6_word_symbol && symbol < g_wd6_word_symbol + 24) {
+        return P25P1_SYNC[symbol - g_wd6_word_symbol] == '1' ? 3 : -3;
     }
     if (g_wd6_vc_word && symbol >= WD6_VC_WORD_SYMBOL && symbol < WD6_VC_WORD_SYMBOL + 24) {
         return P25P1_SYNC[symbol - WD6_VC_WORD_SYMBOL] == '1' ? 3 : -3;
@@ -15368,6 +15372,21 @@ test_live_p25_replaced_pending_return_lands_before_the_next_hunt(void) {
 static int
 test_live_p25_beat_on_a_stalled_sound_card(void) {
     return run_live_p25_beat_in_a_read(WD_DEVICE_STALL);
+}
+
+/* A read the return handed back committed no symbol: the carrier boundary is the last symbol it did commit, so a word
+   whose first symbol is the next one read (no gap after the return) is whole on the new carrier and dispatches, on a
+   rigctl return, a pending one, and one on a stalled sound card. */
+static int
+test_live_p25_word_at_once_after_a_return_in_a_read(void) {
+    static const int k_modes[] = {WD_RIGCTL, WD_PENDING, WD_DEVICE_STALL};
+    int rc = 0;
+    g_wd6_word_symbol = WD6_BEAT_SYMBOL;
+    for (size_t i = 0; i < sizeof k_modes / sizeof k_modes[0]; i++) {
+        rc |= run_live_p25_beat_in_a_read(k_modes[i]);
+    }
+    g_wd6_word_symbol = WD6_BEAT_SYMBOL + WD6_WORD_GAP;
+    return rc;
 }
 
 static int
@@ -17837,6 +17856,7 @@ test_scan_quiet_decisions(void) {
     rc |= test_live_p25_beat_in_a_frame_pending_return_lands_before_the_next_hunt();
     rc |= test_live_p25_replaced_pending_return_lands_before_the_next_hunt();
     rc |= test_live_p25_beat_on_a_stalled_sound_card();
+    rc |= test_live_p25_word_at_once_after_a_return_in_a_read();
     return rc;
 }
 #endif

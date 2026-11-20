@@ -3936,6 +3936,19 @@ frame_sync_history_drop(dsd_state* state) {
     state->frame_sync_carry.valid = 0;
 }
 
+/* A hunt read that left (dsd_state::input_interrupted) and committed no symbol: a carrier change inside it (a P25
+   tick's retune at one of its service points) marked the symbol it was reading as split, one past the clock, but no
+   such symbol was read. The boundary is the clock, so the next symbol read is the new carrier's first and a sync word
+   that starts there is whole (dsd_state_note_carrier_change()). A read that did commit its symbol moved the clock onto
+   the mark. The history goes, as on every such exit. Only on the exit, so the symbol path pays nothing. */
+static void
+frame_sync_read_left(dsd_state* state) {
+    if (state->carrier_change_seen != 0U && state->carrier_change_symbol_clock == state->symbol_clock + 1U) {
+        state->carrier_change_symbol_clock--;
+    }
+    frame_sync_history_drop(state);
+}
+
 /* Whether the carried ring's head and counts lie within its buffers. */
 static int
 frame_sync_history_carry_in_range(const dsd_frame_sync_history_carry* carry) {
@@ -6065,7 +6078,7 @@ getFrameSync(dsd_opts* opts, dsd_state* state) {
             /* The read left a silent input's wait for a queued command, the input ended (issue #634) or the read
                met a stream gap (issue #518): no symbol came and no pass ran, so nothing of it is counted. The engine
                loop applies the command, switches the input or resets what the gap cut; the next call hunts afresh. */
-            frame_sync_history_drop(state);
+            frame_sync_read_left(state);
             frame_sync_sps_hunt_mark_return(state);
             return DSD_SYNC_NONE;
         }
