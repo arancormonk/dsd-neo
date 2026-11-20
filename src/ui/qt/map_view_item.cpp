@@ -520,31 +520,10 @@ MapViewItem::itemChange(ItemChange change, const ItemChangeData& value) {
     const bool gone =
         (change == ItemSceneChange && value.window == nullptr) || (change == ItemVisibleHasChanged && !value.boolValue);
     if (gone) {
-        releaseTiles();
-        /* The view the screen keeps is the one shown when it hid: a camera move still running stops there, and no
-         * follow step moves it while hidden (followNow()), so the dot going back from a live fix to the saved one as
-         * the map closes cannot carry the camera with it. A follow's move cut short is finished on return. */
-        if (m_camera->state() == QAbstractAnimation::Running && m_animFollow && following()) {
-            /* A follow's move cut short (not a zoom button's): a first centring is done again as a first, a later
-             * step is finished at the user's zoom. */
-            if (m_followStepFirst) {
-                m_followedSet = false;
-            } else {
-                m_followCatchUp = true;
-            }
-        }
-        stopCamera();
-        m_hiddenSize = size();
+        hidden();
     }
     if (change == ItemVisibleHasChanged && value.boolValue) {
-        /* Back on screen: the kept view fitted to the size the canvas has now, and a follow still on catches up with a
-         * mark that moved meanwhile, a move cut short, or a canvas resized while hidden (a rotation), at the zoom the
-         * user left it at. The screen calls recentreFollow() again once the chips above have their height. */
-        if (size() != m_hiddenSize) {
-            m_followCatchUp = true;
-        }
-        setViewport(m_asked);
-        followNow();
+        shownAgain();
     }
     if (change == ItemVisibleHasChanged || change == ItemSceneChange) {
         catchUpScene();
@@ -553,6 +532,36 @@ MapViewItem::itemChange(ItemChange change, const ItemChangeData& value) {
         polish();
         update();
     }
+}
+
+void
+MapViewItem::hidden() {
+    releaseTiles();
+    /* The view the screen keeps is the one shown when it hid: a camera move still running stops there, and no follow
+     * step moves it while hidden (followNow()), so the dot going back from a live fix to the saved one as the map
+     * closes cannot carry the camera with it. A follow's move cut short (not a zoom button's) is finished on return:
+     * a first centring is done again as a first, a later step at the user's zoom. */
+    if (m_camera->state() == QAbstractAnimation::Running && m_animFollow && following()) {
+        if (m_followStepFirst) {
+            m_followedSet = false;
+        } else {
+            m_followCatchUp = true;
+        }
+    }
+    stopCamera();
+    m_hiddenSize = size();
+}
+
+void
+MapViewItem::shownAgain() {
+    /* Back on screen: the kept view fitted to the size the canvas has now, and a follow still on catches up with a mark
+     * that moved meanwhile, a move cut short, or a canvas resized while hidden (a rotation), at the zoom the user left
+     * it at. The screen calls recentreFollow() again once the chips above have their height. */
+    if (size() != m_hiddenSize) {
+        m_followCatchUp = true;
+    }
+    setViewport(m_asked);
+    followNow();
 }
 
 // ------------------------------------------------------------- camera ----
@@ -755,12 +764,12 @@ MapViewItem::deviceZoom() const {
     }
     /* The circle's radius spans a quarter of the shorter side, and each zoom step halves the metres per pixel:
      * metres_per_px(lat, 0) / 2^zoom = radius / (side / 4). */
-    const double zoom = std::log2(mm::metres_per_px(m_deviceLat, 0.0) * side / (4.0 * m_deviceAccuracyM));
-    if (!std::isfinite(zoom)) {
+    const double level = std::log2(mm::metres_per_px(m_deviceLat, 0.0) * side / (4.0 * m_deviceAccuracyM));
+    if (!std::isfinite(level)) {
         return kNear;
     }
     /* No floor but the projection's: an approximate fix's circle can be kilometres across, and all of it shows. */
-    return std::max(mm::kMinZoom, std::min(kNear, zoom));
+    return std::max(mm::kMinZoom, std::min(kNear, level));
 }
 
 void

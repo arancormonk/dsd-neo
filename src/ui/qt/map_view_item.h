@@ -526,6 +526,10 @@ class MapViewItem : public QQuickItem {
     bool tilesSettled(const QSet<MapTileKey>& inView);
     void dropUnreusableTiles(const QSet<MapTileKey>& inView);
     map_math::Viewport cameraBase() const;
+    /** @brief itemChange(): the canvas left the screen or its window. */
+    void hidden();
+    /** @brief itemChange(): the canvas is shown again. */
+    void shownAgain();
     void retoneTiles();
     QImage toneTile(const QImage& image) const;
     map_math::Viewport viewportForSize() const;
