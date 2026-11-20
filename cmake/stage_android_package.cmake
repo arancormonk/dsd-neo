@@ -49,8 +49,23 @@ foreach(
     endif()
 endforeach()
 
+get_filename_component(_source "${SOURCE_DIR}" ABSOLUTE)
 get_filename_component(_stage "${STAGE_DIR}" ABSOLUTE)
 set(_doc_dir "${_stage}/assets/doc/dsd-neo")
+
+# Every path below <dir>, relative to it, folders included when <list_dirs> is true. A glob
+# reads [, ], * and ? in the folder's own path as a pattern too, so they are put in brackets
+# there, where each stands for itself alone.
+function(_dsd_glob_tree out dir list_dirs)
+    string(REGEX REPLACE "([][*?])" "[\\1]" _pattern "${dir}")
+    file(
+        GLOB_RECURSE _entries
+        LIST_DIRECTORIES ${list_dirs}
+        RELATIVE "${dir}"
+        "${_pattern}/*"
+    )
+    set(${out} "${_entries}" PARENT_SCOPE)
+endfunction()
 
 # The first symbolic link among <root>, the folders on the way from it to <root>/<relative>
 # and everything in the folder there, or "" when there is none.
@@ -71,10 +86,10 @@ function(_dsd_find_link out root relative)
         endif()
     endforeach()
     if(_link STREQUAL "" AND IS_DIRECTORY "${_path}")
-        file(GLOB_RECURSE _entries LIST_DIRECTORIES true "${_path}/*")
+        _dsd_glob_tree(_entries "${_path}" true)
         foreach(_entry IN LISTS _entries)
-            if(IS_SYMLINK "${_entry}")
-                set(_link "${_entry}")
+            if(IS_SYMLINK "${_path}/${_entry}")
+                set(_link "${_path}/${_entry}")
                 break()
             endif()
         endforeach()
@@ -160,15 +175,10 @@ if(DEFINED _DSD_FRESH_DIR)
     # Then each file of android/package/'s documentation whose path no notice takes: none
     # at a notice's path or under it, whatever its timestamp (file(COPY) would keep a
     # destination of the same time), and none where a notice folder is.
-    set(_package_doc "${SOURCE_DIR}/assets/doc/dsd-neo")
+    set(_package_doc "${_source}/assets/doc/dsd-neo")
     set(_package_files "")
     if(IS_DIRECTORY "${_package_doc}")
-        file(
-            GLOB_RECURSE _package_files
-            LIST_DIRECTORIES false
-            RELATIVE "${_package_doc}"
-            "${_package_doc}/*"
-        )
+        _dsd_glob_tree(_package_files "${_package_doc}" false)
     endif()
     foreach(_name IN LISTS _package_files)
         set(_path "${_fresh_dir}")
@@ -191,21 +201,11 @@ if(DEFINED _DSD_FRESH_DIR)
     endforeach()
 
     set(_index_name "notice-index.txt")
-    file(
-        GLOB_RECURSE _staged
-        LIST_DIRECTORIES false
-        RELATIVE "${_fresh_dir}"
-        "${_fresh_dir}/*"
-    )
+    _dsd_glob_tree(_staged "${_fresh_dir}" false)
     list(REMOVE_ITEM _staged "${_index_name}")
     set(_present "")
     if(EXISTS "${_doc_dir}")
-        file(
-            GLOB_RECURSE _present
-            LIST_DIRECTORIES false
-            RELATIVE "${_doc_dir}"
-            "${_doc_dir}/*"
-        )
+        _dsd_glob_tree(_present "${_doc_dir}" false)
     endif()
     foreach(_name IN LISTS _present)
         if(NOT _name STREQUAL _index_name AND NOT _name IN_LIST _staged)
@@ -255,12 +255,12 @@ include("${REPO_DIR}/cmake/MbelibNotices.cmake")
 # Every copy below writes through a symbolic link as through a folder, to wherever it
 # points, so none may be in the documentation's path: the source and stage folders
 # themselves, android/package/'s documentation or the way to it, or the staged package's.
-_dsd_refuse_links("${SOURCE_DIR}" "assets/doc/dsd-neo")
+_dsd_refuse_links("${_source}" "assets/doc/dsd-neo")
 _dsd_refuse_links("${_stage}" "assets/doc/dsd-neo")
 
 # The package's documentation folder comes from the fresh one alone, below.
 file(
-    COPY "${SOURCE_DIR}/"
+    COPY "${_source}/"
     DESTINATION "${_stage}"
     REGEX "/assets/doc/dsd-neo$"
     EXCLUDE
@@ -282,7 +282,7 @@ file(MAKE_DIRECTORY "${_fresh_dir}")
 # here whichever of them fails, and the child's output is reported with the failure.
 set(_child_args
     -DREPO_DIR=${REPO_DIR}
-    -DSOURCE_DIR=${SOURCE_DIR}
+    -DSOURCE_DIR=${_source}
     -DSTAGE_DIR=${STAGE_DIR}
     -DBUILD_DIR=${BUILD_DIR}
     -DMBELIB_NOTICE_DIR=${MBELIB_NOTICE_DIR}

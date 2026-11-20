@@ -925,6 +925,40 @@ class NoticeStagingTests(unittest.TestCase):
         self.assertIn(f"{self.mbe / 'legal'} is a symbolic link", " ".join((result.stdout + result.stderr).split()))
         self.assertEqual(self.scratch_folders(), [])
 
+    def test_android_staging_reads_folder_paths_literally(self):
+        # A package or stage folder whose path holds pattern characters, or a package folder given relative to the
+        # working folder, keeps the package's documents in the APK and its index, and a link there is still refused.
+        build, share, docs, args = self.android_fixture()
+        package = self.work / "package"
+        (package / "assets/doc/dsd-neo/extra.txt").parent.mkdir(parents=True)
+        (package / "assets/doc/dsd-neo/extra.txt").write_text("from the package source\n", encoding="utf-8")
+        for label, package_name, source, stage_name in (
+                ("a package folder with pattern characters", "package [qa]*?", None, "stage"),
+                ("a stage folder with pattern characters", "package", None, "stage [qa]*?"),
+                ("a relative package folder", "package", "package", "stage")):
+            with self.subTest(case=label):
+                if package.name != package_name:
+                    package = package.rename(self.work / package_name)
+                stage = self.work / stage_name
+                replaced = {"-DSOURCE_DIR": f"-DSOURCE_DIR={source or package}", "-DSTAGE_DIR": f"-DSTAGE_DIR={stage}"}
+                case_args = [replaced.get(str(arg).partition("=")[0], arg) for arg in args]
+                case_docs = stage / "assets/doc/dsd-neo"
+                result = self.run_cmake(*case_args)
+                self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+                self.assertEqual((case_docs / "extra.txt").read_text(encoding="utf-8"), "from the package source\n")
+                self.assertIn("extra.txt", (case_docs / "notice-index.txt").read_text(encoding="utf-8").splitlines())
+                if os.name != "nt":
+                    link = package / "assets/doc/dsd-neo/linked.txt"
+                    link.symlink_to(package / "assets/doc/dsd-neo/extra.txt")
+                    result = self.run_cmake(*case_args)
+                    link.unlink()
+                    self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
+                    self.assertIn("is a symbolic link", " ".join((result.stdout + result.stderr).split()))
+                self.assertEqual([path.name for path in self.work.iterdir() if "-doc-" in path.name], [])
+                shutil.rmtree(stage)
+                if package.name != "package":
+                    package = package.rename(self.work / "package")
+
     def test_android_staging_keeps_the_package_source_documentation(self):
         # A file android/package/ puts in the documentation folder reaches the APK and its index, in a clean build and
         # in an incremental one, and a generated notice of the same name takes its place.
