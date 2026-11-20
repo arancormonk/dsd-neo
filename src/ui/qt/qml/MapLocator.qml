@@ -48,8 +48,8 @@ Item {
 
     // The broker's answer centres the view (the screen does it). canFollow:
     // an explicit Locate me with precise location allowed, so Follow is the
-    // next step; opening: the map's opening fix, placed at the fix's own zoom.
-    signal located(bool canFollow, bool opening)
+    // next step.
+    signal located(bool canFollow)
 
     readonly property bool supported: typeof decoderHost !== "undefined" && !!decoderHost && decoderHost.locationSupported === true
     // A Locate me in flight (the opening fix does not hold the button).
@@ -104,12 +104,15 @@ Item {
         else
             locate();
     }
-    // What the platform allows now: "none", "approximate" or "precise".
+    // What the platform allows now: "none" (no permission), "off" (the
+    // device's location switched off), "approximate" or "precise".
     function access() {
         return supported && typeof decoderHost.locationAccess === "function" ? decoderHost.locationAccess() : "none";
     }
+    // Whether a fix can come now without a prompt.
     function allowed() {
-        return access() !== "none";
+        var a = access();
+        return a === "approximate" || a === "precise";
     }
     function locate() {
         if (!supported || busyElsewhere)
@@ -248,11 +251,7 @@ Item {
             locator.requestId = 0;
             locator.quiet = false;
             if (result.fixOk) {
-                // A cached answer can be older than a fix another screen saved
-                // since: the newer one stays, and the dot shows it.
-                var saved = !(prefs.lastFixAt > result.fixAtMs);
-                if (saved)
-                    prefs.setLocationFix(result.lat, result.lon, result.fixAtMs, result.accuracyM);
+                prefs.setLocationFix(result.lat, result.lon, result.fixAtMs, result.accuracyM);
                 var precise = locator.access() === "precise";
                 if (!quiet) {
                     // An approximate fix after Locate me offered precise:
@@ -260,26 +259,18 @@ Item {
                     locator.notice = precise ? "" : qsTr("Your location is approximate. Allow precise location for a closer fix.");
                     locator.noticeAction = precise ? "" : "appSettings";
                 }
-                // A newer fix kept over this answer places the camera only with
-                // precise access: under approximate access it may be a precise
-                // fix from before access was lowered.
-                if (locator.moveOnAnswer && (saved || precise))
-                    locator.located(precise && !quiet, quiet);
+                if (locator.moveOnAnswer)
+                    locator.located(precise && !quiet);
                 locator.moveOnAnswer = false;
             } else if (!quiet) {
-                // Where to fix it: no access, or approximate access with no
-                // provider it may use, is the app's settings; location
-                // switched off is the device's. (The two errors are
-                // LocationSupport.kt's own fixed texts.)
-                var error = String(result.error || "");
-                var off = error.indexOf("Location is off") === 0;
-                var noProvider = error.indexOf("Location provider unavailable") === 0;
+                // Where to fix it: no permission is the app's settings, the
+                // location switch off is the device's.
                 var access = locator.access();
-                locator.noticeAction = access === "none" || (noProvider && access === "approximate") ? "appSettings" : off ? "locationSettings" : "";
-                locator.notice = off && access !== "none" ? qsTr("Location is off on this device.")
-                    : noProvider && access === "approximate" ? qsTr("Location unavailable with approximate location. Allow precise location to use GPS.")
+                locator.noticeAction = access === "none" ? "appSettings" : access === "off" ? "locationSettings" : "";
+                locator.notice = access === "off" ? qsTr("Location is off on this device.")
+                    : access === "none" ? qsTr("Location unavailable. Check location access in your device settings.")
                     : prefs.lastFixAt > 0 ? qsTr("Location unavailable. The dot shows your saved location.")
-                    : qsTr("Location unavailable. Check location access in your device settings.");
+                    : qsTr("Location unavailable. Try again in a moment.");
             }
         }
         function onEnded(requester, endedId) {

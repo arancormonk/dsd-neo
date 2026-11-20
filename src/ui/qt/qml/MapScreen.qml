@@ -53,10 +53,6 @@ Item {
     // Whether the camera was set up once: at the first open of the app's run.
     // The screen is kept between visits, so the view keeps its place after.
     property bool cameraPlaced: false
-    // Whether the zoom shown is one the user chose (buttons, pinch, wheel, a
-    // saved view): Locate me keeps a closer one; a zoom the map set itself
-    // gives way to the fix's own.
-    property bool zoomChosen: false
     // Whether the app is in the foreground. On Android an Item stays visible
     // while the app is hidden, so the live position and the age clock follow
     // the application's state, not only `visible`. Inactive (a dialog on top)
@@ -138,12 +134,10 @@ Item {
             return;
         var access = locator.access();
         if (access === "precise" && locator.deviceValid)
-            map.centerOnDevice(true);
-        else if (keeper.restore())
-            zoomChosen = true;
-        else
+            map.centerOnDevice();
+        else if (!keeper.restore())
             map.fitAll(false);
-        if (access !== "none")
+        if (locator.allowed())
             locator.locateQuietly();
     }
 
@@ -154,8 +148,8 @@ Item {
         pin = record;
         mapShown = true;
         // A first visit starts from the saved view's zoom, as an open would.
-        if (!cameraPlaced && keeper.restore())
-            zoomChosen = true;
+        if (!cameraPlaced)
+            keeper.restore();
         cameraPlaced = true;
         map.selectedTrackId = 0;
         // A one-shot move: a follow left on would take the camera back on its
@@ -433,7 +427,10 @@ Item {
         id: area
         objectName: "mapArea"
 
-        anchors.top: promptScroll.visible ? promptScroll.bottom : chrome.bottom
+        // The prompt's own condition, not its visibility: that turns false
+        // with the whole screen as it closes, and the canvas would grow
+        // under the view it keeps for the next visit.
+        anchors.top: tilesPrompt.shown ? promptScroll.bottom : chrome.bottom
         anchors.topMargin: 10
         anchors.left: parent.left
         anchors.right: parent.right
@@ -543,7 +540,6 @@ Item {
                 onActiveChanged: {
                     if (active) {
                         startZoom = map.zoom;
-                        screen.zoomChosen = true;
                         screen.userMovedCamera();
                         locator.keepView();
                     }
@@ -558,7 +554,6 @@ Item {
                 enabled: Navigation.allows(map)
                 target: null
                 onWheel: function (event) {
-                    screen.zoomChosen = true;
                     screen.userMovedCamera();
                     locator.keepView();
                     map.zoomAbout(map.zoom + event.angleDelta.y / 240, wheel.point.position.x, wheel.point.position.y);
@@ -809,7 +804,6 @@ Item {
                     accessibleName: qsTr("Zoom in")
                     enabled: map.zoom < map.maximumZoom - 0.01
                     onClicked: {
-                        screen.zoomChosen = true;
                         screen.userMovedCamera();
                         locator.keepView();
                         map.zoomIn();
@@ -831,7 +825,6 @@ Item {
                     accessibleName: qsTr("Zoom out")
                     enabled: map.zoom > map.minimumZoom + 0.01
                     onClicked: {
-                        screen.zoomChosen = true;
                         screen.userMovedCamera();
                         locator.keepView();
                         map.zoomOut();
@@ -844,7 +837,6 @@ Item {
                 accessibleName: qsTr("Show every radio")
                 enabled: map.markerCount > 0 || locator.deviceValid || screen.pin !== null
                 onClicked: {
-                    screen.zoomChosen = false;
                     screen.userMovedCamera();
                     locator.keepView();
                     if (screen.pin)
@@ -894,9 +886,7 @@ Item {
                 screen.endFollows();
                 screen.mapShown = true;
                 screen.userMovedCamera();
-                var keep = screen.zoomChosen && map.zoom >= map.deviceZoom();
-                map.centerOnDevice(!keep);
-                screen.zoomChosen = keep;
+                map.centerOnDevice();
             }
         }
 
@@ -1071,7 +1061,7 @@ Item {
         objectName: "mapLocator"
         shown: screen.visible && screen.mapShown
         foreground: screen.appForeground
-        onLocated: function (canFollow, opening) {
+        onLocated: function (canFollow) {
             screen.userMovedCamera();
             // A radio followed would take the camera back from the dot.
             map.followTrackId = 0;
@@ -1079,12 +1069,9 @@ Item {
             // the opening fix, or without precise location, the button stays
             // Locate me, so every press finds the user again.
             locator.readyToFollow = canFollow;
-            // The fix's own zoom, unless the user chose a closer one (not for
-            // the opening fix, which nobody asked for). A zoom the map sets
-            // itself is not the user's.
-            var keep = !opening && screen.zoomChosen && map.zoom >= map.deviceZoom();
-            map.centerOnDevice(!keep);
-            screen.zoomChosen = keep;
+            // At the fix's own zoom: the streets around a precise fix, the
+            // whole circle of an approximate one.
+            map.centerOnDevice();
         }
         onFollowMeChanged: map.followDevice = followMe
     }

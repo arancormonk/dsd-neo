@@ -6,6 +6,7 @@ import android.app.Activity
 import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
+import android.location.LocationManager
 import android.os.Handler
 import android.os.Looper
 import android.provider.Settings
@@ -34,11 +35,22 @@ object LocationPermission {
     internal fun granted(context: Context, permission: String) =
         context.checkSelfPermission(permission) == PackageManager.PERMISSION_GRANTED
 
-    /** What the app may read now, from any thread: "precise", "approximate" or "none". */
+    /**
+     * What the app may read now, from any thread: "none" without permission, "off" with permission but the device's
+     * location switched off (which revokes nothing), else "precise" or "approximate".
+     */
     @JvmStatic fun access(context: Context): String = when {
+        !granted(context, Manifest.permission.ACCESS_COARSE_LOCATION)
+            && !granted(context, Manifest.permission.ACCESS_FINE_LOCATION) -> "none"
+        locationOff(context) -> "off"
         granted(context, Manifest.permission.ACCESS_FINE_LOCATION) -> "precise"
-        granted(context, Manifest.permission.ACCESS_COARSE_LOCATION) -> "approximate"
-        else -> "none"
+        else -> "approximate"
+    }
+
+    private fun locationOff(context: Context): Boolean = try {
+        !(context.getSystemService(Context.LOCATION_SERVICE) as LocationManager).isLocationEnabled
+    } catch (_: Exception) {
+        false
     }
 
     /**

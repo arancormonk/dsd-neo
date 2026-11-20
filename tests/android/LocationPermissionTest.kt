@@ -278,6 +278,21 @@ private fun mapUpgradeStartsAStreamRoamingHolds() {
     stopFeed()
 }
 
+// What Qt reads before the map places itself: no permission, the device's location switched off (permission kept),
+// approximate or precise.
+private fun accessReadsPermissionAndTheSwitch() {
+    val activity = noAccess()
+    check(LocationPermission.access(activity) == "none")
+    activity.grant(coarse = true, fine = false)
+    check(LocationPermission.access(activity) == "approximate")
+    activity.grant(coarse = true, fine = true)
+    check(LocationPermission.access(activity) == "precise")
+    activity.manager.isLocationEnabled = false
+    check(LocationPermission.access(activity) == "off")
+    activity.grant(coarse = false, fine = false)
+    check(LocationPermission.access(activity) == "none")
+}
+
 fun main() {
     LocationStream.onActivityStart()
     requestCodes()
@@ -292,6 +307,7 @@ fun main() {
     throwingPromptSettlesTheWaiters()
     settingsScreens()
     mapUpgradeStartsAStreamRoamingHolds()
+    accessReadsPermissionAndTheSwitch()
     println(
         "PASS: location prompt codes, precise and approximate answers, denial, cancellation, disable, sharing, " +
             "a prompt that cannot open, Settings"

@@ -762,7 +762,8 @@ approximate, the map zooms to show the whole area you may be in and says **Your 
 location for a closer fix.**, with a Settings button. The fix is saved like the nearby-site chooser's and dropped after
 24 hours. With precise location, press the button again while the map is still on the dot to **Follow my position**:
 the map then moves with you, only while the map is on screen. With approximate location the button stays Locate me, so
-each press finds you again. Leaving the map, moving it by hand or
+each press finds you again. With the phone's location switched off, the map opens as without location and Locate me
+says **Location is off on this device.**, with a Settings button. Leaving the map, moving it by hand or
 pressing the button a third time stops it, and those live positions are never saved. Nor are the map tiles fetched
 around you: they stay in memory (see "Map tiles"). Without precise location the map says **Live position needs precise
 location.** When the phone has had no new fix for a minute (a tunnel), the dot stays where it last was, distances say

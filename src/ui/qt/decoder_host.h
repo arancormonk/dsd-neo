@@ -717,8 +717,9 @@ class DecoderHost : public QObject {
     }
 
     /**
-     * @brief The location access this app has now: "none", "approximate" or "precise". Read when it is needed, since
-     * the user can change it in the platform's settings while the app runs. The default host has none.
+     * @brief The location access this app has now: "none" (no permission), "off" (permission, but the device's location
+     * switched off), "approximate" or "precise". Read when it is needed, since the user can change it in the platform's
+     * settings while the app runs. The default host has none.
      */
     Q_INVOKABLE virtual QString
     locationAccess() const {

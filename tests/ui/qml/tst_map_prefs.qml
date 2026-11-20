@@ -379,58 +379,34 @@ Item {
             verify(near(canvas().centerLongitude, 33.0, 1e-5), "on the pin");
         }
 
-        // Locate me keeps a closer zoom only when the user chose it: one the map set itself gives way to the fix's own.
-        function test_04j_a_zoom_the_user_chose_is_kept() {
-            prefs.setLocationFix(devicePlace.latitude, devicePlace.longitude, savedSystems.realtimeNowMs(), 5);
+        // Locate me always shows the fix's own zoom: the streets around a precise fix, the whole circle of a wide one,
+        // whatever zoom the map had.
+        function test_04j_locate_me_shows_the_fix_at_its_own_zoom() {
+            prefs.setLocationFix(devicePlace.latitude, devicePlace.longitude, savedSystems.realtimeNowMs() - 2000, 5);
             restart();
             tryVerify(function () { return near(canvas().zoom, 15, 1e-6); }, 2000, "opened at street level");
-            var button = item("mapLocate");
-            button.activate();
-            decoderHost.locationResult(pendingLocate(), true, devicePlace.latitude, devicePlace.longitude, 2000, savedSystems.realtimeNowMs(), false, "", "", "");
-            tryVerify(function () { return canvas().zoom < 14; }, 2000, "the wide fix's zoom: " + canvas().zoom);
             item("mapZoomIn").activate();
             item("mapZoomIn").activate();
-            var chosen = canvas().zoom;
-            button.activate();
-            decoderHost.locationResult(pendingLocate(), true, devicePlace.latitude, devicePlace.longitude + 0.05, 2000, savedSystems.realtimeNowMs(), false, "", "", "");
-            tryVerify(function () { return near(canvas().centerLongitude, devicePlace.longitude + 0.05, 1e-5); }, 2000, "the camera reached the new fix");
-            verify(near(canvas().zoom, chosen, 1e-6), "the user's closer zoom stays: " + canvas().zoom + " vs " + chosen);
-        }
-
-        // A zoom the map set itself is not the user's: after a restored view (chosen) the opening fix sets street level,
-        // and a wide Locate me then shows its whole circle.
-        function test_04l_an_automatic_zoom_is_not_kept() {
-            prefs.mapViewport = {latitude: savedPlace.latitude, longitude: savedPlace.longitude, zoom: 5};
-            restart();
-            decoderHost.locationResult(pendingLocate(), true, devicePlace.latitude, devicePlace.longitude, 5, savedSystems.realtimeNowMs() - 1000, false, "", "", "");
-            tryVerify(function () { return near(canvas().zoom, 15, 1e-6); }, 2000, "the opening fix at street level: " + canvas().zoom);
             item("mapLocate").activate();
             decoderHost.locationResult(pendingLocate(), true, devicePlace.latitude, devicePlace.longitude + 0.05, 3000, savedSystems.realtimeNowMs(), false, "", "", "");
-            tryVerify(function () { return near(canvas().centerLongitude, devicePlace.longitude + 0.05, 1e-5); }, 2000);
-            verify(canvas().zoom < 14, "the wide fix's zoom, not 15: " + canvas().zoom);
+            tryVerify(function () { return near(canvas().centerLongitude, devicePlace.longitude + 0.05, 1e-5); }, 2000, "the camera reached the fix");
+            verify(near(canvas().zoom, canvas().deviceZoom(), 1e-6) && canvas().zoom < 14, "the wide fix's zoom: " + canvas().zoom);
         }
 
-        // Under approximate access an answer older than the saved fix moves nothing: the saved one may be precise.
-        function test_04m_an_older_coarse_answer_does_not_place_a_saved_dot() {
-            testContext.setLocationAccess("approximate");
-            var now = savedSystems.realtimeNowMs();
-            prefs.setLocationFix(devicePlace.latitude, devicePlace.longitude, now, 5);
+        // The device's location switched off (permission kept): the map neither opens on the saved dot nor asks for a
+        // fix, and a Locate me that fails sends the user to the location settings.
+        function test_04k_location_switched_off() {
+            testContext.setLocationAccess("off");
+            prefs.setLocationFix(devicePlace.latitude, devicePlace.longitude, savedSystems.realtimeNowMs(), 5);
             prefs.mapViewport = {latitude: savedPlace.latitude, longitude: savedPlace.longitude, zoom: savedPlace.zoom};
             restart();
-            decoderHost.locationResult(pendingLocate(), true, devicePlace.latitude + 0.02, devicePlace.longitude + 0.02, 2000, now - 5000, false, "", "", "");
-            wait(50);
-            verify(sameView(canvasView(), savedPlace.latitude, savedPlace.longitude, savedPlace.zoom), "the saved view stays: " + JSON.stringify(canvasView()));
-            verify(near(prefs.lastLat, devicePlace.latitude), "the newer fix stays saved");
-        }
-
-        // An answer older than a fix another screen saved since leaves the newer one.
-        function test_04k_an_older_answer_keeps_a_newer_saved_fix() {
-            restart();
-            var id = pendingLocate();
-            var newer = savedSystems.realtimeNowMs();
-            prefs.setLocationFix(10.0, 10.0, newer, 5);
-            decoderHost.locationResult(id, true, devicePlace.latitude, devicePlace.longitude, 8, newer - 20000, false, "", "", "");
-            verify(near(prefs.lastLat, 10.0) && prefs.lastFixAt === newer, "the newer fix stays");
+            tryVerify(function () { return screen.cameraPlaced; }, 2000);
+            verify(sameView(canvasView(), savedPlace.latitude, savedPlace.longitude, savedPlace.zoom), "the saved view: " + JSON.stringify(canvasView()));
+            compare(pendingLocate(), 0, "no opening fix");
+            item("mapLocate").activate();
+            decoderHost.locationResult(pendingLocate(), false, 0, 0, 0, 0, false, "", "", "Location is off; use Browse.");
+            compare(item("mapLocator").notice, "Location is off on this device.");
+            compare(item("mapLocator").noticeAction, "locationSettings");
         }
 
         // Close while following a live fix that is not the saved one: letting the lease go moves the dot back to the

@@ -1031,6 +1031,35 @@ test_hidden_canvas_keeps_its_view() {
     f.map->setVisible(true);
     assert(std::fabs(f.map->centerLongitude() - 100.0) < 1.0e-6 && std::fabs(f.map->zoom() - 6.0) < 1.0e-9);
     f.map->setFollowTrackId(0U);
+
+    /* A first centring cut short (one that must raise a world-wide zoom to centre a mark near the pole) is done again
+     * as a first on return, raise included. */
+    push(4013U, 65.0, -40.0);
+    f.model.poll();
+    f.map->centerOn(65.0, -40.0, 6.0);
+    const qulonglong polar = f.map->trackAt(200.0, 150.0);
+    assert(polar != 0U);
+    f.map->setZoom(0.0);
+    f.map->setCameraDurationMs(250);
+    f.map->setFollowTrackId(polar);
+    f.map->setVisible(false);
+    f.map->setCameraDurationMs(0);
+    f.map->setVisible(true);
+    const QPointF mark = f.map->markerPoint(polar).toPointF();
+    assert(std::fabs(mark.x() - 200.0) < 1.0e-6 && std::fabs(mark.y() - 150.0) < 1.0e-6);
+    f.map->setFollowTrackId(0U);
+
+    /* The List shown (the canvas hidden) and the layout changing meanwhile does not start a follow over. */
+    f.map->centerOn(65.0, -40.0, 6.0);
+    f.map->setFollowTrackId(polar);
+    f.map->zoomAbout(f.map->minimumZoom(), 200.0, 150.0); /* pinched right out */
+    const double out = f.map->zoom();
+    f.map->setVisible(false);
+    f.map->setSize(QSizeF(400.0, 900.0));
+    f.map->setSize(QSizeF(400.0, 300.0));
+    f.map->setVisible(true);
+    assert(std::fabs(f.map->zoom() - out) < 1.0e-9);
+    f.map->setFollowTrackId(0U);
 }
 
 /* Independent review M2/M3: a new canvas size, or a view restored through the camera properties, re-centres a running
@@ -1084,8 +1113,8 @@ test_centring_raises_a_zoom_that_cannot() {
     assert(std::fabs(dot.x - 200.0) < 1.0e-6 && std::fabs(dot.y - 150.0) < 1.0e-6);
     assert(f.map->zoom() > 14.99 && f.map->zoom() < 15.01); /* Locate me goes in to the streets around the dot */
     f.map->setZoom(17.0);
-    const bool kept = f.map->centerOnDevice();
-    assert(kept && std::fabs(f.map->zoom() - 17.0) < 1.0e-9); /* a closer zoom is the user's, and stays */
+    const bool again = f.map->centerOnDevice();
+    assert(again && std::fabs(f.map->zoom() - 15.0) < 1.0e-9); /* the fix's own zoom, whatever the map had */
 }
 
 /* Locate me's zoom: the streets around a precise fix, and an approximate fix's whole circle (about half the shorter
@@ -1110,6 +1139,12 @@ test_device_zoom_follows_the_accuracy() {
     f.map->setZoom(2.0);
     f.map->setDeviceAccuracyM(2000.0);
     assert(f.map->centerOnDevice() && std::fabs(f.map->zoom() - approximate) < 1.0e-9);
+    /* Near a pole the projection's edge stops the centre: the accuracy's zoom stays, rather than one raised to centre
+     * the dot that would cut its circle. */
+    f.map->setDeviceLatitude(85.0);
+    f.map->setDeviceAccuracyM(5000.0);
+    const double polar = f.map->deviceZoom();
+    assert(f.map->centerOnDevice() && std::fabs(f.map->zoom() - polar) < 1.0e-9);
 }
 
 /* PR2 review 2: a fit while following the live position takes in the device dot that will be drawn after the follow

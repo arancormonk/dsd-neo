@@ -315,10 +315,9 @@ class MapViewItem : public QQuickItem {
     Q_INVOKABLE bool fitAllWith(double lat, double lon);
     /** @brief Centre on track @p trackId's marker (its current position, else its open ring), animated. */
     Q_INVOKABLE bool centerOnTrack(qulonglong trackId);
-    /** @brief Centre on the device's position (Locate me, the map opening on the user, the List's own row), animated.
-     *  The zoom goes in to at least deviceZoom(), keeping a closer one, or with @p exactZoom (a placement nobody chose,
-     *  as the map opening) to deviceZoom() itself. False while it is not valid. */
-    Q_INVOKABLE bool centerOnDevice(bool exactZoom = false);
+    /** @brief Centre on the device's position at deviceZoom() (Locate me, the map opening on the user, the List's own
+     *  row), animated. False while it is not valid. */
+    Q_INVOKABLE bool centerOnDevice();
     /** @brief The zoom centerOnDevice() goes in to: the streets around the dot (15 at most), with its accuracy circle
      *  about half the view's shorter side across, however wide an approximate fix's circle is. */
     Q_INVOKABLE double deviceZoom() const;
@@ -582,6 +581,8 @@ class MapViewItem : public QQuickItem {
     map_math::Viewport m_asked;
     /* A follow's camera move was cut short by the canvas hiding: its next step moves even to the same mark. */
     bool m_followCatchUp = false;
+    /* The follow's latest step was its first centring (one cut short is done again as a first). */
+    bool m_followStepFirst = false;
     qulonglong m_selected = 0;
     qulonglong m_followTrack = 0;
     bool m_followDevice = false;

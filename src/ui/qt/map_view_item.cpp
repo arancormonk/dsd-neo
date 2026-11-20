@@ -525,7 +525,12 @@ MapViewItem::itemChange(ItemChange change, const ItemChangeData& value) {
          * follow step moves it while hidden (followNow()), so the dot going back from a live fix to the saved one as
          * the map closes cannot carry the camera with it. A follow's move cut short is finished on return. */
         if (m_camera->state() == QAbstractAnimation::Running && following()) {
-            m_followCatchUp = true;
+            /* A first centring cut short is done again as a first; a later step is finished at the user's zoom. */
+            if (m_followStepFirst) {
+                m_followedSet = false;
+            } else {
+                m_followCatchUp = true;
+            }
         }
         stopCamera();
     }
@@ -719,15 +724,17 @@ MapViewItem::centerOnTrack(qulonglong trackId) {
 }
 
 bool
-MapViewItem::centerOnDevice(bool exactZoom) {
+MapViewItem::centerOnDevice() {
     mm::WorldPoint at{};
     if (!deviceWorld(&at)) {
         return false;
     }
     markUsedDevice();
     mm::Viewport vp = cameraBase();
-    vp.zoom = exactZoom ? deviceZoom() : std::max(vp.zoom, deviceZoom()); /* closer already: the user's zoom stays */
-    moveCamera(centredOn(vp, at));
+    vp.zoom = deviceZoom();
+    /* The accuracy's zoom is kept even where it cannot put the dot in the middle (near a pole the projection's edge
+     * stops the centre): raising it would cut the circle the zoom was chosen to show. */
+    moveCamera(centredOn(vp, at, false));
     return true;
 }
 
@@ -912,6 +919,7 @@ MapViewItem::followNow() {
     /* A follow's first centring may raise a zoom too low to centre the mark; its later steps keep the zoom the user
      * chose (a pinch out to see where the radio is stays out). */
     m_followCatchUp = false;
+    m_followStepFirst = !m_followedSet;
     const bool first = !m_followedSet;
     m_followedSet = true;
     m_followedAt = at;
@@ -924,8 +932,9 @@ MapViewItem::followNow() {
 void
 MapViewItem::rearmFollow() {
     /* The camera was put somewhere by other means (a restored view, a new canvas size): the follow centres its mark
-     * again now, as at its start. */
-    if (!following()) {
+     * again now, as at its start. Not while hidden: a size the layout passes through then (the List shown) is no
+     * reason to start the follow over, and the kept view comes back from the view asked for (m_asked). */
+    if (!following() || !isVisible()) {
         return;
     }
     m_followedSet = false;

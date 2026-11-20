@@ -18053,8 +18053,7 @@ Qt Quick frontend (`src/ui/qt`):
   `location_wiring`), and a stop ends one in flight as cancelled. With no provider to ask, the answer is
   `LOCATION_OFF_ERROR` when the device's location switch is off (also for a request that ends with no fix after the
   switch went off) and `PROVIDER_ERROR` otherwise (approximate access on
-  Android 10-11 with the network provider off); the map sends the first to the location settings and the second to
-  App info. A prompt's answer resumes only the request that
+  Android 10-11 with the network provider off). A prompt's answer resumes only the request that
   asked, while it is still the active one, and every real answer also reaches `LocationStream.permissionAnswered()`,
   so precise location allowed from the map starts a stream roaming already holds. The new JNI entry point is retained in `proguard-rules.pro`.
   `SiteChooserSheet` orders eligible saved siblings by distance (each measured once per revision or fix into its
@@ -19187,9 +19186,9 @@ Qt Quick frontend (`src/ui/qt`):
     for a re-requested view) keeps its toned copy and texture serial, so a pan does not re-tone and re-upload it.
     The item holds no gesture state: the screen's
     handlers call `panBy()`, `zoomAbout()`, `zoomIn()`/`zoomOut()`, `fitAll()`, `fitAllWith(lat, lon)` (a fit that
-    also takes in one point the screen draws, the History pin), `centerOnTrack()`, `centerOnDevice(exactZoom)` (at `deviceZoom()`: the streets
-    around the dot, the accuracy circle about half the shorter side across, 15 at most; without `exactZoom` a closer
-    zoom is kept), `centerOn()`,
+    also takes in one point the screen draws, the History pin), `centerOnTrack()`, `centerOnDevice()` (at `deviceZoom()`: the streets around the
+    dot, the accuracy circle about half the shorter side across, 15 at most, kept even where the projection's edge stops
+    the centre), `centerOn()`,
     `trackAt()`, `markerPoint()`, `pointFor()` (where the pin is drawn). Both fits go through `fitPoints()`, which adds
     the device dot when valid and marks `cameraUsedDevicePosition` before the camera moves. `topInset` is the height
     of the chips the screen lays over the canvas top: fits fit into the view less it and every `centerOn*` (so follow)
@@ -19270,25 +19269,27 @@ Qt Quick frontend (`src/ui/qt`):
     server would see the streets around it; otherwise the saved view, else the radios without the dot,
     `fitAll(false)`), and asks for a fresh fix that never prompts (`locateQuietly()`, `requestQuiet()`, dropped when the app goes to
     the background): it shows no notice, does not hold the button or arm Follow, starts only while the map shows in
-    the foreground, and its answer moves only a view nobody moved, at the fix's own zoom (`centerOnDevice(true)`).
-    Locate me keeps a closer zoom only when the user chose it (`MapScreen.zoomChosen`: the zoom buttons, a pinch, the
-    wheel or a restored saved view). An answer older than the saved fix (another screen saved a newer one since)
-    leaves it, and then places the camera only with precise access. `AppPrefs::setLocationFix()` stores a stamp ahead
-    of the wall clock as now, so a fix is never expired (and the one it replaced lost) as it is written. The second press after an explicit Locate me, with
+    the foreground, and its answer moves only a view nobody moved. Every answer is saved as the shared fix (the map's
+    own measurement, newest for the map; decided limit: it can replace a fix another screen saved moments before).
+    `MapLocator.access()` reads `DecoderHost::locationAccess()`: "none", "off" (permission kept, the device's
+    location switched off: no opening fix, no placement on the saved dot), "approximate" or "precise".
+    `AppPrefs::setLocationFix()` stores a stamp ahead of the wall clock as now, so a fix is never expired (and the one
+    it replaced lost) as it is written. The second press after an explicit Locate me, with
     the view still on the found dot and precise location allowed, is Follow my position; with approximate location the button stays Locate me (each
     press finds the user again) and an explicit answer says "Your location is approximate. Allow precise location for a
-    closer fix." with a Settings action; a failed Locate me offers App info without access and the location settings
-    when location is off, the "map" lease, held only while the map canvas shows with follow on,
+    closer fix." with a Settings action; a failed Locate me offers App info without permission and the location settings
+    when location is off; the "map" lease, held only while the map canvas shows with follow on,
     precise only ("Live position needs precise location." otherwise; a feed roaming already runs is read as it stands
     when the lease is taken, since the host repeats nothing). A stream fix is live while at most
     `MapLocator.maxFixAgeMs` (60 s, roaming's limit) old on `locationFeed.nowMs()`, aged once a second: older, the dot
     stays on it as the last known position and following says "Finding your position…". Leaving the map (or switching
     to the List) clears the Follow step and keeps the view as it was left: the canvas stops a running camera move
-    where it is when it hides, no follow step moves it while hidden (`followNow()`), and a size the layout passes
-    through (a band above the canvas hiding as the screen closes, shown or not) clamps nothing for good: a size change
-    clamps from the view last asked for (`m_asked`), not the clamped one, so the dot going back from a live fix to the saved one cannot carry it; on
-    return the view is fitted to the canvas and a follow still on catches up at the user's zoom, a move to it cut
-    short by the hiding included (`m_followCatchUp`). A History pin opening
+    where it is when it hides, no follow step moves it while hidden (`followNow()`), so the dot going back from a live fix to the saved
+    one cannot carry it. The canvas's top follows the tiles prompt's own condition (`tilesPrompt.shown`), not its
+    visibility, which turns false with the whole screen as it closes. A size change clamps from the view last asked
+    for (`m_asked`), not the clamped one, and starts no follow over while hidden (`rearmFollow()`). On return the view
+    is fitted to the canvas and a follow still on catches up at the user's zoom; a move to it cut short by the hiding
+    is finished (`m_followCatchUp`), or done again as a first centring when it was the first (`m_followStepFirst`). A History pin opening
     the map first starts from the saved view's zoom. Every explicit one-shot move (Show on map
     for another radio, a History pin, a located dot) ends any follow first (`MapScreen.endFollows()`). A Locate me still
     running when the view is placed on purpose (every explicit camera action: a follow, Show on map, a pin, the device
