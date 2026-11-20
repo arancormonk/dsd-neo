@@ -31,6 +31,8 @@
 #include <dsd-neo/protocol/ysf/ysf.h>
 #include <dsd-neo/runtime/colors.h>
 #include <dsd-neo/runtime/frame_sync_hooks.h>
+#include <dsd-neo/runtime/scan_mode.h>
+#include <dsd-neo/runtime/trunk_scan_hooks.h>
 #include <mbelib-neo/mbelib.h>
 #include <stdbool.h>
 #include <stdint.h>
@@ -248,6 +250,19 @@ ysf_crc16(const uint8_t bits[], int len) {
     return crc & 0xffff;
 }
 
+/* Content a YSF CRC passed, as a scan hears it (issue #834, #890 F3): PROVEN, except a test frame's (FI 3, Yaesu
+   "Amateur Radio Digital Standards" Rev 1.02, FICH) on a row of the ysf class, a typed -Y row or a ysf-conventional
+   trunk-scan target: for it a test transmission proves the YSF profile and no traffic, so it advances neither the -Y
+   content nor a quiet check's activity. An untyped row hears it as channel activity, as before. @p fi: the frame's
+   checked FI. */
+static void
+ysf_note_checked_content(const dsd_opts* opts, dsd_state* state, uint32_t fi) {
+    if (fi == 3U && dsd_scan_mode_active(state) == DSD_SCAN_MODE_YSF) {
+        return;
+    }
+    dsd_frame_sync_hook_content_evidence(opts, state, DSD_CONTENT_EVIDENCE_PROVEN, 0U);
+}
+
 //modified version of nxdn_deperm_facch1 -- this one for V/D Type 2 CC DCH (100 dibit version)
 int
 ysf_conv_dch2(const dsd_opts* opts, dsd_state* state, uint8_t bn, uint8_t bt, uint8_t fn, uint8_t ft, uint8_t cm,
@@ -290,7 +305,7 @@ ysf_conv_dch2(const dsd_opts* opts, dsd_state* state, uint8_t bn, uint8_t bt, ui
         /* Reported once the callsign is on the call: a signal search reads it from there when it hears this. */
         dsd_signal_search_note_evidence(state, "YSF", 0, 0, NULL);
         dsd_signal_search_note_call(state, 0U);
-        dsd_frame_sync_hook_content_evidence(opts, state, DSD_CONTENT_EVIDENCE_PROVEN, 0U);
+        ysf_note_checked_content(opts, state, state->ysf_fi);
     } else {
         DSD_FPRINTF(stderr, "%s", KRED);
         DSD_FPRINTF(stderr, "DCH2 (CRC ERR) ");
@@ -351,7 +366,7 @@ ysf_conv_dch(const dsd_opts* opts, dsd_state* state, uint8_t bn, uint8_t bt, uin
          * they are on the call, so the frame that carries them is enough for the search to name the stations. */
         dsd_signal_search_note_evidence(state, "YSF", 0, 0, NULL);
         dsd_signal_search_note_call(state, 0U);
-        dsd_frame_sync_hook_content_evidence(opts, state, DSD_CONTENT_EVIDENCE_PROVEN, 0U);
+        ysf_note_checked_content(opts, state, state->ysf_fi);
     } else {
         DSD_FPRINTF(stderr, "%s", KRED);
         DSD_FPRINTF(stderr, "DCH (CRC ERR) ");
@@ -546,6 +561,28 @@ ysf_emit_audio_from_temp(dsd_opts* opts, dsd_state* state, bool bypassed_vocoder
     dsd_play_synthesized_voice(opts, state);
 }
 
+/* A checked FICH's call to trunk scan's policy table (issue #890): header (FI 0) and communication (FI 1) frames
+   are a call, a terminator (FI 2) and a test (FI 3) frame none. YSF names its stations by callsign, so the identity
+   is its kind alone: DT 1 is data (V/D type 1 and 2 and full-rate voice are voice), CM 3 an individual call, CM 0
+   (group/CQ) and 1 (radio ID) a group one, CM 2 (reserved) of unknown party; YSF carries no encryption. No DG-ID is
+   read (a decided limit). Yaesu "Amateur Radio Digital Standards" Rev 1.02, FICH. */
+static void
+ysf_report_scan_activity(const dsd_opts* opts, const dsd_state* state, const ysf_fich_info* info) {
+    if (info->fi > 1U) {
+        return;
+    }
+    dsd_trunk_scan_activity_identity identity;
+    DSD_MEMSET(&identity, 0, sizeof(identity));
+    identity.known = DSD_SCAN_ACTIVITY_KNOWN_DATA | DSD_SCAN_ACTIVITY_KNOWN_ENCRYPTED;
+    identity.data_call = (uint8_t)(info->dt == 1U);
+    if (info->cm != 2U) {
+        identity.is_private = (uint8_t)(info->cm == 3U);
+        identity.known |= DSD_SCAN_ACTIVITY_KNOWN_PARTY;
+    }
+    const int protocol = DSD_SYNC_IS_YSF(state->synctype) ? state->synctype : DSD_SYNC_YSF_POS;
+    dsd_trunk_scan_hook_digital_conventional_activity(opts, state, protocol, -1, &identity);
+}
+
 static void
 ysf_parse_fich(dsd_opts* opts, dsd_state* state, ysf_fich_info* info) {
     uint8_t fichrawdibits[100];
@@ -580,8 +617,6 @@ ysf_parse_fich(dsd_opts* opts, dsd_state* state, ysf_fich_info* info) {
     if (info->err == 0) {
         dsd_signal_search_note_evidence(state, "YSF", 0, 0, NULL);
         dsd_signal_search_note_call(state, 0U);
-        /* FICH Golay(24,12) and CRC-16 passed: activity to a scan quiet check (issue #834). */
-        dsd_frame_sync_hook_content_evidence(opts, state, DSD_CONTENT_EVIDENCE_PROVEN, 0U);
         info->fi = (uint8_t)convert_bits_into_output(&info->fich_decode[0], 2);
         info->cm = (uint8_t)convert_bits_into_output(&info->fich_decode[4], 2);
         info->bn = (uint8_t)convert_bits_into_output(&info->fich_decode[6], 2);
@@ -597,6 +632,9 @@ ysf_parse_fich(dsd_opts* opts, dsd_state* state, ysf_fich_info* info) {
         state->ysf_dt = info->dt;
         state->ysf_fi = info->fi;
         state->ysf_cm = info->cm;
+        /* FICH Golay(24,12) and CRC-16 passed: activity to a scan quiet check (issue #834), and a call to trunk scan. */
+        ysf_note_checked_content(opts, state, info->fi);
+        ysf_report_scan_activity(opts, state, info);
         return;
     }
 

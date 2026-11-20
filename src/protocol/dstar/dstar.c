@@ -327,6 +327,17 @@ dstar_read_frame_zero(dsd_opts* opts, dsd_state* state, dstar_end_window* w, uin
     return DSTAR_READ_ON;
 }
 
+/* The RF header just checked, to a scan hold (dstar_report_scan_activity()): a data transmission when its DATA flag made
+   the D-STAR call it observed a data call (dstar_header_observe()); a header whose observation did not reach the call
+   state reports a transmission of unknown kind. */
+static void
+dstar_report_header_scan_activity(const dsd_opts* opts, const dsd_state* state) {
+    dsd_call_snapshot call;
+    const int known = dsd_call_state_get(state, 0U, &call) > 0 && call.phase == DSD_CALL_PHASE_ACTIVE
+                      && DSD_SYNC_IS_DSTAR(call.protocol);
+    dstar_report_scan_activity(opts, state, known, known && call.kind == DSD_CALL_KIND_DATA);
+}
+
 int
 processDSTAR_HD(dsd_opts* opts, dsd_state* state) {
 
@@ -354,6 +365,8 @@ processDSTAR_HD(dsd_opts* opts, dsd_state* state) {
         /* A CRC-16/X.25 over 39 octets: proof on its own, and it opens the transmission the
          * voice superframe below belongs to. */
         dstar_confirm_note_evidence(opts, state, DSTAR_EVIDENCE_STRONG);
+        /* And a scan hold (issue #890, D4): the header just put its DATA flag on the call as the call's kind. */
+        dstar_report_header_scan_activity(opts, state);
         /* The capture of the transmission before it ends here (issue #661). */
         dsd_mbe_out_close_protocol(opts, state, DSD_MBE_OUT_SLOT1, DSD_SYNC_DSTAR_HD_POS);
     }

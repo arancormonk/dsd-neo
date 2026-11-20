@@ -104,6 +104,15 @@ void dstar_confirm_end_frame(const dsd_opts* opts, dsd_state* state);
 /** @brief Whether the current transmission has proved itself. */
 int dstar_confirm_is_confirmed(const dsd_state* state);
 
+/**
+ * @brief Report the transmission a D-STAR CRC proved to trunk scan's policy table (issue #890, D4): an RF header, a
+ * slow-data header or a D-PRS record, the only D-STAR content a scan hold opens or renews on (the resynchronization
+ * words carry no CRC, so their streak never reports). @p data_known and @p data: whether the transmission is known to
+ * be a data one, from a header's DATA flag (JARL STD 6.0 section 6.4). D-STAR names stations by callsign and carries no
+ * encryption, so that is the whole identity; the party is never known.
+ */
+void dstar_report_scan_activity(const dsd_opts* opts, const dsd_state* state, int data_known, int data);
+
 #ifdef __cplusplus
 }
 #endif

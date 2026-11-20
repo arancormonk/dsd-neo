@@ -172,6 +172,14 @@ dsd_trunk_scan_hook_p25_conventional_activity(const dsd_opts* opts, const dsd_st
     }
 }
 
+void
+dsd_trunk_scan_hook_digital_conventional_activity(const dsd_opts* opts, const dsd_state* state, int protocol, int slot,
+                                                  const dsd_trunk_scan_activity_identity* identity) {
+    if (identity && g_trunk_scan_hooks.digital_conventional_activity) {
+        g_trunk_scan_hooks.digital_conventional_activity(opts, state, protocol, slot, identity);
+    }
+}
+
 const char*
 dsd_trunk_scan_hook_active_chan_csv(const dsd_state* state) {
     return g_trunk_scan_hooks.active_chan_csv ? g_trunk_scan_hooks.active_chan_csv(state) : NULL;

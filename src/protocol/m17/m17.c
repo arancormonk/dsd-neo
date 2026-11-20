@@ -58,6 +58,7 @@
 #include <dsd-neo/runtime/shutdown.h>
 #include <dsd-neo/runtime/squelch.h>
 #include <dsd-neo/runtime/telemetry.h>
+#include <dsd-neo/runtime/trunk_scan_hooks.h>
 #include <dsd-neo/runtime/tuner_owner.h>
 #include <dsd-neo/runtime/udp_audio_hooks.h>
 #include <math.h>
@@ -122,6 +123,7 @@ m17_datagram_digest(const uint8_t* bytes, size_t len) {
 }
 
 static int M17decodeLSF(const dsd_opts* opts, dsd_state* state, int publish_canonical, const m17_lsf_carrier* carrier);
+static int m17_received_protocol(const dsd_state* state);
 static void M17decodeLSFFields(dsd_state* state, const struct m17_lsf_result* res);
 static void m17_retire_if_ended(dsd_state* state);
 static void m17_pkt_arm(dsd_state* state, m17_state_ext* g);
@@ -352,6 +354,38 @@ m17_lich_note_chunk(const dsd_opts* opts, dsd_state* state, uint8_t counter) {
     a->held |= (uint8_t)(1U << counter);
 }
 
+/* Checked M17 content to trunk scan's policy table (issue #890): an LSF whose CRC passed (its frame's, or rebuilt whole
+   from the LICH), a packet whose CRC passed (@p packet) or a stream frame whose clean LICH completed a pair. What the
+   report says of the call is only the checked link setup bound to the transmission (dsd_state::m17_lsf_checked: its
+   CAN, 0 included, its encryption type and its stream or packet type, M17 spec 2.0.11, Link Setup Frame); before one,
+   the report is anonymous and its fields unknown, so a scan restriction that depends on them holds nothing until the
+   LSF is checked. The receive side's own CAN gate (dsd_state::m17_can_en, m17_can_filter_allows()) is kept: a CAN it
+   refuses never holds, nor an unknown CAN while it is set. M17 names stations by 48-bit callsigns, outside talkgroup
+   policy, and has no party bit. A BERT frame (a test) and an LSF -F decodes despite a failed CRC never report. */
+static void
+m17_report_scan_activity(const dsd_opts* opts, const dsd_state* state, int packet) {
+    const int checked = state->m17_lsf_checked != 0U;
+    if (state->m17_can_en >= 0 && (!checked || !m17_can_filter_allows(state->m17_can_en, state->m17_can))) {
+        return;
+    }
+    dsd_trunk_scan_activity_identity identity;
+    DSD_MEMSET(&identity, 0, sizeof(identity));
+    if (checked) {
+        identity.known |= DSD_SCAN_ACTIVITY_KNOWN_ENCRYPTED;
+        identity.encrypted = (uint8_t)(state->m17_enc != 0U);
+        /* M17streamDataTypeFromLSF(): 20 a packet, else the stream's data type (1 data, 2 and 3 voice, 0 reserved). */
+        if (state->m17_str_dt == 20U || state->m17_str_dt == 1U || state->m17_str_dt == 2U || state->m17_str_dt == 3U) {
+            identity.known |= DSD_SCAN_ACTIVITY_KNOWN_DATA;
+            identity.data_call = (uint8_t)(state->m17_str_dt == 20U || state->m17_str_dt == 1U);
+        }
+    }
+    if (packet) {
+        identity.known |= DSD_SCAN_ACTIVITY_KNOWN_DATA;
+        identity.data_call = 1U;
+    }
+    dsd_trunk_scan_hook_digital_conventional_activity(opts, state, m17_received_protocol(state), -1, &identity);
+}
+
 static void
 M17finalizeLICH(dsd_state* state, const dsd_opts* opts) {
     /* All six chunks under one binding (m17_lich_note_chunk() reset the assembly at any change): only then is the LSF
@@ -378,6 +412,7 @@ M17finalizeLICH(dsd_state* state, const dsd_opts* opts) {
            own CRC is: it proves the transmission (issue #890). Noted once its call is published, as there. One -F
            decoded despite a failed CRC proves nothing. */
         m17_confirm_note_evidence(opts, state, M17_EVIDENCE_STRONG);
+        m17_report_scan_activity(opts, state, 0);
     }
 
     if (opts->payload == 1) {
@@ -1868,6 +1903,11 @@ processM17STR(dsd_opts* opts, dsd_state* state) {
          * Golay accepts enough random words that a clean LICH still turns up on noise, so it
          * has to repeat before the decoder acts on the stream (#399). */
         m17_confirm_note_evidence(opts, state, M17_EVIDENCE_WEAK);
+        /* A clean LICH in a row with the frame's before it (the pair that confirms on its own, M17_CONFIRM_WEAK_OBSERVES)
+           is activity too: anonymous until a checked LSF binds the transmission (m17_report_scan_activity()). */
+        if (state->m17_confirm_weak_streak >= M17_CONFIRM_WEAK_OBSERVES) {
+            m17_report_scan_activity(opts, state, 0);
+        }
         M17prepareStream(opts, state, m17_bits);
     }
     m17_confirm_end_frame(state);
@@ -2055,7 +2095,8 @@ processM17BRT(dsd_opts* opts, dsd_state* state) {
      * test transmission from the alternating run that reaches this matcher on noise (#399). */
     const int locked = state->m17_bert_locked != 0U;
     if (locked) {
-        m17_confirm_note_evidence(opts, state, M17_EVIDENCE_STRONG);
+        /* A test transmission: no traffic to a typed m17 scan row, and no call for trunk scan (issue #890 F3). */
+        m17_confirm_note_evidence(opts, state, M17_EVIDENCE_TEST);
     }
     m17_confirm_end_frame(state);
 
@@ -2111,6 +2152,7 @@ m17_finalize_lsf_crc(const dsd_opts* opts, dsd_state* state, const uint8_t* lsf_
          * call is published: a signal search reads the callsigns and CAN from that call when it hears the
          * confirmation, and this LSF may be the only one the transmission delivers. */
         m17_confirm_note_evidence(opts, state, M17_EVIDENCE_STRONG);
+        m17_report_scan_activity(opts, state, 0);
     }
 
     if (opts->payload == 1) {
@@ -4256,6 +4298,7 @@ m17_pkt_finalize_eot(const dsd_opts* opts, dsd_state* state, uint16_t app_len, i
     if (crc_cmp == crc_ext) {
         /* A CRC-16 over the reassembled packet is proof the chain that carried it was real. */
         m17_confirm_note_evidence(opts, state, M17_EVIDENCE_STRONG);
+        m17_report_scan_activity(opts, state, 1);
     }
 
     if (crc_cmp == crc_ext || opts->aggressive_framesync == 0) {

@@ -45,6 +45,7 @@
 #include <string.h>
 
 #include "../../test_support/radio_policy_test.h"
+#include "../../test_support/scan_activity_capture.h"
 #include "../../test_support/test_support.h"
 #include "tetra_calls.h"
 #include "tetra_confirm.h"
@@ -5247,6 +5248,73 @@ test_radio_policy_follow(void) {
     session_close(&s);
 }
 
+/* Issue #890: which direct mode PDUs report to trunk scan's policy table. A DMAC-SYNC's DM-SETUP, DM-CONNECT ACK and
+   DM-OCCUPIED report the call they set up; a DM-SETUP PRES (only a presence check, EN 300 396-3 clause 6.2) reports
+   nothing until the call's DM-CONNECT ACK; a DMAC-DATA call PDU, an end and DM-RESERVED report nothing; short data
+   whose FCS passed (or carries none) reports a data call, every copy (the notice's repeat suppression does not apply),
+   and short data whose FCS failed nothing. DMO speech reports with the identity of the call set up for its
+   transmission, and anonymous when none was. */
+static void
+test_direct_mode_reports_to_trunk_scan(void) {
+    session s = session_open();
+    session_history(&s);
+    dsd_test_scan_activity_install();
+
+    static const struct {
+        uint32_t msg;
+        int reports;
+    } calls[] = {
+        {TETRA_DMO_MSG_SETUP, 1},
+        {TETRA_DMO_MSG_CONNECT_ACK, 1},
+        {TETRA_DMO_MSG_OCCUPIED, 1},
+        {TETRA_DMO_MSG_SETUP_PRES, 0},
+    };
+
+    for (size_t i = 0; i < sizeof(calls) / sizeof(calls[0]); i++) {
+        dsd_test_scan_activity_reset();
+        dmo_dsb_msg(&s, TETRA_DMO_AIE_DM1, calls[i].msg);
+        assert(g_test_scan_activity.count == calls[i].reports);
+        if (calls[i].reports) {
+            assert(g_test_scan_activity.last.source == 100u && g_test_scan_activity.last.target == 0x800001u);
+        }
+    }
+    dsd_test_scan_activity_reset();
+    dmo_data(&s, TETRA_DMO_MSG_OCCUPIED, 100u, 0x800001u, 0);
+    dmo_data(&s, TETRA_DMO_MSG_TX_CEASED, 100u, 0x800001u, 0);
+    dmo_dsb_reserved(&s, 100u, 0u, 5u, 3u);
+    assert(g_test_scan_activity.count == 0);
+
+    /* Speech: with the call a DM-OCCUPIED set up for this transmission, then with none. */
+    dmo_dsb(&s, TETRA_DMO_AIE_DM1);
+    dsd_test_scan_activity_reset();
+    tetra_calls_dmo_speech_activity(s.opts, s.state);
+    assert(g_test_scan_activity.count == 1 && g_test_scan_activity.last.target == 0x800001u
+           && (g_test_scan_activity.last.known & DSD_SCAN_ACTIVITY_KNOWN_DATA)
+           && g_test_scan_activity.last.data_call == 0U);
+    tetra_state_t* ts = tetra_st(s.state);
+    ts->calls.dmo.active = 0;
+    dsd_test_scan_activity_reset();
+    tetra_calls_dmo_speech_activity(s.opts, s.state);
+    assert(g_test_scan_activity.count == 1
+           && (g_test_scan_activity.last.known & (DSD_SCAN_ACTIVITY_KNOWN_TARGET | DSD_SCAN_ACTIVITY_KNOWN_SOURCE))
+                  == 0U);
+
+    /* Short data. */
+    uint8_t data[128];
+    bits_of_value(data, 0x1234u, 16);
+    dsd_test_scan_activity_reset();
+    send_dmo_sds(&s, 200u, 300u, 4u, data, 16, 0, 1, -1);
+    send_dmo_sds(&s, 200u, 300u, 4u, data, 16, 0, 1, -1);
+    assert(g_test_scan_activity.count == 2);
+    assert(g_test_scan_activity.last.source == 200u && g_test_scan_activity.last.target == 300u
+           && g_test_scan_activity.last.data_call == 1U && g_test_scan_activity.last.encrypted == 0U);
+    dsd_test_scan_activity_reset();
+    send_dmo_sds(&s, 201u, 300u, 4u, data, 16, 0, 1, 1 + 4 + 3);
+    assert(g_test_scan_activity.count == 0);
+    dsd_trunk_scan_hooks_set(NULL);
+    session_close(&s);
+}
+
 int
 main(void) {
     test_pdus_act_on_their_own_call();
@@ -5301,6 +5369,7 @@ main(void) {
     test_direct_mode_pending_setup_keeps_its_party();
     test_direct_mode_short_data();
     test_direct_mode_short_data_fcs();
+    test_direct_mode_reports_to_trunk_scan();
     test_direct_mode_short_data_repeats();
     test_events_read_the_new_carrier();
     test_cell_change_forgets_sysinfo();

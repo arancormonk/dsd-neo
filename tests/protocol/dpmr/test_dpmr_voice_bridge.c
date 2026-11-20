@@ -29,10 +29,14 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include "../../test_support/scan_activity_capture.h"
 #include "dpmr_internal.h"
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/state_fwd.h"
 #include "test_support.h"
+
+/* Trunk scan activity reports (issue #890), recorded. */
+DSD_TEST_SCAN_ACTIVITY_DEFINE_HOOK()
 
 #if defined(__GNUC__) && !defined(__cplusplus)
 #pragma GCC diagnostic push

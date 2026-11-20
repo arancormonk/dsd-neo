@@ -6388,38 +6388,76 @@ trunk_scan_activity_tune_allowed(trunk_scan_conventional_family family, const ds
     return rc == 0 && decision.tune_allowed;
 }
 
-/* Shared body for every conventional target type: the hold decision is protocol-independent,
- * so the per-protocol entry points below differ only in which family may claim the hold. The receive policy judges the
- * reporting call's own protocol and slot (issue #637): only traffic it admits holds the target. */
-static void
-trunk_scan_conventional_activity(trunk_scan_conventional_family family, const dsd_opts* opts, const dsd_state* state,
-                                 int protocol, int slot, uint32_t target, uint32_t source, int is_private,
-                                 int encrypted, int data_call) {
+/* The target a conventional @p family's report may hold, or NULL: the parked target, of that family, while the scan
+ * runs, the report's call admitted by the receive policy on its own protocol and slot (issue #637), voice-only scanning
+ * off, and the report heard on the target's own landed visit (issue #890). The hold decision is protocol-independent,
+ * so every entry point below goes through here and differs only in the family and the policy it applies. */
+static dsd_trunk_scan_target_runtime*
+trunk_scan_conventional_report_target(trunk_scan_conventional_family family, const dsd_opts* opts,
+                                      const dsd_state* state, int protocol, int slot) {
     if (!dsd_receive_allows(opts, state, protocol, slot)) {
-        return;
+        return NULL;
     }
     dsd_trunk_scan_coord* coord = trunk_scan_get(state);
     /* A paused scan's target is not on air: the manual session's traffic holds nothing. */
     if (!opts || !state || !coord || coord->count == 0 || coord->paused) {
-        return;
+        return NULL;
     }
     dsd_trunk_scan_target_runtime* rt = &coord->targets[coord->active];
-    if (!trunk_scan_type_in_conventional_family(rt->target.type, family)) {
-        return;
+    /* Voice-only scan: headers alone never hold, voice headers included; decoded voice media refreshes the hold in
+     * trunk_scan_tick_locked(). */
+    if (!trunk_scan_type_in_conventional_family(rt->target.type, family) || opts->scan_voice_only == 1
+        || !trunk_scan_observation_on_target(state, coord)) {
+        return NULL;
     }
-    /* Voice-only scan: headers alone never hold, voice headers included; decoded
-     * voice media refreshes the hold in trunk_scan_tick_locked(). */
-    if (opts->scan_voice_only == 1) {
-        return;
-    }
-    /* Only what was heard on the target's own landed visit holds it (issue #890). */
-    if (!trunk_scan_observation_on_target(state, coord)) {
-        return;
-    }
+    return rt;
+}
 
-    if (trunk_scan_activity_tune_allowed(family, opts, state, target, source, is_private, encrypted, data_call)) {
-        rt->last_allowed_activity_m = trunk_scan_now_m();
-        trunk_scan_disarm_dwell(rt, TRUNK_SCAN_DWELL_DISARM_ACTIVITY_HOLD);
+static void
+trunk_scan_conventional_hold(dsd_trunk_scan_target_runtime* rt) {
+    rt->last_allowed_activity_m = trunk_scan_now_m();
+    trunk_scan_disarm_dwell(rt, TRUNK_SCAN_DWELL_DISARM_ACTIVITY_HOLD);
+}
+
+static void
+trunk_scan_conventional_activity(trunk_scan_conventional_family family, const dsd_opts* opts, const dsd_state* state,
+                                 int protocol, int slot, uint32_t target, uint32_t source, int is_private,
+                                 int encrypted, int data_call) {
+    dsd_trunk_scan_target_runtime* rt = trunk_scan_conventional_report_target(family, opts, state, protocol, slot);
+    if (rt && trunk_scan_activity_tune_allowed(family, opts, state, target, source, is_private, encrypted, data_call)) {
+        trunk_scan_conventional_hold(rt);
+    }
+}
+
+/* The conventional family a simplex digital protocol's report claims (issue #890), NONE for any other protocol. */
+static trunk_scan_conventional_family
+trunk_scan_digital_family(int protocol) {
+    if (DSD_SYNC_IS_YSF(protocol)) {
+        return TRUNK_SCAN_CONVENTIONAL_FAMILY_YSF;
+    }
+    if (DSD_SYNC_IS_DSTAR(protocol)) {
+        return TRUNK_SCAN_CONVENTIONAL_FAMILY_DSTAR;
+    }
+    if (DSD_SYNC_IS_DPMR(protocol)) {
+        return TRUNK_SCAN_CONVENTIONAL_FAMILY_DPMR;
+    }
+    if (DSD_SYNC_IS_M17(protocol)) {
+        return TRUNK_SCAN_CONVENTIONAL_FAMILY_M17;
+    }
+    return DSD_SYNC_IS_TETRA(protocol) ? TRUNK_SCAN_CONVENTIONAL_FAMILY_TETRA_DMO : TRUNK_SCAN_CONVENTIONAL_FAMILY_NONE;
+}
+
+void
+dsd_engine_trunk_scan_digital_conventional_activity(const dsd_opts* opts, const dsd_state* state, int protocol,
+                                                    int slot, const dsd_trunk_scan_activity_identity* identity) {
+    const trunk_scan_conventional_family family = trunk_scan_digital_family(protocol);
+    if (!identity || family == TRUNK_SCAN_CONVENTIONAL_FAMILY_NONE) {
+        return;
+    }
+    /* The scan's policy table, as checked voice media is judged (dsd_scan_activity_policy_allows()). */
+    dsd_trunk_scan_target_runtime* rt = trunk_scan_conventional_report_target(family, opts, state, protocol, slot);
+    if (rt && dsd_scan_activity_policy_allows(opts, state, protocol, identity)) {
+        trunk_scan_conventional_hold(rt);
     }
 }
 
@@ -6494,6 +6532,7 @@ trunk_scan_install_runtime_hooks(dsd_trunk_scan_coord* coord) {
     hooks.dmr_conventional_activity = dsd_engine_trunk_scan_dmr_conventional_activity;
     hooks.nxdn_conventional_activity = dsd_engine_trunk_scan_nxdn_conventional_activity;
     hooks.p25_conventional_activity = dsd_engine_trunk_scan_p25_conventional_activity;
+    hooks.digital_conventional_activity = dsd_engine_trunk_scan_digital_conventional_activity;
     hooks.active_chan_csv = dsd_engine_trunk_scan_active_chan_csv;
     hooks.enc_lockout_clear_snapshots = trunk_scan_clear_enc_lockout_snapshots;
     hooks.control = dsd_engine_trunk_scan_control;

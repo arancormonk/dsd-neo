@@ -26,6 +26,7 @@
 #include <dsd-neo/protocol/m17/m17_parse.h>
 #include <dsd-neo/runtime/exitflag.h>
 #include <dsd-neo/runtime/frame_sync_hooks.h>
+#include <dsd-neo/runtime/scan_mode.h>
 #include <dsd-neo/runtime/signal_search_hooks.h>
 #include <stddef.h>
 #include <stdint.h>
@@ -36,6 +37,7 @@
 #include "dsd-neo/core/state_fwd.h"
 #include "m17_algorithms.h"
 #include "m17_internal.h"
+#include "scan_activity_capture.h"
 #include "test_support.h"
 
 struct CODEC2;
@@ -926,6 +928,135 @@ test_packet_frames_before_their_crc_are_partial(void) {
     }
 }
 
+/* Issue #890: what an M17 transmission reports to trunk scan's policy table. A link setup frame whose CRC passed reports
+   the checked values it binds (encryption, voice stream); a clean LICH reports once it completes a pair with the frame
+   before it, anonymous before any LSF was checked and with the bound values after one; the LSF the six LICH chunks
+   rebuild whole reports with them; a packet whose CRC passed reports a data call; a BERT lock (a test) never reports.
+   The receive side's CAN filter is kept: a CAN it refuses, and an unknown CAN while it is set, report nothing. */
+static void
+test_checked_content_reports_to_trunk_scan(void) {
+    dsd_opts* opts = g_opts;
+    dsd_state* state = g_state;
+    uint8_t lsf_bits[TEST_M17_LSF_BITS];
+    build_lsf_bits(lsf_bits);
+    const uint8_t bound = DSD_SCAN_ACTIVITY_KNOWN_ENCRYPTED | DSD_SCAN_ACTIVITY_KNOWN_DATA;
+
+    prepare(opts, state);
+    dsd_test_scan_activity_install();
+    state->synctype = DSD_SYNC_M17_LSF_POS;
+    load_lsf_frame(lsf_bits);
+    assert(processM17LSF(opts, state) == 1);
+    assert(g_test_scan_activity.count == 1 && DSD_SYNC_IS_M17(g_test_scan_activity.protocol));
+    assert(g_test_scan_activity.last.known == bound && g_test_scan_activity.last.encrypted == 0U
+           && g_test_scan_activity.last.data_call == 0U);
+    /* Stream frames after it: the first clean LICH starts a pair, the second completes it, with the LSF's values. */
+    dsd_test_scan_activity_reset();
+    state->synctype = DSD_SYNC_M17_STR_POS;
+    load_stream_frame(lsf_bits, 0U, 0U);
+    assert(processM17STR(opts, state) == 1);
+    const int after_first = g_test_scan_activity.count;
+    load_stream_frame(lsf_bits, 1U, 1U);
+    assert(processM17STR(opts, state) == 1);
+    assert(g_test_scan_activity.count == after_first + 1 && g_test_scan_activity.last.known == bound);
+    finish(state);
+
+    /* Late entry: no LSF frame. The pair reports anonymous; the rebuilt LSF, whole and checked, binds the values. */
+    prepare(opts, state);
+    dsd_test_scan_activity_install();
+    state->synctype = DSD_SYNC_M17_STR_POS;
+    load_stream_frame(lsf_bits, 0U, 0U);
+    (void)processM17STR(opts, state);
+    assert(g_test_scan_activity.count == 0);
+    load_stream_frame(lsf_bits, 1U, 1U);
+    (void)processM17STR(opts, state);
+    assert(g_test_scan_activity.count == 1 && g_test_scan_activity.last.known == 0U);
+    /* The confirmation the pair made is part of the assembly's binding, so the chunks before it go, and the first chunk
+       5 closes an assembly that is not whole: a whole one follows. */
+    for (uint16_t fn = 2U; fn < 12U; fn++) {
+        load_stream_frame(lsf_bits, (uint8_t)(fn % 6U), fn);
+        (void)processM17STR(opts, state);
+    }
+    assert(state->m17_lsf_checked == 1U && g_test_scan_activity.last.known == bound);
+    finish(state);
+
+    /* Under a CAN filter: the LSF's CAN 5 refused by a filter of 3, and the late entry's unknown CAN, report nothing. */
+    prepare(opts, state);
+    dsd_test_scan_activity_install();
+    state->m17_can_en = 3;
+    state->synctype = DSD_SYNC_M17_STR_POS;
+    load_stream_frame(lsf_bits, 0U, 0U);
+    (void)processM17STR(opts, state);
+    load_stream_frame(lsf_bits, 1U, 1U);
+    (void)processM17STR(opts, state);
+    assert(g_test_scan_activity.count == 0);
+    state->synctype = DSD_SYNC_M17_LSF_POS;
+    load_lsf_frame(lsf_bits);
+    (void)processM17LSF(opts, state);
+    assert(g_test_scan_activity.count == 0);
+    finish(state);
+    prepare(opts, state);
+    dsd_test_scan_activity_install();
+    state->m17_can_en = 5;
+    state->synctype = DSD_SYNC_M17_LSF_POS;
+    load_lsf_frame(lsf_bits);
+    (void)processM17LSF(opts, state);
+    assert(g_test_scan_activity.count == 1);
+    finish(state);
+
+    /* A packet whose CRC passed: a data call. Its own checked packet-mode LSF frame comes first (the strict RF packet
+       rule) and reports a data call too. */
+    static const char text[] = "A PACKET HOLDS AS DATA";
+    prepare(opts, state);
+    dsd_test_scan_activity_install();
+    read_packet_lsf_frame(opts, state);
+    assert(g_test_scan_activity.count == 1 && (g_test_scan_activity.last.known & DSD_SCAN_ACTIVITY_KNOWN_DATA)
+           && g_test_scan_activity.last.data_call == 1U);
+    dsd_test_scan_activity_reset();
+    assert(load_packet_frame(text, 0) == 2);
+    (void)processM17PKT(opts, state);
+    assert(g_test_scan_activity.count == 0);
+    (void)load_packet_frame(text, 1);
+    (void)processM17PKT(opts, state);
+    assert(g_test_scan_activity.count == 1 && (g_test_scan_activity.last.known & DSD_SCAN_ACTIVITY_KNOWN_DATA)
+           && g_test_scan_activity.last.data_call == 1U);
+    finish(state);
+
+    /* BERT: confirmed, never a call. */
+    prepare(opts, state);
+    dsd_test_scan_activity_install();
+    state->synctype = DSD_SYNC_M17_BRT_POS;
+    uint16_t lfsr = 1U;
+    load_bert_frame(&lfsr);
+    assert(processM17BRT(opts, state) == 1 && state->m17_confirmed == 1U);
+    assert(g_test_scan_activity.count == 0);
+    finish(state);
+    dsd_trunk_scan_hooks_set(NULL);
+}
+
+/* Issue #890 F3, end to end: a BERT lock is PROVEN content to a quiet check on an untyped row, and nothing on a row of
+   the m17 class (entered as a -Y row or trunk-scan target enters it), which it confirms all the same. */
+static void
+test_bert_on_a_typed_row_is_profile_only(void) {
+    dsd_opts* opts = g_opts;
+    dsd_state* state = g_state;
+    for (int typed = 0; typed < 2; typed++) {
+        prepare(opts, state);
+        if (typed) {
+            assert(dsd_scan_mode_enter(opts, state, DSD_SCAN_MODE_M17) == 0);
+        }
+        opts->scan_skip_silent = 1;
+        opts->aggressive_framesync = 1;
+        state->synctype = DSD_SYNC_M17_BRT_POS;
+        quiet_notes_install(1);
+        uint16_t lfsr = 1U;
+        load_bert_frame(&lfsr);
+        assert(processM17BRT(opts, state) == 1 && state->m17_confirmed == 1U);
+        assert(g_quiet_proven == (typed ? 0 : 1));
+        quiet_notes_install(0);
+        finish(state);
+    }
+}
+
 int
 main(void) {
     InitAllFecFunction();
@@ -946,6 +1077,8 @@ main(void) {
     test_bert_frame_cut_by_an_input_interruption_counts_nothing();
     test_frames_split_by_a_carrier_boundary_are_dropped();
     test_packet_frames_before_their_crc_are_partial();
+    test_checked_content_reports_to_trunk_scan();
+    test_bert_on_a_typed_row_is_profile_only();
     free(g_state);
     free(g_opts);
     return 0;

@@ -530,6 +530,13 @@ void dsd_engine_trunk_scan_nxdn_conventional_activity(const dsd_opts* opts, cons
 void dsd_engine_trunk_scan_p25_conventional_activity(const dsd_opts* opts, const dsd_state* state, int protocol,
                                                      int slot, uint32_t target, uint32_t source, int is_private,
                                                      int encrypted, int data_call);
+/**
+ * Checked activity of a simplex digital family (issue #890, dsd_trunk_scan_hook_digital_conventional_activity()): YSF,
+ * D-STAR, dPMR, M17 or TETRA DMO by @p protocol's family, held only by a parked target of that family's conventional
+ * type, on its landed visit, under the receive policy and the scan's policy table (dsd_scan_activity_policy_allows()).
+ */
+void dsd_engine_trunk_scan_digital_conventional_activity(const dsd_opts* opts, const dsd_state* state, int protocol,
+                                                         int slot, const dsd_trunk_scan_activity_identity* identity);
 size_t dsd_engine_trunk_scan_target_count(const dsd_state* state);
 /**
  * @brief Whether the scan running now visits an analog row that runs the configured NFM width (issue #526).

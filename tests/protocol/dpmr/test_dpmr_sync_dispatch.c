@@ -3,8 +3,12 @@
  * Focused checks for dPMR sync constants and dispatch matching.
  */
 
+#include "../../test_support/scan_activity_capture.h"
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/state_fwd.h"
+
+/* Trunk scan activity reports (issue #890), recorded. */
+DSD_TEST_SCAN_ACTIVITY_DEFINE_HOOK()
 
 #include <assert.h>
 #include <dsd-neo/core/audio.h>

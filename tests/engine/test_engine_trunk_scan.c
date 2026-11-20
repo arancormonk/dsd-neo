@@ -5090,14 +5090,15 @@ test_nxdn48_conventional_activity_hold(void) {
  * The span must reach DSD_SCAN_VOICE_MIN_SPAN_S (0.10 s) before the probe counts it.
  */
 static int
-seed_voice_gate_media_epoch(dsd_state* state, double begin_m, double media_m, dsd_call_crypto_state crypto) {
+seed_voice_gate_media_epoch_proto(dsd_state* state, int protocol, double begin_m, double media_m,
+                                  dsd_call_crypto_state crypto) {
     if (dsd_call_state_ensure(state) <= 0) {
         DSD_FPRINTF(stderr, "voice-gate seed: call-state ensure failed\n");
         return -1;
     }
     dsd_call_observation obs;
     DSD_MEMSET(&obs, 0, sizeof(obs));
-    obs.protocol = DSD_SYNC_DMR_BS_VOICE_POS;
+    obs.protocol = protocol;
     obs.slot = 0U;
     obs.kind = DSD_CALL_KIND_GROUP_VOICE;
     obs.ota_target_id = 1001U;
@@ -5113,13 +5114,18 @@ seed_voice_gate_media_epoch(dsd_state* state, double begin_m, double media_m, ds
         DSD_MEMSET(&update, 0, sizeof(update));
         update.classification = crypto;
         update.observed_m = begin_m;
-        (void)dsd_call_state_update_crypto(state, 0U, DSD_SYNC_DMR_BS_VOICE_POS, &update);
+        (void)dsd_call_state_update_crypto(state, 0U, protocol, &update);
     }
     if (decoded_media(state, 0U, 1, begin_m) != 1 || decoded_media(state, 0U, 1, media_m) != 1) {
         DSD_FPRINTF(stderr, "voice-gate seed: media update failed\n");
         return -1;
     }
     return 0;
+}
+
+static int
+seed_voice_gate_media_epoch(dsd_state* state, double begin_m, double media_m, dsd_call_crypto_state crypto) {
+    return seed_voice_gate_media_epoch_proto(state, DSD_SYNC_DMR_BS_VOICE_POS, begin_m, media_m, crypto);
 }
 
 /* With the gate on, a header alone never holds a conventional target: not a data header
@@ -5491,9 +5497,136 @@ test_conventional_activity_stale_visit_same_carrier(void) {
     return test_rc;
 }
 
-/* ---- Issue #890: the simplex key matrix at the target list ---- */
+/* ---- Issue #890: simplex digital activity, the policy table at the coordinator, and the key matrix ---- */
 
 static int load_nfm_targets(const char* body, dsd_trunk_scan_target_list* list, char* err, size_t err_sz);
+
+/* An identity for a simplex report (dsd_trunk_scan_activity_identity): a clear voice call of known party, numeric IDs
+   when @p numeric. */
+static dsd_trunk_scan_activity_identity
+simplex_identity(int numeric) {
+    dsd_trunk_scan_activity_identity id;
+    DSD_MEMSET(&id, 0, sizeof(id));
+    id.known = DSD_SCAN_ACTIVITY_KNOWN_DATA | DSD_SCAN_ACTIVITY_KNOWN_ENCRYPTED | DSD_SCAN_ACTIVITY_KNOWN_PARTY;
+    if (numeric) {
+        id.target = 1001U;
+        id.source = 2002U;
+        id.known |= DSD_SCAN_ACTIVITY_KNOWN_TARGET | DSD_SCAN_ACTIVITY_KNOWN_SOURCE;
+    }
+    return id;
+}
+
+/* Two conventional targets of @p type (250 ms dwell and hold): a checked report of @p protocol through the runtime hook
+   holds the first past its dwell, one of @p other (another family) does not, and none does under voice-only scanning
+   or the allow list for a numeric family (the stand-in evaluator refuses every listed lookup); a callsign family takes
+   no allow list. A receive slot filter does not apply (F10). */
+static int
+run_digital_activity_family_case(const char* type, int protocol, int other, int numeric) {
+    char body[256];
+    DSD_SNPRINTF(body, sizeof body, "a,%s,461000000,,250,250,\nb,%s,462000000,,250,250,\n", type, type);
+    char dir[DSD_TEST_PATH_MAX];
+    char target_path[DSD_TEST_PATH_MAX];
+    if (make_runtime_targets(body, target_path, sizeof target_path, dir, sizeof dir) != 0) {
+        return 1;
+    }
+    static dsd_opts opts;
+    static dsd_state state;
+    int test_rc = 0;
+    const dsd_trunk_scan_activity_identity id = simplex_identity(numeric);
+    for (int pass = 0; pass < 4; pass++) {
+        reset_scan_opts_state(&opts, &state);
+        DSD_SNPRINTF(opts.trunk_scan_lists[0].path, sizeof opts.trunk_scan_lists[0].path, "%s", target_path);
+        opts.trunk_scan_list_count = 1;
+        /* pass 1: another family's report; 2: voice-only; 3: the allow list, with a slot filter set. */
+        opts.scan_voice_only = pass == 2;
+        opts.trunk_use_allow_list = pass == 3;
+        if (pass == 3) {
+            unsigned int seen = 0U;
+            char ferr[128] = {0};
+            if (dsd_receive_option_apply(&opts.receive, &seen, "--slot-allow", "2", ferr, sizeof ferr) != 0) {
+                DSD_FPRINTF(stderr, "%s: slot filter: %s\n", type, ferr);
+                test_rc = 1;
+            }
+        }
+        char err[256] = {0};
+        trunk_scan_test_set_now(0.0);
+        if (dsd_engine_trunk_scan_init(&opts, &state, err, sizeof err) != 0) {
+            DSD_FPRINTF(stderr, "%s: init failed: %s\n", type, err);
+            test_rc = 1;
+            break;
+        }
+        trunk_scan_test_set_now(0.10);
+        dsd_trunk_scan_hook_digital_conventional_activity(&opts, &state, pass == 1 ? other : protocol, -1, &id);
+        trunk_scan_test_set_now(0.30);
+        dsd_engine_trunk_scan_tick(&opts, &state);
+        const int held = pass == 0 || (pass == 3 && !numeric);
+        if ((dsd_engine_trunk_scan_active_index(&state) == 0) != held) {
+            DSD_FPRINTF(stderr, "%s pass %d: active %zu, want %s\n", type, pass,
+                        dsd_engine_trunk_scan_active_index(&state), held ? "held on a" : "rotated to b");
+            test_rc = 1;
+        }
+        dsd_engine_trunk_scan_shutdown(&opts, &state);
+    }
+    trunk_scan_test_clear_now();
+    cleanup_paths(dir, target_path, NULL);
+    return test_rc;
+}
+
+static int
+test_digital_activity_holds_its_family(void) {
+    int rc = run_digital_activity_family_case("ysf-conventional", DSD_SYNC_YSF_POS, DSD_SYNC_DSTAR_HD_POS, 0);
+    rc |= run_digital_activity_family_case("dstar-conventional", DSD_SYNC_DSTAR_HD_POS, DSD_SYNC_YSF_POS, 0);
+    rc |= run_digital_activity_family_case("dpmr-conventional", DSD_SYNC_DPMR_FS1_POS, DSD_SYNC_NXDN_POS, 1);
+    rc |= run_digital_activity_family_case("m17-conventional", DSD_SYNC_M17_LSF_POS, DSD_SYNC_YSF_POS, 0);
+    rc |= run_digital_activity_family_case("tetra-dmo-conventional", DSD_SYNC_TETRA_SB_POS, DSD_SYNC_DPMR_FS2_POS, 1);
+    /* A report of DMR's own family through this slot claims no target: DMR reports through its own. */
+    rc |= run_digital_activity_family_case("dpmr-conventional", DSD_SYNC_DPMR_FS2_POS, DSD_SYNC_DMR_BS_VOICE_POS, 1);
+    return rc;
+}
+
+/* A report read on the visit before (the frame's dispatch origin, issue #890 A2) holds nothing for the target on air,
+   for a simplex family as for DMR: two YSF targets. */
+static int
+test_digital_activity_binds_its_visit(void) {
+    char dir[DSD_TEST_PATH_MAX];
+    char target_path[DSD_TEST_PATH_MAX];
+    if (make_runtime_targets("a,ysf-conventional,461000000,,250,2000,\nb,ysf-conventional,461012500,,250,2000,\n",
+                             target_path, sizeof target_path, dir, sizeof dir)
+        != 0) {
+        return 1;
+    }
+    static dsd_opts opts;
+    static dsd_state state;
+    reset_scan_opts_state(&opts, &state);
+    DSD_SNPRINTF(opts.trunk_scan_lists[0].path, sizeof opts.trunk_scan_lists[0].path, "%s", target_path);
+    opts.trunk_scan_list_count = 1;
+    char err[256] = {0};
+    int test_rc = 0;
+    trunk_scan_test_set_now(0.0);
+    if (dsd_engine_trunk_scan_init(&opts, &state, err, sizeof err) != 0) {
+        DSD_FPRINTF(stderr, "ysf visit: init failed: %s\n", err);
+        cleanup_paths(dir, target_path, NULL);
+        return 1;
+    }
+    const uint64_t visit_a = state.scan_landing_visit;
+    const uint32_t carrier_a = state.carrier_seq;
+    trunk_scan_test_set_now(0.26);
+    dsd_engine_trunk_scan_tick(&opts, &state);
+    test_rc |= expect_active_target(&state, "ysf visit: rotation to b", 1U);
+    const dsd_trunk_scan_activity_identity id = simplex_identity(0);
+    state.frame_dispatch_active = 1;
+    state.frame_dispatch_carrier_seq = carrier_a;
+    state.frame_dispatch_scan_visit = visit_a;
+    dsd_trunk_scan_hook_digital_conventional_activity(&opts, &state, DSD_SYNC_YSF_POS, -1, &id);
+    state.frame_dispatch_active = 0;
+    trunk_scan_test_set_now(0.52);
+    dsd_engine_trunk_scan_tick(&opts, &state);
+    test_rc |= expect_active_target(&state, "ysf visit: a's report held b nothing", 0U);
+    dsd_engine_trunk_scan_shutdown(&opts, &state);
+    trunk_scan_test_clear_now();
+    cleanup_paths(dir, target_path, NULL);
+    return test_rc;
+}
 
 /* The key matrix at the target list's own entry points (issue #890): a type whose class takes no key columns refuses
    each legacy key column, with its class's reason and never the cell; the options cell refuses a key switch the class
@@ -5750,6 +5883,69 @@ test_keyed_dpmr_alternates_with_m17(void) {
     return failed;
 }
 
+/* Issue #890: two lists naming simplex targets merge as every target does (issue #697: one id is one target). The same
+   id with the same settings is one target in both lists; the same id with another family, options or key is refused,
+   naming the setting; two ids on one frequency are two targets, whatever their families. */
+static int
+run_simplex_merge_case(const char* tag, const char* first, const char* second, int want_targets, const char* want_err) {
+    static const char header[] = "id,type,frequency_hz,chan_csv,dwell_ms,activity_hold_ms,notes,options\n";
+    char dir[DSD_TEST_PATH_MAX];
+    char path_a[DSD_TEST_PATH_MAX];
+    char path_b[DSD_TEST_PATH_MAX];
+    char body[512];
+    if (make_temp_dir(dir, sizeof dir) != 0 || dsd_test_path_join(path_a, sizeof path_a, dir, "first.csv") != 0
+        || dsd_test_path_join(path_b, sizeof path_b, dir, "second.csv") != 0) {
+        return 1;
+    }
+    DSD_SNPRINTF(body, sizeof body, "%s%s", header, first);
+    int failed = write_text_file(path_a, body) != 0;
+    DSD_SNPRINTF(body, sizeof body, "%s%s", header, second);
+    failed |= write_text_file(path_b, body) != 0;
+    static dsd_opts opts;
+    static dsd_state state;
+    reset_scan_opts_state(&opts, &state);
+    DSD_SNPRINTF(opts.trunk_scan_lists[0].path, sizeof opts.trunk_scan_lists[0].path, "%s", path_a);
+    DSD_SNPRINTF(opts.trunk_scan_lists[1].path, sizeof opts.trunk_scan_lists[1].path, "%s", path_b);
+    opts.trunk_scan_list_count = 2;
+    char err[DSD_TRUNK_SCAN_ERROR_MAX] = {0};
+    trunk_scan_test_set_now(0.0);
+    const int rc = failed ? -1 : dsd_engine_trunk_scan_init(&opts, &state, err, sizeof err);
+    if (want_err == NULL) {
+        if (rc != 0 || dsd_engine_trunk_scan_target_count(&state) != (size_t)want_targets) {
+            DSD_FPRINTF(stderr, "%s: rc %d, %zu targets, want %d: %s\n", tag, rc,
+                        dsd_engine_trunk_scan_target_count(&state), want_targets, err);
+            failed = 1;
+        }
+    } else if (rc == 0 || strstr(err, want_err) == NULL) {
+        DSD_FPRINTF(stderr, "%s: rc %d err '%s', want '%s'\n", tag, rc, err, want_err);
+        failed = 1;
+    }
+    dsd_engine_trunk_scan_shutdown(&opts, &state);
+    trunk_scan_test_clear_now();
+    (void)remove(path_a);
+    (void)remove(path_b);
+    (void)dsd_test_rmdir(dir);
+    return failed;
+}
+
+static int
+test_simplex_targets_merge_across_lists(void) {
+    int rc = run_simplex_merge_case("same id, same settings", "y,ysf-conventional,433000000,,250,250,,\n",
+                                    "y,ysf-conventional,433000000,,250,250,,\n", 1, NULL);
+    rc |= run_simplex_merge_case("same id, another family", "x,ysf-conventional,433000000,,250,250,,\n",
+                                 "x,m17-conventional,433000000,,250,250,,\n", 0, "with another type");
+    rc |= run_simplex_merge_case("same id, other options", "d,dpmr-conventional,446100000,,250,250,,--strict-crc\n",
+                                 "d,dpmr-conventional,446100000,,250,250,,\n", 0, "with another -F/--strict-crc");
+    rc |= run_simplex_merge_case("same id, another key", "d,dpmr-conventional,446100000,,250,250,,-R 17\n",
+                                 "d,dpmr-conventional,446100000,,250,250,,-R 18\n", 0, "the key columns differ");
+    rc |= run_simplex_merge_case("distinct ids, one frequency", "a,ysf-conventional,433000000,,250,250,,\n",
+                                 "b,m17-conventional,433000000,,250,250,,\n", 2, NULL);
+    rc |= run_simplex_merge_case("distinct ids, one frequency, tetra and dpmr",
+                                 "t,tetra-dmo-conventional,433000000,,250,250,,\n",
+                                 "d,dpmr-conventional,433000000,,250,250,,-R 17\n", 2, NULL);
+    return rc;
+}
+
 static int
 test_conventional_activity_after_a_stream_restart(void) {
     int rc = run_conventional_activity_after_restart_case(0) | run_conventional_activity_after_restart_case(1);
@@ -5778,7 +5974,7 @@ test_conventional_activity_binds_its_visit(void) {
  * while a park is in flight. b's own checked media holds b, through a sync loss. @p body names two conventional
  * targets. */
 static int
-run_voice_gate_media_origin_case(const char* tag, const char* body) {
+run_voice_gate_media_origin_case(const char* tag, const char* body, int protocol) {
     char dir[DSD_TEST_PATH_MAX];
     char target_path[DSD_TEST_PATH_MAX];
     if (make_runtime_targets(body, target_path, sizeof target_path, dir, sizeof dir) != 0) {
@@ -5808,7 +6004,7 @@ run_voice_gate_media_origin_case(const char* tag, const char* body) {
     state.frame_dispatch_active = 1;
     state.frame_dispatch_carrier_seq = carrier_a;
     state.frame_dispatch_scan_visit = visit_a;
-    if (seed_voice_gate_media_epoch(&state, 0.16, 0.26, DSD_CALL_CRYPTO_CLEAR) != 0) {
+    if (seed_voice_gate_media_epoch_proto(&state, protocol, 0.16, 0.26, DSD_CALL_CRYPTO_CLEAR) != 0) {
         test_rc = 1;
     }
     state.frame_dispatch_active = 0;
@@ -5824,7 +6020,7 @@ run_voice_gate_media_origin_case(const char* tag, const char* body) {
     /* On a (landed 0.52): marks without checked media, past a's 250 ms dwell. */
     dsd_call_observation obs;
     DSD_MEMSET(&obs, 0, sizeof(obs));
-    obs.protocol = DSD_SYNC_DMR_BS_VOICE_POS;
+    obs.protocol = protocol;
     obs.slot = 0U;
     obs.kind = DSD_CALL_KIND_GROUP_VOICE;
     obs.ota_target_id = 1001U;
@@ -5842,7 +6038,7 @@ run_voice_gate_media_origin_case(const char* tag, const char* body) {
     }
 
     /* On b (landed 0.78): its own checked media holds it past its dwell, a sync loss after it too. */
-    if (seed_voice_gate_media_epoch(&state, 0.79, 0.95, DSD_CALL_CRYPTO_CLEAR) != 0) {
+    if (seed_voice_gate_media_epoch_proto(&state, protocol, 0.79, 0.95, DSD_CALL_CRYPTO_CLEAR) != 0) {
         test_rc = 1;
     }
     (void)dsd_call_state_end_ex(&state, 0U, 0.96, DSD_CALL_END_SYNC_LOSS);
@@ -5862,7 +6058,7 @@ run_voice_gate_media_origin_case(const char* tag, const char* body) {
         DSD_FPRINTF(stderr, "%s: a's park is not in flight\n", tag);
         test_rc = 1;
     }
-    if (seed_voice_gate_media_epoch(&state, 1.51, 1.70, DSD_CALL_CRYPTO_CLEAR) != 0) {
+    if (seed_voice_gate_media_epoch_proto(&state, protocol, 1.51, 1.70, DSD_CALL_CRYPTO_CLEAR) != 0) {
         test_rc = 1;
     }
     dsd_trunk_tuning_request_publish(g_scan_tune_pending_request, DSD_TRUNK_TUNE_RESULT_OK);
@@ -5884,10 +6080,15 @@ run_voice_gate_media_origin_case(const char* tag, const char* body) {
 
 static int
 test_conventional_voice_gate_media_binds_its_visit(void) {
-    int rc = run_voice_gate_media_origin_case("two frequencies", "a,dmr-conventional,461000000,,250,250,\n"
-                                                                 "b,dmr-conventional,462000000,,250,250,\n");
-    rc |= run_voice_gate_media_origin_case("one frequency", "a,nxdn-conventional,461000000,,250,250,\n"
-                                                            "b,nxdn48-conventional,461000000,,250,250,\n");
+    int rc = run_voice_gate_media_origin_case("two frequencies",
+                                              "a,dmr-conventional,461000000,,250,250,\n"
+                                              "b,dmr-conventional,462000000,,250,250,\n",
+                                              DSD_SYNC_DMR_BS_VOICE_POS);
+    /* Media of the rows' own family (issue #890: a row's voice credit is its family's only). */
+    rc |= run_voice_gate_media_origin_case("one frequency",
+                                           "a,nxdn-conventional,461000000,,250,250,\n"
+                                           "b,nxdn48-conventional,461000000,,250,250,\n",
+                                           DSD_SYNC_NXDN_POS);
     return rc;
 }
 
@@ -29160,9 +29361,12 @@ main(void) {
     rc |= run_with_default_tune_hook(test_mixed_target_switch_resets_dmr_demod_profile);
     rc |= run_with_default_tune_hook(test_conventional_activity_hold_and_allowlist_block);
     rc |= run_with_default_tune_hook(test_conventional_activity_binds_its_visit);
+    rc |= run_with_default_tune_hook(test_digital_activity_holds_its_family);
+    rc |= run_with_default_tune_hook(test_digital_activity_binds_its_visit);
     rc |= run_with_default_tune_hook(test_simplex_targets_follow_the_key_matrix);
     rc |= run_with_default_tune_hook(test_live_key_changes_follow_the_key_matrix);
     rc |= run_with_default_tune_hook(test_keyed_dpmr_alternates_with_m17);
+    rc |= run_with_default_tune_hook(test_simplex_targets_merge_across_lists);
     rc |= run_with_default_tune_hook(test_conventional_activity_after_a_stream_restart);
     rc |= run_with_default_tune_hook(test_conventional_activity_stale_visit_same_carrier);
     rc |= run_with_default_tune_hook(test_conventional_activity_encrypted_lockout_does_not_hold);

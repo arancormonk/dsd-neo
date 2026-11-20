@@ -17,6 +17,8 @@
 #include <dsd-neo/engine/scan_voice_gate.h>
 #include <dsd-neo/engine/trunk_tuning.h>
 #include <dsd-neo/runtime/analog_tones.h>
+#include <dsd-neo/runtime/scan_mode.h>
+#include <dsd-neo/runtime/trunk_scan_hooks.h>
 
 #include <math.h>
 #include <stdint.h>
@@ -126,6 +128,131 @@ scan_voice_snapshot_is_voice(const dsd_state* state, const dsd_call_snapshot* ca
     return 1;
 }
 
+int
+dsd_scan_activity_protocol_is_callsign(int protocol) {
+    return DSD_SYNC_IS_YSF(protocol) || DSD_SYNC_IS_DSTAR(protocol) || DSD_SYNC_IS_M17(protocol);
+}
+
+int
+dsd_scan_mode_family_has_protocol(int mode, int protocol) {
+    switch ((dsd_scan_mode)mode) {
+        case DSD_SCAN_MODE_INHERIT: return 1;
+        case DSD_SCAN_MODE_P25: return DSD_SYNC_IS_P25(protocol);
+        case DSD_SCAN_MODE_DMR: return DSD_SYNC_IS_DMR(protocol);
+        case DSD_SCAN_MODE_NXDN96:
+        case DSD_SCAN_MODE_NXDN48: return DSD_SYNC_IS_NXDN(protocol);
+        case DSD_SCAN_MODE_DPMR: return DSD_SYNC_IS_DPMR(protocol);
+        case DSD_SCAN_MODE_DSTAR: return DSD_SYNC_IS_DSTAR(protocol);
+        case DSD_SCAN_MODE_YSF: return DSD_SYNC_IS_YSF(protocol);
+        case DSD_SCAN_MODE_M17: return DSD_SYNC_IS_M17(protocol);
+        case DSD_SCAN_MODE_TETRA_DMO: return DSD_SYNC_IS_TETRA(protocol);
+        case DSD_SCAN_MODE_NFM:
+        case DSD_SCAN_MODE_AM:
+        default: return 0;
+    }
+}
+
+/* The restrictions on a call's data, encryption and party that hold whatever its IDs: a field a restriction in force
+   depends on and the report does not know holds nothing (issue #890 F9), and a known one is judged by the restriction's
+   own option. */
+static int
+scan_activity_restrictions_allow(const dsd_opts* opts, const dsd_trunk_scan_activity_identity* id) {
+    const int data_restricted = opts->trunk_tune_data_calls == 0;
+    const int party_restricted = opts->trunk_tune_private_calls == 0 || opts->trunk_tune_group_calls == 0;
+    if (((id->known & DSD_SCAN_ACTIVITY_KNOWN_DATA) == 0U && data_restricted)
+        || ((id->known & DSD_SCAN_ACTIVITY_KNOWN_ENCRYPTED) == 0U && opts->trunk_tune_enc_calls == 0)
+        || ((id->known & DSD_SCAN_ACTIVITY_KNOWN_PARTY) == 0U && party_restricted)) {
+        return 0;
+    }
+    if ((id->known & DSD_SCAN_ACTIVITY_KNOWN_DATA) && id->data_call && data_restricted) {
+        return 0;
+    }
+    if ((id->known & DSD_SCAN_ACTIVITY_KNOWN_ENCRYPTED) && dsd_tg_policy_encrypted_tune_denied(opts, id->encrypted)) {
+        return 0;
+    }
+    if (id->known & DSD_SCAN_ACTIVITY_KNOWN_PARTY) {
+        return id->is_private ? opts->trunk_tune_private_calls != 0 : opts->trunk_tune_group_calls != 0;
+    }
+    return 1;
+}
+
+/* A numeric family's identity through the talkgroup and radio lists (dsd_scan_activity_policy_allows()). */
+static int
+scan_activity_numeric_allows(const dsd_opts* opts, const dsd_state* state,
+                             const dsd_trunk_scan_activity_identity* identity) {
+    const uint32_t source = (identity->known & DSD_SCAN_ACTIVITY_KNOWN_SOURCE) ? identity->source : 0U;
+    if ((identity->known & DSD_SCAN_ACTIVITY_KNOWN_TARGET) == 0U || identity->target == 0U) {
+        /* An anonymous report never passes a talkgroup Hold or the allow list (fail closed); the radio list acts once
+           the radio is known. */
+        return state->tg_hold == 0U && opts->trunk_use_allow_list != 1 && !dsd_tg_policy_radio_blocked(state, source);
+    }
+    const int encrypted = (identity->known & DSD_SCAN_ACTIVITY_KNOWN_ENCRYPTED) ? identity->encrypted : 0;
+    const int data_call = (identity->known & DSD_SCAN_ACTIVITY_KNOWN_DATA) ? identity->data_call : 0;
+    dsd_tg_policy_decision decision;
+    int rc = 0;
+    if ((identity->known & DSD_SCAN_ACTIVITY_KNOWN_PARTY) && identity->is_private) {
+        rc =
+            dsd_tg_policy_evaluate_private_call(opts, state, source, identity->target, encrypted, data_call, &decision);
+    } else {
+        /* A group call, or one whose party the protocol does not say (dPMR, TS 102 658 A.1.3.3.5): by its target's
+           talkgroup row and its source's radio row. */
+        rc = dsd_tg_policy_evaluate_group_call(opts, state, identity->target, source, encrypted, data_call, &decision);
+    }
+    return rc == 0 && decision.tune_allowed;
+}
+
+int
+dsd_scan_activity_policy_allows(const dsd_opts* opts, const dsd_state* state, int protocol,
+                                const dsd_trunk_scan_activity_identity* identity) {
+    if (!opts || !state || !identity || !scan_activity_restrictions_allow(opts, identity)) {
+        return 0;
+    }
+    return dsd_scan_activity_protocol_is_callsign(protocol) || scan_activity_numeric_allows(opts, state, identity);
+}
+
+/* What the policy table reads of @p call (issue #890): the numeric IDs of a family named by them, the party its kind
+   says, its crypto classification (a callsign family with no encryption, YSF or D-STAR, is clear), and voice. A call
+   whose decoder could decrypt it is judged clear, as its audio is. */
+static void
+scan_voice_call_identity(const dsd_call_snapshot* call, dsd_trunk_scan_activity_identity* id) {
+    DSD_MEMSET(id, 0, sizeof(*id));
+    id->known = DSD_SCAN_ACTIVITY_KNOWN_DATA;
+    if (!dsd_scan_activity_protocol_is_callsign(call->protocol)) {
+        const uint64_t wide_target = call->policy_target_id != 0U ? call->policy_target_id : call->ota_target_id;
+        if (wide_target != 0U && wide_target <= UINT32_MAX) {
+            id->target = (uint32_t)wide_target;
+            id->known |= DSD_SCAN_ACTIVITY_KNOWN_TARGET;
+        }
+        /* A source that does not fit 32 bits is unknown, not its truncated low half. */
+        if (call->ota_source_id != 0U && call->ota_source_id <= UINT32_MAX) {
+            id->source = (uint32_t)call->ota_source_id;
+            id->known |= DSD_SCAN_ACTIVITY_KNOWN_SOURCE;
+        }
+    }
+    if (call->kind == DSD_CALL_KIND_PRIVATE_VOICE || call->kind == DSD_CALL_KIND_GROUP_VOICE) {
+        id->is_private = (uint8_t)(call->kind == DSD_CALL_KIND_PRIVATE_VOICE);
+        id->known |= DSD_SCAN_ACTIVITY_KNOWN_PARTY;
+    }
+    if (DSD_SYNC_IS_YSF(call->protocol) || DSD_SYNC_IS_DSTAR(call->protocol)) {
+        id->known |= DSD_SCAN_ACTIVITY_KNOWN_ENCRYPTED;
+    } else if (call->crypto != DSD_CALL_CRYPTO_UNKNOWN) {
+        id->encrypted =
+            (uint8_t)(call->crypto == DSD_CALL_CRYPTO_ENCRYPTED || call->crypto == DSD_CALL_CRYPTO_ENCRYPTED_PENDING);
+        id->known |= DSD_SCAN_ACTIVITY_KNOWN_ENCRYPTED;
+    }
+}
+
+/* Whether @p call is of the family of the scan row on air (issue #890): the row's class (dsd_scan_mode_active(); an
+   untyped row takes every protocol), and on a tetra-dmo row only direct mode speech, never a trunked carrier's. */
+static int
+scan_voice_call_of_row_family(const dsd_state* state, const dsd_call_snapshot* call) {
+    const dsd_scan_mode mode = dsd_scan_mode_active(state);
+    if (!dsd_scan_mode_family_has_protocol((int)mode, call->protocol)) {
+        return 0;
+    }
+    return mode != DSD_SCAN_MODE_TETRA_DMO || call->checked_media_tetra_direct != 0U;
+}
+
 /* The supergroup of a P25 group call on a live patch, judged through the patch resolver; 0 for any other call, which
  * keeps its stored policy target. */
 static uint32_t
@@ -162,38 +289,16 @@ scan_voice_snapshot_policy_allows(const dsd_opts* opts, const dsd_state* state, 
     if (!dsd_receive_identity_admitted(opts, &call->receive_identity)) {
         return 0;
     }
-    const int encrypted =
-        call->crypto == DSD_CALL_CRYPTO_ENCRYPTED || call->crypto == DSD_CALL_CRYPTO_ENCRYPTED_PENDING;
-    /* The encrypted-call tuning rule needs no talkgroup (issue #890): a call known encrypted is held back under it
-       before its target is known, and whatever its addressing (M17's callsigns included). */
-    if (dsd_tg_policy_encrypted_tune_denied(opts, encrypted)) {
-        return 0;
-    }
-    if (DSD_SYNC_IS_M17(call->protocol)) {
-        /* M17 addresses calls by callsign, outside talkgroup policy: its 48-bit values must never reach a lookup. */
-        return 1;
-    }
-    const uint64_t wide_target = call->policy_target_id != 0U ? call->policy_target_id : call->ota_target_id;
-    /* A source that does not fit 32 bits is unknown, not its truncated low half. */
-    const uint32_t source = call->ota_source_id > UINT32_MAX ? 0U : (uint32_t)call->ota_source_id;
+    /* The policy table (issue #890), as a protocol's activity report is judged: a callsign family (M17's 48-bit
+       values among them) never reaches a talkgroup lookup, and an anonymous call holds nothing under a Hold, the allow
+       list or a block on its known source. */
+    dsd_trunk_scan_activity_identity identity;
+    scan_voice_call_identity(call, &identity);
     const uint32_t patch_sg = scan_voice_call_patch_sg(state, call);
     if (patch_sg != 0U) {
-        return scan_voice_patch_allows(opts, state, call, patch_sg, source, encrypted);
+        return scan_voice_patch_allows(opts, state, call, patch_sg, identity.source, identity.encrypted);
     }
-    if (wide_target == 0U || wide_target > UINT32_MAX) {
-        /* Unknown target (LC never decoded, or not a 32-bit ID) counts as voice, unless the radio list blocks its
-           known source: radio rules act once the radio is known. */
-        return !dsd_tg_policy_radio_blocked(state, source);
-    }
-    const uint32_t target = (uint32_t)wide_target;
-    dsd_tg_policy_decision decision;
-    int rc = 0;
-    if (call->kind == DSD_CALL_KIND_PRIVATE_VOICE) {
-        rc = dsd_tg_policy_evaluate_private_call(opts, state, source, target, encrypted, 0, &decision);
-    } else {
-        rc = dsd_tg_policy_evaluate_group_call(opts, state, target, source, encrypted, 0, &decision);
-    }
-    return rc == 0 && decision.tune_allowed;
+    return dsd_scan_activity_policy_allows(opts, state, call->protocol, &identity);
 }
 
 int
@@ -212,7 +317,7 @@ dsd_scan_voice_probe(const dsd_opts* opts, const dsd_state* state, dsd_scan_voic
         if (dsd_call_state_get(state, (uint8_t)slot_i, &call) <= 0) {
             continue;
         }
-        if (!scan_voice_snapshot_is_voice(state, &call)) {
+        if (!scan_voice_snapshot_is_voice(state, &call) || !scan_voice_call_of_row_family(state, &call)) {
             continue;
         }
         if (!scan_voice_snapshot_policy_allows(opts, state, &call)) {
@@ -245,6 +350,19 @@ scan_tg_hold_matches_call(const dsd_opts* opts, const dsd_state* state, const ds
     return hold == target;
 }
 
+/* Whether call @p call may stand for a talkgroup Hold on the scan row on air (issue #890 F7): a call of the row's family
+   (scan_voice_call_of_row_family()), and on a typed TETRA DMO row only a direct mode talkspurt the policy table admits
+   whose checked speech was heard on this visit: a trunked call, or a DMO call of another visit, never suspends that
+   row's visit cap. */
+static int
+scan_tg_hold_call_on_row(const dsd_opts* opts, const dsd_state* state, const dsd_call_snapshot* call) {
+    if (dsd_scan_mode_active(state) != DSD_SCAN_MODE_TETRA_DMO) {
+        return dsd_scan_mode_family_has_protocol((int)dsd_scan_mode_active(state), call->protocol);
+    }
+    return scan_voice_call_of_row_family(state, call) && scan_voice_snapshot_is_voice(state, call)
+           && scan_voice_snapshot_policy_allows(opts, state, call);
+}
+
 int
 dsd_scan_tg_hold_call_active(const dsd_opts* opts, const dsd_state* state) {
     if (!state || state->tg_hold == 0U) {
@@ -258,7 +376,8 @@ dsd_scan_tg_hold_call_active(const dsd_opts* opts, const dsd_state* state) {
             continue;
         }
         if (call.phase != DSD_CALL_PHASE_ACTIVE || call.kind == DSD_CALL_KIND_DATA
-            || call.receive_verdict == DSD_RECEIVE_CHECKING || call.receive_verdict == DSD_RECEIVE_REJECTED) {
+            || call.receive_verdict == DSD_RECEIVE_CHECKING || call.receive_verdict == DSD_RECEIVE_REJECTED
+            || !scan_tg_hold_call_on_row(opts, state, &call)) {
             continue;
         }
         if (scan_tg_hold_matches_call(opts, state, &call, hold)) {

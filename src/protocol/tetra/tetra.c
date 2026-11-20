@@ -39,6 +39,7 @@
 #include <dsd-neo/protocol/tetra/tetra_voice.h>
 #include <dsd-neo/runtime/frame_sync_hooks.h>
 #include <dsd-neo/runtime/log.h>
+#include <dsd-neo/runtime/scan_mode.h>
 #include <dsd-neo/runtime/telemetry.h>
 #include <stddef.h>
 #include <stdint.h>
@@ -357,10 +358,13 @@ tetra_nb_signalling(dsd_opts* opts, dsd_state* state, const tetra_nb_ctx* ctx, c
 /* Speech whose CRC passed in a trunked downlink burst: the home cell's evidence on a followed carrier
    (tetra_sm_note_home_crc()), as its signalling is. */
 static void
-tetra_nb_speech_decoded(dsd_state* state, const tetra_nb_ctx* ctx) {
+tetra_nb_speech_decoded(const dsd_opts* opts, dsd_state* state, const tetra_nb_ctx* ctx) {
     tetra_confirm_note_block(state);
     tetra_confirm_note_proof(state, ctx->direct ? DSD_TETRA_BURST_PROOF_DMO_SPEECH : DSD_TETRA_BURST_PROOF_TMO);
-    if (!ctx->direct && !ctx->uplink) {
+    if (ctx->direct) {
+        /* Direct mode speech holds a tetra-dmo-conventional scan target (issue #890); trunked speech never does. */
+        tetra_calls_dmo_speech_activity(opts, state);
+    } else if (!ctx->uplink) {
         tetra_sm_note_home_crc(state);
     }
 }
@@ -413,7 +417,7 @@ tetra_nb_nts2(dsd_opts* opts, dsd_state* state, const tetra_nb_ctx* ctx, const u
     if (!tetra_nb_half(opts, state, ctx, block, "STCH-2", TETRA_AIR_KSS_SECOND_HALF_BLOCK)
         && !tetra_tdma_control_frame(tetra_st_peek(state)) && !ctx->no_traffic
         && tetra_decode_tch_half(block, opts, state)) {
-        tetra_nb_speech_decoded(state, ctx);
+        tetra_nb_speech_decoded(opts, state, ctx);
     }
 }
 
@@ -435,7 +439,7 @@ tetra_nb_nts1(dsd_opts* opts, dsd_state* state, const tetra_nb_ctx* ctx, const u
     if (!tetra_schf_decode_bits(type4, decoded)) {
         tetra_nb_block_failed(state, ctx);
         if (!tetra_tdma_control_frame(ts) && !ctx->no_traffic && tetra_decode_tch_fs(type4, ctx->cc, opts, state)) {
-            tetra_nb_speech_decoded(state, ctx);
+            tetra_nb_speech_decoded(opts, state, ctx);
         }
         return;
     }
@@ -1249,12 +1253,25 @@ tetra_publish(dsd_state* state) {
     pub->codec_errors = ts->voice.codec_errors;
 }
 
+/* Whether what a burst proved is content for the scan row on air (issue #890, A5): every checked proof on an untyped row
+ * (tetra_burst_proof_is_content()), but on a row of the tetra-dmo class (a typed -Y row or a tetra-dmo-conventional
+ * trunk-scan target, dsd_scan_mode_active()) only a direct mode one: trunked mode on a DMO channel proves the TETRA
+ * profile and no DMO service, so it advances neither the -Y content nor a quiet check's activity. */
+static int
+tetra_burst_proof_is_row_content(const dsd_state* state, dsd_tetra_burst_proof proof) {
+    if (dsd_scan_mode_active(state) == DSD_SCAN_MODE_TETRA_DMO) {
+        return proof == DSD_TETRA_BURST_PROOF_DMO_OPAQUE || proof == DSD_TETRA_BURST_PROOF_DMO_SERVICE
+               || proof == DSD_TETRA_BURST_PROOF_DMO_SPEECH;
+    }
+    return tetra_burst_proof_is_content(proof);
+}
+
 /* Tell the frame sync where block 1 of the next normal burst sits: right against the training sequence in direct
  * mode and on the uplink, behind AACH half 1 on the downlink. Then publish what the frontends show (unless the burst's
  * read was lost), and end the burst for them (tetra_burst_done()), whichever burst it was and however its decode ended.
- * The burst closes with what it proved (tetra_burst_proof()): checked content, trunked or direct mode, is reported to a
- * -Y row and a scan quiet check as PROVEN content (issue #890); a burst that proved only the TETRA profile, failed, or
- * whose read was lost reports nothing. Last, the move to the main carrier a SYSINFO of the burst staged, if one did
+ * The burst closes with what it proved (tetra_burst_proof()): checked content, trunked or direct mode (direct mode only
+ * on a tetra-dmo row, tetra_burst_proof_is_row_content()), is reported to a -Y row and a scan quiet check as PROVEN
+ * content (issue #890); a burst that proved only the TETRA profile, failed, or whose read was lost reports nothing. Last, the move to the main carrier a SYSINFO of the burst staged, if one did
  * (tetra_sm_after_burst()): every other burst costs the flag read. Returns 1 when the burst decoded a block whose CRC
  * passed. */
 static int
@@ -1267,7 +1284,7 @@ tetra_frame_leave(dsd_opts* opts, dsd_state* state, const tetra_state_t* ts) {
     }
     tetra_burst_done(opts, state);
     const int proven = tetra_confirm_burst_end(state);
-    if (tetra_burst_proof_is_content(tetra_burst_proof(state))) {
+    if (tetra_burst_proof_is_row_content(state, tetra_burst_proof(state))) {
         dsd_frame_sync_hook_content_evidence(opts, state, DSD_CONTENT_EVIDENCE_PROVEN, 0U);
     }
     if (ts->sm.acq.staged_hz != 0) {

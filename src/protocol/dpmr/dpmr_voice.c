@@ -468,6 +468,21 @@ dpmr_publish_call(dsd_opts* opts, dsd_state* state) {
     dsd_event_sync_slot(opts, state, 0U);
 }
 
+/* A frame whose two CCH halves passed their CRC-7 as a bound pair (dpmr_ids_are_strong(): halves 0/1 the called
+   station, 2/3 the calling one, TS 102 658 Tables 5.5 to 5.8) holds a scan target (issue #890), with the one station
+   the pair names and the service of its halves (both checked: the first's). A frame with a failed or unbound half
+   reports nothing. */
+static void
+dpmr_report_frame_scan_activity(const dsd_opts* opts, const dsd_state* state) {
+    const dPMRVoiceFS2Frame_t* f = &state->dPMRVoiceFS2Frame;
+    if (f->BoundIdKind == DPMR_FRAME_ID_NONE) {
+        return;
+    }
+    const int called = f->BoundIdKind == DPMR_FRAME_ID_CALLED;
+    dpmr_report_scan_activity(opts, state, f->BoundIdValue, called, f->BoundIdValue, !called, f->CommunicationMode[0],
+                              f->Version[0]);
+}
+
 /* Whether half @p o's payload frame carries speech in a Voice and attached data call (M = 101, TS 102 658 §5.5.7 Table
    5.55): its TCH is AMBE only while the SLD of its CRC-checked CCH says the frame holds no data (DP = 00, §5.5.29.2
    Table 5.95; §11.1.1 Figure 11.3: after PTT release the remaining frames carry the attached data with DP = 11). A
@@ -653,6 +668,7 @@ processdPMRvoice(dsd_opts* opts, dsd_state* state) {
         DSD_FPRINTF(stderr, " CCH %s/%s", ctx.CrcOk[0] != 0U ? "OK" : "ERR", ctx.CrcOk[1] != 0U ? "OK" : "ERR");
     }
     dpmr_print_scrambler_state(opts, state);
+    dpmr_report_frame_scan_activity(opts, state);
     if (dpmr_confirm_is_confirmed(state)) {
         dpmr_play_voice_frames(opts, state, ctx.ambe_fr);
     } else {

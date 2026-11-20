@@ -18,6 +18,7 @@
 
 #include <dsd-neo/core/opts_fwd.h>
 #include <dsd-neo/core/state_fwd.h>
+#include <dsd-neo/runtime/trunk_scan_hooks.h>
 
 #ifdef __cplusplus
 extern "C" {
@@ -46,6 +47,32 @@ typedef struct {
  */
 int dsd_scan_receive_should_leave(const dsd_opts* opts, const dsd_state* state, double arrived_m, double now_m);
 int dsd_scan_voice_probe(const dsd_opts* opts, const dsd_state* state, dsd_scan_voice_probe_result* out);
+
+/**
+ * The scan's policy table (issue #890): whether activity of @p protocol (a DSD_SYNC_* value) with @p identity may hold
+ * a scan row. Both hold paths ask it, a protocol's activity report and checked voice media; the receive policy (DCC,
+ * RAN, NAC, slot, tone) is the caller's to apply first.
+ *
+ * - A restriction that depends on a field @p identity does not know holds nothing (fail closed): data calls not
+ *   followed (--no-data-calls, the default) with the data field unknown, encrypted calls not followed (--enc-lockout)
+ *   with the encryption unknown, group or private calls not followed with the party unknown.
+ * - Callsign families (YSF, D-STAR, M17) take no talkgroup policy: their callsigns are no talkgroup or radio IDs, so
+ *   only the known data, party and encryption restrictions apply.
+ * - Every other family is judged by its numeric IDs: a known target through the talkgroup policy (a private call by
+ *   both IDs, a group call or one of unknown party by its target and source); with no target known, nothing holds
+ *   under a talkgroup Hold or the allow list, nor a source the radio list blocks, and the known restrictions apply.
+ *
+ * 0 for a NULL @p identity.
+ */
+int dsd_scan_activity_policy_allows(const dsd_opts* opts, const dsd_state* state, int protocol,
+                                    const dsd_trunk_scan_activity_identity* identity);
+/** Whether @p protocol (a DSD_SYNC_* value) names its calls by callsign, outside talkgroup policy (YSF, D-STAR, M17). */
+int dsd_scan_activity_protocol_is_callsign(int protocol);
+/** Whether a call of @p protocol (a DSD_SYNC_* value) belongs to scan class @p mode (a dsd_scan_mode): every protocol
+ * for the inherited class (an untyped row), the class's own family otherwise (P25 Phase 1 and 2 for p25, either NXDN
+ * rate for nxdn48 and nxdn96), and none for an analog class. TETRA calls are tetra-dmo's; whether they were direct mode
+ * is the caller's to ask of the call (dsd_call_snapshot::checked_media_tetra_direct). */
+int dsd_scan_mode_family_has_protocol(int mode, int protocol);
 
 /**
  * Non-zero while the analog channel on air has carrier (issue #526), the activity that holds an analog

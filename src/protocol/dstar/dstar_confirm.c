@@ -3,8 +3,10 @@
  * Copyright (C) 2026 by arancormonk <180709949+arancormonk@users.noreply.github.com>
  */
 
+#include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/runtime/frame_sync_hooks.h>
 #include <dsd-neo/runtime/signal_search_hooks.h>
+#include <dsd-neo/runtime/trunk_scan_hooks.h>
 #include <stddef.h>
 #include "dstar_confirm.h"
 #include "dstar_sd_state.h"
@@ -112,4 +114,20 @@ dstar_confirm_end_frame(const dsd_opts* opts, dsd_state* state) {
 int
 dstar_confirm_is_confirmed(const dsd_state* state) {
     return state && state->dstar_confirmed != 0;
+}
+
+void
+dstar_report_scan_activity(const dsd_opts* opts, const dsd_state* state, int data_known, int data) {
+    if (!state) {
+        return;
+    }
+    dsd_trunk_scan_activity_identity identity;
+    DSD_MEMSET(&identity, 0, sizeof(identity));
+    identity.known = DSD_SCAN_ACTIVITY_KNOWN_ENCRYPTED;
+    if (data_known) {
+        identity.known |= DSD_SCAN_ACTIVITY_KNOWN_DATA;
+        identity.data_call = (uint8_t)(data != 0);
+    }
+    const int protocol = DSD_SYNC_IS_DSTAR(state->synctype) ? state->synctype : DSD_SYNC_DSTAR_VOICE_POS;
+    dsd_trunk_scan_hook_digital_conventional_activity(opts, state, protocol, -1, &identity);
 }

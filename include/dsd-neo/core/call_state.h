@@ -301,6 +301,9 @@ typedef struct {
     double checked_media_updated_m;
     uint64_t checked_media_visit;
     uint32_t checked_media_carrier_seq;
+    /** 1 when the checked media span is TETRA direct mode speech (dsd_call_state_note_checked_media_tetra(), issue
+     * #890): a TETRA DMO scan row takes no other TETRA media. A frame of the other mode starts the span again. */
+    uint8_t checked_media_tetra_direct;
     /** The reception generation when this epoch began (dsd_state_reception_generation()). */
     uint64_t rx_gen;
     dsd_call_phase phase;
@@ -625,6 +628,13 @@ int dsd_call_state_update_media(dsd_state* state, uint8_t slot, int media_active
  * frame was cut, -1 on bad arguments. Decoder thread.
  */
 int dsd_call_state_note_checked_media(dsd_state* state, uint8_t slot, int protocol, double observed_m);
+/**
+ * dsd_call_state_note_checked_media() for a TETRA speech frame (issue #890), which also names the mode its burst was
+ * read in: @p direct 1 for direct mode (EN 300 396), 0 for trunked mode. The span keeps the mode
+ * (dsd_call_snapshot::checked_media_tetra_direct), and a frame of the other mode starts it again, as a frame of
+ * another origin does.
+ */
+int dsd_call_state_note_checked_media_tetra(dsd_state* state, uint8_t slot, int direct, double observed_m);
 /**
  * End the active epoch, recording why it ended.
  *

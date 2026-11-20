@@ -92,6 +92,32 @@ typedef enum {
 /** The list dsd_trunk_scan_hook_list_set() takes for "every list": switched on, all of them at once. */
 enum { DSD_TRUNK_SCAN_LIST_ALL = -1 };
 
+/** Which fields of a dsd_trunk_scan_activity_identity a report knows (issue #890). A field whose bit is clear is
+ * unknown, whatever its value: the protocol has not checked it yet, or carries none. */
+enum {
+    DSD_SCAN_ACTIVITY_KNOWN_TARGET = 1U << 0,    /**< target: a numeric called ID (dPMR, TETRA DMO) */
+    DSD_SCAN_ACTIVITY_KNOWN_SOURCE = 1U << 1,    /**< source: a numeric calling ID (dPMR, TETRA DMO) */
+    DSD_SCAN_ACTIVITY_KNOWN_PARTY = 1U << 2,     /**< is_private: the call is individual (1) or group (0) */
+    DSD_SCAN_ACTIVITY_KNOWN_ENCRYPTED = 1U << 3, /**< encrypted */
+    DSD_SCAN_ACTIVITY_KNOWN_DATA = 1U << 4,      /**< data_call */
+};
+
+/**
+ * @brief What a simplex digital family's checked content says about the call it belongs to (issue #890): the identity a
+ * dsd_trunk_scan_hook_digital_conventional_activity() report carries into the scan's policy table.
+ *
+ * The callsign families (YSF, D-STAR, M17) name no numeric target or source, so only their party, encryption and data
+ * fields may be known. A report with no target known is anonymous.
+ */
+typedef struct {
+    uint32_t target;
+    uint32_t source;
+    uint8_t is_private;
+    uint8_t encrypted;
+    uint8_t data_call;
+    uint8_t known; /**< DSD_SCAN_ACTIVITY_KNOWN_* bits */
+} dsd_trunk_scan_activity_identity;
+
 typedef struct {
     void* (*p25_ctx)(void);
     void* (*dmr_ctx)(void);
@@ -103,6 +129,8 @@ typedef struct {
                                        int is_private, int encrypted, int data_call);
     void (*p25_conventional_activity)(const dsd_opts* opts, const dsd_state* state, int protocol, int slot,
                                       uint32_t target, uint32_t source, int is_private, int encrypted, int data_call);
+    void (*digital_conventional_activity)(const dsd_opts* opts, const dsd_state* state, int protocol, int slot,
+                                          const dsd_trunk_scan_activity_identity* identity);
     const char* (*active_chan_csv)(const dsd_state* state);
     void (*enc_lockout_clear_snapshots)(const dsd_state* state);
     int (*control)(dsd_opts* opts, dsd_state* state, int op);
@@ -195,6 +223,22 @@ void dsd_trunk_scan_hook_nxdn_conventional_activity(const dsd_opts* opts, const 
 void dsd_trunk_scan_hook_p25_conventional_activity(const dsd_opts* opts, const dsd_state* state, int protocol, int slot,
                                                    uint32_t target, uint32_t source, int is_private, int encrypted,
                                                    int data_call);
+
+/**
+ * @brief Report checked conventional activity of a simplex digital family (issue #890): YSF, D-STAR, dPMR, M17 or TETRA
+ * DMO, named by @p protocol (a DSD_SYNC_* value of the family), on @p slot (-1 for none: these families have no slot
+ * the receive policy's slot filter reads).
+ *
+ * The coordinator counts it only for a parked target of the family's conventional type, on that target's landed visit
+ * and current carrier (dsd_state_scan_observation_origin(), as the reports above), and only through the scan's policy
+ * table, which reads @p identity: talkgroup policy for the numeric families (dPMR, TETRA DMO), the known data,
+ * privacy and encryption restrictions for every family, and nothing held while such a restriction depends on a field
+ * @p identity does not know. Make it only from content that passed the protocol's CRC/FEC gate, at the point that
+ * gate made the identity's fields known. Unlike the reports above it adds no Signal search evidence: each of these
+ * protocols notes its own. No-op when trunk scan is not installed.
+ */
+void dsd_trunk_scan_hook_digital_conventional_activity(const dsd_opts* opts, const dsd_state* state, int protocol,
+                                                       int slot, const dsd_trunk_scan_activity_identity* identity);
 
 /**
  * @brief Path of the channel map belonging to the currently parked scan target.

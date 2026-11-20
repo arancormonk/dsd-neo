@@ -31,16 +31,21 @@
 #include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/core/vocoder.h>
 #include <dsd-neo/fec/block_codes.h>
+#include <dsd-neo/protocol/dpmr/dpmr.h>
 #include <dsd-neo/protocol/dpmr/dpmr_data.h>
 #include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include "../../test_support/scan_activity_capture.h"
 #include "dpmr_internal.h"
 #include "dpmr_reference_vectors.h"
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/state_fwd.h"
+
+/* Trunk scan activity reports (issue #890), recorded. */
+DSD_TEST_SCAN_ACTIVITY_DEFINE_HOOK()
 
 #if defined(__GNUC__) && !defined(__cplusplus)
 #pragma GCC diagnostic push
@@ -490,6 +495,72 @@ test_a_corrected_bit_error_still_passes_and_two_do_not(void) {
     expect_int("two-errors-other-half-ok", (long)state->dPMRVoiceFS2Frame.CCHDataCrcOk[1], 1);
 }
 
+/* Issue #890: a frame whose two CCH halves passed their CRC-7 as a bound pair reports the call to trunk scan's policy
+   table with the one station the pair names, by its raw 24-bit air interface ID (frame numbers 0/1 the called, 2/3 the
+   calling one), its service and scrambling from the checked Communications Mode and Version, and no party (dPMR has
+   no group bit every call carries); a frame with a failed half reports nothing. A checked Communications_Start header
+   reports both stations; another message type reports nothing. */
+static void
+test_checked_frames_and_headers_report_to_trunk_scan(void) {
+    dsd_opts* opts = g_opts;
+    dsd_state* state = g_state;
+    DSD_MEMSET(opts, 0, sizeof(*opts));
+    DSD_MEMSET(state, 0, sizeof(*state));
+    state->synctype = DSD_SYNC_DPMR_FS2_POS;
+    for (int f = 0; f < 2; f++) {
+        dsd_test_scan_activity_reset();
+        run_frame(opts, state, DPMR_REF_FRAMES[f].body_dibits, sizeof(DPMR_REF_FRAMES[f].body_dibits));
+        const dsd_trunk_scan_activity_identity* id = &g_test_scan_activity.last;
+        const uint8_t station = f == 0 ? DSD_SCAN_ACTIVITY_KNOWN_TARGET : DSD_SCAN_ACTIVITY_KNOWN_SOURCE;
+        expect_int(f == 0 ? "called pair reports" : "calling pair reports", g_test_scan_activity.count, 1);
+        expect_int("a dPMR report", DSD_SYNC_IS_DPMR(g_test_scan_activity.protocol), 1);
+        expect_int("one station known", id->known & (DSD_SCAN_ACTIVITY_KNOWN_TARGET | DSD_SCAN_ACTIVITY_KNOWN_SOURCE),
+                   station);
+        expect_int("its raw ID", (long)(f == 0 ? id->target : id->source),
+                   (long)(state->dPMRVoiceFS2Frame.BoundIdValue & 0xFFFFFFU));
+        expect_int("no party", id->known & DSD_SCAN_ACTIVITY_KNOWN_PARTY, 0);
+        expect_int("service and scrambling known",
+                   id->known & (DSD_SCAN_ACTIVITY_KNOWN_DATA | DSD_SCAN_ACTIVITY_KNOWN_ENCRYPTED),
+                   DSD_SCAN_ACTIVITY_KNOWN_DATA | DSD_SCAN_ACTIVITY_KNOWN_ENCRYPTED);
+        expect_int("voice", id->data_call, 0);
+        expect_int("scrambling by the Version", id->encrypted, DPMR_REF_FRAMES[f].version[0] == 3U);
+    }
+    uint8_t body[372];
+    DSD_MEMCPY(body, DPMR_REF_FRAMES[0].body_dibits, sizeof(body));
+    body[0] ^= 2U;
+    body[3] ^= 2U;
+    dsd_test_scan_activity_reset();
+    run_frame(opts, state, body, sizeof(body));
+    expect_int("a failed half reports nothing", g_test_scan_activity.count, 0);
+
+    dpmr_header header;
+    DSD_MEMSET(&header, 0, sizeof(header));
+    header.message_type = DPMR_MT_COMMUNICATIONS_START;
+    header.called_id = 0x123456U;
+    header.calling_id = 0x654321U;
+    header.mode = 2U; /* data */
+    header.version = 3U;
+    header.color_code = -1;
+    dsd_test_scan_activity_reset();
+    dpmr_process_header(opts, state, &header, 0);
+    expect_int("a Communications_Start header reports", g_test_scan_activity.count, 1);
+    expect_int("both stations",
+               g_test_scan_activity.last.target == 0x123456U && g_test_scan_activity.last.source == 0x654321U
+                   && (g_test_scan_activity.last.known & DSD_SCAN_ACTIVITY_KNOWN_TARGET)
+                   && (g_test_scan_activity.last.known & DSD_SCAN_ACTIVITY_KNOWN_SOURCE),
+               1);
+    expect_int("a data call", g_test_scan_activity.last.data_call, 1);
+    expect_int("scrambled", g_test_scan_activity.last.encrypted, 1);
+    header.message_type = DPMR_MT_ACK;
+    dsd_test_scan_activity_reset();
+    dpmr_process_header(opts, state, &header, 0);
+    expect_int("another message type reports nothing", g_test_scan_activity.count, 0);
+    header.message_type = DPMR_MT_COMMUNICATIONS_START;
+    header.mode = 6U; /* reserved: no call */
+    dpmr_process_header(opts, state, &header, 0);
+    expect_int("a reserved mode reports nothing", g_test_scan_activity.count, 0);
+}
+
 int
 main(void) {
     g_opts = (dsd_opts*)calloc(1U, sizeof(*g_opts));
@@ -510,6 +581,7 @@ main(void) {
     test_cch_stages_decode_the_reference_frames();
     test_reference_frames_decode_through_process_dpmr_voice();
     test_a_corrected_bit_error_still_passes_and_two_do_not();
+    test_checked_frames_and_headers_report_to_trunk_scan();
     free(g_state);
     free(g_opts);
 

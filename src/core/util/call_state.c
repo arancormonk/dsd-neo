@@ -592,6 +592,7 @@ call_state_seed_reacquired_snapshot(dsd_call_snapshot* snapshot, const dsd_call_
     snapshot->checked_media_updated_m = previous->checked_media_updated_m;
     snapshot->checked_media_visit = previous->checked_media_visit;
     snapshot->checked_media_carrier_seq = previous->checked_media_carrier_seq;
+    snapshot->checked_media_tetra_direct = previous->checked_media_tetra_direct;
     // The reopened epoch continues the ending one's transmission, so state bound to that call stays bound to it.
     snapshot->transmission_epoch = dsd_call_snapshot_transmission(previous);
     // audio_permitted and started_m are deliberately not carried: the reacquired segment
@@ -1097,8 +1098,8 @@ call_state_media_family(int protocol) {
                                        : dsd_call_state_protocol_family(protocol);
 }
 
-int
-dsd_call_state_note_checked_media(dsd_state* state, uint8_t slot, int protocol, double observed_m) {
+static int
+call_state_note_checked_media(dsd_state* state, uint8_t slot, int protocol, uint8_t tetra_direct, double observed_m) {
     if (!state || slot >= DSD_CALL_STATE_SLOT_COUNT || protocol == DSD_SYNC_NONE) {
         return -1;
     }
@@ -1119,15 +1120,27 @@ dsd_call_state_note_checked_media(dsd_state* state, uint8_t slot, int protocol, 
     }
     const double now_m = call_state_observed_m(observed_m);
     if (snapshot->checked_media_started_m <= 0.0 || snapshot->checked_media_visit != origin.visit
-        || snapshot->checked_media_carrier_seq != origin.carrier_seq) {
-        /* Checked media of another visit or carrier is no part of this span. */
+        || snapshot->checked_media_carrier_seq != origin.carrier_seq
+        || snapshot->checked_media_tetra_direct != tetra_direct) {
+        /* Checked media of another visit, carrier or TETRA mode is no part of this span. */
         snapshot->checked_media_started_m = now_m;
         snapshot->checked_media_visit = origin.visit;
         snapshot->checked_media_carrier_seq = origin.carrier_seq;
+        snapshot->checked_media_tetra_direct = tetra_direct;
     }
     snapshot->checked_media_updated_m = now_m;
     dsd_call_state_ext_unlock(ext);
     return 1;
+}
+
+int
+dsd_call_state_note_checked_media(dsd_state* state, uint8_t slot, int protocol, double observed_m) {
+    return call_state_note_checked_media(state, slot, protocol, 0U, observed_m);
+}
+
+int
+dsd_call_state_note_checked_media_tetra(dsd_state* state, uint8_t slot, int direct, double observed_m) {
+    return call_state_note_checked_media(state, slot, DSD_SYNC_TETRA_NDB_POS, direct ? 1U : 0U, observed_m);
 }
 
 /* The system and site the call's carrier had named when the call ended, while the reception is still the one the call

@@ -36,6 +36,7 @@
 #include <dsd-neo/protocol/tetra/tetra_trunk_sm.h>
 #include <dsd-neo/protocol/tetra/tetra_voice.h>
 #include <dsd-neo/runtime/frame_sync_hooks.h>
+#include <dsd-neo/runtime/scan_mode.h>
 #include <dsd-neo/runtime/telemetry.h>
 #include <dsd-neo/runtime/trunk_tuning_hooks.h>
 #include <stdint.h>
@@ -44,6 +45,7 @@
 #include <string.h>
 
 #include "protocol_dispatch_impl.h"
+#include "scan_activity_capture.h"
 #include "test_support.h"
 #include "tetra_calls.h"
 #include "tetra_confirm.h"
@@ -1661,10 +1663,92 @@ test_scan_visit_reset_two_direct_mode_rows(void) {
     session_close(&s);
 }
 
+/* Issue #890: the bursts of test_burst_proof_reports_checked_content() on the way to trunk scan's policy table, on an
+ * untyped row and on a row of the tetra-dmo class (@p typed). Only direct mode reports, from a hard-path DSB whose SCH/H
+ * passed: DM-OCCUPIED as its call (source 100, destination 0x800001, a clear group speech call), the call's speech
+ * with that identity, and a DM-2-C DSB as anonymous encrypted presence. Trunked bursts, a failed burst, a soft-only DSB,
+ * one whose SCH/H failed and one carrying DM-RESERVED report nothing. On the typed row trunked bursts prove the
+ * profile only (no -Y content), and the direct mode ones are content as on the untyped row. */
+static void
+test_burst_reports_to_trunk_scan(int typed) {
+    session s = session_open();
+    if (typed) {
+        assert(dsd_scan_mode_enter(s.opts, s.state, DSD_SCAN_MODE_TETRA_DMO) == 0);
+        s.opts->frame_tetra = 1;
+    }
+    dsd_test_scan_activity_install();
+    uint8_t bsch[BSCH_DIBITS];
+    uint8_t sysinfo[BLOCK_DIBITS];
+    const uint8_t zeros[BLOCK_DIBITS] = {0};
+    dibits_of(k_bsch_type5, bsch, BSCH_DIBITS);
+    dibits_of(k_sysinfo_type5, sysinfo, BLOCK_DIBITS);
+    uint32_t content = s.state->scan_y_content_seq;
+    assert(sync_burst(&s, bsch, sysinfo) == DSD_FRAME_VERDICT_PROFILE_PROVEN);
+    assert(tetra_burst_proof(s.state) == DSD_TETRA_BURST_PROOF_TMO);
+    assert(s.state->scan_y_content_seq - content == (typed ? 0U : 1U));
+    assert(nts2_burst(&s, zeros, sysinfo) == DSD_FRAME_VERDICT_PROFILE_PROVEN);
+    assert(s.state->scan_y_content_seq - content == (typed ? 0U : 2U));
+    assert(g_test_scan_activity.count == 0);
+    session_close(&s);
+
+    s = session_open();
+    if (typed) {
+        assert(dsd_scan_mode_enter(s.opts, s.state, DSD_SCAN_MODE_TETRA_DMO) == 0);
+        s.opts->frame_tetra = 1;
+    }
+    dsd_test_scan_activity_install();
+    uint8_t sch_s[60];
+    uint8_t sch_h[TTB_SCH_HD_BITS] = {0};
+    bits_of(k_dmo_sch_s, sch_s);
+    (void)dmo_sync_burst_as(&s, sch_s, NULL, 0, 1);
+    (void)dmo_sync_burst(&s, sch_s, NULL);
+    dmo_reserved_sch_h(sch_h);
+    (void)dmo_sync_burst(&s, sch_s, sch_h);
+    assert(g_test_scan_activity.count == 0);
+    content = s.state->scan_y_content_seq;
+    bits_of(k_dmo_sch_h, sch_h);
+    assert(dmo_sync_burst(&s, sch_s, sch_h) == DSD_FRAME_VERDICT_PROFILE_PROVEN);
+    assert(s.state->scan_y_content_seq - content == 1U);
+    assert(g_test_scan_activity.count == 1 && DSD_SYNC_IS_TETRA(g_test_scan_activity.protocol)
+           && g_test_scan_activity.slot == -1);
+    const dsd_trunk_scan_activity_identity call = g_test_scan_activity.last;
+    assert((call.known & DSD_SCAN_ACTIVITY_KNOWN_TARGET) && call.target == 0x800001u);
+    assert((call.known & DSD_SCAN_ACTIVITY_KNOWN_SOURCE) && call.source == 100u);
+    assert((call.known & DSD_SCAN_ACTIVITY_KNOWN_PARTY) && call.is_private == 0U);
+    assert((call.known & DSD_SCAN_ACTIVITY_KNOWN_ENCRYPTED) && call.encrypted == 0U);
+    assert((call.known & DSD_SCAN_ACTIVITY_KNOWN_DATA) && call.data_call == 0U);
+    const tetra_state_t* ts = tetra_st_existing(s.state);
+    const uint8_t speech[TTB_TCH_FS_BITS] = {0};
+    uint8_t slot[2 * BLOCK_DIBITS];
+    ttb_encode_tch_fs(speech, ts->dmo_dcc_seed, slot);
+    feed(&s, slot + BLOCK_DIBITS, BLOCK_DIBITS);
+    DSD_MEMCPY(s.state->tetra_sync.b1_dibuf, slot, BLOCK_DIBITS);
+    s.state->tetra_sync.b1_valid = 1;
+    s.state->tetra_sync.b1_soft_valid = 0;
+    s.state->tetra_sync.nts2 = 0;
+    s.state->tetra_sync.cb = 0;
+    s.state->tetra_sync.b2_lead_count = 0;
+    s.state->lastsynctype = DSD_SYNC_TETRA_NDB_POS;
+    s.state->synctype = DSD_SYNC_TETRA_NDB_POS;
+    assert(dsd_dispatch_handle_tetra(s.opts, s.state) == DSD_FRAME_VERDICT_PROFILE_PROVEN);
+    assert(tetra_burst_proof(s.state) == DSD_TETRA_BURST_PROOF_DMO_SPEECH);
+    assert(g_test_scan_activity.count == 2 && g_test_scan_activity.last.target == 0x800001u
+           && g_test_scan_activity.last.source == 100u && g_test_scan_activity.last.data_call == 0U);
+    dmo_sch_s(TETRA_DMO_AIE_DM2C, sch_s);
+    assert(dmo_sync_burst(&s, sch_s, sch_h) == DSD_FRAME_VERDICT_PROFILE_PROVEN);
+    assert(g_test_scan_activity.count == 3);
+    assert(g_test_scan_activity.last.known == DSD_SCAN_ACTIVITY_KNOWN_ENCRYPTED
+           && g_test_scan_activity.last.encrypted == 1U);
+    dsd_trunk_scan_hooks_set(NULL);
+    session_close(&s);
+}
+
 int
 main(void) {
     test_burst_proof_reports_checked_content(0);
     test_burst_proof_reports_checked_content(1);
+    test_burst_reports_to_trunk_scan(0);
+    test_burst_reports_to_trunk_scan(1);
     test_every_burst_ends_with_its_publication();
     test_uplink_registration_proposes_its_algorithm();
     test_noise_is_unproductive();
