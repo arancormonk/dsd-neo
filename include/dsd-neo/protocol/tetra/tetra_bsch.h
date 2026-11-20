@@ -57,6 +57,13 @@ int tetra_bsch_parse(const uint8_t* bits, int len, dsd_opts* opts, dsd_state* st
  * the forgotten SYSINFO gave goes with it. Never creates TETRA state. */
 void tetra_bsch_forget_cell(dsd_opts* opts, dsd_state* state);
 
+/* Forget the network being received (issue #890, a scan's visit to a TETRA row): what a BSCH of another network
+ * forgets, the cell (tetra_bsch_forget_cell()), the calls keyed by its identities, the concatenated short data being
+ * reassembled and its D-MM STATUS, then the network identity itself (MCC, MNC, colour code) and its scrambling seed,
+ * net_known last, so nothing keyed by the network outlives it. A --tetra-net preset seeds the identity again at the
+ * next burst. Never creates TETRA state. */
+void tetra_bsch_forget_network(dsd_opts* opts, dsd_state* state);
+
 /* A SYSINFO of the cell being received names its main carrier, @p main_carrier_hz (0 when it names none), and, when
  * @p la_present, its location area @p la (EN 300 392-2 clause 21.4.4.1, D-MLE-SYSINFO clause 18.4.2.2). Cells of a
  * network may share a colour code, which a BSCH alone tells them apart by: a main carrier or a location area other

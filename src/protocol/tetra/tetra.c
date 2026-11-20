@@ -1336,3 +1336,40 @@ tetra_forget_carrier(dsd_state* state) {
         state->tetra_pub.air_encryption = (uint8_t)DSD_TETRA_AIR_ENC_UNKNOWN;
     }
 }
+
+void
+tetra_scan_visit_reset(dsd_opts* opts, dsd_state* state) {
+    if (!state) {
+        return;
+    }
+    tetra_state_t* const ts = tetra_st_existing(state);
+    if (ts) {
+        /* What this visit's bursts proved, then what the network told its MSs, the trunked calls kept for it and the
+           TM-SDUs and short data being rebuilt. */
+        tetra_confirm_reset(state);
+        ts->mm_status_valid = 0;
+        ts->mm_status_code = 0;
+        tetra_calls_forget_calls(opts, state);
+        tetra_calls_dmo_forget(opts, state);
+        tetra_mac_forget_fragments(state);
+        tetra_mle_forget_reassembly(state);
+        /* The network: its cell (SYSINFO, main carrier, location area, security) and every record keyed by its
+           identities go while it is still known, then MCC, MNC, colour code and the scrambling seed, net_known last
+           (tetra_bsch_forget_network()). */
+        tetra_bsch_forget_network(opts, state);
+        /* The carrier: the TDMA clock, the speech in progress, direct mode with its DM colour code and protection,
+           the timeslots' speech context and the air evidence. */
+        tetra_forget_carrier(state);
+        ts->calls.la = 0;
+        ts->calls.la_known = 0;
+        ts->decode_ok = 0;
+        ts->enc_mode = TETRA_ENC_MODE_NONE;
+        ts->frames_resource = 0;
+        ts->hyperframe = 0;
+        /* Work the trunking state machine has staged or in flight, and its main-carrier history. */
+        tetra_sm_init(opts, state);
+    }
+    /* The carrier's polarity and the burst the frame sync captured, and what the frontends show. */
+    DSD_MEMSET(&state->tetra_sync, 0, sizeof(state->tetra_sync));
+    dsd_tetra_publication_reset(&state->tetra_pub);
+}

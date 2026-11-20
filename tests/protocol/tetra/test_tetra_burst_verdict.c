@@ -1569,6 +1569,98 @@ test_burst_proof_reports_checked_content(int on) {
     dsd_frame_sync_hooks_set(&saved);
 }
 
+/* A carrier boundary as the engine runs it at a scan's switch (tetra_forget_carrier(), the carrier count moving), then
+   the visit reset of a scan that holds the TETRA state (issue #890). */
+static void
+scan_switch(session* s) {
+    tetra_forget_carrier(s->state);
+    s->state->carrier_seq++;
+    tetra_scan_visit_reset(s->opts, s->state);
+}
+
+/* Issue #890: a scan's visit to a TETRA row starts cold. Row A is a trunked cell, received inverted: its BSCH and
+ * SYSINFO (MCC 460, MNC 4242, colour 17, the main carrier, the location area) set the network, the cell, the scrambling
+ * seed, the carrier's polarity and what the frontends show. After the switch, row B's first burst fails its CRC and
+ * publishes nothing of row A: the network and its seed, the cell's SYSINFO, the polarity and the publication are gone,
+ * not only what a carrier boundary forgets. The TETRA state is the same allocation, its speech decoder's storage and the
+ * operator's air keys kept; a --tetra-net preset seeds the identity again at the next burst. */
+static void
+test_scan_visit_reset_forgets_the_last_row(void) {
+    session s = session_open();
+    uint8_t bsch[BSCH_DIBITS];
+    uint8_t sysinfo[BLOCK_DIBITS];
+    const uint8_t zeros[BLOCK_DIBITS] = {0};
+    dibits_of(k_bsch_type5, bsch, BSCH_DIBITS);
+    dibits_of(k_sysinfo_type5, sysinfo, BLOCK_DIBITS);
+    assert(sync_burst_as(&s, bsch, sysinfo, 1) == DSD_FRAME_VERDICT_PROFILE_PROVEN);
+    tetra_state_t* const ts = tetra_st_existing(s.state);
+    assert(ts && ts->net_known && ts->mcc == 460U && ts->mnc == 4242U && ts->colour == 17U && ts->sysinfo_known
+           && ts->lfsr_seed != 0U && ts->decode_ok > 0U);
+    assert(s.state->tetra_sync.polarity == 1U && s.state->tetra_pub.net_known && s.state->tetra_pub.mcc == 460U);
+    const void* const codec = ts->voice.codec;
+    s.state->tetra_air_keys[0].loaded = 1U;
+    s.state->tetra_air_keys[0].mcc = 460U;
+    const uint32_t generation = s.state->tetra_pub.generation;
+
+    scan_switch(&s);
+    assert(tetra_st_existing(s.state) == ts && ts->voice.codec == codec);
+    assert(!ts->net_known && ts->mcc == 0U && ts->mnc == 0U && ts->colour == 0U && ts->lfsr_seed == 0U);
+    assert(!ts->sysinfo_known && ts->dl_carrier_hz == 0L && ts->la == 0U && ts->decode_ok == 0U && !ts->tdma_valid);
+    assert(tetra_burst_proof(s.state) == DSD_TETRA_BURST_PROOF_NONE && s.state->tetra_sync.polarity == 0U);
+    assert(!s.state->tetra_pub.net_known && s.state->tetra_pub.mcc == 0U && !s.state->tetra_pub.cc_known
+           && s.state->tetra_pub.generation != generation);
+    assert(s.state->tetra_air_keys[0].loaded == 1U && s.state->tetra_air_keys[0].mcc == 460U);
+
+    /* Row B: a synchronisation burst whose BSCH fails, read at the normal polarity. */
+    assert(sync_burst(&s, zeros, zeros) == DSD_FRAME_VERDICT_UNPRODUCTIVE);
+    assert(!ts->net_known && !ts->sysinfo_known && s.state->tetra_sync.polarity == 0U);
+    assert(!s.state->tetra_pub.net_known && s.state->tetra_pub.mcc == 0U && s.state->tetra_pub.mnc == 0U
+           && !s.state->tetra_pub.cc_known && !s.state->tetra_pub.la_known);
+
+    /* A --tetra-net preset is configuration: the next burst after another switch seeds the descrambler from it. */
+    scan_switch(&s);
+    preset_network(&s, 17U);
+    assert(sync_burst(&s, zeros, zeros) == DSD_FRAME_VERDICT_UNPRODUCTIVE);
+    assert(ts->net_known && ts->mcc == 460U && ts->mnc == 4242U
+           && ts->lfsr_seed == tetra_compute_scramb_seed(460, 4242, 17));
+    session_close(&s);
+}
+
+/* Issue #890: two TETRA DMO rows, each a radio of its own. Row A's DM-OCCUPIED from source 100 sets up its call, its DM
+ * colour code and the canonical call; after the switch nothing of it is left (direct mode, the colour code, the call
+ * and its canonical call), and row B's DM-OCCUPIED from source 200 is a call of its own, with the colour code its
+ * source gives. */
+static void
+test_scan_visit_reset_two_direct_mode_rows(void) {
+    session s = session_open();
+    uint8_t sch_s[60];
+    uint8_t sch_h[TTB_SCH_HD_BITS] = {0};
+    bits_of(k_dmo_sch_s, sch_s);
+    bits_of(k_dmo_sch_h, sch_h);
+    assert(dmo_sync_burst(&s, sch_s, sch_h) == DSD_FRAME_VERDICT_PROFILE_PROVEN);
+    tetra_state_t* const ts = tetra_st_existing(s.state);
+    assert(ts && ts->dmo && ts->dmo_dcc_valid && ts->calls.dmo.active && ts->calls.dmo.src == 100U);
+    const uint32_t seed_a = ts->dmo_dcc_seed;
+    dsd_call_snapshot call;
+    DSD_MEMSET(&call, 0, sizeof call);
+    assert(dsd_call_state_get(s.state, 0U, &call) > 0 && call.phase == DSD_CALL_PHASE_ACTIVE
+           && call.ota_source_id == 100U);
+
+    scan_switch(&s);
+    assert(tetra_st_existing(s.state) == ts);
+    assert(!ts->dmo && !ts->dmo_dcc_valid && ts->dmo_dcc_seed == 0U && !ts->calls.dmo.active);
+    assert(dsd_call_state_get(s.state, 0U, &call) == 0 || call.phase != DSD_CALL_PHASE_ACTIVE);
+    assert(s.state->tetra_pub.mode == 0U && s.state->tetra_pub.dmo_class == 0U);
+
+    put_bits(sch_h, 42, 24, 200u); /* the source address (EN 300 396-3 table 22) */
+    assert(dmo_sync_burst(&s, sch_s, sch_h) == DSD_FRAME_VERDICT_PROFILE_PROVEN);
+    assert(ts->dmo && ts->dmo_dcc_valid && ts->calls.dmo.active && ts->calls.dmo.src == 200U
+           && ts->dmo_dcc_seed != seed_a);
+    assert(dsd_call_state_get(s.state, 0U, &call) > 0 && call.phase == DSD_CALL_PHASE_ACTIVE
+           && call.ota_source_id == 200U);
+    session_close(&s);
+}
+
 int
 main(void) {
     test_burst_proof_reports_checked_content(0);
@@ -1597,6 +1689,8 @@ main(void) {
     test_burst_entry_settles();
     test_frame_18_tries_no_speech();
     test_aach_tells_traffic_from_signalling();
+    test_scan_visit_reset_forgets_the_last_row();
+    test_scan_visit_reset_two_direct_mode_rows();
     DSD_FPRINTF(stdout, "TETRA_BURST_VERDICT: OK\n");
     return 0;
 }

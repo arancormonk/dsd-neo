@@ -219,6 +219,18 @@ bsch_forget_cell(dsd_opts* opts, dsd_state* state, tetra_state_t* ts) {
     ts->aie_available = 0;
 }
 
+/* What is keyed by the identities a network's SwMI gives out, which another network's BSCH forgets: the call records with
+ * the follow of their identifiers, the concatenated short data being reassembled from its senders, and its D-MM STATUS
+ * (bsch_identity_change(), tetra_bsch_forget_network()). */
+static void
+bsch_forget_network_parties(dsd_opts* opts, dsd_state* state, tetra_state_t* ts) {
+    tetra_calls_forget_calls(opts, state);
+    tetra_mle_forget_reassembly(state);
+    /* The D-MM STATUS the frontends show was the last network's to its MSs (EN 300 392-2 clause 16.9.2.5). */
+    ts->mm_status_valid = 0;
+    ts->mm_status_code = 0;
+}
+
 /* What a BSCH naming another cell or another network leaves behind, decided in one place. Another cell (another colour
  * code, or another network) forgets the cell (bsch_forget_cell()). Another network (another MCC or MNC) forgets as well
  * what is keyed by the identities its SwMI gives out: a downlink SSI is a party of the current network (EN 300 392-2
@@ -237,12 +249,25 @@ bsch_identity_change(dsd_opts* opts, dsd_state* state, tetra_state_t* ts, const 
         bsch_forget_cell(opts, state, ts);
     }
     if (other_network) {
-        tetra_calls_forget_calls(opts, state);
-        tetra_mle_forget_reassembly(state);
-        /* The D-MM STATUS the frontends show was the last network's to its MSs (EN 300 392-2 clause 16.9.2.5). */
-        ts->mm_status_valid = 0;
-        ts->mm_status_code = 0;
+        bsch_forget_network_parties(opts, state, ts);
     }
+}
+
+void
+tetra_bsch_forget_network(dsd_opts* opts, dsd_state* state) {
+    tetra_state_t* const ts = tetra_st_existing(state);
+    if (!ts) {
+        return;
+    }
+    /* What another network's BSCH forgets (bsch_identity_change()), with the identity still known, as that rule reads
+       it; then the identity and its scrambling seed, net_known last. */
+    bsch_forget_cell(opts, state, ts);
+    bsch_forget_network_parties(opts, state, ts);
+    ts->mcc = 0;
+    ts->mnc = 0;
+    ts->colour = 0;
+    ts->lfsr_seed = 0;
+    ts->net_known = 0;
 }
 
 void
