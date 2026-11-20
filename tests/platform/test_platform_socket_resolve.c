@@ -343,8 +343,10 @@ done:
 #if defined(__linux__)
 /* A connect that stays pending (the listener's accept queue is full, so Linux drops its SYN) is bounded by one deadline
    that counts the cancel checks' own time: a check that blocks (the decoder services a P25 tick there, which can wait
-   on a rigctl reply) never stretches the bound. With 150 ms checks and a 300 ms bound, the deadline allows at most two
-   checks, whatever the host's load; counting only the 100 ms waits allowed three. */
+   on a rigctl reply) never stretches the bound, and no check starts once it has passed. With 150 ms checks and a 300 ms
+   bound, the deadline allows at most two checks, whatever the host's load; counting only the 100 ms waits allowed
+   three. With a 100 ms bound, the check before the connect spends it all, and no other runs; checking the deadline
+   only after the next check ran a second. */
 static int g_slow_cancel_calls = 0;
 
 static int
@@ -356,7 +358,7 @@ slow_cancel(void* context) {
 }
 
 static int
-test_connect_bound_counts_slow_cancel_checks(void) {
+pending_connect_with_slow_checks(unsigned int timeout_ms, int max_checks) {
     enum { FILL_MAX = 16 };
 
     dsd_socket_t fill[FILL_MAX];
@@ -397,16 +399,17 @@ test_connect_bound_counts_slow_cancel_checks(void) {
         dsd_socket_t client = dsd_socket_create(AF_INET, SOCK_STREAM, 0);
         int code = 0;
         g_slow_cancel_calls = 0;
-        const int result = client == DSD_INVALID_SOCKET
-                               ? 0
-                               : dsd_socket_connect_bounded(client, (const struct sockaddr*)&listener_addr,
-                                                            (int)sizeof(listener_addr), 300U, slow_cancel, NULL, &code);
-        if (result != -1 || code != ETIMEDOUT || g_slow_cancel_calls > 2) {
+        const int result =
+            client == DSD_INVALID_SOCKET
+                ? 0
+                : dsd_socket_connect_bounded(client, (const struct sockaddr*)&listener_addr, (int)sizeof(listener_addr),
+                                             timeout_ms, slow_cancel, NULL, &code);
+        if (result != -1 || code != ETIMEDOUT || g_slow_cancel_calls > max_checks) {
             DSD_FPRINTF(
                 stderr,
                 "FAIL: a pending connect's bound did not count its cancel checks (result %d, code %d, %d checks "
-                "of 150 ms in a 300 ms bound)\n",
-                result, code, g_slow_cancel_calls);
+                "of 150 ms in a %u ms bound, want at most %d)\n",
+                result, code, g_slow_cancel_calls, timeout_ms, max_checks);
             rc = 1;
         }
         if (client != DSD_INVALID_SOCKET) {
@@ -420,6 +423,11 @@ test_connect_bound_counts_slow_cancel_checks(void) {
     }
     (void)dsd_socket_close(listener);
     return rc;
+}
+
+static int
+test_connect_bound_counts_slow_cancel_checks(void) {
+    return pending_connect_with_slow_checks(300U, 2) | pending_connect_with_slow_checks(100U, 1);
 }
 #endif
 

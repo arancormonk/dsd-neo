@@ -78,20 +78,18 @@ dsd_socket_connect(dsd_socket_t sock, const struct sockaddr* addr, int addrlen) 
 
 /* Wait to @p deadline_ms on the monotonic clock, the connect's one deadline (dsd_socket_connect_bounded()), which the
    cancel checks' own time counts against too: a caller's check can block (the decoder services a P25 tick there, which
-   can wait on a rigctl reply), and never stretches the bound. */
+   can wait on a rigctl reply), and never stretches the bound. No check starts once the deadline has passed (the one
+   before the connect may have spent it); the connect then gets one last look that does not wait. */
 static int
 socket_wait_connect(dsd_socket_t sock, uint64_t deadline_ms, dsd_socket_cancel_fn cancelled, void* context) {
     int code = 0;
     for (;;) {
-        if (cancelled && cancelled(context)) {
+        if (dsd_time_monotonic_ms() < deadline_ms && cancelled && cancelled(context)) {
             code = WSAEINTR;
             return code;
         }
         const uint64_t now_ms = dsd_time_monotonic_ms();
-        if (now_ms >= deadline_ms) {
-            break;
-        }
-        const uint64_t left_ms = deadline_ms - now_ms;
+        const uint64_t left_ms = now_ms < deadline_ms ? deadline_ms - now_ms : 0U;
         const unsigned int wait_ms = left_ms > 100U ? 100U : (unsigned int)left_ms;
         struct timeval wait = {0, (long)wait_ms * 1000L};
         fd_set writable, errors;
@@ -102,21 +100,18 @@ socket_wait_connect(dsd_socket_t sock, uint64_t deadline_ms, dsd_socket_cancel_f
         const int ready = select(0, NULL, &writable, &errors, &wait);
         if (ready < 0) {
             code = dsd_socket_get_error();
-            if (code == WSAEINTR) {
-                continue;
+            if (code != WSAEINTR) {
+                return code;
             }
-            return code;
-        }
-        if (ready > 0) {
+        } else if (ready > 0) {
             int length = (int)sizeof(code);
             if (dsd_socket_getsockopt(sock, SOL_SOCKET, SO_ERROR, &code, &length) != 0) {
                 code = dsd_socket_get_error();
             }
             return code;
         }
-        /* Expired with the wait: no further check runs, so no blocking callback starts past the deadline. */
-        if (dsd_time_monotonic_ms() >= deadline_ms) {
-            break;
+        if (left_ms == 0U) {
+            break; /* the last look found the connect still pending (or was interrupted) */
         }
     }
     return WSAETIMEDOUT;
