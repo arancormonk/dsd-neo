@@ -27,6 +27,7 @@
 #include <dsd-neo/platform/file_compat.h>
 #include <dsd-neo/platform/input_backlog.h>
 #include <dsd-neo/platform/pcm_stream.h>
+#include <dsd-neo/platform/platform.h>
 #include <dsd-neo/platform/timing.h>
 #include <dsd-neo/protocol/m17/m17.h>
 #include <dsd-neo/runtime/control_pump.h>
