@@ -1051,13 +1051,24 @@ the CLI/config options live in `docs/trunk-scan.md`; `include/dsd-neo/engine/tru
   the first one's reason, analog width or TETRA chain), before anything is tuned (issue #890 A3: it used to start on a
   target its park refused and run on nowhere); with only targets waiting for the rate the start parks the first of them,
   whose park the retune refuses until the rate is known. `--trunk-scan-hold` on a TETRA target the rule refuses is
-  refused with the reason (`trunk_scan_hold_refusal()`). Entry reasons: `DSD_SCAN_ENTRY_TETRA_INPUT`, `_TETRA_WAIT`,
+  refused with the reason (`trunk_scan_hold_refusal()`), `TETRA_WAIT` included, and a go-to likewise: an entry intent
+  is bound to the request of the park it asks for (`dsd_engine_scan_entry_intent_set_target()`), which the retune
+  refuses while the rate is unknown, so the hold could not wait for the rate; only the unheld start, which retries
+  after the cooldown, does. Entry reasons: `DSD_SCAN_ENTRY_TETRA_INPUT`, `_TETRA_WAIT`,
   `_TETRA_RATE`, `_TETRA_CHAIN` (LPF, TED, uplink), appended (`dsd_engine_scan_tetra_entry_reason()`; toast phrases in
   `scan_entry_toast.c`). The `-Y` scan (`channel_scan_row_tetra_skip()`) skips such a typed row at every visit: its row
   start refuses it before any backend moves (`channel_scan_row_unlanded()`, the cursor past it, as an analog width the
   rate cannot filter), the reachability counts and the entry match leave it out with its reason
   (`dsd_engine_channel_scan_row_tetra_reason()`), and the width check names it when the rate changes
-  (`channel_scan_warn_row_tetra()`). An untyped `-Y` row under `-fT` is no TETRA DMO row. The TETRA state's lifetime
+  (`channel_scan_warn_row_tetra()`). On air it is judged as the trunk scan's target is
+  (`dsd_engine_channel_scan_tetra_judge()`: at its commit, landed, and at every pass that asks
+  `dsd_engine_channel_scan_departure_due()`, a frame boundary's included); a non-waiting cause is kept in the extension
+  (`tetra_skip`, `tetra_skip_row`) and makes the row owe its departure as an avoided row does
+  (`dsd_engine_channel_scan_on_departing_row()`, which `dsd_engine_channel_scan_hold_keeps_row()`, the departure, the
+  step's pacing, the frame-boundary step and the quiet check read): it leaves at once (`lcn_avoid_depart_m` cleared)
+  for another row (`dsd_engine_channel_scan_has_other_row()`), under its carrier and an operator hold, which stays. The
+  frame boundary asks only while something is avoided or the list has a tetra-dmo row
+  (`dsd_engine_channel_scan_tetra_rows()`). An untyped `-Y` row under `-fT` is no TETRA DMO row. The TETRA state's lifetime
   across a session's landings is the TETRA module's "State and its boundaries" (Scan sessions).
 
 - Target list and loader: `dsd_trunk_scan_target` / `dsd_trunk_scan_target_list`, `dsd_trunk_scan_load_targets_csv()`,
@@ -15627,7 +15638,7 @@ What each decoded event does:
 | A PDU whose channel allocation has its cell change flag set | nothing | nothing; decoded and printed only |
 | Carrier boundary (`tetra_forget_carrier()`) | the carrier evidence, the partial TM-SDUs, the clock, the speech in progress (not its transmission), the timeslot speech context, direct mode with its colour code, protection and call, and with the evidence's epoch the event labels assigned on the carrier | trunked mode, block 1 behind AACH half 1 |
 | Decode-mode change off TETRA (committed) | the whole TETRA state with its tune in flight disowned, the frame sync capture and the publication (`dsd_decode_mode_leave_tetra()`); while a scan session holds the state (`dsd_state::tetra_ext_scan_held`, issue #890) the state stays allocated, dormant | nothing |
-| A scan's landing while it holds the state (`tetra_scan_visit_reset()`, issue #890) | in this order: the visit's burst proof (`tetra_confirm_reset()`), the D-MM STATUS, the call records with their canonical calls and the follow of their identifiers, the direct mode call, the partial TM-SDUs and SDS reassembly, the network (`tetra_bsch_forget_network()`: the cell first, with the identity still known, then MCC, MNC, colour code and scrambling seed, `net_known` last), the carrier (`tetra_forget_carrier()`), the location area of the records, `decode_ok`, `enc_mode`, `frames_resource`, the hyperframe number, the trunking state machine's staged and in-flight work (`tetra_sm_init()`), the polarity and frame sync capture, and the publication | nothing: the state stays allocated, with the speech decoder's storage, the operator air keys (`dsd_state`) and the KSG evidence kept per network; a `--tetra-net` preset seeds the identity at the next burst |
+| A scan's landing while it holds the state (`tetra_scan_visit_reset()`, issue #890) | in this order: the visit's burst proof (`tetra_confirm_reset()`), the direct mode call, the network, each part once (`tetra_bsch_forget_network()`, with the identity still known: the D-MM STATUS, the call records with their canonical calls and the follow of their identifiers, the SDS reassembly, the cell with the partial TM-SDUs; then MCC, MNC, colour code and scrambling seed, `net_known` last), the carrier (`tetra_forget_carrier()`), the location area of the records, `decode_ok`, `enc_mode`, `frames_resource`, the hyperframe number, the trunking state machine's staged and in-flight work (`tetra_sm_init()`), the polarity and frame sync capture, and the publication | nothing: the state stays allocated, with the speech decoder's storage, the operator air keys (`dsd_state`) and the KSG evidence kept per network; a `--tetra-net` preset seeds the identity at the next burst |
 
 Scan sessions (issue #890). A scan that has a TETRA DMO row (a trunk-scan list with a `tetra-dmo-conventional`
 target, a typed `-Y` list with a `tetra-dmo` row) owns the TETRA state's lifetime through `src/engine/scan_tetra.c`:

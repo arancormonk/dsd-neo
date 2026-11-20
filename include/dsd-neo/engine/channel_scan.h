@@ -238,8 +238,24 @@ int dsd_engine_channel_scan_on_air_row(const dsd_state* state);
  * step off it was refused or failed late, or it was avoided while a tune elsewhere had not landed. One read while
  * nothing is avoided. 0 for a NULL state. */
 int dsd_engine_channel_scan_on_avoided_row(const dsd_state* state);
+/** Whether the -Y row on air owes a departure: one the operator avoided (dsd_engine_channel_scan_on_avoided_row()), or a
+ * typed tetra-dmo row whose TETRA chain the scan found cannot run on air (issue #890 D5,
+ * dsd_engine_channel_scan_tetra_judge()). Every rule an avoided row's departure follows reads this: the hold does not
+ * keep it, and its departure (dsd_engine_channel_scan_departure_due()) leaves it. 0 for a NULL state. */
+int dsd_engine_channel_scan_on_departing_row(const dsd_state* state);
+/** Whether the -Y scan in force has landed on a list with a typed tetra-dmo row (issue #890 D5): the cheap gate ahead
+ * of dsd_engine_channel_scan_departure_due() on a frame boundary, beside an avoid. 0 for a NULL state. */
+int dsd_engine_channel_scan_tetra_rows(const dsd_state* state);
+/** Judge the typed tetra-dmo row on air again (issue #890 D5): once its tune landed, against the TED timing the stream
+ * applied for it, else prospectively (dsd_engine_scan_tetra_row_check()). A cause other than a rate the radio has not
+ * published yet is named once in the log and on the status line and makes the row owe its departure at once
+ * (dsd_engine_channel_scan_on_departing_row()). Run at its landing and at every pass that asks for a departure
+ * (dsd_engine_channel_scan_departure_due()); a few loads, and nothing without a list that has a tetra-dmo row.
+ * Decoder thread. */
+void dsd_engine_channel_scan_tetra_judge(const dsd_opts* opts, dsd_state* state);
 /** Whether the operator hold (dsd_state::lcn_scan_hold, `Y`) keeps the -Y scan on the row on air: held, and the row is
- * not one the operator avoided (issue #644). Every rule an operator hold suspends reads this: the timed step, the
+ * not one the operator avoided (issue #644) nor a tetra-dmo row whose chain cannot run on air (issue #890,
+ * dsd_engine_channel_scan_on_departing_row()). Every rule an operator hold suspends reads this: the timed step, the
  * receive-policy leave and its frame-loop yields, the voice gate, the per-visit cap and the timing view. A hold over an
  * avoided row suspends none of them, so the scan leaves it; the hold stays and keeps the row it lands on. */
 int dsd_engine_channel_scan_hold_keeps_row(const dsd_state* state);

@@ -441,6 +441,11 @@ typedef struct {
        override that makes it ineligible on air owes a departure as a list switched off does
        (trunk_scan_active_out_of_rotation()). A rate the reopening radio has not published yet sends nothing away. */
     int active_tetra_skip;
+    /* The TETRA DMO target and cause last named in the log and on the status line (issue #890), so a failed departure's
+       fallback onto it, or its next visit, does not name the same cause again; a landing that finds its chain running
+       forgets it. coord->count for none. */
+    size_t tetra_named_target;
+    int tetra_named_cause;
     /* Set by a walk and a resume around each attempt (trunk_scan_walk_to(), trunk_scan_resume_attempt()): the switch
        judges the park for the DMR calls' privacy and voice hold once its retune is accepted, not at the restore, so a
        failed attempt the walk or resume goes on from, or rolls back from, judges nothing (trunk_scan_judge_park()). The
@@ -4319,6 +4324,8 @@ trunk_scan_walk_to(dsd_opts* opts, dsd_state* state, dsd_trunk_scan_coord* coord
     }
     coord->rollback_rx_id = state->rx_id;
     size_t original_active = coord->active;
+    /* A cause the original's TETRA chain was judged for stays with it should the walk come back (issue #890). */
+    const int original_tetra_skip = coord->active_tetra_skip;
     const trunk_scan_walk walk = {
         .original = original_active,
         .step = step,
@@ -4357,8 +4364,9 @@ trunk_scan_walk_to(dsd_opts* opts, dsd_state* state, dsd_trunk_scan_coord* coord
     }
 
     coord->active = original_active;
-    /* The receiver is back on the original, or never left it: its TETRA chain is judged again at the next tick. */
-    coord->active_tetra_skip = DSD_ENGINE_TETRA_ROW_OK;
+    /* The receiver is back on the original, or never left it: so is the cause its TETRA chain was judged for, which a
+       failed departure keeps without naming it again or re-arming the departure over its retry time (issue #890). */
+    coord->active_tetra_skip = original_tetra_skip;
     if (!tried) {
         if (rotation) {
             /* Nothing was eligible (every alternate avoided, cooling down or skipped for its width): the receiver
@@ -5784,8 +5792,10 @@ trunk_scan_note_dwell_serviced(const dsd_opts* opts, const dsd_state* state, dsd
  * for it (dsd_engine_scan_tetra_row_check() with @c landed), which is the landing's verification; with no park in
  * flight and none landed (a failed park, the fallback onto it), prospectively. A park still in flight is judged when it
  * lands. A cause that makes it ineligible on air (a rate change, a reopen at another rate, a TED override, the channel
- * filter, --tetra-uplink) is named once and owes the departure a target out of the rotation owes
- * (trunk_scan_active_out_of_rotation()); a rate the reopening radio has not published yet sends nothing away. Cheap:
+ * filter, --tetra-uplink) owes the departure a target out of the rotation owes (trunk_scan_active_out_of_rotation()),
+ * and is named once per target and cause (coord->tetra_named_target): a failed departure's fallback onto the target,
+ * or its next visit, names nothing again until a landing finds its chain running. A rate the reopening radio has not
+ * published yet sends nothing away. Cheap:
  * a few loads, and only while a TETRA DMO target is on air. */
 static void
 trunk_scan_judge_tetra_on_air(const dsd_opts* opts, dsd_state* state, dsd_trunk_scan_coord* coord) {
@@ -5803,19 +5813,29 @@ trunk_scan_judge_tetra_on_air(const dsd_opts* opts, dsd_state* state, dsd_trunk_
         return;
     }
     coord->active_tetra_skip = (int)why;
-    if (why == DSD_ENGINE_TETRA_ROW_OK || dsd_engine_scan_tetra_row_waits(why)) {
+    if (why == DSD_ENGINE_TETRA_ROW_OK) {
+        coord->tetra_named_target =
+            coord->active == coord->tetra_named_target ? coord->count : coord->tetra_named_target;
         return;
     }
+    if (dsd_engine_scan_tetra_row_waits(why)) {
+        return;
+    }
+    trunk_scan_arm_departure(coord);
+    if (coord->tetra_named_target == coord->active && coord->tetra_named_cause == (int)why) {
+        return;
+    }
+    coord->tetra_named_target = coord->active;
+    coord->tetra_named_cause = (int)why;
     char text[DSD_ENGINE_TETRA_ROW_TEXT_MAX];
     dsd_engine_scan_tetra_row_text(opts, why, rate_hz, 0, text, sizeof text);
-    LOG_WARN("WARNING: Trunk scan target '%s': %s; it is skipped at every visit until then.\n", rt->target.id, text);
+    LOG_WARN("WARNING: Trunk scan target '%s': %s; the scan leaves it.\n", rt->target.id, text);
     char label[96];
     trunk_scan_analog_target_label(&rt->target, label, sizeof label);
     dsd_engine_scan_tetra_row_text(opts, why, rate_hz, 1, text, sizeof text);
     dsd_engine_scan_skipped skipped = {0};
     dsd_engine_scan_skipped_add(&skipped, label, text);
     dsd_engine_scan_note_skipped_rows(state, &skipped);
-    trunk_scan_arm_departure(coord);
 }
 
 /* The body above has a dozen early returns and can rotate; publishing here, once, means the
@@ -7105,6 +7125,7 @@ dsd_engine_trunk_scan_init(dsd_opts* opts, dsd_state* state, char* err, size_t e
     for (size_t i = 0; i < coord->count; i++) {
         coord->has_tetra |= trunk_scan_type_is_tetra(coord->targets[i].target.type);
     }
+    coord->tetra_named_target = coord->count;
     const int hold = opts->trunk_scan_hold_id[0] != '\0';
     size_t start = 0U;
     if (trunk_scan_pick_start(opts, state, coord, &start, err, err_sz) != 0) {

@@ -1682,7 +1682,7 @@ no_carrier_quiet_row_classes(const dsd_opts* opts, const dsd_state* state, int r
 static int
 no_carrier_quiet_row_eligible(const dsd_opts* opts, const dsd_state* state, int row) {
     return dsd_engine_scan_landing_is_row(state, row) && dsd_engine_channel_scan_on_air_row(state) == row
-           && !state->lcn_scan_hold && !dsd_engine_channel_scan_on_avoided_row(state)
+           && !state->lcn_scan_hold && !dsd_engine_channel_scan_on_departing_row(state)
            && !dsd_engine_channel_scan_waiting(state) && !no_carrier_scan_tune_awaited(state)
            && dsd_scan_analog_tone_gate(opts, state) == DSD_ANALOG_TONE_GATE_OFF
            && !dsd_scan_analog_carrier_open(opts, state) && dsd_engine_channel_scan_has_other_row(opts, state);
@@ -2250,17 +2250,21 @@ no_carrier_scan_tune_awaited(const dsd_state* state) {
 
 int
 dsd_engine_channel_scan_departure_due(const dsd_opts* opts, dsd_state* state, double now_m) {
+    /* A tetra-dmo row on air is judged again at every pass that asks (issue #890 D5). */
+    dsd_engine_channel_scan_tetra_judge(opts, state);
     if (!opts || !state || opts->scanner_mode != 1 || opts->trunk_scan_enabled == 1 || now_m < state->lcn_avoid_depart_m
-        || !dsd_engine_channel_scan_on_avoided_row(state) || !dsd_state_trunk_lcn_user_list_present(opts, state)) {
+        || !dsd_engine_channel_scan_on_departing_row(state) || !dsd_state_trunk_lcn_user_list_present(opts, state)) {
         return 0;
     }
     /* A tune of the scan's still in flight decides first: its landing leaves the row, its failure paces the retry. */
     if (dsd_engine_channel_scan_waiting(state) || dsd_engine_manual_tune_pending_row(state, NULL) >= 0) {
         return 0;
     }
-    /* The avoided row on air is no row a step lands on, so any counted is somewhere else to go. With none, the next
-       look waits the step cadence, as after a step: the row walk runs once a cadence, not on every frame. */
-    if (dsd_engine_channel_scan_reachable_rows(opts, state) > 0) {
+    /* The avoided row on air is no row a step lands on, so any counted is somewhere else to go; a tetra-dmo row whose
+       chain cannot run on air may still count as one, so it needs another row. With none, the next look waits the step
+       cadence, as after a step: the row walk runs once a cadence, not on every frame. */
+    if (dsd_engine_channel_scan_on_avoided_row(state) ? dsd_engine_channel_scan_reachable_rows(opts, state) > 0
+                                                      : dsd_engine_channel_scan_has_other_row(opts, state)) {
         return 1;
     }
     dsd_engine_channel_scan_departure_note(opts, state, now_m);
@@ -2286,7 +2290,7 @@ no_carrier_step_stays(const dsd_opts* opts, dsd_state* state) {
     if (dsd_engine_channel_scan_hold_keeps_row(state) || no_carrier_scan_tune_awaited(state)) {
         return 1;
     }
-    if (dsd_engine_channel_scan_on_avoided_row(state)) {
+    if (dsd_engine_channel_scan_on_departing_row(state)) {
         const double now_m = dsd_decode_now_mono_s();
         if (now_m < state->lcn_avoid_depart_m) {
             return 1;
@@ -4388,7 +4392,8 @@ live_scanner_receive_should_yield(const dsd_opts* opts, dsd_state* state) {
     }
     /* A row the operator avoided is left at its paced departure, whatever holds the carrier (issue #644). The clock is
        read only while something is avoided. */
-    if (state->lcn_avoid_count != 0U && dsd_engine_channel_scan_departure_due(opts, state, dsd_decode_now_mono_s())) {
+    if ((state->lcn_avoid_count != 0U || dsd_engine_channel_scan_tetra_rows(state))
+        && dsd_engine_channel_scan_departure_due(opts, state, dsd_decode_now_mono_s())) {
         return 1;
     }
     return !dsd_engine_channel_scan_hold_keeps_row(state)
@@ -4469,7 +4474,7 @@ live_scanner_y_frame_step_may_decide(const dsd_opts* opts, const dsd_state* stat
         return 0;
     }
     return !dsd_engine_channel_scan_hold_keeps_row(state) && !no_carrier_scan_tune_awaited(state)
-           && !dsd_engine_channel_scan_waiting(state) && !dsd_engine_channel_scan_on_avoided_row(state)
+           && !dsd_engine_channel_scan_waiting(state) && !dsd_engine_channel_scan_on_departing_row(state)
            && dsd_engine_channel_scan_has_other_row(opts, state);
 }
 

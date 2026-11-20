@@ -13628,10 +13628,108 @@ test_typed_goto_refused_by_rigctl_keeps_the_frames(void) {
     return rc;
 }
 
+/* --- Issue #890 D5: a typed tetra-dmo -Y row whose TETRA chain stops being able to run while it is on air (a TED
+   override that disagrees with the rate, the DSP rate moved off TETRA's) leaves at once, under its carrier and under an
+   operator hold, which stays and keeps the row the step lands on. A rate the reopening radio has not published yet
+   keeps it. --- */
+
+/* What the fake stream publishes once a TETRA landing applied: the CQPSK chain at 18000 symbols/s with the TETRA
+   channel profile, its TED at @p ted_sps and the override @p override (0: none). */
+static void
+y_tetra_published(int ted_sps, int override) {
+    g_rtl_cqpsk_enable = 1;
+    g_rtl_symbol_rate_hz = 18000;
+    g_rtl_symbol_levels = 4;
+    g_rtl_channel_profile = RTL_STREAM_CHANNEL_PROFILE_TETRA;
+    g_rtl_ted_sps = ted_sps;
+    g_rtl_ted_sps_override = override;
+}
+
+/* @p cause 0: a TED override of 5 samples per symbol at the 72 kHz rate; 1: the rate moved to 48 kHz. */
+static int
+y_tetra_on_air_case(int held, int cause) {
+    const char* what = cause == 0 ? (held ? "held -Y TETRA row, a TED override" : "-Y TETRA row, a TED override")
+                                  : (held ? "held -Y TETRA row, the rate moved" : "-Y TETRA row, the rate moved");
+    dsd_opts* opts = NULL;
+    dsd_state* state = NULL;
+    if (init_test_runtime(&opts, &state) != 0) {
+        return 1;
+    }
+    int rc = 0;
+    reset_rtl_profile_fakes();
+    dsd_trunk_tuning_requests_reset();
+    opts->audio_in_type = AUDIO_IN_RTL;
+    opts->scanner_mode = 1;
+    mark_scan_list_imported(opts);
+    opts->trunk_hangtime = 1;
+    state->rtl_ctx = (RtlSdrContext*)state;
+    g_rtl_request_rate_hz = 72000;
+    /* The CQPSK chain delivers the complex rate, which the row is timed for (rtl_stream_output_rate_for_family()). */
+    g_rtl_output_rate = 72000;
+    g_rtl_digital_landing_rate = 72000;
+    install_family_rate_hooks();
+    state->lcn_freq_count = 3;
+    state->trunk_lcn_freq[0] = 461012500;
+    state->trunk_lcn_freq[1] = 425012500;
+    state->trunk_lcn_freq[2] = 462012500;
+    rc |= expect_case(what, "rows typed",
+                      dsd_channel_mode_set(state, 0, DSD_SCAN_MODE_DMR) == 0
+                          && dsd_channel_mode_set(state, 1, DSD_SCAN_MODE_TETRA_DMO) == 0
+                          && dsd_channel_mode_set(state, 2, DSD_SCAN_MODE_DMR) == 0);
+    state->last_cc_sync_time = time(NULL);
+    noCarrier(opts, state);
+    state->last_cc_sync_time -= 11;
+    noCarrier(opts, state);
+    state->last_cc_sync_time -= 11;
+    noCarrier(opts, state);
+    rc |= expect_case(what, "on the TETRA row",
+                      state->scan_row_index == 1 && opts->frame_tetra == 1
+                          && dsd_engine_channel_scan_on_air_row(state) == 1);
+    /* What the stream applied for the landing is what it is judged by: a TED of 5 at 72 kHz owes the departure, the
+       rate's own 4 does not (the fake stream's own timing for the row is replaced on both sides). */
+    y_tetra_published(5, 0);
+    dsd_engine_channel_scan_tetra_judge(opts, state);
+    rc |= expect_case(what, "an applied TED that disagrees", dsd_engine_channel_scan_on_departing_row(state));
+    y_tetra_published(4, 0);
+    dsd_engine_channel_scan_tetra_judge(opts, state);
+    rc |= expect_case(what, "the rate's own TED", !dsd_engine_channel_scan_on_departing_row(state));
+    /* The operator hold (`Y`), as the command sets it. */
+    state->lcn_scan_hold = held ? 1U : 0U;
+    rc |= expect_case(what, "its chain runs: the carrier decodes through", carrier_frames(opts, state, 20) == 21);
+    /* The radio reopening: no rate yet keeps it. */
+    g_rtl_request_rate_hz = 0;
+    rc |= expect_case(what, "the rate not known yet keeps it", carrier_frames(opts, state, 20) == 21);
+    g_rtl_request_rate_hz = 72000;
+    if (cause == 0) {
+        g_rtl_ted_sps_override = 5;
+    } else {
+        g_rtl_request_rate_hz = 48000;
+    }
+    rc |= expect_case(what, "the carrier yields at its first frame", carrier_frames(opts, state, 20) == 1);
+    rc |=
+        expect_case(what, "the row owes its departure",
+                    dsd_engine_channel_scan_on_departing_row(state) && !dsd_engine_channel_scan_hold_keeps_row(state));
+    g_rtl_tune_calls = 0;
+    noCarrier(opts, state);
+    rc |= expect_case(what, "the step takes row 2",
+                      g_rtl_tune_calls == 1 && g_rtl_tune_freq == 462012500U && state->scan_row_index == 2
+                          && opts->frame_tetra == 0 && !dsd_engine_channel_scan_on_departing_row(state));
+    rc |= expect_case(what, "the hold is as it was", state->lcn_scan_hold == (uint8_t)held);
+    rc |= expect_case(what, "row 2's carrier decodes through", carrier_frames(opts, state, 20) == 21);
+    dsd_engine_channel_scan_leave(opts, state);
+    dsd_rtl_stream_metrics_hooks_set(NULL);
+    state->rtl_ctx = NULL;
+    free_test_runtime(opts, state);
+    dsd_trunk_tuning_requests_reset();
+    reset_rtl_profile_fakes();
+    return rc;
+}
+
 static int
 test_avoided_row_departs_under_a_carrier(void) {
     return untyped_departure_case(1) | untyped_departure_case(0) | departure_nowhere_to_go_case()
-           | departure_without_a_carrier_case() | typed_departure_case();
+           | departure_without_a_carrier_case() | typed_departure_case() | y_tetra_on_air_case(0, 0)
+           | y_tetra_on_air_case(1, 0) | y_tetra_on_air_case(0, 1) | y_tetra_on_air_case(1, 1);
 }
 
 /* The scan holds row @p row of the walk list, marked an entry hold, as the row committed (issue #644). */

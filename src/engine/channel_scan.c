@@ -151,6 +151,13 @@ typedef struct {
     uint64_t tetra_rows_list;
     int tetra_rows_counted;
     int has_tetra_rows;
+    /* Why the typed tetra-dmo row on air (tetra_skip_row) cannot run its chain now (issue #890 D5),
+       DSD_ENGINE_TETRA_ROW_OK otherwise: judged at its landing against what the stream applied and again at every pass
+       (dsd_engine_channel_scan_tetra_judge()), so a rate change, a reopen at another rate or a TED timing that
+       disagrees makes it owe a departure as an avoided row does (dsd_engine_channel_scan_on_departing_row()), ahead of
+       an operator hold. A rate the reopening radio has not published yet sends nothing away. */
+    int tetra_skip;
+    int tetra_skip_row;
 } channel_scan;
 
 static void
@@ -458,6 +465,8 @@ channel_scan_commit(dsd_opts* opts, dsd_state* state, channel_scan* scan) {
     dsd_engine_scan_entry_landed(state, scan->row, scan->attempt);
     /* Its quiet check starts now, not at the next noCarrier() (issue #834). */
     dsd_engine_scan_quiet_publish_row(opts, state);
+    /* A tetra-dmo row's landing is verified against what the stream applied (issue #890 D5). */
+    dsd_engine_channel_scan_tetra_judge(opts, state);
     return 1;
 }
 
@@ -1070,9 +1079,69 @@ dsd_engine_channel_scan_on_avoided_row(const dsd_state* state) {
     return row >= 0 && row < state->lcn_freq_count && dsd_state_trunk_lcn_avoid_get(state, (size_t)row);
 }
 
+/* Whether the typed tetra-dmo row on air owes a departure for a chain the scan found cannot run on air (issue #890 D5,
+   dsd_engine_channel_scan_tetra_judge()). One read without a scan extension. */
+static int
+channel_scan_tetra_departing(const dsd_state* state) {
+    const channel_scan* scan = channel_scan_get(state);
+    if (!scan || scan->tetra_skip == DSD_ENGINE_TETRA_ROW_OK
+        || dsd_engine_scan_tetra_row_waits((dsd_engine_tetra_row)scan->tetra_skip)) {
+        return 0;
+    }
+    return scan->tetra_skip_row == channel_scan_on_air_row(state);
+}
+
+int
+dsd_engine_channel_scan_tetra_rows(const dsd_state* state) {
+    const channel_scan* scan = state ? channel_scan_get(state) : NULL;
+    return scan && scan->has_tetra_rows;
+}
+
+int
+dsd_engine_channel_scan_on_departing_row(const dsd_state* state) {
+    return state && (dsd_engine_channel_scan_on_avoided_row(state) || channel_scan_tetra_departing(state));
+}
+
 int
 dsd_engine_channel_scan_hold_keeps_row(const dsd_state* state) {
-    return state && state->lcn_scan_hold && !dsd_engine_channel_scan_on_avoided_row(state);
+    return state && state->lcn_scan_hold && !dsd_engine_channel_scan_on_departing_row(state);
+}
+
+void
+dsd_engine_channel_scan_tetra_judge(const dsd_opts* opts, dsd_state* state) {
+    channel_scan* scan = state ? channel_scan_get(state) : NULL;
+    if (!opts || !scan || !scan->has_tetra_rows) {
+        return;
+    }
+    const int row = channel_scan_on_air_row(state);
+    if (row < 0 || row >= state->lcn_freq_count || dsd_channel_mode_get(state, (size_t)row) != DSD_SCAN_MODE_TETRA_DMO
+        || dsd_engine_channel_scan_waiting(state)) {
+        /* No tetra-dmo row on air, or a step of the scan's own leaving it: its landing judges the next one. */
+        scan->tetra_skip = DSD_ENGINE_TETRA_ROW_OK;
+        return;
+    }
+    const int rate_hz = dsd_engine_scan_dsp_rate_hz(opts, state);
+    const dsd_engine_tetra_row why =
+        dsd_engine_scan_tetra_row_check(opts, state, rate_hz, dsd_engine_channel_scan_row_confirmed(state, row));
+    if ((int)why == scan->tetra_skip && row == scan->tetra_skip_row) {
+        return;
+    }
+    scan->tetra_skip = (int)why;
+    scan->tetra_skip_row = row;
+    if (why == DSD_ENGINE_TETRA_ROW_OK || dsd_engine_scan_tetra_row_waits(why)) {
+        return;
+    }
+    char label[64];
+    char text[DSD_ENGINE_TETRA_ROW_TEXT_MAX];
+    channel_scan_row_label(state, row, label, sizeof label);
+    dsd_engine_scan_tetra_row_text(opts, why, rate_hz, 0, text, sizeof text);
+    LOG_WARN("WARNING: %s: %s; the scan leaves it.\n", label, text);
+    dsd_engine_scan_tetra_row_text(opts, why, rate_hz, 1, text, sizeof text);
+    dsd_engine_scan_skipped skipped = {0};
+    dsd_engine_scan_skipped_add(&skipped, label, text);
+    dsd_engine_scan_note_skipped_rows(state, &skipped);
+    /* It leaves at once, not at the paced cadence a step off an avoided row moved on (issue #644). */
+    state->lcn_avoid_depart_m = 0.0;
 }
 
 /* Why the scan skips -Y row @p row at every visit as a TETRA DMO row (issue #890 D5): a typed tetra-dmo row whose chain

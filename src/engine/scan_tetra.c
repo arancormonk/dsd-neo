@@ -36,7 +36,7 @@ dsd_engine_tetra_row
 dsd_engine_scan_tetra_row_check(const dsd_opts* opts, const dsd_state* state, int rate_hz, int landed) {
     /* A radio DSD-neo tunes delivers the I/Q TETRA's chain runs on; audio input (a rigctl peer's included) never does,
        and a replay or a stream another program sends cannot be tuned to the row. */
-    if (!opts || !dsd_opts_input_is_radio(opts) || dsd_opts_input_has_fixed_tuning(opts)) {
+    if (!dsd_opts_radio_can_tune(opts)) {
         return DSD_ENGINE_TETRA_ROW_INPUT;
     }
     if (opts->tetra_uplink) {

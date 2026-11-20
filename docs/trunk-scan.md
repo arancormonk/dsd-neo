@@ -1052,13 +1052,17 @@ no pick. Checking the list itself (Qt, `--validate-config`) does not look at the
 | A TETRA DSP rate: a multiple of 18 kHz from 36 to 144 kHz, normally the 72 kHz DSP bandwidth (`-i rtl:dev:freq:gain:ppm:72`) | Skipped until the rate changes. dsd-neo never changes the bandwidth on its own. While the radio is opening or reopening and has no rate yet, the target waits for it. |
 | The channel filter on (no `DSD_NEO_CHANNEL_LPF=0`) and no `--tetra-uplink` | Skipped. |
 
-- **Checked again on air.** Once a TETRA DMO target is on air, the scan checks the timing the radio applied for it, and
-  checks again at every tick. If the rate changes, or the timing does not match it, the target leaves at once for the
-  next target that can be visited, even under a hold. A radio that is reopening keeps it.
+- **Checked again on air.** Once a TETRA DMO target (or a `-Y` `tetra-dmo` row) is on air, the scan checks the timing
+  the radio applied for it, and checks again all the time. If the rate changes, or the timing does not match it, the
+  scan leaves it at once for the next one that can be visited, even under a hold, which stays and keeps where it lands.
+  A radio that is reopening keeps it. The reason is named once.
 - **A start that can visit nothing is refused.** When no target in the lists that are on can be visited (every one is
   a TETRA DMO target at the wrong rate, say, or an NFM target whose width the rate cannot filter), the scan does not
   start: `--trunk-scan: no target can be visited on this input; target "a" (and 1 more): ...`, with the first target's
-  reason. `--trunk-scan-hold` on a TETRA DMO target that cannot be visited is refused with its reason too.
+  reason. `--trunk-scan-hold` on a TETRA DMO target that cannot be visited is refused with its reason too, and so is
+  typing its frequency. Unlike a start without a hold, these do not wait for a radio that has not published its rate
+  yet: a hold is tied to the park it asks for, which the scan cannot tune before the rate is known, so it would be lost
+  anyway. Give the hold again, or type the frequency again, once the radio is up.
 - **Every visit starts cold.** Each time the scan parks on a TETRA DMO target, even right after another TETRA DMO target,
   the TETRA decoder starts with nothing from before: no network or colour code, no calls, no polarity, nothing shown.
   So a radio heard on one row is never shown on the next. The decoder's memory is set up once for the scan and kept

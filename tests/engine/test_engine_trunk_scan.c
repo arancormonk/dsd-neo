@@ -17120,6 +17120,51 @@ test_tetra_dmo_target_on_air_judged_again(void) {
     return rc;
 }
 
+/* A departure the TETRA DMO target on air owes whose park fails (issue #890): the receiver stays, the cause is kept with
+ * it, so the next ticks name nothing again and wait for the failed alternate's cooldown, not the next tick; the
+ * departure goes once that cooldown ends. */
+static int
+test_tetra_dmo_failed_departure_keeps_its_cause(void) {
+    char dir[DSD_TEST_PATH_MAX];
+    char path[DSD_TEST_PATH_MAX];
+    char err[512] = {0};
+    static dsd_opts opts;
+    static dsd_state state;
+    static const char k_body[] = "dmo,tetra-dmo-conventional,425000000,,250,250,,,,,,,\n"
+                                 "dmr,dmr-conventional,461000000,,250,250,,,,,,,\n";
+    int rc =
+        tetra_rig_start(&opts, &state, dir, sizeof dir, path, sizeof path, k_body, 72000, err, sizeof err, NULL, 0U)
+        != 0;
+    rc |=
+        expect_control_rc("hold", dsd_engine_trunk_scan_control(&opts, &state, DSD_TRUNK_SCAN_CONTROL_HOLD_TOGGLE), 1);
+    g_tetra_ted_applied = 5;
+    g_scan_tune_to_freq_failures_remaining = 1; /* the departure's park of dmr */
+    dsd_test_capture_stderr cap;
+    char log[8192] = {0};
+    const int captured = dsd_test_capture_stderr_begin(&cap, "trunkscantetrafaileddeparture") == 0;
+    tick_at(&opts, &state, 0.1);
+    const int stayed = dsd_engine_trunk_scan_active_index(&state) == 0U;
+    const int due_early = dsd_engine_trunk_scan_departure_due(&opts, &state);
+    tick_at(&opts, &state, 0.2);
+    tick_at(&opts, &state, 0.3);
+    const int still = dsd_engine_trunk_scan_active_index(&state) == 0U;
+    if (captured) {
+        (void)dsd_test_capture_stderr_end(&cap);
+        (void)dsd_test_capture_stderr_read(&cap, log, sizeof log);
+    }
+    const int named = count_text(log, "WARNING: Trunk scan target 'dmo': TETRA DMO needs the TED timed");
+    tick_at(&opts, &state, 2.2); /* past the failed park's cooldown */
+    const int left = dsd_engine_trunk_scan_active_index(&state) == 1U;
+    if (rc || !stayed || due_early || !still || named != 1 || !left) {
+        DSD_FPRINTF(stderr, "TETRA failed departure: rc %d stayed %d due %d still %d named %d left %d\n%s\n", rc,
+                    stayed, due_early, still, named, left, log);
+        rc = 1;
+    }
+    g_scan_tune_to_freq_failures_remaining = 0;
+    tetra_rig_finish(&opts, &state, dir, path);
+    return rc;
+}
+
 /* The TETRA state across a mixed list (issue #890 A4): a session with a TETRA DMO target holds the extension from its
  * first park, so no hop frees or replaces it; every park starts it cold (the visit reset, TETRA after TETRA included);
  * a pause into manual decoding and the stop let it go cold, freeing it when the settings in force run no TETRA. A
@@ -29020,6 +29065,7 @@ main(void) {
     rc |= run_with_default_tune_hook(test_tetra_dmo_target_skipped_off_a_tetra_rate);
     rc |= run_with_default_tune_hook(test_tetra_dmo_start_refused_when_nothing_can_be_visited);
     rc |= run_with_default_tune_hook(test_tetra_dmo_target_on_air_judged_again);
+    rc |= run_with_default_tune_hook(test_tetra_dmo_failed_departure_keeps_its_cause);
     rc |= run_with_default_tune_hook(test_tetra_state_held_across_mixed_hops);
     rc |= run_with_default_tune_hook(test_tetra_entry_reasons_follow_the_chain);
     rc |= run_with_default_tune_hook(test_nfm_target_width_skipped_under_channel_lpf_override);
