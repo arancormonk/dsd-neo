@@ -10,7 +10,7 @@ launchers put on the java command line. These run in milliseconds and start no J
 
 import importlib
 import os
-from pathlib import PureWindowsPath
+from pathlib import Path, PureWindowsPath
 import subprocess
 import sys
 import unittest
@@ -167,6 +167,15 @@ class CollectorChoice(unittest.TestCase):
         self.assertIn(self.SERIAL, self.cached_argv({"JAVA_OPTS": "-XX:+UseG1GC"}))  # java itself never reads JAVA_OPTS
         argv = runner.test_command(JAVA_EXE, "tests.jar", "UsbBrokerTest.kt", {"JAVA_TOOL_OPTIONS": "-Xss1M"})
         self.assertEqual(argv, [JAVA_EXE, *runner.JVM_OPTIONS, "-cp", "tests.jar", f"{runner.PACKAGE}.UsbBrokerTestKt"])
+
+    def test_the_test_jvm_gets_its_own_temp_folder(self):
+        # The JVM ignores TMPDIR, so without the property the tests' temp folders pile up in /tmp.
+        argv = runner.test_command(JAVA_EXE, "tests.jar", "UsbBrokerTest.kt", {}, Path("scratch") / "tmp")
+        temp = f"-Djava.io.tmpdir={Path('scratch') / 'tmp'}"
+        self.assertEqual(argv.count(temp), 1)
+        self.assertLess(argv.index(temp), argv.index("-cp"))
+        self.assertFalse(any(word.startswith("-Djava.io.tmpdir") for word in
+                             runner.test_command(JAVA_EXE, "tests.jar", "UsbBrokerTest.kt", {})))
 
     def test_a_deselected_collector_selects_none(self):
         self.assertIn(self.SERIAL, self.kotlinc_options({"JAVA_OPTS": "-XX:-UseG1GC"}))

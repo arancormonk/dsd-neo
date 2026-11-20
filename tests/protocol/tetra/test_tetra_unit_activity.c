@@ -280,11 +280,11 @@ test_smi_and_missing_addresses(void) {
     ctx.addr.ssi = TEST_MS_SSI;
     ctx.addr.esi = 1;
     ctx.has_addr = 1;
-    dsd_test_capture_stderr cap;
-    const int captured = dsd_test_capture_stderr_begin(&cap, "tetra_ua_esi") == 0;
+    dsd_test_quiet_stderr cap;
+    const int quieted = dsd_test_quiet_stderr_begin(&cap) == 0;
     tetra_mle_dispatch_sdu(sdu.bits, sdu.n, 0, &ctx, s.opts, s.state);
-    if (captured) {
-        (void)dsd_test_capture_stderr_end(&cap);
+    if (quieted) {
+        (void)dsd_test_quiet_stderr_end(&cap);
     }
     expect_no_row(s.state, "encrypted short identity");
     /* A PDU sent encrypted that no key decrypted never reaches MM. */

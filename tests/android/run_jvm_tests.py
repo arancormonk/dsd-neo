@@ -1872,10 +1872,13 @@ def compile_command(java, kotlinc, cached, files, output, environ):
     return argv, dict(environ), os.pathsep.join((str(output), classpath))
 
 
-def test_command(java, runtime, test, environ):
-    """The run of the compiled @p test (a .kt file name) on the classpath @p runtime, under @p environ."""
+def test_command(java, runtime, test, environ, tmpdir=None):
+    """The run of the compiled @p test (a .kt file name) on the classpath @p runtime, under @p environ, with its JVM's
+    temp folder (java.io.tmpdir) at @p tmpdir when given. The JVM reads no TMPDIR: on Linux it uses /tmp, whatever
+    the environment says."""
+    temp = [f"-Djava.io.tmpdir={tmpdir}"] if tmpdir is not None else []
     # Top-level functions in Foo.kt compile into the class FooKt.
-    return [java, *jvm_options(environ), "-cp", runtime, f"{PACKAGE}.{Path(test).stem}Kt"]
+    return [java, *jvm_options(environ), *temp, "-cp", runtime, f"{PACKAGE}.{Path(test).stem}Kt"]
 
 
 def run_build(name, build, java, kotlinc, cached):
@@ -1885,12 +1888,16 @@ def run_build(name, build, java, kotlinc, cached):
         *(HERE / test for test in build.tests),
         *(HERE / "stubs" / stub for stub in build.stubs),
     ]
+    # The tests' own temp files and folders go in this folder too, which goes when the build's tests are done, passed
+    # or not: several suites create temp folders they never remove.
     with tempfile.TemporaryDirectory(prefix=f"dsd-{name}-tests-") as directory:
         output = Path(directory) / "tests.jar"
+        jvm_tmp = Path(directory) / "tmp"
+        jvm_tmp.mkdir()
         argv, env, runtime = compile_command(java, kotlinc, cached, files, output, os.environ)
         subprocess.run(argv, env=env, check=True)
         for test in build.tests:
-            subprocess.run(test_command(java, runtime, test, os.environ), check=True, timeout=30)
+            subprocess.run(test_command(java, runtime, test, os.environ, jvm_tmp), check=True, timeout=30)
 
 
 def run_suite(name, suite, java, kotlinc, cached):

@@ -4101,8 +4101,9 @@ A test must remove every temporary file and directory it creates, on its failure
 paths as well as when it passes. `dsd_test_mkstemp()`, `dsd_test_mkdtemp()` and
 `dsd_test_capture_stderr_begin()` in `tests/test_support/test_support.h` create
 them under `dsd_test_tmpdir()`: `DSD_NEO_TEST_TMPDIR`, else `TMPDIR` (`TEMP` or
-`TMP` on Windows), else the working directory. Create them with these helpers,
-not at a fixed path such as `/tmp`, which the check below does not look at. The
+`TMP` on Windows), else `/tmp` (the working directory on Windows). Create them
+with these helpers, not at a fixed path such as `/tmp`, which the checks below
+do not look at. The
 temp directory's own path can contain a dot, so when the code under test reads
 meaning from a path's text, such as an extension, open the file by a bare name
 from a `dsd_test_temp_cwd_enter()` directory instead. Remove each file with
@@ -4116,7 +4117,19 @@ only on an empty directory, so the check also catches a file the test forgot to
 list or a new file the code under test starts writing.
 `dsd_test_capture_stderr_read()` deletes the capture file it reads. A test that
 does not read its capture removes `cap.path` itself after
-`dsd_test_capture_stderr_end()`.
+`dsd_test_capture_stderr_end()`. A test that only silences what the code under
+test prints uses `dsd_test_quiet_stderr_begin()` and `_end()` instead, which
+send stderr to the null device and write no file.
+
+`dsd_test_mkstemp()` and `dsd_test_mkdtemp()` also record each path they create
+(`tests/test_support/temp_paths.c`, through `dsd_test_temp_track()`). When the
+test process ends, normally or through `abort()`, each recorded path that still
+exists is removed, a directory with everything in it, and a
+`test temp cleanup: removed ...` line on stderr names it. That is a safety net
+for the exit paths a test's own cleanup misses, such as a failed `assert()`, not
+a replacement for that cleanup: a test that ends normally with one of its paths
+still there exits with a failure, whatever `main()` returned. It does not run
+when a test crashes or CTest kills it at its timeout.
 
 A failed `assert()` aborts the test before its cleanup runs. Once a temporary
 file or directory exists, check with a counted failure instead: print what
@@ -4138,21 +4151,34 @@ Production writes CSV, INI and group files in text mode, so on Windows their
 lines end in CRLF. Compare such a file's contents after reading it in text mode
 (`"r"`), and binary output, such as an MBE recording, byte for byte (`"rb"`).
 
-To check the whole suite, run it against an empty directory, which must still
-be empty afterwards. That does not catch a file a test creates by a relative
-path, which lands in its working directory: `build/dev-debug/tests` for most
-tests, the source tree for the `TOOLS_*` scripts. So compare both before and
-after the run too:
+CTest gives every test in `tests/CMakeLists.txt` a temp directory of its own,
+`build/<preset>/tests/tmp/<TEST_NAME>`, through `TMPDIR`, `TEMP` and `TMP`, which
+the C helpers, Python's `tempfile`, Qt and pwsh read. `TEST_TMPDIR_SETUP` empties
+and makes them before the first test, and `TEST_TMPDIR_EMPTY`, which CTest runs
+after all the others (they require its fixture, so it runs with any `-R` or `-L`
+selection too), fails naming each test that left anything in its directory, and
+the files it left, which stay there until the next run. The JVM ignores
+`TMPDIR`, so `tests/android/run_jvm_tests.py` points each Kotlin test's
+`java.io.tmpdir` at a directory of its own that it removes when the test ends.
+A test registered after that block at the end of `tests/CMakeLists.txt` gets
+neither, so register new tests above it.
+
+That does not catch a file a test creates by a relative path, which lands in its
+working directory: `build/dev-debug/tests` for most tests, the source tree for
+the `TOOLS_*` scripts, or one a test creates at a fixed path or under a
+temp directory it chose itself. So after a change to how tests make files,
+compare those before and after a run too:
 
 ```sh
 T=$(mktemp -d)
 find build/dev-debug/tests | sort > "$T.build"
 git status --porcelain --ignored > "$T.src"
-DSD_NEO_TEST_TMPDIR=$T TMPDIR=$T ctest --preset dev-debug --output-on-failure
-ls -A "$T"   # prints nothing
+ls -A /tmp | sort > "$T.tmp"
+ctest --preset dev-debug --output-on-failure
 find build/dev-debug/tests | sort | diff "$T.build" -   # prints nothing
 git status --porcelain --ignored | diff "$T.src" -   # prints nothing
-rmdir "$T"; rm "$T.build" "$T.src"
+ls -A /tmp | sort | comm -13 "$T.tmp" -   # prints only what other programs made meanwhile
+rmdir "$T"; rm "$T.build" "$T.src" "$T.tmp"
 ```
 
 Repeat this in a `-DDSD_ENABLE_QT_UI=ON` build with `-R '^UI_QT'` and
@@ -4472,10 +4498,11 @@ Each entry sets `DSD_NEO_TEST_SHARD=<i>/<n>`, and the module's `load_tests` hook
 names, chosen from measured times, and a share of any test the table does not
 name, so a new test runs in exactly one entry. A test in shard 1 checks that the
 shards run every test of the class once. Without the variable the module runs
-every test, as before. The entries also set `TMPDIR` to `pwsh-test-scratch` in
-the build tree: off Windows, pwsh reads every folder of a path it resolves from
-the root down, so under a system temp folder that holds many thousand entries
-each resolution costs a full read of it, and a class ran about ten times slower. Passing runs of `verify_release_tree.ps1` that only show a
+every test, as before. Their temp folders sit in the build tree, as every test's
+does (see "Temporary files and directories"): off Windows, pwsh reads every folder
+of a path it resolves from the root down, so under a system temp folder that holds
+many thousand entries each resolution costs a full read of it, and a class ran
+about ten times slower. Passing runs of `verify_release_tree.ps1` that only show a
 tree passes steps 0-3 before or after a test's change use its `-SkipProgramRuns`
 switch; `test_verify_release_tree`, every refusal and the release jobs run the
 whole script.

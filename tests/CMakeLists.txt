@@ -45,6 +45,24 @@ target_include_directories(
     INTERFACE ${CMAKE_CURRENT_SOURCE_DIR}/test_support
 )
 
+# The temp paths dsd_test_mkstemp() and dsd_test_mkdtemp() create are tracked
+# here, and any a test leaves behind are removed when it exits or aborts
+# (test_support/temp_paths.c). Compiled once and linked into every executable
+# that can include test_support.h, as objects rather than an archive, so no link
+# order leaves a test support library's reference to it unresolved. It calls
+# only the C library and the OS, and does nothing until a path is tracked.
+add_library(dsd-neo_test_temp_paths OBJECT test_support/temp_paths.c)
+target_include_directories(
+    dsd-neo_test_temp_paths
+    PRIVATE ${PROJECT_SOURCE_DIR}/include
+)
+target_link_libraries(dsd-neo_test_temp_paths PRIVATE dsd-neo_warnings)
+target_sources(
+    dsd-neo_test_env
+    INTERFACE
+        "$<$<STREQUAL:$<TARGET_PROPERTY:TYPE>,EXECUTABLE>:$<TARGET_OBJECTS:dsd-neo_test_temp_paths>>"
+)
+
 link_libraries(dsd-neo_warnings dsd-neo_test_assertions dsd-neo_test_env)
 
 # A Windows main thread gets a 1 MiB stack where Linux gives 8 MiB, so a test
@@ -19296,6 +19314,30 @@ target_link_libraries(
 )
 add_test(NAME PLATFORM_TEST_TMPDIR COMMAND dsd-neo_test_platform_test_tmpdir)
 
+# The temp paths a test leaves behind are removed when it exits or aborts
+# (test_support/temp_paths.c): each mode in its own folder, which must be empty
+# afterwards.
+add_executable(
+    dsd-neo_test_platform_test_temp_paths
+    platform/test_platform_test_temp_paths.c
+)
+target_include_directories(
+    dsd-neo_test_platform_test_temp_paths
+    PRIVATE ${PROJECT_SOURCE_DIR}/include
+)
+target_link_libraries(
+    dsd-neo_test_platform_test_temp_paths
+    PRIVATE dsd-neo_platform dsd-neo_test_support
+)
+add_test(
+    NAME PLATFORM_TEST_TEMP_PATHS
+    COMMAND
+        ${CMAKE_COMMAND}
+        -DEXE=$<TARGET_FILE:dsd-neo_test_platform_test_temp_paths>
+        -DWORK=${CMAKE_CURRENT_BINARY_DIR}/test_temp_paths_work -P
+        ${CMAKE_CURRENT_SOURCE_DIR}/cmake/TestTempPathsCheck.cmake
+)
+
 # 64-bit file sizes and offsets on sparse files past 2 GiB and 4 GiB (issue #701).
 add_executable(
     dsd-neo_test_platform_file_large
@@ -27532,12 +27574,11 @@ if(Python3_Interpreter_FOUND)
     # dumpbin.
     find_program(DSD_NEO_PWSH_FOR_TESTS pwsh)
     if(NOT WIN32 AND DSD_NEO_PWSH_FOR_TESTS)
-        # The tests' folders, and the scripts' own, go under the build tree, not the
-        # system temp folder: off Windows, pwsh reads every folder of a path it resolves
-        # from the root down, so each resolution under a temp folder that holds many
-        # thousand entries costs a full read of it.
-        set(_dsd_pwsh_test_scratch "${PROJECT_BINARY_DIR}/pwsh-test-scratch")
-        file(MAKE_DIRECTORY "${_dsd_pwsh_test_scratch}")
+        # The tests' folders, and the scripts' own, go in each test's temp folder under
+        # the build tree (the end of this file), not the system temp folder: off
+        # Windows, pwsh reads every folder of a path it resolves from the root down, so
+        # each resolution under a temp folder that holds many thousand entries costs a
+        # full read of it.
         # About 30 runs of the script under pwsh: a busy machine can take minutes, so
         # the class runs as two entries that ctest -j runs side by side. Each keeps
         # the tests DSD_NEO_TEST_SHARD names (tests/tools/unittest_shards.py), and
@@ -27554,7 +27595,7 @@ if(Python3_Interpreter_FOUND)
                 PROPERTIES
                     TIMEOUT 300
                     ENVIRONMENT
-                        "DSD_NEO_TEST_PWSH=${DSD_NEO_PWSH_FOR_TESTS};DSD_NEO_TEST_SHARD=${_dsd_shard}/2;TMPDIR=${_dsd_pwsh_test_scratch}"
+                        "DSD_NEO_TEST_PWSH=${DSD_NEO_PWSH_FOR_TESTS};DSD_NEO_TEST_SHARD=${_dsd_shard}/2"
             )
         endforeach()
         # tools/windows/stage_release_tree.ps1 over a fake vcpkg tree,
@@ -27574,7 +27615,7 @@ if(Python3_Interpreter_FOUND)
                 PROPERTIES
                     TIMEOUT 600
                     ENVIRONMENT
-                        "DSD_NEO_TEST_PWSH=${DSD_NEO_PWSH_FOR_TESTS};DSD_NEO_TEST_SHARD=${_dsd_shard}/4;TMPDIR=${_dsd_pwsh_test_scratch}"
+                        "DSD_NEO_TEST_PWSH=${DSD_NEO_PWSH_FOR_TESTS};DSD_NEO_TEST_SHARD=${_dsd_shard}/4"
             )
         endforeach()
     endif()
@@ -28907,3 +28948,56 @@ foreach(_dsd_dmr_pdu_target IN LISTS _dsd_dmr_pdu_position_targets)
         PRIVATE dsd-neo_test_position_support
     )
 endforeach()
+
+# Every test runs with a temp folder of its own under the build tree (TMPDIR,
+# TEMP and TMP: the C tests' dsd_test_tmpdir(), Python's tempfile, Qt, pwsh and
+# the JVM runner all read one of them), and TEST_TMPDIR_EMPTY, which CTest runs
+# after all the others, fails naming each test that left anything in its folder.
+# It keeps the system temp folder clean: thousands of leftovers there once made
+# every path pwsh resolves under it slow. Keep this block last, after every
+# add_test() in this directory.
+set(_dsd_test_tmp_root "${CMAKE_CURRENT_BINARY_DIR}/tmp")
+get_property(_dsd_test_names DIRECTORY PROPERTY TESTS)
+foreach(_dsd_test IN LISTS _dsd_test_names)
+    file(TO_NATIVE_PATH "${_dsd_test_tmp_root}/${_dsd_test}" _dsd_test_tmp)
+    set_property(
+        TEST ${_dsd_test}
+        APPEND
+        PROPERTY
+            ENVIRONMENT
+                "TMPDIR=${_dsd_test_tmp}"
+                "TEMP=${_dsd_test_tmp}"
+                "TMP=${_dsd_test_tmp}"
+    )
+    set_property(
+        TEST ${_dsd_test}
+        APPEND
+        PROPERTY FIXTURES_REQUIRED DSD_TEST_TMPDIR
+    )
+endforeach()
+string(REPLACE ";" "\n" _dsd_test_names_text "${_dsd_test_names}")
+file(
+    GENERATE OUTPUT "${_dsd_test_tmp_root}.names"
+    CONTENT "${_dsd_test_names_text}\n"
+)
+add_test(
+    NAME TEST_TMPDIR_SETUP
+    COMMAND
+        ${CMAKE_COMMAND} -DMODE=setup -DROOT=${_dsd_test_tmp_root}
+        -DNAMES=${_dsd_test_tmp_root}.names -P
+        ${CMAKE_CURRENT_SOURCE_DIR}/cmake/TestTmpdirGuard.cmake
+)
+add_test(
+    NAME TEST_TMPDIR_EMPTY
+    COMMAND
+        ${CMAKE_COMMAND} -DMODE=check -DROOT=${_dsd_test_tmp_root} -P
+        ${CMAKE_CURRENT_SOURCE_DIR}/cmake/TestTmpdirGuard.cmake
+)
+set_tests_properties(
+    TEST_TMPDIR_SETUP
+    PROPERTIES FIXTURES_SETUP DSD_TEST_TMPDIR
+)
+set_tests_properties(
+    TEST_TMPDIR_EMPTY
+    PROPERTIES FIXTURES_CLEANUP DSD_TEST_TMPDIR
+)

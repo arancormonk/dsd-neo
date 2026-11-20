@@ -14,6 +14,7 @@
 #include <dsd-neo/platform/file_compat.h>
 #include <dsd-neo/platform/platform.h>
 #include <dsd-neo/platform/posix_compat.h>
+#include "temp_paths.h"
 #include "test_env.h"
 
 #include <errno.h>
@@ -144,7 +145,11 @@ dsd_test_mkstemp(char* out_path, size_t out_sz, const char* prefix) {
     if (dsd_test_make_temp_template(out_path, out_sz, prefix) != 0) {
         return -1;
     }
-    return dsd_mkstemp(out_path);
+    const int fd = dsd_mkstemp(out_path);
+    if (fd >= 0) {
+        dsd_test_temp_track(out_path);
+    }
+    return fd;
 }
 
 static inline char*
@@ -157,7 +162,11 @@ dsd_test_mkdtemp(char* out_path, size_t out_sz, const char* prefix) {
     if (dsd_test_make_temp_template(out_path, out_sz, prefix) != 0) {
         return NULL;
     }
-    return dsd_mkdtemp(out_path);
+    char* dir = dsd_mkdtemp(out_path);
+    if (dir) {
+        dsd_test_temp_track(dir);
+    }
+    return dir;
 }
 
 static inline char*
@@ -404,6 +413,60 @@ dsd_test_capture_stderr_end(dsd_test_capture_stderr* cap) {
         (void)dsd_dup2(cap->saved_fd, DSD_STDERR_FILENO);
         (void)dsd_close(cap->saved_fd);
         cap->saved_fd = -1;
+    }
+    return 0;
+}
+
+/**
+ * @brief stderr sent to the null device: for a test that drops what the code under test prints there.
+ *
+ * Unlike a capture, it writes no file, so there is nothing to remove afterwards.
+ */
+typedef struct dsd_test_quiet_stderr {
+    int saved_fd;
+} dsd_test_quiet_stderr;
+
+/** @return 0 once stderr goes to the null device, -1 otherwise, with stderr unchanged. */
+static inline int
+dsd_test_quiet_stderr_begin(dsd_test_quiet_stderr* quiet) {
+    if (!quiet) {
+        errno = EINVAL;
+        return -1;
+    }
+    quiet->saved_fd = -1;
+    (void)fflush(stderr);
+
+    int saved = dsd_dup(DSD_STDERR_FILENO);
+    if (saved < 0) {
+        return -1;
+    }
+    FILE* sink = dsd_fopen_private(dsd_null_device(), "w");
+    if (!sink) {
+        dsd_close(saved);
+        return -1;
+    }
+    const int rc = dsd_dup2(dsd_fileno(sink), DSD_STDERR_FILENO);
+    (void)fclose(sink);
+    if (rc < 0) {
+        dsd_close(saved);
+        return -1;
+    }
+    quiet->saved_fd = saved;
+    return 0;
+}
+
+/** Restore the stderr dsd_test_quiet_stderr_begin() replaced; harmless after a failed begin. */
+static inline int
+dsd_test_quiet_stderr_end(dsd_test_quiet_stderr* quiet) {
+    if (!quiet) {
+        errno = EINVAL;
+        return -1;
+    }
+    (void)fflush(stderr);
+    if (quiet->saved_fd >= 0) {
+        (void)dsd_dup2(quiet->saved_fd, DSD_STDERR_FILENO);
+        (void)dsd_close(quiet->saved_fd);
+        quiet->saved_fd = -1;
     }
     return 0;
 }
