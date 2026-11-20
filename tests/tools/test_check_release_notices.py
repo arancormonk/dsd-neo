@@ -191,6 +191,27 @@ class CheckReleaseNotices(unittest.TestCase):
                     self.assertEqual(result.returncode, 1, result.stdout)
                     self.assertIn(f"{files[0]} is in the folder but not in notice-index.txt", result.stderr)
 
+    def test_notice_index_is_decoded_as_the_licences_screen_decodes_it(self):
+        # QString::fromUtf8() takes one leading byte order mark as no text, so the first entry is listed; a second mark
+        # stays on the first entry, which no file then has. Bytes that are not UTF-8 are an error of the index itself.
+        files = sorted(p.relative_to(self.doc).as_posix() for p in self.doc.rglob("*") if p.is_file())
+        index = self.doc / "notice-index.txt"
+        listing = ("\n".join(files) + "\n").encode("utf-8")
+        for label, data, needle in (
+                ("a byte order mark", b"\xef\xbb\xbf" + listing, None),
+                ("two byte order marks", b"\xef\xbb\xbf" * 2 + listing,
+                 f"{files[0]} is in the folder but not in notice-index.txt"),
+                ("a truncated sequence", listing + b"\xe2\x82", "notice-index.txt is not valid UTF-8"),
+                ("a stray continuation byte", b"\x80" + listing, "notice-index.txt is not valid UTF-8")):
+            with self.subTest(case=label):
+                index.write_bytes(data)
+                result = self.run_check("--index", "notice-index.txt")
+                if needle is None:
+                    self.assertEqual(result.returncode, 0, result.stderr)
+                else:
+                    self.assertEqual(result.returncode, 1, result.stdout)
+                    self.assertIn(needle, result.stderr)
+
     def test_missing_required_file_fails(self):
         result = self.run_check("--require", "legal/components.json")
         self.assertEqual(result.returncode, 1, result.stdout)

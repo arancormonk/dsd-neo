@@ -12,7 +12,8 @@ folder the build selected (DSD_MBELIB_SELECTED_NOTICE_DIR in --build-dir's CMake
 other the content of the repository's file (licenses/ is the repository's LICENSES/).
 
 --index names the folder's index of its files (the APK's notice-index.txt, which the licences
-screen reads): it must be there and name each other file of the folder, and only those.
+screen reads): it must be there, be UTF-8 text, and name each other file of the folder, and
+only those.
 
 --binary-dir names the package's binary folders (the DMG's bin/ and lib/): every file in them
 must be one that a record's map lists under "binaries", so a library no record covers, whose
@@ -119,8 +120,15 @@ def check_index(doc, index):
     """Return the problems of the folder's index of its files: missing, or not naming exactly the other files."""
     if not inside(index) or not (doc / index).is_file():
         return [f"missing {index}"]
-    # As DecoderHost::licenseFiles() reads it: the raw bytes as UTF-8, split on LF alone, each line trimmed.
-    lines = (doc / index).read_bytes().decode("utf-8", errors="replace").split("\n")
+    # As DecoderHost::licenseFiles() reads it: the raw bytes as UTF-8 (QString::fromUtf8() takes one leading byte
+    # order mark as no text), split on LF alone, each line trimmed. Bytes that are not UTF-8 would reach the screen as
+    # replacement characters, so they are an error of the index.
+    data = (doc / index).read_bytes()
+    try:
+        text = data.decode("utf-8")
+    except UnicodeDecodeError as error:
+        return [f"{index} is not valid UTF-8 (byte {error.start}: {error.reason})"]
+    lines = text.removeprefix("\ufeff").split("\n")
     listed = {line.strip(QT_SPACE) for line in lines if line.strip(QT_SPACE)}
     present = {path.relative_to(doc).as_posix() for path in doc.rglob("*") if path.is_file()} - {index}
     problems = [f"{name} is in the folder but not in {index}" for name in sorted(present - listed)]
