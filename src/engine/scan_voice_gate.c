@@ -26,7 +26,7 @@
 #include "scan_landing.h"
 #include "scan_quiet.h"
 
-/* Voice must have run this long before it counts: D-STAR and ProVoice run the
+/* Checked voice must have run this long before it counts: D-STAR and ProVoice run the
  * vocoder before their confirm, DMR/NXDN/dPMR are already confirm-gated. */
 #define DSD_SCAN_VOICE_MIN_SPAN_S         0.10
 
@@ -93,25 +93,34 @@ scan_voice_resolve_ms(int configured, int fallback) {
     return configured;
 }
 
+/* Whether @p call carries voice the scan may credit (issue #890): checked media, the frames its decoder output as speech
+   successfully and unconcealed (dsd_call_snapshot::checked_media_started_m), never the media mark a frame gets before it
+   is decoded, and only media read on the scan visit and carrier in force now (dsd_state_scan_observation_is_current()):
+   a call another row's visit or a tune still in flight heard, ended or not, is no voice of this one, whatever its
+   decode times say. Media earned on the visit before a sync loss stays the visit's. */
 static int
-scan_voice_snapshot_is_voice(const dsd_call_snapshot* call) {
+scan_voice_snapshot_is_voice(const dsd_state* state, const dsd_call_snapshot* call) {
     if (!call || (call->phase != DSD_CALL_PHASE_ACTIVE && call->phase != DSD_CALL_PHASE_ENDED)) {
         return 0;
     }
     if (call->kind == DSD_CALL_KIND_DATA) {
         return 0;
     }
-    if (call->media_started_m <= 0.0 || call->media_updated_m <= 0.0) {
+    if (call->checked_media_started_m <= 0.0 || call->checked_media_updated_m <= 0.0) {
         return 0;
     }
-    double span_started_m = call->media_started_m;
+    const dsd_scan_observation_origin origin = {call->checked_media_visit, call->checked_media_carrier_seq};
+    if (!dsd_state_scan_observation_is_current(state, &origin)) {
+        return 0;
+    }
+    double span_started_m = call->checked_media_started_m;
     /* A recoverable reopen retains the logical transmission's media clocks but
      * starts a new segment. Qualify from the later boundary so one post-gap
      * vocoder frame cannot borrow the pre-gap media span. */
     if (call->started_m > span_started_m) {
         span_started_m = call->started_m;
     }
-    if ((call->media_updated_m - span_started_m) < DSD_SCAN_VOICE_MIN_SPAN_S) {
+    if ((call->checked_media_updated_m - span_started_m) < DSD_SCAN_VOICE_MIN_SPAN_S) {
         return 0;
     }
     return 1;
@@ -198,17 +207,18 @@ dsd_scan_voice_probe(const dsd_opts* opts, const dsd_state* state, dsd_scan_voic
         if (dsd_call_state_get(state, (uint8_t)slot_i, &call) <= 0) {
             continue;
         }
-        if (!scan_voice_snapshot_is_voice(&call)) {
+        if (!scan_voice_snapshot_is_voice(state, &call)) {
             continue;
         }
         if (!scan_voice_snapshot_policy_allows(opts, state, &call)) {
             continue;
         }
-        if (call.media_updated_m > out->retained_media_m) {
-            out->retained_media_m = call.media_updated_m;
+        if (call.checked_media_updated_m > out->retained_media_m) {
+            out->retained_media_m = call.checked_media_updated_m;
         }
-        if (call.phase == DSD_CALL_PHASE_ACTIVE && call.media_active && call.media_updated_m > out->active_media_m) {
-            out->active_media_m = call.media_updated_m;
+        if (call.phase == DSD_CALL_PHASE_ACTIVE && call.media_active
+            && call.checked_media_updated_m > out->active_media_m) {
+            out->active_media_m = call.checked_media_updated_m;
         }
     }
     return out->retained_media_m >= 0.0 ? 1 : 0;

@@ -411,7 +411,11 @@ const char* dsd_engine_trunk_scan_active_chan_csv(const dsd_state* state);
  * protocol layer cannot tell them apart and must not have to. The call identity is run through the global
  * talkgroup policy, and only an allowed call refreshes the target's
  * activity hold, so allow/block lists, private-call, data-call and
- * encrypted-call tuning controls all apply to the park decision.
+ * encrypted-call tuning controls all apply to the park decision. Only an
+ * observation of the active target's own landed visit counts (issue #890): the
+ * frame being dispatched must have begun its read on that landing and carrier,
+ * uncut (dsd_state_scan_observation_origin()); a park in flight, failed or
+ * superseded has no landing, so nothing decoded then holds the incoming target.
  *
  * Callers must pass identity that has already cleared the protocol's own
  * FEC/CRC gate: an unverified header would park the coordinator on noise.

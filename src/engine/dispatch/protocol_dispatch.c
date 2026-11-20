@@ -123,6 +123,8 @@ processFrame(dsd_opts* opts, dsd_state* state) {
            (issue #661). */
         state->frame_dispatch_synctype = state->synctype;
         state->frame_dispatch_carrier_seq = carrier_seq;
+        /* And the scan visit the read began on (issue #890): what the frame reports is that visit's, or none's. */
+        state->frame_dispatch_scan_visit = state->scan_landing_visit;
         state->frame_dispatch_active = 1;
         state->sps_hunt_last_frame_verdict = (int)handler->handle_frame(opts, state);
         state->frame_dispatch_active = 0;

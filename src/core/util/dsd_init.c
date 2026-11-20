@@ -801,6 +801,8 @@ init_state_sync_and_stream_defaults(dsd_state* state) {
     state->frame_dispatch_active = 0;
     state->frame_dispatch_synctype = DSD_SYNC_NONE;
     state->frame_dispatch_carrier_seq = 0U;
+    state->scan_landing_visit = 0U;
+    state->frame_dispatch_scan_visit = 0U;
     state->p25_cqpsk_dibit_map_idx = DSD_P25_CQPSK_DIBIT_MAP_IDENTITY;
     state->lastp25type = 0;
     state->offset = 0;

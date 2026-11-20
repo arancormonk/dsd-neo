@@ -223,9 +223,12 @@ dsd-neo -ft -i rtl:0:851.0125M:22:0:48:0:2 \
   [Startup control-channel hunt](cli.md#startup-control-channel-hunt)), except in an EDACS session. Explicit decoder
   modes and trunk-scan target selection still constrain which protocol may recover.
 - `--scan-voice-only`: digital conventional targets hold only from decoded voice media (headers and data no longer
-  hold; an analog target keeps holding on its carrier, see [Analog NFM and AM targets](#analog-nfm-and-am-targets)),
-  with the per-target `dwell_ms` as the qualify window in which voice must appear and `activity_hold_ms` as the
-  hold after the last voice frame, including when a terminator closes the call before the next scan tick; trunked
+  hold; an analog target keeps holding on its carrier, see [Analog NFM and AM targets](#analog-nfm-and-am-targets)).
+  Decoded voice is a frame the vocoder decoded with nothing concealed: a frame that failed, or that the vocoder
+  repeated, muted or replaced, plays as before but never holds, and M17 voice holds only in a build with Codec2. It
+  must be heard on the target's own visit: a call from the target before, or voice decoded while the scan is still
+  tuning to the target, holds nothing. The per-target `dwell_ms` is the qualify window in which voice must appear and
+  `activity_hold_ms` the hold after the last voice frame, including when a terminator closes the call before the next scan tick; trunked
   targets are unchanged (control-only rotates after dwell). The scanner-wide
   `--scan-voice-qualify-ms` and `--scan-voice-hold-ms` timings apply to the `-Y` conventional scan only, not to
   trunk-scan targets; a conventional target can carry its own intervals in its `options` column (see
@@ -570,10 +573,14 @@ During scanning:
   does not refresh the hold, so `-e` has no effect on this row.
   Phase 2 PTT holds are evaluated after crypto classification; Phase 1 late joins honor the LCW encryption bit
   before HDU/LDU2 metadata arrives.
+- A conventional target holds only on what was received on its own visit: a call report decoded while the scan was
+  still tuning to the target, or from a frame that began on the target before it (two targets can share a
+  frequency), holds nothing. A sync loss keeps the hold a visit already earned.
 - With `--scan-voice-only`, all digital conventional types, including P25, hold only from decoded voice media, not
   headers or voice-start reports alone (an analog target holds on carrier; see
   [Analog NFM and AM targets](#analog-nfm-and-am-targets)). The hold refreshes from decoded voice media (stamped
-  with a retained media time, so LC-less and just-ended voice hold), `dwell_ms` is the qualify window and
+  with a retained media time, so LC-less and just-ended voice hold; only frames the vocoder decoded with nothing
+  concealed, heard on the target's own visit), `dwell_ms` is the qualify window and
   `activity_hold_ms` the hold. The terminal status line marks the parked conventional target `Voice: QUALIFY`,
   `VOICE` while a media-bearing call is active, or `TAIL` after it ends while the hold runs. Trunked
   targets are unchanged: control-only traffic rotates after dwell, and they carry no `Voice:` marker.

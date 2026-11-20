@@ -1136,6 +1136,13 @@ test_stream_voice_replaces_foreign_active_call(void) {
     err |= expect_u64("late-entry M17 voice clears foreign destination", call.ota_target_id, 0U);
     err |= expect_u64("late-entry M17 voice clears foreign source", call.ota_source_id, 0U);
     err |= expect_u8("late-entry M17 voice marks media", call.media_active, 1U);
+    /* Issue #890: the scan's voice credit is the speech Codec2 decoded, never the media mark before the payload is
+       decoded: a build without Codec2 decodes nothing, so its stream is never checked media. */
+#ifdef USE_CODEC2
+    err |= expect_int("late-entry M17 voice Codec2 decoded is checked media", call.checked_media_updated_m > 0.0, 1);
+#else
+    err |= expect_int("late-entry M17 voice with no Codec2 is no checked media", call.checked_media_updated_m > 0.0, 0);
+#endif
     dsd_state_ext_free_all(state);
     return err;
 }

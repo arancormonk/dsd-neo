@@ -2879,6 +2879,12 @@ struct dsd_state {
     int frame_dispatch_active;
     int frame_dispatch_synctype;
     uint32_t frame_dispatch_carrier_seq;
+    /* The scan visit (issue #890): the epoch of the scan landing in force (engine/scan_landing.h, its only writer: a
+       -Y row or trunk-scan target confirmed on air), 0 while none is (a tune in flight, failed or forgotten, no scan).
+       frame_dispatch_scan_visit: what it was when processFrame() began dispatching the frame. With the carrier count
+       they are where a scan observation was obtained (dsd_state_scan_observation_origin()). Decoder thread. */
+    uint64_t scan_landing_visit;
+    uint64_t frame_dispatch_scan_visit;
     /* The radio source the stream last started on, as dsd_engine_note_stream_source() keys it; 0 before any start. */
     uint64_t carrier_source_key;
     /* The carrier on air is two-slot TDMA: since the last acquisition reset, a frame of DMR (base station, mobile or
@@ -3594,6 +3600,43 @@ dsd_state_reception_generation(const dsd_state* state) {
 static inline int
 dsd_state_frame_read_lost(const dsd_state* state, uint32_t carrier_seq) {
     return state->carrier_seq != carrier_seq || state->input_interrupted != 0;
+}
+
+/** Where a scan observation was obtained (issue #890): the scan visit (dsd_state::scan_landing_visit, 0 for none) and
+ * the carrier count (dsd_state::carrier_seq) its read began under. */
+typedef struct {
+    uint64_t visit;
+    uint32_t carrier_seq;
+} dsd_scan_observation_origin;
+
+/**
+ * The origin of an observation made now (issue #890), such as a protocol's activity report or a frame its decoder
+ * output: inside a frame dispatch, the visit and carrier the frame's read began under (frame_dispatch_scan_visit,
+ * frame_dispatch_carrier_seq), so what a frame says after the scan moved on stays the frame's; outside one (a host's own
+ * decode, a test), the visit and carrier in force now. Returns 0, filling nothing, for a frame a carrier boundary or an
+ * input interruption cut (dsd_state_frame_read_lost()): no part of it is any visit's.
+ */
+static inline int
+dsd_state_scan_observation_origin(const dsd_state* state, dsd_scan_observation_origin* out) {
+    if (state->frame_dispatch_active) {
+        if (dsd_state_frame_read_lost(state, state->frame_dispatch_carrier_seq)) {
+            return 0;
+        }
+        out->visit = state->frame_dispatch_scan_visit;
+        out->carrier_seq = state->frame_dispatch_carrier_seq;
+        return 1;
+    }
+    out->visit = state->scan_landing_visit;
+    out->carrier_seq = state->carrier_seq;
+    return 1;
+}
+
+/** Whether @p origin is the reception in force now (issue #890): neither the scan visit nor the carrier count it was
+ * obtained under has moved since. A landing, a landing forgotten and a carrier boundary each move one; an ordinary
+ * sync loss moves neither, so what a visit earned before one is still the visit's. */
+static inline int
+dsd_state_scan_observation_is_current(const dsd_state* state, const dsd_scan_observation_origin* origin) {
+    return origin->visit == state->scan_landing_visit && origin->carrier_seq == state->carrier_seq;
 }
 
 /* Publish the toast just written to state->ui_msg, shown until @p expire (epoch seconds of the real-time clock): every

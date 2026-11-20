@@ -23,21 +23,25 @@
 extern "C" {
 #endif
 
-/** Policy-allowed decoded voice media visible to a scanner tick. */
+/** Policy-allowed checked voice media visible to a scanner tick. */
 typedef struct {
-    /** Newest media time on an active call with media latched, or < 0 when none. */
+    /** Newest checked media time on an active call with media latched, or < 0 when none. */
     double active_media_m;
-    /** Newest media time on an active or ended call, or < 0 when none. */
+    /** Newest checked media time on an active or ended call, or < 0 when none. */
     double retained_media_m;
 } dsd_scan_voice_probe_result;
 
 /**
- * Probe both call slots for policy-allowed decoded voice media.
+ * Probe both call slots for policy-allowed checked voice media (issue #890).
  *
- * The returned timestamps are raw call-state anchors and may predate the current
- * scanner visit or hold window. Callers must apply their own freshness bound.
- * Both result fields are initialized to -1. Returns -1 for invalid arguments,
- * 0 when no qualifying media exists, and 1 when retained media exists.
+ * Only a call's checked media counts: the frames its decoder output as speech, successfully and unconcealed
+ * (dsd_call_state_note_checked_media()), at least 100 ms of it, never a frame's media mark before
+ * it is decoded; and only media read on the scan visit and carrier in force now (dsd_state_scan_observation_is_current()):
+ * a call another visit or a tune still in flight heard, ended or not, counts nothing, even with the same decode times.
+ * Within the visit the timestamps are raw call-state anchors and may predate the hold window: callers apply their own
+ * freshness bound, and a trunk-scan caller its own check that the visit is its target's landing. Both result fields
+ * are initialized to -1. Returns -1 for invalid arguments, 0 when no qualifying media exists, and 1 when retained media
+ * exists.
  */
 int dsd_scan_receive_should_leave(const dsd_opts* opts, const dsd_state* state, double arrived_m, double now_m);
 int dsd_scan_voice_probe(const dsd_opts* opts, const dsd_state* state, dsd_scan_voice_probe_result* out);

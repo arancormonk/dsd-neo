@@ -6358,6 +6358,18 @@ seed_visit_anchor(dsd_state* state, double anchor_m) {
     state->scan_visit_roll_seen = state->lcn_freq_roll;
 }
 
+/* A frame its decoder output as speech (issue #890): the call's media mark and its checked media, as a decoder makes
+   both for a good frame; the voice-only scan credits only the checked media. */
+static int
+decoded_media(dsd_state* state, uint8_t slot, int media_active, double t) {
+    const int rc = dsd_call_state_update_media(state, slot, media_active, t);
+    dsd_call_snapshot call;
+    if (rc == 1 && media_active && dsd_call_state_get(state, slot, &call) > 0) {
+        (void)dsd_call_state_note_checked_media(state, slot, call.protocol, t);
+    }
+    return rc;
+}
+
 /*
  * The -Y per-visit cap (issue #507) through the real noCarrier() step. Every case here needs the
  * cap to be the only thing that could hop: the legacy -t 10 deadline is fresh, or the voice gate
@@ -6440,8 +6452,8 @@ test_visit_cap_scanner_hops(void) {
     live_call.observed_m = now_m - 0.4;
     rc |= expect_true("visit-cap-gate-seeds-call",
                       dsd_call_state_observe(state, &live_call, DSD_CALL_BOUNDARY_BEGIN) == 1);
-    rc |= expect_true("visit-cap-gate-seeds-media", dsd_call_state_update_media(state, 0U, 1, now_m - 0.4) == 1
-                                                        && dsd_call_state_update_media(state, 0U, 1, now_m) == 1);
+    rc |= expect_true("visit-cap-gate-seeds-media",
+                      decoded_media(state, 0U, 1, now_m - 0.4) == 1 && decoded_media(state, 0U, 1, now_m) == 1);
     dsd_scan_voice_gate_tick(opts, state, 1, now_m);
     rc |=
         expect_true("visit-cap-gate-holds", dsd_scan_voice_gate_should_step(opts, state, dsd_decode_now_mono_s()) == 0);
@@ -16152,9 +16164,9 @@ test_y_continuing_call_explains_a_new_stay(void) {
     /* Its voice may come with no further observation: the vocoder's media update of the call explains a stay too, and
        an update that says no media does not. */
     dsd_engine_scan_y_stay_begin(state);
-    (void)dsd_call_state_update_media(state, 0U, 0, 0.0);
+    (void)decoded_media(state, 0U, 0, 0.0);
     rc |= expect_true("no media explains nothing", state->scan_y_call_seq == state->scan_y_stay_call_seq);
-    (void)dsd_call_state_update_media(state, 0U, 1, 0.0);
+    (void)decoded_media(state, 0U, 1, 0.0);
     rc |=
         expect_true("the call's media is heard on the new stay", state->scan_y_call_seq != state->scan_y_stay_call_seq);
     free_test_runtime(opts, state);
@@ -18313,9 +18325,8 @@ main(void) {
     gate_voice_call.observed_m = gate_now_m - 2.8;
     rc |= expect_true("voice-gate-voice-seeds-call",
                       dsd_call_state_observe(state, &gate_voice_call, DSD_CALL_BOUNDARY_BEGIN) == 1);
-    rc |= expect_true("voice-gate-voice-seeds-media",
-                      dsd_call_state_update_media(state, 0U, 1, gate_now_m - 2.8) == 1
-                          && dsd_call_state_update_media(state, 0U, 1, gate_now_m - 2.6) == 1);
+    rc |= expect_true("voice-gate-voice-seeds-media", decoded_media(state, 0U, 1, gate_now_m - 2.8) == 1
+                                                          && decoded_media(state, 0U, 1, gate_now_m - 2.6) == 1);
     rc |= expect_true("voice-gate-voice-terminates-before-tick",
                       dsd_call_state_end_ex(state, 0U, gate_now_m - 2.5, DSD_CALL_END_TERMINATOR) == 1);
     dsd_scan_voice_gate_tick(opts, state, 0, gate_now_m);

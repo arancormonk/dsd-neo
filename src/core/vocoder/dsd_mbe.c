@@ -2726,6 +2726,35 @@ mark_vocoder_call_media(dsd_opts* opts, dsd_state* state, dsd_call_snapshot* out
     return 0;
 }
 
+/* The call slot a frame of @p protocol on @p current_slot is media of: X2-TDMA, DMR and P25 Phase 2 by the slot being
+   decoded, every other protocol slot 0. */
+static uint8_t
+mbe_checked_media_slot(int protocol, int current_slot) {
+    if ((DSD_SYNC_IS_X2TDMA(protocol) || DSD_SYNC_IS_DMR(protocol) || DSD_SYNC_IS_P25P2(protocol))
+        && current_slot == 1) {
+        return 1U;
+    }
+    return 0U;
+}
+
+/* What the vocoder output for the frame (issue #890): a speech frame mbelib-neo synthesized with nothing concealed is
+   checked media of the call it belongs to, the scan's voice credit (dsd_call_state_note_checked_media()); a failed,
+   concealed, muted or tone frame is none, though it plays. Judged after the decode, by the frame's own protocol (a YSF
+   or dPMR frame through another protocol's decoder included) and only for traffic the receive policy admits, as the
+   media mark before the decode is. */
+static void
+mbe_note_checked_media(const dsd_opts* opts, dsd_state* state, const mbe_frame_ctx_t* frame_ctx) {
+    if (frame_ctx->media != DSD_VOICE_MEDIA_SPEECH) {
+        return;
+    }
+    const int protocol = state->frame_dispatch_active ? state->frame_dispatch_synctype : state->synctype;
+    const uint8_t slot = mbe_checked_media_slot(protocol, state->currentslot);
+    if (!dsd_receive_current_allows(opts, state, slot)) {
+        return;
+    }
+    (void)dsd_call_state_note_checked_media(state, slot, protocol, 0.0);
+}
+
 /* Admission follows the owner, including YSF/dPMR borrowing an NXDN or P25 decoder. */
 static dsd_receive_context
 receive_vocoder_context(dsd_state* state, dsd_voice_protocol protocol) {
@@ -2783,6 +2812,7 @@ processMbeFrameInternal(dsd_opts* opts, dsd_state* state, dsd_voice_protocol pro
         mbe_process_slot_traffic(opts, state, ambe_fr, ambe_soft_fr, &frame_ctx);
     }
 
+    mbe_note_checked_media(opts, state, &frame_ctx);
     mbe_post_audio_and_recording(opts, state, &frame_ctx);
     dsd_receive_context_end(state, saved);
 }

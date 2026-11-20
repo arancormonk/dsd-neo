@@ -276,6 +276,17 @@ typedef struct {
     double media_started_m;
     /** Most recent decoded-media update in this logical transmission (monotonic seconds), or 0. */
     double media_updated_m;
+    /**
+     * Checked media (issue #890): the first and the latest frame of this logical transmission that its decoder output
+     * as speech, successfully and unconcealed (dsd_call_state_note_checked_media()), monotonic seconds, or 0; and the
+     * scan observation origin those frames were read under (dsd_scan_observation_origin: the scan visit and the carrier
+     * count). A frame of another origin starts the span again. The media clocks above take every frame the call plays;
+     * only these are scan credit (dsd_scan_voice_probe()).
+     */
+    double checked_media_started_m;
+    double checked_media_updated_m;
+    uint64_t checked_media_visit;
+    uint32_t checked_media_carrier_seq;
     /** The reception generation when this epoch began (dsd_state_reception_generation()). */
     uint64_t rx_gen;
     dsd_call_phase phase;
@@ -577,6 +588,19 @@ int dsd_call_state_forget_crypto_values(dsd_state* state, uint8_t slot, int prot
 int dsd_call_state_update_retained_crypto(dsd_state* state, uint8_t slot, int protocol,
                                           const dsd_call_crypto_update* update);
 int dsd_call_state_update_media(dsd_state* state, uint8_t slot, int media_active, double observed_m);
+/**
+ * A frame of the slot's active call that its decoder output as speech, successfully and unconcealed (issue #890): an
+ * AMBE or IMBE frame mbelib-neo synthesized with no erasure, repeat, mute, silence or uncorrectable C0 (and no tone), an
+ * M17 Codec2 frame Codec2 decoded, a TETRA speech frame whose CRC passed and the codec decoded. It raises the call's
+ * checked media clocks (dsd_call_snapshot::checked_media_started_m, checked_media_updated_m, at @p observed_m, 0 for
+ * now on the decode clock) under the frame's scan observation origin (dsd_state_scan_observation_origin()); a frame of
+ * another origin starts the span again, and a frame a carrier boundary or an input interruption cut raises nothing. The
+ * frame is @p protocol's (a DSD_SYNC_* value: the frame's own protocol, not the one whose vocoder it borrowed): it
+ * counts only for a call of that protocol (P25 Phase 1 and Phase 2 one protocol). Playback, the media clocks and the
+ * call's revision are left alone. Returns 1 when raised, 0 when the slot holds no active call of @p protocol or the
+ * frame was cut, -1 on bad arguments. Decoder thread.
+ */
+int dsd_call_state_note_checked_media(dsd_state* state, uint8_t slot, int protocol, double observed_m);
 /**
  * End the active epoch, recording why it ended.
  *

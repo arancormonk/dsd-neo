@@ -91,6 +91,18 @@ seed_patch(dsd_state* st, uint16_t sg, const uint16_t* members, int count) {
     dsd_p25_patch_touch_members(st, idx);
 }
 
+/* A frame its decoder output as speech (issue #890): the call's media mark and its checked media, as a decoder makes
+   both for a good frame; the voice-only scan credits only the checked media. */
+static int
+decoded_media(dsd_state* state, uint8_t slot, int media_active, double t) {
+    const int rc = dsd_call_state_update_media(state, slot, media_active, t);
+    dsd_call_snapshot call;
+    if (rc == 1 && media_active && dsd_call_state_get(state, slot, &call) > 0) {
+        (void)dsd_call_state_note_checked_media(state, slot, call.protocol, t);
+    }
+    return rc;
+}
+
 /* A P25 Phase 1 group voice call on slot 0 to @p ota, judged on @p policy, with 0.5 s of voice from @p t. */
 static void
 open_voice(dsd_state* st, uint64_t ota, uint64_t policy, double t) {
@@ -104,8 +116,8 @@ open_voice(dsd_state* st, uint64_t ota, uint64_t policy, double t) {
     obs.policy_target_id = policy;
     obs.observed_m = t;
     (void)dsd_call_state_observe(st, &obs, DSD_CALL_BOUNDARY_BEGIN);
-    (void)dsd_call_state_update_media(st, 0U, 1, t);
-    (void)dsd_call_state_update_media(st, 0U, 1, t + 0.5);
+    (void)decoded_media(st, 0U, 1, t);
+    (void)decoded_media(st, 0U, 1, t + 0.5);
 }
 
 static int

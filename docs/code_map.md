@@ -394,7 +394,32 @@ Generated (do not edit/commit):
   - Voice-gated scan for -Y and trunk scan (issue #381): `src/engine/scan_voice_gate.c` behind
     `include/dsd-neo/engine/scan_voice_gate.h`; its probe returns separate active and retained last-media clocks so a
     protocol terminator cannot erase the scanner's tail anchor (tests: `ENGINE_SCAN_VOICE_GATE`,
-    `ENGINE_NO_CARRIER_RESET`, `ENGINE_TRUNK_SCAN`). The same file owns the scan-timing publication
+    `ENGINE_NO_CARRIER_RESET`, `ENGINE_TRUNK_SCAN`). Issue #890: the clocks it reads are a call's checked media
+    (`dsd_call_snapshot::checked_media_started_m`, `checked_media_updated_m`, raised by
+    `dsd_call_state_note_checked_media()` after the decode: `mbe_note_checked_media()` in `dsd_mbe.c` for every
+    AMBE/IMBE path, a SPEECH frame with nothing concealed; YSF V/D2 after mbelib-neo returns; M17 in
+    `m17_play_codec2_voice()`, so a build without Codec2 never has any; TETRA in `voice_frame_play()` for a good frame
+    the codec decoded), never the media mark `dsd_call_state_update_media()` makes before the decode, which playback,
+    the -Y call count and the history keep. Each checked frame carries its scan observation origin (below); the probe
+    counts only media whose origin is the reception in force now, so a call another visit heard, ended or not, holds
+    nothing whatever its decode times say, and a frame of another origin starts the span again.
+  - Scan observation origin (issue #890; `include/dsd-neo/core/state.h`): `dsd_state::scan_landing_visit` is the
+    epoch of the scan landing in force (written only by `scan_landing.h`, at a landing's install and forget; 0 while
+    none is: a tune in flight, failed or forgotten), and `processFrame()` copies it into `frame_dispatch_scan_visit`
+    beside `frame_dispatch_carrier_seq` before the handler reads the frame. `dsd_state_scan_observation_origin()` gives
+    an observation's origin (the dispatch's, or, outside a dispatch, the receiver's now; none for a frame
+    `dsd_state_frame_read_lost()` says was cut), and `dsd_state_scan_observation_is_current()` whether it is still in
+    force. The trunk scan's conventional activity (`trunk_scan_conventional_activity()`, the DMR, NXDN and P25
+    wrappers) and its voice-only refresh (`trunk_scan_refresh_voice_media_hold()`) credit a target only through
+    `trunk_scan_observation_on_target()`: the active target's own landing in this session, and an observation obtained
+    on it. A report of a frame read on the visit before, one decoded while the park is in flight (the coordinator
+    publishes the incoming index before the tune lands), and one an interruption or a carrier boundary cut hold
+    nothing, also between two rows of one family on one frequency; an ordinary sync loss moves neither the visit nor the
+    carrier count, so the tail a visit earned stays. Tests: `ENGINE_TRUNK_SCAN`
+    (`test_conventional_activity_binds_its_visit`, `test_conventional_voice_gate_media_binds_its_visit`),
+    `ENGINE_SCAN_VOICE_GATE` (`test_unchecked_media_never_qualifies`, `test_probe_binds_media_to_its_visit`),
+    `CORE_MBE_TRANSFORM_CONTEXT` (`test_process_mbe_frame_dstar_checked_media_follows_the_decode`),
+    `M17_STATE_DISPATCH`. The same file owns the scan-timing publication
     (`dsd_scan_timing_clear()` / `dsd_scan_timing_publish()`) and the -Y timing tick `dsd_engine_scan_y_timing_tick()`,
     which stamps `dsd_state::scan_timing` with the stay reason and the absolute deadline, on the decode clock's
     monotonic reading, of the window that is running (issue #508); the deadline it publishes is the same instant

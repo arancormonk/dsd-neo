@@ -2105,6 +2105,78 @@ audio_frames_differ(const float* a, const float* b) {
     return 0;
 }
 
+/* Issue #890: the scan's voice credit is what the vocoder made of a frame, not the media mark the frame gets before it
+ * is decoded. Six D-STAR frames whose C0 Golay word is uncorrectable (120 ms, past the voice probe's 100 ms span) mark
+ * the call's media, yet raise no checked media; good frames after them do, from the first good one. A frame read
+ * across a carrier boundary raises none. */
+static int
+test_process_mbe_frame_dstar_checked_media_follows_the_decode(void) {
+    int rc = 0;
+    static dsd_opts opts;
+    static dsd_state state;
+    static mbe_parms cur;
+    static mbe_parms prev;
+    static mbe_parms prev_enhanced;
+    static mbe_parms cur2;
+    static mbe_parms prev2;
+    static mbe_parms prev_enhanced2;
+    char bad[4][24];
+    char good[4][24];
+    rc |= expect_eq_int("dstar-checked fixture encodes", build_dstar_voice_frame(1, good), 0);
+    DSD_MEMCPY(bad, good, sizeof(bad));
+    /* Four errors in the extended Golay(24,12) C0 word: detected, never corrected. */
+    for (int i = 0; i < 4; i++) {
+        bad[0][i * 5] = (char)(bad[0][i * 5] ^ 1);
+    }
+
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    pass_through_voice_chain(&opts);
+    opts.floating_point = 1;
+    opts.audio_gain = 1.0f;
+    opts.audio_gainR = 1.0f;
+    init_mbe_state(&state, &cur, &prev, &prev_enhanced, &cur2, &prev2, &prev_enhanced2);
+    state.synctype = DSD_SYNC_DSTAR_VOICE_POS;
+    dsd_decode_clock_use_test(1000000000000ULL);
+    uint64_t now_ns = 1000000000000ULL;
+    dsd_call_snapshot call;
+    for (int f = 0; f < 6; f++) {
+        now_ns += 20000000ULL;
+        dsd_decode_clock_test_set_ns(now_ns);
+        processMbeFrame(&opts, &state, owner_of(state.synctype), NULL, bad, NULL);
+    }
+    rc |= expect_eq_int("dstar-checked call", dsd_call_state_get(&state, 0U, &call) > 0, 1);
+    rc |= expect_eq_int("dstar-checked uncorrectable frames still mark media",
+                        call.media_updated_m - call.media_started_m > 0.099, 1);
+    rc |=
+        expect_eq_int("dstar-checked uncorrectable frames are no checked media", call.checked_media_updated_m > 0.0, 0);
+
+    for (int f = 0; f < 3; f++) {
+        now_ns += 20000000ULL;
+        dsd_decode_clock_test_set_ns(now_ns);
+        processMbeFrame(&opts, &state, owner_of(state.synctype), NULL, good, NULL);
+    }
+    rc |= expect_eq_int("dstar-checked call after good frames", dsd_call_state_get(&state, 0U, &call) > 0, 1);
+    rc |= expect_eq_int("dstar-checked good frames are checked media",
+                        fabs(call.checked_media_updated_m - call.checked_media_started_m - 0.040) < 1e-6, 1);
+
+    /* A frame whose read a carrier boundary cut raises nothing. */
+    const double checked_before = call.checked_media_updated_m;
+    state.frame_dispatch_active = 1;
+    state.frame_dispatch_synctype = state.synctype;
+    state.frame_dispatch_carrier_seq = state.carrier_seq;
+    state.carrier_seq++;
+    now_ns += 20000000ULL;
+    dsd_decode_clock_test_set_ns(now_ns);
+    processMbeFrame(&opts, &state, owner_of(state.synctype), NULL, good, NULL);
+    state.frame_dispatch_active = 0;
+    rc |= expect_eq_int("dstar-checked cut call", dsd_call_state_get(&state, 0U, &call) > 0, 1);
+    rc |= expect_eq_int("dstar-checked a cut frame raises nothing",
+                        fabs(call.checked_media_updated_m - checked_before) < 1e-9, 1);
+    dsd_decode_clock_use_system();
+    dsd_state_ext_free_all(&state);
+    return rc;
+}
+
 enum { DSTAR_ROUTE_FRAMES = 3 };
 
 /* processDSTAR_HD() hands the superframe behind a D-STAR header to processDSTAR() without changing the synctype, so
@@ -7519,6 +7591,7 @@ main(void) {
     rc |= test_process_mbe_frame_nxdn_cipher3_uses_aes_voice_offset();
     rc |= test_process_mbe_frame_hard_dstar_stages_audio();
     rc |= test_process_mbe_frame_dstar_header_voice_decodes_as_ambe2400();
+    rc |= test_process_mbe_frame_dstar_checked_media_follows_the_decode();
     rc |= test_process_mbe_frame_x2_dstar_wav_honors_talkgroup_policy();
     rc |= test_process_mbe_frame_mbe_capture_honors_record_policy();
     rc |= test_process_mbe_frame_p25p1_capture_honors_reverse_mute();
