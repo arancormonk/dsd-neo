@@ -191,6 +191,12 @@ dsd_audio_read(dsd_audio_stream* stream, int16_t* buffer, size_t frames) {
 }
 
 int
+dsd_audio_read_held(dsd_audio_stream* stream, int16_t* buffer, size_t frames) {
+    /* No device holds anything: the null input's frames are made, paced, as dsd_audio_read() makes them. */
+    return dsd_audio_read(stream, buffer, frames);
+}
+
+int
 // cppcheck-suppress constParameterPointer -- signature fixed by dsd-neo/platform/audio.h
 dsd_audio_write(dsd_audio_stream* stream, const int16_t* buffer, size_t frames) {
     if (!stream || !buffer) {

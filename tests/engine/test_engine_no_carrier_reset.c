@@ -47,6 +47,7 @@
 #include <dsd-neo/engine/trunk_scan.h>
 #include <dsd-neo/engine/trunk_tuning.h>
 #include <dsd-neo/io/rtl_stream_c.h>
+#include <dsd-neo/platform/audio.h>
 #include <dsd-neo/platform/file_compat.h>
 #include <dsd-neo/platform/input_backlog.h>
 #include <dsd-neo/platform/sockets.h>
@@ -15040,6 +15041,7 @@ static struct {
     int returned;
     double return_s;
     long return_sample;
+    uint64_t return_realtime_ms;
     int frames;
     int first_sync;
     double first_cc_stamp_s;
@@ -15156,6 +15158,7 @@ wd6_setfreq(long int freq) {
         g_wd6.returned = 1;
         g_wd6.return_s = dsd_decode_now_mono_s();
         g_wd6.return_sample = g_wd6.sample;
+        g_wd6.return_realtime_ms = g_live_realtime_ms;
     }
 }
 
@@ -15178,11 +15181,45 @@ wd6_process_frame(const dsd_opts* opts, const dsd_state* state) {
     return 1; /* the frame is noted, not decoded */
 }
 
-enum { WD_RIGCTL = 0, WD_PENDING = 1, WD_PENDING_BEAT_IN_FRAME = 2, WD_PENDING_REPLACED = 3 };
+enum { WD_RIGCTL = 0, WD_PENDING = 1, WD_PENDING_BEAT_IN_FRAME = 2, WD_PENDING_REPLACED = 3, WD_DEVICE_STALL = 4 };
+
+/* A sound card that stops delivering at the beat's read for 3 s of real time (a suspended source, a capture timeout):
+   dsd_audio_read_held() holds nothing while it stalls, and a blocking dsd_audio_read() waits the stall out. */
+static struct {
+    int active;
+    uint64_t stall_until_ms;
+} g_wd8;
+
+static int
+wd8_device_next(int16_t* out, int blocking) {
+    const long symbol = g_wd6.sample / WD6_SPS;
+    if (symbol == WD6_BEAT_SYMBOL && !g_wd6.beat_posted) {
+        g_wd6.beat_posted = 1;
+        g_wd6_state->p25_sm_force_release = 1;
+        p25_sm_watchdog_request_tick();
+        g_wd8.stall_until_ms = g_live_realtime_ms + 3000U;
+    }
+    if (g_live_realtime_ms < g_wd8.stall_until_ms) {
+        if (!blocking) {
+            return 0;
+        }
+        live_clock_set(g_live.now_ns + (g_wd8.stall_until_ms - g_live_realtime_ms) * LIVE_NS_PER_MS);
+        g_live_realtime_ms = g_wd8.stall_until_ms;
+    }
+    if (symbol >= WD6_STREAM_SYMBOLS) {
+        dsd_exitflag_store(1);
+        *out = 0;
+        return 1;
+    }
+    *out = (int16_t)(wd6_level(symbol) * 3000);
+    g_wd6.sample++;
+    live_clock_set(g_live.now_ns + LIVE_SAMPLE_NS);
+    return 1;
+}
 
 static int
 run_live_p25_beat_in_a_read(int mode) {
-    const int pending_return = mode != WD_RIGCTL;
+    const int pending_return = mode != WD_RIGCTL && mode != WD_DEVICE_STALL;
     dsd_opts* opts = NULL;
     dsd_state* state = NULL;
     if (init_test_runtime(&opts, &state) != 0) {
@@ -15190,6 +15227,12 @@ run_live_p25_beat_in_a_read(int mode) {
     }
     live_session_start(opts, state, LIVE_UDP, 0U);
     dsd_net_audio_input_hooks_set(&(dsd_net_audio_input_hooks){.udp_read_sample_wait = wd6_udp_read});
+    DSD_MEMSET(&g_wd8, 0, sizeof g_wd8);
+    if (mode == WD_DEVICE_STALL) {
+        g_wd8.active = 1;
+        opts->audio_in_type = AUDIO_IN_PULSE;
+        opts->audio_in_stream = (dsd_audio_stream*)&g_wd8; /* opaque to the fakes */
+    }
     DSD_MEMSET(&g_wd6, 0, sizeof g_wd6);
     g_wd6.first_sync = DSD_SYNC_NONE;
     g_wd6_off_thread_tunes = 0;
@@ -15242,6 +15285,8 @@ run_live_p25_beat_in_a_read(int mode) {
     g_sleep_observer = NULL;
     g_process_frame_observer = NULL;
     g_wd6_vc_word = 0;
+    g_wd8.active = 0;
+    opts->audio_in_stream = NULL;
     t_wd6_decoder = 0;
     g_wd6_state = NULL;
 
@@ -15251,8 +15296,16 @@ run_live_p25_beat_in_a_read(int mode) {
         rc = 1;
     }
     static const char* const k_mode[] = {"rigctl return", "pending return", "pending return from a beat in a frame",
-                                         "pending return replacing a failed one"};
-    const int in_read = mode == WD_RIGCTL || mode == WD_PENDING;
+                                         "pending return replacing a failed one", "return on a stalled sound card"};
+    const int in_read = mode == WD_RIGCTL || mode == WD_PENDING || mode == WD_DEVICE_STALL;
+    if (mode == WD_DEVICE_STALL && (!g_wd6.returned || g_wd6.return_realtime_ms >= g_wd8.stall_until_ms)) {
+        DSD_FPRINTF(stderr,
+                    "FAIL: a stalled sound card held the beat's return until it resumed (returned %d at %llu ms, "
+                    "the stall ended at %llu ms)\n",
+                    g_wd6.returned, (unsigned long long)g_wd6.return_realtime_ms,
+                    (unsigned long long)g_wd8.stall_until_ms);
+        rc = 1;
+    }
     if (!g_wd6.returned || (in_read && g_wd6.return_sample / WD6_SPS != WD6_BEAT_SYMBOL)
         || (pending_return && g_wd7.landed != 1) || (mode == WD_PENDING_REPLACED && !g_wd7.failed)) {
         DSD_FPRINTF(stderr,
@@ -15307,6 +15360,14 @@ test_live_p25_beat_in_a_frame_pending_return_lands_before_the_next_hunt(void) {
 static int
 test_live_p25_replaced_pending_return_lands_before_the_next_hunt(void) {
     return run_live_p25_beat_in_a_read(WD_PENDING_REPLACED);
+}
+
+/* A sound card that stops delivering while the hunt reads it: the hunt read waits in bounded slices on what the device
+   holds (dsd_audio_read_held()), so the beat's tick still runs, and returns the receiver to the control channel during
+   the stall, not once the card resumes. */
+static int
+test_live_p25_beat_on_a_stalled_sound_card(void) {
+    return run_live_p25_beat_in_a_read(WD_DEVICE_STALL);
 }
 
 static int
@@ -17775,7 +17836,67 @@ test_scan_quiet_decisions(void) {
     rc |= test_live_p25_beat_pending_return_lands_before_the_next_hunt();
     rc |= test_live_p25_beat_in_a_frame_pending_return_lands_before_the_next_hunt();
     rc |= test_live_p25_replaced_pending_return_lands_before_the_next_hunt();
+    rc |= test_live_p25_beat_on_a_stalled_sound_card();
     return rc;
+}
+#endif
+
+#ifdef DSD_NEO_TEST_RTL_WRAP
+/* The linker's names for the sound card's calls (--wrap), spelled with the target's prefix for C names. Each passes
+   through to the real call unless the stalled-card case (test_live_p25_beat_on_a_stalled_sound_card()) runs. */
+#define WD8_ASM_STR2(x)    #x
+#define WD8_ASM_STR(x)     WD8_ASM_STR2(x)
+#define WD8_ASM_NAME(name) WD8_ASM_STR(__USER_LABEL_PREFIX__) name
+extern int wd8_real_audio_read(dsd_audio_stream* stream, int16_t* buffer,
+                               size_t frames) __asm__(WD8_ASM_NAME("__real_dsd_audio_read"));
+extern int wd8_real_audio_read_held(dsd_audio_stream* stream, int16_t* buffer,
+                                    size_t frames) __asm__(WD8_ASM_NAME("__real_dsd_audio_read_held"));
+extern int wd8_real_audio_discard_input(const dsd_audio_stream* stream,
+                                        uint64_t marked_ns) __asm__(WD8_ASM_NAME("__real_dsd_audio_discard_input"));
+extern int wd8_audio_read(dsd_audio_stream* stream, int16_t* buffer,
+                          size_t frames) __asm__(WD8_ASM_NAME("__wrap_dsd_audio_read"));
+extern int wd8_audio_read_held(dsd_audio_stream* stream, int16_t* buffer,
+                               size_t frames) __asm__(WD8_ASM_NAME("__wrap_dsd_audio_read_held"));
+extern int wd8_audio_discard_input(const dsd_audio_stream* stream,
+                                   uint64_t marked_ns) __asm__(WD8_ASM_NAME("__wrap_dsd_audio_discard_input"));
+
+int
+wd8_audio_read(dsd_audio_stream* stream, int16_t* buffer, size_t frames) {
+#ifdef USE_RADIO
+    if (g_wd8.active) {
+        for (size_t i = 0; i < frames; i++) {
+            (void)wd8_device_next(buffer + i, 1);
+        }
+        return (int)frames;
+    }
+#endif
+    return wd8_real_audio_read(stream, buffer, frames);
+}
+
+int
+wd8_audio_read_held(dsd_audio_stream* stream, int16_t* buffer, size_t frames) {
+#ifdef USE_RADIO
+    if (g_wd8.active) {
+        for (size_t i = 0; i < frames; i++) {
+            if (!wd8_device_next(buffer + i, 0)) {
+                return (int)i;
+            }
+        }
+        return (int)frames;
+    }
+#endif
+    return wd8_real_audio_read_held(stream, buffer, frames);
+}
+
+/* The rigctl return's drop of what the card held (dsd_symbol_apply_input_drop()): the stalled card holds nothing. */
+int
+wd8_audio_discard_input(const dsd_audio_stream* stream, uint64_t marked_ns) {
+#ifdef USE_RADIO
+    if (g_wd8.active) {
+        return 0;
+    }
+#endif
+    return wd8_real_audio_discard_input(stream, marked_ns);
 }
 #endif
 

@@ -2274,17 +2274,6 @@ symbol_process_analog_capture(dsd_opts* opts, dsd_state* state, const symbol_wor
     }
 }
 
-static inline int
-symbol_read_sample_pulse(dsd_opts* opts, float* sample_out) {
-    short s = 0;
-    if (opts->audio_in_stream) {
-        dsd_audio_read(opts->audio_in_stream, &s, 1);
-    }
-    s = symbol_scale_pcm_i16(s, opts->input_volume_multiplier);
-    *sample_out = (float)s;
-    return 1;
-}
-
 static inline void
 symbol_close_audio_in_file(dsd_opts* opts) {
     if (opts == NULL || opts->audio_in_file == NULL) {
@@ -3188,6 +3177,51 @@ symbol_wait_pcm_sample(dsd_opts* opts, dsd_state* state, const symbol_work_ctx* 
     }
 }
 
+/* A sound card's sample within @p timeout_ms (0: only one it holds now), polled in short sleeps against a real-time
+   deadline: dsd_audio_read_held() never waits, so a source that stops delivering (a suspended device, AAudio's capture
+   timeout) holds the read no longer than the wait. 1 with the sample, -1 with none yet. A failed read is a silent
+   sample, as dsd_audio_read()'s always was. */
+enum { SYMBOL_AUDIO_POLL_MS = 2 };
+
+static int
+symbol_audio_read_wait(dsd_opts* opts, int16_t* out, unsigned int timeout_ms) {
+    const uint64_t deadline_ms = dsd_realtime_mono_ms() + timeout_ms;
+    for (;;) {
+        const int got = dsd_audio_read_held(opts->audio_in_stream, out, 1U);
+        if (got != 0) {
+            if (got < 0) {
+                *out = 0;
+            }
+            return 1;
+        }
+        if (dsd_realtime_mono_ms() >= deadline_ms) {
+            return -1;
+        }
+        dsd_sleep_ms(SYMBOL_AUDIO_POLL_MS);
+    }
+}
+
+/* A sound card's sample. A hunt read takes what the device holds at once and, when it holds nothing, waits in bounded
+   slices as a network input's read does (symbol_wait_pcm_sample()), servicing a P25 watchdog beat first and giving way
+   as the hunt's other reads do, so a stalled source cannot hold the decoder. Frame decoding waits for its samples. */
+static int
+symbol_read_sample_pulse(dsd_opts* opts, dsd_state* state, float* sample_out, const symbol_work_ctx* work) {
+    short s = 0;
+    if (opts->audio_in_stream) {
+        if (work->hunting) {
+            if (symbol_wait_pcm_sample(opts, state, work, (int16_t*)&s, symbol_audio_read_wait) < 0) {
+                *sample_out = 0.0f;
+                return 0;
+            }
+        } else {
+            (void)dsd_audio_read(opts->audio_in_stream, &s, 1);
+        }
+    }
+    s = symbol_scale_pcm_i16(s, opts->input_volume_multiplier);
+    *sample_out = (float)s;
+    return 1;
+}
+
 static inline int
 symbol_read_sample_udp(dsd_opts* opts, dsd_state* state, float* sample_out, const symbol_work_ctx* work) {
     short s = 0;
@@ -3226,7 +3260,7 @@ static int
 symbol_read_live_sample(dsd_opts* opts, dsd_state* state, symbol_work_ctx* work) {
     work->sample_flag = 0U;
     if (opts->audio_in_type == AUDIO_IN_PULSE) {
-        return symbol_read_sample_pulse(opts, &work->sample);
+        return symbol_read_sample_pulse(opts, state, &work->sample, work);
     }
     if (opts->audio_in_type == AUDIO_IN_STDIN) {
         return symbol_read_sample_stdin(opts, state, &work->sample, work);

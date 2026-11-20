@@ -9671,6 +9671,10 @@ if(NOT APPLE AND (CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang"))
             "-Wl,--wrap=rtl_stream_session_generation"
             "-Wl,--wrap=dsd_realtime_mono_ms"
             "-Wl,--wrap=dsd_sleep_ms"
+            # The sound card the stalled-capture case fakes (test_live_p25_beat_on_a_stalled_sound_card()).
+            "-Wl,--wrap=dsd_audio_read"
+            "-Wl,--wrap=dsd_audio_read_held"
+            "-Wl,--wrap=dsd_audio_discard_input"
             # The scan quiet check's signal tap (issue #834).
             "-Wl,--wrap=rtl_signal_capture_get"
             "-Wl,--wrap=rtl_signal_quiet_request"

@@ -1010,6 +1010,37 @@ dsd_audio_read(dsd_audio_stream* stream, int16_t* buffer, size_t frames) {
     return (int)frames;
 }
 
+int
+dsd_audio_read_held(dsd_audio_stream* stream, int16_t* buffer, size_t frames) {
+    if (!stream || !stream->handle || !buffer || !stream->is_input) {
+        set_error("Invalid arguments");
+        return -1;
+    }
+    const size_t carried = audio_input_carry_take(stream->input_carry, stream->channels, buffer, frames);
+    if (carried == frames) {
+        return (int)frames;
+    }
+    /* No more than the stream reports available: a read of those never waits for new capture. */
+    const signed long available = Pa_GetStreamReadAvailable(stream->handle);
+    if (available < 0) {
+        set_error_pa((PaError)available);
+        return -1;
+    }
+    size_t take = frames - carried;
+    if ((size_t)available < take) {
+        take = (size_t)available;
+    }
+    if (take > 0U) {
+        const PaError err =
+            Pa_ReadStream(stream->handle, buffer + carried * (size_t)stream->channels, (unsigned long)take);
+        if (err != paNoError && err != paInputOverflowed) {
+            set_error_pa(err);
+            return -1;
+        }
+    }
+    return (int)(carried + take);
+}
+
 /* Frames per read of an input discard, the most channels it reads, and the most it drops: about 2 s of frames at the
    stream's rate, and no read begun 250 ms or more after its first on the monotonic clock, so neither a large driver
    backlog nor slow driver reads hold the decoder there (the bounds the other sound-card inputs keep, docs/cli.md). */

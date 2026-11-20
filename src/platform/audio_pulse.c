@@ -990,6 +990,27 @@ dsd_audio_read(dsd_audio_stream* stream, int16_t* buffer, size_t frames) {
     return (int)frames;
 }
 
+int
+dsd_audio_read_held(dsd_audio_stream* stream, int16_t* buffer, size_t frames) {
+    if (!stream || !buffer || !stream->is_input || !stream->record) {
+        set_error("Invalid arguments");
+        return -1;
+    }
+    const size_t carried = audio_input_carry_take(stream->input_carry, stream->channels, buffer, frames);
+    if (carried == frames) {
+        return (int)frames;
+    }
+    const size_t frame_bytes = (size_t)stream->channels * sizeof(int16_t);
+    int err = 0;
+    const long got = pulse_record_read_held(stream->record, buffer + carried * (size_t)stream->channels,
+                                            (frames - carried) * frame_bytes, &err);
+    if (got < 0) {
+        set_error_pa(err);
+        return -1;
+    }
+    return (int)(carried + (size_t)got / frame_bytes);
+}
+
 /* An input discard (dsd_audio_discard_input()) reads 32-frame chunks, of at most 8 channels, of what the client holds,
    never waiting for more. It stops when the client holds no more, after about 2 s of frames, or after 250 ms on the
    monotonic clock. */

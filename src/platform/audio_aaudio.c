@@ -1523,6 +1523,37 @@ dsd_audio_read(dsd_audio_stream* stream, int16_t* buffer, size_t frames) {
     return (int)frames;
 }
 
+int
+dsd_audio_read_held(dsd_audio_stream* stream, int16_t* buffer, size_t frames) {
+    if (!stream || !buffer || !stream->is_input) {
+        set_error("Invalid arguments");
+        return -1;
+    }
+    if (!aaudio_recover_handle(stream)) {
+        set_error("AAudio input stream is disconnected");
+        return -1;
+    }
+    const size_t carried = audio_input_carry_take(stream->input_carry, stream->channels, buffer, frames);
+    size_t got = carried;
+    if (carried < frames) {
+        const size_t remaining = frames - carried;
+        const int32_t want = (remaining > (size_t)INT32_MAX) ? INT32_MAX : (int32_t)remaining;
+        /* No timeout: what the device wrote and no read took, at once. */
+        const aaudio_result_t res =
+            AAudioStream_read(stream->handle, buffer + carried * (size_t)stream->channels, want, 0);
+        if (res < 0) {
+            if (res == AAUDIO_ERROR_DISCONNECTED) {
+                aaudio_schedule_reopen(stream);
+            }
+            set_error_aaudio(res);
+            return -1;
+        }
+        got += (size_t)res;
+    }
+    stream->device_frames += (uint64_t)got;
+    return (int)got;
+}
+
 /* Frames per read of an input discard, the most channels it reads, and the most it drops: about 2 s of frames, and
    250 ms on the monotonic clock, so a producer that outruns the reader cannot hold it there. */
 #define DSD_AAUDIO_DISCARD_CHUNK_FRAMES 256
