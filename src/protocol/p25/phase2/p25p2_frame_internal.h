@@ -26,6 +26,10 @@ void p25p2_process_facchc(dsd_opts* opts, dsd_state* state, int timeslot_index);
 void p25p2_process_sacchc(dsd_opts* opts, dsd_state* state, int timeslot_index);
 void p25p2_process_isch(const dsd_opts* opts, dsd_state* state, int framing_index);
 void p25p2_process_ess(dsd_opts* opts, dsd_state* state, int defer_rekey);
+/* A voice frame of @p slot the crypto gate kept from the vocoder (issue #890): under --scan-voice-only the first one
+   since the slot's last ESS is noted, and the next ESS whose RS check passes with no soft erasure makes them the slot
+   call's checked media; a failed ESS, a frame reset and a carrier forget drop them. */
+void p25p2_note_gated_voice_frame(const dsd_opts* opts, int slot);
 void p25p2_duid_post_timeslot(dsd_opts* opts, dsd_state* state, int timeslot_index, int sacch_status);
 void p25p2_process_duid(dsd_opts* opts, dsd_state* state);
 /* Descramble the buffered superframe with the seed in force (WACN, SYSID, p2_cc), which a burst decoded from it then

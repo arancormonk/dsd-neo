@@ -12,12 +12,16 @@
  */
 
 #include <assert.h>
+#include <dsd-neo/core/call_state.h>
 #include <dsd-neo/core/dibit.h>
+#include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/core/vocoder.h>
 #include <dsd-neo/fec/block_codes.h>
 #include <dsd-neo/protocol/p25/p25_status_symbol.h>
 #include <dsd-neo/protocol/p25/p25p1_hdu.h>
 #include <dsd-neo/protocol/p25/p25p1_soft.h>
+#include <dsd-neo/runtime/decode_clock.h>
+#include <math.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
@@ -100,6 +104,31 @@ processMbeFrameSoft(dsd_opts* opts, dsd_state* state, dsd_voice_protocol protoco
     (void)imbe7100_fr;
     g_vocoder_calls++;
     DSD_MEMCPY(g_last_imbe_soft, imbe_fr, sizeof(g_last_imbe_soft));
+}
+
+/* Issue #890: the checked media an LDU whose voice the crypto gate withheld gives its call, as stamps, and the decode
+   clock it reads. */
+static int g_checked_media_calls;
+static double g_checked_media_stamps[4];
+static int g_clock_reads;
+
+int
+// NOLINTNEXTLINE(misc-use-internal-linkage)
+dsd_call_state_note_checked_media(dsd_state* state, uint8_t slot, int protocol, double observed_m) {
+    (void)state;
+    assert(slot == 0U && protocol == DSD_SYNC_P25P1_POS);
+    if (g_checked_media_calls < 4) {
+        g_checked_media_stamps[g_checked_media_calls] = observed_m;
+    }
+    g_checked_media_calls++;
+    return 1;
+}
+
+double
+// NOLINTNEXTLINE(misc-use-internal-linkage)
+dsd_decode_now_mono_s(void) {
+    g_clock_reads++;
+    return 42.5;
 }
 
 void
@@ -509,9 +538,48 @@ test_ldu_process_imbe_cut_by_an_input_interruption_is_not_vocoded(void) {
     return rc;
 }
 
+/* Issue #890: an LDU whose voice the crypto gate kept from the vocoder gives its call checked media from the LDU's
+   start to now, once its link control or encryption sync passed the hard RS check; one whose check failed or leaned on
+   soft erasures, or whose voice the vocoder decoded, gives none. With --scan-voice-only off nothing is done: no clock
+   read, no stamp. */
+static int
+test_ldu_gated_voice_checked_media(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    DSD_MEMSET(&state, 0, sizeof(state));
+    int rc = 0;
+    g_checked_media_calls = 0;
+    g_clock_reads = 0;
+    double begun = p25p1_ldu_gated_voice_begin(&opts);
+    p25p1_ldu_note_gated_voice(&opts, &state, begun, 1, 1);
+    if (begun >= 0.0 || g_clock_reads != 0 || g_checked_media_calls != 0) {
+        DSD_FPRINTF(stderr, "gated voice: voice-only off did work (%d reads, %d stamps)\n", g_clock_reads,
+                    g_checked_media_calls);
+        rc = 1;
+    }
+    opts.scan_voice_only = 1;
+    begun = p25p1_ldu_gated_voice_begin(&opts);
+    p25p1_ldu_note_gated_voice(&opts, &state, begun, 1, 0); /* a failed or soft-recovered RS check */
+    p25p1_ldu_note_gated_voice(&opts, &state, begun, 0, 1); /* voice the vocoder decoded */
+    if (g_checked_media_calls != 0) {
+        DSD_FPRINTF(stderr, "gated voice: an unchecked LDU or a vocoded one gave checked media\n");
+        rc = 1;
+    }
+    p25p1_ldu_note_gated_voice(&opts, &state, begun, 1, 1);
+    if (g_checked_media_calls != 2 || fabs(g_checked_media_stamps[0] - 42.5) > 1e-9
+        || fabs(g_checked_media_stamps[1]) > 1e-9) {
+        DSD_FPRINTF(stderr, "gated voice: a checked gated LDU gave %d stamps (%.3f, %.3f)\n", g_checked_media_calls,
+                    g_checked_media_stamps[0], g_checked_media_stamps[1]);
+        rc = 1;
+    }
+    return rc;
+}
+
 int
 main(void) {
     int rc = 0;
+    rc |= test_ldu_gated_voice_checked_media();
     rc |= test_ldu_input_guards_and_status_symbol();
     rc |= test_ldu_soft_hamming_inputs_and_reliability();
     rc |= test_ldu_soft_hamming_fix_paths();

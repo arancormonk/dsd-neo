@@ -24,7 +24,9 @@
 #include <dsd-neo/protocol/dmr/dmr_utf8_text.h>
 #include <dsd-neo/protocol/nxdn/nxdn_lfsr.h>
 #include <dsd-neo/protocol/p25/p25p2_frame.h>
+#include <dsd-neo/runtime/decode_clock.h>
 #include <dsd-neo/runtime/signal_search_hooks.h>
+#include <math.h>
 #include <stdint.h>
 #include <stdio.h>
 #include "dsd-neo/core/opts_fwd.h"
@@ -240,6 +242,58 @@ test_ess_proof_renders_the_slots_again(dsd_opts* opts, dsd_state* state) {
     return rc;
 }
 
+/* Issue #890: slot 0's call on a carrier whose seed is in force, its voice frames kept from the vocoder by the crypto
+   gate (encrypted, no key) from @p gated_at_ns: the next ESS whose RS check passed with no soft erasure makes them the
+   call's checked media, from the first gated frame to the ESS; an ESS that leaned on soft erasures, one after a carrier
+   forget, and any with --scan-voice-only off give none. Returns the call's checked media span, or -1 for none. */
+static double
+gated_voice_span_after_ess(dsd_opts* opts, dsd_state* state, int voice_only, int strong, int forget) {
+    reset_session(opts, state);
+    opts->scan_voice_only = voice_only;
+    seed_site(opts, state, 0x456ULL);
+    const dsd_call_observation obs = {
+        .protocol = DSD_SYNC_P25P2_POS,
+        .slot = 0U,
+        .kind = DSD_CALL_KIND_GROUP_VOICE,
+        .ota_target_id = 101U,
+    };
+    (void)dsd_call_state_observe(state, &obs, DSD_CALL_BOUNDARY_BEGIN);
+    dsd_decode_clock_test_set_ns(50000000000ULL);
+    p25p2_note_gated_voice_frame(opts, 0);
+    dsd_decode_clock_test_set_ns(50300000000ULL);
+    p25p2_note_gated_voice_frame(opts, 0); /* later gated frames keep the first one's time */
+    if (forget) {
+        p25p2_frame_forget_carrier(state);
+    }
+    if (strong) {
+        receive_strong_ess(state);
+    } else {
+        receive_ess_b(state);
+        receive_weak_ess_a();
+    }
+    dsd_decode_clock_test_set_ns(50360000000ULL);
+    p25p2_process_ess(opts, state, 0);
+    dsd_call_snapshot call;
+    if (dsd_call_state_get(state, 0U, &call) <= 0 || call.checked_media_updated_m <= 0.0) {
+        return -1.0;
+    }
+    return call.checked_media_updated_m - call.checked_media_started_m;
+}
+
+static int
+test_gated_voice_is_credited_by_a_checked_ess(dsd_opts* opts, dsd_state* state) {
+    int rc = 0;
+    dsd_decode_clock_use_test(40000000000ULL);
+    const double checked = gated_voice_span_after_ess(opts, state, 1, 1, 0);
+    rc |= expect_int("gated voice, hard ESS: checked media from the first gated frame", fabs(checked - 0.36) < 1e-6, 1);
+    rc |= expect_int("gated voice, soft-erased ESS: none", gated_voice_span_after_ess(opts, state, 1, 0, 0) < 0.0, 1);
+    rc |= expect_int("gated voice, voice-only off: none", gated_voice_span_after_ess(opts, state, 0, 1, 0) < 0.0, 1);
+    /* After a carrier forget the ESS_B is stale and nothing decodes: the gated frames of the carrier left go too. */
+    rc |= expect_int("gated voice, carrier forgotten: none", gated_voice_span_after_ess(opts, state, 1, 1, 1) < 0.0, 1);
+    dsd_decode_clock_use_system();
+    return rc;
+}
+
 int
 main(void) {
     static dsd_opts opts;
@@ -330,6 +384,7 @@ main(void) {
     rc |= test_ess_proof_notes_the_search(&opts, &state);
     rc |= test_ess_proof_renders_the_slots_again(&opts, &state);
     dsd_signal_search_access_set(NULL);
+    rc |= test_gated_voice_is_credited_by_a_checked_ess(&opts, &state);
 
     dsd_state_ext_free_all(&state);
     if (rc == 0) {

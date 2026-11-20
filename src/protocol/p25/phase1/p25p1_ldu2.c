@@ -492,8 +492,11 @@ processLDU2(dsd_opts* opts, dsd_state* state) {
 
     Ldu2Frame frame = {0};
     const uint32_t carrier_seq = state->carrier_seq;
+    const double gated_begun_m = p25p1_ldu_gated_voice_begin(opts);
     ldu2_collect_voice_symbols(opts, state, &frame);
     ldu2_consume_trailing_status(opts, state);
+    /* Whether the crypto gate kept this LDU's voice from the vocoder (issue #890), before its encryption sync applies. */
+    const int voice_gated = !p25_crypto_audio_permitted(opts, state, 0);
     if (dsd_state_frame_read_lost(state, carrier_seq)) {
         /* The carrier boundary moved the carrier count while the LDU was read (issue #575). The encryption sync is
            read whole by the seventh voice frame but decodes only now, so it would publish the carrier left's
@@ -513,6 +516,9 @@ processLDU2(dsd_opts* opts, dsd_state* state) {
     }
     frame.hard_checked = state->p25_p1_soft_rs_ok == soft_rs_before; // ldu2_run_fec() counts each soft recovery
 
+    /* Encrypted voice with no key: the encryption sync's hard RS check is the voice's scan credit (issue #890). */
+    p25p1_ldu_note_gated_voice(opts, state, gated_begun_m, voice_gated,
+                               frame.irrecoverable_errors == 0 && frame.hard_checked);
     ldu2_decode_post_fec_fields(state, &frame);
     ldu2_print_decode_result(&frame);
     ldu2_maybe_enc_lockout(opts, state, &frame);

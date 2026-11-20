@@ -399,7 +399,10 @@ Generated (do not edit/commit):
     `dsd_call_state_note_checked_media()` after the decode: `mbe_note_checked_media()` in `dsd_mbe.c` for every
     AMBE/IMBE path, a SPEECH frame with nothing concealed; YSF V/D2 after mbelib-neo returns; M17 in
     `m17_play_codec2_voice()`, so a build without Codec2 never has any; TETRA in `voice_frame_play()` for a good frame
-    the codec decoded), never the media mark `dsd_call_state_update_media()` makes before the decode, which playback,
+    the codec decoded; P25 voice the crypto gate keeps from the vocoder, encrypted with no key, under
+    `--scan-voice-only` only: a Phase 1 LDU once its link control or encryption sync passed the hard RS check
+    (`p25p1_ldu_note_gated_voice()`, from the LDU's start), a Phase 2 slot's gated frames once the ESS their bursts
+    carried passed the RS check with no soft erasure (`p25p2_note_gated_voice_frame()`, from the first gated frame)), never the media mark `dsd_call_state_update_media()` makes before the decode, which playback,
     the -Y call count and the history keep. Each checked frame carries its scan observation origin (below); the probe
     counts only media whose origin is the reception in force now, so a call another visit heard, ended or not, holds
     nothing whatever its decode times say, and a frame of another origin starts the span again.
