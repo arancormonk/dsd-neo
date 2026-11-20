@@ -85,15 +85,28 @@ alias_slot_index(uint8_t slot) {
     return (slot >= 2U) ? 1U : slot;
 }
 
+/* Whether @p call's talker is the radio a Motorola alias names by its fully qualified SUID. A call whose extended voice
+ * user named the talker's home SUID matches only that whole SUID (a bare unit number from another home is another
+ * radio); any other call matches by its working address. */
 static int
-alias_current_call_snapshot(const dsd_state* state, uint8_t slot, uint32_t src, uint32_t tg, dsd_call_snapshot* out) {
+alias_call_names_suid(const dsd_call_snapshot* call, uint32_t wacn, uint32_t sysid, uint32_t src) {
+    if (call->source_home.valid != 0U) {
+        return call->source_home.unit == src && call->source_home.wacn == wacn && call->source_home.sysid == sysid;
+    }
+    return call->ota_source_id == src;
+}
+
+static int
+alias_current_call_snapshot(const dsd_state* state, uint8_t slot, uint32_t wacn, uint32_t sysid, uint32_t src,
+                            uint32_t tg, dsd_call_snapshot* out) {
     if (!state || !out || src == 0) {
         return 0;
     }
 
     uint8_t slot_idx = alias_slot_index(slot);
     // A P25 alias names a P25 call's talker: another protocol's call the slot still holds is not one.
-    if (dsd_call_state_get(state, slot_idx, out) <= 0 || out->ota_source_id != src || !DSD_SYNC_IS_P25(out->protocol)) {
+    if (dsd_call_state_get(state, slot_idx, out) <= 0 || !alias_call_names_suid(out, wacn, sysid, src)
+        || !DSD_SYNC_IS_P25(out->protocol)) {
         return 0;
     }
     // Motorola P25 systems transmit the talker alias during hangtime, after the
@@ -632,11 +645,16 @@ apx_embedded_alias_dump(const dsd_opts* opts, dsd_state* state, uint8_t slot, ui
     DSD_SNPRINTF(fqs, sizeof fqs, " FQ-SUID: %05X:%03X.%06X (%d);", wacn, sys, rid, rid);
     uint8_t slot_idx = alias_slot_index(slot);
     dsd_call_snapshot call;
-    int current_call_match = alias_current_call_snapshot(state, slot, rid, 0, &call);
+    int current_call_match = alias_current_call_snapshot(state, slot, wacn, sys, rid, 0, &call);
     if (current_call_match) {
-        char metadata[128];
-        DSD_SNPRINTF(metadata, sizeof(metadata), "FQS:%05X.%03X.%06X(%d),Moto", wacn, sys, rid, rid);
-        (void)dsd_alias_learn_radio(opts, state, NULL, rid, str, metadata);
+        /* Learned only for a talker whose checked local working address is the alias's unit ID
+           (dsd_call_state_source_learnable()). A roaming radio matched by its home SUID, or a source that is no checked
+           local radio, is shown on its call only. */
+        if (call.ota_source_id == rid && dsd_call_state_source_learnable(state, &call)) {
+            char metadata[128];
+            DSD_SNPRINTF(metadata, sizeof(metadata), "FQS:%05X.%03X.%06X(%d),Moto", wacn, sys, rid, rid);
+            (void)dsd_alias_learn_radio(opts, state, NULL, rid, str, metadata);
+        }
         char alias[500];
         DSD_SNPRINTF(alias, sizeof(alias), "%s; %s", str, fqs);
         (void)dsd_event_enrich_alias_ex(opts, state, slot_idx, DSD_SYNC_P25P1_POS, call.epoch, alias);
@@ -923,7 +941,8 @@ l3h_alias_resolve_call(const dsd_state* state, uint8_t slot, dsd_call_snapshot* 
         || !DSD_SYNC_IS_P25(out->protocol)) {
         return 0;
     }
-    return out->ota_source_id != 0U && out->ota_source_id <= UINT32_MAX;
+    /* A talker: a working address, or a roaming radio's home identity (shown, never learned). */
+    return (out->ota_source_id != 0U && out->ota_source_id <= UINT32_MAX) || out->source_home.valid != 0U;
 }
 
 // The Harris alias payload names no source, so the talker has to be inferred from the
@@ -995,7 +1014,10 @@ l3h_embedded_alias_decode_internal(const dsd_opts* opts, dsd_state* state, uint8
     }
 
     int8_t ptr = 0;
-    if (attach) {
+    char home_src[24];
+    if (attach && tsrc == 0U && dsd_call_state_format_home_source(&call, home_src, sizeof home_src)) {
+        DSD_FPRINTF(stderr, " TG: %d; SRC: %s; Talker Alias: ", ttg, home_src);
+    } else if (attach) {
         DSD_FPRINTF(stderr, " TG: %d; SRC: %d; Talker Alias: ", ttg, tsrc);
     } else {
         DSD_FPRINTF(stderr, " TG: UNK; SRC: UNK; Talker Alias: ");
@@ -1011,7 +1033,9 @@ l3h_embedded_alias_decode_internal(const dsd_opts* opts, dsd_state* state, uint8
 
     uint8_t slot_idx = alias_slot_index(slot);
     if (attach) {
-        if (save_policy) {
+        /* Learned only for a checked local working address (dsd_call_state_source_learnable()): a roaming radio named
+           by its home identity, or a source that is no checked local radio, is shown, never learned. */
+        if (save_policy && dsd_call_state_source_learnable(state, &call)) {
             // The Duke Energy system may relay two src values, may be a good idea to pick one and stick with it
             l3h_alias_append_policy_row(opts, state, tsrc, ttg, str);
         }
@@ -1061,7 +1085,10 @@ tait_iso7_embedded_alias_decode(const dsd_opts* opts, dsd_state* state, uint8_t 
     if (rid != 0U) {
         char metadata[64];
         DSD_SNPRINTF(metadata, sizeof(metadata), "%03X,Tait", nac);
-        (void)dsd_alias_learn_radio(opts, state, NULL, rid, (const char*)alias, metadata);
+        /* Learned only for a checked local working address (dsd_call_state_source_learnable()); shown either way. */
+        if (dsd_call_state_source_learnable(state, &call)) {
+            (void)dsd_alias_learn_radio(opts, state, NULL, rid, (const char*)alias, metadata);
+        }
         (void)dsd_event_enrich_alias_ex(opts, state, slot_idx, DSD_SYNC_P25P1_POS, call.epoch, (const char*)alias);
     }
 }

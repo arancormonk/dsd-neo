@@ -3194,6 +3194,7 @@ nxdn_vcall_apply_state(dsd_state* state, const struct nxdn_vcall_info* info) {
         state->nxdn_cipher_type = nxdn_cipher_observe(state, info->cipher_type, 0);
     } else {
         DSD_SNPRINTF(state->generic_talker_alias[0], sizeof(state->generic_talker_alias[0]), "%s", "");
+        state->generic_talker_alias_epoch[0] = 0U; /* not bound to a call (P25 keeps only its own) */
         nxdn_alias_reset(state);
     }
 

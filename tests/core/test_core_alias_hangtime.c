@@ -321,6 +321,176 @@ test_enrichment_skips_another_protocols_call(dsd_opts* opts) {
     }
 }
 
+/* A fresh state whose slot 0 holds an open P25 Phase 2 call from a roaming radio: working address @p src (0: none), its
+   home SUID 0xABCDE / 0x2A7 / 1234567 recorded on the call, as an extended voice user names it. */
+static dsd_state*
+roaming_call_fixture(dsd_opts* opts, uint64_t src) {
+    dsd_state* state = (dsd_state*)calloc(1, sizeof(dsd_state));
+    Event_History_I* history = (Event_History_I*)calloc(2, sizeof(Event_History_I));
+    if (!state || !history) {
+        free(state);
+        free(history);
+        abort();
+    }
+    state->event_history_s = history;
+    init_event_history(&state->event_history_s[0], 0, 255);
+    init_event_history(&state->event_history_s[1], 0, 255);
+    const dsd_call_observation observation = {
+        .protocol = DSD_SYNC_P25P2_POS,
+        .slot = 0U,
+        .kind = DSD_CALL_KIND_GROUP_VOICE,
+        .ota_target_id = 4660U,
+        .policy_target_id = 4660U,
+        .ota_source_id = src,
+        .observed_m = 1.0,
+    };
+    (void)dsd_call_state_observe(state, &observation, DSD_CALL_BOUNDARY_BEGIN);
+    const dsd_call_source_home home = {.wacn = 0xABCDEU, .sysid = 0x2A7U, .unit = 1234567U, .valid = 1U};
+    (void)dsd_call_state_note_source_home(state, 0U, DSD_SYNC_P25P2_POS, &home, NULL);
+    dsd_call_snapshot call;
+    if (src != 0U && dsd_call_state_get(state, 0U, &call) > 0) {
+        /* The trunk state machine checked the working address (its #800 identity record, mirrored on the call). */
+        (void)dsd_call_state_note_source_verdict(state, 0U, call.epoch, (uint32_t)src, 1,
+                                                 dsd_state_reception_generation(state));
+    }
+    dsd_event_sync_slot(opts, state, 0U);
+    return state;
+}
+
+/* A roaming radio's talker alias: Harris (no source in the alias) and Motorola (named by its home SUID) both show on
+   its call, and neither is learned, since its home unit ID is not a radio of the system received. */
+static void
+test_roaming_radio_alias_is_shown_not_learned(dsd_opts* opts) {
+    uint8_t input[3200];
+    uint8_t decoded[200];
+
+    dsd_state* state = roaming_call_fixture(opts, 0U);
+    dsd_call_snapshot call;
+    expect_true("roaming call open", dsd_call_state_get(state, 0U, &call) > 0 && call.ota_source_id == 0U);
+    uint8_t l3h_msg[24];
+    DSD_MEMSET(l3h_msg, 0, sizeof(l3h_msg));
+    DSD_MEMCPY(l3h_msg + 4, "ROAMH01", 7);
+    l3h_embedded_alias_decode(opts, state, 0U, 10, l3h_msg);
+    expect_true("harris alias shows for a roaming radio", strstr(state->generic_talker_alias[0], "ROAMH01") != NULL);
+    expect_true("harris alias reaches the roaming call's row", history_has_alias(state, "ROAMH01"));
+    expect_true("harris alias is bound to the roaming call", state->generic_talker_alias_epoch[0] == call.epoch);
+    expect_true("harris alias of a roaming radio is not learned", !alias_learned_for(state, 1234567U));
+    free_fixture(state);
+
+    state = roaming_call_fixture(opts, 0U);
+    build_alias_input(input, sizeof(input), 0xABCDEU, 0x2A7U, 1234567U);
+    uint16_t num_bytes = build_alias_decoded(decoded, sizeof(decoded), "APXROAM");
+    apx_embedded_alias_dump(opts, state, 0U, num_bytes, input, decoded);
+    expect_true("motorola alias shows for its home SUID", strstr(state->generic_talker_alias[0], "APXROAM") != NULL);
+    expect_true("motorola alias of a roaming radio is not learned", !alias_learned_for(state, 1234567U));
+    free_fixture(state);
+
+    /* The same unit ID from another home names another radio. */
+    state = roaming_call_fixture(opts, 0U);
+    build_alias_input(input, sizeof(input), 0xABCDEU, 0x2A8U, 1234567U);
+    apx_embedded_alias_dump(opts, state, 0U, num_bytes, input, decoded);
+    expect_true("motorola alias of another home is deferred", state->generic_talker_alias[0][0] == '\0');
+    free_fixture(state);
+
+    /* A roaming radio with a working address (3002) still matches its alias by home SUID, learned for neither ID. */
+    state = roaming_call_fixture(opts, 3002U);
+    build_alias_input(input, sizeof(input), 0xABCDEU, 0x2A7U, 1234567U);
+    apx_embedded_alias_dump(opts, state, 0U, num_bytes, input, decoded);
+    expect_true("motorola alias matches a working-address roamer",
+                strstr(state->generic_talker_alias[0], "APXROAM") != NULL);
+    expect_true("roamer's home ID not learned", !alias_learned_for(state, 1234567U));
+    expect_true("roamer's working address not learned", !alias_learned_for(state, 3002U));
+    free_fixture(state);
+
+    /* A bare unit number from another home is another radio, even when it equals the roamer's working address. */
+    state = roaming_call_fixture(opts, 3002U);
+    build_alias_input(input, sizeof(input), 0x12345U, 0x111U, 3002U);
+    apx_embedded_alias_dump(opts, state, 0U, num_bytes, input, decoded);
+    expect_true("motorola alias of another home's 3002 is deferred", state->generic_talker_alias[0][0] == '\0');
+    expect_true("another home's 3002 not learned", !alias_learned_for(state, 3002U));
+    free_fixture(state);
+
+    /* A local radio (working address = the alias's unit ID) is still learned. */
+    state = roaming_call_fixture(opts, 1234567U);
+    build_alias_input(input, sizeof(input), 0xABCDEU, 0x2A7U, 1234567U);
+    apx_embedded_alias_dump(opts, state, 0U, num_bytes, input, decoded);
+    expect_true("motorola alias of a local radio is learned", alias_learned_for(state, 1234567U));
+    free_fixture(state);
+}
+
+/* A P25 alias is learned only for a source the trunk state machine checked under the reception now (its #800 identity
+   record, mirrored on the call): a foreign home unit ID from a grant, an unchecked decode or a working address an
+   addressless roamer replaced has no such verdict. Without one the Harris and Motorola aliases show and are not
+   learned; with it they are; a verdict from another reception does not count. */
+static void
+test_alias_learned_only_for_a_checked_source(dsd_opts* opts) {
+    uint8_t input[3200];
+    uint8_t decoded[200];
+    uint8_t l3h_msg[24];
+    DSD_MEMSET(l3h_msg, 0, sizeof(l3h_msg));
+    DSD_MEMCPY(l3h_msg + 4, "FOREIGN", 7);
+    build_alias_input(input, sizeof(input), 0x12345U, 0x111U, 3001U);
+    uint16_t num_bytes = build_alias_decoded(decoded, sizeof(decoded), "APXFRGN");
+
+    for (int verdict = 0; verdict <= 2; verdict++) {
+        dsd_state* state = foreign_call_fixture(opts, DSD_SYNC_P25P2_POS, 0U, 4660U, 3001U);
+        if (!state) {
+            abort();
+        }
+        dsd_call_snapshot call;
+        (void)dsd_call_state_get(state, 0U, &call);
+        if (verdict != 0) {
+            /* 1: checked now; 2: checked under an earlier reception. */
+            (void)dsd_call_state_note_source_verdict(state, 0U, call.epoch, 3001U, 1,
+                                                     dsd_state_reception_generation(state));
+            if (verdict == 2) {
+                state->rx_id.epoch++;
+            }
+        }
+        l3h_embedded_alias_decode(opts, state, 0U, 10, l3h_msg);
+        expect_true("harris alias shows", strstr(state->generic_talker_alias[0], "FOREIGN") != NULL);
+        expect_true(verdict == 1 ? "harris alias of a checked source learned"
+                                 : "harris alias without a verdict not learned",
+                    alias_learned_for(state, 3001U) == (verdict == 1));
+        free_fixture(state);
+
+        state = foreign_call_fixture(opts, DSD_SYNC_P25P2_POS, 0U, 4660U, 3001U);
+        if (!state) {
+            abort();
+        }
+        (void)dsd_call_state_get(state, 0U, &call);
+        if (verdict != 0) {
+            (void)dsd_call_state_note_source_verdict(state, 0U, call.epoch, 3001U, 1,
+                                                     dsd_state_reception_generation(state));
+            if (verdict == 2) {
+                state->rx_id.epoch++;
+            }
+        }
+        apx_embedded_alias_dump(opts, state, 0U, num_bytes, input, decoded);
+        expect_true("motorola alias shows", strstr(state->generic_talker_alias[0], "APXFRGN") != NULL);
+        expect_true(verdict == 1 ? "motorola alias of a checked source learned"
+                                 : "motorola alias without a verdict not learned",
+                    alias_learned_for(state, 3001U) == (verdict == 1));
+        free_fixture(state);
+    }
+}
+
+/* The P25 history line of a roaming radio with no working address names it by its home identity, for display only:
+   the row's source fields stay those of a call with no source. */
+static void
+test_roaming_radio_row_source(dsd_opts* opts) {
+    dsd_state* state = roaming_call_fixture(opts, 0U);
+    const Event_History* row = &state->event_history_s[0].Event_History_Items[0];
+    expect_true("roaming row names the home identity", strstr(row->event_string, "SRC: 1234567@2A7;") != NULL);
+    expect_true("roaming row keeps no source id", row->source_id == 0U);
+    expect_true("roaming row keeps no source text", row->src_str[0] == '\0');
+    free_fixture(state);
+    state = roaming_call_fixture(opts, 3002U);
+    expect_true("working address row keeps the number",
+                strstr(state->event_history_s[0].Event_History_Items[0].event_string, "SRC: 00003002;") != NULL);
+    free_fixture(state);
+}
+
 int
 main(void) {
     dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(dsd_opts));
@@ -443,6 +613,9 @@ main(void) {
     free(history);
     free(state);
     test_enrichment_skips_another_protocols_call(opts);
+    test_roaming_radio_alias_is_shown_not_learned(opts);
+    test_roaming_radio_row_source(opts);
+    test_alias_learned_only_for_a_checked_source(opts);
     free(opts);
     return g_fail;
 }

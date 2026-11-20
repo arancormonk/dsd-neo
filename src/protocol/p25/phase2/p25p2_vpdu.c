@@ -53,6 +53,7 @@
 #include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
 #include "p25p2_frame_internal.h"
+#include "p25p2_voice_home.h"
 
 static inline void dsd_append(char* dst, size_t dstsz, const char* src);
 
@@ -241,12 +242,32 @@ p25p2_vpdu_voice_observable(const dsd_opts* opts, const dsd_state* state, int sl
            && p25p2_vpdu_voice_is_addressable(opts, state, slot);
 }
 
+/* What a voice user that observed the slot's call names beyond the observation: its home identity, only from a MAC
+ * whose CRC passed (the CRC/FEC publication rule), and its identity for the trunk state machine's record. The identity
+ * tracking reads the source field as received: a special address there is evidence (it names no radio, so the talker
+ * kept for display loses its verdict), never an omitted field. An extended voice user naming its talker by a home SUID
+ * alone (Source Address 0) names no local radio either: the working address the call keeps from an earlier talker
+ * loses its verdict, so no alias is learned for it. */
+static void
+p25p2_vpdu_note_voice_user(const dsd_opts* opts, dsd_state* state, int slot, dsd_call_kind kind, uint64_t target,
+                           uint64_t source, const dsd_call_source_home* home, int crc_ok) {
+    if (home != NULL && crc_ok) {
+        p25p2_note_voice_home(opts, state, slot, home);
+    }
+    const uint8_t home_only = (uint8_t)(home != NULL && home->valid != 0U && !p25_source_id_is_subscriber(source));
+    p25_sm_note_call_identity(state, slot, (uint32_t)source, (uint32_t)target, kind == DSD_CALL_KIND_GROUP_VOICE,
+                              crc_ok ? (uint8_t)P25_SM_IDENTITY_CHECKED_ALL : 0U, home_only);
+}
+
 /* A voice user observes the slot's canonical call itself; @p crc_ok is its MAC's CRC verdict, the provenance of the
  * identity it names (spec 2.19, p25_sm_note_call_identity()). @p source is the message's working source address, a
- * local address in the extended forms too (their home SUID never names the talker). */
+ * local address in the extended forms too. @p home is an extended form's Source SUID (NULL for the other forms): the
+ * radio's home identity, recorded on the call for display and alias matching only (an L3Harris site sends Source
+ * Address 0 for a roaming radio, dsd_call_state_format_home_source()), never a local radio ID (issue #800). */
 static int
 p25p2_vpdu_observe_voice(dsd_opts* opts, dsd_state* state, int slot, dsd_call_kind kind, uint64_t target,
-                         uint64_t source, int service_options, p25_mac_pdu_type pdu_type, int crc_ok) {
+                         uint64_t source, const dsd_call_source_home* home, int service_options,
+                         p25_mac_pdu_type pdu_type, int crc_ok) {
     if (!p25p2_vpdu_voice_observable(opts, state, slot, kind, target)) {
         return 0;
     }
@@ -281,10 +302,7 @@ p25p2_vpdu_observe_voice(dsd_opts* opts, dsd_state* state, int slot, dsd_call_ki
     };
     const int began = dsd_call_state_observe(state, &observation, DSD_CALL_BOUNDARY_CONTINUE);
     if (began >= 0) {
-        // The identity tracking reads the source field as received: a special address there is evidence (it names no
-        // radio, so the talker kept for display loses its verdict), never an omitted field.
-        p25_sm_note_call_identity(state, slot, (uint32_t)source, (uint32_t)target, kind == DSD_CALL_KIND_GROUP_VOICE,
-                                  crc_ok ? (uint8_t)P25_SM_IDENTITY_CHECKED_ALL : 0U);
+        p25p2_vpdu_note_voice_user(opts, state, slot, kind, target, source, home, crc_ok);
     }
     const int encrypted_probe = p25p2_vpdu_is_encrypted_probe(opts, service_options);
     if (began > 0) {
@@ -963,6 +981,25 @@ p25p2_vpdu_print_source_suid(const unsigned long long int* mac, int idx) {
                                         | (mac[idx + 3] << 24ULL) | (mac[idx + 4] << 16ULL) | (mac[idx + 5] << 8ULL)
                                         | mac[idx + 6];
     DSD_FPRINTF(stderr, "SUID: %08llX-%08llu; ", suid >> 24, suid & 0xFFFFFFULL);
+}
+
+/* The Source SUID of an extended voice user at MAC octet @p idx as the talker's home identity: valid only when its unit
+ * ID names a radio (not 0, not a special address). */
+static void
+p25p2_vpdu_source_home(const unsigned long long int* mac, int idx, dsd_call_source_home* out) {
+    DSD_MEMSET(out, 0, sizeof(*out));
+    const uint32_t wacn =
+        (uint32_t)(((mac[idx] & 0xFFU) << 12) | ((mac[idx + 1] & 0xFFU) << 4) | ((mac[idx + 2] & 0xF0U) >> 4));
+    const uint32_t sysid = (uint32_t)(((mac[idx + 2] & 0x0FU) << 8) | (mac[idx + 3] & 0xFFU));
+    const uint32_t unit =
+        (uint32_t)(((mac[idx + 4] & 0xFFU) << 16) | ((mac[idx + 5] & 0xFFU) << 8) | (mac[idx + 6] & 0xFFU));
+    if (!p25_source_id_is_subscriber(unit)) {
+        return;
+    }
+    out->wacn = wacn;
+    out->sysid = (uint16_t)sysid;
+    out->unit = unit;
+    out->valid = 1U;
 }
 
 static int
@@ -3179,7 +3216,7 @@ p25p2_vpdu_iter_block_35(p25p2_vpdu_ctx* ctx) {
         DSD_FPRINTF(stderr, "MFID90 Group Regroup Voice");
         const int tracked_voice =
             p25p2_vpdu_observe_voice(opts, state, slot, DSD_CALL_KIND_GROUP_VOICE, (uint64_t)(uint32_t)gr,
-                                     (uint64_t)(uint32_t)src, svc, ctx->pdu_type, ctx->crc_ok);
+                                     (uint64_t)(uint32_t)src, NULL, svc, ctx->pdu_type, ctx->crc_ok);
         if (tracked_voice) {
             p25p2_vpdu_store_slot_svc(state, slot, svc);
         }
@@ -3228,7 +3265,7 @@ p25p2_vpdu_iter_block_36(p25p2_vpdu_ctx* ctx) {
         DSD_FPRINTF(stderr, "MFID90 Group Regroup Voice");
         const int tracked_voice =
             p25p2_vpdu_observe_voice(opts, state, slot, DSD_CALL_KIND_GROUP_VOICE, (uint64_t)(uint32_t)gr,
-                                     (uint64_t)(uint32_t)src, svc, ctx->pdu_type, ctx->crc_ok);
+                                     (uint64_t)(uint32_t)src, NULL, svc, ctx->pdu_type, ctx->crc_ok);
         if (tracked_voice) {
             p25p2_vpdu_store_slot_svc(state, slot, svc);
         }
@@ -3734,20 +3771,22 @@ p25p2_vpdu_iter_block_45(p25p2_vpdu_ctx* ctx) {
         int svc = MAC[2 + len_a];
         int gr = (MAC[3 + len_a] << 8) | MAC[4 + len_a];
         /* The source address is the talker's working address on this system, in the extended form (0x21) too; the
-           SUID after it is the radio's home identity, shown apart and never taken for the source (issue #800). */
+           SUID after it is the radio's home identity, recorded on the call apart from the source (issue #800). */
         int src = (MAC[5 + len_a] << 16) | (MAC[6 + len_a] << 8) | MAC[7 + len_a];
+        dsd_call_source_home home = {0};
         int slot_idx = slot & 1;
 
         DSD_FPRINTF(stderr, "\n VCH %d - TG: %d; SRC: %d; ", slot + 1, gr, src);
         if (MAC[1 + len_a] == 0x21) {
             p25p2_vpdu_print_source_suid(MAC, 8 + len_a);
+            p25p2_vpdu_source_home(MAC, 8 + len_a, &home);
         }
 
         p25p2_vpdu_print_svc_with_slot_state(opts, state, slot_idx, svc, /*set_packet_bit*/ 0);
         DSD_FPRINTF(stderr, " Group Voice");
         const int tracked_voice =
             p25p2_vpdu_observe_voice(opts, state, slot, DSD_CALL_KIND_GROUP_VOICE, (uint64_t)(uint32_t)gr,
-                                     (uint64_t)(uint32_t)src, svc, ctx->pdu_type, ctx->crc_ok);
+                                     (uint64_t)(uint32_t)src, &home, svc, ctx->pdu_type, ctx->crc_ok);
         if (tracked_voice) {
             state->p25_p2_last_mac_active[slot] = dsd_decode_time();
             p25p2_vpdu_store_slot_svc(state, slot, svc);
@@ -3787,19 +3826,22 @@ p25p2_vpdu_iter_block_46(p25p2_vpdu_ctx* ctx) {
     if (MAC[1 + len_a] == 0x2 || MAC[1 + len_a] == 0x22) {
         int svc = MAC[2 + len_a];
         int gr = (MAC[3 + len_a] << 16) | (MAC[4 + len_a] << 8) | MAC[5 + len_a];
-        /* As the group form: the working source address names the talker; the extended form's SUID is shown apart. */
+        /* As the group form: the working source address names the talker; the extended form's SUID is its home
+           identity, recorded on the call apart from the source. */
         int src = (MAC[6 + len_a] << 16) | (MAC[7 + len_a] << 8) | MAC[8 + len_a];
+        dsd_call_source_home home = {0};
 
         DSD_FPRINTF(stderr, "\n VCH %d - TGT: %d; SRC %d; ", slot + 1, gr, src);
         if (MAC[1 + len_a] == 0x22) {
             p25p2_vpdu_print_source_suid(MAC, 9 + len_a);
+            p25p2_vpdu_source_home(MAC, 9 + len_a, &home);
         }
 
         p25p2_vpdu_print_svc_no_state(opts, svc);
         DSD_FPRINTF(stderr, " Unit to Unit Voice");
         const int tracked_voice =
             p25p2_vpdu_observe_voice(opts, state, slot, DSD_CALL_KIND_PRIVATE_VOICE, (uint64_t)(uint32_t)gr,
-                                     (uint64_t)(uint32_t)src, svc, ctx->pdu_type, ctx->crc_ok);
+                                     (uint64_t)(uint32_t)src, &home, svc, ctx->pdu_type, ctx->crc_ok);
         if (tracked_voice) {
             state->p25_p2_last_mac_active[slot] = dsd_decode_time();
             p25p2_vpdu_store_slot_svc(state, slot, svc);
@@ -4821,7 +4863,7 @@ p25p2_vpdu_handle_telephone_interconnect_voice_user(p25p2_vpdu_ctx* ctx) {
     DSD_FPRINTF(stderr, "\n  SVC [%02X] Target [%d] Timer [%0.1fs]", svc, target, (double)timer / 10.0);
     p25p2_vpdu_print_svc_with_slot_state(ctx->opts, state, slot_idx, svc, /*set_packet_bit*/ 0);
     if (p25p2_vpdu_observe_voice(ctx->opts, state, slot_idx, DSD_CALL_KIND_PRIVATE_VOICE, (uint64_t)(uint32_t)target,
-                                 0U, svc, ctx->pdu_type, ctx->crc_ok)) {
+                                 0U, NULL, svc, ctx->pdu_type, ctx->crc_ok)) {
         p25p2_vpdu_store_slot_svc(state, slot_idx, svc);
     }
     p25p2_vpdu_publish_activityf(state, 0U, DSD_CALL_KIND_PRIVATE_VOICE, (uint64_t)target, 0U, 0U, 0, (uint16_t)svc,
@@ -5463,7 +5505,7 @@ p25p2_vpdu_handle_standard_group_regroup_voice_user_abbreviated(p25p2_vpdu_ctx* 
             p25_patch_update(state, supergroup, /*is_patch*/ 1, /*active*/ 1);
         }
         if (p25p2_vpdu_observe_voice(ctx->opts, state, slot, DSD_CALL_KIND_GROUP_VOICE, (uint64_t)(uint32_t)supergroup,
-                                     (uint64_t)(uint32_t)source, -1, ctx->pdu_type, ctx->crc_ok)) {
+                                     (uint64_t)(uint32_t)source, NULL, -1, ctx->pdu_type, ctx->crc_ok)) {
             state->p25_p2_last_mac_active[slot] = dsd_decode_time();
             state->p25_p2_last_mac_active_m[slot] = dsd_decode_now_mono_s();
         }

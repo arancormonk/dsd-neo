@@ -253,37 +253,62 @@ p25_lcw_emit_voice_user(p25_lcw_ctx* ctx, int tg, int dst, uint32_t source, int 
     return p25_sm_emit_voice_start(ctx->opts, ctx->state, &ev);
 }
 
+/* A talker alias belongs to its call. The voice user repeats in every LDU1 of a transmission while the alias is sent
+ * in pieces across the superframes after it, so a voice user that goes on with (@p accepted) the open call the alias
+ * was published for, under the reception it was published under (dsd_state::generic_talker_alias_epoch, _rx_gen),
+ * naming that call's own talker the way the call's earlier voice users did, keeps it: dropping it at every LDU1 made the
+ * alias flash on and off. Anything else drops it: a new call or talker, a start the trunk state machine declined, a
+ * TDULC, another system named on the carrier, no source or a special address (a telephone interconnect, a dispatcher),
+ * the same number switching between a local address and one needing a Source ID Extension (another system's radio),
+ * an alias from an earlier call or set outside call enrichment. */
+static void
+p25_lcw_drop_alias_unless_continued(const p25_lcw_ctx* ctx, int accepted, uint32_t source, int source_local) {
+    dsd_state* state = ctx->state;
+    dsd_call_snapshot call;
+    const int open = p25p1_current_call(state, &call);
+    const uint8_t local = (uint8_t)(source_local != 0);
+    const int locality_flipped =
+        open && accepted && state->p25_p1_voice_user_epoch == call.epoch && state->p25_p1_voice_user_local != local;
+    if (open && accepted) {
+        state->p25_p1_voice_user_epoch = call.epoch;
+        state->p25_p1_voice_user_local = local;
+    }
+    if (!accepted || !open || !p25_source_id_is_subscriber(source) || locality_flipped || call.ota_source_id != source
+        || call.epoch != state->generic_talker_alias_epoch[0]
+        || state->generic_talker_alias_rx_gen[0] != dsd_state_reception_generation(state)) {
+        state->generic_talker_alias[0][0] = '\0';
+    }
+}
+
 static int
 p25_lcw_accept_private_voice_user(p25_lcw_ctx* ctx, uint32_t target, uint32_t source, int source_local) {
-    ctx->state->generic_talker_alias[0][0] = '\0';
     ctx->state->dmr_so = ctx->lc_svcopt;
 
-    if (!ctx->allow_voice_start) {
-        return 0;
-    }
-    if (!p25_lcw_emit_voice_user(ctx, 0, (int)target, source, 0, source_local)) {
+    const int accepted =
+        ctx->allow_voice_start && p25_lcw_emit_voice_user(ctx, 0, (int)target, source, 0, source_local);
+    p25_lcw_drop_alias_unless_continued(ctx, accepted, source, source_local);
+    if (!accepted) {
         return 0;
     }
     p25_lcw_mark_encrypted_voice_pending(ctx, 0, 0);
     return 1;
 }
 
-/* A group voice user, standard (LCO 0x00) or a Motorola patched supergroup (LCGRGR): record its service options,
- * drop the previous talker's alias and note the affiliation, then start the voice. A rejected start (or a TDULC,
- * which starts none) returns before the LC's encrypted service option marks the crypto pending. */
+/* A group voice user, standard (LCO 0x00) or a Motorola patched supergroup (LCGRGR): record its service options and
+ * note the affiliation, then start the voice, dropping the previous talker's alias unless the call goes on
+ * (p25_lcw_drop_alias_unless_continued()). A rejected start (or a TDULC, which starts none) returns before the LC's
+ * encrypted service option marks the crypto pending. */
 static int
 p25_lcw_accept_group_voice_user(p25_lcw_ctx* ctx, uint16_t group, uint32_t source, int source_local) {
     ctx->state->dmr_so = ctx->lc_svcopt;
-    ctx->state->generic_talker_alias[0][0] = '\0';
 
     if (source != 0 && group != 0) {
         p25_ga_add(ctx->state, (uint32_t)source, (uint16_t)group);
     }
 
-    if (!ctx->allow_voice_start) {
-        return 0;
-    }
-    if (!p25_lcw_emit_voice_user(ctx, group, 0, source, 1, source_local)) {
+    const int accepted = ctx->allow_voice_start && p25_lcw_emit_voice_user(ctx, group, 0, source, 1, source_local);
+    p25_lcw_drop_alias_unless_continued(ctx, accepted, source, source_local);
+    if (!accepted) {
         return 0;
     }
     p25_lcw_mark_encrypted_voice_pending(ctx, group, 1);
@@ -560,6 +585,39 @@ p25_lcw_handle_format_47(p25_lcw_ctx* ctx) {
     DSD_FPRINTF(stderr, " Telephone Interconnect Answer Request");
 }
 
+/* A full SUID (WACN, System ID, unit) naming the open Phase 1 call's talker (the Source ID Extension $49, Tait's
+ * Subscriber FQ-SUID): the call takes the unit ID for display. A home of another system, or one not known yet, is no
+ * local radio: the trunk state machine's record withdraws the source's verdict, even when the number is the one a local
+ * voice user checked, so no alias is learned for it (dsd_call_state_source_learnable()). */
+static void
+p25_lcw_note_full_suid_source(const p25_lcw_ctx* ctx, uint32_t wacn, uint16_t sysid, uint32_t src) {
+    dsd_call_snapshot call;
+    if (src == 0U || !p25p1_current_call(ctx->state, &call)) {
+        return;
+    }
+    const dsd_call_observation observation = {
+        .protocol = call.protocol,
+        .slot = 0U,
+        .kind = call.kind,
+        .ota_target_id = call.ota_target_id,
+        .policy_target_id = call.policy_target_id,
+        .ota_source_id = src,
+        .channel = call.channel,
+        .frequency_hz = call.frequency_hz,
+        .service_options = call.service_options,
+        .emergency = call.emergency,
+        .priority = call.priority,
+        .has_service_metadata = call.has_service_metadata,
+    };
+    (void)dsd_call_state_observe(ctx->state, &observation, DSD_CALL_BOUNDARY_CONTINUE);
+    if (!p25_sm_suid_home_is_local(ctx->state, wacn, sysid) && call.ota_target_id <= UINT32_MAX) {
+        p25_sm_note_call_identity(ctx->state, 0, src, (uint32_t)call.ota_target_id,
+                                  call.kind == DSD_CALL_KIND_GROUP_VOICE, 0U, 1U);
+    }
+    dsd_event_sync_slot(ctx->opts, ctx->state, 0U);
+    dsd_signal_search_note_call(ctx->state, 0U);
+}
+
 static void
 p25_lcw_handle_format_49(p25_lcw_ctx* ctx) {
     DSD_FPRINTF(stderr, " Source ID Extension -");
@@ -570,28 +628,7 @@ p25_lcw_handle_format_49(p25_lcw_ctx* ctx) {
     if (wacn != 0) {
         ctx->state->p25_src_nid = wacn;
     }
-    if (src != 0) {
-        dsd_call_snapshot call;
-        if (p25p1_current_call(ctx->state, &call)) {
-            const dsd_call_observation observation = {
-                .protocol = call.protocol,
-                .slot = 0U,
-                .kind = call.kind,
-                .ota_target_id = call.ota_target_id,
-                .policy_target_id = call.policy_target_id,
-                .ota_source_id = src,
-                .channel = call.channel,
-                .frequency_hz = call.frequency_hz,
-                .service_options = call.service_options,
-                .emergency = call.emergency,
-                .priority = call.priority,
-                .has_service_metadata = call.has_service_metadata,
-            };
-            (void)dsd_call_state_observe(ctx->state, &observation, DSD_CALL_BOUNDARY_CONTINUE);
-            dsd_event_sync_slot(ctx->opts, ctx->state, 0U);
-            dsd_signal_search_note_call(ctx->state, 0U);
-        }
-    }
+    p25_lcw_note_full_suid_source(ctx, wacn, sysid, src);
 }
 
 static void
@@ -1278,28 +1315,7 @@ p25_lcw_dispatch_mfid_d8(p25_lcw_ctx* ctx) {
         if (wacn != 0) {
             ctx->state->p25_src_nid = wacn;
         }
-        if (src != 0) {
-            dsd_call_snapshot call;
-            if (p25p1_current_call(ctx->state, &call)) {
-                const dsd_call_observation observation = {
-                    .protocol = call.protocol,
-                    .slot = 0U,
-                    .kind = call.kind,
-                    .ota_target_id = call.ota_target_id,
-                    .policy_target_id = call.policy_target_id,
-                    .ota_source_id = src,
-                    .channel = call.channel,
-                    .frequency_hz = call.frequency_hz,
-                    .service_options = call.service_options,
-                    .emergency = call.emergency,
-                    .priority = call.priority,
-                    .has_service_metadata = call.has_service_metadata,
-                };
-                (void)dsd_call_state_observe(ctx->state, &observation, DSD_CALL_BOUNDARY_CONTINUE);
-                dsd_event_sync_slot(ctx->opts, ctx->state, 0U);
-                dsd_signal_search_note_call(ctx->state, 0U);
-            }
-        }
+        p25_lcw_note_full_suid_source(ctx, wacn, sysid, src);
         return 1;
     }
     return 0;
