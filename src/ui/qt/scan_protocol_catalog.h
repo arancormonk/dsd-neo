@@ -65,7 +65,12 @@ enum ScanKeySwitch : unsigned {
     ScanKeyForceAlgid = 1U << 12,   /**< --dmr-force-algid: an algorithm fallback. */
     ScanKeyNoForce = 1U << 13,      /**< --no-force-key: no forcing. */
     ScanKeyGroup = 1U << 14,        /**< -G: the talkgroup file. */
+    /** Past the last switch: a new one goes before it, so kScanKeyAllSwitches takes it in. */
+    ScanKeySwitchEnd = 1U << 15,
 };
+
+/** Every ScanKeySwitch bit. */
+constexpr unsigned kScanKeyAllSwitches = ScanKeySwitchEnd - 1U;
 
 /* The engine's class masks for those switches (scan_options.c, with the issue #890 key matrix): P25 takes the hex,
    RC4 and file keys; DMR every DMR switch; NXDN48 and NXDN96 the hex, RC4, scrambler and file keys and privacy

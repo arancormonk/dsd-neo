@@ -375,18 +375,11 @@ appendGroupOption(const QVariantMap& sys, QStringList& options) {
     }
 }
 
-/* The key options of a row whose protocol takes keys (P25, DMR, NXDN, dPMR), every switch of which keyMatrixError()
-   checked against the protocol's table: its profile and direct key checked, then -G, the direct key, the profile's
-   options and the force choice. */
+/* The key options of a row whose protocol takes keys (P25, DMR, NXDN, dPMR), its profile already matched
+   (profileChoiceError()) and every switch checked against the protocol's table (keyMatrixError()): its direct key
+   checked, then -G, the direct key, the profile's options and the force choice. */
 QString
 buildKeyOptions(const QVariantMap& sys, const ScanProtocol& protocol, QStringList& options) {
-    if (!session_args_profile_compatible(sys)) {
-        return QStringLiteral("The decryption profile protocol does not match this scan entry.");
-    }
-    if (sys.value("decryptionSelectionMode").toString() == "vendor") {
-        return QStringLiteral(
-            "Vendor keystream profiles require a standalone session; scan restoration is unavailable.");
-    }
     const QString keyType = sys.value("encKeyType").toString();
     const QString key = sys.value("encKeyValue").toString();
     QString keyError = validateDirectKeyChoice(sys, keyType, key);
@@ -418,10 +411,32 @@ buildKeyOptions(const QVariantMap& sys, const ScanProtocol& protocol, QStringLis
     return {};
 }
 
+/* Why the decryption profile saved system @p sys runs cannot serve a row that takes keys, or empty: one made for another
+   protocol, or a vendor keystream profile, which needs a standalone session. Asked before the row's key switches
+   (keyMatrixError()), so a profile of the wrong protocol is named as that, not by a switch it happens to carry. */
+QString
+profileChoiceError(const QVariantMap& sys) {
+    if (!session_args_profile_compatible(sys)) {
+        return QStringLiteral("The decryption profile protocol does not match this scan entry.");
+    }
+    if (sys.value("decryptionSelectionMode").toString() == "vendor") {
+        return QStringLiteral(
+            "Vendor keystream profiles require a standalone session; scan restoration is unavailable.");
+    }
+    return {};
+}
+
 QString
 buildOptions(const QVariantMap& sys, const ScanProtocol& protocol, QStringList& options) {
     if (sys.value("decodeFlag").toString().simplified().split(QLatin1Char(' ')).contains(QStringLiteral("-^"))) {
         options << QStringLiteral("-^");
+    }
+    const bool keyed = protocol.keys == ScanProtocolKeys::Full || protocol.keys == ScanProtocolKeys::Scrambler;
+    if (keyed) {
+        QString profileError = profileChoiceError(sys);
+        if (!profileError.isEmpty()) {
+            return profileError;
+        }
     }
     QString matrixError = keyMatrixError(sys, protocol);
     if (!matrixError.isEmpty()) {

@@ -1634,7 +1634,7 @@ key setting is refused with the reason before the list is written. P25 takes Hyt
 or 64 hex digits) and RC4 / DES keys and key files, but no Basic Privacy key, scrambler or
 Force key setting; NXDN48 and NXDN96 take Hytera / AES (64 hex digits), RC4 / DES and scrambler
 keys, key files and privacy forcing, but no Basic Privacy key, DMR talkgroup key map or algorithm
-fallback; DMR takes every key setting.
+fallback; DMR takes every key setting but a scrambler key.
 
 Each system's group file becomes a scoped `-G` option. The list's group file is
 only the fallback for entries without their own file. Key CSVs retain their

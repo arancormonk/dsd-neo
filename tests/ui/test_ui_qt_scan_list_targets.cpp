@@ -531,6 +531,19 @@ test_key_switch_table_matches_engine() {
                || ((id == QLatin1String("m17") || id == QLatin1String("ysf") || id == QLatin1String("dstar"))
                    && (bit & (ScanKeyClear | ScanKeyProfileRef | ScanKeyNoForce)) != 0U);
     };
+    // The walk covers every switch: a new ScanKeySwitch bit with no setting here fails it.
+    unsigned covered = 0U;
+    for (const KeySetting& setting : keySettings()) {
+        covered |= setting.bit;
+    }
+    check(covered == kScanKeyAllSwitches);
+    if (covered != kScanKeyAllSwitches) {
+        std::fprintf(stderr, "keySettings() misses switch bits 0x%x\n", kScanKeyAllSwitches & ~covered);
+    }
+    // Every protocol's table names only real switches.
+    for (const ScanProtocol& protocol : scan_protocols()) {
+        check((protocol.keySwitches & ~kScanKeyAllSwitches) == 0U);
+    }
     const QVariantMap entry{{"uid", "entry"}, {"kind", "system"}, {"systemUid", "sys"}, {"enabled", true}};
     const QVariantMap list{{"uid", "list"}, {"sourceType", "usb"}, {"entries", QVariantList{entry}}};
     for (const ScanProtocol& protocol : scan_protocols()) {
@@ -571,6 +584,46 @@ test_key_switch_table_matches_engine() {
             }
         }
     }
+}
+
+/* A decryption profile made for another protocol is named as that, before any switch it carries is judged: a DMR
+   Basic Privacy profile left on a system switched to P25 says the profile does not match, not that P25 takes no Basic
+   Privacy key. A vendor keystream profile likewise. */
+static void
+test_profile_mismatch_named_first() {
+    const QVariantMap entry{{"uid", "entry"}, {"kind", "system"}, {"systemUid", "sys"}, {"enabled", true}};
+    const QVariantMap list{{"uid", "list"}, {"sourceType", "usb"}, {"entries", QVariantList{entry}}};
+    QVariantMap sys{{"uid", "sys"},
+                    {"name", "Site"},
+                    {"decodeFlag", "-ft"},
+                    {"freqMhz", "851.5"},
+                    {"decryptionProtocol", "dmr"},
+                    {"decryptionSelectionMode", "direct"},
+                    {"decryptionProfileRef", "dmr-ref"},
+                    {"decryptionForce", 0},
+                    {"encKeyType", "basic"},
+                    {"encKeyValue", "7"}};
+    auto build = [&]() { return scan_list_targets(list, QVariantList{sys}); };
+    check(!build().ok
+          && build().error == QStringLiteral("Site: The decryption profile protocol does not match this scan entry."));
+    // The same profile on the DMR system it was made for builds.
+    sys["decodeFlag"] = "-fs";
+    check(build().ok && build().csv.contains("-b 7"));
+    // A vendor profile is named as that on a protocol whose row would refuse its switches too.
+    sys["decodeFlag"] = "-ft";
+    sys["decryptionProtocol"] = "mixed";
+    sys["decryptionSelectionMode"] = "vendor";
+    check(!build().ok
+          && build().error
+                 == QStringLiteral("Site: Vendor keystream profiles require a standalone session; scan restoration is "
+                                   "unavailable."));
+    // A P25 profile on P25 with a key P25 takes builds; one P25 cannot take is refused by its switch.
+    sys["decryptionProtocol"] = "p25";
+    sys["decryptionSelectionMode"] = "direct";
+    check(!build().ok && build().error.contains("P25 entries take no Motorola Basic Privacy key"));
+    sys["encKeyType"] = "rc4";
+    sys["encKeyValue"] = "0123456789";
+    check(build().ok && build().csv.contains("-1 0123456789"));
 }
 
 int
@@ -973,5 +1026,6 @@ main(int argc, char** argv) {
     test_simplex_digital_targets();
     test_nxdn_row_keys();
     test_key_switch_table_matches_engine();
+    test_profile_mismatch_named_first();
     return failures ? 1 : 0;
 }
