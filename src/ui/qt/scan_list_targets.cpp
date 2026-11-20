@@ -10,6 +10,7 @@
 #include <QVariant>
 #include <Qt>
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <dsd-neo/core/safe_api.h>
 #include <dsd-neo/runtime/analog_channel.h>
@@ -237,11 +238,12 @@ validateDirectKeyChoice(const QVariantMap& sys, const QString& keyType, const QS
    key, a key or key-map file, a profile, a force choice, or the clear-keys choice. */
 bool
 carriesKeys(const QVariantMap& sys) {
-    for (const auto& field : {"encKeyType", "encKeyValue", "keyCsvPath", "keysHexCsvPath", "keysDecCsvPath",
-                              "dmrTgKeyCsvPath", "decryptionProfileRef", "decryptionSelectionMode"}) {
-        if (!sys.value(field).toString().isEmpty()) {
-            return true;
-        }
+    static const std::array<const char*, 8> fields{
+        "encKeyType",     "encKeyValue",     "keyCsvPath",           "keysHexCsvPath",
+        "keysDecCsvPath", "dmrTgKeyCsvPath", "decryptionProfileRef", "decryptionSelectionMode"};
+    if (std::any_of(fields.cbegin(), fields.cend(),
+                    [&sys](const char* field) { return !sys.value(field).toString().isEmpty(); })) {
+        return true;
     }
     int force = 0;
     return sys.value("decryptionClearKeys").toBool() || (stored_int(sys.value("encForceKey", 0), &force) && force != 0)

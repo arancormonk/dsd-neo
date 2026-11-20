@@ -34,21 +34,21 @@ class ScanListsModel : public QAbstractListModel {
 
     QVariantList
     protocols() const {
-        return scan_protocols_variant();
+        return m_protocols;
     }
 
     /** @brief The protocol a saved system's decode flags select (scan_protocol_for_flag()), as protocols lists it;
      *  an empty map for flags a scan list does not map. */
     Q_INVOKABLE QVariantMap
     protocolForFlag(const QString& decodeFlag) const {
-        return scan_protocol_variant(scan_protocol_for_flag(decodeFlag));
+        return protocolEntry(scan_protocol_for_flag(decodeFlag));
     }
 
     /** @brief The protocol an engine target type names, read whole (scan_protocol_for_type()), as protocols lists it;
      *  an empty map for a type the catalog does not have. */
     Q_INVOKABLE QVariantMap
     protocolForType(const QString& type) const {
-        return scan_protocol_variant(scan_protocol_for_type(type));
+        return protocolEntry(scan_protocol_for_type(type));
     }
 
     Q_INVOKABLE QVariantMap get(int row) const;
@@ -106,6 +106,17 @@ class ScanListsModel : public QAbstractListModel {
   private:
     bool save(const QList<QVariantMap>& rows) const;
     QList<QVariantMap> m_rows;
+    /* scan_protocols_variant(), built once: what protocols gives QML, and the protocol*() lookups' answers. */
+    const QVariantList m_protocols = scan_protocols_variant();
+
+    /* @p protocol's entry of m_protocols (the catalog's order), an empty map for nullptr. */
+    QVariantMap
+    protocolEntry(const ScanProtocol* protocol) const {
+        return protocol != nullptr
+                   ? m_protocols.value(static_cast<qsizetype>(protocol - scan_protocols().data())).toMap()
+                   : QVariantMap();
+    }
+
     bool m_uidsRepaired = false;
     std::function<int(const QString&)> m_acceptedRows;
 };

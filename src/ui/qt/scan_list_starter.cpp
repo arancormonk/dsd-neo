@@ -199,13 +199,16 @@ csvAnalogRateWarnings(const QVariantMap& list, const QString& path, const Sessio
     return warning.isEmpty() ? QStringList() : QStringList{warning};
 }
 
-/* Issue #890: a TETRA DMO row of an imported target CSV (scan_protocol_for_type()), counted in @p context (a bool). */
+/* Issue #890: the type of each row of an imported target CSV, appended to @p context (a QStringList). */
 void
-collectCsvTetraTarget(const dsd_app_scan_csv_target* target, void* context) {
-    const ScanProtocol* protocol = scan_protocol_for_type(QString::fromUtf8(target->type));
-    if (protocol != nullptr && QLatin1String(protocol->id) == QLatin1String("tetra_dmo")) {
-        *static_cast<bool*>(context) = true;
-    }
+collectCsvTargetType(const dsd_app_scan_csv_target* target, void* context) {
+    static_cast<QStringList*>(context)->append(QString::fromUtf8(target->type));
+}
+
+/* Whether @p protocol is TETRA DMO. */
+bool
+isTetraDmo(const ScanProtocol* protocol) {
+    return protocol != nullptr && QLatin1String(protocol->id) == QLatin1String("tetra_dmo");
 }
 
 QVariantMap
@@ -392,17 +395,20 @@ bool
 ScanListStarter::hasTetraTargets(const QVariantMap& list) const {
     if (list.value("targetSource", "entries").toString() == QStringLiteral("csv")) {
         const QString path = list.value("targetsCsvPath").toString();
-        bool found = false;
-        const dsd_app_scan_csv_callbacks callbacks{collectCsvTetraTarget, nullptr, &found, nullptr};
-        return !path.isEmpty()
-               && dsd_app_scan_csv_inspect(path.toUtf8().constData(), nullptr, 0, &callbacks, nullptr, 0) == 0 && found;
+        QStringList types;
+        const dsd_app_scan_csv_callbacks callbacks{collectCsvTargetType, nullptr, &types, nullptr};
+        if (path.isEmpty()
+            || dsd_app_scan_csv_inspect(path.toUtf8().constData(), nullptr, 0, &callbacks, nullptr, 0) != 0) {
+            return false;
+        }
+        return std::any_of(types.cbegin(), types.cend(),
+                           [](const QString& type) { return isTetraDmo(scan_protocol_for_type(type)); });
     }
     const QVariantList entries = list.value("entries").toList();
     return std::any_of(entries.cbegin(), entries.cend(), [this](const QVariant& value) {
         const QVariantMap entry = value.toMap();
-        const ScanProtocol* protocol = scan_list_entry_protocol(entry, entrySystemFlag(entry, m_systems));
-        return entry.value("enabled", true).toBool() && protocol != nullptr
-               && QLatin1String(protocol->id) == QLatin1String("tetra_dmo");
+        return entry.value("enabled", true).toBool()
+               && isTetraDmo(scan_list_entry_protocol(entry, entrySystemFlag(entry, m_systems)));
     });
 }
 

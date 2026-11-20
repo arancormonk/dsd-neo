@@ -27,6 +27,7 @@
 #include <QString>
 #include <QVariantList>
 #include <QVariantMap>
+#include <algorithm>
 #include <array>
 #include <cstddef>
 
@@ -90,15 +91,19 @@ scan_protocols() {
     return catalog;
 }
 
+/** The first catalog protocol @p matches takes, or nullptr. */
+template <typename Match>
+inline const ScanProtocol*
+scan_protocol_find(Match matches) {
+    const auto& catalog = scan_protocols();
+    const auto found = std::find_if(catalog.cbegin(), catalog.cend(), matches);
+    return found != catalog.cend() ? &*found : nullptr;
+}
+
 /** The protocol frequency-entry id @p id names, exactly, or nullptr. */
 inline const ScanProtocol*
 scan_protocol_by_id(const QString& id) {
-    for (const ScanProtocol& p : scan_protocols()) {
-        if (id == QLatin1String(p.id)) {
-            return &p;
-        }
-    }
-    return nullptr;
+    return scan_protocol_find([&id](const ScanProtocol& p) { return id == QLatin1String(p.id); });
 }
 
 /** The protocol a saved system's decode flags select, blanks collapsed and case significant, or nullptr: its own flag,
@@ -106,17 +111,11 @@ scan_protocol_by_id(const QString& id) {
 inline const ScanProtocol*
 scan_protocol_for_flag(const QString& decodeFlag) {
     const QString flag = decodeFlag.simplified();
-    for (const char* p25 : {"-f1", "-mq", "-^", "-ft -^", "-mq -^", "-^ -ft", "-^ -mq"}) {
-        if (flag == QLatin1String(p25)) {
-            return &scan_protocols()[0];
-        }
+    static const std::array<const char*, 7> p25{"-f1", "-mq", "-^", "-ft -^", "-mq -^", "-^ -ft", "-^ -mq"};
+    if (std::any_of(p25.cbegin(), p25.cend(), [&flag](const char* alias) { return flag == QLatin1String(alias); })) {
+        return &scan_protocols()[0];
     }
-    for (const ScanProtocol& p : scan_protocols()) {
-        if (flag == QLatin1String(p.decodeFlag)) {
-            return &p;
-        }
-    }
-    return nullptr;
+    return scan_protocol_find([&flag](const ScanProtocol& p) { return flag == QLatin1String(p.decodeFlag); });
 }
 
 /** The engine target type of @p protocol: "<prefix>-trunk" when @p trunk, else "<prefix>-conventional". */
@@ -129,13 +128,10 @@ scan_protocol_type(const ScanProtocol& protocol, bool trunk) {
     trunked spelling only for a protocol that has one. Never split at a hyphen, since a prefix holds one. */
 inline const ScanProtocol*
 scan_protocol_for_type(const QString& type) {
-    for (const ScanProtocol& p : scan_protocols()) {
-        if (type.compare(scan_protocol_type(p, false), Qt::CaseInsensitive) == 0
-            || (p.trunking && type.compare(scan_protocol_type(p, true), Qt::CaseInsensitive) == 0)) {
-            return &p;
-        }
-    }
-    return nullptr;
+    return scan_protocol_find([&type](const ScanProtocol& p) {
+        return type.compare(scan_protocol_type(p, false), Qt::CaseInsensitive) == 0
+               || (p.trunking && type.compare(scan_protocol_type(p, true), Qt::CaseInsensitive) == 0);
+    });
 }
 
 /** The protocol @p mode names wherever a channel's mode is written, or nullptr: a decode flag, compared exactly; else,
@@ -149,11 +145,11 @@ scan_protocol_for_mode(const QString& mode) {
     if (const ScanProtocol* type = scan_protocol_for_type(mode)) {
         return type;
     }
-    for (const ScanProtocol& p : scan_protocols()) {
-        if (mode.compare(QLatin1String(p.scanClass), Qt::CaseInsensitive) == 0
-            || mode.compare(QLatin1String(p.id), Qt::CaseInsensitive) == 0) {
-            return &p;
-        }
+    if (const ScanProtocol* named = scan_protocol_find([&mode](const ScanProtocol& p) {
+            return mode.compare(QLatin1String(p.scanClass), Qt::CaseInsensitive) == 0
+                   || mode.compare(QLatin1String(p.id), Qt::CaseInsensitive) == 0;
+        })) {
+        return named;
     }
     return mode.compare(QLatin1String("d-star"), Qt::CaseInsensitive) == 0
                ? scan_protocol_by_id(QStringLiteral("dstar"))
