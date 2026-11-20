@@ -248,6 +248,30 @@ test_quiet_check_hears_the_frame_verdict(dsd_state* state) {
     (void)quiet_frame(&opts, state, NXDN_EVIDENCE_WEAK);
     expect("both NXDN rates: the longer hold", (int)g_quiet_hold_ms, (int)NXDN_CONFIRM_PARTIAL_HOLD_MS_48);
 
+    /* An isolated strong check waits (PARTIAL); the next frame's spacing confirms it and counts, once, as proof of its
+       content: PROVEN, though that frame checked nothing itself. The frames after it only run on: nothing, and a frame
+       begun with no start of its own inherits nothing either. */
+    nxdn_confirm_reset(state);
+    nxdn_confirm_note_frame_start(state, 40000U, 0, 0);
+    expect("an isolated strong frame is PARTIAL", quiet_frame(&opts, state, NXDN_EVIDENCE_STRONG),
+           DSD_CONTENT_EVIDENCE_PARTIAL);
+    expect("an isolated strong frame counts nothing yet", nxdn_confirm_frame_content_counted(state), 0);
+    nxdn_confirm_note_frame_start(state, 40000U + NXDN_CONFIRM_FRAME_SYMBOLS, 0, 0);
+    expect("the frame whose spacing confirmed it is PROVEN", quiet_frame(&opts, state, 0), DSD_CONTENT_EVIDENCE_PROVEN);
+    expect("and counts as proven content", nxdn_confirm_frame_content_counted(state), 1);
+    expect("though its own content proves nothing", nxdn_confirm_frame_content_proven(state), 0);
+    nxdn_confirm_note_frame_start(state, 40000U + (2U * NXDN_CONFIRM_FRAME_SYMBOLS), 0, 0);
+    expect("the frame after it notes nothing", quiet_frame(&opts, state, 0), 0);
+    expect("and counts nothing", nxdn_confirm_frame_content_counted(state), 0);
+    nxdn_confirm_reset(state);
+    nxdn_confirm_note_frame_start(state, 50000U, 0, 0);
+    (void)quiet_frame(&opts, state, NXDN_EVIDENCE_STRONG);
+    nxdn_confirm_note_frame_start(state, 50000U + NXDN_CONFIRM_FRAME_SYMBOLS, 0, 0);
+    expect("spacing beside a weak check of its own: PROVEN", quiet_frame(&opts, state, NXDN_EVIDENCE_WEAK),
+           DSD_CONTENT_EVIDENCE_PROVEN);
+    expect("a frame begun with no start of its own inherits nothing", quiet_frame(&opts, state, 0), 0);
+    expect("null state counts nothing", nxdn_confirm_frame_content_counted(NULL), 0);
+
     nxdn_confirm_reset(state);
     state->nxdn_frame_foreign = 1;
     expect("another channel's control traffic notes nothing", quiet_frame(&opts, state, NXDN_EVIDENCE_STRONG), 0);

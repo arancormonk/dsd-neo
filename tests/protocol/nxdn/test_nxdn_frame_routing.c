@@ -1468,30 +1468,50 @@ test_forced_scramble_skips_a_standalone_header(void) {
 }
 
 /* An NXDN48 transmission whose first frame's FACCH1 passed on its own (isolated: the check waits) is confirmed by the
-   next frame's spacing. That second frame, data only with an SCCH TS 1-E does not define and a failed FACCH1, starts the
-   carrier's activity stamp (the scanner's hold on a -Y scan) for the transmission it confirmed; a later such frame does
-   not extend it. On a plain conventional receiver, as test_diagnostic_only_frame_holds_no_scan(). */
+   next frame's spacing. That second frame, data only with an SCCH TS 1-E does not define and a failed FACCH1, has no
+   proven content of its own; its spacing counts once as proof of the first frame's content, so it is heard as PROVEN
+   content (the -Y step's and the quiet check's note) and starts the carrier's activity stamp for the transmission it
+   confirmed: on a plain conventional receiver, as test_diagnostic_only_frame_holds_no_scan(), and on a conventional -Y
+   scan (issue #834), whose hold otherwise needs each frame's own content proven, the scanner's 2 s hold. A later
+   diagnostic frame extends neither, and a later frame that checked nothing only runs on: a plain receiver stamps the
+   confirmed transmission's carrier for it, and a -Y scan's hold is not refreshed. */
 static int
-test_spacing_confirmation_starts_the_scan_hold(void) {
+spacing_confirmation_case(int y_scan) {
     reset_state();
+    g_opts.scanner_mode = y_scan;
     g_state.last_cc_sync_time = 1000;
     g_stub_scch_ok = 0;
     g_stub_facch_ok = 1;
     (void)route_nxdn48_frame_at(0x62U, 30000U);
     int rc = expect_int("pending facch: not yet confirmed", nxdn_confirm_is_confirmed(&g_state), 0);
     rc |= expect_int("pending facch: no stamp yet", (int)g_state.last_cc_sync_time, 1000);
+    rc |= expect_int("pending facch: no proven content yet", (int)g_state.scan_y_content_seq, 0);
     g_stub_scch_ok = 1;
     g_stub_scch_names_type_d = 1;
     g_stub_scch_invalid = 1;
     g_stub_facch_ok = 0;
     (void)route_nxdn48_frame_at(0x62U, 30192U);
     rc |= expect_int("spacing confirmed the transmission", nxdn_confirm_is_confirmed(&g_state), 1);
-    rc |= expect_int("spacing confirmation: the carrier stamped active", g_state.last_cc_sync_time == dsd_decode_time(),
-                     1);
+    rc |= expect_int("spacing confirmation: the first frame's content proven once", (int)g_state.scan_y_content_seq, 1);
+    rc |= expect_int(y_scan ? "spacing confirmation: the -Y hold started" : "spacing confirmation: the carrier stamped",
+                     (int)g_state.last_cc_sync_time, (int)dsd_decode_time() + (y_scan ? 2 : 0));
     g_state.last_cc_sync_time = 1000;
     (void)route_nxdn48_frame_at(0x62U, 30384U);
     rc |= expect_int("later diagnostic frame: the stamp not extended", (int)g_state.last_cc_sync_time, 1000);
+    g_stub_scch_ok = 0;
+    g_stub_scch_names_type_d = 0;
+    g_stub_scch_invalid = 0;
+    (void)route_nxdn48_frame_at(0x62U, 30576U);
+    rc |= expect_int(y_scan ? "later unchecked frame: the -Y hold not refreshed"
+                            : "later unchecked frame: the confirmed carrier stamped",
+                     (int)g_state.last_cc_sync_time, y_scan ? 1000 : (int)dsd_decode_time());
+    rc |= expect_int("later frames: no further proven content", (int)g_state.scan_y_content_seq, 1);
     return rc;
+}
+
+static int
+test_spacing_confirmation_starts_the_scan_hold(void) {
+    return spacing_confirmation_case(0) | spacing_confirmation_case(1);
 }
 
 /* A frame whose SCCH is undefined content (its "Type-D" layout rolled back at the frame's end) and whose FACCH1 is a

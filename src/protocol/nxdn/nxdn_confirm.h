@@ -103,9 +103,10 @@ void nxdn_confirm_note_evidence(dsd_state* state, nxdn_evidence evidence);
  * A frame whose own CRCs confirmed the transmission is reported to a signal search here, once,
  * after the frame's channels have published what the confirmation unlocked: the search reads
  * the RAN and call from state when it hears it. A scan quiet check hears it here too, through @p opts
- * (dsd_frame_sync_hook_content_evidence(), issue #834): PROVEN for that frame, PARTIAL for a weak
- * frame whose streak a later one must complete (NXDN_CONFIRM_PARTIAL_HOLD_MS_48 or _96), nothing for
- * a frame that checked nothing. @p opts may be NULL (no quiet check).
+ * (dsd_frame_sync_hook_content_evidence(), issue #834): PROVEN for that frame, and for the frame whose
+ * spacing confirmed the strong check the frame before left waiting (once: the frames after it only run
+ * on), PARTIAL for a weak frame whose streak a later one must complete (NXDN_CONFIRM_PARTIAL_HOLD_MS_48
+ * or _96), nothing for a frame that checked nothing. @p opts may be NULL (no quiet check).
  */
 void nxdn_confirm_end_frame(const dsd_opts* opts, dsd_state* state);
 
@@ -143,9 +144,21 @@ int nxdn_confirm_frame_proved(const dsd_state* state);
  *
  * Narrower than nxdn_confirm_frame_proved(), which a lone short CRC satisfies. It is the frame a scan quiet check hears
  * as PROVEN content (nxdn_confirm_end_frame()), and the frame that refreshes a conventional -Y scan's hold (issue #834),
- * so both read "checked" the same way. Read it after nxdn_confirm_end_frame().
+ * so both read "checked" the same way; a frame whose spacing confirmed the frame before counts too
+ * (nxdn_confirm_frame_content_counted()). Read it after nxdn_confirm_end_frame().
  */
 int nxdn_confirm_frame_content_proven(const dsd_state* state);
+
+/**
+ * @brief Whether this frame counts as proven content for a scan: its own CRCs proved it
+ * (nxdn_confirm_frame_content_proven()), or its spacing confirmed the strong check the frame before left waiting
+ * (nxdn_confirm_note_frame_start()), counted once, for this frame only, as proof of that frame's content.
+ *
+ * It is the frame a scan quiet check hears as PROVEN content (nxdn_confirm_end_frame()) and the frame that starts or
+ * refreshes a conventional -Y scan's hold (issue #834). The frames after it, which only run on, count nothing. Read it
+ * after nxdn_confirm_end_frame().
+ */
+int nxdn_confirm_frame_content_counted(const dsd_state* state);
 
 #ifdef __cplusplus
 }

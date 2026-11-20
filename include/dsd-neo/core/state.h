@@ -2060,6 +2060,9 @@ struct dsd_state {
      * unless another check of the frame passed too (nxdn_confirm_frame_checks counts them).
      * nxdn_confirm_strong_pending: the last frame read, an isolated one, passed a strong check, which confirms the
      * transmission if the next frame runs on from it.
+     * nxdn_confirm_spacing_due: the frame just started ran on from such a frame and so confirmed it
+     * (nxdn_confirm_note_frame_start()); nxdn_confirm_begin_frame() hands it to nxdn_confirm_frame_spaced, this frame's
+     * spacing proof, counted once as proof of the frame before's content (nxdn_confirm_frame_content_counted()).
      * nxdn_confirm_last_frame_valid / nxdn_confirm_last_frame_symbol: where the last frame read began
      * (dsd_state::symbolcnt), the run's measure. */
     uint8_t nxdn_confirmed;
@@ -2071,6 +2074,8 @@ struct dsd_state {
     uint8_t nxdn_confirm_strong_waits;
     uint8_t nxdn_confirm_frame_checks;
     uint8_t nxdn_confirm_strong_pending;
+    uint8_t nxdn_confirm_spacing_due;
+    uint8_t nxdn_confirm_frame_spaced;
     uint8_t nxdn_confirm_last_frame_valid;
     uint32_t nxdn_confirm_last_frame_symbol;
     uint64_t nxdn_confirm_scch_generation;

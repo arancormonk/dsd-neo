@@ -717,8 +717,9 @@ Generated (do not edit/commit):
       D-STAR, YSF, M17 or NXDN call (whose frames stamp no anchor, or only checked ones) keeps the row through those
       checks, encrypted or locked out alike. NXDN on a conventional -Y scan stamps the anchor, with its 2 s scanner
       hold (#406), only on a frame whose own CRCs proved its content (`nxdn_finish_decoded_frame()`,
-      `nxdn_confirm_frame_content_proven()`: a strong CRC, or a weak streak the frame completes or continues, the
-      frame the quiet check hears as PROVEN): the transmission's confirmation alone lets every later LICH-passing frame
+      `nxdn_confirm_frame_content_counted()`: a strong CRC, or a weak streak the frame completes or continues, the
+      frame the quiet check hears as PROVEN; and, once, the frame whose spacing confirmed the strong check the frame
+      before left waiting, as proof of that frame's content): the transmission's confirmation alone lets every later LICH-passing frame
       through, receiver noise after the call included, and a hold those refreshed, or a lone 6-bit CRC one of them
       passed by chance, never let the row go. Trunked receivers and plain conventional ones keep the
       confirmation's stamp, and a run of failed CACs pushes the anchor only off a conventional -Y scan
@@ -13633,8 +13634,13 @@ Private per-protocol modules worth knowing about:
   and is evidence, and only its Call Option, Cipher Type and Key ID are not taken (D2; some decoders read IV parts
   there); such an INFO1 is valid content. A data frame whose only checked content is a content-invalid SCCH
   (`nxdn_scch_content_problem()` names a field, `nxdn_channel_result::scch_invalid`) neither stamps an already confirmed
-  carrier active nor extends the scanner's hold (`nxdn_finish_decoded_frame()`); a transmission that frame's spacing
-  confirms starts its hold there. The "Type-D" layout a content-invalid SCCH names stays with its frame even on a
+  carrier active nor extends the scanner's hold (`nxdn_finish_decoded_frame()`). A transmission that frame's spacing
+  confirms (a strong check the frame before left waiting) was not confirmed before it, so the frame starts the
+  carrier's activity stamp there on a plain conventional or trunked receiver. A conventional -Y scan's hold needs each
+  frame's content counted (issue #834): that frame's own proves nothing, so its spacing counts once as proof of the
+  frame before's content (`nxdn_confirm_frame_content_counted()`): the frame is heard as PROVEN content by the -Y step
+  and the quiet check (`nxdn_confirm_end_frame()`) and starts the scanner's 2 s hold, and the frames after it, which
+  only run on, neither refresh the hold nor note anything. The "Type-D" layout a content-invalid SCCH names stays with its frame even on a
   confirmed transmission (`nxdn_channel_result::scch_invalid`), though never over a Type-C site a later channel of that
   frame verified (`dsd_nxdn_note_type_c()`). An End of Transmission (Repeater in Use / Go to Repeater
   31, Table 6.6-9) ends the sending in an INFO2 as in an INFO4 (TS 2-E Table 5.1-5, `nxdn_scch_update_busy_display()`).
