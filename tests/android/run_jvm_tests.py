@@ -22,7 +22,8 @@ APP_SOURCES = Path("android/package/src/io/github/arancormonk/dsdneo")
 JVM_OPTIONS = ("-XX:TieredStopAtLevel=1", "-XX:+UseSerialGC")
 # The serial collector is a default only: HotSpot exits ("Multiple garbage collectors selected") when two are selected,
 # so a collector the caller selected, in the options the JVM is started with or in those every JVM (JAVA_TOOL_OPTIONS,
-# and HotSpot's _JAVA_OPTIONS) or every java launch (JDK_JAVA_OPTIONS) reads, is left alone.
+# and HotSpot's _JAVA_OPTIONS) or every java launch (JDK_JAVA_OPTIONS) reads, is left alone, as is one an argument file
+# the launcher expands there may select (names_argument_file()).
 # Matched against whole arguments, as the JVM splits these options (jvm_option_words()).
 COLLECTOR_SELECTION = re.compile(r"-XX:\+Use\w*GC")
 JVM_WIDE_OPTIONS = ("JAVA_TOOL_OPTIONS", "JDK_JAVA_OPTIONS", "_JAVA_OPTIONS")
@@ -1820,11 +1821,20 @@ def java_opts_words(text, kotlinc):
     return text.split()
 
 
+def names_argument_file(words):
+    """Whether the java launcher arguments @p words name an argument file (@path), which the launcher expands in their
+    place on its command line and in JDK_JAVA_OPTIONS ("@@" is a literal "@"). The JVM-wide JAVA_TOOL_OPTIONS and
+    _JAVA_OPTIONS expand none."""
+    return any(word.startswith("@") and not word.startswith("@@") for word in words)
+
+
 def jvm_options(environ, given=()):
     """JVM_OPTIONS for a JVM started with the arguments @p given under @p environ, without the serial collector when
-    @p given or the JVM-wide options in @p environ select a collector already."""
-    wide = [jvm_option_words(environ.get(name, "")) for name in JVM_WIDE_OPTIONS]
-    if any(selects_collector(words) for words in [list(given), *wide]):
+    @p given or the JVM-wide options in @p environ select a collector already, or may: an argument file the launcher
+    expands there (in @p given, or in JDK_JAVA_OPTIONS) can select one, and is not read here."""
+    wide = {name: jvm_option_words(environ.get(name, "")) for name in JVM_WIDE_OPTIONS}
+    selected = any(selects_collector(words) for words in [list(given), *wide.values()])
+    if selected or names_argument_file(given) or names_argument_file(wide["JDK_JAVA_OPTIONS"]):
         return tuple(option for option in JVM_OPTIONS if not selects_collector([option]))
     return JVM_OPTIONS
 

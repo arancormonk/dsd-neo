@@ -171,6 +171,24 @@ class CollectorChoice(unittest.TestCase):
     def test_a_deselected_collector_selects_none(self):
         self.assertIn(self.SERIAL, self.kotlinc_options({"JAVA_OPTS": "-XX:-UseG1GC"}))
 
+    def test_an_argument_file_is_left_its_collector(self):
+        # The launcher expands JDK_JAVA_OPTIONS=@file, and a G1 there beside the serial collector stops the JVM.
+        environ = {"JDK_JAVA_OPTIONS": "-Xss1M @/home/tester/jvm.args"}
+        self.assertNotIn(self.SERIAL, self.kotlinc_options(environ))
+        self.assertNotIn(self.SERIAL, self.cached_argv(environ))
+        argv = runner.test_command(JAVA_EXE, "tests.jar", "UsbBrokerTest.kt", environ)
+        self.assertNotIn(self.SERIAL, argv)
+        self.assertIn("-XX:TieredStopAtLevel=1", argv)
+        # kotlinc puts JAVA_OPTS's words on java's command line, where the launcher expands one too.
+        self.assertNotIn(self.SERIAL, self.kotlinc_options({"JAVA_OPTS": "@jvm.args"}))
+
+    def test_an_argument_file_only_where_the_launcher_expands_it(self):
+        # The JVM-wide options expand no argument file, and "@@" is a literal "@" to the launcher.
+        literal = ({"JAVA_TOOL_OPTIONS": "@jvm.args"}, {"_JAVA_OPTIONS": "@jvm.args"}, {"JDK_JAVA_OPTIONS": "@@x"})
+        for environ in literal:
+            with self.subTest(environ=environ):
+                self.assertIn(self.SERIAL, self.cached_argv(environ))
+
 
 if __name__ == "__main__":
     unittest.main()
