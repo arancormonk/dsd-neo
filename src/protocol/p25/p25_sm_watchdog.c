@@ -10,6 +10,7 @@
 #include <dsd-neo/protocol/p25/p25_sm_watchdog.h>
 #include <dsd-neo/protocol/p25/p25_trunk_sm.h>
 #include <dsd-neo/runtime/config.h>
+#include <dsd-neo/runtime/control_pump.h>
 #include <dsd-neo/runtime/exitflag.h>
 #include <dsd-neo/runtime/fp_mode.h>
 #include <dsd-neo/runtime/log.h>
@@ -36,6 +37,10 @@ static atomic_int g_p25_sm_tick_lock = 0;
 static atomic_int g_p25_sm_in_tick = 0;
 /* A watchdog beat asked the decoder thread for a tick (p25_sm_watchdog_service()). */
 static atomic_int g_p25_sm_tick_wanted = 0;
+/* The tune requests the ticks began and left in flight, as the range (after, through] of request IDs (0, 0: none),
+   which p25_sm_tick_tunes_in_flight() checks and retires. Written by the thread that ticks (the decoder's in a run). */
+static dsd_atomic_u64 g_p25_sm_tick_tune_after = {0U};
+static dsd_atomic_u64 g_p25_sm_tick_tune_through = {0U};
 static int g_p25_sm_wd_ms = 0; // 0 => unset (use defaults per UI mode)
 
 #if defined(_MSC_VER)
@@ -94,21 +99,42 @@ p25_sm_tick_locked(dsd_opts* opts, dsd_state* state) {
     }
 }
 
-/* One tick, under the guard, that notes the tune requests it began and left in flight (an RTL retune the stream
-   applies on its own thread): the engine starts no hunt until they land (dsd_state::p25_tick_tune_after). Every tick
-   runs through here, wherever the decoder runs it from. One load when the tick began no request. */
+/* One tick, under the guard, that notes what its tunes did, wherever the decoder runs it from (every tick runs through
+   here). A tune that may have moved the receiver is a carrier boundary: a decoder that reads back before its sync
+   (DMR, X2-TDMA) waits for that many of the new carrier's symbols (dsd_state_carrier_settling()). A tune left in flight
+   (an RTL retune the stream applies on its own thread) is noted, and the engine starts no hunt until it lands
+   (p25_sm_tick_tunes_in_flight()). One load when the tick began no request. */
 static void
 p25_sm_tick_noting_tunes(dsd_opts* opts, dsd_state* state) {
     const uint64_t before = dsd_trunk_tuning_last_request();
     p25_sm_tick_locked(opts, state);
     const uint64_t newest = dsd_trunk_tuning_last_request();
-    if (newest == before || !dsd_trunk_tuning_request_pending_in(before, newest)) {
+    if (newest == before) {
         return;
     }
-    if (state->p25_tick_tune_through == 0U) {
-        state->p25_tick_tune_after = before;
+    if (dsd_trunk_tuning_retuned_since(before)) {
+        dsd_state_note_carrier_change(state);
     }
-    state->p25_tick_tune_through = newest;
+    if (dsd_trunk_tuning_request_pending_in(before, newest)) {
+        if (dsd_atomic_u64_load_acquire(&g_p25_sm_tick_tune_through) == 0U) {
+            dsd_atomic_u64_store_release(&g_p25_sm_tick_tune_after, before);
+        }
+        dsd_atomic_u64_store_release(&g_p25_sm_tick_tune_through, newest);
+    }
+}
+
+int
+p25_sm_tick_tunes_in_flight(void) {
+    const uint64_t through = dsd_atomic_u64_load_acquire(&g_p25_sm_tick_tune_through);
+    if (through == 0U) {
+        return 0;
+    }
+    if (dsd_trunk_tuning_request_pending_in(dsd_atomic_u64_load_acquire(&g_p25_sm_tick_tune_after), through)) {
+        return 1;
+    }
+    dsd_atomic_u64_store_release(&g_p25_sm_tick_tune_after, 0U);
+    dsd_atomic_u64_store_release(&g_p25_sm_tick_tune_through, 0U);
+    return 0;
 }
 
 void
@@ -117,6 +143,9 @@ p25_sm_try_tick(dsd_opts* opts, dsd_state* state) {
         return;
     }
     if (p25_sm_tick_guard_try_enter()) {
+        /* This tick is the one a standing beat asked for too: it is spent here, so the next service point does not run
+           a second tick for it. A beat posted while this tick runs stands for the next point. */
+        atomic_store(&g_p25_sm_tick_wanted, 0);
         p25_sm_tick_noting_tunes(opts, state);
         p25_sm_tick_guard_leave();
     }
@@ -136,6 +165,12 @@ int
 p25_sm_watchdog_service(dsd_opts* opts, dsd_state* state) {
     if (!opts || !state || atomic_load(&g_p25_sm_tick_wanted) == 0) {
         return 0;
+    }
+    /* Shutdown or queued work (a command, a put-off publication) comes first: the beat stands, and no tune starts on a
+       receiver being stopped or replaced. The caller gives the decoder back to the engine loop, which runs the work and
+       then its own tick, which takes the beat. */
+    if (dsd_exitflag_load() || dsd_runtime_controls_pending() || dsd_runtime_publish_pending()) {
+        return P25_SM_WATCHDOG_DEFERRED;
     }
     /* A hold the caller already has, or anyone else's, leaves the beat standing for the next point. */
     if (!p25_sm_tick_guard_try_enter()) {

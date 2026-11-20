@@ -23,6 +23,7 @@
 #include <dsd-neo/protocol/p25/p25_sm_watchdog.h>
 #include <dsd-neo/protocol/p25/p25_trunk_sm.h>
 #include <dsd-neo/runtime/config.h>
+#include <dsd-neo/runtime/control_pump.h>
 #include <dsd-neo/runtime/decode_clock.h>
 #include <dsd-neo/runtime/trunk_scan_hooks.h>
 #include <dsd-neo/runtime/trunk_tuning_hooks.h>
@@ -243,6 +244,74 @@ check_busy_guard_keeps_the_beat(dsd_opts* opts, dsd_state* state) {
     return failed;
 }
 
+/* A followed voice channel, released by the tick @p run makes: the release's return is a carrier boundary, so a decoder
+   that reads back before its sync waits for the new carrier's symbols (dsd_state_carrier_settling()). */
+static int
+follow_and_release(dsd_opts* opts, dsd_state* state) {
+    p25_sm_ctx_t* ctx = p25_sm_get_ctx();
+    p25_sm_init_ctx(ctx, opts, state);
+    p25_sm_event_t grant = p25_sm_ev_group_grant(VOICE_CHANNEL, VC_FREQ_HZ, TALKGROUP, SOURCE, 0);
+    p25_sm_tick_guard_enter();
+    p25_sm_event(ctx, opts, state, &grant);
+    state->p25_sm_force_release = 1;
+    p25_sm_tick_guard_leave();
+    return ctx->state == P25_SM_TUNED ? 0 : 1;
+}
+
+static int g_controls_queued = 0;
+
+static int
+fake_controls_pending(void) {
+    return g_controls_queued;
+}
+
+/* A beat that stands behind a queued command runs no tick: no tune starts on a receiver the command may replace, and
+   the beat stays for the engine loop's own tick after the command. That tick takes the beat, so no later point runs a
+   second tick for it. The release it makes is a carrier boundary. */
+static int
+check_beat_order_and_boundary(dsd_opts* opts, dsd_state* state) {
+    int failed = 0;
+    if (follow_and_release(opts, state) != 0) {
+        DSD_FPRINTF(stderr, "FAIL: the grant to release was not followed\n");
+        return 1;
+    }
+    const int tunes = atomic_load(&g_tunes);
+    dsd_runtime_set_controls_pending(fake_controls_pending);
+    g_controls_queued = 1;
+    p25_sm_watchdog_request_tick();
+    const int deferred = p25_sm_watchdog_service(opts, state);
+    if (deferred != P25_SM_WATCHDOG_DEFERRED || !p25_sm_watchdog_tick_wanted() || atomic_load(&g_tunes) != tunes) {
+        DSD_FPRINTF(stderr,
+                    "FAIL: a beat behind a queued command ran its tick (answer %d, still wanted %d, tunes %d)\n",
+                    deferred, p25_sm_watchdog_tick_wanted(), atomic_load(&g_tunes) - tunes);
+        failed = 1;
+    }
+    g_controls_queued = 0;
+    dsd_runtime_set_controls_pending(NULL);
+
+    state->carrier_change_seen = 0U;
+    state->symbol_clock = 1234U;
+    p25_sm_try_tick(opts, state);
+    if (p25_sm_watchdog_tick_wanted()) {
+        DSD_FPRINTF(stderr, "FAIL: the engine's own tick left the beat it ran for standing\n");
+        failed = 1;
+    }
+    if (atomic_load(&g_tunes) == tunes || atomic_load(&g_last_tune_hz) != CC_FREQ_HZ) {
+        DSD_FPRINTF(stderr, "FAIL: the engine's tick did not release to the control channel\n");
+        failed = 1;
+    }
+    if (state->carrier_change_seen == 0U || state->carrier_change_symbol_clock != 1234U) {
+        DSD_FPRINTF(stderr, "FAIL: the release's return marked no carrier boundary (seen %u)\n",
+                    (unsigned)state->carrier_change_seen);
+        failed = 1;
+    }
+    if (p25_sm_watchdog_service(opts, state) != 0) {
+        DSD_FPRINTF(stderr, "FAIL: a second tick ran for the beat the engine's tick took\n");
+        failed = 1;
+    }
+    return failed;
+}
+
 int
 main(void) {
     if (dsd_test_setenv("DSD_NEO_P25_WD_MS", "20", 1) != 0) {
@@ -274,6 +343,7 @@ main(void) {
 
     int failed = check_release_tunes_on_decoder(opts, state);
     failed |= check_busy_guard_keeps_the_beat(opts, state);
+    failed |= check_beat_order_and_boundary(opts, state);
 
     dsd_engine_set_decoder_thread(0);
     dsd_trunk_tuning_hooks_set((dsd_trunk_tuning_hooks){0});

@@ -4472,23 +4472,6 @@ live_scanner_y_quiet_frame_yield(const dsd_opts* opts, dsd_state* state) {
     return 0;
 }
 
-/* The tunes a P25 tick began, wherever it ran (in the hunt, between frames, in the main pass), still in flight
-   (dsd_state::p25_tick_tune_after, p25_sm_watchdog.c): neither loop starts a hunt until they resolve, so the next takes
-   the tuning generation after the landing, at the actual tune boundary, and reads nothing of the carrier left (every
-   frame read meanwhile would be gated anyway). 1 while one is pending; one load while none is noted. */
-static int
-live_scanner_tick_tune_in_flight(dsd_state* state) {
-    if (state->p25_tick_tune_through == 0U) {
-        return 0;
-    }
-    if (dsd_trunk_tuning_request_pending_in(state->p25_tick_tune_after, state->p25_tick_tune_through)) {
-        return 1;
-    }
-    state->p25_tick_tune_after = 0U;
-    state->p25_tick_tune_through = 0U;
-    return 0;
-}
-
 /* Whether the run of synced frames stops before its next hunt: a command replaced the input (issue #634), and what
    follows is another stream, which the outer loop starts with the end of this reception; or a tick between frames left
    a tune in flight, which the main pass waits for, keeping the interruption so no no-carrier pass runs. */
@@ -4497,7 +4480,7 @@ live_scanner_frames_stop_before_hunt(dsd_state* state) {
     if (state->input_boundary) {
         return 1;
     }
-    if (live_scanner_tick_tune_in_flight(state)) {
+    if (p25_sm_tick_tunes_in_flight()) {
         state->input_interrupted = 1;
         return 1;
     }
@@ -4906,7 +4889,7 @@ live_scanner_main_pass(dsd_opts* opts, dsd_state* state, dsd_engine_slicer_thres
     /* noCarrier and pending-row commits can replace the visit anchors. Publish
      * the incoming visit before getFrameSync starts emitting its snapshots. */
     dsd_engine_scan_y_timing_tick(opts, state, dsd_decode_now_mono_s(), dsd_decode_now_realtime_s());
-    if (live_scanner_tick_tune_in_flight(state)) {
+    if (p25_sm_tick_tunes_in_flight()) {
         /* The hand-back's interruption stands while it waits: nothing was lost, so no no-carrier pass runs. */
         state->input_interrupted = 1;
         dsd_sleep_ms(1);

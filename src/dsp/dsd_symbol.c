@@ -2684,11 +2684,8 @@ symbol_rtl_read_wants(const symbol_work_ctx* work) {
 static int
 symbol_rtl_read_waits(dsd_opts* opts, dsd_state* state, int* wants) {
     *wants &= ~DSD_RTL_READ_WANT_EMPTY_RETURN;
-    /* A queued command or a put-off publication keeps the beat asked for: the read waits on to its idle bound, where it
-       gives way to them (symbol_rtl_read_idle_leaves()), and no tune starts on a receiver the command replaces. */
-    if (dsd_runtime_controls_pending() || dsd_runtime_publish_pending()) {
-        return 0;
-    }
+    /* Queued work with a beat standing hands back too (frame_sync_service_p25_watchdog()); queued work alone waits on
+       to the idle bound, where the read gives way to it (symbol_rtl_read_idle_leaves()). */
     if (frame_sync_service_p25_watchdog(opts, state)) {
         state->input_interrupted = 1;
         return 1;

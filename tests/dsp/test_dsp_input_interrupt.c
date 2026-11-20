@@ -479,6 +479,10 @@ static int
 fake_watchdog_service(dsd_opts* opts, dsd_state* state) {
     (void)opts;
     (void)state;
+    /* As p25_sm_watchdog_service() does: a beat behind queued work stands, and no tick runs. */
+    if (g_beat != BEAT_NONE && (g_pending || exitflag)) {
+        return -1;
+    }
     g_services++;
     if (g_service_ms != 0U) {
         dsd_sleep_ms(g_service_ms);
@@ -546,6 +550,24 @@ test_a_quiet_hunt_read_leaves_when_its_tick_retunes(void) {
                     state->input_interrupted, (unsigned)state->symbolcnt);
         g_failures++;
     }
+
+    /* A command queued with the beat standing comes first: the quiet read runs no tick (no tune on a receiver the
+       command replaces) and hands back at once, before any timed wait, for the engine to run the command, then its own
+       tick. */
+    install_watchdog_service();
+    init_udp_session(opts, state, 1, 0);
+    g_pending = 1;
+    g_beat = BEAT_MOVES;
+    (void)getSymbol(opts, state, 0);
+    if (g_services != 0 || g_beat != BEAT_MOVES || state->input_interrupted != 1 || g_waits != 0) {
+        DSD_FPRINTF(stderr,
+                    "FAIL: a quiet read with a command queued ran the beat's tick or waited (services %d, interrupted "
+                    "%d, timed waits %d)\n",
+                    g_services, state->input_interrupted, g_waits);
+        g_failures++;
+    }
+    g_pending = 0;
+    g_beat = BEAT_NONE;
     dsd_frame_sync_hooks_set(NULL);
     free_case(opts, state);
 }
@@ -842,15 +864,21 @@ test_slow_rtl_reads_that_succeed_service_the_beat(void) {
         g_failures++;
     }
     /* A queued command keeps the beat asked for: the empty read runs no tick (no tune on a receiver the command
-       replaces), and the read waits on for its sample. */
+       replaces), and hands back at once, so the engine runs the command and then its own tick: a trickling stream
+       that never leaves a read idle cannot put either off. */
     install_watchdog_service();
     state->input_interrupted = 0;
     g_pending = 1;
     g_beat = BEAT_MOVES;
+    const unsigned symbols_before = state->symbolcnt;
     (void)getSymbol(opts, state, 0);
-    if (g_services != 0 || g_beat != BEAT_MOVES) {
-        DSD_FPRINTF(stderr, "FAIL: a slow RTL hunt read ran the beat's tick with a command queued (services %d)\n",
-                    g_services);
+    if (g_services != 0 || g_beat != BEAT_MOVES || state->input_interrupted != 1
+        || state->symbolcnt != symbols_before) {
+        DSD_FPRINTF(
+            stderr,
+            "FAIL: a slow RTL hunt read with a command queued and a beat standing did not hand back without the "
+            "tick (services %d, interrupted %d)\n",
+            g_services, state->input_interrupted);
         g_failures++;
     }
     g_pending = 0;

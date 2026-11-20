@@ -138,8 +138,9 @@ void frame_sync_chain_mark_take(frame_sync_chain_mark* mark, const dsd_state* st
 /** 1 when the chain moved since @p mark: the modulation or the symbol profile changed, or a tune request begun since
  * may have moved the receiver (one refused or deferred before it moved counts not). */
 int frame_sync_chain_moved(const frame_sync_chain_mark* mark, const dsd_state* state);
-/** A P25 watchdog beat's tick, on the decoder thread, in the hunt: 1 when one ran and moved the chain, and the hunt
- * hands back at once with no sync (the caller sets dsd_state::input_interrupted). */
+/** A P25 watchdog beat's tick, on the decoder thread, in the hunt: 1 when one ran and moved the chain, or when the beat
+ * stands behind queued work, and the hunt hands back at once with no sync (the caller sets
+ * dsd_state::input_interrupted). */
 int frame_sync_service_p25_watchdog(dsd_opts* opts, dsd_state* state);
 void frame_sync_maybe_auto_switch_modulation(const dsd_opts* opts, dsd_state* state, int t_max, int* lastt);
 int frame_sync_active_profile_modulation(const dsd_opts* opts, const dsd_state* state);

@@ -39,6 +39,13 @@ extern "C" {
 void p25_sm_try_tick(dsd_opts* opts, dsd_state* state);
 
 /**
+ * @brief Decoder thread: whether a tune request a P25 tick began (wherever it ran) is still in flight. Neither engine
+ * loop starts a frame-sync hunt while one is, so the next takes the tuning generation after the landing. Retires the
+ * noted requests once none is pending. One load while none is noted.
+ */
+int p25_sm_tick_tunes_in_flight(void);
+
+/**
  * @brief The watchdog's beat: ask the decoder thread for a P25 tick. Touches no decoder state; any thread.
  */
 void p25_sm_watchdog_request_tick(void);
@@ -46,13 +53,18 @@ void p25_sm_watchdog_request_tick(void);
 /** @brief Whether a beat is waiting for the decoder thread: one atomic load. */
 int p25_sm_watchdog_tick_wanted(void);
 
+/** p25_sm_watchdog_service()'s answer when a beat stands behind shutdown or queued work. */
+#define P25_SM_WATCHDOG_DEFERRED (-1)
+
 /**
  * @brief Decoder thread: run the tick a watchdog beat asked for (p25_sm_try_tick()), if one did.
  *
- * Takes the tick guard with a try: a hold already taken, by the caller or anyone, leaves the beat standing for the next
- * service point. One atomic load when no beat waits.
+ * Shutdown, a queued command or a put-off publication comes first: the beat stands, no tick runs (no tune starts on a
+ * receiver being stopped or replaced), and the caller gives the decoder back to the engine loop, which runs the work
+ * and then its own tick. Takes the tick guard with a try: a hold already taken, by the caller or anyone, leaves the
+ * beat standing for the next service point. One atomic load when no beat waits.
  *
- * @return 1 when a tick ran, else 0.
+ * @return 1 when a tick ran, P25_SM_WATCHDOG_DEFERRED when queued work comes first, else 0.
  */
 int p25_sm_watchdog_service(dsd_opts* opts, dsd_state* state);
 
