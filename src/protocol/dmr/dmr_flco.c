@@ -789,6 +789,28 @@ dmr_flco_drop_held_crypto(const dmr_flco_ctx* ctx) {
     }
 }
 
+/* A checked Kirisun LC that ended its slot's hold and declared clear voice dropped the cipher the slot took while held
+   (dmr_flco_drop_held_crypto()); no voice publication follows on that path, so the slot's active DMR call hears it
+   here: clear, with no ALG ID, key ID or MI (the PI's received ones contradicted), and so does DMR's record of what it
+   last published for the call, which a heal restores (dmr_flco_heal_restore()). */
+static void
+dmr_flco_publish_kirisun_clear(const dmr_flco_ctx* ctx) {
+    dsd_call_snapshot call;
+    if (dsd_call_state_get(ctx->state, ctx->voice_slot, &call) <= 0 || call.phase != DSD_CALL_PHASE_ACTIVE
+        || !DSD_SYNC_IS_DMR(call.protocol)) {
+        return;
+    }
+    const dsd_call_crypto_update crypto = {
+        .classification = DSD_CALL_CRYPTO_CLEAR,
+        .audio_permitted = 1U,
+        .contradicted = (uint8_t)(DSD_CALL_CRYPTO_RX_ALG | DSD_CALL_CRYPTO_RX_KID),
+        .enc_observed = DSD_CALL_ENC_OBSERVED_CLEAR,
+    };
+    if (dsd_call_state_update_crypto(ctx->state, ctx->voice_slot, DSD_SYNC_DMR_BS_VOICE_POS, &crypto) > 0) {
+        dmr_note_published_live_crypto(ctx->state, ctx->voice_slot, 0, 0);
+    }
+}
+
 /* A voice LC that passed its check in a shape the decoder reads no privacy from (Tait FID 0x58, an unknown FID, the
    Motorola and Hytera FLCOs it does not parse: dmr_flco_handle_motorola_or_tait(),
    dmr_flco_handle_hytera_unknown_or_fid()) says as much as such a call ever says: its voice is judged from then on as
@@ -805,6 +827,9 @@ dmr_flco_release_unread_voice_hold(const dmr_flco_ctx* ctx) {
         dmr_enc_class_reset(ctx->state, ctx->voice_slot);
         if (ctx->fid == 0x0AU) {
             dmr_flco_drop_held_crypto(ctx); // a Kirisun LC's privacy bit is read
+            if ((ctx->lc_so & 0x40U) == 0U) {
+                dmr_flco_publish_kirisun_clear(ctx);
+            }
         } else {
             dmr_flco_drop_forced_fallback(ctx); // no privacy bit is read: nothing says the call is clear
         }

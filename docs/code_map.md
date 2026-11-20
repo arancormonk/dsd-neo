@@ -3439,7 +3439,10 @@ suite runs under this compiler.
   slot took while held, such as those of a PI header naming no cipher the decoder has (`dmr_flco_drop_held_crypto()`),
   so the call plays as clear; a forced key still plays. A checked Kirisun LC (FID 0x0A), whose privacy bit the decoder
   reads, does the same on its unread-shape path, and either LC also drops the Kirisun encrypted late-entry mode such a
-  PI header set (`DMR_LE_VENDOR_KIRISUN_ENC`), which would key the clear call again from its next single burst. No
+  PI header set (`DMR_LE_VENDOR_KIRISUN_ENC`), which would key the clear call again from its next single burst. On
+  that path no voice publication follows, so the slot's active DMR call is published clear there, and DMR's record of
+  what it last published for the call (`dsd_state::dmr_live_pub_algid`), which a heal restores, goes to none
+  (`dmr_flco_publish_kirisun_clear()`, `test_dmr_hold_kirisun_clear_lc_reaches_the_call()`). No
   other unread shape's privacy bit is read, so its LC drops only a forced fallback. From then on the hysteresis runs as before.
 
   A DMR frame on a held slot is unknown there (`mbe_dmr_slot_judge()`, `dsd_state::dmr_enc_class_held`), with X2-TDMA's

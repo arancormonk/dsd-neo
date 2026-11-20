@@ -4751,6 +4751,49 @@ test_dmr_hold_checked_clear_lc_drops_an_unusable_kirisun_cipher(char frame[4][24
     return rc;
 }
 
+/* A grant already opened the held slot's call when a checked Kirisun PI header names ALG ID 0x23, a cipher the decoder
+   has none of: the call is published encrypted. Its checked clear Kirisun LC ends the hold and drops the cipher, and
+   says so to the call as well: the call reads clear with no ALG ID, and the ALG ID DMR last published for it is
+   gone, so a heal after a terminator whose check failed puts no 0x23 back and the call's next frame plays. */
+static int
+test_dmr_hold_kirisun_clear_lc_reaches_the_call(char frame[4][24]) {
+    dsd_opts* opts = NULL;
+    dsd_state* state = NULL;
+    if (init_test_runtime(&opts, &state) != 0) {
+        return 1;
+    }
+    int rc = dmr_hop_follow_then_leave(opts, state, DMR_HOP_GRANT);
+    dmr_hold_no_key(opts, state);
+    dmr_hop_clock_at(2.0);
+    state->dmr_confidence_voice_open[0] = 1;
+    state->dmr_confidence_voice_m[0] = dsd_decode_now_mono_s();
+    dmr_sm_emit_voice_sync(opts, state, 0);
+    uint8_t pi[10] = {0x23U, 0x0AU, 0x00U, 0x11U, 0x22U, 0x33U, 0x44U, 0x00U, 0x01U, 0x2FU};
+    state->currentslot = 0;
+    state->lastsynctype = DSD_SYNC_DMR_BS_VOICE_POS;
+    dmr_pi(opts, state, pi, 1U, 0U);
+    dsd_call_snapshot call;
+    rc |= expect_true("Kirisun clear LC: the PI keeps the hold and the call reads encrypted",
+                      state->dmr_enc_class_held[0] == 1U && dsd_call_state_get(state, 0U, &call) > 0
+                          && call.crypto != DSD_CALL_CRYPTO_CLEAR);
+    dmr_hop_lc_on(opts, state, 0, 3U, 1U, 0x0AU, 0x00U, 202U);
+    rc |= expect_true("Kirisun clear LC: the hold ends and the cipher goes",
+                      state->dmr_enc_class_held[0] == 0U && state->payload_algid == 0);
+    rc |= expect_true("Kirisun clear LC: the call reads clear with no ALG ID",
+                      dsd_call_state_get(state, 0U, &call) > 0 && call.crypto == DSD_CALL_CRYPTO_CLEAR
+                          && call.algid == 0U);
+    rc |= expect_true("Kirisun clear LC: DMR's last published ALG ID for the call is gone",
+                      state->dmr_live_pub_epoch[0] != call.epoch || state->dmr_live_pub_algid[0] == 0);
+    dmr_hop_lc_on(opts, state, 0, 2U, 0U, 0x0AU, 0x00U, 202U);
+    char recorded[49] = {0};
+    rc |= expect_true("Kirisun clear LC: after a heal the call's frame plays, no 0x23 put back",
+                      dmr_hop_record_frame(opts, state, frame, recorded) && state->mbe_slot_muted[0] == 0U
+                          && state->payload_algid == 0);
+    dmr_hop_done(opts, state);
+    free_test_runtime(opts, state);
+    return rc;
+}
+
 /* The dual-slot decoder hearing direct mode (an MS sync: both slots' voice and LCs on lane 0) behaves as main: no voice
    hold, as on -fr. After a carrier boundary held both slots, a direct-mode frame plays as it came before any LC, burst A
    included (decoded before dmrMS() marks dsd_state::dmr_ms_mode); a repeater frame is still held. */
@@ -4929,6 +4972,7 @@ test_dmr_hold_edges(void) {
     rc |= test_dmr_direct_mode_has_no_voice_hold(frame);
     rc |= test_dmr_direct_mode_lc_keeps_the_repeater_holds();
     rc |= test_dmr_hold_checked_clear_lc_drops_an_unusable_kirisun_cipher(frame);
+    rc |= test_dmr_hold_kirisun_clear_lc_reaches_the_call(frame);
     rc |= test_dmr_enc_lockout_needs_a_checked_lc();
     rc |= test_dmr_packet_aes_keeps_the_voice_iv();
     return rc;
