@@ -15,11 +15,13 @@
 #include <dsd-neo/core/call_state.h>
 #include <dsd-neo/core/dibit.h>
 #include <dsd-neo/core/events.h>
+#include <dsd-neo/core/file_io.h>
 #include <dsd-neo/core/gps.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/state_ext.h>
 #include <dsd-neo/core/synctype_ids.h>
+#include <dsd-neo/platform/file_compat.h>
 #include <dsd-neo/protocol/p25/p25.h>
 #include <dsd-neo/protocol/p25/p25_lcw.h>
 #include <dsd-neo/protocol/p25/p25_trunk_sm.h>
@@ -27,9 +29,12 @@
 #include <dsd-neo/runtime/trunk_tuning_hooks.h>
 #include <stdint.h>
 #include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
+#include "test_support.h"
 
 #if defined(__GNUC__) && !defined(__cplusplus)
 #pragma GCC diagnostic push
@@ -656,109 +661,155 @@ test_reused_state_forgets_checked_identity(void) {
     return rc;
 }
 
-/* A TDULC read at @p clock, as the symbol grid would have it once the frame's sync and NID were read: the epoch of the
-   call its link control speaks for (p25p1_terminator_note_end(), which p25_lcw_from_tdulc() is given), 0 for none. */
-static uint64_t
-run_tdulc_at(dsd_opts* opts, dsd_state* state, uint64_t clock) {
-    state->symbol_clock = clock;
-    build_lcw_words(0x2B, 0xA4, 0x00, 0x0000, 0x0000, 0x0000);
-    processTDULC(opts, state);
-    return state->p25_p1_terminator_end_epoch;
+/* The trunk state machine's diagnostic log, where it records the talkgroup each end it is handed names. */
+static char g_sm_log_path[DSD_TEST_PATH_MAX];
+
+/* The talker ends (p25_sm_emit_end_call_at(), `kind=end`) the trunk state machine logged so far, and into @p tg the
+   talkgroup the last one named (0: none). A TDULC's own end runs first, so the talker end in its link control finds no
+   followed voice and is logged as ignored, with the talkgroup it was handed. */
+static int
+logged_talker_ends(dsd_opts* opts, int* tg) {
+    *tg = -1;
+    if (opts->p25_sm_log_f != NULL) {
+        (void)fflush(opts->p25_sm_log_f);
+    }
+    FILE* fp = dsd_fopen_private(g_sm_log_path, "r");
+    if (fp == NULL) {
+        return 0;
+    }
+    int count = 0;
+    char line[4096];
+    while (fgets(line, sizeof line, fp) != NULL) {
+        const char* field = strstr(line, " event_tg=");
+        if (strstr(line, "event=voice_end_ignored") == NULL || strstr(line, " kind=end") == NULL || field == NULL) {
+            continue;
+        }
+        char* end = NULL;
+        const long v = strtol(field + strlen(" event_tg="), &end, 10);
+        *tg = (end != NULL && *end == ' ') ? (int)v : -1;
+        count++;
+    }
+    fclose(fp);
+    return count;
 }
 
-/* The epoch of the call slot 0 holds (0: none). */
-static uint64_t
-slot0_epoch(const dsd_state* state) {
+/* A TDULC read at @p clock, as the symbol grid would have it once the frame's sync and NID were read, whose link control
+   is a Motorola talker end (MFID $90 LCO $0F) of radio 0x123456: the talkgroup that end delivers to the trunk state
+   machine (p25_lcw_call(), from the call p25p1_terminator_note_end() named to p25_lcw_from_tdulc()), 0 for none; -1
+   when the TDULC delivered no talker end. */
+static int
+run_tdulc_at(dsd_opts* opts, dsd_state* state, uint64_t clock) {
+    state->symbol_clock = clock;
+    build_lcw_words(0x0F, 0x90, 0x00, 0x0000, 0x0012, 0x3456);
+    int tg = -1;
+    const int before = logged_talker_ends(opts, &tg);
+    processTDULC(opts, state);
+    const int after = logged_talker_ends(opts, &tg);
+    return after == before + 1 ? tg : -1;
+}
+
+/* A trunked voice channel whose call 0x123456 -> TG 0x1234 the trunk state machine follows, its diagnostic log in a
+   fresh file. */
+static int
+reset_followed_call_fixture(dsd_opts* opts, dsd_state* state) {
+    dsd_p25_sm_log_close(opts);
+    if (g_sm_log_path[0] != '\0') {
+        (void)remove(g_sm_log_path);
+    }
+    tune_granted_channel(opts, state);
+    const int fd = dsd_test_mkstemp(g_sm_log_path, sizeof g_sm_log_path, "tdulc_sm_log");
+    if (fd < 0) {
+        return 0;
+    }
+    (void)dsd_close(fd);
+    DSD_SNPRINTF(opts->p25_sm_log_file, sizeof opts->p25_sm_log_file, "%s", g_sm_log_path);
+    const p25_sm_ctx_t* ctx = p25_sm_get_ctx();
+    if (p25_sm_emit_active_call(opts, state, 0, 0x1234, 0, 0x123456, 1, 0) == 0 || !ctx->slots[0].voice_active) {
+        return 0;
+    }
     dsd_call_snapshot call;
-    return dsd_call_state_get(state, 0U, &call) > 0 ? call.epoch : 0U;
+    if (dsd_call_state_get(state, 0U, &call) <= 0 || call.phase != DSD_CALL_PHASE_ACTIVE) {
+        (void)seed_active_call(state, 0x1234, 0x123456, 0x00);
+    }
+    return dsd_call_state_get(state, 0U, &call) > 0 && call.phase == DSD_CALL_PHASE_ACTIVE
+           && call.ota_target_id == 0x1234U;
 }
 
 static void
-reset_conventional_fixture(dsd_opts* opts, dsd_state* state) {
+close_followed_call_fixture(dsd_opts* opts, dsd_state* state) {
+    dsd_p25_sm_log_close(opts);
+    if (g_sm_log_path[0] != '\0') {
+        (void)remove(g_sm_log_path);
+        g_sm_log_path[0] = '\0';
+    }
     dsd_state_ext_free_all(state);
-    DSD_MEMSET(opts, 0, sizeof(*opts));
-    DSD_MEMSET(state, 0, sizeof(*state));
-    state->synctype = DSD_SYNC_P25P1_POS;
-    state->lastsynctype = DSD_SYNC_P25P1_POS;
-    g_rs_hard_result = 0;
-    p25_sm_init_ctx(p25_sm_get_ctx(), opts, state);
 }
 
 /* A TDULC's link control speaks for the call that TDULC ended, and its repeats, which follow it back to back on the
    carrier (each data unit's sync starts where the last one ends, TIA-102.BAAA-A 8.2), for that call too. A TDULC that
    ended no call, its LDUs lost, is a later transmission's terminator: an older call the slot still holds ended is not
-   its call (p25p1_terminator_note_end(); the Motorola talker end takes its talkgroup from that call). */
+   its call (p25p1_terminator_note_end()). Probed through the link control processTDULC() dispatches: the Motorola
+   talker end names only its source and takes its talkgroup from that call. */
 static int
 test_tdulc_link_control_takes_only_the_call_it_ended(void) {
     static dsd_opts opts;
     static dsd_state state;
     const uint64_t start = 100000U;
-    uint64_t epoch = 0U;
+    const int tg = 0x1234;
     int rc = 0;
 
-    reset_conventional_fixture(&opts, &state);
-    rc |= expect_true("fixture call", seed_active_call(&state, 0x1234, 0x123456, 0x00));
-    epoch = slot0_epoch(&state);
-    rc |= expect_eq_u64("the TDULC that ends the call speaks for the call", run_tdulc_at(&opts, &state, start), epoch);
+    rc |= expect_true("fixture call", reset_followed_call_fixture(&opts, &state));
+    rc |= expect_eq_int("the TDULC that ends the call speaks for the call", run_tdulc_at(&opts, &state, start), tg);
     dsd_call_snapshot call;
     rc |= expect_true("the TDULC ended the call",
                       dsd_call_state_get(&state, 0U, &call) > 0 && call.phase == DSD_CALL_PHASE_ENDED);
-    rc |= expect_eq_u64("its repeat speaks for it too", run_tdulc_at(&opts, &state, start + P25P1_TDULC_DIBITS), epoch);
-    rc |= expect_eq_u64("and so does the repeat after it",
-                        run_tdulc_at(&opts, &state, start + (uint64_t)2U * P25P1_TDULC_DIBITS), epoch);
+    rc |= expect_eq_int("its repeat speaks for it too", run_tdulc_at(&opts, &state, start + P25P1_TDULC_DIBITS), tg);
+    rc |= expect_eq_int("and so does the repeat after it",
+                        run_tdulc_at(&opts, &state, start + (uint64_t)2U * P25P1_TDULC_DIBITS), tg);
     // Much later, a voiceless transmission whose TDULC alone decoded: the ended call is not its call.
-    rc |= expect_eq_u64("a later TDULC speaks for no older call", run_tdulc_at(&opts, &state, start + 50000U), 0U);
-    rc |=
-        expect_eq_u64("nor does its own repeat", run_tdulc_at(&opts, &state, start + 50000U + P25P1_TDULC_DIBITS), 0U);
+    rc |= expect_eq_int("a later TDULC speaks for no older call", run_tdulc_at(&opts, &state, start + 50000U), 0);
+    rc |= expect_eq_int("nor does its own repeat", run_tdulc_at(&opts, &state, start + 50000U + P25P1_TDULC_DIBITS), 0);
 
     // A data unit the decoder never read between them (a TDU or LDU lost to a fade): no repeat of the TDULC that ended
     // the call.
-    reset_conventional_fixture(&opts, &state);
-    rc |= expect_true("fixture call 2", seed_active_call(&state, 0x1234, 0x123456, 0x00));
-    epoch = slot0_epoch(&state);
-    rc |= expect_eq_u64("ending TDULC", run_tdulc_at(&opts, &state, start), epoch);
-    rc |= expect_eq_u64("a TDULC after a unit the decoder never read",
-                        run_tdulc_at(&opts, &state, start + P25P1_TDULC_DIBITS + P25P1_TDU_DIBITS), 0U);
+    rc |= expect_true("fixture call 2", reset_followed_call_fixture(&opts, &state));
+    rc |= expect_eq_int("ending TDULC", run_tdulc_at(&opts, &state, start), tg);
+    rc |= expect_eq_int("a TDULC after a unit the decoder never read",
+                        run_tdulc_at(&opts, &state, start + P25P1_TDULC_DIBITS + P25P1_TDU_DIBITS), 0);
 
     // A TDU that ended the call, then the same transmission's TDULCs back to back: the end is one, so its link
     // control is the call's. So is a TDULC after a TDU that followed the TDULC ending the call.
-    reset_conventional_fixture(&opts, &state);
-    rc |= expect_true("fixture call 5", seed_active_call(&state, 0x1234, 0x123456, 0x00));
-    epoch = slot0_epoch(&state);
+    rc |= expect_true("fixture call 5", reset_followed_call_fixture(&opts, &state));
     state.symbol_clock = start;
     processTDU(&opts, &state);
     rc |= expect_true("the TDU ended the call",
                       dsd_call_state_get(&state, 0U, &call) > 0 && call.phase == DSD_CALL_PHASE_ENDED);
-    rc |= expect_eq_u64("the TDULC after the TDU that ended the call speaks for the call",
-                        run_tdulc_at(&opts, &state, start + P25P1_TDU_DIBITS), epoch);
-    rc |= expect_eq_u64("and its repeat", run_tdulc_at(&opts, &state, start + P25P1_TDU_DIBITS + P25P1_TDULC_DIBITS),
-                        epoch);
+    rc |= expect_eq_int("the TDULC after the TDU that ended the call speaks for the call",
+                        run_tdulc_at(&opts, &state, start + P25P1_TDU_DIBITS), tg);
+    rc |=
+        expect_eq_int("and its repeat", run_tdulc_at(&opts, &state, start + P25P1_TDU_DIBITS + P25P1_TDULC_DIBITS), tg);
     state.symbol_clock = start + P25P1_TDU_DIBITS + (uint64_t)2U * P25P1_TDULC_DIBITS;
     processTDU(&opts, &state);
-    rc |= expect_eq_u64(
+    rc |= expect_eq_int(
         "a TDULC after a TDU between the call's TDULCs",
-        run_tdulc_at(&opts, &state, start + (uint64_t)2U * P25P1_TDU_DIBITS + (uint64_t)2U * P25P1_TDULC_DIBITS),
-        epoch);
+        run_tdulc_at(&opts, &state, start + (uint64_t)2U * P25P1_TDU_DIBITS + (uint64_t)2U * P25P1_TDULC_DIBITS), tg);
     // A TDU much later, then a TDULC: a later transmission's end, which ended no call.
     state.symbol_clock = start + 90000U;
     processTDU(&opts, &state);
-    rc |= expect_eq_u64("a TDULC after a later TDU that ended no call",
-                        run_tdulc_at(&opts, &state, start + 90000U + P25P1_TDU_DIBITS), 0U);
+    rc |= expect_eq_int("a TDULC after a later TDU that ended no call",
+                        run_tdulc_at(&opts, &state, start + 90000U + P25P1_TDU_DIBITS), 0);
 
     // A call another end closed (a sync loss) is not a TDULC's either, even straight after it.
-    reset_conventional_fixture(&opts, &state);
-    rc |= expect_true("fixture call 3", seed_active_call(&state, 0x1234, 0x123456, 0x00));
+    rc |= expect_true("fixture call 3", reset_followed_call_fixture(&opts, &state));
     rc |= expect_true("sync loss ends the call", dsd_call_state_end_ex(&state, 0U, 2.0, DSD_CALL_END_SYNC_LOSS) > 0);
-    rc |= expect_eq_u64("a TDULC after a call a sync loss ended", run_tdulc_at(&opts, &state, start), 0U);
+    rc |= expect_eq_int("a TDULC after a call a sync loss ended", run_tdulc_at(&opts, &state, start), 0);
 
     // A new carrier between the TDULC that ended the call and the next one: that one is no repeat of it.
-    reset_conventional_fixture(&opts, &state);
-    rc |= expect_true("fixture call 4", seed_active_call(&state, 0x1234, 0x123456, 0x00));
-    epoch = slot0_epoch(&state);
-    rc |= expect_eq_u64("ending TDULC 4", run_tdulc_at(&opts, &state, start), epoch);
+    rc |= expect_true("fixture call 4", reset_followed_call_fixture(&opts, &state));
+    rc |= expect_eq_int("ending TDULC 4", run_tdulc_at(&opts, &state, start), tg);
     state.carrier_seq++;
-    rc |= expect_eq_u64("a TDULC on the next carrier", run_tdulc_at(&opts, &state, start + P25P1_TDULC_DIBITS), 0U);
-    dsd_state_ext_free_all(&state);
+    rc |= expect_eq_int("a TDULC on the next carrier", run_tdulc_at(&opts, &state, start + P25P1_TDULC_DIBITS), 0);
+    close_followed_call_fixture(&opts, &state);
     return rc;
 }
 
