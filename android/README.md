@@ -941,7 +941,8 @@ notices always come from the repository, the build and mbelib, whatever the
 file's timestamp.
 The staging also writes `assets/doc/dsd-neo/notice-index.txt`, the list of every
 file in that folder; the app's "Open source licenses" screen lists the files it
-names, after the location of the Qt source code, and opens one at a time. The
+names, after the location of the Qt source code, and opens one at a time; a
+package file at that path or under it is left out. The
 folder is staged afresh on every build, so a notice dropped from a record's map
 leaves an incremental build's APK and index as it leaves a clean build's.
 

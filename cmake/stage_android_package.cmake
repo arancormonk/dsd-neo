@@ -191,7 +191,9 @@ if(DEFINED _DSD_FRESH_DIR)
 
     # Then each file of android/package/'s documentation whose path no notice takes: none
     # at a notice's path or under it, whatever its timestamp (file(COPY) would keep a
-    # destination of the same time), and none where a notice folder is.
+    # destination of the same time), and none where a notice folder is. The index written
+    # below takes its path as a notice does.
+    set(_index_name "notice-index.txt")
     set(_package_doc "${_source}/assets/doc/dsd-neo")
     set(_package_files "")
     if(IS_DIRECTORY "${_package_doc}")
@@ -200,6 +202,9 @@ if(DEFINED _DSD_FRESH_DIR)
     foreach(_name IN LISTS _package_files)
         set(_path "${_fresh_dir}")
         set(_taken FALSE)
+        if("${_name}/" MATCHES "^notice-index[.]txt/")
+            set(_taken TRUE)
+        endif()
         string(REPLACE "/" ";" _parts "${_name}")
         foreach(_part IN LISTS _parts)
             string(APPEND _path "/${_part}")
@@ -217,7 +222,6 @@ if(DEFINED _DSD_FRESH_DIR)
         endif()
     endforeach()
 
-    set(_index_name "notice-index.txt")
     _dsd_glob_tree(_staged "${_fresh_dir}" false)
     list(REMOVE_ITEM _staged "${_index_name}")
     set(_present "")
@@ -255,6 +259,10 @@ if(DEFINED _DSD_FRESH_DIR)
     endforeach()
     string(JOIN "\n" _index ${_first} ${_staged})
     string(APPEND _index "\n")
+    # A folder an older staging left at the index's path gives way to it.
+    if(IS_DIRECTORY "${_doc_dir}/${_index_name}")
+        file(REMOVE_RECURSE "${_doc_dir}/${_index_name}")
+    endif()
     # Unchanged content is not rewritten, so a no-op build does not make Gradle repackage.
     set(_old_index "")
     if(EXISTS "${_doc_dir}/${_index_name}")

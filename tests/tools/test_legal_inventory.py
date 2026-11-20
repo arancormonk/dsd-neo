@@ -946,6 +946,30 @@ class NoticeStagingTests(unittest.TestCase):
             self.assertEqual(folder.stat().st_mode & 0o777, 0o555)
         self.assertEqual(self.scratch_folders(), [])
 
+    def test_android_staging_keeps_the_notice_index_path_for_the_index(self):
+        # The index's path is the staging's: a package document at it or under it is left out, and a folder an older
+        # staging left there gives way to the index.
+        build, share, docs, args = self.android_fixture()
+        source = self.work / "package/assets/doc/dsd-neo"
+        (source / "notice-index.txt").mkdir(parents=True)
+        (source / "notice-index.txt/extra.txt").write_text("from the package source\n", encoding="utf-8")
+        (source / "extra.txt").write_text("from the package source\n", encoding="utf-8")
+
+        def check(result):
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            self.assertTrue((docs / "notice-index.txt").is_file())
+            index = (docs / "notice-index.txt").read_text(encoding="utf-8").splitlines()
+            self.assertIn("extra.txt", index)
+            self.assertFalse([name for name in index if name.startswith("notice-index.txt")], index)
+            self.assertEqual(self.scratch_folders(), [])
+
+        check(self.run_cmake(*args))
+        shutil.rmtree(source / "notice-index.txt")
+        (docs / "notice-index.txt").unlink()
+        (docs / "notice-index.txt").mkdir()
+        (docs / "notice-index.txt/stale.txt").write_text("an older staging's file\n", encoding="utf-8")
+        check(self.run_cmake(*args))
+
     def test_android_staging_reads_folder_paths_literally(self):
         # A package or stage folder whose path holds pattern characters, or a package folder given relative to the
         # working folder, keeps the package's documents in the APK and its index, and a link there is still refused.
