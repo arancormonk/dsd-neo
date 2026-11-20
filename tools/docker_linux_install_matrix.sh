@@ -241,6 +241,7 @@ run_one() {
           -DDSD_ENABLE_SOAPYSDR=ON
         cmake --build /tmp/dsd-neo-build-debug -j "$DSD_NEO_BUILD_JOBS"
         ctest --test-dir /tmp/dsd-neo-build-debug -j "$DSD_NEO_BUILD_JOBS" --output-on-failure
+        bash tools/check_test_tmp_leftovers.sh /tmp/dsd-neo-build-debug
       '
 }
 

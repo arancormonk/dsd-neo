@@ -323,9 +323,7 @@ jobs:
           # and fail it saying only that a grep matched nothing. Registration
           # going backwards, which is what this guards, still fails here.
           min=10
-          # The tests themselves, by name: ctest's total also counts the temp
-          # folder setup and check each one brings (cmake/TestTmpdir.cmake).
-          registered=$(ctest --preset dev-debug -N -R '^UI_QT_' | grep -cE '^ *Test +#[0-9]+: UI_QT_' || true)
+          registered=$(ctest --preset dev-debug -N -R '^UI_QT_' | sed -n 's/^Total Tests: *//p')
           echo "UI_QT_* tests registered: ${registered:-none} (floor $min)"
           if [ "${registered:-0}" -lt "$min" ]; then
             echo "::error::expected at least $min UI_QT_* tests, found ${registered:-0}"
@@ -405,7 +403,9 @@ jobs:
       # here — a developer running ctest locally gets the same run.
       - name: Test
         shell: bash
-        run: ctest --preset dev-debug -R '^(UI_QT_|ENGINE_TRUNK_SCAN_SCAN_LIST$)' --parallel 2 --output-on-failure
+        run: |
+          ctest --preset dev-debug -R '^(UI_QT_|ENGINE_TRUNK_SCAN_SCAN_LIST$)' --parallel 2 --output-on-failure
+          tools/check_test_tmp_leftovers.sh build/dev-debug
 
       # The baked RadioReference key is a compile-time constant, so the shipped
       # configuration — a build that carries its own key and must ignore any
@@ -430,6 +430,7 @@ jobs:
           cmake --build --preset dev-debug -j "$(nproc)" \
             --target dsd-neo_test_ui_qt_radio_reference_model
           ctest --preset dev-debug -R '^UI_QT_RADIO_REFERENCE$' --parallel 2 --output-on-failure
+          tools/check_test_tmp_leftovers.sh build/dev-debug
 
       - name: Show ccache stats
         shell: bash

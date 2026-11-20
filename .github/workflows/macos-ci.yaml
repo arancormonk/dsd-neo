@@ -293,6 +293,7 @@ jobs:
           gcc --version | head -n 1
           ctest --preset dev-debug -N | tail -n 1
           ctest --preset dev-debug --parallel 2 --output-on-failure
+          tools/check_test_tmp_leftovers.sh build/dev-debug
 
       - name: Show ccache stats
         if: always()

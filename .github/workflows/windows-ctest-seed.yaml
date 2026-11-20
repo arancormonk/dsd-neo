@@ -137,6 +137,11 @@ jobs:
           ctest --preset win-msvc-debug -N | Select-Object -Last 1
           ctest --preset win-msvc-debug --parallel 2 --output-on-failure
 
+      # Every test's temp folder must be empty after it (cmake/TestTmpdir.cmake).
+      - name: Check the tests' temp folders
+        shell: bash
+        run: bash tools/check_test_tmp_leftovers.sh build/win-msvc-debug
+
       - name: Show sccache stats
         if: always()
         shell: pwsh

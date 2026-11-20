@@ -244,6 +244,15 @@ if(NOT WIN32)
                 ${PROJECT_SOURCE_DIR}/tests/tools/test_ci_arch_toolchain_pull_retry.sh
             WORKING_DIRECTORY ${PROJECT_SOURCE_DIR}
         )
+        # The after-ctest check of the per-test temp folders (cmake/TestTmpdir.cmake):
+        # it names each test that left something, follows no link, deletes nothing.
+        add_test(
+            NAME TOOLS_CHECK_TEST_TMP_LEFTOVERS
+            COMMAND
+                ${DSD_NEO_BASH_EXECUTABLE}
+                ${PROJECT_SOURCE_DIR}/tests/tools/test_check_test_tmp_leftovers.sh
+            WORKING_DIRECTORY ${PROJECT_SOURCE_DIR}
+        )
         add_test(
             NAME TOOLS_CI_CHANGED_FILES_HEADER_EXPANSION
             COMMAND
@@ -28907,20 +28916,11 @@ foreach(_dsd_dmr_pdu_target IN LISTS _dsd_dmr_pdu_position_targets)
     )
 endforeach()
 
-# The per-test temp folder setup and check on folders made for the purpose:
-# leftovers named 0 or OFF, hidden, folders and links are each reported, and a
-# link is never followed.
-add_test(
-    NAME TEST_TMPDIR_GUARD
-    COMMAND
-        ${CMAKE_COMMAND}
-        -DGUARD=${CMAKE_CURRENT_SOURCE_DIR}/cmake/TestTmpdirGuard.cmake
-        -DWORK=${CMAKE_CURRENT_BINARY_DIR}/test_tmpdir_guard_work -P
-        ${CMAKE_CURRENT_SOURCE_DIR}/cmake/TestTmpdirGuardCheck.cmake
-)
-
-# Every test here gets a temp folder of its own in the build tree, and a check
-# after it that fails naming what it left there (cmake/TestTmpdir.cmake). Keep
-# this last, after every add_test() in this directory.
+# Every test here gets a temp folder of its own in the build tree, emptied
+# before each ctest run; tools/check_test_tmp_leftovers.sh, run after ctest,
+# names each test that left something there (cmake/TestTmpdir.cmake). Keep this
+# last, after every add_test() in this directory. tests/fuzz and apps/dsd-cli
+# record theirs before this point, so the pre-test step covers them too.
 include(TestTmpdir)
 dsd_neo_add_test_tmpdirs()
+dsd_neo_write_test_tmpdir_prepare()

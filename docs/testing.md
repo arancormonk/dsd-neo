@@ -4144,26 +4144,38 @@ lines end in CRLF. Compare such a file's contents after reading it in text mode
 CTest gives every test a temp directory of its own,
 `build/<preset>/test-tmp/<TEST_NAME>`, through `TMPDIR`, `TEMP`, `TMP` and
 `DSD_NEO_TEST_TMPDIR`, which the C helpers, Python's `tempfile`, Qt and pwsh read
-(`cmake/TestTmpdir.cmake`). Two helper tests come with each one:
-`TMPDIR_SETUP__<TEST_NAME>` empties or makes the directory before it, and
-`TMPDIR_CHECK__<TEST_NAME>` runs after it, fails naming each entry the test left
-there (a link is named, never followed), and removes the directory. Fixtures tie
-them to the test, so `ctest -R`, `-L` and `--rerun-failed` bring them along, and
-a rerun of a failed check runs its test again. A test that fails leaves its check
-`Not Run`; its next setup empties the directory. Each test has its own
-directory, so two ctest runs in one build tree that run different tests leave
-each other alone. `TEST_TMPDIR_GUARD` tests the setup and check themselves.
+(`cmake/TestTmpdir.cmake`). Before its first test, every ctest run removes
+`test-tmp` and makes one empty directory per test (the `CTEST_CUSTOM_PRE_TEST`
+step in the generated `CTestCustom.cmake`), so a run starts clean even after one
+that left files; run one ctest at a time per build tree.
+`tools/check_test_tmp_leftovers.sh build/<preset>` runs after ctest in every CI
+job that runs it and in `tools/preflight_ci.sh` (on `build/dev-debug`). It lists
+each test's directory one level deep, without following links, fails naming
+each test whose directory is not empty and what it left, and deletes nothing:
+the files stay for a look until the next ctest run. Run it yourself after a
+local ctest run:
+
+```sh
+ctest --preset dev-debug --output-on-failure
+tools/check_test_tmp_leftovers.sh build/dev-debug
+```
+
 `dsd_neo_add_test_tmpdirs()` is called last in each directory that registers
 tests (`tests/`, `tests/fuzz/`, `apps/dsd-cli/`); a test registered after that
-call gets neither.
+call gets no directory of its own.
 
 The JVM ignores `TMPDIR`, so `tests/android/run_jvm_tests.py` runs each Kotlin
 test in a directory of its own, as its `java.io.tmpdir`, native temp directory
-and working directory, and fails naming anything the test left there. It turns
-off HotSpot's shared performance data (`-XX:-UsePerfData`), whose
-`hsperfdata_<user>` directory would stay in the system temp directory, and
-refuses to run when `JAVA_TOOL_OPTIONS`, `JDK_JAVA_OPTIONS` or `_JAVA_OPTIONS`
-sets `java.io.tmpdir`, which would override the test's own.
+and working directory, and fails naming anything the test left there, also when
+the test itself failed. Before each test it asks the JVM which `java.io.tmpdir`
+it ends up with (`-XshowSettings:properties`): `_JAVA_OPTIONS`, or an options
+file named there, can replace the command line's, and the runner refuses to run
+the test then. Relative files that `JAVA_TOOL_OPTIONS`, `JDK_JAVA_OPTIONS` or
+`_JAVA_OPTIONS` name (`@argfiles`, `-XX:VMOptionsFile=`, `-XX:Flags=`) are made
+absolute first, since the working directory changes. The compiler JVM's
+`java.io.tmpdir` is the build's own temp directory. Every JVM runs with
+`-XX:-UsePerfData`, whose `hsperfdata_<user>` directory would otherwise stay in
+the system temp directory.
 
 That does not catch a file a test creates by a relative path, which lands in its
 working directory: `build/dev-debug/tests` for most tests, the source tree for

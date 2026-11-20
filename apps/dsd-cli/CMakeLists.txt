@@ -71,7 +71,7 @@ if(BUILD_TESTING)
             ${PROJECT_SOURCE_DIR}/tests/cmake/RunCliSmoke.cmake
     )
 
-    # Each smoke test's temp folder, checked after it (cmake/TestTmpdir.cmake).
+    # Each smoke test's temp folder (cmake/TestTmpdir.cmake).
     include(TestTmpdir)
     dsd_neo_add_test_tmpdirs()
 endif()

@@ -17,6 +17,7 @@ JOBS=$(nproc 2> /dev/null || sysctl -n hw.ncpu 2> /dev/null || echo 4)
 cmake --preset coverage-debug > /dev/null
 cmake --build --preset "$BUILD_PRESET" -j "$JOBS" > /dev/null
 ctest --preset "$TEST_PRESET" --output-on-failure
+"$ROOT_DIR/tools/check_test_tmp_leftovers.sh" "$BUILD_DIR"
 
 if ! command -v lcov > /dev/null 2>&1 || ! command -v genhtml > /dev/null 2>&1; then
   echo "lcov/genhtml are required for tools/coverage.sh." >&2
