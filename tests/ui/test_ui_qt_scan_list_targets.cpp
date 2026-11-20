@@ -98,6 +98,79 @@ test_protocol_catalog() {
     check(scan_entry_protocol_for_flag("-fz") == "m17" && scan_entry_protocol_for_flag("-fa").isEmpty());
 }
 
+/* An NXDN48 or NXDN96 row's keys are the switches the engine's scoped options give its class (scan_options.c): a saved
+   NXDN system's Basic Privacy key, DMR talkgroup key map or algorithm fallback (DMR's only) is refused here by name, so
+   the list never reaches the engine with a row it would refuse; every switch the class takes still reaches the row. */
+static void
+test_nxdn_row_keys() {
+    const QVariantMap entry{{"uid", "entry"}, {"kind", "system"}, {"systemUid", "sys"}, {"enabled", true}};
+    const QVariantMap list{{"uid", "list"}, {"sourceType", "usb"}, {"entries", QVariantList{entry}}};
+    for (const char* flag : {"-fi", "-fn"}) {
+        for (const bool trunk : {false, true}) {
+            QVariantMap sys{
+                {"uid", "sys"}, {"name", "Site"}, {"decodeFlag", flag}, {"freqMhz", "451.5"}, {"trunking", trunk}};
+            auto build = [&]() { return scan_list_targets(list, QVariantList{sys}); };
+            check(build().ok);
+            // Refused, each by name.
+            sys["encKeyType"] = "basic";
+            sys["encKeyValue"] = "7";
+            check(!build().ok
+                  && build().error
+                         == QStringLiteral("Site: NXDN entries take no Motorola Basic Privacy key, which is DMR's. "
+                                           "Choose another key type for this saved system or its decryption "
+                                           "profile."));
+            sys.remove("encKeyType");
+            sys.remove("encKeyValue");
+            sys["dmrTgKeyCsvPath"] = "/imports/tg.csv";
+            check(!build().ok
+                  && build().error
+                         == QStringLiteral("Site: NXDN entries take no DMR talkgroup key map. Remove it from this "
+                                           "saved system's decryption profile."));
+            sys.remove("dmrTgKeyCsvPath");
+            const QString algorithm = QStringLiteral("Site: NXDN entries take privacy forcing only, not an algorithm "
+                                                     "fallback. Change the Force key setting of this saved system or "
+                                                     "its decryption profile.");
+            sys["encKeyType"] = "scrambler";
+            sys["encKeyValue"] = "17";
+            sys["encForceKey"] = 2;
+            check(!build().ok && build().error == algorithm);
+            sys["encForceKey"] = 0;
+            for (const int force : {2, 0x21, 255}) {
+                sys["decryptionForce"] = force;
+                check(!build().ok && build().error == algorithm);
+            }
+            sys.remove("decryptionForce");
+            // Taken: -R with privacy forcing, -H, -1, the key files, a profile's reference, no forcing, clear keys, -G.
+            sys["encForceKey"] = 1;
+            check(build().ok && build().csv.endsWith(",\"Site\",-R 17 -4\n"));
+            sys.remove("encForceKey");
+            for (const auto& key : {qMakePair(QStringLiteral("hex"), QByteArray("-H ")),
+                                    qMakePair(QStringLiteral("rc4"), QByteArray("-1 "))}) {
+                sys["encKeyType"] = key.first;
+                sys["encKeyValue"] = key.first == QLatin1String("hex") ? "0000001F00" : "0123456789";
+                check(build().ok && build().csv.contains(",\"Site\"," + key.second));
+            }
+            sys.remove("encKeyType");
+            sys.remove("encKeyValue");
+            sys["keysHexCsvPath"] = "/imports/hex.csv";
+            sys["keysDecCsvPath"] = "/imports/dec.csv";
+            sys["decryptionProfileRef"] = "nxdn-ref";
+            sys["decryptionForce"] = 0;
+            sys["groupCsvPath"] = "/imports/groups.csv";
+            check(build().ok
+                  && build().csv.endsWith(",\"Site\",-G \"/imports/groups.csv\" -K \"/imports/hex.csv\" -k "
+                                          "\"/imports/dec.csv\" --no-force-key --key-profile-ref nxdn-ref\n"));
+            sys["decryptionForce"] = 1;
+            sys["decryptionClearKeys"] = true;
+            check(build().ok && build().csv.contains("--no-decryption-keys -4 --key-profile-ref nxdn-ref"));
+            // The legacy key column, too.
+            sys["keyCsvPath"] = "/imports/keys.csv";
+            sys["keyCsvHex"] = true;
+            check(build().ok && build().csv.contains(",/imports/keys.csv,,"));
+        }
+    }
+}
+
 /* Issue #890: saved systems and frequency entries of YSF, D-STAR, dPMR, M17 and TETRA DMO become conventional targets,
    trunking refused; their rows take no modulation (a stale saved one is refused) and keys only by the matrix. */
 static void
@@ -687,5 +760,6 @@ main(int argc, char** argv) {
     check(!rawTargets.ok && rawTargets.error.contains("Gain must be 0..49 dB"));
     test_protocol_catalog();
     test_simplex_digital_targets();
+    test_nxdn_row_keys();
     return failures ? 1 : 0;
 }

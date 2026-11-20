@@ -1629,6 +1629,10 @@ the Bandwidth choice. A TETRA DMO entry that is switched off is not scanned, so 
 not count. **Scan with other lists** judges each list with the ones already switched on,
 so it does not offer a list the start would refuse for its bandwidth.
 
+An NXDN48 or NXDN96 system takes the keys an NXDN target's options column takes: a Motorola
+Basic Privacy key, a DMR talkgroup key map or an algorithm fallback in its Force key setting
+(all DMR's only) is refused with the reason, before the list is written; privacy forcing passes.
+
 Each system's group file becomes a scoped `-G` option. The list's group file is
 only the fallback for entries without their own file. Key CSVs retain their
 hex/decimal interpretation. Direct keys become scoped `-b`, `-H`, `-1` or `-R`

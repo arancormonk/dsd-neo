@@ -260,20 +260,20 @@ forcesAlgorithm(const QVariantMap& sys) {
            || (sys.contains("decryptionForce") && stored_int(sys.value("decryptionForce"), &force) && force > 1);
 }
 
-/* Issue #890: why @p protocol's row cannot take the keys @p sys carries (its key matrix, ScanProtocolKeys), or empty.
-   dPMR takes only its scoped -R scrambler key, of the direct or a profile's key, so a legacy system saved with the
-   NXDN / dPMR scrambler keeps working; never a key or key-map file. M17 takes none of its own: the session's keys
-   apply. */
+/* The refusal for a row that would force a DMR algorithm (forcesAlgorithm()): only privacy forcing (-4) and no forcing
+   (--no-force-key) reach it. */
 QString
-keyMatrixError(const QVariantMap& sys, const ScanProtocol& protocol) {
-    if (protocol.keys == ScanProtocolKeys::Session && carriesKeys(sys)) {
-        return QStringLiteral("%1 entries use the session's keys, never their own. Remove the key or decryption "
-                              "profile from this saved system, or set the key in the app's decoder options.")
-            .arg(QLatin1String(protocol.label));
-    }
-    if (protocol.keys != ScanProtocolKeys::Scrambler) {
-        return {};
-    }
+algorithmForceError(const ScanProtocol& protocol) {
+    return QStringLiteral("%1 entries take privacy forcing only, not an algorithm fallback. Change the Force key "
+                          "setting of this saved system or its decryption profile.")
+        .arg(QLatin1String(protocol.label));
+}
+
+/* dPMR's row (ScanProtocolKeys::Scrambler) takes only its scoped -R scrambler key, of the direct or a profile's key, so
+   a legacy system saved with the NXDN / dPMR scrambler keeps working; never a key or key-map file, nor an algorithm
+   fallback. */
+QString
+scramblerRowError(const QVariantMap& sys, const ScanProtocol& protocol) {
     const QString keyType = sys.value("encKeyType").toString();
     if (!keyType.isEmpty() && keyType != QLatin1String("scrambler")) {
         return QStringLiteral("%1 entries take only a scrambler key.").arg(QLatin1String(protocol.label));
@@ -284,13 +284,43 @@ keyMatrixError(const QVariantMap& sys, const ScanProtocol& protocol) {
                 .arg(QLatin1String(protocol.label));
         }
     }
-    /* The row takes privacy forcing (-4) and no forcing (--no-force-key), never a DMR algorithm fallback. */
-    if (forcesAlgorithm(sys)) {
-        return QStringLiteral("%1 entries take privacy forcing only, not an algorithm fallback. Change the Force key "
-                              "setting of this saved system or its decryption profile.")
+    return forcesAlgorithm(sys) ? algorithmForceError(protocol) : QString();
+}
+
+/* An NXDN48 or NXDN96 row takes what the engine's scoped options give its class (scan_options.c): -H, -1, -R, the key
+   files -K and -k, -G, --no-decryption-keys, --key-profile-ref, -4 and --no-force-key. Basic Privacy (-b), a DMR
+   talkgroup key map (--dmr-tg-key-csv) and an algorithm fallback (-0, --dmr-force-algid) are DMR's only, so a saved
+   NXDN system carrying one would make the engine refuse the whole list: it is refused here, by name, first. */
+QString
+nxdnRowError(const QVariantMap& sys) {
+    if (sys.value("encKeyType").toString() == QLatin1String("basic")) {
+        return QStringLiteral("NXDN entries take no Motorola Basic Privacy key, which is DMR's. Choose another key "
+                              "type for this saved system or its decryption profile.");
+    }
+    if (!sys.value("dmrTgKeyCsvPath").toString().isEmpty()) {
+        return QStringLiteral("NXDN entries take no DMR talkgroup key map. Remove it from this saved system's "
+                              "decryption profile.");
+    }
+    return forcesAlgorithm(sys) ? QStringLiteral("NXDN entries take privacy forcing only, not an algorithm fallback. "
+                                                 "Change the Force key setting of this saved system or its "
+                                                 "decryption profile.")
+                                : QString();
+}
+
+/* Issue #890: why @p protocol's row cannot take the keys @p sys carries (its key matrix, ScanProtocolKeys, and the
+   switches the engine's scoped options give its class), or empty. M17 takes none of its own: the session's keys
+   apply. */
+QString
+keyMatrixError(const QVariantMap& sys, const ScanProtocol& protocol) {
+    if (protocol.keys == ScanProtocolKeys::Session && carriesKeys(sys)) {
+        return QStringLiteral("%1 entries use the session's keys, never their own. Remove the key or decryption "
+                              "profile from this saved system, or set the key in the app's decoder options.")
             .arg(QLatin1String(protocol.label));
     }
-    return {};
+    if (protocol.keys == ScanProtocolKeys::Scrambler) {
+        return scramblerRowError(sys, protocol);
+    }
+    return QLatin1String(protocol.profileProtocol) == QLatin1String("nxdn") ? nxdnRowError(sys) : QString();
 }
 
 /* The saved system's talkgroup file as a scoped -G option, quoted (its path holds no comma, quote or line break). */

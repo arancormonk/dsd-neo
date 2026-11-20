@@ -1077,6 +1077,23 @@ main(int argc, char** argv) {
     check(file.open(QIODevice::ReadOnly));
     check(file.readAll().contains(QByteArray("-1 ") + directKey.toUtf8()));
     file.close();
+    // An NXDN system's keys reach the real target parser only as its class takes them: a scrambler key with privacy
+    // forcing loads; Basic Privacy and an algorithm fallback, DMR's only, are refused by name before the engine is
+    // asked, where they used to fail the whole list with the parser's message.
+    systems.update(0, {{"decodeFlag", "-fi"}, {"encKeyType", "scrambler"}, {"encKeyValue", "17"}, {"encForceKey", 1}});
+    const auto nxdnKeyed = keyedStarter.build(list);
+    check(nxdnKeyed.value("ok").toBool());
+    if (!nxdnKeyed.value("ok").toBool()) {
+        std::fprintf(stderr, "NXDN keyed row: %s\n", qPrintable(nxdnKeyed.value("error").toString()));
+    }
+    systems.update(0, {{"encForceKey", 2}});
+    const QString nxdnForce = keyedStarter.build(list).value("error").toString();
+    check(nxdnForce.contains("NXDN entries take privacy forcing only") && !nxdnForce.contains("Scan list rejected"));
+    systems.update(0, {{"encForceKey", 0}, {"encKeyType", "basic"}, {"encKeyValue", "7"}});
+    const QString nxdnBasic = keyedStarter.build(list).value("error").toString();
+    check(nxdnBasic.contains("NXDN entries take no Motorola Basic Privacy key")
+          && !nxdnBasic.contains("Scan list rejected"));
+    systems.update(0, {{"decodeFlag", "-ft"}, {"encKeyType", "rc4"}, {"encKeyValue", directKey}});
     // RadioReference's combined P25 flags pass the real target parser with their scoped preference.
     systems.update(0, {{"decodeFlag", "-mq -^"}, {"trunking", true}});
     check(keyedStarter.build(list).value("ok").toBool());
