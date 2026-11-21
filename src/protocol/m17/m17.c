@@ -694,6 +694,17 @@ m17_ext_st(dsd_state* state) {
     return g;
 }
 
+/* Empty the text META being assembled (m17_state_ext::text_meta): a packet is a whole transmission with its own LSF
+   (M17 spec 2.0.11, Packet Mode), so its text is its own, as a stream's is (m17_confirm_reset_link() at every stream
+   boundary). Never creates the state. */
+static void
+m17_text_meta_forget(const dsd_state* state) {
+    m17_state_ext* g = m17_state_ext_find(state);
+    if (g) {
+        DSD_MEMSET(&g->text_meta, 0, sizeof(g->text_meta));
+    }
+}
+
 /* The transmission ended (stream EOT, EOTX, DISC, an MPKT's end): a later one that reuses its stream ID is another.
  * The frames remembered stay: a copy of one is still no new transmission. Never creates the state. */
 static void
@@ -4064,6 +4075,9 @@ m17_pkt_finalize_eot(const dsd_opts* opts, dsd_state* state, uint16_t app_len, i
 
     if ((crc_cmp == crc_ext || opts->aggressive_framesync == 0) && app_len > 0U) {
         decodeM17PKT(opts, state, state->m17_pkt, app_len);
+        /* The packet transmission ends here: its text META never joins the next transmission's. (It started at its
+           LSF frame, a transmission boundary of its own.) */
+        m17_text_meta_forget(state);
     }
     if (crc_cmp != crc_ext) {
         DSD_FPRINTF(stderr, " (CRC ERR) ");
@@ -4499,6 +4513,8 @@ m17_ip_handle_mpkt_frame(const dsd_opts* opts, dsd_state* state, const uint8_t* 
     DSD_FPRINTF(stderr, "\n M17 IP   MPKT: %04X;", sid);
 
     if (crc_ext == crc_cmp) {
+        /* One MPKT is one whole transmission, its LSF's META and its packet: the text it carries starts empty. */
+        m17_text_meta_forget(state);
         const m17_lsf_carrier carrier = {1U, sid, 0U, 0U, (uint32_t)err, m17_datagram_digest(ip_frame, (size_t)err)};
         (void)M17decodeLSF(opts, state, 1, &carrier);
     }
@@ -4511,8 +4527,9 @@ m17_ip_handle_mpkt_frame(const dsd_opts* opts, dsd_state* state, const uint8_t* 
         /* The MPKT trailer is CRC2 only; decodeM17PKT consumes the protocol identifier itself. */
         decodeM17PKT(opts, state, ip_frame + 34, err - 34 - 2);
         m17_end_call(opts, state, DSD_CALL_END_EXPLICIT, 1);
-        /* One MPKT is one whole transmission. */
+        /* One MPKT is one whole transmission: its end is the end of its text too. */
         m17_gnss_tx_end(state);
+        m17_text_meta_forget(state);
     } else {
         DSD_FPRINTF(stderr, " IP CRC ERR");
     }

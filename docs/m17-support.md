@@ -14,7 +14,7 @@ Implemented decode coverage:
 - M17 address classification for reserved, standard, extended, and destination-only broadcast addresses.
 - Stream metadata for text, GNSS position, and extended callsign blocks, read only from an LSF (or a stream's LSD, or an
   IP stream or packet frame) whose CRC passed, and never from what the local encoder transmits. A text is put together
-  only from the blocks of one transmission. Under `-F` an LSF that
+  only from the blocks of one transmission; each packet (over the air or MPKT) is a transmission of its own. Under `-F` an LSF that
   failed its CRC still sets up the stream, but its META is not read, and once an LSF whose CRC passed has set up the
   transmission, one that failed it is only shown: it does not change the CAN, encryption or stream type. If the end of
   one transmission is missed and the next one's LSF fails its CRC, the previous transmission's CAN and encryption stay

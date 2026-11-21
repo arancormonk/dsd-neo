@@ -13960,7 +13960,11 @@ Private per-protocol modules worth knowing about:
   (`m17_stream_1600_arbitrary_assemble()`, `m17_state_ext::adata`: decoder scratch, in the M17 state extension and so
   never in a frontend's snapshot); the text META is assembled the same way (`m17_state_ext::text_meta`) and emptied at
   every transmission boundary (`m17_confirm_reset_link()`), so no text is put together from two transmissions'
-  blocks (an MPKT is no such boundary: blocks of consecutive MPKTs still assemble). Tests: `M17_STATE_DISPATCH`
+  blocks. A packet is a whole transmission with its own LSF (M17 spec 2.0.11, Packet Mode), so its text is its own
+  too (`m17_text_meta_forget()`): an MPKT's text starts empty when its CRC passes and is emptied after its packet is
+  decoded, and an RF packet's, which starts at its LSF frame, is emptied once its packet is decoded at its end frame
+  (CRC passed, or under -F); a packet whose CRC failed and is not decoded leaves the text alone. Tests:
+  `M17_STATE_DISPATCH`
   (`test_signed_ip_stream_is_not_verified`, `test_signed_rf_stream_needs_every_frame_once`,
   `test_rf_marker_end_reports_an_incomplete_signature`, `test_rf_eos_retires_the_link_setup`,
   `test_ip_foreign_eot_does_not_end_the_open_stream`, `test_ip_frame_counter_rollover`,
@@ -13970,7 +13974,8 @@ Private per-protocol modules worth knowing about:
   `test_link_setup_boundaries_clear_the_same_set`, `test_signed_rf_signature_range_frames`,
   `test_ip_signed_stream_frame_order_never_wraps`, `test_ip_foreign_eot_is_remembered`,
   `test_ip_signed_stream_end_without_chunks`, `test_ip_ended_streams_are_bounded_and_fail_closed`,
-  `test_ip_1600_arbitrary_data_is_one_streams`, `test_text_meta_is_one_transmissions`; each lifecycle case builds and runs without Codec2 too, its playback
+  `test_ip_1600_arbitrary_data_is_one_streams`, `test_text_meta_is_one_transmissions`,
+  `test_packet_text_meta_is_one_packets`; each lifecycle case builds and runs without Codec2 too, its playback
   counts guarded), `M17_LSF_PARSE`, `M17_GNSS_POSITION` (`test_ip_counter_wrap_is_one_report`). A stream frame's EOS bit,
   an IP EOT, EOTX or DISC, the EOT marker and a packet's end end the slot's call only when it is an M17 one, and an M17
   call a fade already ended is made final by it (`m17_end_call()`, `m17_call_end.c`, public in

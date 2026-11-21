@@ -1759,7 +1759,14 @@ test_ip_mpkt_frames_apply_crc_gated_packet_state(void) {
     const size_t mpkt_len = build_ip_mpkt_frame(mpkt_frame, sizeof(mpkt_frame), lsf_bits, 0xCAFEU, app, sizeof(app));
 
     state->m17_can_en = -1;
+    dsd_test_capture_stderr cap;
+    char out[8192];
+    if (dsd_test_capture_stderr_begin(&cap, "m17_mpkt_text") != 0) {
+        return 1;
+    }
     m17_ip_dispatch_frame(opts, state, mpkt_frame, (int)mpkt_len);
+    (void)dsd_test_capture_stderr_end(&cap);
+    (void)dsd_test_capture_stderr_read(&cap, out, sizeof(out));
 
     int err = 0;
     dsd_call_snapshot call;
@@ -1779,16 +1786,12 @@ test_ip_mpkt_frames_apply_crc_gated_packet_state(void) {
     err |= expect_u8("valid MPKT packet mode data type", state->m17_str_dt, 20U);
     err |= expect_u8("valid MPKT CAN", state->m17_can, 5U);
     err |= expect_u8("valid MPKT clear encryption", state->m17_enc, 0U);
-    const m17_state_ext* ext = m17_state_ext_find(state);
-    err |= expect_int("valid MPKT text assembled in the M17 extension", ext != NULL, 1);
-    if (ext != NULL) {
-        err |= expect_u8("valid MPKT text expected bitmap", ext->text_meta.expected_bitmap, 0x01U);
-        err |= expect_u8("valid MPKT text received bitmap", ext->text_meta.received_bitmap, 0x01U);
-        err |= expect_u8("valid MPKT text control", ext->text_meta.control_or, 0x11U);
-        err |= expect_bytes("valid MPKT text bytes", ext->text_meta.text, expected_text, sizeof(expected_text));
-        err |=
-            expect_u8("valid MPKT retains final application byte", ext->text_meta.text[M17_TEXT_BLOCK_BYTES - 1U], '!');
-    }
+    /* Its one-block text completes, final application byte included, and goes with the MPKT: one MPKT is one whole
+       transmission. */
+    err |= expect_int("valid MPKT text completes with its final application byte",
+                      strstr(out, "Complete: IP-MPKT-LAST!") != NULL, 1);
+    err |= expect_u8("valid MPKT text ends with it", text_meta_received(state), 0U);
+    (void)expected_text;
 
     const uint64_t first_epoch = call.epoch;
     m17_ip_dispatch_frame(opts, state, mpkt_frame, (int)mpkt_len);
@@ -1854,6 +1857,19 @@ start_m17_packet_call(dsd_opts* opts, dsd_state* state, Event_History_I event_hi
     return dsd_call_state_get(state, 0U, &call) > 0 ? call.epoch : 0U;
 }
 
+/* Whether @p needle is anywhere in the @p cap bytes of captured output, NUL bytes (a text block's padding, printed as
+   characters) included. */
+static int
+capture_has(const char* out, size_t cap, const char* needle) {
+    const size_t n = strlen(needle);
+    for (size_t i = 0U; n <= cap && i <= cap - n; i++) {
+        if (memcmp(out + i, needle, n) == 0) {
+            return 1;
+        }
+    }
+    return 0;
+}
+
 static int
 test_packet_eot_finalization_crc_gates_decode_and_clears_state(void) {
     dsd_opts* opts = &g_opts;
@@ -1877,18 +1893,21 @@ test_packet_eot_finalization_crc_gates_decode_and_clears_state(void) {
     const uint64_t first_epoch = start_m17_packet_call(opts, state, event_history);
     stage_packet_with_crc(state, app, app_len, crc);
 
+    dsd_test_capture_stderr cap;
+    char out[8192];
+    if (dsd_test_capture_stderr_begin(&cap, "m17_pkt_eot_text") != 0) {
+        return 1;
+    }
     m17_pkt_finalize_eot(opts, state, app_len, (int)(app_len + M17_PACKET_CRC_BYTES));
+    (void)dsd_test_capture_stderr_end(&cap);
+    (void)dsd_test_capture_stderr_read(&cap, out, sizeof(out));
 
     int err = 0;
     err |= expect_int("valid packet EOT starts canonical epoch", first_epoch != 0U, 1);
-    const m17_state_ext* ext = m17_state_ext_find(state);
-    err |= expect_int("valid packet EOT text assembled in the M17 extension", ext != NULL, 1);
-    if (ext != NULL) {
-        err |= expect_u8("valid packet EOT text expected bitmap", ext->text_meta.expected_bitmap, 0x01U);
-        err |= expect_u8("valid packet EOT text received bitmap", ext->text_meta.received_bitmap, 0x01U);
-        err |= expect_u8("valid packet EOT text control", ext->text_meta.control_or, 0x11U);
-        err |= expect_bytes("valid packet EOT text bytes", ext->text_meta.text, expected_text, sizeof(expected_text));
-    }
+    /* The packet's one-block text completes, and goes with the packet transmission it ends. */
+    err |= expect_int("valid packet EOT text completes", capture_has(out, sizeof(out), "Complete: RF-PKT-OK"), 1);
+    err |= expect_u8("valid packet EOT text ends with it", text_meta_received(state), 0U);
+    (void)expected_text;
     err |= expect_int("valid packet EOT clears PBC", state->m17_pbc_ct, 0);
     for (size_t i = 0U; i < total_len; i++) {
         err |= expect_u8("valid packet EOT clears packet buffer", state->m17_pkt[i], 0U);
@@ -1939,17 +1958,16 @@ test_packet_eot_finalization_crc_gates_decode_and_clears_state(void) {
     state->m17_can_en = -1;
     stage_packet_with_crc(state, app, app_len, (uint16_t)(crc ^ 0x0001U));
 
-    m17_pkt_finalize_eot(opts, state, app_len, (int)(app_len + M17_PACKET_CRC_BYTES));
-
-    ext = m17_state_ext_find(state);
-    err |= expect_int("non-aggressive bad CRC still assembles the text", ext != NULL, 1);
-    if (ext != NULL) {
-        err |= expect_u8("non-aggressive bad CRC still decodes expected bitmap", ext->text_meta.expected_bitmap, 0x01U);
-        err |= expect_u8("non-aggressive bad CRC still decodes received bitmap", ext->text_meta.received_bitmap, 0x01U);
-        err |= expect_u8("non-aggressive bad CRC still decodes control", ext->text_meta.control_or, 0x11U);
-        err |= expect_bytes("non-aggressive bad CRC text bytes", ext->text_meta.text, expected_text,
-                            sizeof(expected_text));
+    if (dsd_test_capture_stderr_begin(&cap, "m17_pkt_relaxed_text") != 0) {
+        return 1;
     }
+    m17_pkt_finalize_eot(opts, state, app_len, (int)(app_len + M17_PACKET_CRC_BYTES));
+    (void)dsd_test_capture_stderr_end(&cap);
+    (void)dsd_test_capture_stderr_read(&cap, out, sizeof(out));
+
+    err |= expect_int("non-aggressive bad CRC still decodes the text",
+                      capture_has(out, sizeof(out), "Complete: RF-PKT-OK"), 1);
+    err |= expect_u8("non-aggressive bad CRC text ends with the packet", text_meta_received(state), 0U);
     dsd_state_ext_free_all(state);
     return err;
 }
@@ -6511,10 +6529,10 @@ test_ip_signed_stream_end_without_chunks(void) {
         const uint8_t status_end = state->m17_signature_verification_status;
         (void)dsd_test_capture_stderr_end(&cap);
         (void)dsd_test_capture_stderr_read(&cap, out, sizeof(out));
-        if (status_open != 6U || (end < 2 && status_end != 6U) || strstr(out, "SIG INCOMPLETE") != NULL
-            || strstr(out, "SIG NOT VERIFIED OVER NETWORK") == NULL) {
+        if (status_open != 6U || (end < 2 && status_end != 6U) || capture_has(out, sizeof(out), "SIG INCOMPLETE")
+            || !capture_has(out, sizeof(out), "SIG NOT VERIFIED OVER NETWORK")) {
             DSD_FPRINTF(stderr, "signed IP stream ended by %s: status %u then %u, incomplete %d\n", k_ends[end],
-                        (unsigned)status_open, (unsigned)status_end, strstr(out, "SIG INCOMPLETE") != NULL);
+                        (unsigned)status_open, (unsigned)status_end, capture_has(out, sizeof(out), "SIG INCOMPLETE"));
             err = 1;
         }
     }
@@ -6591,7 +6609,7 @@ test_ip_1600_arbitrary_data_is_one_streams(void) {
         (void)dsd_test_capture_stderr_read(&cap, out, sizeof(out));
         /* The group's 48 bytes as one packet, shown in hex: slot 2's chunk runs into slot 3's, which no single frame's
            eight bytes do. */
-        const int whole = strstr(out, "43434343434343434444444444444444") != NULL;
+        const int whole = capture_has(out, sizeof(out), "43434343434343434444444444444444");
         err |= expect_int(change ? "a group across two streams is never put together"
                                  : "one stream's group is put "
                                    "together",
@@ -6639,7 +6657,58 @@ test_text_meta_is_one_transmissions(void) {
     send_ip_stream_frame(opts, state, second_bits, 0x7E01U, 0U, 0U, payload, 0);
     (void)dsd_test_capture_stderr_end(&cap);
     (void)dsd_test_capture_stderr_read(&cap, out, sizeof(out));
-    err |= expect_int("two transmissions' text blocks never make one text", strstr(out, "Complete:") != NULL, 0);
+    err |=
+        expect_int("two transmissions' text blocks never make one text", capture_has(out, sizeof(out), "Complete:"), 0);
+    dsd_state_ext_free_all(state);
+    return err;
+}
+
+/* Each packet is a whole transmission with its own LSF (M17 spec 2.0.11, Packet Mode), so its text META is its own:
+   the blocks of two MPKTs, or of two packets over the air, never make one text, though both texts are as long. */
+static int
+test_packet_text_meta_is_one_packets(void) {
+    dsd_opts* opts = &g_opts;
+    dsd_state* state = &g_state;
+    uint8_t lsf_bits[TEST_M17_LSF_BITS];
+    uint8_t first[2U + M17_META_BYTES];
+    uint8_t second[2U + M17_META_BYTES];
+    uint8_t mpkt_frame[34U + sizeof(first) + 2U];
+    int err = 0;
+    const unsigned long long dst = m17_encode_b40_callsign(0ULL, M17_REF_LSF_DST_CSD);
+    const unsigned long long src = m17_encode_b40_callsign(0ULL, M17_REF_LSF_SRC_CSD);
+    build_lsf_bits(lsf_bits, dst, src, m17_compose_frame_info(0U, 0U, 0U, 0U, 5U, 0U, 0U), NULL);
+    /* Two-block texts: the first packet carries block 1 of 2, the second block 2 of 2. */
+    build_packet_text_meta_app(first, "FIRST-PART-AA");
+    first[2] = 0x31U;
+    build_packet_text_meta_app(second, "OTHER-TEXT-BB");
+    second[2] = 0x32U;
+
+    for (int rf = 0; rf < 2; rf++) {
+        ip_test_state(opts, state);
+        dsd_test_capture_stderr cap;
+        char out[16384];
+        if (dsd_test_capture_stderr_begin(&cap, "m17_pkt_text") != 0) {
+            return 1;
+        }
+        const uint8_t* apps[2] = {first, second};
+        for (int i = 0; i < 2; i++) {
+            if (rf) {
+                const uint16_t app_len = (uint16_t)sizeof(first);
+                stage_packet_with_crc(state, apps[i], app_len, m17_crc16(apps[i], app_len));
+                m17_pkt_finalize_eot(opts, state, app_len, (int)(app_len + M17_PACKET_CRC_BYTES));
+            } else {
+                const size_t len = build_ip_mpkt_frame(mpkt_frame, sizeof(mpkt_frame), lsf_bits,
+                                                       (uint16_t)(0x7F00U + i), apps[i], sizeof(first));
+                m17_ip_dispatch_frame(opts, state, mpkt_frame, (int)len);
+            }
+        }
+        (void)dsd_test_capture_stderr_end(&cap);
+        (void)dsd_test_capture_stderr_read(&cap, out, sizeof(out));
+        err |= expect_int(rf ? "two RF packets' text blocks never make one text"
+                             : "two MPKTs' text blocks never make one text",
+                          capture_has(out, sizeof(out), "Complete:"), 0);
+        err |= expect_u8("a packet's text is gone at its end", text_meta_received(state), 0U);
+    }
     dsd_state_ext_free_all(state);
     return err;
 }
@@ -6698,6 +6767,7 @@ main(void) {
     err |= test_ip_ended_streams_are_bounded_and_fail_closed();
     err |= test_ip_1600_arbitrary_data_is_one_streams();
     err |= test_text_meta_is_one_transmissions();
+    err |= test_packet_text_meta_is_one_packets();
     err |= test_lsf_rejects_reserved_type_without_replacing_state();
     err |= test_lsf_rejects_invalid_addresses_without_replacing_state();
     err |= test_lsf_null_meta_decodes_text_and_honors_can_filter();
