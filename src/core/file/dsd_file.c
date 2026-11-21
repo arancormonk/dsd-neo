@@ -3054,11 +3054,14 @@ sdrtrunk_json_handle_hex(dsd_opts* opts, dsd_state* state, const char* token, ch
 }
 
 /* A frame's "time": when SDRTrunk heard it, in Unix milliseconds (VoiceFrame), as a whole decimal integer. Returns 0
-   with the second it falls in, or -1 for a value that is not one, names no second after the epoch, or does not fit. */
+   with the second it falls in, or -1 for a value that is not one, names no second after the epoch, or does not fit.
+   Only decimal digits are one: strtoull() would skip a quoted value's leading space and take its sign, so " -1" would
+   wrap to UINT64_MAX. */
 static int
 sdrtrunk_json_parse_time(const char* value, time_t* out) {
     uint64_t ms = 0;
-    if (dsd_parse_uint64_strict(value, 10, UINT64_MAX, &ms) != 0) {
+    if (value[0] == '\0' || value[strspn(value, "0123456789")] != '\0'
+        || dsd_parse_uint64_strict(value, 10, UINT64_MAX, &ms) != 0) {
         return -1;
     }
     const uint64_t seconds = ms / 1000U;

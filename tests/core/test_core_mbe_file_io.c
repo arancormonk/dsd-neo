@@ -836,6 +836,20 @@ test_sdrtrunk_json_time_is_the_first_valid_frame(void) {
     rc |= expect_u64("sdrtrunk start is the first whole \"time\" value",
                      (uint64_t)history[0].Event_History_Items[0].event_time, 1700000123ULL);
     dsd_state_ext_free_all(&state);
+
+    /* A time is decimal digits only: a quoted value with a sign or a leading space (which strtoull() would skip, and
+       wrap " -1" to UINT64_MAX) names no start, and the next valid frame's does. */
+    static const char json_signed[] =
+        "{\"protocol\":\"DMR\",\"version\":2,\"call_type\":\"GROUP\",\"from\":\"5678\",\"to\":\"1234\","
+        "\"encrypted\":false,\"frames\":[{\"time\":\" -1\"},{\"time\":\"+1700000050000\"},"
+        "{\"time\":\" 1700000060000\"},{\"time\":1700000123456}]}";
+    DSD_MEMSET(&state, 0, sizeof state);
+    DSD_MEMSET(history, 0, sizeof history);
+    state.event_history_s = history;
+    rc |= run_sdrtrunk_json(json_signed, &opts, &state);
+    rc |= expect_u64("sdrtrunk start skips signed and spaced times",
+                     (uint64_t)history[0].Event_History_Items[0].event_time, 1700000123ULL);
+    dsd_state_ext_free_all(&state);
     return rc;
 }
 

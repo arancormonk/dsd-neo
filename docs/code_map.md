@@ -2058,7 +2058,8 @@ suite runs under this compiler.
   call's first valid frame: a recording of two records with other talkgroups is filed at the second record's first
   frame (`CORE_WAV_JOURNAL` `test_playback_records_play_as_one_call`, `CORE_MBE_FILE_IO`). A frame's `time` is matched
   by its exact key (not `timestamp`) and its value read whole (`sdrtrunk_json_next_scalar()`: a quoted string up to its
-  closing quote, spaces included), then strict-parsed.
+  closing quote, spaces included); only decimal digits are a time (a sign or a space, which `strtoull()` would take,
+  is not), then strict-parsed.
 - API note: the high-pass filter in `<dsd-neo/core/audio_filters.h>` is `dsd_hpf()`. It was renamed from
   `hpf()` because codec2 exports a symbol of that name and Android links codec2 statically, which turns the
   duplicate into a link error. It is the only filter in that header that is prefixed: codec2 exports none of
