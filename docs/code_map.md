@@ -2594,8 +2594,10 @@ suite runs under this compiler.
     with no active call (`calls_publish()` in `tetra_calls.c`: the anonymous call once signalling proves the carrier, a
     call record's or the direct-mode call's first publication) runs the flush before it observes the call (issue #888),
     so the speech that reached the slot file before (ahead of the proof or the DM-SETUP, or trailing an ended call)
-    closes as no row's or the held epoch's, unexported, and the first call's recording holds its own audio alone; a call
-    already active (a republication, a reallocation) runs nothing. Each `-r` playback file
+    closes as no row's or the held epoch's, unexported, and the first call's recording holds its own audio alone; the
+    samples of that speech still waiting to be played (`tetra_voice_t::carry_len`, half an output frame after a half
+    slot) are dropped with it, so they never lead the call's audio; a call already active (a republication, a
+    reallocation) runs nothing. Each `-r` playback file
     (`mbe_file_end_replayed_call()` in `dsd_mbe.c`, once per file opened, after it ends and commits the previous file's
     call) runs the flush too (issue #888): a raw `.imb`/`.amb`/`.dmb` file plays with no call, so its audio would
     otherwise join the next file's, and an SDRTrunk export's named call would commit and export it as its own; each file

@@ -653,7 +653,8 @@ calls_reclassify(dsd_opts* opts, dsd_state* state, dsd_call_crypto_state crypto)
  * active call first closes the audio its file holds that no call owns (issue #888): speech the record gate let in
  * before signalling proved the carrier, before a DM-SETUP named the call, or that trailed an ended one. It closes as
  * the ended epoch's that has yet to commit, else as no row's, unexported, so the admitted call's commit never
- * publishes it as its own. */
+ * publishes it as its own. The samples of that speech still waiting to be played (half an output frame after a half
+ * slot) go with it, so they never lead the admitted call's audio either. */
 static void
 calls_publish(dsd_opts* opts, dsd_state* state, tetra_state_t* ts, const dsd_call_observation* o,
               dsd_call_crypto_state crypto, uint8_t pub, uint16_t call_id) {
@@ -663,6 +664,7 @@ calls_publish(dsd_opts* opts, dsd_state* state, tetra_state_t* ts, const dsd_cal
     dsd_call_snapshot call;
     if (opts && (dsd_call_state_get(state, 0U, &call) <= 0 || call.phase != DSD_CALL_PHASE_ACTIVE)) {
         dsd_event_flush_orphan_recordings(opts, state);
+        ts->voice.carry_len = 0;
     }
     (void)dsd_call_state_observe(state, o, DSD_CALL_BOUNDARY_CONTINUE);
     if (crypto != DSD_CALL_CRYPTO_UNKNOWN) {

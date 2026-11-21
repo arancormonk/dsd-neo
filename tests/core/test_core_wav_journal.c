@@ -3956,6 +3956,55 @@ test_tetra_first_call_leaves_unowned_audio(void) {
     return rc;
 }
 
+/* @p bursts good half-slot speech bursts: the first half stolen for signalling, the second speech. */
+static void
+tetra_first_half_speech(rig* r, int bursts) {
+    uint8_t bits[TETRA_SPEECH_HALF_BITS];
+    for (int i = 0; i < TETRA_SPEECH_HALF_BITS; i++) {
+        bits[i] = (uint8_t)(((unsigned)i * 5U + 1U) >> 2U) & 1U;
+    }
+    for (int b = 0; b < bursts; b++) {
+        tetra_voice_half_slot(r->opts, r->state, bits, 1);
+    }
+}
+
+/* Anonymous speech that begins with a half slot leaves half an output frame (80 samples) of it waiting to be played
+   when signalling proves the carrier. The admission drops it with the rest of the earlier audio: the admitted call's
+   speech plays none of it, so after its two full slots nothing is carried, and its recording is its own two slots.
+   Before, those 80 samples led the call's recording. */
+static int
+test_tetra_first_call_drops_carried_samples(void) {
+    rig r;
+    int rc = rig_open(&r, "dsdneo_journal_tetra_carry");
+    tetra_first_rig(&r, TETRA_FIRST_ANON);
+    submit(&r, DSD_APP_CMD_WAV_START);
+    tetra_first_half_speech(&r, 1);
+    tetra_first_speech(&r, 5);
+    const tetra_state_t* ts = tetra_st(r.state);
+    rc |= expect_int("tetra carry: the earlier speech leaves half a frame waiting", (long long)ts->voice.carry_len, 80);
+    /* The same second: the speech goes on with the same owner (voice_bind()), so only the admission can drop it. */
+    tetra_first_admit(&r, TETRA_FIRST_ANON);
+    tetra_first_speech(&r, 2);
+    rc |= expect_true("tetra carry: its speech admitted the call", call_epoch(&r) != 0U);
+    rc |= expect_int("tetra carry: the call's speech carries none of the earlier", (long long)ts->voice.carry_len, 0);
+    clock_at(g_now_s + 2);
+    end_call(&r, DSD_CALL_END_TERMINATOR);
+    tetra_first_files files;
+    DSD_MEMSET(&files, 0, sizeof files);
+    files.dir = r.dir;
+    files.prefill_frames = 5 * TETRA_FIRST_BURST_FRAMES + 160;
+    files.call_frames = 2 * TETRA_FIRST_BURST_FRAMES;
+    (void)dsd_dir_list(r.dir, tetra_first_files_cb, &files);
+    rc |= expect_int("tetra carry: the earlier speech is published once", files.prefill, 1);
+    rc |= expect_int("tetra carry: and not exported", files.prefill_sidecar, 0);
+    rc |= expect_int("tetra carry: the call's recording is its own two slots", files.call, 1);
+    rc |= expect_int("tetra carry: no other recording", files.other, 0);
+    r.opts->rdio_mode = DSD_RDIO_MODE_OFF;
+    r.opts->rdio_unknown_talkgroup = 0;
+    rig_close(&r);
+    return rc;
+}
+
 /* An identity-less TETRA call (anonymous, admitted once signalling proved the carrier) fades: its row is held for the
    reacquisition window, the drop verdict pending, and its audio stays in slot 1's file. Speech then admits a new call
    on the slot: the admission closes the held call's audio as its own recording, pending on its epoch and unexported
@@ -4715,6 +4764,7 @@ main(void) {
     rc |= test_edacs_grant_leaves_owned_audio_to_its_row();
     rc |= test_edacs_same_lid_group_after_all_call();
     rc |= test_tetra_first_call_leaves_unowned_audio();
+    rc |= test_tetra_first_call_drops_carried_samples();
     rc |= test_tetra_held_call_then_readmitted();
     rc |= test_playback_files_record_apart();
     rc |= test_playback_export_starts_at_its_first_frame();
