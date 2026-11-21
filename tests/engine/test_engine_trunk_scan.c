@@ -16746,7 +16746,7 @@ test_target_edit_squelch_live_and_stored(void) {
     /* Refusals change nothing. */
     test_rc |= expect_edit_rc("bad value", edit_target_squelch(&opts, &state, "thr", DSD_SCAN_ROW_EDIT_SET, 5, &result),
                               DSD_SCAN_ROW_EDIT_REFUSED);
-    if (strstr(result.err, "-100 to 0") == NULL) {
+    if (strstr(result.err, "-120 to 0") == NULL) {
         DSD_FPRINTF(stderr, "bad value reason: %s\n", result.err);
         test_rc = 1;
     }
@@ -16777,6 +16777,13 @@ test_target_edit_squelch_live_and_stored(void) {
         DSD_FPRINTF(stderr, "the edit left the P25 SM tick guard held (%d)\n", g_p25_tick_guard_depth);
         test_rc = 1;
     }
+    /* Issue #899: a level down to -120 dB runs on air; one below it is refused and changes nothing. */
+    test_rc |= expect_edit_rc("live -110", edit_target_squelch(&opts, &state, "thr", DSD_SCAN_ROW_EDIT_SET, -110, NULL),
+                              DSD_SCAN_ROW_EDIT_APPLIED);
+    test_rc |= expect_target_squelch(&opts, "live -110", -110, 5);
+    test_rc |= expect_edit_rc("live -121", edit_target_squelch(&opts, &state, "thr", DSD_SCAN_ROW_EDIT_SET, -121, NULL),
+                              DSD_SCAN_ROW_EDIT_REFUSED);
+    test_rc |= expect_target_squelch(&opts, "after -121", -110, 5);
 
     dsd_engine_trunk_scan_shutdown(&opts, &state);
     if (state.scan_row_scanner != (uint8_t)DSD_SCAN_ROW_SCANNER_NONE || state.scan_row_session != 0U

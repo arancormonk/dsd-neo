@@ -2882,7 +2882,7 @@ test_scan_row_scope_chooser(void) {
 
     g_chooser.on_done(g_chooser.user, 1);
     rc |= expect_str("this channel squelch prompt", g_prompt.title,
-                     "Squelch on this channel (dB -100..0, off, auto[+N], noise[+N])");
+                     "Squelch on this channel (dB -120..0, off, auto[+N], noise[+N])");
     rc |= expect_str("this channel squelch prompt opens on the row's", g_prompt.prefill, "-55");
     g_prompt.str_cb(g_prompt.user, "-48");
     dsd_app_scan_row_edit_payload p = cmd_scan_row_edit();
@@ -2922,6 +2922,31 @@ test_scan_row_scope_chooser(void) {
     g_chooser.on_done(g_chooser.user, 1);
     g_prompt.str_cb(g_prompt.user, "-60.5");
     rc |= expect_int("squelch edit refuses half a dB", g_cmd.calls, 0);
+    /* Issue #899: whole dB down to -120, the range a row loads; below it the status line says what it takes. */
+    g_prompt.str_cb(g_prompt.user, "-110");
+    rc |= expect_int("squelch edit posts -110", g_cmd.calls, 1);
+    if (g_cmd.calls == 1) {
+        p = cmd_scan_row_edit();
+        rc |= expect_int(
+            "squelch edit set -110",
+            p.action == DSD_SCAN_ROW_EDIT_SET && p.squelch_db == -110 && p.squelch_mode == DSD_SQUELCH_MODE_LEVEL, 1);
+    }
+    reset_capture();
+    act_set_squelch(&ctx);
+    g_chooser.on_done(g_chooser.user, 1);
+    g_prompt.str_cb(g_prompt.user, "-120");
+    rc |= expect_int("squelch edit posts -120", g_cmd.calls, 1);
+    if (g_cmd.calls == 1) {
+        p = cmd_scan_row_edit();
+        rc |= expect_int("squelch edit set -120", p.squelch_db, -120);
+    }
+    reset_capture();
+    act_set_squelch(&ctx);
+    g_chooser.on_done(g_chooser.user, 1);
+    g_prompt.str_cb(g_prompt.user, "-121");
+    rc |= expect_int("squelch edit refuses -121", g_cmd.calls, 0);
+    rc |= expect_str("squelch edit -121 says what it takes", g_status,
+                     "Squelch on this channel: whole dB from -120 to 0, off, auto[+N] or noise[+N]");
     g_prompt.str_cb(g_prompt.user, NULL);
     rc |= expect_int("squelch edit cancelled", g_cmd.calls, 0);
 
@@ -2982,7 +3007,7 @@ test_scan_row_scope_chooser(void) {
     act_set_squelch(&ctx);
     g_chooser.on_done(g_chooser.user, 1);
     rc |= expect_str("audio input: this channel squelch prompt", g_prompt.title,
-                     "Squelch on this channel (dB -100..0, off, noise[+N])");
+                     "Squelch on this channel (dB -120..0, off, noise[+N])");
     rc |= expect_str("audio input: an am row's noise default opens as off", g_prompt.prefill, "off");
     dsd_test_scan_labels_set(DSD_SCAN_MODE_NFM);
     reset_capture();
@@ -2996,7 +3021,7 @@ test_scan_row_scope_chooser(void) {
     rc |= expect_str("audio input: an auto default opens as off", g_prompt.prefill, "off");
     g_prompt.str_cb(g_prompt.user, "auto");
     rc |= expect_str("audio input: a refusal says what it takes", g_status,
-                     "Squelch on this channel: whole dB from -100 to 0, off or noise[+N]");
+                     "Squelch on this channel: whole dB from -120 to 0, off or noise[+N]");
     dsd_test_scan_labels_input_type(AUDIO_IN_RTL);
 
     dsd_test_scan_labels_squelch(DSD_SQUELCH_MODE_LEVEL, 0, 0.0);

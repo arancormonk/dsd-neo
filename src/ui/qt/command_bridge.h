@@ -82,7 +82,7 @@ class CommandBridge : public QObject {
     Q_INVOKABLE int receiveField(int kind) const;
     /**
      * @brief Submit a session edit of one @p field (a scanRowField*) of the row @p context names, with @p action (a
-     * scanRowEdit*). For SET, @p value carries the field's value: squelchDb (whole dB, -100..0; 0 = off) or
+     * scanRowEdit*). For SET, @p value carries the field's value: squelchDb (whole dB, -120..0; 0 = off) or
      * squelchMode squelchModeAuto with squelchMarginDb (an nfm or am row's auto squelch), squelchMode
      * squelchModeNoise with squelchMarginDb (an nfm row's noise squelch), widthHz, toneMode with
      * toneList, or gainDb (0 = AGC). Returns whether it was queued; the decoder refuses what the row

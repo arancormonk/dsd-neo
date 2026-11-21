@@ -1613,7 +1613,7 @@ negativeMeasurementsSurvive() {
         {LOG_LEVEL_INFO, "info", "Requested RTL PPM Error Set to -5"},
         {LOG_LEVEL_INFO, "info",
          "Device does not support frequency (PPM) correction; configured ppm -25 will have no effect."},
-        // channel_scan.c and trunk_scan.c: a row's squelch, -100..0 dB.
+        // channel_scan.c and trunk_scan.c: a row's squelch, -120..0 dB.
         {LOG_LEVEL_WARN, "warn",
          "WARNING: Scan channel 3 (851.012500 MHz): --squelch-db -50 cannot gate digital acquisition without a radio "
          "input; here it gates only the analog input monitor (-8) and the carrier activity it stamps."},

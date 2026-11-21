@@ -2752,7 +2752,7 @@ together ("Different skip-silent setting"). An unchecked box stays off even when
 decoder arguments load a config file
 (`--config`) that turns its setting on. See [Skipping silent channels](../docs/trunk-scan.md#skipping-silent-channels).
 Per-target squelch is CSV-only: import a target CSV whose `options` carry
-`--squelch-db <dB>` (whole dB from -100 to 0, 0 = off, omitted = inherit). It is not a
+`--squelch-db <dB>` (whole dB from -120 to 0, 0 = off, omitted = inherit). It is not a
 decoder argument, so Extra decoder arguments cannot set it. The target preview lists each
 target's squelch, or inherit. While such a target is on air, the Radio panel shows its
 threshold with a **row** badge and the default beside it; the squelch buttons change that

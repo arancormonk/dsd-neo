@@ -103,7 +103,7 @@ Tip: If you run with no arguments and no config is loaded, `dsd-neo` starts the 
     [noise squelch](#noise-squelch---squelch-noise), which opens an FM channel at N dB of quieting.
     `--squelch <setting>` sets the same thing on any radio input and wins over the spec. A `-Y` channel-map row or
     `--trunk-scan` target can replace it while that row is on air with `--squelch-db <dB>` or `--squelch <setting>` in
-    its `options` column (whole dB, `-100..0`, `0` = off, `auto[+N]` on analog rows, `noise[+N]` on nfm rows, omitted
+    its `options` column (whole dB, `-120..0`, `0` = off, `auto[+N]` on analog rows, `noise[+N]` on nfm rows, omitted
     = inherit this value); see `docs/csv-formats.md`.
     An analog session makes calls (history rows, `-J` lines, recordings) only under a squelch above -110 dB, the
     startup default: see [Analog calls need a squelch](#analog-calls-need-a-squelch-on-a-radio-input).

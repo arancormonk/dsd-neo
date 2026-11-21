@@ -680,14 +680,14 @@ test_empty_group_avoid_scopes(void) {
 
 typedef struct {
     size_t count;
-    int squelch_set[4];
-    int squelch_db[4];
+    int squelch_set[5];
+    int squelch_db[5];
 } squelch_preview;
 
 static void
 collect_squelch_preview(const dsd_csv_channel_profile* row, void* context) {
     squelch_preview* preview = (squelch_preview*)context;
-    if (preview->count < 4) {
+    if (preview->count < 5) {
         preview->squelch_set[preview->count] = row->squelch_db_set;
         preview->squelch_db[preview->count] = row->squelch_db;
     }
@@ -719,13 +719,14 @@ test_squelch_rows_import_and_preview(void) {
                      "1,150000000,dmr,--squelch-db -60\n"
                      "2,150000001,nxdn48,--squelch-db=0\n"
                      "3,150000002,p25,\n"
-                     "4,150000003,,--squelch-db -100 --scan-max-visit-ms 5000\n");
+                     "4,150000003,,--squelch-db -100 --scan-max-visit-ms 5000\n"
+                     "5,150000004,nfm,--squelch -110\n");
     dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(*opts));
     dsd_state* state = (dsd_state*)calloc(1, sizeof(*state));
     assert(opts && state);
     char log[4096];
     assert(import_capturing(opts, state, path, log, sizeof(log)) == 0);
-    assert(state->lcn_freq_count == 4);
+    assert(state->lcn_freq_count == 5);
     const dsd_scan_row_profile* row = dsd_channel_profile_get(state, 0);
     assert(row && (row->values.present & DSD_SCAN_OPT_SQUELCH) && row->values.squelch_db == -60);
     row = dsd_channel_profile_get(state, 1);
@@ -733,23 +734,28 @@ test_squelch_rows_import_and_preview(void) {
     assert(dsd_channel_profile_get(state, 2) == NULL);
     row = dsd_channel_profile_get(state, 3);
     assert(row && row->values.squelch_db == -100 && dsd_channel_mode_get(state, 3) == DSD_SCAN_MODE_INHERIT);
+    /* Issue #899: an nfm row at the CLI's -110 dB default loads as that level. */
+    row = dsd_channel_profile_get(state, 4);
+    assert(row && (row->values.present & DSD_SCAN_OPT_SQUELCH) && row->values.squelch_db == -110
+           && row->values.squelch_mode == DSD_SQUELCH_MODE_LEVEL);
     dsd_state_trunk_lcn_free(state);
     dsd_state_ext_free_all(state);
 
     squelch_preview preview = {0};
     assert(dsd_csv_inspect_channel_profiles(path, &preview, collect_squelch_preview) == 0);
-    assert(preview.count == 4);
+    assert(preview.count == 5);
     assert(preview.squelch_set[0] && preview.squelch_db[0] == -60);
     assert(preview.squelch_set[1] && preview.squelch_db[1] == 0);
     assert(!preview.squelch_set[2]);
     assert(preview.squelch_set[3] && preview.squelch_db[3] == -100);
+    assert(preview.squelch_set[4] && preview.squelch_db[4] == -110);
 
     const struct {
         const char* cell;
         const char* reason;
-    } bad[] = {{"--squelch-db 5", "--squelch-db: expects whole dB from -100 to 0 (0 = off)"},
-               {"--squelch-db -101", "--squelch-db: expects whole dB from -100 to 0 (0 = off)"},
-               {"--squelch-db -5.5", "--squelch-db: expects whole dB from -100 to 0 (0 = off)"},
+    } bad[] = {{"--squelch-db 5", "--squelch-db: expects whole dB from -120 to 0 (0 = off)"},
+               {"--squelch-db -121", "--squelch-db: expects whole dB from -120 to 0 (0 = off)"},
+               {"--squelch-db -5.5", "--squelch-db: expects whole dB from -120 to 0 (0 = off)"},
                {"--squelch-db", "--squelch-db: requires a valid argument"},
                {"--squelch-db -60 --squelch-db -50", "--squelch-db: duplicate option"}};
 

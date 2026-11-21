@@ -226,7 +226,7 @@ const ProducerLine kProducerLines[] = {
     // The Android service's run and configure results (DecoderService.kt), through nativeHostDiagnostic().
     {"[host] [info] ", "engine run returned %d"},
     {"[host] [info] ", "service: engine configuration returned %d"},
-    // Signed settings (#782 gate r1 G5): the requested ppm (rtl_sdr_fm.cpp), and a scan row's squelch, -100..0 dB, on a
+    // Signed settings (#782 gate r1 G5): the requested ppm (rtl_sdr_fm.cpp), and a scan row's squelch, -120..0 dB, on a
     // digital channel without a radio input (channel_scan.c, trunk_scan.c).
     {"[decoder] [info] ", "Requested RTL PPM Error Set to %d"},
     {"[decoder] [info] ", "Device does not support frequency (PPM) correction; configured ppm %d will have no effect."},

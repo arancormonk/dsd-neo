@@ -14,6 +14,11 @@
 extern "C" {
 #endif
 
+/** The lowest level, in whole dB, a row's or target's squelch takes (--squelch-db, --squelch, a session edit); the
+ * range is -120..0, 0 = off (issue #899: deep enough for the CLI's -110 dB default and the frontends' -120 floor). The
+ * diagnostics that state the range spell this number out. */
+#define DSD_SCAN_ROW_SQUELCH_DB_MIN (-120)
+
 enum {
     DSD_SCAN_OPT_FORCE = 1U << 0,
     DSD_SCAN_OPT_CRC = 1U << 1,
@@ -78,7 +83,8 @@ typedef struct {
     int hold_ms;
     /** 0 = explicit per-row disable */
     int max_visit_ms;
-    /** Whole dB from -100 to 0 in the rtl_sql convention; 0 = explicit per-row off. The LEVEL value. */
+    /** Whole dB from DSD_SCAN_ROW_SQUELCH_DB_MIN to 0 in the rtl_sql convention; 0 = explicit per-row off. The LEVEL
+     * value. */
     int squelch_db;
     /** The row's squelch mode (dsd_squelch_mode): LEVEL (squelch_db, --squelch-db or --squelch <dB>), AUTO
      * (--squelch auto[+N], nfm and am rows and targets only) or NOISE (--squelch noise[+N], nfm rows and targets only),

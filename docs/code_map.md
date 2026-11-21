@@ -19997,9 +19997,12 @@ External dependencies (resolved via CMake):
 - App-control scopes force/CRC/voice configuration commands and group imports, while live row policy mutations stay
   with the active context. Configuration export reads saved group paths and voice settings from the configured scope.
 - `DSD_SCAN_OPT_SQUELCH` (`--squelch-db`, issue #521) is the one row option with hardware behind it. The parser
-  accepts whole dB `-100..0` (0 = off) on every class and target type (`ANY_MODES`, not the `DIGITAL_MODES` of the
-  protocol switches); its spec sets `signed_numeric`, the single exception to "a following `-` token is a missing
-  value", applied in `option_argument()` so the parser and `dsd_scan_options_visit_files()` agree. The level lives in
+  accepts whole dB `DSD_SCAN_ROW_SQUELCH_DB_MIN..0` (`-120..0`, 0 = off; issue #899 took it below `-100` so the CLI's
+  `-110` default and the frontends' `-120` floor fit) on every class and target type (`ANY_MODES`, not the
+  `DIGITAL_MODES` of the protocol switches); `dsd_scan_row_edit_value_valid()` and the terminal's "This channel"
+  prompt hold a session edit to the same range. Its spec sets `signed_numeric`, the single exception to "a following
+  `-` token is a missing value" (a negative number, `-.25` included, which the setter then refuses as fractional),
+  applied in `option_argument()` so the parser and `dsd_scan_options_visit_files()` agree. The level lives in
   `dsd_scan_settings::rtl_squelch_level` (a double, first in the struct, compared with a tolerance) beside the other
   row options, outside `dsd_scan_settings_equal()`. It reaches the demod through the runtime metrics hook
   `set_channel_squelch`, only for `AUDIO_IN_RTL`, and at most once per row change: `dsd_scan_mode_enter` pushes

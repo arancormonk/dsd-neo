@@ -92,9 +92,10 @@ static int option_set_tone(const scan_option_spec* spec, const char* argument, u
 static int option_set_path(const scan_option_spec* spec, const char* argument, unsigned int mode,
                            dsd_scan_options* parsed);
 
-#define SQUELCH_HINT "expects whole dB from -100 to 0 (0 = off)"
+/* The range is DSD_SCAN_ROW_SQUELCH_DB_MIN..0. */
+#define SQUELCH_HINT "expects whole dB from -120 to 0 (0 = off)"
 #define SQUELCH_SETTING_HINT                                                                                           \
-    "expects off, whole dB from -100 to 0, auto[+N] (nfm and am rows) or noise[+N] (nfm rows), N from 3 to 30"
+    "expects off, whole dB from -120 to 0, auto[+N] (nfm and am rows) or noise[+N] (nfm rows), N from 3 to 30"
 #define OPTION_TEXT(x) #x
 #define OPTION_HZ(x)   OPTION_TEXT(x)
 #define NFM_BANDWIDTH_HINT                                                                                             \
@@ -431,7 +432,8 @@ option_set_squelch(const scan_option_spec* spec, const char* argument, unsigned 
     int db = 0;
     /* Whole dB, rtl_sql's own range. A positive number was a linear mean power in the legacy
      * CLI contract; it is refused here rather than read in a second unit. */
-    if (!option_signed_integer(argument) || dsd_parse_int_strict(argument, 10, -100, 0, &db) != 0) {
+    if (!option_signed_integer(argument)
+        || dsd_parse_int_strict(argument, 10, DSD_SCAN_ROW_SQUELCH_DB_MIN, 0, &db) != 0) {
         return -1;
     }
     parsed->values.squelch_db = db;
@@ -594,11 +596,12 @@ option_apply(const scan_option_spec* spec, const char* argument, unsigned int mo
     return 1;
 }
 
-/* Whether a separate token reads as a negative number, well formed (-60) or not (-5.5, -1e1):
- * a minus sign, a digit, then only digits, '.', 'e', 'E', '+' or '-'. */
+/* Whether a separate token reads as a negative number, well formed (-60) or not (-5.5, -.25, -1e1):
+ * a minus sign, a digit (or '.' and a digit), then only digits, '.', 'e', 'E', '+' or '-'. */
 static int
 option_negative_number(const char* text) {
-    return text[0] == '-' && text[1] >= '0' && text[1] <= '9'
+    const char* lead = text[0] == '-' && text[1] == '.' ? text + 2 : text + 1;
+    return text[0] == '-' && lead[0] >= '0' && lead[0] <= '9'
            && strspn(text + 1, "0123456789.eE+-") == strlen(text + 1);
 }
 

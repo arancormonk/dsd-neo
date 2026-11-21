@@ -665,7 +665,7 @@ typedef struct {
 /** DSD_APP_CMD_SCAN_ROW_EDIT ("this channel", issue #518). The row as the frontends saw it: @c scanner, @c session and
  * @c row are dsd_state::scan_row_scanner, scan_row_session and scan_row_index, and @c target_id a --trunk-scan target's
  * id (trunk_scan_active_id; "" for a -Y row). @c field is one DSD_SCAN_ROW_FIELD_* and @c action a
- * dsd_scan_row_edit_action (runtime/scan_row_edit.h); for SET the field's value: @c squelch_db (whole dB, -100..0,
+ * dsd_scan_row_edit_action (runtime/scan_row_edit.h); for SET the field's value: @c squelch_db (whole dB, -120..0,
  * 0 = off), @c width_hz, @c tone_mode with @c tone_list as typed (checked by dsd_tone_filter_check()), or @c gain_db
  * (whole dB, 0 = AGC). @c mode is the row's dsd_scan_mode as the editor saw it, for the notice only (the engine checks the
  * edit against the row's own). */

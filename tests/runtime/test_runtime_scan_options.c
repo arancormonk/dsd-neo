@@ -280,13 +280,31 @@ check_squelch_setting_option(void) {
 
     const char* rejected_everywhere[] = {"--squelch auto+2", "--squelch auto+31", "--squelch noise+2",
                                          "--squelch -60.5",  "--squelch 5",       "--squelch SENSITIVE",
-                                         "--squelch -101",   "--squelch noisy"};
+                                         "--squelch -121",   "--squelch noisy"};
     for (size_t i = 0; i < sizeof(rejected_everywhere) / sizeof(rejected_everywhere[0]); i++) {
         DSD_MEMSET(&parsed, 0, sizeof(parsed));
         assert(dsd_scan_options_parse(rejected_everywhere[i], DSD_SCAN_MODE_NFM, 0, &parsed, error, sizeof(error)) < 0);
         assert(parsed.values.present == 0 && strncmp(error, "--squelch: ", 11) == 0);
         assert(strstr(error, "SENSITIVE") == NULL);
     }
+    /* Issue #899: a level row takes whole dB down to -120, the CLI's -110 dB default and the Qt stepper's floor
+       included; below that it is refused with the range it takes. */
+    const int deep[] = {-101, -110, -120};
+    for (size_t i = 0; i < sizeof(deep) / sizeof(deep[0]); i++) {
+        char cell[32];
+        DSD_SNPRINTF(cell, sizeof(cell), "--squelch %d", deep[i]);
+        DSD_MEMSET(&parsed, 0, sizeof(parsed));
+        assert(dsd_scan_options_parse(cell, DSD_SCAN_MODE_NFM, 0, &parsed, error, sizeof(error)) == 0);
+        assert(parsed.values.present == DSD_SCAN_OPT_SQUELCH && parsed.values.squelch_mode == DSD_SQUELCH_MODE_LEVEL);
+        assert(parsed.values.squelch_db == deep[i]);
+    }
+    assert(dsd_scan_options_parse("--squelch -121", DSD_SCAN_MODE_NFM, 0, &parsed, error, sizeof(error)) < 0);
+    assert(strcmp(error, "--squelch: expects off, whole dB from -120 to 0, auto[+N] (nfm and am rows) or noise[+N] "
+                         "(nfm rows), N from 3 to 30")
+           == 0);
+    /* A fraction with no leading digit is a bad level, not a missing value. */
+    assert(dsd_scan_options_parse("--squelch -.25", DSD_SCAN_MODE_NFM, 0, &parsed, error, sizeof(error)) < 0);
+    assert(strncmp(error, "--squelch: expects off, whole dB from -120 to 0", 47) == 0);
     /* auto on a digital row: its channel never shows its noise. */
     assert(dsd_scan_options_parse("--squelch auto", DSD_SCAN_MODE_DMR, 1, &parsed, error, sizeof(error)) < 0);
     assert(strstr(error, "auto[+N] (nfm and am rows)") != NULL);
@@ -308,7 +326,7 @@ check_squelch_setting_option(void) {
         < 0);
 }
 
-/* The row squelch takes whole dB from -100 to 0 (the rtl_sql key's spelling), 0 switches it off, and
+/* The row squelch takes whole dB from -120 to 0 (the rtl_sql key's spelling), 0 switches it off, and
  * omitting it inherits. Both the separate-token and the = spellings work, and a negative number
  * is the one exception to "a following token that starts with - is a switch". */
 static void
@@ -319,8 +337,9 @@ check_squelch_option(void) {
     const struct {
         const char* text;
         int db;
-    } accepted[] = {{"--squelch-db -60", -60}, {"--squelch-db=-60", -60},   {"--squelch-db 0", 0},
-                    {"--squelch-db=0", 0},     {"--squelch-db -100", -100}, {"--squelch-db '-45'", -45}};
+    } accepted[] = {{"--squelch-db -60", -60},   {"--squelch-db=-60", -60},   {"--squelch-db 0", 0},
+                    {"--squelch-db=0", 0},       {"--squelch-db -100", -100}, {"--squelch-db '-45'", -45},
+                    {"--squelch-db -110", -110}, {"--squelch-db=-120", -120}, {"--squelch-db -101", -101}};
 
     for (size_t i = 0; i < sizeof(accepted) / sizeof(accepted[0]); i++) {
         DSD_MEMSET(&parsed, 0, sizeof(parsed));
@@ -368,8 +387,8 @@ check_squelch_option(void) {
     const char* rejected[] = {"--squelch-db +5",
                               "--squelch-db 5",
                               "--squelch-db=5",
-                              "--squelch-db -101",
-                              "--squelch-db=-101",
+                              "--squelch-db -121",
+                              "--squelch-db=-121",
                               "--squelch-db -5.5",
                               "--squelch-db=-5.5",
                               "--squelch-db -60dB",
@@ -397,11 +416,12 @@ check_squelch_option(void) {
     /* A bad number gets the same diagnostic however it is spelled; only a token that is not a
      * number at all reads as a missing value. */
     const char* out_of_contract[] = {"--squelch-db 5",     "--squelch-db=5",     "--squelch-db -5.5",
-                                     "--squelch-db=-5.5",  "--squelch-db -101",  "--squelch-db -1e1",
-                                     "--squelch-db -60.0", "--squelch-db=-60.0", "--squelch-db +5"};
+                                     "--squelch-db=-5.5",  "--squelch-db -121",  "--squelch-db -1e1",
+                                     "--squelch-db -60.0", "--squelch-db=-60.0", "--squelch-db +5",
+                                     "--squelch-db -.5",   "--squelch-db -1000"};
     for (size_t i = 0; i < sizeof(out_of_contract) / sizeof(out_of_contract[0]); i++) {
         assert(dsd_scan_options_parse(out_of_contract[i], DSD_SCAN_MODE_DMR, 1, &parsed, error, sizeof(error)) < 0);
-        assert(strcmp(error, "--squelch-db: expects whole dB from -100 to 0 (0 = off)") == 0);
+        assert(strcmp(error, "--squelch-db: expects whole dB from -120 to 0 (0 = off)") == 0);
     }
     const char* missing[] = {"--squelch-db", "--squelch-db -", "--squelch-db --strict-crc", "--squelch-db -G",
                              "--squelch-db -60dB"};
