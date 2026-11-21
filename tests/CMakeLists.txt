@@ -5300,6 +5300,37 @@ if(DSD_ENABLE_QT_UI)
     dsd_neo_test_ieee_semantics(dsd-neo_test_ui_qt_persistence)
     add_test(NAME UI_QT_PERSISTENCE COMMAND dsd-neo_test_ui_qt_persistence)
 
+    # Issue #903: the remembered talkgroups of each saved system. Upserts,
+    # the per-owner cap and its eviction order, elements of another version
+    # kept, an unreadable file never written, failed writes retried, the 30 s
+    # write interval, and forget, clear and purge written past an older write.
+    add_executable(
+        dsd-neo_test_ui_qt_heard_talkgroup_store
+        ui/test_ui_qt_heard_talkgroup_store.cpp
+        ${PROJECT_SOURCE_DIR}/src/ui/qt/heard_talkgroup_store.cpp
+        ${PROJECT_SOURCE_DIR}/src/ui/qt/json_store.cpp
+    )
+    target_include_directories(
+        dsd-neo_test_ui_qt_heard_talkgroup_store
+        PRIVATE ${PROJECT_SOURCE_DIR}/include ${PROJECT_SOURCE_DIR}/src/ui/qt
+    )
+    target_link_libraries(
+        dsd-neo_test_ui_qt_heard_talkgroup_store
+        PRIVATE Qt6::Core Qt6::Gui dsd-neo_runtime dsd-neo_platform
+    )
+    target_compile_definitions(
+        dsd-neo_test_ui_qt_heard_talkgroup_store
+        PRIVATE QT_NO_KEYWORDS DSD_NEO_TEST_HOOKS
+    )
+    set_target_properties(
+        dsd-neo_test_ui_qt_heard_talkgroup_store
+        PROPERTIES AUTOMOC ON
+    )
+    add_test(
+        NAME UI_QT_HEARD_TALKGROUP_STORE
+        COMMAND dsd-neo_test_ui_qt_heard_talkgroup_store
+    )
+
     add_executable(
         dsd-neo_test_ui_qt_decryption_profiles
         ui/test_ui_qt_decryption_profiles.cpp
@@ -26926,6 +26957,8 @@ if(DSD_ENABLE_QT_UI)
         # Issue #697: several lists started as one session, through the real starter.
         ${PROJECT_SOURCE_DIR}/src/ui/qt/scan_list_starter.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/ui_controller.cpp
+        # Issue #903: the remembered talkgroups the tick writes.
+        ${PROJECT_SOURCE_DIR}/src/ui/qt/heard_talkgroup_store.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/unit_activity_model.cpp
         # Issue #800: the map's tracks, polled on every tick.
         ${PROJECT_SOURCE_DIR}/src/ui/qt/position_model.cpp

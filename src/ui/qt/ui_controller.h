@@ -37,6 +37,7 @@
 namespace dsd_qt {
 
 class CallHistoryModel;
+class HeardTalkgroupStore;
 class MetricsModel;
 class P25NetworkModel; // WP-F2
 class DiagnosticsLogModel;
@@ -105,6 +106,13 @@ class UiController : public QObject {
         m_recordingStatus = status;
     }
 
+    // Issue #903: the remembered talkgroups, written at most every 30 s of real time from the tick and at once after a
+    // session's last rows are ingested at Stop. It must outlive this controller.
+    void
+    setHeardTalkgroups(HeardTalkgroupStore* store) {
+        m_heardTalkgroups = store;
+    }
+
     // WP-S2: called for a consumed host attachment, never on preference changes. @p attachedKind is the kind of
     // the receiver that attached ("usb" for an RTL-SDR, "airspy"); only a target on that kind starts (#647 D3a).
     // @p companions: the other lists a scan target was last started with (issue #697), passed on as they are; the
@@ -142,6 +150,8 @@ class UiController : public QObject {
     void refreshRedrawModels(const dsd_opts* opts_snapshot, const dsd_state* snapshot, bool live, bool new_target);
     void pollTalkgroupExport();
     void pollDecryptionResult();
+    /** @brief The tick's write of the remembered talkgroups: at once when @p sessionEnded, else when one is due. */
+    void flushHeardTalkgroups(bool sessionEnded);
     /** @brief Reset the target-scoped models when the scan target changed; true when it did. */
     bool invalidateForTarget(const dsd_state* snapshot);
     void onSessionStateChanged();
@@ -171,6 +181,7 @@ class UiController : public QObject {
     UnitActivityModel* m_unitActivity = nullptr;
     PositionModel* m_positions = nullptr;
     RecordingStatus* m_recordingStatus = nullptr;
+    HeardTalkgroupStore* m_heardTalkgroups = nullptr;
     QTimer m_timer;
     QVariantMap m_talkgroupExportResult;
     quint64 m_talkgroupExportSequence = 0;

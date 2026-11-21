@@ -24,6 +24,7 @@
 #include <QMap>
 #include <QObject>
 #include <QPointer>
+#include <QSet>
 #include <QString>
 #include <QStringList>
 #include <QVariant>
@@ -75,8 +76,9 @@ class SavedSystemsModel : public QAbstractListModel {
         HasSitePosRole,
         AvoidSiteRole,
         AirspyRole,
-        PlaceRole,        // RadioReference place, validPlace()'s form; empty = none
-        KeyConfiguredRole // a direct key, a key file or a decryption profile: whether one is set, never which
+        PlaceRole,              // RadioReference place, validPlace()'s form; empty = none
+        KeyConfiguredRole,      // a direct key, a key file or a decryption profile: whether one is set, never which
+        RememberTalkgroupsRole, // issue #903: learn the talkgroups heard on it; true unless turned off
     };
 
     /**
@@ -214,6 +216,10 @@ class SavedSystemsModel : public QAbstractListModel {
     /** @brief Mark a grouped site avoided or not; false when the row is unknown or the save failed. */
     Q_INVOKABLE bool setAvoidSite(int row, bool avoid);
     Q_INVOKABLE int rowForUid(const QString& uid) const;
+    /** @brief Every system's uid. */
+    QSet<QString> uids() const;
+    /** @brief The uids of the systems with rememberTalkgroups on (issue #903). */
+    QSet<QString> rememberingUids() const;
     Q_INVOKABLE QVariantMap getByUid(const QString& uid) const;
 
     /**
@@ -300,6 +306,8 @@ class SavedSystemsModel : public QAbstractListModel {
   Q_SIGNALS:
     void sitesChanged();
     void countChanged();
+    /** @brief A removal of the system @p uid was saved; sent after rowsRemoved, sitesChanged and countChanged. */
+    void systemRemoved(const QString& uid);
 
   private:
     struct Row {
@@ -319,6 +327,8 @@ class SavedSystemsModel : public QAbstractListModel {
         double siteLon = 0;
         bool hasSitePos = false;
         bool avoidSite = false;
+        /* Issue #903: on unless turned off, rows saved before the field existed included. */
+        bool rememberTalkgroups = true;
         QVariantMap place; // validPlace()'s form
         // QString copies cannot promise secret erasure. Key values belong only to
         // private persistence and argv assembly, never labels or diagnostics.

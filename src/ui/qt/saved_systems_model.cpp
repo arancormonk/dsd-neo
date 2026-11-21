@@ -504,6 +504,7 @@ SavedSystemsModel::detailRoleValue(const Row& row, int role) {
         case SiteLonRole: return row.siteLon;
         case HasSitePosRole: return row.hasSitePos;
         case AvoidSiteRole: return row.avoidSite;
+        case RememberTalkgroupsRole: return row.rememberTalkgroups;
         case PlaceRole: return row.place;
         case KeyConfiguredRole:
             return !row.encKeyType.isEmpty() || !row.keyCsvPath.isEmpty() || !row.decryptionProfileUid.isEmpty();
@@ -584,6 +585,7 @@ SavedSystemsModel::roleNames() const {
     roles.insert(AvoidSiteRole, QByteArrayLiteral("avoidSite"));
     roles.insert(PlaceRole, QByteArrayLiteral("place"));
     roles.insert(KeyConfiguredRole, QByteArrayLiteral("keyConfigured"));
+    roles.insert(RememberTalkgroupsRole, QByteArrayLiteral("rememberTalkgroups"));
     return roles;
 }
 
@@ -682,6 +684,9 @@ SavedSystemsModel::fillRowDetails(const QVariantMap& map, Row& row) {
     if (map.contains(QStringLiteral("avoidSite"))) {
         row.avoidSite = map.value(QStringLiteral("avoidSite")).toBool();
     }
+    if (map.contains(QStringLiteral("rememberTalkgroups"))) {
+        row.rememberTalkgroups = map.value(QStringLiteral("rememberTalkgroups")).toBool();
+    }
     if (map.contains(QStringLiteral("place"))) {
         row.place = validPlace(map.value(QStringLiteral("place")));
     }
@@ -761,6 +766,7 @@ SavedSystemsModel::mapFromRow(const Row& row) const {
     map.insert(QStringLiteral("siteLon"), row.siteLon);
     map.insert(QStringLiteral("hasSitePos"), row.hasSitePos);
     map.insert(QStringLiteral("avoidSite"), row.avoidSite);
+    map.insert(QStringLiteral("rememberTalkgroups"), row.rememberTalkgroups);
     map.insert(QStringLiteral("place"), row.place);
 
     map.insert(QStringLiteral("name"), row.name);
@@ -939,12 +945,14 @@ SavedSystemsModel::remove(int row) {
         return false;
     }
     const QString file = m_rows.at(row).filePath;
+    const QString uid = m_rows.at(row).uid;
     beginRemoveRows(QModelIndex(), row, row);
     m_rows = std::move(next);
     endRemoveRows();
     Q_EMIT sitesChanged();
     Q_EMIT countChanged();
     releaseReplayIfUnused(file);
+    Q_EMIT systemRemoved(uid);
     return true;
 }
 
@@ -1033,6 +1041,27 @@ SavedSystemsModel::rowForUid(const QString& uid) const {
         }
     }
     return -1;
+}
+
+QSet<QString>
+SavedSystemsModel::uids() const {
+    QSet<QString> out;
+    out.reserve(m_rows.size());
+    for (const Row& row : m_rows) {
+        out.insert(row.uid);
+    }
+    return out;
+}
+
+QSet<QString>
+SavedSystemsModel::rememberingUids() const {
+    QSet<QString> out;
+    for (const Row& row : m_rows) {
+        if (row.rememberTalkgroups) {
+            out.insert(row.uid);
+        }
+    }
+    return out;
 }
 
 QVariantMap

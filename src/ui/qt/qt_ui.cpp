@@ -7,6 +7,7 @@
 #include <QVariantMap>
 #include "qt_ui.h"
 
+#include <QAbstractItemModel>
 #include <QChar>
 #include <QCoreApplication>
 #include <QDir>
@@ -17,6 +18,7 @@
 #include <QQmlApplicationEngine>
 #include <QQmlContext>
 #include <QQuickStyle>
+#include <QSet>
 #include <QString>
 #include <QStringList>
 #include <QUrl>
@@ -24,6 +26,7 @@
 #include <dsd-neo/runtime/git_ver.h>
 #include <dsd-neo/runtime/log.h>
 #include <functional>
+#include <memory>
 #include <qqml.h>
 
 #include "app_prefs.h"
@@ -37,6 +40,7 @@
 #include "decoder_host.h"
 #include "decryption_profiles_model.h"
 #include "diagnostics_log.h"
+#include "heard_talkgroup_store.h"
 #include "import_service.h"
 #include "imported_files_model.h"
 #include "input_commit.h"
@@ -470,6 +474,30 @@ load_replays(DecoderHost* host, ImportService* imports, SavedSystemsModel* syste
     return replays;
 }
 
+// Issue #903: the talkgroups each saved system was heard on. Made after History, so it is destroyed after it (the
+// engine's children go in creation order) and takes what History's teardown still ingests. The owner policy reads a
+// copy of the saved systems' answer, kept current as they change, for the same reason: they are gone by then. A
+// deleted system's list goes with it; the rest are matched against the saved systems only when they loaded and no
+// restore may still replace them (as the replay reclaim is).
+static HeardTalkgroupStore*
+wire_heard_talkgroups(QQmlApplicationEngine& engine, UiController* controller, SavedSystemsModel* systems,
+                      backup::ApplyOutcome restore) {
+    auto* heard = new HeardTalkgroupStore(QLatin1String(HeardTalkgroupStore::kFileName), &engine);
+    auto remembering = std::make_shared<QSet<QString>>(systems->rememberingUids());
+    heard->setOwnerPolicy([remembering](const QString& uid) { return remembering->contains(uid); });
+    const auto refresh = [remembering, systems]() { *remembering = systems->rememberingUids(); };
+    QObject::connect(systems, &QAbstractItemModel::modelReset, heard, refresh);
+    QObject::connect(systems, &QAbstractItemModel::rowsInserted, heard, refresh);
+    QObject::connect(systems, &QAbstractItemModel::rowsRemoved, heard, refresh);
+    QObject::connect(systems, &QAbstractItemModel::dataChanged, heard, refresh);
+    QObject::connect(systems, &SavedSystemsModel::systemRemoved, heard, &HeardTalkgroupStore::clear);
+    if (systems->storeLoaded() && restore != backup::ApplyOutcome::Deferred && restore != backup::ApplyOutcome::Stuck) {
+        heard->purgeMissingOwners(systems->uids());
+    }
+    controller->setHeardTalkgroups(heard);
+    return heard;
+}
+
 // Issue #830: the close before a restart, refused while the import worker or a backup job would be cut short.
 static RestartCloser*
 make_restart_closer(DecoderHost* host, const ImportService* imports, const BackupModel* backupModel, QObject* owner) {
@@ -519,6 +547,7 @@ ui_load(QQmlApplicationEngine& engine, DecoderHost* host) {
     controller->setP25Network(network); // WP-F2
     auto* recordingStatus = wire_recording_status(engine, host, controller, commands);
     wire_attachment(host, controller, prefs, systems, scanLists);
+    wire_heard_talkgroups(engine, controller, systems, restoreOutcome.outcome);
 
     auto* listenPins = load_listen_pins(prefs, importedFiles, systems, scanLists, &engine);
 

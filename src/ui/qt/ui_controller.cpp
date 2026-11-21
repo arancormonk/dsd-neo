@@ -25,11 +25,13 @@
 #include <dsd-neo/app_control/frontend_runtime.h>
 #include <dsd-neo/app_control/snapshot.h>
 #include <dsd-neo/core/state.h>
+#include <dsd-neo/runtime/decode_clock.h>
 
 #include <dsd-neo/core/opts_fwd.h>
 #include <dsd-neo/core/state_fwd.h>
 #include "call_history_model.h"
 #include "decoder_host.h"
+#include "heard_talkgroup_store.h"
 #include "metrics_model.h"
 #include "p25_network_model.h" // WP-F2
 #include "position_model.h"
@@ -295,6 +297,20 @@ UiController::tick() {
      * not this tick had a redraw to ingest (a session that ended while the app was away publishes none). */
     if (m_history != nullptr && m_history->backgroundCaptureHandoffOwed()) {
         flushHistory();
+    }
+    flushHeardTalkgroups(sessionEnded);
+}
+
+void
+UiController::flushHeardTalkgroups(bool sessionEnded) {
+    if (m_heardTalkgroups == nullptr) {
+        return;
+    }
+    // After History's ingest above, which is what feeds the store. Real time: the interval paces writes.
+    if (sessionEnded) {
+        m_heardTalkgroups->flushNow();
+    } else {
+        m_heardTalkgroups->flushIfDue(static_cast<qint64>(dsd_realtime_mono_ms()));
     }
 }
 

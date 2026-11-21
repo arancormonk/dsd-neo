@@ -31,6 +31,7 @@
 #include <QMetaType>
 #include <QObject>
 #include <QPair>
+#include <QSet>
 #include <QSettings>
 #include <QStandardPaths>
 #include <QString>
@@ -695,6 +696,55 @@ test_saved_systems_past_int_range(void) {
                got.value(QStringLiteral("encKeyType")).toString() != QStringLiteral("hex"));
         model.remove(0);
     }
+}
+
+/* Issue #903: "Remember heard talkgroups" is on for a new system and for a row saved before the field existed, a
+ * system can turn it off (saved), the uid sets the remembered-talkgroup store reads follow it, and a saved removal names
+ * the removed system after its rows are gone. */
+void
+test_saved_systems_remember_talkgroups(void) {
+    const QString older = QStringLiteral("00000000-0000-4000-8000-000000009031");
+    QFile::remove(json_store_path(QStringLiteral("saved_systems.json")));
+    expect("remember: older row fixture",
+           write_raw(QStringLiteral("saved_systems.json"),
+                     "[{\"uid\":\"" + older.toUtf8() + "\",\"name\":\"System A\",\"sourceType\":\"usb\"}]"));
+    {
+        SavedSystemsModel model;
+        expect("remember: an older row reads on", model.get(0).value(QStringLiteral("rememberTalkgroups")).toBool());
+        expect("remember: the role reads on",
+               model.data(model.index(0), SavedSystemsModel::RememberTalkgroupsRole).toBool()
+                   && model.roleNames().value(SavedSystemsModel::RememberTalkgroupsRole) == "rememberTalkgroups");
+        QVariantMap added;
+        added.insert(QStringLiteral("name"), QStringLiteral("System B"));
+        expect("remember: added", model.add(added));
+        expect("remember: a new system defaults on", model.get(1).value(QStringLiteral("rememberTalkgroups")).toBool());
+        QVariantMap off;
+        off.insert(QStringLiteral("name"), QStringLiteral("System C"));
+        off.insert(QStringLiteral("rememberTalkgroups"), false);
+        expect("remember: added off", model.add(off));
+        expect("remember: a system added off reads off",
+               !model.get(2).value(QStringLiteral("rememberTalkgroups")).toBool());
+        expect("remember: turned off", model.update(1, {{QStringLiteral("rememberTalkgroups"), false}}));
+        const QString b = model.get(1).value(QStringLiteral("uid")).toString();
+        const QString c = model.get(2).value(QStringLiteral("uid")).toString();
+        expect("remember: uids lists every system", model.uids() == QSet<QString>{older, b, c});
+        expect("remember: rememberingUids follows the switch", model.rememberingUids() == QSet<QString>{older});
+    }
+    SavedSystemsModel reloaded;
+    expect("remember: the switch persists",
+           reloaded.get(0).value(QStringLiteral("rememberTalkgroups")).toBool()
+               && !reloaded.get(1).value(QStringLiteral("rememberTalkgroups")).toBool()
+               && !reloaded.get(2).value(QStringLiteral("rememberTalkgroups")).toBool());
+    QStringList removed;
+    int rowsWhenRemoved = -1;
+    QObject::connect(&reloaded, &SavedSystemsModel::systemRemoved, [&](const QString& uid) {
+        removed.append(uid);
+        rowsWhenRemoved = reloaded.rowCount();
+    });
+    expect("remember: removed", reloaded.remove(0));
+    expect("remember: a saved removal names its system after the rows changed",
+           removed == QStringList{older} && rowsWhenRemoved == 2 && !reloaded.uids().contains(older));
+    QFile::remove(json_store_path(QStringLiteral("saved_systems.json")));
 }
 
 /* A stored tuner gain past what the editor offers (a hand edit, a restore, an older build's 50..99) reads as the
@@ -4128,6 +4178,7 @@ main(int argc, char** argv) {
     test_saved_systems();
     test_saved_systems_past_int_range();
     test_saved_systems_gain_range();
+    test_saved_systems_remember_talkgroups();
     test_saved_systems_csv_fields();
     test_app_prefs();
     test_gain_pref_range();
