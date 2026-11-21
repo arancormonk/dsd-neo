@@ -136,10 +136,14 @@ int dmr_pi_precall_fresh(const dsd_state* state, uint8_t slot, double now_m);
 void dmr_flco(dsd_opts* opts, dsd_state* state, uint8_t lc_bits[], uint32_t CRCCorrect, uint32_t* IrrecoverableErrors,
               uint8_t type);
 /** Non-zero when a Full LC with raw FID @p raw_fid (before any vendor normalisation) and FLCO @p flco is a voice
- * channel user, which opens a call. Under FID 0 (and the Kenwood scrambler's FID 0x20, a standard LC) only FLCO 0x00
- * (group) and 0x03 (unit to unit) are (TS 102 361-2 Table B.1). The Motorola (0x10) and Hytera (0x68, 0x08) FIDs keep
- * the voice FLCOs dmr_flco() reads as calls: every one but their non-voice LCs. No other FID opens a call. */
-int dmr_flco_opens_voice_call(uint8_t raw_fid, uint8_t flco);
+ * channel user, which opens a call and carries service options. Under FID 0 only FLCO 0x00 (group) and 0x03 (unit to
+ * unit) are (TS 102 361-2 Table B.1). Raw FID 0x20 takes the FID 0 rule only when @p kenwood_sc is non-zero: the LC
+ * was recognised as a Kenwood scrambler LC (its check passed, PF set, the SO privacy bit set), which dmr_flco() reads
+ * as a standard LC; any other FID 0x20 LC is an unknown LC and opens no call. The Motorola (0x10) and Hytera (0x68,
+ * 0x08) FIDs keep the voice FLCOs dmr_flco() reads as calls: every one but their non-voice LCs, and for 0x10 the
+ * Capacity Max talker alias and GPS FLCOs 0x14..0x18. No other FID opens a call; @p kenwood_sc is ignored for any FID
+ * but 0x20. */
+int dmr_flco_opens_voice_call(uint8_t raw_fid, uint8_t flco, int kenwood_sc);
 uint8_t dmr_cach(dsd_opts* opts, dsd_state* state, uint8_t cach_bits[25]);
 /** A DMR burst of the sender kind its sync word names is on over-the-air slot @p slot (0/1; -1 when not known: both)
  * (issue #800, fail closed): the sender evidence and data header binding of another sender kind on its lanes are

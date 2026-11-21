@@ -119,6 +119,12 @@ fid0_flco_01_opens_no_call(void) {
     assert(!dsd_enc_lockout_lookup(state, 0x123U, 1, NULL));
     free_state(state);
 
+    // Control: the same opts and service options on FLCO 0x00, a voice channel user, lock the talkgroup out.
+    state = new_state();
+    assert(run_header(opts, state, 0x00U, 0x00U, 0x40U, 0x123U, 0x456U, &call));
+    assert(dsd_enc_lockout_entry_active(state, 0x123U, 1));
+    free_state(state);
+
     // A type-1 header carrying a talker alias or GPS FLCO is no voice user either.
     for (uint8_t flco = 0x04U; flco <= 0x08U; flco++) {
         state = new_state();
@@ -130,6 +136,13 @@ fid0_flco_01_opens_no_call(void) {
     state = new_state();
     assert(!run_header(opts, state, 0x13U, 0x00U, 0x00U, 0x123U, 0x456U, &call) || call.phase != DSD_CALL_PHASE_ACTIVE);
     free_state(state);
+    // Nor a Capacity Max talker alias or GPS FLCO (FID 0x10, 0x14..0x18) in a header: its bits are no group address.
+    for (uint8_t flco = 0x14U; flco <= 0x18U; flco++) {
+        state = new_state();
+        assert(!run_header(opts, state, flco, 0x10U, 0x00U, 0x123U, 0x456U, &call)
+               || call.phase != DSD_CALL_PHASE_ACTIVE);
+        free_state(state);
+    }
     free(opts);
 }
 
@@ -174,39 +187,68 @@ fid0_flco_03_opens_unit(void) {
 static void
 opens_voice_call_table(void) {
     for (unsigned int flco = 0U; flco < 0x40U; flco++) {
-        const int fid0 = dmr_flco_opens_voice_call(0x00U, (uint8_t)flco);
+        const int fid0 = dmr_flco_opens_voice_call(0x00U, (uint8_t)flco, 0);
         assert(fid0 == (flco == 0x00U || flco == 0x03U));
-        // A Kenwood scrambler LC (raw FID 0x20) is a standard call under that FID.
-        assert(dmr_flco_opens_voice_call(0x20U, (uint8_t)flco) == fid0);
+        assert(dmr_flco_opens_voice_call(0x00U, (uint8_t)flco, 1) == fid0);
+        // A recognised Kenwood scrambler LC (raw FID 0x20) is a standard LC; any other FID 0x20 LC is unknown.
+        assert(dmr_flco_opens_voice_call(0x20U, (uint8_t)flco, 1) == fid0);
+        assert(!dmr_flco_opens_voice_call(0x20U, (uint8_t)flco, 0));
     }
     // Motorola (Capacity Plus, Capacity Max): the voice users stay; its non-voice LCs and the Capacity Max alias/GPS
     // FLCOs (0x14..0x18, the FID 0 0x04..0x08 with bit 0x10 set) do not open a call.
-    assert(dmr_flco_opens_voice_call(0x10U, 0x04U));
-    assert(dmr_flco_opens_voice_call(0x10U, 0x07U));
-    assert(dmr_flco_opens_voice_call(0x10U, 0x10U));
-    assert(dmr_flco_opens_voice_call(0x10U, 0x13U));
-    assert(dmr_flco_opens_voice_call(0x10U, 0x20U));
-    assert(dmr_flco_opens_voice_call(0x10U, 0x23U));
-    assert(!dmr_flco_opens_voice_call(0x10U, 0x08U));
-    assert(!dmr_flco_opens_voice_call(0x10U, 0x28U));
-    assert(!dmr_flco_opens_voice_call(0x10U, 0x29U));
+    assert(dmr_flco_opens_voice_call(0x10U, 0x04U, 0));
+    assert(dmr_flco_opens_voice_call(0x10U, 0x07U, 0));
+    assert(dmr_flco_opens_voice_call(0x10U, 0x10U, 0));
+    assert(dmr_flco_opens_voice_call(0x10U, 0x13U, 0));
+    assert(dmr_flco_opens_voice_call(0x10U, 0x20U, 0));
+    assert(dmr_flco_opens_voice_call(0x10U, 0x23U, 0));
+    assert(!dmr_flco_opens_voice_call(0x10U, 0x08U, 0));
+    assert(!dmr_flco_opens_voice_call(0x10U, 0x28U, 0));
+    assert(!dmr_flco_opens_voice_call(0x10U, 0x29U, 0));
     for (uint8_t flco = 0x14U; flco <= 0x18U; flco++) {
-        assert(!dmr_flco_opens_voice_call(0x10U, flco));
+        assert(!dmr_flco_opens_voice_call(0x10U, flco, 0));
     }
     // Hytera: group and private voice users; the XPT alert, Enhanced privacy and the other Hytera LCs do not.
-    assert(dmr_flco_opens_voice_call(0x68U, 0x00U));
-    assert(dmr_flco_opens_voice_call(0x68U, 0x03U));
-    assert(!dmr_flco_opens_voice_call(0x68U, 0x02U));
-    assert(!dmr_flco_opens_voice_call(0x68U, 0x09U));
-    assert(!dmr_flco_opens_voice_call(0x68U, 0x13U));
-    assert(!dmr_flco_opens_voice_call(0x68U, 0x2EU));
-    assert(!dmr_flco_opens_voice_call(0x68U, 0x2FU));
-    assert(!dmr_flco_opens_voice_call(0x68U, 0x31U));
-    assert(dmr_flco_opens_voice_call(0x08U, 0x00U));
+    assert(dmr_flco_opens_voice_call(0x68U, 0x00U, 0));
+    assert(dmr_flco_opens_voice_call(0x68U, 0x03U, 0));
+    assert(!dmr_flco_opens_voice_call(0x68U, 0x02U, 0));
+    assert(!dmr_flco_opens_voice_call(0x68U, 0x09U, 0));
+    assert(!dmr_flco_opens_voice_call(0x68U, 0x13U, 0));
+    assert(!dmr_flco_opens_voice_call(0x68U, 0x2EU, 0));
+    assert(!dmr_flco_opens_voice_call(0x68U, 0x2FU, 0));
+    assert(!dmr_flco_opens_voice_call(0x68U, 0x31U, 0));
+    assert(dmr_flco_opens_voice_call(0x08U, 0x00U, 0));
     // FIDs whose LCs dsd-neo does not read as calls (Tait, Kirisun, unknown).
-    assert(!dmr_flco_opens_voice_call(0x58U, 0x00U));
-    assert(!dmr_flco_opens_voice_call(0x0AU, 0x00U));
-    assert(!dmr_flco_opens_voice_call(0x33U, 0x00U));
+    assert(!dmr_flco_opens_voice_call(0x58U, 0x00U, 0));
+    assert(!dmr_flco_opens_voice_call(0x0AU, 0x00U, 0));
+    assert(!dmr_flco_opens_voice_call(0x33U, 0x00U, 0));
+}
+
+/* Raw FID 0x20: a Kenwood scrambler LC (PF and the privacy bit set, check passed) is a standard call; a FID 0x20 LC
+   without that shape is an unknown LC and opens none. */
+static void
+kenwood_sc_opens_standard_call(void) {
+    dsd_opts* opts = (dsd_opts*)calloc(1U, sizeof(*opts));
+    assert(opts != NULL);
+    uint8_t bits[80];
+    uint32_t irr = 0;
+    dsd_call_snapshot call;
+
+    dsd_state* state = new_state();
+    build_lc(bits, 0x00U, 0x20U, 0x40U, 0x123U, 0x456U);
+    bits[0] = 1U; // PF
+    dmr_flco(opts, state, bits, 1U, &irr, 1U);
+    assert(dsd_call_state_get(state, 0U, &call) > 0 && call.phase == DSD_CALL_PHASE_ACTIVE);
+    assert(call.kind == DSD_CALL_KIND_GROUP_VOICE && call.ota_target_id == 0x123U);
+    free_state(state);
+
+    state = new_state();
+    build_lc(bits, 0x00U, 0x20U, 0x00U, 0x123U, 0x456U);
+    irr = 0;
+    dmr_flco(opts, state, bits, 1U, &irr, 1U);
+    assert(!(dsd_call_state_get(state, 0U, &call) > 0 && call.phase == DSD_CALL_PHASE_ACTIVE));
+    free_state(state);
+    free(opts);
 }
 
 /* A Hytera XPT call alert LC on slot 0. */
@@ -413,6 +455,7 @@ main(void) {
     fid0_flco_00_opens_group();
     fid0_flco_03_opens_unit();
     opens_voice_call_table();
+    kenwood_sc_opens_standard_call();
     ras_relaxed_lc_does_not_brand_xpt();
     xpt_alert_labels();
     ras_relaxed_csbk_does_not_brand_xpt();

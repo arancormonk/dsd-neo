@@ -119,7 +119,12 @@ typedef struct {
     uint8_t voice_slot;
     uint8_t voice_slot_known;
     uint8_t unk;
+    /* A Kenwood scrambler LC (dmr_flco_is_kenwood_sc_lc()), fixed at init: read as a standard FID 0 LC. */
     uint8_t is_kenwood_sc;
+    /* This LC is a voice channel user (dmr_flco_opens_voice_call()), fixed at init: only such an LC opens a call, holds
+       the scan, arms or releases the encryption lockout, moves the slot's encryption classification, ends a voice hold
+       and shows service options. */
+    uint8_t voice_user;
     int protected_lc;
 } dmr_flco_ctx;
 
@@ -247,6 +252,13 @@ dmr_note_unread_burst(const dsd_opts* opts, dsd_state* state) {
     }
 }
 
+/* A Kenwood scrambler LC: a checked FID 0x20 LC with PF and the SO privacy bit set, read as a standard FID 0 LC. */
+static int
+dmr_flco_is_kenwood_sc_lc(const dmr_flco_ctx* ctx) {
+    const int crc_ok = (*ctx->IrrecoverableErrors == 0U && ctx->CRCCorrect == 1U);
+    return crc_ok && ctx->pf == 1U && ctx->raw_fid == 0x20U && (ctx->so & 0x40U) == 0x40U;
+}
+
 static void
 dmr_flco_ctx_init(dmr_flco_ctx* ctx, dsd_opts* opts, dsd_state* state, uint8_t lc_bits[], uint32_t CRCCorrect,
                   uint32_t* IrrecoverableErrors, uint8_t type) {
@@ -280,14 +292,15 @@ dmr_flco_ctx_init(dmr_flco_ctx* ctx, dsd_opts* opts, dsd_state* state, uint8_t l
     ctx->lc_so = ctx->so;
     ctx->target = (uint32_t)convert_bits_into_output(&lc_bits[24], 24);
     ctx->source = (uint32_t)convert_bits_into_output(&lc_bits[48], 24);
+    ctx->is_kenwood_sc = (uint8_t)(dmr_flco_is_kenwood_sc_lc(ctx) != 0);
+    ctx->voice_user = (uint8_t)(dmr_flco_opens_voice_call(ctx->raw_fid, ctx->raw_flco, ctx->is_kenwood_sc) != 0);
 }
 
 static void
-dmr_flco_detect_kenwood_sc(dmr_flco_ctx* ctx, int crc_ok) {
-    if (crc_ok && ctx->pf == 1 && ctx->fid == 0x20 && (ctx->so & 0x40) == 0x40) {
+dmr_flco_detect_kenwood_sc(dmr_flco_ctx* ctx) {
+    if (ctx->is_kenwood_sc) {
         ctx->pf = 0;
         ctx->fid = 0;
-        ctx->is_kenwood_sc = 1;
         if (ctx->state->ken_sc == 1) {
             ctx->so ^= 0x40;
         }
@@ -325,7 +338,7 @@ dmr_flco_detect_invalid_hytera_enhanced(dmr_flco_ctx* ctx) {
 static void
 dmr_flco_detect_special_modes(dmr_flco_ctx* ctx) {
     const int crc_ok = (*ctx->IrrecoverableErrors == 0 && ctx->CRCCorrect == 1);
-    dmr_flco_detect_kenwood_sc(ctx, crc_ok);
+    dmr_flco_detect_kenwood_sc(ctx);
     dmr_flco_detect_kirisun_le(ctx, crc_ok);
     dmr_flco_detect_hytera_xpt(ctx);
     dmr_flco_detect_invalid_hytera_enhanced(ctx);
@@ -908,7 +921,7 @@ dmr_flco_sync_active_call_state(dmr_flco_ctx* ctx) {
     ctx->lc_so = ctx->so;
     // Only a voice channel user carries the call's service options: any other LC's byte there (an FID 0 FLCO other
     // than 0x00 or 0x03) says nothing of the call's encryption, so it neither moves the classification nor ends a hold.
-    if (ctx->voice_slot_known && dmr_flco_opens_voice_call(ctx->raw_fid, ctx->raw_flco)) {
+    if (ctx->voice_slot_known && ctx->voice_user) {
         // A checked LC on a held slot ends the hold (dmr_flco_release_voice_hold()) on its own word: what the slot
         // classified while held is forgotten first, since every checked LC or PI header naming a cipher ends a hold as
         // it is decoded, so it came from data no check of the call's passed (an embedded LC whose checksum failed, a
@@ -959,13 +972,18 @@ dmr_flco_hytera_opens_voice_call(uint8_t flco) {
     return flco != 0x02U && flco != 0x09U && flco != 0x13U && flco != 0x2EU && flco != 0x2FU && flco != 0x31U;
 }
 
+// TS 102 361-2 Table B.1: Grp_V_Ch_Usr and UU_V_Ch_Usr are the only FID 0 voice channel users.
+static int
+dmr_flco_standard_opens_voice_call(uint8_t flco) {
+    return flco == 0x00U || flco == 0x03U;
+}
+
 int
-dmr_flco_opens_voice_call(uint8_t raw_fid, uint8_t flco) {
+dmr_flco_opens_voice_call(uint8_t raw_fid, uint8_t flco, int kenwood_sc) {
     switch (raw_fid) {
-        case 0x00U:
-        case 0x20U: // the Kenwood scrambler's standard LC, read under FID 0
-            // TS 102 361-2 Table B.1: Grp_V_Ch_Usr and UU_V_Ch_Usr are the only voice channel users.
-            return flco == 0x00U || flco == 0x03U;
+        case 0x00U: return dmr_flco_standard_opens_voice_call(flco);
+        case 0x20U: // only a recognised Kenwood scrambler LC is read as a standard LC; any other is an unknown LC
+            return kenwood_sc != 0 && dmr_flco_standard_opens_voice_call(flco);
         case 0x10U: return dmr_flco_motorola_opens_voice_call(flco);
         case 0x68U: return dmr_flco_hytera_opens_voice_call(flco);
         case 0x08U: return 1;
@@ -1534,16 +1552,11 @@ dmr_flco_print_call_class(const dmr_flco_ctx* ctx) {
     }
 }
 
-// An LC that is no voice channel user (dmr_flco_opens_voice_call()) carries no service options: the byte in their place
-// shows no emergency, encryption, priority or other option.
-static int
-dmr_flco_has_service_options(const dmr_flco_ctx* ctx) {
-    return dmr_flco_opens_voice_call(ctx->raw_fid, ctx->raw_flco);
-}
-
+// An LC that is no voice channel user (ctx->voice_user) carries no service options: the byte in their place shows no
+// emergency, encryption, priority or other option.
 static void
 dmr_flco_print_emergency_flag(const dmr_flco_ctx* ctx) {
-    if (dmr_flco_has_service_options(ctx) && (ctx->so & 0x80)) {
+    if (ctx->voice_user && (ctx->so & 0x80)) {
         DSD_FPRINTF(stderr, "%s", KRED);
         DSD_FPRINTF(stderr, "Emergency ");
     }
@@ -1645,7 +1658,7 @@ dmr_flco_arm_enc_lockout(dmr_flco_ctx* ctx, uint8_t eslot, int is_group) {
 static void
 dmr_flco_apply_enc_lockout(dmr_flco_ctx* ctx) {
     // An LC that is no voice channel user names no call to lock out or release, and has no privacy bit to show.
-    if (!dmr_flco_has_service_options(ctx)) {
+    if (!ctx->voice_user) {
         return;
     }
     // The classification the call's LC set, on the slot its voice is judged on.
@@ -1685,7 +1698,7 @@ dmr_flco_apply_enc_lockout(dmr_flco_ctx* ctx) {
 
 static void
 dmr_flco_print_service_options(const dmr_flco_ctx* ctx) {
-    if (!dmr_flco_has_service_options(ctx)) {
+    if (!ctx->voice_user) {
         return;
     }
     if ((ctx->fid == 0x10) && (ctx->so & 0x20)) {
@@ -1960,13 +1973,12 @@ dmr_flco_run(dmr_flco_ctx* ctx) {
         // names no call). The scan hold takes only identity that cleared its check. CRCCorrect is also 1 for a
         // RAS-accepted LC under -F; that exception is deliberate (trunk_scan_hooks.h), so a scanned RAS repeater
         // still holds.
-        const int voice_user = dmr_flco_opens_voice_call(ctx->raw_fid, ctx->raw_flco);
-        if (ctx->CRCCorrect == 1U && voice_user) {
+        if (ctx->CRCCorrect == 1U && ctx->voice_user) {
             dsd_trunk_scan_hook_dmr_conventional_activity(ctx->opts, ctx->state, ctx->target, ctx->source, is_private,
                                                           (ctx->so & 0x40U) != 0U, 0);
         }
         dmr_flco_print_emergency_flag(ctx);
-        if (ctx->type != 2U && ctx->CRCCorrect == 1U && voice_user) {
+        if (ctx->type != 2U && ctx->CRCCorrect == 1U && ctx->voice_user) {
             dmr_flco_publish_voice(ctx);
         }
         dmr_flco_apply_enc_lockout(ctx);
