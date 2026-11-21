@@ -135,6 +135,23 @@ dsd_ysf_event_text_should_print(const dsd_state* state) {
     return true;
 }
 
+size_t
+dsd_ysf_format_fich_sql(int fich_err, uint8_t sql_type, uint8_t sql_code, char* out, size_t out_size) {
+    if (out == NULL || out_size == 0U) {
+        return 0U;
+    }
+    out[0] = '\0';
+    if (fich_err != 0 || sql_type == 0U) {
+        return 0U;
+    }
+    const int len = DSD_SNPRINTF(out, out_size, "SQL CODE: %03u ", (unsigned)sql_code);
+    if (len <= 0 || (size_t)len >= out_size) {
+        out[0] = '\0';
+        return 0U;
+    }
+    return (size_t)len;
+}
+
 void
 dsd_ysf_unpack_full_rate_imbe(const uint8_t imbe_raw[144], uint8_t imbe_vch[144], char imbe_fr[8][23]) {
     int k = 0;
