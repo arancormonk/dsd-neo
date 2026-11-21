@@ -343,10 +343,10 @@ test_second_group_scrambler_bridge_unmutes_with_key(void) {
     state->synctype = DSD_SYNC_DPMR_FS3_POS;
     state->R = 0x12345ULL;
     state->nxdn_payload_mi = 0x8888ULL;
-    state->dPMRVoiceFS2Frame.FrameNumbering[0] = 1;
+    state->dPMRVoiceFS2Frame.FrameNumbering[0] = 0;
     state->dPMRVoiceFS2Frame.CommunicationMode[0] = 2;
     state->dPMRVoiceFS2Frame.CCHDataCrcOk[0] = 1; /* a checked data half, which plays nothing */
-    state->dPMRVoiceFS2Frame.FrameNumbering[1] = 0;
+    state->dPMRVoiceFS2Frame.FrameNumbering[1] = 1;
     state->dPMRVoiceFS2Frame.CommunicationMode[1] = 5;
     state->dPMRVoiceFS2Frame.Version[1] = 3;
     state->dPMRVoiceFS2Frame.CCHDataCrcOk[1] = 1;
@@ -361,8 +361,8 @@ test_second_group_scrambler_bridge_unmutes_with_key(void) {
     for (int i = 0; i < 4; i++) {
         rc |= expect_int("second-group-synctype", g_mbe_synctype[i], DSD_SYNC_NXDN_POS);
         rc |= expect_int("second-group-cipher", g_mbe_cipher[i], 1);
-        /* Reloaded at the checked frame 0, the key loads into the register and the frames step it. */
-        rc |= expect_u64("second-group-mi-reset", g_mbe_mi[i], scramble_register_at(0x12345ULL, i));
+        /* Frame 1 of the superframe: the key loads into the register, stepped to its place, and the frames step it. */
+        rc |= expect_u64("second-group-mi-reset", g_mbe_mi[i], scramble_register_at(0x12345ULL, 4 + i));
     }
     rc |= expect_int("second-group-synctype-restored", state->synctype, DSD_SYNC_DPMR_FS3_POS);
     rc |= expect_int("second-group-cipher-reset", (int)state->nxdn_cipher_type, 0);
@@ -1663,6 +1663,49 @@ test_muted_halves_keep_the_scrambler_in_phase(void) {
     return rc;
 }
 
+/* Issue #890: an FS2 frame carries payload frames 0 and 1, or 2 and 3 (Figure 4.8): half 0 is even, half 1 odd. A
+   checked half whose number has the wrong parity passed its CRC-7 by chance, and two checked halves that are no pair
+   cannot both be right: neither places the scrambler, directly or through its neighbour, and the halves play from the
+   place the transmission tracked. */
+static int
+test_impossible_half_numbers_keep_the_tracked_place(void) {
+    const unsigned long long key = 0x12345ULL;
+
+    static const struct {
+        const char* tag;
+        unsigned crc[2];
+        unsigned fn[2];
+    } k_cases[] = {
+        {"half 1 checked as 2", {0U, 1U}, {1U, 2U}},
+        {"half 0 checked as 1", {1U, 0U}, {1U, 0U}},
+        {"halves checked as 0 and 3", {1U, 1U}, {0U, 3U}},
+    };
+
+    int rc = 0;
+    for (size_t c = 0; c < sizeof(k_cases) / sizeof(k_cases[0]); c++) {
+        dsd_opts* opts = g_opts;
+        dsd_state* state = g_state;
+        DSD_MEMSET(opts, 0, sizeof(*opts));
+        DSD_MEMSET(state, 0, sizeof(*state));
+        state->synctype = DSD_SYNC_DPMR_FS2_POS;
+        state->R = key;
+        /* Frames 0 and 1 of a scrambled voice call: frames 2 and 3 come next. */
+        const bridge_frame frames01 = {.crc = {1U, 1U}, .fn = {0U, 1U}, .mode = {0U, 0U}, .version = {3U, 3U}};
+        bridge_play(opts, state, &frames01);
+        reset_capture();
+        const bridge_frame next = {.crc = {k_cases[c].crc[0], k_cases[c].crc[1]},
+                                   .fn = {k_cases[c].fn[0], k_cases[c].fn[1]},
+                                   .mode = {0U, 0U},
+                                   .version = {3U, 3U}};
+        bridge_play(opts, state, &next);
+        rc |= expect_int(k_cases[c].tag, (int)g_mbe_calls, 8);
+        for (int i = 0; i < 8; i++) {
+            rc |= expect_u64(k_cases[c].tag, g_mbe_mi[i], scramble_register_at(key, 8 + i));
+        }
+    }
+    return rc;
+}
+
 /* Issue #890: a frame played before its transmission is confirmed (one weak frame waits for the next to run on from it)
    still takes its place in the Scramble: the first frame of a keyed call, frames 0 and 1, is muted, and the second,
    frames 2 and 3, which confirms the transmission, plays from Scramble frame 8, not from the key. */
@@ -1815,6 +1858,7 @@ main(void) {
     rc |= test_attached_data_frames_are_no_voice();
     rc |= test_muted_halves_keep_the_scrambler_in_phase();
     rc |= test_unconfirmed_frame_keeps_the_scrambler_in_phase();
+    rc |= test_impossible_half_numbers_keep_the_tracked_place();
     rc |= test_unconfirmed_frame_leaves_nxdn_crypto_alone();
     rc |= test_scrambler_secret_is_not_published_as_key_id();
     rc |= test_scrambling_is_per_half_and_crc_verified();

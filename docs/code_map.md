@@ -14176,8 +14176,10 @@ Private per-protocol modules worth knowing about:
   MI_TYPE and MI_DET
   (message types 0000 to 1010; 5.5.19.1). The scrambler reloads from the key at frame 0 of each superframe and runs on
   through its four payload frames of four AMBE frames each, so each half's place in it is its frame number times
-  four: learned only from checked content (a half that passed, or the half next to a frame's other half that passed;
-  a failed half's own number bits never decide it) and kept in dPMR's own `dsd_state::dpmr_scramble_place`, or
+  four: learned only from checked content (a half that passed with a number it can carry, even for the first half
+  and odd for the second, as an FS2 frame carries frames 0/1 or 2/3; or the half next to such a frame's other half; a
+  failed half's own number bits, a checked half of the wrong parity and two checked halves that are no pair never
+  decide it) and kept in dPMR's own `dsd_state::dpmr_scramble_place`, or
   carried on from the half before (`dpmr_play_voice_frames()`, `dpmr_track_voice_frames()`). A confirmed scrambled
   half that plays reloads the shared register and steps it to its place (`dsd_mbe_nxdn_scramble_skip_voice_frame()`
   in `<dsd-neo/core/vocoder.h>`, the vocoder's own step), so a muted half before it (a keyed mode-101 call's failed
