@@ -14,7 +14,7 @@
  * - The XPT group call alert names 250-254 as emergency groups and 255 as All Call; 249 is an ordinary group.
  * - The same holds for an XPT CSBK: one accepted under relaxed RAS handling does not brand the site.
  * - A FID 0 LC that is no voice channel user carries no service options: it neither moves the slot's encryption
- *   classification nor ends a voice hold.
+ *   classification nor ends a voice hold, and the terminal shows no encryption, emergency or service options from it.
  */
 
 #include <assert.h>
@@ -333,6 +333,45 @@ fid0_non_voice_lc_leaves_privacy_and_hold(void) {
     free(opts);
 }
 
+/* The terminal line of a checked voice LC header on slot 0. */
+static void
+header_print(uint8_t flco, uint8_t so, char* out, size_t out_size) {
+    dsd_opts* opts = (dsd_opts*)calloc(1U, sizeof(*opts));
+    assert(opts != NULL);
+    dsd_state* state = new_state();
+    dsd_call_snapshot call;
+
+    dsd_test_capture_stderr cap;
+    assert(dsd_test_capture_stderr_begin(&cap, "dsdneo_dmr_fid0_print") == 0);
+    (void)run_header(opts, state, flco, 0x00U, so, 0x123U, 0x456U, &call);
+    assert(dsd_test_capture_stderr_end(&cap) == 0);
+    assert(dsd_test_capture_stderr_read(&cap, out, out_size) == 0);
+    free_state(state);
+    free(opts);
+}
+
+static void
+fid0_non_voice_lc_prints_no_service_options(void) {
+    // Emergency, privacy, broadcast, OVCM and priority 3, were the byte service options.
+    const uint8_t so = 0x80U | 0x40U | 0x08U | 0x04U | 0x03U;
+    char out[2048];
+    header_print(0x01U, so, out, sizeof out);
+    assert(strstr(out, "TGT=291") != NULL);
+    assert(strstr(out, "Encrypted") == NULL);
+    assert(strstr(out, "Emergency") == NULL);
+    assert(strstr(out, "Priority") == NULL);
+    assert(strstr(out, "Broadcast") == NULL);
+    assert(strstr(out, "OVCM") == NULL);
+
+    // A voice channel user shows them.
+    header_print(0x00U, so, out, sizeof out);
+    assert(strstr(out, "Encrypted") != NULL);
+    assert(strstr(out, "Emergency") != NULL);
+    assert(strstr(out, "Priority 3") != NULL);
+    assert(strstr(out, "Broadcast") != NULL);
+    assert(strstr(out, "OVCM") != NULL);
+}
+
 static void
 xpt_alert_label(uint32_t target, char* out, size_t out_size) {
     dsd_opts* opts = (dsd_opts*)calloc(1U, sizeof(*opts));
@@ -378,6 +417,7 @@ main(void) {
     xpt_alert_labels();
     ras_relaxed_csbk_does_not_brand_xpt();
     fid0_non_voice_lc_leaves_privacy_and_hold();
+    fid0_non_voice_lc_prints_no_service_options();
     printf("DMR FLCO FID 0 gate tests passed.\n");
     return 0;
 }

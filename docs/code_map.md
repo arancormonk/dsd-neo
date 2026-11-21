@@ -13357,8 +13357,8 @@ Private per-protocol modules worth knowing about:
   channel take the same gate. The Hytera XPT branding takes a stricter one, from an LC and from the XPT site status
   and adjacent-site CSBKs alike (`dmr_flco_crc_checked()`, `dmr_csbk_brand_xpt()`: a RAS-accepted LC or CSBK never
   sets it), since it makes later standard LCs read a 16-bit target. Only a voice channel user opens a call, holds the
-  scan, arms or releases the encryption lockout, and moves the slot's encryption classification or ends its voice
-  hold (`dmr_flco_opens_voice_call()`, keyed on the raw FID before the Kenwood and Capacity Max normalisation): under
+  scan, arms or releases the encryption lockout, moves the slot's encryption classification or ends its voice hold,
+  and shows service options (emergency, encrypted, priority) on the terminal (`dmr_flco_opens_voice_call()`, keyed on the raw FID before the Kenwood and Capacity Max normalisation): under
   FID 0 only FLCO 0x00 and 0x03 (TS 102 361-2 Table B.1); the Motorola and Hytera FIDs keep every FLCO the decoder
   reads as a call. The Capacity Max FLCOs 0x14..0x18 under FID 0x10 are its talker alias and GPS LCs (the FID 0
   0x04..0x08 with bit 0x10 set), so they open no call in any LC type, a header or terminator included: their bits

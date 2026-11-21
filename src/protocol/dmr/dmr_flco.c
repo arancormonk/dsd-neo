@@ -1534,9 +1534,16 @@ dmr_flco_print_call_class(const dmr_flco_ctx* ctx) {
     }
 }
 
+// An LC that is no voice channel user (dmr_flco_opens_voice_call()) carries no service options: the byte in their place
+// shows no emergency, encryption, priority or other option.
+static int
+dmr_flco_has_service_options(const dmr_flco_ctx* ctx) {
+    return dmr_flco_opens_voice_call(ctx->raw_fid, ctx->raw_flco);
+}
+
 static void
 dmr_flco_print_emergency_flag(const dmr_flco_ctx* ctx) {
-    if (ctx->so & 0x80) {
+    if (dmr_flco_has_service_options(ctx) && (ctx->so & 0x80)) {
         DSD_FPRINTF(stderr, "%s", KRED);
         DSD_FPRINTF(stderr, "Emergency ");
     }
@@ -1637,6 +1644,10 @@ dmr_flco_arm_enc_lockout(dmr_flco_ctx* ctx, uint8_t eslot, int is_group) {
 
 static void
 dmr_flco_apply_enc_lockout(dmr_flco_ctx* ctx) {
+    // An LC that is no voice channel user names no call to lock out or release, and has no privacy bit to show.
+    if (!dmr_flco_has_service_options(ctx)) {
+        return;
+    }
     // The classification the call's LC set, on the slot its voice is judged on.
     const uint8_t eslot = ctx->voice_slot;
     const int is_group = dmr_flco_call_kind(ctx) == DSD_CALL_KIND_GROUP_VOICE;
@@ -1647,9 +1658,8 @@ dmr_flco_apply_enc_lockout(dmr_flco_ctx* ctx) {
     // mode would drop entries that then owe a fresh probe once lockout returns.
     // Only an LC whose check passed (a RAS acceptance under -F included) names the talkgroup it acts on: one whose
     // checksum failed may name another call's, which it must neither lock out nor release.
-    // An LC that is no voice channel user names no call to lock out or release.
-    const int lockout_active = (ctx->opts->trunk_enable == 1 && ctx->opts->trunk_tune_enc_calls == 0)
-                               && ctx->CRCCorrect == 1U && dmr_flco_opens_voice_call(ctx->raw_fid, ctx->raw_flco);
+    const int lockout_active =
+        (ctx->opts->trunk_enable == 1 && ctx->opts->trunk_tune_enc_calls == 0) && ctx->CRCCorrect == 1U;
     if (!(ctx->so & 0x40)) {
         // Corroborated clear voice on this target releases any retained
         // lockout entry so a talkgroup that stopped encrypting recovers.
@@ -1675,6 +1685,9 @@ dmr_flco_apply_enc_lockout(dmr_flco_ctx* ctx) {
 
 static void
 dmr_flco_print_service_options(const dmr_flco_ctx* ctx) {
+    if (!dmr_flco_has_service_options(ctx)) {
+        return;
+    }
     if ((ctx->fid == 0x10) && (ctx->so & 0x20)) {
         DSD_FPRINTF(stderr, "TXI ");
     }
