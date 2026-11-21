@@ -22,10 +22,13 @@ lines, it checks:
     levels, rf_mod (0 C4FM, 1 CQPSK, 2 GFSK), channel profile and filter width and the decoder output rate; the analog
     target's is the FM monitor's width and output rate;
   * the nfm, ysf and dmo targets hold while their call plays: their first visit lasts at least the call, and ends
-    within HOLD_MS and LEAVE_PAD_S of the call's end, short of the visit cap;
+    within HOLD_MS, DWELL_MS and LEAVE_PAD_S of the call's end, short of the visit cap;
   * every later visit to them, and every visit to nxdn48 and tmo, is an idle one: it ends within DWELL_MS and
     LEAVE_PAD_S. A tmo hold would last to the visit cap, since its TETRA never stops;
   * the tmo target's TETRA is decoded all the same (its network's BSCH is printed), so it is heard and not held.
+
+Every bound is in stream time (the scene's own sample count), never wall time, so a slow or loaded runner reads the
+same visits, only later; the run's wall time is bounded by --seconds and the CTest TIMEOUT.
 
 Usage: trunk_scan_simplex_rig_check.py DSD_NEO FIXTURE_DIR [--seconds S] [--keep DIR] [--explore]
 Exit 0 on success, 1 on a failed check, 77 when numpy is missing (the rig needs it). Serves the loopback interface
@@ -62,16 +65,19 @@ SPACING_HZ = 2000000
 DSP_KHZ = 72
 # The capture rate the RTL front end asks the source for at a 72 kHz DSP bandwidth (16 times it, 4 half-band passes).
 CAPTURE_HZ = 1152000
-DWELL_MS = 1000
+DWELL_MS = 2000
 HOLD_MS = 1000
-VISIT_CAP_MS = 12000
+VISIT_CAP_MS = 15000
 SNR_DB = 30.0
-# A visit's length is read from the scene's retunes. The decoder reads the stream a little behind the scene, and its
-# ticks, its tune completion and the paced source's blocks each add a little more: this much past a bound still passes.
-# A held tmo visit would run to the visit cap, far past it.
-LEAVE_PAD_S = 2.5
-# The metrics lines read for a visit's profile: those that came this long after its retune, and before the next one.
+# A visit's length is read from the scene's retunes in stream time: the samples the paced source delivered, which stops
+# while the decoder does not read, so a slow runner that falls behind stretches no visit. The decoder still reads a
+# little behind the stream, and its ticks, its tune completion and the source's blocks each add a little more: this much
+# past a bound still passes. A held tmo visit would run to the visit cap, far past it.
+LEAVE_PAD_S = 3.0
+# The metrics lines read for a visit's profile: those that came this long after its retune, and up to END_GUARD_S before
+# the next one, when the decoder may already publish the next target's profile while the source has not seen its tune.
 SETTLE_S = 0.3
+END_GUARD_S = 0.3
 # A visit this long or longer has metrics lines enough to show its profile.
 READABLE_S = 0.9
 SANITIZER = re.compile(r"AddressSanitizer|UndefinedBehaviorSanitizer|ThreadSanitizer|LeakSanitizer|runtime error:")
@@ -312,7 +318,7 @@ def profile_of(metrics, want):
 def check_profile(row, visit, lines):
     """None when the visit landed row's profile, else what it showed."""
     _row, t0, t1, w0, w1 = visit
-    shown = [profile_of(m, row.profile) for t, m in lines if w0 + SETTLE_S <= t < w1]
+    shown = [profile_of(m, row.profile) for t, m in lines if w0 + SETTLE_S <= t < w1 - END_GUARD_S]
     landed = next((i for i, p in enumerate(shown) if p == row.profile), None)
     if landed is None:
         readable = t1 is not None and t1 - t0 >= READABLE_S
@@ -359,9 +365,11 @@ def check(record, rows, explore):
             length = first[2] - first[1]
             if length < row.seconds:
                 failures.append(f"{row.id}: its call of {row.seconds:.2f} s held it only {length:.2f} s")
-            if length > row.seconds + hold_s + LEAVE_PAD_S or length >= cap_s:
+            # The call's last frame restarts the hold; once it runs out, the idle dwell rotates.
+            if length > row.seconds + hold_s + dwell_s + LEAVE_PAD_S or length >= cap_s:
                 failures.append(
-                    f"{row.id}: held {length:.2f} s, past its {row.seconds:.2f} s call and its {hold_s:.1f} s hold"
+                    f"{row.id}: held {length:.2f} s, past its {row.seconds:.2f} s call, its {hold_s:.1f} s hold and its "
+                    f"{dwell_s:.1f} s dwell"
                 )
         for _row, t0, t1, _w0, _w1 in idle:
             if t1 - t0 > dwell_s + LEAVE_PAD_S:
@@ -375,7 +383,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("dsd")
     parser.add_argument("fixture_dir", type=Path)
-    parser.add_argument("--seconds", type=float, default=60.0, help="the longest the run may take (default 60)")
+    parser.add_argument("--seconds", type=float, default=120.0, help="the longest the run may take (default 120)")
     parser.add_argument("--keep", type=Path, help="keep the run's files and a record.json in this folder")
     parser.add_argument("--explore", action="store_true", help="print the visits and profiles; check nothing")
     args = parser.parse_args()

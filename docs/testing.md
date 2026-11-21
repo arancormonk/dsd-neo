@@ -1477,15 +1477,20 @@ control API, not Windows, and numpy, else skipped) runs the real `dsd-neo` again
 targets 2 MHz apart, `nfm-conventional` (`nfm_tone_synth`, 3 s), `nxdn48-conventional` (noise only),
 `ysf-conventional` (`ysf_synth`, 4 s), `tetra-dmo-conventional` (`tetra_dmo_call_synth_72k`, 3.8 s) and a second
 `tetra-dmo-conventional` target on trunked TETRA alone (`tetra_bsch_synth_72k`, on the air the whole run). A call plays
-once, from the first retune onto its channel. Every target has a 1 s dwell and hold and the visits are capped at 12 s.
-The run lasts until every target has had two whole visits (about 30 s). From the scene's record of every retune and
-the control API's `metrics` lines (`--api`) it checks that every visit lands its target's own profile (symbol rate,
-levels, `rf_mod`, channel profile and width, output rate; the NFM monitor's width and output rate), that the NFM, YSF
-and DMO calls hold their targets for the call and release them within the hold and 2.5 s, that every other visit is an
-idle one, and that the trunked TETRA target never holds though its BSCH is decoded. With trunked speech reported as
-direct mode activity (a deliberate break of `tetra_nb_speech_decoded()`) the trunked target held to the 12 s cap on
-both visits and the case failed. The script resamples each channel's call to the 1.152 MHz capture rate before the run:
-done at the first landing, on the paced source's thread, it stalled the stream for a second or more.
+once, from the first retune onto its channel. Every target has a 2 s dwell and a 1 s hold and the visits are capped at
+15 s. The run lasts until every target has had two whole visits (about 40 s; it stops at 120 s, and the CTest TIMEOUT
+is 240 s). From the scene's record of every retune and the control API's `metrics` lines (`--api`) it checks that
+every visit lands its target's own profile (symbol rate, levels, `rf_mod`, channel profile and width, output rate; the
+NFM monitor's width and output rate), that the NFM, YSF and DMO calls hold their targets for the call and release them
+within the hold, the dwell and 3 s after it, that every other visit is an idle one (its dwell and 3 s), and that the trunked TETRA target
+never holds though its BSCH is decoded. The case runs in real time in the default set, so its bounds are kept off the
+wall clock: a visit is measured in stream time, the samples the paced source delivered between two retunes, and the
+source stops while the decoder does not read, so a slow or loaded runner gives the same visits, only later; the
+metrics lines a visit is read by leave out the 0.3 s after its retune and before the next one, where the decoder and the
+source may each have moved before the other. With trunked speech reported as direct mode activity (a deliberate break
+of `tetra_nb_speech_decoded()`) the trunked target held to the visit cap on both visits and the case failed. The script
+resamples each channel's call to the 1.152 MHz capture rate before the run: done at the first landing, on the paced
+source's thread, it stalled the stream for a second or more.
 
 #### Received tone (CTCSS) on the analog monitor
 

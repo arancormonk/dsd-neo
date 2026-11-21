@@ -21894,8 +21894,9 @@ if(DSD_HAS_RADIO)
                 # rtl_tcp scene (issue #890): NFM, NXDN48, YSF, a TETRA DMO call (tetra_dmo_call_synth_72k) and a
                 # TETRA DMO target on trunked TETRA alone. Each target lands its own profile (the control API's
                 # metrics), the NFM, YSF and DMO calls hold their targets and release them, and the trunked TETRA
-                # never holds. About 30 s in real time; numpy, so CTest reports it skipped where the tests' Python
-                # has none.
+                # never holds. About 40 s in real time; every bound is in the stream's own time, so a slow runner only
+                # takes longer (the run stops at 120 s, the TIMEOUT at 240). numpy, so CTest reports it skipped where
+                # the tests' Python has none.
                 add_test(
                     NAME ENGINE_TRUNK_SCAN_SIMPLEX_RIG
                     COMMAND
@@ -21905,7 +21906,7 @@ if(DSD_HAS_RADIO)
                 )
                 set_tests_properties(
                     ENGINE_TRUNK_SCAN_SIMPLEX_RIG
-                    PROPERTIES LABELS "scan-rig" SKIP_RETURN_CODE 77 TIMEOUT 120
+                    PROPERTIES LABELS "scan-rig" SKIP_RETURN_CODE 77 TIMEOUT 240
                 )
             endif()
         endif()
