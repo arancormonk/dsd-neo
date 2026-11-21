@@ -4,7 +4,9 @@
  */
 
 /*
- * Simulate grant → C_MOVE (TS2→TS1) → P_CLEAR and verify return-to-CC.
+ * Simulate grant → C_MOVE → P_CLEAR and verify return-to-CC. C_MOVE is Move TSCC (TS 102 361-4 Table 7.17), which
+ * tells one MS to move to another control channel: the followed call stays where it is (carrier, burst indicators),
+ * and the P_CLEAR on its slot still releases it.
  */
 
 #include <dsd-neo/protocol/dmr/dmr_utils_api.h>
@@ -108,40 +110,32 @@ init_env(dsd_opts* opts, dsd_state* state) {
     DSD_MEMSET(opts, 0, sizeof(*opts));
     DSD_MEMSET(state, 0, sizeof(*state));
     opts->trunk_enable = 1;
-    // The followed call is a group call: a C_MOVE of it is judged with its own classification, as it was followed.
     opts->trunk_tune_group_calls = 1;
     opts->trunk_hangtime = 0.0f;      // immediate release on clear
     state->trunk_cc_freq = 851000000; // mock CC
 }
 
-// Compose a minimal C_MOVE CSBK + MBC absolute channel parms
+// Compose a Move TSCC (Table 7.17): Physical Channel Number 0xFFF (bits 44..55), MS address (bits 56..79), and its
+// MV_AP block (Table 7.18) naming the TSCC: CHAN @p apcn on @p rx_int_mhz plus @p rx_step_125hz steps.
 static void
-build_cmove_apcn(uint8_t* bits, uint8_t* bytes, uint16_t apcn, uint16_t rx_int_mhz, uint16_t rx_step_125hz,
-                 uint8_t slot, uint32_t target) {
+build_move_tscc(uint8_t* bits, uint8_t* bytes, uint32_t ms, uint16_t apcn, uint16_t rx_int_mhz,
+                uint16_t rx_step_125hz) {
     DSD_MEMSET(bits, 0, 256);
     DSD_MEMSET(bytes, 0, 48);
-    // Opcode (low 6 bits of first byte) = 57
     bytes[0] = (uint8_t)(57 & 0x3F);
-    // LPCN field (bits 16..27) = 0xFFF (absolute)
     for (int i = 0; i < 12; i++) {
-        bits[16 + i] = ((0xFFFu >> (11 - i)) & 1u);
+        bits[44 + i] = ((0xFFFu >> (11 - i)) & 1u);
     }
-    // Slot bit (bit 28) — 0 => TS1, 1 => TS2
-    bits[28] = (slot & 1u);
-    // Target (bits 32..55): the call the move is for
     for (int i = 0; i < 24; i++) {
-        bits[32 + i] = (uint8_t)((target >> (23 - i)) & 1u);
+        bits[56 + i] = (uint8_t)((ms >> (23 - i)) & 1u);
     }
     // MBC CDEFTYPE (bits 112..115) = 0 (absolute channel parms)
-    // APCN (bits 118..129)
     for (int i = 0; i < 12; i++) {
         bits[118 + i] = ((apcn >> (11 - i)) & 1u);
     }
-    // RX_INT (bits 153..162) 10 bits
     for (int i = 0; i < 10; i++) {
         bits[153 + i] = ((rx_int_mhz >> (9 - i)) & 1u);
     }
-    // RX_STEP (bits 163..175) 13 bits
     for (int i = 0; i < 13; i++) {
         bits[163 + i] = ((rx_step_125hz >> (12 - i)) & 1u);
     }
@@ -193,25 +187,22 @@ main(int argc, char** argv) {
     state.dmrburstR = 16;  // voice on TS2
     state.dmrburstL = 9;   // idle on TS1
 
-    // Step 2: issue C_MOVE of the followed call (TG 1001) to TS1 with new absolute channel (e.g., 853.500000 MHz). A
-    // move naming another call would be an ordinary grant, which the followed call's acquisition keeps out.
+    // Step 2: a Move TSCC for some MS names another TSCC (453.500000 MHz): the channel map learns it, and the followed
+    // call on TS2 keeps its carrier and burst indicators.
     uint8_t bits[256];
     uint8_t bytes[48];
-    uint16_t apcn = 0x0456;
-    uint16_t rx_int = 853;                                                             // MHz
-    uint16_t rx_step = 4000;                                                           // 4000 * 125 Hz = 500 kHz
-    long f2 = 853000000 + 4000 * 125;                                                  // 853.500000 MHz
-    build_cmove_apcn(bits, bytes, apcn, rx_int, rx_step, /*slot*/ 0, /*target*/ 1001); // TS1
+    const uint16_t apcn = 0x0456;
+    const long tscc = 453000000 + 4000 * 125;
+    build_move_tscc(bits, bytes, /*ms*/ 4321, apcn, /*rx_int*/ 453, /*rx_step*/ 4000);
     cspdu_mbc(&opts, &state, bits, bytes);
     assert(opts.trunk_is_tuned == 1);
-    assert(state.trunk_vc_freq[0] == f2);
-    // After move, opposite slot should clear; destination slot shows voice
-    assert(state.dmrburstL == 16);
-    assert(state.dmrburstR == 9);
+    assert(state.trunk_vc_freq[0] == f1);
+    assert(state.trunk_chan_map[apcn] == tscc);
+    assert(state.dmrburstR == 16);
+    assert(state.dmrburstL == 9);
 
-    // Step 3: P_CLEAR on the active slot, then SM should return to CC immediately
-    // Set current slot context to TS1 for P_CLEAR evaluation
-    state.currentslot = 0;
+    // Step 3: P_CLEAR on the followed call's slot, then SM should return to CC immediately
+    state.currentslot = 1;
     build_pclear(bits, bytes);
     dmr_cspdu(&opts, &state, bits, bytes, /*crc ok*/ 1, /*errs*/ 0);
 

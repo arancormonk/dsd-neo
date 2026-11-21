@@ -577,6 +577,7 @@ build_aloha(uint8_t* bits, uint8_t* bytes, uint8_t fid) {
     build_pf0(bits, bytes, 25U, fid);
 }
 
+/* A C_MOVE whose bits are laid out as a channel grant's (LPCN 16-27, slot 28, target 32-55, source 56-79). */
 static void
 build_c_move(uint8_t* bits, uint8_t* bytes, uint16_t lpcn, uint8_t slot, uint32_t target, uint32_t source) {
     build_pf0(bits, bytes, 57U, 0U);
@@ -2543,25 +2544,20 @@ main(void) {
     rc |= expect_true("aloha rtl learns control-channel frequency", pf0_st.trunk_cc_freq == 460012500L);
     rc |= expect_true("aloha rtl rotates output file on cc", g_rotate_symbol_out_file_calls == 1);
 
-    init_env(&pf0_opts, &pf0_st);
-    pf0_opts.trunk_enable = 0;
-    build_c_move(bits, bytes, 12U, 0U, 0x001234U, 0x005678U);
-    dmr_cspdu(&pf0_opts, &pf0_st, bits, bytes, 1U, 0U);
-    rc |= expect_true("c_move slot 1 activity",
-                      recent_activity_matches(&pf0_st, 0U, DSD_CALL_KIND_GROUP_VOICE, 0x001234U, 0x005678U, 12U,
-                                              "Active Ch: 000C (TDMA S1) TG: 4660;"));
-    rc |= expect_true("c_move slot 1 does not create a call", no_active_call(&pf0_st, 0U));
-    rc |= expect_true("c_move slot 1 debounces opposite slot", pf0_st.dmrburstL == 16 && pf0_st.dmrburstR == 9);
-
-    init_env(&pf0_opts, &pf0_st);
-    pf0_opts.trunk_enable = 0;
-    build_c_move(bits, bytes, 13U, 1U, 0x002345U, 0x006789U);
-    dmr_cspdu(&pf0_opts, &pf0_st, bits, bytes, 1U, 0U);
-    rc |= expect_true("c_move slot 2 activity",
-                      recent_activity_matches(&pf0_st, 1U, DSD_CALL_KIND_GROUP_VOICE, 0x002345U, 0x006789U, 13U,
-                                              "Active Ch: 000D (TDMA S2) TG: 9029;"));
-    rc |= expect_true("c_move slot 2 does not create a call", no_active_call(&pf0_st, 1U));
-    rc |= expect_true("c_move slot 2 debounces opposite slot", pf0_st.dmrburstR == 16 && pf0_st.dmrburstL == 9);
+    /* C_MOVE is Move TSCC (TS 102 361-4 Table 7.17): bits a channel grant would read as LPCN, slot, target and source
+       name no call, so it publishes no activity row and leaves both burst indicators alone. */
+    for (uint8_t slot = 0U; slot <= 1U; slot++) {
+        init_env(&pf0_opts, &pf0_st);
+        pf0_opts.trunk_enable = 0;
+        pf0_st.dmrburstL = 6;
+        pf0_st.dmrburstR = 6;
+        build_c_move(bits, bytes, (uint16_t)(12U + slot), slot, 0x001234U, 0x005678U);
+        dmr_cspdu(&pf0_opts, &pf0_st, bits, bytes, 1U, 0U);
+        rc |= expect_true("c_move publishes no activity",
+                          recent_activity_is_empty(&pf0_st, 0U) && recent_activity_is_empty(&pf0_st, 1U));
+        rc |= expect_true("c_move does not create a call", no_active_call(&pf0_st, slot));
+        rc |= expect_true("c_move leaves the burst indicators", pf0_st.dmrburstL == 6 && pf0_st.dmrburstR == 6);
+    }
 
     init_env(&pf0_opts, &pf0_st);
     pf0_opts.trunk_enable = 0;

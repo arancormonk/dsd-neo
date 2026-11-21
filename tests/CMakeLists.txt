@@ -14416,7 +14416,7 @@ target_link_libraries(
 )
 add_test(NAME DMR_T3_SHIM COMMAND dsd-neo_test_dmr_t3_shim)
 
-# DMR Tier III C_MOVE retune (grant -> move -> retune, gated on VC)
+# DMR Tier III C_MOVE as Move TSCC (informational; an absolute move learns the TSCC) and grant channels
 add_executable(
     dsd-neo_test_dmr_t3_cmove
     protocol/dmr/test_dmr_t3_cmove.c
@@ -14519,7 +14519,7 @@ target_link_libraries(
 )
 add_test(NAME DMR_T3_FORCE_RELEASE COMMAND dsd-neo_test_dmr_t3_force_release)
 
-# DMR Tier III move then release (grant -> move TS2->TS1 -> P_CLEAR -> return CC)
+# DMR Tier III grant -> Move TSCC (call stays) -> P_CLEAR -> return CC
 add_executable(
     dsd-neo_test_dmr_t3_move_release
     protocol/dmr/test_dmr_t3_move_release.c

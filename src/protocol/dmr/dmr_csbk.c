@@ -43,6 +43,7 @@
 #include <dsd-neo/protocol/dmr/dmr_utils_api.h>
 #include <dsd-neo/runtime/colors.h>
 #include <dsd-neo/runtime/rigctl_query_hooks.h>
+#include <dsd-neo/runtime/trunk_cc_candidates.h>
 #include <dsd-neo/runtime/trunk_scan_hooks.h>
 #include <dsd-neo/runtime/trunk_tuning_hooks.h>
 #include <inttypes.h>
@@ -220,17 +221,22 @@ dmr_cspdu_pf0_should_skip_call(const dsd_opts* opts, int* csbk_o, int* data_call
 
 /* The absolute parameters of the PDU being handled (dmr_abs_params_decode()), or 0 with the reason printed: a reserved
    Cdeftype, or no usable frequency (no single checked continuation, or one outside Table C.7). */
-static int
-dmr_cspdu_abs_params(const uint8_t cs_pdu_bits[], dmr_abs_params* ap) {
-    if (dmr_abs_params_decode(cs_pdu_bits, dmr_cspdu_current_shape(), ap)) {
-        return 1;
-    }
+static void
+dmr_cspdu_abs_params_print_unusable(const uint8_t cs_pdu_bits[], const dmr_abs_params* ap) {
     if (ap->cdeftype != 0U) {
         DSD_FPRINTF(stderr, "\n  MBC Absolute Parameters - Unknown CdefParms: %015llX",
                     (unsigned long long int)convert_bits_into_output(&cs_pdu_bits[118], 58));
     } else {
         DSD_FPRINTF(stderr, "\n  MBC Absolute Parameters missing or out of range;");
     }
+}
+
+static int
+dmr_cspdu_abs_params(const uint8_t cs_pdu_bits[], dmr_abs_params* ap) {
+    if (dmr_abs_params_decode(cs_pdu_bits, dmr_cspdu_current_shape(), ap)) {
+        return 1;
+    }
+    dmr_cspdu_abs_params_print_unusable(cs_pdu_bits, ap);
     return 0;
 }
 
@@ -426,90 +432,67 @@ dmr_cspdu_pf0_handle_grants(dsd_opts* opts, dsd_state* state, uint8_t cs_pdu_bit
                                      dmr_cspdu_pf0_call_channel(lpchannum, mbc_lpchannum), freq, target, source);
 }
 
+/* The TSCC an absolute C_MOVE's MV_AP names (CHAN @p chan, which may name no channel, on @p freq): the channel map learns
+   it (dmr_csbk_learn_channel()) and the control channel hunt takes it as a current-site candidate, both only from a
+   checked or RAS-accepted PDU. */
 static void
-dmr_cspdu_pf0_move_resolve_freq(dsd_opts* opts, dsd_state* state, uint8_t cs_pdu_bits[], uint16_t* move_lpcn,
-                                long int* move_freq) {
-    if (*move_lpcn == 0xFFF) {
-        dmr_abs_params ap;
-        if (dmr_cspdu_abs_params(cs_pdu_bits, &ap)) {
-            *move_lpcn = ap.chan;
-            *move_freq = ap.rx_hz;
-            (void)dmr_csbk_learn_channel(opts, state, *move_lpcn, *move_freq, 0);
-        }
+dmr_cspdu_pf0_move_note_tscc(dsd_opts* opts, dsd_state* state, uint16_t chan, long int freq) {
+    if (!dmr_csbk_crc_checked(state) && !dmr_csbk_ras_accepted(opts, state)) {
         return;
     }
-    if (*move_lpcn != 0) {
-        *move_freq = state->trunk_chan_map[*move_lpcn];
+    (void)dmr_csbk_learn_channel(opts, state, chan, freq, 0);
+    if (freq != state->trunk_cc_freq) {
+        (void)dsd_trunk_cc_candidates_add(state, freq, 1, DSD_TRUNK_CC_CANDIDATE_CURRENT_SITE);
     }
 }
 
-static void
-dmr_cspdu_pf0_move_debounce_slot(dsd_state* state, int tslot) {
-    if (tslot == 0) {
-        state->dmrburstL = 16;
-        state->dmrburstR = 9;
-        (void)dsd_recent_activity_clear(state, 1U);
-        return;
-    }
-
-    state->dmrburstR = 16;
-    state->dmrburstL = 9;
-    (void)dsd_recent_activity_clear(state, 0U);
-}
-
+/* C_MOVE is Move TSCC (TS 102 361-4 §7.1.1.1.3, Table 7.17): the TSCC tells one MS (its individual address, bits 56-79)
+   to move to another TSCC, Physical Channel Number bits 44-55, with Mask (25-29), Reg (35) and Backoff (36-39) for its
+   access there. Informational: it names no call, so nothing is followed, published or debounced. The absolute escape
+   0xFFF names the TSCC in an appended MV_AP block (Table 7.18), which teaches the channel map and the candidate list; a
+   single-block C_MOVE naming 0xFFF is malformed and only printed. A call the site moves between payload carriers is
+   picked up again from the TSCC's late-entry grants. */
 static void
 dmr_cspdu_pf0_handle_move(dsd_opts* opts, dsd_state* state, uint8_t cs_pdu_bits[], int csbk_o) {
     if (csbk_o != 57 || cs_pdu_bits == NULL) {
         return;
     }
 
-    DSD_FPRINTF(stderr, "\n");
-    DSD_FPRINTF(stderr, " Move (C_MOVE) ");
+    const uint8_t mask = (uint8_t)convert_bits_into_output(&cs_pdu_bits[25], 5);
+    const uint8_t reg = cs_pdu_bits[35];
+    const uint8_t backoff = (uint8_t)convert_bits_into_output(&cs_pdu_bits[36], 4);
+    const uint16_t pcn = (uint16_t)convert_bits_into_output(&cs_pdu_bits[44], 12);
+    const uint32_t ms = (uint32_t)convert_bits_into_output(&cs_pdu_bits[56], 24);
 
-    long int move_freq = 0;
-    uint16_t move_lpcn = (uint16_t)convert_bits_into_output(&cs_pdu_bits[16], 12);
-    uint8_t move_ts = cs_pdu_bits[28];
-    uint32_t mv_target = (uint32_t)convert_bits_into_output(&cs_pdu_bits[32], 24);
-    uint32_t mv_source = (uint32_t)convert_bits_into_output(&cs_pdu_bits[56], 24);
-    int tslot = (int)(move_ts & 1);
-    char suf[24];
-
-    UNUSED(move_ts);
-    dmr_cspdu_pf0_move_resolve_freq(opts, state, cs_pdu_bits, &move_lpcn, &move_freq);
-    if (!dmr_t3_lpcn_is_channel(move_lpcn)) {
-        move_lpcn = 0; // as for a grant: CHNULL, or an absolute escape whose CdefParms name no channel
-    }
-
-    dmr_format_chan_suffix(tslot, suf, sizeof suf);
-    if (move_lpcn != 0) {
-        char notice[DSD_RECENT_ACTIVITY_TEXT_SIZE];
-        DSD_SNPRINTF(notice, sizeof notice, "Active Ch: %04X%s TG: %u; ", move_lpcn, suf, mv_target);
-        dmr_csbk_publish_activity(state, (uint8_t)tslot, (uint8_t)tslot, DSD_CALL_KIND_GROUP_VOICE, mv_target,
-                                  mv_source, move_lpcn, move_freq, 0, notice);
-    }
-
-    /* While a voice channel is followed the move goes to the trunk state machine first: a move of the followed call
-       keeps following it (judged as it was followed), any other is an ordinary grant under the talkgroup policy and
-       the busy gate. Its effects on the carrier being decoded (the burst indicators, the other slot's activity row)
-       apply only once it was accepted: a refused move leaves the call being heard alone. */
-    if (opts->trunk_enable == 1 && state->trunk_cc_freq != 0 && opts->trunk_is_tuned == 1
-        && (move_freq > 0 || move_lpcn != 0)) {
-        dsd_tg_policy_decision policy_decision;
-        (void)dmr_policy_tune_allowed(opts, state, mv_target, mv_source, 1, 0, &policy_decision);
-        dmr_sm_event_t ev = dmr_sm_ev_group_grant(move_freq, move_lpcn, (int)mv_target, (int)mv_source);
-        ev.slot = tslot;
-        ev.channel_kind =
-            dmr_t3_lpcn_is_channel(move_lpcn) ? (uint8_t)DSD_CALL_CHANNEL_LPCN : (uint8_t)DSD_CALL_CHANNEL_NONE;
-        ev.origin = DMR_SM_ORIGIN_MOVE;
-        ev.policy_valid = 1;
-        ev.policy = policy_decision;
-        const dmr_sm_grant_result_e result = dmr_sm_submit_grant(opts, state, &ev);
-        if (result == DMR_SM_GRANT_FOLLOWED || result == DMR_SM_GRANT_IN_PLACE) {
-            dmr_cspdu_pf0_move_debounce_slot(state, tslot);
+    uint16_t chan = pcn;
+    long int freq = 0;
+    dmr_abs_params ap;
+    int abs_ok = 0;
+    if (pcn == 0xFFF) {
+        abs_ok = dmr_abs_params_decode(cs_pdu_bits, dmr_cspdu_current_shape(), &ap);
+        if (abs_ok) {
+            chan = ap.chan;
+            freq = ap.rx_hz;
         }
+    } else if (dmr_t3_lpcn_is_channel(pcn)) {
+        freq = state->trunk_chan_map[pcn];
+    }
+
+    DSD_FPRINTF(stderr, "\n");
+    DSD_FPRINTF(stderr, " Move TSCC: MS %u to channel %u", ms, (unsigned)chan);
+    if (freq > 0) {
+        DSD_FPRINTF(stderr, " (%.6f MHz)", (double)freq / 1000000.0);
+    }
+    DSD_FPRINTF(stderr, "\n  Mask: %u; Reg: %u; Backoff: %u;", (unsigned)mask, (unsigned)reg, (unsigned)backoff);
+
+    if (pcn != 0xFFF) {
         return;
     }
-    dmr_cspdu_pf0_move_debounce_slot(state, tslot);
+    if (!abs_ok) {
+        dmr_cspdu_abs_params_print_unusable(cs_pdu_bits, &ap);
+        return;
+    }
+    dmr_cspdu_pf0_move_note_tscc(opts, state, chan, freq);
 }
 
 static void

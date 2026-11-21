@@ -3705,10 +3705,10 @@ suite runs under this compiler.
   - Enrichment vs admission: a path that re-judges a call it already follows because its identity was learned or
     updated keeps the call on a rejection whose only reasons are radio reasons
     (`dsd_tg_policy_decision_only_radio_blocks()`): P25 `p25_voice_start_apply_identity()` (the companion slot is
-    untouched), DMR resident members and C_MOVE of the followed call. TETRA never re-judges the call it follows, and
+    untouched) and DMR resident members. TETRA never re-judges the call it follows, and
     NXDN only refuses (never releases) on a repeat. A new grant naming a blocked radio is refused everywhere; the
     per-frame gates then mute a radio learned mid-call. EDACS all-calls keep their `-W` reprieve except for a blocked
-    radio. DMR's C_MOVE keeps following on a radio-only rejection, and its Hold allowance ignores the radio part.
+    radio.
     App-control's row-edit release (`tg_listen_blocked_slots()`) stays talkgroup-only on purpose (mode and allow-list
     blocks), judging each call as its protocol admits it: an NXDN Type-C call by the source fallback with the call's
     source (`nxdn_held_call_policy_source()`, 0 for a Type-D call), every other call by its target.
@@ -13352,14 +13352,14 @@ Private per-protocol modules worth knowing about:
   discussion #900 F2). Every channel map row LPCN 1..4094 has an origin in the DMR extension: NONE, FILE (a channel
   map import, `dmr_t3_chan_note_map_loaded()` after `chan_map_adopt()`; a nonzero row with no recorded origin, such as
   a `-C` map at startup, reads as FILE), USER, SITE, UNVERIFIED, NEIGHBOUR or ESTIMATE. `dmr_t3_chan_learn()` is the
-  only over-the-air writer: `dmr_csbk.c` passes SITE for a CSBK or MBC whose CRC checked (absolute grants, C_MOVE,
-  Chan_Freq), UNVERIFIED for one `-F` accepted as RAS (`dmr_csbk_ras_accepted()`, the C_ALOHA recognition's own
-  predicate), NEIGHBOUR for an absolute Vote_Now/Adjacent_Site either way, and nothing for a failed CRC or the
-  synthesized P_CLEAR. FILE and USER are never overwritten over the air; SITE replaces UNVERIFIED, NEIGHBOUR and
-  ESTIMATE always (an origin change at the same frequency counts) and SITE when the frequency differs; the rest fill
-  empty rows only. The trust byte keeps its meaning (2 learned on the control channel, else 1), NEIGHBOUR never 2 and
-  ESTIMATE 0. The learned ("DMR TIII: Learned channel 12 -> 451.012500 MHz;") and changed notices post on the
-  receiving burst's slot with its CRC flags, so `--slot-allow` and the `[RAS]` marker apply. The env-only heuristic
+  only over-the-air writer: `dmr_csbk.c` passes SITE for a CSBK or MBC whose CRC checked (absolute grants, the TSCC an
+  absolute C_MOVE's MV_AP names, Chan_Freq), UNVERIFIED for one `-F` accepted as RAS (`dmr_csbk_ras_accepted()`, the
+  C_ALOHA recognition's own predicate), NEIGHBOUR for an absolute Vote_Now/Adjacent_Site either way, and nothing for a
+  failed CRC or the synthesized P_CLEAR. FILE and USER are never overwritten over the air; SITE replaces UNVERIFIED,
+  NEIGHBOUR and ESTIMATE always (an origin change at the same frequency counts) and SITE when the frequency differs; the
+  rest fill empty rows only. The trust byte keeps its meaning (2 learned on the control channel, else 1), NEIGHBOUR
+  never 2 and ESTIMATE 0. The learned ("DMR TIII: Learned channel 12 -> 451.012500 MHz;") and changed notices post on
+  the receiving burst's slot with its CRC flags, so `--slot-allow` and the `[RAS]` marker apply. The env-only heuristic
   fill anchors on every row that is no estimate and writes its rows as ESTIMATE through the writer; any anchor that
   appears, moves or goes drops every estimate and fills again. A network change (`dmr_t3_chan_network_changed()`)
   drops the SITE, UNVERIFIED, NEIGHBOUR and ESTIMATE rows with their trust bytes and bumps the generation: a checked
@@ -13494,19 +13494,19 @@ Private per-protocol modules worth knowing about:
   - Call channel (issue #799). A followed call's channel is one resolved value with its numbering
     (`dmr_sm_event_t.channel_kind`, `vc_lpcn`/`vc_channel_kind`, the slot record's `channel`/`channel_kind`,
     `dsd_call_snapshot.channel_kind`, `<dsd-neo/core/call_channel.h>`): a Tier III LPCN 1..4094
-    (`dmr_t3_lpcn_is_channel()`, `dmr_call_channel.h`; a grant's or C_MOVE's absolute escape 0xFFF names its MBC's
+    (`dmr_t3_lpcn_is_channel()`, `dmr_call_channel.h`; a grant's absolute escape 0xFFF names its MBC's
     CdefParms LPCN when that is 1..4094, else no channel, and the channel map learns only that range), a Connect Plus
     LCN, a Cap+ or XPT LSN. The machine, the published call, the slot records and the policy routes see the same value,
     and it rides the MBC assembler's decision and `crc_invalid` (`dmr_block_type2_dispatch()`): nothing new is
     accepted. Fill-only: the call takes it once (`call_state_apply_channel()` ignores 0 and any later channel once one
-    of a known kind is named), so a same-carrier move or a repeated in-place grant keeps the first (decided limit L9).
+    of a known kind is named), so a repeated in-place grant keeps the first (decided limit L9).
     An LC's record keeps its record's channel on that carrier, else the followed call's when that is the carrier's
     (LPCN, LCN: both slots share it) or the slot is the followed one (an LSN is one slot's). A Cap+ or XPT status gives
     each slot record its own LSN (and fills it into an LC's record that names none), and voice sync gives a record's
     channel to the call the record is bound to while that call names no channel (`dmr_sm_publish_slot_channel()`): an
     LSN, or the followed grant's LPCN or LCN, which the companion slot's call is on too (TS 102 361-4 §7.1.1.1.1.1.1:
     the LPCN names the physical channel, both timeslots). The channel keeps its own provenance (`channel_crc_flags`:
-    the naming grant's, move's or status's scope), which an LC naming the record keeps and the publication carries, so
+    the naming grant's or status's scope), which an LC naming the record keeps and the publication carries, so
     a RAS-accepted status or grant under `-F` marks the row it named a channel for. The XPT free value is a repeater
     (LCN): its hint is LSN 2n - 1 (`dmr_xpt_lcn_to_lsn()`), 0 none. Calls without a channel (decided limit L5): trunking
     off; an absolute grant whose CdefParms LPCN is not 1..4094 (its MBC failing, the grant is not followed at all); a
@@ -13516,7 +13516,7 @@ Private per-protocol modules worth knowing about:
     Tests: `DMR_T3_CMOVE`, `DMR_EVENT_CRC`, `DMR_GRANT_POLICY`, `DMR_FLCO_PRIVACY_MODES`, `DMR_CSBK_HELPERS`,
     `CORE_CALL_STATE`, `CORE_TALKGROUP_POLICY`.
   - Leaving a carrier. An accepted follow that leaves the carrier the receiver was on (a grant, Hold or preemption
-    takeover, a matched C_MOVE, Connect Plus, XPT, or a Cap+ status follow, `dmr_sm_note_status_follow()`; the
+    takeover, Connect Plus, XPT, or a Cap+ status follow, `dmr_sm_note_status_follow()`; the
     receiver's frequency read before the tune, `dmr_sm_receiver_frequency()`: the followed carrier, else the one it
     listens on; unknown counts as leaving) ends every slot's canonical call (EXPLICIT, synchronized,
     `dmr_sm_end_left_calls()`, as a release without a control channel does), so a displaced call never stays active
@@ -13545,11 +13545,11 @@ Private per-protocol modules worth knowing about:
     receiver never left keep their ALG, key ID, MI and privacy; a request the machine gives up on unresolved (its
     deadline, a follow or park that replaces it) is judged as landed, the safe side (`ENGINE_DMR_CC_RECOVERY`
     `dmr_probe_judges_its_carrier_once_landed()`, `dmr_rigctl_probe_judged_from_the_confirmed_frequency()`,
-    `dmr_settle_tune_deadline()`). A grant's follow and a C_MOVE's follow are tracked the same way when their tune is
-    still in flight (`dmr_sm_follow_grant()`, `dmr_sm_follow_move()` take its request): the left calls end at once, as
+    `dmr_settle_tune_deadline()`). A grant's follow is tracked the same way when its tune is still in
+    flight (`dmr_sm_follow_grant()` takes its request): the left calls end at once, as
     the machine moves on, and their decryption is judged once the request lands
-    (`dmr_sm_leave_carrier_once_landed()`; `ENGINE_DMR_CC_RECOVERY` `dmr_grant_follow_judges_its_carrier_once_landed()`,
-    `DMR_PREEMPT` `test_move_judges_its_carrier_once_landed()`). So are a Capacity Plus status follow
+    (`dmr_sm_leave_carrier_once_landed()`; `ENGINE_DMR_CC_RECOVERY`
+    `dmr_grant_follow_judges_its_carrier_once_landed()`). So are a Capacity Plus status follow
     (`dmr_sm_note_status_follow()` takes the tune's result and request) and a Connect Plus data channel follow
     (`dmr_cspdu_con_plus_tune_data()`, through `dmr_sm_note_tracked_carrier_tune()`):
     `dmr_status_and_data_follows_judge_their_carrier_once_landed()`. The privacy forget and the hold follow the machine's judgement of a leave alone, never the engine's
@@ -13598,23 +13598,17 @@ Private per-protocol modules worth knowing about:
     (`dmr_sm_clear_released_carrier()`). Writers run under the P25 SM tick guard (frame dispatch, the DMR tick, the
     carrier boundary, the trunk-scan switch); an operator move from a command takes it unless held
     (`dmr_sm_note_operator_move()` in `app_command_queue.c`).
-  - C_MOVE. A move of the followed call (its talkgroup or either party of its private call, as the followed slot's
-    identity names it; the grant's only while that slot names none, so a talkgroup a checked LC renamed is another
-    call's), whatever slot it names, is judged with that call's own classification: refused only when tuning is denied
-    for a reason other than a Hold mismatch (media-only restrictions never stop following it); same carrier -> IN_PLACE
-    on the new slot: the call's canonical epoch on the vacated slot ends (EXPLICIT, synchronized) and its first voice on
-    the new slot publishes it there again, so one call never shows ACTIVE on both slots; another carrier -> a new
-    acquisition that ends the calls of the carrier left (as every follow does) before naming the moved call, so its
-    first voice there publishes it in an epoch of its own, which the moved identity binds to (it never waits behind
-    the old carrier's epoch to bind the next, anonymous call); both keep the follow time. Both republish the moved
-    call's identity as the followed slot's record names it (with the record's `crc_flags` OR'ed with the move burst's:
-    the move confirms the target, not a source a RAS-accepted grant or LC under `-F` named), which makes the grant's
-    identity known again even when the end of the call it first named had withdrawn it (a checked LC then named the
-    moved call). A deferred or failed move tune changes nothing, the followed grant's identity included (it is rewritten
-    from the slot's record only in place
-    or once the tune is accepted), so a repeat of the original grant still matches it. A move of any other call is an
-    ordinary grant under its group decision and the gate. Its burst indicators and companion-row clear apply only once
-    accepted (as before when it is not submitted: trunking off or not on a voice channel).
+  - C_MOVE is Move TSCC (TS 102 361-4 §7.1.1.1.3, Table 7.17; `dmr_cspdu_pf0_handle_move()`): the TSCC tells one MS
+    (its individual address, bits 56-79) to move to another TSCC (Physical Channel Number, bits 44-55), with Mask
+    (25-29), Reg (35) and Backoff (36-39) for its access there. It names no call and is informational: printed
+    (`Move TSCC: MS <address> to channel <n>`, the TSCC's frequency when known), never submitted to the machine, never
+    an activity row or a burst-indicator debounce. The absolute escape 0xFFF names the TSCC in an appended MV_AP block
+    (Table 7.18, `dmr_abs_params_decode()`): from a checked or RAS-accepted PDU the channel map learns it
+    (`dmr_csbk_learn_channel()`: SITE or UNVERIFIED) and the control channel hunt takes its frequency as a current-site
+    candidate; a single-block C_MOVE naming 0xFFF is malformed and only printed. Decided limit (discussion #900 D6): a
+    call the site moves between payload carriers (a P_GRANT move on a payload channel) is not followed by a move path;
+    it is picked up again from the TSCC's late-entry grants. Tests: `DMR_T3_CMOVE`, `DMR_T3_MOVE_RELEASE`,
+    `DMR_GRANT_POLICY`.
   - Status selection (Cap+ 0x3E, XPT site status). One tune per status: while held (busy view or the status's own 2 s
     voice window, which an allow-list or Hold no longer zeroes) an entry on another carrier is eligible only by Hold or
     preemption and one on the held carrier never displaces; among the eligible Hold, then priority, then channel order
