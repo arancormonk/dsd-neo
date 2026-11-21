@@ -106,8 +106,20 @@ Item {
             return Util.countText(n);
         }
 
-        // The span's dates are local (America/Los_Angeles here), with the year
-        // outside the local day's (issue #902).
+        // Local noon on @p d @p m (1-12) 2025, in seconds: a recording stamp
+        // whose local date is the same in every zone the run may be in.
+        function noon2025(m, d) {
+            return Math.floor(new Date(2025, m - 1, d, 12, 0, 0).getTime() / 1000);
+        }
+        // County over 24 to 27 October and Metro on 26 October, in local time.
+        function fillLocal() {
+            recordings.folders = [Object.assign({}, county, {first: noon2025(10, 24), last: noon2025(10, 27)}),
+                                  Object.assign({}, metro, {first: noon2025(10, 26), last: noon2025(10, 26)})];
+            recordings.recordingCount = 843;
+        }
+
+        // A span's dates are local, with the year outside the local day's
+        // (issue #902): one day reads as one date.
         function test_folders() {
             fill();
             verify(!item("callRecordingsEmpty").visible);
@@ -119,9 +131,8 @@ Item {
             recordings.unfinishedBytes = 4100000;
             verify(item("callRecordingsUnfinished").visible);
             compare(item("callRecordingsUnfinished").subtitle, counted(2) + " recordings · 4.1 MB · left when listening stopped unexpectedly");
-            if (!testContext.setLocalTimeZone("America/Los_Angeles"))
-                skip("this host cannot make America/Los_Angeles the process time zone");
-            testContext.setLocalNowMs(Date.UTC(2025, 10, 1, 19, 0, 0));
+            testContext.setLocalNowMs(new Date(2025, 10, 1, 12, 0, 0).getTime());
+            fillLocal();
             compare(item("callRecordingsFolder0").subtitle, counted(842) + " recordings · 210 MB · 24 Oct – 27 Oct");
             compare(item("callRecordingsFolder1").subtitle, "1 recording · 96 kB · 26 Oct", "one day reads as one date");
         }
@@ -130,13 +141,15 @@ Item {
         // the same folder's dates their year. B11: a stamp at 00:00 UTC is the
         // day before west of UTC.
         function test_folder_span_follows_the_local_day() {
+            testContext.setLocalNowMs(new Date(2025, 11, 31, 12, 0, 0).getTime());
+            fillLocal();
+            compare(item("callRecordingsFolder0").subtitle, counted(842) + " recordings · 210 MB · 24 Oct – 27 Oct");
+            testContext.setLocalNowMs(new Date(2026, 0, 1, 0, 0, 5).getTime());
+            compare(item("callRecordingsFolder0").subtitle, counted(842) + " recordings · 210 MB · 24 Oct 2025 – 27 Oct 2025", "the new year shows last year's");
+            // Only this needs a zone west of UTC.
             if (!testContext.setLocalTimeZone("America/Los_Angeles"))
                 skip("this host cannot make America/Los_Angeles the process time zone");
-            testContext.setLocalNowMs(Date.UTC(2025, 11, 31, 20, 0, 0));
-            fill();
-            compare(item("callRecordingsFolder0").subtitle, counted(842) + " recordings · 210 MB · 24 Oct – 27 Oct");
             testContext.setLocalNowMs(Date.UTC(2026, 0, 1, 8, 0, 5));
-            compare(item("callRecordingsFolder0").subtitle, counted(842) + " recordings · 210 MB · 24 Oct 2025 – 27 Oct 2025", "the new year shows last year's");
             recordings.folders = [{uid: "u3", kind: "saved", name: "Midnight", count: 1, bytes: 1000, first: Date.UTC(2026, 0, 1) / 1000, last: Date.UTC(2026, 0, 1) / 1000, available: true}];
             compare(item("callRecordingsFolder0").subtitle, "1 recording · 1 kB · 31 Dec 2025");
         }

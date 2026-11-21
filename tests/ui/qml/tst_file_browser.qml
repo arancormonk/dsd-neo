@@ -189,9 +189,11 @@ Item {
         function back() {
             Ui.Navigation.back(window());
         }
+        // Noon on 9 November of the local day's year, with the local day pinned
+        // to 1 July 2026 (issue #902), so a run across New Year reads one year.
         function thisYearNov9() {
-            var year = new Date(savedSystems.realtimeNowMs()).getFullYear();
-            return new Date(year, 10, 9, 12, 0, 0).getTime();
+            testContext.setLocalNowMs(new Date(2026, 6, 1, 12, 0, 0).getTime());
+            return new Date(2026, 10, 9, 12, 0, 0).getTime();
         }
 
         // ---- cases ----

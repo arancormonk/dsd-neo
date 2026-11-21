@@ -96,9 +96,13 @@ Item {
             Ui.Theme.resetFontScale();
             Ui.Theme.resetReducedMotion();
         }
+        // Issue #902: the day and zone a case moved end with it, before the
+        // next case's _data() rows are built.
+        function cleanup() {
+            testContext.resetLocalDay();
+        }
         function init() {
             Ui.Theme.resetFontScale();
-            testContext.resetLocalDay();
             root.width = 360;
             root.height = 780;
             testContext.setMapTilesFailing(false);

@@ -7789,15 +7789,24 @@ class Setup : public QObject {
         }
     }
 
-    /* Issue #902: whether the process's local time, native and in @p engine's JavaScript, now has @p id's offsets, in
-       winter and in summer. */
+    /* Issue #902: whether the process's local time, native and in @p engine's JavaScript, now has @p id's offsets at
+       every date the QML fixtures use, across both of 2025's and 2026's transitions: two zones that agree in January
+       and July can still part in November (America/Vancouver kept UTC-7 from November 2026, America/Los_Angeles went
+       back to UTC-8). */
     static bool
     local_zone_is(const QString& id, QJSEngine* engine) {
         const QTimeZone named{id.toUtf8()};
         if (!named.isValid()) {
             return false;
         }
-        for (const qint64 probe : {Q_INT64_C(1767225600000), Q_INT64_C(1782864000000)}) {
+        /* UTC noon on: 2025-06-14, 2025-10-26, 2025-11-01, 2025-11-03, 2025-12-31, 2026-01-01, 2026-03-07, 2026-03-09,
+           2026-11-02, 2026-11-09, 2026-11-21, 2026-12-31, 2027-01-01. */
+        static constexpr qint64 kProbes[] = {
+            Q_INT64_C(1749902400000), Q_INT64_C(1761480000000), Q_INT64_C(1761998400000), Q_INT64_C(1762171200000),
+            Q_INT64_C(1767182400000), Q_INT64_C(1767268800000), Q_INT64_C(1772884800000), Q_INT64_C(1773057600000),
+            Q_INT64_C(1793620800000), Q_INT64_C(1794225600000), Q_INT64_C(1795262400000), Q_INT64_C(1798718400000),
+            Q_INT64_C(1798804800000)};
+        for (const qint64 probe : kProbes) {
             const QDateTime at = QDateTime::fromMSecsSinceEpoch(probe, QTimeZone::UTC);
             const int offset = named.offsetFromUtc(at);
             if (at.toLocalTime().offsetFromUtc() != offset) {

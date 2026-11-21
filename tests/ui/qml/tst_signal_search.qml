@@ -124,6 +124,12 @@ Item {
             // A test that renames the range restores it even when it fails.
             if (model.ranges.length > 0 && model.ranges[0].name !== "Local UHF")
                 model.ranges = [Object.assign({}, model.ranges[0], {name: "Local UHF"})];
+            // Issue #902: the clock, the day and the zone a case moved end with
+            // it, before the next case's _data() rows are built.
+            loader.item.systems = systemsStub;
+            systemsStub.nowMs = systemsStub.noon;
+            systemsStub.localDay = systemsStub.firstDay;
+            testContext.resetLocalDay();
         }
         function init() {
             verify(loader.item !== null);
@@ -164,10 +170,6 @@ Item {
             testContext.resetHostPlayback();
             testContext.setPrefs("recordCalls", false);
             testContext.setPrefs("appearance", 0);
-            loader.item.systems = systemsStub;
-            systemsStub.nowMs = systemsStub.noon;
-            systemsStub.localDay = systemsStub.firstDay;
-            testContext.resetLocalDay();
         }
         // The panel is narrower than a phone: the strip beside it is scrim.
         function tapBeside(sheet) {
@@ -1351,8 +1353,11 @@ Item {
             compare(cue.marks, marks + 1);
             verify(cue.visible);
         }
+        // Each action as the menu offers it now: `enabled` may be a function
+        // the menu evaluates (issue #902 B8), so its own verdict is read.
         function menuTexts() {
-            return findChild(loader.item, "searchDetectionMenu").actions.map(function (a) { return a.text + (a.enabled === false ? " (disabled)" : ""); });
+            var menu = findChild(loader.item, "searchDetectionMenu");
+            return menu.actions.map(function (a, i) { return a.text + (menu.actionEnabled(i) ? "" : " (disabled)"); });
         }
         function menuItem(name) {
             var menu = findChild(loader.item, "searchDetectionMenu");
@@ -2801,18 +2806,36 @@ Item {
             var place = scroll.contentY;
             var height = row.height;
             verify(place > 0, "the page scrolls");
+            // The recordings alone: the row keeps its line while hidden and
+            // loses it on show.
             screen.visible = false;
-            systemsStub.localDay = nextDay();
             recordings.setDetectionRecordings("17:40", []);
             wait(20);
             compare(findChildren(screen, "searchHistoryRow")[0], row, "the same row");
-            compare(detail.fullText, before, "hidden, the row's words stay");
+            compare(detail.fullText, before, "hidden, the row keeps its count");
             compare(row.height, height, "and its height");
             compare(scroll.contentY, place, "and the reader's place");
             screen.visible = true;
             waitForRendering(screen);
-            compare(detail.fullText, "2026-11-09 14:32:05 · RF only · ended\nTIII Small · Net 12 · Site 3 · SYS 1183", "shown, both land");
+            var shown = "14:32:05 · RF only · ended\nTIII Small · Net 12 · Site 3 · SYS 1183";
+            compare(detail.fullText, shown, "shown, the count goes");
             verify(row.height < height, "the row is shorter by its recordings line");
+            // A midnight alone: the row keeps its time while hidden and takes
+            // its date on show.
+            scroll.contentY = Math.max(0, scroll.contentHeight - scroll.height - 40);
+            waitForRendering(screen);
+            place = scroll.contentY;
+            height = row.height;
+            screen.visible = false;
+            systemsStub.localDay = nextDay();
+            wait(20);
+            compare(findChildren(screen, "searchHistoryRow")[0], row, "the same row");
+            compare(detail.fullText, shown, "hidden, the row keeps its time");
+            compare(row.height, height, "and its height");
+            compare(scroll.contentY, place, "and the reader's place");
+            screen.visible = true;
+            waitForRendering(screen);
+            compare(detail.fullText, "2026-11-09 14:32:05 · RF only · ended\nTIII Small · Net 12 · Site 3 · SYS 1183", "shown, the date lands");
             scroll.contentY = 0;
             model.history = [];
             model.avoids = [];
@@ -2882,6 +2905,7 @@ Item {
             verify(action.enabled);
             data.change();
             verify(!action.enabled, "disabled once its session is gone");
+            verify(menuTexts().indexOf("Avoid this session (disabled)") >= 0, JSON.stringify(menuTexts()));
             var menu = findChild(loader.item, "searchDetectionMenu");
             var index = menu.actions.findIndex(function (a) { return a.key === "avoidSession"; });
             compare(findChild(menu, "actionMenuDescription" + index).text, "That search session has ended.");
