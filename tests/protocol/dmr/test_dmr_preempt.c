@@ -134,20 +134,10 @@ clock_at(double seconds) {
     dsd_decode_clock_test_set_ns(k_t0_ns + (uint64_t)(seconds * 1e9));
 }
 
-/* The request the last tune was handed (issue #834). */
-static uint64_t g_tune_request;
-
 static dsd_trunk_tune_result
 test_tune_request(dsd_opts* opts, dsd_state* state, long int freq, int ted_sps, uint64_t request_id) {
     (void)ted_sps;
-    g_tune_request = request_id;
-    if (g_tune_result == DSD_TRUNK_TUNE_RESULT_PENDING) {
-        /* In flight: the tuner is told where to go, and the request resolves later. */
-        opts->rtlsdr_center_freq = (uint32_t)freq;
-        opts->trunk_is_tuned = 1;
-        state->trunk_vc_freq[0] = state->trunk_vc_freq[1] = freq;
-        return g_tune_result;
-    }
+    (void)request_id;
     if (g_tune_result != DSD_TRUNK_TUNE_RESULT_OK) {
         return g_tune_result;
     }
