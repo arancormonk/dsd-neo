@@ -68,8 +68,11 @@ ModalSheet {
                 textColor: row.modelData.destructive ? Theme.magenta : Theme.buttonSecondaryText
                 enabled: menu.actionEnabled(row.index)
                 readonly property string descriptionText: menu.actionDescription(row.index)
+                // The description only while shown: a state that changes with
+                // the menu closed (issue #901's Compact view) renames nothing
+                // under it.
                 accessibleName: (row.modelData.accessibleName || text)
-                    + (descriptionText ? ". " + descriptionText : "")
+                    + (descriptionText && visible ? ". " + descriptionText : "")
                 onClicked: menu.activate(row.index)
             }
             // Read in the action's own name above (issue #782).

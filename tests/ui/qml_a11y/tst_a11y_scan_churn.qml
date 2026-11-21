@@ -1048,6 +1048,84 @@ Item {
             }
         }
 
+        // Issue #901: Compact view flipped with the session menu closed (from Settings, or the menu's own item, which
+        // closes it first) changes nothing in the closed menu: no row is rebuilt, so nothing shows or hides, and
+        // nothing in it is renamed. The item's On/Off is one function the row calls in its own binding, so the menu's
+        // action list does not read the preference, and the function keeps one identity across the list's
+        // re-evaluations (a metrics hop re-runs it). Opened, the row reads the state and follows a change in place.
+        function test_m8_closed_session_menu_ignores_a_density_change() {
+            testContext.setLifecyclePhase(0);
+            var menu = findChild(app, "sessionMenu");
+            verify(!menu.visible, "the session menu starts closed");
+            var repeater = findItem(menu, function (item) {
+                return item.itemAdded !== undefined && item.count === menu.actions.length && item.count > 0
+                    && item.itemAt(0).modelData.key === menu.actions[0].key;
+            });
+            verify(repeater !== null, "the menu's rows");
+            var rowsMade = 0;
+            var onRow = function () {
+                ++rowsMade;
+            };
+            var indexOfCompact = function () {
+                for (var i = 0; i < menu.actions.length; ++i) {
+                    if (menu.actions[i].key === "compactView")
+                        return i;
+                }
+                return -1;
+            };
+            repeater.itemAdded.connect(onRow);
+            repeater.itemRemoved.connect(onRow);
+            try {
+                prefs.compactView = false;
+                wait(50);
+                var at = indexOfCompact();
+                verify(at >= 0, "the menu offers Compact view");
+                for (var on of [true, false, true]) {
+                    rowsMade = 0;
+                    testContext.startAccessibilityCount();
+                    prefs.compactView = on;
+                    wait(50);
+                    var counts = testContext.accessibilityCount();
+                    testContext.stopAccessibilityCount();
+                    compare(rowsMade, 0, "the flip rebuilt the closed menu's rows");
+                    compare(showHide(menu), 0, "shows or hides in the closed menu: " + churn(counts));
+                    compare(testContext.accessibilityCountWithin(menu, "NameChanged"), 0, "renames in the closed menu: "
+                        + churn(counts));
+                    compare(menu.actionDescription(indexOfCompact()), on ? "On" : "Off");
+                }
+                var state = menu.actions[at].description;
+                compare(typeof state, "function", "the state is a function the row calls");
+                verify(state === app.compactViewState, "the menu holds the window's own function");
+                compare(menu.actionDescription(at), "On");
+                // A metrics hop re-runs the action list: the same function comes back, and no row is rebuilt.
+                rowsMade = 0;
+                for (var i = 1; i <= 3; ++i)
+                    testContext.publishTarget(reading(i));
+                wait(50);
+                verify(menu.actions[indexOfCompact()].description === state, "a hop made a new function");
+                compare(rowsMade, 0, "a hop rebuilt the menu's rows");
+                // Open, the row says the state and follows a change in place.
+                menu.open();
+                tryCompare(menu, "visible", true);
+                waitForRendering(menu);
+                var line = findChild(menu, "actionMenuDescription" + indexOfCompact());
+                var button = findChild(menu, "sessionMenuCompactView");
+                compare(line.text, "On");
+                compare(button.accessibleName, "Compact view. On");
+                rowsMade = 0;
+                prefs.compactView = false;
+                tryCompare(line, "text", "Off");
+                compare(button.accessibleName, "Compact view. Off");
+                compare(rowsMade, 0, "the open menu rebuilt its rows");
+            } finally {
+                testContext.stopAccessibilityCount();
+                repeater.itemAdded.disconnect(onRow);
+                repeater.itemRemoved.disconnect(onRow);
+                menu.visible = false;
+                prefs.compactView = false;
+            }
+        }
+
         // B11 (issue #901): a card's heading and controls (the section heading, the site button, Play, More, a scan
         // list's Play and More) carry no name or description while covered by a sheet or hidden with Home, as while
         // held: Android keeps the nodes it already fetched, and reads a covered node's cached interface by what it says
