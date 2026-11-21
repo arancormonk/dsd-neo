@@ -2799,10 +2799,50 @@ nxdn_run_encrypted_interconnect_dropped_case(void) {
     at_seconds(12001.0);
     send_typed_assignment(0x04U, 6U, 0U, 1234U, 16U);
     rc |= nxdn_expect(g_tune_count == 1, name, "skip", "the same call is not followed again at once");
+    rc |= nxdn_expect(dsd_tg_policy_call_skip_empty(&g_state), name, "skip", "no operator call skip is armed");
     at_seconds(12020.0);
     g_state.last_vc_sync_time = dsd_decode_time() - 4;
     send_typed_assignment(0x04U, 6U, 0U, 1234U, 16U);
     rc |= nxdn_expect(g_tune_count == 2, name, "lapsed", "a later assignment of the target is followed");
+    return rc;
+}
+
+/* The skip an encrypted interconnect call takes is that call's alone (issue #903): within its 15 s, a clear individual
+ * call to the same number, an interconnect call from another radio, and the same call under --enc-follow are all
+ * followed. */
+static int
+nxdn_run_encrypted_interconnect_skip_scope_case(void) {
+    static const char* const name = "encrypted-interconnect-skip-scope";
+    int rc = 0;
+    for (int variant = 0; variant < 3; variant++) {
+        type_c_fixture();
+        g_opts.trunk_tune_enc_calls = 0; /* --enc-lockout */
+        at_seconds(13000.0);
+        send_typed_assignment(0x04U, 6U, 0U, 1234U, 16U);
+        at_seconds(13000.2);
+        voice_live();
+        send_encrypted_vcall(6U, 1234U);
+        at_seconds(13000.4);
+        voice_live();
+        send_encrypted_vcall(6U, 1234U);
+        rc |= nxdn_expect(g_tune_cc_count == 1 && g_opts.trunk_is_tuned == 0, name, "drop", "the call is dropped");
+        at_seconds(13001.0);
+        g_state.last_vc_sync_time = dsd_decode_time() - 4;
+        if (variant == 0) {
+            send_typed_assignment(0x04U, 4U, 0U, 1234U, 16U); /* a clear individual call to 1234 */
+            rc |= nxdn_expect(g_tune_count == 2, name, "individual", "another call to the number is followed");
+        } else if (variant == 1) {
+            const nxdn_case c = {"", NXDN_MATRIX_TYPE_C, 0x04U, 6U, 2200U, 1234U, 16U, 0, 0, 0, 0, 0, 0, 0};
+            uint8_t message[128];
+            build_vcall_assgn(message, &c);
+            NXDN_decode_VCALL_ASSGN(&g_opts, &g_state, message); /* from another radio */
+            rc |= nxdn_expect(g_tune_count == 2, name, "other-source", "another radio's call is followed");
+        } else {
+            g_opts.trunk_tune_enc_calls = 1; /* --enc-follow */
+            send_typed_assignment(0x04U, 6U, 0U, 1234U, 16U);
+            rc |= nxdn_expect(g_tune_count == 2, name, "enc-follow", "the same call is followed under --enc-follow");
+        }
+    }
     return rc;
 }
 
@@ -3029,6 +3069,7 @@ main(void) {
     rc |= nxdn_run_call_type_labels_case();
     rc |= nxdn_run_type_d_private_busy_label_case();
     rc |= nxdn_run_encrypted_interconnect_dropped_case();
+    rc |= nxdn_run_encrypted_interconnect_skip_scope_case();
 #ifdef NXDN_MATRIX_REAL_CALL_STATE
     rc |= nxdn_run_assignment_activity_kind_case();
     rc |= nxdn_run_release_reply_keeps_dwell_case();

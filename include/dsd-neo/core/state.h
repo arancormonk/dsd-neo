@@ -2037,6 +2037,16 @@ struct dsd_state {
     uint8_t nxdn_data_type_d;
     uint8_t nxdn_data_source_prefix;
     uint8_t nxdn_data_target_prefix;
+    /* The one encrypted NXDN call --enc-lockout dropped without a lockout entry (an interconnect, speed dial or generic
+     * voice call, nxdn_vcall_suppress_encrypted_call()): its call type, endpoints and the decode-clock time of its last
+     * corroborated encrypted VCALL. An assignment of that same call is not followed again within
+     * DSD_TG_CALL_SKIP_QUIET_S of it; any other call to or from either number is (issue #903). Apart from the operator's
+     * call skips (dsd_tg_policy_call_skip_arm()), and off under --enc-follow. */
+    uint8_t nxdn_enc_skip_valid;
+    uint8_t nxdn_enc_skip_call_type;
+    uint16_t nxdn_enc_skip_source;
+    uint16_t nxdn_enc_skip_target;
+    double nxdn_enc_skip_seen_m;
     unsigned int nxdn_cipher_type;
     unsigned int nxdn_key;
 

@@ -2134,6 +2134,38 @@ nxdn_vcall_assgn_parse(dsd_state* state, const uint8_t* Message, struct nxdn_vca
     }
 }
 
+/* The encrypted call --enc-lockout dropped without a lockout entry (dsd_state::nxdn_enc_skip_valid): whether an
+ * assignment of call type @p call_type from @p source to @p target is that same call, still within
+ * DSD_TG_CALL_SKIP_QUIET_S of its last encrypted VCALL, while --enc-lockout is on. */
+static int
+nxdn_enc_skip_matches(const dsd_opts* opts, const dsd_state* state, uint8_t call_type, uint16_t source, uint16_t target,
+                      double now_m) {
+    if (opts->trunk_tune_enc_calls != 0 || state->nxdn_enc_skip_valid == 0U) {
+        return 0;
+    }
+    if (state->nxdn_enc_skip_call_type != (call_type & 0x7U) || state->nxdn_enc_skip_source != source
+        || state->nxdn_enc_skip_target != target) {
+        return 0;
+    }
+    return now_m >= state->nxdn_enc_skip_seen_m && now_m - state->nxdn_enc_skip_seen_m <= DSD_TG_CALL_SKIP_QUIET_S;
+}
+
+/* Note the encrypted call just dropped (nxdn_vcall_suppress_encrypted_call()); returns 1 when it was not already the
+ * skipped call (its note is new), 0 for a refresh. */
+static int
+nxdn_enc_skip_note(dsd_state* state, uint8_t call_type, uint16_t source, uint16_t target, double now_m) {
+    const int refresh = state->nxdn_enc_skip_valid != 0U && state->nxdn_enc_skip_call_type == (call_type & 0x7U)
+                        && state->nxdn_enc_skip_source == source && state->nxdn_enc_skip_target == target
+                        && now_m >= state->nxdn_enc_skip_seen_m
+                        && now_m - state->nxdn_enc_skip_seen_m <= DSD_TG_CALL_SKIP_QUIET_S;
+    state->nxdn_enc_skip_valid = 1U;
+    state->nxdn_enc_skip_call_type = (uint8_t)(call_type & 0x7U);
+    state->nxdn_enc_skip_source = source;
+    state->nxdn_enc_skip_target = target;
+    state->nxdn_enc_skip_seen_m = now_m;
+    return refresh ? 0 : 1;
+}
+
 static void
 nxdn_vcall_assgn_print(const dsd_state* state, const struct nxdn_vcall_assgn_info* info) {
     uint8_t duplex_mode[32] = {0};
@@ -2401,7 +2433,11 @@ NXDN_decode_VCALL_ASSGN(dsd_opts* opts, dsd_state* state, const uint8_t* Message
     nxdn_vcall_assgn_print(state, &info);
     nxdn_vcall_assgn_adjust_duplicate(opts, state, now, &info);
     nxdn_vcall_assgn_track_active_channel(opts, state, &info);
-    if (nxdn_vcall_assgn_should_tune(opts, &info)) {
+    if (nxdn_vcall_assgn_should_tune(opts, &info)
+        && nxdn_enc_skip_matches(opts, state, info.call_type, info.source_unit_id, info.destination_id,
+                                 dsd_decode_now_mono_s())) {
+        DSD_FPRINTF(stderr, " Encrypted call skipped;");
+    } else if (nxdn_vcall_assgn_should_tune(opts, &info)) {
         const long int freq = nxdn_vcall_assgn_frequency(opts, state, &info);
         nxdn_anchor_control_channel_from_current_tuner(opts, state, 1);
         nxdn_vcall_assgn_apply_tune(opts, state, &info, freq, now);
@@ -3283,15 +3319,14 @@ nxdn_vcall_apply_state(dsd_state* state, const struct nxdn_vcall_info* info) {
 /* Suppress the corroborated encrypted call @p info names, without a usable key. A group or individual call's endpoint
  * takes the session-long lockout entry (nxdn_call_type_locks_endpoint()). Any other call's (an interconnect or speed
  * dial call's PSTN ID or gateway radio, or a generic voice call's unclassed target) takes none: the call alone is
- * skipped, by the call skip ledger's short fallback skip (dsd_tg_policy_call_skip_arm(), DSD_TG_CALL_SKIP_QUIET_S from
- * its last corroborated VCALL), so the disconnect that follows is not undone by the next assignment of the same call. */
+ * skipped (nxdn_enc_skip_note(), DSD_TG_CALL_SKIP_QUIET_S from its last corroborated VCALL), so the disconnect that
+ * follows is not undone by the next assignment of the same call. */
 static void
 nxdn_vcall_suppress_encrypted_call(dsd_opts* opts, dsd_state* state, const struct nxdn_vcall_info* info) {
     char note[128];
     if (!nxdn_call_type_locks_endpoint(info->call_type)) {
-        const double now_m = dsd_decode_now_mono_s();
-        const int skipped = dsd_tg_policy_call_skip_active(state, info->destination_id, now_m);
-        if (dsd_tg_policy_call_skip_arm(state, info->destination_id, info->source_unit_id, 1, now_m) == 0 && !skipped) {
+        if (nxdn_enc_skip_note(state, info->call_type, info->source_unit_id, info->destination_id,
+                               dsd_decode_now_mono_s())) {
             DSD_SNPRINTF(note, sizeof note, "Target: %d; encrypted call skipped; Encryption Lock Out Enabled.",
                          info->destination_id);
             dsd_event_note_current_call(opts, state, 0U, note);

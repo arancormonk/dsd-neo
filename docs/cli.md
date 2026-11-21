@@ -2721,8 +2721,8 @@ channel is delayed.
     ledger including the copies parked by trunk scan. DMR and NXDN lockouts share the same session ledger instead of
     writing "ENC LO" rows into the group list. An encrypted NXDN interconnect or speed dial call (and a Type-D session
     call) is dropped the same way but locks nothing out for the session, since its far end is a phone line or the
-    gateway: it is skipped as a call skip that lasts 15 s from its last encrypted VCALL, so the receiver does not go
-    straight back to it. While `--enc-follow` is active the ledger is suspended rather than
+    gateway: that one call (its call type, caller and called number) is not followed again for 15 s from its last
+    encrypted VCALL, so the receiver does not go straight back to it; other calls to or from either number are. While `--enc-follow` is active the ledger is suspended rather than
     erased, so toggling back to `--enc-lockout` does not owe a fresh probe per target.
   - A locked P25 supergroup stays locked for the whole patch: its member talkgroups are not locked themselves, but
     they do not readmit the supergroup's grants.
