@@ -46,6 +46,7 @@
 #include <time.h>
 #include "../p25_cc_update.h"
 #include "../p25_extended_function.h"
+#include "../p25_heard_tg.h"
 #include "../p25_search_site.h"
 #include "../p25_trunk_sm_internal.h"
 #include "../p25_unit_activity.h"
@@ -130,6 +131,25 @@ p25p2_vpdu_publish_activityf(dsd_state* state, uint8_t index, dsd_call_kind kind
     };
     (void)dsd_recent_activity_publish(state, index, &observation, notice, 0U);
 }
+
+typedef struct {
+    dsd_opts* opts;
+    dsd_state* state;
+    int type;
+    p25_mac_pdu_type pdu_type;
+    unsigned long long int* mac;
+    struct p25p2_mac_result* mac_res;
+    int len_a;
+    int len_b;
+    int len_c;
+    int slot;
+    int skip_rest;
+    int end_pdu;
+    int iter_idx;
+    int crc_ok; /* 0: a MAC_SIGNAL -F let through with a failed CRC (process_MAC_VPDU_crc()) */
+    /* 1: one Phase 1 TSBK in MAC form; process_MAC_VPDU_bridged_p1() alone sets it. */
+    int bridged_p1;
+} p25p2_vpdu_ctx;
 
 static int
 p25p2_vpdu_voice_protocol(const dsd_state* state) {
@@ -259,19 +279,25 @@ p25p2_vpdu_note_voice_user(const dsd_opts* opts, dsd_state* state, int slot, dsd
                               crc_ok ? (uint8_t)P25_SM_IDENTITY_CHECKED_ALL : 0U, home_only);
 }
 
-/* A voice user observes the slot's canonical call itself; @p crc_ok is its MAC's CRC verdict, the provenance of the
- * identity it names (spec 2.19, p25_sm_note_call_identity()). @p source is the message's working source address, a
+/* A voice user observes the slot's canonical call itself; the MAC's CRC verdict (@p ctx crc_ok) is the provenance of
+ * the identity it names (spec 2.19, p25_sm_note_call_identity()). @p source is the message's working source address, a
  * local address in the extended forms too. @p home is an extended form's Source SUID (NULL for the other forms): the
  * radio's home identity, recorded on the call for display and alias matching only (an L3Harris site sends Source
- * Address 0 for a roaming radio, dsd_call_state_format_home_source()), never a local radio ID (issue #800). */
+ * Address 0 for a roaming radio, dsd_call_state_format_home_source()), never a local radio ID (issue #800). A
+ * CRC-passed group voice user that observed the call waits for the transmission's traffic to prove its group (issue
+ * #903, p25p2_heard_tg_voice_user()), a supergroup when it is a regroup voice user (@p regroup 1): the message's own
+ * evidence, taken before its handler updates the patch table. Tracking-only returns (IDLE, HANGTIME, a repeat of a
+ * recent end) prove nothing. */
 static int
-p25p2_vpdu_observe_voice(dsd_opts* opts, dsd_state* state, int slot, dsd_call_kind kind, uint64_t target,
-                         uint64_t source, const dsd_call_source_home* home, int service_options,
-                         p25_mac_pdu_type pdu_type, int crc_ok) {
+p25p2_vpdu_observe_voice(const p25p2_vpdu_ctx* ctx, int slot, dsd_call_kind kind, uint64_t target, uint64_t source,
+                         const dsd_call_source_home* home, int service_options, int regroup) {
+    dsd_opts* opts = ctx->opts;
+    dsd_state* state = ctx->state;
+    const int crc_ok = ctx->crc_ok;
     if (!p25p2_vpdu_voice_observable(opts, state, slot, kind, target)) {
         return 0;
     }
-    if (!p25p2_vpdu_pdu_type_is_live_voice(pdu_type)) {
+    if (!p25p2_vpdu_pdu_type_is_live_voice(ctx->pdu_type)) {
         // Track the slot -- the caller's liveness timer and service options,
         // and the crypto classification below -- but do not begin or continue
         // a canonical epoch. Resurrecting the ended call here is what minted
@@ -303,6 +329,10 @@ p25p2_vpdu_observe_voice(dsd_opts* opts, dsd_state* state, int slot, dsd_call_ki
     const int began = dsd_call_state_observe(state, &observation, DSD_CALL_BOUNDARY_CONTINUE);
     if (began >= 0) {
         p25p2_vpdu_note_voice_user(opts, state, slot, kind, target, source, home, crc_ok);
+    }
+    if (began >= 0 && crc_ok && kind == DSD_CALL_KIND_GROUP_VOICE) {
+        /* Its traffic proves the group (issue #903); the regroup evidence is the message's own. */
+        p25p2_heard_tg_voice_user(state, (uint8_t)slot, (uint32_t)target, regroup);
     }
     const int encrypted_probe = p25p2_vpdu_is_encrypted_probe(opts, service_options);
     if (began > 0) {
@@ -512,25 +542,6 @@ p25p2_emit_mac_json_if_enabled(const dsd_state* state, int xch_type, uint8_t mfi
                 "\"lenB\":%d,\"lenC\":%d,\"summary\":\"%s\"}\n",
                 (long)ts, xch, (unsigned)mfid, (unsigned)opcode, slot, slot + 1, len_b, len_c, sum);
 }
-
-typedef struct {
-    dsd_opts* opts;
-    dsd_state* state;
-    int type;
-    p25_mac_pdu_type pdu_type;
-    unsigned long long int* mac;
-    struct p25p2_mac_result* mac_res;
-    int len_a;
-    int len_b;
-    int len_c;
-    int slot;
-    int skip_rest;
-    int end_pdu;
-    int iter_idx;
-    int crc_ok; /* 0: a MAC_SIGNAL -F let through with a failed CRC (process_MAC_VPDU_crc()) */
-    /* 1: one Phase 1 TSBK in MAC form; process_MAC_VPDU_bridged_p1() alone sets it. */
-    int bridged_p1;
-} p25p2_vpdu_ctx;
 
 enum {
     /* L3Harris GPS (`AA A4 11`): opcode/MCO, MFID and length octets, then the body. The legacy form adds a leading
@@ -3214,9 +3225,8 @@ p25p2_vpdu_iter_block_35(p25p2_vpdu_ctx* ctx) {
         DSD_FPRINTF(stderr, "\n VCH %d - Super Group %d SRC %d ", slot + 1, gr, src);
         p25p2_vpdu_print_svc_with_slot_state(opts, state, slot, svc, /*set_packet_bit*/ 0);
         DSD_FPRINTF(stderr, "MFID90 Group Regroup Voice");
-        const int tracked_voice =
-            p25p2_vpdu_observe_voice(opts, state, slot, DSD_CALL_KIND_GROUP_VOICE, (uint64_t)(uint32_t)gr,
-                                     (uint64_t)(uint32_t)src, NULL, svc, ctx->pdu_type, ctx->crc_ok);
+        const int tracked_voice = p25p2_vpdu_observe_voice(ctx, slot, DSD_CALL_KIND_GROUP_VOICE, (uint64_t)(uint32_t)gr,
+                                                           (uint64_t)(uint32_t)src, NULL, svc, /*regroup*/ 1);
         if (tracked_voice) {
             p25p2_vpdu_store_slot_svc(state, slot, svc);
         }
@@ -3263,9 +3273,8 @@ p25p2_vpdu_iter_block_36(p25p2_vpdu_ctx* ctx) {
         DSD_FPRINTF(stderr, "\n VCH %d - Super Group %d SRC %d ", slot + 1, gr, src);
         p25p2_vpdu_print_svc_with_slot_state(opts, state, slot, svc, /*set_packet_bit*/ 0);
         DSD_FPRINTF(stderr, "MFID90 Group Regroup Voice");
-        const int tracked_voice =
-            p25p2_vpdu_observe_voice(opts, state, slot, DSD_CALL_KIND_GROUP_VOICE, (uint64_t)(uint32_t)gr,
-                                     (uint64_t)(uint32_t)src, NULL, svc, ctx->pdu_type, ctx->crc_ok);
+        const int tracked_voice = p25p2_vpdu_observe_voice(ctx, slot, DSD_CALL_KIND_GROUP_VOICE, (uint64_t)(uint32_t)gr,
+                                                           (uint64_t)(uint32_t)src, NULL, svc, /*regroup*/ 1);
         if (tracked_voice) {
             p25p2_vpdu_store_slot_svc(state, slot, svc);
         }
@@ -3784,9 +3793,8 @@ p25p2_vpdu_iter_block_45(p25p2_vpdu_ctx* ctx) {
 
         p25p2_vpdu_print_svc_with_slot_state(opts, state, slot_idx, svc, /*set_packet_bit*/ 0);
         DSD_FPRINTF(stderr, " Group Voice");
-        const int tracked_voice =
-            p25p2_vpdu_observe_voice(opts, state, slot, DSD_CALL_KIND_GROUP_VOICE, (uint64_t)(uint32_t)gr,
-                                     (uint64_t)(uint32_t)src, &home, svc, ctx->pdu_type, ctx->crc_ok);
+        const int tracked_voice = p25p2_vpdu_observe_voice(ctx, slot, DSD_CALL_KIND_GROUP_VOICE, (uint64_t)(uint32_t)gr,
+                                                           (uint64_t)(uint32_t)src, &home, svc, /*regroup*/ 0);
         if (tracked_voice) {
             state->p25_p2_last_mac_active[slot] = dsd_decode_time();
             p25p2_vpdu_store_slot_svc(state, slot, svc);
@@ -3840,8 +3848,8 @@ p25p2_vpdu_iter_block_46(p25p2_vpdu_ctx* ctx) {
         p25p2_vpdu_print_svc_no_state(opts, svc);
         DSD_FPRINTF(stderr, " Unit to Unit Voice");
         const int tracked_voice =
-            p25p2_vpdu_observe_voice(opts, state, slot, DSD_CALL_KIND_PRIVATE_VOICE, (uint64_t)(uint32_t)gr,
-                                     (uint64_t)(uint32_t)src, &home, svc, ctx->pdu_type, ctx->crc_ok);
+            p25p2_vpdu_observe_voice(ctx, slot, DSD_CALL_KIND_PRIVATE_VOICE, (uint64_t)(uint32_t)gr,
+                                     (uint64_t)(uint32_t)src, &home, svc, /*regroup*/ 0);
         if (tracked_voice) {
             state->p25_p2_last_mac_active[slot] = dsd_decode_time();
             p25p2_vpdu_store_slot_svc(state, slot, svc);
@@ -4862,8 +4870,8 @@ p25p2_vpdu_handle_telephone_interconnect_voice_user(p25p2_vpdu_ctx* ctx) {
     DSD_FPRINTF(stderr, "\n Telephone Interconnect Voice Channel User");
     DSD_FPRINTF(stderr, "\n  SVC [%02X] Target [%d] Timer [%0.1fs]", svc, target, (double)timer / 10.0);
     p25p2_vpdu_print_svc_with_slot_state(ctx->opts, state, slot_idx, svc, /*set_packet_bit*/ 0);
-    if (p25p2_vpdu_observe_voice(ctx->opts, state, slot_idx, DSD_CALL_KIND_PRIVATE_VOICE, (uint64_t)(uint32_t)target,
-                                 0U, NULL, svc, ctx->pdu_type, ctx->crc_ok)) {
+    if (p25p2_vpdu_observe_voice(ctx, slot_idx, DSD_CALL_KIND_PRIVATE_VOICE, (uint64_t)(uint32_t)target, 0U, NULL, svc,
+                                 /*regroup*/ 0)) {
         p25p2_vpdu_store_slot_svc(state, slot_idx, svc);
     }
     p25p2_vpdu_publish_activityf(state, 0U, DSD_CALL_KIND_PRIVATE_VOICE, (uint64_t)target, 0U, 0U, 0, (uint16_t)svc,
@@ -5504,8 +5512,8 @@ p25p2_vpdu_handle_standard_group_regroup_voice_user_abbreviated(p25p2_vpdu_ctx* 
         if (p25p2_vpdu_network_table_writable(ctx, "patch")) {
             p25_patch_update(state, supergroup, /*is_patch*/ 1, /*active*/ 1);
         }
-        if (p25p2_vpdu_observe_voice(ctx->opts, state, slot, DSD_CALL_KIND_GROUP_VOICE, (uint64_t)(uint32_t)supergroup,
-                                     (uint64_t)(uint32_t)source, NULL, -1, ctx->pdu_type, ctx->crc_ok)) {
+        if (p25p2_vpdu_observe_voice(ctx, slot, DSD_CALL_KIND_GROUP_VOICE, (uint64_t)(uint32_t)supergroup,
+                                     (uint64_t)(uint32_t)source, NULL, -1, /*regroup*/ 1)) {
             state->p25_p2_last_mac_active[slot] = dsd_decode_time();
             state->p25_p2_last_mac_active_m[slot] = dsd_decode_now_mono_s();
         }

@@ -2412,7 +2412,8 @@ suite runs under this compiler.
   `--playfiles`): set at the row's first render, ANDed at every render and at the commit, ANDed across a merge, and
   cleared when a proof revises a committed row after the epoch's staged row saw non-live input. All three ride
   `push_event_history()`, `init_event_history()` and the whole-row copies (trunk-scan snapshots, the UI snapshot,
-  `dsd_app_history_tap_copy()`). Producers: TETRA TMO (TETRA Calls, "Verified talkgroup"). Test:
+  `dsd_app_history_tap_copy()`). Producers: TETRA TMO (TETRA Calls, "Verified talkgroup"), P25 Phase 1 and Phase 2
+  (Protocols, "P25 verified talkgroup"). Test:
   `CORE_HEARD_TALKGROUP` (its build counts classifier runs through `dsd_heard_tg_test_eval_count()`).
 - API note (call history rows, issue #575): every `Event_History` row records the frequency its call was heard on
   (`freq_hz`, Hz, 0 unknown) and its access code (`access_code_kind`, a `dsd_access_code_kind`, and `access_code`; zero
@@ -13993,6 +13994,20 @@ Private per-protocol modules worth knowing about:
   that release is never received, so that call keeps whatever name its row had. The fast release is kept (maintainer
   decision): it returns the tuner to the control channel early, and an alias sent before the second END, or on a
   channel the fast release does not close, still names the call (see the Motorola alias invariant under Core).
+- P25 verified talkgroup (issue #903, `src/protocol/p25/p25_heard_tg.{c,h}`). The proof comes from the voice
+  channel's own checked message for the transmission, never from a TSBK/MBT grant or the SM's `identity_checked`
+  verdicts (an addressless start inherits those from the assignment). Phase 1: an LDU1 group voice-user link control
+  (LCO $00, Motorola LCGRGR) whose start the SM accepted, recovered by a hard RS decode (`p25_lcw_ctx::lc_hard`; a
+  soft-erasure retry and a TDULC never prove), trunked or conventional (`p25_lcw_accept_group_voice_user()`). Phase 2:
+  a CRC-passed MAC_PTT naming a non-zero group (`p25p2_xcch_emit_ptt()` → `p25p2_heard_tg_ptt()`), or a CRC-passed
+  live group voice user (`p25p2_vpdu_observe_voice()` → `p25p2_heard_tg_voice_user()`), which only waits on its call
+  (`dsd_state::p25_p2_heard_vu_epoch` and its group) until a 4V/2V burst of that same epoch on the slot proves it
+  (`p25p2_emit_voice_activity()` → `p25p2_heard_tg_traffic()`, a field check while nothing waits): BBAC §7.3.1 sends
+  voice users for setups that fail. Tracking-only returns (IDLE, HANGTIME, a recent-end repeat) never wait, and an
+  epoch an addressless start reopens after a clean END is another epoch. Supergroup evidence is the message's own (a
+  regroup voice user: LCGRGR, MFID 0x90 regroup, standard group regroup; passed into the observer before its handler
+  updates the patch table) or an active patch entry naming the group when the proof is noted, frozen there with it.
+  Test: `P25_HEARD_TALKGROUP`.
 - P25 identity provenance (`p25_trunk_sm.c`, `<dsd-neo/protocol/p25/p25_trunk_sm.h>`, issue #800). Each slot's
   assignment and each `p25_sm_event_t` carry `identity_checked`: `P25_SM_IDENTITY_CHECKED_SOURCE`, `_TARGET` and
   `_KIND` (group or private), set only from the check the producer ran on the message (a grant's or MAC message's own

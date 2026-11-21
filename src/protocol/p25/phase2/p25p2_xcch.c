@@ -28,6 +28,7 @@
 #include <limits.h>
 #include <stdint.h>
 #include <stdio.h>
+#include "../p25_heard_tg.h"
 #include "../p25_trunk_sm_internal.h"
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/safe_api.h"
@@ -209,17 +210,23 @@ p25p2_xcch_emit_active(dsd_opts* opts, dsd_state* state, int type, int slot, con
     return p25_sm_emit_active(opts, state, slot);
 }
 
-/* MAC_PTT: the group address field and the source, with the raw octets that coalesce SACCH/FACCH retransmissions. */
+/* MAC_PTT: the group address field and the source, with the raw octets that coalesce SACCH/FACCH retransmissions. The
+ * call it started or continued is the slot's own transmission, whose group it proves (issue #903); group address 0
+ * names an individual call (TIA-102.BBAC §7.3.1). */
 static int
 p25p2_xcch_emit_ptt(dsd_opts* opts, dsd_state* state, uint8_t slot, const unsigned long long int mac[24],
                     double observed_m, int facch) {
-    p25_sm_event_t ev = p25_sm_ev_ptt_call(slot, p25p2_xcch_tg_from_mac(mac), 0, (int)p25p2_xcch_src_from_mac(mac), 1,
-                                           P25_SM_SVC_UNKNOWN);
+    const int tg = p25p2_xcch_tg_from_mac(mac);
+    p25_sm_event_t ev = p25_sm_ev_ptt_call(slot, tg, 0, (int)p25p2_xcch_src_from_mac(mac), 1, P25_SM_SVC_UNKNOWN);
     p25p2_xcch_ptt_signature(mac, ev.ptt_signature);
     ev.ptt_signature_valid = observed_m > 0.0 ? 1 : 0;
     ev.observed_m = observed_m;
     ev.facch = facch ? 1 : 0;
-    return p25p2_xcch_emit_checked_voice_start(opts, state, &ev);
+    const int accepted = p25p2_xcch_emit_checked_voice_start(opts, state, &ev);
+    if (accepted && tg > 0) {
+        p25p2_heard_tg_ptt(state, slot, (uint32_t)tg);
+    }
+    return accepted;
 }
 
 static void

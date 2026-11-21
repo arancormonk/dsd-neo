@@ -2503,6 +2503,13 @@ struct dsd_state {
     double p25_p2_last_mac_active_m[2];
     // P25p2 recent MAC_END_PTT timestamps per slot (transmission boundaries)
     time_t p25_p2_last_end_ptt[2];
+    /* Per slot: the group a CRC-passed P25 Phase 2 group voice-user message named for the slot's ACTIVE call, waiting
+       for traffic of that call to prove it (issue #903, p25_heard_tg.c): the call's epoch (0 for none; a reacquired or
+       reopened call is another epoch and waits for its own voice user), the group, and 1 when the message itself named
+       a supergroup (a regroup voice user). Decoder-thread private. */
+    uint64_t p25_p2_heard_vu_epoch[2];
+    uint32_t p25_p2_heard_vu_group[2];
+    uint8_t p25_p2_heard_vu_regroup[2];
     // P25p1 recent TDU/TDULC transmission-boundary timestamp
     double p25_p1_last_tdu_m;
     /* The P25 Phase 1 call the last terminator (a TDU or TDULC) ended (p25p1_terminator_note_end()), 0 for none, and

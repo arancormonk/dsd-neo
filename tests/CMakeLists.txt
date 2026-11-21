@@ -14096,6 +14096,46 @@ add_test(
     COMMAND dsd-neo_test_p25_voice_resume_identity
 )
 
+# P25 producers of the verified talkgroup proof (issue #903). heard_talkgroup.c is built with the hooks on, ahead of
+# the library's, to count the classifier's runs.
+add_executable(
+    dsd-neo_test_p25_heard_talkgroup
+    protocol/p25/test_p25_heard_talkgroup.c
+    ${PROJECT_SOURCE_DIR}/src/core/util/heard_talkgroup.c
+)
+target_include_directories(
+    dsd-neo_test_p25_heard_talkgroup
+    PRIVATE ${PROJECT_SOURCE_DIR}/include
+)
+target_compile_definitions(
+    dsd-neo_test_p25_heard_talkgroup
+    PRIVATE DSD_NEO_TEST_HOOKS
+)
+# Real XCCH processing also reaches VPDU/core GPS and its proto_dmr text decoder; the real vocoder a 2V burst reaches
+# calls the NXDN scrambler.
+if(NOT APPLE AND (CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang"))
+    target_link_libraries(
+        dsd-neo_test_p25_heard_talkgroup
+        PRIVATE
+            "-Wl,--start-group"
+            dsd-neo_proto_p25
+            dsd-neo_proto_dmr
+            dsd-neo_proto_nxdn
+            dsd-neo_core
+            "-Wl,--end-group"
+    )
+else()
+    target_link_libraries(
+        dsd-neo_test_p25_heard_talkgroup
+        PRIVATE
+            dsd-neo_proto_p25
+            dsd-neo_proto_dmr
+            dsd-neo_proto_nxdn
+            dsd-neo_core
+    )
+endif()
+add_test(NAME P25_HEARD_TALKGROUP COMMAND dsd-neo_test_p25_heard_talkgroup)
+
 # DMR Tier III trunk SM tests (with local stubs; safe to enable by default)
 # M17 protocol tests
 add_executable(
