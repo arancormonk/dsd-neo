@@ -13645,16 +13645,19 @@ y_tetra_published(int ted_sps, int override) {
     g_rtl_ted_sps_override = override;
 }
 
-/* @p cause 0: a TED override of 5 samples per symbol at the 72 kHz rate; 1: the rate moved to 48 kHz. */
+/* How many times @p needle occurs in @p text. */
 static int
-y_tetra_on_air_case(int held, int cause) {
-    const char* what = cause == 0 ? (held ? "held -Y TETRA row, a TED override" : "-Y TETRA row, a TED override")
-                                  : (held ? "held -Y TETRA row, the rate moved" : "-Y TETRA row, the rate moved");
-    dsd_opts* opts = NULL;
-    dsd_state* state = NULL;
-    if (init_test_runtime(&opts, &state) != 0) {
-        return 1;
+y_count_text(const char* text, const char* needle) {
+    int n = 0;
+    for (const char* p = strstr(text, needle); p != NULL; p = strstr(p + 1, needle)) {
+        n++;
     }
+    return n;
+}
+
+/* A typed -Y list (DMR, TETRA DMO, DMR) on the fake 72 kHz radio, stepped onto its TETRA row: 0 when it is on air. */
+static int
+y_tetra_start(dsd_opts* opts, dsd_state* state, const char* what) {
     int rc = 0;
     reset_rtl_profile_fakes();
     dsd_trunk_tuning_requests_reset();
@@ -13685,6 +13688,30 @@ y_tetra_on_air_case(int held, int cause) {
     rc |= expect_case(what, "on the TETRA row",
                       state->scan_row_index == 1 && opts->frame_tetra == 1
                           && dsd_engine_channel_scan_on_air_row(state) == 1);
+    return rc;
+}
+
+static void
+y_tetra_finish(dsd_opts* opts, dsd_state* state) {
+    dsd_engine_channel_scan_leave(opts, state);
+    dsd_rtl_stream_metrics_hooks_set(NULL);
+    state->rtl_ctx = NULL;
+    free_test_runtime(opts, state);
+    dsd_trunk_tuning_requests_reset();
+    reset_rtl_profile_fakes();
+}
+
+/* @p cause 0: a TED override of 5 samples per symbol at the 72 kHz rate; 1: the rate moved to 48 kHz. */
+static int
+y_tetra_on_air_case(int held, int cause) {
+    const char* what = cause == 0 ? (held ? "held -Y TETRA row, a TED override" : "-Y TETRA row, a TED override")
+                                  : (held ? "held -Y TETRA row, the rate moved" : "-Y TETRA row, the rate moved");
+    dsd_opts* opts = NULL;
+    dsd_state* state = NULL;
+    if (init_test_runtime(&opts, &state) != 0) {
+        return 1;
+    }
+    int rc = y_tetra_start(opts, state, what);
     /* What the stream applied for the landing is what it is judged by: a TED of 5 at 72 kHz owes the departure, the
        rate's own 4 does not (the fake stream's own timing for the row is replaced on both sides). */
     y_tetra_published(5, 0);
@@ -13716,12 +13743,116 @@ y_tetra_on_air_case(int held, int cause) {
                           && opts->frame_tetra == 0 && !dsd_engine_channel_scan_on_departing_row(state));
     rc |= expect_case(what, "the hold is as it was", state->lcn_scan_hold == (uint8_t)held);
     rc |= expect_case(what, "row 2's carrier decodes through", carrier_frames(opts, state, 20) == 21);
-    dsd_engine_channel_scan_leave(opts, state);
-    dsd_rtl_stream_metrics_hooks_set(NULL);
-    state->rtl_ctx = NULL;
-    free_test_runtime(opts, state);
-    dsd_trunk_tuning_requests_reset();
-    reset_rtl_profile_fakes();
+    y_tetra_finish(opts, state);
+    return rc;
+}
+
+/* The departure's step whose tune fails late (a timeout, then FAILED): the receiver stays on the TETRA row with the
+   cause it had, named once (no second log line or status line), and the next try waits the step cadence the step
+   paced, not the next pass. */
+static int
+y_tetra_late_failure_case(void) {
+    const char* what = "-Y TETRA row, a departure that fails late";
+    dsd_opts* opts = NULL;
+    dsd_state* state = NULL;
+    if (init_test_runtime(&opts, &state) != 0) {
+        return 1;
+    }
+    int rc = y_tetra_start(opts, state, what);
+    y_tetra_published(4, 0);
+    dsd_engine_channel_scan_tetra_judge(opts, state);
+    dsd_test_capture_stderr cap;
+    char log[8192] = {0};
+    const int captured = dsd_test_capture_stderr_begin(&cap, "ytetralatefailure") == 0;
+    g_rtl_ted_sps_override = 5;
+    rc |= expect_case(what, "the carrier yields", carrier_frames(opts, state, 20) == 1);
+    g_rtl_tune_result = RTL_STREAM_TUNE_TIMEOUT;
+    state->last_cc_sync_time -= 11;
+    noCarrier(opts, state);
+    const uint64_t request = dsd_trunk_tuning_pending_request();
+    rc |= expect_case(what, "the step waits on its tune", request != 0U && dsd_engine_channel_scan_waiting(state));
+    /* Passes while it waits judge the row too (the frame-sync hook and noCarrier() ask for the departure). */
+    (void)dsd_engine_channel_scan_departure_due(opts, state, dsd_decode_now_mono_s());
+    noCarrier(opts, state);
+    rc |= expect_case(what, "still waiting", dsd_engine_channel_scan_waiting(state));
+    state->ui_msg[0] = '\0';
+    dsd_trunk_tuning_request_publish(request, DSD_TRUNK_TUNE_RESULT_FAILED);
+    (void)dsd_engine_channel_scan_pending(opts, state);
+    g_rtl_tune_result = RTL_STREAM_TUNE_OK;
+    rc |= expect_case(what, "still on the TETRA row, owing its departure",
+                      !dsd_engine_channel_scan_waiting(state) && dsd_engine_channel_scan_on_air_row(state) == 1
+                          && dsd_engine_channel_scan_on_departing_row(state));
+    /* Within the step cadence the departure is not due again, so no pass steps (the failed tune keeps the frame gate
+       closed until a tune lands, as after any failed step). */
+    rc |= expect_case(what, "within the cadence no departure is due",
+                      !dsd_engine_channel_scan_departure_due(opts, state, dsd_decode_now_mono_s()));
+    g_rtl_tune_calls = 0;
+    for (int pass = 0; pass < 3; pass++) {
+        state->last_cc_sync_time -= 11;
+        noCarrier(opts, state);
+    }
+    rc |= expect_case(what, "and no pass retries it", g_rtl_tune_calls == 0);
+    if (captured) {
+        (void)dsd_test_capture_stderr_end(&cap);
+        (void)dsd_test_capture_stderr_read(&cap, log, sizeof log);
+    }
+    if (rc) {
+        DSD_FPRINTF(stderr, "%s", log); /* the failures above went to the capture */
+    }
+    rc |= expect_case(what, "named once",
+                      y_count_text(log, "TETRA DMO needs the TED timed at the DSP rate") == 1
+                          && strstr(state->ui_msg, "Skipped at every visit") == NULL);
+    /* The cadence ran out: the next try goes. */
+    state->lcn_avoid_depart_m -= 60.0;
+    rc |= expect_case(what, "the next departure is due",
+                      dsd_engine_channel_scan_departure_due(opts, state, dsd_decode_now_mono_s()));
+    g_rtl_tune_calls = 0;
+    state->last_cc_sync_time -= 11;
+    noCarrier(opts, state);
+    rc |=
+        expect_case(what, "and lands another row",
+                    g_rtl_tune_calls == 1 && dsd_engine_channel_scan_on_air_row(state) != 1 && opts->frame_tetra == 0);
+    y_tetra_finish(opts, state);
+    return rc;
+}
+
+/* A paused -Y scan on its TETRA row judges nothing: a TED override and a rate change there log nothing and add no
+   status line; the manual session decodes on. */
+static int
+y_tetra_paused_case(void) {
+    const char* what = "-Y TETRA row, paused";
+    dsd_opts* opts = NULL;
+    dsd_state* state = NULL;
+    if (init_test_runtime(&opts, &state) != 0) {
+        return 1;
+    }
+    int rc = y_tetra_start(opts, state, what);
+    y_tetra_published(4, 0);
+    dsd_engine_channel_scan_tetra_judge(opts, state);
+    (void)dsd_engine_channel_scan_pause(opts, state, 1);
+    rc |= expect_case(what, "paused", state->lcn_scan_paused == 1U && opts->scanner_mode == 0);
+    state->ui_msg[0] = '\0';
+    dsd_test_capture_stderr cap;
+    char log[8192] = {0};
+    const int captured = dsd_test_capture_stderr_begin(&cap, "ytetrapaused") == 0;
+    g_rtl_ted_sps_override = 5;
+    dsd_engine_channel_scan_tetra_judge(opts, state);
+    (void)dsd_engine_channel_scan_departure_due(opts, state, dsd_decode_now_mono_s());
+    (void)carrier_frames(opts, state, 5);
+    g_rtl_request_rate_hz = 48000;
+    dsd_engine_channel_scan_tetra_judge(opts, state);
+    (void)dsd_engine_channel_scan_departure_due(opts, state, dsd_decode_now_mono_s());
+    (void)carrier_frames(opts, state, 5);
+    if (captured) {
+        (void)dsd_test_capture_stderr_end(&cap);
+        (void)dsd_test_capture_stderr_read(&cap, log, sizeof log);
+    }
+    if (rc) {
+        DSD_FPRINTF(stderr, "%s", log); /* the failures above went to the capture */
+    }
+    rc |= expect_case(what, "nothing named", strstr(log, "TETRA") == NULL && state->ui_msg[0] == '\0');
+    rc |= expect_case(what, "nothing owed", !dsd_engine_channel_scan_on_departing_row(state));
+    y_tetra_finish(opts, state);
     return rc;
 }
 
@@ -13729,7 +13860,8 @@ static int
 test_avoided_row_departs_under_a_carrier(void) {
     return untyped_departure_case(1) | untyped_departure_case(0) | departure_nowhere_to_go_case()
            | departure_without_a_carrier_case() | typed_departure_case() | y_tetra_on_air_case(0, 0)
-           | y_tetra_on_air_case(1, 0) | y_tetra_on_air_case(0, 1) | y_tetra_on_air_case(1, 1);
+           | y_tetra_on_air_case(1, 0) | y_tetra_on_air_case(0, 1) | y_tetra_on_air_case(1, 1)
+           | y_tetra_late_failure_case() | y_tetra_paused_case();
 }
 
 /* The scan holds row @p row of the walk list, marked an entry hold, as the row committed (issue #644). */

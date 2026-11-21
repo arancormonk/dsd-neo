@@ -1062,8 +1062,12 @@ the CLI/config options live in `docs/trunk-scan.md`; `include/dsd-neo/engine/tru
   (`dsd_engine_channel_scan_row_tetra_reason()`), and the width check names it when the rate changes
   (`channel_scan_warn_row_tetra()`). On air it is judged as the trunk scan's target is
   (`dsd_engine_channel_scan_tetra_judge()`: at its commit, landed, and at every pass that asks
-  `dsd_engine_channel_scan_departure_due()`, a frame boundary's included); a non-waiting cause is kept in the extension
-  (`tetra_skip`, `tetra_skip_row`) and makes the row owe its departure as an avoided row does
+  `dsd_engine_channel_scan_departure_due()`, a frame boundary's included), only while the -Y scan runs (not paused, no
+  trunk scan), by what the stream applied for the row the receiver is on (a step off it that failed leaves it there);
+  while a step of the scan's own is in flight the cause is kept, so a step that fails late leaves the departure paced
+  as the step paced it; a cause is named once per row and cause (`tetra_named_row`, `tetra_named_cause`). A non-waiting
+  cause is kept in the extension (`tetra_skip`, `tetra_skip_row`) and makes the row owe its departure as an avoided row
+  does
   (`dsd_engine_channel_scan_on_departing_row()`, which `dsd_engine_channel_scan_hold_keeps_row()`, the departure, the
   step's pacing, the frame-boundary step and the quiet check read): it leaves at once (`lcn_avoid_depart_m` cleared)
   for another row (`dsd_engine_channel_scan_has_other_row()`), under its carrier and an operator hold, which stays. The

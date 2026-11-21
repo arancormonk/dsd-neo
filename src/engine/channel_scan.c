@@ -158,6 +158,10 @@ typedef struct {
        an operator hold. A rate the reopening radio has not published yet sends nothing away. */
     int tetra_skip;
     int tetra_skip_row;
+    /* The row and cause last named in the log and on the status line, so a step off it that fails late, or a later
+       visit with the same cause, names nothing again; a judgement that finds its chain running forgets it (-1 none). */
+    int tetra_named_row;
+    int tetra_named_cause;
 } channel_scan;
 
 static void
@@ -194,6 +198,7 @@ channel_scan_obtain(dsd_state* state) {
         return NULL;
     }
     scan->committed_row = -1;
+    scan->tetra_named_row = -1;
     scan->session = dsd_scan_row_edit_new_session();
     (void)dsd_state_ext_set(state, DSD_STATE_EXT_ENGINE_CHANNEL_SCAN, scan, channel_scan_free);
     return scan;
@@ -1107,30 +1112,30 @@ dsd_engine_channel_scan_hold_keeps_row(const dsd_state* state) {
     return state && state->lcn_scan_hold && !dsd_engine_channel_scan_on_departing_row(state);
 }
 
-void
-dsd_engine_channel_scan_tetra_judge(const dsd_opts* opts, dsd_state* state) {
+/* The running -Y scan whose list has a tetra-dmo row, and with no step of its own in flight (issue #890 D5), or NULL: a
+   paused scan (the extension kept) and a trunk scan's leave the row alone, and a step decides first (its landing judges
+   the row it lands on, and a failure, late or not, leaves the receiver on this one with the cause it had, whose
+   departure keeps its pacing). */
+static channel_scan*
+channel_scan_tetra_judging(const dsd_opts* opts, const dsd_state* state) {
     channel_scan* scan = state ? channel_scan_get(state) : NULL;
-    if (!opts || !scan || !scan->has_tetra_rows) {
-        return;
-    }
-    const int row = channel_scan_on_air_row(state);
-    if (row < 0 || row >= state->lcn_freq_count || dsd_channel_mode_get(state, (size_t)row) != DSD_SCAN_MODE_TETRA_DMO
+    if (!opts || !scan || !scan->has_tetra_rows || opts->scanner_mode != 1 || opts->trunk_scan_enabled == 1
         || dsd_engine_channel_scan_waiting(state)) {
-        /* No tetra-dmo row on air, or a step of the scan's own leaving it: its landing judges the next one. */
-        scan->tetra_skip = DSD_ENGINE_TETRA_ROW_OK;
+        return NULL;
+    }
+    return scan;
+}
+
+/* Name the cause @p why the tetra-dmo row @p row cannot run its chain for, once per row and cause, in the log and on
+   the status line. */
+static void
+channel_scan_name_tetra_cause(const dsd_opts* opts, dsd_state* state, channel_scan* scan, int row,
+                              dsd_engine_tetra_row why, int rate_hz) {
+    if (scan->tetra_named_row == row && scan->tetra_named_cause == (int)why) {
         return;
     }
-    const int rate_hz = dsd_engine_scan_dsp_rate_hz(opts, state);
-    const dsd_engine_tetra_row why =
-        dsd_engine_scan_tetra_row_check(opts, state, rate_hz, dsd_engine_channel_scan_row_confirmed(state, row));
-    if ((int)why == scan->tetra_skip && row == scan->tetra_skip_row) {
-        return;
-    }
-    scan->tetra_skip = (int)why;
-    scan->tetra_skip_row = row;
-    if (why == DSD_ENGINE_TETRA_ROW_OK || dsd_engine_scan_tetra_row_waits(why)) {
-        return;
-    }
+    scan->tetra_named_row = row;
+    scan->tetra_named_cause = (int)why;
     char label[64];
     char text[DSD_ENGINE_TETRA_ROW_TEXT_MAX];
     channel_scan_row_label(state, row, label, sizeof label);
@@ -1140,8 +1145,39 @@ dsd_engine_channel_scan_tetra_judge(const dsd_opts* opts, dsd_state* state) {
     dsd_engine_scan_skipped skipped = {0};
     dsd_engine_scan_skipped_add(&skipped, label, text);
     dsd_engine_scan_note_skipped_rows(state, &skipped);
+}
+
+void
+dsd_engine_channel_scan_tetra_judge(const dsd_opts* opts, dsd_state* state) {
+    channel_scan* scan = channel_scan_tetra_judging(opts, state);
+    if (!scan) {
+        return;
+    }
+    const int row = channel_scan_on_air_row(state);
+    if (row < 0 || row >= state->lcn_freq_count
+        || dsd_channel_mode_get(state, (size_t)row) != DSD_SCAN_MODE_TETRA_DMO) {
+        scan->tetra_skip = DSD_ENGINE_TETRA_ROW_OK;
+        return;
+    }
+    /* The receiver is on the row (its landing, or a step off it that failed and left it there): judged by what the
+       stream applied, which dsd_engine_scan_tetra_ted_sps() reads only once the TETRA profile is the published one. */
+    const int rate_hz = dsd_engine_scan_dsp_rate_hz(opts, state);
+    const dsd_engine_tetra_row why = dsd_engine_scan_tetra_row_check(opts, state, rate_hz, 1);
+    if ((int)why == scan->tetra_skip && row == scan->tetra_skip_row) {
+        return;
+    }
+    scan->tetra_skip = (int)why;
+    scan->tetra_skip_row = row;
+    if (why == DSD_ENGINE_TETRA_ROW_OK) {
+        scan->tetra_named_row = scan->tetra_named_row == row ? -1 : scan->tetra_named_row;
+        return;
+    }
+    if (dsd_engine_scan_tetra_row_waits(why)) {
+        return;
+    }
     /* It leaves at once, not at the paced cadence a step off an avoided row moved on (issue #644). */
     state->lcn_avoid_depart_m = 0.0;
+    channel_scan_name_tetra_cause(opts, state, scan, row, why, rate_hz);
 }
 
 /* Why the scan skips -Y row @p row at every visit as a TETRA DMO row (issue #890 D5): a typed tetra-dmo row whose chain

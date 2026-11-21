@@ -248,10 +248,11 @@ int dsd_engine_channel_scan_on_departing_row(const dsd_state* state);
 int dsd_engine_channel_scan_tetra_rows(const dsd_state* state);
 /** Judge the typed tetra-dmo row on air again (issue #890 D5): once its tune landed, against the TED timing the stream
  * applied for it, else prospectively (dsd_engine_scan_tetra_row_check()). A cause other than a rate the radio has not
- * published yet is named once in the log and on the status line and makes the row owe its departure at once
- * (dsd_engine_channel_scan_on_departing_row()). Run at its landing and at every pass that asks for a departure
- * (dsd_engine_channel_scan_departure_due()); a few loads, and nothing without a list that has a tetra-dmo row.
- * Decoder thread. */
+ * published yet makes the row owe its departure at once (dsd_engine_channel_scan_on_departing_row()), and is named in
+ * the log and on the status line once per row and cause. Run at its landing and at every pass that asks for a
+ * departure (dsd_engine_channel_scan_departure_due()), only while the -Y scan runs (not paused, no trunk scan); while
+ * a step of the scan's own is in flight it keeps the cause, so a step that fails late leaves the departure paced as it
+ * was. A few loads, and nothing without a list that has a tetra-dmo row. Decoder thread. */
 void dsd_engine_channel_scan_tetra_judge(const dsd_opts* opts, dsd_state* state);
 /** Whether the operator hold (dsd_state::lcn_scan_hold, `Y`) keeps the -Y scan on the row on air: held, and the row is
  * not one the operator avoided (issue #644) nor a tetra-dmo row whose chain cannot run on air (issue #890,
