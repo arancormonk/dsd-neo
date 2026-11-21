@@ -16163,7 +16163,8 @@ Qt Quick frontend (`src/ui/qt`):
   `SavedSystemsControls.holdsParts`) it stays visible and is held instead, part by part as a held row is: transparent,
   out of the tree and unnamed, disabled (no Tab stop, and a tap reaches what is under it: the field under the ×), and
   with no height where a column lays it out (a plain slot `Item` takes the height, so the text keeps its own and no
-  binding loop forms). A row's next card showed or hid ~140 such parts per sort at 300 cards, each a show or hide that
+  binding loop forms; a `Column` skips a child of no height, its spacing with it, so a card is as tall with a screen
+  reader as without, `tst_home_compact_cards.qml` `test_screen_reader_keeps_the_card_height`). A row's next card showed or hid ~140 such parts per sort at 300 cards, each a show or hide that
   had Qt 6.11.3's Android bridge fetch the scroll body, with every card under it, again: TalkBack was silent 73-109 s
   after each sort on the emulator. Nothing a positional change raises then tells Android its copy of the tree is
   stale (renames, held rows and held parts raise no show or hide), and TalkBack read a row's last card, and its focus,
@@ -17725,12 +17726,11 @@ Qt Quick frontend (`src/ui/qt`):
   in any tier: `labelCandidate(t)` (`t < 4 && !compactView`) is the one rule that the budget's label part, the label,
   the 1 px `labelSpacer` standing in for it and where `recentCallsPanel` starts all follow (`labelShown`); the list
   keeps its accessible name. Tiers 2 to 4 then have the same call space (moving the strip into the list header costs
-  what it frees), so compact view lands on 2, 4 or 5. The hero, strip, actions and Stop keep their sizes; the rows
-  take the compact form. `callRowHeight` is the shared `LineBoxes.callRowHeight(compactView, narrow)`, with `narrow`
-  from `LineBoxes.callRowNarrow()` at the rows' width and `rowTimeProbe`, the widest ages a row shows (`now`, `59m`,
-  `23h`, `999d`; "Call rows" below), and the delegates and `FollowLatest.rowHeight` take the same density and
-  height. On a 360 dp phone at text 1.6 the rows take the narrow form (about 119 px against 87 wide), which the tier
-  search counts (decided limit: fewer rows at very large text, and a name that stays readable). A change of density
+  what it frees), so compact view lands on 2, 4 or 5, always with the compact hero; the strip, actions and Stop keep
+  their sizes and the rows take the compact form. `callRowHeight` is the shared `LineBoxes.callRowHeight(compactView)`
+  (fonts and density only, never the rows' width; "Call rows" below), and the delegates and `FollowLatest.rowHeight`
+  take the same density and height. A row too narrow for everything at its right keeps its height and draws fewer
+  extras (B7), so the tier search never pays for a narrow screen with a taller row. A change of density
   restarts the owned 0 ms `listToStart`, which lays the rows out at their new height (`forceLayout()`; without it the
   view was placed against the old heights and left short of the header) and puts the list at its start, header in view,
   the focus left where it is (D11). The header's lines are fixed line boxes (issue #901 B9): the scan target, the scan
@@ -17774,9 +17774,14 @@ Qt Quick frontend (`src/ui/qt`):
   lists and calls on the screen."), under the theme control and its note, spanning the card as the Units row does,
   and the session menu's **Compact view** row (`sessionMenuCompactView`, just before Settings), whose description
   line reads On or Off. That row flips the preference and opens nothing; the menu closes and the session-menu return
-  gives the focus back to Session options, as for every row. Its On/Off must compare equal across the re-runs of
-  `sessionMenu.actions` that each metrics tick makes: as a new function on each run it made the list differ from the
-  last, and every row of the closed menu was rebuilt each tick (`UI_QT_QML_A11Y_CHURN`). The Monitor and Home read
+  gives the focus back to Session options, as for every row. Its On/Off is Main's `compactViewState`, one function
+  made once that the row calls in its own binding (ActionMenu reads a function description there), so
+  `sessionMenu.actions` never reads the preference: a change with the menu closed re-runs nothing and rebuilds no
+  row, and the re-runs each metrics tick makes hand the Repeater the same function, an equal model (a function made
+  inside the list was a new one each run and rebuilt every row of the closed menu each tick; the preference read
+  there rebuilt them on each change). An ActionMenu row's name carries its description only while shown, so a
+  state that changes under the closed menu renames nothing (`UI_QT_QML_A11Y_CHURN`
+  `test_m8_closed_session_menu_ignores_a_density_change`). The Monitor and Home read
   an injected `prefsStore.compactView` first, else `prefs.compactView`; History reads `prefs`. A change puts each list
   it reaches back at its start (D11): the Monitor's calls (above), History's log and Home's Recent activity ("Call
   rows" below), and Listen's Systems and Scan lists tabs ("Listen body layout"). The QML fixture's `prefs` map
@@ -17789,32 +17794,41 @@ Qt Quick frontend (`src/ui/qt`):
   `lineHeight(family, pixelSize, weight)` is the ceiled `implicitHeight` of a hidden plain-text probe reading "Ag返🚒"
   (a Latin ascender and descender, a CJK ideograph and an emoji, each drawn by its own face), one per key
   (`Theme.fontRevision`, family, pixel size, weight, text), made on first use and kept, so a new text size or font
-  mapping measures again; `textWidth()` gives the widest line of a text. Sizes are rounded first (`pixelSizeOf()`): a
+  mapping measures again. The cache only grows, bounded by font revisions × sizes × the one probe text, and a probe
+  is made inside the binding that first reads its box, on purpose: that binding then depends on it. Sizes are rounded
+  first (`pixelSizeOf()`): a
   Text's `font.pixelSize` rounds a fractional size and `Qt.font()` truncates it, and the boxes were a pixel short of
   the lines they hold at text 1.3 and 1.6. A box is read through a property or a `Binding`, never inline in a
   `ReadableText`'s own `height` binding, where the first probe of a size warned of a binding loop (MonitorScreen's
   `otherIdentityBox`). `CallRow`'s name and meta lines are exactly their boxes (`callRowNameBox()`, sans 16
   DemiBold; `callRowMetaBox()`, mono 12), in the fonts `LineBoxes` gives (`callRowNameFont`, `callRowMetaFont`),
-  centred, unclipped. Its `implicitHeight` is `LineBoxes.callRowHeight(compact, narrow)`: name + 3 + meta (+ 3 + the
-  third line when narrow) + twice the padding (12, or 6 when `compact`), at least `Theme.rowHeight` (a compact row at
-  least `Theme.minimumTouchSize`); about 65 px by default and 53 compact at text 1.0. The narrow form (B7):
-  `narrow` is `LineBoxes.callRowNarrow(width, timeProbe)`, true when the widest right side the view can show
-  (EMERGENCY, 8, the play glyph, 8, then ENC or the widest time in `timeProbe`, measured on hidden instances of the
-  real tags) would leave the name less than max(96, 35% of the row). The right side then moves to a third line under
-  the meta line (`callRowClusterBox()`: the meta box, or a tag's height where that is taller), starting where the
-  labels start, and the name and meta take the full width. Width and fonts only, so every row of a view takes the
-  same form and height, the one the Monitor's budget, History's `rowHeight` and `FollowLatest.rowHeight` read
-  (`FollowLatest` keeps `Theme.rowHeight` by default, as Activity and the Map's List use it). `timeProbe` is the
-  Monitor's ages, `00:00` on History and Home, whose rows show HH:mm. The accessible name and description are the same
-  in every form. Decided limit (D10): a rarer script whose glyphs stand taller than the box (Tibetan stacks) is drawn
+  centred, unclipped. A row is always these two lines: its `implicitHeight` is `LineBoxes.callRowHeight(compact)`,
+  name + 3 + meta + twice the padding (12, or 6 when `compact`), at least `Theme.rowHeight` (a compact row at least
+  `Theme.minimumTouchSize`); about 65 px by default and 53 compact at text 1.0. Fonts and density only, never the
+  row's width or call, so every row of a view has the one height the Monitor's budget, History's `rowHeight` and
+  `FollowLatest.rowHeight` read (`FollowLatest` keeps `Theme.rowHeight` by default, as Activity and the Map's List
+  use it). Narrow rows (B7, "keep heights, drop extras", as the Monitor strip and hero): `CallRow.plan` decides what
+  the right side draws from the room beside the labels (the row less 18 + 12 + 18) and the items' own widths. The
+  name first gets min(its natural width, 96), measured with a `TextMetrics` in the row's name font; then EMERGENCY,
+  ENC, the time and the recording glyph, each only while it still fits beside that, the first that does not ending
+  the run, so a lower item is never drawn while a higher one is left out. Left to right the side reads EMERGENCY (8
+  px before the glyph, else 6 before ENC or the time), the glyph (8 px before ENC or the time), then ENC or the time
+  at the 18 px margin; `plan.width` is that side's width and the name and meta lines take the rest and elide. Widths
+  only, never positions, so nothing loops. What is not drawn is still read: the node's name carries "has a
+  recording", and its description the meta line, EMERGENCY (the tag's `label`), ENC and the time, each once, drawn
+  or not. Decided limit: at 280 px (Home's Recent pane) a recorded emergency call drops its glyph at text 1.0 and
+  its time from 1.6; History's emergency rows on a 360 dp phone keep their time up to 1.6. Decided limit (D10): a rarer script whose glyphs stand taller than the box (Tibetan stacks) is drawn
   centred in it and unclipped, into the row's padding; the row keeps its height. History (both instances) and Home's
   Recent activity pass `compact` from the preference; on a change each forgets its kept place (`KeepPlace.forget()`)
-  and an owned 0 ms timer (`logToStart`, `recentToStart`) puts the list at its newest call, so a list hidden through
-  the change comes back there too. Tests: `UI_QT_QML_CALL_LISTS` (`tst_call_row_lines.qml`: Latin, emoji, CJK and
-  Tibetan rows of one height at 1.0/1.6/2.0 in both densities, the compact floor, the 280 px narrow form clear of the
-  lines, one form per view, `test_box_holds_the_drawn_line`, Home's injected density and its reset;
-  `tst_call_log_follow.qml` `test_13_compact_rows`, `test_14_a_density_change_returns_to_the_newest_call`,
-  `test_06i` at 1.6 and 2.0).
+  and an owned 0 ms timer (`logToStart`, `recentToStart`) lays the rows out at their new height (`forceLayout()`, as
+  the Monitor's `listToStart`; without it a log read deep was placed against the old layout and stayed off its top)
+  and puts the list at its newest call, so a list hidden through the change comes back there too. Tests:
+  `UI_QT_QML_CALL_LISTS` (`tst_call_row_lines.qml`: Latin, emoji, CJK and Tibetan rows of one height at 1.0/1.6/2.0
+  in both densities, the compact floor, `test_b7_extras_give_way` and `test_height_follows_neither_width_nor_call`
+  (the plan's minimum, order, priority and containment, one height at 200 to 640 px), the accessible text whatever
+  is drawn, `test_box_holds_the_drawn_line`, Home's injected density and its reset from deep, drawn at the top;
+  `tst_call_log_follow.qml` `test_13_compact_rows`, `test_14_a_density_change_returns_to_the_newest_call` (the day's
+  label and row 0 at the top of the viewport, from deep), `test_06i` at 1.0 to 2.0).
 - Monitor receiver pill (issue #647; brokered hosts only, `qml/MonitorScreen.qml`): the live pill (`monitorLiveStatus`,
   label `monitorLiveLabel`, dot `monitorLiveDot`) reads `LOST` with a `Theme.alert` dot (no halo) as soon as the host's
   `receiverHealth` reports the session's receiver lost or failed (`receiverLost`, read through a `DeviceStatus`), while
