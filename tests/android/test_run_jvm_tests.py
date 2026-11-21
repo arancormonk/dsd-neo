@@ -197,25 +197,48 @@ class CollectorChoice(unittest.TestCase):
         # kotlinc's POSIX launcher splits JAVA_OPTS at every space, so the folder goes in JAVA_TOOL_OPTIONS, quoted.
         _argv, env, _runtime = runner.compile_command(JAVA_EXE, KOTLINC_BAT, None, FILES, OUTPUT,
                                                       {"JAVA_TOOL_OPTIONS": "-Xss1M"}, "/b d")
-        self.assertEqual(runner.jvm_option_words(env["JAVA_TOOL_OPTIONS"]), ["-Xss1M", "-Djava.io.tmpdir=/b d"])
+        self.assertEqual(runner.jvm_option_words(env["JAVA_TOOL_OPTIONS"]),
+                         ["-Xss1M", "-XX:-UsePerfData", "-Djava.io.tmpdir=/b d"])
         _argv, env, _runtime = runner.compile_command(JAVA_EXE, KOTLINC_BAT, None, FILES, OUTPUT, {})
         self.assertNotIn("JAVA_TOOL_OPTIONS", env)
 
-    def test_kotlinc_options_that_undo_the_isolation_are_refused(self):
-        # kotlinc puts JAVA_OPTS on the command line after JAVA_TOOL_OPTIONS: its own temp folder or perf data would win.
-        for words in ("-Xss1M -Djava.io.tmpdir=/tmp/shared", "-XX:+UsePerfData"):
-            with self.subTest(words=words):
-                with self.assertRaises(RuntimeError):
-                    runner.compiler_isolation(JAVA_EXE, KOTLINC_BAT, [], {"JAVA_OPTS": words}, "scratch")
+    def test_kotlinc_runs_the_java_its_launcher_picks(self):
+        self.assertEqual(runner.kotlinc_java({"JAVACMD": "/jdk21/bin/java", "JAVA_HOME": "/jdk17"}, "java"), "/jdk21/bin/java")
+        self.assertEqual(Path(runner.kotlinc_java({"JAVA_HOME": "/jdk17"}, "java")).parent, Path("/jdk17") / "bin")
+        self.assertEqual(runner.kotlinc_java({}, "/usr/bin/java"), "/usr/bin/java")
+
+    def test_the_kotlinc_jvms_get_no_perf_data_through_java_tool_options(self):
+        # The POSIX launcher's own `java -version` reads JAVA_TOOL_OPTIONS but not JAVA_OPTS.
+        _argv, env, _runtime = runner.compile_command(JAVA_EXE, KOTLINC_BAT, None, FILES, OUTPUT, {}, "/b")
+        self.assertIn("-XX:-UsePerfData", runner.jvm_option_words(env["JAVA_TOOL_OPTIONS"]))
 
     def test_isolation_settings_come_from_the_jvm_output(self):
         flags = "     bool UseParallelGC = false {product} {default}\n     bool UsePerfData   = false {product} {command line}\n"
         properties = "Property settings:\n    java.io.tmpdir = /b d/t1\n"
-        self.assertEqual(runner.isolation_settings(flags, properties), ("/b d/t1", False))
-        self.assertEqual(runner.isolation_settings(flags.replace("= false {product} {command", "= true {product} {command"),
-                                                   properties), ("/b d/t1", True))
-        self.assertIsNone(runner.isolation_settings("", properties))
-        self.assertIsNone(runner.isolation_settings(flags, "openjdk version 21\n"))
+        self.assertEqual(runner.isolation_settings(flags + properties), ("/b d/t1", False))
+        # Either stream: -XX:+DisplayVMOutputToStderr puts the flags after the properties, on stderr.
+        self.assertEqual(runner.isolation_settings(properties + flags.replace("= false {product} {command",
+                                                                              "= true {product} {command")),
+                         ("/b d/t1", True))
+        self.assertIsNone(runner.isolation_settings(properties))
+        self.assertIsNone(runner.isolation_settings(flags))
+
+    def test_launch_errors_keep_no_option_values(self):
+        self.assertEqual(runner.launch_error("Error: Could not find or load main class -Dservice.apiKey=s3cr3t"),
+                         "Error: Could not find or load main class -Dservice.apiKey=...")
+        self.assertIsNone(runner.LAUNCH_ERROR.match("    javax.net.ssl.keyStorePassword = s3cr3t"))
+
+    def test_a_relative_option_file_keeps_the_callers_directory(self):
+        # FileListingTest runs in its temp folder, where a relative file the caller's options name would not be found.
+        tmp = Path("scratch")
+        self.assertEqual(runner.test_directory(True, {}, tmp), tmp)
+        self.assertIsNone(runner.test_directory(False, {}, tmp))
+        for name, words in (("JDK_JAVA_OPTIONS", "@vm.args"), ("_JAVA_OPTIONS", "-XX:VMOptionsFile=vm.options"),
+                            ("JAVA_TOOL_OPTIONS", "-XX:Flags=.hotspotrc")):
+            with self.subTest(name=name):
+                self.assertIsNone(runner.test_directory(True, {name: words}, tmp))
+        absolute = str(Path.cwd() / "vm.args")
+        self.assertEqual(runner.test_directory(True, {"JDK_JAVA_OPTIONS": f'"@{absolute}" @@x'}, tmp), tmp)
 
     def test_only_named_tests_run_in_their_temp_folder(self):
         # The others keep the caller's working directory, so relative files the caller's JVM options name resolve.

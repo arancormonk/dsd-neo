@@ -292,11 +292,13 @@ jobs:
           export PATH="$RUNNER_TEMP/gnu-gcc:$PATH"
           gcc --version | head -n 1
           ctest --preset dev-debug -N | tail -n 1
-          # The leftover check runs whatever ctest returned, then the step fails on either.
+          # The leftover check runs whatever ctest returned; the step fails with the ctest status, else the check status.
           ctest_status=0
           ctest --preset dev-debug --parallel 2 --output-on-failure || ctest_status=$?
-          tools/check_test_tmp_leftovers.sh build/dev-debug
-          exit "$ctest_status"
+          check_status=0
+          tools/check_test_tmp_leftovers.sh build/dev-debug || check_status=$?
+          if [ "$ctest_status" -ne 0 ]; then exit "$ctest_status"; fi
+          exit "$check_status"
 
       - name: Show ccache stats
         if: always()

@@ -1877,8 +1877,9 @@ def compile_command(java, kotlinc, cached, files, output, environ, tmpdir=None):
             temp = quote_jvm_word(f"-Djava.io.tmpdir={tmpdir}")
             if temp is None:
                 raise ValueError(f"the compiler's temp folder {tmpdir} holds both quote characters")
+            # With the no-perf flag too: the POSIX launcher first starts `java -version` without JAVA_OPTS.
             given = environ.get("JAVA_TOOL_OPTIONS", "").strip()
-            env["JAVA_TOOL_OPTIONS"] = f"{given} {temp}" if given else temp
+            env["JAVA_TOOL_OPTIONS"] = " ".join(word for word in (given, "-XX:-UsePerfData", temp) if word)
         return argv, env, str(output)
     classpath = os.pathsep.join(map(str, cached))
     temp = [f"-Djava.io.tmpdir={tmpdir}"] if tmpdir is not None else []
@@ -1921,20 +1922,33 @@ def jvm_isolation(java, options, environ, cwd):
     whether it writes shared performance data. _JAVA_OPTIONS comes after the command line, and an options file named
     there can say anything, so only the JVM can tell. Raises RuntimeError, with what the JVM printed, when it does not
     start or does not say."""
-    probe = subprocess.run([java, *options, "-XshowSettings:properties", "-XX:+PrintFlagsFinal", "-version"],
-                           env=environ, cwd=cwd, capture_output=True, text=True, timeout=60)
-    settings = isolation_settings(probe.stdout, probe.stderr) if probe.returncode == 0 else None
+    # -XX:+PerfDisableSharedMem last: the probe itself must not publish performance data, even when the caller turned
+    # UsePerfData on, which it still reports.
+    probe = subprocess.run([java, *options, "-XshowSettings:properties", "-XX:+PrintFlagsFinal", "-XX:+PerfDisableSharedMem",
+                            "-version"], env=environ, cwd=cwd, capture_output=True, text=True, timeout=60)
+    settings = isolation_settings(probe.stdout + probe.stderr) if probe.returncode == 0 else None
     if settings is None:
-        raise RuntimeError(f"{java} {' '.join(options)} did not start or did not report its settings "
-                           f"(exit {probe.returncode}):\n{probe.stderr.strip()}")
+        # Not the options or the JVM's output, which can hold the caller's secrets: only what says why it stopped.
+        reasons = [launch_error(line) for line in probe.stderr.splitlines() if LAUNCH_ERROR.match(line.strip())]
+        raise RuntimeError(f"{java} did not start or did not report its settings (exit {probe.returncode})"
+                           + "".join(f"\n  {reason}" for reason in reasons[:5]))
     return settings
 
 
-def isolation_settings(flags, properties):
-    """(java.io.tmpdir, UsePerfData) from what -XX:+PrintFlagsFinal (@p flags) and -XshowSettings:properties
-    (@p properties) print; None when either is missing."""
-    tmpdir = tmpdir_setting(properties)
-    perf = re.search(r"\bbool\s+UsePerfData\s*=\s*(true|false)\b", flags)
+# The lines a JVM that does not start prints about why.
+LAUNCH_ERROR = re.compile(r"(Error|Unrecognized|Improperly specified|Could not|Invalid|Missing)\b")
+
+
+def launch_error(line):
+    """@p line, a JVM's launch error, without any value it quotes after an '=' (an option's value can be secret)."""
+    return re.sub(r"=\S*", "=...", line.strip())
+
+
+def isolation_settings(output):
+    """(java.io.tmpdir, UsePerfData) from what -XX:+PrintFlagsFinal and -XshowSettings:properties print, on either
+    stream (-XX:+DisplayVMOutputToStderr moves the flags); None when either is missing."""
+    tmpdir = tmpdir_setting(output)
+    perf = re.search(r"\bbool\s+UsePerfData\s*=\s*(true|false)\b", output)
     if tmpdir is None or perf is None:
         return None
     return tmpdir, perf.group(1) == "true"
@@ -1972,7 +1986,10 @@ def run_test(java, runtime, test, directory, in_folder=False):
     fails the run, named, whether the test passed or not, and is removed."""
     jvm_tmp = Path(tempfile.mkdtemp(prefix="t", dir=directory))
     env = temp_environment(os.environ, jvm_tmp)
-    cwd = jvm_tmp if in_folder else None
+    cwd = test_directory(in_folder, env, jvm_tmp)
+    if in_folder and cwd is None:
+        print(f"{test}: runs in the caller's working directory, since the JVM options name a relative file",
+              file=sys.stderr)
     try:
         require_isolation(test, java, [*jvm_options(env), f"-Djava.io.tmpdir={jvm_tmp}"], env, cwd, jvm_tmp)
         failure = None
@@ -1991,14 +2008,49 @@ def run_test(java, runtime, test, directory, in_folder=False):
         raise RuntimeError(f"{test} left files in its temp folder")
 
 
+# The arguments in a JVM-wide option variable that name a file: the launcher's @argfiles and HotSpot's options files.
+JVM_FILE_ARGUMENTS = ("-XX:VMOptionsFile=", "-XX:Flags=")
+
+
+def names_relative_file(environ):
+    """Whether a JVM-wide option variable in @p environ names a file by a relative path, which a JVM started in another
+    working directory would not find."""
+    for name in JVM_WIDE_OPTIONS:
+        for word in jvm_option_words(environ.get(name, "")):
+            prefix = next((p for p in JVM_FILE_ARGUMENTS if word.startswith(p)), None)
+            if prefix is None and word.startswith("@") and not word.startswith("@@"):
+                prefix = "@"
+            if prefix is not None and not Path(word[len(prefix):]).is_absolute():
+                return True
+    return False
+
+
+def test_directory(in_folder, environ, jvm_tmp):
+    """The working directory for a test: its temp folder @p jvm_tmp for one that binds a socket by a relative name
+    (@p in_folder), unless the caller's JVM options name a relative file, which would not be found there; then, as for
+    every other test, the caller's own (None)."""
+    if in_folder and not names_relative_file(environ):
+        return jvm_tmp
+    return None
+
+
+def kotlinc_java(environ, java):
+    """The java the kotlinc launchers start: JAVACMD, else JAVA_HOME's, else @p java (the one on PATH)."""
+    if environ.get("JAVACMD"):
+        return environ["JAVACMD"]
+    home = environ.get("JAVA_HOME")
+    if home:
+        return str(Path(home) / "bin" / ("java.exe" if os.name == "nt" else "java"))
+    return java
+
+
 def compiler_isolation(java, kotlinc, argv, env, directory):
     """Refuse to compile unless the compiler JVM's java.io.tmpdir is @p directory and it writes no shared performance
-    data. kotlinc puts JAVA_OPTS on its java command line, after JAVA_TOOL_OPTIONS, so a setting there would win."""
+    data, as the JVM itself reports them: for kotlinc, the java it starts with JAVA_OPTS on its command line after
+    JAVA_TOOL_OPTIONS."""
     if kotlinc:
         words = java_opts_words(env.get("JAVA_OPTS", ""), kotlinc)
-        if any(word.startswith("-Djava.io.tmpdir=") or word == "-XX:+UsePerfData" for word in words):
-            raise RuntimeError("JAVA_OPTS sets java.io.tmpdir or turns UsePerfData on for kotlinc; unset that")
-        require_isolation("the Kotlin compiler", java, words, env, None, directory)
+        require_isolation("the Kotlin compiler", kotlinc_java(env, java), words, env, None, directory)
     else:
         require_isolation("the Kotlin compiler", java, argv[1:argv.index("-cp")], env, None, directory)
 

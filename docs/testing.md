@@ -4153,11 +4153,14 @@ job that runs it, whether ctest passed or not, and in `tools/preflight_ci.sh`
 (on `build/dev-debug`). It walks `test-tmp` two levels deep in one traversal,
 without following links, fails naming each test whose directory is not empty
 and what it left, and deletes nothing: the files stay for a look until the next
-ctest run. It fails closed: an unreadable directory, a linked `test-tmp` or test
-directory, a stray entry, or a test directory `build/<preset>/test-tmp.names`
-lists but that is missing each fail the check. The pre-test step is written
-into each binary directory that registers tests as well as the top, so
-`ctest --test-dir build/<preset>/tests` starts clean too. Each test also gets
+ctest run. It fails closed: an unreadable directory or test list, a linked
+`test-tmp` or test directory, a stray entry or a directory no test was given,
+or a test directory `build/<preset>/test-tmp.names` lists but that is missing
+each fail the check. The pre-test step is written into each binary directory
+that registers tests, the directories above them and the top, so
+`ctest --test-dir build/<preset>/tests` starts clean too. A build tree whose
+path holds a `"`, a `;` or (off Windows) a `\` cannot carry ctest's pre-test
+command, so configuring one with tests fails. Each test also gets
 `GIT_CEILING_DIRECTORIES` at `test-tmp`, so git run in a test's scratch
 repository never finds the checkout's own repository above it. Run the check
 yourself after a local ctest run:
@@ -4176,14 +4179,18 @@ test a directory of its own as its `java.io.tmpdir` and native temp directory,
 and fails naming anything the test left there, also when the test itself
 failed. Tests run in the caller's working directory, so relative files the
 caller's JVM options name still resolve; only `FileListingTest`, which binds a
-Unix socket by a short relative name, runs in its temp directory. Every JVM
+Unix socket by a short relative name, runs in its temp directory, and not when
+the caller's JVM options name a relative file (its socket case then skips). Every JVM
 runs with `-XX:-UsePerfData`, whose `hsperfdata_<user>` directory would
 otherwise stay in the system temp directory. Before compiling and before each
 test, the runner asks the JVM what it ends up with (`-XshowSettings:properties`
 and `-XX:+PrintFlagsFinal`): `_JAVA_OPTIONS`, or an options file named there,
 can override the command line, and the runner refuses to run when the
-`java.io.tmpdir` is not its own or `UsePerfData` is back on. It also refuses a
-`JAVA_OPTS` for kotlinc that sets either.
+`java.io.tmpdir` is not its own or `UsePerfData` is back on. For kotlinc it asks
+the java the launcher starts (`JAVACMD`, else `JAVA_HOME`'s), with `JAVA_OPTS`
+on its command line. The probe itself writes no performance data
+(`-XX:+PerfDisableSharedMem`), and a probe that fails reports only the JVM's
+launch errors, without option values.
 
 That does not catch a file a test creates by a relative path, which lands in its
 working directory: `build/dev-debug/tests` for most tests, the source tree for
