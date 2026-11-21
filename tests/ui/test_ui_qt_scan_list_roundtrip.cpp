@@ -794,9 +794,7 @@ checkCsvListWithoutUsableTargets(const QTemporaryDir& dir) {
     check(library.validate(list).value("ok").toBool());
 }
 
-/* Whether the engine's target parser takes the issue #890 conventional types (task B1). Until it does, the cases that
-   go through it are skipped with a line saying so; the CSV generation itself is asserted textually in
-   UI_QT_SCAN_LIST_TARGETS. */
+/* Whether the app's target CSV check (the engine's own parser) takes the five issue #890 conventional types. */
 static bool
 engineTakesSimplexTypes(const QTemporaryDir& dir) {
     const QString probe = dir.filePath("simplex-probe.csv");
@@ -917,11 +915,7 @@ checkTetraListRate(const QTemporaryDir& dir) {
           && mixedRate.value("error").toString() == QString::fromUtf8("“p25-48”: ") + refusal
           && host.received.isEmpty());
 
-    if (!engineTakesSimplexTypes(dir)) {
-        std::fprintf(stderr, "SKIP: TETRA DMO list-rate starts and the simplex type round trip need the engine's issue "
-                             "#890 target types (task B1)\n");
-        return;
-    }
+    check(engineTakesSimplexTypes(dir));
     // Default P25 started with a Default TETRA companion: the session runs at 72 kHz; so does explicit 72 with a
     // Default one.
     for (int primaryKhz : {-1, 72}) {

@@ -2529,8 +2529,7 @@ test_simplex_widths_and_labels(const QString& root) {
                               + QStringLiteral(" MHz")});
     }
 
-    // A target CSV's rows by their suffixed types: read by the engine's own target parser, which takes them once it
-    // has the types (task B1); until then the file loads no rows, which is checked as such.
+    // A target CSV's rows by their suffixed types, read by the engine's own target parser.
     const QString targets = QDir(root).filePath(QStringLiteral("simplex-targets.csv"));
     writeFile(targets, "id,type,frequency_hz,chan_csv,dwell_ms,activity_hold_ms,notes,label\n"
                        "p,dpmr-conventional,473100000,,,,,Pmr\n"
@@ -2548,12 +2547,12 @@ test_simplex_widths_and_labels(const QString& root) {
         }
     };
     char error[256] = {};
-    if (dsd_app_trunk_scan_validate_targets_csv(targets.toUtf8().constData(), nullptr, error, sizeof error) != 0) {
-        std::fprintf(
-            stderr, "SKIP: simplex target CSV widths need the engine's issue #890 target types (task B1): %s\n", error);
-        forget();
-        return;
+    const int parsed =
+        dsd_app_trunk_scan_validate_targets_csv(targets.toUtf8().constData(), nullptr, error, sizeof error);
+    if (parsed != 0) {
+        std::fprintf(stderr, "the engine refuses the simplex target CSV: %s\n", error);
     }
+    assert(parsed == 0);
     assert(lists.add({{QStringLiteral("name"), QStringLiteral("Typed")},
                       {QStringLiteral("targetSource"), QStringLiteral("csv")},
                       {QStringLiteral("targetsCsvPath"), targets}}));

@@ -514,23 +514,9 @@ engineTakes(const char* text, dsd_scan_mode mode) {
    engine's own scoped-option parser (dsd_scan_options_parse()) for the protocol's class, and Qt's answer follows the
    table: a switch the row takes reaches it, one it does not is refused by name before anything is written (or, for a
    protocol whose editor hides decryption, never written), so a generated list can never carry a switch the engine
-   would refuse it for. On an engine without the issue #890 key matrix (task B3: -4 for dPMR, no key settings for
-   M17, YSF and D-STAR) only those cells may differ, and they are named; with it, every cell must agree. */
+   would refuse it for. Every protocol's scan class is one the engine knows, and every cell must agree. */
 static void
 test_key_switch_table_matches_engine() {
-    dsd_scan_mode dpmr = DSD_SCAN_MODE_INHERIT;
-    check(dsd_scan_mode_parse("dpmr", &dpmr) == 0);
-    const bool keyMatrix = engineTakes("-4", dpmr);
-    if (!keyMatrix) {
-        std::fprintf(stderr, "NOTE: the engine has no issue #890 key matrix yet (task B3): its own cells are "
-                             "allowed to differ\n");
-    }
-    const auto b3Cell = [](const ScanProtocol& p, unsigned bit) {
-        const QLatin1String id(p.id);
-        return (id == QLatin1String("dpmr") && bit == ScanKeyForcePrivacy)
-               || ((id == QLatin1String("m17") || id == QLatin1String("ysf") || id == QLatin1String("dstar"))
-                   && (bit & (ScanKeyClear | ScanKeyProfileRef | ScanKeyNoForce)) != 0U);
-    };
     // The walk covers every switch: a new ScanKeySwitch bit with no setting here fails it.
     unsigned covered = 0U;
     for (const KeySetting& setting : keySettings()) {
@@ -549,20 +535,19 @@ test_key_switch_table_matches_engine() {
     for (const ScanProtocol& protocol : scan_protocols()) {
         dsd_scan_mode mode = DSD_SCAN_MODE_INHERIT;
         const bool classKnown = dsd_scan_mode_parse(protocol.scanClass, &mode) == 0;
+        check(classKnown);
         if (!classKnown) {
-            std::fprintf(stderr, "NOTE: the engine has no scan class '%s' yet (task B1): its row is not compared\n",
-                         protocol.scanClass);
+            std::fprintf(stderr, "%s row: the engine has no scan class '%s'\n", protocol.id, protocol.scanClass);
+            continue;
         }
         for (const KeySetting& setting : keySettings()) {
             const bool tableTakes = (protocol.keySwitches & setting.bit) != 0U;
             // The table is the engine's.
-            if (classKnown && engineTakes(setting.engineText, mode) != tableTakes) {
-                const bool allowed = !keyMatrix && b3Cell(protocol, setting.bit);
-                check(allowed);
-                if (!allowed) {
-                    std::fprintf(stderr, "%s row, %s: the engine %s it, the table %s\n", protocol.id, setting.name,
-                                 tableTakes ? "refuses" : "takes", tableTakes ? "takes it" : "does not");
-                }
+            const bool agrees = engineTakes(setting.engineText, mode) == tableTakes;
+            check(agrees);
+            if (!agrees) {
+                std::fprintf(stderr, "%s row, %s: the engine %s it, the table %s\n", protocol.id, setting.name,
+                             tableTakes ? "refuses" : "takes", tableTakes ? "takes it" : "does not");
             }
             // Qt follows the table.
             QVariantMap sys{{"uid", "sys"}, {"name", "Row"}, {"decodeFlag", protocol.decodeFlag}, {"freqMhz", "451.5"}};

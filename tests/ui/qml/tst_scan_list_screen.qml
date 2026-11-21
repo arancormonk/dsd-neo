@@ -606,7 +606,7 @@ Item {
 
         // Issue #890: the preview names each target's protocol as the editor does, read whole from its
         // type, and gives a modulation only where the type takes one. The import reads the file through
-        // the engine's parser, which takes the simplex types once it has them (task B1).
+        // the engine's parser, which takes the simplex types.
         function test_imported_target_preview_names_simplex_types() {
             var source = testContext.writeFixtureCsv("simplex-targets.csv",
                 "id,type,frequency_hz,chan_csv,dwell_ms,activity_hold_ms,notes,options\n"
@@ -614,14 +614,10 @@ Item {
                 + "dmo,tetra-dmo-conventional,430500000,,,,,\n"
                 + "fusion,ysf-conventional,145500000,,,,,\n"
                 + "dig,dmr-conventional,461000000,,,,,\n");
-            // Whether the engine's target parser takes the types (task B1): a one-entry YSF list
-            // validates only then. Once it does, the import has to take the file.
+            // The engine's target parser takes the types: a one-entry YSF list validates.
             var probe = scanListStarter.validate({uid: "simplex-probe", name: "Probe", sourceType: "usb",
                 entries: [{uid: "probe", kind: "freq", protocol: "ysf", freqMhz: "430", enabled: true}]});
-            if (!probe.ok) {
-                verify(probe.error.indexOf("invalid target type 'ysf-conventional'") >= 0, probe.error);
-                skip("the engine's target parser does not take the issue #890 types yet (task B1)");
-            }
+            verify(probe.ok, probe.error);
             var result = testContext.importNow(source, "trunkTargets");
             verify(result.ok, result.detail || "Import failed");
             try {
