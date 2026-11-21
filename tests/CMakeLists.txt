@@ -14219,6 +14219,17 @@ target_link_libraries(
     dsd-neo_test_m17_gnss_position
     PRIVATE dsd-neo_proto_m17 dsd-neo_test_support
 )
+# Issue #890: calloc is wrapped, where the linker can wrap it, to count and fail the M17 extension's allocation.
+if(NOT APPLE AND (CMAKE_C_COMPILER_ID MATCHES "GNU|Clang"))
+    target_compile_definitions(
+        dsd-neo_test_m17_gnss_position
+        PRIVATE DSD_NEO_TEST_ALLOC_WRAP
+    )
+    target_link_options(
+        dsd-neo_test_m17_gnss_position
+        PRIVATE "-Wl,--wrap=calloc"
+    )
+endif()
 add_test(NAME M17_GNSS_POSITION COMMAND dsd-neo_test_m17_gnss_position)
 
 # M17 frames an input interruption cut, read through GNU ld --wrap seams around the symbol readers, like the YSF DCH

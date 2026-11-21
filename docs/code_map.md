@@ -13961,12 +13961,17 @@ Private per-protocol modules worth knowing about:
   CRC-failed LSF
   frame (it drops any buffered bytes and arms nothing, as an LSF frame never stands between one packet's chunks), a
   stream-mode LSF frame, or no extension to hold the assembly (out of memory: nothing is armed, and nothing resumes
-  later; the LSF frame requests the extension once, `m17_finalize_lsf_crc()`, and its META text and arming both use
-  that one result, `m17_lsf_carrier::text_none` when it failed, so a second request in the same frame never arms). A
+  later; a checked LSF frame requests the extension once, `m17_finalize_lsf_crc()`, and its META text, its GNSS
+  repeat state (`m17_publish_gnss_position()`) and arming all use that one result (`m17_lsf_carrier::ext_given`,
+  `ext`, NULL when it failed), so a second request in the same frame never arms or admits a position; a CRC-failed
+  LSF frame disarms and requests nothing). A
   one-frame packet needs its checked LSF frame too. Limit (decided, issue #890): continuity is checked between frames
   (the spacing and the symbol clock epoch from the frame before) and against the cuts above, not inside a frame's own
   read. An M17 frame split by a looping replay's rewind (`-~`), or completed by stand-in samples after a failed device
-  or file read, or by a low-rate WAV's resampler padding at end of file, is not detected; its CRC still applies. Limit (decided): a packet with any lost, cut or
+  or file read, or by a low-rate WAV's resampler padding at end of file, is not detected; its own CRC is all that
+  guards it. A rewind inside an armed packet's last frame moves the epoch, so `m17_pkt_in_step()` rejects it and the
+  payload is dropped with its CRC never checked, but a syntactically valid EOF still ends the transmission
+  (`m17_pkt_end_transmission()`): that end is not CRC-protected. Limit (decided): a packet with any lost, cut or
   structurally rejected frame is dropped, under -F too; one that is structurally complete but whose payload CRC fails
   is not decoded either, and -F still shows it (`decodeM17PKT()` with no assembler), marked `CRC ERR`. A packet with
   no application byte (two bytes `FF FF`, the CRC of nothing; M17 Packet Data begins with its protocol byte) is
@@ -14078,7 +14083,8 @@ Private per-protocol modules worth knowing about:
   and options, its symbol reader counting symbols as production does (an ended input's stand-ins, but no erasure an
   interruption stood in nor a failed read's stand-in); each
   lifecycle case builds and runs without Codec2 too, its playback
-  counts guarded), `M17_LSF_PARSE`, `M17_GNSS_POSITION` (`test_ip_counter_wrap_is_one_report`). A stream frame's EOS bit,
+  counts guarded), `M17_LSF_PARSE`, `M17_GNSS_POSITION` (`test_ip_counter_wrap_is_one_report`; `test_rf_lsf_meta_uses_one_extension_request`,
+  `test_bad_lsf_requests_no_extension` where the linker wraps calloc). A stream frame's EOS bit,
   an IP EOT, EOTX or DISC, the EOT marker and a packet's end end the slot's call only when it is an M17 one, and an M17
   call a fade already ended is made final by it (`m17_end_call()`, `m17_call_end.c`, public in
   `<dsd-neo/protocol/m17/m17.h>`). The EOT also puts the slicer levels back where a lost carrier leaves them

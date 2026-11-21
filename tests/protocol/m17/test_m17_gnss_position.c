@@ -32,6 +32,7 @@
 #include "m17_algorithms.h"
 #include "m17_confirm.h"
 #include "m17_internal.h"
+#include "m17_state_ext.h"
 #include "test_support.h"
 
 #ifdef USE_CODEC2
@@ -492,6 +493,74 @@ test_reused_state_admits_meta_again(void) {
 }
 
 /* Under -F an LSF whose CRC failed still sets the decoder up, but its META is no position, no text and no callsign. */
+#ifdef DSD_NEO_TEST_ALLOC_WRAP
+/* While g_ext_alloc_watch is set, the requests for an allocation the size of the M17 extension are counted, and the
+   first fails while g_ext_alloc_fail_next is set. */
+static int g_ext_alloc_watch;
+static int g_ext_alloc_fail_next;
+static int g_ext_alloc_requests;
+
+// NOLINTNEXTLINE(bugprone-reserved-identifier,cert-dcl37-c,cert-dcl51-cpp,misc-use-internal-linkage)
+void* __real_calloc(size_t count, size_t size);
+// NOLINTNEXTLINE(bugprone-reserved-identifier,cert-dcl37-c,cert-dcl51-cpp,misc-use-internal-linkage)
+void* __wrap_calloc(size_t count, size_t size);
+
+void*
+__wrap_calloc(size_t count, size_t size) {
+    if (g_ext_alloc_watch != 0 && count == 1U && size == sizeof(m17_state_ext)) {
+        g_ext_alloc_requests++;
+        if (g_ext_alloc_fail_next != 0) {
+            g_ext_alloc_fail_next = 0;
+            return NULL;
+        }
+    }
+    return __real_calloc(count, size);
+}
+
+/* Issue #890: a checked RF stream LSF carrying GNSS META requests the M17 extension once, for its text, its GNSS repeat
+   state and any packet it starts. That one request failing, no second one is made for the same LSF, and with no
+   repeat rule to tell a report from its repeats no position is admitted. The next checked LSF, memory back, admits
+   it. */
+static void
+test_rf_lsf_meta_uses_one_extension_request(void) {
+    rig r;
+    rig_open(&r);
+    uint8_t meta[M17_META_BYTES];
+    gnss_meta(meta, GNSS_ALL_VALID, 3U, TEST_BEARING_DEG, RAW_QUARTER, RAW_QUARTER);
+    g_ext_alloc_requests = 0;
+    g_ext_alloc_watch = 1;
+    g_ext_alloc_fail_next = 1;
+    expect_int("checked LSF passes", rf_lsf(&r, 0, 1U, meta, 0), 0);
+    g_ext_alloc_watch = 0;
+    expect_int("one extension request for the LSF", g_ext_alloc_requests, 1);
+    dsd_position_fix f[4];
+    expect_int("no position without the repeat state", feed_records(&r, f, 4U), 0);
+    expect_int("the next checked LSF passes", rf_lsf(&r, 0, 1U, meta, 0), 0);
+    expect_int("memory back, the next LSF admits its position", feed_records(&r, f, 4U), 1);
+    rig_close(&r);
+}
+
+/* Issue #890: an LSF whose CRC failed, in strict and relaxed mode, assembles no META and arms no packet, so it makes
+   no M17 extension: a fresh decoder still has none after it, and none was requested. */
+static void
+test_bad_lsf_requests_no_extension(void) {
+    for (int relaxed = 0; relaxed <= 1; relaxed++) {
+        rig r;
+        rig_open(&r);
+        r.opts->aggressive_framesync = relaxed ? 0 : 1;
+        uint8_t meta[M17_META_BYTES];
+        gnss_meta(meta, GNSS_ALL_VALID, 3U, TEST_BEARING_DEG, RAW_QUARTER, RAW_QUARTER);
+        g_ext_alloc_requests = 0;
+        g_ext_alloc_watch = 1;
+        expect_int("bad LSF reports its CRC error", rf_lsf(&r, 0, 1U, meta, 1), 1);
+        g_ext_alloc_watch = 0;
+        expect_int("a bad LSF requests no extension", g_ext_alloc_requests, 0);
+        expect_true("a bad LSF leaves no extension", dsd_state_ext_get(r.state, DSD_STATE_EXT_PROTO_M17_GNSS) == NULL);
+        rig_close(&r);
+    }
+}
+#endif
+
 static void
 test_relaxed_bad_lsf_gives_nothing(void) {
     rig r;
@@ -1323,6 +1392,10 @@ main(void) {
     test_unbound_lsf_is_not_the_active_calls();
     test_refused_meta_prints_no_coordinates();
     test_radius_code_7_prints_a_lower_bound();
+#ifdef DSD_NEO_TEST_ALLOC_WRAP
+    test_rf_lsf_meta_uses_one_extension_request();
+    test_bad_lsf_requests_no_extension();
+#endif
     if (g_failures != 0) {
         DSD_FPRINTF(stderr, "M17_GNSS_POSITION: %d failure(s)\n", g_failures);
         return 1;

@@ -98,14 +98,16 @@ typedef struct {
        META, but it publishes no call and notes no received identity, so the open stream's call and the carrier's
        identity stay the stream's. 0 for anything else. */
     uint8_t mpkt_call;
-    /* 1: text is NULL because the LSF has no assembler (the M17 extension could not be made for it): its META text is
-       shown and assembled into nothing, and no second allocation is tried for it (issue #890). */
-    uint8_t text_none;
+    /* ext_given 1: ext is the M17 extension this LSF frame obtained, once (m17_finalize_lsf_crc(); NULL when it could
+       not be made or the LSF failed its CRC), and its META text and GNSS repeat state use that one result: no second
+       request is made for that LSF (issue #890). 0: they request it as they need it. */
+    uint8_t ext_given;
+    m17_state_ext* ext;
 } m17_lsf_carrier;
 
 enum { M17_MPKT_CALL_DATA = 1, M17_MPKT_CALL_NONE = 2 };
 
-static const m17_lsf_carrier k_m17_rf_carrier = {0U, 0U, 0U, 0U, 0U, 0U, NULL, 0U, 0U};
+static const m17_lsf_carrier k_m17_rf_carrier = {0U, 0U, 0U, 0U, 0U, 0U, NULL, 0U, 0U, NULL};
 
 /* 64-bit FNV-1a over a network frame's @p len bytes (its CRC included): what tells a byte-identical copy of a datagram
  * from another frame for the GNSS META repeat rule. Not a check (the frame's own CRC is that), and nothing secret. */
@@ -575,7 +577,7 @@ M17decodeLSF(const dsd_opts* opts, dsd_state* state, int publish_canonical, cons
            when this LSF published one. */
         if (!s_m17_monitoring_local_tx) {
             struct m17_meta_text_assembler* text = carrier->text;
-            if (text == NULL && carrier->text_none == 0U) {
+            if (text == NULL && carrier->ext_given == 0U) {
                 text = m17_transmission_text(state);
             }
             M17decodeLSFMeta(opts, state, &res, &bound, text);
@@ -977,7 +979,7 @@ m17_publish_gnss_position(const dsd_opts* opts, dsd_state* state, const struct m
     dsd_position_origin_capture(opts, state, &heard);
     m17_gnss_tx_key key;
     m17_gnss_build_key(&key, res, carrier, active ? call.epoch : 0U, heard.gen);
-    m17_state_ext* g = m17_ext_st(state);
+    m17_state_ext* g = carrier->ext_given != 0U ? carrier->ext : m17_ext_st(state);
     if (g == NULL) {
         return M17_GNSS_REFUSED; /* no repeat rule to tell one report from its repeats: none is admitted */
     }
@@ -2080,13 +2082,15 @@ m17_finalize_lsf_crc(const dsd_opts* opts, dsd_state* state, const uint8_t* lsf_
     /* Any LSF frame drops whatever was being assembled, as an LSF frame never stands between one packet's chunks; only
        a checked packet-mode LSF frame that M17decodeLSF() applied starts a packet (below). */
     m17_pkt_disarm(state);
-    /* The M17 extension is requested once for this LSF frame, and its META text and the packet it may start both use
-       that one result: an allocation that failed for one is not retried for the other, so a packet is never armed
-       behind an LSF whose own state could not be made (the strict RF packet rule). */
-    m17_state_ext* const ext = m17_ext_st(state);
+    /* The M17 extension is requested once for this LSF frame, and only when its CRC passed (a failed LSF assembles no
+       META and arms no packet, so it makes nothing): its META text, its GNSS repeat state and the packet it may start
+       all use that one result. An allocation that failed for one is not retried for another, so a packet is never
+       armed, nor a position admitted, behind an LSF whose own state could not be made. */
+    m17_state_ext* const ext = crc_err == 0 ? m17_ext_st(state) : NULL;
     m17_lsf_carrier rf_carrier = k_m17_rf_carrier;
     rf_carrier.text = ext != NULL ? &ext->text_meta : NULL;
-    rf_carrier.text_none = (uint8_t)(ext == NULL);
+    rf_carrier.ext_given = 1U;
+    rf_carrier.ext = ext;
     /* The boundary emptied the raw LSF bits: this frame's own go back in for its decode. */
     (void)dsd_unpack_bytes_to_bits(lsf_packed, M17_LSF_BYTES, state->m17_lsf, sizeof(state->m17_lsf), M17_LSF_BYTES);
     /* TYPE is bytes 12-13; its bit 0 is the packet/stream indicator. Only an LSF whose CRC passed says which. */
@@ -4602,7 +4606,7 @@ m17_ip_take_stream_frame(const dsd_opts* opts, dsd_state* state, const uint8_t* 
     m17_store_current_aes_counter(state, stream_frame_number);
     const m17_state_ext* g = m17_state_ext_find(state);
     const m17_lsf_carrier carrier = {
-        1U, sid, 0U, g != NULL ? g->ip_stream_gen : 0U, 54U, m17_datagram_digest(ip_frame, 54U), NULL, 0U, 0U};
+        1U, sid, 0U, g != NULL ? g->ip_stream_gen : 0U, 54U, m17_datagram_digest(ip_frame, 54U), NULL, 0U, 0U, NULL};
     (void)M17decodeLSF(opts, state, 1, &carrier);
     if (state->m17_ip_stream_signed != 0U) {
         /* Signed once, signed for the rest of the stream (m17_ip_continue_stream()): its signature range stays no
@@ -4790,7 +4794,8 @@ m17_ip_handle_mpkt_frame(const dsd_opts* opts, dsd_state* state, const uint8_t* 
                                          m17_datagram_digest(ip_frame, (size_t)err),
                                          &text,
                                          (uint8_t)(interleaved ? M17_MPKT_CALL_NONE : M17_MPKT_CALL_DATA),
-                                         0U};
+                                         0U,
+                                         NULL};
         applied = M17decodeLSF(opts, state, 1, &carrier);
     }
     if (opts->payload == 1) {

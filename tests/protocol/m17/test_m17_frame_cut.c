@@ -743,6 +743,8 @@ test_packet_frame_at_the_input_end_decodes_nothing(void) {
         g_input_end_mode = mode;
         g_input_end_at = 178U;
         assert(processM17PKT(opts, state) == 0);
+        /* Marked cut, as an interruption marks a frame: the engine withholds the frame's verdict from the hunt. */
+        assert(state->input_interrupted == 1);
         assert(state->symbolcnt - count == (mode == TEST_END_EXIT ? 178U : M17_PAYLOAD_SYMBOLS));
         assert(g_search_evidence == evidence);
         assert(state->m17_pbc_ct == 0U);
@@ -754,6 +756,7 @@ test_packet_frame_at_the_input_end_decodes_nothing(void) {
         g_input_end_mode = mode;
         g_input_end_at = 178U;
         assert(processM17LSF(opts, state) == 0);
+        assert(state->input_interrupted == 1);
         dsd_exitflag_store(0);
         state->input_interrupted = 0;
         state->input_fallback_pending = 0;
