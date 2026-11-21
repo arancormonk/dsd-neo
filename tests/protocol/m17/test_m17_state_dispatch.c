@@ -7152,7 +7152,7 @@ test_rf_packet_eof_without_its_prefix_ends_it(void) {
     dsd_call_snapshot call;
     const int a_call = get_m17_call(state, &call) == 1 && call.phase == DSD_CALL_PHASE_ACTIVE;
     rf_frames_pass(state, 1U);
-    const int used = m17_packet_take_chunk(opts, state, eof_frame);
+    const int used = m17_packet_take_chunk(opts, state, eof_frame, NULL);
     const int a_ended = get_m17_call(state, &call) == 1 && call.phase != DSD_CALL_PHASE_ACTIVE;
     DSD_MEMCPY(state->m17_lsf, a_bits, sizeof(a_bits));
     (void)m17_finalize_lsf_crc(opts, state, a_packed, (uint16_t)(a_crc ^ 1U));
@@ -7315,7 +7315,7 @@ rf_sms_frames(dsd_opts* opts, dsd_state* state, const uint8_t* pkt, size_t len, 
         }
         uint8_t frame[26];
         build_sms_frame(frame, pkt, len, (size_t)frames[i]);
-        verdict = m17_packet_take_chunk(opts, state, frame);
+        verdict = m17_packet_take_chunk(opts, state, frame, NULL);
     }
     (void)dsd_test_capture_stderr_end(&cap_err);
     (void)dsd_test_capture_stderr_read(&cap_err, out, cap);
@@ -7376,16 +7376,71 @@ test_rf_packet_not_whole_is_not_decoded(void) {
     uint8_t frame[26];
     rf_frames_pass(state, 2U);
     build_sms_frame(frame, pkt, len, 1U);
-    (void)m17_packet_take_chunk(opts, state, frame);
+    (void)m17_packet_take_chunk(opts, state, frame, NULL);
     rf_frames_pass(state, 1U);
     build_packet_chunk(frame, 0U, 0U, pkt + 50, 25U);
-    (void)m17_packet_take_chunk(opts, state, frame);
+    (void)m17_packet_take_chunk(opts, state, frame, NULL);
     rf_frames_pass(state, 1U);
     build_sms_frame(frame, pkt, len, 2U);
-    (void)m17_packet_take_chunk(opts, state, frame);
+    (void)m17_packet_take_chunk(opts, state, frame, NULL);
     (void)dsd_test_capture_stderr_end(&cap);
     (void)dsd_test_capture_stderr_read(&cap, out, sizeof(out));
     err |= expect_int("a counter read as 0 clears no known gap", capture_has(out, sizeof(out), "Protocol:"), 0);
+
+    /* Chunk 0 lost (chunk 1 ends two frames after the LSF frame) and chunk 1's counter misread as 0: a measured loss is
+       a loss whatever the counter says, so the EOF after it decodes nothing. */
+    ip_test_state(opts, state);
+    opts->aggressive_framesync = 0;
+    if (dsd_test_capture_stderr_begin(&cap, "m17_pkt_zero_after_gap") != 0) {
+        return 1;
+    }
+    rf_packet_lsf_frame(opts, state, 0);
+    rf_frames_pass(state, 2U);
+    build_packet_chunk(frame, 0U, 0U, pkt + 25, 25U);
+    (void)m17_packet_take_chunk(opts, state, frame, NULL);
+    rf_frames_pass(state, 1U);
+    build_sms_frame(frame, pkt, len, 2U);
+    (void)m17_packet_take_chunk(opts, state, frame, NULL);
+    (void)dsd_test_capture_stderr_end(&cap);
+    (void)dsd_test_capture_stderr_read(&cap, out, sizeof(out));
+    err |= expect_int("a zero counter after a measured loss decodes nothing",
+                      capture_has(out, sizeof(out), "Protocol:"), 0);
+
+    /* Packet A's chunk 0, its end lost, then packet B's LSF frame with its CRC failed and B's one-frame EOF one frame
+       later: a failed LSF frame starts nothing and drops A's bytes, so the two never join (the strict RF packet rule). */
+    uint8_t one[16];
+    const size_t one_len = build_sms_packet(one, sizeof(one), "BBBB");
+    ip_test_state(opts, state);
+    opts->aggressive_framesync = 0;
+    if (dsd_test_capture_stderr_begin(&cap, "m17_pkt_join") != 0) {
+        return 1;
+    }
+    rf_packet_lsf_frame(opts, state, 0);
+    rf_frames_pass(state, 1U);
+    build_sms_frame(frame, pkt, len, 0U);
+    (void)m17_packet_take_chunk(opts, state, frame, NULL);
+    rf_frames_pass(state, 1U);
+    rf_packet_lsf_frame(opts, state, 1);
+    rf_frames_pass(state, 1U);
+    build_sms_frame(frame, one, one_len, 0U);
+    (void)m17_packet_take_chunk(opts, state, frame, NULL);
+    (void)dsd_test_capture_stderr_end(&cap);
+    (void)dsd_test_capture_stderr_read(&cap, out, sizeof(out));
+    err |= expect_int("a failed LSF frame joins no two packets", capture_has(out, sizeof(out), "Protocol:"), 0);
+
+    /* An empty packet after its checked LSF frame: no consumption credit for its EOF, the LSF's confirmation kept. */
+    ip_test_state(opts, state);
+    rf_packet_lsf_frame(opts, state, 0);
+    rf_frames_pass(state, 1U);
+    {
+        static const uint8_t k_nothing[2] = {0xFFU, 0xFFU};
+        int terminal = 0;
+        build_packet_chunk(frame, 1U, 2U, k_nothing, sizeof(k_nothing));
+        err |= expect_int("an empty packet after its checked LSF gets no credit",
+                          m17_packet_take_chunk(opts, state, frame, &terminal), 0);
+        err |= expect_int("an EOF is the terminal frame", terminal, 1);
+        err |= expect_int("the checked LSF's confirmation stands", m17_confirm_is_confirmed(state), 1);
+    }
 
     /* An empty packet after an LSF frame whose CRC failed: an unconfirmed chain the EOF must not credit. */
     ip_test_state(opts, state);
@@ -7393,7 +7448,8 @@ test_rf_packet_not_whole_is_not_decoded(void) {
     rf_frames_pass(state, 1U);
     static const uint8_t k_empty[2] = {0xFFU, 0xFFU};
     build_packet_chunk(frame, 1U, 2U, k_empty, sizeof(k_empty));
-    err |= expect_int("an empty packet's EOF gets no consumption credit", m17_packet_take_chunk(opts, state, frame), 0);
+    err |= expect_int("an empty packet's EOF gets no consumption credit",
+                      m17_packet_take_chunk(opts, state, frame, NULL), 0);
     err |= expect_int("an empty packet earns no confirmation", m17_confirm_is_confirmed(state), 0);
     err |= expect_u8("an empty packet's EOF ends the transmission", state->m17_tx_ended, 1U);
     dsd_state_ext_free_all(state);
@@ -7412,6 +7468,80 @@ uint64_t __wrap_dsd_realtime_mono_ms(void);
 uint64_t
 __wrap_dsd_realtime_mono_ms(void) {
     return g_fake_realtime_ms != 0U ? g_fake_realtime_ms : __real_dsd_realtime_mono_ms();
+}
+
+/* The M17 extension cannot be made when a packet's checked LSF frame arms the assembler: no packet is assembled behind
+   it, and once memory is back its chunk 0 (no counter or allocation alone resumes an assembly) and its EOF still decode
+   nothing (the strict RF packet rule). */
+static int
+test_rf_packet_unarmed_without_memory(void) {
+    dsd_opts* opts = &g_opts;
+    dsd_state* state = &g_state;
+    uint8_t pkt[48];
+    uint8_t frame[26];
+    char out[8192];
+    int err = 0;
+    const size_t len = build_sms_packet(pkt, sizeof(pkt), "ABCDEFGHIJKLMNOPQRSTUVWXYZ012");
+
+    ip_test_state(opts, state);
+    opts->aggressive_framesync = 0;
+    dsd_test_capture_stderr cap;
+    if (dsd_test_capture_stderr_begin(&cap, "m17_pkt_no_memory") != 0) {
+        return 1;
+    }
+    g_fail_m17_ext_alloc = 1;
+    rf_packet_lsf_frame(opts, state, 0);
+    g_fail_m17_ext_alloc = 0;
+    rf_frames_pass(state, 1U);
+    build_sms_frame(frame, pkt, len, 0U);
+    (void)m17_packet_take_chunk(opts, state, frame, NULL);
+    rf_frames_pass(state, 1U);
+    build_sms_frame(frame, pkt, len, 1U);
+    (void)m17_packet_take_chunk(opts, state, frame, NULL);
+    (void)dsd_test_capture_stderr_end(&cap);
+    (void)dsd_test_capture_stderr_read(&cap, out, sizeof(out));
+    err |= expect_int("a packet its LSF could not arm is not decoded", capture_has(out, sizeof(out), "Protocol:"), 0);
+    dsd_state_ext_free_all(state);
+    return err;
+}
+
+/* A data stream on the network whose end was lost goes idle; an MPKT then heard with the same source, destination and
+   CAN is a transmission of its own: it starts its own call, not a continuation of the stream's. */
+static int
+test_ip_mpkt_after_an_idle_like_stream_starts_its_own_call(void) {
+    dsd_opts* opts = &g_opts;
+    dsd_state* state = &g_state;
+    uint8_t data_bits[TEST_M17_LSF_BITS];
+    uint8_t packet_bits[TEST_M17_LSF_BITS];
+    uint8_t sms[8];
+    uint8_t mpkt_frame[34U + sizeof(sms) + 2U];
+    uint8_t payload[M17_SIGNATURE_DIGEST_BYTES];
+    int err = 0;
+    const unsigned long long dst = m17_encode_b40_callsign(0ULL, M17_REF_LSF_DST_CSD);
+    const unsigned long long src = m17_encode_b40_callsign(0ULL, M17_REF_LSF_SRC_CSD);
+    build_lsf_bits(data_bits, dst, src, m17_compose_frame_info(1U, 1U, 0U, 0U, 5U, 0U, 0U), NULL);
+    build_lsf_bits(packet_bits, dst, src, m17_compose_frame_info(0U, 0U, 0U, 0U, 5U, 0U, 0U), NULL);
+    DSD_MEMSET(sms, 0, sizeof(sms));
+    sms[0] = 0x05U;
+    DSD_MEMCPY(sms + 1, "HELLO", 5U);
+    DSD_MEMSET(payload, 0x64, sizeof(payload));
+
+    ip_test_state(opts, state);
+    g_fake_realtime_ms = 2000000U;
+    send_ip_stream_frame(opts, state, data_bits, 0x7F90U, 0U, 0U, payload, 0);
+    dsd_call_snapshot call;
+    err |= expect_int("the data stream's call", get_m17_call(state, &call), 1);
+    const uint64_t epoch = call.epoch;
+    g_fake_realtime_ms += 8000U;
+    const size_t len = build_ip_mpkt_frame(mpkt_frame, sizeof(mpkt_frame), packet_bits, 0x7F91U, sms, sizeof(sms));
+    m17_ip_dispatch_frame(opts, state, mpkt_frame, (int)len);
+    err |= expect_int("after the MPKT: call", get_m17_call(state, &call), 1);
+    err |= expect_int("the MPKT starts its own call", call.epoch != epoch, 1);
+    err |=
+        expect_int("the idle stream stays open for its own frames", (int)state->m17_ip_stream, DSD_M17_IP_STREAM_OPEN);
+    g_fake_realtime_ms = 0U;
+    dsd_state_ext_free_all(state);
+    return err;
 }
 
 /* A network stream whose final frame was lost, with no EOTX or DISC after it, stays open, but once no frame of it has
@@ -7530,6 +7660,8 @@ main(void) {
     err |= test_rf_packet_not_whole_is_not_decoded();
 #ifdef DSD_NEO_TEST_ALLOC_WRAP
     err |= test_ip_idle_stream_does_not_hold_back_packets();
+    err |= test_rf_packet_unarmed_without_memory();
+    err |= test_ip_mpkt_after_an_idle_like_stream_starts_its_own_call();
 #endif
     err |= test_lsf_rejects_reserved_type_without_replacing_state();
     err |= test_lsf_rejects_invalid_addresses_without_replacing_state();

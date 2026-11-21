@@ -113,10 +113,12 @@ int m17_pkt_ptr_clamped(int pbc_count);
 /* Finalize a packet at its last frame (m17.c): 1 when it was a packet (decoded when its CRC passed or under -F), 0 when
    it had no application byte, which earns no credit. Either way the packet transmission ends. */
 int m17_pkt_finalize_eot(const dsd_opts* opts, dsd_state* state, uint16_t app_len, int end);
-/* Take one RF packet frame's 26 decoded bytes (its 25-byte chunk and its metadata byte, m17.c): the chunk joins the
-   packet, a frame out of order empties it, and a valid last frame (EOF) finalizes the packet, or, when the packet
-   cannot be whole, ends the packet transmission with nothing decoded. Returns 1 when the chunk was used. */
-int m17_packet_take_chunk(const dsd_opts* opts, dsd_state* state, const uint8_t* pkt_packed);
+/* Take one RF packet frame's 26 decoded bytes (its 25-byte chunk and its metadata byte, m17.c) by the strict RF packet
+   rule: the chunk joins the packet only as the next chunk, in order, one frame after the frame before, of a packet its
+   checked LSF frame started; anything else drops the whole packet until the next checked LSF frame. A valid last frame
+   (EOF) finalizes a whole packet, and ends the packet transmission either way. Returns 1 when the frame was used (an
+   EOF: when it was a packet), 0 otherwise; *@p terminal (may be NULL) is 1 for an EOF. */
+int m17_packet_take_chunk(const dsd_opts* opts, dsd_state* state, const uint8_t* pkt_packed, int* terminal);
 void m17_ip_dispatch_frame(const dsd_opts* opts, dsd_state* state, const uint8_t* ip_frame, int len);
 /** Decode an LSF this station transmits (@p m17_rnd_bits, the randomized on-air payload) through the receive path, to
  * monitor it: its call is shown, but nothing in it is received identity, META or a position. */

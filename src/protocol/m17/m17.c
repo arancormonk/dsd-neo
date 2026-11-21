@@ -119,7 +119,8 @@ m17_datagram_digest(const uint8_t* bytes, size_t len) {
 static int M17decodeLSF(const dsd_opts* opts, dsd_state* state, int publish_canonical, const m17_lsf_carrier* carrier);
 static void M17decodeLSFFields(dsd_state* state, const struct m17_lsf_result* res);
 static void m17_retire_if_ended(dsd_state* state);
-static int m17_pkt_note_frame_end(dsd_state* state);
+static void m17_pkt_arm(dsd_state* state);
+static void m17_pkt_disarm(dsd_state* state);
 static int m17_lsf_result_usable(const struct m17_lsf_result* res);
 static void M17logLSFSummary(const struct m17_lsf_result* res);
 static void M17storeLSFMeta(dsd_state* state, const struct m17_lsf_result* res);
@@ -480,7 +481,10 @@ m17_publish_lsf(const dsd_opts* opts, dsd_state* state, const struct m17_lsf_res
     };
     m17_format_address(res->src, 1, observation.source_text);
     m17_format_address(res->dst, 0, observation.target_text);
-    if (dsd_call_state_observe(state, &observation, DSD_CALL_BOUNDARY_CONTINUE) < 0) {
+    /* A standalone MPKT (as_data) is a whole transmission and always starts its own call, even when the slot still holds
+       an idle stream's call of the same source, destination and CAN (issue #890). */
+    if (dsd_call_state_observe(state, &observation, as_data ? DSD_CALL_BOUNDARY_BEGIN : DSD_CALL_BOUNDARY_CONTINUE)
+        < 0) {
         return 0;
     }
 
@@ -2053,8 +2057,13 @@ m17_finalize_lsf_crc(const dsd_opts* opts, dsd_state* state, const uint8_t* lsf_
     } else {
         m17_confirm_reset_signature(state);
     }
-    /* A packet that follows is spaced from this frame's end (m17_packet_take_chunk()), whatever its CRC said. */
-    (void)m17_pkt_note_frame_end(state);
+    /* Only a checked packet-mode LSF frame starts a packet (the strict RF packet rule, m17_pkt_arm()); any other drops
+       whatever was being assembled, as an LSF frame never stands between one packet's chunks. */
+    if (crc_err == 0 && (lsf_packed[13] & 1U) == 0U) {
+        m17_pkt_arm(state);
+    } else {
+        m17_pkt_disarm(state);
+    }
     /* The boundary emptied the raw LSF bits: this frame's own go back in for its decode. */
     (void)dsd_unpack_bytes_to_bits(lsf_packed, M17_LSF_BYTES, state->m17_lsf, sizeof(state->m17_lsf), M17_LSF_BYTES);
     /* TYPE is bytes 12-13; its bit 0 is the packet/stream indicator. Only an LSF whose CRC passed says which. */
@@ -2132,6 +2141,8 @@ processM17LSF(dsd_opts* opts, dsd_state* state) {
     const uint32_t carrier_seq = state->carrier_seq;
     m17_capture_soft_symbols(opts, state, soft_symbols);
     if (dsd_state_frame_read_lost(state, carrier_seq)) {
+        /* No checked LSF frame: nothing a packet could be assembled behind (the strict RF packet rule). */
+        m17_pkt_disarm(state);
         DSD_FPRINTF(stderr, "\n");
         return 0;
     }
@@ -4131,43 +4142,47 @@ m17_pkt_log_final_if_enabled(const dsd_opts* opts, const dsd_state* state, int e
    less than the frame a wholly lost one would add. */
 enum { M17_PACKET_FRAME_SYMBOLS = 192, M17_PACKET_SPACING_SLACK = 32 };
 
-/* Whether the packet being assembled is known to have a gap (m17_state_ext::pkt_gap): with no extension it cannot be
-   told, which fails closed. */
-static int
-m17_pkt_gap_known(const dsd_state* state) {
-    const m17_state_ext* g = m17_state_ext_find(state);
-    return g == NULL || g->pkt_gap != 0U;
-}
+/* The strict RF packet rule (decided, issue #890): an RF packet is decoded and credited only when its own CRC-checked
+   packet-mode LSF frame is followed by its chunks 0, 1, 2, ... in order, each ending exactly one frame (within
+   M17_PACKET_SPACING_SLACK) after the frame before, up to its EOF. The chunk counters and the EOF's byte count are not
+   covered by the packet's CRC (M17 spec 2.0.11, Packet Frames), so anything else (a counter out of order, a frame lost
+   or cut, a CRC-failed LSF frame, no extension to hold the assembly) drops the whole packet, and nothing more is
+   assembled until the next checked LSF frame arms the assembler again (m17_state_ext::pkt_armed). */
 
-/* A frame of the packet being assembled was lost or out of order: what is held cannot be the packet, and the packet is
-   known to have a gap until a transmission boundary (m17_confirm_reset(), m17_pkt_end_transmission()), so its last
-   frame decodes and credits nothing (m17_state_ext::pkt_gap). A chunk counter, which no CRC covers, never clears it. */
+/* Drop the packet being assembled and stop assembling until the next checked LSF frame. Never allocates. */
 static void
-m17_pkt_drop(dsd_state* state) {
+m17_pkt_disarm(dsd_state* state) {
     DSD_MEMSET(state->m17_pkt, 0, sizeof(state->m17_pkt));
     state->m17_pbc_ct = 0;
-    m17_state_ext* g = m17_ext_st(state);
+    m17_state_ext* g = m17_state_ext_find(state);
     if (g != NULL) {
-        g->pkt_gap = 1U;
+        g->pkt_armed = 0U;
     }
 }
 
-/* Note where a packet frame (or the LSF frame before the packet) ends, dsd_state::symbolcnt, and whether it is one M17
-   frame after the frame before: 1 when it is, 0 when a frame between was lost or there is no frame before to tell (the
-   transmission's LSF frame was missed). An EOF carries a byte count, not a frame number (M17 spec 2.0.11, Packet
-   Frames), so only this spacing shows a wholly lost frame just before it. */
-static int
-m17_pkt_note_frame_end(dsd_state* state) {
+/* A checked packet-mode LSF frame ends here: a packet starts, its chunk 0 due one frame on. With no extension (out of
+   memory) nothing is armed, and its packet is not decoded. */
+static void
+m17_pkt_arm(dsd_state* state) {
+    m17_pkt_disarm(state);
     m17_state_ext* g = m17_ext_st(state);
-    if (g == NULL) {
+    if (g != NULL) {
+        g->pkt_armed = 1U;
+        g->pkt_ref_symbol = state->symbolcnt;
+    }
+}
+
+/* Whether the packet frame now ending (dsd_state::symbolcnt) is the next frame of an armed assembly: one frame after
+   the frame before it. */
+static int
+m17_pkt_in_step(const dsd_state* state) {
+    const m17_state_ext* g = m17_state_ext_find(state);
+    if (g == NULL || g->pkt_armed == 0U) {
         return 0;
     }
     const uint32_t since = state->symbolcnt - g->pkt_ref_symbol;
-    const int next = g->pkt_have_ref != 0U && since >= (uint32_t)(M17_PACKET_FRAME_SYMBOLS - M17_PACKET_SPACING_SLACK)
-                     && since <= (uint32_t)(M17_PACKET_FRAME_SYMBOLS + M17_PACKET_SPACING_SLACK);
-    g->pkt_have_ref = 1U;
-    g->pkt_ref_symbol = state->symbolcnt;
-    return next;
+    return since >= (uint32_t)(M17_PACKET_FRAME_SYMBOLS - M17_PACKET_SPACING_SLACK)
+           && since <= (uint32_t)(M17_PACKET_FRAME_SYMBOLS + M17_PACKET_SPACING_SLACK);
 }
 
 /* A packet's last frame (a valid EOF): the packet transmission ends, whether its packet was whole and its CRC passed
@@ -4176,13 +4191,7 @@ m17_pkt_note_frame_end(dsd_state* state) {
    marker. */
 static void
 m17_pkt_end_transmission(const dsd_opts* opts, dsd_state* state) {
-    DSD_MEMSET(state->m17_pkt, 0, sizeof(state->m17_pkt));
-    state->m17_pbc_ct = 0;
-    m17_state_ext* g = m17_state_ext_find(state);
-    if (g != NULL) {
-        g->pkt_gap = 0U;
-        g->pkt_have_ref = 0U;
-    }
+    m17_pkt_disarm(state);
     m17_end_call(opts, state, DSD_CALL_END_EXPLICIT, 1);
     state->m17_tx_ended = 1U;
 }
@@ -4228,7 +4237,7 @@ m17_pkt_finalize_eot(const dsd_opts* opts, dsd_state* state, uint16_t app_len, i
  * the decoder could use; the four rejections in m17_packet_take_chunk() are checks this frame ran and failed, which
  * is what the SPS hunt wants to hear about (#419). */
 static int
-m17_process_packet_frame(const dsd_opts* opts, dsd_state* state, const float* soft_symbols) {
+m17_process_packet_frame(const dsd_opts* opts, dsd_state* state, const float* soft_symbols, int* terminal) {
 
     uint16_t m17_soft_bits[M17_PAYLOAD_BITS];   //368 soft costs (de-interleaved and de-scrambled)
     uint16_t m17_depunc[M17_PACKET_TYPE2_BITS]; //420 weighted values after depuncturing
@@ -4246,78 +4255,67 @@ m17_process_packet_frame(const dsd_opts* opts, dsd_state* state, const float* so
     m17_soft_depuncture_p3(m17_soft_bits, m17_depunc);
     (void)viterbi_decode(pkt_bytes, m17_depunc, M17_PACKET_TYPE2_BITS);
     DSD_MEMCPY(pkt_packed, pkt_bytes + 1, 26);
-    return m17_packet_take_chunk(opts, state, pkt_packed);
+    return m17_packet_take_chunk(opts, state, pkt_packed, terminal);
 }
 
 int
-m17_packet_take_chunk(const dsd_opts* opts, dsd_state* state, const uint8_t* pkt_packed) {
+m17_packet_take_chunk(const dsd_opts* opts, dsd_state* state, const uint8_t* pkt_packed, int* terminal) {
+    if (terminal != NULL) {
+        *terminal = 0;
+    }
     if (opts == NULL || state == NULL || pkt_packed == NULL) {
         return 0;
     }
+    const int in_step = m17_pkt_in_step(state);
+    m17_state_ext* g = m17_state_ext_find(state);
+    if (g != NULL) {
+        g->pkt_ref_symbol = state->symbolcnt;
+    }
     uint8_t counter = 0U;
     uint8_t eot = 0U;
-    const int next_frame = m17_pkt_note_frame_end(state);
-    const int metadata_ok = m17_packet_parse_metadata_byte(pkt_packed[25], &eot, &counter);
-    if (metadata_ok != 0) {
-        DSD_FPRINTF(stderr, " PKT metadata invalid;");
-        m17_pkt_drop(state);
-        DSD_FPRINTF(stderr, "\n");
+    if (m17_packet_parse_metadata_byte(pkt_packed[25], &eot, &counter) != 0) {
+        DSD_FPRINTF(stderr, " PKT metadata invalid;\n");
+        m17_pkt_disarm(state);
         return 0;
     }
-    /* A frame not one frame after the frame before (one was lost) leaves a gap; so does an EOF with no frame before to
-       tell (the transmission's LSF frame and the packet before it missed). Chunk 0 with no frame before starts a packet
-       whose LSF frame was missed. */
-    if (!next_frame && (eot != 0U || counter != 0U || state->m17_pbc_ct != 0)) {
-        m17_pkt_drop(state);
+    if (terminal != NULL) {
+        *terminal = eot != 0U;
     }
-    const int ptr = m17_pkt_ptr_clamped(state->m17_pbc_ct);
-    if (eot == 0U && counter != (uint8_t)state->m17_pbc_ct) {
-        DSD_FPRINTF(stderr, " PKT counter mismatch: expected %02d got %02u;", state->m17_pbc_ct, counter);
-        m17_pkt_drop(state);
-        DSD_FPRINTF(stderr, "\n");
-        return 0;
-    }
-
     uint16_t app_len = 0U;
-    int total_with_crc = ptr + M17_PACKET_CHUNK_BYTES;
-    if (eot != 0U) {
-        if (m17_pkt_gap_known(state)
-            || m17_packet_app_bytes_from_eof((uint8_t)state->m17_pbc_ct, counter, &app_len) != 0) {
-            /* A valid last frame of a packet that cannot be whole (a frame of it was lost, the gap kept since, or the
-               byte count cannot be): nothing of it is decoded or checked, but it is the packet transmission's end all
-               the same (issue #890). */
-            DSD_FPRINTF(stderr, " PKT not whole;");
+    const int in_order = eot != 0U || counter == (uint8_t)state->m17_pbc_ct;
+    const int whole_eof =
+        eot == 0U || m17_packet_app_bytes_from_eof((uint8_t)state->m17_pbc_ct, counter, &app_len) == 0;
+    if (!in_step || !in_order || !whole_eof) {
+        /* Not the next frame of a packet its checked LSF frame started (the strict RF packet rule): the whole packet is
+           dropped. A valid last frame (EOF) still ends the packet transmission (issue #890). */
+        DSD_FPRINTF(stderr, " PKT not whole: dropped;\n");
+        if (eot != 0U) {
             m17_pkt_end_transmission(opts, state);
-            DSD_FPRINTF(stderr, "\n");
-            return 0;
+        } else {
+            m17_pkt_disarm(state);
         }
-        total_with_crc = ptr + counter;
+        return 0;
     }
 
+    const int ptr = m17_pkt_ptr_clamped(state->m17_pbc_ct);
     m17_pkt_log_counter(state->m17_pbc_ct, counter, eot);
     DSD_MEMCPY(state->m17_pkt + ptr, pkt_packed, M17_PACKET_CHUNK_BYTES);
     m17_pkt_log_frame_if_enabled(opts, pkt_packed);
-
     if (eot != 0U) {
         /* An empty packet is no packet: no consumption credit for its EOF either (it still ends the transmission). */
-        const int taken = m17_pkt_finalize_eot(opts, state, app_len, total_with_crc);
+        const int taken = m17_pkt_finalize_eot(opts, state, app_len, ptr + counter);
         DSD_FPRINTF(stderr, "\n");
         return taken;
     }
-
     if (state->m17_pbc_ct >= (M17_PACKET_MAX_FRAMES - 1)) {
-        DSD_FPRINTF(stderr, " PKT frame count overflow;");
-        m17_pkt_drop(state);
-        DSD_FPRINTF(stderr, "\n");
+        DSD_FPRINTF(stderr, " PKT frame count overflow;\n");
+        m17_pkt_disarm(state);
         return 0;
     }
     state->m17_pbc_ct++;
     /* A chunk the packet's CRC checks only at its end-of-transmission frame: the quiet check waits for it. */
     m17_confirm_note_unchecked_frame(opts, state);
-
-    //ending linebreak
     DSD_FPRINTF(stderr, "\n");
-
     return 1;
 }
 
@@ -4334,6 +4332,9 @@ processM17PKT(dsd_opts* opts, dsd_state* state) {
     const uint32_t carrier_seq = state->carrier_seq;
     m17_capture_soft_symbols(opts, state, soft_symbols);
     if (dsd_state_frame_read_lost(state, carrier_seq)) {
+        /* The lost frame was one of the packet's: the whole packet goes (the strict RF packet rule), whatever the
+           symbol count since the frame before says (a cut read counts no stood-in symbols). */
+        m17_pkt_disarm(state);
         DSD_FPRINTF(stderr, "\n");
         return 0;
     }
@@ -4342,8 +4343,14 @@ processM17PKT(dsd_opts* opts, dsd_state* state) {
        stream's CAN or encryption (issue #890). */
     m17_retire_if_ended(state);
     m17_confirm_begin_frame(state);
-    const int decoded = m17_process_packet_frame(opts, state, soft_symbols);
+    int terminal = 0;
+    const int decoded = m17_process_packet_frame(opts, state, soft_symbols, &terminal);
     m17_confirm_end_frame(state);
+    /* The last frame (EOF) answers for itself: an empty or rejected one earns no consumption credit, though the
+       transmission's confirmation stands for its EOT marker. Any other frame keeps a confirmed transmission's credit. */
+    if (terminal) {
+        return decoded != 0 ? 1 : 0;
+    }
     return (decoded != 0 || m17_confirm_is_confirmed(state)) ? 1 : 0;
 } //end processM17PKT
 

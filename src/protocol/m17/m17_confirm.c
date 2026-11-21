@@ -71,8 +71,7 @@ m17_confirm_reset(dsd_state* state) {
     if (ext) {
         DSD_MEMSET(&ext->adata, 0, sizeof(ext->adata));
         DSD_MEMSET(&ext->text_meta, 0, sizeof(ext->text_meta));
-        ext->pkt_gap = 0U;
-        ext->pkt_have_ref = 0U;
+        ext->pkt_armed = 0U;
         ext->pkt_ref_symbol = 0U;
         ext->ip_stream_last_ms = 0U;
     }

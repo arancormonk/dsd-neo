@@ -93,12 +93,12 @@ typedef struct m17_state_ext {
     /* When the open network stream's last frame was taken (dsd_realtime_mono_ms()): a stream with none taken for
        M17_IP_STREAM_IDLE_MS no longer holds back an MPKT's call (m17_ip_handle_mpkt_frame()). */
     uint64_t ip_stream_last_ms;
-    /* The RF packet being assembled (m17_packet_take_chunk()). pkt_gap: a frame of it was lost or out of order (its
-       last frame then decodes and credits nothing) until a transmission boundary. pkt_have_ref / pkt_ref_symbol: where
-       the frame before the next packet frame ended (dsd_state::symbolcnt: the LSF frame's or the last packet frame's),
-       so a wholly lost frame shows in the spacing (an EOF carries a byte count, not a frame number). */
-    uint8_t pkt_gap;
-    uint8_t pkt_have_ref;
+    /* The RF packet being assembled by the strict RF packet rule (m17_packet_take_chunk()). pkt_armed: a checked
+       packet-mode LSF frame started it and every frame since was the next in order and in step; cleared by anything
+       else, and set again only by the next checked LSF frame. pkt_ref_symbol: where the frame before the next packet
+       frame ended (dsd_state::symbolcnt), so a wholly lost frame shows in the spacing (an EOF carries a byte count, not
+       a frame number). */
+    uint8_t pkt_armed;
     uint32_t pkt_ref_symbol;
     m17_adata_assembly adata;
     /* The text META of the RF transmission or the admitted network stream being assembled from its blocks

@@ -13940,17 +13940,22 @@ Private per-protocol modules worth knowing about:
   or not, and also when the packet cannot be whole because its earlier frames were lost, decoding and checking nothing,
   `m17_packet_take_chunk()`: a packet is a whole transmission with its own LSF, M17 spec 2.0.11 Packet Mode; its data
   call ends there too) end the transmission (`dsd_state::m17_tx_ended`). A packet is decoded and credited at its last
-  frame only when whole: a frame of it lost or out of order (`m17_pkt_drop()`) marks a gap (`m17_state_ext::pkt_gap`,
-  M17's private state) kept through its last frame and cleared only by a transmission boundary (`m17_confirm_reset()`,
-  `m17_pkt_end_transmission()`), never by a chunk counter that reads 0 (no CRC covers it). Every packet frame, the first
-  after the LSF frame included, must end one M17 frame (192 symbols, within 32) after the frame before it
-  (`m17_pkt_note_frame_end()`, `dsd_state::symbolcnt` at the LSF frame's or the last packet frame's end): an EOF carries
-  a byte count, not a frame number (M17 spec 2.0.11, Packet Frames), so only that spacing shows a wholly lost frame
-  just before it, and a frame cut by an input interruption or a carrier boundary is such a lost frame. A chunk 0 with
-  no frame before it (the LSF frame missed) starts a packet; an EOF with none is not whole. A packet with no
-  application byte (two bytes `FF FF`, the CRC of nothing; M17 Packet Data begins with its protocol byte) is decoded and
-  credited nothing, and its EOF gets no consumption credit either (`m17_pkt_finalize_eot()` returns 0, and so does
-  `m17_packet_take_chunk()` and `processM17PKT()`). Either still ends the transmission:
+  frame only by the strict RF packet rule (decided, issue #890; `m17_pkt_arm()`, `m17_pkt_in_step()`,
+  `m17_pkt_disarm()`, `m17_state_ext::pkt_armed`, M17's private state): its own CRC-checked packet-mode LSF frame
+  arms the assembler, and it must be followed by chunks 0, 1, 2, ... in order, each ending exactly one M17 frame (192
+  symbols, within 32, `dsd_state::symbolcnt`) after the frame before, up to its EOF. The chunk counters and the EOF's
+  byte count are outside the packet's CRC (M17 spec 2.0.11, Packet Frames), so anything else drops the whole packet
+  until the next checked LSF frame: a counter out of order, a frame lost (the spacing, which alone shows a frame lost
+  just before an EOF), a frame cut by an input interruption or a carrier boundary (disarmed on the interrupted read
+  itself, `processM17PKT()`, whatever the symbol count says: a cut read counts no stood-in symbols), a CRC-failed LSF
+  frame (it drops any buffered bytes and arms nothing, as an LSF frame never stands between one packet's chunks), a
+  stream-mode LSF frame, or no extension to hold the assembly (out of memory: nothing is armed, and nothing resumes
+  later). A one-frame packet needs its checked LSF frame too. Limit (decided): a packet with any lost or damaged frame
+  is not decoded. A packet with no application byte (two bytes `FF FF`, the CRC of nothing; M17 Packet Data begins
+  with its protocol byte) is decoded and credited nothing (`m17_pkt_finalize_eot()` returns 0). The last frame (EOF)
+  answers for itself: `m17_packet_take_chunk()` says it was terminal, and `processM17PKT()` returns its own verdict
+  (an empty or rejected EOF earns no consumption credit) without clearing the transmission's confirmation, which its
+  EOT marker needs. Either still ends the transmission:
   its evidence stands until the next RF frame, so its EOT marker is still recognized, and that frame drops all of it
   (`m17_retire_if_ended()` at the next stream, LSF, packet or BERT frame, the full `m17_confirm_reset()`), so the next
   transmission never runs on the ended one's CAN, encryption or type, nor rebuilds its LSF from the ended one's raw
@@ -14011,7 +14016,8 @@ Private per-protocol modules worth knowing about:
   nothing of the MPKT stays; an MPKT whose LSF is not applied (a reserved TYPE, an invalid address) inherits nothing
   and its payload is not decoded. An MPKT's call is a data call whatever its LSF's Packet/Stream bit says (a
   stream-mode LSF in an MPKT is taken for its META, which only a stream-mode TYPE can name, never as a live voice
-  stream) and ends with it; heard while a network stream is live, an MPKT publishes no call and notes no received
+  stream), always a call of its own (`DSD_CALL_BOUNDARY_BEGIN`, even when the slot still holds an idle stream's call of
+  the same source, destination and CAN; the idle stream's admission state is untouched), and ends with it; heard while a network stream is live, an MPKT publishes no call and notes no received
   identity (`m17_lsf_carrier::mpkt_call`), so the stream's call is neither ended, split nor replaced and the carrier's
   CAN stays the stream's. A stream is live while a frame of it was taken within `M17_IP_STREAM_IDLE_MS` (2 s: fifty
   40 ms frame periods, far beyond network jitter or reflector buffering; `m17_ip_stream_live()`,
@@ -14036,7 +14042,9 @@ Private per-protocol modules worth knowing about:
   `test_ip_failed_allocation_on_an_ordinary_frame`, `test_ip_mpkt_link_setup_is_its_own`,
   `test_rf_packet_eof_without_its_prefix_ends_it`, `test_ip_mpkt_keeps_the_open_streams_call`,
   `test_ip_mpkt_with_a_stream_mode_lsf_leaves_no_voice_call`, `test_rf_packet_not_whole_is_not_decoded`,
-  `test_ip_idle_stream_does_not_hold_back_packets` (the real-time clock wrapped); each
+  `test_ip_idle_stream_does_not_hold_back_packets` (the real-time clock wrapped), `test_rf_packet_unarmed_without_memory`,
+  `test_ip_mpkt_after_an_idle_like_stream_starts_its_own_call`; `M17_FRAME_CUT` `test_packet_cut_early_is_lost`,
+  `test_packet_eof_verdict_is_its_own`, its symbol reader counting no stood-in erasures as production; each
   lifecycle case builds and runs without Codec2 too, its playback
   counts guarded), `M17_LSF_PARSE`, `M17_GNSS_POSITION` (`test_ip_counter_wrap_is_one_report`). A stream frame's EOS bit,
   an IP EOT, EOTX or DISC, the EOT marker and a packet's end end the slot's call only when it is an M17 one, and an M17
