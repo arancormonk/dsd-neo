@@ -3218,7 +3218,10 @@ struct dsd_state {
     int soft_symbol_head;        // Write index (wraps at 512)
     int soft_symbol_frame_start; // Index where current frame started
     uint8_t m17_pbc_ct;          //pbc packet counter
-    uint8_t m17_str_dt;          //stream contents
+    /* A frame of the packet being assembled was lost or out of order (src/protocol/m17/m17.c m17_pkt_drop()): its last
+     * frame decodes and credits nothing, until a chunk 0 or a transmission boundary starts a packet afresh (issue #890). */
+    uint8_t m17_pkt_gap;
+    uint8_t m17_str_dt; //stream contents
     uint8_t m17_bert_locked;
     uint16_t m17_bert_lfsr;
     uint16_t m17_bert_lock_count;

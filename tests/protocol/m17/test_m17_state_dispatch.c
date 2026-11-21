@@ -7165,6 +7165,139 @@ test_rf_packet_eof_without_its_prefix_ends_it(void) {
     return err;
 }
 
+/* Gate round 7 (issue #890): an MPKT inside an open stream, and a packet that is not whole. */
+
+/* An MPKT heard while a network stream is open is its own transmission and leaves the stream's call alone: it neither
+   ends, splits nor replaces it, and the carrier's received identity stays the stream's. The stream's next frame
+   continues the same call. */
+static int
+test_ip_mpkt_keeps_the_open_streams_call(void) {
+    dsd_opts* opts = &g_opts;
+    dsd_state* state = &g_state;
+    uint8_t voice_bits[TEST_M17_LSF_BITS];
+    uint8_t packet_bits[TEST_M17_LSF_BITS];
+    uint8_t sms[8];
+    uint8_t mpkt_frame[34U + sizeof(sms) + 2U];
+    uint8_t payload[M17_SIGNATURE_DIGEST_BYTES];
+    int err = 0;
+    const unsigned long long dst = m17_encode_b40_callsign(0ULL, M17_REF_LSF_DST_CSD);
+    const unsigned long long src = m17_encode_b40_callsign(0ULL, M17_REF_LSF_SRC_CSD);
+    build_voice_lsf(voice_bits, 3U, 0);
+    build_lsf_bits(packet_bits, dst, src, m17_compose_frame_info(0U, 0U, 0U, 0U, 5U, 0U, 0U), NULL);
+    DSD_MEMSET(sms, 0, sizeof(sms));
+    sms[0] = 0x05U;
+    DSD_MEMCPY(sms + 1, "HELLO", 5U);
+    DSD_MEMSET(payload, 0x62, sizeof(payload));
+
+    ip_test_state(opts, state);
+    send_ip_stream_frame(opts, state, voice_bits, 0x7F60U, 0U, 0U, payload, 0);
+    dsd_call_snapshot call;
+    err |= expect_int("the stream's call", get_m17_call(state, &call), 1);
+    const uint64_t epoch = call.epoch;
+    const size_t len = build_ip_mpkt_frame(mpkt_frame, sizeof(mpkt_frame), packet_bits, 0x7F61U, sms, sizeof(sms));
+    m17_ip_dispatch_frame(opts, state, mpkt_frame, (int)len);
+    err |= expect_int("after the MPKT: call", get_m17_call(state, &call), 1);
+    err |= expect_u64("the MPKT starts no epoch", call.epoch, epoch);
+    err |= expect_int("the MPKT leaves the stream's call active", call.phase == DSD_CALL_PHASE_ACTIVE, 1);
+    err |= expect_int("the stream's call stays voice", call.kind, DSD_CALL_KIND_VOICE);
+    err |= expect_u8("the received CAN stays the stream's", (uint8_t)state->rx_id.access, 3U);
+    send_ip_stream_frame(opts, state, voice_bits, 0x7F60U, 1U, 0U, payload, 0);
+    err |= expect_int("next stream frame: call", get_m17_call(state, &call), 1);
+    err |= expect_u64("the stream's next frame continues its call", call.epoch, epoch);
+    dsd_state_ext_free_all(state);
+    return err;
+}
+
+/* An MPKT is a packet (M17 spec 2.0.11, Packet Mode), whatever its LSF's Packet/Stream bit says: one whose LSF is
+   stream-mode voice (taken for its META, which only a stream-mode TYPE can name) publishes a data call that ends with
+   it, and never leaves a live voice call. */
+static int
+test_ip_mpkt_with_a_stream_mode_lsf_leaves_no_voice_call(void) {
+    dsd_opts* opts = &g_opts;
+    dsd_state* state = &g_state;
+    uint8_t stream_bits[TEST_M17_LSF_BITS];
+    uint8_t sms[8];
+    uint8_t mpkt_frame[34U + sizeof(sms) + 2U];
+    int err = 0;
+    build_voice_lsf(stream_bits, 3U, 0);
+    DSD_MEMSET(sms, 0, sizeof(sms));
+    sms[0] = 0x05U;
+    DSD_MEMCPY(sms + 1, "HELLO", 5U);
+
+    ip_test_state(opts, state);
+    const size_t len = build_ip_mpkt_frame(mpkt_frame, sizeof(mpkt_frame), stream_bits, 0x7F70U, sms, sizeof(sms));
+    m17_ip_dispatch_frame(opts, state, mpkt_frame, (int)len);
+    dsd_call_snapshot call;
+    err |= expect_int("a stream-mode MPKT published its call", get_m17_call(state, &call), 1);
+    err |= expect_int("a stream-mode MPKT's call is a data call", call.kind, DSD_CALL_KIND_DATA);
+    err |= expect_int("a stream-mode MPKT leaves no active call", call.phase == DSD_CALL_PHASE_ACTIVE, 0);
+    dsd_state_ext_free_all(state);
+    return err;
+}
+
+/* The over-the-air packet frame of chunk @p counter (@p eof: its last, @p counter then its byte count) whose first
+   bytes are @p bytes. */
+static void
+build_packet_chunk(uint8_t frame[26], uint8_t eof, uint8_t counter, const uint8_t* bytes, size_t n) {
+    DSD_MEMSET(frame, 0, 26U);
+    DSD_MEMCPY(frame, bytes, n);
+    (void)m17_packet_metadata_byte(eof, counter, &frame[25]);
+}
+
+/* A packet that is not whole is never decoded or credited at its last frame (EOF): one whose chunk 0 was lost (its
+   first chunk heard is chunk 1), even under -F, and one with no application byte at all (an EOF of two bytes, FF FF,
+   the CRC of nothing; M17 Packet Data begins with its protocol byte). Each still ends its transmission. */
+static int
+test_rf_packet_not_whole_is_not_decoded(void) {
+    dsd_opts* opts = &g_opts;
+    dsd_state* state = &g_state;
+    uint8_t frame[26];
+    int err = 0;
+    uint8_t sms[7];
+    DSD_MEMSET(sms, 0, sizeof(sms));
+    sms[0] = 0x05U;
+    DSD_MEMCPY(sms + 1, "HI", 2U);
+    const uint16_t crc = m17_crc16(sms, 5U);
+    sms[5] = (uint8_t)(crc >> 8U);
+    sms[6] = (uint8_t)(crc & 0xFFU);
+
+    ip_test_state(opts, state);
+    opts->aggressive_framesync = 0;
+    dsd_test_capture_stderr cap;
+    char out[8192];
+    if (dsd_test_capture_stderr_begin(&cap, "m17_pkt_gap") != 0) {
+        return 1;
+    }
+    uint8_t chunk[25];
+    DSD_MEMSET(chunk, 0x41, sizeof(chunk));
+    build_packet_chunk(frame, 0U, 1U, chunk, sizeof(chunk));
+    (void)m17_packet_take_chunk(opts, state, frame);
+    build_packet_chunk(frame, 1U, 7U, sms, sizeof(sms));
+    (void)m17_packet_take_chunk(opts, state, frame);
+    (void)dsd_test_capture_stderr_end(&cap);
+    (void)dsd_test_capture_stderr_read(&cap, out, sizeof(out));
+    err |= expect_int("a packet missing chunk 0 is not decoded at its EOF", capture_has(out, sizeof(out), "SMS"), 0);
+    err |= expect_u8("its EOF still ends the transmission", state->m17_tx_ended, 1U);
+    /* The gap was that packet's: the next whole packet (one frame) decodes. */
+    if (dsd_test_capture_stderr_begin(&cap, "m17_pkt_after_gap") != 0) {
+        return 1;
+    }
+    build_packet_chunk(frame, 1U, 7U, sms, sizeof(sms));
+    (void)m17_packet_take_chunk(opts, state, frame);
+    (void)dsd_test_capture_stderr_end(&cap);
+    (void)dsd_test_capture_stderr_read(&cap, out, sizeof(out));
+    err |= expect_int("the next whole packet decodes", capture_has(out, sizeof(out), "SMS: HI"), 1);
+
+    ip_test_state(opts, state);
+    static const uint8_t k_empty[2] = {0xFFU, 0xFFU};
+    build_packet_chunk(frame, 1U, 2U, k_empty, sizeof(k_empty));
+    (void)m17_packet_take_chunk(opts, state, frame);
+    err |= expect_int("an empty packet earns no confirmation", m17_confirm_is_confirmed(state), 0);
+    err |= expect_u8("an empty packet's EOF ends the transmission", state->m17_tx_ended, 1U);
+    dsd_state_ext_free_all(state);
+    return err;
+}
+
 int
 main(void) {
     int err = 0;
@@ -7230,6 +7363,9 @@ main(void) {
 #endif
     err |= test_ip_mpkt_link_setup_is_its_own();
     err |= test_rf_packet_eof_without_its_prefix_ends_it();
+    err |= test_ip_mpkt_keeps_the_open_streams_call();
+    err |= test_ip_mpkt_with_a_stream_mode_lsf_leaves_no_voice_call();
+    err |= test_rf_packet_not_whole_is_not_decoded();
     err |= test_lsf_rejects_reserved_type_without_replacing_state();
     err |= test_lsf_rejects_invalid_addresses_without_replacing_state();
     err |= test_lsf_null_meta_decodes_text_and_honors_can_filter();

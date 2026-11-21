@@ -57,6 +57,7 @@ m17_confirm_reset(dsd_state* state) {
     /* The packet being assembled. */
     DSD_MEMSET(state->m17_pkt, 0, sizeof(state->m17_pkt));
     state->m17_pbc_ct = 0U;
+    state->m17_pkt_gap = 0U;
     /* The BERT receiver. */
     state->m17_bert_locked = 0U;
     state->m17_bert_lfsr = 1U;

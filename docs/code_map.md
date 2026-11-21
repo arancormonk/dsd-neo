@@ -13933,7 +13933,11 @@ Private per-protocol modules worth knowing about:
   (`m17_stream_end_of_stream()`) and a packet's end (`m17_pkt_end_transmission()` at a valid last frame, its CRC passed
   or not, and also when the packet cannot be whole because its earlier frames were lost, decoding and checking nothing,
   `m17_packet_take_chunk()`: a packet is a whole transmission with its own LSF, M17 spec 2.0.11 Packet Mode; its data
-  call ends there too) end the transmission (`dsd_state::m17_tx_ended`):
+  call ends there too) end the transmission (`dsd_state::m17_tx_ended`). A packet is decoded and credited at its last
+  frame only when whole: a frame of it lost or out of order (`m17_pkt_drop()`) marks a gap (`dsd_state::m17_pkt_gap`)
+  kept through its last frame, cleared by a chunk 0 starting a packet afresh or a boundary; and a packet with no
+  application byte (two bytes `FF FF`, the CRC of nothing; M17 Packet Data begins with its protocol byte) is decoded and
+  credited nothing (`m17_pkt_finalize_eot()`). Either still ends the transmission:
   its evidence stands until the next RF frame, so its EOT marker is still recognized, and that frame drops all of it
   (`m17_retire_if_ended()` at the next stream, LSF, packet or BERT frame, the full `m17_confirm_reset()`), so the next
   transmission never runs on the ended one's CAN, encryption or type, nor rebuilds its LSF from the ended one's raw
@@ -13992,7 +13996,11 @@ Private per-protocol modules worth knowing about:
   the decoded link setup it found (the raw LSF bits, `m17_lsf_checked`, type, CAN, encryption, IV, advertisement) is
   given back (`m17_link_setup_hold()`, `m17_link_setup_give_back()`), so an interleaved stream keeps its own and
   nothing of the MPKT stays; an MPKT whose LSF is not applied (a reserved TYPE, an invalid address) inherits nothing
-  and its payload is not decoded; a checked LSF's META and a packet
+  and its payload is not decoded. An MPKT's call is a data call whatever its LSF's Packet/Stream bit says (a
+  stream-mode LSF in an MPKT is taken for its META, which only a stream-mode TYPE can name, never as a live voice
+  stream) and ends with it; heard while a network stream is open, an MPKT publishes no call and notes no received
+  identity (`m17_lsf_carrier::mpkt_call`), so the stream's call is neither ended, split nor replaced and the carrier's
+  CAN stays the stream's; a checked LSF's META and a packet
   whose CRC passed commit their block (`decodeM17PKT()`, `m17_decode_pkt_print_meta_or_arb()` take the assembler), and
   a packet whose CRC failed, shown only under -F, commits to and clears no assembler (NULL). Tests:
   `M17_STATE_DISPATCH`
@@ -14010,7 +14018,9 @@ Private per-protocol modules worth knowing about:
   `test_rf_packet_text_is_its_transmissions`, `test_ip_mpkt_leaves_the_open_streams_text`,
   `test_ip_refused_signed_copy_signs_nothing`, `test_ip_unrecordable_end_fails_closed`,
   `test_ip_failed_allocation_on_an_ordinary_frame`, `test_ip_mpkt_link_setup_is_its_own`,
-  `test_rf_packet_eof_without_its_prefix_ends_it`; each lifecycle case builds and runs without Codec2 too, its playback
+  `test_rf_packet_eof_without_its_prefix_ends_it`, `test_ip_mpkt_keeps_the_open_streams_call`,
+  `test_ip_mpkt_with_a_stream_mode_lsf_leaves_no_voice_call`, `test_rf_packet_not_whole_is_not_decoded`; each
+  lifecycle case builds and runs without Codec2 too, its playback
   counts guarded), `M17_LSF_PARSE`, `M17_GNSS_POSITION` (`test_ip_counter_wrap_is_one_report`). A stream frame's EOS bit,
   an IP EOT, EOTX or DISC, the EOT marker and a packet's end end the slot's call only when it is an M17 one, and an M17
   call a fade already ended is made final by it (`m17_end_call()`, `m17_call_end.c`, public in
