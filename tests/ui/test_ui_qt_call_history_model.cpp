@@ -5230,12 +5230,14 @@ test_day_labels_follow_the_local_day(void) {
 
         int dayChanges = 0;
         bool allRows = false;
+        bool timeToo = false;
         const QMetaObject::Connection watchRows =
             QObject::connect(&model, &QAbstractItemModel::dataChanged,
                              [&](const QModelIndex& from, const QModelIndex& to, const QList<int>& roles) {
                                  if (roles.contains(CallHistoryModel::DayLabelRole)) {
                                      dayChanges++;
                                      allRows = from.row() == 0 && to.row() == model.count() - 1;
+                                     timeToo = roles.contains(CallHistoryModel::TimeTextRole);
                                  }
                              });
         g_dayNowMs = QDateTime(QDate(2026, 1, 1), QTime(0, 0, 2)).toMSecsSinceEpoch();
@@ -5250,6 +5252,9 @@ test_day_labels_follow_the_local_day(void) {
         }
         QObject::disconnect(watchRows);
         expect("day labels: the timer's check relabels every row once", dayChanges == 1 && allRows);
+        /* A day change can be a zone change that moved midnight: a row's clock text is re-read with its section, so
+         * the two never come from different zones. */
+        expect("day labels: the clock text is re-read with them", timeToo);
         expect("day labels: yesterday across 1 January", day_label_of(model, 90204U) == QStringLiteral("YESTERDAY"));
         expect("day labels: last year's dates carry the year",
                day_label_of(model, 90203U) == QStringLiteral("TUE 30 DEC 2025")

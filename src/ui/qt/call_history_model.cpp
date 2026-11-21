@@ -277,12 +277,13 @@ CallHistoryModel::CallHistoryModel(QObject* parent) : QAbstractListModel(parent)
     connect(this, &QAbstractItemModel::modelReset, this, &CallHistoryModel::rowPositionsChanged);
     m_spill = std::make_unique<CallHistorySpill>(json_store_path(QLatin1String(kSpillFileName)));
     /* Day sections are derived from the watch's day at read time; when it changes, every
-     * "TODAY" on screen is wrong until the rows are re-read. (No application, no watch: the
-     * labels then read the day as each is asked for.) */
+     * "TODAY" on screen is wrong until the rows are re-read. The clock text goes with them: a
+     * day change can be a zone change that moved midnight, and a row's section and time must
+     * come from one zone. (No application, no watch: both are read as each is asked for.) */
     if (const LocalDayWatch* watch = LocalDayWatch::shared()) {
         connect(watch, &LocalDayWatch::dayChanged, this, [this]() {
             if (!m_rows.isEmpty()) {
-                Q_EMIT dataChanged(index(0), index(static_cast<int>(m_rows.size()) - 1), {DayLabelRole});
+                Q_EMIT dataChanged(index(0), index(static_cast<int>(m_rows.size()) - 1), {DayLabelRole, TimeTextRole});
             }
         });
     }

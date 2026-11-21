@@ -16394,8 +16394,9 @@ Qt Quick frontend (`src/ui/qt`):
   change that moves today's midnight is picked up by the next check (the start instant differs); one that keeps the same
   midnight instant, and absolute times already drawn elsewhere (History and Activity clock text, map pins), follow at
   their next redraw, the next day change or a restart. `CallHistoryModel` reads `LocalDayWatch::current()` in `day_label()`
-  and re-reads `DayLabelRole` for every row on `dayChanged()` (no timer of its own; B2: a phone that slept through
-  midnight kept yesterday's rows under TODAY). QML gets the day as `savedSystems.localDay` (`SavedSystemsModel`,
+  and re-reads `DayLabelRole` and `TimeTextRole` for every row on `dayChanged()` (no timer of its own; B2: a phone that
+  slept through midnight kept yesterday's rows under TODAY; the time too, since a day change can be a zone change that
+  moved midnight, and a row's section and clock text must come from one zone). QML gets the day as `savedSystems.localDay` (`SavedSystemsModel`,
   `{startMs, revision}`, `localDayChanged`, a new map per change) and says a moment the app saw with
   `Util.clockText(ms, day)`: "" for a missing, non-positive or non-finite `ms`, `hh:mm:ss` on the local date of
   `day.startMs`, else `yyyy-MM-dd hh:mm:ss`, and the full form with no day. `MapText.clockText(seconds, day)` checks
