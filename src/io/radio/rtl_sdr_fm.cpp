@@ -18438,6 +18438,13 @@ search_read_feeder(void* arg) {
     DSD_THREAD_RETURN;
 }
 
+static uint64_t g_rtl_test_last_live_read_waits = 0U;
+
+extern "C" uint64_t
+rtl_stream_test_last_live_read_waits(void) {
+    return g_rtl_test_last_live_read_waits;
+}
+
 /* One decoder-side live read on an empty output ring with @p dev as the open device, while @p feeder acts. */
 static int
 rtl_stream_test_run_live_read(struct rtl_device* dev, uint64_t search_owner, const dsd_opts* live_opts, int wants,
@@ -18463,8 +18470,10 @@ rtl_stream_test_run_live_read(struct rtl_device* dev, uint64_t search_owner, con
     if (started) {
         float sample = 0.0f;
         const uint64_t read_started_ms = dsd_realtime_mono_ms();
+        const uint64_t timeouts_before = output.read_timeouts.load(std::memory_order_relaxed);
         *out_got = rtl_stream_read_live_samples(&sample, NULL, NULL, 1U, live_opts, wants);
         *out_waited_ms = dsd_realtime_mono_ms() - read_started_ms;
+        g_rtl_test_last_live_read_waits = output.read_timeouts.load(std::memory_order_relaxed) - timeouts_before;
         feeder->read_done.store(1, std::memory_order_release);
         (void)dsd_thread_join(thread);
     }

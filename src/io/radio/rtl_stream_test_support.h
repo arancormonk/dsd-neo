@@ -1452,6 +1452,11 @@ typedef struct {
  * DSD_RTL_READ_NO_STREAM, DSD_RTL_READ_IDLE or DSD_RTL_READ_EMPTY) and how long it waited; returns 0 when the read
  * ran. */
 int rtl_stream_test_live_read(const rtl_stream_test_live_read_request* req, int* out_got, uint64_t* out_waited_ms);
+
+/* The timed waits on the empty output ring the last live read of rtl_stream_test_live_read() (or
+ * rtl_stream_test_search_live_read_bound()) made before it returned, each of which timed out: 0 for a read that
+ * returned at its first empty poll. */
+uint64_t rtl_stream_test_last_live_read_waits(void);
 /* Set or clear a USB device's recovering state (the swap's), which rtl_device_has_stream() reads as no stream. */
 void rtl_device_test_set_recovering(struct rtl_device* dev, int on);
 

@@ -1768,13 +1768,16 @@ test_hunt_live_read_idle_bound(void) {
     failed |= expect_int_eq("no-stream empty-return read", rtl_stream_test_live_read(&empty_req, &got, &waited_ms), 0);
     failed |=
         expect_int_eq("no stream and no command: the empty-return read says empty at once", got, DSD_RTL_READ_EMPTY);
-    /* EMPTY is the first empty poll's answer, before any wait: a read that waited would have taken the producer's
-       sample (3 s on), so the result itself says it did not. */
+    /* EMPTY is the first empty poll's answer, before any wait. The ring stays empty (the producer delivers nothing),
+       and the read's own wait count says whether it waited, whatever the scheduler does. */
     rtl_device_test_set_recovering(dev, 0);
+    empty_req.feed = 0;
     failed |=
         expect_int_eq("empty-return read on a stream", rtl_stream_test_live_read(&empty_req, &got, &waited_ms), 0);
-    failed |= expect_int_eq("a stream with nothing buffered: the empty-return read says empty at once", got,
-                            DSD_RTL_READ_EMPTY);
+    failed |=
+        expect_int_eq("a stream with nothing buffered: the empty-return read says empty", got, DSD_RTL_READ_EMPTY);
+    failed |= expect_int_eq("and says it at the first empty poll, before any wait",
+                            static_cast<int>(rtl_stream_test_last_live_read_waits()), 0);
 
     dsd_runtime_set_controls_pending(nullptr);
     rtl_device_test_usb_gain_device_free(dev);
