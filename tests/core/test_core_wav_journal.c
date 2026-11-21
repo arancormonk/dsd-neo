@@ -61,6 +61,7 @@
 #include <string.h>
 #include <time.h>
 #if !DSD_PLATFORM_WIN_NATIVE
+#include <fcntl.h>
 #include <sys/stat.h>
 #endif
 #if defined(USE_CURL) && !DSD_PLATFORM_WIN_NATIVE
@@ -4105,7 +4106,7 @@ test_tetra_first_call_conceals_nothing_before_it(void) {
 
 /* The samples of the one published recording in a folder that is @p frames long. */
 typedef struct {
-    const char* dir;
+    char dir[DSD_TEST_PATH_MAX];
     sf_count_t frames;
     short pcm[2 * TETRA_FIRST_BURST_FRAMES];
     int found;
@@ -4151,7 +4152,7 @@ tetra_first_call_hpf_run(int prefill, tetra_call_pcm* out) {
     clock_at(g_now_s + 2);
     end_call(&r, DSD_CALL_END_TERMINATOR);
     DSD_MEMSET(out, 0, sizeof *out);
-    out->dir = r.dir;
+    DSD_SNPRINTF(out->dir, sizeof out->dir, "%s", r.dir);
     out->frames = 2 * TETRA_FIRST_BURST_FRAMES;
     (void)dsd_dir_list(r.dir, tetra_call_pcm_cb, out);
     rc |= expect_int("tetra hpf: the call's recording", out->found, 1);
@@ -5892,8 +5893,13 @@ read_only_dir_denies_removal(const char* dir) {
         return 0;
     }
     (void)fclose(f);
-    const int denied = chmod(dir, 0500) == 0 && remove(probe) != 0;
-    (void)chmod(dir, 0700);
+    // The folder made read-only and writable again through one descriptor, so both act on the folder opened here.
+    const int dir_fd = open(dir, O_RDONLY | O_DIRECTORY | O_CLOEXEC);
+    const int denied = dir_fd >= 0 && dsd_fchmod(dir_fd, 0500) == 0 && remove(probe) != 0;
+    if (dir_fd >= 0) {
+        (void)dsd_fchmod(dir_fd, 0700);
+        (void)dsd_close(dir_fd);
+    }
     (void)remove(probe);
     return denied;
 #endif
@@ -5912,7 +5918,17 @@ static int g_discard_unreadable;
 static void
 discard_unreadable_hook(const char* path) {
     g_discard_hook_ran = 1;
-    g_discard_modes_set = chmod(path, 0000) == 0 && chmod(g_discard_dir, 0500) == 0;
+    // Each mode set through a descriptor on the file or folder opened here.
+    const int file_fd = open(path, O_RDONLY | O_CLOEXEC);
+    const int dir_fd = open(g_discard_dir, O_RDONLY | O_DIRECTORY | O_CLOEXEC);
+    g_discard_modes_set =
+        file_fd >= 0 && dir_fd >= 0 && dsd_fchmod(file_fd, 0000) == 0 && dsd_fchmod(dir_fd, 0500) == 0;
+    if (file_fd >= 0) {
+        (void)dsd_close(file_fd);
+    }
+    if (dir_fd >= 0) {
+        (void)dsd_close(dir_fd);
+    }
     g_discard_unreadable = dsd_wav_file_size_or_negative(path) < 0;
 }
 #endif

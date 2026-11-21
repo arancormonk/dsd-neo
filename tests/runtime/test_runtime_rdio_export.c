@@ -19,6 +19,7 @@
 #include <limits.h>
 #if !DSD_PLATFORM_WIN_NATIVE
 #include <arpa/inet.h>
+#include <fcntl.h>
 #include <netinet/in.h>
 #include <pthread.h>
 #include <sys/select.h>
@@ -4018,11 +4019,19 @@ test_both_mode_upload_survives_dirwatch_delete(void) {
 // A DirWatch with delete-after that takes the pair the moment its sidecar is in place (the sidecar-published seam):
 // the private inputs it found then, and the public pair removed, as that watch does.
 static struct {
-    const char* dir;
-    const char* wav;
+    char dir[DSD_TEST_PATH_MAX];
+    char wav[DSD_TEST_PATH_MAX];
     int seen;
     int private_inputs;
 } g_rdio_eager_watch;
+
+/* The eager watch armed for the pair @p wav in @p dir, with nothing seen yet. */
+static void
+rdio_eager_watch_arm(const char* dir, const char* wav) {
+    DSD_MEMSET(&g_rdio_eager_watch, 0, sizeof g_rdio_eager_watch);
+    DSD_SNPRINTF(g_rdio_eager_watch.dir, sizeof g_rdio_eager_watch.dir, "%s", dir);
+    DSD_SNPRINTF(g_rdio_eager_watch.wav, sizeof g_rdio_eager_watch.wav, "%s", wav);
+}
 
 static void
 rdio_eager_watch_takes_pair(const char* meta_path) {
@@ -4060,9 +4069,7 @@ test_both_mode_private_inputs_precede_the_sidecar(void) {
     }
     rdio_cancel_opts(opts, api_url, 5000, 1);
     opts->rdio_mode = DSD_RDIO_MODE_BOTH;
-    DSD_MEMSET(&g_rdio_eager_watch, 0, sizeof g_rdio_eager_watch);
-    g_rdio_eager_watch.dir = dir;
-    g_rdio_eager_watch.wav = wav;
+    rdio_eager_watch_arm(dir, wav);
     dsd_rdio_set_sidecar_published_observer(rdio_eager_watch_takes_pair);
     int rc = rdio_both_publish(opts, hist, dir, "both_eager", audio, 1203, wav, json);
     dsd_rdio_set_sidecar_published_observer(NULL);
@@ -4228,7 +4235,7 @@ test_both_mode_stop_removes_private_inputs(void) {
 
 #if defined(USE_CURL) && !DSD_PLATFORM_WIN_NATIVE
 // The folder a sidecar-published observer counts private inputs in, and the count it found there; -1 before.
-static const char* g_rdio_count_dir = NULL;
+static char g_rdio_count_dir[DSD_TEST_PATH_MAX];
 static int g_rdio_private_at_sidecar = -1;
 
 static void
@@ -4279,7 +4286,7 @@ test_both_mode_refused_upload_leaves_no_private_inputs(void) {
         }
         int queued = 0;
         if (i == calls - 1) {
-            g_rdio_count_dir = dir;
+            DSD_SNPRINTF(g_rdio_count_dir, sizeof g_rdio_count_dir, "%s", dir);
             dsd_rdio_set_sidecar_published_observer(rdio_count_private_at_sidecar);
         }
         (void)dsd_rdio_export_call_ex(opts, hist, wav, 0, 0, &queued);
@@ -4386,9 +4393,7 @@ test_both_mode_private_names_do_not_grow_with_the_stem(void) {
     }
     rdio_cancel_opts(opts, api_url, 5000, 1);
     opts->rdio_mode = DSD_RDIO_MODE_BOTH;
-    DSD_MEMSET(&g_rdio_eager_watch, 0, sizeof g_rdio_eager_watch);
-    g_rdio_eager_watch.dir = dir;
-    g_rdio_eager_watch.wav = wav;
+    rdio_eager_watch_arm(dir, wav);
     g_rdio_eager_longest_private = 0U;
     dsd_rdio_set_sidecar_published_observer(rdio_eager_watch_measures);
     int rc = rdio_both_publish(opts, hist, dir, stem, audio, 1204, wav, json);
@@ -4447,11 +4452,12 @@ static atomic_int g_seam_link_then_stop = 0;
 static atomic_int g_seam_stream_fails = 0;
 /* The worker's join reports failure, after the worker has ended. */
 static atomic_int g_seam_join_fails = 0;
-/* With g_seam_stream_fails: the folder made read-only once the open has made its file, so removing that file fails. */
-static const char* g_seam_lock_dir = NULL;
+/* With g_seam_stream_fails: the folder made read-only once the open has made its file, so removing that file fails.
+   Empty when off. */
+static char g_seam_lock_dir[DSD_TEST_PATH_MAX];
 /* The private WAV's hard link fails as on a drive with none, its folder made read-only first: the copy that follows
-   cannot be made, nor the private sidecar copy already made removed. */
-static const char* g_seam_link_locks_dir = NULL;
+   cannot be made, nor the private sidecar copy already made removed. Empty when off. */
+static char g_seam_link_locks_dir[DSD_TEST_PATH_MAX];
 
 int
 __wrap_dsd_hard_link(const char* existing, const char* new_path) {
@@ -4460,10 +4466,9 @@ __wrap_dsd_hard_link(const char* existing, const char* new_path) {
         errno = EPERM;
         return -1;
     }
-    const char* lock = seam_names_private(new_path, ".rdio-upload-audio") ? g_seam_link_locks_dir : NULL;
-    if (lock != NULL) {
-        g_seam_link_locks_dir = NULL;
-        (void)chmod(lock, 0500);
+    if (seam_names_private(new_path, ".rdio-upload-audio") && g_seam_link_locks_dir[0] != '\0') {
+        (void)chmod(g_seam_link_locks_dir, 0500);
+        g_seam_link_locks_dir[0] = '\0';
         errno = EPERM;
         return -1;
     }
@@ -4479,10 +4484,9 @@ seam_open_without_stream(const char* path, int* out_opened) {
     if (made != NULL) {
         (void)fclose(made);
     }
-    const char* lock = g_seam_lock_dir;
-    g_seam_lock_dir = NULL;
-    if (lock != NULL) {
-        (void)chmod(lock, 0500);
+    if (g_seam_lock_dir[0] != '\0') {
+        (void)chmod(g_seam_lock_dir, 0500);
+        g_seam_lock_dir[0] = '\0';
     }
     if (out_opened != NULL) {
         *out_opened = created;
@@ -4668,7 +4672,7 @@ rdio_partial_copy_removal_said(const dsd_opts* opts, Event_History_I* hist, int*
     }
     hist->Event_History_Items[0].event_time = (time_t)1700000000;
     hist->Event_History_Items[0].target_id = 1205;
-    g_seam_lock_dir = dir;
+    DSD_SNPRINTF(g_seam_lock_dir, sizeof g_seam_lock_dir, "%s", dir);
     atomic_store(&g_seam_stream_fails, 1);
     dsd_test_capture_stderr cap;
     const int capturing = dsd_test_capture_stderr_begin(&cap, "rdio_partial") == 0;
@@ -4680,7 +4684,7 @@ rdio_partial_copy_removal_said(const dsd_opts* opts, Event_History_I* hist, int*
         (void)dsd_test_capture_stderr_read(&cap, out, sizeof(out));
     }
     (void)chmod(dir, 0700);
-    g_seam_lock_dir = NULL;
+    g_seam_lock_dir[0] = '\0';
     atomic_store(&g_seam_stream_fails, 0);
     *said = 0;
     for (const char* p = out; (p = strstr(p, "failed to delete the private upload input")) != NULL; p++) {
@@ -4714,7 +4718,7 @@ rdio_meta_left_after_failed_wav_said_once(const dsd_opts* opts, Event_History_I*
     }
     hist->Event_History_Items[0].event_time = (time_t)1700000000;
     hist->Event_History_Items[0].target_id = 1208;
-    g_seam_link_locks_dir = dir;
+    DSD_SNPRINTF(g_seam_link_locks_dir, sizeof g_seam_link_locks_dir, "%s", dir);
     dsd_test_capture_stderr cap;
     const int capturing = dsd_test_capture_stderr_begin(&cap, "rdio_wav_fails") == 0;
     int queued = -1;
@@ -4725,8 +4729,8 @@ rdio_meta_left_after_failed_wav_said_once(const dsd_opts* opts, Event_History_I*
         (void)dsd_test_capture_stderr_read(&cap, out, sizeof(out));
     }
     (void)chmod(dir, 0700);
-    const int double_unused = g_seam_link_locks_dir != NULL;
-    g_seam_link_locks_dir = NULL;
+    const int double_unused = g_seam_link_locks_dir[0] != '\0';
+    g_seam_link_locks_dir[0] = '\0';
     const int left = rdio_test_private_inputs_in(dir, NULL);
     int rc = 0;
     if (!capturing || double_unused || queued != 0 || left != 1 || strstr(out, "private upload metadata") != NULL
@@ -4757,8 +4761,13 @@ rdio_test_read_only_dir_denies_removal(const char* dir) {
         return 0;
     }
     (void)fclose(f);
-    const int denied = chmod(dir, 0500) == 0 && remove(probe) != 0;
-    (void)chmod(dir, 0700);
+    // The folder made read-only and writable again through one descriptor, so both act on the folder opened here.
+    const int dir_fd = open(dir, O_RDONLY | O_DIRECTORY | O_CLOEXEC);
+    const int denied = dir_fd >= 0 && dsd_fchmod(dir_fd, 0500) == 0 && remove(probe) != 0;
+    if (dir_fd >= 0) {
+        (void)dsd_fchmod(dir_fd, 0700);
+        (void)dsd_close(dir_fd);
+    }
     (void)remove(probe);
     return denied;
 }

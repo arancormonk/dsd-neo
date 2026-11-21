@@ -16,8 +16,9 @@
 #include "sparse_file.h"
 #include "test_support.h"
 
-/* The probe's answer is a 64-bit integer, whatever the platform's long. */
-_Static_assert(sizeof(dsd_wav_file_size_or_negative("x")) == 8, "the WAV size probe must return a 64-bit size");
+/* The probe's answer is a 64-bit integer, whatever the platform's long: the probe is declared to return int64_t. */
+_Static_assert(_Generic(&dsd_wav_file_size_or_negative, int64_t (*)(const char*): 1, default: 0),
+               "the WAV size probe must return a 64-bit size");
 
 #define SKIP_CODE   77
 #define SPARSE_SIZE (((int64_t)1 << 31) + 1000)
