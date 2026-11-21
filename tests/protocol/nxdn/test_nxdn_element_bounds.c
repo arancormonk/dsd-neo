@@ -2371,6 +2371,61 @@ test_vcall_type_010_changes_no_cipher(void) {
     return rc;
 }
 
+/* The address layout follows the channel this frame's LICH selected (issue #903): a late-entry FACCH VCALL or data
+ * header on an RTCH2 before any SCCH set the "Type-D" category reads its prefixes, and a conventional traffic frame
+ * under a "Type-D" category an earlier SCCH left reads 16-bit IDs, inventing no prefix. */
+static int
+test_type_d_layout_follows_the_frame(void) {
+    dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(*opts));
+    dsd_state* state = (dsd_state*)calloc(1, sizeof(*state));
+    uint8_t bits[96];
+    if (!opts || !state) {
+        DSD_FPRINTF(stderr, "alloc-failed: %s%s\n", !opts ? "dsd_opts" : "", !state ? " dsd_state" : "");
+        free(state);
+        free(opts);
+        return 1;
+    }
+    int rc = 0;
+    for (int conventional = 0; conventional <= 1; conventional++) {
+        dsd_state_ext_free_all(state);
+        DSD_MEMSET(state, 0, sizeof(*state));
+        state->nxdn_confirmed = 1;
+        if (conventional) {
+            DSD_SNPRINTF(state->nxdn_location_category, sizeof(state->nxdn_location_category), "%s", "Type-D");
+            state->nxdn_frame_channel = (uint8_t)NXDN_FRAME_CHANNEL_TRAFFIC;
+        } else {
+            state->nxdn_frame_channel = (uint8_t)NXDN_FRAME_CHANNEL_TYPE_D;
+        }
+        DSD_MEMSET(bits, 0, sizeof(bits));
+        write_vcall_fields(bits, 0x01U, 0x00U, 1U, 0U, 0x1864U, 0x1805U, 0U, 0U);
+        NXDN_Elements_Content_decode(opts, state, bits, sizeof(bits));
+        dsd_call_snapshot call;
+        const char* tag = conventional ? "conventional" : "rtch2";
+        char label[96];
+        DSD_SNPRINTF(label, sizeof label, "layout-%s-call", tag);
+        rc |= expect_int(label, dsd_call_state_get(state, 0U, &call), 1);
+        DSD_SNPRINTF(label, sizeof label, "layout-%s-target", tag);
+        rc |= expect_int(label, (int)call.ota_target_id, conventional ? 0x1805 : 5);
+        DSD_SNPRINTF(label, sizeof label, "layout-%s-source", tag);
+        rc |= expect_int(label, (int)call.ota_source_id, conventional ? 0x1864 : 100);
+        DSD_SNPRINTF(label, sizeof label, "layout-%s-target-text", tag);
+        rc |= expect_string(label, call.target_text, conventional ? "" : "03-0005");
+
+        uint8_t header_bits[96];
+        DSD_MEMSET(header_bits, 0, sizeof(header_bits));
+        write_data_call_header_fields(header_bits, 0x38U, 0U, 0U, 0x1864U, 0x3805U, 1U, 0U);
+        NXDN_Elements_Content_decode(opts, state, header_bits, sizeof(header_bits));
+        DSD_SNPRINTF(label, sizeof label, "layout-%s-data-target", tag);
+        rc |= expect_int(label, (int)state->dmr_lrrp_target[0], conventional ? 0x3805 : 5);
+        DSD_SNPRINTF(label, sizeof label, "layout-%s-data-prefix", tag);
+        rc |= expect_int(label, state->nxdn_data_type_d, conventional ? 0 : 1);
+    }
+    dsd_state_ext_free_all(state);
+    free(state);
+    free(opts);
+    return rc;
+}
+
 static int
 test_vcall_imported_zero_keys_are_present(void) {
     dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(*opts));
@@ -4462,6 +4517,7 @@ main(void) {
     rc |= test_vcall_reports_the_key_its_cipher_selected();
     rc |= test_type_d_vcall_destination_key_uses_low_id();
     rc |= test_vcall_type_010_changes_no_cipher();
+    rc |= test_type_d_layout_follows_the_frame();
     rc |= test_type_d_data_headers_keep_prefix_text();
     rc |= test_vcall_aes_fallback_needs_a_full_key();
     rc |= test_vcall_iv_keeps_the_vcall_key_choice();

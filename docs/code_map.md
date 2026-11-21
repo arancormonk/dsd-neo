@@ -12432,7 +12432,10 @@ Call frequency and access-code provenance (issue #575). A call's canonical `freq
 - NXDN Type-D addresses (`nxdn_internal.h`: `nxdn_typed_full_id()`, `nxdn_typed_low_id()`, `nxdn_typed_prefix()`,
   `nxdn_typed_id_text()`). A Type-D unit or group ID is 11 bits under a 5-bit Home Repeater / Prefix (TS 1-E
   6.6.6-6.6.8). The VCALL, the SD (0x38) and packet (0x09) data call headers and the SCCH INFO4/INFO3/INFO2 carry the
-  prefix. Every numeric ID the protocol publishes stays the 11-bit ID, the policy namespace (decision D7):
+  prefix. The VCALL, VCALL_IV and data header layouts follow the channel the frame's LICH selected
+  (`nxdn_location_is_type_d()`: an RTCH2 Type-D, any other channel not), so a late-entry FACCH VCALL before any SCCH
+  reads its prefix and conventional traffic invents none under an old "Type-D" category; only an element decoded
+  with no frame falls back to that category. Every numeric ID the protocol publishes stays the 11-bit ID, the policy namespace (decision D7):
   `ota_target_id`, `policy_target_id`, `ota_source_id`, `dmr_lrrp_source/target` (position attribution), the
   scan-activity hook, and the keys, lockouts, skips and holds, including the NXDN48 destination-key fallback. So an
   existing group list, key file or lockout behaves as it did. The prefix travels as text, "pp-iiii" (`03-0005`), in the

@@ -156,10 +156,16 @@ nxdn_call_type_opens_call(uint8_t call_type) {
     return (call_type & 0x7U) != 2U ? 1 : 0;
 }
 
-/* Whether the session decodes Type-D (IDAS), as the VCALL and data header layouts take it: the location category an
- * SCCH set. */
+/* Whether a message decodes in the Type-D (IDAS) layout, as the VCALL, VCALL_IV and data header layouts take it: the
+ * channel this frame's own LICH selected (dsd_state::nxdn_frame_channel), an RTCH2 Type-D and any other channel not, so
+ * a late-entry FACCH VCALL before any SCCH reads its prefixes, and conventional traffic never invents one from a "Type-D"
+ * category an earlier SCCH left (issue #903). With no frame decoding (an element handed over alone), the location
+ * category an SCCH set. */
 static int
 nxdn_location_is_type_d(const dsd_state* state) {
+    if (state->nxdn_frame_channel != (uint8_t)NXDN_FRAME_CHANNEL_NONE) {
+        return state->nxdn_frame_channel == (uint8_t)NXDN_FRAME_CHANNEL_TYPE_D ? 1 : 0;
+    }
     return strcmp(state->nxdn_location_category, "Type-D") == 0 ? 1 : 0;
 }
 
@@ -313,7 +319,7 @@ nxdn_element_handle_sdcall_data(dsd_opts* opts, dsd_state* state, const uint8_t*
 static void
 nxdn_element_handle_sdcall_iv(dsd_opts* opts, dsd_state* state, const uint8_t* elements, size_t elements_bits) {
     size_t sdcall_iv_min_bits = 72U;
-    if (strcmp(state->nxdn_location_category, "Type-D") == 0) {
+    if (nxdn_location_is_type_d(state)) {
         sdcall_iv_min_bits = 30U;
     }
     if (elements_bits < sdcall_iv_min_bits) {
@@ -580,7 +586,7 @@ nxdn_element_handle_disc(dsd_opts* opts, dsd_state* state, const uint8_t* elemen
 static void
 nxdn_element_handle_vcall_iv(dsd_opts* opts, dsd_state* state, const uint8_t* elements, size_t elements_bits) {
     /* The IV is 64 bits from element 8, 22 on Type-D (nxdn_vcall_iv_extract()). */
-    const size_t min_bits = (strcmp(state->nxdn_location_category, "Type-D") == 0) ? 30U : 72U;
+    const size_t min_bits = nxdn_location_is_type_d(state) ? 30U : 72U;
     if (!nxdn_element_has_bits("VCALL_IV", elements_bits, min_bits)) {
         return;
     }
@@ -1108,7 +1114,7 @@ nxdn_dcall_invalidate(dsd_state* state) {
 
 static int
 nxdn_dcall_byte_len(const dsd_state* state, int type) {
-    int byte_len = (strcmp(state->nxdn_location_category, "Type-D") == 0) ? 18 : 20;
+    int byte_len = nxdn_location_is_type_d(state) ? 18 : 20;
     if (type == 2) {
         byte_len = 14;
     }
@@ -2961,7 +2967,7 @@ nxdn_vcall_parse_fields(dsd_state* state, const uint8_t* Message, struct nxdn_vc
     state->NxdnElementsContent.CipherType = info->cipher_type;
     state->NxdnElementsContent.KeyID = info->key_id;
 
-    info->idas = (apply_type_d_truncation && strcmp(state->nxdn_location_category, "Type-D") == 0) ? 1U : 0U;
+    info->idas = (apply_type_d_truncation && nxdn_location_is_type_d(state)) ? 1U : 0U;
     if (info->idas != 0U) {
         info->rep1 = nxdn_typed_prefix(info->source_unit_id);
         info->dst_prefix = nxdn_typed_prefix(info->destination_id);
@@ -3464,7 +3470,7 @@ NXDN_decode_VCALL_ARIB(dsd_opts* opts, dsd_state* state, const uint8_t* Message)
 
 static unsigned long long int
 nxdn_vcall_iv_extract(const dsd_state* state, const uint8_t* Message) {
-    if (strcmp(state->nxdn_location_category, "Type-D") == 0) {
+    if (nxdn_location_is_type_d(state)) {
         return (unsigned long long int)convert_bits_into_output(&Message[8], 22);
     }
     return (unsigned long long int)convert_bits_into_output(&Message[8], 64);
