@@ -196,12 +196,16 @@ static DSD_THREAD_RETURN_TYPE
     __stdcall
 #endif
     hold_guard(void* opaque) {
-    (void)opaque;
+    dsd_opts* opts = opaque;
     p25_sm_tick_guard_enter();
+    /* A holder in the middle of swapping the run's state: recovery looks off until it is done. Nothing reads the field
+       without the guard. */
+    opts->trunk_enable = 0;
     atomic_store(&g_held, 1);
     while (atomic_load(&g_looked) == 0 && fixture_time_left()) {
         dsd_sleep_ms(1U);
     }
+    opts->trunk_enable = 1;
     p25_sm_tick_guard_leave();
     DSD_THREAD_RETURN;
 }
@@ -213,7 +217,7 @@ check_busy_guard_keeps_the_beat(dsd_opts* opts, dsd_state* state) {
     g_fixture_deadline_s = dsd_realtime_mono_s() + 60.0;
     p25_sm_watchdog_request_tick();
     dsd_thread_t holder;
-    if (dsd_thread_create(&holder, hold_guard, NULL) != 0) {
+    if (dsd_thread_create(&holder, hold_guard, opts) != 0) {
         DSD_FPRINTF(stderr, "FAIL: the guard holder did not start\n");
         return 1;
     }
@@ -231,7 +235,7 @@ check_busy_guard_keeps_the_beat(dsd_opts* opts, dsd_state* state) {
             DSD_FPRINTF(stderr, "FAIL: the fixture deadline passed\n");
             failed = 1;
         } else if (serviced != 0 || !p25_sm_watchdog_tick_wanted()) {
-            DSD_FPRINTF(stderr, "FAIL: a held guard lost the beat\n");
+            DSD_FPRINTF(stderr, "FAIL: a held guard lost the beat (eligibility read without the guard)\n");
             failed = 1;
         }
     }

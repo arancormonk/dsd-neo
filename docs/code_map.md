@@ -1300,15 +1300,16 @@ pipe given by its path (`-i /path/to/fifo`) is read through libsndfile, whose re
 pipe open and writes nothing: a quiet named pipe holds the beat, and every tick, until data arrives or the pipe closes.
 PCM piped into stdin (`-i -`) is waited on in the bounded reads above instead. The engine's main pass and the hunt's
 entry run the decoder's own tick (`p25_sm_try_tick()`), which spends a standing beat too, so no later point runs a
-second tick for it. A beat with no recovery to run (trunking off, -Y, no P25 to follow, a startup hunt:
-`p25_sm_tick_eligible()`) is let go at once and hands no read back. Otherwise shutdown, a queued command or a put-off
-publication comes first: `p25_sm_watchdog_service()` then runs no tick and answers `P25_SM_WATCHDOG_DEFERRED`, the beat
-standing, so no tune starts on a receiver being stopped or replaced; a hunt read that meets it hands back (a TCP
-reconnect gives up), and the engine runs the work and then its own tick; the hunt's checkpoint, which waits on no input,
-hunts on with its window, the work waiting for the hunt's return as at any checkpoint. The reconnect's backoff and its
-bounded connect (`dsd_socket_connect_bounded()`) each wait to one real-time deadline that counts the ticks' own time and
-is checked before every check, so no check (a tick) starts once it has passed: the connect then takes one last look that
-does not wait. A beat that finds the guard held stays asked for. A tick inside the hunt that moved the chain
+second tick for it. A beat that finds the guard free and no recovery to run (trunking off, -Y, no P25 to follow, a
+startup hunt: `p25_sm_tick_eligible()`) is let go at once and hands no read back. Otherwise shutdown, a queued command
+or a put-off publication comes first: `p25_sm_watchdog_service()` then runs no tick and answers
+`P25_SM_WATCHDOG_DEFERRED`, the beat standing, so no tune starts on a receiver being stopped or replaced; a hunt read
+that meets it hands back (a TCP reconnect gives up), and the engine runs the work and then its own tick; the hunt's
+checkpoint, which waits on no input, hunts on with its window, the work waiting for the hunt's return as at any
+checkpoint. The reconnect's backoff and its bounded connect (`dsd_socket_connect_bounded()`) each wait to one real-time
+deadline that counts the ticks' own time and is checked before every check, so no check (a tick) starts once it has
+passed: the connect then takes one last look that does not wait. A beat that finds the guard held stays asked for, and
+nothing recovery reads is looked at without the guard. A tick inside the hunt that moved the chain
 (`frame_sync_watchdog_tick.c`: the modulation, the symbol profile, or a tune request that may have moved the receiver,
 `dsd_trunk_tuning_retuned_since()`; one refused or deferred before it moved keeps the window) hands back at once: the
 read leaves with no sample and the partial symbol given up, and `getFrameSync()` returns no sync with

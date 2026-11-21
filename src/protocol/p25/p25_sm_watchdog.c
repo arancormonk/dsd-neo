@@ -171,21 +171,23 @@ p25_sm_watchdog_service(dsd_opts* opts, dsd_state* state) {
     if (!opts || !state || atomic_load(&g_p25_sm_tick_wanted) == 0) {
         return 0;
     }
+    /* A hold the caller already has, or anyone else's, leaves the beat standing for the next point: a holder may be
+       swapping what recovery reads, so nothing of it is read without the guard. */
+    if (!p25_sm_tick_guard_try_enter()) {
+        return 0;
+    }
     /* A beat with no recovery to run (trunking off, -Y scanning, no P25 to follow, a startup hunt) is let go: its
        tick could tune nothing, so it never hands a read back, even behind queued work. */
     if (!p25_sm_tick_eligible(opts, state)) {
         atomic_store(&g_p25_sm_tick_wanted, 0);
+        p25_sm_tick_guard_leave();
         return 0;
     }
     /* Shutdown or queued work (a command, a put-off publication) comes first: the beat stands, and no tune starts on a
-       receiver being stopped or replaced. The caller gives the decoder back to the engine loop, which runs the work and
-       then its own tick, which takes the beat. */
+       receiver being stopped or replaced. The engine loop runs the work and then its own tick, which takes the beat. */
     if (dsd_exitflag_load() || dsd_runtime_controls_pending() || dsd_runtime_publish_pending()) {
+        p25_sm_tick_guard_leave();
         return P25_SM_WATCHDOG_DEFERRED;
-    }
-    /* A hold the caller already has, or anyone else's, leaves the beat standing for the next point. */
-    if (!p25_sm_tick_guard_try_enter()) {
-        return 0;
     }
     atomic_store(&g_p25_sm_tick_wanted, 0);
     p25_sm_tick_noting_tunes(opts, state);
