@@ -1743,6 +1743,9 @@ uint64_t tap_last_ms = 0;
 std::atomic<uint32_t> tap_status{0};
 /* The capture word (rtl_signal_capture_seq()): written only under tap_mutex, with the capture it stands for. */
 std::atomic<uint32_t> tap_capture_seq{0};
+/* The pairs fed with the published capture after its first block, the one that moved its word (under tap_mutex): how
+   much of a quiet request's lead, which counts from the end of that block, has already gone by when it is made. */
+uint64_t tap_capture_pairs = 0;
 std::atomic<int> bypass{0};
 std::atomic<uint64_t> search_owner{0};
 #ifdef DSD_NEO_ENABLE_INTERNAL_TEST_HOOKS
@@ -1906,6 +1909,9 @@ rtl_signal_measure_feed(const float* iq, size_t pairs, const dsd_signal_capture*
         if (capture->generation != tap_capture.generation || capture->capture_hz != tap_capture.capture_hz
             || capture->capture_offset_hz != tap_capture.capture_offset_hz) {
             tap_capture_seq.fetch_add(1, std::memory_order_release);
+            tap_capture_pairs = 0; /* the capture's first block: the lead counts from its end */
+        } else {
+            tap_capture_pairs += pairs;
         }
         tap_capture = *capture;
         tap_last_ms = dsd_realtime_mono_ms();
@@ -1998,8 +2004,28 @@ rtl_signal_measure_reset(void) {
     tap_ready = 0;
     tap_capture = dsd_signal_capture{};
     tap_capture_seq.fetch_add(1, std::memory_order_release);
+    tap_capture_pairs = 0;
     tap_last_ms = 0;
     advance_ticket(false);
+}
+
+/* @p request with the lead that already went by credited (issue #834 follow-up): a lead counts from the end of the
+   first block of its capture, so pairs the tap was fed with that same capture after that block and before the request
+   (generation, centre and offset unchanged) are taken off it. A request whose capture is not the tap's keeps its whole lead. Under feed_mutex. */
+static dsd_signal_quiet_request
+lead_credited(const dsd_signal_quiet_request& request) {
+    dsd_signal_quiet_request credited = request;
+    if (request.lead_pairs == 0U) {
+        return credited;
+    }
+    std::lock_guard<std::mutex> lock(tap_mutex);
+    const dsd_signal_capture& now = tap_capture;
+    if (now.generation == request.capture.generation && now.capture_hz == request.capture.capture_hz
+        && now.capture_offset_hz == request.capture.capture_offset_hz) {
+        const uint64_t gone = std::min<uint64_t>(tap_capture_pairs, request.lead_pairs);
+        credited.lead_pairs = request.lead_pairs - (uint32_t)gone;
+    }
+    return credited;
 }
 
 extern "C" int
@@ -2017,7 +2043,8 @@ rtl_signal_quiet_request(const dsd_signal_quiet_request* request, uint32_t* tick
             tap_quiet = tap_quiet_create();
         }
         why = DSD_SIGNAL_REQUEST_NO_MEMORY;
-        rc = tap_quiet ? dsd_signal_quiet_detector_begin(tap_quiet, request, nullptr, &why) : -1;
+        const dsd_signal_quiet_request credited = request ? lead_credited(*request) : dsd_signal_quiet_request{};
+        rc = tap_quiet ? dsd_signal_quiet_detector_begin(tap_quiet, request ? &credited : nullptr, nullptr, &why) : -1;
         std::lock_guard<std::mutex> lock(tap_mutex);
         const uint32_t next = advance_ticket(rc == 0);
         if (rc == 0) {

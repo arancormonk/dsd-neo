@@ -12,6 +12,7 @@
 #include <cmath>
 #include <cstddef>
 #include <dsd-neo/core/power.h>
+#include <dsd-neo/core/safe_api.h>
 #include <dsd-neo/io/iq_types.h>
 #include <dsd-neo/io/signal_measure.h>
 #include <dsd-neo/runtime/analog_channel.h>
@@ -1509,6 +1510,16 @@ test_quiet_spans(dsd_signal_quiet_detector* d) {
     }
 }
 
+/* Whether two floats have the same representation (a byte-for-byte guarantee: +0 and -0 differ). */
+static bool
+same_bits(float a, float b) {
+    uint32_t x = 0;
+    uint32_t y = 0;
+    DSD_MEMCPY(&x, &a, sizeof x);
+    DSD_MEMCPY(&y, &b, sizeof y);
+    return x == y;
+}
+
 /* A request's sub-window count and lead (issue #834): count 0 is the calibrated nine, byte for byte; any count from 1
    to DSD_SIGNAL_QUIET_WINDOWS_MAX judges that many sub-windows of the same length, and a count above it is refused;
    the lead's pairs are dropped before the first transform, so a carrier only inside the lead is never measured. */
@@ -1521,9 +1532,10 @@ test_quiet_windows_and_lead(dsd_signal_quiet_detector* d) {
         const auto by_default = quiet_run(d, q, iq, 4096);
         q.windows = DSD_SIGNAL_QUIET_WINDOWS;
         const auto nine = quiet_run(d, q, iq, 4096);
-        assert(by_default.max_ratio_db == nine.max_ratio_db && by_default.power_dbfs == nine.power_dbfs
-               && by_default.floor_dbfs == nine.floor_dbfs && by_default.floor_rise_db == nine.floor_rise_db
-               && by_default.quiet == nine.quiet && by_default.valid == nine.valid);
+        assert(same_bits(by_default.max_ratio_db, nine.max_ratio_db)
+               && same_bits(by_default.power_dbfs, nine.power_dbfs) && same_bits(by_default.floor_dbfs, nine.floor_dbfs)
+               && same_bits(by_default.floor_rise_db, nine.floor_rise_db) && by_default.quiet == nine.quiet
+               && by_default.valid == nine.valid);
         for (uint32_t windows : {1U, 3U, 6U, (uint32_t)DSD_SIGNAL_QUIET_WINDOWS_MAX}) {
             q.windows = windows;
             for (uint32_t lead : {0U, rate / 100}) {
@@ -1579,9 +1591,8 @@ test_quiet_dmr_coverage() {
             }
             return false;
         };
-        const uint64_t step = std::max<uint64_t>(1, rate / 1536000);
         bool five_misses = false;
-        for (uint64_t phase = 0; phase < frame; phase += step) {
+        for (uint64_t phase = 0; phase < frame; ++phase) {
             assert(covered(phase, 6));
             five_misses = five_misses || !covered(phase, 5);
         }
@@ -1743,6 +1754,42 @@ test_quiet_tap_capture_seq() {
     assert(rtl_signal_capture_seq() != last);
     assert(rtl_signal_capture_get_seq(&got, &seq) == 0 && seq == rtl_signal_capture_seq());
     assert(rtl_signal_capture_get_seq(&got, nullptr) == 0);
+}
+
+/* A quiet request's lead counts from the end of the first block of its capture (issue #834 follow-up): pairs the tap
+   was fed with that capture after that block and before the request are taken off it. A request made right after the
+   first block keeps its whole lead, one made later reads from 10 ms after that block (or at once past it), and a
+   request for another capture than the tap's keeps its whole lead. */
+static void
+test_quiet_tap_lead_credit() {
+    const auto q0 = quiet_request(1536000, DSD_SIGNAL_QUIET_CLASS_12K5);
+    const size_t window = quiet_window_pairs(q0);
+    const auto noise = quiet_noise(size_t{16} * 4096 + DSD_SIGNAL_QUIET_WINDOWS * window, 109);
+    for (size_t fed_blocks : {size_t{0}, size_t{1}, size_t{3}, size_t{5}}) {
+        for (int other_capture = 0; other_capture < 2; ++other_capture) {
+            rtl_signal_measure_reset();
+            auto q = q0;
+            q.lead_pairs = 15360;
+            dsd_signal_capture fed = q.capture;
+            if (other_capture) {
+                ++fed.generation; /* the tap runs another capture than the request's */
+            }
+            quiet_tap_feed(noise, 0, fed_blocks * 4096, fed);
+            uint32_t ticket = 0;
+            assert(rtl_signal_quiet_request(&q, &ticket, nullptr) == 0);
+            size_t used = 0;
+            while (rtl_signal_quiet_status(ticket) == 0) {
+                rtl_signal_measure_feed(noise.data() + 2 * (fed_blocks * 4096 + used), 1, &q.capture);
+                ++used;
+            }
+            const size_t after_first = fed_blocks > 0 ? (fed_blocks - 1) * 4096 : 0;
+            const size_t gone = other_capture ? 0 : std::min<size_t>(after_first, 15360);
+            assert(used == 15360 - gone + DSD_SIGNAL_QUIET_WINDOWS * window);
+            dsd_signal_quiet_result result{};
+            assert(rtl_signal_quiet_take(ticket, &result) == 1);
+        }
+    }
+    rtl_signal_measure_reset();
 }
 
 /* The shared tap's owners: a quiet request is refused while Signal search owns the tuner or holds a request or an
@@ -1964,6 +2011,7 @@ test_quiet(const dsd_signal_measure_request& r) {
     test_quiet_dmr_coverage();
     dsd_signal_quiet_detector_destroy(d);
     test_quiet_tap_capture_seq();
+    test_quiet_tap_lead_credit();
     test_quiet_tap_owners(r);
     test_quiet_tap_completion_stamp();
     test_quiet_tap_tickets();
