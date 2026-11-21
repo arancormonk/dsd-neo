@@ -13424,9 +13424,12 @@ Private per-protocol modules worth knowing about:
   only when received on the followed call's slot (`dmr_sm_follows_slot()`: either slot before a slotless grant's first
   voice) and addressed to that call (`dmr_sm_names_followed_call()`: G/I 1 and its talkgroup, G/I 0 and either party of
   a private call, as the grant or the slot's identity names it; or G/I 0 and ALLMSI 0xFFFED4 or ALLMSID 0xFFFFFF).
-  Otherwise it prints "not for the followed call" and changes nothing: no burst hint, activity, force latch or release.
-  Applied, it releases its own slot only, so a busy companion slot keeps the carrier. The synthesized lockout clear
-  (`dmr_cspdu_release_channel()`) and another FID's opcode 46 keep the carrier-wide release unread. A checked or
+  Otherwise it prints "not for the followed call" ("no followed call" when nothing is followed) and changes nothing: no
+  burst hint, activity, force latch or release. Applied, it releases its own slot only, so a busy companion slot keeps
+  the carrier. The synthesized lockout clear (`dmr_cspdu_release_channel()`) and another FID's opcode 46 keep the
+  carrier-wide release unread. Any clear arms `trunk_sm_force_release` only while a call is followed
+  (`trunk_is_tuned`): on a composite TSCC's payload slot a latched force would release the next followed grant on its
+  first tick. A checked or
   RAS-accepted clear naming another TSCC (a mapped LPCN, or a valid appended block, which the map also learns) makes it
   a current-site hunt candidate, whether or not it is for the followed call; the release still returns where the
   machine returns. Ann_WD_TSCC, Vote_Now and Adjacent_Site add candidates under the same gate. Tests:

@@ -1026,13 +1026,15 @@ dmr_cspdu_pf0_p_clear_log_status(const dsd_state* state, int clear, int csbk_fid
     return clear;
 }
 
-/* The release a clear asks the machine for: of @p slot (-1: the carrier). */
+/* The release a clear asks the machine for: of @p slot (-1: the carrier), forced for the reasons that force it. Only
+   while a call is followed: on the control channel (a composite TSCC's payload slot) the latch would outlive the
+   clear and release the next followed grant on its first tick. */
 static void
 dmr_cspdu_pf0_p_clear_emit_release(dsd_opts* opts, dsd_state* state, int clear, int slot) {
-    if (clear == 1 || clear == 2 || clear == 3 || clear == 4 || clear == 5) {
-        state->trunk_sm_force_release = 1;
-    }
     if (state->trunk_cc_freq != 0 && opts->trunk_is_tuned == 1) {
+        if (clear == 1 || clear == 2 || clear == 3 || clear == 4 || clear == 5) {
+            state->trunk_sm_force_release = 1;
+        }
         watchdog_event_current(opts, state, 0);
         watchdog_event_current(opts, state, 1);
         dmr_sm_emit_release(opts, state, slot);
@@ -1130,7 +1132,9 @@ dmr_cspdu_pf0_handle_p_clear(dsd_opts* opts, dsd_state* state, const uint8_t cs_
         return;
     }
     if (addressed && !dmr_cspdu_pf0_p_clear_for_followed_call(state, &f)) {
-        DSD_FPRINTF(stderr, " not for the followed call;");
+        const dmr_sm_ctx_t* ctx = dmr_sm_get_ctx();
+        const int following = dmr_sm_follows_slot(ctx, 0) || dmr_sm_follows_slot(ctx, 1);
+        DSD_FPRINTF(stderr, "%s", following ? " not for the followed call;" : " no followed call;");
         return;
     }
     dmr_cspdu_pf0_p_clear_mark_slots_idle(state);

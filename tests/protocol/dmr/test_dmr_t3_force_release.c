@@ -373,6 +373,35 @@ test_vendor_fid_clear_unchanged(void) {
     assert(opts.trunk_is_tuned == 0);
 }
 
+/* On the control channel (nothing followed, composite TSCC: the companion slot is the idle TSCC), a P_CLEAR on the
+   payload slot, standard (FID @p fid 0, any address) or a manufacturer's, arms no forced release: a latched one would
+   release the next followed grant on its first tick. */
+static void
+check_on_cc_clear_arms_no_forced_release(uint8_t fid) {
+    init_env();
+    assert(opts.trunk_is_tuned == 0);
+    state.dmrburstL = 9;
+    state.dmrburstR = 9;
+    uint8_t bits[256];
+    uint8_t bytes[48];
+    build_pclear_fid(bits, bytes, fid, 0U, 0U, 0xFFFED4U, 77U);
+    state.currentslot = 1;
+    dmr_cspdu(&opts, &state, bits, bytes, 1, 0);
+    assert(state.trunk_sm_force_release == 0);
+
+    dmr_sm_emit_group_grant_slot(&opts, &state, VC_HZ, /*lpcn*/ 20, /*slot*/ 0, /*tg*/ 1234, /*src*/ 42);
+    assert(opts.trunk_is_tuned == 1);
+    dmr_sm_tick_ctx(dmr_sm_get_ctx(), &opts, &state);
+    dmr_sm_tick_ctx(dmr_sm_get_ctx(), &opts, &state);
+    assert(opts.trunk_is_tuned == 1);
+}
+
+static void
+test_on_cc_clear_arms_no_forced_release(void) {
+    check_on_cc_clear_arms_no_forced_release(0U);
+    check_on_cc_clear_arms_no_forced_release(0x10U);
+}
+
 int
 main(int argc, char** argv) {
     (void)argc;
@@ -390,6 +419,7 @@ main(int argc, char** argv) {
     test_p_clear_named_tscc_becomes_candidate();
     test_synth_lockout_clear_still_releases();
     test_vendor_fid_clear_unchanged();
+    test_on_cc_clear_arms_no_forced_release();
     dsd_trunk_tuning_hooks_set((dsd_trunk_tuning_hooks){0});
     dsd_state_ext_free_all(&state);
     printf("DMR_T3_FORCE_RELEASE: OK\n");
