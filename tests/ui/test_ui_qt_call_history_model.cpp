@@ -5240,9 +5240,12 @@ test_day_labels_follow_the_local_day(void) {
                              });
         g_dayNowMs = QDateTime(QDate(2026, 1, 1), QTime(0, 0, 2)).toMSecsSinceEpoch();
         expect("day labels: nothing relabels before a check", dayChanges == 0);
-        QTimer* timer = LocalDayWatch::shared()->findChild<QTimer*>(QStringLiteral("localDayTimer"));
+        LocalDayWatch* watch = LocalDayWatch::shared();
+        QTimer* timer = watch != nullptr ? watch->timerForTest() : nullptr;
         expect("day labels: the watch's timer runs", timer != nullptr && timer->isActive());
         if (timer != nullptr) {
+            /* As the event loop delivers it: an expired single-shot timer. */
+            timer->stop();
             QMetaObject::invokeMethod(timer, "timeout");
         }
         QObject::disconnect(watchRows);
