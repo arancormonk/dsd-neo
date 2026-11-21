@@ -2000,6 +2000,7 @@ static void
 dmo_call_forget(tetra_dmo_call_t* d) {
     d->src = 0u;
     tetra_dmo_party_of(NULL, &d->party);
+    DSD_MEMSET(&d->named, 0, sizeof d->named);
     d->dst = 0u;
     d->active = 0;
     d->in_tx = 0;
@@ -2013,18 +2014,29 @@ dmo_call_forget(tetra_dmo_call_t* d) {
 /* The call a DM-SETUP, DM-SETUP PRES, DM-CONNECT ACK, DM-OCCUPIED or DM-GSETUP describes: its source and destination
  * (the destination hidden by DM-2-B), its circuit mode type from the message dependent elements and its call type from
  * the DM-SDU, each when the security class left it clear. */
+static uint32_t
+dmo_call_target(const tetra_dmo_call_t* d, const tetra_dmo_sync_h_t* h) {
+    for (uint8_t i = 0; i < d->named.n_dst && i < TETRA_DMO_NAMED_MAX; i++) {
+        if (d->named.dst[i].clear) {
+            return d->named.dst[i].ssi;
+        }
+    }
+    return (h->dst_type != 2u && !h->dst_encrypted) ? h->dst : 0u;
+}
+
 static void
 dmo_call_from(tetra_dmo_call_t* d, const tetra_dmo_sync_h_t* h) {
     if (!d->active || !tetra_dmo_party_repeats(&d->party, h)) {
         dmo_call_forget(d);
+        tetra_dmo_party_of(h, &d->party);
     }
     d->active = 1;
     d->addressed = 1;
-    tetra_dmo_party_note(&d->party, h);
+    tetra_dmo_named_note(&d->named, h);
     d->src = d->party.src;
-    /* The called party by its true SSI where one was named: a later message of the call may address it by the pseudo
-     * SSI its DM-CONNECT gave (EN 300 396-3 clause 8.5.2.1.1 note 3), which is the same called party. */
-    d->dst = d->party.called_ssi ? d->party.called : (d->party.dst_clear ? d->party.dst : 0u);
+    /* The call's first named destination stays its target: a later message of the call may address the called party
+     * by the pseudo SSI its DM-CONNECT gave (EN 300 396-3 clause 8.5.2.1.1 note 3), the same called party. */
+    d->dst = dmo_call_target(d, h);
     if (h->md_ok) {
         d->circuit_mode = (uint8_t)h->e[TETRA_DMO_E_CIRCUIT_MODE];
         d->circuit_known = 1;
@@ -2087,14 +2099,13 @@ dmo_sds_notice(dsd_opts* opts, dsd_state* state, tetra_state_t* ts, const tetra_
     calls_emit_notice(opts, state, 0, h->src, dst, notice, NULL);
 }
 
-/* A DM-RESERVED is for the call on the channel (EN 300 396-3 clause 8.5.2.1.1, note 5): the call is open and the
- * reservation is from its master, the party of the set-up that started the transmission (source address of the same
- * type, its MNI for a true SSI, the same route, the same called party: a group's TSI in a group call), or through a
- * gateway from the call's gateway (EN 300 396-5 clauses 8.4.6.1, 13.5.2.1.2). The same rule as the transmission's
- * (tetra_dmo_party_reserves(), dmo_apply_reserved()). */
+/* A DM-RESERVED is for the call on the channel (EN 300 396-3 clause 8.5.2.1.1, note 5) only when it names the call's
+ * parties exactly (tetra_dmo_named_reserves(): from the master to the call's destination, or through a gateway from
+ * the call's gateway to the DM-MS end or the group, EN 300 396-5 clauses 8.4.6.1, 13.5.2.1.2). The same rule as the
+ * transmission's (dmo_apply_reserved()); any other is ignored. */
 static int
 dmo_reserved_for_call(const tetra_dmo_call_t* d, const tetra_dmo_sync_h_t* h) {
-    return d->active && tetra_dmo_party_reserves(&d->party, h);
+    return d->active && tetra_dmo_named_reserves(&d->named, h);
 }
 
 /* A DM-RESERVED whose SCH/H passed its CRC (tetra_dmo_reservation()). It never opens traffic or a call, and one for
@@ -2130,12 +2141,13 @@ dmo_reserved(dsd_opts* opts, dsd_state* state, tetra_state_t* ts, const tetra_dm
  * apart. A call its set-up announced before any transmission began (DM-SETUP PRES, whose DM-CONNECT ACK from the same
  * calling party starts the traffic, clause 6.2; DM-GSETUP) takes the first transmission of its own party as its own,
  * and so does a call whose transmission a DM-RESERVED ended: the PDU that describes it now (@p h, NULL when none is
- * known) repeats the set-up's addresses with a source address (tetra_dmo_party_repeats(), clause 8.5.2.1.1: the same
- * source address type, address and route, the MNI for a true SSI only, the same called party), so a co-channel
- * network's master of the same SSI never takes the pending set-up's call, while the caller's DM-CONNECT ACK to the
- * called party's new pseudo SSI, which may carry another dummy MNI, does. The stricter DM-OCCUPIED rule
- * (tetra_dmo_party_continues(), note 4) holds only within a transmission. 1 when the call on the channel is the
- * transmission in progress's. */
+ * known) repeats the set-up's source (tetra_dmo_party_repeats(), clause 8.5.2.1.1: the same source address type,
+ * address and route, the MNI for a true SSI only, the same group in a group call), so a co-channel network's master
+ * of the same SSI never takes the pending set-up's call, while the caller's DM-CONNECT ACK to the called party's new
+ * pseudo SSI, which may carry another dummy MNI, does. The call record then holds the parties both the set-up and the
+ * ACK named (tetra_dmo_call_t::named), which both layers match end messages and reservations against. The stricter
+ * DM-OCCUPIED rule (tetra_dmo_party_continues(), note 4) holds only within a transmission. 1 when the call on the
+ * channel is the transmission in progress's. */
 static int
 dmo_call_of_transmission(dsd_opts* opts, dsd_state* state, tetra_state_t* ts, const tetra_dmo_sync_h_t* h) {
     tetra_dmo_call_t* const d = &ts->calls.dmo;
@@ -2152,6 +2164,23 @@ dmo_call_of_transmission(dsd_opts* opts, dsd_state* state, tetra_state_t* ts, co
     dmo_call_forget(d);
     d->tx_seq = ts->dmo_tx_seq;
     return 0;
+}
+
+/* A call PDU of the channel (dmo_pdu_kind()): the call it describes. */
+static void
+dmo_call_pdu(dsd_opts* opts, dsd_state* state, tetra_state_t* ts, const tetra_dmo_sync_h_t* h) {
+    tetra_dmo_call_t* const d = &ts->calls.dmo;
+    tetra_confirm_note_proof(state, DSD_TETRA_BURST_PROOF_DMO_SERVICE);
+    /* A DMAC-DATA that leaves its source out names no one the call record could take as its master: no address is
+     * inferred for it (EN 300 396-3 clause 8.5.2.1.2 lets a receiver assume the set-up's). */
+    if (!h->route_known && h->src_type == 2u) {
+        return;
+    }
+    (void)dmo_call_of_transmission(opts, state, ts, h);
+    dmo_call_from(d, h);
+    d->in_tx = (uint8_t)(d->in_tx || ts->dmo_tx_crypt != (uint8_t)TETRA_DMO_CRYPT_UNKNOWN);
+    d->seen_m = dsd_decode_now_mono_s();
+    dmo_publish(opts, state, ts);
 }
 
 void
@@ -2176,18 +2205,11 @@ tetra_calls_dmo_pdu(dsd_opts* opts, dsd_state* state, int sync_enc_state, const 
         return;
     }
     switch (dmo_pdu_kind(h)) {
-        case DMO_PDU_CALL:
-            tetra_confirm_note_proof(state, DSD_TETRA_BURST_PROOF_DMO_SERVICE);
-            (void)dmo_call_of_transmission(opts, state, ts, h);
-            dmo_call_from(d, h);
-            d->in_tx = (uint8_t)(d->in_tx || ts->dmo_tx_crypt != (uint8_t)TETRA_DMO_CRYPT_UNKNOWN);
-            d->seen_m = dsd_decode_now_mono_s();
-            dmo_publish(opts, state, ts);
-            break;
+        case DMO_PDU_CALL: dmo_call_pdu(opts, state, ts, h); break;
         case DMO_PDU_END:
-            /* Only the call's own end (tetra_dmo_party_ends()): another network's, route's or call's DM-TX CEASED,
-             * DM-RELEASE, DM-DISCONNECT or DM-GRELEASE leaves it (EN 300 396-3 clause 8.5.2.1.1 note 5). */
-            if (d->active && !tetra_dmo_party_ends(&d->party, h)) {
+            /* Only the call's own end, naming its parties exactly (tetra_dmo_named_ends()); any other DM-TX CEASED,
+             * DM-RELEASE, DM-DISCONNECT or DM-GRELEASE is ignored and the call ends by its idle timeout. */
+            if (!d->active || !tetra_dmo_named_ends(&d->named, h)) {
                 break;
             }
             d->active = 0;

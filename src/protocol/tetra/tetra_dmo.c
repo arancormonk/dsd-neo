@@ -1286,6 +1286,9 @@ dmo_learn_dcc(tetra_state_t* ts, const tetra_dmo_sync_s_t* s, const tetra_dmo_sy
     const uint32_t net_id = s->comm_type >= 2u ? (uint32_t)h->relay_addr : h->mni;
     ts->dmo_dcc_seed = tetra_dmo_dcc_seed(net_id, h->src);
     ts->dmo_dcc_valid = 1;
+    /* The normal bursts this colour code descrambles carry no communication type: they are read with this one
+     * (EN 300 396-5 clauses 8.5.2.1.5, 13.5.2.1.5), whatever another DSB on the carrier said since. */
+    ts->dmo_dcc_comm_type = (uint8_t)(s->comm_type & 3u);
 }
 
 static void
@@ -1413,7 +1416,6 @@ dmo_apply_setup(tetra_state_t* ts, const tetra_dmo_sync_s_t* s, const tetra_dmo_
         return;
     }
     dmo_learn_dcc(ts, s, h);
-    tetra_dmo_party_note(&ts->dmo_tx_party, h);
     dmo_set_crypt(ts, dmo_closure(crypt) >= dmo_closure(tx) ? crypt : tx);
 }
 
@@ -1461,27 +1463,6 @@ dmo_call_type_read(const tetra_dmo_sync_h_t* h) {
     }
 }
 
-/* A DMAC-DATA that leaves its source address out (source address type 10, table 23): its source is the layer 2 source
- * of the call set-up (EN 300 396-3 clause 8.5.2.1.2). A DMAC-SYNC, which always names its route, leaves it out only
- * through a gateway, as a source of its own (table 22 note). */
-static int
-dmo_source_left_out(const tetra_dmo_sync_h_t* h) {
-    return !h->route_known && h->src_type == 2u;
-}
-
-/* The destination of @p h in @p out: a true SSI destination with the MNI is the called party's TSI (clauses 8.5.2.1.1
- * and 8.5.2.2). */
-static void
-dmo_party_dst_of(const tetra_dmo_sync_h_t* h, tetra_dmo_party* out) {
-    out->dst_type = h->dst_type;
-    out->dst_clear = (uint8_t)(h->dst_type != 2u && !h->dst_encrypted);
-    out->dst = out->dst_clear ? h->dst : 0u;
-    out->called_tsi = (uint8_t)(h->dst_type == 0u && h->has_mni);
-    out->called_mni = out->called_tsi ? h->mni : 0u;
-    out->called_ssi = (uint8_t)(out->called_tsi && out->dst_clear);
-    out->called = out->called_ssi ? h->dst : 0u;
-}
-
 void
 tetra_dmo_party_of(const tetra_dmo_sync_h_t* h, tetra_dmo_party* out) {
     if (!out) {
@@ -1500,81 +1481,21 @@ tetra_dmo_party_of(const tetra_dmo_sync_h_t* h, tetra_dmo_party* out) {
         out->comm_type = (uint8_t)(h->comm_type & 3u);
         out->relay = out->comm_type != 0u ? h->relay_addr : 0u;
     }
-    dmo_party_dst_of(h, out);
-    if (dmo_call_type_read(h)) {
-        out->group_known = 1;
-        out->group = (uint8_t)(h->e[TETRA_DMO_E_CALL_TYPE] != 0u);
-    }
+    out->dst_type = h->dst_type;
+    out->dst_clear = (uint8_t)(h->dst_type != 2u && !h->dst_encrypted);
+    out->dst = out->dst_clear ? h->dst : 0u;
+    out->group = (uint8_t)(dmo_call_type_read(h) && h->e[TETRA_DMO_E_CALL_TYPE] != 0u);
     out->known = 1;
 }
 
-/* tetra_dmo_party_note(): the source a DMAC-DATA left out (clause 8.5.2.1.2), an MNI and a route @p p's PDU did not
- * carry, all from @p prev. */
-static void
-dmo_party_keep_source(tetra_dmo_party* p, const tetra_dmo_party* prev, const tetra_dmo_sync_h_t* h) {
-    if (dmo_source_left_out(h)) {
-        p->src_type = prev->src_type;
-        p->src = prev->src;
-    }
-    if (!p->has_mni && prev->has_mni) {
-        p->has_mni = 1;
-        p->mni = prev->mni;
-    }
-    if (!p->route_known && prev->route_known) {
-        p->route_known = 1;
-        p->comm_type = prev->comm_type;
-        p->relay = prev->relay;
-    }
-}
-
-/* tetra_dmo_party_note(): the destination DM-2-B hid, the called party's true TSI where @p p's PDU addressed it by a
- * pseudo SSI (clause 8.5.2.1.1 note 3) or hid its SSI, and the call type an encrypted DM-SDU hid, all from @p prev. */
-static void
-dmo_party_keep_called(tetra_dmo_party* p, const tetra_dmo_party* prev) {
-    if (!p->dst_clear && prev->dst_clear && p->dst_type == prev->dst_type) {
-        p->dst_clear = 1;
-        p->dst = prev->dst;
-    }
-    if (!p->called_tsi && prev->called_tsi) {
-        p->called_tsi = 1;
-        p->called_mni = prev->called_mni;
-        p->called_ssi = prev->called_ssi;
-        p->called = prev->called;
-    } else if (p->called_tsi && !p->called_ssi && prev->called_ssi && prev->called_mni == p->called_mni) {
-        p->called_ssi = 1;
-        p->called = prev->called;
-    }
-    if (!p->group_known && prev->group_known) {
-        p->group_known = 1;
-        p->group = prev->group;
-    }
-}
-
-void
-tetra_dmo_party_note(tetra_dmo_party* p, const tetra_dmo_sync_h_t* h) {
-    if (!p) {
-        return;
-    }
-    const tetra_dmo_party prev = *p;
-    tetra_dmo_party_of(h, p);
-    if (!prev.known) {
-        return;
-    }
-    if (!p->known) {
-        *p = prev;
-        return;
-    }
-    dmo_party_keep_source(p, &prev, h);
-    dmo_party_keep_called(p, &prev);
-}
-
-/* The common part of both rules: a party read in the clear, the same source address type and address (a DMAC-DATA
- * that leaves its source out is the set-up's, clause 8.5.2.1.2), and the same route where both name one: the same
- * communication type (table 21, clause 9.3.3), so direct operation is never a call through a repeater or gateway, and
- * through one the same repeater or gateway address (table 22). Only a DMAC-DATA, which carries no communication type
- * (table 23), leaves the route unsaid. */
+/* The source of @p h is @p p's, as both rules have it: the same source address type and address, the same route where
+ * both name one (communication type, clause 9.3.3, and repeater or gateway address, table 22), and the same called
+ * party where both name a true one: a true SSI destination with the MNI is the called party's TSI (clauses 8.5.2.1.1,
+ * 8.5.2.2), so another MNI or SSI is another called party (the SSI compared where read, DM-2-B hiding it). A group is
+ * always addressed by its TSI (clause 8.5.2.1.1), so in a group call a destination of another address type is
+ * another call's. */
 static int
-dmo_route_matches(const tetra_dmo_party* p, const tetra_dmo_sync_h_t* h) {
+dmo_party_same_route(const tetra_dmo_party* p, const tetra_dmo_sync_h_t* h) {
     if (!p->route_known || !h->route_known) {
         return 1;
     }
@@ -1583,165 +1504,262 @@ dmo_route_matches(const tetra_dmo_party* p, const tetra_dmo_sync_h_t* h) {
 }
 
 static int
-dmo_party_addresses_match(const tetra_dmo_party* p, const tetra_dmo_sync_h_t* h) {
-    if (!p || !h || !p->known || !h->has_addrs) {
-        return 0;
+dmo_party_same_called(const tetra_dmo_party* p, const tetra_dmo_sync_h_t* h) {
+    if (p->dst_type == 0u && h->dst_type == 0u && p->has_mni && h->has_mni) {
+        return h->mni == p->mni && !(!h->dst_encrypted && p->dst_clear && h->dst != p->dst);
     }
-    if (!dmo_source_left_out(h)) {
-        if (p->src_type != h->src_type || (h->src_type != 2u && p->src != h->src)) {
-            return 0;
-        }
-    }
-    return dmo_route_matches(p, h);
+    return !p->group || h->dst_type == p->dst_type;
 }
 
-/* @p h is to the called party of @p p, where both name it (EN 300 396-3 clause 8.5.2.1.1): a destination that is a
- * true SSI, with the MNI, is the called party's TSI (clause 8.5.2.2), which group-addressed occupation and reservation
- * messages carry as the set-up did, so two true destinations are one called party only with the same MNI and SSI,
- * whatever the source address type. A group is never addressed by a pseudo SSI, which addresses one DM-MS. Two pseudo
- * destinations are one called party only with the same pseudo SSI: the called party's stays valid for the call and a
- * DM-MS holds one at a time. A true SSI and a pseudo SSI may be one individual's (note 3). */
 static int
-dmo_party_called_matches(const tetra_dmo_party* p, const tetra_dmo_sync_h_t* h) {
-    const int h_clear = h->dst_type != 2u && !h->dst_encrypted;
-    if (h->dst_type == 0u && h->has_mni && p->called_tsi) {
-        return h->mni == p->called_mni && !(h_clear && p->called_ssi && h->dst != p->called);
-    }
-    if (h->dst_type == 1u && p->group_known && p->group) {
+dmo_party_same_source(const tetra_dmo_party* p, const tetra_dmo_sync_h_t* h) {
+    if (!p || !h || !p->known || !h->has_addrs || p->src_type != h->src_type
+        || (h->src_type != 2u && p->src != h->src)) {
         return 0;
     }
-    return !(h->dst_type == 1u && p->dst_type == 1u && h_clear && p->dst_clear && h->dst != p->dst);
+    return dmo_party_same_route(p, h) && dmo_party_same_called(p, h);
 }
 
 int
 tetra_dmo_party_continues(const tetra_dmo_party* p, const tetra_dmo_sync_h_t* h) {
-    if (!dmo_party_addresses_match(p, h)) {
-        return 0;
-    }
-    return (!(p->has_mni && h->has_mni) || p->mni == h->mni) && dmo_party_called_matches(p, h);
+    return dmo_party_same_source(p, h) && (!(p->has_mni && h->has_mni) || p->mni == h->mni);
 }
 
 int
 tetra_dmo_party_repeats(const tetra_dmo_party* p, const tetra_dmo_sync_h_t* h) {
-    if (!dmo_party_addresses_match(p, h)) {
-        return 0;
-    }
-    /* The source's MNI counts for a true SSI alone (note 5): behind a pseudo SSI it is the called party's, or a dummy
-     * one where the destination is a pseudo SSI too, which dmo_party_called_matches() tells apart. */
-    const int mni_ok = h->src_type != 0u || !(p->has_mni && h->has_mni) || p->mni == h->mni;
-    return mni_ok && dmo_party_called_matches(p, h);
+    return dmo_party_same_source(p, h) && (h->src_type != 0u || !(p->has_mni && h->has_mni) || p->mni == h->mni);
 }
 
-/* @p h is addressed to the layer 2 address @p p has been using as its source (EN 300 396-3 clause 8.5.2.1.1, EN 300
- * 396-5 clause 13.5.2.1.1), true or pseudo: the same address type and SSI, and for a true SSI the same MNI where both
- * carry one. A destination DM-2-B hides, or none, says nothing either way. */
+/* ---- The parties a direct mode call named ---------------------------------------------------------------------- */
+
+/* An address @p n's call named, of the same type, MNI (present or not, and its value) and SSI as @p h's address of
+ * type @p type and SSI @p ssi; an SSI DM-2-B hides (@p clear 0) is the only field not compared (EN 300 396-3 clauses
+ * 8.5.3, 9.3.2: the address type and MNI stay clear). @p want_gw: -1 any, 0 only addresses a DM-MS's PDU named, 1 only
+ * those a gateway-generated PDU named. */
 static int
-dmo_dst_is_source(const tetra_dmo_party* p, const tetra_dmo_sync_h_t* h) {
-    if (h->dst_type == 2u || h->dst_encrypted) {
+dmo_named_has(const tetra_dmo_ident* list, uint8_t n, uint8_t type, uint32_t ssi, int clear,
+              const tetra_dmo_sync_h_t* h, int want_gw) {
+    for (uint8_t i = 0; i < n && i < TETRA_DMO_NAMED_MAX; i++) {
+        const tetra_dmo_ident* id = &list[i];
+        if (want_gw >= 0 && id->by_gateway != (uint8_t)want_gw) {
+            continue;
+        }
+        if (id->type == type && id->has_mni == h->has_mni && (!h->has_mni || id->mni == h->mni)
+            && (!clear || (id->clear && id->ssi == ssi))) {
+            return 1;
+        }
+    }
+    return 0;
+}
+
+static int
+dmo_named_src(const tetra_dmo_named* n, const tetra_dmo_sync_h_t* h, int want_gw) {
+    return h->src_type != 2u && dmo_named_has(n->src, n->n_src, h->src_type, h->src, 1, h, want_gw);
+}
+
+static int
+dmo_named_dst(const tetra_dmo_named* n, const tetra_dmo_sync_h_t* h, int want_gw) {
+    return h->dst_type != 2u && dmo_named_has(n->dst, n->n_dst, h->dst_type, h->dst, !h->dst_encrypted, h, want_gw);
+}
+
+/* @p h's destination, as an address it names, is one @p n's own PDUs named as a source (@p as_src) or a destination. */
+static int
+dmo_named_dst_as(const tetra_dmo_named* n, const tetra_dmo_sync_h_t* h, int as_src, int want_gw) {
+    if (h->dst_type == 2u) {
+        return 0;
+    }
+    return as_src ? dmo_named_has(n->src, n->n_src, h->dst_type, h->dst, !h->dst_encrypted, h, want_gw)
+                  : dmo_named_dst(n, h, want_gw);
+}
+
+/* @p h's source is one @p n named as a destination: the called party answering. */
+static int
+dmo_named_src_as_dst(const tetra_dmo_named* n, const tetra_dmo_sync_h_t* h) {
+    return h->src_type != 2u && dmo_named_has(n->dst, n->n_dst, h->src_type, h->src, 1, h, -1);
+}
+
+static void
+dmo_named_add(tetra_dmo_ident* list, uint8_t* n, uint8_t type, uint32_t ssi, int clear, const tetra_dmo_sync_h_t* h) {
+    tetra_dmo_ident id;
+    DSD_MEMSET(&id, 0, sizeof id);
+    id.type = type;
+    id.clear = (uint8_t)clear;
+    id.ssi = clear ? ssi : 0u;
+    id.has_mni = h->has_mni;
+    id.mni = h->has_mni ? h->mni : 0u;
+    id.by_gateway = h->gw_generated;
+    for (uint8_t i = 0; i < *n && i < TETRA_DMO_NAMED_MAX; i++) {
+        const tetra_dmo_ident* o = &list[i];
+        if (o->type == id.type && o->clear == id.clear && o->ssi == id.ssi && o->has_mni == id.has_mni
+            && o->mni == id.mni && o->by_gateway == id.by_gateway) {
+            return;
+        }
+    }
+    if (*n < TETRA_DMO_NAMED_MAX) {
+        list[*n] = id;
+        (*n)++;
+    }
+}
+
+/* The burst came by @p n's route: the communication type and the repeater or gateway address (EN 300 396-3 table 21,
+ * clause 9.3.3, table 22; EN 300 396-5 clause 13.5.2.1.4). A DMAC-DATA carries none (table 23). */
+static int
+dmo_named_route(const tetra_dmo_named* n, const tetra_dmo_sync_h_t* h) {
+    if (!h->route_known) {
         return 1;
     }
-    if (h->dst_type != p->src_type || h->dst != p->src) {
-        return 0;
-    }
-    return h->dst_type != 0u || !(h->has_mni && p->has_mni) || h->mni == p->mni;
+    const uint8_t comm_type = (uint8_t)(h->comm_type & 3u);
+    return n->route_known && n->comm_type == comm_type && (comm_type == 0u || n->relay == h->relay_addr);
 }
 
-/* DM-DISCONNECT (EN 300 396-3 clause 9.5.4): the called party's rejection of a DM-SETUP PRES, sent to the calling
- * party, the call's master (clause 8.5.2.1.1: the response carries the master's address as its destination; through a
- * gateway it is addressed to the gateway, EN 300 396-5 clause 6.2.2.2, which sends no DM-DISCONNECT itself, clause
- * 14.5 ii). Its source is the called party: its true SSI and MNI where both the set-up and the response name a true
- * one, or a pseudo SSI the response may choose (clause 8.5.2.1.1), which no one can check. */
+/* The call's route is the first naming DSB's; a DSB by another route names nothing of the call. */
 static int
-dmo_party_disconnects(const tetra_dmo_party* p, const tetra_dmo_sync_h_t* h) {
-    if (!h->has_addrs || !dmo_route_matches(p, h) || !dmo_dst_is_source(p, h)) {
-        return 0;
+dmo_named_take_route(tetra_dmo_named* n, const tetra_dmo_sync_h_t* h) {
+    if (n->n_src != 0u || n->n_dst != 0u || n->route_known) {
+        return dmo_named_route(n, h);
     }
-    if (h->src_type != 0u || !p->called_ssi) {
-        return 1;
-    }
-    return h->src == p->called && !(h->has_mni && p->called_tsi && h->mni != p->called_mni);
+    n->route_known = 1;
+    n->comm_type = (uint8_t)(h->comm_type & 3u);
+    n->relay = n->comm_type != 0u ? h->relay_addr : 0u;
+    return 1;
 }
 
-/* DM-GRELEASE (EN 300 396-5 clause 14.5.4): a gateway's message that it can no longer support the call. The gateway
- * names no source in a gateway-specific message (clause 13.5.2.1.1), so it is the call's only through the call's
- * gateway (communication type and 10-bit gateway address, clause 13.5.2.1.4) and only addressed to the address the
- * master has been using as its layer 2 source (clause 13.5.2.1.1). */
+void
+tetra_dmo_named_note(tetra_dmo_named* n, const tetra_dmo_sync_h_t* h) {
+    if (!n || !h || !h->has_addrs || !h->route_known) {
+        return;
+    }
+    const int first = n->n_src == 0u && n->n_dst == 0u;
+    if (!dmo_named_take_route(n, h)) {
+        return;
+    }
+    n->pending_pres = (uint8_t)(h->msg_type == TETRA_DMO_MSG_SETUP_PRES && (first || n->pending_pres));
+    if (h->src_type != 2u) {
+        dmo_named_add(n->src, &n->n_src, h->src_type, h->src, 1, h);
+    }
+    if (h->dst_type != 2u) {
+        dmo_named_add(n->dst, &n->n_dst, h->dst_type, h->dst, !h->dst_encrypted, h);
+    }
+    if (dmo_call_type_read(h)) {
+        n->group_known = 1;
+        n->group = (uint8_t)(h->e[TETRA_DMO_E_CALL_TYPE] != 0u);
+    }
+}
+
+/* DM-TX CEASED or DM-RELEASE: from the master, which a DSB names (EN 300 396-3 clause 8.5.2.1.1 note 5) and a
+ * DMAC-DATA may leave out (clause 8.5.2.1.2), to the call's destination; at least one of the two carried. */
 static int
-dmo_party_gateway_releases(const tetra_dmo_party* p, const tetra_dmo_sync_h_t* h) {
-    if (!h->has_addrs || (h->route_known && (h->comm_type & 2u) == 0u)) {
+dmo_named_end_by_master(const tetra_dmo_named* n, const tetra_dmo_sync_h_t* h) {
+    const int src_carried = h->src_type != 2u;
+    const int dst_carried = h->dst_type != 2u;
+    if ((!src_carried && h->route_known) || (!src_carried && !dst_carried)) {
         return 0;
     }
-    return dmo_route_matches(p, h) && dmo_dst_is_source(p, h);
+    return (!src_carried || dmo_named_src(n, h, -1)) && (!dst_carried || dmo_named_dst(n, h, -1));
+}
+
+/* DM-DISCONNECT (EN 300 396-3 clause 9.5.4): the called party's rejection of a DM-SETUP PRES, an individual call
+ * with presence check, before it is accepted: from the called party that set-up named, to its caller (clause
+ * 8.5.2.1.1). A pseudo SSI the called party chose for its response was named by no PDU of the call: it is ignored, and
+ * the caller's DM-RELEASE that follows (clause 6.2.2.1) ends the call. */
+static int
+dmo_named_disconnects(const tetra_dmo_named* n, const tetra_dmo_sync_h_t* h) {
+    if (!n->pending_pres || (n->group_known && n->group)) {
+        return 0;
+    }
+    return dmo_named_src_as_dst(n, h) && dmo_named_dst_as(n, h, 1, -1);
+}
+
+/* DM-GRELEASE (EN 300 396-5 clause 14.5.4): through the call's gateway, gateway generated (clause 13.5.2.1.4),
+ * naming no source (clause 13.5.2.1.1), to the address the master DM-MS has been using as its source, which a DM-MS's
+ * own PDU of the call named. */
+static int
+dmo_named_gateway_releases(const tetra_dmo_named* n, const tetra_dmo_sync_h_t* h) {
+    if (!h->md_ok || h->e[TETRA_DMO_E_GW_SUBTYPE] != TETRA_DMO_GW_RELEASE || !h->route_known
+        || (h->comm_type & 2u) == 0u || !h->gw_generated || h->src_type != 2u) {
+        return 0;
+    }
+    return dmo_named_dst_as(n, h, 1, 0);
 }
 
 int
-tetra_dmo_party_ends(const tetra_dmo_party* p, const tetra_dmo_sync_h_t* h) {
-    if (!p || !h) {
+tetra_dmo_named_ends(const tetra_dmo_named* n, const tetra_dmo_sync_h_t* h) {
+    if (!n || !h || !h->has_addrs || n->n_src == 0u || !dmo_named_route(n, h)) {
         return 0;
-    }
-    /* A transmission whose party no PDU named (DM-2-C), or no call at all: nothing to check it against. */
-    if (!p->known) {
-        return 1;
     }
     switch (h->msg_type) {
         case TETRA_DMO_MSG_TX_CEASED:
-        case TETRA_DMO_MSG_RELEASE: return tetra_dmo_party_repeats(p, h);
-        case TETRA_DMO_MSG_DISCONNECT: return dmo_party_disconnects(p, h);
-        case TETRA_DMO_MSG_GATEWAY:
-            return h->md_ok && h->e[TETRA_DMO_E_GW_SUBTYPE] == TETRA_DMO_GW_RELEASE && dmo_party_gateway_releases(p, h);
+        case TETRA_DMO_MSG_RELEASE: return dmo_named_end_by_master(n, h);
+        case TETRA_DMO_MSG_DISCONNECT: return dmo_named_disconnects(n, h);
+        case TETRA_DMO_MSG_GATEWAY: return dmo_named_gateway_releases(n, h);
         default: return 0;
     }
 }
 
-/* A gateway's pseudo SSI carries its 10-bit gateway address in its 10 most significant bits (EN 300 396-5 clause
- * 13.5.2.1.3). */
+/* @p h's destination is the DM-MS end of a call through a gateway: an address a DM-MS's own PDU of the call named as
+ * its source, or a gateway-generated PDU named as its destination (EN 300 396-5 clause 13.5.2.1.2). */
 static int
-dmo_is_gateway_pseudo(const tetra_dmo_sync_h_t* h) {
-    return h->src_type == 1u && ((h->src >> 14) & 0x3FFu) == (uint32_t)(h->relay_addr & 0x3FFu);
+dmo_named_dst_is_dm_ms(const tetra_dmo_named* n, const tetra_dmo_sync_h_t* h) {
+    return dmo_named_dst_as(n, h, 1, 0) || dmo_named_dst_as(n, h, 0, 1);
+}
+
+/* A DM-RESERVED through a gateway (EN 300 396-5 clauses 8.4.6.1, 13.5.2.1.2 to 13.5.2.1.4): gateway generated, from the
+ * gateway's pseudo SSI, whose 10 most significant bits are the gateway address the burst carries. */
+static int
+dmo_named_gateway_reserves(const tetra_dmo_named* n, const tetra_dmo_sync_h_t* h) {
+    const int from_gateway =
+        h->gw_generated && h->src_type == 1u && ((h->src >> 14) & 0x3FFu) == (uint32_t)(h->relay_addr & 0x3FFu);
+    if (!from_gateway) {
+        return 0;
+    }
+    if (tetra_dmo_reservation(h) == TETRA_DMO_RSV_GATEWAY_SETUP) {
+        return dmo_named_dst_is_dm_ms(n, h);
+    }
+    if (!n->group_known) {
+        return 0;
+    }
+    return n->group ? (h->dst_type == 0u && dmo_named_dst(n, h, -1)) : dmo_named_dst_is_dm_ms(n, h);
 }
 
 int
-tetra_dmo_party_reserves(const tetra_dmo_party* p, const tetra_dmo_sync_h_t* h) {
-    if (!p || !h || !h->route_known || (h->comm_type & 2u) == 0u) {
-        return tetra_dmo_party_repeats(p, h);
-    }
-    /* Through a gateway a DM-MS sends no DM-RESERVED (EN 300 396-5 clause 8.4.6.1): the gateway does, from its pseudo
-     * SSI, to the group address in a group call or to the DM-MS's layer 2 address in an individual call (clause
-     * 13.5.2.1.2), so the master's own source names no reservation there. */
-    if (!p->known || !h->has_addrs || !dmo_route_matches(p, h) || !dmo_is_gateway_pseudo(h) || h->dst_type == 2u) {
+tetra_dmo_named_reserves(const tetra_dmo_named* n, const tetra_dmo_sync_h_t* h) {
+    if (!n || !h || !h->has_addrs || n->n_src == 0u || !h->route_known || !dmo_named_route(n, h)) {
         return 0;
     }
-    if (p->group_known && p->group) {
-        return h->dst_type == 0u && dmo_party_called_matches(p, h);
+    if ((h->comm_type & 2u) != 0u) {
+        return dmo_named_gateway_reserves(n, h);
     }
-    return (h->dst_type == p->src_type && dmo_dst_is_source(p, h)) || dmo_party_called_matches(p, h);
+    return dmo_named_src(n, h, -1) && dmo_named_dst(n, h, -1);
+}
+
+/* The end message or reservation @p h is the call on the channel's: it names the call's parties exactly. */
+static int
+dmo_call_named_ends(const tetra_state_t* ts, const tetra_dmo_sync_h_t* h) {
+    return ts->calls.dmo.active && tetra_dmo_named_ends(&ts->calls.dmo.named, h);
 }
 
 void
 tetra_dmo_transmission_ended_by(dsd_state* state, const tetra_dmo_sync_h_t* h) {
     tetra_state_t* const ts = tetra_st_existing(state);
-    if (ts && tetra_dmo_party_ends(&ts->dmo_tx_party, h)) {
+    if (ts && dmo_call_named_ends(ts, h)) {
         dmo_transmission_over(ts);
     }
 }
 
 /* A DM-RESERVED of the transmission in progress after it, or at the end of the call (tetra_dmo_reservation()): the
  * master is no longer transmitting (EN 300 396-3 clause 8.6.2, case 3, a DM-TX CEASED that went unheard), so the
- * transmission is over as at that DM-TX CEASED. Only the master's (tetra_dmo_party_reserves()): its source address,
- * of the same type, is that of the set-up that started the transmission, with the set-up's MNI for a true SSI (clause
- * 8.5.2.1.1), on the same route (direct, or through the same repeater or gateway, table 21), for the same called party
- * (a group's TSI, MNI and GSSI, in a group call). Another network's true SSI of the same value, a pseudo SSI where the
- * set-up gave a true one, a direct reservation of a relayed call's pseudo SSI or the other way, another gateway's
- * pseudo SSI, another network's group of the same GSSI or another source is another call's. Through a gateway the
- * reservation is the gateway's, from its pseudo SSI (EN 300 396-5 clauses 8.4.6.1, 13.5.2.1.2). A reservation during a
- * gateway set-up leaves the set-up as it was. */
+ * transmission is over as at that DM-TX CEASED. Only one that names the call's parties exactly
+ * (tetra_dmo_named_reserves(): from the master to the call's destination, or through a gateway from the call's gateway
+ * to the DM-MS end or the group, EN 300 396-5 clauses 8.4.6.1, 13.5.2.1.2); any other is ignored, and a reservation
+ * during a gateway set-up leaves the set-up as it was. */
 static void
 dmo_apply_reserved(tetra_state_t* ts, const tetra_dmo_sync_h_t* h) {
     const tetra_dmo_reservation_e rsv = tetra_dmo_reservation(h);
     if (rsv != TETRA_DMO_RSV_AFTER_TX && rsv != TETRA_DMO_RSV_ENDED) {
         return;
     }
-    if (ts->dmo_tx_crypt != (uint8_t)TETRA_DMO_CRYPT_UNKNOWN && tetra_dmo_party_reserves(&ts->dmo_tx_party, h)) {
+    if (ts->dmo_tx_crypt != (uint8_t)TETRA_DMO_CRYPT_UNKNOWN && ts->calls.dmo.active
+        && tetra_dmo_named_reserves(&ts->calls.dmo.named, h)) {
         dmo_transmission_over(ts);
     }
 }
@@ -1757,9 +1775,8 @@ dmo_apply_call(tetra_state_t* ts, const tetra_dmo_sync_s_t* s, const tetra_dmo_s
     } else if (role == DMO_ROLE_FRAGMENTS && h->frag_flag) {
         dmo_learn_dcc(ts, s, h);
     } else if (role == DMO_ROLE_END) {
-        /* Only the call's own end (tetra_dmo_party_ends()): EN 300 396-3 clause 8.5.2.1.1 note 5, EN 300 396-5
-         * clause 13.5.2.1.1. */
-        if (tetra_dmo_party_ends(&ts->dmo_tx_party, h)) {
+        /* Only the call's own end, naming its parties exactly (tetra_dmo_named_ends()). */
+        if (dmo_call_named_ends(ts, h)) {
             dmo_transmission_over(ts);
         }
     } else if (h->msg_type == TETRA_DMO_MSG_RESERVED) {
@@ -1783,8 +1800,10 @@ dmo_apply_sync(dsd_state* state, tetra_state_t* ts, const tetra_dmo_sync_s_t* s,
     ts->dmo_since_sync = 0;
     if (h) {
         dmo_settle(h, s->enc_state);
-        /* The DSB's frame number, which a DM-RESERVED's reservation time remaining counts from (clause 9.6.15). */
+        /* The DSB's frame number, which a DM-RESERVED's reservation time remaining counts from (clause 9.6.15), and
+         * whether a gateway sent it (EN 300 396-5 clauses 8.5.2.1.4, 13.5.2.1.4). */
         h->sync_frame = s->frame;
+        h->gw_generated = s->gw_flag;
     }
     if (h && h->has_addrs) {
         dmo_apply_call(ts, s, h);
@@ -1909,7 +1928,9 @@ dmo_log_data(const uint8_t* bits, int len, const char* chan, dsd_opts* opts, dsd
     tetra_dmo_sync_h_t h;
     char desc[160];
     char dst[16];
-    (void)tetra_dmo_parse_data(bits, len, ts ? ts->dmo_comm_type : 0, &h);
+    /* Read with the route of the transmission whose colour code descrambled it, not the last DSB's (EN 300 396-5
+     * clauses 13.5.2.1.5, 14.2: the MNI is present by that route's rules). */
+    (void)tetra_dmo_parse_data(bits, len, ts ? ts->dmo_dcc_comm_type : 0, &h);
     if (h.null_pdu) {
         TETRA_LOG_PAYLOAD(ts, "[TETRA DMO %s] DMAC-DATA null PDU\n", chan);
         return;
