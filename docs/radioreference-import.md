@@ -467,6 +467,8 @@ Limits worth knowing:
   `Failed: P25 Phase 1 -> the replay did not start at the new rate (see log)`, and the import goes no further.
   A CSV file that cannot be loaded by then (deleted in the meantime) is reported as a partial apply that names
   what did take, for example `Failed: RR import -> channel map not loaded; mode and talkgroups applied`.
+  The previous system's channel map is cleared then, not kept: its rows would send the new system's calls to the
+  old system's frequencies.
 - The tune to the system's frequency reports how it went. A tune that fails is a partial apply
   (`Failed: RR import -> tune to 851.012500 MHz failed; mode applied`). A tuner that is busy (for example
   while auto-PPM trains) takes nothing: the rest applies and the message asks for a retry
@@ -525,7 +527,7 @@ list — RadioReference adds rows over time.
 | P25, simulcast (LSM) | `-mq -^` | Yes |
 | DMR Connect Plus | `-fs` | Yes, LCN-keyed, with a `999,<cc>` seed row |
 | DMR Capacity Plus / Hytera XPT | `-fs` | Yes, LSN-paired (`2n-1`, `2n`) |
-| DMR Tier III | `-fs` | Yes, LCN-keyed, with a `999,<cc>` seed row |
+| DMR Tier III | `-fs` | Yes, keyed by RadioReference's Ch ID, with `0,<cc>` seed rows ([Tier III channel maps](#dmr-tier-iii-channel-maps)) |
 | NXDN 4800 / 9600 | `-fi` / `-fn` | When the site publishes channel numbers; it is then the control-channel hunt list, at session start and after a loss ([Startup control-channel hunt](cli.md#startup-control-channel-hunt)) |
 | EDACS Standard / Networked / Narrowband | `-fh`, or `-fH` with ESK | Yes, strictly positional |
 | EDACS Extended Addressing | `-fe`, or `-fE` with ESK | Yes, strictly positional |
@@ -559,6 +561,37 @@ Two things the preview will warn about rather than silently paper over:
   `docs/csv-formats.md`), which is one row per identifier rather than one per channel. Generating
   that file from the RadioReference plan is a follow-up: RadioReference publishes base, spacing and
   offset per entry but no identifier number or channel type.
+
+## DMR Tier III channel maps
+
+A Tier III map row is keyed by the frequency's RadioReference **Ch ID**, the channel number (1-4094, decimal) a grant
+names. RadioReference's LCN column on a Tier III site is only the row's position in the listing, so a frequency with
+no Ch ID, or one that is not a number, is left out, and the preview counts them:
+`RadioReference lists no channel number for 3 frequencies; add them in the app.`
+
+Every control frequency RadioReference marks, the primary and each alternate, that no row already holds is written
+first under key `0`:
+
+```csv
+ChannelNumber(dec),frequency(Hz) (generated from RadioReference; do not delete this line)
+0,451112500,default cc
+5,451012500
+7,451312500
+```
+
+Channel `0` is the null channel in Tier III, which no grant ever names, so this row puts the control frequency at the
+front of the control-channel hunt list and nothing else. A file made only of such rows still loads: on a site that
+sends its channels' frequencies over the air, that is all the decoder needs. That is also why the preview, when it
+generates no map at all for a Tier III site, says the system needs one only "unless the site sends frequencies".
+
+- **Ch ID can count timeslots.** On some Tier III sites RadioReference's Ch ID is per slot, `2 x channel + slot`,
+  rather than the channel number the site announces. If the channels in the decoder's grants are about half of the
+  Ch IDs, convert each one to `floor((N - 1) / 2)`: Ch IDs `603` and `604` are both channel `301`.
+- **Files generated before this change keep their `999,<cc>,default cc` row** until you refresh them
+  ([Refreshing](#refreshing)). On Tier III, 999 is a real channel number, so a grant to channel 999 would tune the
+  control channel; the refresh writes the seed under `0` instead.
+
+Connect Plus is unchanged: its 4-bit channel numbers never reach 999, so its map keeps the `999,<cc>` seed row.
 
 ## Conventional Networked systems
 

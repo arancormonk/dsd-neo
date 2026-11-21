@@ -11,6 +11,7 @@
 #include <dsd-neo/app_control/commands.h>
 #include <dsd-neo/app_control/frontend_runtime.h>
 #include <dsd-neo/app_control/rr_import_apply.h>
+#include <dsd-neo/core/csv_validate.h>
 #include <dsd-neo/core/init.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/safe_api.h>
@@ -556,6 +557,58 @@ test_apply_dmr_trunked_with_files(void) {
 
     remove(chan_csv);
     remove(group_csv);
+    freeState(&state);
+    return rc;
+}
+
+/*
+ * Issue #900: a Tier III site whose channel numbers RadioReference does not list generates a seed-only map, its control
+ * frequencies under key 0 (CHNULL, never a grant's channel) as hunt-list rows. The live import has to take it, or the
+ * apply would go on with the old system's map still loaded.
+ */
+static int
+test_apply_tier3_seed_only_map(void) {
+    int rc = 0;
+    static dsd_opts opts;
+    static dsd_state state;
+    const char* old_csv = "rr_apply_seed_old.csv";
+    const char* seed_csv = "rr_apply_seed_only.csv";
+    const char* group_csv = "rr_apply_seed_group.csv";
+    rc |= write_text(old_csv, "ChannelNumber(dec),frequency(Hz)\n"
+                              "1,851012500\n"
+                              "2,851512500\n");
+    rc |= write_text(seed_csv,
+                     "ChannelNumber(dec),frequency(Hz) (generated from RadioReference; do not delete this line)\n"
+                     "0,452012500,default cc\n"
+                     "0,452112500,default cc\n");
+    rc |= write_text(group_csv, "id,mode,name\n101,A,Dispatch\n");
+
+    dsd_csv_validation counts;
+    DSD_MEMSET(&counts, 0, sizeof counts);
+    rc |= expect_int("seed-only validates", dsd_csv_validate_chan_file(seed_csv, &counts), 0);
+    rc |= expect_int("seed-only rows accepted", (int)counts.accepted, 2);
+
+    init_test_context(&opts, &state);
+    rc |= expect_int("seed-only: old map loaded", svc_import_channel_map(&opts, &state, old_csv), 0);
+    dsd_app_rr_apply_payload p;
+    DSD_MEMSET(&p, 0, sizeof p);
+    p.decode_mode = (int32_t)DSDCFG_MODE_DMR;
+    p.trunking = 1U;
+    payload_files(&p, seed_csv, group_csv);
+    rc |= expect_int("seed-only queued", dsd_app_command_set_rr_apply(&p), DSD_APP_COMMAND_SUBMIT_QUEUED);
+    rc |= expect_int("seed-only drained", dsd_app_drain_cmds(&opts, &state), 1);
+    rc |= expect_int("seed-only: not a failure", strncmp(state.ui_msg, "Failed", 6) != 0, 1);
+    rc |= expect_str("seed-only: path adopted", opts.chan_in_file, seed_csv);
+    rc |= expect_int("seed-only: old row 1 gone", (int)state.trunk_chan_map[1], 0);
+    rc |= expect_int("seed-only: old row 2 gone", (int)state.trunk_chan_map[2], 0);
+    rc |= expect_int("seed-only: no channel rows", (int)state.trunk_chan_map_used_count, 0);
+    rc |= expect_int("seed-only: hunt list", state.lcn_freq_count, 2);
+    rc |= expect_int("seed-only: primary seed first", (int)state.trunk_lcn_freq[0], 452012500);
+    rc |= expect_int("seed-only: alternate seed next", (int)state.trunk_lcn_freq[1], 452112500);
+
+    (void)remove(old_csv);
+    (void)remove(seed_csv);
+    (void)remove(group_csv);
     freeState(&state);
     return rc;
 }
@@ -1140,6 +1193,9 @@ test_apply_partial_files(void) {
     p.decode_mode = (int32_t)DSDCFG_MODE_DMR;
     p.trunking = 1U;
     payload_files(&p, chan_csv, group_csv);
+    /* The old system's map, loaded before the import re-points the session (issue #900). */
+    rc |= expect_int("partial: old map loaded", svc_import_channel_map(&opts, &state, chan_csv), 0);
+    rc |= expect_int("partial: old map live", (int)state.trunk_chan_map[1], 851012500);
 
     g_chan_import_fails = 1;
     rc |= expect_int("partial queued", dsd_app_command_set_rr_apply(&p), DSD_APP_COMMAND_SUBMIT_QUEUED);
@@ -1148,6 +1204,11 @@ test_apply_partial_files(void) {
                      "Failed: RR import -> channel map not loaded; mode and talkgroups applied");
     rc |= expect_int("partial mode applied", opts.frame_dmr, 1);
     rc |= expect_str("partial group list applied", opts.group_in_file, group_csv);
+    /* A map that did not load leaves none: the old system's rows would tune the new system's grants off-system. */
+    rc |= expect_int("partial: old map row gone", (int)state.trunk_chan_map[1], 0);
+    rc |= expect_int("partial: no map rows", (int)state.trunk_chan_map_used_count, 0);
+    rc |= expect_int("partial: no hunt list", state.lcn_freq_count, 0);
+    rc |= expect_str("partial: no map path", opts.chan_in_file, "");
 
     p.has_group = 0U;
     p.group_path[0] = '\0';
@@ -1763,6 +1824,7 @@ main(void) {
     rc |= test_fill_payload_edacs_and_refusals();
     rc |= test_submit_null_guards();
     rc |= test_apply_dmr_trunked_with_files();
+    rc |= test_apply_tier3_seed_only_map();
     rc |= test_apply_edacs_variants();
     rc |= test_apply_simulcast_forces_qpsk();
     rc |= test_apply_refusals();

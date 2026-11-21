@@ -26355,6 +26355,47 @@ test_channel_map_reload_expected_path(void) {
     return rc;
 }
 
+/*
+ * Issue #900: a map whose only usable rows are positional (a Tier III control frequency under key 0, which names no
+ * channel) is a hunt list and loads; a file of zero-frequency placeholders has nothing to load and leaves the live map.
+ */
+static int
+test_channel_map_import_positional_rows(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    init_test_context(&opts, &state);
+    char map[DSD_TEST_PATH_MAX], seed[DSD_TEST_PATH_MAX], blank[DSD_TEST_PATH_MAX];
+    int rc = make_group_file(map, sizeof map, "dsd_positional_map", "channel,freq\n1,851012500\n2,851512500\n");
+    rc |= make_group_file(seed, sizeof seed, "dsd_positional_seed", "channel,freq,note\n0,452012500,default cc\n");
+    rc |= make_group_file(blank, sizeof blank, "dsd_positional_blank", "channel,freq\n1,0\n2,0\n");
+    if (rc != 0) {
+        freeState(&state);
+        return 1;
+    }
+    post_string(DSD_APP_CMD_IMPORT_CHANNEL_MAP, map);
+    rc |= expect_int("positional: map import drained", dsd_app_drain_cmds(&opts, &state), 1);
+    rc |= expect_int("positional: map loaded", state.trunk_chan_map[1] == 851012500, 1);
+
+    post_string(DSD_APP_CMD_IMPORT_CHANNEL_MAP, seed);
+    rc |= expect_int("positional: seed import drained", dsd_app_drain_cmds(&opts, &state), 1);
+    rc |= expect_str("positional: seed adopted", opts.chan_in_file, seed);
+    rc |= expect_true("positional: old rows gone", state.trunk_chan_map[1] == 0 && state.trunk_chan_map[2] == 0);
+    rc |= expect_true("positional: seed is the hunt list",
+                      state.lcn_freq_count == 1 && state.trunk_lcn_freq[0] == 452012500);
+
+    post_string(DSD_APP_CMD_IMPORT_CHANNEL_MAP, blank);
+    rc |= expect_int("positional: placeholder import drained", dsd_app_drain_cmds(&opts, &state), 1);
+    rc |= expect_str("positional: placeholders refused", opts.chan_in_file, seed);
+    rc |= expect_true("positional: seed kept", state.lcn_freq_count == 1 && state.trunk_lcn_freq[0] == 452012500);
+
+    dsd_app_frontend_runtime_stop();
+    freeState(&state);
+    (void)remove(map);
+    (void)remove(seed);
+    (void)remove(blank);
+    return rc;
+}
+
 #ifdef DSD_NEO_TEST_IO_CONTROL_WRAP
 /* Where the followed call and its list stand when a group list command runs (spec R3). */
 enum {
@@ -32174,6 +32215,7 @@ main(void) {
     rc |= test_group_reload_expected_path();
     rc |= test_group_reload_under_a_row_list();
     rc |= test_channel_map_reload_expected_path();
+    rc |= test_channel_map_import_positional_rows();
 #ifdef DSD_NEO_TEST_IO_CONTROL_WRAP
     for (int scenario = GROUP_RELEASE_IMPORT; scenario <= GROUP_RELEASE_RETURN_FAILS; scenario++) {
         rc |= test_group_list_command_releases_blocked_calls(scenario);

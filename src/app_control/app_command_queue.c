@@ -7285,14 +7285,15 @@ enum { RR_APPLY_CHAN_FAILED = 1, RR_APPLY_GROUP_FAILED = 2 };
    protocols (DMR Cap+/Con+/TIII) legitimately produce no channel map at all, so
    this is an ordinary outcome, not an edge case. services.h says the same thing
    about why the clear counterparts exist: "the previous file would otherwise
-   stay live for the session". Returns the halves that did not load: RR_APPLY_CHAN_FAILED and RR_APPLY_GROUP_FAILED,
-   or 0. */
+   stay live for the session". A channel map that fails to load clears the live one for the same reason (issue #900).
+   Returns the halves that did not load: RR_APPLY_CHAN_FAILED and RR_APPLY_GROUP_FAILED, or 0. */
 static int
 rr_apply_files(dsd_opts* opts, dsd_state* state, const dsd_app_rr_apply_payload* p) {
     int failed = 0;
     if (p->has_chan) {
         if (svc_import_channel_map(opts, state, p->chan_path) != 0) {
             failed |= RR_APPLY_CHAN_FAILED;
+            (void)svc_clear_channel_map(opts, state);
         }
     } else {
         (void)svc_clear_channel_map(opts, state);

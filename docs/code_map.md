@@ -5420,7 +5420,11 @@ suite runs under this compiler.
     through `dsd_rr_protocol_id_max()`, 0 = none), mirrored by `k_decode_modes[]` in `rr_import.c`. New kinds go
     just before `DSD_RR_PROTO_UNSUPPORTED`, because sidecars store the token, never the number, and tests loop
     over every value below it. A row with `map_need` 0 (TETRA) generates no channel map: `dsd_rr_generate_chan_csv()`
-    returns 0 with no text and keeps the trunked "first site only" warning.
+    returns 0 with no text and keeps the trunked "first site only" warning. Tier III rows are keyed by `ch_id` only
+    (`lcn` is a row ordinal there) and every marked control frequency no row holds is seeded under key 0 (CHNULL,
+    never a grant's channel, only a hunt-list slot); Connect Plus keeps its `999,<cc>` seed (issue #900). The live
+    import (`svc_import_channel_map()`) takes a file with a usable channel row or a usable positional slot, so such
+    a seed-only map loads; zero-frequency placeholders count for neither.
     The SOAP parser never narrows a number: every integer leaf goes through a 64-bit bounded parse
     (`rr_parse_ll_range_strict()` in `rr_types.c`), and `tgDec` sets `dsd_rr_talkgroup::tg_dec_valid` (1 only for a
     value in `0..UINT32_MAX`; a zeroed or hand-built talkgroup is invalid until it says otherwise). The `use` mark
@@ -6700,8 +6704,8 @@ the stream-notice hooks' pattern: one that fails to initialize leaves the hook u
     publishes against the configured widths a scan leave puts back, a running replay's dry re-plan, each CSV); a
     refusal changes nothing (the profile check passes the after-leave widths down to the NFM-default path too,
     `svc_check_mode_receive_profile_widths()`). After it, a failed mode change keeps its own toast (its reason; the
-    import stops), a file that does not load is a partial apply (`rr_apply_outcome`, "X not loaded; mode applied"),
-    and an I/Q replay never tunes or crosses a receiver-move boundary, rigctl peer or not
+    import stops), a file that does not load is a partial apply (`rr_apply_outcome`, "X not loaded; mode applied")
+    that leaves no old file of that kind live (a channel map that fails is cleared, issue #900), and an I/Q replay never tunes or crosses a receiver-move boundary, rigctl peer or not
   - Invariant: the import reports its tune (`rr_apply_tune()`, `rr_apply_report()`, issue #803). Only a request the
     tuner took supersedes a pending manual tune: one applied or accepted; a refusal (an RTL request that failed in its
     wait, a rigctl refusal, an RTL input with no stream) and a deferral leave it (issue #644). A failure or

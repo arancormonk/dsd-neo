@@ -837,6 +837,28 @@ svc_next_start_p25_bandplan(dsdneoUserConfig* save, const void* ctx) {
     DSD_SNPRINTF(save->trunk_p25_bandplan_csv, sizeof save->trunk_p25_bandplan_csv, "%s", (const char*)ctx);
 }
 
+/*
+ * Whether an imported map has a row to load: a channel row with a frequency, or a positional (hunt list) slot with
+ * one. A Tier III control frequency seeded under key 0 (CHNULL) names no channel, so only its slot counts (issue
+ * #900); a zero-frequency placeholder counts for neither.
+ */
+static int
+chan_map_has_usable_row(const dsd_state* imported) {
+    if (imported->trunk_chan_map_used_count > 0U) {
+        return 1;
+    }
+    int slots = imported->lcn_freq_count > 0 ? imported->lcn_freq_count : 0;
+    if (slots > DSD_TRUNK_LCN_EMBEDDED && imported->trunk_lcn_freq_ext == NULL) {
+        slots = DSD_TRUNK_LCN_EMBEDDED; // chan_map_adopt() refuses this shape; read only what exists
+    }
+    for (int i = 0; i < slots; i++) {
+        if (*dsd_state_trunk_lcn_slot_const(imported, i) != 0) {
+            return 1;
+        }
+    }
+    return 0;
+}
+
 int
 svc_import_channel_map(dsd_opts* opts, dsd_state* state, const char* path) {
     if (!opts || !state || !path || !*path) {
@@ -870,8 +892,9 @@ svc_import_channel_map(dsd_opts* opts, dsd_state* state, const char* path) {
     // The importer reports success for any file it could open, so a mispicked
     // CSV (a talkgroup list, a header-only file) parses to an empty map. Adopting
     // that would replace the live map with zeros; refuse instead, which is what
-    // the additive import used to do by doing nothing.
-    const int mapped_any = (imported->trunk_chan_map_used_count > 0);
+    // the additive import used to do by doing nothing. A file whose only rows are
+    // positional (a hunt list) is not empty.
+    const int mapped_any = chan_map_has_usable_row(imported);
     const int adopted = (import_rc == 0 && mapped_any && chan_map_adopt(opts, state, imported) == 0);
     if (adopted) {
         dsd_scan_row_keys_warn_if_unused(state, opts->scanner_mode);

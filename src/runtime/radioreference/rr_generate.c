@@ -72,9 +72,16 @@
 /* Capacity Plus and XPT expand RR LCN n into LSNs 2n-1 and 2n. */
 #define RR_LSN_SOURCE_MAX     (RR_CHAN_NUMBER_MAX / 2L)
 
-/* Convention only - nothing special-cases 999. Its effects are trunk_chan_map[999]
- * and the CC taking positional slot 0 of the LCN list. */
+/* Connect Plus only, by convention - nothing special-cases 999. Its effects are
+ * trunk_chan_map[999] and the CC taking positional slot 0 of the LCN list; a
+ * 4-bit Con+ grant never names it. Tier III cannot use it: 999 is a channel
+ * number there (1..4094), so a grant to it would tune the control channel. */
 #define RR_DEFAULT_CC_CHAN    999L
+
+/* Tier III seeds its control frequencies under LPCN 0, CHNULL: never a grant's
+ * channel (dmr_t3_lpcn_is_channel()), while the row still takes its positional
+ * slot in the LCN list the control-channel hunt walks. */
+#define RR_TIER3_SEED_CHAN    0L
 
 /* A P25 lcn small enough to be a row index is not a (iden << 12) | chan grant
  * identifier. Real RR data is always in that range, so the verbatim branch below
@@ -607,18 +614,19 @@ typedef struct {
 /**
  * @brief Resolve a frequency's channel number.
  *
- * ch_id overrides lcn for DMR and NXDN, mirroring the reference decoder: on a
- * Tier III system lcn is a meaningless 1-based row index while ch_id carries the
- * real channel number. A ch_id that does not parse leaves lcn in place silently.
+ * ch_id overrides lcn, mirroring the reference decoder. A ch_id that does not
+ * parse leaves lcn in place silently, except on Tier III, where lcn is a
+ * meaningless 1-based row index and ch_id carries the real channel number: there
+ * a frequency without a parseable ch_id has no channel number at all.
  *
- * @param freq      Site frequency.
- * @param use_ch_id Non-zero for DMR/NXDN.
+ * @param freq       Site frequency.
+ * @param ch_id_only Non-zero for Tier III: no lcn fallback.
  * @return The channel number, or -1 when there is none.
  */
 static long
-rr_freq_channel(const dsd_rr_site_freq* freq, int use_ch_id) {
-    long value = (freq->lcn >= 0) ? (long)freq->lcn : -1L;
-    if (use_ch_id && freq->ch_id[0] != '\0') {
+rr_freq_channel(const dsd_rr_site_freq* freq, int ch_id_only) {
+    long value = (!ch_id_only && freq->lcn >= 0) ? (long)freq->lcn : -1L;
+    if (freq->ch_id[0] != '\0') {
         long parsed = 0;
         if (rr_parse_long_strict(freq->ch_id, &parsed) == 0 && parsed >= 0) {
             value = parsed;
@@ -645,6 +653,7 @@ rr_chan_row_cmp(const void* lhs, const void* rhs) {
  * @brief Collect a site's usable (channel, frequency) pairs, sorted and deduped.
  *
  * @param site      Site to walk.
+ * @param ch_id_only Non-zero when only ch_id names a channel (rr_freq_channel()).
  * @param min_chan  Lowest channel number this protocol can express.
  * @param max_chan  Highest channel number this protocol can express.
  * @param out_rows  Receives the heap array; caller frees. NULL when count is 0.
@@ -653,8 +662,8 @@ rr_chan_row_cmp(const void* lhs, const void* rhs) {
  * @return 0 on success, -1 on allocation failure.
  */
 static int
-rr_collect_rows(const dsd_rr_site* site, long min_chan, long max_chan, rr_chan_row** out_rows, size_t* out_count,
-                rr_skip_counts* skips) {
+rr_collect_rows(const dsd_rr_site* site, int ch_id_only, long min_chan, long max_chan, rr_chan_row** out_rows,
+                size_t* out_count, rr_skip_counts* skips) {
     *out_rows = NULL;
     *out_count = 0;
     if (site->freq_count == 0U || site->freqs == NULL) {
@@ -669,7 +678,7 @@ rr_collect_rows(const dsd_rr_site* site, long min_chan, long max_chan, rr_chan_r
     size_t count = 0;
     for (size_t i = 0; i < site->freq_count; i++) {
         const dsd_rr_site_freq* freq = &site->freqs[i];
-        const long chan = rr_freq_channel(freq, 1);
+        const long chan = rr_freq_channel(freq, ch_id_only);
         if (!rr_freq_usable(freq->freq_hz)) {
             skips->no_freq++;
         } else if (chan < 0) {
@@ -826,7 +835,7 @@ rr_p25_identifiers_usable(const dsd_rr_site* site, const size_t* order, size_t c
     }
     int usable = 1;
     for (size_t i = 0; i < count; i++) {
-        const long chan = rr_freq_channel(&site->freqs[order[i]], 1);
+        const long chan = rr_freq_channel(&site->freqs[order[i]], 0);
         if (chan < RR_P25_IDENTIFIER_MIN || chan > RR_CHAN_NUMBER_MAX) {
             usable = 0;
             break;
@@ -893,19 +902,79 @@ rr_chan_p25(const dsd_rr_site* site, rr_text* text, dsd_rr_warning_list* warning
 
     for (size_t i = 0; i < count; i++) {
         const dsd_rr_site_freq* freq = &site->freqs[order[i]];
-        const long chan = verbatim ? rr_freq_channel(freq, 1) : (long)(i + 1U);
+        const long chan = verbatim ? rr_freq_channel(freq, 0) : (long)(i + 1U);
         rr_text_chan_row(text, chan, freq->freq_hz, NULL);
     }
     free(order);
     return 0;
 }
 
+/** @brief Whether any collected row already holds @p freq_hz. */
+static int
+rr_rows_hold_freq(const rr_chan_row* rows, size_t count, long long freq_hz) {
+    for (size_t i = 0; i < count; i++) {
+        if (rows[i].freq_hz == freq_hz) {
+            return 1;
+        }
+    }
+    return 0;
+}
+
+/**
+ * @brief Whether site frequency @p idx is a Tier III control frequency to seed in pass @p pass.
+ *
+ * Pass 0 takes the primary control frequencies, pass 1 the alternates.
+ */
+static int
+rr_tier3_seed_candidate(const dsd_rr_site* site, int pass, size_t idx) {
+    const dsd_rr_site_freq* freq = &site->freqs[idx];
+    const int marked = (pass == 0) ? freq->is_control : freq->is_alt_control;
+    return marked && rr_freq_usable(freq->freq_hz);
+}
+
+/** @brief Whether a seed candidate before (@p pass, @p idx) carries the same frequency, so it was written already. */
+static int
+rr_tier3_seed_written(const dsd_rr_site* site, int pass, size_t idx) {
+    const long long freq_hz = site->freqs[idx].freq_hz;
+    for (int p = 0; p <= pass; p++) {
+        const size_t end = (p == pass) ? idx : site->freq_count;
+        for (size_t i = 0; i < end; i++) {
+            if (rr_tier3_seed_candidate(site, p, i) && site->freqs[i].freq_hz == freq_hz) {
+                return 1;
+            }
+        }
+    }
+    return 0;
+}
+
+/**
+ * @brief Emit a Tier III site's control-frequency seed rows.
+ *
+ * Every marked primary, then alternate, control frequency the rows do not hold
+ * already is written once under RR_TIER3_SEED_CHAN, ahead of the rows, so the
+ * hunt list starts on the control channel.
+ */
+static void
+rr_tier3_seed_controls(const dsd_rr_site* site, const rr_chan_row* rows, size_t count, rr_text* text) {
+    for (int pass = 0; pass < 2; pass++) {
+        for (size_t i = 0; i < site->freq_count; i++) {
+            const long long freq_hz = site->freqs[i].freq_hz;
+            if (rr_tier3_seed_candidate(site, pass, i) && !rr_rows_hold_freq(rows, count, freq_hz)
+                && !rr_tier3_seed_written(site, pass, i)) {
+                rr_text_chan_row(text, RR_TIER3_SEED_CHAN, freq_hz, "default cc");
+            }
+        }
+    }
+}
+
 /**
  * @brief Emit a Connect Plus or Tier III channel map.
  *
  * Both index trunk_chan_map[] by the announced channel number, so rows are
- * ascending by channel with the control frequency seeded at the conventional 999
- * slot when the site marks one.
+ * ascending by channel. Connect Plus seeds the control frequency at the
+ * conventional 999 slot when the site marks one; Tier III seeds every marked
+ * control frequency the rows do not hold under key 0 (rr_tier3_seed_controls()),
+ * and skips a frequency without a ch_id rather than keying it by its row ordinal.
  *
  * @param protocol CONPLUS or TIER3.
  * @param site     Site.
@@ -921,20 +990,32 @@ rr_chan_dmr_lcn(dsd_rr_protocol protocol, const dsd_rr_site* site, rr_text* text
     size_t count = 0;
     rr_skip_counts skips = {0U, 0U, 0U, 0U};
 
-    if (rr_collect_rows(site, 1L, max_chan, &rows, &count, &skips) != 0) {
+    if (rr_collect_rows(site, !conplus, 1L, max_chan, &rows, &count, &skips) != 0) {
         return -1;
+    }
+    if (!conplus && skips.no_chan > 0U) {
+        char msg[DSD_RR_WARNING_TEXT_MAX];
+        (void)DSD_SNPRINTF(msg, sizeof(msg),
+                           "RadioReference lists no channel number for %zu frequencies; add them in the app.",
+                           skips.no_chan);
+        rr_warn(warnings, msg);
+        skips.no_chan = 0U;
     }
     rr_warn_skips(&skips, conplus ? "Connect Plus" : "Tier III", conplus ? "1..15" : "1..4094", warnings);
 
-    const long long cc_hz = dsd_rr_site_control_freq_hz(site);
-    int seeded = 0;
-    for (size_t i = 0; i < count; i++) {
-        if (rows[i].chan == RR_DEFAULT_CC_CHAN) {
-            seeded = 1;
+    if (conplus) {
+        const long long cc_hz = dsd_rr_site_control_freq_hz(site);
+        int seeded = 0;
+        for (size_t i = 0; i < count; i++) {
+            if (rows[i].chan == RR_DEFAULT_CC_CHAN) {
+                seeded = 1;
+            }
         }
-    }
-    if (cc_hz > 0 && !seeded) {
-        rr_text_chan_row(text, RR_DEFAULT_CC_CHAN, cc_hz, "default cc");
+        if (cc_hz > 0 && !seeded) {
+            rr_text_chan_row(text, RR_DEFAULT_CC_CHAN, cc_hz, "default cc");
+        }
+    } else {
+        rr_tier3_seed_controls(site, rows, count, text);
     }
     for (size_t i = 0; i < count; i++) {
         rr_text_chan_row(text, rows[i].chan, rows[i].freq_hz, NULL);
@@ -963,7 +1044,7 @@ rr_chan_dmr_lsn(const dsd_rr_site* site, rr_text* text, dsd_rr_warning_list* war
     size_t count = 0;
     rr_skip_counts skips = {0U, 0U, 0U, 0U};
 
-    if (rr_collect_rows(site, 1L, RR_LSN_SOURCE_MAX, &rows, &count, &skips) != 0) {
+    if (rr_collect_rows(site, 0, 1L, RR_LSN_SOURCE_MAX, &rows, &count, &skips) != 0) {
         return -1;
     }
     rr_warn_skips(&skips, "Capacity Plus/XPT", "1..32767", warnings);
@@ -995,7 +1076,7 @@ rr_chan_nxdn(const dsd_rr_site* site, rr_text* text, dsd_rr_warning_list* warnin
     size_t count = 0;
     rr_skip_counts skips = {0U, 0U, 0U, 0U};
 
-    if (rr_collect_rows(site, 1L, RR_CHAN_NUMBER_MAX, &rows, &count, &skips) != 0) {
+    if (rr_collect_rows(site, 0, 1L, RR_CHAN_NUMBER_MAX, &rows, &count, &skips) != 0) {
         return -1;
     }
     rr_warn_skips(&skips, "NXDN", "1..65534", warnings);
