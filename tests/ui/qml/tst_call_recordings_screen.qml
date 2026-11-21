@@ -3,6 +3,7 @@
 
 import QtQuick
 import QtTest
+import "../../../src/ui/qt/qml/Util.js" as Util
 
 // Issue #708: Settings → Manage call recordings. The store is the `recordings` map (qml_test_context.h): a case sets
 // its readings and reads back the calls the screen made; the decoderHost map runs the export.
@@ -99,35 +100,43 @@ Item {
             compare(item("callRecordingsUsage").text, "Counting recordings…");
         }
 
+        // A count as the screen says it in the run's locale (Util.countText());
+        // the dates beside it are always written the one way.
+        function counted(n) {
+            return Util.countText(n);
+        }
+
         // The span's dates are local (America/Los_Angeles here), with the year
         // outside the local day's (issue #902).
         function test_folders() {
-            testContext.setLocalTimeZone("America/Los_Angeles");
-            testContext.setLocalNowMs(Date.UTC(2025, 10, 1, 19, 0, 0));
             fill();
             verify(!item("callRecordingsEmpty").visible);
-            compare(item("callRecordingsUsage").text, "210 MB of 1 GB · 843 recordings");
+            compare(item("callRecordingsUsage").text, "210 MB of 1 GB · " + counted(843) + " recordings");
             compare(item("callRecordingsFolder0").title, "County P25");
-            compare(item("callRecordingsFolder0").subtitle, "842 recordings · 210 MB · 24 Oct – 27 Oct");
-            compare(item("callRecordingsFolder1").subtitle, "1 recording · 96 kB · 26 Oct", "one day reads as one date");
             compare(item("callRecordingsFolder2"), null, "a folder with nothing in it is not listed");
             verify(!item("callRecordingsUnfinished").visible);
             recordings.unfinishedCount = 2;
             recordings.unfinishedBytes = 4100000;
             verify(item("callRecordingsUnfinished").visible);
-            compare(item("callRecordingsUnfinished").subtitle, "2 recordings · 4.1 MB · left when listening stopped unexpectedly");
+            compare(item("callRecordingsUnfinished").subtitle, counted(2) + " recordings · 4.1 MB · left when listening stopped unexpectedly");
+            if (!testContext.setLocalTimeZone("America/Los_Angeles"))
+                skip("this host cannot make America/Los_Angeles the process time zone");
+            testContext.setLocalNowMs(Date.UTC(2025, 10, 1, 19, 0, 0));
+            compare(item("callRecordingsFolder0").subtitle, counted(842) + " recordings · 210 MB · 24 Oct – 27 Oct");
+            compare(item("callRecordingsFolder1").subtitle, "1 recording · 96 kB · 26 Oct", "one day reads as one date");
         }
 
         // Issue #902 B1: the span follows the local day: the year turning gives
         // the same folder's dates their year. B11: a stamp at 00:00 UTC is the
         // day before west of UTC.
         function test_folder_span_follows_the_local_day() {
-            testContext.setLocalTimeZone("America/Los_Angeles");
+            if (!testContext.setLocalTimeZone("America/Los_Angeles"))
+                skip("this host cannot make America/Los_Angeles the process time zone");
             testContext.setLocalNowMs(Date.UTC(2025, 11, 31, 20, 0, 0));
             fill();
-            compare(item("callRecordingsFolder0").subtitle, "842 recordings · 210 MB · 24 Oct – 27 Oct");
+            compare(item("callRecordingsFolder0").subtitle, counted(842) + " recordings · 210 MB · 24 Oct – 27 Oct");
             testContext.setLocalNowMs(Date.UTC(2026, 0, 1, 8, 0, 5));
-            compare(item("callRecordingsFolder0").subtitle, "842 recordings · 210 MB · 24 Oct 2025 – 27 Oct 2025", "the new year shows last year's");
+            compare(item("callRecordingsFolder0").subtitle, counted(842) + " recordings · 210 MB · 24 Oct 2025 – 27 Oct 2025", "the new year shows last year's");
             recordings.folders = [{uid: "u3", kind: "saved", name: "Midnight", count: 1, bytes: 1000, first: Date.UTC(2026, 0, 1) / 1000, last: Date.UTC(2026, 0, 1) / 1000, available: true}];
             compare(item("callRecordingsFolder0").subtitle, "1 recording · 1 kB · 31 Dec 2025");
         }

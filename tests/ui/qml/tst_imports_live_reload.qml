@@ -226,7 +226,8 @@ Item {
         // Issue #902 B11: the import's day is its local date, also for an
         // import at 00:00 UTC, which is the day before west of UTC.
         function test_row_summary_says_the_local_date() {
-            testContext.setLocalTimeZone("America/Los_Angeles");
+            if (!testContext.setLocalTimeZone("America/Los_Angeles"))
+                skip("this host cannot make America/Los_Angeles the process time zone");
             var at = Date.UTC(2026, 0, 1) / 1000;
             compare(tc.screen.summaryFor("group", 0, 0, at), "Empty list · Dec 31");
             compare(tc.screen.summaryFor("group", 3, 1, at), "3 talkgroups · 1 row skipped · Dec 31");

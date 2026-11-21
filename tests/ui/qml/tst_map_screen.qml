@@ -1334,7 +1334,10 @@ Item {
         function test_18l_measured_at_has_its_date_when_not_today() {
             sheet().pin = null;
             sheet().trackId = 0;
-            var now = Math.floor(savedSystems.realtimeNowMs() / 1000);
+            // One fixed sample for the local day and the times below (issue
+            // #902), so a run across midnight reads them on one day.
+            var now = Math.floor(new Date(2025, 4, 20, 9, 30, 0).getTime() / 1000);
+            testContext.setLocalNowMs(now * 1000);
             var take = function (fixTime) {
                 sheet().take({trackId: 7, label: "Unit 41", hasPosition: true, hasUnknownFix: false, ageSeconds: -1,
                               currentFix: {latitude: 10.0, longitude: 20.0, timeText: "12:04:33", newest: true, fixTime: fixTime}});
@@ -1419,8 +1422,11 @@ Item {
             testContext.startNewPositionStream();
             screen.mapShown = false;
             var list = item("mapList");
+            // The local day pinned to one sample (issue #902), so a run across midnight compares on one day.
+            var nowMs = savedSystems.realtimeNowMs();
+            testContext.setLocalNowMs(nowMs);
             var expected = function (seconds) {
-                var at = new Date(seconds * 1000), now = new Date(savedSystems.realtimeNowMs());
+                var at = new Date(seconds * 1000), now = new Date(nowMs);
                 var same = at.getFullYear() === now.getFullYear() && at.getMonth() === now.getMonth() && at.getDate() === now.getDate();
                 return Qt.formatDateTime(at, same ? "hh:mm:ss" : "yyyy-MM-dd hh:mm:ss");
             };
@@ -1440,7 +1446,8 @@ Item {
         // today takes its date at midnight. Literal local times in a zone west
         // of UTC.
         function test_18o_times_follow_the_local_day() {
-            testContext.setLocalTimeZone("America/Los_Angeles");
+            if (!testContext.setLocalTimeZone("America/Los_Angeles"))
+                skip("this host cannot make America/Los_Angeles the process time zone");
             testContext.setLocalNowMs(Date.UTC(2025, 5, 15, 3, 0, 0));
             sheet().pin = null;
             sheet().trackId = 0;

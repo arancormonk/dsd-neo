@@ -19,8 +19,17 @@ TestCase {
     // 2026-11-21 00:00 in America/Los_Angeles (UTC-8 in November).
     readonly property double dayStart: Date.UTC(2026, 10, 21, 8, 0, 0)
 
+    // Whether this host took the zone (a C library that reads no IANA name in
+    // TZ, as on Windows, does not): the cases that need it skip otherwise.
+    property bool zoneSet: false
+
     function init() {
-        testContext.setLocalTimeZone("America/Los_Angeles")
+        zoneSet = testContext.setLocalTimeZone("America/Los_Angeles")
+    }
+
+    function needZone() {
+        if (!zoneSet)
+            skip("this host cannot make America/Los_Angeles the process time zone")
     }
 
     function cleanup() {
@@ -32,6 +41,7 @@ TestCase {
     }
 
     function test_zone_reaches_javascript() {
+        needZone()
         compare(new Date(Date.UTC(2026, 0, 1)).getDate(), 31, "JavaScript dates use the zone the case set")
     }
 
@@ -54,11 +64,13 @@ TestCase {
     }
 
     function test_clock_text(data) {
+        needZone()
         compare(Util.clockText(data.ms, day()), data.text)
     }
 
     // With no day to compare against, a time always carries its date.
     function test_no_day_is_a_full_date() {
+        needZone()
         var ms = Date.UTC(2026, 10, 21, 22, 32, 5)
         compare(Util.clockText(ms, null), "2026-11-21 14:32:05")
         compare(Util.clockText(ms, undefined), "2026-11-21 14:32:05")
@@ -67,6 +79,7 @@ TestCase {
     }
 
     function test_map_text_is_the_same_in_seconds() {
+        needZone()
         var secs = Date.UTC(2026, 10, 21, 22, 32, 5) / 1000
         compare(MapText.clockText(secs, day()), "14:32:05")
         compare(MapText.clockText(secs - 86400, day()), "2026-11-20 14:32:05")

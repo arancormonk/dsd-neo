@@ -287,7 +287,8 @@ Item {
         // subtitle and its spoken name. B11: a stamp at 00:00 UTC is the day
         // before west of UTC.
         function test_rows_follow_the_local_year() {
-            testContext.setLocalTimeZone("America/Los_Angeles");
+            if (!testContext.setLocalTimeZone("America/Los_Angeles"))
+                skip("this host cannot make America/Los_Angeles the process time zone");
             testContext.setLocalNowMs(Date.UTC(2026, 11, 31, 20, 0, 0));
             openAtRoots();
             openRoot("storage");

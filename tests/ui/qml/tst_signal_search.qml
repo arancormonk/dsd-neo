@@ -5,6 +5,7 @@ import QtQuick
 import QtQuick.Window
 import QtTest
 import "../../../src/ui/qt/qml" as Ui
+import "../../../src/ui/qt/qml/Util.js" as Util
 
 Item {
     id: root
@@ -2112,7 +2113,7 @@ Item {
         }
         // The first characters of each line @p words wrap to at @p width in
         // @p text's font, read from a TextEdit laid out the same way (a Text gives
-        // no line's characters), and how many lines that is.
+        // no line's characters), each line's whole text, and how many lines that is.
         function renderedLineStarts(text, words, width) {
             var mirror = Qt.createQmlObject("import QtQuick; TextEdit { readOnly: true; visible: false; textFormat: TextEdit.PlainText }", root);
             mirror.width = width;
@@ -2120,17 +2121,21 @@ Item {
             mirror.wrapMode = text.wrapMode;
             mirror.text = words;
             var starts = [];
+            var at = [];
             var lastY = -1;
             for (var i = 0; i < mirror.length; ++i) {
                 var y = mirror.positionToRectangle(i).y;
                 if (y > lastY + 0.5) {
                     starts.push(mirror.getText(i, Math.min(mirror.length, i + 2)));
+                    at.push(i);
                     lastY = y;
                 }
             }
+            // Each drawn line's whole text.
+            var texts = at.map(function (from, k) { return mirror.getText(from, k + 1 < at.length ? at[k + 1] : mirror.length); });
             var lines = mirror.lineCount;
             mirror.destroy();
-            return {starts: starts, lines: lines};
+            return {starts: starts, texts: texts, lines: lines};
         }
         // A Recent detections row's details wrap only between values, at every
         // width from the narrowest row (360 dp, the largest text) up: a value that
@@ -2729,7 +2734,7 @@ Item {
             wait(0);
             var detail = findChild(loader.item, "searchHistoryDetail");
             compare(detail.fullText, data.text);
-            compare(detail.text.replace(/ /g, " "), data.text, "drawn as written, the time one value");
+            compare(detail.text.replace(/\u00a0/g, " "), data.text, "drawn as written, the time one value");
             compare(detail.Accessible.name, data.text, "the detail's name carries the time");
             compare(findChild(loader.item, "searchHistoryActions").accessibleName,
                     data.found.length ? "Actions for 462.5750 MHz, " + data.found : "Actions for 462.5750 MHz");
@@ -2788,7 +2793,8 @@ Item {
             waitForRendering(screen);
             var row = findChildren(screen, "searchHistoryRow")[0];
             var detail = findChild(row, "searchHistoryDetail");
-            var before = "14:32:05 · RF only · ended\nTIII Small · Net 12 · Site 3 · SYS 1183\n3 recordings";
+            // The count as the run's locale writes it (Util.countText()); the time is written the one way.
+            var before = "14:32:05 · RF only · ended\nTIII Small · Net 12 · Site 3 · SYS 1183\n" + Util.countText(3) + " recordings";
             compare(detail.fullText, before);
             scroll.contentY = Math.max(0, scroll.contentHeight - scroll.height - 40);
             waitForRendering(screen);
@@ -2862,7 +2868,9 @@ Item {
                     {tag: "failed", change: function () { model.status = Object.assign({}, model.status, {phase: 7, hit: {}}); }}];
         }
         function test_avoid_this_session_keeps_its_session(data) {
-            model.history = [historyHit()];
+            // A detection an earlier search (16) found, listed while 17 runs:
+            // the avoid is for the running search, not the detection's.
+            model.history = [historyHit({session: "16", recordingKey: "16:40"})];
             wait(0);
             var more = findChild(loader.item, "searchHistoryActions");
             more.activate();
@@ -2894,16 +2902,23 @@ Item {
             waitForRendering(loader.item);
             var row = findChild(loader.item, "searchHistoryRow");
             var detail = findChild(row, "searchHistoryDetail");
-            verify(detail.text.indexOf("2026-11-08 09:05:07 ·") === 0, JSON.stringify(detail.text));
+            verify(detail.text.indexOf("2026-11-08\u00a009:05:07\u00a0·") === 0, JSON.stringify(detail.text));
             verify(!/[^·\n] /.test(detail.text), "a value never splits across lines");
             verify(detail.contentWidth <= detail.width + 0.5, "nothing drawn past the line");
+            // As Qt draws it: the whole time on the first line, and no later line starting with a separator.
+            var drawn = renderedLineStarts(detail, detail.text, detail.width);
+            compare(drawn.lines, detail.lineCount, "the mirror wraps as the row does");
+            verify(drawn.texts[0].replace(/\u00a0/g, " ").indexOf("2026-11-08 09:05:07") === 0, JSON.stringify(drawn.texts));
+            for (var k = 1; k < drawn.texts.length; ++k)
+                verify(drawn.texts[k].trim().charAt(0) !== "·", "a drawn line starts with a separator: " + JSON.stringify(drawn.texts));
             var actions = findChild(row, "searchHistoryActions");
             verify(actions.mapToItem(row, 0, 0).x + actions.width <= row.width + 0.5, "the row's actions stay inside it");
             model.history = [];
         }
         // B11: the export's day is the local date, also at 00:00 UTC, which is the day before west of UTC.
         function test_export_name_is_the_local_date() {
-            testContext.setLocalTimeZone("America/Los_Angeles");
+            if (!testContext.setLocalTimeZone("America/Los_Angeles"))
+                skip("this host cannot make America/Los_Angeles the process time zone");
             systemsStub.nowMs = Date.UTC(2026, 0, 1);
             var id = beginExport("detections");
             compare(testContext.lastDocumentRequest().name, "Signal search detections 2025-12-31.csv");

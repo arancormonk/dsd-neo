@@ -1438,7 +1438,8 @@ Item {
         // Issue #902 B11: the backup's day is its local date, also for a
         // backup made at 00:00 UTC, which is the day before west of UTC.
         function test_confirm_message_says_the_local_date() {
-            testContext.setLocalTimeZone("America/Los_Angeles");
+            if (!testContext.setLocalTimeZone("America/Los_Angeles"))
+                skip("this host cannot make America/Los_Angeles the process time zone");
             var confirm = toConfirm(Object.assign({}, fullSummary, {createdAt: Date.UTC(2026, 0, 1) / 1000}));
             verify(confirm.message.indexOf("with the backup from Dec 31, 2025 (DSD-neo 1.4.0)?") >= 0, confirm.message);
         }
