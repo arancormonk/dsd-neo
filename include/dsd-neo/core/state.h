@@ -3124,8 +3124,10 @@ struct dsd_state {
      * talker never replaces it, its transmission moving with the call the INFO3 continues. Travels with a trunk scan
      * target. */
     dsd_nxdn_tx_source nxdn_tx_source;
-    /* NXDN Type-D: a checked VCALL's group awaiting its transmission's confirmed SCCH run (issue #903). Bound to that
-     * transmission, so one left behind by another call or carrier notes nothing. */
+    /* NXDN Type-D: a checked VCALL's group awaiting its transmission's confirmed SCCH run (issue #903). No call or
+     * carrier boundary resets it: the next confirmed SCCH consumes it, and notes it only while slot 0's ACTIVE call is
+     * still that transmission (dsd_call_snapshot_transmission(), epochs never repeat), so one left behind by another
+     * call or carrier is dropped there and notes nothing. */
     dsd_nxdn_heard_pending nxdn_heard_pending;
 
     //multi-key array

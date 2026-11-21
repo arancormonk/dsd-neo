@@ -1062,6 +1062,12 @@ call_target(const dsd_state* state) {
     return dsd_call_state_get(state, 0U, &call) > 0 ? (long)call.ota_target_id : -1L;
 }
 
+static uint64_t
+call_transmission(const dsd_state* state) {
+    dsd_call_snapshot call;
+    return dsd_call_state_get(state, 0U, &call) > 0 ? dsd_call_snapshot_transmission(&call) : 0U;
+}
+
 /* A fresh session decoding NXDN48 (the sync the frame's voice and calls publish under). */
 static void
 heard_session(dsd_opts* opts, dsd_state* state) {
@@ -2181,6 +2187,29 @@ test_heard_type_d(dsd_opts* opts, dsd_state* state) {
     send_type_d_frame(opts, state, LICH_TYPE_D_FACCH1_PAIR, scch, vcall);
     send_frame(opts, state, LICH_TYPE_D_VOICE, 0x21U, NULL, NULL);
     rc |= expect_long("Type-D unconfirmed SCCH run: not noted", heard_variant(state), -1L);
+
+    /* The group left waiting belongs to that transmission alone. The next call, a private one to the same ID (whose
+       VCALL waits for nothing), is another transmission: the SCCH run that then confirms drops the waiting group. */
+    const uint64_t left = call_transmission(state);
+    vcall_message(vcall, 0U, 4U, (uint16_t)nxdn_typed_full_id(3U, 100U), (uint16_t)nxdn_typed_full_id(3U, 5U));
+    send_type_d_frame(opts, state, LICH_TYPE_D_FACCH1_PAIR, scch, vcall);
+    rc |= expect_long("Type-D next call: same target", call_target(state), 5L);
+    rc |= expect_long("Type-D next call: another transmission", call_transmission(state) != left, 1L);
+    send_type_d_frame(opts, state, LICH_TYPE_D_VOICE, scch, NULL);
+    send_type_d_frame(opts, state, LICH_TYPE_D_VOICE, scch, NULL);
+    rc |= expect_long("Type-D left-over group: not on the next call", heard_variant(state), -1L);
+
+    /* An SCCH run confirmed before the call (an RTCH2 sending SCCHs ahead of the header frame): the header frame's VCALL
+       is noted at once. */
+    heard_session(opts, state);
+    send_type_d_frame(opts, state, LICH_TYPE_D_FACCH1_PAIR, scch, NULL);
+    send_type_d_frame(opts, state, LICH_TYPE_D_FACCH1_PAIR, scch, NULL);
+    vcall_message(vcall, 0U, 1U, (uint16_t)nxdn_typed_full_id(3U, 100U), (uint16_t)nxdn_typed_full_id(3U, 5U));
+    send_type_d_frame(opts, state, LICH_TYPE_D_FACCH1_PAIR, scch, vcall);
+    rc |= expect_long("Type-D run already confirmed: noted on the header", heard_variant(state),
+                      (long)DSD_HEARD_TG_NXDN_D);
+    rc |= expect_long("Type-D run already confirmed: full id", heard_id(state), (long)nxdn_typed_full_id(3U, 5U));
+    rc |= expect_long("Type-D run already confirmed: nothing waits", (long)state->nxdn_heard_pending.transmission, 0L);
     return rc;
 }
 
