@@ -72,8 +72,13 @@ Item {
         id: systemsStub
         property var byUid: ({"uid-a": {uid: "uid-a", name: "Warehouse"}, "uid-b": {uid: "uid-b", name: "Dock", avoidSite: true}})
         function getByUid(uid) { return byUid[uid] || {}; }
-        // A fixed clock: local noon on 2026-11-09, so an export's suggested name is known.
-        function realtimeNowMs() { return new Date(2026, 10, 9, 12, 0, 0).getTime(); }
+        // A fixed clock: local noon on 2026-11-09, so an export's suggested name is known. A case may move it.
+        readonly property double noon: new Date(2026, 10, 9, 12, 0, 0).getTime()
+        property double nowMs: noon
+        function realtimeNowMs() { return nowMs; }
+        // Issue #902: the local day, as savedSystems.localDay notifies it: 2026-11-09.
+        readonly property var firstDay: ({startMs: new Date(2026, 10, 9).getTime(), revision: 1})
+        property var localDay: firstDay
     }
     TestCase {
         name: "SignalSearch"
@@ -158,6 +163,10 @@ Item {
             testContext.resetHostPlayback();
             testContext.setPrefs("recordCalls", false);
             testContext.setPrefs("appearance", 0);
+            loader.item.systems = systemsStub;
+            systemsStub.nowMs = systemsStub.noon;
+            systemsStub.localDay = systemsStub.firstDay;
+            testContext.resetLocalDay();
         }
         // The panel is narrower than a phone: the strip beside it is scrim.
         function tapBeside(sheet) {
@@ -2370,6 +2379,7 @@ Item {
             }
             screen.systems = systemsStub;
             verify(threw, "no clock to name the file by");
+            compare(exportCalls("prepare"), "[]", "the model took no rows (issue #902 B5)");
             verify(noRequest(), "no picker");
             compare(screen.exportToken, 0);
             verify(exportButton("detections").enabled && exportButton("avoids").enabled, "nothing pending");
@@ -2687,6 +2697,217 @@ Item {
             screen.visible = true;
             wait(0);
             compare(findChildren(screen, "searchHistoryRow").filter(function (row) { return row.visible; }).length, 5);
+        }
+        // ---- Issue #902: when each detection was found ----
+        function at(y, m, d, hh, mm, ss) {
+            return new Date(y, m - 1, d, hh, mm, ss).getTime();
+        }
+        function nextDay() {
+            return {startMs: new Date(2026, 10, 10).getTime(), revision: 2};
+        }
+        // The found time leads the verdict: a clock time on the screen's day,
+        // with its date on any other, before or after it. A row with no time
+        // (missing, 0 or less, not finite) reads as it always did.
+        function test_history_row_says_when_it_was_found_data() {
+            return [
+                {tag: "today", started: at(2026, 11, 9, 14, 32, 5), text: "14:32:05 · RF only · ended", found: "14:32:05"},
+                {tag: "today, confirmed", started: at(2026, 11, 9, 0, 0, 0), confirmed: true, text: "00:00:00 · DMR · confirmed · ended", found: "00:00:00"},
+                {tag: "another day", started: at(2026, 11, 8, 9, 5, 7), text: "2026-11-08 09:05:07 · RF only · ended", found: "2026-11-08 09:05:07"},
+                {tag: "later, after a clock correction", started: at(2026, 11, 10, 0, 0, 1), text: "2026-11-10 00:00:01 · RF only · ended", found: "2026-11-10 00:00:01"},
+                {tag: "zero", started: 0, text: "RF only · ended", found: ""},
+                {tag: "negative", started: -1000, text: "RF only · ended", found: ""},
+                {tag: "not a number", started: NaN, text: "RF only · ended", found: ""},
+                {tag: "infinite", started: Infinity, text: "RF only · ended", found: ""},
+                {tag: "missing", text: "RF only · ended", found: ""}
+            ];
+        }
+        function test_history_row_says_when_it_was_found(data) {
+            var extra = data.confirmed ? {confirmed: true, protocol: "DMR"} : {};
+            if (data.started !== undefined)
+                extra.started = data.started;
+            model.history = [historyHit(extra)];
+            wait(0);
+            var detail = findChild(loader.item, "searchHistoryDetail");
+            compare(detail.fullText, data.text);
+            compare(detail.text.replace(/ /g, " "), data.text, "drawn as written, the time one value");
+            compare(detail.Accessible.name, data.text, "the detail's name carries the time");
+            compare(findChild(loader.item, "searchHistoryActions").accessibleName,
+                    data.found.length ? "Actions for 462.5750 MHz, " + data.found : "Actions for 462.5750 MHz");
+            model.history = [];
+        }
+        // With no saved systems to say the day there is no today: every time has its date.
+        function test_history_row_without_a_day_has_the_date() {
+            model.history = [historyHit({started: at(2026, 11, 9, 14, 32, 5)})];
+            wait(0);
+            loader.item.systems = null;
+            compare(loader.item.shownDay, null);
+            compare(findChild(loader.item, "searchHistoryDetail").fullText, "2026-11-09 14:32:05 · RF only · ended");
+            loader.item.systems = systemsStub;
+            compare(findChild(loader.item, "searchHistoryDetail").fullText, "14:32:05 · RF only · ended");
+            model.history = [];
+        }
+        // A day change on screen re-texts the row in place: no row is rebuilt.
+        function test_history_row_follows_the_day_in_place() {
+            model.history = [historyHit({started: at(2026, 11, 9, 14, 32, 5)})];
+            wait(0);
+            var history = repeatersIn(loader.item).filter(function (r) { return r.count === 1 && r.itemAt(0).objectName === "searchHistoryRow"; });
+            compare(history.length, 1);
+            var row = history[0].itemAt(0);
+            var changes = 0;
+            var note = function () { changes++; };
+            history[0].itemAdded.connect(note);
+            history[0].itemRemoved.connect(note);
+            systemsStub.localDay = nextDay();
+            history[0].itemAdded.disconnect(note);
+            history[0].itemRemoved.disconnect(note);
+            compare(changes, 0, "no row rebuilt");
+            compare(history[0].itemAt(0), row);
+            compare(findChild(row, "searchHistoryDetail").fullText, "2026-11-09 14:32:05 · RF only · ended");
+            compare(findChild(row, "searchHistoryActions").accessibleName, "Actions for 462.5750 MHz, 2026-11-09 14:32:05");
+            model.history = [];
+        }
+        // Hidden, a row keeps its words, its height and the reader's place
+        // through a midnight and a recordings change (B7: three recordings to
+        // none shrank a hidden row); both land on show.
+        function test_hidden_screen_freezes_the_day_and_counts_data() {
+            return [{tag: "searching", active: true}, {tag: "idle", active: false}];
+        }
+        function test_hidden_screen_freezes_the_day_and_counts(data) {
+            var screen = loader.item;
+            screen.sessionActive = data.active;
+            recordings.setDetectionRecordings("17:40", [rec("c", 1700000300, 4000), rec("b", 1700000200, 3000), rec("a", 1700000100, 2000)]);
+            var rows = [historyHit({started: at(2026, 11, 9, 14, 32, 5), site: "TIII Small · Net 12 · Site 3 · SYS 1183"})];
+            for (var i = 1; i < 5; ++i)
+                rows.push(historyHit({id: String(60 + i), recordingKey: "17:" + (60 + i)}));
+            var avoids = [];
+            for (i = 0; i < 40; ++i)
+                avoids.push(150000000 + i * 25000);
+            model.history = rows;
+            model.avoids = avoids;
+            var scroll = findChild(screen, "searchScroll");
+            waitForRendering(screen);
+            var row = findChildren(screen, "searchHistoryRow")[0];
+            var detail = findChild(row, "searchHistoryDetail");
+            var before = "14:32:05 · RF only · ended\nTIII Small · Net 12 · Site 3 · SYS 1183\n3 recordings";
+            compare(detail.fullText, before);
+            scroll.contentY = Math.max(0, scroll.contentHeight - scroll.height - 40);
+            waitForRendering(screen);
+            var place = scroll.contentY;
+            var height = row.height;
+            verify(place > 0, "the page scrolls");
+            screen.visible = false;
+            systemsStub.localDay = nextDay();
+            recordings.setDetectionRecordings("17:40", []);
+            wait(20);
+            compare(findChildren(screen, "searchHistoryRow")[0], row, "the same row");
+            compare(detail.fullText, before, "hidden, the row's words stay");
+            compare(row.height, height, "and its height");
+            compare(scroll.contentY, place, "and the reader's place");
+            screen.visible = true;
+            waitForRendering(screen);
+            compare(detail.fullText, "2026-11-09 14:32:05 · RF only · ended\nTIII Small · Net 12 · Site 3 · SYS 1183", "shown, both land");
+            verify(row.height < height, "the row is shorter by its recordings line");
+            scroll.contentY = 0;
+            model.history = [];
+            model.avoids = [];
+        }
+        // The menu names its detection with the found time, as its row; a
+        // midnight while it is open dates it.
+        function test_detection_menu_title_follows_the_day() {
+            model.history = [historyHit({started: at(2026, 11, 9, 14, 32, 5)})];
+            wait(0);
+            findChild(loader.item, "searchHistoryActions").activate();
+            var menu = findChild(loader.item, "searchDetectionMenu");
+            verify(menu.visible);
+            compare(menu.title, "462.5750 MHz · 14:32:05");
+            compare(menu.accessibleName, "462.5750 MHz · 14:32:05");
+            systemsStub.localDay = nextDay();
+            compare(menu.title, "462.5750 MHz · 2026-11-09 14:32:05");
+            menu.cancel();
+            // The Now panel's More, for the live detection, by the same rule.
+            model.status = Object.assign({}, model.status, {hit: Object.assign({}, model.status.hit, {started: at(2026, 11, 10, 8, 1, 2)})});
+            findChild(loader.item, "searchMore").clicked();
+            compare(menu.title, "463.5521 MHz · 08:01:02");
+            menu.cancel();
+            model.history = [];
+        }
+        // Two visits to one frequency are two rows, told apart by their times;
+        // each menu acts on its own detection.
+        function test_two_visits_on_one_frequency() {
+            model.history = [historyHit({id: "44", started: at(2026, 11, 9, 15, 1, 10)}), historyHit({id: "40", started: at(2026, 11, 9, 14, 32, 5)})];
+            wait(0);
+            var buttons = findChildren(loader.item, "searchHistoryActions");
+            compare(buttons.length, 2);
+            compare(buttons[0].accessibleName, "Actions for 462.5750 MHz, 15:01:10");
+            compare(buttons[1].accessibleName, "Actions for 462.5750 MHz, 14:32:05");
+            buttons[1].activate();
+            compare(findChild(loader.item, "searchDetectionMenu").title, "462.5750 MHz · 14:32:05");
+            menuItem("searchActionSave").activate();
+            compare(saved.count, 1);
+            compare(saved.signalArguments[0][0].id, "40");
+            compare(saved.signalArguments[0][0].session, "17");
+            buttons[0].activate();
+            compare(findChild(loader.item, "searchDetectionMenu").title, "462.5750 MHz · 15:01:10");
+            menuItem("searchActionExplore").activate();
+            compare(explored.signalArguments[0][0].id, "44");
+            model.history = [];
+        }
+        // B8: Avoid this session is for the session running as the menu
+        // opened. Once that one ends, fails or another takes its place while
+        // the menu is open, the action is disabled, says why, and sends
+        // nothing to any session.
+        function test_avoid_this_session_keeps_its_session_data() {
+            return [{tag: "replaced", change: function () { model.status = Object.assign({}, model.status, {session: "18"}); }},
+                    {tag: "ended", change: function () { loader.item.sessionActive = false; }},
+                    {tag: "failed", change: function () { model.status = Object.assign({}, model.status, {phase: 7, hit: {}}); }}];
+        }
+        function test_avoid_this_session_keeps_its_session(data) {
+            model.history = [historyHit()];
+            wait(0);
+            var more = findChild(loader.item, "searchHistoryActions");
+            more.activate();
+            menuItem("searchActionAvoidSession").activate();
+            compare(model.actions.join(","), "session,17,462575000", "the session the menu opened in");
+            model.actions = [];
+            more.activate();
+            var action = menuItem("searchActionAvoidSession");
+            verify(action.enabled);
+            data.change();
+            verify(!action.enabled, "disabled once its session is gone");
+            var menu = findChild(loader.item, "searchDetectionMenu");
+            var index = menu.actions.findIndex(function (a) { return a.key === "avoidSession"; });
+            compare(findChild(menu, "actionMenuDescription" + index).text, "That search session has ended.");
+            verify(action.accessibleName.indexOf("That search session has ended.") > 0, action.accessibleName);
+            menu.activate(index);
+            compare(model.actions.join(","), "", "nothing sent to any session");
+            verify(menu.visible, "the disabled action keeps the menu");
+            menu.cancel();
+            model.history = [];
+        }
+        // A date on a narrow phone at the largest text stays one value: it
+        // never splits, and no line starts with a separator.
+        function test_found_date_whole_at_360_large_text() {
+            root.width = 360;
+            Ui.Theme.fontScale = 1.6;
+            model.history = [historyHit({started: at(2026, 11, 8, 9, 5, 7), confirmed: true, protocol: "P25 Phase 1", ended: false,
+                site: "WACN BEE00 · SYS 1A3 · RFSS 1 · Site 2", access: "NAC 293", crypt: "ALG 84 · KID 0001"})];
+            waitForRendering(loader.item);
+            var row = findChild(loader.item, "searchHistoryRow");
+            var detail = findChild(row, "searchHistoryDetail");
+            verify(detail.text.indexOf("2026-11-08 09:05:07 ·") === 0, JSON.stringify(detail.text));
+            verify(!/[^·\n] /.test(detail.text), "a value never splits across lines");
+            verify(detail.contentWidth <= detail.width + 0.5, "nothing drawn past the line");
+            var actions = findChild(row, "searchHistoryActions");
+            verify(actions.mapToItem(row, 0, 0).x + actions.width <= row.width + 0.5, "the row's actions stay inside it");
+            model.history = [];
+        }
+        // B11: the export's day is the local date, also at 00:00 UTC, which is the day before west of UTC.
+        function test_export_name_is_the_local_date() {
+            testContext.setLocalTimeZone("America/Los_Angeles");
+            systemsStub.nowMs = Date.UTC(2026, 0, 1);
+            var id = beginExport("detections");
+            compare(testContext.lastDocumentRequest().name, "Signal search detections 2025-12-31.csv");
+            testContext.answerDocumentCancelled(id);
         }
         function test_capture_menu() {
             model.history = [historyHit({matches: [{systemUid: "uid-a"}, {systemUid: "uid-b"}]})];
