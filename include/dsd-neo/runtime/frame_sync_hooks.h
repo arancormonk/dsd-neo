@@ -120,6 +120,7 @@ typedef struct {
     void (*tick_guard_leave)(void);
     void (*scan_quiet_setting_changed)(dsd_state* state, int turned_on);
     int (*scan_quiet_service)(const dsd_opts* opts, dsd_state* state);
+    int (*scan_quiet_event)(const dsd_opts* opts, dsd_state* state);
     void (*content_evidence)(dsd_state* state, int level, uint32_t hold_ms);
 } dsd_frame_sync_hooks;
 
@@ -182,6 +183,15 @@ void dsd_scan_quiet_setting_changed(dsd_state* state, int turned_on);
  * and DSD_SCAN_QUIET_NONE; NONE too when nothing is installed.
  */
 int dsd_frame_sync_hook_scan_quiet_service(const dsd_opts* opts, dsd_state* state);
+
+/**
+ * The scan quiet check's event service (issue #834 follow-up), asked before each hunt symbol while the last quiet
+ * answer said a check is under way: the engine acts as soon as the tap's capture or the request's answer is there and
+ * answers as dsd_frame_sync_hook_scan_quiet_service() does; when nothing moved it does no more than lock-free loads.
+ * The hunt hands back on HAND_BACK alone, as at its 300-symbol point. One load and DSD_SCAN_QUIET_NONE with the
+ * skip-silent setting off; NONE too when nothing is installed.
+ */
+int dsd_frame_sync_hook_scan_quiet_event(const dsd_opts* opts, dsd_state* state);
 
 /**
  * Protocol code reports what its CRC/FEC gate made of the frame being decoded (issue #834): @p level

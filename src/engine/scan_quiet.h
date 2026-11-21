@@ -18,15 +18,16 @@
  *   refusal is cached: published again with the same facts and revisions while the stream keeps the output generation
  *   it refused, the visit starts nothing and reads no capture; an edit, a rate or receive change starts it again.
  * - WAIT_CAPTURE: waits for the tap's capture of the landed channel: a capture of the stream's live output generation,
- *   newer than the one read at the tune request, centred where the visit landed. Looked at no more often than every
- *   50 ms, for no longer than 1000 ms (realtime) after the landing was noted (a trunk-scan park still in flight: after
+ *   newer than the one read at the tune request, centred where the visit landed. The hunt's legacy points look at it
+ *   no more often than every 50 ms; the hunt's event service (dsd_engine_scan_quiet_event_service()) looks once
+ *   whenever the tap's capture word moves. For no longer than 1000 ms (realtime) after the landing was noted (a trunk-scan park still in flight: after
  *   the tuning ledger published its completion, which the hunt reads lock-free), or after the check started again on a
  *   visit it already published. A frame boundary of the synced-frames loop services the check too
  *   (dsd_engine_scan_quiet_frame_service()): it reads the capture without moving that 50 ms schedule and requests only
  *   SCAN_QUIET_FRAME_SETTLE_MS after the first qualifying capture the service saw (a retry: after the retryable
  *   failure), and a capture seen in time is no capture failure: its deadline is max(origin + 1000 ms, settle start +
  *   125 ms), and a capture still there past it is requested.
- * - REQUESTED: the tap measures; 400 ms (realtime) to answer. A lost, capture-changed or dropped request waits for the
+ * - REQUESTED: the tap measures, from SCAN_QUIET_LEAD_MS after the capture; 400 ms (realtime) to answer. A lost, capture-changed or dropped request waits for the
  *   capture again, at most 3 times a visit; clipping, a non-finite sample, a failed transform or the deadline end it.
  * - READY: a quiet result the scan may skip on, for 250 ms.
  * - DONE: terminal for the visit (busy, failed, timed out, refused by the tap, activity, declined, applied): no new
@@ -68,6 +69,9 @@ enum {
     /** A request a frame-boundary service starts waits this long (issue #834 R1): from the first qualifying capture the
         service saw, or from the retryable failure it collected. */
     SCAN_QUIET_FRAME_SETTLE_MS = 125,
+    /** Every request's reading starts this many ms of samples after its capture's first block (issue #834 follow-up,
+        D1-a): the request's lead, which the tap drops unmeasured. */
+    SCAN_QUIET_LEAD_MS = 10,
 };
 
 /** The longest a PARTIAL content note holds a quiet result back, in ms (decode clock): above every protocol's hold. */
@@ -322,6 +326,15 @@ void dsd_engine_scan_quiet_pending_reset(dsd_state* state);
  * 300-symbol point: this is what runs the check through them. DSD_SCAN_QUIET_NONE at once with the setting off (one
  * load), for another owner's check, or none. */
 int dsd_engine_scan_quiet_frame_service(const dsd_opts* opts, dsd_state* state, int owner_kind);
+/** The event service the frame-sync hunt runs before each symbol while a check is under way
+ * (dsd_frame_sync_hook_scan_quiet_event(), issue #834 follow-up): it acts as soon as the tap's capture word moves
+ * (WAIT_CAPTURE), the request's status word leaves pending (REQUESTED) or a READY result is free of a frame verdict,
+ * and otherwise does nothing but those lock-free loads. It never ends a check for time (the hunt's 300-symbol point,
+ * engine publications and frame boundaries keep every expiry), never moves the 50 ms legacy schedule, and requests a
+ * capture no earlier than a frame boundary may once a settle is in force. A READY result is handed back by events at
+ * most once. DSD_SCAN_QUIET_NONE with the setting off (one load) or no check under way. */
+int dsd_engine_scan_quiet_event_service(const dsd_opts* opts, dsd_state* state);
+
 /** The -Y frame-boundary yield of the synced-frames loop: 1 when the scan is -Y with skip-silent on and the -Y check's
  * frame-boundary service answers DSD_SCAN_QUIET_HAND_BACK, so the loop ends and noCarrier() decides as after the hunt's
  * hand-back. */

@@ -1009,10 +1009,57 @@ int __wrap_getFrameSync(dsd_opts* opts, dsd_state* state);
 void __real_processFrame(dsd_opts* opts, dsd_state* state);
 void __wrap_processFrame(dsd_opts* opts, dsd_state* state);
 
+/* The real hunt's symbols, watched while armed (issue #834 follow-up: the scan quiet check's early hand-back): how many
+   symbols the hunt in progress has read, and for the one call in which the fake tap first answered, how many it had read
+   by then, how many when it returned, and what it returned (-1 until then). */
+static struct {
+    int armed;
+    int in_hunt;
+    const dsd_state* state;
+    uint32_t entry_symbolcnt;
+    int answered_in_call;
+    int answered_at;
+    int returned_at;
+    int returned_sync;
+} g_hunt_watch;
+
+#if defined(USE_RADIO) && defined(DSD_NEO_TEST_RTL_WRAP)
+/* Only the radio cases (below) arm the watch and read it. */
+static void
+hunt_watch_arm(int on) {
+    DSD_MEMSET(&g_hunt_watch, 0, sizeof g_hunt_watch);
+    g_hunt_watch.armed = on;
+    g_hunt_watch.answered_at = -1;
+    g_hunt_watch.returned_at = -1;
+    g_hunt_watch.returned_sync = -1;
+}
+
+/* The symbols the hunt in progress has read, or -1 outside a hunt. */
+static int
+hunt_watch_symbols(void) {
+    return g_hunt_watch.in_hunt ? (int)(g_hunt_watch.state->symbolcnt - g_hunt_watch.entry_symbolcnt) : -1;
+}
+#endif
+
+static int
+hunt_watched(dsd_opts* opts, dsd_state* state) {
+    g_hunt_watch.state = state;
+    g_hunt_watch.entry_symbolcnt = state->symbolcnt;
+    g_hunt_watch.answered_in_call = 0;
+    g_hunt_watch.in_hunt = 1;
+    const int sync = __real_getFrameSync(opts, state);
+    g_hunt_watch.in_hunt = 0;
+    if (g_hunt_watch.answered_in_call) {
+        g_hunt_watch.returned_at = (int)(state->symbolcnt - g_hunt_watch.entry_symbolcnt);
+        g_hunt_watch.returned_sync = sync;
+    }
+    return sync;
+}
+
 int
 __wrap_getFrameSync(dsd_opts* opts, dsd_state* state) {
     if (!g_frame_script) {
-        return __real_getFrameSync(opts, state);
+        return g_hunt_watch.armed ? hunt_watched(opts, state) : __real_getFrameSync(opts, state);
     }
     if (g_frame_syncs_left <= 0) {
         return DSD_SYNC_NONE;
@@ -15652,6 +15699,15 @@ static struct {
     int requests;
     uint32_t ticket;
     uint32_t next_ticket;
+    /* When set, the decoder thread stops for pause_ms of real time, once, as the hunt in progress asks for an answer
+       having read this many symbols: a host scheduling pause while the stream it reads stands still. */
+    int pause_at_symbols;
+    unsigned int pause_ms;
+    int paused;
+    /* When set, a request is answered only once the hunt in progress has read this many symbols
+       (hunt_watch_symbols()), and once one is, no later request is ever answered. */
+    int answer_after_symbols;
+    uint32_t answered_ticket;
     dsd_signal_quiet_request last;
     int notices;
     char notice[192];
@@ -15662,6 +15718,10 @@ static struct {
 // NOLINTBEGIN(bugprone-reserved-identifier,cert-dcl37-c,cert-dcl51-cpp,misc-use-internal-linkage)
 int __real_rtl_signal_capture_get(dsd_signal_capture* capture);
 int __wrap_rtl_signal_capture_get(dsd_signal_capture* capture);
+uint32_t __real_rtl_signal_capture_seq(void);
+uint32_t __wrap_rtl_signal_capture_seq(void);
+int __real_rtl_signal_capture_get_seq(dsd_signal_capture* capture, uint32_t* seq);
+int __wrap_rtl_signal_capture_get_seq(dsd_signal_capture* capture, uint32_t* seq);
 int __real_rtl_signal_quiet_request(const dsd_signal_quiet_request* request, uint32_t* ticket,
                                     dsd_signal_request_failure* out_failure);
 int __wrap_rtl_signal_quiet_request(const dsd_signal_quiet_request* request, uint32_t* ticket,
@@ -15699,6 +15759,26 @@ __wrap_rtl_signal_capture_get(dsd_signal_capture* capture) {
     return 1;
 }
 
+/* The tap's capture word under the fake: it moves with every tune, as the fake's capture generation does. */
+uint32_t
+__wrap_rtl_signal_capture_seq(void) {
+    if (!g_yq.active) {
+        return __real_rtl_signal_capture_seq();
+    }
+    return yq_stream_gen() ^ g_rtl_tune_freq;
+}
+
+int
+__wrap_rtl_signal_capture_get_seq(dsd_signal_capture* capture, uint32_t* seq) {
+    if (!g_yq.active) {
+        return __real_rtl_signal_capture_get_seq(capture, seq);
+    }
+    if (seq) {
+        *seq = __wrap_rtl_signal_capture_seq();
+    }
+    return __wrap_rtl_signal_capture_get(capture);
+}
+
 int
 __wrap_rtl_signal_quiet_request(const dsd_signal_quiet_request* request, uint32_t* ticket,
                                 dsd_signal_request_failure* out_failure) {
@@ -15712,18 +15792,47 @@ __wrap_rtl_signal_quiet_request(const dsd_signal_quiet_request* request, uint32_
     return 0;
 }
 
+/* Whether the outstanding request @p ticket has its answer: at once, or under g_yq.answer_after_symbols. */
+static int
+yq_answered(uint32_t ticket) {
+    if (g_yq.answer_after_symbols <= 0) {
+        return 1;
+    }
+    if (g_yq.answered_ticket != 0U) {
+        return ticket == g_yq.answered_ticket;
+    }
+    const int read = hunt_watch_symbols();
+    if (g_yq.pause_at_symbols > 0 && !g_yq.paused && read >= g_yq.pause_at_symbols) {
+        g_yq.paused = 1;
+        __real_dsd_sleep_ms(g_yq.pause_ms);
+    }
+    if (read < g_yq.answer_after_symbols) {
+        return 0;
+    }
+    g_yq.answered_ticket = ticket;
+    g_hunt_watch.answered_in_call = 1;
+    g_hunt_watch.answered_at = read;
+    return 1;
+}
+
 int
 __wrap_rtl_signal_quiet_status(uint32_t ticket) {
     if (!g_yq.active) {
         return __real_rtl_signal_quiet_status(ticket);
     }
-    return (ticket != 0U && ticket == g_yq.ticket) ? 1 : -1;
+    if (ticket == 0U || ticket != g_yq.ticket) {
+        return -1;
+    }
+    return yq_answered(ticket);
 }
 
 int
 __wrap_rtl_signal_quiet_take(uint32_t ticket, dsd_signal_quiet_result* result) {
     if (!g_yq.active) {
         return __real_rtl_signal_quiet_take(ticket, result);
+    }
+    if (ticket != 0U && ticket == g_yq.ticket && !yq_answered(ticket)) {
+        return 0;
     }
     DSD_MEMSET(result, 0, sizeof *result);
     if (ticket == 0U || ticket != g_yq.ticket) {
@@ -15943,6 +16052,39 @@ test_y_quiet_skips_a_landed_row(int typed, int on) {
     yq_finish(opts, state);
     if (rc) {
         DSD_FPRINTF(stderr, "FAIL #834: %s\n", label);
+    }
+    return rc;
+}
+
+/* Issue #834 follow-up: the hunt's event service, not its 300-symbol point, collects the answer of a row measured as
+   it lands and hands back at once; the noCarrier() that follows steps off the row with one tune and one NOTICE line;
+   typed and untyped. An event service asked again hands nothing back twice. */
+static int
+test_y_quiet_event_skips_a_landed_row(int typed) {
+    dsd_opts* opts = NULL;
+    dsd_state* state = NULL;
+    if (init_test_runtime(&opts, &state) != 0) {
+        return 1;
+    }
+    yq_start(1);
+    /* Frequencies unique to each case: engine.c caches its last tune in file statics. */
+    const long int base_hz = 471012500L + (typed ? 4000000L : 0L);
+    int rc = expect_true("the first step lands row 0", yq_list(opts, state, 3, typed, 1, base_hz) == 0);
+    rc |=
+        expect_true("measured as it lands", g_yq.requests == 1 && scan_quiet_phase_get(state) == SCAN_QUIET_REQUESTED);
+    rc |= expect_true("the event service collects the answer and hands back",
+                      dsd_engine_scan_quiet_event_service(opts, state) == DSD_SCAN_QUIET_HAND_BACK);
+    rc |= expect_true("once", dsd_engine_scan_quiet_event_service(opts, state) == DSD_SCAN_QUIET_LIVE);
+    rc |= expect_true("the request carries the 10 ms lead", g_yq.last.lead_pairs == 1536000U / 100U);
+    noCarrier(opts, state);
+    rc |=
+        expect_true("one tune off the row", g_rtl_tune_calls == 1 && g_rtl_tune_freq == (uint32_t)(base_hz + 1000000L));
+    char want[192];
+    (void)scan_quiet_format_skip(want, sizeof want, NULL, 0, (uint32_t)base_hz, -97.25f, -98.75f, 1.5f);
+    rc |= expect_true("one NOTICE line", g_yq.notices == 1 && strcmp(g_yq.notice, want) == 0);
+    yq_finish(opts, state);
+    if (rc) {
+        DSD_FPRINTF(stderr, "FAIL #834: -Y event skip, %s\n", typed ? "typed" : "untyped");
     }
     return rc;
 }
@@ -17327,6 +17469,109 @@ test_live_trunk_scan_skips_a_quiet_target(int on) {
     return rc;
 }
 
+/* Issue #834 follow-up: the early hand-back end to end, for a -Y row (@p trunk 0) and a trunk-scan conventional target
+   (@p trunk 1). The live loop runs the real hunt over a flowing RTL stream, with the engine's hooks installed. The fake
+   tap answers the landed visit's request, quiet, only once the hunt in progress has read YQ_EARLY_ANSWER_SYMBOLS
+   symbols, between its 300- and 600-symbol points, and never answers a later visit's. The hunt hands back at once,
+   having read no symbol past the answer, instead of at its 600-symbol point; the owner's next pass skips the visit
+   with one tune and one NOTICE line, and the next visit, never answered, keeps the tuner.
+
+   The check's request deadline (400 ms) and its READY age (250 ms) run on the realtime clock, kept apart from the
+   stream's decode clock. The case keeps yq_start()'s fake realtime clock from landing to hand-back: on this thread
+   only a sleep moves it, so a host pause cannot run either out while the simulated stream stands still. A real
+   pause of YQ_HOST_PAUSE_MS after YQ_HOST_PAUSE_SYMBOLS symbols, longer than the deadline, shows it. */
+enum {
+    YQ_EARLY_ANSWER_SYMBOLS = 400,
+    YQ_HUNT_POINT_SYMBOLS = 300,
+    YQ_HOST_PAUSE_SYMBOLS = 200,
+    YQ_HOST_PAUSE_MS = 450,
+};
+
+static int
+live_quiet_early_hand_back_case(int trunk) {
+    const char* what = trunk ? "live trunk scan" : "live -Y";
+    dsd_opts* opts = NULL;
+    dsd_state* state = NULL;
+    if (init_test_runtime(&opts, &state) != 0) {
+        return 1;
+    }
+    live_session_start(opts, state, RTL_STREAM_OUTPUT_FSK_DISCRIMINATOR, 0U);
+    yq_start(1); /* its fake realtime clock stays on to the end */
+    static const dsd_rtl_stream_metrics_hooks metrics = {
+        .output_rate_hz = live_output_rate_hz,
+        .output_kind = live_output_kind,
+        .symbol_profile = live_symbol_profile,
+        .stream_generation = yq_stream_gen,
+    };
+    dsd_rtl_stream_metrics_hooks_set(&metrics);
+    g_yq.answer_after_symbols = YQ_EARLY_ANSWER_SYMBOLS;
+    g_yq.pause_at_symbols = YQ_HOST_PAUSE_SYMBOLS;
+    g_yq.pause_ms = YQ_HOST_PAUSE_MS;
+    hunt_watch_arm(1);
+    /* Frequencies unique to each case: engine.c caches its last tune in file statics. */
+    const long int base_hz = trunk ? 492012500L : 490012500L;
+    const long int next_hz = base_hz + 1000000L;
+    char path[DSD_TEST_PATH_MAX] = {0};
+    int rc = 0;
+    int64_t left_ms = -1;
+    if (trunk) {
+        g_live_second_hz = next_hz;
+        g_live_trunk_dwell_ms = 3000; /* nothing but the skip leaves a target */
+        yq_dmr_only(opts);
+        opts->scan_skip_silent = 1;
+        rc |= expect_true("live trunk scan set up", live_trunk_scan(opts, state, path, sizeof path, base_hz) == 0);
+        g_live_trunk_dwell_ms = 250;
+        g_yq.gen_base = 100U; /* the landing's capture is newer than the generation read at its tune */
+        if (rc == 0) {
+            left_ms = yq_live_run_until(opts, state, live_trunk_quiet_left, 2000U);
+        }
+    } else {
+        live_y_list(opts, state, base_hz);
+        opts->trunk_hangtime = 30;                         /* nothing but the skip leaves a row */
+        state->last_cc_sync_time = dsd_decode_time() - 40; /* the first step at once */
+        opts->scan_skip_silent = 1;
+        yq_dmr_only(opts);
+        /* The landing's tune, then the skip's. */
+        left_ms = yq_live_run_until(opts, state, yq_tuned_twice, 2000U);
+    }
+    /* The next visit, never answered, keeps the tuner for two more passes. */
+    for (int pass = 0; rc == 0 && pass < 2; pass++) {
+        dsd_engine_test_live_scanner_run(opts, state, 1);
+    }
+    if (rc == 0) {
+        rc |= expect_true("the visit is left", left_ms >= 0);
+        if (g_hunt_watch.answered_at != YQ_EARLY_ANSWER_SYMBOLS || g_hunt_watch.returned_at != YQ_EARLY_ANSWER_SYMBOLS
+            || g_hunt_watch.returned_sync != DSD_SYNC_NONE) {
+            DSD_FPRINTF(stderr,
+                        "FAIL: %s: the hunt saw the answer after %d symbols and returned %d after %d; want both after "
+                        "%d (before its %d-symbol point), with no sync\n",
+                        what, g_hunt_watch.answered_at, g_hunt_watch.returned_sync, g_hunt_watch.returned_at,
+                        YQ_EARLY_ANSWER_SYMBOLS, 2 * YQ_HUNT_POINT_SYMBOLS);
+            rc |= 1;
+        }
+        rc |= expect_true("exactly one tune, to the next visit",
+                          g_rtl_tune_calls == (trunk ? 1 : 2) && g_rtl_tune_freq == (uint32_t)next_hz);
+        rc |= expect_true("exactly one skip NOTICE", g_yq.notices == 1);
+        rc |= expect_true("the host paused inside the hunt", g_yq.paused == 1);
+    }
+    if (trunk) {
+        dsd_engine_trunk_scan_shutdown(opts, state);
+        (void)remove(path);
+    }
+    hunt_watch_arm(0);
+    yq_stop();
+    live_session_stop(opts, state);
+    if (rc) {
+        DSD_FPRINTF(stderr, "FAIL #834: %s early hand-back between hunt points\n", what);
+    }
+    return rc;
+}
+
+static int
+test_live_quiet_early_hand_back(void) {
+    return live_quiet_early_hand_back_case(0) | live_quiet_early_hand_back_case(1);
+}
+
 /* Issue #834 R1, trunk scan: a target whose noise keeps passing a sync word its protocol's gate rejects (NXDN48 or dPMR
    noise) keeps the synced-frames loop running, so the hunt's 300-symbol service never comes and the outer pass that
    publishes the target never runs. The loop's frame-boundary service collects the quiet result after the first
@@ -17829,6 +18074,7 @@ test_scan_quiet_decisions(void) {
     for (int typed = 0; typed <= 1; typed++) {
         rc |= test_y_quiet_skips_a_landed_row(typed, 1);
         rc |= test_y_quiet_skips_a_landed_row(typed, 0);
+        rc |= test_y_quiet_event_skips_a_landed_row(typed);
     }
     for (int which = YQ_BUSY; which <= YQ_STEP_IN_FLIGHT; which++) {
         rc |= yq_keep_case(which);
@@ -17883,6 +18129,7 @@ test_scan_quiet_decisions(void) {
     rc |= test_live_y_skips_a_quiet_row(0);
     rc |= test_live_trunk_scan_skips_a_quiet_target(1);
     rc |= test_live_trunk_scan_skips_a_quiet_target(0);
+    rc |= test_live_quiet_early_hand_back();
     rc |= test_live_p25_beat_in_a_read();
     rc |= test_live_p25_beat_pending_return_lands_before_the_next_hunt();
     rc |= test_live_p25_beat_in_a_frame_pending_return_lands_before_the_next_hunt();

@@ -1043,6 +1043,72 @@ test_a_quiet_result_hands_back_within_one_point(void) {
     }
 }
 
+/* Issue #834 follow-up: the scan quiet check's event service, faked as the engine's: HAND_BACK from
+   g_quiet_event_ready_at symbols on, LIVE before; with g_quiet_event_none it answers NONE (the check gone). */
+static long g_quiet_event_ready_at = 0;
+static long g_quiet_event_asks = 0;
+static int g_quiet_event_none = 0;
+
+static int
+fake_scan_quiet_event(const dsd_opts* opts, dsd_state* state) {
+    (void)opts;
+    (void)state;
+    g_quiet_event_asks++;
+    if (g_quiet_event_none) {
+        return DSD_SCAN_QUIET_NONE;
+    }
+    return g_symbols_emitted >= g_quiet_event_ready_at ? DSD_SCAN_QUIET_HAND_BACK : DSD_SCAN_QUIET_LIVE;
+}
+
+/* Issue #834 follow-up: a quiet answer that is ready between two 300-symbol points hands the hunt back before the next
+   symbol, not at the next point, as the point's own hand-back does (no sync, no no-sync hook); no symbol read is given
+   up. The event service is asked only while the last answer was LIVE: never with the setting off, and not again once
+   it answered NONE until a 300-symbol point says LIVE again. */
+static void
+test_a_quiet_event_hands_back_before_the_next_symbol(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    for (int variant = 0; variant < 3; variant++) {
+        init_hunt_opts_state(&opts, &state, 0);
+        assert(init_state_buffers(&state));
+        stream_reset("", 0);
+        dsd_frame_sync_reset_mod_state();
+        quiet_service_install(1000000, variant != 2, &opts);
+        g_quiet_always_live = 1;
+        g_quiet_event_ready_at = 450;
+        g_quiet_event_asks = 0;
+        g_quiet_event_none = variant == 1;
+        dsd_frame_sync_hooks_set(&(dsd_frame_sync_hooks){
+            .p25_sm_release = fake_p25_sm_release,
+            .p25_sm_vc_no_sync = fake_p25_sm_vc_no_sync,
+            .no_carrier = fake_no_carrier,
+            .scan_quiet_service = fake_scan_quiet_service,
+            .scan_quiet_event = fake_scan_quiet_event,
+        });
+        const int sync = getFrameSync(&opts, &state);
+        const long read = g_symbols_emitted;
+        dsd_frame_sync_hooks_set(NULL);
+        free_state_buffers(&state);
+        g_quiet_always_live = 0;
+        if (variant == 0) {
+            if (sync != DSD_SYNC_NONE || read != 450) {
+                DSD_FPRINTF(stderr, "FAIL #834: quiet event hand-back returned %d after %ld symbols\n", sync, read);
+            }
+            assert(sync == DSD_SYNC_NONE && read == 450);
+            assert(g_quiet_handbacks == 0 && g_quiet_asks == 1); /* the point at 300 said LIVE */
+            assert(g_quiet_event_asks == 1 + 451 - 1); /* the entry, then before each symbol but at the point */
+            assert(g_vc_no_sync_order == 0 && g_release_order == 0 && g_no_carrier_order == 0);
+        } else if (variant == 1) {
+            /* NONE at the entry: not asked again until a point says LIVE, then NONE again at once. */
+            assert(sync == -1 && read >= DSD_FRAME_SYNC_NO_SYNC_PASS_SYMBOLS);
+            /* The entry's ask, then one after each point but the last, whose symbol ends the pass. */
+            assert(g_quiet_event_asks == read / 300);
+        } else {
+            assert(sync == -1 && g_quiet_event_asks == 0 && g_quiet_asks == 0);
+        }
+    }
+}
+
 /* Issue #834: no hand-back once a frame's checked content moved the sequence. Syncs arrive inside the hunt while a
    quiet result would otherwise be ready; each returned sync's frame is scripted as one its protocol's gate passed
    (PROVEN, which moves the sequence), so every later 300-symbol point is a no, and the hunt keeps returning its syncs.
@@ -1837,6 +1903,7 @@ main(void) {
     test_idle_rotation_period_is_unchanged();
     test_a_trunk_scan_dwell_returns_inside_the_pass();
     test_a_quiet_result_hands_back_within_one_point();
+    test_a_quiet_event_hands_back_before_the_next_symbol();
     test_the_hunt_returns_its_syncs_once_the_quiet_service_answers_no();
     test_rejected_syncs_keep_the_hand_backs_and_live_never_yields();
     test_locked_modulation_rotates_within_equal_timing();

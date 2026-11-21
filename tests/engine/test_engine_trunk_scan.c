@@ -23030,6 +23030,8 @@ typedef struct {
     int analog_ok;
     uint32_t refused_rate_hz; /* one capture rate the calibration did not validate, 0 for none */
     uint32_t session;         /* rtl_stream_session_generation(): the stream opens and stops */
+    uint32_t word_bumps;      /* moves the capture word with the capture unchanged (a reset) */
+    int word_loads;           /* rtl_signal_capture_seq() loads */
 } quiet_fake_tap;
 
 static quiet_fake_tap g_tap;
@@ -23042,6 +23044,30 @@ rtl_signal_capture_get(dsd_signal_capture* capture) {
     }
     *capture = g_tap.capture;
     return 1;
+}
+
+/* The tap's capture word: a function of the capture the fake holds, so a case that changes the capture moves it. */
+static uint32_t
+quiet_fake_capture_word(void) {
+    if (!g_tap.have_capture) {
+        return 0x9e3779b9U ^ g_tap.word_bumps;
+    }
+    return (g_tap.capture.generation * 2654435761U) ^ g_tap.capture.capture_hz
+           ^ (uint32_t)g_tap.capture.capture_offset_hz ^ (g_tap.word_bumps << 24);
+}
+
+uint32_t
+rtl_signal_capture_seq(void) {
+    g_tap.word_loads++;
+    return quiet_fake_capture_word();
+}
+
+int
+rtl_signal_capture_get_seq(dsd_signal_capture* capture, uint32_t* seq) {
+    if (seq) {
+        *seq = quiet_fake_capture_word();
+    }
+    return rtl_signal_capture_get(capture);
 }
 
 int
@@ -23887,6 +23913,230 @@ test_scan_quiet_frame_boundary_late_capture_and_retry(void) {
     rc |= qt_capture_bound_case(1);
     rc |= qt_late_retry_case(800U);
     rc |= qt_late_retry_case(950U);
+    return rc;
+}
+
+/* --- Issue #834 follow-up: the hunt's event service (dsd_engine_scan_quiet_event_service()), which acts as soon as the
+ * tap's capture word or the request's status word moves, never ends a check for time, never moves the 50 ms legacy
+ * schedule, and requests no earlier than a frame boundary may once a settle is in force. --- */
+
+/* The event service @p ms of realtime later. */
+static int
+qt_event_after(dsd_opts* opts, dsd_state* state, uint64_t ms) {
+    g_quiet_rt_ms += ms;
+    return dsd_engine_scan_quiet_event_service(opts, state);
+}
+
+/* A capture appears: the event service requests at once, with the 10 ms lead; nothing moved: no capture read; the
+   answer is collected as its status word turns done, and handed back once by events (the hunt's point still hands
+   back); an event read leaves the legacy 50 ms schedule alone. */
+static int
+test_scan_quiet_event_acts_when_ready(void) {
+    char dir[DSD_TEST_PATH_MAX];
+    char path[DSD_TEST_PATH_MAX];
+    static dsd_opts opts;
+    dsd_state* const state_p = qt_shared_state();
+    if (qt_portable_start(&opts, state_p, dir, sizeof dir, path, sizeof path) != 0) {
+        return 1;
+    }
+    const uint64_t landed_ms = qt_publish_without_capture(&opts, state_p, 10U);
+    int rc = qt_expect("published with no capture yet", scan_quiet_phase_get(state_p) == SCAN_QUIET_WAIT_CAPTURE);
+    const int reads = g_tap.capture_reads;
+    rc |= qt_expect("nothing moved: no capture read", qt_event_after(&opts, state_p, 2U) == DSD_SCAN_QUIET_LIVE
+                                                          && g_tap.capture_reads == reads && g_tap.word_loads > 0);
+    /* A capture of the old generation moves the word but does not qualify: read once, nothing asked. */
+    quiet_tap_capture(k_qt_hz_a, QT_GEN);
+    g_quiet_rt_ms = landed_ms + 20U;
+    rc |= qt_expect("a capture that does not qualify: read, waits",
+                    dsd_engine_scan_quiet_event_service(&opts, state_p) == DSD_SCAN_QUIET_LIVE
+                        && g_tap.capture_reads == reads + 1 && g_tap.requests == 0);
+    /* The legacy schedule the publication at +10 set: its next read is due at +60, and the event read did not move
+       it. */
+    g_quiet_rt_ms = landed_ms + 60U;
+    (void)dsd_engine_scan_quiet_service(&opts, state_p);
+    rc |= qt_expect("the legacy point still reads at +60", g_tap.capture_reads == reads + 2);
+    quiet_tap_capture(k_qt_hz_a, QT_GEN + 1);
+    g_quiet_rt_ms = landed_ms + 61U;
+    rc |= qt_expect("the landed capture: requested at once",
+                    dsd_engine_scan_quiet_event_service(&opts, state_p) == DSD_SCAN_QUIET_LIVE
+                        && scan_quiet_phase_get(state_p) == SCAN_QUIET_REQUESTED && g_tap.requests == 1);
+    rc |= qt_expect("with a 10 ms lead", g_tap.last_request.lead_pairs == 1536000U / 100U);
+    rc |= qt_expect("pending: nothing taken", qt_event_after(&opts, state_p, 50U) == DSD_SCAN_QUIET_LIVE
+                                                  && scan_quiet_phase_get(state_p) == SCAN_QUIET_REQUESTED);
+    g_quiet_rt_ms += 50U;
+    quiet_tap_finish(1, DSD_SIGNAL_MEASURE_OK);
+    rc |= qt_expect("the answer: handed back at once",
+                    dsd_engine_scan_quiet_event_service(&opts, state_p) == DSD_SCAN_QUIET_HAND_BACK);
+    rc |= qt_expect("handed back by events once", qt_event_after(&opts, state_p, 1U) == DSD_SCAN_QUIET_LIVE
+                                                      && scan_quiet_phase_get(state_p) == SCAN_QUIET_READY);
+    rc |= qt_expect("the hunt's point still hands it back",
+                    quiet_service_after(&opts, state_p, 1U) == DSD_SCAN_QUIET_HAND_BACK);
+    rc |= qt_expect("and the tick applies it", quiet_apply(&opts, state_p, SCAN_QUIET_OWNER_TRUNK) == 1);
+    quiet_rig_finish(&opts, state_p, dir, path);
+    return rc;
+}
+
+/* A settle in force: a frame boundary saw the capture first, so the event service requests only once its 125 ms have
+   run; and a lost guard leaves READY to the hunt's point, not to events. */
+static int
+test_scan_quiet_event_respects_the_settle(void) {
+    char dir[DSD_TEST_PATH_MAX];
+    char path[DSD_TEST_PATH_MAX];
+    static dsd_opts opts;
+    dsd_state* const state_p = qt_shared_state();
+    if (qt_portable_start(&opts, state_p, dir, sizeof dir, path, sizeof path) != 0) {
+        return 1;
+    }
+    const uint64_t landed_ms = qt_publish_without_capture(&opts, state_p, 10U);
+    quiet_tap_capture(k_qt_hz_a, QT_GEN + 1);
+    int rc = qt_expect("a frame boundary sees it first: settling",
+                       qt_frame_at(&opts, state_p, landed_ms, 100U) == DSD_SCAN_QUIET_LIVE && g_tap.requests == 0);
+    for (uint64_t at = 101U; at < 225U; at += 7U) {
+        g_quiet_rt_ms = landed_ms + at;
+        (void)dsd_engine_scan_quiet_event_service(&opts, state_p);
+    }
+    rc |= qt_expect("no event request inside the settle", g_tap.requests == 0);
+    g_quiet_rt_ms = landed_ms + 226U;
+    (void)dsd_engine_scan_quiet_event_service(&opts, state_p);
+    rc |= qt_expect("the first event past the settle requests",
+                    g_tap.requests == 1 && scan_quiet_phase_get(state_p) == SCAN_QUIET_REQUESTED);
+    g_quiet_rt_ms += 100U;
+    quiet_tap_finish(1, DSD_SIGNAL_MEASURE_OK);
+    rc |= qt_expect("ready: handed back",
+                    dsd_engine_scan_quiet_event_service(&opts, state_p) == DSD_SCAN_QUIET_HAND_BACK);
+    scan_quiet_reconcile_declined(&opts, state_p, SCAN_QUIET_OWNER_TRUNK, 1);
+    rc |= qt_expect("a tick that lost its guard: still READY, not handed back by events again",
+                    scan_quiet_phase_get(state_p) == SCAN_QUIET_READY
+                        && qt_event_after(&opts, state_p, 1U) == DSD_SCAN_QUIET_LIVE);
+    rc |= qt_expect("the hunt's point hands it back",
+                    quiet_service_after(&opts, state_p, 1U) == DSD_SCAN_QUIET_HAND_BACK);
+    quiet_rig_finish(&opts, state_p, dir, path);
+    return rc;
+}
+
+/* The late retry of qt_late_retry_case() with short hunts between the frames: a retryable failure collected at a
+   frame boundary @p failed_at ms in sets a settle; events never end the visit past the 1 s bound (main's frame
+   boundary would still request it) and never request inside the settle; the first event past it requests. A failure
+   past its deadline, or a result past its age, gives no hand-back. */
+static int
+qt_event_late_retry_case(uint64_t failed_at) {
+    char dir[DSD_TEST_PATH_MAX];
+    char path[DSD_TEST_PATH_MAX];
+    static dsd_opts opts;
+    dsd_state* const state_p = qt_shared_state();
+    if (qt_portable_start(&opts, state_p, dir, sizeof dir, path, sizeof path) != 0) {
+        return 1;
+    }
+    const uint64_t landed_ms = qt_landed_ms(state_p);
+    g_quiet_rt_ms = landed_ms + failed_at - 200U;
+    quiet_publish(&opts, state_p);
+    int rc = qt_expect("requested", scan_quiet_phase_get(state_p) == SCAN_QUIET_REQUESTED && g_tap.requests == 1);
+    g_quiet_rt_ms = landed_ms + failed_at - 10U;
+    quiet_tap_finish(0, DSD_SIGNAL_MEASURE_CAPTURE_CHANGED);
+    rc |= qt_expect("the failure collected at a frame boundary",
+                    qt_frame_at(&opts, state_p, landed_ms, failed_at) == DSD_SCAN_QUIET_LIVE
+                        && scan_quiet_phase_get(state_p) == SCAN_QUIET_WAIT_CAPTURE);
+    uint64_t at = failed_at + 1U;
+    for (; at < failed_at + SCAN_QUIET_FRAME_SETTLE_MS; at += 7U) {
+        if (at >= failed_at + 80U && at < failed_at + 87U) {
+            (void)qt_frame_at(&opts, state_p, landed_ms, at);
+        } else {
+            g_quiet_rt_ms = landed_ms + at;
+            (void)dsd_engine_scan_quiet_event_service(&opts, state_p);
+        }
+        rc |= qt_expect("inside the settle: waiting, never ended",
+                        scan_quiet_phase_get(state_p) == SCAN_QUIET_WAIT_CAPTURE && g_tap.requests == 1);
+    }
+    g_quiet_rt_ms = landed_ms + failed_at + SCAN_QUIET_FRAME_SETTLE_MS;
+    (void)dsd_engine_scan_quiet_event_service(&opts, state_p);
+    rc |= qt_expect("the first event past the settle requests again",
+                    scan_quiet_phase_get(state_p) == SCAN_QUIET_REQUESTED && g_tap.requests == 2);
+    /* This answer completes past its 400 ms deadline: no READY, no hand-back. */
+    g_quiet_rt_ms += SCAN_QUIET_REQUEST_DEADLINE_MS;
+    quiet_tap_finish(1, DSD_SIGNAL_MEASURE_OK);
+    rc |= qt_expect("an answer past its deadline: DONE, no hand-back",
+                    dsd_engine_scan_quiet_event_service(&opts, state_p) == DSD_SCAN_QUIET_NONE
+                        && scan_quiet_phase_get(state_p) == SCAN_QUIET_DONE);
+    quiet_rig_finish(&opts, state_p, dir, path);
+    return rc;
+}
+
+/* A READY result a PARTIAL frame verdict holds: events hand it back once the hold ends inside its 250 ms age, and not
+   at all once the age ran out first. */
+static int
+qt_event_hold_case(uint32_t hold_ms, int expect_hand_back) {
+    char dir[DSD_TEST_PATH_MAX];
+    char path[DSD_TEST_PATH_MAX];
+    static dsd_opts opts;
+    dsd_state* const state_p = qt_shared_state();
+    if (qt_portable_start(&opts, state_p, dir, sizeof dir, path, sizeof path) != 0) {
+        return 1;
+    }
+    qt_decode_at(10U);
+    const uint64_t landed_ms = qt_landed_ms(state_p);
+    g_quiet_rt_ms = landed_ms + 10U;
+    quiet_publish(&opts, state_p);
+    int rc = qt_expect("requested", scan_quiet_phase_get(state_p) == SCAN_QUIET_REQUESTED);
+    g_quiet_rt_ms = landed_ms + 120U;
+    quiet_tap_finish(1, DSD_SIGNAL_MEASURE_OK);
+    qt_decode_at(120U);
+    qt_frame(state_p, DSD_CONTENT_EVIDENCE_PARTIAL, hold_ms);
+    rc |= qt_expect("collected, held by the frame's verdict",
+                    dsd_engine_scan_quiet_event_service(&opts, state_p) == DSD_SCAN_QUIET_LIVE
+                        && scan_quiet_phase_get(state_p) == SCAN_QUIET_READY);
+    int handed = 0;
+    for (uint64_t at = 130U; at <= 120U + hold_ms + 20U && !handed; at += 10U) {
+        g_quiet_rt_ms = landed_ms + at;
+        qt_decode_at(at);
+        const int answer = dsd_engine_scan_quiet_event_service(&opts, state_p);
+        handed = answer == DSD_SCAN_QUIET_HAND_BACK;
+        if (!handed && 120U + hold_ms > at) {
+            rc |= qt_expect("inside the hold: not handed back", answer == DSD_SCAN_QUIET_LIVE);
+        }
+    }
+    rc |= qt_expect(expect_hand_back ? "the hold ends inside the age: handed back"
+                                     : "the age ran out first: never handed back",
+                    handed == expect_hand_back);
+    quiet_rig_finish(&opts, state_p, dir, path);
+    return rc;
+}
+
+/* The event service's hand-back, taken by the tick as the hunt's would be: the target skips with one NOTICE, and the
+   next target is tuned once. */
+static int
+test_scan_quiet_event_hand_back_skips_the_target(void) {
+    char dir[DSD_TEST_PATH_MAX];
+    char path[DSD_TEST_PATH_MAX];
+    static dsd_opts opts;
+    dsd_state* const state_p = qt_shared_state();
+    if (qt_portable_start(&opts, state_p, dir, sizeof dir, path, sizeof path) != 0) {
+        return 1;
+    }
+    qt_notices_watch(1);
+    qt_decode_at(10U);
+    const uint64_t landed_ms = qt_landed_ms(state_p);
+    g_quiet_rt_ms = landed_ms + 10U;
+    quiet_publish(&opts, state_p);
+    int rc = qt_expect("requested", scan_quiet_phase_get(state_p) == SCAN_QUIET_REQUESTED);
+    g_quiet_rt_ms = landed_ms + 110U;
+    quiet_tap_finish(1, DSD_SIGNAL_MEASURE_OK);
+    rc |= qt_expect("the event service hands back",
+                    dsd_engine_scan_quiet_event_service(&opts, state_p) == DSD_SCAN_QUIET_HAND_BACK);
+    qt_decode_at(110U);
+    qt_pass(&opts, state_p);
+    rc |= qt_expect("the tick skips the target, with one NOTICE",
+                    g_qt_notices == 1 && dsd_engine_trunk_scan_active_index(state_p) == 1U);
+    qt_notices_watch(0);
+    quiet_rig_finish(&opts, state_p, dir, path);
+    return rc;
+}
+
+static int
+test_scan_quiet_event_late_retry_and_holds(void) {
+    int rc = qt_event_late_retry_case(800U);
+    rc |= qt_event_late_retry_case(950U);
+    rc |= qt_event_hold_case(150U, 1);
+    rc |= qt_event_hold_case(300U, 0);
     return rc;
 }
 
@@ -27154,6 +27404,10 @@ test_scan_quiet_all(void) {
     rc |= run_with_default_tune_hook(test_scan_quiet_evidence_moves_no_trunk_activity);
     rc |= run_with_default_tune_hook(test_scan_quiet_frame_boundary_settles_before_requesting);
     rc |= run_with_default_tune_hook(test_scan_quiet_frame_boundary_late_capture_and_retry);
+    rc |= run_with_default_tune_hook(test_scan_quiet_event_acts_when_ready);
+    rc |= run_with_default_tune_hook(test_scan_quiet_event_respects_the_settle);
+    rc |= run_with_default_tune_hook(test_scan_quiet_event_late_retry_and_holds);
+    rc |= run_with_default_tune_hook(test_scan_quiet_event_hand_back_skips_the_target);
     rc |= run_with_default_tune_hook(test_scan_quiet_frame_boundaries_run_every_step);
     rc |= run_with_default_tune_hook(test_scan_quiet_sync_free_visit_timing);
     rc |= run_with_default_tune_hook(test_scan_quiet_frame_boundary_setting_off);

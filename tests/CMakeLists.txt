@@ -9686,6 +9686,8 @@ if(NOT APPLE AND (CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang"))
             "-Wl,--wrap=dsd_audio_discard_input"
             # The scan quiet check's signal tap (issue #834).
             "-Wl,--wrap=rtl_signal_capture_get"
+            "-Wl,--wrap=rtl_signal_capture_get_seq"
+            "-Wl,--wrap=rtl_signal_capture_seq"
             "-Wl,--wrap=rtl_signal_quiet_request"
             "-Wl,--wrap=rtl_signal_quiet_status"
             "-Wl,--wrap=rtl_signal_quiet_take"
@@ -10964,17 +10966,23 @@ target_link_libraries(
 
 # The -Y step's frame-boundary rule over real calls (issue #834 item 3): a test-only host that replays a fixture on a
 # landed -Y row and prints its timeline for tests/y_call_hold_check.py (DECODE_IQ_Y_CALL_HOLD). I/Q replay needs the
-# radio pipeline, and the host's link wraps a GNU-style linker.
+# radio pipeline, and the host's link wraps a GNU-style linker. The radio code is the test-hook build, whose signal tap
+# counts the scan quiet check's requests (none under I/Q replay).
 if(DSD_HAS_RADIO AND NOT APPLE AND (CMAKE_C_COMPILER_ID MATCHES "GNU|Clang"))
     add_executable(dsd-neo_test_y_call_hold_replay engine/y_call_hold_replay.c)
     target_include_directories(
         dsd-neo_test_y_call_hold_replay
-        PRIVATE ${PROJECT_SOURCE_DIR}/src/engine
+        PRIVATE
+            ${PROJECT_SOURCE_DIR}/src/engine
+            ${PROJECT_SOURCE_DIR}/src/io/radio
     )
     target_link_libraries(
         dsd-neo_test_y_call_hold_replay
         PRIVATE
+            "-Wl,--start-group"
             dsd-neo_engine
+            dsd-neo_io_radio_private_test_support
+            "-Wl,--end-group"
             ${LIBS}
             "-Wl,--wrap=getFrameSync"
             "-Wl,--wrap=dsd_engine_channel_scan_step"

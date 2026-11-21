@@ -1748,6 +1748,7 @@ std::atomic<uint64_t> search_owner{0};
 #ifdef DSD_NEO_ENABLE_INTERNAL_TEST_HOOKS
 int test_fail_allocation = 0; /* under feed_mutex */
 std::atomic<uint64_t (*)(void)> test_clock_ns{nullptr};
+std::atomic<uint32_t> test_quiet_requests{0}; /* every rtl_signal_quiet_request() call */
 #endif
 
 /* std::atomic<uint32_t>::is_always_lock_free is C++17; on every target uint32_t is an unsigned int. */
@@ -1859,6 +1860,11 @@ rtl_signal_measure_test_set_ticket(uint32_t ticket) {
     disarm_quiet();
     std::lock_guard<std::mutex> lock(tap_mutex);
     tap_status.store((ticket & kTicketMask) << 2, std::memory_order_release);
+}
+
+extern "C" uint32_t
+rtl_signal_measure_test_quiet_requests(void) {
+    return test_quiet_requests.load(std::memory_order_relaxed);
 }
 #endif
 
@@ -1999,6 +2005,9 @@ rtl_signal_measure_reset(void) {
 extern "C" int
 rtl_signal_quiet_request(const dsd_signal_quiet_request* request, uint32_t* ticket,
                          dsd_signal_request_failure* out_failure) {
+#ifdef DSD_NEO_ENABLE_INTERNAL_TEST_HOOKS
+    test_quiet_requests.fetch_add(1, std::memory_order_relaxed);
+#endif
     std::lock_guard<std::mutex> feed(feed_mutex);
     dsd_signal_request_failure why = DSD_SIGNAL_REQUEST_UNSUPPORTED;
     int rc = -1;

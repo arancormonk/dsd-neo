@@ -111,6 +111,15 @@ dsd_frame_sync_hook_scan_quiet_service(const dsd_opts* opts, dsd_state* state) {
                                                  : DSD_SCAN_QUIET_NONE;
 }
 
+int
+dsd_frame_sync_hook_scan_quiet_event(const dsd_opts* opts, dsd_state* state) {
+    /* The setting off: this one load is the hunt's whole cost. */
+    if (!opts->scan_skip_silent) {
+        return DSD_SCAN_QUIET_NONE;
+    }
+    return g_frame_sync_hooks.scan_quiet_event ? g_frame_sync_hooks.scan_quiet_event(opts, state) : DSD_SCAN_QUIET_NONE;
+}
+
 void
 dsd_frame_sync_hook_content_evidence(const dsd_opts* opts, dsd_state* state, int level, uint32_t hold_ms) {
     /* Checked content and open verdicts, whatever the setting, for the -Y step's frame-boundary rule (issue #834 item

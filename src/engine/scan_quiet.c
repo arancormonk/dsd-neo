@@ -572,6 +572,14 @@ typedef struct {
     int origin_set;
     uint64_t origin_ms;
     uint64_t next_capture_check_ms;
+    /* The tap's capture word the check last read the capture with (rtl_signal_capture_get_seq()), and whether it read
+       one since it entered WAIT_CAPTURE: the event service reads the capture again only once the word moved
+       (issue #834 follow-up). */
+    uint32_t capture_seq_seen;
+    int capture_read;
+    /* A READY result the event service has handed back (or found not passing) once: it is never handed back again by
+       events, so a tick that keeps the visit or loses its guard leaves it to the hunt's 300-symbol point, as before. */
+    int event_handed;
     /* The frame-boundary settle wait (issue #834 R1): a request a frame-boundary service starts waits
        SCAN_QUIET_FRAME_SETTLE_MS (realtime) from settle_from_ms, the first qualifying capture the service saw (the first
        request) or the retryable failure it collected (a retry); settle_set 0 while there is neither. capture_seen: a
@@ -817,8 +825,9 @@ quiet_reconcile(const dsd_opts* opts, const dsd_state* state, const dsd_engine_s
 /* The capture of the landed channel, or 0 while there is none yet: a capture of the stream's live output generation,
    newer than the one read at the tune request, centred where the visit landed. */
 static int
-quiet_landed_capture(const scan_quiet_check* c, dsd_signal_capture* cap) {
-    if (!rtl_signal_capture_get(cap)) {
+quiet_landed_capture(scan_quiet_check* c, dsd_signal_capture* cap) {
+    c->capture_read = 1;
+    if (!rtl_signal_capture_get_seq(cap, &c->capture_seq_seen)) {
         return 0;
     }
     return cap->generation != 0U && cap->generation == dsd_rtl_stream_metrics_hook_stream_generation()
@@ -877,6 +886,8 @@ quiet_request(scan_quiet_check* c, const dsd_signal_capture* cap, uint64_t now_m
     request.frequency_hz = c->frequency_hz;
     request.classes = c->classes;
     request.analog_width_hz = (c->classes & QUIET_CLASS_ANALOG) ? c->analog_width_hz : 0U;
+    /* The reading starts SCAN_QUIET_LEAD_MS of samples after the request's capture (issue #834 follow-up, D1-a). */
+    request.lead_pairs = (uint32_t)((uint64_t)cap->rate_hz * SCAN_QUIET_LEAD_MS / 1000U);
     uint32_t ticket = 0U;
     if (rtl_signal_quiet_request(&request, &ticket, NULL) != 0) {
         /* Refused (a Signal search holds the tap, or no memory): no check this visit. */
@@ -986,6 +997,7 @@ quiet_collect(scan_quiet_check* c, uint64_t now_ms) {
             && quiet_age_ms(now_ms, completed_ms) <= SCAN_QUIET_READY_MAX_AGE_MS) {
             c->result = result;
             c->ready_ms = completed_ms;
+            c->event_handed = 0;
             c->phase = SCAN_QUIET_READY;
         } else {
             c->phase = SCAN_QUIET_DONE; /* busy, not measurable, or stale */
@@ -999,6 +1011,7 @@ quiet_collect(scan_quiet_check* c, uint64_t now_ms) {
         c->settle_set = 1;
         c->settle_from_ms = now_ms;
         c->capture_seen = 0;
+        c->capture_read = 0;
         c->phase = SCAN_QUIET_WAIT_CAPTURE;
         return;
     }
@@ -1122,6 +1135,7 @@ quiet_start(const dsd_engine_scan_owner* owner, scan_quiet_check* c, const scan_
     c->origin_set = landed;
     c->origin_ms = restart ? now_ms : (landed ? owner->landing.landed_realtime_ms : 0U);
     c->next_capture_check_ms = 0U;
+    c->capture_read = 0;
     c->settle_set = 0;
     c->settle_from_ms = 0U;
     c->capture_seen = 0;
@@ -1327,6 +1341,97 @@ dsd_engine_scan_quiet_frame_yield(const dsd_opts* opts, dsd_state* state) {
     /* The setting before anything else: with it off, the null check and one load. */
     return opts && opts->scan_skip_silent && opts->scanner_mode == 1
            && dsd_engine_scan_quiet_frame_service(opts, state, SCAN_QUIET_OWNER_Y) == DSD_SCAN_QUIET_HAND_BACK;
+}
+
+/* WAIT_CAPTURE from the event service (issue #834 follow-up): as a frame boundary may, never earlier, and never ending
+   the check. A park in flight starts its wait once the ledger reports it landed. A qualifying capture is requested at
+   once when no settle is in force (the visit's first request: the legacy rule), else once the settle has run since the
+   first qualifying capture a frame boundary saw, or since the retryable failure. Past the capture deadline a capture
+   not seen in time is no capture: the legacy and frame calls end the check there, as before. The 50 ms legacy schedule
+   is not moved. */
+static void
+quiet_event_wait_capture(const dsd_opts* opts, scan_quiet_check* c, uint64_t now_ms) {
+    if (!c->origin_set) {
+        if (!dsd_trunk_tuning_request_landed(c->key.tune_request)) {
+            return;
+        }
+        c->origin_set = 1;
+        c->origin_ms = now_ms;
+    }
+    if (now_ms >= quiet_capture_deadline_ms(c, 1) && !c->capture_seen) {
+        return;
+    }
+    dsd_signal_capture cap;
+    if (!quiet_landed_capture(c, &cap)) {
+        return;
+    }
+    if (c->settle_set && quiet_age_ms(now_ms, c->settle_from_ms) < SCAN_QUIET_FRAME_SETTLE_MS) {
+        return;
+    }
+    if (!c->settle_set) {
+        c->settle_set = 1;
+        c->settle_from_ms = now_ms;
+    }
+    c->capture_seen = 1;
+    const uint8_t refusal = quiet_capture_refusal(opts, c, &cap);
+    if (refusal != (uint8_t)DSD_SCAN_QUIET_REASON_NONE) {
+        quiet_refuse(c, refusal, cap.generation);
+        return;
+    }
+    quiet_request(c, &cap, now_ms);
+}
+
+/* Whether the event service has anything to do for @p c: lock-free loads, and a clock read only while a settle or a
+   frame verdict's hold runs out. */
+static int
+quiet_event_due(const dsd_engine_scan_owner* owner, const scan_quiet_check* c) {
+    switch (c->phase) {
+        case SCAN_QUIET_WAIT_CAPTURE:
+            if (!c->origin_set) {
+                return dsd_trunk_tuning_request_landed(c->key.tune_request);
+            }
+            if (!c->capture_read || rtl_signal_capture_seq() != c->capture_seq_seen) {
+                return 1;
+            }
+            return c->capture_seen && c->settle_set
+                   && quiet_age_ms(quiet_realtime_ms(), c->settle_from_ms) >= SCAN_QUIET_FRAME_SETTLE_MS;
+        case SCAN_QUIET_REQUESTED: return rtl_signal_quiet_status(c->ticket) != 0;
+        case SCAN_QUIET_READY: return !c->event_handed && !quiet_pending(owner);
+        default: return 0;
+    }
+}
+
+int
+dsd_engine_scan_quiet_event_service(const dsd_opts* opts, dsd_state* state) {
+    /* The setting before anything else: with it off, the null check and one load. */
+    if (!opts || !opts->scan_skip_silent) {
+        return DSD_SCAN_QUIET_NONE;
+    }
+    dsd_engine_scan_owner* owner = dsd_engine_scan_owner_get(state);
+    scan_quiet_check* c = quiet_check_get(owner);
+    if (!c || !quiet_check_active(c)) {
+        return DSD_SCAN_QUIET_NONE;
+    }
+    if (!quiet_event_due(owner, c)) {
+        return DSD_SCAN_QUIET_LIVE;
+    }
+    const uint64_t now_ms = quiet_realtime_ms();
+    quiet_reconcile(opts, state, owner, c, now_ms);
+    if (c->phase == SCAN_QUIET_WAIT_CAPTURE) {
+        quiet_event_wait_capture(opts, c, now_ms);
+    } else if (c->phase == SCAN_QUIET_REQUESTED) {
+        quiet_collect(c, now_ms);
+    }
+    if (!quiet_check_active(c)) {
+        return DSD_SCAN_QUIET_NONE;
+    }
+    if (c->phase == SCAN_QUIET_READY && !c->event_handed && !quiet_pending(owner)) {
+        c->event_handed = 1;
+        if (quiet_ready_passes(opts, state, c)) {
+            return DSD_SCAN_QUIET_HAND_BACK;
+        }
+    }
+    return DSD_SCAN_QUIET_LIVE;
 }
 
 /* A visit SUSPENDED whose revisions moved since it was published: once per change, so it is republished and starts
@@ -1673,6 +1778,13 @@ dsd_engine_scan_quiet_frame_yield(const dsd_opts* opts, dsd_state* state) {
     (void)opts;
     (void)state;
     return 0;
+}
+
+int
+dsd_engine_scan_quiet_event_service(const dsd_opts* opts, dsd_state* state) {
+    (void)opts;
+    (void)state;
+    return DSD_SCAN_QUIET_NONE;
 }
 
 int
