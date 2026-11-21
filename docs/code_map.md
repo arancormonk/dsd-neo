@@ -15124,47 +15124,20 @@ single "current call".
   as terminators, the state machine leaving it as a teardown, the heard speech stopping as a sync loss. Direct mode
   (`tetra_calls_dmo_pdu()`, EN 300 396-3) publishes the call on the channel from DM-SETUP, DM-SETUP PRES, DM-CONNECT
   ACK, DM-OCCUPIED and DM-GSETUP with what its security class leaves clear (DM-2-B hides the destination, DM-2-C every
-  identity), ends it at its own DM-TX CEASED, DM-RELEASE, DM-DISCONNECT and DM-GRELEASE (below), after
-  `TETRA_CALL_DMO_IDLE_S` without a PDU or speech of it, and when the channel's traffic is another transmission's
-  (`dmo_tx_seq`, `dmo_call_of_transmission()`).
-  One DMO call at a time (decided for issue #890): the traffic transmission in progress owns the channel, its identity
-  the current master as its own DSB named it (`tetra_dmo_party`: source address and type, clause 9.3.27, the MNI where
-  carried, the route a DSB names, table 21 and table 22, and through a gateway the gateway generated message flag,
-  EN 300 396-5 clauses 8.5.2.1.4, 13.5.2.1.4) and its colour code, and one call record is bound to it
-  (`tetra_dmo_call_t`: the current master, the called party as the set-up named it, the called party's pseudo SSI a
-  later set-up or ACK addressed, the caller and sending side of the first set-up, the gateway's pseudo SSI when a
-  gateway-generated DSB of the call named it, the call type, a pending DM-SETUP PRES or DM-GSETUP); there is no list of
-  past identities. Every DSB and DMAC-DATA that would act on a call is judged once, by the direct mode layer
-  (`dmo_judge()` in `tetra_dmo.c`, `tetra_dmo_sync_h_t::verdict`), and both layers follow that one verdict. While a
-  transmission is in progress, or its call is in set-up or reservation, any other party's set-up, presence check,
-  release or reservation is ignored: no record replaced, no row opened, no colour code or protection touched, until the
-  transmission ends or the call's reservation ends or times out (an accepted limit: traffic of a second co-channel call
-  is ignored until the first ends or times out). Call PDUs: with a transmission in progress only its master goes on
-  (`tetra_dmo_party_is()`: exactly, the MNI where both carry one, note 4); a pending set-up takes its caller's next PDU
-  repeating its source (`tetra_dmo_party_repeats()`, note 5: the MNI for a true SSI only, so the caller's DM-CONNECT ACK
-  to the called party's new pseudo SSI under another dummy MNI goes on with the set-up's row); in reservation only the
-  call's parties exactly as its current set-up or ACK named them go on, a fresh presence check from the same pair
-  pending again; each to the call's called party (its address as named, or the called party's pseudo SSI while none is
-  known, clause 8.5.2.1.1 note 3; a DM-MS's DM-GSETUP names no destination, so the same DM-MS's DM-SETUP to the
-  group's TSI is its traffic, EN 300 396-5 clauses 4.3.2.2, 8.5.2.1). Individual calls to different known pseudo SSIs
-  are different calls. End messages: on the STCH one decoded under the transmission's colour code is that
-  transmission's (EN 300 396-3 clause 8.2.4: the transmission's source and MNI scramble its normal bursts), whatever it
-  carries or leaves out; in a DSB a DM-TX CEASED or DM-RELEASE counts only from the current master exactly, and a
-  DM-GRELEASE only through the current master's gateway, gateway generated, naming no source, to the master's address
-  (EN 300 396-5 clause 13.5.2.1.1; the MNI compared where both carry one, clause 8.5.2.3); an unnamed DM-2-C
-  transmission, which has no master to compare, is retired by a decoded end message, so its sequence and key are not
-  the next one's. DM-DISCONNECT acts only on the current pending individual DM-SETUP PRES, from the called party
-  exactly as the set-up named it to the caller (clause 9.5.4), and retires no transmission; a matching DM-CONNECT
-  (clause 9.5.3) clears the pending state. DM-RESERVED (`tetra_dmo_reservation()`, `dmo_reserved()`,
-  `dmo_apply_reserved()`; EN 300 396-3 clauses 8.4.3.3, 8.6.2, 9.6.2, 9.6.15), read from DSBs only and never opening
-  traffic: in direct mode and through a DM-REP from the current master exactly to the call's called party; through a
-  gateway a DM-MS sends none (EN 300 396-5 clause 8.4.6.1) and the current call's gateway does, gateway generated, from
-  the gateway's pseudo SSI the call's own PDUs named, else one carrying the gateway address in its 10 most significant
-  bits (clause 13.5.2.1.3), to the recipient its channel reservation type selects, whatever the time remaining
-  (clause 13.5.2.1.2: type 1, the DM-MS end, the calling DM-MS of a set-up a DM-MS sent or the called DM-MS of one the
-  gateway sent; type 0, the group's TSI in a group call or the DM-MS end in an individual call, none with the call type
-  not known). A reservation of the call after a call
-  transaction
+  identity), ends it at DM-TX CEASED, DM-RELEASE, DM-DISCONNECT and DM-GRELEASE, after `TETRA_CALL_DMO_IDLE_S`
+  without a PDU or speech of it, and when the channel's traffic is another transmission's (`dmo_tx_seq`,
+  `dmo_call_of_transmission()`): a transmission keeps its source and class, so one of another class is another call
+  even where neither names the other's parties (a clear call after an encrypted DM-2-C one, or the other way, and a
+  DM-2-C one after a DM-2-A or DM-2-B one, which encrypt the air interface too). A call
+  its set-up announced before any transmission began (DM-SETUP PRES, whose calling party's DM-CONNECT ACK starts the
+  traffic, clause 6.2; DM-GSETUP) takes the first transmission of its own party as its own (`dmo_call_of_transmission()`
+  with `tetra_dmo_party_continues()`: a co-channel network's DM-OCCUPIED of the same SSIs opens a row of its own).
+  DM-RESERVED
+  (`tetra_dmo_reservation()`, `dmo_reserved()`, `dmo_apply_reserved()`; EN 300 396-3 clauses 8.4.3.3, 8.6.2, 9.6.2,
+  9.6.15) is read from DSBs only and never opens traffic; for the call on the channel (from its master's party, one
+  rule for the call record and the transmission, `tetra_dmo_party_reserves()`: the source address of the same type,
+  clause 9.3.27, its MNI for a true SSI only, clause 8.5.2.1.1, and the same repeater or gateway, whose pseudo
+  addresses carry no MNI, table 22) one after a call transaction
   ends the transmission as its unheard DM-TX CEASED would (the canonical call ends as a terminator, the colour code and
   protection go), keeping the call record open for the reservation; reservation time remaining 0 sent in a frame 6, 12
   or 18 (`tetra_dmo_sync_h_t::sync_frame`) ends the call too, while 0 in another frame runs to the next one; a gateway
@@ -15182,29 +15155,20 @@ single "current call".
   class its DM-SETUP or DM-CONNECT ACK gave (`dmo_tx_crypt`, and the SCH/S security class itself, `dmo_tx_aie`: DM-2-A,
   DM-2-B and DM-2-C all encrypt the air interface, but are three classes), which its DM-OCCUPIED shall repeat (clause
   8.5.3): one that agrees confirms it, opening what an unread DMAC-SYNC sealed, one that contradicts it leaves the more
-  closed of the two (`dmo_apply_setup()`), and a set-up of another class from the same master starts the next
-  transmission (`dmo_tx_seq`); a set-up from another party (`tetra_dmo_party_is()`: source address type and address,
-  MNI wherever both carry one, route, sending side, EN 300 396-3 clause 8.5.2.1.1; the colour code seed holds only six
-  MNI bits, so two co-channel networks' masters of one SSI share it), or a DM-2-C DMAC-SYNC after a transmission of any
-  other class, DM-2-A and DM-2-B included, is another call's, ignored while that transmission holds the channel and
-  the start of the next transmission once it is over, so a DM-2-C one, which names no one, never goes on with the last
-  one's source and destination. An
+  closed of the two (`dmo_apply_setup()`), and a set-up from another party (`tetra_dmo_party` /
+  `tetra_dmo_party_continues()`: source address type and address, MNI wherever both carry one, repeater or gateway,
+  EN 300 396-3 clause 8.5.2.1.1; the colour code seed holds only six MNI bits, so two co-channel networks' masters of
+  one SSI share it) or of another class, like a DM-2-C
+  DMAC-SYNC after a transmission of any other class, DM-2-A and DM-2-B included, starts the next transmission
+  (`dmo_tx_seq`), so a DM-2-C one, which names no one, never goes on with the last one's source and destination. An
   unread DM-2-A or DM-2-B DMAC-SYNC only seals: its transmission's next DMAC-SYNC, whose addresses those classes leave
   clear, says whose it is. The canonical direct mode
   call takes a protection that no call PDU republishes at once (`tetra_calls_dmo_protection()`). The protection and the
   DM colour code belong to one traffic transmission (clauses 8.2.4, 8.5.3) and end with it
-  (`tetra_dmo_transmission_over()`): at its own DM-TX CEASED, DM-RELEASE or DM-GRELEASE (above), in a DMAC-SYNC or on
-  the STCH in a DMAC-DATA (one under DM-2-C, whose message type is unread, ends nothing: a DMAC-DATA's security class is
-  its own message's), at the call's DM-RESERVED after a call transaction, and when the call is idle for
-  `TETRA_CALL_DMO_IDLE_S`, so a next transmission is never descrambled or classified by the last one's; short data's
-  colour code is learnt only with no transmission in progress (`tetra_state_t::dmo_dcc_tx` marks the transmission's
-  own). A DMAC-DATA carries no communication type: it is read with the
-  route of the transmission whose colour code descrambled it (`tetra_state_t::dmo_dcc_comm_type`, set with the colour
-  code, EN 300 396-5 clauses 8.5.2.1.5, 13.5.2.1.5, 14.2), never the last DSB's, which may be another call's. A
-  DMAC-DATA call PDU decoded under the transmission's colour code keeps its call and names no one. The short data
-  repeat key
-  (`tetra_dmo_sds_key`) leaves the
-  route out on purpose: a DSB copy names it and a DMAC-DATA copy of the same message does not.
+  (`tetra_dmo_transmission_over()`): at DM-TX CEASED, DM-RELEASE or DM-DISCONNECT, in a DMAC-SYNC or on the STCH in a
+  DMAC-DATA (one under DM-2-C, whose message type is unread, ends nothing: a DMAC-DATA's security class is its own
+  message's), and when the call is idle for `TETRA_CALL_DMO_IDLE_S`, so a next transmission is never descrambled or
+  classified by the last one's.
 - Notices. D-SDS-DATA becomes a data notice with its text as the message, D-STATUS and MM D-ENABLE / D-DISABLE
   control notices, once the carrier is proven (`tetra_calls_notice()`); direct mode short data becomes a data notice,
   a repeat within 10 s not again: a repeat is the same message (`tetra_dmo_sds_key`: message type, source,

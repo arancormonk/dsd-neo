@@ -174,13 +174,7 @@ typedef enum {
 typedef struct {
     uint16_t relay_addr; /* DMAC-SYNC: repeater or gateway address, valid when has_relay */
     uint8_t has_relay;
-    uint8_t route_known;  /* DMAC-SYNC: its SCH/S named the route (comm_type); a DMAC-DATA names none (table 23) */
-    uint8_t comm_type;    /* valid when route_known: 0 direct, 1 via DM-REP, 2 via DM-GATE, 3 via DM-REP/GATE */
-    uint8_t gw_generated; /* DMAC-SYNC via a gateway: its SCH/S gateway generated message flag (EN 300 396-5 clauses
-                             8.5.2.1.4, 13.5.2.1.4), set by tetra_dmo_apply_sync() */
-    uint8_t verdict;      /* TETRA_DMO_VERDICT_*: whether the PDU acts on the channel's one call, set by
-                             tetra_dmo_apply_sync() for a DSB and by tetra_dmo_log_dnb_pdu() for a DMAC-DATA */
-    uint8_t enc_state;    /* air interface encryption state the PDU was read under, TETRA_DMO_AIE_* */
+    uint8_t enc_state; /* air interface encryption state the PDU was read under, TETRA_DMO_AIE_* */
     uint8_t fill_bit;
     uint8_t stolen2; /* DMAC-DATA: second half slot stolen flag */
     uint8_t frag_flag;
@@ -303,73 +297,43 @@ typedef enum {
  * frame not known, the reservation runs to the end of the next one (clause 8.4.5.1.8 note 2). */
 tetra_dmo_reservation_e tetra_dmo_reservation(const tetra_dmo_sync_h_t* h);
 
-/* One direct mode call at a time (decided for issue #890): the traffic transmission in progress owns the channel, and
- * one call record is bound to it. Every DSB and DMAC-DATA that would act on a call is judged once, by the direct mode
- * layer, against that transmission and call (tetra_dmo_sync_h_t::verdict), and both the transmission state and the
- * call records follow the one verdict. A PDU of any other party is ignored until the transmission ends, or the call's
- * reservation ends or times out. */
-enum {
-    TETRA_DMO_VERDICT_UNJUDGED = 0, /* no verdict: acts on nothing (a PDU no reader judged) */
-    TETRA_DMO_VERDICT_CALL,         /* acts on the channel's call: opens it, goes on with it or ends it */
-    TETRA_DMO_VERDICT_IGNORED,      /* another party's while the call holds the channel: no effect */
-};
-
-/* An address as a PDU carried it: its type (EN 300 396-3 clauses 9.3.5, 9.3.27: 0 true SSI, 1 pseudo SSI, 2 none), its
- * SSI when read (not absent, not hidden by DM-2-B) and the PDU's MNI when the PDU carried one. */
-typedef struct {
-    uint32_t ssi;
-    uint32_t mni;
-    uint8_t type;
-    uint8_t clear;
-    uint8_t has_mni;
-} tetra_dmo_addr;
-
-/* The master of a transmission as its own DSB named it (EN 300 396-3 clause 8.5.2.1.1): the source address with its
- * type (clause 9.3.27), the MNI when the PDU carried one, the route the DSB named (table 21, communication type, with
- * the repeater or gateway address of table 22) and, through a gateway, which side sent it (the gateway generated
- * message flag, EN 300 396-5 clauses 8.5.2.1.4, 13.5.2.1.4). */
+/* Who sent a DMAC-SYNC or DMAC-DATA, as EN 300 396-3 clause 8.5.2.1.1 names the master of a call transaction: the
+ * source address with its type (clause 9.3.27: a true SSI, a pseudo SSI or none), the MNI when the PDU carried one, and
+ * the repeater or gateway address a DMAC-SYNC carries for a call through one (table 22). The SSI alone names no one:
+ * co-channel networks may share a true SSI, a pseudo SSI is any random value, and a gateway's pseudo addresses come
+ * with no MNI at all. */
 typedef struct {
     uint32_t src;
     uint32_t mni;
-    uint16_t relay; /* repeater or gateway address, valid when route_known and comm_type is not 0 */
+    uint16_t relay;
     uint8_t src_type;
     uint8_t has_mni;
-    uint8_t route_known;
-    uint8_t comm_type;
-    uint8_t has_origin; /* the route is through a gateway, whose DSBs carry the gateway generated message flag */
-    uint8_t gw;         /* with has_origin: the gateway sent it */
-    uint8_t known;      /* set from a PDU whose addresses were read in the clear */
+    uint8_t has_relay;
+    uint8_t known; /* set from a PDU whose addresses were read in the clear */
 } tetra_dmo_party;
 
 /* The party @p h names in @p out; not known when its addresses were not read (DM-2-C). */
 void tetra_dmo_party_of(const tetra_dmo_sync_h_t* h, tetra_dmo_party* out);
 
-/* @p h's source (@p dst 0) or destination (@p dst 1) as an address. */
-tetra_dmo_addr tetra_dmo_addr_of(const tetra_dmo_sync_h_t* h, int dst);
+/* 1 when @p h is from party @p p as a message of its transmission must be (clause 8.5.2.1.1): the same source address
+ * type and address, the same repeater or gateway where both name one, and the same MNI where both carry one, whatever
+ * the address type, since a DM-OCCUPIED repeats the MNI of the set-up that started its transmission, which the
+ * scrambling uses (note 4). A source that names none matches one that names none. */
+int tetra_dmo_party_continues(const tetra_dmo_party* p, const tetra_dmo_sync_h_t* h);
 
-/* 1 when @p a and @p b are one address: the same type, the same SSI where both were read, the same MNI where both
- * carry one (an address through a gateway carries none when neither address of its PDU is a true SSI, EN 300 396-5
- * clause 8.5.2.3, and DM-2-B hides only the SSI, EN 300 396-3 clauses 8.5.3, 9.3.2). */
-int tetra_dmo_addr_same(const tetra_dmo_addr* a, const tetra_dmo_addr* b);
-
-/* 1 when @p h is from master @p p exactly: the same source address type and SSI, the same MNI where both carry one,
- * the same route where @p h names one, and through a gateway the same sending side where @p h carries the flag. */
-int tetra_dmo_party_is(const tetra_dmo_party* p, const tetra_dmo_sync_h_t* h);
-
-/* 1 when the call PDU @p h repeats the source of the set-up of party @p p, as a DM-CONNECT ACK shall (EN 300 396-3
- * clause 8.5.2.1.1, note 5): as tetra_dmo_party_is(), but the MNI counts for a true source SSI only; behind a pseudo
- * SSI it may be another dummy one. */
-int tetra_dmo_party_repeats(const tetra_dmo_party* p, const tetra_dmo_sync_h_t* h);
+/* 1 when the DM-RESERVED @p h is from party @p p (clause 8.5.2.1.1): as tetra_dmo_party_continues(), but the MNI
+ * counts only for a true SSI, for which alone a DM-RESERVED shall repeat it; behind a pseudo SSI it need not be a true
+ * MNI. */
+int tetra_dmo_party_reserves(const tetra_dmo_party* p, const tetra_dmo_sync_h_t* h);
 
 /* The carrier was left: forget its DM colour code (and its seed) and the protection of its call, so no normal burst of
  * the next carrier is descrambled with them and its traffic is not classified by them, and direct mode itself: the next
  * carrier is trunked until its own DSB says otherwise. Never creates TETRA state. */
 void tetra_dmo_forget_carrier(dsd_state* state);
 
-/* The direct mode channel's traffic transmission is over: nothing of its call heard for a while (its own end messages
- * end it as the DSB or DMAC-DATA is read). Its DM colour code and protection
- * are no other transmission's (EN 300 396-3 clauses 8.2.4 and 8.5.3): the next one's DMAC-SYNC gives its own. Never
- * creates TETRA state. */
+/* The direct mode channel's traffic transmission is over: a DM-TX CEASED, DM-RELEASE or DM-DISCONNECT on its STCH, or
+ * nothing of its call heard for a while. Its DM colour code and protection are no other transmission's (EN 300 396-3
+ * clauses 8.2.4 and 8.5.3): the next one's DMAC-SYNC gives its own. Never creates TETRA state. */
 void tetra_dmo_transmission_over(dsd_state* state);
 
 /* A trunked mode burst proved the carrier: a BSCH of a trunked system code or a control uplink burst's SCH/HU passed

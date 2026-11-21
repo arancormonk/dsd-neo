@@ -70,34 +70,20 @@ free_state(dsd_state* st) {
     free(st);
 }
 
-/* Direct DMAC-SYNC SCH/H (EN 300 396-3 table 22) up to and including the message type: true SSIs @p dst and @p src,
- * MNI 0. */
+/* Direct DMAC-SYNC SCH/H (EN 300 396-3 table 22) up to and including the message type: dst 1, src 2, MNI 0. */
 static void
-sync_h_header_to(bitw* w, int msg, uint32_t dst, uint32_t src) {
+sync_h_header(bitw* w, int msg) {
     bw_reset(w);
     put(w, 10, 0); /* reserved for direct operation */
     put(w, 1, 0);  /* fill bit indication */
     put(w, 1, 0);  /* not fragmented */
     put(w, 2, 0);  /* frame countdown */
     put(w, 2, 0);
-    put(w, 24, dst);
+    put(w, 24, 1);
     put(w, 2, 0);
-    put(w, 24, src);
+    put(w, 24, 2);
     put(w, 24, 0);
     put(w, 5, (uint32_t)msg);
-}
-
-/* sync_h_header_to() from 2 to 1. */
-static void
-sync_h_header(bitw* w, int msg) {
-    sync_h_header_to(w, msg, 1u, 2u);
-}
-
-/* A DSB as the decoder takes it (tetra.c): applied to the channel, then handed to the call records. */
-static void
-apply_dsb(dsd_state* st, const tetra_dmo_sync_s_t* s, tetra_dmo_sync_h_t* h) {
-    tetra_dmo_apply_sync(st, s, h);
-    tetra_calls_dmo_pdu(NULL, st, s->enc_state, h);
 }
 
 /* DM-SETUP / DM-CONNECT ACK / DM-OCCUPIED elements (tables 31, 35, 36). */
@@ -197,7 +183,7 @@ test_real_air_call(void) {
     tetra_st(st)->hyperframe_valid = 1;
     from_string(k_sch_s, bits);
     tetra_dmo_parse_sync_s(bits, &s);
-    apply_dsb(st, &s, &h);
+    tetra_dmo_apply_sync(st, &s, &h);
     CHECK(tetra_st(st)->dmo == 1 && tetra_st(st)->dmo_dcc_valid == 1, "DSB switches to DMO and learns the DCC");
     CHECK(tetra_st(st)->dmo_dcc_seed == 0xE4000193u && s.slot == 1 && s.frame == 3, "DMO clock read and seed stored");
     CHECK(tetra_st(st)->tdma_valid == 0 && tetra_st(st)->hyperframe_valid == 0,
@@ -205,7 +191,7 @@ test_real_air_call(void) {
     CHECK(tetra_dmo_call_crypt(st) == TETRA_DMO_CRYPT_CLEAR, "a DM-1 call without end-to-end encryption is clear");
 
     h.msg_type = TETRA_DMO_MSG_TX_CEASED;
-    apply_dsb(st, &s, &h);
+    tetra_dmo_apply_sync(st, &s, &h);
     CHECK(tetra_st(st)->dmo_dcc_valid == 0, "DM-TX CEASED invalidates the colour code");
     CHECK(tetra_dmo_call_crypt(st) == TETRA_DMO_CRYPT_UNKNOWN, "DM-TX CEASED leaves the next call unknown");
     free_state(st);
@@ -251,10 +237,8 @@ test_carrier_boundary_forgets_call(void) {
 /* A DMAC-SYNC whose message went unread (its SCH/H failed or was skipped: no SCH/H here) may be the one that sets the
  * protection of the traffic after it (EN 300 396-3 clause 8.5.3), so its SCH/S security class stands for it: after a
  * clear DM-1 call, DM-2-A and DM-2-B seal the traffic and keep the colour code, which their clear source address still
- * gives. A DM-2-C one is another transmission (a transmission keeps its class), so while the clear one holds the
- * channel it is ignored (one call at a time): it neither seals the clear traffic nor drops its colour code; once that
- * transmission is over it starts its own, sealed and with no colour code, which it derives from the encrypted short
- * identity (clause 8.2.4). A DM-1 SCH/S leaves the protection as it was. */
+ * gives; DM-2-C seals it and drops the colour code, which it derives from the encrypted short identity (clause
+ * 8.2.4). A DM-1 SCH/S leaves the protection as it was. */
 static void
 test_unread_sync_protection(void) {
     static const uint32_t k_classes[3] = {TETRA_DMO_AIE_DM2A, TETRA_DMO_AIE_DM2B, TETRA_DMO_AIE_DM2C};
@@ -282,12 +266,6 @@ test_unread_sync_protection(void) {
         sync_s(&w, k_classes[i]);
         (void)tetra_dmo_parse_sync_s(w.bits, &s);
         tetra_dmo_apply_sync(st, &s, NULL);
-        if (k_classes[i] == TETRA_DMO_AIE_DM2C) {
-            CHECK(tetra_dmo_call_crypt(st) == TETRA_DMO_CRYPT_CLEAR && tetra_st(st)->dmo_dcc_valid == 1,
-                  "an unread DM-2-C DMAC-SYNC of another transmission leaves the clear one as it was");
-            tetra_dmo_transmission_over(st);
-            tetra_dmo_apply_sync(st, &s, NULL);
-        }
         CHECK(tetra_dmo_call_crypt(st) == TETRA_DMO_CRYPT_AIR, "an unread encrypted DMAC-SYNC seals the traffic");
         CHECK(tetra_st(st)->dmo_dcc_valid == (k_classes[i] == TETRA_DMO_AIE_DM2C ? 0 : 1),
               "and only DM-2-C drops the colour code");
@@ -342,9 +320,7 @@ test_security_classes(void) {
     CHECK(tetra_st(st)->dmo_dcc_valid == 1 && tetra_dmo_call_crypt(st) == TETRA_DMO_CRYPT_AIR,
           "DM-2-B call learns its colour code and is air interface encrypted");
 
-    /* DM-2-C: everything after the address types is encrypted, and the colour code needs the encrypted identity. It is
-     * another transmission, which starts once the DM-2-B one is over (one call at a time). */
-    tetra_dmo_transmission_over(st);
+    /* DM-2-C: everything after the address types is encrypted, and the colour code needs the encrypted identity. */
     sync_s(&ws, TETRA_DMO_AIE_DM2C);
     tetra_dmo_parse_sync_s(ws.bits, &s);
     tetra_dmo_parse_sync_h(wh.bits, 0, &h);
@@ -356,8 +332,7 @@ test_security_classes(void) {
     CHECK(tetra_st(st)->dmo_dcc_valid == 0 && tetra_dmo_call_crypt(st) == TETRA_DMO_CRYPT_AIR,
           "DM-2-C call has no colour code and is air interface encrypted");
 
-    /* DM-1 with the end-to-end encryption flag, once the DM-2-C transmission is over. */
-    tetra_dmo_transmission_over(st);
+    /* DM-1 with the end-to-end encryption flag. */
     sync_s(&ws, TETRA_DMO_AIE_DM1);
     tetra_dmo_parse_sync_s(ws.bits, &s);
     sync_h_header(&wh, TETRA_DMO_MSG_SETUP);
@@ -427,12 +402,8 @@ test_occupied_keeps_the_setup_class(void) {
     sync_s(&w2c, TETRA_DMO_AIE_DM2C);
     (void)tetra_dmo_parse_sync_s(w2c.bits, &s2c);
     tetra_dmo_apply_sync(st, &s2c, NULL);
-    CHECK(tetra_st(st)->dmo_tx_seq == seq_2a + 1u && tetra_st(st)->dmo_tx_aie == TETRA_DMO_AIE_DM2B,
-          "a DM-2-C DMAC-SYNC while the DM-2-B transmission holds the channel is ignored");
-    tetra_dmo_transmission_over(st);
-    tetra_dmo_apply_sync(st, &s2c, NULL);
     CHECK(tetra_st(st)->dmo_tx_seq == seq_2a + 2u && tetra_dmo_call_crypt(st) == TETRA_DMO_CRYPT_AIR,
-          "a DM-2-C DMAC-SYNC after the DM-2-B transmission starts the next one");
+          "a DM-2-C DMAC-SYNC after a DM-2-B transmission starts the next one");
     tetra_dmo_apply_sync(st, &s2c, NULL);
     CHECK(tetra_st(st)->dmo_tx_seq == seq_2a + 2u, "and the next DM-2-C DMAC-SYNC goes on with it");
     free_state(st);
@@ -543,7 +514,7 @@ static void
 test_transmission_algorithm(void) {
     printf("[the transmission's algorithm and key]\n");
     dsd_state* st = new_state();
-    const tetra_state_t* ts = tetra_st(st);
+    tetra_state_t* ts = tetra_st(st);
     apply_keyed_sync(st, TETRA_DMO_AIE_DM2A, TETRA_DMO_MSG_SETUP, 1, 4);
     CHECK(ts->dmo_tx_ksg == 1 && ts->dmo_tx_key_number == 4, "a DM-2-A set-up names TEA2 and SCK 5");
     apply_keyed_sync(st, TETRA_DMO_AIE_DM2A, TETRA_DMO_MSG_OCCUPIED, 2, 9);
@@ -563,10 +534,6 @@ test_transmission_algorithm(void) {
     tetra_dmo_sync_s_t s2c;
     sync_s_keyed(&w2c, TETRA_DMO_AIE_DM2C, 2, 30);
     (void)tetra_dmo_parse_sync_s(w2c.bits, &s2c);
-    tetra_dmo_apply_sync(st, &s2c, NULL);
-    CHECK(ts->dmo_tx_aie == TETRA_DMO_AIE_DM2A && ts->dmo_tx_ksg == 1 && ts->dmo_tx_key_number == 4,
-          "a DM-2-C DMAC-SYNC while the DM-2-A transmission holds the channel is ignored");
-    tetra_dmo_transmission_over(st);
     tetra_dmo_apply_sync(st, &s2c, NULL);
     CHECK(ts->dmo_tx_aie == TETRA_DMO_AIE_DM2C && ts->dmo_tx_ksg == 2 && ts->dmo_tx_key_number == 30,
           "an unread DM-2-C DMAC-SYNC starts a transmission with its own TEA3 and SCK 31");
@@ -765,7 +732,7 @@ test_call_control_elements(void) {
     CHECK(tetra_dmo_describe_elems(&h, desc, (int)sizeof(desc)) > 0 && strstr(desc, "individual speech") != NULL
               && strstr(desc, "prio=high") != NULL,
           "DM-SETUP PRES summary");
-    apply_dsb(st, &s, &h);
+    tetra_dmo_apply_sync(st, &s, &h);
     CHECK(tetra_st(st)->dmo_dcc_valid == 1 && tetra_st(st)->dmo_dcc_seed == 0x1234u,
           "DM-SETUP PRES does not replace the colour code");
 
@@ -777,16 +744,13 @@ test_call_control_elements(void) {
               && strstr(desc, "prio=") == NULL,
           "DM-CONNECT summary");
 
-    /* The called party (1) rejects the caller's (2) set-up (EN 300 396-3 clause 9.5.4). */
-    sync_h_header_to(&w, TETRA_DMO_MSG_DISCONNECT, 2u, 1u);
+    sync_h_header(&w, TETRA_DMO_MSG_DISCONNECT);
     put(&w, 4, 3);
     CHECK(tetra_dmo_parse_sync_h(w.bits, 0, &h) == 1 && h.e[TETRA_DMO_E_DISCONNECT_CAUSE] == 3, "DM-DISCONNECT cause");
     CHECK(tetra_dmo_describe_elems(&h, desc, (int)sizeof(desc)) > 0 && strstr(desc, "rejected by called party") != NULL,
           "DM-DISCONNECT summary");
-    apply_dsb(st, &s, &h);
-    /* It ends the pending set-up, before any traffic of it, so it retires no transmission (clause 9.5.4). */
-    CHECK(!tetra_st(st)->calls.dmo.active && tetra_st(st)->dmo_dcc_valid == 1,
-          "DM-DISCONNECT ends the pending set-up and leaves the colour code");
+    tetra_dmo_apply_sync(st, &s, &h);
+    CHECK(tetra_st(st)->dmo_dcc_valid == 0, "DM-DISCONNECT invalidates the colour code");
 
     sync_h_header(&w, TETRA_DMO_MSG_TX_REQUEST);
     put(&w, 1, 1);
@@ -949,28 +913,16 @@ test_gateway_messages(void) {
     CHECK(tetra_dmo_parse_sync_h(w.bits, 2, &h) == 1 && h.frag_flag == 1 && h.e[TETRA_DMO_E_CALLED_TSI_FLAG] == 0
               && h.e[TETRA_DMO_E_CALLED_SSI] == 50,
           "fragmented DM-GSETUP");
-    apply_dsb(st, &s, &h);
+    tetra_dmo_apply_sync(st, &s, &h);
     CHECK(tetra_st(st)->dmo_dcc_valid == 1 && tetra_st(st)->dmo_dcc_seed == 0x54000193u,
           "fragmented DM-GSETUP learns the gateway colour code");
 
-    /* The gateway's DM-GRELEASE names no source and goes to the master's address, pseudo SSI 100 (EN 300 396-5
-     * clause 13.5.2.1.1), gateway generated (clause 13.5.2.1.4). */
-    bw_reset(&w);
-    put(&w, 10, 0x155);
-    put(&w, 1, 0);
-    put(&w, 1, 0);
-    put(&w, 2, 0);
-    put(&w, 2, 1); /* pseudo destination */
-    put(&w, 24, 100);
-    put(&w, 2, 2); /* no source address, so the MNI is absent */
-    put(&w, 5, TETRA_DMO_MSG_GATEWAY);
-    put(&w, 5, TETRA_DMO_GW_RELEASE);
+    gw_header(&w, 0, TETRA_DMO_GW_RELEASE);
     put(&w, 4, 1);
     CHECK(tetra_dmo_parse_sync_h(w.bits, 2, &h) == 1, "DM-GRELEASE parses");
     CHECK(tetra_dmo_describe_elems(&h, desc, (int)sizeof(desc)) > 0 && strstr(desc, "TMO resource lost") != NULL,
           "DM-GRELEASE summary");
-    s.gw_flag = 1;
-    apply_dsb(st, &s, &h);
+    tetra_dmo_apply_sync(st, &s, &h);
     CHECK(tetra_st(st)->dmo_dcc_valid == 0, "DM-GRELEASE invalidates the colour code");
 
     bw_reset(&w);
@@ -1269,7 +1221,7 @@ test_dmac_data_ends_the_transmission(void) {
         (void)tetra_dmo_parse_sync_s(bits, &s);
         from_string(k_sch_h, bits);
         (void)tetra_dmo_parse_sync_h(bits, 0, &h);
-        apply_dsb(st, &s, &h);
+        tetra_dmo_apply_sync(st, &s, &h);
         CHECK(tetra_dmo_call_crypt(st) == TETRA_DMO_CRYPT_CLEAR && tetra_st(st)->dmo_dcc_valid == 1,
               "a clear DM-1 call");
         bw_reset(&w);
