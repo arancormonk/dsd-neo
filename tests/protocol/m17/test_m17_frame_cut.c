@@ -1104,6 +1104,51 @@ test_checked_content_reports_to_trunk_scan(void) {
     dsd_trunk_scan_hooks_set(NULL);
 }
 
+/* Issue #890: a decoded EOS ends the transmission its checked LSF was for. The next transmission, joined on its LICH
+   chunks 3 and 4 (which carry none of DST, SRC or TYPE, so nothing in them can dispute the binding), reports anonymous:
+   never the ended transmission's CAN, encryption or type. */
+static void
+test_eos_ends_the_scan_binding(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    uint8_t lsf_bits[TEST_M17_LSF_BITS];
+    uint8_t other_bits[TEST_M17_LSF_BITS];
+    uint8_t packed[M17_LSF_BYTES];
+    build_lsf_bits(lsf_bits);
+    DSD_MEMSET(other_bits, 0, sizeof other_bits);
+    m17_load_lsf_callsigns(other_bits, m17_encode_b40_callsign(0ULL, "XY9ZZ"), m17_encode_b40_callsign(0ULL, "QR7ST"));
+    write_bits(other_bits + 96, m17_compose_frame_info(1U, 2U, 0U, 0U, 7U, 0U, 0U), 16U);
+    (void)m17_attach_lsf_crc(other_bits, packed);
+    const uint8_t bound = DSD_SCAN_ACTIVITY_KNOWN_ENCRYPTED | DSD_SCAN_ACTIVITY_KNOWN_DATA;
+
+    prepare(&opts, &state);
+    dsd_test_scan_activity_install();
+    state.synctype = DSD_SYNC_M17_LSF_POS;
+    load_lsf_frame(lsf_bits);
+    assert(processM17LSF(&opts, &state) == 1);
+    state.synctype = DSD_SYNC_M17_STR_POS;
+    for (uint16_t fn = 0U; fn < 2U; fn++) {
+        load_stream_frame(lsf_bits, (uint8_t)fn, fn);
+        (void)processM17STR(&opts, &state);
+    }
+    assert(g_test_scan_activity.count >= 2 && g_test_scan_activity.last.known == bound);
+    /* The last frame, its EOS bit set. */
+    load_stream_frame(lsf_bits, 2U, (uint16_t)(2U | 0x8000U));
+    (void)processM17STR(&opts, &state);
+    assert(state.m17_lsf_checked == 1U && state.m17_tx_ended == 1U);
+
+    dsd_test_scan_activity_reset();
+    for (uint16_t fn = 0U; fn < 2U; fn++) {
+        load_stream_frame(other_bits, (uint8_t)(3U + fn), fn);
+        (void)processM17STR(&opts, &state);
+        assert(state.m17_lsf_checked == 0U);
+        assert(g_test_scan_activity.count == 0 || g_test_scan_activity.last.known == 0U);
+    }
+    assert(g_test_scan_activity.count >= 1 && g_test_scan_activity.last.known == 0U);
+    finish(&state);
+    dsd_trunk_scan_hooks_set(NULL);
+}
+
 /* Issue #890 F3, end to end: a BERT lock is PROVEN content to a quiet check on an untyped row, and nothing on a row of
    the m17 class (entered as a -Y row or trunk-scan target enters it), which it confirms all the same. */
 static void
@@ -1149,6 +1194,7 @@ main(void) {
     test_frames_split_by_a_carrier_boundary_are_dropped();
     test_packet_frames_before_their_crc_are_partial();
     test_checked_content_reports_to_trunk_scan();
+    test_eos_ends_the_scan_binding();
     test_bert_on_a_typed_row_is_profile_only();
     free(g_state);
     free(g_opts);

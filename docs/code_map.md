@@ -5953,8 +5953,10 @@ the implementations from `dsd_engine_trunk_scan_init()` and clears them again on
   `dpmr_report_scan_activity()` (a Communications_Start header, and an FS2 frame whose CCH halves pass
   as a bound pair, with the raw 24-bit IDs and no party), M17 `m17_report_scan_activity()` (direct and rebuilt LSF,
   packet CRC, a clean LICH pair; only `m17_lsf_checked` values an applied LSF bound, withdrawn while a clean LICH
-  chunk disputes the checked DST/SRC/TYPE (`m17_lsf_disputed`, a missed boundary). Only chunks 0 to 2 carry those
-  bits, so a decided fail-open limit: after a missed EOT, a new transmission whose chunks 3 to 5 come first can still
+  chunk disputes the checked DST/SRC/TYPE (`m17_lsf_disputed`, a missed boundary), and gone from the frame after a
+  decoded EOS (the boundary reset, `m17_confirm_reset()`, drops `m17_lsf_checked` and the dispute with it). Only
+  chunks 0 to 2 carry those bits, so a decided fail-open limit: after a missed EOS and EOT, a new transmission whose
+  chunks 3 to 5 come first can still
   send about two pair reports (at most its chunk 3 to 5 frames) with the old LSF's CAN, encryption and type before its
   chunk 0 disputes it. The receive CAN gate `m17_can_en` is kept; never BERT)
   and TETRA `tetra_calls.c` (`dmo_scan_report()`: DSB DM-SETUP, DM-CONNECT ACK, DM-OCCUPIED, DM-2-C opaque
@@ -14309,7 +14311,7 @@ Private per-protocol modules worth knowing about:
   transmission never runs on the ended one's CAN, encryption or type, nor rebuilds its LSF from the ended one's raw
   bits or chunks, even with no EOT marker between: one acquired from its LICH alone plays nothing, earns no media and
   opens no call until its own LSF applies (its rebuilt LSF, checked or under -F the relaxed one, made of its own chunks
-  only; the scan side marks the binding disputed at the EOS, PR B). In a signed RF voice stream every frame that may reach playback is either counted into
+  only; its scan reports are anonymous until then, `m17_report_scan_activity()`). In a signed RF voice stream every frame that may reach playback is either counted into
   the digest or leaves the signature incomplete: the signature range 0x7FFC-0x7FFF (either end bit) holds no voice
   (M17 spec 2.0.11, Digital Signatures: signature use shortens the stream by four frames, numbered 0x7FFC, 0x7FFD,
   0x7FFE, 0xFFFF), so a frame there that is no signature chunk (0x7FFF without the end bit, 0xFFFC-0xFFFE) is consumed
