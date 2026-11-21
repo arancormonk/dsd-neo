@@ -1081,6 +1081,31 @@ turned it on).
   hold, and nothing it measures goes to call history, event or location files, or counts as activity for trunk scan.
   It can only make a visit shorter.
 
+### Reading length (experts)
+
+`--scan-skip-silent-ms <ms>` (or `[trunking] scan_skip_silent_ms`) sets how long the reading lasts, for users who
+accept more missed calls for a faster scan. The value is rounded up to whole 10 ms slices: 81 to 90 gives the
+calibrated nine, 60 gives six, 500 gives fifty. Each slice keeps its length at the receiver's rate (10.0 to 11.5 ms),
+so the reading lasts that many slices of it: 60 reads for 60 to 69 ms. Unset (or 0 in a config file), the check reads
+its calibrated nine slices, exactly as without the option. It is session-wide, like `--scan-skip-silent`, and an
+`options` cell refuses it.
+
+- Only the nine-slice reading was calibrated. The 5.0 dB threshold and the 8.7 dB guard stay the same at every
+  length, but below nine slices they are not calibrated: a weak signal, or one that fades during the reading, is more
+  likely to read silent and be skipped. A short check at 1.536 Msps (not a calibration) found no live signal read
+  silent at six slices, live DMR read silent at three, and weak M17 and dPMR read silent at one.
+- A channel that can carry a single DMR radio is still read for at least six slices (60 to 69 ms): a typed DMR row or
+  `dmr-conventional` target, or an untyped row or a row in mode `inherit` while the DMR decoder is on. Six slices is
+  the fewest that always hold one slice wholly inside a burst of an ongoing DMR transmission (above).
+- Longer readings (above 90 ms) skip less often and are less likely to skip a weak live signal, at the cost of a
+  longer skip. The time the scan waits for the answer grows with them.
+- When the setting shortens the reading, the first check logs
+  `WARNING: scan: --scan-skip-silent-ms 50 reads 5 slices (50 to 53 ms), shorter than the calibrated 9: a weak or fading signal can read silent and be skipped.`
+  (with the span at the receiver's rate), and the first DMR channel read for its floor logs
+  `WARNING: scan: --scan-skip-silent-ms 50: DMR channels are read for 6 slices (60 to 64 ms), the fewest that always hold a whole DMR burst.`
+  A value that rounds to nine or more slices logs nothing. The option has no effect without `--scan-skip-silent`, and
+  says so at start.
+
 ### When a channel is never skipped
 
 - Trunked targets: they are never checked.

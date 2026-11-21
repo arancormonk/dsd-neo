@@ -29,6 +29,7 @@
 #include <dsd-neo/io/rtl_stream_c.h>
 #include <dsd-neo/io/signal_measure.h>
 #include <dsd-neo/runtime/rtl_stream_metrics_hooks.h>
+#include <dsd-neo/runtime/signal_search.h>
 #include <dsd-neo/runtime/trunk_tuning_hooks.h>
 #endif
 #include "dsd-neo/runtime/analog_channel.h"
@@ -92,6 +93,43 @@ scan_quiet_mode_classes(dsd_scan_mode mode) {
         case DSD_SCAN_MODE_INHERIT: return 0U;
     }
     return 0U;
+}
+
+uint8_t
+scan_quiet_mode_dmr(const dsd_opts* opts, dsd_scan_mode mode) {
+    if (mode == DSD_SCAN_MODE_DMR) {
+        return 1U;
+    }
+    return (uint8_t)(mode == DSD_SCAN_MODE_INHERIT && opts && opts->frame_dmr ? 1U : 0U);
+}
+
+uint8_t
+scan_quiet_visit_dmr(const dsd_opts* opts, dsd_scan_mode mode) {
+    const uint32_t setting = scan_quiet_setting_windows(opts);
+    return (uint8_t)(setting != 0U && setting < SCAN_QUIET_DMR_MIN_WINDOWS ? scan_quiet_mode_dmr(opts, mode) : 0U);
+}
+
+uint32_t
+scan_quiet_setting_windows(const dsd_opts* opts) {
+    if (!opts || opts->scan_skip_silent_ms <= 0) {
+        return 0U;
+    }
+    return (uint32_t)(opts->scan_skip_silent_ms + 9) / 10U;
+}
+
+uint32_t
+scan_quiet_request_windows(uint32_t setting_windows, int dmr) {
+    if (setting_windows == 0U) {
+        return 0U;
+    }
+    return dmr && setting_windows < SCAN_QUIET_DMR_MIN_WINDOWS ? (uint32_t)SCAN_QUIET_DMR_MIN_WINDOWS : setting_windows;
+}
+
+uint32_t
+scan_quiet_request_deadline_ms(uint32_t windows) {
+    const uint32_t calibrated = 9U; /* DSD_SIGNAL_QUIET_WINDOWS, which a radio header names */
+    const uint32_t extra = windows > calibrated ? (windows - calibrated) * SCAN_QUIET_DEADLINE_PER_WINDOW_MS : 0U;
+    return SCAN_QUIET_REQUEST_DEADLINE_MS + extra;
 }
 
 /* Whether the decoder set enables a mode of the 12.5 kHz class, and of the 6.25 kHz class. */
@@ -561,6 +599,7 @@ typedef struct {
     uint64_t epoch_counter;
     /* As measured: the published classes, width, rate and frequency the request judged. */
     uint8_t classes;
+    uint8_t dmr;
     int analog_kind;
     uint32_t analog_width_hz;
     uint32_t dsp_rate_hz;
@@ -577,9 +616,12 @@ typedef struct {
        (issue #834 follow-up). */
     uint32_t capture_seq_seen;
     int capture_read;
-    /* A READY result the event service has handed back (or found not passing) once: it is never handed back again by
-       events, so a tick that keeps the visit or loses its guard leaves it to the hunt's 300-symbol point, as before. */
-    int event_handed;
+    /* The shortened reading a WARN line was last logged for (--scan-skip-silent-ms, its sub-window count at the
+       capture rate), and the DMR sub-window floor's own line: each once per setting and rate. */
+    int short_warned_ms;
+    uint32_t short_warned_rate_hz;
+    int dmr_warned_ms;
+    uint32_t dmr_warned_rate_hz;
     /* The frame-boundary settle wait (issue #834 R1): a request a frame-boundary service starts waits
        SCAN_QUIET_FRAME_SETTLE_MS (realtime) from settle_from_ms, the first qualifying capture the service saw (the first
        request) or the retryable failure it collected (a retry); settle_set 0 while there is neither. capture_seen: a
@@ -594,6 +636,9 @@ typedef struct {
     int retries;
     uint64_t request_seq;
     uint32_t ticket;
+    /* A READY result the event service has handed back (or found not passing) once: it is never handed back again by
+       events, so a tick that keeps the visit or loses its guard leaves it to the hunt's 300-symbol point, as before. */
+    int event_handed;
     uint64_t deadline_ms;
     /* The visit's activity baseline: the activity sequence and the decode time when its tune was issued (a landed
        visit carries them on its landing's note; a park still in flight takes them at its first publication, and keeps
@@ -877,8 +922,84 @@ quiet_refuse(scan_quiet_check* c, uint8_t reason, uint32_t generation) {
     c->republish_owed = 0;
 }
 
+/* The length of one sub-window at @p rate_hz for a narrowest judged width of @p width_hz, in ms (the detector's rule:
+   the smallest whole number of transforms of at least 10 ms); 0 when no transform fits. */
+static double
+quiet_window_ms(uint32_t rate_hz, double width_hz) {
+    const int n = dsd_signal_fft_size_for_width(rate_hz, width_hz);
+    if (n <= 0 || rate_hz == 0U) {
+        return 0.0;
+    }
+    const uint64_t frames = ((uint64_t)rate_hz + 100U * (uint64_t)n - 1U) / (100U * (uint64_t)n);
+    return 1000.0 * (double)(frames * (uint64_t)n) / (double)rate_hz;
+}
+
+/* The shortest and longest sub-window any checked width has at @p rate_hz, in ms. */
 static void
-quiet_request(scan_quiet_check* c, const dsd_signal_capture* cap, uint64_t now_ms) {
+quiet_window_range_ms(uint32_t rate_hz, double* lo, double* hi) {
+    *lo = *hi = quiet_window_ms(rate_hz, DSD_SIGNAL_QUIET_WIDTH_12K5_HZ);
+    const double digital = quiet_window_ms(rate_hz, DSD_SIGNAL_QUIET_WIDTH_6K25_HZ);
+    *lo = digital < *lo ? digital : *lo;
+    *hi = digital > *hi ? digital : *hi;
+    for (int kind = 0; kind < 2; kind++) {
+        size_t count = 0;
+        const uint32_t* widths = scan_quiet_warn_widths(kind ? DSD_ANALOG_DEMOD_AM : DSD_ANALOG_DEMOD_FM, &count);
+        for (size_t i = 0; i < count; i++) {
+            const double ms = quiet_window_ms(rate_hz, (double)widths[i]);
+            *lo = ms < *lo ? ms : *lo;
+            *hi = ms > *hi ? ms : *hi;
+        }
+    }
+}
+
+int
+scan_quiet_format_short_warn(char* out, size_t out_size, int setting_ms, uint32_t windows, uint32_t rate_hz,
+                             int dmr_floor) {
+    double lo = 0.0;
+    double hi = 0.0;
+    quiet_window_range_ms(rate_hz, &lo, &hi);
+    char span[48];
+    if (hi - lo < 0.5) {
+        DSD_SNPRINTF(span, sizeof span, "%.0f ms", lo * windows);
+    } else {
+        DSD_SNPRINTF(span, sizeof span, "%.0f to %.0f ms", lo * windows, hi * windows);
+    }
+    if (dmr_floor) {
+        return DSD_SNPRINTF(out, out_size,
+                            "WARNING: scan: --scan-skip-silent-ms %d: DMR channels are read for %u slices (%s), the "
+                            "fewest that always hold a whole DMR burst.\n",
+                            setting_ms, (unsigned)windows, span);
+    }
+    return DSD_SNPRINTF(out, out_size,
+                        "WARNING: scan: --scan-skip-silent-ms %d reads %u slices (%s), shorter than the calibrated "
+                        "9: a weak or fading signal can read silent and be skipped.\n",
+                        setting_ms, (unsigned)windows, span);
+}
+
+/* The WARN lines a shortened reading takes (issue #834 follow-up, D3): once per setting and capture rate for the
+   reading, and once more for the DMR floor when a DMR visit is read for longer than the setting asks. */
+static void
+quiet_warn_short(const dsd_opts* opts, scan_quiet_check* c, uint32_t rate_hz, uint32_t setting, uint32_t windows) {
+    if (setting == 0U || setting >= 9U) {
+        return;
+    }
+    char line[320];
+    if (c->short_warned_ms != opts->scan_skip_silent_ms || c->short_warned_rate_hz != rate_hz) {
+        c->short_warned_ms = opts->scan_skip_silent_ms;
+        c->short_warned_rate_hz = rate_hz;
+        (void)scan_quiet_format_short_warn(line, sizeof line, opts->scan_skip_silent_ms, setting, rate_hz, 0);
+        LOG_WARN("%s", line);
+    }
+    if (windows > setting && (c->dmr_warned_ms != opts->scan_skip_silent_ms || c->dmr_warned_rate_hz != rate_hz)) {
+        c->dmr_warned_ms = opts->scan_skip_silent_ms;
+        c->dmr_warned_rate_hz = rate_hz;
+        (void)scan_quiet_format_short_warn(line, sizeof line, opts->scan_skip_silent_ms, windows, rate_hz, 1);
+        LOG_WARN("%s", line);
+    }
+}
+
+static void
+quiet_request(const dsd_opts* opts, scan_quiet_check* c, const dsd_signal_capture* cap, uint64_t now_ms) {
     dsd_signal_quiet_request request;
     DSD_MEMSET(&request, 0, sizeof request);
     request.request_id = ++c->request_seq;
@@ -888,6 +1009,11 @@ quiet_request(scan_quiet_check* c, const dsd_signal_capture* cap, uint64_t now_m
     request.analog_width_hz = (c->classes & QUIET_CLASS_ANALOG) ? c->analog_width_hz : 0U;
     /* The reading starts SCAN_QUIET_LEAD_MS of samples after the request's capture (issue #834 follow-up, D1-a). */
     request.lead_pairs = (uint32_t)((uint64_t)cap->rate_hz * SCAN_QUIET_LEAD_MS / 1000U);
+    /* The reading's length (issue #834 follow-up, D3): the calibrated one unless --scan-skip-silent-ms sets another,
+       never fewer than the DMR floor on a visit that can carry DMR. */
+    const uint32_t setting = scan_quiet_setting_windows(opts);
+    request.windows = scan_quiet_request_windows(setting, c->dmr);
+    quiet_warn_short(opts, c, cap->rate_hz, setting, request.windows);
     uint32_t ticket = 0U;
     if (rtl_signal_quiet_request(&request, &ticket, NULL) != 0) {
         /* Refused (a Signal search holds the tap, or no memory): no check this visit. */
@@ -895,7 +1021,7 @@ quiet_request(scan_quiet_check* c, const dsd_signal_capture* cap, uint64_t now_m
         return;
     }
     c->ticket = ticket;
-    c->deadline_ms = now_ms + SCAN_QUIET_REQUEST_DEADLINE_MS;
+    c->deadline_ms = now_ms + scan_quiet_request_deadline_ms(request.windows);
     c->phase = SCAN_QUIET_REQUESTED;
 }
 
@@ -961,7 +1087,7 @@ quiet_wait_capture(const dsd_opts* opts, scan_quiet_check* c, uint64_t now_ms, i
         quiet_refuse(c, refusal, cap.generation);
         return;
     }
-    quiet_request(c, &cap, now_ms);
+    quiet_request(opts, c, &cap, now_ms);
 }
 
 static int
@@ -1100,14 +1226,16 @@ static int
 quiet_published_as_measured(const scan_quiet_check* c, const scan_quiet_eligibility* e) {
     return quiet_key_equal(&c->key, &e->key) && c->classes == e->classes && c->analog_kind == e->analog_kind
            && c->analog_width_hz == e->analog_width_hz && c->dsp_rate_hz == e->dsp_rate_hz
-           && c->frequency_hz == e->frequency_hz && quiet_revisions_equal(&c->revisions, &e->revisions);
+           && c->frequency_hz == e->frequency_hz && c->dmr == e->dmr
+           && quiet_revisions_equal(&c->revisions, &e->revisions);
 }
 
 /* The effective classes, the analog kind and width (with the analog class) and the DSP rate in force
    (@p current, this pass's facts) are still the ones measured. */
 static int
 quiet_measured_as_current(const scan_quiet_check* c, const scan_quiet_eligibility* current) {
-    if (!current || current->classes != c->classes || current->dsp_rate_hz != c->dsp_rate_hz) {
+    if (!current || current->classes != c->classes || current->dsp_rate_hz != c->dsp_rate_hz
+        || current->dmr != c->dmr) {
         return 0;
     }
     return !(c->classes & QUIET_CLASS_ANALOG)
@@ -1129,6 +1257,7 @@ quiet_start(const dsd_engine_scan_owner* owner, scan_quiet_check* c, const scan_
     c->analog_width_hz = e->analog_width_hz;
     c->dsp_rate_hz = e->dsp_rate_hz;
     c->frequency_hz = e->frequency_hz;
+    c->dmr = e->dmr;
     c->revisions = e->revisions;
     c->republish_seen = e->revisions;
     c->generation_before = landed ? owner->landing.generation_before_tune : owner->tune_generation_before;
@@ -1378,7 +1507,7 @@ quiet_event_wait_capture(const dsd_opts* opts, scan_quiet_check* c, uint64_t now
         quiet_refuse(c, refusal, cap.generation);
         return;
     }
-    quiet_request(c, &cap, now_ms);
+    quiet_request(opts, c, &cap, now_ms);
 }
 
 /* Whether the event service has anything to do for @p c: lock-free loads, and a clock read only while a settle or a

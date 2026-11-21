@@ -72,6 +72,12 @@ enum {
     /** Every request's reading starts this many ms of samples after its capture's first block (issue #834 follow-up,
         D1-a): the request's lead, which the tap drops unmeasured. */
     SCAN_QUIET_LEAD_MS = 10,
+    /** A reading set shorter than the calibrated one (--scan-skip-silent-ms) still judges this many sub-windows on a
+        visit that can carry a single DMR radio: the fewest of at most 13.75 ms that always hold one wholly inside a
+        burst of an ongoing normal-burst train (ETSI TS 102 361-1 clauses 4.2.2 and 10.2.3; IO_SIGNAL_MEASURE). */
+    SCAN_QUIET_DMR_MIN_WINDOWS = 6,
+    /** The answer deadline grows by this much for each sub-window a reading has above the calibrated nine. */
+    SCAN_QUIET_DEADLINE_PER_WINDOW_MS = 12,
 };
 
 /** The longest a PARTIAL content note holds a quiet result back, in ms (decode clock): above every protocol's hold. */
@@ -124,6 +130,9 @@ typedef struct {
     uint32_t analog_width_hz; /**< the analog class's configured width; 0 without it */
     uint32_t dsp_rate_hz;     /**< the DSP rate in force */
     uint32_t frequency_hz;    /**< where the visit lands */
+    /** The visit can carry a single DMR radio's bursts (scan_quiet_mode_dmr()): a shortened reading keeps
+        SCAN_QUIET_DMR_MIN_WINDOWS sub-windows on it. */
+    uint8_t dmr;
     /** Why the facts give the visit no check (dsd_scan_quiet_reason: MODES or NO_WIDTH, scan_quiet_facts_reason()),
         NONE when they give one, and for a trunked target, which is never checked by design. */
     uint8_t reason;
@@ -132,6 +141,32 @@ typedef struct {
 
 /** Read the counters a check snapshots. */
 void scan_quiet_revisions_read(const dsd_opts* opts, const dsd_state* state, scan_quiet_revisions* out);
+
+/** Whether a visit in @p mode can carry a single DMR radio: a DMR row or target, or one that inherits a decoder set with
+ * DMR on (an untyped -Y row, or a typed one in mode inherit). */
+uint8_t scan_quiet_mode_dmr(const dsd_opts* opts, dsd_scan_mode mode);
+
+/** The visit fact scan_quiet_eligibility::dmr for @p mode: scan_quiet_mode_dmr() while --scan-skip-silent-ms shortens
+ * readings (the only time the DMR floor matters), else 0, so the calibrated reading's facts are unchanged. */
+uint8_t scan_quiet_visit_dmr(const dsd_opts* opts, dsd_scan_mode mode);
+
+/** The sub-window count --scan-skip-silent-ms asks for (its ms rounded up to whole 10 ms sub-windows), 0 when unset:
+ * the calibrated reading. */
+uint32_t scan_quiet_setting_windows(const dsd_opts* opts);
+
+/** The sub-window count a request asks for: 0 (the calibrated reading) with the setting unset, else the setting's,
+ * and at least SCAN_QUIET_DMR_MIN_WINDOWS on a visit that can carry DMR (@p dmr). */
+uint32_t scan_quiet_request_windows(uint32_t setting_windows, int dmr);
+
+/** The answer deadline of a request judging @p windows sub-windows (0: the calibrated nine), in ms after it. */
+uint32_t scan_quiet_request_deadline_ms(uint32_t windows);
+
+/** Format the WARN line of a reading shortened by --scan-skip-silent-ms (@p setting_ms) to @p windows sub-windows at
+ * capture rate @p rate_hz, with the span those sub-windows take over every checked width there; with @p dmr_floor the
+ * line for a DMR visit read for @p windows sub-windows, the DMR floor, instead. Radio builds only. Returns the snprintf
+ * result. */
+int scan_quiet_format_short_warn(char* out, size_t out_size, int setting_ms, uint32_t windows, uint32_t rate_hz,
+                                 int dmr_floor);
 
 /** The width classes of a typed row's or a conventional target's @p mode; 0 for a mode in no class. */
 uint8_t scan_quiet_mode_classes(dsd_scan_mode mode);

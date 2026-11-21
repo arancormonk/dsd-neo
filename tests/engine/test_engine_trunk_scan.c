@@ -23354,6 +23354,9 @@ qt_pass(dsd_opts* opts, dsd_state* state) {
 
 static int g_qt_notices = 0;
 static char g_qt_notice[192];
+/* The shortened-reading WARN lines (issue #834 follow-up, D3): how many, and the last. */
+static int g_qt_short_warns = 0;
+static char g_qt_short_warn[320];
 /* The silent-channel skip's WARN lines (issue #834 R6), counted by the same tap: a process installs one tap only. */
 static int g_qt_warns = 0;
 static char g_qt_warn[512];
@@ -23369,6 +23372,10 @@ qt_count_notice(dsd_neo_log_level_t level, const char* text, void* ctx) {
     if (text && strncmp(text, "WARNING: scan: silent channel skip", 34) == 0) {
         g_qt_warns++;
         DSD_SNPRINTF(g_qt_warn, sizeof g_qt_warn, "%s", text);
+    }
+    if (text && strncmp(text, "WARNING: scan: --scan-skip-silent-ms", 36) == 0) {
+        g_qt_short_warns++;
+        DSD_SNPRINTF(g_qt_short_warn, sizeof g_qt_short_warn, "%s", text);
     }
 }
 
@@ -24129,6 +24136,115 @@ test_scan_quiet_event_hand_back_skips_the_target(void) {
     qt_notices_watch(0);
     quiet_rig_finish(&opts, state_p, dir, path);
     return rc;
+}
+
+/* --- Issue #834 follow-up, D3: --scan-skip-silent-ms sets the reading's sub-window count. --- */
+
+static const char k_qt_p25_targets[] = "a,p25-conventional,452000000,,2000,1000,\n"
+                                       "b,p25-conventional,453000000,,2000,1000,\n";
+
+/* The rig's first visit published by the outer pass at +10 ms with its capture there, with @p ms set: the request's
+   sub-window count, or -1 when nothing was asked. */
+static int
+qt_reading_windows(const char* body, int ms, int* warns) {
+    char dir[DSD_TEST_PATH_MAX];
+    char path[DSD_TEST_PATH_MAX];
+    static dsd_opts opts;
+    dsd_state* const state_p = qt_shared_state();
+    g_qt_real_clock = 1;
+    const int start = quiet_rig_start_body(&opts, state_p, dir, sizeof dir, path, sizeof path, body);
+    g_qt_real_clock = 0;
+    if (start != 0) {
+        return -2;
+    }
+    scan_quiet_test_realtime_ms = qt_seam_clock;
+    opts.scan_skip_silent_ms = ms;
+    g_quiet_rt_ms = qt_landed_ms(state_p) + 10U;
+    g_qt_short_warns = 0;
+    qt_notices_watch(1);
+    g_qt_short_warns = 0;
+    qt_decode_at(10U);
+    qt_pass(&opts, state_p);
+    const int windows = g_tap.requests == 1 ? (int)g_tap.last_request.windows : -1;
+    if (warns) {
+        *warns = g_qt_short_warns;
+    }
+    qt_notices_watch(0);
+    quiet_rig_finish(&opts, state_p, dir, path);
+    return windows;
+}
+
+/* Unset: the calibrated reading (0, the detector's nine). 30 ms: three sub-windows on a P25 target, six (the DMR
+   floor) on a DMR target, each with its WARN lines once; 85 ms rounds to the calibrated nine and warns nothing;
+   500 ms: fifty, with no warning. */
+static int
+test_scan_quiet_reading_length_per_visit(void) {
+    int warns = 0;
+    int rc = qt_expect("unset: the calibrated reading",
+                       qt_reading_windows(k_qt_dwell_targets, 0, &warns) == 0 && warns == 0);
+    rc |=
+        qt_expect("30 ms on a P25 target: three", qt_reading_windows(k_qt_p25_targets, 30, &warns) == 3 && warns == 1);
+    rc |= qt_expect("the warning names the reading",
+                    strstr(g_qt_short_warn, "--scan-skip-silent-ms 30 reads 3 slices (30 to ") != NULL
+                        && strstr(g_qt_short_warn, "shorter than the calibrated 9") != NULL);
+    rc |= qt_expect("30 ms on a DMR target: the floor of six",
+                    qt_reading_windows(k_qt_dwell_targets, 30, &warns) == 6 && warns == 2);
+    rc |= qt_expect("the DMR line names the floor",
+                    strstr(g_qt_short_warn, "DMR channels are read for 6 slices") != NULL);
+    rc |= qt_expect("85 ms rounds to nine: no warning",
+                    qt_reading_windows(k_qt_p25_targets, 85, &warns) == 9 && warns == 0);
+    rc |= qt_expect("500 ms: fifty", qt_reading_windows(k_qt_dwell_targets, 500, &warns) == 50 && warns == 0);
+    char line[320];
+    (void)scan_quiet_format_short_warn(line, sizeof line, 50, 5, 1536000U, 0);
+    rc |= qt_expect("the span at 1.536 Msps",
+                    strcmp(line, "WARNING: scan: --scan-skip-silent-ms 50 reads 5 slices (50 to "
+                                 "53 ms), shorter than the calibrated 9: a weak or fading signal "
+                                 "can read silent and be skipped.\n")
+                        == 0);
+    (void)scan_quiet_format_short_warn(line, sizeof line, 50, 6, 1024000U, 1);
+    rc |=
+        qt_expect("one length at 1.024 Msps", strcmp(line, "WARNING: scan: --scan-skip-silent-ms 50: DMR channels are "
+                                                           "read for 6 slices (60 ms), the fewest that always hold a "
+                                                           "whole DMR burst.\n")
+                                                  == 0);
+    rc |= qt_expect("the helpers",
+                    scan_quiet_request_windows(0U, 1) == 0U && scan_quiet_request_windows(3U, 0) == 3U
+                        && scan_quiet_request_windows(3U, 1) == 6U && scan_quiet_request_windows(7U, 1) == 7U
+                        && scan_quiet_request_deadline_ms(0U) == 400U && scan_quiet_request_deadline_ms(9U) == 400U
+                        && scan_quiet_request_deadline_ms(50U) == 892U);
+    return rc;
+}
+
+/* A fifty-sub-window reading's answer has 892 ms: one completing 1 ms before is taken, one completing at it is not. */
+static int
+qt_long_deadline_case(uint64_t completes_after) {
+    char dir[DSD_TEST_PATH_MAX];
+    char path[DSD_TEST_PATH_MAX];
+    static dsd_opts opts;
+    dsd_state* const state_p = qt_shared_state();
+    if (qt_portable_start(&opts, state_p, dir, sizeof dir, path, sizeof path) != 0) {
+        return 1;
+    }
+    opts.scan_skip_silent_ms = 500;
+    const uint64_t landed_ms = qt_landed_ms(state_p);
+    g_quiet_rt_ms = landed_ms + 10U;
+    quiet_publish(&opts, state_p);
+    int rc = qt_expect("requested with fifty",
+                       scan_quiet_phase_get(state_p) == SCAN_QUIET_REQUESTED && g_tap.last_request.windows == 50U);
+    g_quiet_rt_ms = landed_ms + 10U + completes_after;
+    quiet_tap_finish(1, DSD_SIGNAL_MEASURE_OK);
+    const int answer = dsd_engine_scan_quiet_event_service(&opts, state_p);
+    rc |= qt_expect(completes_after < 892U ? "1 ms before the grown deadline: taken" : "at the grown deadline: not",
+                    completes_after < 892U
+                        ? answer == DSD_SCAN_QUIET_HAND_BACK
+                        : (answer == DSD_SCAN_QUIET_NONE && scan_quiet_phase_get(state_p) == SCAN_QUIET_DONE));
+    quiet_rig_finish(&opts, state_p, dir, path);
+    return rc;
+}
+
+static int
+test_scan_quiet_reading_length_deadline(void) {
+    return qt_long_deadline_case(891U) | qt_long_deadline_case(892U);
 }
 
 static int
@@ -27408,6 +27524,8 @@ test_scan_quiet_all(void) {
     rc |= run_with_default_tune_hook(test_scan_quiet_event_respects_the_settle);
     rc |= run_with_default_tune_hook(test_scan_quiet_event_late_retry_and_holds);
     rc |= run_with_default_tune_hook(test_scan_quiet_event_hand_back_skips_the_target);
+    rc |= run_with_default_tune_hook(test_scan_quiet_reading_length_per_visit);
+    rc |= run_with_default_tune_hook(test_scan_quiet_reading_length_deadline);
     rc |= run_with_default_tune_hook(test_scan_quiet_frame_boundaries_run_every_step);
     rc |= run_with_default_tune_hook(test_scan_quiet_sync_free_visit_timing);
     rc |= run_with_default_tune_hook(test_scan_quiet_frame_boundary_setting_off);

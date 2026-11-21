@@ -28683,7 +28683,7 @@ if(DSD_HAS_RADIO)
             ${LIBS}
     )
     add_test(NAME IO_SIGNAL_MEASURE COMMAND dsd-neo_test_io_signal_measure)
-    # Manual only: the scan quiet-threshold calibration (docs/signal-search.md), minutes on every core.
+    # The scan quiet-threshold calibration (docs/signal-search.md), run by hand: minutes on every core.
     add_executable(
         dsd-neo_test_signal_quiet_calibrate
         io/signal_quiet_calibrate.cpp
@@ -28702,6 +28702,22 @@ if(DSD_HAS_RADIO)
             Threads::Threads
             ${LIBS}
     )
+    # The calibration driver checks the sources of the conditions --filter selects for the phase, and only those
+    # (issue #834): one condition at a time on a tiny source set it makes in its temp directory, in seconds.
+    find_package(Python3 QUIET COMPONENTS Interpreter)
+    if(Python3_Interpreter_FOUND)
+        add_test(
+            NAME IO_SIGNAL_QUIET_CALIBRATE_CHOOSE
+            COMMAND
+                ${Python3_EXECUTABLE}
+                ${CMAKE_CURRENT_SOURCE_DIR}/io/signal_quiet_calibrate_choose_check.py
+                $<TARGET_FILE:dsd-neo_test_signal_quiet_calibrate>
+        )
+        set_tests_properties(
+            IO_SIGNAL_QUIET_CALIBRATE_CHOOSE
+            PROPERTIES TIMEOUT 120
+        )
+    endif()
     # The shared tap forgets a stopped stream's capture, run on a real I/Q replay stream.
     add_executable(dsd-neo_test_io_rtl_signal_tap io/test_io_rtl_signal_tap.cpp)
     target_include_directories(
