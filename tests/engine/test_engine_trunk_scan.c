@@ -2166,6 +2166,109 @@ test_chan_map_zero_per_target(void) {
     return test_rc;
 }
 
+static int g_dmr_missing_summaries;
+static char g_dmr_missing_summary[2][256];
+
+#ifdef USE_RADIO
+static void qt_count_notice(dsd_neo_log_level_t level, const char* text, void* ctx);
+#endif
+
+/* The process's one log tap (dsd_neo_log_set_tap() installs only the first): it counts the DMR per-target exit
+   summaries here and, with radio support, the quiet check's lines (qt_count_notice()). */
+static void
+trunk_scan_test_log_tap(dsd_neo_log_level_t level, const char* text, void* ctx) {
+    if (text != NULL && strncmp(text, "NOTICE: DMR Tier III (", 22) == 0) {
+        if (g_dmr_missing_summaries < 2) {
+            DSD_SNPRINTF(g_dmr_missing_summary[g_dmr_missing_summaries], sizeof g_dmr_missing_summary[0], "%s", text);
+        }
+        g_dmr_missing_summaries++;
+    }
+#ifdef USE_RADIO
+    qt_count_notice(level, text, ctx);
+#else
+    (void)level;
+    (void)ctx;
+#endif
+}
+
+/* Whether the live ledger holds exactly LPCN @p lpcn. */
+static int
+dmr_missing_only(const dsd_state* state, uint16_t lpcn) {
+    static dmr_t3_missing_ledger l;
+    dmr_t3_missing_copy(state, &l);
+    return dmr_t3_missing_count(state) == 1U && l.detail_count == 1U && l.details[0].lpcn == lpcn
+           && ((l.missing[lpcn >> 3] >> (lpcn & 7U)) & 1U) != 0U;
+}
+
+/* Two DMR targets each record their own channel granted without a frequency (discussion #900 F1): A's 12 and B's 30
+   leave and come back with their target, never show on the other, and the exit summary names each target's own. */
+static int
+test_dmr_missing_ledger_per_target(void) {
+    char dir[DSD_TEST_PATH_MAX];
+    char target_path[DSD_TEST_PATH_MAX];
+    if (make_runtime_targets("a,dmr-trunk,452000000,,250,,tier iii\n"
+                             "b,dmr-trunk,453000000,,250,,tier iii\n",
+                             target_path, sizeof target_path, dir, sizeof dir)
+        != 0) {
+        return 1;
+    }
+
+    static dsd_opts opts;
+    static dsd_state state;
+    reset_scan_opts_state(&opts, &state);
+    DSD_SNPRINTF(opts.trunk_scan_lists[0].path, sizeof opts.trunk_scan_lists[0].path, "%s", target_path);
+    opts.trunk_scan_list_count = 1;
+
+    char err[256] = {0};
+    trunk_scan_test_set_now(0.0);
+    int test_rc = 0;
+    if (dsd_engine_trunk_scan_init(&opts, &state, err, sizeof err) != 0
+        || dsd_engine_trunk_scan_active_index(&state) != 0) {
+        DSD_FPRINTF(stderr, "dmr missing: scan init failed err=%s\n", err);
+        test_rc = 1;
+    }
+
+    const dmr_t3_grant_class group = {1U, 0U, 2002U, 1001U};
+    dmr_t3_missing_note_grant(&opts, &state, 12U, &group, 0U, 0);
+    if (!dmr_missing_only(&state, 12U)) {
+        DSD_FPRINTF(stderr, "dmr missing: target A did not record LPCN 12\n");
+        test_rc = 1;
+    }
+    trunk_scan_test_set_now(0.26);
+    dsd_engine_trunk_scan_tick(&opts, &state);
+    if (dsd_engine_trunk_scan_active_index(&state) != 1 || dmr_t3_missing_count(&state) != 0U) {
+        DSD_FPRINTF(stderr, "dmr missing: target A's LPCN 12 leaked into B\n");
+        test_rc = 1;
+    }
+    dmr_t3_missing_note_grant(&opts, &state, 30U, &group, 1U, 1);
+    trunk_scan_test_set_now(0.52);
+    dsd_engine_trunk_scan_tick(&opts, &state);
+    if (dsd_engine_trunk_scan_active_index(&state) != 0 || !dmr_missing_only(&state, 12U)) {
+        DSD_FPRINTF(stderr, "dmr missing: target A's ledger not restored\n");
+        test_rc = 1;
+    }
+    trunk_scan_test_set_now(0.78);
+    dsd_engine_trunk_scan_tick(&opts, &state);
+    if (dsd_engine_trunk_scan_active_index(&state) != 1 || !dmr_missing_only(&state, 30U)) {
+        DSD_FPRINTF(stderr, "dmr missing: target B's ledger not restored\n");
+        test_rc = 1;
+    }
+
+    g_dmr_missing_summaries = 0;
+    dsd_neo_log_set_tap(trunk_scan_test_log_tap, NULL);
+    dsd_engine_trunk_scan_shutdown(&opts, &state);
+    if (g_dmr_missing_summaries != 2 || strstr(g_dmr_missing_summary[0], "(a)") == NULL
+        || strstr(g_dmr_missing_summary[0], " 12") == NULL || strstr(g_dmr_missing_summary[1], "(b)") == NULL
+        || strstr(g_dmr_missing_summary[1], " 30 (unchecked)") == NULL) {
+        DSD_FPRINTF(stderr, "dmr missing: exit summaries %d [%s] [%s]\n", g_dmr_missing_summaries,
+                    g_dmr_missing_summary[0], g_dmr_missing_summary[1]);
+        test_rc = 1;
+    }
+    trunk_scan_test_clear_now();
+    cleanup_paths(dir, target_path, NULL);
+    return test_rc;
+}
+
 /* Fill every registration owner slot with values derived from @p tag (a distinct table per target). */
 static void
 seed_aff_owners(dsd_state* state, uint32_t tag) {
@@ -23475,7 +23578,7 @@ static void
 qt_notices_watch(int on) {
     g_qt_notices = 0;
     g_qt_notice[0] = '\0';
-    dsd_neo_log_set_tap(on ? qt_count_notice : NULL, NULL);
+    dsd_neo_log_set_tap(on ? trunk_scan_test_log_tap : NULL, NULL);
 }
 
 /* A pass that publishes the target on air measures it, and the tap finds it quiet: READY, handed back. */
@@ -26613,12 +26716,12 @@ test_scan_quiet_y_ready_declines_at_its_own_sites(void) {
 #if defined(USE_RADIO) && defined(DSD_NEO_TEST_RTL_WRAP)
 /* --- Issue #834 R6: the check says when and why it cannot check a visit, through the trunk scan's timing publication
  * (quiet_status and quiet_reason, shown on the idle dwell) and with a WARN line once per key. --- */
-/* Count the WARN lines from here (qt_count_notice(), the process's one tap). */
+/* Count the WARN lines from here (qt_count_notice(), through the process's one tap). */
 static void
 qt_warns_watch(void) {
     g_qt_warns = 0;
     g_qt_warn[0] = '\0';
-    dsd_neo_log_set_tap(qt_count_notice, NULL);
+    dsd_neo_log_set_tap(trunk_scan_test_log_tap, NULL);
 }
 
 /* The quiet status and reason the timing publication carries. */
@@ -27315,6 +27418,7 @@ main(void) {
     rc |= run_with_default_tune_hook(test_parser_refuses_a_non_utf8_id);
     rc |= run_with_default_tune_hook(test_coordinator_idle_rotation_and_state_restore);
     rc |= run_with_default_tune_hook(test_dmr_channel_origins_restore_per_target);
+    rc |= run_with_default_tune_hook(test_dmr_missing_ledger_per_target);
     rc |= run_with_default_tune_hook(test_chan_map_zero_per_target);
     rc |= run_with_default_tune_hook(test_assoc_trunk_scan_restore);
     rc |= run_with_default_tune_hook(test_unit_activity_ring_spans_trunk_scan_switch);

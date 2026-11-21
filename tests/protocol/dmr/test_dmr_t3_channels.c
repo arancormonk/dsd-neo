@@ -26,6 +26,7 @@
 #include <dsd-neo/protocol/dmr/dmr_trunk_sm.h>
 #include <dsd-neo/protocol/dmr/dmr_utils_api.h>
 #include <dsd-neo/runtime/decode_clock.h>
+#include <dsd-neo/runtime/log.h>
 #include <dsd-neo/runtime/trunk_cc_candidates.h>
 #include <dsd-neo/runtime/trunk_tuning_hooks.h>
 #include <stdint.h>
@@ -35,6 +36,7 @@
 
 #include "dmr_abs_params.h"
 #include "dmr_bptc_test_encoder.h"
+#include "dmr_crc_provenance.h"
 #include "dmr_t3_channels_internal.h"
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/state_fwd.h"
@@ -1467,8 +1469,286 @@ test_save_restore_keeps_effective_revision(void) {
     assert(dmr_t3_chan_revision(&g_state) > rev);
 }
 
+/* ---- Missing-channel ledger (F1) ---- */
+
+static int g_missing_notices;
+static char g_missing_notice[256];
+static int g_missing_summaries;
+static char g_missing_summary[600];
+
+static void
+missing_log_tap(dsd_neo_log_level_t level, const char* text, void* ctx) {
+    (void)level;
+    (void)ctx;
+    if (text == NULL) {
+        return;
+    }
+    if (strncmp(text, "NOTICE: DMR Tier III: channel ", 30) == 0) {
+        g_missing_notices++;
+        DSD_SNPRINTF(g_missing_notice, sizeof g_missing_notice, "%s", text);
+    } else if (strncmp(text, "NOTICE: DMR Tier III: ", 22) == 0) {
+        g_missing_summaries++;
+        DSD_SNPRINTF(g_missing_summary, sizeof g_missing_summary, "%s", text);
+    }
+}
+
+static void
+reset_missing(void) {
+    reset();
+    g_state.synctype = DSD_SYNC_DMR_BS_DATA_POS;
+    g_missing_notices = 0;
+    g_missing_notice[0] = '\0';
+    g_missing_summaries = 0;
+    g_missing_summary[0] = '\0';
+}
+
+/* Grant @p opcode for LPCN @p lpcn, destination slot @p slot, target 1001 and source 2002, feature set @p fid. */
+static void
+send_grant_fid(uint8_t opcode, uint16_t lpcn, uint8_t slot, uint8_t fid) {
+    uint8_t bits[256];
+    uint8_t bytes[48];
+    build_pf0(bits, bytes, opcode);
+    bytes[1] = fid;
+    put_bits(bits, 8, fid, 8);
+    put_bits(bits, 16, lpcn & 0x0FFFU, 12);
+    bits[28] = (uint8_t)(slot & 1U);
+    put_bits(bits, 32, 1001U, 24);
+    put_bits(bits, 56, 2002U, 24);
+    dmr_cspdu(&g_opts, &g_state, bits, bytes, 1U, 0U);
+}
+
+static void
+send_grant(uint8_t opcode, uint16_t lpcn, uint8_t slot) {
+    send_grant_fid(opcode, lpcn, slot, 0U);
+}
+
+static dmr_t3_missing_ledger*
+missing_copy(void) {
+    static dmr_t3_missing_ledger out;
+    dmr_t3_missing_copy(&g_state, &out);
+    return &out;
+}
+
+static int
+bit_set(const uint8_t* set, uint16_t lpcn) {
+    return (set[lpcn >> 3] >> (lpcn & 7U)) & 1U;
+}
+
+static void
+test_unmapped_grant_recorded_once_per_channel(void) {
+    reset_missing();
+    dsd_decode_clock_use_test(UINT64_C(7000) * UINT64_C(1000000));
+    send_grant(49U, 12U, 1U);
+    assert(dmr_t3_missing_count(&g_state) == 1U);
+    assert(g_missing_notices == 1);
+    assert(strcmp(g_missing_notice,
+                  "NOTICE: DMR Tier III: channel 12 has no frequency; dsd-neo cannot retune to its calls\n")
+           == 0);
+    dmr_t3_missing_ledger* l = missing_copy();
+    assert(l->detail_count == 1U);
+    assert(l->details[0].lpcn == 12U && l->details[0].slot == 1U);
+    assert(l->details[0].group == 1U && l->details[0].data == 0U && l->details[0].unverified == 0U);
+    assert(l->details[0].recipient == 1001U && l->details[0].caller == 2002U);
+    assert(l->details[0].last_heard_ms == UINT64_C(7000));
+    assert(bit_set(l->missing, 12U) && bit_set(l->checked, 12U) && bit_set(l->reported, 12U));
+    const uint32_t rev = l->revision;
+
+    /* The same channel again, on the other slot as a private data grant: one channel, one notice, the newest details. */
+    dsd_decode_clock_test_set_ns(UINT64_C(9000) * UINT64_C(1000000));
+    send_grant(51U, 12U, 0U);
+    assert(dmr_t3_missing_count(&g_state) == 1U);
+    assert(g_missing_notices == 1);
+    l = missing_copy();
+    assert(l->detail_count == 1U && l->revision != rev);
+    assert(l->details[0].slot == 0U && l->details[0].group == 0U && l->details[0].data == 1U);
+    assert(l->details[0].last_heard_ms == UINT64_C(9000));
+
+    /* The exit summary names it. */
+    dmr_t3_missing_log_summary(&g_state);
+    assert(g_missing_summaries == 1);
+    assert(strstr(g_missing_summary, "1 channel") != NULL && strstr(g_missing_summary, " 12") != NULL);
+    dsd_decode_clock_use_system();
+}
+
+static void
+test_count_exact_past_16_details(void) {
+    reset_missing();
+    for (uint16_t l = 100U; l < 120U; l++) {
+        send_grant(49U, l, 0U);
+    }
+    assert(dmr_t3_missing_count(&g_state) == 20U);
+    assert(g_missing_notices == 20);
+    dmr_t3_missing_ledger* l = missing_copy();
+    assert(l->detail_count == 16U);
+    assert(l->details[0].lpcn == 119U && l->details[15].lpcn == 104U);
+    for (uint16_t c = 100U; c < 120U; c++) {
+        assert(bit_set(l->missing, c));
+    }
+
+    /* A repeat moves its channel to the front and drops nothing else. */
+    send_grant(49U, 110U, 0U);
+    l = missing_copy();
+    assert(dmr_t3_missing_count(&g_state) == 20U && l->detail_count == 16U);
+    assert(l->details[0].lpcn == 110U && l->details[1].lpcn == 119U && l->details[15].lpcn == 104U);
+    /* One evicted from the details comes back at the front, the oldest goes. */
+    send_grant(49U, 100U, 0U);
+    l = missing_copy();
+    assert(l->details[0].lpcn == 100U && l->details[15].lpcn == 105U);
+    assert(g_missing_notices == 20);
+
+    dmr_t3_missing_log_summary(&g_state);
+    assert(g_missing_summaries == 1 && strstr(g_missing_summary, "20 channels") != NULL);
+    assert(strstr(g_missing_summary, "(+4 more)") != NULL);
+}
+
+static void
+test_mapped_grant_records_nothing(void) {
+    reset_missing();
+    g_state.trunk_chan_map[12] = 451012500L;
+    dmr_t3_chan_note_map_loaded(&g_state);
+    dmr_sm_init(&g_opts, &g_state);
+    dsd_trunk_tuning_hooks_set((dsd_trunk_tuning_hooks){.tune_to_freq_request = tune_request});
+    send_grant(49U, 12U, 0U);
+    assert(g_state.trunk_vc_freq[0] == 451012500L); /* followed as before */
+    assert(dmr_t3_missing_count(&g_state) == 0U);
+    assert(missing_copy()->detail_count == 0U && !bit_set(missing_copy()->reported, 12U));
+    assert(g_missing_notices == 0);
+    /* Not channels at all: CHNULL, and 4095 with no absolute block. */
+    g_opts.trunk_is_tuned = 0;
+    send_grant(49U, 0U, 0U);
+    assert(dmr_t3_missing_count(&g_state) == 0U);
+    dmr_t3_missing_log_summary(&g_state);
+    assert(g_missing_summaries == 0);
+    dsd_trunk_tuning_hooks_set((dsd_trunk_tuning_hooks){0});
+}
+
+static void
+test_ras_grant_ledger_unverified(void) {
+    reset_missing();
+    g_opts.aggressive_framesync = 0; /* -F */
+    g_state.currentslot = 0;
+    g_state.dmr_ras_signatures = 2U;
+    g_state.event_crc_invalid[0] = DSD_CRC_RAS_UNVERIFIED;
+    send_grant(49U, 40U, 0U);
+    assert(dmr_t3_missing_count(&g_state) == 1U);
+    dmr_t3_missing_ledger* l = missing_copy();
+    assert(l->details[0].unverified == 1U && !bit_set(l->checked, 40U));
+    assert(g_missing_notices == 1);
+    assert(strcmp(g_missing_notice, "NOTICE: DMR Tier III: channel 40 has no frequency; dsd-neo cannot retune to "
+                                    "its calls (unchecked)\n")
+           == 0);
+    dmr_t3_missing_log_summary(&g_state);
+    assert(strstr(g_missing_summary, "40 (unchecked)") != NULL);
+
+    /* A checked repeat clears the mark, and no second notice; a later RAS one does not bring the mark back. */
+    g_state.event_crc_invalid[0] = 0U;
+    send_grant(49U, 40U, 0U);
+    l = missing_copy();
+    assert(l->details[0].unverified == 0U && bit_set(l->checked, 40U));
+    g_state.event_crc_invalid[0] = DSD_CRC_RAS_UNVERIFIED;
+    send_grant(49U, 40U, 0U);
+    assert(missing_copy()->details[0].unverified == 0U);
+    assert(g_missing_notices == 1);
+
+    /* RAS not confirmed on this carrier, or a failed CRC: nothing recorded. */
+    g_state.dmr_ras_signatures = 0U;
+    send_grant(49U, 41U, 0U);
+    g_state.dmr_ras_signatures = 2U;
+    g_state.event_crc_invalid[0] = DSD_CRC_FAILED;
+    send_grant(49U, 42U, 0U);
+    assert(dmr_t3_missing_count(&g_state) == 1U);
+    assert(g_missing_notices == 1);
+}
+
+static void
+test_synthesized_and_ms_data_56_ignored(void) {
+    reset_missing();
+    dmr_cspdu_release_channel(&g_opts, &g_state);
+    assert(dmr_t3_missing_count(&g_state) == 0U);
+
+    /* MS-sourced: 56 is BS_Dwn_Act there, and an inbound grant opcode is no grant the site sent. */
+    g_state.synctype = DSD_SYNC_DMR_MS_DATA;
+    send_grant(56U, 43U, 0U);
+    send_grant(49U, 44U, 0U);
+    assert(dmr_t3_missing_count(&g_state) == 0U);
+
+    /* A manufacturer's feature set is not the standard grant. */
+    g_state.synctype = DSD_SYNC_DMR_BS_DATA_POS;
+    send_grant_fid(49U, 45U, 0U, 0x10U);
+    assert(dmr_t3_missing_count(&g_state) == 0U);
+
+    /* Outbound 56 is a group data grant. */
+    send_grant(56U, 46U, 0U);
+    assert(dmr_t3_missing_count(&g_state) == 1U);
+    assert(missing_copy()->details[0].data == 1U && missing_copy()->details[0].group == 1U);
+    assert(g_missing_notices == 1);
+}
+
+static void
+test_reconcile_clears_only_mapped_bits(void) {
+    reset_missing();
+    send_grant(49U, 10U, 0U);
+    send_grant(49U, 11U, 0U);
+    send_grant(49U, 12U, 0U);
+    const uint32_t rev = missing_copy()->revision;
+
+    /* A map load that names 11 (and 13, never granted) clears 11 only and sets nothing. */
+    g_state.trunk_chan_map[11] = 451025000L;
+    g_state.trunk_chan_map[13] = 451037500L;
+    dmr_t3_chan_note_map_loaded(&g_state);
+    dmr_t3_missing_ledger* l = missing_copy();
+    assert(dmr_t3_missing_count(&g_state) == 2U && l->revision != rev);
+    assert(bit_set(l->missing, 10U) && !bit_set(l->missing, 11U) && bit_set(l->missing, 12U));
+    assert(!bit_set(l->missing, 13U) && !bit_set(l->checked, 11U));
+    assert(bit_set(l->reported, 11U)); /* reported survives everything but a network change */
+    assert(l->detail_count == 2U && l->details[0].lpcn == 12U && l->details[1].lpcn == 10U);
+
+    /* A row learned over the air clears its channel too. */
+    assert(dmr_t3_chan_learn(&g_opts, &g_state, 12U, 451050000L, DMR_CHAN_ORIGIN_SITE) == 1);
+    l = missing_copy();
+    assert(dmr_t3_missing_count(&g_state) == 1U && l->detail_count == 1U && l->details[0].lpcn == 10U);
+
+    /* An explicit reconcile with nothing newly mapped changes nothing. */
+    const uint32_t rev2 = l->revision;
+    dmr_t3_missing_reconcile(&g_state);
+    assert(missing_copy()->revision == rev2);
+
+    /* The map emptied: 11 granted again is recorded, with no second notice. */
+    DSD_MEMSET(g_state.trunk_chan_map, 0, sizeof g_state.trunk_chan_map);
+    dmr_t3_chan_note_map_cleared(&g_state);
+    send_grant(49U, 11U, 0U);
+    assert(dmr_t3_missing_count(&g_state) == 2U);
+    assert(g_missing_notices == 3);
+}
+
+static void
+test_missing_network_change_resets(void) {
+    reset_missing();
+    send_grant(49U, 10U, 0U);
+    send_grant(49U, 11U, 1U);
+    assert(dmr_t3_missing_count(&g_state) == 2U && g_missing_notices == 2);
+    const uint32_t rev = missing_copy()->revision;
+    dmr_t3_chan_network_changed(&g_opts, &g_state);
+    dmr_t3_missing_ledger* l = missing_copy();
+    assert(dmr_t3_missing_count(&g_state) == 0U && l->detail_count == 0U && l->revision != rev);
+    assert(!bit_set(l->reported, 10U) && !bit_set(l->checked, 10U));
+    send_grant(49U, 10U, 0U);
+    assert(dmr_t3_missing_count(&g_state) == 1U && g_missing_notices == 3);
+
+    /* The save and restore carry the ledger: a restore brings it back with a revision past both. */
+    static dmr_t3_chan_target_snapshot a;
+    dmr_t3_chan_save(&g_state, &a);
+    dmr_t3_chan_network_changed(&g_opts, &g_state);
+    const uint32_t rev2 = missing_copy()->revision;
+    dmr_t3_chan_restore(&g_state, &a);
+    l = missing_copy();
+    assert(dmr_t3_missing_count(&g_state) == 1U && l->details[0].lpcn == 10U);
+    assert(l->revision > rev2 && l->revision > a.missing.revision);
+}
+
 int
 main(void) {
+    dsd_neo_log_set_tap(missing_log_tap, NULL);
     test_site_overrides_estimate_and_unverified();
     test_file_and_user_never_overwritten_ota();
     test_site_change_notice_on_new_hz();
@@ -1497,6 +1777,13 @@ main(void) {
     test_scan_activity_only_from_accepted_control();
     test_c_bcast_bad_abs_params_no_effect();
     test_chan_freq_header_fff_uses_bcap_chan();
+    test_unmapped_grant_recorded_once_per_channel();
+    test_count_exact_past_16_details();
+    test_mapped_grant_records_nothing();
+    test_ras_grant_ledger_unverified();
+    test_synthesized_and_ms_data_56_ignored();
+    test_reconcile_clears_only_mapped_bits();
+    test_missing_network_change_resets();
     test_chan_freq_inconsistent_channels_ignored();
     test_chan_freq_learned_notice_and_origin();
     test_chan_freq_user_list_not_appended();

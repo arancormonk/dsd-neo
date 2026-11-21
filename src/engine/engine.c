@@ -5153,11 +5153,12 @@ dsd_engine_cleanup(dsd_opts* opts, dsd_state* state) {
 
     dsd_exitflag_store(1);
 
-    // Under trunk scan each target owns a channel map and a ledger, so the coordinator logs one
+    // Under trunk scan each target owns a channel map and its ledgers, so the coordinator logs one
     // summary per target from its snapshots as it shuts down. A paused scan's targets are in their
-    // snapshots too, and the live ledger is the manual session's own (issue #671).
+    // snapshots too, and the live ledgers are the manual session's own (issue #671).
     if (!dsd_trunk_scan_owns_tuner(opts, state)) {
         nxdn_trunk_diag_log_summary(opts, state);
+        dmr_t3_missing_log_summary(state);
     }
     dsd_engine_cleanup_codec2(state);
     dsd_engine_finalize_calls(opts, state);

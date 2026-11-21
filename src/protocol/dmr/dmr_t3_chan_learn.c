@@ -217,6 +217,9 @@ dmr_t3_chan_learn(dsd_opts* opts, dsd_state* state, uint16_t lpcn, long freq_hz,
     dsd_state_dmr_lcn_ota_set(state, lpcn, 0);
     dsd_state_set_trunk_chan_freq(state, lpcn, freq_hz);
     dsd_state_dmr_lcn_ota_set(state, lpcn, 1);
+    if (cur_hz == 0) {
+        dmr_t3_missing_forget(ext, lpcn);
+    }
     ext->origin[lpcn] = (uint8_t)origin;
     state->dmr_lcn_trust[lpcn] = dmr_t3_chan_trust(opts, state, origin);
     ext->revision++;

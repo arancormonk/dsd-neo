@@ -6237,9 +6237,10 @@ trunk_scan_coord_create(const dsd_trunk_scan_target_list* list, const dsd_opts* 
 }
 
 // Each target carries its own missing-channel ledger and channel map, so the exit summary the
-// engine logs once for a single system becomes one line per target with a channel map here.
+// engine logs once for a single system becomes one line per target here: an NXDN target with a
+// channel map, and a DMR trunk target named by its id (discussion #900 F1).
 static void
-trunk_scan_log_nxdn_diag_summaries(dsd_trunk_scan_coord* coord, const dsd_state* state) {
+trunk_scan_log_missing_channel_summaries(dsd_trunk_scan_coord* coord, const dsd_state* state) {
     if (!coord || coord->count == 0) {
         return;
     }
@@ -6249,6 +6250,10 @@ trunk_scan_log_nxdn_diag_summaries(dsd_trunk_scan_coord* coord, const dsd_state*
     }
     for (size_t i = 0; i < coord->count; i++) {
         const dsd_trunk_scan_target_runtime* rt = &coord->targets[i];
+        if (rt->target.type == DSD_TRUNK_SCAN_TARGET_DMR_TRUNK) {
+            dmr_t3_missing_log_summary_for(&rt->snapshot.dmr_chan.missing, rt->target.id);
+            continue;
+        }
         if (!trunk_scan_type_is_nxdn_trunk(rt->target.type)) {
             continue;
         }
@@ -6261,7 +6266,7 @@ trunk_scan_log_nxdn_diag_summaries(dsd_trunk_scan_coord* coord, const dsd_state*
    whose rollback puts back the scan-start modulation as well (trunk_scan_restore_saved_opts()). */
 static void
 trunk_scan_detach(dsd_opts* opts, dsd_state* state, dsd_trunk_scan_coord* coord, int failed_init) {
-    trunk_scan_log_nxdn_diag_summaries(coord, state);
+    trunk_scan_log_missing_channel_summaries(coord, state);
     dsd_engine_channel_scan_leave(opts, state);
     if (failed_init) {
         trunk_scan_restore_saved_opts(opts, coord);

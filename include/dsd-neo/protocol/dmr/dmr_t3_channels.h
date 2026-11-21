@@ -19,6 +19,12 @@
  * The origins, a network generation and a revision live in the DMR module's state extension
  * (DSD_STATE_EXT_PROTO_DMR_RC); with dsd_state::dmr_lcn_trust and dsd_state::dmr_lcn_ota they are saved per trunk-scan
  * target and per Signal search session. Decoder thread only.
+ *
+ * Beside them sits the missing-channel ledger: the channels a grant named that have no frequency, so the receiver
+ * cannot follow their calls. Only a standard outbound grant that passed its CRC, or that -F accepted as RAS on a
+ * RAS-confirmed carrier (then marked unchecked), feeds it, never a synthesized PDU; a grant whose channel has a
+ * frequency never reaches it. A map change clears the channels it gave a frequency, a network change empties it, and
+ * it is saved with the provenance.
  */
 
 #ifndef DSD_NEO_INCLUDE_DSD_NEO_PROTOCOL_DMR_DMR_T3_CHANNELS_H_
@@ -26,7 +32,9 @@
 
 #include <dsd-neo/core/opts_fwd.h>
 #include <dsd-neo/core/state_fwd.h>
+#include <dsd-neo/protocol/dmr/dmr_t3_grant.h>
 
+#include <stddef.h>
 #include <stdint.h>
 
 #ifdef __cplusplus
@@ -67,8 +75,8 @@ void dmr_t3_chan_note_map_cleared(dsd_state* state);
 /**
  * The receiver is on another network (an operator move, or a checked system code whose MODEL or NET differs from the
  * last checked one's; another site of the same network is none): the over-the-air rows (SITE, UNVERIFIED, NEIGHBOUR,
- * ESTIMATE) and their trust bytes are dropped, FILE and USER rows stay, and the network generation bumps. A trip from
- * the control channel to a voice channel and back is none.
+ * ESTIMATE) and their trust bytes are dropped, FILE and USER rows stay, the missing-channel ledger empties, and the
+ * network generation bumps. A trip from the control channel to a voice channel and back is none.
  */
 void dmr_t3_chan_network_changed(dsd_opts* opts, dsd_state* state);
 
@@ -79,9 +87,62 @@ uint32_t dmr_t3_chan_generation(const dsd_state* state);
 uint32_t dmr_t3_chan_revision(const dsd_state* state);
 
 /**
+ * One channel of the ledger with the latest grant that named it: its destination slot (0 or 1), the grant's classes and
+ * parties, when it was heard (dsd_decode_now_mono_ms()), and whether no checked grant named the channel yet.
+ */
+typedef struct {
+    uint16_t lpcn;
+    uint8_t slot;
+    uint8_t group;
+    uint8_t data;
+    uint8_t unverified;
+    uint32_t caller;
+    uint32_t recipient;
+    uint64_t last_heard_ms;
+} dmr_t3_missing_detail;
+
+/**
+ * The missing-channel ledger. Bit LPCN & 7 of byte LPCN >> 3 of each set: missing (granted, still no frequency),
+ * checked (a checked grant named it), reported (its notice was logged; only a network change clears it). The revision
+ * bumps on every change. details holds the detail_count most recent channels, newest first; a channel past them is in
+ * the sets only.
+ */
+typedef struct {
+    uint8_t missing[512];
+    uint8_t checked[512];
+    uint8_t reported[512];
+    uint32_t revision;
+    uint8_t detail_count;
+    dmr_t3_missing_detail details[16];
+} dmr_t3_missing_ledger;
+
+/**
+ * A grant of class @p cls for @p lpcn (1..4094) on destination slot @p slot named no frequency: record it, and log its
+ * notice the first time this network names the channel. @p unverified is nonzero for a grant -F accepted as RAS; the
+ * caller judges the provenance and records nothing else. A channel with a frequency is ignored.
+ */
+void dmr_t3_missing_note_grant(dsd_opts* opts, dsd_state* state, uint16_t lpcn, const dmr_t3_grant_class* cls,
+                               uint8_t slot, int unverified);
+
+/** After the channel map changed: the channels that now have a frequency leave the ledger; none join it. */
+void dmr_t3_missing_reconcile(const dsd_state* state);
+
+/** How many channels the ledger holds, the ones past its details included. */
+size_t dmr_t3_missing_count(const dsd_state* state);
+
+/** Copy the ledger to @p out (all zero when nothing was recorded). */
+void dmr_t3_missing_copy(const dsd_state* state, dmr_t3_missing_ledger* out);
+
+/** Log the exit summary of the ledger's channels, if any. */
+void dmr_t3_missing_log_summary(const dsd_state* state);
+
+/** Log the exit summary of @p ledger, a trunk-scan target's, naming that target @p target (NULL or empty: none). */
+void dmr_t3_missing_log_summary_for(const dmr_t3_missing_ledger* ledger, const char* target);
+
+/**
  * One trunk-scan target's (or Signal search session's) channel provenance: the origins, the trust bytes
- * (dsd_state::dmr_lcn_trust), the rows the air holds (dsd_state::dmr_lcn_ota), the generation and revision. syscode is the last checked system code (valid when
- * syscode_valid), the baseline a later checked one is compared against.
+ * (dsd_state::dmr_lcn_trust), the rows the air holds (dsd_state::dmr_lcn_ota), the generation and revision, and the missing-channel ledger. syscode is the last
+ * checked system code (valid when syscode_valid), the baseline a later checked one is compared against.
  */
 typedef struct {
     uint8_t origin[0x1000];
@@ -91,14 +152,16 @@ typedef struct {
     uint32_t revision;
     uint16_t syscode;
     uint8_t syscode_valid;
+    dmr_t3_missing_ledger missing;
 } dmr_t3_chan_target_snapshot;
 
-/** Save the parked target's provenance. */
+/** Save the parked target's provenance and ledger. */
 void dmr_t3_chan_save(const dsd_state* state, dmr_t3_chan_target_snapshot* out);
 
 /**
- * Restore a target's provenance, the map rows being restored beside it. The revision goes past both the current one
- * and the saved one, so a reader comparing revisions sees the switch. The hunt's candidate list is not part of it.
+ * Restore a target's provenance and ledger, the map rows being restored beside it. Each revision goes past both the
+ * current one and the saved one, so a reader comparing revisions sees the switch. The hunt's candidate list is not part
+ * of it.
  */
 void dmr_t3_chan_restore(dsd_state* state, const dmr_t3_chan_target_snapshot* in);
 

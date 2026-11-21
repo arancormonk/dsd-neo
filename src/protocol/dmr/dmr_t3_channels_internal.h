@@ -13,6 +13,7 @@
 #define DSD_NEO_SRC_PROTOCOL_DMR_DMR_T3_CHANNELS_INTERNAL_H_
 
 #include <dsd-neo/core/state_fwd.h>
+#include <dsd-neo/protocol/dmr/dmr_t3_channels.h>
 
 #include <stdint.h>
 #include <time.h>
@@ -41,6 +42,8 @@ typedef struct {
        change (its MODEL and NET). */
     uint16_t syscode;
     uint8_t syscode_valid;
+    /* The channels granted without a frequency (dmr_t3_missing_note_grant()). */
+    dmr_t3_missing_ledger missing;
 } dmr_ext_t;
 
 /* The extension, or NULL when nothing allocated it yet. */
@@ -56,6 +59,9 @@ int dmr_t3_chan_origin_is_ota(unsigned origin);
 /* Empty the LPCN 1..4094 rows whose recorded origin @p drop accepts, with their trust bytes and origins. Returns
  * whether any row went. */
 int dmr_t3_chan_drop_rows(dsd_state* state, dmr_ext_t* ext, int (*drop)(unsigned origin));
+
+/* Row @p lpcn gained a frequency: it leaves the missing-channel ledger (the one-row dmr_t3_missing_reconcile()). */
+void dmr_t3_missing_forget(dmr_ext_t* ext, uint16_t lpcn);
 
 /* A checked C_ALOHA or standard C_BCAST, or a C_SYS_Parms or P_SYS_Parms short LC, named @p syscode for the carrier
  * the receiver is on: a code whose MODEL or NET differs from the last checked one's is a network change

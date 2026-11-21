@@ -376,11 +376,28 @@ dmr_cspdu_pf0_try_dispatch_grant(dsd_opts* opts, dsd_state* state, uint8_t cs_pd
     dmr_csbk_handle(&res, opts, state);
 }
 
+/* A grant for channel @p lpcn whose row has no frequency goes to the missing-channel ledger
+   (dmr_t3_missing_note_grant()) when it is a standard grant the site sent that passed its CRC, or that -F accepted as
+   RAS (then unchecked); never one an MS sent, a manufacturer's, a failed one or the decoder's own. */
+static void
+dmr_cspdu_pf0_note_missing_channel(dsd_opts* opts, dsd_state* state, int csbk_fid, uint16_t lpcn,
+                                   const dmr_t3_grant_class* grant, uint8_t slot) {
+    if (csbk_fid != 0 || DSD_SYNC_IS_DMR_MS(state->synctype)) {
+        return;
+    }
+    const int checked = dmr_csbk_crc_checked(state);
+    if (!checked && !dmr_csbk_ras_accepted(opts, state)) {
+        return;
+    }
+    dmr_t3_missing_note_grant(opts, state, lpcn, grant, slot, !checked);
+}
+
 /* A channel grant (TS 102 361-4 §7.1.1.1.1). Opcode 56 on MS-sourced data is BS_Dwn_Act, never a grant. The console
    line, the activity row, the policy and the trunk state machine all take the grant's classes and its called and
    calling parties from dmr_t3_grant_classify(). */
 static void
-dmr_cspdu_pf0_handle_grants(dsd_opts* opts, dsd_state* state, uint8_t cs_pdu_bits[], uint8_t cs_pdu[], int csbk_o) {
+dmr_cspdu_pf0_handle_grants(dsd_opts* opts, dsd_state* state, uint8_t cs_pdu_bits[], uint8_t cs_pdu[], int csbk_o,
+                            int csbk_fid) {
     dmr_t3_grant_class grant;
     if (!dmr_t3_grant_classify(csbk_o, cs_pdu_bits, state->synctype != DSD_SYNC_DMR_MS_DATA, &grant)) {
         return;
@@ -410,6 +427,9 @@ dmr_cspdu_pf0_handle_grants(dsd_opts* opts, dsd_state* state, uint8_t cs_pdu_bit
         return;
     }
     dmr_cspdu_pf0_print_frequency(lpchannum, freq);
+    if (freq == 0 && dmr_t3_lpcn_is_channel(lpchannum)) {
+        dmr_cspdu_pf0_note_missing_channel(opts, state, csbk_fid, lpchannum, &grant, lcn);
+    }
 
     dmr_cspdu_pf0_publish_active_grant(state, lcn, lpchannum, mbc_lpchannum, freq, &grant, st2);
 
@@ -1687,7 +1707,7 @@ dmr_cspdu_handle_pf0(dsd_opts* opts, dsd_state* state, uint8_t cs_pdu_bits[], ui
 
         DSD_FPRINTF(stderr, "%s", KYEL);
 
-        dmr_cspdu_pf0_handle_grants(opts, state, cs_pdu_bits, cs_pdu, csbk_o);
+        dmr_cspdu_pf0_handle_grants(opts, state, cs_pdu_bits, cs_pdu, csbk_o, csbk_fid);
 
         dmr_cspdu_pf0_handle_move(opts, state, cs_pdu_bits, csbk_o);
         dmr_cspdu_pf0_handle_aloha(opts, state, cs_pdu_bits, csbk_o, csbk_fid);
