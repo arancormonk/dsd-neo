@@ -1878,6 +1878,24 @@ dmo_dsb(session* s, uint8_t enc_state) {
     tetra_calls_dmo_pdu(s->opts, s->state, sync_s.enc_state, &sync_h);
 }
 
+/* dmo_dsb() under DMO system code @p system_code (EN 300 396-3 clause 9.3.29), as tetra_dmo_log_sync() hands it on. */
+static void
+dmo_dsb_code(session* s, uint8_t enc_state, uint32_t system_code) {
+    uint8_t bits[128];
+    DSD_MEMSET(bits, 0, sizeof bits);
+    bits_of(k_dmo_sch_s, bits);
+    tetra_dmo_sync_s_t sync_s;
+    (void)tetra_dmo_parse_sync_s(bits, &sync_s);
+    sync_s.enc_state = enc_state;
+    sync_s.system_code = (uint8_t)system_code;
+    DSD_MEMSET(bits, 0, sizeof bits);
+    bits_of(k_dmo_sch_h, bits);
+    tetra_dmo_sync_h_t sync_h;
+    (void)tetra_dmo_parse_sync_h(bits, 0, &sync_h);
+    tetra_dmo_apply_sync(s->state, &sync_s, &sync_h);
+    tetra_calls_dmo_sync_pdu(s->opts, s->state, sync_s.enc_state, system_code, &sync_h);
+}
+
 /* dmo_dsb() with its SCH/H carrying message type @p msg_type in place of DM-OCCUPIED (bits 90..94 of the vector, after
  * the addresses and the MNI); the message dependent elements read the same for DM-SETUP, DM-SETUP PRES and DM-CONNECT
  * ACK (EN 300 396-3 tables 31, 32, 35). */
@@ -5253,8 +5271,8 @@ test_radio_policy_follow(void) {
    nothing until the call's DM-CONNECT ACK; a DMAC-DATA call PDU, an end and DM-RESERVED report nothing; short data
    whose FCS passed (or carries none) reports a data call, every copy (the notice's repeat suppression does not apply),
    and short data whose FCS failed nothing, the good copy after it again. A gateway set-up holds nothing, and a DM-2-C
-   DMAC-SYNC under a DMO reserved system code holds nothing. DMO speech reports with the identity of the call set up for its
-   transmission, and anonymous when none was. */
+   DMAC-SYNC under a DMO reserved system code holds nothing. DMO speech reports with the identity of the call set up
+   for its transmission, and anonymous when none was. */
 static void
 test_direct_mode_reports_to_trunk_scan(void) {
     session s = session_open();
@@ -5343,19 +5361,24 @@ test_direct_mode_reports_to_trunk_scan(void) {
     assert(g_test_scan_activity.count == 1 && g_test_scan_activity.last.source == 500u);
 
     /* A DMO reserved system code (EN 300 396-3 clause 9.3.29): a DM-2-C DMAC-SYNC, whose content cannot be examined,
-       holds nothing and opens no call; a clear one, examined, holds as under a recognised code. */
-    tetra_dmo_sync_h_t opaque;
-    DSD_MEMSET(&opaque, 0, sizeof opaque);
+       holds nothing, though it still ends the clear call before it and shows as an encrypted call of its own, as under
+       a recognised code; a clear one, examined, holds as under a recognised code. */
     const uint32_t reserved[] = {0xAu, 0xBu, 0xEu, 0xFu};
     for (size_t i = 0; i < sizeof(reserved) / sizeof(reserved[0]); i++) {
         dsd_test_scan_activity_reset();
-        tetra_calls_dmo_sync_pdu(s.opts, s.state, TETRA_DMO_AIE_DM2C, reserved[i], &opaque);
+        dmo_dsb_code(&s, TETRA_DMO_AIE_DM1, reserved[i]);
+        assert(g_test_scan_activity.count == 1 && g_test_scan_activity.last.source == 100u);
+        const dsd_call_snapshot clear = canonical(s.state);
+        assert(clear.phase == DSD_CALL_PHASE_ACTIVE && clear.ota_source_id == 100u);
+        dsd_test_scan_activity_reset();
+        dmo_dsb_code(&s, TETRA_DMO_AIE_DM2C, reserved[i]);
         assert(g_test_scan_activity.count == 0);
-        tetra_calls_dmo_sync_pdu(s.opts, s.state, TETRA_DMO_AIE_DM1, reserved[i], &gw);
-        assert(g_test_scan_activity.count == 1);
+        const dsd_call_snapshot dm2c = canonical(s.state);
+        assert(dm2c.phase == DSD_CALL_PHASE_ACTIVE && dm2c.epoch != clear.epoch && dm2c.ota_source_id == 0u
+               && dm2c.crypto == DSD_CALL_CRYPTO_ENCRYPTED_PENDING);
     }
     dsd_test_scan_activity_reset();
-    tetra_calls_dmo_sync_pdu(s.opts, s.state, TETRA_DMO_AIE_DM2C, 0xCu, &opaque);
+    dmo_dsb_code(&s, TETRA_DMO_AIE_DM2C, 0xCu);
     assert(g_test_scan_activity.count == 1 && g_test_scan_activity.last.encrypted == 1U);
     dsd_trunk_scan_hooks_set(NULL);
     session_close(&s);

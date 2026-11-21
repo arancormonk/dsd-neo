@@ -1664,11 +1664,12 @@ test_scan_visit_reset_two_direct_mode_rows(void) {
 }
 
 /* Issue #890: the bursts of test_burst_proof_reports_checked_content() on the way to trunk scan's policy table, on an
- * untyped row and on a row of the tetra-dmo class (@p typed). Only direct mode reports, from a hard-path DSB whose SCH/H
- * passed: DM-OCCUPIED as its call (source 100, destination 0x800001, a clear group speech call), the call's speech
- * with that identity, and a DM-2-C DSB as anonymous encrypted presence, known to be no data call. Trunked bursts, a failed burst, a soft-only DSB,
- * one whose SCH/H failed and one carrying DM-RESERVED report nothing. On the typed row trunked bursts prove the
- * profile only (no -Y content), and the direct mode ones are content as on the untyped row. */
+ * untyped row and on a row of the tetra-dmo class (@p typed). Only direct mode reports, from a hard-path DSB whose
+ * SCH/H passed: DM-OCCUPIED as its call (source 100, destination 0x800001, a clear group speech call), the call's
+ * speech with that identity, and a DM-2-C DSB as anonymous encrypted presence, known to be no data call. Trunked
+ * bursts, a failed burst, a soft-only DSB, one whose SCH/H failed and one carrying DM-RESERVED report nothing. On the
+ * typed row trunked bursts prove the profile only (no -Y content), and the direct mode ones are content as on the
+ * untyped row. */
 static void
 test_burst_reports_to_trunk_scan(int typed) {
     session s = session_open();

@@ -2250,23 +2250,23 @@ dmo_system_code_recognised(uint32_t code) {
 }
 
 /* A DM-2-C DMAC-SYNC, whose addresses and message type are encrypted too: an encrypted transmission, of no one known.
-   Under a DMO reserved system code nothing of the PDU could be examined (EN 300 396-3 clause 9.3.29): the profile only,
-   no call and no scan hold. */
+   It shows and records as a call under any system code. Under a DMO reserved one nothing of the PDU could be examined
+   (EN 300 396-3 clause 9.3.29), so it proves the profile only and holds no scan target (issue #890). */
 static void
 dmo_opaque_pdu(dsd_opts* opts, dsd_state* state, tetra_state_t* ts, uint32_t system_code) {
-    if (!dmo_system_code_recognised(system_code)) {
-        tetra_confirm_note_proof(state, DSD_TETRA_BURST_PROOF_PROFILE);
-        return;
-    }
+    const int examined = dmo_system_code_recognised(system_code);
     tetra_dmo_call_t* const d = &ts->calls.dmo;
     /* Checked, but what it is no one can tell: a transmission or a reservation (tetra.h). */
-    tetra_confirm_note_proof(state, DSD_TETRA_BURST_PROOF_DMO_OPAQUE);
+    tetra_confirm_note_proof(state, examined ? DSD_TETRA_BURST_PROOF_DMO_OPAQUE : DSD_TETRA_BURST_PROOF_PROFILE);
     (void)dmo_call_of_transmission(opts, state, ts, NULL);
     dmo_call_forget(d);
     d->active = 1;
     d->in_tx = (uint8_t)(ts->dmo_tx_crypt != (uint8_t)TETRA_DMO_CRYPT_UNKNOWN);
     d->seen_m = dsd_decode_now_mono_s();
     dmo_publish(opts, state, ts);
+    if (!examined) {
+        return;
+    }
     /* Encrypted direct mode presence of no one known (EN 300 396-3 clause 8.5.3): it may be a reservation. It is no
        data call of its own (presence, as a D-PRS record is), so it holds under --no-data-calls; whether an encrypted
        call may hold is the encrypted-call tuning rule's. */
