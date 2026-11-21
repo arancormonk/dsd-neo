@@ -720,10 +720,12 @@ tetra_dmo_log_sync(dsd_opts* opts, const tetra_state_t* ts, const tetra_dmo_sync
     }
     if (h_ok && h->has_addrs) {
         char desc[160];
+        char mni[24];
         (void)tetra_dmo_describe_elems(h, desc, (int)sizeof(desc));
-        DSD_SNPRINTF(line + n, sizeof(line) - (size_t)n, " | %s src=%u dst=%u MNI=%u/%u cd=%u%s%s%s",
-                     tetra_dmo_msg_name(h->msg_type), h->src, h->dst, (h->mni >> 14) & 0x3FFu, h->mni & 0x3FFFu,
-                     h->frame_countdown, ts->dmo_dcc_valid ? " dcc=ok" : "", desc[0] ? " | " : "", desc);
+        tetra_dmo_format_mni(h->mni, mni, sizeof mni);
+        DSD_SNPRINTF(line + n, sizeof(line) - (size_t)n, " | %s src=%u dst=%u MNI=%s cd=%u%s%s%s",
+                     tetra_dmo_msg_name(h->msg_type), h->src, h->dst, mni, h->frame_countdown,
+                     ts->dmo_dcc_valid ? " dcc=ok" : "", desc[0] ? " | " : "", desc);
     } else {
         DSD_SNPRINTF(line + n, sizeof(line) - (size_t)n, " | SCH/H %s", h_ok ? "ok" : "CRC fail");
     }

@@ -1213,6 +1213,44 @@ tetra_dmo_describe_elems(const tetra_dmo_sync_h_t* h, char* buf, int buf_len) {
     return (int)t.len;
 }
 
+/* The all-ones MNI: the open MNI in addressed signalling (EN 300 396-1 clause 6.2), the null value of a DM-REP that has
+ * no MNI or does not broadcast it in its presence signal (EN 300 396-4 clause 10.3.9). */
+#define DMO_MNI_ALL_ONES 0xFFFFFFu
+
+void
+tetra_dmo_format_mni(uint32_t mni, char* buf, size_t buf_len) {
+    if (!buf || buf_len == 0u) {
+        return;
+    }
+    mni &= DMO_MNI_ALL_ONES;
+    if (mni == DMO_MNI_ALL_ONES) {
+        DSD_SNPRINTF(buf, buf_len, "open");
+        return;
+    }
+    DSD_SNPRINTF(buf, buf_len, "%u/%u", (unsigned)((mni >> 14) & 0x3FFu), (unsigned)(mni & 0x3FFFu));
+}
+
+/* Who sent a presence signal: its address and MNI, SCH/H elements shown only once its CRC passed and it was read, else
+ * the kind of equipment alone; then its link, which a gateway's master/slave link flag gives only while it provides a
+ * DM-REP function (EN 300 396-5 table 5). */
+static void
+dmo_put_presence_station(dmo_text* t, const tetra_dmo_pres_t* p, int gateway) {
+    if (p->parsed) {
+        dmo_put(t, "%s=%u", gateway ? "gw" : "rep", (unsigned)p->repeater);
+        /* A DM-REP's all-ones MNI is its null value (EN 300 396-4 clause 10.3.9); no SwMI MNI names it either. */
+        if ((p->mni & DMO_MNI_ALL_ONES) != DMO_MNI_ALL_ONES) {
+            char mni[24];
+            tetra_dmo_format_mni(p->mni, mni, sizeof mni);
+            dmo_put(t, " MNI=%s", mni);
+        }
+    } else {
+        dmo_put(t, "%s", gateway ? "gateway" : "repeater");
+    }
+    if (!gateway || p->dmrep) {
+        dmo_put(t, " %s", p->ms_link ? "master" : "slave");
+    }
+}
+
 int
 tetra_dmo_describe_presence(const tetra_dmo_pres_t* p, char* buf, int buf_len) {
     /* Channel state (EN 300 396-4 clause 10.3.5): value 3 is the gateway registration phase (EN 300 396-5). */
@@ -1225,10 +1263,12 @@ tetra_dmo_describe_presence(const tetra_dmo_pres_t* p, char* buf, int buf_len) {
     dmo_text t = {buf, (size_t)buf_len, 0u};
     const int gateway = p->comm_type >= 2u;
     buf[0] = '\0';
-    dmo_put(&t, "%s=%u MNI=%u/%u %s %s pwr=%u urt=%u", gateway ? "gw" : "rep", (unsigned)p->repeater,
-            ((p->mni >> 14) & 0x3FFu), (p->mni & 0x3FFFu), p->ms_link ? "master" : "slave",
-            (gateway || p->channel_state < 3u) ? DMO_NAME(k_state, p->channel_state) : "reserved",
-            (unsigned)p->power_class, (unsigned)p->urt);
+    dmo_put_presence_station(&t, p, gateway);
+    dmo_put(&t, " %s pwr=%u", (gateway || p->channel_state < 3u) ? DMO_NAME(k_state, p->channel_state) : "reserved",
+            (unsigned)p->power_class);
+    if (p->parsed) {
+        dmo_put(&t, " urt=%u", (unsigned)p->urt);
+    }
     if (gateway) {
         dmo_put(&t, " swmi=%s label=%u", p->swmi_up ? "up" : "down", (unsigned)p->reg_label);
     }
@@ -1689,9 +1729,10 @@ dmo_log_data(const uint8_t* bits, int len, const char* chan, dsd_opts* opts, dsd
     } else {
         DSD_SNPRINTF(dst, sizeof dst, "%u", (unsigned)h.dst);
     }
-    DSD_FPRINTF(stderr, "[TETRA DMO %s] %s src=%u dst=%s MNI=%u/%u%s%s\n", chan, tetra_dmo_msg_name(h.msg_type),
-                (unsigned)h.src, dst, (unsigned)((h.mni >> 14) & 0x3FFu), (unsigned)(h.mni & 0x3FFFu),
-                desc[0] ? " | " : "", desc);
+    char mni[24];
+    tetra_dmo_format_mni(h.mni, mni, sizeof mni);
+    DSD_FPRINTF(stderr, "[TETRA DMO %s] %s src=%u dst=%s MNI=%s%s%s\n", chan, tetra_dmo_msg_name(h.msg_type),
+                (unsigned)h.src, dst, mni, desc[0] ? " | " : "", desc);
 }
 
 int

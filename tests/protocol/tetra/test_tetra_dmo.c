@@ -699,6 +699,79 @@ test_gateway(void) {
     free_state(st);
 }
 
+/* A gateway presence signal (EN 300 396-5 tables 5 and 6), channel free, with the DM-REP function flag @p dmrep and the
+ * master/slave link flag @p master, and its SCH/H with gateway address 17 and SwMI MNI @p mni. */
+static void
+build_gateway_presence(bitw* ps, bitw* ph, uint32_t dmrep, uint32_t master, uint32_t mni) {
+    bw_reset(ps);
+    put(ps, 4, 0xD);
+    put(ps, 2, 1);
+    put(ps, 2, 2);     /* via DM-GATE */
+    put(ps, 1, 0);     /* not managed direct mode */
+    put(ps, 1, 1);     /* SwMI available */
+    put(ps, 1, dmrep); /* DM-REP function */
+    put(ps, 1, 0);
+    put(ps, 2, 0);
+    put(ps, 6, 0);
+    put(ps, 1, master);
+    put(ps, 2, 0); /* channel usage: the carrier */
+    put(ps, 2, 0); /* free */
+    put(ps, 2, 0);
+    put(ps, 5, 3);
+    ps->at = 60;
+    bw_reset(ph);
+    put(ph, 10, 17);
+    put(ph, 24, mni);
+}
+
+/* What a presence signal's summary says comes from the blocks that were read (EN 300 396-4 clause 10.3.9, EN 300 396-5
+ * table 5): the repeater or gateway address and the MNI only from its SCH/H; no MNI for a DM-REP's null all-ones MNI
+ * (it has none, or does not broadcast it); no link role from a gateway whose DM-REP function is off, where the
+ * master/slave link flag means nothing. An all-ones MNI in a DMAC-SYNC is the open MNI. */
+static void
+test_presence_summary_fields(void) {
+    bitw ps;
+    bitw ph;
+    tetra_dmo_sync_s_t s;
+    tetra_dmo_pres_t pres;
+    char desc[160];
+
+    printf("[presence summary fields]\n");
+    build_rep_presence(&ps, &ph);
+    (void)tetra_dmo_parse_sync_s(ps.bits, &s);
+    CHECK(tetra_dmo_parse_presence(ps.bits, NULL, &s, &pres) == 1 && pres.parsed == 0
+              && tetra_dmo_describe_presence(&pres, desc, (int)sizeof(desc)) > 0 && strstr(desc, "rep=") == NULL
+              && strstr(desc, "MNI") == NULL && strstr(desc, "urt=") == NULL && strstr(desc, "repeater") != NULL
+              && strstr(desc, "occupied") != NULL,
+          "SCH/S-only presence names the equipment kind and channel state, no address or MNI");
+
+    bw_reset(&ph);
+    put(&ph, 10, 17);
+    put(&ph, 24, 0xFFFFFFu);
+    CHECK(tetra_dmo_parse_presence(ps.bits, ph.bits, &s, &pres) == 1 && pres.parsed == 1
+              && tetra_dmo_describe_presence(&pres, desc, (int)sizeof(desc)) > 0 && strstr(desc, "rep=17") != NULL
+              && strstr(desc, "MNI") == NULL,
+          "a DM-REP's all-ones MNI is not advertised: no MNI shown");
+
+    build_gateway_presence(&ps, &ph, 0u, 0u, 0xBC4939u);
+    (void)tetra_dmo_parse_sync_s(ps.bits, &s);
+    CHECK(tetra_dmo_parse_presence(ps.bits, ph.bits, &s, &pres) == 1 && pres.dmrep == 0
+              && tetra_dmo_describe_presence(&pres, desc, (int)sizeof(desc)) > 0 && strstr(desc, "gw=17") != NULL
+              && strstr(desc, "slave") == NULL && strstr(desc, "master") == NULL,
+          "a gateway without the DM-REP function shows no link role");
+    build_gateway_presence(&ps, &ph, 1u, 1u, 0xBC4939u);
+    (void)tetra_dmo_parse_sync_s(ps.bits, &s);
+    CHECK(tetra_dmo_parse_presence(ps.bits, ph.bits, &s, &pres) == 1 && pres.dmrep == 1
+              && tetra_dmo_describe_presence(&pres, desc, (int)sizeof(desc)) > 0 && strstr(desc, "master") != NULL,
+          "a gateway with the DM-REP function shows its link role");
+
+    char mni[24];
+    tetra_dmo_format_mni(0xFFFFFFu, mni, sizeof(mni));
+    CHECK(strcmp(mni, "open") == 0, "the all-ones MNI reads open");
+    tetra_dmo_format_mni(0xBC4939u, mni, sizeof(mni));
+    CHECK(strcmp(mni, "753/2361") == 0, "any other MNI reads MCC/MNC");
+}
+
 /* Presence-check, changeover and pre-emption PDUs (EN 300 396-3 tables 32-34 and 39-44). None of these learn a
  * colour code; DM-DISCONNECT drops the one already held. */
 static void
@@ -1262,6 +1335,7 @@ main(void) {
     test_security_classes();
     test_occupied_keeps_the_setup_class();
     test_repeater_presence();
+    test_presence_summary_fields();
     test_transmission_algorithm();
     test_gateway();
     test_call_control_elements();
