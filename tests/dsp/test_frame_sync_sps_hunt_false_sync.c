@@ -38,6 +38,7 @@
 #include <dsd-neo/runtime/frame_sync_hooks.h>
 #include <dsd-neo/runtime/trunk_scan_hooks.h>
 #include <dsd-neo/runtime/trunk_tuning_hooks.h>
+#include <limits.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -104,6 +105,9 @@ static long g_epoch_bump_at_read = 0;
    it pushes no symbol, as dsd_symbol.c's read does. 0 for none. */
 static long g_interrupt_at_read = 0;
 static long g_reads = 0;
+/* Non-zero: every symbol read moves the stream's symbol clock on, as dsd_symbol.c's read does, so a history a no-sync
+   exit kept is taken up by the next call (frame_sync_history_resume()). */
+static int g_symbol_clock_runs = 0;
 /* Non-zero: every symbol read steps the TEST decode clock by one symbol period at this rate, so the clock is the
    stream's own (discussion #717). */
 static int g_symbol_clock_rate = 0;
@@ -139,6 +143,9 @@ getSymbol(dsd_opts* opts, dsd_state* state, int have_sync) { // NOLINT(misc-use-
     const float symbol = (dibit == '3') ? -3.0f : 3.0f;
     dsd_symbol_history_push(state, symbol);
     state->symbolcnt++;
+    if (g_symbol_clock_runs) {
+        state->symbol_clock++;
+    }
     if (g_symbol_clock_rate > 0) {
         dsd_decode_clock_test_set_ns(k_symbol_clock_t0_ns
                                      + (uint64_t)g_symbols_emitted * 1000000000ULL / (uint64_t)g_symbol_clock_rate);
@@ -1066,14 +1073,16 @@ fake_scan_quiet_event(const dsd_opts* opts, dsd_state* state) {
    it answered NONE until a 300-symbol point says LIVE again. */
 static void
 test_a_quiet_event_hands_back_before_the_next_symbol(void) {
-    static dsd_opts opts;
-    static dsd_state state;
     for (int variant = 0; variant < 3; variant++) {
-        init_hunt_opts_state(&opts, &state, 0);
-        assert(init_state_buffers(&state));
+        /* dsd_state is megabytes: each variant's pair is the heap's, and freed when it is done. */
+        dsd_opts* const opts = calloc(1, sizeof(*opts));
+        dsd_state* const state = calloc(1, sizeof(*state));
+        assert(opts && state);
+        init_hunt_opts_state(opts, state, 0);
+        assert(init_state_buffers(state));
         stream_reset("", 0);
         dsd_frame_sync_reset_mod_state();
-        quiet_service_install(1000000, variant != 2, &opts);
+        quiet_service_install(1000000, variant != 2, opts);
         g_quiet_always_live = 1;
         g_quiet_event_ready_at = 450;
         g_quiet_event_asks = 0;
@@ -1085,10 +1094,12 @@ test_a_quiet_event_hands_back_before_the_next_symbol(void) {
             .scan_quiet_service = fake_scan_quiet_service,
             .scan_quiet_event = fake_scan_quiet_event,
         });
-        const int sync = getFrameSync(&opts, &state);
+        const int sync = getFrameSync(opts, state);
         const long read = g_symbols_emitted;
         dsd_frame_sync_hooks_set(NULL);
-        free_state_buffers(&state);
+        free_state_buffers(state);
+        free(state);
+        free(opts);
         g_quiet_always_live = 0;
         if (variant == 0) {
             if (sync != DSD_SYNC_NONE || read != 450) {
@@ -1636,6 +1647,7 @@ watchdog_case_done(dsd_opts* opts, dsd_state* state) {
     g_watchdog_tick_kind = 0;
     g_watchdog_tick_wall_stamp = 0;
     g_watchdog_tick_mono_stamp = 0.0;
+    g_symbol_clock_runs = 0;
     free(state);
     free(opts);
 }
@@ -1684,6 +1696,115 @@ test_a_refused_checkpoint_tune_keeps_the_window(void) {
         g_watchdog_failures++;
     }
     watchdog_case_done(opts, state);
+}
+
+/* Issue #834 follow-up: the quiet event service armed across the real 300-symbol point. A watchdog tick that moved the
+   chain, a Signal search yield and a due trunk-scan dwell each still take the point first, before the quiet service;
+   and an event hand-back keeps the history for the next call (the carry), as the point's own quiet hand-back does,
+   where a moved chain or a search yield drops it. The next call takes the kept history up and matches the word that
+   straddles the hand-back (symbols 317 to 340, four of them read before it); with the history gone it misses it. */
+static long g_coincide_event_at = 0;
+static long g_coincide_service_asks = 0;
+static int g_coincide_search = 0;
+
+static int
+fake_coincide_event(const dsd_opts* opts, dsd_state* state) {
+    (void)opts;
+    (void)state;
+    return g_reads >= g_coincide_event_at ? DSD_SCAN_QUIET_HAND_BACK : DSD_SCAN_QUIET_LIVE;
+}
+
+static int
+fake_coincide_service(const dsd_opts* opts, dsd_state* state) {
+    (void)opts;
+    (void)state;
+    g_coincide_service_asks++;
+    return DSD_SCAN_QUIET_LIVE;
+}
+
+static int
+fake_coincide_search_yield(const dsd_opts* opts, dsd_state* state) {
+    (void)opts;
+    (void)state;
+    return g_coincide_search;
+}
+
+enum { COINCIDE_WATCHDOG = 0, COINCIDE_SEARCH, COINCIDE_DWELL, COINCIDE_HISTORY, COINCIDE_HISTORY_LOST };
+
+/* The call after an event hand-back at symbol 320, the event disarmed: with the history kept it matches the word
+   straddling the hand-back as its 340th symbol is read; with it gone (@p lost) it misses that word. */
+static void
+coincide_next_hunt(dsd_opts* opts, dsd_state* state, int lost) {
+    if (lost) {
+        state->frame_sync_carry.valid = 0; /* what a hand-back that kept nothing leaves */
+    }
+    g_coincide_event_at = LONG_MAX;
+    const int next = getFrameSync(opts, state);
+    const int matched = DSD_SYNC_IS_P25P1(next) && g_reads == 340;
+    if (matched == lost) {
+        DSD_FPRINTF(stderr,
+                    "FAIL: the hunt after an event hand-back with the history %s returned %d after %ld reads (want %s "
+                    "the word ending at 340)\n",
+                    lost ? "gone" : "kept", next, g_reads, lost ? "no match of" : "a match of");
+        g_watchdog_failures++;
+    }
+}
+
+static void
+coincide_case(int which) {
+    dsd_opts* opts = NULL;
+    dsd_state* state = NULL;
+    watchdog_case_init(&opts, &state, 340, which == COINCIDE_WATCHDOG ? WATCHDOG_TICK_MOVES : 0);
+    const int history = which == COINCIDE_HISTORY || which == COINCIDE_HISTORY_LOST;
+    opts->scan_skip_silent = 1;
+    g_symbol_clock_runs = history;
+    /* C4FM locked (-mc): an AUTO hunt's modulation switch on this filler would drop the history in its own right. */
+    opts->mod_cli_lock = history;
+    g_coincide_event_at = history ? 320 : 299;
+    g_coincide_service_asks = 0;
+    g_coincide_search = which == COINCIDE_SEARCH;
+    dsd_frame_sync_hooks_set(&(dsd_frame_sync_hooks){
+        .p25_sm_watchdog_service = fake_watchdog_service,
+        .p25_sm_release = fake_p25_sm_release,
+        .p25_sm_vc_no_sync = fake_p25_sm_vc_no_sync,
+        .no_carrier = fake_no_carrier,
+        .signal_search_should_yield = fake_coincide_search_yield,
+        .scan_quiet_service = fake_coincide_service,
+        .scan_quiet_event = fake_coincide_event,
+    });
+    g_dwell_deadline_s = 0.0;
+    g_dwell_yielded = 0;
+    dsd_trunk_scan_hooks dwell_hooks = {0};
+    dwell_hooks.dwell_due = fake_trunk_scan_dwell_due;
+    dsd_trunk_scan_hooks_set(which == COINCIDE_DWELL ? &dwell_hooks : NULL);
+    const int first = getFrameSync(opts, state);
+    dsd_trunk_scan_hooks_set(NULL);
+    if (history) {
+        if (first != DSD_SYNC_NONE || g_reads != 320 || state->input_interrupted != 0
+            || state->frame_sync_carry.valid != 1) {
+            DSD_FPRINTF(stderr, "FAIL: an event hand-back did not keep the history (sync %d after %ld, carry %d)\n",
+                        first, g_reads, state->frame_sync_carry.valid);
+            g_watchdog_failures++;
+        }
+        coincide_next_hunt(opts, state, which == COINCIDE_HISTORY_LOST);
+    } else if (first != DSD_SYNC_NONE || g_reads != 299 || g_coincide_service_asks != 0
+               || state->input_interrupted != (which == COINCIDE_DWELL ? 0 : 1)
+               || g_dwell_yielded != (which == COINCIDE_DWELL)) {
+        /* A dwell-first return is the dwell's own (g_dwell_yielded), not a quiet event's hand-back at the same point. */
+        DSD_FPRINTF(stderr,
+                    "FAIL: case %d: the point's earlier duty did not come first (sync %d, reads %ld, asks %ld, dwell "
+                    "%d)\n",
+                    which, first, g_reads, g_coincide_service_asks, g_dwell_yielded);
+        g_watchdog_failures++;
+    }
+    watchdog_case_done(opts, state);
+}
+
+static void
+test_quiet_events_meet_the_point_duties(void) {
+    for (int which = COINCIDE_WATCHDOG; which <= COINCIDE_HISTORY_LOST; which++) {
+        coincide_case(which);
+    }
 }
 
 /* A beat at the checkpoint behind queued work (a command, a put-off publication) runs no tick and moves nothing: the
@@ -1917,6 +2038,7 @@ main(void) {
     test_a_checkpoint_retune_hands_back_and_the_next_hunt_stamps_now();
     test_a_refused_checkpoint_tune_keeps_the_window();
     test_a_deferred_checkpoint_beat_keeps_the_window();
+    test_quiet_events_meet_the_point_duties();
     test_a_flush_inside_the_window_drops_it();
     test_a_sync_never_moves_the_control_channel_stamp_back();
     test_a_sync_moves_neither_control_channel_stamp_back();
