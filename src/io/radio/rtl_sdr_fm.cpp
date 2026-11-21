@@ -14566,13 +14566,24 @@ rtl_stream_apply_retune_profile(const RtlRetuneProfile* profile, uint32_t center
  * them, as a live width edit does. The record of the last landing (g_external_retune_freq_hz) is set only by a landing
  * that took its profile. One with nothing queued applies nothing but still moved the tuner, so it forgets the record,
  * and the next landing starts the filters over wherever it lands; so does a finalize. */
+/* An external backend (a rigctl peer) moved the device: the output ring, and the symbols the decoder cached from it,
+   hold the channel it left. The stream's own retune flushes them; this landing has none, so it flushes the output
+   itself and moves its generation, so the decoder drops its cache (a RETRY) and the hunt the epoch it moves. */
+static void
+rtl_stream_clear_output_for_external_retune(void) {
+    rtl_stream_clear_output_ring(g_stream && g_stream->output ? g_stream->output : &output, 1);
+}
+
 extern "C" void
 rtl_stream_apply_pending_retune_profile_for_target(uint32_t target_freq_hz) {
     RtlRetuneProfile profile{};
     if (!rtl_stream_take_pending_retune_profile(&profile, 0U, target_freq_hz)) {
         /* The external backend tuned the device here, so the filters now run on this channel's samples, whatever the
-           record says (a DMR or NXDN voice-channel tune queues no profile; the return to the control channel does). */
-        g_external_retune_freq_hz.store(0U, std::memory_order_release);
+           record says (a DMR or NXDN voice-channel tune queues no profile; the return to the control channel does).
+           What the output holds from before is the old channel's unless the record says this is where it was. */
+        if (g_external_retune_freq_hz.exchange(0U, std::memory_order_acq_rel) != target_freq_hz) {
+            rtl_stream_clear_output_for_external_retune();
+        }
         return;
     }
     const int gate = rtl_stream_enter_demod_family_switch_gate();
@@ -14585,6 +14596,7 @@ rtl_stream_apply_pending_retune_profile_for_target(uint32_t target_freq_hz) {
     const uint32_t previous_freq_hz = g_external_retune_freq_hz.exchange(target_freq_hz, std::memory_order_acq_rel);
     if (previous_freq_hz != target_freq_hz) {
         rtl_demod_clear_filter_histories(&demod);
+        rtl_stream_clear_output_for_external_retune();
     }
     rtl_stream_apply_retune_gain_profile(&profile);
     const int symbol_rate_before_hz = demod.symbol_rate_hz;
@@ -20489,6 +20501,12 @@ rtl_stream_test_external_landing_filter_state(rtl_stream_test_external_landing_f
         return -1;
     }
     *out = {};
+    /* An output ring to flush, so a landing's flush shows as its generation moving. */
+    int initialized_output = 0;
+    if (fsk_reacquire_test_prepare_output_ring(0U, &initialized_output) != 0) {
+        fsk_reacquire_test_cleanup_output_ring(initialized_output);
+        return -2;
+    }
     const FamilyTestSaved saved = family_test_save();
     test_stream_set(NULL);
     static dsd_opts analog_opts;
@@ -20501,6 +20519,7 @@ rtl_stream_test_external_landing_filter_state(rtl_stream_test_external_landing_f
     if (family_test_seed_open(&analog_opts, 48000, 0) != 0) {
         family_test_restore(saved);
         family_test_release_buffers();
+        fsk_reacquire_test_cleanup_output_ring(initialized_output);
         return -2;
     }
     rtl_stream_clear_demod_profile_request();
@@ -20509,10 +20528,14 @@ rtl_stream_test_external_landing_filter_state(rtl_stream_test_external_landing_f
     const uint32_t freq_c = kFamilyTestRetuneHz + 25000U;
     int unused = 0;
     out->first_taken = external_filter_test_land(freq_a, 16000);
+    uint32_t generation = g_rtl_output_generation.load(std::memory_order_acquire);
     out->new_freq_width_taken = external_filter_test_step(freq_b, 12500, &out->new_freq_width_cleared, &unused);
+    out->new_freq_flushed = g_rtl_output_generation.load(std::memory_order_acquire) != generation ? 1 : 0;
     out->new_freq_same_width_taken =
         external_filter_test_step(freq_c, 12500, &out->new_freq_same_width_cleared, &unused);
+    generation = g_rtl_output_generation.load(std::memory_order_acquire);
     out->same_freq_width_taken = external_filter_test_step(freq_c, 16000, &unused, &out->same_freq_width_kept);
+    out->same_freq_flushed = g_rtl_output_generation.load(std::memory_order_acquire) != generation ? 1 : 0;
     out->same_freq_width_after = demod.channel_lpf_width_hz;
     out->same_freq_plan_dropped = family_test_channel_plan_dropped();
     /* A controller retune to X between two landings on C reset the demod on X: C's next landing finds X's samples. */
@@ -20529,18 +20552,22 @@ rtl_stream_test_external_landing_filter_state(rtl_stream_test_external_landing_f
         rtl_stream_clear_pending_retune_profile();
         family_test_restore(saved);
         family_test_release_buffers();
+        fsk_reacquire_test_cleanup_output_ring(initialized_output);
         return -2;
     }
     out->reopened_taken = external_filter_test_step(freq_d, 12500, &out->reopened_cleared, &unused);
     /* An external retune away to C with no profile queued, then back to D: the filters ran on C's samples in between,
        though the landing on C applied nothing. */
     rtl_stream_clear_pending_retune_profile();
+    generation = g_rtl_output_generation.load(std::memory_order_acquire);
     out->profileless_away_taken = family_test_apply_external_retune(freq_c);
+    out->profileless_away_flushed = g_rtl_output_generation.load(std::memory_order_acquire) != generation ? 1 : 0;
     out->back_after_profileless_taken =
         external_filter_test_step(freq_d, 12500, &out->back_after_profileless_cleared, &unused);
     rtl_stream_clear_pending_retune_profile();
     family_test_restore(saved);
     family_test_release_buffers();
+    fsk_reacquire_test_cleanup_output_ring(initialized_output);
     return 0;
 }
 

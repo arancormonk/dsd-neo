@@ -2099,6 +2099,9 @@ typedef struct rtl_stream_test_external_landing_filter_result {
     int profileless_away_taken;         /* frequency C with no profile queued, after D's landing: 0 */
     int back_after_profileless_taken;   /* frequency D again, with a profile queued */
     int back_after_profileless_cleared; /* 1 when that landing started the filters over: they hold C's samples */
+    int new_freq_flushed;               /* 1 when the landing on B flushed the output (its generation moved) */
+    int same_freq_flushed;              /* 1 when the width-only landing on C flushed it: 0, it is seamless */
+    int profileless_away_flushed;       /* 1 when the profile-less landing away to C flushed it */
 } rtl_stream_test_external_landing_filter_result;
 
 /* Open the NFM monitor at 48 kHz, 16 kHz wide, and land NFM retune profiles as an external backend's retunes do

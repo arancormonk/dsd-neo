@@ -1328,6 +1328,13 @@ test_external_backend_landing_filter_state(void) {
                             r.back_after_profileless_taken, 1);
     failed |= expect_int_eq("external landing back after a profile-less landing away: filters start over",
                             r.back_after_profileless_cleared, 1);
+    /* What the output and the decoder's symbol cache hold from before a landing on a new frequency is the old
+       channel's: the landing flushes the output, so its generation moves and the decoder drops its cached symbols. A
+       width-only landing on the same frequency keeps it. */
+    failed |= expect_int_eq("external landing on a new frequency: output flushed", r.new_freq_flushed, 1);
+    failed |= expect_int_eq("external landing on the same frequency, new width: output kept", r.same_freq_flushed, 0);
+    failed |=
+        expect_int_eq("external landing away with no profile queued: output flushed", r.profileless_away_flushed, 1);
     return failed;
 }
 
