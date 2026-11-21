@@ -1,0 +1,564 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+import QtQuick
+import QtTest
+import "../../../src/ui/qt/qml" as Ui
+
+// Issue #901 (D7, D8, D11): Listen's cards in Compact view. A saved system's card is one row: the bold title over one
+// supporting line (the source line, led by the distance in Nearest order and by the site count while the site button
+// is not drawn), with the site button, Play and More on the title's row. The site button is drawn only while the title
+// keeps its minimum width beside it; More offers Sites for every site group. The receiver line and the refresh hint
+// stay; the place and the "Heard" line are not drawn, and the title's description reads them. A scan list's card is
+// its name over its count with Play and More on the same row. The cards are the production savedSystemCards over the
+// real saved systems, and `prefs` is the real AppPrefs. Names, places and addresses are made up.
+Item {
+    id: root
+    width: 411
+    height: 800
+
+    Ui.HomeScreen {
+        id: home
+        anchors.fill: parent
+    }
+    SignalSpy { id: played; target: home; signalName: "playSystem" }
+    SignalSpy { id: sitesChosen; target: home; signalName: "chooseSites" }
+    SignalSpy { id: listPlayed; target: home; signalName: "playScanList" }
+
+    TestCase {
+        name: "HomeCompactCards"
+        when: windowShown
+
+        function init() {
+            testContext.useAppPrefs(true);
+            testContext.setLocationSupported(false);
+            testContext.resetSystemsSort();
+            testContext.resetSavedSystemCards();
+            prefs.setLocationFix(0, 0, 0, 0);
+            prefs.metricUnits = false;
+            prefs.compactView = true;
+            emptyModels();
+            home.visible = true;
+            home.showSection("systems");
+            home.resetScrollMemory();
+            root.width = 411;
+            root.height = 800;
+            Ui.Theme.resetFontScale();
+            played.clear();
+            sitesChosen.clear();
+            listPlayed.clear();
+            settle();
+        }
+        function cleanup() {
+            for (var modal of Ui.Navigation.modals.slice())
+                modal.visible = false;
+            root.forceActiveFocus();
+            savedSystemCards.screenReaderActive = false;
+            prefs.compactView = false;
+            home.visible = true;
+            home.showSection("systems");
+            emptyModels();
+            testContext.resetSavedSystemCards();
+            testContext.resetSystemsSort();
+            prefs.setLocationFix(0, 0, 0, 0);
+            testContext.setLocationSupported(false);
+            testContext.useAppPrefs(false);
+            root.width = 411;
+            root.height = 800;
+            Ui.Theme.resetFontScale();
+            settle();
+        }
+        function emptyModels() {
+            while (savedSystems.count)
+                savedSystems.remove(0);
+            while (scanLists.count)
+                scanLists.remove(0);
+        }
+        // The cards' coalesced rebuild, then layout, the columns inside the cards too.
+        function settle() {
+            wait(0);
+            verify(waitForPolish(root.Window.window));
+            findChild(home, "listenSystemsSection").forceLayout();
+            findChild(home, "listenScanListsSection").forceLayout();
+            verify(waitForPolish(root.Window.window));
+        }
+        function add(name, fields) {
+            verify(savedSystems.add(Object.assign({name: name, sourceType: "rtltcp", host: "127.0.0.1", port: 1234,
+                freqMhz: "851.5"}, fields || {})), "could not add " + name);
+        }
+        // Site @a n of a RadioReference system @a sid, at @a lat, @a lon (none when undefined).
+        function site(name, sid, n, lat, lon, fields) {
+            var row = {rrSid: sid, rrSiteId: sid * 10 + n, siteName: "Site " + n};
+            if (lat !== undefined)
+                Object.assign(row, {siteLat: lat, siteLon: lon, hasSitePos: true});
+            add(name, Object.assign(row, fields || {}));
+        }
+        function rowOfSite(sid, n) {
+            for (var i = 0; i < savedSystems.count; ++i) {
+                if (savedSystems.get(i).rrSiteId === sid * 10 + n)
+                    return i;
+            }
+            fail("no site " + sid + "/" + n);
+        }
+        function entries() {
+            var out = [];
+            for (var child of findChild(home, "listenSystemsSection").children) {
+                if (child.objectName === "savedSystemEntry" && child.visible && !child.held)
+                    out.push(child);
+            }
+            out.sort(function (a, b) {
+                return a.y - b.y;
+            });
+            return out;
+        }
+        function entryTitled(title) {
+            for (var entry of entries()) {
+                if (entry.title === title)
+                    return entry;
+            }
+            fail("no card " + title);
+        }
+        function cardOf(title) {
+            return findChild(entryTitled(title), "savedSystemCard");
+        }
+        function part(card, name) {
+            var found = findChild(card, name);
+            verify(found !== null, name);
+            return found;
+        }
+        function tap(control) {
+            verify(waitForPolish(home));
+            mouseClick(control, control.width / 2, control.height / 2);
+        }
+        function rectIn(item, ancestor) {
+            var p = item.mapToItem(ancestor, 0, 0);
+            return {x: p.x, y: p.y, w: item.width, h: item.height};
+        }
+        function overlaps(a, b) {
+            return a.x < b.x + b.w - 0.5 && b.x < a.x + a.w - 0.5 && a.y < b.y + b.h - 0.5 && b.y < a.y + a.h - 0.5;
+        }
+        function inside(r, card) {
+            return r.x >= -0.5 && r.y >= -0.5 && r.x + r.w <= card.width + 0.5 && r.y + r.h <= card.height + 0.5;
+        }
+        function describe(r) {
+            return "[" + Math.round(r.x) + "," + Math.round(r.y) + " " + Math.round(r.w) + "x" + Math.round(r.h) + "]";
+        }
+        function minimumTitle(card) {
+            return Math.max(96, 0.35 * card.width);
+        }
+        // What a card draws: every visible, opaque part inside it, no two of its actions meeting, each action at least
+        // 48 px square, the actions on one row beside the labels, and the title at least its minimum width.
+        function checkCompactCard(card, label) {
+            var labels = part(card, "savedSystemTitle").parent;
+            var title = part(card, "savedSystemTitle");
+            var actions = [];
+            for (var name of ["homeSiteChooserButton", "savedSystemPlay", "savedSystemManageButton"]) {
+                var control = part(card, name);
+                if (control.visible && control.opacity > 0)
+                    actions.push([name, control, rectIn(control, card)]);
+            }
+            var labelsRect = rectIn(labels, card);
+            verify(inside(labelsRect, card), label + ": labels " + describe(labelsRect) + " inside, " + card.height);
+            verify(title.width >= minimumTitle(card) - 0.5, label + ": the title is " + title.width + " wide, under "
+                + minimumTitle(card));
+            for (var i = 0; i < actions.length; ++i) {
+                var a = actions[i];
+                verify(inside(a[2], card), label + ": " + a[0] + " " + describe(a[2]) + " inside, " + card.height);
+                verify(a[2].w >= 48 - 0.5 && a[2].h >= 48 - 0.5, label + ": " + a[0] + " is a 48 px target " + describe(a[2]));
+                verify(!overlaps(a[2], labelsRect), label + ": " + a[0] + " clear of the labels");
+                // One row: centred on the title's row, as the first action is.
+                fuzzyCompare(a[2].y + a[2].h / 2, actions[0][2].y + actions[0][2].h / 2, 0.5, label + ": " + a[0] + " on the row");
+                for (var j = i + 1; j < actions.length; ++j)
+                    verify(!overlaps(a[2], actions[j][2]), label + ": " + a[0] + " " + describe(a[2]) + " and "
+                        + actions[j][0] + " " + describe(actions[j][2]) + " apart");
+            }
+            verify(actions.length > 0 && actions[actions.length - 1][0] === "savedSystemManageButton", label + ": More");
+            var hint = part(card, "savedSystemRefreshHint");
+            if (hint.visible) {
+                var h = rectIn(hint, card);
+                verify(inside(h, card), label + ": the hint inside");
+                for (var b of actions)
+                    verify(!overlaps(b[2], h), label + ": " + b[0] + " clear of the hint");
+                verify(!overlaps(labelsRect, h), label + ": labels clear of the hint");
+            }
+            verify(!part(card, "savedSystemPlace").visible, label + ": no place line");
+            verify(!part(card, "savedSystemMeta").visible, label + ": no Heard line");
+        }
+
+        // Compact cards at 320, 360 and 411 dp at text 1.0, 1.6 and 2.0: a plain card, a one-site group (site button and
+        // Play), a group of two (its site button plays), every part inside, the 48 px targets apart and the title at its
+        // minimum at least. A one-site card's site button is drawn only where it leaves the title that minimum: at 411
+        // dp at normal text; elsewhere the supporting line leads with "1 site". Play stays.
+        function test_compact_cards_fit_data() {
+            var rows = [];
+            for (var w of [320, 360, 411]) {
+                for (var s of [1.0, 1.6, 2.0])
+                    rows.push({tag: w + " at " + s, width: w, scale: s});
+            }
+            return rows;
+        }
+        function test_compact_cards_fit(data) {
+            root.width = data.width;
+            Ui.Theme.fontScale = data.scale;
+            add("Plain Vale");
+            site("Single Vale", 31, 1);
+            site("Twin Vale", 32, 1);
+            site("Twin Vale", 32, 2);
+            settle();
+            for (var title of ["Plain Vale", "Single Vale", "Twin Vale"])
+                checkCompactCard(cardOf(title), data.tag + " " + title);
+            var single = cardOf("Single Vale");
+            var sites = part(single, "homeSiteChooserButton");
+            verify(part(single, "savedSystemPlay").visible, "the one-site card keeps Play");
+            var drawn = data.width === 411 && data.scale === 1.0;
+            compare(sites.visible, drawn, "the site button drawn only where it fits");
+            var source = part(single, "savedSystemSource").text;
+            compare(source.indexOf("1 site · ") === 0, !drawn, "the count leads the line when the button is not drawn: " + source);
+            if (data.scale === 1.0)
+                fuzzyCompare(cardOf("Plain Vale").height, 68, 0.5, "a compact card at normal text");
+        }
+
+        // Compact one-site card at 320 and 360 dp: one row without its site button, and More → Sites opens the chooser
+        // for it, as its long press does.
+        function test_one_site_card_sites_from_more_data() {
+            return [{tag: "320", width: 320}, {tag: "360", width: 360}];
+        }
+        function test_one_site_card_sites_from_more(data) {
+            root.width = data.width;
+            site("Single Vale", 31, 1);
+            settle();
+            var card = cardOf("Single Vale");
+            verify(!part(card, "homeSiteChooserButton").visible);
+            tap(part(card, "savedSystemManageButton"));
+            var menu = findChild(home, "savedSystemManageSheet");
+            tryCompare(menu, "visible", true);
+            verify(waitForRendering(menu));
+            var sites = findChild(menu, "sitesSavedSystemButton");
+            verify(sites !== null, "More offers Sites");
+            tap(sites);
+            tryCompare(menu, "visible", false);
+            compare(sitesChosen.count, 1);
+            compare(sitesChosen.signalArguments[0][0], rowOfSite(31, 1));
+        }
+
+        // The full card's More offers Sites for a group of one site too (it offered it only for two or more), as compact
+        // does where it leaves the site button out; a system outside a group has none.
+        function test_default_one_site_card_offers_sites() {
+            prefs.compactView = false;
+            site("Single Vale", 31, 1);
+            add("Plain Vale");
+            settle();
+            var menu = findChild(home, "savedSystemManageSheet");
+            tap(part(cardOf("Single Vale"), "savedSystemManageButton"));
+            tryCompare(menu, "visible", true);
+            verify(waitForRendering(menu));
+            var sites = findChild(menu, "sitesSavedSystemButton");
+            verify(sites !== null, "More offers Sites for one site");
+            tap(sites);
+            tryCompare(menu, "visible", false);
+            compare(sitesChosen.count, 1);
+            compare(sitesChosen.signalArguments[0][0], rowOfSite(31, 1));
+            tap(part(cardOf("Plain Vale"), "savedSystemManageButton"));
+            tryCompare(menu, "visible", true);
+            compare(findChild(menu, "sitesSavedSystemButton"), null, "no Sites outside a group");
+            menu.visible = false;
+        }
+
+        // Play and the site button do what they say, through the controls themselves (411 dp, where both are drawn):
+        // Play starts the one site, the site button opens the chooser.
+        function test_play_and_chooser_through_their_controls() {
+            site("Single Vale", 31, 1);
+            settle();
+            var card = cardOf("Single Vale");
+            var sites = part(card, "homeSiteChooserButton");
+            verify(sites.visible && sites.opacity === 1);
+            tap(part(card, "savedSystemPlay"));
+            compare(played.count, 1);
+            compare(played.signalArguments[0][0], rowOfSite(31, 1));
+            tap(sites);
+            compare(sitesChosen.count, 1);
+            compare(sitesChosen.signalArguments[0][0], rowOfSite(31, 1));
+        }
+
+        // A group of two whose first site is avoided: one site plays, which is not the card's lead, and Play starts that
+        // one. Compact at 320 dp, as a one-site card: no site button, the count first, More → Sites.
+        function test_one_playable_site_plays_its_own_uid() {
+            root.width = 320;
+            site("Pair Vale", 33, 1);
+            site("Pair Vale", 33, 2);
+            settle();
+            verify(savedSystems.setAvoidSite(rowOfSite(33, 1), true));
+            settle();
+            var entry = entryTitled("Pair Vale");
+            var card = cardOf("Pair Vale");
+            verify(entry.playUid.length > 0 && entry.playUid !== entry.leadUid, "the playable site is not the lead");
+            compare(entry.playUid, savedSystems.get(rowOfSite(33, 2)).uid);
+            checkCompactCard(card, "one playable site");
+            verify(!part(card, "homeSiteChooserButton").visible);
+            compare(part(card, "savedSystemSource").text.indexOf("2 sites · "), 0);
+            tap(part(card, "savedSystemPlay"));
+            compare(played.count, 1);
+            compare(played.signalArguments[0][0], rowOfSite(33, 2), "Play starts the site that plays");
+            tap(part(card, "savedSystemManageButton"));
+            var menu = findChild(home, "savedSystemManageSheet");
+            tryCompare(menu, "visible", true);
+            verify(findChild(menu, "sitesSavedSystemButton") !== null, "More offers Sites");
+            menu.visible = false;
+        }
+
+        // Every site avoided: no Play; the site button (which fits beside More at 320 dp at normal text) is how it
+        // plays, and the card still draws within itself.
+        function test_all_sites_avoided() {
+            root.width = 320;
+            site("Hush Vale", 34, 1);
+            site("Hush Vale", 34, 2);
+            settle();
+            verify(savedSystems.setAvoidSite(rowOfSite(34, 1), true));
+            verify(savedSystems.setAvoidSite(rowOfSite(34, 2), true));
+            settle();
+            var card = cardOf("Hush Vale");
+            verify(!part(card, "savedSystemPlay").visible, "nothing to play alone");
+            verify(part(card, "homeSiteChooserButton").visible, "the site button fits beside More");
+            checkCompactCard(card, "all avoided");
+            Ui.Theme.fontScale = 2.0;
+            settle();
+            checkCompactCard(card, "all avoided at 2.0");
+            verify(!part(card, "homeSiteChooserButton").visible);
+            compare(part(card, "savedSystemSource").text.indexOf("2 sites · "), 0);
+        }
+
+        // One system on two receivers: compact keeps each card's receiver line, which wraps, and the card grows by it.
+        // Two TCP cards of one title differ by their addresses on their faces.
+        function test_receivers_tell_cards_apart() {
+            root.width = 320;
+            site("Twin Mesa", 35, 1, undefined, undefined, {sourceType: "usb", freqMhz: "851.0125"});
+            site("Twin Mesa", 35, 1, undefined, undefined, {host: "10.20.30.40", port: 61234, freqMhz: "852.0125"});
+            add("Wire Mesa", {sourceType: "tcp", host: "10.0.0.1", port: 7355});
+            add("Wire Mesa", {sourceType: "tcp", host: "10.0.0.2", port: 7356});
+            add("Plain Mesa");
+            settle();
+            var plain = cardOf("Plain Mesa");
+            for (var entry of entries()) {
+                var card = findChild(entry, "savedSystemCard");
+                checkCompactCard(card, entry.title + " " + entry.y);
+                if (entry.title === "Twin Mesa") {
+                    var line = part(card, "savedSystemReceiver");
+                    verify(line.visible && line.opacity === 1, "the receiver line stays");
+                    verify(!line.truncated && line.contentWidth <= line.width + 0.5, "never cut");
+                    verify(card.height >= plain.height + line.height - 0.5, "the card grows by it");
+                }
+            }
+            var faces = function (title) {
+                return entries().filter(function (e) {
+                    return e.title === title;
+                }).map(function (e) {
+                    var card = findChild(e, "savedSystemCard");
+                    var receiver = part(card, "savedSystemReceiver");
+                    return part(card, "savedSystemSource").text + "|" + (receiver.visible ? receiver.text : "");
+                });
+            };
+            for (var title of ["Twin Mesa", "Wire Mesa"]) {
+                var shown = faces(title);
+                compare(shown.length, 2);
+                verify(shown[0] !== shown[1], title + " cards differ on their faces: " + JSON.stringify(shown));
+            }
+        }
+
+        // Nearest: the supporting line leads with the distance when it is known; with no location fix, or no
+        // coordinates for the system, it is the source line alone.
+        function test_nearest_line() {
+            testContext.setLocationSupported(true);
+            site("Near Vale", 36, 1, 10.1, 20.0);
+            add("Far Plain");
+            prefs.systemsSort = "nearest";
+            settle();
+            var near = function () {
+                return part(cardOf("Near Vale"), "savedSystemSource").text;
+            };
+            verify(near().indexOf(" mi · ") < 0, "no fix, no distance: " + near());
+            prefs.setLocationFix(10.0, 20.0, savedSystems.realtimeNowMs(), 25);
+            settle();
+            compare(savedSystemCards.effectiveSort, "nearest");
+            compare(near().indexOf("6.9 mi · "), 0, "the distance first: " + near());
+            var plain = part(cardOf("Far Plain"), "savedSystemSource").text;
+            compare(plain.indexOf("851.5 MHz"), 0, "no coordinates, no distance: " + plain);
+            prefs.systemsSort = "name";
+            settle();
+            verify(near().indexOf(" mi · ") < 0, "off Nearest, no distance");
+        }
+
+        // The refresh hint stays, full width under the row, inside the card.
+        function test_refresh_hint_data() {
+            return [{tag: "320 at 1.0", width: 320, scale: 1.0}, {tag: "320 at 2.0", width: 320, scale: 2.0}];
+        }
+        function test_refresh_hint(data) {
+            root.width = data.width;
+            Ui.Theme.fontScale = data.scale;
+            var path = testContext.writeFixtureCsv("compact-provenance.csv", "Decimal,Mode,Alpha Tag\n123,A,Dispatch\n");
+            var result = importedFiles.importGeneratedFile(path, "Compact provenance.csv", "group",
+                {origin: "radioreference", rrSid: 12, rrSiteIds: "16863", rrKind: "group"});
+            verify(result.ok);
+            try {
+                add("Hinted Vale", {trunking: true, groupCsvPath: result.path});
+                settle();
+                var card = cardOf("Hinted Vale");
+                verify(card.refreshHint);
+                var hint = part(card, "savedSystemRefreshHint");
+                verify(hint.visible);
+                compare(hint.height, hint.implicitHeight, "every line of the hint is shown");
+                checkCompactCard(card, data.tag);
+                fuzzyCompare(card.height, hint.y + hint.height + 12, 0.5, "12 px under the hint");
+            } finally {
+                importedFiles.remove(importedFiles.rowForPath(result.path));
+            }
+        }
+
+        // D8: what compact does not draw is read on the title's description: the place and the "Heard" line's words,
+        // from their own text. The full card reads them on their own lines, and its title has no description.
+        function test_title_reads_what_is_not_drawn() {
+            add("Placed Vale", {keyConfigured: true, place: {states: [{stid: 90, name: "Westmark"}], counties: [],
+                candidateStates: [90]}});
+            settle();
+            var card = cardOf("Placed Vale");
+            var title = part(card, "savedSystemTitle");
+            var description = title.Accessible.description;
+            verify(description.indexOf("Westmark") >= 0, "the place: " + description);
+            verify(description.indexOf("Not yet listened") >= 0, "when last heard: " + description);
+            compare(part(card, "savedSystemPlace").Accessible.name, "", "the place line is not read itself");
+            prefs.compactView = false;
+            settle();
+            compare(title.Accessible.description, "", "the full card's title has no description");
+            compare(part(card, "savedSystemPlace").Accessible.name, "Westmark");
+            verify(part(card, "savedSystemMeta").Accessible.name.indexOf("Not yet listened") >= 0);
+        }
+
+        // With a screen reader the rows are positional: the lines compact does not draw are held (visible, transparent,
+        // unnamed, no height), never hidden, and come back in place when the full view returns.
+        function test_screen_reader_holds_the_undrawn_lines() {
+            root.width = 320;
+            add("Placed Vale", {place: {states: [{stid: 90, name: "Westmark"}], counties: [], candidateStates: [90]}});
+            site("Single Vale", 31, 1);
+            settle();
+            savedSystemCards.screenReaderActive = true;
+            settle();
+            var placed = cardOf("Placed Vale");
+            var single = cardOf("Single Vale");
+            for (var pair of [[placed, "savedSystemPlace"], [placed, "savedSystemMeta"], [single, "homeSiteChooserButton"]]) {
+                var held = part(pair[0], pair[1]);
+                verify(held.visible, pair[1] + ": held, not hidden");
+                compare(held.opacity, 0, pair[1] + ": transparent");
+                compare(held.Accessible.name, "", pair[1] + ": unnamed");
+                verify(held.Accessible.ignored, pair[1] + ": out of the tree");
+                if (pair[1] !== "homeSiteChooserButton")
+                    compare(held.parent.height, 0, pair[1] + ": no height");
+            }
+            verify(!part(single, "homeSiteChooserButton").enabled, "the held site button takes no press");
+            fuzzyCompare(placed.height, 68, 0.5, "held lines take no room");
+            prefs.compactView = false;
+            settle();
+            compare(part(placed, "savedSystemPlace").opacity, 1);
+            compare(part(placed, "savedSystemPlace").Accessible.name, "Westmark");
+            verify(part(single, "homeSiteChooserButton").enabled);
+            fuzzyCompare(placed.height, 122, 0.5);
+        }
+
+        // A scan list's compact card: its name over its count, Play and More on the name's row, inside the card at
+        // every width and text size, 68 px at normal text. Play keeps its gating (a draft does not play) and the count
+        // follows the list.
+        function test_compact_scan_list_card_data() {
+            return test_compact_cards_fit_data();
+        }
+        function test_compact_scan_list_card(data) {
+            root.width = data.width;
+            Ui.Theme.fontScale = data.scale;
+            verify(scanLists.add({name: "Harbor Loop", sourceType: "rtltcp", host: "127.0.0.1", port: 1234,
+                entries: [{kind: "freq", name: "Simplex", protocol: "p25", freqMhz: "851.5", enabled: true}]}));
+            home.showSection("scanLists");
+            settle();
+            var card = findChild(findChild(home, "listenScanListsSection"), "scanListCard");
+            verify(card !== null && card.visible);
+            verify(card.compact);
+            var name = part(card, "scanListTitle");
+            var count = part(card, "scanListCount");
+            compare(name.font.weight, Font.Bold);
+            compare(count.text, "1 entry");
+            verify(count.y > name.y, "the count under the name");
+            var labels = rectIn(name.parent, card);
+            var play = rectIn(part(card, "scanListPlay"), card);
+            var more = rectIn(part(card, "scanListManageButton"), card);
+            for (var r of [["labels", labels], ["Play", play], ["More", more]])
+                verify(inside(r[1], card), data.tag + ": " + r[0] + " " + describe(r[1]) + " inside, " + card.height);
+            verify(!overlaps(play, more) && !overlaps(labels, play) && !overlaps(labels, more), data.tag + ": apart");
+            fuzzyCompare(play.y + play.h / 2, more.y + more.h / 2, 0.5, "one row");
+            verify(name.width >= minimumTitle(card) - 0.5, "the name at its minimum at least");
+            if (data.scale === 1.0)
+                fuzzyCompare(card.height, 68, 0.5);
+            tap(part(card, "scanListPlay"));
+            compare(listPlayed.count, 1);
+            verify(scanLists.update(0, {entries: [{kind: "freq", name: "Simplex", protocol: "p25", freqMhz: "851.5",
+                enabled: true}, {kind: "freq", name: "Repeater", protocol: "p25", freqMhz: "852.5", enabled: true}]}));
+            tryCompare(count, "text", "2 entries");
+        }
+
+        // D11: a change of Compact view puts the Systems and Scan lists tabs back at their top, the one shown at once
+        // and the other when it is next shown, with Home shown or hidden. Explore keeps its place.
+        function test_density_change_resets_listen_places_data() {
+            return [{tag: "shown", hidden: false}, {tag: "hidden", hidden: true}];
+        }
+        function test_density_change_resets_listen_places(data) {
+            root.height = 700;
+            for (var i = 0; i < 20; ++i)
+                add("Vale " + String(i).padStart(2, "0"));
+            for (i = 0; i < 12; ++i)
+                verify(scanLists.add({name: "Loop " + i, sourceType: "rtltcp", host: "127.0.0.1", port: 1234,
+                    entries: [{kind: "freq", name: "Simplex", protocol: "p25", freqMhz: "851.5", enabled: true}]}));
+            settle();
+            var body = findChild(home, "dongleScrollBody");
+            var scrollTo = function (y) {
+                body.contentY = Math.min(y, body.originY + body.contentHeight - body.height);
+                verify(body.contentY > body.originY + 100, "scrolled down");
+            };
+            home.showSection("scanLists");
+            settle();
+            tryCompare(home, "restorePending", false);
+            scrollTo(600);
+            home.showSection("systems");
+            settle();
+            tryCompare(home, "restorePending", false);
+            scrollTo(900);
+            if (data.hidden)
+                home.visible = false;
+            prefs.compactView = false;
+            wait(0);
+            settle();
+            if (data.hidden) {
+                home.visible = true;
+                settle();
+            }
+            tryVerify(function () {
+                return Math.abs(body.contentY - body.originY) < 0.5;
+            }, 1000, "the Systems tab at its top: " + body.contentY);
+            home.showSection("scanLists");
+            tryCompare(home, "restorePending", false);
+            settle();
+            fuzzyCompare(body.contentY, body.originY, 0.5, "the Scan lists tab at its top");
+        }
+
+        // The card stride, top to top, at 411 x 914 and normal text, in both views (logged for the PR).
+        function test_card_stride() {
+            root.height = 914;
+            for (var i = 0; i < 4; ++i)
+                add("Vale " + i);
+            var strides = {};
+            for (var compact of [false, true]) {
+                prefs.compactView = compact;
+                settle();
+                var shown = entries();
+                var stride = shown[1].y - shown[0].y;
+                strides[compact ? "compact" : "default"] = stride;
+            }
+            console.log("Listen card stride at 411x914 @1.0: default " + strides["default"] + " px, compact "
+                + strides.compact + " px");
+            fuzzyCompare(strides["default"], 122 + Ui.Theme.gap, 0.5);
+            fuzzyCompare(strides.compact, 68 + Ui.Theme.gap, 0.5);
+        }
+    }
+}

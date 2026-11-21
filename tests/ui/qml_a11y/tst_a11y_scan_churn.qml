@@ -892,6 +892,279 @@ Item {
             }
         }
 
+        // Issue #901 (D8): a change of Compact view holds or shows lines and site buttons in every card, in place, with
+        // no rebuild of the cards. At 300 mixed cards it makes and destroys no delegate and raises no show or hide in
+        // the section; while Systems is shown and in reach it has Home refresh Android's copy of the tree once. Made
+        // where it is made (Settings, the session menu: Home hidden, on another tab, or under a sheet) it refreshes
+        // nothing there and owes the refresh until Systems is shown and in reach again, through a rebuild of the cards
+        // meanwhile, and then gives it once. Counts are printed.
+        function test_m6_density_change_refreshes_the_tree_once() {
+            testContext.setLifecyclePhase(0);
+            verify(screenReader.active, "this run has a screen reader on");
+            var home = findChild(app, "homeScreen");
+            var repeater = null;
+            var made = 0;
+            var gone = 0;
+            var onMade = function () {
+                ++made;
+            };
+            var onGone = function () {
+                ++gone;
+            };
+            var report = [];
+            var imported = null;
+            var rebuilt = Qt.createQmlObject("import QtTest; SignalSpy { signalName: \"rebuilt\" }", app);
+            try {
+                while (savedSystems.count)
+                    savedSystems.remove(0);
+                prefs.compactView = false;
+                var csv = testContext.writeFixtureCsv("density-provenance.csv", "Decimal,Mode,Alpha Tag\n123,A,Dispatch\n");
+                imported = importedFiles.importGeneratedFile(csv, "Density provenance.csv", "group",
+                    {origin: "radioreference", rrSid: 12, rrSiteIds: "16863", rrKind: "group"});
+                verify(imported.ok);
+                var rows = [];
+                for (var i = 0; i < 300; ++i) {
+                    var twin = i % 30 === 7;
+                    var row = {name: twin ? "Bench " + String(300 - i).padStart(3, "0") : "Bench " + String(299 - i).padStart(3, "0"),
+                        sourceType: twin ? "usb" : "rtltcp", host: "127.0.0.1", port: 1234, freqMhz: "851.5"};
+                    if (i % 4 === 0)
+                        row.place = {states: [{stid: 90, name: "Westmark"}], counties: [], candidateStates: [90]};
+                    var kind = i % 6;
+                    if (kind === 1 || kind === 2 || kind === 4 || kind === 5)
+                        Object.assign(row, {rrSid: 1000 + i, rrSiteId: 1, siteName: "S"});
+                    else if (kind === 3)
+                        Object.assign(row, {trunking: true, groupCsvPath: imported.path});
+                    rows.push(row);
+                    if (kind === 5)
+                        rows.push(Object.assign({}, row, {rrSiteId: 2, siteName: "T"}));
+                }
+                verify(savedSystems.addAll(rows, "") >= 0);
+                prefs.systemsSort = "added";
+                tryCompare(home, "visible", true);
+                home.showSection("systems");
+                tryCompare(savedSystemCards, "totalCount", 300);
+                waitForRendering(home);
+                wait(50); // the tree refresh the cards' arrival owes
+                var section = findChild(home, "listenSystemsSection");
+                repeater = findChild(home, "savedSystemCardsRepeater");
+                compare(repeater.count, 300);
+                repeater.itemAdded.connect(onMade);
+                repeater.itemRemoved.connect(onGone);
+                rebuilt.target = savedSystemCards;
+                var refreshes = function () {
+                    var refresh = findChild(app, "savedSystemsTreeRefresh");
+                    return refresh ? showHide(refresh) : 0;
+                };
+                // Counts what @a change raises, in the section and of the tree refresh.
+                var step = function (label, change, wantRefresh, quietSection) {
+                    testContext.startAccessibilityCount();
+                    var started = Date.now();
+                    change();
+                    wait(0);
+                    section.forceLayout();
+                    var ms = Date.now() - started;
+                    wait(50);
+                    var counts = testContext.accessibilityCount();
+                    testContext.stopAccessibilityCount();
+                    var inSection = showHide(section);
+                    var refreshed = refreshes();
+                    report.push(label + " " + ms + " ms, " + inSection + " shows or hides in the section, " + refreshed
+                        + " tree refresh, " + (typed(counts, "ObjectShow") + typed(counts, "ObjectHide")) + " anywhere");
+                    compare(made + gone, 0, label + ": no delegate made or destroyed");
+                    compare(repeater.count, 300, label + ": 300 rows");
+                    if (quietSection)
+                        compare(inSection, 0, label + ": no show or hide in the section: " + churn(counts));
+                    compare(refreshed, wantRefresh, label + ": the tree refresh: " + churn(counts));
+                };
+                var flip = function () {
+                    prefs.compactView = !prefs.compactView;
+                };
+                step("compact, Systems shown", flip, 1, true);
+                verify(home.compactView);
+                var first = repeater.itemAt(0);
+                verify(findChild(first, "savedSystemPlace").visible && findChild(first, "savedSystemPlace").opacity === 0,
+                    "the place line is held, not hidden");
+                step("full, Systems shown", flip, 1, true);
+
+                app.currentTab = 1;
+                tryCompare(home, "visible", false);
+                wait(50);
+                step("compact, Home hidden", flip, 0, true);
+                step("Home shown again", function () {
+                    app.currentTab = 0;
+                    tryCompare(home, "visible", true);
+                }, 1, false);
+
+                rebuilt.clear();
+                app.currentTab = 1;
+                tryCompare(home, "visible", false);
+                wait(50);
+                step("full, Home hidden, the cards rebuilt", function () {
+                    flip();
+                    verify(savedSystems.update(0, Object.assign(savedSystems.get(0), {freqMhz: "852.5"})));
+                    tryVerify(function () {
+                        return rebuilt.count > 0;
+                    }, 1000, "the cards rebuilt while hidden");
+                }, 0, true);
+                step("Home shown again after the rebuild", function () {
+                    app.currentTab = 0;
+                    tryCompare(home, "visible", true);
+                }, 1, false);
+
+                home.showSection("explore");
+                wait(50);
+                step("compact, on Explore", flip, 0, true);
+                step("back on Systems", function () {
+                    home.showSection("systems");
+                }, 1, false);
+
+                var sheet = findChild(home, "systemsSortSheet");
+                sheet.open("Sort systems", ["Name"], null);
+                tryCompare(sheet, "visible", true);
+                wait(50);
+                step("full, under a sheet", flip, 0, true);
+                step("the sheet closed", function () {
+                    sheet.visible = false;
+                }, 1, false);
+                verify(!home.compactView);
+                console.log("a11y counts for a density change, 300 cards: " + report.join("; "));
+            } finally {
+                testContext.stopAccessibilityCount();
+                if (repeater) {
+                    repeater.itemAdded.disconnect(onMade);
+                    repeater.itemRemoved.disconnect(onGone);
+                }
+                rebuilt.destroy();
+                for (var modal of Ui.Navigation.modals.slice())
+                    modal.visible = false;
+                app.currentTab = 0;
+                prefs.compactView = false;
+                home.showSection("systems");
+                testContext.resetSystemsSort();
+                while (savedSystems.count)
+                    savedSystems.remove(0);
+                if (imported && imported.ok)
+                    importedFiles.remove(importedFiles.rowForPath(imported.path));
+            }
+        }
+
+        // B11 (issue #901): a card's heading and controls (the section heading, the site button, Play, More, a scan
+        // list's Play and More) carry no name or description while covered by a sheet or hidden with Home, as while
+        // held: Android keeps the nodes it already fetched, and reads a covered node's cached interface by what it says
+        // now. Their interfaces are made first, while shown; a late press on them under the sheet does nothing.
+        function test_m7_covered_cards_say_nothing() {
+            testContext.setLifecyclePhase(0);
+            verify(screenReader.active, "this run has a screen reader on");
+            var home = findChild(app, "homeScreen");
+            var played = Qt.createQmlObject("import QtTest; SignalSpy { signalName: \"playSystem\" }", app);
+            var chosen = Qt.createQmlObject("import QtTest; SignalSpy { signalName: \"chooseSites\" }", app);
+            var listPlayed = Qt.createQmlObject("import QtTest; SignalSpy { signalName: \"playScanList\" }", app);
+            played.target = home;
+            chosen.target = home;
+            listPlayed.target = home;
+            try {
+                while (savedSystems.count)
+                    savedSystems.remove(0);
+                while (scanLists.count)
+                    scanLists.remove(0);
+                verify(savedSystems.add({name: "Ridge", sourceType: "rtltcp", host: "127.0.0.1", port: 1234, freqMhz: "851.5",
+                    rrSid: 41, rrSiteId: 410, siteName: "North", place: {states: [{stid: 90, name: "Westmark"}], counties: [],
+                    candidateStates: [90]}}));
+                verify(savedSystems.add({name: "Valley", sourceType: "rtltcp", host: "127.0.0.1", port: 1234, freqMhz: "852.5"}));
+                verify(scanLists.add({name: "Coast loop", sourceType: "rtltcp", host: "127.0.0.1", port: 1234,
+                    entries: [{kind: "freq", name: "Simplex", protocol: "p25", freqMhz: "851.5", enabled: true}]}));
+                prefs.systemsSort = "place";
+                tryCompare(home, "visible", true);
+                home.showSection("systems");
+                tryCompare(savedSystemCards, "totalCount", 2);
+                waitForRendering(home);
+                var entry = null;
+                var other = null;
+                var repeater = findChild(home, "savedSystemCardsRepeater");
+                for (var i = 0; i < repeater.count; ++i) {
+                    var row = repeater.itemAt(i);
+                    if (row.held)
+                        continue;
+                    if (row.title === "Ridge")
+                        entry = row;
+                    else if (row.title === "Valley")
+                        other = row;
+                }
+                verify(entry !== null && other !== null);
+                var parts = ["savedSystemSection", "homeSiteChooserButton", "savedSystemPlay", "savedSystemManageButton"].map(function (name) {
+                    var item = findChild(entry, name);
+                    verify(item !== null, name);
+                    return [name, item];
+                });
+                var expectSaid = function (label, said) {
+                    for (var pair of parts) {
+                        var node = testContext.accessibleNode(pair[1]);
+                        verify(node.exists, label + ": " + pair[0] + " has its interface");
+                        if (said) {
+                            verify(node.name.length > 0, label + ": " + pair[0] + " named");
+                        } else {
+                            compare(node.name, "", label + ": " + pair[0] + " unnamed");
+                            compare(node.description, "", label + ": " + pair[0] + " no description");
+                        }
+                    }
+                };
+                expectSaid("shown", true);
+
+                var menu = findChild(home, "savedSystemManageSheet");
+                home.manageCard(other.leadUid, "Valley", false, false);
+                tryCompare(menu, "visible", true);
+                var opened = menu.systemUid;
+                expectSaid("under a sheet", false);
+                for (var pair of parts)
+                    testContext.pressAccessible(pair[1]);
+                wait(50);
+                compare(played.count, 0, "a late Play under the sheet plays nothing");
+                compare(chosen.count, 0, "a late site button under the sheet opens no chooser");
+                compare(menu.systemUid, opened, "a late More under the sheet opens no other menu");
+                menu.visible = false;
+                tryCompare(menu, "visible", false);
+                expectSaid("the sheet closed", true);
+
+                app.currentTab = 1;
+                tryCompare(home, "visible", false);
+                expectSaid("Home hidden", false);
+                app.currentTab = 0;
+                tryCompare(home, "visible", true);
+
+                home.showSection("scanLists");
+                var list = findChild(findChild(home, "listenScanListsSection"), "scanListCard");
+                tryCompare(list, "visible", true);
+                waitForRendering(home);
+                parts = ["scanListPlay", "scanListManageButton"].map(function (name) {
+                    return [name, findChild(list, name)];
+                });
+                expectSaid("scan list shown", true);
+                var scanMenu = findChild(home, "scanListManageSheet");
+                scanMenu.openFor(0);
+                tryCompare(scanMenu, "visible", true);
+                expectSaid("scan list under a sheet", false);
+                verify(testContext.pressAccessible(parts[0][1]), "Play offers its press");
+                wait(50);
+                compare(listPlayed.count, 0, "a late scan-list Play under the sheet plays nothing");
+                scanMenu.visible = false;
+                tryCompare(scanMenu, "visible", false);
+                expectSaid("scan list, the sheet closed", true);
+            } finally {
+                for (var modal of Ui.Navigation.modals.slice())
+                    modal.visible = false;
+                app.currentTab = 0;
+                home.showSection("systems");
+                played.destroy();
+                chosen.destroy();
+                listPlayed.destroy();
+                while (scanLists.count)
+                    scanLists.remove(0);
+                testContext.resetSystemsSort();
+                while (savedSystems.count)
+                    savedSystems.remove(0);
+            }
+        }
+
         // a11y2 B: a choice made in a sheet as TalkBack makes it (Qt's bridge carries TalkBack's focus out as the
         // set-focus action, and its double tap as the press) hands the keyboard focus, which TalkBack's follows, back
         // to the control that opened the sheet: one Focus event, the opener's. Home disables its body while the Sort
