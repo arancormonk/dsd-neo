@@ -6,12 +6,21 @@
 #include <dsd-neo/core/airspy_config.h>
 #include <dsd-neo/core/power.h>
 #include <dsd-neo/core/safe_api.h>
+#include <dsd-neo/platform/atomic_compat.h>
 #include <dsd-neo/runtime/airspy_config.h>
 #include <dsd-neo/runtime/analog_channel.h>
 #include <dsd-neo/runtime/signal_search.h>
 #include <dsd-neo/runtime/signal_search_hooks.h>
 #include <stdint.h>
 #include <string.h>
+
+/* The last status revision handed out; 0 is never one. */
+static dsd_atomic_u64 status_revision = {0U};
+
+uint64_t
+dsd_signal_search_status_revision_next(void) {
+    return dsd_atomic_u64_fetch_add_relaxed(&status_revision, 1U) + 1U;
+}
 
 void
 dsd_signal_search_range_default(dsd_signal_search_range* range) {

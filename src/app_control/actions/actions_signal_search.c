@@ -188,7 +188,6 @@ start_search(dsd_opts* opts, dsd_state* state, const struct dsd_app_command* cmd
     if (dsd_engine_signal_search_start(opts, state, &config, publish_search, NULL, error, sizeof(error))) {
         dsd_signal_search_status status = {0};
         dsd_app_signal_search_status_get(&status, NULL, 0);
-        const uint64_t revision = status.revision + 1;
         if (!dsd_engine_signal_search_active(state)) {
             /* No coordinator owns the tuner: the error is for display, and session teardown retires it. */
             DSD_MEMSET(&status, 0, sizeof(status));
@@ -196,8 +195,10 @@ start_search(dsd_opts* opts, dsd_state* state, const struct dsd_app_command* cmd
             status.phase = DSD_SEARCH_ERROR;
             status.owned = 0;
         }
-        /* A rejected restart of a paused session leaves that coordinator, its phase and its ownership as they were. */
-        status.revision = revision;
+        /* A rejected restart of a paused session leaves that coordinator, its phase and its ownership as they were. Its
+           revision is the shared one the coordinator takes too, so the coordinator's next publication is new to a
+           frontend that skips a revision it has read (issue #748 B11). */
+        status.revision = dsd_signal_search_status_revision_next();
         DSD_SNPRINTF(status.message, sizeof(status.message), "%s", error);
         dsd_app_signal_search_publish(&status, NULL, NULL);
         return 2;

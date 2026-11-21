@@ -4,6 +4,8 @@
  */
 
 #include <assert.h>
+#include <dsd-neo/app_control/rx_tone_view.h>
+#include <dsd-neo/app_control/signal_search.h>
 #include <dsd-neo/core/access_code.h>
 #include <dsd-neo/core/airspy_config.h>
 #include <dsd-neo/core/audio.h>
@@ -39,6 +41,7 @@
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
+#include "../../src/app_control/command_dispatch.h"
 #include "../../src/engine/scan_owner.h"
 
 static dsd_signal_search_status status;
@@ -3836,6 +3839,136 @@ test_avoid_interleaving(dsd_opts* o, dsd_state* s, const dsd_signal_search_confi
     stop_tag_session(o, s);
 }
 
+/* The native store as the start action reaches it (the app-control store, stubbed): the status it keeps is the one a
+   frontend reads (dsd_app_signal_search_status_get()). */
+static dsd_signal_search_status store_status;
+
+void
+dsd_app_signal_search_publish(const dsd_signal_search_status* s, const dsd_signal_search_hit* h, void* ctx) {
+    (void)ctx;
+    store_status = *s;
+    observer(s, h, NULL);
+}
+
+void
+dsd_app_signal_search_status_get(dsd_signal_search_status* s, char* error, size_t capacity) {
+    if (s) {
+        *s = store_status;
+    }
+    if (error && capacity) {
+        error[0] = '\0';
+    }
+}
+
+void
+dsd_app_signal_search_store_flush(void) {}
+
+int
+dsd_app_signal_search_permanent_avoid(uint32_t frequency) {
+    (void)frequency;
+    return DSD_APP_SEARCH_AVOID_ADDED;
+}
+
+int
+dsd_app_command_submit(int id, const void* data, size_t size) {
+    (void)id;
+    (void)data;
+    (void)size;
+    return DSD_APP_COMMAND_SUBMIT_QUEUED;
+}
+
+double
+dsd_analog_rx_clock_s(void) {
+    return 0.0;
+}
+
+int
+dsd_app_rx_tone_view(const dsd_opts* opts, const dsd_state* state, double now, dsd_app_rx_tone* out) {
+    (void)opts;
+    (void)state;
+    (void)now;
+    DSD_MEMSET(out, 0, sizeof(*out));
+    return 0;
+}
+
+/* A frontend's read of the store, as Qt's SignalSearchModel::refresh() makes it: a status whose revision and session
+   both match the last one read is the same status, and is skipped. 1 when this read took a new status. */
+static uint64_t qt_revision = UINT64_MAX, qt_session;
+
+static int
+qt_reads_status(dsd_signal_search_status* out) {
+    dsd_signal_search_status s;
+    dsd_app_signal_search_status_get(&s, NULL, 0);
+    if (s.revision == qt_revision && s.session_id == qt_session) {
+        return 0;
+    }
+    qt_revision = s.revision;
+    qt_session = s.session_id;
+    *out = s;
+    return 1;
+}
+
+/* A start through the command queue's handler, as the decoder drains it: 1 when it went on, 2 when it was refused. */
+static int
+start_action(dsd_opts* o, dsd_state* s, const dsd_signal_search_config* config) {
+    static struct dsd_app_command command;
+    DSD_MEMSET(&command, 0, sizeof(command));
+    command.id = DSD_APP_CMD_SIGNAL_SEARCH_START;
+    command.n = sizeof(*config);
+    DSD_MEMCPY(command.data, config, sizeof(*config));
+    return dsd_app_actions_signal_search[0].fn(o, s, &command);
+}
+
+/* Issue #748 B11: a refused start publishes a status of its own, and every later publication of the session must reach
+   a frontend that skips a status whose revision it has read. A refusal took the store's revision plus one, which the
+   paused coordinator's next publication (an edited Resume) reused: the frontend skipped the Resume and kept showing the
+   refusal on a paused search. */
+static void
+test_refusal_then_resume_reaches_frontend(dsd_opts* o, dsd_state* s, const dsd_signal_search_config* config) {
+    dsd_signal_search_config one = tag_config(config, 90, 0, 0);
+    live = 1;
+    carrier = 0;
+    observed = 1;
+    failed = 0;
+    stalled_ms = 0;
+    o->rtlsdr_center_freq = 100000000;
+    assert(start_action(o, s, &one) == 1);
+    tick(o, s);
+    visit_strongest(o, s);
+    act(o, s, DSD_SEARCH_ACTION_PAUSE);
+    dsd_signal_search_status seen;
+    assert(qt_reads_status(&seen) && seen.phase == DSD_SEARCH_PAUSED && seen.session_id == 90);
+
+    // An edited Resume the engine refuses: its message shows on the paused search.
+    dsd_signal_search_config refused = one;
+    refused.ranges[0].end_hz = refused.ranges[0].start_hz - 1;
+    assert(start_action(o, s, &refused) == 2);
+    assert(qt_reads_status(&seen) && seen.phase == DSD_SEARCH_PAUSED && seen.message[0] != '\0');
+
+    // The corrected Resume goes on: the frontend reads the running search, not the refusal it already showed.
+    one.ranges[0].end_hz = 100012500;
+    assert(start_action(o, s, &one) == 1);
+    assert(qt_reads_status(&seen) && seen.phase == DSD_SEARCH_SEARCHING && seen.message[0] == '\0');
+    tick(o, s);
+    assert(qt_reads_status(&seen) && seen.phase == DSD_SEARCH_TUNING);
+    land(o, s);
+    stop_tag_session(o, s);
+    assert(qt_reads_status(&seen) && seen.phase == DSD_SEARCH_STOPPED);
+
+    // A fresh start refused with no coordinator, then one that goes on under the same session: the first publication
+    // of the new coordinator reaches the frontend too.
+    dsd_signal_search_config fresh = tag_config(config, 91, 0, 0);
+    dsd_signal_search_config bad = fresh;
+    bad.ranges[0].end_hz = bad.ranges[0].start_hz - 1;
+    assert(start_action(o, s, &bad) == 2);
+    assert(qt_reads_status(&seen) && seen.phase == DSD_SEARCH_ERROR && seen.session_id == 91);
+    assert(start_action(o, s, &fresh) == 1);
+    assert(qt_reads_status(&seen) && seen.phase == DSD_SEARCH_SEARCHING && seen.session_id == 91);
+    tick(o, s);
+    land(o, s);
+    stop_tag_session(o, s);
+}
+
 static void
 test_avoid_lists(dsd_opts* o, dsd_state* s, const dsd_signal_search_config* config) {
     test_avoid_lists_room(o, s, config);
@@ -4046,6 +4179,7 @@ main(void) {
     test_rejected_code_p25p2_slot(o, s, &config);
     test_p25_site_and_codes(o, s, &config);
     test_avoid_lists(o, s, &config);
+    test_refusal_then_resume_reaches_frontend(o, s, &config);
     s->rtl_ctx = NULL;
     dsd_state_ext_free_all(s);
     free(s);

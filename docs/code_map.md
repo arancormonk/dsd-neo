@@ -241,7 +241,10 @@ Generated (do not edit/commit):
     under its tag as at any return to the span. A held probe keeps the NFM fallback, and a probe with CHECKING-only or
     no evidence falls back as before (`ENGINE_SIGNAL_SEARCH`).
     Published status carries `owned` (a coordinator holds the tuner) and
-    the landed channel's live RF level. Receive profiles, gain and frequency are restored on
+    the landed channel's live RF level. Every status publication, the coordinator's, a refused start's
+    (`actions_signal_search.c`) and the session end's (`dsd_app_signal_search_session_ended()`), takes its revision from
+    one source, `dsd_signal_search_status_revision_next()` (Runtime), so a frontend that skips a status whose revision
+    and session it has read never skips a new one (issue #748 B11, `ENGINE_SIGNAL_SEARCH`). Receive profiles, gain and frequency are restored on
     exit: a search Stop tunes back, running the carrier boundary and acquisition reset as each
     visit's tune does, and its retune carries the session's receive family
     (`rtl_stream_prepare_retune_analog_profile_for_target()`), since a retune landing first

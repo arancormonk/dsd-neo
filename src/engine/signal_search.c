@@ -163,7 +163,8 @@ search_publish(search_coord* c, int hit_changed) {
 #endif
     c->status.identifying = c->probing && !c->status.hit.ended;
     c->status.owned = c->status.phase != DSD_SEARCH_STOPPED;
-    ++c->status.revision;
+    /* The shared source, never a count of this coordinator's own: a refused start publishes between two of them. */
+    c->status.revision = dsd_signal_search_status_revision_next();
     c->last_publish = dsd_realtime_mono_ms();
     if (c->publish) {
         c->publish(&c->status, hit_changed ? &c->status.hit : NULL, c->user);

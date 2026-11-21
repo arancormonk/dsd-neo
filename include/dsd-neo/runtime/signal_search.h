@@ -186,6 +186,12 @@ int dsd_signal_search_site_apply(dsd_signal_search_site* record, const dsd_signa
 /** Format @p record for display ("" for an empty record); returns the length written. */
 size_t dsd_signal_search_site_format(const dsd_signal_search_site* record, char* out, size_t capacity);
 
+/** The revision of a new status publication (dsd_signal_search_status::revision), from the one source every publisher
+ * takes it from: the coordinator, a refused start and the session's end (issue #748 B11). Each call returns a value no
+ * earlier call returned, so a frontend that skips a status whose revision and session it has read skips no new one.
+ * Any thread. */
+uint64_t dsd_signal_search_status_revision_next(void);
+
 void dsd_signal_search_range_default(dsd_signal_search_range* range);
 int dsd_signal_search_validate(const dsd_signal_search_range* range, char* error, size_t capacity);
 /** Every range valid, at least one enabled, and at most DSD_SEARCH_MAX_CHANNELS enabled channels in total.

@@ -634,11 +634,14 @@ main(void) {
     control_refused = 0;
     free(control);
 
-    // A start the engine rejects is shown, but owns nothing: no coordinator will ever publish STOPPED for it.
+    // A start the engine rejects is shown, but owns nothing: no coordinator will ever publish STOPPED for it. Its
+    // revision is a new one from the source every publisher takes it from, not the store's plus one, which the
+    // coordinator's own next publication could reuse (issue #748 B11).
     reject_start = 1;
     published.revision = 9;
+    const uint64_t before_refusal = dsd_signal_search_status_revision_next();
     assert(dsd_app_actions_signal_search[0].fn(opts, state, command) == 2);
-    assert(published.phase == DSD_SEARCH_ERROR && !published.owned && published.revision == 10);
+    assert(published.phase == DSD_SEARCH_ERROR && !published.owned && published.revision == before_refusal + 1);
     assert(strstr(published.message, "100,000") != NULL);
 
     // A rejected restart of a paused session keeps that coordinator's phase, session and ownership.
@@ -649,7 +652,8 @@ main(void) {
     coordinator_active = 1;
     assert(dsd_app_actions_signal_search[0].fn(opts, state, command) == 2);
     assert(published.phase == DSD_SEARCH_PAUSED && published.owned && published.session_id == 5);
-    assert(published.revision == 11 && strstr(published.message, "100,000") != NULL);
+    assert(published.revision == before_refusal + 2 && strstr(published.message, "100,000") != NULL);
+    assert(dsd_signal_search_status_revision_next() == before_refusal + 3);
 
     free(command);
     free(state);
