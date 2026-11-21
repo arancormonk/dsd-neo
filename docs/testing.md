@@ -2260,7 +2260,8 @@ through `tests/rdio_dirwatch_check.cmake`, each with `-P -7 <dir>/calls --wav-jo
 dirwatch --rdio-system-id 48`, on the synthetic YSF call `ysf_synth` (851.375 MHz), which names no target or source.
 Every leg must exit 0, print the decode regex, report no sanitizer error, and leave at least one recording, no
 `TEMP_` file, and one journal `publish` line a recording, not failed, naming a file in the folder, with an empty
-`target`: the number is the export's alone. Then it reads the finalized WAV/JSON pairs:
+`target`: the number is the export's alone. Each leg runs with `DSD_NEO_CONFIG` unset (`cmake -E env --unset`), so it
+neither loads a developer's config nor autosaves its options into it. Then it reads the finalized WAV/JSON pairs:
 
 | Leg | Input | What each recording's sidecar must hold |
 | --- | --- | --- |
@@ -2296,6 +2297,11 @@ turned read-only right after, so that file's removal fails and is the run's one 
 reports failure after the worker ended (the queued jobs are released). That last case leaves the upload worker failed
 for good, so it runs last in `main()`. The issue #888 sidecar cases share one heap ring and options
 (`rdio_case_hist()`, `rdio_case_opts()`), zeroed for each case, rather than each keeping a static ring.
+
+`PLATFORM_FILE_COMPAT` checks `dsd_hard_link()` in a folder the test makes (`dsd_test_mkdtemp()`), never the working
+folder. Whether that folder's file system takes hard links is asked of the platform: on Windows the volume's
+`FILE_SUPPORTS_HARD_LINKS` flag, on POSIX a `link()` between names the probe creates exclusively there, removing only
+what it made. Where it takes none, only the refusals are checked.
 
 ### Digital voice chain checks (issue #653)
 

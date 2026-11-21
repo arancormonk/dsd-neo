@@ -1039,21 +1039,41 @@ expect_rename_noreplace_in(const char* dir) {
     return ok ? 0 : 1;
 }
 
-/* Whether the filesystem holding @p dir ("" for the working folder) takes hard links, asked of the platform itself:
-   some (FAT-like, some FUSE) do not, and the fallbacks then claim the name or copy instead. NTFS, the Windows test
-   filesystem, does. */
+/* Whether the filesystem holding @p dir, a folder the test made, takes hard links, asked of the platform itself: some
+   (FAT-like, exFAT, some FUSE, some shares) do not, and the fallbacks then claim the name or copy instead. On Windows
+   its volume says so; on POSIX a link is tried between names the probe makes in @p dir, and only what it made is
+   removed. */
 static int
 dir_takes_hard_links(const char* dir) {
 #if DSD_PLATFORM_WIN_NATIVE
-    (void)dir;
-    return 1;
+#ifndef FILE_SUPPORTS_HARD_LINKS
+#define FILE_SUPPORTS_HARD_LINKS 0x00400000
+#endif
+    wchar_t* wide = dsd_win32_utf8_path_to_wide(dir);
+    wchar_t root[MAX_PATH + 1];
+    DWORD flags = 0;
+    const int known = wide != NULL && GetVolumePathNameW(wide, root, MAX_PATH + 1)
+                      && GetVolumeInformationW(root, NULL, 0, NULL, NULL, &flags, NULL, 0);
+    free(wide);
+    return known && (flags & FILE_SUPPORTS_HARD_LINKS) != 0;
 #else
     char a[512];
     char b[512];
-    DSD_SNPRINTF(a, sizeof a, "%s%slink_probe.a", dir, dir[0] ? "/" : "");
-    DSD_SNPRINTF(b, sizeof b, "%s%slink_probe.b", dir, dir[0] ? "/" : "");
-    int ok = write_text_file(a, "p") == 0 && link(a, b) == 0;
-    (void)remove(b);
+    DSD_SNPRINTF(a, sizeof a, "%s/link_probe.a", dir);
+    DSD_SNPRINTF(b, sizeof b, "%s/link_probe.b", dir);
+    int opened = 0;
+    FILE* fp = dsd_fopen_private_ex(a, "wbx", &opened);
+    if (fp == NULL) {
+        if (opened) {
+            (void)remove(a);
+        }
+        return 0;
+    }
+    (void)fclose(fp);
+    const int ok = link(a, b) == 0;
+    if (ok) {
+        (void)remove(b);
+    }
     (void)remove(a);
     return ok;
 #endif
@@ -1107,7 +1127,13 @@ expect_hard_link(void) {
     rc |= dsd_hard_link(NULL, "x") == -1 && errno == EINVAL ? 0 : 1;
     errno = 0;
     rc |= dsd_hard_link("x", "") == -1 && errno == EINVAL ? 0 : 1;
-    rc |= expect_hard_link_in("");
+    /* In a folder of the test's own, so no file of the caller's working folder is touched. */
+    char dir[DSD_TEST_PATH_MAX];
+    if (dsd_test_mkdtemp(dir, sizeof dir, "dsdneo_hard_link") == NULL) {
+        return 1;
+    }
+    rc |= expect_hard_link_in(dir);
+    rc |= dsd_test_rmdir(dir) == 0 ? 0 : 1;
     return rc;
 }
 
