@@ -44,6 +44,7 @@
 #include <time.h>
 #include "../../src/app_control/commands_internal.h"
 #include "../../src/app_control/snapshot_internal.h"
+#include "../../src/protocol/dmr/dmr_abs_params.h"
 
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/state_fwd.h"
@@ -640,6 +641,82 @@ dmr_deferred_candidate_probe_is_retried(void) {
     rc |= expect(dmr_probe_once(ctx, DSD_TRUNK_TUNE_RESULT_FAILED) == 455000000L && cc->idx == 1 && cc->used == 1U,
                  "candidates: a refusal passes it, as before");
     rc |= expect(dmr_probe_once(ctx, DSD_TRUNK_TUNE_RESULT_OK) == 456000000L, "candidates: then the next one");
+    cleanup();
+    return rc;
+}
+
+static void
+put_csbk_bits(uint8_t* bits, size_t start, uint32_t value, size_t nbits) {
+    for (size_t i = 0; i < nbits; i++) {
+        bits[start + i] = (uint8_t)((value >> (nbits - 1U - i)) & 1U);
+    }
+}
+
+/* A checked C_BCAST Ann_WD_TSCC (TS 102 361-4 §7.2.19.1, Table 7.69): BCAST_CH1/2 @p ch1 / @p ch2 with AW_FLAG1/2
+   @p aw1 / @p aw2 (0 add, 1 withdraw). @p abs_chan nonzero sends the MBC form instead, its BC_AP naming CHAN
+   @p abs_chan on @p abs_mhz MHz. */
+static void
+ann_wd_tscc(uint16_t ch1, uint16_t ch2, uint8_t aw1, uint8_t aw2, uint16_t abs_chan, uint16_t abs_mhz) {
+    uint8_t bits[256] = {0};
+    uint8_t bytes[48] = {0};
+    bytes[0] = 0x80U | 40U;
+    bits[0] = 1U;
+    put_csbk_bits(bits, 2U, 40U, 6U);
+    bits[33] = aw1;
+    bits[34] = aw2;
+    put_csbk_bits(bits, 56U, ch1, 12U);
+    put_csbk_bits(bits, 68U, ch2, 12U);
+    g_state.synctype = g_state.lastsynctype = DSD_SYNC_DMR_BS_DATA_POS;
+    if (abs_chan == 0U) {
+        dmr_cspdu(&g_opts, &g_state, bits, bytes, 1, 0);
+        return;
+    }
+    bytes[0] = 40U;
+    bits[0] = 0U;
+    bits[96] = 1U;
+    put_csbk_bits(bits, 98U, 40U, 6U);
+    bytes[12] = 0x80U | 40U;
+    put_csbk_bits(bits, 118U, abs_chan, 12U);
+    put_csbk_bits(bits, 130U, abs_mhz, 10U);
+    put_csbk_bits(bits, 153U, abs_mhz, 10U);
+    const dmr_cspdu_shape shape = {1U, 1U, 40U, 40U, 1U};
+    dmr_cspdu_ex(&g_opts, &g_state, bits, bytes, 1, 0, &shape);
+}
+
+/* A site with no channel list hunts the TSCCs its Ann_WD_TSCC announces (discussion #900 B5; a radio does the same),
+   never one it withdraws: in the logical form only the channel marked add, in the MBC form the one TSCC its BC_AP
+   names. The CSBKs arrive after the carrier loss, since noCarrier() empties the candidate list. */
+static int
+dmr_hunt_takes_announced_not_withdrawn_tscc(void) {
+    if (setup(0.0f)) {
+        cleanup();
+        return 1;
+    }
+    dsd_engine_trunk_scan_shutdown(&g_opts, &g_state);
+    g_opts.trunk_scan_enabled = 0;
+    g_opts.trunk_enable = 1;
+    g_opts.frame_dmr = 1;
+    g_state.trunk_cc_freq = 451000000L;
+    g_state.lcn_freq_count = 0;
+    g_state.trunk_chan_map[10] = 455000000L;
+    g_state.trunk_chan_map[11] = 456000000L;
+    dmr_sm_ctx_t* ctx = dmr_sm_get_ctx();
+    dmr_sm_init_ctx(ctx, &g_opts, &g_state);
+    aloha(1);
+    g_state.synctype = DSD_SYNC_NONE;
+    noCarrier(&g_opts, &g_state);
+    int rc = expect(dsd_trunk_dmr_recovery_allowed(&g_opts, &g_state), "ann_wd: DMR owns the recovery");
+    ann_wd_tscc(10U, 11U, 1U, 0U, 0U, 0U);
+    ann_wd_tscc(0x0FFFU, 0U, 1U, 0U, 12U, 458U);
+    ann_wd_tscc(0x0FFFU, 0U, 0U, 0U, 13U, 457U);
+    const dsd_trunk_cc_candidates* cc = dsd_trunk_cc_candidates_peek(&g_state);
+    rc |= expect(cc != NULL && cc->count == 2, "ann_wd: two announced TSCCs, the withdrawn ones left out");
+    rc |= expect(dmr_probe_once(ctx, DSD_TRUNK_TUNE_RESULT_FAILED) == 456000000L,
+                 "ann_wd: the hunt probes the logical channel marked add");
+    rc |= expect(dmr_probe_once(ctx, DSD_TRUNK_TUNE_RESULT_FAILED) == 457000000L,
+                 "ann_wd: then the absolute TSCC announced");
+    rc |= expect(g_state.trunk_chan_map[12] == 458000000L && g_state.trunk_chan_map[13] == 457000000L,
+                 "ann_wd: the absolute TSCCs' channels are learned");
     cleanup();
     return rc;
 }
@@ -2828,6 +2905,7 @@ main(void) {
     rc |= dmr_deferred_mapped_probe_is_retried();
     rc |= dmr_probe_drops_the_back_retry();
     rc |= dmr_deferred_candidate_probe_is_retried();
+    rc |= dmr_hunt_takes_announced_not_withdrawn_tscc();
     rc |= cap_plus_rest_recovery();
     rc |= switch_while_probe_pending();
     rc |= standalone_recovery();

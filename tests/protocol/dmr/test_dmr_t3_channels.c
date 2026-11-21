@@ -26,6 +26,7 @@
 #include <dsd-neo/protocol/dmr/dmr_trunk_sm.h>
 #include <dsd-neo/protocol/dmr/dmr_utils_api.h>
 #include <dsd-neo/runtime/decode_clock.h>
+#include <dsd-neo/runtime/trunk_cc_candidates.h>
 #include <dsd-neo/runtime/trunk_tuning_hooks.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -119,16 +120,19 @@ send_aloha(uint16_t syscode) {
     dmr_cspdu(&g_opts, &g_state, bits, bytes, 1U, 0U);
 }
 
-/* C_BCAST Chan_Freq (type 5) for @p channel. */
+/* A C_BCAST MBC of announcement @p type: header channel @p header_ch (bits 68-79), BC_AP CHAN @p bcap_chan at
+   @p rx_int MHz plus @p rx_step 125 Hz steps (TX the same), AC-info-available bit (56) @p ac_info. */
 static void
-send_chan_freq(uint16_t channel, uint16_t rx_int, uint16_t rx_step) {
+send_c_bcast_mbc(uint8_t type, uint16_t header_ch, uint16_t bcap_chan, uint16_t rx_int, uint16_t rx_step,
+                 uint8_t ac_info) {
     uint8_t bits[256];
     uint8_t bytes[48];
     build_pf0(bits, bytes, 40U);
-    put_bits(bits, 16, 5U, 5);
-    put_bits(bits, 68, channel & 0x0FFFU, 12);
+    put_bits(bits, 16, type & 0x1FU, 5);
+    bits[56] = (uint8_t)(ac_info & 1U);
+    put_bits(bits, 68, header_ch & 0x0FFFU, 12);
     put_bits(bits, 112, 0U, 4);
-    put_bits(bits, 118, channel & 0x0FFFU, 12);
+    put_bits(bits, 118, bcap_chan & 0x0FFFU, 12);
     put_bits(bits, 130, rx_int & 0x03FFU, 10);
     put_bits(bits, 140, rx_step & 0x1FFFU, 13);
     put_bits(bits, 153, rx_int & 0x03FFU, 10);
@@ -136,22 +140,35 @@ send_chan_freq(uint16_t channel, uint16_t rx_int, uint16_t rx_step) {
     dispatch_mbc(bits, bytes, 40U);
 }
 
+/* C_BCAST Chan_Freq (type 5) for @p channel. */
+static void
+send_chan_freq(uint16_t channel, uint16_t rx_int, uint16_t rx_step) {
+    send_c_bcast_mbc(5U, channel, channel, rx_int, rx_step, 0U);
+}
+
 /* C_BCAST Adjacent_Site (type 6) with absolute parameters for @p channel. */
 static void
 send_adjacent(uint16_t channel, uint16_t rx_int, uint16_t rx_step) {
-    uint8_t bits[256];
-    uint8_t bytes[48];
-    build_pf0(bits, bytes, 40U);
-    put_bits(bits, 16, 6U, 5);
-    bits[56] = 1U;
-    put_bits(bits, 68, 0x0FFFU, 12);
-    put_bits(bits, 112, 0U, 4);
-    put_bits(bits, 118, channel & 0x0FFFU, 12);
-    put_bits(bits, 130, rx_int & 0x03FFU, 10);
-    put_bits(bits, 140, rx_step & 0x1FFFU, 13);
-    put_bits(bits, 153, rx_int & 0x03FFU, 10);
-    put_bits(bits, 163, rx_step & 0x1FFFU, 13);
-    dispatch_mbc(bits, bytes, 40U);
+    send_c_bcast_mbc(6U, 0x0FFFU, channel, rx_int, rx_step, 1U);
+}
+
+static int
+candidate_count(long freq) {
+    const dsd_trunk_cc_candidates* cc = dsd_trunk_cc_candidates_peek(&g_state);
+    int n = 0;
+    for (int i = 0; cc != NULL && i < cc->count; i++) {
+        n += cc->candidates[i] == freq ? 1 : 0;
+    }
+    return n;
+}
+
+static int
+hunt_list_count(long freq) {
+    int n = 0;
+    for (int i = 0; i < g_state.lcn_freq_count; i++) {
+        n += *dsd_state_trunk_lcn_slot_const(&g_state, i) == freq ? 1 : 0;
+    }
+    return n;
 }
 
 /* TV_GRANT (opcode 49) to the absolute escape, its MBC naming @p channel. */
@@ -502,6 +519,109 @@ test_save_restore_round_trip(void) {
     assert(dmr_t3_chan_origin(&g_state, 12U) == DMR_CHAN_ORIGIN_FILE); /* a row with no recorded origin */
 }
 
+/* ---- C_BCAST announcements (B4, B6) ---- */
+
+/* Chan_Freq always carries a BC_AP (TS 102 361-4 §7.2.19.6): a header CH of 0xFFF leaves the channel to the BC_AP's
+   CHAN, learned and appended to the hunt list as any other. */
+static void
+test_chan_freq_header_fff_uses_bcap_chan(void) {
+    reset();
+    dmr_sm_init(&g_opts, &g_state);
+    send_c_bcast_mbc(5U, 0x0FFFU, 130U, 451U, 1000U, 0U);
+    assert(g_state.trunk_chan_map[130] == 451125000L);
+    assert(dmr_t3_chan_origin(&g_state, 130U) == DMR_CHAN_ORIGIN_SITE);
+    assert(g_state.trunk_chan_map[0xFFF] == 0L);
+    assert(hunt_list_count(451125000L) == 1);
+    assert(candidate_count(451125000L) == 1);
+
+    /* Neither the header nor the BC_AP names a channel: nothing is learned. */
+    send_c_bcast_mbc(5U, 0x0FFFU, 0x0FFFU, 451U, 1100U, 0U);
+    send_c_bcast_mbc(5U, 0x0FFFU, 0U, 451U, 1100U, 0U);
+    assert(hunt_list_count(451137500L) == 0);
+    assert(g_state.trunk_chan_map[0] == 0L && g_state.trunk_chan_map[0xFFF] == 0L);
+    dsd_state_trunk_lcn_free(&g_state);
+}
+
+/* A header CH and a BC_AP CHAN that both name channels and differ say two things: the announcement is ignored. A BC_AP
+   CHAN of 0 or 4095 leaves the header's. */
+static void
+test_chan_freq_inconsistent_channels_ignored(void) {
+    reset();
+    dmr_sm_init(&g_opts, &g_state);
+    send_c_bcast_mbc(5U, 131U, 132U, 451U, 1200U, 0U);
+    assert(g_state.trunk_chan_map[131] == 0L && g_state.trunk_chan_map[132] == 0L);
+    assert(hunt_list_count(451150000L) == 0);
+    assert(candidate_count(451150000L) == 0);
+
+    send_c_bcast_mbc(5U, 133U, 0U, 451U, 1300U, 0U);
+    assert(g_state.trunk_chan_map[133] == 451162500L);
+    send_c_bcast_mbc(5U, 134U, 0x0FFFU, 451U, 1400U, 0U);
+    assert(g_state.trunk_chan_map[134] == 451175000L);
+    dsd_state_trunk_lcn_free(&g_state);
+}
+
+/* A checked Chan_Freq is a SITE row with its learned notice; announced again it changes nothing and the hunt list
+   holds its frequency once. A user's list is never appended to. */
+static void
+test_chan_freq_learned_notice_and_origin(void) {
+    reset();
+    dmr_sm_init(&g_opts, &g_state);
+    const uint64_t before = pushes(0);
+    send_chan_freq(135U, 451U, 1500U);
+    assert(g_state.trunk_chan_map[135] == 451187500L);
+    assert(dmr_t3_chan_origin(&g_state, 135U) == DMR_CHAN_ORIGIN_SITE);
+    assert(g_state.dmr_lcn_trust[135] == 2U);
+    assert(pushes(0) == before + 1U);
+    assert(strstr(newest_row(0), "DMR TIII: Learned channel 135 -> 451.187500 MHz;") != NULL);
+    send_chan_freq(135U, 451U, 1500U);
+    assert(pushes(0) == before + 1U);
+    assert(hunt_list_count(451187500L) == 1 && g_state.lcn_freq_count == 1);
+    assert(candidate_count(451187500L) == 1);
+    dsd_state_trunk_lcn_free(&g_state);
+}
+
+/* Vote_Now with "Active_connection information not available" (§6.7.1.3) still names its channel: only the
+   Active_connection bit is meaningless. Its VN_AP is a neighbour's frequency. */
+static void
+test_vote_now_ac_unavailable_still_decodes_channel(void) {
+    reset();
+    dmr_sm_init(&g_opts, &g_state);
+    send_c_bcast_mbc(2U, 0x0FFFU, 136U, 451U, 1600U, 0U);
+    assert(g_state.trunk_chan_map[136] == 451200000L);
+    assert(dmr_t3_chan_origin(&g_state, 136U) == DMR_CHAN_ORIGIN_NEIGHBOUR);
+    assert(g_state.dmr_lcn_trust[136] == 1U);
+    assert(candidate_count(451200000L) == 1);
+
+    send_c_bcast_mbc(2U, 0x0FFFU, 137U, 451U, 1700U, 1U);
+    assert(dmr_t3_chan_origin(&g_state, 137U) == DMR_CHAN_ORIGIN_NEIGHBOUR);
+}
+
+/* An absolute Adjacent_Site fills an empty row as NEIGHBOUR and never replaces a row, its own included; its frequency
+   stays a hunt candidate. */
+static void
+test_adjacent_absolute_is_neighbour_fill_only(void) {
+    reset();
+    dmr_sm_init(&g_opts, &g_state);
+    assert(dmr_t3_chan_learn(&g_opts, &g_state, 138U, 451212500L, DMR_CHAN_ORIGIN_SITE) == 1);
+    send_adjacent(138U, 451U, 1800U);
+    assert(g_state.trunk_chan_map[138] == 451212500L);
+    assert(dmr_t3_chan_origin(&g_state, 138U) == DMR_CHAN_ORIGIN_SITE);
+    assert(candidate_count(451225000L) == 1);
+
+    send_adjacent(139U, 451U, 1900U);
+    assert(g_state.trunk_chan_map[139] == 451237500L);
+    assert(dmr_t3_chan_origin(&g_state, 139U) == DMR_CHAN_ORIGIN_NEIGHBOUR);
+    send_adjacent(139U, 451U, 2000U);
+    assert(g_state.trunk_chan_map[139] == 451237500L);
+    assert(dmr_t3_chan_origin(&g_state, 139U) == DMR_CHAN_ORIGIN_NEIGHBOUR);
+
+    g_state.trunk_chan_map[140] = 451262500L;
+    dmr_t3_chan_note_map_loaded(&g_state);
+    send_adjacent(140U, 451U, 2200U);
+    assert(g_state.trunk_chan_map[140] == 451262500L);
+    assert(dmr_t3_chan_origin(&g_state, 140U) == DMR_CHAN_ORIGIN_FILE);
+}
+
 /* ---- MBC assembly and absolute parameters (B7): real burst -> assembler -> dispatch ---- */
 
 static const uint8_t k_no_reserved[3] = {0, 0, 0};
@@ -794,6 +914,11 @@ main(void) {
     test_abs_rx_valid_chan_zero_tunes_without_learning();
     test_absolute_grant_two_block_mbc_still_follows();
     test_malformed_mbc_no_cc_heartbeat();
+    test_chan_freq_header_fff_uses_bcap_chan();
+    test_chan_freq_inconsistent_channels_ignored();
+    test_chan_freq_learned_notice_and_origin();
+    test_vote_now_ac_unavailable_still_decodes_channel();
+    test_adjacent_absolute_is_neighbour_fill_only();
     dsd_state_ext_free_all(&g_state);
     printf("DMR_T3_CHANNELS: OK\n");
     return 0;

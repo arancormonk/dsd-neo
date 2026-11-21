@@ -14,11 +14,14 @@
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/state_ext.h>
 #include <dsd-neo/core/synctype_ids.h>
+#include <dsd-neo/protocol/dmr/dmr_t3_channels.h>
 #include <dsd-neo/protocol/dmr/dmr_trunk_sm.h>
+#include <dsd-neo/runtime/trunk_cc_candidates.h>
 #include <dsd-neo/runtime/trunk_tuning_hooks.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
+#include "dmr_abs_params.h"
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
@@ -27,6 +30,8 @@
 #pragma GCC diagnostic push
 #pragma GCC diagnostic ignored "-Wmissing-prototypes"
 #endif
+
+extern void dmr_cspdu(dsd_opts*, dsd_state*, uint8_t*, uint8_t*, uint32_t, uint32_t);
 
 static int g_return_to_cc_calls = 0;
 static int g_dmr_reset_blocks_calls = 0;
@@ -148,6 +153,109 @@ build_ann_wd_tscc(uint8_t* bits, uint8_t* bytes, uint16_t ch1, uint16_t ch2, uin
     write_bits_u32(bits, 68U, ch2 & 0x0FFFU, 12U);
 }
 
+/* The MBC form (TS 102 361-4 §7.2.19.1): the header (BCAST_CH1 @p bcast_ch1, AW_FLAG1 @p aw_flag1) and one BC_AP
+   naming CHAN @p chan at @p rx_mhz plus @p rx_step 125 Hz steps (TX the same), as the assembler hands them over. */
+static void
+send_ann_wd_mbc(dsd_opts* opts, dsd_state* state, uint16_t bcast_ch1, uint8_t aw_flag1, uint16_t chan, uint16_t rx_mhz,
+                uint16_t rx_step) {
+    uint8_t bits[256];
+    uint8_t bytes[48];
+    build_ann_wd_tscc(bits, bytes, bcast_ch1, 0U, aw_flag1, 0U);
+    write_bits_u32(bits, 2U, 40U, 6U);
+    bits[96] = 1U;
+    write_bits_u32(bits, 98U, 40U, 6U);
+    bytes[12] = (uint8_t)(0x80U | 40U);
+    write_bits_u32(bits, 118U, chan & 0x0FFFU, 12U);
+    write_bits_u32(bits, 130U, rx_mhz & 0x03FFU, 10U);
+    write_bits_u32(bits, 140U, rx_step & 0x1FFFU, 13U);
+    write_bits_u32(bits, 153U, rx_mhz & 0x03FFU, 10U);
+    write_bits_u32(bits, 163U, rx_step & 0x1FFFU, 13U);
+    const dmr_cspdu_shape shape = {1U, 1U, 40U, 40U, 1U};
+    dmr_cspdu_ex(opts, state, bits, bytes, 1U, 0U, &shape);
+}
+
+static int
+candidate_present(const dsd_state* state, long freq) {
+    const dsd_trunk_cc_candidates* cc = dsd_trunk_cc_candidates_peek(state);
+    for (int i = 0; cc != NULL && i < cc->count; i++) {
+        if (cc->candidates[i] == freq) {
+            return 1;
+        }
+    }
+    return 0;
+}
+
+static int
+candidates_count(const dsd_state* state) {
+    const dsd_trunk_cc_candidates* cc = dsd_trunk_cc_candidates_peek(state);
+    return cc != NULL ? cc->count : 0;
+}
+
+/* The MBC form announces one TSCC whatever BCAST_CH1 holds: its BC_AP teaches CHAN its frequency (SITE) and, announced,
+   the TSCC is a hunt candidate. */
+static int
+test_ann_wd_absolute_learns_and_adds(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    int rc = 0;
+    init_env(&opts, &state);
+    send_ann_wd_mbc(&opts, &state, 0x0FFFU, 0U, 20U, 853U, 4000U);
+    rc |= expect_true("ann_wd absolute: CHAN learned", state.trunk_chan_map[20] == 853500000L);
+    rc |= expect_true("ann_wd absolute: SITE origin", dmr_t3_chan_origin(&state, 20U) == DMR_CHAN_ORIGIN_SITE);
+    rc |= expect_true("ann_wd absolute: candidate added", candidate_present(&state, 853500000L));
+    rc |= expect_true("ann_wd absolute: no switch", state.trunk_cc_freq == 851000000L);
+
+    send_ann_wd_mbc(&opts, &state, 5U, 0U, 21U, 853U, 4100U);
+    rc |= expect_true("ann_wd absolute: BCAST_CH1 ignored", state.trunk_chan_map[21] == 853512500L);
+    rc |= expect_true("ann_wd absolute: BCAST_CH1 not learned", state.trunk_chan_map[5] == 0L);
+    rc |= expect_true("ann_wd absolute: second candidate", candidate_present(&state, 853512500L));
+
+    /* A BC_AP with a frequency outside Table C.7 is no TSCC. */
+    send_ann_wd_mbc(&opts, &state, 0x0FFFU, 0U, 22U, 1000U, 0U);
+    rc |= expect_true("ann_wd absolute: bad frequency ignored", state.trunk_chan_map[22] == 0L);
+    rc |= expect_true("ann_wd absolute: bad frequency no candidate", candidates_count(&state) == 2);
+    dsd_state_ext_free_all(&state);
+    return rc;
+}
+
+/* AW_FLAG 1 withdraws a TSCC from the hunt list: it is never added, in either form. */
+static int
+test_ann_wd_withdraw_not_added(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    uint8_t bits[256];
+    uint8_t bytes[48];
+    int rc = 0;
+
+    init_env(&opts, &state);
+    state.trunk_chan_map[10] = 852000000L;
+    state.trunk_chan_map[11] = 852500000L;
+    build_ann_wd_tscc(bits, bytes, 10U, 11U, 1U, 1U);
+    dmr_cspdu(&opts, &state, bits, bytes, 1U, 0U);
+    rc |= expect_true("ann_wd logical: both withdrawn, none added", candidates_count(&state) == 0);
+    build_ann_wd_tscc(bits, bytes, 10U, 11U, 0U, 1U);
+    dmr_cspdu(&opts, &state, bits, bytes, 1U, 0U);
+    rc |= expect_true("ann_wd logical: CH1 added", candidate_present(&state, 852000000L));
+    rc |= expect_true("ann_wd logical: CH2 withdrawn", !candidate_present(&state, 852500000L));
+    dsd_state_ext_free_all(&state);
+
+    init_env(&opts, &state);
+    state.trunk_chan_map[10] = 852000000L;
+    state.trunk_chan_map[11] = 852500000L;
+    build_ann_wd_tscc(bits, bytes, 10U, 11U, 1U, 0U);
+    dmr_cspdu(&opts, &state, bits, bytes, 1U, 0U);
+    rc |= expect_true("ann_wd logical: CH1 withdrawn", !candidate_present(&state, 852000000L));
+    rc |= expect_true("ann_wd logical: CH2 added", candidate_present(&state, 852500000L));
+    dsd_state_ext_free_all(&state);
+
+    init_env(&opts, &state);
+    send_ann_wd_mbc(&opts, &state, 0x0FFFU, 1U, 23U, 853U, 4200U);
+    rc |= expect_true("ann_wd absolute withdraw: no candidate", candidates_count(&state) == 0);
+    rc |= expect_true("ann_wd absolute withdraw: frequency still learned", state.trunk_chan_map[23] == 853525000L);
+    dsd_state_ext_free_all(&state);
+    return rc;
+}
+
 static void
 build_t3_grant(uint8_t* bits, uint8_t* bytes, uint8_t opcode, uint16_t lpcn, uint8_t slot, uint32_t target,
                uint32_t source) {
@@ -182,8 +290,6 @@ expect_recent_activity(const char* tag, const dsd_state* state, uint8_t index, d
     }
     return 0;
 }
-
-extern void dmr_cspdu(dsd_opts*, dsd_state*, uint8_t*, uint8_t*, uint32_t, uint32_t);
 
 int
 main(void) {
@@ -290,6 +396,8 @@ main(void) {
 
     dsd_trunk_tuning_hooks_set((dsd_trunk_tuning_hooks){0});
     dsd_state_ext_free_all(&state);
+    rc |= test_ann_wd_absolute_learns_and_adds();
+    rc |= test_ann_wd_withdraw_not_added();
     if (rc == 0) {
         printf("DMR_T3_ANN_WD_TSCC: OK\n");
     }

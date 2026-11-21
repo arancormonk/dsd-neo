@@ -1274,8 +1274,41 @@ dmr_cspdu_pf0_c_bcast_try_switch_tscc(dsd_opts* opts, dsd_state* state, long f1,
     }
 }
 
+/* The frequency the channel map holds for a logical Ann_WD_TSCC channel: 0 for CHNULL, the escape or an unmapped
+   one. */
+static long
+dmr_cspdu_pf0_c_bcast_ann_wd_freq(const dsd_state* state, uint16_t bcast_ch) {
+    return dmr_t3_lpcn_is_channel(bcast_ch) ? state->trunk_chan_map[bcast_ch] : 0L;
+}
+
+/* The MBC form of Ann_WD_TSCC (TS 102 361-4 §7.2.19.1): a header and a BC_AP announcing or withdrawing one TSCC,
+   whatever BCAST_CH1 holds. The BC_AP teaches the channel map CHAN's frequency (SITE) either way; only an announced
+   TSCC (AW_FLAG1 0) becomes a hunt candidate, and only from a checked or RAS-accepted PDU. A withdraw removes no
+   candidate an earlier announcement added (a decided limit). */
 static void
-dmr_cspdu_pf0_c_bcast_handle_ann_wd_tscc(dsd_opts* opts, dsd_state* state, const dmr_cspdu_pf0_c_bcast_fields* f) {
+dmr_cspdu_pf0_c_bcast_ann_wd_absolute(dsd_opts* opts, dsd_state* state, const uint8_t cs_pdu_bits[],
+                                      const dmr_cspdu_pf0_c_bcast_fields* f, uint8_t cc_ch1, uint8_t aw_flag1) {
+    DSD_FPRINTF(stderr, " TSCC CC: %d;", cc_ch1);
+    dmr_cspdu_pf0_c_bcast_print_add_remove(aw_flag1);
+    dmr_cspdu_pf0_c_bcast_abs_freqs abs_freqs;
+    if (!dmr_cspdu_pf0_c_bcast_abs(cs_pdu_bits, f, 0, 1, &abs_freqs)
+        || (!dmr_csbk_crc_checked(state) && !dmr_csbk_ras_accepted(opts, state))) {
+        return;
+    }
+    (void)dmr_csbk_learn_channel(opts, state, abs_freqs.lpchannum, abs_freqs.freqr, 0);
+    if (aw_flag1 == 0U) {
+        const long cand[1] = {abs_freqs.freqr};
+        dmr_sm_on_neighbor_update(opts, state, cand, 1);
+    }
+}
+
+/* Ann_WD_TSCC (TS 102 361-4 §7.2.19.1, Table 7.69): up to two TSCCs as logical channels, BCAST_CH1/2 (Parms2 bits
+   56-67, 68-79) with their colour codes (Parms1 25-28, 29-32) and AW_FLAG1/2 (33, 34: 0 add to the hunt list, 1
+   withdraw), or one TSCC in the MBC form. Only a channel marked add becomes a hunt candidate; withdrawing the control
+   channel the receiver is on moves it to the other one announced. */
+static void
+dmr_cspdu_pf0_c_bcast_handle_ann_wd_tscc(dsd_opts* opts, dsd_state* state, const uint8_t cs_pdu_bits[],
+                                         const dmr_cspdu_pf0_c_bcast_fields* f) {
     uint8_t ann_res = (uint8_t)convert_bits_into_output(&f->bpbits1[0], 4);
     uint8_t cc_ch1 = (uint8_t)convert_bits_into_output(&f->bpbits1[4], 4);
     uint8_t cc_ch2 = (uint8_t)convert_bits_into_output(&f->bpbits1[8], 4);
@@ -1288,26 +1321,23 @@ dmr_cspdu_pf0_c_bcast_handle_ann_wd_tscc(dsd_opts* opts, dsd_state* state, const
     if (ann_res) {
         DSD_FPRINTF(stderr, " Res: %X;", ann_res);
     }
+    if (dmr_cspdu_current_shape()->is_mbc) {
+        dmr_cspdu_pf0_c_bcast_ann_wd_absolute(opts, state, cs_pdu_bits, f, cc_ch1, ch1_flag);
+        return;
+    }
     DSD_FPRINTF(stderr, " LPCN CH1: %d; CC: %d;", bcast_ch1, cc_ch1);
     dmr_cspdu_pf0_c_bcast_print_add_remove(ch1_flag);
     DSD_FPRINTF(stderr, " LPCN CH2: %d; CC: %d;", bcast_ch2, cc_ch2);
     dmr_cspdu_pf0_c_bcast_print_add_remove(ch2_flag);
 
-    long f1 = 0;
-    long f2 = 0;
-    if (bcast_ch1 > 0 && bcast_ch1 < 0xFFFF) {
-        f1 = state->trunk_chan_map[bcast_ch1];
-    }
-    if (bcast_ch2 > 0 && bcast_ch2 < 0xFFFF) {
-        f2 = state->trunk_chan_map[bcast_ch2];
-    }
-
+    const long f1 = dmr_cspdu_pf0_c_bcast_ann_wd_freq(state, bcast_ch1);
+    const long f2 = dmr_cspdu_pf0_c_bcast_ann_wd_freq(state, bcast_ch2);
     long cand[2];
     int ccount = 0;
-    if (f1 > 0) {
+    if (f1 > 0 && ch1_flag == 0U) {
         cand[ccount++] = f1;
     }
-    if (f2 > 0 && f2 != f1) {
+    if (f2 > 0 && ch2_flag == 0U && (ccount == 0 || f2 != cand[0])) {
         cand[ccount++] = f2;
     }
     if (ccount > 0) {
@@ -1380,6 +1410,26 @@ dmr_cspdu_pf0_c_bcast_handle_local_time(const dmr_cspdu_pf0_c_bcast_fields* f) {
     }
 }
 
+/* The LPCN a Chan_Freq announces: its header's CH when that names a channel, else its BC_AP's CHAN; 0 when neither
+   names one, or when both do and differ (printed: the PDU contradicts itself). */
+static uint16_t
+dmr_cspdu_pf0_c_bcast_chan_freq_lpcn(uint16_t header_ch, uint16_t bcap_chan) {
+    const int header_named = dmr_t3_lpcn_is_channel(header_ch);
+    const int bcap_named = dmr_t3_lpcn_is_channel(bcap_chan);
+    if (header_named && bcap_named && header_ch != bcap_chan) {
+        DSD_FPRINTF(stderr, " Inconsistent channels (header %u, BC_AP %u); ignored;", (unsigned)header_ch,
+                    (unsigned)bcap_chan);
+        return 0U;
+    }
+    if (header_named) {
+        return header_ch;
+    }
+    return bcap_named ? bcap_chan : 0U;
+}
+
+/* Chan_Freq (TS 102 361-4 §7.2.19.6, Table 7.78) is always an MBC header and a BC_AP: CH (header bits 68-79) names
+   the channel, or 0xFFF leaves it to the BC_AP's CHAN. The pair is learned (SITE, or UNVERIFIED when RAS-accepted) and
+   its frequency joins the hunt list and the control channel candidates. */
 static void
 dmr_cspdu_pf0_c_bcast_handle_chan_freq(dsd_opts* opts, dsd_state* state, const uint8_t cs_pdu_bits[],
                                        const dmr_cspdu_pf0_c_bcast_fields* f) {
@@ -1391,9 +1441,18 @@ dmr_cspdu_pf0_c_bcast_handle_chan_freq(dsd_opts* opts, dsd_state* state, const u
     if (!dmr_cspdu_pf0_c_bcast_abs(cs_pdu_bits, f, 0, f->a_channel == 0xFFF, &abs_freqs)) {
         return;
     }
-    dmr_cspdu_pf0_c_bcast_maybe_store_channel(opts, state, f->a_channel, abs_freqs.freqr);
+    const uint16_t lpcn = dmr_cspdu_pf0_c_bcast_chan_freq_lpcn(f->a_channel, abs_freqs.lpchannum);
+    if (lpcn != 0U) {
+        dmr_cspdu_pf0_c_bcast_maybe_store_channel(opts, state, lpcn, abs_freqs.freqr);
+    }
 }
 
+/* Vote_Now (TS 102 361-4 §7.2.19.3, Tables 7.71/7.72) and Adjacent_Site (§7.2.19.7, Table 7.79) share their Parms:
+   the assessed TSCC's system code (Parms1), AC-info-available (56), Active_connection (57), the confirmed and adjacent
+   channel priorities (58-60, 61-63), 4 reserved bits and the channel (68-79). Vote_Now's 0xFFF appends a VN_AP; the
+   spec defines Adjacent_Site with a logical channel only, and its absolute form (a BC_AP after 0xFFF) is read as
+   SDRTrunk reads it. An absolute entry is a neighbour's frequency: NEIGHBOUR, filling empty rows only, and a hunt
+   candidate as before. */
 static void
 dmr_cspdu_pf0_c_bcast_handle_vote_or_adjacent(dsd_opts* opts, dsd_state* state, const uint8_t cs_pdu_bits[],
                                               int csbk_fid, const dmr_cspdu_pf0_c_bcast_fields* f) {
@@ -1405,12 +1464,12 @@ dmr_cspdu_pf0_c_bcast_handle_vote_or_adjacent(dsd_opts* opts, dsd_state* state, 
 
     DSD_FPRINTF(stderr, "\n");
     dmr_decode_syscode(opts, state, cs_pdu_bits, csbk_fid, 1);
+    /* Without Active_connection information only that bit means nothing (§6.7.1.3): the rest is decoded as ever. */
     if (active_ava != 1) {
         DSD_FPRINTF(stderr, " Active Connection Information Not Available;");
-        return;
+    } else {
+        DSD_FPRINTF(stderr, active_con == 1 ? " Online;" : " Offline;");
     }
-
-    DSD_FPRINTF(stderr, active_con == 1 ? " Online;" : " Offline;");
     DSD_FPRINTF(stderr, " CC Pri: %d;", c_chan_pri);
     DSD_FPRINTF(stderr, " AC Pri: %d;", a_chan_pri);
     if (a_reserved) {
@@ -1501,7 +1560,7 @@ static void
 dmr_cspdu_pf0_c_bcast_dispatch(dsd_opts* opts, dsd_state* state, const uint8_t cs_pdu_bits[], int csbk_fid,
                                const dmr_cspdu_pf0_c_bcast_fields* f) {
     switch (f->a_type) {
-        case 0: dmr_cspdu_pf0_c_bcast_handle_ann_wd_tscc(opts, state, f); return;
+        case 0: dmr_cspdu_pf0_c_bcast_handle_ann_wd_tscc(opts, state, cs_pdu_bits, f); return;
         case 1: dmr_cspdu_pf0_c_bcast_handle_call_timer(f); return;
         case 2:
         case 6: dmr_cspdu_pf0_c_bcast_handle_vote_or_adjacent(opts, state, cs_pdu_bits, csbk_fid, f); return;
