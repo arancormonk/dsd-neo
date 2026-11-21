@@ -93,7 +93,9 @@ as the saved system's group list. Setting the list changes nothing else about
 the system: a RadioReference site keeps its site details, group and avoid. Later
 edits write that same file. Each step reports its own result. If a step after
 the export fails, the message says which, and **Try again** repeats only that
-step, keeping the file the decoder already writes to. If the saved system was
+step, keeping the file the decoder already writes to. The Talkgroups screen is
+open only while a session runs, so a step that failed just before Stop is
+retried from the Talkgroups screen of the next session. If the saved system was
 deleted, retuned or acquired another group file while saving, the export remains
 in Imports without changing that system. Explore sessions, scan lists and
 operator holds save to Imports for later selection in a saved system. Scan-row

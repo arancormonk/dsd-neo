@@ -8,6 +8,8 @@ Item {
         property int registrations: 0
         property int paths: 0
         property bool failRegister: false
+        // Whether a file is at every export path (the decoder wrote it).
+        property bool written: true
         property var registered: []
         property var released: []
         function newTalkgroupListPath() {
@@ -20,6 +22,9 @@ Item {
             registrations++;
             registered = registered.concat([path]);
             return true;
+        }
+        function talkgroupListWritten(path) {
+            return written;
         }
         function releaseTalkgroupListPath(path) {
             released = released.concat([path]);
@@ -80,6 +85,7 @@ Item {
             library.registrations = 0;
             library.paths = 0;
             library.failRegister = false;
+            library.written = true;
             library.registered = [];
             library.released = [];
             systems.updates = 0;
@@ -219,14 +225,15 @@ Item {
             deliver([], "4");
             verify(loader.item.pending !== null);
             // The file is not there (yet): the request is reported and kept for a result still to come.
-            library.failRegister = true;
+            library.written = false;
             deliver([result("80", "7", 1, "/other.csv", true)], "79");
             compare(loader.item.pending, null);
             verify(loader.item.message.indexOf("not received") >= 0);
             verify(loader.item.retryAvailable);
             compare(loader.item.abandoned.length, 1);
             compare(systems.attempts, 0);
-            library.failRegister = false;
+            compare(library.registrations, 0);
+            library.written = true;
             deliver([result("81", "7", 1, "/owned/list.csv", true)]);
             compare(library.registered, ["/owned/list.csv"]);
             compare(systems.updates, 0);
@@ -241,6 +248,27 @@ Item {
             compare(systems.attempts, 0);
             verify(loader.item.message.indexOf("not received") >= 0);
             verify(loader.item.message.indexOf("Imports") >= 0);
+        }
+        // The file is there but Imports cannot record it now: it is owed, not waiting on a completion that was lost,
+        // and the next poll records it. An abandoned request in the gap is treated the same way.
+        function test_missed_completion_with_unrecorded_file_is_owed() {
+            loader.item.timeoutMs = 50;
+            verify(loader.item.save("original", "7", 1));
+            tryCompare(loader.item, "retryAvailable", true);
+            verify(loader.item.save("original", "7", 1));
+            var retry = loader.item.pending.path;
+            library.failRegister = true;
+            deliver([], "70");
+            compare(loader.item.pending, null);
+            compare(loader.item.abandoned.length, 0);
+            compare(loader.item.owedRegistrations, [retry, "/owned/list.csv"]);
+            verify(loader.item.message.indexOf("adding it to Imports failed") >= 0);
+            compare(systems.attempts, 0);
+            library.failRegister = false;
+            deliver([]);
+            compare(library.registered, [retry, "/owned/list.csv"]);
+            compare(loader.item.owedRegistrations, []);
+            compare(systems.attempts, 0);
         }
         // B8: a failed save of the system keeps the export and offers that step again, not another export.
         function test_failed_system_save_retries_attachment_only() {

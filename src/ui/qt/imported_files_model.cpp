@@ -531,17 +531,23 @@ ImportedFilesModel::newTalkgroupListPath() const {
 }
 
 bool
-ImportedFilesModel::registerTalkgroupList(const QString& path) {
+ImportedFilesModel::talkgroupListWritten(const QString& path) const {
     const QFileInfo file(path);
     const QDir dir(libraryRoot());
-    if (!file.isFile() || file.isSymLink()
-        || file.canonicalPath() != QFileInfo(dir.absolutePath()).canonicalFilePath()) {
+    return file.isFile() && !file.isSymLink()
+           && file.canonicalPath() == QFileInfo(dir.absolutePath()).canonicalFilePath();
+}
+
+bool
+ImportedFilesModel::registerTalkgroupList(const QString& path) {
+    if (!talkgroupListWritten(path)) {
         return false;
     }
     if (rowForPath(path) >= 0) {
         reserved_exports().remove(path);
         return true;
     }
+    const QFileInfo file(path);
     Row row;
     row.path = path;
     row.name = file.fileName();

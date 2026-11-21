@@ -179,24 +179,36 @@ Item {
         if (owed.length !== owedRegistrations.length)
             owedRegistrations = owed;
     }
+    // A missed success: kept in Imports (never attached), or owed there when Imports cannot record it now.
+    function keepMissed(path) {
+        if (library.registerTalkgroupList(path))
+            return true;
+        owedRegistrations = owedRegistrations.concat([path]);
+        return false;
+    }
     // More completions finished between two polls than app-control keeps; a request older than the newest one lost
-    // may have been among them. A file at its path means its export succeeded (the decoder writes it only then).
+    // may have been among them. A file at its path means its export succeeded (the decoder writes it only then). A
+    // request with no file stays waiting: its completion may still come, and if a failure was lost, it keeps its name.
     function recoverMissed(missed) {
         if (pending !== null && newer(missed, pending.sequence)) {
             var request = pending;
             pending = null;
-            retryAvailable = true;
-            if (library.registerTalkgroupList(request.path)) {
+            if (!library.talkgroupListWritten(request.path)) {
+                abandon(request);
+                retryAvailable = true;
+                message = qsTr("The export result was not received: too many exports finished at once. Try again.");
+            } else if (keepMissed(request.path)) {
                 message = qsTr("The export result was not received, but the list was saved in Imports; system association was not changed");
             } else {
-                abandon(request);
-                message = qsTr("The export result was not received: too many exports finished at once. Try again.");
+                message = qsTr("The export result was not received. The list was exported, but adding it to Imports failed; it is tried again later");
             }
         }
         var kept = [];
         for (var i = 0; i < abandoned.length; ++i) {
             var old = abandoned[i];
-            if (!newer(missed, old.sequence) || !library.registerTalkgroupList(old.path))
+            if (newer(missed, old.sequence) && library.talkgroupListWritten(old.path))
+                keepMissed(old.path);
+            else
                 kept.push(old);
         }
         if (kept.length !== abandoned.length)

@@ -1053,8 +1053,10 @@ test_export_registration_in_place() {
     expect("generated path is unique", path != model.newTalkgroupListPath());
     expect("destination is not registered before completion", model.count() == before && !QFile::exists(path));
     expect("missing export cannot be registered", !model.registerTalkgroupList(path));
+    expect("issue #903: a missing export is not written", !model.talkgroupListWritten(path));
     const QByteArray csv("id,mode,name,priority,preempt\n42,A,Dispatch,50,1\n");
     expect("write canonical export", write_file(path, csv));
+    expect("issue #903: a written export is seen before its registration", model.talkgroupListWritten(path));
     expect("register existing export", model.registerTalkgroupList(path));
     expect("same path and bytes retained", model.get(model.rowForPath(path)).value("path").toString() == path
                                                && read_file(path) == csv && model.count() == before + 1);
@@ -1064,6 +1066,7 @@ test_export_registration_in_place() {
     expect("write outside fixture", write_file(external, csv));
     expect("outside path refused without deleting it",
            !model.registerTalkgroupList(external) && QFile::exists(external));
+    expect("issue #903: a file outside the library is no export", !model.talkgroupListWritten(external));
     model.remove(model.rowForPath(path));
 }
 
@@ -1793,6 +1796,7 @@ test_register_unsaved_export() {
     expect("unsaved export fixture", write_file(stored, "id,mode,name,priority,preempt\n42,A,Dispatch,50,1\n"));
     expect("block the index for registration", blockIndex());
     const bool registered = model.registerTalkgroupList(stored);
+    expect("issue #903: an export the index cannot record is still written", model.talkgroupListWritten(stored));
     expect("unblock the index after registration", unblockIndex());
     expect("an export the index cannot record is not registered", !registered);
     expect("an unrecorded export adds no row", model.count() == before && model.rowForPath(stored) < 0);

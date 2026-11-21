@@ -126,10 +126,18 @@ class ImportedFilesModel : public QAbstractListModel {
     }
 
     /**
-     * WP-D1: generate an app-owned destination without registering or writing a file. The path stays reserved for the
-     * life of the process (the engine may still write it after the export flow gave up), so no import takes its name.
+     * WP-D1: generate an app-owned destination without registering or writing a file. The path stays reserved while the
+     * engine may still write it (even after the export flow gave up), so no import takes its name: until
+     * registerTalkgroupList() hands the name to its row or releaseTalkgroupListPath() gives it back.
      */
     Q_INVOKABLE QString newTalkgroupListPath() const;
+    /**
+     * Whether an exported list is at @p path: a regular file, not a symlink, directly in the library folder, which is
+     * where registerTalkgroupList() accepts one. The engine writes an export there only once it succeeded, so the
+     * save flow reads this as "the export completed" when its completion was missed, apart from whether Imports could
+     * then record it.
+     */
+    Q_INVOKABLE bool talkgroupListWritten(const QString& path) const;
     /**
      * Register a successfully exported list in place; the engine keeps writing this path. False, with no row added,
      * when the library cannot be saved; the file stays where it is. A registered path is no longer reserved: its row

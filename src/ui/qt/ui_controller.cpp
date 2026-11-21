@@ -229,7 +229,7 @@ UiController::pollTalkgroupExport() {
     m_talkgroupExportSequence = last;
     m_talkgroupExportResults = {{QStringLiteral("results"), results},
                                 {QStringLiteral("missedThrough"), QString::number(missedThrough)}};
-    Q_EMIT talkgroupExportResultChanged();
+    Q_EMIT talkgroupExportResultsChanged();
 }
 
 void

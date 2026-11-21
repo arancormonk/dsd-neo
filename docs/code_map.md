@@ -19098,7 +19098,11 @@ Qt Quick frontend (`src/ui/qt`):
   registration in Imports, then `SavedSystemsModel::attachGroupList()`, each reporting its own failure; a failed step
   keeps the exported file (the decoder writes to it already) and Try again repeats that step only. A request given up
   on (15 s, or its completion in a gap) is registered when its success arrives, never attached; a failed or unqueued
-  export releases its reserved name. The screen's `scanRowRefusesSave` (persistence scope `scan`) hides every Save
+  export releases its reserved name. A completion lost in a gap is recovered from the file
+  (`ImportedFilesModel::talkgroupListWritten()`: the decoder writes it only on success): an existing file is registered,
+  or owed to Imports and retried at each later poll when the index cannot be saved. Known limit: a failure lost in a
+  gap leaves no file, so that request waits for a completion that never comes and keeps its reserved name for the
+  process lifetime (a gap does not prove the request's own completion was in it). The screen's `scanRowRefusesSave` (persistence scope `scan`) hides every Save
   button where the decoder refuses the export.
   `CommandBridge` submits `TG_LISTEN_SET`/`TG_LISTEN_SET_ALL` through app-control; only the decoder thread mutates
   policy and atomically rewrites a configured group file. Scan-row lists remain session-only. **Lock out** shares
