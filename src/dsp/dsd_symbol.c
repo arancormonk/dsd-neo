@@ -605,9 +605,30 @@ symbol_accumulate_add(symbol_work_ctx* work, float sample) {
     work->count++;
 }
 
+/*
+ * The 2400 sym/s grid rules (NXDN48, dPMR): the averaging window and the slip bands below. They were measured at
+ * 20 samples per symbol, a 2400 sym/s stream at 48 kHz, and are written in twentieths of a symbol so a 2400 sym/s
+ * stream at another whole-sample span (30 at 72 kHz, 15 at 36 kHz, 40 at 96 kHz) gets the same rule. At 20 samples
+ * per symbol the arithmetic is exactly the original 7..13 window and 7..10 / 11..14 bands.
+ *
+ * They follow the active symbol rate above 10 samples per symbol. At 10 and below the 4800 sym/s rules are already
+ * tuned for that span (a 2400 sym/s stream at 24 kHz is the same geometry as 4800 sym/s at 48 kHz), so those spans
+ * keep them. 20 samples per symbol keeps the rule whatever the symbol rate, as before: a 4800 sym/s stream at 96 kHz
+ * measured better with it than with the GFSK rule (DMR 4 vs 7 errors, YSF 1 vs 3 on 2x renders of the fixtures).
+ */
+static inline int
+symbol_uses_2400_grid(const dsd_state* state) {
+    const int sps = state->samplesPerSymbol;
+    if (sps == 20) {
+        return 1;
+    }
+    return sps > 10 && dsd_frame_sync_active_profile_symbol_rate_hz(state) == 2400;
+}
+
 static inline int
 symbol_accumulate_nxdn_window(const dsd_state* state, int i) {
-    return state->samplesPerSymbol == 20 && i >= 7 && i <= 13;
+    const int sps = state->samplesPerSymbol;
+    return symbol_uses_2400_grid(state) && 20 * i >= 7 * sps && 20 * i < 14 * sps;
 }
 
 #ifdef USE_RADIO
@@ -696,9 +717,12 @@ symbol_accumulate_sample(const dsd_state* state, symbol_work_ctx* work, int i, f
  */
 static inline void
 symbol_adjust_timing_nxdn(const dsd_state* state, int* i) {
-    if ((state->jitter >= 7) && (state->jitter <= 10)) {
+    /* 7..10 and 11..14 at 20 samples per symbol, in twentieths of a symbol at any span. */
+    const int sps = state->samplesPerSymbol;
+    const int jitter20 = 20 * state->jitter;
+    if (jitter20 >= 7 * sps && jitter20 < 11 * sps) {
         (*i)--;
-    } else if ((state->jitter >= 11) && (state->jitter <= 14)) {
+    } else if (jitter20 >= 11 * sps && jitter20 < 15 * sps) {
         (*i)++;
     }
 }
@@ -745,7 +769,7 @@ symbol_adjust_timing_index(dsd_state* state, int have_sync, int symbol_span, int
     if (state->jitter < 0) {
         return;
     }
-    if (state->samplesPerSymbol == 20) {
+    if (symbol_uses_2400_grid(state)) {
         symbol_adjust_timing_nxdn(state, i);
     } else if (state->rf_mod == 1) {
         symbol_adjust_timing_qpsk(state, i);

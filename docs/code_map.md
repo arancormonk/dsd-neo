@@ -9000,7 +9000,13 @@ the stream-notice hooks' pattern: one that fails to initialize leaves the hook u
   which keeps the crossing loop off the word a hunt-read recording holds. Issue #444 documents how
   sensitive that is; the comment above `symbol_adjust_timing_nxdn()` records the five ways of damping it that were
   A/B'd on real captures and measured worse, so change it only with `tools/replay_ab.sh` evidence
-  (`docs/testing.md`). The CQPSK path does not use any of this: it has a real timing loop in `costas.cpp`.
+  (`docs/testing.md`). The 2400 sym/s rules (NXDN48, dPMR: the averaging window and the slip bands) are written in
+  twentieths of a symbol and follow the active profile above 10 samples per symbol (`symbol_uses_2400_grid()`), so a
+  2400 sym/s stream at 72 kHz (30) or 36 kHz (15) is timed as at 48 kHz (20); keyed on exactly 20 samples per symbol
+  before, the grid at 30 never slipped out of a bad starting phase (dPMR headers at 1 of 6 timing shifts). 20 samples
+  per symbol keeps the rules whatever the symbol rate (4800 sym/s at 96 kHz measured better with them), and 10 and
+  below keep the 4800 sym/s rules, which already serve that span. Test: `FRAME_SYNC_NXDN_FSK_PHASE` (every starting
+  phase at 24, 36, 48, 60 and 72 kHz). The CQPSK path does not use any of this: it has a real timing loop in `costas.cpp`.
 - The analog monitor's audible output leaves `dsd_symbol.c` in `symbol_output_unsynced_analog()`, after the audio
   chain (`symbol_run_unsynced_chain()`, below) and only while the gate is open; for `audio_out_type == 8` it goes
   through `dsd_udp_audio_hook_blast_analog()` with a byte count of int16 mono samples.
