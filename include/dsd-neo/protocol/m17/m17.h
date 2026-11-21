@@ -34,6 +34,14 @@ int processM17IPF(dsd_opts* opts, dsd_state* state);
  * it is combined with the next one, which proves itself again (src/protocol/m17/m17_confirm.h). */
 void m17_confirm_reset(dsd_state* state);
 
+/**
+ * @brief The decoder session ends (dsd_engine_cleanup(), before the state's extensions are freed): what M17 keeps for
+ * the session with the M17 extension goes with it, the network lost-end fallback (dsd_state::m17_ip_ended_lost)
+ * included, so the next session starts with an empty ended-stream table and no fallback. Transmission boundaries never
+ * clear it.
+ */
+void m17_end_session(dsd_state* state);
+
 /** @brief Whether the current M17 transmission has produced CRC-verified content. */
 int m17_confirm_is_confirmed(const dsd_state* state);
 

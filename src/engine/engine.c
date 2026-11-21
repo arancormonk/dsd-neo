@@ -5128,6 +5128,8 @@ dsd_engine_cleanup(dsd_opts* opts, dsd_state* state) {
 
     /* A stopped decoder hears nothing: the next session starts with no received tone. */
     dsd_analog_rx_reset(state);
+    /* M17's session state goes with the extensions it belongs to. */
+    m17_end_session(state);
     dsd_state_ext_free_all(state);
     dsd_socket_cleanup();
 }

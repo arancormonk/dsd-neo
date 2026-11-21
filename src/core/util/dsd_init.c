@@ -1553,6 +1553,8 @@ init_state_string_and_m17_defaults(dsd_state* state) {
     state->m17encoder_tx = 0;
     state->m17encoder_eot = 0;
     DSD_MEMSET(state->m17_meta, 0, sizeof(state->m17_meta));
+    /* A new session: no M17 network end lost yet (the fallback has the M17 extension's lifetime). */
+    state->m17_ip_ended_lost = 0;
 }
 
 static void
@@ -1639,6 +1641,7 @@ freeState(dsd_state* state) {
         return;
     }
 
+    state->m17_ip_ended_lost = 0; // the M17 lost-end fallback goes with the M17 extension freed below
     dsd_state_ext_free_all(state);
     dsd_state_trunk_lcn_free(state);
     dsd_state_trunk_scan_avoids_free(state);

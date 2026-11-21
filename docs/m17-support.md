@@ -45,9 +45,12 @@ Implemented decode coverage:
   does not end the open one, but that other stream counts as ended. A stream's own end, or EOTX and DISC from its
   station, end it and drop the carrier. After a network stream ends, its stream ID (from that station) is ignored until
   a frame 0 starts it again; a stream ID that the same station reuses with no end received between is not taken. The
-  last 64 ended streams are remembered. Once more than 64 have ended in a session (or an end could not be recorded
-  for lack of memory), the oldest are forgotten, and from then on a stream that is not open and not remembered starts
-  only at its frame 0: a stream whose first frames were lost is not joined part-way through. A stream is treated as
+  last 64 ended streams are remembered. Once more than 64 have ended in a session (or a stream's end could not be
+  recorded for lack of memory), the oldest are forgotten, and from then on, until the decoder stops, a stream that is
+  not open and not remembered starts only at its frame 0: a stream whose first frames were lost is not joined
+  part-way through. A network packet (MPKT) is decoded with its own link setup only, and leaves a stream it arrives
+  during untouched; one whose link setup cannot be used is not decoded. An over-the-air packet whose earlier frames were
+  lost still ends at its last frame. A stream is treated as
   signed only once one of its own frames with a signed LSF is taken. A GNSS position repeated in one network stream is one report, also across the
   frame counter's wrap.
 - Signed voice streams: over the air, the signature is collected and checked (secp256r1) when

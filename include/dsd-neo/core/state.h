@@ -3301,8 +3301,10 @@ struct dsd_state {
     uint64_t m17_ip_stream_src;
     uint8_t m17_ip_stream_signed;
     /* An ended network stream's end may have gone unrecorded this session (one forgotten to make room in the M17
-     * extension's fixed table, or no table could be made): from then on a stream neither open nor remembered starts
-     * only at its frame 0 (fail closed, issue #890). Kept here, outside the allocation it stands in for. */
+     * extension's fixed table, or no table could be made to take a final frame): from then on a stream neither open
+     * nor remembered starts only at its frame 0 (fail closed, issue #890). Kept here, outside the allocation it stands
+     * in for, with its lifetime: cleared at the session boundary (initState(), m17_end_session() in
+     * dsd_engine_cleanup()), never at a transmission boundary. */
     uint8_t m17_ip_ended_lost;
     int m17encoder_tx;  // If TX (encode + decode) M17 Stream is enabled
     int m17encoder_eot; //signal if we need to send the EOT frame

@@ -13925,8 +13925,10 @@ Private per-protocol modules worth knowing about:
   Verification needs the whole stream), also when only the EOT marker ends the transmission
   (`m17_note_transmission_end()` before the marker's `m17_confirm_reset()`). A voice frame lost just before the
   signature frames cannot be told from the end of voice, so such a stream is judged, and fails. A decoded EOS
-  (`m17_stream_end_of_stream()`) and a packet's end (`m17_pkt_finalize_eot()`, its CRC passed or not: a packet is a
-  whole transmission with its own LSF, M17 spec 2.0.11 Packet Mode) end the transmission (`dsd_state::m17_tx_ended`):
+  (`m17_stream_end_of_stream()`) and a packet's end (`m17_pkt_end_transmission()` at a valid last frame, its CRC passed
+  or not, and also when the packet cannot be whole because its earlier frames were lost, decoding and checking nothing,
+  `m17_packet_take_chunk()`: a packet is a whole transmission with its own LSF, M17 spec 2.0.11 Packet Mode; its data
+  call ends there too) end the transmission (`dsd_state::m17_tx_ended`):
   its evidence stands until the next RF frame, so its EOT marker is still recognized, and that frame drops all of it
   (`m17_retire_if_ended()` at the next stream, LSF, packet or BERT frame, the full `m17_confirm_reset()`), so the next
   transmission never runs on the ended one's CAN, encryption or type, nor rebuilds its LSF from the ended one's raw
@@ -13959,10 +13961,15 @@ Private per-protocol modules worth knowing about:
   M17 state extension (`m17_state_ext`, `src/protocol/m17/m17_state_ext.h`): no allocation and no moves on the
   decoder thread; when it is full the oldest end is forgotten, and from then on for the session (fail closed,
   `dsd_state::m17_ip_ended_lost`) a stream neither open nor in the table opens only on a CRC-valid frame 0, never joined
-  at a later frame. No allocation can lose an end: the extension is created before a stream opens, a stream it cannot
-  be created for does not open, and that refusal (the frame might be an end), like any end with no table to take it,
-  sets the same flag, which lives in `dsd_state`, outside the allocation (`M17_STATE_DISPATCH`
-  `test_ip_unrecordable_end_fails_closed`, with the extension's allocation failed through a `calloc` wrap). Accepted limits: a copy of a one-frame stream's frame 0 after its EOT starts it again;
+  at a later frame. No allocation can lose an end: the extension is created before a stream opens, and a stream it
+  cannot be created for does not open. When the refused frame is a final frame (its CRC-checked EOT bit), its end
+  could not be recorded and sets the same flag, as does any end with no table to take it; any other refused frame loses
+  no end and sets nothing, so the stream's next frame opens it once the table can be made. The flag lives in
+  `dsd_state`, outside the allocation, with the extension's lifetime: the decoder session (cleared by `initState()`,
+  `freeState()` and `m17_end_session()` in `dsd_engine_cleanup()` before the extensions are freed), never a
+  transmission (`M17_STATE_DISPATCH` `test_ip_unrecordable_end_fails_closed`,
+  `test_ip_failed_allocation_on_an_ordinary_frame`, with the extension's allocation failed through a `calloc` wrap;
+  `ENGINE_CLEANUP_AUDIO` `test_session_boundary_clears_the_m17_lost_end_fallback`). Accepted limits: a copy of a one-frame stream's frame 0 after its EOT starts it again;
   a stream ID reused by the same station with no end received between is not taken; after the table first filled, a
   network stream whose first frames were lost is not joined until its station starts another. A checked IP frame plays on its own check; its decoded speech marks the call's media
   (`m17_note_received_speech()`), which also returns whether the speech is checked speech (a checked LSF bound its type,
@@ -13975,7 +13982,12 @@ Private per-protocol modules worth knowing about:
   transmission's, and only from content whose check passed (decided, issue #890): the RF transmission's or the admitted
   network stream's is `m17_state_ext::text_meta` (`m17_transmission_text()`), emptied at every boundary by
   `m17_confirm_reset()`; an MPKT has its own on the stack for its LSF's META and its packet (`m17_lsf_carrier::text`),
-  so an MPKT heard while a stream is open neither adds to nor clears the stream's text; a checked LSF's META and a packet
+  so an MPKT heard while a stream is open neither adds to nor clears the stream's text. An MPKT's link setup is its own
+  too (`m17_ip_handle_mpkt_frame()`): its payload is decoded against its own LSF, applied for it alone, and at its end
+  the decoded link setup it found (the raw LSF bits, `m17_lsf_checked`, type, CAN, encryption, IV, advertisement) is
+  given back (`m17_link_setup_hold()`, `m17_link_setup_give_back()`), so an interleaved stream keeps its own and
+  nothing of the MPKT stays; an MPKT whose LSF is not applied (a reserved TYPE, an invalid address) inherits nothing
+  and its payload is not decoded; a checked LSF's META and a packet
   whose CRC passed commit their block (`decodeM17PKT()`, `m17_decode_pkt_print_meta_or_arb()` take the assembler), and
   a packet whose CRC failed, shown only under -F, commits to and clears no assembler (NULL). Tests:
   `M17_STATE_DISPATCH`
@@ -13991,7 +14003,9 @@ Private per-protocol modules worth knowing about:
   `test_ip_1600_arbitrary_data_is_one_streams`, `test_text_meta_is_one_transmissions`,
   `test_packet_text_meta_is_one_packets`, `test_rf_eos_drops_the_raw_lsf_bits`,
   `test_rf_packet_text_is_its_transmissions`, `test_ip_mpkt_leaves_the_open_streams_text`,
-  `test_ip_refused_signed_copy_signs_nothing`, `test_ip_unrecordable_end_fails_closed`; each lifecycle case builds and runs without Codec2 too, its playback
+  `test_ip_refused_signed_copy_signs_nothing`, `test_ip_unrecordable_end_fails_closed`,
+  `test_ip_failed_allocation_on_an_ordinary_frame`, `test_ip_mpkt_link_setup_is_its_own`,
+  `test_rf_packet_eof_without_its_prefix_ends_it`; each lifecycle case builds and runs without Codec2 too, its playback
   counts guarded), `M17_LSF_PARSE`, `M17_GNSS_POSITION` (`test_ip_counter_wrap_is_one_report`). A stream frame's EOS bit,
   an IP EOT, EOTX or DISC, the EOT marker and a packet's end end the slot's call only when it is an M17 one, and an M17
   call a fade already ended is made final by it (`m17_end_call()`, `m17_call_end.c`, public in

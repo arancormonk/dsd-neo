@@ -766,9 +766,10 @@ m17_ip_ended_take_slot(dsd_state* state, m17_state_ext* g) {
 }
 
 /* 1 once an end may have gone unrecorded: an ended stream was forgotten to make room (m17_ip_ended_take_slot()), or no
-   table could be made to record one (m17_ip_admit_frame()). A stream neither open nor remembered may then be one whose
-   end was lost, so it is started only by its frame 0. The flag lives in dsd_state, outside the allocation it stands in
-   for. */
+   table could be made to record an end (m17_ip_note_ended(), m17_ip_admit_frame() refusing a final frame). A stream
+   neither open nor remembered may then be one whose end was lost, so it is started only by its frame 0. The flag lives
+   in dsd_state, outside the allocation it stands in for, with the extension's lifetime: the decoder session
+   (m17_end_session(), initState()), never a transmission. */
 static int
 m17_ip_ended_forgot(const dsd_state* state) {
     return state->m17_ip_ended_lost != 0U;
@@ -1385,6 +1386,14 @@ static void
 m17_retire_if_ended(dsd_state* state) {
     if (state->m17_tx_ended != 0U) {
         m17_confirm_reset(state);
+    }
+}
+
+void
+m17_end_session(dsd_state* state) {
+    if (state != NULL) {
+        /* The lost-end fallback goes with the ended-stream table it stands in for (dsd_state_ext_free_all() follows). */
+        state->m17_ip_ended_lost = 0U;
     }
 }
 
@@ -4072,6 +4081,18 @@ m17_pkt_log_final_if_enabled(const dsd_opts* opts, const dsd_state* state, int e
     DSD_FPRINTF(stderr, "\n      CRC - C: %04X; E: %04X", crc_cmp, crc_ext);
 }
 
+/* A packet's last frame (a valid EOF): the packet transmission ends, whether its packet was whole and its CRC passed
+   or not. A packet is a whole transmission with its own LSF (M17 spec 2.0.11, Packet Mode), so its call ends and all of
+   it goes at the next transmission's first frame (m17_retire_if_ended()); until then its evidence stands for its EOT
+   marker. */
+static void
+m17_pkt_end_transmission(const dsd_opts* opts, dsd_state* state) {
+    DSD_MEMSET(state->m17_pkt, 0, sizeof(state->m17_pkt));
+    state->m17_pbc_ct = 0;
+    m17_end_call(opts, state, DSD_CALL_END_EXPLICIT, 1);
+    state->m17_tx_ended = 1U;
+}
+
 void
 m17_pkt_finalize_eot(const dsd_opts* opts, dsd_state* state, uint16_t app_len, int end) {
     if (opts == NULL || state == NULL) {
@@ -4098,17 +4119,11 @@ m17_pkt_finalize_eot(const dsd_opts* opts, dsd_state* state, uint16_t app_len, i
     }
 
     m17_pkt_log_final_if_enabled(opts, state, end, crc_cmp, crc_ext);
-    DSD_MEMSET(state->m17_pkt, 0, sizeof(state->m17_pkt));
-    state->m17_pbc_ct = 0;
-    m17_end_call(opts, state, DSD_CALL_END_EXPLICIT, 1);
-    /* A packet is a whole transmission with its own LSF (M17 spec 2.0.11, Packet Mode): its end is a transmission end,
-       its CRC passed or not. All of it goes at the next transmission's first frame (m17_retire_if_ended()); until then
-       its evidence stands for its EOT marker. */
-    state->m17_tx_ended = 1U;
+    m17_pkt_end_transmission(opts, state);
 }
 
 /* Decodes the frame's @p soft_symbols. Returns non-zero when the frame carried a packet chunk
- * the decoder could use; the four rejections below are checks this frame ran and failed, which
+ * the decoder could use; the four rejections in m17_packet_take_chunk() are checks this frame ran and failed, which
  * is what the SPS hunt wants to hear about (#419). */
 static int
 m17_process_packet_frame(const dsd_opts* opts, dsd_state* state, const float* soft_symbols) {
@@ -4129,7 +4144,14 @@ m17_process_packet_frame(const dsd_opts* opts, dsd_state* state, const float* so
     m17_soft_depuncture_p3(m17_soft_bits, m17_depunc);
     (void)viterbi_decode(pkt_bytes, m17_depunc, M17_PACKET_TYPE2_BITS);
     DSD_MEMCPY(pkt_packed, pkt_bytes + 1, 26);
+    return m17_packet_take_chunk(opts, state, pkt_packed);
+}
 
+int
+m17_packet_take_chunk(const dsd_opts* opts, dsd_state* state, const uint8_t* pkt_packed) {
+    if (opts == NULL || state == NULL || pkt_packed == NULL) {
+        return 0;
+    }
     uint8_t counter = 0U;
     uint8_t eot = 0U;
     const int metadata_ok = m17_packet_parse_metadata_byte(pkt_packed[25], &eot, &counter);
@@ -4154,9 +4176,10 @@ m17_process_packet_frame(const dsd_opts* opts, dsd_state* state, const float* so
     int total_with_crc = ptr + M17_PACKET_CHUNK_BYTES;
     if (eot != 0U) {
         if (m17_packet_app_bytes_from_eof((uint8_t)state->m17_pbc_ct, counter, &app_len) != 0) {
+            /* A valid last frame whose packet cannot be whole (its earlier frames were lost): nothing of it is decoded
+               or checked, but it is the packet transmission's end all the same (issue #890). */
             DSD_FPRINTF(stderr, " PKT EOF byte count invalid;");
-            DSD_MEMSET(state->m17_pkt, 0, sizeof(state->m17_pkt));
-            state->m17_pbc_ct = 0;
+            m17_pkt_end_transmission(opts, state);
             DSD_FPRINTF(stderr, "\n");
             return 0;
         }
@@ -4370,11 +4393,14 @@ m17_ip_admit_frame(const dsd_opts* opts, dsd_state* state, uint16_t sid, const s
     if (!m17_ip_may_open(state, sid, src, fn)) {
         return 0;
     }
-    /* The ended-stream table must take this stream's end: no stream opens without it, and the frame refused (an end,
-       perhaps) counts as a lost end (fail closed). */
+    /* The ended-stream table must take this stream's end: no stream opens without it. The frame is refused; when it
+       is a final frame (its EOT bit, CRC-checked) the end it carries could not be recorded, which is a lost end (fail
+       closed). Any other frame lost nothing: a later frame of the stream may open it once the table can be made. */
     m17_state_ext* g = m17_ext_st(state);
     if (g == NULL) {
-        state->m17_ip_ended_lost = 1U;
+        if (eot != 0U) {
+            state->m17_ip_ended_lost = 1U;
+        }
         return 0;
     }
     if (open) {
@@ -4513,6 +4539,54 @@ m17_ip_handle_control_frame(const m17_ip_ctrl_desc* desc, const dsd_opts* opts, 
     return 1;
 }
 
+/* The decoded link setup an MPKT applies for itself (its LSF) and gives back at its end: the raw LSF bits and every
+   field M17decodeLSF() sets. */
+typedef struct {
+    uint8_t lsf[360];
+    uint8_t meta[16];
+    uint8_t checked;
+    uint8_t str_dt;
+    uint8_t can;
+    uint8_t enc;
+    uint8_t enc_st;
+    uint8_t decrypted;
+    uint8_t advertised;
+} m17_link_setup_held;
+
+_Static_assert(sizeof(((m17_link_setup_held*)0)->lsf) == sizeof(((dsd_state*)0)->m17_lsf), "the LSF bits fit");
+_Static_assert(sizeof(((m17_link_setup_held*)0)->meta) == sizeof(((dsd_state*)0)->m17_meta), "the META fits");
+
+static void
+m17_link_setup_hold(const dsd_state* state, m17_link_setup_held* held) {
+    DSD_MEMCPY(held->lsf, state->m17_lsf, sizeof(held->lsf));
+    DSD_MEMCPY(held->meta, state->m17_meta, sizeof(held->meta));
+    held->checked = state->m17_lsf_checked;
+    held->str_dt = state->m17_str_dt;
+    held->can = state->m17_can;
+    held->enc = state->m17_enc;
+    held->enc_st = state->m17_enc_st;
+    held->decrypted = state->m17_payload_decrypted;
+    held->advertised = state->m17_signature_advertised;
+}
+
+static void
+m17_link_setup_give_back(dsd_state* state, const m17_link_setup_held* held) {
+    DSD_MEMCPY(state->m17_lsf, held->lsf, sizeof(held->lsf));
+    DSD_MEMCPY(state->m17_meta, held->meta, sizeof(held->meta));
+    state->m17_lsf_checked = held->checked;
+    state->m17_str_dt = held->str_dt;
+    state->m17_can = held->can;
+    state->m17_enc = held->enc;
+    state->m17_enc_st = held->enc_st;
+    state->m17_payload_decrypted = held->decrypted;
+    state->m17_signature_advertised = held->advertised;
+}
+
+/* One MPKT is one whole transmission (M17 spec 2.0.11, Packet Mode: a packet with its own LSF): its payload is decoded
+   against its own LSF, applied for it alone, and with its own text META assembler. At its end its settings are retired
+   by giving back the decoded link setup it found, so a network stream it interleaves with keeps its own, and nothing of
+   the MPKT stays for what follows. An MPKT whose LSF is not applied (a reserved TYPE, an invalid address) has no setup
+   to decode its payload against: the payload is not decoded, and inherits nothing. */
 static void
 m17_ip_handle_mpkt_frame(const dsd_opts* opts, dsd_state* state, const uint8_t* ip_frame, int err) {
     if (err < 37) {
@@ -4525,35 +4599,38 @@ m17_ip_handle_mpkt_frame(const dsd_opts* opts, dsd_state* state, const uint8_t* 
        stream frame does, and no packet payload belongs in this header conversion. */
     m17_ip_bits_from_bytes(ip_frame, 34U, ip_bits);
     const uint16_t sid = (uint16_t)convert_bits_into_output(&ip_bits[32], 16);
-    m17_ip_copy_lsf_from_bits(state, ip_bits);
 
     const uint16_t crc_ext = (uint16_t)((ip_frame[err - 2] << 8) + ip_frame[err - 1]);
     const uint16_t crc_cmp = m17_crc16(ip_frame, (uint16_t)(err - 2));
     DSD_FPRINTF(stderr, "\n M17 IP   MPKT: %04X;", sid);
 
-    /* One MPKT is one whole transmission with its own text META assembler, for its LSF's META and its packet: an open
-       stream's text, which the MPKT does not end, is never touched. */
+    m17_link_setup_held held;
+    m17_link_setup_hold(state, &held);
     struct m17_meta_text_assembler text;
     DSD_MEMSET(&text, 0, sizeof(text));
+    int applied = 0;
     if (crc_ext == crc_cmp) {
+        m17_ip_copy_lsf_from_bits(state, ip_bits);
         const m17_lsf_carrier carrier = {1U,   sid, 0U, 0U, (uint32_t)err, m17_datagram_digest(ip_frame, (size_t)err),
                                          &text};
-        (void)M17decodeLSF(opts, state, 1, &carrier);
+        applied = M17decodeLSF(opts, state, 1, &carrier);
     }
     if (opts->payload == 1) {
         m17_ip_dump_bytes_spaced(ip_frame, err, 25, "                ");
         DSD_FPRINTF(stderr, " (CRC CHK) E: %04X; C: %04X;", crc_ext, crc_cmp);
         DSD_FPRINTF(stderr, "\n M17 IP   RECD: %d", err);
     }
-    if (crc_ext == crc_cmp) {
+    if (crc_ext != crc_cmp) {
+        DSD_FPRINTF(stderr, " IP CRC ERR");
+    } else if (applied) {
         /* The MPKT trailer is CRC2 only; decodeM17PKT consumes the protocol identifier itself. */
         decodeM17PKT(opts, state, &text, ip_frame + 34, err - 34 - 2);
         m17_end_call(opts, state, DSD_CALL_END_EXPLICIT, 1);
-        /* One MPKT is one whole transmission. */
         m17_gnss_tx_end(state);
     } else {
-        DSD_FPRINTF(stderr, " IP CRC ERR");
+        DSD_FPRINTF(stderr, " MPKT link setup not usable: packet not decoded;");
     }
+    m17_link_setup_give_back(state, &held);
 }
 
 void

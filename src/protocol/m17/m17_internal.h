@@ -111,6 +111,10 @@ int m17_encoder_vox_keyed(int heard, int lich_cnt, int* sql_hit);
 int m17_decode_pkt_should_report_encrypted(const dsd_state* state, uint32_t protocol);
 int m17_pkt_ptr_clamped(int pbc_count);
 void m17_pkt_finalize_eot(const dsd_opts* opts, dsd_state* state, uint16_t app_len, int end);
+/* Take one RF packet frame's 26 decoded bytes (its 25-byte chunk and its metadata byte, m17.c): the chunk joins the
+   packet, a frame out of order empties it, and a valid last frame (EOF) finalizes the packet, or, when the packet
+   cannot be whole, ends the packet transmission with nothing decoded. Returns 1 when the chunk was used. */
+int m17_packet_take_chunk(const dsd_opts* opts, dsd_state* state, const uint8_t* pkt_packed);
 void m17_ip_dispatch_frame(const dsd_opts* opts, dsd_state* state, const uint8_t* ip_frame, int len);
 /** Decode an LSF this station transmits (@p m17_rnd_bits, the randomized on-air payload) through the receive path, to
  * monitor it: its call is shown, but nothing in it is received identity, META or a position. */

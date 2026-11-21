@@ -1783,9 +1783,12 @@ test_ip_mpkt_frames_apply_crc_gated_packet_state(void) {
                       event_history[0].Event_History_Items[0].event_string[0] == '\0', 1);
     err |= expect_int("valid MPKT commits event history",
                       event_history[0].Event_History_Items[1].event_string[0] != '\0', 1);
-    err |= expect_u8("valid MPKT packet mode data type", state->m17_str_dt, 20U);
-    err |= expect_u8("valid MPKT CAN", state->m17_can, 5U);
-    err |= expect_u8("valid MPKT clear encryption", state->m17_enc, 0U);
+    /* The MPKT's own LSF named its call (CAN 5), and its settings went with it: the decoded link setup is what it
+       found (issue #890). */
+    err |= expect_int("valid MPKT call carries its CAN", (int)call.service_options, 5);
+    err |= expect_u8("valid MPKT gives back the stream type", state->m17_str_dt, 0U);
+    err |= expect_u8("valid MPKT gives back the CAN", state->m17_can, 0U);
+    err |= expect_u8("valid MPKT gives back the checked binding", state->m17_lsf_checked, 0U);
     /* Its one-block text completes, final application byte included, and goes with the MPKT: one MPKT is one whole
        transmission. */
     err |= expect_int("valid MPKT text completes with its final application byte",
@@ -7036,7 +7039,131 @@ test_ip_unrecordable_end_fails_closed(void) {
     dsd_state_ext_free_all(state);
     return err;
 }
+
+/* A failed allocation on an ordinary frame (no EOT) refuses that frame and loses no end: once the table can be made, the
+   stream's next frame opens it, and streams joined part-way through are still taken. */
+static int
+test_ip_failed_allocation_on_an_ordinary_frame(void) {
+    dsd_opts* opts = &g_opts;
+    dsd_state* state = &g_state;
+    uint8_t lsf_bits[TEST_M17_LSF_BITS];
+    uint8_t payload[M17_SIGNATURE_DIGEST_BYTES];
+    int err = 0;
+    build_voice_lsf(lsf_bits, 3U, 0);
+    DSD_MEMSET(payload, 0x60, sizeof(payload));
+
+    ip_test_state(opts, state);
+    g_fail_m17_ext_alloc = 1;
+    send_ip_stream_frame(opts, state, lsf_bits, 0x7F40U, 5U, 0U, payload, 0);
+    err |= expect_int("the allocation was tried and failed", g_fail_m17_ext_alloc, 0);
+    err |= expect_int("the frame is refused", (int)state->m17_ip_stream, DSD_M17_IP_STREAM_NONE);
+    err |= expect_u8("no end was lost", state->m17_ip_ended_lost, 0U);
+    send_ip_stream_frame(opts, state, lsf_bits, 0x7F40U, 6U, 0U, payload, 0);
+    err |= expect_int("its next frame opens the stream", (int)state->m17_ip_stream, DSD_M17_IP_STREAM_OPEN);
+    err |= expect_int("the stream is the one joined", (int)state->m17_ip_stream_last_fn, 6);
+    dsd_state_ext_free_all(state);
+    return err;
+}
 #endif
+
+/* An MPKT's payload is decoded against its own LSF, applied for it alone: at its end the decoded link setup is the one
+   it found, whether no stream was open (nothing of the MPKT stays) or a stream it interleaves with keeps its own. An
+   MPKT whose LSF is not applied (a reserved TYPE) inherits nothing: its payload is not decoded, even through a CAN
+   filter an earlier MPKT's CAN would pass. */
+static int
+test_ip_mpkt_link_setup_is_its_own(void) {
+    dsd_opts* opts = &g_opts;
+    dsd_state* state = &g_state;
+    uint8_t can5_bits[TEST_M17_LSF_BITS];
+    uint8_t reserved_bits[TEST_M17_LSF_BITS];
+    uint8_t voice_bits[TEST_M17_LSF_BITS];
+    uint8_t sms[8];
+    uint8_t mpkt_frame[34U + sizeof(sms) + 2U];
+    uint8_t payload[M17_SIGNATURE_DIGEST_BYTES];
+    int err = 0;
+    const unsigned long long dst = m17_encode_b40_callsign(0ULL, M17_REF_LSF_DST_CSD);
+    const unsigned long long src = m17_encode_b40_callsign(0ULL, M17_REF_LSF_SRC_CSD);
+    build_lsf_bits(can5_bits, dst, src, m17_compose_frame_info(0U, 0U, 0U, 0U, 5U, 0U, 0U), NULL);
+    build_lsf_bits(reserved_bits, dst, src, m17_compose_frame_info(0U, 0U, 0U, 0U, 9U, 0U, 1U), NULL);
+    build_voice_lsf(voice_bits, 3U, 0);
+    DSD_MEMSET(sms, 0, sizeof(sms));
+    sms[0] = 0x05U;
+    DSD_MEMCPY(sms + 1, "HELLO", 5U);
+    DSD_MEMSET(payload, 0x61, sizeof(payload));
+
+    ip_test_state(opts, state);
+    size_t len = build_ip_mpkt_frame(mpkt_frame, sizeof(mpkt_frame), can5_bits, 0x7F50U, sms, sizeof(sms));
+    m17_ip_dispatch_frame(opts, state, mpkt_frame, (int)len);
+    err |= expect_u8("a finished MPKT leaves no checked binding", state->m17_lsf_checked, 0U);
+    err |= expect_u8("a finished MPKT leaves no CAN", state->m17_can, 0U);
+
+    state->m17_can_en = 5;
+    dsd_test_capture_stderr cap;
+    char out[8192];
+    if (dsd_test_capture_stderr_begin(&cap, "m17_mpkt_reserved") != 0) {
+        return 1;
+    }
+    len = build_ip_mpkt_frame(mpkt_frame, sizeof(mpkt_frame), reserved_bits, 0x7F51U, sms, sizeof(sms));
+    m17_ip_dispatch_frame(opts, state, mpkt_frame, (int)len);
+    (void)dsd_test_capture_stderr_end(&cap);
+    (void)dsd_test_capture_stderr_read(&cap, out, sizeof(out));
+    err |= expect_int("an MPKT whose LSF is not applied decodes no payload", capture_has(out, sizeof(out), "HELLO"), 0);
+
+    state->m17_can_en = -1;
+    send_ip_stream_frame(opts, state, voice_bits, 0x7F52U, 0U, 0U, payload, 0);
+    len = build_ip_mpkt_frame(mpkt_frame, sizeof(mpkt_frame), can5_bits, 0x7F53U, sms, sizeof(sms));
+    m17_ip_dispatch_frame(opts, state, mpkt_frame, (int)len);
+    err |= expect_u8("an interleaved MPKT leaves the stream's CAN", state->m17_can, 3U);
+    err |= expect_u8("an interleaved MPKT leaves the stream's type", state->m17_str_dt, 2U);
+    err |= expect_u8("an interleaved MPKT leaves the stream's checked binding", state->m17_lsf_checked, 1U);
+    dsd_state_ext_free_all(state);
+    return err;
+}
+
+/* An over-the-air packet whose earlier frames were lost ends at its valid last frame (EOF) all the same: nothing of it
+   is decoded or checked, its call ends, and its transmission is over, so the next packet (its LSF frame failed its CRC,
+   the EOT marker between missed) never completes the ended one's text. */
+static int
+test_rf_packet_eof_without_its_prefix_ends_it(void) {
+    dsd_opts* opts = &g_opts;
+    dsd_state* state = &g_state;
+    uint8_t a_bits[TEST_M17_LSF_BITS];
+    uint8_t a_packed[M17_LSF_BYTES];
+    uint8_t second[2U + M17_META_BYTES];
+    uint8_t eof_frame[26];
+    int err = 0;
+    const uint16_t a_crc = build_packet_text_lsf(a_bits, a_packed, 0x31U, "FIRST-PART-AA");
+    build_packet_text_meta_app(second, "OTHER-TEXT-BB");
+    second[2] = 0x32U;
+    const uint16_t app_len = (uint16_t)sizeof(second);
+    DSD_MEMSET(eof_frame, 0x42, sizeof(eof_frame));
+    err |= expect_int("one-byte EOF metadata", m17_packet_metadata_byte(1U, 1U, &eof_frame[25]), 0);
+
+    ip_test_state(opts, state);
+    dsd_test_capture_stderr cap;
+    char out[16384];
+    if (dsd_test_capture_stderr_begin(&cap, "m17_rf_pkt_eof") != 0) {
+        return 1;
+    }
+    DSD_MEMCPY(state->m17_lsf, a_bits, sizeof(a_bits));
+    (void)m17_finalize_lsf_crc(opts, state, a_packed, a_crc);
+    dsd_call_snapshot call;
+    const int a_call = get_m17_call(state, &call) == 1 && call.phase == DSD_CALL_PHASE_ACTIVE;
+    const int used = m17_packet_take_chunk(opts, state, eof_frame);
+    const int a_ended = get_m17_call(state, &call) == 1 && call.phase != DSD_CALL_PHASE_ACTIVE;
+    DSD_MEMCPY(state->m17_lsf, a_bits, sizeof(a_bits));
+    (void)m17_finalize_lsf_crc(opts, state, a_packed, (uint16_t)(a_crc ^ 1U));
+    stage_packet_with_crc(state, second, app_len, m17_crc16(second, app_len));
+    m17_pkt_finalize_eot(opts, state, app_len, (int)(app_len + M17_PACKET_CRC_BYTES));
+    (void)dsd_test_capture_stderr_end(&cap);
+    (void)dsd_test_capture_stderr_read(&cap, out, sizeof(out));
+    err |= expect_int("A's checked LSF opened its call", a_call, 1);
+    err |= expect_int("A's partial packet is not taken", used, 0);
+    err |= expect_int("A's EOF ends its call", a_ended, 1);
+    err |= expect_int("A's and B's blocks never make one text", capture_has(out, sizeof(out), "Complete:"), 0);
+    dsd_state_ext_free_all(state);
+    return err;
+}
 
 int
 main(void) {
@@ -7099,7 +7226,10 @@ main(void) {
     err |= test_ip_refused_signed_copy_signs_nothing();
 #ifdef DSD_NEO_TEST_ALLOC_WRAP
     err |= test_ip_unrecordable_end_fails_closed();
+    err |= test_ip_failed_allocation_on_an_ordinary_frame();
 #endif
+    err |= test_ip_mpkt_link_setup_is_its_own();
+    err |= test_rf_packet_eof_without_its_prefix_ends_it();
     err |= test_lsf_rejects_reserved_type_without_replacing_state();
     err |= test_lsf_rejects_invalid_addresses_without_replacing_state();
     err |= test_lsf_null_meta_decodes_text_and_honors_can_filter();
