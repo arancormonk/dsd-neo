@@ -68,6 +68,7 @@
 #include "dsd-neo/core/state_fwd.h"
 #include "dsd-neo/dsp/unflushed_retune.h"
 #include "dsd-neo/platform/sockets.h"
+#include "frame_sync_internal.h"
 #include "frame_sync_unflushed.h"
 #include "pcm_input_staging.h"
 #include "symbol_anchor_internal.h"
@@ -943,6 +944,9 @@ enum {
     /* The cache is empty and the refill's live read, a hunt's, found nothing for its bound (issue #834,
        DSD_RTL_READ_IDLE): no failure (symbol_rtl_read_idle_leaves()). */
     RTL_SYMBOL_CACHE_IDLE = 6,
+    /* The cache is empty and the refill's live read, a hunt's, found the output empty and came back before waiting
+       (DSD_RTL_READ_EMPTY): the hunt services a P25 watchdog beat, then reads again to wait (symbol_rtl_read_waits()). */
+    RTL_SYMBOL_CACHE_WAITS = 7,
 };
 
 static inline int
@@ -1273,6 +1277,9 @@ static inline int
 rtl_symbol_cache_empty_status(int read_rc) {
     if (read_rc == DSD_RTL_READ_YIELD) {
         return RTL_SYMBOL_CACHE_YIELD;
+    }
+    if (read_rc == DSD_RTL_READ_EMPTY) {
+        return RTL_SYMBOL_CACHE_WAITS;
     }
     return read_rc == DSD_RTL_READ_IDLE ? RTL_SYMBOL_CACHE_IDLE : RTL_SYMBOL_CACHE_EMPTY;
 }
@@ -2267,17 +2274,6 @@ symbol_process_analog_capture(dsd_opts* opts, dsd_state* state, const symbol_wor
     }
 }
 
-static inline int
-symbol_read_sample_pulse(dsd_opts* opts, float* sample_out) {
-    short s = 0;
-    if (opts->audio_in_stream) {
-        dsd_audio_read(opts->audio_in_stream, &s, 1);
-    }
-    s = symbol_scale_pcm_i16(s, opts->input_volume_multiplier);
-    *sample_out = (float)s;
-    return 1;
-}
-
 static inline void
 symbol_close_audio_in_file(dsd_opts* opts) {
     if (opts == NULL || opts->audio_in_file == NULL) {
@@ -2641,8 +2637,12 @@ symbol_rtl_read_yielded(dsd_state* state) {
    Under a scan the pass ends (symbol_hunt_idle_ends_pass()). Else nothing waits on the decoder, and the read reads
    again. Returns 1 when the read leaves. Nothing of the stream is lost either way: the read found no samples. */
 static int
-symbol_rtl_read_idle_leaves(const dsd_opts* opts, dsd_state* state) {
-    if (dsd_runtime_controls_pending() || dsd_runtime_publish_pending()) {
+symbol_rtl_read_idle_leaves(dsd_opts* opts, dsd_state* state) {
+    /* A queued command or a put-off publication first, with a P25 watchdog beat left asked for, so no tune starts on a
+       receiver the command replaces. Else the beat's tick runs here, as in a PCM read that waits; one that moved the
+       chain ends the read at once (frame_sync_watchdog_tick.c). */
+    if (dsd_runtime_controls_pending() || dsd_runtime_publish_pending()
+        || frame_sync_service_p25_watchdog(opts, state) == FRAME_SYNC_WD_MOVED) {
         state->input_interrupted = 1;
         return 1;
     }
@@ -2659,27 +2659,63 @@ symbol_rtl_monitor_idle(const dsd_opts* opts, dsd_state* state, const symbol_wor
     }
 }
 
-/* What the decoder's live reads ask for: the idle bound for a hunt read (issue #834), nothing for a frame read, which
-   waits for its samples. */
+/* What the decoder's live reads ask for: for a hunt read the idle bound (issue #834) and, first, an empty output at
+   once (symbol_rtl_read_waits()); nothing for a frame read, which waits for its samples. */
 static inline int
 symbol_rtl_read_wants(const symbol_work_ctx* work) {
-    return work->hunting ? DSD_RTL_READ_WANT_IDLE_BOUND : 0;
+    return work->hunting ? DSD_RTL_READ_WANT_IDLE_BOUND | DSD_RTL_READ_WANT_EMPTY_RETURN : 0;
+}
+
+/* A hunt read whose live read found the output empty, before it waits on the stream: a P25 watchdog beat's tick runs
+   here, as before a PCM read's wait, however short the waits a slow stream makes; one that moved the chain ends the
+   read at once (frame_sync_watchdog_tick.c). Returns 1 when the read leaves; else @p wants loses the empty return, so
+   the read that follows waits. A buffered sample never reaches this. */
+static int
+symbol_rtl_read_waits(dsd_opts* opts, dsd_state* state, int* wants) {
+    *wants &= ~DSD_RTL_READ_WANT_EMPTY_RETURN;
+    /* A beat standing behind queued work moved nothing, and the read waits on: to the idle bound, where it gives way to
+       the work (symbol_rtl_read_idle_leaves()), or to its sample, as with no beat. */
+    if (frame_sync_service_p25_watchdog(opts, state) == FRAME_SYNC_WD_MOVED) {
+        state->input_interrupted = 1;
+        return 1;
+    }
+    return 0;
+}
+
+/* A hunt refill that brought no samples because the stream had none: an empty output, before the read waits
+   (symbol_rtl_read_waits()), or the idle bound (symbol_rtl_read_idle_leaves()). 0 for any other status, 1 when the
+   read goes on to read again, -1 when it leaves. */
+static int
+symbol_rtl_cache_waited(dsd_opts* opts, dsd_state* state, int cache_status, int* wants) {
+    if (cache_status == RTL_SYMBOL_CACHE_WAITS) {
+        return symbol_rtl_read_waits(opts, state, wants) ? -1 : 1;
+    }
+    if (cache_status == RTL_SYMBOL_CACHE_IDLE) {
+        return symbol_rtl_read_idle_leaves(opts, state) ? -1 : 1;
+    }
+    return 0;
 }
 
 /* One live read of one sample for the one-sample reader, with the stream generation before it in @p read_generation.
    A hunt read that the stream bounded reads again unless it leaves (symbol_rtl_read_idle_leaves()). Returns the read's
    result: DSD_RTL_READ_IDLE only when the read left. */
 static int
-symbol_rtl_read_sample(const dsd_opts* opts, dsd_state* state, float* sample_out, symbol_work_ctx* work,
+symbol_rtl_read_sample(dsd_opts* opts, dsd_state* state, float* sample_out, symbol_work_ctx* work,
                        uint32_t* read_generation, int* got) {
+    int wants = symbol_rtl_read_wants(work);
     for (;;) {
         *read_generation = dsd_rtl_stream_metrics_hook_stream_generation();
         *got = 0;
         if (!work->hunting) {
             return dsd_rtl_stream_io_hook_read_ex(state, sample_out, &work->sample_flag, 1, got);
         }
-        const int read_rc = dsd_rtl_stream_io_hook_read_ex2(state, sample_out, &work->sample_flag, 1, got,
-                                                            DSD_RTL_READ_WANT_IDLE_BOUND);
+        const int read_rc = dsd_rtl_stream_io_hook_read_ex2(state, sample_out, &work->sample_flag, 1, got, wants);
+        if (read_rc == DSD_RTL_READ_EMPTY) {
+            if (symbol_rtl_read_waits(opts, state, &wants)) {
+                return DSD_RTL_READ_IDLE;
+            }
+            continue;
+        }
         if (read_rc != DSD_RTL_READ_IDLE || symbol_rtl_read_idle_leaves(opts, state)) {
             return read_rc;
         }
@@ -2787,15 +2823,17 @@ symbol_note_replay_center(dsd_opts* opts, dsd_state* state, uint32_t center_hz) 
 
 static inline int
 symbol_read_cached_rtl_sample(dsd_opts* opts, dsd_state* state, float* sample_out, symbol_work_ctx* work) {
+    int wants = symbol_rtl_read_wants(work);
     for (;;) {
-        int cache_status = rtl_symbol_cache_take(state, work->rtl_output_kind, work->rtl_channel_profile,
-                                                 work->rtl_symbol_rate_hz, work->rtl_symbol_levels,
-                                                 &work->rtl_stream_generation, sample_out, symbol_rtl_read_wants(work));
+        int cache_status =
+            rtl_symbol_cache_take(state, work->rtl_output_kind, work->rtl_channel_profile, work->rtl_symbol_rate_hz,
+                                  work->rtl_symbol_levels, &work->rtl_stream_generation, sample_out, wants);
         if (cache_status == RTL_SYMBOL_CACHE_READY) {
             return 1;
         }
-        if (cache_status == RTL_SYMBOL_CACHE_IDLE) {
-            if (symbol_rtl_read_idle_leaves(opts, state)) {
+        const int waited = symbol_rtl_cache_waited(opts, state, cache_status, &wants);
+        if (waited != 0) {
+            if (waited < 0) {
                 return 0;
             }
             continue;
@@ -2858,32 +2896,94 @@ symbol_read_sample_rtl(dsd_opts* opts, dsd_state* state, float* sample_out, symb
 
 /* The TCP reconnect gives up a backoff or a connect attempt for shutdown, and, in a frame-sync hunt, for a queued
    command (issue #634): the stream ended when its read failed, so the hunt loses nothing of it. */
+typedef struct {
+    dsd_opts* opts;
+    dsd_state* state;
+    int moved;            /* a P25 tick in one of the reconnect's waits moved the chain */
+    int connecting;       /* the connect is under way: its socket exists, and the server may already send on it */
+    int moved_in_connect; /* a tick moved the chain while the connect was under way */
+    int gave_up;          /* a cancel check answered that the reconnect gives up */
+} symbol_tcp_reconnect_ctx;
+
 static int
 symbol_tcp_reconnect_cancelled_decoding(void* context) {
-    (void)context;
-    return dsd_exitflag_load() == 1;
+    symbol_tcp_reconnect_ctx* ctx = context;
+    const int cancelled = dsd_exitflag_load() == 1;
+    if (ctx != NULL && cancelled) {
+        ctx->gave_up = 1;
+    }
+    return cancelled;
 }
 
+/* A hunt's reconnect gives way to shutdown and to a queued command, checked first so that neither starts a tune on a
+   receiver being stopped or replaced: a P25 watchdog beat then stays asked for, for the next service point. Else it
+   services the beat in its backoff and connect waits (frame_sync_watchdog_tick.c), and gives way as well when the
+   service defers the beat to queued work this check does not see (a put-off publication). A tick that moved the chain
+   does not cancel the reconnect: the server's return has nothing to do with the receiver's tune, and a reconnect that
+   started over at every move would never reach its connect while the receiver kept moving. The move is noted, and the
+   read hands back before the new connection's first sample (symbol_tcp_reconnect_read()). */
 static int
 symbol_tcp_reconnect_cancelled_hunting(void* context) {
-    (void)context;
-    return dsd_exitflag_load() == 1 || dsd_runtime_controls_pending();
+    symbol_tcp_reconnect_ctx* ctx = context;
+    if (dsd_exitflag_load() == 1 || dsd_runtime_controls_pending()) {
+        if (ctx != NULL) {
+            ctx->gave_up = 1;
+        }
+        return 1;
+    }
+    if (ctx == NULL) {
+        return 0;
+    }
+    const int serviced = frame_sync_service_p25_watchdog(ctx->opts, ctx->state);
+    if (serviced == FRAME_SYNC_WD_DEFERRED) {
+        ctx->gave_up = 1;
+        return 1;
+    }
+    if (serviced == FRAME_SYNC_WD_MOVED) {
+        ctx->moved = 1;
+        ctx->moved_in_connect |= ctx->connecting;
+    }
+    return 0;
 }
 
-/* Wait out the reconnect backoff in slices. Returns 1 when the reconnect was cancelled meanwhile. */
+/* A tick that retuned while the connect was under way ran before the reconnect knew the socket, so its mark measured
+   no input, though the server may have accepted the connection and queued the old channel's audio on it by then. Once
+   the connection is opening (dsd_input_backlog_opening()), the retune is marked again on it and held as a watchdog
+   post is (dsd_frame_sync_note_off_thread_unflushed_retune()): what the connection holds now is dropped before its
+   first sample is read, and what reaches it after is kept. The fail-closed side: audio of the new channel that reached
+   the connection between the retune and this mark (the rest of one connect wait, which ends once the socket is
+   writable) is dropped with it. */
+static void
+symbol_tcp_mark_connect_retune(const symbol_tcp_reconnect_ctx* context) {
+    if (!context->moved_in_connect) {
+        return;
+    }
+    dsd_input_cut cut;
+    dsd_input_backlog_mark(&cut);
+    dsd_frame_sync_note_off_thread_unflushed_retune(&cut);
+}
+
+/* Wait out the reconnect backoff in slices, to one deadline on the real-time clock that counts the cancel checks' own
+   time too (a hunt's check services a P25 tick, which can wait on a rigctl reply). Returns 1 when the reconnect was
+   cancelled meanwhile. */
 static int
-symbol_tcp_backoff(int backoff_ms, dsd_socket_cancel_fn cancelled) {
-    int waited = 0;
-    while (waited < backoff_ms) {
-        if (cancelled(NULL)) {
+symbol_tcp_backoff(int backoff_ms, dsd_socket_cancel_fn cancelled, void* context) {
+    const uint64_t deadline_ms = dsd_realtime_mono_ms() + (uint64_t)(backoff_ms > 0 ? backoff_ms : 0);
+    for (;;) {
+        if (cancelled(context)) {
             return 1;
         }
-        const int left = backoff_ms - waited;
-        const int slice = left < SYMBOL_INPUT_WAIT_SLICE_MS ? left : SYMBOL_INPUT_WAIT_SLICE_MS;
-        dsd_sleep_ms((unsigned int)slice);
-        waited += slice;
+        const uint64_t now_ms = dsd_realtime_mono_ms();
+        if (now_ms >= deadline_ms) {
+            return 0;
+        }
+        const uint64_t left = deadline_ms - now_ms;
+        dsd_sleep_ms((unsigned int)(left < SYMBOL_INPUT_WAIT_SLICE_MS ? left : SYMBOL_INPUT_WAIT_SLICE_MS));
+        /* Expired: no further check runs, so no tick starts past the deadline. */
+        if (dsd_realtime_mono_ms() >= deadline_ms) {
+            return 0;
+        }
     }
-    return cancelled(NULL);
 }
 
 /* A cancelled reconnect: shutdown, or a hunt read that leaves for a queued command with the TCP input still
@@ -2914,7 +3014,8 @@ symbol_tcp_close(dsd_opts* opts) {
    follows finds no stream), and -1 when it was cancelled (symbol_tcp_reconnect_gave_up()). An M17-only session
    (dsd_m17_only_session()) keeps trying until it reconnects or is cancelled. */
 static int
-symbol_tcp_reconnect(dsd_opts* opts, dsd_state* state, dsd_socket_cancel_fn cancelled) {
+symbol_tcp_reconnect(dsd_opts* opts, dsd_state* state, dsd_socket_cancel_fn cancelled,
+                     symbol_tcp_reconnect_ctx* context) {
     for (;;) {
         if (dsd_exitflag_load() == 1) {
             return -1;
@@ -2934,18 +3035,21 @@ symbol_tcp_reconnect(dsd_opts* opts, dsd_state* state, dsd_socket_cancel_fn canc
            tap would notice, so the old tone would otherwise carry over onto the new connection. */
         dsd_analog_rx_reset(state);
         symbol_tcp_close(opts);
-        if (symbol_tcp_backoff(backoff_ms, cancelled)) {
+        if (symbol_tcp_backoff(backoff_ms, cancelled, context)) {
             return -1;
         }
 
         /* The address the connection was made to: a reconnect looks nothing up (issue #634). */
+        context->connecting = 1;
         opts->tcp_sockfd =
-            dsd_net_audio_input_hook_tcp_connect(opts->tcp_hostname, opts->tcp_portno, 0, cancelled, NULL);
+            dsd_net_audio_input_hook_tcp_connect(opts->tcp_hostname, opts->tcp_portno, 0, cancelled, context);
+        context->connecting = 0;
         if (opts->tcp_sockfd != DSD_INVALID_SOCKET) {
             /* The new connection exists: a watchdog retune marked from now on may find the old channel's audio on it,
                and is measured on it, its reader going on from that count; one marked during the backoff measured no
                input and is not this one's drop (issue #834). */
             dsd_input_backlog_opening(opts->tcp_sockfd, dsd_pcm_stream_socket_arrived);
+            symbol_tcp_mark_connect_retune(context);
             opts->tcp_in_ctx = dsd_net_audio_input_hook_tcp_open(opts->tcp_sockfd, opts->wav_sample_rate);
             if (opts->tcp_in_ctx == NULL) {
                 DSD_FPRINTF(stderr, "Error, couldn't Reconnect to TCP audio input\n");
@@ -2961,8 +3065,11 @@ symbol_tcp_reconnect(dsd_opts* opts, dsd_state* state, dsd_socket_cancel_fn canc
             return 1;
         }
         LOG_ERROR("TCP Socket Connection Error.\n");
-        /* A connect a queued command cancelled lost no server: the read gives way to the command first. */
-        if (cancelled(NULL)) {
+        /* A connect a queued command cancelled lost no server: the read gives way to the command first. Told from the
+           checks' own answers and from shutdown, never by another check, which would service a beat (a tick, and a
+           rigctl round trip) after the connect's deadline. */
+        if (context->gave_up || dsd_exitflag_load() == 1
+            || (cancelled == symbol_tcp_reconnect_cancelled_hunting && dsd_runtime_controls_pending())) {
             return -1;
         }
         if (!dsd_m17_only_session(opts)) {
@@ -2988,7 +3095,13 @@ symbol_tcp_reconnect_read(dsd_opts* opts, dsd_state* state, float* sample_out, c
     }
     const dsd_socket_cancel_fn cancelled =
         work->hunting ? symbol_tcp_reconnect_cancelled_hunting : symbol_tcp_reconnect_cancelled_decoding;
-    const int reconnected = symbol_tcp_reconnect(opts, state, cancelled);
+    symbol_tcp_reconnect_ctx context = {opts, state, 0, 0, 0, 0};
+    const int reconnected = symbol_tcp_reconnect(opts, state, cancelled, &context);
+    /* A P25 tick moved the chain while the reconnect waited: the old connection's staged tail and resampler history
+       are a carrier the receiver left, and go whatever the reconnect's outcome. */
+    if (context.moved) {
+        dsd_opts_reset_pcm_input_state(opts);
+    }
     if (reconnected < 0) {
         return symbol_tcp_reconnect_gave_up(opts, state);
     }
@@ -3002,6 +3115,12 @@ symbol_tcp_reconnect_read(dsd_opts* opts, dsd_state* state, float* sample_out, c
         frame_sync_take_unflushed_retunes(opts, state);
         if (state->input_drop_pending) {
             dsd_symbol_apply_input_drop(opts, state);
+        }
+        if (context.moved) {
+            /* The new connection's samples are the next hunt's, which takes the tuning generation and the decode time
+               after the tune, as any hand-back does. */
+            state->input_interrupted = 1;
+            return 0;
         }
     }
     /* The new connection is waited on as any other: one that stays quiet, or sends a part of a sample, leaves the
@@ -3054,9 +3173,24 @@ symbol_read_sample_tcp(dsd_opts* opts, dsd_state* state, float* sample_out, cons
 static int
 symbol_wait_pcm_sample(dsd_opts* opts, dsd_state* state, const symbol_work_ctx* work, int16_t* out,
                        symbol_pcm_read_wait_fn read_wait) {
+    /* A hunt read takes a sample already buffered at once; only one that has to wait on its transport goes on below, to
+       service a P25 watchdog beat first. Frame decoding services none, so it goes straight to its bounded wait. */
+    if (work->hunting) {
+        const int buffered = read_wait(opts, out, 0U);
+        if (buffered >= 0) {
+            return buffered;
+        }
+    }
     uint64_t silent_since_ms = 0U;
     int silent = 0;
     for (;;) {
+        /* A P25 watchdog beat's tick runs before each wait of a hunt read, however slowly the sender trickles; one that
+           moved the chain ends the read at once with no sample (frame_sync_watchdog_tick.c). A beat behind queued work
+           moved nothing: the read keeps its partial symbol, and gives way to the work at the stream pause below. */
+        if (work->hunting && frame_sync_service_p25_watchdog(opts, state) == FRAME_SYNC_WD_MOVED) {
+            state->input_interrupted = 1;
+            return -1;
+        }
         const int got = read_wait(opts, out, SYMBOL_INPUT_WAIT_SLICE_MS);
         if (got >= 0) {
             return got;
@@ -3085,6 +3219,60 @@ symbol_wait_pcm_sample(dsd_opts* opts, dsd_state* state, const symbol_work_ctx* 
             return -1;
         }
     }
+}
+
+/* A sound card's sample within @p timeout_ms (0: only one it holds now), polled in short sleeps against a real-time
+   deadline: dsd_audio_read_held() never waits, so a source that stops delivering (a suspended device, AAudio's capture
+   timeout) holds the read no longer than the wait. 1 with the sample, -1 with none yet. A failed read is a silent
+   sample, as dsd_audio_read()'s always was. The deadline is taken at the first miss of a read that waits, so a sample
+   the card holds costs no clock read. */
+enum { SYMBOL_AUDIO_POLL_MS = 2 };
+
+static int
+symbol_audio_read_wait(dsd_opts* opts, int16_t* out, unsigned int timeout_ms) {
+    uint64_t deadline_ms = 0U; /* none yet; never 0 once taken, as timeout_ms is not */
+    for (;;) {
+        /* Only a read that waits may bring back a lost device (AAudio's reopen after a route change): the probe never
+           does, and the waiting read comes after the hunt serviced what waits on it. */
+        const int got = dsd_audio_read_held(opts->audio_in_stream, out, 1U, timeout_ms > 0U);
+        if (got != 0) {
+            if (got < 0) {
+                *out = 0;
+            }
+            return 1;
+        }
+        if (timeout_ms == 0U) {
+            return -1;
+        }
+        const uint64_t now_ms = dsd_realtime_mono_ms();
+        if (deadline_ms == 0U) {
+            deadline_ms = now_ms + timeout_ms;
+        } else if (now_ms >= deadline_ms) {
+            return -1;
+        }
+        dsd_sleep_ms(SYMBOL_AUDIO_POLL_MS);
+    }
+}
+
+/* A sound card's sample. A hunt read takes what the device holds at once and, when it holds nothing, waits in bounded
+   slices as a network input's read does (symbol_wait_pcm_sample()), servicing a P25 watchdog beat first and giving way
+   as the hunt's other reads do, so a stalled source cannot hold the decoder. Frame decoding waits for its samples. */
+static int
+symbol_read_sample_pulse(dsd_opts* opts, dsd_state* state, float* sample_out, const symbol_work_ctx* work) {
+    short s = 0;
+    if (opts->audio_in_stream) {
+        if (work->hunting) {
+            if (symbol_wait_pcm_sample(opts, state, work, (int16_t*)&s, symbol_audio_read_wait) < 0) {
+                *sample_out = 0.0f;
+                return 0;
+            }
+        } else {
+            (void)dsd_audio_read(opts->audio_in_stream, &s, 1);
+        }
+    }
+    s = symbol_scale_pcm_i16(s, opts->input_volume_multiplier);
+    *sample_out = (float)s;
+    return 1;
 }
 
 static inline int
@@ -3125,7 +3313,7 @@ static int
 symbol_read_live_sample(dsd_opts* opts, dsd_state* state, symbol_work_ctx* work) {
     work->sample_flag = 0U;
     if (opts->audio_in_type == AUDIO_IN_PULSE) {
-        return symbol_read_sample_pulse(opts, &work->sample);
+        return symbol_read_sample_pulse(opts, state, &work->sample, work);
     }
     if (opts->audio_in_type == AUDIO_IN_STDIN) {
         return symbol_read_sample_stdin(opts, state, &work->sample, work);
@@ -3203,16 +3391,18 @@ symbol_try_rtl_symbol_rate_fast_path(dsd_opts* opts, dsd_state* state, symbol_wo
     state->symbolCenter = 0;
     state->jitter = -1;
 
+    int wants = symbol_rtl_read_wants(work);
     for (;;) {
         apply_rtl_symbol_thresholds(state, work->rtl_symbol_levels);
-        int cache_status = rtl_symbol_cache_take(
-            state, work->rtl_output_kind, work->rtl_channel_profile, work->rtl_symbol_rate_hz, work->rtl_symbol_levels,
-            &work->rtl_stream_generation, &work->sample, symbol_rtl_read_wants(work));
+        int cache_status =
+            rtl_symbol_cache_take(state, work->rtl_output_kind, work->rtl_channel_profile, work->rtl_symbol_rate_hz,
+                                  work->rtl_symbol_levels, &work->rtl_stream_generation, &work->sample, wants);
         if (cache_status == RTL_SYMBOL_CACHE_READY) {
             break;
         }
-        if (cache_status == RTL_SYMBOL_CACHE_IDLE) {
-            if (symbol_rtl_read_idle_leaves(opts, state)) {
+        const int waited = symbol_rtl_cache_waited(opts, state, cache_status, &wants);
+        if (waited != 0) {
+            if (waited < 0) {
                 return -1;
             }
             continue;

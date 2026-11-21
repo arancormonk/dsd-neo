@@ -540,7 +540,8 @@ test_held_tiles_follow_the_cache_rules() {
 }
 
 /* Final review I1: every tile request of a view the device's position placed is memory only (Locate me, Follow my
- * position, a fit that took in the dot), for the rest of the visit, even after a pan; a new visit asks by hand. */
+ * position, a fit that took in the dot), for the rest of the item's life (the app's run), even after a pan or a move
+ * elsewhere, since the screen keeps the view between visits; a new item asks by hand. */
 void
 test_device_views_ask_memory_only() {
     Fixture f;
@@ -564,27 +565,33 @@ test_device_views_ask_memory_only() {
     f.map->testPolish();
     assert(tiles.memoryOnlyForTest()); /* still near the device */
 
-    /* Same keys, new origin: a new visit asks again by hand; following asks again from the device. */
-    /* Read through a function: the generation moves inside the calls below, not in this scope. */
-    const auto generation_now = [&tiles] { return tiles.generation(); };
-    const quint64 before = generation_now();
-    f.map->resetCameraUsedDevicePosition();
+    f.map->centerOn(-40.0, 120.0, 6.0);
     f.map->testPolish();
-    assert(generation_now() > before && !tiles.memoryOnlyForTest());
-    f.map->setDeviceValid(false);
-    f.map->setFollowDevice(true); /* no fix yet: the camera does not move, the request is still memory only */
-    f.map->testPolish();
-    assert(tiles.memoryOnlyForTest());
-    f.map->setFollowDevice(false);
-    f.map->testPolish();
-    assert(!tiles.memoryOnlyForTest());
-
-    f.map->setDeviceValid(true);
-    const bool fitted = f.map->fitAll(); /* the fit takes in the dot */
-    assert(fitted);
-    f.map->testPolish();
-    assert(tiles.memoryOnlyForTest());
+    assert(f.map->cameraUsedDevicePosition() && tiles.memoryOnlyForTest()); /* for the item's life: the app's run */
     f.map->setTileSource(nullptr);
+
+    /* A new item (the next run) asks by hand; following asks from the device before any fix moves the camera. */
+    Fixture g;
+    stub::MapTileSourceStub fresh;
+    g.map->setTileSource(&fresh);
+    fresh.setEnabled(true);
+    g.map->testPolish();
+    assert(!g.map->cameraUsedDevicePosition() && !fresh.memoryOnlyForTest());
+    g.map->setFollowDevice(true); /* no fix yet: the camera does not move, the request is still memory only */
+    g.map->testPolish();
+    assert(fresh.memoryOnlyForTest());
+    g.map->setFollowDevice(false);
+    g.map->testPolish();
+    assert(!fresh.memoryOnlyForTest());
+
+    g.map->setDeviceLatitude(10.01);
+    g.map->setDeviceLongitude(20.01);
+    g.map->setDeviceValid(true);
+    const bool fitted = g.map->fitAll(); /* the fit takes in the dot */
+    assert(fitted);
+    g.map->testPolish();
+    assert(g.map->cameraUsedDevicePosition() && fresh.memoryOnlyForTest());
+    g.map->setTileSource(nullptr);
 }
 
 /* A pan that moves a trail-bearing marker across the flip line (half a world from the centre) rebuilds the overlay:
@@ -972,6 +979,118 @@ test_follow_keeps_a_pinched_out_zoom() {
     assert(std::fabs(f.map->zoom() - zoom) < 1.0e-9);
 }
 
+/* The screen keeps the canvas between visits (the user's report: the view was lost on Back). While hidden: no follow
+ * step moves it, a size the layout passes through clamps nothing, and on return a follow catches up at the zoom the user
+ * left it at, not as a first centring. */
+void
+test_hidden_canvas_keeps_its_view() {
+    Fixture f;
+    push(4011U, 60.0, 20.0);
+    f.model.poll();
+    f.map->centerOn(60.0, 20.0, 12.0);
+    const qulonglong id = f.map->trackAt(200.0, 150.0);
+    assert(id != 0U);
+    f.map->setFollowTrackId(id);
+    f.map->zoomAbout(f.map->minimumZoom(), 200.0, 150.0); /* pinched right out */
+    const double zoom = f.map->zoom();
+    f.map->setVisible(false);
+    push(4011U, 60.0, 21.0); /* the radio moves while hidden */
+    f.model.poll();
+    assert(std::fabs(f.map->centerLongitude() - 20.0) < 1.0e-6); /* no step while hidden */
+    f.map->setVisible(true);
+    assert(std::fabs(f.map->zoom() - zoom) < 1.0e-9);            /* the user's zoom, not a first centring's */
+    assert(std::fabs(f.map->centerLongitude() - 21.0) < 1.0e-6); /* caught up with the move */
+    f.map->setFollowTrackId(0U);
+
+    /* North at zoom 2 on a 300 px canvas; a taller canvas while hidden would pin the centre further south. */
+    f.map->centerOn(64.0, 0.0, 2.0);
+    const double north = f.map->centerLatitude();
+    f.map->setVisible(false);
+    f.map->setSize(QSizeF(400.0, 900.0));
+    f.map->setSize(QSizeF(400.0, 300.0));
+    f.map->setVisible(true);
+    assert(std::fabs(f.map->centerLatitude() - north) < 1.0e-9);
+    /* The same while still shown: a band above the canvas hides as the screen closes, before the canvas itself. */
+    f.map->setSize(QSizeF(400.0, 900.0));
+    f.map->setSize(QSizeF(400.0, 300.0));
+    assert(std::fabs(f.map->centerLatitude() - north) < 1.0e-9);
+
+    /* A follow's camera move cut short by hiding is finished on return, though the radio has not moved. */
+    push(4012U, -30.0, 100.0);
+    f.model.poll();
+    f.map->centerOn(-30.0, 100.0, 6.0);
+    const qulonglong radio = f.map->trackAt(200.0, 150.0);
+    assert(radio != 0U);
+    f.map->centerOn(10.0, 60.0, 6.0); /* the radio well off the view */
+    f.map->setCameraDurationMs(250);
+    f.map->setFollowTrackId(radio); /* the move starts... */
+    f.map->setVisible(false);       /* ...and the screen closes part way */
+    const double stopped = f.map->centerLongitude();
+    assert(std::fabs(stopped - 100.0) > 1.0);
+    f.map->setCameraDurationMs(0);
+    f.map->setVisible(true);
+    assert(std::fabs(f.map->centerLongitude() - 100.0) < 1.0e-6 && std::fabs(f.map->zoom() - 6.0) < 1.0e-9);
+    f.map->setFollowTrackId(0U);
+
+    /* A first centring cut short (one that must raise a world-wide zoom to centre a mark near the pole) is done again
+     * as a first on return, raise included. */
+    push(4013U, 65.0, -40.0);
+    f.model.poll();
+    f.map->centerOn(65.0, -40.0, 6.0);
+    const qulonglong polar = f.map->trackAt(200.0, 150.0);
+    assert(polar != 0U);
+    f.map->setZoom(0.0);
+    f.map->setCameraDurationMs(250);
+    f.map->setFollowTrackId(polar);
+    f.map->setVisible(false);
+    f.map->setCameraDurationMs(0);
+    f.map->setVisible(true);
+    const QPointF mark = f.map->markerPoint(polar).toPointF();
+    assert(std::fabs(mark.x() - 200.0) < 1.0e-6 && std::fabs(mark.y() - 150.0) < 1.0e-6);
+    f.map->setFollowTrackId(0U);
+
+    /* A rotation while hidden (a size that lasts): on return the follow centres its mark for the new canvas, at the
+     * user's zoom. */
+    f.map->centerOn(65.0, -40.0, 6.0);
+    f.map->setFollowTrackId(polar);
+    f.map->setVisible(false);
+    f.map->setSize(QSizeF(300.0, 400.0));
+    f.map->setVisible(true);
+    const QPointF turned = f.map->markerPoint(polar).toPointF();
+    assert(std::fabs(turned.x() - 150.0) < 1.0e-6 && std::fabs(turned.y() - 200.0) < 1.0e-6
+           && std::fabs(f.map->zoom() - 6.0) < 1.0e-9);
+    f.map->setFollowTrackId(0U);
+    f.map->setSize(QSizeF(400.0, 300.0));
+
+    /* A zoom button's move cut short while following is left where it stopped, not replayed as a follow step. */
+    f.map->centerOn(65.0, -40.0, 6.0);
+    f.map->setFollowTrackId(polar);
+    f.map->setCameraDurationMs(250);
+    f.map->zoomIn();
+    f.map->setVisible(false);
+    const double stoppedZoom = f.map->zoom();
+    f.map->setCameraDurationMs(0);
+    f.map->setVisible(true);
+    assert(std::fabs(f.map->zoom() - stoppedZoom) < 1.0e-9);
+    f.map->setFollowTrackId(0U);
+
+    /* The List shown (the canvas hidden) and the layout changing meanwhile does not start a follow over. */
+    f.map->centerOn(65.0, -40.0, 6.0);
+    f.map->setFollowTrackId(polar);
+    f.map->zoomAbout(f.map->minimumZoom(), 200.0, 150.0); /* pinched right out */
+    const double out = f.map->zoom();
+    f.map->setVisible(false);
+    f.map->setSize(QSizeF(400.0, 900.0));
+    f.map->setSize(QSizeF(400.0, 300.0));
+    f.map->setVisible(true);
+    assert(std::fabs(f.map->zoom() - out) < 1.0e-9);
+    /* Nor while shown: the tiles prompt can go (the List) before the canvas hides. */
+    f.map->setSize(QSizeF(400.0, 900.0));
+    f.map->setSize(QSizeF(400.0, 300.0));
+    assert(std::fabs(f.map->zoom() - out) < 1.0e-9);
+    f.map->setFollowTrackId(0U);
+}
+
 /* Independent review M2/M3: a new canvas size, or a view restored through the camera properties, re-centres a running
  * follow at once rather than leaving the mark where those put it until it moves. */
 void
@@ -987,19 +1106,23 @@ test_follow_recentres_after_resize_and_restore() {
     assert(std::fabs(at.x() - 200.0) < 1.0e-6 && std::fabs(at.y() - 150.0) < 1.0e-6);
     f.map->setFollowTrackId(0U);
 
-    /* Following the device at 51.5 N from the world's zoom: the first centring raised the zoom for a 300 px canvas;
-     * on an 800 px one (a rotation) that zoom pins the centre again, and the follow centres the dot anew. */
+    /* Following the device at 51.5 N from the world's zoom: the first centring raised the zoom for a 300 px canvas.
+     * On an 800 px one (a rotation) the follow centres the dot again at that zoom, not a raised one: only a first
+     * centring raises a zoom (a layout change must not undo a zoom the user pinched out to). Where the projection's
+     * edge stops the centre, the dot is as near it as the canvas allows, and in view. */
     f.map->setZoom(0.0);
     f.map->setDeviceLatitude(51.5);
     f.map->setDeviceLongitude(20.0);
     f.map->setDeviceValid(true);
     f.map->setFollowDevice(true);
+    const double raised = f.map->zoom();
     f.map->setSize(QSizeF(400.0, 800.0));
+    assert(std::fabs(f.map->zoom() - std::max(raised, f.map->minimumZoom())) < 1.0e-9);
     const mm::Viewport vp = mm::clamp_viewport(mm::Viewport{
         mm::world_from_lat_lon(f.map->centerLatitude(), f.map->centerLongitude()).x,
         mm::world_from_lat_lon(f.map->centerLatitude(), f.map->centerLongitude()).y, f.map->zoom(), 400.0, 800.0});
     const mm::ScreenPoint dot = mm::screen_from_world(vp, mm::world_from_lat_lon(51.5, 20.0));
-    assert(std::fabs(dot.x - 200.0) < 1.0e-6 && std::fabs(dot.y - 400.0) < 1.0e-6);
+    assert(std::fabs(dot.x - 200.0) < 1.0e-6 && dot.y >= 0.0 && dot.y <= 800.0);
     f.map->setFollowDevice(false);
     f.map->setSize(QSizeF(400.0, 300.0));
 }
@@ -1021,10 +1144,40 @@ test_centring_raises_a_zoom_that_cannot() {
         mm::world_from_lat_lon(f.map->centerLatitude(), f.map->centerLongitude()).y, f.map->zoom(), 400.0, 300.0});
     const mm::ScreenPoint dot = mm::screen_from_world(vp, mm::world_from_lat_lon(51.5, 20.0));
     assert(std::fabs(dot.x - 200.0) < 1.0e-6 && std::fabs(dot.y - 150.0) < 1.0e-6);
-    assert(f.map->zoom() > 0.7 && f.map->zoom() < 4.0); /* raised, but only as far as needed */
-    f.map->setZoom(12.0);
-    const bool kept = f.map->centerOnDevice();
-    assert(kept && std::fabs(f.map->zoom() - 12.0) < 1.0e-9);
+    assert(f.map->zoom() > 14.99 && f.map->zoom() < 15.01); /* Locate me goes in to the streets around the dot */
+    f.map->setZoom(17.0);
+    const bool again = f.map->centerOnDevice();
+    assert(again && std::fabs(f.map->zoom() - 15.0) < 1.0e-9); /* the fix's own zoom, whatever the map had */
+}
+
+/* Locate me's zoom: the streets around a precise fix, and an approximate fix's whole circle (about half the shorter
+ * side across), however wide. The view is 400 x 300. */
+void
+test_device_zoom_follows_the_accuracy() {
+    Fixture f;
+    f.map->setDeviceLatitude(51.5);
+    f.map->setDeviceLongitude(20.0);
+    f.map->setDeviceValid(true);
+    f.map->setDeviceAccuracyM(0.0); /* unknown */
+    assert(std::fabs(f.map->deviceZoom() - 15.0) < 1.0e-9);
+    f.map->setDeviceAccuracyM(5.0);
+    assert(std::fabs(f.map->deviceZoom() - 15.0) < 1.0e-9);
+    f.map->setDeviceAccuracyM(2000.0);
+    const double approximate = f.map->deviceZoom();
+    const double radius_px = 2000.0 / mm::metres_per_px(51.5, approximate);
+    assert(approximate > 11.0 && approximate < 15.0 && std::fabs(radius_px - 75.0) < 1.0e-6);
+    f.map->setDeviceAccuracyM(10000.0); /* the widest fix a request keeps: its whole circle still shows */
+    const double wide = f.map->deviceZoom();
+    assert(wide < 11.0 && std::fabs((10000.0 / mm::metres_per_px(51.5, wide)) - 75.0) < 1.0e-6);
+    f.map->setZoom(2.0);
+    f.map->setDeviceAccuracyM(2000.0);
+    assert(f.map->centerOnDevice() && std::fabs(f.map->zoom() - approximate) < 1.0e-9);
+    /* Near a pole the projection's edge stops the centre: the accuracy's zoom stays, rather than one raised to centre
+     * the dot that would cut its circle. */
+    f.map->setDeviceLatitude(85.0);
+    f.map->setDeviceAccuracyM(5000.0);
+    const double polar = f.map->deviceZoom();
+    assert(f.map->centerOnDevice() && std::fabs(f.map->zoom() - polar) < 1.0e-9);
 }
 
 /* PR2 review 2: a fit while following the live position takes in the device dot that will be drawn after the follow
@@ -1105,8 +1258,10 @@ main(int argc, char** argv) {
     test_chips_never_move_the_camera();
     test_pinch_during_a_follow_step();
     test_follow_keeps_a_pinched_out_zoom();
+    test_hidden_canvas_keeps_its_view();
     test_follow_recentres_after_resize_and_restore();
     test_centring_raises_a_zoom_that_cannot();
+    test_device_zoom_follows_the_accuracy();
     test_fit_takes_the_dot_left_after_follow();
     test_ring_label_ranks_by_its_own_age();
     (void)dsd_qt::MapTileWorker::shutdownThreads(dsd_qt::MapTileWorker::kShutdownJoinMs);

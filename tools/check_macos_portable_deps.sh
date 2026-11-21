@@ -56,14 +56,15 @@ list_deps() {
 }
 
 # The oldest macOS a Mach-O file runs on: LC_BUILD_VERSION's minos, or the
-# version of an older LC_VERSION_MIN_MACOSX.
+# version of an older LC_VERSION_MIN_MACOSX. awk reads to the end: leaving at
+# the first match would end otool with SIGPIPE, which pipefail reports.
 min_os() {
   "$otool_bin" -l "$1" | awk '
     /cmd LC_BUILD_VERSION/ { build = 1; legacy = 0; next }
     /cmd LC_VERSION_MIN_MACOSX/ { legacy = 1; build = 0; next }
     /cmd / { build = 0; legacy = 0 }
-    build && /^[[:space:]]*minos / { print $2; exit }
-    legacy && /^[[:space:]]*version / { print $2; exit }
+    !found && build && /^[[:space:]]*minos / { print $2; found = 1 }
+    !found && legacy && /^[[:space:]]*version / { print $2; found = 1 }
   '
 }
 

@@ -115,6 +115,9 @@ session_new(dsd_opts** opts, dsd_state** state) {
     initOpts(*opts);
     initState(*state);
     (*opts)->audio_in_type = AUDIO_IN_NULL;
+    /* No sound card: initOpts() picks the PulseAudio output, which a scan's commit opens, and libpulse then makes a
+       runtime folder in TMPDIR wherever XDG_RUNTIME_DIR is unset. */
+    (*opts)->audio_out_type = 9;
     return 0;
 }
 

@@ -1328,7 +1328,80 @@ untyped FDMA entry with a typed peer entry at trust 1 (`trunk_scan_share_peer_id
 Recovery ownership is checked at the P25 watchdog, DMR tick and engine frame-sync callback boundaries. Runtime trunk-scan
 hooks identify the parked protocol. Outside trunk scan, validated control/grant evidence retains a protocol owner
 across sync loss; unrelated protocol decodes and raw sync cannot evict it. Ownership writes and watchdog reads share the decoder/SM guard, so the
-watchdog predicate does not read the sync or CC-format hints modified by frame acquisition. DMR owns its decoded
+watchdog predicate does not read the sync or CC-format hints modified by frame acquisition.
+
+**P25 watchdog threading:** the P25 watchdog thread is a beat (`p25_sm_watchdog_request_tick()`, every 200 ms with a
+frontend, 400 ms headless, `DSD_NEO_P25_WD_MS`): it reads and writes no `dsd_state` or `dsd_opts`, and makes no tune.
+The tick it asks for runs on the decoder thread (`p25_sm_watchdog_service()`, under the tick guard), which owns every
+field the hunt reads and makes every tune: at the frame-sync hunt's 300-symbol checkpoint, between synced frames
+(`live_scanner_process_synced_frames()`), and in a hunt read before each wait on its input. That covers a PCM read (UDP,
+TCP, stdin) that finds nothing buffered: a hunt read's zero-timeout read comes first, so a buffered sample services
+nothing, a trickling sender is serviced at every sample it makes the read wait for, and a frame read makes no probe. It
+covers a sound card's hunt read, which takes what the device holds without waiting (`dsd_audio_read_held()`:
+PulseAudio's held record queue, PortAudio's `Pa_GetStreamReadAvailable()`, AAudio's unread frames) in bounded polled
+waits (`symbol_audio_read_wait()`), so a suspended source or AAudio's capture timeout cannot hold the beat (the probe
+makes no device teardown or reopen: a waiting read brings back an AAudio input a route change lost,
+`dsd_audio_read_held()` with its recover flag, after it serviced the beat); frame decoding reads with the blocking
+`dsd_audio_read()`. It covers a live RTL read that finds the output empty (`DSD_RTL_READ_WANT_EMPTY_RETURN`: the read
+comes back `DSD_RTL_READ_EMPTY` before it waits, after the idle bound and, with no stream, a queued command's yield,
+`rtl_live_read_empty_poll()`; the hunt services the beat and reads again to wait), the RTL idle-bounded read, and a TCP
+reconnect's backoff and connect waits (its cancel check; a tick that retunes while the connect is under way, before the
+reconnect knows the socket, is marked again on the connection once it is opening, so what the server queued before is
+dropped, `symbol_tcp_mark_connect_retune()`). A named pipe given by its path (`-i /path/to/fifo`) is read through
+libsndfile, whose read blocks while the producer keeps the pipe open and writes nothing: a quiet named pipe holds the
+beat, and every tick, until data arrives or the pipe closes. PCM piped into stdin (`-i -`) is waited on in the bounded
+reads above instead. The engine's main pass and the hunt's entry run the decoder's own tick (`p25_sm_try_tick()`), which
+spends a standing beat too, so no later point runs a second tick for it. A beat that finds the guard free and no
+recovery to run (trunking off, -Y, no P25 to follow, a startup hunt: `p25_sm_tick_eligible()`) is let go at once and
+hands no read back. Otherwise shutdown, a queued command or a put-off publication comes first:
+`p25_sm_watchdog_service()` then runs no tick and answers `P25_SM_WATCHDOG_DEFERRED`, the beat standing, so no tune
+starts on a receiver being stopped or replaced; nothing moved, so a hunt read that meets it keeps its partial symbol and
+gives way to the work where it would with no beat (a stream pause, the RTL idle bound), a TCP reconnect gives up, and
+the hunt's checkpoint hunts on with its window, the work waiting for the hunt's return as at any checkpoint; the engine
+runs the work and then its own tick. The reconnect's backoff and its bounded connect (`dsd_socket_connect_bounded()`)
+each wait to one real-time deadline that counts the ticks' own time and is checked before every check, so no check (a
+tick) starts once it has passed: the connect then takes one last look that does not wait. A beat that finds the guard
+held stays asked for, and nothing recovery reads is looked at without the guard. A tick inside the hunt that moved the
+chain (`frame_sync_watchdog_tick.c`: the modulation, the symbol profile, or a tune request that may have moved the
+receiver, `dsd_trunk_tuning_retuned_since()`; one refused or deferred before it moved keeps the window) hands back at
+once: the read leaves with no sample and the partial symbol given up, and `getFrameSync()` returns no sync with
+`dsd_state::input_interrupted` set and its history dropped, as for a queued command, with no no-carrier pass. The
+engine's next call then starts on the new carrier with the tuning generation (the dispatch gate's) and the decode time
+(the sync stamps') taken afresh, so no window joins the two carriers and the first frame on the new one dispatches.
+Every P25 tick, wherever it runs, notes what its tunes did (`p25_sm_tick_noting_tunes()`): a tune that may have moved
+the receiver is a carrier boundary (`dsd_state_note_carrier_change()`), so a decoder that reads back before its sync
+(DMR, X2-TDMA) waits for that many of the new carrier's symbols (`dsd_state_carrier_settling()`); and the requests it
+left in flight (an RTL retune the stream applies on its own thread) are noted in the watchdog module, which neither
+engine loop starts a hunt past while one is pending (`p25_sm_tick_tunes_in_flight()`: the synced-frames loop ends its
+run of frames, the main pass waits in 1 ms passes that keep the interruption, so no no-carrier pass runs), so the
+generation is taken at the actual tune boundary. A rigctl tune a tick makes is an ordinary decoder-thread tune: it marks
+the input before the frequency is sent and asks for the drop (`dsd_engine_note_rigctl_retune()`), and the next read
+drops the old channel's queued audio (`dsd_symbol_apply_input_drop()`) before the new carrier's hunt reads any of it. A
+TCP reconnect a tick's move meets is not cancelled by it (a receiver that kept moving would keep it from ever
+connecting): it runs to its connect, and the read hands back before the new connection's first sample; the old
+connection's staged samples and resampler history go whatever the reconnect's outcome
+(`dsd_opts_reset_pcm_input_state()`). The control channel's sync stamps a sync accept writes
+(`frame_sync_note_cc_sync()`) each follow their own clock: the monotonic one only moves forward, and the wall one takes
+the call's time, set back included, unless a tick wrote it during the call, which the hunt sees against both stamps as
+it found them before its entry tick (kept across window restarts, `frame_sync_runtime_restart()`; a grace writes both,
+so one whose wall second repeats the old one still shows in the monotonic stamp); a grace after a tune stamps the wall
+clock as the tick saw it and the monotonic one as the tune completed, so either can be the newer. So a release, a
+control-channel hunt step and a CQPSK retry write the decoder's profile (`rf_mod`, `samplesPerSymbol`, `symbolCenter`,
+`sps_hunt_*`), `trunk_is_tuned`, `p25_p2_active_slot`, the audio gates, the payload crypto fields and the sync stamps in
+the same decoder-thread call that retunes, before another sample is read. Beat-to-tick delay: one checkpoint (62.5 ms at
+4800 sym/s), one frame, or one input wait (at most a 100 ms slice). A frame read waits for its samples inside a dispatch
+that holds the guard, as before. The off-thread tune machinery (`dsd_frame_sync_note_off_thread_tune()`, the published
+P25p1 decision, `dsd_rxid_request_trunk_tune()`) has no production caller off the decoder thread any more.
+`ENGINE_P25_WATCHDOG_DECODER_TICK` runs the real watchdog thread beside the hunt's writes and reads and checks that a
+watchdog-paced release tunes from the decoder thread (tsan-debug), that a beat behind a queued command runs no tick,
+that the decoder's own tick spends it, and that the release marks a carrier boundary; `DSP_INPUT_INTERRUPT` and
+`FRAME_SYNC_SPS_HUNT_FALSE_SYNC` pin the hand-back, the input-wait service and its order, and the stamps;
+`ENGINE_NO_CARRIER_RESET` runs the live loop over a scripted C4FM input with a beat posted at a hunt read (UDP, a
+pending RTL-style return, a beat in a frame, a replaced return, a stalled sound card) and checks that the control
+channel's first frame after the return dispatches with a stamp no earlier than the return; `ENGINE_RIGCTL_RETUNE` checks
+that a beat's rigctl return drops the old channel's queued UDP audio at the next read.
+
+DMR owns its decoded
 CC heartbeat, six-second loss grace, two-second probe window and five-second backend deadline inside each
 target's `dmr_sm_ctx_t`. In single-system sessions the engine ticks admitted DMR recovery between synced frames,
 including withheld frames, after startup acquisition has ended too. Data-only or unvalidated syncs need not enter a
@@ -1648,45 +1721,47 @@ Tests: `tests/engine/test_engine_trunk_scan.c` (`ENGINE_TRUNK_SCAN`) and
   acquisition reset; so a P25 release's retune, or a direct return, in the exit's own no-sync hooks keeps nothing. Its
   first read checks the clock, epoch, carrier count, generation, drops and pending off-thread tunes again, for a flush
   an RTL reader finds only when it reads; a failed check drops the levels with the dibits, and the pass position a
-  dropped P25p1 candidate's carry brought, so the call hunts a whole pass of the new stream. A matcher that reads only its
-  window or reads its frame forward from the sync (TETRA, P25, NXDN, YSF, dPMR, D-STAR, M17, ProVoice, EDACS) then
-  matches a frame that straddles the exit; before, a TETRA control uplink burst that began fewer than 20 symbols before
-  it was lost. An NXDN96 FSW straddling the exit is read on its carried levels, so it counts as clear only when its 20
-  bits are, and acquisition still needs two clear FSWs a frame apart; `frame_sync_nxdn96_fsw_bit_errors()` reads a
-  window with fewer than ten levels as not clear (only a test's sign-only window keeps the sign match). DMR and X2-TDMA
-  decode their burst back from the rolling dibit buffers (`dmr_payload_p`, `dibit_buf_p`), which the no-carrier reset
-  clears, so they match only on a 24-symbol window the call read itself (`frame_sync_match_window_own()`), as before the
-  carry, or one a dropped P25p1 candidate's carry brought (`dsd_frame_sync_history_carry::own_symbols`: the hunt wrote
-  its word's dibits there and the NID read its NID's; a no-sync exit's carry brings none, since the no-carrier reset
-  after the exit clears them), counted no further back than the buffers hold dibits written since their last clear or
-  wrap (`dsd_state_rolling_dibits()` at the next call's start); a broken first read drops it with the history. A frame
-  decoder that read into the hunt's symbols hands them back the same way (`dsd_frame_sync_hand_back_symbols()`, no
-  pass position, `own_symbols` 0): D-STAR reads the start of each resynchronization word to tell it from the end
-  pattern, and the hunt matches the word where it ends. Every clear of the rolling buffers (initState, noCarrier, an
-  NXDN reset) and every wrap puts a buffer's pointer at `DSD_ROLLING_DIBIT_FLOOR` (200), and what lies before it is the
-  clear's zeros or a wrap's stale dibits, which pass
-  Golay and Hamming as codewords; `dsd_state_rolling_dibits()` counts what was written since. A DMR or X2-TDMA sync is
-  still accepted, and each accept notes how many of the oldest read-back dibits are not the stream's
-  (`dsd_state_note_sync_readback()`, `dsd_state::sync_readback_invalid`, read by a decoder before it reads a symbol
-  through `dsd_state_sync_readback_invalid()`, which answers 0 once a symbol was read). For DMR the 90 dibits written
-  since the clear are the stream's, and so are the 66 before the sync that `dmr_resample_cach()` re-reads from the soft
-  symbol history, which the clear leaves; `frame_sync_dmr_resample_on_sync()` gives those below the floor their symbols'
-  soft metrics too, in place of the clear's zero reliabilities. So DMR notes dibits only after a cold start or an
-  acquisition reset (no soft history), and X2-TDMA (no re-read) within 90 (data) or 144 (voice) dibits of any clear. The
-  decoders then decode and publish nothing from them: `dmr_data_sync()`, `dmrMSData()` and `processX2TDMAdata()` nothing
-  of the burst (CACH, slot type and payload are all read back) and read its live half past; `dmrBSBootstrap()` nothing
-  of burst A, since the CACH names its slot, before its loop takes the next burst at the slot that burst's own TACT
-  names (no slot to alternate from); `dmrMSBootstrap()` no AMBE frame with a dibit among them (silence in its place),
-  nor the burst's late-entry fragments, debug dump or DSP output line; `dmrRC()` nothing when they reach its last 36
-  dibits; and `processX2TDMAvoice()` nothing of its first slot when they reach its CACH. Tests: `DMR_DATA_SYNC`,
-  `DMR_MS_DATA`, `DMR_BS_SYNC_TIMES`, `DMR_RC_BURST`, `X2TDMA_DATA`, `X2TDMA_VOICE_HELPERS`, `FRAME_SYNC_HISTORY_CARRY`.
-  What the carry does not restore is either continuous across the exit (the soft symbol history
-  `dsd_state::symbol_history`, which TETRA's soft capture and every warm start read, and `sbuf`) or sync evidence that
-  noCarrier resets (the NXDN96 hits and lock, the M17 preamble run, candidate, polarity and join hits, `lastsynctype`,
-  the ProVoice and M17 confirms), after which a matcher needs more evidence, not less. A sync, an input interruption, a
-  signal-search yield and shutdown drop it too. Test: `FRAME_SYNC_HISTORY_CARRY` (NXDN96 FSWs, a DMR and an X2-TDMA sync
-  straddling the exit, DMR and X2-TDMA syncs short of their read-back after a clear, and a carried pass a first-read
-  flush restarts whole, among them).
+  dropped P25p1 candidate's carry brought, so the call hunts a whole pass of the new stream. Within a call, a read that
+  moves the clock epoch (an RTL stream flush, a CQPSK reacquisition's flush of the RTL output, which changes nothing
+  else the hunt compares) drops the window the same way, one compare a symbol (`frame_sync_history_confirm()`). A
+  matcher that reads only its window or reads its frame forward from the sync (TETRA, P25, NXDN, YSF, dPMR, D-STAR, M17,
+  ProVoice, EDACS) then matches a frame that straddles the exit; before, a TETRA control uplink burst that began fewer
+  than 20 symbols before it was lost. An NXDN96 FSW straddling the exit is read on its carried levels, so it counts as
+  clear only when its 20 bits are, and acquisition still needs two clear FSWs a frame apart;
+  `frame_sync_nxdn96_fsw_bit_errors()` reads a window with fewer than ten levels as not clear (only a test's sign-only
+  window keeps the sign match). DMR and X2-TDMA decode their burst back from the rolling dibit buffers (`dmr_payload_p`,
+  `dibit_buf_p`), which the no-carrier reset clears, so they match only on a 24-symbol window the call read itself
+  (`frame_sync_match_window_own()`), as before the carry, or one a dropped P25p1 candidate's carry brought
+  (`dsd_frame_sync_history_carry::own_symbols`: the hunt wrote its word's dibits there and the NID read its NID's; a
+  no-sync exit's carry brings none, since the no-carrier reset after the exit clears them), counted no further back than
+  the buffers hold dibits written since their last clear or wrap (`dsd_state_rolling_dibits()` at the next call's
+  start); a broken first read drops it with the history. A frame decoder that read into the hunt's symbols hands them
+  back the same way (`dsd_frame_sync_hand_back_symbols()`, no pass position, `own_symbols` 0): D-STAR reads the start of
+  each resynchronization word to tell it from the end pattern, and the hunt matches the word where it ends. Every clear
+  of the rolling buffers (initState, noCarrier, an NXDN reset) and every wrap puts a buffer's pointer at
+  `DSD_ROLLING_DIBIT_FLOOR` (200), and what lies before it is the
+  clear's zeros or a wrap's stale dibits, which pass Golay and Hamming as codewords; `dsd_state_rolling_dibits()` counts
+  what was written since. A DMR or X2-TDMA sync is still accepted, and each accept notes how many of the oldest
+  read-back dibits are not the stream's (`dsd_state_note_sync_readback()`, `dsd_state::sync_readback_invalid`, read by a
+  decoder before it reads a symbol through `dsd_state_sync_readback_invalid()`, which answers 0 once a symbol was read).
+  For DMR the 90 dibits written since the clear are the stream's, and so are the 66 before the sync that
+  `dmr_resample_cach()` re-reads from the soft symbol history, which the clear leaves;
+  `frame_sync_dmr_resample_on_sync()` gives those below the floor their symbols' soft metrics too, in place of the
+  clear's zero reliabilities. So DMR notes dibits only after a cold start or an acquisition reset (no soft history), and
+  X2-TDMA (no re-read) within 90 (data) or 144 (voice) dibits of any clear. The decoders then decode and publish nothing
+  from them: `dmr_data_sync()`, `dmrMSData()` and `processX2TDMAdata()` nothing of the burst (CACH, slot type and
+  payload are all read back) and read its live half past; `dmrBSBootstrap()` nothing of burst A, since the CACH names
+  its slot, before its loop takes the next burst at the slot that burst's own TACT names (no slot to alternate from);
+  `dmrMSBootstrap()` no AMBE frame with a dibit among them (silence in its place), nor the burst's late-entry fragments,
+  debug dump or DSP output line; `dmrRC()` nothing when they reach its last 36 dibits; and `processX2TDMAvoice()`
+  nothing of its first slot when they reach its CACH. Tests: `DMR_DATA_SYNC`, `DMR_MS_DATA`, `DMR_BS_SYNC_TIMES`,
+  `DMR_RC_BURST`, `X2TDMA_DATA`, `X2TDMA_VOICE_HELPERS`, `FRAME_SYNC_HISTORY_CARRY`. What the carry does not restore is
+  either continuous across the exit (the soft symbol history `dsd_state::symbol_history`, which TETRA's soft capture and
+  every warm start read, and `sbuf`) or sync evidence that noCarrier resets (the NXDN96 hits and lock, the M17 preamble
+  run, candidate, polarity and join hits, `lastsynctype`, the ProVoice and M17 confirms), after which a matcher needs
+  more evidence, not less. A sync, an input interruption, a signal-search yield and shutdown drop it too. Test:
+  `FRAME_SYNC_HISTORY_CARRY` (NXDN96 FSWs, a DMR and an X2-TDMA sync straddling the exit, DMR and X2-TDMA syncs short of
+  their read-back after a clear, and a carried pass a first-read flush restarts whole, among them).
 - DSP `dsd_frame_sync_reset_acquisition()` drops outgoing profile proof, modulation votes, symbol history, hunt budgets,
   the two-slot TDMA verdict (`tdma_carrier`) and slicer windows at committed row boundaries, and at an input boundary
   (issue #634). Conventional rows also discard learned P25 modulation; trunk targets retain their own learned
@@ -2576,11 +2651,13 @@ suite runs under this compiler.
     `close_and_publish_call_wav()` follows), so the commit links it and a drop unlinks it; with no such epoch, as no
     row's (nothing names it, as on the drop path). An empty file, `-P` off, a static WAV and an active call's file (its
     commit closes it) are left alone. The check that no call owns the file and its close run as one step under the
-    call-state lock, the lock every commit holds while it rotates a slot: a flush on the P25 watchdog's thread (a trunk
-    control-channel return or tune, under the tick guard) can meet the decoder thread committing the slot's ended call
+    call-state lock, the lock every commit holds while it rotates a slot. In a running decoder a flush (a P25 tick's
+    trunk control-channel return or tune, under the tick guard) and a commit of the slot's ended call
     (`dsd_event_sync_slot()` from `noCarrier()` or `getFrameSync()`, which holds the call-state lock and not the tick
-    guard), and the two must never close the same file. The slot writers never meet a flush: they run on the decoder
-    thread under the tick guard (a frame dispatch), and the watchdog flushes only inside its tick. Lock order: tick
+    guard) are both the decoder thread's, the watchdog's ticks included ("P25 watchdog threading"), so they never
+    overlap; the lock keeps the check and the close one step for a caller that runs a tick on a thread of its own (the
+    engine tests' in-flight ticks), so the two never close the same file. The slot writers never meet a flush: they run
+    under the tick guard (a frame dispatch), and a flush runs only inside a tick. Lock order: tick
     guard, then the call-state lock, then the journal's and the segment table's; no flush caller holds the call-state
     lock or an event-history transaction. Every departure the decoder makes runs it, after ending its calls where it
     ends them: the carrier boundary (every kind but a stream gap, after `no_carrier_finalize_canonical_calls()`); a
@@ -2850,6 +2927,22 @@ suite runs under this compiler.
   understated length, the KE8NAX sample's 2 for six characters), is shown but never learned (a decided limit). A block
   that completes the set out of order waits for the next cycle's decode; an empty alias and one with a U+FFFD are never
   learned. Tests: `DMR_TALKER_ALIAS_UTF8`, `DMR_TALKER_ALIAS_UTF16`, `DMR_TALKER_ALIAS_HEADER_LEN`, `DMR_ALIAS_LEARN`.
+- Invariant (live talker alias, `dsd_state::generic_talker_alias`): the alias the terminal UI shows for a slot is set by
+  alias enrichment (`dsd_event_enrich_alias()`), which tags it with the call epoch and the reception generation it was
+  published under (`generic_talker_alias_epoch`, `_rx_gen`). A P25 Phase 1 voice-user link control repeats in every LDU1
+  while the alias arrives in pieces across later superframes, so it keeps the alias when it goes on with the open call
+  the alias was published for, under the same reception, and drops it otherwise: a new call or talker, a declined start,
+  a TDULC, another system, a source other than the call's own talker, no source or a special address, the same number
+  switching between a local address and one needing a Source ID Extension within the call (another system's radio:
+  `p25_p1_voice_user_epoch` / `_local`), an alias from an earlier call or set outside enrichment
+  (`p25_lcw_drop_alias_unless_continued()`). Dropping it at every LDU1 made a Phase 1 alias flash on and off. Phase 2
+  drops it when a voice user begins a new epoch, or when another roaming radio's home replaces the call's
+  (`p25p2_note_voice_home()`); the trunk state machine drops it when a slot's media closes. The terminal UI shows an
+  alias only on the call it was published for, and on a P25 call never an untagged one; the NXDN line shows NXDN's
+  untagged text, and tagged text only on its own call. A decoder that sets the text outside call enrichment (NXDN) sets
+  the tag to 0. Decided limits: a reception change inside one call epoch drops the alias at the next voice-user link
+  control, not at once; Harris and Motorola alias fragments that straddle a reception change are assembled as before.
+  Tests: `P25_P1_LCW_GATING`, `CORE_ALIAS_HANGTIME`.
 - Invariant (Motorola talker alias reassembly, `src/core/util/dsd_alias.c`, `<dsd-neo/core/embedded_alias.h>`): the
   MFID 0x90 alias (Phase 1 LCW 0x15/0x17, Phase 2 MAC 0x91/0x95) assembles in `dsd_state::p25_apx_alias_rx[slot]`
   (`p25_apx_alias_rx_state_t`), which owns its header copy, block bitmap and record store; it never touches the
@@ -3740,7 +3833,7 @@ suite runs under this compiler.
   re-resolves for admission: the winner becomes the slot's and the snapshot's policy target in place
   (`dsd_call_state_update_policy_target()`, no boundary; the received service options and priority stay as received)
   and the ledger takes its priority; when nothing in the patch may be followed the held call is described with no
-  priority protection (-1). The watchdog's TUNED tick runs that re-resolution on its own thread, so every command that
+  priority protection (-1). The watchdog-paced TUNED tick runs that re-resolution under the tick guard, so every command that
   writes a talkgroup policy input applies under the P25 SM tick guard: the policy store, Hold, allow list and record
   switch (`command_changes_call_verdict()`), and the tune switches, the encryption lockout ledger, every key edit (they
   bump its key epoch) and the Phase 2 parameters (`command_writes_tick_inputs()`). Admission also judges the row-edit
@@ -4550,7 +4643,8 @@ suite runs under this compiler.
   gate starts at dispatch; what a frame reads back from before its sync (DMR's 66 buffered dibits, X2-TDMA's 144, a
   TETRA burst's block 1 in the hunt's history) was read earlier, so the boundary and a trunk-scan target switch also
   mark the symbol clock (`dsd_state_note_carrier_change()`; a change that runs while `getSymbol()` reads a symbol,
-  `dsd_state::symbol_read_active`, counts that split symbol as the carrier left's, one between reads none), and each
+  `dsd_state::symbol_read_active`, counts that split symbol as the carrier left's, one between reads none, and one in a
+  read that then commits no symbol, a hunt read handed back after a P25 tick's retune, none either), and each
   protocol's matcher in `getFrameSync()` waits until what its frame reads back (`k_frame_sync_tries`, then the matched
   burst's own, `frame_sync_burst_settling()`: its sync window; DMR 90, X2-TDMA data 90 and voice 144, TETRA control 57,
   synchronisation 79 and normal bursts 126, EDACS 48) is the new carrier's (`dsd_state_carrier_settling()`;
@@ -4583,7 +4677,8 @@ suite runs under this compiler.
   engine (`dsd_rxid_apply_trunk_tune()` returns 1 when it applied a drop, `dsd_rxid_request_trunk_tune()` when it
   applied one at once inside a dispatch): `dsd_engine_rxid_trunk_tune()` on the decoder thread or inside a dispatch,
   `processFrame()`'s apply before the frame, the apply after the synced-frame trunking ticks, and the trunk-scan
-  advance, so a watchdog retune resets it when the decoder thread applies the drop, never on the watchdog's thread;
+  advance, so a retune made off the decoder thread resets it when the decoder thread applies the drop, never on the
+  tuning thread (a P25 watchdog tick's retune is the decoder thread's own);
   `trunk_scan_switch_to()` (which also covers the forced release's own apply) and its rollback, which restores the
   record without the evidence and so drops the part; a colour-code change on the carrier (the confidence lock onto
   another code and its relock, BS and MS voice alike; the MS/direct slot type, `dmr_ras_note_color_code()`); the DMR
@@ -4591,8 +4686,8 @@ suite runs under this compiler.
   (`ui_user_move_forgets_identity()`); and the guarded no-carrier step (`dsd_engine_no_carrier_identity_stale()`), so
   the next transmission proves RAS again. A frame
   of another family drops the part with the record and keeps the evidence (the same carrier): the next signature notes
-  it again. `dsd_engine_forget_carrier_codes()` does not reset it: the voice-channel tune that calls it can run on the
-  watchdog's thread, and the trunk tune's apply covers that tune. A tune the user asked for while trunking, which keeps
+  it again. `dsd_engine_forget_carrier_codes()` does not reset it: the trunk tune's apply covers the voice-channel tune that calls
+  it. A tune the user asked for while trunking, which keeps
   the decoder's trunking state and so is no carrier boundary, forgets the record too (D4: any user move), after the
   calls it ended took theirs: a frequency entry that selects a P25 control channel (`ui_cmd_handle_p25_cc_selection()`,
   accepted only), a Return to CC, and a channel or candidate cycle (`ui_user_move_forgets_identity()`, which also marks
@@ -4894,7 +4989,7 @@ suite runs under this compiler.
     readings feed the P25 patch table's listening clock) is decode time: protocol windows (the DMR header repeat, SLCO
     print throttle and RC repeat dedup, the P25 PTT retransmission and FACCH double-END windows, NXDN recent context),
     trunk SM stamps and ticks, sync stamps, and decoded-output timestamps and file names. The P25 SM watchdog thread
-    sleeps in real time, but the ticks it drives compare decode time, so where a tick falls among a replay's samples
+    sleeps in real time, but the ticks it asks the decoder thread for compare decode time, so where a tick falls among a replay's samples
     follows the wall clock, one reason a trunked (`-T`) replay is outside the replay determinism guarantee
     (`docs/iq-capture-replay.md`). In
     `src/core`, `src/app_control` and `src/ui` decode time drives the call store's fallback stamps
@@ -5428,7 +5523,8 @@ suite runs under this compiler.
       stop before the closing blank line (7.81 and 8.5: every line but it; 7.65: the status line only), so the lines
       seen so far are kept; a write refusal can be the header cap, so there the block must be whole.
       `RUNTIME_TILE_FETCH_PLAIN_HTTP` drives the real libcurl against a loopback server (plain http via the
-      test-only `DSD_TILE_FETCH_TEST_PLAIN_HTTP`). A URL libcurl rejects as malformed
+      test-only `DSD_TILE_FETCH_TEST_PLAIN_HTTP`, pinned by the `CURLPROTO_HTTP` bitmask so no build hands libcurl a
+      plain-http protocol name). A URL libcurl rejects as malformed
       (`CURLE_URL_MALFORMAT`) is `ERR_INVALID`, a settings problem, never retried as an outage.
     - Connection reuse: `dsd_tile_fetch_session` (one per fetching thread, `request.session`) is a curl share handle
       for the connection (7.57+), DNS and TLS session caches; any one the library cannot share is skipped. The
@@ -5522,7 +5618,7 @@ stays. Tests: `CORE_KEY_DIRECT`, `APP_CONTROL_TELEMETRY_HOOKS_INSTALL`, `UI_ASYN
 
 **Publishing under the tick guard:** the P25 watchdog's tick writes decoder state and options (calls, tuned and
 control-channel frequencies, site tables, CC candidates, `trunk_is_tuned`, the tuner's centre frequency) under the P25
-SM tick guard on its own thread. `dsd_app_telemetry_publish_snapshot()` and `dsd_app_telemetry_publish_opts_snapshot()`
+SM tick guard (on the decoder thread, which runs the watchdog's ticks). `dsd_app_telemetry_publish_snapshot()` and `dsd_app_telemetry_publish_opts_snapshot()`
 therefore read the live state only under that guard: the copy, the notification record and the observers. Publishers run
 on the decoder thread only, and a publication never waits for a tick (a tick can last an RTL tune, up to 500 ms, or
 rigctl round trips): a publisher already under the guard (a frame dispatch) uses that hold, since the guard is not
@@ -5809,8 +5905,7 @@ reports every outcome: its late failure posts the text the import composed (the 
 import applied); its landing (the import's toast with the tune landed) and its drop (superseded, or the stream stopped)
 replace the import's own toast only while it is up, never a newer message or a cleared line. An owner's own tune
 (`dsd_engine_tune_rtl()`, `no_carrier_tune_rtl_if_needed()`: a trunk hunt, a grant, a scan step, after an import that
-turned it on) marks itself first (`dsd_engine_manual_tune_owner_takes_over()`, atomic, since the P25 watchdog's thread
-tunes too), and its drop says nothing, unless the import's tune had already landed. The operator's P25 Return-to-CC,
+turned it on) marks itself first (`dsd_engine_manual_tune_owner_takes_over()`, atomic), and its drop says nothing, unless the import's tune had already landed. The operator's P25 Return-to-CC,
 Candidate cycle and a block's return to the control channel (`request_manual_tune()` with a P25 symbol rate) tune
 through the same hook, so they count as owner tunes as well: an import's tune they drop is not announced (accepted
 limit; their own toasts say where the receiver went). The cached centre follows a tune that fails inside its wait the
@@ -7762,7 +7857,8 @@ the stream-notice hooks' pattern: one that fails to initialize leaves the hook u
   (`dsd_state_carrier_settling()`), so no frame decodes the carrier left's buffered dibits on the new carrier, and a
   protocol that reads only forward (P25 Phase 1) loses no frame. A shorter gap, frame decoding, or no queued command
   keeps waiting. The M17 TCP reconnect gives up the same way between attempts, which connect within a bound to the
-  address the connection was made to (`tcp_connect` hook, `ConnectBounded()` with no lookup) and back off in slices; "no
+  address the connection was made to (`tcp_connect` hook, `ConnectBounded()` with no lookup) and back off in slices, each
+  to one real-time deadline that counts the cancel checks' own time; "no
   socket" is `DSD_INVALID_SOCKET`. A file or TCP input that ends marks `dsd_state::input_fallback_pending`: frame
   decoding reads zeros until its frame ends (a symbol capture's dibits are erasures then, reliability 0, never its last
   dibit repeated at full confidence), and the hunt's read hands the switch to Pulse to the engine
@@ -8042,15 +8138,16 @@ the stream-notice hooks' pattern: one that fails to initialize leaves the hook u
   its own later retune (an io_control tune, the frequency entry) never brings back what that retune dropped, and moves
   no epoch (that retune moved it, and no symbol came between them); a request on a newer input replaces an older
   input's. Two posts before one take leave the later (the backlog holds the latest post), and a take racing a post
-  carries the latest mark (`ENGINE_RIGCTL_RETUNE`, `test_newest_cutoff_wins()`). Off the decoder thread (the P25
-  watchdog) the tune posts `dsd_frame_sync_note_off_thread_unflushed_retune()` (`unflushed_retune.c`) before its tune
-  notice: the mark it took before its request, held in the backlog (`dsd_input_backlog_post()`; of two posts the later
+  carries the latest mark (`ENGINE_RIGCTL_RETUNE`, `test_newest_cutoff_wins()`). A P25 watchdog tick runs on the decoder thread
+  ("P25 watchdog threading"), so its tunes take the direct path above. A tune made off the decoder thread (the retained
+  off-thread API: a test, or a caller on another thread) posts `dsd_frame_sync_note_off_thread_unflushed_retune()`
+  (`unflushed_retune.c`) before its tune notice: the mark it took before its request, held in the backlog (`dsd_input_backlog_post()`; of two posts the later
   mark is held, in whatever order they come), and an atomic count, the decoder's cue. The decoder's next read takes it
   (`frame_sync_take_unflushed_retunes()`, inline in `frame_sync_unflushed.h`, with the take itself in
   `frame_sync_unflushed.c`: one relaxed load per EDACS triplet, and per symbol read only while rigctl is in use
   (`dsd_opts::use_rigctl`), the only time a post is made, so a run without rigctl loads no shared count per symbol,
   which on the MSVC atomics fallback is a locked operation; `test_symbol_reader_checks_posts_only_with_rigctl()`),
-  moving the epoch and asking for the drop with the post's mark, so the watchdog's tunes drop at the next read after
+  moving the epoch and asking for the drop with the post's mark, so an off-thread tune drops at the next read after
   the post; the notice's reconcile (`dsd_frame_sync_apply_off_thread_tunes()`) takes a post no read met yet, and a
   failed rigctl reconnect takes one as it turns rigctl off (`svc_rigctl_connect()`). Every mark is measured when it is taken:
   the cutoff is what had arrived on the input then, nothing later. The TCP reconnect makes its new connection the
@@ -8084,7 +8181,7 @@ the stream-notice hooks' pattern: one that fails to initialize leaves the hook u
   was not measured on the queue attached then (`dsd_frame_sync_forget_unflushed_retunes()`, declared in
   `include/dsd-neo/dsp/unflushed_retune.h`, which `<dsd-neo/core/opts.h>` includes for
   `dsd_opts_reset_pcm_input_state()`; it calls `dsd_input_backlog_forget()`): such a retune moved the peer before the
-  new stream began. A post that comes after the replacement, marked on the input replaced (a watchdog's tune marked on
+  new stream began. A post that comes after the replacement, marked on the input replaced (an off-thread tune marked on
   the old TCP connection and confirmed after the reconnect), is refused by `dsd_input_backlog_post()` itself, past the
   opening-to-reader handoff above: it would move the new stream's timeline and drop nothing of it
   (`test_late_post_from_a_replaced_input()`). One marked on the input a switch's attach in flight replaced comes back
@@ -9241,7 +9338,8 @@ the stream-notice hooks' pattern: one that fails to initialize leaves the hook u
   Both are also cleared with the M17 join history (`dsd_state_forget_sync_join_histories()`), at an acquisition reset
   and any carrier change (`dsd_state_note_carrier_change()`, so a tune, a probe or a trunk-scan switch), at every
   accepted trunk retune of any protocol (`dsd_engine_trunk_tune_to_freq_request()`, `_to_cc_request()`: an NXDN DISC's
-  return included; one the P25 watchdog makes off the decoder thread is applied by the frame sync's next step,
+  return included, and a P25 watchdog tick's, which runs on the decoder thread; one made off the decoder thread is
+  applied by the frame sync's next step,
   `dsd_frame_sync_apply_off_thread_tunes()`), at a carrier boundary inside an NXDN frame and at the CAC reset. The
   four-level reading takes the window's level ring, which a symbol capture fills with its dibits' levels
   (`dsd_symbol_level_from_dibit()`), so it applies there too; only a window holding fewer than ten levels (the unit
@@ -9382,7 +9480,8 @@ the stream-notice hooks' pattern: one that fails to initialize leaves the hook u
     modulation goes back. A tune that fails or is deferred puts the comparison back as it was, with the front end's
     profile captured before the comparison ended, so the decoder and the front end stay on the same chain.
   - The comparison is the decoder thread's: it runs in the hunt, outside the P25 SM tick guard, and a tune the P25
-    watchdog's tick makes on its own thread never touches it. The invariant: an off-thread tune makes one coherent read
+    watchdog's tick made on its own thread never touches it (the decoder thread now runs those ticks, see "P25 watchdog
+    threading"; the rule stays for any tune made off it). The invariant: an off-thread tune makes one coherent read
     of the decision the decoder publishes (`dsd_frame_sync_p25p1_read_decision()`: one atomic value, whether a
     comparison runs and the learned modulation, the leading chain while one runs, published at every comparison step and
     every write of the learned modulation by `dsd_frame_sync_p25p1_mod_compare_publish()`), taken when its outermost
@@ -13288,7 +13387,8 @@ Key public headers (selection):
 - P25: `<dsd-neo/protocol/p25/p25p1_const.h>`, `<dsd-neo/protocol/p25/p25_trunk_sm.h>`,
   `<dsd-neo/protocol/p25/p25_sm_watchdog.h>` (a watchdog thread that cannot start leaves the watchdog off, logged, and
   a stop joins only a thread that started; `p25_sm_watchdog_set_thread_create_for_test()`, compiled only with
-  `DSD_NEO_TEST_HOOKS`, injects the failure, `P25_SM_WATCHDOG_START`)
+  `DSD_NEO_TEST_HOOKS`, injects the failure, `P25_SM_WATCHDOG_START`; the thread only asks for ticks, which the decoder
+  thread runs, `p25_sm_watchdog_service()`, see "P25 watchdog threading")
 - NXDN: `<dsd-neo/protocol/nxdn/nxdn_const.h>`, `<dsd-neo/protocol/nxdn/nxdn_trunk_diag.h>`
   (the movable missing-channel ledger and its exit summary, so trunk scan can park one per target)
 - D‑STAR: `<dsd-neo/protocol/dstar/dstar_const.h>`, `<dsd-neo/protocol/dstar/dstar_header.h>`
@@ -13561,8 +13661,9 @@ Private per-protocol modules worth knowing about:
     trunking the machine does not judge an operator's move: on the io_control leg the engine's reading of the receiver
     does (`dmr_sm_note_foreign_operator_leave()`), and on the P25 hook leg the engine's tune hook. The decoder thread
     alone writes the left calls' decryption and the hold: it does so in its frames and in the no-carrier pass, which
-    runs outside the P25 SM tick guard. A tune the P25 watchdog makes on its own thread (a grant, a return to the
-    control channel, whose release forgets the privacy) only asks for it, under the guard
+    runs outside the P25 SM tick guard. A P25 watchdog tick's tune (a grant, a return to the control channel, whose
+    release forgets the privacy) runs on the decoder thread ("P25 watchdog threading"); a tune made off the decoder
+    thread (the retained off-thread API) only asks for it, under the guard
     (`dsd_engine_dmr_leave()`, `dsd_state::dmr_leave_pending`, outside every snapshot copy range), and the decoder
     thread applies the request before its next frame (`dsd_engine_apply_dmr_leave()`: in `processFrame()`, after the
     synced frame's ticks, at the no-carrier pass's identity step and where a trunk scan snapshots the state), as it
@@ -13729,7 +13830,37 @@ Private per-protocol modules worth knowing about:
   source address as well as the home SUID names the talker by the working address, which is local: the extended voice
   users (Group and Unit to Unit Voice Channel User - Extended, 0x21/0x22, as MAC_SIGNAL and inside
   MAC_PTT/MAC_ACTIVE: `p25p2_mac_decode_voice_identity()`, `p25p2_vpdu_observe_voice()`), as the extended grants that
-  carry one do; the SUID is only shown (`SUID:`), so a roaming radio's checked voice user names it like any other.
+  carry one do; the SUID is then only shown (`SUID:`), so a roaming radio's checked voice user names it like any other.
+  Its Source SUID is recorded on the call as the talker's home identity (`dsd_call_snapshot::source_home`, only from a
+  MAC whose CRC passed: `p25p2_vpdu_source_home()` for the voice-user pass, `p25p2_mac_decode_voice_identity()` for the
+  MAC_ACTIVE voice start when the call it published names the voice user's nonzero target, both through
+  `p25p2_note_voice_home()` and `dsd_call_state_note_source_home()`), for display and alias matching only: it never
+  takes part in the call's identity, boundaries, source fields or any local list. An L3Harris site sends Source Address
+  0 for a roaming radio; that call keeps source 0 and is shown as `unit@system` (decimal unit ID, hex home System ID,
+  `dsd_call_state_format_home_source()`) on the history line (kept with the row as `Event_History::src_home` for a
+  re-render with `src_home_key`, the full SUID: a reacquired segment naming another full SUID takes the new home and
+  alias, and the event log reports that alias), in the terminal call window and in the app's call view. Another radio's
+  home on the same call (two roaming radios with no end decoded between them) replaces it and drops the alias the
+  earlier radio's call showed; such an addressless voice user is `source_nonlocal` to the trunk state machine, so a
+  working address the call keeps from an earlier talker loses its verdict. A P25 talker alias is learned only for a
+  source the state machine's identity record positively checks under the reception now: every publication of that record
+  mirrors the verdict onto the call (`p25_sm_merge_published_identity()` -> `dsd_call_state_note_source_verdict()`; in
+  hangtime a claim withdrawing or contradicting the retained call's source clears it, anything else leaves it, so an
+  alias completed in hangtime is still learned), and every P25 learner (Harris, Motorola, Tait, Soft ID) reads it
+  (`dsd_call_state_source_learnable()`), so a foreign home unit ID from a grant, an unchecked decode or a withdrawn
+  source is shown and never learned; a full SUID ($49, Tait's Subscriber FQ-SUID, `p25_lcw_note_full_suid_source()`)
+  naming another system's home withdraws the verdict even for the number a local voice user checked. A Harris alias
+  (0xA8, which names no radio) attaches to the call's talker, a working address or a home identity; a Motorola alias
+  names a fully qualified SUID and matches a call with a home identity only by that whole SUID, any other call by its
+  working address, and is learned only when that checked address is the alias's unit ID (`alias_call_names_suid()`).
+  Decided limits (display only): a radio named only by its home SUID cannot be allowed, blocked or named through the
+  radio list (a numeric source from a foreign grant still can, as on main; only learning is gated); a voice user with no
+  working address never ends a call (two roaming radios back to back with no end decoded share one call, as on main);
+  the row's `source_id` and source text, CSV, WAV names and app History merging carry no home identity, while display
+  text (the history line, the call view's `src_text`, and the JSON fields that carry them) shows it; a long home ID may
+  shorten the call window's status banner; on a call that keeps an earlier radio's working address, a roaming radio
+  named only by its home shows that working address (its verdict withdrawn, nothing learned); an alias clear made while
+  a live slot filter withholds the call does not reach the staged row.
   A foreign unit's home ID alone therefore never names a report's sender, a sender scope or a local radio-list label.
   The
   verdicts are bound to their reception: a claim applied after the reception generation moved (another access code
@@ -18505,7 +18636,27 @@ Qt Quick frontend (`src/ui/qt`):
   newer request ends the one before it and only its own id is answered: fixes must be at most 30 seconds old, a cache
   must also be within 100 m to finish immediately,
   and current providers compete for accuracy up to the 20-second deadline. GPS participates with fine foreground
-  permission; approximate permission remains usable. The new JNI entry point is retained in `proguard-rules.pro`.
+  permission; approximate permission remains usable. With fine permission the fused provider is asked at
+  `QUALITY_HIGH_ACCURACY` (API 31+); with GPS asked, only GPS's own cache counts, and another provider's answer within
+  100 m settles only once `GPS_GRACE_MS` (10 s from the request's start) has passed: Google's fused provider answers a
+  new request at once with the position it already holds, stamped as new, so taking it at once made every Locate me
+  after the first come back where the first one was. A fresh GPS fix within 100 m settles at once, on itself or on a
+  more accurate network answer still fresh (never a fused one). Each provider's newest usable answer is kept (one unusable
+  on arrival, a future-dated one included, never is), and the one used is the most accurate still fresh when the request settles (every provider answered,
+  the grace, or the deadline). `requestPreciseLocation` (the map's Locate me) is a site request that first asks for
+  precise and approximate together when only approximate is allowed (Android's upgrade prompt; after two refusals
+  Android 11 and later answer at once and the request goes on with approximate); `requestQuietLocation` (the map's
+  opening fix) never prompts and ends at once without permission; it runs only while the Activity is started
+  (`LocationSupport.onActivityStart()`/`onActivityStop()`, called from `DsdNeoActivity` and checked by
+  `location_wiring`), and a stop ends one in flight as cancelled. With no provider to ask, the answer is
+  `LOCATION_OFF_ERROR` when the device's location switch is off (also for a request that ends with no fix after the
+  switch went off), `PRECISE_NEEDED_ERROR` for approximate access with no provider but GPS (Android 10-11 with the
+  network provider off; the map points to App info), and `PROVIDER_ERROR` otherwise. Locate me offers no precise
+  upgrade with the switch off. Every answer's `fixAtMs` is the phone's wall time less the fix's age on the elapsed
+  clock, not the provider's own `time` (GPS or network time, which a phone clock set ahead or behind does not match,
+  while Qt ages the saved fix on the phone's clock). A prompt's answer resumes only the request that
+  asked, while it is still the active one, and every real answer also reaches `LocationStream.permissionAnswered()`,
+  so precise location allowed from the map starts a stream roaming already holds. The new JNI entry point is retained in `proguard-rules.pro`.
   `SiteChooserSheet` orders eligible saved siblings by distance (each measured once per revision or fix into its
   `measured`, which `rows`, `nearest`, `uncertainNearest` and each row's label read), names the nearest site, exposes
   missing positions and saved-fix/accuracy limitations, and gates the nearest action during a lookup. While Running that
@@ -19587,11 +19738,14 @@ Qt Quick frontend (`src/ui/qt`):
     host sends only changes). A lease taken on a running feed changes nothing: its consumer reads the standing
     `record` itself. Test: `UI_QT_LOCATION_FEED`.
   - `location_requests.{h,cpp}` (`LocationRequests`, context property `locationRequests`): the one-shot broker over
-    `DecoderHost::requestSiteLocation()`/`requestCurrentLocation()`. Android keeps one request and cancels the previous
+    `DecoderHost::requestSiteLocation()`/`requestPreciseLocation()`/`requestCurrentLocation()`. Android keeps one request and cancels the previous
     one on every new request (`LocationSupport.kt`), so the broker owns the single request in flight: the newest
     wins, the one it replaces is cancelled and its requester told with `ended()`, and only the pending id is ever
     answered (`answered(requester, id, result)`). Requesters: "siteChooser", "savedSystems" (Listen's Nearest),
-    "radioReference" (Use my location, `requestCurrent()`) and "map" (Locate me). An answer a host gives inside the
+    "radioReference" (Use my location, `requestCurrent()`) and "map" (Locate me, `requestPrecise()`; the map's opening
+    fix, `requestQuiet()`). `DecoderHost::locationAccess()` ("none", "approximate", "precise"; Android reads the
+    permissions over JNI each call) tells the map whether it may locate without a prompt and whether Follow can run.
+    An answer a host gives inside the
     request call is delivered once the event loop turns. Saving the one-shot fix stays the requester's
     (`prefs.setLocationFix()`). Test: `UI_QT_LOCATION_REQUESTS`. Both objects are published by `qt_ui.cpp`
     `publish_location()` and, under the same names, by the QML harness (`tests/ui/qml_test_context.h`, over
@@ -19633,7 +19787,9 @@ Qt Quick frontend (`src/ui/qt`):
     for a re-requested view) keeps its toned copy and texture serial, so a pan does not re-tone and re-upload it.
     The item holds no gesture state: the screen's
     handlers call `panBy()`, `zoomAbout()`, `zoomIn()`/`zoomOut()`, `fitAll()`, `fitAllWith(lat, lon)` (a fit that
-    also takes in one point the screen draws, the History pin), `centerOnTrack()`, `centerOnDevice()`, `centerOn()`,
+    also takes in one point the screen draws, the History pin), `centerOnTrack()`, `centerOnDevice()` (at `deviceZoom()`: the streets around the
+    dot, the accuracy circle about half the shorter side across, 15 at most, kept even where the projection's edge stops
+    the centre), `centerOn()`,
     `trackAt()`, `markerPoint()`, `pointFor()` (where the pin is drawn). Both fits go through `fitPoints()`, which adds
     the device dot when valid and marks `cameraUsedDevicePosition` before the camera moves. `topInset` is the height
     of the chips the screen lays over the canvas top: fits fit into the view less it and every `centerOn*` (so follow)
@@ -19653,8 +19809,8 @@ Qt Quick frontend (`src/ui/qt`):
     remains once live follow lets go. Every one-shot centring (`centredOn()`) and a follow's first raise a zoom too low
     to put the point in the middle (the whole world shorter than the canvas) just enough; a follow's later steps keep
     the zoom the user chose. `cameraUsedDevicePosition` turns true once the
-    camera centred on, followed or fitted the device dot, until `resetCameraUsedDevicePosition()` (every open): the
-    saved-view rule below reads it, and so do the tile requests. `tilesFromDevice()` (`cameraUsedDevicePosition` or
+    camera centred on, followed or fitted the device dot, for the item's life (the app's run; only tests call
+    `resetCameraUsedDevicePosition()`), since the screen keeps the view between visits: the saved-view rule below reads it, and so do the tile requests. `tilesFromDevice()` (`cameraUsedDevicePosition` or
     `followDevice`) is the one place that decides a request's `MapTileWorker::ViewOrigin`; a change of origin alone asks
     for the same keys again, so a device-placed view never rides on a request made by hand. Tile loading stops at once
     (not at the next polish, which a hidden window never gets) when the app goes Hidden/Suspended, the item hides or
@@ -19708,13 +19864,38 @@ Qt Quick frontend (`src/ui/qt`):
     (`Navigation.allows(map)`, as Spectrum's do); taps go through `GatedTapHandler`. The History pin is hit-tested
     before the marks (it is drawn over them) and sits in a layer clipped to the canvas.
   - Own position (spec 4.7): the dot is the saved one-shot fix (`prefs.lastLat`/`lastLon`, 24 h), which Locate me
-    refreshes as requester "map" (disabled while another requester's request runs); the second press, with the view
-    still on the found dot, is Follow my position, the "map" lease, held only while the map canvas shows with follow on,
+    refreshes as requester "map" (`requestPrecise()`, disabled while another requester's request runs) and centres at
+    `deviceZoom()`. The first open of a run with location allowed (`MapLocator.allowed()`) centres on the saved dot at
+    once only with precise access (a saved dot may be a precise fix from before access was lowered, and the tile
+    server would see the streets around it; otherwise the saved view, else the radios without the dot,
+    `fitAll(false)`), and asks for a fresh fix that never prompts (`locateQuietly()`, `requestQuiet()`, dropped when the app goes to
+    the background): it shows no notice, does not hold the button or arm Follow, starts only while the map shows in
+    the foreground, and its answer moves only a view nobody moved. Every answer is saved as the shared fix (the map's
+    own measurement, newest for the map; decided limit: it can replace a fix another screen saved moments before), unless
+    location was switched off or revoked while it waited: then it is not used at all.
+    `MapLocator.access()` reads `DecoderHost::locationAccess()`: "none", "off" (permission kept, the device's
+    location switched off: no opening fix, no placement on the saved dot), "approximate" or "precise".
+    `AppPrefs::setLocationFix()` stores a stamp ahead of the wall clock as now, so a fix is never expired (and the one
+    it replaced lost) as it is written. The second press after an explicit Locate me, with
+    the view still on the found dot and precise location allowed, is Follow my position; with approximate location the button stays Locate me (each
+    press finds the user again) and an explicit answer says "Your location is approximate. Allow precise location for a
+    closer fix." with a Settings action; a failed Locate me offers App info without permission and the location settings
+    when location is off; the "map" lease, held only while the map canvas shows with follow on,
     precise only ("Live position needs precise location." otherwise; a feed roaming already runs is read as it stands
     when the lease is taken, since the host repeats nothing). A stream fix is live while at most
     `MapLocator.maxFixAgeMs` (60 s, roaming's limit) old on `locationFeed.nowMs()`, aged once a second: older, the dot
-    stays on it as the last known position and following says "Finding your position…". Leaving the map clears the
-    Follow step (the keeper puts back a view the device did not shape), and every explicit one-shot move (Show on map
+    stays on it as the last known position and following says "Finding your position…". Leaving the map (or switching
+    to the List) clears the Follow step and keeps the view as it was left: the canvas stops a running camera move
+    where it is when it hides, no follow step moves it while hidden (`followNow()`), so the dot going back from a live fix to the saved
+    one cannot carry it. The canvas's top follows the tiles prompt's own condition (`tilesPrompt.shown`), not its
+    visibility, which turns false with the whole screen as it closes. A size change clamps from the view last asked
+    for (`m_asked`), not the clamped one; a follow re-centres after it at its own zoom, never raised as a first centring
+    would (`rearmFollow()`), and not while hidden. On return the view is fitted to the canvas and a follow still on
+    catches up at the user's zoom (a mark that moved, a canvas resized while hidden, a follow move cut short by the
+    hiding (`m_animFollow`, `m_followCatchUp`), or a first centring cut short, done again as a first
+    (`m_followStepFirst`)); the screen calls `recentreFollow()` once the chips are laid out again, and lays them out
+    before centring a located dot under a new notice. A History pin opening
+    the map first starts from the saved view's zoom. Every explicit one-shot move (Show on map
     for another radio, a History pin, a located dot) ends any follow first (`MapScreen.endFollows()`). A Locate me still
     running when the view is placed on purpose (every explicit camera action: a follow, Show on map, a pin, the device
     row, a fit, the zoom buttons, the wheel, a drag or pinch) keeps the view: its answer saves the dot but neither
@@ -19754,13 +19935,14 @@ Qt Quick frontend (`src/ui/qt`):
     one, when the app leaves the foreground, or when `AppPrefs` goes, since a pan writes every frame and each QSettings
     write rewrites the file. Follow is never saved. Rule: no view derived from the device's position is ever stored.
     `MapViewKeeper.qml` saves the view on every change only while `cameraUsedDevicePosition` is false; once Locate me,
-    follow or a fit that took in the device dot has used it, nothing more is saved that visit (a later pan or zoom
-    still starts from there), and closing the map puts the view back on the last saved one (or on the whole world,
-    with the camera placed again at the next open, when none is saved), so the next visit starts from a view the
-    device did not shape. A first open restores the saved view instead of fitting the radios. Tests:
+    follow, a fit that took in the device dot or the opening placement has used it, nothing more is saved for the rest
+    of the run (a later pan or zoom still starts from there). Closing the map keeps the view as it was left (the screen
+    lives for the run). A run's first open (`MapScreen.placeCamera()`) centres on the user when location is allowed;
+    otherwise it restores the saved view, else fits the radios. Tests:
     `UI_QT_PERSISTENCE` (`test_map_prefs()`, the pinned key table, a backup leaving the map keys out and a restore
     leaving them alone), `UI_QT_BACKUP_ARCHIVE` (an edited backup's map keys dropped), `tst_map_prefs.qml` (follow
-    on, follow off then zoom, follow off then fit, close, restart, a first fit with the device, the pin).
+    on, follow off then zoom, follow off then fit, close and reopen keeping the view, a run opening on the user, the
+    opening fix leaving a moved view and failing quietly, no access, approximate access, the pin).
   - Accessibility: the canvas is `Accessible.ignored`; the List is its complete equivalent (every mark, each state in
     words, the same sheet and Follow), detached while hidden (`KeepPlace`), its row names paced (`SpeechPacer`,
     `Navigation.speechPeriodMs`), rows updated in place. An unnamed radio is its bare ID everywhere (List, sheet title,
@@ -20708,8 +20890,9 @@ upgrade dialog), asks nothing when fine is granted, and asks once per id (each u
 re-registers the current subscription only if that start is still the newest call, so a stop during the prompt
 starts nothing, and empty grants (an interrupted prompt) change nothing. `openAppLocationSettings(activity)` (App info,
 through the `SettingsScreens.kt` intent helper FileBrowser shares) and `openLocationSourceSettings(activity)` post to
-main and swallow a missing screen. `LocationSupport` keeps its behaviour through the broker (an existing coarse grant
-skips its prompt). Tests: `ANDROID_LOCATION_JVM` (`LocationStreamTest.kt`, `LocationPermissionTest.kt`,
+main and swallow a missing screen. `access(context)` answers "precise", "approximate" or "none" from any thread.
+`LocationSupport` keeps its behaviour through the broker (an existing coarse grant skips its prompt, except the map's
+`requestPreciseLocation`, which offers precise). Tests: `ANDROID_LOCATION_JVM` (`LocationStreamTest.kt`, `LocationPermissionTest.kt`,
 `LocationSupportTest.kt`, and the `location_wiring` source check of `DsdNeoActivity`'s calls).
 
 Session end and the notification (issue #782): `stopSelf()` makes ActiveServices (`bringDownServiceLocked()`) cancel the

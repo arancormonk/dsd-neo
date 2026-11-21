@@ -215,7 +215,13 @@ jobs:
           DSD_NEO_REQUIRE_TEST_TOOLS: "1"
         run: |
           ctest --preset dev-debug -N | tail -n 1
-          ctest --preset dev-debug --parallel 2 --output-on-failure
+          # The leftover check runs whatever ctest returned; the step fails with the ctest status, else the check status.
+          ctest_status=0
+          ctest --preset dev-debug --parallel 2 --output-on-failure || ctest_status=$?
+          check_status=0
+          tools/check_test_tmp_leftovers.sh build/dev-debug || check_status=$?
+          if [ "$ctest_status" -ne 0 ]; then exit "$ctest_status"; fi
+          exit "$check_status"
 
   # Manual only: dispatch this workflow on a branch with dsp_bench set. It builds
   # dsd-neo_bench_dsp (perf-bench preset) for the branch and for its merge base
@@ -457,7 +463,13 @@ jobs:
           DSD_NEO_REQUIRE_TEST_TOOLS: "1"
         run: |
           ctest --preset dev-debug -N | tail -n 1
-          ctest --preset dev-debug --parallel 2 --output-on-failure
+          # The leftover check runs whatever ctest returned; the step fails with the ctest status, else the check status.
+          ctest_status=0
+          ctest --preset dev-debug --parallel 2 --output-on-failure || ctest_status=$?
+          check_status=0
+          tools/check_test_tmp_leftovers.sh build/dev-debug || check_status=$?
+          if [ "$ctest_status" -ne 0 ]; then exit "$ctest_status"; fi
+          exit "$check_status"
 
   # Every other ctest job is a -O0 Debug build, but what ships is optimized with
   # fast-math. This one runs the suite at -O2 with fast-math and AVX2/FMA code
@@ -532,7 +544,13 @@ jobs:
           DSD_NEO_REQUIRE_TEST_TOOLS: "1"
         run: |
           ctest --preset perf-bench -N | tail -n 1
-          ctest --preset perf-bench --parallel 2 --output-on-failure
+          # The leftover check runs whatever ctest returned; the step fails with the ctest status, else the check status.
+          ctest_status=0
+          ctest --preset perf-bench --parallel 2 --output-on-failure || ctest_status=$?
+          check_status=0
+          tools/check_test_tmp_leftovers.sh build/perf-bench || check_status=$?
+          if [ "$ctest_status" -ne 0 ]; then exit "$ctest_status"; fi
+          exit "$check_status"
 
   # The same suite built by Clang, the toolchain of the macOS DMG, which treats
   # fast-math more aggressively than GCC: it folds bit tests on floats it computed
@@ -643,7 +661,13 @@ jobs:
             # A test whose tool is missing fails here instead of skipping.
             export DSD_NEO_REQUIRE_TEST_TOOLS=1
             ctest --preset perf-bench -N | tail -n 1
-            ctest --preset perf-bench --parallel 2 --output-on-failure
+            # The leftover check runs whatever ctest returned; the step fails with the ctest status, else the check status.
+            ctest_status=0
+            ctest --preset perf-bench --parallel 2 --output-on-failure || ctest_status=$?
+            check_status=0
+            tools/check_test_tmp_leftovers.sh build/perf-bench || check_status=$?
+            if [ "$ctest_status" -ne 0 ]; then exit "$ctest_status"; fi
+            exit "$check_status"
           '
 
   build-linux:
@@ -1086,7 +1110,7 @@ jobs:
 
       - name: Install Semgrep
         if: github.event_name != 'pull_request' || steps.changed.outputs.semgrep_targets != '0' || steps.changed.outputs.semgrep_full_scan == '1'
-        # The complete lockfile overrides Semgrep's vulnerable MCP and OpenTelemetry pins; see docs/dependencies.md.
+        # The complete lockfile overrides Semgrep's vulnerable MCP, OpenTelemetry and wcmatch pins; see docs/dependencies.md.
         run: |
           python -m pip install --require-hashes --no-deps -r .github/requirements/semgrep.txt
           python - <<'PY'
@@ -1095,14 +1119,15 @@ jobs:
 
           check = subprocess.run([sys.executable, "-m", "pip", "check"], capture_output=True, text=True)
           expected = sorted([
-              "semgrep 1.184.0 has requirement mcp==1.29.0, but you have mcp 1.30.0.",
-              "semgrep 1.184.0 has requirement opentelemetry-api~=1.37.0, but you have opentelemetry-api 1.45.2.",
-              "semgrep 1.184.0 has requirement opentelemetry-exporter-otlp-proto-http~=1.37.0, but you have opentelemetry-exporter-otlp-proto-http 1.45.2.",
-              "semgrep 1.184.0 has requirement opentelemetry-sdk~=1.37.0, but you have opentelemetry-sdk 1.45.2.",
+              "semgrep 1.185.0 has requirement mcp==1.29.0, but you have mcp 1.30.0.",
+              "semgrep 1.185.0 has requirement opentelemetry-api~=1.37.0, but you have opentelemetry-api 1.45.2.",
+              "semgrep 1.185.0 has requirement opentelemetry-exporter-otlp-proto-http~=1.37.0, but you have opentelemetry-exporter-otlp-proto-http 1.45.2.",
+              "semgrep 1.185.0 has requirement opentelemetry-sdk~=1.37.0, but you have opentelemetry-sdk 1.45.2.",
+              "semgrep 1.185.0 has requirement wcmatch~=8.3, but you have wcmatch 12.0.3.",
           ])
           if check.returncode != 1 or sorted(check.stdout.splitlines()) != expected or check.stderr:
               sys.exit(f"Unexpected Semgrep dependency check: {check.stdout}{check.stderr}")
-          print("Semgrep dependencies verified; only the documented MCP and OpenTelemetry overrides differ.")
+          print("Semgrep dependencies verified; only the documented MCP, OpenTelemetry and wcmatch overrides differ.")
           PY
 
       - name: Run Semgrep
@@ -1931,7 +1956,13 @@ jobs:
             export LSAN_OPTIONS="suppressions=${GITHUB_WORKSPACE}/tools/lsan.supp"
             export UBSAN_OPTIONS="halt_on_error=1:print_stacktrace=1"
           fi
-          ctest --preset ${{ matrix.preset }} --parallel 2 --output-on-failure
+          # The leftover check runs whatever ctest returned; the step fails with the ctest status, else the check status.
+          ctest_status=0
+          ctest --preset ${{ matrix.preset }} --parallel 2 --output-on-failure || ctest_status=$?
+          check_status=0
+          tools/check_test_tmp_leftovers.sh build/${{ matrix.preset }} || check_status=$?
+          if [ "$ctest_status" -ne 0 ]; then exit "$ctest_status"; fi
+          exit "$check_status"
 
       - name: Show ccache stats
         if: env.CI_RUN_CHECK == 'true' && (always())

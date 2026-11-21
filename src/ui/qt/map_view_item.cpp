@@ -412,7 +412,9 @@ MapViewItem::rebuildScene() {
 
 mm::Viewport
 MapViewItem::viewportForSize() const {
-    mm::Viewport vp = m_vp;
+    /* From the view last asked for, not the one a passing size clamped: a canvas briefly taller (a band above it
+     * hiding as the screen closes) must not move the view kept for the next visit. */
+    mm::Viewport vp = m_asked;
     vp.width = width();
     vp.height = height();
     return mm::clamp_viewport(vp);
@@ -420,6 +422,7 @@ MapViewItem::viewportForSize() const {
 
 void
 MapViewItem::setViewport(const mm::Viewport& next) {
+    m_asked = next;
     mm::Viewport vp = next;
     vp.width = width();
     vp.height = height();
@@ -499,9 +502,10 @@ void
 MapViewItem::geometryChange(const QRectF& new_geometry, const QRectF& old_geometry) {
     QQuickItem::geometryChange(new_geometry, old_geometry);
     if (new_geometry.size() != old_geometry.size()) {
-        /* The centre stays where it was; the zoom floor may rise with the width. A followed mark is centred again: where
-         * centring puts it depends on the canvas's size. */
-        setViewport(m_vp);
+        /* The centre stays where it was asked to be (a size that clamps it only for a while, as a band hides while the
+         * screen closes, moves nothing for good); the zoom floor may rise with the width. A followed mark is centred
+         * again: where centring puts it depends on the canvas's size. */
+        setViewport(m_asked);
         rearmFollow();
         polish();
         update();
@@ -516,7 +520,10 @@ MapViewItem::itemChange(ItemChange change, const ItemChangeData& value) {
     const bool gone =
         (change == ItemSceneChange && value.window == nullptr) || (change == ItemVisibleHasChanged && !value.boolValue);
     if (gone) {
-        releaseTiles();
+        hidden();
+    }
+    if (change == ItemVisibleHasChanged && value.boolValue) {
+        shownAgain();
     }
     if (change == ItemVisibleHasChanged || change == ItemSceneChange) {
         catchUpScene();
@@ -525,6 +532,36 @@ MapViewItem::itemChange(ItemChange change, const ItemChangeData& value) {
         polish();
         update();
     }
+}
+
+void
+MapViewItem::hidden() {
+    releaseTiles();
+    /* The view the screen keeps is the one shown when it hid: a camera move still running stops there, and no follow
+     * step moves it while hidden (followNow()), so the dot going back from a live fix to the saved one as the map
+     * closes cannot carry the camera with it. A follow's move cut short (not a zoom button's) is finished on return:
+     * a first centring is done again as a first, a later step at the user's zoom. */
+    if (m_camera->state() == QAbstractAnimation::Running && m_animFollow && following()) {
+        if (m_followStepFirst) {
+            m_followedSet = false;
+        } else {
+            m_followCatchUp = true;
+        }
+    }
+    stopCamera();
+    m_hiddenSize = size();
+}
+
+void
+MapViewItem::shownAgain() {
+    /* Back on screen: the kept view fitted to the size the canvas has now, and a follow still on catches up with a mark
+     * that moved meanwhile, a move cut short, or a canvas resized while hidden (a rotation), at the zoom the user left
+     * it at. The screen calls recentreFollow() again once the chips above have their height. */
+    if (size() != m_hiddenSize) {
+        m_followCatchUp = true;
+    }
+    setViewport(m_asked);
+    followNow();
 }
 
 // ------------------------------------------------------------- camera ----
@@ -537,6 +574,7 @@ MapViewItem::stopCamera() {
 void
 MapViewItem::moveCamera(const mm::Viewport& target) {
     m_camera->stop();
+    m_animFollow = false; /* followNow() marks its own moves */
     mm::Viewport to = target;
     to.width = width();
     to.height = height();
@@ -648,9 +686,9 @@ MapViewItem::findTrack(qulonglong trackId) const {
 }
 
 bool
-MapViewItem::fitAll() {
+MapViewItem::fitAll(bool withDevice) {
     ensureScene();
-    return fitPoints(markerPoints());
+    return fitPoints(markerPoints(), withDevice);
 }
 
 bool
@@ -664,12 +702,12 @@ MapViewItem::fitAllWith(double lat, double lon) {
 }
 
 bool
-MapViewItem::fitPoints(std::vector<mm::WorldPoint> points) {
+MapViewItem::fitPoints(std::vector<mm::WorldPoint> points, bool takeDevice) {
     /* A fit ends any follow first: ending live follow gives the device dot back its saved fix (the screen releases the
      * live position), and the fit must take in the dot that will be drawn, not the one that was. */
     stopFollowing();
     mm::WorldPoint device{};
-    const bool withDevice = deviceWorld(&device);
+    const bool withDevice = takeDevice && deviceWorld(&device);
     if (withDevice) {
         points.push_back(device);
     }
@@ -708,8 +746,30 @@ MapViewItem::centerOnDevice() {
         return false;
     }
     markUsedDevice();
-    moveCamera(centredOn(cameraBase(), at));
+    mm::Viewport vp = cameraBase();
+    vp.zoom = deviceZoom();
+    /* The accuracy's zoom is kept even where it cannot put the dot in the middle (near a pole the projection's edge
+     * stops the centre): raising it would cut the circle the zoom was chosen to show. */
+    moveCamera(centredOn(vp, at, false));
     return true;
+}
+
+double
+MapViewItem::deviceZoom() const {
+    constexpr double kNear = 15.0; /* a few streets either way on a phone */
+    const double side = std::min(width(), height());
+    if (!(side > 0.0) || !(m_deviceAccuracyM > 0.0) || !std::isfinite(m_deviceAccuracyM)
+        || !std::isfinite(m_deviceLat)) {
+        return kNear;
+    }
+    /* The circle's radius spans a quarter of the shorter side, and each zoom step halves the metres per pixel:
+     * metres_per_px(lat, 0) / 2^zoom = radius / (side / 4). */
+    const double level = std::log2(mm::metres_per_px(m_deviceLat, 0.0) * side / (4.0 * m_deviceAccuracyM));
+    if (!std::isfinite(level)) {
+        return kNear;
+    }
+    /* No floor but the projection's: an approximate fix's circle can be kilometres across, and all of it shows. */
+    return std::max(mm::kMinZoom, std::min(kNear, level));
 }
 
 void
@@ -866,14 +926,16 @@ MapViewItem::followNow() {
      * track's marks or showing the other, the device's position, or the chips above (topInset) changing where centred
      * lies. The camera moves only when the target or that place changed, so an age tick or a zoom leaves it be. */
     mm::WorldPoint at{};
-    if (!followTarget(&at)) {
-        return;
+    if (!isVisible() || !followTarget(&at)) {
+        return; /* hidden: the kept view stays put (itemChange() re-arms it on return) */
     }
-    if (m_followedSet && !differs(at.x, m_followedAt.x) && !differs(at.y, m_followedAt.y)) {
+    if (m_followedSet && !m_followCatchUp && !differs(at.x, m_followedAt.x) && !differs(at.y, m_followedAt.y)) {
         return;
     }
     /* A follow's first centring may raise a zoom too low to centre the mark; its later steps keep the zoom the user
      * chose (a pinch out to see where the radio is stays out). */
+    m_followCatchUp = false;
+    m_followStepFirst = !m_followedSet;
     const bool first = !m_followedSet;
     m_followedSet = true;
     m_followedAt = at;
@@ -881,16 +943,30 @@ MapViewItem::followNow() {
         markUsedDevice();
     }
     moveCamera(centredOn(cameraBase(), at, first));
+    m_animFollow = true;
+}
+
+void
+MapViewItem::recentreFollow() {
+    /* Centred below the chips as they are now (the screen has just laid them out), at the user's zoom. */
+    if (!following()) {
+        return;
+    }
+    m_followCatchUp = true;
+    followNow();
 }
 
 void
 MapViewItem::rearmFollow() {
     /* The camera was put somewhere by other means (a restored view, a new canvas size): the follow centres its mark
-     * again now, as at its start. */
-    if (!following()) {
+     * again now, as at its start. Not while hidden: a size the layout passes through then (the List shown) is no
+     * reason to start the follow over, and the kept view comes back from the view asked for (m_asked). */
+    if (!following() || !isVisible()) {
         return;
     }
-    m_followedSet = false;
+    /* At the zoom the follow has: a layout change (the tiles prompt going as the List shows) is no reason to raise a
+     * zoom the user pinched out to, as a first centring would. */
+    m_followCatchUp = true;
     followNow();
 }
 

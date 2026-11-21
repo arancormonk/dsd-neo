@@ -655,6 +655,9 @@ checkImportedListsNamedApart(const QTemporaryDir& dir) {
         auto* opts = new dsd_opts{};
         auto* state = new dsd_state{};
         initOpts(opts);
+        // No sound card: initOpts() picks the PulseAudio output, which a scan opens, and libpulse then makes a runtime
+        // folder in TMPDIR wherever XDG_RUNTIME_DIR is unset.
+        opts->audio_out_type = 9;
         initState(state);
         opts->trunk_scan_enabled = 1;
         opts->use_rigctl = 1;

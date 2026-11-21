@@ -135,6 +135,8 @@ slot_source_text(const dsd_state* state, uint8_t slot, const dsd_call_snapshot* 
         DSD_SNPRINTF(identity, sizeof(identity), "%s", call->source_text);
     } else if (call->ota_source_id != 0U) {
         DSD_SNPRINTF(identity, sizeof(identity), "%llu", (unsigned long long)call->ota_source_id);
+    } else if (dsd_call_state_format_home_source(call, identity, sizeof(identity))) {
+        /* A roaming P25 radio named only by its home identity: shown, never labelled from a local list. */
     } else {
         /* No source decoded: no text, never "0", which would read as a radio numbered zero (issue #773). A label needs
            a nonzero source below, so src_label stays empty too. */

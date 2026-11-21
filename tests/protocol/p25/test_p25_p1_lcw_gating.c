@@ -10,6 +10,7 @@
  */
 
 #include <dsd-neo/core/call_state.h>
+#include <dsd-neo/core/events.h>
 #include <dsd-neo/core/gps.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
@@ -21,6 +22,8 @@
 #include <dsd-neo/runtime/trunk_tuning_hooks.h>
 #include <stdint.h>
 #include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
 #include <time.h>
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/safe_api.h"
@@ -475,6 +478,184 @@ test_group_voice_user_parity(int mfid) {
     return rc;
 }
 
+/* Tags slot 0's live alias "OLD ALIAS" as published for call @p epoch under the reception now. */
+static void
+tag_alias(dsd_state* state, uint64_t epoch) {
+    DSD_SNPRINTF(state->generic_talker_alias[0], sizeof state->generic_talker_alias[0], "%s", "OLD ALIAS");
+    state->generic_talker_alias_epoch[0] = epoch;
+    state->generic_talker_alias_rx_gen[0] = dsd_state_reception_generation(state);
+}
+
+/* A talker alias belongs to its call, and the voice user repeats in every LDU1 while the alias arrives in pieces after
+   it: a voice user that goes on with the call the alias was published for keeps it. Dropping it at every LDU1 made a
+   Phase 1 alias flash on and off in the terminal UI. A new talker, an alias left from another call and a TDULC drop
+   it. */
+static int
+test_voice_user_keeps_its_calls_alias(void) {
+    dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(dsd_opts));
+    dsd_state* state = (dsd_state*)calloc(1, sizeof(dsd_state));
+    uint8_t lcw[72];
+    int rc = 0;
+    if (!opts || !state) {
+        free(opts);
+        free(state);
+        return 1;
+    }
+
+    rc |= expect_eq_int("alias keep fixture", init_established_clear_call(opts, state), 1);
+    const uint64_t epoch = slot0_call_epoch(state);
+    /* Published as the decoder publishes it: alias enrichment, under a reception generation that is not zero. */
+    Event_History_I* history = (Event_History_I*)calloc(2U, sizeof(Event_History_I));
+    if (!history) {
+        dsd_state_ext_free_all(state);
+        free(state);
+        free(opts);
+        return 1;
+    }
+    init_event_history(&history[0], 0, 255);
+    init_event_history(&history[1], 0, 255);
+    state->event_history_s = history;
+    state->rx_id.epoch = 7U;
+    state->generic_talker_alias[0][0] = '\0';
+    rc |= expect_eq_int("alias published",
+                        dsd_event_enrich_alias(state, 0U, DSD_SYNC_P25P1_POS, epoch, "OLD ALIAS") >= 0, 1);
+    rc |= expect_eq_int("alias shown", strcmp(state->generic_talker_alias[0], "OLD ALIAS") == 0, 1);
+    build_group_voice_user_lcw(lcw, 0x00, 0x00, LCGRGR_SG, LCGRGR_SRC);
+    p25_lcw(opts, state, lcw, 0);
+    rc |= expect_eq_int("repeated voice user keeps the call", slot0_call_epoch(state) == epoch, 1);
+    rc |= expect_eq_int("repeated voice user keeps the call's alias",
+                        strcmp(state->generic_talker_alias[0], "OLD ALIAS") == 0, 1);
+
+    /* Another system named on the carrier (a new reception generation): the alias was not published under it. */
+    state->rx_id.epoch++;
+    p25_lcw(opts, state, lcw, 0);
+    rc |= expect_eq_int("another reception drops the alias", state->generic_talker_alias[0][0], '\0');
+
+    tag_alias(state, slot0_call_epoch(state));
+    build_group_voice_user_lcw(lcw, 0x00, 0x00, LCGRGR_SG, LCGRGR_SRC + 1);
+    const uint64_t before_talker = slot0_call_epoch(state);
+    p25_lcw(opts, state, lcw, 0);
+    rc |= expect_eq_int("new talker begins a call", slot0_call_epoch(state) != before_talker, 1);
+    rc |= expect_eq_int("new talker drops the old talker's alias", state->generic_talker_alias[0][0], '\0');
+
+    /* An alias published for an earlier call, on a call that is open now, is not this call's. */
+    tag_alias(state, before_talker);
+    p25_lcw(opts, state, lcw, 0);
+    rc |= expect_eq_int("earlier call's alias dropped", state->generic_talker_alias[0][0], '\0');
+
+    /* The same unit number needing a Source ID Extension (S set) is another system's radio: not the alias's talker. */
+    tag_alias(state, slot0_call_epoch(state));
+    build_group_voice_user_lcw(lcw, 0x00, 0x00, LCGRGR_SG, LCGRGR_SRC + 1);
+    lcw[31] = 1U;
+    p25_lcw(opts, state, lcw, 0);
+    rc |= expect_eq_int("extension-required source drops the alias", state->generic_talker_alias[0][0], '\0');
+
+    /* A Source ID Extension naming another radio moves the call's talker to it; that radio's alias is not the alias of
+       the radio the next ordinary voice user names, which the trunk assignment still holds. */
+    build_group_voice_user_lcw(lcw, 0x00, 0x00, LCGRGR_SG, LCGRGR_SRC + 1);
+    p25_lcw(opts, state, lcw, 0);
+    uint8_t ext[72];
+    DSD_MEMSET(ext, 0, sizeof ext);
+    set_bits_msb(ext, 0, 8, 0x49);
+    set_bits_msb(ext, 16, 20, 0xABCDEU);
+    set_bits_msb(ext, 36, 12, 0x2A7U);
+    set_bits_msb(ext, 48, 24, (unsigned)(LCGRGR_SRC + 7));
+    p25_lcw(opts, state, ext, 0);
+    dsd_call_snapshot moved;
+    if (dsd_call_state_get(state, 0U, &moved) > 0 && moved.ota_source_id == (uint64_t)(LCGRGR_SRC + 7)) {
+        tag_alias(state, moved.epoch);
+        p25_lcw(opts, state, lcw, 0);
+        rc |= expect_eq_int("assignment's talker does not take the extension radio's alias",
+                            state->generic_talker_alias[0][0] == '\0' || (slot0_call_epoch(state) != moved.epoch), 1);
+    }
+
+    /* A foreign radio (Source ID Extension required) keeps its alias across its own repeats; a local radio with the
+       same number on the same call (no end decoded) is another radio and drops it. */
+    build_group_voice_user_lcw(lcw, 0x00, 0x00, LCGRGR_SG, LCGRGR_SRC + 5);
+    lcw[31] = 1U;
+    p25_lcw(opts, state, lcw, 0);
+    tag_alias(state, slot0_call_epoch(state));
+    p25_lcw(opts, state, lcw, 0);
+    rc |= expect_eq_int("foreign radio's repeat keeps its alias",
+                        strcmp(state->generic_talker_alias[0], "OLD ALIAS") == 0, 1);
+    lcw[31] = 0U;
+    p25_lcw(opts, state, lcw, 0);
+    rc |= expect_eq_int("local radio with the same number drops the foreign alias", state->generic_talker_alias[0][0],
+                        '\0');
+
+    /* A voice user naming a special address (a dispatcher) on the same call names no radio: not the alias's talker. */
+    tag_alias(state, slot0_call_epoch(state));
+    build_group_voice_user_lcw(lcw, 0x00, 0x00, LCGRGR_SG, 0xFFFFFD);
+    p25_lcw(opts, state, lcw, 0);
+    rc |= expect_eq_int("special source drops the alias", state->generic_talker_alias[0][0], '\0');
+
+    /* Text a decoder set outside call enrichment (epoch 0) is no P25 call's either, even on a repeat of the call's own
+       local voice user. */
+    build_group_voice_user_lcw(lcw, 0x00, 0x00, LCGRGR_SG, LCGRGR_SRC + 3);
+    p25_lcw(opts, state, lcw, 0);
+    tag_alias(state, slot0_call_epoch(state));
+    p25_lcw(opts, state, lcw, 0);
+    rc |= expect_eq_int("own talker's repeat keeps the tagged alias",
+                        strcmp(state->generic_talker_alias[0], "OLD ALIAS") == 0, 1);
+    tag_alias(state, 0U);
+    p25_lcw(opts, state, lcw, 0);
+    rc |= expect_eq_int("unbound alias dropped", state->generic_talker_alias[0][0], '\0');
+    state->event_history_s = NULL;
+    dsd_state_ext_free_all(state);
+    free(history);
+    free(state);
+    free(opts);
+    return rc;
+}
+
+/* A full SUID ($49) naming another system's home for the number a local voice user checked withdraws the verdict: no
+   alias is learned for it (dsd_call_state_source_learnable()). Between two hard-decoded voice users of one radio, it
+   stays learnable. In hangtime, a claim naming another source takes the verdict mirrored on the retained call away; a
+   claim naming the call's own source leaves it. */
+static int
+test_foreign_suid_withdraws_learning(void) {
+    dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(dsd_opts));
+    dsd_state* state = (dsd_state*)calloc(1, sizeof(dsd_state));
+    uint8_t lcw[72];
+    int rc = 0;
+    if (!opts || !state) {
+        free(opts);
+        free(state);
+        return 1;
+    }
+    rc |= expect_eq_int("suid fixture", init_retained_p1_call(opts, state, LCGRGR_SG, LCGRGR_SRC), 1);
+    build_group_voice_user_lcw(lcw, 0x00, 0x00, LCGRGR_SG, LCGRGR_SRC);
+    p25_lcw(opts, state, lcw, 0);
+    dsd_call_snapshot call;
+    rc |= expect_eq_int("hard voice user learnable",
+                        dsd_call_state_get(state, 0U, &call) > 0 && dsd_call_state_source_learnable(state, &call), 1);
+    uint8_t ext[72];
+    DSD_MEMSET(ext, 0, sizeof ext);
+    set_bits_msb(ext, 0, 8, 0x49);
+    set_bits_msb(ext, 16, 20, 0xABCDEU);
+    set_bits_msb(ext, 36, 12, 0x2A7U);
+    set_bits_msb(ext, 48, 24, (unsigned)LCGRGR_SRC);
+    p25_lcw(opts, state, ext, 0);
+    rc |= expect_eq_int("foreign SUID for the same number withdraws learning",
+                        dsd_call_state_get(state, 0U, &call) > 0 && dsd_call_state_source_learnable(state, &call), 0);
+
+    p25_lcw(opts, state, lcw, 0);
+    rc |= expect_eq_int("relearnable after a local voice user",
+                        dsd_call_state_get(state, 0U, &call) > 0 && dsd_call_state_source_learnable(state, &call), 1);
+    rc |= expect_eq_int(
+        "call ends", p25_sm_emit_end_call_at(opts, state, 0, LCGRGR_SG, LCGRGR_SRC, dsd_decode_now_mono_s()) != 0, 1);
+    p25_sm_note_call_identity(state, 0, LCGRGR_SRC, LCGRGR_SG, 1, P25_SM_IDENTITY_CHECKED_ALL, 0U);
+    rc |= expect_eq_int("hangtime claim of the same source keeps learning",
+                        dsd_call_state_get(state, 0U, &call) > 0 && dsd_call_state_source_learnable(state, &call), 1);
+    p25_sm_note_call_identity(state, 0, LCGRGR_SRC + 9, LCGRGR_SG, 1, P25_SM_IDENTITY_CHECKED_ALL, 0U);
+    rc |= expect_eq_int("hangtime claim of another source takes learning away",
+                        dsd_call_state_get(state, 0U, &call) > 0 && dsd_call_state_source_learnable(state, &call), 0);
+    dsd_state_ext_free_all(state);
+    free(state);
+    free(opts);
+    return rc;
+}
+
 /* The identity a voice-user link control names reaches the trunk state machine as checked only when the link control was
    hard-decoded (spec 2.20); one a soft-erasure RS retry recovered leaves it unchecked. */
 static int
@@ -862,6 +1043,8 @@ main(void) {
     rc |= test_rejected_lcw_stops_post_processing(0x00, 0x90);
     rc |= test_group_voice_user_parity(0x00);
     rc |= test_group_voice_user_parity(0x90);
+    rc |= test_voice_user_keeps_its_calls_alias();
+    rc |= test_foreign_suid_withdraws_learning();
     rc |= test_voice_user_identity_checked_follows_hard_decode();
     rc |= test_lcgrgr_key0_keeps_clear_gate();
     rc |= test_lcgrgr_from_tdulc_records_without_voice_start();

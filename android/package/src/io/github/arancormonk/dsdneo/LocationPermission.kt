@@ -6,6 +6,7 @@ import android.app.Activity
 import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
+import android.location.LocationManager
 import android.os.Handler
 import android.os.Looper
 import android.provider.Settings
@@ -35,6 +36,24 @@ object LocationPermission {
         context.checkSelfPermission(permission) == PackageManager.PERMISSION_GRANTED
 
     /**
+     * What the app may read now, from any thread: "none" without permission, "off" with permission but the device's
+     * location switched off (which revokes nothing), else "precise" or "approximate".
+     */
+    @JvmStatic fun access(context: Context): String = when {
+        !granted(context, Manifest.permission.ACCESS_COARSE_LOCATION)
+            && !granted(context, Manifest.permission.ACCESS_FINE_LOCATION) -> "none"
+        locationOff(context) -> "off"
+        granted(context, Manifest.permission.ACCESS_FINE_LOCATION) -> "precise"
+        else -> "approximate"
+    }
+
+    private fun locationOff(context: Context): Boolean = try {
+        !(context.getSystemService(Context.LOCATION_SERVICE) as LocationManager).isLocationEnabled
+    } catch (_: Exception) {
+        false
+    }
+
+    /**
      * On the main looper: opens the prompt for [permissions] unless one is open, and waits for its answer. Returns what
      * the prompt that will answer asks for, which is less than [permissions] when an open prompt asked for less.
      */
@@ -60,7 +79,8 @@ object LocationPermission {
     /**
      * Roaming's prompt for precise location, once per request [id]: the caller makes a new id for each thing the user
      * does, so a repeated call can never put the prompt up again by itself, nor loop on Android's instant "don't ask
-     * again" denial. Roaming needs no answer of its own: the stream reads the outcome from the permissions themselves.
+     * again" denial. Roaming needs no answer of its own: the stream reads the outcome from the permissions themselves,
+     * once [settle] tells it a prompt was answered.
      */
     @JvmStatic fun requestRoamingPermission(activity: Activity, id: Long) {
         main.post {
@@ -79,8 +99,8 @@ object LocationPermission {
                 if (!offeredPrecise && !granted(answered, Manifest.permission.ACCESS_FINE_LOCATION) && roamingId == id) {
                     roamingId = null
                 }
-                // An interrupted prompt changes nothing; the user can ask again.
-                if (grants.isNotEmpty()) LocationStream.permissionAnswered()
+                // The stream hears a real answer from settle(); an interrupted prompt changes nothing, and the user can
+                // ask again.
             }
             // Set before any answer can come: answers arrive later, on this looper.
             offeredPrecise = Manifest.permission.ACCESS_FINE_LOCATION in asked
@@ -96,11 +116,16 @@ object LocationPermission {
         return true
     }
 
-    /** Answers every waiter with [grants] (empty: the prompt was interrupted, which each reads as cancelled). */
+    /**
+     * Answers every waiter with [grants] (empty: the prompt was interrupted, which each reads as cancelled). A real
+     * answer also reaches the location stream, whoever asked: precise location allowed from the map's Locate me must
+     * start a stream roaming already holds, which would otherwise keep reporting approximate location only.
+     */
     private fun settle(activity: Activity, grants: IntArray) {
         val answered = waiters.values.toList()
         waiters.clear()
         answered.forEach { it(activity, grants) }
+        if (grants.isNotEmpty()) LocationStream.permissionAnswered()
     }
 
     /** Forgets [activity]'s open prompt and who waits for it. */

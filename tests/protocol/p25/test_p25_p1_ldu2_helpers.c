@@ -47,6 +47,13 @@ seed_p25_call(dsd_state* state, uint64_t target, uint64_t source) {
         .ota_source_id = source,
     };
     (void)dsd_call_state_observe(state, &observation, DSD_CALL_BOUNDARY_BEGIN);
+    /* The trunk state machine's #800 verdict on a checked voice user's source, mirrored on the call: a P25 alias is
+       learned only for such a source (dsd_call_state_source_learnable()). */
+    dsd_call_snapshot opened;
+    if (source != 0U && dsd_call_state_get(state, 0U, &opened) > 0) {
+        (void)dsd_call_state_note_source_verdict(state, 0U, opened.epoch, (uint32_t)source, 1,
+                                                 dsd_state_reception_generation(state));
+    }
 }
 
 uint8_t
@@ -773,6 +780,20 @@ test_ldu2_decode_key_reporting_and_lsd_alias_state(void) {
     rc |= expect_int("alias policy learns once", g_policy_learn_calls, 1);
     rc |= expect_int("alias policy id", (int)g_last_policy_id, 77);
     rc |= expect_int("alias policy source", (int)g_last_policy_source, (int)DSD_TG_POLICY_SOURCE_RUNTIME_ALIAS);
+
+    /* The same alias for a source the state machine did not check (a foreign unit, an unchecked decode) is shown and
+       not learned. */
+    const int learned_before = g_policy_learn_calls;
+    state.dmr_alias_format[0] = 0x02;
+    state.dmr_alias_block_len[0] = 2;
+    seed_p25_call(&state, 0U, 78U);
+    dsd_call_snapshot unchecked;
+    if (dsd_call_state_get(&state, 0U, &unchecked) > 0) {
+        (void)dsd_call_state_note_source_verdict(&state, 0U, unchecked.epoch, 78U, 0,
+                                                 dsd_state_reception_generation(&state));
+    }
+    ldu2_handle_lsd_alias(&state, &frame);
+    rc |= expect_int("alias of an unchecked source not learned", g_policy_learn_calls, learned_before);
     return rc;
 }
 
@@ -788,6 +809,13 @@ seed_slot0_call(dsd_state* state, int protocol, uint64_t target, uint64_t source
         .ota_source_id = source,
     };
     (void)dsd_call_state_observe(state, &observation, DSD_CALL_BOUNDARY_BEGIN);
+    /* The trunk state machine's #800 verdict on a checked voice user's source, mirrored on the call: a P25 alias is
+       learned only for such a source (dsd_call_state_source_learnable()). */
+    dsd_call_snapshot opened;
+    if (source != 0U && dsd_call_state_get(state, 0U, &opened) > 0) {
+        (void)dsd_call_state_note_source_verdict(state, 0U, opened.epoch, (uint32_t)source, 1,
+                                                 dsd_state_reception_generation(state));
+    }
     if (ended) {
         (void)dsd_call_state_end(state, 0U, 0.0);
     }

@@ -46,6 +46,11 @@ dsd_frame_sync_hook_p25_sm_try_tick(dsd_opts* opts, dsd_state* state) {
     g_frame_sync_hooks.p25_sm_try_tick(opts, state);
 }
 
+int
+dsd_frame_sync_hook_p25_sm_watchdog_service(dsd_opts* opts, dsd_state* state) {
+    return g_frame_sync_hooks.p25_sm_watchdog_service ? g_frame_sync_hooks.p25_sm_watchdog_service(opts, state) : 0;
+}
+
 void
 dsd_frame_sync_hook_p25_sm_release(dsd_opts* opts, dsd_state* state) {
     if (!g_frame_sync_hooks.p25_sm_release) {

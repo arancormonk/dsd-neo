@@ -24,7 +24,7 @@ init_output_ring(struct output_state* ring, size_t capacity) {
         return -1;
     }
     ring->capacity = capacity;
-    dsd_cond_init(&ring->ready);
+    dsd_cond_init_monotonic(&ring->ready);
     dsd_cond_init(&ring->space);
     dsd_mutex_init(&ring->ready_m);
     return 0;

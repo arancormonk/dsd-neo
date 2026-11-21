@@ -220,7 +220,10 @@ class AppPrefs : public QObject {
     double lastLon() const;
     void setLastLon(double value);
     /** Publish coordinates and timestamp together. Separate property writes can
-     * notify a reader before the timestamp makes the new coordinates valid. */
+     * notify a reader before the timestamp makes the new coordinates valid. A
+     * stamp ahead of this device's wall clock (a GPS time ahead of a phone
+     * clock set behind) is stored as now, so the fix is not expired, and the
+     * one it replaced lost, the moment it is written. */
     Q_INVOKABLE void setLocationFix(double lat, double lon, qint64 fixAtMs, double accuracyM = 0);
     double lastAccuracyM() const;
     qint64 lastFixAt() const;

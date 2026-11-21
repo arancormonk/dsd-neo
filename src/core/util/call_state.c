@@ -564,6 +564,7 @@ call_state_seed_reacquired_snapshot(dsd_call_snapshot* snapshot, const dsd_call_
     DSD_MEMCPY(snapshot->source_text, previous->source_text, sizeof(snapshot->source_text));
     DSD_MEMCPY(snapshot->target_text, previous->target_text, sizeof(snapshot->target_text));
     DSD_MEMCPY(snapshot->route_text, previous->route_text, sizeof(snapshot->route_text));
+    snapshot->source_home = previous->source_home;
     snapshot->kind = previous->kind;
     snapshot->protocol = previous->protocol;
     snapshot->channel = previous->channel;
@@ -1382,6 +1383,99 @@ dsd_call_context_restore_snapshot(dsd_state* state, const dsd_call_context_snaps
     }
     call_state_note_epoch_floor(state, ext);
     dsd_call_state_ext_unlock(ext);
+    return 1;
+}
+
+int
+dsd_call_state_note_source_verdict(dsd_state* state, uint8_t slot, uint64_t epoch, uint32_t source, int checked,
+                                   uint64_t rx_gen) {
+    if (!state || slot >= DSD_CALL_STATE_SLOT_COUNT || epoch == 0U) {
+        return -1;
+    }
+    dsd_call_state_ext* ext = dsd_call_state_ext_get(state, 0);
+    if (!ext) {
+        return 0;
+    }
+    dsd_call_state_ext_lock(ext);
+    dsd_call_snapshot* snapshot = &ext->calls.slots[slot];
+    if (snapshot->epoch != epoch) {
+        dsd_call_state_ext_unlock(ext);
+        return 0;
+    }
+    snapshot->source_checked = (uint8_t)(checked != 0 && source != 0U);
+    snapshot->source_checked_id = source;
+    snapshot->source_checked_rx_gen = rx_gen;
+    dsd_call_state_ext_unlock(ext);
+    return 1;
+}
+
+int
+dsd_call_state_source_learnable(const dsd_state* state, const dsd_call_snapshot* call) {
+    if (!state || !call || call->ota_source_id == 0U || call->ota_source_id > UINT32_MAX) {
+        return 0;
+    }
+    if (!DSD_SYNC_IS_P25(call->protocol)) {
+        return 1;
+    }
+    return call->source_checked != 0U && call->source_checked_id == (uint32_t)call->ota_source_id
+           && call->source_checked_rx_gen == dsd_state_reception_generation(state);
+}
+
+static int
+call_state_source_home_equal(const dsd_call_source_home* a, const dsd_call_source_home* b) {
+    return a->unit == b->unit && a->wacn == b->wacn && a->sysid == b->sysid;
+}
+
+int
+dsd_call_state_note_source_home(dsd_state* state, uint8_t slot, int protocol, const dsd_call_source_home* home,
+                                int* replaced) {
+    if (replaced) {
+        *replaced = 0;
+    }
+    if (!state || !home || home->valid == 0U || slot >= DSD_CALL_STATE_SLOT_COUNT || protocol == DSD_SYNC_NONE) {
+        return -1;
+    }
+    dsd_call_state_ext* ext = dsd_call_state_ext_get(state, 0);
+    if (!ext) {
+        return 0;
+    }
+    dsd_call_state_ext_lock(ext);
+    dsd_call_snapshot* snapshot = &ext->calls.slots[slot];
+    if (snapshot->epoch == 0U || snapshot->phase != DSD_CALL_PHASE_ACTIVE
+        || !dsd_call_state_update_is_protocols(snapshot, protocol)) {
+        dsd_call_state_ext_unlock(ext);
+        return 0;
+    }
+    if (snapshot->source_home.valid != 0U && call_state_source_home_equal(&snapshot->source_home, home)) {
+        dsd_call_state_ext_unlock(ext);
+        return 1;
+    }
+    if (replaced) {
+        *replaced = snapshot->source_home.valid != 0U;
+    }
+    snapshot->source_home = *home;
+    snapshot->revision = call_state_next_nonzero(snapshot->revision);
+    ext->calls.revision = call_state_next_nonzero(ext->calls.revision);
+    dsd_call_state_ext_unlock(ext);
+    return 1;
+}
+
+int
+dsd_call_state_format_home_source(const dsd_call_snapshot* call, char* out, size_t out_size) {
+    if (!out || out_size == 0U) {
+        return 0;
+    }
+    out[0] = '\0';
+    if (!call || !DSD_SYNC_IS_P25(call->protocol) || call->ota_source_id != 0U || call->source_home.valid == 0U) {
+        return 0;
+    }
+    const int written = DSD_SNPRINTF(out, out_size, "%u@%03X", (unsigned int)call->source_home.unit,
+                                     (unsigned int)call->source_home.sysid);
+    if (written < 0 || (size_t)written >= out_size) {
+        /* A cut identity could read as a local radio's ID: none rather than part of one. */
+        out[0] = '\0';
+        return 0;
+    }
     return 1;
 }
 

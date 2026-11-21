@@ -414,6 +414,7 @@ nxdn_handle_dcr_csm_alias(const dsd_opts* opts, dsd_state* state, const uint8_t*
     if (nxdn_dcr_decode_csm_alias(trellis_buf, csm_alias, sizeof(csm_alias))) {
         DSD_FPRINTF(stderr, "\n Call Sign Memory: %s; ", csm_alias + 4);
         DSD_SNPRINTF(state->generic_talker_alias[0], sizeof(state->generic_talker_alias[0]), "%s", csm_alias);
+        state->generic_talker_alias_epoch[0] = 0U; /* not bound to a call (P25 keeps only its own) */
         // The display takes the call sign either way; the history row only through the open call, since
         // a CSM decoded ahead of the SACCH2 SB0 observation has no row of its own yet.
         char row_alias[sizeof(csm_alias) + 2U];

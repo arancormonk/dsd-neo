@@ -459,7 +459,7 @@ bench_output_ring(const BenchOptions& opts) {
         DSD_FPRINTF(stderr, "output ring allocation failed\n");
         return ran;
     }
-    dsd_cond_init(&ring.ready);
+    dsd_cond_init_monotonic(&ring.ready);
     dsd_cond_init(&ring.space);
     dsd_mutex_init(&ring.ready_m);
     ring.head.store(0);

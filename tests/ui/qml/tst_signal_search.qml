@@ -2693,7 +2693,7 @@ Item {
             wait(0);
             findChild(loader.item, "searchHistoryActions").activate();
             wait(100);
-            grabImage(root).save("/tmp/dsd-signal-search-menu.png");
+            grabImage(root);
             findChild(loader.item, "searchDetectionMenu").cancel();
             model.history = [historyHit({matches: [{systemUid: "uid-a"}], knownLabel: "Warehouse · 462.5750 MHz", confirmed: true, protocol: "P25 Phase 1", site: "WACN BEE00 · SYS 1A3 · RFSS 1 · Site 2", access: "NAC 293"}),
                 historyHit({id: "39", confirmed: true, protocol: "DMR", ended: false, site: "TIII Small · Net 12 · Site 3 · SYS 1183", access: "CC 1", slot: 2, crypt: "Encrypted"}),
@@ -2705,7 +2705,7 @@ Item {
                 var row = findChild(loader.item, "searchHistoryRow");
                 scroll.contentY = Math.max(0, row.mapToItem(scroll.contentItem, 0, 0).y - 60);
                 wait(100);
-                grabImage(root).save(scale > 1 ? "/tmp/dsd-signal-search-history-large.png" : "/tmp/dsd-signal-search-history.png");
+                grabImage(root);
                 var actions = findChild(loader.item, "searchHistoryActions");
                 verify(actions.mapToItem(row, 0, 0).x + actions.width <= row.width + 0.5, "the row's actions stay inside it");
             }
@@ -2715,7 +2715,7 @@ Item {
         function test_capture_searching() {
             model.status = Object.assign({}, model.status, {phase: 1, rangeName: "Local UHF", rangeStartMHz: "450.000", rangeEndMHz: "460.000", hit: {}});
             wait(100);
-            grabImage(root).save("/tmp/dsd-signal-search-searching.png");
+            grabImage(root);
         }
         // A P25 detection with its checked site, over a history row for an
         // encrypted DMR call.
@@ -2726,8 +2726,6 @@ Item {
             wait(100);
             var img = grabImage(root);
             compare(img.width, 411);
-            // Optional artifact for native finish review; no screenshot comparison in the test.
-            img.save("/tmp/dsd-signal-search-phone.png");
             model.history = [];
         }
         function test_capture_large_text() {
@@ -2737,7 +2735,7 @@ Item {
                 hit: Object.assign({}, model.status.hit, {knownNames: ["Warehouse", "Dock security", "Yard"], confirmed: true, unresolved: false, protocol: "DMR",
                     site: "TIII Small · Net 12 · Site 3 · SYS 1183", access: "CC 1", slot: 2, target: 100, source: 2001, crypt: "ALG 21 · KID 0001"})});
             wait(100);
-            grabImage(root).save("/tmp/dsd-signal-search-large.png");
+            grabImage(root);
             var button = findChild(loader.item, "searchStartPause");
             verify(button.y + button.height <= loader.item.height);
             // A narrow phone, with long valid bounds and counts.
@@ -2745,7 +2743,7 @@ Item {
             model.status = Object.assign({}, model.status, {pass: 12, channel: 99998, count: 99999, rangeName: "Regional interoperability",
                 rangeStartMHz: "118.008333", rangeEndMHz: "136.991667"});
             wait(100);
-            grabImage(root).save("/tmp/dsd-signal-search-large-360.png");
+            grabImage(root);
             verify(button.y + button.height <= loader.item.height);
         }
         function test_capture_editor() {
@@ -2754,7 +2752,7 @@ Item {
             editor.openFor(0, model.defaultRange());
             verify(editor.visible);
             wait(100);
-            grabImage(root).save("/tmp/dsd-signal-search-editor.png");
+            grabImage(root);
         }
     }
 }

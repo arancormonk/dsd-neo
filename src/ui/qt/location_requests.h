@@ -11,7 +11,7 @@
  * the requesters (the site chooser, Listen's Nearest, the RadioReference nearby search, the map's Locate me) share
  * this broker rather than calling DecoderHost directly:
  *
- *  - requestSite() / requestCurrent() start a request for a named requester and return its id. A request still
+ *  - requestSite() / requestPrecise() / requestQuiet() / requestCurrent() start a request for a named requester and return its id. A request still
  *    pending (anyone's) is given up first: the host is told to cancel it and its requester gets ended().
  *  - Only the pending request's answer is passed on, as answered() to its requester with its id; an answer or a
  *    cancellation for any other id (a request given up, cancelled or already answered) is dropped.
@@ -58,6 +58,13 @@ class LocationRequests : public QObject {
      * @return The request's id; 0 with no host or an empty requester (nothing asked).
      */
     Q_INVOKABLE qint64 requestSite(const QString& requester);
+    /**
+     * @brief The map's Locate me: as requestSite(), but where only approximate location is allowed the platform first
+     * offers precise location (DecoderHost::requestPreciseLocation()).
+     */
+    Q_INVOKABLE qint64 requestPrecise(const QString& requester);
+    /** @brief The map's opening fix: as requestSite(), but never a permission prompt (DecoderHost::requestQuietLocation()). */
+    Q_INVOKABLE qint64 requestQuiet(const QString& requester);
     /** @brief Ask for a fix with its postal code (DecoderHost::requestCurrentLocation()); as requestSite(). */
     Q_INVOKABLE qint64 requestCurrent(const QString& requester);
     /** @brief Give up request @p requestId when it is the pending one; any other id does nothing. */
@@ -82,7 +89,8 @@ class LocationRequests : public QObject {
     void ended(const QString& requester, qint64 requestId);
 
   private:
-    qint64 begin(const QString& requester, bool forSites);
+    enum class Kind { Site, Precise, Quiet, Current };
+    qint64 begin(const QString& requester, Kind kind);
     void giveUp(bool notify);
     void onResult(qint64 requestId, bool fixOk, double lat, double lon, double accuracyM, qint64 fixAtMs,
                   bool geocodeOk, const QString& postalCode, const QString& countryCode, const QString& error);

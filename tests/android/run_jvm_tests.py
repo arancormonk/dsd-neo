@@ -19,7 +19,9 @@ APP_SOURCES = Path("android/package/src/io/github/arancormonk/dsdneo")
 # The compiler and the tests run in short-lived JVMs. C1 alone and the serial collector do their work in about a third of
 # the CPU time of the default C2 and G1 threads, and CPU is what a loaded host runs out of: two cold Kotlin compiles of
 # the usb suite outlasted CTest's 90 s beside a full parallel build.
-JVM_OPTIONS = ("-XX:TieredStopAtLevel=1", "-XX:+UseSerialGC")
+# No shared performance data either: HotSpot would make an hsperfdata_<user> folder in the system temp folder (on
+# Windows the native temp folder, TMP) and leave it behind after every JVM.
+JVM_OPTIONS = ("-XX:TieredStopAtLevel=1", "-XX:+UseSerialGC", "-XX:-UsePerfData")
 # The serial collector is a default only: HotSpot exits ("Multiple garbage collectors selected") when two are selected,
 # so a collector the caller selected, in the options the JVM is started with or in those every JVM (JAVA_TOOL_OPTIONS,
 # and HotSpot's _JAVA_OPTIONS) or every java launch (JDK_JAVA_OPTIONS) reads, is left alone, as is one an argument file
@@ -132,6 +134,10 @@ class Build(NamedTuple):
     # Android platform stubs from stubs/ that compile with it. A build with none has no android.* classes at all, so an
     # Android import in its sources fails the compile.
     stubs: tuple = ()
+    # Tests that also run with their temp folder as working directory: FileListingTest binds a Unix socket by a name
+    # relative to it, since the absolute name under a build tree is longer than a socket address holds. The others run
+    # in the caller's working directory, so a relative path the caller gave the JVM still resolves.
+    in_folder: tuple = ()
 
 
 class Suite(NamedTuple):
@@ -1137,6 +1143,7 @@ def location_wiring():
 
     required = (
         ("override fun onStart(", "LocationStream.onActivityStart()"),
+        ("override fun onStart(", "LocationSupport.onActivityStart()"),
         ("override fun onDestroy(", "LocationStream.onDestroy()"),
         (
             "override fun onRequestPermissionsResult(",
@@ -1152,6 +1159,8 @@ def location_wiring():
     guarded = stop.index("if (!isChangingConfigurations) {") if "if (!isChangingConfigurations) {" in stop else len(stop)
     if stop.index("LocationStream.onActivityStop()") > guarded:
         return f"{where}: onStop must call LocationStream.onActivityStop() on every stop, outside the recreation guard"
+    if "LocationSupport.onActivityStop()" not in stop or stop.index("LocationSupport.onActivityStop()") > guarded:
+        return f"{where}: onStop must call LocationSupport.onActivityStop() on every stop, outside the recreation guard"
     if "LocationSupport.onRequestPermissionsResult(" in activity:
         return f"{where}: location permission answers go to LocationPermission, which owns the prompt"
     return None
@@ -1718,7 +1727,7 @@ SUITES = {
     "file_browser": Suite(
         checks=(file_browser_wiring, storage_permissions_policy),
         builds=(
-            Build(sources=("FileListing.kt",), tests=("FileListingTest.kt",)),
+            Build(sources=("FileListing.kt",), tests=("FileListingTest.kt",), in_folder=("FileListingTest.kt",)),
             Build(
                 sources=("FileListing.kt", "FileBrowser.kt", "SettingsScreens.kt"),
                 tests=("FileBrowserTest.kt",),
@@ -1780,7 +1789,8 @@ def cached_compiler():
         candidates = sorted((cache / package).glob("*/*/*.jar"))
         if not candidates:
             return None
-        jars.append(candidates[-1])
+        # Absolute: the tests run in a working directory of their own, where a relative GRADLE_USER_HOME means nothing.
+        jars.append(candidates[-1].resolve())
     return jars
 
 
@@ -1857,25 +1867,195 @@ def kotlinc_environment(environ, kotlinc):
     return {**environ, "JAVA_OPTS": " ".join((given or KOTLINC_DEFAULT_JAVA_OPTS, *jvm_options(environ, words)))}
 
 
-def compile_command(java, kotlinc, cached, files, output, environ):
+def compile_command(java, kotlinc, cached, files, output, environ, tmpdir=None):
     """The compile of @p files into the jar @p output: its argv, its environment and the classpath the tests run on. With
     kotlinc, the JVM options go through JAVA_OPTS and no argument carries one; with the cached compiler, java takes them
-    as arguments itself."""
+    as arguments itself. With @p tmpdir, the compiler JVM's java.io.tmpdir is there (it unpacks native libraries into
+    it): an argument to the cached compiler, and for kotlinc, whose POSIX launcher splits JAVA_OPTS at every space,
+    a quoted word appended to JAVA_TOOL_OPTIONS."""
     if kotlinc:
         argv = [kotlinc, "-include-runtime", *map(str, files), "-d", str(output)]
-        return argv, kotlinc_environment(environ, kotlinc), str(output)
+        env = kotlinc_environment(environ, kotlinc)
+        if tmpdir is not None:
+            temp = quote_jvm_word(f"-Djava.io.tmpdir={tmpdir}")
+            if temp is None:
+                raise ValueError(f"the compiler's temp folder {tmpdir} holds both quote characters")
+            # With the no-perf flag too: the POSIX launcher first starts `java -version` without JAVA_OPTS.
+            given = environ.get("JAVA_TOOL_OPTIONS", "").strip()
+            env["JAVA_TOOL_OPTIONS"] = " ".join(word for word in (given, "-XX:-UsePerfData", temp) if word)
+        return argv, env, str(output)
     classpath = os.pathsep.join(map(str, cached))
+    temp = [f"-Djava.io.tmpdir={tmpdir}"] if tmpdir is not None else []
     argv = [
-        java, *jvm_options(environ), "-cp", classpath, "org.jetbrains.kotlin.cli.jvm.K2JVMCompiler",
+        java, *jvm_options(environ), *temp, "-cp", classpath, "org.jetbrains.kotlin.cli.jvm.K2JVMCompiler",
         "-no-stdlib", "-no-reflect", "-classpath", classpath, *map(str, files), "-d", str(output),
     ]
     return argv, dict(environ), os.pathsep.join((str(output), classpath))
 
 
-def test_command(java, runtime, test, environ):
-    """The run of the compiled @p test (a .kt file name) on the classpath @p runtime, under @p environ."""
+def test_command(java, runtime, test, environ, tmpdir=None):
+    """The run of the compiled @p test (a .kt file name) on the classpath @p runtime, under @p environ, with its JVM's
+    temp folder (java.io.tmpdir) at @p tmpdir when given. The JVM reads no TMPDIR: on Linux it uses /tmp, whatever
+    the environment says."""
+    temp = [f"-Djava.io.tmpdir={tmpdir}"] if tmpdir is not None else []
     # Top-level functions in Foo.kt compile into the class FooKt.
-    return [java, *jvm_options(environ), "-cp", runtime, f"{PACKAGE}.{Path(test).stem}Kt"]
+    return [java, *jvm_options(environ), *temp, "-cp", runtime, f"{PACKAGE}.{Path(test).stem}Kt"]
+
+
+def temp_environment(environ, tmpdir):
+    """@p environ with the native temp folder (TMPDIR, TEMP, TMP) at @p tmpdir, for what a JVM writes outside
+    java.io.tmpdir."""
+    return {**environ, "TMPDIR": str(tmpdir), "TEMP": str(tmpdir), "TMP": str(tmpdir)}
+
+
+def quote_jvm_word(word):
+    """@p word as one argument in a JVM-wide option variable, which HotSpot splits at whitespace outside quotes
+    (jvm_option_words()); None when it holds both kinds of quote and so cannot be written there."""
+    if not any(char.isspace() or char in "\"'" for char in word):
+        return word
+    if '"' not in word:
+        return f'"{word}"'
+    if "'" not in word:
+        return f"'{word}'"
+    return None
+
+
+def jvm_isolation(java, options, environ, cwd):
+    """What a JVM started as @p java @p options under @p environ in @p cwd ends up with: its java.io.tmpdir and
+    whether it writes shared performance data. _JAVA_OPTIONS comes after the command line, and an options file named
+    there can say anything, so only the JVM can tell. Raises RuntimeError, with what the JVM printed, when it does not
+    start or does not say."""
+    # -XX:+PerfDisableSharedMem last: the probe itself must not publish performance data, even when the caller turned
+    # UsePerfData on, which it still reports.
+    probe = subprocess.run([java, *options, "-XshowSettings:properties", "-XX:+PrintFlagsFinal", "-XX:+PerfDisableSharedMem",
+                            "-version"], env=environ, cwd=cwd, capture_output=True, text=True, timeout=60)
+    settings = isolation_settings(probe.stdout + probe.stderr) if probe.returncode == 0 else None
+    if settings is None:
+        # Not the options or the JVM's output, which can hold the caller's secrets: only what says why it stopped.
+        reasons = [launch_error(line) for line in probe.stderr.splitlines() if LAUNCH_ERROR.match(line.strip())]
+        raise RuntimeError(f"{java} did not start or did not report its settings (exit {probe.returncode})"
+                           + "".join(f"\n  {reason}" for reason in reasons[:5]))
+    return settings
+
+
+# The lines a JVM that does not start prints about why.
+LAUNCH_ERROR = re.compile(r"(Error|Unrecognized|Improperly specified|Could not|Invalid|Missing)\b")
+
+
+def launch_error(line):
+    """@p line, a JVM's launch error, without any value it quotes after an '=' (an option's value can be secret)."""
+    return re.sub(r"=\S*", "=...", line.strip())
+
+
+def isolation_settings(output):
+    """(java.io.tmpdir, UsePerfData) from what -XX:+PrintFlagsFinal and -XshowSettings:properties print, on either
+    stream (-XX:+DisplayVMOutputToStderr moves the flags); None when either is missing."""
+    tmpdir = tmpdir_setting(output)
+    perf = re.search(r"\bbool\s+UsePerfData\s*=\s*(true|false)\b", output)
+    if tmpdir is None or perf is None:
+        return None
+    return tmpdir, perf.group(1) == "true"
+
+
+def require_isolation(who, java, options, environ, cwd, tmpdir):
+    """Refuse to run @p who unless its JVM's java.io.tmpdir is @p tmpdir and it writes no shared performance data,
+    whatever the caller's JVM options say: a file it wrote elsewhere would escape every check."""
+    seen, perf = jvm_isolation(java, options, environ, cwd)
+    if seen != str(tmpdir):
+        raise RuntimeError(f"{who}: the JVM's java.io.tmpdir would be {seen!r}, not {str(tmpdir)!r}; unset what sets it "
+                           "(_JAVA_OPTIONS, or an options file it names)")
+    if perf:
+        raise RuntimeError(f"{who}: the JVM would write shared performance data (hsperfdata) to the system temp "
+                           "folder; unset what turns UsePerfData back on")
+
+
+def tmpdir_setting(settings):
+    """java.io.tmpdir in @p settings, what -XshowSettings:properties prints; None when it is not there."""
+    for line in settings.splitlines():
+        key, sep, value = line.strip().partition(" = ")
+        if sep and key == "java.io.tmpdir":
+            return value
+    return None
+
+
+def leftovers(folder):
+    """What is left in @p folder, by name, sorted."""
+    return sorted(entry.name for entry in Path(folder).iterdir())
+
+
+def run_test(java, runtime, test, directory, in_folder=False):
+    """Run the compiled @p test with a temp folder of its own inside @p directory as its java.io.tmpdir and native temp
+    folder (and, with @p in_folder, its working directory). Each test must remove what it creates there: what is left
+    fails the run, named, whether the test passed or not, and is removed."""
+    jvm_tmp = Path(tempfile.mkdtemp(prefix="t", dir=directory))
+    env = temp_environment(os.environ, jvm_tmp)
+    cwd = test_directory(in_folder, env, jvm_tmp)
+    if in_folder and cwd is None:
+        print(f"{test}: runs in the caller's working directory, since the JVM options name a relative file",
+              file=sys.stderr)
+    try:
+        require_isolation(test, java, [*jvm_options(env), f"-Djava.io.tmpdir={jvm_tmp}"], env, cwd, jvm_tmp)
+        failure = None
+        try:
+            subprocess.run(test_command(java, runtime, test, env, jvm_tmp), env=env, cwd=cwd, check=True, timeout=30)
+        except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as error:
+            failure = error
+        left = leftovers(jvm_tmp)
+    finally:
+        shutil.rmtree(jvm_tmp, ignore_errors=True)
+    if left:
+        print(f"{test} left {len(left)} entries in its temp folder: {', '.join(left[:20])}", file=sys.stderr)
+    if failure is not None:
+        raise failure
+    if left:
+        raise RuntimeError(f"{test} left files in its temp folder")
+
+
+# The arguments in a JVM-wide option variable that name a file: the launcher's @argfiles and HotSpot's options files.
+JVM_FILE_ARGUMENTS = ("-XX:VMOptionsFile=", "-XX:Flags=")
+
+
+def names_relative_file(environ):
+    """Whether a JVM-wide option variable in @p environ names a file by a relative path, which a JVM started in another
+    working directory would not find."""
+    for name in JVM_WIDE_OPTIONS:
+        for word in jvm_option_words(environ.get(name, "")):
+            prefix = next((p for p in JVM_FILE_ARGUMENTS if word.startswith(p)), None)
+            if prefix is None and word.startswith("@") and not word.startswith("@@"):
+                prefix = "@"
+            if prefix is not None and not Path(word[len(prefix):]).is_absolute():
+                return True
+    return False
+
+
+def test_directory(in_folder, environ, jvm_tmp):
+    """The working directory for a test: its temp folder @p jvm_tmp for one that binds a socket by a relative name
+    (@p in_folder), unless the caller's JVM options name a relative file, which would not be found there; then, as for
+    every other test, the caller's own (None)."""
+    if in_folder and not names_relative_file(environ):
+        return jvm_tmp
+    return None
+
+
+def kotlinc_java(environ, java):
+    """The java the kotlinc launchers start: JAVACMD, else JAVA_HOME's, else @p java (the one on PATH)."""
+    if environ.get("JAVACMD"):
+        return environ["JAVACMD"]
+    home = environ.get("JAVA_HOME")
+    if home:
+        return str(Path(home) / "bin" / ("java.exe" if os.name == "nt" else "java"))
+    return java
+
+
+def compiler_isolation(java, kotlinc, argv, env, directory):
+    """Refuse to compile unless the compiler JVM's java.io.tmpdir is @p directory and it writes no shared performance
+    data, as the JVM itself reports them: for kotlinc, the java it starts with JAVA_OPTS on its command line after
+    JAVA_TOOL_OPTIONS."""
+    if kotlinc:
+        words = java_opts_words(env.get("JAVA_OPTS", ""), kotlinc)
+        require_isolation("the Kotlin compiler", kotlinc_java(env, java), words, env, None, directory)
+    else:
+        require_isolation("the Kotlin compiler", java, argv[1:argv.index("-cp")], env, None, directory)
 
 
 def run_build(name, build, java, kotlinc, cached):
@@ -1887,10 +2067,12 @@ def run_build(name, build, java, kotlinc, cached):
     ]
     with tempfile.TemporaryDirectory(prefix=f"dsd-{name}-tests-") as directory:
         output = Path(directory) / "tests.jar"
-        argv, env, runtime = compile_command(java, kotlinc, cached, files, output, os.environ)
+        argv, env, runtime = compile_command(java, kotlinc, cached, files, output,
+                                             temp_environment(os.environ, directory), directory)
+        compiler_isolation(java, kotlinc, argv, env, directory)
         subprocess.run(argv, env=env, check=True)
         for test in build.tests:
-            subprocess.run(test_command(java, runtime, test, os.environ), check=True, timeout=30)
+            run_test(java, runtime, test, directory, test in build.in_folder)
 
 
 def run_suite(name, suite, java, kotlinc, cached):
@@ -1919,8 +2101,11 @@ def main():
                 return 1
     # CI jobs that run the suite set DSD_NEO_REQUIRE_TEST_TOOLS=1, so a missing compiler fails there instead of skipping.
     require_tools = args.require_tools or os.environ.get("DSD_NEO_REQUIRE_TEST_TOOLS") == "1"
+    # Absolute: FileListingTest runs in a working directory of its own, where a relative PATH entry means nothing.
     java = shutil.which("java")
+    java = os.path.abspath(java) if java else None
     kotlinc = shutil.which("kotlinc")
+    kotlinc = os.path.abspath(kotlinc) if kotlinc else None
     cached = cached_compiler() if not kotlinc else None
     if not java or (not kotlinc and not cached):
         print("Android JVM tests need Java and kotlinc, or the Kotlin compiler in the Gradle cache.")

@@ -199,6 +199,9 @@ session_new(dsd_opts** out_opts, dsd_state** out_state) {
     }
     initOpts(opts);
     initState(state);
+    /* No sound card: initOpts() picks the PulseAudio output, which a scan opens (dsd_engine_scan_ensure_output()), and
+       libpulse then makes a runtime folder in TMPDIR wherever XDG_RUNTIME_DIR is unset. */
+    opts->audio_out_type = 9;
     /* The FM monitor of a rigctl peer's audio (-fA -U), whose frequency the input names nowhere. */
     opts->audio_in_type = AUDIO_IN_WAV;
     opts->analog_only = 1;

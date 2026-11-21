@@ -112,6 +112,26 @@ dsd_audio_stream* dsd_audio_open_output(const dsd_audio_params* params);
 int dsd_audio_read(dsd_audio_stream* stream, int16_t* buffer, size_t frames);
 
 /**
+ * @brief Read up to @p frames of what the input stream holds now, never waiting.
+ *
+ * What a discard kept comes first (dsd_audio_discard_input()), then what the device holds, as dsd_audio_discard_input()
+ * counts it: PulseAudio's client-side queue (the record stream's held audio), PortAudio's
+ * Pa_GetStreamReadAvailable(), AAudio's frames the device wrote and no read took (a read with no timeout). A source
+ * that stops delivering holds nothing, and the call returns at once. The decoder's frame-sync hunt reads through this,
+ * in bounded waits that service what waits on the decoder, so a stalled sound card cannot hold it; frame decoding
+ * reads with dsd_audio_read(). The null backend paces as dsd_audio_read() does.
+ *
+ * With @p recover 0 (a probe) it makes no device teardown or reopen: an input it finds lost (AAudio after a route
+ * disconnect) holds nothing until a call with @p recover set, or a blocking read, brings the device back. With
+ * @p recover set, AAudio first tears down a stream a route change disconnected and opens it again once its reopen
+ * backoff allows: synchronous calls into the audio service, so the decoder's hunt sets it only in a read that waits,
+ * after it serviced what waits on it. PulseAudio, PortAudio and the null backend keep their input open.
+ *
+ * @return Frames read (0 when the stream holds none), or negative on error.
+ */
+int dsd_audio_read_held(dsd_audio_stream* stream, int16_t* buffer, size_t frames, int recover);
+
+/**
  * @brief Drop the input samples the stream holds now, unread, but for those captured since @p marked_ns (issue #834: a
  * rigctl peer's audio from before its retune; the audio captured since the retune was asked for is kept).
  *

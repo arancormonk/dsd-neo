@@ -12,6 +12,7 @@
 #include <dsd-neo/platform/platform.h>
 #include <dsd-neo/platform/sockets.h>
 #include <dsd-neo/platform/threading.h>
+#include <dsd-neo/runtime/decode_clock.h>
 #include <dsd-neo/runtime/exitflag.h>
 #include <errno.h>
 #if !DSD_PLATFORM_WIN_NATIVE
@@ -92,7 +93,8 @@ ring_init(udp_input_ring* r, size_t cap_samples) {
     r->head = r->tail = 0;
     dsd_atomic_u64_init(&r->written, 0U);
     dsd_mutex_init(&r->m);
-    dsd_cond_init(&r->cv);
+    /* Waited on to monotonic deadlines (udp_input_read_sample_wait()): a wall clock set back never stretches a wait. */
+    dsd_cond_init_monotonic(&r->cv);
 }
 
 /**
@@ -616,7 +618,11 @@ udp_input_read_sample_wait(dsd_opts* opts, int16_t* out, unsigned int timeout_ms
             udp_input_mirror_counters(opts, ctx);
             return 0;
         }
-        (void)dsd_cond_timedwait(&ctx->ring.cv, &ctx->ring.m, timeout_ms);
+        /* A zero-time probe of an empty ring is answered at once; a wait ends at its monotonic deadline. */
+        if (timeout_ms > 0U) {
+            (void)dsd_cond_timedwait_monotonic(&ctx->ring.cv, &ctx->ring.m,
+                                               dsd_realtime_mono_ns() + (uint64_t)timeout_ms * 1000000ULL);
+        }
         if (ring_used(&ctx->ring) == 0) {
             const int stopped = dsd_exitflag_load() || !atomic_load(&ctx->running);
             dsd_mutex_unlock(&ctx->ring.m);

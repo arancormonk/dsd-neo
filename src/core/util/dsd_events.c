@@ -111,6 +111,8 @@ init_event_history(Event_History_I* event_struct, uint8_t start, uint8_t stop) {
         event_struct->Event_History_Items[i].target_id = 0;
         event_struct->Event_History_Items[i].policy_target_id = 0;
         event_struct->Event_History_Items[i].src_str[0] = '\0';
+        event_struct->Event_History_Items[i].src_home[0] = '\0';
+        event_struct->Event_History_Items[i].src_home_key = 0U;
         event_struct->Event_History_Items[i].tgt_str[0] = '\0';
         event_struct->Event_History_Items[i].t_name[0] = '\0';
         event_struct->Event_History_Items[i].s_name[0] = '\0';
@@ -195,6 +197,9 @@ push_event_history(Event_History_I* event_struct) {
             event_struct->Event_History_Items[i - 1].policy_target_id;
         copy_str_field(event_struct->Event_History_Items[i].src_str, event_struct->Event_History_Items[i - 1].src_str,
                        sizeof event_struct->Event_History_Items[i].src_str);
+        copy_str_field(event_struct->Event_History_Items[i].src_home, event_struct->Event_History_Items[i - 1].src_home,
+                       sizeof event_struct->Event_History_Items[i].src_home);
+        event_struct->Event_History_Items[i].src_home_key = event_struct->Event_History_Items[i - 1].src_home_key;
         copy_str_field(event_struct->Event_History_Items[i].tgt_str, event_struct->Event_History_Items[i - 1].tgt_str,
                        sizeof event_struct->Event_History_Items[i].tgt_str);
         copy_str_field(event_struct->Event_History_Items[i].t_name, event_struct->Event_History_Items[i - 1].t_name,
@@ -579,10 +584,10 @@ dsd_event_flush_orphan_recordings(dsd_opts* opts, dsd_state* state) {
     if (!opts || !state || opts->static_wav_file != 0) {
         return;
     }
-    /* Under the call-state lock, which every commit holds while it rotates a slot: a flush on the P25 watchdog's thread
-       (a trunk control-channel return) can meet the decoder thread committing the slot's ended call
-       (dsd_event_sync_slot() from noCarrier() or getFrameSync(), outside the tick guard). Judging the file no call's
-       and closing it are one step, so the two never close the same file. */
+    /* Under the call-state lock, which every commit holds while it rotates a slot. A running decoder flushes and commits
+       on its own thread only (the P25 watchdog's ticks, whose control-channel returns flush, run there too), so the two
+       never overlap in it; the lock keeps judging the file no call's and closing it one step for a caller that runs a
+       tick on a thread of its own (the engine tests' in-flight ticks), so the two never close the same file. */
     const dsd_call_state_ext* ext = dsd_call_state_ext_get(state, 1);
     dsd_call_state_ext_lock(ext);
     for (uint8_t slot = 0; slot < 2U; slot++) {
@@ -1328,6 +1333,28 @@ watchdog_event_rx_scope_learns(const Event_History* held_row, const Event_Histor
     return ss != 0 && watchdog_event_rx_scope_covers(held, seen) && !watchdog_event_rx_scope_covers(seen, held);
 }
 
+/* The merged row's roaming home and alias; returns whether the alias the row logs changed. Another radio's home
+   (a different full SUID) named inside the reacquired segment (two roamers, no end decoded between them) is the row's
+   talker now: its home and its alias replace the first's, an empty alias included (the replacement dropped the first
+   radio's). Otherwise the home fills a row without one and the alias merges progressively. */
+static int
+watchdog_event_merge_home_and_alias(Event_History* retained, const Event_History* staged) {
+    const int home_replaced =
+        staged->src_home_key != 0U && retained->src_home_key != 0U && staged->src_home_key != retained->src_home_key;
+    if (staged->src_home_key != 0U && staged->src_home_key != retained->src_home_key) {
+        retained->src_home_key = staged->src_home_key;
+        copy_str_field(retained->src_home, staged->src_home, sizeof retained->src_home);
+    } else if (retained->src_home[0] == '\0') {
+        copy_str_field(retained->src_home, staged->src_home, sizeof retained->src_home);
+    }
+    if (!home_replaced) {
+        return watchdog_event_merge_text_progressive(retained->alias, staged->alias, sizeof(retained->alias), 1);
+    }
+    const int changed = staged->alias[0] != '\0' && strcmp(retained->alias, staged->alias) != 0;
+    copy_str_field(retained->alias, staged->alias, sizeof retained->alias);
+    return changed;
+}
+
 // Fold the staged row into the row already in history: this is the same transmission, and
 // everything the reacquired segment learned -- a late-decoded SRC, the system identifiers, an
 // alias, GPS, a text message, the crypto header that finally arrived -- has to survive.
@@ -1362,8 +1389,7 @@ watchdog_event_merge_staged_into(Event_History* retained, const Event_History* s
         copy_str_field(retained->service_label, staged->service_label, sizeof retained->service_label);
     }
 
-    added->alias =
-        (uint8_t)watchdog_event_merge_text_progressive(retained->alias, staged->alias, sizeof(retained->alias), 1);
+    added->alias = (uint8_t)watchdog_event_merge_home_and_alias(retained, staged);
     added->gps = watchdog_event_merge_gps(retained, staged);
     added->text_message = (uint8_t)watchdog_event_merge_text_progressive(retained->text_message, staged->text_message,
                                                                          sizeof(retained->text_message), 0);
@@ -1685,6 +1711,8 @@ typedef struct {
     uint32_t source_id;
     uint32_t target_id;
     char src_str[200];
+    char src_home[24];     /* a roaming P25 radio's display-only home identity (dsd_call_state_format_home_source()) */
+    uint64_t src_home_key; /* the talker's full home SUID when one was named (any working address), 0 otherwise */
     char tgt_str[200];
     char t_name[200];
     char s_name[200];
@@ -1873,6 +1901,11 @@ watchdog_event_current_init_base(const dsd_state* state, uint8_t slot, const dsd
     }
     ctx->start_wall = call->start_wall;
     DSD_SNPRINTF(ctx->src_str, sizeof ctx->src_str, "%s", call->source_text);
+    (void)dsd_call_state_format_home_source(call, ctx->src_home, sizeof ctx->src_home);
+    ctx->src_home_key = call->source_home.valid != 0U ? (((uint64_t)call->source_home.wacn & 0xFFFFFU) << 36)
+                                                            | (((uint64_t)call->source_home.sysid & 0xFFFU) << 24)
+                                                            | (call->source_home.unit & 0xFFFFFFU)
+                                                      : 0U;
     DSD_SNPRINTF(ctx->tgt_str, sizeof ctx->tgt_str, "%s", call->target_text);
 
     if (call->protocol == DSD_SYNC_ANALOG) {
@@ -2471,6 +2504,8 @@ watchdog_event_current_update_item(const dsd_opts* opts, dsd_state* state, uint8
 
     DSD_SNPRINTF(item->sysid_string, sizeof(item->sysid_string), "%s", ctx->sysid_string);
     DSD_SNPRINTF(item->src_str, sizeof(item->src_str), "%s", ctx->src_str);
+    DSD_SNPRINTF(item->src_home, sizeof(item->src_home), "%s", ctx->src_home);
+    item->src_home_key = ctx->src_home_key;
     DSD_SNPRINTF(item->tgt_str, sizeof(item->tgt_str), "%s", ctx->tgt_str);
     DSD_SNPRINTF(item->t_name, sizeof(item->t_name), "%s", ctx->t_name);
     DSD_SNPRINTF(item->s_name, sizeof(item->s_name), "%s", ctx->s_name);
@@ -2767,8 +2802,15 @@ watchdog_event_current_build_event_p25(const watchdog_event_current_ctx* ctx, co
                                        const char* sys_string, char* event_string, size_t event_size) {
     char nac_buf[8];
     const char* nac = watchdog_event_nac_text(nac_buf, sizeof nac_buf, ctx->access_code_kind, ctx->access_code);
-    DSD_SNPRINTF(event_string, event_size, "%s %s %s TGT: %08d; SRC: %08d; NAC: %s; ", datestr, timestr, sys_string,
-                 ctx->target_id, ctx->source_id, nac);
+    /* A roaming radio named only by its home identity has no working address: the line shows that identity. */
+    char src_buf[sizeof ctx->src_home];
+    if (ctx->source_id == 0U && ctx->src_home[0] != '\0') {
+        DSD_SNPRINTF(src_buf, sizeof src_buf, "%s", ctx->src_home);
+    } else {
+        DSD_SNPRINTF(src_buf, sizeof src_buf, "%08u", ctx->source_id);
+    }
+    DSD_SNPRINTF(event_string, event_size, "%s %s %s TGT: %08d; SRC: %s; NAC: %s; ", datestr, timestr, sys_string,
+                 ctx->target_id, src_buf, nac);
     watchdog_event_append_p25_site(ctx, event_string, event_size);
 
     watchdog_event_append_ess_crypto(ctx, event_string, event_size);
@@ -3135,6 +3177,8 @@ watchdog_event_ctx_from_row(const dsd_call_event_render_env* env, const Event_Hi
     DSD_MEMCPY(&ctx->site_id, &item->site_id, sizeof(ctx->site_id));
     DSD_SNPRINTF(ctx->sysid_string, sizeof(ctx->sysid_string), "%s", item->sysid_string);
     DSD_SNPRINTF(ctx->src_str, sizeof(ctx->src_str), "%s", item->src_str);
+    DSD_SNPRINTF(ctx->src_home, sizeof(ctx->src_home), "%s", item->src_home);
+    ctx->src_home_key = item->src_home_key;
     DSD_SNPRINTF(ctx->tgt_str, sizeof(ctx->tgt_str), "%s", item->tgt_str);
     DSD_SNPRINTF(ctx->t_name, sizeof(ctx->t_name), "%s", item->t_name);
     DSD_SNPRINTF(ctx->s_name, sizeof(ctx->s_name), "%s", item->s_name);
@@ -3842,14 +3886,22 @@ typedef enum {
     DSD_EVENT_ENRICH_TEXT,
 } dsd_event_enrichment_kind;
 
+/* The per-slot generic alias the live display reads, tagged with the call @p epoch it belongs to. */
+static void
+dsd_event_set_live_alias(dsd_state* state, uint8_t slot, uint64_t epoch, const char* value) {
+    DSD_SNPRINTF(state->generic_talker_alias[slot], sizeof(state->generic_talker_alias[slot]), "%s", value);
+    state->generic_talker_alias_epoch[slot] = epoch;
+    state->generic_talker_alias_rx_gen[slot] = dsd_state_reception_generation(state);
+}
+
 // Write one enrichment payload into its row field. An alias also feeds the per-slot
 // generic alias the live display reads.
 static void
-dsd_event_enrich_apply(dsd_state* state, uint8_t slot, Event_History* item, const char* value,
+dsd_event_enrich_apply(dsd_state* state, uint8_t slot, uint64_t epoch, Event_History* item, const char* value,
                        dsd_event_enrichment_kind kind) {
     if (kind == DSD_EVENT_ENRICH_ALIAS) {
         DSD_SNPRINTF(item->alias, sizeof(item->alias), "%s", value);
-        DSD_SNPRINTF(state->generic_talker_alias[slot], sizeof(state->generic_talker_alias[slot]), "%s", value);
+        dsd_event_set_live_alias(state, slot, epoch, value);
     } else if (kind == DSD_EVENT_ENRICH_GPS) {
         DSD_SNPRINTF(item->gps_s, sizeof(item->gps_s), "%s", value);
         dsd_event_pos_drop_position(&item->pos); /* text without a position */
@@ -3922,7 +3974,7 @@ static void
 dsd_event_enrich_unopened(dsd_state* state, uint8_t slot, dsd_call_state_ext* ext, dsd_call_snapshot* call,
                           const char* value, dsd_event_enrichment_kind kind) {
     if (kind == DSD_EVENT_ENRICH_ALIAS) {
-        DSD_SNPRINTF(state->generic_talker_alias[slot], sizeof(state->generic_talker_alias[slot]), "%s", value);
+        dsd_event_set_live_alias(state, slot, call->epoch, value);
     }
     if (state->event_crc_invalid[slot]) {
         dsd_event_enrich_mark_call_crc(ext, call, state->event_crc_invalid[slot]);
@@ -3970,7 +4022,7 @@ dsd_event_enrich_row_locked(const dsd_opts* opts, dsd_state* state, uint8_t slot
     Event_History* item = &state->event_history_s[slot].Event_History_Items[history_index];
     const int alias_changed =
         kind == DSD_EVENT_ENRICH_ALIAS && strncmp(item->alias, value, sizeof(item->alias) - 1U) != 0;
-    dsd_event_enrich_apply(state, slot, item, value, kind);
+    dsd_event_enrich_apply(state, slot, epoch, item, value, kind);
     if (state->event_crc_invalid[slot]) {
         dsd_event_enrich_mark_crc(ext, call, item, state->event_crc_invalid[slot]);
     }
@@ -4483,6 +4535,8 @@ watchdog_event_notice_set_gps(Event_History* item, const dsd_call_observation* o
         item->source_id = 0U;
         item->target_id = 0U;
         item->src_str[0] = '\0';
+        item->src_home[0] = '\0';
+        item->src_home_key = 0U;
         item->tgt_str[0] = '\0';
         dsd_event_pos_write_notice(item, fix, gps);
         return;
@@ -4601,6 +4655,8 @@ dsd_event_emit_data_notice_impl(dsd_opts* opts, dsd_state* state, uint8_t slot, 
     }
     item->event_time = watchdog_event_decode_second();
     DSD_SNPRINTF(item->src_str, sizeof(item->src_str), "%s", observation->source_text);
+    item->src_home[0] = '\0';
+    item->src_home_key = 0U;
     DSD_SNPRINTF(item->tgt_str, sizeof(item->tgt_str), "%s", observation->target_text);
     watchdog_event_notice_payload(opts, state, event_struct, item, observation, gps, fix);
 

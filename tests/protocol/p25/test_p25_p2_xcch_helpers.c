@@ -12,6 +12,7 @@
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/safe_api.h>
 #include <dsd-neo/core/state.h>
+#include <dsd-neo/core/state_ext.h>
 #include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/platform/timing.h>
 #include <dsd-neo/protocol/p25/p25_cc_activity.h>
@@ -1857,6 +1858,69 @@ test_mac_handlers_stop_after_vpdu_retune(void) {
     return rc;
 }
 
+/* The decoded MAC_ACTIVE voice user of an extended group form (0x21): TG 0x1234, Source Address 0, home SUID WACN
+   0xABCDE, System ID 0x2A7, unit @p unit (p25p2_mac_decode_voice_identity() is stubbed here; P25_MAC_SEGMENT tests
+   the parse). */
+static void
+set_roaming_voice_identity(uint32_t unit) {
+    DSD_MEMSET(&g_voice_identity, 0, sizeof(g_voice_identity));
+    g_voice_identity.tg = 0x1234;
+    g_voice_identity.is_group = 1;
+    g_voice_identity.svc_bits = 0;
+    g_voice_identity.home_valid = 1;
+    g_voice_identity.home_wacn = 0xABCDEU;
+    g_voice_identity.home_sysid = 0x2A7U;
+    g_voice_identity.home_unit = unit;
+    g_voice_identity_result = 1;
+}
+
+/* The MAC_ACTIVE voice start can open the call after the voice-user pass named the talker's home: the call it opened
+   carries the home too. Another radio's home on the same call drops the alias the earlier radio's call showed. */
+static int
+test_mac_active_voice_start_carries_roaming_home(void) {
+    dsd_opts* opts = (dsd_opts*)calloc(1U, sizeof(dsd_opts));
+    dsd_state* state = (dsd_state*)calloc(1U, sizeof(dsd_state));
+    int rc = 0;
+    if (!opts || !state) {
+        free(opts);
+        free(state);
+        return 1;
+    }
+    reset_stubs();
+    g_voice_event_accept = 1;
+    unsigned long long int mac[24] = {0};
+    set_roaming_voice_identity(1234567U);
+    rc |= expect_int("roam MAC_ACTIVE accepted", p25p2_xcch_emit_active(opts, state, 0, 0, mac), 1);
+    dsd_call_snapshot call;
+    rc |= expect_int("roam call open", dsd_call_state_get(state, 0U, &call), 1);
+    rc |= expect_int("roam no working address", (int)call.ota_source_id, 0);
+    rc |= expect_int("roam home on the call",
+                     call.source_home.valid == 1U && call.source_home.unit == 1234567U
+                         && call.source_home.wacn == 0xABCDEU && call.source_home.sysid == 0x2A7U,
+                     1);
+
+    DSD_SNPRINTF(state->generic_talker_alias[0], sizeof state->generic_talker_alias[0], "%s", "FIRSTRADIO");
+    set_roaming_voice_identity(7654321U);
+    rc |= expect_int("second roamer accepted", p25p2_xcch_emit_active(opts, state, 0, 0, mac), 1);
+    rc |= expect_int("second roamer's home",
+                     dsd_call_state_get(state, 0U, &call) == 1 && call.source_home.unit == 7654321U, 1);
+    rc |= expect_int("first roamer's alias dropped", state->generic_talker_alias[0][0], '\0');
+
+    /* A voice user naming no target publishes no call: its home is not the open call's. */
+    set_roaming_voice_identity(5555555U);
+    g_voice_identity.tg = 0;
+    (void)p25p2_xcch_emit_active(opts, state, 0, 0, mac);
+    rc |= expect_int("target-less voice user leaves the open call's home",
+                     dsd_call_state_get(state, 0U, &call) == 1 && call.source_home.unit == 7654321U, 1);
+
+    g_voice_identity_result = 0;
+    reset_stubs();
+    dsd_state_ext_free_all(state);
+    free(state);
+    free(opts);
+    return rc;
+}
+
 int
 main(void) {
     int rc = 0;
@@ -1873,6 +1937,7 @@ main(void) {
     rc |= test_encrypted_voice_user_stays_locked_through_mac_active();
     rc |= test_voice_counter_reset_helpers();
     rc |= test_mac_handlers_stop_after_vpdu_retune();
+    rc |= test_mac_active_voice_start_carries_roaming_home();
 
     if (rc != 0) {
         return 1;

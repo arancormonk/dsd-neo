@@ -244,6 +244,15 @@ if(NOT WIN32)
                 ${PROJECT_SOURCE_DIR}/tests/tools/test_ci_arch_toolchain_pull_retry.sh
             WORKING_DIRECTORY ${PROJECT_SOURCE_DIR}
         )
+        # The after-ctest check of the per-test temp folders (cmake/TestTmpdir.cmake):
+        # it names each test that left something, follows no link, deletes nothing.
+        add_test(
+            NAME TOOLS_CHECK_TEST_TMP_LEFTOVERS
+            COMMAND
+                ${DSD_NEO_BASH_EXECUTABLE}
+                ${PROJECT_SOURCE_DIR}/tests/tools/test_check_test_tmp_leftovers.sh
+            WORKING_DIRECTORY ${PROJECT_SOURCE_DIR}
+        )
         add_test(
             NAME TOOLS_CI_CHANGED_FILES_HEADER_EXPANSION
             COMMAND
@@ -7387,7 +7396,9 @@ if(DSD_HAS_CURL)
     # The built-in transport with the real libcurl against a loopback server, over
     # plain http (DSD_TILE_FETCH_TEST_PLAIN_HTTP; the shipped library is https
     # only): an answer over the body cap keeps its status and the header lines
-    # libcurl delivered (Retry-After), with a declared length and without.
+    # libcurl delivered (Retry-After), with a declared length and without. Plain
+    # http is pinned by the CURLOPT_PROTOCOLS bitmask, deprecated in current
+    # headers, hence CURL_DISABLE_DEPRECATION.
     if(NOT WIN32)
         add_executable(
             dsd-neo_test_runtime_tile_fetch_plain_http
@@ -7404,7 +7415,7 @@ if(DSD_HAS_CURL)
         )
         target_compile_definitions(
             dsd-neo_test_runtime_tile_fetch_plain_http
-            PRIVATE DSD_TILE_FETCH_TEST_PLAIN_HTTP
+            PRIVATE DSD_TILE_FETCH_TEST_PLAIN_HTTP CURL_DISABLE_DEPRECATION
         )
         target_link_libraries(
             dsd-neo_test_runtime_tile_fetch_plain_http
@@ -9698,6 +9709,10 @@ if(NOT APPLE AND (CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang"))
             "-Wl,--wrap=rtl_stream_session_generation"
             "-Wl,--wrap=dsd_realtime_mono_ms"
             "-Wl,--wrap=dsd_sleep_ms"
+            # The sound card the stalled-capture case fakes (test_live_p25_beat_on_a_stalled_sound_card()).
+            "-Wl,--wrap=dsd_audio_read"
+            "-Wl,--wrap=dsd_audio_read_held"
+            "-Wl,--wrap=dsd_audio_discard_input"
             # The scan quiet check's signal tap (issue #834).
             "-Wl,--wrap=rtl_signal_capture_get"
             "-Wl,--wrap=rtl_signal_quiet_request"
@@ -11360,6 +11375,40 @@ if(NOT APPLE AND (CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang"))
         NAME ENGINE_TRUNK_SCAN_LIST_RACE
         COMMAND dsd-neo_test_engine_trunk_scan_list_race
     )
+endif()
+
+# The P25 watchdog thread is a beat and the decoder thread runs its ticks: a release the beat paces tunes from the decoder
+# thread, beside the hunt's writes and reads (run it under tsan-debug too). The rigctl peer is replaced through the
+# linker, so GNU ld and lld only.
+if(NOT APPLE AND (CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang"))
+    add_executable(
+        dsd-neo_test_engine_p25_watchdog_decoder_tick
+        engine/test_engine_p25_watchdog_decoder_tick.c
+    )
+    target_include_directories(
+        dsd-neo_test_engine_p25_watchdog_decoder_tick
+        PRIVATE ${PROJECT_SOURCE_DIR}/include ${PROJECT_SOURCE_DIR}/src/engine
+    )
+    target_link_libraries(
+        dsd-neo_test_engine_p25_watchdog_decoder_tick
+        PRIVATE
+            "-Wl,--start-group"
+            dsd-neo_engine
+            "-Wl,--end-group"
+            "-Wl,--wrap=SetFreq"
+            "-Wl,--wrap=SetModulation"
+            "-Wl,--wrap=SetModulationKind"
+            "-Wl,--wrap=SetScanRowModulation"
+            "-Wl,--wrap=RigctlMarkSessionPassband"
+            ${LIBS}
+            dsd-neo_feature_radio
+            dsd-neo_test_support
+    )
+    add_test(
+        NAME ENGINE_P25_WATCHDOG_DECODER_TICK
+        COMMAND dsd-neo_test_engine_p25_watchdog_decoder_tick
+    )
+    set_tests_properties(ENGINE_P25_WATCHDOG_DECODER_TICK PROPERTIES TIMEOUT 60)
 endif()
 
 # Compile the queue here to enable private storage-erasure probes without adding
@@ -27702,12 +27751,11 @@ if(Python3_Interpreter_FOUND)
     # dumpbin.
     find_program(DSD_NEO_PWSH_FOR_TESTS pwsh)
     if(NOT WIN32 AND DSD_NEO_PWSH_FOR_TESTS)
-        # The tests' folders, and the scripts' own, go under the build tree, not the
-        # system temp folder: off Windows, pwsh reads every folder of a path it resolves
-        # from the root down, so each resolution under a temp folder that holds many
-        # thousand entries costs a full read of it.
-        set(_dsd_pwsh_test_scratch "${PROJECT_BINARY_DIR}/pwsh-test-scratch")
-        file(MAKE_DIRECTORY "${_dsd_pwsh_test_scratch}")
+        # The tests' folders, and the scripts' own, go in each test's temp folder under
+        # the build tree (cmake/TestTmpdir.cmake), not the system temp folder: off
+        # Windows, pwsh reads every folder of a path it resolves from the root down, so
+        # each resolution under a temp folder that holds many thousand entries costs a
+        # full read of it.
         # About 30 runs of the script under pwsh: a busy machine can take minutes, so
         # the class runs as two entries that ctest -j runs side by side. Each keeps
         # the tests DSD_NEO_TEST_SHARD names (tests/tools/unittest_shards.py), and
@@ -27724,7 +27772,7 @@ if(Python3_Interpreter_FOUND)
                 PROPERTIES
                     TIMEOUT 300
                     ENVIRONMENT
-                        "DSD_NEO_TEST_PWSH=${DSD_NEO_PWSH_FOR_TESTS};DSD_NEO_TEST_SHARD=${_dsd_shard}/2;TMPDIR=${_dsd_pwsh_test_scratch}"
+                        "DSD_NEO_TEST_PWSH=${DSD_NEO_PWSH_FOR_TESTS};DSD_NEO_TEST_SHARD=${_dsd_shard}/2"
             )
         endforeach()
         # tools/windows/stage_release_tree.ps1 over a fake vcpkg tree,
@@ -27744,7 +27792,7 @@ if(Python3_Interpreter_FOUND)
                 PROPERTIES
                     TIMEOUT 600
                     ENVIRONMENT
-                        "DSD_NEO_TEST_PWSH=${DSD_NEO_PWSH_FOR_TESTS};DSD_NEO_TEST_SHARD=${_dsd_shard}/4;TMPDIR=${_dsd_pwsh_test_scratch}"
+                        "DSD_NEO_TEST_PWSH=${DSD_NEO_PWSH_FOR_TESTS};DSD_NEO_TEST_SHARD=${_dsd_shard}/4"
             )
         endforeach()
     endif()
@@ -29077,3 +29125,12 @@ foreach(_dsd_dmr_pdu_target IN LISTS _dsd_dmr_pdu_position_targets)
         PRIVATE dsd-neo_test_position_support
     )
 endforeach()
+
+# Every test here gets a temp folder of its own in the build tree, emptied
+# before each ctest run; tools/check_test_tmp_leftovers.sh, run after ctest,
+# names each test that left something there (cmake/TestTmpdir.cmake). Keep this
+# last, after every add_test() in this directory. tests/fuzz and apps/dsd-cli
+# record theirs before this point, so the pre-test step covers them too.
+include(TestTmpdir)
+dsd_neo_add_test_tmpdirs()
+dsd_neo_write_test_tmpdir_prepare()

@@ -4442,6 +4442,21 @@ live_scanner_y_quiet_frame_yield(const dsd_opts* opts, dsd_state* state) {
     return 0;
 }
 
+/* Whether the run of synced frames stops before its next hunt: a command replaced the input (issue #634), and what
+   follows is another stream, which the outer loop starts with the end of this reception; or a tick between frames left
+   a tune in flight, which the main pass waits for, keeping the interruption so no no-carrier pass runs. */
+static int
+live_scanner_frames_stop_before_hunt(dsd_state* state) {
+    if (state->input_boundary) {
+        return 1;
+    }
+    if (p25_sm_tick_tunes_in_flight()) {
+        state->input_interrupted = 1;
+        return 1;
+    }
+    return 0;
+}
+
 /* The -Y frame-boundary step (issue #834 item 3), its terms other than the time: -Y owns the step with no voice gate,
    tone verdict or analog carrier deciding it, and nothing keeps the row: no operator hold, awaited tune or typed step
    in flight, not an avoided row (its paced departure decides), and another row to land on. */
@@ -4631,15 +4646,16 @@ live_scanner_process_synced_frames(dsd_opts* opts, dsd_state* state, dsd_engine_
         if (opts->scan_skip_silent) {
             live_scanner_trunk_quiet_frame_service(opts, state);
         }
+        /* A P25 watchdog beat's tick, between frames, on this thread (p25_sm_watchdog_service()): a carrier that keeps
+           sync never reaches the main pass's tick or the hunt's checkpoint for long. */
+        (void)p25_sm_watchdog_service(opts, state);
         dsd_trunk_scan_hook_tick(opts, state);
         if (live_scanner_frame_boundary_yields(opts, state, frame_dispatchable)) {
             state->synctype = DSD_SYNC_NONE;
             break;
         }
         dsd_runtime_pump_controls(opts, state);
-        /* A command replaced the input (issue #634): what follows is another stream, which the outer loop starts with
-           the end of this reception. */
-        if (state->input_boundary) {
+        if (live_scanner_frames_stop_before_hunt(state)) {
             live_scanner_quiet_pending_reset(opts, state);
             state->synctype = DSD_SYNC_NONE;
             break;
@@ -4843,6 +4859,12 @@ live_scanner_main_pass(dsd_opts* opts, dsd_state* state, dsd_engine_slicer_thres
     /* noCarrier and pending-row commits can replace the visit anchors. Publish
      * the incoming visit before getFrameSync starts emitting its snapshots. */
     dsd_engine_scan_y_timing_tick(opts, state, dsd_decode_now_mono_s(), dsd_decode_now_realtime_s());
+    if (p25_sm_tick_tunes_in_flight()) {
+        /* The hand-back's interruption stands while it waits: nothing was lost, so no no-carrier pass runs. */
+        state->input_interrupted = 1;
+        dsd_sleep_ms(1);
+        return;
+    }
     uint64_t frame_tune_generation = dsd_trunk_tuning_generation();
     state->synctype = live_scanner_frame_sync(opts, state);
     (void)dsd_engine_slicer_thresholds_refresh(state, threshold_cache);

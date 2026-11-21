@@ -142,6 +142,59 @@ dsd_call_state_get(const dsd_state* state, uint8_t slot, dsd_call_snapshot* out)
 }
 
 int
+dsd_call_state_note_source_home(dsd_state* state, uint8_t slot, int protocol, const dsd_call_source_home* home,
+                                int* replaced) {
+    if (replaced) {
+        *replaced = 0;
+    }
+    if (state == NULL || home == NULL || home->valid == 0U || slot >= DSD_CALL_STATE_SLOT_COUNT) {
+        return -1;
+    }
+    (void)protocol;
+    stub_select_state(state);
+    dsd_call_snapshot* call = &g_stub_calls[slot];
+    if (call->epoch == 0U || call->phase != DSD_CALL_PHASE_ACTIVE) {
+        return 0;
+    }
+    if (replaced) {
+        *replaced = call->source_home.valid != 0U
+                    && (call->source_home.unit != home->unit || call->source_home.wacn != home->wacn
+                        || call->source_home.sysid != home->sysid);
+    }
+    call->source_home = *home;
+    return 1;
+}
+
+int
+dsd_call_state_note_source_verdict(dsd_state* state, uint8_t slot, uint64_t epoch, uint32_t source, int checked,
+                                   uint64_t rx_gen) {
+    if (state == NULL || slot >= DSD_CALL_STATE_SLOT_COUNT || epoch == 0U) {
+        return -1;
+    }
+    stub_select_state(state);
+    dsd_call_snapshot* call = &g_stub_calls[slot];
+    if (call->epoch != epoch) {
+        return 0;
+    }
+    call->source_checked = (uint8_t)(checked != 0 && source != 0U);
+    call->source_checked_id = source;
+    call->source_checked_rx_gen = rx_gen;
+    return 1;
+}
+
+int
+dsd_call_state_source_learnable(const dsd_state* state, const dsd_call_snapshot* call) {
+    if (state == NULL || call == NULL || call->ota_source_id == 0U || call->ota_source_id > UINT32_MAX) {
+        return 0;
+    }
+    if (!DSD_SYNC_IS_P25(call->protocol)) {
+        return 1;
+    }
+    return call->source_checked != 0U && call->source_checked_id == (uint32_t)call->ota_source_id
+           && call->source_checked_rx_gen == dsd_state_reception_generation(state);
+}
+
+int
 dsd_call_state_protocol_family(int protocol) {
     // Mirrors the real store closely enough for the boundary decisions these
     // stubs exercise: P25 Phase 1 and Phase 2 must land in different families.

@@ -499,8 +499,10 @@ hunt_reads_ask_for_the_idle_bound(dsd_opts* opts, dsd_state* state, int output_k
     for (int i = 0; i < 200; i++) {
         (void)getSymbol(opts, state, 0);
     }
-    DSD_SNPRINTF(label, sizeof label, "%s: hunt reads ask for the idle bound", name);
-    check(label, g_bounded_reads > 0 && g_unbounded_reads == 0 && g_last_wants == DSD_RTL_READ_WANT_IDLE_BOUND);
+    /* And for an empty output at once, to service a P25 watchdog beat before they wait (DSD_RTL_READ_EMPTY). */
+    DSD_SNPRINTF(label, sizeof label, "%s: hunt reads ask for the idle bound and the empty return", name);
+    check(label, g_bounded_reads > 0 && g_unbounded_reads == 0
+                     && g_last_wants == (DSD_RTL_READ_WANT_IDLE_BOUND | DSD_RTL_READ_WANT_EMPTY_RETURN));
     g_bounded_reads = 0;
     for (int i = 0; i < 200; i++) {
         (void)getSymbol(opts, state, 1);

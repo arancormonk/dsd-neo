@@ -4,6 +4,7 @@
 
 import argparse
 import json
+import os
 from pathlib import Path
 import re
 import shutil
@@ -13,6 +14,19 @@ import unittest
 
 
 ROOT = Path(__file__).resolve().parents[2]
+
+
+def short_path(path):
+    """@p path in its Windows 8.3 spelling where the volume keeps one, else @p path itself. The tests' temp folder is
+    in the build tree, a long path: its short spelling is what exercises the source-property lookup under a short
+    path that the runners' system temp folder (C:\\Users\\RUNNER~1\\...) used to give."""
+    if os.name != "nt":
+        return path
+    import ctypes  # Windows only
+
+    buffer = ctypes.create_unicode_buffer(32768)
+    length = ctypes.windll.kernel32.GetShortPathNameW(str(path), buffer, len(buffer))
+    return Path(buffer.value) if 0 < length < len(buffer) else path
 PROJECT = r'''
 cmake_minimum_required(VERSION 3.20)
 project(msvc_fast_math_test LANGUAGES C CXX)
@@ -62,10 +76,13 @@ class MsvcFastMath(unittest.TestCase):
 
     def check_configuration(self, generator, fast_math, configuration):
         with tempfile.TemporaryDirectory(prefix="dsd-msvc-fp-") as directory:
-            # Preserve Windows runners' short temporary paths. Expanding them
-            # during source-property lookup must not lose the selected mode.
-            source = Path(directory) / "source"
-            build = Path(directory) / "build"
+            # Configure through the short spelling where there is one. Expanding
+            # it during source-property lookup must not lose the selected mode.
+            short = short_path(Path(directory))
+            if short != Path(directory):
+                print(f"configuring through the short path {short}")
+            source = short / "source"
+            build = short / "build"
             source.mkdir()
             (source / "CMakeLists.txt").write_text(PROJECT, encoding="utf-8")
             command = [ARGS.cmake, "-S", str(source), "-B", str(build), "-G", generator,

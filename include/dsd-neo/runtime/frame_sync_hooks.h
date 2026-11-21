@@ -106,6 +106,7 @@ enum {
 
 typedef struct {
     void (*p25_sm_try_tick)(dsd_opts* opts, dsd_state* state);
+    int (*p25_sm_watchdog_service)(dsd_opts* opts, dsd_state* state);
     void (*p25_sm_release)(dsd_opts* opts, dsd_state* state);
     void (*p25_sm_vc_sync)(dsd_opts* opts, const dsd_state* state);
     void (*p25_sm_vc_no_sync)(dsd_opts* opts, const dsd_state* state);
@@ -211,6 +212,11 @@ void dsd_frame_sync_hooks_set(const dsd_frame_sync_hooks* hooks);
 void dsd_frame_sync_hooks_get(dsd_frame_sync_hooks* out);
 
 void dsd_frame_sync_hook_p25_sm_try_tick(dsd_opts* opts, dsd_state* state);
+/** The tick a P25 watchdog beat asked for, run here on the decoder thread (p25_sm_watchdog_service()): 1 when one ran,
+ * negative when the beat stands behind shutdown or queued work (the hunt hands back for the engine loop to run it), 0
+ * when none was asked for, the guard was held, or nothing is installed. A hunt step or a hunt read on a quiet input
+ * calls it; a tick that ran may have retuned. */
+int dsd_frame_sync_hook_p25_sm_watchdog_service(dsd_opts* opts, dsd_state* state);
 void dsd_frame_sync_hook_p25_sm_release(dsd_opts* opts, dsd_state* state);
 void dsd_frame_sync_hook_p25_sm_vc_sync(dsd_opts* opts, const dsd_state* state);
 void dsd_frame_sync_hook_p25_sm_vc_no_sync(dsd_opts* opts, const dsd_state* state);
