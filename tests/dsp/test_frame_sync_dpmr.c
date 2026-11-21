@@ -49,10 +49,8 @@ static int g_pos;
 static int g_inverted;
 /* The read at which getSymbol() records an input interruption (a Signal search leaving, a stream gap); -1 none. */
 static int g_interrupt_at = -1;
-/* Stream symbols [g_fade_from, g_fade_to) arrive at g_fade times their level (a fade); none when from == to. */
-static int g_fade_from;
-static int g_fade_to;
-static float g_fade = 1.0f;
+/* Each stream symbol arrives at this times its level (1 unless a case fades it, fade()). */
+static float g_gain[STREAM_MAX];
 
 static float
 dibit_level(uint8_t dibit) {
@@ -74,8 +72,8 @@ getSymbol(dsd_opts* opts, dsd_state* state, int have_sync) { // NOLINT(misc-use-
     (void)opts;
     (void)have_sync;
     float symbol = dibit_level(g_pos < g_len ? g_dibits[g_pos] : filler_dibit(g_pos));
-    if (g_pos >= g_fade_from && g_pos < g_fade_to) {
-        symbol *= g_fade;
+    if (g_pos < STREAM_MAX) {
+        symbol *= g_gain[g_pos];
     }
     if (g_pos == g_interrupt_at) {
         state->input_interrupted = 1;
@@ -93,9 +91,18 @@ stream_reset(void) {
     g_pos = 0;
     g_inverted = 0;
     g_interrupt_at = -1;
-    g_fade_from = 0;
-    g_fade_to = 0;
-    g_fade = 1.0f;
+    for (int i = 0; i < STREAM_MAX; i++) {
+        g_gain[i] = 1.0f;
+    }
+}
+
+/* Stream symbols [@p from, @p to) arrive at @p gain times their level. */
+static void
+fade(int from, int to, float gain) {
+    assert(from >= 0 && to <= STREAM_MAX);
+    for (int i = from; i < to; i++) {
+        g_gain[i] = gain;
+    }
 }
 
 static void
@@ -883,9 +890,7 @@ test_faded_fs1_sign_pattern_does_not_displace_a_header(void) {
     put_dibits(k_preamble, DPMR_SPEC_PREAMBLE_DIBITS);
     put_word(DPMR_FRAME_SYNC_1);
     put_dibits(mi0_cc, (int)sizeof(mi0_cc));
-    g_fade_from = g_len - 24;
-    g_fade_to = g_len;
-    g_fade = 0.1f; /* outer levels +-0.3: a span of 0.6 */
+    fade(g_len - 24, g_len, 0.1f); /* outer levels +-0.3: a span of 0.6 */
     put_bits(mi, DPMR_SPEC_MI_WIRE);
     const int header_end = g_len;
     put_filler(200);
@@ -898,6 +903,42 @@ test_faded_fs1_sign_pattern_does_not_displace_a_header(void) {
     assert(g_pos == header_end);
     assert(g_state->dpmr_sync.checked_copies == DSD_DPMR_SYNC_COPY_1);
     assert(checked_bits_equal(g_state, info, DPMR_SPEC_MI_BITS));
+    free_state_buffers(g_state);
+}
+
+/* A later FS1 whose levels can read a frame is kept to its own check, MI1 included, before either frame is published
+   (issue #890). A false FS1 72 symbols before a header's frames the header's MI0 as its own MI1; with the false word
+   and the header's MI0 faded alike, that MI0 passes on the false word's levels but fails on the header's own FS1
+   levels. The header still passes on its MI1, so it is the frame, accepted at its end with its own channel code, never
+   the false word's frame 72 symbols early. */
+static void
+test_viable_later_fs1_is_checked_on_both_copies(void) {
+    uint8_t info[DPMR_SPEC_MI_BITS];
+    uint8_t cc[24];
+    dpmr_spec_header_bits(&k_voice_header, info);
+    dpmr_spec_put(cc, 0, 24, 0x5D5D55U); /* put_header_clipped()'s channel code */
+    setup(g_opts, g_state, MODE_DPMR, 0);
+    stream_reset();
+    put_filler(80);
+    const int false_at = g_len;
+    put_word(DPMR_FRAME_SYNC_1);
+    fade(false_at, g_len, 0.5f);
+    put_filler(12);
+    const int header_at = g_len;
+    put_header_clipped(info, 36);
+    const int header_end = g_len;
+    const int mi0_at = header_at + 36 + 24;
+    fade(mi0_at, mi0_at + (DPMR_SPEC_MI_WIRE / 2), 0.5f);
+    put_filler(200);
+    const int sync = hunt(g_opts, g_state, g_len);
+    if (sync != DSD_SYNC_DPMR_FS1_POS || g_pos != header_end) {
+        DSD_FPRINTF(stderr, "viable later FS1: sync %d at %d, want %d at %d\n", sync, g_pos, DSD_SYNC_DPMR_FS1_POS,
+                    header_end);
+    }
+    assert(sync == DSD_SYNC_DPMR_FS1_POS);
+    assert(g_pos == header_end);
+    assert(checked_bits_equal(g_state, info, DPMR_SPEC_MI_BITS));
+    assert(memcmp(g_state->dpmr_sync.checked_cc, cc, sizeof cc) == 0);
     free_state_buffers(g_state);
 }
 
@@ -1078,6 +1119,7 @@ main(int argc, char** argv) {
     test_header_payload_holding_fs1_is_kept();
     test_false_fs1_words_before_a_header();
     test_faded_fs1_sign_pattern_does_not_displace_a_header();
+    test_viable_later_fs1_is_checked_on_both_copies();
     test_reserved_start_mode_copy_is_no_copy();
     test_header_both_polarities();
     test_header_copies();

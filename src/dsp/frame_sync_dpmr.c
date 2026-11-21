@@ -311,12 +311,14 @@ dpmr_read_back_bits(const dsd_state* state, const dpmr_levels* levels, uint8_t i
     }
 }
 
-/* Whether another FS1 being read ends where @p header's MI1 begins (@p header's own word end plus 72 symbols) and will
- * pass its own check on those bits. Its MI0 is then the bits @p header read as MI1: a header behind one or more false
- * FS1 words (the last of them 72 symbols before its own) passes in that false word's frame on its MI0 alone, read as
- * MI1, with the false word's frame misplaced 72 symbols early and the end of the header's FS1 taken as its channel
- * code. A pending word is a sign pattern only, so it displaces the frame only when its own levels can read a frame
- * (dpmr_word_levels(), as its own check will) and its MI0, sliced on them, passes; else @p header is the frame. */
+/* Whether another FS1 being read ends where @p header's MI1 begins (@p header's own word end plus 72 symbols) and can
+ * read a frame. Its MI0 is then the bits @p header read as MI1: a header behind one or more false FS1 words (the last
+ * of them 72 symbols before its own) passes in that false word's frame on its MI0 alone, read as MI1, with the false
+ * word's frame misplaced 72 symbols early and the end of the header's FS1 taken as its channel code. A pending word is
+ * a sign pattern only, so it stands for the header when its own levels can read a frame (dpmr_word_levels(), as its
+ * own check will); its two copies are checked at its own frame's end, MI1 included, which has not been received yet:
+ * a reading of its MI0 alone cannot rule it out, as a faded MI0 can pass on @p header's levels and fail on its own.
+ * With a word that cannot read a frame, @p header is the frame. */
 static int
 dpmr_mi1_is_a_later_headers_mi0(const dsd_state* state, const dsd_dpmr_sync_mark* header) {
     const dsd_dpmr_frame_sync* sync = &state->dpmr_sync;
@@ -329,17 +331,10 @@ dpmr_mi1_is_a_later_headers_mi0(const dsd_state* state, const dsd_dpmr_sync_mark
             || state->symbol_clock < other->clock) {
             continue;
         }
-        /* This runs on @p header's last symbol, 132 after its word: the later word ends 60 symbols back, and its MI0
-           is the newest 60 symbols. */
+        /* This runs on @p header's last symbol, 132 after its word: the later word ends 60 symbols back. */
         dpmr_levels levels;
-        uint8_t mi0[DPMR_MI_WIRE_BITS];
-        uint8_t info[DSD_DPMR_HEADER_MI_BITS];
-        if (!dpmr_word_levels(state, dpmr_received_word(DSD_DPMR_SYNC_FRAME_HEADER, other->inverted), DPMR_FS1_SYMBOLS,
-                              (int)(state->symbol_clock - other->clock), &levels)) {
-            continue;
-        }
-        dpmr_read_back_bits(state, &levels, other->inverted, DPMR_MI_WIRE_BITS / 2, mi0);
-        if (frame_sync_dpmr_decode_mi(mi0, info)) {
+        if (dpmr_word_levels(state, dpmr_received_word(DSD_DPMR_SYNC_FRAME_HEADER, other->inverted), DPMR_FS1_SYMBOLS,
+                             (int)(state->symbol_clock - other->clock), &levels)) {
             return 1;
         }
     }

@@ -9147,11 +9147,13 @@ the stream-notice hooks' pattern: one that fails to initialize leaves the hook u
   that passes is accepted and the rest, begun inside it, dropped. FS1 overlaps itself at no shift, so its words end 24
   symbols apart at least and six can be read at once; the slots are sized for that (a `_Static_assert` holds the
   bound), and an FS3 is marked only while no candidate is read. A frame that passes on MI1 alone where another FS1
-  being read ends 72 symbols after its own word (where its MI1 begins) is not taken when that later word can read the
-  frame itself (its levels pass `dpmr_word_levels()` and its MI0, sliced on them, passes): those bits are the later
-  word's MI0, the frame a false FS1's misplaced 72 symbols early with the end of the header's FS1 read as its channel
-  code, and the later candidate reads the header in place. A pending word is a sign pattern only, so one that cannot
-  read the frame (faded below `DSD_WARM_START_MIN_SPAN`) displaces nothing. Only FS2 and FS3 stand down inside a candidate. Once the
+  being read ends 72 symbols after its own word (where its MI1 begins) is not taken when that later word's levels can
+  read a frame (`dpmr_word_levels()`, the check it will face): those bits are the later word's MI0, the frame a false
+  FS1's misplaced 72 symbols early with the end of the header's FS1 read as its channel code, and the later candidate
+  is checked on both its copies, MI1 included, at its own frame's end; no reading of its MI0 alone rules it out (a
+  faded MI0 can pass on the earlier word's levels and fail on its own). A pending word is a sign pattern only, so one
+  that cannot read a frame (faded below `DSD_WARM_START_MIN_SPAN`) displaces nothing. Should the later candidate then
+  fail, neither frame is published. Only FS2 and FS3 stand down inside a candidate. Once the
   frame's last symbol is in, it is
   read back from the soft symbol history, sliced on its own sync word's outer levels, and checked, in the
   specification's receive order: each 120-bit MI copy descrambled from a fresh X^9 + X^5 + 1 scrambler, then the 12 x
