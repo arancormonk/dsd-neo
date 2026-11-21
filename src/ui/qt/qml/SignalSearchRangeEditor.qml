@@ -212,7 +212,7 @@ ModalSheet {
         }
         ReadableText { heading: true; text: qsTr("RF detection"); color: Theme.textPrimary; font.family: Theme.sans; font.pixelSize: Theme.fontSize(17); font.weight: Font.DemiBold }
         PlexTextField { id: sensitivityField; width: parent.width; label: qsTr("Above local noise · dB (3–30)"); inputMethodHints: Qt.ImhDigitsOnly }
-        PlexCheckBox { id: minimumSwitch; text: qsTr("Also require a minimum RF level") }
+        PlexCheckBox { id: minimumSwitch; objectName: "searchRangeMinimumSwitch"; width: parent.width; text: qsTr("Also require a minimum RF level") }
         PlexTextField { id: minimumField; width: parent.width; visible: minimumSwitch.checked; label: qsTr("Minimum RF level · dBFS"); inputMethodHints: Qt.ImhFormattedNumbersOnly }
         ReadableText { heading: true; text: qsTr("Listening squelch"); color: Theme.textPrimary; font.family: Theme.sans; font.pixelSize: Theme.fontSize(17); font.weight: Font.DemiBold }
         PlexComboBox { id: squelch; objectName: "searchRangeSquelch"; width: parent.width; Accessible.name: qsTr("Listening squelch mode"); model: [qsTr("Level"), qsTr("Auto"), qsTr("Noise (NFM)")] }
@@ -221,7 +221,7 @@ ModalSheet {
         ReadableText { heading: true; text: qsTr("Receiver gain"); color: Theme.textPrimary; font.family: Theme.sans; font.pixelSize: Theme.fontSize(17); font.weight: Font.DemiBold }
         PlexComboBox { id: gainMode; width: parent.width; visible: sheet.sourceType !== "airspy"; Accessible.name: qsTr("Receiver gain mode"); model: [qsTr("Session setting"), qsTr("Hardware auto"), qsTr("Manual")] }
         PlexTextField { id: gainField; width: parent.width; visible: sheet.sourceType !== "airspy" && gainMode.currentIndex === 2; label: qsTr("Gain · dB"); inputMethodHints: Qt.ImhFormattedNumbersOnly }
-        PlexCheckBox { id: airspyOverride; visible: sheet.sourceType === "airspy"; text: qsTr("Use Airspy gain settings for this range") }
+        PlexCheckBox { id: airspyOverride; objectName: "searchRangeAirspyOverride"; width: parent.width; visible: sheet.sourceType === "airspy"; text: qsTr("Use Airspy gain settings for this range") }
         AirspyControls {
             id: airspyGain
             width: parent.width

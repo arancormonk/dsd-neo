@@ -651,6 +651,36 @@ Item {
             verify(!placeholder.truncated, "\"" + visit.placeholderText + "\" shown whole");
             editor.visible = false;
         }
+        // Issue #748: the editor's check boxes take the form's width and wrap
+        // their label inside it. At the narrowest phone with the largest text,
+        // "Also require a minimum RF level" had run past the sheet and been cut
+        // at "minimum"; the Airspy one the same.
+        function test_range_editor_check_boxes_wrap_data() {
+            return [{tag: "411 dp, default text", scale: 1.0, width: 411, source: "usb", name: "searchRangeMinimumSwitch", lines: 1},
+                {tag: "360 dp, largest text", scale: 1.6, width: 360, source: "usb", name: "searchRangeMinimumSwitch", lines: 2},
+                {tag: "Airspy, 411 dp, default text", scale: 1.0, width: 411, source: "airspy", name: "searchRangeAirspyOverride", lines: 1},
+                {tag: "Airspy, 360 dp, largest text", scale: 1.6, width: 360, source: "airspy", name: "searchRangeAirspyOverride", lines: 2}];
+        }
+        function test_range_editor_check_boxes_wrap(data) {
+            root.width = data.width;
+            Ui.Theme.fontScale = data.scale;
+            loader.item.sessionActive = false;
+            loader.item.sourceType = data.source;
+            var editor = findChild(loader.item, "signalSearchRangeEditor");
+            editor.openFor(0, model.defaultRange());
+            waitForRendering(editor);
+            var box = findChild(editor, data.name);
+            verify(box.visible);
+            scrollTo(editor, box);
+            var form = box.parent;
+            var label = box.contentItem;
+            verify(box.mapToItem(form, 0, 0).x + box.width <= form.width + 0.5, "the check box stays inside the form");
+            verify(label.contentWidth + label.leftPadding + label.rightPadding <= label.width + 0.5, "no line runs past the label");
+            verify(label.height >= label.contentHeight + label.topPadding + label.bottomPadding - 0.5, "no line is cut off");
+            verify(box.height >= label.y + label.height - 0.5, "the box holds every line");
+            compare(label.lineCount, data.lines);
+            editor.visible = false;
+        }
         function test_controls_are_tagged_and_save_is_a_snapshot() {
             findChild(loader.item, "searchSkip").clicked();
             compare(model.actions.join(","), "4,17,42");
