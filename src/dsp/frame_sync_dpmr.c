@@ -559,8 +559,8 @@ frame_sync_dpmr_candidate_reading(const dsd_state* state) {
     return 0;
 }
 
-int
-frame_sync_dpmr_header_held(const dsd_state* state) {
+static int
+dpmr_header_held(const dsd_state* state) {
     return state->dpmr_sync.held_at.kind == DSD_DPMR_SYNC_FRAME_HEADER;
 }
 
@@ -594,7 +594,7 @@ frame_sync_dpmr_arm_header(const dsd_opts* opts, dsd_state* state, const char* w
         return 0;
     }
     dpmr_mark_here(slot, state, state->symbol_clock, DSD_DPMR_SYNC_FRAME_HEADER, inverted);
-    if (!frame_sync_dpmr_header_held(state)) {
+    if (!dpmr_header_held(state)) {
         sync->fs3_at.kind = DSD_DPMR_SYNC_FRAME_NONE; /* a held header's END window stays, its corroboration */
     }
     return 1;
@@ -623,6 +623,11 @@ frame_sync_dpmr_arm_end(const dsd_opts* opts, dsd_state* state, const char* wind
     at->kind = DSD_DPMR_SYNC_FRAME_NONE;
     dpmr_mark_here(slot, state, state->symbol_clock, DSD_DPMR_SYNC_FRAME_END, (uint8_t)(opts->inverted_dpmr == 1));
     return 1;
+}
+
+int
+frame_sync_dpmr_arm_held_end(const dsd_opts* opts, dsd_state* state, const char* window12) {
+    return dpmr_header_held(state) ? frame_sync_dpmr_arm_end(opts, state, window12) : 0;
 }
 
 void
