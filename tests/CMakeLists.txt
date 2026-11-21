@@ -5307,6 +5307,7 @@ if(DSD_ENABLE_QT_UI)
         ${PROJECT_SOURCE_DIR}/src/ui/qt/scan_list_targets.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/scan_lists_model.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/session_args.cpp
+        ${PROJECT_SOURCE_DIR}/src/ui/qt/squelch_default_policy.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/decoder_host.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/document_import_transport.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/document_save_transport.cpp
@@ -5665,6 +5666,7 @@ if(DSD_ENABLE_QT_UI)
         ${PROJECT_SOURCE_DIR}/src/ui/qt/json_store.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/app_prefs.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/session_args.cpp
+        ${PROJECT_SOURCE_DIR}/src/ui/qt/squelch_default_policy.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/decoder_host.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/document_import_transport.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/document_save_transport.cpp
@@ -5691,6 +5693,7 @@ if(DSD_ENABLE_QT_UI)
         ui/test_ui_qt_scan_list_targets.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/scan_list_targets.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/session_args.cpp
+        ${PROJECT_SOURCE_DIR}/src/ui/qt/squelch_default_policy.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/decoder_host.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/document_import_transport.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/document_save_transport.cpp
@@ -5736,6 +5739,33 @@ if(DSD_ENABLE_QT_UI)
     )
     target_link_libraries(dsd-neo_test_ui_qt_qml_gc_policy PRIVATE Qt6::Core)
     add_test(NAME UI_QT_QML_GC_POLICY COMMAND dsd-neo_test_ui_qt_qml_gc_policy)
+
+    # Issue #899: who owns a session's squelch, and what a live decode switch asks the app to send.
+    add_executable(
+        dsd-neo_test_ui_qt_squelch_default_policy
+        ui/test_ui_qt_squelch_default_policy.cpp
+        ${PROJECT_SOURCE_DIR}/src/ui/qt/squelch_default_policy.cpp
+    )
+    target_include_directories(
+        dsd-neo_test_ui_qt_squelch_default_policy
+        PRIVATE ${PROJECT_SOURCE_DIR}/include ${PROJECT_SOURCE_DIR}/src/ui/qt
+    )
+    target_link_libraries(
+        dsd-neo_test_ui_qt_squelch_default_policy
+        PRIVATE Qt6::Core
+    )
+    target_compile_definitions(
+        dsd-neo_test_ui_qt_squelch_default_policy
+        PRIVATE QT_NO_KEYWORDS
+    )
+    set_target_properties(
+        dsd-neo_test_ui_qt_squelch_default_policy
+        PROPERTIES AUTOMOC ON
+    )
+    add_test(
+        NAME UI_QT_SQUELCH_DEFAULT_POLICY
+        COMMAND dsd-neo_test_ui_qt_squelch_default_policy
+    )
 
     # The one rule that names a stored import and finds it a free name.
     add_executable(
@@ -6322,6 +6352,7 @@ if(DSD_ENABLE_QT_UI)
         ${PROJECT_SOURCE_DIR}/src/ui/qt/system_search_query.cpp
         # The search reads a saved frequency as the tuner does.
         ${PROJECT_SOURCE_DIR}/src/ui/qt/session_args.cpp
+        ${PROJECT_SOURCE_DIR}/src/ui/qt/squelch_default_policy.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/frequency_query.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/text_order.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/app_prefs.cpp
@@ -6548,6 +6579,7 @@ if(DSD_ENABLE_QT_UI)
             ${PROJECT_SOURCE_DIR}/src/ui/qt/scan_list_targets.cpp
             ${PROJECT_SOURCE_DIR}/src/ui/qt/scan_list_starter.cpp
             ${PROJECT_SOURCE_DIR}/src/ui/qt/session_args.cpp
+            ${PROJECT_SOURCE_DIR}/src/ui/qt/squelch_default_policy.cpp
             # Issue #644: the known-frequency index Main offers Listen with its settings from.
             ${PROJECT_SOURCE_DIR}/src/ui/qt/known_frequency_index.cpp
             # Issue #801: the shortcuts pinned to Listen.
@@ -26834,6 +26866,7 @@ if(DSD_ENABLE_QT_UI)
         dsd-neo_test_ui_qt_controller
         ui/test_ui_qt_controller.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/session_args.cpp
+        ${PROJECT_SOURCE_DIR}/src/ui/qt/squelch_default_policy.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/site_groups.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/saved_systems_model.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/replay_store.cpp
@@ -27956,6 +27989,7 @@ if(DSD_ENABLE_QT_UI)
         ${PROJECT_SOURCE_DIR}/src/ui/qt/import_service.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/json_store.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/session_args.cpp
+        ${PROJECT_SOURCE_DIR}/src/ui/qt/squelch_default_policy.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/decoder_host.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/document_import_transport.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/document_save_transport.cpp
@@ -28003,6 +28037,7 @@ if(DSD_ENABLE_QT_UI)
         engine/test_engine_trunk_scan_scan_list.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/scan_list_targets.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/session_args.cpp
+        ${PROJECT_SOURCE_DIR}/src/ui/qt/squelch_default_policy.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/decoder_host.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/document_import_transport.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/document_save_transport.cpp

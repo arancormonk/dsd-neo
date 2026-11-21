@@ -499,6 +499,9 @@ ui_load(QQmlApplicationEngine& engine, DecoderHost* host) {
     // WP-S1: persisted lists and the pre-start validation facade.
     auto* scanLists = new ScanListsModel(&engine);
     auto* scanListStarter = new ScanListStarter(prefs, systems, &engine);
+    // Issue #899: both start paths tell the bridge's squelch policy who owns each session's squelch.
+    sessionArgs->setSquelchDefaults(commands->squelchDefaults());
+    scanListStarter->setSquelchDefaults(commands->squelchDefaults());
     auto* importedFiles = new ImportedFilesModel(host, imports, &engine);
     wire_target_files(scanListStarter, scanLists, importedFiles);
     wire_library_replace(importedFiles, systems);

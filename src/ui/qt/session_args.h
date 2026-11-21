@@ -24,6 +24,7 @@
 #include <QtGlobal>
 
 #include <dsd-neo/core/opts.h>
+#include "app_squelch_default.h"
 Q_MOC_INCLUDE("decoder_host.h")
 
 namespace dsd_qt {
@@ -33,6 +34,7 @@ class DecoderHost;
 class SavedSystemsModel;
 class DecryptionProfileProvider;
 class RecordingSessions;
+class SquelchDefaultPolicy;
 
 /** @brief The app-wide defaults a saved system's overrides fall back to. */
 struct SessionArgPrefs {
@@ -47,6 +49,9 @@ struct SessionArgPrefs {
     bool relaxedCrc = false;
     double hangtimeSec = 2.0;
     QString extraArgs;
+    /* Issue #899: the squelch an analog session starts with when nothing of its own names one (AppPrefs::squelch()):
+       "off", "auto+N" or "noise+N". */
+    QString squelchDefault = QString::fromLatin1(kAppSquelchDefault);
     /* Call recording (issue #708). The folder the session records into, from the recording store: with one, the argv
        names it (-7) and its journal (--wav-journal), records per call (-P) when recordCalls is on and records only
        unknown talkgroups (--record-unknown-only) when recordUnknownOnly is; without one (no storage to record to, or
@@ -162,6 +167,27 @@ enum class SessionArgsError {
 /* The last SessionArgsError value. A value added after it takes its place here, and session_args_error_text() then
  * needs its text: a static_assert there holds the text table to this value. */
 constexpr SessionArgsError SessionArgsErrorLast = SessionArgsError::IqStreamExtra;
+
+/**
+ * @brief Whether the extra options @p tokens set the squelch themselves (--squelch or --squelch-db, in either form),
+ * read as session_args_extra_sets_pause_hold() reads the pause hold (issue #899).
+ */
+bool session_args_extra_sets_squelch(const QString& tokens);
+
+/** @brief How the app's default squelch (issue #899) stands for the session session_args_build() makes. */
+struct SessionArgsSquelchDefault {
+    /* The session's input is a radio spec the app builds (RTL-SDR USB, rtl_tcp, Airspy), which the extra options do
+       not replace (-i, --iq-replay): only there does the app give a squelch. */
+    bool eligible = false;
+    /* A saved Radio-sheet squelch, or --squelch / --squelch-db among the extra options, names the squelch. */
+    bool ownSquelch = false;
+    /* The spec's squelch field carries prefs.squelchDefault: eligible, no squelch of its own, an analog start (the last decode
+       preset the argv names is NFM, -fA, or AM, -fM) and a default that is not off. */
+    bool inSpec = false;
+};
+
+/** @brief The default squelch's standing for @p system built with @p prefs (see SessionArgsSquelchDefault). */
+SessionArgsSquelchDefault session_args_squelch_default(const QVariantMap& system, const SessionArgPrefs& prefs);
 
 /**
  * @brief Why the extra options @p tokens conflict with the app's call recording (issue #708), or None.
@@ -317,6 +343,12 @@ class SessionArgsBuilder : public QObject {
         m_profiles = profiles;
     }
 
+    /** @brief Who start() tells which squelch the session started with (issue #899); nullptr: no one. */
+    void
+    setSquelchDefaults(SquelchDefaultPolicy* policy) {
+        m_squelchDefaults = policy;
+    }
+
     /** @brief Where start() asks for the session's call recording folder (issue #708); nullptr: nowhere. */
     void
     setRecordingSessions(RecordingSessions* sessions) {
@@ -396,6 +428,8 @@ class SessionArgsBuilder : public QObject {
        folder's session begun). */
     QStringList buildForStart(const QVariantMap& system, const DecoderHost* host, const QString& kind,
                               SessionArgsError* error, bool* recording) const;
+    /* Tells the squelch policy which squelch the session @p system started with (issue #899), once it @p started. */
+    void noteSessionSquelch(bool started, const QVariantMap& system, const QString& kind) const;
     /* The recording session buildForStart() began ends when the start did not happen and no session runs. */
     void endUnstartedRecording(bool recording, bool started, const DecoderHost* host) const;
     /* Both start()s: @p expects says whether the expectations are a roam's. */
@@ -405,6 +439,7 @@ class SessionArgsBuilder : public QObject {
     const SavedSystemsModel* m_systems = nullptr;
     DecryptionProfileProvider* m_profiles = nullptr;
     RecordingSessions* m_recordingSessions = nullptr;
+    SquelchDefaultPolicy* m_squelchDefaults = nullptr;
 };
 
 } // namespace dsd_qt

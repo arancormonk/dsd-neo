@@ -15748,8 +15748,30 @@ Build files: `src/protocol/CMakeLists.txt` and per‑protocol `src/protocol/<nam
     and appended after advanced arguments in `session_args.cpp`, so a confirmed choice wins on restart.
     The saved decoder flag also updates wizard/list metadata; a later wizard preset replaces its saved live
     decoder/modulation override. Manual scan lists inherit saved squelch and modulation (an entry's explicit
-    modulation wins). `UI_QT_PERSISTENCE`, `UI_QT_SESSION_ARGS`, `UI_QT_SCAN_LIST_TARGETS` and the Radio persistence
-    QML test cover disk reload, restart, validation and temporary scopes.
+    modulation wins). `SavedSystemsModel::clearRadioSetting(uid, key)` takes one
+    saved control out ("Clear saved squelch", issue #899 B11), keeping the others. `UI_QT_PERSISTENCE`,
+    `UI_QT_SESSION_ARGS`, `UI_QT_SCAN_LIST_TARGETS` and the Radio persistence QML test cover disk reload, restart,
+    validation and temporary scopes.
+  - Qt/Android default squelch (issue #899): `AppPrefs::squelch` (`radio/squelch`, portable; exactly `off`, `auto+N` or
+    `noise+N`, N 3..30, `app_squelch_default_valid()` in `app_squelch_default.h`; `noise+10` when absent or damaged, a
+    refused write writes nothing, a valid one repairs damage; a backup without it restores the default) maps to
+    `SessionArgPrefs::squelchDefault`. It is applied on analog sessions only, so digital sessions run off as before and
+    pay no dynamic-squelch work: `session_args_squelch_default()` puts it in the radio spec's squelch field (the
+    RTL/rtl_tcp `sql` field, an Airspy's third tuning field; otherwise `0`) when the input is a radio spec the app
+    builds (not an audio or file source, not replaced by an Advanced `-i` or `--iq-replay`), nothing names a squelch of
+    its own (a saved Radio-sheet `squelch`, which stays the last `--squelch`; an Advanced `--squelch`/`--squelch-db` in
+    either field, walked as the decoder reads options) and the start is analog (the last decode preset the argv names is
+    `-fA` or `-fM`; on AM the engine runs noise as auto). A live switch is `SquelchDefaultPolicy`'s
+    (`squelch_default_policy.{h,cpp}`, `CommandBridge::squelchDefaults`): `SessionArgsBuilder::start()` tells it each
+    start (`sessionStarted(default, inSpec, ownSquelch)`, or `sessionStartedWithoutDefault()` for a signal search, an
+    audio source or a replaced input), `ScanListStarter` tells it a scan session's rows own the squelch, and every user
+    squelch edit (`CommandBridge::setSquelch*()`, `restoreSquelchLevel()`, and QML's `noteUserSquelchChange()`) makes it
+    the user's for the session. `CommandBridge::setDecodeMode()` asks it after the switch is queued: to NFM/AM with the
+    app's default not in force, it sends the default (`DSD_APP_CMD_RTL_SET_SQL_SETTING`); back to a digital mode with it
+    in force, it sends off (level 0, as the spec's `0`); otherwise, and whenever the user or the session owns the
+    squelch, nothing. A fresh policy (no start seen, e.g. an Activity recreated over a running session) sends nothing.
+    Tests: `UI_QT_SESSION_ARGS`, `UI_QT_SQUELCH_DEFAULT_POLICY`, `UI_QT_SESSION_ARGS_PARSE` (live switches through the
+    real bridge and queue), `UI_QT_PERSISTENCE`, `UI_QT_BACKUP_MODEL`.
   - Qt/Android tuner gain: `qml/GainEditor.qml` is the one gain editor (Settings' Radio defaults, the system editor, the
     scan list editor). It shows `[Automatic | Set]`, or `[App default | Automatic | Set]` when `inheritable`, with one
     canonical `mode` in both layouts (0 App default, 1 Automatic, 2 Set). An optional `hint` sits right under the strip

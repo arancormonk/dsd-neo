@@ -38,6 +38,7 @@
 #include "scan_list_starter.h"
 #include "scan_list_targets.h"
 #include "session_args.h"
+#include "squelch_default_policy.h"
 #include "stored_int.h"
 
 namespace dsd_qt {
@@ -428,6 +429,11 @@ ScanListStarter::startPrepared(const QVariantList& lists, DecoderHost* host, con
     }
     const bool started = result.value("ok").toBool() && host && host->start(args);
     endUnstartedRecording(recording, started, host);
+    if (started && m_squelchDefaults != nullptr) {
+        // Each row runs its own squelch, the app's default among them (scan_list_targets()): a decode switch on a row
+        // never brings the default in or takes it out.
+        m_squelchDefaults->sessionStartedWithoutDefault();
+    }
     result.insert("started", started);
     if (started && host->sessionActive() && m_profiles) {
         for (const auto& value : lists) {

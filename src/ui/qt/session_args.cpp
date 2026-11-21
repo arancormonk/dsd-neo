@@ -12,6 +12,7 @@
 #include "saved_systems_model.h"
 #include "session_args.h"
 #include "site_groups.h"
+#include "squelch_default_policy.h"
 #include "stored_int.h"
 
 #include <algorithm>
@@ -170,6 +171,25 @@ extra_names_iq_stream(const QString& tokens) {
         const QByteArray spec = input.toUtf8();
         return dsd_opts_audio_in_dev_is_iq_stream_spec(spec.constData()) != 0;
     });
+}
+
+/* The value of each -f (the decode preset letter and anything after it) the argv @p tokens hands the parser, in
+   order, read as option_tokens() reads the options. */
+QStringList
+decode_presets(const QString& tokens) {
+    const QStringList split = tokens.split(QRegularExpression(QStringLiteral("\\s+")), Qt::SkipEmptyParts);
+    QStringList options;
+    QStringList presets;
+    short_option_tokens(long_option_tokens(split, &options), &options, QLatin1Char('f'), &presets);
+    return presets;
+}
+
+/* Whether the argv @p tokens starts the analog monitor (issue #899): the last decode preset it names, which is the one
+   the parser keeps, is NFM (-fA) or AM (-fM). */
+bool
+starts_analog(const QString& tokens) {
+    const QStringList presets = decode_presets(tokens);
+    return !presets.isEmpty() && (presets.last() == QLatin1String("A") || presets.last() == QLatin1String("M"));
 }
 
 /** @brief Whether @p token is the long option @p name, alone or in its "=value" form. */
@@ -511,6 +531,27 @@ bool
 session_args_extra_sets_preroll(const QString& tokens) {
     return extra_sets_long_option(tokens, QLatin1String("--analog-record-preroll-ms"));
 }
+
+bool
+session_args_extra_sets_squelch(const QString& tokens) {
+    return extra_sets_long_option(tokens, QLatin1String("--squelch"))
+           || extra_sets_long_option(tokens, QLatin1String("--squelch-db"));
+}
+
+namespace {
+
+/* Whether the extra options @p tokens pick the input themselves (an -i the decoder reads, or --iq-replay), so the radio
+   spec the app builds is not the one the session opens. */
+bool
+extra_replaces_input(const QString& tokens) {
+    const QStringList split = tokens.split(QRegularExpression(QStringLiteral("\\s+")), Qt::SkipEmptyParts);
+    QStringList options;
+    QStringList inputs;
+    short_option_tokens(long_option_tokens(split, &options), &options, QLatin1Char('i'), &inputs);
+    return !inputs.isEmpty() || extra_sets_long_option(tokens, QLatin1String("--iq-replay"));
+}
+
+} // namespace
 
 static QString
 validateScanEndpoint(const QVariantMap& list) {
@@ -980,6 +1021,29 @@ is_rtl_source(const QString& source) {
     return source == QLatin1String("usb") || source == QLatin1String("rtltcp");
 }
 
+SessionArgsSquelchDefault
+session_args_squelch_default(const QVariantMap& system, const SessionArgPrefs& prefs) {
+    const QString extra = system.value(QStringLiteral("extraArgs")).toString() + QLatin1Char(' ') + prefs.extraArgs;
+    SessionArgsSquelchDefault out;
+    out.eligible =
+        is_radio_source(system.value(QStringLiteral("sourceType")).toString()) && !extra_replaces_input(extra);
+    out.ownSquelch = system.value(QStringLiteral("radioSettings")).toMap().contains(QStringLiteral("squelch"))
+                     || session_args_extra_sets_squelch(extra);
+    /* The decode flag stands before the extra options in the argv (append_flag_args()), and a saved decode choice is
+       the same flag (session_args_build() refuses one that is not). */
+    const bool analog = starts_analog(system.value(QStringLiteral("decodeFlag")).toString() + QLatin1Char(' ') + extra);
+    out.inSpec = out.eligible && !out.ownSquelch && analog && app_squelch_default_valid(prefs.squelchDefault)
+                 && prefs.squelchDefault != QLatin1String("off");
+    return out;
+}
+
+/* The radio spec's squelch field (issue #899): an analog start with no squelch of its own starts with the app's default
+   there (an Airspy's third tuning field, append_input_args()); every other start keeps 0, off. */
+static QString
+spec_squelch_field(const QVariantMap& system, const SessionArgPrefs& prefs) {
+    return session_args_squelch_default(system, prefs).inSpec ? prefs.squelchDefault : QStringLiteral("0");
+}
+
 /* The DSP bandwidth, in kHz, a system asks for, and its radio spec carries as it is: its own override (@p systemKhz
    above 0), else 72 kHz for TETRA, which runs only at a multiple of 18 kHz (as -fT takes it on the command line), else
    the app-wide default. */
@@ -1266,7 +1330,12 @@ session_args_build(const QVariantMap& system, const SessionArgPrefs& prefs, Sess
     const int gainOverride = stored_int_or(system.value(QStringLiteral("gainDb")), -1);
     const int gain = gainOverride >= 0 ? gainOverride : prefs.gainDb;
     const bool bias = bias_tee_effective(system.value(QStringLiteral("biasTee")), prefs.biasTee);
-    const QString tail = QStringLiteral(":%1M:%2:%3:%4:0:2").arg(freqMhz).arg(gain).arg(ppm).arg(bw);
+    const QString tail = QStringLiteral(":%1M:%2:%3:%4:%5:2")
+                             .arg(freqMhz)
+                             .arg(gain)
+                             .arg(ppm)
+                             .arg(bw)
+                             .arg(spec_squelch_field(system, prefs));
 
     QStringList args{QStringLiteral("--frontend"), QStringLiteral("none")};
     append_input_args(args, system, sourceType, tail, bias);
@@ -1315,6 +1384,7 @@ session_args_prefs(const AppPrefs* prefs) {
         out.recordUnknownOnly = prefs->recordUnknownOnly();
         out.analogMaxGapMs = prefs->analogMaxGapMs();
         out.analogPrerollMs = prefs->analogPrerollMs();
+        out.squelchDefault = prefs->squelch();
     }
     return out;
 }
@@ -1413,6 +1483,21 @@ SessionArgsBuilder::buildForStart(const QVariantMap& system, const DecoderHost* 
 }
 
 void
+SessionArgsBuilder::noteSessionSquelch(bool started, const QVariantMap& system, const QString& kind) const {
+    if (!started || m_squelchDefaults == nullptr) {
+        return;
+    }
+    const SessionArgPrefs prefs = session_args_prefs(m_prefs);
+    const SessionArgsSquelchDefault standing = session_args_squelch_default(system, prefs);
+    /* A signal search applies each range's own squelch at every landing, so the app's default never follows it. */
+    if (kind == QLatin1String("search") || !standing.eligible) {
+        m_squelchDefaults->sessionStartedWithoutDefault();
+        return;
+    }
+    m_squelchDefaults->sessionStarted(prefs.squelchDefault, standing.inSpec, standing.ownSquelch);
+}
+
+void
 SessionArgsBuilder::endUnstartedRecording(bool recording, bool started, const DecoderHost* host) const {
     if (recording && !started && !host->sessionActive()) {
         m_recordingSessions->endSession();
@@ -1456,6 +1541,7 @@ SessionArgsBuilder::startSession(const QVariantMap& system, DecoderHost* host, c
         && (expects ? host->startWithStopExpectation(args, expectedStopGeneration, expectedForegroundEpoch)
                     : host->start(args));
     endUnstartedRecording(recording, started, host);
+    noteSessionSquelch(started, system, kind);
     result.insert(QStringLiteral("started"), started);
     if (expects) {
         // Only the host's answer to this start: a flag left from an earlier one says nothing of a build error.

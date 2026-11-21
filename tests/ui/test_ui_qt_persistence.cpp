@@ -3128,6 +3128,8 @@ test_prefs_key_table(void) {
          QVariantMap{
              {QStringLiteral("latitude"), 22.5}, {QStringLiteral("longitude"), 45.0}, {QStringLiteral("zoom"), 12.0}},
          "map/viewport"},
+        // Issue #899: the squelch analog sessions start with.
+        {"squelch", QStringLiteral("auto+14"), "radio/squelch"},
     };
     QStringList covered;
     int writable = 0;
@@ -3248,6 +3250,7 @@ test_prefs_key_table(void) {
                && portable.contains(QStringLiteral("listen/pinned"))
                && portable.contains(QStringLiteral("roaming/maxDistanceKm"))
                && portable.contains(QStringLiteral("roaming/marginKm"))
+               && portable.contains(QStringLiteral("radio/squelch"))
                && !portable.contains(QStringLiteral("roaming/enabled")));
 
     const QVariantMap before = AppPrefs::readPortable();
@@ -4092,8 +4095,93 @@ test_radio_settings() {
     expect("wizard decoder edit", model.update(0, {{"decodeFlag", "-fs"}}));
     expect("wizard preset replaces live decoder and modulation, preserves squelch",
            model.get(0).value("radioSettings").toMap() == QVariantMap{{"squelch", "-65"}});
+    // Issue #899 (B11): "Clear saved squelch" takes out only that key, and the next start runs without it.
+    expect("restore controls to clear", model.updateRadioSettings(uid, {{"modulation", 1}, {"squelch", "noise+17"}}));
+    expect("a key that is no Radio control is refused", !model.clearRadioSetting(uid, QStringLiteral("gainDb")));
+    expect("an unknown system is refused", !model.clearRadioSetting(QStringLiteral("nope"), QStringLiteral("squelch")));
+    expect("clear the saved squelch", model.clearRadioSetting(uid, QStringLiteral("squelch")));
+    {
+        SavedSystemsModel fresh;
+        const auto saved = fresh.getByUid(uid);
+        expect("only the squelch is gone, on disk",
+               saved.value("radioSettings").toMap() == QVariantMap{{"modulation", 1}} && saved.value("gainDb") == 36
+                   && saved.value("extraArgs") == "--squelch -80");
+    }
+    expect("clearing what is not saved is no failure", model.clearRadioSetting(uid, QStringLiteral("squelch")));
+    expect("clearing leaves the rest",
+           model.getByUid(uid).value("radioSettings").toMap() == QVariantMap{{"modulation", 1}});
+    expect("move store aside for the clear failure test", QFile::rename(path, path + ".saved"));
+    expect("block store with a directory again", QDir().mkpath(path));
+    expect("a clear that cannot be saved fails", !model.clearRadioSetting(uid, QStringLiteral("modulation")));
+    expect("and keeps the row", model.getByUid(uid).value("radioSettings").toMap() == QVariantMap{{"modulation", 1}});
+    expect("unblock store again", QDir().rmdir(path) && QFile::rename(path + ".saved", path));
     model.remove(0);
     expect("removed system is never recreated", !model.updateRadioSettings(uid, {{"squelch", "off"}}));
+    expect("nor cleared", !model.clearRadioSetting(uid, QStringLiteral("squelch")));
+}
+
+/* Issue #899 (D1): the squelch analog sessions start with. Noise +10 unless chosen; only off, auto+N and noise+N (N
+ * 3..30) are taken; a damaged stored value reads as the default and is replaced by the next write; portable, and a
+ * backup without it restores the default. */
+static void
+test_squelch_pref() {
+    QSettings stored(QSettings::IniFormat, QSettings::UserScope, "dsd-neo", "dsd-neo-app");
+    const QString key = QStringLiteral("radio/squelch");
+    stored.remove(key);
+    {
+        AppPrefs prefs;
+        int changes = 0;
+        QObject::connect(&prefs, &AppPrefs::squelchChanged, &prefs, [&changes] { ++changes; });
+        expect("the squelch is Noise +10 by default",
+               prefs.squelch() == QStringLiteral("noise+10") && !stored.contains(key));
+        for (const QString& choice : {QStringLiteral("auto+3"), QStringLiteral("noise+30"), QStringLiteral("off"),
+                                      QStringLiteral("noise+10")}) {
+            prefs.setSquelch(choice);
+            expect("a choice is saved", prefs.squelch() == choice && stored.value(key).toString() == choice);
+        }
+        expect("each choice notified once", changes == 4);
+        prefs.setSquelch(QStringLiteral("noise+10"));
+        expect("a repeated choice does not notify", changes == 4);
+        for (const QString& bad : {QStringLiteral("noise+2"), QStringLiteral("auto+31"), QStringLiteral("-60"),
+                                   QStringLiteral("noise"), QStringLiteral("auto+010"), QStringLiteral("Noise+10"),
+                                   QStringLiteral(" off"), QStringLiteral("noise+10 "), QString()}) {
+            prefs.setSquelch(bad);
+            expect("anything else is refused and writes nothing", prefs.squelch() == QStringLiteral("noise+10")
+                                                                      && stored.value(key).toString() == "noise+10"
+                                                                      && changes == 4);
+        }
+        prefs.setSquelch(QStringLiteral("auto+12"));
+    }
+    {
+        AppPrefs reloaded;
+        expect("the squelch persists", reloaded.squelch() == QStringLiteral("auto+12"));
+        for (const QVariant& damaged : {QVariant(QStringLiteral("-65")), QVariant(QStringLiteral("auto+99")),
+                                        QVariant(7), QVariant(QStringList{"noise+10", "x"})}) {
+            stored.setValue(key, damaged);
+            expect("a damaged stored squelch reads as the default", reloaded.squelch() == QStringLiteral("noise+10"));
+        }
+        int changes = 0;
+        QObject::connect(&reloaded, &AppPrefs::squelchChanged, &reloaded, [&changes] { ++changes; });
+        reloaded.setSquelch(QStringLiteral("noise+10"));
+        expect("a write of the default over damage repairs it",
+               stored.value(key).toString() == QStringLiteral("noise+10") && changes == 1);
+    }
+    expect("the squelch is portable", AppPrefs::portableKeys().contains(key));
+    {
+        AppPrefs prefs;
+        prefs.setSquelch(QStringLiteral("auto+20"));
+        const QVariantMap portable = AppPrefs::readPortable();
+        expect("a backup carries it", portable.value(key).toString() == QStringLiteral("auto+20"));
+        QVariantMap older = portable;
+        older.remove(key);
+        expect("restore an older backup without it", AppPrefs::replacePortable(older));
+        stored.sync();
+        expect("which restores the default",
+               AppPrefs().squelch() == QStringLiteral("noise+10") && !stored.contains(key));
+        expect("restore it again", AppPrefs::replacePortable(portable));
+        expect("a backup's squelch comes back", AppPrefs().squelch() == QStringLiteral("auto+20"));
+    }
+    stored.remove(key);
 }
 
 int
@@ -4141,6 +4229,7 @@ main(int argc, char** argv) {
     test_recording_prefs();
     test_analog_max_gap_pref();
     test_analog_preroll_pref();
+    test_squelch_pref();
     test_prefs_past_int_range();
     test_units_preference();
     test_migration_write_failure();

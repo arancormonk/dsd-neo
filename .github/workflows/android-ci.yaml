@@ -358,6 +358,7 @@ jobs:
             dsd-neo_test_engine_trunk_scan_scan_list \
             dsd-neo_test_ui_qt_imported_files_model \
             dsd-neo_test_ui_qt_import_names \
+            dsd-neo_test_ui_qt_squelch_default_policy \
             dsd-neo_test_ui_qt_import_transport \
             dsd-neo_test_ui_qt_license_notices \
             dsd-neo_test_ui_qt_restart_closer \

@@ -45,6 +45,7 @@
 #include <dsd-neo/core/safe_api.h>
 #include <dsd-neo/runtime/receive_policy.h>
 #include <dsd-neo/runtime/scan_row_edit.h>
+#include <dsd-neo/runtime/squelch.h>
 #include <stdint.h>
 
 #include <atomic>
@@ -76,7 +77,7 @@ send_setting_unless_none(int command, int value) {
 
 } // namespace
 
-CommandBridge::CommandBridge(QObject* parent) : QObject(parent) {}
+CommandBridge::CommandBridge(QObject* parent) : QObject(parent), m_squelchDefaults(new SquelchDefaultPolicy(this)) {}
 
 CommandBridge::~CommandBridge() = default;
 
@@ -621,6 +622,7 @@ CommandBridge::setTunerGain(int gain_db) const {
 bool
 // cppcheck-suppress functionStatic -- Q_INVOKABLE members cannot be static (Qt meta-object)
 CommandBridge::setSquelchDb(double db) const {
+    m_squelchDefaults->userChangedSquelch();
     return accepted(dsd_app_command_set_double(DSD_APP_CMD_RTL_SET_SQL_DB, db));
 }
 
@@ -643,18 +645,21 @@ submitDynamicSquelch(int mode, int marginDb) {
 bool
 // cppcheck-suppress functionStatic -- Q_INVOKABLE members cannot be static (Qt meta-object)
 CommandBridge::setSquelchAuto(int marginDb) const {
+    m_squelchDefaults->userChangedSquelch();
     return submitDynamicSquelch(DSD_SQUELCH_MODE_AUTO, marginDb);
 }
 
 bool
 // cppcheck-suppress functionStatic -- Q_INVOKABLE members cannot be static (Qt meta-object)
 CommandBridge::setSquelchNoise(int marginDb) const {
+    m_squelchDefaults->userChangedSquelch();
     return submitDynamicSquelch(DSD_SQUELCH_MODE_NOISE, marginDb);
 }
 
 bool
 // cppcheck-suppress functionStatic -- Q_INVOKABLE members cannot be static (Qt meta-object)
 CommandBridge::restoreSquelchLevel() const {
+    m_squelchDefaults->userChangedSquelch();
     dsd_app_squelch_view view{};
     if (dsd_app_squelch_view_get(dsd_app_get_latest_opts_snapshot(), dsd_app_get_latest_snapshot(), &view) != 0) {
         return false;
@@ -730,7 +735,31 @@ CommandBridge::setModulation(int modulation) const {
 
 bool
 CommandBridge::setDecodeMode(int mode) const {
-    return accepted(dsd_app_command_set_i32(DSD_APP_CMD_DECODE_MODE_SET, static_cast<int32_t>(mode)));
+    if (!accepted(dsd_app_command_set_i32(DSD_APP_CMD_DECODE_MODE_SET, static_cast<int32_t>(mode)))) {
+        return false;
+    }
+    followSquelchDefault(m_squelchDefaults->decodeModeChanged(mode == DSDCFG_MODE_ANALOG || mode == DSDCFG_MODE_AM));
+    return true;
+}
+
+void
+CommandBridge::followSquelchDefault(SquelchDefaultPolicy::Action action) const {
+    if (action == SquelchDefaultPolicy::Action::PushDefault) {
+        // Queued after the decode switch, so the decoder applies it to the analog channel the switch opens. Noise on
+        // an AM channel runs as auto, as the engine runs it everywhere, and stays noise for a switch on to NFM.
+        const QByteArray text = m_squelchDefaults->defaultSetting().toUtf8();
+        dsd_squelch_setting setting{};
+        if (dsd_squelch_setting_parse(text.constData(), &setting, nullptr, 0U) == 0
+            && dsd_squelch_setting_is_dynamic(&setting)) {
+            (void)submitDynamicSquelch(setting.mode, setting.margin_db);
+        }
+    } else if (action == SquelchDefaultPolicy::Action::PushOff) {
+        // Off exactly as the session started with it: the level field 0 of its spec.
+        dsd_app_squelch_setting_payload payload = {};
+        payload.mode = DSD_SQUELCH_MODE_LEVEL;
+        payload.level = 0.0;
+        (void)accepted(dsd_app_command_submit(DSD_APP_CMD_RTL_SET_SQL_SETTING, &payload, sizeof payload));
+    }
 }
 
 int

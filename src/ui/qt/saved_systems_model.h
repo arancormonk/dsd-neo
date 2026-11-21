@@ -186,6 +186,16 @@ class SavedSystemsModel : public QAbstractListModel {
     Q_INVOKABLE bool updateRadioSettings(const QString& uid, const QVariantMap& changes);
 
     /**
+     * @brief Forget one confirmed Radio control (issue #899, B11): "Clear saved squelch" takes @p key "squelch" out,
+     * so the system's next start runs what it would without it (the app's default squelch on an analog start).
+     *
+     * Only that key goes; the other saved controls and every wizard field stay. Persists first. True when the key is
+     * no longer saved (a system that had none included); false for an unknown @p uid, a key that is no Radio control
+     * ("squelch", "modulation", "decodeFlag"), or a failed save, which leaves the row as it was.
+     */
+    Q_INVOKABLE bool clearRadioSetting(const QString& uid, const QString& key);
+
+    /**
      * @brief Remove one system. Persists first: on a failed save it returns false, keeps the row and signals nothing.
      *
      * A saved removal signals rowsAboutToBeRemoved/rowsRemoved, then sitesChanged and countChanged, so whatever

@@ -83,6 +83,9 @@ class AppPrefs : public QObject {
     Q_PROPERTY(int ppm READ ppm WRITE setPpm NOTIFY ppmChanged)
     Q_PROPERTY(int bandwidthKhz READ bandwidthKhz WRITE setBandwidthKhz NOTIFY bandwidthKhzChanged)
     Q_PROPERTY(bool biasTee READ biasTee WRITE setBiasTee NOTIFY biasTeeChanged)
+    /* Issue #899: the squelch analog sessions start with ("off", "auto+N" or "noise+N", N 3..30); "noise+10" unless
+     * chosen. Portable. */
+    Q_PROPERTY(QString squelch READ squelch WRITE setSquelch NOTIFY squelchChanged)
     Q_PROPERTY(QString extraArgs READ extraArgs WRITE setExtraArgs NOTIFY extraArgsChanged)
     /* RadioReference account. The password is deliberately absent: it is held in
      * memory for the session only and re-prompted next launch, so it can never
@@ -289,6 +292,15 @@ class AppPrefs : public QObject {
     bool biasTee() const;
     void setBiasTee(bool on);
 
+    /**
+     * @brief The squelch the app gives analog sessions that have none of their own (issue #899): "off", "auto+N" or
+     *        "noise+N" with N a whole 3..30 dB, as app_squelch_default_valid() takes it; else, absent or anything
+     *        stored that is not one of those, the default "noise+10". A write of anything else is refused and writes
+     *        nothing; a valid write over a damaged stored value replaces it.
+     */
+    QString squelch() const;
+    void setSquelch(const QString& setting);
+
     QString extraArgs() const;
     void setExtraArgs(const QString& args);
 
@@ -473,6 +485,7 @@ class AppPrefs : public QObject {
     void ppmChanged();
     void bandwidthKhzChanged();
     void biasTeeChanged();
+    void squelchChanged();
     void extraArgsChanged();
     void rrUsernameChanged();
     void rrAppKeyChanged();

@@ -17,6 +17,7 @@ class SavedSystemsModel;
 class DecryptionProfileProvider;
 class DecoderHost;
 class RecordingSessions;
+class SquelchDefaultPolicy;
 
 /**
  * @brief The file name, without ".csv", a manual scan list's generated targets are written under (issue #697): the
@@ -89,6 +90,12 @@ class ScanListStarter : public QObject {
         m_recordingSessions = sessions;
     }
 
+    /** @brief Who start() tells that a scan session's rows own its squelch (issue #899); nullptr: no one. */
+    void
+    setSquelchDefaults(SquelchDefaultPolicy* policy) {
+        m_squelchDefaults = policy;
+    }
+
   private:
     QVariantList resolveSystems(const QVariantMap& list, QString* error) const;
     bool resolveEntryProfiles(QVariantMap& prepared, QString* error) const;
@@ -126,6 +133,7 @@ class ScanListStarter : public QObject {
     const SavedSystemsModel* m_systems;
     DecryptionProfileProvider* m_profiles = nullptr;
     RecordingSessions* m_recordingSessions = nullptr;
+    SquelchDefaultPolicy* m_squelchDefaults = nullptr;
 };
 } // namespace dsd_qt
 #endif
