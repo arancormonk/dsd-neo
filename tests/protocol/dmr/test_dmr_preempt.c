@@ -213,6 +213,22 @@ tv_grant(dsd_opts* opts, dsd_state* st, uint16_t lpcn, uint8_t slot, uint32_t tg
     dmr_cspdu(opts, st, bits, bytes, 1U, 0U);
 }
 
+/* A CRC-valid Tier III channel grant of opcode @p op (48 PV_GRANT, 49 TV_GRANT, 51 PD_GRANT, 52 TD_GRANT) naming
+   @p target from @p src: the layout every one of them shares (TS 102 361-4 Tables 7.9-7.15). */
+static void
+grant_op(dsd_opts* opts, dsd_state* st, uint8_t op, uint16_t lpcn, uint8_t slot, uint32_t target, uint32_t src) {
+    uint8_t bits[256];
+    uint8_t bytes[48];
+    DSD_MEMSET(bits, 0, sizeof(bits));
+    DSD_MEMSET(bytes, 0, sizeof(bytes));
+    bytes[0] = op;
+    write_bits_u32(bits, 16U, lpcn, 12U);
+    bits[28] = (uint8_t)(slot & 1U);
+    write_bits_u32(bits, 32U, target, 24U);
+    write_bits_u32(bits, 56U, src, 24U);
+    dmr_cspdu(opts, st, bits, bytes, 1U, 0U);
+}
+
 /* Accepted voice on @p slot: its own voice passed the colour-code gate just now. */
 static void
 voice(dsd_opts* opts, dsd_state* st, int slot) {
@@ -712,6 +728,42 @@ test_in_place_reassignment(dsd_opts* opts, dsd_state* st) {
     return rc;
 }
 
+/* A grant that changes the followed slot's media (data to voice, voice to data) for the same target is a new assignment
+   of the slot, not a repeat: before its first voice, a group data grant followed by a voice grant for the same group
+   publishes the voice grant's caller at the voice sync, and a private voice grant followed by a data grant for the same
+   radio publishes nothing of the obsolete voice grant. */
+static int
+test_in_place_media_change(dsd_opts* opts, dsd_state* st) {
+    init_env(opts, st, 2.0);
+    grant_op(opts, st, 52U, LPCN_A, 0, 300, 1); // TD_GRANT
+    int rc = expect_true("the data grant is followed as data", vc(st) == VC_A && sm()->vc_data_call == 1);
+    clock_at(0.2);
+    grant_op(opts, st, 49U, LPCN_A, 0, 300, 2); // TV_GRANT, same group, carrier and slot
+    rc |= expect_true("the voice grant reassigns the slot to voice",
+                      g_tunes == 1 && sm()->vc_data_call == 0 && sm()->vc_src == 2 && sm()->slots[0].data_call == 0U
+                          && sm()->slots[0].source == 2U);
+    clock_at(0.3);
+    voice(opts, st, 0);
+    dsd_call_snapshot call;
+    rc |= expect_true("the voice sync publishes the voice grant's call",
+                      dsd_call_state_get(st, 0U, &call) > 0 && call.phase == DSD_CALL_PHASE_ACTIVE
+                          && call.policy_target_id == 300U && call.ota_source_id == 2U);
+
+    init_env(opts, st, 2.0);
+    grant_op(opts, st, 48U, LPCN_A, 0, 300, 1); // PV_GRANT
+    rc |= expect_true("the private voice grant is followed", vc(st) == VC_A && sm()->vc_data_call == 0);
+    clock_at(0.2);
+    grant_op(opts, st, 51U, LPCN_A, 0, 300, 2); // PD_GRANT, same radio, carrier and slot
+    rc |= expect_true("the data grant reassigns the slot to data",
+                      sm()->vc_data_call == 1 && sm()->vc_src == 2 && sm()->slots[0].data_call == 1U);
+    clock_at(0.3);
+    voice(opts, st, 0);
+    const int published =
+        dsd_call_state_get(st, 0U, &call) > 0 && call.phase == DSD_CALL_PHASE_ACTIVE && call.ota_source_id == 1U;
+    rc |= expect_true("the obsolete voice grant's caller is not published", !published);
+    return rc;
+}
+
 /* An in-place group grant for TG 300 arrives while the followed slot still carries a private call to unit 300 (a checked
    LC names it): the private call is not the group's, whatever the number, so the grant's record awaits its own call
    instead of binding to the private one. Once the private call ends, the group's unnamed voice is that call: it stays
@@ -991,6 +1043,7 @@ main(void) {
     rc |= test_release_clears_ledger(opts, st);
     rc |= test_scan_target_contexts(opts, st);
     rc |= test_in_place_reassignment(opts, st);
+    rc |= test_in_place_media_change(opts, st);
     rc |= test_in_place_group_grant_never_binds_private_call(opts, st);
     rc |= test_in_place_reassignment_carries_crc_provenance(opts, st);
     rc |= test_composite_grant_adopts_resident_calls(opts, st);

@@ -13488,7 +13488,11 @@ Private per-protocol modules worth knowing about:
     there takes the slot's record with its follow time now (on the followed slot, the grant identity too, with this
     announcement's CRC provenance, `vc_crc_flags`, which the first voice publishes it with, never the replaced
     grant's: a RAS-accepted reassignment under `-F` reads unverified, a verified one verified); a repeat of
-    the call the slot names, or of the grant followed there, keeps record and follow time. A status's in-place entry
+    the call the slot names, or of the grant followed there, keeps record and follow time. A repeat is the same
+    target, policy class and media (`dmr_sm_grant_names_call()`): a grant that turns the slot from data to voice or
+    from voice to data for the same target is a new assignment, so a voice grant after a data one publishes its caller
+    at the first voice, and a data grant after a voice one publishes none of the obsolete voice grant's. A status's
+    in-place entry
     (origin STATUS) replaces only a seed or grant identity, never a checked LC's on that carrier.
   - Slot identities (`dmr_sm_slot_ctx_t`: target, source, kind, provenance SEED/GRANT/LC, policy class, channel,
     carrier, follow time, and `crc_flags`, the DSD_CRC_* bits of what named it: the grant's or status's burst, a Cap+

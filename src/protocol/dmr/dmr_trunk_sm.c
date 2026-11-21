@@ -2273,11 +2273,14 @@ dmr_sm_event_kind(const dmr_sm_event_t* ev) {
     return ev->is_group ? DSD_CALL_KIND_GROUP_VOICE : DSD_CALL_KIND_PRIVATE_VOICE;
 }
 
-/* Whether grant @p ev names the call @p id describes on @p carrier_hz: the same target and policy class. */
+/* Whether grant @p ev names the call @p id describes on @p carrier_hz: the same target, policy class and media (voice
+   or data). A grant that changes the slot's media for the same target is a new assignment of the slot, not a repeat:
+   a voice grant after a data one must publish its caller at the voice sync, a data grant after a voice one none. */
 static int
 dmr_sm_grant_names_call(const dmr_sm_event_t* ev, uint32_t target, const dmr_sm_slot_ctx_t* id, long carrier_hz) {
+    const uint8_t data_call = (uint8_t)(dmr_sm_event_kind(ev) == DSD_CALL_KIND_DATA);
     return dmr_sm_slot_identity_known(id) && id->carrier_hz == carrier_hz && id->target == target
-           && id->judged_group == (uint8_t)(ev->is_group != 0);
+           && id->judged_group == (uint8_t)(ev->is_group != 0) && id->data_call == data_call;
 }
 
 /* The followed grant names its call: the followed slot's record takes its identity, and the preemption ledger holds the
