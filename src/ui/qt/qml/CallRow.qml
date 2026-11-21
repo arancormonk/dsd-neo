@@ -9,14 +9,18 @@ import "Util.js" as Util
 // call with a recording carries a small play glyph before the time or ENC tag
 // (issue #708); a row without one is unchanged.
 //
-// Issue #901: the row's height is its fonts', never its call's. The name and
-// meta lines each get a fixed line box (LineBoxes, D10), so a name in another
-// script does not move the row, and the view's width and fonts decide its
-// form: where the widest right side the view can show would leave the name
-// less than max(96, 35% of the row), the right side moves to a third line of
-// its own under the meta line (the narrow form). Every row of a view takes
-// the same form, so all share one height: LineBoxes.callRowHeight(), which the
+// Issue #901: the row's height is its fonts' and the user's density, never
+// its call's or its width's: always the two lines, each a fixed line box
+// (LineBoxes, D10), so a name in another script does not move the row, and
+// every row of a view shares one height, LineBoxes.callRowHeight(), which the
 // Monitor's budget reads too. Compact view (D5) halves the padding.
+//
+// B7: where the row is too narrow for everything at its right, the name keeps
+// its place and the extras give way (plan): the name first gets min(its
+// natural width, 96); then EMERGENCY, ENC, the time and the recording glyph
+// are drawn in that order, each only while it still fits beside that, and the
+// first that does not fit ends the run. The name and meta line take what is
+// left and elide. What is not drawn is still in the node's accessible text.
 Item {
     id: row
     property string accessibleName: name
@@ -47,8 +51,9 @@ Item {
     // What the row shows besides its name (issue #782): the meta line, its
     // tags and its time, each once: a tag the meta line already says (History
     // puts EMERGENCY and "encrypted" there) and a time the caller's name
-    // already reads are left out.
-    readonly property string emergencyWords: emergency ? Util.shownText(emergencyTag) : ""
+    // already reads are left out. A tag's word comes from the tag itself,
+    // drawn or not (issue #901 B7: a narrow row may leave it out).
+    readonly property string emergencyWords: emergency ? emergencyTag.label : ""
     function activate() {
         if (interactive && enabled && Navigation.allows(row))
             activated();
@@ -73,13 +78,51 @@ Item {
     // Compact view: 6 px above and below the lines instead of 12, floored at
     // a touch target instead of Theme.rowHeight.
     property bool compact: false
-    // The widest time the view shows (one per line when there are several),
-    // which sizes the right side the form is decided with.
-    property string timeProbe: "00:00"
-    // From the row's width and the fonts only, never from what it shows.
-    readonly property bool narrow: LineBoxes.callRowNarrow(width, timeProbe)
 
-    implicitHeight: LineBoxes.callRowHeight(compact, narrow)
+    implicitHeight: LineBoxes.callRowHeight(compact)
+
+    // What the right side draws (issue #901 B7), from the room beside the
+    // labels and the items' own widths: the name first gets min(its natural
+    // width, 96); then EMERGENCY, ENC, the time and the recording glyph, each
+    // only while it still fits, the first that does not ending the run, so a
+    // lower one is never drawn in place of a higher one. `width` is the drawn
+    // right side's, with the gaps the anchors below put between its items.
+    // Widths only, never the items' positions, so no binding loops.
+    readonly property var plan: {
+        var room = Math.max(0, width - 18 - 12 - 18);
+        var least = Math.min(Math.ceil(nameMetrics.advanceWidth), 96);
+        var shown = {emergency: false, enc: false, time: false, recording: false, width: 0};
+        var parts = [{key: "emergency", on: emergency},
+                     {key: "enc", on: enc},
+                     {key: "time", on: !enc && rightText.length > 0},
+                     {key: "recording", on: hasRecording}];
+        for (var part of parts) {
+            if (!part.on)
+                continue;
+            var next = Object.assign({}, shown);
+            next[part.key] = true;
+            next.width = rightWidth(next);
+            if (least + next.width > room)
+                break;
+            shown = next;
+        }
+        return shown;
+    }
+    // The right side's width with @p drawn's items: ENC or the time at its
+    // right edge, the glyph 8 px before that, EMERGENCY 8 px before the glyph
+    // or 6 before ENC or the time.
+    function rightWidth(drawn) {
+        var end = drawn.enc ? encTag.implicitWidth : drawn.time ? timeText.implicitWidth : 0;
+        var endDrawn = drawn.enc || drawn.time;
+        var glyph = drawn.recording ? recordingGlyph.implicitWidth + (endDrawn ? 8 : 0) : 0;
+        var tag = drawn.emergency ? emergencyTag.implicitWidth + (drawn.recording ? 8 : endDrawn ? 6 : 0) : 0;
+        return end + glyph + tag;
+    }
+    TextMetrics {
+        id: nameMetrics
+        font: LineBoxes.callRowNameFont
+        text: Util.oneLine(row.name)
+    }
 
     Item {
         id: rowNode
@@ -91,7 +134,7 @@ Item {
         Accessible.name: !row.reachable ? "" : row.hasRecording ? qsTr("%1, has a recording").arg(row.accessibleName) : row.accessibleName
         Accessible.description: !row.reachable ? "" : [row.metaText,
             row.emergencyWords.length > 0 && row.metaText.indexOf(row.emergencyWords) < 0 ? row.emergencyWords : "",
-            row.enc && row.metaText.indexOf(qsTr("encrypted")) < 0 ? Util.shownText(encTag) : "",
+            row.enc && row.metaText.indexOf(qsTr("encrypted")) < 0 ? encTag.label : "",
             !row.enc && row.accessibleName.indexOf(row.rightText) < 0 ? row.rightText : ""].filter(function (part) {
             return part.length > 0;
         }).join(", ")
@@ -106,12 +149,11 @@ Item {
 
         // The row's text sits inside its node, so the node's words are its
         // own lines' (what a screen reader reaches is checked by that).
+        // As wide as the right side leaves, never less than nothing.
         Column {
             id: labels
-            anchors.left: parent.left
-            anchors.right: row.narrow ? parent.right : right.left
-            anchors.leftMargin: 18
-            anchors.rightMargin: row.narrow ? 18 : 12
+            x: 18
+            width: Math.max(0, parent.width - 18 - 12 - 18 - row.plan.width)
             anchors.verticalCenter: parent.verticalCenter
             spacing: 3
 
@@ -146,49 +188,39 @@ Item {
                 color: Theme.textSubdued
                 elide: Text.ElideRight
             }
-
-            // The narrow form's third line, where the right side sits.
-            Item {
-                id: clusterLine
-                visible: row.narrow
-                width: parent.width
-                height: LineBoxes.callRowClusterBox()
-            }
         }
 
-        // The tags and the time, laid out from its right edge and exactly as
-        // wide as they are: at the row's right, or in the narrow form on the
-        // third line, starting where the labels start.
+        // The tags and the time the plan draws, laid out from the row's right
+        // margin and exactly as wide as they are, centred on the row.
         Item {
             id: right
 
-            x: row.narrow ? labels.x : parent.width - 18 - width
-            y: row.narrow ? labels.y + clusterLine.y : 0
-            width: (emergencyTag.visible ? emergencyTag.implicitWidth + emergencyTag.anchors.rightMargin : 0) + (recordingGlyph.visible ? recordingGlyph.implicitWidth + 8 : 0) + Math.max(encTag.visible ? encTag.implicitWidth : 0, timeText.visible ? timeText.implicitWidth : 0)
-            height: row.narrow ? clusterLine.height : parent.height
+            x: parent.width - 18 - width
+            width: row.plan.width
+            height: parent.height
 
             EmergencyTag {
                 id: emergencyTag
                 objectName: "rowEmergencyTag"
-                visible: row.emergency
-                anchors.right: recordingGlyph.visible ? recordingGlyph.left : encTag.visible ? encTag.left : timeText.left
-                anchors.rightMargin: recordingGlyph.visible ? 8 : 6
+                visible: row.plan.emergency
+                anchors.right: recordingGlyph.visible ? recordingGlyph.left : encTag.visible ? encTag.left : timeText.visible ? timeText.left : parent.right
+                anchors.rightMargin: recordingGlyph.visible ? 8 : encTag.visible || timeText.visible ? 6 : 0
                 anchors.verticalCenter: parent.verticalCenter
             }
 
             PlayGlyph {
                 id: recordingGlyph
                 objectName: "rowRecordingGlyph"
-                visible: row.hasRecording
-                anchors.right: encTag.visible ? encTag.left : timeText.left
-                anchors.rightMargin: 8
+                visible: row.plan.recording
+                anchors.right: encTag.visible ? encTag.left : timeText.visible ? timeText.left : parent.right
+                anchors.rightMargin: encTag.visible || timeText.visible ? 8 : 0
                 anchors.verticalCenter: parent.verticalCenter
             }
 
             EncTag {
                 id: encTag
                 objectName: "rowEncTag"
-                visible: row.enc
+                visible: row.plan.enc
                 anchors.right: parent.right
                 anchors.verticalCenter: parent.verticalCenter
             }
@@ -196,7 +228,7 @@ Item {
             Text {
                 id: timeText
                 objectName: "callRowTime"
-                visible: !row.enc
+                visible: row.plan.time
                 anchors.right: parent.right
                 anchors.verticalCenter: parent.verticalCenter
                 text: row.rightText

@@ -2122,8 +2122,6 @@ Item {
                 readonly property var rowUid: model.uid
                 width: recentList.width
                 compact: screen.compactView
-                // The time is HH:mm.
-                timeProbe: "00:00"
                 name: model.name
                 metaText: model.systemName
                 rightText: model.timeText

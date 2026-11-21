@@ -12,11 +12,8 @@ Item {
     property bool showTitle: true
     // Issue #901 (D6): Compact view; the log's rows follow it.
     readonly property bool compactView: typeof prefs !== "undefined" && !!prefs && prefs.compactView === true
-    // The time a row shows is HH:mm; the rows' form and height are decided
-    // with it (CallRow.timeProbe).
-    readonly property string rowTimeProbe: "00:00"
-    // The height every row of the log has at its width and fonts.
-    readonly property real rowHeight: LineBoxes.callRowHeight(compactView, LineBoxes.callRowNarrow(logList.width, rowTimeProbe))
+    // The height every row of the log has at its fonts and density.
+    readonly property real rowHeight: LineBoxes.callRowHeight(compactView)
     // Issue #800: the map (its kept tracks stay reachable after Stop), and a
     // row's "Show on map" with the sheet to return to.
     signal openMap
@@ -530,7 +527,6 @@ Item {
             interactive: true
             width: ListView.view.width
             compact: screen.compactView
-            timeProbe: screen.rowTimeProbe
             name: model.name
             metaText: {
                 // A notice row's payload (the SMS body, the GPS string) is its

@@ -9,8 +9,10 @@ import "../../../src/ui/qt/qml" as Ui
 // width, never from what a call says. A name in another script came from a
 // fallback face and made its row 59 or 65 px high beside a 64-px Latin row
 // (B5), and a recorded emergency call in Home's 280-px Recent pane left its
-// name 6 px wide at 2x text (B7). Compact view (D5) tightens the padding; the
-// row keeps its two lines and its right side.
+// name 6 px wide at 2x text (B7): there the name keeps its place and the
+// extras at the right give way, in priority order, while the row keeps its
+// height. Compact view (D5) tightens the padding; the row keeps its two lines
+// and its right side.
 Item {
     id: root
 
@@ -102,6 +104,29 @@ Item {
             enc: true
             hasRecording: true
         }
+        Ui.CallRow {
+            id: tightAll
+            width: pane.width
+            name: "Fire Dispatch North"
+            metaText: "TG 4001 · SRC 7001"
+            rightText: "09:41"
+            emergency: true
+            enc: true
+            hasRecording: true
+        }
+        Ui.CallRow {
+            id: tightShort
+            width: pane.width
+            name: "Fire"
+            metaText: "TG 4001"
+            rightText: "09:41"
+            emergency: true
+            hasRecording: true
+        }
+    }
+
+    TextMetrics {
+        id: naturalName
     }
 
     // A store a screen is handed in place of the app's preferences.
@@ -131,7 +156,7 @@ Item {
         when: windowShown
 
         readonly property var sameView: [latin, emoji, cjk, cjkMeta, tagged, tall]
-        readonly property var tightView: [tight, tightPlain, tightEnc]
+        readonly property var tightView: [tight, tightPlain, tightEnc, tightAll, tightShort]
 
         function rectOf(item, under) {
             var at = item.mapToItem(under, 0, 0);
@@ -152,6 +177,7 @@ Item {
             Ui.Theme.resetFontScale();
             setCompact(false);
             scripts.width = 420;
+            pane.width = 280;
             home.active = false;
             wait(0);
             homeStore.compactView = true;
@@ -174,7 +200,7 @@ Item {
             waitForRendering(scripts);
             for (var row of tc.sameView)
                 compare(row.height, latin.height, "\"" + row.name + "\" / \"" + row.metaText + "\" moved its row");
-            compare(latin.height, Ui.LineBoxes.callRowHeight(data.compact, latin.narrow), "the row and the shared measure disagree");
+            compare(latin.height, Ui.LineBoxes.callRowHeight(data.compact), "the row and the shared measure disagree");
             for (row of tc.sameView) {
                 compare(findChild(row, "callRowName").height, Ui.LineBoxes.callRowNameBox(), "the name's box: " + row.name);
                 compare(findChild(row, "callRowMeta").height, Ui.LineBoxes.callRowMetaBox(), "the meta line's box: " + row.name);
@@ -252,52 +278,107 @@ Item {
             verify(!name.truncated, "the taller line was elided");
         }
 
-        function test_b7_narrow_form_data() {
-            return [{tag: "1.0", scale: 1.0}, {tag: "1.6", scale: 1.6}, {tag: "2.0", scale: 2.0}];
+        // What a row's right side can carry, in the order it is drawn in
+        // (issue #901 B7): each with whether the call has it.
+        function rightParts(row) {
+            return [{name: "rowEmergencyTag", on: row.emergency},
+                    {name: "rowEncTag", on: row.enc},
+                    {name: "callRowTime", on: !row.enc && row.rightText.length > 0},
+                    {name: "rowRecordingGlyph", on: row.hasRecording}];
         }
-        // B7: in Home's 280-px pane, a recorded emergency call keeps its name
-        // at least max(96, 35% of the row) wide; where the tags would not
-        // leave that, they move to a line of their own, inside the row and
-        // clear of the name and the meta line.
-        function test_b7_narrow_form(data) {
-            Ui.Theme.fontScale = data.scale;
-            waitForRendering(pane);
-            var least = Math.max(96, 0.35 * tight.width);
-            var name = findChild(tight, "callRowName");
-            var meta = findChild(tight, "callRowMeta");
-            verify(name.width >= least, "the name is " + name.width.toFixed(1) + " px wide, under " + least);
-            verify(meta.width >= least, "the meta line is " + meta.width.toFixed(1) + " px wide, under " + least);
-            var nameRect = rectOf(name, tight);
-            var metaRect = rectOf(meta, tight);
-            verify(inside(nameRect, tight) && inside(metaRect, tight));
-            var tag = findChild(tight, "rowEmergencyTag");
-            var glyph = findChild(tight, "rowRecordingGlyph");
-            var time = findChild(tight, "callRowTime");
-            for (var part of [tag, glyph, time]) {
-                verify(part.visible, part.objectName);
-                var r = rectOf(part, tight);
-                verify(inside(r, tight), part.objectName + " leaves the row: " + JSON.stringify(r) + " in " + tight.width + "x" + tight.height);
-                verify(!overlaps(r, nameRect), part.objectName + " covers the name");
-                verify(!overlaps(r, metaRect), part.objectName + " covers the meta line");
+        // The right side's width with the items in @p drawn (objectNames), by
+        // the row's spacing: ENC or the time at its right, the glyph 8 px
+        // before that, EMERGENCY 8 px before the glyph or 6 before ENC or the
+        // time.
+        function rightWidthOf(row, drawn) {
+            var w = function (n) {
+                return findChild(row, n).implicitWidth;
+            };
+            var has = function (n) {
+                return drawn.indexOf(n) >= 0;
+            };
+            var endDrawn = has("rowEncTag") || has("callRowTime");
+            var end = has("rowEncTag") ? w("rowEncTag") : has("callRowTime") ? w("callRowTime") : 0;
+            var glyph = has("rowRecordingGlyph") ? w("rowRecordingGlyph") + (endDrawn ? 8 : 0) : 0;
+            var tag = has("rowEmergencyTag") ? w("rowEmergencyTag") + (has("rowRecordingGlyph") ? 8 : endDrawn ? 6 : 0) : 0;
+            return end + glyph + tag;
+        }
+        // B7 on one row: the name keeps min(its natural width, 96); the
+        // right side's items are drawn in priority order, each only while it
+        // fits beside that minimum, the first that does not ending the run;
+        // what is drawn is inside the row, clear of the lines and of each
+        // other, in its place left to right; the height is the shared one; and
+        // the accessible text keeps every word, drawn or not.
+        function checkPlan(row, at) {
+            var name = findChild(row, "callRowName");
+            var meta = findChild(row, "callRowMeta");
+            naturalName.font = name.font;
+            naturalName.text = name.text;
+            var least = Math.min(Math.ceil(naturalName.advanceWidth), 96);
+            verify(name.width >= least - 0.5, at + ": the name is " + name.width.toFixed(1) + " px wide, under " + least);
+            compare(meta.width, name.width, at + ": the meta line is as wide as the name");
+            compare(row.height, Ui.LineBoxes.callRowHeight(row.compact), at + ": the row's height");
+            var nameRect = rectOf(name, row);
+            var metaRect = rectOf(meta, row);
+            verify(inside(nameRect, row) && inside(metaRect, row), at + ": the lines leave the row");
+            var room = Math.max(0, row.width - 18 - 12 - 18);
+            var drawn = [];
+            var dropped = null;
+            for (var part of rightParts(row)) {
+                var item = findChild(row, part.name);
+                verify(item !== null, part.name);
+                if (!part.on) {
+                    verify(!item.visible, at + ": " + part.name + " drawn for a call without it");
+                    continue;
+                }
+                if (dropped !== null) {
+                    verify(!item.visible, at + ": " + part.name + " drawn while " + dropped + " is not");
+                    continue;
+                }
+                if (!item.visible) {
+                    dropped = part.name;
+                    // It could not have been drawn beside the name's minimum.
+                    var need = least + rightWidthOf(row, drawn.concat([part.name]));
+                    verify(need > room, at + ": " + part.name + " left out, though it needs " + need.toFixed(1) + " of " + room);
+                    continue;
+                }
+                drawn.push(part.name);
+                var r = rectOf(item, row);
+                verify(item.width > 0, at + ": " + part.name + " drawn with no width");
+                verify(inside(r, row), at + ": " + part.name + " leaves the row: " + JSON.stringify(r) + " in " + row.width + "x" + row.height);
+                verify(!overlaps(r, nameRect), at + ": " + part.name + " covers the name");
+                verify(!overlaps(r, metaRect), at + ": " + part.name + " covers the meta line");
+                verify(r.x >= nameRect.x + nameRect.width + 12 - 0.5, at + ": " + part.name + " within 12 px of the lines");
+                verify(r.x + r.width <= row.width - 18 + 0.5, at + ": " + part.name + " past the row's margin");
             }
-            // EMERGENCY, then the glyph, then the time, in either form.
-            var tagRect = rectOf(tag, tight);
-            var glyphRect = rectOf(glyph, tight);
-            var timeRect = rectOf(time, tight);
-            verify(tagRect.x + tagRect.width <= glyphRect.x, "EMERGENCY before the glyph");
-            compare(glyphRect.x + glyphRect.width + 8, timeRect.x, "the glyph sits just before the time");
-            if (tight.narrow) {
-                // Below the meta line, starting where the labels start.
-                compare(tagRect.x, nameRect.x, "the third line starts with the labels");
-                verify(tagRect.y >= metaRect.y + metaRect.height, "the third line is below the meta line");
-                compare(name.width, tight.width - 2 * 18, "the name takes the full width");
+            // The lines take exactly the room the drawn items leave.
+            verify(Math.abs(name.width - Math.max(0, room - rightWidthOf(row, drawn))) < 0.5,
+                   at + ": the name is " + name.width.toFixed(1) + " px, the room left " + (room - rightWidthOf(row, drawn)).toFixed(1));
+            // Left to right: EMERGENCY, the glyph, then ENC or the time, apart.
+            var order = ["rowEmergencyTag", "rowRecordingGlyph", "rowEncTag", "callRowTime"].filter(function (n) {
+                return drawn.indexOf(n) >= 0;
+            });
+            for (var i = 0; i + 1 < order.length; ++i) {
+                var a = rectOf(findChild(row, order[i]), row);
+                var b = rectOf(findChild(row, order[i + 1]), row);
+                verify(a.x + a.width + 6 - 0.5 <= b.x, at + ": " + order[i] + " runs into " + order[i + 1]);
             }
+            // Every word, drawn or not.
+            var spoken = row.node.Accessible.name + " | " + row.node.Accessible.description;
+            verify(spoken.indexOf(row.name) >= 0, at + ": " + spoken);
+            verify(spoken.indexOf(row.metaText) >= 0, at + ": " + spoken);
+            if (row.emergency)
+                verify(spoken.indexOf("EMERGENCY") >= 0, at + ": EMERGENCY unsaid: " + spoken);
+            if (row.enc)
+                verify(spoken.indexOf("ENC") >= 0, at + ": ENC unsaid: " + spoken);
+            else
+                verify(spoken.indexOf(row.rightText) >= 0, at + ": the time unsaid: " + spoken);
+            if (row.hasRecording)
+                verify(row.node.Accessible.name.indexOf("has a recording") >= 0, at + ": the recording unsaid: " + spoken);
+            return {drawn: drawn, dropped: dropped};
         }
 
-        // The form is the view's, not the call's: every row at a width takes
-        // the same form and so the same height, whatever tags it carries, and
-        // the right side's line is reserved even on a row with no tag.
-        function test_narrow_form_is_the_views_data() {
+        function test_b7_extras_give_way_data() {
             var cases = [];
             for (var scale of [1.0, 1.6, 2.0]) {
                 cases.push({tag: scale.toFixed(1) + " default", scale: scale, compact: false});
@@ -305,31 +386,76 @@ Item {
             }
             return cases;
         }
-        function test_narrow_form_is_the_views(data) {
+        // B7: in Home's 280-px pane a recorded emergency call keeps its name at
+        // least min(its natural width, 96) wide; the tags, the time and the
+        // glyph give way in priority order instead, and the row keeps the
+        // height every row of the view has. Encrypted, emergency and short
+        // names follow the same rule.
+        function test_b7_extras_give_way(data) {
             Ui.Theme.fontScale = data.scale;
             setCompact(data.compact);
             waitForRendering(pane);
-            compare(tight.narrow, Ui.LineBoxes.callRowNarrow(tight.width, tight.timeProbe));
             for (var row of tc.tightView) {
-                compare(row.narrow, tight.narrow, row.name + " took another form");
-                compare(row.height, tight.height, "a row with other tags has another height");
-                compare(row.height, Ui.LineBoxes.callRowHeight(data.compact, tight.narrow));
+                var plan = checkPlan(row, data.tag + " " + row.name + (row.enc ? " ENC" : "") + (row.emergency ? " EMERGENCY" : ""));
+                console.log("B7", data.tag, row.name, row.emergency, row.enc, row.hasRecording, "drawn", plan.drawn.join(","), "dropped", plan.dropped);
             }
-            // The encrypted row's ENC tag keeps the place of the time.
-            var enc = findChild(tightEnc, "rowEncTag");
-            var glyph = findChild(tightEnc, "rowRecordingGlyph");
-            var encRect = rectOf(enc, tightEnc);
-            verify(inside(encRect, tightEnc));
-            compare(rectOf(glyph, tightEnc).x + glyph.width + 8, encRect.x, "the glyph sits just before ENC");
-            for (var line of ["callRowName", "callRowMeta"])
-                verify(!overlaps(encRect, rectOf(findChild(tightEnc, line), tightEnc)), "ENC covers " + line);
+            // EMERGENCY leads: at 280 px it is drawn at every text size.
+            verify(findChild(tight, "rowEmergencyTag").visible, "EMERGENCY gave way");
+            // A short name leaves the extras more room than a long one.
+            var count = function (row) {
+                return checkPlan(row, "count").drawn.length;
+            };
+            verify(count(tightShort) >= count(tight), "a short name drew less");
+        }
+
+        // Row heights are the density's and the fonts', never the width's or
+        // the call's: at every width, every row in either density is the
+        // shared height, and a row that drops its extras keeps it.
+        function test_height_follows_neither_width_nor_call_data() {
+            return test_b7_extras_give_way_data();
+        }
+        function test_height_follows_neither_width_nor_call(data) {
+            Ui.Theme.fontScale = data.scale;
+            setCompact(data.compact);
+            var expected = Ui.LineBoxes.callRowHeight(data.compact);
+            try {
+                for (var w of [200, 240, 280, 322, 384, 420, 640]) {
+                    pane.width = w;
+                    waitForRendering(pane);
+                    for (var row of tc.tightView) {
+                        compare(row.height, expected, w + " px: " + row.name);
+                        checkPlan(row, w + " px " + row.name);
+                    }
+                }
+            } finally {
+                pane.width = 280;
+            }
+        }
+
+        // The ENC tag keeps the place of the time, with the glyph 8 px before
+        // it where both are drawn.
+        function test_enc_keeps_the_place_of_the_time() {
+            Ui.Theme.fontScale = 1.0;
+            pane.width = 420;
+            try {
+                waitForRendering(pane);
+                var enc = findChild(tightEnc, "rowEncTag");
+                var glyph = findChild(tightEnc, "rowRecordingGlyph");
+                verify(enc.visible && glyph.visible && !findChild(tightEnc, "callRowTime").visible);
+                var encRect = rectOf(enc, tightEnc);
+                compare(encRect.x + encRect.width, tightEnc.width - 18, "ENC ends at the row's margin");
+                compare(rectOf(glyph, tightEnc).x + glyph.width + 8, encRect.x, "the glyph sits just before ENC");
+            } finally {
+                pane.width = 280;
+            }
         }
 
         // A wide row is unchanged: the right side beside the lines.
         function test_wide_form_keeps_the_right_side_beside_the_lines() {
             Ui.Theme.fontScale = 1.0;
             waitForRendering(scripts);
-            verify(!tagged.narrow);
+            for (var part of ["rowEmergencyTag", "rowRecordingGlyph", "callRowTime"])
+                verify(findChild(tagged, part).visible, part + " gave way at 420 px");
             compare(tagged.height, latin.height);
             var name = rectOf(findChild(tagged, "callRowName"), tagged);
             var tag = rectOf(findChild(tagged, "rowEmergencyTag"), tagged);
@@ -339,18 +465,22 @@ Item {
             verify(Math.abs(tag.y + tag.height / 2 - tagged.height / 2) <= 1, "the tags are centred on the row");
         }
 
-        // What a screen reader hears is the same in either form.
-        function test_accessible_text_is_the_same_in_either_form() {
+        // What a screen reader hears is the same whatever the row draws: at
+        // 420 px everything is drawn, at 280 px at 2x text the extras give way.
+        function test_accessible_text_is_the_same_whatever_is_drawn() {
             Ui.Theme.fontScale = 1.0;
             scripts.width = 420;
             waitForRendering(scripts);
-            verify(!tagged.narrow);
+            verify(findChild(tagged, "rowRecordingGlyph").visible && findChild(tagged, "callRowTime").visible);
             var name = tagged.node.Accessible.name;
             var description = tagged.node.Accessible.description;
             verify(name.length > 0 && description.length > 0);
+            compare(name, "Fire Dispatch North, has a recording");
+            compare(description, "TG 4001 · SRC 7001, EMERGENCY, 09:41");
             scripts.width = 280;
+            Ui.Theme.fontScale = 2.0;
             waitForRendering(scripts);
-            verify(tagged.narrow, "280 px at 1x is the narrow form");
+            verify(!findChild(tagged, "rowRecordingGlyph").visible, "the glyph is drawn at 280 px at 2x");
             compare(tagged.node.Accessible.name, name);
             compare(tagged.node.Accessible.description, description);
         }
@@ -359,7 +489,7 @@ Item {
         // screen was handed, and a change of density puts the list back at
         // the newest call, shown or hidden.
         function test_home_recent_compact_rows() {
-            callHistory.pushMany(150, "TODAY");
+            callHistory.pushMany(40, "TODAY");
             home.active = true;
             home.item.prefsStore = homeStore;
             waitForRendering(home.item);
@@ -369,13 +499,12 @@ Item {
             tryVerify(function () { return list.itemAtIndex(0) !== null; });
             var row = list.itemAtIndex(0);
             verify(row.compact, "the row follows the store handed in");
-            compare(row.height, Ui.LineBoxes.callRowHeight(true, row.narrow));
-            compare(row.narrow, Ui.LineBoxes.callRowNarrow(list.width, "00:00"));
+            compare(row.height, Ui.LineBoxes.callRowHeight(true));
             homeStore.compactView = false;
             waitForRendering(list);
             row = list.itemAtIndex(0);
             verify(!row.compact);
-            compare(row.height, Ui.LineBoxes.callRowHeight(false, row.narrow));
+            compare(row.height, Ui.LineBoxes.callRowHeight(false));
 
             // The list at its start as drawn, not only as its contentY says:
             // the newest row at the top of the viewport. A view placed before
@@ -395,7 +524,7 @@ Item {
             try {
                 for (var deep of [false, true, true]) {
                     if (deep)
-                        list.positionViewAtIndex(149, ListView.Beginning);
+                        list.positionViewAtIndex(39, ListView.Beginning);
                     else
                         list.contentY = list.originY + 400;
                     waitForRendering(list);
@@ -413,7 +542,7 @@ Item {
                 focusHolder.destroy();
             }
             // Hidden: it comes back at its start, not at the place it held.
-            list.positionViewAtIndex(149, ListView.Beginning);
+            list.positionViewAtIndex(39, ListView.Beginning);
             waitForRendering(list);
             home.item.visible = false;
             homeStore.compactView = !homeStore.compactView;

@@ -306,17 +306,15 @@ Item {
             var header = (t >= 3 && strip > 0 ? strip + gap : 0) + item("monitorDetailsCard").height + gap + 1;
             return viewport - header;
         }
-        // The compact row's height, from the shared measure in the form a row
-        // as wide as the list's rows takes.
+        // The compact row's height, from the shared measure.
         function compactRowHeight() {
-            return Ui.LineBoxes.callRowHeight(true, Ui.LineBoxes.callRowNarrow(tc.list.width - 2, tc.monitor.rowTimeProbe));
+            return Ui.LineBoxes.callRowHeight(true);
         }
         function test_compact_tier_budget_data() {
             var rows = [];
             // The outcomes each stand for, by a wide margin at these sizes: two
             // rows in tier 2 on a 360 dp phone; at large text there, only tier 4's
-            // one whole row (the rows take their narrow form); a landscape phone
-            // in tier 5.
+            // one whole row; a landscape phone in tier 5.
             var outcomes = {"360x690@1": 2, "360x690@1.6": 4, "640x360@1": 5};
             for (var size of [[360, 690], [411, 780], [411, 914], [640, 360]]) {
                 for (var scale of [1, 1.6]) {
@@ -345,7 +343,7 @@ Item {
             var tier = tc.monitor.tier;
             var row = compactRowHeight();
             compare(tc.monitor.callRowHeight, row, "the budget's row is the compact row");
-            verify(row < Ui.LineBoxes.callRowHeight(false, Ui.LineBoxes.callRowNarrow(tc.list.width - 2, tc.monitor.rowTimeProbe)),
+            verify(row < Ui.LineBoxes.callRowHeight(false),
                    "a compact row is shorter");
             var expected = 5;
             for (var t = 2; t <= 4; ++t) {
@@ -486,7 +484,7 @@ Item {
                 settle();
                 compare(prefs.compactView, data.global);
                 compare(tc.monitor.compactView, data.injected);
-                var row = Ui.LineBoxes.callRowHeight(data.injected, Ui.LineBoxes.callRowNarrow(tc.list.width - 2, tc.monitor.rowTimeProbe));
+                var row = Ui.LineBoxes.callRowHeight(data.injected);
                 compare(tc.monitor.callRowHeight, row, "the budget's row");
                 compare(item("recentCallsFollow").rowHeight, row, "the follower's row");
                 for (var i = 0; i < 3; ++i) {

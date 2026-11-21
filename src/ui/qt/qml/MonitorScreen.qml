@@ -353,10 +353,8 @@ Item {
     // gives that part, so the budget and the screen cannot disagree.
     readonly property real pillHeight: Math.max(48, 30 * Theme.fontScale)
     // The rows' own height (LineBoxes, issue #901): their fonts' line boxes,
-    // at the user's density, in the form the rows take at their width.
-    readonly property real callRowHeight: LineBoxes.callRowHeight(compactView, LineBoxes.callRowNarrow(recentList.width - 2, rowTimeProbe))
-    // The widest age a row shows (Util.shortAge), one per line.
-    readonly property string rowTimeProbe: [qsTr("now"), "59m", "23h", "999d"].join("\n")
+    // at the user's density, whatever their width.
+    readonly property real callRowHeight: LineBoxes.callRowHeight(compactView)
     readonly property real heroMicroHeight: Math.ceil(heroMicroMetrics.height)
     readonly property real heroSublineHeight: Math.ceil(Math.max(heroSublineMetrics.height, heroEncTag.implicitHeight, heroEmergencyTag.implicitHeight, heroPrivateTag.implicitHeight))
     readonly property real heroFullHeight: 2 * 14 + heroMicroHeight + 6 + Math.ceil(Theme.fontSize(40)) + 6 + heroSublineHeight + 6 + Math.max(26, Math.ceil(heroDurationMetrics.height))
@@ -1947,7 +1945,6 @@ Item {
             x: 1
             width: ListView.view.width - 2
             compact: screen.compactView
-            timeProbe: screen.rowTimeProbe
             name: model.name
             metaText: {
                 // A notice keeps its payload first, the pane being too

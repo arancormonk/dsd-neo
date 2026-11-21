@@ -617,12 +617,14 @@ Item {
 
         // On an emergency call the frequency leads ahead of EMERGENCY, which the
         // badge also shows, and it fits on a phone at the larger text sizes: the
-        // meta line is only as wide as the badge and the time leave it. Where
-        // they would leave too little (issue #901, B7), they move to a line of
-        // their own under the meta line, clear of both lines.
+        // meta line is only as wide as the badge and the time leave it. At
+        // larger text still (issue #901, B7) the row keeps its two lines: the
+        // name keeps min(its width, 96), EMERGENCY and the time are drawn only
+        // while they fit beside that, beside the lines and clear of them, and
+        // the time leaves before EMERGENCY does.
         function test_06i_an_emergency_row_keeps_the_frequency_in_view_data() {
-            return [{tag: "1.0", scale: 1.0, narrow: false}, {tag: "1.3", scale: 1.3, narrow: false},
-                {tag: "1.6", scale: 1.6, narrow: true}, {tag: "2.0", scale: 2.0, narrow: true}]
+            return [{tag: "1.0", scale: 1.0, frequency: true}, {tag: "1.3", scale: 1.3, frequency: true},
+                {tag: "1.6", scale: 1.6, frequency: true}, {tag: "2.0", scale: 2.0, frequency: false}]
         }
         function test_06i_an_emergency_row_keeps_the_frequency_in_view(data) {
             var width = root.width
@@ -638,25 +640,37 @@ Item {
                 var meta = findChild(row, "callRowMeta")
                 verify(meta !== null, "the meta line is missing")
                 frequencyWidth.font = meta.font
-                verify(frequencyWidth.advanceWidth <= meta.width,
-                       "the frequency is elided: " + frequencyWidth.advanceWidth + " > " + meta.width)
-                compare(row.narrow, data.narrow, "the row's form at 360 px")
+                if (data.frequency)
+                    verify(frequencyWidth.advanceWidth <= meta.width,
+                           "the frequency is elided: " + frequencyWidth.advanceWidth + " > " + meta.width)
+                compare(row.height, Ui.LineBoxes.callRowHeight(false), "the row's height")
+                var name = findChild(row, "callRowName")
+                partWidth.font = name.font
+                partWidth.text = name.text
+                verify(name.width >= Math.min(Math.ceil(partWidth.advanceWidth), 96) - 0.5, "the name is " + name.width + " px")
                 var tag = findChild(row, "rowEmergencyTag")
                 var time = findChild(row, "callRowTime")
-                verify(tag.visible && time.visible)
-                var lines = [findChild(row, "callRowName"), meta].map(function (line) { return tc.rectIn(line, row) })
+                verify(tag.visible, "EMERGENCY gave way")
+                // At 1.0 and 1.3 the time is drawn too.
+                if (data.frequency)
+                    verify(time.visible, "the time gave way")
+                var lines = [name, meta].map(function (line) { return tc.rectIn(line, row) })
                 for (var part of [tag, time]) {
+                    if (!part.visible)
+                        continue
                     var r = tc.rectIn(part, row)
                     verify(r.x >= 0 && r.y >= 0 && r.x + r.width <= row.width && r.y + r.height <= row.height,
                            part.objectName + " leaves the row")
                     for (var line of lines)
                         verify(!tc.overlaps(r, line), part.objectName + " covers a line: " + JSON.stringify(r) + " " + JSON.stringify(line))
-                    // Wide: beside the lines; narrow: below them.
-                    if (data.narrow)
-                        verify(r.y >= lines[1].y + lines[1].height, part.objectName + " is not below the meta line")
-                    else
-                        verify(r.x >= lines[1].x + lines[1].width, part.objectName + " is not beside the meta line")
+                    verify(r.x >= lines[1].x + lines[1].width, part.objectName + " is not beside the meta line")
                 }
+                if (tag.visible && time.visible)
+                    verify(tc.rectIn(tag, row).x + tag.width <= tc.rectIn(time, row).x, "EMERGENCY runs into the time")
+                // Drawn or not, the row says the time and EMERGENCY.
+                var spoken = row.node.Accessible.name + " | " + row.node.Accessible.description
+                verify(row.rightText.length > 0 && spoken.indexOf(row.rightText) >= 0, spoken)
+                verify(spoken.indexOf("EMERGENCY") >= 0, spoken)
             } finally {
                 Ui.Theme.fontScale = scale
                 root.width = width
@@ -950,7 +964,7 @@ Item {
             try {
                 prefs.compactView = false
                 tc.waitForRendering(tc.list)
-                var normal = Ui.LineBoxes.callRowHeight(false, tc.list.itemAtIndex(0).narrow)
+                var normal = Ui.LineBoxes.callRowHeight(false)
                 compare(tc.list.itemAtIndex(0).height, normal)
                 compare(follow.rowHeight, normal)
                 prefs.compactView = true
@@ -958,9 +972,7 @@ Item {
                 for (var i = 0; i < 3; i++) {
                     var row = tc.list.itemAtIndex(i)
                     verify(row.compact, "row " + i + " is not compact")
-                    compare(row.timeProbe, "00:00")
-                    compare(row.narrow, Ui.LineBoxes.callRowNarrow(tc.list.width, "00:00"))
-                    compare(row.height, Ui.LineBoxes.callRowHeight(true, row.narrow))
+                    compare(row.height, Ui.LineBoxes.callRowHeight(true))
                 }
                 verify(tc.list.itemAtIndex(0).height < normal, "a compact row is no smaller")
                 compare(follow.rowHeight, tc.list.itemAtIndex(0).height, "the pin's slack is the row's height")
