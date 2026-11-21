@@ -4613,7 +4613,8 @@ suite runs under this compiler.
   engine (`dsd_rxid_apply_trunk_tune()` returns 1 when it applied a drop, `dsd_rxid_request_trunk_tune()` when it
   applied one at once inside a dispatch): `dsd_engine_rxid_trunk_tune()` on the decoder thread or inside a dispatch,
   `processFrame()`'s apply before the frame, the apply after the synced-frame trunking ticks, and the trunk-scan
-  advance, so a watchdog retune resets it when the decoder thread applies the drop, never on the watchdog's thread;
+  advance, so a retune made off the decoder thread resets it when the decoder thread applies the drop, never on the
+  tuning thread (a P25 watchdog tick's retune is the decoder thread's own);
   `trunk_scan_switch_to()` (which also covers the forced release's own apply) and its rollback, which restores the
   record without the evidence and so drops the part; a colour-code change on the carrier (the confidence lock onto
   another code and its relock, BS and MS voice alike; the MS/direct slot type, `dmr_ras_note_color_code()`); the DMR
@@ -8073,15 +8074,16 @@ the stream-notice hooks' pattern: one that fails to initialize leaves the hook u
   its own later retune (an io_control tune, the frequency entry) never brings back what that retune dropped, and moves
   no epoch (that retune moved it, and no symbol came between them); a request on a newer input replaces an older
   input's. Two posts before one take leave the later (the backlog holds the latest post), and a take racing a post
-  carries the latest mark (`ENGINE_RIGCTL_RETUNE`, `test_newest_cutoff_wins()`). Off the decoder thread (the P25
-  watchdog) the tune posts `dsd_frame_sync_note_off_thread_unflushed_retune()` (`unflushed_retune.c`) before its tune
-  notice: the mark it took before its request, held in the backlog (`dsd_input_backlog_post()`; of two posts the later
+  carries the latest mark (`ENGINE_RIGCTL_RETUNE`, `test_newest_cutoff_wins()`). A P25 watchdog tick runs on the decoder thread
+  ("P25 watchdog threading"), so its tunes take the direct path above. A tune made off the decoder thread (the retained
+  off-thread API: a test, or a caller on another thread) posts `dsd_frame_sync_note_off_thread_unflushed_retune()`
+  (`unflushed_retune.c`) before its tune notice: the mark it took before its request, held in the backlog (`dsd_input_backlog_post()`; of two posts the later
   mark is held, in whatever order they come), and an atomic count, the decoder's cue. The decoder's next read takes it
   (`frame_sync_take_unflushed_retunes()`, inline in `frame_sync_unflushed.h`, with the take itself in
   `frame_sync_unflushed.c`: one relaxed load per EDACS triplet, and per symbol read only while rigctl is in use
   (`dsd_opts::use_rigctl`), the only time a post is made, so a run without rigctl loads no shared count per symbol,
   which on the MSVC atomics fallback is a locked operation; `test_symbol_reader_checks_posts_only_with_rigctl()`),
-  moving the epoch and asking for the drop with the post's mark, so the watchdog's tunes drop at the next read after
+  moving the epoch and asking for the drop with the post's mark, so an off-thread tune drops at the next read after
   the post; the notice's reconcile (`dsd_frame_sync_apply_off_thread_tunes()`) takes a post no read met yet, and a
   failed rigctl reconnect takes one as it turns rigctl off (`svc_rigctl_connect()`). Every mark is measured when it is taken:
   the cutoff is what had arrived on the input then, nothing later. The TCP reconnect makes its new connection the
@@ -8115,7 +8117,7 @@ the stream-notice hooks' pattern: one that fails to initialize leaves the hook u
   was not measured on the queue attached then (`dsd_frame_sync_forget_unflushed_retunes()`, declared in
   `include/dsd-neo/dsp/unflushed_retune.h`, which `<dsd-neo/core/opts.h>` includes for
   `dsd_opts_reset_pcm_input_state()`; it calls `dsd_input_backlog_forget()`): such a retune moved the peer before the
-  new stream began. A post that comes after the replacement, marked on the input replaced (a watchdog's tune marked on
+  new stream began. A post that comes after the replacement, marked on the input replaced (an off-thread tune marked on
   the old TCP connection and confirmed after the reconnect), is refused by `dsd_input_backlog_post()` itself, past the
   opening-to-reader handoff above: it would move the new stream's timeline and drop nothing of it
   (`test_late_post_from_a_replaced_input()`). One marked on the input a switch's attach in flight replaced comes back
@@ -9218,7 +9220,8 @@ the stream-notice hooks' pattern: one that fails to initialize leaves the hook u
   Both are also cleared with the M17 join history (`dsd_state_forget_sync_join_histories()`), at an acquisition reset
   and any carrier change (`dsd_state_note_carrier_change()`, so a tune, a probe or a trunk-scan switch), at every
   accepted trunk retune of any protocol (`dsd_engine_trunk_tune_to_freq_request()`, `_to_cc_request()`: an NXDN DISC's
-  return included; one the P25 watchdog makes off the decoder thread is applied by the frame sync's next step,
+  return included, and a P25 watchdog tick's, which runs on the decoder thread; one made off the decoder thread is
+  applied by the frame sync's next step,
   `dsd_frame_sync_apply_off_thread_tunes()`), at a carrier boundary inside an NXDN frame and at the CAC reset. The
   four-level reading takes the window's level ring, which a symbol capture fills with its dibits' levels
   (`dsd_symbol_level_from_dibit()`), so it applies there too; only a window holding fewer than ten levels (the unit
@@ -13540,8 +13543,9 @@ Private per-protocol modules worth knowing about:
     trunking the machine does not judge an operator's move: on the io_control leg the engine's reading of the receiver
     does (`dmr_sm_note_foreign_operator_leave()`), and on the P25 hook leg the engine's tune hook. The decoder thread
     alone writes the left calls' decryption and the hold: it does so in its frames and in the no-carrier pass, which
-    runs outside the P25 SM tick guard. A tune the P25 watchdog makes on its own thread (a grant, a return to the
-    control channel, whose release forgets the privacy) only asks for it, under the guard
+    runs outside the P25 SM tick guard. A P25 watchdog tick's tune (a grant, a return to the control channel, whose
+    release forgets the privacy) runs on the decoder thread ("P25 watchdog threading"); a tune made off the decoder
+    thread (the retained off-thread API) only asks for it, under the guard
     (`dsd_engine_dmr_leave()`, `dsd_state::dmr_leave_pending`, outside every snapshot copy range), and the decoder
     thread applies the request before its next frame (`dsd_engine_apply_dmr_leave()`: in `processFrame()`, after the
     synced frame's ticks, at the no-carrier pass's identity step and where a trunk scan snapshots the state), as it
