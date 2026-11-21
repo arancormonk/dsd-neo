@@ -13,6 +13,7 @@
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/state_ext.h>
 #include <dsd-neo/core/state_fwd.h>
+#include <dsd-neo/core/tetra_publication.h>
 #include <dsd-neo/protocol/tetra/tetra.h>
 #include <dsd-neo/protocol/tetra/tetra_bsch.h>
 #include <dsd-neo/protocol/tetra/tetra_mac.h>
@@ -238,30 +239,76 @@ test_sysinfo_received_identity(void) {
     return ok;
 }
 
-/* Table 21.65 note 3: main carrier 0 and band 0 mean the cell has no CA main carrier. Band 0 is never a carrier
- * frequency, so neither may replace the known control channel. */
+/* Table 21.65 note 3: main carrier 0 and band 0 mean the cell has no CA main carrier; band 0 with another carrier and
+ * bands 10 to 15 name none this decoder can resolve (TS 100 392-15 table 1). Either way the SYSINFO names no main carrier
+ * the cell's last one can stand for: what the decoder holds of that carrier -- its frequency, band and offset, the
+ * control channel it set, the received identity's control channel and the published frequency -- goes, at the same
+ * location area too, so nothing pairs the old frequency with the new carrier number. A control channel set by anything
+ * else stays. The next valid SYSINFO of the cell takes it all on again, and the cell's location area and calls stay
+ * throughout. (This replaces the contract that such a SYSINFO left the control channel and band alone.) */
 static int
-test_sysinfo_band_zero_keeps_control_channel(void) {
-    dsd_state* state = new_state();
-    dsd_opts* opts = new_opts();
-    tetra_state_t* ts = tetra_st(state);
-    ts->freq_band = 4;
-    ts->freq_offset = 2;
-    ts->dl_carrier_hz = 401243750L;
-    state->trunk_cc_freq = 401243750L;
+test_sysinfo_without_a_main_carrier_clears_it(void) {
+    static const struct {
+        uint32_t carrier;
+        uint32_t band;
+        const char* what;
+    } k_cases[] = {
+        {0, 0, "no CA main carrier (band 0, carrier 0)"},
+        {100, 0, "band 0, another carrier"},
+        {100, 12, "a band with no base frequency"},
+    };
+
     int ok = 1;
-    static const uint32_t k_carriers[] = {100, 0};
-    for (int i = 0; i < 2; i++) {
-        ttb_block b = {0};
-        put_sysinfo(&b, k_carriers[i], 0, 0);
-        tetra_mac_parse_schd(b.bits, b.n, 0, opts, state);
-        ok &= check(state->trunk_cc_freq == 401243750L && ts->dl_carrier_hz == 401243750L && ts->freq_band == 4
-                        && ts->freq_offset == 2,
-                    "SYSINFO in band 0 leaves the control channel and band alone");
-        ok &= check(ts->sysinfo_known && ts->la == 987, "SYSINFO in band 0 still publishes its cell data");
+    for (size_t i = 0; i < sizeof k_cases / sizeof k_cases[0]; i++) {
+        dsd_state* state = new_state();
+        dsd_opts* opts = new_opts();
+        tetra_state_t* ts = tetra_st(state);
+        ttb_block sync = {0};
+        ttb_sync_pdu(&sync, 901, 1001, 25);
+        ok &= check(tetra_bsch_parse(sync.bits, sync.n, opts, state) == 1, "no main carrier: the BSCH decodes");
+        opts->audio_in_type = AUDIO_IN_RTL;
+        opts->rtlsdr_center_freq = 401243750U;
+        ttb_block valid = {0};
+        put_sysinfo(&valid, 50, 4, 2);
+        tetra_mac_parse_schd(valid.bits, valid.n, 0, opts, state);
+        ok &= check(ts->dl_carrier_hz == 401243750L && state->trunk_cc_freq == 401243750L
+                        && (state->rx_id.valid & DSD_RXID_CC_FREQ) != 0U,
+                    "no main carrier: the valid SYSINFO names the control channel first");
+
+        ttb_block none = {0};
+        put_sysinfo(&none, k_cases[i].carrier, k_cases[i].band, 0);
+        tetra_mac_parse_schd(none.bits, none.n, 0, opts, state);
+        tetra_publish(state);
+        const dsd_tetra_publication* pub = &state->tetra_pub;
+        const int cleared = ts->dl_carrier_hz == 0L && ts->freq_band == 0U && ts->freq_offset == 0U
+                            && state->trunk_cc_freq == 0L && (state->rx_id.valid & DSD_RXID_CC_FREQ) == 0U
+                            && pub->cc_freq_hz == 0U && pub->cc_carrier == (uint16_t)k_cases[i].carrier;
+        if (!cleared) {
+            DSD_FPRINTF(stderr, "  %s: dl=%ld band=%u offset=%u trunk_cc=%ld rxid_cc=%u pub=%u/%u Hz\n",
+                        k_cases[i].what, ts->dl_carrier_hz, (unsigned)ts->freq_band, (unsigned)ts->freq_offset,
+                        state->trunk_cc_freq, (unsigned)((state->rx_id.valid & DSD_RXID_CC_FREQ) != 0U),
+                        (unsigned)pub->cc_carrier, (unsigned)pub->cc_freq_hz);
+        }
+        ok &= check(cleared, k_cases[i].what);
+        ok &= check(ts->sysinfo_known && ts->la == 987 && ts->calls.la_known && ts->calls.la == 987,
+                    "no main carrier: the cell's location area stays");
+
+        /* The cell's next valid SYSINFO at the same location area takes the main carrier on again. */
+        tetra_mac_parse_schd(valid.bits, valid.n, 0, opts, state);
+        tetra_publish(state);
+        ok &= check(ts->dl_carrier_hz == 401243750L && ts->freq_band == 4 && ts->freq_offset == 2
+                        && state->trunk_cc_freq == 401243750L && (state->rx_id.valid & DSD_RXID_CC_FREQ) != 0U
+                        && pub->cc_carrier == 50U && pub->cc_freq_hz == 401243750U,
+                    "no main carrier: a valid SYSINFO at the same area reacquires it");
+
+        /* A control channel the cell's SYSINFO did not set is not the decoder's to clear. */
+        state->trunk_cc_freq = 401300000L;
+        tetra_mac_parse_schd(none.bits, none.n, 0, opts, state);
+        ok &= check(state->trunk_cc_freq == 401300000L && ts->dl_carrier_hz == 0L,
+                    "no main carrier: a control channel set elsewhere stays");
+        free_state(state);
+        free(opts);
     }
-    free_state(state);
-    free(opts);
     return ok;
 }
 
@@ -1098,7 +1145,7 @@ main(void) {
     int ok = 1;
     ok &= test_llc_fcs_annex_c();
     ok &= test_sysinfo();
-    ok &= test_sysinfo_band_zero_keeps_control_channel();
+    ok &= test_sysinfo_without_a_main_carrier_clears_it();
     ok &= test_sysinfo_received_identity();
     ok &= test_sysinfo_tooshort();
     ok &= test_sysinfo_security();
