@@ -95,6 +95,9 @@ stream_next_dibit(void) {
     return dibit;
 }
 
+/* The read, counted from 1, under which the stream flushes (the symbol clock's epoch moves), 0 for none. */
+static long g_epoch_bump_at_read = 0;
+
 /* Mirrors the production slicer's bookkeeping: history push plus the symbol counter
  * that src/dsp/dsd_symbol.c bumps on every getSymbol() path. */
 /* The read, counted from 1, that leaves a silent input's wait for a queued command (issue #634): it reads nothing, so
@@ -128,6 +131,9 @@ getSymbol(dsd_opts* opts, dsd_state* state, int have_sync) { // NOLINT(misc-use-
     if (g_interrupt_at_read > 0 && g_reads == g_interrupt_at_read) {
         state->input_interrupted = 1;
         return 0.0f;
+    }
+    if (g_epoch_bump_at_read > 0 && g_reads == g_epoch_bump_at_read) {
+        state->symbol_clock_epoch++; /* the stream flushed under this read, as an RTL reader notes it */
     }
     const char dibit = stream_next_dibit();
     const float symbol = (dibit == '3') ? -3.0f : 3.0f;
@@ -1633,6 +1639,24 @@ test_a_deferred_checkpoint_beat_keeps_the_window(void) {
     watchdog_case_done(opts, state);
 }
 
+/* A stream flush in the middle of the hunt's window (a CQPSK reacquisition, which flushes the RTL output with no tune
+   and no change to the hunt's profile, an RTL stream flush): symbols on either side are no measure of one carrier, so
+   a P25 word whose first half was read before it and its second half after never matches. */
+static void
+test_a_flush_inside_the_window_drops_it(void) {
+    dsd_opts* opts = NULL;
+    dsd_state* state = NULL;
+    watchdog_case_init(&opts, &state, 313, 0);
+    g_epoch_bump_at_read = 302;
+    const int sync = getFrameSync(opts, state);
+    g_epoch_bump_at_read = 0;
+    if (DSD_SYNC_IS_P25P1(sync)) {
+        DSD_FPRINTF(stderr, "FAIL: a word read across a stream flush matched (sync %d, reads %ld)\n", sync, g_reads);
+        g_watchdog_failures++;
+    }
+    watchdog_case_done(opts, state);
+}
+
 /* A tick's grace at the checkpoint, during this call (no tune: the hunt goes on), stamps the control channel's sync later
    than the call began; the word after the checkpoint never puts either stamp back. */
 static void
@@ -1826,6 +1850,7 @@ main(void) {
     test_a_checkpoint_retune_hands_back_and_the_next_hunt_stamps_now();
     test_a_refused_checkpoint_tune_keeps_the_window();
     test_a_deferred_checkpoint_beat_keeps_the_window();
+    test_a_flush_inside_the_window_drops_it();
     test_a_sync_never_moves_the_control_channel_stamp_back();
     test_a_sync_moves_neither_control_channel_stamp_back();
     test_a_sync_follows_a_wall_clock_set_back();

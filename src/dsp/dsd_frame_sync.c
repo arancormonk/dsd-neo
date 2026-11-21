@@ -3696,6 +3696,9 @@ typedef struct frame_sync_runtime_ctx {
     int resumed;
     uint64_t resume_clock;
     uint32_t resume_epoch;
+    /* The symbol clock's epoch the window was read on: a read that moves it (a stream flush, a CQPSK reacquisition,
+       an input switch) leaves nothing before it worth matching (frame_sync_history_confirm()). */
+    uint32_t window_epoch;
     uint32_t resume_carrier_seq;
     /* The 79- and 119-symbol TETRA burst windows are only built when TETRA is enabled. */
     int tetra_windows;
@@ -3802,6 +3805,7 @@ frame_sync_runtime_init(frame_sync_runtime_ctx* rt, const dsd_opts* opts, const 
     rt->history_drops = state->frame_sync_carry.drops;
     rt->history_tune_gen = dsd_trunk_tuning_generation();
     rt->cc_stamp_at_entry = frame_sync_cc_stamps_take(state);
+    rt->window_epoch = state->symbol_clock_epoch;
     rt->synctest[24] = 0;
     rt->synctest12[12] = 0;
     rt->synctest10[10] = 0;
@@ -4022,22 +4026,34 @@ frame_sync_history_resume(frame_sync_runtime_ctx* rt, dsd_state* state) {
  * position (a dropped P25p1 candidate's carry goes on with the pass it interrupted), so the call hunts a whole pass of
  * the new stream, as one that began after the break would. */
 static void
+frame_sync_history_window_drop(frame_sync_runtime_ctx* rt) {
+    rt->history_head = 0;
+    rt->history_count = 0;
+    rt->lidx = 0;
+    rt->level_count = 0;
+    rt->synctest_pos = 0;
+    rt->own_count = 0;
+}
+
+static void
 frame_sync_history_confirm(frame_sync_runtime_ctx* rt, const dsd_state* state) {
     if (!rt->resumed) {
+        /* A read that met a stream flush moved the epoch: the window read before it goes, whatever moved nothing the
+           hunt compares (a CQPSK reacquisition's flush of the RTL output, say). One compare a symbol. */
+        if (state->symbol_clock_epoch != rt->window_epoch) {
+            rt->window_epoch = state->symbol_clock_epoch;
+            frame_sync_history_window_drop(rt);
+        }
         return;
     }
     rt->resumed = 0;
+    rt->window_epoch = state->symbol_clock_epoch;
     const int unbroken =
         state->symbol_clock == rt->resume_clock + 1U && state->symbol_clock_epoch == rt->resume_epoch
         && state->carrier_seq == rt->resume_carrier_seq && state->frame_sync_carry.drops == rt->history_drops
         && dsd_trunk_tuning_generation() == rt->history_tune_gen && !dsd_frame_sync_off_thread_tune_pending();
     if (!unbroken) {
-        rt->history_head = 0;
-        rt->history_count = 0;
-        rt->lidx = 0;
-        rt->level_count = 0;
-        rt->synctest_pos = 0;
-        rt->own_count = 0;
+        frame_sync_history_window_drop(rt);
     }
 }
 
