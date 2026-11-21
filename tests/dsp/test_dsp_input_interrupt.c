@@ -759,8 +759,7 @@ test_a_tcp_reconnect_services_the_beat(void) {
        deferral cancels the reconnect, which neither connects nor drops the old connection's staging (nothing moved),
        and the read gives way so the engine loop can publish. */
     install_watchdog_service();
-    init_tcp_session(opts, state, 0);
-    open_owned_tcp_socket();
+    init_tcp_session(opts, state, 0); /* no server socket: the reconnect gives up in its backoff, before any connect */
     opts->input_upsample_prev_valid = 1;
     opts->input_upsample_len = 4;
     g_defer = 1;
