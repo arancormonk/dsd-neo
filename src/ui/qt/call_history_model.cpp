@@ -62,8 +62,8 @@
 #include "call_recording_provider.h"
 #include "dsd-neo/core/state_fwd.h"
 #include "json_store.h"
+#include "local_day_watch.h"
 #include "position_kind_text.h"
-#include "realtime_clock.h"
 #include "teardown_trace.h"
 
 namespace dsd_qt {
@@ -194,28 +194,30 @@ seen_key(int slot, qulonglong seq, qint64 when, qulonglong tg, int kind) {
 }
 
 /**
- * @brief "TODAY" / "YESTERDAY" / "MON 3 AUG" for the list's day sections; "TIME UNKNOWN" for a row with no start.
+ * @brief "TODAY" / "YESTERDAY" / "MON 3 AUG" for the list's day sections, with the year outside @p today's ("SAT 21
+ * NOV 2015"); "TIME UNKNOWN" for a row with no start.
  *
  * A deliberate real-time exception to the rule that decoded stamps are compared on the decode
- * clock. The log spans sessions, and its sections name the viewer's calendar day, retired by the
- * real midnight timer (scheduleDayRollover()). On the decode clock a week-old replay's calls would
- * read "TODAY" and the labels would never roll over on time.
+ * clock. The log spans sessions, and its sections name the viewer's calendar day, which the shared
+ * LocalDayWatch publishes and retires. On the decode clock a week-old replay's calls would read
+ * "TODAY" and the labels would never roll over on time. The label is the section key, so one date
+ * in two years needs the year to stay two sections.
  */
 QString
-day_label(qint64 when) {
+day_label(qint64 when, QDate today) {
     if (when <= 0) {
         // No start stamp: the detail sheet and the export leave its time out, so the list makes up no date.
         return QStringLiteral("TIME UNKNOWN");
     }
     const QDate day = QDateTime::fromSecsSinceEpoch(when).date();
-    const QDate today = realtimeCurrentDate();
     if (day == today) {
         return QStringLiteral("TODAY");
     }
     if (day == today.addDays(-1)) {
         return QStringLiteral("YESTERDAY");
     }
-    return QLocale().toString(day, QStringLiteral("ddd d MMM")).toUpper();
+    const QString format = day.year() == today.year() ? QStringLiteral("ddd d MMM") : QStringLiteral("ddd d MMM yyyy");
+    return QLocale().toString(day, format).toUpper();
 }
 
 /** @brief "12:04" for a row's time in the list; empty for a row with no start, as day_label() names no day. */
@@ -274,17 +276,13 @@ CallHistoryModel::CallHistoryModel(QObject* parent) : QAbstractListModel(parent)
     connect(this, &QAbstractItemModel::rowsMoved, this, &CallHistoryModel::rowPositionsChanged);
     connect(this, &QAbstractItemModel::modelReset, this, &CallHistoryModel::rowPositionsChanged);
     m_spill = std::make_unique<CallHistorySpill>(json_store_path(QLatin1String(kSpillFileName)));
-    /* Day sections are derived from the current date at read time; when midnight
-     * passes, every "TODAY" on screen is wrong until the rows are re-read. */
-    m_dayTimer.setSingleShot(true);
-    m_dayTimer.setTimerType(Qt::VeryCoarseTimer);
-    connect(&m_dayTimer, &QTimer::timeout, this, [this]() {
+    /* Day sections are derived from the watch's day at read time; when it changes, every
+     * "TODAY" on screen is wrong until the rows are re-read. */
+    connect(LocalDayWatch::shared(), &LocalDayWatch::dayChanged, this, [this]() {
         if (!m_rows.isEmpty()) {
             Q_EMIT dataChanged(index(0), index(static_cast<int>(m_rows.size()) - 1), {DayLabelRole});
         }
-        scheduleDayRollover();
     });
-    scheduleDayRollover();
     load();
 }
 
@@ -381,15 +379,6 @@ CallHistoryModel::loadSessionOrdinals() {
         }
     }
     bound_session_ordinals(m_sessionOrdinals.rings);
-}
-
-void
-CallHistoryModel::scheduleDayRollover() {
-    const QDateTime now = realtimeCurrentDateTime();
-    const QDateTime nextMidnight = realtimeCurrentDate().addDays(1).startOfDay();
-    /* A second past the boundary, so a coarse timer that fires marginally early
-     * cannot re-derive the very labels it was meant to retire. */
-    m_dayTimer.start(static_cast<int>(qMin<qint64>(now.msecsTo(nextMidnight) + 1000, 86400000)));
 }
 
 CallHistoryModel::~CallHistoryModel() {
@@ -538,7 +527,7 @@ row_role_value(const CallHistoryModel::Row& row, int role) {
         case CallHistoryModel::EncRole: return row.enc;
         case CallHistoryModel::WhenRole: return row.when;
         case CallHistoryModel::DurationSecsRole: return row.durationSecs;
-        case CallHistoryModel::DayLabelRole: return day_label(row.when);
+        case CallHistoryModel::DayLabelRole: return day_label(row.when, LocalDayWatch::shared()->today());
         case CallHistoryModel::TimeTextRole: return time_text(row.when);
         case CallHistoryModel::KindRole: return row.kind;
         case CallHistoryModel::DetailRole: return row_detail_text(row);

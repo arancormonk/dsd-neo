@@ -87,6 +87,27 @@ Item {
                 sheet.visible = false
         }
 
+        // Issue #902 B3: the day label is the section key, and one date in two
+        // years carries the year outside the current one (CallHistoryModel's
+        // day_label()): adjacent, they are two sections, not one.
+        function test_same_date_in_two_years_is_two_sections() {
+            callHistory.clearAll()
+            callHistory.push("SAT 21 NOV 2015")
+            callHistory.push("SAT 21 NOV 2020")
+            tc.list.positionViewAtBeginning()
+            tc.waitForRendering(tc.list)
+            var headers = function () {
+                var found = []
+                for (var child of tc.list.contentItem.children) {
+                    if (child.visible && child.section !== undefined && String(child.text).indexOf("21 NOV") >= 0)
+                        found.push(String(child.text))
+                }
+                return found.sort()
+            }
+            tryVerify(function () { return headers().length === 2 }, 5000, "two section headers: " + headers().join(" | "))
+            compare(headers(), ["SAT 21 NOV 2015", "SAT 21 NOV 2020"])
+        }
+
         function test_source_alias_is_visible() {
             var newest = callHistory.pushWithSourceName("Radio 1201")
             tryVerify(function () {

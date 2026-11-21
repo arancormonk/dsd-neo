@@ -46,9 +46,11 @@
  * one service (B4) and two conventional systems (B5) stay apart; a notice decoded again collapses only on the same
  * fix. */
 
+#include <QAbstractItemModel>
 #include <QByteArray>
 #include <QChar>
 #include <QCoreApplication>
+#include <QDate>
 #include <QDateTime>
 #include <QDir>
 #include <QFile>
@@ -62,7 +64,9 @@
 #include <QJsonValue>
 #include <QLatin1String>
 #include <QList>
+#include <QLocale>
 #include <QMap>
+#include <QMetaObject>
 #include <QMetaType>
 #include <QModelIndex>
 #include <QObject>
@@ -73,6 +77,8 @@
 #include <QString>
 #include <QStringList>
 #include <QTemporaryDir>
+#include <QTime>
+#include <QTimer>
 #include <QVariant>
 #include <QVariantList>
 #include <QVariantMap>
@@ -100,6 +106,7 @@
 #include <utility>
 #include "../test_support/qt_test_paths.h"
 #include "json_store.h"
+#include "local_day_watch.h"
 
 #include "call_history_filter.h"
 #include "call_history_merge.h"
@@ -112,6 +119,7 @@
 
 using dsd_qt::CallHistoryFilterModel;
 using dsd_qt::CallHistoryModel;
+using dsd_qt::LocalDayWatch;
 
 class QThread;
 
@@ -5177,6 +5185,77 @@ test_row_without_start_time_reads_unknown(void) {
                != QStringLiteral("TIME UNKNOWN"));
 }
 
+/* Issue #902: the day sections count from the shared local-day watch. */
+qint64 g_dayNowMs = 0;
+
+qint64
+day_clock() {
+    return g_dayNowMs;
+}
+
+time_t
+local_secs(int y, int m, int d, int hh) {
+    return static_cast<time_t>(QDateTime(QDate(y, m, d), QTime(hh, 0)).toSecsSinceEpoch());
+}
+
+QString
+day_label_of(const CallHistoryModel& model, qulonglong tg) {
+    return model.data(model.index(row_with_tg(model, tg)), CallHistoryModel::DayLabelRole).toString();
+}
+
+/* B2, B3: the labels follow the watch, so a phone that slept through midnight relabels as the watch's own timer next
+ * runs (no other check), every row at once with DayLabelRole, YESTERDAY reaching back across 1 January; a date outside
+ * the current year carries its year, so one date in two years is two sections (the label is the section key). */
+void
+test_day_labels_follow_the_local_day(void) {
+    resetStorage();
+    const QLocale previousLocale;
+    QLocale::setDefault(QLocale(QLocale::English, QLocale::UnitedStates));
+    g_dayNowMs = QDateTime(QDate(2025, 12, 31), QTime(20, 0)).toMSecsSinceEpoch();
+    LocalDayWatch::setClockForTest(&day_clock);
+    {
+        RingFixture ring;
+        CallHistoryModel model;
+        ring.commit(0, 90201U, 801U, local_secs(2015, 11, 21, 10), local_secs(2015, 11, 21, 10) + 5);
+        ring.commit(0, 90202U, 802U, local_secs(2025, 11, 21, 10), local_secs(2025, 11, 21, 10) + 5);
+        ring.commit(0, 90203U, 803U, local_secs(2025, 12, 30, 10), local_secs(2025, 12, 30, 10) + 5);
+        ring.commit(0, 90204U, 804U, local_secs(2025, 12, 31, 10), local_secs(2025, 12, 31, 10) + 5);
+        model.refresh(ring.state);
+        expect("day labels: four calls land", model.count() == 4);
+        expect("day labels: today", day_label_of(model, 90204U) == QStringLiteral("TODAY"));
+        expect("day labels: yesterday", day_label_of(model, 90203U) == QStringLiteral("YESTERDAY"));
+        expect("day labels: this year's date has no year", day_label_of(model, 90202U) == QStringLiteral("FRI 21 NOV"));
+        expect("day labels: an earlier year's date carries it",
+               day_label_of(model, 90201U) == QStringLiteral("SAT 21 NOV 2015"));
+
+        int dayChanges = 0;
+        bool allRows = false;
+        const QMetaObject::Connection watchRows =
+            QObject::connect(&model, &QAbstractItemModel::dataChanged,
+                             [&](const QModelIndex& from, const QModelIndex& to, const QList<int>& roles) {
+                                 if (roles.contains(CallHistoryModel::DayLabelRole)) {
+                                     dayChanges++;
+                                     allRows = from.row() == 0 && to.row() == model.count() - 1;
+                                 }
+                             });
+        g_dayNowMs = QDateTime(QDate(2026, 1, 1), QTime(0, 0, 2)).toMSecsSinceEpoch();
+        expect("day labels: nothing relabels before a check", dayChanges == 0);
+        QTimer* timer = LocalDayWatch::shared()->findChild<QTimer*>(QStringLiteral("localDayTimer"));
+        expect("day labels: the watch's timer runs", timer != nullptr && timer->isActive());
+        if (timer != nullptr) {
+            QMetaObject::invokeMethod(timer, "timeout");
+        }
+        QObject::disconnect(watchRows);
+        expect("day labels: the timer's check relabels every row once", dayChanges == 1 && allRows);
+        expect("day labels: yesterday across 1 January", day_label_of(model, 90204U) == QStringLiteral("YESTERDAY"));
+        expect("day labels: last year's dates carry the year",
+               day_label_of(model, 90203U) == QStringLiteral("TUE 30 DEC 2025")
+                   && day_label_of(model, 90202U) == QStringLiteral("FRI 21 NOV 2025"));
+    }
+    LocalDayWatch::resetClockForTest();
+    QLocale::setDefault(previousLocale);
+}
+
 /* ---- Issue #800: texts, positions and raw identity (B2-B5, 2.7). Synthetic coordinates and identities only. ---- */
 
 /** Give a ring row GPS text and the admitted position it describes, as the core's position writers do. */
@@ -7816,6 +7895,7 @@ main(int argc, char** argv) {
     test_save_now_writes_at_once();
     test_save_now_mid_write_queues_the_next_save();
     test_leaving_the_screen_saves();
+    test_day_labels_follow_the_local_day();
     test_destructor_marks_its_teardown_stage();
     test_analog_replay_heard_again();
     test_analog_replay_same_second();
