@@ -8,7 +8,9 @@
    frequency and group delay, block-cut invariance, I/Q separation, clears, the output bound and the refusals. Then the
    rational entry point the live rate step uses (issue #806): every live ratio at its exact fractional input rate, the
    match with the scaled whole-Hz design bit for bit, the delay and tail it reports, swaps, a refused candidate next to
-   a running resampler, block cuts and its refusals. */
+   a running resampler, block cuts and its refusals. Last, the start (issue #748): a configure or clear fills the history
+   with the first input, so a carrier start is flat and a phasor's phase step never flips, while a silent start, a
+   silent clear and the outputs' count and positions stay the zero-history filter's. */
 
 #include <dsd-neo/dsp/iq_resampler.h>
 #include <dsd-neo/dsp/rate_converter.h>
@@ -876,8 +878,8 @@ same_resampler(const dsd_iq_resampler* a, const dsd_iq_resampler* b) {
            && a->M == b->M && a->taps_per_phase == b->taps_per_phase && a->in_rate_num == b->in_rate_num
            && a->in_rate_shift == b->in_rate_shift && a->keyed == b->keyed && a->protect_hz == b->protect_hz
            && a->stop_hz == b->stop_hz && same_double(a->passband_hz, b->passband_hz)
-           && same_double(a->stopband_hz, b->stopband_hz) && a->max_in == b->max_in && a->phase == b->phase
-           && a->bank == b->bank && a->work == b->work;
+           && same_double(a->stopband_hz, b->stopband_hz) && a->max_in == b->max_in && a->primed == b->primed
+           && a->phase == b->phase && a->bank == b->bank && a->work == b->work;
 }
 
 /* Whether @p r is released: nothing held, no design, no key. */
@@ -1513,6 +1515,297 @@ test_ratio_refusals(void) {
           "unconfigured rate, delay and tail");
 }
 
+/* What the polyphase sum makes of @p n inputs behind a history of taps_per_phase - 1 copies of (@p hi, @p hq), in
+   double, from phase 0: the resampler's own outputs, at the same positions, for a history that held that value.
+   Returns the outputs written to @p out (room for max_out(@p n)), or (size_t)-1 when the work buffer fails. */
+static size_t
+reference_run(const dsd_iq_resampler* r, const float* in, size_t n, double hi, double hq, double* out) {
+    const size_t T = (size_t)r->taps_per_phase;
+    const size_t hist = T - 1U;
+    double* ext = (double*)malloc((hist + n) * 2U * sizeof(double));
+    if (!ext) {
+        return (size_t)-1;
+    }
+    for (size_t k = 0; k < hist; k++) {
+        ext[2U * k] = hi;
+        ext[2U * k + 1U] = hq;
+    }
+    for (size_t k = 0; k < 2U * n; k++) {
+        ext[2U * hist + k] = (double)in[k];
+    }
+    size_t produced = 0;
+    int ph = 0;
+    for (size_t i = 0; i < n; i++) {
+        for (; ph < r->L; ph += r->M) {
+            const float* c = r->bank + (size_t)ph * T;
+            double yi = 0.0;
+            double yq = 0.0;
+            for (size_t t = 0; t < T; t++) {
+                yi += (double)c[t] * ext[2U * (i + t)];
+                yq += (double)c[t] * ext[2U * (i + t) + 1U];
+            }
+            out[2U * produced] = yi;
+            out[2U * produced + 1U] = yq;
+            produced++;
+        }
+        ph -= r->L;
+    }
+    free(ext);
+    return produced;
+}
+
+/* The largest distance between @p got (float) and @p want (double), over @p n complex samples. */
+static double
+max_error(const float* got, const double* want, size_t n) {
+    double worst = 0.0;
+    for (size_t i = 0; i < 2U * n; i++) {
+        worst = fmax(worst, fabs((double)got[i] - want[i]));
+    }
+    return worst;
+}
+
+/* @p n complex samples of the constant (@p ci, @p cq). */
+static float*
+make_constant(size_t n, float ci, float cq) {
+    float* buf = (float*)malloc(n * 2U * sizeof(float));
+    for (size_t i = 0; buf && i < n; i++) {
+        buf[2U * i] = ci;
+        buf[2U * i + 1U] = cq;
+    }
+    return buf;
+}
+
+/* Every output of a constant carrier (@p ci, @p cq) sits on the carrier, within the filter's DC gain per phase. */
+static double
+worst_carrier_error(const float* y, size_t n, float ci, float cq) {
+    const double mag = hypot((double)ci, (double)cq);
+    double worst = 0.0;
+    for (size_t i = 0; i < n; i++) {
+        worst = fmax(worst, hypot((double)y[2U * i] - (double)ci, (double)y[2U * i + 1U] - (double)cq) / mag);
+    }
+    return worst;
+}
+
+/* A carrier's start: the history holds its first sample, so a stream that starts at full level is no step from
+   silence into the filter. */
+#define PRIME_CARRIER_TOL   2e-3
+/* float sums of up to 256 taps against the double reference, at levels near 1. */
+#define PRIME_REFERENCE_TOL 2e-5
+/* The phase step's overshoot past 0 .. the tone's step, as a fraction of the tone's step: a rotating carrier eases in
+   from the constant history, and the frequency step it makes there rings as the filter's edge does (about 0.2 of it). */
+#define PRIME_PHASE_TOL     0.3
+
+/* @p r, freshly designed (or cleared), on a constant carrier: every output on the carrier (no step response), the
+   outputs those of a history that held the first input, as many as a zero history makes, and the same bits however
+   the input is cut. @p label names the design. */
+static void
+check_carrier_start(dsd_iq_resampler* r, const char* label) {
+    const float ci = 0.6f * (float)cos(0.7);
+    const float cq = 0.6f * (float)sin(0.7);
+    const size_t n = 6U * (size_t)r->taps_per_phase + 500U;
+    float* in = make_constant(n, ci, cq);
+    double* want = (double*)malloc((dsd_iq_resampler_max_out(r, n) + 1U) * 2U * sizeof(double));
+    float* y = NULL;
+    const int got = in ? run_once(r, in, n, &y) : -1;
+    const size_t want_n = want && in ? reference_run(r, in, n, (double)ci, (double)cq, want) : (size_t)-1;
+    CHECK(got > 0 && (size_t)got == want_n, "%s: %d outputs, the reference %zu", label, got, want_n);
+    if (got > 0 && (size_t)got == want_n) {
+        const double ref_err = max_error(y, want, (size_t)got);
+        const double carrier_err = worst_carrier_error(y, (size_t)got, ci, cq);
+        CHECK(ref_err <= PRIME_REFERENCE_TOL, "%s: %.3g from a history of the first input", label, ref_err);
+        CHECK(carrier_err <= PRIME_CARRIER_TOL, "%s: a carrier start leaves the carrier by %.4f of its level", label,
+              carrier_err);
+        DSD_FPRINTF(stderr, "%s: carrier start within %.2e of the carrier, %.2e of the reference\n", label, carrier_err,
+                    ref_err);
+        /* Cut every way, the stream comes out the same; a zero-length call first does not prime the history. */
+        static const size_t kMaxChunk[] = {1, 7, 333};
+        float* cut = (float*)malloc(((size_t)got + 8U) * 2U * sizeof(float));
+        for (size_t c = 0; cut && c < sizeof(kMaxChunk) / sizeof(kMaxChunk[0]); c++) {
+            dsd_iq_resampler_clear(r);
+            float none[2];
+            CHECK(dsd_iq_resampler_process(r, in, 0U, none, 0U) == 0, "%s: an empty call", label);
+            const size_t cut_n = run_cuts(r, in, n, kMaxChunk[c], cut, (size_t)got + 8U);
+            CHECK(cut_n == (size_t)got && same_bits(cut, y, cut_n * 2U),
+                  "%s: cuts up to %zu: %zu outputs or other bits", label, kMaxChunk[c], cut_n);
+        }
+        free(cut);
+    }
+    free(in);
+    free(want);
+    free(y);
+}
+
+/* A carrier from the start, and again after a clear that followed other input: the history the clear leaves is the
+   carrier's first sample, so the restart is no step either, and a stream of zeros after a clear stays exactly zero. */
+static void
+check_carrier_clear(dsd_iq_resampler* r, const char* label) {
+    check_carrier_start(r, label);
+    float* junk_in = make_noise(1237);
+    float* junk = NULL;
+    if (junk_in) {
+        (void)run_once(r, junk_in, 1237, &junk);
+    }
+    free(junk);
+    free(junk_in);
+    dsd_iq_resampler_clear(r);
+    char again[96];
+    DSD_SNPRINTF(again, sizeof(again), "%s, after a clear", label);
+    check_carrier_start(r, again);
+    dsd_iq_resampler_clear(r);
+    const size_t n = 3U * (size_t)r->taps_per_phase;
+    float* zeros = make_constant(n, 0.0f, 0.0f);
+    float* y = NULL;
+    const int got = zeros ? run_once(r, zeros, n, &y) : -1;
+    int all_zero = got > 0;
+    for (int i = 0; all_zero && i < 2 * got; i++) {
+        all_zero = y[i] == 0.0f;
+    }
+    CHECK(all_zero, "%s: zeros after a carrier and a clear are not all zero (%d outputs)", label, got);
+    free(zeros);
+    free(y);
+}
+
+/* Starting on a carrier, freshly designed and after a clear, for every replay design and the live step's. */
+static void
+test_prime_carrier(void) {
+    char label[96];
+    for (size_t c = 0; c < N_CASES; c++) {
+        const resample_case* k = &kCases[c];
+        dsd_iq_resampler r;
+        dsd_iq_resampler_init(&r);
+        if (dsd_iq_resampler_configure(&r, k->in_hz, k->out_hz, k->protect_hz, 512) != DSD_IQ_RESAMPLER_OK) {
+            CHECK(0, "%d->%d: configure", k->in_hz, k->out_hz);
+            continue;
+        }
+        DSD_SNPRINTF(label, sizeof(label), "%d->%d", k->in_hz, k->out_hz);
+        check_carrier_clear(&r, label);
+        dsd_iq_resampler_free(&r);
+    }
+    static const size_t kIdx[] = {6, 7, 9, 16, 18}; /* 48k, 72k, Mini 4k, Mini 72k, Soapy 72k */
+    for (size_t c = 0; c < sizeof(kIdx) / sizeof(kIdx[0]); c++) {
+        const live_case* k = &kLive[kIdx[c]];
+        dsd_iq_resampler r;
+        dsd_iq_resampler_init(&r);
+        if (live_configure(&r, k, 7) != DSD_IQ_RESAMPLER_OK) {
+            CHECK(0, "%s: configure", k->name);
+            continue;
+        }
+        check_carrier_clear(&r, k->name);
+        dsd_iq_resampler_free(&r);
+    }
+}
+
+/* A stream that starts in silence and keys up later: the history holds zeros, as it always did, so every output is the
+   zero-history filter's, and those that saw only silence are exactly zero. */
+static void
+test_prime_leading_silence(void) {
+    for (size_t c = 0; c < N_CASES; c++) {
+        const resample_case* k = &kCases[c];
+        dsd_iq_resampler r;
+        dsd_iq_resampler_init(&r);
+        if (dsd_iq_resampler_configure(&r, k->in_hz, k->out_hz, k->protect_hz, 512) != DSD_IQ_RESAMPLER_OK) {
+            CHECK(0, "%d->%d: configure", k->in_hz, k->out_hz);
+            continue;
+        }
+        const size_t quiet = 3U * (size_t)r.taps_per_phase;
+        const size_t n = quiet + 2000U;
+        float* in = make_tone(n, (double)k->in_hz, 0.05 * (double)k->in_hz, 0.5);
+        for (size_t i = 0; in && i < 2U * quiet; i++) {
+            in[i] = 0.0f;
+        }
+        double* want = (double*)malloc((dsd_iq_resampler_max_out(&r, n) + 1U) * 2U * sizeof(double));
+        float* y = NULL;
+        const int got = in ? run_once(&r, in, n, &y) : -1;
+        const size_t want_n = want && in ? reference_run(&r, in, n, 0.0, 0.0, want) : (size_t)-1;
+        CHECK(got > 0 && (size_t)got == want_n && max_error(y, want, want_n) <= PRIME_REFERENCE_TOL,
+              "%d->%d: a silent start is not the zero-history filter's (%d outputs, the reference %zu)", k->in_hz,
+              k->out_hz, got, want_n);
+        const size_t silent_out = dsd_iq_resampler_max_out(&r, quiet) - 1U; /* outputs from silence alone */
+        int zero = got > 0 && (size_t)got > silent_out;
+        for (size_t i = 0; zero && i < 2U * silent_out; i++) {
+            zero = y[i] == 0.0f;
+        }
+        CHECK(zero, "%d->%d: outputs of silence alone are not exactly zero", k->in_hz, k->out_hz);
+        free(in);
+        free(want);
+        free(y);
+        dsd_iq_resampler_free(&r);
+    }
+}
+
+/* The FM discriminator's view of a rotating carrier from the start: each output's phase step stays near the tone's
+   (it eases in from the constant history), and never flips by half a turn as a step from silence's pre-ringing does. */
+static void
+test_prime_phasor(void) {
+    for (size_t c = 0; c < N_CASES; c++) {
+        const resample_case* k = &kCases[c];
+        dsd_iq_resampler r;
+        dsd_iq_resampler_init(&r);
+        if (dsd_iq_resampler_configure(&r, k->in_hz, k->out_hz, k->protect_hz, 512) != DSD_IQ_RESAMPLER_OK) {
+            CHECK(0, "%d->%d: configure", k->in_hz, k->out_hz);
+            continue;
+        }
+        const double f_hz = 0.1 * r.passband_hz;
+        const double w_out = 2.0 * kPi * f_hz / actual_out_hz(&r);
+        const size_t n = 6U * (size_t)r.taps_per_phase + 500U;
+        float* in = make_tone(n, (double)k->in_hz, f_hz, 0.5);
+        float* y = NULL;
+        const int got = in ? run_once(&r, in, n, &y) : -1;
+        double worst = 0.0;
+        for (int i = 1; i < got; i++) {
+            const double re = (double)y[2 * i] * (double)y[2 * i - 2] + (double)y[2 * i + 1] * (double)y[2 * i - 1];
+            const double im = (double)y[2 * i + 1] * (double)y[2 * i - 2] - (double)y[2 * i] * (double)y[2 * i - 1];
+            worst = fmax(worst, fabs(atan2(im, re) - 0.5 * w_out));
+        }
+        /* Between none and the tone's step (0 .. w_out), with room for the filter's ringing. */
+        CHECK(got > 1 && worst <= (0.5 + PRIME_PHASE_TOL) * w_out,
+              "%d->%d: a phasor start's phase step strays %.4f rad from 0 .. %.4f rad", k->in_hz, k->out_hz,
+              worst - 0.5 * w_out, w_out);
+        DSD_FPRINTF(stderr, "%d->%d: phasor start, phase step within %.4f rad of 0 .. %.4f rad\n", k->in_hz, k->out_hz,
+                    fmax(0.0, worst - 0.5 * w_out), w_out);
+        free(in);
+        free(y);
+        dsd_iq_resampler_free(&r);
+    }
+}
+
+/* A silent clear keeps the zero-state filter for the next input (a carrier start then rings as a step from silence,
+   which is what an impulse-response measurement needs); the next plain clear fills from the input again. */
+static void
+test_clear_silent(void) {
+    dsd_iq_resampler_clear_silent(NULL);
+    dsd_iq_resampler idle;
+    dsd_iq_resampler_init(&idle);
+    dsd_iq_resampler_clear_silent(&idle);
+    CHECK(!idle.configured, "a silent clear of an unconfigured resampler configured it");
+    const resample_case* k = &kCases[2]; /* 48 kHz to 72 kHz */
+    dsd_iq_resampler r;
+    dsd_iq_resampler_init(&r);
+    const size_t n = 6U * 44U + 500U;
+    float* in = make_constant(n, 0.6f, -0.2f);
+    double* want = (double*)malloc((n * 2U + 8U) * 2U * sizeof(double));
+    if (!in || !want || dsd_iq_resampler_configure(&r, k->in_hz, k->out_hz, k->protect_hz, 64) != DSD_IQ_RESAMPLER_OK) {
+        CHECK(0, "setup");
+    } else {
+        float* junk = NULL;
+        (void)run_once(&r, in, 100, &junk);
+        free(junk);
+        dsd_iq_resampler_clear_silent(&r);
+        CHECK(r.phase == 0, "phase %d after a silent clear", r.phase);
+        float* y = NULL;
+        const int got = run_once(&r, in, n, &y);
+        const size_t want_n = reference_run(&r, in, n, 0.0, 0.0, want);
+        CHECK(got > 0 && (size_t)got == want_n && max_error(y, want, want_n) <= PRIME_REFERENCE_TOL,
+              "a silent clear is not the zero-state filter (%d outputs, the reference %zu)", got, want_n);
+        free(y);
+        dsd_iq_resampler_clear(&r);
+        check_carrier_start(&r, "48000->72000, a plain clear after a silent one");
+    }
+    free(in);
+    free(want);
+    dsd_iq_resampler_free(&r);
+}
+
 int
 main(void) {
     test_design();
@@ -1535,6 +1828,10 @@ main(void) {
     test_ratio_candidate_isolation();
     test_ratio_chunking();
     test_ratio_refusals();
+    test_prime_carrier();
+    test_prime_leading_silence();
+    test_prime_phasor();
+    test_clear_silent();
     if (g_failures) {
         DSD_FPRINTF(stderr, "%d failure(s)\n", g_failures);
         return 1;

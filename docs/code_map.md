@@ -9073,7 +9073,12 @@ the stream-notice hooks' pattern: one that fails to initialize leaves the hook u
   into the protected band at the output rate (or at the input's own first image, upsampling), at least 60 dB down with
   at most 0.1 dB of ripple; taps per phase from the Kaiser estimate rounded up to a multiple of 4, refused past 256 per
   phase or 4096 x 256 in the bank. I and Q share one phase and one set of taps; the output depends only on the samples
-  fed since the last `dsd_iq_resampler_clear()`, never on how calls cut them. `dsd_iq_resampler_group_delay_seconds()`
+  fed since the last `dsd_iq_resampler_clear()`, never on how calls cut them. After a configure or a clear the first
+  input fills the history (the stream reads as having held that sample), so a stream that starts or resumes on a carrier
+  is no step from silence into the causal filter, whose ringing the FM discriminator hears as a click (issue #748); one
+  that starts in silence sees the zero history it always did, and the delay and output count do not change.
+  `dsd_iq_resampler_clear_silent()` keeps the zero state for measuring the step as a linear system (the squelch step
+  model's impulse responses and the stepped noise calibration). `dsd_iq_resampler_group_delay_seconds()`
   reports the delay, which replay does not compensate (0.41 ms for 48,254 Hz to 72 kHz, about 2.5 ms for 8 to 72 kHz).
   Only the replay reader thread touches it (`rtl_device.cpp`: configured before the thread starts, cleared at a RETUNE,
   RESET, MUTE and loop rewind, freed after the join); live paths never run it. Test: `DSP_IQ_RESAMPLER`.

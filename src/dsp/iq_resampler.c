@@ -190,6 +190,7 @@ iq_resampler_build(dsd_iq_resampler* r, int L, int M, double in, double pass, do
     r->passband_hz = pass;
     r->stopband_hz = stop;
     r->max_in = max_in_complex;
+    r->primed = 0;
     r->phase = 0;
     r->bank = bank;
     r->work = work;
@@ -365,7 +366,31 @@ dsd_iq_resampler_clear(dsd_iq_resampler* r) {
         return;
     }
     DSD_MEMSET(r->work, 0, ((size_t)r->taps_per_phase - 1U) * 2U * sizeof(float));
+    r->primed = 0;
     r->phase = 0;
+}
+
+void
+dsd_iq_resampler_clear_silent(dsd_iq_resampler* r) {
+    if (!r || !r->configured) {
+        return;
+    }
+    dsd_iq_resampler_clear(r);
+    r->primed = 1;
+}
+
+/* The first pass after a configure or a clear: the history takes the pass's first input, so the filter sees the stream
+   as having held that value before it, not as a step from silence. A step into the causal filter rings ahead of its
+   delay, and the sign changes of that ringing read as half-turn phase jumps (a click) at the FM discriminator. A
+   stream that starts in silence keeps the zero history it had. */
+static void
+iq_resampler_prime(dsd_iq_resampler* r, const float* in) {
+    const size_t hist = (size_t)r->taps_per_phase - 1U;
+    for (size_t k = 0; k < hist; k++) {
+        r->work[2U * k] = in[0];
+        r->work[2U * k + 1U] = in[1];
+    }
+    r->primed = 1;
 }
 
 /* Filters @p n inputs (at most max_in) into @p out; returns the outputs written. The caller has checked the room. */
@@ -376,6 +401,9 @@ iq_resampler_pass(dsd_iq_resampler* r, const float* in, size_t n, float* out) {
     const size_t T = (size_t)r->taps_per_phase;
     const size_t hist = T - 1U;
     float* work = r->work;
+    if (!r->primed) {
+        iq_resampler_prime(r, in);
+    }
     DSD_MEMCPY(work + 2U * hist, in, n * 2U * sizeof(float));
     size_t produced = 0;
     int ph = r->phase;

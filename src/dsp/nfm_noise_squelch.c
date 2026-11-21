@@ -514,7 +514,8 @@ nsq_calibrate_stepped(dsd_noise_squelch_plan* plan, const float* taps, int taps_
     src.stepped = &stepped;
     src.taps = taps ? taps : k_unit_tap;
     src.taps_len = taps ? taps_len : 1;
-    dsd_iq_resampler_clear(step);
+    /* From silence, as the step model's responses are, so a plan does not move with the noise's first sample. */
+    dsd_iq_resampler_clear_silent(step);
     /* The factor and the step fill within their own taps, counted as outputs (the step never makes more than it takes). */
     nsq_calibrate_from(plan, &src, src.taps_len + factor_len + step->taps_per_phase);
     dsd_iq_resampler_clear(step);
