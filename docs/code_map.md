@@ -13987,7 +13987,7 @@ Private per-protocol modules worth knowing about:
   no carrier reset between them counted as running, and under `-fa` two weak noise frames seconds apart, other
   protocols' syncs between them, confirmed a transmission, published a call and decoded its voice (one in 8 x 30 min
   of noise). Both halves in one frame is one in 16384 and confirms outright. Evidence confirms before the frame
-  publishes its identity, service and colour code (the console's per-frame `TG=`/`Src=` line, `dpmr_print_ids()`,
+  publishes its identity, service and colour code (the console's per-frame `Called=`/`Src=` line, `dpmr_print_ids()`,
   shows the slot's call only while the transmission is confirmed and that call is an open dPMR one, else the CRC ERR
   fields); a signal search hears the frame's confirmation from `dpmr_confirm_end_frame()`, after the publication
   (`DPMR_CONFIRM`,
@@ -14003,7 +14003,19 @@ Private per-protocol modules worth knowing about:
   `dpmr_confirm_reset()`, initState() and the FS1/FS3/FS4 boundaries (`dpmr_scrambling_reset()`) forget it. A boundary
   leaves confirmation standing, so a half no verified half speaks for since it (`DPMR_HALF_UNVERIFIED`) plays nothing
   and leaves the call's classification alone, rather than playing a scrambled call's first undecodable halves as
-  clear.
+  clear. Every other CCH field is gated the same way (issue #903). An ID is published only when both halves of its
+  own pair passed CRC-7 (`dpmr_checked_id_pair()`: FN 0/1 the called ID, 2/3 the own ID, TS 102 658 section 11.1.0;
+  a mixed pair such as 0/3 is none), so a miscorrected Hamming block never renames a confirmed call or starts a caller
+  epoch. Emergency and service options come from the frame's first verified half, or not at all
+  (`dpmr_note_service_metadata()`), so a failed half neither sets nor clears emergency. The voice mode follows the
+  scrambling rule (`dsd_state::dpmr_voice_mode`, `dPMRVoiceFS2Frame.VoiceMode[]`, forgotten at the same boundaries):
+  a failed half reading a data mode does not cut an established voice call, and one reading a voice mode does not
+  play a data transmission. The scrambler reloads (FN 0) only on a checked frame number, the half's own or the one
+  its verified pair partner implies (`dpmr_half_checked_frame_number()`); `FrameNumbering[]` and
+  `CommunicationMode[]` stay the raw fields. The called ID can be a radio or a group, so the console labels it
+  `Called=`, not `TG=`. `dpmr_convert_air_interface_id()` maps B2 dial strings only up to `DPMR_AI_ID_DIAL_STRING_MAX`
+  (0xDF6767, "999****"); a higher ID renders as its 8-digit decimal number (hex in a buffer under
+  `DPMR_AIR_INTERFACE_ID_TEXT_SIZE`), never a dial string or ';'.
 - Signal search site notes (`dsd_signal_search_note_site()` in `<dsd-neo/runtime/signal_search_hooks.h>`): each writer
   passes the identity of one message that passed its check, after handling it, never decoder state; a SYSID of 0 names
   no system. P25 (`src/protocol/p25/p25_search_site.h`): a TSBK network status (`tsbk_handle_network_status()`,

@@ -1031,6 +1031,10 @@ typedef struct {
        one; DPMR_HALF_UNVERIFIED when no half has verified since the transmission's boundary: the bridge plays none of
        it. Version itself is the raw field. */
     unsigned int Scrambled[NB_OF_DPMR_VOICE_FRAME_TO_DECODE];
+    /* Per half (dpmr_resolve_half_scrambling(), issue #903): 1 when the half carries voice (Communication Mode 0, 1 or
+       5), by the same rule as Scrambled: its own mode when its CRC-7 passed, else the transmission's last verified
+       half's or this frame's other one; 0 for a data mode or no verified half. CommunicationMode is the raw field. */
+    unsigned int VoiceMode[NB_OF_DPMR_VOICE_FRAME_TO_DECODE];
     unsigned int CommsFormat[NB_OF_DPMR_VOICE_FRAME_TO_DECODE];
     unsigned int EmergencyPriority[NB_OF_DPMR_VOICE_FRAME_TO_DECODE];
     unsigned int Reserved[NB_OF_DPMR_VOICE_FRAME_TO_DECODE];
@@ -2324,6 +2328,9 @@ struct dsd_state {
     /* The scrambling the current dPMR transmission's last CRC-verified CCH half signalled (issue #655): 0 none yet,
        1 clear, 2 scrambled (Version 3). A half whose CRC-7 failed takes it; a transmission boundary forgets it. */
     uint8_t dpmr_scrambled;
+    /* Whether the current dPMR transmission's last CRC-verified CCH half signalled a voice mode (issue #903): 0 none
+       yet, 1 no (data), 2 yes. A half whose CRC-7 failed takes it; the same boundaries as dpmr_scrambled forget it. */
+    uint8_t dpmr_voice_mode;
 
     /* How recently a dPMR CCH CRC-7 passed, for the SPS hunt's profile accounting
      * (src/engine/dispatch/dispatch_dpmr.c). The flag, not the stamp, opens the window,

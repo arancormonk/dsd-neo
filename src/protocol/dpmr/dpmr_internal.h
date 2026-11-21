@@ -9,6 +9,7 @@
 #include "dsd-neo/core/state.h"
 
 #include <stdbool.h>
+#include <stddef.h>
 #include <stdint.h>
 
 typedef struct {
@@ -22,7 +23,11 @@ void dpmr_play_voice_frames(dsd_opts* opts, dsd_state* state,
                             char ambe_fr[NB_OF_DPMR_VOICE_FRAME_TO_DECODE * 4][4][24]);
 void dpmr_deinterleave_6x12(const uint8_t* input, uint8_t* output);
 uint8_t dpmr_crc7(const uint8_t* input, uint32_t bit_length);
-void dpmr_convert_air_interface_id(uint32_t ai_id, char id[8]);
+/* The highest AI ID B2 maps to a dial string: "999****" (TS 102 658 A.1.2.1.1.6, Table A.1). */
+#define DPMR_AI_ID_DIAL_STRING_MAX      0xDF6767U
+/* Room for any rendering dpmr_convert_air_interface_id() makes: a 7-character dial string, or an 8-digit number. */
+#define DPMR_AIR_INTERFACE_ID_TEXT_SIZE 9U
+void dpmr_convert_air_interface_id(uint32_t ai_id, char* id, size_t id_size);
 uint8_t dpmr_extract_cch_crc(const uint8_t cch_bits[48]);
 void dpmr_update_superframe_part(dsd_opts* opts, dsd_state* state, const dpmr_superframe_part* part);
 void dpmr_print_ids(const dsd_state* state);

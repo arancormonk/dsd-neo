@@ -285,8 +285,9 @@ test_dispatch_voice_sync_alone_opens_no_call(void) {
     g_voice_crc_halves = 2;
 }
 
-/* Issue #655: a CRC-failed half is played by the scrambling the transmission's last verified half signalled, so every
-   transmission boundary the dispatcher sees (FS1 header, FS3 end, FS4) forgets it before the next call. */
+/* Issue #655: a CRC-failed half is played by the scrambling (and, issue #903, the voice mode) the transmission's last
+   verified half signalled, so every transmission boundary the dispatcher sees (FS1 header, FS3 end, FS4) forgets them
+   before the next call. */
 static void
 test_dispatch_boundaries_forget_the_scrambling(void) {
     static dsd_opts opts;
@@ -297,17 +298,21 @@ test_dispatch_boundaries_forget_the_scrambling(void) {
         DSD_MEMSET(&opts, 0, sizeof(opts));
         DSD_MEMSET(&state, 0, sizeof(state));
         state.dpmr_scrambled = 2U;
+        state.dpmr_voice_mode = 2U;
         state.synctype = boundaries[i];
         (void)dsd_dispatch_handle_dpmr(&opts, &state);
         assert(state.dpmr_scrambled == 0U);
+        assert(state.dpmr_voice_mode == 0U);
     }
     // A voice frame keeps the transmission's verdict.
     DSD_MEMSET(&opts, 0, sizeof(opts));
     DSD_MEMSET(&state, 0, sizeof(state));
     state.dpmr_scrambled = 2U;
+    state.dpmr_voice_mode = 2U;
     state.synctype = DSD_SYNC_DPMR_FS2_POS;
     (void)dsd_dispatch_handle_dpmr(&opts, &state);
     assert(state.dpmr_scrambled == 2U);
+    assert(state.dpmr_voice_mode == 2U);
 }
 
 /* Issue #834: the content notes a scan quiet check hears through the content-evidence hook. */

@@ -11,7 +11,7 @@
  * 12-symbol FS2 word matches about one window in 2048 of receiver noise -- roughly one
  * false frame a second at 2400 baud -- and there is no repeat guard behind it. What the
  * frame body then offered was not a check: identity publishing rode on
- * dpmr_ids_are_strong(), which accepts a CCH whose two leading Hamming(12,8) blocks
+ * dpmr_ids_are_strong(), which accepted a CCH whose two leading Hamming(12,8) blocks
  * merely report correctable. Thirteen of the sixteen syndromes are correctable, so a
  * random block passes about 81% of the time and the predicate passes (13/16)^4, about
  * 44%, of noise superframes. Voice playback was gated on less still: a decoded 3-bit

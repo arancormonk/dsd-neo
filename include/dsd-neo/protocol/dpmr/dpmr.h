@@ -50,7 +50,8 @@ enum {
 };
 
 /**
- * @brief Forget the scrambling the current transmission's CRC-verified halves signalled (issue #655).
+ * @brief Forget the scrambling (issue #655) and the voice mode (issue #903) the current transmission's CRC-verified
+ * halves signalled.
  *
  * A half whose CRC-7 fails is played by the transmission's last verified half, so a transmission boundary the engine
  * sees (a header, end or other non-voice frame sync) must not hand one call's verdict to the next.

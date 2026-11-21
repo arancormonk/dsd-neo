@@ -97,12 +97,31 @@ get_dibit_and_analog_signal(dsd_opts* opts, dsd_state* state, int* out_analog_si
     return 0;
 }
 
+/* The CRC-7 of a clean frame's second CCH half: all zero but its frame number, 01 (frame 2), so the pair reads as the
+   called-ID pair (frames 1 and 2 behind one FS2, TS 102 658 Figure 5.4). */
+static uint8_t
+second_half_crc(void) {
+    uint8_t bits[41] = {0};
+    bits[1] = 1U;
+    return dpmr_crc7(bits, 41U);
+}
+
 bool
 Hamming_12_8_decode(unsigned char* rxBits, unsigned char* decodedBits, int nbCodewords) {
     (void)rxBits;
     if (decodedBits != NULL && nbCodewords > 0) {
+        const int block = g_hamming_calls % 12;
         DSD_MEMSET(decodedBits, g_cch_noise ? 1 : 0, (size_t)nbCodewords * 8U);
-        if (g_fail_half >= 0 && g_hamming_calls % 12 == g_fail_half * 6) {
+        if (!g_cch_noise && block == 6) {
+            decodedBits[1] = 1; /* second half's FN = 01 */
+        }
+        if (!g_cch_noise && block == 11) {
+            const uint8_t crc = second_half_crc();
+            for (int k = 0; k < 7; k++) {
+                decodedBits[1 + k] = (unsigned char)((crc >> (6 - k)) & 1U); /* CCH bits 41..47 */
+            }
+        }
+        if (g_fail_half >= 0 && block == g_fail_half * 6) {
             decodedBits[0] = 1;
         }
     }
@@ -211,8 +230,11 @@ test_first_group_scrambler_bridge_mutes_without_key(void) {
     state.dPMRVoiceFS2Frame.CommunicationMode[0] = 0;
     state.dPMRVoiceFS2Frame.Version[0] = 3;
     state.dPMRVoiceFS2Frame.CCHDataCrcOk[0] = 1;
-    state.dPMRVoiceFS2Frame.FrameNumbering[1] = 2;
+    state.dPMRVoiceFS2Frame.FrameNumbering[1] = 1;
+    /* A verified data half plays nothing (a failed one's mode is not trusted, issue #903). */
     state.dPMRVoiceFS2Frame.CommunicationMode[1] = 2;
+    state.dPMRVoiceFS2Frame.Version[1] = 3;
+    state.dPMRVoiceFS2Frame.CCHDataCrcOk[1] = 1;
 
     dpmr_resolve_half_scrambling(&state);
     dpmr_play_voice_frames(&opts, &state, ambe_fr);
@@ -246,7 +268,10 @@ test_second_group_scrambler_bridge_unmutes_with_key(void) {
     state.R = 0x12345ULL;
     state.nxdn_payload_mi = 0x8888ULL;
     state.dPMRVoiceFS2Frame.FrameNumbering[0] = 1;
+    /* A verified data half plays nothing (a failed one's mode is not trusted, issue #903). */
     state.dPMRVoiceFS2Frame.CommunicationMode[0] = 2;
+    state.dPMRVoiceFS2Frame.Version[0] = 3;
+    state.dPMRVoiceFS2Frame.CCHDataCrcOk[0] = 1;
     state.dPMRVoiceFS2Frame.FrameNumbering[1] = 0;
     state.dPMRVoiceFS2Frame.CommunicationMode[1] = 5;
     state.dPMRVoiceFS2Frame.Version[1] = 3;
@@ -342,6 +367,157 @@ test_scrambling_is_per_half_and_crc_verified(void) {
     // Its next frame verifies one half: both play by it.
     rc |= expect_int("then a verified scrambled half", bridge_run(&state, 0U, 0U, 3U, 1U), 8);
     rc |= expect_halves("then a verified scrambled half", 1, 1);
+    return rc;
+}
+
+/* One CCH half as dpmr_decode_cch_frames() leaves it: its CRC-7 verdict and the fields it decoded. */
+static void
+set_half(dsd_state* state, int o, unsigned crc_ok, unsigned fn, unsigned mode, unsigned version, unsigned ep) {
+    dPMRVoiceFS2Frame_t* f = &state->dPMRVoiceFS2Frame;
+    f->CCHDataCrcOk[o] = crc_ok;
+    f->FrameNumbering[o] = fn;
+    f->CommunicationMode[o] = mode;
+    f->Version[o] = version;
+    f->CommsFormat[o] = 0U;
+    f->EmergencyPriority[o] = ep;
+}
+
+/* Play the frame set_half() built, with the scrambler's working register at @p mi; how many vocoder frames ran. */
+static int
+play_frame(dsd_state* state, unsigned long long mi) {
+    static dsd_opts opts;
+    char ambe_fr[NB_OF_DPMR_VOICE_FRAME_TO_DECODE * 4][4][24];
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    DSD_MEMSET(ambe_fr, 0, sizeof(ambe_fr));
+    reset_capture();
+    state->synctype = DSD_SYNC_DPMR_FS2_POS;
+    state->nxdn_payload_mi = mi;
+    dpmr_resolve_half_scrambling(state);
+    dpmr_play_voice_frames(&opts, state, ambe_fr);
+    return (int)g_mbe_calls;
+}
+
+/* Issue #903: the frame number of a CCH half whose CRC-7 failed is not trusted, so it never reloads the scrambler
+   (FN 0, frame 1). A faded middle half reading 0 left the running register for the rest of the superframe reloaded
+   from the key. A failed half's position still follows from its pair partner when that one passed: frames 1/2 and 3/4
+   share one FS2 (TS 102 658 Figure 5.4), so a passing frame 2 makes the half before it frame 1. */
+static int
+test_failed_cch_frame_number_does_not_reset_the_scrambler(void) {
+    static dsd_state state;
+    DSD_MEMSET(&state, 0, sizeof(state));
+    int rc = 0;
+
+    /* A faded frame 3 reading FN 0, its frame 4 verified. */
+    set_half(&state, 0, 0U, 0U, 0U, 3U, 0U);
+    set_half(&state, 1, 1U, 3U, 0U, 3U, 0U);
+    rc |= expect_int("faded middle half plays", play_frame(&state, 0x1234ULL), 8);
+    for (int i = 0; i < 8; i++) {
+        rc |= expect_u64("faded middle half keeps the register", g_mbe_mi[i], 0x1234ULL);
+    }
+
+    /* Both halves failed, the first reading FN 0: the transmission's learned scrambling plays them, unreloaded. */
+    set_half(&state, 0, 0U, 0U, 0U, 3U, 0U);
+    set_half(&state, 1, 0U, 1U, 0U, 3U, 0U);
+    rc |= expect_int("failed pair plays", play_frame(&state, 0x5678ULL), 8);
+    rc |= expect_u64("failed pair keeps the register", g_mbe_mi[0], 0x5678ULL);
+
+    /* A failed frame 1 that misread its number, behind a verified frame 2: the pair places it, and it reloads. */
+    set_half(&state, 0, 0U, 2U, 0U, 3U, 0U);
+    set_half(&state, 1, 1U, 1U, 0U, 3U, 0U);
+    rc |= expect_int("placed frame 1 plays", play_frame(&state, 0x9ABCULL), 8);
+    rc |= expect_u64("placed frame 1 reloads", g_mbe_mi[0], 0ULL);
+
+    /* A verified frame 1 reloads. */
+    set_half(&state, 0, 1U, 0U, 0U, 3U, 0U);
+    set_half(&state, 1, 1U, 1U, 0U, 3U, 0U);
+    rc |= expect_int("verified frame 1 plays", play_frame(&state, 0xDEF0ULL), 8);
+    rc |= expect_u64("verified frame 1 reloads", g_mbe_mi[0], 0ULL);
+    return rc;
+}
+
+/* Issue #903: nor is a failed half's Communication Mode trusted. Once a verified half has said what the transmission
+   carries, a failed half reading a data mode does not cut its voice, and one reading a voice mode does not play a data
+   transmission's payload as speech. */
+static int
+test_failed_cch_mode_does_not_switch_voice(void) {
+    static dsd_state state;
+    DSD_MEMSET(&state, 0, sizeof(state));
+    int rc = 0;
+
+    set_half(&state, 0, 0U, 0U, 2U, 0U, 0U);
+    set_half(&state, 1, 1U, 1U, 0U, 0U, 0U);
+    rc |= expect_int("failed data-mode half in a voice call plays", play_frame(&state, 0ULL), 8);
+    set_half(&state, 0, 0U, 2U, 3U, 0U, 0U);
+    set_half(&state, 1, 0U, 3U, 4U, 0U, 0U);
+    rc |= expect_int("failed data-mode pair in a voice call plays", play_frame(&state, 0ULL), 8);
+
+    /* The next transmission carries data, which a verified pair says. */
+    dpmr_scrambling_reset(&state);
+    set_half(&state, 0, 1U, 0U, 2U, 0U, 0U);
+    set_half(&state, 1, 1U, 1U, 2U, 0U, 0U);
+    rc |= expect_int("verified data plays nothing", play_frame(&state, 0ULL), 0);
+    set_half(&state, 0, 0U, 2U, 0U, 0U, 0U);
+    set_half(&state, 1, 0U, 3U, 1U, 0U, 0U);
+    rc |= expect_int("failed voice-mode pair in a data transmission plays nothing", play_frame(&state, 0ULL), 0);
+    return rc;
+}
+
+/* Issue #903: emergency and the service options come only from a CCH half whose CRC-7 passed. A failed half in a
+   confirmed transmission set or cleared emergency and replaced the service options. */
+static int
+test_failed_cch_changes_no_service_metadata(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    DSD_MEMSET(&state, 0, sizeof(state));
+    int rc = 0;
+    dsd_call_snapshot call;
+
+    state.synctype = DSD_SYNC_DPMR_FS2_POS;
+    state.dpmr_confirmed = 1;
+    state.dPMRVoiceFS2Frame.ColorCode[0] = (unsigned int)(-1);
+
+    /* Verified: voice + slow data, clear, no emergency. */
+    set_half(&state, 0, 1U, 0U, 1U, 0U, 0U);
+    set_half(&state, 1, 1U, 1U, 1U, 0U, 0U);
+    dpmr_resolve_half_scrambling(&state);
+    dpmr_publish_call(&opts, &state);
+    rc |= expect_int("verified call", dsd_call_state_get(&state, 0U, &call) > 0, 1);
+    rc |= expect_int("verified no emergency", call.emergency, 0);
+    rc |= expect_int("verified service options", call.service_options, 0x10);
+    rc |= expect_int("verified has metadata", call.has_service_metadata, 1);
+    const uint64_t epoch = call.epoch;
+
+    /* Both halves failed, reading emergency, data mode, another version and format. */
+    set_half(&state, 0, 0U, 2U, 2U, 2U, 1U);
+    set_half(&state, 1, 0U, 3U, 2U, 2U, 1U);
+    state.dPMRVoiceFS2Frame.CommsFormat[0] = 3U;
+    dpmr_resolve_half_scrambling(&state);
+    dpmr_publish_call(&opts, &state);
+    (void)dsd_call_state_get(&state, 0U, &call);
+    rc |= expect_int("failed pair sets no emergency", call.emergency, 0);
+    rc |= expect_int("failed pair keeps service options", call.service_options, 0x10);
+    rc |= expect_int("failed pair keeps the call", call.epoch == epoch, 1);
+
+    /* The first half failed reading emergency; the second verified none, in voice mode. */
+    set_half(&state, 0, 0U, 0U, 2U, 2U, 1U);
+    set_half(&state, 1, 1U, 1U, 0U, 0U, 0U);
+    dpmr_resolve_half_scrambling(&state);
+    dpmr_publish_call(&opts, &state);
+    (void)dsd_call_state_get(&state, 0U, &call);
+    rc |= expect_int("verified second half: no emergency", call.emergency, 0);
+    rc |= expect_int("verified second half: its service options", call.service_options, 0x00);
+
+    /* A verified emergency sets it, and a failed half reading none does not clear it. */
+    set_half(&state, 1, 1U, 1U, 0U, 0U, 1U);
+    dpmr_publish_call(&opts, &state);
+    (void)dsd_call_state_get(&state, 0U, &call);
+    rc |= expect_int("verified emergency", call.emergency, 1);
+    set_half(&state, 0, 0U, 2U, 0U, 0U, 0U);
+    set_half(&state, 1, 0U, 3U, 0U, 0U, 0U);
+    dpmr_publish_call(&opts, &state);
+    (void)dsd_call_state_get(&state, 0U, &call);
+    rc |= expect_int("failed halves keep the emergency", call.emergency, 1);
     return rc;
 }
 
@@ -441,7 +617,7 @@ static int
 test_crc7_and_air_interface_id_helpers(void) {
     static const uint8_t crc_bits[12] = {1, 0, 1, 1, 0, 0, 1, 0, 1, 0, 1, 1};
     uint8_t cch_bits[48] = {0};
-    char id[8];
+    char id[DPMR_AIR_INTERFACE_ID_TEXT_SIZE];
     int rc = 0;
 
     rc |= expect_int("crc7-empty", dpmr_crc7(crc_bits, 0U), 0x00);
@@ -451,14 +627,97 @@ test_crc7_and_air_interface_id_helpers(void) {
     cch_bits[46] = 1U;
     rc |= expect_int("cch-crc-extract", dpmr_extract_cch_crc(cch_bits), 0x52);
 
-    dpmr_convert_air_interface_id(0U, id);
+    dpmr_convert_air_interface_id(0U, id, sizeof(id));
     rc |= expect_int("aiid-zero", strcmp(id, "0000000"), 0);
-    dpmr_convert_air_interface_id(10U, id);
+    dpmr_convert_air_interface_id(10U, id, sizeof(id));
     rc |= expect_int("aiid-star-low", strcmp(id, "000000*"), 0);
-    dpmr_convert_air_interface_id(1464100U, id);
+    dpmr_convert_air_interface_id(1464100U, id, sizeof(id));
     rc |= expect_int("aiid-first-digit", strcmp(id, "1000000"), 0);
-    dpmr_convert_air_interface_id(1464110U, id);
+    dpmr_convert_air_interface_id(1464110U, id, sizeof(id));
     rc |= expect_int("aiid-first-digit-with-star", strcmp(id, "100000*"), 0);
+    dpmr_convert_air_interface_id(0xDF6767U, id, sizeof(id));
+    rc |= expect_int("aiid-top-of-dial-space", strcmp(id, "999****"), 0);
+    return rc;
+}
+
+/* Issue #903: B2 maps only the dial strings "0000000".."999****" (TS 102 658 A.1.2.1.1.6, Table A.1), the IDs up to
+   0xDF6767. Above that the first "digit" ran past 9 and printed ';' (0xF8339C read ";10***0"), or 0xDF6768 read as the
+   plausible "*000000". An ID there has no dial string: it renders as its decimal number, 8 digits, which no 7-character
+   dial string can be; a buffer too short for that gets hex, and one too short for anything gets nothing. */
+static int
+test_air_interface_ids_above_the_dial_space_render_as_numbers(void) {
+    char id[DPMR_AIR_INTERFACE_ID_TEXT_SIZE];
+    char want[16];
+    int rc = 0;
+    int bad = 0;
+    for (uint32_t ai = 0xDF6768U; ai <= 0xFFFFFFU && bad < 4; ai++) {
+        dpmr_convert_air_interface_id(ai, id, sizeof(id));
+        DSD_SNPRINTF(want, sizeof(want), "%u", (unsigned)ai);
+        if (strcmp(id, want) != 0) {
+            DSD_FPRINTF(stderr, "aiid 0x%06X rendered \"%s\" want \"%s\"\n", (unsigned)ai, id, want);
+            bad++;
+        }
+    }
+    rc |= expect_int("aiid-above-dial-space-decimal", bad, 0);
+
+    dpmr_convert_air_interface_id(0xDF6768U, id, sizeof(id));
+    rc |= expect_int("aiid-first-reserved", strcmp(id, "14641000"), 0);
+    dpmr_convert_air_interface_id(0xF8339CU, id, sizeof(id));
+    rc |= expect_int("aiid-alltalk0", strcmp(id, "16266140"), 0);
+    dpmr_convert_air_interface_id(0xFFFFFFU, id, sizeof(id));
+    rc |= expect_int("aiid-all-ones", strcmp(id, "16777215"), 0);
+
+    /* The old eight-byte buffer: hex, never a cut-off number or dial string. */
+    char narrow[8];
+    dpmr_convert_air_interface_id(0xF8339CU, narrow, sizeof(narrow));
+    rc |= expect_int("aiid-narrow-hex", strcmp(narrow, "F8339C"), 0);
+    dpmr_convert_air_interface_id(1464100U, narrow, sizeof(narrow));
+    rc |= expect_int("aiid-narrow-dial-string", strcmp(narrow, "1000000"), 0);
+    char tiny[6];
+    dpmr_convert_air_interface_id(0xF8339CU, tiny, sizeof(tiny));
+    rc |= expect_int("aiid-tiny-number", strcmp(tiny, ""), 0);
+    dpmr_convert_air_interface_id(1464100U, tiny, sizeof(tiny));
+    rc |= expect_int("aiid-tiny-dial-string", strcmp(tiny, ""), 0);
+    return rc;
+}
+
+/* Issue #903: an ID half is used only once its own CCH passed CRC-7 (TS 102 658 Table 7.1; the Hamming(12,8) flags
+   cannot see a miscorrection), and only from the frame pair that carries that ID (section 11.1.0: FN 0/1 the called
+   ID, FN 2/3 the calling one). Neither failed halves, nor one failed half, nor two passing halves from different
+   superframe positions change the call (called "1000000", calling "100000*") or start a caller epoch. */
+static int
+expect_unchecked_pairs_change_nothing(dsd_opts* opts, dsd_state* state, uint64_t caller_epoch) {
+    static const struct {
+        const char* tag;
+        uint32_t fn0, fn1;
+        bool crc0, crc1;
+    } k_rejected[] = {
+        {"calling-both-crc-failed", 2U, 3U, false, false},
+        {"calling-first-half-failed", 2U, 3U, false, true},
+        {"calling-second-half-failed", 2U, 3U, true, false},
+        {"called-second-half-failed", 0U, 1U, true, false},
+        {"mixed-pair-0-3", 0U, 3U, true, true},
+        {"mixed-pair-2-1", 2U, 1U, true, true},
+        {"swapped-pair-1-0", 1U, 0U, true, true},
+    };
+
+    int rc = 0;
+    for (size_t i = 0; i < sizeof(k_rejected) / sizeof(k_rejected[0]); i++) {
+        char tag[96];
+        dsd_call_snapshot call;
+        const dpmr_superframe_part part = {.frame_number = {k_rejected[i].fn0, k_rejected[i].fn1},
+                                           .id_value = 2928210U,
+                                           .crc_ok = {k_rejected[i].crc0, k_rejected[i].crc1},
+                                           .hamming_ok = {{true, true}, {true, true}}};
+        dpmr_update_superframe_part(opts, state, &part);
+        (void)dsd_call_state_get(state, 0U, &call);
+        DSD_SNPRINTF(tag, sizeof(tag), "%s keeps the calling id", k_rejected[i].tag);
+        rc |= expect_int(tag, strcmp(call.source_text, "100000*"), 0);
+        DSD_SNPRINTF(tag, sizeof(tag), "%s keeps the called id", k_rejected[i].tag);
+        rc |= expect_int(tag, strcmp(call.target_text, "1000000"), 0);
+        DSD_SNPRINTF(tag, sizeof(tag), "%s keeps the caller epoch", k_rejected[i].tag);
+        rc |= expect_int(tag, call.epoch == caller_epoch, 1);
+    }
     return rc;
 }
 
@@ -494,14 +753,16 @@ test_superframe_part_updates_called_and_calling_ids(void) {
 
     part = (dpmr_superframe_part){.frame_number = {2U, 3U},
                                   .id_value = 1464110U,
-                                  .crc_ok = {false, false},
-                                  .hamming_ok = {{true, true}, {true, true}}};
+                                  .crc_ok = {true, true},
+                                  .hamming_ok = {{false, false}, {false, false}}};
     dpmr_update_superframe_part(&opts, &state, &part);
     (void)dsd_call_state_get(&state, 0U, &call);
     rc |= expect_int("calling-id", strcmp(call.source_text, "100000*"), 0);
     rc |= expect_int("calling-next-part", opts.dPMR_next_part_of_superframe, 1);
     rc |= expect_int("called-id-preserved", strcmp(call.target_text, "1000000"), 0);
     const uint64_t first_caller_epoch = call.epoch;
+
+    rc |= expect_unchecked_pairs_change_nothing(&opts, &state, first_caller_epoch);
 
     part = (dpmr_superframe_part){.frame_number = {2U, 3U},
                                   .id_value = 2928210U,
@@ -542,7 +803,7 @@ test_superframe_part_updates_called_and_calling_ids(void) {
     return rc;
 }
 
-/* Before #407 this published a talkgroup and a source: dpmr_ids_are_strong() accepts a
+/* Before #407 this published a talkgroup and a source: the identity gate accepted a
    CCH whose two leading Hamming blocks merely report correctable, which 44% of noise
    superframes do. Without a passing CRC-7 there is nothing here to publish. */
 static int
@@ -715,7 +976,7 @@ test_unconfirmed_frame_with_retained_caller_publishes_no_color_code(void) {
     /* The retained text belongs to the earlier transmission: this unconfirmed frame decoded no identity to show. */
     rc |= expect_text("retained-target-not-printed", printed, "1000000", 0);
     rc |= expect_text("retained-caller-not-printed", printed, "200000*", 0);
-    rc |= expect_text("unconfirmed-prints-target-crc-err", printed, "TG=(CRC ERR)", 1);
+    rc |= expect_text("unconfirmed-prints-target-crc-err", printed, "Called=(CRC ERR)", 1);
     rc |= expect_text("unconfirmed-prints-caller-crc-err", printed, "Src=(CRC ERR)", 1);
     return rc;
 }
@@ -741,7 +1002,9 @@ test_confirmed_call_prints_its_identities(void) {
 
     char printed[256];
     rc |= capture_print_ids(&state, printed, sizeof(printed));
-    rc |= expect_text("confirmed-prints-target", printed, "TG=1000000", 1);
+    /* The called ID may be a radio's as well as a group's (issue #903): the line names neither. */
+    rc |= expect_text("confirmed-prints-target", printed, "Called=1000000", 1);
+    rc |= expect_text("confirmed-prints-no-tg-label", printed, "TG=", 0);
     rc |= expect_text("confirmed-prints-caller", printed, "Src=200000*", 1);
     rc |= expect_text("confirmed-prints-channel-code", printed, "Channel Code=12", 1);
     rc |= expect_text("confirmed-no-crc-err", printed, "CRC ERR", 0);
@@ -797,7 +1060,7 @@ test_noise_frame_after_another_protocols_call_prints_no_identity(void) {
         rc |= expect_int("noise-no-voice", (int)g_mbe_calls, 0);
         rc |= expect_text("noise-no-foreign-target", printed, "CQCQCQ", 0);
         rc |= expect_text("noise-no-foreign-caller", printed, "N0CALL", 0);
-        rc |= expect_text("noise-target-crc-err", printed, "TG=(CRC ERR)", 1);
+        rc |= expect_text("noise-target-crc-err", printed, "Called=(CRC ERR)", 1);
         rc |= expect_text("noise-caller-crc-err", printed, "Src=(CRC ERR)", 1);
 
         /* The other protocol's call is left as it was. */
@@ -854,7 +1117,7 @@ test_process_dpmr_voice_zero_stream_updates_cch_and_dispatches_voice(void) {
         DSD_SNPRINTF(tag, sizeof(tag), "process-crc-ok-%u", (unsigned)i);
         rc |= expect_int(tag, (int)state.dPMRVoiceFS2Frame.CCHDataCrcOk[i], 1);
         DSD_SNPRINTF(tag, sizeof(tag), "process-frame-number-%u", (unsigned)i);
-        rc |= expect_int(tag, (int)state.dPMRVoiceFS2Frame.FrameNumbering[i], 0);
+        rc |= expect_int(tag, (int)state.dPMRVoiceFS2Frame.FrameNumbering[i], (int)i);
         DSD_SNPRINTF(tag, sizeof(tag), "process-comm-mode-%u", (unsigned)i);
         rc |= expect_int(tag, (int)state.dPMRVoiceFS2Frame.CommunicationMode[i], 0);
         DSD_SNPRINTF(tag, sizeof(tag), "process-version-%u", (unsigned)i);
@@ -1054,8 +1317,12 @@ main(void) {
     rc |= test_scrambler_secret_is_not_published_as_key_id();
     rc |= test_scrambling_is_per_half_and_crc_verified();
     rc |= test_enc_indication_is_the_frames_own();
+    rc |= test_failed_cch_frame_number_does_not_reset_the_scrambler();
+    rc |= test_failed_cch_mode_does_not_switch_voice();
+    rc |= test_failed_cch_changes_no_service_metadata();
     rc |= test_deinterleave_transposes_6x12_blocks();
     rc |= test_crc7_and_air_interface_id_helpers();
+    rc |= test_air_interface_ids_above_the_dial_space_render_as_numbers();
     rc |= test_process_dpmr_voice_weak_frames_confirm_only_when_they_run();
     rc |= test_superframe_part_updates_called_and_calling_ids();
     rc |= test_unconfirmed_superframe_part_publishes_nothing();
