@@ -355,8 +355,6 @@ typedef struct {
     dsd_state* state;
     time_t now;
     double nowm;
-    /* The control channel's sync stamps when the call began (frame_sync_note_cc_sync()). */
-    frame_sync_cc_stamps cc_stamp_at_entry;
     int synctest_pos;
     float lmax;
     float lmin;
@@ -531,23 +529,8 @@ frame_sync_set_basic_lock(frame_sync_match_ctx* ctx) {
     state->min = ((state->min) + ctx->lmin) / 2;
 }
 
-/* The control channel's sync stamps a sync accept writes, from the call's decode times, each by its own clock's rule. The
-   monotonic stamp only moves forward: a tick inside the call (the grace after a tune) may already have stamped a later
-   one. The wall stamp follows the wall clock, set back included, so a stale-carrier or hangtime check never reads a
-   negative age; only one a tick wrote during this call (its grace, stamped as the tick saw the clock, while the hunt's
-   time is the call's start) is kept. A grace writes both stamps, so either one moved since the call began marks it. */
-static inline void
-frame_sync_note_cc_sync(frame_sync_match_ctx* ctx) {
-    dsd_state* state = ctx->state;
-    const int written_in_call = state->last_cc_sync_time != ctx->cc_stamp_at_entry.wall
-                                || fabs(state->last_cc_sync_time_m - ctx->cc_stamp_at_entry.mono) > 1e-9;
-    if (ctx->nowm > state->last_cc_sync_time_m) {
-        state->last_cc_sync_time_m = ctx->nowm;
-    }
-    if (!written_in_call) {
-        state->last_cc_sync_time = ctx->now;
-    }
-}
+/* The control channel's sync stamps a sync accept writes (after frame_sync_runtime_ctx, whose stamps it reads). */
+static void frame_sync_note_cc_sync(frame_sync_match_ctx* ctx);
 
 static void
 frame_sync_set_p25_cqpsk_dibit_map(frame_sync_match_ctx* ctx, uint8_t map_idx) {
@@ -3736,6 +3719,28 @@ typedef struct frame_sync_runtime_ctx {
     float lbuf[DSD_FRAME_SYNC_HISTORY_CARRY_LEVELS];
 } frame_sync_runtime_ctx;
 
+/* The control channel's sync stamps a sync accept writes, from the call's decode times, each by its own clock's rule. The
+   monotonic stamp only moves forward: a tick inside the call (the grace after a tune) may already have stamped a later
+   one. The wall stamp follows the wall clock, set back included, so a stale-carrier or hangtime check never reads a
+   negative age; only one a tick wrote during this call (its grace, stamped as the tick saw the clock, while the hunt's
+   time is the call's start) is kept. A grace writes both stamps, so either one moved since the call began marks it.
+   The stamps the call began with are read through the call's history, only here, at an accept. */
+static void
+frame_sync_note_cc_sync(frame_sync_match_ctx* ctx) {
+    dsd_state* state = ctx->state;
+    /* Every accept's context carries the call's history; one with none has no stamps of its own to keep. */
+    const frame_sync_cc_stamps* entry = ctx->history != NULL ? &ctx->history->cc_stamp_at_entry : NULL;
+    const int written_in_call =
+        entry != NULL
+        && (state->last_cc_sync_time != entry->wall || fabs(state->last_cc_sync_time_m - entry->mono) > 1e-9);
+    if (ctx->nowm > state->last_cc_sync_time_m) {
+        state->last_cc_sync_time_m = ctx->nowm;
+    }
+    if (!written_in_call) {
+        state->last_cc_sync_time = ctx->now;
+    }
+}
+
 /* Bit errors between the window's last ten symbols, read on four levels, and the NXDN frame sync word of @p synctype's
  * polarity, counted on the 20 bits the dibits carry (+3 01, +1 00, -1 10, -3 11; TS 1-A 4.2). The levels are the
  * window's level ring, which live input and symbol captures alike fill (a capture at its dibits' levels), and which a
@@ -4459,7 +4464,6 @@ frame_sync_eval_window(dsd_opts* opts, dsd_state* state, frame_sync_runtime_ctx*
         .state = state,
         .now = now,
         .nowm = nowm,
-        .cc_stamp_at_entry = rt->cc_stamp_at_entry,
         .synctest_pos = rt->synctest_pos,
         .lmax = rt->lmax,
         .lmin = rt->lmin,
@@ -4516,7 +4520,6 @@ dsd_frame_sync_test_try_protocol_matches(dsd_opts* opts, dsd_state* state, const
         .state = state,
         .now = 0,
         .nowm = 0.0,
-        .cc_stamp_at_entry = frame_sync_cc_stamps_take(state),
         .synctest_pos = symbol_count > 0 ? symbol_count - 1 : 0,
         .lmax = state->max,
         .lmin = state->min,
