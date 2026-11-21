@@ -8,10 +8,10 @@
 # BUILD_DIR/test-tmp/<TEST> (cmake/TestTmpdir.cmake), and must remove what it
 # creates there. This walks test-tmp two levels deep in one traversal, without
 # following links, and fails naming every test whose folder is not empty, with
-# what it left. It fails closed: an unreadable folder, a linked test-tmp or test
-# folder, an entry that is not a test's folder, or a test folder the last
-# configure listed (BUILD_DIR/test-tmp.names) that is missing, are each a
-# failure. It never deletes anything: the folders stay for a look, and ctest's
+# what it left. It fails closed: an unreadable folder or test list, a linked
+# test-tmp or test folder, an entry that is not a registered test's folder, or a
+# test folder the last configure listed (BUILD_DIR/test-tmp.names) that is
+# missing, are each a failure. It never deletes anything: the folders stay for a look, and ctest's
 # next run empties them before its first test (tests/cmake/TestTmpdirPrepare.cmake).
 set -euo pipefail
 
@@ -29,6 +29,13 @@ if [[ -L "$root" || ! -d "$root" ]]; then
 fi
 if [[ ! -f "$names" ]]; then
   say "$names is missing; configure $build_dir first"
+  exit 2
+fi
+
+# The tests the last configure registered, read in a step whose failure counts. A list written on Windows ends its
+# lines in CR LF.
+if ! expected=$(tr -d '\r' < "$names" | grep -v '^$' | LC_ALL=C sort -u) || [[ -z "$expected" ]]; then
+  say "$names could not be read, or lists no tests"
   exit 2
 fi
 
@@ -77,11 +84,18 @@ while IFS= read -r path; do
 done < <(printf '%s\n' "$listing" | LC_ALL=C sort)
 report_current
 
-missing=$(LC_ALL=C comm -23 <(grep -v '^$' "$names" | LC_ALL=C sort -u) <(printf '%s' "$folders" | LC_ALL=C sort -u) | wc -l | tr -d ' ')
+actual=$(printf '%s' "$folders" | LC_ALL=C sort -u)
+missing=$(LC_ALL=C comm -23 <(printf '%s\n' "$expected") <(printf '%s\n' "$actual") | grep -c . || true)
 if [[ $missing -gt 0 ]]; then
   say "$missing of the folders $names lists are missing from $root; run ctest again to make them"
   failed=1
 fi
+# A folder no test was given is a leftover too, empty or not.
+while IFS= read -r stray; do
+  [[ -n "$stray" ]] || continue
+  say "$stray in $root is not a registered test's folder"
+  failed=1
+done < <(LC_ALL=C comm -13 <(printf '%s\n' "$expected") <(printf '%s\n' "$actual"))
 
 if [[ $failed -ne 0 ]]; then
   say "a test must remove every temp file and folder it creates; see docs/testing.md, \"Temporary files and directories\""

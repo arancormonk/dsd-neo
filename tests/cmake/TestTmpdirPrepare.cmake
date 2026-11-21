@@ -15,6 +15,16 @@ foreach(_var ROOT NAMES)
     endif()
 endforeach()
 
+# Only ever a test-tmp folder, and only once the list of tests has been read.
+if(NOT ROOT MATCHES "/test-tmp$" OR NOT EXISTS "${NAMES}")
+    message(
+        FATAL_ERROR
+        "refusing to prepare ROOT=${ROOT} with NAMES=${NAMES}: not a test-tmp folder, or no list of tests"
+    )
+endif()
+file(STRINGS "${NAMES}" _names)
+# A list written on Windows ends its lines in CR LF.
+list(TRANSFORM _names REPLACE "\r$" "")
 file(REMOVE_RECURSE "${ROOT}")
 if(EXISTS "${ROOT}" OR IS_SYMLINK "${ROOT}")
     message(
@@ -22,6 +32,5 @@ if(EXISTS "${ROOT}" OR IS_SYMLINK "${ROOT}")
         "could not empty the test temp folders in ${ROOT}: remove what is left there and run ctest again"
     )
 endif()
-file(STRINGS "${NAMES}" _names)
 list(TRANSFORM _names PREPEND "${ROOT}/")
 file(MAKE_DIRECTORY "${ROOT}" ${_names})

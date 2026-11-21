@@ -6,9 +6,11 @@
 # space and glob characters in it: empty per-test folders pass; a leftover named
 # 0, a hidden file, a folder, and a link (named, not followed) each fail naming
 # their test, and two tests' leftovers are each named under their own test; an
-# entry that is not a folder, a linked test folder, a test folder the names file
-# lists but that is missing, an unreadable folder, and a linked test-tmp each
-# fail; a missing test-tmp or names file is an error. The check deletes nothing.
+# entry that is not a folder, a linked test folder, a folder no test was given,
+# a test folder the names file lists but that is missing, a walk that fails
+# part-way, and a linked test-tmp each fail; a CR LF names file reads the same; a
+# missing, empty or unreadable test-tmp or names file is an error. The check
+# deletes nothing.
 set -euo pipefail
 
 ROOT_DIR=$(CDPATH='' cd -- "$(dirname -- "$0")/../.." && pwd)
@@ -74,14 +76,37 @@ run 1 "CLEAN_B in .* is not a test's folder"
 rm "$TMP/CLEAN_B"
 mv "$WORK/clean_b" "$TMP/CLEAN_B"
 
-if [[ $(id -u) -ne 0 ]]; then
-  # A folder the walk cannot read fails the check rather than reading as empty.
-  touch "$TMP/CLEAN_B/hidden-by-mode"
-  chmod 000 "$TMP/CLEAN_B"
-  run 1 "could not be read completely"
-  chmod 755 "$TMP/CLEAN_B"
-  rm "$TMP/CLEAN_B/hidden-by-mode"
+# A walk that fails part-way fails the check rather than reading as empty: a find that lists one folder and then
+# reports an error, whatever the user's privileges would let the real one read.
+mkdir "$WORK/shim"
+cat > "$WORK/shim/find" << 'SHIM'
+#!/usr/bin/env bash
+echo "$1/CLEAN_A"
+echo "find: '$1/CLEAN_B': Permission denied" >&2
+exit 1
+SHIM
+chmod +x "$WORK/shim/find"
+out=$(PATH="$WORK/shim:$PATH" "$CHECK" "$BUILD" 2>&1) && rc=0 || rc=$?
+[[ $rc -eq 1 && "$out" == *"could not be read completely"* && "$out" == *"Permission denied"* ]] ||
+  fail "a failed walk did not fail the check (exit $rc): $out"
+
+# A folder no test was given, even an empty one, is a leftover.
+mkdir "$TMP/EXTRA"
+run 1 "EXTRA in .* is not a registered test's folder"
+rmdir "$TMP/EXTRA"
+
+# A list written on Windows (CR LF) names the same folders.
+printf 'CLEAN_A\r\nCLEAN_A_B\r\nCLEAN_B\r\n' > "$BUILD/test-tmp.names"
+run 0 "3 test temp folders .* all empty"
+# A list that cannot be read, or lists nothing, is an error, not an empty set.
+: > "$BUILD/test-tmp.names"
+run 2 "could not be read, or lists no tests"
+printf 'CLEAN_A\nCLEAN_A_B\nCLEAN_B\n' > "$BUILD/test-tmp.names"
+chmod 000 "$BUILD/test-tmp.names"
+if [[ ! -r "$BUILD/test-tmp.names" ]]; then
+  run 2 "could not be read, or lists no tests"
 fi
+chmod 644 "$BUILD/test-tmp.names"
 
 mv "$TMP" "$WORK/real-tmp"
 ln -s "$WORK/real-tmp" "$TMP"
