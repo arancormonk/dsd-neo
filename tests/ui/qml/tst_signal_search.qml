@@ -587,6 +587,70 @@ Item {
             compare(hint.Accessible.name, hint.text);
             editor.visible = false;
         }
+        // Issue #748: the editor's pairs of fields (Start and End, the step's
+        // numerator and denominator, the probe and the longest visit) sit side
+        // by side while half the form shows each field's whole value, and one
+        // per row once it would not. At the narrowest phone with the largest
+        // text, Start and End had scrolled their leading digits out of sight
+        // ("0.000000"); a placeholder is shown whole too.
+        function test_range_editor_pairs_show_whole_values_data() {
+            return [{tag: "desktop", scale: 1.0, width: 1024, stacked: false},
+                {tag: "411 dp, default text", scale: 1.0, width: 411, stacked: false},
+                {tag: "360 dp, default text", scale: 1.0, width: 360, stacked: false},
+                {tag: "360 dp, largest text", scale: 1.6, width: 360, stacked: true}];
+        }
+        function test_range_editor_pairs_show_whole_values(data) {
+            root.width = data.width;
+            Ui.Theme.fontScale = data.scale;
+            loader.item.sessionActive = false;
+            var editor = findChild(loader.item, "signalSearchRangeEditor");
+            editor.openFor(0, model.defaultRange());
+            waitForRendering(editor);
+            var start = findChild(editor, "searchRangeStart");
+            var end = findChild(editor, "searchRangeEnd");
+            var visit = findChild(editor, "searchRangeVisit");
+            var pairs = [[start, end],
+                [findChild(editor, "searchStepNumerator"), findChild(editor, "searchStepDenominator")],
+                [findChild(editor, "searchRangeProbe"), visit]];
+            var form = start.parent.parent;
+            function check(what) {
+                for (var pair of pairs) {
+                    for (var field of pair) {
+                        var at = field.mapToItem(form, 0, 0);
+                        verify(at.x >= -0.5 && at.x + field.width <= form.width + 0.5, field.label + " stays inside the form" + what);
+                        verify(field.input.contentWidth + field.input.cursorRectangle.width <= field.input.width + 0.5,
+                            field.label + " shows \"" + field.text + "\" whole" + what);
+                    }
+                    var side = Math.abs(pair[0].mapToItem(form, 0, 0).y - pair[1].mapToItem(form, 0, 0).y) < 0.5;
+                    if (side)
+                        verify(pair[1].mapToItem(form, 0, 0).x >= pair[0].mapToItem(form, 0, 0).x + pair[0].width, "side by side, apart");
+                    else
+                        verify(pair[1].mapToItem(form, 0, 0).y >= pair[0].mapToItem(form, 0, 0).y + pair[0].height, "one per row, apart");
+                }
+            }
+            check("");
+            compare(Math.abs(start.mapToItem(form, 0, 0).y - end.mapToItem(form, 0, 0).y) >= 0.5, data.stacked, "Start and End stacked");
+            if (!data.stacked) {
+                for (var pair of pairs)
+                    compare(pair[0].width, pair[1].width, "two equal halves");
+                compare(start.width, (form.width - 12) / 2, "the halves of the form, as before");
+            }
+            // A four-digit frequency, as a wide-band receiver takes, and the
+            // longest visit's placeholder.
+            start.text = "1240.000000";
+            end.text = "1300.000000";
+            visit.text = "";
+            waitForRendering(editor);
+            check(" (four digits)");
+            var placeholder = null;
+            for (var child of visit.children) {
+                if (child.text === visit.placeholderText && child.visible)
+                    placeholder = child;
+            }
+            verify(placeholder !== null, "the visit shows its placeholder");
+            verify(!placeholder.truncated, "\"" + visit.placeholderText + "\" shown whole");
+            editor.visible = false;
+        }
         function test_controls_are_tagged_and_save_is_a_snapshot() {
             findChild(loader.item, "searchSkip").clicked();
             compare(model.actions.join(","), "4,17,42");
