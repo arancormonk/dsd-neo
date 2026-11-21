@@ -36,14 +36,18 @@ struct dmr_csbk_result {
     uint8_t st1;
     uint8_t st2;
     uint8_t st3;
+    /* A grant's called MS or talkgroup and its calling MS (dmr_t3_grant_classify(); for a duplex grant its Call
+       Direction decides which address is which). */
     uint32_t target;
     uint32_t source;
 
     /* Optional resolved frequency in Hz when known (0 if unknown). */
     long freq_hz;
 
-    /* The grant's classification and talkgroup policy verdict, as the CSBK layer judged it (dmr_csbk_handle() hands
-       them to the trunk state machine, which never re-evaluates a grant). */
+    /* The grant's classification (group or private, data or voice; dmr_t3_grant_classify()) and talkgroup policy
+       verdict, as the CSBK layer judged it (dmr_csbk_handle() hands them to the trunk state machine, which never
+       re-evaluates a grant). */
+    int group_call;
     int data_call;
     int policy_valid;
     dsd_tg_policy_decision policy;

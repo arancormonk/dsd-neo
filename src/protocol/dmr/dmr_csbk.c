@@ -39,6 +39,7 @@
 #include <dsd-neo/protocol/dmr/dmr_csbk_parse.h>
 #include <dsd-neo/protocol/dmr/dmr_csbk_tables.h>
 #include <dsd-neo/protocol/dmr/dmr_t3_channels.h>
+#include <dsd-neo/protocol/dmr/dmr_t3_grant.h>
 #include <dsd-neo/protocol/dmr/dmr_trunk_sm.h>
 #include <dsd-neo/protocol/dmr/dmr_utils_api.h>
 #include <dsd-neo/runtime/colors.h>
@@ -196,27 +197,23 @@ static void dmr_gateway_identifier(uint32_t source, uint32_t target);
 static void dmr_decode_syscode(const dsd_opts* opts, dsd_state* state, const uint8_t* cs_pdu_bits, int csbk_fid,
                                int type);
 
+/* A grant is judged by its own classes (dmr_t3_grant_classify()): a data grant needs data tuning, and a group grant
+   group tuning or a private one private tuning, whatever its data class. */
 static int
-dmr_cspdu_pf0_is_data_grant_opcode(int csbk_o) {
-    return csbk_o == 51 || csbk_o == 52 || csbk_o == 54 || csbk_o == 55 || csbk_o == 56;
-}
-
-static int
-dmr_cspdu_pf0_should_skip_call(const dsd_opts* opts, int* csbk_o, int* data_call) {
-    if (opts->trunk_tune_group_calls == 0 && (*csbk_o == 49 || *csbk_o == 50)) {
+dmr_cspdu_pf0_should_skip_call(const dsd_opts* opts, const dmr_t3_grant_class* grant) {
+    if (grant->data && opts->trunk_tune_data_calls != 1) {
         return 1;
     }
+    return grant->group ? opts->trunk_tune_group_calls == 0 : opts->trunk_tune_private_calls == 0;
+}
 
-    if (*csbk_o == 50) {
-        *csbk_o = 49;
+/* The call kind a grant's activity row and its call carry: data whatever its group class, else group or private voice. */
+static dsd_call_kind
+dmr_cspdu_pf0_grant_call_kind(const dmr_t3_grant_class* grant) {
+    if (grant->data) {
+        return DSD_CALL_KIND_DATA;
     }
-
-    *data_call = dmr_cspdu_pf0_is_data_grant_opcode(*csbk_o);
-    if (*data_call && opts->trunk_tune_data_calls == 1) {
-        *csbk_o = 49;
-    }
-
-    return (opts->trunk_tune_private_calls == 0 && *csbk_o != 49) ? 1 : 0;
+    return grant->group ? DSD_CALL_KIND_GROUP_VOICE : DSD_CALL_KIND_PRIVATE_VOICE;
 }
 
 /* The absolute parameters of the PDU being handled (dmr_abs_params_decode()), or 0 with the reason printed: a reserved
@@ -259,23 +256,21 @@ dmr_cspdu_pf0_parse_absolute_grant(dsd_opts* opts, dsd_state* state, uint8_t cs_
 }
 
 static void
-dmr_cspdu_pf0_publish_grant(dsd_state* state, uint8_t lcn, uint16_t channel, long int frequency, uint32_t target,
-                            uint32_t source, int csbk_o, int emergency) {
+dmr_cspdu_pf0_publish_grant(dsd_state* state, uint8_t lcn, uint16_t channel, long int frequency,
+                            const dmr_t3_grant_class* grant, int emergency) {
     char suf[24];
     dmr_format_chan_suffix(lcn, suf, sizeof suf);
+    const dsd_call_kind call_kind = dmr_cspdu_pf0_grant_call_kind(grant);
     const char* kind = "Active Private Ch";
-    if (csbk_o == 49 || csbk_o == 50) {
-        kind = "Active Group Ch";
-    } else if (dmr_cspdu_pf0_is_data_grant_opcode(csbk_o)) {
+    if (call_kind == DSD_CALL_KIND_DATA) {
         kind = "Active Data Ch";
+    } else if (call_kind == DSD_CALL_KIND_GROUP_VOICE) {
+        kind = "Active Group Ch";
     }
     char notice[DSD_RECENT_ACTIVITY_TEXT_SIZE];
-    DSD_SNPRINTF(notice, sizeof notice, "%s: %04X%s TG: %u; ", kind, channel, suf, (unsigned)target);
-    const dsd_call_kind call_kind =
-        dmr_cspdu_pf0_is_data_grant_opcode(csbk_o)
-            ? DSD_CALL_KIND_DATA
-            : ((csbk_o == 49 || csbk_o == 50) ? DSD_CALL_KIND_GROUP_VOICE : DSD_CALL_KIND_PRIVATE_VOICE);
-    dmr_csbk_publish_activity(state, lcn, lcn, call_kind, target, source, channel, frequency, emergency, notice);
+    DSD_SNPRINTF(notice, sizeof notice, "%s: %04X%s TG: %u; ", kind, channel, suf, (unsigned)grant->recipient);
+    dmr_csbk_publish_activity(state, lcn, lcn, call_kind, grant->recipient, grant->caller, channel, frequency,
+                              emergency, notice);
 }
 
 static void
@@ -323,20 +318,17 @@ dmr_cspdu_pf0_print_frequency(uint16_t lpchannum, long int freq) {
 
 static void
 dmr_cspdu_pf0_publish_active_grant(dsd_state* state, uint8_t lcn, uint16_t lpchannum, uint16_t mbc_lpchannum,
-                                   long int frequency, uint32_t target, uint32_t source, int csbk_o, int emergency) {
+                                   long int frequency, const dmr_t3_grant_class* grant, int emergency) {
     if (lpchannum != 0 && lpchannum != 0xFFF) {
-        dmr_cspdu_pf0_publish_grant(state, lcn, lpchannum, frequency, target, source, csbk_o, emergency);
+        dmr_cspdu_pf0_publish_grant(state, lcn, lpchannum, frequency, grant, emergency);
     } else if (lpchannum == 0xFFF) {
-        dmr_cspdu_pf0_publish_grant(state, lcn, mbc_lpchannum, frequency, target, source, csbk_o, emergency);
+        dmr_cspdu_pf0_publish_grant(state, lcn, mbc_lpchannum, frequency, grant, emergency);
     }
 }
 
 static int
-dmr_cspdu_pf0_prepare_dispatch(const dsd_opts* opts, dsd_state* state, int* csbk_o, int* data_call, long int freq) {
-    if (dmr_cspdu_pf0_should_skip_call(opts, csbk_o, data_call)) {
-        return 0;
-    }
-    if (!(*csbk_o == 48 || *csbk_o == 49 || *csbk_o == 50 || *csbk_o == 53)) {
+dmr_cspdu_pf0_prepare_dispatch(const dsd_opts* opts, dsd_state* state, const dmr_t3_grant_class* grant, long int freq) {
+    if (dmr_cspdu_pf0_should_skip_call(opts, grant)) {
         return 0;
     }
     // A Hold grant is admitted by its own decision (tg_hold_match), never by wiping the voice-sync stamp the
@@ -349,27 +341,24 @@ dmr_cspdu_pf0_prepare_dispatch(const dsd_opts* opts, dsd_state* state, int* csbk
 }
 
 static void
-dmr_cspdu_pf0_try_dispatch_grant(dsd_opts* opts, dsd_state* state, uint8_t cs_pdu_bits[], uint8_t cs_pdu[], int csbk_o,
-                                 int data_call, uint16_t call_channel, long int freq, uint32_t target,
-                                 uint32_t source) {
+dmr_cspdu_pf0_try_dispatch_grant(dsd_opts* opts, dsd_state* state, uint8_t cs_pdu_bits[], uint8_t cs_pdu[],
+                                 const dmr_t3_grant_class* grant, uint16_t call_channel, long int freq) {
     if (state->trunk_cc_freq == 0 || opts->trunk_enable != 1 || freq == 0) {
         return;
     }
 
-    const int is_group_call = (csbk_o == 49 || csbk_o == 50) ? 1 : 0;
+    const uint32_t target = grant->recipient;
+    const uint32_t source = grant->caller;
     dsd_tg_policy_decision policy_decision;
     int policy_allowed =
-        dmr_policy_tune_allowed(opts, state, target, source, is_group_call, data_call, &policy_decision);
+        dmr_policy_tune_allowed(opts, state, target, source, grant->group, grant->data, &policy_decision);
     if (!policy_allowed) {
-        dmr_policy_log_block(opts, is_group_call, target, source, &policy_decision);
+        dmr_policy_log_block(opts, grant->group, target, source, &policy_decision);
         return;
     }
 
-    dmr_csbk_print_target_label(state,
-                                data_call       ? DSD_CALL_KIND_DATA
-                                : is_group_call ? DSD_CALL_KIND_GROUP_VOICE
-                                                : DSD_CALL_KIND_PRIVATE_VOICE,
-                                target);
+    // The target's label from its own namespace: a talkgroup's for a group grant, a radio's for a private one.
+    dmr_csbk_print_target_label(state, grant->group ? DSD_CALL_KIND_GROUP_VOICE : DSD_CALL_KIND_PRIVATE_VOICE, target);
 
     struct dmr_csbk_result res;
     if (dmr_csbk_parse(cs_pdu_bits, cs_pdu, &res) != 0) {
@@ -377,26 +366,24 @@ dmr_cspdu_pf0_try_dispatch_grant(dsd_opts* opts, dsd_state* state, uint8_t cs_pd
     }
     res.freq_hz = freq;
     res.lpcn = call_channel;
-    res.opcode = (uint8_t)csbk_o;
-    res.target = target;
-    res.source = source;
-    res.data_call = data_call;
     res.policy_valid = 1;
     res.policy = policy_decision;
     dmr_csbk_handle(&res, opts, state);
 }
 
+/* A channel grant (TS 102 361-4 §7.1.1.1.1). Opcode 56 on MS-sourced data is BS_Dwn_Act, never a grant. The console
+   line, the activity row, the policy and the trunk state machine all take the grant's classes and its called and
+   calling parties from dmr_t3_grant_classify(). */
 static void
 dmr_cspdu_pf0_handle_grants(dsd_opts* opts, dsd_state* state, uint8_t cs_pdu_bits[], uint8_t cs_pdu[], int csbk_o) {
-    if (csbk_o < 48 || csbk_o > 56) {
+    dmr_t3_grant_class grant;
+    if (!dmr_t3_grant_classify(csbk_o, cs_pdu_bits, state->synctype != DSD_SYNC_DMR_MS_DATA, &grant)) {
         return;
     }
 
     DSD_FPRINTF(stderr, "\n");
     long int freq = 0;
-    if (!(csbk_o == 56 && state->synctype == DSD_SYNC_DMR_MS_DATA)) {
-        DSD_FPRINTF(stderr, " %s", dmr_csbk_grant_opcode_name((uint8_t)csbk_o));
-    }
+    DSD_FPRINTF(stderr, " %s", dmr_csbk_grant_opcode_name((uint8_t)csbk_o));
 
     uint16_t lpchannum = (uint16_t)convert_bits_into_output(&cs_pdu_bits[16], 12);
     dmr_cspdu_pf0_print_channel_kind(lpchannum);
@@ -404,16 +391,14 @@ dmr_cspdu_pf0_handle_grants(dsd_opts* opts, dsd_state* state, uint8_t cs_pdu_bit
     uint16_t pluschannum = (uint16_t)convert_bits_into_output(&cs_pdu_bits[16], 13) + 1;
     uint8_t lcn = cs_pdu_bits[28];
     uint8_t st2 = cs_pdu_bits[30];
-    uint32_t target = (uint32_t)convert_bits_into_output(&cs_pdu_bits[32], 24);
-    uint32_t source = (uint32_t)convert_bits_into_output(&cs_pdu_bits[56], 24);
 
     DSD_FPRINTF(stderr, "\n");
-    DSD_FPRINTF(stderr, "  LPCN: %04d; TS: %d; LPCN+TS: %04d; Target: %08d - Source: %08d ", lpchannum, lcn + 1,
-                pluschannum, target, source);
+    DSD_FPRINTF(stderr, "  LPCN: %04d; TS: %d; LPCN+TS: %04d; Target: %08u - Source: %08u ", lpchannum, lcn + 1,
+                pluschannum, grant.recipient, grant.caller);
     if (st2) {
         DSD_FPRINTF(stderr, "Emergency; ");
     }
-    dmr_gateway_identifier(source, target);
+    dmr_gateway_identifier(grant.caller, grant.recipient);
 
     uint16_t mbc_lpchannum = 0;
     if (!dmr_cspdu_pf0_resolve_frequency(opts, state, cs_pdu_bits, lpchannum, &freq, &mbc_lpchannum)) {
@@ -421,15 +406,14 @@ dmr_cspdu_pf0_handle_grants(dsd_opts* opts, dsd_state* state, uint8_t cs_pdu_bit
     }
     dmr_cspdu_pf0_print_frequency(lpchannum, freq);
 
-    dmr_cspdu_pf0_publish_active_grant(state, lcn, lpchannum, mbc_lpchannum, freq, target, source, csbk_o, st2);
+    dmr_cspdu_pf0_publish_active_grant(state, lcn, lpchannum, mbc_lpchannum, freq, &grant, st2);
 
-    int data_call = 0;
-    if (!dmr_cspdu_pf0_prepare_dispatch(opts, state, &csbk_o, &data_call, freq)) {
+    if (!dmr_cspdu_pf0_prepare_dispatch(opts, state, &grant, freq)) {
         return;
     }
 
-    dmr_cspdu_pf0_try_dispatch_grant(opts, state, cs_pdu_bits, cs_pdu, csbk_o, data_call,
-                                     dmr_cspdu_pf0_call_channel(lpchannum, mbc_lpchannum), freq, target, source);
+    dmr_cspdu_pf0_try_dispatch_grant(opts, state, cs_pdu_bits, cs_pdu, &grant,
+                                     dmr_cspdu_pf0_call_channel(lpchannum, mbc_lpchannum), freq);
 }
 
 /* The TSCC an absolute C_MOVE's MV_AP or an absolute P_CLEAR's appended block names (CHAN @p chan, which may name no

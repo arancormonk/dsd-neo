@@ -14438,6 +14438,7 @@ add_executable(
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_csbk_parse.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_csbk_tables.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_ras.c
+    ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_t3_grant.c
     ${PROJECT_SOURCE_DIR}/src/core/util/dsd_state_trunk_lcn.c
     ${PROJECT_SOURCE_DIR}/src/core/util/dsd_state_lcn_nav.c
 )
@@ -14492,6 +14493,7 @@ add_executable(
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_csbk_parse.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_csbk_tables.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_ras.c
+    ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_t3_grant.c
 )
 target_link_libraries(
     dsd-neo_test_dmr_t3_force_release
@@ -14541,6 +14543,7 @@ add_executable(
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_csbk_parse.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_csbk_tables.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_ras.c
+    ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_t3_grant.c
     ${PROJECT_SOURCE_DIR}/src/core/util/dsd_state_trunk_lcn.c
     ${PROJECT_SOURCE_DIR}/src/core/util/dsd_state_lcn_nav.c
 )
@@ -14594,6 +14597,7 @@ add_executable(
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_csbk_parse.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_csbk_tables.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_ras.c
+    ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_t3_grant.c
 )
 target_link_libraries(
     dsd-neo_test_dmr_t3_ann_wd_tscc
@@ -16172,6 +16176,7 @@ add_executable(
     protocol/dmr/test_dmr_csbk_helpers.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_csbk_parse.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_csbk_tables.c
+    ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_t3_grant.c
 )
 target_include_directories(
     dsd-neo_test_dmr_csbk_helpers
@@ -17501,7 +17506,10 @@ target_include_directories(
     dsd-neo_test_dmr_grant_policy
     PRIVATE ${PROJECT_SOURCE_DIR}/include ${PROJECT_SOURCE_DIR}/src/protocol/dmr
 )
-target_link_libraries(dsd-neo_test_dmr_grant_policy PRIVATE dsd-neo_proto_dmr)
+target_link_libraries(
+    dsd-neo_test_dmr_grant_policy
+    PRIVATE dsd-neo_proto_dmr dsd-neo_test_support
+)
 add_test(NAME DMR_GRANT_POLICY COMMAND dsd-neo_test_dmr_grant_policy)
 
 # DMR Tier III channel provenance: one over-the-air writer, origins, network change, notices (discussion #900 F2)

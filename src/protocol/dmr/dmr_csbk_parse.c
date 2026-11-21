@@ -12,6 +12,7 @@
 #include <dsd-neo/core/call_state.h>
 
 #include <dsd-neo/protocol/dmr/dmr_csbk_parse.h>
+#include <dsd-neo/protocol/dmr/dmr_t3_grant.h>
 #include <dsd-neo/protocol/dmr/dmr_trunk_sm.h>
 #include <stddef.h>
 #include <stdint.h>
@@ -35,8 +36,10 @@ dmr_csbk_parse(const uint8_t* cs_pdu_bits, const uint8_t* cs_pdu, struct dmr_csb
     out->opcode = (uint8_t)(cs_pdu[0] & 0x3FU);
     out->fid = (uint8_t)cs_pdu[1];
 
-    /* For channel grant CSBK/MBC PDUs (ETSI 7.1.1.1.1), decode common fields. */
-    if (out->opcode >= 48 && out->opcode <= 56) {
+    /* For channel grant CSBK/MBC PDUs (ETSI 7.1.1.1.1), decode common fields. The caller has already told an
+       inbound BS_Dwn_Act (56 on MS data) from a grant. */
+    dmr_t3_grant_class grant;
+    if (dmr_t3_grant_classify(out->opcode, cs_pdu_bits, 1, &grant)) {
         out->lpcn = (uint16_t)convert_bits_into_output((uint8_t*)&cs_pdu_bits[16], 12U);
         out->pluschannum = (uint16_t)convert_bits_into_output((uint8_t*)&cs_pdu_bits[16], 13U);
         out->pluschannum = (uint16_t)(out->pluschannum + 1U);
@@ -44,8 +47,10 @@ dmr_csbk_parse(const uint8_t* cs_pdu_bits, const uint8_t* cs_pdu, struct dmr_csb
         out->st1 = cs_pdu_bits[29];
         out->st2 = cs_pdu_bits[30];
         out->st3 = cs_pdu_bits[31];
-        out->target = (uint32_t)convert_bits_into_output((uint8_t*)&cs_pdu_bits[32], 24U);
-        out->source = (uint32_t)convert_bits_into_output((uint8_t*)&cs_pdu_bits[56], 24U);
+        out->target = grant.recipient;
+        out->source = grant.caller;
+        out->group_call = grant.group;
+        out->data_call = grant.data;
     }
 
     return 0;
@@ -64,10 +69,10 @@ dmr_csbk_handle(const struct dmr_csbk_result* res, dsd_opts* opts, dsd_state* st
         const int is_channel = dmr_t3_lpcn_is_channel(res->lpcn);
         int lpcn = is_channel ? (int)res->lpcn : 0;
 
-        /* Group vs individual is made on opcode (a data grant followed as a group was rewritten to 49); the data
-           classification and the policy verdict travel with it. */
-        dmr_sm_event_t ev = (res->opcode == 49) ? dmr_sm_ev_group_grant(freq, lpcn, (int)res->target, (int)res->source)
-                                                : dmr_sm_ev_indiv_grant(freq, lpcn, (int)res->target, (int)res->source);
+        /* Group vs individual and data vs voice are the grant's own classes (dmr_t3_grant_classify()); the policy
+           verdict travels with them. */
+        dmr_sm_event_t ev = res->group_call ? dmr_sm_ev_group_grant(freq, lpcn, (int)res->target, (int)res->source)
+                                            : dmr_sm_ev_indiv_grant(freq, lpcn, (int)res->target, (int)res->source);
         ev.slot = (int)(res->lcn & 1U);
         ev.channel_kind = is_channel ? (uint8_t)DSD_CALL_CHANNEL_LPCN : (uint8_t)DSD_CALL_CHANNEL_NONE;
         if (res->data_call) {

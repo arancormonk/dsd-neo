@@ -13268,7 +13268,8 @@ Tests: `P25_SEARCH_SITE_NOTES`, `P25_P1_SYNC_DISPATCH`, `P25_P2_ESS_CARRIER`, `D
 Key public headers (selection):
 
 - DMR: `<dsd-neo/protocol/dmr/dmr_utils_api.h>`, `<dsd-neo/protocol/dmr/dmr_trunk_sm.h>`,
-  `<dsd-neo/protocol/dmr/dmr_t3_channels.h>` (Tier III channel provenance, below)
+  `<dsd-neo/protocol/dmr/dmr_t3_channels.h>` (Tier III channel provenance, below),
+  `<dsd-neo/protocol/dmr/dmr_t3_grant.h>` (Tier III grant classes, below)
 - P25: `<dsd-neo/protocol/p25/p25p1_const.h>`, `<dsd-neo/protocol/p25/p25_trunk_sm.h>`,
   `<dsd-neo/protocol/p25/p25_sm_watchdog.h>` (a watchdog thread that cannot start leaves the watchdog off, logged, and
   a stop joins only a thread that started; `p25_sm_watchdog_set_thread_create_for_test()`, compiled only with
@@ -13434,9 +13435,18 @@ Private per-protocol modules worth knowing about:
   a current-site hunt candidate, whether or not it is for the followed call; the release still returns where the
   machine returns. Ann_WD_TSCC, Vote_Now and Adjacent_Site add candidates under the same gate. Tests:
   `DMR_T3_FORCE_RELEASE`, `DMR_T3_MOVE_RELEASE`, `DMR_GRANT_POLICY`, `DMR_T3_CHANNELS`.
+- Tier III grant classes (`dmr_t3_grant.c`, `<dsd-neo/protocol/dmr/dmr_t3_grant.h>`, discussion #900 B8).
+  `dmr_t3_grant_classify()` is the one classifier of a channel grant (TS 102 361-4 Tables 7.9-7.15): group {49, 50,
+  52, 56} or private {48, 51, 53, 54, 55}, and data {51, 52, 54, 55, 56} or voice, the two kept apart; 56 on MS-sourced
+  data is BS_Dwn_Act, never a grant. A duplex grant (53, 54) reads Call Direction (bit 31: whether bits 32-55 name the
+  calling or the called MS) to name its caller and recipient. Eligibility (`dmr_cspdu_pf0_prepare_dispatch()`: data
+  tuning for a data grant, then group or private tuning by group class), the talkgroup policy (group or private call,
+  data flag), the console line, the activity row and the trunk state machine event (`dmr_csbk_parse()` fills
+  `group_call`, `data_call`, target = recipient and source = caller) all take it; no opcode is rewritten. Tests:
+  `DMR_GRANT_POLICY`, `DMR_CSBK_HELPERS`.
 - DMR talkgroup priority and preemption (`dmr_trunk_sm.c`, `dmr_csbk.c`, `dmr_csbk_parse.c`, `dmr_flco.c`). Policy
-  stays at the CSBK/status layer, which alone knows each grant's classification (Tier III data grants rewritten to
-  group, Connect Plus private refused with group tuning off, Cap+ private LSNs, XPT kinds); its decision, call kind,
+  stays at the CSBK/status layer, which alone knows each grant's classification (Tier III grant classes, Connect Plus
+  private refused with group tuning off, Cap+ private LSNs, XPT kinds); its decision, call kind,
   identity and origin travel on `dmr_sm_event_t` to `dmr_sm_submit_grant()` (FOLLOWED / IN_PLACE / REFUSED / BUSY /
   DEFERRED), which never re-evaluates a grant. The `dmr_sm_emit_*_grant*` wrappers carry no decision and are never a
   Hold or preemption candidate.

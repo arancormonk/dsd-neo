@@ -40,6 +40,7 @@
 #include "dsd-neo/core/state_fwd.h"
 
 #include "../../test_support/radio_policy_test.h"
+#include "test_support.h"
 
 #if defined(__GNUC__) && !defined(__cplusplus)
 #pragma GCC diagnostic push
@@ -2073,6 +2074,126 @@ test_grant_naming_blocked_radio_not_tuned(dsd_opts* opts, dsd_state* st, uint16_
     return rc;
 }
 
+/* ---- Tier III grant classes (TS 102 361-4 Tables 7.9-7.15, discussion #900 B8) ---- */
+
+/* @p opcode granted on @p lpcn to @p target from @p source on slot 1 with group and private tuning as given; 1 when it
+   was followed to @p freq. */
+static int
+grant_class_followed(dsd_opts* opts, dsd_state* st, uint8_t opcode, int group_on, int private_on, uint16_t lpcn,
+                     long freq, uint32_t target, uint32_t source) {
+    uint8_t bits[256];
+    uint8_t bytes[48];
+    reset_to_cc(opts, st);
+    opts->trunk_tune_group_calls = group_on;
+    opts->trunk_tune_private_calls = private_on;
+    build_grant(bits, bytes, opcode, lpcn, target, source, 0U);
+    dmr_cspdu(opts, st, bits, bytes, 1U, 0U);
+    return opts->trunk_is_tuned == 1 && st->trunk_vc_freq[0] == freq;
+}
+
+/* With data tuning on, a data grant is judged by its own class, never rewritten to a group voice grant: PD_GRANT
+   (0x33 single, 0x37 multi) and PD_GRANT_DX (0x36) by the private-call settings, TD_GRANT (0x34 single, 0x38 multi)
+   by the group-call ones. With data tuning off none is followed. */
+static int
+test_data_grant_classes(dsd_opts* opts, dsd_state* st, uint16_t lpcn, long freq) {
+    static const uint8_t k_private_data[] = {0x33U, 0x37U, 0x36U};
+    static const uint8_t k_group_data[] = {0x34U, 0x38U};
+    int rc = 0;
+    init_env(opts, st);
+    st->trunk_chan_map[lpcn] = freq;
+    for (size_t i = 0; i < sizeof k_private_data; i++) {
+        const uint8_t op = k_private_data[i];
+        const uint32_t id = 7100U + (uint32_t)i;
+        rc |= expect_true("private data grant followed with group tuning off",
+                          grant_class_followed(opts, st, op, 0, 1, lpcn, freq, id, id + 100U));
+        rc |= expect_true("private data grant followed as an individual call",
+                          dmr_sm_get_ctx()->vc_is_group == 0 && dmr_sm_get_ctx()->vc_dst == (int)id
+                              && dmr_sm_get_ctx()->vc_src == (int)(id + 100U));
+        rc |= expect_true("private data grant blocked with private tuning off",
+                          !grant_class_followed(opts, st, op, 1, 0, lpcn, freq, id + 10U, id + 110U));
+    }
+    for (size_t i = 0; i < sizeof k_group_data; i++) {
+        const uint8_t op = k_group_data[i];
+        const uint32_t id = 7200U + (uint32_t)i;
+        rc |= expect_true("group data grant followed with private tuning off",
+                          grant_class_followed(opts, st, op, 1, 0, lpcn, freq, id, id + 100U));
+        rc |= expect_true("group data grant followed as a group call",
+                          dmr_sm_get_ctx()->vc_is_group == 1 && dmr_sm_get_ctx()->vc_tg == (int)id);
+        rc |= expect_true("group data grant blocked with group tuning off",
+                          !grant_class_followed(opts, st, op, 0, 1, lpcn, freq, id + 10U, id + 110U));
+    }
+    opts->trunk_tune_data_calls = 0;
+    for (uint8_t op = 0x33U; op <= 0x38U; op++) {
+        if (op == 0x35U) {
+            continue;
+        }
+        rc |= expect_true("data grant not followed with data tuning off",
+                          !grant_class_followed(opts, st, op, 1, 1, lpcn, freq, 7300U + op, 7400U));
+    }
+    opts->trunk_tune_data_calls = 1;
+
+    // Opcode 0x38 on MS-sourced data is BS_Dwn_Act, never a grant: no activity row, nothing followed.
+    (void)dsd_recent_activity_clear(st, 0U);
+    st->synctype = DSD_SYNC_DMR_MS_DATA;
+    rc |= expect_true("BS_Dwn_Act on MS data is not followed",
+                      !grant_class_followed(opts, st, 0x38U, 1, 1, lpcn, freq, 7500U, 7501U));
+    rc |= expect_true("BS_Dwn_Act on MS data publishes no grant activity", recent_activity_is_empty(st, 0U));
+    st->synctype = 0;
+    reset_to_cc(opts, st);
+    return rc;
+}
+
+/* A duplex grant (PV_GRANT_DX 0x35, PD_GRANT_DX 0x36; Tables 7.10 and 7.14) names its target MS in bits 32-55 and the
+   call partner in bits 56-79; Call Direction (bit 31) says whether that target is the called MS (0) or the calling MS
+   (1). The trunk state machine, the console line and the activity row all name the called MS as the target and the
+   calling MS as the source. */
+static int
+test_duplex_grant_direction(dsd_opts* opts, dsd_state* st, uint16_t lpcn, long freq) {
+    static const struct {
+        uint8_t opcode;
+        uint8_t direction;
+        uint32_t called;
+        uint32_t calling;
+        dsd_call_kind kind;
+        const char* line;
+    } cases[] = {
+        {0x35U, 0U, 8001U, 8002U, DSD_CALL_KIND_PRIVATE_VOICE, "Target: 00008001 - Source: 00008002"},
+        {0x35U, 1U, 8002U, 8001U, DSD_CALL_KIND_PRIVATE_VOICE, "Target: 00008002 - Source: 00008001"},
+        {0x36U, 0U, 8001U, 8002U, DSD_CALL_KIND_DATA, "Target: 00008001 - Source: 00008002"},
+        {0x36U, 1U, 8002U, 8001U, DSD_CALL_KIND_DATA, "Target: 00008002 - Source: 00008001"},
+    };
+
+    int rc = 0;
+    char out[4096];
+    init_env(opts, st);
+    st->trunk_chan_map[lpcn] = freq;
+    for (size_t i = 0; i < sizeof cases / sizeof cases[0]; i++) {
+        uint8_t bits[256];
+        uint8_t bytes[48];
+        reset_to_cc(opts, st);
+        (void)dsd_recent_activity_clear(st, 0U);
+        // The target address field (bits 32-55) always holds 8001, the partner field (56-79) 8002.
+        build_grant(bits, bytes, cases[i].opcode, lpcn, 8001U, 8002U, 0U);
+        bits[31] = cases[i].direction;
+        dsd_test_capture_stderr cap;
+        out[0] = '\0';
+        rc |= expect_true("duplex capture begin", dsd_test_capture_stderr_begin(&cap, "dmr_grant_dx") == 0);
+        dmr_cspdu(opts, st, bits, bytes, 1U, 0U);
+        rc |= expect_true("duplex capture end", dsd_test_capture_stderr_end(&cap) == 0);
+        rc |= expect_true("duplex capture read", dsd_test_capture_stderr_read(&cap, out, sizeof out) == 0);
+        rc |= expect_true("duplex grant followed", opts->trunk_is_tuned == 1 && st->trunk_vc_freq[0] == freq);
+        rc |= expect_true("duplex grant event names the called MS as target and the calling MS as source",
+                          dmr_sm_get_ctx()->vc_is_group == 0 && dmr_sm_get_ctx()->vc_dst == (int)cases[i].called
+                              && dmr_sm_get_ctx()->vc_src == (int)cases[i].calling);
+        rc |= expect_true("duplex grant console line names called and calling", strstr(out, cases[i].line) != NULL);
+        rc |=
+            expect_true("duplex grant activity row names called and calling",
+                        recent_activity_matches(st, 0U, cases[i].kind, cases[i].called, cases[i].calling, lpcn, NULL));
+    }
+    reset_to_cc(opts, st);
+    return rc;
+}
+
 int
 main(void) {
     int rc = 0;
@@ -2092,6 +2213,8 @@ main(void) {
 
     install_trunk_tuning_hooks();
     rc |= test_grant_naming_blocked_radio_not_tuned(opts, st, lpcn, freq);
+    rc |= test_data_grant_classes(opts, st, lpcn, freq);
+    rc |= test_duplex_grant_direction(opts, st, lpcn, freq);
     init_env(opts, st);
     st->trunk_chan_map[lpcn] = freq;
     opts->trunk_use_allow_list = 1;
@@ -2127,7 +2250,7 @@ main(void) {
     reset_to_cc(opts, st);
     build_grant(bits, bytes, 52U, lpcn, 1300U, 2300U, 1U);
     dmr_cspdu(opts, st, bits, bytes, 1U, 0U);
-    rc |= expect_true("data grant enabled for tuning is normalized to group", dmr_sm_get_ctx()->vc_tg == 1300);
+    rc |= expect_true("TD_GRANT is followed as a group call", dmr_sm_get_ctx()->vc_tg == 1300);
 
     reset_to_cc(opts, st);
     build_absolute_grant(bits, bytes, 49U, 3300U, 4400U, 0U, 88U, 452U, 100U);
