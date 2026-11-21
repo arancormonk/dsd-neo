@@ -17510,7 +17510,10 @@ target_include_directories(
     dsd-neo_test_dmr_grant_policy
     PRIVATE ${PROJECT_SOURCE_DIR}/include
 )
-target_link_libraries(dsd-neo_test_dmr_grant_policy PRIVATE dsd-neo_proto_dmr)
+target_link_libraries(
+    dsd-neo_test_dmr_grant_policy
+    PRIVATE dsd-neo_proto_dmr dsd-neo_test_support
+)
 add_test(NAME DMR_GRANT_POLICY COMMAND dsd-neo_test_dmr_grant_policy)
 
 # DMR talkgroup priority and preemption (busy view, hold-or-preempt gate, slot identities, ledger)

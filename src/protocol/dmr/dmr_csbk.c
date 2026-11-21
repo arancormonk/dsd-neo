@@ -530,11 +530,9 @@ dmr_cspdu_pf0_try_dispatch_grant(dsd_opts* opts, dsd_state* state, uint8_t cs_pd
         return;
     }
 
-    dmr_csbk_print_target_label(state,
-                                data_call       ? DSD_CALL_KIND_DATA
-                                : is_group_call ? DSD_CALL_KIND_GROUP_VOICE
-                                                : DSD_CALL_KIND_PRIVATE_VOICE,
-                                target);
+    // The label follows the target's address class (a private data grant's called radio by the radio list); the
+    // grant's media kind stays DATA for following and its activity row.
+    dmr_csbk_print_target_label(state, is_group_call ? DSD_CALL_KIND_GROUP_VOICE : DSD_CALL_KIND_PRIVATE_VOICE, target);
 
     struct dmr_csbk_result res;
     if (dmr_csbk_parse(cs_pdu_bits, cs_pdu, &res) != 0) {

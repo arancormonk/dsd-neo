@@ -39,6 +39,7 @@
 #include "dsd-neo/core/state_fwd.h"
 
 #include "../../test_support/radio_policy_test.h"
+#include "test_support.h"
 
 #if defined(__GNUC__) && !defined(__cplusplus)
 #pragma GCC diagnostic push
@@ -2162,6 +2163,55 @@ test_pd_grant_is_individual(dsd_opts* opts, dsd_state* st, uint16_t lpcn, long f
     return rc;
 }
 
+/* The grant line labels a data grant's target by its address class: a private data grant's called radio by the radio
+   list (never a talkgroup row that happens to carry the same number), a talkgroup data grant's group by the group list.
+   The media kind stays DATA for following and the activity row. */
+static int
+test_data_grant_label_by_address_class(dsd_opts* opts, dsd_state* st, uint16_t lpcn, long freq) {
+    const uint32_t id = 0x001234U;
+    uint8_t bits[256];
+    uint8_t bytes[48];
+    char out[8192];
+    int rc = 0;
+    install_trunk_tuning_hooks();
+    const uint8_t ops[2] = {51U, 52U}; // PD_GRANT, TD_GRANT
+    for (size_t i = 0; i < 2U; i++) {
+        init_env(opts, st);
+        st->trunk_chan_map[lpcn] = freq;
+        opts->trunk_tune_group_calls = 1;
+        opts->trunk_tune_private_calls = 1;
+        opts->trunk_tune_data_calls = 1;
+        dsd_tg_policy_entry row;
+        if (dsd_tg_policy_make_exact_entry(id, "A", "GROUP-NAME", DSD_TG_POLICY_SOURCE_IMPORTED, &row) != 0
+            || dsd_tg_policy_upsert_exact(st, &row, DSD_TG_POLICY_UPSERT_REPLACE_FIRST) != 0) {
+            abort();
+        }
+        const dsd_test_radio_row radio = {.id = id, .name = "RADIO-NAME"};
+        if (dsd_test_install_radio_rows(st, &radio, 1U) != 0) {
+            abort();
+        }
+        build_grant(bits, bytes, ops[i], lpcn, id, 0x005678U, 0U);
+        dsd_test_capture_stderr cap;
+        if (dsd_test_capture_stderr_begin(&cap, "dsdneo_dmr_data_label") != 0) {
+            abort();
+        }
+        dmr_cspdu(opts, st, bits, bytes, 1U, 0U);
+        (void)dsd_test_capture_stderr_end(&cap);
+        if (dsd_test_capture_stderr_read(&cap, out, sizeof out) != 0) {
+            abort();
+        }
+        const int private_grant = ops[i] == 51U;
+        rc |= expect_true(private_grant ? "a private data grant is labelled by the radio list"
+                                        : "a talkgroup data grant is labelled by the group list",
+                          strstr(out, private_grant ? "[RADIO-NAME]" : "[GROUP-NAME]") != NULL
+                              && strstr(out, private_grant ? "[GROUP-NAME]" : "[RADIO-NAME]") == NULL);
+        rc |= expect_true("the data grant is followed as data", dmr_sm_get_ctx()->vc_data_call == 1);
+        reset_to_cc(opts, st);
+    }
+    dsd_state_ext_free_all(st);
+    return rc;
+}
+
 static int
 recent_notice_contains(const dsd_state* state, uint8_t index, const char* fragment) {
     dsd_recent_activity_snapshot recent;
@@ -2325,6 +2375,7 @@ main(void) {
     install_trunk_tuning_hooks();
     rc |= test_grant_naming_blocked_radio_not_tuned(opts, st, lpcn, freq);
     rc |= test_pd_grant_is_individual(opts, st, lpcn, freq);
+    rc |= test_data_grant_label_by_address_class(opts, st, lpcn, freq);
     rc |= test_pd_grant_notice_and_voice_sync(opts, st, lpcn, freq);
     rc |= test_private_voice_grant_notice(opts, st, lpcn, freq);
     rc |= test_pd_grant_allow_list(opts, st, lpcn, freq);

@@ -3673,7 +3673,9 @@ suite runs under this compiler.
   (`dsd_tg_policy_lookup_group_label()`: talkgroup exact row, else narrowest range, else most specific pattern; a
   learned alias never labels a talkgroup, and a deciding row without a name labels nothing). A private call's target is
   a radio and takes the source label (`dsd_source_label_lookup()`: radio list, then the group list's exact row). Data
-  calls and voice of unknown kind keep the exact-row label. Every path returns 1 only with a non-empty name; a label
+  calls and voice of unknown kind keep the exact-row label; a DMR data grant's stderr line is labelled by its target's
+  address class instead (a private data grant's called radio as a radio, a talkgroup data grant's group as a group).
+  Every path returns 1 only with a non-empty name; a label
   without a mode prints no `Mode:`. A textual target (`target_text`, set by YSF, D-STAR, dPMR and M17, no numeric ID)
   is never looked up and keeps its text. A terminal site with no open call passes the group kind. Tests:
   `CORE_TALKGROUP_POLICY` (`test_group_label_from_range_and_pattern`, `test_alias_never_labels_talkgroup`),
