@@ -1041,26 +1041,37 @@ expect_rename_noreplace_in(const char* dir) {
 
 /* Whether the filesystem holding @p dir, a folder the test made, takes hard links, asked of the platform itself: some
    (FAT-like, exFAT, some FUSE, some shares) do not, and the fallbacks then claim the name or copy instead. On Windows
-   its volume says so; on POSIX a link is tried between names the probe makes in @p dir, and only what it made is
-   removed. */
+   its volume says so, asked through the wide or the ANSI call as dsd_hard_link() picks it (dsd_win32_path_wide()); on
+   POSIX a link is tried between names the probe makes in @p dir, and only what it made is removed. -1 when a probe
+   name does not fit, before any file is touched. */
 static int
 dir_takes_hard_links(const char* dir) {
 #if DSD_PLATFORM_WIN_NATIVE
 #ifndef FILE_SUPPORTS_HARD_LINKS
 #define FILE_SUPPORTS_HARD_LINKS 0x00400000
 #endif
-    wchar_t* wide = dsd_win32_utf8_path_to_wide(dir);
-    wchar_t root[MAX_PATH + 1];
+    wchar_t* wide = NULL;
+    const int kind = dsd_win32_path_wide(dir, &wide);
     DWORD flags = 0;
-    const int known = wide != NULL && GetVolumePathNameW(wide, root, MAX_PATH + 1)
-                      && GetVolumeInformationW(root, NULL, 0, NULL, NULL, &flags, NULL, 0);
+    int known = 0;
+    if (kind > 0) {
+        wchar_t root[MAX_PATH + 1];
+        known = GetVolumePathNameW(wide, root, MAX_PATH + 1)
+                && GetVolumeInformationW(root, NULL, 0, NULL, NULL, &flags, NULL, 0);
+    } else if (kind == 0) {
+        char root[MAX_PATH + 1];
+        known = GetVolumePathNameA(dir, root, MAX_PATH + 1)
+                && GetVolumeInformationA(root, NULL, 0, NULL, NULL, &flags, NULL, 0);
+    }
     free(wide);
     return known && (flags & FILE_SUPPORTS_HARD_LINKS) != 0;
 #else
-    char a[512];
-    char b[512];
-    DSD_SNPRINTF(a, sizeof a, "%s/link_probe.a", dir);
-    DSD_SNPRINTF(b, sizeof b, "%s/link_probe.b", dir);
+    char a[DSD_TEST_PATH_MAX];
+    char b[DSD_TEST_PATH_MAX];
+    if (dsd_test_path_join(a, sizeof a, dir, "link_probe.a") != 0
+        || dsd_test_path_join(b, sizeof b, dir, "link_probe.b") != 0) {
+        return -1;
+    }
     int opened = 0;
     FILE* fp = dsd_fopen_private_ex(a, "wbx", &opened);
     if (fp == NULL) {
@@ -1081,15 +1092,23 @@ dir_takes_hard_links(const char* dir) {
 
 /* Issue #888: a hard link names the same file under a second name, never over an existing one (EEXIST, both files as
    they were), and keeps every byte once the first name is removed. Where the filesystem takes none (the exporter then copies),
-   only the refusals are checked. */
+   only the refusals are checked. A fixture name that does not fit fails the test before any file is touched. */
 static int
 expect_hard_link_in(const char* dir) {
-    char from[512];
-    char taken[512];
-    char to[512];
-    DSD_SNPRINTF(from, sizeof from, "%s%sdsd_neo_link_from.tmp", dir, dir[0] ? "/" : "");
-    DSD_SNPRINTF(taken, sizeof taken, "%s%sdsd_neo_link_taken.tmp", dir, dir[0] ? "/" : "");
-    DSD_SNPRINTF(to, sizeof to, "%s%sdsd_neo_link_to.tmp", dir, dir[0] ? "/" : "");
+    char from[DSD_TEST_PATH_MAX];
+    char taken[DSD_TEST_PATH_MAX];
+    char to[DSD_TEST_PATH_MAX];
+    if (dsd_test_path_join(from, sizeof from, dir, "dsd_neo_link_from.tmp") != 0
+        || dsd_test_path_join(taken, sizeof taken, dir, "dsd_neo_link_taken.tmp") != 0
+        || dsd_test_path_join(to, sizeof to, dir, "dsd_neo_link_to.tmp") != 0) {
+        DSD_FPRINTF(stderr, "hard link: the fixture names do not fit under %s\n", dir);
+        return 1;
+    }
+    const int links = dir_takes_hard_links(dir);
+    if (links < 0) {
+        DSD_FPRINTF(stderr, "hard link: the probe names do not fit under %s\n", dir);
+        return 1;
+    }
     (void)dsd_remove_file(from);
     (void)dsd_remove_file(taken);
     (void)dsd_remove_file(to);
@@ -1103,7 +1122,6 @@ expect_hard_link_in(const char* dir) {
     errno = 0;
     ok = ok && dsd_hard_link(from, taken) == -1 && errno == EEXIST;
     ok = ok && file_text_is(from, "from") && file_text_is(taken, "taken");
-    const int links = dir_takes_hard_links(dir);
     if (links) {
         ok = ok && dsd_hard_link(from, to) == 0 && file_text_is(to, "from");
         ok = ok && dsd_path_same_file(from, to, &same) == 0 && same == 1;

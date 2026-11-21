@@ -4971,8 +4971,10 @@ test_recording_rdio_unknown_talkgroup_roundtrip(void) {
         DSD_FPRINTF(stderr, "FAIL: rdio_unknown_talkgroup did not load (%d)\n", cfg.rdio_unknown_talkgroup);
         return 1;
     }
-    static dsd_opts opts;
-    static dsd_state state;
+    auto opts_storage = std::unique_ptr<dsd_opts>(new dsd_opts{});
+    auto state_storage = std::unique_ptr<dsd_state>(new dsd_state{});
+    dsd_opts& opts = *opts_storage;
+    dsd_state& state = *state_storage;
     reset_opts_and_state(opts, state);
     if (opts.rdio_unknown_talkgroup != 0) {
         DSD_FPRINTF(stderr, "FAIL: rdio_unknown_talkgroup defaults to %d, want 0\n", opts.rdio_unknown_talkgroup);

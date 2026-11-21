@@ -7207,8 +7207,18 @@ target_link_libraries(
     PRIVATE dsd-neo_runtime dsd-neo_test_support
 )
 # The cases that need a fault at one call (a hard link, a private open, the worker's join) wrap those calls, so they
-# exist only where GNU ld --wrap links, like the other wrap tests (on POSIX dsd_thread_join() is pthread_join()).
-if(NOT APPLE AND NOT WIN32 AND (CMAKE_C_COMPILER_ID MATCHES "GNU|Clang"))
+# exist only where GNU ld --wrap links, like the other wrap tests (on POSIX dsd_thread_join() is pthread_join()). Not
+# under IPO/LTO, which can inline or resolve the wrapped calls before the linker sees them: the cases are skipped
+# there.
+if(
+    NOT APPLE
+    AND NOT WIN32
+    AND (CMAKE_C_COMPILER_ID MATCHES "GNU|Clang")
+    AND NOT DSD_ENABLE_LTO
+    AND NOT CMAKE_INTERPROCEDURAL_OPTIMIZATION
+    AND NOT CMAKE_INTERPROCEDURAL_OPTIMIZATION_RELEASE
+    AND NOT CMAKE_INTERPROCEDURAL_OPTIMIZATION_RELWITHDEBINFO
+)
     target_compile_definitions(
         dsd-neo_test_runtime_rdio_export
         PRIVATE DSD_TEST_WRAP_RDIO_SEAMS=1
