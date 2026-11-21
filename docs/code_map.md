@@ -2407,11 +2407,13 @@ suite runs under this compiler.
   when the epoch already committed one, revises that row in place (`commit_rev` moves). `Event_History::heard_variant`
   and `heard_id` come only from the row's own canonical call (`staged_is_own`): a non-canonical notice carries none. A
   reacquisition merge keeps the row's proof and fills one it lacks, and a CRC failure marked on the row later leaves it
-  (fragment trust). `Event_History::live_input` is `dsd_opts_input_is_live()` (`opts.h`: an RTL-family input other than
-  an I/Q replay, Pulse, UDP or TCP PCM; not files, stdin, symbol captures or `--playfiles`) at the row's first render,
-  frozen with `operator_tuned`. All three ride `push_event_history()`, `init_event_history()` and the whole-row copies
-  (trunk-scan snapshots, the UI snapshot, `dsd_app_history_tap_copy()`). No protocol calls the note yet. Test:
-  `CORE_HEARD_TALKGROUP` (its build counts classifier runs through `dsd_heard_tg_test_eval_count()`).
+  (fragment trust). `Event_History::live_input` is a fail-closed latch of `dsd_opts_input_is_live()` (`opts.h`: an
+  RTL-family input other than an I/Q replay, Pulse, UDP or TCP PCM; not files, stdin, symbol captures or
+  `--playfiles`): set at the row's first render, ANDed at every render and at the commit, ANDed across a merge, and
+  cleared when a proof revises a committed row after the epoch's staged row saw non-live input. All three ride
+  `push_event_history()`, `init_event_history()` and the whole-row copies (trunk-scan snapshots, the UI snapshot,
+  `dsd_app_history_tap_copy()`). No protocol calls the note yet. Test: `CORE_HEARD_TALKGROUP` (its build counts
+  classifier runs through `dsd_heard_tg_test_eval_count()`).
 - API note (call history rows, issue #575): every `Event_History` row records the frequency its call was heard on
   (`freq_hz`, Hz, 0 unknown) and its access code (`access_code_kind`, a `dsd_access_code_kind`, and `access_code`; zero
   means none, so a memset-zero row reads as unknown). `<dsd-neo/core/access_code.h>` (`src/core/util/access_code.c`,

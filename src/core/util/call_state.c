@@ -1591,18 +1591,25 @@ call_state_stamp_verified_rows(dsd_state* state, const dsd_call_state_ext* ext, 
     Event_History_I* ring = &state->event_history_s[slot];
     const dsd_call_event_lifecycle* lifecycle = &ext->events[slot];
     int changed = 0;
+    /* Whether the input is live now, as far as the note can tell without the options: the epoch's own staged row's
+       live-input latch, which every render ANDs with the input in force (issue #903); none (not live) without one. */
+    uint8_t live_now = 0U;
     if (lifecycle->epoch == call->epoch && !lifecycle->ended_committed) {
         Event_History* staged = &ring->Event_History_Items[0];
         staged->heard_variant = call->heard_variant;
         staged->heard_id = call->heard_id;
+        live_now = staged->live_input;
         changed = 1;
     }
     const uint8_t index =
         lifecycle->committed_epoch == call->epoch ? dsd_call_event_committed_row_index(ring, lifecycle) : (uint8_t)0U;
+    /* Always none here: heard_noted lets one note per epoch through, so a committed row is never re-proved. */
     if (index != 0U && ring->Event_History_Items[index].heard_variant == (uint8_t)DSD_HEARD_TG_NONE) {
         Event_History* committed = &ring->Event_History_Items[index];
         committed->heard_variant = call->heard_variant;
         committed->heard_id = call->heard_id;
+        /* A proof noted while the input is not live clears the row's live input: fail closed. */
+        committed->live_input = (uint8_t)(committed->live_input != 0U && live_now != 0U);
         ring->commit_rev++;
         changed = 1;
     }

@@ -8205,7 +8205,7 @@ add_test(NAME CORE_P25_PATCH_POLICY COMMAND dsd-neo_test_core_p25_patch_policy)
 add_executable(
     dsd-neo_test_core_heard_talkgroup
     core/test_core_heard_talkgroup.c
-    ../src/core/util/heard_talkgroup.c
+    ${PROJECT_SOURCE_DIR}/src/core/util/heard_talkgroup.c
 )
 target_include_directories(
     dsd-neo_test_core_heard_talkgroup

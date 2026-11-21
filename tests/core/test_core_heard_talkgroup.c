@@ -408,18 +408,83 @@ test_live_input(void) {
         fixture_close(&f);
     }
 
-    /* A file row stays a file row, and a live row a live row, whatever the input becomes before it commits. */
+    /* live_input is a latch (spec 4.1: a running live-to-file switch is covered): a row is live only while the input
+       was live when it began and at every render and commit since. A row begun on a file stays not live after a
+       switch to a radio. */
     proof_fixture f;
     fixture_open(&f, AUDIO_IN_WAV);
     assert(observe(&f, 100U, 200U, DSD_CALL_BOUNDARY_BEGIN) == 1);
     f.opts->audio_in_type = AUDIO_IN_RTL;
     assert(observe(&f, 100U, 200U, DSD_CALL_BOUNDARY_CONTINUE) == 0);
+    assert(row(&f, 0)->live_input == 0U);
     end_call(&f, DSD_CALL_END_TERMINATOR);
     assert(row(&f, 1)->event_string[0] != '\0' && row(&f, 1)->live_input == 0U);
+    /* A row begun live and switched to a symbol replay before its end commits not live. */
     assert(observe(&f, 101U, 200U, DSD_CALL_BOUNDARY_BEGIN) == 1);
+    assert(row(&f, 0)->live_input == 1U);
     f.opts->audio_in_type = AUDIO_IN_SYMBOL_BIN;
+    assert(observe(&f, 101U, 200U, DSD_CALL_BOUNDARY_CONTINUE) == 0);
+    assert(row(&f, 0)->live_input == 0U); /* the render closes the latch */
+    f.opts->audio_in_type = AUDIO_IN_RTL; /* and a switch back to the radio does not reopen it */
+    assert(observe(&f, 101U, 200U, DSD_CALL_BOUNDARY_CONTINUE) == 0);
     end_call(&f, DSD_CALL_END_TERMINATOR);
-    assert(row(&f, 1)->live_input == 1U && row(&f, 2)->live_input == 0U);
+    assert(row(&f, 1)->live_input == 0U && row(&f, 2)->live_input == 0U);
+    fixture_close(&f);
+
+    /* The epoch-change commit renders nothing: the commit itself reads the input. */
+    fixture_open(&f, AUDIO_IN_RTL);
+    assert(observe(&f, 100U, 200U, DSD_CALL_BOUNDARY_BEGIN) == 1);
+    const dsd_call_snapshot first = slot_call(&f);
+    note(&f, dsd_call_snapshot_transmission(&first), DSD_HEARD_TG_P25, 100U);
+    assert(row(&f, 0)->live_input == 1U && row(&f, 0)->heard_variant == DSD_HEARD_TG_P25);
+    f.opts->audio_in_type = AUDIO_IN_WAV;
+    assert(observe(&f, 101U, 201U, DSD_CALL_BOUNDARY_BEGIN) == 1);
+    assert(row(&f, 1)->heard_variant == DSD_HEARD_TG_P25 && row(&f, 1)->live_input == 0U);
+    fixture_close(&f);
+}
+
+/* A reacquisition merge ANDs the two segments' live input: a live segment healed from a file is not live. */
+static void
+test_live_input_merge(void) {
+    proof_fixture f;
+    fixture_open(&f, AUDIO_IN_RTL);
+    assert(observe(&f, 100U, 200U, DSD_CALL_BOUNDARY_BEGIN) == 1);
+    end_call(&f, DSD_CALL_END_SYNC_LOSS);
+    assert(row(&f, 1)->live_input == 1U && row(&f, 1)->heard_variant == DSD_HEARD_TG_NONE);
+    f.opts->audio_in_type = AUDIO_IN_WAV;
+    assert(observe(&f, 100U, 200U, DSD_CALL_BOUNDARY_CONTINUE) == 1);
+    const dsd_call_snapshot healed = slot_call(&f);
+    note(&f, dsd_call_snapshot_transmission(&healed), DSD_HEARD_TG_P25, 100U);
+    assert(row(&f, 0)->live_input == 0U);
+    f.opts->audio_in_type = AUDIO_IN_RTL; /* back on a radio before the end: the latch stays closed */
+    end_call(&f, DSD_CALL_END_TERMINATOR);
+    assert(row(&f, 2)->event_string[0] == '\0'); /* one row: merged */
+    assert(row(&f, 1)->heard_variant == DSD_HEARD_TG_P25 && row(&f, 1)->live_input == 0U);
+    fixture_close(&f);
+
+    /* Both segments live: the merged row stays live. */
+    fixture_open(&f, AUDIO_IN_RTL);
+    assert(observe(&f, 100U, 200U, DSD_CALL_BOUNDARY_BEGIN) == 1);
+    end_call(&f, DSD_CALL_END_SYNC_LOSS);
+    assert(observe(&f, 100U, 200U, DSD_CALL_BOUNDARY_CONTINUE) == 1);
+    end_call(&f, DSD_CALL_END_TERMINATOR);
+    assert(row(&f, 2)->event_string[0] == '\0' && row(&f, 1)->live_input == 1U);
+    fixture_close(&f);
+}
+
+/* A proof that revises an already committed row while the input is not live clears that row's live input. */
+static void
+test_live_input_committed_revision(void) {
+    proof_fixture f;
+    fixture_open(&f, AUDIO_IN_RTL);
+    assert(observe(&f, 100U, 200U, DSD_CALL_BOUNDARY_BEGIN) == 1);
+    dsd_call_snapshot call = slot_call(&f);
+    assert(dsd_event_emit_call_notice_nonfinalizing(f.opts, f.state, 0U, &call, "NOTICE") == 1);
+    assert(row(&f, 1)->live_input == 1U);
+    f.opts->audio_in_type = AUDIO_IN_WAV;
+    assert(observe(&f, 100U, 200U, DSD_CALL_BOUNDARY_CONTINUE) == 0);
+    note(&f, dsd_call_snapshot_transmission(&call), DSD_HEARD_TG_P25, 100U);
+    assert(row(&f, 1)->heard_variant == DSD_HEARD_TG_P25 && row(&f, 1)->live_input == 0U);
     fixture_close(&f);
 }
 
@@ -433,5 +498,7 @@ main(void) {
     test_committed_row_revision();
     test_noncanonical_notice_carries_no_proof();
     test_live_input();
+    test_live_input_merge();
+    test_live_input_committed_revision();
     return 0;
 }

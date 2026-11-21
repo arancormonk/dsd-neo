@@ -1064,12 +1064,16 @@ watchdog_event_merge_system_identity(Event_History* retained, const Event_Histor
 static void
 watchdog_event_merge_channel_label(Event_History* retained, const Event_History* staged) {
     if (retained->channel_label_resolved != 0U || staged->channel_label_resolved == 0U) {
+        /* Both segments' input must have been live for the row to be (issue #903): an AND, never an OR. */
+        retained->live_input = (uint8_t)(retained->live_input != 0U && staged->live_input != 0U);
         return;
     }
     DSD_SNPRINTF(retained->channel_label, sizeof(retained->channel_label), "%s", staged->channel_label);
     retained->channel_label_resolved = 1U;
     retained->operator_tuned = staged->operator_tuned;
     retained->scan_member = staged->scan_member;
+    /* A row that never resolved its stamps (staged directly) takes the segment's, as it takes its tuner owner. */
+    retained->live_input = staged->live_input;
 }
 
 // The frequency and access code the transmission was heard with fill in only when the first
@@ -1378,7 +1382,7 @@ watchdog_event_merge_staged_into(Event_History* retained, const Event_History* s
                                             (dsd_event_category)retained->category);
     }
     /* The row keeps the proof a segment of this transmission already gave it; a row with none takes the reacquired
-       segment's own (issue #903). live_input stays as the row began. */
+       segment's own (issue #903). live_input is ANDed in watchdog_event_merge_channel_label(). */
     if (retained->heard_variant == (uint8_t)DSD_HEARD_TG_NONE && staged->heard_variant != (uint8_t)DSD_HEARD_TG_NONE) {
         retained->heard_variant = staged->heard_variant;
         retained->heard_id = staged->heard_id;
@@ -1482,6 +1486,11 @@ static int
 watchdog_event_commit_staged_row(dsd_opts* opts, dsd_state* state, Event_History_I* event_struct, uint8_t slot,
                                  dsd_call_event_lifecycle* lifecycle, int last_event_is_data, int reset_slot_identity,
                                  dsd_event_end_disposition end_disposition) {
+    /* The live-input latch closes at the commit too (issue #903): a commit with no render since an input switch (the
+       epoch-change path commits the staged row as it stands) still reads the input in force. */
+    if (!dsd_opts_input_is_live(opts)) {
+        event_struct->Event_History_Items[0].live_input = 0U;
+    }
     const Event_History* staged = &event_struct->Event_History_Items[0];
     // A voice row whose epoch was never anything the operator could name or hear end is dropped
     // rather than committed as "TGT: 00000000; SRC: 00000000". The staged verdicts -- recorded
@@ -2350,13 +2359,14 @@ watchdog_event_current_load_channel_label(const dsd_opts* opts, const dsd_state*
         ctx->channel_label_resolved = 1U;
         ctx->operator_tuned = staged->operator_tuned;
         ctx->scan_member = staged->scan_member;
-        ctx->live_input = staged->live_input;
+        /* A latch (issue #903): live only while the input was live when the row began and at every render since. */
+        ctx->live_input = (uint8_t)(staged->live_input != 0U && dsd_opts_input_is_live(opts));
         return;
     }
     (void)dsd_channel_label_current(opts, state, ctx->channel_label, sizeof(ctx->channel_label));
     ctx->channel_label_resolved = 1U;
     watchdog_event_stamp_tuner_owner(opts, state, &ctx->operator_tuned, &ctx->scan_member);
-    /* Whether the input was live when the row began (issue #903), frozen with the tuner owner. */
+    /* Whether the input is live as the row begins (issue #903); later renders and the commit only clear it. */
     ctx->live_input = (uint8_t)dsd_opts_input_is_live(opts);
 }
 
