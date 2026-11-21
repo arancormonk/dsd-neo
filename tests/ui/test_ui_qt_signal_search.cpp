@@ -2655,10 +2655,14 @@ test_simplex_widths_and_labels(const QString& root) {
     for (const auto& f : families) {
         const QString label = QString::fromLatin1(f.label);
         for (qint64 base : {f.hz, f.hz + 1000000}) {
-            // Inside half its width (and the tuned 25 kHz channel's) it is the entry; past it, nothing.
+            // Inside half its width (and the tuned 25 kHz channel's) it is the entry; past it, nothing. Issue #748: a
+            // saved -fT system decodes trunked and direct mode TETRA alike, so it is "TETRA"; only the scan list's
+            // own TETRA rows, which scan direct mode alone (issue #890), are "TETRA DMO".
+            const bool savedTetra = base != f.hz && QLatin1String(f.protocol) == QLatin1String("tetra_dmo");
             const auto inside = index.tunedMatches(base + f.width / 2 - 500, 25000);
             assert(inside.size() == 1);
-            assert(inside[0].toMap().value(QStringLiteral("protocolLabel")).toString() == label);
+            assert(inside[0].toMap().value(QStringLiteral("protocolLabel")).toString()
+                   == (savedTetra ? QStringLiteral("TETRA") : label));
             assert(index.tunedMatches(base + f.width / 2 + 500, 25000).isEmpty());
         }
         // An unnamed entry is named for its protocol, as the scan list shows it.
@@ -2911,6 +2915,18 @@ main(int argc, char** argv) {
     assert(index.lookup(467990000, 25000).size() == 1);
     assert(index.lookup(468013000, 25000).isEmpty());
     assert(index.lookup(457510000, 25000).isEmpty());
+    // Issue #748: it is labelled TETRA, as a Signal search TETRA detection saved with -fT is, and an unnamed one is
+    // named so; a P25 (-ft) system keeps its own label at 12.5 kHz.
+    assert(index.lookup(468010000, 25000).value(0).toMap().value(QStringLiteral("protocolLabel"))
+           == QStringLiteral("TETRA"));
+    assert(systems.add({{QStringLiteral("decodeFlag"), QStringLiteral("-fT")},
+                        {QStringLiteral("freqMhz"), QStringLiteral("469.000000")}}));
+    assert(index.tunedNames(469010000, 25000) == QStringList{QString::fromUtf8("TETRA \u00b7 469.000000 MHz")});
+    assert(systems.add({{QStringLiteral("decodeFlag"), QStringLiteral("-ft")},
+                        {QStringLiteral("freqMhz"), QStringLiteral("469.500000")}}));
+    assert(index.lookup(469505000, 25000).value(0).toMap().value(QStringLiteral("protocolLabel"))
+           == QStringLiteral("P25"));
+    assert(index.lookup(469510000, 25000).isEmpty());
     const QString narrowModes = temp.filePath(QStringLiteral("narrow-modes.csv"));
     f = dsd_fopen_private(narrowModes.toUtf8().constData(), "wb");
     assert(f);

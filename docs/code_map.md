@@ -16134,7 +16134,9 @@ Build files: `src/protocol/CMakeLists.txt` and per‑protocol `src/protocol/<nam
   a suffixed type (`dpmr-conventional`) is its protocol's and a type is never split at its
   first hyphen. A match's `protocolLabel` is the catalog label of its entry's protocol, its
   system's decode flag or its row's type (`scan_entry_type_label()`), empty for one the catalog
-  does not have. Only the width option of the channel's own
+  does not have; a saved `-fT` system on its own, which decodes trunked and direct mode TETRA alike, is `TETRA`, and an
+  unnamed one is named so (`scan_entry_system_label()`, issue #748), while a scan list's TETRA rows, its entries for
+  such a system included, stay `TETRA DMO`, since the list scans direct mode only. Only the width option of the channel's own
   analog kind applies (`--am-bandwidth-hz` for AM, `--nfm-bandwidth-hz` for NFM, either as
   `--name value` or `--name=value`), so an NFM system that also sets an AM width keeps its
   NFM channels' width, and its mode-less map rows inherit that. A saved system's mode is its decode
