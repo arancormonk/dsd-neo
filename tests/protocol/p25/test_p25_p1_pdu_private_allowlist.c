@@ -393,7 +393,7 @@ main(void) {
     mpdu[0] = 0x37; // outbound ALT MBT
     mpdu[2] = 0x00;
     mpdu[6] = 0x01; // header plus one data block
-    mpdu[7] = 0x00; // Group Voice Channel Grant Update - Extended
+    mpdu[7] = 0x00; // Group Voice Channel Grant - Explicit
     mpdu[8] = 0x00; // clear voice service
     mpdu[3] = 0x01;
     mpdu[4] = 0x02;

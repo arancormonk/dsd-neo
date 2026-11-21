@@ -16,12 +16,14 @@
 #include <dsd-neo/core/state_ext.h>
 #include <dsd-neo/protocol/p25/p25_trunk_sm.h>
 #include <dsd-neo/protocol/p25/p25p1_pdu_trunking.h>
+#include <dsd-neo/runtime/decode_clock.h>
 #include <dsd-neo/runtime/trunk_scan_hooks.h>
 #include <dsd-neo/runtime/trunk_tuning_hooks.h>
 #include <math.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
+#include <time.h>
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
@@ -407,6 +409,102 @@ capture_mbt_output(const char* name, const uint8_t* mbt, size_t mbt_len, char* o
 
     int rc = dsd_test_capture_stderr_read(&cap, out, out_sz);
     dsd_state_ext_free_all(&state);
+    return rc;
+}
+
+static int g_follow_tune_calls;
+
+static dsd_trunk_tune_result
+follow_tune_request(dsd_opts* opts, dsd_state* state, long int freq, int ted_sps, uint64_t request_id) {
+    (void)ted_sps;
+    (void)request_id;
+    g_follow_tune_calls++;
+    opts->trunk_is_tuned = 1;
+    state->p25_vc_freq[0] = state->p25_vc_freq[1] = freq;
+    state->trunk_vc_freq[0] = state->trunk_vc_freq[1] = freq;
+    return DSD_TRUNK_TUNE_RESULT_OK;
+}
+
+static dsd_trunk_tune_result
+follow_return_request(dsd_opts* opts, dsd_state* state, uint64_t request_id) {
+    (void)request_id;
+    opts->trunk_is_tuned = 0;
+    state->p25_vc_freq[0] = state->p25_vc_freq[1] = 0;
+    state->trunk_vc_freq[0] = state->trunk_vc_freq[1] = 0;
+    return DSD_TRUNK_TUNE_RESULT_OK;
+}
+
+/* AMBTC opcode $00 is the explicit Group Voice Channel Grant (TIA-102.AABC-D §4.2.1.2), a new assignment and not a
+   grant update: it is labelled a grant and reaches the trunk SM with ASSIGNMENT provenance. Only an authoritative
+   assignment clears the post-call stale-regrant guard when the source is unchanged, so the same source re-granted on
+   the ended call's carrier inside the guard is followed, while a genuine update for it is still held. */
+static int
+test_explicit_group_grant_is_an_assignment(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    uint8_t grant[48];
+    char out[4096];
+    const uint16_t channel = 0x100A;
+    const int tg = 0x1234;
+    const int src = 0x010203;
+    int rc = 0;
+
+    dsd_trunk_tuning_hooks_set((dsd_trunk_tuning_hooks){
+        .tune_to_freq_request = follow_tune_request,
+        .tune_to_cc_request = follow_tune_request,
+        .return_to_cc_request = follow_return_request,
+    });
+    g_follow_tune_calls = 0;
+    init_private_trunking(&opts, &state);
+    opts.trunk_hangtime = 2.0f;
+    opts.p25_grant_voice_to_s = 0.2;
+    state.trunk_cc_freq = state.p25_cc_freq;
+    seed_fdma_iden(&state, 1);
+    p25_sm_ctx_t* ctx = p25_sm_get_ctx();
+    p25_sm_init_ctx(ctx, &opts, &state);
+
+    build_ambtc_group_voice(grant, 0x00, channel, channel, (uint16_t)tg, (uint32_t)src);
+    dsd_test_capture_stderr cap;
+    if (dsd_test_capture_stderr_begin(&cap, "p25_mbt_explicit_group_grant") != 0) {
+        return 1;
+    }
+    (void)p25_decode_pdu_trunking(&opts, &state, grant, sizeof grant);
+    dsd_test_capture_stderr_end(&cap);
+    if (dsd_test_capture_stderr_read(&cap, out, sizeof out) != 0) {
+        return 1;
+    }
+    rc |= expect_contains_text("mbt 0x00 grant label", out, "Group Voice Channel Grant - Explicit");
+    rc |= expect_not_contains_text("mbt 0x00 not an update", out, "Grant Update");
+    rc |= expect_eq_int("mbt 0x00 grant followed", g_follow_tune_calls, 1);
+    rc |= expect_eq_int("mbt 0x00 grant tuned", ctx->state, P25_SM_TUNED);
+
+    p25_sm_event_t ev = p25_sm_ev_ptt_call(0, tg, 0, src, 1, 0);
+    p25_sm_event(ctx, &opts, &state, &ev);
+    ev = p25_sm_ev_end_call_at(0, tg, src, dsd_decode_now_mono_s());
+    p25_sm_event(ctx, &opts, &state, &ev);
+    ctx->slots[0].last_followed_m = dsd_decode_now_mono_s() - 3.0; // hangtime ran out
+    ctx->slots[1].last_followed_m = 0.0;
+    p25_sm_tick_ctx(ctx, &opts, &state);
+    const double cc_decoded_m = ctx->t_cc_tune_m > 0.0 ? ctx->t_cc_tune_m + 0.010 : dsd_decode_now_mono_s();
+    state.last_cc_sync_time = time(NULL);
+    state.last_cc_sync_time_m = cc_decoded_m;
+    state.p25_last_cc_msg_time = state.last_cc_sync_time;
+    state.p25_last_cc_msg_time_m = cc_decoded_m;
+    rc |= expect_eq_int("call end returned to the CC", ctx->state, P25_SM_ON_CC);
+    rc |= expect_eq_int("call end armed the stale-regrant guard", ctx->recent_call_ends[0].valid, 1);
+
+    ev = p25_sm_ev_group_grant_update(channel, 0, tg, src, 0);
+    p25_sm_event(ctx, &opts, &state, &ev);
+    rc |= expect_eq_int("same-source update inside the guard held", g_follow_tune_calls, 1);
+    rc |= expect_eq_int("held update stays on the CC", ctx->state, P25_SM_ON_CC);
+
+    (void)p25_decode_pdu_trunking(&opts, &state, grant, sizeof grant);
+    rc |= expect_eq_int("same-source explicit grant inside the guard followed", g_follow_tune_calls, 2);
+    rc |= expect_eq_int("explicit grant tuned", ctx->state, P25_SM_TUNED);
+    rc |= expect_eq_int("explicit grant cleared the guard", ctx->recent_call_ends[0].valid, 0);
+
+    dsd_state_ext_free_all(&state);
+    install_trunk_tuning_hooks();
     return rc;
 }
 
@@ -877,8 +975,7 @@ main(void) {
         }
         rc |= expect_eq_int("umbtc standard no grant", (int)p25_sm_get_ctx()->grant_count, 0);
         rc |= expect_contains_text("umbtc standard guard log", out, "UMBTC standard opcode 00 not handled as AMBTC");
-        rc |= expect_not_contains_text("umbtc standard no ambtc grant", out,
-                                       "Group Voice Channel Grant Update - Extended");
+        rc |= expect_not_contains_text("umbtc standard no ambtc grant", out, "Group Voice Channel Grant - Explicit");
 
         build_umbtc_grant_like(umbtc, 0x02, 0x90);
         if (capture_mbt_output("p25_mbt_umbtc_mfid90_no_ambtc", umbtc, sizeof umbtc, out, sizeof out) != 0) {
@@ -1129,6 +1226,7 @@ main(void) {
     }
 
     rc |= test_mfid90_regroup_grant_refreshes_seen();
+    rc |= test_explicit_group_grant_is_an_assignment();
     dsd_trunk_tuning_hooks_set((dsd_trunk_tuning_hooks){0});
     return rc;
 }
