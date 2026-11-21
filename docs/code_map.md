@@ -13918,9 +13918,11 @@ Private per-protocol modules worth knowing about:
   one-frame stream's frame 0 after its EOT starts it again; a stream ID reused by the same station with no end received
   between is not taken. A checked IP frame plays on its own check; its decoded speech marks the call's media
   (`m17_note_received_speech()`), which also returns whether the speech is checked speech (a checked LSF bound its type,
-  encryption and CAN, `m17_lsf_checked`: under -F a relaxed LSF or the LICH alone may name ciphertext clear voice), the
-  gate any checked-speech credit sits behind. The 1600 bit/s arbitrary data is assembled per six-frame group and emptied
-  at a stream change (`m17_stream_1600_arbitrary_assemble()`, `dsd_state::m17_adata`). Tests: `M17_STATE_DISPATCH`
+  encryption and CAN, `m17_lsf_checked`: under -F a relaxed LSF or the LICH alone may name ciphertext clear voice), and
+  only checked speech earns the scan's checked media (`dsd_call_state_note_checked_media()` behind it and
+  `dsd_scan_uses_checked_media()` in `m17_play_codec2_voice()`; `M17_STATE_DISPATCH` "unchecked-LSF M17 speech earns no
+  checked media"). The 1600 bit/s arbitrary data is assembled per six-frame group and emptied at a stream change
+  (`m17_stream_1600_arbitrary_assemble()`, `dsd_state::m17_adata`). Tests: `M17_STATE_DISPATCH`
   (`test_signed_ip_stream_is_not_verified`, `test_signed_rf_stream_needs_every_frame_once`,
   `test_rf_marker_end_reports_an_incomplete_signature`, `test_rf_eos_retires_the_link_setup`,
   `test_ip_foreign_eot_does_not_end_the_open_stream`, `test_ip_frame_counter_rollover`,

@@ -1144,12 +1144,22 @@ test_stream_voice_replaces_foreign_active_call(void) {
        nobody reads it, and the voice path keeps none. */
     err |= expect_int("late-entry M17 voice, no scan: no checked media", call.checked_media_updated_m > 0.0, 0);
     opts->trunk_scan_enabled = 1;
+    /* Under a scan, speech Codec2 decoded is checked speech only once a checked LSF bound the transmission's type,
+       encryption and CAN (m17_lsf_checked): before that (a stream joined on its LICH, or one -F set up from an LSF whose
+       CRC failed, which may name ciphertext clear voice) it plays but earns no checked media. */
     err |= expect_int("late-entry M17 voice dispatches under a scan",
                       m17_dispatch_stream_payload(opts, state, payload_bits, M17_REF_STREAM_FN, processed_bits),
                       M17_STREAM_CLEAR_DISPATCHED);
     (void)get_m17_call(state, &call);
+    err |= expect_int("unchecked-LSF M17 speech earns no checked media", call.checked_media_updated_m > 0.0, 0);
+    state->m17_lsf_checked = 1U;
+    err |= expect_int(
+        "checked-LSF M17 voice dispatches under a scan",
+        m17_dispatch_stream_payload(opts, state, payload_bits, (uint16_t)(M17_REF_STREAM_FN + 1U), processed_bits),
+        M17_STREAM_CLEAR_DISPATCHED);
+    (void)get_m17_call(state, &call);
 #ifdef USE_CODEC2
-    err |= expect_int("late-entry M17 voice Codec2 decoded is checked media", call.checked_media_updated_m > 0.0, 1);
+    err |= expect_int("checked-LSF M17 speech Codec2 decoded is checked media", call.checked_media_updated_m > 0.0, 1);
 #else
     err |= expect_int("late-entry M17 voice with no Codec2 is no checked media", call.checked_media_updated_m > 0.0, 0);
 #endif
