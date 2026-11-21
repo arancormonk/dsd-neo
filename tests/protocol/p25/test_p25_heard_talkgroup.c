@@ -28,6 +28,7 @@
 #include <dsd-neo/protocol/p25/p25_crc.h>
 #include <dsd-neo/protocol/p25/p25_lcw.h>
 #include <dsd-neo/protocol/p25/p25_trunk_sm.h>
+#include <dsd-neo/protocol/p25/p25_vpdu.h>
 #include <dsd-neo/protocol/p25/p25_xcch.h>
 #include <dsd-neo/protocol/p25/p25p2_frame.h>
 #include <dsd-neo/runtime/decode_clock.h>
@@ -209,6 +210,21 @@ test_p1_soft_lcw_proves_nothing(void) {
     rc |= expect("P1 soft-erasure LCW proves nothing", not_noted(0U));
     p1_ldu1_voice_user(0x00, TEST_TG, 0);
     rc |= expect("P1 hard LCW after a soft one proves the group", remembered(0U, TEST_TG));
+    return rc;
+}
+
+/* A TDULC's link control names the call its terminator ends: never a proof, hard-decoded or not. */
+static int
+test_p1_tdulc_voice_user_proves_nothing(void) {
+    int rc = 0;
+    follow_grant(0, TEST_TG);
+    p1_ldu1_voice_user(0x00, TEST_TG, 1);
+    rc |= expect("P1 soft LCW opens the call unproven", active_on(0U, TEST_TG) && not_noted(0U));
+    uint8_t bits[72] = {0};
+    put_bits(bits, 32, 16, TEST_TG);
+    put_bits(bits, 48, 24, TEST_SRC);
+    p25_lcw_from_tdulc(&g_opts, &g_state, bits, 0, NULL, 0U);
+    rc |= expect("P1 TDULC group voice user proves nothing", slot_call(0U).heard_noted == 0U);
     return rc;
 }
 
@@ -440,6 +456,49 @@ test_p2_voice_user_then_traffic_proves_group(void) {
     return rc;
 }
 
+/* A Group Voice Channel User - Abbreviated for @p group, straight into the MAC message dispatch as a MAC_SIGNAL of
+ * CRC verdict @p crc_ok (-F lets a failed one through, process_MAC_VPDU_crc()). */
+static void
+p2_signal_voice_user(uint8_t slot, uint32_t group, int crc_ok) {
+    unsigned long long int mac[24] = {0};
+    mac[1] = 0x01;
+    mac[3] = (group >> 8) & 0xFFU;
+    mac[4] = group & 0xFFU;
+    mac[5] = (TEST_SRC >> 16) & 0xFFU;
+    mac[6] = (TEST_SRC >> 8) & 0xFFU;
+    mac[7] = TEST_SRC & 0xFFU;
+    g_state.currentslot = slot;
+    process_MAC_VPDU_crc(&g_opts, &g_state, 0, P25_MAC_PDU_SIGNAL, mac, crc_ok);
+}
+
+/* A voice user from a MAC PDU whose CRC failed publishes the call, but its traffic proves nothing; one that passed
+ * does. */
+static int
+test_p2_failed_crc_voice_user_proves_nothing(void) {
+    int rc = 0;
+    follow_grant(1, TEST_TG);
+    p2_signal_voice_user(0U, TEST_TG, 0);
+    rc |= expect("P2 failed-CRC voice user publishes the call", active_on(0U, TEST_TG));
+    p2_traffic(0U);
+    rc |= expect("P2 failed-CRC voice user then traffic proves nothing", not_noted(0U));
+    p2_signal_voice_user(0U, TEST_TG, 1);
+    p2_traffic(0U);
+    rc |= expect("P2 CRC-passed voice user then traffic proves the group", remembered(0U, TEST_TG));
+    return rc;
+}
+
+/* A voice user continuing a call already noted leaves nothing waiting. */
+static int
+test_p2_voice_user_after_note_waits_on_nothing(void) {
+    int rc = 0;
+    follow_grant(1, TEST_TG);
+    p2_ptt(0U, TEST_TG);
+    rc |= expect("P2 MAC_PTT notes the call", remembered(0U, TEST_TG));
+    p2_voice_user(0U, MAC_ACTIVE, TEST_TG);
+    rc |= expect("P2 voice user after the note waits on nothing", g_state.p25_p2_heard_vu_epoch[0] == 0U);
+    return rc;
+}
+
 /* A 4V burst whose DUID decoded only after a correction is voice for the decoder, but not traffic that proves a voice
  * user: one bit off the codeword (the hard table corrects it), then two weak bits off (only the soft lookup matches
  * it). The next burst whose DUID matched exactly proves the group. */
@@ -537,6 +596,24 @@ test_p2_addressless_start_after_end_proves_nothing(void) {
     return rc;
 }
 
+/* A clean END, then an addressless MAC_ACTIVE (no voice user) without a fresh grant, then traffic: whatever the
+ * receiver reopens is not proven by the ended call's voice user. */
+static int
+test_p2_addressless_mac_active_after_end_proves_nothing(void) {
+    int rc = 0;
+    const dsd_call_snapshot ended = p2_unproven_call_ended();
+    advance_ms(1500U);
+    const uint8_t none[1] = {0};
+    facch(0U, MAC_ACTIVE, none, 0);
+    advance_ms(30U);
+    p2_traffic(0U);
+    const dsd_call_snapshot after = slot_call(0U);
+    rc |= expect("P2 addressless MAC_ACTIVE reopens another call",
+                 after.phase == DSD_CALL_PHASE_ACTIVE && after.ota_target_id == TEST_TG && after.epoch != ended.epoch);
+    rc |= expect("P2 addressless MAC_ACTIVE after a clean END proves nothing", after.heard_noted == 0U);
+    return rc;
+}
+
 /* The MFID 0x90 regroup voice user's first packet, before any patch is known: its traffic proves a supergroup. */
 static int
 test_p2_regroup_voice_user_first_packet_is_supergroup(void) {
@@ -555,6 +632,68 @@ test_p2_regroup_voice_user_first_packet_is_supergroup(void) {
     rc |= expect("P2 regroup call commits its frozen verdict",
                  ended.phase == DSD_CALL_PHASE_ENDED && ended.heard_noted == 1U
                      && ended.heard_variant == (uint8_t)DSD_HEARD_TG_NONE);
+    return rc;
+}
+
+/* Run @p deliver (a regroup voice user for TEST_SG, no patch known), clear the patch entry its handler noted, then
+ * traffic: the message's own supergroup evidence makes the proof a supergroup, which is not remembered. */
+static int
+expect_regroup_voice_user_is_supergroup(const char* what, void (*deliver)(void)) {
+    int rc = 0;
+    char tag[128];
+    follow_grant(1, TEST_SG);
+    deliver();
+    DSD_SNPRINTF(tag, sizeof tag, "P2 %s publishes the call", what);
+    rc |= expect(tag, active_on(0U, TEST_SG) && not_noted(0U));
+    p25_patch_clear_sg(&g_state, TEST_SG);
+    p2_traffic(0U);
+    DSD_SNPRINTF(tag, sizeof tag, "P2 %s then traffic proves a supergroup", what);
+    rc |= expect(tag, noted_not_remembered(0U));
+    return rc;
+}
+
+/* The standard Group Regroup Voice Channel User - Abbreviated (opcode 0x90, standard MFID) in a MAC_ACTIVE. */
+static void
+p2_standard_regroup_voice_user(void) {
+    const uint8_t body[7] = {
+        0x90,
+        0x00,
+        (uint8_t)(TEST_SG >> 8),
+        (uint8_t)TEST_SG,
+        (uint8_t)(TEST_SRC >> 16),
+        (uint8_t)(TEST_SRC >> 8),
+        (uint8_t)TEST_SRC,
+    };
+    facch(0U, MAC_ACTIVE, body, (int)sizeof(body));
+}
+
+/* The Motorola MFID 0x90 Group Regroup Voice Channel User - Extended (0xA0 0x90, 16 octets) in a MAC_ACTIVE. */
+static void
+p2_mfid90_extended_regroup_voice_user(void) {
+    const uint8_t body[16] = {
+        0xA0,
+        0x90,
+        0x10,
+        0x00,
+        (uint8_t)(TEST_SG >> 8),
+        (uint8_t)TEST_SG,
+        (uint8_t)(TEST_SRC >> 16),
+        (uint8_t)(TEST_SRC >> 8),
+        (uint8_t)TEST_SRC,
+        0xBE,
+        0xE0,
+        0x01,
+        0xA2,
+    };
+    facch(0U, MAC_ACTIVE, body, (int)sizeof(body));
+}
+
+static int
+test_p2_other_regroup_voice_users_are_supergroups(void) {
+    int rc = 0;
+    rc |= expect_regroup_voice_user_is_supergroup("standard regroup voice user", p2_standard_regroup_voice_user);
+    rc |= expect_regroup_voice_user_is_supergroup("MFID90 extended regroup voice user",
+                                                  p2_mfid90_extended_regroup_voice_user);
     return rc;
 }
 
@@ -585,6 +724,7 @@ main(void) {
     int rc = 0;
     rc |= test_p1_hard_lcw_proves_group();
     rc |= test_p1_soft_lcw_proves_nothing();
+    rc |= test_p1_tdulc_voice_user_proves_nothing();
     rc |= test_p1_conventional_hard_lcw_proves_group();
     rc |= test_p1_classifies_once();
     rc |= test_p1_regroup_voice_user_is_supergroup();
@@ -592,13 +732,17 @@ main(void) {
     rc |= test_p2_ptt_proves_group();
     rc |= test_p2_failed_setup_proves_nothing();
     rc |= test_p2_voice_user_then_traffic_proves_group();
+    rc |= test_p2_failed_crc_voice_user_proves_nothing();
+    rc |= test_p2_voice_user_after_note_waits_on_nothing();
     rc |= test_p2_corrected_duid_traffic_proves_nothing();
     rc |= test_p2_voice_outside_dispatch_proves_nothing();
     rc |= test_p2_tracking_only_voice_users_prove_nothing();
     rc |= test_p2_recent_end_repeat_proves_nothing();
     rc |= test_p2_addressless_start_after_end_proves_nothing();
+    rc |= test_p2_addressless_mac_active_after_end_proves_nothing();
     rc |= test_p2_regroup_voice_user_first_packet_is_supergroup();
     rc |= test_p2_ptt_for_patched_group_verdict_frozen();
+    rc |= test_p2_other_regroup_voice_users_are_supergroups();
     dsd_decode_clock_use_system();
     dsd_state_ext_free_all(&g_state);
     if (rc == 0) {

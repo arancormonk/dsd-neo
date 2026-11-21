@@ -602,7 +602,6 @@ p25_sm_note_validated_cc(const dsd_opts* opts, dsd_state* state) {
 
 /* The verified talkgroup proof of a MAC_PTT (issue #903) has its own test (P25_HEARD_TALKGROUP). */
 void
-// NOLINTNEXTLINE(misc-use-internal-linkage)
 p25p2_heard_tg_ptt(dsd_state* state, uint8_t slot, uint32_t group) {
     (void)state;
     (void)slot;

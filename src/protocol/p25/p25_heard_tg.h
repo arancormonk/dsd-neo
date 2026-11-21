@@ -29,11 +29,9 @@
 extern "C" {
 #endif
 
-/* 1 when an active entry of the patch table names @p group as its supergroup, whatever its freshness. */
-int p25_heard_tg_patch_names_sg(const dsd_state* state, uint32_t group);
-
 /* Note that a checked message proved @p group for @p call, slot @p slot's ACTIVE P25 group call naming that group, with
- * @p supergroup 1 when the message itself named a supergroup. Nothing for any other call, or one already noted. */
+ * @p supergroup 1 when the message itself named a supergroup; an active patch entry naming the group as its supergroup
+ * counts too. Nothing for any other call, or one already noted. */
 void p25_heard_tg_note(dsd_state* state, uint8_t slot, const dsd_call_snapshot* call, uint32_t group, int supergroup);
 
 /* Phase 2: a CRC-passed, live group voice-user message observed slot @p slot's call as @p group (@p regroup 1 for a

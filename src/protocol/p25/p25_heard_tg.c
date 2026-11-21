@@ -16,7 +16,8 @@
 #include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
 
-int
+/* 1 when an active entry of the patch table names @p group as its supergroup, whatever its freshness. */
+static int
 p25_heard_tg_patch_names_sg(const dsd_state* state, uint32_t group) {
     if (!state || group == 0U || state->p25_patch_count <= 0) {
         return 0;

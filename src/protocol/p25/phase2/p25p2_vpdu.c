@@ -162,16 +162,18 @@ p25p2_vpdu_voice_protocol(const dsd_state* state) {
     return DSD_SYNC_P25P2_POS;
 }
 
+/* The policy target of a voice user naming @p target, from @p current (the slot's call before the observation, NULL for
+ * none) or the trunk state machine's slot. */
 static uint64_t
-p25p2_vpdu_voice_policy_target(const dsd_state* state, int slot, dsd_call_kind kind, uint64_t target) {
+p25p2_vpdu_voice_policy_target(const dsd_state* state, int slot, dsd_call_kind kind, uint64_t target,
+                               const dsd_call_snapshot* current) {
     if (!state || kind != DSD_CALL_KIND_GROUP_VOICE || slot < 0 || slot > 1) {
         return target;
     }
 
-    dsd_call_snapshot active = {0};
-    if (dsd_call_state_get(state, (uint8_t)slot, &active) > 0 && active.phase == DSD_CALL_PHASE_ACTIVE
-        && active.ota_target_id == target && active.policy_target_id != 0U) {
-        return active.policy_target_id;
+    if (current && current->phase == DSD_CALL_PHASE_ACTIVE && current->ota_target_id == target
+        && current->policy_target_id != 0U) {
+        return current->policy_target_id;
     }
 
     const p25_sm_ctx_t* sm = p25_sm_get_ctx();
@@ -279,6 +281,22 @@ p25p2_vpdu_note_voice_user(const dsd_opts* opts, dsd_state* state, int slot, dsd
                               crc_ok ? (uint8_t)P25_SM_IDENTITY_CHECKED_ALL : 0U, home_only);
 }
 
+/* A CRC-passed group voice user that observed the slot's call (dsd_call_state_observe() returned @p began >= 0) waits
+ * for that call's traffic to prove its group (issue #903); the regroup evidence is the message's own (@p regroup). One
+ * that continued an epoch already noted (@p before, the slot's call before the observation: observe returns 0 only
+ * when the epoch stays) has nothing left to prove: a field check, no call lookup. */
+static void
+p25p2_vpdu_heard_voice_user(const p25p2_vpdu_ctx* ctx, int slot, dsd_call_kind kind, uint64_t target, int regroup,
+                            int began, const dsd_call_snapshot* before) {
+    if (began < 0 || !ctx->crc_ok || kind != DSD_CALL_KIND_GROUP_VOICE) {
+        return;
+    }
+    if (began == 0 && before != NULL && before->heard_noted != 0U) {
+        return;
+    }
+    p25p2_heard_tg_voice_user(ctx->state, (uint8_t)slot, (uint32_t)target, regroup);
+}
+
 /* A voice user observes the slot's canonical call itself; the MAC's CRC verdict (@p ctx crc_ok) is the provenance of
  * the identity it names (spec 2.19, p25_sm_note_call_identity()). @p source is the message's working source address, a
  * local address in the extended forms too. @p home is an extended form's Source SUID (NULL for the other forms): the
@@ -314,12 +332,14 @@ p25p2_vpdu_observe_voice(const p25p2_vpdu_ctx* ctx, int slot, dsd_call_kind kind
         return 1;
     }
     const uint16_t svc = service_options >= 0 ? (uint16_t)service_options : 0U;
+    dsd_call_snapshot before = {0};
+    const int had_before = kind == DSD_CALL_KIND_GROUP_VOICE && dsd_call_state_get(state, (uint8_t)slot, &before) > 0;
     const dsd_call_observation observation = {
         .protocol = p25p2_vpdu_voice_protocol(state),
         .slot = (uint8_t)slot,
         .kind = kind,
         .ota_target_id = target,
-        .policy_target_id = p25p2_vpdu_voice_policy_target(state, slot, kind, target),
+        .policy_target_id = p25p2_vpdu_voice_policy_target(state, slot, kind, target, had_before ? &before : NULL),
         .ota_source_id = subscriber_source,
         .service_options = svc,
         .emergency = (uint8_t)((svc & 0x80U) != 0U),
@@ -330,10 +350,7 @@ p25p2_vpdu_observe_voice(const p25p2_vpdu_ctx* ctx, int slot, dsd_call_kind kind
     if (began >= 0) {
         p25p2_vpdu_note_voice_user(opts, state, slot, kind, target, source, home, crc_ok);
     }
-    if (began >= 0 && crc_ok && kind == DSD_CALL_KIND_GROUP_VOICE) {
-        /* Its traffic proves the group (issue #903); the regroup evidence is the message's own. */
-        p25p2_heard_tg_voice_user(state, (uint8_t)slot, (uint32_t)target, regroup);
-    }
+    p25p2_vpdu_heard_voice_user(ctx, slot, kind, target, regroup, began, had_before ? &before : NULL);
     const int encrypted_probe = p25p2_vpdu_is_encrypted_probe(opts, service_options);
     if (began > 0) {
         state->generic_talker_alias[slot][0] = '\0';
