@@ -38,8 +38,35 @@ static const heard_tg_range kRanges[] = {
     {DSD_HEARD_TG_TETRA, 0x000001u, 0xFFFFFEu},
 };
 
+#ifdef DSD_NEO_TEST_HOOKS
+static long g_eval_count = 0;
+
+long
+dsd_heard_tg_test_eval_count(void) {
+    return g_eval_count;
+}
+
+#define HEARD_TG_COUNT_EVAL() (g_eval_count++)
+#else
+#define HEARD_TG_COUNT_EVAL() ((void)0)
+#endif
+
+/* The qualifiers a variant checks beyond its id range: P25 excludes supergroups, NXDN admits only group call types. */
+static int
+heard_tg_qualifiers_ok(const dsd_heard_tg_input* in) {
+    switch (in->variant) {
+        case DSD_HEARD_TG_P25: return in->p25_supergroup ? 0 : 1;
+        case DSD_HEARD_TG_NXDN_C:
+            /* Call types 000/001 only; inter-system (CC Option bit 6) is not a local talkgroup. */
+            return ((in->nxdn_call_type == 0u || in->nxdn_call_type == 1u) && !in->nxdn_inter_system) ? 1 : 0;
+        case DSD_HEARD_TG_NXDN_CONV: return in->nxdn_call_type == 1u ? 1 : 0;
+        default: return 1;
+    }
+}
+
 int
 dsd_heard_tg_ordinary(const dsd_heard_tg_input* in) {
+    HEARD_TG_COUNT_EVAL();
     if (in == NULL) {
         return 0;
     }
@@ -51,19 +78,8 @@ dsd_heard_tg_ordinary(const dsd_heard_tg_input* in) {
     }
     for (size_t i = 0; i < sizeof kRanges / sizeof kRanges[0]; i++) {
         const heard_tg_range* r = &kRanges[i];
-        if (r->variant != in->variant) {
-            continue;
-        }
-        if (in->id < r->lo || in->id > r->hi) {
-            return 0;
-        }
-        switch (in->variant) {
-            case DSD_HEARD_TG_P25: return in->p25_supergroup ? 0 : 1;
-            case DSD_HEARD_TG_NXDN_C:
-                /* Call types 000/001 only; inter-system (CC Option bit 6) is not a local talkgroup. */
-                return ((in->nxdn_call_type == 0u || in->nxdn_call_type == 1u) && !in->nxdn_inter_system) ? 1 : 0;
-            case DSD_HEARD_TG_NXDN_CONV: return in->nxdn_call_type == 1u ? 1 : 0;
-            default: return 1;
+        if (r->variant == in->variant) {
+            return (in->id >= r->lo && in->id <= r->hi) ? heard_tg_qualifiers_ok(in) : 0;
         }
     }
     return 0;

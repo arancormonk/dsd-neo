@@ -780,6 +780,17 @@ typedef struct {
     // whether or not it named the channel. Meaningful only once channel_label_resolved is set.
     uint8_t operator_tuned;
     uint8_t scan_member;
+    // The verified talkgroup proof of the row's transmission (issue #903; dsd_call_snapshot::heard_variant, heard_id):
+    // a dsd_heard_tg_variant (<dsd-neo/core/heard_talkgroup.h>) and the over-the-air id a checked message of this
+    // fragment's own call epoch proved, or DSD_HEARD_TG_NONE (0) and 0. Copied from the call, never from a grant or an
+    // earlier epoch; a merged reacquisition keeps the row's own and fills one it lacks; a CRC failure marked on the row
+    // later leaves it (fragment trust).
+    uint8_t heard_variant;
+    uint32_t heard_id;
+    // 1 when the decoder input was a live radio or network source (dsd_opts_input_is_live()) when the row began; 0 for
+    // a file, --playfiles, an I/Q or symbol replay, and for a row the renderer never built. Stamped and frozen with
+    // channel_label, so a live-to-file switch before the commit leaves it.
+    uint8_t live_input;
     uint32_t channel; // If this occurs on a trunking channel, which channel
     // The numbering channel was named in, a dsd_call_channel_kind (<dsd-neo/core/call_channel.h>): the DMR call's own
     // LSN, LPCN or LCN; DSD_CALL_CHANNEL_NONE for other protocols. Meaningful only with channel != 0, and set with it.

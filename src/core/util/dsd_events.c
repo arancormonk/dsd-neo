@@ -21,6 +21,7 @@
 #include <dsd-neo/core/crc_provenance.h>
 #include <dsd-neo/core/events.h>
 #include <dsd-neo/core/file_io.h>
+#include <dsd-neo/core/heard_talkgroup.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/position.h>
 #include <dsd-neo/core/position_attribution.h>
@@ -129,6 +130,10 @@ init_event_history(Event_History_I* event_struct, uint8_t start, uint8_t stop) {
         event_struct->Event_History_Items[i].stream_blocked = 0U;
         event_struct->Event_History_Items[i].operator_tuned = 0;
         event_struct->Event_History_Items[i].scan_member = 0;
+        /* No verified talkgroup proof, and not known to be live input (issue #903). */
+        event_struct->Event_History_Items[i].heard_variant = (uint8_t)DSD_HEARD_TG_NONE;
+        event_struct->Event_History_Items[i].heard_id = 0U;
+        event_struct->Event_History_Items[i].live_input = 0U;
         event_struct->Event_History_Items[i].channel = 0;
         event_struct->Event_History_Items[i].call_channel_kind = (uint8_t)DSD_CALL_CHANNEL_NONE;
         event_struct->Event_History_Items[i].analog_mode = (uint8_t)DSD_ANALOG_MODE_UNKNOWN;
@@ -154,6 +159,14 @@ init_event_history(Event_History_I* event_struct, uint8_t start, uint8_t stop) {
         event_struct->commit_rev++;
     }
     dsd_event_history_mark_dirty(event_struct);
+}
+
+// The row's verified talkgroup proof and live-input stamp (issue #903), copied whole as a row moves.
+static void
+watchdog_event_copy_proof(Event_History* dst, const Event_History* src) {
+    dst->heard_variant = src->heard_variant;
+    dst->heard_id = src->heard_id;
+    dst->live_input = src->live_input;
 }
 
 void
@@ -218,6 +231,7 @@ push_event_history(Event_History_I* event_struct) {
         event_struct->Event_History_Items[i].stream_blocked = event_struct->Event_History_Items[i - 1].stream_blocked;
         event_struct->Event_History_Items[i].operator_tuned = event_struct->Event_History_Items[i - 1].operator_tuned;
         event_struct->Event_History_Items[i].scan_member = event_struct->Event_History_Items[i - 1].scan_member;
+        watchdog_event_copy_proof(&event_struct->Event_History_Items[i], &event_struct->Event_History_Items[i - 1]);
         event_struct->Event_History_Items[i].channel = event_struct->Event_History_Items[i - 1].channel;
         event_struct->Event_History_Items[i].call_channel_kind =
             event_struct->Event_History_Items[i - 1].call_channel_kind;
@@ -907,20 +921,11 @@ watchdog_event_format_m17_sysid(char* out, size_t cap, uint8_t access_code_kind,
                                           access_code, 0));
 }
 
-// Depth of the row this slot last committed, or 0 when it can no longer be located.
-// push_event_history() copies row 0 into row 1, so immediately after a commit the row
-// sits at index 1 and every push since -- including interleaved data or system notices --
-// has pushed it one deeper.
+// Depth of the row this slot last committed, or 0 when it can no longer be located
+// (dsd_call_event_committed_row_index()).
 static uint8_t
 watchdog_event_committed_row_index(const Event_History_I* event_struct, const dsd_call_event_lifecycle* lifecycle) {
-    if (event_struct == NULL || lifecycle == NULL || !lifecycle->committed_valid) {
-        return 0U;
-    }
-    if (event_struct->push_seq < lifecycle->committed_seq) {
-        return 0U;
-    }
-    const uint64_t depth = 1U + (event_struct->push_seq - lifecycle->committed_seq);
-    return depth <= (DSD_EVENT_HISTORY_LEN - 1U) ? (uint8_t)depth : 0U;
+    return dsd_call_event_committed_row_index(event_struct, lifecycle);
 }
 
 static int
@@ -1372,6 +1377,12 @@ watchdog_event_merge_staged_into(Event_History* retained, const Event_History* s
         dsd_event_history_item_set_metadata(retained, DSD_EVENT_SEVERITY_WARNING,
                                             (dsd_event_category)retained->category);
     }
+    /* The row keeps the proof a segment of this transmission already gave it; a row with none takes the reacquired
+       segment's own (issue #903). live_input stays as the row began. */
+    if (retained->heard_variant == (uint8_t)DSD_HEARD_TG_NONE && staged->heard_variant != (uint8_t)DSD_HEARD_TG_NONE) {
+        retained->heard_variant = staged->heard_variant;
+        retained->heard_id = staged->heard_id;
+    }
     watchdog_event_merge_identity_fields(retained, staged);
     watchdog_event_merge_system_identity(retained, staged);
     watchdog_event_merge_site(retained, staged);
@@ -1726,6 +1737,11 @@ typedef struct {
     uint8_t channel_label_resolved;
     uint8_t operator_tuned;
     uint8_t scan_member;
+    /* The verified talkgroup proof of the call the row is this epoch's own (issue #903), and whether the input was
+       live when the row began; see watchdog_event_current_load_heard() and load_channel_label(). */
+    uint8_t heard_variant;
+    uint32_t heard_id;
+    uint8_t live_input;
     uint16_t svc_opts;
     uint8_t subtype;
     uint8_t crc_invalid;
@@ -2334,11 +2350,29 @@ watchdog_event_current_load_channel_label(const dsd_opts* opts, const dsd_state*
         ctx->channel_label_resolved = 1U;
         ctx->operator_tuned = staged->operator_tuned;
         ctx->scan_member = staged->scan_member;
+        ctx->live_input = staged->live_input;
         return;
     }
     (void)dsd_channel_label_current(opts, state, ctx->channel_label, sizeof(ctx->channel_label));
     ctx->channel_label_resolved = 1U;
     watchdog_event_stamp_tuner_owner(opts, state, &ctx->operator_tuned, &ctx->scan_member);
+    /* Whether the input was live when the row began (issue #903), frozen with the tuner owner. */
+    ctx->live_input = (uint8_t)dsd_opts_input_is_live(opts);
+}
+
+// The verified talkgroup proof the row carries (issue #903): the call's frozen one
+// (dsd_call_state_note_verified_target()) when the staged row is this epoch's own, else none. A notice for a call
+// that is not the slot's canonical one (a grant's synthetic snapshot) renders with no lifecycle, so it never carries
+// a proof, nor does any render over another epoch's row. Classified once, at the note: a render only copies.
+static void
+watchdog_event_current_load_heard(const dsd_call_snapshot* call, int staged_is_own, watchdog_event_current_ctx* ctx) {
+    if (!staged_is_own || call == NULL) {
+        ctx->heard_variant = (uint8_t)DSD_HEARD_TG_NONE;
+        ctx->heard_id = 0U;
+        return;
+    }
+    ctx->heard_variant = call->heard_variant;
+    ctx->heard_id = call->heard_variant != (uint8_t)DSD_HEARD_TG_NONE ? call->heard_id : 0U;
 }
 
 // The frequency the call was heard on and the access code it was heard with, resolved per render
@@ -2515,6 +2549,9 @@ watchdog_event_current_update_item(const dsd_opts* opts, dsd_state* state, uint8
     item->channel_label_resolved = ctx->channel_label_resolved;
     item->operator_tuned = ctx->operator_tuned;
     item->scan_member = ctx->scan_member;
+    item->heard_variant = ctx->heard_variant;
+    item->heard_id = ctx->heard_id;
+    item->live_input = ctx->live_input;
     (void)dsd_event_pos_requalify_row(item);
     (void)state;
     (void)slot;
@@ -3509,6 +3546,7 @@ watchdog_event_current_impl(const dsd_opts* opts, dsd_state* state, uint8_t slot
     watchdog_event_current_apply_protocol_metadata(state, &candidate, &ctx);
     watchdog_event_current_load_labels(opts, state, effective_call, &candidate, staged_is_own, &ctx);
     watchdog_event_current_load_channel_label(opts, state, &candidate, staged_is_own, &ctx);
+    watchdog_event_current_load_heard(effective_call, staged_is_own, &ctx);
     watchdog_event_current_load_tuning(opts, state, effective_call, &candidate, staged_is_own, &ctx);
     watchdog_event_current_load_rx_scope(opts, state, effective_call, &candidate, staged_is_own, ctx.freq_hz);
     watchdog_event_current_apply_code_identity(&ctx);

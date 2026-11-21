@@ -46,6 +46,11 @@ typedef struct {
  */
 int dsd_heard_tg_ordinary(const dsd_heard_tg_input* in);
 
+#ifdef DSD_NEO_TEST_HOOKS
+/** How many times dsd_heard_tg_ordinary() has run since the process started. */
+long dsd_heard_tg_test_eval_count(void);
+#endif
+
 #ifdef __cplusplus
 }
 #endif

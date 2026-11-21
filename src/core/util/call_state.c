@@ -5,6 +5,8 @@
 
 #include <dsd-neo/core/call_channel.h>
 #include <dsd-neo/core/call_state.h>
+#include <dsd-neo/core/events.h>
+#include <dsd-neo/core/heard_talkgroup.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/opts_fwd.h>
 #include <dsd-neo/core/receive.h>
@@ -1572,6 +1574,71 @@ dsd_call_state_update_policy_target(dsd_state* state, uint8_t slot, uint64_t epo
     }
     dsd_call_state_ext_unlock(ext);
     return changed;
+}
+
+/* Write @p call's verified talkgroup proof (issue #903) into the epoch's own history rows: the staged row while the
+   slot's lifecycle has opened the epoch and not yet committed its end, and the row the epoch already committed, when
+   it lacks one (a revision: commit_rev moves, so a mirror of the committed rows reads it). A row of another epoch is
+   never touched. Rendering copies the proof into the staged row too; writing it here keeps a commit that runs before
+   the next render (the epoch-change path commits the staged row as it stands) from losing it. Caller holds the
+   call-state mutex. */
+static void
+call_state_stamp_verified_rows(dsd_state* state, const dsd_call_state_ext* ext, uint8_t slot,
+                               const dsd_call_snapshot* call) {
+    if (state->event_history_s == NULL) {
+        return;
+    }
+    Event_History_I* ring = &state->event_history_s[slot];
+    const dsd_call_event_lifecycle* lifecycle = &ext->events[slot];
+    int changed = 0;
+    if (lifecycle->epoch == call->epoch && !lifecycle->ended_committed) {
+        Event_History* staged = &ring->Event_History_Items[0];
+        staged->heard_variant = call->heard_variant;
+        staged->heard_id = call->heard_id;
+        changed = 1;
+    }
+    const uint8_t index =
+        lifecycle->committed_epoch == call->epoch ? dsd_call_event_committed_row_index(ring, lifecycle) : (uint8_t)0U;
+    if (index != 0U && ring->Event_History_Items[index].heard_variant == (uint8_t)DSD_HEARD_TG_NONE) {
+        Event_History* committed = &ring->Event_History_Items[index];
+        committed->heard_variant = call->heard_variant;
+        committed->heard_id = call->heard_id;
+        ring->commit_rev++;
+        changed = 1;
+    }
+    if (changed) {
+        dsd_event_history_mark_dirty(ring);
+    }
+}
+
+void
+dsd_call_state_note_verified_target(dsd_state* state, uint8_t slot, uint64_t transmission_epoch,
+                                    const dsd_heard_tg_input* in) {
+    if (!state || slot >= DSD_CALL_STATE_SLOT_COUNT || transmission_epoch == 0U || !in) {
+        return;
+    }
+    dsd_call_state_ext* ext = dsd_call_state_ext_get(state, 0);
+    if (!ext) {
+        return;
+    }
+    dsd_call_state_ext_lock(ext);
+    dsd_call_snapshot* snapshot = &ext->calls.slots[slot];
+    if (snapshot->phase != DSD_CALL_PHASE_ACTIVE || snapshot->heard_noted != 0U
+        || dsd_call_snapshot_transmission(snapshot) != transmission_epoch) {
+        dsd_call_state_ext_unlock(ext);
+        return;
+    }
+    /* Classified here, once per epoch, and frozen: a later checked message, a render or a rebuilt staged row only
+       reads the result. */
+    snapshot->heard_noted = 1U;
+    if (dsd_heard_tg_ordinary(in)) {
+        snapshot->heard_variant = (uint8_t)in->variant;
+        snapshot->heard_id = in->id;
+        call_state_stamp_verified_rows(state, ext, slot, snapshot);
+    }
+    snapshot->revision = call_state_next_nonzero(snapshot->revision);
+    ext->calls.revision = call_state_next_nonzero(ext->calls.revision);
+    dsd_call_state_ext_unlock(ext);
 }
 
 static int

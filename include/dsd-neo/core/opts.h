@@ -1127,6 +1127,32 @@ dsd_opts_input_is_iq_stream(const dsd_opts* opts) {
 }
 
 /**
+ * @brief Return 1 while the decoder input in force is a live radio or network source, 0 otherwise.
+ *
+ * Live: an RTL-family input (RTL-SDR, rtl_tcp, SoapySDR, Airspy, a raw I/Q stream) other than an I/Q replay, and
+ * PulseAudio, UDP and TCP PCM. Not live: WAV/audio files, stdin (a pipe that may as well be a file), symbol captures,
+ * the null input, an I/Q replay (dsd_opts_input_is_iq_replay()) and --playfiles. Like the other input predicates it
+ * reads the input type and device string the session runs, so a running switch to a file or a replay counts at once.
+ * What a heard call proves is kept only from live input (issue #903).
+ *
+ * @param opts Decoder options (may be NULL).
+ * @return 1 for a live input; 0 otherwise and for NULL.
+ */
+static inline int
+dsd_opts_input_is_live(const dsd_opts* opts) {
+    if (opts == NULL || opts->playfiles != 0) {
+        return 0;
+    }
+    switch (opts->audio_in_type) {
+        case AUDIO_IN_RTL: return dsd_opts_input_is_iq_replay(opts) ? 0 : 1;
+        case AUDIO_IN_PULSE:
+        case AUDIO_IN_UDP:
+        case AUDIO_IN_TCP: return 1;
+        default: return 0;
+    }
+}
+
+/**
  * @brief Return 1 when the radio input in force has a tuning DSD-neo cannot change: an I/Q replay or an I/Q stream.
  *
  * A replay plays the tuning its capture recorded, and the program that sends a stream picks its channel. Neither has a

@@ -11,6 +11,7 @@
 #ifndef DSD_NEO_INCLUDE_DSD_NEO_CORE_CALL_STATE_H_H
 #define DSD_NEO_INCLUDE_DSD_NEO_CORE_CALL_STATE_H_H
 
+#include <dsd-neo/core/heard_talkgroup.h>
 #include <dsd-neo/core/opts_fwd.h>
 #include <dsd-neo/core/receive_types.h>
 #include <dsd-neo/core/received_identity.h>
@@ -438,6 +439,17 @@ typedef struct {
      */
     char channel_label[64];
     uint64_t channel_label_epoch;
+    /**
+     * The verified talkgroup proof (issue #903), set by dsd_call_state_note_verified_target() from this epoch's own
+     * checked message and frozen once set: @ref heard_variant is a dsd_heard_tg_variant when the message named an
+     * ordinary talkgroup (dsd_heard_tg_ordinary()), DSD_HEARD_TG_NONE (0) otherwise, and @ref heard_id that verified
+     * over-the-air id (NXDN Type-D: the full prefix and id). @ref heard_noted is 1 once the first note classified the
+     * epoch, whatever it found, so later notes never classify again. A new epoch, a reacquired one included, starts
+     * with none: a proof is never inherited from a grant, an earlier epoch or a reacquired identity.
+     */
+    uint8_t heard_noted;
+    uint8_t heard_variant;
+    uint32_t heard_id;
 } dsd_call_snapshot;
 
 /** The logical transmission @p call belongs to (dsd_call_snapshot::transmission_epoch, else its own epoch); 0 none. */
@@ -727,6 +739,21 @@ int dsd_call_state_enrich_text(dsd_state* state, uint8_t slot, int protocol, uin
  *         arguments (NULL state, a slot out of range, epoch or target 0).
  */
 int dsd_call_state_update_policy_target(dsd_state* state, uint8_t slot, uint64_t epoch, uint64_t policy_target);
+
+/**
+ * @brief Record that a checked message of slot @p slot's ACTIVE call proved its group (issue #903).
+ *
+ * Called by a protocol, on the decoder thread, at the voice channel's own checked message for this transmission. It
+ * binds to the slot's ACTIVE call whose logical transmission (dsd_call_snapshot_transmission()) is
+ * @p transmission_epoch, and does nothing for any other call, an ended one, or one already noted. The first note runs
+ * dsd_heard_tg_ordinary() on @p in, once, and freezes the result on the call (dsd_call_snapshot::heard_variant,
+ * heard_id; none when the id is not an ordinary talkgroup), and writes it to the epoch's history row: the staged row,
+ * and its committed row when the epoch already committed one (a revision, which bumps the ring's commit_rev). A later
+ * CRC failure on the transmission marks its row but never takes the proof back. Never per voice frame: a note costs a
+ * lookup once the epoch is noted.
+ */
+void dsd_call_state_note_verified_target(dsd_state* state, uint8_t slot, uint64_t transmission_epoch,
+                                         const dsd_heard_tg_input* in);
 
 int dsd_recent_activity_publish(dsd_state* state, uint8_t index, const dsd_call_observation* observation,
                                 const char* notice, uint64_t observed_m_ms);
