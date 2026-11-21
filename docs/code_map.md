@@ -2044,31 +2044,40 @@ suite runs under this compiler.
   `PLATFORM_WRITE_FRAMES`, `PLATFORM_AUDIO_PULSE_HELPERS`, `PLATFORM_AUDIO_PORTAUDIO_RECOVERY`,
   `IO_UDP_SOCKET_BACKENDS`, `DSP_SYMBOL_REPLAY`, and the `DECODE_IQ_STDOUT_*` end-to-end cases.
 - `src/core/file/dsd_file.c` reads SDRTrunk JSON MBE exports. Its file-local crypto context owns NXDN SACCH
-  position/session tracking and DMR AES late-entry context; playback does not call protocol-layer state-mutating
-  IV expansion. Voice bits are FEC-decoded before decryption and then passed to the normal vocoder/output path. The
-  row's `event_time` is the recording's start, from its call's first frame `time` that parses (issue #888 B21,
-  below). A played file is one call, as SDRTrunk writes them (issue #888): the event layer is synced at the file's
-  start and end only, never per frame or per record, and the reader observes the call on each key with
-  `DSD_CALL_BOUNDARY_CONTINUE`. A file holding several records is played as one stream: their headers fold into the
-  open call one key at a time, and identity changes split calls only as the call-state layer splits them on air. The
-  event layer never renders a call the stream moved past, so such a file makes one history row and one recording of
-  all its records' audio, named and exported under the identity the row ends with: the last ID each endpoint was
-  given (a `to` or `from` of 0, or one left out, clears none). Where the call-state layer opens a new call inside the
-  file (`dsd_call_state_observe()` returns a new epoch), the stamp latch resets, so the row is stamped from that
-  call's first valid frame: a recording of two records with other talkgroups is filed at the second record's first
+  position/session tracking and DMR AES late-entry context; playback does not call protocol-layer state-mutating IV
+  expansion. Voice bits are FEC-decoded before decryption and then passed to the normal vocoder/output path. The row's
+  `event_time` is the recording's start, from its call's first frame `time` that parses (issue #888 B21, below). A
+  played file is one call, as SDRTrunk writes them (issue #888): the event layer is synced at the file's start and end
+  only, never per frame or per record, and the reader observes the call on each key with `DSD_CALL_BOUNDARY_CONTINUE`. A
+  file holding several records is played as one stream: their headers fold into the open call one key at a time, and
+  identity changes split calls only as the call-state layer splits them on air. The event layer never renders a call the
+  stream moved past, so such a file makes one history row and one recording of all its records' audio, named and
+  exported under the identity the row ends with: the last ID each endpoint was given (a `to` or `from` of 0, or one left
+  out, clears none while the open call lasts; when another member of the record opens a new call, that call starts from
+  the context's IDs as read so far, so a 0 read before the change stays 0). Where the call-state layer opens a new call
+  inside the file (`dsd_call_state_observe()` returns a new epoch), the stamp latch resets, so the row is stamped from
+  that call's first valid frame: a recording of two records with other talkgroups is filed at the second record's first
   frame (`CORE_WAV_JOURNAL` `test_playback_records_play_as_one_call`, `CORE_MBE_FILE_IO`). From the file's second such
   call on (`sdrtrunk_json_call_opened()`), the staged row's `event_time` is cleared with the latch, so a call with no
-  valid frame `time` falls back to the decode clock instead of the last call's date, and the slot's open segment is
-  kept local (`wav_segment_keep_local()`, `wav_segment.c`): its close publishes and journals it (`rdio` false) but never
+  valid frame `time` falls back to the decode clock instead of the last call's date, and the slot's open segment is kept
+  local (`wav_segment_keep_local()`, `wav_segment.c`): its close publishes and journals it (`rdio` false) but never
   exports it under any number, as its audio spans calls whose stream verdicts the last row does not carry; one line a
   run (`CORE_WAV_JOURNAL` `test_playback_stream_off_record_stays_local`,
   `test_playback_new_call_without_time_takes_the_decode_clock`). The JSON is read token by token
-  (`sdrtrunk_json_token()`): a quoted string is one token, spaces and escapes (`\"`, `\\`) included, and only a string
-  a `:` follows is a key, so a word inside a value (`"system":"Local time 2000"`, `"site":"protocol NXDN"`) is never
+  (`sdrtrunk_json_token()`): a quoted string is one token, spaces and escapes (`\"`, `\\`) included, and only a string a
+  `:` follows is a key, so a word inside a value (`"system":"Local time 2000"`, `"site":"protocol NXDN"`) is never
   matched as one; handlers read their member's value with `sdrtrunk_json_next_value()`, which refuses an object or an
-  array, whose members are read as keys of their own. An NXDN frame's `"tag":"SACCH <n>"` is that one value. A frame's
-  `time` is matched by its exact key (not `timestamp`) and its value read whole; only decimal digits are a time (a sign
-  or a space, which `strtoull()` would take, is not), then strict-parsed.
+  array, whose members are read as keys of their own. Every key is matched by its full name (`total_frames` is not `to`,
+  `from_site` not `from`, `protocol_name` not `protocol`). The cursor (`sdrtrunk_json_cursor`) counts the braces and
+  brackets the tokenizer passes over, including the one that ends a bare value, so it knows the depth of each key: a
+  record's own members sit at depth 1 (2 in a file that is one array of records), and a record-level `frames` whose
+  value is an array marks its elements' members as voice-frame members. Only such a member's `time` stamps the row; a
+  `time` of the record, of a `metadata` object, or of another object's `frames` is passed over. The other keys keep
+  their depth-free reading (some exports carry `encryption_*` at record level). An NXDN frame's `"tag":"SACCH <n>"` is
+  that one value. A frame's `time` is matched by its exact key (not `timestamp`) and its value read whole; only decimal
+  digits are a time (a sign or a space, which `strtoull()` would take, is not), then strict-parsed. A record whose
+  `frames` come before its changed `to` or `from` has no frame `time` after the change, so it is filed on the decode
+  clock; such a file holds several calls and is kept local anyway.
 - API note: the high-pass filter in `<dsd-neo/core/audio_filters.h>` is `dsd_hpf()`. It was renamed from
   `hpf()` because codec2 exports a symbol of that name and Android links codec2 statically, which turns the
   duplicate into a link error. It is the only filter in that header that is prefixed: codec2 exports none of

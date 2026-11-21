@@ -2284,13 +2284,18 @@ kept local, no sidecar and journal `rdio` false, and the run's one line is said,
 fallback when no record names a talkgroup; `test_playback_stream_off_record_stays_local`: a stream=off radio's record
 before an unrestricted one's is not exported with it, and the unrestricted record alone is;
 `test_playback_new_call_without_time_takes_the_decode_clock`: a second call with no frame `time` is filed on the decode
-clock, in the journal and the file name, not at the first call's stamp; `test_tetra_first_call_conceals_nothing_before_it`:
-a TETRA call admitted on a half slot after earlier speech conceals nothing from that speech). `CORE_MBE_FILE_IO`
-`test_sdrtrunk_json_words_in_values_are_not_keys` reads keys only in key position: `time`, `protocol` and `to` inside a
-quoted value, escaped quotes included, change nothing. The number and label rules themselves are in `RUNTIME_RDIO_EXPORT`,
-and which closes may give the number in `CORE_WAV_JOURNAL`'s `test_d7_*` cases. `test_d7_fallback_journal_rdio_flag`
-expects an API-only upload's sidecar removed only when its upload succeeded, which needs the loopback stand-in server
-(`RDIO_CAPTURE`, not on native Windows, where the queued upload fails and keeps the sidecar).
+clock, in the journal and the file name, not at the first call's stamp;
+`test_tetra_first_call_conceals_nothing_before_it`: a TETRA call admitted on a half slot after earlier speech conceals
+nothing from that speech). `CORE_MBE_FILE_IO` `test_sdrtrunk_json_words_in_values_are_not_keys` reads keys only in key
+position: `time`, `protocol` and `to` inside a quoted value, escaped quotes included, change nothing. `CORE_WAV_JOURNAL`
+`test_playback_record_reads_only_its_own_members` plays one-record files whose headers carry members the reader does not
+know: `total_frames`, `from_site` and `protocol_name` (names that start with a key's name) leave the call one call,
+exported under its own talkgroup and radio, and a `time` of the record, of a `metadata` object or of another object's
+`frames` does not stamp it (each is filed at its first voice frame's second). The number and label rules themselves are
+in `RUNTIME_RDIO_EXPORT`, and which closes may give the number in `CORE_WAV_JOURNAL`'s `test_d7_*` cases.
+`test_d7_fallback_journal_rdio_flag` expects an API-only upload's sidecar removed only when its upload succeeded, which
+needs the loopback stand-in server (`RDIO_CAPTURE`, not on native Windows, where the queued upload fails and keeps the
+sidecar).
 
 `RUNTIME_RDIO_EXPORT` checks `--rdio-mode both`'s private upload inputs: short names under a 230-character public stem
 (the test folder's file system must allow 255-byte names), no copy and no job after a Stop, a Stop at the sidecar's

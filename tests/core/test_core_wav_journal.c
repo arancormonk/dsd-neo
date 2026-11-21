@@ -4345,17 +4345,14 @@ enum {
    falls two seconds on, in second k_stamped_first_ms / 1000 + 2. */
 static const uint64_t k_stamped_first_ms = 1600000000250ULL;
 
-/* An SDRTrunk export as SDRTrunk writes it: a clear DMR group call from 5678 to @p to, every voice frame with its own
-   Unix-millisecond "time" (a JSON number) before its "hex". */
+/* An SDRTrunk export of one record: @p head, the record's members up to and including its "frames":[, then the voice
+   frames, each with its own Unix-millisecond "time" (a JSON number) before its "hex", and the record's close. */
 static int
-stamped_write_export(const char* path, const char* to) {
-    static char json[STAMPED_FRAMES * 64 + 256];
+stamped_write_record(const char* path, const char* head) {
+    static char json[STAMPED_FRAMES * 64 + 512];
     size_t len = 0;
-    int n = DSD_SNPRINTF(json, sizeof json,
-                         "{\"protocol\":\"DMR\",\"version\":2,\"call_type\":\"GROUP\",\"from\":\"5678\",\"to\":\"%s\","
-                         "\"encrypted\":false,\"frames\":[",
-                         to);
-    if (n <= 0) {
+    int n = DSD_SNPRINTF(json, sizeof json, "%s", head);
+    if (n <= 0 || (size_t)n >= sizeof json) {
         return 1;
     }
     len = (size_t)n;
@@ -4379,6 +4376,20 @@ stamped_write_export(const char* path, const char* to) {
     int rc = fwrite(json, 1, len, f) != len ? 1 : 0;
     rc |= fclose(f) != 0 ? 1 : 0;
     return rc;
+}
+
+/* An SDRTrunk export as SDRTrunk writes it: a clear DMR group call from 5678 to @p to. */
+static int
+stamped_write_export(const char* path, const char* to) {
+    char head[256];
+    const int n = DSD_SNPRINTF(head, sizeof head,
+                               "{\"protocol\":\"DMR\",\"version\":2,\"call_type\":\"GROUP\",\"from\":\"5678\","
+                               "\"to\":\"%s\",\"encrypted\":false,\"frames\":[",
+                               to);
+    if (n <= 0 || (size_t)n >= sizeof head) {
+        return 1;
+    }
+    return stamped_write_record(path, head);
 }
 
 /* The sidecar of the journal's publish record @p pub, read into @p body (empty when there is none). */
@@ -4670,6 +4681,63 @@ expect_record_local(const rig* r, const char* label, const playback_record* rec)
     return rc;
 }
 
+/* -P -r of one record whose header also carries members the reader does not know: a name that starts with a key's name
+   ("total_frames" before "to", "from_site" after "from", "protocol_name" after "protocol") is not that key, and a
+   "time" that is no frame's (a record member, a member of another object, a frame of another object's "frames") does
+   not stamp the call. Each file is one call: exported under 1234, from 5678, filed at its first frame's second. Before,
+   a key matched by its first letters, so "total_frames":2 named talkgroup 2 and the real one opened a second call
+   (kept local), and any "time" before the frames stamped the recording (issue #888). */
+static int
+test_playback_record_reads_only_its_own_members(void) {
+    static const struct {
+        const char* label;
+        const char* head;
+    } k_cases[] = {
+        {"key-prefixed members",
+         "{\"protocol\":\"DMR\",\"protocol_name\":\"NXDN\",\"version\":2,\"call_type\":\"GROUP\","
+         "\"from\":\"5678\",\"from_site\":\"99\",\"total_frames\":2,\"to\":\"1234\",\"encrypted\":false,"
+         "\"frames\":["},
+        {"metadata time before the frames",
+         "{\"protocol\":\"DMR\",\"version\":2,\"call_type\":\"GROUP\",\"from\":\"5678\",\"to\":\"1234\","
+         "\"encrypted\":false,\"metadata\":{\"time\":1700000000000},\"frames\":["},
+        {"record time before the frames",
+         "{\"protocol\":\"DMR\",\"version\":2,\"call_type\":\"GROUP\",\"from\":\"5678\",\"to\":\"1234\","
+         "\"encrypted\":false,\"time\":1700000000000,\"frames\":["},
+        {"another object's frames",
+         "{\"protocol\":\"DMR\",\"version\":2,\"call_type\":\"GROUP\",\"from\":\"5678\",\"to\":\"1234\","
+         "\"encrypted\":false,\"metadata\":{\"frames\":[{\"time\":1700000000000}]},\"frames\":["},
+    };
+
+    int rc = 0;
+    for (size_t c = 0; c < sizeof k_cases / sizeof k_cases[0]; c++) {
+        char tag[200];
+        const char* label = k_cases[c].label;
+        rig r;
+        rc |= rig_open(&r, "dsdneo_journal_playback_members");
+        r.opts->audio_out = 0;
+        r.opts->playfiles = 1;
+        rdio_fallback_on(&r, DSD_RDIO_MODE_DIRWATCH);
+        submit(&r, DSD_APP_CMD_WAV_START);
+        char path[DSD_TEST_PATH_MAX * 2];
+        DSD_SNPRINTF(tag, sizeof tag, "%s: input written", label);
+        rc |= expect_int(tag,
+                         dsd_test_path_join(path, sizeof path, r.dir, "members.mbe") == 0
+                             ? stamped_write_record(path, k_cases[c].head)
+                             : 1,
+                         0);
+        char* argv[2] = {"dsd-neo", path};
+        r.state->optind = 1;
+        playMbeFiles(r.opts, r.state, 2, argv);
+        playback_end_run(&r);
+        reload(&r);
+        const playback_record rec = {1234U, 5678U, STAMPED_FRAMES, k_stamped_first_ms};
+        rc |= expect_record_export(&r, label, &rec, 1234U, 5678U);
+        r.opts->rdio_mode = DSD_RDIO_MODE_OFF;
+        rig_close(&r);
+    }
+    return rc;
+}
+
 /* -P -r with --rdio-unknown-talkgroup: a played file is one call, as SDRTrunk writes them. A file of two records is
    played as one stream: one recording of both records' audio and one history row. The records' headers fold into the
    open call one key at a time, as on air, so the row ends with the last ID each endpoint was given (a 0 or a missing ID
@@ -4879,6 +4947,7 @@ main(void) {
     rc |= test_tetra_held_call_then_readmitted();
     rc |= test_playback_files_record_apart();
     rc |= test_playback_export_starts_at_its_first_frame();
+    rc |= test_playback_record_reads_only_its_own_members();
     rc |= test_playback_unnumbered_call_export();
     rc |= test_playback_records_play_as_one_call();
     rc |= test_playback_stream_off_record_stays_local();

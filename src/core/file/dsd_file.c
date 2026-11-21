@@ -2376,22 +2376,62 @@ typedef struct {
 /* The separators the SDRTrunk export's JSON puts between its tokens: white space and structure. */
 #define SDRTRUNK_JSON_SEPARATORS " \t\r\n,:{}[]"
 
-/* The next token of the SDRTrunk export's JSON at *@p cursor, which moves past it: a quoted string whole, spaces and
+/* Where the reader is in the export's JSON: the text left, and how deep it sits in objects and arrays, counted from the
+   braces and brackets the tokenizer passes over (one inside a quoted string is text). A record is a top-level object
+   (or, in a file that is one array, an element of it); its "frames" array holds the voice frames, whose members sit at
+   frames_depth + 1. */
+typedef struct {
+    char* p;
+    unsigned depth;        // objects and arrays open around the cursor
+    unsigned record_depth; // the depth of a record's own members: 1, or 2 in a file that is one array of records
+    unsigned frames_depth; // the depth inside the record's "frames" array; 0 outside one
+} sdrtrunk_json_cursor;
+
+static void
+sdrtrunk_json_cursor_init(sdrtrunk_json_cursor* cursor, char* text) {
+    cursor->p = text;
+    cursor->depth = 0U;
+    cursor->record_depth = 1U;
+    cursor->frames_depth = 0U;
+}
+
+/* Count one structural character the cursor passes over. */
+static void
+sdrtrunk_json_cursor_pass(sdrtrunk_json_cursor* cursor, char c) {
+    if (c == '{' || c == '[') {
+        if (cursor->depth == 0U) {
+            cursor->record_depth = c == '[' ? 2U : 1U;
+        }
+        cursor->depth++;
+    } else if (c == '}' || c == ']') {
+        if (cursor->depth > 0U) {
+            cursor->depth--;
+        }
+        if (cursor->depth < cursor->frames_depth) {
+            cursor->frames_depth = 0U;
+        }
+    }
+}
+
+/* The next token of the SDRTrunk export's JSON at @p cursor, which moves past it: a quoted string whole, spaces and
    escapes (\" and \\ among them, left as written) included, with its closing quote cut; else bare text (a number,
    true, false, null) up to the next separator. NULL at the end of the text. *@p is_key, when given, gets whether the
    token is a member's name, a string a ':' follows: only such a token is a key, so a word inside a value never is. */
 static char*
-sdrtrunk_json_token(char** cursor, int* is_key) {
+sdrtrunk_json_token(sdrtrunk_json_cursor* cursor, int* is_key) {
     if (is_key != NULL) {
         *is_key = 0;
     }
-    char* p = *cursor;
+    char* p = cursor->p;
     if (p == NULL) {
         return NULL;
     }
-    p += strspn(p, SDRTRUNK_JSON_SEPARATORS);
+    while (*p != '\0' && strchr(SDRTRUNK_JSON_SEPARATORS, *p) != NULL) {
+        sdrtrunk_json_cursor_pass(cursor, *p);
+        p++;
+    }
     if (*p == '\0') {
-        *cursor = p;
+        cursor->p = p;
         return NULL;
     }
     char* token = p;
@@ -2408,12 +2448,14 @@ sdrtrunk_json_token(char** cursor, int* is_key) {
         }
     } else {
         end = p + strcspn(p, SDRTRUNK_JSON_SEPARATORS);
+        // The brace or bracket that ends a bare value is cut below: count it here.
+        sdrtrunk_json_cursor_pass(cursor, *end);
     }
     if (*end != '\0') {
         *end = '\0';
-        *cursor = end + 1;
+        cursor->p = end + 1;
     } else {
-        *cursor = end;
+        cursor->p = end;
     }
     return token;
 }
@@ -2421,13 +2463,13 @@ sdrtrunk_json_token(char** cursor, int* is_key) {
 /* The value of the member whose name was just read: its scalar token whole (sdrtrunk_json_token()); NULL when there is
    none or it is an object or an array, whose members are then read as keys of their own. */
 static char*
-sdrtrunk_json_next_value(char** str_saveptr) {
-    char* p = *str_saveptr;
+sdrtrunk_json_next_value(sdrtrunk_json_cursor* str_saveptr) {
+    char* p = str_saveptr->p;
     if (p == NULL) {
         return NULL;
     }
     p += strspn(p, " \t\r\n:");
-    *str_saveptr = p;
+    str_saveptr->p = p;
     if (*p == '{' || *p == '[' || *p == ',' || *p == '}' || *p == ']') {
         return NULL;
     }
@@ -2625,8 +2667,9 @@ sdrtrunk_json_set_protocol(const char* value, dsd_state* state, sdrtrunk_json_co
 }
 
 static int
-sdrtrunk_json_handle_version(const dsd_opts* opts, const char* token, char** str_saveptr, sdrtrunk_json_context* ctx) {
-    if (strncmp("version", token, 7) != 0) {
+sdrtrunk_json_handle_version(const dsd_opts* opts, const char* token, sdrtrunk_json_cursor* str_saveptr,
+                             sdrtrunk_json_context* ctx) {
+    if (strcmp("version", token) != 0) {
         return 0;
     }
 
@@ -2645,8 +2688,9 @@ sdrtrunk_json_handle_version(const dsd_opts* opts, const char* token, char** str
 }
 
 static int
-sdrtrunk_json_handle_protocol(dsd_state* state, const char* token, char** str_saveptr, sdrtrunk_json_context* ctx) {
-    if (strncmp("protocol", token, 8) != 0) {
+sdrtrunk_json_handle_protocol(dsd_state* state, const char* token, sdrtrunk_json_cursor* str_saveptr,
+                              sdrtrunk_json_context* ctx) {
+    if (strcmp("protocol", token) != 0) {
         return 0;
     }
 
@@ -2661,8 +2705,8 @@ sdrtrunk_json_handle_protocol(dsd_state* state, const char* token, char** str_sa
 }
 
 static int
-sdrtrunk_json_handle_call_type(const char* token, char** str_saveptr, sdrtrunk_json_context* ctx) {
-    if (strncmp("call_type", token, 9) != 0) {
+sdrtrunk_json_handle_call_type(const char* token, sdrtrunk_json_cursor* str_saveptr, sdrtrunk_json_context* ctx) {
+    if (strcmp("call_type", token) != 0) {
         return 0;
     }
 
@@ -2676,8 +2720,8 @@ sdrtrunk_json_handle_call_type(const char* token, char** str_saveptr, sdrtrunk_j
 }
 
 static int
-sdrtrunk_json_handle_encrypted(const char* token, char** str_saveptr, sdrtrunk_json_context* ctx) {
-    if (strncmp("encrypted", token, 9) != 0) {
+sdrtrunk_json_handle_encrypted(const char* token, sdrtrunk_json_cursor* str_saveptr, sdrtrunk_json_context* ctx) {
+    if (strcmp("encrypted", token) != 0) {
         return 0;
     }
 
@@ -2694,8 +2738,8 @@ sdrtrunk_json_handle_encrypted(const char* token, char** str_saveptr, sdrtrunk_j
 }
 
 static int
-sdrtrunk_json_handle_to_from(sdrtrunk_json_context* ctx, const char* token, char** str_saveptr) {
-    if (strncmp("to", token, 2) == 0) {
+sdrtrunk_json_handle_to_from(sdrtrunk_json_context* ctx, const char* token, sdrtrunk_json_cursor* str_saveptr) {
+    if (strcmp("to", token) == 0) {
         char* value = sdrtrunk_json_next_value(str_saveptr);
         if (value) {
             uint32_t parsed = 0;
@@ -2704,7 +2748,7 @@ sdrtrunk_json_handle_to_from(sdrtrunk_json_context* ctx, const char* token, char
         }
         return 1;
     }
-    if (strncmp("from", token, 4) == 0) {
+    if (strcmp("from", token) == 0) {
         char* value = sdrtrunk_json_next_value(str_saveptr);
         if (value) {
             uint32_t parsed = 0;
@@ -2717,8 +2761,9 @@ sdrtrunk_json_handle_to_from(sdrtrunk_json_context* ctx, const char* token, char
 }
 
 static int
-sdrtrunk_json_handle_alg(const dsd_opts* opts, const char* token, char** str_saveptr, sdrtrunk_json_context* ctx) {
-    if (strncmp("encryption_algorithm", token, 20) != 0) {
+sdrtrunk_json_handle_alg(const dsd_opts* opts, const char* token, sdrtrunk_json_cursor* str_saveptr,
+                         sdrtrunk_json_context* ctx) {
+    if (strcmp("encryption_algorithm", token) != 0) {
         return 0;
     }
 
@@ -2744,8 +2789,9 @@ sdrtrunk_json_handle_alg(const dsd_opts* opts, const char* token, char** str_sav
 }
 
 static int
-sdrtrunk_json_handle_key_id(const dsd_opts* opts, const char* token, char** str_saveptr, sdrtrunk_json_context* ctx) {
-    if (strncmp("encryption_key_id", token, 17) != 0) {
+sdrtrunk_json_handle_key_id(const dsd_opts* opts, const char* token, sdrtrunk_json_cursor* str_saveptr,
+                            sdrtrunk_json_context* ctx) {
+    if (strcmp("encryption_key_id", token) != 0) {
         return 0;
     }
 
@@ -2923,9 +2969,9 @@ sdrtrunk_json_classify_p25_crypto(dsd_state* state, const sdrtrunk_json_context*
 // opts is read-only here: the key activation moved to keyring_activate_slot_with_kid(), which
 // takes no opts, leaving only the payload-verbosity read and two const-taking helpers.
 static int
-sdrtrunk_json_handle_mi(const dsd_opts* opts, dsd_state* state, const char* token, char** str_saveptr,
+sdrtrunk_json_handle_mi(const dsd_opts* opts, dsd_state* state, const char* token, sdrtrunk_json_cursor* str_saveptr,
                         sdrtrunk_json_context* ctx) {
-    if (strncmp("encryption_mi", token, 13) != 0) {
+    if (strcmp("encryption_mi", token) != 0) {
         return 0;
     }
 
@@ -3062,7 +3108,7 @@ sdrtrunk_json_decode_ambe_hex(dsd_opts* opts, dsd_state* state, sdrtrunk_json_co
 }
 
 static void
-sdrtrunk_json_handle_nxdn_tag(const char* token, char** str_saveptr, sdrtrunk_json_context* ctx) {
+sdrtrunk_json_handle_nxdn_tag(const char* token, sdrtrunk_json_cursor* str_saveptr, sdrtrunk_json_context* ctx) {
     if (ctx->protocol != 3 || strcmp(token, "tag") != 0) {
         return;
     }
@@ -3120,9 +3166,9 @@ sdrtrunk_json_decode_nxdn_hex(dsd_opts* opts, dsd_state* state, sdrtrunk_json_co
 }
 
 static int
-sdrtrunk_json_handle_hex(dsd_opts* opts, dsd_state* state, const char* token, char** str_saveptr,
+sdrtrunk_json_handle_hex(dsd_opts* opts, dsd_state* state, const char* token, sdrtrunk_json_cursor* str_saveptr,
                          sdrtrunk_json_context* ctx) {
-    if (strncmp("hex", token, 3) != 0) {
+    if (strcmp("hex", token) != 0) {
         return 0;
     }
 
@@ -3160,14 +3206,31 @@ sdrtrunk_json_parse_time(const char* value, time_t* out) {
     return 0;
 }
 
+/* The record's "frames" member: when its value is an array, the objects directly inside it are the voice frames. */
+static void
+sdrtrunk_json_handle_frames(const char* token, sdrtrunk_json_cursor* cursor) {
+    if (cursor->depth != cursor->record_depth || strcmp("frames", token) != 0) {
+        return;
+    }
+    const char* value = cursor->p + strspn(cursor->p, " \t\r\n:");
+    if (*value == '[') {
+        cursor->frames_depth = cursor->depth + 1U;
+    }
+}
+
 /* The row of a played call is stamped once, from its first frame's "time" that parses: the recording's start, on the
    recording's own clock. Later frames of the call leave it, so the recording is not filed at its last frame (issue #888
    B21); the row of a --playfiles call keeps no end (see dsd_rdio_recording_start()). Another call in the same file is
-   stamped afresh from its own first valid frame. */
+   stamped afresh from its own first valid frame. Only a voice frame's own "time" counts, a member of an object directly
+   inside the record's "frames": a "time" of the record or of any other object is not when the call was heard. */
 static int
-sdrtrunk_json_handle_time(const char* token, char** str_saveptr, dsd_state* state, sdrtrunk_json_context* ctx) {
+sdrtrunk_json_handle_time(const char* token, sdrtrunk_json_cursor* str_saveptr, dsd_state* state,
+                          sdrtrunk_json_context* ctx) {
     if (strcmp("time", token) != 0) {
         return 0;
+    }
+    if (str_saveptr->frames_depth == 0U || str_saveptr->depth != str_saveptr->frames_depth + 1U) {
+        return 1;
     }
 
     // The key exactly, not a "timestamp", and its value whole: "1700000000000 junk" is not a time.
@@ -3248,7 +3311,7 @@ sdrtrunk_json_publish_call(const dsd_opts* opts, dsd_state* state, sdrtrunk_json
 
 static void
 sdrtrunk_json_process_token(dsd_opts* opts, dsd_state* state, sdrtrunk_json_context* ctx, const char* token,
-                            char** str_saveptr) {
+                            sdrtrunk_json_cursor* str_saveptr) {
     (void)sdrtrunk_json_handle_version(opts, token, str_saveptr, ctx);
     (void)sdrtrunk_json_handle_protocol(state, token, str_saveptr, ctx);
     (void)sdrtrunk_json_handle_call_type(token, str_saveptr, ctx);
@@ -3266,6 +3329,7 @@ sdrtrunk_json_process_token(dsd_opts* opts, dsd_state* state, sdrtrunk_json_cont
     sdrtrunk_json_handle_nxdn_tag(token, str_saveptr, ctx);
     (void)sdrtrunk_json_handle_hex(opts, state, token, str_saveptr, ctx);
     (void)sdrtrunk_json_handle_time(token, str_saveptr, state, ctx);
+    sdrtrunk_json_handle_frames(token, str_saveptr);
     sdrtrunk_json_publish_call(opts, state, ctx);
 }
 
@@ -3293,7 +3357,8 @@ read_sdrtrunk_json_format(dsd_opts* opts, dsd_state* state) {
     source_str[source_size] = '\0';
 
     /* Members are read by name: a token that is no key (a value no handler took) is passed over. */
-    char* cursor = source_str;
+    sdrtrunk_json_cursor cursor;
+    sdrtrunk_json_cursor_init(&cursor, source_str);
     for (size_t i = 0; i < source_size && dsd_exitflag_load() != 1; i++) {
         int is_key = 0;
         const char* token = sdrtrunk_json_token(&cursor, &is_key);

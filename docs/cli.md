@@ -424,13 +424,17 @@ Windows console runs:
   `dsd-neo -o null -w decoded.wav -H '<key>' --dmr-force-algid 25 -r call.mbe`.
   These are known-key playback modes, not key recovery.
   With `-P`, each played file is a recording of its own, and an SDRTrunk export, one call per file as SDRTrunk writes
-  them, is recorded under its own history row, filed at its first frame's `time`. A file holding several records is
-  played as one stream: one history row and one recording of all of them, named and exported under the last talkgroup
-  and radio ID the records gave (a `to` or `from` of 0, or one left out, does not clear an earlier one). When a later
-  record changes a talkgroup or radio ID an earlier one gave, the recording is filed at that record's first frame
-  `time` (on the decode clock when that record's frames carry no valid `time`), though it starts with the earlier
-  records' audio. Such a recording holds more than one call, so it is never exported to rdio-scanner, whatever its
-  talkgroup and stream settings: no sidecar, no upload, and one line in the log a run.
+  them, is recorded under its own history row, filed at its first frame's `time` (a member of a frame in the record's
+  `frames` array; a `time` anywhere else is not the call's). Members are matched by their full names. A file holding
+  several records is played as one stream: one history row and one recording of all of them, named and exported under
+  the last talkgroup and radio ID the records gave. A record's members are read in the order they are written, so a `to`
+  or `from` of 0, or one left out, keeps an earlier ID only while the record changes no other: when it also changes a
+  talkgroup or radio ID an earlier record gave, the ID it gave as 0 before that change stays 0 (`"to":"0"` before a
+  changed `from` leaves the recording with no talkgroup; after it, the earlier talkgroup stays). When a later record
+  changes a talkgroup or radio ID, the recording is filed at that record's first frame `time` read after the change (on
+  the decode clock when there is none, as when the record's `frames` come before its changed `to` or `from`), though it
+  starts with the earlier records' audio. Such a recording holds more than one call, so it is never exported to
+  rdio-scanner, whatever its talkgroup and stream settings: no sidecar, no upload, and one line in the log a run.
   Only those SDRTrunk calls are exported to rdio-scanner. They carry
   no frequency or access code, so one with no talkgroup uses `--rdio-unknown-talkgroup` ([Digital calls with no
   talkgroup in rdio-scanner](#digital-calls-with-no-talkgroup-in-rdio-scanner)). A raw `.imb`, `.amb` or `.dmb` file

@@ -742,6 +742,8 @@ test_parse_raw_user_string_guards_and_bounds(void) {
     return rc;
 }
 
+/* The header's protocol, call type and IDs, and the row stamped from its frame's "time" (a voice frame's member, as
+   SDRTrunk writes it: the record itself carries none). */
 static int
 test_sdrtrunk_json_metadata_protocols_and_time(void) {
     int rc = 0;
@@ -768,7 +770,7 @@ test_sdrtrunk_json_metadata_protocols_and_time(void) {
         state.event_history_s = history;
         DSD_SNPRINTF(json, sizeof json,
                      "{\"version\":\"2\",\"protocol\":\"%s\",\"call_type\":\"GROUP\",\"encrypted\":\"false\","
-                     "\"to\":\"1234\",\"from\":\"5678\",\"time\":\"1700000000000\"}",
+                     "\"to\":\"1234\",\"from\":\"5678\",\"frames\":[{\"time\":\"1700000000000\"}]}",
                      cases[i].protocol);
 
         rc |= run_sdrtrunk_json(json, &opts, &state);
