@@ -510,21 +510,42 @@ private fun aStoppedWorkerStillAnswers() {
     check(!DownloadsSave.settle(rows, stranded, true, null) && deleted(stranded)) { "a claimed row is deleted here" }
 }
 
-fun main() {
+/**
+ * Run [body], then remove [root] and everything in it without following a link, failing when anything cannot be
+ * removed (on Windows, a file a handle still holds), so the test cannot pass with its temp folder left behind. A
+ * failure of [body] stays the failure, with the removal's own attached.
+ */
+private fun withScratchRemoved(root: File, body: () -> Unit) {
     try {
-        DownloadsSave.start(rows)
-        insertValues()
-        backupSaveSettles()
-        recordingTransferSettles()
-        claimActsOnce()
-        publishedIsBounded()
-        leftoverGrantsGo()
-        abortLeavesAHeldUpdate()
-        aStoppedWorkerStillAnswers()
-        check(DownloadsSave.pendingCount() == 0) { "no row stays pending" }
-    } finally {
-        DownloadsSave.worker.shutdownNow()
-        scratch.deleteRecursively()
+        body()
+    } catch (e: Throwable) {
+        runCatching { removeTree(root) }.exceptionOrNull()?.let(e::addSuppressed)
+        throw e
+    }
+    removeTree(root)
+}
+
+private fun removeTree(root: File) {
+    Files.walk(root.toPath()).use { paths -> paths.sorted(Comparator.reverseOrder()).forEach(Files::delete) }
+}
+
+fun main() {
+    withScratchRemoved(scratch) {
+        try {
+            DownloadsSave.start(rows)
+            insertValues()
+            backupSaveSettles()
+            recordingTransferSettles()
+            claimActsOnce()
+            publishedIsBounded()
+            leftoverGrantsGo()
+            abortLeavesAHeldUpdate()
+            aStoppedWorkerStillAnswers()
+            check(DownloadsSave.pendingCount() == 0) { "no row stays pending" }
+            check(ParcelFileDescriptor.openCount() == 0) { "every descriptor is closed: ${ParcelFileDescriptor.openCount()} open" }
+        } finally {
+            DownloadsSave.worker.shutdownNow()
+        }
     }
     println("PASS: Download folder rows are inserted, published or deleted at every write exit, discarded and bounded")
 }

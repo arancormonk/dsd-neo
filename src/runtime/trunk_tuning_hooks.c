@@ -175,6 +175,22 @@ dsd_trunk_tuning_retuned_since(uint64_t request_id) {
     return refused != newest - request_id;
 }
 
+int
+dsd_trunk_tuning_request_pending_in(uint64_t after, uint64_t through) {
+    if (through <= after) {
+        return 0;
+    }
+    int pending = 0;
+    dsd_trunk_tuning_requests_lock();
+    for (int i = 0; i < DSD_TRUNK_TUNING_REQUEST_HISTORY && !pending; i++) {
+        const dsd_trunk_tuning_request_record* record = &g_trunk_tuning_requests[i];
+        pending = record->state == DSD_TRUNK_TUNING_REQUEST_PENDING && record->request_id > after
+                  && record->request_id <= through;
+    }
+    dsd_trunk_tuning_requests_unlock();
+    return pending;
+}
+
 uint64_t
 dsd_trunk_tuning_request_begin(void) {
     uint64_t request_id = 0U;

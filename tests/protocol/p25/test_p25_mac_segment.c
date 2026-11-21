@@ -624,6 +624,38 @@ run_voice_identity_parse_cases(void) {
     rc |= expect_int("Motorola extended regroup type", identity.is_group, 1);
     rc |= expect_int("Motorola extended regroup service", identity.svc_bits, 0x80);
 
+    /* Extended forms: the Source Address stays the source; the Source SUID is the talker's home identity. */
+    static const uint8_t k_ext_opcodes[] = {0x21u, 0x22u};
+    for (size_t e = 0; e < sizeof(k_ext_opcodes); e++) {
+        const int private_form = k_ext_opcodes[e] == 0x22u;
+        DSD_MEMSET(mac, 0, sizeof(mac));
+        int pos = 1;
+        mac[pos++] = k_ext_opcodes[e];
+        mac[pos++] = 0x00;
+        pos += private_form ? 3 : 2; /* target */
+        mac[pos++] = 0x00;
+        mac[pos++] = 0x0B;
+        mac[pos++] = 0xBA; /* Source Address 0x000BBA */
+        mac[pos++] = 0xAB;
+        mac[pos++] = 0xCD;
+        mac[pos++] = 0xE2;
+        mac[pos++] = 0xA7; /* WACN 0xABCDE, System ID 0x2A7 */
+        mac[pos++] = 0x12;
+        mac[pos++] = 0xD6;
+        mac[pos++] = 0x87; /* unit 1234567 */
+        rc |= expect_int("extended voice identity present", p25p2_mac_decode_voice_identity(0, mac, &identity), 1);
+        rc |= expect_int("extended voice source is the working address", identity.src, 0x000BBA);
+        rc |= expect_int("extended voice home", identity.home_valid, 1);
+        rc |= expect_int("extended voice home wacn", (int)identity.home_wacn, 0xABCDE);
+        rc |= expect_int("extended voice home sysid", (int)identity.home_sysid, 0x2A7);
+        rc |= expect_int("extended voice home unit", (int)identity.home_unit, 1234567);
+        mac[pos - 3] = 0xFF;
+        mac[pos - 2] = 0xFF;
+        mac[pos - 1] = 0xFD; /* a special address names no home */
+        rc |= expect_int("extended voice special unit present", p25p2_mac_decode_voice_identity(0, mac, &identity), 1);
+        rc |= expect_int("extended voice special unit: no home", identity.home_valid, 0);
+    }
+
     DSD_MEMSET(mac, 0, sizeof(mac));
     mac[1] = 0x30;
     rc |= expect_int("non-voice identity absent", p25p2_mac_decode_voice_identity(0, mac, &identity), 0);

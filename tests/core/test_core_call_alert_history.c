@@ -5012,6 +5012,171 @@ test_reacq_merge_unions_site(void) {
     return rc;
 }
 
+static int observe_roaming_call_home(dsd_state* state, dsd_call_boundary boundary, uint32_t wacn, uint32_t unit);
+
+/* One observation of a roaming P25 Phase 2 radio with no working address, named by its home SUID. */
+static int
+observe_roaming_call(dsd_state* state, dsd_call_boundary boundary) {
+    return observe_roaming_call_home(state, boundary, 0xABCDEU, 1234567U);
+}
+
+static int
+observe_roaming_call_unit(dsd_state* state, dsd_call_boundary boundary, uint32_t unit) {
+    return observe_roaming_call_home(state, boundary, 0xABCDEU, unit);
+}
+
+static int
+observe_roaming_call_home(dsd_state* state, dsd_call_boundary boundary, uint32_t wacn, uint32_t unit) {
+    const dsd_call_observation observation = {
+        .protocol = DSD_SYNC_P25P2_POS,
+        .slot = 0U,
+        .kind = DSD_CALL_KIND_GROUP_VOICE,
+        .ota_target_id = 100U,
+        .policy_target_id = 100U,
+        .has_service_metadata = 1U,
+        .observed_m = g_observed_m,
+    };
+    g_observed_m += 0.1;
+    const int began = dsd_call_state_observe(state, &observation, boundary);
+    const dsd_call_source_home home = {.wacn = wacn, .sysid = 0x2A7U, .unit = unit, .valid = 1U};
+    int replaced = 0;
+    (void)dsd_call_state_note_source_home(state, 0U, DSD_SYNC_P25P2_POS, &home, &replaced);
+    if (replaced) {
+        /* As p25p2_note_voice_home(): another radio's home drops the earlier radio's alias from the call's row. */
+        dsd_call_snapshot call;
+        if (dsd_call_state_get(state, 0U, &call) > 0) {
+            (void)dsd_event_enrich_alias(state, 0U, DSD_SYNC_P25P2_POS, call.epoch, "");
+        }
+    }
+    return began;
+}
+
+// A roaming radio's call reacquired after a sync loss merges into one row whose re-rendered line still names the
+// radio by its home identity: the display-only home is kept with the row, never in its source fields.
+static int
+test_reacq_merge_keeps_roaming_home(void) {
+    dsd_opts* opts = (dsd_opts*)calloc(1U, sizeof(dsd_opts));
+    dsd_state* state = (dsd_state*)calloc(1U, sizeof(dsd_state));
+    Event_History_I* event_history = (Event_History_I*)calloc(2U, sizeof(Event_History_I));
+    assert(opts != NULL && state != NULL && event_history != NULL);
+    reset_fixture(opts, state, event_history);
+    state->nac = 0x293;
+    note_p25_site(state);
+    assert(observe_roaming_call(state, DSD_CALL_BOUNDARY_BEGIN) == 1);
+    dsd_event_sync_slot(opts, state, 0U);
+    assert(end_test_call(state, 0U, DSD_CALL_END_SYNC_LOSS) == 1);
+    dsd_event_sync_slot(opts, state, 0U);
+    assert(observe_roaming_call(state, DSD_CALL_BOUNDARY_CONTINUE) == 1);
+    dsd_event_sync_slot(opts, state, 0U);
+    assert(end_test_call(state, 0U, DSD_CALL_END_TERMINATOR) == 1);
+    dsd_event_sync_slot(opts, state, 0U);
+    const Event_History* merged = &event_history[0].Event_History_Items[1];
+    int rc = expect_int("one row", committed_history_rows(&event_history[0]), 1);
+    rc |= expect_has_substr("the merged line names the roaming radio", merged->event_string, "SRC: 1234567@2A7;");
+    rc |= expect_int("no source id", (int)merged->source_id, 0);
+    rc |= expect_int("no source text", merged->src_str[0] == '\0', 1);
+    dsd_state_ext_free_all(state);
+    free(event_history);
+    free(state);
+    free(opts);
+    return rc;
+}
+
+// Another roaming radio heard in the reacquired segment (no end decoded between them) is the merged row's talker: the
+// row takes its home and drops the first radio's alias rather than pairing the two.
+static int
+test_reacq_merge_takes_the_replacement_home(void) {
+    dsd_opts* opts = (dsd_opts*)calloc(1U, sizeof(dsd_opts));
+    dsd_state* state = (dsd_state*)calloc(1U, sizeof(dsd_state));
+    Event_History_I* event_history = (Event_History_I*)calloc(2U, sizeof(Event_History_I));
+    assert(opts != NULL && state != NULL && event_history != NULL);
+    reset_fixture(opts, state, event_history);
+    state->nac = 0x293;
+    note_p25_site(state);
+    assert(observe_roaming_call_unit(state, DSD_CALL_BOUNDARY_BEGIN, 1234567U) == 1);
+    dsd_event_sync_slot(opts, state, 0U);
+    dsd_call_snapshot call;
+    assert(dsd_call_state_get(state, 0U, &call) == 1);
+    assert(dsd_event_enrich_alias(state, 0U, DSD_SYNC_P25P2_POS, call.epoch, "FIRSTRADIO") >= 0);
+    assert(end_test_call(state, 0U, DSD_CALL_END_SYNC_LOSS) == 1);
+    dsd_event_sync_slot(opts, state, 0U);
+    assert(observe_roaming_call_unit(state, DSD_CALL_BOUNDARY_CONTINUE, 7654321U) == 1);
+    dsd_event_sync_slot(opts, state, 0U);
+    assert(end_test_call(state, 0U, DSD_CALL_END_TERMINATOR) == 1);
+    dsd_event_sync_slot(opts, state, 0U);
+    int rc = 0;
+    int found = 0;
+    for (int i = 1; i < 10; i++) {
+        const Event_History* row = &event_history[0].Event_History_Items[i];
+        if (strstr(row->event_string, "SRC: 7654321@2A7;") != NULL) {
+            found = 1;
+            rc |= expect_int("the replacement's row has no first-radio alias", strstr(row->alias, "FIRSTRADIO") == NULL,
+                             1);
+        }
+        rc |= expect_int(
+            "no row pairs the replacement home with the first alias",
+            !(strstr(row->event_string, "7654321@2A7") != NULL && strstr(row->alias, "FIRSTRADIO") != NULL), 1);
+    }
+    rc |= expect_int("the replacement is named", found, 1);
+    dsd_state_ext_free_all(state);
+    free(event_history);
+    free(state);
+    free(opts);
+    return rc;
+}
+
+// A replacement roaming radio whose home differs only by WACN (the same `unit@system` text) is still another radio:
+// the merged row takes its alias, not the first radio's, and the event log reports the new alias.
+static int
+test_reacq_merge_logs_the_replacement_alias(void) {
+    dsd_opts* opts = (dsd_opts*)calloc(1U, sizeof(dsd_opts));
+    dsd_state* state = (dsd_state*)calloc(1U, sizeof(dsd_state));
+    Event_History_I* event_history = (Event_History_I*)calloc(2U, sizeof(Event_History_I));
+    assert(opts != NULL && state != NULL && event_history != NULL);
+    reset_fixture(opts, state, event_history);
+    char path[DSD_TEST_PATH_MAX];
+    int fd = dsd_test_mkstemp(path, sizeof path, "dsd-neo-roam-events");
+    assert(fd >= 0);
+    close(fd);
+    remove(path);
+    DSD_SNPRINTF(opts->event_out_file, sizeof opts->event_out_file, "%s", path);
+    state->nac = 0x293;
+    note_p25_site(state);
+    assert(observe_roaming_call_home(state, DSD_CALL_BOUNDARY_BEGIN, 0xABCDEU, 1234567U) == 1);
+    dsd_event_sync_slot(opts, state, 0U);
+    dsd_call_snapshot call;
+    assert(dsd_call_state_get(state, 0U, &call) == 1);
+    assert(dsd_event_enrich_alias_ex(opts, state, 0U, DSD_SYNC_P25P2_POS, call.epoch, "FIRSTRADIO") >= 0);
+    assert(end_test_call(state, 0U, DSD_CALL_END_SYNC_LOSS) == 1);
+    dsd_event_sync_slot(opts, state, 0U);
+    assert(observe_roaming_call_home(state, DSD_CALL_BOUNDARY_CONTINUE, 0xBCDEFU, 1234567U) == 1);
+    dsd_event_sync_slot(opts, state, 0U);
+    assert(dsd_call_state_get(state, 0U, &call) == 1);
+    assert(dsd_event_enrich_alias_ex(opts, state, 0U, DSD_SYNC_P25P2_POS, call.epoch, "SECONDRADIO") >= 0);
+    assert(end_test_call(state, 0U, DSD_CALL_END_TERMINATOR) == 1);
+    dsd_event_sync_slot(opts, state, 0U);
+    int rc = 0;
+    for (int i = 1; i < 10; i++) {
+        const Event_History* row = &event_history[0].Event_History_Items[i];
+        if (strstr(row->event_string, "1234567@2A7") != NULL
+            && row->src_home_key == ((0xBCDEFULL << 36) | (0x2A7ULL << 24) | 1234567ULL)) {
+            rc |= expect_int("the replacement's row carries its alias", strstr(row->alias, "SECONDRADIO") != NULL, 1);
+            rc |=
+                expect_int("the replacement's row drops the first alias", strstr(row->alias, "FIRSTRADIO") == NULL, 1);
+        }
+    }
+    char buf[8192] = {0};
+    const int read_rc = read_event_log(path, buf, sizeof buf);
+    remove(path);
+    rc |= expect_int("the event log was readable", read_rc, 0);
+    rc |= expect_has_substr("the event log reports the replacement's alias", buf, "Talker Alias: SECONDRADIO");
+    dsd_state_ext_free_all(state);
+    free(event_history);
+    free(state);
+    free(opts);
+    return rc;
+}
+
 // Two segments on the same talkgroup heard under two sites (a radio roaming between them inside the reacquire window,
 // the record reset between them so the call state reopens the call) are two rows, each with its own site: a merge
 // never pairs one site's WACN with another's system.
@@ -9769,6 +9934,9 @@ main(void) {
     rc |= test_row_site_playfiles_none_iq_replay_kept();
     rc |= test_row_site_m17_dpmr_none();
     rc |= test_reacq_merge_unions_site();
+    rc |= test_reacq_merge_keeps_roaming_home();
+    rc |= test_reacq_merge_takes_the_replacement_home();
+    rc |= test_reacq_merge_logs_the_replacement_alias();
     rc |= test_reacq_merge_refuses_conflict();
     rc |= test_row_channel_fill_only_with_kind();
     rc |= test_event_line_dmr_site_tokens();

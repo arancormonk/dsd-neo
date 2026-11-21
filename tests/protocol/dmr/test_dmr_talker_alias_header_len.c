@@ -39,6 +39,13 @@ seed_active_call_of(dsd_state* state, int protocol, uint8_t slot, uint32_t sourc
     if (dsd_call_state_observe(state, &observation, DSD_CALL_BOUNDARY_BEGIN) < 0) {
         abort();
     }
+    /* The trunk state machine's #800 verdict on a checked voice user's source, mirrored on the call
+       (dsd_call_state_note_source_verdict()): a P25 alias is learned only for such a source. */
+    dsd_call_snapshot opened;
+    if (dsd_call_state_get(state, slot, &opened) > 0) {
+        (void)dsd_call_state_note_source_verdict(state, slot, opened.epoch, (uint32_t)source, 1,
+                                                 dsd_state_reception_generation(state));
+    }
     if (state->event_history_s != NULL) {
         state->event_history_s[slot].Event_History_Items[0].source_id = source;
         state->event_history_s[slot].Event_History_Items[0].target_id = target;

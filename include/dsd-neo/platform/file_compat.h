@@ -496,6 +496,16 @@ int dsd_fd_wait_readable(int fd, unsigned int timeout_ms);
 int dsd_fd_is_stream(int fd);
 
 /**
+ * @brief Whether a read of @p fd can block with no bounded wait to put before it: on Windows a console or other
+ * character device (a serial port), whose readiness dsd_fd_wait_readable() cannot tell. Never on POSIX, where a
+ * terminal or device is polled.
+ *
+ * @param fd File descriptor.
+ * @return 1 for such a descriptor, 0 otherwise and on failure.
+ */
+int dsd_fd_read_unbounded(int fd);
+
+/**
  * @brief The bytes a pipe, FIFO or socket descriptor holds ready to read, without reading them (FIONREAD; on Windows
  * PeekNamedPipe() on a pipe). Safe while another thread reads the descriptor.
  *

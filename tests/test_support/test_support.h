@@ -409,6 +409,60 @@ dsd_test_capture_stderr_end(dsd_test_capture_stderr* cap) {
 }
 
 /**
+ * @brief stderr sent to the null device: for a test that drops what the code under test prints there.
+ *
+ * Unlike a capture, it writes no file, so there is nothing to remove afterwards.
+ */
+typedef struct dsd_test_quiet_stderr {
+    int saved_fd;
+} dsd_test_quiet_stderr;
+
+/** @return 0 once stderr goes to the null device, -1 otherwise, with stderr unchanged. */
+static inline int
+dsd_test_quiet_stderr_begin(dsd_test_quiet_stderr* quiet) {
+    if (!quiet) {
+        errno = EINVAL;
+        return -1;
+    }
+    quiet->saved_fd = -1;
+    (void)fflush(stderr);
+
+    int saved = dsd_dup(DSD_STDERR_FILENO);
+    if (saved < 0) {
+        return -1;
+    }
+    FILE* sink = dsd_fopen_private(dsd_null_device(), "w");
+    if (!sink) {
+        dsd_close(saved);
+        return -1;
+    }
+    const int rc = dsd_dup2(dsd_fileno(sink), DSD_STDERR_FILENO);
+    (void)fclose(sink);
+    if (rc < 0) {
+        dsd_close(saved);
+        return -1;
+    }
+    quiet->saved_fd = saved;
+    return 0;
+}
+
+/** Restore the stderr dsd_test_quiet_stderr_begin() replaced; harmless after a failed begin. */
+static inline int
+dsd_test_quiet_stderr_end(dsd_test_quiet_stderr* quiet) {
+    if (!quiet) {
+        errno = EINVAL;
+        return -1;
+    }
+    (void)fflush(stderr);
+    if (quiet->saved_fd >= 0) {
+        (void)dsd_dup2(quiet->saved_fd, DSD_STDERR_FILENO);
+        (void)dsd_close(quiet->saved_fd);
+        quiet->saved_fd = -1;
+    }
+    return 0;
+}
+
+/**
  * Whether @p name is a published conventional analog per-call recording of mode word @p mode (`NFM`, `AM`, or
  * `ANALOG` on audio input; issue #667),
  * `<date>_<time>_<5 digits>_<mode>_<freq Hz | FREQ_UNKNOWN>[_<tone>][_SVC_<service>].wav` (issues #637, #668): no

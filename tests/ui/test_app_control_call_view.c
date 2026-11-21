@@ -174,6 +174,30 @@ test_source_text_used_verbatim(void) {
     destroy_state(state);
 }
 
+/* A roaming P25 radio named only by its home SUID (no working address) reads as `unit@system`, with no label and
+   no source ID; a working address, once named, takes precedence. */
+static void
+test_roaming_home_identity_shown(void) {
+    dsd_state* state = make_state();
+    observe_group_call(state, 0U, 4660U, 0U, 10.0);
+    const dsd_call_source_home home = {.wacn = 0xABCDEU, .sysid = 0x2A7U, .unit = 1234567U, .valid = 1U};
+    assert(dsd_call_state_note_source_home(state, 0U, DSD_SYNC_P25P2_POS, &home, NULL) == 1);
+    dsd_app_slot_call view;
+    dsd_app_slot_call_view(state, 0U, 12.0, &view);
+    assert(strcmp(view.src_text, "1234567@2A7") == 0);
+    assert(view.src_label[0] == '\0');
+    assert(view.src_id == 0U);
+
+    dsd_call_observation working = dsd_call_observation_data(DSD_SYNC_P25P2_POS, 0U, 3002U, 4660U);
+    working.kind = DSD_CALL_KIND_GROUP_VOICE;
+    working.observed_m = 12.5;
+    assert(dsd_call_state_observe(state, &working, DSD_CALL_BOUNDARY_CONTINUE) == 0);
+    dsd_app_slot_call_view(state, 0U, 13.0, &view);
+    assert(strcmp(view.src_text, "3002") == 0);
+    assert(view.src_id == 3002U);
+    destroy_state(state);
+}
+
 static void
 test_ended_call_holds_then_expires(void) {
     dsd_state* state = make_state();
@@ -1163,6 +1187,7 @@ main(void) {
     test_tg_id_falls_back_to_policy_target_id();
     test_target_text_used_verbatim();
     test_source_text_used_verbatim();
+    test_roaming_home_identity_shown();
     test_ended_call_holds_then_expires();
     test_identityless_epoch_reads_idle();
     test_route_text_leg0_confers_identity();

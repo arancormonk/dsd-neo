@@ -145,6 +145,7 @@ class Sender:
                 connection.sendall(block)
                 time.sleep(0.01)
         except OSError:
+            # dsd-neo hung up (stopped or reconnecting): this sender's stream is over, so just close it.
             pass
         connection.close()
 
@@ -248,6 +249,7 @@ def check_udp_notice(binary, cwd):
             probe.bind(("127.0.0.1", port))
             bound_by_us.append(True)
         except OSError:
+            # Expected: the stream already holds the port, so the notice came after the bind.
             pass
         probe.close()
 

@@ -746,11 +746,14 @@ typedef struct {
     uint32_t source_id;  //source radio id or other source value
     uint32_t target_id;  //group or individual target, or destination value
     char src_str[200];   //source, expressed as a string for M17, YSF, DSTAR, dPMR
-    char tgt_str[200];   //target, expressed as a string for M17, YSF, DSTAR, dPMR
-    char t_name[200];    //this is the string present from any csv groupName import
-    char s_name[200];    //same as above, but if loaded from a src value and not tg value
-    char t_mode[200];    //mode, or A,B,D,DE from csv group import file
-    char s_mode[200];    //mode, or A,B,D,DE from csv group import file
+    char src_home[24];   //display only: a roaming P25 radio's home identity, unit@system (never a source)
+    uint64_t
+        src_home_key; //the talker's full P25 home SUID (WACN, System ID, unit) when named, 0 otherwise: which radio's home the row shows
+    char tgt_str[200]; //target, expressed as a string for M17, YSF, DSTAR, dPMR
+    char t_name[200];  //this is the string present from any csv groupName import
+    char s_name[200];  //same as above, but if loaded from a src value and not tg value
+    char t_mode[200];  //mode, or A,B,D,DE from csv group import file
+    char s_mode[200];  //mode, or A,B,D,DE from csv group import file
     // Name of the scan channel this transmission was heard on, or "" when the receiver was not
     // scanning a named channel. Resolved once per call epoch, on the epoch's first render, and
     // rendered as a bracketed prefix between the row's timestamp and its protocol token.
@@ -1077,7 +1080,8 @@ typedef struct {
 typedef enum {
     /* None of its own: a hunt read left a silent input's wait for a queued command, or the input ended; or a hunt read
        on a live RTL stream that came back idle (DSD_RTL_READ_IDLE) gave way to a queued command or a put-off
-       publication (issue #834). The engine loop clears it at its next pass. */
+       publication (issue #834); or a P25 tick inside the hunt moved the chain under it (a retune, a new symbol
+       profile), and the hunt handed back. The engine loop clears it at its next pass. */
     DSD_INTERRUPT_NONE = 0,
     /* A Signal search left the frame, or a live read gave up on a stalled input during a search visit: getSymbol()
        stands erasures in while the search runs. */
@@ -2294,6 +2298,16 @@ struct dsd_state {
 
     //Generic Talker Alias String
     char generic_talker_alias[2][500];
+    /* The canonical call epoch each slot's alias above was published for (dsd_event_enrich_alias()), and the reception
+       generation it was published under (dsd_state_reception_generation()); epoch 0 when a decoder set the text
+       outside call enrichment. A P25 alias is shown and kept only for its own call. */
+    uint64_t generic_talker_alias_epoch[2];
+    uint64_t generic_talker_alias_rx_gen[2];
+    /* The P25 Phase 1 call epoch whose last accepted voice-user link control named its source as a local address
+       (p25_p1_voice_user_local 1) or as one needing a Source ID Extension (0): a change between the two on one call is
+       another radio with the same number, whose alias is not the earlier one's. */
+    uint64_t p25_p1_voice_user_epoch;
+    uint8_t p25_p1_voice_user_local;
 
     dPMRVoiceFS2Frame_t dPMRVoiceFS2Frame;
 
@@ -2871,8 +2885,9 @@ struct dsd_state {
     uint32_t carrier_seq;
     /* The symbol_clock of the last symbol not wholly the new carrier's when the receiver last left a carrier
        (dsd_state_note_carrier_change(): a carrier boundary or a trunk-scan target switch; one more than the clock when
-       the change split the symbol being read), valid once carrier_change_seen is set. What the frame sync's history and the
-       decoders' rolling buffers hold from before it is the carrier left's (dsd_state_carrier_settling()). */
+       the change split the symbol being read, set back by the frame-sync hunt when that read left with none), valid
+       once carrier_change_seen is set. What the frame sync's history and the decoders' rolling buffers hold from before
+       it is the carrier left's (dsd_state_carrier_settling()). */
     uint64_t carrier_change_symbol_clock;
     uint8_t carrier_change_seen;
     /* The frame processFrame() is dispatching (issue #661): its synctype, which a decoder borrowing another protocol's

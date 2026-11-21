@@ -162,23 +162,23 @@ put_wacn_sys(unsigned long long int* mac, int pos, uint32_t wacn, uint32_t sys) 
     mac[pos + 3] = sys & 0xFFU;
 }
 
-/* stderr is captured and dropped: the rows are what is checked. */
+/* stderr goes to the null device: the rows are what is checked. */
 static void
-quiet_begin(dsd_test_capture_stderr* cap) {
-    if (dsd_test_capture_stderr_begin(cap, "p25_unit_activity") != 0) {
-        DSD_FPRINTF(stderr, "capture failed: %s\n", strerror(errno));
+quiet_begin(dsd_test_quiet_stderr* cap) {
+    if (dsd_test_quiet_stderr_begin(cap) != 0) {
+        DSD_FPRINTF(stderr, "quieting stderr failed: %s\n", strerror(errno));
     }
 }
 
 static void
-quiet_end(dsd_test_capture_stderr* cap) {
-    dsd_test_capture_stderr_end(cap);
+quiet_end(dsd_test_quiet_stderr* cap) {
+    (void)dsd_test_quiet_stderr_end(cap);
 }
 
 /* A Phase 1 TSBK in MAC form: MAC opcode (TSBK opcode ^ 0x40) at MAC[1], TSBK octet n at MAC[n]. */
 static void
 run_tsbk(fixture* f, unsigned long long int mac[24]) {
-    dsd_test_capture_stderr cap;
+    dsd_test_quiet_stderr cap;
     mac[0] = 0x07;
     f->state->synctype = DSD_SYNC_P25P1_POS;
     quiet_begin(&cap);
@@ -189,7 +189,7 @@ run_tsbk(fixture* f, unsigned long long int mac[24]) {
 /* A native Phase 2 MAC_SIGNAL PDU on a SACCH; @p crc_ok 0 is the PDU -F let through with a failed CRC. */
 static void
 run_p2_crc(fixture* f, unsigned long long int mac[24], int crc_ok) {
-    dsd_test_capture_stderr cap;
+    dsd_test_quiet_stderr cap;
     f->state->synctype = DSD_SYNC_P25P2_POS;
     quiet_begin(&cap);
     process_MAC_VPDU_crc(f->opts, f->state, 1, P25_MAC_PDU_SIGNAL, mac, crc_ok);
@@ -429,7 +429,7 @@ mbt_put_wacn_sys(uint8_t* m, uint32_t wacn, uint32_t sys) {
 
 static void
 run_mbt(fixture* f, const uint8_t* m, size_t len) {
-    dsd_test_capture_stderr cap;
+    dsd_test_quiet_stderr cap;
     quiet_begin(&cap);
     (void)p25_decode_pdu_trunking(f->opts, f->state, m, len);
     quiet_end(&cap);
@@ -829,7 +829,7 @@ test_p25_report_rows(void) {
     for (int i = 0; i < 72; i++) {
         bits[i] = (uint8_t)((lc[i / 8] >> (7 - (i % 8))) & 1U);
     }
-    dsd_test_capture_stderr cap;
+    dsd_test_quiet_stderr cap;
     quiet_begin(&cap);
     p25_lcw(f.opts, f.state, bits, 0);
     quiet_end(&cap);
@@ -1182,7 +1182,7 @@ test_p25_more_forms(void) {
     for (int i = 0; i < 72; i++) {
         bits[i] = (uint8_t)((lc[i / 8] >> (7 - (i % 8))) & 1U);
     }
-    dsd_test_capture_stderr cap;
+    dsd_test_quiet_stderr cap;
     quiet_begin(&cap);
     p25_lcw(f.opts, f.state, bits, 0);
     quiet_end(&cap);
@@ -1285,7 +1285,7 @@ run_lcw(fixture* f, const uint8_t lc[9]) {
     for (int i = 0; i < 72; i++) {
         bits[i] = (uint8_t)((lc[i / 8] >> (7 - (i % 8))) & 1U);
     }
-    dsd_test_capture_stderr cap;
+    dsd_test_quiet_stderr cap;
     quiet_begin(&cap);
     p25_lcw(f->opts, f->state, bits, 0);
     quiet_end(&cap);

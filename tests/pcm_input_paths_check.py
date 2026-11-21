@@ -8,6 +8,7 @@ closed connection's.
 """
 import argparse
 from pathlib import Path
+import os
 import re
 import signal
 import socket
@@ -31,9 +32,19 @@ def decoded(text, pattern):
     return lines[:-1]
 
 
+def decoder_environment(cwd):
+    """The decoders' environment. When a TCP or file input ends, the engine falls back to the PulseAudio input, by
+    design, and libpulse then makes its runtime folder: in TMPDIR when XDG_RUNTIME_DIR is unset (as on CI runners),
+    where it would be left behind. PULSE_RUNTIME_PATH puts it in this test's own temporary folder, which goes with it,
+    and a server that does not exist keeps it from a desktop's real sound server and from starting one."""
+    runtime = Path(cwd) / "pulse-runtime"
+    return dict(os.environ, PULSE_RUNTIME_PATH=str(runtime), PULSE_SERVER=f"unix:{runtime / 'no-server'}")
+
+
 def run(binary, mode, source, cwd, stdin=None):
     result = subprocess.run([binary, "--frontend", "none", mode, "-o", "null", "-i", source], cwd=cwd, input=stdin,
-                            stdout=subprocess.PIPE, stderr=subprocess.STDOUT, timeout=120, check=False)
+                            env=decoder_environment(cwd), stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                            timeout=120, check=False)
     return result.stdout.decode(errors="replace")
 
 
@@ -71,7 +82,7 @@ def run_tcp(binary, mode, pcm, cwd):
     with log_path.open("wb") as log:
         decoder = subprocess.Popen(
             [binary, "--frontend", "none", mode, "-o", "null", "-i", f"tcp:127.0.0.1:{port}"],
-            cwd=cwd, stdout=log, stderr=subprocess.STDOUT)
+            cwd=cwd, env=decoder_environment(cwd), stdout=log, stderr=subprocess.STDOUT)
         try:
             thread.join()
             # Generous: a sanitizer build on a loaded host decodes the socket's backlog slowly.
@@ -104,7 +115,8 @@ def main():
             raw = Path(temporary) / (fixture + "_raw.wav")
             made = subprocess.run([binary, "--frontend", "none", mode, "--iq-replay",
                                    str(fixtures / (fixture + ".iq.json")), "-o", "null", "-6", str(raw)],
-                                  cwd=temporary, capture_output=True, timeout=120, check=False)
+                                  cwd=temporary, env=decoder_environment(temporary), capture_output=True, timeout=120,
+                                  check=False)
             assert made.returncode == 0 and raw.exists(), made.stdout + made.stderr
             with wave.open(str(raw)) as recording:
                 assert recording.getframerate() == 48000 and recording.getnchannels() == 1

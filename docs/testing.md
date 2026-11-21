@@ -4279,8 +4279,9 @@ A test must remove every temporary file and directory it creates, on its failure
 paths as well as when it passes. `dsd_test_mkstemp()`, `dsd_test_mkdtemp()` and
 `dsd_test_capture_stderr_begin()` in `tests/test_support/test_support.h` create
 them under `dsd_test_tmpdir()`: `DSD_NEO_TEST_TMPDIR`, else `TMPDIR` (`TEMP` or
-`TMP` on Windows), else the working directory. Create them with these helpers,
-not at a fixed path such as `/tmp`, which the check below does not look at. The
+`TMP` on Windows), else `/tmp` (the working directory on Windows). Create them
+with these helpers, not at a fixed path such as `/tmp`, which the checks below
+do not look at. The
 temp directory's own path can contain a dot, so when the code under test reads
 meaning from a path's text, such as an extension, open the file by a bare name
 from a `dsd_test_temp_cwd_enter()` directory instead. Remove each file with
@@ -4294,7 +4295,9 @@ only on an empty directory, so the check also catches a file the test forgot to
 list or a new file the code under test starts writing.
 `dsd_test_capture_stderr_read()` deletes the capture file it reads. A test that
 does not read its capture removes `cap.path` itself after
-`dsd_test_capture_stderr_end()`.
+`dsd_test_capture_stderr_end()`. A test that only silences what the code under
+test prints uses `dsd_test_quiet_stderr_begin()` and `_end()` instead, which
+send stderr to the null device and write no file.
 
 A failed `assert()` aborts the test before its cleanup runs. Once a temporary
 file or directory exists, check with a counted failure instead: print what
@@ -4316,21 +4319,82 @@ Production writes CSV, INI and group files in text mode, so on Windows their
 lines end in CRLF. Compare such a file's contents after reading it in text mode
 (`"r"`), and binary output, such as an MBE recording, byte for byte (`"rb"`).
 
-To check the whole suite, run it against an empty directory, which must still
-be empty afterwards. That does not catch a file a test creates by a relative
-path, which lands in its working directory: `build/dev-debug/tests` for most
-tests, the source tree for the `TOOLS_*` scripts. So compare both before and
-after the run too:
+CTest gives every test a temp directory of its own,
+`build/<preset>/test-tmp/<TEST_NAME>`, through `TMPDIR`, `TEMP`, `TMP` and
+`DSD_NEO_TEST_TMPDIR`, which the C helpers, Python's `tempfile`, Qt and pwsh read
+(`cmake/TestTmpdir.cmake`). Before its first test, every ctest run removes
+`test-tmp` and makes one empty directory per test (the `CTEST_CUSTOM_PRE_TEST`
+step in the generated `CTestCustom.cmake`), so a run starts clean even after one
+that left files; run one ctest at a time per build tree.
+`tools/check_test_tmp_leftovers.sh build/<preset>` runs after ctest in every CI
+job that runs it, whether ctest passed or not, and in `tools/preflight_ci.sh`
+(on `build/dev-debug`). It walks `test-tmp` two levels deep in one traversal,
+without following links, fails naming each test whose directory is not empty
+and what it left, and deletes nothing: the files stay for a look until the next
+ctest run. It fails closed: an unreadable directory or test list, a linked
+`test-tmp` or test directory, a stray entry or a directory no test was given,
+or a test directory `build/<preset>/test-tmp.names` lists but that is missing
+each fail the check. The pre-test step is written into each binary directory
+that registers tests, the directories above them and the top, so
+`ctest --test-dir build/<preset>/tests` starts clean too. A build tree whose
+path holds a `"`, a `;` or (off Windows) a `\` cannot carry ctest's pre-test
+command, so configuring one with tests fails. Each test also gets
+`GIT_CEILING_DIRECTORIES` at `test-tmp`, so git run in a test's scratch
+repository never finds the checkout's own repository above it. Run the check
+yourself after a local ctest run:
+
+```sh
+ctest --preset dev-debug --output-on-failure
+tools/check_test_tmp_leftovers.sh build/dev-debug
+```
+
+A test must not open a real sound device either: where `XDG_RUNTIME_DIR` is
+unset, as on the CI runners, libpulse makes its runtime directory in `TMPDIR`
+and leaves it there. `initOpts()` picks the PulseAudio output, so a test whose
+code can open output sets `opts->audio_out_type = 9` (no audio output), and a
+CLI run passes `-o null`. A test whose decoder falls back to the PulseAudio
+input by design (a TCP or file input that ends) gives it
+`PULSE_RUNTIME_PATH` inside its own temp directory, as
+`tests/pcm_input_paths_check.py` does.
+
+`dsd_neo_add_test_tmpdirs()` is called last in each directory that registers
+tests (`tests/`, `tests/fuzz/`, `apps/dsd-cli/`); a test registered after that
+call gets no directory of its own.
+
+The JVM ignores `TMPDIR`, so `tests/android/run_jvm_tests.py` gives each Kotlin
+test a directory of its own as its `java.io.tmpdir` and native temp directory,
+and fails naming anything the test left there, also when the test itself
+failed. Tests run in the caller's working directory, so relative files the
+caller's JVM options name still resolve; only `FileListingTest`, which binds a
+Unix socket by a short relative name, runs in its temp directory, and not when
+the caller's JVM options name a relative file (its socket case then skips). Every JVM
+runs with `-XX:-UsePerfData`, whose `hsperfdata_<user>` directory would
+otherwise stay in the system temp directory. Before compiling and before each
+test, the runner asks the JVM what it ends up with (`-XshowSettings:properties`
+and `-XX:+PrintFlagsFinal`): `_JAVA_OPTIONS`, or an options file named there,
+can override the command line, and the runner refuses to run when the
+`java.io.tmpdir` is not its own or `UsePerfData` is back on. For kotlinc it asks
+the java the launcher starts (`JAVACMD`, else `JAVA_HOME`'s), with `JAVA_OPTS`
+on its command line. The probe itself writes no performance data
+(`-XX:+PerfDisableSharedMem`), and a probe that fails reports only the JVM's
+launch errors, without option values.
+
+That does not catch a file a test creates by a relative path, which lands in its
+working directory: `build/dev-debug/tests` for most tests, the source tree for
+the `TOOLS_*` scripts, or one a test creates at a fixed path, such as under
+`/tmp`, or under a temp directory it chose itself. So after a change to how
+tests make files, compare those before and after a run too:
 
 ```sh
 T=$(mktemp -d)
 find build/dev-debug/tests | sort > "$T.build"
 git status --porcelain --ignored > "$T.src"
-DSD_NEO_TEST_TMPDIR=$T TMPDIR=$T ctest --preset dev-debug --output-on-failure
-ls -A "$T"   # prints nothing
+ls -A /tmp | sort > "$T.tmp"
+ctest --preset dev-debug --output-on-failure
 find build/dev-debug/tests | sort | diff "$T.build" -   # prints nothing
 git status --porcelain --ignored | diff "$T.src" -   # prints nothing
-rmdir "$T"; rm "$T.build" "$T.src"
+ls -A /tmp | sort | comm -13 "$T.tmp" -   # prints only what other programs made meanwhile
+rmdir "$T"; rm "$T.build" "$T.src" "$T.tmp"
 ```
 
 Repeat this in a `-DDSD_ENABLE_QT_UI=ON` build with `-R '^UI_QT'` and
@@ -4650,10 +4714,11 @@ Each entry sets `DSD_NEO_TEST_SHARD=<i>/<n>`, and the module's `load_tests` hook
 names, chosen from measured times, and a share of any test the table does not
 name, so a new test runs in exactly one entry. A test in shard 1 checks that the
 shards run every test of the class once. Without the variable the module runs
-every test, as before. The entries also set `TMPDIR` to `pwsh-test-scratch` in
-the build tree: off Windows, pwsh reads every folder of a path it resolves from
-the root down, so under a system temp folder that holds many thousand entries
-each resolution costs a full read of it, and a class ran about ten times slower. Passing runs of `verify_release_tree.ps1` that only show a
+every test, as before. Their temp folders sit in the build tree, as every test's
+does (see "Temporary files and directories"): off Windows, pwsh reads every folder
+of a path it resolves from the root down, so under a system temp folder that holds
+many thousand entries each resolution costs a full read of it, and a class ran
+about ten times slower. Passing runs of `verify_release_tree.ps1` that only show a
 tree passes steps 0-3 before or after a test's change use its `-SkipProgramRuns`
 switch; `test_verify_release_tree`, every refusal and the release jobs run the
 whole script.

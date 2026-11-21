@@ -4061,8 +4061,59 @@ test_slot_header_burst_column_is_fixed(void) {
     assert_capture_contains("TGT: [        ] SRC: [        ]");
     assert(capture_burst_separator_offset() == baseline_offset);
 
+    // A roaming radio shown by its home identity, wider than the ID field, keeps the column too.
+    dsd_call_observation roam = {0};
+    roam.protocol = DSD_SYNC_P25P2_POS;
+    roam.slot = 1U;
+    roam.kind = DSD_CALL_KIND_GROUP_VOICE;
+    roam.ota_target_id = 1202U;
+    roam.policy_target_id = 1202U;
+    roam.observed_m = 1.6;
+    assert(dsd_call_state_observe(state, &roam, DSD_CALL_BOUNDARY_BEGIN) == 1);
+    const dsd_call_source_home home = {.wacn = 0xABCDEU, .sysid = 0x2A7U, .unit = 1234567U, .valid = 1U};
+    assert(dsd_call_state_note_source_home(state, 1U, DSD_SYNC_P25P2_POS, &home, NULL) == 1);
+    capture_slot_header_line(state, 1);
+    assert_capture_contains("SRC: [1234567@2A7]");
+    assert(capture_burst_separator_offset() == baseline_offset);
+
     dsd_state_ext_free_all(state);
     free(state);
+}
+
+/* The NXDN line shows NXDN's untagged early alias, and tagged text only on the NXDN call it was published for: never a
+   P25 call's alias the slot still holds after the decoder moved to NXDN. */
+static void
+test_nxdn_line_alias_belongs_to_an_nxdn_call(void) {
+    dsd_state* state = (dsd_state*)calloc(1U, sizeof(*state));
+    assert(state != NULL);
+    dsd_call_observation obs = {0};
+    obs.protocol = DSD_SYNC_P25P1_POS;
+    obs.slot = 0U;
+    obs.kind = DSD_CALL_KIND_GROUP_VOICE;
+    obs.ota_target_id = 1201U;
+    obs.policy_target_id = 1201U;
+    obs.ota_source_id = 404U;
+    obs.observed_m = 1.0;
+    assert(dsd_call_state_observe(state, &obs, DSD_CALL_BOUNDARY_BEGIN) == 1);
+    dsd_call_snapshot call;
+    assert(dsd_call_state_get(state, 0U, &call) == 1);
+    DSD_SNPRINTF(state->generic_talker_alias[0], sizeof state->generic_talker_alias[0], "%s", "P25NAME");
+    state->generic_talker_alias_epoch[0] = call.epoch;
+    dsd_opts* opts = (dsd_opts*)calloc(1U, sizeof(*opts));
+    assert(opts != NULL);
+    assert(strcmp(ui_nxdn_alias_text(opts, state), "") == 0);
+
+    obs.protocol = DSD_SYNC_NXDN_POS;
+    obs.observed_m = 2.0;
+    assert(dsd_call_state_observe(state, &obs, DSD_CALL_BOUNDARY_BEGIN) == 1);
+    assert(dsd_call_state_get(state, 0U, &call) == 1);
+    state->generic_talker_alias_epoch[0] = call.epoch;
+    assert(strcmp(ui_nxdn_alias_text(opts, state), "P25NAME") == 0);
+    state->generic_talker_alias_epoch[0] = 0U;
+    assert(strcmp(ui_nxdn_alias_text(opts, state), "P25NAME") == 0);
+    dsd_state_ext_free_all(state);
+    free(state);
+    free(opts);
 }
 
 static void
@@ -5781,6 +5832,7 @@ main(void) {
     test_lock_and_protocol_helpers();
     test_canonical_p25_slot_and_recent_activity();
     test_slot_header_burst_column_is_fixed();
+    test_nxdn_line_alias_belongs_to_an_nxdn_call();
     test_slot_header_id_highlight_is_balanced();
     test_live_protocol_panels_ignore_ended_call_identity();
     test_colour_code_sentinels_print_as_unknown();

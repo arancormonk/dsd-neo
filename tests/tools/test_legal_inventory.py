@@ -3,7 +3,6 @@
 """Regressions for truthful component metadata and installed dependency notices."""
 
 import copy
-import hashlib
 import importlib.util
 import json
 import os
@@ -500,7 +499,7 @@ class InventoryTests(unittest.TestCase):
             "androidx": "Apache-2.0",
             "kotlin": "Apache-2.0 AND BSD-3-Clause AND BSL-1.0",
         }
-        self.assertTrue(set(expected) <= legal.REQUIRED)
+        self.assertLessEqual(set(expected), legal.REQUIRED)
         document = {"spdxVersion": "SPDX-2.3", "SPDXID": "SPDXRef-DOCUMENT", "packages": []}
         legal.add_spdx(document, self.inventory, self.pins, "android")
         legal.extracted_licenses(document, self.inventory, ROOT)

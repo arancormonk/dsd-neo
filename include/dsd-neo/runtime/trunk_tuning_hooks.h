@@ -106,6 +106,16 @@ uint64_t dsd_trunk_tuning_last_request(void);
 int dsd_trunk_tuning_retuned_since(uint64_t request_id);
 
 /**
+ * @brief Whether any request begun after @p after and up to @p through is still in flight.
+ *
+ * PENDING as dsd_trunk_tuning_request_status() answers it: in flight, or awaiting its owner's readiness. A request the
+ * bounded history no longer holds is not pending. One lock for the whole range.
+ *
+ * @return 1 when one is, 0 when none is (or the range is empty).
+ */
+int dsd_trunk_tuning_request_pending_in(uint64_t after, uint64_t through);
+
+/**
  * @brief Retire terminal failed requests after correlated recovery is abandoned.
  *
  * Mode-exit paths call this after trunking ownership has been released so a

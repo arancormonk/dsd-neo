@@ -34,6 +34,7 @@
 #include "dsd-neo/core/secret_redaction.h"
 #include "dsd-neo/core/state_fwd.h"
 #include "p25p2_frame_internal.h"
+#include "p25p2_voice_home.h"
 
 static int
 p25p2_xcch_slot_valid(int slot) {
@@ -186,7 +187,24 @@ p25p2_xcch_emit_active(dsd_opts* opts, dsd_state* state, int type, int slot, con
                                                                       identity.is_group, identity.svc_bits)
                                 : p25_sm_ev_active_call(slot, identity.tg, identity.dst, identity.src,
                                                         identity.is_group, identity.svc_bits);
-        return p25p2_xcch_emit_checked_voice_start(opts, state, &ev);
+        /* A talker named by a home SUID alone (Source Address 0) is no local radio: a source the call inherits loses its
+           verdict (p25_sm_event_t::source_nonlocal). */
+        ev.source_nonlocal = (uint8_t)(identity.home_valid && identity.src == 0);
+        const int accepted = p25p2_xcch_emit_checked_voice_start(opts, state, &ev);
+        /* The voice start may open the call after the voice-user pass named its home: the call it opened carries it, and
+           only that call (one naming this voice user's target). */
+        const uint64_t named_target = (uint64_t)(uint32_t)(identity.is_group ? identity.tg : identity.dst);
+        dsd_call_snapshot published;
+        if (accepted && identity.home_valid && named_target != 0U
+            && dsd_call_state_get(state, (uint8_t)slot, &published) > 0 && published.phase == DSD_CALL_PHASE_ACTIVE
+            && published.ota_target_id == named_target) {
+            const dsd_call_source_home home = {.wacn = identity.home_wacn,
+                                               .unit = identity.home_unit,
+                                               .sysid = (uint16_t)identity.home_sysid,
+                                               .valid = 1U};
+            p25p2_note_voice_home(opts, state, slot, &home);
+        }
+        return accepted;
     }
     return p25_sm_emit_active(opts, state, slot);
 }

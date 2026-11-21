@@ -152,6 +152,9 @@ main(void) {
     }
     initOpts(&g_opts);
     initState(&g_state);
+    /* No sound card: initOpts() picks the PulseAudio output, which a scan opens (dsd_engine_scan_ensure_output()), and
+       libpulse then makes a runtime folder in TMPDIR wherever XDG_RUNTIME_DIR is unset. */
+    g_opts.audio_out_type = 9;
     g_opts.audio_in_type = AUDIO_IN_NULL;
     g_opts.use_rigctl = 1;
     g_opts.trunk_scan_enabled = 1;

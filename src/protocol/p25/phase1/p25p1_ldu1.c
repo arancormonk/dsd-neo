@@ -433,9 +433,12 @@ p25p1_ldu1_softid_finalize_alias(dsd_state* state, int k) {
     if (tsrc != 0) {
         // A learned alias names a radio and is always mode D: an encrypted radio's calls are locked out by the
         // encryption ledger, and a DE row would read as a talkgroup lockout once the list is saved and reloaded.
+        /* Learned only for a checked local working address (dsd_call_state_source_learnable()); shown either way. */
         dsd_tg_policy_entry alias_entry;
-        if (dsd_tg_policy_make_exact_entry((uint32_t)tsrc, "D", str, DSD_TG_POLICY_SOURCE_RUNTIME_ALIAS, &alias_entry)
-            == 0) {
+        if (dsd_call_state_source_learnable(state, &call)
+            && dsd_tg_policy_make_exact_entry((uint32_t)tsrc, "D", str, DSD_TG_POLICY_SOURCE_RUNTIME_ALIAS,
+                                              &alias_entry)
+                   == 0) {
             (void)dsd_tg_policy_learn_exact(state, &alias_entry);
         }
         (void)dsd_event_enrich_alias(state, 0U, DSD_SYNC_P25P1_POS, call.epoch, str);

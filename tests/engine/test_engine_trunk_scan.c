@@ -25841,8 +25841,8 @@ test_scan_quiet_trunk_goto_and_resume_sites(void) {
     rc |= quiet_to_ready(&opts, &state);
     const dsd_engine_scan_owner* owner = dsd_engine_scan_owner_get(&state);
     if (qt_expect("an owner", owner != NULL) != 0) {
-        quiet_rig_finish(&opts, &state, dir, path);
         (void)remove(keys);
+        quiet_rig_finish(&opts, &state, dir, path);
         return 1;
     }
     uint64_t inv = owner->quiet_inv_seq;
@@ -25854,8 +25854,9 @@ test_scan_quiet_trunk_goto_and_resume_sites(void) {
     rc |=
         qt_expect("the READY result held over it is declined", quiet_apply(&opts, &state, SCAN_QUIET_OWNER_TRUNK) == 0
                                                                    && scan_quiet_phase_get(&state) != SCAN_QUIET_READY);
-    quiet_rig_finish(&opts, &state, dir, path);
+    /* The keys file first: quiet_rig_finish() removes the folder, which must be empty by then. */
     (void)remove(keys);
+    quiet_rig_finish(&opts, &state, dir, path);
 
     /* A go-to's park in flight, measured before the tick: the tick lands it and takes the entry hold. */
     if (quiet_rig_start(&opts, &state, dir, sizeof dir, path, sizeof path) != 0) {

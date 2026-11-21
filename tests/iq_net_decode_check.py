@@ -157,6 +157,7 @@ class TcpSender:
             for _, piece in paced(self.payload, self.chunk, self.byte_rate, self.done):
                 connection.sendall(piece)
         except OSError:
+            # dsd-neo hung up before the whole payload went out; the decode check judges what it received.
             pass
         self.sent.set()
 

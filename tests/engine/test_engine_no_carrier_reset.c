@@ -27,6 +27,7 @@
 #include <dsd-neo/core/scan_profile.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/state_ext.h>
+#include <dsd-neo/core/sync_patterns.h>
 #include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/core/talkgroup_policy.h>
 #include <dsd-neo/core/time_format.h>
@@ -46,6 +47,7 @@
 #include <dsd-neo/engine/trunk_scan.h>
 #include <dsd-neo/engine/trunk_tuning.h>
 #include <dsd-neo/io/rtl_stream_c.h>
+#include <dsd-neo/platform/audio.h>
 #include <dsd-neo/platform/file_compat.h>
 #include <dsd-neo/platform/input_backlog.h>
 #include <dsd-neo/platform/sockets.h>
@@ -65,6 +67,7 @@
 #include <dsd-neo/runtime/config.h>
 #include <dsd-neo/runtime/decode_clock.h>
 #include <dsd-neo/runtime/decode_mode.h>
+#include <dsd-neo/runtime/exitflag.h>
 #include <dsd-neo/runtime/rdio_export.h>
 #include <dsd-neo/runtime/receive_policy.h>
 #include <dsd-neo/runtime/rigctl_query_hooks.h>
@@ -394,6 +397,11 @@ static long int g_rigctl_setfreq_freq = 0;
 /* The frequency the stand-in peer last confirmed (RigctlConfirmedFreq()), which the legacy leg's cache holds on: every
    stand-in failure is a complete refusal, which leaves it. */
 static uint32_t g_rigctl_confirmed_hz = 0U;
+/* What a rigctl tune and a frame dispatch report to the P25 watchdog read case (test_live_p25_beat_in_a_read()). */
+static void (*g_setfreq_observer)(long int freq) = NULL;
+/* What a sleep on the decoder thread reports to the pending-return case (the time a tune lands in). */
+static void (*g_sleep_observer)(void) = NULL;
+static int (*g_process_frame_observer)(const dsd_opts* opts, const dsd_state* state) = NULL;
 // The -B requests the legacy rigctl leg makes (issue #589); the peer takes each one.
 static int g_rigctl_setmod_calls = 0;
 static int g_rigctl_setmod_bw = 0;
@@ -1025,6 +1033,9 @@ __wrap_getFrameSync(dsd_opts* opts, dsd_state* state) {
 
 void
 __wrap_processFrame(dsd_opts* opts, dsd_state* state) {
+    if (g_process_frame_observer && g_process_frame_observer(opts, state)) {
+        return;
+    }
     if (!g_frame_script) {
         __real_processFrame(opts, state);
         return;
@@ -1114,6 +1125,9 @@ __wrap_SetFreq(dsd_socket_t sockfd, long int freq) {
     g_rigctl_setfreq_freq = freq;
     if (g_rigctl_setfreq_ok) {
         g_rigctl_confirmed_hz = (uint32_t)freq;
+    }
+    if (g_setfreq_observer) {
+        g_setfreq_observer(freq);
     }
     return g_rigctl_setfreq_ok ? true : false;
 }
@@ -1229,13 +1243,27 @@ uint64_t __wrap_dsd_realtime_mono_ms(void);
 void __real_dsd_sleep_ms(unsigned int ms);
 void __wrap_dsd_sleep_ms(unsigned int ms);
 
+#ifdef USE_RADIO
+/* Counts a fake clock read for the stalled-card case (wd8_note_clock_read()). */
+static void wd8_note_clock_read(void);
+#endif
+
 uint64_t
 __wrap_dsd_realtime_mono_ms(void) {
-    return g_live_fake_realtime ? g_live_realtime_ms : __real_dsd_realtime_mono_ms();
+    if (g_live_fake_realtime) {
+#ifdef USE_RADIO
+        wd8_note_clock_read();
+#endif
+        return g_live_realtime_ms;
+    }
+    return __real_dsd_realtime_mono_ms();
 }
 
 void
 __wrap_dsd_sleep_ms(unsigned int ms) {
+    if (g_sleep_observer) {
+        g_sleep_observer();
+    }
     if (g_live_fake_realtime) {
         g_live_realtime_ms += ms;
         return;
@@ -1260,6 +1288,10 @@ init_test_runtime(dsd_opts** opts_out, dsd_state** state_out) {
 
     initOpts(opts);
     initState(state);
+    /* No sound card: initOpts() picks the PulseAudio output, which a scan's commit opens (dsd_engine_scan_ensure_output()),
+       and libpulse then makes a runtime folder in TMPDIR wherever XDG_RUNTIME_DIR is unset. A case that tests an output
+       sets its own type. */
+    opts->audio_out_type = 9;
 
     *opts_out = opts;
     *state_out = state;
@@ -14998,6 +15030,397 @@ live_trunk_scan_advanced(const dsd_opts* opts, const dsd_state* state) {
     return g_rigctl_setfreq_calls > 0 && g_rigctl_setfreq_freq == g_live_second_hz;
 }
 
+/*
+ * A P25 watchdog beat met in a hunt read: the live loop over a scripted C4FM PCM input on UDP, with the engine's hooks
+ * and the real P25 trunk state machine following a voice channel it is told to release. The beat is posted at a
+ * scripted read inside the hunt, and that read finds nothing buffered, so its tick runs there, on this (the decoder)
+ * thread, and tunes back to the control channel. The stream goes on with the control channel's P25p1 word. The first
+ * frame after the return dispatches (the frame-sync gate takes the generation after the tune), and the control
+ * channel's sync stamp it carries is no earlier than the return.
+ */
+enum {
+    WD6_SPS = 10,          /* 48 kHz over 4800 symbols/s */
+    WD6_BEAT_SYMBOL = 150, /* the read the beat is posted at: before the hunt's 300-symbol checkpoint */
+    WD6_WORD_GAP = 12,     /* the control channel's word starts this many symbols after the beat */
+    WD6_STREAM_SYMBOLS = 900,
+    WD6_VOICE_CHANNEL = 0x1234,
+};
+
+static const long int WD6_CC_HZ = 851000000L;
+static const long int WD6_VC_HZ = 852000000L;
+
+static struct {
+    long sample;
+    int beat_posted;
+    int beat_reads;
+    int returned;
+    double return_s;
+    long return_sample;
+    uint64_t return_realtime_ms;
+    int frames;
+    int first_sync;
+    double first_cc_stamp_s;
+} g_wd6;
+
+static _Thread_local int t_wd6_decoder = 0;
+static dsd_state* g_wd6_state = NULL;
+static int g_wd6_off_thread_tunes = 0;
+
+/* The voice channel's word the between-frame case dispatches first (WD_PENDING_BEAT_IN_FRAME), before the beat. */
+enum { WD6_VC_WORD_SYMBOL = 60 };
+
+static int g_wd6_vc_word = 0;
+
+/* Where the control channel's word starts: WD6_WORD_GAP symbols after the beat, or at the beat's own symbol (the zero-gap
+   cases: the word's first symbol is the one the handed-back read never committed). */
+static long g_wd6_word_symbol = WD6_BEAT_SYMBOL + WD6_WORD_GAP;
+
+static int
+wd6_level(long symbol) {
+    if (symbol >= g_wd6_word_symbol && symbol < g_wd6_word_symbol + 24) {
+        return P25P1_SYNC[symbol - g_wd6_word_symbol] == '1' ? 3 : -3;
+    }
+    if (g_wd6_vc_word && symbol >= WD6_VC_WORD_SYMBOL && symbol < WD6_VC_WORD_SYMBOL + 24) {
+        return P25P1_SYNC[symbol - WD6_VC_WORD_SYMBOL] == '1' ? 3 : -3;
+    }
+    /* Data: a fixed scramble of the four levels. */
+    static const int k_levels[4] = {3, 1, -1, -3};
+    const uint32_t h = (uint32_t)symbol * 2654435761U;
+    return k_levels[(h >> 13) & 3U];
+}
+
+/* A return the receiver answers PENDING (an RTL retune applied on the stream's own thread), which lands at the first
+   sleep or read on the decoder thread after it: a decoder that hunted on would read the new carrier's samples under the
+   tuning generation it took before the landing. */
+static struct {
+    int pending_returns;
+    uint64_t request;
+    int landed;
+    int fail_first; /* the first return lands failed, and the state machine's next tick makes another */
+    int failed;
+} g_wd7;
+
+static dsd_trunk_tune_result
+wd7_return_to_cc(dsd_opts* opts, dsd_state* state, uint64_t request_id) {
+    (void)opts;
+    (void)state;
+    if (!g_wd7.pending_returns) {
+        return DSD_TRUNK_TUNE_RESULT_FAILED;
+    }
+    g_wd7.request = request_id;
+    return DSD_TRUNK_TUNE_RESULT_PENDING;
+}
+
+static dsd_trunk_tune_result
+wd7_tune_to_cc(dsd_opts* opts, dsd_state* state, long int freq, int ted_sps, uint64_t request_id) {
+    (void)freq;
+    (void)ted_sps;
+    return wd7_return_to_cc(opts, state, request_id);
+}
+
+static void
+wd7_land(void) {
+    if (g_wd7.request == 0U) {
+        return;
+    }
+    const uint64_t request = g_wd7.request;
+    g_wd7.request = 0U;
+    if (g_wd7.fail_first && !g_wd7.failed) {
+        g_wd7.failed = 1;
+        dsd_trunk_tuning_request_publish(request, DSD_TRUNK_TUNE_RESULT_FAILED);
+        return;
+    }
+    g_wd7.landed++;
+    g_wd6.returned = 1;
+    g_wd6.return_s = dsd_decode_now_mono_s();
+    g_wd6.return_sample = g_wd6.sample;
+    dsd_trunk_tuning_request_publish(request, DSD_TRUNK_TUNE_RESULT_OK);
+}
+
+static int
+wd6_udp_read(dsd_opts* opts, int16_t* out, unsigned int timeout_ms) {
+    (void)opts;
+    /* A return still in flight lands before any read after it: the receiver applies it on its own time, and every
+       sample read after that is the new carrier's. */
+    wd7_land();
+    const long symbol = g_wd6.sample / WD6_SPS;
+    if (symbol == WD6_BEAT_SYMBOL && !g_wd6.beat_posted) {
+        /* The release the beat's tick makes, asked for here (on the decoder thread, which owns the field) so the
+           decoder's own once-a-second tick at the hunt's entry has nothing to release before the beat. */
+        g_wd6.beat_posted = 1;
+        g_wd6_state->p25_sm_force_release = 1;
+        p25_sm_watchdog_request_tick();
+    }
+    /* The read at the beat finds nothing buffered while the beat stands (a short pause in the sender). */
+    if (g_wd6.beat_posted && p25_sm_watchdog_tick_wanted() && g_wd6.beat_reads < 4) {
+        g_wd6.beat_reads++;
+        dsd_sleep_ms(timeout_ms);
+        live_clock_set(g_live.now_ns + (uint64_t)timeout_ms * LIVE_NS_PER_MS);
+        return -1;
+    }
+    if (symbol >= WD6_STREAM_SYMBOLS) {
+        dsd_exitflag_store(1);
+        return -1;
+    }
+    *out = (int16_t)(wd6_level(symbol) * 3000);
+    g_wd6.sample++;
+    live_clock_set(g_live.now_ns + LIVE_SAMPLE_NS);
+    return 1;
+}
+
+static void
+wd6_setfreq(long int freq) {
+    if (!t_wd6_decoder) {
+        g_wd6_off_thread_tunes++;
+    }
+    if (freq == WD6_CC_HZ && !g_wd6.returned) {
+        g_wd6.returned = 1;
+        g_wd6.return_s = dsd_decode_now_mono_s();
+        g_wd6.return_sample = g_wd6.sample;
+        g_wd6.return_realtime_ms = g_live_realtime_ms;
+    }
+}
+
+static int
+wd6_process_frame(const dsd_opts* opts, const dsd_state* state) {
+    (void)opts;
+    if (g_wd6_vc_word && !g_wd6.beat_posted) {
+        /* The voice channel's frame: a beat the watchdog posts while it decodes, with the release it makes, serviced
+           between frames (live_scanner_process_synced_frames()). */
+        g_wd6.beat_posted = 1;
+        g_wd6_state->p25_sm_force_release = 1;
+        p25_sm_watchdog_request_tick();
+        return 1;
+    }
+    if (g_wd6.returned && g_wd6.frames++ == 0) {
+        g_wd6.first_sync = state->synctype;
+        g_wd6.first_cc_stamp_s = state->last_cc_sync_time_m;
+        dsd_exitflag_store(1);
+    }
+    return 1; /* the frame is noted, not decoded */
+}
+
+enum { WD_RIGCTL = 0, WD_PENDING = 1, WD_PENDING_BEAT_IN_FRAME = 2, WD_PENDING_REPLACED = 3, WD_DEVICE_STALL = 4 };
+
+/* A sound card that stops delivering at the beat's read for 3 s of real time (a suspended source, a capture timeout):
+   dsd_audio_read_held() holds nothing while it stalls, and a blocking dsd_audio_read() waits the stall out. */
+static struct {
+    int active;
+    uint64_t stall_until_ms;
+    unsigned long held_samples;      /* samples a held read found ready */
+    unsigned long ready_clock_reads; /* clock reads while the card was not stalled */
+} g_wd8;
+
+/* A hunt read on a card that holds its samples reads none of the clock for them: a deadline is for a wait. */
+static void
+wd8_note_clock_read(void) {
+    if (g_wd8.active && g_live_realtime_ms >= g_wd8.stall_until_ms) {
+        g_wd8.ready_clock_reads++;
+    }
+}
+
+static int
+wd8_device_next(int16_t* out, int blocking) {
+    const long symbol = g_wd6.sample / WD6_SPS;
+    if (symbol == WD6_BEAT_SYMBOL && !g_wd6.beat_posted) {
+        g_wd6.beat_posted = 1;
+        g_wd6_state->p25_sm_force_release = 1;
+        p25_sm_watchdog_request_tick();
+        g_wd8.stall_until_ms = g_live_realtime_ms + 3000U;
+    }
+    if (g_live_realtime_ms < g_wd8.stall_until_ms) {
+        if (!blocking) {
+            return 0;
+        }
+        live_clock_set(g_live.now_ns + (g_wd8.stall_until_ms - g_live_realtime_ms) * LIVE_NS_PER_MS);
+        g_live_realtime_ms = g_wd8.stall_until_ms;
+    }
+    if (symbol >= WD6_STREAM_SYMBOLS) {
+        dsd_exitflag_store(1);
+        *out = 0;
+        return 1;
+    }
+    *out = (int16_t)(wd6_level(symbol) * 3000);
+    g_wd6.sample++;
+    live_clock_set(g_live.now_ns + LIVE_SAMPLE_NS);
+    return 1;
+}
+
+static int
+run_live_p25_beat_in_a_read(int mode) {
+    const int pending_return = mode != WD_RIGCTL && mode != WD_DEVICE_STALL;
+    dsd_opts* opts = NULL;
+    dsd_state* state = NULL;
+    if (init_test_runtime(&opts, &state) != 0) {
+        return 1;
+    }
+    live_session_start(opts, state, LIVE_UDP, 0U);
+    dsd_net_audio_input_hooks_set(&(dsd_net_audio_input_hooks){.udp_read_sample_wait = wd6_udp_read});
+    DSD_MEMSET(&g_wd8, 0, sizeof g_wd8);
+    if (mode == WD_DEVICE_STALL) {
+        g_wd8.active = 1;
+        opts->audio_in_type = AUDIO_IN_PULSE;
+        opts->audio_in_stream = (dsd_audio_stream*)&g_wd8; /* opaque to the fakes */
+    }
+    DSD_MEMSET(&g_wd6, 0, sizeof g_wd6);
+    g_wd6.first_sync = DSD_SYNC_NONE;
+    g_wd6_off_thread_tunes = 0;
+    t_wd6_decoder = 1;
+    opts->frame_dstar = opts->frame_x2tdma = opts->frame_p25p2 = opts->frame_nxdn48 = opts->frame_nxdn96 = 0;
+    opts->frame_dmr = opts->frame_provoice = opts->frame_dpmr = opts->frame_ysf = opts->frame_m17 = 0;
+    opts->frame_tetra = 0;
+    opts->frame_p25p1 = 1;
+    opts->trunk_enable = 1;
+    opts->trunk_tune_group_calls = 1;
+    opts->use_rigctl = 1;
+    opts->rigctl_sockfd = DSD_INVALID_SOCKET;
+    opts->setmod_bw = 0;
+    g_rigctl_setfreq_ok = 1;
+    state->p25_cc_freq = state->trunk_cc_freq = WD6_CC_HZ;
+    state->trunk_chan_map[WD6_VOICE_CHANNEL] = WD6_VC_HZ;
+    dsd_trunk_recovery_note_protocol(state, DSD_TRUNK_RECOVERY_P25);
+    dsd_engine_trunk_tuning_hooks_install();
+    DSD_MEMSET(&g_wd7, 0, sizeof g_wd7);
+    g_wd6_vc_word = mode == WD_PENDING_BEAT_IN_FRAME;
+    g_wd7.fail_first = mode == WD_PENDING_REPLACED;
+    if (pending_return) {
+        g_wd7.pending_returns = 1;
+        dsd_trunk_tuning_hooks_set(
+            (dsd_trunk_tuning_hooks){.tune_to_freq_request = dsd_engine_trunk_tune_to_freq_request,
+                                     .tune_to_cc_request = wd7_tune_to_cc,
+                                     .return_to_cc_request = wd7_return_to_cc});
+    }
+    dsd_engine_set_decoder_thread(1);
+
+    /* A followed voice channel. */
+    p25_sm_ctx_t* ctx = p25_sm_get_ctx();
+    p25_sm_init_ctx(ctx, opts, state);
+    p25_sm_event_t grant = p25_sm_ev_group_grant(WD6_VOICE_CHANNEL, WD6_VC_HZ, 1234, 42, 0);
+    p25_sm_tick_guard_enter();
+    p25_sm_event(ctx, opts, state, &grant);
+    p25_sm_tick_guard_leave();
+    g_wd6_state = state;
+    const int followed = ctx->state == P25_SM_TUNED && g_rigctl_setfreq_freq == WD6_VC_HZ;
+
+    g_setfreq_observer = pending_return ? NULL : wd6_setfreq;
+    g_sleep_observer = pending_return ? wd7_land : NULL;
+    g_process_frame_observer = wd6_process_frame;
+    dsd_exitflag_store(0);
+    for (int pass = 0; pass < LIVE_PASS_CAP && dsd_exitflag_load() == 0; pass++) {
+        dsd_engine_test_live_scanner_run(opts, state, 1);
+    }
+    dsd_exitflag_store(0);
+    g_setfreq_observer = NULL;
+    g_sleep_observer = NULL;
+    g_process_frame_observer = NULL;
+    g_wd6_vc_word = 0;
+    g_wd8.active = 0;
+    opts->audio_in_stream = NULL;
+    t_wd6_decoder = 0;
+    g_wd6_state = NULL;
+
+    int rc = 0;
+    if (!followed) {
+        DSD_FPRINTF(stderr, "FAIL: the grant was not followed (state %d)\n", (int)ctx->state);
+        rc = 1;
+    }
+    static const char* const k_mode[] = {"rigctl return", "pending return", "pending return from a beat in a frame",
+                                         "pending return replacing a failed one", "return on a stalled sound card"};
+    const int in_read = mode == WD_RIGCTL || mode == WD_PENDING || mode == WD_DEVICE_STALL;
+    if (mode == WD_DEVICE_STALL && (g_wd8.held_samples == 0UL || g_wd8.ready_clock_reads * 10UL > g_wd8.held_samples)) {
+        DSD_FPRINTF(stderr,
+                    "FAIL: the hunt read the clock %lu times for %lu samples a sound card held ready (a deadline is "
+                    "for a wait)\n",
+                    g_wd8.ready_clock_reads, g_wd8.held_samples);
+        rc = 1;
+    }
+    if (mode == WD_DEVICE_STALL && (!g_wd6.returned || g_wd6.return_realtime_ms >= g_wd8.stall_until_ms)) {
+        DSD_FPRINTF(stderr,
+                    "FAIL: a stalled sound card held the beat's return until it resumed (returned %d at %llu ms, "
+                    "the stall ended at %llu ms)\n",
+                    g_wd6.returned, (unsigned long long)g_wd6.return_realtime_ms,
+                    (unsigned long long)g_wd8.stall_until_ms);
+        rc = 1;
+    }
+    if (!g_wd6.returned || (in_read && g_wd6.return_sample / WD6_SPS != WD6_BEAT_SYMBOL)
+        || (pending_return && g_wd7.landed != 1) || (mode == WD_PENDING_REPLACED && !g_wd7.failed)) {
+        DSD_FPRINTF(stderr,
+                    "FAIL: the beat's tick did not return where expected (%s, returned %d, symbol %ld, landed %d, "
+                    "failed %d)\n",
+                    k_mode[mode], g_wd6.returned, g_wd6.return_sample / WD6_SPS, g_wd7.landed, g_wd7.failed);
+        rc = 1;
+    }
+    if (g_wd6_off_thread_tunes != 0) {
+        DSD_FPRINTF(stderr, "FAIL: a tune ran off the decoder thread\n");
+        rc = 1;
+    }
+    if (g_wd6.frames == 0 || !DSD_SYNC_IS_P25P1(g_wd6.first_sync)) {
+        DSD_FPRINTF(stderr,
+                    "FAIL: the control channel's first frame after the %s was not dispatched (frames %d, sync %d)\n",
+                    k_mode[mode], g_wd6.frames, g_wd6.first_sync);
+        rc = 1;
+    } else if (g_wd6.first_cc_stamp_s + 1e-6 < g_wd6.return_s) {
+        DSD_FPRINTF(stderr,
+                    "FAIL: the first frame after the return carried a sync stamp of %.6f s, before the return at "
+                    "%.6f s\n",
+                    g_wd6.first_cc_stamp_s, g_wd6.return_s);
+        rc = 1;
+    }
+    dsd_engine_set_decoder_thread(0);
+    p25_sm_init_ctx(ctx, opts, state);
+    live_session_stop(opts, state);
+    return rc;
+}
+
+static int
+test_live_p25_beat_in_a_read(void) {
+    return run_live_p25_beat_in_a_read(WD_RIGCTL);
+}
+
+/* The same return answered PENDING, landing on the receiver's own time after the hand-back: the hunt after it takes the
+   tuning generation of the landing, and the control channel's first frame dispatches. */
+static int
+test_live_p25_beat_pending_return_lands_before_the_next_hunt(void) {
+    return run_live_p25_beat_in_a_read(WD_PENDING);
+}
+
+/* A beat posted while a frame decodes is serviced between frames (live_scanner_process_synced_frames()), and its
+   return answered PENDING: the inner loop starts no hunt either until it lands. */
+static int
+test_live_p25_beat_in_a_frame_pending_return_lands_before_the_next_hunt(void) {
+    return run_live_p25_beat_in_a_read(WD_PENDING_BEAT_IN_FRAME);
+}
+
+/* The first return lands failed, and the state machine's next tick makes another, PENDING too: the hunt waits for the
+   one in flight, not the one the hand-back carried. */
+static int
+test_live_p25_replaced_pending_return_lands_before_the_next_hunt(void) {
+    return run_live_p25_beat_in_a_read(WD_PENDING_REPLACED);
+}
+
+/* A sound card that stops delivering while the hunt reads it: the hunt read waits in bounded slices on what the device
+   holds (dsd_audio_read_held()), so the beat's tick still runs, and returns the receiver to the control channel during
+   the stall, not once the card resumes. A sample the card holds ready costs no clock read. */
+static int
+test_live_p25_beat_on_a_stalled_sound_card(void) {
+    return run_live_p25_beat_in_a_read(WD_DEVICE_STALL);
+}
+
+/* A read the return handed back committed no symbol: the carrier boundary is the last symbol it did commit, so a word
+   whose first symbol is the next one read (no gap after the return) is whole on the new carrier and dispatches, on a
+   rigctl return, a pending one, and one on a stalled sound card. */
+static int
+test_live_p25_word_at_once_after_a_return_in_a_read(void) {
+    static const int k_modes[] = {WD_RIGCTL, WD_PENDING, WD_DEVICE_STALL};
+    int rc = 0;
+    g_wd6_word_symbol = WD6_BEAT_SYMBOL;
+    for (size_t i = 0; i < sizeof k_modes / sizeof k_modes[0]; i++) {
+        rc |= run_live_p25_beat_in_a_read(k_modes[i]);
+    }
+    g_wd6_word_symbol = WD6_BEAT_SYMBOL + WD6_WORD_GAP;
+    return rc;
+}
+
 static int
 live_expect_between(const char* label, int64_t got_ms, int64_t min_ms, int64_t max_ms) {
     if (got_ms < min_ms || got_ms > max_ms) {
@@ -17460,7 +17883,73 @@ test_scan_quiet_decisions(void) {
     rc |= test_live_y_skips_a_quiet_row(0);
     rc |= test_live_trunk_scan_skips_a_quiet_target(1);
     rc |= test_live_trunk_scan_skips_a_quiet_target(0);
+    rc |= test_live_p25_beat_in_a_read();
+    rc |= test_live_p25_beat_pending_return_lands_before_the_next_hunt();
+    rc |= test_live_p25_beat_in_a_frame_pending_return_lands_before_the_next_hunt();
+    rc |= test_live_p25_replaced_pending_return_lands_before_the_next_hunt();
+    rc |= test_live_p25_beat_on_a_stalled_sound_card();
+    rc |= test_live_p25_word_at_once_after_a_return_in_a_read();
     return rc;
+}
+#endif
+
+#ifdef DSD_NEO_TEST_RTL_WRAP
+/* The linker's names for the sound card's calls (--wrap), spelled with the target's prefix for C names. Each passes
+   through to the real call unless the stalled-card case (test_live_p25_beat_on_a_stalled_sound_card()) runs. */
+#define WD8_ASM_STR2(x)    #x
+#define WD8_ASM_STR(x)     WD8_ASM_STR2(x)
+#define WD8_ASM_NAME(name) WD8_ASM_STR(__USER_LABEL_PREFIX__) name
+extern int wd8_real_audio_read(dsd_audio_stream* stream, int16_t* buffer,
+                               size_t frames) __asm__(WD8_ASM_NAME("__real_dsd_audio_read"));
+extern int wd8_real_audio_read_held(dsd_audio_stream* stream, int16_t* buffer, size_t frames,
+                                    int recover) __asm__(WD8_ASM_NAME("__real_dsd_audio_read_held"));
+extern int wd8_real_audio_discard_input(const dsd_audio_stream* stream,
+                                        uint64_t marked_ns) __asm__(WD8_ASM_NAME("__real_dsd_audio_discard_input"));
+extern int wd8_audio_read(dsd_audio_stream* stream, int16_t* buffer,
+                          size_t frames) __asm__(WD8_ASM_NAME("__wrap_dsd_audio_read"));
+extern int wd8_audio_read_held(dsd_audio_stream* stream, int16_t* buffer, size_t frames,
+                               int recover) __asm__(WD8_ASM_NAME("__wrap_dsd_audio_read_held"));
+extern int wd8_audio_discard_input(const dsd_audio_stream* stream,
+                                   uint64_t marked_ns) __asm__(WD8_ASM_NAME("__wrap_dsd_audio_discard_input"));
+
+int
+wd8_audio_read(dsd_audio_stream* stream, int16_t* buffer, size_t frames) {
+#ifdef USE_RADIO
+    if (g_wd8.active) {
+        for (size_t i = 0; i < frames; i++) {
+            (void)wd8_device_next(buffer + i, 1);
+        }
+        return (int)frames;
+    }
+#endif
+    return wd8_real_audio_read(stream, buffer, frames);
+}
+
+int
+wd8_audio_read_held(dsd_audio_stream* stream, int16_t* buffer, size_t frames, int recover) {
+#ifdef USE_RADIO
+    if (g_wd8.active) {
+        for (size_t i = 0; i < frames; i++) {
+            if (!wd8_device_next(buffer + i, 0)) {
+                return (int)i;
+            }
+            g_wd8.held_samples++;
+        }
+        return (int)frames;
+    }
+#endif
+    return wd8_real_audio_read_held(stream, buffer, frames, recover);
+}
+
+/* The rigctl return's drop of what the card held (dsd_symbol_apply_input_drop()): the stalled card holds nothing. */
+int
+wd8_audio_discard_input(const dsd_audio_stream* stream, uint64_t marked_ns) {
+#ifdef USE_RADIO
+    if (g_wd8.active) {
+        return 0;
+    }
+#endif
+    return wd8_real_audio_discard_input(stream, marked_ns);
 }
 #endif
 

@@ -289,11 +289,31 @@ p25p2_mac_telephone_voice_identity_segment(const unsigned long long mac[24], con
     return 1;
 }
 
+/* The Source SUID at MAC octets @p pos .. @p pos + 6 as the talker's home identity, when its unit ID names a radio (not
+   0, not a special address $FFFFFC-$FFFFFF). */
+static void
+p25p2_mac_voice_home(const unsigned long long mac[24], int pos, struct p25p2_mac_voice_identity* out) {
+    const uint32_t unit =
+        (p25p2_mac_octet(mac, pos + 4) << 16) | (p25p2_mac_octet(mac, pos + 5) << 8) | p25p2_mac_octet(mac, pos + 6);
+    if (unit == 0U || unit >= 0xFFFFFCU) {
+        return;
+    }
+    out->home_valid = 1;
+    out->home_wacn = (p25p2_mac_octet(mac, pos) << 12) | (p25p2_mac_octet(mac, pos + 1) << 4)
+                     | ((p25p2_mac_octet(mac, pos + 2) & 0xF0U) >> 4);
+    out->home_sysid = ((p25p2_mac_octet(mac, pos + 2) & 0x0FU) << 8) | p25p2_mac_octet(mac, pos + 3);
+    out->home_unit = unit;
+}
+
 static int
 p25p2_mac_voice_identity_segment(const unsigned long long mac[24], const struct p25p2_mac_segment* segment,
                                  struct p25p2_mac_voice_identity* out) {
     const int pos = 1 + segment->offset;
     const uint8_t opcode = (uint8_t)p25p2_mac_octet(mac, pos);
+    out->home_valid = 0;
+    out->home_wacn = 0U;
+    out->home_sysid = 0U;
+    out->home_unit = 0U;
 
     /* The extended forms (0x21, 0x22) carry the source's working address on this system, then its home SUID: the
        working address names the talker here, as in the abbreviated forms; the SUID is the radio's home identity and
@@ -303,6 +323,9 @@ p25p2_mac_voice_identity_segment(const unsigned long long mac[24], const struct 
         out->dst = 0;
         out->src = (int)((p25p2_mac_octet(mac, pos + 4) << 16) | (p25p2_mac_octet(mac, pos + 5) << 8)
                          | p25p2_mac_octet(mac, pos + 6));
+        if (opcode == 0x21u) {
+            p25p2_mac_voice_home(mac, pos + 7, out);
+        }
         out->is_group = 1;
         out->svc_bits = (int)p25p2_mac_octet(mac, pos + 1);
         out->source_optional = 0;
@@ -315,6 +338,9 @@ p25p2_mac_voice_identity_segment(const unsigned long long mac[24], const struct 
                          | p25p2_mac_octet(mac, pos + 4));
         out->src = (int)((p25p2_mac_octet(mac, pos + 5) << 16) | (p25p2_mac_octet(mac, pos + 6) << 8)
                          | p25p2_mac_octet(mac, pos + 7));
+        if (opcode == 0x22u) {
+            p25p2_mac_voice_home(mac, pos + 8, out);
+        }
         out->is_group = 0;
         out->svc_bits = (int)p25p2_mac_octet(mac, pos + 1);
         out->source_optional = 0;
@@ -354,6 +380,10 @@ p25p2_mac_decode_voice_identity(int type, const unsigned long long mac[24], stru
     out->is_group = 1;
     out->svc_bits = -1;
     out->source_optional = 0;
+    out->home_valid = 0;
+    out->home_wacn = 0U;
+    out->home_sysid = 0U;
+    out->home_unit = 0U;
     if (p25p2_mac_parse(type, mac, &result) != 0) {
         return -1;
     }
