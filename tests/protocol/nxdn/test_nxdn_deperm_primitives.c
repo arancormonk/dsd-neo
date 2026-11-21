@@ -588,8 +588,11 @@ test_sacch2_state_update(void) {
     rc |= expect_nxdn_access_code("sacch2-single-no-access-code", &state, 0, 0U);
     dsd_call_snapshot call;
     rc |= expect_int("sacch2-single-canonical", dsd_call_state_get(&state, 0U, &call), 1);
-    rc |= expect_int("sacch2-single-target", (int)call.ota_target_id, 777);
-    rc |= expect_int("sacch2-single-source", (int)call.ota_source_id, 777);
+    /* DCR carries no decoded group or radio: the call is identity-less voice, never a made-up group (issue #903). */
+    rc |= expect_int("sacch2-single-kind", call.kind, DSD_CALL_KIND_VOICE);
+    rc |= expect_int("sacch2-single-target", (int)call.ota_target_id, 0);
+    rc |= expect_int("sacch2-single-policy-target", (int)call.policy_target_id, 0);
+    rc |= expect_int("sacch2-single-source", (int)call.ota_source_id, 0);
     rc |= expect_int("sacch2-single-canonical-crypto", call.crypto, DSD_CALL_CRYPTO_ENCRYPTED_PENDING);
     rc |= expect_int("sacch2-single-canonical-algid", call.algid, 1);
     rc |= expect_int("sacch2-single-canonical-key", call.kid, 0);
@@ -597,8 +600,8 @@ test_sacch2_state_update(void) {
     rc |= expect_int("sacch2-single-canonical-audio", call.audio_permitted, 0);
     rc |= expect_str("sacch2-single-alias", state.generic_talker_alias[0], "JPN DCR");
     rc |= expect_int("sacch2-single-event-protocol", histories[0].Event_History_Items[0].systype, DSD_SYNC_NXDN_POS);
-    rc |= expect_int("sacch2-single-event-target", histories[0].Event_History_Items[0].target_id, 777);
-    rc |= expect_int("sacch2-single-event-source", histories[0].Event_History_Items[0].source_id, 777);
+    rc |= expect_int("sacch2-single-event-target", histories[0].Event_History_Items[0].target_id, 0);
+    rc |= expect_int("sacch2-single-event-source", histories[0].Event_History_Items[0].source_id, 0);
     rc |= expect_int("sacch2-single-event-encrypted", histories[0].Event_History_Items[0].enc, 1);
     rc |= expect_int("sacch2-single-event-algid", histories[0].Event_History_Items[0].enc_alg, 1);
     rc |= expect_int("sacch2-single-event-key", histories[0].Event_History_Items[0].enc_key, 0);
@@ -872,10 +875,7 @@ test_pich_tch_dcr_csm_alias_state(void) {
     const dsd_call_observation observation = {
         .protocol = DSD_SYNC_NXDN_POS,
         .slot = 0U,
-        .kind = DSD_CALL_KIND_GROUP_VOICE,
-        .ota_target_id = 777U,
-        .policy_target_id = 777U,
-        .ota_source_id = 777U,
+        .kind = DSD_CALL_KIND_VOICE,
     };
     rc |= expect_int("pich-csm-call-opens", dsd_call_state_observe(&state, &observation, DSD_CALL_BOUNDARY_BEGIN), 1);
     dsd_event_sync_slot(&opts, &state, 0U);
