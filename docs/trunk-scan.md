@@ -2,8 +2,8 @@
 
 Single-tuner trunk scan lets one retunable receiver rotate across several explicit targets instead of staying on one
 system. Use it when you want one DSD-neo instance to check a small set of P25 trunk, P25 conventional, DMR trunk,
-DMR conventional, NXDN (trunk, NXDN96 conventional, and NXDN48 conventional) and analog NFM and AM conventional
-targets, but you do not have a separate receiver for each system.
+DMR conventional, NXDN (trunk, NXDN96 conventional, and NXDN48 conventional), simplex digital (YSF, D-STAR, dPMR, M17
+and TETRA DMO) and analog NFM and AM conventional targets, but you do not have a separate receiver for each system.
 
 The scan coordinator parks on one target, watches for activity, and moves to the next idle target after the configured
 dwell time. Trunking state and per-target channel maps are kept separate, so a channel number or learned control-channel
@@ -48,6 +48,11 @@ field-nxdn,nxdn-conventional,461550000,,1500,1200,one-frequency NXDN96,gfsk,,,
 field-nxdn48,nxdn48-conventional,461556250,,1500,1200,one-frequency NXDN48 (6.25 kHz),gfsk,,,
 fire-nfm,nfm-conventional,154430000,,2000,3000,analog NFM channel,,,--nfm-bandwidth-hz 12500 --squelch-db -60,
 tower-am,am-conventional,118300000,,2000,3000,analog AM airband channel,,,--am-bandwidth-hz 8333 --squelch auto+6,
+simplex-ysf,ysf-conventional,433100000,,1500,1200,YSF (C4FM) simplex channel,auto,,,
+simplex-dstar,dstar-conventional,433200000,,1500,3000,D-STAR simplex channel,,,,
+simplex-dpmr,dpmr-conventional,446106250,,1500,1200,dPMR channel with its scrambler key,,,-R 1234,
+simplex-m17,m17-conventional,433300000,,1500,1200,M17 channel (session keys),,,,
+simplex-dmo,tetra-dmo-conventional,433400000,,600,1200,TETRA direct mode channel (72 kHz DSP bandwidth),,,,
 ```
 
 The repository includes a starter file at `examples/trunk_scan_targets.csv`. Companion paths in these examples
@@ -55,7 +60,12 @@ refer to files in `examples/`; replace the illustrative frequencies, keys and ba
 Omitted scoped settings inherit the outer CLI/configuration; the DMR conventional example uses
 `--no-force-key` to disable inherited privacy forcing without changing other settings, and the P25 conventional
 example sets its own squelch with `--squelch-db -55` while every other target keeps the configured one; the AM
-target runs the [auto squelch](cli.md#auto-squelch---squelch-auto), 6 dB over the noise floor it learns there.
+target runs the [auto squelch](cli.md#auto-squelch---squelch-auto), 6 dB over the noise floor it learns there. The
+simplex rows show what their types take: `auto` or no modulation, a scoped `-R` scrambler key as the only key (dPMR;
+M17 uses the session's keys, YSF, D-STAR and TETRA DMO none), a D-STAR hold long enough for slow-data text, and a TETRA
+DMO target that is visited only at a TETRA DSP rate, normally the 72 kHz DSP bandwidth (`-i rtl:...:72`), with a
+dwell of at least 500 ms
+([Simplex digital targets](#simplex-digital-targets)).
 
 Column behavior:
 
@@ -1036,8 +1046,16 @@ The simplex digital types each scan one conventional channel of a mode DSD-neo a
   DMO target gets no check: the Scan Timing row shows `No check: mode` and the log says once that TETRA DMO channels
   have no check.
 
-`-Y` channel maps take the matching row mode `tetra-dmo` beside `ysf`, `dstar`, `dpmr` and `m17` (see
-[csv-formats.md](csv-formats.md)).
+`-Y` channel maps take the matching row modes `ysf`, `dstar`, `dpmr`, `m17` and `tetra-dmo` (see
+[csv-formats.md](csv-formats.md)). A typed row follows the same rules as the target of its type: what holds it, the
+policy table, voice-only, its keys, and for a `tetra-dmo` row the TETRA rules below (it is visited only where its
+chain runs and holds only on direct mode content). An untyped `-Y` row under a global `-fT` keeps decoding TETRA and
+holds on checked TETRA content, trunked or direct.
+
+The Qt and Android scan lists build these targets from frequency entries and saved systems
+([Qt and Android scan lists](#qt-and-android-scan-lists)). A list with a TETRA DMO target runs at one bandwidth for
+the whole session: **App default** is then 72 kHz, and a list set to another bandwidth is refused at start with the
+fix.
 
 ### TETRA DMO targets
 
@@ -1063,7 +1081,7 @@ no pick. Checking the list itself (Qt, `--validate-config`) does not look at the
   typing its frequency. Unlike a start without a hold, these do not wait for a radio that has not published its rate
   yet: a hold is tied to the park it asks for, which the scan cannot tune before the rate is known, so it would be lost
   anyway. Give the hold again, or type the frequency again, once the radio is up.
-- - **Every visit starts cold.** Each time the scan parks on a TETRA DMO target, even right after another TETRA DMO
+- **Every visit starts cold.** Each time the scan parks on a TETRA DMO target, even right after another TETRA DMO
   target, the TETRA decoder starts with nothing from before: no network or colour code, no calls, no polarity, nothing
   shown. So a radio heard on one row is never shown on the next. The decoder's memory is set up once for the scan and
   kept between rows, so a mixed list costs nothing extra per hop. Pausing the scan or stopping it leaves the decoder
@@ -1407,7 +1425,9 @@ frame even if none of its own checks pass. The frames after it only keep the hol
 ## Limitations
 
 - P25 trunk, P25 conventional, DMR trunk, DMR conventional, NXDN trunk at both rates (`nxdn-trunk`, `nxdn48-trunk`),
-  NXDN96 conventional, NXDN48 conventional and analog NFM and AM conventional targets are supported. NXDN Type-C sites
+  NXDN96 conventional, NXDN48 conventional, the simplex digital types (YSF, D-STAR, dPMR, M17 and TETRA DMO, each
+  conventional only; [their limits](#simplex-digital-targets)) and analog NFM and AM conventional targets are
+  supported. NXDN Type-C sites
   use one control-channel format at 4800 and 9600 bps (NXDN TS 1-A), so `nxdn48-trunk` shares every decoding path with
   `nxdn-trunk` and differs only in symbol rate and channel filter; neither the Type-C nor the Type-D NXDN48 path has
   been verified against a live NXDN48 trunked site from trunk scan. `-Y` with `-fi` remains available for scanning
