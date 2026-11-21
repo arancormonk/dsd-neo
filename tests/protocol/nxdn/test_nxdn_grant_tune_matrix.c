@@ -2797,6 +2797,95 @@ nxdn_run_encrypted_interconnect_dropped_case(void) {
 }
 
 #ifdef NXDN_MATRIX_REAL_CALL_STATE
+/* An SCCH of structure @p sf (INFO4 0, INFO3 1, INFO2 2) naming @p id under Home Repeater / Prefix @p rep2, from repeater
+ * @p rep1. */
+static void
+send_scch_prefixed(uint8_t sf, uint8_t rep1, uint8_t rep2, uint16_t id) {
+    uint8_t message[32];
+    build_scch_identity(message, sf, rep1, id);
+    write_bits_u32(message, 8U, rep2, 5U);
+    NXDN_decode_scch(&g_opts, &g_state, message, 1U);
+}
+
+static void
+type_d_prefix_policy_row(uint32_t id, const char* mode) {
+    dsd_tg_policy_entry row;
+    if (dsd_tg_policy_make_exact_entry(id, mode, "test", DSD_TG_POLICY_SOURCE_IMPORTED, &row) == 0) {
+        (void)dsd_tg_policy_upsert_exact(&g_state, &row, DSD_TG_POLICY_UPSERT_REPLACE_FIRST);
+    }
+}
+
+/* The live call's group verdict, as the audio and scan gates judge it: on its policy target and source. */
+static int
+type_d_prefix_call_allowed(const dsd_call_snapshot* call) {
+    dsd_tg_policy_decision decision;
+    if (dsd_tg_policy_evaluate_group_call(&g_opts, &g_state, (uint32_t)call->policy_target_id,
+                                          (uint32_t)call->ota_source_id, 0, 0, &decision)
+        != 0) {
+        return -1;
+    }
+    return decision.tune_allowed ? 1 : 0;
+}
+
+/* A Type-D unit or group ID is unique only under its Home Repeater / Prefix (NXDN TS 1-E §6.6.6-§6.6.8). The call keeps
+ * the 11-bit IDs every policy, lockout, skip, hold and key consumer reads, and names them "pp-iiii" (issue #903 D7):
+ * group 5 under prefixes 3 and 7 are two calls by their text, judged by the one row "5" (a list allowing 5 and blocking
+ * the packed 6149 and 14341 still allows both). The busy (INFO4), source (INFO3) and target (INFO2) messages carry
+ * their prefix into the call's text as the VCALL does. */
+static int
+nxdn_run_type_d_prefix_identity_case(void) {
+    static const char* const name = "type-d-prefix-identity";
+    const nxdn_case busy = {
+        "type-d-prefix", NXDN_MATRIX_TYPE_D, 0U, 0U, 0U, 0U, 0U, 0, 0, 0, 6U, 3U, 5U, 938012500L,
+    };
+    nxdn_setup_fixture(&busy);
+    DSD_SNPRINTF(g_state.nxdn_location_category, sizeof(g_state.nxdn_location_category), "%s", "Type-D");
+    g_opts.trunk_is_tuned = 1;
+    g_state.trunk_vc_freq[0] = g_state.trunk_vc_freq[1] = busy.expected_freq;
+    type_d_prefix_policy_row(5U, "A");
+    type_d_prefix_policy_row(0x1805U, "B");
+    type_d_prefix_policy_row(0x3805U, "B");
+    nxdn_install_hooks();
+    int rc = 0;
+
+    at_seconds(9400.0);
+    voice_live();
+    late_entry_call();
+    nxdn_run_case_decode(&busy); /* INFO4: group 5 under prefix 3, on the receiver's repeater */
+    dsd_call_snapshot call;
+    rc |= nxdn_expect(dsd_call_state_get(&g_state, 0U, &call) == 1 && call.ota_target_id == 5U
+                          && call.policy_target_id == 5U && strcmp(call.target_text, "03-0005") == 0,
+                      name, "info4", "the busy message names 03-0005, ID 5");
+
+    at_seconds(9400.1);
+    voice_live();
+    send_scch_prefixed(1U, 6U, 3U, 100U); /* INFO3: talker 100 under prefix 3 */
+    rc |= nxdn_expect(dsd_call_state_get(&g_state, 0U, &call) == 1 && call.ota_source_id == 100U
+                          && strcmp(call.source_text, "03-0100") == 0 && strcmp(call.target_text, "03-0005") == 0,
+                      name, "info3", "the source message names 03-0100, ID 100");
+    rc |= nxdn_expect(type_d_prefix_call_allowed(&call) == 1, name, "policy-03", "03-0005 is judged by row 5");
+    const uint64_t first = dsd_call_snapshot_transmission(&call);
+
+    at_seconds(9400.2);
+    voice_live();
+    send_vcall(0x3864U, 0x3805U); /* group 5 under prefix 7, talker 100 under prefix 7 */
+    rc |= nxdn_expect(dsd_call_state_get(&g_state, 0U, &call) == 1 && dsd_call_snapshot_transmission(&call) != first,
+                      name, "vcall", "07-0005 is another call than 03-0005");
+    rc |= nxdn_expect(call.ota_target_id == 5U && call.policy_target_id == 5U && call.ota_source_id == 100U, name,
+                      "vcall", "its IDs stay 11-bit");
+    rc |= nxdn_expect(strcmp(call.target_text, "07-0005") == 0 && strcmp(call.source_text, "07-0100") == 0, name,
+                      "vcall", "named 07-0005 from 07-0100");
+    rc |= nxdn_expect(type_d_prefix_call_allowed(&call) == 1, name, "policy-07", "07-0005 is judged by row 5 too");
+
+    at_seconds(9400.3);
+    voice_live();
+    send_scch_prefixed(2U, 6U, 7U, 9U); /* INFO2: target 9 under prefix 7 on the receiver's repeater */
+    rc |= nxdn_expect(dsd_call_state_get(&g_state, 0U, &call) == 1 && call.ota_target_id == 9U
+                          && strcmp(call.target_text, "07-0009") == 0,
+                      name, "info2", "the target message names 07-0009, ID 9");
+    return rc;
+}
+
 /* The assignment's recent-activity row: its kind by the call type, and its notice says TG only for a group call (a
  * private or interconnect call's destination is a radio or PSTN ID). 010 publishes no row. */
 static int
@@ -2942,6 +3031,7 @@ main(void) {
     rc |= nxdn_run_type_d_abandoned_grant_case();
     rc |= nxdn_run_type_d_abandoned_grant_fade_case();
     rc |= nxdn_run_type_d_refollow_during_fade_case();
+    rc |= nxdn_run_type_d_prefix_identity_case();
 #endif
 
     dsd_trunk_tuning_hooks_set((dsd_trunk_tuning_hooks){0});

@@ -48,6 +48,9 @@ void nxdn_data_call_bind_header(const dsd_opts* opts, dsd_state* state);
 int nxdn_data_call_header_bound(const dsd_state* state);
 /* Drop the header and its binding (a failed channel CRC, a rejected header): no payload assembles under it. */
 void nxdn_data_call_drop_header(dsd_state* state);
+/* Keep a data call header's Type-D Home Repeater / Prefixes (@p type_d 0: a Type-C or conventional header, none) for the
+ * data call's row (dsd_state::nxdn_data_type_d); dropping the header forgets them. */
+void nxdn_data_call_note_prefixes(dsd_state* state, uint8_t type_d, uint8_t source_prefix, uint8_t target_prefix);
 void nxdn_prepare_sacch_payload_seed(dsd_state* state, int part_of_frame);
 
 /* Whether the canonical call on slot 0 is an NXDN call: the only one an NXDN message may end or give crypto. Another
@@ -246,6 +249,29 @@ void nxdn_handle_facch3_udch2_soft(dsd_opts* opts, dsd_state* state, const struc
 dsd_call_kind nxdn_call_type_kind(uint8_t call_type, int type_d);
 /* Whether a message of @p call_type may open a call: every type but 010, which only a TX_REL carries. */
 int nxdn_call_type_opens_call(uint8_t call_type);
+
+/* A Type-D unit or group ID is 11 bits, unique only under its 5-bit Home Repeater / Prefix (NXDN TS 1-E §6.6.6 Table
+ * 6.6-4, §6.6.7, §6.6.8 Table 6.6-6): the full address is (prefix << 11) | id, the 16 bits a VCALL, a data call header
+ * or an SCCH's bits 8-23 carry. The call state, talkgroup policy, lockouts, skips, holds and keys keep the 11-bit id
+ * (the policy namespace, issue #903 D7); the prefix travels as text, "pp-iiii" (nxdn_typed_id_text()). */
+static inline uint32_t
+nxdn_typed_full_id(uint8_t prefix, uint16_t id11) {
+    return ((uint32_t)(prefix & 0x1FU) << 11) | (uint32_t)(id11 & 0x7FFU);
+}
+
+static inline uint16_t
+nxdn_typed_low_id(uint32_t full) {
+    return (uint16_t)(full & 0x7FFU);
+}
+
+static inline uint8_t
+nxdn_typed_prefix(uint32_t full) {
+    return (uint8_t)((full >> 11) & 0x1FU);
+}
+
+/* The text identity of Type-D @p id11 under @p prefix, "pp-iiii" (prefix 3, ID 5: "03-0005"); empty for the Null ID 0,
+ * which names nobody. */
+void nxdn_typed_id_text(char* out, size_t out_size, uint8_t prefix, uint16_t id11);
 
 #ifdef __cplusplus
 }

@@ -163,6 +163,17 @@ nxdn_location_is_type_d(const dsd_state* state) {
     return strcmp(state->nxdn_location_category, "Type-D") == 0 ? 1 : 0;
 }
 
+void
+nxdn_typed_id_text(char* out, size_t out_size, uint8_t prefix, uint16_t id11) {
+    if (out == NULL || out_size == 0U) {
+        return;
+    }
+    out[0] = '\0';
+    if ((id11 & 0x7FFU) != 0U) {
+        DSD_SNPRINTF(out, out_size, "%02u-%04u", (unsigned)(prefix & 0x1FU), (unsigned)(id11 & 0x7FFU));
+    }
+}
+
 /* Whether an encrypted call of @p call_type takes a session-long lockout entry on its endpoint: a group call (000,
  * 001) its talkgroup, an individual call (100) its called radio. An interconnect or speed dial call's endpoint is a PSTN
  * ID or a radio behind the gateway, and a generic voice call (011, 101) has no known class, so neither locks anything
@@ -900,6 +911,7 @@ nxdn_sdcall_header(const dsd_opts* opts, dsd_state* state, const uint8_t* Messag
     state->payload_keyid = key_id;
     state->dmr_lrrp_source[0] = source;
     state->dmr_lrrp_target[0] = target;
+    nxdn_data_call_note_prefixes(state, idas, (uint8_t)source_ch, (uint8_t)target_ch);
     // Not a DMR talkgroup: clear the qualifier so a stale DMR group flag cannot make the
     // --dmr-tg-key-csv lookup treat this address as one.
     state->dmr_data_target_is_group[0] = 0;
@@ -1043,6 +1055,7 @@ nxdn_dcall_header_apply(const dsd_opts* opts, dsd_state* state, const struct nxd
     state->payload_keyid = info->key_id;
     state->dmr_lrrp_source[0] = info->source;
     state->dmr_lrrp_target[0] = info->target;
+    nxdn_data_call_note_prefixes(state, info->idas, (uint8_t)info->source_ch, (uint8_t)info->target_ch);
     // Not a DMR talkgroup -- see the sibling header handler above.
     state->dmr_data_target_is_group[0] = 0;
     state->dmr_data_checked_group[0] = nxdn_data_call_type_is_group(info->call_type);
@@ -1260,7 +1273,14 @@ nxdn_dcall_watchdog(dsd_opts* opts, dsd_state* state, const char* event_text) {
     const uint32_t target = (uint32_t)state->dmr_lrrp_target[0];
     char comp_string[128];
     DSD_SNPRINTF(comp_string, sizeof(comp_string), "DATA CALL SRC: %u; TGT: %u;", source, target);
-    const dsd_call_observation observation = dsd_call_observation_data(state->lastsynctype, 0U, source, target);
+    dsd_call_observation observation = dsd_call_observation_data(state->lastsynctype, 0U, source, target);
+    if (state->nxdn_data_type_d != 0U) {
+        /* A Type-D header's IDs are the 11-bit ones; the row names them under their prefixes (issue #903). */
+        nxdn_typed_id_text(observation.source_text, sizeof(observation.source_text), state->nxdn_data_source_prefix,
+                           (uint16_t)source);
+        nxdn_typed_id_text(observation.target_text, sizeof(observation.target_text), state->nxdn_data_target_prefix,
+                           (uint16_t)target);
+    }
     (void)dsd_event_emit_data_notice(opts, state, 0U, &observation, comp_string);
 }
 
@@ -2878,8 +2898,9 @@ struct nxdn_vcall_info {
     uint8_t cipher_type;
     uint8_t key_id;
     uint8_t idas;
-    uint8_t rep1;
-    uint16_t source_unit_id;
+    uint8_t rep1;            /* Type-D: the source's Home Repeater / Prefix (TS 1-E §6.4.1.1 Fig 6.4-1) */
+    uint8_t dst_prefix;      /* Type-D: the destination's Home Repeater / Prefix */
+    uint16_t source_unit_id; /* Type-D: the 11-bit ID, the policy and key namespace (nxdn_typed_low_id()) */
     uint16_t destination_id;
 };
 
@@ -2906,9 +2927,10 @@ nxdn_vcall_parse_fields(dsd_state* state, const uint8_t* Message, struct nxdn_vc
 
     info->idas = (apply_type_d_truncation && strcmp(state->nxdn_location_category, "Type-D") == 0) ? 1U : 0U;
     if (info->idas != 0U) {
-        info->rep1 = (uint8_t)((info->source_unit_id >> 11) & 0x1FU);
-        info->source_unit_id &= 0x7FFU;
-        info->destination_id &= 0x7FFU;
+        info->rep1 = nxdn_typed_prefix(info->source_unit_id);
+        info->dst_prefix = nxdn_typed_prefix(info->destination_id);
+        info->source_unit_id = nxdn_typed_low_id(info->source_unit_id);
+        info->destination_id = nxdn_typed_low_id(info->destination_id);
     }
 }
 
@@ -3164,6 +3186,19 @@ nxdn_vcall_publish_crypto(dsd_opts* opts, dsd_state* state, uint8_t cipher_type,
     }
 }
 
+/* A Type-D VCALL's call keeps the 11-bit IDs @p observation holds and names them under their prefixes, so 03-0005 and
+ * 07-0005 are two calls judged by one policy row (issue #903 D7). */
+static void
+nxdn_vcall_name_type_d(dsd_call_observation* observation, const struct nxdn_vcall_info* info) {
+    if (info->idas == 0U) {
+        return;
+    }
+    nxdn_typed_id_text(observation->target_text, sizeof(observation->target_text), info->dst_prefix,
+                       (uint16_t)observation->ota_target_id);
+    nxdn_typed_id_text(observation->source_text, sizeof(observation->source_text), info->rep1,
+                       (uint16_t)observation->ota_source_id);
+}
+
 static void
 nxdn_vcall_publish(dsd_opts* opts, dsd_state* state, const struct nxdn_vcall_info* info) {
     int protocol = DSD_SYNC_IS_NXDN(state->synctype) ? state->synctype : state->lastsynctype;
@@ -3179,7 +3214,7 @@ nxdn_vcall_publish(dsd_opts* opts, dsd_state* state, const struct nxdn_vcall_inf
     const long int followed_freq =
         route_held ? state->nxdn_follow.freq_hz : (dsd_opts_trunk_vc_followed(opts) ? state->trunk_vc_freq[0] : 0);
     const uint16_t followed_chan = route_held ? state->nxdn_follow.chan : 0U;
-    const dsd_call_observation observation = {
+    dsd_call_observation observation = {
         .protocol = protocol,
         .slot = 0U,
         .kind = nxdn_call_type_kind(info->call_type, info->idas),
@@ -3192,6 +3227,7 @@ nxdn_vcall_publish(dsd_opts* opts, dsd_state* state, const struct nxdn_vcall_inf
         .emergency = (uint8_t)((info->cc_option & 0x80U) != 0U),
         .has_service_metadata = 1U,
     };
+    nxdn_vcall_name_type_d(&observation, info);
     (void)dsd_call_state_observe(state, &observation, DSD_CALL_BOUNDARY_CONTINUE);
     // Publish the applied classification, not the raw observation: a quarantined contradiction
     // must not flap the published crypto any more than it may flap the audio gate. The cipher and
@@ -3753,7 +3789,7 @@ nxdn_scch_update_busy_display(const dsd_opts* opts, dsd_state* state, const stru
         nxdn_call_identity_end(opts, state);
     } else if (info->rep1 != 0U && info->id != 0U) {
         /* ID 0 is the Null ID (TS 1-E Tables 6.6-5, 6.6-6): no destination, so no activity to note. */
-        const dsd_call_observation observation = {
+        dsd_call_observation observation = {
             .protocol = DSD_SYNC_NXDN_POS,
             .slot = 0U,
             .kind = info->gu == 0U ? DSD_CALL_KIND_GROUP_VOICE : DSD_CALL_KIND_PRIVATE_VOICE,
@@ -3761,6 +3797,7 @@ nxdn_scch_update_busy_display(const dsd_opts* opts, dsd_state* state, const stru
             .policy_target_id = info->id,
             .channel = info->rep1,
         };
+        nxdn_typed_id_text(observation.target_text, sizeof(observation.target_text), info->rep2, info->id);
         char notice[DSD_RECENT_ACTIVITY_TEXT_SIZE];
         if (info->gu == 0U) {
             DSD_SNPRINTF(notice, sizeof(notice), "Active Group Ch: %d TG: %d-%d; ", info->rep1, info->rep2, info->id);
@@ -3786,12 +3823,14 @@ nxdn_scch_named_kind(const dsd_call_snapshot* call, uint32_t target_id, dsd_call
     return call->kind;
 }
 
-/* The live call takes an SCCH's source or target (0: keep the call's), and @p kind when the message classifies it
+/* The live call takes an SCCH's source or target (0: keep the call's), named under @p prefix (the message's Home
+ * Repeater / Prefix, "pp-iiii", nxdn_typed_id_text()), and @p kind when the message classifies it
  * (a busy message's G/U bit; DSD_CALL_KIND_UNKNOWN keeps the call's for the same target, and gives a new target no
  * class, nxdn_scch_named_kind()), so a later unclassified message for the same target reads the class this one
  * verified, never a previous call's. */
 static void
-nxdn_scch_enrich_identity(dsd_state* state, uint32_t source_id, uint32_t target_id, dsd_call_kind kind) {
+nxdn_scch_enrich_identity(dsd_state* state, uint16_t source_id, uint16_t target_id, uint8_t prefix,
+                          dsd_call_kind kind) {
     dsd_call_snapshot call;
     if (dsd_call_state_get(state, 0U, &call) <= 0 || call.phase != DSD_CALL_PHASE_ACTIVE
         || !DSD_SYNC_IS_NXDN(call.protocol)) {
@@ -3813,9 +3852,13 @@ nxdn_scch_enrich_identity(dsd_state* state, uint32_t source_id, uint32_t target_
     };
     if (source_id == 0U) {
         DSD_MEMCPY(observation.source_text, call.source_text, sizeof(observation.source_text));
+    } else {
+        nxdn_typed_id_text(observation.source_text, sizeof(observation.source_text), prefix, source_id);
     }
     if (target_id == 0U) {
         DSD_MEMCPY(observation.target_text, call.target_text, sizeof(observation.target_text));
+    } else {
+        nxdn_typed_id_text(observation.target_text, sizeof(observation.target_text), prefix, target_id);
     }
     DSD_MEMCPY(observation.route_text[0], call.route_text[0], sizeof(observation.route_text[0]));
     DSD_MEMCPY(observation.route_text[1], call.route_text[1], sizeof(observation.route_text[1]));
@@ -3848,7 +3891,7 @@ nxdn_scch_handle_busy(dsd_opts* opts, dsd_state* state, const struct nxdn_scch_i
     if (info->acts && info->rep1 != 31U && info->id != 0U && info->now - state->last_vc_sync_time < 1
         && nxdn_idas_assoc(opts, state, info->rep1) == NXDN_IDAS_MATCH) {
         // The message's G/U bit classifies its target, for the canonical call as for the held one.
-        nxdn_scch_enrich_identity(state, 0U, info->id,
+        nxdn_scch_enrich_identity(state, 0U, info->id, info->rep2,
                                   info->gu ? DSD_CALL_KIND_PRIVATE_VOICE : DSD_CALL_KIND_GROUP_VOICE);
         nxdn_call_identity_reconcile(opts, state, info->gu ? 1 : 0, 1);
     }
@@ -3964,7 +4007,7 @@ nxdn_scch_handle_info3(const dsd_opts* opts, dsd_state* state, const struct nxdn
                 info->id);
     if (info->acts && info->now - state->last_vc_sync_time < 1) {
         const uint64_t before = nxdn_live_call_transmission(state);
-        nxdn_scch_enrich_identity(state, info->id, 0U, DSD_CALL_KIND_UNKNOWN);
+        nxdn_scch_enrich_identity(state, info->id, 0U, info->rep2, DSD_CALL_KIND_UNKNOWN);
         nxdn_call_identity_follow_source_update(state, before);
     }
 }
@@ -3999,7 +4042,7 @@ nxdn_scch_handle_info2(const dsd_opts* opts, dsd_state* state, const struct nxdn
     if (info->acts && info->id != 0U && info->now - state->last_vc_sync_time < 1
         && nxdn_idas_assoc(opts, state, info->rep1) == NXDN_IDAS_MATCH) {
         /* ID 0 is the Null ID (TS 1-E Tables 6.6-5, 6.6-6): no destination, so its G/U bit classifies nothing. */
-        nxdn_scch_enrich_identity(state, 0U, info->id,
+        nxdn_scch_enrich_identity(state, 0U, info->id, info->rep2,
                                   info->gu ? DSD_CALL_KIND_PRIVATE_VOICE : DSD_CALL_KIND_GROUP_VOICE);
         nxdn_call_identity_reconcile(opts, state, info->gu ? 1 : 0, 1);
     }

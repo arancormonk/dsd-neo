@@ -79,4 +79,15 @@ nxdn_data_call_drop_header(dsd_state* state) {
     DSD_MEMSET(&state->nxdn_data_origin, 0, sizeof(state->nxdn_data_origin));
     state->nxdn_data_header_ms = 0U;
     state->nxdn_data_carrier_seq = 0U;
+    nxdn_data_call_note_prefixes(state, 0U, 0U, 0U);
+}
+
+void
+nxdn_data_call_note_prefixes(dsd_state* state, uint8_t type_d, uint8_t source_prefix, uint8_t target_prefix) {
+    if (state == NULL) {
+        return;
+    }
+    state->nxdn_data_type_d = type_d != 0U ? 1U : 0U;
+    state->nxdn_data_source_prefix = type_d != 0U ? (uint8_t)(source_prefix & 0x1FU) : 0U;
+    state->nxdn_data_target_prefix = type_d != 0U ? (uint8_t)(target_prefix & 0x1FU) : 0U;
 }

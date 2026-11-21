@@ -12414,6 +12414,21 @@ Call frequency and access-code provenance (issue #575). A call's canonical `freq
   live displays follow the mark too: outside IDAS, whose area keeps its own label, the terminal's NXDN line prints
   `RAN: --` and the Qt site sheet shows no RAN for a stand-in, which there is DCR's 7 (`ui_render_nxdn_site_line()`,
   `MetricsModel::fillNxdnSite()`).
+- NXDN call identity without a decoded ID. A DCR call (SACCH2 SB0 call traffic, `nxdn_update_sacch2_identity_state()`)
+  is identity-less voice: kind VOICE, target and source 0, labelled "JPN DCR". It never takes a made-up group, which
+  would land in history and feed talkgroup policy (issue #903).
+- NXDN Type-D addresses (`nxdn_internal.h`: `nxdn_typed_full_id()`, `nxdn_typed_low_id()`, `nxdn_typed_prefix()`,
+  `nxdn_typed_id_text()`). A Type-D unit or group ID is 11 bits under a 5-bit Home Repeater / Prefix (TS 1-E 6.6.6-6.6.8).
+  The VCALL, the SD (0x38) and packet (0x09) data call headers and the SCCH INFO4/INFO3/INFO2 carry the prefix. Every
+  numeric ID the protocol publishes stays the 11-bit ID, the policy namespace (decision D7): `ota_target_id`,
+  `policy_target_id`, `ota_source_id`, `dmr_lrrp_source/target` (position attribution), the scan-activity hook, and the
+  keys, lockouts, skips and holds, including the NXDN48 destination-key fallback. So an existing group list, key file or
+  lockout behaves as it did. The prefix travels as text, "pp-iiii" (`03-0005`), in the call's `target_text`/`source_text`
+  (hence the event row's `tgt_str`/`src_str`), on the SCCH busy message's recent-activity row, and on the data call's row
+  (`nxdn_dcall_watchdog()`, from the header's prefixes `dsd_state::nxdn_data_type_d`/`_source_prefix`/`_target_prefix`,
+  `nxdn_data_call_note_prefixes()`). Because call identity compares known text, group 5 under prefixes 3 and 7 are two
+  calls with one policy row. The GPS data notice (`nxdn_gps_publish()`, core) and position fixes carry no prefix text.
+  `nxdn_typed_full_id()` is for producers that key identity, not policy, by the full address.
 - NXDN site identity (`nxdn_element.c`). `NXDN_Elements_Content_decode()` is handed buffers of every channel's size,
   down to the 26 elements of a non-superframe SACCH whose 6-bit CRC passes noise one time in 64, so each parser checks
   the length it was given before reading (`nxdn_element_has_bits()`: SRV_INFO 72, 80 on Type-D; VCALL/TX_REL/DISC 64;

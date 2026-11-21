@@ -199,6 +199,8 @@ dsd_event_note_current_call(dsd_opts* opts, dsd_state* state, uint8_t slot, cons
 static char g_datacall_event[80];
 static uint32_t g_datacall_src;
 static uint32_t g_datacall_dst;
+static char g_datacall_src_text[DSD_CALL_IDENTITY_TEXT_SIZE];
+static char g_datacall_dst_text[DSD_CALL_IDENTITY_TEXT_SIZE];
 static uint8_t g_datacall_slot;
 static int g_des_fill_enabled;
 static int g_aes_fill_enabled;
@@ -224,6 +226,8 @@ reset_datacall_capture(void) {
     DSD_MEMSET(g_datacall_event, 0, sizeof(g_datacall_event));
     g_datacall_src = 0;
     g_datacall_dst = 0;
+    g_datacall_src_text[0] = '\0';
+    g_datacall_dst_text[0] = '\0';
     g_datacall_slot = 0xFFU;
 }
 
@@ -280,6 +284,8 @@ dsd_event_emit_data_notice(dsd_opts* opts, dsd_state* state, uint8_t slot, const
     (void)state;
     g_datacall_src = observation->ota_source_id;
     g_datacall_dst = observation->ota_target_id;
+    DSD_SNPRINTF(g_datacall_src_text, sizeof(g_datacall_src_text), "%s", observation->source_text);
+    DSD_SNPRINTF(g_datacall_dst_text, sizeof(g_datacall_dst_text), "%s", observation->target_text);
     g_datacall_slot = slot;
     DSD_SNPRINTF(g_datacall_event, sizeof(g_datacall_event), "%s", notice ? notice : "");
     return 0;
@@ -2182,6 +2188,143 @@ test_vcall_reports_the_key_its_cipher_selected(void) {
     rc |= expect_int("aes-scalar-only-reports-key-0", call.key_selection.effective_id, 0);
     rc |= expect_u64("aes-scalar-only-loads-key-0", (uint64_t)state->A1[0], 0U);
 
+    dsd_state_ext_free_all(state);
+    free(state);
+    free(opts);
+    return rc;
+}
+
+/*
+ * A Type-D data call header (SD 0x38 or packet 0x09) names its 16-bit addresses, prefix and 11-bit ID (NXDN TS 1-E
+ * §6.6.6-§6.6.8). The IDs every policy-keyed consumer reads stay 11-bit -- the scan activity hold, position attribution
+ * (dmr_lrrp_*) and the data call's numeric row IDs -- and the row names them under their prefixes, "pp-iiii" (issue
+ * #903 D7). A Type-C header's IDs are 16-bit and get no text.
+ */
+static int
+run_type_d_data_header_prefix_case(const char* tag, uint8_t header_type, uint8_t payload_type, int type_d) {
+    dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(*opts));
+    dsd_state* state = (dsd_state*)calloc(1, sizeof(*state));
+    if (!opts || !state) {
+        DSD_FPRINTF(stderr, "alloc-failed: %s%s\n", !opts ? "dsd_opts" : "", !state ? " dsd_state" : "");
+        free(state);
+        free(opts);
+        return 1;
+    }
+    state->event_history_s = (Event_History_I*)calloc(1, sizeof(*state->event_history_s));
+    if (state->event_history_s == NULL) {
+        DSD_FPRINTF(stderr, "alloc-failed: event_history\n");
+        free(state);
+        free(opts);
+        return 1;
+    }
+    if (type_d) {
+        DSD_SNPRINTF(state->nxdn_location_category, sizeof(state->nxdn_location_category), "%s", "Type-D");
+    }
+    state->nxdn_confirmed = 1;
+    reset_datacall_capture();
+    reset_scan_activity_capture();
+
+    /* Source prefix 3, ID 100; destination prefix 7, ID 5. Scrambled with no key: the payload fails its CRC and the
+       data call's row is written ("Encrypted PDU"). */
+    uint8_t header_bits[96];
+    uint8_t first_bits[80];
+    uint8_t final_bits[80];
+    uint8_t payload[16];
+    DSD_MEMSET(header_bits, 0, sizeof(header_bits));
+    DSD_MEMSET(first_bits, 0, sizeof(first_bits));
+    DSD_MEMSET(final_bits, 0, sizeof(final_bits));
+    DSD_MEMSET(payload, 0x55, sizeof(payload));
+    write_data_call_header_fields(header_bits, header_type, 1U, 0U, 0x1864U, 0x3805U, 1U, 0U);
+    NXDN_Elements_Content_decode(opts, state, header_bits, sizeof(header_bits));
+
+    char label[96];
+    int rc = 0;
+    const uint32_t want_src = type_d ? 100U : 0x1864U;
+    const uint32_t want_dst = type_d ? 5U : 0x3805U;
+    DSD_SNPRINTF(label, sizeof label, "%s-lrrp-source", tag);
+    rc |= expect_int(label, (int)state->dmr_lrrp_source[0], (int)want_src);
+    DSD_SNPRINTF(label, sizeof label, "%s-lrrp-target", tag);
+    rc |= expect_int(label, (int)state->dmr_lrrp_target[0], (int)want_dst);
+    DSD_SNPRINTF(label, sizeof label, "%s-scan-target", tag);
+    rc |= expect_int(label, (int)g_scan_activity_target, (int)want_dst);
+    DSD_SNPRINTF(label, sizeof label, "%s-scan-source", tag);
+    rc |= expect_int(label, (int)g_scan_activity_source, (int)want_src);
+
+    state->data_header_format[0] = 3U;
+    write_data_payload_frame(first_bits, payload_type, 1U, 1U, payload, 8U);
+    write_data_payload_frame(final_bits, payload_type, 0U, 0U, payload + 8U, 8U);
+    NXDN_Elements_Content_decode(opts, state, first_bits, sizeof(first_bits));
+    NXDN_Elements_Content_decode(opts, state, final_bits, sizeof(final_bits));
+
+    DSD_SNPRINTF(label, sizeof label, "%s-row-written", tag);
+    rc |= expect_int(label, strncmp(g_datacall_event, "DATA CALL SRC:", 14) == 0, 1);
+    DSD_SNPRINTF(label, sizeof label, "%s-row-source", tag);
+    rc |= expect_int(label, (int)g_datacall_src, (int)want_src);
+    DSD_SNPRINTF(label, sizeof label, "%s-row-target", tag);
+    rc |= expect_int(label, (int)g_datacall_dst, (int)want_dst);
+    DSD_SNPRINTF(label, sizeof label, "%s-row-source-text", tag);
+    rc |= expect_string(label, g_datacall_src_text, type_d ? "03-0100" : "");
+    DSD_SNPRINTF(label, sizeof label, "%s-row-target-text", tag);
+    rc |= expect_string(label, g_datacall_dst_text, type_d ? "07-0005" : "");
+
+    dsd_trunk_scan_hooks_set(NULL);
+    dsd_state_ext_free_all(state);
+    free(state->event_history_s);
+    free(state);
+    free(opts);
+    return rc;
+}
+
+static int
+test_type_d_data_headers_keep_prefix_text(void) {
+    int rc = 0;
+    rc |= run_type_d_data_header_prefix_case("type-d-sdcall", 0x38U, 0x39U, 1);
+    rc |= run_type_d_data_header_prefix_case("type-d-dcall", 0x09U, 0x0BU, 1);
+    rc |= run_type_d_data_header_prefix_case("type-c-sdcall", 0x38U, 0x39U, 0);
+    return rc;
+}
+
+/* The NXDN48 scrambler's destination-key fallback finds a key filed under a Type-D group's 11-bit ID whatever prefix
+ * the call names (issue #903 D7): 03-0005 and 07-0005 both decrypt with key 5, the call's ID stays 5, and the prefix
+ * is only the call's text. */
+static int
+test_type_d_vcall_destination_key_uses_low_id(void) {
+    dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(*opts));
+    dsd_state* state = (dsd_state*)calloc(1, sizeof(*state));
+    uint8_t bits[96];
+    if (!opts || !state) {
+        DSD_FPRINTF(stderr, "alloc-failed: %s%s\n", !opts ? "dsd_opts" : "", !state ? " dsd_state" : "");
+        free(state);
+        free(opts);
+        return 1;
+    }
+    int rc = 0;
+    static const uint16_t k_destinations[] = {0x1805U, 0x3805U};
+    static const char* const k_texts[] = {"03-0005", "07-0005"};
+    for (size_t i = 0U; i < 2U; i++) {
+        dsd_state_ext_free_all(state);
+        DSD_MEMSET(state, 0, sizeof(*state));
+        DSD_SNPRINTF(state->nxdn_location_category, sizeof(state->nxdn_location_category), "%s", "Type-D");
+        state->nxdn_confirmed = 1;
+        opts->frame_nxdn48 = 1;
+        opts->frame_nxdn96 = 1;
+        state->sps_hunt_idx = DSD_FRAME_SYNC_SPS_PROFILE_2400_4;
+        state->keyloader = 1;
+        state->rkey_array[5U] = 0x1234U;
+        state->rkey_array_loaded[5U] = 1U;
+        DSD_MEMSET(bits, 0, sizeof(bits));
+        write_vcall_fields(bits, 0x01U, 0x20U, 1U, 2U, 0x1864U, k_destinations[i], 1U, 0x2AU);
+        NXDN_Elements_Content_decode(opts, state, bits, sizeof(bits));
+        dsd_call_snapshot call;
+        rc |= expect_u64("type-d-scrambler-loads-destination-key", (uint64_t)state->R, 0x1234U);
+        rc |= expect_int("type-d-scrambler-canonical", dsd_call_state_get(state, 0U, &call), 1);
+        rc |= expect_int("type-d-scrambler-destination-source", call.key_selection.source, DSD_CALL_KEY_DESTINATION);
+        rc |= expect_int("type-d-scrambler-destination-key", call.key_selection.effective_id, 5);
+        rc |= expect_int("type-d-scrambler-target-id", (int)call.ota_target_id, 5);
+        rc |= expect_int("type-d-scrambler-source-id", (int)call.ota_source_id, 100);
+        rc |= expect_string("type-d-scrambler-target-text", call.target_text, k_texts[i]);
+        rc |= expect_string("type-d-scrambler-source-text", call.source_text, "03-0100");
+    }
     dsd_state_ext_free_all(state);
     free(state);
     free(opts);
@@ -4277,6 +4420,8 @@ main(void) {
     rc |= test_vcall_aes_key_flag_drives_crypto_state();
     rc |= test_vcall_imported_zero_keys_are_present();
     rc |= test_vcall_reports_the_key_its_cipher_selected();
+    rc |= test_type_d_vcall_destination_key_uses_low_id();
+    rc |= test_type_d_data_headers_keep_prefix_text();
     rc |= test_vcall_aes_fallback_needs_a_full_key();
     rc |= test_vcall_iv_keeps_the_vcall_key_choice();
     rc |= test_type_d_scch_publishes_call_option_crypto();
