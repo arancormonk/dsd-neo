@@ -21888,6 +21888,26 @@ if(DSD_HAS_RADIO)
                 RUNTIME_IQ_STREAM_LIVE
                 PROPERTIES LABELS "iq-stream" TIMEOUT 120
             )
+            # The run reads the receive profile off the control API, which a build without it lacks.
+            if(DSD_ENABLE_API)
+                # A real --trunk-scan at the 72 kHz DSP bandwidth on tools/bench_scan_skip_silent.py's paced
+                # rtl_tcp scene (issue #890): NFM, NXDN48, YSF, a TETRA DMO call (tetra_dmo_call_synth_72k) and a
+                # TETRA DMO target on trunked TETRA alone. Each target lands its own profile (the control API's
+                # metrics), the NFM, YSF and DMO calls hold their targets and release them, and the trunked TETRA
+                # never holds. About 30 s in real time; numpy, so CTest reports it skipped where the tests' Python
+                # has none.
+                add_test(
+                    NAME ENGINE_TRUNK_SCAN_SIMPLEX_RIG
+                    COMMAND
+                        ${Python3_EXECUTABLE}
+                        ${CMAKE_CURRENT_SOURCE_DIR}/trunk_scan_simplex_rig_check.py
+                        $<TARGET_FILE:dsd-neo> ${_DSD_NEO_IQ_FIXTURE_DIR}
+                )
+                set_tests_properties(
+                    ENGINE_TRUNK_SCAN_SIMPLEX_RIG
+                    PROPERTIES LABELS "scan-rig" SKIP_RETURN_CODE 77 TIMEOUT 120
+                )
+            endif()
         endif()
     endif()
 
