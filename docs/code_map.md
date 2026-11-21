@@ -7959,13 +7959,6 @@ the stream-notice hooks' pattern: one that fails to initialize leaves the hook u
   over a 3-block TSDU, an LDU and a long PDU at the `-f1` and the default sizes, both polarities at `-f1`; the warm
   start off still tracks), `DECODE_IQ_P25P1_C4FM_VOICE_HDU_F1` (the voice fixture under `-f1` prints an HDU and no
   `HDU FEC ERR`).
-- `dsd_state::input_substitute_seq` (issue #890): a count DSP's symbol reader bumps each time it hands back a stand-in
-  instead of input it read: a failed `dsd_audio_read()` (`symbol_read_sample_pulse()`), a binary symbol capture that
-  ended (`symbol_bin_input_ended()`, shutdown), cannot be opened, read or reopened when looping, or an empty looping
-  capture, and a float capture's failed read. Only those rare paths touch it, and the reader otherwise behaves as
-  before; no flag is raised and the stand-in still counts as a symbol. A decoder that judges a frame by what it read
-  compares it across the frame (M17's LSF and packet frames, `m17_frame_read_cut()`). It sits outside the UI
-  snapshot's copied ranges.
 - `dsd_state::symbol_clock`/`symbol_clock_epoch` (issue #729): a 64-bit count of every symbol the grid produced that no
   protocol resets (NXDN resets `symbolcnt`), and an epoch DSP bumps on an RTL stream flush or profile change (any reset
   of the RTL symbol cache, also one the profile refresh meets ahead of a take), a symbol-capture replay starting over
@@ -13912,7 +13905,8 @@ Private per-protocol modules worth knowing about:
   control-channel hunt.
 - `src/protocol/m17/m17_confirm.{c,h}` — the same module for M17, whose sync chain opens on a preamble that is only an
   alternating symbol run. The stream, LSF and BERT frame handlers report `(own check || confirmed)`; `processM17PKT()`
-  reports the packet frame's own verdict only, so a frame the strict RF packet rule rejects returns 0 while the
+  reports the packet frame's own verdict only (1 for a chunk accepted in order or an EOF whose packet's CRC passed,
+  only the latter verifying the packet), so a frame the strict RF packet rule rejects returns 0 while the
   transmission stays confirmed (`m17_confirm_is_confirmed()`, which a caller asks to tell the two apart); any frame
   dropped as cut returns 0. `dispatch_m17.c` reports the confirmation on an EOT, and
   `dsd_frame_sync.c` reads the raw state to decide whether to keep extending a candidate chain. Strong evidence is a
@@ -13961,18 +13955,18 @@ Private per-protocol modules worth knowing about:
   byte count are outside the packet's CRC (M17 spec 2.0.11, Packet Frames), so anything else drops the whole packet
   until the next checked LSF frame: a counter out of order, a frame lost (the spacing, which alone shows a frame lost
   just before an EOF), a frame cut by an input interruption or a carrier boundary (disarmed on the interrupted read
-  itself, `processM17PKT()`, whatever the symbol count says: an interrupted read counts no stood-in symbols), or any
-  other read of an LSF or packet frame that was not one continuous reception, judged across the frame itself before
-  anything of it takes effect (no publication, arming or packet end; `m17_frame_read_begin()` before the capture,
-  `m17_frame_read_cut()` after, in `processM17LSF()` and `processM17PKT()`): the input's end inside it
-  (`dsd_state_note_input_end()`: shutdown, a fallback to another input), the symbol clock epoch moving inside it (a
-  looping capture rewound on its last symbol, whose CRC may still pass), or a stand-in the reader handed back for
-  input it could not read (`dsd_state::input_substitute_seq`: a failed audio read, a capture that ended or cannot be
-  reopened; such stand-ins do count as symbols, so the spacing alone cannot show them), a CRC-failed LSF
+  itself, `processM17PKT()`, whatever the symbol count says: an interrupted read counts no stood-in symbols; the
+  input's end inside the frame counts as a cut, `dsd_state_note_input_end()` in `processM17PKT()` and
+  `processM17LSF()`: shutdown or a fallback to another input, past which the reader stood in silence or erasures), a
+  CRC-failed LSF
   frame (it drops any buffered bytes and arms nothing, as an LSF frame never stands between one packet's chunks), a
   stream-mode LSF frame, or no extension to hold the assembly (out of memory: nothing is armed, and nothing resumes
   later; the LSF frame requests the extension once, `m17_finalize_lsf_crc()`, and its META text and arming both use
-  that one result, `m17_lsf_carrier::text_none` when it failed, so a second request in the same frame never arms). A one-frame packet needs its checked LSF frame too. Limit (decided): a packet with any lost, cut or
+  that one result, `m17_lsf_carrier::text_none` when it failed, so a second request in the same frame never arms). A
+  one-frame packet needs its checked LSF frame too. Limit (decided, issue #890): continuity is checked between frames
+  (the spacing and the symbol clock epoch from the frame before) and against the cuts above, not inside a frame's own
+  read. An M17 frame split by a looping replay's rewind (`-~`), or completed by stand-in samples after a failed device
+  or file read, or by a low-rate WAV's resampler padding at end of file, is not detected; its CRC still applies. Limit (decided): a packet with any lost, cut or
   structurally rejected frame is dropped, under -F too; one that is structurally complete but whose payload CRC fails
   is not decoded either, and -F still shows it (`decodeM17PKT()` with no assembler), marked `CRC ERR`. A packet with
   no application byte (two bytes `FF FF`, the CRC of nothing; M17 Packet Data begins with its protocol byte) is
@@ -14078,13 +14072,11 @@ Private per-protocol modules worth knowing about:
   `test_packet_eof_verdict_is_its_own`, `test_packet_malformed_eof_earns_no_credit`,
   `test_packet_out_of_order_first_chunk_earns_no_credit`, `test_packet_crc_failure_earns_no_credit`,
   `test_packet_behind_an_unapplied_lsf_is_not_decoded`, `test_packet_frame_at_the_input_end_decodes_nothing` (an
-  input cut short: stood-in silence with shutdown or the input fallback asked for, or counted as a substitute, the
-  symbol count saying the frame was whole), `test_packet_after_a_symbol_clock_restart_is_not_decoded`,
-  `test_frames_split_by_a_symbol_clock_restart_are_dropped`, the newer cases sharing one heap-allocated decoder state
-  and options, its symbol reader counting stand-ins for an ended or failed input as production does and no erasure an
-  interruption stood in; `DSP_SYMBOL_REPLAY` (`test_looping_capture_that_cannot_reopen_counts_a_substitute`,
-  `test_failed_audio_read_counts_a_substitute` where the linker wraps `dsd_audio_read()`, and the ended and missing
-  capture cases) for the reader's side; each
+  input cut short: a failed read asking for shutdown, its stand-ins uncounted, or an ended input with the fallback
+  asked for, its stand-ins counted so the symbol count says the frame was whole),
+  `test_packet_after_a_symbol_clock_restart_is_not_decoded`, the newer cases sharing one heap-allocated decoder state
+  and options, its symbol reader counting symbols as production does (an ended input's stand-ins, but no erasure an
+  interruption stood in nor a failed read's stand-in); each
   lifecycle case builds and runs without Codec2 too, its playback
   counts guarded), `M17_LSF_PARSE`, `M17_GNSS_POSITION` (`test_ip_counter_wrap_is_one_report`). A stream frame's EOS bit,
   an IP EOT, EOTX or DISC, the EOT marker and a packet's end end the slot's call only when it is an M17 one, and an M17

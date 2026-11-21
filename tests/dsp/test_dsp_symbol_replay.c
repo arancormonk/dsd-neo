@@ -29,7 +29,6 @@
 #include <dsd-neo/dsp/symbol.h>
 #include <dsd-neo/dsp/symbol_levels.h>
 #include <dsd-neo/io/rtl_stream_c.h>
-#include <dsd-neo/platform/audio.h>
 #include <dsd-neo/platform/file_compat.h>
 #include <dsd-neo/platform/platform.h>
 #include <dsd-neo/platform/sockets.h>
@@ -369,16 +368,12 @@ test_ended_legacy_capture_reads_unusable_symbols(void) {
 
     assert(symbol_level_matches(getSymbol(&opts, &state, 1), 3U));
     assert(state.symbol_replay_symbol_unusable == 0);
-    assert(state.input_substitute_seq == 0U);
 
     for (int i = 0; i < 3; i++) {
         assert(getSymbol(&opts, &state, 1) == 0.0f);
         assert(opts.symbolfile == NULL);
         assert(state.input_fallback_pending == 1);
         assert(state.symbol_replay_symbol_unusable == 1);
-        /* Each stand-in is counted as one (issue #890), as getSymbol() counts each as a symbol. */
-        assert(state.input_substitute_seq == (uint32_t)i + 1U);
-        assert(state.symbolcnt == (uint32_t)i + 2U);
     }
     assert(g_cleanup_calls == 0);
     state.input_fallback_pending = 0;
@@ -472,85 +467,6 @@ test_debug_replay_reopens_and_reprobes(void) {
     remove(path);
 }
 
-/* Issue #890: a looping capture (debug mode) that cannot be reopened at its end hands back a stand-in, on the same
-   symbol clock epoch (it did not start over) and with no flag a decoder checks: the reader counts it as a substitute,
-   which is how a decoder that judges a frame by what it read tells that frame was not all read. */
-static void
-test_looping_capture_that_cannot_reopen_counts_a_substitute(void) {
-    char path[DSD_TEST_PATH_MAX];
-    int fd = dsd_test_mkstemp(path, sizeof(path), "dsdneo_symbol_reopen");
-    assert(fd >= 0);
-    FILE* file = dsd_test_fdopen(fd, "wb");
-    assert(file != NULL);
-    assert(fputc(1, file) != EOF);
-    assert(fclose(file) == 0);
-
-    static dsd_opts opts;
-    static dsd_state state;
-    init_symbol_replay_fixture(&opts, &state);
-    state.debug_mode = 1;
-    g_cleanup_calls = 0;
-    exitflag = 0;
-    DSD_SNPRINTF(opts.audio_in_dev, sizeof(opts.audio_in_dev), "%s", path);
-    opts.symbolfile = dsd_fopen_existing_regular_file(path, "rb");
-    assert(opts.symbolfile != NULL);
-    assert(symbol_level_matches(getSymbol(&opts, &state, 0), 1U));
-    assert(state.input_substitute_seq == 0U);
-    const uint32_t epoch = state.symbol_clock_epoch;
-
-    assert(remove(path) == 0);
-    assert(getSymbol(&opts, &state, 0) == -1.0f);
-    assert(opts.symbolfile == NULL);
-    assert(state.symbol_clock_epoch == epoch);
-    assert(state.input_fallback_pending == 0 && state.input_interrupted == 0 && exitflag == 0);
-    assert(state.input_substitute_seq == 1U);
-    assert(state.symbolcnt == 2U);
-    assert(g_cleanup_calls == 0);
-}
-
-#ifdef DSD_NEO_TEST_AUDIO_READ_WRAP
-static int g_audio_read_fails;
-
-// NOLINTNEXTLINE(bugprone-reserved-identifier,cert-dcl37-c,cert-dcl51-cpp,misc-use-internal-linkage)
-int __wrap_dsd_audio_read(dsd_audio_stream* stream, int16_t* buffer, size_t frames);
-
-/* The audio input's read, failing while a test asks: the stream a test hands in is never read for real. */
-int
-__wrap_dsd_audio_read(dsd_audio_stream* stream, int16_t* buffer, size_t frames) {
-    (void)stream;
-    if (g_audio_read_fails) {
-        return -1;
-    }
-    for (size_t i = 0U; i < frames; i++) {
-        buffer[i] = 1000;
-    }
-    return (int)frames;
-}
-
-/* Issue #890: a failed read of the local audio input hands back silence, with no flag a decoder checks; the reader
-   counts it as a substitute. A read that succeeds counts none. */
-static void
-test_failed_audio_read_counts_a_substitute(void) {
-    static dsd_opts opts;
-    static dsd_state state;
-    init_symbol_replay_fixture(&opts, &state);
-    opts.audio_in_type = AUDIO_IN_PULSE;
-    static int fake_stream;
-    opts.audio_in_stream = (dsd_audio_stream*)(void*)&fake_stream;
-    g_audio_read_fails = 0;
-    (void)getSymbol(&opts, &state, 0);
-    assert(state.input_substitute_seq == 0U);
-    g_audio_read_fails = 1;
-    (void)getSymbol(&opts, &state, 0);
-    assert(state.input_substitute_seq >= 1U);
-    const uint32_t failed = state.input_substitute_seq;
-    g_audio_read_fails = 0;
-    (void)getSymbol(&opts, &state, 0);
-    assert(state.input_substitute_seq == failed);
-    opts.audio_in_stream = NULL;
-}
-#endif
-
 static void
 test_missing_symbol_file_returns_error_symbol(void) {
     static dsd_opts opts;
@@ -563,7 +479,6 @@ test_missing_symbol_file_returns_error_symbol(void) {
     float symbol = getSymbol(&opts, &state, 0);
     assert(symbol == -1.0f);
     assert(state.symbolcnt == 1);
-    assert(state.input_substitute_seq == 1U); /* a stand-in, no input (issue #890) */
     assert(state.symbol_replay_header_checked == 0);
     assert(state.symbol_replay_has_soft == 0);
     assert(g_cleanup_calls == 0);
@@ -7135,10 +7050,6 @@ main(void) {
     test_symbol_count_wraps_instead_of_overflowing();
     test_debug_replay_reopens_and_reprobes();
     test_missing_symbol_file_returns_error_symbol();
-    test_looping_capture_that_cannot_reopen_counts_a_substitute();
-#ifdef DSD_NEO_TEST_AUDIO_READ_WRAP
-    test_failed_audio_read_counts_a_substitute();
-#endif
     test_unsupported_soft_headers_are_rejected();
     test_soft_header_without_record_cleans_up_at_eof();
     test_float_symbol_replay_scales_values();

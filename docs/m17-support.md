@@ -60,7 +60,9 @@ Implemented decode coverage:
   was received whole and is valid, even if earlier frames were lost; a last frame that was cut, or whose byte count
   cannot be right, does not end it. A packet that
   arrived whole but whose own checksum (CRC) failed is not decoded either; under `-F` it is still shown, marked
-  `CRC ERR`. A standalone network packet (MPKT: one heard while no network stream is live, also after a stream went
+  `CRC ERR`. Known limit: an M17 frame split by a looping replay's rewind (`-~`), or completed by stand-in samples
+  after a failed device or file read, or by a low-rate WAV's resampler padding at end of file, is not detected; its
+  CRC still applies. A standalone network packet (MPKT: one heard while no network stream is live, also after a stream went
   idle or ended) always shows as a call of its own, never joined to the stream before it. A stream is treated as
   signed only once one of its own frames with a signed LSF is taken. A GNSS position repeated in one network stream is one report, also across the
   frame counter's wrap.

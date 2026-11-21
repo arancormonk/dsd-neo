@@ -2268,11 +2268,10 @@ symbol_process_analog_capture(dsd_opts* opts, dsd_state* state, const symbol_wor
 }
 
 static inline int
-symbol_read_sample_pulse(dsd_opts* opts, dsd_state* state, float* sample_out) {
+symbol_read_sample_pulse(dsd_opts* opts, float* sample_out) {
     short s = 0;
-    if (opts->audio_in_stream && dsd_audio_read(opts->audio_in_stream, &s, 1) < 1) {
-        /* Nothing read: the silence that stands in is no input (dsd_state::input_substitute_seq). */
-        state->input_substitute_seq++;
+    if (opts->audio_in_stream) {
+        dsd_audio_read(opts->audio_in_stream, &s, 1);
     }
     s = symbol_scale_pcm_i16(s, opts->input_volume_multiplier);
     *sample_out = (float)s;
@@ -3126,7 +3125,7 @@ static int
 symbol_read_live_sample(dsd_opts* opts, dsd_state* state, symbol_work_ctx* work) {
     work->sample_flag = 0U;
     if (opts->audio_in_type == AUDIO_IN_PULSE) {
-        return symbol_read_sample_pulse(opts, state, &work->sample);
+        return symbol_read_sample_pulse(opts, &work->sample);
     }
     if (opts->audio_in_type == AUDIO_IN_STDIN) {
         return symbol_read_sample_stdin(opts, state, &work->sample, work);
@@ -3322,7 +3321,6 @@ symbol_print_timing_line(const dsd_state* state, int timing_level) {
 static inline int
 symbol_bin_input_ended(dsd_state* state, int hunting, float* symbol_out) {
     state->input_fallback_pending = 1;
-    state->input_substitute_seq++;
     if (hunting) {
         state->input_interrupted = 1;
     }
@@ -3338,7 +3336,6 @@ symbol_process_symbol_bin_input(dsd_opts* opts, dsd_state* state, float* symbol_
             return symbol_bin_input_ended(state, hunting, symbol_out);
         }
         DSD_FPRINTF(stderr, "Error Opening File %s\n", opts->audio_in_dev);
-        state->input_substitute_seq++;
         *symbol_out = -1.0f;
         return 1;
     }
@@ -3350,7 +3347,6 @@ symbol_process_symbol_bin_input(dsd_opts* opts, dsd_state* state, float* symbol_
             fclose(opts->symbolfile);
             opts->symbolfile = NULL;
             dsd_request_shutdown(opts, state);
-            state->input_substitute_seq++;
             *symbol_out = 0.0f;
             return 1;
         }
@@ -3383,7 +3379,6 @@ symbol_process_symbol_bin_input(dsd_opts* opts, dsd_state* state, float* symbol_
             state->symbol_replay_has_soft = 0;
             if (opts->symbolfile == NULL) {
                 DSD_FPRINTF(stderr, "Error Opening File %s\n", opts->audio_in_dev);
-                state->input_substitute_seq++;
                 *symbol_out = -1.0f;
                 return 1;
             }
@@ -3392,7 +3387,6 @@ symbol_process_symbol_bin_input(dsd_opts* opts, dsd_state* state, float* symbol_
             if (replay_retry_count++ == 0) {
                 continue;
             }
-            state->input_substitute_seq++;
             *symbol_out = 0.0f;
             return 1;
         }
@@ -3401,7 +3395,6 @@ symbol_process_symbol_bin_input(dsd_opts* opts, dsd_state* state, float* symbol_
             return symbol_bin_input_ended(state, hunting, symbol_out);
         }
         dsd_request_shutdown(opts, state);
-        state->input_substitute_seq++;
         *symbol_out = 0.0f;
         return 1;
     }
@@ -3415,7 +3408,6 @@ symbol_process_symbol_flt_input(dsd_opts* opts, dsd_state* state, float* symbol_
         dsd_exitflag_store(1);
         *symbol_out = 0.0f;
         state->symbol_replay_symbol_unusable = 1;
-        state->input_substitute_seq++;
         return 1;
     }
     if (feof(opts->symbolfile)) {

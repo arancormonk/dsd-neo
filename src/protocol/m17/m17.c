@@ -2152,32 +2152,6 @@ m17_decode_lsf_soft_bits(const dsd_opts* opts, dsd_state* state, const uint16_t*
     return m17_finalize_lsf_crc(opts, state, lsf_packed, crc_ext);
 }
 
-/* Where an RF LSF or packet frame's read began (issue #890): the carrier, the symbol clock epoch and the count of
-   stand-ins the symbol reader handed back (dsd_state::input_substitute_seq). */
-typedef struct {
-    uint32_t carrier_seq;
-    uint32_t epoch;
-    uint32_t substitutes;
-} m17_frame_read;
-
-static m17_frame_read
-m17_frame_read_begin(const dsd_state* state) {
-    const m17_frame_read read = {state->carrier_seq, state->symbol_clock_epoch, state->input_substitute_seq};
-    return read;
-}
-
-/* Whether the frame just read is not one continuous reception, so it is dropped before anything of it takes effect (no
-   publication, arming or end of a packet): a carrier boundary or an input interruption cut it; the input ended inside
-   it (a symbol or binary capture's end, shutdown, a fallback to another input: dsd_state_note_input_end()); the
-   symbol clock restarted inside it (a looping capture rewound, an input switched or flushed); or the reader stood in
-   for input it could not read (a failed audio read, a capture that cannot be read or reopened). */
-static int
-m17_frame_read_cut(dsd_state* state, const m17_frame_read* read) {
-    dsd_state_note_input_end(state, dsd_exitflag_load() == 1);
-    return dsd_state_frame_read_lost(state, read->carrier_seq) || state->symbol_clock_epoch != read->epoch
-           || state->input_substitute_seq != read->substitutes;
-}
-
 // Decode an RF LSF using captured soft symbols.
 int
 processM17LSF(dsd_opts* opts, dsd_state* state) {
@@ -2192,11 +2166,13 @@ processM17LSF(dsd_opts* opts, dsd_state* state) {
     /* An LSF a carrier boundary split (issue #575) or an input interruption cut (a Signal search left it, or a live
        read gave up on a stalled input) decodes nothing: the rest of it is another carrier's or erasures the reader
        stood in, through which the soft Viterbi decode can still clear the CRC and publish and confirm a link setup
-       that is not this transmission's. So does any other read that was not one continuous reception
-       (m17_frame_read_cut()). It is dropped, as on a sync loss. */
-    const m17_frame_read read = m17_frame_read_begin(state);
+       that is not this transmission's. It is dropped, as on a sync loss. */
+    const uint32_t carrier_seq = state->carrier_seq;
     m17_capture_soft_symbols(opts, state, soft_symbols);
-    if (m17_frame_read_cut(state, &read)) {
+    /* The input ended inside the frame (a symbol or binary capture's end, a short read, shutdown, a fallback to
+       another input): past the end the reader stood in silence or erasures, so the frame counts as cut. */
+    dsd_state_note_input_end(state, dsd_exitflag_load() == 1);
+    if (dsd_state_frame_read_lost(state, carrier_seq)) {
         /* No checked LSF frame: nothing a packet could be assembled behind (the strict RF packet rule). */
         m17_pkt_disarm(state);
         DSD_FPRINTF(stderr, "\n");
@@ -4382,15 +4358,16 @@ processM17PKT(dsd_opts* opts, dsd_state* state) {
 
     /* A packet frame a carrier boundary split (issue #575) or an input interruption cut (a Signal search left it, or a
        live read gave up on a stalled input) adds no chunk and ends, decodes and confirms no packet: the rest of it is
-       another carrier's or erasures the reader stood in, which the soft Viterbi decode reads as symbols. So does any
-       other read that was not one continuous reception (m17_frame_read_cut()), a last frame (EOF) included: nothing
-       of it ends the packet. It is dropped, as on a sync loss. */
-    const m17_frame_read read = m17_frame_read_begin(state);
+       another carrier's or erasures the reader stood in, which the soft Viterbi decode reads as symbols. It is
+       dropped, as on a sync loss. */
+    const uint32_t carrier_seq = state->carrier_seq;
     m17_capture_soft_symbols(opts, state, soft_symbols);
-    if (m17_frame_read_cut(state, &read)) {
+    /* The input ended inside the frame (a symbol or binary capture's end, a short read, shutdown, a fallback to
+       another input): past the end the reader stood in silence or erasures, so the frame counts as cut. */
+    dsd_state_note_input_end(state, dsd_exitflag_load() == 1);
+    if (dsd_state_frame_read_lost(state, carrier_seq)) {
         /* The lost frame was one of the packet's: the whole packet goes (the strict RF packet rule), whatever the
-           symbol count since the frame before says (an interrupted read counts no stood-in symbols, an ended or
-           failed input's do). */
+           symbol count since the frame before says (a cut read counts no stood-in symbols). */
         m17_pkt_disarm(state);
         DSD_FPRINTF(stderr, "\n");
         return 0;
