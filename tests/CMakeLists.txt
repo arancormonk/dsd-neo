@@ -14144,12 +14144,11 @@ target_link_libraries(
 )
 # Issue #625: the stream encoder's end of stream drains a local output around its dead air; the
 # wraps record the order of writes and drains where the linker can wrap them. GNU ld --wrap reaches only calls linked
-# into the executable, so the wraps need a static build and a GNU-style linker (not clang-cl's).
+# into the executable, so the wraps need a static build.
 if(
     NOT APPLE
     AND NOT BUILD_SHARED_LIBS
     AND CMAKE_C_COMPILER_ID MATCHES "GNU|Clang"
-    AND NOT CMAKE_C_COMPILER_FRONTEND_VARIANT STREQUAL "MSVC"
 )
     target_compile_definitions(
         dsd-neo_test_m17_state_dispatch
@@ -14164,12 +14163,12 @@ if(
     )
 endif()
 # Issue #890: calloc is wrapped to fail the M17 extension's allocation, and the real-time clock to age a network
-# stream. The M17 decoder must be linked into the executable (a static build, GNU-style linker) for --wrap to reach it.
+# stream. The M17 decoder must be linked into the executable (a static build) for GNU ld --wrap to reach its calls.
 if(
     NOT APPLE
+    AND NOT WIN32
     AND NOT BUILD_SHARED_LIBS
     AND CMAKE_C_COMPILER_ID MATCHES "GNU|Clang"
-    AND NOT CMAKE_C_COMPILER_FRONTEND_VARIANT STREQUAL "MSVC"
 )
     target_compile_definitions(
         dsd-neo_test_m17_state_dispatch
@@ -14240,12 +14239,12 @@ target_link_libraries(
     PRIVATE dsd-neo_proto_m17 dsd-neo_test_support
 )
 # Issue #890: calloc is wrapped to count and fail the M17 extension's allocation. The M17 decoder must be linked into
-# the executable (a static build, GNU-style linker) for --wrap to reach its calls.
+# the executable (a static build) for GNU ld --wrap to reach its calls.
 if(
     NOT APPLE
+    AND NOT WIN32
     AND NOT BUILD_SHARED_LIBS
     AND CMAKE_C_COMPILER_ID MATCHES "GNU|Clang"
-    AND NOT CMAKE_C_COMPILER_FRONTEND_VARIANT STREQUAL "MSVC"
 )
     target_compile_definitions(
         dsd-neo_test_m17_gnss_position
