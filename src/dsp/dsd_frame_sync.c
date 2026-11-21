@@ -1323,8 +1323,12 @@ frame_sync_try_dpmr(frame_sync_match_ctx* ctx) {
         && frame_sync_dpmr_arm_header(opts, state, ctx->synctest)) {
         return DSD_SYNC_NONE;
     }
-    /* No FS2 or FS3 inside a header or end frame being read: a sync word there is its payload's. */
+    /* No FS2 or FS3 inside a header or end frame being read: a sync word there is its payload's. The one exception is
+       the END a held header's frame predicts, which is what decides that header (frame_sync_dpmr.c). */
     if (frame_sync_dpmr_candidate_reading(state)) {
+        if (frame_sync_dpmr_header_held(state)) {
+            (void)frame_sync_dpmr_arm_end(opts, state, ctx->synctest12);
+        }
         return DSD_SYNC_NONE;
     }
     if (frame_sync_dpmr_arm_end(opts, state, ctx->synctest12)) {

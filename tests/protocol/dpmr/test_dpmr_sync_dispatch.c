@@ -104,6 +104,7 @@ plant_checked_header(dsd_state* state, uint32_t mt, uint32_t mode, uint32_t vers
     sync->checked_copies = DSD_DPMR_SYNC_COPY_0 | DSD_DPMR_SYNC_COPY_1;
     sync->checked_clock = state->symbol_clock;
     sync->checked_epoch = state->symbol_clock_epoch;
+    sync->checked_frame_lag = 0U;
     state->synctype = DSD_SYNC_DPMR_FS1_POS;
 }
 
@@ -628,6 +629,41 @@ run_powersave_headers_with_losses(unsigned lost) {
     assert(g_close_calls == 1);
 }
 
+/* Issue #890: a header held until its END corroborated it is dispatched later than its frame ended (by its lag, the
+   END's frame and one symbol); the run is timed from where each header's frame ended, so such a header still goes on
+   with the call a frame before it, and the next header is timed from its frame, not from its dispatch. */
+static void
+test_dispatch_held_header_is_timed_from_its_frame(void) {
+    dsd_opts* opts = g_opts;
+    dsd_state* state = g_state;
+    dsd_call_snapshot call;
+    DSD_MEMSET(opts, 0, sizeof(*opts));
+    DSD_MEMSET(state, 0, sizeof(*state));
+    opts->mbe_out_f = stdout;
+    state->dpmr_color_code = -1;
+    const uint32_t lag = 12U + 36U + 1U;
+    uint64_t epoch = 0U;
+    for (int h = 0; h < 3; h++) {
+        const uint64_t frame_end = 7000U + (192U * (uint64_t)h);
+        state->symbol_clock = frame_end + (h == 1 ? lag : 0U);
+        plant_checked_header(state, 0x0U, 0U, 0U);
+        put_bits(state->dpmr_sync.checked_bits, 61, 3, 7U); /* powersave, WU 1: one more frame follows */
+        put_bits(state->dpmr_sync.checked_bits, 64, 8, 1U);
+        if (h == 1) {
+            state->dpmr_sync.checked_frame_lag = lag;
+        }
+        (void)dsd_dispatch_handle_dpmr(opts, state);
+        assert(dsd_call_state_get(state, 0U, &call) > 0 && call.phase == DSD_CALL_PHASE_ACTIVE);
+        if (h == 0) {
+            epoch = call.epoch;
+        }
+        if (call.epoch != epoch) {
+            DSD_FPRINTF(stderr, "held header run: header %d split the call\n", h);
+        }
+        assert(call.epoch == epoch);
+    }
+}
+
 /* Issue #890: a lost header in the run does not split the call; the bound is the last received header's WU. After a
    normal header (WU 0) only the next frame goes on with it, and after WU 1 only the next frame too: a header two frames
    on is a new key-up. */
@@ -761,6 +797,7 @@ main(void) {
     test_dispatch_checked_header_opens_its_call();
     test_dispatch_powersave_headers_open_one_call();
     test_dispatch_powersave_headers_with_lost_ones();
+    test_dispatch_held_header_is_timed_from_its_frame();
     test_dispatch_header_run_learns_its_colour_code();
     test_dispatch_all_call_header();
     test_dispatch_new_call_without_a_channel_code();

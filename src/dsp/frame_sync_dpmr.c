@@ -341,6 +341,21 @@ dpmr_mi1_is_a_later_headers_mi0(const dsd_state* state, const dsd_dpmr_sync_mark
     return 0;
 }
 
+/* Accept a checked header whose frame ended @p lag symbols ago, with its MT and PARMS @p info and channel code @p cc. */
+static int
+dpmr_accept_header(dsd_state* state, const uint8_t* info, const uint8_t* cc, uint8_t copies, uint8_t inverted,
+                   uint32_t lag) {
+    dsd_dpmr_frame_sync* sync = &state->dpmr_sync;
+    DSD_MEMCPY(sync->checked_bits, info, DSD_DPMR_HEADER_MI_BITS);
+    DSD_MEMCPY(sync->checked_cc, cc, DSD_DPMR_HEADER_CC_BITS);
+    sync->checked_kind = DSD_DPMR_SYNC_FRAME_HEADER;
+    sync->checked_copies = copies;
+    sync->checked_clock = state->symbol_clock;
+    sync->checked_epoch = state->symbol_clock_epoch;
+    sync->checked_frame_lag = lag;
+    return inverted ? DSD_SYNC_DPMR_FS1_NEG : DSD_SYNC_DPMR_FS1_POS;
+}
+
 static int
 dpmr_check_header(dsd_state* state, const dsd_dpmr_sync_mark* header, const dpmr_levels* levels) {
     dsd_dpmr_frame_sync* sync = &state->dpmr_sync;
@@ -356,25 +371,24 @@ dpmr_check_header(dsd_state* state, const dsd_dpmr_sync_mark* header, const dpmr
     if (copies == 0U) {
         return DSD_SYNC_NONE;
     }
-    /* A frame that passed on MI1 alone, where another FS1 that can read a frame ends right before it, is that later
-       header's MI0: the later candidate reads it in place, both copies and the channel code where they are, at its own
-       frame's end. */
-    if (copies == DSD_DPMR_SYNC_COPY_1 && dpmr_mi1_is_a_later_headers_mi0(state, header)) {
-        return DSD_SYNC_NONE;
-    }
-    DSD_MEMCPY(sync->checked_bits, info, DSD_DPMR_HEADER_MI_BITS);
-    DSD_MEMCPY(sync->checked_cc, bits + DPMR_HEADER_CC_AT, DSD_DPMR_HEADER_CC_BITS);
-    sync->checked_kind = DSD_DPMR_SYNC_FRAME_HEADER;
-    sync->checked_copies = copies;
-    sync->checked_clock = state->symbol_clock;
-    sync->checked_epoch = state->symbol_clock_epoch;
     /* An END frame may follow any header at once, its FS3 twelve symbols from here: Table 5.3 names several (an
        unsolicited status, note 2; Connection_Request, Disconnect_Request, System_Request, Status Polling Response), and
        the procedures send others as header and END pairs too (4.2.3.2 to 4.2.3.5; a status poll, Tables 10.7, 10.8,
        10.15, 10.16; a BS_Access poll, 10.2.7.1.0 a). Looking for one costs a compare at one window, and only an END that
-       passes its own check is taken, so every checked header arms it. */
+       passes its own check is taken, so every checked header arms it, a held one too. */
     dpmr_mark_here(&sync->fs3_at, state, state->symbol_clock + DPMR_FS3_SYMBOLS, DSD_DPMR_SYNC_FRAME_END, inverted);
-    return inverted ? DSD_SYNC_DPMR_FS1_NEG : DSD_SYNC_DPMR_FS1_POS;
+    /* A frame that passed on MI1 alone, where another FS1 that can read a frame ends right before it, may be that later
+       header's MI0, misplaced: neither is taken on the sign pattern alone. The later candidate is read on and checked
+       on both its copies at its own frame's end; this one is held, and taken only if the END its frame predicts passes
+       its check first, which places it. */
+    if (copies == DSD_DPMR_SYNC_COPY_1 && dpmr_mi1_is_a_later_headers_mi0(state, header)) {
+        dpmr_mark_here(&sync->held_at, state, state->symbol_clock, DSD_DPMR_SYNC_FRAME_HEADER, inverted);
+        sync->held_copies = copies;
+        DSD_MEMCPY(sync->held_bits, info, DSD_DPMR_HEADER_MI_BITS);
+        DSD_MEMCPY(sync->held_cc, bits + DPMR_HEADER_CC_AT, DSD_DPMR_HEADER_CC_BITS);
+        return DSD_SYNC_NONE;
+    }
+    return dpmr_accept_header(state, info, bits + DPMR_HEADER_CC_AT, copies, inverted, 0U);
 }
 
 /* The second END copy, read both ways: as one 72-bit run's second half (7.7, and the off-air recording) and from a
@@ -413,7 +427,68 @@ dpmr_check_end(dsd_state* state, const dpmr_levels* levels, uint8_t inverted) {
     sync->checked_copies = copies;
     sync->checked_clock = state->symbol_clock;
     sync->checked_epoch = state->symbol_clock_epoch;
+    sync->checked_frame_lag = 0U;
     return inverted ? DSD_SYNC_DPMR_FS3_NEG : DSD_SYNC_DPMR_FS3_POS;
+}
+
+/* Whether the END whose word ended at @p end_word is the one the held header's frame predicts: its FS3 twelve symbols
+   after the held frame, within the slip any FS3 has, on the same stream and polarity. */
+static int
+dpmr_end_follows_held_header(const dsd_opts* opts, const dsd_state* state, const dsd_dpmr_sync_mark* end_word) {
+    const dsd_dpmr_sync_mark* held = &state->dpmr_sync.held_at;
+    const uint64_t at = held->clock + DPMR_FS3_SYMBOLS;
+    return held->kind == DSD_DPMR_SYNC_FRAME_HEADER && dpmr_mark_stream_holds(held, opts, state)
+           && end_word->inverted == held->inverted && end_word->clock + DPMR_FS3_SLIP >= at
+           && end_word->clock <= at + DPMR_FS3_SLIP;
+}
+
+/* The held header, now that the END its frame predicts passed (in checked_*): the header is accepted on this symbol and
+   the END queued for the next, each with its own frame's lag. */
+static int
+dpmr_accept_held_header(dsd_state* state, uint8_t end_inverted) {
+    dsd_dpmr_frame_sync* sync = &state->dpmr_sync;
+    dpmr_mark_here(&sync->queued_end_at, state, state->symbol_clock, DSD_DPMR_SYNC_FRAME_END, end_inverted);
+    sync->queued_end_copies = sync->checked_copies;
+    DSD_MEMCPY(sync->queued_end_bits, sync->checked_bits, DSD_DPMR_END_INFO_BITS);
+    const dsd_dpmr_sync_mark held = sync->held_at;
+    sync->held_at.kind = DSD_DPMR_SYNC_FRAME_NONE;
+    sync->fs3_at.kind = DSD_DPMR_SYNC_FRAME_NONE;
+    return dpmr_accept_header(state, sync->held_bits, sync->held_cc, sync->held_copies, held.inverted,
+                              (uint32_t)(state->symbol_clock - held.clock));
+}
+
+/* The END a held header's END corroborated, accepted on the symbol after it; DSD_SYNC_NONE when none is queued, or its
+   stream did not hold. */
+static int
+dpmr_take_queued_end(const dsd_opts* opts, dsd_state* state) {
+    dsd_dpmr_frame_sync* sync = &state->dpmr_sync;
+    dsd_dpmr_sync_mark* queued = &sync->queued_end_at;
+    if (queued->kind != DSD_DPMR_SYNC_FRAME_END) {
+        return DSD_SYNC_NONE;
+    }
+    queued->kind = DSD_DPMR_SYNC_FRAME_NONE;
+    if (!dpmr_mark_stream_holds(queued, opts, state) || state->symbol_clock <= queued->clock) {
+        return DSD_SYNC_NONE;
+    }
+    DSD_MEMCPY(sync->checked_bits, sync->queued_end_bits, DSD_DPMR_END_INFO_BITS);
+    sync->checked_kind = DSD_DPMR_SYNC_FRAME_END;
+    sync->checked_copies = sync->queued_end_copies;
+    sync->checked_clock = state->symbol_clock;
+    sync->checked_epoch = state->symbol_clock_epoch;
+    sync->checked_frame_lag = (uint32_t)(state->symbol_clock - queued->clock);
+    return queued->inverted ? DSD_SYNC_DPMR_FS3_NEG : DSD_SYNC_DPMR_FS3_POS;
+}
+
+/* A held header that can no longer be corroborated is dropped: its END window has passed with no END checked in it
+   (the END's 36 symbols after its FS3 at most), or its stream changed. */
+static void
+dpmr_expire_held_header(const dsd_opts* opts, dsd_state* state) {
+    dsd_dpmr_sync_mark* held = &state->dpmr_sync.held_at;
+    if (held->kind == DSD_DPMR_SYNC_FRAME_HEADER
+        && (!dpmr_mark_stream_holds(held, opts, state)
+            || state->symbol_clock > held->clock + DPMR_FS3_SYMBOLS + DPMR_FS3_SLIP + DSD_DPMR_END_DIBITS)) {
+        held->kind = DSD_DPMR_SYNC_FRAME_NONE;
+    }
 }
 
 static int
@@ -443,12 +518,24 @@ dpmr_complete_candidate(const dsd_opts* opts, dsd_state* state, dsd_dpmr_sync_ma
             word, (int)frame, &levels)) {
         return DSD_SYNC_NONE;
     }
-    return header ? dpmr_check_header(state, &done, &levels) : dpmr_check_end(state, &levels, done.inverted);
+    if (header) {
+        return dpmr_check_header(state, &done, &levels);
+    }
+    const int end = dpmr_check_end(state, &levels, done.inverted);
+    if (end != DSD_SYNC_NONE && dpmr_end_follows_held_header(opts, state, &done)) {
+        return dpmr_accept_held_header(state, done.inverted);
+    }
+    return end;
 }
 
 int
 frame_sync_dpmr_candidate_complete(const dsd_opts* opts, dsd_state* state) {
     dsd_dpmr_frame_sync* sync = &state->dpmr_sync;
+    const int queued = dpmr_take_queued_end(opts, state);
+    if (queued != DSD_SYNC_NONE) {
+        return queued;
+    }
+    dpmr_expire_held_header(opts, state);
     /* Candidates began at different symbols, so at most one reaches its frame's last symbol here. */
     for (int i = 0; i < DSD_DPMR_PENDING_MAX; i++) {
         const int synctype = dpmr_complete_candidate(opts, state, &sync->pending[i]);
@@ -470,6 +557,11 @@ frame_sync_dpmr_candidate_reading(const dsd_state* state) {
         }
     }
     return 0;
+}
+
+int
+frame_sync_dpmr_header_held(const dsd_state* state) {
+    return state->dpmr_sync.held_at.kind == DSD_DPMR_SYNC_FRAME_HEADER;
 }
 
 /* A free candidate slot, or NULL when every one is being read. */
@@ -502,7 +594,9 @@ frame_sync_dpmr_arm_header(const dsd_opts* opts, dsd_state* state, const char* w
         return 0;
     }
     dpmr_mark_here(slot, state, state->symbol_clock, DSD_DPMR_SYNC_FRAME_HEADER, inverted);
-    sync->fs3_at.kind = DSD_DPMR_SYNC_FRAME_NONE;
+    if (!frame_sync_dpmr_header_held(state)) {
+        sync->fs3_at.kind = DSD_DPMR_SYNC_FRAME_NONE; /* a held header's END window stays, its corroboration */
+    }
     return 1;
 }
 
@@ -520,9 +614,14 @@ frame_sync_dpmr_arm_end(const dsd_opts* opts, dsd_state* state, const char* wind
         || strcmp(window12, dpmr_received_word(DSD_DPMR_SYNC_FRAME_END, at->inverted)) != 0) {
         return 0;
     }
+    /* Only one free slot is needed: an FS3 is marked while no candidate is read, or behind a held header beside the
+       few its frame left (DSD_DPMR_PENDING_MAX holds every word read at once). */
+    dsd_dpmr_sync_mark* slot = dpmr_free_candidate(state);
+    if (slot == NULL) {
+        return 0;
+    }
     at->kind = DSD_DPMR_SYNC_FRAME_NONE;
-    dpmr_mark_here(&state->dpmr_sync.pending[0], state, state->symbol_clock, DSD_DPMR_SYNC_FRAME_END,
-                   (uint8_t)(opts->inverted_dpmr == 1));
+    dpmr_mark_here(slot, state, state->symbol_clock, DSD_DPMR_SYNC_FRAME_END, (uint8_t)(opts->inverted_dpmr == 1));
     return 1;
 }
 
@@ -537,6 +636,7 @@ void
 frame_sync_dpmr_forget(dsd_state* state) {
     frame_sync_dpmr_forget_candidates(state);
     state->dpmr_sync.fs3_at.kind = DSD_DPMR_SYNC_FRAME_NONE;
+    state->dpmr_sync.queued_end_at.kind = DSD_DPMR_SYNC_FRAME_NONE;
 }
 
 void
@@ -544,4 +644,5 @@ frame_sync_dpmr_forget_candidates(dsd_state* state) {
     for (int i = 0; i < DSD_DPMR_PENDING_MAX; i++) {
         state->dpmr_sync.pending[i].kind = DSD_DPMR_SYNC_FRAME_NONE;
     }
+    state->dpmr_sync.held_at.kind = DSD_DPMR_SYNC_FRAME_NONE;
 }

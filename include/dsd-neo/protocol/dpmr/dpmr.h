@@ -68,6 +68,9 @@ typedef struct {
     uint32_t mi_detail;    /**< MI_DET */
     int color_code;        /**< The channel code between MI0 and MI1 as a colour code, or -1 for none (6.1.5) */
     uint8_t copies;        /**< DSD_DPMR_SYNC_COPY_*: the MI copies that passed */
+    /** Symbols between the header frame's last symbol and its dispatch: 0, but for a header held until its END
+        corroborated it (dsd_dpmr_frame_sync::checked_frame_lag). */
+    uint32_t lag_symbols;
 } dpmr_header;
 
 /** @brief A dPMR End_Frame whose END passed its CRC-7 (TS 102 658 5.3, 11.6). */
