@@ -12529,11 +12529,11 @@ Call frequency and access-code provenance (issue #575). A call's canonical `freq
   - `nxdn_call` (`dsd_nxdn_call_identity`): the held call as preemption judges it. The followed grant's identity, then
     reconciled from the canonical call after a verified VCALL publication and after an SCCH identity that belongs to
     the receiver's repeater (`nxdn_call_identity_reconcile()`), so a new call on the followed carrier is what a
-    candidate is compared against. Its private/group class is the naming message's own (a VCALL's call type, 4 =
-    private, as admission judges it; a busy message's or an INFO2 target message's G/U bit), else the canonical call's
-    group or private kind, else, for a generic voice call (late entry), the held call's when it names that target; a
-    generic voice call is never read as group, and one of no known class leaves the held call unknown (only Hold
-    displaces it).
+    candidate is compared against. Its private/group class is the naming message's own (a VCALL's call type as
+    admission judges it, `nxdn_call_type_kind()`; a busy message's or an INFO2 target message's G/U bit), else the
+    canonical call's group or private kind, else, for a generic voice call (late entry), the held call's when it names
+    that target; a generic voice call is never read as group, and one of no known class leaves the held call unknown
+    (only Hold displaces it).
     Its `follow_m` moves only when the identity changes (target, kind, or frequency
     when both are known); one heard on another frequency than the receiver's is not known here. A follow replaces the
     previous record outright unless it re-follows the call the receiver still holds (`NXDN_FOLLOW_HELD`, a Type-D busy
@@ -12568,6 +12568,14 @@ Call frequency and access-code provenance (issue #575). A call's canonical `freq
     followed Type-D route) is judged as Type-D admission judges it, by its target alone (`nxdn_held_policy_source()`):
     no source fallback for a group call and no source for a private one, so an INFO3 source, which may misname the
     talker, never reaches policy.
+  - Call types (`nxdn_call_type_kind()`, `nxdn_call_type_opens_call()` in `nxdn_internal.h`; TS 1-A Table 6.5-8, TS
+    1-E Table 6.6-15): one matrix for VCALL, VCALL_ASSGN, TX_REL, the encryption lockout, the reconcile, the
+    conventional scan hold and the data call headers. 000/001 are group calls (the group switch); 100 Individual, 110
+    Interconnect and 111 Speed Dial are private (the private switch, the radio list's label); 010, 011 (a Session Call
+    on Type-D, reserved on Type-C) and 101 are generic voice, never followed and never holding a conventional scan;
+    010 is a TX_REL's alone, so a VCALL or assignment of it opens no call. Only 000/001 and 100 take a session-long
+    encryption lockout entry: an interconnect or speed dial endpoint is a PSTN ID or a radio behind the gateway. CC
+    Option bit 6 is Intra/Inter and prints "Inter-System".
   - The receiver's frequency (`nxdn_receiver_freq()`): the valid route, else the tuned voice channel, else the
     tuner's own (`dsd_opts_tuned_freq_hz()`), else, rigctl on an audio input, the peer's, asked through the
     hunt's per-tuning-generation attribution (`nxdn_cc_hunt_receiver_frequency()`: one rigctl round trip per

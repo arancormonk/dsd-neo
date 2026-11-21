@@ -131,12 +131,47 @@ static void NXDN_decode_srv_info_type_d(dsd_state* state, const uint8_t* Message
 static void NXDN_decode_adj_site_type_d(const uint8_t* Message);
 static int NXDN_decode_site_info(const dsd_opts* opts, dsd_state* state, const uint8_t* Message, size_t message_bits);
 static void NXDN_decode_adj_site(const dsd_state* state, const uint8_t* Message, size_t message_bits);
-static char* NXDN_Call_Type_To_Str(uint8_t CallType);
+static const char* NXDN_Call_Type_To_Str(uint8_t CallType, int type_d);
 static void NXDN_Voice_Call_Option_To_Str(uint8_t VoiceCallOption, uint8_t* Duplex, uint8_t* TransmissionMode);
 static char* NXDN_Cipher_Type_To_Str(uint8_t CipherType);
 static void nxdn_srv_info_handler(dsd_state* state, uint16_t svc_info);
 static void nxdn_rst_info_handler(dsd_state* state, uint32_t rst_info);
 static void nxdn_ca_info_handler(dsd_state* state, uint32_t location_id, uint32_t ca_info);
+
+dsd_call_kind
+nxdn_call_type_kind(uint8_t call_type, int type_d) {
+    (void)type_d; /* Table 6.5-8 and Table 6.6-15 classify alike: Type-D's Session Call (011) is no group call */
+    switch (call_type & 0x7U) {
+        case 0U:
+        case 1U: return DSD_CALL_KIND_GROUP_VOICE;
+        case 4U:
+        case 6U:
+        case 7U: return DSD_CALL_KIND_PRIVATE_VOICE;
+        default: return DSD_CALL_KIND_VOICE;
+    }
+}
+
+int
+nxdn_call_type_opens_call(uint8_t call_type) {
+    return (call_type & 0x7U) != 2U ? 1 : 0;
+}
+
+/* Whether the session decodes Type-D (IDAS), as the VCALL and data header layouts take it: the location category an
+ * SCCH set. */
+static int
+nxdn_location_is_type_d(const dsd_state* state) {
+    return strcmp(state->nxdn_location_category, "Type-D") == 0 ? 1 : 0;
+}
+
+/* Whether an encrypted call of @p call_type takes a session-long lockout entry on its endpoint: a group call (000,
+ * 001) its talkgroup, an individual call (100) its called radio. An interconnect or speed dial call's endpoint is a PSTN
+ * ID or a radio behind the gateway, and a generic voice call (011, 101) has no known class, so neither locks anything
+ * out (nor releases an entry a group or individual call left). */
+static int
+nxdn_call_type_locks_endpoint(uint8_t call_type) {
+    const uint8_t type = (uint8_t)(call_type & 0x7U);
+    return type <= 1U || type == 4U;
+}
 
 /* The label of a call's target as the call history names it (dsd_call_target_label_lookup(), issue #773 D4). */
 static void
@@ -765,13 +800,14 @@ nxdn_data_header_report_scan_activity(const dsd_opts* opts, const dsd_state* sta
     if (!nxdn_confirm_is_confirmed(state)) {
         return;
     }
-    // call_type 4 is the individual/private call, spelled the same way as the trunked data-grant
-    // path in NXDN_decode_VCALL_ASSGN().
-    dsd_trunk_scan_hook_nxdn_conventional_activity(opts, state, target, source, (call_type == 4U) ? 1 : 0,
-                                                   (cipher != 0U) ? 1 : 0, 1);
+    // Private by the call type, as the trunked data-grant path in NXDN_decode_VCALL_ASSGN() judges it
+    // (nxdn_call_type_kind()).
+    const int is_private =
+        nxdn_call_type_kind(call_type, nxdn_location_is_type_d(state)) == DSD_CALL_KIND_PRIVATE_VOICE ? 1 : 0;
+    dsd_trunk_scan_hook_nxdn_conventional_activity(opts, state, target, source, is_private, (cipher != 0U) ? 1 : 0, 1);
 }
 
-/* A data call header's destination is a group for a broadcast (0) or group (1) call type (as nxdn_vcall_kind()); a
+/* A data call header's destination is a group for a broadcast (0) or group (1) call type (nxdn_call_type_kind()); a
  * position report the call carries is qualified by it (dsd_state::dmr_data_checked_group). */
 static uint8_t
 nxdn_data_call_type_is_group(uint8_t call_type) {
@@ -827,7 +863,7 @@ nxdn_sdcall_header(const dsd_opts* opts, dsd_state* state, const uint8_t* Messag
     } else {
         DSD_FPRINTF(stderr, "Source: %u-%u; Target: %u-%u; ", source_ch, source, target_ch, target);
     }
-    DSD_FPRINTF(stderr, "%s %s %s ", NXDN_Call_Type_To_Str(call_type), mode, duplex);
+    DSD_FPRINTF(stderr, "%s %s %s ", NXDN_Call_Type_To_Str(call_type, idas), mode, duplex);
     if (cc_option != 0U) {
         DSD_FPRINTF(stderr, "CCOPT: %02X; ", cc_option);
     }
@@ -963,7 +999,7 @@ nxdn_dcall_header_print(const struct nxdn_dcall_header_info* info, const dsd_sta
         DSD_FPRINTF(stderr, "Source: %u-%u; Target: %u-%u; ", info->source_ch, info->source, info->target_ch,
                     info->target);
     }
-    DSD_FPRINTF(stderr, "%s %s %s ", NXDN_Call_Type_To_Str(info->call_type), mode, duplex);
+    DSD_FPRINTF(stderr, "%s %s %s ", NXDN_Call_Type_To_Str(info->call_type, info->idas), mode, duplex);
     if (info->cc_option != 0U) {
         DSD_FPRINTF(stderr, "CCOPT: %02X; ", info->cc_option);
     }
@@ -2049,6 +2085,8 @@ struct nxdn_vcall_assgn_info {
     uint16_t channel;
     uint16_t ofn;
     uint8_t dup_after_hangtime; /* a duplicate assignment heard while tuned, past the hangtime of the call there */
+    uint8_t type_d;             /* decoded as Type-D (nxdn_location_is_type_d()) */
+    dsd_call_kind kind;         /* the call type's (nxdn_call_type_kind()) */
 };
 
 static void
@@ -2061,6 +2099,8 @@ nxdn_vcall_assgn_parse(dsd_state* state, const uint8_t* Message, struct nxdn_vca
     info->source_unit_id = (uint16_t)convert_bits_into_output(&Message[24], 16);
     info->destination_id = (uint16_t)convert_bits_into_output(&Message[40], 16);
     info->channel = (uint16_t)convert_bits_into_output(&Message[62], 10);
+    info->type_d = (uint8_t)nxdn_location_is_type_d(state);
+    info->kind = nxdn_call_type_kind(info->call_type, info->type_d);
 
     state->NxdnElementsContent.CCOption = info->cc_option;
     state->NxdnElementsContent.CallType = info->call_type;
@@ -2085,13 +2125,13 @@ nxdn_vcall_assgn_print(const dsd_state* state, const struct nxdn_vcall_assgn_inf
         DSD_FPRINTF(stderr, "Emergency ");
     }
     if (info->cc_option & 0x40U) {
-        DSD_FPRINTF(stderr, "Visitor ");
+        DSD_FPRINTF(stderr, "Inter-System ");
     }
     if (info->cc_option & 0x20U) {
         DSD_FPRINTF(stderr, "Priority Paging ");
     }
 
-    DSD_FPRINTF(stderr, "%s - ", NXDN_Call_Type_To_Str(info->call_type));
+    DSD_FPRINTF(stderr, "%s - ", NXDN_Call_Type_To_Str(info->call_type, info->type_d));
     if (voice_grant) {
         NXDN_Voice_Call_Option_To_Str(info->voice_call_option, duplex_mode, transmission_mode);
         DSD_FPRINTF(stderr, "%s %s (%02X) - ", duplex_mode, transmission_mode, info->voice_call_option);
@@ -2132,27 +2172,30 @@ nxdn_vcall_assgn_track_active_channel(const dsd_opts* opts, dsd_state* state,
     const long int grant_freq = nxdn_channel_to_frequency_quiet(state, grant_chan);
     state->nxdn_grant_chan = grant_chan;
     state->nxdn_grant_freq = grant_freq;
+    if (!nxdn_call_type_opens_call(info->call_type)) {
+        return; /* 010 is a TX_REL's alone: an assignment of it names no call */
+    }
 
+    /* A group call's destination is a talkgroup; any other call's a radio or a PSTN ID (TS 1-A Table 6.4-6). */
+    const char* const target = info->kind == DSD_CALL_KIND_GROUP_VOICE ? "TG" : "TGT";
     char notice[DSD_RECENT_ACTIVITY_TEXT_SIZE];
     if (grant_freq != 0) {
-        DSD_SNPRINTF(notice, sizeof notice, "Active Ch: %d (%.6lf MHz) TG: %d SRC: %d; ", grant_chan,
-                     (double)grant_freq / 1000000.0, info->destination_id, info->source_unit_id);
+        DSD_SNPRINTF(notice, sizeof notice, "Active Ch: %d (%.6lf MHz) %s: %d SRC: %d; ", grant_chan,
+                     (double)grant_freq / 1000000.0, target, info->destination_id, info->source_unit_id);
     } else if (opts && opts->chan_in_file[0] != '\0') {
         nxdn_trunk_diag_log_missing_channel_once(opts, state, grant_chan, "grant");
-        DSD_SNPRINTF(notice, sizeof notice, "Active Ch: %d (no chan_csv freq) TG: %d SRC: %d; ", grant_chan,
+        DSD_SNPRINTF(notice, sizeof notice, "Active Ch: %d (no chan_csv freq) %s: %d SRC: %d; ", grant_chan, target,
                      info->destination_id, info->source_unit_id);
     } else {
         nxdn_trunk_diag_log_missing_channel_once(opts, state, grant_chan, "grant");
-        DSD_SNPRINTF(notice, sizeof notice, "Active Ch: %d TG: %d SRC: %d; ", grant_chan, info->destination_id,
+        DSD_SNPRINTF(notice, sizeof notice, "Active Ch: %d %s: %d SRC: %d; ", grant_chan, target, info->destination_id,
                      info->source_unit_id);
     }
     const int data_call = info->message_type == 0x0DU || info->message_type == 0x0EU;
     const dsd_call_observation observation = {
         .protocol = DSD_SYNC_NXDN_POS,
         .slot = 0U,
-        .kind = data_call               ? DSD_CALL_KIND_DATA
-                : info->call_type == 4U ? DSD_CALL_KIND_PRIVATE_VOICE
-                                        : DSD_CALL_KIND_GROUP_VOICE,
+        .kind = data_call ? DSD_CALL_KIND_DATA : info->kind,
         .ota_target_id = info->destination_id,
         .policy_target_id = info->destination_id,
         .ota_source_id = info->source_unit_id,
@@ -2169,6 +2212,9 @@ nxdn_vcall_assgn_track_active_channel(const dsd_opts* opts, dsd_state* state,
  * call-type gates. A duplicate heard off a voice channel is not followed. */
 static int
 nxdn_vcall_assgn_should_tune(const dsd_opts* opts, const struct nxdn_vcall_assgn_info* info) {
+    if (!nxdn_call_type_opens_call(info->call_type)) {
+        return 0;
+    }
     if (info->message_type == 0x0DU || info->message_type == 0x0EU) {
         return (opts->trunk_tune_data_calls == 1) ? 1 : 0;
     }
@@ -2176,10 +2222,14 @@ nxdn_vcall_assgn_should_tune(const dsd_opts* opts, const struct nxdn_vcall_assgn
     if (info->message_type != 0x04U && !in_call_duplicate) {
         return 0;
     }
-    if (info->call_type == 4U) {
+    /* By the call type (nxdn_call_type_kind()): a generic voice call (011, 101) is never followed. */
+    if (info->kind == DSD_CALL_KIND_PRIVATE_VOICE) {
         return opts->trunk_tune_private_calls ? 1 : 0;
     }
-    return opts->trunk_tune_group_calls ? 1 : 0;
+    if (info->kind == DSD_CALL_KIND_GROUP_VOICE) {
+        return opts->trunk_tune_group_calls ? 1 : 0;
+    }
+    return 0;
 }
 
 static long int
@@ -2243,7 +2293,7 @@ nxdn_assignment_repeats_held_call(const dsd_state* state, const dsd_nxdn_call_id
     if (!cur || state->trunk_vc_freq[0] != freq) {
         return 0;
     }
-    return cur->target == info->destination_id && cur->private_call == (info->call_type == 4U);
+    return cur->target == info->destination_id && cur->private_call == (info->kind == DSD_CALL_KIND_PRIVATE_VOICE);
 }
 
 static nxdn_admit
@@ -2296,7 +2346,7 @@ nxdn_vcall_assgn_print_labels(const dsd_state* state, const struct nxdn_vcall_as
 static void
 nxdn_vcall_assgn_apply_tune(dsd_opts* opts, dsd_state* state, const struct nxdn_vcall_assgn_info* info, long int freq,
                             time_t now) {
-    const int is_private_call = (info->call_type == 4U) ? 1 : 0;
+    const int is_private_call = (info->kind == DSD_CALL_KIND_PRIVATE_VOICE) ? 1 : 0;
     nxdn_vcall_assgn_print_labels(state, info, is_private_call);
     const int data_call = (info->message_type == 0x0DU || info->message_type == 0x0EU) ? 1 : 0;
     const int hold_matches = (state->tg_hold != 0 && state->tg_hold == info->destination_id) ? 1 : 0;
@@ -2934,14 +2984,14 @@ nxdn_vcall_print_summary(dsd_state* state, const struct nxdn_vcall_info* info) {
         DSD_FPRINTF(stderr, "Emergency ");
     }
     if (info->cc_option & 0x40U) {
-        DSD_FPRINTF(stderr, "Visitor ");
+        DSD_FPRINTF(stderr, "Inter-System ");
     }
     if (info->cc_option & 0x20U) {
         DSD_FPRINTF(stderr, "Priority Paging ");
     }
 
     nxdn_vcall_update_crypto_flags(state, info);
-    DSD_FPRINTF(stderr, "%s - ", NXDN_Call_Type_To_Str(info->call_type));
+    DSD_FPRINTF(stderr, "%s - ", NXDN_Call_Type_To_Str(info->call_type, info->idas));
     nxdn_vcall_print_voice_option(info);
     DSD_FPRINTF(stderr, "Src=%u - Dst/TG=%u ", info->source_unit_id & 0xFFFF, info->destination_id & 0xFFFF);
     if (info->idas) {
@@ -3059,17 +3109,6 @@ nxdn_vcall_print_cipher(const dsd_opts* opts, const dsd_state* state, const stru
     }
 }
 
-static dsd_call_kind
-nxdn_vcall_kind(uint8_t call_type) {
-    if (call_type == 4U) {
-        return DSD_CALL_KIND_PRIVATE_VOICE;
-    }
-    if (call_type == 0U || call_type == 1U) {
-        return DSD_CALL_KIND_GROUP_VOICE;
-    }
-    return DSD_CALL_KIND_VOICE;
-}
-
 static int
 nxdn_vcall_has_key(const dsd_state* state, uint8_t cipher_type) {
     if (state == NULL) {
@@ -3142,7 +3181,7 @@ nxdn_vcall_publish(dsd_opts* opts, dsd_state* state, const struct nxdn_vcall_inf
     const dsd_call_observation observation = {
         .protocol = protocol,
         .slot = 0U,
-        .kind = nxdn_vcall_kind(info->call_type),
+        .kind = nxdn_call_type_kind(info->call_type, info->idas),
         .ota_target_id = info->destination_id,
         .policy_target_id = info->destination_id,
         .ota_source_id = (info->voice_call_option & 0x0FU) < 4U ? info->source_unit_id : 0U,
@@ -3207,10 +3246,10 @@ nxdn_vcall_apply_state(dsd_state* state, const struct nxdn_vcall_info* info) {
 static void
 nxdn_vcall_run_enc_lockout(dsd_opts* opts, dsd_state* state, const struct nxdn_vcall_info* info) {
     if (opts->trunk_enable != 1 || opts->trunk_tune_enc_calls != 0 || info->message_type != 0x01U
-        || info->destination_id == 0) {
+        || info->destination_id == 0 || !nxdn_call_type_locks_endpoint(info->call_type)) {
         return;
     }
-    const int is_group = (info->call_type == 4U) ? 0 : 1;
+    const int is_group = nxdn_call_type_kind(info->call_type, info->idas) == DSD_CALL_KIND_GROUP_VOICE ? 1 : 0;
     if (state->dmr_encL != 1) {
         // Corroborated clear -- or encrypted-but-decryptable -- voice on this
         // target releases any retained lockout entry so a talkgroup that
@@ -3263,6 +3302,31 @@ nxdn_vcall_message_type_is_release(uint8_t message_type) {
     return message_type == 0x07U || message_type == 0x08U || message_type == 0x11U;
 }
 
+/* A checked VCALL of a confirmed transmission, of a call type that opens a call (nxdn_call_type_opens_call(): 010 is a
+ * TX_REL's alone), classified by its call type (nxdn_call_type_kind()). */
+static void
+nxdn_vcall_note_confirmed(dsd_opts* opts, dsd_state* state, const struct nxdn_vcall_info* info) {
+    const dsd_call_kind kind = nxdn_call_type_kind(info->call_type, info->idas);
+    if (kind != DSD_CALL_KIND_VOICE) {
+        // Reached, like the publish below, only once the frame's content has confirmed the transmission:
+        // a miscorrected VCALL carries a garbage destination_id, and letting it refresh the
+        // conventional scan hold would park the coordinator on noise for a full activity_hold_ms
+        // per corrupt burst. The encryption
+        // flag is the corroborated classification nxdn_vcall_apply_state() just applied, not the
+        // raw element field -- a lone flipped cipher_type would otherwise drop the hold mid-call
+        // under --enc-lockout, the exact defect nxdn_enc_class.c exists to prevent. A generic voice
+        // call (011, 101) is of neither class, so it never holds the scan as a group call.
+        dsd_trunk_scan_hook_nxdn_conventional_activity(opts, state, info->destination_id, info->source_unit_id,
+                                                       kind == DSD_CALL_KIND_PRIVATE_VOICE ? 1 : 0,
+                                                       state->nxdn_cipher_type != 0U, 0);
+    }
+    nxdn_vcall_publish(opts, state, info);
+    // Classified as admission classifies its assignment (nxdn_vcall_assgn_should_tune()); a generic voice call names no
+    // class of its own (-1, nxdn_reconcile_private()).
+    const int msg_private = kind == DSD_CALL_KIND_PRIVATE_VOICE ? 1 : kind == DSD_CALL_KIND_GROUP_VOICE ? 0 : -1;
+    nxdn_call_identity_reconcile(opts, state, msg_private, nxdn_receiver_on_type_d(opts, state));
+}
+
 static void
 nxdn_vcall_process(dsd_opts* opts, dsd_state* state, const struct nxdn_vcall_info* info) {
     if (info->message_type != 0x01U) {
@@ -3279,20 +3343,8 @@ nxdn_vcall_process(dsd_opts* opts, dsd_state* state, const struct nxdn_vcall_inf
     nxdn_vcall_load_key(opts, state, info);
     nxdn_vcall_print_cipher(opts, state, info);
     nxdn_vcall_apply_state(state, info);
-    if (info->message_type == 0x01U && nxdn_confirm_is_confirmed(state)) {
-        // Held, like the publish below, until the frame's content has confirmed the transmission:
-        // a miscorrected VCALL carries a garbage destination_id, and letting it refresh the
-        // conventional scan hold would park the coordinator on noise for a full activity_hold_ms
-        // per corrupt burst. The encryption
-        // flag is the corroborated classification nxdn_vcall_apply_state() just applied, not the
-        // raw element field -- a lone flipped cipher_type would otherwise drop the hold mid-call
-        // under --enc-lockout, the exact defect nxdn_enc_class.c exists to prevent.
-        dsd_trunk_scan_hook_nxdn_conventional_activity(
-            opts, state, info->destination_id, info->source_unit_id,
-            nxdn_vcall_kind(info->call_type) == DSD_CALL_KIND_PRIVATE_VOICE ? 1 : 0, state->nxdn_cipher_type != 0U, 0);
-        nxdn_vcall_publish(opts, state, info);
-        // Classified as admission classifies its assignment (nxdn_vcall_assgn_admit()): call type 4 is private.
-        nxdn_call_identity_reconcile(opts, state, info->call_type == 4U ? 1 : 0, nxdn_receiver_on_type_d(opts, state));
+    if (info->message_type == 0x01U && nxdn_confirm_is_confirmed(state) && nxdn_call_type_opens_call(info->call_type)) {
+        nxdn_vcall_note_confirmed(opts, state, info);
     }
     nxdn_vcall_run_enc_lockout(opts, state, info);
 }
@@ -3611,6 +3663,12 @@ nxdn_scch_follow_busy(dsd_opts* opts, dsd_state* state, const struct nxdn_scch_i
     nxdn_scch_busy_tuned(state, info, freq, is_private_call, decision, how);
 }
 
+/* The busy message's target label: a private call's (its G/U bit) is a radio, named by the radio list. */
+static void
+nxdn_scch_print_target_label(const dsd_state* state, const struct nxdn_scch_info* info) {
+    nxdn_print_target_label(state, info->gu == 1U ? DSD_CALL_KIND_PRIVATE_VOICE : DSD_CALL_KIND_GROUP_VOICE, info->id);
+}
+
 /* A busy repeater message names a call on go-to repeater rep1 (31: the call there ended, back to the control channel).
  * With no voice on the receiver's repeater for a second it is followed as before. While voice is live there, only a
  * call on another repeater (nxdn_idas_assoc()) may take the receiver: one of the held talkgroup over a call that is not
@@ -3623,7 +3681,7 @@ nxdn_scch_apply_busy_tune(dsd_opts* opts, dsd_state* state, const struct nxdn_sc
         return;
     }
 
-    nxdn_print_target_label(state, DSD_CALL_KIND_GROUP_VOICE, info->id);
+    nxdn_scch_print_target_label(state, info);
     if (!info->acts) {
         return;
     }
@@ -4018,15 +4076,16 @@ NXDN_decode_scch(dsd_opts* opts, dsd_state* state, const uint8_t* Message, uint8
     }
 }
 
-static char*
-NXDN_Call_Type_To_Str(uint8_t CallType) {
-    char* Ptr = NULL;
+/* The Call Type's label (TS 1-A Table 6.5-8; on Type-D, @p type_d, TS 1-E Table 6.6-15, where 011 is a Session Call). */
+static const char*
+NXDN_Call_Type_To_Str(uint8_t CallType, int type_d) {
+    const char* Ptr = NULL;
 
     switch (CallType) {
         case 0: Ptr = "Broadcast Call"; break;
         case 1: Ptr = "Group Call"; break;
-        case 2: Ptr = "Idle"; break;         //"Unspecified Call" This value is used only on Idle Burst TX_REL message.
-        case 3: Ptr = "Session Call"; break; //"reserved" is session call on Type D
+        case 2: Ptr = "Idle"; break; //"Unspecified Call" This value is used only on Idle Burst TX_REL message.
+        case 3: Ptr = type_d ? "Session Call" : "Reserved"; break;
         case 4: Ptr = "Private Call"; break;
         case 5: Ptr = "Reserved"; break;
         case 6: Ptr = "PSTN Interconnect Call"; break;

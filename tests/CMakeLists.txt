@@ -17530,7 +17530,7 @@ target_include_directories(
 )
 target_link_libraries(
     dsd-neo_test_nxdn_grant_tune_matrix
-    PRIVATE dsd-neo_proto_nxdn
+    PRIVATE dsd-neo_proto_nxdn dsd-neo_test_support
 )
 add_test(
     NAME NXDN_GRANT_TUNE_MATRIX
@@ -17552,7 +17552,7 @@ target_include_directories(
 )
 target_link_libraries(
     dsd-neo_test_nxdn_grant_tune_matrix_real_call_state
-    PRIVATE dsd-neo_proto_nxdn
+    PRIVATE dsd-neo_proto_nxdn dsd-neo_test_support
 )
 add_test(
     NAME NXDN_GRANT_TUNE_MATRIX_REAL_CALL_STATE

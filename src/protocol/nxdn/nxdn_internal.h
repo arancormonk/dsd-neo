@@ -236,6 +236,17 @@ void nxdn_store_facch3_udch2_block(struct nxdn_facch3_udch2_message* message, si
 void nxdn_handle_facch3_udch2_soft(dsd_opts* opts, dsd_state* state, const struct nxdn_facch3_udch2_message* message,
                                    uint8_t type);
 
+/* The call kind a Call Type (NXDN TS 1-A §6.5.12 Table 6.5-8; Type-D TS 1-E §6.6.21 Table 6.6-15) gives a call: 000
+   Broadcast and 001 Conference are group calls; 100 Individual, 110 Interconnect and 111 Speed Dial are private (their
+   destination is a radio or a PSTN ID, TS 1-A Table 6.4-6); 010 Unspecified, 011 (reserved on Type-C, a Session Call
+   with the trunk controller on Type-D) and 101 (reserved) are generic voice, of neither class. The two variants
+   classify alike; @p type_d (a Type-D call) names the variant for the callers' labels. VCALL, VCALL_ASSGN, TX_REL,
+   the encryption lockout, the held-call reconcile, the conventional scan hold and the data call headers all classify
+   by it. */
+dsd_call_kind nxdn_call_type_kind(uint8_t call_type, int type_d);
+/* Whether a message of @p call_type may open a call: every type but 010, which only a TX_REL carries. */
+int nxdn_call_type_opens_call(uint8_t call_type);
+
 #ifdef __cplusplus
 }
 #endif

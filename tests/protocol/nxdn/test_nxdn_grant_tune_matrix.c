@@ -16,6 +16,7 @@
 
 #include <dsd-neo/core/call_state.h>
 #include <dsd-neo/core/opts.h>
+#include <dsd-neo/core/source_alias.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/state_ext.h>
 #include <dsd-neo/core/synctype_ids.h>
@@ -24,6 +25,7 @@
 #include <dsd-neo/crypto/des.h>
 #include <dsd-neo/protocol/nxdn/nxdn.h>
 #include <dsd-neo/runtime/decode_clock.h>
+#include <dsd-neo/runtime/trunk_scan_hooks.h>
 #include <dsd-neo/runtime/trunk_tuning_hooks.h>
 #include <math.h>
 #include <stdint.h>
@@ -33,6 +35,7 @@
 #include "dsd-neo/core/position.h"
 #include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
+#include "test_support.h"
 
 #if defined(__GNUC__) && !defined(__cplusplus)
 #pragma GCC diagnostic push
@@ -43,6 +46,8 @@ void NXDN_decode_VCALL_ASSGN(dsd_opts* opts, dsd_state* state, const uint8_t* Me
 void NXDN_decode_scch(dsd_opts* opts, dsd_state* state, const uint8_t* Message, uint8_t direction);
 void NXDN_Elements_Content_decode(dsd_opts* opts, dsd_state* state, const uint8_t* ElementsContent,
                                   size_t ElementsContentBits);
+dsd_call_kind nxdn_call_type_kind(uint8_t call_type, int type_d);
+int nxdn_call_type_opens_call(uint8_t call_type);
 // Defined here for the real-call-state build and by tests/test_support/call_state_stubs.c for the stubbed one.
 // NOLINTNEXTLINE(misc-use-internal-linkage)
 unsigned int dsd_call_state_stub_event_sync_count(uint8_t slot);
@@ -2508,6 +2513,278 @@ nxdn_run_type_d_info2_new_target_case(void) {
     return rc;
 }
 
+/* ---- Call types (NXDN TS 1-A Table 6.5-8, TS 1-E Table 6.6-15) ------------------------------------------------ */
+
+/* A VCALL_ASSGN (or a data assignment) of call type @p call_type, CC Option @p cc_option, to @p target on @p channel. */
+static void
+send_typed_assignment(uint8_t message_type, uint8_t call_type, uint8_t cc_option, uint16_t target, uint16_t channel) {
+    const nxdn_case c = {"", NXDN_MATRIX_TYPE_C, message_type, call_type, 2100U, target, channel, 0, 0, 0, 0, 0, 0, 0};
+    uint8_t message[128];
+    build_vcall_assgn(message, &c);
+    write_bits_u32(message, 8U, cc_option, 8U);
+    NXDN_decode_VCALL_ASSGN(&g_opts, &g_state, message);
+}
+
+/* A checked VCALL of a confirmed transmission, of call type @p call_type and CC Option @p cc_option. */
+static void
+send_typed_vcall(uint8_t call_type, uint8_t cc_option, uint16_t source, uint16_t target) {
+    uint8_t bits[96];
+    DSD_MEMSET(bits, 0, sizeof(bits));
+    set_message_type(bits, 0x01U);
+    write_bits_u32(bits, 8U, cc_option, 8U);
+    write_bits_u32(bits, 16U, call_type, 3U);
+    write_bits_u32(bits, 24U, source, 16U);
+    write_bits_u32(bits, 40U, target, 16U);
+    g_state.nxdn_confirmed = 1;
+    NXDN_Elements_Content_decode(&g_opts, &g_state, bits, sizeof(bits));
+}
+
+/* The classification every call-type site shares: 000/001 group, 100/110/111 private, the rest generic voice; only 010
+ * (TX_REL only) opens no call. Both variants read the table alike. */
+static int
+nxdn_run_call_type_table_case(void) {
+    static const char* const name = "call-type-table";
+    static const dsd_call_kind kinds[8] = {
+        DSD_CALL_KIND_GROUP_VOICE,   DSD_CALL_KIND_GROUP_VOICE,   DSD_CALL_KIND_VOICE,
+        DSD_CALL_KIND_VOICE,         DSD_CALL_KIND_PRIVATE_VOICE, DSD_CALL_KIND_VOICE,
+        DSD_CALL_KIND_PRIVATE_VOICE, DSD_CALL_KIND_PRIVATE_VOICE,
+    };
+    int rc = 0;
+    for (uint8_t ct = 0U; ct < 8U; ct++) {
+        rc |= nxdn_expect(nxdn_call_type_kind(ct, 0) == kinds[ct] && nxdn_call_type_kind(ct, 1) == kinds[ct], name,
+                          "kind", "call type classified by the table, alike on Type-C and Type-D");
+        rc |= nxdn_expect(nxdn_call_type_opens_call(ct) == (ct != 2U ? 1 : 0), name, "opens", "only 010 opens no call");
+    }
+    return rc;
+}
+
+/* Every call type under every group/private switch pair: 000/001 follow under the group switch, 100/110/111 under the
+ * private switch (and are held as private calls), 010/011/101 never. */
+static int
+nxdn_run_call_type_grant_matrix_case(void) {
+    static const char* const name = "call-type-grant-matrix";
+    int rc = 0;
+    for (uint8_t ct = 0U; ct < 8U; ct++) {
+        const int group_type = ct == 0U || ct == 1U;
+        const int private_type = ct == 4U || ct == 6U || ct == 7U;
+        for (int group_on = 0; group_on <= 1; group_on++) {
+            for (int private_on = 0; private_on <= 1; private_on++) {
+                type_c_fixture();
+                g_opts.trunk_tune_group_calls = group_on;
+                g_opts.trunk_tune_private_calls = private_on;
+                send_typed_assignment(0x04U, ct, 0U, 1100U, 16U);
+                const int expect_follow = (group_type && group_on) || (private_type && private_on);
+                char result[48];
+                DSD_SNPRINTF(result, sizeof result, "ct%u-g%d-p%d", (unsigned)ct, group_on, private_on);
+                rc |= nxdn_expect(g_tune_count == (expect_follow ? 1 : 0), name, result,
+                                  "followed only under the call type's own switch");
+                if (expect_follow) {
+                    rc |= nxdn_expect(g_state.nxdn_call.private_call == (private_type ? 1U : 0U), name, result,
+                                      "held as the call type's class");
+                }
+            }
+        }
+    }
+    return rc;
+}
+
+static int g_conv_count = 0;
+static int g_conv_private = -1;
+
+static void
+nxdn_scan_hook_conventional(const dsd_opts* opts, const dsd_state* state, uint32_t target, uint32_t source,
+                            int is_private, int encrypted, int data_call) {
+    (void)opts;
+    (void)state;
+    (void)target;
+    (void)source;
+    (void)encrypted;
+    (void)data_call;
+    g_conv_count++;
+    g_conv_private = is_private;
+}
+
+/* A conventional scan's hold is refreshed by a VCALL of a group or private call, each as its class, and never by one
+ * of generic voice (011, 101) or by 010, which opens no call. */
+static int
+nxdn_run_conventional_hold_call_types_case(void) {
+    static const char* const name = "conventional-hold-call-types";
+    static const int expected[8] = {0, 0, -2, -2, 1, -2, 1, 1}; /* -2: no hold; else the private flag */
+    dsd_trunk_scan_hooks hooks;
+    DSD_MEMSET(&hooks, 0, sizeof hooks);
+    hooks.nxdn_conventional_activity = nxdn_scan_hook_conventional;
+    int rc = 0;
+    for (uint8_t ct = 0U; ct < 8U; ct++) {
+        type_c_fixture();
+        g_opts.trunk_enable = 0;
+        dsd_trunk_scan_hooks_set(&hooks);
+        g_conv_count = 0;
+        g_conv_private = -1;
+        send_typed_vcall(ct, 0U, 2100U, 1100U);
+        char result[16];
+        DSD_SNPRINTF(result, sizeof result, "ct%u", (unsigned)ct);
+        if (expected[ct] == -2) {
+            rc |= nxdn_expect(g_conv_count == 0, name, result, "no hold");
+        } else {
+            rc |= nxdn_expect(g_conv_count == 1 && g_conv_private == expected[ct], name, result, "hold as its class");
+        }
+    }
+    dsd_trunk_scan_hooks_set(NULL);
+    return rc;
+}
+
+/* What decoding @p decode printed on stderr, into @p out. */
+static int
+capture_stderr_of(void (*decode)(void), char* out, size_t out_size) {
+    dsd_test_capture_stderr cap;
+    if (dsd_test_capture_stderr_begin(&cap, "nxdn_matrix") != 0) {
+        return -1;
+    }
+    decode();
+    if (dsd_test_capture_stderr_end(&cap) != 0) {
+        return -1;
+    }
+    return dsd_test_capture_stderr_read(&cap, out, out_size);
+}
+
+static void
+decode_session_vcall(void) {
+    send_typed_vcall(3U, 0U, 100U, 200U);
+}
+
+static void
+decode_inter_system_assignment(void) {
+    send_typed_assignment(0x04U, 1U, 0x40U, 1100U, 16U);
+}
+
+static void
+decode_inter_system_vcall(void) {
+    send_typed_vcall(1U, 0x40U, 2100U, 1100U);
+}
+
+static nxdn_case g_busy_case;
+
+static void
+decode_busy_case(void) {
+    nxdn_run_case_decode(&g_busy_case);
+}
+
+/* Call type 011 is a Session Call only on Type-D (TS 1-E Table 6.6-15); Type-C reserves it (TS 1-A Table 6.5-8). CC
+ * Option bit 6 is Intra/Inter: 1 is an inter-system call (TS 1-A Table 6.5-7, TS 1-E Table 6.6-14). */
+static int
+nxdn_run_call_type_labels_case(void) {
+    static const char* const name = "call-type-labels";
+    char out[4096];
+    int rc = 0;
+
+    type_c_fixture();
+    g_opts.trunk_enable = 0;
+    DSD_SNPRINTF(g_state.nxdn_location_category, sizeof(g_state.nxdn_location_category), "%s", "Type-D");
+    rc |= nxdn_expect(capture_stderr_of(decode_session_vcall, out, sizeof out) == 0, name, "type-d", "captured");
+    rc |= nxdn_expect(strstr(out, "Session Call") != NULL, name, "type-d", "011 is a Session Call on Type-D");
+
+    type_c_fixture();
+    g_opts.trunk_enable = 0;
+    rc |= nxdn_expect(capture_stderr_of(decode_session_vcall, out, sizeof out) == 0, name, "type-c", "captured");
+    rc |= nxdn_expect(strstr(out, "Session Call") == NULL && strstr(out, "Reserved") != NULL, name, "type-c",
+                      "011 is reserved on Type-C");
+
+    type_c_fixture();
+    rc |= nxdn_expect(capture_stderr_of(decode_inter_system_assignment, out, sizeof out) == 0, name, "assgn-cc-option",
+                      "captured");
+    rc |= nxdn_expect(strstr(out, "Inter-System") != NULL && strstr(out, "Visitor") == NULL, name, "assgn-cc-option",
+                      "an assignment's CC Option bit 6 reads Inter-System");
+
+    type_c_fixture();
+    g_opts.trunk_enable = 0;
+    rc |= nxdn_expect(capture_stderr_of(decode_inter_system_vcall, out, sizeof out) == 0, name, "vcall-cc-option",
+                      "captured");
+    rc |= nxdn_expect(strstr(out, "Inter-System") != NULL && strstr(out, "Visitor") == NULL, name, "vcall-cc-option",
+                      "a VCALL's CC Option bit 6 reads Inter-System");
+    return rc;
+}
+
+/* A radio list naming @p id. */
+static int
+install_radio_label(uint32_t id, const char* label) {
+    dsd_source_alias_store* store = dsd_source_alias_store_create();
+    dsd_source_alias_entry entry;
+    DSD_MEMSET(&entry, 0, sizeof entry);
+    entry.id_start = entry.id_end = id;
+    DSD_SNPRINTF(entry.name, sizeof entry.name, "%s", label);
+    if (store == NULL || dsd_source_alias_store_append(store, &entry) != 0) {
+        dsd_source_alias_store_free(store);
+        return -1;
+    }
+    dsd_source_alias_install(&g_state, store);
+    return 0;
+}
+
+/* A Type-D private busy message names its target as a radio (the radio list), never as a talkgroup of that number. */
+static int
+nxdn_run_type_d_private_busy_label_case(void) {
+    static const char* const name = "type-d-private-busy-label";
+    g_busy_case = type_d_fixture(1U, 1500U);
+    dsd_tg_policy_entry row;
+    if (dsd_tg_policy_make_exact_entry(1500U, "A", "GROUP-A", DSD_TG_POLICY_SOURCE_IMPORTED, &row) == 0) {
+        (void)dsd_tg_policy_upsert_exact(&g_state, &row, DSD_TG_POLICY_UPSERT_REPLACE_FIRST);
+    }
+    int rc = nxdn_expect(install_radio_label(1500U, "UNIT-A") == 0, name, "setup", "radio list installed");
+    char out[4096];
+    rc |= nxdn_expect(capture_stderr_of(decode_busy_case, out, sizeof out) == 0, name, "private", "captured");
+    rc |= nxdn_expect(strstr(out, "[UNIT-A]") != NULL && strstr(out, "[GROUP-A]") == NULL, name, "private",
+                      "the private target is named by the radio list");
+
+    g_busy_case = type_d_fixture(0U, 1500U);
+    if (dsd_tg_policy_make_exact_entry(1500U, "A", "GROUP-A", DSD_TG_POLICY_SOURCE_IMPORTED, &row) == 0) {
+        (void)dsd_tg_policy_upsert_exact(&g_state, &row, DSD_TG_POLICY_UPSERT_REPLACE_FIRST);
+    }
+    rc |= nxdn_expect(install_radio_label(1500U, "UNIT-A") == 0, name, "setup", "radio list installed");
+    rc |= nxdn_expect(capture_stderr_of(decode_busy_case, out, sizeof out) == 0, name, "group", "captured");
+    rc |= nxdn_expect(strstr(out, "[GROUP-A]") != NULL && strstr(out, "[UNIT-A]") == NULL, name, "group",
+                      "the group target is named by the group list");
+    return rc;
+}
+
+#ifdef NXDN_MATRIX_REAL_CALL_STATE
+/* The assignment's recent-activity row: its kind by the call type, and its notice says TG only for a group call (a
+ * private or interconnect call's destination is a radio or PSTN ID). 010 publishes no row. */
+static int
+nxdn_run_assignment_activity_kind_case(void) {
+    static const char* const name = "assignment-activity-kind";
+    static const dsd_call_kind kinds[8] = {
+        DSD_CALL_KIND_GROUP_VOICE,   DSD_CALL_KIND_GROUP_VOICE,   DSD_CALL_KIND_UNKNOWN,
+        DSD_CALL_KIND_VOICE,         DSD_CALL_KIND_PRIVATE_VOICE, DSD_CALL_KIND_VOICE,
+        DSD_CALL_KIND_PRIVATE_VOICE, DSD_CALL_KIND_PRIVATE_VOICE,
+    };
+    int rc = 0;
+    for (uint8_t ct = 0U; ct < 8U; ct++) {
+        type_c_fixture();
+        g_opts.trunk_tune_group_calls = 0;
+        g_opts.trunk_tune_private_calls = 0;
+        send_typed_assignment(0x04U, ct, 0U, 1100U, 16U);
+        dsd_recent_activity_snapshot snap;
+        DSD_MEMSET(&snap, 0, sizeof snap);
+        (void)dsd_recent_activity_copy_snapshot(&g_state, &snap);
+        const dsd_recent_activity_entry* row = &snap.entries[0];
+        char result[16];
+        DSD_SNPRINTF(result, sizeof result, "ct%u", (unsigned)ct);
+        if (ct == 2U) {
+            rc |= nxdn_expect(row->notice[0] == '\0', name, result, "010 publishes no activity");
+            continue;
+        }
+        rc |= nxdn_expect(row->observation.kind == kinds[ct], name, result, "activity kind by the call type");
+        if (kinds[ct] == DSD_CALL_KIND_GROUP_VOICE) {
+            rc |= nxdn_expect(strstr(row->notice, "TG: 1100") != NULL, name, result, "a group notice says TG");
+        } else {
+            rc |= nxdn_expect(strstr(row->notice, "TG:") == NULL && strstr(row->notice, "TGT: 1100") != NULL, name,
+                              result, "a non-group notice names its target, not a TG");
+        }
+    }
+    return rc;
+}
+#endif
+
 int
 main(void) {
     int rc = 0;
@@ -2597,7 +2874,13 @@ main(void) {
     rc |= nxdn_run_type_c_takeover_ends_left_call_case();
     rc |= nxdn_run_type_d_takeover_ends_left_call_case();
     rc |= nxdn_run_refollow_after_hangtime_return_case();
+    rc |= nxdn_run_call_type_table_case();
+    rc |= nxdn_run_call_type_grant_matrix_case();
+    rc |= nxdn_run_conventional_hold_call_types_case();
+    rc |= nxdn_run_call_type_labels_case();
+    rc |= nxdn_run_type_d_private_busy_label_case();
 #ifdef NXDN_MATRIX_REAL_CALL_STATE
+    rc |= nxdn_run_assignment_activity_kind_case();
     rc |= nxdn_run_release_reply_keeps_dwell_case();
     rc |= nxdn_run_sync_loss_reply_keeps_dwell_case();
     rc |= nxdn_run_lapsed_call_same_carrier_duplicate_case();

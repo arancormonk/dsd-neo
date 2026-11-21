@@ -155,18 +155,24 @@ write_bits(uint8_t* bits, size_t start, uint64_t value, size_t nbits) {
     }
 }
 
-/* VCALL (message type 0x01): body at bit offset 8. */
+/* VCALL (message type 0x01) of call type @p call_type: body at bit offset 8. */
 static void
-build_vcall(uint8_t bits[96], uint8_t cipher, uint8_t key_id, uint16_t source, uint16_t dest) {
+build_typed_vcall(uint8_t bits[96], uint8_t call_type, uint8_t cipher, uint8_t key_id, uint16_t source, uint16_t dest) {
     DSD_MEMSET(bits, 0, 96U);
-    write_bits(bits, 2U, 0x01U, 6U);  /* message type */
-    write_bits(bits, 8U, 0x00U, 8U);  /* cc option */
-    write_bits(bits, 16U, 0x01U, 3U); /* call type: group */
+    write_bits(bits, 2U, 0x01U, 6U); /* message type */
+    write_bits(bits, 8U, 0x00U, 8U); /* cc option */
+    write_bits(bits, 16U, call_type, 3U);
     write_bits(bits, 19U, 0x00U, 5U); /* voice call option */
     write_bits(bits, 24U, source, 16U);
     write_bits(bits, 40U, dest, 16U);
     write_bits(bits, 56U, cipher, 2U);
     write_bits(bits, 58U, key_id, 6U);
+}
+
+/* A group (001) VCALL. */
+static void
+build_vcall(uint8_t bits[96], uint8_t cipher, uint8_t key_id, uint16_t source, uint16_t dest) {
+    build_typed_vcall(bits, 0x01U, cipher, key_id, source, dest);
 }
 
 static void
@@ -488,6 +494,57 @@ test_republish_leaves_another_protocols_call_alone(void) {
     dsd_state_ext_free_all(&state);
 }
 
+/* The lockout entry is the call type's endpoint: an individual call (100) locks its called radio out, never a talkgroup
+   of that number. An interconnect (110) or speed dial (111) call's endpoint is a PSTN ID or a radio behind the
+   gateway, so it takes no session-long lockout entry in either namespace; nor does a call of generic voice (011,
+   101). */
+static void
+test_vcall_lockout_endpoint_by_call_type(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    static Event_History_I history[2];
+    uint8_t bits[96];
+
+    reset_fixture(&opts, &state, history);
+    build_typed_vcall(bits, 0x04U, 2U, 5U, 100U, 1234U);
+    NXDN_Elements_Content_decode(&opts, &state, bits, sizeof(bits));
+    NXDN_Elements_Content_decode(&opts, &state, bits, sizeof(bits));
+    assert(dsd_enc_lockout_entry_active(&state, 1234U, 0));
+    assert(!dsd_enc_lockout_lookup(&state, 1234U, 1, NULL));
+    dsd_state_ext_free_all(&state);
+
+    static const uint8_t no_lockout[] = {0x03U, 0x05U, 0x06U, 0x07U};
+    for (size_t i = 0; i < sizeof(no_lockout); i++) {
+        reset_fixture(&opts, &state, history);
+        build_typed_vcall(bits, no_lockout[i], 2U, 5U, 100U, 1234U);
+        NXDN_Elements_Content_decode(&opts, &state, bits, sizeof(bits));
+        NXDN_Elements_Content_decode(&opts, &state, bits, sizeof(bits));
+        assert(nxdn_cipher_established_enc(&state));
+        assert(!dsd_enc_lockout_lookup(&state, 1234U, 0, NULL));
+        assert(!dsd_enc_lockout_lookup(&state, 1234U, 1, NULL));
+        dsd_state_ext_free_all(&state);
+    }
+}
+
+/* An encrypted interconnect call (110) under --enc-lockout leaves no session-long lockout on its endpoint. */
+static void
+test_vcall_interconnect_no_endpoint_lockout(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    static Event_History_I history[2];
+    uint8_t bits[96];
+
+    reset_fixture(&opts, &state, history);
+    build_typed_vcall(bits, 0x06U, 3U, 9U, 100U, 4321U);
+    for (int i = 0; i < 3; i++) {
+        NXDN_Elements_Content_decode(&opts, &state, bits, sizeof(bits));
+    }
+    assert(state.dmr_encL == 1);
+    assert(!dsd_enc_lockout_lookup(&state, 4321U, 0, NULL));
+    assert(!dsd_enc_lockout_lookup(&state, 4321U, 1, NULL));
+    dsd_state_ext_free_all(&state);
+}
+
 int
 main(void) {
     test_observe_tentative_then_corroborated();
@@ -495,6 +552,8 @@ main(void) {
     test_contradiction_of_tentative_replaces();
     test_force_and_reset();
     test_vcall_enc_lockout_requires_corroboration();
+    test_vcall_lockout_endpoint_by_call_type();
+    test_vcall_interconnect_no_endpoint_lockout();
     test_lone_contradicting_vcall_does_not_flap_established_clear();
     test_vcall_cipher_received_once_corroborated();
     test_forced_cipher_is_not_received();
