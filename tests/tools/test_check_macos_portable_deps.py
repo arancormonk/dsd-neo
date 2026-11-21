@@ -56,6 +56,8 @@ case "$mode" in
           # so a reader that leaves early ends this with SIGPIPE every time.
           printf 'Load command %d\n' "$n"
           awk 'BEGIN { for (i = 0; i < 50000; i++) print "      cmd LC_SOURCE_VERSION" }'
+          # A last whole command whose version is not the file's macOS.
+          printf 'Load command %d\n      cmd LC_VERSION_MIN_MACOSX\n  cmdsize 16\n  version %s\n' "$((n + 1))" "$value"
           ;;
       esac
       n=$((n + 1))
