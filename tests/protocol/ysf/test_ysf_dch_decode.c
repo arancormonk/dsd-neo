@@ -562,11 +562,14 @@ test_dch_rid_mode_preserves_target_and_source_state(void) {
     assert(call.epoch != first_epoch);
 }
 
+/* CSD2 is the downlink repeater's callsign, then the uplink's (Yaesu "Amateur Radio Digital Standards" Table 4-2;
+   MMDVMHost and DSDcc read it so). route_text[0] is the uplink, route_text[1] the downlink. Before, the first ten bytes
+   were taken for the uplink, so the two read swapped. */
 static void
 test_dch_csd2_tracks_uplink_and_downlink(void) {
     static dsd_state state;
     uint8_t bits[160];
-    const char payload[] = "UPLINK0001DOWNLINK02";
+    const char payload[] = "DOWNLINK02UPLINK0001";
 
     DSD_MEMSET(&state, 0, sizeof(state));
     begin_test_ysf_call(&state);
@@ -621,15 +624,16 @@ test_dch2_tracks_destination_source_links_and_remarks(void) {
     call = get_test_ysf_call(&state);
     assert(strcmp(call.source_text, "SRC2CALL45") == 0);
 
-    pack_bytes_to_bits("UP2CALL678", 10U, bits);
+    /* V/D type 2 sends the downlink in frame 2 and the uplink in frame 3 (Table 4-4). */
+    pack_bytes_to_bits("DN2CALL901", 10U, bits);
     ysf_dch_decode2(&state, 0, 0, 2, 5, 0, bits);
     call = get_test_ysf_call(&state);
-    assert(strcmp(call.route_text[0], "UP2CALL678") == 0);
+    assert(strcmp(call.route_text[1], "DN2CALL901") == 0);
 
-    pack_bytes_to_bits("DN2CALL901", 10U, bits);
+    pack_bytes_to_bits("UP2CALL678", 10U, bits);
     ysf_dch_decode2(&state, 0, 0, 3, 5, 0, bits);
     call = get_test_ysf_call(&state);
-    assert(strcmp(call.route_text[1], "DN2CALL901") == 0);
+    assert(strcmp(call.route_text[0], "UP2CALL678") == 0);
 
     pack_bytes_to_bits("RM1AARM2BB", 10U, bits);
     ysf_dch_decode2(&state, 0, 0, 4, 5, 0, bits);
@@ -871,7 +875,7 @@ test_process_ysf_header_search_evidence_follows_the_callsigns(void) {
     make_fich_bits_for_full_rate_data(fich_bits);
     encode_fich_input(fich_bits, 0, 0, fich_input);
     encode_dch_payload_to_input("SRCHDST001SRCHSRC002", 20U, dch0, 176U, 9U, 0);
-    encode_dch_payload_to_input("SRCHUPL003SRCHDNL004", 20U, dch1, 176U, 9U, 0);
+    encode_dch_payload_to_input("SRCHDNL004SRCHUPL003", 20U, dch1, 176U, 9U, 0);
     append_dibits_to_stream(fich_input, 100U);
     append_interleaved_full_rate_dch_blocks(dch0, dch1);
 
@@ -906,7 +910,7 @@ test_process_ysf_full_rate_data_routes_fich_and_dch_state(void) {
     make_fich_bits_for_full_rate_data(fich_bits);
     encode_fich_input(fich_bits, 0, 0, fich_input);
     encode_dch_payload_to_input("PYSFDST001PYSFSRC002", 20U, dch0, 176U, 9U, 0);
-    encode_dch_payload_to_input("PYSFUPL003PYSFDNL004", 20U, dch1, 176U, 9U, 0);
+    encode_dch_payload_to_input("PYSFDNL004PYSFUPL003", 20U, dch1, 176U, 9U, 0);
 
     append_dibits_to_stream(fich_input, 100U);
     append_interleaved_full_rate_dch_blocks(dch0, dch1);
@@ -1142,7 +1146,7 @@ quiet_ysf_header(int on, size_t cut) {
     make_fich_bits_for_full_rate_data(fich_bits);
     encode_fich_input(fich_bits, 0, 0, fich_input);
     encode_dch_payload_to_input("QYSFDST001QYSFSRC002", 20U, dch0, 176U, 9U, 0);
-    encode_dch_payload_to_input("QYSFUPL003QYSFDNL004", 20U, dch1, 176U, 9U, 0);
+    encode_dch_payload_to_input("QYSFDNL004QYSFUPL003", 20U, dch1, 176U, 9U, 0);
     append_dibits_to_stream(fich_input, 100U);
     append_interleaved_full_rate_dch_blocks(dch0, dch1);
     g_quiet_proven = 0;
@@ -1484,7 +1488,7 @@ test_process_ysf_terminator_enriches_identity_before_call_end(void) {
     make_fich_bits_for_terminator(fich_bits);
     encode_fich_input(fich_bits, 0, 0, fich_input);
     encode_dch_payload_to_input("TERMDST001TERMSRC002", 20U, dch0, 176U, 9U, 0);
-    encode_dch_payload_to_input("TERMUPL003TERMDNL004", 20U, dch1, 176U, 9U, 0);
+    encode_dch_payload_to_input("TERMDNL004TERMUPL003", 20U, dch1, 176U, 9U, 0);
 
     append_dibits_to_stream(fich_input, 100U);
     append_interleaved_full_rate_dch_blocks(dch0, dch1);
@@ -1713,7 +1717,7 @@ make_ysf_fich(uint8_t fich_bits[48], uint8_t fi, uint8_t cm, uint8_t fn, uint8_t
 }
 
 /* The header (@p fi 0) or terminator (2) of a V/D type 1 call in call mode @p cm, carrying CSD1 @p csd1 (destination,
-   source) and CSD2 @p csd2 (uplink, downlink), twenty characters each. */
+   source) and CSD2 @p csd2 (downlink, uplink), twenty characters each. */
 static void
 append_ysf_bound_frame(uint8_t fi, uint8_t cm, const char* csd1, const char* csd2) {
     uint8_t fich_bits[48];
@@ -1796,11 +1800,11 @@ test_process_ysf_repeater_call_is_one_row_that_takes_the_fallback(void) {
     ysf_call_rig rig;
     ysf_call_rig_open(&rig);
     reset_ysf_stream();
-    append_ysf_bound_frame(0U, 0U, "CALLDST001CALLSRC002", "RPTUPL0003RPTDNL0004");
+    append_ysf_bound_frame(0U, 0U, "CALLDST001CALLSRC002", "RPTDNL0004RPTUPL0003");
     ysf_call_rig_play(&rig);
     append_ysf_vd1_frame(0U, 0U, "CALLDST001CALLSRC002");
     ysf_call_rig_play(&rig);
-    append_ysf_vd1_frame(0U, 1U, "RPTUPL0003RPTDNL0004");
+    append_ysf_vd1_frame(0U, 1U, "RPTDNL0004RPTUPL0003");
     ysf_call_rig_play(&rig);
     const dsd_call_snapshot call = get_test_ysf_call(rig.state);
     assert(strcmp(call.source_text, "CALLSRC002") == 0);
@@ -1808,7 +1812,7 @@ test_process_ysf_repeater_call_is_one_row_that_takes_the_fallback(void) {
     assert(strcmp(call.route_text[0], "RPTUPL0003") == 0);
     append_ysf_vd1_frame(0U, 0U, "CALLDST001CALLSRC002");
     ysf_call_rig_play(&rig);
-    append_ysf_bound_frame(2U, 0U, "CALLDST001CALLSRC002", "RPTUPL0003RPTDNL0004");
+    append_ysf_bound_frame(2U, 0U, "CALLDST001CALLSRC002", "RPTDNL0004RPTUPL0003");
     ysf_call_rig_play(&rig);
     const dsd_call_snapshot ended = get_test_ysf_call(rig.state);
     assert(ended.epoch == call.epoch && ended.phase == DSD_CALL_PHASE_ENDED);
@@ -1828,7 +1832,7 @@ test_process_ysf_call_takes_the_fallback_only_after_a_terminator(void) {
         ysf_call_rig rig;
         ysf_call_rig_open(&rig);
         reset_ysf_stream();
-        append_ysf_bound_frame(0U, 0U, "CALLDST001CALLSRC002", "RPTUPL0003RPTDNL0004");
+        append_ysf_bound_frame(0U, 0U, "CALLDST001CALLSRC002", "RPTDNL0004RPTUPL0003");
         ysf_call_rig_play(&rig);
         append_ysf_vd1_frame(0U, 0U, "CALLDST001CALLSRC002");
         ysf_call_rig_play(&rig);
@@ -1844,7 +1848,7 @@ test_process_ysf_call_takes_the_fallback_only_after_a_terminator(void) {
             assert(rig.history[0].push_seq == 1U);
             assert(rig.history[0].Event_History_Items[1].gi == 0);
             assert(ysf_committed_talkgroup(&rig, 1) == 0U);
-            append_ysf_bound_frame(2U, 3U, "CALLDST001CALLSRC002", "RPTUPL0003RPTDNL0004");
+            append_ysf_bound_frame(2U, 3U, "CALLDST001CALLSRC002", "RPTDNL0004RPTUPL0003");
             ysf_call_rig_play(&rig);
             assert(rig.history[0].push_seq == 2U);
             assert(rig.history[0].Event_History_Items[1].gi == 1);
@@ -1967,7 +1971,7 @@ test_process_ysf_header_and_terminator_end_the_capture(void) {
     state.synctype = DSD_SYNC_YSF_POS;
     capture_dir_begin(&opts, "dsdneo_ysf_end_capture");
     encode_dch_payload_to_input("TERMDST001TERMSRC002", 20U, dch0, 176U, 9U, 0);
-    encode_dch_payload_to_input("TERMUPL003TERMDNL004", 20U, dch1, 176U, 9U, 0);
+    encode_dch_payload_to_input("TERMDNL004TERMUPL003", 20U, dch1, 176U, 9U, 0);
 
     for (int header = 1; header >= 0; --header) {
         reset_ysf_stream();

@@ -100,22 +100,24 @@ ysf_dch_decode_csd1(dsd_state* state, const char dch_bytes[20], uint8_t cm) {
     ysf_enrich_identity(state, cm, string2, target, NULL, NULL);
 }
 
+/* CSD2: the downlink repeater's callsign, then the uplink's (Yaesu "Amateur Radio Digital Standards" Table 4-2, as
+   MMDVMHost and DSDcc read it). */
 static void
 ysf_dch_decode_csd2(dsd_state* state, const char dch_bytes[20]) {
-    char string1[11];
-    char string2[11];
+    char downlink[11];
+    char uplink[11];
 
-    DSD_MEMCPY(string1, dch_bytes, 10);
-    string1[10] = '\0';
-    DSD_FPRINTF(stderr, "U/L: ");
-    DSD_FPRINTF(stderr, "%s ", string1);
-
-    DSD_MEMCPY(string2, dch_bytes + 10, 10);
-    string2[10] = '\0';
+    DSD_MEMCPY(downlink, dch_bytes, 10);
+    downlink[10] = '\0';
     DSD_FPRINTF(stderr, "D/L: ");
-    DSD_FPRINTF(stderr, "%s ", string2);
+    DSD_FPRINTF(stderr, "%s ", downlink);
 
-    ysf_enrich_identity(state, state->ysf_cm, NULL, NULL, string1, string2);
+    DSD_MEMCPY(uplink, dch_bytes + 10, 10);
+    uplink[10] = '\0';
+    DSD_FPRINTF(stderr, "U/L: ");
+    DSD_FPRINTF(stderr, "%s ", uplink);
+
+    ysf_enrich_identity(state, state->ysf_cm, NULL, NULL, uplink, downlink);
 }
 
 static void
@@ -137,7 +139,8 @@ ysf_dch_decode_text(dsd_state* state, const char dch_bytes[20], uint8_t fn, uint
 }
 
 void
-ysf_dch_decode(dsd_state* state, uint8_t bn, uint8_t bt, uint8_t fn, uint8_t ft, uint8_t cm, const uint8_t input[160]) {
+ysf_dch_decode(dsd_state* state, uint8_t field, uint8_t bt, uint8_t fn, uint8_t ft, uint8_t cm,
+               const uint8_t input[160]) {
     //TODO: Per Call WAV files using these strings
     int i;
     char dch_bytes[20];
@@ -149,7 +152,7 @@ ysf_dch_decode(dsd_state* state, uint8_t bn, uint8_t bt, uint8_t fn, uint8_t ft,
         dch_bytes[i] = (char)convert_bits_into_output(&input[(size_t)i * 8u], 8);
     }
 
-    switch (bn) { //using bn here so we can use the frame number for sorting the text messages found in here
+    switch (field) { // the caller names the field, so fn is left to sort the text messages found in here
         case 0: ysf_dch_decode_csd1(state, dch_bytes, cm); break;
         case 1: ysf_dch_decode_csd2(state, dch_bytes); break;
         case 2: ysf_dch_decode_text(state, dch_bytes, fn, ft); break;
@@ -212,18 +215,19 @@ ysf_dch_decode2(dsd_state* state, uint8_t bn, uint8_t bt, uint8_t fn, uint8_t ft
             ysf_enrich_identity(state, cm, source_text, NULL, NULL, NULL);
             break;
         }
+        /* The downlink repeater in frame 2, the uplink in frame 3 (Table 4-4). */
         case 2: {
-            char uplink[11];
-            ysf_print_text_field("U/L: ", dch_bytes, 10, "");
-            ysf_copy_text_field(uplink, dch_bytes, 10);
-            ysf_enrich_identity(state, cm, NULL, NULL, uplink, NULL);
-            break;
-        }
-        case 3: {
             char downlink[11];
             ysf_print_text_field("D/L: ", dch_bytes, 10, "");
             ysf_copy_text_field(downlink, dch_bytes, 10);
             ysf_enrich_identity(state, cm, NULL, NULL, NULL, downlink);
+            break;
+        }
+        case 3: {
+            char uplink[11];
+            ysf_print_text_field("U/L: ", dch_bytes, 10, "");
+            ysf_copy_text_field(uplink, dch_bytes, 10);
+            ysf_enrich_identity(state, cm, NULL, NULL, uplink, NULL);
             break;
         }
         case 4: ysf_dch_decode2_remarks("RM1: ", state->ysf_rm1, "RM2: ", state->ysf_rm2, dch_bytes); break;
@@ -310,7 +314,7 @@ ysf_conv_dch2(const dsd_opts* opts, dsd_state* state, uint8_t bn, uint8_t bt, ui
 
 //modified version of nxdn_deperm_facch1 -- this one for Full Rate, Type 1 CC, Headers and Terminators DCH (180 dibit version)
 int
-ysf_conv_dch(const dsd_opts* opts, dsd_state* state, uint8_t bn, uint8_t bt, uint8_t fn, uint8_t ft, uint8_t cm,
+ysf_conv_dch(const dsd_opts* opts, dsd_state* state, uint8_t field, uint8_t bt, uint8_t fn, uint8_t ft, uint8_t cm,
              uint8_t input[180]) {
     int i, j, err;
     uint8_t trellis_buf[190];
@@ -345,7 +349,7 @@ ysf_conv_dch(const dsd_opts* opts, dsd_state* state, uint8_t bn, uint8_t bt, uin
 
     //decode the callsign, etc, found in the DCH when no errors
     if (err == 0) {
-        ysf_dch_decode(state, bn, bt, fn, ft, cm, trellis_buf);
+        ysf_dch_decode(state, field, bt, fn, ft, cm, trellis_buf);
         /* A header's or terminator's callsigns arrive here, after its FICH reported: tell a signal search again once
          * they are on the call, so the frame that carries them is enough for the search to name the stations. */
         dsd_signal_search_note_evidence(state, "YSF", 0, 0, NULL);
@@ -723,7 +727,7 @@ ysf_print_fich_summary(const dsd_opts* opts, const ysf_fich_info* info) {
 enum { YSF_VD1_CHANNEL_PAIRS = 5 };
 
 /* The DCH field of a V/D type 1 frame, as ysf_dch_decode() selects one: named by the frame's number, not its block's.
-   Frame 0 carries CSD1 (destination and source), frame 1 CSD2 (the uplink and downlink repeaters); the later frames
+   Frame 0 carries CSD1 (destination and source), frame 1 CSD2 (the downlink and uplink repeaters); the later frames
    carry no callsign this decoder reads (3: none). Read by the block number, 0 in a voice call, every frame was CSD1,
    so a repeater's callsigns became the call's endpoints and began another call part-way (issue #888). */
 static uint8_t

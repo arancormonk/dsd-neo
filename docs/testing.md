@@ -2466,7 +2466,8 @@ V/D1 call through a repeater (header, frame 0 with CSD1, frame 1 with the repeat
 history after each frame as the frame sync does, on heap fixtures: one epoch and one row, the caller's, which takes
 the fallback talkgroup. `test_process_ysf_call_takes_the_fallback_only_after_a_terminator`: a call ended by a sync
 loss, and a group call that a private one follows in band, get no fallback number; the private call, ended by its
-terminator, does. `M17_STATE_DISPATCH` checks received Codec2 voice is decodable, admitted
+terminator, does. Every CSD2 these tests write is the downlink callsign first, then the uplink, as the YSF spec has it
+(`test_dch_csd2_tracks_uplink_and_downlink`; V/D2 frame 2 downlink, frame 3 uplink). `M17_STATE_DISPATCH` checks received Codec2 voice is decodable, admitted
 speech and the stream encoder's own decoded monitor is the monitor's (`DSD_VOICE_MEDIA_TX_MONITOR`): it plays the
 decoded samples as they are under a fixed `-g 3` and under auto, and leaves the receive slot's speech AGC as it
 started. `TETRA_VOICE_PIPELINE` checks the 240-to-160

@@ -12176,6 +12176,14 @@ control within the CC grace walks its channel map with the ordinary hunts.
   `test_process_ysf_call_takes_the_fallback_only_after_a_terminator`; `DECODE_IQ_YSF_RDIO_DIRWATCH_UNKNOWN_TG` (the
   synthetic call has no terminator: never exported, said once a leg) beside `DECODE_IQ_M17_RDIO_DIRWATCH_UNKNOWN_TG`
   (the fallback end to end).
+- YSF repeater callsigns (`src/protocol/ysf/ysf.c`): CSD2 is the downlink repeater's callsign, then the uplink's
+  (Yaesu "Amateur Radio Digital Standards" rev 1.02 Table 4-2; V/D type 2 sends the downlink in frame 2 and the uplink
+  in frame 3, Table 4-4; MMDVMHost `YSFPayload.cpp` and DSDcc `ysf.cpp` read them so). `ysf_dch_decode_csd2()` and
+  `ysf_dch_decode2()` give the uplink to `route_text[0]` and the downlink to `route_text[1]`, which the terminal's
+  `UPL:`/`DNL:` row shows; main had the two swapped. `ysf_dch_decode()` and `ysf_conv_dch()` take the DCH `field` to
+  decode (0 CSD1, 1 CSD2, 2 text), never the FICH block number. Tests: `YSF_DCH_DECODE`
+  `test_dch_csd2_tracks_uplink_and_downlink`, `test_dch2_tracks_destination_source_links_and_remarks` and the header
+  and terminator cases, every CSD2 written downlink first.
 - YSF call mode 1 ("radio ID", `src/protocol/ysf/ysf.c`): the CSD1 destination field is printed as a 5-character
   destination radio ID and a 5-character source radio ID, but the call's target text keeps all 10 characters. The
   split is not changed: the two independent decoders checked disagree (DSDcc `processCSD1()` reads destination and
