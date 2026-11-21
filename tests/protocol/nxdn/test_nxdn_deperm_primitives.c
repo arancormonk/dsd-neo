@@ -549,6 +549,54 @@ test_sacch_state_update(void) {
     return rc;
 }
 
+/* DCR after a named NXDN call whose release was missed (issue #903): the first confirmed SB0 opens a fresh anonymous
+ * epoch, never one carrying the named call's group and radio; the SB0s after it continue that epoch. */
+static int
+test_sacch2_dcr_after_named_call_starts_its_own(void) {
+    static const uint8_t m_data[5] = {0xA1U, 0xB2U, 0xC3U, 0xD4U, 0xE5U};
+    static Event_History_I histories[2];
+    static dsd_opts opts;
+    static dsd_state state;
+    uint8_t trellis[32];
+    int rc = 0;
+
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    init_sacch2_state(&state, histories);
+    const dsd_call_observation named = {
+        .protocol = DSD_SYNC_NXDN_POS,
+        .slot = 0U,
+        .kind = DSD_CALL_KIND_GROUP_VOICE,
+        .ota_target_id = 500U,
+        .policy_target_id = 500U,
+        .ota_source_id = 123U,
+    };
+    rc |= expect_int("dcr-after-named-opens", dsd_call_state_observe(&state, &named, DSD_CALL_BOUNDARY_BEGIN), 1);
+    dsd_call_snapshot call;
+    (void)dsd_call_state_get(&state, 0U, &call);
+    const uint64_t named_epoch = call.epoch;
+
+    make_sacch2_trellis(trellis, 1U, 0U, 0x01U);
+    nxdn_confirm_begin_frame(&state);
+    nxdn_handle_sacch2(&opts, &state, trellis, m_data, 0x2AU, 0x2AU);
+    nxdn_confirm_begin_frame(&state);
+    nxdn_handle_sacch2(&opts, &state, trellis, m_data, 0x2AU, 0x2AU);
+    rc |= expect_int("dcr-after-named-canonical", dsd_call_state_get(&state, 0U, &call), 1);
+    rc |= expect_int("dcr-after-named-new-epoch", call.epoch != named_epoch, 1);
+    rc |= expect_int("dcr-after-named-kind", call.kind, DSD_CALL_KIND_VOICE);
+    rc |= expect_int("dcr-after-named-target", (int)call.ota_target_id, 0);
+    rc |= expect_int("dcr-after-named-policy-target", (int)call.policy_target_id, 0);
+    rc |= expect_int("dcr-after-named-source", (int)call.ota_source_id, 0);
+    rc |= expect_int("dcr-after-named-confirmed-anonymous", call.confirmed_anonymous, 1);
+    const uint64_t dcr_epoch = call.epoch;
+
+    nxdn_confirm_begin_frame(&state);
+    nxdn_handle_sacch2(&opts, &state, trellis, m_data, 0x2AU, 0x2AU);
+    rc |= expect_int("dcr-after-named-continues", dsd_call_state_get(&state, 0U, &call), 1);
+    rc |= expect_int("dcr-after-named-same-epoch", call.epoch == dcr_epoch, 1);
+    dsd_state_ext_free_all(&state);
+    return rc;
+}
+
 static int
 test_sacch2_state_update(void) {
     static const uint8_t m_data[5] = {0xA1U, 0xB2U, 0xC3U, 0xD4U, 0xE5U};
@@ -590,6 +638,8 @@ test_sacch2_state_update(void) {
     rc |= expect_int("sacch2-single-canonical", dsd_call_state_get(&state, 0U, &call), 1);
     /* DCR carries no decoded group or radio: the call is identity-less voice, never a made-up group (issue #903). */
     rc |= expect_int("sacch2-single-kind", call.kind, DSD_CALL_KIND_VOICE);
+    /* Confirmed traffic, unlike a bare sync's provisional epoch: shown and kept though it names nobody. */
+    rc |= expect_int("sacch2-single-confirmed-anonymous", call.confirmed_anonymous, 1);
     rc |= expect_int("sacch2-single-target", (int)call.ota_target_id, 0);
     rc |= expect_int("sacch2-single-policy-target", (int)call.policy_target_id, 0);
     rc |= expect_int("sacch2-single-source", (int)call.ota_source_id, 0);
@@ -602,6 +652,8 @@ test_sacch2_state_update(void) {
     rc |= expect_int("sacch2-single-event-protocol", histories[0].Event_History_Items[0].systype, DSD_SYNC_NXDN_POS);
     rc |= expect_int("sacch2-single-event-target", histories[0].Event_History_Items[0].target_id, 0);
     rc |= expect_int("sacch2-single-event-source", histories[0].Event_History_Items[0].source_id, 0);
+    rc |= expect_int("sacch2-single-event-confirmed-anonymous", histories[0].Event_History_Items[0].confirmed_anonymous,
+                     1);
     rc |= expect_int("sacch2-single-event-encrypted", histories[0].Event_History_Items[0].enc, 1);
     rc |= expect_int("sacch2-single-event-algid", histories[0].Event_History_Items[0].enc_alg, 1);
     rc |= expect_int("sacch2-single-event-key", histories[0].Event_History_Items[0].enc_key, 0);
@@ -1709,6 +1761,7 @@ main(void) {
     rc |= test_bit_window_and_state_helpers();
     rc |= test_sacch_state_update();
     rc |= test_sacch2_state_update();
+    rc |= test_sacch2_dcr_after_named_call_starts_its_own();
     rc |= test_sacch2_release_ends_an_nxdn_call_only();
     rc |= test_ran_after_dcr_stand_in_is_an_access_code();
     rc |= test_cac_crc_failure_reset();

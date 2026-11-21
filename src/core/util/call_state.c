@@ -570,6 +570,7 @@ call_state_seed_reacquired_snapshot(dsd_call_snapshot* snapshot, const dsd_call_
     snapshot->channel = previous->channel;
     snapshot->channel_kind = previous->channel_kind;
     snapshot->analog_mode = previous->analog_mode;
+    snapshot->confirmed_anonymous = previous->confirmed_anonymous;
     snapshot->frequency_hz = previous->frequency_hz;
     snapshot->reacquire_rx_id = previous->reacquire_rx_id;
     snapshot->crypto = previous->crypto;
@@ -683,6 +684,9 @@ call_state_apply_observation(dsd_call_snapshot* snapshot, const dsd_call_observa
         snapshot->emergency = observation->emergency;
         snapshot->priority = observation->priority;
         snapshot->has_service_metadata = 1U;
+    }
+    if (observation->confirmed_anonymous != 0U) {
+        snapshot->confirmed_anonymous = 1U;
     }
 }
 

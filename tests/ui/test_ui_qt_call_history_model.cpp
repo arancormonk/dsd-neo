@@ -572,6 +572,24 @@ test_marked_and_serviced_notice_titles(void) {
     expect("search finds the serviced notices by their service", view.count() == 2);
 }
 
+/* Issue #903: a confirmed DCR call names no party and has no channel name, but its protocol checked it as traffic
+ * (confirmed_anonymous): history keeps it, where a bare sync's identity-less row is dropped. */
+void
+test_confirmed_anonymous_row_is_logged(void) {
+    resetStorage();
+    RingFixture ring;
+    CallHistoryModel model;
+    const time_t when = 1754500600;
+    ring.commit(0, 0, 0, when, when + 3)->systype = DSD_SYNC_NXDN_POS;
+    model.refresh(ring.state);
+    expect("identity-less nxdn row dropped", model.count() == 0);
+    Event_History* dcr = ring.commit(0, 0, 0, when + 100, when + 103);
+    dcr->systype = DSD_SYNC_NXDN_POS;
+    dcr->confirmed_anonymous = 1U;
+    model.refresh(ring.state);
+    expect("confirmed anonymous row logged", model.count() == 1);
+}
+
 /* Issue #903: an NXDN Type-D group's "pp-iiii" text only spells its numeric talkgroup, so the row is named as a bare
  * number is (dsd_call_target_text_is_name()): its list name, else the channel it was heard on, else the text. A text
  * target with no number and an M17 callsign keep naming their rows over the channel. */
@@ -7771,6 +7789,7 @@ main(int argc, char** argv) {
     test_marked_and_serviced_notice_titles();
     test_channel_label_is_its_own_role();
     test_type_d_text_yields_to_names();
+    test_confirmed_anonymous_row_is_logged();
     test_target_ids_read_as_their_names();
     test_target_names_outlive_their_session();
     test_reacquisition_merge_updates_in_place();

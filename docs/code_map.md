@@ -12423,7 +12423,12 @@ Call frequency and access-code provenance (issue #575). A call's canonical `freq
   `MetricsModel::fillNxdnSite()`).
 - NXDN call identity without a decoded ID. A DCR call (SACCH2 SB0 call traffic, `nxdn_update_sacch2_identity_state()`)
   is identity-less voice: kind VOICE, target and source 0, labelled "JPN DCR". It never takes a made-up group, which
-  would land in history and feed talkgroup policy (issue #903).
+  would land in history and feed talkgroup policy (issue #903). Its observation sets `confirmed_anonymous`
+  (`dsd_call_observation`, `dsd_call_snapshot`, `Event_History`): checked traffic, unlike a bare sync's provisional
+  epoch, so the call view shows it (`call_has_no_identity()`), the event layer keeps its row (`named_call`) and Qt
+  history lists it (`ring_item_display_kind()`). It is no identity: it never makes an ended call reacquirable. The
+  first SB0 after a named NXDN call whose release was missed opens a fresh epoch (`nxdn_dcr_call_boundary()`), and
+  the SB0s after it continue that epoch.
 - NXDN Type-D addresses (`nxdn_internal.h`: `nxdn_typed_full_id()`, `nxdn_typed_low_id()`, `nxdn_typed_prefix()`,
   `nxdn_typed_id_text()`). A Type-D unit or group ID is 11 bits under a 5-bit Home Repeater / Prefix (TS 1-E
   6.6.6-6.6.8). The VCALL, the SD (0x38) and packet (0x09) data call headers and the SCCH INFO4/INFO3/INFO2 carry the

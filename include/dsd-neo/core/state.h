@@ -787,6 +787,9 @@ typedef struct {
     // An analog row's mode, a dsd_analog_mode (<dsd-neo/core/analog_mode.h>): NFM or AM as the demodulator ran, unknown
     // (0) on audio input. A row is analog by its systype (DSD_SYNC_ANALOG); the mode means nothing on any other row.
     uint8_t analog_mode;
+    // 1: a voice call that names no party but that its protocol checked as real traffic (an NXDN DCR call,
+    // dsd_call_snapshot::confirmed_anonymous): a frontend lists the row though no ID or text names it.
+    uint8_t confirmed_anonymous;
     // The system and site the call was heard on: the site parts (dsd_rxid_site_snapshot(),
     // <dsd-neo/core/received_identity_site.h>) of the received identity record the sys_id parts come from, taken under
     // the same rule and frozen with them -- what the carrier sent while the call was heard, never a part of the moment
