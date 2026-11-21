@@ -23,6 +23,7 @@
 #include <dsd-neo/engine/manual_tune.h>
 #include <dsd-neo/engine/scan_voice_gate.h>
 #include <dsd-neo/engine/signal_search.h>
+#include <dsd-neo/engine/trunk_tuning.h>
 #include <dsd-neo/runtime/analog_channel.h>
 #include <dsd-neo/runtime/config.h>
 #include <dsd-neo/runtime/control_pump.h>
@@ -36,11 +37,13 @@
 #include <dsd-neo/runtime/signal_search_avoids.h>
 #include <dsd-neo/runtime/signal_search_hooks.h>
 #include <dsd-neo/runtime/telemetry.h>
+#include <dsd-neo/runtime/tetra_rate.h>
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
 #include "p25_site_snapshot.h"
 #include "scan_owner.h"
+#include "scan_tetra_internal.h"
 #ifdef USE_RADIO
 #include <dsd-neo/io/rtl_stream_c.h>
 #include <dsd-neo/io/signal_measure.h>
@@ -139,6 +142,9 @@ typedef struct {
     /* A decoder session ended during a visit: the session's P25 site is put back once its final call snapshots are
        taken (dsd_engine_signal_search_release_site()). */
     int site_owed;
+    /* An enabled range identifies TETRA (issue #748): the search holds the TETRA state across its landings and starts
+       it cold at each (dsd_engine_scan_tetra_landing()), from Start or the Resume that applied such a range. */
+    int needs_tetra;
 #ifdef USE_RADIO
     dsd_signal_search_span span;
     dsd_signal_measure_report report;
@@ -353,8 +359,23 @@ search_apply_airspy(const search_coord* c, dsd_opts* opts) {
     return 0;
 }
 
+/* The TED timing a visit's retune names: the decoder's own, except for TETRA, whose CQPSK chain runs at the DSP rate:
+   the rate over 18000 symbols/s, when the stream publishes a rate TETRA runs at (the stream times an unforced profile
+   for the complex rate it lands at either way). */
+static int
+search_retune_ted_sps(const dsd_opts* opts, const dsd_state* state, dsd_scan_mode mode) {
+    if (mode == DSD_SCAN_MODE_TETRA_DMO) {
+        const int rate_hz = dsd_engine_scan_dsp_rate_hz(opts, state);
+        if (dsd_tetra_dsp_rate_runs(rate_hz)) {
+            return rate_hz / DSD_TETRA_SYMBOL_RATE_HZ;
+        }
+    }
+    return state->samplesPerSymbol;
+}
+
 static void
-search_stage_gain(const search_coord* c, const dsd_opts* opts, const dsd_state* state, uint32_t target) {
+search_stage_gain(const search_coord* c, const dsd_opts* opts, const dsd_state* state, uint32_t target,
+                  dsd_scan_mode mode) {
     const dsd_signal_search_range* r = &c->config.ranges[c->status.range_index];
     dsd_decode_mode_profile profile = dsd_scan_mode_effective_profile(opts, state);
     rtl_stream_retune_gain_profile gain = {0};
@@ -369,7 +390,7 @@ search_stage_gain(const search_coord* c, const dsd_opts* opts, const dsd_state* 
     rtl_stream_prepare_retune_profile_for_target_with_gain(
         target, state->rf_mod == 1, profile.symbol_rate_hz, profile.levels,
         dsd_rtl_channel_profile_for(opts, profile.symbol_rate_hz, profile.levels, state->rf_mod),
-        state->samplesPerSymbol, 0, &gain);
+        search_retune_ted_sps(opts, state, mode), 0, &gain);
 }
 
 static int
@@ -408,16 +429,45 @@ search_time_typed_visit(const dsd_opts* opts, dsd_state* state, dsd_scan_mode mo
     }
 }
 
+/* The scan class a tune of range @p r runs: the analog monitor of the range's kind, a typed range's class (2..9: the
+   class plus one), the session's Auto baseline for an Auto range, and for a TETRA range (issue #748), named by its own
+   value, the TETRA preset (the tetra-dmo class's, which decodes trunked and direct mode alike) on a visit only: its span
+   tunes run the baseline, as a span return does. */
+static dsd_scan_mode
+search_tune_mode(const dsd_signal_search_range* r, int visit, int analog) {
+    if (analog) {
+        return r->am ? DSD_SCAN_MODE_AM : DSD_SCAN_MODE_NFM;
+    }
+    if (dsd_signal_search_range_is_tetra(r)) {
+        return visit ? DSD_SCAN_MODE_TETRA_DMO : DSD_SCAN_MODE_INHERIT;
+    }
+    return r->digital > 1 ? (dsd_scan_mode)(r->digital - 1) : DSD_SCAN_MODE_INHERIT;
+}
+
+/* A TETRA visit's modulation (issue #748): TETRA's pi/4-DQPSK runs only on the CQPSK chain, so the visit runs CQPSK
+   whatever a -m lock names, before its landing rate is predicted. The lock's flags change too, which the frame sync
+   applies at every pass; the scope puts the session's own back at the next row it enters and at its leave. */
+static void
+search_tetra_modulation(dsd_opts* opts, dsd_state* state) {
+    opts->mod_c4fm = 0;
+    opts->mod_qpsk = 1;
+    opts->mod_gfsk = 0;
+    opts->mod_p25p2_c4fm = 0;
+    state->rf_mod = 1;
+}
+
 static int
 search_prepare_profile(search_coord* c, dsd_opts* opts, dsd_state* state, uint32_t target, int analog) {
     const dsd_signal_search_range* r = &c->config.ranges[c->status.range_index];
     if (search_apply_airspy(c, opts)) {
         return -1;
     }
-    dsd_scan_mode mode = analog ? (r->am ? DSD_SCAN_MODE_AM : DSD_SCAN_MODE_NFM)
-                                : (r->digital > 1 ? (dsd_scan_mode)(r->digital - 1) : DSD_SCAN_MODE_INHERIT);
+    const dsd_scan_mode mode = search_tune_mode(r, c->visit, analog);
     if (dsd_scan_mode_enter(opts, state, mode)) {
         return -1;
+    }
+    if (mode == DSD_SCAN_MODE_TETRA_DMO) {
+        search_tetra_modulation(opts, state);
     }
     search_time_typed_visit(opts, state, mode);
     dsd_scan_option_values values;
@@ -437,7 +487,7 @@ search_prepare_profile(search_coord* c, dsd_opts* opts, dsd_state* state, uint32
     if (search_open_audio(c, opts, state, analog) < 0) {
         return -1;
     }
-    search_stage_gain(c, opts, state, target);
+    search_stage_gain(c, opts, state, target, mode);
     rtl_stream_retune_analog_profile family = {0};
     family.family = analog ? DSD_RX_FAMILY_ANALOG : DSD_RX_FAMILY_DIGITAL;
     family.kind = r->am ? DSD_ANALOG_DEMOD_AM : DSD_ANALOG_DEMOD_FM;
@@ -488,6 +538,9 @@ search_queue_tune(search_coord* c, dsd_opts* opts, dsd_state* state, uint32_t ta
     c->ticket = 0;
     c->tune_started = dsd_realtime_mono_ms();
     dsd_engine_carrier_boundary(opts, state, DSD_CARRIER_BOUNDARY_TUNE, 0);
+    /* The TETRA state starts cold once the boundary closed the visit's calls and recordings, before the session's site
+       comes back (issue #748): every departure, and so every landing, of a search with a TETRA range. */
+    dsd_engine_scan_tetra_landing(opts, state, c->needs_tetra);
     search_restore_site(c, state);
     /* The boundary closed what the visit being left received, under its tag; the bypass passes nothing more until the
        next landing names its own visit (issue #809). */
@@ -685,6 +738,7 @@ search_restart_paused(search_coord* previous, const dsd_signal_search_config* co
        coordinator and the runtime, never in a start. */
     previous->config.range_count = config->range_count;
     DSD_MEMCPY(previous->config.ranges, config->ranges, sizeof(config->ranges));
+    previous->needs_tetra = previous->needs_tetra || dsd_signal_search_config_needs_tetra(config);
     previous->status.range_index = previous->status.channel_index = 0;
     ++previous->status.pass;
     previous->suppressed_count = 0;
@@ -873,6 +927,7 @@ dsd_engine_signal_search_start_with_commit(dsd_opts* opts, dsd_state* state, con
     }
     search_coord* c = reserve.coord;
     c->config = *config;
+    c->needs_tetra = dsd_signal_search_config_needs_tetra(config);
     c->opts = opts;
     c->publish = observer;
     c->user = user;
@@ -1616,6 +1671,7 @@ static void
 search_close_reception(search_coord* c, dsd_opts* opts, dsd_state* state) {
     c->reception_ended = 1;
     dsd_engine_carrier_boundary(opts, state, DSD_CARRIER_BOUNDARY_TUNE, 0);
+    dsd_engine_scan_tetra_landing(opts, state, c->needs_tetra);
     search_restore_site(c, state);
     dsd_signal_search_visit_clear();
     dsd_frame_sync_reset_acquisition(opts, state, 1);
@@ -2083,6 +2139,8 @@ dsd_engine_signal_search_shutdown(dsd_opts* opts, dsd_state* state) {
        and a call still active is labelled with the code proven on its own carrier, never the session's. The engine's
        teardown puts the session's back after them (dsd_engine_signal_search_release_site(), issue #804). */
     if (c->reception_ended) {
+        /* The search lets the TETRA state go with the session's settings back (issue #748). */
+        dsd_engine_scan_tetra_release(opts, state);
         search_return_site(c, state);
     } else {
         c->site_owed = 1;
@@ -2101,18 +2159,21 @@ dsd_engine_signal_search_shutdown(dsd_opts* opts, dsd_state* state) {
 }
 
 void
-dsd_engine_signal_search_release_site(dsd_state* state) {
+dsd_engine_signal_search_release_site(dsd_opts* opts, dsd_state* state) {
 #ifdef USE_RADIO
     search_coord* c = state ? search_get(state) : NULL;
     if (!c || !c->site_owed) {
         return;
     }
     c->site_owed = 0;
+    /* The last visit's TETRA state goes once its final calls and recordings are closed, before the site (issue #748). */
+    dsd_engine_scan_tetra_release(opts, state);
     search_return_site(c, state);
     /* The visit's proof was its carrier's; the final no-carrier pass has cleared it, and the session's code was never
        proven here. */
     dsd_state_forget_p2_proof(state);
 #else
+    (void)opts;
     (void)state;
 #endif
 }

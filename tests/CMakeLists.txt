@@ -29058,6 +29058,8 @@ if(DSD_HAS_RADIO)
         engine/test_engine_signal_search.c
         ${PROJECT_SOURCE_DIR}/src/engine/signal_search.c
         ${PROJECT_SOURCE_DIR}/src/engine/signal_search_protocol.c
+        # The TETRA row checks and the TETRA state's hold across landings (issue #748).
+        ${PROJECT_SOURCE_DIR}/src/engine/scan_tetra.c
         ${PROJECT_SOURCE_DIR}/src/engine/p25_site_snapshot.c
         # The session's P25 patch table, kept aside while the search visits other carriers.
         ${PROJECT_SOURCE_DIR}/src/core/util/p25_patch_state.c
@@ -29088,6 +29090,8 @@ if(DSD_HAS_RADIO)
         engine/test_engine_signal_search_scene.c
         ${PROJECT_SOURCE_DIR}/src/engine/signal_search.c
         ${PROJECT_SOURCE_DIR}/src/engine/signal_search_protocol.c
+        # The TETRA row checks and the TETRA state's hold across landings (issue #748).
+        ${PROJECT_SOURCE_DIR}/src/engine/scan_tetra.c
         ${PROJECT_SOURCE_DIR}/src/engine/p25_site_snapshot.c
         # The session's P25 patch table, kept aside while the search visits other carriers.
         ${PROJECT_SOURCE_DIR}/src/core/util/p25_patch_state.c

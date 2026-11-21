@@ -70,8 +70,9 @@ int dsd_engine_signal_search_probe(const dsd_opts* opts, const dsd_state* state)
 void dsd_engine_signal_search_shutdown(dsd_opts* opts, dsd_state* state);
 /** Puts the session's own P25 site back (issue #804) when the decoder session ended during a visit: the search's
  * shutdown left the visit's code and tables for the session's final call snapshots. The engine's teardown calls it
- * after them, before anything that reads the site (the band plan export). Unproven; a no-op otherwise, and again. */
-void dsd_engine_signal_search_release_site(dsd_state* state);
+ * after them, before anything that reads the site (the band plan export). Unproven; a no-op otherwise, and again. A
+ * search with a TETRA range starts the TETRA state cold here first and lets its hold go (issue #748). */
+void dsd_engine_signal_search_release_site(dsd_opts* opts, dsd_state* state);
 /** Only call with protocol-confirmed observations from runtime evidence hooks. */
 void dsd_engine_signal_search_evidence_at(const dsd_state* state, const char* protocol, int sync, int slot,
                                           uint32_t target, uint32_t source, const char* access);
