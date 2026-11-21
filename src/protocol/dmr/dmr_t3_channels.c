@@ -17,6 +17,7 @@
 #include <stdlib.h>
 #include "dmr_call_channel.h"
 #include "dmr_t3_channels_internal.h"
+#include "dmr_tiii_site.h"
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
@@ -120,13 +121,22 @@ dmr_t3_chan_network_changed(dsd_opts* opts, dsd_state* state) {
     }
 }
 
+/* Whether two system codes name one network: the same MODEL and NET fields, whatever the SITE (TS 102 361-4 §6.1.2, the
+   channel plan is the network's). Both decode alike, so a vendor's numbering makes no difference here. */
+static int
+dmr_t3_chan_same_network(uint16_t a, uint16_t b) {
+    const dmr_tiii_code ca = dmr_tiii_decode_syscode(a);
+    const dmr_tiii_code cb = dmr_tiii_decode_syscode(b);
+    return ca.model == cb.model && ca.net == cb.net;
+}
+
 void
 dmr_t3_chan_note_checked_syscode(dsd_state* state, uint16_t syscode) {
     dmr_ext_t* ext = dmr_ext_get_or_create(state);
     if (ext == NULL) {
         return;
     }
-    if (ext->syscode_valid != 0U && ext->syscode != syscode) {
+    if (ext->syscode_valid != 0U && !dmr_t3_chan_same_network(ext->syscode, syscode)) {
         dmr_t3_chan_drop_network(state, ext);
     }
     ext->syscode = syscode;

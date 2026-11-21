@@ -28748,6 +28748,8 @@ if(DSD_HAS_RADIO)
         ${PROJECT_SOURCE_DIR}/src/engine/signal_search.c
         ${PROJECT_SOURCE_DIR}/src/engine/signal_search_protocol.c
         ${PROJECT_SOURCE_DIR}/src/engine/p25_site_snapshot.c
+        # The DMR channel provenance a visit must leave alone (discussion #900).
+        ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_t3_channels.c
         # The session's P25 patch table, kept aside while the search visits other carriers.
         ${PROJECT_SOURCE_DIR}/src/core/util/p25_patch_state.c
         ${PROJECT_SOURCE_DIR}/src/core/util/receive.c

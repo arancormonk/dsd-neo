@@ -60,8 +60,8 @@ void dmr_t3_chan_note_map_loaded(dsd_state* state);
 void dmr_t3_chan_note_map_cleared(dsd_state* state);
 
 /**
- * The receiver is on another network (an operator move, or a checked system code that differs from the last checked
- * one): the over-the-air rows (SITE, UNVERIFIED, NEIGHBOUR, ESTIMATE) and their trust bytes are dropped, FILE and USER
+ * The receiver is on another network (an operator move, or a checked system code whose MODEL or NET differs from the
+ * last checked one's; another site of the same network is none): the over-the-air rows (SITE, UNVERIFIED, NEIGHBOUR, ESTIMATE) and their trust bytes are dropped, FILE and USER
  * rows stay, and the network generation bumps. A trip from the control channel to a voice channel and back is none.
  */
 void dmr_t3_chan_network_changed(dsd_opts* opts, dsd_state* state);

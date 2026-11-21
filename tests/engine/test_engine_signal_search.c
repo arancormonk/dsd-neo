@@ -25,6 +25,7 @@
 #include <dsd-neo/engine/signal_search.h>
 #include <dsd-neo/io/rtl_stream_c.h>
 #include <dsd-neo/io/signal_measure.h>
+#include <dsd-neo/protocol/dmr/dmr_t3_channels.h>
 #include <dsd-neo/protocol/p25/p25_cc_candidates.h>
 #include <dsd-neo/runtime/analog_channel.h>
 #include <dsd-neo/runtime/control_pump.h>
@@ -40,6 +41,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include "../../src/engine/scan_owner.h"
+#include "../../src/protocol/dmr/dmr_t3_channels_internal.h"
 
 static dsd_signal_search_status status;
 static dsd_signal_capture capture = {1536000, 100384000, 1, 384000, 384000, 0, 0, DSD_SIGNAL_CLIP_LEVEL_DEFAULT};
@@ -332,6 +334,9 @@ static uint64_t boundary_session, boundary_hit;
    ended were labelled with. */
 static uint64_t boundary_code;
 static uint8_t boundary_proven;
+/* The kind of the latest carrier boundary: a visit's is a tune, which the production boundary runs without dropping the
+   DMR Tier III channels the air taught (ENGINE_STREAM_GAP proves it; discussion #900 F2). */
+static dsd_carrier_boundary_kind boundary_kind = DSD_CARRIER_BOUNDARY_STREAM_GAP;
 
 /* The P25 Phase 2 code (WACN(20) << 24 | SYSID(12) << 12 | NAC(12)) @p state holds. */
 static uint64_t
@@ -347,6 +352,7 @@ dsd_engine_carrier_boundary(dsd_opts* opts, dsd_state* state, dsd_carrier_bounda
     (void)opts;
     (void)guard;
     ++boundary;
+    boundary_kind = reason;
     boundary_tagged = dsd_signal_search_visit_get(&boundary_session, &boundary_hit);
     boundary_code = code_held(state);
     boundary_proven = state->p2_cc_verified;
@@ -3094,6 +3100,37 @@ test_hardset_restored(dsd_opts* o, dsd_state* s, const dsd_signal_search_config*
     session_site(s, 0, 0, 0);
 }
 
+/* A DMR Tier III channel the session learned from its site survives the search's visits with its origin and trust: a
+   visit's boundary is a tune, which keeps them, and the departure's map restore puts the same row back under the origin
+   it never lost (discussion #900 F2). */
+enum { LEARNED_CHANNEL = 9 };
+
+static void
+test_learned_dmr_channel_survives_visits(dsd_opts* o, dsd_state* s, const dsd_signal_search_config* config) {
+    const dsd_signal_search_config one = tag_config(config, 85, 1, 0);
+    session_site(s, CODE_A, 0, 0);
+    dmr_ext_t* ext = dmr_ext_get_or_create(s);
+    assert(ext != NULL);
+    dsd_state_set_trunk_chan_freq(s, LEARNED_CHANNEL, 852012500);
+    ext->origin[LEARNED_CHANNEL] = (uint8_t)DMR_CHAN_ORIGIN_SITE;
+    s->dmr_lcn_trust[LEARNED_CHANNEL] = 2U;
+    const uint32_t generation = dmr_t3_chan_generation(s);
+    start_tag_session(o, s, &one);
+    visit_strongest(o, s);
+    assert(boundary_kind == DSD_CARRIER_BOUNDARY_TUNE);
+    next_visit(o, s);
+    assert(boundary_kind == DSD_CARRIER_BOUNDARY_TUNE);
+    assert(s->trunk_chan_map[LEARNED_CHANNEL] == 852012500 && s->dmr_lcn_trust[LEARNED_CHANNEL] == 2U);
+    assert(dmr_t3_chan_origin(s, LEARNED_CHANNEL) == DMR_CHAN_ORIGIN_SITE);
+    stop_tag_session(o, s);
+    assert(s->trunk_chan_map[LEARNED_CHANNEL] == 852012500 && s->dmr_lcn_trust[LEARNED_CHANNEL] == 2U);
+    assert(dmr_t3_chan_origin(s, LEARNED_CHANNEL) == DMR_CHAN_ORIGIN_SITE);
+    assert(dmr_t3_chan_generation(s) == generation);
+    s->dmr_lcn_trust[LEARNED_CHANNEL] = 0U;
+    dmr_t3_chan_note_map_cleared(s);
+    session_site(s, 0, 0, 0);
+}
+
 static void
 test_unknown_identity_restored(dsd_opts* o, dsd_state* s, const dsd_signal_search_config* config) {
     const dsd_signal_search_config one = tag_config(config, 84, 1, 0);
@@ -3539,6 +3576,7 @@ test_p25_site_and_codes(dsd_opts* o, dsd_state* s, const dsd_signal_search_confi
     test_iden_before_nsb_restored(o, s, config);
     test_pending_announcements_stay_with_their_site(o, s, config);
     test_hardset_restored(o, s, config);
+    test_learned_dmr_channel_survives_visits(o, s, config);
     test_unknown_identity_restored(o, s, config);
     test_verified_seed_at_start_not_restored_as_proof(o, s, config);
     test_shutdown_during_active_call(o, s, config);

@@ -38,7 +38,7 @@ typedef struct {
     uint8_t origin[0x1000];
     uint32_t generation;
     uint32_t revision;
-    /* The last system code a checked C_ALOHA named, the baseline of a network change. */
+    /* The last system code a checked C_ALOHA named, the baseline of a network change (its MODEL and NET). */
     uint16_t syscode;
     uint8_t syscode_valid;
 } dmr_ext_t;
@@ -57,8 +57,9 @@ int dmr_t3_chan_origin_is_ota(unsigned origin);
  * any row went. */
 int dmr_t3_chan_drop_rows(dsd_state* state, dmr_ext_t* ext, int (*drop)(unsigned origin));
 
-/* A checked C_ALOHA named @p syscode for the control channel the receiver is on: a code other than the last checked
- * one is a network change (dmr_t3_chan_network_changed()). */
+/* A checked C_ALOHA named @p syscode for the control channel the receiver is on: a code whose MODEL or NET differs from
+ * the last checked one's is a network change (dmr_t3_chan_network_changed()); another SITE of the same network is
+ * none. */
 void dmr_t3_chan_note_checked_syscode(dsd_state* state, uint16_t syscode);
 
 #endif /* DSD_NEO_SRC_PROTOCOL_DMR_DMR_T3_CHANNELS_INTERNAL_H_ */

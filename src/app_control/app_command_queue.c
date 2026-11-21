@@ -2351,7 +2351,7 @@ ui_cmd_rtl_set_freq_tune(dsd_opts* opts, dsd_state* state, uint32_t v, int* scan
         *scan_paused = trunk_scan_paused;
     } else {
         /* The receiver moved: the carrier boundary runs before anything decodes the new carrier (issue #575). */
-        dsd_engine_carrier_boundary(opts, state, DSD_CARRIER_BOUNDARY_TUNE, 0);
+        svc_operator_carrier_boundary(opts, state, 0);
     }
     dsd_frame_sync_reset_mod_state();
     dsd_analog_rx_reset(state);
@@ -4169,7 +4169,7 @@ try_manual_candidate_cycle_locked(dsd_opts* opts, dsd_state* state, int p25_live
     if (opts->trunk_enable != 1) {
         /* With trunking off the candidate list is no system the receiver follows: the next entry is another carrier
            (issue #575). */
-        dsd_engine_carrier_boundary(opts, state, DSD_CARRIER_BOUNDARY_TUNE, p25_live);
+        svc_operator_carrier_boundary(opts, state, p25_live);
     } else {
         ui_user_move_leaves_network(opts, state, p25_live, 0);
         manual_move_judge_after(opts, state, &judge, cand);
@@ -4228,7 +4228,7 @@ lcn_cycle_finish(dsd_opts* opts, dsd_state* state, int row, long freq, int p25_l
     if (opts->trunk_enable != 1) {
         /* A conventional list's next channel is another carrier; a trunked system's channel list is the system's own
            (issue #575), but the user moved, so what was received before is not this channel's identity. */
-        dsd_engine_carrier_boundary(opts, state, DSD_CARRIER_BOUNDARY_TUNE, p25_live);
+        svc_operator_carrier_boundary(opts, state, p25_live);
     } else {
         ui_user_move_leaves_network(opts, state, p25_live, 0);
         manual_move_judge_after(opts, state, judge, freq);
@@ -5012,7 +5012,7 @@ apply_cfg_radio_input(dsd_opts* opts, dsd_state* state, const dsdneoUserConfig* 
     const int rc = apply_cfg_radio_input_tuned(opts, state, cfg, before);
     if (!apply_cfg_left_carrier(state, carrier_seq, source_key, starts) && before->input.audio_in_type == AUDIO_IN_RTL
         && opts->audio_in_type == AUDIO_IN_RTL && dsd_opts_tuned_freq_hz(opts) != before->input.tuned_freq_hz) {
-        dsd_engine_carrier_boundary(opts, state, DSD_CARRIER_BOUNDARY_TUNE, 1); // a config apply holds the guard
+        svc_operator_carrier_boundary(opts, state, 1); // a config apply holds the guard
     }
     return rc;
 }
@@ -7627,7 +7627,7 @@ apply_rr_import(dsd_opts* opts, dsd_state* state, const struct dsd_app_command* 
            while the calls of the system it leaves are still active, before anything below ends them
            (decode_mode_apply_value() -> reset_call_tracking()), so the followed channel's buffered audio plays under its
            talkgroup (issue #575). The import runs under the P25 SM tick guard. */
-        dsd_engine_carrier_boundary(opts, state, DSD_CARRIER_BOUNDARY_TUNE, 1);
+        svc_operator_carrier_boundary(opts, state, 1);
     }
     (void)svc_leave_channel_scan(opts, state);
     char note[DSD_TETRA_RATE_ADVICE_BRIEF_MAX];

@@ -570,25 +570,33 @@ test_gap_resets_dmr_confirmation_keeps_colour_code(dsd_opts* opts, dsd_state* st
                && state->p2_cc_verified == 1U && state->p2_proven_nac == 0x293);
 }
 
-/* A gap is the same carrier, so the DMR Tier III channels the air taught stay; a tune to another carrier may be another
-   network, so they go, a file's row staying (discussion #900 F2). */
+/* The engine's boundary drops the DMR Tier III channels the air taught only for another source or input, which need not
+   be the same network; a gap, a -Y step, a replay retune and a tune (a signal search visit runs one; an operator's
+   tune drops them in app-control, svc_operator_carrier_boundary()) keep them, origin and trust included. A file's row
+   always stays (discussion #900 F2). */
 static void
 test_boundary_dmr_learned_channels(dsd_opts* opts, dsd_state* state) {
     state->trunk_chan_map[11] = 452000000L;
     dmr_t3_chan_note_map_loaded(state);
     expect("dmr channels: a site's channel is learned",
            dmr_t3_chan_learn(opts, state, 12U, 452012500L, DMR_CHAN_ORIGIN_SITE) == 1);
+    const uint8_t trust = state->dmr_lcn_trust[12];
     const uint32_t generation = dmr_t3_chan_generation(state);
 
-    dsd_engine_carrier_boundary(opts, state, DSD_CARRIER_BOUNDARY_STREAM_GAP, 0);
-    expect("dmr channels: a gap keeps the learned channel",
-           state->trunk_chan_map[12] == 452012500L && dmr_t3_chan_generation(state) == generation);
+    static const dsd_carrier_boundary_kind keep[] = {DSD_CARRIER_BOUNDARY_STREAM_GAP, DSD_CARRIER_BOUNDARY_SCAN_STEP,
+                                                     DSD_CARRIER_BOUNDARY_REPLAY_RETUNE, DSD_CARRIER_BOUNDARY_TUNE};
+    for (size_t i = 0; i < sizeof keep / sizeof keep[0]; i++) {
+        dsd_engine_carrier_boundary(opts, state, keep[i], 0);
+        expect("dmr channels: a gap, a scan step, a replay retune and a tune keep the learned channel",
+               state->trunk_chan_map[12] == 452012500L && dmr_t3_chan_origin(state, 12U) == DMR_CHAN_ORIGIN_SITE
+                   && state->dmr_lcn_trust[12] == trust && dmr_t3_chan_generation(state) == generation);
+    }
 
-    dsd_engine_carrier_boundary(opts, state, DSD_CARRIER_BOUNDARY_TUNE, 0);
-    expect("dmr channels: a tune drops the learned channel and its trust",
+    dsd_engine_carrier_boundary(opts, state, DSD_CARRIER_BOUNDARY_INPUT_SWITCH, 0);
+    expect("dmr channels: an input switch drops the learned channel and its trust",
            state->trunk_chan_map[12] == 0L && state->dmr_lcn_trust[12] == 0U
                && dmr_t3_chan_generation(state) == generation + 1U);
-    expect("dmr channels: a tune keeps the file's row", state->trunk_chan_map[11] == 452000000L);
+    expect("dmr channels: an input switch keeps the file's row", state->trunk_chan_map[11] == 452000000L);
     dsd_state_set_trunk_chan_freq(state, 11U, 0L);
     dmr_t3_chan_note_map_cleared(state);
 }

@@ -436,6 +436,32 @@ test_cc_vc_cc_trip_keeps_learned_rows(void) {
     dsd_trunk_tuning_hooks_set((dsd_trunk_tuning_hooks){0});
 }
 
+/* The channel plan is the network's (TS 102 361-4 §6.1.2): a checked C_ALOHA from another site of the same network
+   (MODEL and NET equal) keeps what the air taught; another NET drops it. Small model: 5 SITE bits under 7 NET bits. */
+static void
+test_other_site_same_network_keeps_rows(void) {
+    reset();
+    dmr_sm_init(&g_opts, &g_state);
+    send_aloha(0x1234U); /* Small, NET 0x11, SITE 0x14 */
+    assert(dmr_t3_chan_learn(&g_opts, &g_state, 95U, 451087500L, DMR_CHAN_ORIGIN_SITE) == 1);
+    const uint32_t gen = dmr_t3_chan_generation(&g_state);
+
+    send_aloha(0x1223U); /* Small, NET 0x11, SITE 0x03 */
+    assert(g_state.trunk_chan_map[95] == 451087500L);
+    assert(dmr_t3_chan_origin(&g_state, 95U) == DMR_CHAN_ORIGIN_SITE);
+    assert(dmr_t3_chan_generation(&g_state) == gen);
+
+    send_aloha(0x1254U); /* Small, NET 0x12, SITE 0x14 */
+    assert(g_state.trunk_chan_map[95] == 0L);
+    assert(dmr_t3_chan_generation(&g_state) == gen + 1U);
+
+    /* The same NET under another MODEL is another network. */
+    assert(dmr_t3_chan_learn(&g_opts, &g_state, 95U, 451087500L, DMR_CHAN_ORIGIN_SITE) == 1);
+    send_aloha(0x2254U); /* Large: another MODEL */
+    assert(g_state.trunk_chan_map[95] == 0L);
+    assert(dmr_t3_chan_generation(&g_state) == gen + 2U);
+}
+
 static void
 test_save_restore_round_trip(void) {
     reset();
@@ -469,6 +495,7 @@ main(void) {
     test_network_change_drops_ota_rows_keeps_file_user();
     test_learned_notice_on_receiving_slot();
     test_cc_vc_cc_trip_keeps_learned_rows();
+    test_other_site_same_network_keeps_rows();
     test_save_restore_round_trip();
     dsd_state_ext_free_all(&g_state);
     printf("DMR_T3_CHANNELS: OK\n");

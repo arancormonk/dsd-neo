@@ -13221,6 +13221,22 @@ test_user_moves_while_trunking_forget_the_record(void) {
     rc |= expect_true("a trunked channel cycle drops the learned DMR channel",
                       state.trunk_chan_map[12] == 0L && state.dmr_lcn_trust[12] == 0U);
     freeState(&state);
+
+#ifdef USE_RADIO // the frequency entry is a radio build's command
+    /* A frequency entry runs the operator's carrier boundary (svc_operator_carrier_boundary()): the same. */
+    init_test_context(&opts, &state);
+    opts.trunk_enable = 0;
+    rc |= expect_int("a DMR channel learned before the frequency entry",
+                     dmr_t3_chan_learn(&opts, &state, 12U, 451012500L, DMR_CHAN_ORIGIN_SITE), 1);
+    reset_io_control_tune_stub(RTL_STREAM_TUNE_OK);
+    rc |= expect_int("frequency entry queued", dsd_app_command_set_u32(DSD_APP_CMD_RTL_SET_FREQ, 853000000U),
+                     DSD_APP_COMMAND_SUBMIT_QUEUED);
+    rc |= expect_int("frequency entry drained", dsd_app_drain_cmds(&opts, &state), 1);
+    rc |= expect_int("frequency entry tuned", g_io_control_tune_calls, 1);
+    rc |= expect_true("an operator tune's boundary drops the learned DMR channel",
+                      state.trunk_chan_map[12] == 0L && state.dmr_lcn_trust[12] == 0U);
+    freeState(&state);
+#endif
     return rc;
 }
 

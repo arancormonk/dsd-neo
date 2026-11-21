@@ -13363,12 +13363,17 @@ Private per-protocol modules worth knowing about:
   fill anchors on every row that is no estimate and writes its rows as ESTIMATE through the writer; any anchor that
   appears, moves or goes drops every estimate and fills again. A network change (`dmr_t3_chan_network_changed()`)
   drops the SITE, UNVERIFIED, NEIGHBOUR and ESTIMATE rows with their trust bytes and bumps the generation: a checked
-  C_ALOHA whose system code differs from the last checked one (`dmr_t3_chan_note_checked_syscode()`), every carrier
-  boundary but a stream gap, and an operator move that keeps trunking (`ui_user_move_leaves_network()`: a CC
-  selection of another system, a candidate or channel cycle; a Return-to-CC keeps them). A trunked CC -> voice -> CC
-  trip changes nothing. Trunk scan saves and restores the origins, generation, revision and system-code baseline per
+  C_ALOHA whose system code names another network than the last checked one, MODEL or NET differing (another SITE of
+  the same network is none: the channel plan is the network's, TS 102 361-4 §6.1.2;
+  `dmr_t3_chan_note_checked_syscode()`), and an operator boundary: every app-control tune boundary
+  (`svc_operator_carrier_boundary()`: a frequency entry, a cycle with trunking off, a config or RadioReference apply
+  that moves the receiver), a source or input switch boundary (`dsd_engine_carrier_boundary()`), and an operator move
+  that keeps trunking (`ui_user_move_leaves_network()`: a CC selection of another system, a candidate or channel
+  cycle; a Return-to-CC keeps them). A -Y step, a replay retune, a signal search visit, a stream gap and a trunked
+  CC -> voice -> CC trip change nothing. Trunk scan saves and restores the origins, generation, revision and system-code baseline per
   target beside `dmr_lcn_trust` (`dmr_t3_chan_save()`/`_restore()`); the revision moves on every row or origin change
-  and past both sides on a restore. Tests: `DMR_T3_CHANNELS`, `ENGINE_TRUNK_SCAN`.
+  and past both sides on a restore. Tests: `DMR_T3_CHANNELS`, `ENGINE_TRUNK_SCAN`, `ENGINE_STREAM_GAP`,
+  `ENGINE_SIGNAL_SEARCH`, `APP_COMMAND_QUEUE`.
 - Capacity Plus identity (`dmr_flco.c`, `dmr_csbk.c`, `dmr_trunk_sm.c`). Cap+ talkgroups are 8-bit (1..255) and
   radio IDs 16-bit. The FID 0x10 FLCO 0x04 group voice LC carries the talkgroup at bits 40..47, a 5-bit rest LSN at
   51..55 and the radio at 56..71 in every LC type (header, embedded, terminator); bits 24..39 are not part of the
