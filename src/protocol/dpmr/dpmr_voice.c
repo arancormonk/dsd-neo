@@ -489,52 +489,95 @@ dpmr_half_is_checked_frame0(const dPMRVoiceFS2Frame_t* f, int o) {
     return o == 0 && f->CCHDataCrcOk[1] != 0U && f->FrameNumbering[1] == 1U;
 }
 
-void
-dpmr_play_voice_frames(dsd_opts* opts, dsd_state* state, char ambe_fr[NB_OF_DPMR_VOICE_FRAME_TO_DECODE * 4][4][24]) {
-    uint32_t start = 0;
-    uint32_t end = 4;
+/* Whether half @p o is played: its scrambling is verified (issue #655), it is not attached data (issue #890: attached
+ * data is never AMBE, so it is neither played nor the scan's voice credit), and its checked mode
+ * (dpmr_resolve_half_modes(), never its own unchecked bits) is a voice mode. */
+static int
+dpmr_half_plays(const dsd_state* state, short o) {
+    const dPMRVoiceFS2Frame_t* f = &state->dPMRVoiceFS2Frame;
+    if (f->Scrambled[o] == DPMR_HALF_UNVERIFIED) {
+        return 0;
+    }
+    if (f->ServiceMode[o] == 5U && !dpmr_attached_data_half_is_voice(state, o)) {
+        return 0;
+    }
+    return dpmr_call_kind_for_mode(f->ServiceMode[o]) == DSD_CALL_KIND_VOICE;
+}
+
+/* A half that is not played still takes its place in the scrambler (issue #890): the transmitter scrambled its four
+ * TCH blocks, so the register steps past them as decoding them would (dsd_mbe_nxdn_scramble_skip_voice_frame(), four
+ * times 49 bits), and the next half played descrambles in phase. In a keyed Voice and attached data call a frame 0
+ * whose CCH failed is muted while the checked frame 1 behind it is speech (TS 102 658 5.5.7, 11.1.1 Figure 11.3); so
+ * is an unverified half, a data half, and every half of a frame played before its transmission is confirmed. A half
+ * known clear takes no step, as it takes none when played (it decodes outside the NXDN decoder); an unverified one
+ * steps, since a clear call does not use the register and a scrambled one needs the step. */
+static void
+dpmr_skip_half(dsd_state* state, short o) {
+    if (state->dPMRVoiceFS2Frame.Scrambled[o] == DPMR_HALF_CLEAR) {
+        return;
+    }
+    state->nxdn_cipher_type = 0x01;
+    for (int i = 0; i < 4; i++) {
+        dsd_mbe_nxdn_scramble_skip_voice_frame(state);
+    }
+    state->nxdn_cipher_type = 0;
+}
+
+static void
+dpmr_play_half(dsd_opts* opts, dsd_state* state, char ambe_fr[NB_OF_DPMR_VOICE_FRAME_TO_DECODE * 4][4][24], short o) {
+    const int realsynctype = state->synctype;
+    /* Each half is scrambled or clear on its own (issue #655): a scrambled half decodes through the NXDN scrambler, and
+     * the verdict the vocoder and mixers take from nxdn_cipher_type follows it half by half. */
+    const int scrambled = state->dPMRVoiceFS2Frame.Scrambled[o] == DPMR_HALF_SCRAMBLED;
+    state->nxdn_cipher_type = scrambled ? 0x01 : 0x00;
+    if (scrambled) {
+        state->synctype = DSD_SYNC_NXDN_POS;
+    }
+    if (opts->payload == 1) {
+        DSD_FPRINTF(stderr, "\n FN %d/4", state->dPMRVoiceFS2Frame.FrameNumbering[o] + 1);
+    }
+
+    /* A scrambled half plays through NXDN's decoder under its synctype; the receive policy judges dPMR's. */
+    const dsd_receive_context receive = dsd_receive_context_begin(state, DSD_SYNC_DPMR_FS2_POS);
+    const uint32_t start = o == 0 ? 0U : 4U;
+    for (uint32_t i = start; i < start + 4U; i++) {
+        processMbeFrame(opts, state, DSD_VOICE_PROTOCOL_DPMR, NULL, ambe_fr[i], NULL);
+        playSynthesizedVoiceMS(opts, state);
+    }
+    dsd_receive_context_end(state, receive);
+    state->synctype = realsynctype;
+    state->nxdn_cipher_type = 0;
+}
+
+/* The frame's halves in order: the scrambler reloads at a checked frame 0, then each half plays, or, when it does not,
+ * takes its place in the scrambler. A frame whose transmission is not confirmed (@p confirmed 0) plays nothing, and
+ * may be noise on a carrier where another protocol's call works in the same register (NXDN): it reloads and steps the
+ * register only for a half its checked content or the transmission says is scrambled. */
+static void
+dpmr_route_voice_frames(dsd_opts* opts, dsd_state* state, char ambe_fr[NB_OF_DPMR_VOICE_FRAME_TO_DECODE * 4][4][24],
+                        int confirmed) {
     for (short o = 0; o < 2; o++) {
-        if (dpmr_half_is_checked_frame0(&state->dPMRVoiceFS2Frame, o)) {
+        const int keeps_place = confirmed || state->dPMRVoiceFS2Frame.Scrambled[o] == DPMR_HALF_SCRAMBLED;
+        if (keeps_place && dpmr_half_is_checked_frame0(&state->dPMRVoiceFS2Frame, o)) {
             state->nxdn_payload_mi = 0; /* the scrambler reloads from the key (shared with NXDN) */
             state->nxdn_iv_on_air = 0U;
         }
-        if (o == 1) {
-            start = 4;
-            end = 8;
-        }
-
-        if (state->dPMRVoiceFS2Frame.Scrambled[o] == DPMR_HALF_UNVERIFIED) {
-            continue;
-        }
-        /* Attached data is never AMBE: it is neither played nor the scan's voice credit (issue #890). */
-        if (state->dPMRVoiceFS2Frame.ServiceMode[o] == 5U && !dpmr_attached_data_half_is_voice(state, o)) {
-            continue;
-        }
-        int realsynctype = state->synctype;
-        /* The half's checked mode (dpmr_resolve_half_modes()), never its own unchecked bits. */
-        if (dpmr_call_kind_for_mode(state->dPMRVoiceFS2Frame.ServiceMode[o]) == DSD_CALL_KIND_VOICE) {
-            /* Each half is scrambled or clear on its own (issue #655): a scrambled half decodes through the NXDN
-             * scrambler, and the verdict the vocoder and mixers take from nxdn_cipher_type follows it half by half. */
-            const int scrambled = state->dPMRVoiceFS2Frame.Scrambled[o] == DPMR_HALF_SCRAMBLED;
-            state->nxdn_cipher_type = scrambled ? 0x01 : 0x00;
-            if (scrambled) {
-                state->synctype = DSD_SYNC_NXDN_POS;
-            }
-            if (opts->payload == 1) {
-                DSD_FPRINTF(stderr, "\n FN %d/4", state->dPMRVoiceFS2Frame.FrameNumbering[o] + 1);
-            }
-
-            /* A scrambled half plays through NXDN's decoder under its synctype; the receive policy judges dPMR's. */
-            const dsd_receive_context receive = dsd_receive_context_begin(state, DSD_SYNC_DPMR_FS2_POS);
-            for (uint32_t i = start; i < end; i++) {
-                processMbeFrame(opts, state, DSD_VOICE_PROTOCOL_DPMR, NULL, ambe_fr[i], NULL);
-                playSynthesizedVoiceMS(opts, state);
-            }
-            dsd_receive_context_end(state, receive);
-            state->synctype = realsynctype;
-            state->nxdn_cipher_type = 0;
+        if (confirmed && dpmr_half_plays(state, o)) {
+            dpmr_play_half(opts, state, ambe_fr, o);
+        } else if (keeps_place) {
+            dpmr_skip_half(state, o);
         }
     }
+}
+
+void
+dpmr_play_voice_frames(dsd_opts* opts, dsd_state* state, char ambe_fr[NB_OF_DPMR_VOICE_FRAME_TO_DECODE * 4][4][24]) {
+    dpmr_route_voice_frames(opts, state, ambe_fr, 1);
+}
+
+void
+dpmr_skip_voice_frames(dsd_state* state) {
+    dpmr_route_voice_frames(NULL, state, NULL, 0);
 }
 
 int
@@ -590,6 +633,9 @@ processdPMRvoice(dsd_opts* opts, dsd_state* state) {
     dpmr_print_scrambler_state(opts, state);
     if (dpmr_confirm_is_confirmed(state)) {
         dpmr_play_voice_frames(opts, state, ctx.ambe_fr);
+    } else {
+        /* Nothing plays before the transmission is confirmed, but the frame keeps the scrambler's place. */
+        dpmr_skip_voice_frames(state);
     }
     DSD_FPRINTF(stderr, "\n");
 

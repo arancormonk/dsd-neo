@@ -1990,7 +1990,10 @@ suite runs under this compiler.
   stops after its 32 EHR words (1568 bits) until a fresh IV starts the next encryption session, per NXDN TS 1-D section
   5.4.4.2; it never repeats the final word or uses the unused cipher-block padding. A P25 Phase 1 frame the decoder
   drops before the vocoder (non-standard C0 or the crypto gate) still consumes its keystream position through
-  `dsd_mbe_p25p1_skip_voice_frame()`. Raw `.dmb` (D-STAR AMBE 2400) playback never applies `-b`.
+  `dsd_mbe_p25p1_skip_voice_frame()`; an NXDN-decoder AMBE frame a decoder does not play (a muted dPMR half) steps the
+  Scramble register past its 49 bits under the same rule a decoded frame follows (cipher 0x01 or a forced key, with a
+  key) through `dsd_mbe_nxdn_scramble_skip_voice_frame()`, which steps no DES/AES keystream. Raw `.dmb` (D-STAR AMBE
+  2400) playback never applies `-b`.
   Tests: `CORE_MBE_CRYPTO_SCOPE`, `P25_P1_LDU_HELPERS`.
 - Invariant (keyring presence and width, `<dsd-neo/core/keyring.h>`, `src/core/vocoder/keyring.c`): a keyring cell
   is present by its import flag (`rkey_array_loaded`), whatever its value, or by a non-zero value for material stored
@@ -14108,8 +14111,16 @@ Private per-protocol modules worth knowing about:
   MI_TYPE and MI_DET
   (message types 0000 to 1010; 5.5.19.1). The shared scrambler reloads only at a checked frame 0: a half that passed
   numbered 0, or a failed first half
-  whose second half passed numbered 1 (`dpmr_play_voice_frames()`). Tests: `DPMR_SYNC_DISPATCH`,
-  `DPMR_VOICE_BRIDGE`, `FRAME_SYNC_DPMR`.
+  whose second half passed numbered 1 (`dpmr_play_voice_frames()`). A half that is not played keeps its place in the
+  scrambler: the register steps past its four AMBE frames exactly as decoding them would
+  (`dsd_mbe_nxdn_scramble_skip_voice_frame()` in `<dsd-neo/core/vocoder.h>`, the vocoder's own Scramble rule), so
+  the next half played descrambles in phase (a keyed mode-101 call's failed frame 0 before a checked frame 1 of
+  speech, an unverified half, a data half). A half known clear takes no step, as it takes none when played. A frame
+  played before its transmission is confirmed steps it too (`dpmr_skip_voice_frames()`), but only for the halves its
+  checked content or the transmission says are scrambled, since it may be noise where an NXDN call works in the same
+  register. A frame a carrier boundary or an input interruption cuts steps nothing: the boundary resets the register,
+  and the next checked frame 0 reloads it. Tests: `DPMR_SYNC_DISPATCH`, `DPMR_VOICE_BRIDGE`, `FRAME_SYNC_DPMR`,
+  `CORE_MBE_CRYPTO_SCOPE`.
 - Signal search site notes (`dsd_signal_search_note_site()` in `<dsd-neo/runtime/signal_search_hooks.h>`): each writer
   passes the identity of one message that passed its check, after handling it, never decoder state; a SYSID of 0 names
   no system. P25 (`src/protocol/p25/p25_search_site.h`): a TSBK network status (`tsbk_handle_network_status()`,

@@ -85,6 +85,12 @@ processMbeFrame(dsd_opts* opts, dsd_state* state, dsd_voice_protocol protocol, c
     g_mbe_calls++;
 }
 
+/* These cases load no key and read no Scramble register. */
+void
+dsd_mbe_nxdn_scramble_skip_voice_frame(dsd_state* state) {
+    (void)state;
+}
+
 /* As core/receive.c does: the owner generic output paths judge while dPMR plays through NXDN's decoder. */
 dsd_receive_context
 dsd_receive_context_begin(dsd_state* state, int protocol) {

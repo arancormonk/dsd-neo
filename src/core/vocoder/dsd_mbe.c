@@ -1052,6 +1052,13 @@ mbe_process_x2(dsd_opts* opts, dsd_state* state, char ambe_fr[4][24], dsd_vocode
     frame_ctx->capture = MBE_CAPTURE_X2;
 }
 
+/* Whether a frame the NXDN decoder decodes for NXDN or a scrambled dPMR half runs the Scramble LFSR: Scramble (cipher
+   0x01), or a forced key, with a key loaded. */
+static int
+mbe_nxdn_cipher1_applies(const dsd_state* state) {
+    return (state->nxdn_cipher_type == 0x01 || state->M == 1) && dsd_key_scalar_present(state, 0);
+}
+
 static void
 mbe_apply_nxdn_cipher1(dsd_state* state, char ambe_d[49]) {
     if (state->nxdn_payload_mi == 0) {
@@ -1237,9 +1244,7 @@ mbe_process_nxdn(dsd_opts* opts, dsd_state* state, char ambe_fr[4][24], dsd_voco
     // dPMR halves', only.
     const int nxdn_crypto =
         frame_ctx->protocol == DSD_VOICE_PROTOCOL_NXDN || frame_ctx->protocol == DSD_VOICE_PROTOCOL_DPMR;
-    if (nxdn_crypto
-        && ((state->nxdn_cipher_type == 0x01 && dsd_key_scalar_present(state, 0))
-            || (state->M == 1 && dsd_key_scalar_present(state, 0)))) {
+    if (nxdn_crypto && mbe_nxdn_cipher1_applies(state)) {
         mbe_apply_nxdn_cipher1(state, frame_ctx->ambe_d);
     }
 
@@ -2828,6 +2833,16 @@ void
 processMbeFrameSoft(dsd_opts* opts, dsd_state* state, dsd_voice_protocol protocol, dsd_vocoder_soft_bit imbe_fr[8][23],
                     dsd_vocoder_soft_bit ambe_fr[4][24], dsd_vocoder_soft_bit imbe7100_fr[7][24]) {
     processMbeFrameInternal(opts, state, protocol, NULL, NULL, NULL, imbe_fr, ambe_fr, imbe7100_fr);
+}
+
+void
+dsd_mbe_nxdn_scramble_skip_voice_frame(dsd_state* state) {
+    if (state == NULL || !mbe_nxdn_cipher1_applies(state)) {
+        return;
+    }
+    char keystream[49] = {0};
+    mbe_apply_nxdn_cipher1(state, keystream); /* zeros in: the 49 key bits a decoded frame would have taken */
+    DSD_SECURE_ZERO(keystream, sizeof(keystream));
 }
 
 void
