@@ -317,6 +317,12 @@ typedef struct {
      */
     uint8_t identity_unread;
     /**
+     * 1 when the call ended on a terminator its own protocol's decoder verified (dsd_call_state_end_own_terminator()),
+     * 0 for any other end, another protocol's terminator on the slot included, and while the call is active. A YSF
+     * row takes the rdio fallback talkgroup only with it (Event_History::fallback_blocked, issue #888).
+     */
+    uint8_t own_terminator;
+    /**
      * DSD_CALL_CRYPTO_RX_* bits: which of received_algid and received_kid this transmission received over the air.
      * Sticky for the epoch: an update that did not receive a field leaves its received value alone, so a forced or
      * inferred ALG ID, or a live value a sync loss cleared, changes algid/kid but never these. A new epoch starts
@@ -602,6 +608,13 @@ int dsd_call_state_update_media(dsd_state* state, uint8_t slot, int media_active
  * check DSD_CALL_PHASE_ACTIVE themselves beforehand.
  */
 int dsd_call_state_end_ex(dsd_state* state, uint8_t slot, double observed_m, dsd_call_end_reason reason);
+/**
+ * End the slot's call on a terminator @p protocol's decoder verified: as dsd_call_state_end_ex() with
+ * DSD_CALL_END_TERMINATOR, whatever call the slot holds, and, when that call is @p protocol's
+ * (dsd_call_state_protocol_family()), marked as ended on its own terminator (dsd_call_snapshot::own_terminator).
+ * Returns as dsd_call_state_end_ex(); -1 also for @p protocol DSD_SYNC_NONE.
+ */
+int dsd_call_state_end_own_terminator(dsd_state* state, uint8_t slot, double observed_m, int protocol);
 /** End the active epoch as a deliberate teardown (DSD_CALL_END_EXPLICIT). */
 int dsd_call_state_end(dsd_state* state, uint8_t slot, double observed_m);
 

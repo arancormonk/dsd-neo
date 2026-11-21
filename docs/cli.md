@@ -438,11 +438,18 @@ Windows console runs:
   patched talkgroups) is talkgroup 1234, whose talkgroup settings apply.
   Before it plays, each export is checked once against the shape SDRTrunk writes a call in:
   - one call record, with nothing but white space after it;
-  - only the members SDRTrunk writes, each at most once and in SDRTrunk's order: `protocol`, `version`, `call_type`,
-    `from`, `to`, `encrypted`, `system`, `site`, `frames` (any may be missing). `frames` comes last, except that the
-    `system` and `site` of SDRTrunk versions before November 2025 come after it;
-  - each value of the kind SDRTrunk writes: text in quotes, a whole number (`version`), or `true`/`false`
-    (`encrypted`);
+  - only the members SDRTrunk writes, each at most once and in the order of one of SDRTrunk's two layouts (any member
+    may be missing):
+    - since November 2025: `protocol`, `version`, `call_type`, `from`, `to`, `encrypted`, `system`, `site`, `frames`;
+    - before that: the same with no `version`, and `system` and `site` after `frames`, in either order. A record with
+      `version` and a `system` or `site` after `frames` is in neither;
+  - each value of the kind SDRTrunk writes: text in quotes, a whole number, or `true`/`false` (`encrypted`). A whole
+    number is written as JSON writes one (no leading zero, so not `02`, and not `-0`) and fits SDRTrunk's type: a Java
+    `int` for `version`, `encryption_algorithm` and `encryption_key_id`, a Java `long` for `time`;
+  - text as SDRTrunk writes it: valid UTF-8, with no escape in a value the reader reads (`protocol`, `call_type`,
+    `from`, `to`, a frame's `tag` and `encryption_mi`), so `"56\u00378"` is not radio 5678. The free text of `system`
+    and `site` may hold JSON's own escapes (`\"`, `\\`, `\/`, `\b`, `\f`, `\n`, `\r`, `\t`, and `\u` with four hex
+    digits), but no other (`\q`);
   - `frames` a list of frames, each with only SDRTrunk's frame members, in its order (`tag`, `encryption_algorithm`,
     `encryption_key_id`, `encryption_mi`, `time`, `hex`), and always a `hex` of hex digits;
   - no member name written with an escape (`"\u0074o"` is not `to`).
@@ -760,9 +767,10 @@ Which calls get a number:
   So a WAV stop in the middle of a call heard with no identity at all does not export that recording. Audio no call
   owns, a call whose row was cleared from the history, and a faded call that is held and then dropped are never
   exported.
-- A YSF call gets a number only when it ended on a decoded terminator. One that ended any other way (its signal faded,
-  or the next call's callsigns or call mode arrived in its voice frames with no header or terminator between the two)
-  is recorded but not exported: its recording may also hold the start of what came next. One log line a run says so.
+- A YSF call gets a number only when it ended on its own YSF terminator. One that ended any other way (its signal
+  faded, the next call's callsigns or call mode arrived in its voice frames with no header or terminator between the
+  two, or another protocol's end, such as a P25 terminator heard next in Auto mode, closed it) is recorded but not
+  exported: its recording may also hold the start of what came next. One log line a run says so.
   A YSF call with no terminator in a capture, as when the capture stops before the call ends, is therefore not
   exported.
 - The talkgroup is the frequency the call was heard on, in kHz, rounded down: 452.3125 MHz is talkgroup `452312`. On

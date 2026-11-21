@@ -45,6 +45,7 @@
 #include <unistd.h>
 #endif
 #include "core/audio/voice_chain_internal.h"
+#include "core/file/sdrtrunk_test_support.h"
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
@@ -2862,6 +2863,111 @@ test_sdrtrunk_json_stop_during_the_shape_check(void) {
     return rc;
 }
 
+/* The shape check's looks at the exit flag (dsd_sdrtrunk_test_set_shape_poll_hook()): how many, the widest gap
+   between two (and from the file's start to the first), the last one's offset; and the offset past which a look
+   raises Stop (0: never). */
+static struct {
+    int polls;
+    size_t last;
+    size_t widest;
+    size_t stop_after;
+} g_shape_polls;
+
+static void
+shape_poll_hook(size_t offset) {
+    const size_t gap = offset - g_shape_polls.last;
+    g_shape_polls.widest = gap > g_shape_polls.widest ? gap : g_shape_polls.widest;
+    g_shape_polls.last = offset;
+    g_shape_polls.polls++;
+    if (g_shape_polls.stop_after != 0U && offset > g_shape_polls.stop_after) {
+        dsd_exitflag_store(1);
+    }
+}
+
+/* One call with a 2 MiB "system" name and 2 MiB of white space after it, at the heap buffer it returns (NULL when it
+   cannot be allocated), the record's length in *@p record_len. */
+static char*
+sdrtrunk_json_long_spans(size_t* record_len) {
+    enum { SPAN = 2 * 1024 * 1024 };
+
+    static const char k_head[] =
+        "{\"protocol\":\"DMR\",\"version\":2,\"call_type\":\"GROUP\",\"to\":\"1234\",\"system\":\"";
+    static const char k_tail[] = "\",\"frames\":[{\"hex\":\"3ABF032D9ADEE4CB50\"}]}";
+    const size_t head = sizeof k_head - 1U;
+    const size_t tail = sizeof k_tail - 1U;
+    char* json = (char*)malloc(head + SPAN + tail + SPAN + 1U);
+    if (json == NULL) {
+        return NULL;
+    }
+    DSD_MEMCPY(json, k_head, head);
+    DSD_MEMSET(json + head, 'n', SPAN);
+    DSD_MEMCPY(json + head + SPAN, k_tail, tail);
+    DSD_MEMSET(json + head + SPAN + tail, ' ', SPAN);
+    json[head + SPAN + tail + SPAN] = '\0';
+    *record_len = head + SPAN + tail;
+    return json;
+}
+
+/* Issue #888: the shape check looks at the exit flag at least once each MiB of the file it passes, inside a long
+   string and a long run of white space too, through the white space after the record; a Stop that comes while it
+   passes the white space after the record ends the file before anything of it changes. Before, it looked only at the
+   start, before each frame and before that last white space, so a Stop in a long span went unseen and the reader
+   ended the earlier call. */
+static int
+test_sdrtrunk_json_stop_in_a_long_span(void) {
+    size_t record_len = 0;
+    char* json = sdrtrunk_json_long_spans(&record_len);
+    if (json == NULL) {
+        return expect_true("stop in a long span: allocated", 0);
+    }
+    const size_t size = strlen(json);
+    int rc = 0;
+    for (int stop = 0; stop <= 1; stop++) {
+        sdrtrunk_run run;
+        if (sdrtrunk_run_open(&run) != 0) {
+            free(json);
+            return expect_true("stop in a long span: run allocated", 0);
+        }
+        const dsd_call_observation earlier = {
+            .protocol = DSD_SYNC_DMR_BS_DATA_POS,
+            .slot = 0U,
+            .kind = DSD_CALL_KIND_GROUP_VOICE,
+            .ota_target_id = 77U,
+            .policy_target_id = 77U,
+        };
+        (void)dsd_call_state_observe(run.state, &earlier, DSD_CALL_BOUNDARY_BEGIN);
+        dsd_call_snapshot before;
+        DSD_MEMSET(&before, 0, sizeof before);
+        (void)dsd_call_state_get(run.state, 0U, &before);
+        DSD_MEMSET(&g_shape_polls, 0, sizeof g_shape_polls);
+        g_shape_polls.stop_after = stop ? record_len : 0U;
+        dsd_sdrtrunk_test_set_shape_poll_hook(shape_poll_hook);
+        rc |= run_sdrtrunk_json(json, run.opts, run.state);
+        dsd_sdrtrunk_test_set_shape_poll_hook(NULL);
+        dsd_exitflag_store(0);
+        dsd_call_snapshot after;
+        DSD_MEMSET(&after, 0, sizeof after);
+        (void)dsd_call_state_get(run.state, 0U, &after);
+        const int earlier_on =
+            after.epoch == before.epoch && after.phase == DSD_CALL_PHASE_ACTIVE && after.ota_target_id == 77U;
+        if (stop) {
+            rc |= expect_true("stop in a long span: Stop in the white space after the record leaves the earlier call",
+                              earlier_on);
+        } else {
+            rc |= expect_true("stop in a long span: a look each MiB", g_shape_polls.widest <= 0x100000U);
+            rc |= expect_true("stop in a long span: a look in the last MiB", size - g_shape_polls.last <= 0x100000U);
+            rc |= expect_true("stop in a long span: the file played", !earlier_on);
+        }
+        if (rc != 0) {
+            DSD_FPRINTF(stderr, "  stop in a long span (stop %d): %d looks, widest gap %zu, last at %zu of %zu\n", stop,
+                        g_shape_polls.polls, g_shape_polls.widest, g_shape_polls.last, size);
+        }
+        sdrtrunk_run_close(&run);
+    }
+    free(json);
+    return rc;
+}
+
 /* An IMBE record as saveImbe4400Data() writes it: the error count and eleven packed bytes, LF, CR and Ctrl-Z among
  * them, as in the AMBE probe. */
 static const unsigned char kBinaryProbeImbe[12] = {0x0A, 0x0D, 0x0A, 0x1A, 0x0A, 0x00,
@@ -5113,6 +5219,7 @@ main(void) {
     rc |= test_sdrtrunk_json_lost_frame_keeps_the_keystream_place();
     rc |= test_sdrtrunk_json_stop_during_the_read();
     rc |= test_sdrtrunk_json_stop_during_the_shape_check();
+    rc |= test_sdrtrunk_json_stop_in_a_long_span();
     rc |= test_sdrtrunk_dmr_capture_and_late_entry();
     rc |= test_sdrtrunk_json_dmr_aes_incomplete_late_entry_mi();
     rc |= test_sdrtrunk_json_tells_the_chain_each_frame();

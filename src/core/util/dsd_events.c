@@ -1841,15 +1841,17 @@ watchdog_event_set_ysf_text_message(dsd_state* state, Event_History* item) {
 }
 
 /* Whether @p call's row may not take rdio's fallback talkgroup (Event_History::fallback_blocked, issue #888): it named
-   a party its decoder could not read as an ID, or it is a YSF call that has not ended on a decoded terminator. A YSF
-   call that ended any other way (a sync loss, a change of call mode or callsign in band, a teardown) may hold the
-   start of what came next: a voice frame's callsigns are read after its voice. */
+   a party its decoder could not read as an ID, or it is a YSF call that has not ended on its own terminator, decoded by
+   YSF (dsd_call_snapshot::own_terminator). A YSF call that ended any other way (a sync loss, a change of call mode or
+   callsign in band, a teardown, another protocol's terminator on the slot) may hold the start of what came next: a
+   voice frame's callsigns are read after its voice. */
 static uint8_t
 watchdog_event_call_blocks_fallback(const dsd_call_snapshot* call) {
     if (call->identity_unread != 0U) {
         return 1U;
     }
-    const int terminated = call->phase == DSD_CALL_PHASE_ENDED && call->end_reason == (uint8_t)DSD_CALL_END_TERMINATOR;
+    const int terminated = call->phase == DSD_CALL_PHASE_ENDED && call->end_reason == (uint8_t)DSD_CALL_END_TERMINATOR
+                           && call->own_terminator != 0U;
     return DSD_SYNC_IS_YSF(call->protocol) && !terminated ? 1U : 0U;
 }
 

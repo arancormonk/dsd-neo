@@ -1858,6 +1858,28 @@ test_process_ysf_call_takes_the_fallback_only_after_a_terminator(void) {
     }
 }
 
+/* Issue #888: a YSF call takes the fallback talkgroup only on its own terminator, decoded by YSF. A call that another
+   protocol's terminator ends on the slot (as a P25 Phase 1 TDU heard next in Auto mode ends slot 0 on a terminator,
+   whatever call it holds) does not. Before, any terminator end let the YSF row take the fallback. */
+static void
+test_process_ysf_call_takes_the_fallback_only_on_its_own_terminator(void) {
+    ysf_call_rig rig;
+    ysf_call_rig_open(&rig);
+    reset_ysf_stream();
+    append_ysf_bound_frame(0U, 0U, "CALLDST001CALLSRC002", "RPTDNL0004RPTUPL0003");
+    ysf_call_rig_play(&rig);
+    append_ysf_vd1_frame(0U, 0U, "CALLDST001CALLSRC002");
+    ysf_call_rig_play(&rig);
+    assert(dsd_call_state_end_ex(rig.state, 0U, 0.0, DSD_CALL_END_TERMINATOR) > 0);
+    dsd_event_sync_slot(rig.opts, rig.state, 0U);
+    const dsd_call_snapshot ended = get_test_ysf_call(rig.state);
+    assert(ended.phase == DSD_CALL_PHASE_ENDED && ended.end_reason == (uint8_t)DSD_CALL_END_TERMINATOR);
+    assert(rig.history[0].push_seq == 1U);
+    assert(strcmp(rig.history[0].Event_History_Items[1].src_str, "CALLSRC002") == 0);
+    assert(ysf_committed_talkgroup(&rig, 1) == 0U);
+    ysf_call_rig_close(&rig);
+}
+
 #ifndef DSD_YSF_TEST_REAL_VOCODER
 /* V/D2 decodes straight through mbelib: each block is captured after the vocoder settled its error counts (0 for a
    block mbelib refused), in the record format -r reads back. */
@@ -2237,6 +2259,7 @@ main(void) {
     test_process_ysf_terminator_enriches_identity_before_call_end();
     test_process_ysf_repeater_call_is_one_row_that_takes_the_fallback();
     test_process_ysf_call_takes_the_fallback_only_after_a_terminator();
+    test_process_ysf_call_takes_the_fallback_only_on_its_own_terminator();
     test_process_ysf_ehr_voice_leaves_call_wav_to_vocoder();
     test_process_ysf_vd_type2_writes_call_wav_under_record_policy();
     test_process_ysf_vd_type2_captures_each_block();

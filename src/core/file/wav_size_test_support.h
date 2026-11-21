@@ -17,6 +17,12 @@ extern "C" {
    its size cannot be read. */
 int64_t dsd_wav_file_size_or_negative(const char* filename);
 
+/* Test seam (issue #888): called with the recording's path when an empty recording (the header alone), its size read,
+   is about to be removed; a test makes the removal and any later read of the file fail from it. NULL (the default)
+   for none. */
+typedef void (*dsd_wav_test_discard_fn)(const char* path);
+void dsd_wav_test_set_discard_hook(dsd_wav_test_discard_fn hook);
+
 #ifdef __cplusplus
 }
 #endif

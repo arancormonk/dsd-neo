@@ -993,9 +993,10 @@ static void
 ysf_end_call_lifecycle(dsd_opts* opts, dsd_state* state, const ysf_fich_info* info) {
     // A FICH-verified communication terminator (FI=2) is positive over-the-air end evidence, so
     // the event layer can keep an audible epoch whose callsigns never decoded; EXPLICIT would be
-    // indistinguishable from an engine retune and drop that row.
+    // indistinguishable from an engine retune and drop that row. It is the YSF call's own terminator, the one end
+    // that lets its row take the rdio fallback talkgroup (issue #888).
     if (info->err == 0 && info->fi == 2U && !ysf_carrier_left(state, info)
-        && dsd_call_state_end_ex(state, 0U, 0.0, DSD_CALL_END_TERMINATOR) > 0) {
+        && dsd_call_state_end_own_terminator(state, 0U, 0.0, DSD_SYNC_YSF_POS) > 0) {
         dsd_event_sync_slot(opts, state, 0U);
     }
 }

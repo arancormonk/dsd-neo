@@ -83,6 +83,7 @@
 #include "wav_journal_test_support.h"
 #include "wav_segment.h"
 #include "wav_segment_test_support.h"
+#include "wav_size_test_support.h"
 
 static int
 expect_true(const char* what, int ok) {
@@ -5387,6 +5388,102 @@ test_playback_file_shape_decides_its_recording(void) {
          3,
          0U,
          0U},
+        {"an escaped source whose radio has stream=off",
+         "{\"protocol\":\"DMR\",\"version\":2,\"call_type\":\"GROUP\",\"from\":\"56\\u00378\",\"to\":\"1234\","
+         "\"encrypted\":false,\"frames\":[" K_THREE_FRAMES "]}",
+         {2, 0, 0U, 0, 0},
+         0,
+         0,
+         0U,
+         0U},
+        {"an escaped talkgroup with stream=off",
+         "{\"protocol\":\"DMR\",\"version\":2,\"call_type\":\"GROUP\",\"from\":\"5678\",\"to\":\"12\\u00334\","
+         "\"encrypted\":false,\"frames\":[" K_THREE_FRAMES "]}",
+         {0, 1, 1234U, 1, 0},
+         0,
+         0,
+         0U,
+         0U},
+        {"a system with an escape JSON has not",
+         "{\"protocol\":\"DMR\",\"version\":2,\"call_type\":\"GROUP\",\"from\":\"5678\",\"to\":\"1234\","
+         "\"encrypted\":false,\"system\":\"A\\q\",\"frames\":[" K_THREE_FRAMES "]}",
+         {0},
+         0,
+         0,
+         0U,
+         0U},
+        {"a site with a short unicode escape",
+         "{\"protocol\":\"DMR\",\"version\":2,\"call_type\":\"GROUP\",\"from\":\"5678\",\"to\":\"1234\","
+         "\"encrypted\":false,\"site\":\"S\\u00e\",\"frames\":[" K_THREE_FRAMES "]}",
+         {0},
+         0,
+         0,
+         0U,
+         0U},
+        {"a system that is not UTF-8",
+         "{\"protocol\":\"DMR\",\"version\":2,\"call_type\":\"GROUP\",\"from\":\"5678\",\"to\":\"1234\","
+         "\"encrypted\":false,\"system\":\"Caf\xE9\",\"frames\":[" K_THREE_FRAMES "]}",
+         {0},
+         0,
+         0,
+         0U,
+         0U},
+        {"a system and site with every JSON escape and UTF-8",
+         "{\"protocol\":\"DMR\",\"version\":2,\"call_type\":\"GROUP\",\"from\":\"5678\",\"to\":\"1234\","
+         "\"encrypted\":false,\"system\":\"\\\"A\\\" \\\\ \\/ \\b\\f\\n\\r\\t "
+         "\\u00e9\\u00C9\",\"site\":\"Caf\xC3\xA9\","
+         "\"frames\":[" K_THREE_FRAMES "]}",
+         {0},
+         0,
+         3,
+         1234U,
+         5678U},
+        {"a version, then a site after the frames",
+         "{\"protocol\":\"DMR\",\"version\":2,\"call_type\":\"GROUP\",\"from\":\"5678\",\"to\":\"1234\","
+         "\"encrypted\":false,\"system\":\"North\",\"frames\":[" K_THREE_FRAMES "],\"site\":\"Site 1\"}",
+         {0},
+         0,
+         0,
+         0U,
+         0U},
+        {"no version, and a system before the frames",
+         "{\"protocol\":\"DMR\",\"call_type\":\"GROUP\",\"from\":\"5678\",\"to\":\"1234\",\"encrypted\":false,"
+         "\"system\":\"North\",\"frames\":[" K_THREE_FRAMES "]}",
+         {0},
+         0,
+         0,
+         0U,
+         0U},
+        {"a version with a leading zero",
+         "{\"protocol\":\"DMR\",\"version\":02,\"call_type\":\"GROUP\",\"from\":\"5678\",\"to\":\"1234\","
+         "\"encrypted\":false,\"frames\":[" K_THREE_FRAMES "]}",
+         {0},
+         0,
+         0,
+         0U,
+         0U},
+        {"a version past a Java Integer",
+         "{\"protocol\":\"DMR\",\"version\":2147483648,\"call_type\":\"GROUP\",\"from\":\"5678\",\"to\":\"1234\","
+         "\"encrypted\":false,\"frames\":[" K_THREE_FRAMES "]}",
+         {0},
+         0,
+         0,
+         0U,
+         0U},
+        {"a time past a Java long",
+         K_DMR_HEAD K_GOOD_FRAME "," K_GOOD_FRAME ",{\"time\":9223372036854775808,\"hex\":\"3ABF032D9ADEE4CB50\"}]}",
+         {0},
+         0,
+         0,
+         0U,
+         0U},
+        {"a key id of minus zero",
+         K_DMR_HEAD K_GOOD_FRAME "," K_GOOD_FRAME ",{\"encryption_key_id\":-0,\"hex\":\"3ABF032D9ADEE4CB50\"}]}",
+         {0},
+         0,
+         0,
+         0U,
+         0U},
         {"a patch group whose talkgroup has stream=off",
          "{\"protocol\":\"APCO25-PHASE2\",\"version\":2,\"call_type\":\"GROUP\",\"from\":\"5678\",\"to\":\"P:1234\","
          "\"encrypted\":false,\"frames\":[" K_THREE_FRAMES "]}",
@@ -5450,6 +5547,40 @@ test_playback_file_shape_decides_its_recording(void) {
         rig_close(&r);
     }
     dsd_neo_log_set_tap(NULL, NULL);
+    return rc;
+}
+
+/* Issue #888: a played call whose IDs the reader cannot read, with no talkgroup, is recorded but stays local, and the
+   run says so once, whether or not its close could give it the fallback talkgroup: also for a roaming source to an
+   ISSI talkgroup, which leaves the row no ID and no text, so the last file's early close at the run's end may not.
+   Before, that call stayed local with nothing said. */
+static int
+test_playback_unread_ids_say_they_stay_local(void) {
+    static const struct {
+        const char* label;
+        const char* json;
+    } k_cases[] = {
+        {"a to the reader cannot read",
+         "{\"protocol\":\"DMR\",\"version\":2,\"call_type\":\"GROUP\",\"from\":\"5678\",\"to\":\"Q:77\","
+         "\"encrypted\":false,\"frames\":[" K_THREE_FRAMES "]}"},
+        {"a roaming source to an ISSI talkgroup",
+         "{\"protocol\":\"APCO25-PHASE2\",\"version\":2,\"call_type\":\"GROUP\","
+         "\"from\":\"ROAM 5678(BEE01.2A3.5678)\",\"to\":\"ISSI BEE01.2A3.1234\",\"encrypted\":false,"
+         "\"frames\":[" K_THREE_FRAMES "]}"},
+    };
+
+    int rc = 0;
+    for (size_t c = 0; c < sizeof k_cases / sizeof k_cases[0]; c++) {
+        char tag[200];
+        rig r;
+        rc |= rig_open(&r, "dsdneo_journal_playback_unread_ids");
+        rc |= playback_json_run(&r, "unread.mbe", k_cases[c].json);
+        rc |= expect_played_file(&r, k_cases[c].label, 3, 0U, 0U);
+        DSD_SNPRINTF(tag, sizeof tag, "%s: said once this run", k_cases[c].label);
+        rc |= expect_int(tag, wav_recording_fallback_blocked_first_this_run(), 0);
+        rdio_fallback_off(&r);
+        rig_close(&r);
+    }
     return rc;
 }
 
@@ -5619,51 +5750,91 @@ read_only_dir_denies_removal(const char* dir) {
 #endif
 }
 
+#if !DSD_PLATFORM_WIN_NATIVE
+/* The folder of the recording the discard hook is handed, made read-only by it; the hook's verdict on the file. */
+static char g_discard_dir[DSD_TEST_PATH_MAX];
+static int g_discard_unreadable;
+
+/* The discard seam (dsd_wav_test_set_discard_hook()), after the close read the recording's size: the recording made
+   unreadable and its folder read-only, so neither its removal nor a read of it can succeed. */
+static void
+discard_unreadable_hook(const char* path) {
+    (void)chmod(path, 0000);
+    (void)chmod(g_discard_dir, 0500);
+    g_discard_unreadable = dsd_wav_file_size_or_negative(path) < 0;
+}
+#endif
+
 /* Issue #888: an empty recording (the header alone) is journaled `discard` only once it is gone. One whose removal
-   fails (here a read-only folder) stays, with a warning and an `error` record of kind `discard` naming it: the
-   removal's own error decides, not whether the file can still be read. */
+   fails (here a read-only folder; then a read-only folder and a recording that can no longer be read, made so after
+   the close read its size) stays, with a warning and an `error` record of kind `discard` naming it: the removal's own
+   error decides, not whether the file can still be read. Before, a failed removal of a file that could not be read
+   was journaled as a discard. */
 static int
 test_empty_segment_discard_checks_the_removal(void) {
-    rig r;
-    int rc = rig_open(&r, "dsdneo_journal_discard_read_only");
-    if (!read_only_dir_denies_removal(r.dir)) {
-        DSD_FPRINTF(stderr, "SKIP: discard in a read-only folder: a read-only folder does not stop a removal here\n");
-        rig_close(&r);
-        return rc;
-    }
-    submit(&r, DSD_APP_CMD_WAV_START);
-    char id[64];
-    slot1_id(&r, id, sizeof id);
-    char temp[DSD_TEST_PATH_MAX * 2];
-    DSD_SNPRINTF(temp, sizeof temp, "%s", r.opts->wav_out_file);
-    begin_call(&r, DSD_SYNC_P25P1_POS, 300U, 1U, DSD_CALL_BOUNDARY_BEGIN);
-    dsd_neo_log_set_tap(count_log_lines, NULL);
-    g_unremoved_discards = 0;
-#if !DSD_PLATFORM_WIN_NATIVE
-    (void)chmod(r.dir, 0500);
-#endif
-    end_call(&r, DSD_CALL_END_EXPLICIT);
-#if !DSD_PLATFORM_WIN_NATIVE
-    (void)chmod(r.dir, 0700);
-#endif
-    dsd_neo_log_set_tap(NULL, NULL);
-    reload(&r);
-    rc |= expect_true("discard in a read-only folder: the recording survives", file_exists(temp));
-    rc |= expect_int("discard in a read-only folder: not journaled as discarded", count_for_id(&g_j, "discard", id), 0);
-    const char* err = NULL;
-    const char* line = NULL;
-    for (int i = 0; (line = record(&g_j, "error", i)) != NULL; i++) {
-        if (strcmp(field_s(line, "id"), id) == 0) {
-            err = line;
+    int rc = 0;
+    for (int unreadable = 0; unreadable <= 1; unreadable++) {
+        const char* leg = unreadable ? "discard of an unreadable file" : "discard in a read-only folder";
+        rig r;
+        rc |= rig_open(&r, "dsdneo_journal_discard_read_only");
+        if (!read_only_dir_denies_removal(r.dir)) {
+            DSD_FPRINTF(stderr, "SKIP: %s: a read-only folder does not stop a removal here\n", leg);
+            rig_close(&r);
+            return rc;
         }
+        submit(&r, DSD_APP_CMD_WAV_START);
+        char id[64];
+        slot1_id(&r, id, sizeof id);
+        char temp[DSD_TEST_PATH_MAX * 2];
+        DSD_SNPRINTF(temp, sizeof temp, "%s", r.opts->wav_out_file);
+        begin_call(&r, DSD_SYNC_P25P1_POS, 300U, 1U, DSD_CALL_BOUNDARY_BEGIN);
+        dsd_neo_log_set_tap(count_log_lines, NULL);
+        g_unremoved_discards = 0;
+#if !DSD_PLATFORM_WIN_NATIVE
+        g_discard_unreadable = 0;
+        if (unreadable) {
+            DSD_SNPRINTF(g_discard_dir, sizeof g_discard_dir, "%s", r.dir);
+            dsd_wav_test_set_discard_hook(discard_unreadable_hook);
+        } else {
+            (void)chmod(r.dir, 0500);
+        }
+#endif
+        end_call(&r, DSD_CALL_END_EXPLICIT);
+#if !DSD_PLATFORM_WIN_NATIVE
+        dsd_wav_test_set_discard_hook(NULL);
+        (void)chmod(temp, 0600);
+        (void)chmod(r.dir, 0700);
+        if (unreadable && !g_discard_unreadable) {
+            DSD_FPRINTF(stderr, "SKIP: %s: a file of mode 0000 can still be read here\n", leg);
+            dsd_neo_log_set_tap(NULL, NULL);
+            rig_close(&r);
+            return rc;
+        }
+#endif
+        dsd_neo_log_set_tap(NULL, NULL);
+        reload(&r);
+        char tag[200];
+        DSD_SNPRINTF(tag, sizeof tag, "%s: the recording survives", leg);
+        rc |= expect_true(tag, file_exists(temp));
+        DSD_SNPRINTF(tag, sizeof tag, "%s: not journaled as discarded", leg);
+        rc |= expect_int(tag, count_for_id(&g_j, "discard", id), 0);
+        const char* err = NULL;
+        const char* line = NULL;
+        for (int i = 0; (line = record(&g_j, "error", i)) != NULL; i++) {
+            if (strcmp(field_s(line, "id"), id) == 0) {
+                err = line;
+            }
+        }
+        DSD_SNPRINTF(tag, sizeof tag, "%s: an error of kind discard", leg);
+        rc |= expect_str(tag, err ? field_s(err, "kind") : "", "discard");
+        DSD_SNPRINTF(tag, sizeof tag, "%s: it names the file left", leg);
+        rc |= expect_str(tag, err ? field_s(err, "temp") : "", temp + strlen(r.dir) + 1);
+        DSD_SNPRINTF(tag, sizeof tag, "%s: a warning", leg);
+        rc |= expect_int(tag, g_unremoved_discards, 1);
+        DSD_SNPRINTF(tag, sizeof tag, "%s: nothing published", leg);
+        rc |= expect_int(tag, count_records(&g_j, "publish"), 0);
+        rig_close(&r);
     }
-    rc |= expect_str("discard in a read-only folder: an error of kind discard", err ? field_s(err, "kind") : "",
-                     "discard");
-    rc |= expect_str("discard in a read-only folder: it names the file left", err ? field_s(err, "temp") : "",
-                     temp + strlen(r.dir) + 1);
-    rc |= expect_int("discard in a read-only folder: a warning", g_unremoved_discards, 1);
-    rc |= expect_int("discard in a read-only folder: nothing published", count_records(&g_j, "publish"), 0);
-    rig_close(&r);
     return rc;
 }
 
@@ -5795,6 +5966,7 @@ main(void) {
     rc |= test_playback_sdrtrunk_written_files_record();
     rc |= test_playback_empty_file_leaves_the_next_recording();
     rc |= test_empty_segment_discard_checks_the_removal();
+    rc |= test_playback_unread_ids_say_they_stay_local();
     rc |= test_playback_next_file_takes_no_earlier_stamp();
     rc |= test_playback_long_export_plays_once();
     if (rc == 0) {
