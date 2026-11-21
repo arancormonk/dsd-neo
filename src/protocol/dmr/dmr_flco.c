@@ -22,6 +22,7 @@
 #include <dsd-neo/core/events.h>
 #include <dsd-neo/core/file_io.h>
 #include <dsd-neo/core/gps.h>
+#include <dsd-neo/core/heard_talkgroup.h>
 #include <dsd-neo/core/keyring.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/position_attribution.h>
@@ -439,6 +440,18 @@ dmr_flco_cap_plus_rest_lsn(uint32_t lsn) {
     return (lsn >= 1U && lsn <= 16U) ? (int)lsn : -1;
 }
 
+// The 8-bit talkgroup of a Capacity Plus group call LC (FID 0x10 FLCO 0x04), at bits 40..47.
+static uint32_t
+dmr_flco_cap_plus_group_of(const uint8_t* lc_bits) {
+    return (uint32_t)convert_bits_into_output(&lc_bits[40], 8);
+}
+
+// The 16-bit source at bits 56..71 that the Capacity Plus group call and every Hytera XPT LC carry.
+static uint32_t
+dmr_flco_short_source_of(const uint8_t* lc_bits) {
+    return (uint32_t)convert_bits_into_output(&lc_bits[56], 16);
+}
+
 // Motorola Capacity Plus voice channel users (FID 0x10). FLCO 0x04 is the group call: an 8-bit talkgroup at bits
 // 40..47, a 5-bit rest LSN at 51..55 and a 16-bit radio ID at 56..71, with bits 24..39 not part of the talkgroup
 // (the public Cap+ decoders read it this way, and the channel-status CSBK carries the same 8-bit group IDs). Cap+
@@ -453,9 +466,9 @@ dmr_flco_handle_cap_plus(dmr_flco_ctx* ctx) {
     }
     if (ctx->flco == 0x04) {
         ctx->is_cap_plus = 1;
-        ctx->target = (uint32_t)convert_bits_into_output(&ctx->lc_bits[40], 8);
+        ctx->target = dmr_flco_cap_plus_group_of(ctx->lc_bits);
         ctx->restchannel = dmr_flco_cap_plus_rest_lsn((uint32_t)convert_bits_into_output(&ctx->lc_bits[51], 5));
-        ctx->source = (uint32_t)convert_bits_into_output(&ctx->lc_bits[56], 16);
+        ctx->source = dmr_flco_short_source_of(ctx->lc_bits);
     } else if (ctx->type == 1 && ctx->flco == 0x07) {
         ctx->is_cap_plus = 1;
         ctx->restchannel = dmr_flco_cap_plus_rest_lsn((uint32_t)convert_bits_into_output(&ctx->lc_bits[52], 4));
@@ -519,10 +532,16 @@ dmr_flco_handle_motorola_or_tait(dmr_flco_ctx* ctx) {
     return 0;
 }
 
+// Hytera XPT reads every LC's target from bits 32..47 alone (dmr_flco_detect_special_modes() sets is_xpt).
+static uint32_t
+dmr_flco_xpt_target_of(const uint8_t* lc_bits) {
+    return (uint32_t)convert_bits_into_output(&lc_bits[32], 16);
+}
+
 static void
 dmr_flco_set_xpt_targets(dmr_flco_ctx* ctx) {
-    ctx->target = (uint32_t)convert_bits_into_output(&ctx->lc_bits[32], 16);
-    ctx->source = (uint32_t)convert_bits_into_output(&ctx->lc_bits[56], 16);
+    ctx->target = dmr_flco_xpt_target_of(ctx->lc_bits);
+    ctx->source = dmr_flco_short_source_of(ctx->lc_bits);
     for (int i = 0; i < 16; i++) {
         ctx->target_hash[i] = ctx->lc_bits[32 + i];
     }
@@ -1186,6 +1205,126 @@ dmr_flco_forget_checked_source(const dmr_flco_ctx* ctx) {
     dsd_position_attribution_clear(&ctx->state->dmr_lc_attribution[ctx->slot]);
 }
 
+/* The DMR trunking system (dsd_rxid_dmr_trunk) that checked messages of the carrier being decoded named, NONE when
+   none did. The received identity notes only content whose own check passed and is reset at every carrier boundary; a
+   trunk follow keeps it, as a voice channel belongs to its control channel's system. The Capacity Max marker alone is
+   no evidence: -F may take it from a RAS C_ALOHA whose CRC no one can check. */
+static uint8_t
+dmr_flco_checked_trunk(const dsd_state* state) {
+    const uint32_t checked_parts = DSD_RXID_DMR_REST_LSN | DSD_RXID_DMR_SITE_TEXT | DSD_RXID_DMR_NET | DSD_RXID_DMR_SITE
+                                   | DSD_RXID_DMR_BRAND | DSD_RXID_DMR_T3_SYSCODE | DSD_RXID_DMR_XPT_FREE_LCN;
+    const dsd_received_identity* const id = &state->rx_id;
+    if (id->family != (uint8_t)DSD_RXID_FAMILY_DMR || (id->valid & checked_parts) == 0U) {
+        return (uint8_t)DSD_RXID_DMR_TRUNK_NONE;
+    }
+    return id->dmr_trunk;
+}
+
+/* A standard layout group voice channel user (FLCO 0x00) as its raw FID carries it: FID 0, a Kenwood scrambler LC read
+   as FID 0, or Hytera's FID 0x68. */
+static int
+dmr_flco_is_standard_group_lc(const dmr_flco_ctx* ctx) {
+    return ctx->raw_flco == 0x00U
+           && (ctx->raw_fid == 0x00U || ctx->raw_fid == 0x68U || (ctx->raw_fid == 0x20U && ctx->is_kenwood_sc != 0U));
+}
+
+/* The variant a standard group LC proves on a carrier of checked trunking system @p trunk. Hytera XPT reads its target
+   with the 16-bit layout: only where the XPT branding that selected that layout (is_xpt) and the carrier's checked
+   evidence agree, never one without the other. A Capacity Plus carrier's standard LC is not read. */
+static dsd_heard_tg_variant
+dmr_flco_standard_group_variant(const dmr_flco_ctx* ctx, uint8_t trunk) {
+    const int xpt_carrier = trunk == (uint8_t)DSD_RXID_DMR_TRUNK_XPT;
+    if (xpt_carrier || ctx->is_xpt) {
+        return (xpt_carrier && ctx->is_xpt) ? DSD_HEARD_TG_XPT : DSD_HEARD_TG_NONE;
+    }
+    switch (trunk) {
+        case DSD_RXID_DMR_TRUNK_NONE:
+        case DSD_RXID_DMR_TRUNK_TIER3: return DSD_HEARD_TG_DMR;
+        case DSD_RXID_DMR_TRUNK_CONNECT_PLUS: return DSD_HEARD_TG_CONPLUS;
+        default: return DSD_HEARD_TG_NONE;
+    }
+}
+
+/* The variant whose group this LC names in a layout the decoder reads positively for its raw FID and FLCO, checked
+   against the carrier's trunking system where that layout depends on it; NONE for any other LC. Besides the standard
+   group LC: the Capacity Plus group call (FID 0x10 FLCO 0x04, an 8-bit group) on a Capacity Plus carrier, and the
+   Capacity Max group voice user (FID 0x10 FLCO 0x10, a standard 24-bit group) on a Tier III one. */
+static dsd_heard_tg_variant
+dmr_flco_heard_group_variant(const dmr_flco_ctx* ctx) {
+    const uint8_t trunk = dmr_flco_checked_trunk(ctx->state);
+    if (dmr_flco_is_standard_group_lc(ctx)) {
+        return dmr_flco_standard_group_variant(ctx, trunk);
+    }
+    if (ctx->raw_fid != 0x10U || ctx->is_xpt) {
+        return DSD_HEARD_TG_NONE;
+    }
+    if (ctx->raw_flco == 0x04U && trunk == (uint8_t)DSD_RXID_DMR_TRUNK_CAPACITY_PLUS) {
+        return DSD_HEARD_TG_CAPPLUS;
+    }
+    if (ctx->raw_flco == 0x10U && trunk == (uint8_t)DSD_RXID_DMR_TRUNK_TIER3) {
+        return DSD_HEARD_TG_DMR;
+    }
+    return DSD_HEARD_TG_NONE;
+}
+
+/* Whether this LC may prove a group at all: a voice LC header or terminator (never an embedded LC) that is a voice
+   channel user, on slot 0 or 1 (an unknown slot is out of range), whose own check passed (never a RAS acceptance) and
+   whose payload is readable. */
+static int
+dmr_flco_may_prove_group(const dmr_flco_ctx* ctx) {
+    return (ctx->type == 1U || ctx->type == 2U) && ctx->voice_user && ctx->slot < DSD_CALL_STATE_SLOT_COUNT
+           && dmr_flco_crc_checked(ctx) && dmr_flco_lc_readable(ctx);
+}
+
+/* The target and source the LC's bits carry in the layout @p variant reads (a terminator's are not parsed yet when it
+   ends the slot): the Capacity Plus group call's 8-bit group, the Hytera XPT 16-bit target, the standard 24 bits
+   otherwise; the 16-bit source of the first two. */
+static void
+dmr_flco_heard_group_ids(const dmr_flco_ctx* ctx, dsd_heard_tg_variant variant, uint32_t* target, uint32_t* source) {
+    if (variant == DSD_HEARD_TG_CAPPLUS || variant == DSD_HEARD_TG_XPT) {
+        *target = variant == DSD_HEARD_TG_CAPPLUS ? dmr_flco_cap_plus_group_of(ctx->lc_bits)
+                                                  : dmr_flco_xpt_target_of(ctx->lc_bits);
+        *source = dmr_flco_short_source_of(ctx->lc_bits);
+        return;
+    }
+    *target = (uint32_t)convert_bits_into_output(&ctx->lc_bits[24], 24);
+    *source = (uint32_t)convert_bits_into_output(&ctx->lc_bits[48], 24);
+}
+
+/* Whether @p call is the open DMR group transmission naming @p target and @p source, not yet noted. */
+static int
+dmr_flco_call_is_group_of(const dsd_call_snapshot* call, uint32_t target, uint32_t source) {
+    return call->phase == DSD_CALL_PHASE_ACTIVE && call->heard_noted == 0U && DSD_SYNC_IS_DMR(call->protocol)
+           && call->kind == DSD_CALL_KIND_GROUP_VOICE && call->ota_target_id == target && call->ota_source_id == source;
+}
+
+/* A checked voice LC header or terminator (dmr_flco_may_prove_group()) proves the group it names for its slot's open
+   transmission (issue #903): a group voice channel user of dmr_flco_heard_group_variant(), whose slot's ACTIVE DMR
+   group call carries the same target and source. Another transmission, an embedded LC, a grant and a voice sync prove
+   nothing. dsd_call_state_note_verified_target() classifies once per transmission. */
+static void
+dmr_flco_note_heard_group(const dmr_flco_ctx* ctx) {
+    if (!dmr_flco_may_prove_group(ctx)) {
+        return;
+    }
+    const dsd_heard_tg_variant variant = dmr_flco_heard_group_variant(ctx);
+    if (variant == DSD_HEARD_TG_NONE) {
+        return;
+    }
+    uint32_t target = 0U;
+    uint32_t source = 0U;
+    dmr_flco_heard_group_ids(ctx, variant, &target, &source);
+    dsd_call_snapshot call;
+    if (dsd_call_state_get(ctx->state, ctx->slot, &call) <= 0 || !dmr_flco_call_is_group_of(&call, target, source)) {
+        return;
+    }
+    dsd_heard_tg_input in;
+    DSD_MEMSET(&in, 0, sizeof in);
+    in.variant = variant;
+    in.id = target;
+    dsd_call_state_note_verified_target(ctx->state, ctx->slot, dsd_call_snapshot_transmission(&call), &in);
+}
+
 static void
 dmr_flco_publish_voice(dmr_flco_ctx* ctx) {
     if (ctx->slot >= DSD_CALL_STATE_SLOT_COUNT) {
@@ -1254,6 +1393,8 @@ dmr_flco_publish_voice(dmr_flco_ctx* ctx) {
         ctx->state->dmr_crypto_inherited_keyid[slot] = *live.keyid;
     }
     dmr_flco_publish_crypto(ctx, slot, was_active && !DSD_SYNC_IS_DMR(before.protocol));
+    // A voice LC header proves the group of the call it just published (an embedded LC proves none).
+    dmr_flco_note_heard_group(ctx);
     dsd_event_sync_slot(ctx->opts, ctx->state, slot);
     dsd_signal_search_note_call(ctx->state, slot);
 }
@@ -1935,6 +2076,8 @@ dmr_flco_run(dmr_flco_ctx* ctx) {
     // mark heals the epoch and restores the stashed slot crypto, so the cost
     // of the ambiguity is one burst, not a split call or lost decryption.
     if (ctx->type == 2U && !(dmr_flco_lc_readable(ctx) && ctx->flco == 0x30U)) {
+        // A checked terminator proves the group of the transmission it ends, which it must find still open.
+        dmr_flco_note_heard_group(ctx);
         dmr_flco_handle_terminator(ctx);
     }
 

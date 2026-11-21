@@ -2413,7 +2413,7 @@ suite runs under this compiler.
   cleared when a proof revises a committed row after the epoch's staged row saw non-live input. All three ride
   `push_event_history()`, `init_event_history()` and the whole-row copies (trunk-scan snapshots, the UI snapshot,
   `dsd_app_history_tap_copy()`). Producers: TETRA TMO (TETRA Calls, "Verified talkgroup"), P25 Phase 1 and Phase 2
-  (Protocols, "P25 verified talkgroup"). Test:
+  (Protocols, "P25 verified talkgroup"), DMR ("DMR verified talkgroup"). Test:
   `CORE_HEARD_TALKGROUP` (its build counts classifier runs through `dsd_heard_tg_test_eval_count()`).
 - API note (call history rows, issue #575): every `Event_History` row records the frequency its call was heard on
   (`freq_hz`, Hz, 0 unknown) and its access code (`access_code_kind`, a `dsd_access_code_kind`, and `access_code`; zero
@@ -13604,6 +13604,22 @@ Private per-protocol modules worth knowing about:
   `dmr_cspdu_cap_plus_slot_lsn()`), not the record's, so a slot whose identity expired with its call while the
   companion kept the carrier busy (no record left) takes the group a status names for its next call. Tests:
   `DMR_FLCO_PRIVACY_MODES`, `DMR_GRANT_POLICY`, `DMR_FLCO_FID0`, `DMR_CSBK_BRANDING`.
+- DMR verified talkgroup (`dmr_flco.c`, issue #903). Only a voice LC header or terminator proves a group
+  (`dmr_flco_note_heard_group()`): never an embedded LC, a grant or the voice sync that opens a grant's call, which
+  copies the grant's identity. The LC's own check must have passed (`dmr_flco_crc_checked()`: a RAS acceptance under
+  `-F` never counts), its payload be readable (no FEC failure, not protected), it be a voice channel user on slot 0 or
+  1, and its slot's ACTIVE DMR group call carry the target and source it names. A header notes after it published the
+  call; a terminator notes before it ends the slot, reading its target from the LC's bits in its variant's layout, as
+  its payload is not parsed yet. Eligible raw shapes and variants (`dmr_flco_heard_group_variant()`), the carrier's
+  trunking system read from the received identity's checked parts (`dmr_flco_checked_trunk()`; the Capacity Max marker
+  alone is no evidence): FLCO 0x00 under FID 0, a Kenwood scrambler LC or Hytera FID 0x68 is DMR (no trunking system or
+  Tier III) or Connect Plus with its 24-bit target, and Hytera XPT with its 16-bit target only while the XPT branding
+  that selected that layout and the checked XPT evidence agree (either alone proves nothing); a Capacity Plus
+  carrier's standard LC proves nothing. FID 0x10 FLCO 0x04 is Capacity Plus (its 8-bit group) on a carrier checked
+  messages named Capacity Plus, a rest LSN of the same checked LC included; FID 0x10 FLCO 0x10 (Capacity Max group
+  voice) is DMR on a checked Tier III carrier. Unit-to-unit calls and every other FLCO prove nothing.
+  `dsd_call_state_note_verified_target()` classifies the first proof of the transmission once. Tests:
+  `DMR_FLCO_HEARD_TG`.
 - DMR reasons and C_AHOY meaning (`src/protocol/dmr/dmr_reason.{c,h}`). The Tier II NACK_Rsp Reason Code (TS 102 361-2
   Table 7.13) and the Tier III C_ACKD / C_ACKU / P_ACKD / P_ACKU Reason (TS 102 361-4 Tables 7.42-7.45, plus
   MS_Duplex_Not_Supported 0x16 from the clause 7.2.8.2 text) are separate tables, as they give 0x21 different meanings;

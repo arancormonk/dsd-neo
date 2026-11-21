@@ -16182,6 +16182,22 @@ target_link_libraries(
 )
 add_test(NAME DMR_CSBK_BRANDING COMMAND dsd-neo_test_dmr_csbk_branding)
 
+# Issue #903: a checked voice LC header or terminator proves its slot's group (Tier II/III, Capacity Plus, Connect
+# Plus, Hytera XPT) from current-carrier evidence; embedded LCs, grants, voice syncs and RAS acceptances never do.
+add_executable(
+    dsd-neo_test_dmr_flco_heard_tg
+    protocol/dmr/test_dmr_flco_heard_tg.c
+)
+target_include_directories(
+    dsd-neo_test_dmr_flco_heard_tg
+    PRIVATE ${PROJECT_SOURCE_DIR}/include
+)
+target_link_libraries(
+    dsd-neo_test_dmr_flco_heard_tg
+    PRIVATE dsd-neo_proto_dmr dsd-neo_app_control dsd-neo_test_support
+)
+add_test(NAME DMR_FLCO_HEARD_TG COMMAND dsd-neo_test_dmr_flco_heard_tg)
+
 add_executable(
     dsd-neo_test_dmr_bs_alg_refresh_error
     protocol/dmr/test_dmr_bs_alg_refresh_error.c
