@@ -2308,30 +2308,36 @@ the sidecar).
 publication (through `dsd_rdio_set_sidecar_published_observer()`, after the private inputs and before the enqueue)
 leaving the job unqueued and its WAV unheld, no private input made for a call a full queue refuses (counted at its
 sidecar's publication), and removals that fail (a read-only folder) leaving their files with one log line a run. The
-faults no real file system gives on demand come from GNU ld `--wrap` link seams (`DSD_TEST_WRAP_RDIO_SEAMS`, GCC or
-Clang builds off macOS and Windows, as the other `--wrap` tests): a hard link that fails as on a drive with none while
-the Stop arrives (the copy fallback then ends), a private open that makes its file and no stream (also with the folder
-turned read-only right after, so that file's removal fails and is the run's one log line), a hard link that fails with
-the folder turned read-only first (the WAV's copy then fails, and the private sidecar copy already made, which cannot be
-removed, goes through the same once-a-run warning, not a second line), and a worker join that reports failure after the
-worker ended (the queued jobs are released). That last case leaves the upload worker failed for good, so it runs last in
-`main()`. Under IPO/LTO the wrapped calls can be resolved before the linker sees them, so the seams and their cases are
-left out there, as on macOS and Windows: with `DSD_ENABLE_LTO`, and in any configuration whose
-`CMAKE_INTERPROCEDURAL_OPTIMIZATION` or `CMAKE_INTERPROCEDURAL_OPTIMIZATION_<CONFIG>` is on (generator expressions on
-the target's IPO properties, so a multi-config build decides per configuration; the definition and the `--wrap` options
-follow the same answer). The issue #888 sidecar cases share one heap ring and options (`rdio_case_hist()`,
-`rdio_case_opts()`), zeroed for each case, rather than each keeping a static ring.
+failures no real file system gives on demand are simulated by test doubles of the calls, linked in through GNU ld
+`--wrap` (`DSD_TEST_WRAP_RDIO_SEAMS`, GCC or Clang builds off macOS and Windows, as the other `--wrap` tests): a hard
+link that fails as on a drive with none while the Stop arrives (the copy fallback then ends), a private open that makes
+its file and no stream (also with the folder turned read-only right after, so that file's removal fails and is the run's
+one log line), a hard link that fails with the folder turned read-only first (the WAV's copy then fails, and the private
+sidecar copy already made, which cannot be removed, goes through the same once-a-run warning, not a second line), and a
+worker join that reports failure after the worker ended (the queued jobs are released). That last case leaves the upload
+worker failed for good, so it runs last in `main()`. `--wrap` reaches only calls the linker resolves into the test: the
+callers in `dsd-neo_runtime` and `dsd-neo_platform` must be static libraries (not `BUILD_SHARED_LIBS`), and under
+IPO/LTO the wrapped calls can be resolved before the linker sees them. So the doubles and their cases are left out
+there, as on macOS and Windows: with a shared runtime or platform library, with `DSD_ENABLE_LTO`, with `-flto` in
+`CMAKE_C_FLAGS` or `CMAKE_CXX_FLAGS` (as `CFLAGS`/`CXXFLAGS` set them), and in any configuration whose
+`CMAKE_<LANG>_FLAGS_<CONFIG>` carries `-flto` or whose `CMAKE_INTERPROCEDURAL_OPTIMIZATION` or
+`CMAKE_INTERPROCEDURAL_OPTIMIZATION_<CONFIG>` is on (generator expressions, so a multi-config build decides per
+configuration; the definition and the `--wrap` options follow the same answer). The issue #888 sidecar cases share one
+heap ring and options (`rdio_case_hist()`, `rdio_case_opts()`), zeroed for each case, rather than each keeping a static
+ring.
 
 `PLATFORM_FILE_COMPAT` checks `dsd_hard_link()` in a folder the test makes (`dsd_test_mkdtemp()`), never the working
 folder. Whether that folder's file system takes hard links is asked of the platform: on Windows the volume's
 `FILE_SUPPORTS_HARD_LINKS` flag, asked through the wide or the ANSI call as `dsd_hard_link()` picks it
-(`dsd_win32_path_wide()`, so the code page 1252 folder with byte `0xE9` is asked as an ANSI path), on POSIX a `link()`
+(`dsd_win32_path_wide()`, so the code page 1252 folder with byte `0xE9` is asked as an ANSI path) for the folder's full
+path (`GetFullPathName()`: for a relative path `GetVolumePathName()` answers the boot volume), on POSIX a `link()`
 between names the probe creates exclusively there, removing only what it made. A link over a taken name must fail with
-`EEXIST` only where the volume takes links; where it takes none, a refusal with both files as they were is enough, as a
-FAT or exFAT volume can refuse the link before it looks at the name. A missing source is linked to an unused name, so
-`ENOENT` does not compete with a taken name. Every fixture and probe name is built with `dsd_test_path_join()`, so under
-a long `DSD_NEO_TEST_TMPDIR` a name that does not fit fails the case before any file is touched, and none is cut short
-to another folder's name.
+`EEXIST`, and a missing source with `ENOENT`, only where the volume takes links; where it takes none, a refusal with the
+files as they were is enough, as a FAT or exFAT volume can refuse the link before it looks at the name, and a runner
+whose policy denies `link()` refuses it with `EPERM` before the source is looked up. A missing source is linked to an
+unused name, so `ENOENT` does not compete with a taken name. Every fixture and probe name is built with
+`dsd_test_path_join()`, so under a long `DSD_NEO_TEST_TMPDIR` a name that does not fit fails the case before any file is
+touched, and none is cut short to another folder's name.
 
 ### Digital voice chain checks (issue #653)
 

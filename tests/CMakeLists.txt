@@ -7206,24 +7206,60 @@ target_link_libraries(
     dsd-neo_test_runtime_rdio_export
     PRIVATE dsd-neo_runtime dsd-neo_test_support
 )
-# The cases that need a fault at one call (a hard link, a private open, the worker's join) wrap those calls, so they
-# exist only where GNU ld --wrap links, like the other wrap tests (on POSIX dsd_thread_join() is pthread_join()). Not
-# under IPO/LTO, which can inline or resolve the wrapped calls before the linker sees them: the cases are skipped
-# there. IPO is asked of the configuration being built, through the target's INTERPROCEDURAL_OPTIMIZATION and
-# INTERPROCEDURAL_OPTIMIZATION_<CONFIG> (set from CMAKE_INTERPROCEDURAL_OPTIMIZATION[_<CONFIG>] for every target
-# alike), either one on; the definition and the link options follow the same answer, as --wrap without the __wrap_
-# definitions would not link.
+# The cases that need a simulated failure at one call (a hard link, a private open, the worker's join) replace those
+# calls with test doubles through GNU ld --wrap, so they exist only where it links, like the other wrap tests (on POSIX
+# dsd_thread_join() is pthread_join()). --wrap reaches only calls the linker resolves into this executable: the
+# callers in dsd-neo_runtime and dsd-neo_platform must be static libraries (a shared one, as BUILD_SHARED_LIBS makes,
+# has bound them already), and their objects not LTO ones, which can inline or resolve the wrapped calls before the
+# linker sees them. LTO is left out however it is asked: DSD_ENABLE_LTO, -flto in CMAKE_C_FLAGS or CMAKE_CXX_FLAGS (as
+# CFLAGS/CXXFLAGS set them), and, per configuration, -flto in CMAKE_<LANG>_FLAGS_<CONFIG> or the target's
+# INTERPROCEDURAL_OPTIMIZATION or INTERPROCEDURAL_OPTIMIZATION_<CONFIG> (set from
+# CMAKE_INTERPROCEDURAL_OPTIMIZATION[_<CONFIG>] for every target alike), through generator expressions, so a
+# multi-config build decides per configuration. The cases are skipped there. The definition and the link options
+# follow the same answer, as --wrap without the __wrap_ definitions would not link.
+get_target_property(_dsd_rdio_runtime_type dsd-neo_runtime TYPE)
+get_target_property(_dsd_rdio_platform_type dsd-neo_platform TYPE)
+set(_dsd_rdio_lto_configs "")
+set(_dsd_rdio_cfgs
+    ${CMAKE_CONFIGURATION_TYPES}
+    ${CMAKE_BUILD_TYPE}
+    Debug
+    Release
+    RelWithDebInfo
+    MinSizeRel
+)
+list(REMOVE_DUPLICATES _dsd_rdio_cfgs)
+foreach(_dsd_rdio_cfg IN LISTS _dsd_rdio_cfgs)
+    string(TOUPPER "${_dsd_rdio_cfg}" _dsd_rdio_cfg_upper)
+    if(
+        "${CMAKE_C_FLAGS_${_dsd_rdio_cfg_upper}} ${CMAKE_CXX_FLAGS_${_dsd_rdio_cfg_upper}}"
+            MATCHES
+            "-flto"
+    )
+        list(APPEND _dsd_rdio_lto_configs "${_dsd_rdio_cfg}")
+    endif()
+endforeach()
 if(
     NOT APPLE
     AND NOT WIN32
     AND (CMAKE_C_COMPILER_ID MATCHES "GNU|Clang")
     AND NOT DSD_ENABLE_LTO
+    AND _dsd_rdio_runtime_type STREQUAL "STATIC_LIBRARY"
+    AND _dsd_rdio_platform_type STREQUAL "STATIC_LIBRARY"
+    AND NOT "${CMAKE_C_FLAGS} ${CMAKE_CXX_FLAGS}" MATCHES "-flto"
 )
     set(_dsd_rdio_tgt dsd-neo_test_runtime_rdio_export)
     set(_dsd_rdio_ipo
         "$<OR:$<BOOL:$<TARGET_PROPERTY:${_dsd_rdio_tgt},INTERPROCEDURAL_OPTIMIZATION>>,$<BOOL:$<TARGET_PROPERTY:${_dsd_rdio_tgt},INTERPROCEDURAL_OPTIMIZATION_$<UPPER_CASE:$<CONFIG>>>>>"
     )
     set(_dsd_rdio_wrap "$<NOT:${_dsd_rdio_ipo}>")
+    if(_dsd_rdio_lto_configs)
+        string(REPLACE ";" "," _dsd_rdio_lto_list "${_dsd_rdio_lto_configs}")
+        set(_dsd_rdio_wrap
+            "$<AND:${_dsd_rdio_wrap},$<NOT:$<CONFIG:${_dsd_rdio_lto_list}>>>"
+        )
+        unset(_dsd_rdio_lto_list)
+    endif()
     target_compile_definitions(
         dsd-neo_test_runtime_rdio_export
         PRIVATE "$<${_dsd_rdio_wrap}:DSD_TEST_WRAP_RDIO_SEAMS=1>"
@@ -7240,6 +7276,12 @@ if(
     unset(_dsd_rdio_ipo)
     unset(_dsd_rdio_tgt)
 endif()
+unset(_dsd_rdio_cfg_upper)
+unset(_dsd_rdio_cfg)
+unset(_dsd_rdio_cfgs)
+unset(_dsd_rdio_lto_configs)
+unset(_dsd_rdio_platform_type)
+unset(_dsd_rdio_runtime_type)
 add_test(NAME RUNTIME_RDIO_EXPORT COMMAND dsd-neo_test_runtime_rdio_export)
 
 # Issue #800: the map's tile fetch. The public suite runs against the library as

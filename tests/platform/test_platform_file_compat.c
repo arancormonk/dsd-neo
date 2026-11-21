@@ -1039,32 +1039,45 @@ expect_rename_noreplace_in(const char* dir) {
     return ok ? 0 : 1;
 }
 
-/* Whether the filesystem holding @p dir, a folder the test made, takes hard links, asked of the platform itself: some
-   (FAT-like, exFAT, some FUSE, some shares) do not, and the fallbacks then claim the name or copy instead. On Windows
-   its volume says so, asked through the wide or the ANSI call as dsd_hard_link() picks it (dsd_win32_path_wide()); on
-   POSIX a link is tried between names the probe makes in @p dir, and only what it made is removed. -1 when a probe
-   name does not fit, before any file is touched. */
-static int
-dir_takes_hard_links(const char* dir) {
 #if DSD_PLATFORM_WIN_NATIVE
 #ifndef FILE_SUPPORTS_HARD_LINKS
 #define FILE_SUPPORTS_HARD_LINKS 0x00400000
 #endif
+/* The flags of the volume holding @p dir, asked through the wide or the ANSI call as dsd_hard_link() picks it
+   (dsd_win32_path_wide()). The folder's full path is asked, not @p dir as given: for a relative path
+   GetVolumePathName() answers the boot volume, not the working folder's. 0 when it cannot be asked. */
+static int
+win_volume_flags(const char* dir, DWORD* flags) {
     wchar_t* wide = NULL;
     const int kind = dsd_win32_path_wide(dir, &wide);
-    DWORD flags = 0;
     int known = 0;
     if (kind > 0) {
+        wchar_t full[DSD_TEST_PATH_MAX];
         wchar_t root[MAX_PATH + 1];
-        known = GetVolumePathNameW(wide, root, MAX_PATH + 1)
-                && GetVolumeInformationW(root, NULL, 0, NULL, NULL, &flags, NULL, 0);
+        const DWORD n = GetFullPathNameW(wide, DSD_TEST_PATH_MAX, full, NULL);
+        known = n > 0 && n < DSD_TEST_PATH_MAX && GetVolumePathNameW(full, root, MAX_PATH + 1)
+                && GetVolumeInformationW(root, NULL, 0, NULL, NULL, flags, NULL, 0);
     } else if (kind == 0) {
+        char full[DSD_TEST_PATH_MAX];
         char root[MAX_PATH + 1];
-        known = GetVolumePathNameA(dir, root, MAX_PATH + 1)
-                && GetVolumeInformationA(root, NULL, 0, NULL, NULL, &flags, NULL, 0);
+        const DWORD n = GetFullPathNameA(dir, DSD_TEST_PATH_MAX, full, NULL);
+        known = n > 0 && n < DSD_TEST_PATH_MAX && GetVolumePathNameA(full, root, MAX_PATH + 1)
+                && GetVolumeInformationA(root, NULL, 0, NULL, NULL, flags, NULL, 0);
     }
     free(wide);
-    return known && (flags & FILE_SUPPORTS_HARD_LINKS) != 0;
+    return known;
+}
+#endif
+
+/* Whether the filesystem holding @p dir, a folder the test made, takes hard links, asked of the platform itself: some
+   (FAT-like, exFAT, some FUSE, some shares) do not, and the fallbacks then claim the name or copy instead. On Windows
+   its volume says so (win_volume_flags()); on POSIX a link is tried between names the probe makes in @p dir, and only
+   what it made is removed. -1 when a probe name does not fit, before any file is touched. */
+static int
+dir_takes_hard_links(const char* dir) {
+#if DSD_PLATFORM_WIN_NATIVE
+    DWORD flags = 0;
+    return win_volume_flags(dir, &flags) && (flags & FILE_SUPPORTS_HARD_LINKS) != 0;
 #else
     char a[DSD_TEST_PATH_MAX];
     char b[DSD_TEST_PATH_MAX];
@@ -1093,9 +1106,10 @@ dir_takes_hard_links(const char* dir) {
 /* Issue #888: a hard link names the same file under a second name, never over an existing one (EEXIST, both files as
    they were), and keeps every byte once the first name is removed; a missing source fails with ENOENT and makes no
    name, asked against an unused one so a taken name cannot answer first. Where the filesystem takes none (the exporter
-   then copies), a link over an existing name is refused with both files as they were, whatever the reason given: such
-   a volume (FAT, exFAT) can refuse the link before it looks at the name. A fixture name that does not fit fails the
-   test before any file is touched. */
+   then copies), a link over an existing name, and a link from a missing source, are refused with the files as they
+   were, whatever the reason given: such a volume (FAT, exFAT) can refuse the link before it looks at the name, and a
+   runner whose policy denies link() refuses it (EPERM) before the source is looked up. A fixture name that does not
+   fit fails the test before any file is touched. */
 static int
 expect_hard_link_in(const char* dir) {
     char from[DSD_TEST_PATH_MAX];
@@ -1135,7 +1149,7 @@ expect_hard_link_in(const char* dir) {
     ok = ok && (links ? file_text_is(to, "from") : !file_exists(to));
     ok = ok && (!links || dsd_remove_file(to) == 0);
     errno = 0;
-    ok = ok && dsd_hard_link(from, to) == -1 && errno == ENOENT && !file_exists(to) && !file_exists(from);
+    ok = ok && dsd_hard_link(from, to) == -1 && (!links || errno == ENOENT) && !file_exists(to) && !file_exists(from);
     (void)dsd_remove_file(from);
     (void)dsd_remove_file(taken);
     (void)dsd_remove_file(to);

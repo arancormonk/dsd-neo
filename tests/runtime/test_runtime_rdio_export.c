@@ -4379,8 +4379,8 @@ test_both_mode_private_names_do_not_grow_with_the_stem(void) {
 }
 
 #ifdef DSD_TEST_WRAP_RDIO_SEAMS
-/* Link seams (GNU ld --wrap, POSIX only). Each fault is armed for one call on a private input name, so every other
-   caller, the test's own included, passes through. */
+/* Link seams (GNU ld --wrap, POSIX only): test doubles of the calls. Each simulated failure is set for one call on a
+   private input name, so every other caller, the test's own included, reaches the real call. */
 // GNU ld --wrap entry points must keep the reserved __wrap_* and __real_* symbol names.
 // NOLINTBEGIN(bugprone-reserved-identifier, cert-dcl37-c, cert-dcl51-cpp, misc-use-internal-linkage)
 int __real_dsd_hard_link(const char* existing, const char* new_path);
@@ -4683,16 +4683,16 @@ rdio_meta_left_after_failed_wav_said_once(const dsd_opts* opts, Event_History_I*
         (void)dsd_test_capture_stderr_read(&cap, out, sizeof(out));
     }
     (void)chmod(dir, 0700);
-    const int armed = g_seam_link_locks_dir != NULL;
+    const int double_unused = g_seam_link_locks_dir != NULL;
     g_seam_link_locks_dir = NULL;
     const int left = rdio_test_private_inputs_in(dir, NULL);
     int rc = 0;
-    if (!capturing || armed || queued != 0 || left != 1 || strstr(out, "private upload metadata") != NULL
+    if (!capturing || double_unused || queued != 0 || left != 1 || strstr(out, "private upload metadata") != NULL
         || strstr(out, "failed to delete the private upload input") != NULL) {
         DSD_FPRINTF(stderr,
                     "both WAV copy failed: queued %d, %d private inputs left, seam %s, want 0, 1, used, and no second "
                     "removal warning\n%s\n",
-                    queued, left, armed ? "unused" : "used", out);
+                    queued, left, double_unused ? "unused" : "used", out);
         rc = 1;
     }
     rdio_test_remove_dir_tree(dir);
