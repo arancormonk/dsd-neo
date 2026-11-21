@@ -2634,6 +2634,13 @@ static void
 build_lost_frame_json(char* out, size_t cap, const char* head, size_t digits, int lost, const char* bad) {
     char good[40];
     char text[40];
+    if (cap == 0U) {
+        return;
+    }
+    if (digits >= sizeof good) {
+        out[0] = '\0';
+        return;
+    }
     DSD_MEMSET(good, '0', digits);
     good[digits] = '\0';
     DSD_MEMSET(text, 'Z', digits);
