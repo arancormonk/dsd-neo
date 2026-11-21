@@ -444,9 +444,8 @@ dmr_cspdu_pf0_publish_grant(dsd_state* state, uint8_t lcn, uint16_t channel, lon
     } else if (dmr_cspdu_pf0_is_data_grant_opcode(csbk_o)) {
         kind = "Active Data Ch";
     }
-    // A private data grant's target is the called radio or gateway, labelled as a private target (TGT:), not a TG.
-    const char* target_label =
-        (dmr_cspdu_pf0_is_data_grant_opcode(csbk_o) && !dmr_cspdu_pf0_is_group_grant_opcode(csbk_o)) ? "TGT" : "TG";
+    // An individual grant's target (voice or data) is the called radio or gateway: a private target (TGT:), not a TG.
+    const char* target_label = dmr_cspdu_pf0_is_group_grant_opcode(csbk_o) ? "TG" : "TGT";
     char notice[DSD_RECENT_ACTIVITY_TEXT_SIZE];
     DSD_SNPRINTF(notice, sizeof notice, "%s: %04X%s %s: %u; ", kind, channel, suf, target_label, (unsigned)target);
     const dsd_call_kind call_kind =

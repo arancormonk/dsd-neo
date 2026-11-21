@@ -2211,6 +2211,44 @@ test_pd_grant_notice_and_voice_sync(dsd_opts* opts, dsd_state* st, uint16_t lpcn
     return rc;
 }
 
+/* A private voice grant's activity row names the called radio as a private target (TGT:), as a private data grant's
+   does; a talkgroup voice grant's names its group (TG:). */
+static int
+test_private_voice_grant_notice(dsd_opts* opts, dsd_state* st, uint16_t lpcn, long freq) {
+    static const struct {
+        uint8_t op;
+        dsd_call_kind kind;
+        const char* notice;
+    } cases[] = {
+        {48U, DSD_CALL_KIND_PRIVATE_VOICE, "Active Private Ch: 0010 (TDMA S1) TGT: 4660;"},
+        {53U, DSD_CALL_KIND_PRIVATE_VOICE, "Active Private Ch: 0010 (TDMA S1) TGT: 4660;"},
+        {49U, DSD_CALL_KIND_GROUP_VOICE, "Active Group Ch: 0010 (TDMA S1) TG: 4660;"},
+        {50U, DSD_CALL_KIND_GROUP_VOICE, "Active Group Ch: 0010 (TDMA S1) TG: 4660;"},
+    };
+
+    uint8_t bits[256];
+    uint8_t bytes[48];
+    char tag[160];
+    int rc = 0;
+    install_trunk_tuning_hooks();
+    for (size_t i = 0; i < sizeof cases / sizeof cases[0]; i++) {
+        init_env(opts, st);
+        st->trunk_chan_map[lpcn] = freq;
+        build_grant(bits, bytes, cases[i].op, lpcn, 0x001234U, 0x005678U, 0U);
+        dmr_cspdu(opts, st, bits, bytes, 1U, 0U);
+        DSD_SNPRINTF(tag, sizeof tag, "opcode %u voice grant notice '%s'", (unsigned)cases[i].op, cases[i].notice);
+        rc |= expect_true(tag,
+                          recent_activity_matches(st, 0U, cases[i].kind, 0x001234U, 0x005678U, lpcn, cases[i].notice));
+        if (cases[i].kind == DSD_CALL_KIND_PRIVATE_VOICE) {
+            DSD_SNPRINTF(tag, sizeof tag, "opcode %u private voice notice says no TG", (unsigned)cases[i].op);
+            rc |= expect_true(tag, !recent_notice_contains(st, 0U, " TG: "));
+        }
+        reset_to_cc(opts, st);
+    }
+    dsd_state_ext_free_all(st);
+    return rc;
+}
+
 int
 main(void) {
     int rc = 0;
@@ -2232,6 +2270,7 @@ main(void) {
     rc |= test_grant_naming_blocked_radio_not_tuned(opts, st, lpcn, freq);
     rc |= test_pd_grant_is_individual(opts, st, lpcn, freq);
     rc |= test_pd_grant_notice_and_voice_sync(opts, st, lpcn, freq);
+    rc |= test_private_voice_grant_notice(opts, st, lpcn, freq);
     install_trunk_tuning_hooks();
     init_env(opts, st);
     st->trunk_chan_map[lpcn] = freq;

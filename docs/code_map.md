@@ -13407,11 +13407,14 @@ Private per-protocol modules worth knowing about:
 - DMR talkgroup priority and preemption (`dmr_trunk_sm.c`, `dmr_csbk.c`, `dmr_csbk_parse.c`, `dmr_flco.c`). Policy
   stays at the CSBK/status layer, which alone knows each grant's classification (a Tier III grant is group or
   individual by its own opcode, TS 102 361-4 Table B.1: TV/BTV/TD/TD_MI normalised to group 49, PV/PV_DX and the
-  private data grants PD/PD_DX/PD_MI individual, the latter followed only with both the private and the data switch on;
-  a data grant's identity is never published at voice sync; Connect Plus private refused with group tuning off; Cap+
-  private LSNs; XPT kinds); its decision, call kind, identity and origin travel on `dmr_sm_event_t` to
-  `dmr_sm_submit_grant()` (FOLLOWED / IN_PLACE / REFUSED / BUSY / DEFERRED), which never re-evaluates a grant. The
-  `dmr_sm_emit_*_grant*` wrappers carry no decision and are never a Hold or preemption candidate.
+  private data grants PD/PD_DX/PD_MI individual, the latter followed only with both the private and the data switch on.
+  An individual grant, voice or data, is judged by the private evaluator: an exact row on either party decides it, a
+  range row never does (a Block range covering the called radio does not stop it), and its activity row names the
+  called radio as `TGT:`. A data grant's identity is never published at voice sync; Connect Plus private refused with
+  group tuning off; Cap+ private LSNs; XPT kinds); its decision, call kind, identity and origin travel on
+  `dmr_sm_event_t` to `dmr_sm_submit_grant()` (FOLLOWED / IN_PLACE / REFUSED / BUSY / DEFERRED), which never
+  re-evaluates a grant. The `dmr_sm_emit_*_grant*` wrappers carry no decision and are never a Hold or preemption
+  candidate.
   - Busy view (`dmr_sm_describe_held_calls()`). TUNED: the tick's own retention rule, factored out of `tick_tuned()`
     without changing the tick (`dmr_sm_tuned_retention()`): live voice on an admitted slot (0.2 s stale) whatever the
     hangtime, the hangtime tail (a tail no admitted slot is in holds nothing), acquisition before the first voice (the
