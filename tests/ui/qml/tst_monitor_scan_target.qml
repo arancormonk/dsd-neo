@@ -152,6 +152,104 @@ Item {
             root.height = 900;
         }
 
+        // Issue #901 B12: beside the header actions on a narrow phone at large
+        // text the title has no room for "+ 7 lists" and a readable part of the
+        // name, so the count takes a second line of the header's whole width
+        // below the actions, and the name the first line, elided. The heading
+        // is read as one, and the budget's header is the one drawn.
+        function test_multi_list_title_two_lines_data() {
+            return [{tag: "320x900@2", width: 320, height: 900, scale: 2},
+                    {tag: "320x900@1.6", width: 320, height: 900, scale: 1.6},
+                    {tag: "360x690@1.6", width: 360, height: 690, scale: 1.6}];
+        }
+        function test_multi_list_title_two_lines(data) {
+            var name = "Countywide public safety and municipal services";
+            screen.system = {name: name, sourceType: "usb"};
+            screen.otherListCount = 7;
+            testContext.setHostRunning(true);
+            root.width = data.width;
+            root.height = data.height;
+            Ui.Theme.fontScale = data.scale;
+            waitForRendering(screen);
+            tryVerify(function () { return screen.tier >= 1 && !screen.headerStacked; }, 1000, "the header actions share the title's line");
+            var header = findChild(screen, "monitorHeader");
+            var title = findChild(screen, "monitorHeaderTitle");
+            waitForRendering(screen);
+            // A readable part of the name: at least three letters before the ellipsis.
+            var cut = title.text.indexOf("…");
+            verify(cut >= 3 && name.indexOf(title.text.substring(0, cut)) === 0, "the name shown: '" + title.text + "'");
+            verify(!title.truncated, "the title line overflows");
+            var count = findChild(screen, "monitorHeaderTitleCount");
+            verify(count !== null, "no line for the count");
+            tryVerify(function () { return count.visible; }, 1000, "the count's line");
+            compare(count.text, "+ 7 lists");
+            verify(!count.truncated, "the count was cut");
+            compare(title.Accessible.name, title.text + " + 7 lists");
+            // Inside the header, and clear of the actions and of each other.
+            var parts = [title, count, findChild(screen, "sessionOptionsButton"), findChild(screen, "monitorLiveStatus")];
+            var rects = parts.map(function (part) {
+                var at = part.mapToItem(header, 0, 0);
+                return {name: part.objectName, x: at.x, y: at.y, w: part.width, h: part.height};
+            });
+            for (var r of rects)
+                verify(r.x >= -0.5 && r.y >= -0.5 && r.x + r.w <= header.width + 0.5 && r.y + r.h <= header.height + 0.5,
+                       r.name + " inside the header: " + JSON.stringify(r) + " in " + header.width + "x" + header.height);
+            for (var i = 0; i < rects.length; ++i) {
+                for (var j = i + 1; j < rects.length; ++j) {
+                    var a = rects[i], b = rects[j];
+                    var clear = Math.min(a.x + a.w, b.x + b.w) - Math.max(a.x, b.x) <= 0.5 || Math.min(a.y + a.h, b.y + b.h) - Math.max(a.y, b.y) <= 0.5;
+                    verify(clear, a.name + " overlaps " + b.name);
+                }
+            }
+            // The budget's header is the drawn one.
+            compare(header.height, screen.headerBarHeight(screen.tier));
+            var heading = title.parent;
+            var pill = findChild(screen, "monitorLiveStatus");
+            verify(waitForPolish(pill.parent));
+            var drawn = Math.max(heading.mapToItem(header, 0, heading.height).y, pill.mapToItem(header, 0, pill.height).y);
+            verify(Math.abs(drawn - header.height) < 0.5, "header " + header.height + " vs drawn " + drawn);
+            // One list: one line again.
+            screen.otherListCount = 0;
+            tryVerify(function () { return !count.visible; }, 1000, "the count's line stays for one list");
+            compare(header.height, screen.headerBarHeight(screen.tier));
+        }
+
+        // Issue #901 B9: the header's lines are fixed line boxes, so a scan
+        // target or a timing phrase in a script whose line is taller (Burmese)
+        // changes neither the header's height nor the tier.
+        function test_header_lines_ignore_the_script_data() {
+            return [{tag: "420x900@1", width: 420, height: 900, scale: 1},
+                    {tag: "320x900@1", width: 320, height: 900, scale: 1},
+                    {tag: "360x690@1.6", width: 360, height: 690, scale: 1.6}];
+        }
+        function test_header_lines_ignore_the_script(data) {
+            root.width = data.width;
+            root.height = data.height;
+            Ui.Theme.fontScale = data.scale;
+            testContext.setHostRunning(true);
+            testContext.setMetric("scanRotationActive", true);
+            testContext.setMetric("scanTargetOrdinal", 2);
+            testContext.setMetric("scanTargetCount", 3);
+            testContext.setMetric("scanTimingVisible", true);
+            testContext.setMetric("scanStayPhrase", "Following call");
+            screen.scanTargetName = "East";
+            var target = findChild(screen, "scanTargetHeader");
+            var header = findChild(screen, "monitorHeader");
+            tryCompare(target, "text", "SCANNING · 2/3 · East");
+            waitForRendering(screen);
+            var height = header.height;
+            var tier = screen.tier;
+            var steps = [{name: "က", phrase: "Following call"}, {name: "East", phrase: "က"}, {name: "East", phrase: "Following call"}];
+            for (var step of steps) {
+                screen.scanTargetName = step.name;
+                testContext.setMetric("scanStayPhrase", step.phrase);
+                tryCompare(target, "text", "SCANNING · 2/3 · " + step.name);
+                waitForRendering(screen);
+                compare(header.height, height, "the header with " + step.name + " / " + step.phrase);
+                compare(screen.tier, tier, "the tier with " + step.name + " / " + step.phrase);
+            }
+        }
+
         // Issue #671: a paused scan is named as one, apart from the rotation's
         // HOLD and the timing row's "(paused)" dwell, with how much there is to
         // go back to. It has no target on air, and no timing to show.

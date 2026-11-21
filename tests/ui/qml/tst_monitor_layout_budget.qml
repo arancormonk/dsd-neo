@@ -810,7 +810,8 @@ Item {
             Ui.Theme.fontScale = data.scale;
             setCall(1, 2);
             m("slot1CallEnc", true);
-            m("slot1EncText", "AES-256 K:65535");
+            // The shape the metrics model gives it (slot_enc_text()).
+            m("slot1EncText", "ALG 84 · KID 0001");
             setStrip(data.compact, data.compact);
             try {
                 settle();

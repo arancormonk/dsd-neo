@@ -17412,16 +17412,28 @@ Qt Quick frontend (`src/ui/qt`):
   talkgroup call as before; a private call (`slotNCallKind` 3) by its other party -- `slotNTgLabel`, else its text, else
   `ID <n>` for a known nonzero target, else `Private call`, never a service or channel name -- with a `PrivateTag.qml`
   (the ENC/EMERGENCY tag metrics, neutral `Theme.privateBorder`) leading the hero subline before `SRC ...`, or beside
-  the strip's identity, where the name outranks it: the strip's tag shows only while the whole identity fits beside it
-  and the ENC and EMERGENCY tags, so at phone width it can yield (decided limit; the headline still names the other
-  radio); a call no party named (no target text or id, no source, a `slotNProtocolLabel`) by `<protocol> call`, TETRA
+  the strip's identity; a call no party named (no target text or id, no source, a `slotNProtocolLabel`) by `<protocol> call`, TETRA
   alone adding "identity not decoded" (`heroIdentityNote`). The hero's channel shows whenever it differs from the
   headline. The Android notification applies the same rules (`SlotCall.headline`). The painted hero headline
   (`heroHeadlineText`, a Canvas, out of the tree) is read by the hero, whose accessible name leads with it. On a
   private call the actions name the radio: **Hold** (the strip menu's **Hold radio n**) holds it, as the decoder's hold
   matches either party of a private call, and **Avoid TG**/**Lock out** are disabled, since the decoder refuses a
   lockout whose target is a radio (below).
-  Tests: `tst_monitor_call_identity.qml`, `tst_monitor_other_slot.qml`, `UI_QT_METRICS_MODEL`
+  The strip and the hero's subline are one line each at any width and text size (issue #901 B6/B10), of the heights
+  they always had (the strip `max(56, its line boxes and tags + 8)`, 56 up to text 2.0; the hero's from its fixed
+  lines), and what does not fit is left out in a fixed order, the first item that does not fit ending the run so a
+  lower one is never drawn in place of a higher one (`plan` on `otherSlotPanel` and `heroSubline`, from widths only).
+  The strip reads label, identity, PRIVATE, EMERGENCY, ENC, then Skip and More; the identity first gets
+  min(its width, 96), then EMERGENCY, the `SLOT n` label, PRIVATE and ENC each while it fits in the room up to Skip, and
+  the identity takes the rest and elides. The idle strip keeps its label. The hero reads PRIVATE, ids, EMERGENCY, ENC,
+  algorithm, channel; the ids first get min(their width, 96), then EMERGENCY, PRIVATE, ENC and the algorithm text
+  (`ALG nn · KID nnnn`, cut to no less than its `ALG nn` part, else left out), and the channel only after every status
+  drawn. What is left out stays in the accessible text: the strip identity's name carries the slot (while its label is
+  not drawn), PRIVATE, EMERGENCY and ENC, and the hero reads its subline from `heroSublineSpeech()`, every part the call
+  has. On a 320 px phone a long name can leave the strip's identity alone on its line (decided limit: the status words
+  are still heard, and the hero shows its own call's).
+  Tests: `tst_monitor_call_identity.qml`, `tst_monitor_other_slot.qml`, `tst_monitor_status_lines.qml`
+  (320/360/411 at text 1.0, 1.6 and 2.0), `UI_QT_METRICS_MODEL`
   (`test_slot_kind_and_labels()`). The panel sits in a plain `Item` (`otherSlotHost`) that holds its place: during a
   scan rotation that has visited a two-slot carrier (`rotationReservesStrip`, latched by handlers on
   `scanRotationActive` and `twoSlotCarrier`, cleared when the rotation ends or the decoder's `running` changes) the host
@@ -17645,7 +17657,14 @@ Qt Quick frontend (`src/ui/qt`):
   hero, duration on the name line), 3 (live strip in the list header above the disclosure), 4 (no label) whose
   `callSpaceFor()` (viewport less the closed list header) holds two `callRowHeight`s; 4 when no tier does but 4
   leaves a row, else 5, where only Stop (and, for a lost receiver, the line above it) stays put and header, hero, strip
-  and actions move into slots at the top of the list header. Parts move by `parent` bindings between fixed hosts
+  and actions move into slots at the top of the list header. The header's lines are fixed line boxes (`LineBoxes`,
+  issue #901 B9): the title, the scan target, the scan timing and the roaming line, so a target or phrase in a script
+  with a taller line (Burmese) never changes the header or the tier, and `headerBarHeight(t)` sums them for tier t
+  (`headingHeight(t)`), never reading the column back. A scan of several lists whose title room in tier t (the header
+  actions that tier shows, the pill at its widest label) cannot hold "+ N lists" and max(96, 35% of the room) of the
+  name takes the two-line title (B12, `titleTwoLine(t)`): the name elided on the first line, the count
+  (`monitorHeaderTitleCount`) on a line of the header's whole width below the actions; the heading is still read as
+  "name… + N lists". Parts move by `parent` bindings between fixed hosts
   (`topHost`, `stripHost`, `actionsHost`) and those slots; slots and hosts size from the budget's own numbers
   (`stripHeight`), since an Item hides its children. The hero's height is reserved from its fixed lines
   (`heroFullHeight`, `heroCompactHeight`) so waiting, a call and its end share
