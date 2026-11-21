@@ -1728,7 +1728,9 @@ handle_voice_sync(dmr_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, int slot)
     dmr_sm_note_voice_evidence(ctx, state, s, now_m);
     update_voice_sync_state(ctx, state, s, now_m);
 
-    if (state && ctx->state == DMR_SM_TUNED && ctx->vc_identity_published == 0
+    /* A voice sync opens the followed voice grant's call. A data grant's is no voice call: voice on its channel is
+       some other transmission, which its own LC names. */
+    if (state && ctx->state == DMR_SM_TUNED && ctx->vc_identity_published == 0 && ctx->vc_data_call == 0
         && (ctx->vc_slot < 0 || ctx->vc_slot == s)) {
         int protocol = DSD_SYNC_IS_DMR(state->synctype) ? state->synctype : state->lastsynctype;
         if (!DSD_SYNC_IS_DMR(protocol)) {

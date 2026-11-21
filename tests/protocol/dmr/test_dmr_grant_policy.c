@@ -2057,6 +2057,160 @@ test_grant_naming_blocked_radio_not_tuned(dsd_opts* opts, dsd_state* st, uint16_
     return rc;
 }
 
+/* ---- Issue #903 P8: a grant's identity is its own opcode's (TS 102 361-4 Table B.1, Table 7.13) ---- */
+
+enum { PD_POLICY_NONE = 0, PD_POLICY_EXACT = 1, PD_POLICY_RANGE = 2 };
+
+/* TV_GRANT, BTV_GRANT, TD_GRANT and TD_GRANT_MI name a talkgroup; PV_GRANT, PV_GRANT_DX, PD_GRANT, PD_GRANT_DX and
+   PD_GRANT_MI an individual MS or gateway. */
+static int
+pd_opcode_is_group(uint8_t op) {
+    return op == 49U || op == 50U || op == 52U || op == 56U;
+}
+
+static int
+pd_opcode_is_data(uint8_t op) {
+    return op == 51U || op == 52U || op == 54U || op == 55U || op == 56U;
+}
+
+/* Whether a grant to @p policy's target is followed: a talkgroup grant under the group switch, an individual grant
+   under the private switch, a data grant under the data switch as well (D8: a private data grant needs both the
+   private and the data switch). An exact Block row on the target blocks every grant naming it; a Block range blocks
+   talkgroup grants only, since a private endpoint is looked up by its exact row alone. */
+static int
+pd_expect_followed(uint8_t op, int group_on, int private_on, int data_on, int policy) {
+    const int group = pd_opcode_is_group(op);
+    if (pd_opcode_is_data(op) && !data_on) {
+        return 0;
+    }
+    if (group ? !group_on : !private_on) {
+        return 0;
+    }
+    if (policy == PD_POLICY_EXACT) {
+        return 0;
+    }
+    return !(policy == PD_POLICY_RANGE && group);
+}
+
+static void
+pd_seed_policy(dsd_state* st, uint32_t target, int policy) {
+    if (policy == PD_POLICY_EXACT) {
+        if (seed_exact(st, target, "B", "BLOCK-ROW") != 0) {
+            abort();
+        }
+        return;
+    }
+    if (policy != PD_POLICY_RANGE) {
+        return;
+    }
+    dsd_tg_policy_entry range;
+    if (dsd_tg_policy_make_exact_entry(target - 4U, "B", "BLOCK-RANGE", DSD_TG_POLICY_SOURCE_IMPORTED, &range) != 0) {
+        abort();
+    }
+    range.id_end = target + 4U;
+    range.kind = DSD_TG_POLICY_ROW_RANGE;
+    if (dsd_tg_policy_add_range_entry(st, &range) != 0) {
+        abort();
+    }
+}
+
+/* One grant of every opcode 48-56, under every group/private/data switch combination and with no row, an exact Block
+   row or a Block range on its target: it is followed as its opcode says, with the identity its opcode names. */
+static int
+test_pd_grant_is_individual(dsd_opts* opts, dsd_state* st, uint16_t lpcn, long freq) {
+    const uint32_t target = 0x001234U;
+    const uint32_t source = 0x005678U;
+    uint8_t bits[256];
+    uint8_t bytes[48];
+    char tag[192];
+    int rc = 0;
+    install_trunk_tuning_hooks();
+    for (uint8_t op = 48U; op <= 56U; op++) {
+        for (int sw = 0; sw < 8; sw++) {
+            for (int policy = PD_POLICY_NONE; policy <= PD_POLICY_RANGE; policy++) {
+                const int group_on = sw & 1;
+                const int private_on = (sw >> 1) & 1;
+                const int data_on = (sw >> 2) & 1;
+                init_env(opts, st);
+                st->trunk_chan_map[lpcn] = freq;
+                opts->trunk_tune_group_calls = group_on;
+                opts->trunk_tune_private_calls = private_on;
+                opts->trunk_tune_data_calls = data_on;
+                pd_seed_policy(st, target, policy);
+                build_grant(bits, bytes, op, lpcn, target, source, 0U);
+                dmr_cspdu(opts, st, bits, bytes, 1U, 0U);
+                const int expected = pd_expect_followed(op, group_on, private_on, data_on, policy);
+                const int followed = opts->trunk_is_tuned == 1 && st->trunk_vc_freq[0] == freq;
+                DSD_SNPRINTF(tag, sizeof tag, "opcode %u group %d private %d data %d policy %d: followed %d, want %d",
+                             (unsigned)op, group_on, private_on, data_on, policy, followed, expected);
+                rc |= expect_true(tag, followed == expected);
+                if (followed) {
+                    const dmr_sm_ctx_t* ctx = dmr_sm_get_ctx();
+                    const int group = pd_opcode_is_group(op);
+                    const int identity_ok = ctx->vc_is_group == group && ctx->vc_data_call == pd_opcode_is_data(op)
+                                            && (uint32_t)(group ? ctx->vc_tg : ctx->vc_dst) == target
+                                            && (uint32_t)ctx->vc_src == source;
+                    DSD_SNPRINTF(tag, sizeof tag, "opcode %u followed with its own identity (group %d data %d)",
+                                 (unsigned)op, ctx->vc_is_group, ctx->vc_data_call);
+                    rc |= expect_true(tag, identity_ok);
+                }
+                reset_to_cc(opts, st);
+            }
+        }
+    }
+    dsd_state_ext_free_all(st);
+    return rc;
+}
+
+static int
+recent_notice_contains(const dsd_state* state, uint8_t index, const char* fragment) {
+    dsd_recent_activity_snapshot recent;
+    return dsd_recent_activity_copy_snapshot(state, &recent) > 0
+           && strstr(recent.entries[index].notice, fragment) != NULL;
+}
+
+/* A followed data grant's activity row is DATA and names its target as its opcode does (a private data grant's
+   called radio as TGT:, a talkgroup data grant's group as TG:). A later voice sync on the data channel is no evidence of
+   the data call, so it publishes no call from the grant's identity. */
+static int
+test_pd_grant_notice_and_voice_sync(dsd_opts* opts, dsd_state* st, uint16_t lpcn, long freq) {
+    static const uint8_t ops[] = {51U, 52U, 54U, 55U, 56U};
+    const uint32_t target = 0x001234U;
+    const uint32_t source = 0x005678U;
+    uint8_t bits[256];
+    uint8_t bytes[48];
+    char tag[160];
+    int rc = 0;
+    install_trunk_tuning_hooks();
+    for (size_t i = 0; i < sizeof ops / sizeof ops[0]; i++) {
+        const uint8_t op = ops[i];
+        const int group = pd_opcode_is_group(op);
+        init_env(opts, st);
+        st->trunk_chan_map[lpcn] = freq;
+        build_grant(bits, bytes, op, lpcn, target, source, 0U);
+        dmr_cspdu(opts, st, bits, bytes, 1U, 0U);
+        DSD_SNPRINTF(tag, sizeof tag, "opcode %u data grant activity names its %s", (unsigned)op,
+                     group ? "talkgroup" : "radio");
+        rc |= expect_true(tag, recent_activity_matches(st, 0U, DSD_CALL_KIND_DATA, target, source, lpcn,
+                                                       group ? "Active Data Ch: 0010 (TDMA S1) TG: 4660;"
+                                                             : "Active Data Ch: 0010 (TDMA S1) TGT: 4660;"));
+        if (!group) {
+            DSD_SNPRINTF(tag, sizeof tag, "opcode %u private data notice says no TG", (unsigned)op);
+            rc |= expect_true(tag, !recent_notice_contains(st, 0U, " TG: "));
+        }
+        DSD_SNPRINTF(tag, sizeof tag, "opcode %u data grant followed", (unsigned)op);
+        rc |= expect_true(tag, opts->trunk_is_tuned == 1 && st->trunk_vc_freq[0] == freq);
+        test_accepted_voice_sync(opts, st, 0);
+        DSD_SNPRINTF(tag, sizeof tag, "opcode %u voice sync publishes no group call from the grant", (unsigned)op);
+        rc |= expect_true(tag, !active_call_matches(st, 0U, DSD_CALL_KIND_GROUP_VOICE, target, source));
+        DSD_SNPRINTF(tag, sizeof tag, "opcode %u voice sync publishes no call from the data grant", (unsigned)op);
+        rc |= expect_true(tag, no_active_call(st, 0U));
+        reset_to_cc(opts, st);
+    }
+    dsd_state_ext_free_all(st);
+    return rc;
+}
+
 int
 main(void) {
     int rc = 0;
@@ -2076,6 +2230,9 @@ main(void) {
 
     install_trunk_tuning_hooks();
     rc |= test_grant_naming_blocked_radio_not_tuned(opts, st, lpcn, freq);
+    rc |= test_pd_grant_is_individual(opts, st, lpcn, freq);
+    rc |= test_pd_grant_notice_and_voice_sync(opts, st, lpcn, freq);
+    install_trunk_tuning_hooks();
     init_env(opts, st);
     st->trunk_chan_map[lpcn] = freq;
     opts->trunk_use_allow_list = 1;

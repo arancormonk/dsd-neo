@@ -64,8 +64,9 @@ dmr_csbk_handle(const struct dmr_csbk_result* res, dsd_opts* opts, dsd_state* st
         const int is_channel = dmr_t3_lpcn_is_channel(res->lpcn);
         int lpcn = is_channel ? (int)res->lpcn : 0;
 
-        /* Group vs individual is made on opcode (a data grant followed as a group was rewritten to 49); the data
-           classification and the policy verdict travel with it. */
+        /* Group vs individual is made on opcode (a followed talkgroup grant, voice or data, was normalised to 49; an
+           individual one, a private data grant included, keeps its own); the data classification and the policy
+           verdict travel with it. */
         dmr_sm_event_t ev = (res->opcode == 49) ? dmr_sm_ev_group_grant(freq, lpcn, (int)res->target, (int)res->source)
                                                 : dmr_sm_ev_indiv_grant(freq, lpcn, (int)res->target, (int)res->source);
         ev.slot = (int)(res->lcn & 1U);

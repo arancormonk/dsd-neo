@@ -382,22 +382,36 @@ dmr_cspdu_pf0_is_data_grant_opcode(int csbk_o) {
     return csbk_o == 51 || csbk_o == 52 || csbk_o == 54 || csbk_o == 55 || csbk_o == 56;
 }
 
+/* Whether a channel grant names a talkgroup, from its own opcode (TS 102 361-4 Table B.1): TV_GRANT (49), BTV_GRANT
+   (50), TD_GRANT (52) and TD_GRANT_MI (56) do. PV_GRANT (48), PV_GRANT_DX (53), PD_GRANT (51), PD_GRANT_DX (54) and
+   PD_GRANT_MI (55) name the called individual MS or gateway (Table 7.13: "Called party Individual MS Address or
+   Gateway"). */
+static int
+dmr_cspdu_pf0_is_group_grant_opcode(int csbk_o) {
+    return csbk_o == 49 || csbk_o == 50 || csbk_o == 52 || csbk_o == 56;
+}
+
+/* Whether the switches leave a channel grant to follow: a voice grant under its group or private switch, a data grant
+   under the data switch as well (a private data grant needs both the private and the data switch). A followed
+   talkgroup grant is normalised to 49; an individual grant keeps its opcode. A talkgroup data grant leaves the group
+   switch to the group policy, as it always has. */
 static int
 dmr_cspdu_pf0_should_skip_call(const dsd_opts* opts, int* csbk_o, int* data_call) {
-    if (opts->trunk_tune_group_calls == 0 && (*csbk_o == 49 || *csbk_o == 50)) {
+    const int group = dmr_cspdu_pf0_is_group_grant_opcode(*csbk_o);
+    *data_call = dmr_cspdu_pf0_is_data_grant_opcode(*csbk_o);
+    if (*data_call && opts->trunk_tune_data_calls != 1) {
         return 1;
     }
-
-    if (*csbk_o == 50) {
+    if (group && !*data_call && opts->trunk_tune_group_calls == 0) {
+        return 1;
+    }
+    if (!group && opts->trunk_tune_private_calls == 0) {
+        return 1;
+    }
+    if (group) {
         *csbk_o = 49;
     }
-
-    *data_call = dmr_cspdu_pf0_is_data_grant_opcode(*csbk_o);
-    if (*data_call && opts->trunk_tune_data_calls == 1) {
-        *csbk_o = 49;
-    }
-
-    return (opts->trunk_tune_private_calls == 0 && *csbk_o != 49) ? 1 : 0;
+    return 0;
 }
 
 static uint16_t
@@ -430,8 +444,11 @@ dmr_cspdu_pf0_publish_grant(dsd_state* state, uint8_t lcn, uint16_t channel, lon
     } else if (dmr_cspdu_pf0_is_data_grant_opcode(csbk_o)) {
         kind = "Active Data Ch";
     }
+    // A private data grant's target is the called radio or gateway, labelled as a private target (TGT:), not a TG.
+    const char* target_label =
+        (dmr_cspdu_pf0_is_data_grant_opcode(csbk_o) && !dmr_cspdu_pf0_is_group_grant_opcode(csbk_o)) ? "TGT" : "TG";
     char notice[DSD_RECENT_ACTIVITY_TEXT_SIZE];
-    DSD_SNPRINTF(notice, sizeof notice, "%s: %04X%s TG: %u; ", kind, channel, suf, (unsigned)target);
+    DSD_SNPRINTF(notice, sizeof notice, "%s: %04X%s %s: %u; ", kind, channel, suf, target_label, (unsigned)target);
     const dsd_call_kind call_kind =
         dmr_cspdu_pf0_is_data_grant_opcode(csbk_o)
             ? DSD_CALL_KIND_DATA
@@ -495,9 +512,6 @@ dmr_cspdu_pf0_prepare_dispatch(const dsd_opts* opts, dsd_state* state, int* csbk
     if (dmr_cspdu_pf0_should_skip_call(opts, csbk_o, data_call)) {
         return 0;
     }
-    if (!(*csbk_o == 48 || *csbk_o == 49 || *csbk_o == 50 || *csbk_o == 53)) {
-        return 0;
-    }
     // A Hold grant is admitted by its own decision (tg_hold_match), never by wiping the voice-sync stamp the
     // no-carrier return reads.
     if (opts->trunk_enable == 0 && freq != 0) {
@@ -515,7 +529,7 @@ dmr_cspdu_pf0_try_dispatch_grant(dsd_opts* opts, dsd_state* state, uint8_t cs_pd
         return;
     }
 
-    const int is_group_call = (csbk_o == 49 || csbk_o == 50) ? 1 : 0;
+    const int is_group_call = dmr_cspdu_pf0_is_group_grant_opcode(csbk_o);
     dsd_tg_policy_decision policy_decision;
     int policy_allowed =
         dmr_policy_tune_allowed(opts, state, target, source, is_group_call, data_call, &policy_decision);
@@ -550,12 +564,16 @@ dmr_cspdu_pf0_handle_grants(dsd_opts* opts, dsd_state* state, uint8_t cs_pdu_bit
     if (csbk_o < 48 || csbk_o > 56) {
         return;
     }
+    /* Channel grants are outbound. On an MS-sourced (uplink) burst opcode 56 is BS_Dwn_Act (TS 102 361-2 Table 7.5a),
+       which dmr_cspdu_pf0_handle_standard_only() handles under FID 0 and names as a manufacturer CSBK under any other:
+       none of its fields is a grant's. */
+    if (csbk_o == 56 && state->synctype == DSD_SYNC_DMR_MS_DATA) {
+        return;
+    }
 
     DSD_FPRINTF(stderr, "\n");
     long int freq = 0;
-    if (!(csbk_o == 56 && state->synctype == DSD_SYNC_DMR_MS_DATA)) {
-        DSD_FPRINTF(stderr, " %s", dmr_csbk_grant_opcode_name((uint8_t)csbk_o));
-    }
+    DSD_FPRINTF(stderr, " %s", dmr_csbk_grant_opcode_name((uint8_t)csbk_o));
 
     uint16_t lpchannum = (uint16_t)convert_bits_into_output(&cs_pdu_bits[16], 12);
     dmr_cspdu_pf0_print_channel_kind(lpchannum);

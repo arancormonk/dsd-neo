@@ -162,6 +162,43 @@ test_vendor_opcodes_not_standard(dsd_opts* opts, dsd_state* state) {
     expect_contains("BS_Dwn_Act", "standard op 56 on MS data");
     expect_absent("Manufacturer CSBK", "standard op 56 not manufacturer");
     state->synctype = saved_synctype;
+}
+
+/* Uplink opcode 56 is BS_Dwn_Act (TS 102 361-2 Table 7.5a: 16 reserved bits, BS address, source), never the downlink
+   TD_GRANT_MI (TS 102 361-4 Table B.1): the grant parser reads none of it, whatever its FID or reserved bits. The same
+   opcode on a downlink burst is still the multi-item talkgroup data grant. */
+static void
+test_uplink_56_not_parsed_as_grant(dsd_opts* opts, dsd_state* state) {
+    static const uint8_t bs_dwn_act[10] = {0xB8, 0x00, 0x00, 0x00, 0x00, 0x01, 0x23, 0x00, 0x04, 0x56};
+    static const uint8_t bs_dwn_reserved[10] = {0xB8, 0x00, 0x01, 0x50, 0x00, 0x01, 0x23, 0x00, 0x04, 0x56};
+    static const uint8_t bs_dwn_vendor[10] = {0xB8, 0x10, 0x01, 0x50, 0x00, 0x01, 0x23, 0x00, 0x04, 0x56};
+    static const uint8_t td_grant_mi[10] = {0xB8, 0x00, 0x01, 0x50, 0x00, 0x01, 0x23, 0x00, 0x04, 0x56};
+    const int saved_synctype = state->synctype;
+
+    state->synctype = DSD_SYNC_DMR_MS_DATA;
+    run_csbk(opts, state, bs_dwn_act);
+    expect_contains("BS Outbound Activation (BS_Dwn_Act) - ", "uplink 56 activation diagnostic");
+    expect_contains("Target [291]", "uplink 56 BS address");
+    expect_absent("LPCN:", "uplink 56 prints no grant channel");
+    expect_absent("Invalid Channel", "uplink 56 prints no grant channel kind");
+    expect_absent("TD_GRANT", "uplink 56 is not a talkgroup data grant");
+
+    run_csbk(opts, state, bs_dwn_reserved);
+    expect_contains("BS_Dwn_Act", "uplink 56 with reserved bits set is still the activation");
+    expect_absent("LPCN:", "uplink 56 reserved bits are no grant channel");
+    expect_absent("Logical", "uplink 56 reserved bits are no logical channel");
+
+    run_csbk(opts, state, bs_dwn_vendor);
+    expect_contains("Manufacturer CSBK: FID 10; Opcode 38;", "vendor uplink 56 is a manufacturer CSBK");
+    expect_absent("LPCN:", "vendor uplink 56 prints no grant channel");
+
+    state->synctype = DSD_SYNC_DMR_BS_DATA_POS;
+    run_csbk(opts, state, td_grant_mi);
+    expect_contains("Talkgroup Data Channel Grant: Multi Item (TD_GRANT)", "downlink 56 is the multi-item grant");
+    expect_contains("LPCN: 0021;", "downlink 56 grant channel parsed");
+    expect_contains("Target: 00000291 - Source: 00001110", "downlink 56 grant parties parsed");
+    expect_absent("BS_Dwn_Act", "downlink 56 is not the activation");
+    state->synctype = saved_synctype;
 
     /* FID 0x00 keeps the standard meaning. */
     static const uint8_t c_rand[10] = {0x9F, 0x00};
@@ -387,6 +424,7 @@ main(void) {
     test_nack_rsp(opts, state);
     test_c_ackd_tier3_reason(opts, state);
     test_vendor_opcodes_not_standard(opts, state);
+    test_uplink_56_not_parsed_as_grant(opts, state);
     test_c_ahoy_kinds(opts, state);
     test_ahoy_classify_table();
     test_reason_tables();
