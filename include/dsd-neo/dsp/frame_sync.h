@@ -374,6 +374,14 @@ int getFrameSync(dsd_opts* opts, dsd_state* state);
 void dsd_frame_sync_hand_back_symbols(dsd_state* state, int symbols);
 
 /**
+ * @brief As dsd_frame_sync_hand_back_symbols(), for symbols that may end with a whole sync word: the next
+ * getFrameSync() call scores the window ending on the last of them once, before it reads a symbol
+ * (dsd_frame_sync_history_carry::score_on_resume). M17 hands back the word after its end-of-transmission marker this
+ * way (src/engine/dispatch/dispatch_m17.c), which may be a co-channel stream's sync word. Decoder thread.
+ */
+void dsd_frame_sync_hand_back_word(dsd_state* state, int symbols);
+
+/**
  * @brief Whether eight hunt symbols are one word of the M17 end-of-transmission marker.
  *
  * @p window holds DSD_FRAME_SYNC_M17_EOT_WORD_SYMBOLS signs, oldest first, as the hunt slices them ('1' positive, '3'

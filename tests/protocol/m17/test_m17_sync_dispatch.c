@@ -30,6 +30,10 @@ static int skipped_dibits;
 static int str_calls;
 static int brt_calls;
 static int confirm_reset_calls;
+/* The transmission's end noted before its proof is forgotten (an unjudged signature reported incomplete, issue #890):
+   how often, and whether the reset had already run. */
+static int g_tx_end_calls;
+static int g_tx_end_after_reset;
 
 static void
 reset_calls(void) {
@@ -40,6 +44,8 @@ reset_calls(void) {
     str_calls = 0;
     brt_calls = 0;
     confirm_reset_calls = 0;
+    g_tx_end_calls = 0;
+    g_tx_end_after_reset = 0;
 }
 
 /* What the stubbed frame decoders report back: 1 = validated something, 0 = proved nothing. */
@@ -51,6 +57,13 @@ m17_confirm_reset(dsd_state* state) {
     (void)state;
     confirm_reset_calls++;
     g_confirmed = 0;
+}
+
+void
+m17_note_transmission_end(dsd_state* state) {
+    (void)state;
+    g_tx_end_calls++;
+    g_tx_end_after_reset |= confirm_reset_calls != 0;
 }
 
 int
@@ -102,7 +115,7 @@ dsd_frame_sync_symbol_sign_back(const dsd_state* state, int back) {
 }
 
 void
-dsd_frame_sync_hand_back_symbols(dsd_state* state, int symbols) {
+dsd_frame_sync_hand_back_word(dsd_state* state, int symbols) {
     (void)state;
     g_resume_calls++;
     g_resume_symbols = symbols;
@@ -306,6 +319,9 @@ test_eot_dispatch(void) {
     assert(lastsynctype == DSD_SYNC_NONE);
     /* ...and then forgets the transmission's proof, so the next carrier has to earn its own (#399). */
     assert(confirm_reset_calls == 1);
+    /* Its unjudged signature is reported incomplete first, before the reset forgets it (issue #890). */
+    assert(g_tx_end_calls == 1);
+    assert(g_tx_end_after_reset == 0);
 
     set_air(EOT5_INV M17_STR);
     lastsynctype = dispatch_one(DSD_SYNC_M17_EOT_NEG);

@@ -44,6 +44,12 @@ int m17_confirm_is_confirmed(const dsd_state* state);
  * this end belongs to. An M17 call a fade already ended (recoverable) is made final by it (dsd_call_state_end_ex()).
  */
 void m17_end_call(const dsd_opts* opts, dsd_state* state, dsd_call_end_reason reason, int data_only);
+
+/**
+ * @brief The RF transmission ended (its EOT marker): a signature it advertised and has not judged is reported
+ * incomplete, before m17_confirm_reset() forgets it.
+ */
+void m17_note_transmission_end(dsd_state* state);
 int encodeM17STR(dsd_opts* opts, dsd_state* state);
 void encodeM17BRT(dsd_opts* opts, dsd_state* state);
 int encodeM17PKT(dsd_opts* opts, dsd_state* state);

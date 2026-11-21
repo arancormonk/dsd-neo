@@ -35,7 +35,7 @@ dsd_dispatch_matches_m17(int synctype) {
  * The rest of an end-of-transmission marker the hunt took the end on (M17 spec 2.0.11, End of Transmission Marker: 192
  * symbols of 0x555D), read a word at a time up to the first word that is not the marker: that word may be the start of
  * what follows (another transmission's preamble or sync word), so the hunt takes it up as the history of its window
- * (dsd_frame_sync_hand_back_symbols()) instead of losing it. A marker whose first words a fade took leaves
+ * (dsd_frame_sync_hand_back_word(), scored where it ends) instead of losing it. A marker whose first words a fade took leaves
  * fewer words than the 184 symbols a fixed skip used to read, and that skip ran into the next frame. A word is judged
  * as the hunt judges one (dsd_frame_sync_m17_eot_word()), on the signs the hunt reads. An input interruption ends the
  * drain with nothing handed back: the next hunt starts afresh.
@@ -56,7 +56,7 @@ m17_drain_eot_marker(dsd_opts* opts, dsd_state* state, int inverted) {
         }
         window[DSD_FRAME_SYNC_M17_EOT_WORD_SYMBOLS] = '\0';
         if (!dsd_frame_sync_m17_eot_word(window, inverted)) {
-            dsd_frame_sync_hand_back_symbols(state, (int)DSD_FRAME_SYNC_M17_EOT_WORD_SYMBOLS);
+            dsd_frame_sync_hand_back_word(state, (int)DSD_FRAME_SYNC_M17_EOT_WORD_SYMBOLS);
             return;
         }
     }
@@ -81,6 +81,9 @@ dsd_dispatch_handle_m17(dsd_opts* opts, dsd_state* state) {
         // is indistinguishable from an engine retune and would drop that row.
         // Only an M17 call: the marker ends the transmission whose frames led the hunt to it.
         m17_end_call(opts, state, DSD_CALL_END_TERMINATOR, 0);
+        /* A signature the transmission advertised and never judged (its last chunk, with the EOS, was lost) is
+           reported incomplete before the reset below forgets it. */
+        m17_note_transmission_end(state);
         DSD_MEMSET(state->m17_lsf, 0, sizeof(state->m17_lsf));
         DSD_MEMSET(&state->m17_lich, 0, sizeof(state->m17_lich));
         state->m17_pbc_ct = 0;

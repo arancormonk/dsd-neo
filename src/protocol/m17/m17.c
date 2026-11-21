@@ -123,7 +123,7 @@ typedef enum {
 } m17_gnss_verdict;
 
 static void m17_print_gnss(const struct m17_gnss_result* gnss, m17_gnss_verdict verdict);
-static void M17logLSFTrailer(const dsd_state* state, const struct m17_lsf_result* res);
+static void M17logLSFTrailer(const struct m17_lsf_result* res);
 static int m17_can_matches_state(const dsd_state* state);
 static int m17_load_aes_key(const dsd_state* state, uint8_t subtype, uint8_t key[32]);
 
@@ -150,6 +150,8 @@ enum {
     /* The stream ended without every voice frame (once, in order) and every signature chunk before or with its end:
        the digest is not the whole stream's, so the signature is not judged (never "invalid" for a frame lost). */
     M17_SIGNATURE_VERIFY_INCOMPLETE = 5,
+    /* A network (IP) stream's signature is not verified (issue #890: the network path does not collect or judge it). */
+    M17_SIGNATURE_VERIFY_NOT_OVER_NETWORK = 6,
 };
 
 short
@@ -500,7 +502,7 @@ M17decodeLSF(const dsd_opts* opts, dsd_state* state, int publish_canonical, cons
     if (publish_canonical == 0 && state->m17_lsf_checked != 0U) {
         if (m17_lsf_result_usable(&res)) {
             M17logLSFSummary(&res);
-            M17logLSFTrailer(state, &res);
+            M17logLSFTrailer(&res);
         }
         return 0;
     }
@@ -525,7 +527,7 @@ M17decodeLSF(const dsd_opts* opts, dsd_state* state, int publish_canonical, cons
             M17decodeLSFMeta(opts, state, &res, &bound);
         }
     }
-    M17logLSFTrailer(state, &res);
+    M17logLSFTrailer(&res);
     return publish_canonical != 0;
 }
 
@@ -702,20 +704,30 @@ typedef struct {
  * decoder-thread private, created at the first GNSS META heard, freed with the run's extensions. A transmission
  * repeats its LSF META (RF: every LICH superframe; IP: every stream frame), and the repeats are one report: the last
  * admitted report's transmission key and META bytes, and the network frames that carried it. */
-/* Network streams that ended (EOT, a matching EOTX or DISC, or another stream replacing them), remembered so that a
- * datagram of one arriving late is ignored until frame 0 starts its stream ID again (issue #890). */
-enum { M17_IP_ENDED_RING = 8 };
+/* Network streams that ended (EOT, a matching EOTX or DISC, or another stream replacing them), each by its stream ID
+ * and the station its LSF named, remembered until frame 0 starts that stream again, however many other streams end
+ * meanwhile, so that a datagram of one arriving late is ignored (issue #890). The keys (station << 16 | stream ID) are
+ * kept sorted. */
 
 typedef struct {
     m17_gnss_tx_key last;
     uint8_t meta_admitted[M17_META_BYTES];
     m17_gnss_dgram dgram[M17_GNSS_DGRAM_RING];
     uint8_t dgram_next;
-    /* The M17 network state the same extension holds: the stream IDs that ended lately, oldest overwritten. */
-    uint16_t ended_sid[M17_IP_ENDED_RING];
-    uint8_t ended_used[M17_IP_ENDED_RING];
-    uint8_t ended_next;
+    /* The M17 network state the same extension holds: the ended streams' keys, sorted. */
+    uint64_t* ended;
+    size_t ended_count;
+    size_t ended_cap;
 } m17_gnss_state;
+
+static void
+m17_net_state_free(void* p) {
+    m17_gnss_state* g = (m17_gnss_state*)p;
+    if (g) {
+        free(g->ended);
+    }
+    free(g);
+}
 
 _Static_assert((int)DSD_STATE_EXT_PROTO_M17_GNSS < (int)DSD_STATE_EXT_MAX,
                "the M17 GNSS extension slot must fit the state's extension table");
@@ -732,7 +744,7 @@ m17_gnss_st(dsd_state* state) {
     if (!g) {
         return NULL;
     }
-    if (dsd_state_ext_set(state, DSD_STATE_EXT_PROTO_M17_GNSS, g, free) != 0) {
+    if (dsd_state_ext_set(state, DSD_STATE_EXT_PROTO_M17_GNSS, g, m17_net_state_free) != 0) {
         free(g);
         return NULL;
     }
@@ -749,40 +761,74 @@ m17_gnss_tx_end(const dsd_state* state) {
     }
 }
 
-/* 1 when network stream @p sid ended lately (m17_ip_note_ended()). With no state it ended nowhere. */
-static int
-m17_ip_sid_ended(const dsd_state* state, uint16_t sid) {
-    const m17_gnss_state* g = (const m17_gnss_state*)dsd_state_ext_get_const(state, DSD_STATE_EXT_PROTO_M17_GNSS);
-    if (!g) {
-        return 0;
-    }
-    for (int i = 0; i < M17_IP_ENDED_RING; i++) {
-        if (g->ended_used[i] != 0U && g->ended_sid[i] == sid) {
-            return 1;
-        }
-    }
-    return 0;
+/* A network stream's key: the station its LSF names and its stream ID. */
+static uint64_t
+m17_ip_stream_key(uint16_t sid, uint64_t src) {
+    return ((src & 0xFFFFFFFFFFFFULL) << 16U) | sid;
 }
 
-/* Remember that network stream @p sid ended, or (@p ended 0) forget it: frame 0 started its stream ID again. */
+/* The index of @p key in the sorted ended keys, or where it would go; *@p found 1 when it is there. */
+static size_t
+m17_ip_ended_find(const m17_gnss_state* g, uint64_t key, int* found) {
+    size_t lo = 0U;
+    size_t hi = g->ended_count;
+    while (lo < hi) {
+        const size_t mid = lo + ((hi - lo) / 2U);
+        if (g->ended[mid] < key) {
+            lo = mid + 1U;
+        } else {
+            hi = mid;
+        }
+    }
+    *found = lo < g->ended_count && g->ended[lo] == key;
+    return lo;
+}
+
+/* 1 when the network stream @p sid of station @p src ended (m17_ip_note_ended()). With no state it ended nowhere. */
+static int
+m17_ip_stream_ended(const dsd_state* state, uint16_t sid, uint64_t src) {
+    const m17_gnss_state* g = (const m17_gnss_state*)dsd_state_ext_get_const(state, DSD_STATE_EXT_PROTO_M17_GNSS);
+    int found = 0;
+    if (g && g->ended_count != 0U) {
+        (void)m17_ip_ended_find(g, m17_ip_stream_key(sid, src), &found);
+    }
+    return found;
+}
+
+/* Remember that the network stream @p sid of station @p src ended, or (@p ended 0) forget it: frame 0 started it
+   again. A stream that cannot be remembered (no memory) is not: its late datagrams then open it again. */
 static void
-m17_ip_note_ended(dsd_state* state, uint16_t sid, int ended) {
+m17_ip_note_ended(dsd_state* state, uint16_t sid, uint64_t src, int ended) {
     m17_gnss_state* g =
         ended ? m17_gnss_st(state) : (m17_gnss_state*)dsd_state_ext_get(state, DSD_STATE_EXT_PROTO_M17_GNSS);
     if (!g) {
         return;
     }
-    for (int i = 0; i < M17_IP_ENDED_RING; i++) {
-        if (g->ended_used[i] != 0U && g->ended_sid[i] == sid) {
-            g->ended_used[i] = (uint8_t)(ended ? 1U : 0U);
+    const uint64_t key = m17_ip_stream_key(sid, src);
+    int found = 0;
+    const size_t at = m17_ip_ended_find(g, key, &found);
+    if (!ended) {
+        if (found) {
+            DSD_MEMMOVE(&g->ended[at], &g->ended[at + 1U], (g->ended_count - at - 1U) * sizeof(g->ended[0]));
+            g->ended_count--;
+        }
+        return;
+    }
+    if (found) {
+        return;
+    }
+    if (g->ended_count == g->ended_cap) {
+        const size_t cap = g->ended_cap != 0U ? g->ended_cap * 2U : 16U;
+        uint64_t* grown = (uint64_t*)realloc(g->ended, cap * sizeof(*grown));
+        if (!grown) {
             return;
         }
+        g->ended = grown;
+        g->ended_cap = cap;
     }
-    if (ended) {
-        g->ended_sid[g->ended_next] = sid;
-        g->ended_used[g->ended_next] = 1U;
-        g->ended_next = (uint8_t)((g->ended_next + 1U) % M17_IP_ENDED_RING);
-    }
+    DSD_MEMMOVE(&g->ended[at + 1U], &g->ended[at], (g->ended_count - at) * sizeof(g->ended[0]));
+    g->ended[at] = key;
+    g->ended_count++;
 }
 
 /* 1 when the META now held repeats the last admitted one within the same transmission, LSF and reception. A stream's
@@ -963,12 +1009,13 @@ M17decodeLSFMeta(const dsd_opts* opts, dsd_state* state, const struct m17_lsf_re
 }
 
 static void
-M17logLSFTrailer(const dsd_state* state, const struct m17_lsf_result* res) {
-    // If no Meta (debug)
+M17logLSFTrailer(const struct m17_lsf_result* res) {
+    /* The nonce this LSF carries, as received: one -F only shows (m17_lsf_checked) leaves the bound IV in m17_meta, which
+       is the checked LSF's, not this one's. */
     if (res->et == 2) {
         LOG_INFO(" IV: ");
-        for (int i = 0; i < 16; i++) {
-            LOG_INFO("%02X", state->m17_meta[i]);
+        for (size_t i = 0; i < sizeof(res->meta); i++) {
+            LOG_INFO("%02X", res->meta[i]);
         }
     }
 
@@ -1124,7 +1171,30 @@ m17_can_matches_state(const dsd_state* state) {
     return state == NULL || m17_can_filter_allows(state->m17_can_en, state->m17_can);
 }
 
+/* Set while a network (IP) stream frame is dispatched (m17_ip_take_stream_frame()). Decoder thread only. */
+static int s_m17_network_frame;
+
 #ifdef USE_CODEC2
+/*
+ * Speech Codec2 decoded from what this station received, about to play (issue #890). A network frame's media is its
+ * decoded speech, never the datagram alone, so the canonical call's media is marked here for it (an RF frame's was
+ * marked with the frame, m17_mark_stream_media()). Speech counts as the transmission's checked speech only once a
+ * checked LSF bound its type, encryption and CAN (m17_lsf_checked): under -F a relaxed LSF, or the LICH alone, may
+ * name an encrypted stream clear voice and play its ciphertext, which is no speech to credit. Returns 1 for checked
+ * speech: any checked-speech credit belongs behind it.
+ */
+static int
+m17_note_received_speech(const dsd_opts* opts, dsd_state* state) {
+    if (s_m17_network_frame != 0) {
+        dsd_call_snapshot call;
+        if (dsd_call_state_get(state, 0U, &call) > 0 && call.phase == DSD_CALL_PHASE_ACTIVE
+            && DSD_SYNC_IS_M17(call.protocol) && dsd_call_state_update_media(state, 0U, 1, 0.0) > 0) {
+            dsd_event_sync_slot((dsd_opts*)opts, state, 0U);
+        }
+    }
+    return state->m17_lsf_checked != 0U;
+}
+
 /* Decoded Codec2 voice plays through the digital voice output the other modes use (issue #658): the adapter runs the
    shared high-pass and gain, then the mixers apply the slot 1 switch, mute, channel count and sample format. The WAVs
    consume the same chained samples.
@@ -1140,6 +1210,9 @@ m17_play_codec2_voice(const dsd_opts* opts, dsd_state* state, const short* sampl
     }
     static const dsd_voice_frame_info k_received = {(uint8_t)DSD_VOICE_MEDIA_SPEECH, 1U, 1U, 0U};
     static const dsd_voice_frame_info k_tx_monitor = {(uint8_t)DSD_VOICE_MEDIA_TX_MONITOR, 1U, 1U, 0U};
+    if (!s_m17_monitoring_local_tx) {
+        (void)m17_note_received_speech(opts, state);
+    }
     if (!s_m17_monitoring_local_tx && dsd_scan_uses_checked_media(opts, state)) {
         /* Received speech Codec2 decoded is the scan's voice credit (issue #890); the media mark before the payload is
            decoded, which a build without Codec2 makes too, is not. */
@@ -1190,7 +1263,8 @@ M17processCodec2_1600(const dsd_opts* opts, dsd_state* state, const uint8_t* pay
     uint8_t aggregate[49];
     DSD_MEMSET(aggregate, 0, sizeof(aggregate));
     const int assembled =
-        m17_stream_1600_arbitrary_assemble(state->dmr_pdu_sf[0], frame_number, (const uint8_t*)voice2, aggregate);
+        m17_stream_1600_arbitrary_assemble(state->m17_adata, &state->m17_adata_mask, &state->m17_adata_group,
+                                           frame_number, (const uint8_t*)voice2, aggregate);
     if (assembled > 0 && m17_any_nonzero_octets(aggregate + 1, 48)) {
         DSD_FPRINTF(stderr, "\n");
         decodeM17PKT(opts, state, aggregate, 49);
@@ -1305,13 +1379,21 @@ m17_signature_end_transmission(dsd_state* state) {
     state->m17_signature_ended = 1U;
 }
 
-/* At an RF stream frame: the transmission before it ended at its EOS, and no EOT marker or LSF frame came between, so
-   its digest, chunks, verdict and advertisement are retired before this frame counts toward its own. */
+/* At an RF stream or LSF frame: the transmission before it ended at its EOS, and no EOT marker came between, so all of
+   it is retired before this frame counts toward its own: its confirmation, its checked link setup (CAN, encryption,
+   type, the signature advertisement) and its signature. Until this frame the ended transmission's evidence stands, so
+   the EOT marker that follows an EOS is still recognized (issue #890). */
 static void
 m17_signature_retire_if_ended(dsd_state* state) {
     if (state->m17_signature_ended != 0U) {
-        m17_confirm_reset_signature(state);
-        state->m17_signature_advertised = 0U;
+        m17_confirm_reset(state);
+    }
+}
+
+void
+m17_note_transmission_end(dsd_state* state) {
+    if (state != NULL) {
+        m17_signature_end_transmission(state);
     }
 }
 
@@ -1348,19 +1430,23 @@ M17collectSignaturePayload(dsd_state* state, const uint8_t* payload_bytes, const
     return 1;
 }
 
-/* Count a stream frame's payload into the digest (M17 spec 2.0.11, Message Digest Algorithm for Voice Streams: XOR the
-   payload in, rotate left one byte, frame by frame from frame 0): every voice frame before the signature frames, RF or
-   a network frame whose CRC passed, in order. A frame number below the next one is a frame already counted and is
-   skipped; one above it means frames were lost, and the signature can then only be incomplete
-   (m17_signature_voice_complete()). The digest is kept whether or not the signature is advertised yet: a transmission
+/* Count an RF stream frame's payload into the digest (M17 spec 2.0.11, Message Digest Algorithm for Voice Streams: XOR
+   the payload in, rotate left one byte, frame by frame from frame 0): every voice frame before the signature frames, in
+   order. Any other frame number (frames lost, or one played again) makes the signature incomplete
+   (m17_signature_voice_complete()). A network stream has no digest (its signature is not verified). The digest is kept whether or not the signature is advertised yet: a transmission
    whose LSF frame was lost learns it from a LICH rebuild later, and the digest covers the stream from its start. */
 static void
 M17updateSignatureDigest(dsd_state* state, const uint8_t* payload_bytes, uint16_t payload_frame_number) {
-    if (payload_frame_number >= M17_STREAM_SIGNATURE_FN0 || payload_frame_number < state->m17_signature_voice_next) {
+    if (payload_frame_number >= M17_STREAM_SIGNATURE_FN0) {
         return;
     }
     if (payload_frame_number != state->m17_signature_voice_next) {
+        /* A frame lost, or one played again (a repeated frame number: the digest takes it once, yet it plays): either
+           way the verdict would not cover all the audio played, so the signature is incomplete. */
         state->m17_signature_voice_gap = 1U;
+        if (payload_frame_number < state->m17_signature_voice_next) {
+            return;
+        }
     } else {
         m17_signature_digest_update(state->m17_signature_digest, payload_bytes);
     }
@@ -1421,6 +1507,30 @@ m17_stream_payload_may_play(const dsd_state* state, int network) {
     return m17_confirm_is_confirmed(state);
 }
 
+/* A stream frame's part in the signature: 1 when it is a signature frame, consumed. Over the air its chunk is collected
+   and every voice frame enters the digest. M17 signatures are not verified on network streams (issue #890): no digest
+   and no collection; a signature frame is still no voice, so it is consumed and the stream reported not verified over
+   the network. */
+static int
+m17_stream_signature_step(dsd_state* state, const uint8_t* payload_bytes, const uint8_t* trellis_buf,
+                          uint16_t frame_number, int network) {
+    if (network == 0) {
+        if (M17collectSignaturePayload(state, payload_bytes, trellis_buf, frame_number) != 0) {
+            return 1;
+        }
+        M17updateSignatureDigest(state, payload_bytes, (uint16_t)(frame_number & M17_STREAM_FRAME_COUNTER_MAX));
+        return 0;
+    }
+    if (!m17_is_signature_frame(state, frame_number)) {
+        return 0;
+    }
+    if (state->m17_signature_verification_status == M17_SIGNATURE_VERIFY_NOT_RUN) {
+        state->m17_signature_verification_status = M17_SIGNATURE_VERIFY_NOT_OVER_NETWORK;
+        DSD_FPRINTF(stderr, " SIG NOT VERIFIED OVER NETWORK;");
+    }
+    return 1;
+}
+
 /* @p network: an IP stream frame (whose CRC passed); 0 for RF. */
 static int
 m17_dispatch_stream_payload_internal(const dsd_opts* opts, dsd_state* state, const uint8_t* payload,
@@ -1439,12 +1549,10 @@ m17_dispatch_stream_payload_internal(const dsd_opts* opts, dsd_state* state, con
                            sizeof(payload_bytes));
     m17_stream_build_type1_bits(frame_number, payload, trellis_buf);
 
-    if (M17collectSignaturePayload(state, payload_bytes, trellis_buf, frame_number) != 0) {
+    const uint16_t payload_frame_number = (uint16_t)(frame_number & M17_STREAM_FRAME_COUNTER_MAX);
+    if (m17_stream_signature_step(state, payload_bytes, trellis_buf, frame_number, network)) {
         return M17_STREAM_SIGNATURE_CONSUMED;
     }
-
-    const uint16_t payload_frame_number = (uint16_t)(frame_number & M17_STREAM_FRAME_COUNTER_MAX);
-    M17updateSignatureDigest(state, payload_bytes, payload_frame_number);
 
     if (!m17_can_matches_state(state)) {
         DSD_FPRINTF(stderr, " CAN Filtered;");
@@ -1874,6 +1982,9 @@ int
 m17_finalize_lsf_crc(const dsd_opts* opts, dsd_state* state, const uint8_t* lsf_packed, uint16_t crc_ext) {
     const uint16_t crc_cmp = m17_crc16(lsf_packed, 28);
     const int crc_err = (crc_cmp != crc_ext);
+    /* After a decoded EOS the ended transmission's binding goes first: a repeat LSF keeps a checked binding only within
+       one transmission. */
+    m17_signature_retire_if_ended(state);
     /* A link setup frame opens a transmission: no stream frame of it has been sent yet, so its digest starts empty
        (M17 spec 2.0.11, Digital Signatures), whatever its CRC says (a repeated LSF comes before any stream frame too).
        One whose CRC passed also replaces the checked link setup the last transmission bound; one that failed is no
@@ -4145,7 +4256,9 @@ m17_ip_copy_lsf_from_bits(dsd_state* state, const uint8_t* ip_bits) {
     }
 }
 
-/* The link setup in an IP stream frame's bits, parsed: 1 when its fields can be used (m17_lsf_result_usable()). */
+/* The link setup in an IP stream frame's bits, parsed: 1 when its fields can be used (m17_lsf_result_usable()) and it
+   is a stream-mode LSF (M17 spec 2.0.11, Stream Mode: the Packet/Stream bit 1). Packet traffic has its own datagram
+   (MPKT); a packet-mode LSF in a stream datagram is nothing. */
 static int
 m17_ip_frame_lsf(const uint8_t* ip_bits, struct m17_lsf_result* res) {
     uint8_t lsf[M17_LSF_BYTES * 8];
@@ -4153,42 +4266,73 @@ m17_ip_frame_lsf(const uint8_t* ip_bits, struct m17_lsf_result* res) {
     for (int i = 0; i < M17_LSF_LSD_BITS; i++) {
         lsf[i] = ip_bits[i + 48];
     }
-    return m17_parse_lsf(lsf, sizeof(lsf), res) == 0 && m17_lsf_result_usable(res);
+    if (m17_parse_lsf(lsf, sizeof(lsf), res) != 0 || res->packet_stream == 0U) {
+        return 0;
+    }
+    return m17_lsf_result_usable(res);
 }
 
-/* The open network stream ended (its EOT, or a matching EOTX or DISC): its stream ID is ignored from now until frame 0
-   starts it again, its call ends, and its signature is judged or found incomplete. */
+/* The open network stream ended: by its EOT or a matching EOTX or DISC (@p in_band_end 1: the carrier goes with it), or
+   by another stream replacing it (0: the next stream's frame follows at once). Its call ends, its stream (ID and
+   station) is ignored from now until frame 0 starts it again, and the next stream starts with its own state. */
 static void
-m17_ip_end_stream(const dsd_opts* opts, dsd_state* state, dsd_call_end_reason reason) {
+m17_ip_end_stream(const dsd_opts* opts, dsd_state* state, dsd_call_end_reason reason, int in_band_end) {
     m17_end_call(opts, state, reason, 0);
-    /* A later stream that reuses its ID is another transmission. Its verdict stays until then. */
+    /* A later stream that reuses its ID is another transmission. */
     m17_gnss_tx_end(state);
     m17_signature_end_transmission(state);
-    m17_ip_note_ended(state, state->m17_ip_stream_sid, 1);
+    m17_ip_note_ended(state, state->m17_ip_stream_sid, state->m17_ip_stream_src, 1);
     state->m17_ip_stream = DSD_M17_IP_STREAM_NONE;
+    if (in_band_end) {
+        state->carrier = 0;
+        state->synctype = DSD_SYNC_NONE;
+    }
 }
 
-/* Whether a frame of network stream @p sid from station @p src, frame number @p fn, opens a stream or continues the open
-   one (1), or is dropped (0). */
+/* Whether frame number @p fn comes after @p last in a stream (15-bit, wrapping from 0x7FFF to 0: a long unsigned stream
+   numbers on through the wrap). A frame half the counter or more behind is a late one. In a signed stream (@p is_signed,
+   its LSF's signature bit; it never wraps) the signature frames (0x7FFC to 0x7FFF) follow the last voice frame, however
+   far that is from them. */
 static int
-m17_ip_admit_frame(dsd_state* state, uint16_t sid, uint64_t src, uint16_t fn) {
+m17_ip_fn_after(uint16_t fn, uint16_t last, int is_signed) {
+    const uint16_t ahead = (uint16_t)((fn - last) & M17_STREAM_FRAME_COUNTER_MAX);
+    if (ahead != 0U && ahead < 0x4000U) {
+        return 1;
+    }
+    return is_signed && fn > last && fn >= (M17_STREAM_SIGNATURE_FN0 & M17_STREAM_FRAME_COUNTER_MAX);
+}
+
+/* Whether a frame of network stream @p sid whose LSF is @p res (the station it names), frame number @p fn (@p eot its
+   EOT bit), opens a stream or continues the open one (1), or is dropped (0). */
+static int
+m17_ip_admit_frame(const dsd_opts* opts, dsd_state* state, uint16_t sid, const struct m17_lsf_result* res, uint16_t fn,
+                   uint8_t eot) {
+    const uint64_t src = res->src;
     const int open = state->m17_ip_stream == DSD_M17_IP_STREAM_OPEN;
     if (open && sid == state->m17_ip_stream_sid && src == state->m17_ip_stream_src) {
-        if (fn <= state->m17_ip_stream_last_fn) {
+        if (!m17_ip_fn_after(fn, state->m17_ip_stream_last_fn, res->signature != 0U)) {
             return 0; /* this frame number was used, or a later one: a copy or a late datagram */
         }
         state->m17_ip_stream_last_fn = fn;
         return 1;
     }
-    if (m17_ip_sid_ended(state, sid)) {
+    /* A final frame that is not the open stream's does not replace it (it would end at once, taking the open stream
+       with it); frame 0 (a one-frame stream) is a stream start like any frame 0. With no stream open, a final frame is
+       a stream joined at its end. */
+    if (open && eot != 0U && fn != 0U) {
+        return 0;
+    }
+    if (m17_ip_stream_ended(state, sid, src)) {
         if (fn != 0U) {
             return 0; /* the ended stream's datagram, delivered late */
         }
-        m17_ip_note_ended(state, sid, 0);
+        m17_ip_note_ended(state, sid, src, 0);
     }
-    if (open && state->m17_ip_stream_sid != sid) {
-        /* Another stream replaces the open one: that one is over, and its late datagrams are ignored too. */
-        m17_ip_note_ended(state, state->m17_ip_stream_sid, 1);
+    if (open) {
+        /* Another stream (ID or station) replaces the open one, whose end was lost: that one is over, its call ends
+           before the next is published (so the two transmissions are two calls), and its late datagrams are ignored
+           too. */
+        m17_ip_end_stream(opts, state, DSD_CALL_END_EXPLICIT, 0);
     }
     m17_confirm_reset_link(state);
     state->m17_ip_stream = DSD_M17_IP_STREAM_OPEN;
@@ -4201,13 +4345,17 @@ m17_ip_admit_frame(dsd_state* state, uint16_t sid, uint64_t src, uint16_t fn) {
 /*
  * A network stream frame whose CRC passed (M17 IP stream frame: stream ID, LSF, frame number with the EOT bit,
  * payload), by one rule set that fails closed (issue #890):
- * - a frame whose own link setup cannot be used (reserved TYPE fields, an invalid address) is nothing: the previous
- *   stream's type, encryption and CAN never stand in for it;
- * - each frame number of a stream (its stream ID and the station its LSF names) is used once and in order: a copy, or a
- *   datagram arriving after a later one, is dropped before playback, the digest and everything else;
- * - another stream ID, or another station, opens a stream; after a stream ended (its EOT, a matching EOTX or DISC, or
- *   another stream replacing it) every datagram of its stream ID is ignored until frame 0 starts it again. Accepted
- *   limit: a copy of a one-frame stream's frame 0 arriving after its EOT starts it again and may open a second row.
+ * - a frame whose own link setup cannot be used (reserved TYPE fields, an invalid address, a packet-mode LSF) is
+ *   nothing: the previous stream's type, encryption and CAN never stand in for it;
+ * - each frame number of a stream (its stream ID and the station its LSF names) is used once and in order (through the
+ *   15-bit counter's wrap): a copy, or a datagram arriving after a later one, is dropped before playback and everything
+ *   else;
+ * - another stream ID or station opens a stream, ending the open one; a final frame (EOT) other than frame 0 is taken
+ *   only for the open stream;
+ * - after a stream ended (its EOT, a matching EOTX or DISC, or another stream replacing it) every datagram of it (its
+ *   stream ID and station) is ignored until frame 0 starts it again. Accepted limit: a copy of a one-frame stream's
+ *   frame 0 arriving after its EOT starts it again and may open a second call row.
+ * M17 signatures are not verified on network streams.
  */
 static void
 m17_ip_take_stream_frame(const dsd_opts* opts, dsd_state* state, const uint8_t* ip_frame, const uint8_t* ip_bits,
@@ -4217,7 +4365,7 @@ m17_ip_take_stream_frame(const dsd_opts* opts, dsd_state* state, const uint8_t* 
     const uint8_t eot = ip_bits[272];
     const uint16_t stream_frame_number = (uint16_t)((eot != 0U ? M17_STREAM_FRAME_END_MASK : 0U) | fn);
     struct m17_lsf_result res;
-    if (!m17_ip_frame_lsf(ip_bits, &res) || !m17_ip_admit_frame(state, sid, res.src, fn)) {
+    if (!m17_ip_frame_lsf(ip_bits, &res) || !m17_ip_admit_frame(opts, state, sid, &res, fn, eot)) {
         return;
     }
     state->carrier = 1;
@@ -4227,10 +4375,12 @@ m17_ip_take_stream_frame(const dsd_opts* opts, dsd_state* state, const uint8_t* 
     const m17_lsf_carrier carrier = {1U, sid, 0U, 1U, fn, 54U, m17_datagram_digest(ip_frame, 54U)};
     (void)M17decodeLSF(opts, state, 1, &carrier);
     uint8_t processed_payload[M17_STREAM_PAYLOAD_BITS];
+    s_m17_network_frame = 1;
     (void)m17_dispatch_stream_payload_internal(opts, state, payload, stream_frame_number, processed_payload, 1);
+    s_m17_network_frame = 0;
     // CRC-verified IP-frame EOT: positive end evidence, like the RF stream's end flag above.
     if (eot != 0U) {
-        m17_ip_end_stream(opts, state, DSD_CALL_END_TERMINATOR);
+        m17_ip_end_stream(opts, state, DSD_CALL_END_TERMINATOR, 1);
     }
 }
 
@@ -4296,9 +4446,7 @@ m17_ip_handle_control_frame(const m17_ip_ctrl_desc* desc, const dsd_opts* opts, 
        another station is not its end (issue #890). */
     if (desc->drop_carrier && state->m17_ip_stream == DSD_M17_IP_STREAM_OPEN
         && m17_read_ip_source(ip_frame) == state->m17_ip_stream_src) {
-        m17_ip_end_stream(opts, state, DSD_CALL_END_EXPLICIT);
-        state->carrier = 0;
-        state->synctype = DSD_SYNC_NONE;
+        m17_ip_end_stream(opts, state, DSD_CALL_END_EXPLICIT, 1);
     }
     return 1;
 }

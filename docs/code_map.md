@@ -13888,49 +13888,64 @@ Private per-protocol modules worth knowing about:
   stands a relaxed (`-F`) LSF is shown and replaces none of them. The digest and the signature chunks are the
   transmission's and survive every LSF applied mid-stream (a LICH rebuild, each IP frame's LSF); they are forgotten only
   at a boundary: an LSF frame, an EOT, `noCarrier()`, a carrier boundary, or another IP stream. The signature
-  advertisement is the checked link setup's: a repeat LSF frame whose CRC failed resets the digest but keeps it. The
+  advertisement is the checked link setup's: a repeat LSF frame whose CRC failed resets the digest but keeps it. The RF
   digest (M17 spec 2.0.11, Message Digest Algorithm for Voice Streams: XOR each payload in, rotate left a byte, frame by
   frame from frame 0) takes the voice frames in order (`M17updateSignatureDigest()`,
-  `dsd_state::m17_signature_voice_next`): a frame number below the next is skipped, one above it marks a gap
-  (`m17_signature_voice_gap`), advertised or not yet (a rebuild can advertise it late). A signature is judged only at
-  the transmission's end, its last chunk (0xFFFF), and only when every voice frame arrived once and in order from frame
-  0 and every chunk arrived before or with the end (`m17_signature_collector_push()`); otherwise it is incomplete
-  (`M17_SIGNATURE_VERIFY_INCOMPLETE`), never invalid (Signature Verification needs the whole stream). A voice frame lost
-  just before the signature frames cannot be told from the end of voice (the signature frames carry their own numbers),
-  so such a stream is judged, and fails. A decoded EOS (`m17_stream_end_of_stream()`) and an IP EOT end the signature
-  (`m17_signature_end_transmission()`): the next RF transmission's first LICH retires it
-  (`m17_signature_retire_if_ended()`) even with no EOT marker or LSF frame between. The network path keeps one rule set
-  that fails closed (`m17_ip_take_stream_frame()`): an IP stream frame whose CRC failed is nothing; one whose own LSF
-  cannot be used is nothing (the open stream's CAN, encryption and type never stand in); each frame number of a stream
-  (stream ID and the station its LSF names, `m17_ip_stream_*`) is used once and in order, so a copy or a late datagram
-  is dropped before playback, the digest and everything else; another stream ID or station opens a stream; EOTX and DISC
-  end the open stream only when they name its station; after a stream ends (its EOT, a matching EOTX or DISC, or another
-  stream replacing it) every datagram of its stream ID is ignored until frame 0 starts it again (the stream IDs ended
-  lately are kept in the M17 state extension, `m17_ip_note_ended()`). Accepted limits: a copy of a one-frame stream's
-  frame 0 after its EOT starts it again; a stream ID reused by the same station with no end received between is not
-  taken. A checked IP frame plays on its own check, but marks no media: a network frame's media comes from the speech
-  decoded (`M17_STATE_DISPATCH` `test_ip_duplicate_frames_are_dropped`,
-  `test_ip_unusable_link_setup_dispatches_nothing`, `test_ip_end_controls_match_the_station`,
-  `test_ip_ended_stream_is_ignored_until_frame_0`, `test_signed_ip_stream_missing_frame_is_incomplete`,
-  `test_rf_eos_retires_the_signature`). A stream frame's EOS bit, an IP EOT, EOTX or DISC, the EOT marker and a packet's
-  end end the slot's call only when it is an M17 one, and an M17 call a fade already ended is made final by it
-  (`m17_end_call()`, `m17_call_end.c`, public in `<dsd-neo/protocol/m17/m17.h>`). The EOT also puts the slicer levels
-  back where a lost carrier leaves them (`max`/`min` +/-15000, `center` 0, as `noCarrier()`): the marker is seven outer
-  symbols of one sign to one of the other, and the next transmission's hunt sliced and timed its preamble against the
-  skewed centre it left (issue #834).
+  `dsd_state::m17_signature_voice_next`): any other frame number, a lost frame or one played again (its audio is not all
+  covered), marks a gap (`m17_signature_voice_gap`), advertised or not yet (a rebuild can advertise it late). A
+  signature is judged only at the transmission's end, its last chunk (0xFFFF), and only when every voice frame arrived
+  once and in order from frame 0 and every chunk arrived before or with the end (`m17_signature_collector_push()`);
+  otherwise it is incomplete (`M17_SIGNATURE_VERIFY_INCOMPLETE`, " SIG INCOMPLETE;"), never invalid (Signature
+  Verification needs the whole stream), also when only the EOT marker ends the transmission
+  (`m17_note_transmission_end()` before the marker's `m17_confirm_reset()`). A voice frame lost just before the
+  signature frames cannot be told from the end of voice, so such a stream is judged, and fails. A decoded EOS
+  (`m17_stream_end_of_stream()`) ends the transmission (`m17_signature_end_transmission()`): its evidence stands until
+  the next RF LICH or LSF frame, so its EOT marker is still recognized, and that frame retires all of it
+  (`m17_signature_retire_if_ended()`, a full `m17_confirm_reset()`: confirmation, checked link setup and signature), so
+  the next transmission never runs on the ended one's CAN, encryption or type even with no EOT marker between (the scan
+  side marks the binding disputed at the EOS, PR B). M17 signatures are not verified on network (IP) streams (decided,
+  issue #890): no digest, no collection; a signature frame is consumed, never played, and the stream is reported " SIG
+  NOT VERIFIED OVER NETWORK;" (`M17_SIGNATURE_VERIFY_NOT_OVER_NETWORK`). The network path keeps one rule set that fails
+  closed (`m17_ip_take_stream_frame()`, `m17_ip_admit_frame()`): an IP stream frame whose CRC failed is nothing; one
+  whose own LSF cannot be used, or is packet mode (Stream Mode needs the Packet/Stream bit set; packets are MPKT), is
+  nothing; each frame number of a stream (stream ID and the station its LSF names, `m17_ip_stream_*`) is used once and
+  in order through the 15-bit counter's wrap (`m17_ip_fn_after()`), so a copy or a late datagram is dropped before
+  playback and everything else; another stream ID or station opens a stream, ending the open one and its call first (two
+  transmissions, two calls), but a final frame other than frame 0 never replaces the open stream; a stream's EOT, or
+  EOTX and DISC naming its station, end it and drop the carrier and sync type (`m17_ip_end_stream()`); after a stream
+  ends every datagram of it (stream ID and station) is ignored until frame 0 starts it again, however many other streams
+  end (the ended keys, sorted, in the M17 state extension, `m17_ip_note_ended()`). Accepted limits: a copy of a
+  one-frame stream's frame 0 after its EOT starts it again; a stream ID reused by the same station with no end received
+  between is not taken. A checked IP frame plays on its own check; its decoded speech marks the call's media
+  (`m17_note_received_speech()`), which also returns whether the speech is checked speech (a checked LSF bound its type,
+  encryption and CAN, `m17_lsf_checked`: under -F a relaxed LSF or the LICH alone may name ciphertext clear voice), the
+  gate any checked-speech credit sits behind. The 1600 bit/s arbitrary data is assembled per six-frame group and emptied
+  at a stream change (`m17_stream_1600_arbitrary_assemble()`, `dsd_state::m17_adata`). Tests: `M17_STATE_DISPATCH`
+  (`test_signed_ip_stream_is_not_verified`, `test_signed_rf_stream_needs_every_frame_once`,
+  `test_rf_marker_end_reports_an_incomplete_signature`, `test_rf_eos_retires_the_link_setup`,
+  `test_ip_foreign_eot_does_not_end_the_open_stream`, `test_ip_frame_counter_rollover`,
+  `test_ip_in_band_end_drops_the_carrier`, `test_ip_replaced_stream_ends_its_call`,
+  `test_ip_ended_streams_by_station_and_unbounded`, `test_ip_packet_mode_lsf_in_a_stream_datagram`,
+  `test_ip_decoded_speech_marks_media`, `test_relaxed_lsf_logs_its_own_iv`), `M17_LSF_PARSE`. A stream frame's EOS bit,
+  an IP EOT, EOTX or DISC, the EOT marker and a packet's end end the slot's call only when it is an M17 one, and an M17
+  call a fade already ended is made final by it (`m17_end_call()`, `m17_call_end.c`, public in
+  `<dsd-neo/protocol/m17/m17.h>`). The EOT also puts the slicer levels back where a lost carrier leaves them
+  (`max`/`min` +/-15000, `center` 0, as `noCarrier()`): the marker is seven outer symbols of one sign to one of the
+  other, and the next transmission's hunt sliced and timed its preamble against the skewed centre it left (issue #834).
 - M17 end-of-transmission marker (M17 spec 2.0.11: 192 symbols of 0x555D, +3 six times, -3, +3). The hunt takes it
   (`frame_sync_try_m17_eot()`) only behind an M17 frame of a transmission with evidence and only on
-  `DSD_FRAME_SYNC_M17_EOT_WORDS` (3) marker words in a row, each exactly a word after the one before and each within
-  one symbol of the marker with its one other-sign symbol right (`dsd_frame_sync_m17_eot_word()`,
-  `frame_sync_m17_eot.c`, both polarities): every flat run is within one symbol of a single word, and a fade after
-  real traffic used to end the call there. The words after the first are read with the hunt still running
-  (`dsd_state::m17_eot_pending`): any sync taken meanwhile drops them (`frame_sync_try_protocol_matches()`), and a
-  window that is not the next word drops them and may start one afresh. `dsd_dispatch_handle_m17()` then drains the
-  rest of the marker a word at a time (at most the 21 words left) up to the first word that is not the marker and hands
-  that word back to the hunt as its window's history (`dsd_frame_sync_hand_back_symbols()`, the carry a
-  no-sync exit keeps), so a sync word that began in it is still found; the blind 184-symbol skip it replaces ran into
-  the next frame when the marker's first words were lost. Outside M17 the hunt pays one state check a window while M17
-  is enabled, and nothing when it is not (`M17_FRAME_SYNC`, `M17_SYNC_DISPATCH`).
+  `DSD_FRAME_SYNC_M17_EOT_WORDS` (3) marker words in a row, each exactly a word after the one before and each within one
+  symbol of the marker with its one other-sign symbol right (`dsd_frame_sync_m17_eot_word()`, `frame_sync_m17_eot.c`,
+  both polarities): every flat run is within one symbol of a single word, and a fade after real traffic used to end the
+  call there. The words after the first are read with the hunt still running (`dsd_state::m17_eot_pending`): any sync
+  taken meanwhile drops them (`frame_sync_try_protocol_matches()`), and a window that is not the next word drops them
+  and may start one afresh. `dsd_dispatch_handle_m17()` then drains the rest of the marker a word at a time (at most the
+  21 words left) up to the first word that is not the marker and hands that word back to the hunt as its window's
+  history (`dsd_frame_sync_hand_back_word()`, the carry a no-sync exit keeps), scored once at its own end
+  before the next symbol is read (`score_on_resume`), so a sync word that began in it, or is all of it, is still found;
+  the blind 184-symbol skip it replaces ran into the next frame when the marker's first words were lost. Outside M17 the
+  hunt pays one state check a window while M17 is enabled, and nothing when it is not (`M17_FRAME_SYNC`,
+  `M17_SYNC_DISPATCH`).
 - `src/protocol/dstar/dstar_confirm.{c,h}` and `src/protocol/provoice/provoice_confirm.{c,h}` — the same shape again,
   answering the SPS hunt (issue #421); D-STAR's also gates voice: a superframe's AMBE frames reach the vocoder, the
   speaker, the MBE capture and the call record only when the transmission is confirmed as the superframe starts (its

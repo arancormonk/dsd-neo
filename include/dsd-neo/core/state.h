@@ -271,6 +271,10 @@ typedef struct {
        Phase 1 carrier NAC (dsd_p25p1_carrier_nac) reads it too, as the same stream boundary. */
     uint32_t drops;
     uint8_t valid;
+    /* The window ending on the last carried dibit is scored once before the next call reads a symbol: the symbols a
+       frame handler read and handed back (dsd_frame_sync_hand_back_word(), the word after an M17 end-of-transmission
+       marker) may end with a whole sync word. */
+    uint8_t score_on_resume;
 } dsd_frame_sync_history_carry;
 
 /* The dPMR frames the frame sync reads inside the hunt before it accepts them (src/dsp/frame_sync_dpmr.c, ETSI TS 102
@@ -3279,6 +3283,11 @@ struct dsd_state {
      *   the station its LSF names and the last frame number used: each frame number of it is used once and in order,
      *   so a datagram delivered again or late is dropped before anything (m17_ip_take_stream_frame()). */
     uint8_t m17_lsf_checked;
+    /* The 1600 bit/s stream's arbitrary data being assembled (m17_stream_1600_arbitrary_assemble()): one six-frame
+     * group's chunks, which slots are in and the group; emptied at a stream change (m17_confirm_reset_link()). */
+    uint8_t m17_adata[48];
+    uint8_t m17_adata_mask;
+    uint16_t m17_adata_group;
     uint16_t m17_signature_voice_next;
     uint8_t m17_signature_voice_gap;
     uint8_t m17_signature_ended;

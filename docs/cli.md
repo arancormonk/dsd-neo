@@ -2408,7 +2408,8 @@ setting, shown apart from what is received, and it is off by default: then the o
   - DMR encryption lockout acts only on a voice LC whose check passed, or one `-F` accepted as RAS: a RAS system
     needs `-F` for it.
 - M17 signed voice-stream verification: `--m17-signature-public-key <hex>` accepts a 64-byte secp256r1 public key as
-  raw `X||Y` hex.
+  raw `X||Y` hex. Signatures are verified over the air only; a network (UDP/IP) stream shows `SIG NOT VERIFIED OVER
+  NETWORK`.
 - P25p2 manual WACN/SYSID/CC: `-X <hex>` (e.g., `-X BEE00ABC123`). With all three parts nonzero the seed is hand-set, as
   the menu's P25 P2 parameters set it: no NID or network status rewrites it, and neither a control channel change nor
   another protocol's trunking clears it; it counts as the received NAC only once a burst decodes with it. Unless `-X`

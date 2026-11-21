@@ -29,17 +29,22 @@ Implemented decode coverage:
   written to `-L` (its source column is a number; M17 sends a callsign). Packets never carry a position: M17 defines no
   GNSS packet protocol, and a packet with protocol 0x91 is shown as an unknown protocol.
 - Stream payload descrambling and AES-CTR decrypt when the corresponding key material is configured.
-- M17 over UDP/IP: a network frame whose CRC failed, or whose own link setup cannot be used, is dropped (not played, no
-  call). Each frame of a stream is used once and in order: a frame received again, or after a later one, is dropped.
-  EOTX and DISC end a stream only when they come from its station. After a network stream ends, its stream ID is
-  ignored until a frame 0 starts it again; a stream ID that the same station reuses with no end received between is not
-  taken.
-- Signed voice-stream collection and secp256r1 verification when `--m17-signature-public-key <hex>` is provided (M17
-  2.0.11 signatures). The digest runs over the whole stream from its first frame: the LSF repeated in the LICH or in
-  each network frame does not restart it. The signature is checked at the end of the transmission, and only when every
-  voice frame and every signature piece arrived once and in order; otherwise it is reported as incomplete, never as a
+- M17 over UDP/IP: a network frame whose CRC failed, whose own link setup cannot be used, or that carries a packet-mode
+  link setup in a stream frame, is dropped (not played, no call). Each frame of a stream (its stream ID and station) is
+  used once and in order, through the frame counter's wrap: a frame received again, or after a later one, is dropped. A
+  new stream ID or station ends the stream before it and starts its own call; a final frame of another stream does not
+  end the open one. A stream's own end, or EOTX and DISC from its station, end it and drop the carrier. After a network
+  stream ends, its stream ID (from that station) is ignored until a frame 0 starts it again, however many other streams
+  end meanwhile; a stream ID that the same station reuses with no end received between is not taken.
+- Signed voice streams: over the air, the signature is collected and checked (secp256r1) when
+  `--m17-signature-public-key <hex>` is provided (M17 2.0.11 signatures). The digest runs over the whole stream from its
+  first frame: the LSF repeated in the LICH does not restart it. The signature is checked at the end of the
+  transmission, and only when every voice frame arrived once and in order and every signature piece arrived; otherwise
+  it is reported as incomplete (`SIG INCOMPLETE`), also when only the end-of-transmission marker ends it, never as a
   failed signature. A voice frame lost just before the signature frames cannot be detected, and then the check fails.
-  The SHA-256 stream hash and Authentication Frame of the M17 2.1 revisions are not implemented.
+  M17 signatures are not verified on network (UDP/IP) streams: their signature frames are not played, and the stream
+  shows `SIG NOT VERIFIED OVER NETWORK`. The SHA-256 stream hash and Authentication Frame of the M17 2.1 revisions are
+  not implemented.
 - Packet assembly with the current 823-byte application-payload ceiling and packet CRC validation.
 - BERT PRBS9 payload checking without requiring a preceding LSF.
 

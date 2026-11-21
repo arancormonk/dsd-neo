@@ -102,22 +102,34 @@ m17_signature_collector_push(struct m17_signature_collector* collector, uint16_t
 }
 
 int
-m17_stream_1600_arbitrary_assemble(uint8_t accumulator[48], uint16_t frame_number, const uint8_t chunk[8],
-                                   uint8_t out_packet[49]) {
-    if (accumulator == NULL || chunk == NULL || out_packet == NULL) {
+m17_stream_1600_arbitrary_assemble(uint8_t accumulator[48], uint8_t* received_mask, uint16_t* group,
+                                   uint16_t frame_number, const uint8_t chunk[8], uint8_t out_packet[49]) {
+    if (accumulator == NULL || received_mask == NULL || group == NULL || chunk == NULL || out_packet == NULL) {
         return -1;
     }
 
+    const uint16_t frame_group = (uint16_t)(frame_number / 6U);
+    if (*received_mask != 0U && *group != frame_group) {
+        /* Another group's chunks (a stream joined, a frame lost, another stream): none of them is this group's. */
+        *received_mask = 0U;
+        DSD_MEMSET(accumulator, 0, 48U);
+    }
+    *group = frame_group;
     const size_t slot = (size_t)(frame_number % 6U);
     DSD_MEMCPY(accumulator + (slot * 8U), chunk, 8U);
+    *received_mask = (uint8_t)(*received_mask | (1U << slot));
     if (slot != 5U) {
         return 0;
     }
 
-    out_packet[0] = 0x99U;
-    DSD_MEMCPY(out_packet + 1, accumulator, 48U);
+    const int whole = *received_mask == 0x3FU;
+    if (whole) {
+        out_packet[0] = 0x99U;
+        DSD_MEMCPY(out_packet + 1, accumulator, 48U);
+    }
     DSD_MEMSET(accumulator, 0, 48U);
-    return 1;
+    *received_mask = 0U;
+    return whole;
 }
 
 static uint8_t

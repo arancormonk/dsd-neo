@@ -67,8 +67,9 @@ void m17_confirm_reset(dsd_state* state);
 void m17_confirm_reset_signature(dsd_state* state);
 
 /**
- * @brief Forget the transmission's checked link setup (dsd_state::m17_lsf_checked), its network stream and its
- * signature (m17_confirm_reset_signature()): a transmission boundary.
+ * @brief Forget the transmission's checked link setup (dsd_state::m17_lsf_checked) and signature advertisement, its
+ * network stream, its 1600 bit/s arbitrary data being assembled, and its signature (m17_confirm_reset_signature()): a
+ * transmission boundary.
  */
 void m17_confirm_reset_link(dsd_state* state);
 

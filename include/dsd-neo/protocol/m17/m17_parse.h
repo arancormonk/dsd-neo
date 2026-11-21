@@ -224,14 +224,18 @@ int m17_signature_collector_push(struct m17_signature_collector* collector, uint
  * Assemble M17 1600 bps stream arbitrary-data chunks into a 0x99 payload.
  *
  * Each stream frame carries 8 arbitrary-data bytes. The frame number modulo 6
- * selects the chunk slot. When slot 5 is received, out_packet is filled with a
- * protocol byte followed by 48 assembled payload bytes.
+ * selects the chunk slot and the frame number divided by 6 the group: the
+ * accumulator holds one group's chunks (@p received_mask, bit per slot, and
+ * @p group), and a chunk of another group empties it first. When slot 5 is
+ * received with all six chunks of its group in, out_packet is filled with a
+ * protocol byte followed by 48 assembled payload bytes; the accumulator is
+ * emptied at slot 5 either way. A caller empties it (mask 0) at a stream change.
  *
  * @return 1 when out_packet was completed, 0 when only a chunk was stored,
  *         negative on invalid arguments.
  */
-int m17_stream_1600_arbitrary_assemble(uint8_t accumulator[48], uint16_t frame_number, const uint8_t chunk[8],
-                                       uint8_t out_packet[49]);
+int m17_stream_1600_arbitrary_assemble(uint8_t accumulator[48], uint8_t* received_mask, uint16_t* group,
+                                       uint16_t frame_number, const uint8_t chunk[8], uint8_t out_packet[49]);
 
 /**
  * Decode M17 meta text segment control.

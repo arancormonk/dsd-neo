@@ -37,6 +37,9 @@ m17_confirm_reset_link(dsd_state* state) {
         return;
     }
     state->m17_lsf_checked = 0U;
+    DSD_MEMSET(state->m17_adata, 0, sizeof(state->m17_adata));
+    state->m17_adata_mask = 0U;
+    state->m17_adata_group = 0U;
     state->m17_signature_advertised = 0U;
     state->m17_ip_stream = DSD_M17_IP_STREAM_NONE;
     state->m17_ip_stream_sid = 0U;

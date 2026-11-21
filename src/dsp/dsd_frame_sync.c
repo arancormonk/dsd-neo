@@ -3774,6 +3774,8 @@ typedef struct frame_sync_runtime_ctx {
     /* A history taken up from the last call, until the first symbol read confirms the stream went on unbroken: the
        read is where an RTL reader finds a flush (the clock's epoch) or a tune completes. */
     int resumed;
+    /* The taken-up history's last window is scored before the first read (dsd_frame_sync_history_carry). */
+    int score_on_resume;
     uint64_t resume_clock;
     uint32_t resume_epoch;
     uint32_t resume_carrier_seq;
@@ -3960,6 +3962,7 @@ frame_sync_history_keep(const frame_sync_runtime_ctx* rt, dsd_state* state) {
     carry->pass_symbols = 0;
     /* The no-carrier reset after the exit clears the rolling dibit buffers: none of the history is in them. */
     carry->own_symbols = 0;
+    carry->score_on_resume = 0;
     carry->valid = 1;
 }
 
@@ -4004,6 +4007,7 @@ frame_sync_history_carry_symbols(dsd_state* state, int symbols, int pass_symbols
        still hold the stream when it starts (frame_sync_history_resume(): a clear since, or one before the word's first
        symbols were read, leaves fewer). */
     carry->own_symbols = count;
+    carry->score_on_resume = 0;
     carry->valid = 1;
 }
 
@@ -4016,6 +4020,14 @@ dsd_frame_sync_hand_back_symbols(dsd_state* state, int symbols) {
     frame_sync_history_carry_symbols(state, symbols, 0);
     /* The decoder's slicer wrote its own dibits for them, and no DMR payload: nothing decodes a burst back from them. */
     state->frame_sync_carry.own_symbols = 0;
+}
+
+void
+dsd_frame_sync_hand_back_word(dsd_state* state, int symbols) {
+    dsd_frame_sync_hand_back_symbols(state, symbols);
+    /* The handed-back word may be a whole sync word itself (a co-channel stream right after a shortened M17 marker):
+       its window is scored where it ends, before the next symbol is read. */
+    state->frame_sync_carry.score_on_resume = state->frame_sync_carry.valid;
 }
 
 /* Any other exit: the next call starts with no history. */
@@ -4045,9 +4057,12 @@ frame_sync_history_resume(frame_sync_runtime_ctx* rt, dsd_state* state) {
                          && carry->rf_mod == state->rf_mod && carry->tune_generation == rt->history_tune_gen
                          && !dsd_frame_sync_off_thread_tune_pending() && frame_sync_history_carry_in_range(carry);
     carry->valid = 0;
+    const uint8_t score = carry->score_on_resume;
+    carry->score_on_resume = 0;
     if (!unbroken) {
         return;
     }
+    rt->score_on_resume = score;
     DSD_MEMCPY(rt->symbol_history, carry->dibits, sizeof(rt->symbol_history));
     rt->history_head = carry->head;
     rt->history_count = carry->count;
@@ -6057,6 +6072,26 @@ frame_sync_pass_end_step(dsd_opts* opts, dsd_state* state, frame_sync_runtime_ct
     return budget_step != 0;
 }
 
+/* A call's runtime, set up with the last call's history taken up (frame_sync_history_resume()); the window ending on the last of the symbols a frame
+   handler handed back (dsd_frame_sync_history_carry score_on_resume) is scored once where it ends, before the next
+   symbol is read: the sync it holds, or none. */
+static int
+frame_sync_take_up_history(dsd_opts* opts, dsd_state* state, frame_sync_runtime_ctx* rt, time_t now, double nowm) {
+    frame_sync_runtime_init(rt, opts, state);
+    /* The last call's history, when it ended on a no-sync exit and the stream went on unbroken from there. */
+    frame_sync_history_resume(rt, state);
+    if (!rt->score_on_resume || rt->history_count < 8) {
+        return DSD_SYNC_NONE;
+    }
+    rt->score_on_resume = 0;
+    const int sync_type = frame_sync_eval_window(opts, state, rt, now, nowm);
+    if (sync_type != DSD_SYNC_NONE) {
+        frame_sync_history_drop(state);
+        frame_sync_sps_hunt_mark_return(state);
+    }
+    return sync_type;
+}
+
 int
 getFrameSync(dsd_opts* opts, dsd_state* state) {
     if (!opts || !state) {
@@ -6073,9 +6108,10 @@ getFrameSync(dsd_opts* opts, dsd_state* state) {
     frame_sync_ensure_enabled_sps_profile(opts, state);
 
     frame_sync_runtime_ctx rt;
-    frame_sync_runtime_init(&rt, opts, state);
-    /* The last call's history, when it ended on a no-sync exit and the stream went on unbroken from there. */
-    frame_sync_history_resume(&rt, state);
+    const int handed_back = frame_sync_take_up_history(opts, state, &rt, now, nowm);
+    if (handed_back != DSD_SYNC_NONE) {
+        return handed_back;
+    }
 
     frame_sync_publish_ui_throttled(opts, state);
     dsd_event_sync_slot(opts, state, 0);
