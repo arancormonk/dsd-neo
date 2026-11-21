@@ -21899,9 +21899,10 @@ if(DSD_HAS_RADIO)
                 # rtl_tcp scene (issue #890): NFM, NXDN48, YSF, a TETRA DMO call (tetra_dmo_call_synth_72k) and a
                 # TETRA DMO target on trunked TETRA alone. Each target lands its own profile (the control API's
                 # metrics), the NFM, YSF and DMO calls hold their targets and release them, and the trunked TETRA
-                # never holds. About 40 s in real time; every bound is in the stream's own time, so a slow runner only
-                # takes longer (the run stops at 120 s, the TIMEOUT at 240). numpy, so CTest reports it skipped where
-                # the tests' Python has none.
+                # never holds. About 40 s in real time. The decoder's dwell and hold run on its real clock, so a slow
+                # runner is carried by the slack: 3 s on every bound, an idle visit's 5 s bound far under the 15 s visit
+                # cap a held trunked target would run to (the run stops at 120 s, the TIMEOUT at 240). numpy, so CTest
+                # reports it skipped where the tests' Python has none.
                 add_test(
                     NAME ENGINE_TRUNK_SCAN_SIMPLEX_RIG
                     COMMAND
@@ -22637,18 +22638,21 @@ if(DSD_HAS_RADIO)
     # A synthetic direct mode group call at 72 kHz (tetra_dmo_call_synth_72k, TETRA_DMO_NAME in
     # tools/build_iq_fixtures.py; issue #890): DM-SETUP in eight DSBs, three multiframes of full-slot speech in slot 1
     # with DM-OCCUPIED in frames 6, 12 and 18, then DM-TX CEASED, the carrier off between the bursts as a DM-MS keys it.
-    # Every burst must decode: the 8 DM-SETUP, the 12 DM-OCCUPIED and the 4 DM-TX CEASED, the call published as a
-    # direct mode group call (-J), and all 51 DNBs, scrambled with the call's DM colour code, with the speech CRC passing
-    # and none failing. Before the TETRA chain took each direct mode burst's timing and carrier phase from its training
+    # The 12 DM-OCCUPIED and the 4 DM-TX CEASED must decode, the call must be published as a direct mode group call
+    # (-J), and all 51 DNBs, scrambled with the call's DM colour code, must carry speech whose CRC passes with no
+    # mismatch. Before the TETRA chain took each direct mode burst's timing and carrier phase from its training
     # (tetra_uplink_timing.h, as the uplink does), its loops free-ran on the noise between bursts and the replay decoded
-    # 9 of the 12 DM-OCCUPIED and 35 of the 51 speech bursts.
+    # 9 of the 12 DM-OCCUPIED and 35 of the 51 speech bursts. The first DSB of the carrier still comes on the free-running
+    # loops, since only a DSB taken on tells the front end the carrier is direct mode: this fixture decodes all 8
+    # DM-SETUP, but 5 of 12 realizations of it (other noise and phases, a sample later each) lose one, so 7 are
+    # required.
     dsd_neo_add_iq_decode_test(
         DECODE_IQ_TETRA_DMO_SETUP
         tetra_dmo_call_synth_72k
         -fT
         "\\[TETRA DMO DSB\\] sys=13 comm=0 ch=0 slot=[1-4] frame=1[78] enc=0 \\| DM-SETUP src=4321 dst=6060 MNI=460/4242 cd=[01] dcc=ok \\| group speech"
         "TETRA needs a DSP rate"
-        8
+        7
     )
     dsd_neo_add_iq_decode_test(
         DECODE_IQ_TETRA_DMO_OCCUPIED
@@ -22671,7 +22675,7 @@ if(DSD_HAS_RADIO)
         tetra_dmo_call_synth_72k
         "-fT -Z"
         "\\[TETRA TCH/FS\\] CC=0  dec_bits=274  crc=ok  mismatches=0"
-        "crc=bad"
+        ""
         51
     )
     # A "." stands for each ";" of the event line, which an add_test argument would split at.

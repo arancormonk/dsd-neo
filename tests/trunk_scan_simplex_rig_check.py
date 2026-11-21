@@ -12,10 +12,11 @@ channels 2 MHz apart, one target each, which a target CSV lists in this order:
 
 A call starts when the receiver first tunes to its channel and plays once; after it the channel is noise. The decoder
 runs the list at the 72 kHz DSP bandwidth (-i rtltcp:...:72), a TETRA rate, so the TETRA DMO targets can be visited,
-with every target's dwell and activity hold DWELL_MS and HOLD_MS and a visit cap of VISIT_CAP_MS. Its control API
-(--api) streams the metrics, the receive profile the front end and the decoder run. The run lasts until every target
-has had two whole visits (at most --seconds). From the scene's own record of every retune (the visits) and the API's
-lines, it checks:
+with every target's dwell and activity hold DWELL_MS and HOLD_MS from the target CSV, over far longer session
+defaults (SESSION_DWELL_MS, SESSION_HOLD_MS) a target that ignored its own would run, and a visit cap of VISIT_CAP_MS.
+Its control API (--api) streams the metrics, the receive profile the front end and the decoder run. The run lasts
+until every target has had two whole visits (at most --seconds). From the scene's own record of every retune (the
+visits) and the API's lines, it checks:
 
   * every visit lands its target's own profile (ROWS): once the metrics show it, they show nothing else for the rest
     of the visit, and every visit long enough to read shows it. A digital target's profile is its symbol rate, slicer
@@ -27,8 +28,13 @@ lines, it checks:
     LEAVE_PAD_S. A tmo hold would last to the visit cap, since its TETRA never stops;
   * the tmo target's TETRA is decoded all the same (its network's BSCH is printed), so it is heard and not held.
 
-Every bound is in stream time (the scene's own sample count), never wall time, so a slow or loaded runner reads the
-same visits, only later; the run's wall time is bounded by --seconds and the CTest TIMEOUT.
+A visit's length is read in stream time (the scene's own sample count), its profile from the API lines between the
+retune commands as they arrive (RigScene). That does not make the run independent of the runner: the decoder's dwell
+and hold run on its real clock, and the paced source catches up after a blocked send, so a stalled decoder can see a
+visit end early or late by about the stall. What keeps a slow runner passing is the slack: LEAVE_PAD_S on every bound,
+an idle visit's bound (DWELL_MS and LEAVE_PAD_S, 5 s) far under the visit cap (15 s) a held trunked target would run to,
+and a held visit's bound well under what the session defaults would give. The run's wall time is bounded by --seconds
+and the CTest TIMEOUT.
 
 Usage: trunk_scan_simplex_rig_check.py DSD_NEO FIXTURE_DIR [--seconds S] [--keep DIR] [--explore]
 Exit 0 on success, 1 on a failed check, 77 when numpy is missing (the rig needs it). Serves the loopback interface
@@ -42,6 +48,7 @@ import os
 from pathlib import Path
 import re
 import socket
+import struct
 import subprocess
 import sys
 import tempfile
@@ -67,15 +74,18 @@ DSP_KHZ = 72
 CAPTURE_HZ = 1152000
 DWELL_MS = 2000
 HOLD_MS = 1000
+# The session's own dwell and hold: a target that ran these in place of its CSV row's would fail every bound.
+SESSION_DWELL_MS = 8000
+SESSION_HOLD_MS = 6000
 VISIT_CAP_MS = 15000
 SNR_DB = 30.0
-# A visit's length is read from the scene's retunes in stream time: the samples the paced source delivered, which stops
-# while the decoder does not read, so a slow runner that falls behind stretches no visit. The decoder still reads a
-# little behind the stream, and its ticks, its tune completion and the source's blocks each add a little more: this much
-# past a bound still passes. A held tmo visit would run to the visit cap, far past it.
+# A visit's length is read from the scene's retunes in stream time: the samples the paced source delivered. The decoder
+# reads a little behind the stream, its dwell and hold run on its real clock, and its ticks, its tune completion and the
+# source's blocks each add a little more: this much past a bound still passes. A held tmo visit would run to the visit
+# cap, and a target on the session's dwell or hold past its bound by more than that.
 LEAVE_PAD_S = 3.0
-# The metrics lines read for a visit's profile: those that came this long after its retune, and up to END_GUARD_S before
-# the next one, when the decoder may already publish the next target's profile while the source has not seen its tune.
+# The metrics lines read for a visit's profile: those that came this long after its retune command arrived, and up to
+# END_GUARD_S before the next one, as the API's lines and the source's commands come on two sockets read apart.
 SETTLE_S = 0.3
 END_GUARD_S = 0.3
 # A visit this long or longer has metrics lines enough to show its profile.
@@ -99,6 +109,36 @@ ROWS = (
     ("dmo", "tetra-dmo-conventional", "tetra_dmo_call_synth_72k", 1, "call", "", TETRA),
     ("tmo", "tetra-dmo-conventional", "tetra_bsch_synth_72k", 1, "air", "", TETRA),
 )
+
+
+class RigScene(bench.Scene):
+    """The bench's scene, noting when each frequency command arrives (its stream-time tunes are noted as the next block
+    goes out, which a decoder that stopped reading delays)."""
+
+    def __init__(self, channels, seed):
+        super().__init__(channels, seed)
+        self.commanded = []  # (monotonic s, Hz) of every frequency command, as it arrived
+
+    def commands(self, connection):
+        pending = b""
+        while not self.stop.is_set():
+            try:
+                block = connection.recv(128)
+                if not block:
+                    return
+                pending += block
+                while len(pending) >= 5:
+                    command, value = struct.unpack("!BI", pending[:5])
+                    pending = pending[5:]
+                    if command == 1:
+                        self.commanded.append((time.monotonic(), value))
+                        self.frequency = value
+                    elif command == 2 and value:
+                        self.rate = value
+            except socket.timeout:
+                continue
+            except OSError:
+                return
 
 
 class Row:
@@ -248,7 +288,7 @@ def whole_visits(scene, rows):
 
 
 def run(args, rows, work):
-    scene = bench.Scene(rows, seed=890)
+    scene = RigScene(rows, seed=890)
     for row in rows:
         row.scene = scene
         # Resampled before the run: done on the paced source's thread at the first landing, it would stall the
@@ -271,6 +311,10 @@ def run(args, rows, work):
         str(targets),
         "--scan-max-visit-ms",
         str(VISIT_CAP_MS),
+        "--trunk-scan-dwell-ms",
+        str(SESSION_DWELL_MS),
+        "--trunk-scan-activity-hold-ms",
+        str(SESSION_HOLD_MS),
         "--no-scan-skip-silent",
         "--api",
         str(api_port),
@@ -305,6 +349,7 @@ def run(args, rows, work):
         "command": cmd,
         "exit": proc.returncode,
         "tunes": list(scene.tunes),
+        "commanded": list(scene.commanded),
         "end": end,
         "api": api.lines if api is not None else [],
         "output": output,
@@ -315,13 +360,29 @@ def profile_of(metrics, want):
     return {key: metrics.get(key) for key in want}
 
 
+def command_visits(commanded, end, rows):
+    """(row, start monotonic, end monotonic) per visit, from the retune commands as they arrived; a command to the
+    channel on air goes on with its visit, the last visit runs to @p end."""
+    out = []
+    for wall, hz in commanded:
+        row = min(rows, key=lambda r: abs(r.frequency - hz))
+        if abs(row.frequency - hz) >= SPACING_HZ / 2:
+            row = None
+        if out and out[-1][0] is row:
+            continue
+        if out:
+            out[-1] = (out[-1][0], out[-1][1], wall)
+        out.append((row, wall, end))
+    return out
+
+
 def check_profile(row, visit, lines):
-    """None when the visit landed row's profile, else what it showed."""
-    _row, t0, t1, w0, w1 = visit
+    """None when the visit (a command_visits() entry) landed row's profile, else what it showed."""
+    _row, w0, w1 = visit
     shown = [profile_of(m, row.profile) for t, m in lines if w0 + SETTLE_S <= t < w1 - END_GUARD_S]
     landed = next((i for i, p in enumerate(shown) if p == row.profile), None)
     if landed is None:
-        readable = t1 is not None and t1 - t0 >= READABLE_S
+        readable = w1 - w0 >= READABLE_S
         return f"never showed {row.profile}: {shown}" if readable or shown else None
     after = [p for p in shown[landed:] if p != row.profile]
     return f"showed {after[0]} after landing {row.profile}" if after else None
@@ -355,10 +416,11 @@ def check(record, rows, explore):
         if len(whole) < 2:
             failures.append(f"{row.id}: {len(whole)} whole visit(s); the run needs two of every target")
             continue
-        for visit in mine:
+        for visit in (v for v in command_visits(record["commanded"], record["end"][1], rows) if v[0] is row):
             wrong = check_profile(row, visit, record["api"])
             if wrong:
-                failures.append(f"{row.id}: the visit at {visit[1]:.2f} s {wrong}")
+                at = visit[1] - record["commanded"][0][0]
+                failures.append(f"{row.id}: the visit commanded {at:.2f} s in {wrong}")
         idle = whole
         if row.play == "call":
             first, idle = whole[0], whole[1:]
@@ -368,8 +430,8 @@ def check(record, rows, explore):
             # The call's last frame restarts the hold; once it runs out, the idle dwell rotates.
             if length > row.seconds + hold_s + dwell_s + LEAVE_PAD_S or length >= cap_s:
                 failures.append(
-                    f"{row.id}: held {length:.2f} s, past its {row.seconds:.2f} s call, its {hold_s:.1f} s hold and its "
-                    f"{dwell_s:.1f} s dwell"
+                    f"{row.id}: held {length:.2f} s, past its {row.seconds:.2f} s call, its {hold_s:.1f} s hold and "
+                    f"its {dwell_s:.1f} s dwell"
                 )
         for _row, t0, t1, _w0, _w1 in idle:
             if t1 - t0 > dwell_s + LEAVE_PAD_S:

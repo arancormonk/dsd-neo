@@ -166,8 +166,9 @@ void dsd_tetra_ul_timing_reset_direct(dsd_tetra_ul_timing* t, int sps);
 /**
  * @brief Push one Gardner input sample and search the trainings that end on it.
  *
- * Writes the sample the look-ahead returns, DSD_TETRA_UL_LOOKAHEAD_SYMBOLS symbols older (0 while it fills), to
- * @p out_r / @p out_j. The Gardner takes that one.
+ * Writes the sample the look-ahead returns, the look-ahead's length older (dsd_tetra_ul_timing::delay samples:
+ * DSD_TETRA_UL_LOOKAHEAD_SYMBOLS symbols on an uplink, DSD_TETRA_DM_LOOKAHEAD_SYMBOLS in direct mode; 0 while it fills),
+ * to @p out_r / @p out_j. The Gardner takes that one.
  */
 void dsd_tetra_ul_timing_push(dsd_tetra_ul_timing* t, float in_r, float in_j, float* out_r, float* out_j);
 
