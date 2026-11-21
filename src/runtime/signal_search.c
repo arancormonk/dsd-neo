@@ -96,7 +96,7 @@ validate_receiver(const dsd_signal_search_range* range) {
     if (range->airspy_gain_set && !dsd_airspy_config_valid(&range->airspy)) {
         return "Invalid Airspy gain controls";
     }
-    if (range->digital < 0 || range->digital > 9 || (range->am && range->digital)) {
+    if (range->digital < 0 || range->digital > DSD_SEARCH_DIGITAL_TETRA || (range->am && range->digital)) {
         return "AM requires analog-only monitoring";
     }
     return NULL;
@@ -134,6 +134,24 @@ dsd_signal_search_validate(const dsd_signal_search_range* range, char* error, si
         DSD_SNPRINTF(error, capacity, "%s", why ? why : "");
     }
     return why ? -1 : 0;
+}
+
+int
+dsd_signal_search_range_is_tetra(const dsd_signal_search_range* range) {
+    return range && !range->am && range->digital == DSD_SEARCH_DIGITAL_TETRA;
+}
+
+int
+dsd_signal_search_config_needs_tetra(const dsd_signal_search_config* config) {
+    if (!config) {
+        return 0;
+    }
+    for (uint32_t i = 0; i < config->range_count && i < DSD_SEARCH_MAX_RANGES; ++i) {
+        if (config->ranges[i].enabled && dsd_signal_search_range_is_tetra(&config->ranges[i])) {
+            return 1;
+        }
+    }
+    return 0;
 }
 
 static int
@@ -248,8 +266,37 @@ site_note_protocol(int kind) {
         case DSD_SEARCH_SITE_NOTE_P25_SITE: return "P25";
         case DSD_SEARCH_SITE_NOTE_DMR_TIII: return "DMR";
         case DSD_SEARCH_SITE_NOTE_NXDN: return "NXDN";
+        case DSD_SEARCH_SITE_NOTE_TETRA:
+        case DSD_SEARCH_SITE_NOTE_TETRA_WITHDRAW: return "TETRA";
         default: return NULL;
     }
+}
+
+/* The part of a TETRA note its mode shows, each value only when the note marks it known, so two notes that show the
+   same compare equal whatever else they carry. */
+static dsd_signal_search_tetra_note
+site_tetra_shown(const dsd_signal_search_tetra_note* note) {
+    dsd_signal_search_tetra_note shown;
+    DSD_MEMSET(&shown, 0, sizeof(shown));
+    shown.mode = note->mode;
+    if (note->mode == DSD_SEARCH_TETRA_TMO) {
+        shown.mcc = note->mcc;
+        shown.mnc = note->mnc;
+        if (note->la_valid) {
+            shown.la_valid = 1;
+            shown.la = note->la;
+        }
+        if (note->main_state == DSD_SEARCH_TETRA_MAIN_HZ || note->main_state == DSD_SEARCH_TETRA_MAIN_NO_CA) {
+            shown.main_state = note->main_state;
+        }
+        if (note->main_state == DSD_SEARCH_TETRA_MAIN_HZ) {
+            shown.main_hz = note->main_hz;
+        }
+    } else {
+        shown.presence_only = note->presence_only ? 1 : 0;
+        shown.route = shown.presence_only || note->route > DSD_SEARCH_TETRA_ROUTE_REPEATER_GATEWAY ? 0 : note->route;
+    }
+    return shown;
 }
 
 /* The record @p note would make on its own. */
@@ -273,6 +320,11 @@ site_from_note(dsd_signal_search_site* record, const dsd_signal_search_site_note
             record->valid = DSD_SEARCH_SITE_TEXT;
             DSD_SNPRINTF(record->text, sizeof(record->text), "%.*s", (int)sizeof(note->text) - 1, note->text);
             break;
+        case DSD_SEARCH_SITE_NOTE_TETRA:
+            record->valid = DSD_SEARCH_SITE_TETRA;
+            record->tetra = site_tetra_shown(&note->tetra);
+            break;
+        case DSD_SEARCH_SITE_NOTE_TETRA_WITHDRAW: record->withdrawn = 1; break;
         default:
             record->valid = DSD_SEARCH_SITE_NXDN;
             record->nxdn_sys = note->nxdn_sys;
@@ -281,11 +333,30 @@ site_from_note(dsd_signal_search_site* record, const dsd_signal_search_site_note
     }
 }
 
+/* Field by field: the note struct has padding. */
+static int
+site_tetra_equal(const dsd_signal_search_tetra_note* a, const dsd_signal_search_tetra_note* b) {
+    return a->mode == b->mode && a->mcc == b->mcc && a->mnc == b->mnc && a->la == b->la && a->la_valid == b->la_valid
+           && a->main_state == b->main_state && a->main_hz == b->main_hz && a->route == b->route
+           && a->presence_only == b->presence_only;
+}
+
 static int
 site_equal(const dsd_signal_search_site* a, const dsd_signal_search_site* b) {
     return strcmp(a->protocol, b->protocol) == 0 && a->valid == b->valid && a->wacn == b->wacn && a->sysid == b->sysid
            && a->rfss == b->rfss && a->site == b->site && strcmp(a->text, b->text) == 0 && a->nxdn_sys == b->nxdn_sys
-           && a->nxdn_site == b->nxdn_site;
+           && a->nxdn_site == b->nxdn_site && site_tetra_equal(&a->tetra, &b->tetra) && a->withdrawn == b->withdrawn;
+}
+
+/* Whether @p note is no TETRA note this record may take: a mode the hooks do not define, or any TETRA note once the
+   record's TETRA identity was withdrawn (a second withdrawal included, which changes nothing). */
+static int
+site_tetra_refused(const dsd_signal_search_site* record, const dsd_signal_search_site_note* note) {
+    if (note->kind == DSD_SEARCH_SITE_NOTE_TETRA && note->tetra.mode != DSD_SEARCH_TETRA_TMO
+        && note->tetra.mode != DSD_SEARCH_TETRA_DMO) {
+        return 1;
+    }
+    return record->withdrawn && strcmp(record->protocol, "TETRA") == 0;
 }
 
 /* @p next (a copy of @p record) after @p note: a P25 site or network note completes the same system's record, any other
@@ -320,12 +391,62 @@ dsd_signal_search_site_apply(dsd_signal_search_site* record, const dsd_signal_se
     if (!record || !protocol || (note->kind == DSD_SEARCH_SITE_NOTE_DMR_TIII && !note->text[0])) {
         return 0;
     }
+    if (strcmp(protocol, "TETRA") == 0 && site_tetra_refused(record, note)) {
+        return 0;
+    }
     dsd_signal_search_site next = *record;
     if (!site_merge_note(&next, record, note, protocol) || site_equal(&next, record)) {
         return 0;
     }
     *record = next;
     return 1;
+}
+
+/* U+00B7 MIDDLE DOT between parts, as the frontends separate details. */
+static const char site_dot[] = " \xC2\xB7 ";
+
+/* A direct mode record: the route of the latest checked DMAC-SYNC, or what a presence-only confirmation shows. */
+static const char*
+site_tetra_dmo_text(const dsd_signal_search_tetra_note* t) {
+    if (t->presence_only) {
+        return "presence signal";
+    }
+    switch (t->route) {
+        case DSD_SEARCH_TETRA_ROUTE_DIRECT: return "Direct";
+        case DSD_SEARCH_TETRA_ROUTE_REPEATER: return "Via repeater";
+        case DSD_SEARCH_TETRA_ROUTE_GATEWAY: return "Via gateway";
+        case DSD_SEARCH_TETRA_ROUTE_REPEATER_GATEWAY: return "Via repeater/gateway";
+        default: return "";
+    }
+}
+
+/* "MCC 228 · MNC 8889 · LA 12 · Main carrier 426.70625 MHz": the LA only when known and the cell has a main carrier,
+   the carrier in MHz to five decimals (10 Hz), or "No main carrier"; a direct mode record's route text. */
+static int
+site_tetra_format(const dsd_signal_search_site* record, char* out, size_t capacity) {
+    const dsd_signal_search_tetra_note* t = &record->tetra;
+    if (record->withdrawn || !(record->valid & DSD_SEARCH_SITE_TETRA)) {
+        return 0;
+    }
+    if (t->mode == DSD_SEARCH_TETRA_DMO) {
+        return DSD_SNPRINTF(out, capacity, "%s", site_tetra_dmo_text(t));
+    }
+    char la[24] = "";
+    char main_carrier[48] = "";
+    if (t->main_state == DSD_SEARCH_TETRA_MAIN_NO_CA) {
+        DSD_SNPRINTF(main_carrier, sizeof(main_carrier), "%sNo main carrier", site_dot);
+    } else {
+        if (t->la_valid) {
+            DSD_SNPRINTF(la, sizeof(la), "%sLA %u", site_dot, (unsigned)t->la);
+        }
+        if (t->main_state == DSD_SEARCH_TETRA_MAIN_HZ) {
+            const uint64_t tens = ((uint64_t)t->main_hz + 5U) / 10U;
+            DSD_SNPRINTF(main_carrier, sizeof(main_carrier), "%sMain carrier %u.%05u MHz", site_dot,
+                         (unsigned)(tens / 100000U), (unsigned)(tens % 100000U));
+        }
+    }
+    return DSD_SNPRINTF(out, capacity, "MCC %u%sMNC %u%s%s", (unsigned)t->mcc, site_dot, (unsigned)t->mnc, la,
+                        main_carrier);
 }
 
 size_t
@@ -337,10 +458,11 @@ dsd_signal_search_site_format(const dsd_signal_search_site* record, char* out, s
     if (!record || !record->protocol[0]) {
         return 0;
     }
-    /* U+00B7 MIDDLE DOT between parts, as the frontends separate details. */
-    static const char dot[] = " \xC2\xB7 ";
+    const char* dot = site_dot;
     int n = 0;
-    if (record->valid & DSD_SEARCH_SITE_TEXT) {
+    if (strcmp(record->protocol, "TETRA") == 0) {
+        n = site_tetra_format(record, out, capacity);
+    } else if (record->valid & DSD_SEARCH_SITE_TEXT) {
         n = DSD_SNPRINTF(out, capacity, "%s", record->text);
     } else if (record->valid & DSD_SEARCH_SITE_NXDN) {
         n = DSD_SNPRINTF(out, capacity, "Site %u%sSys %u", (unsigned)record->nxdn_site, dot,

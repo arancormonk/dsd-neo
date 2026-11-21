@@ -7940,6 +7940,24 @@ add_test(
     COMMAND dsd-neo_test_runtime_signal_search_avoids
 )
 
+# The Signal search TETRA range value, site note, withdrawal and site text within the hit's field (issue #748).
+add_executable(
+    dsd-neo_test_runtime_signal_search_tetra
+    runtime/test_runtime_signal_search_tetra.c
+)
+target_include_directories(
+    dsd-neo_test_runtime_signal_search_tetra
+    PRIVATE ${PROJECT_SOURCE_DIR}/include
+)
+target_link_libraries(
+    dsd-neo_test_runtime_signal_search_tetra
+    PRIVATE dsd-neo_runtime dsd-neo_platform
+)
+add_test(
+    NAME RUNTIME_SIGNAL_SEARCH_TETRA
+    COMMAND dsd-neo_test_runtime_signal_search_tetra
+)
+
 add_executable(
     dsd-neo_test_runtime_udp_audio_hooks
     runtime/test_runtime_udp_audio_hooks.c
