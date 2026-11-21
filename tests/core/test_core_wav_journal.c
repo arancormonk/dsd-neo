@@ -4409,45 +4409,52 @@ test_playback_unnumbered_call_export(void) {
     return rc;
 }
 
-/* Two calls in one file: a DMR group call to 1234 from 5678 of 3 frames, then one to 4321 from 777 of 5, each frame
-   stamped on the recording's clock. */
-static const struct {
+/* One record of a played SDRTrunk export: a DMR group call to @p tg (0 for none) from @p src (0: no "from" key), of
+   @p frames voice frames stamped on the recording's clock from @p first_ms, 20 ms apart. */
+typedef struct {
     uint32_t tg;
     uint32_t src;
     int frames;
     uint64_t first_ms;
-} k_two_calls[2] = {
+} playback_record;
+
+/* Two calls in one file: a DMR group call to 1234 from 5678 of 3 frames, then one to 4321 from 777 of 5. */
+static const playback_record k_two_calls[2] = {
     {1234U, 5678U, 3, 1600000100250ULL},
     {4321U, 777U, 5, 1600000200750ULL},
 };
 
+/* An export of @p n records, one a line, written at @p path. */
 static int
-two_calls_write(const char* path) {
-    static char json[2048];
+records_write(const char* path, const playback_record* recs, int n) {
+    static char json[4096];
     size_t len = 0;
-    for (int c = 0; c < 2; c++) {
-        int n =
-            DSD_SNPRINTF(json + len, sizeof json - len,
-                         "%s{\"protocol\":\"DMR\",\"version\":2,\"call_type\":\"GROUP\",\"from\":\"%u\",\"to\":\"%u\","
-                         "\"encrypted\":false,\"frames\":[",
-                         c > 0 ? "\n" : "", k_two_calls[c].src, k_two_calls[c].tg);
-        if (n <= 0 || (size_t)n >= sizeof json - len) {
+    for (int c = 0; c < n; c++) {
+        char from[32] = "";
+        if (recs[c].src != 0U) {
+            DSD_SNPRINTF(from, sizeof from, "\"from\":\"%u\",", recs[c].src);
+        }
+        int k = DSD_SNPRINTF(json + len, sizeof json - len,
+                             "%s{\"protocol\":\"DMR\",\"version\":2,\"call_type\":\"GROUP\",%s\"to\":\"%u\","
+                             "\"encrypted\":false,\"frames\":[",
+                             c > 0 ? "\n" : "", from, recs[c].tg);
+        if (k <= 0 || (size_t)k >= sizeof json - len) {
             return 1;
         }
-        len += (size_t)n;
-        for (int i = 0; i < k_two_calls[c].frames; i++) {
-            n = DSD_SNPRINTF(json + len, sizeof json - len, "%s{\"time\":%llu,\"hex\":\"%s\"}", i > 0 ? "," : "",
-                             (unsigned long long)(k_two_calls[c].first_ms + (uint64_t)i * 20ULL), k_playback_dmr_hex);
-            if (n <= 0 || (size_t)n >= sizeof json - len) {
+        len += (size_t)k;
+        for (int i = 0; i < recs[c].frames; i++) {
+            k = DSD_SNPRINTF(json + len, sizeof json - len, "%s{\"time\":%llu,\"hex\":\"%s\"}", i > 0 ? "," : "",
+                             (unsigned long long)(recs[c].first_ms + (uint64_t)i * 20ULL), k_playback_dmr_hex);
+            if (k <= 0 || (size_t)k >= sizeof json - len) {
                 return 1;
             }
-            len += (size_t)n;
+            len += (size_t)k;
         }
-        n = DSD_SNPRINTF(json + len, sizeof json - len, "]}");
-        if (n <= 0 || (size_t)n >= sizeof json - len) {
+        k = DSD_SNPRINTF(json + len, sizeof json - len, "]}");
+        if (k <= 0 || (size_t)k >= sizeof json - len) {
             return 1;
         }
-        len += (size_t)n;
+        len += (size_t)k;
     }
     FILE* f = dsd_fopen_private(path, "wb");
     if (f == NULL) {
@@ -4456,6 +4463,11 @@ two_calls_write(const char* path) {
     int rc = fwrite(json, 1, len, f) != len ? 1 : 0;
     rc |= fclose(f) != 0 ? 1 : 0;
     return rc;
+}
+
+static int
+two_calls_write(const char* path) {
+    return records_write(path, k_two_calls, 2);
 }
 
 /* The history row of call @p c, or NULL. */
@@ -4528,6 +4540,109 @@ test_playback_two_calls_in_one_file(void) {
         rc |= expect_int(tag, found, 1);
     }
     r.opts->rdio_mode = DSD_RDIO_MODE_OFF;
+    rig_close(&r);
+    return rc;
+}
+
+/* The journal's publish record of @p ms of audio, or NULL; *@p count gets how many there are. */
+static const char*
+publish_of_duration(long long ms, int* count) {
+    const char* found = NULL;
+    *count = 0;
+    const char* pub = NULL;
+    for (int i = 0; (pub = record(&g_j, "publish", i)) != NULL; i++) {
+        if (field_ll(pub, "duration_ms") == ms) {
+            found = pub;
+            (*count)++;
+        }
+    }
+    return found;
+}
+
+/* Plays @p n records from one file, with --rdio-unknown-talkgroup 4242 and DirWatch, through playMbeFiles(), the run's
+   end and the real close and export, then reloads the journal. */
+static int
+playback_records_run(rig* r, const char* leaf, const playback_record* recs, int n) {
+    r->opts->audio_out = 0;
+    r->opts->playfiles = 1;
+    rdio_fallback_on(r, DSD_RDIO_MODE_DIRWATCH);
+    submit(r, DSD_APP_CMD_WAV_START);
+    char path[DSD_TEST_PATH_MAX * 2];
+    const int rc =
+        expect_int("records: input written",
+                   dsd_test_path_join(path, sizeof path, r->dir, leaf) == 0 ? records_write(path, recs, n) : 1, 0);
+    char* argv[2] = {"dsd-neo", path};
+    r->state->optind = 1;
+    playMbeFiles(r->opts, r->state, 2, argv);
+    playback_end_run(r);
+    reload(r);
+    return rc;
+}
+
+/* Record @p c's recording, of its own frames alone: published once, and exported (@p want_tg, @p want_src and its
+   first frame's second in its sidecar) or not (@p want_tg 0). */
+static int
+expect_record_export(const rig* r, const char* label, const playback_record* rec, unsigned want_tg, unsigned want_src) {
+    int rc = 0;
+    char tag[200];
+    int count = 0;
+    const char* pub = publish_of_duration((long long)rec->frames * 20, &count);
+    DSD_SNPRINTF(tag, sizeof tag, "%s: one recording of its own %d frames", label, rec->frames);
+    rc |= expect_int(tag, count, 1);
+    static char body[4096];
+    read_sidecar_of(r, pub, body, sizeof body);
+    if (want_tg == 0U) {
+        DSD_SNPRINTF(tag, sizeof tag, "%s: not exported", label);
+        rc |= expect_str(tag, body, "");
+        return rc;
+    }
+    char want[96];
+    DSD_SNPRINTF(want, sizeof want, "\"talkgroup\": %u,", want_tg);
+    DSD_SNPRINTF(tag, sizeof tag, "%s: exported under %u", label, want_tg);
+    rc |= expect_true(tag, strstr(body, want) != NULL);
+    DSD_SNPRINTF(want, sizeof want, "\"srcList\": [{\"pos\":0,\"src\":%u}],", want_src);
+    DSD_SNPRINTF(tag, sizeof tag, "%s: from %u", label, want_src);
+    rc |= expect_true(tag, strstr(body, want) != NULL);
+    DSD_SNPRINTF(want, sizeof want, "\"start_time\": %lld,", (long long)(rec->first_ms / 1000ULL));
+    DSD_SNPRINTF(tag, sizeof tag, "%s: filed at its own first frame", label);
+    rc |= expect_true(tag, strstr(body, want) != NULL);
+    if (rc != 0) {
+        DSD_FPRINTF(stderr, "  %s sidecar: %s\n", label, body);
+    }
+    return rc;
+}
+
+/* -P -r with --rdio-unknown-talkgroup: each record of a file is a call of its own, judged on its own header. A record
+   whose "to" is 0 after a call to 1234 is exported under the fallback, not 1234; an identity-less record before a
+   sourced one is a recording of its own, not exported, and the sourced call's recording holds its own audio alone.
+   Before, the next header was folded into the open call one key at a time: a zero target could not clear the previous
+   one, and the identity-less call merged into the next. */
+static int
+test_playback_records_are_calls_of_their_own(void) {
+    static const playback_record k_zero_after_tg[2] = {
+        {1234U, 5678U, 3, 1600000100250ULL},
+        {0U, 777U, 4, 1600000200750ULL},
+    };
+    static const playback_record k_anonymous_first[2] = {
+        {0U, 0U, 3, 1600000300250ULL},
+        {0U, 111U, 4, 1600000400750ULL},
+    };
+    int rc = 0;
+    rig r;
+    rc |= rig_open(&r, "dsdneo_journal_playback_zero_to");
+    rc |= playback_records_run(&r, "zero_to.mbe", k_zero_after_tg, 2);
+    rc |= expect_int("zero to after a talkgroup: two recordings", count_records(&g_j, "publish"), 2);
+    rc |= expect_record_export(&r, "zero to after a talkgroup, first", &k_zero_after_tg[0], 1234U, 5678U);
+    rc |= expect_record_export(&r, "zero to after a talkgroup, second", &k_zero_after_tg[1], 4242U, 777U);
+    rdio_fallback_off(&r);
+    rig_close(&r);
+
+    rc |= rig_open(&r, "dsdneo_journal_playback_anonymous_first");
+    rc |= playback_records_run(&r, "anonymous_first.mbe", k_anonymous_first, 2);
+    rc |= expect_int("identity-less first: two recordings", count_records(&g_j, "publish"), 2);
+    rc |= expect_record_export(&r, "identity-less first, first", &k_anonymous_first[0], 0U, 0U);
+    rc |= expect_record_export(&r, "identity-less first, second", &k_anonymous_first[1], 4242U, 111U);
+    rdio_fallback_off(&r);
     rig_close(&r);
     return rc;
 }
@@ -4605,6 +4720,7 @@ main(void) {
     rc |= test_playback_export_starts_at_its_first_frame();
     rc |= test_playback_two_calls_in_one_file();
     rc |= test_playback_unnumbered_call_export();
+    rc |= test_playback_records_are_calls_of_their_own();
     if (rc == 0) {
         printf("CORE_WAV_JOURNAL: OK\n");
     }

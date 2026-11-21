@@ -822,6 +822,20 @@ test_sdrtrunk_json_time_is_the_first_valid_frame(void) {
     rc |= expect_u64("sdrtrunk stamps that all fail leave no start",
                      (uint64_t)history[0].Event_History_Items[0].event_time, 0ULL);
     dsd_state_ext_free_all(&state);
+
+    /* The key is "time" exactly, and its value the whole scalar: a "timestamp" key, and a quoted value with text after
+       its digits, name no start; a quoted whole number does. */
+    static const char json_scalar[] =
+        "{\"protocol\":\"DMR\",\"version\":2,\"call_type\":\"GROUP\",\"from\":\"5678\",\"to\":\"1234\","
+        "\"encrypted\":false,\"frames\":[{\"timestamp\":1700000000000},{\"time\":\"1700000050000 junk\"},"
+        "{\"time\":\"1700000123456\"},{\"time\":1700000125456}]}";
+    DSD_MEMSET(&state, 0, sizeof state);
+    DSD_MEMSET(history, 0, sizeof history);
+    state.event_history_s = history;
+    rc |= run_sdrtrunk_json(json_scalar, &opts, &state);
+    rc |= expect_u64("sdrtrunk start is the first whole \"time\" value",
+                     (uint64_t)history[0].Event_History_Items[0].event_time, 1700000123ULL);
+    dsd_state_ext_free_all(&state);
     return rc;
 }
 

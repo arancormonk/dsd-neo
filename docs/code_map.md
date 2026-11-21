@@ -2046,13 +2046,19 @@ suite runs under this compiler.
   position/session tracking and DMR AES late-entry context; playback does not call protocol-layer state-mutating
   IV expansion. Voice bits are FEC-decoded before decryption and then passed to the normal vocoder/output path. The
   row's `event_time` is the recording's start, from its call's first frame `time` that parses (issue #888 B21,
-  below). The reader syncs the event layer twice a record, never per frame (`sdrtrunk_json_sync_call()`): where the
-  voice frames of a call its own observation opened begin (a file's, or a later record's that names another call), and
-  at the next record's first key (`protocol`), before that record is observed. The first renders the new call and
-  commits the one before it, whose recording rotates out under its own row before the new call's stamp or audio reaches
-  the slot; the second re-renders the open call with what its frames carried, since SDRTrunk sends a call's encryption
-  (algorithm, key id, MI) on each frame, so the row it then commits with is complete (`CORE_WAV_JOURNAL`,
-  `CORE_MBE_FILE_IO`).
+  below). Each record is a call of its own (issue #888). At a record's first key (`protocol`,
+  `sdrtrunk_json_begin_record()`) the record before it is over: the event layer is synced to re-render its call with
+  what its frames carried (SDRTrunk sends a call's encryption, algorithm, key id and MI, on each frame), then the call
+  ends (`dsd_call_state_end()`, as at its record's end) and a second sync commits its row and rotates its recording
+  out under it; the per-record identity (`to`, `from`, call type, the time stamp) is reset, so a key the record leaves
+  out names no one rather than the last record's party. While the header is read nothing is observed: where its voice
+  frames begin (the `frames` key, or a frame's own `time` or `hex` in a flat record) the call is observed whole with
+  `DSD_CALL_BOUNDARY_BEGIN` and synced before its stamp or audio reaches the slot, and later keys observe with CONTINUE
+  (a call begun among the frames is synced at its next frame). So an explicit `to: 0` after a numbered call is
+  exported under the fallback, not the earlier number, and an identity-less record is a recording of its own, never
+  merged into the next. Never per frame (`sdrtrunk_json_sync_call()`; `CORE_WAV_JOURNAL`, `CORE_MBE_FILE_IO`). A
+  frame's `time` is matched by its exact key (not `timestamp`) and its value read whole (`sdrtrunk_json_next_scalar()`:
+  a quoted string up to its closing quote, spaces included), then strict-parsed.
 - API note: the high-pass filter in `<dsd-neo/core/audio_filters.h>` is `dsd_hpf()`. It was renamed from
   `hpf()` because codec2 exports a symbol of that name and Android links codec2 statically, which turns the
   duplicate into a link error. It is the only filter in that header that is prefixed: codec2 exports none of

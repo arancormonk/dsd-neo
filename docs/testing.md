@@ -2275,9 +2275,11 @@ above it lists no radio), and `CORE_WAV_JOURNAL` through the real close and expo
 (`test_tetra_first_call_leaves_unowned_audio`: a TETRA anonymous call is exported under the fallback once signalling
 proves the carrier, and the speech before it is not; `test_playback_unnumbered_call_export`: a played SDRTrunk call with
 no talkgroup, on a receiver tuned to 452.3125 MHz with colour code 3, is exported under `--rdio-unknown-talkgroup` at
-its first frame's second, labelled `DMR`, with `freq` 0 and no `freqList`, and is kept local without the option). The
-number and label rules themselves are in `RUNTIME_RDIO_EXPORT`, and which closes may give the number in
-`CORE_WAV_JOURNAL`'s `test_d7_*` cases.
+its first frame's second, labelled `DMR`, with `freq` 0 and no `freqList`, and is kept local without the option;
+`test_playback_records_are_calls_of_their_own`: in one export, a record with `to` 0 after a call to 1234 is exported
+under the fallback, and an identity-less record before a sourced one is a recording of its own, unexported, each
+recording holding its own record's frames alone). The number and label rules themselves are in `RUNTIME_RDIO_EXPORT`,
+and which closes may give the number in `CORE_WAV_JOURNAL`'s `test_d7_*` cases.
 
 ### Digital voice chain checks (issue #653)
 
