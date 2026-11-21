@@ -5,6 +5,7 @@
  */
 
 #include <assert.h>
+#include <dsd-neo/app_control/tetra_view.h>
 #include <dsd-neo/core/enc_lockout.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/opts_fwd.h>
@@ -242,9 +243,9 @@ test_sysinfo_received_identity(void) {
 /* Table 21.65 note 3: main carrier 0 and band 0 mean the cell has no CA main carrier; band 0 with another carrier and
  * bands 10 to 15 name none this decoder can resolve (TS 100 392-15 table 1). Either way the SYSINFO names no main carrier
  * the cell's last one can stand for: what the decoder holds of that carrier -- its frequency, band and offset, the
- * control channel it set, the received identity's control channel and the published frequency -- goes, at the same
- * location area too, so nothing pairs the old frequency with the new carrier number. A control channel set by anything
- * else stays. The next valid SYSINFO of the cell takes it all on again, and the cell's location area and calls stay
+ * control channel it set, the received identity's control channel and the published control channel, its carrier
+ * number too, which the TETRA view shows -- goes, at the same location area too, so nothing pairs the old frequency with
+ * the new carrier number. A control channel set by anything else stays. The next valid SYSINFO of the cell takes it all on again, and the cell's location area and calls stay
  * throughout. (This replaces the contract that such a SYSINFO left the control channel and band alone.) */
 static int
 test_sysinfo_without_a_main_carrier_clears_it(void) {
@@ -266,6 +267,7 @@ test_sysinfo_without_a_main_carrier_clears_it(void) {
         ttb_block sync = {0};
         ttb_sync_pdu(&sync, 901, 1001, 25);
         ok &= check(tetra_bsch_parse(sync.bits, sync.n, opts, state) == 1, "no main carrier: the BSCH decodes");
+        ts->decode_ok = 1; /* as the burst decoder counts the BSCH: the publication reads as trunked mode */
         opts->audio_in_type = AUDIO_IN_RTL;
         opts->rtlsdr_center_freq = 401243750U;
         ttb_block valid = {0};
@@ -280,14 +282,19 @@ test_sysinfo_without_a_main_carrier_clears_it(void) {
         tetra_mac_parse_schd(none.bits, none.n, 0, opts, state);
         tetra_publish(state);
         const dsd_tetra_publication* pub = &state->tetra_pub;
+        dsd_app_tetra view;
+        opts->frame_tetra = 1;
+        (void)dsd_app_tetra_view(opts, state, 0U, &view);
         const int cleared = ts->dl_carrier_hz == 0L && ts->freq_band == 0U && ts->freq_offset == 0U
                             && state->trunk_cc_freq == 0L && (state->rx_id.valid & DSD_RXID_CC_FREQ) == 0U
-                            && pub->cc_freq_hz == 0U && pub->cc_carrier == (uint16_t)k_cases[i].carrier;
+                            && pub->cc_known == 0U && pub->cc_carrier == 0U && pub->cc_freq_hz == 0U
+                            && view.control_known == 0U && view.control_text[0] == '\0';
         if (!cleared) {
-            DSD_FPRINTF(stderr, "  %s: dl=%ld band=%u offset=%u trunk_cc=%ld rxid_cc=%u pub=%u/%u Hz\n",
+            DSD_FPRINTF(stderr, "  %s: dl=%ld band=%u offset=%u trunk_cc=%ld rxid_cc=%u pub=%u:%u/%u Hz view=%u '%s'\n",
                         k_cases[i].what, ts->dl_carrier_hz, (unsigned)ts->freq_band, (unsigned)ts->freq_offset,
                         state->trunk_cc_freq, (unsigned)((state->rx_id.valid & DSD_RXID_CC_FREQ) != 0U),
-                        (unsigned)pub->cc_carrier, (unsigned)pub->cc_freq_hz);
+                        (unsigned)pub->cc_known, (unsigned)pub->cc_carrier, (unsigned)pub->cc_freq_hz,
+                        (unsigned)view.control_known, view.control_text);
         }
         ok &= check(cleared, k_cases[i].what);
         ok &= check(ts->sysinfo_known && ts->la == 987 && ts->calls.la_known && ts->calls.la == 987,
@@ -296,9 +303,11 @@ test_sysinfo_without_a_main_carrier_clears_it(void) {
         /* The cell's next valid SYSINFO at the same location area takes the main carrier on again. */
         tetra_mac_parse_schd(valid.bits, valid.n, 0, opts, state);
         tetra_publish(state);
+        (void)dsd_app_tetra_view(opts, state, 0U, &view);
         ok &= check(ts->dl_carrier_hz == 401243750L && ts->freq_band == 4 && ts->freq_offset == 2
                         && state->trunk_cc_freq == 401243750L && (state->rx_id.valid & DSD_RXID_CC_FREQ) != 0U
-                        && pub->cc_carrier == 50U && pub->cc_freq_hz == 401243750U,
+                        && pub->cc_known == 1U && pub->cc_carrier == 50U && pub->cc_freq_hz == 401243750U
+                        && view.control_known == 1U && strstr(view.control_text, "carrier 50") != NULL,
                     "no main carrier: a valid SYSINFO at the same area reacquires it");
 
         /* A control channel the cell's SYSINFO did not set is not the decoder's to clear. */

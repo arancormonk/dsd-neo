@@ -1234,7 +1234,9 @@ tetra_pub_trunk_state(const tetra_state_t* ts) {
 static void
 tetra_pub_channels(const dsd_state* state, const tetra_state_t* ts, dsd_tetra_publication* pub) {
     pub->trunk_state = tetra_pub_trunk_state(ts);
-    pub->cc_known = (uint8_t)(ts->frames_sysinfo != 0 && !ts->dmo);
+    /* A SYSINFO with no main carrier a frequency can be given for (no CA main carrier, band 0, a band with no base
+     * frequency) names no control channel: neither its carrier number nor a frequency is shown. */
+    pub->cc_known = (uint8_t)(ts->frames_sysinfo != 0 && !ts->dmo && ts->dl_carrier_hz > 0L);
     pub->cc_carrier = pub->cc_known ? (uint16_t)(ts->sysinfo_main_carrier & 0xFFFu) : 0U;
     pub->cc_freq_hz = pub->cc_known ? tetra_pub_hz(ts->dl_carrier_hz) : 0U;
     tetra_chan_alloc traffic = {0};

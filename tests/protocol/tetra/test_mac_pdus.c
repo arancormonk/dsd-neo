@@ -11,6 +11,8 @@
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/state_ext.h>
 #include <dsd-neo/core/state_fwd.h>
+#include <dsd-neo/core/tetra_publication.h>
+#include <dsd-neo/protocol/tetra/tetra.h>
 #include <dsd-neo/protocol/tetra/tetra_mac.h>
 
 #include <stdint.h>
@@ -188,8 +190,14 @@ test_sysinfo_without_mle(void) {
     CHECK(bc.sysinfo.option_flag == 2, "optional field flag");
     CHECK(bc.sysinfo.option == 0xABCDE, "optional field");
 
+    /* Band 0 gives carrier 1000 no frequency (EN 300 392-2 table 21.65, TS 100 392-15 table 1): the frontends are shown
+     * no main carrier, neither its number nor a frequency. */
     tetra_mac_parse_schd(bits, n, 0, opt, st);
-    CHECK(tetra_st(st)->sysinfo_main_carrier == 1000, "the main carrier the frontends show");
+    tetra_st(st)->decode_ok = 1;
+    tetra_publish(st);
+    CHECK(tetra_st(st)->frames_sysinfo == 1 && tetra_st(st)->sysinfo_main_carrier == 0 && st->tetra_pub.cc_known == 0
+              && st->tetra_pub.cc_carrier == 0,
+          "a band 0 main carrier is none the frontends show");
 
     free_state(st);
     free(opt);

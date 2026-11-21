@@ -17811,6 +17811,13 @@ foreach(_dsd_tetra_test IN LISTS _dsd_tetra_test_sources)
         PROPERTIES LABELS "protocol;tetra"
     )
 endforeach()
+# The main carrier a SYSINFO names, or forgets, is read back through the TETRA view every frontend shows.
+target_sources(
+    dsd-neo_test_tetra_mac_state
+    PRIVATE
+        ${PROJECT_SOURCE_DIR}/src/app_control/tetra_view.c
+        ${PROJECT_SOURCE_DIR}/src/app_control/access_code_view.c
+)
 # The unit activity rows are also read back through the app-control view every frontend shows, as names reach users.
 target_sources(
     dsd-neo_test_tetra_tetra_unit_activity

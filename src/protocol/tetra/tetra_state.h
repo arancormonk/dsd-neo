@@ -482,10 +482,11 @@ typedef struct tetra_state {
     struct tetra_sds_concat_store* sds_concat;
 
     /* The cell's SYSINFO (EN 300 392-2 table 21.65, tetra_mac.c): the downlink frequency in Hz of its main carrier (0
-     * while unknown) and that carrier's number; the frequency band and offset of the last SYSINFO with a valid main
+     * while unknown, or since a SYSINFO named none a frequency can be given for) and that carrier's number (0 then
+     * too); the frequency band and offset of the last SYSINFO with a valid main
      * carrier, which a channel allocation without extended carrier numbering uses (clause 21.5.2; freq_band 0 while
      * none is known); and the location area of its D-MLE-SYSINFO (clause 18.4.2.2), sysinfo_known once one was
-     * decoded. frames_sysinfo counts SYSINFO PDUs: the publication shows the main carrier once there was one. */
+     * decoded. frames_sysinfo counts SYSINFO PDUs: the publication shows the main carrier while dl_carrier_hz names one. */
     long dl_carrier_hz;
     uint32_t frames_sysinfo;
     uint16_t sysinfo_main_carrier;
