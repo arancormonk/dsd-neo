@@ -488,15 +488,18 @@ dpmr_half_number_fits(const dPMRVoiceFS2Frame_t* f, int o) {
 
 /* The frame number half @p o carries, by checked content only (issue #890): its own when its CRC-7 passed with a
  * number it can carry, else the one next to the frame's other half when that one did; -1 when neither says, or when
- * the two checked halves are no pair (0/1 or 2/3), one of them a chance pass. A failed half's own frame number bits,
- * and a checked half's number of the wrong parity, never decide it: the place the transmission tracked goes on. */
+ * both halves passed their CRC-7 with numbers that are no FS2 pair (0/1 or 2/3, TS 102 658 Figure 4.8), one of them a
+ * chance pass whichever parity each has. A failed half's own frame number bits, and a checked half's number of the
+ * wrong parity, never decide it: the place the transmission tracked goes on. */
 static int
 dpmr_half_frame_number(const dPMRVoiceFS2Frame_t* f, int o) {
-    const int own = dpmr_half_number_fits(f, o);
-    const int other = dpmr_half_number_fits(f, 1 - o);
-    if (own && other && (f->FrameNumbering[1] & 3U) != (f->FrameNumbering[0] & 3U) + 1U) {
+    if (f->CCHDataCrcOk[0] != 0U && f->CCHDataCrcOk[1] != 0U
+        && ((f->FrameNumbering[0] & 3U) % 2U != 0U
+            || (f->FrameNumbering[1] & 3U) != (f->FrameNumbering[0] & 3U) + 1U)) {
         return -1;
     }
+    const int own = dpmr_half_number_fits(f, o);
+    const int other = dpmr_half_number_fits(f, 1 - o);
     if (own) {
         return (int)(f->FrameNumbering[o] & 3U);
     }

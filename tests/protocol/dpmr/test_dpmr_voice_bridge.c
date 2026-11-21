@@ -306,7 +306,7 @@ test_first_group_scrambler_bridge_mutes_without_key(void) {
     state->dPMRVoiceFS2Frame.CommunicationMode[0] = 0;
     state->dPMRVoiceFS2Frame.Version[0] = 3;
     state->dPMRVoiceFS2Frame.CCHDataCrcOk[0] = 1;
-    state->dPMRVoiceFS2Frame.FrameNumbering[1] = 2;
+    state->dPMRVoiceFS2Frame.FrameNumbering[1] = 1;
     state->dPMRVoiceFS2Frame.CommunicationMode[1] = 2;
     /* A checked data half: it plays nothing (a failed half would play by the transmission's checked mode). */
     state->dPMRVoiceFS2Frame.CCHDataCrcOk[1] = 1;
@@ -1665,8 +1665,8 @@ test_muted_halves_keep_the_scrambler_in_phase(void) {
 
 /* Issue #890: an FS2 frame carries payload frames 0 and 1, or 2 and 3 (Figure 4.8): half 0 is even, half 1 odd. A
    checked half whose number has the wrong parity passed its CRC-7 by chance, and two checked halves that are no pair
-   cannot both be right: neither places the scrambler, directly or through its neighbour, and the halves play from the
-   place the transmission tracked. */
+   (0/3, or 0/2 and 1/3, where one number has the right parity) cannot both be right: neither places the scrambler,
+   directly or through its neighbour, and the halves play from the place the transmission tracked. */
 static int
 test_impossible_half_numbers_keep_the_tracked_place(void) {
     const unsigned long long key = 0x12345ULL;
@@ -1676,9 +1676,9 @@ test_impossible_half_numbers_keep_the_tracked_place(void) {
         unsigned crc[2];
         unsigned fn[2];
     } k_cases[] = {
-        {"half 1 checked as 2", {0U, 1U}, {1U, 2U}},
-        {"half 0 checked as 1", {1U, 0U}, {1U, 0U}},
-        {"halves checked as 0 and 3", {1U, 1U}, {0U, 3U}},
+        {"half 1 checked as 2", {0U, 1U}, {1U, 2U}},       {"half 0 checked as 1", {1U, 0U}, {1U, 0U}},
+        {"halves checked as 0 and 3", {1U, 1U}, {0U, 3U}}, {"halves checked as 0 and 2", {1U, 1U}, {0U, 2U}},
+        {"halves checked as 1 and 3", {1U, 1U}, {1U, 3U}}, {"halves checked as 3 and 1", {1U, 1U}, {3U, 1U}},
     };
 
     int rc = 0;
