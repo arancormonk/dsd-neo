@@ -39,6 +39,15 @@ class Intent(var action: String? = null) {
     fun copy(): Intent = Intent(action).also { it.extras.putAll(extras); it.targetPackage = targetPackage }
 }
 
+/** The system property naming the folder UsbSourceManagerTest's main() makes for the run and removes at its end. */
+const val USB_TEST_SCRATCH = "dsdneo.test.usb.scratch"
+
+/** A new temp folder for a USB test, in the run's scratch folder (or java.io.tmpdir outside a run). */
+fun usbTestDir(prefix: String): java.io.File {
+    val parent = System.getProperty(USB_TEST_SCRATCH) ?: System.getProperty("java.io.tmpdir")
+    return java.nio.file.Files.createTempDirectory(java.nio.file.Path.of(parent), prefix).toFile()
+}
+
 open class Context {
     companion object {
         const val USB_SERVICE = "usb"
@@ -47,7 +56,7 @@ open class Context {
     val usb = UsbManager()
     val receivers = mutableListOf<BroadcastReceiver>()
     /** App-private storage: a directory of the test's own, or the one a "previous process" left (#782). */
-    var noBackupFilesDir: java.io.File = java.nio.file.Files.createTempDirectory("dsd-usb-test").toFile()
+    var noBackupFilesDir: java.io.File = usbTestDir("dsd-usb-test")
     open val applicationContext: Context get() = this
     val packageName = "io.github.arancormonk.dsdneo"
     fun getSystemService(name: String): Any? = if (name == USB_SERVICE) usb else null

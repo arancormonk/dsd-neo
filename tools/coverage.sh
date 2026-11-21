@@ -16,7 +16,19 @@ THIRD_PARTY_EXCLUDES=("${ROOT_DIR}/src/third_party/*")
 JOBS=$(nproc 2> /dev/null || sysctl -n hw.ncpu 2> /dev/null || echo 4)
 cmake --preset coverage-debug > /dev/null
 cmake --build --preset "$BUILD_PRESET" -j "$JOBS" > /dev/null
-ctest --preset "$TEST_PRESET" --output-on-failure
+# The check looks at the instrumented tree, where the coverage comes from. Its old test-tmp goes first, so a
+# TEST_PRESET that ran in another tree leaves none behind there and the check reports that.
+rm -rf "$BUILD_DIR/test-tmp"
+ctest_status=0
+ctest --preset "$TEST_PRESET" --output-on-failure || ctest_status=$?
+check_status=0
+"$ROOT_DIR/tools/check_test_tmp_leftovers.sh" "$BUILD_DIR" || check_status=$?
+if [[ $ctest_status -ne 0 ]]; then
+  exit "$ctest_status"
+fi
+if [[ $check_status -ne 0 ]]; then
+  exit "$check_status"
+fi
 
 if ! command -v lcov > /dev/null 2>&1 || ! command -v genhtml > /dev/null 2>&1; then
   echo "lcov/genhtml are required for tools/coverage.sh." >&2

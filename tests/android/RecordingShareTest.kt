@@ -239,16 +239,33 @@ private fun oldShareCopiesAreCleaned() {
     check(RecordingShare.stage(app, original.path).isNotEmpty() && !recent.exists()) { "a share removes old copies" }
 }
 
-fun main() {
+/**
+ * Run [body], then remove [root] and everything in it without following a link, failing when anything cannot be
+ * removed (on Windows, a file a handle still holds), so the test cannot pass with its temp folder left behind. A
+ * failure of [body] stays the failure, with the removal's own attached.
+ */
+private fun withScratchRemoved(root: File, body: () -> Unit) {
     try {
+        body()
+    } catch (e: Throwable) {
+        runCatching { removeTree(root) }.exceptionOrNull()?.let(e::addSuppressed)
+        throw e
+    }
+    removeTree(root)
+}
+
+private fun removeTree(root: File) {
+    Files.walk(root.toPath()).use { paths -> paths.sorted(Comparator.reverseOrder()).forEach(Files::delete) }
+}
+
+fun main() {
+    withScratchRemoved(scratch) {
         rootsAreSharedStorageThenInternal()
         onlyRecordingsInsideARootAreShared()
         aShareOffersOneRecordingReadOnly()
         aShareThatFailsLaterIsReported()
         aShareOutlivesItsOriginal()
         oldShareCopiesAreCleaned()
-    } finally {
-        scratch.deleteRecursively()
     }
     println("PASS: call recordings live in the two roots, only a recording inside one is shared, read-only, as a copy")
 }

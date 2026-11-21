@@ -660,8 +660,10 @@ private fun folderRequests() {
     val entries = record["entries"] as List<Map<String, Any?>>
     check(entries.map { it["name"] } == listOf("Lists", "a b#1%.csv", "map%20v2.csv")) { "inbox listing $entries" }
     val reference = entries[1]["reference"] as String
-    check(reference == "file://$inbox/a%20b%231%25.csv") { "file reference $reference" }
-    check(entries[2]["reference"] == "file://$inbox/map%2520v2.csv") { "an escape in a name is encoded once" }
+    // The folder's own part as a URI encodes it: the scratch folder's path can hold a space or a '#' too.
+    val folderUri = inbox.toUri().toASCIIString().removeSuffix("/")
+    check(reference == "$folderUri/a%20b%231%25.csv") { "file reference $reference" }
+    check(entries[2]["reference"] == "$folderUri/map%2520v2.csv") { "an escape in a name is encoded once" }
     check(Paths.get(URI(reference)) == inbox.resolve("a b#1%.csv")) { "the reference names the file" }
 
     check(FileBrowser.listFolder(2, 1, "inbox", generation, inbox.resolve("Lists").toString(), "csv", false))

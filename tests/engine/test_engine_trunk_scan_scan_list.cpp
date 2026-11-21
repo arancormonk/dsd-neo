@@ -113,6 +113,9 @@ keyMuteRotation(bool unmuteP25) {
     auto* opts = new dsd_opts{};
     auto* state = new dsd_state{};
     initOpts(opts);
+    // No sound card: initOpts() picks the PulseAudio output, which a scan opens, and libpulse then makes a runtime
+    // folder in TMPDIR wherever XDG_RUNTIME_DIR is unset.
+    opts->audio_out_type = 9;
     initState(state);
     opts->unmute_encrypted_p25 = unmuteP25;
     opts->trunk_scan_enabled = 1;
@@ -132,6 +135,7 @@ keyMuteRotation(bool unmuteP25) {
             auto* standaloneOpts = new dsd_opts{};
             auto* standaloneState = new dsd_state{};
             initOpts(standaloneOpts);
+            standaloneOpts->audio_out_type = 9;
             initState(standaloneState);
             standaloneOpts->unmute_encrypted_p25 = unmuteP25;
             auto system = systems[i % systems.size()].toMap();
@@ -190,6 +194,7 @@ p25CandidateRotation(int configured) {
     auto* opts = new dsd_opts{};
     auto* state = new dsd_state{};
     initOpts(opts);
+    opts->audio_out_type = 9;
     initState(state);
     opts->p25_prefer_candidates = static_cast<uint8_t>(configured);
     opts->trunk_scan_enabled = 1;
@@ -273,6 +278,7 @@ twoGeneratedLists() {
     auto* parsed = new dsd_opts{};
     auto* parsedState = new dsd_state{};
     initOpts(parsed);
+    parsed->audio_out_type = 9;
     initState(parsedState);
     QList<QByteArray> storage{QByteArray("scan-lists-test")};
     for (const auto& arg : args) {
@@ -292,6 +298,7 @@ twoGeneratedLists() {
     auto* opts = new dsd_opts{};
     auto* state = new dsd_state{};
     initOpts(opts);
+    opts->audio_out_type = 9;
     initState(state);
     opts->trunk_scan_enabled = 1;
     opts->use_rigctl = 1;

@@ -263,7 +263,12 @@ private fun specialFilesNeverListed() {
     if (!made) println("SKIP: no mkfifo here, so no FIFO in the listing")
     try {
         ServerSocketChannel.open(StandardProtocolFamily.UNIX).use { socket ->
-            socket.bind(UnixDomainSocketAddress.of(root.resolve("sock.csv")))
+            // By a name relative to the working directory where it can be: run_jvm_tests.py runs this test in its temp
+            // folder, and the absolute name under a build tree is longer than a socket address holds (108 bytes on
+            // Linux, 104 on macOS), which would make this a skip.
+            val here = Path.of("").toRealPath()
+            val sock = root.resolve("sock.csv")
+            socket.bind(UnixDomainSocketAddress.of(if (sock.startsWith(here)) here.relativize(sock) else sock))
             Harness().list(root, showAll = true).listed(listOf("real.csv"), "links, FIFOs and sockets")
         }
     } catch (e: UnsupportedOperationException) {
