@@ -291,8 +291,18 @@ Item {
                 verify(ids.width >= lead - 0.5, "ids " + ids.width + " under their minimum " + lead);
             // The algorithm text is whole, or cut to no less than "ALG 84".
             var algMin = naturalWidth("ALG 84", algorithm.font);
-            if (algorithm.visible)
+            if (algorithm.visible) {
                 verify(algorithm.width >= algMin - 0.5, "algorithm " + algorithm.width + " under " + algMin);
+                // What it draws keeps "ALG 84" whole: right-eliding fits the
+                // ellipsis inside the width too.
+                var drawn = Qt.createQmlObject("import QtQuick; TextMetrics { elide: Text.ElideRight }", root);
+                drawn.font = algorithm.font;
+                drawn.text = algorithm.text;
+                drawn.elideWidth = algorithm.width;
+                var shownText = drawn.elidedText;
+                drawn.destroy();
+                verify(shownText.indexOf("ALG 84") === 0, "the algorithm draws '" + shownText + "' at " + algorithm.width + " px");
+            }
             var order = [emergency, privateTag, enc, algorithm];
             var dropped = null;
             for (var p of order) {
@@ -304,7 +314,9 @@ Item {
             if (dropped !== null) {
                 verify(!channel.visible, "the channel drawn while " + dropped.objectName + " is not");
                 var spare = ids.width - lead;
-                var need = 8 + (dropped === algorithm ? algMin : dropped.implicitWidth);
+                // Cut, the algorithm needs its "ALG 84" and the ellipsis.
+                var algCut = Math.min(naturalWidth(algorithm.text, algorithm.font), naturalWidth("ALG 84…", algorithm.font));
+                var need = 8 + (dropped === algorithm ? algCut : dropped.implicitWidth);
                 verify(need > spare + 0.5, dropped.objectName + " was left out with room for it (spare " + spare + ")");
             }
 

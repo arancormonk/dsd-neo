@@ -66,6 +66,9 @@ Item {
     }
 
     // The height of one line in this font, whatever it says.
+    // Read a box through a property or a Binding, never inline in a
+    // ReadableText's own height binding: read there, the first probe of a
+    // size warned of a binding loop (MonitorScreen's otherIdentityBox).
     function lineHeight(family, pixelSize, weight) {
         return Math.ceil(probe(probeText, family, pixelSize, weight).implicitHeight);
     }

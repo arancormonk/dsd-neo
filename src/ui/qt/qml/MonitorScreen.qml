@@ -123,7 +123,7 @@ Item {
             heroIdentityNote.shown || heroIdentityNote.visible ? heroIdentityNote.text : "",
             heroEmergency || heroEmergencyTag.visible ? heroEmergencyTag.label : "", heroEnc || heroEncTag.visible ? heroEncTag.label : "",
             heroAlgorithm.shown || heroAlgorithm.visible ? heroAlgorithm.text : "",
-            heroChannel.shown || heroChannel.visible ? heroChannel.text : ""].filter(function (part) {
+            heroChannelText.shown || heroChannelText.visible ? heroChannelText.text : ""].filter(function (part) {
             return part.length > 0;
         }).join(", ");
     }
@@ -1248,7 +1248,8 @@ Item {
                             if (!stopped && heroAlgorithm.shown) {
                                 var left = room - used - (count > 0 ? gap : 0);
                                 var whole = Math.ceil(heroAlgorithmMetrics.advanceWidth);
-                                var part = Math.ceil(heroAlgorithmPartMetrics.advanceWidth);
+                                // Cut, it draws its part and the ellipsis.
+                                var part = Math.min(whole, Math.ceil(heroAlgorithmPartMetrics.advanceWidth));
                                 if (left >= part) {
                                     shown.algorithm = Math.min(whole, left);
                                     used += (count > 0 ? gap : 0) + shown.algorithm;
@@ -1266,7 +1267,7 @@ Item {
                                 shown[grown.key] = grown.width;
                             }
                             // Last of all: never in place of a status left out.
-                            if (!stopped && heroChannel.shown) {
+                            if (!stopped && heroChannelText.shown) {
                                 var channelRoom = spare - (count > 0 ? gap : 0);
                                 var channelNatural = Math.ceil(heroChannelMetrics.advanceWidth);
                                 if (channelRoom >= Math.min(channelNatural, 48))
@@ -1289,16 +1290,19 @@ Item {
                             font: heroAlgorithm.font
                             text: heroAlgorithm.text
                         }
-                        // "ALG 84" of "ALG 84 · KID 0001": what tells AES from RC4.
+                        // "ALG 84" of "ALG 84 · KID 0001", what tells AES from RC4,
+                        // with the "…" a cut text ends in: right-eliding fits the
+                        // ellipsis inside the width, so "ALG 84" alone came out
+                        // "ALG 8…".
                         TextMetrics {
                             id: heroAlgorithmPartMetrics
                             font: heroAlgorithm.font
-                            text: heroAlgorithm.text.split(" · ")[0]
+                            text: heroAlgorithm.text.split(" · ")[0] + "…"
                         }
                         TextMetrics {
                             id: heroChannelMetrics
-                            font: heroChannel.font
-                            text: heroChannel.text
+                            font: heroChannelText.font
+                            text: heroChannelText.text
                         }
 
                         // A private call (#773): the tag leads, then the talker. The
@@ -1395,7 +1399,7 @@ Item {
                         // what is left of it, so an operator-length name never pushes
                         // the tags off the panel.
                         Text {
-                            id: heroChannel
+                            id: heroChannelText
                             objectName: "heroChannel"
                             readonly property bool shown: screen.heroChannel.length > 0 && screen.heroChannel !== screen.heroHeadline
                             anchors.verticalCenter: parent.verticalCenter
