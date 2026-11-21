@@ -4959,7 +4959,7 @@ test_verified_group_setup_then_speech(void) {
     assert(!canonical_verified(&s, 0x100u));
     send_tx_granted(&s, 0x100u, 0x0A, 0x4444u);
     assert(!canonical_verified(&s, 0x100u));
-    speech(&s, 3); /* not the call's timeslot */
+    speech(&s, 3); /* speech the followed channel does not carry (the voice gate drops it) */
     assert(!canonical_verified(&s, 0x100u));
     speech(&s, 2);
     assert(canonical(s.state).media_active == 1U && canonical_verified(&s, 0x100u));
@@ -4985,6 +4985,50 @@ test_verified_group_needs_the_allocation(void) {
     speech(&s, 2);
     assert(canonical_verified(&s, 0x100u));
     session_close(&s);
+}
+
+/* Two calls at once, not trunking: call A to 0x300 on TN2 and call B on TN3 of the carrier being received, both set
+ * up before either is heard. Each one's speech proves only its own group, on its own transmission: B's speech, which
+ * ends A's canonical call and opens B's, never notes A's GSSI, nor A's speech B's, and the committed row of each keeps
+ * its own proof. A B set up by USSI is never proven, even after A was. */
+static void
+test_verified_group_two_calls_apart(void) {
+    for (int b_ussi = 0; b_ussi <= 1; b_ussi++) {
+        session s = session_heard();
+        send_setup(&s, 0x300u, 0x0C, TTB_SPEECH_GROUP, 4, 100); /* TN2 */
+        if (b_ussi) {
+            send_setup_to(&s, TETRA_MAC_ADDR_USSI, 0x400u, 0x0D, TTB_SPEECH_GROUP, 2, 100); /* TN3 */
+        } else {
+            send_setup(&s, 0x400u, 0x0D, TTB_SPEECH_GROUP, 2, 100); /* TN3 */
+        }
+        assert(tetra_calls_peek(s.state, 0x0C)->verified_gssi == 0x300u);
+        assert(tetra_calls_peek(s.state, 0x0D)->verified_gssi == (b_ussi ? 0u : 0x400u));
+
+        speech(&s, 2);
+        dsd_call_snapshot call = canonical(s.state);
+        assert(call.ota_target_id == 0x300u && canonical_verified(&s, 0x300u));
+        const uint64_t a_epoch = call.epoch;
+
+        at_seconds(1000.0 + 2.0 * TETRA_CALL_SPEECH_END_S); /* A's speech stopped: TN3 may be heard */
+        speech(&s, 3);
+        call = canonical(s.state);
+        assert(call.phase == DSD_CALL_PHASE_ACTIVE && call.epoch != a_epoch && call.ota_target_id == 0x400u);
+        assert(b_ussi ? !canonical_verified(&s, 0x400u) : canonical_verified(&s, 0x400u));
+        assert(row_proof(&s, 0) == DSD_HEARD_TG_TETRA && committed_row(&s, 0)->heard_id == 0x300u);
+        const uint64_t b_epoch = call.epoch;
+
+        at_seconds(1000.0 + 4.0 * TETRA_CALL_SPEECH_END_S);
+        speech(&s, 2);
+        call = canonical(s.state);
+        assert(call.epoch != b_epoch && call.ota_target_id == 0x300u && canonical_verified(&s, 0x300u));
+        if (b_ussi) {
+            assert(row_proof(&s, 0) == DSD_HEARD_TG_NONE);
+        } else {
+            assert(row_proof(&s, 0) == DSD_HEARD_TG_TETRA && committed_row(&s, 0)->heard_id == 0x400u);
+        }
+        assert(row_proof(&s, 1) == DSD_HEARD_TG_TETRA && committed_row(&s, 1)->heard_id == 0x300u);
+        session_close(&s);
+    }
 }
 
 /* End-to-end encrypted speech, which nothing here decrypts and which does not play, still proves the group. */
@@ -5018,11 +5062,16 @@ test_verified_group_setup_then_silence(void) {
     send_call_pdu(&s, 0x100u, TETRA_CMCE_D_TX_CEASED, 0x0A, 1);
     speech(&s, 2); /* the trail of the transmission that ceased */
     assert(canonical(s.state).phase == DSD_CALL_PHASE_ENDED && !canonical_verified(&s, 0x100u));
+    send_tx_granted(&s, 0x100u, 0x0A, 0x5555u); /* a second transmission, silent too */
+    assert(canonical(s.state).phase == DSD_CALL_PHASE_ACTIVE);
     send_call_pdu(&s, 0x100u, TETRA_CMCE_D_RELEASE, 0x0A, 5);
-    assert(committed_row(&s, 0)->event_string[0] != '\0');
-    for (int i = 0; i < 4; i++) {
-        assert(row_proof(&s, i) == DSD_HEARD_TG_NONE);
+    assert(canonical(s.state).phase == DSD_CALL_PHASE_ENDED && !canonical_verified(&s, 0x100u));
+    int rows = 0;
+    while (rows < DSD_EVENT_HISTORY_LEN - 1 && committed_row(&s, rows)->event_string[0] != '\0') {
+        assert(row_proof(&s, rows) == DSD_HEARD_TG_NONE && committed_row(&s, rows)->heard_id == 0u);
+        rows++;
     }
+    assert(rows == 2); /* one row per silent transmission, neither proven */
     session_close(&s);
 }
 
@@ -5247,6 +5296,7 @@ main(void) {
     test_radio_policy_follow();
     test_verified_group_setup_then_speech();
     test_verified_group_needs_the_allocation();
+    test_verified_group_two_calls_apart();
     test_verified_group_encrypted_speech();
     test_verified_group_setup_then_silence();
     test_verified_group_needs_a_group_ssi();
