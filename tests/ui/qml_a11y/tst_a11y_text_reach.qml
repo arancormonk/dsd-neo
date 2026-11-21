@@ -337,7 +337,7 @@ Item {
                 reason: "\"+N\", how many saved names the line leaves out; the saved line's name reads every one of them."},
             {file: "ScanAvoidSheet.qml", name: "entryLabel", readBy: function (text) { return findNear(text, "scanAvoidPutBack"); },
                 reason: "Its Put back reads the entry in its name (\"Put back Row 1  851.012500 MHz  Fire Dispatch\"), the row's one node."},
-            {file: "MonitorScreen.qml", name: /^(liveLabelProbe|rowNameProbe|rowMetaProbe|titleLineProbe)$/,
+            {file: "MonitorScreen.qml", name: /^(liveLabelProbe|titleLineProbe)$/,
                 reason: "Sizing probes, never shown (visible: false); only the every-branch pass shows them."}
         ]
         property var used: ({})

@@ -363,7 +363,8 @@ Item {
         }
 
         // Nearest: the supporting line leads with the distance when it is known; with no location fix, or no
-        // coordinates for the system, it is the source line alone.
+        // coordinates for the system, it is the source line alone. With the site count on the line too (320 dp),
+        // the order is distance, count, source.
         function test_nearest_line() {
             testContext.setLocationSupported(true);
             site("Near Vale", 36, 1, 10.1, 20.0);
@@ -380,9 +381,16 @@ Item {
             compare(near().indexOf("6.9 mi · "), 0, "the distance first: " + near());
             var plain = part(cardOf("Far Plain"), "savedSystemSource").text;
             compare(plain.indexOf("851.5 MHz"), 0, "no coordinates, no distance: " + plain);
+            // At 320 dp the one-site card's button is not drawn and its count joins the line: the distance still
+            // leads (Nearest sorts by it), then the count, then the source.
+            root.width = 320;
+            settle();
+            verify(!part(cardOf("Near Vale"), "homeSiteChooserButton").visible, "the site button is drawn at 320 dp");
+            compare(near().indexOf("6.9 mi · 1 site · 851.5 MHz"), 0, "distance, then the count, then the source: " + near());
             prefs.systemsSort = "name";
             settle();
             verify(near().indexOf(" mi · ") < 0, "off Nearest, no distance");
+            compare(near().indexOf("1 site · "), 0, "off Nearest, the count leads: " + near());
         }
 
         // The refresh hint stays, full width under the row, inside the card.
@@ -460,6 +468,52 @@ Item {
             fuzzyCompare(placed.height, 122, 0.5);
         }
 
+        // A card is as tall with a screen reader as without, compact or full: the lines it holds take no room,
+        // spacing included (a Column skips a slot of no height, its spacing with it), at any width and text size,
+        // and the receiver line that stays is the same height either way.
+        function test_screen_reader_keeps_the_card_height_data() {
+            var rows = [];
+            for (var compact of [true, false]) {
+                for (var w of [320, 411]) {
+                    for (var s of [1.0, 2.0])
+                        rows.push({tag: (compact ? "compact " : "full ") + w + " at " + s, width: w, scale: s, compact: compact});
+                }
+            }
+            return rows;
+        }
+        function test_screen_reader_keeps_the_card_height(data) {
+            prefs.compactView = data.compact;
+            root.width = data.width;
+            Ui.Theme.fontScale = data.scale;
+            add("Plain Vale");
+            add("Placed Vale", {keyConfigured: true, place: {states: [{stid: 90, name: "Westmark"}], counties: [],
+                candidateStates: [90]}});
+            site("Single Vale", 31, 1);
+            site("Twin Mesa", 35, 1, undefined, undefined, {sourceType: "usb", freqMhz: "851.0125"});
+            site("Twin Mesa", 35, 1, undefined, undefined, {host: "10.20.30.40", port: 61234, freqMhz: "852.0125"});
+            settle();
+            var heights = function () {
+                var out = [];
+                for (var entry of entries())
+                    out.push(entry.title + " " + findChild(entry, "savedSystemCard").height);
+                return out.sort();
+            };
+            var without = heights();
+            compare(without.length, 5);
+            savedSystemCards.screenReaderActive = true;
+            settle();
+            var withReader = heights();
+            compare(withReader, without, "a screen reader changed the compact cards' heights");
+            // The held slots are there, of no height, and what is drawn sits where it did.
+            var plain = cardOf("Plain Vale");
+            var held = data.compact ? [part(cardOf("Placed Vale"), "savedSystemPlace"), part(plain, "savedSystemMeta")]
+                : [part(plain, "savedSystemPlace"), part(plain, "savedSystemReceiver")];
+            for (var line of held) {
+                verify(line.visible, line.objectName + " is held, not hidden");
+                compare(line.parent.height, 0, line.objectName + " takes no room");
+            }
+        }
+
         // A scan list's compact card: its name over its count, Play and More on the name's row, inside the card at
         // every width and text size, 68 px at normal text. Play keeps its gating (a draft does not play) and the count
         // follows the list.
@@ -499,7 +553,8 @@ Item {
         }
 
         // D11: a change of Compact view puts the Systems and Scan lists tabs back at their top, the one shown at once
-        // and the other when it is next shown, with Home shown or hidden. Explore keeps its place.
+        // and the other when it is next shown, with Home shown or hidden. Explore, whose rows the density does not
+        // change, keeps its place.
         function test_density_change_resets_listen_places_data() {
             return [{tag: "shown", hidden: false}, {tag: "hidden", hidden: true}];
         }
@@ -516,7 +571,19 @@ Item {
                 body.contentY = Math.min(y, body.originY + body.contentHeight - body.height);
                 verify(body.contentY > body.originY + 100, "scrolled down");
             };
+            // Explore's place, left part way down; a short window at large text, so it scrolls.
+            root.height = 360;
+            Ui.Theme.fontScale = 2.0;
+            home.showSection("explore");
+            settle();
+            tryCompare(home, "restorePending", false);
+            var exploreRoom = body.contentHeight - body.height;
+            verify(exploreRoom > 40, "Explore scrolls at this height: " + exploreRoom);
+            body.contentY = body.originY + Math.round(exploreRoom / 2);
+            var explorePlace = body.contentY;
             home.showSection("scanLists");
+            root.height = 700;
+            Ui.Theme.fontScale = 1.0;
             settle();
             tryCompare(home, "restorePending", false);
             scrollTo(600);
@@ -540,6 +607,14 @@ Item {
             tryCompare(home, "restorePending", false);
             settle();
             fuzzyCompare(body.contentY, body.originY, 0.5, "the Scan lists tab at its top");
+            // Explore keeps its place: the density change is not its.
+            root.height = 360;
+            Ui.Theme.fontScale = 2.0;
+            home.showSection("explore");
+            settle();
+            tryCompare(home, "restorePending", false);
+            settle();
+            fuzzyCompare(body.contentY, explorePlace, 0.5, "Explore kept its place");
         }
 
         // The card stride, top to top, at 411 x 914 and normal text, in both views (logged for the PR).

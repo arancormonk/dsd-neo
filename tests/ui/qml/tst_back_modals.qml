@@ -734,17 +734,30 @@ Item {
             verify(waitForPolish(app.contentItem));
             var scroll = item("modalSheetScroll", menu);
             if (button.mapToItem(scroll, 0, button.height).y > scroll.height) {
-                // Start on a destination row: its tap handler must let the sheet flick.
+                // Start on a destination row: its tap handler must let the sheet flick. The finger moves slowly and
+                // rests before it lets go, so the sheet stops where the finger does, with no fling: just far enough
+                // to bring the row into view (the middle of the range that shows it whole), never past it. A fling
+                // ran a menu this tall (issue #901 added Compact view) past a row in its middle.
                 var dragRow = item(menu.actions[3].objectName, menu);
                 var previousY = scroll.contentY;
-                mouseDrag(dragRow, dragRow.width / 2, dragRow.height / 2, 0, -190, Qt.LeftButton);
-                tryVerify(function () { return scroll.contentY > previousY; });
+                var least = button.mapToItem(scroll, 0, button.height).y - scroll.height;
+                var most = button.mapToItem(scroll, 0, 0).y;
+                verify(least < most, "the row fits the sheet");
+                var target = (least + most) / 2;
+                var start = dragRow.mapToItem(scroll, dragRow.width / 2, dragRow.height / 2);
+                var fingerY = start.y;
+                mousePress(scroll, start.x, fingerY);
+                for (var step = 0; step < 200 && scroll.contentY - previousY < target; ++step) {
+                    fingerY -= 4;
+                    mouseMove(scroll, start.x, fingerY, 16);
+                }
+                wait(300);
+                mouseRelease(scroll, start.x, fingerY);
                 tryCompare(scroll, "moving", false);
+                verify(scroll.contentY > previousY, "the drag moved the sheet");
+                var moved = scroll.contentY - previousY;
+                verify(moved >= least && moved <= most, "the drag stopped at " + moved + ", outside " + least + " to " + most);
                 verify(menu.visible, "dragging must not activate a destination");
-                // The drag flings the sheet to its end, which on a menu this tall (issue #901 added Compact view) is
-                // past a row in its middle: come back to the row, as a shorter drag would have stopped on it.
-                if (button.mapToItem(scroll, 0, 0).y < 0)
-                    scroll.contentY += button.mapToItem(scroll, 0, 0).y;
             }
             verify(button.mapToItem(scroll, 0, 0).y >= 0);
             verify(button.mapToItem(scroll, 0, button.height).y <= scroll.height);
