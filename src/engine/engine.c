@@ -4048,7 +4048,6 @@ no_carrier_reset_m17_and_sample_buffers(dsd_state* state) {
     DSD_MEMSET(&state->m17_lich, 0, sizeof(state->m17_lich));
     DSD_MEMSET(state->m17_pkt, 0, sizeof(state->m17_pkt));
     state->m17_pbc_ct = 0;
-    state->m17_str_dt = 9;
     state->m17_bert_locked = 0;
     state->m17_bert_lfsr = 1;
     state->m17_bert_lock_count = 0;
@@ -4057,17 +4056,9 @@ no_carrier_reset_m17_and_sample_buffers(dsd_state* state) {
     state->m17_bert_bits = 0;
     state->m17_bert_errors = 0;
     state->m17_bert_resyncs = 0;
-    state->m17_can = 0;
-    state->m17_enc = 0;
-    state->m17_enc_st = 0;
-    state->m17_payload_decrypted = 0;
-    state->m17_signature_advertised = 0;
-    DSD_MEMSET(state->m17_signature_digest, 0, sizeof(state->m17_signature_digest));
-    DSD_MEMSET(state->m17_signature, 0, sizeof(state->m17_signature));
-    state->m17_signature_received_mask = 0;
-    state->m17_signature_complete = 0;
-    state->m17_signature_bad_sequence = 0;
-    DSD_MEMSET(state->m17_meta, 0, sizeof(state->m17_meta));
+    /* The link setup (stream type, CAN, encryption, IV, signature advertisement) and the signature went with the
+       transmission's evidence in no_carrier_reset_decode_state() (m17_confirm_reset()), the one reset every M17
+       boundary runs (issue #890). */
 
     DSD_MEMSET(state->audio_out_temp_buf, 0.0f, sizeof(state->audio_out_temp_buf));
     DSD_MEMSET(state->audio_out_temp_bufR, 0.0f, sizeof(state->audio_out_temp_bufR));

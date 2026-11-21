@@ -3254,11 +3254,7 @@ struct dsd_state {
     int m17_rate;    //sampling rate for audio input
     int m17_vox;     //vox enabled via PWR value
 
-    uint8_t m17_meta[16]; //packed meta
-    uint8_t m17_text_meta_control_or;
-    uint8_t m17_text_meta_expected_bitmap;
-    uint8_t m17_text_meta_received_bitmap;
-    uint8_t m17_text_meta[52];
+    uint8_t m17_meta[16];          //packed meta
     uint8_t m17_enc;               //enc type
     uint8_t m17_enc_st;            //scrambler or data subtye
     uint8_t m17_payload_decrypted; //current encrypted payload was successfully decrypted
@@ -3273,7 +3269,10 @@ struct dsd_state {
     uint8_t m17_signature_verification_status;
     /* The transmission's checked link setup and its stream signature (src/protocol/m17/m17_confirm.c,
      * m17_confirm_reset_link()): kept from frame to frame and forgotten only at a transmission boundary (an LSF frame,
-     * an end of transmission, a lost carrier, a carrier boundary, another network stream).
+     * an end of transmission, a lost carrier, a carrier boundary, another network stream). Every boundary retires the
+     * decoded link setup (m17_str_dt, m17_can, m17_enc, m17_enc_st, m17_payload_decrypted, m17_meta,
+     * m17_signature_advertised, m17_lsf_checked) through m17_confirm_reset_link_setup(), the stream type to
+     * M17_STREAM_TYPE_UNKNOWN (issue #890).
      * m17_lsf_checked: an LSF whose CRC passed (the LSF frame's, one rebuilt whole from LICH chunks, an IP frame's) set
      *   m17_can (0 included), m17_enc, m17_enc_st, m17_str_dt and m17_meta for this transmission; an LSF -F decodes
      *   despite a failed CRC is then shown and never replaces them.
@@ -3283,15 +3282,11 @@ struct dsd_state {
      *   Verification: the receiver needs the whole stream).
      * m17_signature_ended: the transmission ended (a stream frame's EOS bit, an IP EOT); the next one starts with a
      *   fresh signature state (m17_confirm_reset_signature()) even when no EOT marker or LSF frame came between.
-     * m17_ip_stream / _sid / _src / _last_fn: the open network stream (DSD_M17_IP_STREAM_NONE or _OPEN), its stream ID,
-     *   the station its LSF names and the last frame number used: each frame number of it is used once and in order,
-     *   so a datagram delivered again or late is dropped before anything (m17_ip_take_stream_frame()). */
+     * m17_ip_stream / _sid / _src / _last_fn / _signed: the open network stream (DSD_M17_IP_STREAM_NONE or _OPEN), its
+     *   stream ID, the station its LSF names, the last frame number used and whether any of its LSFs was signed: each
+     *   frame number of it is used once and in order (an unsigned stream through the counter's wrap, a signed one
+     *   only rising), so a datagram delivered again or late is dropped before anything (m17_ip_take_stream_frame()). */
     uint8_t m17_lsf_checked;
-    /* The 1600 bit/s stream's arbitrary data being assembled (m17_stream_1600_arbitrary_assemble()): one six-frame
-     * group's chunks, which slots are in and the group; emptied at a stream change (m17_confirm_reset_link()). */
-    uint8_t m17_adata[48];
-    uint8_t m17_adata_mask;
-    uint16_t m17_adata_group;
     uint16_t m17_signature_voice_next;
     uint8_t m17_signature_voice_gap;
     uint8_t m17_signature_ended;
@@ -3299,6 +3294,7 @@ struct dsd_state {
     uint16_t m17_ip_stream_sid;
     uint16_t m17_ip_stream_last_fn;
     uint64_t m17_ip_stream_src;
+    uint8_t m17_ip_stream_signed;
     int m17encoder_tx;  // If TX (encode + decode) M17 Stream is enabled
     int m17encoder_eot; //signal if we need to send the EOT frame
 

@@ -13,12 +13,17 @@ Implemented decode coverage:
   stream advertisement.
 - M17 address classification for reserved, standard, extended, and destination-only broadcast addresses.
 - Stream metadata for text, GNSS position, and extended callsign blocks, read only from an LSF (or a stream's LSD, or an
-  IP stream or packet frame) whose CRC passed, and never from what the local encoder transmits. Under `-F` an LSF that
+  IP stream or packet frame) whose CRC passed, and never from what the local encoder transmits. A text is put together
+  only from the blocks of one transmission. Under `-F` an LSF that
   failed its CRC still sets up the stream, but its META is not read, and once an LSF whose CRC passed has set up the
   transmission, one that failed it is only shown: it does not change the CAN, encryption or stream type. If the end of
   one transmission is missed and the next one's LSF fails its CRC, the previous transmission's CAN and encryption stay
   in force until the new stream's LSF is rebuilt from its LICH with a good CRC: one LICH cycle (six stream frames, 240
-  ms) when those frames are received cleanly. A stream's LSD counts only when all six of its LICH pieces were heard in
+  ms) when those frames are received cleanly. When a transmission's end is decoded (its last frame's end bit, or the
+  end-of-transmission marker) the next one starts with no setup at all: until its own LSF is read (its LSF frame, or
+  its LSF rebuilt from the LICH; under `-F` also one that failed its CRC), it plays nothing and opens no call, and it
+  never runs on the previous transmission's CAN, encryption or stream type. A stream's LSD counts only when all six of
+  its LICH pieces were heard in
   one transmission, on one tuning, and on the same side of the moment the stream was confirmed; one put together across
   a retune or another change is dropped, and the next whole set is read.
 - GNSS position META: the position goes to the call's History row, the position feed and the control API's `positions`
@@ -31,19 +36,28 @@ Implemented decode coverage:
 - Stream payload descrambling and AES-CTR decrypt when the corresponding key material is configured.
 - M17 over UDP/IP: a network frame whose CRC failed, whose own link setup cannot be used, or that carries a packet-mode
   link setup in a stream frame, is dropped (not played, no call). Each frame of a stream (its stream ID and station) is
-  used once and in order, through the frame counter's wrap: a frame received again, or after a later one, is dropped. A
-  new stream ID or station ends the stream before it and starts its own call; a final frame of another stream does not
-  end the open one. A stream's own end, or EOTX and DISC from its station, end it and drop the carrier. After a network
-  stream ends, its stream ID (from that station) is ignored until a frame 0 starts it again, however many other streams
-  end meanwhile; a stream ID that the same station reuses with no end received between is not taken.
+  used once and in order: a frame received again, or after a later one, is dropped. An unsigned stream numbers on
+  through the frame counter's wrap; a signed stream never wraps, so a voice frame arriving after a signature frame is
+  late. A new stream ID or station ends the stream before it and starts its own call; a final frame of another stream
+  does not end the open one, but that other stream counts as ended. A stream's own end, or EOTX and DISC from its
+  station, end it and drop the carrier. After a network stream ends, its stream ID (from that station) is ignored until
+  a frame 0 starts it again; a stream ID that the same station reuses with no end received between is not taken. The
+  last 64 ended streams are remembered. Once more than 64 have ended in a session, the oldest are forgotten, and from
+  then on a stream that is not open and not remembered starts only at its frame 0: a stream whose first frames were
+  lost is not joined part-way through. A GNSS position repeated in one network stream is one report, also across the
+  frame counter's wrap.
 - Signed voice streams: over the air, the signature is collected and checked (secp256r1) when
   `--m17-signature-public-key <hex>` is provided (M17 2.0.11 signatures). The digest runs over the whole stream from its
   first frame: the LSF repeated in the LICH does not restart it. The signature is checked at the end of the
   transmission, and only when every voice frame arrived once and in order and every signature piece arrived; otherwise
   it is reported as incomplete (`SIG INCOMPLETE`), also when only the end-of-transmission marker ends it, never as a
   failed signature. A voice frame lost just before the signature frames cannot be detected, and then the check fails.
+  In a signed stream no voice uses the frame numbers kept for the signature (0x7FFC to 0x7FFF, M17 2.0.11): a frame
+  numbered there that is not a signature piece is never played, and the signature is then reported incomplete, as it
+  is when a frame numbered there was played before the stream was known to be signed.
   M17 signatures are not verified on network (UDP/IP) streams: their signature frames are not played, and the stream
-  shows `SIG NOT VERIFIED OVER NETWORK`. The SHA-256 stream hash and Authentication Frame of the M17 2.1 revisions are
+  shows `SIG NOT VERIFIED OVER NETWORK` as soon as its signed link setup is received, however the stream ends (also
+  when every signature frame was lost). The SHA-256 stream hash and Authentication Frame of the M17 2.1 revisions are
   not implemented.
 - Packet assembly with the current 823-byte application-payload ceiling and packet CRC validation.
 - BERT PRBS9 payload checking without requiring a preceding LSF.

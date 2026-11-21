@@ -50,8 +50,8 @@ typedef enum {
  * stream frames. */
 #define M17_CONFIRM_PARTIAL_HOLD_MS 80U
 
-/** @brief Forget everything learned about the current transmission: its confirmation, and its checked link setup and
- * signature (m17_confirm_reset_link()). */
+/** @brief Forget everything learned about the current transmission: its confirmation, and its link setup and signature
+ * (m17_confirm_reset_link()). The EOT marker, a lost carrier and a retune run it. */
 void m17_confirm_reset(dsd_state* state);
 
 /**
@@ -66,10 +66,22 @@ void m17_confirm_reset(dsd_state* state);
  */
 void m17_confirm_reset_signature(dsd_state* state);
 
+/** @brief dsd_state::m17_str_dt with no link setup decoded: no stream type, so nothing plays, marks media or names a
+ * signature (the value noCarrier() and initState() have always left). */
+#define M17_STREAM_TYPE_UNKNOWN 9U
+
 /**
- * @brief Forget the transmission's checked link setup (dsd_state::m17_lsf_checked) and signature advertisement, its
- * network stream, its 1600 bit/s arbitrary data being assembled, and its signature (m17_confirm_reset_signature()): a
- * transmission boundary.
+ * @brief Retire the decoded link setup: the stream type (M17_STREAM_TYPE_UNKNOWN), CAN, encryption type and subtype,
+ * whether the payload decrypted, the META/IV, the signature advertisement and whether a checked LSF bound them
+ * (dsd_state::m17_lsf_checked). Every transmission boundary runs it, through m17_confirm_reset_link() or, at a network
+ * stream's end, alone (issue #890): what the next transmission plays, credits or publishes is set up by its own LSF.
+ */
+void m17_confirm_reset_link_setup(dsd_state* state);
+
+/**
+ * @brief A transmission boundary: forget the decoded link setup (m17_confirm_reset_link_setup()), the network stream,
+ * the 1600 bit/s arbitrary data and the text META being assembled (in the M17 extension) and the signature
+ * (m17_confirm_reset_signature()).
  */
 void m17_confirm_reset_link(dsd_state* state);
 

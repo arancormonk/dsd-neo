@@ -7,6 +7,7 @@
 #include <dsd-neo/runtime/signal_search_hooks.h>
 #include <stddef.h>
 #include "m17_confirm.h"
+#include "m17_state_ext.h"
 
 #include <dsd-neo/core/safe_api.h>
 #include <dsd-neo/core/state.h>
@@ -32,19 +33,36 @@ m17_confirm_reset_signature(dsd_state* state) {
 }
 
 void
-m17_confirm_reset_link(dsd_state* state) {
+m17_confirm_reset_link_setup(dsd_state* state) {
     if (!state) {
         return;
     }
     state->m17_lsf_checked = 0U;
-    DSD_MEMSET(state->m17_adata, 0, sizeof(state->m17_adata));
-    state->m17_adata_mask = 0U;
-    state->m17_adata_group = 0U;
+    state->m17_str_dt = (uint8_t)M17_STREAM_TYPE_UNKNOWN;
+    state->m17_can = 0U;
+    state->m17_enc = 0U;
+    state->m17_enc_st = 0U;
+    state->m17_payload_decrypted = 0U;
+    DSD_MEMSET(state->m17_meta, 0, sizeof(state->m17_meta));
     state->m17_signature_advertised = 0U;
+}
+
+void
+m17_confirm_reset_link(dsd_state* state) {
+    if (!state) {
+        return;
+    }
+    m17_confirm_reset_link_setup(state);
+    m17_state_ext* ext = m17_state_ext_find(state);
+    if (ext) {
+        DSD_MEMSET(&ext->adata, 0, sizeof(ext->adata));
+        DSD_MEMSET(&ext->text_meta, 0, sizeof(ext->text_meta));
+    }
     state->m17_ip_stream = DSD_M17_IP_STREAM_NONE;
     state->m17_ip_stream_sid = 0U;
     state->m17_ip_stream_last_fn = 0U;
     state->m17_ip_stream_src = 0U;
+    state->m17_ip_stream_signed = 0U;
     m17_confirm_reset_signature(state);
 }
 

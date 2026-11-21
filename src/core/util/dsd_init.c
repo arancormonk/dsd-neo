@@ -1552,10 +1552,6 @@ init_state_string_and_m17_defaults(dsd_state* state) {
     state->m17encoder_tx = 0;
     state->m17encoder_eot = 0;
     DSD_MEMSET(state->m17_meta, 0, sizeof(state->m17_meta));
-    state->m17_text_meta_control_or = 0;
-    state->m17_text_meta_expected_bitmap = 0;
-    state->m17_text_meta_received_bitmap = 0;
-    DSD_MEMSET(state->m17_text_meta, 0, sizeof(state->m17_text_meta));
 }
 
 static void

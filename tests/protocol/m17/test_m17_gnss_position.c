@@ -1115,6 +1115,38 @@ test_ip_late_copy_is_a_repeat(void) {
     dsd_decode_clock_use_system();
 }
 
+/* Issue #890: an unsigned network stream numbers on through the 15-bit counter's wrap (0x7FFF to 0) as one stream, and
+ * its unchanged GNSS META stays one report across the wrap, however long ago the report was admitted: the stream's
+ * boundary is where admission opened it, not where its frame number fell. */
+static void
+test_ip_counter_wrap_is_one_report(void) {
+    uint8_t meta[M17_META_BYTES];
+    uint8_t bits[LSF_BITS];
+    uint8_t packed[M17_LSF_BYTES];
+    gnss_meta(meta, GNSS_ALL_VALID, 3U, TEST_BEARING_DEG, RAW_QUARTER, RAW_QUARTER);
+    (void)build_lsf(bits, packed, 0, 1U, meta);
+    write_bits(bits + 96, m17_compose_frame_info(1U, 0U, 0U, 1U, 5U, 0U, 0U), 16U);
+    uint64_t now_ns = 3000ULL * 1000000000ULL;
+    dsd_decode_clock_use_test(now_ns);
+    rig r;
+    rig_open(&r);
+    long long admitted = send_ip_stream_frame(&r, bits, 0x7FFDU, 0x21U, 0);
+    /* Past the feed's 30 s repeat window. */
+    now_ns += 31ULL * 1000000000ULL;
+    dsd_decode_clock_test_set_ns(now_ns);
+    static const uint16_t k_after[4] = {0x7FFEU, 0x7FFFU, 0U, 1U};
+    for (size_t i = 0U; i < 4U; i++) {
+        admitted += send_ip_stream_frame(&r, bits, k_after[i], (uint8_t)(0x22U + i), 0);
+        now_ns += 40000000ULL;
+        dsd_decode_clock_test_set_ns(now_ns);
+    }
+    expect_int("a stream across the counter's wrap is one report", admitted, 1);
+    dsd_position_fix f[4];
+    expect_int("one feed record across the wrap", feed_records(&r, f, 4U), 1);
+    rig_close(&r);
+    dsd_decode_clock_use_system();
+}
+
 /* Issue #800 (g62-r9): one MPKT is one whole transmission, but a byte-identical copy of it (a duplicated datagram)
  * heard within DSD_POSITION_REPEAT_MS is no new one: its META is a repeat. The same bytes heard later, or another
  * packet with the same LSF, are another transmission and admitted again. */
@@ -1239,6 +1271,7 @@ main(void) {
     test_ip_duplicate_frame_is_a_repeat();
     test_mpkt_duplicate_is_a_repeat();
     test_ip_late_copy_is_a_repeat();
+    test_ip_counter_wrap_is_one_report();
     test_local_tx_monitor_gives_nothing();
     test_local_tx_stream_monitor_gives_nothing();
     test_ip_stream_position();

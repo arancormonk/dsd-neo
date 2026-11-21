@@ -105,9 +105,10 @@ typedef enum DSD_ATTR_PACKED dsd_state_ext_id {
     /* D-STAR slow-data assemblies: the D-PRS record and the text message being collected
      * (src/protocol/dstar/dstar_sd_state.h, issue #800). Decoder-thread private. */
     DSD_STATE_EXT_PROTO_DSTAR_SLOW_DATA = 30,
-    /* M17 network state: the GNSS META repeat rule's last admitted report's transmission and the network frames that
-     * carried it (issue #800), and the network streams that ended lately (issue #890) (src/protocol/m17/m17.c
-     * m17_gnss_state). Decoder-thread private. */
+    /* M17 decoder state no frontend reads (src/protocol/m17/m17_state_ext.h m17_state_ext): the GNSS META repeat rule's
+     * last admitted report's transmission and the network frames that carried it (issue #800), the network streams
+     * that ended lately and the streams admission opened, and the 1600 bit/s arbitrary data and the text META being
+     * assembled (issue #890). Decoder-thread private. */
     DSD_STATE_EXT_PROTO_M17_GNSS = 31,
 } dsd_state_ext_id;
 
