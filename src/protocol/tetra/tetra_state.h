@@ -11,6 +11,7 @@
 
 #include <dsd-neo/core/position.h>
 #include <dsd-neo/core/state_fwd.h>
+#include <dsd-neo/protocol/tetra/tetra_dmo.h>
 #include <dsd-neo/protocol/tetra/tetra_trunk_sm.h>
 #include <stdint.h>
 #include <time.h>
@@ -273,17 +274,23 @@ enum {
 };
 
 /** What tells one direct mode short data message from another (EN 300 396-3 tables 45 and 46): its message type, who
- * sent it to whom, its short data type and user data length, and its whole DM-SDU, the first 64 bits of the user data
- * and the digest of every element (tetra_dmo_sync_h_t::sdu_digest). */
+ * sent it to whom (the addresses with their types and the MNI, which with the destination SSI is the called party's
+ * TSI, clause 8.5.2.1.1: the same SSIs on a co-channel network are other parties), its short data type and user data
+ * length, and its whole DM-SDU, the first 64 bits of the user data and the digest of every element
+ * (tetra_dmo_sync_h_t::sdu_digest). */
 typedef struct {
     uint64_t value;    /**< user data or status: its first 64 bits */
     uint32_t digest;   /**< the DM-SDU's digest (tetra_dmo_sync_h_t::sdu_digest), its FCS left out */
     uint32_t src;      /**< source address */
     uint32_t dst;      /**< destination address; 0 when DM-2-B hides it */
+    uint32_t mni;      /**< the MNI element, 0 when absent */
     uint16_t length;   /**< user data length in bits */
     uint16_t sdu_bits; /**< DM-SDU bits the digest covers */
     uint8_t type;      /**< message type; 0 for none */
     uint8_t sdti;      /**< short data type identifier */
+    uint8_t src_type;  /**< source address type (clause 9.3.27) */
+    uint8_t dst_type;  /**< destination address type (clause 9.3.5) */
+    uint8_t has_mni;   /**< the MNI element was present */
 } tetra_dmo_sds_key;
 
 /** The direct mode call on the channel, from its DMAC-SYNC and DMAC-DATA PDUs (EN 300 396-3 clause 9). */
@@ -292,7 +299,7 @@ typedef struct {
     double sds_m;          /**< decode clock: when the last short data notice went out */
     tetra_dmo_sds_key sds; /**< the message of the last short data notice; type 0 for none */
     uint32_t src;          /**< source address (talker) */
-    uint32_t mni;          /**< the MNI its PDUs carried with that source: the source's network (0 when absent) */
+    tetra_dmo_party party; /**< who its source is (tetra_dmo_party_of()): address type, MNI, repeater or gateway */
     uint32_t dst;          /**< destination address; 0 when DM-2-B hides it */
     uint32_t tx_seq;       /**< the transmission it is a call of (tetra_state_t::dmo_tx_seq) */
     uint8_t active;        /**< a DM-SETUP, DM-CONNECT ACK or DM-OCCUPIED set it up and no end has come since */
@@ -572,16 +579,15 @@ typedef struct tetra_state {
  *                 DMAC-SYNC that set it up, when its class is not DM-1 (EN 300 396-3 clauses 9.3.7 and 9.3.14; the
  *                 ciphering parameters do not change within a call transaction, EN 300 396-6 clause 5.2); 0 otherwise.
  * dmo_tx_seed:    the DM colour code seed of that transmission's source, 0 when none is known.
- * dmo_tx_src, dmo_tx_mni: the source address and MNI of the set-up that started that transmission, which its
- *                 DM-RESERVED shall carry (clause 8.5.2.1.1); dmo_tx_party once they are known (a DM-2-C one names
- *                 none).
+ * dmo_tx_party:   the party of the set-up that started that transmission (tetra_dmo_party: source address and its
+ *                 type, MNI, repeater or gateway), which its DM-OCCUPIED and DM-RESERVED shall repeat (clause
+ *                 8.5.2.1.1); not known for a DM-2-C one, which names none.
      * dmo_tx_seq:     counts the transmissions started: the direct mode call canonical slot 0 shows is of one of them.
      * dmo_since_sync: DNBs processed since the last DMAC-SYNC (colour code staleness). */
     uint32_t dmo_dcc_seed;
     uint32_t dmo_tx_seed;
-    uint32_t dmo_tx_src;
-    uint32_t dmo_tx_mni;
     uint32_t dmo_tx_seq;
+    tetra_dmo_party dmo_tx_party;
     uint16_t dmo_since_sync;
     uint8_t dmo;
     uint8_t dmo_dcc_valid;
@@ -591,7 +597,6 @@ typedef struct tetra_state {
     uint8_t dmo_tx_aie;
     uint8_t dmo_tx_ksg;
     uint8_t dmo_tx_key_number;
-    uint8_t dmo_tx_party;
 
     /* The status downlink of the last complete D-MM STATUS (EN 300 392-2 table 16.3), for the frontends; mm_status_valid
      * once one was decoded (tetra_mm.c). */

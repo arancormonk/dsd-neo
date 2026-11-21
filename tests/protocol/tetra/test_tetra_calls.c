@@ -2106,7 +2106,7 @@ test_direct_mode_setup_names_the_master_by_network(void) {
                     "%s)\n",
                     (unsigned)ts->dmo_tx_seq, call.epoch == first ? "same" : "new");
     }
-    assert(ts->dmo_tx_seq == tx_seq + 1U && ts->dmo_tx_mni == other && call.phase == DSD_CALL_PHASE_ACTIVE
+    assert(ts->dmo_tx_seq == tx_seq + 1U && ts->dmo_tx_party.mni == other && call.phase == DSD_CALL_PHASE_ACTIVE
            && call.epoch != first);
     const uint64_t second = call.epoch;
     /* The first network's master's late reservation is not this transmission's. */
@@ -2119,6 +2119,175 @@ test_direct_mode_setup_names_the_master_by_network(void) {
     call = canonical(s.state);
     assert(call.phase == DSD_CALL_PHASE_ENDED && call.epoch == second && ts->calls.dmo.active);
     assert(!ts->dmo_dcc_valid && tetra_dmo_call_crypt(s.state) == TETRA_DMO_CRYPT_UNKNOWN);
+    session_close(&s);
+}
+
+/* Who a DSB of dmo_dsb_party() is from: its communication type with the repeater or gateway address, and its source
+   address type (EN 300 396-3 clause 9.3.27), source and MNI (absent through a gateway when neither address is a true
+   SSI, table 22). */
+typedef struct {
+    uint32_t comm_type;
+    uint32_t relay;
+    uint32_t src_type;
+    uint32_t src;
+    uint32_t mni;
+} test_dmo_party;
+
+/* A DSB from @p p to group 0x800001 (address type @p p->src_type for both), DM-1, frame @p frame, carrying @p msg:
+   DM-OCCUPIED or DM-SETUP PRES of a group speech call, or DM-RESERVED after a call transaction with reservation time
+   remaining @p time (EN 300 396-3 tables 22, 27, 33, 36). Applied and handed to the call records as the decoder does. */
+static void
+dmo_dsb_party(session* s, const test_dmo_party* p, uint32_t msg, uint32_t time, uint8_t frame) {
+    uint8_t bits[128];
+    DSD_MEMSET(bits, 0, sizeof bits);
+    bits_of(k_dmo_sch_s, bits);
+    tetra_dmo_sync_s_t sync_s;
+    (void)tetra_dmo_parse_sync_s(bits, &sync_s);
+    sync_s.comm_type = (uint8_t)p->comm_type;
+    sync_s.frame = frame;
+    DSD_MEMSET(bits, 0, sizeof bits);
+    int at = 0;
+    put_bits(bits, at, 10, p->relay); /* repeater or gateway address, reserved in direct mode */
+    at += 10 + 1 + 1 + 2;             /* fill bit, not fragmented, frame countdown */
+    put_bits(bits, at, 2, p->src_type);
+    put_bits(bits, at + 2, 24, 0x800001u);
+    at += 26;
+    put_bits(bits, at, 2, p->src_type);
+    put_bits(bits, at + 2, 24, p->src);
+    at += 26;
+    const int with_mni = (p->comm_type != 2u && p->comm_type != 3u) || p->src_type == 0u;
+    if (with_mni) {
+        put_bits(bits, at, 24, p->mni);
+        at += 24;
+    }
+    put_bits(bits, at, 5, msg);
+    at += 5;
+    if (msg == TETRA_DMO_MSG_RESERVED) {
+        put_bits(bits, at + 1, 6, time); /* after a call transaction; no requests bitmap */
+        put_bits(bits, at + 10, 3, 4u);  /* power class 4 */
+    } else {
+        put_bits(bits, at + 3, 3, 4u);      /* timing, LCH and pre-emption flags clear; power class 4 */
+        put_bits(bits, at + 21 + 1, 1, 1u); /* no end-to-end encryption; group call */
+    }
+    tetra_dmo_sync_h_t sync_h;
+    (void)tetra_dmo_parse_sync_h(bits, (int)p->comm_type, &sync_h);
+    assert(sync_h.has_addrs && sync_h.md_ok && sync_h.msg_type == msg && sync_h.src == p->src
+           && sync_h.src_type == p->src_type && sync_h.has_mni == (uint8_t)with_mni);
+    tetra_dmo_apply_sync(s->state, &sync_s, &sync_h);
+    tetra_calls_dmo_pdu(s->opts, s->state, sync_s.enc_state, &sync_h);
+}
+
+/* 1 while the canonical direct mode call of epoch @p epoch is active, with its transmission's colour code and clear
+   protection. */
+static int
+dmo_call_goes_on(const session* s, uint64_t epoch) {
+    const dsd_call_snapshot call = canonical(s->state);
+    const tetra_state_t* ts = tetra_st_existing(s->state);
+    return call.phase == DSD_CALL_PHASE_ACTIVE && call.epoch == epoch && ts->dmo_dcc_valid
+           && tetra_dmo_call_crypt(s->state) == TETRA_DMO_CRYPT_CLEAR;
+}
+
+/* 1 once the transmission of the call of epoch @p epoch is over in both layers: its canonical call ended, its colour
+   code and protection gone. */
+static int
+dmo_transmission_retired(const session* s, uint64_t epoch) {
+    const dsd_call_snapshot call = canonical(s->state);
+    const tetra_state_t* ts = tetra_st_existing(s->state);
+    return call.phase == DSD_CALL_PHASE_ENDED && call.epoch == epoch && !ts->dmo_dcc_valid
+           && tetra_dmo_call_crypt(s->state) == TETRA_DMO_CRYPT_UNKNOWN;
+}
+
+/* A DM-RESERVED is the master's only with the master's party (EN 300 396-3 clause 8.5.2.1.1): the source address of
+ * the same type (clause 9.3.27), its MNI for a true SSI alone (behind a pseudo SSI the MNI "need not be a true MNI"),
+ * and, through a gateway, whose pseudo addresses come with no MNI (table 22), the same gateway. So: a reservation of
+ * the same pseudo SSI with another dummy MNI retires the transmission and its call; one of a pseudo SSI equal in value
+ * to the call's true SSI does not; and through a gateway, one of another gateway with the same pseudo SSI does not,
+ * while the call's own gateway's does. */
+static void
+test_direct_mode_reservation_names_the_party(void) {
+    /* A pseudo SSI: the reservation's MNI need not be true. */
+    session s = session_open();
+    session_history(&s);
+    test_dmo_party pseudo = {0u, 0u, 1u, 100u, TEST_DMO_MNI};
+    dmo_dsb_party(&s, &pseudo, TETRA_DMO_MSG_OCCUPIED, 0u, 3u);
+    uint64_t epoch = canonical(s.state).epoch;
+    assert(dmo_call_goes_on(&s, epoch));
+    pseudo.mni = 0x123456u;
+    dmo_dsb_party(&s, &pseudo, TETRA_DMO_MSG_RESERVED, 5u, 6u);
+    if (!dmo_transmission_retired(&s, epoch)) {
+        DSD_FPRINTF(stderr, "FAIL DM-RESERVED of the call's pseudo SSI under a dummy MNI left the transmission\n");
+    }
+    assert(dmo_transmission_retired(&s, epoch) && tetra_st_existing(s.state)->calls.dmo.active);
+    session_close(&s);
+
+    /* A pseudo SSI of the same value as the call's true SSI is another party. */
+    s = session_open();
+    session_history(&s);
+    test_dmo_party party = {0u, 0u, 0u, 100u, TEST_DMO_MNI};
+    dmo_dsb_party(&s, &party, TETRA_DMO_MSG_OCCUPIED, 0u, 3u);
+    epoch = canonical(s.state).epoch;
+    party.src_type = 1u;
+    dmo_dsb_party(&s, &party, TETRA_DMO_MSG_RESERVED, 5u, 6u);
+    if (!dmo_call_goes_on(&s, epoch)) {
+        DSD_FPRINTF(stderr, "FAIL a pseudo SSI's DM-RESERVED ended the call of the true SSI of its value\n");
+    }
+    assert(dmo_call_goes_on(&s, epoch) && tetra_st_existing(s.state)->calls.dmo.in_tx);
+    party.src_type = 0u;
+    dmo_dsb_party(&s, &party, TETRA_DMO_MSG_RESERVED, 5u, 6u);
+    assert(dmo_transmission_retired(&s, epoch));
+    session_close(&s);
+
+    /* Through a gateway, with pseudo addresses and so no MNI: the gateway is part of who the master is. */
+    s = session_open();
+    session_history(&s);
+    test_dmo_party gw = {2u, 0x155u, 1u, 100u, 0u};
+    dmo_dsb_party(&s, &gw, TETRA_DMO_MSG_OCCUPIED, 0u, 3u);
+    epoch = canonical(s.state).epoch;
+    assert(dmo_call_goes_on(&s, epoch));
+    gw.relay = 0x2AAu;
+    dmo_dsb_party(&s, &gw, TETRA_DMO_MSG_RESERVED, 5u, 6u);
+    dmo_dsb_party(&s, &gw, TETRA_DMO_MSG_RESERVED, 0u, 6u);
+    if (!dmo_call_goes_on(&s, epoch)) {
+        DSD_FPRINTF(stderr, "FAIL another gateway's DM-RESERVED of the same pseudo SSI ended the call\n");
+    }
+    assert(dmo_call_goes_on(&s, epoch) && tetra_st_existing(s.state)->calls.dmo.active);
+    gw.relay = 0x155u;
+    dmo_dsb_party(&s, &gw, TETRA_DMO_MSG_RESERVED, 5u, 6u);
+    assert(dmo_transmission_retired(&s, epoch));
+    session_close(&s);
+}
+
+/* A call announced by its set-up before any transmission began (DM-SETUP PRES) takes the first transmission of its own
+ * party only (EN 300 396-3 clauses 6.2, 8.5.2.1.1): a DM-OCCUPIED of the same true source and destination SSIs from a
+ * co-channel network (another MNI) is another call, which opens a canonical call of its own, so its later DM-RESERVED
+ * closes its row, never the set-up's. The set-up's own party's DM-OCCUPIED goes on with the set-up's call. */
+static void
+test_direct_mode_pending_setup_keeps_its_party(void) {
+    session s = session_open();
+    session_history(&s);
+    test_dmo_party a = {0u, 0u, 0u, 100u, TEST_DMO_MNI};
+    dmo_dsb_party(&s, &a, TETRA_DMO_MSG_SETUP_PRES, 0u, 3u);
+    const uint64_t pending = canonical(s.state).epoch;
+    assert(canonical(s.state).phase == DSD_CALL_PHASE_ACTIVE);
+    test_dmo_party b = a;
+    b.mni = TEST_DMO_MNI + 0x40u;
+    dmo_dsb_party(&s, &b, TETRA_DMO_MSG_OCCUPIED, 0u, 4u);
+    dsd_call_snapshot call = canonical(s.state);
+    if (call.epoch == pending) {
+        DSD_FPRINTF(stderr, "FAIL another network's DM-OCCUPIED took the pending set-up's call row\n");
+    }
+    assert(call.phase == DSD_CALL_PHASE_ACTIVE && call.epoch != pending);
+    const uint64_t other = call.epoch;
+    dmo_dsb_party(&s, &b, TETRA_DMO_MSG_RESERVED, 5u, 6u);
+    assert(dmo_transmission_retired(&s, other));
+    session_close(&s);
+
+    s = session_open();
+    session_history(&s);
+    dmo_dsb_party(&s, &a, TETRA_DMO_MSG_SETUP_PRES, 0u, 3u);
+    const uint64_t own = canonical(s.state).epoch;
+    dmo_dsb_party(&s, &a, TETRA_DMO_MSG_OCCUPIED, 0u, 4u);
+    assert(dmo_call_goes_on(&s, own));
     session_close(&s);
 }
 
@@ -2485,24 +2654,24 @@ bits_of_value(uint8_t* bits, uint64_t value, int nbits) {
 }
 
 /* A DMAC-DATA in an SCH/F (EN 300 396-3 table 23), clear (DM-1), carrying a DM-SDS UDATA (table 45) from @p src to
- * @p dst without additional addressing: short data type @p sdti and its user data, @p data_bits of @p data (for SDTI 3
+ * @p dst under MNI @p mni without additional addressing: short data type @p sdti and its user data, @p data_bits of @p data (for SDTI 3
  * after a length indicator of @p length_bits, which may claim more than follows), then with @p fcs an FCS over the
  * DM-SDU elements before it (clause 9.7.10, annex B). Bit @p flip of the DM-SDU, counted from its first element, is
  * flipped once the FCS is in (-1: none), as a bit error the channel CRC let through. Decoded as a DNB's SCH/F reaches
  * the decoder (tetra_dmo_log_dnb_pdu()). */
 static void
-send_dmo_sds(session* s, uint32_t src, uint32_t dst, uint32_t sdti, const uint8_t* data, int data_bits, int length_bits,
-             int fcs, int flip) {
+send_dmo_sds_mni(session* s, uint32_t mni, uint32_t src, uint32_t dst, uint32_t sdti, const uint8_t* data,
+                 int data_bits, int length_bits, int fcs, int flip) {
     ttb_block b = {0};
-    ttb_put(&b, 0, 2);        /* MAC PDU type 00: DMAC-DATA */
-    ttb_put(&b, 0, 4);        /* fill bit, second half slot stolen, fragmentation and null PDU flags */
-    ttb_put(&b, 0, 2);        /* frame countdown */
-    ttb_put(&b, 0, 2);        /* air interface encryption state DM-1 */
-    ttb_put(&b, 0, 2);        /* destination address type: true SSI */
-    ttb_put(&b, dst, 24);     /* destination address */
-    ttb_put(&b, 0, 2);        /* source address type: true SSI */
-    ttb_put(&b, src, 24);     /* source address */
-    ttb_put(&b, 0x41901, 24); /* mobile network identity */
+    ttb_put(&b, 0, 2);    /* MAC PDU type 00: DMAC-DATA */
+    ttb_put(&b, 0, 4);    /* fill bit, second half slot stolen, fragmentation and null PDU flags */
+    ttb_put(&b, 0, 2);    /* frame countdown */
+    ttb_put(&b, 0, 2);    /* air interface encryption state DM-1 */
+    ttb_put(&b, 0, 2);    /* destination address type: true SSI */
+    ttb_put(&b, dst, 24); /* destination address */
+    ttb_put(&b, 0, 2);    /* source address type: true SSI */
+    ttb_put(&b, src, 24); /* source address */
+    ttb_put(&b, mni, 24); /* mobile network identity */
     ttb_put(&b, TETRA_DMO_MSG_SDS_UDATA, 5);
     ttb_put(&b, 0, 4); /* SDS time remaining */
     ttb_put(&b, 0, 1); /* SDS transaction type: stand-alone */
@@ -2523,6 +2692,13 @@ send_dmo_sds(session* s, uint32_t src, uint32_t dst, uint32_t sdti, const uint8_
         b.bits[sdu + flip] ^= 1u;
     }
     (void)tetra_dmo_log_dnb_pdu(b.bits, TTB_SCH_F_BITS, "SCH/F", s->opts, s->state);
+}
+
+/* send_dmo_sds_mni() on network 0x41901. */
+static void
+send_dmo_sds(session* s, uint32_t src, uint32_t dst, uint32_t sdti, const uint8_t* data, int data_bits, int length_bits,
+             int fcs, int flip) {
+    send_dmo_sds_mni(s, 0x41901u, src, dst, sdti, data, data_bits, length_bits, fcs, flip);
 }
 
 /* Direct mode short data whose FCS fails is discarded (EN 300 396-3 clauses 6.3.2 and 6.3.4): no notice, and nothing of
@@ -2579,6 +2755,16 @@ test_direct_mode_short_data_repeats(void) {
     assert(history->push_seq > pushes);
     pushes = history->push_seq;
     send_dmo_sds(&s, 200u, 300u, 0u, data, 16, 0, 0, -1);
+    assert(history->push_seq == pushes);
+    /* The same SSIs and message on a co-channel network (another MNI, with the destination SSI the called party's
+       TSI, EN 300 396-3 clause 8.5.2.1.1) are another message, noted too; its repeat is a repeat. */
+    send_dmo_sds_mni(&s, 0x41941u, 200u, 300u, 0u, data, 16, 0, 0, -1);
+    if (history->push_seq == pushes) {
+        DSD_FPRINTF(stderr, "FAIL another network's short data of the same SSIs was taken for a repeat\n");
+    }
+    assert(history->push_seq > pushes);
+    pushes = history->push_seq;
+    send_dmo_sds_mni(&s, 0x41941u, 200u, 300u, 0u, data, 16, 0, 0, -1);
     assert(history->push_seq == pushes);
 
     /* User defined data 4 (SDTI 3): the same first 64 bits, then other bits, or fewer. */
@@ -5110,6 +5296,8 @@ main(void) {
     test_direct_mode_reservation_retires_the_transmission();
     test_direct_mode_reservation_keeps();
     test_direct_mode_setup_names_the_master_by_network();
+    test_direct_mode_reservation_names_the_party();
+    test_direct_mode_pending_setup_keeps_its_party();
     test_direct_mode_short_data();
     test_direct_mode_short_data_fcs();
     test_direct_mode_short_data_repeats();

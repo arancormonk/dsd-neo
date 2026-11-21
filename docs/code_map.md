@@ -15009,11 +15009,14 @@ single "current call".
   even where neither names the other's parties (a clear call after an encrypted DM-2-C one, or the other way, and a
   DM-2-C one after a DM-2-A or DM-2-B one, which encrypt the air interface too). A call
   its set-up announced before any transmission began (DM-SETUP PRES, whose calling party's DM-CONNECT ACK starts the
-  traffic, clause 6.2; DM-GSETUP) takes the first transmission of its source as its own. DM-RESERVED
+  traffic, clause 6.2; DM-GSETUP) takes the first transmission of its own party as its own (`dmo_call_of_transmission()`
+  with `tetra_dmo_party_continues()`: a co-channel network's DM-OCCUPIED of the same SSIs opens a row of its own).
+  DM-RESERVED
   (`tetra_dmo_reservation()`, `dmo_reserved()`, `dmo_apply_reserved()`; EN 300 396-3 clauses 8.4.3.3, 8.6.2, 9.6.2,
-  9.6.15) is read from DSBs only and never opens traffic; for the call on the channel (its source address and MNI the
-  call's and its transmission's, clause 8.5.2.1.1, one rule for both, `tetra_dmo_same_party()`: co-channel networks may
-  share an SSI, so the same source under another MNI is another call's) one after a call transaction
+  9.6.15) is read from DSBs only and never opens traffic; for the call on the channel (from its master's party, one
+  rule for the call record and the transmission, `tetra_dmo_party_reserves()`: the source address of the same type,
+  clause 9.3.27, its MNI for a true SSI only, clause 8.5.2.1.1, and the same repeater or gateway, whose pseudo
+  addresses carry no MNI, table 22) one after a call transaction
   ends the transmission as its unheard DM-TX CEASED would (the canonical call ends as a terminator, the colour code and
   protection go), keeping the call record open for the reservation; reservation time remaining 0 sent in a frame 6, 12
   or 18 (`tetra_dmo_sync_h_t::sync_frame`) ends the call too, while 0 in another frame runs to the next one; a gateway
@@ -15031,9 +15034,10 @@ single "current call".
   class its DM-SETUP or DM-CONNECT ACK gave (`dmo_tx_crypt`, and the SCH/S security class itself, `dmo_tx_aie`: DM-2-A,
   DM-2-B and DM-2-C all encrypt the air interface, but are three classes), which its DM-OCCUPIED shall repeat (clause
   8.5.3): one that agrees confirms it, opening what an unread DMAC-SYNC sealed, one that contradicts it leaves the more
-  closed of the two (`dmo_apply_setup()`), and a set-up from another source (source address or MNI,
-  `tetra_dmo_same_party()`, EN 300 396-3 clause 8.5.2.1.1: the colour code seed holds only six MNI bits, so two
-  co-channel networks' masters of one SSI share it) or of another class, like a DM-2-C
+  closed of the two (`dmo_apply_setup()`), and a set-up from another party (`tetra_dmo_party` /
+  `tetra_dmo_party_continues()`: source address type and address, MNI wherever both carry one, repeater or gateway,
+  EN 300 396-3 clause 8.5.2.1.1; the colour code seed holds only six MNI bits, so two co-channel networks' masters of
+  one SSI share it) or of another class, like a DM-2-C
   DMAC-SYNC after a transmission of any other class, DM-2-A and DM-2-B included, starts the next transmission
   (`dmo_tx_seq`), so a DM-2-C one, which names no one, never goes on with the last one's source and destination. An
   unread DM-2-A or DM-2-B DMAC-SYNC only seals: its transmission's next DMAC-SYNC, whose addresses those classes leave
