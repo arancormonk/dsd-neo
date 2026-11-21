@@ -5398,6 +5398,39 @@ if(DSD_ENABLE_QT_UI)
         PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen"
     )
 
+    # Issue #902: the frontend's one local-day source, on a fake real clock, across midnight, sleeps, the app coming
+    # back on screen and the days time zones reshape (each case sets TZ itself). A QGuiApplication, so the real
+    # applicationStateChanged signal reaches it.
+    add_executable(
+        dsd-neo_test_ui_qt_local_day_watch
+        ui/test_ui_qt_local_day_watch.cpp
+        ${PROJECT_SOURCE_DIR}/src/ui/qt/local_day_watch.cpp
+    )
+    target_include_directories(
+        dsd-neo_test_ui_qt_local_day_watch
+        PRIVATE ${PROJECT_SOURCE_DIR}/include ${PROJECT_SOURCE_DIR}/src/ui/qt
+    )
+    target_link_libraries(
+        dsd-neo_test_ui_qt_local_day_watch
+        PRIVATE Qt6::Core Qt6::Gui
+    )
+    target_compile_definitions(
+        dsd-neo_test_ui_qt_local_day_watch
+        PRIVATE QT_NO_KEYWORDS
+    )
+    set_target_properties(
+        dsd-neo_test_ui_qt_local_day_watch
+        PROPERTIES AUTOMOC ON
+    )
+    add_test(
+        NAME UI_QT_LOCAL_DAY_WATCH
+        COMMAND dsd-neo_test_ui_qt_local_day_watch
+    )
+    set_tests_properties(
+        UI_QT_LOCAL_DAY_WATCH
+        PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen"
+    )
+
     # WP-D4 site grouping and saved-row provenance.
     add_executable(
         dsd-neo_test_ui_qt_site_groups

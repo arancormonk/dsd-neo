@@ -86,6 +86,7 @@ target_sources(
         signal_search_model.cpp
         known_frequency_index.cpp
         listen_pins.cpp # Issue #801
+        local_day_watch.cpp # Issue #902
         map_tile_cache.cpp # Issue #800
         map_tile_http.cpp # Issue #800
         map_tile_worker.cpp # Issue #800
