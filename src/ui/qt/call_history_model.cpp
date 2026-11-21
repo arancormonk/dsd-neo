@@ -36,6 +36,7 @@
 #include <dsd-neo/core/access_code.h>
 #include <dsd-neo/core/analog_mode.h>
 #include <dsd-neo/core/call_channel.h>
+#include <dsd-neo/core/call_state.h>
 #include <dsd-neo/core/crc_provenance.h>
 #include <dsd-neo/core/opts_fwd.h>
 #include <dsd-neo/core/position.h>
@@ -1225,12 +1226,15 @@ row_take_name(CallHistoryModel::Row& row, const Event_History* item) {
         row.name = QString::fromUtf8(item->service_label);
     } else if (item->t_name[0] != '\0') {
         row.name = QString::fromUtf8(item->t_name);
-    } else if (item->tgt_str[0] != '\0') {
+    } else if (dsd_call_target_text_is_name(item->systype, item->target_id, item->tgt_str)) {
         row.name = QString::fromUtf8(item->tgt_str);
     } else if (item->channel_label[0] != '\0') {
         /* No identity of its own: the channel it was heard on is what the
-         * operator recognises it by, and "Talkgroup 0" is not. */
+         * operator recognises it by, and "Talkgroup 0" is not. So for an
+         * NXDN Type-D group, whose "pp-iiii" text only spells its number. */
         row.name = QString::fromUtf8(item->channel_label);
+    } else if (item->tgt_str[0] != '\0') {
+        row.name = QString::fromUtf8(item->tgt_str); /* that spelling, past the channel */
     } else {
         row.name =
             item->systype == DSD_SYNC_ANALOG ? analog_fallback_name(item->analog_mode) : target_fallback_name(row);

@@ -16,6 +16,7 @@
 #include <dsd-neo/core/received_identity.h>
 #include <dsd-neo/core/safe_api.h>
 #include <dsd-neo/core/state_fwd.h>
+#include <dsd-neo/core/synctype_ids.h>
 #include <stddef.h>
 
 #include <stdint.h>
@@ -169,6 +170,23 @@ typedef struct {
     double start_wall;
     double observed_m;
 } dsd_call_observation;
+
+/**
+ * Whether a call's target text (dsd_call_snapshot::target_text, Event_History::tgt_str) is the call's own name, ranked
+ * above its group list name and the channel it was heard on. It is, for a target of text only (D-STAR, YSF, dPMR: no
+ * numeric target) and for a protocol that names a numeric target by text (an M17 callsign, its numeric target the
+ * encoded address; an EDACS AFS). An NXDN numeric target's text only spells that number, as an IDAS (Type-D) group
+ * "pp-iiii" under its prefix (issue #903): such a call is named, as a bare number is, by its list entry, else its
+ * channel, else the text. The Monitor headline and ended-call hold (call_view.c), the Qt history row
+ * (call_history_model.cpp) and the rdio-scanner tag (rdio_export.c) all rank by it.
+ */
+static inline int
+dsd_call_target_text_is_name(int protocol, uint64_t numeric_target, const char* target_text) {
+    if (target_text == NULL || target_text[0] == '\0') {
+        return 0;
+    }
+    return numeric_target == 0U || !DSD_SYNC_IS_NXDN(protocol);
+}
 
 static inline dsd_call_observation
 dsd_call_observation_data(int protocol, uint8_t slot, uint64_t source_id, uint64_t target_id) {

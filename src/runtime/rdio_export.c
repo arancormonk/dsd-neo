@@ -4,6 +4,7 @@
  */
 
 #include <ctype.h>
+#include <dsd-neo/core/call_state.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/synctype_ids.h>
@@ -862,14 +863,17 @@ dsd_rdio_meta_fields_from_event(const dsd_opts* opts, const Event_History* event
         out->talkgroup_tag = event->service_label;
     } else if (event->t_name[0] != '\0') {
         out->talkgroup_tag = event->t_name;
-    } else if (event->tgt_str[0] != '\0') {
+    } else if (dsd_call_target_text_is_name(event->systype, event->target_id, event->tgt_str)) {
         out->talkgroup_tag = event->tgt_str;
     } else if (event->channel_label[0] != '\0') {
         // A numeric talkgroup with no name of its own -- no CSV entry for it -- heard while the
         // receiver was parked on a named channel. That name is what the operator would recognise
         // the upload by; "GROUP" is not. A row with no talkgroup at all never gets here:
-        // dsd_rdio_write_trunk_recorder_meta() skips those outright.
+        // dsd_rdio_write_trunk_recorder_meta() skips those outright. So is an NXDN Type-D group,
+        // whose "pp-iiii" text only spells its number (dsd_call_target_text_is_name()).
         out->talkgroup_tag = event->channel_label;
+    } else if (event->tgt_str[0] != '\0') {
+        out->talkgroup_tag = event->tgt_str; // that spelling, past the channel
     } else if (event->gi == 1) {
         out->talkgroup_tag = "PRIVATE";
     } else if (event->gi == 0) {

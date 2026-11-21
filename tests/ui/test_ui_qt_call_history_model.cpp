@@ -572,6 +572,33 @@ test_marked_and_serviced_notice_titles(void) {
     expect("search finds the serviced notices by their service", view.count() == 2);
 }
 
+/* Issue #903: an NXDN Type-D group's "pp-iiii" text only spells its numeric talkgroup, so the row is named as a bare
+ * number is (dsd_call_target_text_is_name()): its list name, else the channel it was heard on, else the text. A text
+ * target with no number and an M17 callsign keep naming their rows over the channel. */
+void
+test_type_d_text_yields_to_names(void) {
+    resetStorage();
+    RingFixture ring;
+    CallHistoryModel model;
+    const time_t when = 1754500400;
+    ring.commit(0, 5, 100, when, when + 3, "03-0005", "", "Fire Dispatch")->systype = DSD_SYNC_NXDN_POS;
+    ring.commit(0, 5, 101, when + 100, when + 103, "03-0005", "Metro Fire", "Fire Dispatch")->systype =
+        DSD_SYNC_NXDN_POS;
+    ring.commit(0, 5, 102, when + 200, when + 203, "03-0005", "", "")->systype = DSD_SYNC_NXDN_POS;
+    ring.commit(0, 0, 103, when + 300, when + 303, "CQCQCQ", "", "Fire Dispatch")->systype = DSD_SYNC_DSTAR_HD_POS;
+    ring.commit(0, 123456, 104, when + 400, when + 403, "N0CALL", "", "Fire Dispatch")->systype = DSD_SYNC_M17_LSF_POS;
+    model.refresh(ring.state);
+    QStringList names;
+    for (int i = 0; i < model.count(); i++) {
+        names << model.data(model.index(i), CallHistoryModel::NameRole).toString();
+    }
+    expect("type-d rows: five rows", model.count() == 5);
+    expect("type-d rows: channel, list name, text; text and callsign keep theirs",
+           names.contains(QStringLiteral("Fire Dispatch")) && names.contains(QStringLiteral("Metro Fire"))
+               && names.contains(QStringLiteral("03-0005")) && names.contains(QStringLiteral("CQCQCQ"))
+               && names.contains(QStringLiteral("N0CALL")));
+}
+
 /* The scan channel a row was heard on rides its own role. The system stays the
  * saved entry the session runs, for labelled and unlabelled rows alike, so the
  * "All systems" pill keeps offering what the Home screen lists and never a
@@ -7743,6 +7770,7 @@ main(int argc, char** argv) {
     test_labelled_notice_name_drops_its_own_channel_prefix();
     test_marked_and_serviced_notice_titles();
     test_channel_label_is_its_own_role();
+    test_type_d_text_yields_to_names();
     test_target_ids_read_as_their_names();
     test_target_names_outlive_their_session();
     test_reacquisition_merge_updates_in_place();

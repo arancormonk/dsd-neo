@@ -857,10 +857,10 @@ nxdn_sdcall_header(const dsd_opts* opts, dsd_state* state, const uint8_t* Messag
     uint16_t source_ch = 0U;
     uint16_t target_ch = 0U;
     if (idas != 0U) {
-        source_ch = (uint16_t)((source >> 11) & 0x1FU);
-        target_ch = (uint16_t)((target >> 11) & 0x1FU);
-        source &= 0x7FFU;
-        target &= 0x7FFU;
+        source_ch = nxdn_typed_prefix(source);
+        target_ch = nxdn_typed_prefix(target);
+        source = nxdn_typed_low_id(source);
+        target = nxdn_typed_low_id(target);
     }
 
     char duplex[32];
@@ -976,10 +976,10 @@ nxdn_dcall_header_parse(struct nxdn_dcall_header_info* info, dsd_state* state, c
     info->tx_frag_count = (uint16_t)convert_bits_into_output(Message + 79, 9);
 
     if (info->idas != 0U) {
-        info->source_ch = (uint16_t)((info->source >> 11) & 0x1FU);
-        info->target_ch = (uint16_t)((info->target >> 11) & 0x1FU);
-        info->source &= 0x7FFU;
-        info->target &= 0x7FFU;
+        info->source_ch = nxdn_typed_prefix(info->source);
+        info->target_ch = nxdn_typed_prefix(info->target);
+        info->source = nxdn_typed_low_id(info->source);
+        info->target = nxdn_typed_low_id(info->target);
     }
 
     if (info->cipher > 1U && message_bits >= (NXDN_DCALL_IV_OFFSET_BITS + NXDN_DCALL_IV_PRESENCE_BITS)) {

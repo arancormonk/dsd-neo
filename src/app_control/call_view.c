@@ -106,15 +106,16 @@ staged_group_name(const dsd_state* state, uint8_t slot, uint64_t tg_id, char* ou
  * @brief Copy the target label the event layer cached on an ended call's epoch (issue #773 B11).
  *
  * Once the call's row commits, the staged row no longer names it, so the ended-call hold reads the label cached on the
- * epoch when the row committed -- only for the numeric target it was cached for (target_label_id). A text-only target
- * (D-STAR, YSF, M17, dPMR: no numeric target, @p tg_id 0) names the call itself and takes none; a numeric target shown
- * as text (an NXDN Type-D "pp-iiii" group, issue #903) keeps its ID's label, as it does while live.
+ * epoch when the row committed -- only for the numeric target it was cached for (target_label_id). A target whose text
+ * names the call (dsd_call_target_text_is_name(): D-STAR, YSF and dPMR text, an M17 callsign) takes none; a numeric
+ * target its text only spells (an NXDN Type-D "pp-iiii" group, issue #903) keeps its ID's label, as it does live.
  *
  * @return Non-zero when a name was written.
  */
 static int
 cached_group_name(const dsd_call_snapshot* call, uint64_t tg_id, char* out, size_t out_size) {
-    if (call->phase != DSD_CALL_PHASE_ENDED || tg_id == 0U || call->target_label_id != tg_id
+    if (call->phase != DSD_CALL_PHASE_ENDED || tg_id == 0U
+        || dsd_call_target_text_is_name(call->protocol, tg_id, call->target_text) || call->target_label_id != tg_id
         || call->target_label[0] == '\0') {
         return 0;
     }
@@ -224,7 +225,12 @@ slot_call_name(const dsd_state* state, uint8_t slot, const dsd_call_snapshot* ca
         DSD_SNPRINTF(out->name, sizeof(out->name), "%s", out->tg_label);
         return;
     }
-    const char* fallback = (call->target_text[0] == '\0' && out->channel[0] != '\0') ? out->channel : out->tg_text;
+    /* A target whose text names the call heads it; a numeric one (its text, if any, only spells the number) yields to
+       the channel (dsd_call_target_text_is_name()). */
+    const char* fallback =
+        (!dsd_call_target_text_is_name(call->protocol, out->tg_id, call->target_text) && out->channel[0] != '\0')
+            ? out->channel
+            : out->tg_text;
     DSD_SNPRINTF(out->name, sizeof(out->name), "%s", fallback);
 }
 

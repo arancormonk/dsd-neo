@@ -1548,6 +1548,51 @@ test_sidecar_service_name_keeps_numeric_identity(void) {
     return rc;
 }
 
+// Issue #903: an NXDN Type-D group's "pp-iiii" text only spells its numeric talkgroup, so it tags the upload as a bare
+// number does: its list name, else the channel it was heard on, else the text. An M17 callsign keeps its own tag.
+static int
+test_sidecar_type_d_text_yields_to_names(void) {
+    static const struct {
+        int systype;
+        const char* tgt_str;
+        const char* t_name;
+        const char* channel;
+        const char* want;
+    } cases[] = {
+        {DSD_SYNC_NXDN_POS, "03-0005", "", "Fire Dispatch", "Fire Dispatch"},
+        {DSD_SYNC_NXDN_POS, "03-0005", "Metro Fire", "Fire Dispatch", "Metro Fire"},
+        {DSD_SYNC_NXDN_POS, "03-0005", "", "", "03-0005"},
+        {DSD_SYNC_M17_LSF_POS, "N0CALL", "", "Fire Dispatch", "N0CALL"},
+    };
+
+    int rc = 0;
+    for (size_t i = 0U; i < sizeof cases / sizeof cases[0]; i++) {
+        Event_History_I* hist = calloc(1, sizeof(*hist));
+        if (!hist) {
+            return 1;
+        }
+        Event_History* item = &hist->Event_History_Items[0];
+        item->systype = cases[i].systype;
+        item->target_id = 5;
+        item->source_id = 100;
+        item->gi = 0;
+        item->event_time = (time_t)1700000600;
+        DSD_SNPRINTF(item->tgt_str, sizeof item->tgt_str, "%s", cases[i].tgt_str);
+        DSD_SNPRINTF(item->t_name, sizeof item->t_name, "%s", cases[i].t_name);
+        DSD_SNPRINTF(item->channel_label, sizeof item->channel_label, "%s", cases[i].channel);
+        char body[4096];
+        char want[128];
+        DSD_SNPRINTF(want, sizeof want, "\"talkgroup_tag\": \"%s\"", cases[i].want);
+        if (export_sidecar_body(hist, 1, 0, 0, body, sizeof body) != 0 || !strstr(body, want)
+            || !strstr(body, "\"talkgroup\": 5")) {
+            DSD_FPRINTF(stderr, "case %zu: want %s\n%s\n", i, want, body);
+            rc = 1;
+        }
+        free(hist);
+    }
+    return rc;
+}
+
 // The sidecar's freq is the frequency the call was heard on (Event_History::freq_hz). A row's channel is a trunk
 // channel number, an LCN or a dPMR colour code, never Hz, and must not be read as one even when it is large enough to
 // pass the 1 MHz floor. A frequency that does not fit the field, or sits below the floor, is reported as 0.
@@ -3106,6 +3151,7 @@ main(void) {
     rc |= test_sidecar_escapes_strings_and_tgt_fallback();
     rc |= test_sidecar_private_fallback_and_malformed_wav_duration();
     rc |= test_sidecar_channel_label_fallback();
+    rc |= test_sidecar_type_d_text_yields_to_names();
     rc |= test_sidecar_freq_comes_from_the_row_frequency();
     rc |= test_sidecar_start_time_sources();
     rc |= test_analog_sidecar_fields();
