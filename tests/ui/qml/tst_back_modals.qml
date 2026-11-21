@@ -119,6 +119,7 @@ Item {
             prefs.backgroundListening = oldBackgroundListening;
             prefs.lastStartedKind = "";
             prefs.lastStartedUid = "";
+            prefs.compactView = false;
             testContext.setScanTestUsb(false, false);
             testContext.useLifecycleHost(false);
             while (savedSystems.count)
@@ -695,7 +696,7 @@ Item {
         function test_session_menu_routes_data() {
             var rows = [];
             for (var height of [900, 440]) {
-                for (var text of ["Sites", "Radio", "Spectrum", "Talkgroups", "Activity", "Map", "History", "Settings", "Diagnostics", "Edit saved system", "Cancel"])
+                for (var text of ["Sites", "Radio", "Spectrum", "Talkgroups", "Activity", "Map", "History", "Compact view", "Settings", "Diagnostics", "Edit saved system", "Cancel"])
                     rows.push({tag: text + "-" + height, text: text, height: height});
             }
             return rows;
@@ -717,7 +718,7 @@ Item {
             var menu = item("sessionMenu");
             monitor.openSessionMenu();
             tryCompare(menu, "visible", true);
-            compare(menu.actions.length, 10);
+            compare(menu.actions.length, 11);
             var button = visualChild(menu, function (entry) {
                 return entry.text === data.text && typeof entry.clicked === "function";
             });
@@ -732,6 +733,10 @@ Item {
                 tryVerify(function () { return scroll.contentY > previousY; });
                 tryCompare(scroll, "moving", false);
                 verify(menu.visible, "dragging must not activate a destination");
+                // The drag flings the sheet to its end, which on a menu this tall (issue #901 added Compact view) is
+                // past a row in its middle: come back to the row, as a shorter drag would have stopped on it.
+                if (button.mapToItem(scroll, 0, 0).y < 0)
+                    scroll.contentY += button.mapToItem(scroll, 0, 0).y;
             }
             verify(button.mapToItem(scroll, 0, 0).y >= 0);
             verify(button.mapToItem(scroll, 0, button.height).y <= scroll.height);
@@ -754,6 +759,10 @@ Item {
             }
             if (data.text === "History")
                 compare(app.sessionDestination, "history");
+            if (data.text === "Compact view") {
+                verify(prefs.compactView, "Compact view turns compact view on");
+                prefs.compactView = false;
+            }
             if (data.text === "Settings")
                 compare(app.sessionDestination, "settings");
             if (data.text === "Diagnostics")
@@ -766,9 +775,9 @@ Item {
             app.sessionRow = -1;
             testContext.setMetric("radioInput", false);
             menu.open();
-            // Talkgroups, Activity, Map (issue #800), History, Settings and Diagnostics: none needs a radio or a
-            // saved system.
-            compare(menu.actions.length, 6);
+            // Talkgroups, Activity, Map (issue #800), History, Compact view (issue #901), Settings and Diagnostics:
+            // none needs a radio or a saved system.
+            compare(menu.actions.length, 7);
             verify(Ui.Navigation.back(app));
             verify(!menu.visible);
         }

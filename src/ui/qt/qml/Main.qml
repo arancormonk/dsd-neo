@@ -2774,6 +2774,11 @@ Window {
             // Issue #800: every protocol can carry positions, so always offered.
             items.push({text: qsTr("Map"), key: "map", objectName: "sessionMenuMap"});
             items.push({text: qsTr("History"), key: "history", objectName: "sessionMenuHistory"});
+            // Issue #901: the Settings switch, one tap from the session it changes. Its state is text, not a
+            // function: a new function each time the metrics re-run this list would make it differ from the last
+            // and rebuild every row of the closed menu on each tick.
+            items.push({text: qsTr("Compact view"), key: "compactView", objectName: "sessionMenuCompactView",
+                description: prefs.compactView ? qsTr("On") : qsTr("Off")});
             items.push({text: qsTr("Settings"), key: "settings", objectName: "sessionMenuSettings"});
             items.push({text: qsTr("Diagnostics"), key: "diagnostics", objectName: "sessionMenuDiagnostics"});
             if (mainRoot.sessionRow >= 0)
@@ -2800,6 +2805,8 @@ Window {
                 mainRoot.diagnosticsOpen = true;
             else if (key === "map")
                 mainRoot.openMap();
+            else if (key === "compactView")
+                prefs.compactView = !prefs.compactView;
             else if (key === "edit" && mainRoot.sessionRow >= 0) {
                 wizard.openForEdit(mainRoot.sessionRow);
                 mainRoot.wizardOpen = true;

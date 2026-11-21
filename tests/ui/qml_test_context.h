@@ -7059,6 +7059,8 @@ class Setup : public QObject {
         prefs[QStringLiteral("systemsSort")] = QStringLiteral("added");
         /* Issue #830: Android's picker first, as on a fresh install. */
         prefs[QStringLiteral("chooseFilesInApp")] = false;
+        /* Issue #901: compact view off, as on a fresh install. */
+        prefs[QStringLiteral("compactView")] = false;
         /* RadioReference account: empty on purpose, so the screen's first state
          * is the credentials gate a fresh install shows. This map answers reads
          * only -- it is a plain QVariantMap, not the production AppPrefs, so QML
@@ -7653,6 +7655,8 @@ class Setup : public QObject {
         /* Issue #646: the Listen tab too, on the same shared file; resetListenSection() between cases. */
         app_prefs->setListenSection(QStringLiteral("systems"));
         app_prefs->setSystemsSort(QStringLiteral("added"));
+        /* Issue #901: and compact view off, as on a fresh install, whatever a test file before this one left. */
+        app_prefs->setCompactView(false);
         ctx->setContextProperty(QStringLiteral("listenPins"),
                                 new dsd_qt::ListenPins(app_prefs, saved_systems, scan_lists, engine));
         /* Listen's saved-system cards, the production model over the same stores; resetSavedSystemCards() between

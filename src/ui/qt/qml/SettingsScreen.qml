@@ -455,8 +455,9 @@ Item {
 
             // APPEARANCE
             UiPanel {
+                objectName: "settingsAppearanceCard"
                 width: parent.width
-                height: appearanceColumn.height + 2 * Theme.cardPadding
+                height: appearanceColumn.height + Theme.cardPadding + 4
 
                 Column {
                     id: appearanceColumn
@@ -464,33 +465,52 @@ Item {
                     anchors.left: parent.left
                     anchors.right: parent.right
                     anchors.top: parent.top
-                    anchors.margins: Theme.cardPadding
-                    spacing: 12
+                    anchors.topMargin: Theme.cardPadding
+                    spacing: 0
 
-                    MicroLabel {
-                        objectName: "settingsAppearanceHeader"
-                        width: parent.width
-                        wrapMode: Text.Wrap
-                        text: qsTr("Appearance")
-                    }
+                    // Inset by the card's padding; the toggle row below brings its own.
+                    Column {
+                        x: Theme.cardPadding
+                        width: parent.width - 2 * Theme.cardPadding
+                        spacing: 12
 
-                    SegmentedControl {
-                        width: parent.width
-                        model: [qsTr("System"), qsTr("Light"), qsTr("Dark")]
-                        currentIndex: prefs.appearance
-                        onSelected: function (index) {
-                            prefs.appearance = index;
+                        MicroLabel {
+                            objectName: "settingsAppearanceHeader"
+                            width: parent.width
+                            wrapMode: Text.Wrap
+                            text: qsTr("Appearance")
+                        }
+
+                        SegmentedControl {
+                            width: parent.width
+                            model: [qsTr("System"), qsTr("Light"), qsTr("Dark")]
+                            currentIndex: prefs.appearance
+                            onSelected: function (index) {
+                                prefs.appearance = index;
+                            }
+                        }
+
+                        ReadableText {
+                            objectName: "settingsAppearanceNote"
+                            width: parent.width
+                            visible: prefs.appearance === 0
+                            text: qsTr("Follows your phone's dark mode schedule.")
+                            font.family: Theme.sans
+                            font.pixelSize: Theme.fontSize(12)
+                            color: Theme.textSubdued
+                            wrapMode: Text.Wrap
                         }
                     }
 
-                    ReadableText {
-                        width: parent.width
-                        visible: prefs.appearance === 0
-                        text: qsTr("Follows your phone's dark mode schedule.")
-                        font.family: Theme.sans
-                        font.pixelSize: Theme.fontSize(12)
-                        color: Theme.textSubdued
-                        wrapMode: Text.Wrap
+                    // Issue #901: denser rows across the app, so more fit on the screen.
+                    ToggleRow {
+                        objectName: "settingsCompactView"
+                        title: qsTr("Compact view")
+                        subtitle: qsTr("Fit more systems, scan lists and calls on the screen.")
+                        checked: prefs.compactView
+                        onToggled: function (state) {
+                            prefs.compactView = state;
+                        }
                     }
                 }
             }
