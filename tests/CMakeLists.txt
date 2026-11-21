@@ -14431,6 +14431,7 @@ add_executable(
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_trunk_sm.c
     ${PROJECT_SOURCE_DIR}/tests/test_support/dmr_carrier_leave_stubs.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_csbk.c
+    ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_abs_params.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_t3_channels.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_t3_chan_learn.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_reason.c
@@ -14484,6 +14485,7 @@ add_executable(
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_trunk_sm.c
     ${PROJECT_SOURCE_DIR}/tests/test_support/dmr_carrier_leave_stubs.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_csbk.c
+    ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_abs_params.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_t3_channels.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_t3_chan_learn.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_reason.c
@@ -14532,6 +14534,7 @@ add_executable(
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_trunk_sm.c
     ${PROJECT_SOURCE_DIR}/tests/test_support/dmr_carrier_leave_stubs.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_csbk.c
+    ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_abs_params.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_t3_channels.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_t3_chan_learn.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_reason.c
@@ -14584,6 +14587,7 @@ add_executable(
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_trunk_sm.c
     ${PROJECT_SOURCE_DIR}/tests/test_support/dmr_carrier_leave_stubs.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_csbk.c
+    ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_abs_params.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_t3_channels.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_t3_chan_learn.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_reason.c
@@ -17495,13 +17499,17 @@ add_executable(
 )
 target_include_directories(
     dsd-neo_test_dmr_grant_policy
-    PRIVATE ${PROJECT_SOURCE_DIR}/include
+    PRIVATE ${PROJECT_SOURCE_DIR}/include ${PROJECT_SOURCE_DIR}/src/protocol/dmr
 )
 target_link_libraries(dsd-neo_test_dmr_grant_policy PRIVATE dsd-neo_proto_dmr)
 add_test(NAME DMR_GRANT_POLICY COMMAND dsd-neo_test_dmr_grant_policy)
 
 # DMR Tier III channel provenance: one over-the-air writer, origins, network change, notices (discussion #900 F2)
-add_executable(dsd-neo_test_dmr_t3_channels protocol/dmr/test_dmr_t3_channels.c)
+add_executable(
+    dsd-neo_test_dmr_t3_channels
+    protocol/dmr/test_dmr_t3_channels.c
+    test_support/dmr_bptc_test_encoder.c
+)
 target_include_directories(
     dsd-neo_test_dmr_t3_channels
     PRIVATE ${PROJECT_SOURCE_DIR}/include ${PROJECT_SOURCE_DIR}/src/protocol/dmr

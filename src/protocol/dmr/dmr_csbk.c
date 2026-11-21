@@ -50,6 +50,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
+#include "dmr_abs_params.h"
 #include "dmr_call_channel.h"
 #include "dmr_crc_provenance.h"
 #include "dmr_reason.h"
@@ -217,23 +218,38 @@ dmr_cspdu_pf0_should_skip_call(const dsd_opts* opts, int* csbk_o, int* data_call
     return (opts->trunk_tune_private_calls == 0 && *csbk_o != 49) ? 1 : 0;
 }
 
-static uint16_t
-dmr_cspdu_pf0_parse_absolute_grant(dsd_opts* opts, dsd_state* state, uint8_t cs_pdu_bits[], long int* freq) {
-    uint8_t mbc_cdeftype = (uint8_t)convert_bits_into_output(&cs_pdu_bits[112], 4);
-    unsigned long long int mbc_cdefparms = (unsigned long long int)convert_bits_into_output(&cs_pdu_bits[118], 58);
-    if (mbc_cdeftype != 0) {
-        DSD_FPRINTF(stderr, "\n  MBC Channel Grant - Unknown Parms: %015llX", mbc_cdefparms);
+/* The absolute parameters of the PDU being handled (dmr_abs_params_decode()), or 0 with the reason printed: a reserved
+   Cdeftype, or no usable frequency (no single checked continuation, or one outside Table C.7). */
+static int
+dmr_cspdu_abs_params(const uint8_t cs_pdu_bits[], dmr_abs_params* ap) {
+    if (dmr_abs_params_decode(cs_pdu_bits, dmr_cspdu_current_shape(), ap)) {
+        return 1;
+    }
+    if (ap->cdeftype != 0U) {
+        DSD_FPRINTF(stderr, "\n  MBC Absolute Parameters - Unknown CdefParms: %015llX",
+                    (unsigned long long int)convert_bits_into_output(&cs_pdu_bits[118], 58));
+    } else {
+        DSD_FPRINTF(stderr, "\n  MBC Absolute Parameters missing or out of range;");
+    }
+    return 0;
+}
+
+/* An absolute grant (LPCN 0xFFF): its frequency in @p freq and the LPCN its CdefParms define in @p chan (0 or 4095
+   name no channel). 0 when its parameters are unusable: then it names no frequency and is neither shown nor followed. */
+static int
+dmr_cspdu_pf0_parse_absolute_grant(dsd_opts* opts, dsd_state* state, uint8_t cs_pdu_bits[], long int* freq,
+                                   uint16_t* chan) {
+    dmr_abs_params ap;
+    if (!dmr_cspdu_abs_params(cs_pdu_bits, &ap)) {
         return 0;
     }
-
-    uint16_t mbc_lpchannum = (uint16_t)convert_bits_into_output(&cs_pdu_bits[118], 12);
-    uint16_t mbc_abs_rx_int = (uint16_t)convert_bits_into_output(&cs_pdu_bits[153], 10);
-    uint16_t mbc_abs_rx_step = (uint16_t)convert_bits_into_output(&cs_pdu_bits[163], 13);
     DSD_FPRINTF(stderr, "\n");
-    DSD_FPRINTF(stderr, "  RX APCN: %04d; RX INT: %d; RX STEP: %d;", mbc_lpchannum, mbc_abs_rx_int, mbc_abs_rx_step);
-    *freq = (mbc_abs_rx_int * 1000000L) + (mbc_abs_rx_step * 125L);
-    (void)dmr_csbk_learn_channel(opts, state, mbc_lpchannum, *freq, 0);
-    return mbc_lpchannum;
+    DSD_FPRINTF(stderr, "  RX APCN: %04d; RX INT: %ld; RX STEP: %ld;", ap.chan, ap.rx_hz / 1000000L,
+                (ap.rx_hz % 1000000L) / 125L);
+    *freq = ap.rx_hz;
+    *chan = ap.chan;
+    (void)dmr_csbk_learn_channel(opts, state, ap.chan, ap.rx_hz, 0);
+    return 1;
 }
 
 static void
@@ -267,16 +283,18 @@ dmr_cspdu_pf0_print_channel_kind(uint16_t lpchannum) {
     }
 }
 
-static uint16_t
+/* The grant's frequency in @p freq, and for the absolute escape the LPCN its CdefParms define in @p mbc_lpchannum.
+   0 for an absolute grant whose parameters are unusable. */
+static int
 dmr_cspdu_pf0_resolve_frequency(dsd_opts* opts, dsd_state* state, uint8_t cs_pdu_bits[], uint16_t lpchannum,
-                                long int* freq) {
+                                long int* freq, uint16_t* mbc_lpchannum) {
     if (lpchannum == 0xFFF) {
-        return dmr_cspdu_pf0_parse_absolute_grant(opts, state, cs_pdu_bits, freq);
+        return dmr_cspdu_pf0_parse_absolute_grant(opts, state, cs_pdu_bits, freq, mbc_lpchannum);
     }
     if (lpchannum != 0) {
         *freq = state->trunk_chan_map[lpchannum];
     }
-    return 0;
+    return 1;
 }
 
 /* The grant's call channel, the one value the trunk state machine, the call and the policy route all name: its LPCN, or
@@ -391,7 +409,10 @@ dmr_cspdu_pf0_handle_grants(dsd_opts* opts, dsd_state* state, uint8_t cs_pdu_bit
     }
     dmr_gateway_identifier(source, target);
 
-    uint16_t mbc_lpchannum = dmr_cspdu_pf0_resolve_frequency(opts, state, cs_pdu_bits, lpchannum, &freq);
+    uint16_t mbc_lpchannum = 0;
+    if (!dmr_cspdu_pf0_resolve_frequency(opts, state, cs_pdu_bits, lpchannum, &freq, &mbc_lpchannum)) {
+        return;
+    }
     dmr_cspdu_pf0_print_frequency(lpchannum, freq);
 
     dmr_cspdu_pf0_publish_active_grant(state, lcn, lpchannum, mbc_lpchannum, freq, target, source, csbk_o, st2);
@@ -409,13 +430,10 @@ static void
 dmr_cspdu_pf0_move_resolve_freq(dsd_opts* opts, dsd_state* state, uint8_t cs_pdu_bits[], uint16_t* move_lpcn,
                                 long int* move_freq) {
     if (*move_lpcn == 0xFFF) {
-        uint8_t mbc_cdeftype = (uint8_t)convert_bits_into_output(&cs_pdu_bits[112], 4);
-        if (mbc_cdeftype == 0) {
-            uint16_t mbc_lpchannum = (uint16_t)convert_bits_into_output(&cs_pdu_bits[118], 12);
-            uint16_t mbc_abs_rx_int = (uint16_t)convert_bits_into_output(&cs_pdu_bits[153], 10);
-            uint16_t mbc_abs_rx_step = (uint16_t)convert_bits_into_output(&cs_pdu_bits[163], 13);
-            *move_lpcn = mbc_lpchannum;
-            *move_freq = (mbc_abs_rx_int * 1000000L) + (mbc_abs_rx_step * 125L);
+        dmr_abs_params ap;
+        if (dmr_cspdu_abs_params(cs_pdu_bits, &ap)) {
+            *move_lpcn = ap.chan;
+            *move_freq = ap.rx_hz;
             (void)dmr_csbk_learn_channel(opts, state, *move_lpcn, *move_freq, 0);
         }
         return;
@@ -1170,6 +1188,27 @@ dmr_cspdu_pf0_c_bcast_print_unknown_cdef(const dmr_cspdu_pf0_c_bcast_fields* f, 
     DSD_FPRINTF(stderr, " RES2: %X;", f->mbc_res2);
 }
 
+/* The BC_AP absolute parameters of the C_BCAST being handled (dmr_abs_params_decode()), printed (@p apcn: as the APCN),
+   in @p abs_freqs. 0 when unusable, with the reason printed (a reserved Cdeftype as before, @p include_cc its CC). */
+static int
+dmr_cspdu_pf0_c_bcast_abs(const uint8_t cs_pdu_bits[], const dmr_cspdu_pf0_c_bcast_fields* f, int include_cc, int apcn,
+                          dmr_cspdu_pf0_c_bcast_abs_freqs* abs_freqs) {
+    dmr_abs_params ap;
+    if (!dmr_abs_params_decode(cs_pdu_bits, dmr_cspdu_current_shape(), &ap)) {
+        if (ap.cdeftype != 0U) {
+            dmr_cspdu_pf0_c_bcast_print_unknown_cdef(f, include_cc);
+        } else {
+            DSD_FPRINTF(stderr, " MBC Absolute Parameters missing or out of range;");
+        }
+        return 0;
+    }
+    dmr_cspdu_pf0_c_bcast_parse_abs_freqs(cs_pdu_bits, abs_freqs);
+    abs_freqs->freqr = ap.rx_hz;
+    abs_freqs->freqt = ap.tx_hz;
+    dmr_cspdu_pf0_c_bcast_print_abs_freqs(abs_freqs, apcn);
+    return 1;
+}
+
 /*
  * Ceiling on frequencies learned from site broadcasts. Held at the embedded slot count so
  * over-the-air data can never drive a heap allocation; the reserve call below keeps the
@@ -1365,14 +1404,10 @@ dmr_cspdu_pf0_c_bcast_handle_chan_freq(dsd_opts* opts, dsd_state* state, const u
         DSD_FPRINTF(stderr, " LPCN: Null;");
         return;
     }
-    if (f->mbc_cdeftype != 0) {
-        dmr_cspdu_pf0_c_bcast_print_unknown_cdef(f, 0);
+    dmr_cspdu_pf0_c_bcast_abs_freqs abs_freqs;
+    if (!dmr_cspdu_pf0_c_bcast_abs(cs_pdu_bits, f, 0, f->a_channel == 0xFFF, &abs_freqs)) {
         return;
     }
-
-    dmr_cspdu_pf0_c_bcast_abs_freqs abs_freqs;
-    dmr_cspdu_pf0_c_bcast_parse_abs_freqs(cs_pdu_bits, &abs_freqs);
-    dmr_cspdu_pf0_c_bcast_print_abs_freqs(&abs_freqs, f->a_channel == 0xFFF);
     dmr_cspdu_pf0_c_bcast_maybe_store_channel(opts, state, f->a_channel, abs_freqs.freqr);
 }
 
@@ -1407,14 +1442,11 @@ dmr_cspdu_pf0_c_bcast_handle_vote_or_adjacent(dsd_opts* opts, dsd_state* state, 
     if (f->a_channel != 0xFFF) {
         return;
     }
-    if (f->mbc_cdeftype != 0) {
-        dmr_cspdu_pf0_c_bcast_print_unknown_cdef(f, f->a_type == 2);
-        return;
-    }
 
     dmr_cspdu_pf0_c_bcast_abs_freqs abs_freqs;
-    dmr_cspdu_pf0_c_bcast_parse_abs_freqs(cs_pdu_bits, &abs_freqs);
-    dmr_cspdu_pf0_c_bcast_print_abs_freqs(&abs_freqs, 1);
+    if (!dmr_cspdu_pf0_c_bcast_abs(cs_pdu_bits, f, f->a_type == 2, 1, &abs_freqs)) {
+        return;
+    }
     (void)dmr_csbk_learn_channel(opts, state, abs_freqs.lpchannum, abs_freqs.freqr, 1);
     const long cand[1] = {abs_freqs.freqr};
     dmr_sm_on_neighbor_update(opts, state, cand, 1);
@@ -2986,26 +3018,58 @@ dmr_cspdu_init_cc_anchor(const dsd_opts* opts, dsd_state* state) {
     }
 }
 
-//function for handling Control Signalling PDUs (CSBK, MBC) messages
-void
-dmr_cspdu(dsd_opts* opts, dsd_state* state, uint8_t cs_pdu_bits[], uint8_t cs_pdu[], uint32_t CRCCorrect,
-          uint32_t IrrecoverableErrors) {
-    if (opts == NULL || state == NULL || cs_pdu_bits == NULL || cs_pdu == NULL) {
-        return;
+/* Opcodes whose MBC form appends absolute parameters (CG_AP, MV_AP, BC_AP: TS 102 361-4 Tables 7.16, 7.18, 7.21):
+   C_BCAST, P_CLEAR, the channel grants and C_MOVE. Their handlers run whatever the feature set. */
+static int
+dmr_cspdu_appends_abs_params(int csbk_o) {
+    return csbk_o == 40 || csbk_o == 46 || (csbk_o >= 48 && csbk_o <= 57);
+}
+
+/* A PDU no handler may act on, refused before any of its effects (the control channel heartbeat and anchor included):
+   an MBC of more continuations than TS 102 361-1 §7.4.0 allows, or of an absolute-parameter opcode whose continuation
+   is not exactly one last block carrying its header's CSBKO; or an unprotected single-block channel grant naming the
+   absolute escape (LPCN 0xFFF "defines a Multi Block Control", so it has no appended block). Opcode 56 on MS-sourced
+   data is BS_Dwn_Act, not a grant. */
+static int
+dmr_cspdu_malformed(const dsd_state* state, const uint8_t cs_pdu_bits[], int csbk_o, int csbk_pf,
+                    const dmr_cspdu_shape* shape) {
+    if (shape->is_mbc) {
+        if (shape->continuations < 1U || shape->continuations > 3U) {
+            return 1;
+        }
+        return dmr_cspdu_appends_abs_params(csbk_o) && !dmr_abs_params_shape_ok(shape);
     }
+    if (csbk_pf != 0 || csbk_o < 48 || csbk_o > 56 || (csbk_o == 56 && state->synctype == DSD_SYNC_DMR_MS_DATA)) {
+        return 0;
+    }
+    return convert_bits_into_output(&cs_pdu_bits[16], 12) == 0xFFFU;
+}
 
-    int csbk_lb = 0;
-    int csbk_pf = 0;
-    int csbk_o = 0;
-    int csbk_fid = 0;
+static const dmr_cspdu_shape k_dmr_cspdu_single_shape = {0U, 0U, 0U, 0U, 0U};
 
-    csbk_lb = ((cs_pdu[0] & 0x80) >> 7);
-    csbk_pf = ((cs_pdu[0] & 0x40) >> 6);
-    csbk_o = cs_pdu[0] & 0x3F;
-    csbk_fid = cs_pdu[1]; //feature set id
-    UNUSED(csbk_lb);
+/* The shape of the PDU dmr_cspdu_ex() is dispatching; NULL outside one. Decoder thread only. */
+static const dmr_cspdu_shape* s_dmr_cspdu_shape;
+
+const dmr_cspdu_shape*
+dmr_cspdu_current_shape(void) {
+    return s_dmr_cspdu_shape != NULL ? s_dmr_cspdu_shape : &k_dmr_cspdu_single_shape;
+}
+
+static void
+dmr_cspdu_dispatch(dsd_opts* opts, dsd_state* state, uint8_t cs_pdu_bits[], uint8_t cs_pdu[], uint32_t CRCCorrect,
+                   uint32_t IrrecoverableErrors) {
+    int csbk_pf = ((cs_pdu[0] & 0x40) >> 6);
+    int csbk_o = cs_pdu[0] & 0x3F;
+    int csbk_fid = cs_pdu[1]; //feature set id
 
     csbk_pf = dmr_cspdu_apply_protect_flag_checks(IrrecoverableErrors, csbk_o, csbk_fid, csbk_pf);
+
+    if (dmr_cspdu_malformed(state, cs_pdu_bits, csbk_o, csbk_pf, dmr_cspdu_current_shape())) {
+        DSD_FPRINTF(stderr, "%s", KRED);
+        DSD_FPRINTF(stderr, "\n Malformed Control Signalling Block (CSBKO %02X); ignored", csbk_o);
+        DSD_FPRINTF(stderr, "%s", KNRM);
+        return;
+    }
 
     if (IrrecoverableErrors == 0 && CRCCorrect == 1) {
         dsd_trunk_recovery_note_protocol(state, DSD_TRUNK_RECOVERY_DMR);
@@ -3035,6 +3099,25 @@ dmr_cspdu(dsd_opts* opts, dsd_state* state, uint8_t cs_pdu_bits[], uint8_t cs_pd
     }
 
     DSD_FPRINTF(stderr, "%s", KNRM);
+}
+
+//function for handling Control Signalling PDUs (CSBK, MBC) messages
+void
+dmr_cspdu_ex(dsd_opts* opts, dsd_state* state, uint8_t cs_pdu_bits[], uint8_t cs_pdu[], uint32_t crc_correct,
+             uint32_t irrecoverable, const dmr_cspdu_shape* shape) {
+    if (opts == NULL || state == NULL || cs_pdu_bits == NULL || cs_pdu == NULL) {
+        return;
+    }
+    const dmr_cspdu_shape* const outer = s_dmr_cspdu_shape;
+    s_dmr_cspdu_shape = shape != NULL ? shape : &k_dmr_cspdu_single_shape;
+    dmr_cspdu_dispatch(opts, state, cs_pdu_bits, cs_pdu, crc_correct, irrecoverable);
+    s_dmr_cspdu_shape = outer;
+}
+
+void
+dmr_cspdu(dsd_opts* opts, dsd_state* state, uint8_t cs_pdu_bits[], uint8_t cs_pdu[], uint32_t CRCCorrect,
+          uint32_t IrrecoverableErrors) {
+    dmr_cspdu_ex(opts, state, cs_pdu_bits, cs_pdu, CRCCorrect, IrrecoverableErrors, NULL);
 }
 
 void

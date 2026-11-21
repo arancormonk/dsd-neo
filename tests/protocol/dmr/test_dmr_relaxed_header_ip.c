@@ -22,6 +22,7 @@
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
+#include "dmr_abs_params.h"
 #include "dmr_ars.h"
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/safe_api.h"
@@ -301,14 +302,15 @@ dmr_lrrp(dsd_opts* opts, dsd_state* state, uint16_t len, uint32_t source, uint32
 
 void
 // NOLINTNEXTLINE(misc-use-internal-linkage)
-dmr_cspdu(dsd_opts* opts, dsd_state* state, uint8_t* bits, uint8_t* bytes, uint32_t CRCCorrect,
-          uint32_t IrrecoverableErrors) {
+dmr_cspdu_ex(dsd_opts* opts, dsd_state* state, uint8_t* bits, uint8_t* bytes, uint32_t CRCCorrect,
+             uint32_t IrrecoverableErrors, const dmr_cspdu_shape* shape) {
     (void)opts;
     (void)state;
     (void)bits;
     (void)bytes;
     (void)CRCCorrect;
     (void)IrrecoverableErrors;
+    (void)shape;
 }
 
 void

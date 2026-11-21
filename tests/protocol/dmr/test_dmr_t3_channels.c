@@ -11,6 +11,8 @@
  */
 
 #include <assert.h>
+#include <dsd-neo/core/bit_packing.h>
+#include <dsd-neo/core/call_state.h>
 #include <dsd-neo/core/crc_provenance.h>
 #include <dsd-neo/core/events.h>
 #include <dsd-neo/core/opts.h>
@@ -22,11 +24,15 @@
 #include <dsd-neo/protocol/dmr/dmr.h>
 #include <dsd-neo/protocol/dmr/dmr_t3_channels.h>
 #include <dsd-neo/protocol/dmr/dmr_trunk_sm.h>
+#include <dsd-neo/protocol/dmr/dmr_utils_api.h>
+#include <dsd-neo/runtime/decode_clock.h>
 #include <dsd-neo/runtime/trunk_tuning_hooks.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
 
+#include "dmr_abs_params.h"
+#include "dmr_bptc_test_encoder.h"
 #include "dmr_t3_channels_internal.h"
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/state_fwd.h"
@@ -91,6 +97,19 @@ build_pf0(uint8_t* bits, uint8_t* bytes, uint8_t opcode) {
     put_bits(bits, 2, opcode & 0x3FU, 6);
 }
 
+/* The PDU in @p bits / @p bytes as a two-block MBC of @p opcode: header LB 0, one continuation carrying LB 1 and the
+   header's CSBKO, as the assembler hands it over. */
+static void
+dispatch_mbc(uint8_t* bits, uint8_t* bytes, uint8_t opcode) {
+    bits[0] = 0U;
+    bytes[0] = (uint8_t)(opcode & 0x3FU);
+    bits[96] = 1U;
+    put_bits(bits, 98, opcode & 0x3FU, 6);
+    bytes[12] = (uint8_t)(0x80U | (opcode & 0x3FU));
+    const dmr_cspdu_shape shape = {1U, 1U, (uint8_t)(opcode & 0x3FU), (uint8_t)(opcode & 0x3FU), 1U};
+    dmr_cspdu_ex(&g_opts, &g_state, bits, bytes, 1U, 0U, &shape);
+}
+
 static void
 send_aloha(uint16_t syscode) {
     uint8_t bits[256];
@@ -114,7 +133,7 @@ send_chan_freq(uint16_t channel, uint16_t rx_int, uint16_t rx_step) {
     put_bits(bits, 140, rx_step & 0x1FFFU, 13);
     put_bits(bits, 153, rx_int & 0x03FFU, 10);
     put_bits(bits, 163, rx_step & 0x1FFFU, 13);
-    dmr_cspdu(&g_opts, &g_state, bits, bytes, 1U, 0U);
+    dispatch_mbc(bits, bytes, 40U);
 }
 
 /* C_BCAST Adjacent_Site (type 6) with absolute parameters for @p channel. */
@@ -132,7 +151,7 @@ send_adjacent(uint16_t channel, uint16_t rx_int, uint16_t rx_step) {
     put_bits(bits, 140, rx_step & 0x1FFFU, 13);
     put_bits(bits, 153, rx_int & 0x03FFU, 10);
     put_bits(bits, 163, rx_step & 0x1FFFU, 13);
-    dmr_cspdu(&g_opts, &g_state, bits, bytes, 1U, 0U);
+    dispatch_mbc(bits, bytes, 40U);
 }
 
 /* TV_GRANT (opcode 49) to the absolute escape, its MBC naming @p channel. */
@@ -148,7 +167,7 @@ send_absolute_grant(uint16_t channel, uint16_t rx_int, uint16_t rx_step) {
     put_bits(bits, 118, channel & 0x0FFFU, 12);
     put_bits(bits, 153, rx_int & 0x03FFU, 10);
     put_bits(bits, 163, rx_step & 0x1FFFU, 13);
-    dmr_cspdu(&g_opts, &g_state, bits, bytes, 1U, 0U);
+    dispatch_mbc(bits, bytes, 49U);
 }
 
 static dsd_trunk_tune_result
@@ -483,6 +502,275 @@ test_save_restore_round_trip(void) {
     assert(dmr_t3_chan_origin(&g_state, 12U) == DMR_CHAN_ORIGIN_FILE); /* a row with no recorded origin */
 }
 
+/* ---- MBC assembly and absolute parameters (B7): real burst -> assembler -> dispatch ---- */
+
+static const uint8_t k_no_reserved[3] = {0, 0, 0};
+
+static void
+unpack_bytes(const uint8_t* bytes, uint8_t* bits, size_t count) {
+    for (size_t i = 0; i < count * 8U; ++i) {
+        bits[i] = (uint8_t)((bytes[i / 8U] >> (7U - i % 8U)) & 1U);
+    }
+}
+
+static void
+send_burst(uint8_t slot, const uint8_t bits[96], uint8_t databurst) {
+    uint8_t info[196];
+    g_state.currentslot = slot;
+    dmr_test_encode_bptc_196x96(bits, k_no_reserved, info);
+    dmr_data_burst_handler(&g_opts, &g_state, info, databurst, NULL);
+}
+
+/* A CSBK (@p mbc_header 0: LB 1, mask 0xA5A5, data type 3) or an MBC header (LB 0, mask 0xAAAA, data type 4) of
+   opcode @p csbko naming channel @p chan (bits 16..27), talkgroup 1001 and source 2002. */
+static void
+send_csbk_or_header(uint8_t slot, uint8_t csbko, uint16_t chan, int mbc_header) {
+    uint8_t bytes[12] = {0};
+    uint8_t bits[96];
+    bytes[0] = (uint8_t)((mbc_header ? 0x00U : 0x80U) | (csbko & 0x3FU));
+    bytes[2] = (uint8_t)(chan >> 4);
+    bytes[3] = (uint8_t)((chan & 0x0FU) << 4);
+    bytes[5] = 0x03; /* target (bits 32..55): TG 1001 */
+    bytes[6] = 0xE9;
+    bytes[8] = 0x07; /* source (bits 56..79): 2002 */
+    bytes[9] = 0xD2;
+    unpack_bytes(bytes, bits, sizeof bytes);
+    const uint16_t crc = (uint16_t)(ComputeCrcCCITT(bits) ^ (mbc_header ? 0xAAAAU : 0xA5A5U));
+    bytes[10] = (uint8_t)(crc >> 8);
+    bytes[11] = (uint8_t)crc;
+    unpack_bytes(bytes, bits, sizeof bytes);
+    send_burst(slot, bits, mbc_header ? 0x04U : 0x03U);
+}
+
+/* A continuation carrying CdefParms: CSBKO @p csbko, CHAN @p chan, RX @p rx_mhz plus @p rx_step 125 Hz steps (TX the
+   same). */
+static void
+build_abs_block(uint8_t block[96], uint8_t csbko, uint16_t chan, uint16_t rx_mhz, uint16_t rx_step) {
+    DSD_MEMSET(block, 0, 96);
+    put_bits(block, 2, csbko & 0x3FU, 6);
+    put_bits(block, 22, chan & 0x0FFFU, 12);
+    put_bits(block, 34, rx_mhz & 0x03FFU, 10);
+    put_bits(block, 44, rx_step & 0x1FFFU, 13);
+    put_bits(block, 57, rx_mhz & 0x03FFU, 10);
+    put_bits(block, 67, rx_step & 0x1FFFU, 13);
+}
+
+/* @p count continuations on @p slot, the last with LB 1 and the CRC16 over every continuation (TS 102 361-1 §7.4.0).
+   @p old_span_crc 1 computes it instead over the first three blocks and zeros, as the old fixed-size copy did. */
+static void
+send_continuations(uint8_t slot, uint8_t blocks[][96], size_t count, int old_span_crc) {
+    uint8_t all[4 * 96];
+    assert(count >= 1U && count <= 4U);
+    put_bits(blocks[count - 1U], 0, 1U, 1);
+    DSD_MEMSET(all, 0, sizeof all);
+    for (size_t b = 0; b < count; b++) {
+        DSD_MEMCPY(all + 96U * b, blocks[b], 96);
+    }
+    if (old_span_crc && count == 4U) {
+        DSD_MEMSET(all + 288, 0, 96);
+    }
+    put_bits(blocks[count - 1U], 80, dsd_crc_ccitt16_bits(all, count * 96U - 16U), 16);
+    for (size_t b = 0; b < count; b++) {
+        send_burst(slot, blocks[b], 0x05);
+    }
+}
+
+/* A two-block absolute TV_GRANT on @p slot: header CSBKO 49, CHAN 0xFFF; continuation CSBKO @p cont_csbko. */
+static void
+send_abs_grant_mbc(uint8_t slot, uint8_t cont_csbko, uint16_t chan, uint16_t rx_mhz, uint16_t rx_step) {
+    uint8_t block[1][96];
+    send_csbk_or_header(slot, 49U, 0x0FFFU, 1);
+    build_abs_block(block[0], cont_csbko, chan, rx_mhz, rx_step);
+    send_continuations(slot, block, 1U, 0);
+}
+
+static int
+activity_rows(void) {
+    dsd_recent_activity_snapshot snap;
+    DSD_MEMSET(&snap, 0, sizeof snap);
+    (void)dsd_recent_activity_copy_snapshot(&g_state, &snap);
+    int rows = 0;
+    for (int i = 0; i < DSD_RECENT_ACTIVITY_COUNT; i++) {
+        rows += snap.entries[i].notice[0] != '\0' ? 1 : 0;
+    }
+    return rows;
+}
+
+static void
+reset_bursts(void) {
+    reset();
+    g_state.synctype = DSD_SYNC_DMR_BS_DATA_POS;
+    g_state.lastsynctype = DSD_SYNC_DMR_BS_DATA_POS;
+    dmr_reset_blocks(&g_opts, &g_state);
+    dmr_sm_init(&g_opts, &g_state);
+    dsd_trunk_tuning_hooks_set((dsd_trunk_tuning_hooks){.tune_to_freq_request = tune_request});
+}
+
+static int
+not_followed(uint16_t chan) {
+    return g_state.trunk_vc_freq[0] == 0L && g_opts.trunk_is_tuned == 0 && g_state.trunk_chan_map[chan] == 0L
+           && dmr_sm_get_ctx()->state != DMR_SM_TUNED;
+}
+
+/* An MBC header armed on one slot is disarmed by the next burst on that slot, whatever it is: header A, then another
+   burst on the slot, then continuation B never assemble into a grant nobody sent. A sync loss disarms it too. */
+static void
+test_mbc_header_then_other_same_slot_burst_disarms(void) {
+    static const uint8_t kinds[] = {0x03U, 0x09U, 0x06U};
+    for (size_t k = 0; k <= sizeof kinds; k++) {
+        reset_bursts();
+        uint8_t block[1][96];
+        send_csbk_or_header(0, 49U, 0x0FFFU, 1);
+        if (k < sizeof kinds) {
+            uint8_t other[96];
+            DSD_MEMSET(other, 0, sizeof other);
+            if (kinds[k] == 0x03U) {
+                send_csbk_or_header(0, 25U, 0U, 0); /* a C_ALOHA */
+            } else {
+                send_burst(0, other, kinds[k]);
+            }
+        } else {
+            dmr_reset_blocks(&g_opts, &g_state); /* sync loss */
+        }
+        build_abs_block(block[0], 49U, 120U, 451U, 100U);
+        send_continuations(0, block, 1U, 0);
+        assert(not_followed(120U));
+    }
+    dsd_trunk_tuning_hooks_set((dsd_trunk_tuning_hooks){0});
+}
+
+/* The other slot's bursts between the header and its continuation leave the assembly alone. */
+static void
+test_companion_slot_traffic_does_not_disarm(void) {
+    reset_bursts();
+    uint8_t block[1][96];
+    uint8_t idle[96];
+    DSD_MEMSET(idle, 0, sizeof idle);
+    send_csbk_or_header(0, 49U, 0x0FFFU, 1);
+    send_csbk_or_header(1, 25U, 0U, 0);
+    send_burst(1, idle, 0x09U);
+    build_abs_block(block[0], 49U, 121U, 451U, 200U);
+    send_continuations(0, block, 1U, 0);
+    assert(g_state.trunk_vc_freq[0] == 451025000L);
+    assert(g_state.trunk_chan_map[121] == 451025000L);
+    dsd_trunk_tuning_hooks_set((dsd_trunk_tuning_hooks){0});
+}
+
+/* A single CSBK naming the absolute escape has no appended block: no activity row, no tune. */
+static void
+test_single_csbk_0xfff_is_malformed(void) {
+    reset_bursts();
+    send_csbk_or_header(0, 49U, 0x0FFFU, 0);
+    assert(activity_rows() == 0);
+    assert(g_state.trunk_vc_freq[0] == 0L && g_opts.trunk_is_tuned == 0);
+    dsd_trunk_tuning_hooks_set((dsd_trunk_tuning_hooks){0});
+}
+
+/* A continuation that does not carry its header's CSBKO is not that header's (CG_AP Table 7.16). */
+static void
+test_continuation_csbko_mismatch_rejected(void) {
+    reset_bursts();
+    send_abs_grant_mbc(0, 0U, 122U, 451U, 300U);
+    assert(not_followed(122U));
+    send_abs_grant_mbc(0, 40U, 122U, 451U, 300U);
+    assert(not_followed(122U));
+    assert(activity_rows() == 0);
+    dsd_trunk_tuning_hooks_set((dsd_trunk_tuning_hooks){0});
+}
+
+/* An MBC has at most three continuations (TS 102 361-1 §7.4.0), and absolute parameters come from exactly one: four
+   are refused whichever span the CRC covers, three carry no absolute grant. */
+static void
+test_four_continuations_rejected(void) {
+    for (int span = 0; span <= 1; span++) {
+        reset_bursts();
+        uint8_t blocks[4][96];
+        send_csbk_or_header(0, 49U, 0x0FFFU, 1);
+        build_abs_block(blocks[0], 49U, 123U, 451U, 400U);
+        for (size_t b = 1; b < 4U; b++) {
+            build_abs_block(blocks[b], 49U, 0U, 0U, 0U);
+        }
+        send_continuations(0, blocks, 4U, span);
+        assert(not_followed(123U));
+    }
+    reset_bursts();
+    uint8_t three[3][96];
+    send_csbk_or_header(0, 49U, 0x0FFFU, 1);
+    build_abs_block(three[0], 49U, 124U, 451U, 400U);
+    build_abs_block(three[1], 49U, 0U, 0U, 0U);
+    build_abs_block(three[2], 49U, 0U, 0U, 0U);
+    send_continuations(0, three, 3U, 0);
+    assert(not_followed(124U));
+    dsd_trunk_tuning_hooks_set((dsd_trunk_tuning_hooks){0});
+}
+
+/* A receive frequency outside Table C.7 (50..999 MHz, 0..7999 steps) is no frequency: nothing tuned or learned. */
+static void
+test_abs_rx_outside_table_c7_no_frequency(void) {
+    static const struct {
+        uint16_t mhz;
+        uint16_t step;
+    } bad[] = {{49U, 0U}, {1000U, 0U}, {451U, 8000U}};
+
+    for (size_t i = 0; i < sizeof bad / sizeof bad[0]; i++) {
+        reset_bursts();
+        send_abs_grant_mbc(0, 49U, 125U, bad[i].mhz, bad[i].step);
+        assert(not_followed(125U));
+    }
+    dsd_trunk_tuning_hooks_set((dsd_trunk_tuning_hooks){0});
+}
+
+/* A valid frequency whose CHAN is 0 or 4095 is tuned and shown, but names no channel to learn. */
+static void
+test_abs_rx_valid_chan_zero_tunes_without_learning(void) {
+    static const uint16_t chans[] = {0U, 0x0FFFU};
+    for (size_t i = 0; i < sizeof chans / sizeof chans[0]; i++) {
+        reset_bursts();
+        send_abs_grant_mbc(0, 49U, chans[i], 451U, 500U);
+        assert(g_state.trunk_vc_freq[0] == 451062500L);
+        assert(g_state.trunk_chan_map[0] == 0L && g_state.trunk_chan_map[0x0FFF] == 0L);
+    }
+    dsd_trunk_tuning_hooks_set((dsd_trunk_tuning_hooks){0});
+}
+
+/* Review Focus 1: a site that sends absolute grants only, with no channel map at all, is followed as before. */
+static void
+test_absolute_grant_two_block_mbc_still_follows(void) {
+    reset_bursts();
+    send_abs_grant_mbc(0, 49U, 126U, 451U, 700U);
+    assert(g_state.trunk_vc_freq[0] == 451087500L);
+    assert(g_opts.trunk_is_tuned == 1);
+    assert(g_state.trunk_chan_map[126] == 451087500L);
+    assert(dmr_t3_chan_origin(&g_state, 126U) == DMR_CHAN_ORIGIN_SITE);
+    assert(activity_rows() == 1);
+    dsd_trunk_tuning_hooks_set((dsd_trunk_tuning_hooks){0});
+}
+
+/* A malformed MBC has no side effect at all: no control channel heartbeat, no anchor, nothing published. */
+static void
+test_malformed_mbc_no_cc_heartbeat(void) {
+    reset_bursts();
+    g_state.trunk_cc_freq = 0L;
+    g_opts.audio_in_type = AUDIO_IN_RTL;
+    g_opts.rtlsdr_center_freq = 451500000U;
+    g_opts.dmr_crc_relaxed_default = 1;
+    dsd_decode_clock_test_set_ns(UINT64_C(5000) * UINT64_C(1000000000));
+    g_state.last_cc_sync_time = 0;
+    g_state.last_cc_sync_time_m = 0.0;
+    send_abs_grant_mbc(0, 0U, 127U, 451U, 800U);
+    assert(g_state.last_cc_sync_time == 0);
+    assert(g_state.last_cc_sync_time_m < 0.5 && g_state.last_cc_sync_time_m > -0.5);
+    assert(g_state.trunk_cc_freq == 0L);
+    assert(activity_rows() == 0);
+    assert(g_state.trunk_chan_map[127] == 0L);
+
+    /* The same MBC well formed does keep the control channel warm and anchors it. */
+    send_abs_grant_mbc(0, 49U, 127U, 451U, 800U);
+    assert(g_state.last_cc_sync_time_m > 1.0);
+    assert(g_state.trunk_cc_freq == 451500000L);
+    dsd_trunk_tuning_hooks_set((dsd_trunk_tuning_hooks){0});
+}
+
 int
 main(void) {
     test_site_overrides_estimate_and_unverified();
@@ -497,6 +785,15 @@ main(void) {
     test_cc_vc_cc_trip_keeps_learned_rows();
     test_other_site_same_network_keeps_rows();
     test_save_restore_round_trip();
+    test_mbc_header_then_other_same_slot_burst_disarms();
+    test_companion_slot_traffic_does_not_disarm();
+    test_single_csbk_0xfff_is_malformed();
+    test_continuation_csbko_mismatch_rejected();
+    test_four_continuations_rejected();
+    test_abs_rx_outside_table_c7_no_frequency();
+    test_abs_rx_valid_chan_zero_tunes_without_learning();
+    test_absolute_grant_two_block_mbc_still_follows();
+    test_malformed_mbc_no_cc_heartbeat();
     dsd_state_ext_free_all(&g_state);
     printf("DMR_T3_CHANNELS: OK\n");
     return 0;

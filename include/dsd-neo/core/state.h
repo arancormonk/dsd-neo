@@ -2231,6 +2231,9 @@ struct dsd_state {
     uint16_t data_byte_ctr[2];   //number of bytes acculumated
     uint8_t data_ks_start[2];    //where the start of the keystream should be applied to PDU data
     uint8_t udt_uab_reserved[2]; //UDT: header UAB indicates reserved/unknown count (use CRC-based EOM)
+    /* 1 while the slot's last burst was an MBC header or one of its continuations: only then does a continuation join
+     * that MBC. Any other burst on the slot, a sync loss or a retune (dmr_reset_blocks()) disarms it. */
+    uint8_t dmr_mbc_armed[2];
     uint8_t dmr_pdu_sf
         [2][24 * 128]; //unified pdu 'superframe' //[slot][byte] -- increased capacity to 127(+1) full rate blocks
     uint8_t cap_plus_csbk_bits[2][12 * 8 * 8]; //CSBK Cap+ FL initial and appended block bit storage, by slot

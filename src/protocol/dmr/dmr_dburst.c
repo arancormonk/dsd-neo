@@ -1029,6 +1029,12 @@ dmr_data_burst_handler_origin(dsd_opts* opts, dsd_state* state, uint8_t info[196
     dmr_data_burst_ctx ctx;
     dmr_dburst_ctx_init(&ctx, opts, state, info, databurst, reliab98, origin);
 
+    // An MBC is consecutive bursts on one slot: any burst there but a continuation ends the one being assembled (an
+    // MBC header arms the slot again in the assembler).
+    if (databurst != 0x05) {
+        state->dmr_mbc_armed[ctx.slot & 1] = 0;
+    }
+
     dmr_dburst_apply_profile(&ctx);
 
     if (!dmr_dburst_keeps_data_p_head(ctx.databurst)) {

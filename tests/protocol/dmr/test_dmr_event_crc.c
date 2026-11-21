@@ -287,6 +287,7 @@ send_mbc_grant(dsd_opts* opts, dsd_state* state, int ras, uint16_t lpcn, int con
 
     uint8_t block[96] = {0};
     put_bits(block, 0, 1, 1U);     // last block
+    put_bits(block, 2, 6, 0x31U);  // CSBKO: the header's (CG_AP, TS 102 361-4 Table 7.16)
     put_bits(block, 22, 12, lpcn); // logical channel the absolute parameters describe (CSBK bits 118..129)
     put_bits(block, 57, 10, 851U); // RX MHz (CSBK bits 153..162)
     put_bits(block, 67, 13, 100U); // RX 125 Hz steps (CSBK bits 163..175)

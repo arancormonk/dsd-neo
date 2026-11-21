@@ -29,6 +29,7 @@
 #include <dsd-neo/runtime/trunk_tuning_hooks.h>
 #include <stdint.h>
 #include <stdio.h>
+#include "dmr_abs_params.h"
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
@@ -164,6 +165,22 @@ build_cmove_apcn(uint8_t* bits, uint8_t* bytes, uint16_t apcn, uint16_t rx_int_m
 }
 
 extern void dmr_cspdu(dsd_opts*, dsd_state*, uint8_t*, uint8_t*, uint32_t, uint32_t);
+
+/* The PDU in @p bits / @p bytes as the assembler hands over a two-block MBC: header LB 0, one continuation carrying
+   LB 1 and the header's CSBKO (TS 102 361-4 CG_AP/MV_AP/BC_AP). */
+static void
+cspdu_mbc(dsd_opts* opts, dsd_state* state, uint8_t* bits, uint8_t* bytes) {
+    const uint8_t csbko = (uint8_t)(bytes[0] & 0x3FU);
+    bytes[0] = csbko;
+    bytes[12] = (uint8_t)(0x80U | csbko);
+    bits[0] = 0U;
+    bits[96] = 1U;
+    for (int i = 0; i < 6; i++) {
+        bits[98 + i] = (uint8_t)((csbko >> (5 - i)) & 1U);
+    }
+    const dmr_cspdu_shape shape = {1U, 1U, csbko, csbko, 1U};
+    dmr_cspdu_ex(opts, state, bits, bytes, 1U, 0U, &shape);
+}
 
 /* ---- Move admission and commit ---- */
 
@@ -398,7 +415,7 @@ csbk_absolute(dsd_opts* opts, dsd_state* state, uint8_t opcode, uint16_t apcn, u
     build_cmove_apcn(bits, bytes, apcn, rx_int, rx_step, slot, target);
     bytes[0] = opcode;
     put_bits(bits, 56U, 1234U, 24U);
-    dmr_cspdu(opts, state, bits, bytes, 1U, 0U);
+    cspdu_mbc(opts, state, bits, bytes);
 }
 
 /* The slot's call, the followed context and the slot's record (what the policy route is built from) name @p channel of
@@ -563,7 +580,7 @@ main(int argc, char** argv) {
     uint16_t rx_step = 4000;          // 4000 * 125 Hz = 500 kHz
     long f2 = 853000000 + 4000 * 125; // 853.500000 MHz
     build_cmove_apcn(bits, bytes, apcn, rx_int, rx_step, /*slot*/ 0, /*target*/ 101);
-    dmr_cspdu(&opts, &state, bits, bytes, /*crc ok*/ 1, /*errs*/ 0);
+    cspdu_mbc(&opts, &state, bits, bytes);
     assert(opts.trunk_is_tuned == 1);
     assert(state.trunk_vc_freq[0] == f2);
 
@@ -574,7 +591,7 @@ main(int argc, char** argv) {
     rx_int = 854;
     rx_step = 0;
     build_cmove_apcn(bits, bytes, apcn, rx_int, rx_step, /*slot*/ 0, /*target*/ 101);
-    dmr_cspdu(&opts, &state, bits, bytes, /*crc ok*/ 1, /*errs*/ 0);
+    cspdu_mbc(&opts, &state, bits, bytes);
     // Expect no tune while on CC
     assert(opts.trunk_is_tuned == 0);
     assert(state.trunk_vc_freq[0] == 0);
@@ -585,7 +602,7 @@ main(int argc, char** argv) {
     opts.audio_in_type = AUDIO_IN_RTL;
     opts.rtlsdr_center_freq = 851012500U;
     build_cmove_apcn(bits, bytes, apcn, rx_int, rx_step, /*slot*/ 0, /*target*/ 101);
-    dmr_cspdu(&opts, &state, bits, bytes, /*crc ok*/ 1, /*errs*/ 0);
+    cspdu_mbc(&opts, &state, bits, bytes);
     assert(opts.trunk_is_tuned == 0);
     assert(state.trunk_cc_freq == 851012500);
 
