@@ -438,6 +438,20 @@ SignalSearchModel::arm() {
     return {};
 }
 
+/* The range value for TETRA identification. The runtime names it DSD_SEARCH_DIGITAL_TETRA and validates it; this is
+   the one place the model reads it. */
+static constexpr int kDigitalTetra = 10;
+
+int
+SignalSearchModel::searchBandwidthKhz() const {
+    const bool tetra = std::any_of(m_ranges.cbegin(), m_ranges.cend(), [](const QVariant& value) {
+        const QVariantMap range = value.toMap();
+        return range.value(QStringLiteral("enabled")).toBool() && !range.value(QStringLiteral("am")).toBool()
+               && range.value(QStringLiteral("digital")).toInt() == kDigitalTetra;
+    });
+    return tetra ? 72 : 48;
+}
+
 void
 SignalSearchModel::cancelArm() {
     disarm();

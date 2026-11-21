@@ -432,6 +432,51 @@ testRangeSaveFailureClears(dsd_qt::KnownFrequencyIndex* index) {
     assert(dsd_qt::json_store_save_array(file, previous));
 }
 
+/* Issue #748: every identification choice, TETRA's 10 among them, is saved and loaded again as it was picked; the search
+   runs at 72 kHz while any enabled NFM range identifies TETRA, else at 48 kHz, whatever the other ranges ask for. */
+void
+testTetraRangeOptionAndRate(dsd_qt::KnownFrequencyIndex* index) {
+    const QString file = QStringLiteral("signal-search-ranges.json");
+    const QJsonArray previous = dsd_qt::json_store_load_array(file);
+    {
+        dsd_qt::SignalSearchModel model(nullptr, index);
+        const QVariantMap base = model.defaultRange();
+        for (int digital = 0; digital <= 10; ++digital) {
+            QVariantMap range = base;
+            range[QStringLiteral("digital")] = digital;
+            assert(model.saveRange(0, range).isEmpty());
+            assert(model.ranges().front().toMap().value(QStringLiteral("digital")).toInt() == digital);
+            dsd_qt::SignalSearchModel reloaded(nullptr, index);
+            assert(reloaded.ranges().size() == 1);
+            assert(reloaded.ranges().front().toMap().value(QStringLiteral("digital")).toInt() == digital);
+            assert(model.searchBandwidthKhz() == (digital == 10 ? 72 : 48));
+        }
+        // An AM range never identifies TETRA, and a TETRA range is refused for it.
+        QVariantMap am = base;
+        am[QStringLiteral("am")] = true;
+        am[QStringLiteral("digital")] = 10;
+        assert(!model.saveRange(0, am).isEmpty());
+        assert(model.searchBandwidthKhz() == 72);
+        // Only an enabled TETRA range moves the rate, wherever it sits.
+        QVariantMap tetra = model.ranges().front().toMap(), dmr = base;
+        dmr[QStringLiteral("name")] = QStringLiteral("DMR");
+        dmr[QStringLiteral("digital")] = 3;
+        dmr[QStringLiteral("enabled")] = true;
+        tetra[QStringLiteral("enabled")] = false;
+        assert(model.saveRange(0, dmr).isEmpty() && model.saveRange(-1, tetra).isEmpty());
+        assert(model.searchBandwidthKhz() == 48);
+        tetra[QStringLiteral("enabled")] = true;
+        assert(model.saveRange(1, tetra).isEmpty());
+        assert(model.searchBandwidthKhz() == 72);
+        dmr[QStringLiteral("enabled")] = false;
+        assert(model.saveRange(0, dmr).isEmpty());
+        assert(model.searchBandwidthKhz() == 72);
+        model.removeRange(1);
+        assert(model.searchBandwidthKhz() == 48);
+    }
+    assert(dsd_qt::json_store_save_array(file, previous));
+}
+
 void
 writeBytes(const QString& path, const QByteArray& bytes) {
     QFile file(path);
@@ -3266,6 +3311,7 @@ main(int argc, char** argv) {
     testStoredMarginBelowMinimum(&index);
     testRangesKeptAside(&index);
     testRangeSaveFailureClears(&index);
+    testTetraRangeOptionAndRate(&index);
     testStoreFilesWorded(&index);
     testKnownFrequencyIdentity(temp.path());
     testKnownFrequencyListsApart(temp.path());

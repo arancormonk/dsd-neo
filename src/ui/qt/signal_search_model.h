@@ -92,6 +92,9 @@ class SignalSearchModel : public QObject {
     Q_INVOKABLE void removeRange(int row);
     Q_INVOKABLE void moveRange(int row, int direction);
     Q_INVOKABLE QString arm();
+    /** The DSP bandwidth a search of the stored ranges starts at, in kHz (issue #748): 72 while any enabled range
+     * identifies TETRA (it runs only at a multiple of 18 kHz), else 48. Settings' default bandwidth never applies. */
+    Q_INVOKABLE int searchBandwidthKhz() const;
     Q_INVOKABLE void cancelArm();
     Q_INVOKABLE bool control(int action, const QString& session, const QString& hit);
     /** Avoid a history row's frequency for the running session @p session (DSD_SEARCH_ACTION_AVOID_FREQUENCY). The

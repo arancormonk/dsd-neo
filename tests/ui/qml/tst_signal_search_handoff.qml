@@ -27,6 +27,11 @@ Item {
         property int cancels: 0
         function control(action, session, hit) { return true; }
         function arm() { arms++; return ""; }
+        // As SignalSearchModel::searchBandwidthKhz() reads the ranges: 72 kHz while an enabled NFM range identifies
+        // TETRA (digital 10), else 48 kHz (issue #748).
+        function searchBandwidthKhz() {
+            return ranges.some(function (r) { return r.enabled && !r.am && r.digital === 10; }) ? 72 : 48;
+        }
         function cancelArm() { cancels++; }
         function removeAvoid(frequency) {}
         function avoidFrequency(session, frequency) { return true; }
@@ -169,6 +174,38 @@ Item {
             compare(app.sessionSystem.sourceType, "rtltcp");
             compare(app.sessionSystem.host, "10.0.0.7");
             verify(!app.exploring);
+        }
+        // Issue #748: a search starts at 72 kHz while an enabled range
+        // identifies TETRA and at 48 kHz otherwise, never at the app's
+        // default bandwidth; a retry follows the ranges as they are then.
+        function test_search_rate_follows_its_ranges() {
+            var ranges = searchStub.ranges;
+            var bandwidth = prefs.bandwidthKhz;
+            prefs.bandwidthKhz = 96;
+            var cases = [{ranges: ranges, khz: 48},
+                {ranges: [Object.assign({}, ranges[0], {digital: 3}), Object.assign({}, ranges[0], {name: "TETRA", digital: 10})], khz: 72},
+                {ranges: [Object.assign({}, ranges[0], {digital: 3}), Object.assign({}, ranges[0], {name: "TETRA", digital: 10, enabled: false})], khz: 48}];
+            try {
+                for (var c of cases) {
+                    searchStub.ranges = c.ranges;
+                    // Each start is a retry of the failed one before it, as the
+                    // screen's Start is: both arm the ranges as they are then.
+                    if (decoderHost.sessionState === 0) {
+                        startSearch();
+                    } else {
+                        testContext.setLifecycleFailure("rtl_tcp: connection refused");
+                        testContext.setLifecyclePhase(4);
+                        screen().requestClose();
+                        app.retrySource();
+                        tryCompare(decoderHost, "sessionState", 1);
+                    }
+                    verify(app.sessionSystem.signalSearch);
+                    compare(app.sessionSystem.bandwidthKhz, c.khz, JSON.stringify(c.ranges));
+                }
+            } finally {
+                searchStub.ranges = ranges;
+                prefs.bandwidthKhz = bandwidth;
+            }
         }
         // Editing a failed search opens Signal search, not Explore setup.
         function test_edit_of_a_failed_search_opens_the_search() {

@@ -2530,7 +2530,9 @@ Window {
             var sys = mainRoot.exploreSystem(sourceType, host, port, frequency);
             sys.signalSearch = true;
             sys.name = qsTr("Signal search");
-            sys.bandwidthKhz = 48;
+            // 72 kHz while an enabled range identifies TETRA, else 48 kHz;
+            // the app's default bandwidth never applies (issue #748).
+            sys.bandwidthKhz = searchModel.searchBandwidthKhz();
             mainRoot.startWithMap(sys, -1, false);
             mainRoot.spectrumOpen = false;
         }

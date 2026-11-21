@@ -26,6 +26,7 @@ Item {
         property string storeMessage: ""
         function control(action, session, hit) {}
         function arm() { return ""; }
+        function searchBandwidthKhz() { return 48; }
         function cancelArm() {}
     }
     TestCase {
