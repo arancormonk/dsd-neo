@@ -183,6 +183,8 @@ static atomic_int g_rdio_upload_cancel = 0;
 static size_t g_rdio_upload_aborted = 0;
 
 #define DSD_RDIO_UPLOAD_CANCELLED (-2)
+/* A job the queue does not admit: the shutdown has begun, or the queue is full. */
+#define DSD_RDIO_UPLOAD_REFUSED   (-3)
 /* The pause between two attempts of one upload. */
 #define DSD_RDIO_RETRY_BACKOFF_MS 150U
 
@@ -531,22 +533,46 @@ dsd_rdio_build_upload_job(const dsd_rdio_api_config* api, const char* wav_path, 
     return 0;
 }
 
+/* Whether the queue admits one more job: 0, DSD_RDIO_UPLOAD_CANCELLED after the user's Stop (the worker would never
+   send it), or DSD_RDIO_UPLOAD_REFUSED, said for @p wav_path, when the shutdown has begun or the queue is full. Under
+   the queue's mutex. */
+static int
+dsd_rdio_upload_admits_locked(const char* wav_path) {
+    if (g_rdio_upload_stop_requested) {
+        LOG_WARN("Rdio export: shutdown in progress, dropping %s\n", wav_path);
+        return DSD_RDIO_UPLOAD_REFUSED;
+    }
+    if (atomic_load(&g_rdio_upload_cancel) != 0) {
+        return DSD_RDIO_UPLOAD_CANCELLED;
+    }
+    if (g_rdio_upload_depth >= DSD_RDIO_UPLOAD_QUEUE_MAX) {
+        LOG_WARN("Rdio export: upload queue full, dropping %s\n", wav_path);
+        return DSD_RDIO_UPLOAD_REFUSED;
+    }
+    return 0;
+}
+
+/* dsd_rdio_upload_admits_locked(), asked ahead of the private inputs' I/O, which runs with the mutex free: the enqueue
+   asks again, and has the last word. */
+static int
+dsd_rdio_upload_admits(const char* wav_path) {
+    dsd_mutex_lock(&g_rdio_upload_mutex);
+    const int admits = dsd_rdio_upload_admits_locked(wav_path);
+    dsd_mutex_unlock(&g_rdio_upload_mutex);
+    return admits;
+}
+
+/* 0 when @p job is queued; else dsd_rdio_upload_admits_locked()'s refusal, or -1, and the job is still the caller's. */
 static int
 dsd_rdio_enqueue_upload_job(dsd_rdio_upload_job* job, const char* wav_path) {
     if (!job || !wav_path) {
         return -1;
     }
     dsd_mutex_lock(&g_rdio_upload_mutex);
-    if (g_rdio_upload_stop_requested) {
+    const int admits = dsd_rdio_upload_admits_locked(wav_path);
+    if (admits != 0) {
         dsd_mutex_unlock(&g_rdio_upload_mutex);
-        LOG_WARN("Rdio export: shutdown in progress, dropping %s\n", wav_path);
-        return -1;
-    }
-
-    if (g_rdio_upload_depth >= DSD_RDIO_UPLOAD_QUEUE_MAX) {
-        dsd_mutex_unlock(&g_rdio_upload_mutex);
-        LOG_WARN("Rdio export: upload queue full, dropping %s\n", wav_path);
-        return -1;
+        return admits;
     }
 
     if (g_rdio_upload_tail) {
@@ -615,8 +641,8 @@ dsd_rdio_copy_chunks(FILE* in, FILE* out) {
 }
 
 /* A copy of the file at @p src, created at @p dst, which must not exist (EEXIST); owner-only. The user's Stop ends it
-   between chunks with DSD_RDIO_ECANCELED (dsd_rdio_copy_chunks()). On a failure a @p dst this copy created is removed,
-   never one that was there. */
+   between chunks with DSD_RDIO_ECANCELED (dsd_rdio_copy_chunks()). On a failure a @p dst this copy created is removed
+   (dsd_rdio_remove_private_input(), which says a removal that fails), never one that was there. */
 static int
 dsd_rdio_copy_file(const char* src, const char* dst) {
     FILE* in = dsd_fopen_existing_regular_file(src, "rb");
@@ -628,7 +654,7 @@ dsd_rdio_copy_file(const char* src, const char* dst) {
     if (!out) {
         const int err = errno;
         if (opened) {
-            (void)dsd_remove_file(dst);
+            dsd_rdio_remove_private_input(dst);
         }
         (void)fclose(in);
         errno = err;
@@ -640,7 +666,8 @@ dsd_rdio_copy_file(const char* src, const char* dst) {
     }
     (void)fclose(in);
     if (err != 0) {
-        (void)dsd_remove_file(dst);
+        /* A removal that fails is said (once a run), and the copy's own error is the one returned. */
+        dsd_rdio_remove_private_input(dst);
         errno = err == EEXIST ? EIO : err;
         return -1;
     }
@@ -726,8 +753,9 @@ dsd_rdio_make_private_inputs(dsd_rdio_upload_job* job, const char* wav_path, con
 
 /* The upload job of @p wav_path and @p meta_path, its API config checked, into @p out_job: 0, or -1 with none. With
    @p private_meta_src (--rdio-mode both: the sidecar's temp file) the job uploads from its own copies of the pair
-   (dsd_rdio_make_private_inputs()), made here, before the public sidecar is in place; after the user's Stop none are
-   made, and DSD_RDIO_UPLOAD_CANCELLED says so. */
+   (dsd_rdio_make_private_inputs()), made here, before the public sidecar is in place, and only once the queue would
+   admit the job: a job it would refuse (DSD_RDIO_UPLOAD_REFUSED: a full queue, the shutdown) costs no WAV copy. After
+   the user's Stop none are made, and DSD_RDIO_UPLOAD_CANCELLED says so. */
 static int
 dsd_rdio_prepare_api_job(const dsd_opts* opts, int system_id, const char* wav_path, const char* meta_path,
                          const char* private_meta_src, int remove_meta_on_success, int remove_wav_on_success,
@@ -747,7 +775,10 @@ dsd_rdio_prepare_api_job(const dsd_opts* opts, int system_id, const char* wav_pa
     /* The job holds its own copy now: this one goes. */
     DSD_SECURE_ZERO(&api, sizeof api);
     if (rc == 0 && private_meta_src) {
-        rc = dsd_rdio_make_private_inputs(*out_job, wav_path, private_meta_src);
+        rc = dsd_rdio_upload_admits(wav_path);
+        if (rc == 0) {
+            rc = dsd_rdio_make_private_inputs(*out_job, wav_path, private_meta_src);
+        }
         if (rc != 0) {
             dsd_rdio_upload_job_free(*out_job);
             *out_job = NULL;
@@ -1819,16 +1850,17 @@ dsd_rdio_export_api(const dsd_opts* opts, const Event_History_I* event_struct, c
         dsd_rdio_upload_job_free(job);
         return -1;
     }
-    if (prepared == DSD_RDIO_UPLOAD_CANCELLED) {
-        /* The user's Stop: no upload of this run is sent any more. The public pair is DirWatch's all the same. */
+    const int queued = prepared == 0 ? dsd_rdio_enqueue_upload_job(job, wav_path) : prepared;
+    if (queued != 0) {
+        /* Not queued: the job goes (its private inputs, its hold), the public pair stays DirWatch's. */
+        dsd_rdio_upload_job_free(job);
+    }
+    if (queued == DSD_RDIO_UPLOAD_CANCELLED) {
+        /* The user's Stop, before or after the job was made: no upload of this run is sent any more. */
         LOG_INFO("Rdio API upload of %s not queued: uploads were stopped\n", wav_path);
         return 0;
     }
-    if (prepared != 0) {
-        return -1;
-    }
-    if (dsd_rdio_enqueue_upload_job(job, wav_path) != 0) {
-        dsd_rdio_upload_job_free(job);
+    if (queued != 0) {
         return -1;
     }
     if (api_queued) {

@@ -4206,8 +4206,23 @@ test_both_mode_stop_removes_private_inputs(void) {
     return rc;
 }
 
+#if defined(USE_CURL) && !DSD_PLATFORM_WIN_NATIVE
+// The folder a sidecar-published observer counts private inputs in, and the count it found there; -1 before.
+static const char* g_rdio_count_dir = NULL;
+static int g_rdio_private_at_sidecar = -1;
+
+static void
+rdio_count_private_at_sidecar(const char* meta_path) {
+    (void)meta_path;
+    g_rdio_private_at_sidecar = rdio_test_private_inputs_in(g_rdio_count_dir, NULL);
+}
+#endif
+
 // Issue #888 B15: an upload the full queue refuses leaves no private input. Behind a stalled upload, the one in
-// flight and a full queue hold two private inputs each; the next call is refused with its public pair alone.
+// flight and a full queue hold two private inputs each; the next call is refused with its public pair alone, and its
+// own copies are never made: when its sidecar appears, the folder holds the queued jobs' private inputs alone. Before,
+// the refused call's WAV was linked or copied (a whole WAV on a drive without hard links) and its sidecar copied, then
+// both removed when the full queue refused the job.
 static int
 test_both_mode_refused_upload_leaves_no_private_inputs(void) {
 #if !defined(USE_CURL) || DSD_PLATFORM_WIN_NATIVE
@@ -4243,7 +4258,12 @@ test_both_mode_refused_upload_leaves_no_private_inputs(void) {
             break;
         }
         int queued = 0;
+        if (i == calls - 1) {
+            g_rdio_count_dir = dir;
+            dsd_rdio_set_sidecar_published_observer(rdio_count_private_at_sidecar);
+        }
         (void)dsd_rdio_export_call_ex(opts, hist, wav, 0, 0, &queued);
+        dsd_rdio_set_sidecar_published_observer(NULL);
         queued_count += queued;
         last_queued = queued;
         if (i == 0 && (!queued || rdio_test_wait_for_connection(stalled, 5000U) <= 0)) {
@@ -4258,6 +4278,12 @@ test_both_mode_refused_upload_leaves_no_private_inputs(void) {
                     files);
         rc = 1;
     }
+    if (rc == 0 && g_rdio_private_at_sidecar != 2 * 129) {
+        DSD_FPRINTF(stderr, "both full queue: %d private inputs when the refused call's sidecar appeared, want %d\n",
+                    g_rdio_private_at_sidecar, 2 * 129);
+        rc = 1;
+    }
+    g_rdio_private_at_sidecar = -1;
     dsd_rdio_upload_cancel();
     dsd_rdio_upload_shutdown();
     if (rdio_test_private_inputs_in(dir, &files) != 0 || files != 2 * calls) {
@@ -4379,6 +4405,8 @@ static atomic_int g_seam_link_then_stop = 0;
 static atomic_int g_seam_stream_fails = 0;
 /* The worker's join reports failure, after the worker has ended. */
 static atomic_int g_seam_join_fails = 0;
+/* With g_seam_stream_fails: the folder made read-only once the open has made its file, so removing that file fails. */
+static const char* g_seam_lock_dir = NULL;
 
 int
 __wrap_dsd_hard_link(const char* existing, const char* new_path) {
@@ -4396,6 +4424,11 @@ seam_open_without_stream(const char* path, int* out_opened) {
     FILE* made = __real_dsd_fopen_private_ex(path, "wbx", NULL);
     if (made != NULL) {
         (void)fclose(made);
+    }
+    const char* lock = g_seam_lock_dir;
+    g_seam_lock_dir = NULL;
+    if (lock != NULL) {
+        (void)chmod(lock, 0500);
     }
     if (out_opened != NULL) {
         *out_opened = made != NULL;
@@ -4451,13 +4484,23 @@ rdio_both_expect_not_queued(const char* label, const dsd_opts* opts, Event_Histo
     const int exported = dsd_rdio_export_call_ex(opts, hist, wav, 0, 0, &queued);
     int files = 0;
     const int private_inputs = rdio_test_private_inputs_in(dir, &files);
-    if (queued != 0 || !file_exists(wav) || !file_exists(json) || private_inputs != 0) {
-        DSD_FPRINTF(stderr, "%s: export %d, queued %d, public pair %s, %d private inputs, want unqueued, kept, none\n",
-                    label, exported, queued, file_exists(wav) && file_exists(json) ? "kept" : "missing",
-                    private_inputs);
+    if (queued != 0 || !file_exists(wav) || !file_exists(json) || private_inputs != 0
+        || dsd_rdio_upload_holds(wav) != 0) {
+        DSD_FPRINTF(stderr,
+                    "%s: export %d, queued %d, public pair %s, %d private inputs, held %d, want unqueued, kept, none, "
+                    "unheld\n",
+                    label, exported, queued, file_exists(wav) && file_exists(json) ? "kept" : "missing", private_inputs,
+                    dsd_rdio_upload_holds(wav));
         return 1;
     }
     return 0;
+}
+
+// The user's Stop, the moment a sidecar is in place: after the private inputs are made, before the job is queued.
+static void
+rdio_stop_at_sidecar(const char* meta_path) {
+    (void)meta_path;
+    dsd_rdio_upload_cancel();
 }
 #endif
 
@@ -4497,6 +4540,36 @@ test_both_mode_stop_ends_private_copies(void) {
 #endif
 }
 
+// Issue #888: a Stop that comes after a "both" job's private inputs are made but before it is queued (here as its
+// sidecar appears) leaves it unqueued: its private inputs removed, its WAV not held, the public pair DirWatch's. Before,
+// the job was queued for a worker that would never send it, held the WAV and kept its private inputs until the
+// shutdown, and the journal said it was queued.
+static int
+test_both_mode_stop_before_queueing_releases_the_job(void) {
+#if !defined(USE_CURL) || DSD_PLATFORM_WIN_NATIVE
+    return 0;
+#else
+    char dir[DSD_TEST_PATH_MAX] = {0};
+    dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(*opts));
+    Event_History_I* hist = (Event_History_I*)calloc(1, sizeof(*hist));
+    if (!opts || !hist || !dsd_test_mkdtemp(dir, sizeof(dir), "dsdneo_rdio_both_admit")) {
+        free(hist);
+        free(opts);
+        return 1;
+    }
+    rdio_cancel_opts(opts, "http://127.0.0.1:9", 5000, 1);
+    opts->rdio_mode = DSD_RDIO_MODE_BOTH;
+    dsd_rdio_set_sidecar_published_observer(rdio_stop_at_sidecar);
+    int rc = rdio_both_expect_not_queued("both Stop before queueing", opts, hist, dir, "stop_at_admission");
+    dsd_rdio_set_sidecar_published_observer(NULL);
+    dsd_rdio_upload_shutdown();
+    rdio_test_remove_dir_tree(dir);
+    free(hist);
+    free(opts);
+    return rc;
+#endif
+}
+
 // Issue #888: a private sidecar copy whose open made the file but no stream leaves no file behind, and an existing file
 // of that name is never removed. Before, the empty file stayed, owned by no job. Needs the link seams.
 static int
@@ -4526,8 +4599,56 @@ test_both_mode_failed_private_open_leaves_nothing(void) {
 #endif
 }
 
-// Issue #888 (Windows limit, here by a read-only folder): private inputs whose removal fails at the jobs' end are left
-// in place and said once a run, not once a job. Skipped as root, whom a read-only folder does not stop.
+#if defined(DSD_TEST_WRAP_RDIO_SEAMS) && defined(USE_CURL)
+/* A private sidecar copy whose open made its file and no stream, in a folder that then turns read-only: the file cannot
+   be removed, and that is said (the run's one warning), with the open's own error kept for the copy's failure. 0 when
+   so, with *@p said set. Before, the failed removal was silent. */
+static int
+rdio_partial_copy_removal_said(const dsd_opts* opts, Event_History_I* hist, int* said) {
+    char dir[DSD_TEST_PATH_MAX] = {0};
+    char wav[DSD_TEST_PATH_MAX] = {0};
+    if (!dsd_test_mkdtemp(dir, sizeof(dir), "dsdneo_rdio_both_partial")
+        || dsd_test_path_join(wav, sizeof(wav), dir, "partial.wav") != 0 || write_pcm16_mono_wav(wav, 8000, 1) != 0) {
+        rdio_test_remove_dir_tree(dir);
+        return 1;
+    }
+    hist->Event_History_Items[0].event_time = (time_t)1700000000;
+    hist->Event_History_Items[0].target_id = 1205;
+    g_seam_lock_dir = dir;
+    atomic_store(&g_seam_stream_fails, 1);
+    dsd_test_capture_stderr cap;
+    const int capturing = dsd_test_capture_stderr_begin(&cap, "rdio_partial") == 0;
+    int queued = -1;
+    (void)dsd_rdio_export_call_ex(opts, hist, wav, 0, 0, &queued);
+    char out[4096] = "";
+    if (capturing) {
+        dsd_test_capture_stderr_end(&cap);
+        (void)dsd_test_capture_stderr_read(&cap, out, sizeof(out));
+    }
+    (void)chmod(dir, 0700);
+    g_seam_lock_dir = NULL;
+    atomic_store(&g_seam_stream_fails, 0);
+    *said = 0;
+    for (const char* p = out; (p = strstr(p, "failed to delete the private upload input")) != NULL; p++) {
+        (*said)++;
+    }
+    const int left = rdio_test_private_inputs_in(dir, NULL);
+    int rc = 0;
+    if (!capturing || queued != 0 || *said != 1 || left != 1 || strstr(out, strerror(ENOMEM)) == NULL) {
+        DSD_FPRINTF(stderr,
+                    "both partial copy left: queued %d, said %d time(s), %d private inputs left, want 0, once, 1, and "
+                    "the open's error\n%s\n",
+                    queued, *said, left, out);
+        rc = 1;
+    }
+    rdio_test_remove_dir_tree(dir);
+    return rc;
+}
+#endif
+
+// Issue #888 (Windows limit, here by a read-only folder): private inputs whose removal fails are left in place and said
+// once a run, not once a job: a partial copy's (where the link seams can make one) and those of the jobs' end. Skipped
+// as root, whom a read-only folder does not stop.
 static int
 test_both_mode_failed_private_removal_said_once(void) {
 #if !defined(USE_CURL) || DSD_PLATFORM_WIN_NATIVE
@@ -4553,6 +4674,10 @@ test_both_mode_failed_private_removal_said_once(void) {
     rdio_cancel_opts(opts, api_url, 30000, 1);
     opts->rdio_mode = DSD_RDIO_MODE_BOTH;
     int rc = 0;
+    int said_before = 0;
+#ifdef DSD_TEST_WRAP_RDIO_SEAMS
+    rc |= rdio_partial_copy_removal_said(opts, hist, &said_before);
+#endif
     for (int i = 0; i < 2 && rc == 0; i++) {
         char leaf[32];
         DSD_SNPRINTF(leaf, sizeof(leaf), "ro_%d", i);
@@ -4573,9 +4698,10 @@ test_both_mode_failed_private_removal_said_once(void) {
         said++;
     }
     const int left = rdio_test_private_inputs_in(dir, NULL);
-    if (!capturing || said != 1 || left != 4) {
-        DSD_FPRINTF(stderr, "both read-only folder: said %d time(s), %d private inputs left, want once and 4\n%s\n",
-                    said, left, out);
+    if (!capturing || said_before + said != 1 || left != 4) {
+        DSD_FPRINTF(stderr,
+                    "both read-only folder: said %d time(s) (%d before), %d private inputs left, want once and 4\n%s\n",
+                    said, said_before, left, out);
         rc = 1;
     }
     rdio_test_remove_dir_tree(dir);
@@ -4703,6 +4829,7 @@ main(void) {
     rc |= test_both_mode_refused_upload_leaves_no_private_inputs();
     rc |= test_both_mode_private_names_do_not_grow_with_the_stem();
     rc |= test_both_mode_stop_ends_private_copies();
+    rc |= test_both_mode_stop_before_queueing_releases_the_job();
     rc |= test_both_mode_failed_private_open_leaves_nothing();
     rc |= test_both_mode_failed_private_removal_said_once();
     /* Last: it leaves the upload worker failed for good. */

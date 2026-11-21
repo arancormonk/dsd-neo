@@ -5415,9 +5415,15 @@ suite runs under this compiler.
     published at close as before, the job's `public_wav_path` is what `dsd_rdio_upload_holds()` names, and API-only and
     DirWatch-only runs make no private inputs. The copy (`dsd_rdio_copy_file()`) opens its destination exclusively with
     `dsd_fopen_private_ex()` and, on a failure, removes it only when this open created it (never a file already there),
-    and checks the user's Stop (`g_rdio_upload_cancel`) between 16 KiB chunks. After a Stop no private inputs are made
-    and no job is queued (the worker would never send it): the export logs it and returns success with the public pair
-    published (`DSD_RDIO_UPLOAD_CANCELLED` from the preparation). A run only ever removes its own private inputs, at
+    through `dsd_rdio_remove_private_input()`, so a removal that fails is said like a job's, with the copy's own error
+    kept; it checks the user's Stop (`g_rdio_upload_cancel`) between 16 KiB chunks. The queue's admission rule
+    (`dsd_rdio_upload_admits_locked()`: not after the shutdown began, not after a Stop, not past
+    `DSD_RDIO_UPLOAD_QUEUE_MAX`) is asked twice: before the private inputs are made, with the queue's mutex released
+    again for their I/O, so an upload the queue would refuse costs no WAV copy, and at the enqueue, which has the last
+    word. After a Stop no job is queued (the worker would never send it), whether the Stop came before the private
+    inputs or after them, before the enqueue: the job is released (its private inputs removed, nothing held), the
+    export logs it and returns success with the public pair published (`DSD_RDIO_UPLOAD_CANCELLED`), and the journal's
+    `rdio` stays false. A run only ever removes its own private inputs, at
     each job's end: there is no cleanup of other runs' files. A run that ends without that release (killed) leaves
     them, and so does a removal that fails (Windows: a DirWatch holding the public WAV open without delete sharing
     also blocks the delete of its hard link), which is not retried and is logged once a process
@@ -5435,8 +5441,10 @@ suite runs under this compiler.
     while the second pair is deleted as a watch would, the second request's audio, meta and part names, private inputs
     gone after success, refusal, Stop and a full queue, the private inputs in place before the sidecar appears (a watch
     that deletes the pair at that moment, `dsd_rdio_set_sidecar_published_observer()`), short private names under a
-    230-character stem, no copy and no job after a Stop and a Stop that ends a copy, a private open that made its file
-    but no stream, a failed removal said once, the queued jobs released after a failed join (the last three through
+    230-character stem, no copy and no job after a Stop and a Stop that ends a copy, a Stop at the sidecar's
+    publication (after the private inputs, before the enqueue) that leaves the job unqueued and unheld, no private
+    input made for a call the full queue refuses, a private open that made its file but no stream, a failed removal said
+    once (a partial copy's and the jobs' end together), the queued jobs released after a failed join (the last three through
     GNU ld `--wrap` link seams, `DSD_TEST_WRAP_RDIO_SEAMS`, POSIX only); the fallback number and its eligibility, the
     generated label (`EDACS` for a ProVoice call an EDACS grant named), `freq`/`freqList` at their bounds, emergency,
     the protocol `short_name`, `"-"` tags, UTF-8 strings, and a fallback call's API `meta` and `system` parts),

@@ -2285,14 +2285,17 @@ expects an API-only upload's sidecar removed only when its upload succeeded, whi
 (`RDIO_CAPTURE`, not on native Windows, where the queued upload fails and keeps the sidecar).
 
 `RUNTIME_RDIO_EXPORT` checks `--rdio-mode both`'s private upload inputs: short names under a 230-character public stem
-(the test folder's file system must allow 255-byte names), no copy and no job after a Stop, and removals that fail (a read-only
-folder) leaving their files with one log line a run. The faults no real file system gives on demand come from GNU ld `--wrap` link seams
-(`DSD_TEST_WRAP_RDIO_SEAMS`, GCC or Clang builds off macOS and Windows, as the other `--wrap` tests): a hard link that
-fails as on a drive with none while the Stop arrives (the copy fallback then ends), a private open that makes its file
-and no stream, and a worker join that reports failure after the worker ended (the queued jobs are released). That
-last case leaves the upload worker failed for good, so it runs last in `main()`. The issue #888 sidecar cases share one
-heap ring and options (`rdio_case_hist()`, `rdio_case_opts()`), zeroed for each case, rather than each keeping a static
-ring.
+(the test folder's file system must allow 255-byte names), no copy and no job after a Stop, a Stop at the sidecar's
+publication (through `dsd_rdio_set_sidecar_published_observer()`, after the private inputs and before the enqueue)
+leaving the job unqueued and its WAV unheld, no private input made for a call a full queue refuses (counted at its
+sidecar's publication), and removals that fail (a read-only folder) leaving their files with one log line a run. The
+faults no real file system gives on demand come from GNU ld `--wrap` link seams (`DSD_TEST_WRAP_RDIO_SEAMS`, GCC or
+Clang builds off macOS and Windows, as the other `--wrap` tests): a hard link that fails as on a drive with none while
+the Stop arrives (the copy fallback then ends), a private open that makes its file and no stream (also with the folder
+turned read-only right after, so that file's removal fails and is the run's one log line), and a worker join that
+reports failure after the worker ended (the queued jobs are released). That last case leaves the upload worker failed
+for good, so it runs last in `main()`. The issue #888 sidecar cases share one heap ring and options
+(`rdio_case_hist()`, `rdio_case_opts()`), zeroed for each case, rather than each keeping a static ring.
 
 ### Digital voice chain checks (issue #653)
 
