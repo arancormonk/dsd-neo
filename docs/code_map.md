@@ -15013,7 +15013,9 @@ single "current call".
   class its DM-SETUP or DM-CONNECT ACK gave (`dmo_tx_crypt`, and the SCH/S security class itself, `dmo_tx_aie`: DM-2-A,
   DM-2-B and DM-2-C all encrypt the air interface, but are three classes), which its DM-OCCUPIED shall repeat (clause
   8.5.3): one that agrees confirms it, opening what an unread DMAC-SYNC sealed, one that contradicts it leaves the more
-  closed of the two (`dmo_apply_setup()`), and a set-up from another source or of another class, like a DM-2-C
+  closed of the two (`dmo_apply_setup()`), and a set-up from another source (source address or MNI,
+  `tetra_dmo_same_party()`, EN 300 396-3 clause 8.5.2.1.1: the colour code seed holds only six MNI bits, so two
+  co-channel networks' masters of one SSI share it) or of another class, like a DM-2-C
   DMAC-SYNC after a transmission of any other class, DM-2-A and DM-2-B included, starts the next transmission
   (`dmo_tx_seq`), so a DM-2-C one, which names no one, never goes on with the last one's source and destination. An
   unread DM-2-A or DM-2-B DMAC-SYNC only seals: its transmission's next DMAC-SYNC, whose addresses those classes leave

@@ -1388,7 +1388,11 @@ dmo_source_seed(const tetra_dmo_sync_s_t* s, const tetra_dmo_sync_h_t* h) {
 
 /* DM-SETUP, DM-CONNECT ACK or DM-OCCUPIED protected as @p crypt. One from another source than the transmission in
  * progress (one that names none, which EN 300 396-5 clause 13.5.2.1.1 keeps for gateway-specific messages, is the same
- * as another that names none), or with none in progress, starts a transmission, and so does a set-up that gives another
+ * as another that names none), or with none in progress, starts a transmission. Another source is another source
+ * address or MNI (tetra_dmo_same_party()): a DM-OCCUPIED, DM-CONNECT ACK or DM-RESERVED of a transmission carries the
+ * source address and MNI of the set-up that started it (EN 300 396-3 clause 8.5.2.1.1), and the colour code seed alone,
+ * which holds only six MNI bits (clause 8.2.4), does not tell two co-channel networks' masters of one SSI apart. So
+ * does a set-up that gives another
  * class: another security class (DM-2-A, DM-2-B and DM-2-C all encrypt the air interface), or under DM-1 another
  * end-to-end encryption; one that repeats the set-up's class goes on with it. A DM-OCCUPIED shall carry the class of
  * the DM-SETUP or DM-CONNECT ACK that initiated its transmission (clause 8.5.3): one that agrees confirms it, which
@@ -1401,7 +1405,8 @@ dmo_apply_setup(tetra_state_t* ts, const tetra_dmo_sync_s_t* s, const tetra_dmo_
     const uint32_t seed = dmo_source_seed(s, h);
     const int occupied = h->msg_type == TETRA_DMO_MSG_OCCUPIED;
     const int other_class = crypt != tx || !dmo_in_transmission_of(ts, s->enc_state);
-    if (tx == TETRA_DMO_CRYPT_UNKNOWN || seed != ts->dmo_tx_seed || (!occupied && other_class)) {
+    const int other_party = !ts->dmo_tx_party || !tetra_dmo_same_party(ts->dmo_tx_src, ts->dmo_tx_mni, h);
+    if (tx == TETRA_DMO_CRYPT_UNKNOWN || seed != ts->dmo_tx_seed || other_party || (!occupied && other_class)) {
         dmo_learn_dcc(ts, s, h);
         dmo_start_transmission(ts, s, s->enc_state, crypt, seed);
         ts->dmo_tx_src = h->src;

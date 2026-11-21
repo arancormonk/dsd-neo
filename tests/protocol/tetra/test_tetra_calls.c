@@ -1999,6 +1999,24 @@ dmo_dsb_reserved_mni(session* s, uint32_t src, uint32_t mni, uint32_t type, uint
 /* The MNI of the k_dmo_sch_h vector's source: 753/2361. */
 #define TEST_DMO_MNI 0xBC4939u
 
+/* dmo_dsb() (DM-OCCUPIED, DM-1, source 100) from the network of MNI @p mni. */
+static void
+dmo_dsb_occupied_mni(session* s, uint32_t mni) {
+    uint8_t bits[128];
+    DSD_MEMSET(bits, 0, sizeof bits);
+    bits_of(k_dmo_sch_s, bits);
+    tetra_dmo_sync_s_t sync_s;
+    (void)tetra_dmo_parse_sync_s(bits, &sync_s);
+    DSD_MEMSET(bits, 0, sizeof bits);
+    bits_of(k_dmo_sch_h, bits);
+    put_bits(bits, 66, 24, mni);
+    tetra_dmo_sync_h_t sync_h;
+    (void)tetra_dmo_parse_sync_h(bits, 0, &sync_h);
+    assert(sync_h.has_addrs && sync_h.msg_type == TETRA_DMO_MSG_OCCUPIED && sync_h.src == 100u && sync_h.mni == mni);
+    tetra_dmo_apply_sync(s->state, &sync_s, &sync_h);
+    tetra_calls_dmo_pdu(s->opts, s->state, sync_s.enc_state, &sync_h);
+}
+
 /* dmo_dsb_reserved_mni() from the vector's network. */
 static void
 dmo_dsb_reserved(session* s, uint32_t src, uint32_t type, uint32_t time, uint8_t frame) {
@@ -2061,6 +2079,46 @@ test_direct_mode_reservation_retires_the_transmission(void) {
     call = canonical(s.state);
     assert(call.phase == DSD_CALL_PHASE_ENDED && call.end_reason == DSD_CALL_END_TERMINATOR && !ts->calls.dmo.active);
     assert(tetra_dmo_call_crypt(s.state) == TETRA_DMO_CRYPT_UNKNOWN);
+    session_close(&s);
+}
+
+/* Two co-channel networks' masters of one SSI whose MNIs differ by 0x40 give one DM colour code seed, which holds only
+ * the MNI's six low bits (EN 300 396-3 clause 8.2.4). The source address and MNI together name the master of a
+ * transmission (clause 8.5.2.1.1), so the second network's DM-OCCUPIED, with no end of the first's transmission heard,
+ * starts a transmission and a canonical call of its own; a late DM-RESERVED of the first network's master then ends
+ * neither, and the second master's own DM-RESERVED ends both its call's transmission and the colour code and protection
+ * of the lower layer at once. */
+static void
+test_direct_mode_setup_names_the_master_by_network(void) {
+    session s = session_open();
+    session_history(&s);
+    const uint32_t other = TEST_DMO_MNI + 0x40u;
+    assert((other & 0x3Fu) == (TEST_DMO_MNI & 0x3Fu));
+    dmo_dsb(&s, TETRA_DMO_AIE_DM1);
+    const uint64_t first = canonical(s.state).epoch;
+    const tetra_state_t* ts = tetra_st_existing(s.state);
+    const uint32_t tx_seq = ts->dmo_tx_seq;
+    dmo_dsb_occupied_mni(&s, other);
+    dsd_call_snapshot call = canonical(s.state);
+    if (ts->dmo_tx_seq == tx_seq || call.epoch == first) {
+        DSD_FPRINTF(stderr,
+                    "FAIL the other network's master went on with the first one's transmission (tx %u, epoch "
+                    "%s)\n",
+                    (unsigned)ts->dmo_tx_seq, call.epoch == first ? "same" : "new");
+    }
+    assert(ts->dmo_tx_seq == tx_seq + 1U && ts->dmo_tx_mni == other && call.phase == DSD_CALL_PHASE_ACTIVE
+           && call.epoch != first);
+    const uint64_t second = call.epoch;
+    /* The first network's master's late reservation is not this transmission's. */
+    dmo_dsb_reserved_mni(&s, 100u, TEST_DMO_MNI, 0u, 5u, 6u);
+    call = canonical(s.state);
+    assert(call.phase == DSD_CALL_PHASE_ACTIVE && call.epoch == second && ts->dmo_dcc_valid
+           && tetra_dmo_call_crypt(s.state) == TETRA_DMO_CRYPT_CLEAR);
+    /* Its own master's ends the transmission in both layers. */
+    dmo_dsb_reserved_mni(&s, 100u, other, 0u, 5u, 6u);
+    call = canonical(s.state);
+    assert(call.phase == DSD_CALL_PHASE_ENDED && call.epoch == second && ts->calls.dmo.active);
+    assert(!ts->dmo_dcc_valid && tetra_dmo_call_crypt(s.state) == TETRA_DMO_CRYPT_UNKNOWN);
     session_close(&s);
 }
 
@@ -5051,6 +5109,7 @@ main(void) {
     test_direct_mode_transmissions_apart();
     test_direct_mode_reservation_retires_the_transmission();
     test_direct_mode_reservation_keeps();
+    test_direct_mode_setup_names_the_master_by_network();
     test_direct_mode_short_data();
     test_direct_mode_short_data_fcs();
     test_direct_mode_short_data_repeats();
