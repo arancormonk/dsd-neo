@@ -1396,8 +1396,10 @@ The editor's Advanced section has **Voice only** and **Skip silent channels** ch
 stores its own, but they are session settings (`--scan-voice-only`, `--scan-skip-silent`): lists that differ cannot
 scan together, Extra decoder arguments may not carry those switches, and a change applies at the next start. An
 unchecked box starts the scan with `--no-scan-voice-only` or `--no-scan-skip-silent`, so a config file loaded with
-`--config` in Extra decoder arguments cannot turn that setting on. See
-[Skipping silent channels](#skipping-silent-channels).
+`--config` in Extra decoder arguments cannot turn that setting on. The checkbox does not set how long the check
+reads: Extra decoder arguments may carry `--scan-skip-silent-ms <ms>` (or `--scan-skip-silent-ms=<ms>`) for the
+whole session, and the decoder checks its range. See [Skipping silent channels](#skipping-silent-channels) and
+[Reading length (experts)](#reading-length-experts).
 The editor does not model the per-visit cap: put `--scan-max-visit-ms <ms>` in Extra decoder
 arguments to cap every target in the session, or import a target CSV whose `options`
 cells cap individual targets. Per-target squelch is likewise CSV-only: import a target CSV

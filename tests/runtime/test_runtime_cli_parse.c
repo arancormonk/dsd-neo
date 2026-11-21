@@ -11009,6 +11009,116 @@ test_scan_max_visit_warns_without_scan_mode(void) {
     return test_rc;
 }
 
+/* --scan-skip-silent-ms (#834) parses in both long-option spellings and keeps the value as given: 10, 500 and a value
+ * between whole slices (85) all land in dsd_opts unchanged, since rounding to 10 ms slices is the engine's. */
+static int
+test_scan_skip_silent_ms_parses(void) {
+    static const int wanted[] = {10, 85, 500};
+    int test_rc = 0;
+    for (size_t i = 0; i < sizeof wanted / sizeof wanted[0]; i++) {
+        for (int equals = 0; equals < 2; equals++) {
+            dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(dsd_opts));
+            dsd_state* state = (dsd_state*)calloc(1, sizeof(dsd_state));
+            if (!opts || !state) {
+                free(opts);
+                free(state);
+                return 1;
+            }
+            initOpts(opts);
+            initState(state);
+            if (opts->scan_skip_silent_ms != 0) {
+                DSD_FPRINTF(stderr, "scan_skip_silent_ms defaults to %d, want 0\n", opts->scan_skip_silent_ms);
+                test_rc = 1;
+            }
+
+            char arg0[] = "dsd-neo";
+            char arg_flag[] = "--scan-skip-silent-ms";
+            char value[16];
+            char equals_form[48];
+            DSD_SNPRINTF(value, sizeof value, "%d", wanted[i]);
+            DSD_SNPRINTF(equals_form, sizeof equals_form, "--scan-skip-silent-ms=%d", wanted[i]);
+            char* argv_space[] = {arg0, arg_flag, value, NULL};
+            char* argv_equals[] = {arg0, equals_form, NULL};
+            char** argv = equals ? argv_equals : argv_space;
+            const int argc = equals ? 2 : 3;
+
+            int argc_effective = 0;
+            int exit_rc = 0;
+            int rc = dsd_parse_args(argc, argv, opts, state, &argc_effective, &exit_rc);
+            if (rc != DSD_PARSE_CONTINUE || exit_rc != 0 || opts->scan_skip_silent_ms != wanted[i]) {
+                DSD_FPRINTF(stderr, "%s form: expected scan-skip-silent-ms %d, got rc=%d exit_rc=%d ms=%d\n",
+                            equals ? "equals" : "space", wanted[i], rc, exit_rc, opts->scan_skip_silent_ms);
+                test_rc = 1;
+            }
+
+            freeState(state);
+            free(opts);
+            free(state);
+        }
+    }
+    return test_rc;
+}
+
+/* 0 (the calibrated reading is the default, not a value to give), 9, 501, a negative value, text that is no whole
+ * number and a missing value are refused in both spellings with an error naming the option; nothing reaches
+ * dsd_opts. */
+static int
+test_scan_skip_silent_ms_refuses_values_outside_range(void) {
+    static const char* const values[] = {"0", "9", "501", "-10", "abc", "50ms", ""};
+    int test_rc = 0;
+    for (size_t i = 0; i <= sizeof values / sizeof values[0]; i++) {
+        for (int equals = 0; equals < 2; equals++) {
+            const int missing = i == sizeof values / sizeof values[0];
+            if (missing && equals) {
+                continue;
+            }
+            dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(dsd_opts));
+            dsd_state* state = (dsd_state*)calloc(1, sizeof(dsd_state));
+            if (!opts || !state) {
+                free(opts);
+                free(state);
+                return 1;
+            }
+            initOpts(opts);
+            initState(state);
+
+            char arg0[] = "dsd-neo";
+            char arg_flag[] = "--scan-skip-silent-ms";
+            char value[16];
+            char equals_form[48];
+            DSD_SNPRINTF(value, sizeof value, "%s", missing ? "" : values[i]);
+            DSD_SNPRINTF(equals_form, sizeof equals_form, "--scan-skip-silent-ms=%s", value);
+            char* argv_space[] = {arg0, arg_flag, missing ? NULL : value, NULL};
+            char* argv_equals[] = {arg0, equals_form, NULL};
+            char** argv = equals ? argv_equals : argv_space;
+            const int argc = (equals || missing) ? 2 : 3;
+
+            char output[4096];
+            int argc_effective = 0;
+            int exit_rc = -1;
+            int rc =
+                parse_args_capture_stderr(argc, argv, opts, state, &argc_effective, &exit_rc, output, sizeof output);
+            if (rc != DSD_PARSE_ERROR || exit_rc != 1 || opts->scan_skip_silent_ms != 0
+                || !strstr(output, "--scan-skip-silent-ms")) {
+                DSD_FPRINTF(stderr, "%s form \"%s\": expected a refusal, got rc=%d exit_rc=%d ms=%d stderr \"%s\"\n",
+                            equals ? "equals" : "space", missing ? "(missing)" : values[i], rc, exit_rc,
+                            opts->scan_skip_silent_ms, output);
+                test_rc = 1;
+            }
+            if (!missing && values[i][0] != '\0' && strspn(values[i], "-0123456789") == strlen(values[i])
+                && !strstr(output, "10..500")) {
+                DSD_FPRINTF(stderr, "\"%s\": the refusal does not name 10..500: \"%s\"\n", values[i], output);
+                test_rc = 1;
+            }
+
+            freeState(state);
+            free(opts);
+            free(state);
+        }
+    }
+    return test_rc;
+}
+
 /* Runs the bootstrap (INI first, then argv) and returns the stderr text. The caller owns opts and state. */
 static int
 scan_warn_bootstrap(const char* ini, char* a1, char* a2, dsd_opts* opts, dsd_state* state, char* out, size_t out_size) {
@@ -11064,15 +11174,37 @@ test_scan_option_warnings_name_their_source(void) {
          "--scan-max-visit-ms has no effect without", "[trunking] scan_max_visit_ms has no effect"},
         {"[trunking]\nscan_max_visit_ms = 1000\n", "--scan-max-visit-ms=0", NULL, NULL, "scan_max_visit_ms has no"},
         /* An active scan (-Y on argv, or scanner = true in the INI) leaves every one of them silent. */
-        {"[trunking]\nscan_voice_only = true\nscan_max_visit_ms = 1000\nscan_skip_silent = true\n", "-Y", NULL, NULL,
-         "has no effect without"},
-        {"[trunking]\nscanner = true\nscan_voice_only = true\nscan_max_visit_ms = 1000\nscan_skip_silent = true\n",
+        {"[trunking]\nscan_voice_only = true\nscan_max_visit_ms = 1000\nscan_skip_silent = true\n"
+         "scan_skip_silent_ms = 50\n",
+         "-Y", NULL, NULL, "has no effect without"},
+        {"[trunking]\nscanner = true\nscan_voice_only = true\nscan_max_visit_ms = 1000\nscan_skip_silent = true\n"
+         "scan_skip_silent_ms = 50\n",
          NULL, NULL, NULL, "has no effect without"},
         {"[trunking]\nscan_skip_silent = true\n", NULL, NULL, "[trunking] scan_skip_silent has no effect without",
          "--scan-skip-silent has no effect"},
         {"[trunking]\nscan_skip_silent = false\n", "--scan-skip-silent", NULL,
          "--scan-skip-silent has no effect without", "[trunking] scan_skip_silent has no effect"},
         {"[trunking]\nscan_skip_silent = true\n", "--no-scan-skip-silent", NULL, NULL, "scan_skip_silent has no"},
+        /* The skip-silent reading length (#834): no effect without a scan, named by where it was set... */
+        {"[trunking]\nscan_skip_silent = true\nscan_skip_silent_ms = 50\n", NULL, NULL,
+         "WARNING: [trunking] scan_skip_silent_ms has no effect without -Y or --trunk-scan.",
+         "--scan-skip-silent-ms has no effect"},
+        {"[trunking]\nscan_skip_silent = true\nscan_skip_silent_ms = 50\n", "--scan-skip-silent-ms=40", NULL,
+         "WARNING: --scan-skip-silent-ms has no effect without -Y or --trunk-scan.",
+         "[trunking] scan_skip_silent_ms has no effect"},
+        /* ...and none under a scan with skip-silent off, where only the setting it changes is missing. */
+        {"[trunking]\nscan_skip_silent = false\n", "-Y", "--scan-skip-silent-ms=50",
+         "WARNING: --scan-skip-silent-ms has no effect without --scan-skip-silent.\n", "without -Y or --trunk-scan"},
+        {"[trunking]\nscanner = true\nscan_skip_silent_ms = 50\n", NULL, NULL,
+         "WARNING: [trunking] scan_skip_silent_ms has no effect without --scan-skip-silent.\n",
+         "--scan-skip-silent-ms has no effect"},
+        {"[trunking]\nscanner = true\nscan_skip_silent = true\nscan_skip_silent_ms = 50\n", "--no-scan-skip-silent",
+         NULL, "WARNING: [trunking] scan_skip_silent_ms has no effect without --scan-skip-silent.\n", NULL},
+        {"[trunking]\nscanner = true\nscan_skip_silent_ms = 50\n", "--scan-skip-silent", NULL, NULL,
+         "scan_skip_silent_ms has no effect"},
+        {"[trunking]\nscanner = true\n", "--scan-skip-silent", "--scan-skip-silent-ms=500", NULL,
+         "scan-skip-silent-ms has no effect"},
+        {"[trunking]\nscanner = true\n", NULL, NULL, NULL, "skip_silent_ms has no effect"},
     };
     int test_rc = 0;
     for (size_t i = 0; i < sizeof cases / sizeof cases[0]; i++) {
@@ -11167,7 +11299,8 @@ test_scan_skip_silent_cli_and_ini(void) {
 }
 
 /* Help: both skip-silent flags and --no-scan-voice-only sit in the Trunking Options section beside
- * --scan-voice-only, and -t says what it does not do in --trunk-scan. */
+ * --scan-voice-only, the skip-silent reading length (#834) follows them with its range, and -t says what it does not do
+ * in --trunk-scan. */
 static int
 test_scan_flags_are_in_the_trunking_help_section(void) {
     dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(dsd_opts));
@@ -11207,9 +11340,11 @@ test_scan_flags_are_in_the_trunking_help_section(void) {
             const char* no_voice = section ? strstr(section, "--no-scan-voice-only") : NULL;
             const char* skip = section ? strstr(section, "--scan-skip-silent  ") : NULL;
             const char* no_skip = section ? strstr(section, "--no-scan-skip-silent") : NULL;
+            const char* skip_ms = section ? strstr(section, "--scan-skip-silent-ms <ms>") : NULL;
             const char* first_no_voice = strstr(text, "--no-scan-voice-only");
             if (!voice || !no_voice || !skip || !no_skip || first_no_voice != no_voice || !(voice < no_voice)
-                || !(no_voice < skip) || !(skip < no_skip)
+                || !(no_voice < skip) || !(skip < no_skip) || !skip_ms || !(no_skip < skip_ms)
+                || !strstr(skip_ms, "10..500")
                 || !strstr(section, "In --trunk-scan, -t never shortens a conventional target's idle dwell")) {
                 DSD_FPRINTF(stderr, "scan switches are not together in the Trunking Options help section\n");
                 test_rc = 1;
@@ -13343,6 +13478,8 @@ main(void) {
     rc |= test_scan_max_visit_warns_without_scan_mode();
     rc |= test_scan_option_warnings_name_their_source();
     rc |= test_scan_skip_silent_cli_and_ini();
+    rc |= test_scan_skip_silent_ms_parses();
+    rc |= test_scan_skip_silent_ms_refuses_values_outside_range();
     rc |= test_scan_flags_are_in_the_trunking_help_section();
     rc |= test_bootstrap_inherited_trunk_scan_preserves_max_visit_override();
     rc |= test_squelch_option();

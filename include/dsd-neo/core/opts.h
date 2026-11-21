@@ -107,6 +107,18 @@ typedef struct {
 #define DSD_ANALOG_RECORD_PREROLL_DEFAULT_MS 200
 #define DSD_ANALOG_RECORD_PREROLL_MAX_MS     1000
 
+/* The scan skip-silent reading length in ms (dsd_opts.scan_skip_silent_ms, #834), an expert setting: 0 is the
+   calibrated reading, else the shortest and longest length the CLI and the INI take. A value outside them is refused,
+   never clamped. */
+#define DSD_SCAN_SKIP_SILENT_MS_MIN          10
+#define DSD_SCAN_SKIP_SILENT_MS_MAX          500
+
+/** @brief Return 1 when @p ms is a skip-silent reading length the CLI or the INI may store: 0, or MIN..MAX. */
+static inline int
+dsd_scan_skip_silent_ms_is_valid(long ms) {
+    return ms == 0 || (ms >= DSD_SCAN_SKIP_SILENT_MS_MIN && ms <= DSD_SCAN_SKIP_SILENT_MS_MAX);
+}
+
 struct dsd_opts {
 #ifdef __cplusplus
     dsd_opts() noexcept { DSD_MEMSET(this, 0, sizeof(*this)); }
@@ -407,6 +419,10 @@ struct dsd_opts {
     int scan_voice_only;
     /* Session-wide (#834): skip a silent conventional scan channel after a quick RF check. Never a scan-row option. */
     int scan_skip_silent;
+    /* Session-wide (#834): the length of the skip-silent reading in ms, which the quiet check rounds up to whole 10 ms
+       slices. 0 is the calibrated reading; else DSD_SCAN_SKIP_SILENT_MS_MIN..DSD_SCAN_SKIP_SILENT_MS_MAX. Never a
+       scan-row option. */
+    int scan_skip_silent_ms;
     int scan_voice_qualify_ms;
     int scan_voice_hold_ms;
     /* 0 disables; else 1000..3600000 ms cap on one scan-target visit (issue #507) */

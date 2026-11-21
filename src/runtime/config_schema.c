@@ -140,6 +140,10 @@ static const dsdcfg_schema_entry_t s_schema[] = {
     {"trunking", "scan_voice_only", "Only stop scan on channels carrying voice", "false", NULL, DSDCFG_TYPE_BOOL, 0, 0},
     {"trunking", "scan_skip_silent", "Skip a silent conventional scan channel after a quick RF check", "false", NULL,
      DSDCFG_TYPE_BOOL, 0, 0},
+    {"trunking", "scan_skip_silent_ms",
+     "Expert: length of the skip-silent reading in ms, rounded up to 10 ms slices (0 = the calibrated reading; else "
+     "10..500)",
+     "0", NULL, DSDCFG_TYPE_INT, 0, DSD_SCAN_SKIP_SILENT_MS_MAX},
     {"trunking", "scan_voice_qualify_ms", "Window after sync in which voice must appear or the scan moves on", "1000",
      NULL, DSDCFG_TYPE_INT, 100, 600000},
     {"trunking", "scan_voice_hold_ms", "Time to stay after the last voice frame", "2000", NULL, DSDCFG_TYPE_INT, 100,

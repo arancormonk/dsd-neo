@@ -279,6 +279,28 @@ test_scan_skip_silent_long_opts_are_removed(void) {
     return 0;
 }
 
+/* The skip-silent reading length (#834) takes a value in both spellings: the flag and its value leave this pre-getopt
+ * pass together, so a bare "50" never reads as a positional argument, and the boolean --scan-skip-silent beside it is
+ * still its own switch. */
+static int
+test_scan_skip_silent_ms_long_opts_are_removed(void) {
+    char arg0[] = "dsd-neo";
+    char arg1[] = "--scan-skip-silent-ms";
+    char arg2[] = "50";
+    char arg3[] = "--scan-skip-silent-ms=120";
+    char arg4[] = "--scan-skip-silent";
+    char arg5[] = "-fi";
+    char* argv[] = {arg0, arg1, arg2, arg3, arg4, arg5, NULL};
+
+    int new_argc = dsd_cli_compact_args(6, argv);
+    if (new_argc != 2 || argv[1] == NULL || strcmp(argv[1], "-fi") != 0) {
+        DSD_FPRINTF(stderr, "expected only -fi to survive the skip-silent length, got argc=%d argv[1]=\"%s\"\n",
+                    new_argc, argv[1] ? argv[1] : "(null)");
+        return 1;
+    }
+    return 0;
+}
+
 /* The per-visit cap (issue #507) must leave this pre-getopt pass in BOTH spellings. A
  * surviving bare value token looks like a positional argument to
  * bootstrap_compacted_arg_disables_inherited_trunk_scan(), which would switch off a
@@ -860,6 +882,7 @@ main(void) {
     rc |= test_scan_voice_long_opts_are_removed();
     rc |= test_scan_skip_silent_long_opts_are_removed();
     rc |= test_scan_max_visit_long_opts_are_removed();
+    rc |= test_scan_skip_silent_ms_long_opts_are_removed();
     rc |= test_am_bandwidth_long_opts_are_removed();
     rc |= test_analog_record_max_gap_long_opts_are_removed();
     rc |= test_analog_record_preroll_long_opts_are_removed();

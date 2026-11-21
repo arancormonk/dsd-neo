@@ -531,6 +531,10 @@ dsd_cli_usage_section_trunking_and_tools(void) {
     printf("      --scan-skip-silent  Skip a silent conventional scan channel after a quick RF check; applies to\n");
     printf("                 -Y and --trunk-scan conventional targets, never a row option.\n");
     printf("      --no-scan-skip-silent  Turn --scan-skip-silent off (also over a config file value).\n");
+    printf("      --scan-skip-silent-ms <ms>  Expert: length of the skip-silent reading, rounded up to 10 ms slices\n");
+    printf("                 (10..500; default the calibrated nine slices). Fewer than nine slices (10..80 ms)\n");
+    printf("                 are not calibrated: a weak or fading signal can read silent and be skipped; DMR\n");
+    printf("                 channels are still read for at least six slices (60 ms or a little more).\n");
     printf("      --scan-voice-qualify-ms <ms>  Window after sync in which voice must appear or the scan moves on "
            "(100..600000, default 1000).\n");
     printf("      --scan-voice-hold-ms <ms>  Time to stay after the last voice frame (100..600000, default 2000).\n");
