@@ -40,6 +40,7 @@ target_sources(
         call_history_payload.cpp
         call_history_tap.cpp
         frequency_query.cpp
+        heard_talkgroup_owners.cpp # Issue #903
         heard_talkgroup_store.cpp # Issue #903
         command_bridge.cpp
         decoder_host.cpp

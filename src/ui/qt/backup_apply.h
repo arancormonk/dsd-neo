@@ -149,6 +149,16 @@ enum class ApplyOutcome {
 /** "", "applied", "failed", "deferred" or "stuck". */
 QString apply_outcome_name(ApplyOutcome outcome);
 
+/**
+ * @brief Whether this start's restore has settled. One that was Deferred or got Stuck may still replace the stores at a
+ * later start, so nothing may be deleted now on the strength of what they hold (the replay reclaim, the remembered
+ * talkgroups' owner purge).
+ */
+inline bool
+restore_settled(ApplyOutcome outcome) {
+    return outcome != ApplyOutcome::Deferred && outcome != ApplyOutcome::Stuck;
+}
+
 struct ApplyResult {
     ApplyOutcome outcome = ApplyOutcome::None;
     /** A sentence for the user; empty for None and Applied. */

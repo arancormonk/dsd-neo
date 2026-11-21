@@ -84,6 +84,7 @@ extern "C" {
 #include "decoder_host.h"
 #include "decryption_profiles_model.h"
 #include "diagnostics_log.h"
+#include "heard_talkgroup_store.h"
 #include "json_store.h"
 #include "metrics_model.h"
 #include "p25_network_model.h"
@@ -1991,6 +1992,53 @@ test_session_end_saves_after_final_ingest() {
     freeState(&state);
 }
 
+// Issue #903: the tick writes the remembered talkgroups. While a session runs it waits out the 30 s interval; on the
+// tick that sees the session end it writes what is owed at once.
+static void
+test_session_end_writes_heard_talkgroups() {
+    const QString name = QStringLiteral("heard_controller.json");
+    QFile::remove(dsd_qt::json_store_path(name));
+    dsd_qt::HeardTalkgroupStore store(name);
+    store.setOwnerPolicy([](const QString&) { return true; });
+    const QString owner = QStringLiteral("00000000-0000-4000-8000-000000009030");
+    Host host;
+    dsd_qt::UiController controller(&host, nullptr, nullptr, nullptr);
+    controller.setHeardTalkgroups(&store);
+    controller.setPollIntervalMs(50);
+    host.setPhase(Host::Running);
+    // The interval starts now, so the running ticks below are inside it.
+    store.observe(owner, 1, 41, 100);
+    store.flushIfDue(static_cast<qint64>(dsd_realtime_mono_ms()));
+    store.waitForWrites();
+    check(!store.dirty());
+    store.observe(owner, 1, 42, 200);
+    const auto run = [&controller](int ms) {
+        QEventLoop loop;
+        QTimer::singleShot(ms, &loop, &QEventLoop::quit);
+        controller.start();
+        loop.exec();
+        controller.stop();
+    };
+    run(130);
+    store.waitForWrites();
+    check(store.dirty()); // running ticks inside the interval write nothing
+    host.onRefresh = [&host]() {
+        if (host.phase == Host::Running) {
+            host.setPhase(Host::Idle);
+        }
+    };
+    run(130);
+    host.onRefresh = {};
+    store.waitForWrites();
+    check(!store.dirty());
+    bool onDisk = false;
+    for (const auto& value : dsd_qt::json_store_load_array(name)) {
+        onDisk |= value.toObject().value("id").toInt() == 42;
+    }
+    check(onDisk);
+    QFile::remove(dsd_qt::json_store_path(name));
+}
+
 /* The Activity screen's log: read from each redraw's snapshot while the session runs, kept across a scan hop (one log
  * spans the session), dropped when the session stops and read from the start at the next. */
 static void
@@ -2108,6 +2156,7 @@ main(int argc, char** argv) {
     test_history_receives_effective_scan_options();
     test_history_handoff_after_resume_without_redraw();
     test_session_end_saves_after_final_ingest();
+    test_session_end_writes_heard_talkgroups();
     test_unit_activity_follows_the_session();
     test_positions_poll_without_redraw();
     test_startup_options_wait_for_redraw();

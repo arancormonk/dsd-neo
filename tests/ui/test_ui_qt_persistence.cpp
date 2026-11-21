@@ -47,6 +47,7 @@
 #include <cmath>
 #include <functional>
 #include <limits>
+#include <memory>
 #include <stdio.h>
 #include <thread>
 #include <utility>
@@ -61,7 +62,10 @@
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/runtime/log.h>
 #include "app_prefs.h"
+#include "backup_apply.h"
 #include "dsd-neo/core/safe_api.h"
+#include "heard_talkgroup_owners.h"
+#include "heard_talkgroup_store.h"
 #include "json_store.h"
 #include "json_store_test_hooks.h"
 #include "listen_pins.h"
@@ -70,6 +74,7 @@
 #include "site_groups.h"
 
 using dsd_qt::AppPrefs;
+using dsd_qt::HeardTalkgroupStore;
 using dsd_qt::json_store_load_array;
 using dsd_qt::json_store_notices;
 using dsd_qt::json_store_path;
@@ -696,6 +701,101 @@ test_saved_systems_past_int_range(void) {
                got.value(QStringLiteral("encKeyType")).toString() != QStringLiteral("hex"));
         model.remove(0);
     }
+}
+
+/* Issue #903: the remembered talkgroups follow the saved systems. Owners missing from them are purged only when
+ * saved_systems.json loaded and no restore is Deferred or Stuck; only a system that exists with the switch on learns,
+ * as the switch and the rows change; a deleted system's list is cleared and written at once. */
+QJsonObject
+heard_entry(const QString& owner, int id) {
+    return QJsonObject{{"v", 1}, {"owner", owner}, {"variant", 1}, {"id", id}, {"first", 10}, {"last", 20}};
+}
+
+/* A heard store over the fixture (owners @p a, @p b and a missing one), following @p systems. */
+std::unique_ptr<HeardTalkgroupStore>
+heard_following(SavedSystemsModel& systems, dsd_qt::backup::ApplyOutcome restore, const QString& a, const QString& b,
+                const QString& gone) {
+    const QString name = QStringLiteral("heard_follow.json");
+    expect("follow: heard fixture",
+           json_store_save_array(name, QJsonArray{heard_entry(a, 1), heard_entry(b, 2), heard_entry(gone, 3)}));
+    auto store = std::make_unique<HeardTalkgroupStore>(name);
+    dsd_qt::heard_talkgroups_follow_systems(store.get(), &systems, restore);
+    store->waitForWrites();
+    return store;
+}
+
+void
+test_heard_talkgroups_follow_systems(void) {
+    using dsd_qt::backup::ApplyOutcome;
+    const QString systemsStore = QStringLiteral("saved_systems.json");
+    const QString a = QStringLiteral("00000000-0000-4000-8000-00000000903a");
+    const QString b = QStringLiteral("00000000-0000-4000-8000-00000000903b");
+    const QString gone = QStringLiteral("00000000-0000-4000-8000-00000000903c");
+    QFile::remove(json_store_path(systemsStore));
+    expect("follow: systems fixture",
+           write_raw(systemsStore, "[{\"uid\":\"" + a.toUtf8() + "\",\"name\":\"System A\"},{\"uid\":\"" + b.toUtf8()
+                                       + "\",\"name\":\"System B\",\"rememberTalkgroups\":false}]"));
+    {
+        SavedSystemsModel systems;
+        expect("follow: may purge after a clean load and a settled restore",
+               dsd_qt::heard_talkgroups_may_purge(systems, ApplyOutcome::None)
+                   && dsd_qt::heard_talkgroups_may_purge(systems, ApplyOutcome::Applied)
+                   && dsd_qt::heard_talkgroups_may_purge(systems, ApplyOutcome::Failed));
+        expect("follow: no purge while a restore is Deferred or Stuck",
+               !dsd_qt::heard_talkgroups_may_purge(systems, ApplyOutcome::Deferred)
+                   && !dsd_qt::heard_talkgroups_may_purge(systems, ApplyOutcome::Stuck));
+        for (const ApplyOutcome restore : {ApplyOutcome::Deferred, ApplyOutcome::Stuck}) {
+            auto store = heard_following(systems, restore, a, b, gone);
+            expect("follow: an unsettled restore keeps every owner", store->entriesFor(gone).size() == 1);
+        }
+        auto store = heard_following(systems, ApplyOutcome::None, a, b, gone);
+        expect("follow: the missing owner is purged and written",
+               store->entriesFor(gone).isEmpty() && store->entriesFor(a).size() == 1 && store->entriesFor(b).size() == 1
+                   && !store->dirty() && json_store_load_array(QStringLiteral("heard_follow.json")).size() == 2);
+        store->observe(a, 1, 11, 30);
+        store->observe(b, 1, 12, 30);
+        expect("follow: a system with the switch on learns", store->entriesFor(a).size() == 2);
+        expect("follow: a system with the switch off does not", store->entriesFor(b).size() == 1);
+        expect("follow: switched off", systems.update(0, {{QStringLiteral("rememberTalkgroups"), false}}));
+        expect("follow: switched on", systems.update(1, {{QStringLiteral("rememberTalkgroups"), true}}));
+        store->observe(a, 1, 13, 40);
+        store->observe(b, 1, 14, 40);
+        expect("follow: switching off stops learning", store->entriesFor(a).size() == 2);
+        expect("follow: switching on starts it", store->entriesFor(b).size() == 2);
+        expect("follow: a system added", systems.add({{QStringLiteral("name"), QStringLiteral("System D")}}));
+        const QString d = systems.get(2).value(QStringLiteral("uid")).toString();
+        store->observe(d, 1, 15, 50);
+        expect("follow: a new system learns", store->entriesFor(d).size() == 1);
+        expect("follow: B removed", systems.remove(1));
+        store->waitForWrites();
+        expect("follow: a deleted system's list is cleared and written",
+               store->entriesFor(b).isEmpty() && !store->dirty());
+        bool bOnDisk = false;
+        for (const auto& value : json_store_load_array(QStringLiteral("heard_follow.json"))) {
+            bOnDisk |= value.toObject().value(QStringLiteral("owner")).toString() == b;
+        }
+        expect("follow: the removal reached the file", !bOnDisk);
+        store->observe(b, 1, 16, 60);
+        expect("follow: a deleted system learns nothing", store->entriesFor(b).isEmpty());
+    }
+    /* An unreadable saved_systems.json: nothing is purged and nothing is learnt. */
+    expect("follow: corrupt systems", write_raw(systemsStore, "[{\"uid\":"));
+    {
+        SavedSystemsModel systems;
+        expect("follow: no purge when the saved systems are unreadable",
+               !dsd_qt::heard_talkgroups_may_purge(systems, ApplyOutcome::None));
+        auto store = heard_following(systems, ApplyOutcome::None, a, b, gone);
+        expect("follow: every owner kept", store->entriesFor(a).size() == 1 && store->entriesFor(b).size() == 1
+                                               && store->entriesFor(gone).size() == 1);
+        store->observe(a, 1, 17, 70);
+        expect("follow: nothing learnt", store->entriesFor(a).size() == 1);
+        /* As test_models_keep_unreadable_stores(): a save moves the corrupt file aside and clears its mark. */
+        expect("follow: a system added over the corrupt store",
+               systems.add({{QStringLiteral("name"), QStringLiteral("New")}}));
+    }
+    remove_kept(systemsStore, 1);
+    QFile::remove(json_store_path(systemsStore));
+    QFile::remove(json_store_path(QStringLiteral("heard_follow.json")));
 }
 
 /* Issue #903: "Remember heard talkgroups" is on for a new system and for a row saved before the field existed, a
@@ -4179,6 +4279,7 @@ main(int argc, char** argv) {
     test_saved_systems_past_int_range();
     test_saved_systems_gain_range();
     test_saved_systems_remember_talkgroups();
+    test_heard_talkgroups_follow_systems();
     test_saved_systems_csv_fields();
     test_app_prefs();
     test_gain_pref_range();

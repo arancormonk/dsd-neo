@@ -5282,6 +5282,9 @@ if(DSD_ENABLE_QT_UI)
         # Issue #801: the pinned Listen shortcuts, over both models.
         ${PROJECT_SOURCE_DIR}/src/ui/qt/scan_lists_model.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/listen_pins.cpp
+        # Issue #903: the remembered talkgroups following the saved systems.
+        ${PROJECT_SOURCE_DIR}/src/ui/qt/heard_talkgroup_store.cpp
+        ${PROJECT_SOURCE_DIR}/src/ui/qt/heard_talkgroup_owners.cpp
     )
     target_include_directories(
         dsd-neo_test_ui_qt_persistence
@@ -5329,6 +5332,10 @@ if(DSD_ENABLE_QT_UI)
     add_test(
         NAME UI_QT_HEARD_TALKGROUP_STORE
         COMMAND dsd-neo_test_ui_qt_heard_talkgroup_store
+    )
+    set_tests_properties(
+        UI_QT_HEARD_TALKGROUP_STORE
+        PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen"
     )
 
     add_executable(

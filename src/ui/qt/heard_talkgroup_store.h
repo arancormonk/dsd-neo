@@ -17,8 +17,9 @@
  * nothing is learnt for the rest of the process (json_store posts its notice). Each owner keeps at most
  * kMaxEntriesPerOwner entries; the one heard longest ago goes first, ties to the lower variant, then the lower id.
  *
- * Writes are serialized on one worker, each with the whole state as it stood when it was queued, so the last one
- * queued is what the file ends up holding. The store stays owed (dirty) until a write of its latest state succeeds.
+ * Writes are serialized on one worker. At most one write waits behind the one running, and it writes the latest state
+ * queued when it starts, so a burst of changes is one write and the file ends up holding the newest state. The store
+ * stays owed (dirty) until a write of its latest state succeeds.
  * Background learning is written at most every kFlushIntervalMs of real monotonic time (flushIfDue(), from the UI
  * poll), and at once at Stop, app pause, quit and teardown (flushNow(), the destructor). Forget, clear and purge are
  * written straight away. GUI thread only.
@@ -39,6 +40,7 @@
 #include <atomic>
 #include <functional>
 #include <memory>
+#include <mutex>
 
 #include "heard_talkgroup_sink.h"
 
@@ -154,11 +156,23 @@ class HeardTalkgroupStore : public QObject, public HeardTalkgroupSink {
     quint64 m_queuedGeneration = 0; // the state the last queued write carries
     qint64 m_lastFlushMs = -1;      // when flushIfDue() last queued, real monotonic ms
 
-    /* What the worker reports: the newest generation it wrote, and how many writes are queued or running. */
+    /* What the GUI thread and the worker share: the newest generation written, how many writes are queued or
+       running, and, under the lock, the latest state queued and whether a write that has not started will take it. */
     struct Shared {
         std::atomic<quint64> written{0};
         std::atomic<int> pending{0};
+        std::mutex lock;
+        bool jobWaiting = false;
+        bool hasState = false;
+        QVector<Entry> entries;
+        QJsonArray kept;
+        quint64 generation = 0;
     };
+
+    /** Takes the latest queued state, if any, and lets the next queueWrite() start a write. */
+    static bool takeQueued(Shared& shared, QVector<Entry>* entries, QJsonArray* kept, quint64* generation);
+    /** The worker's part of a write: take the latest queued state, write it, report. */
+    static void runWrite(const std::shared_ptr<Shared>& shared, const QString& fileName);
 
     std::shared_ptr<Shared> m_shared;
     QThreadPool m_pool;

@@ -14,6 +14,7 @@
 #include <QStringList>
 #include <Qt>
 #include <algorithm>
+#include <mutex>
 #include <tuple>
 #include <utility>
 
@@ -336,26 +337,58 @@ HeardTalkgroupStore::queueWrite() {
         return; // never: an unreadable file is not replaced
     }
     m_queuedGeneration = m_generation;
-    m_shared->pending.fetch_add(1);
     // A flat copy the worker owns, built here; its JSON is built on the worker. m_kept is never edited after load,
-    // so the worker's copy shares its data with nothing that changes.
+    // so the worker's copy shares its data with nothing that changes. It replaces a state queued earlier that no
+    // write has taken yet: the write waiting behind the running one writes only the newest.
     QVector<Entry> entries = flatEntries();
-    const quint64 generation = m_generation;
-    m_pool.start(
-        [shared = m_shared, fileName = m_fileName, entries = std::move(entries), kept = m_kept, generation]() mutable {
+    {
+        const std::lock_guard<std::mutex> locker(m_shared->lock);
+        m_shared->entries = std::move(entries);
+        m_shared->kept = m_kept;
+        m_shared->generation = m_generation;
+        m_shared->hasState = true;
+        if (m_shared->jobWaiting) {
+            return;
+        }
+        m_shared->jobWaiting = true;
+    }
+    m_shared->pending.fetch_add(1);
+    m_pool.start([shared = m_shared, fileName = m_fileName]() { runWrite(shared, fileName); });
+}
+
+bool
+HeardTalkgroupStore::takeQueued(Shared& shared, QVector<Entry>* entries, QJsonArray* kept, quint64* generation) {
+    const std::lock_guard<std::mutex> locker(shared.lock);
+    shared.jobWaiting = false;
+    if (!shared.hasState) {
+        return false;
+    }
+    shared.hasState = false;
+    *entries = std::exchange(shared.entries, QVector<Entry>());
+    *kept = std::exchange(shared.kept, QJsonArray());
+    *generation = shared.generation;
+    return true;
+}
+
+void
+HeardTalkgroupStore::runWrite(const std::shared_ptr<Shared>& shared, const QString& fileName) {
+    QVector<Entry> entries;
+    QJsonArray kept;
+    quint64 generation = 0;
+    if (takeQueued(*shared, &entries, &kept, &generation)) {
 #ifdef DSD_NEO_TEST_HOOKS
-            if (before_write_hook()) {
-                before_write_hook()();
-            }
+        if (before_write_hook()) {
+            before_write_hook()();
+        }
 #endif
-            if (json_store_save_array(fileName, entries_to_json(std::move(entries), kept))) {
-                // Writes run in the order they were queued, and each carries a generation no older than the last's.
-                shared->written.store(generation);
-            } else {
-                LOG_WARN("%s could not be saved; it is retried.\n", qUtf8Printable(fileName));
-            }
-            shared->pending.fetch_sub(1);
-        });
+        if (json_store_save_array(fileName, entries_to_json(std::move(entries), kept))) {
+            // One write runs at a time and each takes the newest state queued, so generations only grow.
+            shared->written.store(generation);
+        } else {
+            LOG_WARN("%s could not be saved; it is retried.\n", qUtf8Printable(fileName));
+        }
+    }
+    shared->pending.fetch_sub(1);
 }
 
 #ifdef DSD_NEO_TEST_HOOKS

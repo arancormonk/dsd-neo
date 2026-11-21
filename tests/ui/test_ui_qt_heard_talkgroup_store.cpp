@@ -9,13 +9,15 @@
  * malformed or future file is never written, moved or purged, through observes, Stop flushes, due flushes and teardown;
  * a failed write stays owed and is retried; background writes come at most once, and at least once, per 30 s of real
  * time; forget and clear are written at once and no older write queued before them undoes them; purge removes only
- * owners missing from the live set; an owner the policy does not allow learns nothing. Registered only when the Qt
+ * owners missing from the live set; an owner the policy does not allow learns nothing; a burst queued behind a running
+ * write is one more write, of the newest state; going off screen and quitting write what is owed. Registered only when the Qt
  * frontend is enabled (DSD_ENABLE_QT_UI). */
 
 #include <QCoreApplication>
 #include <QDir>
 #include <QFile>
 #include <QFileInfo>
+#include <QGuiApplication>
 #include <QIODevice>
 #include <QJsonArray>
 #include <QJsonDocument>
@@ -26,7 +28,9 @@
 #include <QSet>
 #include <QStandardPaths>
 #include <QString>
+#include <QTimer>
 #include <QVector>
+#include <Qt>
 #include <algorithm>
 #include <atomic>
 #include <dsd-neo/core/safe_api.h>
@@ -432,6 +436,87 @@ test_forget_clear_not_undone() {
     check_not_undone(true);
 }
 
+/* A burst queued behind a running write is one more write, of the newest state. */
+void
+test_burst_coalesced() {
+    const QString name = QStringLiteral("heard_burst.json");
+    fresh(name);
+    auto gate = std::make_shared<QSemaphore>(0);
+    auto entered = std::make_shared<QSemaphore>(0);
+    auto writes = std::make_shared<std::atomic<int>>(0);
+    HeardTalkgroupStore::setBeforeWriteForTest([gate, entered, writes] {
+        if (writes->fetch_add(1) == 0) {
+            entered->release();
+            gate->acquire();
+        }
+    });
+    {
+        HeardTalkgroupStore store(name);
+        store.setOwnerPolicy(allow_all);
+        for (quint32 id = 1; id <= 3; ++id) {
+            store.observe(kOwnerA, 1, id, 100);
+        }
+        store.observe(kOwnerB, 1, 9, 100);
+        store.flushNow();
+        entered->acquire(); // the first write runs with all four entries
+        store.forget(kOwnerA, 1);
+        store.forget(kOwnerA, 2);
+        store.clear(kOwnerB);
+        store.observe(kOwnerC, 1, 7, 200);
+        store.flushNow();
+        gate->release();
+        store.waitForWrites();
+        expect("burst: one write after the running one", writes->load() == 2);
+        expect("burst: it holds the newest state",
+               !store.dirty() && !stored_has(name, kOwnerA, 1) && !stored_has(name, kOwnerA, 2)
+                   && stored_has(name, kOwnerA, 3) && !stored_has(name, kOwnerB, 9) && stored_has(name, kOwnerC, 7));
+    }
+    HeardTalkgroupStore::setBeforeWriteForTest({});
+    expect("burst: nothing more at teardown", writes->load() == 2);
+    fresh(name);
+}
+
+/* Going off screen (Suspended or Hidden) writes what is owed; coming back on screen does not. */
+void
+test_pause_hook() {
+    const QString name = QStringLiteral("heard_pause.json");
+    auto* app = qobject_cast<QGuiApplication*>(QCoreApplication::instance());
+    expect("pause: a GUI application", app != nullptr);
+    if (app == nullptr) {
+        return;
+    }
+    fresh(name);
+    HeardTalkgroupStore store(name);
+    store.setOwnerPolicy(allow_all);
+    store.observe(kOwnerA, 1, 1, 10);
+    Q_EMIT app->applicationStateChanged(Qt::ApplicationActive);
+    store.waitForWrites();
+    expect("pause: on screen writes nothing", store.dirty());
+    Q_EMIT app->applicationStateChanged(Qt::ApplicationSuspended);
+    store.waitForWrites();
+    expect("pause: suspended writes", !store.dirty() && stored_has(name, kOwnerA, 1));
+    store.observe(kOwnerA, 1, 2, 10);
+    Q_EMIT app->applicationStateChanged(Qt::ApplicationHidden);
+    store.waitForWrites();
+    expect("pause: hidden writes", !store.dirty() && stored_has(name, kOwnerA, 2));
+    fresh(name);
+}
+
+/* Quitting writes what is owed while the store is still alive (aboutToQuit). Runs the event loop, so it goes last. */
+void
+test_quit_hook() {
+    const QString name = QStringLiteral("heard_quit.json");
+    fresh(name);
+    HeardTalkgroupStore store(name);
+    store.setOwnerPolicy(allow_all);
+    store.observe(kOwnerA, 1, 3, 10);
+    QTimer::singleShot(0, QCoreApplication::instance(), &QCoreApplication::quit);
+    (void)QCoreApplication::exec();
+    store.waitForWrites();
+    expect("quit: written at quit", !store.dirty() && stored_has(name, kOwnerA, 3));
+    fresh(name);
+}
+
 void
 test_purge() {
     const QString name = QStringLiteral("heard_purge.json");
@@ -505,7 +590,10 @@ test_teardown_writes() {
 
 int
 main(int argc, char** argv) {
-    QCoreApplication app(argc, argv);
+    if (qEnvironmentVariableIsEmpty("QT_QPA_PLATFORM")) {
+        qputenv("QT_QPA_PLATFORM", "offscreen");
+    }
+    QGuiApplication app(argc, argv);
     QCoreApplication::setOrganizationName(QStringLiteral("dsd-neo-test"));
     QCoreApplication::setApplicationName(
         QStringLiteral("dsd-neo-heard-talkgroups-%1").arg(QCoreApplication::applicationPid()));
@@ -522,6 +610,9 @@ main(int argc, char** argv) {
     test_purge();
     test_policy();
     test_teardown_writes();
+    test_burst_coalesced();
+    test_pause_hook();
+    test_quit_hook(); // last: it runs the event loop
 
     QDir(QStandardPaths::writableLocation(QStandardPaths::AppDataLocation)).removeRecursively();
     if (g_failures != 0) {

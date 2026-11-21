@@ -7,7 +7,6 @@
 #include <QVariantMap>
 #include "qt_ui.h"
 
-#include <QAbstractItemModel>
 #include <QChar>
 #include <QCoreApplication>
 #include <QDir>
@@ -18,7 +17,6 @@
 #include <QQmlApplicationEngine>
 #include <QQmlContext>
 #include <QQuickStyle>
-#include <QSet>
 #include <QString>
 #include <QStringList>
 #include <QUrl>
@@ -26,7 +24,6 @@
 #include <dsd-neo/runtime/git_ver.h>
 #include <dsd-neo/runtime/log.h>
 #include <functional>
-#include <memory>
 #include <qqml.h>
 
 #include "app_prefs.h"
@@ -40,6 +37,7 @@
 #include "decoder_host.h"
 #include "decryption_profiles_model.h"
 #include "diagnostics_log.h"
+#include "heard_talkgroup_owners.h"
 #include "heard_talkgroup_store.h"
 #include "import_service.h"
 #include "imported_files_model.h"
@@ -467,7 +465,7 @@ load_replays(DecoderHost* host, ImportService* imports, SavedSystemsModel* syste
     systems->setReplayStore(replays);
     // A restore still waiting (Deferred) or stopped part-way (Stuck) may yet replace saved_systems.json, so what it
     // names now says nothing about what the user keeps.
-    if (restore != backup::ApplyOutcome::Deferred && restore != backup::ApplyOutcome::Stuck) {
+    if (backup::restore_settled(restore)) {
         replays->reclaim(*systems, systems->storeLoaded());
     }
     replays->migrateCachedReplays(systems);
@@ -475,25 +473,13 @@ load_replays(DecoderHost* host, ImportService* imports, SavedSystemsModel* syste
 }
 
 // Issue #903: the talkgroups each saved system was heard on. Made after History, so it is destroyed after it (the
-// engine's children go in creation order) and takes what History's teardown still ingests. The owner policy reads a
-// copy of the saved systems' answer, kept current as they change, for the same reason: they are gone by then. A
-// deleted system's list goes with it; the rest are matched against the saved systems only when they loaded and no
-// restore may still replace them (as the replay reclaim is).
+// engine's children go in creation order) and takes what History's teardown still ingests. It follows the saved
+// systems through heard_talkgroups_follow_systems().
 static HeardTalkgroupStore*
 wire_heard_talkgroups(QQmlApplicationEngine& engine, UiController* controller, SavedSystemsModel* systems,
                       backup::ApplyOutcome restore) {
     auto* heard = new HeardTalkgroupStore(QLatin1String(HeardTalkgroupStore::kFileName), &engine);
-    auto remembering = std::make_shared<QSet<QString>>(systems->rememberingUids());
-    heard->setOwnerPolicy([remembering](const QString& uid) { return remembering->contains(uid); });
-    const auto refresh = [remembering, systems]() { *remembering = systems->rememberingUids(); };
-    QObject::connect(systems, &QAbstractItemModel::modelReset, heard, refresh);
-    QObject::connect(systems, &QAbstractItemModel::rowsInserted, heard, refresh);
-    QObject::connect(systems, &QAbstractItemModel::rowsRemoved, heard, refresh);
-    QObject::connect(systems, &QAbstractItemModel::dataChanged, heard, refresh);
-    QObject::connect(systems, &SavedSystemsModel::systemRemoved, heard, &HeardTalkgroupStore::clear);
-    if (systems->storeLoaded() && restore != backup::ApplyOutcome::Deferred && restore != backup::ApplyOutcome::Stuck) {
-        heard->purgeMissingOwners(systems->uids());
-    }
+    heard_talkgroups_follow_systems(heard, systems, restore);
     controller->setHeardTalkgroups(heard);
     return heard;
 }
