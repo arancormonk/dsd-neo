@@ -1278,7 +1278,80 @@ untyped FDMA entry with a typed peer entry at trust 1 (`trunk_scan_share_peer_id
 Recovery ownership is checked at the P25 watchdog, DMR tick and engine frame-sync callback boundaries. Runtime trunk-scan
 hooks identify the parked protocol. Outside trunk scan, validated control/grant evidence retains a protocol owner
 across sync loss; unrelated protocol decodes and raw sync cannot evict it. Ownership writes and watchdog reads share the decoder/SM guard, so the
-watchdog predicate does not read the sync or CC-format hints modified by frame acquisition. DMR owns its decoded
+watchdog predicate does not read the sync or CC-format hints modified by frame acquisition.
+
+**P25 watchdog threading:** the P25 watchdog thread is a beat (`p25_sm_watchdog_request_tick()`, every 200 ms with a
+frontend, 400 ms headless, `DSD_NEO_P25_WD_MS`): it reads and writes no `dsd_state` or `dsd_opts`, and makes no tune.
+The tick it asks for runs on the decoder thread (`p25_sm_watchdog_service()`, under the tick guard), which owns every
+field the hunt reads and makes every tune: at the frame-sync hunt's 300-symbol checkpoint, between synced frames
+(`live_scanner_process_synced_frames()`), and in a hunt read before each wait on its input. That covers a PCM read (UDP,
+TCP, stdin) that finds nothing buffered: a hunt read's zero-timeout read comes first, so a buffered sample services
+nothing, a trickling sender is serviced at every sample it makes the read wait for, and a frame read makes no probe. It
+covers a sound card's hunt read, which takes what the device holds without waiting (`dsd_audio_read_held()`:
+PulseAudio's held record queue, PortAudio's `Pa_GetStreamReadAvailable()`, AAudio's unread frames) in bounded polled
+waits (`symbol_audio_read_wait()`), so a suspended source or AAudio's capture timeout cannot hold the beat (the probe
+makes no device teardown or reopen: a waiting read brings back an AAudio input a route change lost,
+`dsd_audio_read_held()` with its recover flag, after it serviced the beat); frame decoding reads with the blocking
+`dsd_audio_read()`. It covers a live RTL read that finds the output empty (`DSD_RTL_READ_WANT_EMPTY_RETURN`: the read
+comes back `DSD_RTL_READ_EMPTY` before it waits, after the idle bound and, with no stream, a queued command's yield,
+`rtl_live_read_empty_poll()`; the hunt services the beat and reads again to wait), the RTL idle-bounded read, and a TCP
+reconnect's backoff and connect waits (its cancel check; a tick that retunes while the connect is under way, before the
+reconnect knows the socket, is marked again on the connection once it is opening, so what the server queued before is
+dropped, `symbol_tcp_mark_connect_retune()`). A named pipe given by its path (`-i /path/to/fifo`) is read through
+libsndfile, whose read blocks while the producer keeps the pipe open and writes nothing: a quiet named pipe holds the
+beat, and every tick, until data arrives or the pipe closes. PCM piped into stdin (`-i -`) is waited on in the bounded
+reads above instead. The engine's main pass and the hunt's entry run the decoder's own tick (`p25_sm_try_tick()`), which
+spends a standing beat too, so no later point runs a second tick for it. A beat that finds the guard free and no
+recovery to run (trunking off, -Y, no P25 to follow, a startup hunt: `p25_sm_tick_eligible()`) is let go at once and
+hands no read back. Otherwise shutdown, a queued command or a put-off publication comes first:
+`p25_sm_watchdog_service()` then runs no tick and answers `P25_SM_WATCHDOG_DEFERRED`, the beat standing, so no tune
+starts on a receiver being stopped or replaced; nothing moved, so a hunt read that meets it keeps its partial symbol and
+gives way to the work where it would with no beat (a stream pause, the RTL idle bound), a TCP reconnect gives up, and
+the hunt's checkpoint hunts on with its window, the work waiting for the hunt's return as at any checkpoint; the engine
+runs the work and then its own tick. The reconnect's backoff and its bounded connect (`dsd_socket_connect_bounded()`)
+each wait to one real-time deadline that counts the ticks' own time and is checked before every check, so no check (a
+tick) starts once it has passed: the connect then takes one last look that does not wait. A beat that finds the guard
+held stays asked for, and nothing recovery reads is looked at without the guard. A tick inside the hunt that moved the
+chain (`frame_sync_watchdog_tick.c`: the modulation, the symbol profile, or a tune request that may have moved the
+receiver, `dsd_trunk_tuning_retuned_since()`; one refused or deferred before it moved keeps the window) hands back at
+once: the read leaves with no sample and the partial symbol given up, and `getFrameSync()` returns no sync with
+`dsd_state::input_interrupted` set and its history dropped, as for a queued command, with no no-carrier pass. The
+engine's next call then starts on the new carrier with the tuning generation (the dispatch gate's) and the decode time
+(the sync stamps') taken afresh, so no window joins the two carriers and the first frame on the new one dispatches.
+Every P25 tick, wherever it runs, notes what its tunes did (`p25_sm_tick_noting_tunes()`): a tune that may have moved
+the receiver is a carrier boundary (`dsd_state_note_carrier_change()`), so a decoder that reads back before its sync
+(DMR, X2-TDMA) waits for that many of the new carrier's symbols (`dsd_state_carrier_settling()`); and the requests it
+left in flight (an RTL retune the stream applies on its own thread) are noted in the watchdog module, which neither
+engine loop starts a hunt past while one is pending (`p25_sm_tick_tunes_in_flight()`: the synced-frames loop ends its
+run of frames, the main pass waits in 1 ms passes that keep the interruption, so no no-carrier pass runs), so the
+generation is taken at the actual tune boundary. A rigctl tune a tick makes is an ordinary decoder-thread tune: it marks
+the input before the frequency is sent and asks for the drop (`dsd_engine_note_rigctl_retune()`), and the next read
+drops the old channel's queued audio (`dsd_symbol_apply_input_drop()`) before the new carrier's hunt reads any of it. A
+TCP reconnect a tick's move meets is not cancelled by it (a receiver that kept moving would keep it from ever
+connecting): it runs to its connect, and the read hands back before the new connection's first sample; the old
+connection's staged samples and resampler history go whatever the reconnect's outcome
+(`dsd_opts_reset_pcm_input_state()`). The control channel's sync stamps a sync accept writes
+(`frame_sync_note_cc_sync()`) each follow their own clock: the monotonic one only moves forward, and the wall one takes
+the call's time, set back included, unless a tick wrote it during the call, which the hunt sees against both stamps as
+it found them before its entry tick (kept across window restarts, `frame_sync_runtime_restart()`; a grace writes both,
+so one whose wall second repeats the old one still shows in the monotonic stamp); a grace after a tune stamps the wall
+clock as the tick saw it and the monotonic one as the tune completed, so either can be the newer. So a release, a
+control-channel hunt step and a CQPSK retry write the decoder's profile (`rf_mod`, `samplesPerSymbol`, `symbolCenter`,
+`sps_hunt_*`), `trunk_is_tuned`, `p25_p2_active_slot`, the audio gates, the payload crypto fields and the sync stamps in
+the same decoder-thread call that retunes, before another sample is read. Beat-to-tick delay: one checkpoint (62.5 ms at
+4800 sym/s), one frame, or one input wait (at most a 100 ms slice). A frame read waits for its samples inside a dispatch
+that holds the guard, as before. The off-thread tune machinery (`dsd_frame_sync_note_off_thread_tune()`, the published
+P25p1 decision, `dsd_rxid_request_trunk_tune()`) has no production caller off the decoder thread any more.
+`ENGINE_P25_WATCHDOG_DECODER_TICK` runs the real watchdog thread beside the hunt's writes and reads and checks that a
+watchdog-paced release tunes from the decoder thread (tsan-debug), that a beat behind a queued command runs no tick,
+that the decoder's own tick spends it, and that the release marks a carrier boundary; `DSP_INPUT_INTERRUPT` and
+`FRAME_SYNC_SPS_HUNT_FALSE_SYNC` pin the hand-back, the input-wait service and its order, and the stamps;
+`ENGINE_NO_CARRIER_RESET` runs the live loop over a scripted C4FM input with a beat posted at a hunt read (UDP, a
+pending RTL-style return, a beat in a frame, a replaced return, a stalled sound card) and checks that the control
+channel's first frame after the return dispatches with a stamp no earlier than the return; `ENGINE_RIGCTL_RETUNE` checks
+that a beat's rigctl return drops the old channel's queued UDP audio at the next read.
+
+DMR owns its decoded
 CC heartbeat, six-second loss grace, two-second probe window and five-second backend deadline inside each
 target's `dmr_sm_ctx_t`. In single-system sessions the engine ticks admitted DMR recovery between synced frames,
 including withheld frames, after startup acquisition has ended too. Data-only or unvalidated syncs need not enter a
@@ -1598,41 +1671,44 @@ Tests: `tests/engine/test_engine_trunk_scan.c` (`ENGINE_TRUNK_SCAN`) and
   acquisition reset; so a P25 release's retune, or a direct return, in the exit's own no-sync hooks keeps nothing. Its
   first read checks the clock, epoch, carrier count, generation, drops and pending off-thread tunes again, for a flush
   an RTL reader finds only when it reads; a failed check drops the levels with the dibits, and the pass position a
-  dropped P25p1 candidate's carry brought, so the call hunts a whole pass of the new stream. A matcher that reads only its
-  window or reads its frame forward from the sync (TETRA, P25, NXDN, YSF, dPMR, D-STAR, M17, ProVoice, EDACS) then
-  matches a frame that straddles the exit; before, a TETRA control uplink burst that began fewer than 20 symbols before
-  it was lost. An NXDN96 FSW straddling the exit is read on its carried levels, so it counts as clear only when its 20
-  bits are, and acquisition still needs two clear FSWs a frame apart; `frame_sync_nxdn96_fsw_bit_errors()` reads a
-  window with fewer than ten levels as not clear (only a test's sign-only window keeps the sign match). DMR and X2-TDMA
-  decode their burst back from the rolling dibit buffers (`dmr_payload_p`, `dibit_buf_p`), which the no-carrier reset
-  clears, so they match only on a 24-symbol window the call read itself (`frame_sync_match_window_own()`), as before the
-  carry, or one a dropped P25p1 candidate's carry brought (`dsd_frame_sync_history_carry::own_symbols`: the hunt wrote
-  its word's dibits there and the NID read its NID's; a no-sync exit's carry brings none, since the no-carrier reset
-  after the exit clears them), counted no further back than the buffers hold dibits written since their last clear or
-  wrap (`dsd_state_rolling_dibits()` at the next call's start); a broken first read drops it with the history. Every clear of the rolling buffers (initState, noCarrier, an NXDN reset) and every wrap puts a buffer's pointer
-  at `DSD_ROLLING_DIBIT_FLOOR` (200), and what lies before it is the clear's zeros or a wrap's stale dibits, which pass
-  Golay and Hamming as codewords; `dsd_state_rolling_dibits()` counts what was written since. A DMR or X2-TDMA sync is
-  still accepted, and each accept notes how many of the oldest read-back dibits are not the stream's
-  (`dsd_state_note_sync_readback()`, `dsd_state::sync_readback_invalid`, read by a decoder before it reads a symbol
-  through `dsd_state_sync_readback_invalid()`, which answers 0 once a symbol was read). For DMR the 90 dibits written
-  since the clear are the stream's, and so are the 66 before the sync that `dmr_resample_cach()` re-reads from the soft
-  symbol history, which the clear leaves; `frame_sync_dmr_resample_on_sync()` gives those below the floor their symbols'
-  soft metrics too, in place of the clear's zero reliabilities. So DMR notes dibits only after a cold start or an
-  acquisition reset (no soft history), and X2-TDMA (no re-read) within 90 (data) or 144 (voice) dibits of any clear. The
-  decoders then decode and publish nothing from them: `dmr_data_sync()`, `dmrMSData()` and `processX2TDMAdata()` nothing
-  of the burst (CACH, slot type and payload are all read back) and read its live half past; `dmrBSBootstrap()` nothing
-  of burst A, since the CACH names its slot, before its loop takes the next burst at the slot that burst's own TACT
-  names (no slot to alternate from); `dmrMSBootstrap()` no AMBE frame with a dibit among them (silence in its place),
-  nor the burst's late-entry fragments, debug dump or DSP output line; `dmrRC()` nothing when they reach its last 36
-  dibits; and `processX2TDMAvoice()` nothing of its first slot when they reach its CACH. Tests: `DMR_DATA_SYNC`,
-  `DMR_MS_DATA`, `DMR_BS_SYNC_TIMES`, `DMR_RC_BURST`, `X2TDMA_DATA`, `X2TDMA_VOICE_HELPERS`, `FRAME_SYNC_HISTORY_CARRY`.
-  What the carry does not restore is either continuous across the exit (the soft symbol history
-  `dsd_state::symbol_history`, which TETRA's soft capture and every warm start read, and `sbuf`) or sync evidence that
-  noCarrier resets (the NXDN96 hits and lock, the M17 preamble run, candidate, polarity and join hits, `lastsynctype`,
-  the ProVoice and M17 confirms), after which a matcher needs more evidence, not less. A sync, an input interruption, a
-  signal-search yield and shutdown drop it too. Test: `FRAME_SYNC_HISTORY_CARRY` (NXDN96 FSWs, a DMR and an X2-TDMA sync
-  straddling the exit, DMR and X2-TDMA syncs short of their read-back after a clear, and a carried pass a first-read
-  flush restarts whole, among them).
+  dropped P25p1 candidate's carry brought, so the call hunts a whole pass of the new stream. Within a call, a read that
+  moves the clock epoch (an RTL stream flush, a CQPSK reacquisition's flush of the RTL output, which changes nothing
+  else the hunt compares) drops the window the same way, one compare a symbol (`frame_sync_history_confirm()`). A
+  matcher that reads only its window or reads its frame forward from the sync (TETRA, P25, NXDN, YSF, dPMR, D-STAR, M17,
+  ProVoice, EDACS) then matches a frame that straddles the exit; before, a TETRA control uplink burst that began fewer
+  than 20 symbols before it was lost. An NXDN96 FSW straddling the exit is read on its carried levels, so it counts as
+  clear only when its 20 bits are, and acquisition still needs two clear FSWs a frame apart;
+  `frame_sync_nxdn96_fsw_bit_errors()` reads a window with fewer than ten levels as not clear (only a test's sign-only
+  window keeps the sign match). DMR and X2-TDMA decode their burst back from the rolling dibit buffers (`dmr_payload_p`,
+  `dibit_buf_p`), which the no-carrier reset clears, so they match only on a 24-symbol window the call read itself
+  (`frame_sync_match_window_own()`), as before the carry, or one a dropped P25p1 candidate's carry brought
+  (`dsd_frame_sync_history_carry::own_symbols`: the hunt wrote its word's dibits there and the NID read its NID's; a
+  no-sync exit's carry brings none, since the no-carrier reset after the exit clears them), counted no further back than
+  the buffers hold dibits written since their last clear or wrap (`dsd_state_rolling_dibits()` at the next call's
+  start); a broken first read drops it with the history. Every clear of the rolling buffers (initState, noCarrier, an
+  NXDN reset) and every wrap puts a buffer's pointer at `DSD_ROLLING_DIBIT_FLOOR` (200), and what lies before it is the
+  clear's zeros or a wrap's stale dibits, which pass Golay and Hamming as codewords; `dsd_state_rolling_dibits()` counts
+  what was written since. A DMR or X2-TDMA sync is still accepted, and each accept notes how many of the oldest
+  read-back dibits are not the stream's (`dsd_state_note_sync_readback()`, `dsd_state::sync_readback_invalid`, read by a
+  decoder before it reads a symbol through `dsd_state_sync_readback_invalid()`, which answers 0 once a symbol was read).
+  For DMR the 90 dibits written since the clear are the stream's, and so are the 66 before the sync that
+  `dmr_resample_cach()` re-reads from the soft symbol history, which the clear leaves;
+  `frame_sync_dmr_resample_on_sync()` gives those below the floor their symbols' soft metrics too, in place of the
+  clear's zero reliabilities. So DMR notes dibits only after a cold start or an acquisition reset (no soft history), and
+  X2-TDMA (no re-read) within 90 (data) or 144 (voice) dibits of any clear. The decoders then decode and publish nothing
+  from them: `dmr_data_sync()`, `dmrMSData()` and `processX2TDMAdata()` nothing of the burst (CACH, slot type and
+  payload are all read back) and read its live half past; `dmrBSBootstrap()` nothing of burst A, since the CACH names
+  its slot, before its loop takes the next burst at the slot that burst's own TACT names (no slot to alternate from);
+  `dmrMSBootstrap()` no AMBE frame with a dibit among them (silence in its place), nor the burst's late-entry fragments,
+  debug dump or DSP output line; `dmrRC()` nothing when they reach its last 36 dibits; and `processX2TDMAvoice()`
+  nothing of its first slot when they reach its CACH. Tests: `DMR_DATA_SYNC`, `DMR_MS_DATA`, `DMR_BS_SYNC_TIMES`,
+  `DMR_RC_BURST`, `X2TDMA_DATA`, `X2TDMA_VOICE_HELPERS`, `FRAME_SYNC_HISTORY_CARRY`. What the carry does not restore is
+  either continuous across the exit (the soft symbol history `dsd_state::symbol_history`, which TETRA's soft capture and
+  every warm start read, and `sbuf`) or sync evidence that noCarrier resets (the NXDN96 hits and lock, the M17 preamble
+  run, candidate, polarity and join hits, `lastsynctype`, the ProVoice and M17 confirms), after which a matcher needs
+  more evidence, not less. A sync, an input interruption, a signal-search yield and shutdown drop it too. Test:
+  `FRAME_SYNC_HISTORY_CARRY` (NXDN96 FSWs, a DMR and an X2-TDMA sync straddling the exit, DMR and X2-TDMA syncs short of
+  their read-back after a clear, and a carried pass a first-read flush restarts whole, among them).
 - DSP `dsd_frame_sync_reset_acquisition()` drops outgoing profile proof, modulation votes, symbol history, hunt budgets,
   the two-slot TDMA verdict (`tdma_carrier`) and slicer windows at committed row boundaries, and at an input boundary
   (issue #634). Conventional rows also discard learned P25 modulation; trunk targets retain their own learned
@@ -2518,11 +2594,13 @@ suite runs under this compiler.
     `close_and_publish_call_wav()` follows), so the commit links it and a drop unlinks it; with no such epoch, as no
     row's (nothing names it, as on the drop path). An empty file, `-P` off, a static WAV and an active call's file (its
     commit closes it) are left alone. The check that no call owns the file and its close run as one step under the
-    call-state lock, the lock every commit holds while it rotates a slot: a flush on the P25 watchdog's thread (a trunk
-    control-channel return or tune, under the tick guard) can meet the decoder thread committing the slot's ended call
+    call-state lock, the lock every commit holds while it rotates a slot. In a running decoder a flush (a P25 tick's
+    trunk control-channel return or tune, under the tick guard) and a commit of the slot's ended call
     (`dsd_event_sync_slot()` from `noCarrier()` or `getFrameSync()`, which holds the call-state lock and not the tick
-    guard), and the two must never close the same file. The slot writers never meet a flush: they run on the decoder
-    thread under the tick guard (a frame dispatch), and the watchdog flushes only inside its tick. Lock order: tick
+    guard) are both the decoder thread's, the watchdog's ticks included ("P25 watchdog threading"), so they never
+    overlap; the lock keeps the check and the close one step for a caller that runs a tick on a thread of its own (the
+    engine tests' in-flight ticks), so the two never close the same file. The slot writers never meet a flush: they run
+    under the tick guard (a frame dispatch), and a flush runs only inside a tick. Lock order: tick
     guard, then the call-state lock, then the journal's and the segment table's; no flush caller holds the call-state
     lock or an event-history transaction. Every departure the decoder makes runs it, after ending its calls where it
     ends them: the carrier boundary (every kind but a stream gap, after `no_carrier_finalize_canonical_calls()`); a
@@ -3691,7 +3769,7 @@ suite runs under this compiler.
   re-resolves for admission: the winner becomes the slot's and the snapshot's policy target in place
   (`dsd_call_state_update_policy_target()`, no boundary; the received service options and priority stay as received)
   and the ledger takes its priority; when nothing in the patch may be followed the held call is described with no
-  priority protection (-1). The watchdog's TUNED tick runs that re-resolution on its own thread, so every command that
+  priority protection (-1). The watchdog-paced TUNED tick runs that re-resolution under the tick guard, so every command that
   writes a talkgroup policy input applies under the P25 SM tick guard: the policy store, Hold, allow list and record
   switch (`command_changes_call_verdict()`), and the tune switches, the encryption lockout ledger, every key edit (they
   bump its key epoch) and the Phase 2 parameters (`command_writes_tick_inputs()`). Admission also judges the row-edit
@@ -4501,7 +4579,8 @@ suite runs under this compiler.
   gate starts at dispatch; what a frame reads back from before its sync (DMR's 66 buffered dibits, X2-TDMA's 144, a
   TETRA burst's block 1 in the hunt's history) was read earlier, so the boundary and a trunk-scan target switch also
   mark the symbol clock (`dsd_state_note_carrier_change()`; a change that runs while `getSymbol()` reads a symbol,
-  `dsd_state::symbol_read_active`, counts that split symbol as the carrier left's, one between reads none), and each
+  `dsd_state::symbol_read_active`, counts that split symbol as the carrier left's, one between reads none, and one in a
+  read that then commits no symbol, a hunt read handed back after a P25 tick's retune, none either), and each
   protocol's matcher in `getFrameSync()` waits until what its frame reads back (`k_frame_sync_tries`, then the matched
   burst's own, `frame_sync_burst_settling()`: its sync window; DMR 90, X2-TDMA data 90 and voice 144, TETRA control 57,
   synchronisation 79 and normal bursts 126, EDACS 48) is the new carrier's (`dsd_state_carrier_settling()`;
@@ -4534,7 +4613,8 @@ suite runs under this compiler.
   engine (`dsd_rxid_apply_trunk_tune()` returns 1 when it applied a drop, `dsd_rxid_request_trunk_tune()` when it
   applied one at once inside a dispatch): `dsd_engine_rxid_trunk_tune()` on the decoder thread or inside a dispatch,
   `processFrame()`'s apply before the frame, the apply after the synced-frame trunking ticks, and the trunk-scan
-  advance, so a watchdog retune resets it when the decoder thread applies the drop, never on the watchdog's thread;
+  advance, so a retune made off the decoder thread resets it when the decoder thread applies the drop, never on the
+  tuning thread (a P25 watchdog tick's retune is the decoder thread's own);
   `trunk_scan_switch_to()` (which also covers the forced release's own apply) and its rollback, which restores the
   record without the evidence and so drops the part; a colour-code change on the carrier (the confidence lock onto
   another code and its relock, BS and MS voice alike; the MS/direct slot type, `dmr_ras_note_color_code()`); the DMR
@@ -4542,8 +4622,8 @@ suite runs under this compiler.
   (`ui_user_move_forgets_identity()`); and the guarded no-carrier step (`dsd_engine_no_carrier_identity_stale()`), so
   the next transmission proves RAS again. A frame
   of another family drops the part with the record and keeps the evidence (the same carrier): the next signature notes
-  it again. `dsd_engine_forget_carrier_codes()` does not reset it: the voice-channel tune that calls it can run on the
-  watchdog's thread, and the trunk tune's apply covers that tune. A tune the user asked for while trunking, which keeps
+  it again. `dsd_engine_forget_carrier_codes()` does not reset it: the trunk tune's apply covers the voice-channel tune that calls
+  it. A tune the user asked for while trunking, which keeps
   the decoder's trunking state and so is no carrier boundary, forgets the record too (D4: any user move), after the
   calls it ended took theirs: a frequency entry that selects a P25 control channel (`ui_cmd_handle_p25_cc_selection()`,
   accepted only), a Return to CC, and a channel or candidate cycle (`ui_user_move_forgets_identity()`, which also marks
@@ -4845,7 +4925,7 @@ suite runs under this compiler.
     readings feed the P25 patch table's listening clock) is decode time: protocol windows (the DMR header repeat, SLCO
     print throttle and RC repeat dedup, the P25 PTT retransmission and FACCH double-END windows, NXDN recent context),
     trunk SM stamps and ticks, sync stamps, and decoded-output timestamps and file names. The P25 SM watchdog thread
-    sleeps in real time, but the ticks it drives compare decode time, so where a tick falls among a replay's samples
+    sleeps in real time, but the ticks it asks the decoder thread for compare decode time, so where a tick falls among a replay's samples
     follows the wall clock, one reason a trunked (`-T`) replay is outside the replay determinism guarantee
     (`docs/iq-capture-replay.md`). In
     `src/core`, `src/app_control` and `src/ui` decode time drives the call store's fallback stamps
@@ -5474,7 +5554,7 @@ stays. Tests: `CORE_KEY_DIRECT`, `APP_CONTROL_TELEMETRY_HOOKS_INSTALL`, `UI_ASYN
 
 **Publishing under the tick guard:** the P25 watchdog's tick writes decoder state and options (calls, tuned and
 control-channel frequencies, site tables, CC candidates, `trunk_is_tuned`, the tuner's centre frequency) under the P25
-SM tick guard on its own thread. `dsd_app_telemetry_publish_snapshot()` and `dsd_app_telemetry_publish_opts_snapshot()`
+SM tick guard (on the decoder thread, which runs the watchdog's ticks). `dsd_app_telemetry_publish_snapshot()` and `dsd_app_telemetry_publish_opts_snapshot()`
 therefore read the live state only under that guard: the copy, the notification record and the observers. Publishers run
 on the decoder thread only, and a publication never waits for a tick (a tick can last an RTL tune, up to 500 ms, or
 rigctl round trips): a publisher already under the guard (a frame dispatch) uses that hold, since the guard is not
@@ -5761,8 +5841,7 @@ reports every outcome: its late failure posts the text the import composed (the 
 import applied); its landing (the import's toast with the tune landed) and its drop (superseded, or the stream stopped)
 replace the import's own toast only while it is up, never a newer message or a cleared line. An owner's own tune
 (`dsd_engine_tune_rtl()`, `no_carrier_tune_rtl_if_needed()`: a trunk hunt, a grant, a scan step, after an import that
-turned it on) marks itself first (`dsd_engine_manual_tune_owner_takes_over()`, atomic, since the P25 watchdog's thread
-tunes too), and its drop says nothing, unless the import's tune had already landed. The operator's P25 Return-to-CC,
+turned it on) marks itself first (`dsd_engine_manual_tune_owner_takes_over()`, atomic), and its drop says nothing, unless the import's tune had already landed. The operator's P25 Return-to-CC,
 Candidate cycle and a block's return to the control channel (`request_manual_tune()` with a P25 symbol rate) tune
 through the same hook, so they count as owner tunes as well: an import's tune they drop is not announced (accepted
 limit; their own toasts say where the receiver went). The cached centre follows a tune that fails inside its wait the
@@ -7714,7 +7793,8 @@ the stream-notice hooks' pattern: one that fails to initialize leaves the hook u
   (`dsd_state_carrier_settling()`), so no frame decodes the carrier left's buffered dibits on the new carrier, and a
   protocol that reads only forward (P25 Phase 1) loses no frame. A shorter gap, frame decoding, or no queued command
   keeps waiting. The M17 TCP reconnect gives up the same way between attempts, which connect within a bound to the
-  address the connection was made to (`tcp_connect` hook, `ConnectBounded()` with no lookup) and back off in slices; "no
+  address the connection was made to (`tcp_connect` hook, `ConnectBounded()` with no lookup) and back off in slices, each
+  to one real-time deadline that counts the cancel checks' own time; "no
   socket" is `DSD_INVALID_SOCKET`. A file or TCP input that ends marks `dsd_state::input_fallback_pending`: frame
   decoding reads zeros until its frame ends (a symbol capture's dibits are erasures then, reliability 0, never its last
   dibit repeated at full confidence), and the hunt's read hands the switch to Pulse to the engine
@@ -7994,15 +8074,16 @@ the stream-notice hooks' pattern: one that fails to initialize leaves the hook u
   its own later retune (an io_control tune, the frequency entry) never brings back what that retune dropped, and moves
   no epoch (that retune moved it, and no symbol came between them); a request on a newer input replaces an older
   input's. Two posts before one take leave the later (the backlog holds the latest post), and a take racing a post
-  carries the latest mark (`ENGINE_RIGCTL_RETUNE`, `test_newest_cutoff_wins()`). Off the decoder thread (the P25
-  watchdog) the tune posts `dsd_frame_sync_note_off_thread_unflushed_retune()` (`unflushed_retune.c`) before its tune
-  notice: the mark it took before its request, held in the backlog (`dsd_input_backlog_post()`; of two posts the later
+  carries the latest mark (`ENGINE_RIGCTL_RETUNE`, `test_newest_cutoff_wins()`). A P25 watchdog tick runs on the decoder thread
+  ("P25 watchdog threading"), so its tunes take the direct path above. A tune made off the decoder thread (the retained
+  off-thread API: a test, or a caller on another thread) posts `dsd_frame_sync_note_off_thread_unflushed_retune()`
+  (`unflushed_retune.c`) before its tune notice: the mark it took before its request, held in the backlog (`dsd_input_backlog_post()`; of two posts the later
   mark is held, in whatever order they come), and an atomic count, the decoder's cue. The decoder's next read takes it
   (`frame_sync_take_unflushed_retunes()`, inline in `frame_sync_unflushed.h`, with the take itself in
   `frame_sync_unflushed.c`: one relaxed load per EDACS triplet, and per symbol read only while rigctl is in use
   (`dsd_opts::use_rigctl`), the only time a post is made, so a run without rigctl loads no shared count per symbol,
   which on the MSVC atomics fallback is a locked operation; `test_symbol_reader_checks_posts_only_with_rigctl()`),
-  moving the epoch and asking for the drop with the post's mark, so the watchdog's tunes drop at the next read after
+  moving the epoch and asking for the drop with the post's mark, so an off-thread tune drops at the next read after
   the post; the notice's reconcile (`dsd_frame_sync_apply_off_thread_tunes()`) takes a post no read met yet, and a
   failed rigctl reconnect takes one as it turns rigctl off (`svc_rigctl_connect()`). Every mark is measured when it is taken:
   the cutoff is what had arrived on the input then, nothing later. The TCP reconnect makes its new connection the
@@ -8036,7 +8117,7 @@ the stream-notice hooks' pattern: one that fails to initialize leaves the hook u
   was not measured on the queue attached then (`dsd_frame_sync_forget_unflushed_retunes()`, declared in
   `include/dsd-neo/dsp/unflushed_retune.h`, which `<dsd-neo/core/opts.h>` includes for
   `dsd_opts_reset_pcm_input_state()`; it calls `dsd_input_backlog_forget()`): such a retune moved the peer before the
-  new stream began. A post that comes after the replacement, marked on the input replaced (a watchdog's tune marked on
+  new stream began. A post that comes after the replacement, marked on the input replaced (an off-thread tune marked on
   the old TCP connection and confirmed after the reconnect), is refused by `dsd_input_backlog_post()` itself, past the
   opening-to-reader handoff above: it would move the new stream's timeline and drop nothing of it
   (`test_late_post_from_a_replaced_input()`). One marked on the input a switch's attach in flight replaced comes back
@@ -9139,7 +9220,8 @@ the stream-notice hooks' pattern: one that fails to initialize leaves the hook u
   Both are also cleared with the M17 join history (`dsd_state_forget_sync_join_histories()`), at an acquisition reset
   and any carrier change (`dsd_state_note_carrier_change()`, so a tune, a probe or a trunk-scan switch), at every
   accepted trunk retune of any protocol (`dsd_engine_trunk_tune_to_freq_request()`, `_to_cc_request()`: an NXDN DISC's
-  return included; one the P25 watchdog makes off the decoder thread is applied by the frame sync's next step,
+  return included, and a P25 watchdog tick's, which runs on the decoder thread; one made off the decoder thread is
+  applied by the frame sync's next step,
   `dsd_frame_sync_apply_off_thread_tunes()`), at a carrier boundary inside an NXDN frame and at the CAC reset. The
   four-level reading takes the window's level ring, which a symbol capture fills with its dibits' levels
   (`dsd_symbol_level_from_dibit()`), so it applies there too; only a window holding fewer than ten levels (the unit
@@ -9280,7 +9362,8 @@ the stream-notice hooks' pattern: one that fails to initialize leaves the hook u
     modulation goes back. A tune that fails or is deferred puts the comparison back as it was, with the front end's
     profile captured before the comparison ended, so the decoder and the front end stay on the same chain.
   - The comparison is the decoder thread's: it runs in the hunt, outside the P25 SM tick guard, and a tune the P25
-    watchdog's tick makes on its own thread never touches it. The invariant: an off-thread tune makes one coherent read
+    watchdog's tick made on its own thread never touches it (the decoder thread now runs those ticks, see "P25 watchdog
+    threading"; the rule stays for any tune made off it). The invariant: an off-thread tune makes one coherent read
     of the decision the decoder publishes (`dsd_frame_sync_p25p1_read_decision()`: one atomic value, whether a
     comparison runs and the learned modulation, the leading chain while one runs, published at every comparison step and
     every write of the learned modulation by `dsd_frame_sync_p25p1_mod_compare_publish()`), taken when its outermost
@@ -13186,7 +13269,8 @@ Key public headers (selection):
 - P25: `<dsd-neo/protocol/p25/p25p1_const.h>`, `<dsd-neo/protocol/p25/p25_trunk_sm.h>`,
   `<dsd-neo/protocol/p25/p25_sm_watchdog.h>` (a watchdog thread that cannot start leaves the watchdog off, logged, and
   a stop joins only a thread that started; `p25_sm_watchdog_set_thread_create_for_test()`, compiled only with
-  `DSD_NEO_TEST_HOOKS`, injects the failure, `P25_SM_WATCHDOG_START`)
+  `DSD_NEO_TEST_HOOKS`, injects the failure, `P25_SM_WATCHDOG_START`; the thread only asks for ticks, which the decoder
+  thread runs, `p25_sm_watchdog_service()`, see "P25 watchdog threading")
 - NXDN: `<dsd-neo/protocol/nxdn/nxdn_const.h>`, `<dsd-neo/protocol/nxdn/nxdn_trunk_diag.h>`
   (the movable missing-channel ledger and its exit summary, so trunk scan can park one per target)
 - D‑STAR: `<dsd-neo/protocol/dstar/dstar_const.h>`, `<dsd-neo/protocol/dstar/dstar_header.h>`
@@ -13459,8 +13543,9 @@ Private per-protocol modules worth knowing about:
     trunking the machine does not judge an operator's move: on the io_control leg the engine's reading of the receiver
     does (`dmr_sm_note_foreign_operator_leave()`), and on the P25 hook leg the engine's tune hook. The decoder thread
     alone writes the left calls' decryption and the hold: it does so in its frames and in the no-carrier pass, which
-    runs outside the P25 SM tick guard. A tune the P25 watchdog makes on its own thread (a grant, a return to the
-    control channel, whose release forgets the privacy) only asks for it, under the guard
+    runs outside the P25 SM tick guard. A P25 watchdog tick's tune (a grant, a return to the control channel, whose
+    release forgets the privacy) runs on the decoder thread ("P25 watchdog threading"); a tune made off the decoder
+    thread (the retained off-thread API) only asks for it, under the guard
     (`dsd_engine_dmr_leave()`, `dsd_state::dmr_leave_pending`, outside every snapshot copy range), and the decoder
     thread applies the request before its next frame (`dsd_engine_apply_dmr_leave()`: in `processFrame()`, after the
     synced frame's ticks, at the no-carrier pass's identity step and where a trunk scan snapshots the state), as it

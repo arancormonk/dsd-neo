@@ -139,6 +139,12 @@ dsd_fd_is_stream(int fd) {
     return (S_ISFIFO(st.st_mode) || S_ISSOCK(st.st_mode)) ? 1 : 0;
 }
 
+int
+dsd_fd_read_unbounded(int fd) {
+    (void)fd; /* poll() bounds a wait on any descriptor */
+    return 0;
+}
+
 long
 dsd_fd_readable_bytes(int fd) {
     if (!dsd_fd_is_stream(fd)) {

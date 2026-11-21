@@ -23,7 +23,7 @@ ring_wait_not_empty(struct output_state* o) {
             return -1;
         }
         dsd_mutex_lock(&o->ready_m);
-        int ret = dsd_cond_timedwait(&o->ready, &o->ready_m, 10);
+        int ret = output_ring_wait_ready(o, 10U);
         dsd_mutex_unlock(&o->ready_m);
         if (ret != 0) {
             if (dsd_exitflag_load() || !o->buffer) {

@@ -1322,6 +1322,73 @@ test_input_reopen_recovery(void) {
 }
 
 /*
+ * A held read (dsd_audio_read_held(), the hunt's read that never waits) that brings frames clears the recovery streak,
+ * as a blocking read does: a hunt that reads only through it after a route change otherwise left the streak up, and the
+ * next unrelated disconnect waited out the backoff though the device was ready. An empty poll proves nothing and
+ * leaves the streak.
+ */
+static void
+test_held_read_clears_the_recovery_streak(void) {
+    dsd_audio_params params = valid_params(8000, 1);
+    int16_t buffer[4] = {0};
+    reset_fakes();
+    g.device_rate = 8000;
+    g.device_channels = 1;
+    dsd_audio_stream* stream = dsd_audio_open_input(&params);
+    assert(stream != NULL);
+    g.read_result_pending = 1;
+    g.read_result = AAUDIO_ERROR_DISCONNECTED;
+    assert(dsd_audio_read_held(stream, buffer, 4, 0) == 0);
+    g.read_result_pending = 1;
+    g.read_result = AAUDIO_OK;                              /* nothing held yet on the reopened stream */
+    assert(dsd_audio_read_held(stream, buffer, 4, 1) == 0); /* reopened */
+    assert(stream->recovery_streak == 1);
+
+    g.read_result_pending = 1;
+    g.read_result = AAUDIO_OK; /* nothing held */
+    assert(dsd_audio_read_held(stream, buffer, 4, 0) == 0);
+    assert(stream->recovery_streak == 1);
+
+    assert(dsd_audio_read_held(stream, buffer, 4, 0) == 4);
+    assert(stream->recovery_streak == 0);
+    dsd_audio_close(stream);
+}
+
+/*
+ * The held read is the hunt's probe, which must never wait: a route disconnect it meets only notes the teardown owed,
+ * and it holds nothing until the device is back. Neither the old stream's teardown nor the reopen (both synchronous
+ * calls into the audio service, which can stall during a route change) runs inside it: the waiting read does that
+ * (a held read that may recover), and so does a blocking read.
+ */
+static void
+test_held_read_never_reopens_the_device(void) {
+    dsd_audio_params params = valid_params(8000, 1);
+    int16_t buffer[4] = {0};
+    reset_fakes();
+    g.device_rate = 8000;
+    g.device_channels = 1;
+    dsd_audio_stream* stream = dsd_audio_open_input(&params);
+    assert(stream != NULL);
+    const int opens = g.open_calls;
+    const int closes = g.close_calls;
+    g.read_result_pending = 1;
+    g.read_result = AAUDIO_ERROR_DISCONNECTED;
+    assert(dsd_audio_read_held(stream, buffer, 4, 0) == 0);
+    assert(dsd_audio_read_held(stream, buffer, 4, 0) == 0); /* owed, still held off */
+    assert(g.open_calls == opens && g.close_calls == closes);
+    assert(dsd_audio_read_held(stream, buffer, 4, 1) == 4); /* a waiting read: torn down, reopened, read */
+    assert(g.close_calls == closes + 1 && g.open_calls == opens + 1);
+
+    /* A blocking read pays a teardown the held read left owed, as its own disconnect would. */
+    g.read_result_pending = 1;
+    g.read_result = AAUDIO_ERROR_DISCONNECTED;
+    assert(dsd_audio_read_held(stream, buffer, 4, 0) == 0);
+    assert(dsd_audio_read(stream, buffer, 4) == 4);
+    assert(g.open_calls == opens + 2);
+    dsd_audio_close(stream);
+}
+
+/*
  * A frame count that would wrap the sample count is refused, not truncated.
  *
  * Every other size in the backend goes through size_mul_nonzero(); this one used to
@@ -1892,6 +1959,8 @@ main(void) {
     test_open_failure_paths();
     test_input_stream();
     test_input_reopen_recovery();
+    test_held_read_clears_the_recovery_streak();
+    test_held_read_never_reopens_the_device();
     test_write_rejects_overflowing_frame_count();
     test_drain_paths();
     test_async_output_setup_and_pump();

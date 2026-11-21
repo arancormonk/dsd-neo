@@ -67,6 +67,10 @@ struct audio_input_carry {
     int16_t* frames;
     size_t len;
     size_t pos;
+    /* PortAudio: frames the device was last counted holding (Pa_GetStreamReadAvailable()) that no read has taken since,
+       so the held read (dsd_audio_read_held()) counts once per run of buffered frames. A blocking read and a discard
+       take frames the count included, and clear it. */
+    size_t device_counted;
 };
 
 /* The frames the carry still holds. */
@@ -216,6 +220,9 @@ struct dsd_audio_stream {
     int write_timeouts;
     /* Successful device reopens, i.e. route changes survived. */
     int reopen_count;
+    /* Input: a held read (dsd_audio_read_held()) met a route disconnect and left the old stream's teardown to the next
+       recovery (a held read that may recover, or a blocking read), so a probe makes no synchronous device call. */
+    int disconnect_owed;
     /* Frames accepted by the device across the stream's whole life; unlike
      * AAudioStream_getFramesWritten this survives a reopen. */
     uint64_t device_frames;

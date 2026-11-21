@@ -993,6 +993,12 @@ dsd_audio_alloc_pcm16_mono_info_exact_rate(int sample_rate_hz) {
 static int
 dsd_audio_open_stdin_input(dsd_opts* opts) {
     opts->audio_in_type = AUDIO_IN_STDIN;
+    /* A Windows console or serial device has no bounded wait: its read would hold the decoder, and every watchdog tick
+       and command with it, for as long as it sends nothing. PCM comes through a pipe or a file. */
+    if (dsd_fd_read_unbounded(dsd_fileno(stdin))) {
+        LOG_ERROR("Error, stdin is a console or character device: pipe the audio in (program | dsd-neo -i -)\n");
+        return -1;
+    }
     opts->audio_in_stdin = dsd_pcm_stream_open_fd(dsd_fileno(stdin));
     if (opts->audio_in_stdin == NULL) {
         LOG_ERROR("Error, couldn't open stdin for audio input\n");

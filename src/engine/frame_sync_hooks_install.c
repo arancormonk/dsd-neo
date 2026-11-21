@@ -164,6 +164,7 @@ dsd_engine_frame_sync_hooks_install(void) {
     hooks.receive_policy_boundary = dsd_engine_receive_policy_boundary;
     hooks.analog_call_block = dsd_engine_analog_call_block;
     hooks.p25_sm_try_tick = p25_sm_try_tick;
+    hooks.p25_sm_watchdog_service = p25_sm_watchdog_service;
     hooks.decoder_ticks_due = engine_decoder_ticks_due;
     hooks.scan_owns_hunt = engine_scan_owns_hunt;
     hooks.p25_probe_in_flight = engine_p25_probe_in_flight;

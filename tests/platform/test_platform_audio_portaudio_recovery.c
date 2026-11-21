@@ -316,9 +316,13 @@ Pa_ReadStream(PaStream* stream, void* buffer, unsigned long frames) {
     return result;
 }
 
+/* Availability queries made, for a case that bounds them. */
+static unsigned long g_available_calls = 0U;
+
 signed long
 Pa_GetStreamReadAvailable(PaStream* stream) {
     (void)stream;
+    g_available_calls++;
     if (g_available_real_delay_ms > 0U) {
         usleep((useconds_t)g_available_real_delay_ms * 1000U);
         g_available_real_delay_ms = 0U;
@@ -741,6 +745,40 @@ test_input_discard_is_bounded(void) {
     g_default_input = paNoDevice;
 }
 
+/* The hunt's held reads take one frame at a time: a count the stream reported covers the frames after it, so a run of
+   buffered frames costs one availability query, not one each, and never reads past what was counted. A blocking read
+   or a discard takes frames the count included, so the next held read counts again. */
+static void
+test_held_reads_count_availability_once_per_run(void) {
+    g_default_input = 0;
+    const dsd_audio_params params = {48000, 1, 16, NULL, "test", 0};
+    dsd_audio_stream* in = dsd_audio_open_input(&params);
+    assert(in != NULL);
+    int16_t frame = 0;
+    g_read_available = 100;
+    g_reads_past_available = 0;
+    g_available_calls = 0U;
+    for (int i = 0; i < 100; i++) {
+        assert(dsd_audio_read_held(in, &frame, 1U, 0) == 1);
+    }
+    assert(g_available_calls == 1U);
+    assert(dsd_audio_read_held(in, &frame, 1U, 0) == 0); /* the counted run is used up: counted again, none held */
+    assert(g_available_calls == 2U);
+    g_read_available = 10;
+    assert(dsd_audio_read_held(in, &frame, 1U, 0) == 1);
+    assert(g_available_calls == 3U);
+    assert(dsd_audio_read(in, &frame, 5U) == 5); /* takes frames the count included */
+    assert(dsd_audio_read_held(in, &frame, 1U, 0) == 1);
+    assert(g_available_calls == 4U);
+    assert(discard_at(in, g_discard_now_ns - 1000000000U) == 0); /* keeps all, but counts afresh */
+    assert(dsd_audio_read_held(in, &frame, 1U, 0) == 1);
+    assert(g_available_calls == 6U);
+    assert(g_reads_past_available == 0);
+    g_read_available = 0;
+    dsd_audio_close(in);
+    g_default_input = paNoDevice;
+}
+
 int
 main(void) {
     assert(dsd_audio_init() == 0);
@@ -752,6 +790,7 @@ main(void) {
     test_input_discard_without_memory_loses_no_new_audio();
     test_input_discard_never_reads_past_what_is_held();
     test_input_discard_is_bounded();
+    test_held_reads_count_availability_once_per_run();
     dsd_audio_cleanup();
     printf("PLATFORM_AUDIO_PORTAUDIO_RECOVERY: OK\n");
     return 0;

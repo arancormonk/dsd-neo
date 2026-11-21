@@ -41,20 +41,26 @@ typedef struct {
    stream that is only delayed is still a stream: its reads wait for samples. */
 /* The read was empty and gave way to a queued command: the consumer stands erasures in and lets the engine loop apply
    it (the DSD_INTERRUPT_YIELD interruption), then reads on. */
-#define DSD_RTL_READ_YIELD           (-2)
+#define DSD_RTL_READ_YIELD             (-2)
 /* The read was empty for one wait slice. Only a reader that asks for it gets it
    (dsd_rtl_stream_io_hook_read_ex2()): the EDACS analog call loop, which plays the time that passed as closed squelch
    and ends its call by its own timers. */
-#define DSD_RTL_READ_NO_STREAM       (-3)
+#define DSD_RTL_READ_NO_STREAM         (-3)
 /* The live stream delivered nothing for 100 ms (issue #834). Only a reader that asks for it gets it
    (DSD_RTL_READ_WANT_IDLE_BOUND): the decoder's frame-sync hunt, which then applies a queued command, ends its pass
    under a scan, or reads again. Frame reads, an I/Q replay's reads and a Signal search's or analog monitor's own bounds
    are not changed by it. */
-#define DSD_RTL_READ_IDLE            (-4)
+#define DSD_RTL_READ_IDLE              (-4)
+/* The live stream's output was empty, and the read came back before waiting on it. Only a reader that asks for it
+   gets it (DSD_RTL_READ_WANT_EMPTY_RETURN): the decoder's frame-sync hunt, which services what waits on the decoder (a
+   P25 watchdog beat) before it reads again to wait, so a slow stream that never leaves a read idle for 100 ms still
+   reaches that service once per wait. */
+#define DSD_RTL_READ_EMPTY             (-5)
 
 /* What a reader asks of a live read (the @p wants bits of dsd_rtl_stream_io_hook_read_ex2() and the reads under it). */
-#define DSD_RTL_READ_WANT_NO_STREAM  0x1 /* DSD_RTL_READ_NO_STREAM while the device has no stream */
-#define DSD_RTL_READ_WANT_IDLE_BOUND 0x2 /* DSD_RTL_READ_IDLE after 100 ms with no samples */
+#define DSD_RTL_READ_WANT_NO_STREAM    0x1 /* DSD_RTL_READ_NO_STREAM while the device has no stream */
+#define DSD_RTL_READ_WANT_IDLE_BOUND   0x2 /* DSD_RTL_READ_IDLE after 100 ms with no samples */
+#define DSD_RTL_READ_WANT_EMPTY_RETURN 0x4 /* DSD_RTL_READ_EMPTY at once when the output is empty */
 
 typedef struct {
     int (*read)(void* rtl_ctx, float* out, size_t count, int* out_got);
@@ -99,8 +105,9 @@ int dsd_rtl_stream_io_hook_read_ex(dsd_state* state, float* out, uint8_t* flags,
  * @brief dsd_rtl_stream_io_hook_read_ex() for a reader that asks for more of a live read (@p wants,
  * DSD_RTL_READ_WANT_* bits). DSD_RTL_READ_WANT_NO_STREAM: while the device has no stream, each read that found nothing
  * for one wait slice returns DSD_RTL_READ_NO_STREAM instead of waiting on, and never DSD_RTL_READ_YIELD.
- * DSD_RTL_READ_WANT_IDLE_BOUND: a live read that found nothing for 100 ms returns DSD_RTL_READ_IDLE (issue #834). With
- * @p wants 0 it reads as dsd_rtl_stream_io_hook_read_ex().
+ * DSD_RTL_READ_WANT_IDLE_BOUND: a live read that found nothing for 100 ms returns DSD_RTL_READ_IDLE (issue #834).
+ * DSD_RTL_READ_WANT_EMPTY_RETURN: a live read that finds the output empty returns DSD_RTL_READ_EMPTY before it waits.
+ * With @p wants 0 it reads as dsd_rtl_stream_io_hook_read_ex().
  */
 int dsd_rtl_stream_io_hook_read_ex2(dsd_state* state, float* out, uint8_t* flags, size_t count, int* out_got,
                                     int wants);

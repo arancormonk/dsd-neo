@@ -508,6 +508,16 @@ aaudio_recover_handle(dsd_audio_stream* stream) {
     return 1;
 }
 
+/* A disconnect the held read noted (dsd_audio_stream::disconnect_owed): the old stream is torn down and its reopen
+   scheduled now, as the read that met it would have done. */
+static void
+aaudio_pay_owed_disconnect(dsd_audio_stream* stream) {
+    if (stream->disconnect_owed) {
+        stream->disconnect_owed = 0;
+        aaudio_schedule_reopen(stream);
+    }
+}
+
 /*============================================================================
  * Format Conversion (output fallback path)
  *============================================================================*/
@@ -1478,6 +1488,7 @@ dsd_audio_read(dsd_audio_stream* stream, int16_t* buffer, size_t frames) {
         return -1;
     }
 
+    aaudio_pay_owed_disconnect(stream);
     if (!aaudio_recover_handle(stream)) {
         set_error("AAudio input stream is disconnected");
         return -1;
@@ -1521,6 +1532,50 @@ dsd_audio_read(dsd_audio_stream* stream, int16_t* buffer, size_t frames) {
        there) included; a read that fails returns none, so counts none. */
     stream->device_frames += (uint64_t)frames;
     return (int)frames;
+}
+
+int
+dsd_audio_read_held(dsd_audio_stream* stream, int16_t* buffer, size_t frames, int recover) {
+    if (!stream || !buffer || !stream->is_input) {
+        set_error("Invalid arguments");
+        return -1;
+    }
+    /* A read that may recover pays a disconnect a probe noted and reopens once the backoff allows. A probe makes no
+       device call but the read: a stream lost to a route change holds nothing until such a read, or a blocking one,
+       brings it back. */
+    if (recover) {
+        aaudio_pay_owed_disconnect(stream);
+        (void)aaudio_recover_handle(stream);
+    }
+    if (!stream->handle || stream->disconnect_owed) {
+        return 0;
+    }
+    const size_t carried = audio_input_carry_take(stream->input_carry, stream->channels, buffer, frames);
+    size_t got = carried;
+    if (carried < frames) {
+        const size_t remaining = frames - carried;
+        const int32_t want = (remaining > (size_t)INT32_MAX) ? INT32_MAX : (int32_t)remaining;
+        /* No timeout: what the device wrote and no read took, at once. */
+        const aaudio_result_t res =
+            AAudioStream_read(stream->handle, buffer + carried * (size_t)stream->channels, want, 0);
+        if (res < 0) {
+            if (res == AAUDIO_ERROR_DISCONNECTED) {
+                /* Torn down and reopened later, outside the probe; what a discard kept still goes first. */
+                stream->disconnect_owed = 1;
+                stream->device_frames += (uint64_t)carried;
+                return (int)carried;
+            }
+            set_error_aaudio(res);
+            return -1;
+        }
+        if (res > 0) {
+            /* The device delivers again, as a blocking read's frames prove: an empty poll proves nothing. */
+            stream->recovery_streak = 0;
+        }
+        got += (size_t)res;
+    }
+    stream->device_frames += (uint64_t)got;
+    return (int)got;
 }
 
 /* Frames per read of an input discard, the most channels it reads, and the most it drops: about 2 s of frames, and

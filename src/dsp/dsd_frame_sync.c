@@ -332,6 +332,24 @@ enum {
 
 typedef struct frame_sync_runtime_ctx frame_sync_runtime_ctx;
 
+/* The control channel's sync stamps, wall and monotonic, as getFrameSync() found them before its entry tick: a tick's
+   grace during the call writes both, so either one differing at a sync accept was written during the call, even when
+   the wall second it wrote repeats the old one (frame_sync_note_cc_sync()). */
+typedef struct {
+    time_t wall;
+    double mono;
+} frame_sync_cc_stamps;
+
+static inline frame_sync_cc_stamps
+frame_sync_cc_stamps_take(const dsd_state* state) {
+    frame_sync_cc_stamps stamps = {0, 0.0};
+    if (state) {
+        stamps.wall = state->last_cc_sync_time;
+        stamps.mono = state->last_cc_sync_time_m;
+    }
+    return stamps;
+}
+
 typedef struct {
     dsd_opts* opts;
     dsd_state* state;
@@ -511,11 +529,8 @@ frame_sync_set_basic_lock(frame_sync_match_ctx* ctx) {
     state->min = ((state->min) + ctx->lmin) / 2;
 }
 
-static inline void
-frame_sync_note_cc_sync(frame_sync_match_ctx* ctx) {
-    ctx->state->last_cc_sync_time = ctx->now;
-    ctx->state->last_cc_sync_time_m = ctx->nowm;
-}
+/* The control channel's sync stamps a sync accept writes (after frame_sync_runtime_ctx, whose stamps it reads). */
+static void frame_sync_note_cc_sync(frame_sync_match_ctx* ctx);
 
 static void
 frame_sync_set_p25_cqpsk_dibit_map(frame_sync_match_ctx* ctx, uint8_t map_idx) {
@@ -3030,10 +3045,10 @@ frame_sync_try_protocol_matches(frame_sync_match_ctx* ctx) {
 static time_t g_p25_trunk_tick_last_tick = 0;
 static time_t g_p25_trunk_tick_last_p25_seen = 0;
 
-void
+int
 frame_sync_maybe_tick_p25_trunk_sm(dsd_opts* opts, dsd_state* state, time_t now) {
     if (now == g_p25_trunk_tick_last_tick) {
-        return;
+        return 0;
     }
 
     int p25_by_sync = DSD_SYNC_IS_P25(state->lastsynctype) ? 1 : 0;
@@ -3042,10 +3057,12 @@ frame_sync_maybe_tick_p25_trunk_sm(dsd_opts* opts, dsd_state* state, time_t now)
     }
     int p25_recent = (g_p25_trunk_tick_last_p25_seen != 0 && (now - g_p25_trunk_tick_last_p25_seen) <= 3) ? 1 : 0;
     int p25_active = p25_by_sync || p25_recent || (state->p25_p2_active_slot != -1);
-    if (opts->trunk_enable == 1 && p25_active) {
+    const int ticks = opts->trunk_enable == 1 && p25_active;
+    if (ticks) {
         dsd_frame_sync_hook_p25_sm_try_tick(opts, state);
     }
     g_p25_trunk_tick_last_tick = now;
+    return ticks;
 }
 
 #ifdef DSD_NEO_TEST_HOOKS
@@ -3671,11 +3688,17 @@ typedef struct frame_sync_runtime_ctx {
        tune since then (a release's tune in the no-sync hooks, say) leaves a history that is not kept. */
     uint32_t history_drops;
     uint64_t history_tune_gen;
+    /* The control channel's sync stamps when the call began: either one that differs at a sync accept was written
+       during the call (a tick's grace after a tune), and the wall stamp is kept (frame_sync_note_cc_sync()). */
+    frame_sync_cc_stamps cc_stamp_at_entry;
     /* A history taken up from the last call, until the first symbol read confirms the stream went on unbroken: the
        read is where an RTL reader finds a flush (the clock's epoch) or a tune completes. */
     int resumed;
     uint64_t resume_clock;
     uint32_t resume_epoch;
+    /* The symbol clock's epoch the window was read on: a read that moves it (a stream flush, a CQPSK reacquisition,
+       an input switch) leaves nothing before it worth matching (frame_sync_history_confirm()). */
+    uint32_t window_epoch;
     uint32_t resume_carrier_seq;
     /* The 79- and 119-symbol TETRA burst windows are only built when TETRA is enabled. */
     int tetra_windows;
@@ -3698,6 +3721,28 @@ typedef struct frame_sync_runtime_ctx {
     /* The level window, t_max levels; a carried history brings its levels (dsd_frame_sync_history_carry::levels). */
     float lbuf[DSD_FRAME_SYNC_HISTORY_CARRY_LEVELS];
 } frame_sync_runtime_ctx;
+
+/* The control channel's sync stamps a sync accept writes, from the call's decode times, each by its own clock's rule. The
+   monotonic stamp only moves forward: a tick inside the call (the grace after a tune) may already have stamped a later
+   one. The wall stamp follows the wall clock, set back included, so a stale-carrier or hangtime check never reads a
+   negative age; only one a tick wrote during this call (its grace, stamped as the tick saw the clock, while the hunt's
+   time is the call's start) is kept. A grace writes both stamps, so either one moved since the call began marks it.
+   The stamps the call began with are read through the call's history, only here, at an accept. */
+static void
+frame_sync_note_cc_sync(frame_sync_match_ctx* ctx) {
+    dsd_state* state = ctx->state;
+    /* Every accept's context carries the call's history; one with none has no stamps of its own to keep. */
+    const frame_sync_cc_stamps* entry = ctx->history != NULL ? &ctx->history->cc_stamp_at_entry : NULL;
+    const int written_in_call =
+        entry != NULL
+        && (state->last_cc_sync_time != entry->wall || fabs(state->last_cc_sync_time_m - entry->mono) > 1e-9);
+    if (ctx->nowm > state->last_cc_sync_time_m) {
+        state->last_cc_sync_time_m = ctx->nowm;
+    }
+    if (!written_in_call) {
+        state->last_cc_sync_time = ctx->now;
+    }
+}
 
 /* Bit errors between the window's last ten symbols, read on four levels, and the NXDN frame sync word of @p synctype's
  * polarity, counted on the 20 bits the dibits carry (+3 01, +1 00, -1 10, -3 11; TS 1-A 4.2). The levels are the
@@ -3759,6 +3804,8 @@ frame_sync_runtime_init(frame_sync_runtime_ctx* rt, const dsd_opts* opts, const 
     rt->history_rf_mod = state->rf_mod;
     rt->history_drops = state->frame_sync_carry.drops;
     rt->history_tune_gen = dsd_trunk_tuning_generation();
+    rt->cc_stamp_at_entry = frame_sync_cc_stamps_take(state);
+    rt->window_epoch = state->symbol_clock_epoch;
     rt->synctest[24] = 0;
     rt->synctest12[12] = 0;
     rt->synctest10[10] = 0;
@@ -3770,6 +3817,16 @@ frame_sync_runtime_init(frame_sync_runtime_ctx* rt, const dsd_opts* opts, const 
     rt->synctest8[8] = 0;
     rt->synctest16[16] = 0;
     rt->modulation[7] = 0;
+}
+
+/* The window's context started over within the call (a CQPSK trial's pass end, a hunt-chain handback, a P25p1 word
+   hint): what the call began with stays, the control channel's wall stamp as getFrameSync() found it before its entry
+   tick (frame_sync_note_cc_sync()). */
+static void
+frame_sync_runtime_restart(frame_sync_runtime_ctx* rt, const dsd_opts* opts, const dsd_state* state) {
+    const frame_sync_cc_stamps cc_stamp_at_entry = rt->cc_stamp_at_entry;
+    frame_sync_runtime_init(rt, opts, state);
+    rt->cc_stamp_at_entry = cc_stamp_at_entry;
 }
 
 static int
@@ -3907,6 +3964,19 @@ frame_sync_history_drop(dsd_state* state) {
     state->frame_sync_carry.valid = 0;
 }
 
+/* A hunt read that left (dsd_state::input_interrupted) and committed no symbol: a carrier change inside it (a P25
+   tick's retune at one of its service points) marked the symbol it was reading as split, one past the clock, but no
+   such symbol was read. The boundary is the clock, so the next symbol read is the new carrier's first and a sync word
+   that starts there is whole (dsd_state_note_carrier_change()). A read that did commit its symbol moved the clock onto
+   the mark. The history goes, as on every such exit. Only on the exit, so the symbol path pays nothing. */
+static void
+frame_sync_read_left(dsd_state* state) {
+    if (state->carrier_change_seen != 0U && state->carrier_change_symbol_clock == state->symbol_clock + 1U) {
+        state->carrier_change_symbol_clock--;
+    }
+    frame_sync_history_drop(state);
+}
+
 /* Whether the carried ring's head and counts lie within its buffers. */
 static int
 frame_sync_history_carry_in_range(const dsd_frame_sync_history_carry* carry) {
@@ -3956,22 +4026,34 @@ frame_sync_history_resume(frame_sync_runtime_ctx* rt, dsd_state* state) {
  * position (a dropped P25p1 candidate's carry goes on with the pass it interrupted), so the call hunts a whole pass of
  * the new stream, as one that began after the break would. */
 static void
+frame_sync_history_window_drop(frame_sync_runtime_ctx* rt) {
+    rt->history_head = 0;
+    rt->history_count = 0;
+    rt->lidx = 0;
+    rt->level_count = 0;
+    rt->synctest_pos = 0;
+    rt->own_count = 0;
+}
+
+static void
 frame_sync_history_confirm(frame_sync_runtime_ctx* rt, const dsd_state* state) {
     if (!rt->resumed) {
+        /* A read that met a stream flush moved the epoch: the window read before it goes, whatever moved nothing the
+           hunt compares (a CQPSK reacquisition's flush of the RTL output, say). One compare a symbol. */
+        if (state->symbol_clock_epoch != rt->window_epoch) {
+            rt->window_epoch = state->symbol_clock_epoch;
+            frame_sync_history_window_drop(rt);
+        }
         return;
     }
     rt->resumed = 0;
+    rt->window_epoch = state->symbol_clock_epoch;
     const int unbroken =
         state->symbol_clock == rt->resume_clock + 1U && state->symbol_clock_epoch == rt->resume_epoch
         && state->carrier_seq == rt->resume_carrier_seq && state->frame_sync_carry.drops == rt->history_drops
         && dsd_trunk_tuning_generation() == rt->history_tune_gen && !dsd_frame_sync_off_thread_tune_pending();
     if (!unbroken) {
-        rt->history_head = 0;
-        rt->history_count = 0;
-        rt->lidx = 0;
-        rt->level_count = 0;
-        rt->synctest_pos = 0;
-        rt->own_count = 0;
+        frame_sync_history_window_drop(rt);
     }
 }
 
@@ -5907,12 +5989,12 @@ frame_sync_maybe_dump_unsynced_dmr(const dsd_opts* opts, const dsd_state* state)
 static int
 frame_sync_pass_end_step(dsd_opts* opts, dsd_state* state, frame_sync_runtime_ctx* rt, time_t now) {
     if (frame_sync_p25p1_mod_compare_trial_pass_ended(opts, state, rt->synctest_pos)) {
-        frame_sync_runtime_init(rt, opts, state);
+        frame_sync_runtime_restart(rt, opts, state);
         return 0;
     }
     const int timeout_step = frame_sync_handle_no_sync_timeout(opts, state, rt, now);
     if (timeout_step == FRAME_SYNC_HUNT_CHAIN_HANDBACK) {
-        frame_sync_runtime_init(rt, opts, state);
+        frame_sync_runtime_restart(rt, opts, state);
         return 0;
     }
     if (timeout_step != 0) {
@@ -5934,29 +6016,63 @@ frame_sync_pass_end_step(dsd_opts* opts, dsd_state* state, frame_sync_runtime_ct
      * and the hunt goes on in the same dwell. */
     const int budget_step = frame_sync_hunt_budget_exit(opts, state, now);
     if (budget_step == FRAME_SYNC_HUNT_CHAIN_HANDBACK) {
-        frame_sync_runtime_init(rt, opts, state);
+        frame_sync_runtime_restart(rt, opts, state);
         return 0;
     }
     return budget_step != 0;
 }
 
+/* A P25 tick inside the hunt moved the chain (frame_sync_watchdog_tick.c): the hunt hands back at once with no sync, as
+   a read that left for a queued command does, and the engine's next call starts on the new carrier with the tuning
+   generation and the decode time taken afresh. No no-carrier pass: nothing was lost, the receiver moved. */
+static int
+frame_sync_hand_back_after_tick(dsd_state* state) {
+    state->input_interrupted = 1;
+    frame_sync_history_drop(state);
+    return DSD_SYNC_NONE;
+}
+
+/* The decoder's own once-a-second P25 tick at the hunt's entry: 1 when it ran and moved the chain. Nothing was read
+   yet, so the hand-back leaves the handler's consumption for the next call to note. */
+static int
+frame_sync_entry_tick_moved_chain(dsd_opts* opts, dsd_state* state, time_t now) {
+    frame_sync_chain_mark entry;
+    frame_sync_chain_mark_take(&entry, state);
+    return frame_sync_maybe_tick_p25_trunk_sm(opts, state, now) && frame_sync_chain_moved(&entry, state);
+}
+
+/* getFrameSync()'s entry: 1 when the call ends before it hunts, with *@p out its result: -1 with no context, or no sync
+   when the decoder's own tick moved the chain (handed back). */
+static int
+frame_sync_entry_ends_call(dsd_opts* opts, dsd_state* state, time_t now, int* out) {
+    if (!opts || !state) {
+        *out = -1;
+        return 1;
+    }
+    if (frame_sync_entry_tick_moved_chain(opts, state, now)) {
+        *out = frame_sync_hand_back_after_tick(state);
+        return 1;
+    }
+    return 0;
+}
+
 int
 getFrameSync(dsd_opts* opts, dsd_state* state) {
-    if (!opts || !state) {
-        return -1;
-    }
-
     const time_t now = dsd_decode_time();
     const double nowm = dsd_decode_now_mono_s();
-    frame_sync_maybe_tick_p25_trunk_sm(opts, state, now);
+    const frame_sync_cc_stamps cc_stamp_at_entry = frame_sync_cc_stamps_take(state); /* before the entry tick's grace */
+    int ended = DSD_SYNC_NONE;
+    if (frame_sync_entry_ends_call(opts, state, now, &ended)) {
+        return ended;
+    }
     frame_sync_apply_cli_mod_lock(opts, state);
     (void)dsd_frame_sync_apply_off_thread_tunes(opts, state);
     frame_sync_p25p1_mod_compare_note(opts, state);
     frame_sync_sps_hunt_note_handler_consumption(state);
     frame_sync_ensure_enabled_sps_profile(opts, state);
-
     frame_sync_runtime_ctx rt;
     frame_sync_runtime_init(&rt, opts, state);
+    rt.cc_stamp_at_entry = cc_stamp_at_entry;
     /* The last call's history, when it ended on a no-sync exit and the stream went on unbroken from there. */
     frame_sync_history_resume(&rt, state);
 
@@ -5968,6 +6084,10 @@ getFrameSync(dsd_opts* opts, dsd_state* state) {
         rt.t++;
         if ((rt.t % 300) == 0) {
             frame_sync_publish_ui_throttled(opts, state);
+            if (frame_sync_service_p25_watchdog(opts, state) == FRAME_SYNC_WD_MOVED) { /* a deferral hunts on */
+                frame_sync_sps_hunt_mark_return(state);
+                return frame_sync_hand_back_after_tick(state);
+            }
             if (dsd_frame_sync_hook_signal_search_should_yield(opts, state)) {
                 dsd_state_raise_input_interrupt(state, DSD_INTERRUPT_SEARCH);
                 frame_sync_history_drop(state);
@@ -5996,7 +6116,7 @@ getFrameSync(dsd_opts* opts, dsd_state* state) {
             /* The read left a silent input's wait for a queued command, the input ended (issue #634) or the read
                met a stream gap (issue #518): no symbol came and no pass ran, so nothing of it is counted. The engine
                loop applies the command, switches the input or resets what the gap cut; the next call hunts afresh. */
-            frame_sync_history_drop(state);
+            frame_sync_read_left(state);
             frame_sync_sps_hunt_mark_return(state);
             return DSD_SYNC_NONE;
         }
@@ -6015,7 +6135,7 @@ getFrameSync(dsd_opts* opts, dsd_state* state) {
                 return sync_type;
             }
             if (frame_sync_p25p1_word_hint(opts, state, &rt)) {
-                frame_sync_runtime_init(&rt, opts, state);
+                frame_sync_runtime_restart(&rt, opts, state);
                 continue;
             }
         }

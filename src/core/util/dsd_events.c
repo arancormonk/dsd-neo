@@ -584,10 +584,10 @@ dsd_event_flush_orphan_recordings(dsd_opts* opts, dsd_state* state) {
     if (!opts || !state || opts->static_wav_file != 0) {
         return;
     }
-    /* Under the call-state lock, which every commit holds while it rotates a slot: a flush on the P25 watchdog's thread
-       (a trunk control-channel return) can meet the decoder thread committing the slot's ended call
-       (dsd_event_sync_slot() from noCarrier() or getFrameSync(), outside the tick guard). Judging the file no call's
-       and closing it are one step, so the two never close the same file. */
+    /* Under the call-state lock, which every commit holds while it rotates a slot. A running decoder flushes and commits
+       on its own thread only (the P25 watchdog's ticks, whose control-channel returns flush, run there too), so the two
+       never overlap in it; the lock keeps judging the file no call's and closing it one step for a caller that runs a
+       tick on a thread of its own (the engine tests' in-flight ticks), so the two never close the same file. */
     const dsd_call_state_ext* ext = dsd_call_state_ext_get(state, 1);
     dsd_call_state_ext_lock(ext);
     for (uint8_t slot = 0; slot < 2U; slot++) {

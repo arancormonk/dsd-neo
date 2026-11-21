@@ -1433,14 +1433,15 @@ int rtl_stream_test_search_live_read_bound(uint64_t search_owner, const dsd_opts
 /* rtl_stream_test_search_live_read_bound()'s read (issue #518 D4) with @p dev as the open device, whose stream (or lack
  * of one, rtl_device_has_stream()) it reads by, for a reader that does (@p want_no_stream) or does not take
  * DSD_RTL_READ_NO_STREAM, and does (@p want_idle_bound, the decoder's hunt: issue #834) or does not take
- * DSD_RTL_READ_IDLE. After @p event_after_ms the producer calls @p event (when set), then delivers one sample when
- * @p feed is set. */
+ * DSD_RTL_READ_IDLE, and does (@p want_empty_return, the hunt's first read) or does not take DSD_RTL_READ_EMPTY. After
+ * @p event_after_ms the producer calls @p event (when set), then delivers one sample when @p feed is set. */
 typedef struct {
     struct rtl_device* dev;
     uint64_t search_owner;
     const dsd_opts* live_opts;
     int want_no_stream;
     int want_idle_bound;
+    int want_empty_return;
     int event_after_ms;
     void (*event)(void* ctx);
     void* event_ctx;
@@ -1448,8 +1449,14 @@ typedef struct {
 } rtl_stream_test_live_read_request;
 
 /* Reports what the read returned (a sample count, -1, 0 for an idle monitor, DSD_RTL_READ_YIELD,
- * DSD_RTL_READ_NO_STREAM or DSD_RTL_READ_IDLE) and how long it waited; returns 0 when the read ran. */
+ * DSD_RTL_READ_NO_STREAM, DSD_RTL_READ_IDLE or DSD_RTL_READ_EMPTY) and how long it waited; returns 0 when the read
+ * ran. */
 int rtl_stream_test_live_read(const rtl_stream_test_live_read_request* req, int* out_got, uint64_t* out_waited_ms);
+
+/* The timed waits on the empty output ring the last live read of rtl_stream_test_live_read() (or
+ * rtl_stream_test_search_live_read_bound()) made before it returned, each of which timed out: 0 for a read that
+ * returned at its first empty poll. */
+uint64_t rtl_stream_test_last_live_read_waits(void);
 /* Set or clear a USB device's recovering state (the swap's), which rtl_device_has_stream() reads as no stream. */
 void rtl_device_test_set_recovering(struct rtl_device* dev, int on);
 
@@ -2092,6 +2099,9 @@ typedef struct rtl_stream_test_external_landing_filter_result {
     int profileless_away_taken;         /* frequency C with no profile queued, after D's landing: 0 */
     int back_after_profileless_taken;   /* frequency D again, with a profile queued */
     int back_after_profileless_cleared; /* 1 when that landing started the filters over: they hold C's samples */
+    int new_freq_flushed;               /* 1 when the landing on B flushed the output (its generation moved) */
+    int same_freq_flushed;              /* 1 when the width-only landing on C flushed it: 0, it is seamless */
+    int profileless_away_flushed;       /* 1 when the profile-less landing away to C flushed it */
 } rtl_stream_test_external_landing_filter_result;
 
 /* Open the NFM monitor at 48 kHz, 16 kHz wide, and land NFM retune profiles as an external backend's retunes do

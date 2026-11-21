@@ -1344,7 +1344,7 @@ keep_carry_clear(struct audio_input_carry* carry) {
    frames start at its front is left as it is. */
 static void
 test_pulse_keep_moves_only_frames_read(void) {
-    struct audio_input_carry carry = {NULL, 0U, 0U};
+    struct audio_input_carry carry = {NULL, 0U, 0U, 0U};
     pulse_keep_ring ring = keep_ring_after(64U, 10U);
     pulse_keep_to_carry(&carry, &ring, 4U);
     assert(carry.len == 4U && carry.pos == 0U);

@@ -186,10 +186,10 @@ __wrap_RigctlMarkSessionPassband(dsd_socket_t sockfd, int kind) {
     g_session_mark_kind = kind;
 }
 
-void __real_p25_sm_watchdog_start(dsd_opts* opts, dsd_state* state);
+void __real_p25_sm_watchdog_start(const dsd_opts* opts, const dsd_state* state);
 
 void
-__wrap_p25_sm_watchdog_start(dsd_opts* opts, dsd_state* state) {
+__wrap_p25_sm_watchdog_start(const dsd_opts* opts, const dsd_state* state) {
     g_watchdog_seq = ++g_order_seq;
     __real_p25_sm_watchdog_start(opts, state);
 }
