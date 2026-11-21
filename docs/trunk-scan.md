@@ -1118,7 +1118,9 @@ rules:
 - A TETRA DMO burst under a DMO reserved system code (1010, 1011, 1110, 1111) counts only when its content could be
   read: an encrypted DM-2-C burst under such a code holds nothing.
 - M17: a clean LICH that disagrees with the checked link setup's callsigns or type (another transmission whose end
-  was missed) makes its reports anonymous until a link setup is checked again.
+  was missed) makes its reports anonymous until a link setup is checked again. Only the first three LICH parts carry
+  those fields, so when a new transmission is joined on its last three parts, about two reports (no more than those
+  three frames) can still carry the old link setup's CAN, encryption and type.
 - dPMR and TETRA DMO calls go through the talkgroup and radio lists like DMR calls. A report with no target ID (a
   dPMR frame that names only the caller, an encrypted DM-2-C burst) holds nothing while a talkgroup Hold or the allow
   list is on, or when the radio list blocks its known source.

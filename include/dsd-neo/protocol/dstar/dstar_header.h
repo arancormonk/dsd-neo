@@ -24,8 +24,8 @@ struct dsd_state;
  */
 int dstar_header_decode_soft(struct dsd_state* state, const float soft_symbols[DSD_DSTAR_HEADER_CODED_BITS]);
 /**
- * @brief dstar_header_decode_soft(), also giving the first flag byte's DATA bit (JARL STD 6.0 section 6.4, bit 7 of
- * flag 1) read from the CRC-covered header octets: 1 for a data transmission, 0 for voice; set only when the CRC
+ * @brief dstar_header_decode_soft(), also giving the first flag byte's DATA bit (JARL STD 6.0 section 4.1.1 c, bit 7
+ * of flag 1) read from the CRC-covered header octets: 1 for a data transmission, 0 for voice; set only when the CRC
  * matched (@p data may be NULL).
  */
 int dstar_header_decode_soft_data(struct dsd_state* state, const float soft_symbols[DSD_DSTAR_HEADER_CODED_BITS],

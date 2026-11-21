@@ -5953,12 +5953,15 @@ the implementations from `dsd_engine_trunk_scan_init()` and clears them again on
   `dpmr_report_scan_activity()` (a Communications_Start header, and an FS2 frame whose CCH halves pass
   as a bound pair, with the raw 24-bit IDs and no party), M17 `m17_report_scan_activity()` (direct and rebuilt LSF,
   packet CRC, a clean LICH pair; only `m17_lsf_checked` values an applied LSF bound, withdrawn while a clean LICH
-  chunk disputes the checked DST/SRC/TYPE (`m17_lsf_disputed`, a missed boundary); the receive CAN gate `m17_can_en`
-  kept; never BERT)
+  chunk disputes the checked DST/SRC/TYPE (`m17_lsf_disputed`, a missed boundary). Only chunks 0 to 2 carry those
+  bits, so a decided fail-open limit: after a missed EOT, a new transmission whose chunks 3 to 5 come first can still
+  send about two pair reports (at most its chunk 3 to 5 frames) with the old LSF's CAN, encryption and type before its
+  chunk 0 disputes it. The receive CAN gate `m17_can_en` is kept; never BERT)
   and TETRA `tetra_calls.c` (`dmo_scan_report()`: DSB DM-SETUP, DM-CONNECT ACK, DM-OCCUPIED, DM-2-C opaque
   presence (known encrypted, known non-data; under a DMO reserved system code, `tetra_calls_dmo_sync_pdu()`, EN 300
-  396-3 clause 9.3.29, the profile only), SDS after its FCS check and before the notice dedupe, and DMO speech through
-  `tetra_calls_dmo_speech_activity()`; never TMO, soft-only DSBs, DM-RESERVED, DM-SETUP PRES or gateway set-up).
+  396-3 clause 9.3.29, shown and recorded as a call but the profile only for the scan), SDS after its FCS check and
+  before the notice dedupe, and DMO speech through `tetra_calls_dmo_speech_activity()`; never TMO, soft-only DSBs,
+  DM-RESERVED, DM-SETUP PRES or gateway set-up).
   Tests: `RUNTIME_TRUNK_SCAN_HOOKS`, `YSF_DCH_DECODE`, `DSTAR_PROCESS`, `DSTAR_DPRS`, `DPMR_REFERENCE_VECTORS`,
   `M17_FRAME_CUT`, `TETRA_CALLS`, `TETRA_BURST_VERDICT` (recorded through
   `tests/test_support/scan_activity_capture.h`).

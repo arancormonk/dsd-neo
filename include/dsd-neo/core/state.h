@@ -3312,8 +3312,10 @@ struct dsd_state {
     /* The checked LSF's DST, SRC and TYPE (its first 112 bits, packed MSB first), and whether a clean LICH chunk of the
      * stream has since disagreed with them (m17_process_lich(), issue #890): another transmission whose boundary went
      * unheard, or a Golay miscorrection. A disputed binding is no identity of the call for a scan hold (its report is
-     * anonymous until an LSF is checked again); the decoder's checked fields are left as they are. Meaningful only
-     * while m17_lsf_checked is set. */
+     * anonymous until an LSF is checked again); the decoder's checked fields are left as they are. Only LICH chunks 0
+     * to 2 carry these bits: a new transmission whose chunks 3 to 5 come first is not disputed until its chunk 0, so
+     * its reports of those frames (about two pair reports) still carry the old LSF's CAN, encryption and type, a
+     * bounded fail-open limit. Meaningful only while m17_lsf_checked is set. */
     uint8_t m17_lsf_checked_head[14];
     uint8_t m17_lsf_disputed;
     uint16_t m17_signature_voice_next;
