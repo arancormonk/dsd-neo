@@ -2047,19 +2047,18 @@ suite runs under this compiler.
   position/session tracking and DMR AES late-entry context; playback does not call protocol-layer state-mutating
   IV expansion. Voice bits are FEC-decoded before decryption and then passed to the normal vocoder/output path. The
   row's `event_time` is the recording's start, from its call's first frame `time` that parses (issue #888 B21,
-  below). Each record is a call of its own (issue #888). At a record's first key (`protocol`,
-  `sdrtrunk_json_begin_record()`) the record before it is over: the event layer is synced to re-render its call with
-  what its frames carried (SDRTrunk sends a call's encryption, algorithm, key id and MI, on each frame), then the call
-  ends (`dsd_call_state_end()`, as at its record's end) and a second sync commits its row and rotates its recording
-  out under it; the per-record identity (`to`, `from`, call type, the time stamp) is reset, so a key the record leaves
-  out names no one rather than the last record's party. While the header is read nothing is observed: where its voice
-  frames begin (the `frames` key, or a frame's own `time` or `hex` in a flat record) the call is observed whole with
-  `DSD_CALL_BOUNDARY_BEGIN` and synced before its stamp or audio reaches the slot, and later keys observe with CONTINUE
-  (a call begun among the frames is synced at its next frame). So an explicit `to: 0` after a numbered call is
-  exported under the fallback, not the earlier number, and an identity-less record is a recording of its own, never
-  merged into the next. Never per frame (`sdrtrunk_json_sync_call()`; `CORE_WAV_JOURNAL`, `CORE_MBE_FILE_IO`). A
-  frame's `time` is matched by its exact key (not `timestamp`) and its value read whole (`sdrtrunk_json_next_scalar()`:
-  a quoted string up to its closing quote, spaces included), then strict-parsed.
+  below). A played file is one call, as SDRTrunk writes them (issue #888): the event layer is synced at the file's
+  start and end only, never per frame or per record, and the reader observes the call on each key with
+  `DSD_CALL_BOUNDARY_CONTINUE`. A file holding several records is played as one stream: their headers fold into the
+  open call one key at a time, and identity changes split calls only as the call-state layer splits them on air. The
+  event layer never renders a call the stream moved past, so such a file makes one history row and one recording of
+  all its records' audio, named and exported under the identity the row ends with: the last ID each endpoint was
+  given (a `to` or `from` of 0, or one left out, clears none). Where the call-state layer opens a new call inside the
+  file (`dsd_call_state_observe()` returns a new epoch), the stamp latch resets, so the row is stamped from that
+  call's first valid frame: a recording of two records with other talkgroups is filed at the second record's first
+  frame (`CORE_WAV_JOURNAL` `test_playback_records_play_as_one_call`, `CORE_MBE_FILE_IO`). A frame's `time` is matched
+  by its exact key (not `timestamp`) and its value read whole (`sdrtrunk_json_next_scalar()`: a quoted string up to its
+  closing quote, spaces included), then strict-parsed.
 - API note: the high-pass filter in `<dsd-neo/core/audio_filters.h>` is `dsd_hpf()`. It was renamed from
   `hpf()` because codec2 exports a symbol of that name and Android links codec2 statically, which turns the
   duplicate into a link error. It is the only filter in that header that is prefixed: codec2 exports none of
@@ -2456,7 +2455,7 @@ suite runs under this compiler.
   and decode time comes after that; `dsd_rdio_recording_start()` is the rule, which the recording journal's `start`
   shares (below). A played SDRTrunk export's row is stamped once per call, from its first voice frame whose `time`
   (Unix milliseconds, parsed whole) is valid, so the recording is filed at its start, not its last frame; a stamp that
-  fails clears the row's until one parses. A record that begins another call in the same file is stamped afresh
+  fails clears the row's until one parses. A call the call-state layer opens inside the same file is stamped afresh
   (issue #888 B21; `CORE_WAV_JOURNAL` through `playMbeFiles()`, the run's end and the sidecar, `CORE_MBE_FILE_IO`).
   `stop_time` adds the WAV length to the start (`RUNTIME_RDIO_EXPORT`, `CORE_MBE_FILE_IO`, `CORE_INIT_STATE`,
   `UI_MENU_SERVICES`, and `CORE_CALL_ALERT_HISTORY` through the real event layer). The WAV name stays on `event_time`.

@@ -2313,16 +2313,8 @@ typedef struct {
     uint8_t is_dmra;
     uint8_t dmra_le;
     // Whether the call's row carries its recording start yet, the first frame "time" that parsed (issue #888 B21).
-    // Cleared when a record begins another call.
+    // Cleared when the call-state layer opens another call inside the file.
     uint8_t time_stamped;
-    // The record's header is being read: its call is observed whole, with BEGIN, where its voice frames begin
-    // (issue #888).
-    uint8_t header_open;
-    // Another call began among a record's frames (its identity or service changed): the event layer is synced at its
-    // next frame, so the call before it commits its own row and recording first (issue #888).
-    uint8_t call_sync_pending;
-    // The record's voice frames have begun: at the next record's first key its call ends.
-    uint8_t frames_begun;
     uint8_t alg_id;
     uint8_t alg_seen;
     uint16_t key_id;
@@ -2366,9 +2358,6 @@ sdrtrunk_json_context_init(sdrtrunk_json_context* ctx) {
     ctx->is_dmra = 1;
     ctx->dmra_le = 0;
     ctx->time_stamped = 0;
-    ctx->header_open = 1;
-    ctx->call_sync_pending = 0;
-    ctx->frames_begun = 0;
     ctx->alg_id = 0;
     ctx->alg_seen = 0;
     ctx->key_id = 0;
@@ -3145,12 +3134,9 @@ sdrtrunk_json_handle_time(const char* token, char** str_saveptr, dsd_state* stat
     return 1;
 }
 
-/* Observe the record's call with what has been read of it: whole, with @p boundary BEGIN, where its frames begin, then
-   with CONTINUE at each later key. Nothing while its header is still being read, so no key of it is folded into the
-   call before it one at a time. */
 static void
-sdrtrunk_json_publish_call(dsd_state* state, sdrtrunk_json_context* ctx, dsd_call_boundary boundary) {
-    if (!state || !ctx || state->synctype == DSD_SYNC_NONE || ctx->header_open != 0U) {
+sdrtrunk_json_publish_call(dsd_state* state, sdrtrunk_json_context* ctx) {
+    if (!state || !ctx || state->synctype == DSD_SYNC_NONE) {
         return;
     }
     const dsd_call_observation observation = {
@@ -3161,10 +3147,8 @@ sdrtrunk_json_publish_call(dsd_state* state, sdrtrunk_json_context* ctx, dsd_cal
         .policy_target_id = ctx->target_id,
         .ota_source_id = ctx->source_id,
     };
-    if (dsd_call_state_observe(state, &observation, boundary) > 0) {
-        /* Another call: its row takes its own first frame's stamp, and the event layer is synced before its audio. */
-        ctx->time_stamped = 0U;
-        ctx->call_sync_pending = 1U;
+    if (dsd_call_state_observe(state, &observation, DSD_CALL_BOUNDARY_CONTINUE) > 0) {
+        ctx->time_stamped = 0U; /* another call: its row takes its own first frame's stamp */
     }
     const dsd_call_crypto_update crypto = {
         .classification = ctx->is_enc == 0U         ? DSD_CALL_CRYPTO_CLEAR
@@ -3178,62 +3162,9 @@ sdrtrunk_json_publish_call(dsd_state* state, sdrtrunk_json_context* ctx, dsd_cal
     (void)dsd_call_state_update_crypto(state, 0U, state->synctype, &crypto);
 }
 
-static int
-sdrtrunk_json_token_starts_frames(const char* token) {
-    return strncmp("frames", token, 6) == 0 || strcmp("time", token) == 0 || strncmp("hex", token, 3) == 0;
-}
-
-/* A record's first key: the record before it is over (issue #888). The event layer is synced to re-render its call with
-   what its frames carried (SDRTrunk sends a call's encryption on each frame), then the call ends, as at its record's
-   end, and the sync commits its row and rotates its recording out under it. Whatever the record before named, this
-   one's identity is its own: a key it leaves out (an unknown "to" or "from") is no one's, not the last record's. */
-static void
-sdrtrunk_json_begin_record(dsd_opts* opts, dsd_state* state, sdrtrunk_json_context* ctx) {
-    if (ctx->frames_begun != 0U) {
-        dsd_event_sync_slot(opts, state, 0);
-        if (dsd_call_state_end(state, 0U, 0.0) != 0) {
-            dsd_event_sync_slot(opts, state, 0);
-        }
-    }
-    ctx->frames_begun = 0U;
-    ctx->header_open = 1U;
-    ctx->call_sync_pending = 0U;
-    ctx->time_stamped = 0U;
-    ctx->kind = DSD_CALL_KIND_VOICE;
-    ctx->source_id = 0U;
-    ctx->target_id = 0U;
-}
-
-/* The event layer is synced at a record's boundaries, never per frame (issue #888): at its first key
-   (sdrtrunk_json_begin_record()), and where its voice frames begin -- the "frames" key, or a frame's own "time" or
-   "hex" in a flat record -- once its header is whole: the record's call is observed with BEGIN and rendered before its
-   stamp or audio reaches the slot. */
-static void
-sdrtrunk_json_sync_call(dsd_opts* opts, dsd_state* state, sdrtrunk_json_context* ctx, const char* token) {
-    if (strncmp("protocol", token, 8) == 0) {
-        sdrtrunk_json_begin_record(opts, state, ctx);
-        return;
-    }
-    if (!sdrtrunk_json_token_starts_frames(token)) {
-        return;
-    }
-    ctx->frames_begun = 1U;
-    if (ctx->header_open != 0U) {
-        ctx->header_open = 0U;
-        sdrtrunk_json_publish_call(state, ctx, DSD_CALL_BOUNDARY_BEGIN);
-        ctx->call_sync_pending = 1U;
-    }
-    // A call begun among the frames is synced at its next frame, as one begun by a record's header is at its first.
-    if (ctx->call_sync_pending != 0U) {
-        ctx->call_sync_pending = 0U;
-        dsd_event_sync_slot(opts, state, 0);
-    }
-}
-
 static void
 sdrtrunk_json_process_token(dsd_opts* opts, dsd_state* state, sdrtrunk_json_context* ctx, const char* token,
                             char** str_saveptr) {
-    sdrtrunk_json_sync_call(opts, state, ctx, token);
     (void)sdrtrunk_json_handle_version(opts, token, str_saveptr, ctx);
     (void)sdrtrunk_json_handle_protocol(state, token, str_saveptr, ctx);
     (void)sdrtrunk_json_handle_call_type(token, str_saveptr, ctx);
@@ -3251,7 +3182,7 @@ sdrtrunk_json_process_token(dsd_opts* opts, dsd_state* state, sdrtrunk_json_cont
     sdrtrunk_json_handle_nxdn_tag(token, str_saveptr, ctx);
     (void)sdrtrunk_json_handle_hex(opts, state, token, str_saveptr, ctx);
     (void)sdrtrunk_json_handle_time(token, str_saveptr, state, ctx);
-    sdrtrunk_json_publish_call(state, ctx, DSD_CALL_BOUNDARY_CONTINUE);
+    sdrtrunk_json_publish_call(state, ctx);
 }
 
 void

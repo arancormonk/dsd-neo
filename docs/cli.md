@@ -421,9 +421,12 @@ Windows console runs:
   supplies the next superframe's context. For example:
   `dsd-neo -o null -w decoded.wav -H '<key>' --dmr-force-algid 25 -r call.mbe`.
   These are known-key playback modes, not key recovery.
-  With `-P`, each played file is a recording of its own, and each call in an SDRTrunk export is recorded under its own
-  history row, filed at its first frame's `time`. Each record of an export is a call of its own, named by its own
-  `to` and `from` only: a record that leaves one out, or gives 0, has none, whatever the record before it named.
+  With `-P`, each played file is a recording of its own, and an SDRTrunk export, one call per file as SDRTrunk writes
+  them, is recorded under its own history row, filed at its first frame's `time`. A file holding several records is
+  played as one stream: one history row and one recording of all of them, named and exported under the last talkgroup
+  and radio ID the records gave (a `to` or `from` of 0, or one left out, does not clear an earlier one). When a later
+  record changes a talkgroup or radio ID an earlier one gave, the recording is filed at that record's first frame
+  `time`, though it starts with the earlier records' audio.
   Only those SDRTrunk calls are exported to rdio-scanner. They carry
   no frequency or access code, so one with no talkgroup uses `--rdio-unknown-talkgroup` ([Digital calls with no
   talkgroup in rdio-scanner](#digital-calls-with-no-talkgroup-in-rdio-scanner)). A raw `.imb`, `.amb` or `.dmb` file

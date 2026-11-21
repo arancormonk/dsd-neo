@@ -2276,9 +2276,10 @@ above it lists no radio), and `CORE_WAV_JOURNAL` through the real close and expo
 proves the carrier, and the speech before it is not; `test_playback_unnumbered_call_export`: a played SDRTrunk call with
 no talkgroup, on a receiver tuned to 452.3125 MHz with colour code 3, is exported under `--rdio-unknown-talkgroup` at
 its first frame's second, labelled `DMR`, with `freq` 0 and no `freqList`, and is kept local without the option;
-`test_playback_records_are_calls_of_their_own`: in one export, a record with `to` 0 after a call to 1234 is exported
-under the fallback, and an identity-less record before a sourced one is a recording of its own, unexported, each
-recording holding its own record's frames alone). The number and label rules themselves are in `RUNTIME_RDIO_EXPORT`,
+`test_playback_records_play_as_one_call`: a played file is one call, so a file of two records makes one history row and
+one recording of both records' frames, exported once under the identity the row ends with: the second record's
+talkgroup when it names one, the first's when it gives `to` 0, the fallback when neither does; it is filed at the first
+frame of the last call the call-state layer opened). The number and label rules themselves are in `RUNTIME_RDIO_EXPORT`,
 and which closes may give the number in `CORE_WAV_JOURNAL`'s `test_d7_*` cases. `test_d7_fallback_journal_rdio_flag`
 expects an API-only upload's sidecar removed only when its upload succeeded, which needs the loopback stand-in server
 (`RDIO_CAPTURE`, not on native Windows, where the queued upload fails and keeps the sidecar).

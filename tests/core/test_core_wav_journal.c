@@ -4475,12 +4475,6 @@ typedef struct {
     uint64_t first_ms;
 } playback_record;
 
-/* Two calls in one file: a DMR group call to 1234 from 5678 of 3 frames, then one to 4321 from 777 of 5. */
-static const playback_record k_two_calls[2] = {
-    {1234U, 5678U, 3, 1600000100250ULL},
-    {4321U, 777U, 5, 1600000200750ULL},
-};
-
 /* An export of @p n records, one a line, written at @p path. */
 static int
 records_write(const char* path, const playback_record* recs, int n) {
@@ -4522,85 +4516,6 @@ records_write(const char* path, const playback_record* recs, int n) {
     return rc;
 }
 
-static int
-two_calls_write(const char* path) {
-    return records_write(path, k_two_calls, 2);
-}
-
-/* The history row of call @p c, or NULL. */
-static const Event_History*
-two_calls_row(const rig* r, int c) {
-    const Event_History_I* ring = &r->state->event_history_s[0];
-    for (int i = 0; i < DSD_EVENT_HISTORY_LEN; i++) {
-        const Event_History* row = &ring->Event_History_Items[i];
-        if (row->target_id == k_two_calls[c].tg && row->source_id == k_two_calls[c].src) {
-            return row;
-        }
-    }
-    return NULL;
-}
-
-/* -P -r two.mbe, a file whose second record is another call: the reader commits the first call's row when the second
-   call begins, before its audio, so each call has a history row with its own first frame's stamp and a recording of
-   its own audio alone, published and exported under that row. Before, the first call was never rendered: one row, the
-   second call's, and one recording of both calls' audio. */
-static int
-test_playback_two_calls_in_one_file(void) {
-    int rc = 0;
-    rig r;
-    rc |= rig_open(&r, "dsdneo_journal_playback_two_calls");
-    r.opts->audio_out = 0;
-    r.opts->playfiles = 1;
-    r.opts->rdio_mode = DSD_RDIO_MODE_DIRWATCH;
-    r.opts->rdio_system_id = 48;
-    submit(&r, DSD_APP_CMD_WAV_START);
-    char path[DSD_TEST_PATH_MAX * 2];
-    rc |= expect_int("two calls: input written",
-                     dsd_test_path_join(path, sizeof path, r.dir, "two.mbe") == 0 ? two_calls_write(path) : 1, 0);
-    char* argv[2] = {"dsd-neo", path};
-    r.state->optind = 1;
-    playMbeFiles(r.opts, r.state, 2, argv);
-    playback_end_run(&r);
-
-    reload(&r);
-    rc |= expect_int("two calls: two recordings published", count_records(&g_j, "publish"), 2);
-    rc |= expect_int("two calls: two history rows, none for the header between them",
-                     (long long)r.state->event_history_s[0].push_seq, 2);
-    for (int c = 0; c < 2; c++) {
-        char tag[160];
-        const long long start = (long long)(k_two_calls[c].first_ms / 1000ULL);
-        const Event_History* row = two_calls_row(&r, c);
-        DSD_SNPRINTF(tag, sizeof tag, "two calls: call %d has a history row", c + 1);
-        rc |= expect_true(tag, row != NULL);
-        DSD_SNPRINTF(tag, sizeof tag, "two calls: call %d's row is stamped from its first frame", c + 1);
-        rc |= expect_int(tag, row ? (long long)row->event_time : -1, start);
-        int found = 0;
-        const char* pub = NULL;
-        for (int i = 0; (pub = record(&g_j, "publish", i)) != NULL; i++) {
-            if (field_ll(pub, "start") != start) {
-                continue;
-            }
-            found++;
-            DSD_SNPRINTF(tag, sizeof tag, "two calls: call %d's recording holds its own audio alone", c + 1);
-            rc |= expect_int(tag, field_ll(pub, "duration_ms"), (long long)k_two_calls[c].frames * 20);
-            static char body[4096];
-            read_sidecar_of(&r, pub, body, sizeof body);
-            char want[64];
-            DSD_SNPRINTF(want, sizeof want, "\"start_time\": %lld,", start);
-            DSD_SNPRINTF(tag, sizeof tag, "two calls: call %d's recording is exported at its start", c + 1);
-            rc |= expect_true(tag, strstr(body, want) != NULL);
-            DSD_SNPRINTF(want, sizeof want, "\"talkgroup\": %u,", k_two_calls[c].tg);
-            DSD_SNPRINTF(tag, sizeof tag, "two calls: call %d's recording is exported under its talkgroup", c + 1);
-            rc |= expect_true(tag, strstr(body, want) != NULL);
-        }
-        DSD_SNPRINTF(tag, sizeof tag, "two calls: call %d's recording is published once at its start", c + 1);
-        rc |= expect_int(tag, found, 1);
-    }
-    r.opts->rdio_mode = DSD_RDIO_MODE_OFF;
-    rig_close(&r);
-    return rc;
-}
-
 /* The journal's publish record of @p ms of audio, or NULL; *@p count gets how many there are. */
 static const char*
 publish_of_duration(long long ms, int* count) {
@@ -4636,23 +4551,18 @@ playback_records_run(rig* r, const char* leaf, const playback_record* recs, int 
     return rc;
 }
 
-/* Record @p c's recording, of its own frames alone: published once, and exported (@p want_tg, @p want_src and its
-   first frame's second in its sidecar) or not (@p want_tg 0). */
+/* The recording of @p rec's frames: published once, and exported with @p want_tg, @p want_src and @p rec's first frame's
+   second in its sidecar. */
 static int
 expect_record_export(const rig* r, const char* label, const playback_record* rec, unsigned want_tg, unsigned want_src) {
     int rc = 0;
     char tag[200];
     int count = 0;
     const char* pub = publish_of_duration((long long)rec->frames * 20, &count);
-    DSD_SNPRINTF(tag, sizeof tag, "%s: one recording of its own %d frames", label, rec->frames);
+    DSD_SNPRINTF(tag, sizeof tag, "%s: one recording of all %d frames", label, rec->frames);
     rc |= expect_int(tag, count, 1);
     static char body[4096];
     read_sidecar_of(r, pub, body, sizeof body);
-    if (want_tg == 0U) {
-        DSD_SNPRINTF(tag, sizeof tag, "%s: not exported", label);
-        rc |= expect_str(tag, body, "");
-        return rc;
-    }
     char want[96];
     DSD_SNPRINTF(want, sizeof want, "\"talkgroup\": %u,", want_tg);
     DSD_SNPRINTF(tag, sizeof tag, "%s: exported under %u", label, want_tg);
@@ -4661,7 +4571,7 @@ expect_record_export(const rig* r, const char* label, const playback_record* rec
     DSD_SNPRINTF(tag, sizeof tag, "%s: from %u", label, want_src);
     rc |= expect_true(tag, strstr(body, want) != NULL);
     DSD_SNPRINTF(want, sizeof want, "\"start_time\": %lld,", (long long)(rec->first_ms / 1000ULL));
-    DSD_SNPRINTF(tag, sizeof tag, "%s: filed at its own first frame", label);
+    DSD_SNPRINTF(tag, sizeof tag, "%s: filed at the stamped record's first frame", label);
     rc |= expect_true(tag, strstr(body, want) != NULL);
     if (rc != 0) {
         DSD_FPRINTF(stderr, "  %s sidecar: %s\n", label, body);
@@ -4669,38 +4579,67 @@ expect_record_export(const rig* r, const char* label, const playback_record* rec
     return rc;
 }
 
-/* -P -r with --rdio-unknown-talkgroup: each record of a file is a call of its own, judged on its own header. A record
-   whose "to" is 0 after a call to 1234 is exported under the fallback, not 1234; an identity-less record before a
-   sourced one is a recording of its own, not exported, and the sourced call's recording holds its own audio alone.
-   Before, the next header was folded into the open call one key at a time: a zero target could not clear the previous
-   one, and the identity-less call merged into the next. */
+/* -P -r with --rdio-unknown-talkgroup: a played file is one call, as SDRTrunk writes them. A file of two records is
+   played as one stream: one recording of both records' audio, one history row, and one export. The records' headers
+   fold into the open call one key at a time, as on air, so the row ends with the last ID each endpoint was given (a
+   0 or a missing ID clears none), and the row is stamped from the first valid frame of the last call the call-state
+   layer opened: the second record's where its source or talkgroup changed, else the first's. */
 static int
-test_playback_records_are_calls_of_their_own(void) {
-    static const playback_record k_zero_after_tg[2] = {
-        {1234U, 5678U, 3, 1600000100250ULL},
-        {0U, 777U, 4, 1600000200750ULL},
+test_playback_records_play_as_one_call(void) {
+    static const struct {
+        const char* label;
+        const char* leaf;
+        playback_record recs[2];
+        uint32_t row_tg;  /* the row's talkgroup, also the sidecar's unless 0 */
+        uint32_t row_src; /* the row's and the sidecar's source */
+        int stamped;      /* the record whose first frame stamps the row */
+    } k_cases[] = {
+        {"two talkgroups",
+         "two.mbe",
+         {{1234U, 5678U, 3, 1600000100250ULL}, {4321U, 777U, 5, 1600000200750ULL}},
+         4321U,
+         777U,
+         1},
+        {"zero to after a talkgroup",
+         "zero_to.mbe",
+         {{1234U, 5678U, 3, 1600000100250ULL}, {0U, 777U, 4, 1600000200750ULL}},
+         1234U,
+         777U,
+         1},
+        {"identity-less first",
+         "anonymous_first.mbe",
+         {{0U, 0U, 3, 1600000300250ULL}, {0U, 111U, 4, 1600000400750ULL}},
+         0U,
+         111U,
+         0},
     };
-    static const playback_record k_anonymous_first[2] = {
-        {0U, 0U, 3, 1600000300250ULL},
-        {0U, 111U, 4, 1600000400750ULL},
-    };
-    int rc = 0;
-    rig r;
-    rc |= rig_open(&r, "dsdneo_journal_playback_zero_to");
-    rc |= playback_records_run(&r, "zero_to.mbe", k_zero_after_tg, 2);
-    rc |= expect_int("zero to after a talkgroup: two recordings", count_records(&g_j, "publish"), 2);
-    rc |= expect_record_export(&r, "zero to after a talkgroup, first", &k_zero_after_tg[0], 1234U, 5678U);
-    rc |= expect_record_export(&r, "zero to after a talkgroup, second", &k_zero_after_tg[1], 4242U, 777U);
-    rdio_fallback_off(&r);
-    rig_close(&r);
 
-    rc |= rig_open(&r, "dsdneo_journal_playback_anonymous_first");
-    rc |= playback_records_run(&r, "anonymous_first.mbe", k_anonymous_first, 2);
-    rc |= expect_int("identity-less first: two recordings", count_records(&g_j, "publish"), 2);
-    rc |= expect_record_export(&r, "identity-less first, first", &k_anonymous_first[0], 0U, 0U);
-    rc |= expect_record_export(&r, "identity-less first, second", &k_anonymous_first[1], 4242U, 111U);
-    rdio_fallback_off(&r);
-    rig_close(&r);
+    int rc = 0;
+    for (size_t c = 0; c < sizeof k_cases / sizeof k_cases[0]; c++) {
+        char tag[200];
+        rig r;
+        rc |= rig_open(&r, "dsdneo_journal_playback_records");
+        rc |= playback_records_run(&r, k_cases[c].leaf, k_cases[c].recs, 2);
+        DSD_SNPRINTF(tag, sizeof tag, "%s: one recording", k_cases[c].label);
+        rc |= expect_int(tag, count_records(&g_j, "publish"), 1);
+        DSD_SNPRINTF(tag, sizeof tag, "%s: one history row", k_cases[c].label);
+        rc |= expect_int(tag, (long long)r.state->event_history_s[0].push_seq, 1);
+        const Event_History* row = &r.state->event_history_s[0].Event_History_Items[1];
+        DSD_SNPRINTF(tag, sizeof tag, "%s: the row's talkgroup", k_cases[c].label);
+        rc |= expect_int(tag, (long long)row->target_id, (long long)k_cases[c].row_tg);
+        DSD_SNPRINTF(tag, sizeof tag, "%s: the row's source", k_cases[c].label);
+        rc |= expect_int(tag, (long long)row->source_id, (long long)k_cases[c].row_src);
+        const playback_record whole = {
+            0U,
+            0U,
+            k_cases[c].recs[0].frames + k_cases[c].recs[1].frames,
+            k_cases[c].recs[k_cases[c].stamped].first_ms,
+        };
+        rc |= expect_record_export(&r, k_cases[c].label, &whole, k_cases[c].row_tg != 0U ? k_cases[c].row_tg : 4242U,
+                                   k_cases[c].row_src);
+        rdio_fallback_off(&r);
+        rig_close(&r);
+    }
     return rc;
 }
 
@@ -4776,9 +4715,8 @@ main(void) {
     rc |= test_tetra_held_call_then_readmitted();
     rc |= test_playback_files_record_apart();
     rc |= test_playback_export_starts_at_its_first_frame();
-    rc |= test_playback_two_calls_in_one_file();
     rc |= test_playback_unnumbered_call_export();
-    rc |= test_playback_records_are_calls_of_their_own();
+    rc |= test_playback_records_play_as_one_call();
     if (rc == 0) {
         printf("CORE_WAV_JOURNAL: OK\n");
     }
