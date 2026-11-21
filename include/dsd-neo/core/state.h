@@ -290,7 +290,11 @@ enum {
 #define DSD_DPMR_HEADER_CC_BITS        24 /* the channel code between MI0 and MI1 */
 #define DSD_DPMR_END_INFO_BITS         17 /* ET, ARQ, Tx_WAIT, STAT, RSVD before the CRC-7 (11.6) */
 #define DSD_DPMR_HEADER_DIBITS         132
-#define DSD_DPMR_PENDING_MAX           4   /* dPMR frame sync candidates read at once (dsd_dpmr_frame_sync::pending) */
+/* dPMR frame sync candidates read at once (dsd_dpmr_frame_sync::pending): FS1 overlaps itself at no shift, so its words
+   end 24 symbols apart at least, and one is read for 132 symbols after its end, so six header words (131 / 24 + 1) can
+   be read at once; an end frame's FS3 is marked only while none is read, and no more than two header words end within
+   its 36 symbols (src/dsp/frame_sync_dpmr.c checks the bound). */
+#define DSD_DPMR_PENDING_MAX           6
 #define DSD_DPMR_MESSAGE_FRAME_SYMBOLS 192 /* a whole Message_Frame on air: preamble 36, FS1 24, MI0 + CC + MI1 132 */
 #define DSD_DPMR_END_DIBITS            36
 #define DSD_DPMR_SYNC_COPY_0           0x1U

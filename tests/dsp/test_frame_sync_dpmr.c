@@ -161,6 +161,24 @@ put_header_cc(const char* fs1, const uint8_t* info, uint32_t cc_bits) {
     put_bits(mi, DPMR_SPEC_MI_WIRE);
 }
 
+/* A clean header whose preamble the receiver caught only the last @p preamble dibits of (0 to 36). */
+static void
+put_header_clipped(const uint8_t* info, int preamble) {
+    static const uint8_t k_preamble[DPMR_SPEC_PREAMBLE_DIBITS] = {
+        1, 1, 3, 3, 1, 1, 3, 3, 1, 1, 3, 3, 1, 1, 3, 3, 1, 1, 3, 3, 1, 1, 3, 3, 1, 1, 3, 3, 1, 1, 3, 3, 1, 1, 3, 3,
+    };
+    uint8_t mi[DPMR_SPEC_MI_WIRE];
+    uint8_t cc[24];
+    assert(preamble >= 0 && preamble <= DPMR_SPEC_PREAMBLE_DIBITS);
+    dpmr_spec_encode_mi(info, mi);
+    dpmr_spec_put(cc, 0, 24, 0x5D5D55U);
+    put_dibits(k_preamble + (DPMR_SPEC_PREAMBLE_DIBITS - preamble), preamble);
+    put_word(DPMR_FRAME_SYNC_1);
+    put_bits(mi, DPMR_SPEC_MI_WIRE);
+    put_bits(cc, 24);
+    put_bits(mi, DPMR_SPEC_MI_WIRE);
+}
+
 /* An FS2 frame: the word and a body of filler. */
 static void
 put_fs2_frame(const char* fs2) {
@@ -775,6 +793,57 @@ test_header_payload_holding_fs1_is_kept(void) {
     free_state_buffers(g_state);
 }
 
+/* Every FS1 that can still be read when a header's FS1 comes is kept to its own check (issue #890). FS1 overlaps itself
+   at no shift, so its words end at least 24 symbols apart, and one is read for 132 symbols after its end: up to six
+   are read at once, the newest included. False words back to back before a header whose preamble was caught late (or
+   not at all) leave four or five read when the header's FS1 ends; the header is still checked and accepted.
+   A false word that ends 72 symbols before the header's FS1 frames the header's MI0 as its own MI1, which passes: that
+   frame, 72 symbols early and with the end of the header's FS1 read as its channel code, is not the header. The header
+   is accepted where it is, with its own channel code. */
+static void
+test_false_fs1_words_before_a_header(void) {
+    static const struct {
+        int false_words;
+        int gap; /* filler symbols between the false words and the header */
+        int preamble;
+    } k_cases[] = {{4, 0, 32}, {5, 0, 32}, {4, 0, 0}, {5, 0, 0}, {1, 48, 0}, {1, 12, 36}, {2, 24, 0}};
+
+    /* The premise of the bound: no shift of FS1 matches FS1. */
+    const char* fs1 = DPMR_FRAME_SYNC_1;
+    for (int shift = 1; shift < 24; shift++) {
+        assert(strncmp(fs1 + shift, fs1, (size_t)(24 - shift)) != 0);
+    }
+
+    uint8_t info[DPMR_SPEC_MI_BITS];
+    uint8_t cc[24];
+    dpmr_spec_header_bits(&k_voice_header, info);
+    dpmr_spec_put(cc, 0, 24, 0x5D5D55U); /* put_header_clipped()'s channel code */
+    int failed = 0;
+    for (size_t c = 0; c < sizeof(k_cases) / sizeof(k_cases[0]); c++) {
+        setup(g_opts, g_state, MODE_DPMR, 0);
+        stream_reset();
+        put_filler(80);
+        for (int w = 0; w < k_cases[c].false_words; w++) {
+            put_word(DPMR_FRAME_SYNC_1);
+        }
+        put_filler(k_cases[c].gap);
+        put_header_clipped(info, k_cases[c].preamble);
+        const int header_end = g_len;
+        put_filler(200);
+        const int sync = hunt(g_opts, g_state, g_len);
+        if (sync != DSD_SYNC_DPMR_FS1_POS || g_pos != header_end
+            || !checked_bits_equal(g_state, info, DPMR_SPEC_MI_BITS)
+            || memcmp(g_state->dpmr_sync.checked_cc, cc, sizeof cc) != 0) {
+            DSD_FPRINTF(stderr, "%d false FS1 words, %d filler, %d preamble symbols: sync %d at %d, want %d at %d\n",
+                        k_cases[c].false_words, k_cases[c].gap, k_cases[c].preamble, sync, g_pos, DSD_SYNC_DPMR_FS1_POS,
+                        header_end);
+            failed = 1;
+        }
+        free_state_buffers(g_state);
+    }
+    assert(!failed);
+}
+
 /* A Communications_Start copy in the reserved Communications Mode 111 (TS 102 658 Table 5.55) is no copy, whatever its
    CRC: beside a good copy it is no contradiction (the good one is the header), and alone it is no header, so no FS3 is
    looked for behind it. */
@@ -950,6 +1019,7 @@ main(int argc, char** argv) {
     test_powersave_headers_back_to_back();
     test_end_reading_with_reserved_fields_is_rejected();
     test_header_payload_holding_fs1_is_kept();
+    test_false_fs1_words_before_a_header();
     test_reserved_start_mode_copy_is_no_copy();
     test_header_both_polarities();
     test_header_copies();

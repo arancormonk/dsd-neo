@@ -9138,9 +9138,14 @@ the stream-notice hooks' pattern: one that fails to initialize leaves the hook u
   an END that passes its own check is taken). Nothing is accepted at the word: the hunt goes on over the candidate's
   frame (132 dibits for a header, 36 for an end frame), every matcher with it, so a rejected candidate costs no
   protocol a frame (an NXDN48 frame sync inside it is matched where it is). An FS1 found while candidates are read is
-  kept beside them (`pending[]`, up to `DSD_DPMR_PENDING_MAX`), not instead: a real header's payload can hold FS1's sign
-  pattern and a false FS1 can come just before a real one, so each is checked on its own last symbol, the one that
-  passes is accepted and the rest, begun inside it, dropped. Only FS2 and FS3 stand down inside a candidate. Once the
+  kept beside them (`pending[]`, `DSD_DPMR_PENDING_MAX` of them), not instead: a real header's payload can hold FS1's
+  sign pattern and false FS1 words can come just before a real one, so each is checked on its own last symbol, the one
+  that passes is accepted and the rest, begun inside it, dropped. FS1 overlaps itself at no shift, so its words end 24
+  symbols apart at least and six can be read at once; the slots are sized for that (a `_Static_assert` holds the
+  bound), and an FS3 is marked only while no candidate is read. A frame that passes on MI1 alone where another FS1
+  being read ends 72 symbols after its own word (where its MI1 begins) is not taken: those bits are the later word's
+  MI0, the frame a false FS1's misplaced 72 symbols early with the end of the header's FS1 read as its channel code,
+  and the later candidate reads the header in place. Only FS2 and FS3 stand down inside a candidate. Once the
   frame's last symbol is in, it is
   read back from the soft symbol history, sliced on its own sync word's outer levels, and checked, in the
   specification's receive order: each 120-bit MI copy descrambled from a fresh X^9 + X^5 + 1 scrambler, then the 12 x

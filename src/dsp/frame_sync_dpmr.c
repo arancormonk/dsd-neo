@@ -62,7 +62,15 @@ enum {
     DPMR_HEADER_MI1_AT = DPMR_MI_WIRE_BITS + DSD_DPMR_HEADER_CC_BITS,
     /* How many symbols either side of an FS3 boundary its word may end (DPMR_CONFIRM_FRAME_SYMBOLS_SLIP's one). */
     DPMR_FS3_SLIP = 1,
+    /* How many symbols after a header's FS1 its MI1 begins: MI0 (60) and the channel code (12). */
+    DPMR_HEADER_MI1_SYMBOLS = DPMR_HEADER_MI1_AT / 2,
 };
+
+/* Every FS1 still being read when another comes keeps a slot to its own check: FS1 overlaps itself at no shift, so
+   two words end DPMR_FS1_SYMBOLS apart at least, and a word is read for DSD_DPMR_HEADER_DIBITS symbols after its end
+   (the one whose frame ends at a symbol is checked before that symbol's word is marked). */
+_Static_assert(DSD_DPMR_PENDING_MAX >= ((DSD_DPMR_HEADER_DIBITS - 1) / DPMR_FS1_SYMBOLS) + 1,
+               "every FS1 read at once needs its own candidate slot");
 
 /* The Hamming(12,8) parity of each information bit, X7 first: its row of the generator matrix's C3..C0 columns (TS 102
  * 658 Table 7.2), C3 the most significant. A single bit error's syndrome is its column, so these and 8, 4, 2, 1 for
@@ -303,19 +311,45 @@ dpmr_read_back_bits(const dsd_state* state, const dpmr_levels* levels, uint8_t i
     }
 }
 
+/* Whether another FS1 being read ends where @p header's MI1 begins (@p header's own word end plus 72 symbols). Its MI0
+ * is then the bits @p header read as MI1: a header behind one or more false FS1 words (the last of them 72 symbols
+ * before its own) passes in that false word's frame on its MI0 alone, read as MI1, with the false word's frame
+ * misplaced 72 symbols early and the end of the header's FS1 taken as its channel code. */
 static int
-dpmr_check_header(dsd_state* state, const dpmr_levels* levels, uint8_t inverted) {
+dpmr_mi1_is_a_later_headers_mi0(const dsd_dpmr_frame_sync* sync, const dsd_dpmr_sync_mark* header) {
+    for (int i = 0; i < DSD_DPMR_PENDING_MAX; i++) {
+        const dsd_dpmr_sync_mark* other = &sync->pending[i];
+        if (other != header && other->kind == DSD_DPMR_SYNC_FRAME_HEADER
+            && other->clock == header->clock + DPMR_HEADER_MI1_SYMBOLS && other->epoch == header->epoch
+            && other->input == header->input && other->carrier_seq == header->carrier_seq
+            && other->sps_hunt_idx == header->sps_hunt_idx && other->inverted == header->inverted) {
+            return 1;
+        }
+    }
+    return 0;
+}
+
+static int
+dpmr_check_header(dsd_state* state, const dsd_dpmr_sync_mark* header, const dpmr_levels* levels) {
     dsd_dpmr_frame_sync* sync = &state->dpmr_sync;
+    const uint8_t inverted = header->inverted;
     uint8_t bits[DSD_DPMR_HEADER_DIBITS * 2];
     uint8_t info0[DSD_DPMR_HEADER_MI_BITS];
     uint8_t info1[DSD_DPMR_HEADER_MI_BITS];
+    uint8_t info[DSD_DPMR_HEADER_MI_BITS];
     dpmr_read_back_bits(state, levels, inverted, DSD_DPMR_HEADER_DIBITS, bits);
     const int ok0 = frame_sync_dpmr_decode_mi(bits, info0);
     const int ok1 = frame_sync_dpmr_decode_mi(bits + DPMR_HEADER_MI1_AT, info1);
-    const uint8_t copies = dpmr_pick_copy(ok0, info0, ok1, info1, DSD_DPMR_HEADER_MI_BITS, sync->checked_bits);
+    const uint8_t copies = dpmr_pick_copy(ok0, info0, ok1, info1, DSD_DPMR_HEADER_MI_BITS, info);
     if (copies == 0U) {
         return DSD_SYNC_NONE;
     }
+    /* A frame that passed on MI1 alone, where another FS1 ends right before it, is that later header's MI0: the later
+       candidate reads it in place, both copies and the channel code where they are, at its own frame's end. */
+    if (copies == DSD_DPMR_SYNC_COPY_1 && dpmr_mi1_is_a_later_headers_mi0(sync, header)) {
+        return DSD_SYNC_NONE;
+    }
+    DSD_MEMCPY(sync->checked_bits, info, DSD_DPMR_HEADER_MI_BITS);
     DSD_MEMCPY(sync->checked_cc, bits + DPMR_HEADER_CC_AT, DSD_DPMR_HEADER_CC_BITS);
     sync->checked_kind = DSD_DPMR_SYNC_FRAME_HEADER;
     sync->checked_copies = copies;
@@ -385,6 +419,8 @@ dpmr_complete_candidate(const dsd_opts* opts, dsd_state* state, dsd_dpmr_sync_ma
     if (state->symbol_clock < pending->clock + frame) {
         return DSD_SYNC_NONE; /* still reading */
     }
+    /* The candidate is done whatever its check says; the mark stays readable for it (its kind cleared). */
+    const dsd_dpmr_sync_mark done = *pending;
     pending->kind = DSD_DPMR_SYNC_FRAME_NONE;
     /* The frame and its word are the carrier's and still in the soft history. */
     dpmr_levels levels;
@@ -394,8 +430,7 @@ dpmr_complete_candidate(const dsd_opts* opts, dsd_state* state, dsd_dpmr_sync_ma
             word, (int)frame, &levels)) {
         return DSD_SYNC_NONE;
     }
-    return header ? dpmr_check_header(state, &levels, pending->inverted)
-                  : dpmr_check_end(state, &levels, pending->inverted);
+    return header ? dpmr_check_header(state, &done, &levels) : dpmr_check_end(state, &levels, done.inverted);
 }
 
 int
@@ -445,10 +480,10 @@ frame_sync_dpmr_arm_header(const dsd_opts* opts, dsd_state* state, const char* w
     }
     dsd_dpmr_frame_sync* sync = &state->dpmr_sync;
     /* A candidate being read is kept until its own check: a real header's payload can hold FS1's sign pattern (a
-       peer-to-peer Communications_Start does) and a false FS1 can come just before a real one, so a later word is read
-       beside the others, not instead of any. The one that passes is accepted and the rest, which began inside it,
-       dropped. With every slot taken (DSD_DPMR_PENDING_MAX words within one header's 132 symbols) the newest word
-       waits: the older ones are still owed their checks. */
+       peer-to-peer Communications_Start does) and false FS1 words can come just before a real one, so a later word is
+       read beside the others, not instead of any. The one that passes is accepted and the rest, which began inside it,
+       dropped. Every word that can be read at once has a slot (DSD_DPMR_PENDING_MAX); were none free, the newest word
+       would wait, the older ones being owed their checks. */
     dsd_dpmr_sync_mark* slot = dpmr_free_candidate(state);
     if (slot == NULL) {
         return 0;
