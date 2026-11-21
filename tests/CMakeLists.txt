@@ -5401,8 +5401,8 @@ if(DSD_ENABLE_QT_UI)
     )
 
     # Issue #902: the frontend's one local-day source, on a fake real clock, across midnight, sleeps, the app coming
-    # back on screen and the days time zones reshape (each case sets TZ itself). A QGuiApplication, so the real
-    # applicationStateChanged signal reaches it.
+    # back on screen and the days time zones reshape (each case names its zone through the test hooks, not TZ). A
+    # QGuiApplication, so the real applicationStateChanged signal reaches it.
     add_executable(
         dsd-neo_test_ui_qt_local_day_watch
         ui/test_ui_qt_local_day_watch.cpp
@@ -5418,7 +5418,7 @@ if(DSD_ENABLE_QT_UI)
     )
     target_compile_definitions(
         dsd-neo_test_ui_qt_local_day_watch
-        PRIVATE QT_NO_KEYWORDS
+        PRIVATE QT_NO_KEYWORDS DSD_NEO_TEST_HOOKS
     )
     set_target_properties(
         dsd-neo_test_ui_qt_local_day_watch
@@ -6634,6 +6634,8 @@ if(DSD_ENABLE_QT_UI)
             dsd-neo_test_ui_qt_qml
             PRIVATE
                 QT_NO_KEYWORDS
+                # Issue #902: the local-day watch's clock and zone, which the harness's day control drives.
+                DSD_NEO_TEST_HOOKS
                 QUICK_TEST_SOURCE_DIR="${CMAKE_CURRENT_SOURCE_DIR}/ui/qml"
                 DSD_QML_UI_DIR="${PROJECT_SOURCE_DIR}/src/ui/qt/qml"
                 DSD_QML_FONT_DIR="${PROJECT_SOURCE_DIR}/src/ui/qt/fonts"

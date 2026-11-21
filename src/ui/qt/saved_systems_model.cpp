@@ -465,7 +465,9 @@ SavedSystemsModel::fillPlaceNames(Row& row, const QVariantMap& previous) const {
 
 SavedSystemsModel::SavedSystemsModel(QObject* parent)
     : QAbstractListModel(parent), m_realtime_now_ms(&realtimeMSecsSinceEpoch) {
-    connect(LocalDayWatch::shared(), &LocalDayWatch::dayChanged, this, &SavedSystemsModel::localDayChanged);
+    if (const LocalDayWatch* watch = LocalDayWatch::shared()) {
+        connect(watch, &LocalDayWatch::dayChanged, this, &SavedSystemsModel::localDayChanged);
+    }
     load();
 }
 
@@ -1049,8 +1051,8 @@ SavedSystemsModel::realtimeNowMs() const {
 
 QVariantMap
 SavedSystemsModel::localDay() const {
-    const LocalDayWatch* watch = LocalDayWatch::shared();
-    return {{QStringLiteral("startMs"), watch->dayStartMs()}, {QStringLiteral("revision"), watch->revision()}};
+    const LocalDayWatch::Day day = LocalDayWatch::current();
+    return {{QStringLiteral("startMs"), day.startMs}, {QStringLiteral("revision"), day.revision}};
 }
 
 void

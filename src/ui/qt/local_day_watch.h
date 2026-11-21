@@ -22,7 +22,9 @@
  * change that keeps the same midnight instant, and times already drawn elsewhere (History and Activity clock text,
  * map pins), follow at their next redraw, the next day change or a restart.
  *
- * GUI thread only. The shared watch is created on first use, parented to the application.
+ * GUI thread only. The shared watch is created on first use once a QCoreApplication exists, parented to it: before
+ * then there is no event loop to arm its timer on and no application state to follow, so shared() is null and
+ * current() samples the clock itself.
  */
 
 #ifndef DSD_NEO_SRC_UI_QT_LOCAL_DAY_WATCH_H_
@@ -32,6 +34,9 @@
 #include <QObject>
 #include <QTimer>
 #include <QtGlobal>
+#ifdef DSD_NEO_TEST_HOOKS
+#include <QTimeZone>
+#endif
 
 namespace dsd_qt {
 
@@ -39,8 +44,12 @@ class LocalDayWatch : public QObject {
     Q_OBJECT
 
   public:
-    /** @brief A real clock in ms since the Unix epoch. */
-    using Clock = qint64 (*)();
+    /** @brief A local day as published: its date, the instant it began (ms since the Unix epoch) and the revision. */
+    struct Day {
+        QDate date;
+        qint64 startMs = 0;
+        quint64 revision = 0;
+    };
 
     /** @brief The longest wait between two checks. */
     static constexpr int kMaxCheckDelayMs = 60000;
@@ -48,8 +57,12 @@ class LocalDayWatch : public QObject {
      * the new day rather than re-reading the old one. */
     static constexpr int kPastMidnightMs = 1500;
 
-    /** @brief The application's watch, created on first use (checked once as it is made). */
+    /** @brief The application's watch, created on first use (checked once as it is made); null while no
+     * QCoreApplication exists. */
     static LocalDayWatch* shared();
+
+    /** @brief The shared watch's day; with no application yet, a fresh sample of the clock at revision 0. */
+    static Day current();
 
     /** @brief The local date of the last check's sample. */
     QDate
@@ -77,16 +90,24 @@ class LocalDayWatch : public QObject {
      * clock moved back across midnight). */
     static int checkDelayMs(qint64 nowMs);
 
+#ifdef DSD_NEO_TEST_HOOKS
+    /** @brief A real clock in ms since the Unix epoch. */
+    using Clock = qint64 (*)();
+
     /** @brief Read @p clock instead of the real clock, and check the shared watch at once if it exists. */
     static void setClockForTest(Clock clock);
-    /** @brief Back to the real clock, and check the shared watch at once if it exists. */
+    /** @brief Back to the real clock and the process's zone, and check the shared watch at once if it exists. */
     static void resetClockForTest();
+    /** @brief Count days in @p zone instead of the process's local zone (an invalid zone: the process's), so a test
+     * does not depend on the process taking a zone; checks the shared watch at once if it exists. */
+    static void setZoneForTest(const QTimeZone& zone);
 
-    /** @brief The interval the timer was last armed with. */
-    int
-    armedDelayMsForTest() const {
-        return m_timer.interval();
+    /** @brief The timer that re-checks. */
+    QTimer*
+    timerForTest() {
+        return &m_timer;
     }
+#endif
 
   Q_SIGNALS:
     /** @brief today() or dayStartMs() changed; revision() has moved on. */

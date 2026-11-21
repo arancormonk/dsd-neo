@@ -70,6 +70,7 @@
 #include <QStandardPaths>
 #include <QString>
 #include <QStringList>
+#include <QTimeZone>
 #include <QTimer>
 #include <QUrl>
 #include <QVariantMap>
@@ -6946,11 +6947,18 @@ class Setup : public QObject {
 
     /**
      * @brief Issue #902: make @p id (an IANA name) the process's local zone, as TZ at launch would, for QDateTime and
-     * JavaScript dates alike, and check the watch; "" puts the run's own zone back.
+     * JavaScript dates alike, and check the watch; "" puts the run's own zone back. False, with the run's own zone
+     * back, when this host cannot (its C library takes no IANA name in TZ, as on Windows, or has no data for it): a
+     * case then skips what needs that zone.
      */
-    Q_INVOKABLE void
+    Q_INVOKABLE bool
     setLocalTimeZone(const QString& id) {
         apply_local_zone(id, m_engine);
+        if (id.isEmpty() || local_zone_is(id, m_engine)) {
+            return true;
+        }
+        apply_local_zone(QString(), m_engine);
+        return false;
     }
 
     /** @brief Issue #902: the real clock and the run's own zone again (a case's cleanup). */
@@ -7776,7 +7784,32 @@ class Setup : public QObject {
         if (engine != nullptr) {
             engine->evaluate(QStringLiteral("Date.timeZoneUpdated()"));
         }
-        dsd_qt::LocalDayWatch::shared()->check();
+        if (dsd_qt::LocalDayWatch* watch = dsd_qt::LocalDayWatch::shared()) {
+            watch->check();
+        }
+    }
+
+    /* Issue #902: whether the process's local time, native and in @p engine's JavaScript, now has @p id's offsets, in
+       winter and in summer. */
+    static bool
+    local_zone_is(const QString& id, QJSEngine* engine) {
+        const QTimeZone named{id.toUtf8()};
+        if (!named.isValid()) {
+            return false;
+        }
+        for (const qint64 probe : {Q_INT64_C(1767225600000), Q_INT64_C(1782864000000)}) {
+            const QDateTime at = QDateTime::fromMSecsSinceEpoch(probe, QTimeZone::UTC);
+            const int offset = named.offsetFromUtc(at);
+            if (at.toLocalTime().offsetFromUtc() != offset) {
+                return false;
+            }
+            if (engine != nullptr
+                && engine->evaluate(QStringLiteral("new Date(%1).getTimezoneOffset()").arg(probe)).toInt()
+                       != -offset / 60) {
+                return false;
+            }
+        }
+        return true;
     }
 
     void

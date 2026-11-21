@@ -16379,7 +16379,9 @@ Qt Quick frontend (`src/ui/qt`):
   because the log spans sessions and a replay's calls keep their own dates; a date outside the current year carries
   it ("SAT 21 NOV 2015"), since the label is the section key (issue #902 B3).
   The viewer's calendar day is one source (issue #902): `LocalDayWatch` (`local_day_watch.{h,cpp}`, private to
-  `src/ui/qt`, `shared()` created on first use and parented to the application). Each `check()` takes one sample of
+  `src/ui/qt`, `shared()` created on first use once a `QCoreApplication` exists and parented to it; null before, when it
+  could arm no timer and follow no application state, so `current()` then samples the clock itself at revision 0, and
+  the models connect only to a watch that exists). Each `check()` takes one sample of
   the real clock (`realtimeMSecsSinceEpoch()`), publishes its local date (`today()`) and that date's `startOfDay()`
   instant (`dayStartMs()`), and when either differs bumps `revision()` and emits `dayChanged()` once, however many
   days passed. It re-checks from a single-shot `Qt::VeryCoarseTimer` armed for `min(next midnight − now + 1.5 s, 60
@@ -16391,7 +16393,7 @@ Qt Quick frontend (`src/ui/qt`):
   `Qt.formatDateTime()` and `QDateTime` local conversions use, and no watch for a zone change while the app runs. A
   change that moves today's midnight is picked up by the next check (the start instant differs); one that keeps the same
   midnight instant, and absolute times already drawn elsewhere (History and Activity clock text, map pins), follow at
-  their next redraw, the next day change or a restart. `CallHistoryModel` reads the watch's `today()` in `day_label()`
+  their next redraw, the next day change or a restart. `CallHistoryModel` reads `LocalDayWatch::current()` in `day_label()`
   and re-reads `DayLabelRole` for every row on `dayChanged()` (no timer of its own; B2: a phone that slept through
   midnight kept yesterday's rows under TODAY). QML gets the day as `savedSystems.localDay` (`SavedSystemsModel`,
   `{startMs, revision}`, `localDayChanged`, a new map per change) and says a moment the app saw with
@@ -16399,9 +16401,13 @@ Qt Quick frontend (`src/ui/qt`):
   `day.startMs`, else `yyyy-MM-dd hh:mm:ss`, and the full form with no day. `MapText.clockText(seconds, day)` checks
   its numeric seconds and calls it (`.import "Util.js"`). An instant is formatted with `Qt.formatDateTime()`, even for
   a date-only pattern: `Qt.formatDate()` prints the UTC date for an instant at exactly 00:00 UTC (B11). Tests:
-  `UI_QT_LOCAL_DAY_WATCH` (a fake clock through `setClockForTest()`/`resetClockForTest()`, `TZ` per case), the QML
-  harness's `testContext.setLocalNowMs()`, `setLocalTimeZone()` and `resetLocalDay()` (reset for every engine),
-  `tst_util_clock_text.qml`.
+  `UI_QT_LOCAL_DAY_WATCH` (a fake clock through `setClockForTest()`/`resetClockForTest()`, a named zone per case
+  through `setZoneForTest()` rather than the process's `TZ`, and the timer through `timerForTest()`: test hooks
+  compiled only with `DSD_NEO_TEST_HOOKS`; a case whose named zone the host's data lacks is skipped, saying so), the QML
+  harness's `testContext.setLocalNowMs()`, `setLocalTimeZone()` and `resetLocalDay()` (reset for every engine; QML's
+  JavaScript dates need the process zone, so `setLocalTimeZone()` sets `TZ`, checks the effective native and JavaScript
+  offsets, and returns false, back on the run's zone, where the host cannot take it, as on Windows, and a case skips
+  then), `tst_util_clock_text.qml`.
   Tests: `UI_QT_METRICS_MODEL`, `UI_QT_QML_CALL_LISTS` (`tst_monitor_recent_calls.qml`),
   `APP_CONTROL_NOTIFICATION_STATUS`.
 - Call history identity, and order across sessions (`call_history_model.{h,cpp}`), never come from the rows'

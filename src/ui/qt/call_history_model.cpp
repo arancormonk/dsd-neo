@@ -277,12 +277,15 @@ CallHistoryModel::CallHistoryModel(QObject* parent) : QAbstractListModel(parent)
     connect(this, &QAbstractItemModel::modelReset, this, &CallHistoryModel::rowPositionsChanged);
     m_spill = std::make_unique<CallHistorySpill>(json_store_path(QLatin1String(kSpillFileName)));
     /* Day sections are derived from the watch's day at read time; when it changes, every
-     * "TODAY" on screen is wrong until the rows are re-read. */
-    connect(LocalDayWatch::shared(), &LocalDayWatch::dayChanged, this, [this]() {
-        if (!m_rows.isEmpty()) {
-            Q_EMIT dataChanged(index(0), index(static_cast<int>(m_rows.size()) - 1), {DayLabelRole});
-        }
-    });
+     * "TODAY" on screen is wrong until the rows are re-read. (No application, no watch: the
+     * labels then read the day as each is asked for.) */
+    if (const LocalDayWatch* watch = LocalDayWatch::shared()) {
+        connect(watch, &LocalDayWatch::dayChanged, this, [this]() {
+            if (!m_rows.isEmpty()) {
+                Q_EMIT dataChanged(index(0), index(static_cast<int>(m_rows.size()) - 1), {DayLabelRole});
+            }
+        });
+    }
     load();
 }
 
@@ -527,7 +530,7 @@ row_role_value(const CallHistoryModel::Row& row, int role) {
         case CallHistoryModel::EncRole: return row.enc;
         case CallHistoryModel::WhenRole: return row.when;
         case CallHistoryModel::DurationSecsRole: return row.durationSecs;
-        case CallHistoryModel::DayLabelRole: return day_label(row.when, LocalDayWatch::shared()->today());
+        case CallHistoryModel::DayLabelRole: return day_label(row.when, LocalDayWatch::current().date);
         case CallHistoryModel::TimeTextRole: return time_text(row.when);
         case CallHistoryModel::KindRole: return row.kind;
         case CallHistoryModel::DetailRole: return row_detail_text(row);
