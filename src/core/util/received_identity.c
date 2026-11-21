@@ -518,6 +518,19 @@ dsd_rxid_note_dmr_t3_capmax(dsd_state* state, uint8_t model, uint16_t net) {
     id->valid |= DSD_RXID_DMR_T3_CAPMAX;
 }
 
+void
+dsd_rxid_note_dmr_t3_capmax_unchecked(dsd_state* state, uint8_t model, uint16_t net) {
+    if (state == NULL) {
+        return;
+    }
+    const dsd_received_identity* const id = &state->rx_id;
+    if (id->family == (uint8_t)DSD_RXID_FAMILY_DMR && (id->valid & RXID_DMR_TRUNK_PARTS) != 0U
+        && id->dmr_trunk != (uint8_t)DSD_RXID_DMR_TRUNK_TIER3) {
+        return; /* another trunking system's parts stand: only checked evidence replaces them */
+    }
+    dsd_rxid_note_dmr_t3_capmax(state, model, net);
+}
+
 int
 dsd_rxid_dmr_t3_is_capmax(const dsd_state* state, uint8_t model, uint16_t net) {
     if (state == NULL) {

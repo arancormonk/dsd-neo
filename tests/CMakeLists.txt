@@ -16102,7 +16102,8 @@ target_link_libraries(
 )
 add_test(NAME DMR_FLCO_FID0 COMMAND dsd-neo_test_dmr_flco_fid0)
 
-# The Capacity Plus and Connect Plus CSBK branding is set only from a CSBK whose own CRC passed (no RAS/-F acceptance).
+# The Capacity Plus and Connect Plus CSBK branding is set only from a CSBK whose own CRC passed (no RAS/-F acceptance),
+# and no RAS-accepted LC, CSBK or Capacity Max C_ALOHA clears or replaces a checked trunk brand.
 add_executable(
     dsd-neo_test_dmr_csbk_branding
     protocol/dmr/test_dmr_csbk_branding.c

@@ -8,11 +8,16 @@
  * reads data headers and preamble CSBKs with a 16-bit target and source, and any brand replaces an "XPT " one, which
  * reads standard LCs with a 16-bit target. So only a CSBK whose own CRC passed sets it: one accepted under relaxed RAS
  * handling (-F) leaves the branding as it was. A checked one still brands.
+ *
+ * Nor does unchecked content clear or replace a checked brand: a RAS-accepted LC or CSBK of another vendor leaves the
+ * carrier's vendor (dmr_mfid, which the dispatcher shows as the branding) alone, and a RAS-accepted Capacity Max
+ * C_ALOHA leaves a checked Capacity Plus record standing.
  */
 
 #include <assert.h>
 #include <dsd-neo/core/crc_provenance.h>
 #include <dsd-neo/core/opts.h>
+#include <dsd-neo/core/received_identity.h>
 #include <dsd-neo/core/safe_api.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/state_ext.h>
@@ -107,8 +112,132 @@ ras_relaxed_csbk_does_not_brand(const dsd_opts* proto, const branding_case* c) {
     free(opts);
 }
 
+static void
+write_bits(uint8_t* bits, size_t start, uint64_t value, size_t nbits) {
+    for (size_t i = 0; i < nbits; i++) {
+        bits[start + i] = (uint8_t)((value >> ((nbits - 1U) - i)) & 1U);
+    }
+}
+
+/* A carrier branded Capacity Plus by a checked channel status naming rest LSN 1. */
+static dsd_state*
+checked_cap_plus_carrier(dsd_opts* opts) {
+    dsd_state* state = new_state();
+    run_csbk(opts, state, 0x3EU, 0x10U, 0xC1U, 0);
+    assert(strcmp(state->dmr_branding_sub, "Cap+ ") == 0);
+    assert(state->dmr_mfid == 0x10);
+    assert(state->rx_id.dmr_trunk == (uint8_t)DSD_RXID_DMR_TRUNK_CAPACITY_PLUS);
+    assert((state->rx_id.valid & DSD_RXID_DMR_BRAND) != 0U);
+    return state;
+}
+
+static void
+assert_still_cap_plus(const dsd_state* state) {
+    assert(strcmp(state->dmr_branding_sub, "Cap+ ") == 0);
+    assert(strcmp(state->dmr_branding, "Motorola") == 0);
+    assert(state->dmr_mfid == 0x10);
+    assert(state->rx_id.dmr_trunk == (uint8_t)DSD_RXID_DMR_TRUNK_CAPACITY_PLUS);
+    assert((state->rx_id.valid & DSD_RXID_DMR_BRAND) != 0U);
+}
+
+/* A voice LC header of FID @p fid on slot 0, its check passed or accepted by RAS. */
+static void
+run_lc(dsd_opts* opts, dsd_state* state, uint8_t fid, int ras_relaxed) {
+    uint8_t bits[80];
+    DSD_MEMSET(bits, 0, sizeof(bits));
+    write_bits(bits, 8U, fid, 8U);
+    write_bits(bits, 24U, 0x123U, 24U);
+    write_bits(bits, 48U, 0x456U, 24U);
+    const int synctype = state->synctype;
+    state->synctype = DSD_SYNC_DMR_BS_VOICE_POS;
+    state->event_crc_invalid[0] = ras_relaxed ? DSD_CRC_RAS_UNVERIFIED : 0U;
+    uint32_t irr = 0;
+    dmr_flco(opts, state, bits, 1U, &irr, 1U);
+    state->event_crc_invalid[0] = 0U;
+    state->synctype = synctype;
+}
+
+static void
+unchecked_lc_keeps_checked_brand(void) {
+    dsd_opts* opts = (dsd_opts*)calloc(1U, sizeof(*opts));
+    assert(opts != NULL);
+    const uint8_t fids[3] = {0x68U, 0x08U, 0x58U};
+    for (size_t i = 0; i < 3U; i++) {
+        dsd_state* state = checked_cap_plus_carrier(opts);
+        run_lc(opts, state, fids[i], 1);
+        assert_still_cap_plus(state);
+        free_state(state);
+    }
+    // Control: a checked LC names its vendor.
+    dsd_state* state = checked_cap_plus_carrier(opts);
+    run_lc(opts, state, 0x68U, 0);
+    assert(state->dmr_mfid == 0x68);
+    free_state(state);
+    free(opts);
+}
+
+static void
+unchecked_csbk_keeps_checked_vendor(void) {
+    dsd_opts* opts = (dsd_opts*)calloc(1U, sizeof(*opts));
+    assert(opts != NULL);
+    // A Hytera (FID 0x68) CSBK accepted by RAS: the opcode is a standard one, read under its FID.
+    dsd_state* state = checked_cap_plus_carrier(opts);
+    run_csbk(opts, state, 0x3DU, 0x68U, 0x00U, 1);
+    assert_still_cap_plus(state);
+    free_state(state);
+    // Control: a checked one names its vendor.
+    state = checked_cap_plus_carrier(opts);
+    run_csbk(opts, state, 0x3DU, 0x68U, 0x00U, 0);
+    assert(state->dmr_mfid == 0x68);
+    free_state(state);
+    free(opts);
+}
+
+/* A Motorola C_ALOHA naming a Large network 1 (synthetic numbers), single block. */
+static const uint8_t k_capmax_aloha[12] = {0x99, 0x10, 0x09, 0x00, 0xF6, 0x84, 0x05, 0x00, 0x00, 0x00, 0x16, 0xA3};
+
+static void
+run_aloha(dsd_opts* opts, dsd_state* state, int ras_relaxed) {
+    uint8_t pdu[12];
+    uint8_t pdu_bits[96];
+    DSD_MEMCPY(pdu, k_capmax_aloha, sizeof(pdu));
+    for (size_t i = 0; i < sizeof(pdu_bits); i++) {
+        pdu_bits[i] = (uint8_t)((pdu[i / 8U] >> (7U - (i % 8U))) & 1U);
+    }
+    state->dmr_ras_signatures = 2U; // RAS confirmed on this carrier
+    state->event_crc_invalid[0] = ras_relaxed ? DSD_CRC_RAS_UNVERIFIED : 0U;
+    dmr_cspdu(opts, state, pdu_bits, pdu, 1U, 0U);
+    state->event_crc_invalid[0] = 0U;
+}
+
+static void
+unchecked_capmax_aloha_keeps_checked_cap_plus(void) {
+    dsd_opts* opts = (dsd_opts*)calloc(1U, sizeof(*opts));
+    assert(opts != NULL);
+    dsd_state* state = checked_cap_plus_carrier(opts);
+    run_aloha(opts, state, 1);
+    assert_still_cap_plus(state);
+    assert(!dsd_rxid_dmr_t3_is_capmax(state, 2U, 1U));
+    free_state(state);
+
+    // Controls: on a carrier no checked system names, a RAS-accepted C_ALOHA still recognises Capacity Max (RAS
+    // networks never let the CRC verify); a checked one recognises it over a Capacity Plus record.
+    state = new_state();
+    run_aloha(opts, state, 1);
+    assert(dsd_rxid_dmr_t3_is_capmax(state, 2U, 1U));
+    free_state(state);
+    state = checked_cap_plus_carrier(opts);
+    run_aloha(opts, state, 0);
+    assert(dsd_rxid_dmr_t3_is_capmax(state, 2U, 1U));
+    free_state(state);
+    free(opts);
+}
+
 int
 main(void) {
+    unchecked_lc_keeps_checked_brand();
+    unchecked_csbk_keeps_checked_vendor();
+    unchecked_capmax_aloha_keeps_checked_cap_plus();
     dsd_opts* opts = (dsd_opts*)calloc(1U, sizeof(*opts));
     assert(opts != NULL);
     for (size_t i = 0; i < sizeof(k_cases) / sizeof(k_cases[0]); i++) {

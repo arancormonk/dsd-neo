@@ -299,6 +299,10 @@ void dsd_rxid_note_dmr_t3_syscode(dsd_state* state, uint16_t syscode);
  * of range (NET width Tiny 9, Small 7, Large 4, Huge 2 bits) is ignored. Sets the part valid, never fresh, and moves
  * no epoch. */
 void dsd_rxid_note_dmr_t3_capmax(dsd_state* state, uint8_t model, uint16_t net);
+/** dsd_rxid_note_dmr_t3_capmax() for a marker whose CSBK passed no CRC of its own (a C_ALOHA -F accepted as RAS on a
+ * RAS-confirmed carrier): noted only when the DMR record holds no parts of another trunking system than Tier III, so
+ * unchecked content never drops another system's checked brand or parts. */
+void dsd_rxid_note_dmr_t3_capmax_unchecked(dsd_state* state, uint8_t model, uint16_t net);
 /** 1 when @p state's record is DMR and holds the Capacity Max marker for exactly @p model and @p net; else 0 (NULL
  * too). */
 int dsd_rxid_dmr_t3_is_capmax(const dsd_state* state, uint8_t model, uint16_t net);

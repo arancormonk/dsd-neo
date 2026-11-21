@@ -1488,11 +1488,11 @@ dmr_flco_prepare_regular_state(dmr_flco_ctx* ctx) {
         return 0;
     }
 
-    if (ctx->fid != 0 && ctx->CRCCorrect == 1U) { // the vendor (shown as the branding) only from a checked LC
+    // The vendor (shown as the branding) and the identity's vendor only from an LC whose own check passed: one -F
+    // accepted as RAS would replace a checked trunk brand's vendor with whatever its FID bits say.
+    if (ctx->fid != 0 && dmr_flco_crc_checked(ctx)) {
         ctx->state->dmr_mfid = ctx->fid;
-        if (dmr_flco_crc_checked(ctx)) {
-            dsd_rxid_note_dmr_vendor(ctx->state, ctx->fid); // and as identity only from a genuine check
-        }
+        dsd_rxid_note_dmr_vendor(ctx->state, ctx->fid);
     }
 
     if (ctx->protected_lc) {

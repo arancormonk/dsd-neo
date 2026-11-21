@@ -1721,12 +1721,11 @@ dmr_cspdu_handle_pf0(dsd_opts* opts, dsd_state* state, uint8_t cs_pdu_bits[], ui
     if (csbk_pf == 0) //okay to run
     {
 
-        //set overarching manufacturer in use when non-standard feature id set is up
-        if (csbk_fid != 0) {
+        // The manufacturer of a non-standard feature set (shown as the branding), only from a CSBK whose own CRC
+        // passed: one -F accepted as RAS would replace a checked trunk brand's vendor.
+        if (csbk_fid != 0 && dmr_csbk_crc_checked(state)) {
             state->dmr_mfid = csbk_fid;
-            if (dmr_csbk_crc_checked(state)) {
-                dsd_rxid_note_dmr_vendor(state, (uint8_t)csbk_fid);
-            }
+            dsd_rxid_note_dmr_vendor(state, (uint8_t)csbk_fid);
         }
 
         DSD_FPRINTF(stderr, "%s", KYEL);
@@ -3275,15 +3274,30 @@ dmr_syscode_set_partition_label(uint8_t par, char* par_str, size_t par_str_sz) {
     }
 }
 
-/* Whether a system code CSBK of feature set @p csbk_fid is Motorola's (FID 0x10), which brands the carrier Motorola. A
-   C_ALOHA of it recognises its network as Capacity Max only when dmr_aloha_recognises_capmax() holds. */
+/* Whether a system code CSBK of feature set @p csbk_fid is Motorola's (FID 0x10), which brands the carrier Motorola
+   when its own CRC passed. A C_ALOHA of it recognises its network as Capacity Max only when
+   dmr_aloha_recognises_capmax() holds. */
 static uint8_t
 dmr_syscode_note_capmax(dsd_state* state, int csbk_fid) {
     if (csbk_fid != 0x10) {
         return 0U;
     }
-    DSD_SNPRINTF(state->dmr_branding, sizeof(state->dmr_branding), "%s", "Motorola");
+    if (dmr_csbk_crc_checked(state)) {
+        DSD_SNPRINTF(state->dmr_branding, sizeof(state->dmr_branding), "%s", "Motorola");
+    }
     return 1U;
+}
+
+/* Note the Capacity Max marker of a C_ALOHA dmr_aloha_recognises_capmax() admitted. One -F accepted as RAS is
+   recognition all the same (a RAS network's CRC never verifies), but it never displaces another trunking system's
+   checked parts (dsd_rxid_note_dmr_t3_capmax_unchecked()). */
+static void
+dmr_syscode_note_capmax_marker(dsd_state* state, const dmr_tiii_code* code) {
+    if (dmr_csbk_crc_checked(state)) {
+        dsd_rxid_note_dmr_t3_capmax(state, code->model, code->net);
+    } else {
+        dsd_rxid_note_dmr_t3_capmax_unchecked(state, code->model, code->net);
+    }
 }
 
 /* Whether the Motorola C_ALOHA being handled may recognise its network as Capacity Max (dmr_tiii_site.h): a single
@@ -3386,7 +3400,7 @@ dmr_decode_syscode(const dsd_opts* opts, dsd_state* state, const uint8_t* cs_pdu
     if (type == 0) {
         state->dmr_t3_syscode = syscode;
         if (is_motorola && dmr_aloha_recognises_capmax(opts, state, cs_pdu_bits)) {
-            dsd_rxid_note_dmr_t3_capmax(state, code.model, code.net);
+            dmr_syscode_note_capmax_marker(state, &code);
         }
     }
     const int capmax = dsd_rxid_dmr_t3_is_capmax(state, code.model, code.net);

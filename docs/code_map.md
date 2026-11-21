@@ -4526,7 +4526,9 @@ suite runs under this compiler.
   the Tier III network (model and raw network, never `syscode >> SITE width`, which two models can share) a C_ALOHA
   recognised as Motorola Capacity Max, so the DMR decoder writes that network's site text with raw numbers and the
   `DSD_RXID_T3_CAPMAX_TOKEN` part. It is the one note a RAS-accepted message under `-F` may make (it publishes no
-  number). It is set valid and never fresh, noting or dropping it alone never moves the epoch, and no site snapshot,
+  number), and such a note never displaces another trunking system's checked parts
+  (`dsd_rxid_note_dmr_t3_capmax_unchecked()`: on a record of another system it changes nothing). It is set valid
+  and never fresh, noting or dropping it alone never moves the epoch, and no site snapshot,
   compare, union, store or API feed carries it. It goes with the DMR system parts (another access code, the DMR reset)
   and the trunking parts (another trunking system), and a Tier III system code of another network drops it; another
   site of the same network, a trunk tune, the RAS reset and the no-carrier pass keep it. One site can so carry two
@@ -13389,20 +13391,22 @@ Private per-protocol modules worth knowing about:
   the 16-bit source and 4-bit rest LSN read from the header only. A rest LSN outside 1..16 announces none, and an LC
   announces one only when its own check passed (`CRCCorrect`: the RS check of a header or terminator, the 5-bit
   checksum of an embedded LC); clean FEC alone does not. Under `-F` a RAS-accepted LC counts as checked, as a
-  RAS-accepted 0x3E status does. The LC's vendor ID (`dmr_mfid`, shown as the branding) and an XPT alert's free channel
-  take the same gate. The Hytera XPT branding takes a stricter one, from an LC and from the XPT site status and
-  adjacent-site CSBKs alike (`dmr_flco_crc_checked()`, `dmr_csbk_brand_xpt()`: a RAS-accepted LC or CSBK never sets it),
-  since it makes later standard LCs read a 16-bit target. So do the Capacity Plus and Connect Plus brands a CSBK sets
-  (`dmr_cspdu_cap_plus_3e_set_branding()`, `dmr_cspdu_con_plus_set_branding()`, from a checked CSBK only): "Cap+ " reads
-  later data headers and preamble CSBKs with a 16-bit target and source, and either replaces an "XPT " brand. Only a
-  voice channel user opens a call, holds the scan, arms or releases the encryption lockout, moves the slot's encryption
-  classification or ends its voice hold, and shows service options (emergency, encrypted, priority) on the terminal
-  (`dmr_flco_opens_voice_call()`, fixed once per LC as `voice_user` in `dmr_flco_ctx_init()`, keyed on the raw FID
-  before the Kenwood and Capacity Max normalisation): under FID 0 only FLCO 0x00 and 0x03 (TS 102 361-2 Table B.1), and
-  under FID 0x20 the same only for an LC recognised as a Kenwood scrambler LC (any other FID 0x20 LC is unknown); the
-  Motorola and Hytera FIDs keep every FLCO the decoder reads as a call. The Capacity Max FLCOs 0x14..0x18 under FID 0x10
-  are its talker alias and GPS LCs (the FID 0 0x04..0x08 with bit 0x10 set), so they open no call in any LC type, a
-  header or terminator included: their bits are no group address. The 0x3E
+  RAS-accepted 0x3E status does. An XPT alert's free channel takes the same gate. The vendor ID an LC or CSBK names
+  (`dmr_mfid`, shown as the branding) takes a stricter one (`dmr_flco_crc_checked()`, `dmr_csbk_crc_checked()`), so a
+  RAS-accepted LC or CSBK of another vendor never replaces a checked trunk brand's vendor, and so does the Hytera XPT
+  branding, from an LC and from the XPT site status and adjacent-site CSBKs alike (`dmr_flco_crc_checked()`,
+  `dmr_csbk_brand_xpt()`: a RAS-accepted LC or CSBK never sets it), since it makes later standard LCs read a 16-bit
+  target. So do the Capacity Plus and Connect Plus brands a CSBK sets (`dmr_cspdu_cap_plus_3e_set_branding()`,
+  `dmr_cspdu_con_plus_set_branding()`, from a checked CSBK only): "Cap+ " reads later data headers and preamble CSBKs
+  with a 16-bit target and source, and either replaces an "XPT " brand. Only a voice channel user opens a call, holds
+  the scan, arms or releases the encryption lockout, moves the slot's encryption classification or ends its voice hold,
+  and shows service options (emergency, encrypted, priority) on the terminal (`dmr_flco_opens_voice_call()`, fixed once
+  per LC as `voice_user` in `dmr_flco_ctx_init()`, keyed on the raw FID before the Kenwood and Capacity Max
+  normalisation): under FID 0 only FLCO 0x00 and 0x03 (TS 102 361-2 Table B.1), and under FID 0x20 the same only for an
+  LC recognised as a Kenwood scrambler LC (any other FID 0x20 LC is unknown); the Motorola and Hytera FIDs keep every
+  FLCO the decoder reads as a call. The Capacity Max FLCOs 0x14..0x18 under FID 0x10 are its talker alias and GPS LCs
+  (the FID 0 0x04..0x08 with bit 0x10 set), so they open no call in any LC type, a header or terminator included: their
+  bits are no group address. The 0x3E
   channel status reads its rest LSN as 5 bits (19..23) and decodes each active LSN's ID in the parser, one byte per
   active group LSN and one 16-bit word per active private LSN, so which LSNs the display window shows never moves an
   offset. Cap+ follows a call already in progress on that status alone, outside the DMR SM grant path, so the voice
