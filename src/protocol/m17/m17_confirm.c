@@ -57,7 +57,6 @@ m17_confirm_reset(dsd_state* state) {
     /* The packet being assembled. */
     DSD_MEMSET(state->m17_pkt, 0, sizeof(state->m17_pkt));
     state->m17_pbc_ct = 0U;
-    state->m17_pkt_gap = 0U;
     /* The BERT receiver. */
     state->m17_bert_locked = 0U;
     state->m17_bert_lfsr = 1U;
@@ -72,6 +71,10 @@ m17_confirm_reset(dsd_state* state) {
     if (ext) {
         DSD_MEMSET(&ext->adata, 0, sizeof(ext->adata));
         DSD_MEMSET(&ext->text_meta, 0, sizeof(ext->text_meta));
+        ext->pkt_gap = 0U;
+        ext->pkt_have_ref = 0U;
+        ext->pkt_ref_symbol = 0U;
+        ext->ip_stream_last_ms = 0U;
     }
     /* The network stream. */
     state->m17_ip_stream = DSD_M17_IP_STREAM_NONE;

@@ -120,6 +120,9 @@ next_dibit(dsd_state* state, float* symbol) {
         *symbol = 0.0F;
     }
     g_pos++;
+    /* Every symbol read counts, as getSymbol() counts it: the packet's frame spacing is read from it (issue #890). The
+       frame's 8 sync symbols are the hunt's, so frames here end 184 symbols apart. */
+    state->symbolcnt++;
     return dibit;
 }
 
@@ -412,7 +415,8 @@ test_lsf_cut_by_an_input_interruption_publishes_nothing(void) {
 }
 
 /* A packet frame cut late in its frame still decodes its chunk and the reassembled packet's CRC. A cut frame adds no
-   chunk, and a cut last frame neither decodes nor confirms the packet; the whole packet does. */
+   chunk, and a cut last frame neither decodes nor confirms the packet, nor does a frame after it (the cut one is lost);
+   the whole packet does. */
 static void
 test_packet_frame_cut_by_an_input_interruption_decodes_nothing(void) {
     static dsd_opts opts;
@@ -445,9 +449,23 @@ test_packet_frame_cut_by_an_input_interruption_decodes_nothing(void) {
     assert(state.m17_pbc_ct == 1U);
     assert(memcmp(state.m17_pkt, chunks_before, sizeof(chunks_before)) == 0);
 
-    /* The cut frame left the gathered chunk as a sync loss would: the same last frame, whole, completes the packet, its
-       CRC the proof. */
+    /* The cut frame is lost, as on a sync loss (issue #890): a last frame read whole one frame after it is a frame
+       later than the gathered chunk, so the packet is not whole. It decodes and proves nothing, and still ends the
+       transmission. */
     state.input_interrupted = 0;
+    (void)load_packet_frame(text, 1);
+    assert(processM17PKT(&opts, &state) == 0);
+    assert(state.m17_confirmed == 0U);
+    assert(g_search_evidence == 0);
+    assert(state.m17_pbc_ct == 0U);
+    assert(state.m17_tx_ended == 1U);
+    finish(&state);
+
+    /* The same packet with no frame lost completes, its CRC the proof. */
+    prepare(&opts, &state);
+    state.synctype = DSD_SYNC_M17_PKT_POS;
+    (void)load_packet_frame(text, 0);
+    assert(processM17PKT(&opts, &state) == 1);
     (void)load_packet_frame(text, 1);
     assert(processM17PKT(&opts, &state) == 1);
     assert(state.m17_confirmed == 1U);

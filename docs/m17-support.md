@@ -49,10 +49,12 @@ Implemented decode coverage:
   recorded for lack of memory), the oldest are forgotten, and from then on, until the decoder stops, a stream that is
   not open and not remembered starts only at its frame 0: a stream whose first frames were lost is not joined
   part-way through. A network packet (MPKT) is decoded with its own link setup only, and leaves a stream it arrives
-  during untouched: the stream's call goes on as one call, and the packet opens no call of its own then. Otherwise an
+  during untouched: the stream's call goes on as one call, and the packet opens no call of its own then. A stream
+  that has sent nothing for 2 seconds (its end lost) no longer counts for this. Otherwise an
   MPKT shows as a data call that ends with it, never as a voice call. One whose link setup cannot be used is not
-  decoded. An over-the-air packet is decoded only when it is whole: one with a lost frame, or with no data at all, is
-  not decoded, and still ends at its last frame. A stream is treated as
+  decoded. An over-the-air packet is decoded only when it is whole: one with a lost frame (also one lost just before its
+  last frame, which only the frame timing shows), or with no data at all, is not decoded, and still ends at its last
+  frame. A stream is treated as
   signed only once one of its own frames with a signed LSF is taken. A GNSS position repeated in one network stream is one report, also across the
   frame counter's wrap.
 - Signed voice streams: over the air, the signature is collected and checked (secp256r1) when

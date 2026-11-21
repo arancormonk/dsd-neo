@@ -90,6 +90,16 @@ typedef struct m17_state_ext {
     /* Counts the network streams admission opened: the GNSS repeat rule's stream boundary (a stream numbers on through
        its counter's wrap, so a frame number that falls is no boundary). */
     uint32_t ip_stream_gen;
+    /* When the open network stream's last frame was taken (dsd_realtime_mono_ms()): a stream with none taken for
+       M17_IP_STREAM_IDLE_MS no longer holds back an MPKT's call (m17_ip_handle_mpkt_frame()). */
+    uint64_t ip_stream_last_ms;
+    /* The RF packet being assembled (m17_packet_take_chunk()). pkt_gap: a frame of it was lost or out of order (its
+       last frame then decodes and credits nothing) until a transmission boundary. pkt_have_ref / pkt_ref_symbol: where
+       the frame before the next packet frame ended (dsd_state::symbolcnt: the LSF frame's or the last packet frame's),
+       so a wholly lost frame shows in the spacing (an EOF carries a byte count, not a frame number). */
+    uint8_t pkt_gap;
+    uint8_t pkt_have_ref;
+    uint32_t pkt_ref_symbol;
     m17_adata_assembly adata;
     /* The text META of the RF transmission or the admitted network stream being assembled from its blocks
        (m17_meta_text_assembler_push()), emptied at every transmission boundary (m17_confirm_reset()) so that no text

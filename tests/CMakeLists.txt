@@ -14144,7 +14144,7 @@ target_link_libraries(
 )
 # Issue #625: the stream encoder's end of stream drains a local output around its dead air; the
 # wraps record the order of writes and drains where the linker can wrap them. Issue #890: calloc is
-# wrapped too, to fail the M17 extension's first allocation.
+# wrapped too, to fail the M17 extension's first allocation, and the real-time clock, to age a network stream.
 if(NOT APPLE AND (CMAKE_C_COMPILER_ID MATCHES "GNU|Clang"))
     target_compile_definitions(
         dsd-neo_test_m17_state_dispatch
@@ -14157,6 +14157,7 @@ if(NOT APPLE AND (CMAKE_C_COMPILER_ID MATCHES "GNU|Clang"))
             "-Wl,--wrap=dsd_audio_drain"
             "-Wl,--wrap=dsd_audio_output_health_get"
             "-Wl,--wrap=calloc"
+            "-Wl,--wrap=dsd_realtime_mono_ms"
     )
 endif()
 add_test(NAME M17_STATE_DISPATCH COMMAND dsd-neo_test_m17_state_dispatch)

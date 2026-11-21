@@ -110,7 +110,9 @@ int m17_encoder_vox_keyed(int heard, int lich_cnt, int* sql_hit);
 
 int m17_decode_pkt_should_report_encrypted(const dsd_state* state, uint32_t protocol);
 int m17_pkt_ptr_clamped(int pbc_count);
-void m17_pkt_finalize_eot(const dsd_opts* opts, dsd_state* state, uint16_t app_len, int end);
+/* Finalize a packet at its last frame (m17.c): 1 when it was a packet (decoded when its CRC passed or under -F), 0 when
+   it had no application byte, which earns no credit. Either way the packet transmission ends. */
+int m17_pkt_finalize_eot(const dsd_opts* opts, dsd_state* state, uint16_t app_len, int end);
 /* Take one RF packet frame's 26 decoded bytes (its 25-byte chunk and its metadata byte, m17.c): the chunk joins the
    packet, a frame out of order empties it, and a valid last frame (EOF) finalizes the packet, or, when the packet
    cannot be whole, ends the packet transmission with nothing decoded. Returns 1 when the chunk was used. */

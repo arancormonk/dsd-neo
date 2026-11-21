@@ -119,6 +119,7 @@ m17_datagram_digest(const uint8_t* bytes, size_t len) {
 static int M17decodeLSF(const dsd_opts* opts, dsd_state* state, int publish_canonical, const m17_lsf_carrier* carrier);
 static void M17decodeLSFFields(dsd_state* state, const struct m17_lsf_result* res);
 static void m17_retire_if_ended(dsd_state* state);
+static int m17_pkt_note_frame_end(dsd_state* state);
 static int m17_lsf_result_usable(const struct m17_lsf_result* res);
 static void M17logLSFSummary(const struct m17_lsf_result* res);
 static void M17storeLSFMeta(dsd_state* state, const struct m17_lsf_result* res);
@@ -2052,6 +2053,8 @@ m17_finalize_lsf_crc(const dsd_opts* opts, dsd_state* state, const uint8_t* lsf_
     } else {
         m17_confirm_reset_signature(state);
     }
+    /* A packet that follows is spaced from this frame's end (m17_packet_take_chunk()), whatever its CRC said. */
+    (void)m17_pkt_note_frame_end(state);
     /* The boundary emptied the raw LSF bits: this frame's own go back in for its decode. */
     (void)dsd_unpack_bytes_to_bits(lsf_packed, M17_LSF_BYTES, state->m17_lsf, sizeof(state->m17_lsf), M17_LSF_BYTES);
     /* TYPE is bytes 12-13; its bit 0 is the packet/stream indicator. Only an LSF whose CRC passed says which. */
@@ -4123,14 +4126,48 @@ m17_pkt_log_final_if_enabled(const dsd_opts* opts, const dsd_state* state, int e
     DSD_FPRINTF(stderr, "\n      CRC - C: %04X; E: %04X", crc_cmp, crc_ext);
 }
 
+/* How far one M17 frame ends after the one before it (M17 spec 2.0.11: 8 sync and 184 payload symbols), and the slack
+   either way a packet frame's end may stand from that and still be the next frame: a few symbols of timing slip, far
+   less than the frame a wholly lost one would add. */
+enum { M17_PACKET_FRAME_SYMBOLS = 192, M17_PACKET_SPACING_SLACK = 32 };
+
+/* Whether the packet being assembled is known to have a gap (m17_state_ext::pkt_gap): with no extension it cannot be
+   told, which fails closed. */
+static int
+m17_pkt_gap_known(const dsd_state* state) {
+    const m17_state_ext* g = m17_state_ext_find(state);
+    return g == NULL || g->pkt_gap != 0U;
+}
+
 /* A frame of the packet being assembled was lost or out of order: what is held cannot be the packet, and the packet is
-   known to have a gap until a chunk 0 starts one afresh, so its last frame decodes and credits nothing
-   (dsd_state::m17_pkt_gap). */
+   known to have a gap until a transmission boundary (m17_confirm_reset(), m17_pkt_end_transmission()), so its last
+   frame decodes and credits nothing (m17_state_ext::pkt_gap). A chunk counter, which no CRC covers, never clears it. */
 static void
 m17_pkt_drop(dsd_state* state) {
     DSD_MEMSET(state->m17_pkt, 0, sizeof(state->m17_pkt));
     state->m17_pbc_ct = 0;
-    state->m17_pkt_gap = 1U;
+    m17_state_ext* g = m17_ext_st(state);
+    if (g != NULL) {
+        g->pkt_gap = 1U;
+    }
+}
+
+/* Note where a packet frame (or the LSF frame before the packet) ends, dsd_state::symbolcnt, and whether it is one M17
+   frame after the frame before: 1 when it is, 0 when a frame between was lost or there is no frame before to tell (the
+   transmission's LSF frame was missed). An EOF carries a byte count, not a frame number (M17 spec 2.0.11, Packet
+   Frames), so only this spacing shows a wholly lost frame just before it. */
+static int
+m17_pkt_note_frame_end(dsd_state* state) {
+    m17_state_ext* g = m17_ext_st(state);
+    if (g == NULL) {
+        return 0;
+    }
+    const uint32_t since = state->symbolcnt - g->pkt_ref_symbol;
+    const int next = g->pkt_have_ref != 0U && since >= (uint32_t)(M17_PACKET_FRAME_SYMBOLS - M17_PACKET_SPACING_SLACK)
+                     && since <= (uint32_t)(M17_PACKET_FRAME_SYMBOLS + M17_PACKET_SPACING_SLACK);
+    g->pkt_have_ref = 1U;
+    g->pkt_ref_symbol = state->symbolcnt;
+    return next;
 }
 
 /* A packet's last frame (a valid EOF): the packet transmission ends, whether its packet was whole and its CRC passed
@@ -4141,15 +4178,19 @@ static void
 m17_pkt_end_transmission(const dsd_opts* opts, dsd_state* state) {
     DSD_MEMSET(state->m17_pkt, 0, sizeof(state->m17_pkt));
     state->m17_pbc_ct = 0;
-    state->m17_pkt_gap = 0U;
+    m17_state_ext* g = m17_state_ext_find(state);
+    if (g != NULL) {
+        g->pkt_gap = 0U;
+        g->pkt_have_ref = 0U;
+    }
     m17_end_call(opts, state, DSD_CALL_END_EXPLICIT, 1);
     state->m17_tx_ended = 1U;
 }
 
-void
+int
 m17_pkt_finalize_eot(const dsd_opts* opts, dsd_state* state, uint16_t app_len, int end) {
     if (opts == NULL || state == NULL) {
-        return;
+        return 0;
     }
     if (app_len > M17_PACKET_MAX_APPLICATION_BYTES) {
         app_len = M17_PACKET_MAX_APPLICATION_BYTES;
@@ -4159,7 +4200,7 @@ m17_pkt_finalize_eot(const dsd_opts* opts, dsd_state* state, uint16_t app_len, i
            which is no proof of anything. Nothing is decoded or credited; the packet transmission ends. */
         DSD_FPRINTF(stderr, " PKT empty;");
         m17_pkt_end_transmission(opts, state);
-        return;
+        return 0;
     }
     const uint16_t crc_cmp = m17_crc16(state->m17_pkt, app_len);
     const uint16_t crc_ext = (uint16_t)(((uint16_t)state->m17_pkt[app_len] << 8U) | state->m17_pkt[app_len + 1U]);
@@ -4180,6 +4221,7 @@ m17_pkt_finalize_eot(const dsd_opts* opts, dsd_state* state, uint16_t app_len, i
 
     m17_pkt_log_final_if_enabled(opts, state, end, crc_cmp, crc_ext);
     m17_pkt_end_transmission(opts, state);
+    return 1;
 }
 
 /* Decodes the frame's @p soft_symbols. Returns non-zero when the frame carried a packet chunk
@@ -4214,6 +4256,7 @@ m17_packet_take_chunk(const dsd_opts* opts, dsd_state* state, const uint8_t* pkt
     }
     uint8_t counter = 0U;
     uint8_t eot = 0U;
+    const int next_frame = m17_pkt_note_frame_end(state);
     const int metadata_ok = m17_packet_parse_metadata_byte(pkt_packed[25], &eot, &counter);
     if (metadata_ok != 0) {
         DSD_FPRINTF(stderr, " PKT metadata invalid;");
@@ -4221,10 +4264,11 @@ m17_packet_take_chunk(const dsd_opts* opts, dsd_state* state, const uint8_t* pkt
         DSD_FPRINTF(stderr, "\n");
         return 0;
     }
-
-    if (eot == 0U && counter == 0U && state->m17_pbc_ct == 0) {
-        /* Chunk 0 starts a packet afresh: no gap of an earlier one is this packet's. */
-        state->m17_pkt_gap = 0U;
+    /* A frame not one frame after the frame before (one was lost) leaves a gap; so does an EOF with no frame before to
+       tell (the transmission's LSF frame and the packet before it missed). Chunk 0 with no frame before starts a packet
+       whose LSF frame was missed. */
+    if (!next_frame && (eot != 0U || counter != 0U || state->m17_pbc_ct != 0)) {
+        m17_pkt_drop(state);
     }
     const int ptr = m17_pkt_ptr_clamped(state->m17_pbc_ct);
     if (eot == 0U && counter != (uint8_t)state->m17_pbc_ct) {
@@ -4237,7 +4281,7 @@ m17_packet_take_chunk(const dsd_opts* opts, dsd_state* state, const uint8_t* pkt
     uint16_t app_len = 0U;
     int total_with_crc = ptr + M17_PACKET_CHUNK_BYTES;
     if (eot != 0U) {
-        if (state->m17_pkt_gap != 0U
+        if (m17_pkt_gap_known(state)
             || m17_packet_app_bytes_from_eof((uint8_t)state->m17_pbc_ct, counter, &app_len) != 0) {
             /* A valid last frame of a packet that cannot be whole (a frame of it was lost, the gap kept since, or the
                byte count cannot be): nothing of it is decoded or checked, but it is the packet transmission's end all
@@ -4255,20 +4299,21 @@ m17_packet_take_chunk(const dsd_opts* opts, dsd_state* state, const uint8_t* pkt
     m17_pkt_log_frame_if_enabled(opts, pkt_packed);
 
     if (eot != 0U) {
-        m17_pkt_finalize_eot(opts, state, app_len, total_with_crc);
+        /* An empty packet is no packet: no consumption credit for its EOF either (it still ends the transmission). */
+        const int taken = m17_pkt_finalize_eot(opts, state, app_len, total_with_crc);
+        DSD_FPRINTF(stderr, "\n");
+        return taken;
     }
 
-    if (eot == 0U) {
-        if (state->m17_pbc_ct >= (M17_PACKET_MAX_FRAMES - 1)) {
-            DSD_FPRINTF(stderr, " PKT frame count overflow;");
-            m17_pkt_drop(state);
-            DSD_FPRINTF(stderr, "\n");
-            return 0;
-        }
-        state->m17_pbc_ct++;
-        /* A chunk the packet's CRC checks only at its end-of-transmission frame: the quiet check waits for it. */
-        m17_confirm_note_unchecked_frame(opts, state);
+    if (state->m17_pbc_ct >= (M17_PACKET_MAX_FRAMES - 1)) {
+        DSD_FPRINTF(stderr, " PKT frame count overflow;");
+        m17_pkt_drop(state);
+        DSD_FPRINTF(stderr, "\n");
+        return 0;
     }
+    state->m17_pbc_ct++;
+    /* A chunk the packet's CRC checks only at its end-of-transmission frame: the quiet check waits for it. */
+    m17_confirm_note_unchecked_frame(opts, state);
 
     //ending linebreak
     DSD_FPRINTF(stderr, "\n");
@@ -4509,6 +4554,10 @@ m17_ip_take_stream_frame(const dsd_opts* opts, dsd_state* state, const uint8_t* 
     if (!m17_ip_frame_lsf(ip_bits, &res) || !m17_ip_admit_frame(opts, state, sid, &res, fn, eot)) {
         return;
     }
+    m17_state_ext* live = m17_state_ext_find(state);
+    if (live != NULL) {
+        live->ip_stream_last_ms = dsd_realtime_mono_ms(); /* the stream is live (m17_ip_stream_live()) */
+    }
     state->carrier = 1;
     state->synctype = DSD_SYNC_M17_STR_POS;
     m17_ip_copy_lsf_from_bits(state, ip_bits);
@@ -4602,6 +4651,22 @@ m17_ip_handle_control_frame(const m17_ip_ctrl_desc* desc, const dsd_opts* opts, 
     return 1;
 }
 
+/* How long an open network stream may go with no frame taken and still hold an MPKT's call back
+   (m17_ip_stream_live()): 2 s, fifty 40 ms frame periods. A live stream sends a frame every 40 ms with no pauses (M17
+   spec 2.0.11, Stream Mode), and network jitter or a reflector's buffering delays frames by a few hundred ms at most,
+   so a stream silent this long has ended with its final frame, EOTX and DISC lost. */
+enum { M17_IP_STREAM_IDLE_MS = 2000 };
+
+/* Whether a network stream is open and live: a frame of it was taken within M17_IP_STREAM_IDLE_MS (both sides on the
+   real-time clock, dsd_realtime_mono_ms()). Only a live stream holds an MPKT's call back. An idle one stays open
+   otherwise: its ended-stream and admission rules are unchanged, and its next frame continues it. */
+static int
+m17_ip_stream_live(const dsd_state* state) {
+    const m17_state_ext* g = m17_state_ext_find(state);
+    return state->m17_ip_stream == DSD_M17_IP_STREAM_OPEN && g != NULL
+           && (dsd_realtime_mono_ms() - g->ip_stream_last_ms) < (uint64_t)M17_IP_STREAM_IDLE_MS;
+}
+
 /* The decoded link setup an MPKT applies for itself (its LSF) and gives back at its end: the raw LSF bits and every
    field M17decodeLSF() sets. */
 typedef struct {
@@ -4671,7 +4736,7 @@ m17_ip_handle_mpkt_frame(const dsd_opts* opts, dsd_state* state, const uint8_t* 
     const uint16_t crc_cmp = m17_crc16(ip_frame, (uint16_t)(err - 2));
     DSD_FPRINTF(stderr, "\n M17 IP   MPKT: %04X;", sid);
 
-    const int interleaved = state->m17_ip_stream == DSD_M17_IP_STREAM_OPEN;
+    const int interleaved = m17_ip_stream_live(state);
     m17_link_setup_held held;
     m17_link_setup_hold(state, &held);
     struct m17_meta_text_assembler text;
