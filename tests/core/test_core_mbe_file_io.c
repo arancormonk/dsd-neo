@@ -25,6 +25,7 @@
 #include <dsd-neo/core/voice_chain.h>
 #include <dsd-neo/dsp/speech_agc.h>
 #include <dsd-neo/fec/block_codes.h>
+#include <dsd-neo/fec/dmr_late_entry.h>
 #include <dsd-neo/runtime/decode_clock.h>
 #include <dsd-neo/runtime/exitflag.h>
 #include <dsd-neo/runtime/rdio_export.h>
@@ -2609,29 +2610,83 @@ test_sdrtrunk_nxdn_missing_context_and_sacch_alignment(void) {
 enum { LOST_FRAME_COUNT = 4, LOST_FRAME_AT = 1 };
 
 /* An encrypted export of LOST_FRAME_COUNT all-zero voice frames of @p digits hex digits after @p head (the record's
-   members up to "frames":[), the one at @p lost (-1: none) replaced by a value that is no hex. */
+   members up to "frames":[), the one at @p lost (-1: none) given @p bad as its "hex" value instead (NULL: a string of
+   as many characters that are no hex digit). */
 static void
-build_lost_frame_json(char* out, size_t cap, const char* head, size_t digits, int lost) {
+build_lost_frame_json(char* out, size_t cap, const char* head, size_t digits, int lost, const char* bad) {
     char good[40];
-    char bad[40];
+    char text[40];
     DSD_MEMSET(good, '0', digits);
     good[digits] = '\0';
-    DSD_MEMSET(bad, 'Z', digits);
-    bad[digits] = '\0';
+    DSD_MEMSET(text, 'Z', digits);
+    text[digits] = '\0';
     size_t off = (size_t)DSD_SNPRINTF(out, cap, "%s", head);
     for (int i = 0; i < LOST_FRAME_COUNT && off < cap; i++) {
-        off += (size_t)DSD_SNPRINTF(out + off, cap - off, "%s{\"hex\":\"%s\"}", i ? "," : "", i == lost ? bad : good);
+        if (i == lost && bad != NULL) {
+            off += (size_t)DSD_SNPRINTF(out + off, cap - off, "%s{\"hex\":%s}", i ? "," : "", bad);
+        } else {
+            off +=
+                (size_t)DSD_SNPRINTF(out + off, cap - off, "%s{\"hex\":\"%s\"}", i ? "," : "", i == lost ? text : good);
+        }
     }
     if (off < cap) {
         (void)DSD_SNPRINTF(out + off, cap - off, "]}");
     }
 }
 
+/* One case of test_sdrtrunk_json_lost_frame_keeps_the_keystream_place(): the call played whole, then with frame
+   LOST_FRAME_AT given @p bad as its "hex" (build_lost_frame_json()). Each pass has a state of its own. */
+static int
+lost_frame_case(const char* label, const char* head, size_t digits, size_t rec, int dmr_keys, const char* bad) {
+    unsigned char whole[LOST_FRAME_COUNT * 12];
+    unsigned char lost[LOST_FRAME_COUNT * 12];
+    size_t whole_len = 0;
+    size_t lost_len = 0;
+    char json[1024];
+    char name[160];
+    char tag[200];
+    DSD_SNPRINTF(name, sizeof name, "%s, the lost frame's hex %s", label, bad ? bad : "no hex");
+    int rc = 0;
+    for (int pass = 0; pass < 2; pass++) {
+        dsd_state* state = (dsd_state*)calloc(1, sizeof(*state));
+        if (state == NULL) {
+            return expect_true("lost frame: state allocated", 0);
+        }
+        if (dmr_keys) {
+            seed_sdrtrunk_dmr_replay_keys(state);
+        } else {
+            state->R = 0x0102030405ULL;
+        }
+        build_lost_frame_json(json, sizeof json, head, digits, pass ? LOST_FRAME_AT : -1, bad);
+        DSD_SNPRINTF(tag, sizeof tag, "lost frame: %s%s", name, pass ? ", one lost" : ", whole");
+        rc |= capture_sdrtrunk_replay_records(tag, json, state, pass ? lost : whole, sizeof whole,
+                                              pass ? &lost_len : &whole_len);
+        dsd_state_ext_free_all(state);
+        free(state);
+    }
+    DSD_SNPRINTF(tag, sizeof tag, "lost frame: %s: a record for each frame played", name);
+    rc |= expect_true(tag, whole_len == LOST_FRAME_COUNT * rec && lost_len == (LOST_FRAME_COUNT - 1) * rec);
+    if (whole_len != LOST_FRAME_COUNT * rec || lost_len != (LOST_FRAME_COUNT - 1) * rec) {
+        DSD_FPRINTF(stderr, "  %s: %zu and %zu bytes\n", name, whole_len, lost_len);
+        return rc;
+    }
+    DSD_SNPRINTF(tag, sizeof tag, "lost frame: %s: the frames' keystreams differ", name);
+    rc |= expect_true(tag, memcmp(whole + LOST_FRAME_AT * rec, whole + (LOST_FRAME_AT + 1) * rec, rec) != 0);
+    DSD_SNPRINTF(tag, sizeof tag, "lost frame: %s: the frame before it", name);
+    rc |= expect_u8_bits(tag, lost, whole, LOST_FRAME_AT * rec);
+    DSD_SNPRINTF(tag, sizeof tag, "lost frame: %s: the frames after it, with their own bits", name);
+    rc |= expect_u8_bits(tag, lost + LOST_FRAME_AT * rec, whole + (LOST_FRAME_AT + 1) * rec,
+                         (LOST_FRAME_COUNT - 1 - LOST_FRAME_AT) * rec);
+    return rc;
+}
+
 /* Issue #888: a malformed voice frame of a decryptable call is a lost frame. It plays and records nothing, but it
    takes its place in the call: its keystream bits and its count in the frame sequence go by, so each later frame is
-   decrypted with its own bits. The records after it are those of the same frames in the call played whole. Before, the
-   rejected frame took no keystream, so every later frame was decrypted with the bits of the one before it. NXDN's
-   published DES-OFB vectors, with one lost, still decrypt to their tone. */
+   decrypted with its own bits. The records after it are those of the same frames in the call played whole. A "hex"
+   that is an array or an object is such a frame too, and an object's own members are not read as the call's. Before,
+   the rejected frame took no keystream, so every later frame was decrypted with the bits of the one before it; an
+   array or an object took none even once a malformed string did. NXDN's published DES-OFB vectors, with one lost,
+   still decrypt to their tone. */
 static int
 test_sdrtrunk_json_lost_frame_keeps_the_keystream_place(void) {
     static const struct {
@@ -2663,42 +2718,14 @@ test_sdrtrunk_json_lost_frame_keeps_the_keystream_place(void) {
          18, 8, 1},
     };
 
+    /* The lost frame's "hex": no hex digits, an array, an object (whose own "hex" is no frame of the call). */
+    static const char* const k_bad[] = {NULL, "[]", "{\"hex\":\"000000000000000000000000000000000000\"}"};
     int rc = 0;
     for (size_t c = 0; c < sizeof k_cases / sizeof k_cases[0]; c++) {
-        static dsd_state state;
-        unsigned char whole[LOST_FRAME_COUNT * 12];
-        unsigned char lost[LOST_FRAME_COUNT * 12];
-        size_t whole_len = 0;
-        size_t lost_len = 0;
-        char json[1024];
-        char tag[160];
-        const size_t rec = k_cases[c].record;
-        for (int pass = 0; pass < 2; pass++) {
-            DSD_MEMSET(&state, 0, sizeof state);
-            if (k_cases[c].dmr_keys) {
-                seed_sdrtrunk_dmr_replay_keys(&state);
-            } else {
-                state.R = 0x0102030405ULL;
-            }
-            build_lost_frame_json(json, sizeof json, k_cases[c].head, k_cases[c].digits, pass ? LOST_FRAME_AT : -1);
-            DSD_SNPRINTF(tag, sizeof tag, "lost frame: %s%s", k_cases[c].label, pass ? ", one lost" : ", whole");
-            rc |= capture_sdrtrunk_replay_records(tag, json, &state, pass ? lost : whole, sizeof whole,
-                                                  pass ? &lost_len : &whole_len);
-            dsd_state_ext_free_all(&state);
+        for (size_t b = 0; b < sizeof k_bad / sizeof k_bad[0]; b++) {
+            rc |= lost_frame_case(k_cases[c].label, k_cases[c].head, k_cases[c].digits, k_cases[c].record,
+                                  k_cases[c].dmr_keys, k_bad[b]);
         }
-        DSD_SNPRINTF(tag, sizeof tag, "lost frame: %s: a record for each frame played", k_cases[c].label);
-        rc |= expect_true(tag, whole_len == LOST_FRAME_COUNT * rec && lost_len == (LOST_FRAME_COUNT - 1) * rec);
-        if (whole_len != LOST_FRAME_COUNT * rec || lost_len != (LOST_FRAME_COUNT - 1) * rec) {
-            DSD_FPRINTF(stderr, "  %s: %zu and %zu bytes\n", k_cases[c].label, whole_len, lost_len);
-            continue;
-        }
-        DSD_SNPRINTF(tag, sizeof tag, "lost frame: %s: the frames' keystreams differ", k_cases[c].label);
-        rc |= expect_true(tag, memcmp(whole + LOST_FRAME_AT * rec, whole + (LOST_FRAME_AT + 1) * rec, rec) != 0);
-        DSD_SNPRINTF(tag, sizeof tag, "lost frame: %s: the frame before it", k_cases[c].label);
-        rc |= expect_u8_bits(tag, lost, whole, LOST_FRAME_AT * rec);
-        DSD_SNPRINTF(tag, sizeof tag, "lost frame: %s: the frames after it, with their own bits", k_cases[c].label);
-        rc |= expect_u8_bits(tag, lost + LOST_FRAME_AT * rec, whole + (LOST_FRAME_AT + 1) * rec,
-                             (LOST_FRAME_COUNT - 1 - LOST_FRAME_AT) * rec);
     }
 
     dsd_state* nxdn = nxdn_replay_test_state(2);
@@ -2736,9 +2763,17 @@ test_sdrtrunk_json_lost_frame_keeps_the_keystream_place(void) {
    exit flag. */
 static int
 test_sdrtrunk_json_stop_during_the_read(void) {
-    FILE* in = tmpfile();
+    char path[DSD_TEST_PATH_MAX];
+    const int fd = dsd_test_mkstemp(path, sizeof path, "dsdneo_sdrtrunk_stop");
+    if (fd < 0) {
+        DSD_FPRINTF(stderr, "stop during the read: no temp file: %s\n", strerror(errno));
+        return 1;
+    }
+    (void)dsd_close(fd);
+    FILE* in = dsd_fopen_private(path, "w+b");
     if (in == NULL) {
-        DSD_FPRINTF(stderr, "tmpfile failed: %s\n", strerror(errno));
+        DSD_FPRINTF(stderr, "stop during the read: %s not opened: %s\n", path, strerror(errno));
+        (void)remove(path);
         return 1;
     }
     int rc = fputs("{\"protocol\":\"DMR\",\"version\":2,\"call_type\":\"GROUP\",\"to\":\"1234\",\"frames\":[", in) < 0;
@@ -2749,29 +2784,27 @@ test_sdrtrunk_json_stop_during_the_read(void) {
     }
     rc |= fputs("{\"hex\":\"3ABF032D9ADEE4CB50\"}]}", in) < 0;
     rc |= fflush(in) != 0 || fseek(in, 4L, SEEK_SET) != 0;
-    static dsd_opts opts;
-    static dsd_state state;
-    static Event_History_I history[2];
-    DSD_MEMSET(&opts, 0, sizeof opts);
-    DSD_MEMSET(&state, 0, sizeof state);
-    DSD_MEMSET(history, 0, sizeof history);
-    opts.playfiles = 1;
-    state.event_history_s = history;
-    state.synctype = DSD_SYNC_NONE;
-    prepare_gain_stage(&state);
-    opts.mbe_in_f = in;
+    sdrtrunk_run run;
+    if (sdrtrunk_run_open(&run) != 0) {
+        (void)fclose(in);
+        (void)remove(path);
+        return expect_true("stop during the read: allocated", 0);
+    }
+    run.state->synctype = DSD_SYNC_NONE;
+    run.opts->mbe_in_f = in;
     dsd_exitflag_store(1);
-    read_sdrtrunk_json_format(&opts, &state);
+    read_sdrtrunk_json_format(run.opts, run.state);
     dsd_exitflag_store(0);
     const long at = ftell(in);
     rc |= expect_true("stop during the read: no more than the first MiB read", at >= 0 && at <= 0x100000L);
-    rc |= expect_int("stop during the read: nothing played", state.synctype, DSD_SYNC_NONE);
+    rc |= expect_int("stop during the read: nothing played", run.state->synctype, DSD_SYNC_NONE);
     if (at < 0 || at > 0x100000L) {
         DSD_FPRINTF(stderr, "  stop during the read: read to %ld\n", at);
     }
-    opts.mbe_in_f = NULL;
-    (void)fclose(in);
-    dsd_state_ext_free_all(&state);
+    run.opts->mbe_in_f = NULL;
+    sdrtrunk_run_close(&run);
+    rc |= fclose(in) != 0;
+    rc |= expect_int("stop during the read: its input removed", remove(path), 0);
     return rc;
 }
 
@@ -4523,6 +4556,114 @@ test_sdrtrunk_dmr_capture_and_late_entry(void) {
     return rc;
 }
 
+/* The late-entry MI fragment each frame of an 18-frame DMR superframe carries for MI @p mi, as
+   dsd_dmr_late_entry_decode() reads them: Golay word t holds MI bits 12t..12t+11 (word 2's last four the CRC), its data
+   in frames t, t+3 and t+6 and its parity in frames 9+t, 12+t and 15+t, four bits a frame. */
+static void
+dmr_late_entry_nibbles(uint32_t mi, uint8_t nibbles[18]) {
+    uint8_t bits[36];
+    for (unsigned i = 0; i < 32U; i++) {
+        bits[i] = (uint8_t)((mi >> (31U - i)) & 1U);
+    }
+    const uint8_t crc = dsd_dmr_crc4(bits, 32U);
+    for (unsigned i = 0; i < 4U; i++) {
+        bits[32U + i] = (uint8_t)((crc >> (3U - i)) & 1U);
+    }
+    for (unsigned t = 0; t < 3U; t++) {
+        unsigned char msg[12];
+        unsigned char word[24];
+        for (unsigned b = 0; b < 12U; b++) {
+            msg[b] = bits[t * 12U + b];
+        }
+        Golay_24_12_encode(msg, word);
+        for (unsigned row = 0; row < 3U; row++) {
+            uint8_t data = 0;
+            uint8_t parity = 0;
+            for (unsigned k = 0; k < 4U; k++) {
+                data = (uint8_t)((data << 1U) | word[row * 4U + k]);
+                parity = (uint8_t)((parity << 1U) | word[12U + row * 4U + k]);
+            }
+            nibbles[t + 3U * row] = data;
+            nibbles[9U + t + 3U * row] = parity;
+        }
+    }
+}
+
+/* An AMBE frame's 18 hex digits, as SDRTrunk writes them, whose C3 word starts with @p nibble (its late-entry MI
+   fragment) and is otherwise all zero. */
+static void
+dmr_fragment_frame_hex(uint8_t nibble, char hex[19]) {
+    static const char k_digits[] = "0123456789ABCDEF";
+    char frame[4][24];
+    DSD_MEMSET(frame, 0, sizeof frame);
+    for (unsigned k = 0; k < 4U; k++) {
+        frame[3][k] = (char)((nibble >> (3U - k)) & 1U);
+    }
+    uint8_t dibits[DSD_AMBE_2450_DIBITS];
+    for (size_t i = 0; i < DSD_AMBE_2450_DIBITS; i++) {
+        const dsd_ambe_2450_dibit_map_entry* map = &dsd_ambe_2450_dibit_map[i];
+        dibits[i] = (uint8_t)((frame[map->high_row][map->high_col] << 1) | frame[map->low_row][map->low_col]);
+    }
+    for (size_t j = 0; j < 18U; j++) {
+        hex[j] = k_digits[(dibits[2U * j] << 2) | dibits[2U * j + 1U]];
+    }
+    hex[18] = '\0';
+}
+
+/* Issue #888: a DMR AES late-entry MI is assembled only from fragments that were received, as the live decoder's
+   dmr_late_entry_mi() requires all six bursts. An MI whose first Golay word is all zero is carried by a superframe;
+   with the six frames of that word lost (malformed), the fragments that remain, the missing ones read as zero, would
+   decode to the same MI with a matching CRC. That incomplete MI is not installed for the next superframe; the whole
+   superframe's is. Before, a lost frame's fragment was stored as zero, received evidence. */
+static int
+test_sdrtrunk_json_dmr_aes_incomplete_late_entry_mi(void) {
+    static const uint32_t k_mi = 0x0004D2A7U; /* MI bits 0..11 zero: Golay word 0 is the all-zero codeword */
+    uint8_t nibbles[18];
+    dmr_late_entry_nibbles(k_mi, nibbles);
+    uint64_t fragments[8][3];
+    DSD_MEMSET(fragments, 0, sizeof fragments);
+    for (unsigned k = 0; k < 18U; k++) {
+        fragments[k / 3U + 1U][k % 3U] = nibbles[k];
+    }
+    dsd_dmr_late_entry_result decoded = {0};
+    int rc = expect_true("incomplete late-entry MI: the superframe carries the MI",
+                         dsd_dmr_late_entry_decode(&fragments[0][0], &decoded) && decoded.crc_ok && decoded.mi == k_mi);
+    for (int lost = 0; lost < 2; lost++) {
+        char json[2048];
+        size_t off =
+            (size_t)DSD_SNPRINTF(json, sizeof json,
+                                 "{\"protocol\":\"DMR\",\"version\":2,\"call_type\":\"GROUP\",\"from\":\"5678\","
+                                 "\"to\":\"1234\",\"encrypted\":true,\"encryption_algorithm\":36,"
+                                 "\"encryption_key_id\":5,\"encryption_mi\":\"12345678\",\"frames\":[");
+        for (unsigned k = 0; k < 18U && off < sizeof json; k++) {
+            char hex[19];
+            dmr_fragment_frame_hex(nibbles[k], hex);
+            const int in_word0 = k % 3U == 0U;
+            off += (size_t)DSD_SNPRINTF(json + off, sizeof json - off, "%s{\"hex\":\"%s\"}", k ? "," : "",
+                                        lost && in_word0 ? "ZZZZZZZZZZZZZZZZZZ" : hex);
+        }
+        if (off < sizeof json) {
+            (void)DSD_SNPRINTF(json + off, sizeof json - off, "]}");
+        }
+        dsd_state* state = (dsd_state*)calloc(1, sizeof(*state));
+        if (state == NULL) {
+            return expect_true("incomplete late-entry MI: state allocated", 0);
+        }
+        unsigned char records[18U * 8U];
+        size_t size = 0;
+        rc |= capture_sdrtrunk_replay_records("incomplete late-entry MI", json, state, records, sizeof records, &size);
+        if (lost) {
+            rc |= expect_true("incomplete late-entry MI: six fragments lost, the MI is not taken",
+                              state->payload_mi != (unsigned long long)k_mi);
+        } else {
+            rc |= expect_u64("incomplete late-entry MI: the whole superframe's MI is taken", state->payload_mi, k_mi);
+        }
+        dsd_state_ext_free_all(state);
+        free(state);
+    }
+    return rc;
+}
+
 /* ---------------------------------------------------------------------------------------------------------------
  * What MBE file playback and SDRTrunk JSON playback tell the voice chain about each frame (dsd_voice_frame_info).
  * ------------------------------------------------------------------------------------------------------------- */
@@ -4885,6 +5026,7 @@ main(void) {
     rc |= test_sdrtrunk_json_lost_frame_keeps_the_keystream_place();
     rc |= test_sdrtrunk_json_stop_during_the_read();
     rc |= test_sdrtrunk_dmr_capture_and_late_entry();
+    rc |= test_sdrtrunk_json_dmr_aes_incomplete_late_entry_mi();
     rc |= test_sdrtrunk_json_tells_the_chain_each_frame();
     rc |= test_play_mbe_files_tell_the_chain_each_frame();
     rc |= test_play_mbe_files_start_each_file_at_the_start_gain();

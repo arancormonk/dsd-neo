@@ -2277,23 +2277,28 @@ above it lists no radio), and `CORE_WAV_JOURNAL` through the real close and expo
 proves the carrier, and the speech before it is not; `test_playback_unnumbered_call_export`: a played SDRTrunk call with
 no talkgroup, on a receiver tuned to 452.3125 MHz with colour code 3, is exported under `--rdio-unknown-talkgroup` at
 its first frame's second, labelled `DMR`, with `freq` 0 and no `freqList`, and is kept local without the option;
-`test_playback_records_play_as_one_call`: a played file is one call, so a file of two records makes one history row and
-one recording of both records' frames, named by the identity the row ends with and filed at the first frame of the last
-call the call-state layer opened; where that layer opened a second call (another talkgroup or radio) the recording is
-kept local, no sidecar and journal `rdio` false, and the run's one line is said, and so is a file the layer read as one
-call, since the second record's IDs come after the first record's frames; `test_playback_stream_off_record_stays_local`: a stream=off radio's record
-before an unrestricted one's is not exported with it, and the unrestricted record alone is;
-`test_playback_new_call_without_time_takes_the_decode_clock`: a second call with no frame `time` is filed on the decode
-clock, in the journal and the file name, not at the first call's stamp;
+`test_playback_records_play_as_one_call`: a file of two records makes one history row, named by the identity the row
+ends with and filed at the first frame of the last call the call-state layer opened, and, not being in SDRTrunk's own
+shape, no recording at all (no WAV, no temp file, nothing published), with the run's one line said;
+`test_playback_stream_off_record_stays_local`: a stream=off radio's record before an unrestricted one's is not recorded
+or exported with it, and the unrestricted record alone is exported;
+`test_playback_new_call_without_time_takes_the_decode_clock`: a second call with no frame `time` takes no stamp of the
+first call's;
 `test_tetra_first_call_conceals_nothing_before_it`: a TETRA call admitted on a half slot after earlier speech conceals
 nothing from that speech; `test_tetra_first_call_starts_the_high_pass_over`: with the digital high-pass on, the call's
 recording after five bursts of speech no call owned is sample for sample the one it makes with none before it;
 `test_playback_malformed_frames_play_nothing`: an empty, short, long or non-hex `hex`, and an 18-digit frame in a P25
 Phase 1 export, play and record nothing, and a file of nothing else records nothing;
-`test_playback_identity_after_the_frames_stays_local`: export is fail closed, so a `from` after the frames keeps the
-recording local (no sidecar, the run's one line said) and, when it names a radio set `record=off`, leaves no WAV and
-nothing published; two records from one radio, the first matching a `stream=off` talkgroup 0 row and the second a
-private call, are not exported together; a file in SDRTrunk's own order is exported;
+`test_playback_file_shape_decides_its_recording`: a file is classified before it plays, so a `from` after the frames,
+two records (one of frames alone, or the first with its frames before its protocol), a `to` after the frames that a
+Stop leaves unread, and a `to` the reader cannot read (`Q:77`) leave no WAV, no temp file and nothing published, the
+run's one line said; a file in SDRTrunk's own order is exported, a Stop part-way included (the Stop is the log tap
+setting the exit flag at a malformed frame's warning, so it lands after three frames); a trailing `metadata` `from`
+changes nothing; an SDRTrunk patch group's `to` (`P:1234`, `P:1234 [5001, 5002]`) is talkgroup 1234, whose
+`stream=off` row keeps the recording local; `test_playback_discard_checks_the_removal`: a discarded recording whose
+close fails (the close seam) is still removed and journaled `discard`, and one whose removal fails (a read-only folder,
+skipped where that does not stop a removal) is left with a warning and an `error` of kind `discard` naming it, no
+`discard`;
 `test_playback_next_file_takes_no_earlier_stamp`: an export of a protocol the reader does not play stages its frame's
 `time` with no call, and the next file's unstamped call is filed on the decode clock, in the journal and the file name;
 `test_playback_long_export_plays_once`: an export with more than 1 MiB of text before its last frames is one recording
@@ -2301,11 +2306,15 @@ of all its frames, exported once, and an export over `DSD_SDRTRUNK_JSON_MAX_BYTE
 log line and records nothing). `CORE_MBE_FILE_IO` `test_sdrtrunk_json_words_in_values_are_not_keys` reads keys only in
 key position: `time`, `protocol` and `to` inside a quoted value, escaped quotes included, change nothing.
 `CORE_MBE_FILE_IO` `test_sdrtrunk_json_lost_frame_keeps_the_keystream_place` plays encrypted P25 Phase 1 (v1 and v2),
-P25 Phase 2 and DMR RC4 calls of four frames whole and with the second malformed, and compares the MBE capture records:
-the frames after the lost one are byte for byte those of the same frames in the whole call (so each took its own
-keystream bits), and NXDN's published DES-OFB vectors with one frame lost still decrypt to their tone;
-`test_sdrtrunk_json_stop_during_the_read` sets the exit flag and plays a 3 MiB export: the reader reads no more than its
-first MiB.
+P25 Phase 2 and DMR RC4 calls of four frames whole and with the second malformed (no hex digits, an array, an object
+holding a `hex` of its own), each pass on a state of its own on the heap, and compares the MBE capture records: the
+frames after the lost one are byte for byte those of the same frames in the whole call (so each took its own keystream
+bits), and NXDN's published DES-OFB vectors with one frame lost still decrypt to their tone;
+`test_sdrtrunk_json_dmr_aes_incomplete_late_entry_mi` builds an AES superframe whose frames carry a chosen MI's
+late-entry fragments (an MI whose first Golay word is all zero) and checks the MI is taken from the whole superframe
+and not when that word's six frames are lost; `test_sdrtrunk_json_stop_during_the_read` sets the exit flag and plays a
+3 MiB export, written with `dsd_test_mkstemp()` in the test temp folder and removed after, on `sdrtrunk_run_open()`'s
+heap fixtures: the reader reads no more than its first MiB.
 `CORE_WAV_JOURNAL` `test_playback_record_reads_only_its_own_members` plays one-record files whose headers carry members
 the reader does not know: `total_frames`, `from_site` and `protocol_name` (names that start with a key's name) leave the
 call one call, exported under its own talkgroup and radio, and a `time` of the record, of a `metadata` object or of
@@ -2429,7 +2438,9 @@ override plays it, and YSF full rate on the P25 decoder decodable; P25 Phase 2 d
 while unknown); D-STAR and ProVoice decodable. `CORE_MBE_FILE_IO` plays `.amb` (speech, tone, silence, a recorded C0
 count that repeats), `.dmb` and `.imb` records and SDRTrunk JSON (clear and encrypted with no key, speech, silence
 and a repeat). `YSF_DCH_DECODE` checks
-V/D2's frames from stubbed mbelib results. `M17_STATE_DISPATCH` checks received Codec2 voice is decodable, admitted
+V/D2's frames from stubbed mbelib results, and `test_process_ysf_vd_type2_next_call_keeps_the_recording_local` that a
+V/D2 frame whose destination begins another call keeps the slot's open recording local, and one naming the same
+destination does not. `M17_STATE_DISPATCH` checks received Codec2 voice is decodable, admitted
 speech and the stream encoder's own decoded monitor is the monitor's (`DSD_VOICE_MEDIA_TX_MONITOR`): it plays the
 decoded samples as they are under a fixed `-g 3` and under auto, and leaves the receive slot's speech AGC as it
 started. `TETRA_VOICE_PIPELINE` checks the 240-to-160

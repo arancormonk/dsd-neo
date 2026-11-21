@@ -117,6 +117,12 @@ SNDFILE* close_wav_file(SNDFILE* wav_file);
 void dsd_wav_segment_write(SNDFILE* file, const short* samples, size_t count, const char* context);
 /** The frames @p file holds so far (libsndfile's count, as a close reads it for the journal); 0 for NULL or unknown. */
 int64_t dsd_wav_segment_frames(SNDFILE* file);
+/**
+ * Keep open per-call segment @p file local: its close publishes it but never exports it to rdio-scanner (issue #888: a
+ * YSF call whose recording also holds the next call's first frame). A handle that is no per-call segment (NULL, the
+ * static WAV) is left alone.
+ */
+void dsd_wav_segment_keep_local(const SNDFILE* file);
 
 /** Whose recording a per-call WAV is when it is published, for the recording journal (<dsd-neo/core/wav_journal.h>). */
 typedef enum {

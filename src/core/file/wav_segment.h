@@ -32,21 +32,21 @@ int wav_recording_analog_rdio_skip_first_this_run(void);
    failure counts. */
 int wav_recording_digital_rdio_skip_first_this_run(void);
 
-/* 1 the first time this decoder run that a played file's recording is kept local (issue #888: the file held more than
-   one call, named a call ID after its first voice frame, or its stream verdict blocked), the one that is logged; reset
-   with the run's failure counts. */
-int wav_recording_played_file_rdio_skip_first_this_run(void);
+/* 1 the first time this decoder run that a played SDRTrunk file not in SDRTrunk's own shape is played with no per-call
+   recording (issue #888), the one that is logged; reset with the run's failure counts. */
+int wav_recording_played_file_unrecorded_first_this_run(void);
 
-/* Keep open segment @p file local: its close publishes it, never exports it (issue #888: a played SDRTrunk file in which
-   the call-state layer opened more than one call). A handle that is no per-call segment is left alone. */
-void wav_segment_keep_local(const SNDFILE* file);
+/* 1 the first time this decoder run that a recording kept local (dsd_wav_segment_keep_local()) is not exported to
+   rdio-scanner (issue #888), the one that is logged; reset with the run's failure counts. */
+int wav_recording_kept_local_rdio_skip_first_this_run(void);
 
-/* Whether open segment @p file was kept local (wav_segment_keep_local()); 0 for a handle that is no per-call segment. */
+/* Whether open segment @p file was kept local (dsd_wav_segment_keep_local()); 0 for a handle that is no per-call
+   segment. */
 int wav_segment_kept_local(const SNDFILE* file);
 
 /* Discard open segment @p file at its close: removed and journaled as discarded, never published (issue #888: a played
-   SDRTrunk file whose call ID, read after its audio was written, turned its recording off). A handle that is no
-   per-call segment is left alone. */
+   SDRTrunk file not in SDRTrunk's own shape, whose audio its IDs do not all judge). A handle that is no per-call segment
+   is left alone. */
 void wav_segment_discard_at_close(const SNDFILE* file);
 
 /* Whether open segment @p file is to be discarded at its close (wav_segment_discard_at_close()); 0 for a handle that is

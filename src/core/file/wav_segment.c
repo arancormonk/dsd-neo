@@ -62,7 +62,7 @@ enum { WAV_SEGMENT_SLOTS = 16 };
 typedef struct {
     const SNDFILE* file;
     int failed;
-    int local;   /* published, never exported (wav_segment_keep_local()) */
+    int local;   /* published, never exported (dsd_wav_segment_keep_local()) */
     int discard; /* removed at the close, never published (wav_segment_discard_at_close()) */
 } wav_segment;
 
@@ -188,7 +188,7 @@ wav_segment_marked(const SNDFILE* file, int discard) {
 }
 
 void
-wav_segment_keep_local(const SNDFILE* file) {
+dsd_wav_segment_keep_local(const SNDFILE* file) {
     wav_segment_mark(file, 0);
 }
 

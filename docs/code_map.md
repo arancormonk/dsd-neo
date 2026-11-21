@@ -2055,59 +2055,66 @@ suite runs under this compiler.
   decoders read that many; any other value is a lost frame, with a warning: `imbe_str_to_decode()` /
   `ambe2_str_to_decode()` take a NULL frame, decode, play and record nothing, and return the keystream position past
   its bits (88, or 49 plus DMR's 7 spare), while the callers count it in the frame sequence as usual (IMBE frame
-  counter, AMBE superframe counter, NXDN session position), so the frames after it decrypt with their own keystream; a
-  lost frame's DMR late-entry MI fragment is 0, which the MI's CRC then judges (`CORE_MBE_FILE_IO`
-  `test_sdrtrunk_json_lost_frame_keeps_the_keystream_place`). The row's
+  counter, AMBE superframe counter, NXDN session position), so the frames after it decrypt with their own keystream. A
+  `hex` that is missing, an array or an object is a lost frame too, and an array or object is passed whole
+  (`sdrtrunk_json_skip_container()`), so none of its members is read as a key (`CORE_MBE_FILE_IO`
+  `test_sdrtrunk_json_lost_frame_keeps_the_keystream_place`). A lost frame gives no DMR late-entry MI fragment: the
+  context marks the fragments each superframe's frames gave (`le_fragments`, `sdrtrunk_json_note_fragment()`, reset at
+  position 0), and at position 18 the MI is decoded only from all 18 (`sdrtrunk_json_finish_dmr_aes()`,
+  `sdrtrunk_dmr_process_late_entry_mi()` take `complete`), as the live `dmr_late_entry_mi()` requires all six bursts;
+  an incomplete one carries the last MI on (`test_sdrtrunk_json_dmr_aes_incomplete_late_entry_mi`: a missing Golay word
+  read as zeros would pass Golay and the CRC). The row's
   `event_time` is the recording's start, from its call's first frame `time` that parses (issue #888 B21, below). A
   played file is one call, as SDRTrunk writes them (issue #888): the event layer is synced at the file's start and end
-  only, never per frame or per record, and the reader observes the call on each key with `DSD_CALL_BOUNDARY_CONTINUE`. A
-  file holding several records is played as one stream: their headers fold into the open call one key at a time, and
-  identity changes split calls only as the call-state layer splits them on air. The event layer never renders a call the
-  stream moved past, so such a file makes one history row and one recording of all its records' audio, named and
-  exported under the identity the row ends with: the last ID each endpoint was given (a `to` or `from` of 0, or one left
-  out, clears none while the open call lasts; when another member of the record opens a new call, that call starts from
-  the context's IDs as read so far, so a 0 read before the change stays 0). Where the call-state layer opens a new call
+  only, never per frame or per record, and the reader observes the call on each key with `DSD_CALL_BOUNDARY_CONTINUE`.
+  So a file's audio is in one per-call segment. A file holding several records is played as one stream: their headers
+  fold into the open call one key at a time, and identity changes split calls only as the call-state layer splits them
+  on air. The event layer never renders a call the stream moved past, so such a file makes one history row, named
+  under the identity the row ends with: the last ID each endpoint was given (a `to` or `from` of 0, or one left out,
+  clears none while the open call lasts; when another member of the record opens a new call, that call starts from the
+  context's IDs as read so far, so a 0 read before the change stays 0). Where the call-state layer opens a new call
   inside the file (`dsd_call_state_observe()` returns a new epoch), the stamp latch resets, so the row is stamped from
-  that call's first valid frame: a recording of two records with other talkgroups is filed at the second record's first
-  frame (`CORE_WAV_JOURNAL` `test_playback_records_play_as_one_call`, `CORE_MBE_FILE_IO`). From the file's second such
-  call on (`sdrtrunk_json_call_opened()`), the staged row's `event_time` is cleared with the latch, so a call with no
-  valid frame `time` falls back to the decode clock instead of the last call's date, and the slot's open segment is kept
-  local (`wav_segment_keep_local()`, `wav_segment.c`): its close publishes and journals it (`rdio` false) but never
-  exports it under any number, as its audio spans calls whose stream verdicts the last row does not carry; one line a
-  run (`CORE_WAV_JOURNAL` `test_playback_stream_off_record_stays_local`,
-  `test_playback_new_call_without_time_takes_the_decode_clock`). The JSON is read token by token
-  (`sdrtrunk_json_token()`): a quoted string is one token, spaces and escapes (`\"`, `\\`) included, and only a string a
-  `:` follows is a key, so a word inside a value (`"system":"Local time 2000"`, `"site":"protocol NXDN"`) is never
-  matched as one; handlers read their member's value with `sdrtrunk_json_next_value()`, which refuses an object or an
-  array, whose members are read as keys of their own. Every key is matched by its full name (`total_frames` is not `to`,
-  `from_site` not `from`, `protocol_name` not `protocol`). The cursor (`sdrtrunk_json_cursor`) counts the braces and
-  brackets the tokenizer passes over, including the one that ends a bare value, so it knows the depth of each key: a
-  record's own members sit at depth 1 (2 in a file that is one array of records), and a record-level `frames` whose
-  value is an array marks its elements' members as voice-frame members. Only such a member's `time` stamps the row; a
-  `time` of the record, of a `metadata` object, or of another object's `frames` is passed over. The other keys keep
-  their depth-free reading (some exports carry `encryption_*` at record level). An NXDN frame's `"tag":"SACCH <n>"` is
-  that one value. A frame's `time` is matched by its exact key (not `timestamp`) and its value read whole; only decimal
-  digits are a time (a sign or a space, which `strtoull()` would take, is not), then strict-parsed. A record whose
-  `frames` come before its changed `to` or `from` has no frame `time` after the change, so it is filed on the decode
-  clock; such a file holds several calls and is kept local anyway. The reader clears the staged row's `event_time`
-  after its start sync, so a stamp an earlier file staged with no call to commit it (an export of a protocol the reader
-  does not play) never files this file's call (`test_playback_next_file_takes_no_earlier_stamp`).
-  Export is fail closed (issue #888): a played file's recording is exported only when (a) every member the record
-  and stream policies judge (`protocol`, `call_type`, `to`, `from`: the call snapshot's protocol, kind, target
-  and source) was read before the file's first voice frame, played or lost; (b) the stream verdict did not block at that
-  first frame (`sdrtrunk_json_first_frame()`, `dsd_audio_stream_export_allowed()` on the slot's active call), which by
-  (a) is the verdict for all its audio, since the policy does not change while a file is read (the decoder thread is in
-  the reader and drains no commands); and (c) it holds one call (above). The context keeps three sticky flags for the
-  file, set where the reader already passes: `frame_seen` at the first frame, `keep_local` there or when
-  `sdrtrunk_json_process_token()` sees an ID key after it (`sdrtrunk_json_id_after_frames()`), and `discard` when, with
-  that late ID observed, the record verdict (`sdrtrunk_json_record_allowed()`) is off: the audio written before it was
-  recorded under a verdict that did not judge it. At the file's end, before the closing sync, the slot's open segment is
-  marked: `wav_segment_discard_at_close()` (its close removes it and journals `discard`, never publishes it) or
-  `wav_segment_keep_local()` (published, never exported, one line a run). SDRTrunk writes every ID before `frames`
-  (`MBECallSequence`: `protocol, version, call_type, from, to, encrypted, system, site, frames`), so its own exports
-  export as before; a file of several records is always kept local, its later records' IDs coming after the earlier
-  frames (`CORE_WAV_JOURNAL` `test_playback_identity_after_the_frames_stays_local`). The static WAV and MBE captures are
-  written as before: neither is exported, and neither can be taken back in part.
+  that call's first valid frame; from the file's second such call on (`sdrtrunk_json_call_opened()`), the staged row's
+  `event_time` is cleared with the latch, so a call with no valid frame `time` falls back to the decode clock instead
+  of the last call's date (`CORE_WAV_JOURNAL` `test_playback_records_play_as_one_call`,
+  `test_playback_new_call_without_time_takes_the_decode_clock`, `CORE_MBE_FILE_IO`). The JSON is read token by token
+  (`sdrtrunk_json_token()`, the cut of `sdrtrunk_json_token_span()`, which finds a token without changing the text): a
+  quoted string is one token, spaces and escapes (`\"`, `\\`) included, and only a string a `:` follows is a key, so a
+  word inside a value (`"system":"Local time 2000"`, `"site":"protocol NXDN"`) is never matched as one; handlers read
+  their member's value with `sdrtrunk_json_next_value()`, which refuses an object or an array, whose members are read
+  as keys of their own. Every key is matched by its full name (`total_frames` is not `to`, `from_site` not `from`,
+  `protocol_name` not `protocol`). The cursor (`sdrtrunk_json_cursor`) counts the braces and brackets the tokenizer
+  passes over, including the one that ends a bare value, so it knows the depth of each key and how many records began
+  (`records`): a record's own members sit at depth 1 (2 in a file that is one array of records), and a record-level
+  `frames` whose value is an array marks its elements' members as voice-frame members. Only such a member's `time`
+  stamps the row; a `time` of the record, of a `metadata` object, or of another object's `frames` is passed over. The
+  call's IDs (`protocol`, `call_type`, `to`, `from`) are read only at record depth (`sdrtrunk_json_at_record()`), so a
+  `metadata` object's `from` is not the call's. The other keys keep their depth-free reading (some exports carry
+  `encryption_*` at record level). A `to` or `from` is read by `sdrtrunk_json_parse_id()`: decimal digits, or for a
+  `to` an SDRTrunk P25 patch group (`PatchGroup.toString()`, `P:<group>` and ` [<patched talkgroups>]`), which is its
+  group's talkgroup, so its talkgroup rows apply. An NXDN frame's `"tag":"SACCH <n>"` is that one value. A frame's
+  `time` is matched by its exact key (not `timestamp`) and its value read whole; only decimal digits are a time (a sign
+  or a space, which `strtoull()` would take, is not), then strict-parsed. The reader clears the staged row's
+  `event_time` after its start sync, so a stamp an earlier file staged with no call to commit it (an export of a
+  protocol the reader does not play) never files this file's call (`test_playback_next_file_takes_no_earlier_stamp`).
+  Recording and export are fail closed (issue #888). Before the file plays, `sdrtrunk_json_is_standard()` reads the
+  buffered text once, with the span tokenizer and the cursor's depth and record count, side-effect free: a file is
+  standard (SDRTrunk's own shape: `MBECallSequence` writes `protocol, version, call_type, from, to, encrypted, system,
+  site, frames`) when it holds exactly one record, none of whose ID members (`sdrtrunk_json_is_id_key()`: what the
+  record and stream verdicts read from the call snapshot, its protocol, kind, target and source) comes after its first
+  voice frame (its record-level `frames`, or any `hex` before them), and each `to` and `from` reads
+  (`sdrtrunk_json_id_value_reads()`; a value present but unreadable must not become "no talkgroup" for the fallback).
+  A standard file is recorded and exported as its policies allow, a Stop part-way included: its call is complete
+  before any audio, and the policy does not change while a file is read (the decoder thread is in the reader and
+  drains no commands), so the row's own record and stream verdicts judge all its audio. Any other file plays and makes
+  its history rows, but its segment is marked at the file's end, before the closing sync and so before any close,
+  Stop included: `wav_segment_discard_at_close()` (`wav_segment.c`), whose close removes it and journals `discard`
+  (`wav_close_discard()`), never publishes or exports it; one line a run while per-call recording is on
+  (`sdrtrunk_json_note_unrecorded()`). SDRTrunk's own exports are standard, so they record and export as before
+  (`CORE_WAV_JOURNAL` `test_playback_file_shape_decides_its_recording`: a `from` after the frames, a second record of
+  frames alone, frames before the protocol, a `to` after a Stop, an unreadable `to`; a trailing `metadata` `from` and
+  the patch groups still export). The static WAV and MBE captures are written as before: neither is exported, and
+  neither can be taken back in part.
 - API note: the high-pass filter in `<dsd-neo/core/audio_filters.h>` is `dsd_hpf()`. It was renamed from
   `hpf()` because codec2 exports a symbol of that name and Android links codec2 statically, which turns the
   duplicate into a link error. It is the only filter in that header that is prefixed: codec2 exports none of
@@ -2581,12 +2588,15 @@ suite runs under this compiler.
   fsync. A journal whose last byte is not `\n` gets one at open, so a line torn by a crash never swallows the next
   record. A failed open, write or flush turns the journal off for the rest of the run (`DSD_WAV_JOURNAL_FAILED`, one
   LOG_ERROR, the recording view's `journal_state` FAILED until the next run opens one); recording itself goes on.
-  - Publication: `wav_close_and_publish()` (`dsd_file.c`) journals every close that has options: `publish` after the
-    rename (and the rdio export), `discard` for a 44-byte WAV it deletes, `error` for a close (`sf_close()`) or rename
-    failure that keeps the temp file. `open_wav_file()` journals an open failure. The analog teardown close
+  - - Publication: `wav_close_and_publish()` (`dsd_file.c`) journals every close that has options: `publish` after the
+    rename (and the rdio export), `discard` for a 44-byte WAV or a segment marked `wav_segment_discard_at_close()` once
+    `wav_close_discard()` has removed it (a marked segment is removed even when its close fails: none of it was to be
+    kept), `error` for a close (`sf_close()`) or rename failure that keeps the temp file, and `error` of kind `discard`,
+    with a warning, for a file whose removal failed (a read-only folder; a Windows reader that shares no delete), which
+    names the file left (issue #888). `open_wav_file()` journals an open failure. The analog teardown close
     (`close_and_rename_analog_wav_file()`, no options, no row, named from the parts the call kept) and the discard of an
-    unpublished analog recording (`discard_analog_wav_file()`) write nothing. Each segment's id is its temp name's
-    token and sequence (`TEMP_<date>_<time>_<token>_<seq>`), so an open, its discard and its errors name one id.
+    unpublished analog recording (`discard_analog_wav_file()`) write nothing. Each segment's id is its temp name's token
+    and sequence (`TEMP_<date>_<time>_<token>_<seq>`), so an open, its discard and its errors name one id.
   - Whose recording: the event layer's rotation (`watchdog_event_retire_staged_row()` to
     `close_and_rename_wav_file_ex()`) passes the row explicitly (`dsd_wav_owner`): the pushed row's stamp
     (`push_seq` right after the push) on a commit, the retained row's (`push_seq - (retained_index - 1)`) on a
@@ -2719,8 +2729,9 @@ suite runs under this compiler.
 
     `link` (a pending recording's row committed): `instance` (string), `slot` (number), `row` (number), as in
     `publish`. `unlink` (the row a pending recording waited for will never exist): no other field. `discard` (an empty
-    segment was deleted): no other field. `error` (the segment is not published): `kind` (string: `open`, `close` or
-    `publish`), `temp` (string: the temp name it keeps, relative or absolute as `file` is; "" when none) and `folder`.
+    or discarded segment was deleted): no other field. `error` (the segment is not published): `kind` (string: `open`,
+    `close`, `publish`, or `discard` for a deletion that failed), `temp` (string: the temp name it keeps, relative or
+    absolute as `file` is; "" when none) and `folder`.
 
     Measured (dev-release, NVMe ext4, 20000 appends): a `publish` append costs 7.5 us mean (p99 10 us; 6.1 us on
     tmpfs), and the whole close and publish of a 1 s per-call WAV goes from 29 us to 39 us with the journal on. With
@@ -12128,6 +12139,15 @@ control within the CC grace walks its channel map with the ordinary hunts.
   data (`edacs_lcn_names_channel()`); main published LCNs 26-30 as grants on a 0 Hz channel. This rests on the
   decoder's own reserved-LCN handling; EDACS gets no unit-event semantics (no public spec). Tests:
   `EDACS_GRANT_TUNE_MATRIX` (`edacs_run_status_lcn_cases`).
+- YSF in-band identity change (`src/protocol/ysf/ysf.c`, issue #888): a V/D1, V/D2 or full-rate voice frame's DCH is
+  decoded after its voice was written to the slot's per-call WAV, so when its callsigns begin another call
+  (`ysf_enrich_identity()`'s observe opens a new epoch, with no header or terminator between the two calls) the ended
+  call's recording holds the new call's first frame (100 ms). The voice handlers read the slot's epoch before the DCH
+  (`dsd_call_state_get_revision()`, no snapshot copy) and, when it moved, mark the open segment
+  `dsd_wav_segment_keep_local()` (`<dsd-neo/core/file_io.h>`): its close publishes and journals it (`rdio` false) but
+  never exports it, one line a run (`wav_close_note_kept_local()`). A header's or terminator's DCH carries no voice and
+  marks nothing. Fail closed rather than reorder the frame (the DCH is read after the voice blocks on air). Test:
+  `YSF_DCH_DECODE` `test_process_ysf_vd_type2_next_call_keeps_the_recording_local`.
 - YSF call mode 1 ("radio ID", `src/protocol/ysf/ysf.c`): the CSD1 destination field is printed as a 5-character
   destination radio ID and a 5-character source radio ID, but the call's target text keeps all 10 characters. The
   split is not changed: the two independent decoders checked disagree (DSDcc `processCSD1()` reads destination and

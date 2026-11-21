@@ -45,6 +45,7 @@
 #include <dsd-neo/protocol/tetra/tetra_voice.h>
 #include <dsd-neo/runtime/config.h>
 #include <dsd-neo/runtime/decode_clock.h>
+#include <dsd-neo/runtime/exitflag.h>
 #include <dsd-neo/runtime/frame_sync_hooks.h>
 #include <dsd-neo/runtime/log.h>
 #include <dsd-neo/runtime/rdio_export.h>
@@ -59,6 +60,9 @@
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
+#if !DSD_PLATFORM_WIN_NATIVE
+#include <sys/stat.h>
+#endif
 #if defined(USE_CURL) && !DSD_PLATFORM_WIN_NATIVE
 #include <arpa/inet.h>
 #include <netinet/in.h>
@@ -109,6 +113,9 @@ expect_str(const char* what, const char* got, const char* want) {
 
 static int g_journal_errors;
 static int g_sdrtrunk_refusals;
+/* Set: a played SDRTrunk file's malformed voice frame (its warning) sets the exit flag, as Stop does mid-file. */
+static int g_stop_at_malformed_frame;
+static int g_unremoved_discards;
 
 /* The process's one log tap (it is installed once and never replaced): the errors the tests count. */
 static void
@@ -119,6 +126,12 @@ count_log_lines(dsd_neo_log_level_t level, const char* text, void* ctx) {
     }
     if (level == LOG_LEVEL_ERROR && text && strstr(text, "SDRTrunk MBE file") != NULL) {
         g_sdrtrunk_refusals++;
+    }
+    if (g_stop_at_malformed_frame && text && strstr(text, "Skipping malformed SDRTrunk MBE voice frame") != NULL) {
+        dsd_exitflag_store(1);
+    }
+    if (text && strstr(text, "was to be discarded but could not be removed") != NULL) {
+        g_unremoved_discards++;
     }
 }
 
@@ -4740,26 +4753,20 @@ expect_record_export(const rig* r, const char* label, const playback_record* rec
     return rc;
 }
 
-/* The recording of @p rec's frames, kept local: published once, filed at @p rec's first frame's second, with no upload
-   and no sidecar, and the run's one line said. */
+/* A played file that is not in SDRTrunk's own shape: played, but no recording of it is published or left (no WAV, no
+   temp file, no sidecar), and the run's one line said. */
 static int
-expect_record_local(const rig* r, const char* label, const playback_record* rec) {
-    int rc = 0;
+expect_played_not_recorded(const rig* r, const char* label) {
     char tag[200];
-    int count = 0;
-    const char* pub = publish_of_duration((long long)rec->frames * 20, &count);
-    DSD_SNPRINTF(tag, sizeof tag, "%s: one recording of all %d frames", label, rec->frames);
-    rc |= expect_int(tag, count, 1);
-    DSD_SNPRINTF(tag, sizeof tag, "%s: filed at the stamped record's first frame", label);
-    rc |= expect_int(tag, pub ? field_ll(pub, "start") : -9, (long long)(rec->first_ms / 1000ULL));
-    DSD_SNPRINTF(tag, sizeof tag, "%s: no upload", label);
-    rc |= expect_str(tag, pub ? field_s(pub, "rdio") : "", "false");
-    static char body[4096];
-    read_sidecar_of(r, pub, body, sizeof body);
-    DSD_SNPRINTF(tag, sizeof tag, "%s: kept local, no sidecar", label);
-    rc |= expect_str(tag, body, "");
+    DSD_SNPRINTF(tag, sizeof tag, "%s: nothing published", label);
+    int rc = expect_int(tag, count_records(&g_j, "publish"), 0);
+    wav_names names;
+    DSD_MEMSET(&names, 0, sizeof names);
+    (void)dsd_dir_list(r->dir, collect_wav_cb, &names);
+    DSD_SNPRINTF(tag, sizeof tag, "%s: no WAV, no temp file", label);
+    rc |= expect_int(tag, names.count, 0);
     DSD_SNPRINTF(tag, sizeof tag, "%s: said once this run", label);
-    rc |= expect_int(tag, wav_recording_played_file_rdio_skip_first_this_run(), 0);
+    rc |= expect_int(tag, wav_recording_played_file_unrecorded_first_this_run(), 0);
     return rc;
 }
 
@@ -4820,47 +4827,40 @@ test_playback_record_reads_only_its_own_members(void) {
     return rc;
 }
 
-/* -P -r with --rdio-unknown-talkgroup: a played file is one call, as SDRTrunk writes them. A file of two records is
-   played as one stream: one recording of both records' audio and one history row. The records' headers fold into the
-   open call one key at a time, as on air, so the row ends with the last ID each endpoint was given (a 0 or a missing ID
-   clears none), and the row is stamped from the first valid frame of the last call the call-state layer opened: the
-   second record's where its source or talkgroup changed, else the first's. A file in which the call-state layer opened
-   a second call holds audio of more than one call under the last one's row: it is kept local, with no sidecar and no
-   upload, under any number (issue #888). So is a file the call-state layer read as one call: the second record's IDs
-   are read after the first record's frames, and a played file is exported only when every ID comes before its first
-   voice frame. */
+/* -P -r with --rdio-unknown-talkgroup: a file of two records is played as one stream, with one history row. The
+   records' headers fold into the open call one key at a time, as on air, so the row ends with the last ID each endpoint
+   was given (a 0 or a missing ID clears none), and the row is stamped from the first valid frame of the last call the
+   call-state layer opened: the second record's where its source or talkgroup changed, else the first's. Such a file is
+   not in SDRTrunk's own shape (one record): the second record's IDs come after the first record's frames, so it gets
+   no per-call recording and no export under any number (issue #888). */
 static int
 test_playback_records_play_as_one_call(void) {
     static const struct {
         const char* label;
         const char* leaf;
         playback_record recs[2];
-        uint32_t row_tg;  /* the row's talkgroup, also the sidecar's unless 0 */
-        uint32_t row_src; /* the row's and the sidecar's source */
+        uint32_t row_tg;  /* the row's talkgroup */
+        uint32_t row_src; /* the row's source */
         int stamped;      /* the record whose first frame stamps the row */
-        int local;        /* kept local: a second call opened, or an ID came after the frames */
     } k_cases[] = {
         {"two talkgroups",
          "two.mbe",
          {{1234U, 5678U, 3, 1600000100250ULL}, {4321U, 777U, 5, 1600000200750ULL}},
          4321U,
          777U,
-         1,
          1},
         {"zero to after a talkgroup",
          "zero_to.mbe",
          {{1234U, 5678U, 3, 1600000100250ULL}, {0U, 777U, 4, 1600000200750ULL}},
          1234U,
          777U,
-         1,
          1},
         {"identity-less first",
          "anonymous_first.mbe",
          {{0U, 0U, 3, 1600000300250ULL}, {0U, 111U, 4, 1600000400750ULL}},
          0U,
          111U,
-         0,
-         1},
+         0},
     };
 
     int rc = 0;
@@ -4869,8 +4869,6 @@ test_playback_records_play_as_one_call(void) {
         rig r;
         rc |= rig_open(&r, "dsdneo_journal_playback_records");
         rc |= playback_records_run(&r, k_cases[c].leaf, k_cases[c].recs, 2);
-        DSD_SNPRINTF(tag, sizeof tag, "%s: one recording", k_cases[c].label);
-        rc |= expect_int(tag, count_records(&g_j, "publish"), 1);
         DSD_SNPRINTF(tag, sizeof tag, "%s: one history row", k_cases[c].label);
         rc |= expect_int(tag, (long long)r.state->event_history_s[0].push_seq, 1);
         const Event_History* row = &r.state->event_history_s[0].Event_History_Items[1];
@@ -4878,18 +4876,10 @@ test_playback_records_play_as_one_call(void) {
         rc |= expect_int(tag, (long long)row->target_id, (long long)k_cases[c].row_tg);
         DSD_SNPRINTF(tag, sizeof tag, "%s: the row's source", k_cases[c].label);
         rc |= expect_int(tag, (long long)row->source_id, (long long)k_cases[c].row_src);
-        const playback_record whole = {
-            0U,
-            0U,
-            k_cases[c].recs[0].frames + k_cases[c].recs[1].frames,
-            k_cases[c].recs[k_cases[c].stamped].first_ms,
-        };
-        if (k_cases[c].local) {
-            rc |= expect_record_local(&r, k_cases[c].label, &whole);
-        } else {
-            rc |= expect_record_export(&r, k_cases[c].label, &whole,
-                                       k_cases[c].row_tg != 0U ? k_cases[c].row_tg : 4242U, k_cases[c].row_src);
-        }
+        DSD_SNPRINTF(tag, sizeof tag, "%s: the row is filed at the stamped record's first frame", k_cases[c].label);
+        rc |= expect_int(tag, (long long)row->event_time,
+                         (long long)(k_cases[c].recs[k_cases[c].stamped].first_ms / 1000ULL));
+        rc |= expect_played_not_recorded(&r, k_cases[c].label);
         rdio_fallback_off(&r);
         rig_close(&r);
     }
@@ -4897,9 +4887,9 @@ test_playback_records_play_as_one_call(void) {
 }
 
 /* A played file whose first record is from a radio set stream=off and whose second is from one with no restriction:
-   the second record's call is the last the file opened, so its row allows the export, but the recording holds the
-   first record's audio too. It is kept local (issue #888). Before, it was exported under the second radio. The
-   unrestricted radio's record played alone is exported as before. */
+   the second record's call is the last the file opened, so its row allows the export, but the file's audio holds the
+   first record's too. A file of two records gets no per-call recording and no export (issue #888). Before, it was
+   exported under the second radio. The unrestricted radio's record played alone is exported as before. */
 static int
 test_playback_stream_off_record_stays_local(void) {
     static const struct {
@@ -4919,10 +4909,10 @@ test_playback_stream_off_record_stays_local(void) {
         rc |= rig_open(&r, "dsdneo_journal_playback_stream_off");
         rc |= expect_int("stream=off radio row", dsd_test_install_radio_policy(r.state, 5678U, "A", 1, 1, 0), 0);
         rc |= playback_records_run(&r, "stream_off.mbe", k_cases[c].recs, k_cases[c].n);
-        const playback_record last = {0U, 0U, k_cases[c].n == 2 ? 7 : 4, 1600000200750ULL};
         if (k_cases[c].n == 2) {
-            rc |= expect_record_local(&r, k_cases[c].label, &last);
+            rc |= expect_played_not_recorded(&r, k_cases[c].label);
         } else {
+            const playback_record last = {0U, 0U, 4, 1600000200750ULL};
             rc |= expect_record_export(&r, k_cases[c].label, &last, 4242U, 777U);
         }
         rdio_fallback_off(&r);
@@ -4932,27 +4922,20 @@ test_playback_stream_off_record_stays_local(void) {
 }
 
 /* A played file's second call (another source) whose frames carry no "time": its row is not filed at the first call's
-   stamp. The new call clears the staged stamp with the latch, so the recording falls back to the decode clock, in the
-   journal and in its file name. Before, both took the first record's date. */
+   stamp. The new call clears the staged stamp with the latch, so the row keeps none and falls back to the decode clock.
+   Before, it took the first record's date. */
 static int
 test_playback_new_call_without_time_takes_the_decode_clock(void) {
     static const playback_record k_recs[2] = {{0U, 5678U, 3, 1600000100250ULL}, {0U, 777U, 4, 0U}};
     rig r;
     int rc = rig_open(&r, "dsdneo_journal_playback_unstamped");
     rc |= playback_records_run(&r, "unstamped.mbe", k_recs, 2);
-    int count = 0;
-    const char* pub = publish_of_duration(7LL * 20LL, &count);
-    rc |= expect_int("unstamped second call: one recording", count, 1);
-    const long long start = pub ? field_ll(pub, "start") : -9;
-    rc |= expect_true("unstamped second call: filed on the decode clock, not the first call's stamp",
-                      start >= (long long)k_t0 && start <= (long long)k_t0 + 60);
-    char first_date[16] = "";
-    (void)dsd_format_local_datetime((time_t)1600000100, DSD_LOCAL_DATETIME_DATE_COMPACT, first_date, sizeof first_date);
-    const char* file = pub ? field_s(pub, "file") : "";
-    rc |= expect_true("unstamped second call: its name is not the first call's date",
-                      first_date[0] != '\0' && strstr(file, first_date) == NULL);
+    rc |= expect_int("unstamped second call: one history row", (long long)r.state->event_history_s[0].push_seq, 1);
+    const long long start = (long long)r.state->event_history_s[0].Event_History_Items[1].event_time;
+    rc |= expect_true("unstamped second call: no stamp of the first call's, so filed on the decode clock",
+                      start == 0 || (start >= (long long)k_t0 && start <= (long long)k_t0 + 60));
     if (rc != 0) {
-        DSD_FPRINTF(stderr, "  unstamped second call: start %lld, file %s\n", start, file);
+        DSD_FPRINTF(stderr, "  unstamped second call: start %lld\n", start);
     }
     rig_close(&r);
     return rc;
@@ -5147,103 +5130,6 @@ test_playback_malformed_frames_play_nothing(void) {
     return rc;
 }
 
-/* A talkgroup row for @p tg with @p stream, audio and record on. */
-static int
-install_stream_row(rig* r, uint32_t tg, int stream) {
-    dsd_tg_policy_entry row;
-    if (dsd_tg_policy_make_exact_entry(tg, "A", "", DSD_TG_POLICY_SOURCE_IMPORTED, &row) != 0) {
-        return -1;
-    }
-    row.audio = 1U;
-    row.record = 1U;
-    row.stream = stream ? 1U : 0U;
-    return dsd_tg_policy_append_exact(r->state, &row);
-}
-
-#define K_THREE_FRAMES K_GOOD_FRAME "," K_GOOD_FRAME "," K_GOOD_FRAME
-#define K_FOUR_FRAMES  K_THREE_FRAMES "," K_GOOD_FRAME
-
-/* Issue #888 (fail closed): a played file is exported only when every ID its policies judge (protocol, call type, to,
-   from) was read before its first voice frame, its stream verdict never blocked while its audio was written, and it
-   holds one call. A key read after the frames can change the verdicts after the audio they judge was written: such a
-   file is recorded as its record policy allows and kept local (no sidecar, no upload). When that late key turns its
-   recording off, the audio already written is discarded, never published. A file in SDRTrunk's own order (every ID
-   before "frames") is exported as before. Before, "from" after "frames" exported audio of a radio set record=off, and
-   a call type read after a first record that matched a stream=off talkgroup exported both records' audio. */
-static int
-test_playback_identity_after_the_frames_stays_local(void) {
-    static const struct {
-        const char* label;
-        const char* json;
-        int radio_record_off; /* radio 5678 has record=off */
-        int tg0_stream_off;   /* talkgroup 0 has stream=off */
-        int frames;           /* the recording's length in frames; 0: none published */
-        int exported;
-    } k_cases[] = {
-        {"from after the frames, its radio record=off",
-         "{\"protocol\":\"DMR\",\"version\":2,\"call_type\":\"GROUP\",\"to\":\"0\",\"encrypted\":false,"
-         "\"frames\":[" K_THREE_FRAMES "],\"from\":\"5678\"}",
-         1, 0, 0, 0},
-        {"from after the frames, record and stream on",
-         "{\"protocol\":\"DMR\",\"version\":2,\"call_type\":\"GROUP\",\"to\":\"0\",\"encrypted\":false,"
-         "\"frames\":[" K_THREE_FRAMES "],\"from\":\"5678\"}",
-         0, 0, 3, 0},
-        {"a stream=off talkgroup 0 record, then a private one from the same radio",
-         "{\"protocol\":\"DMR\",\"version\":2,\"from\":\"5678\",\"to\":\"0\",\"encrypted\":false,"
-         "\"frames\":[" K_THREE_FRAMES "]}\n"
-         "{\"protocol\":\"DMR\",\"version\":2,\"call_type\":\"PRIVATE\",\"from\":\"5678\",\"to\":\"0\","
-         "\"encrypted\":false,\"frames\":[" K_FOUR_FRAMES "]}",
-         0, 1, 7, 0},
-        {"SDRTrunk's order", K_DMR_HEAD K_THREE_FRAMES "]}", 0, 0, 3, 1},
-    };
-
-    int rc = 0;
-    for (size_t c = 0; c < sizeof k_cases / sizeof k_cases[0]; c++) {
-        char tag[200];
-        const char* label = k_cases[c].label;
-        rig r;
-        rc |= rig_open(&r, "dsdneo_journal_playback_late_identity");
-        if (k_cases[c].radio_record_off) {
-            rc |= expect_int("record=off radio row", dsd_test_install_radio_policy(r.state, 5678U, "A", 1, 0, 1), 0);
-        }
-        if (k_cases[c].tg0_stream_off) {
-            rc |= expect_int("stream=off talkgroup row", install_stream_row(&r, 0U, 0), 0);
-        }
-        rc |= playback_json_run(&r, "late_identity.mbe", k_cases[c].json);
-        const int frames = k_cases[c].frames;
-        DSD_SNPRINTF(tag, sizeof tag, "%s: %s", label, frames ? "one recording" : "nothing published");
-        rc |= expect_int(tag, count_records(&g_j, "publish"), frames ? 1 : 0);
-        wav_names names;
-        DSD_MEMSET(&names, 0, sizeof names);
-        (void)dsd_dir_list(r.dir, collect_wav_cb, &names);
-        DSD_SNPRINTF(tag, sizeof tag, "%s: %s", label, frames ? "one WAV" : "no WAV");
-        rc |= expect_int(tag, names.count, frames ? 1 : 0);
-        if (frames) {
-            int count = 0;
-            const char* pub = publish_of_duration((long long)frames * 20, &count);
-            DSD_SNPRINTF(tag, sizeof tag, "%s: of all %d frames", label, frames);
-            rc |= expect_int(tag, count, 1);
-            static char body[4096];
-            read_sidecar_of(&r, pub, body, sizeof body);
-            DSD_SNPRINTF(tag, sizeof tag, "%s: %s", label, k_cases[c].exported ? "exported" : "kept local, no sidecar");
-            rc |=
-                expect_true(tag, k_cases[c].exported ? strstr(body, "\"talkgroup\": 1234,") != NULL : body[0] == '\0');
-            if (!k_cases[c].exported) {
-                DSD_SNPRINTF(tag, sizeof tag, "%s: no upload", label);
-                rc |= expect_str(tag, pub ? field_s(pub, "rdio") : "", "false");
-                DSD_SNPRINTF(tag, sizeof tag, "%s: said once this run", label);
-                rc |= expect_int(tag, wav_recording_played_file_rdio_skip_first_this_run(), 0);
-            }
-            if (rc != 0) {
-                DSD_FPRINTF(stderr, "  %s sidecar: %s\n", label, body);
-            }
-        }
-        rdio_fallback_off(&r);
-        rig_close(&r);
-    }
-    return rc;
-}
-
 /* Writes @p json to @p leaf in the rig's folder, its path in @p path. */
 static int
 json_write_leaf(const rig* r, const char* leaf, const char* json, char* path, size_t path_size) {
@@ -5256,6 +5142,285 @@ json_write_leaf(const rig* r, const char* leaf, const char* json, char* path, si
     }
     int rc = fputs(json, f) < 0 ? 1 : 0;
     rc |= fclose(f) != 0 ? 1 : 0;
+    return rc;
+}
+
+/* A talkgroup row for @p tg with @p record and @p stream, audio on. */
+static int
+install_tg_row(rig* r, uint32_t tg, int record, int stream) {
+    dsd_tg_policy_entry row;
+    if (dsd_tg_policy_make_exact_entry(tg, "A", "", DSD_TG_POLICY_SOURCE_IMPORTED, &row) != 0) {
+        return -1;
+    }
+    row.audio = 1U;
+    row.record = record ? 1U : 0U;
+    row.stream = stream ? 1U : 0U;
+    return dsd_tg_policy_append_exact(r->state, &row);
+}
+
+#define K_THREE_FRAMES  K_GOOD_FRAME "," K_GOOD_FRAME "," K_GOOD_FRAME
+#define K_FOUR_FRAMES   K_THREE_FRAMES "," K_GOOD_FRAME
+#define K_BAD_FRAME     "{\"hex\":\"3ABF032D9ADEE4CB5Z\"}"
+#define K_STOPPED_AFTER K_THREE_FRAMES "," K_BAD_FRAME "," K_GOOD_FRAME
+
+/* What a played file's case expects: the recording of @p frames frames (0: none, and no WAV at all), exported under
+   @p tg from @p src (tg 0: no sidecar, no upload). */
+static int
+expect_played_file(const rig* r, const char* label, int frames, unsigned tg, unsigned src) {
+    char tag[200];
+    int rc = 0;
+    DSD_SNPRINTF(tag, sizeof tag, "%s: %s", label, frames ? "one recording" : "nothing published");
+    rc |= expect_int(tag, count_records(&g_j, "publish"), frames ? 1 : 0);
+    wav_names names;
+    DSD_MEMSET(&names, 0, sizeof names);
+    (void)dsd_dir_list(r->dir, collect_wav_cb, &names);
+    DSD_SNPRINTF(tag, sizeof tag, "%s: %s", label, frames ? "one WAV" : "no WAV, no temp file");
+    rc |= expect_int(tag, names.count, frames ? 1 : 0);
+    if (!frames) {
+        return rc;
+    }
+    int count = 0;
+    const char* pub = publish_of_duration((long long)frames * 20, &count);
+    DSD_SNPRINTF(tag, sizeof tag, "%s: of all %d frames", label, frames);
+    rc |= expect_int(tag, count, 1);
+    static char body[4096];
+    read_sidecar_of(r, pub, body, sizeof body);
+    if (tg == 0U) {
+        DSD_SNPRINTF(tag, sizeof tag, "%s: kept local, no sidecar", label);
+        rc |= expect_str(tag, body, "");
+        DSD_SNPRINTF(tag, sizeof tag, "%s: no upload", label);
+        rc |= expect_str(tag, pub ? field_s(pub, "rdio") : "", "false");
+    } else {
+        char want[96];
+        DSD_SNPRINTF(want, sizeof want, "\"talkgroup\": %u,", tg);
+        DSD_SNPRINTF(tag, sizeof tag, "%s: exported under %u", label, tg);
+        rc |= expect_true(tag, strstr(body, want) != NULL);
+        DSD_SNPRINTF(want, sizeof want, "\"srcList\": [{\"pos\":0,\"src\":%u}],", src);
+        DSD_SNPRINTF(tag, sizeof tag, "%s: from %u", label, src);
+        rc |= expect_true(tag, strstr(body, want) != NULL);
+    }
+    if (rc != 0) {
+        DSD_FPRINTF(stderr, "  %s sidecar: %s\n", label, body);
+    }
+    return rc;
+}
+
+/* Issue #888 (fail closed): a played SDRTrunk file is classified before it plays. A file in SDRTrunk's own shape
+   (MBECallSequence: one record, every member the policies judge -- protocol, call type, to, from -- before its
+   frames, each "to" and "from" an ID the reader reads) is recorded and exported as its policies allow, Stop during it
+   included, since its call is known before any of its audio. Any other file is played, but it gets no per-call
+   recording and no export (one line a run): its audio would be judged by IDs read after it. Only a record's own
+   members count (a "metadata" object's "from" is not the call's). An SDRTrunk patch group's "to" ("P:<group>", with
+   its patched talkgroups after it) is that talkgroup. Before: a "from" after the frames, a second record of frames
+   alone, frames before the protocol, a "to" read after Stop, or a "to" the reader could not read exported audio its
+   policies never judged (under the fallback talkgroup 4242); a trailing "metadata" "from" kept a call local; a patch
+   group's call was exported under the fallback, its stream=off row unread. */
+static int
+test_playback_file_shape_decides_its_recording(void) {
+    static const struct {
+        const char* label;
+        const char* json;
+        int radio_record_off; /* radio 5678 has record=off */
+        uint32_t tg_row;      /* a talkgroup row (0: none) ... */
+        int tg_record;        /* ... with these record and stream settings */
+        int tg_stream;
+        int stop; /* Stop at the file's malformed frame */
+        int frames;
+        unsigned tg; /* exported under (0: not exported) */
+        unsigned src;
+    } k_cases[] = {
+        {"from after the frames, its radio record=off",
+         "{\"protocol\":\"DMR\",\"version\":2,\"call_type\":\"GROUP\",\"to\":\"0\",\"encrypted\":false,"
+         "\"frames\":[" K_THREE_FRAMES "],\"from\":\"5678\"}",
+         1, 0U, 0, 0, 0, 0, 0U, 0U},
+        {"from after the frames, record and stream on",
+         "{\"protocol\":\"DMR\",\"version\":2,\"call_type\":\"GROUP\",\"to\":\"0\",\"encrypted\":false,"
+         "\"frames\":[" K_THREE_FRAMES "],\"from\":\"5678\"}",
+         0, 0U, 0, 0, 0, 0, 0U, 0U},
+        {"a stream=off talkgroup 0 record, then a private one from the same radio",
+         "{\"protocol\":\"DMR\",\"version\":2,\"from\":\"5678\",\"to\":\"0\",\"encrypted\":false,"
+         "\"frames\":[" K_THREE_FRAMES "]}\n"
+         "{\"protocol\":\"DMR\",\"version\":2,\"call_type\":\"PRIVATE\",\"from\":\"5678\",\"to\":\"0\","
+         "\"encrypted\":false,\"frames\":[" K_FOUR_FRAMES "]}",
+         0, 0U, 1, 0, 0, 0, 0U, 0U},
+        {"SDRTrunk's order", K_DMR_HEAD K_THREE_FRAMES "]}", 0, 0U, 0, 0, 0, 3, 1234U, 5678U},
+        {"Stop before a to after the frames",
+         "{\"protocol\":\"DMR\",\"version\":2,\"call_type\":\"GROUP\",\"from\":\"5678\",\"encrypted\":false,"
+         "\"frames\":[" K_STOPPED_AFTER "],\"to\":\"99\"}",
+         0, 99U, 0, 0, 1, 0, 0U, 0U},
+        {"Stop in SDRTrunk's order", K_DMR_HEAD K_STOPPED_AFTER "]}", 0, 0U, 0, 0, 1, 3, 1234U, 5678U},
+        {"a second record of frames alone", K_DMR_HEAD K_THREE_FRAMES "]}\n{\"frames\":[" K_FOUR_FRAMES "]}", 0, 0U, 0,
+         0, 0, 0, 0U, 0U},
+        {"frames before the protocol, then the same call",
+         "{\"frames\":[" K_THREE_FRAMES "],\"protocol\":\"DMR\",\"version\":2,\"call_type\":\"GROUP\","
+         "\"from\":\"5678\",\"to\":\"1234\"}\n" K_DMR_HEAD K_FOUR_FRAMES "]}",
+         0, 0U, 0, 0, 0, 0, 0U, 0U},
+        {"a metadata from after the frames", K_DMR_HEAD K_THREE_FRAMES "],\"metadata\":{\"from\":\"9999\"}}", 0, 0U, 0,
+         0, 0, 3, 1234U, 5678U},
+        {"a patch group whose talkgroup has stream=off",
+         "{\"protocol\":\"APCO25-PHASE2\",\"version\":2,\"call_type\":\"GROUP\",\"from\":\"5678\",\"to\":\"P:1234\","
+         "\"encrypted\":false,\"frames\":[" K_THREE_FRAMES "]}",
+         0, 1234U, 1, 0, 0, 3, 0U, 0U},
+        {"a patch group with its patched talkgroups",
+         "{\"protocol\":\"APCO25-PHASE2\",\"version\":2,\"call_type\":\"GROUP\",\"from\":\"5678\","
+         "\"to\":\"P:1234 [5001, 5002]\",\"encrypted\":false,\"frames\":[" K_THREE_FRAMES "]}",
+         0, 0U, 0, 0, 0, 3, 1234U, 5678U},
+        {"a to the reader cannot read",
+         "{\"protocol\":\"DMR\",\"version\":2,\"call_type\":\"GROUP\",\"from\":\"5678\",\"to\":\"Q:77\","
+         "\"encrypted\":false,\"frames\":[" K_THREE_FRAMES "]}",
+         0, 0U, 0, 0, 0, 0, 0U, 0U},
+    };
+
+    int rc = 0;
+    dsd_neo_log_set_tap(count_log_lines, NULL);
+    for (size_t c = 0; c < sizeof k_cases / sizeof k_cases[0]; c++) {
+        char tag[200];
+        const char* label = k_cases[c].label;
+        rig r;
+        rc |= rig_open(&r, "dsdneo_journal_playback_shape");
+        if (k_cases[c].radio_record_off) {
+            rc |= expect_int("record=off radio row", dsd_test_install_radio_policy(r.state, 5678U, "A", 1, 0, 1), 0);
+        }
+        if (k_cases[c].tg_row != 0U) {
+            rc |= expect_int("talkgroup row",
+                             install_tg_row(&r, k_cases[c].tg_row, k_cases[c].tg_record, k_cases[c].tg_stream), 0);
+        }
+        g_stop_at_malformed_frame = k_cases[c].stop;
+        rc |= playback_json_run(&r, "shape.mbe", k_cases[c].json);
+        g_stop_at_malformed_frame = 0;
+        dsd_exitflag_store(0);
+        rc |= expect_played_file(&r, label, k_cases[c].frames, k_cases[c].tg, k_cases[c].src);
+        if (k_cases[c].frames == 0) {
+            DSD_SNPRINTF(tag, sizeof tag, "%s: said once this run", label);
+            rc |= expect_int(tag, wav_recording_played_file_unrecorded_first_this_run(), 0);
+        }
+        rdio_fallback_off(&r);
+        rig_close(&r);
+    }
+    dsd_neo_log_set_tap(NULL, NULL);
+    return rc;
+}
+
+/* The one per-call recording a nonstandard played file left: its temp path and journal id, read before the run ends. */
+typedef struct {
+    char temp[DSD_TEST_PATH_MAX * 2];
+    char id[64];
+} played_segment;
+
+/* Plays the nonstandard file of a radio set record=off (a "from" after its frames) up to the run's end, which closes
+   its recording, through @p close_fn (NULL: libsndfile's own) and with the folder read-only when @p read_only. */
+static int
+played_discard_run(rig* r, played_segment* seg, dsd_wav_test_close_fn close_fn, int read_only) {
+    static const char k_json[] = "{\"protocol\":\"DMR\",\"version\":2,\"call_type\":\"GROUP\",\"to\":\"0\","
+                                 "\"encrypted\":false,\"frames\":[" K_THREE_FRAMES "],\"from\":\"5678\"}";
+    int rc = expect_int("record=off radio row", dsd_test_install_radio_policy(r->state, 5678U, "A", 1, 0, 1), 0);
+    r->opts->audio_out = 0;
+    r->opts->playfiles = 1;
+    rdio_fallback_on(r, DSD_RDIO_MODE_DIRWATCH);
+    submit(r, DSD_APP_CMD_WAV_START);
+    char path[DSD_TEST_PATH_MAX * 2];
+    rc |= json_write_leaf(r, "discard.mbe", k_json, path, sizeof path);
+    char* argv[2] = {"dsd-neo", path};
+    r->state->optind = 1;
+    playMbeFiles(r->opts, r->state, 2, argv);
+    DSD_SNPRINTF(seg->temp, sizeof seg->temp, "%s", r->opts->wav_out_file);
+    slot1_id(r, seg->id, sizeof seg->id);
+    rc |= expect_true("discard: the file's audio is in its recording", dsd_wav_segment_frames(r->opts->wav_out_f) > 0);
+#if !DSD_PLATFORM_WIN_NATIVE
+    if (read_only) {
+        (void)chmod(r->dir, 0500);
+    }
+#else
+    (void)read_only;
+#endif
+    dsd_wav_test_set_io(NULL, close_fn);
+    playback_end_run(r);
+    dsd_wav_test_set_io(NULL, NULL);
+#if !DSD_PLATFORM_WIN_NATIVE
+    if (read_only) {
+        (void)chmod(r->dir, 0700);
+    }
+#endif
+    reload(r);
+    rdio_fallback_off(r);
+    return rc;
+}
+
+/* Whether a read-only folder (chmod 0500) keeps a file in @p dir from being removed here: not as root, nor on a mount
+   whose permissions are fixed by its options. The folder is left writable and empty of the probe. */
+static int
+read_only_dir_denies_removal(const char* dir) {
+#if DSD_PLATFORM_WIN_NATIVE
+    (void)dir;
+    return 0;
+#else
+    char probe[DSD_TEST_PATH_MAX * 2];
+    if (dsd_test_path_join(probe, sizeof probe, dir, "ro_probe") != 0) {
+        return 0;
+    }
+    FILE* f = dsd_fopen_private(probe, "wb");
+    if (f == NULL) {
+        return 0;
+    }
+    (void)fclose(f);
+    const int denied = chmod(dir, 0500) == 0 && remove(probe) != 0;
+    (void)chmod(dir, 0700);
+    (void)remove(probe);
+    return denied;
+#endif
+}
+
+/* Issue #888: a recording its policy marks to be discarded is removed even when its close fails (none of it was to be
+   kept), and journaled `discard` only once it is gone: a removal that fails (here a read-only folder) leaves an `error`
+   record of kind `discard` naming the file that survives, and a warning. Before, a failed close returned before the
+   removal, leaving the audio under its temp name, and a failed removal was journaled as a discard. */
+static int
+test_playback_discard_checks_the_removal(void) {
+    int rc = 0;
+    {
+        rig r;
+        rc |= rig_open(&r, "dsdneo_journal_discard_close_error");
+        played_segment seg;
+        rc |= played_discard_run(&r, &seg, failing_close, 0);
+        rc |= expect_true("discard after a failed close: the recording is gone", !file_exists(seg.temp));
+        rc |= expect_int("discard after a failed close: journaled as discarded", count_for_id(&g_j, "discard", seg.id),
+                         1);
+        rc |= expect_int("discard after a failed close: nothing published", count_records(&g_j, "publish"), 0);
+        rig_close(&r);
+    }
+    {
+        rig r;
+        rc |= rig_open(&r, "dsdneo_journal_discard_read_only");
+        if (!read_only_dir_denies_removal(r.dir)) {
+            DSD_FPRINTF(stderr,
+                        "SKIP: discard in a read-only folder: a read-only folder does not stop a removal here\n");
+            rig_close(&r);
+            return rc;
+        }
+        dsd_neo_log_set_tap(count_log_lines, NULL);
+        g_unremoved_discards = 0;
+        played_segment seg;
+        rc |= played_discard_run(&r, &seg, NULL, 1);
+        dsd_neo_log_set_tap(NULL, NULL);
+        rc |= expect_true("discard in a read-only folder: the recording survives", file_exists(seg.temp));
+        rc |= expect_int("discard in a read-only folder: not journaled as discarded",
+                         count_for_id(&g_j, "discard", seg.id), 0);
+        const char* err = NULL;
+        const char* line = NULL;
+        for (int i = 0; (line = record(&g_j, "error", i)) != NULL; i++) {
+            if (strcmp(field_s(line, "id"), seg.id) == 0) {
+                err = line;
+            }
+        }
+        rc |= expect_str("discard in a read-only folder: an error of kind discard", err ? field_s(err, "kind") : "",
+                         "discard");
+        rc |= expect_str("discard in a read-only folder: it names the file left", err ? field_s(err, "temp") : "",
+                         seg.temp + strlen(r.dir) + 1);
+        /* The other slot's file, empty, cannot be removed either: each says so. */
+        rc |= expect_true("discard in a read-only folder: a warning", g_unremoved_discards >= 1);
+        rc |= expect_int("discard in a read-only folder: nothing published", count_records(&g_j, "publish"), 0);
+        rig_close(&r);
+    }
     return rc;
 }
 
@@ -5383,7 +5548,8 @@ main(void) {
     rc |= test_playback_stream_off_record_stays_local();
     rc |= test_playback_new_call_without_time_takes_the_decode_clock();
     rc |= test_playback_malformed_frames_play_nothing();
-    rc |= test_playback_identity_after_the_frames_stays_local();
+    rc |= test_playback_file_shape_decides_its_recording();
+    rc |= test_playback_discard_checks_the_removal();
     rc |= test_playback_next_file_takes_no_earlier_stamp();
     rc |= test_playback_long_export_plays_once();
     if (rc == 0) {

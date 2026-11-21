@@ -508,6 +508,25 @@ ysf_carrier_left(const dsd_state* state, const ysf_fich_info* info) {
     return dsd_state_frame_read_lost(state, info->carrier_seq) != 0;
 }
 
+/* The epoch of the call slot 0 holds, 0 for none. */
+static uint64_t
+ysf_call_epoch(const dsd_state* state) {
+    uint64_t epoch = 0U;
+    uint64_t revision = 0U;
+    return dsd_call_state_get_revision(state, 0U, &epoch, &revision) > 0 ? epoch : 0U;
+}
+
+/* A voice frame's DCH is read after the frame's voice was written to the slot's recording (V/D1, V/D2, full rate). When
+   the identity it names began another call (@p epoch_before, the call before the DCH, moved on), with no header or
+   terminator between the two, that voice is the new call's, in the recording of the call it ended: that recording is
+   kept local, never exported (issue #888). */
+static void
+ysf_voice_dch_read(const dsd_opts* opts, const dsd_state* state, uint64_t epoch_before) {
+    if (epoch_before != 0U && ysf_call_epoch(state) != epoch_before) {
+        dsd_wav_segment_keep_local(opts->wav_out_f);
+    }
+}
+
 // V/D2 decodes straight through mbelib, so its frames never reach the vocoder's
 // per-call WAV write (-P); they are written here under the same record policy, on
 // slot 0 where YSF publishes its call. Frames that went through processMbeFrame()
@@ -742,7 +761,9 @@ ysf_handle_vd_type1(dsd_opts* opts, dsd_state* state, const ysf_fich_info* info)
     }
 
     ysf_ehr(opts, state, vbuf, 0, YSF_VD1_CHANNEL_PAIRS);
+    const uint64_t epoch = ysf_call_epoch(state);
     ysf_conv_dch(opts, state, info->bn, info->bt, info->fn, info->ft, info->cm, dbuf);
+    ysf_voice_dch_read(opts, state, epoch);
 }
 
 static void
@@ -840,7 +861,9 @@ ysf_handle_vd_type2(dsd_opts* opts, dsd_state* state, const ysf_fich_info* info)
         return;
     }
 
+    const uint64_t epoch = ysf_call_epoch(state);
     ysf_conv_dch2(opts, state, info->bn, info->bt, info->fn, info->ft, info->cm, dbuf);
+    ysf_voice_dch_read(opts, state, epoch);
 }
 
 static bool
@@ -915,7 +938,9 @@ ysf_handle_full_rate_voice(dsd_opts* opts, dsd_state* state, const ysf_fich_info
     }
 
     if (is_csd3 && !ysf_carrier_left(state, info)) {
+        const uint64_t epoch = ysf_call_epoch(state);
         ysf_conv_dch(opts, state, 2, info->bt, info->fn, info->ft, info->cm, dbuf);
+        ysf_voice_dch_read(opts, state, epoch);
     }
 }
 

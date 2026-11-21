@@ -35,6 +35,7 @@
 #include <string.h>
 
 #include "core/audio/voice_chain_internal.h"
+#include "core/file/wav_segment.h"
 #include "dsd-neo/core/opts_fwd.h"
 #ifdef DSD_YSF_TEST_REAL_VOCODER
 /* The real-vocoder build (YSF_MBE_CAPTURE) runs only its capture cases; the stubbed-vocoder cases stay compiled. */
@@ -1698,6 +1699,67 @@ reset_ysf_stream(void) {
     g_mbe_fail_at = -1;
 }
 
+/* A V/D2 frame whose FICH names DCH part @p fn and whose DCH carries @p text (ten characters). */
+static void
+append_vd_type2_frame_with_dch(uint8_t fn, const char* text) {
+    uint8_t fich_bits[48];
+    uint8_t fich_input[100];
+    uint8_t dch2[100];
+    make_fich_bits_for_vd_type2(fich_bits);
+    set_bits_msb(fich_bits, 10U, 3U, fn);
+    append_ysf_crc(fich_bits);
+    encode_fich_input(fich_bits, 0, 0, fich_input);
+    encode_dch_payload_to_input(text, 10U, dch2, 96U, 5U, 0);
+    append_dibits_to_stream(fich_input, 100U);
+    for (size_t block = 0; block < 5U; block++) {
+        append_dibits_to_stream(&dch2[block * 20U], 20U);
+        append_type2_vech_dibits(0U);
+    }
+}
+
+/* Issue #888: a V/D2 frame's DCH is read after its five voice blocks were written to the slot's recording. A frame whose
+   destination begins another call, with no header or terminator between the two, leaves its 100 ms in the recording of
+   the call it ended, so that recording is kept local: published, never exported. A frame that names the call's own
+   destination again leaves the recording alone. Before, the recording was exported with the next call's first
+   frame. */
+static void
+test_process_ysf_vd_type2_next_call_keeps_the_recording_local(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    for (int changes = 1; changes >= 0; --changes) {
+        InitAllFecFunction();
+        DSD_MEMSET(&opts, 0, sizeof(opts));
+        DSD_MEMSET(&state, 0, sizeof(state));
+        reset_ysf_stream();
+        opts.floating_point = 1;
+        prepare_gain_stage(&state);
+        opts.dmr_stereo_wav = 1;
+        char dir[DSD_TEST_PATH_MAX];
+        assert(dsd_test_mkdtemp(dir, sizeof dir, "dsdneo_ysf_next_call") != NULL);
+        DSD_SNPRINTF(opts.wav_out_dir, sizeof opts.wav_out_dir, "%s", dir);
+        opts.wav_out_f = open_wav_file(opts.wav_out_dir, opts.wav_out_file, sizeof opts.wav_out_file, 8000, 0);
+        assert(opts.wav_out_f != NULL);
+
+        append_vd_type2_frame_with_dch(0U, "GROUP A   ");
+        processYSF(&opts, &state);
+        const dsd_call_snapshot first = get_test_ysf_call(&state);
+        assert(strcmp(first.target_text, "GROUP A") == 0);
+        assert(wav_segment_kept_local(opts.wav_out_f) == 0);
+
+        reset_ysf_stream();
+        append_vd_type2_frame_with_dch(0U, changes ? "GROUP B   " : "GROUP A   ");
+        processYSF(&opts, &state);
+        const dsd_call_snapshot second = get_test_ysf_call(&state);
+        assert((second.epoch != first.epoch) == (changes != 0));
+        assert(dsd_wav_segment_frames(opts.wav_out_f) == (int64_t)10 * 160);
+        assert(wav_segment_kept_local(opts.wav_out_f) == changes);
+
+        opts.wav_out_f = discard_analog_wav_file(opts.wav_out_f, opts.wav_out_file);
+        assert(dsd_test_rmdir(dir) == 0);
+        dsd_state_ext_free_all(&state);
+    }
+}
+
 #ifndef DSD_YSF_TEST_REAL_VOCODER
 /* V/D2 decodes straight through mbelib: each block is captured after the vocoder settled its error counts (0 for a
    block mbelib refused), in the record format -r reads back. */
@@ -2077,6 +2139,7 @@ main(void) {
     test_process_ysf_terminator_enriches_identity_before_call_end();
     test_process_ysf_ehr_voice_leaves_call_wav_to_vocoder();
     test_process_ysf_vd_type2_writes_call_wav_under_record_policy();
+    test_process_ysf_vd_type2_next_call_keeps_the_recording_local();
     test_process_ysf_vd_type2_captures_each_block();
     test_process_ysf_capture_waits_for_a_verified_fich();
     test_process_ysf_header_and_terminator_end_the_capture();
