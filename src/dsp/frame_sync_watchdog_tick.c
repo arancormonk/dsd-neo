@@ -13,9 +13,10 @@
  * nothing (dsd_trunk_tuning_retuned_since()). One still in flight (an RTL retune the stream applies on its own thread)
  * is noted by the tick itself (p25_sm_tick_tunes_in_flight(), p25_sm_watchdog.c): the engine starts no hunt until it
  * lands, so the next takes the generation at the actual tune boundary. A beat standing behind queued work (shutdown, a
- * command, a put-off publication) hands a hunt read back the same way, its tick left for the engine loop; a TCP
- * reconnect gives up for it. At the hunt's checkpoint, where nothing waits on the input, a deferral moves nothing and
- * the hunt goes on with its window: the work waits for the hunt's return, as at any checkpoint. Apart from dsd_symbol.c
+ * command, a put-off publication) moved nothing: a hunt read keeps its partial symbol and gives way to the work where
+ * it would with no beat (a stream pause, the RTL idle bound), and the hunt's checkpoint goes on with its window, the
+ * work waiting for the hunt's return as at any checkpoint; a TCP reconnect, whose stream already ended, gives up for
+ * it. The tick is left for the engine loop. Apart from dsd_symbol.c
  * and dsd_frame_sync.c, which tests link one without the other. */
 
 #include <dsd-neo/core/state.h>

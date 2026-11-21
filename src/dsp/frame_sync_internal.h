@@ -146,9 +146,9 @@ enum {
     FRAME_SYNC_WD_DEFERRED = 2, /* the beat stands behind queued work, and no tick ran: nothing moved */
 };
 
-/** A P25 watchdog beat's tick, on the decoder thread, in the hunt: FRAME_SYNC_WD_*. A hunt read hands back at once with
- * no sample on either a move or a deferral (the caller sets dsd_state::input_interrupted); the hunt's checkpoint hands
- * back on a move only. */
+/** A P25 watchdog beat's tick, on the decoder thread, in the hunt: FRAME_SYNC_WD_*. A hunt read and the hunt's
+ * checkpoint hand back at once on a move only (the caller sets dsd_state::input_interrupted); a deferral moved nothing,
+ * and leaves the queued work to the paths that give way to it with no beat. A TCP reconnect gives up on a deferral. */
 int frame_sync_service_p25_watchdog(dsd_opts* opts, dsd_state* state);
 void frame_sync_maybe_auto_switch_modulation(const dsd_opts* opts, dsd_state* state, int t_max, int* lastt);
 int frame_sync_active_profile_modulation(const dsd_opts* opts, const dsd_state* state);

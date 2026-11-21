@@ -1303,51 +1303,51 @@ entry run the decoder's own tick (`p25_sm_try_tick()`), which spends a standing 
 second tick for it. A beat that finds the guard free and no recovery to run (trunking off, -Y, no P25 to follow, a
 startup hunt: `p25_sm_tick_eligible()`) is let go at once and hands no read back. Otherwise shutdown, a queued command
 or a put-off publication comes first: `p25_sm_watchdog_service()` then runs no tick and answers
-`P25_SM_WATCHDOG_DEFERRED`, the beat standing, so no tune starts on a receiver being stopped or replaced; a hunt read
-that meets it hands back (a TCP reconnect gives up), and the engine runs the work and then its own tick; the hunt's
-checkpoint, which waits on no input, hunts on with its window, the work waiting for the hunt's return as at any
-checkpoint. The reconnect's backoff and its bounded connect (`dsd_socket_connect_bounded()`) each wait to one real-time
-deadline that counts the ticks' own time and is checked before every check, so no check (a tick) starts once it has
-passed: the connect then takes one last look that does not wait. A beat that finds the guard held stays asked for, and
-nothing recovery reads is looked at without the guard. A tick inside the hunt that moved the chain
-(`frame_sync_watchdog_tick.c`: the modulation, the symbol profile, or a tune request that may have moved the receiver,
-`dsd_trunk_tuning_retuned_since()`; one refused or deferred before it moved keeps the window) hands back at once: the
-read leaves with no sample and the partial symbol given up, and `getFrameSync()` returns no sync with
-`dsd_state::input_interrupted` set and its history dropped, as for a queued command, with no no-carrier pass. The
-engine's next call then starts on the new carrier with the tuning generation (the dispatch gate's) and the decode time
-(the sync stamps') taken afresh, so no window joins the two carriers and the first frame on the new one dispatches.
-Every P25 tick, wherever it runs, notes what its tunes did (`p25_sm_tick_noting_tunes()`): a tune that may have moved
-the receiver is a carrier boundary (`dsd_state_note_carrier_change()`), so a decoder that reads back before its sync
-(DMR, X2-TDMA) waits for that many of the new carrier's symbols (`dsd_state_carrier_settling()`); and the requests it
-left in flight (an RTL retune the stream applies on its own thread) are noted in the watchdog module, which neither
-engine loop starts a hunt past while one is pending (`p25_sm_tick_tunes_in_flight()`: the synced-frames loop ends its
-run of frames, the main pass waits in 1 ms passes that keep the interruption, so no no-carrier pass runs), so the
-generation is taken at the actual tune boundary. A rigctl tune a tick makes is an ordinary decoder-thread tune: it marks
-the input before the frequency is sent and asks for the drop (`dsd_engine_note_rigctl_retune()`), and the next read
-drops the old channel's queued audio (`dsd_symbol_apply_input_drop()`) before the new carrier's hunt reads any of it. A
-TCP reconnect a tick's move meets is not cancelled by it (a receiver that kept moving would keep it from ever
-connecting): it runs to its connect, and the read hands back before the new connection's first sample; the old
-connection's staged samples and resampler history go whatever the reconnect's outcome
-(`dsd_opts_reset_pcm_input_state()`). The control channel's sync stamps a sync accept writes
-(`frame_sync_note_cc_sync()`) each follow their own clock: the monotonic one only moves forward, and the wall one takes
-the call's time, set back included, unless a tick wrote it during the call, which the hunt sees against both stamps as
-it found them before its entry tick (kept across window restarts, `frame_sync_runtime_restart()`; a grace writes both,
-so one whose wall second repeats the old one still shows in the monotonic stamp); a grace after a tune stamps the wall
-clock as the tick saw it and the monotonic one as the tune completed, so either can be the newer. So a release, a
-control-channel hunt step and a CQPSK retry write the decoder's profile (`rf_mod`, `samplesPerSymbol`, `symbolCenter`,
-`sps_hunt_*`), `trunk_is_tuned`, `p25_p2_active_slot`, the audio gates, the payload crypto fields and the sync stamps in
-the same decoder-thread call that retunes, before another sample is read. Beat-to-tick delay: one checkpoint (62.5 ms at
-4800 sym/s), one frame, or one input wait (at most a 100 ms slice). A frame read waits for its samples inside a dispatch
-that holds the guard, as before. The off-thread tune machinery (`dsd_frame_sync_note_off_thread_tune()`, the published
-P25p1 decision, `dsd_rxid_request_trunk_tune()`) has no production caller off the decoder thread any more.
-`ENGINE_P25_WATCHDOG_DECODER_TICK` runs the real watchdog thread beside the hunt's writes and reads and checks that a
-watchdog-paced release tunes from the decoder thread (tsan-debug), that a beat behind a queued command runs no tick,
-that the decoder's own tick spends it, and that the release marks a carrier boundary; `DSP_INPUT_INTERRUPT` and
-`FRAME_SYNC_SPS_HUNT_FALSE_SYNC` pin the hand-back, the input-wait service and its order, and the stamps;
-`ENGINE_NO_CARRIER_RESET` runs the live loop over a scripted C4FM input with a beat posted at a hunt read (UDP, a
-pending RTL-style return, a beat in a frame, a replaced return, a stalled sound card) and checks that the control
-channel's first frame after the return dispatches with a stamp no earlier than the return; `ENGINE_RIGCTL_RETUNE` checks
-that a beat's rigctl return drops the old channel's queued UDP audio at the next read.
+`P25_SM_WATCHDOG_DEFERRED`, the beat standing, so no tune starts on a receiver being stopped or replaced; nothing moved,
+so a hunt read that meets it keeps its partial symbol and gives way to the work where it would with no beat (a stream
+pause, the RTL idle bound), a TCP reconnect gives up, and the hunt's checkpoint hunts on with its window, the work
+waiting for the hunt's return as at any checkpoint; the engine runs the work and then its own tick. The reconnect's
+backoff and its bounded connect (`dsd_socket_connect_bounded()`) each wait to one real-time deadline that counts the
+ticks' own time and is checked before every check, so no check (a tick) starts once it has passed: the connect then
+takes one last look that does not wait. A beat that finds the guard held stays asked for, and nothing recovery reads is
+looked at without the guard. A tick inside the hunt that moved the chain (`frame_sync_watchdog_tick.c`: the modulation,
+the symbol profile, or a tune request that may have moved the receiver, `dsd_trunk_tuning_retuned_since()`; one refused
+or deferred before it moved keeps the window) hands back at once: the read leaves with no sample and the partial symbol
+given up, and `getFrameSync()` returns no sync with `dsd_state::input_interrupted` set and its history dropped, as for a
+queued command, with no no-carrier pass. The engine's next call then starts on the new carrier with the tuning
+generation (the dispatch gate's) and the decode time (the sync stamps') taken afresh, so no window joins the two
+carriers and the first frame on the new one dispatches. Every P25 tick, wherever it runs, notes what its tunes did
+(`p25_sm_tick_noting_tunes()`): a tune that may have moved the receiver is a carrier boundary
+(`dsd_state_note_carrier_change()`), so a decoder that reads back before its sync (DMR, X2-TDMA) waits for that many of
+the new carrier's symbols (`dsd_state_carrier_settling()`); and the requests it left in flight (an RTL retune the stream
+applies on its own thread) are noted in the watchdog module, which neither engine loop starts a hunt past while one is
+pending (`p25_sm_tick_tunes_in_flight()`: the synced-frames loop ends its run of frames, the main pass waits in 1 ms
+passes that keep the interruption, so no no-carrier pass runs), so the generation is taken at the actual tune boundary.
+A rigctl tune a tick makes is an ordinary decoder-thread tune: it marks the input before the frequency is sent and asks
+for the drop (`dsd_engine_note_rigctl_retune()`), and the next read drops the old channel's queued audio
+(`dsd_symbol_apply_input_drop()`) before the new carrier's hunt reads any of it. A TCP reconnect a tick's move meets is
+not cancelled by it (a receiver that kept moving would keep it from ever connecting): it runs to its connect, and the
+read hands back before the new connection's first sample; the old connection's staged samples and resampler history go
+whatever the reconnect's outcome (`dsd_opts_reset_pcm_input_state()`). The control channel's sync stamps a sync accept
+writes (`frame_sync_note_cc_sync()`) each follow their own clock: the monotonic one only moves forward, and the wall one
+takes the call's time, set back included, unless a tick wrote it during the call, which the hunt sees against both
+stamps as it found them before its entry tick (kept across window restarts, `frame_sync_runtime_restart()`; a grace
+writes both, so one whose wall second repeats the old one still shows in the monotonic stamp); a grace after a tune
+stamps the wall clock as the tick saw it and the monotonic one as the tune completed, so either can be the newer. So a
+release, a control-channel hunt step and a CQPSK retry write the decoder's profile (`rf_mod`, `samplesPerSymbol`,
+`symbolCenter`, `sps_hunt_*`), `trunk_is_tuned`, `p25_p2_active_slot`, the audio gates, the payload crypto fields and
+the sync stamps in the same decoder-thread call that retunes, before another sample is read. Beat-to-tick delay: one
+checkpoint (62.5 ms at 4800 sym/s), one frame, or one input wait (at most a 100 ms slice). A frame read waits for its
+samples inside a dispatch that holds the guard, as before. The off-thread tune machinery
+(`dsd_frame_sync_note_off_thread_tune()`, the published P25p1 decision, `dsd_rxid_request_trunk_tune()`) has no
+production caller off the decoder thread any more. `ENGINE_P25_WATCHDOG_DECODER_TICK` runs the real watchdog thread
+beside the hunt's writes and reads and checks that a watchdog-paced release tunes from the decoder thread (tsan-debug),
+that a beat behind a queued command runs no tick, that the decoder's own tick spends it, and that the release marks a
+carrier boundary; `DSP_INPUT_INTERRUPT` and `FRAME_SYNC_SPS_HUNT_FALSE_SYNC` pin the hand-back, the input-wait service
+and its order, and the stamps; `ENGINE_NO_CARRIER_RESET` runs the live loop over a scripted C4FM input with a beat
+posted at a hunt read (UDP, a pending RTL-style return, a beat in a frame, a replaced return, a stalled sound card) and
+checks that the control channel's first frame after the return dispatches with a stamp no earlier than the return;
+`ENGINE_RIGCTL_RETUNE` checks that a beat's rigctl return drops the old channel's queued UDP audio at the next read.
 
 DMR owns its decoded
 CC heartbeat, six-second loss grace, two-second probe window and five-second backend deadline inside each

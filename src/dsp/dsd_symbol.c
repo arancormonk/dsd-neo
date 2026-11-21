@@ -2642,7 +2642,7 @@ symbol_rtl_read_idle_leaves(dsd_opts* opts, dsd_state* state) {
        receiver the command replaces. Else the beat's tick runs here, as in a PCM read that waits; one that moved the
        chain ends the read at once (frame_sync_watchdog_tick.c). */
     if (dsd_runtime_controls_pending() || dsd_runtime_publish_pending()
-        || frame_sync_service_p25_watchdog(opts, state)) {
+        || frame_sync_service_p25_watchdog(opts, state) == FRAME_SYNC_WD_MOVED) {
         state->input_interrupted = 1;
         return 1;
     }
@@ -2673,9 +2673,9 @@ symbol_rtl_read_wants(const symbol_work_ctx* work) {
 static int
 symbol_rtl_read_waits(dsd_opts* opts, dsd_state* state, int* wants) {
     *wants &= ~DSD_RTL_READ_WANT_EMPTY_RETURN;
-    /* Queued work with a beat standing hands back too (frame_sync_service_p25_watchdog()); queued work alone waits on
-       to the idle bound, where the read gives way to it (symbol_rtl_read_idle_leaves()). */
-    if (frame_sync_service_p25_watchdog(opts, state)) {
+    /* A beat standing behind queued work moved nothing, and the read waits on: to the idle bound, where it gives way to
+       the work (symbol_rtl_read_idle_leaves()), or to its sample, as with no beat. */
+    if (frame_sync_service_p25_watchdog(opts, state) == FRAME_SYNC_WD_MOVED) {
         state->input_interrupted = 1;
         return 1;
     }
@@ -3173,8 +3173,9 @@ symbol_wait_pcm_sample(dsd_opts* opts, dsd_state* state, const symbol_work_ctx* 
     int silent = 0;
     for (;;) {
         /* A P25 watchdog beat's tick runs before each wait of a hunt read, however slowly the sender trickles; one that
-           moved the chain ends the read at once with no sample (frame_sync_watchdog_tick.c). */
-        if (work->hunting && frame_sync_service_p25_watchdog(opts, state)) {
+           moved the chain ends the read at once with no sample (frame_sync_watchdog_tick.c). A beat behind queued work
+           moved nothing: the read keeps its partial symbol, and gives way to the work at the stream pause below. */
+        if (work->hunting && frame_sync_service_p25_watchdog(opts, state) == FRAME_SYNC_WD_MOVED) {
             state->input_interrupted = 1;
             return -1;
         }

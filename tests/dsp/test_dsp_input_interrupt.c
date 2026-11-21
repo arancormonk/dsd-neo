@@ -557,18 +557,20 @@ test_a_quiet_hunt_read_leaves_when_its_tick_retunes(void) {
     }
 
     /* A command queued with the beat standing comes first: the quiet read runs no tick (no tune on a receiver the
-       command replaces) and hands back at once, before any timed wait, for the engine to run the command, then its own
-       tick. */
+       command replaces), and the beat, which moved nothing, does not cut the read short either: a gap shorter than a
+       stream pause (one silent wait here) keeps the partial symbol and the hunt's window, and the read takes the
+       sample that ends it. A longer one gives way to the command at the stream pause, as with no beat. */
     install_watchdog_service();
     init_udp_session(opts, state, 1, 0);
     g_pending = 1;
     g_beat = BEAT_MOVES;
     (void)getSymbol(opts, state, 0);
-    if (g_services != 0 || g_beat != BEAT_MOVES || state->input_interrupted != 1 || g_waits != 0) {
+    if (g_services != 0 || g_beat != BEAT_MOVES || state->input_interrupted != 0 || state->symbolcnt != 1U
+        || g_waits == 0) {
         DSD_FPRINTF(stderr,
-                    "FAIL: a quiet read with a command queued ran the beat's tick or waited (services %d, interrupted "
-                    "%d, timed waits %d)\n",
-                    g_services, state->input_interrupted, g_waits);
+                    "FAIL: a short gap with a command queued and a beat standing ran the tick or gave up the symbol "
+                    "(services %d, interrupted %d, symbols %u, timed waits %d)\n",
+                    g_services, state->input_interrupted, (unsigned)state->symbolcnt, g_waits);
         g_failures++;
     }
     g_pending = 0;
@@ -917,21 +919,20 @@ test_slow_rtl_reads_that_succeed_service_the_beat(void) {
         g_failures++;
     }
     /* A queued command keeps the beat asked for: the empty read runs no tick (no tune on a receiver the command
-       replaces), and hands back at once, so the engine runs the command and then its own tick: a trickling stream
-       that never leaves a read idle cannot put either off. */
+       replaces), and the beat, which moved nothing, does not cut the read short: it reads its sample, and the command
+       waits for the hunt's return, as it does with no beat. */
     install_watchdog_service();
     state->input_interrupted = 0;
     g_pending = 1;
     g_beat = BEAT_MOVES;
     const unsigned symbols_before = state->symbolcnt;
     (void)getSymbol(opts, state, 0);
-    if (g_services != 0 || g_beat != BEAT_MOVES || state->input_interrupted != 1
-        || state->symbolcnt != symbols_before) {
-        DSD_FPRINTF(
-            stderr,
-            "FAIL: a slow RTL hunt read with a command queued and a beat standing did not hand back without the "
-            "tick (services %d, interrupted %d)\n",
-            g_services, state->input_interrupted);
+    if (g_services != 0 || g_beat != BEAT_MOVES || state->input_interrupted != 0
+        || state->symbolcnt != symbols_before + 1U) {
+        DSD_FPRINTF(stderr,
+                    "FAIL: a slow RTL hunt read with a command queued and a beat standing ran the tick or gave up its "
+                    "symbol (services %d, interrupted %d, symbols %u)\n",
+                    g_services, state->input_interrupted, state->symbolcnt - symbols_before);
         g_failures++;
     }
     g_pending = 0;
