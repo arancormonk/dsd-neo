@@ -759,19 +759,19 @@ test_held_reads_count_availability_once_per_run(void) {
     g_reads_past_available = 0;
     g_available_calls = 0U;
     for (int i = 0; i < 100; i++) {
-        assert(dsd_audio_read_held(in, &frame, 1U) == 1);
+        assert(dsd_audio_read_held(in, &frame, 1U, 0) == 1);
     }
     assert(g_available_calls == 1U);
-    assert(dsd_audio_read_held(in, &frame, 1U) == 0); /* the counted run is used up: counted again, none held */
+    assert(dsd_audio_read_held(in, &frame, 1U, 0) == 0); /* the counted run is used up: counted again, none held */
     assert(g_available_calls == 2U);
     g_read_available = 10;
-    assert(dsd_audio_read_held(in, &frame, 1U) == 1);
+    assert(dsd_audio_read_held(in, &frame, 1U, 0) == 1);
     assert(g_available_calls == 3U);
     assert(dsd_audio_read(in, &frame, 5U) == 5); /* takes frames the count included */
-    assert(dsd_audio_read_held(in, &frame, 1U) == 1);
+    assert(dsd_audio_read_held(in, &frame, 1U, 0) == 1);
     assert(g_available_calls == 4U);
     assert(discard_at(in, g_discard_now_ns - 1000000000U) == 0); /* keeps all, but counts afresh */
-    assert(dsd_audio_read_held(in, &frame, 1U) == 1);
+    assert(dsd_audio_read_held(in, &frame, 1U, 0) == 1);
     assert(g_available_calls == 6U);
     assert(g_reads_past_available == 0);
     g_read_available = 0;

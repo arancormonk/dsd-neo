@@ -220,6 +220,9 @@ struct dsd_audio_stream {
     int write_timeouts;
     /* Successful device reopens, i.e. route changes survived. */
     int reopen_count;
+    /* Input: a held read (dsd_audio_read_held()) met a route disconnect and left the old stream's teardown to the next
+       recovery (a held read that may recover, or a blocking read), so a probe makes no synchronous device call. */
+    int disconnect_owed;
     /* Frames accepted by the device across the stream's whole life; unlike
      * AAudioStream_getFramesWritten this survives a reopen. */
     uint64_t device_frames;

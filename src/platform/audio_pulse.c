@@ -991,7 +991,8 @@ dsd_audio_read(dsd_audio_stream* stream, int16_t* buffer, size_t frames) {
 }
 
 int
-dsd_audio_read_held(dsd_audio_stream* stream, int16_t* buffer, size_t frames) {
+dsd_audio_read_held(dsd_audio_stream* stream, int16_t* buffer, size_t frames, int recover) {
+    (void)recover; /* the input stays open for the stream's life: nothing to bring back */
     if (!stream || !buffer || !stream->is_input || !stream->record) {
         set_error("Invalid arguments");
         return -1;

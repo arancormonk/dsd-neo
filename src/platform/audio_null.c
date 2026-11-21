@@ -191,7 +191,8 @@ dsd_audio_read(dsd_audio_stream* stream, int16_t* buffer, size_t frames) {
 }
 
 int
-dsd_audio_read_held(dsd_audio_stream* stream, int16_t* buffer, size_t frames) {
+dsd_audio_read_held(dsd_audio_stream* stream, int16_t* buffer, size_t frames, int recover) {
+    (void)recover; /* the input stays open for the stream's life: nothing to bring back */
     /* No device holds anything: the null input's frames are made, paced, as dsd_audio_read() makes them. */
     return dsd_audio_read(stream, buffer, frames);
 }

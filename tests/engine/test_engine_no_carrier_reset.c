@@ -17897,14 +17897,14 @@ test_scan_quiet_decisions(void) {
 #define WD8_ASM_NAME(name) WD8_ASM_STR(__USER_LABEL_PREFIX__) name
 extern int wd8_real_audio_read(dsd_audio_stream* stream, int16_t* buffer,
                                size_t frames) __asm__(WD8_ASM_NAME("__real_dsd_audio_read"));
-extern int wd8_real_audio_read_held(dsd_audio_stream* stream, int16_t* buffer,
-                                    size_t frames) __asm__(WD8_ASM_NAME("__real_dsd_audio_read_held"));
+extern int wd8_real_audio_read_held(dsd_audio_stream* stream, int16_t* buffer, size_t frames,
+                                    int recover) __asm__(WD8_ASM_NAME("__real_dsd_audio_read_held"));
 extern int wd8_real_audio_discard_input(const dsd_audio_stream* stream,
                                         uint64_t marked_ns) __asm__(WD8_ASM_NAME("__real_dsd_audio_discard_input"));
 extern int wd8_audio_read(dsd_audio_stream* stream, int16_t* buffer,
                           size_t frames) __asm__(WD8_ASM_NAME("__wrap_dsd_audio_read"));
-extern int wd8_audio_read_held(dsd_audio_stream* stream, int16_t* buffer,
-                               size_t frames) __asm__(WD8_ASM_NAME("__wrap_dsd_audio_read_held"));
+extern int wd8_audio_read_held(dsd_audio_stream* stream, int16_t* buffer, size_t frames,
+                               int recover) __asm__(WD8_ASM_NAME("__wrap_dsd_audio_read_held"));
 extern int wd8_audio_discard_input(const dsd_audio_stream* stream,
                                    uint64_t marked_ns) __asm__(WD8_ASM_NAME("__wrap_dsd_audio_discard_input"));
 
@@ -17922,7 +17922,7 @@ wd8_audio_read(dsd_audio_stream* stream, int16_t* buffer, size_t frames) {
 }
 
 int
-wd8_audio_read_held(dsd_audio_stream* stream, int16_t* buffer, size_t frames) {
+wd8_audio_read_held(dsd_audio_stream* stream, int16_t* buffer, size_t frames, int recover) {
 #ifdef USE_RADIO
     if (g_wd8.active) {
         for (size_t i = 0; i < frames; i++) {
@@ -17934,7 +17934,7 @@ wd8_audio_read_held(dsd_audio_stream* stream, int16_t* buffer, size_t frames) {
         return (int)frames;
     }
 #endif
-    return wd8_real_audio_read_held(stream, buffer, frames);
+    return wd8_real_audio_read_held(stream, buffer, frames, recover);
 }
 
 /* The rigctl return's drop of what the card held (dsd_symbol_apply_input_drop()): the stalled card holds nothing. */

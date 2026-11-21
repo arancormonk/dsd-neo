@@ -3232,7 +3232,9 @@ static int
 symbol_audio_read_wait(dsd_opts* opts, int16_t* out, unsigned int timeout_ms) {
     uint64_t deadline_ms = 0U; /* none yet; never 0 once taken, as timeout_ms is not */
     for (;;) {
-        const int got = dsd_audio_read_held(opts->audio_in_stream, out, 1U);
+        /* Only a read that waits may bring back a lost device (AAudio's reopen after a route change): the probe never
+           does, and the waiting read comes after the hunt serviced what waits on it. */
+        const int got = dsd_audio_read_held(opts->audio_in_stream, out, 1U, timeout_ms > 0U);
         if (got != 0) {
             if (got < 0) {
                 *out = 0;
