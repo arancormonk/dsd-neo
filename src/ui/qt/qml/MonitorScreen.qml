@@ -310,9 +310,9 @@ Item {
     //   4  no RECENT CALLS label;
     //   5  even 4 leaves less than one row: only Stop stays put and everything
     //      else scrolls with the calls, so every control stays reachable.
-    // Compact view (issue #901, D4) starts the search at 2, draws no label in
-    // any tier (labelCandidate) and has compact rows; the hero, strip, actions
-    // and Stop keep their size.
+    // Compact view (issue #901, D4) starts the search at 2, so it always has
+    // the compact hero, draws no label in any tier (labelCandidate) and has
+    // compact rows; the strip, actions and Stop keep their size.
     // Only the size, the fonts, the user's density and which live-strip parts
     // the session shows feed it, never call content, so traffic never moves the
     // screen. A scan's hops between two-slot and single-slot carriers do not

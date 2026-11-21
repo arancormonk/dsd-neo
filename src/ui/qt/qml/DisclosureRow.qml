@@ -106,7 +106,10 @@ Item {
             // A reading's line is a fixed box (LineBoxes, issue #901 D10): its
             // font's height, never its text's, so no script a reading or an
             // answer in its place shows (the Monitor's) changes the row's
-            // height. A hint keeps its own wrapped height.
+            // height. A hint keeps its own wrapped height. subtitleReading is a
+            // row's kind, set where the row is declared and never changed: a
+            // Binding whose `when` turns false puts back the height it found
+            // when it first applied, a fixed number, not the text's own.
             verticalAlignment: Text.AlignVCenter
             Binding on height {
                 when: row.subtitleReading
