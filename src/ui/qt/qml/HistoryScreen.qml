@@ -679,7 +679,9 @@ Item {
     // Issue #901 (D11): a change of density puts the log back at the newest
     // call, as a new search does; hidden, it comes back there rather than at
     // the place it held. Deferred so the rows take their new height first, by
-    // a timer the screen owns, so nothing runs after it closes.
+    // a timer the screen owns, so nothing runs after it closes; the rows are
+    // laid out at their new height before the view is placed, or the start it
+    // found was the old layout's and a log read deep stayed off its top.
     onCompactViewChanged: {
         logPlace.forget();
         logToStart.restart();
@@ -687,7 +689,10 @@ Item {
     Timer {
         id: logToStart
         interval: 0
-        onTriggered: logList.positionViewAtBeginning()
+        onTriggered: {
+            logList.forceLayout();
+            logList.positionViewAtBeginning();
+        }
     }
 
     // A sibling of the view, not a child: ListView reparents declared children

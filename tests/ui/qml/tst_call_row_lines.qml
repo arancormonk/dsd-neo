@@ -359,7 +359,7 @@ Item {
         // screen was handed, and a change of density puts the list back at
         // the newest call, shown or hidden.
         function test_home_recent_compact_rows() {
-            callHistory.pushMany(40, "TODAY");
+            callHistory.pushMany(150, "TODAY");
             home.active = true;
             home.item.prefsStore = homeStore;
             waitForRendering(home.item);
@@ -377,20 +377,51 @@ Item {
             verify(!row.compact);
             compare(row.height, Ui.LineBoxes.callRowHeight(false, row.narrow));
 
-            // Shown: a change puts the list back at its start.
-            list.contentY = list.originY + 400;
-            waitForRendering(list);
-            homeStore.compactView = true;
-            tryVerify(function () { return Math.abs(list.contentY - list.originY) < 1; }, 1000, "back at the newest call");
+            // The list at its start as drawn, not only as its contentY says:
+            // the newest row at the top of the viewport. A view placed before
+            // its rows took their new height stops at the old layout's start.
+            var drawnAtStart = function (at) {
+                verify(Math.abs(list.contentY - list.originY) < 1, at + ": contentY " + list.contentY + " vs " + list.originY);
+                var first = list.itemAtIndex(0);
+                verify(first !== null, at + ": row 0 is not built");
+                var y = first.mapToItem(list, 0, 0).y;
+                verify(Math.abs(y) < 1, at + ": row 0 starts at " + y);
+            };
+
+            // Shown: a change puts the list back at its start, from near the top
+            // and from deep, where the first rows are no longer built; the focus
+            // stays where it was.
+            var focusHolder = Qt.createQmlObject("import QtQuick; Item { activeFocusOnTab: true }", root);
+            try {
+                for (var deep of [false, true, true]) {
+                    if (deep)
+                        list.positionViewAtIndex(149, ListView.Beginning);
+                    else
+                        list.contentY = list.originY + 400;
+                    waitForRendering(list);
+                    verify(Math.abs(list.contentY - list.originY) > 100, "scrolled down");
+                    focusHolder.forceActiveFocus();
+                    var focused = root.Window.window.activeFocusItem;
+                    verify(focused === focusHolder);
+                    homeStore.compactView = !homeStore.compactView;
+                    tryVerify(function () { return Math.abs(list.contentY - list.originY) < 1; }, 1000, "back at the newest call");
+                    waitForRendering(list);
+                    drawnAtStart(deep ? "from deep" : "from near");
+                    compare(root.Window.window.activeFocusItem, focused, "the change moved the focus");
+                }
+            } finally {
+                focusHolder.destroy();
+            }
             // Hidden: it comes back at its start, not at the place it held.
-            list.contentY = list.originY + 400;
+            list.positionViewAtIndex(149, ListView.Beginning);
             waitForRendering(list);
             home.item.visible = false;
-            homeStore.compactView = false;
+            homeStore.compactView = !homeStore.compactView;
             waitForRendering(home);
             home.item.visible = true;
             waitForRendering(list);
             tryVerify(function () { return Math.abs(list.contentY - list.originY) < 1; }, 1000, "shown again at the newest call");
+            drawnAtStart("hidden");
         }
     }
 }

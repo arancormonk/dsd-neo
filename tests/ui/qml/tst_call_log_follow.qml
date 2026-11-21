@@ -970,30 +970,66 @@ Item {
             }
         }
 
+        // The day's label over the first row, as the view lays it out.
+        function firstSectionLabel() {
+            for (var child of tc.list.contentItem.children) {
+                if (child.section !== undefined && child.text === "TODAY" && child.visible)
+                    return child
+            }
+            return null
+        }
+        // The log at its start as drawn, not only as its contentY says: the
+        // first day's label at the top of the viewport and the newest row
+        // right under it. A view placed before its rows took their new height
+        // stops at the old layout's start, which is not where row 0 now is.
+        function verifyDrawnAtStart(at) {
+            var first = tc.list.itemAtIndex(0)
+            verify(first !== null, at + ": row 0 is not built")
+            var label = tc.firstSectionLabel()
+            verify(label !== null, at + ": the day's label is not built")
+            var labelY = label.mapToItem(tc.list, 0, 0).y
+            var rowY = first.mapToItem(tc.list, 0, 0).y
+            verify(Math.abs(labelY) < 1, at + ": the day's label starts at " + labelY)
+            verify(Math.abs(rowY - label.height) < 1, at + ": row 0 starts at " + rowY + ", under a " + label.height + " px label")
+        }
         // Issue #901 (D11): a change of density puts the log back at the newest
-        // call, shown or hidden; the focus stays where it was.
+        // call, shown or hidden, from deep in a long log; the focus stays where
+        // it was.
         function test_14_a_density_change_returns_to_the_newest_call() {
             var screen = screenLoader.item
             testContext.useAppPrefs(true)
             try {
+                callHistory.pushMany(60, "TODAY")
                 prefs.compactView = false
                 tc.waitForRendering(tc.list)
-                tc.scrollBack()
-                var field = findChild(screen, "historySearch")
-                field.input.forceActiveFocus()
-                var focused = screen.Window.window.activeFocusItem
-                prefs.compactView = true
-                tryVerify(function () { return tc.atTop() }, 1000, "the log stayed back")
-                compare(screen.Window.window.activeFocusItem, focused, "the change moved the focus")
+                for (var deep of [true, false]) {
+                    // Deep: the first rows are no longer built.
+                    if (deep)
+                        tc.list.positionViewAtIndex(60, ListView.Beginning)
+                    else
+                        tc.scrollBack()
+                    tc.waitForRendering(tc.list)
+                    verify(!tc.atTop())
+                    var field = findChild(screen, "historySearch")
+                    field.input.forceActiveFocus()
+                    var focused = screen.Window.window.activeFocusItem
+                    prefs.compactView = !prefs.compactView
+                    tryVerify(function () { return tc.atTop() }, 1000, "the log stayed back")
+                    tc.waitForRendering(tc.list)
+                    tc.verifyDrawnAtStart(deep ? "from deep" : "from near")
+                    compare(screen.Window.window.activeFocusItem, focused, "the change moved the focus")
+                }
 
-                tc.scrollBack()
+                tc.list.positionViewAtIndex(60, ListView.Beginning)
+                tc.waitForRendering(tc.list)
                 verify(!tc.atTop())
                 screen.visible = false
-                prefs.compactView = false
+                prefs.compactView = !prefs.compactView
                 tc.waitForRendering(screen.parent)
                 screen.visible = true
                 tc.waitForRendering(tc.list)
                 tryVerify(function () { return tc.atTop() }, 1000, "a log hidden through the change came back where it was")
+                tc.verifyDrawnAtStart("hidden")
             } finally {
                 prefs.compactView = false
                 testContext.useAppPrefs(false)

@@ -2166,6 +2166,8 @@ Item {
     // newest call; hidden, it comes back there rather than at the place it
     // held. Deferred, as History's filter change is: the rows take their new
     // height first. A timer the screen owns, so nothing runs after it closes.
+    // The rows are laid out at their new height before the view is placed, as
+    // the Monitor and History do, so the start it finds is the new layout's.
     onCompactViewChanged: {
         recentPlace.forget();
         recentToStart.restart();
@@ -2180,7 +2182,10 @@ Item {
     Timer {
         id: recentToStart
         interval: 0
-        onTriggered: recentList.positionViewAtBeginning()
+        onTriggered: {
+            recentList.forceLayout();
+            recentList.positionViewAtBeginning();
+        }
     }
     // Issue #901 (D11): the Systems and Scan lists tabs open at the top after
     // a change of density, the one shown at once (once its cards have their
