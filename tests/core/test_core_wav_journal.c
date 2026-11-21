@@ -5562,6 +5562,15 @@ test_playback_file_shape_decides_its_recording(void) {
          0,
          0U,
          0U},
+        {"a SACCH tag with an escaped tab before its place",
+         "{\"protocol\":\"NXDN\",\"version\":2,\"call_type\":\"GROUP\",\"from\":\"5678\",\"to\":\"1234\","
+         "\"encrypted\":false,\"frames\":[" K_GOOD_FRAME "," K_GOOD_FRAME
+         ",{\"tag\":\"SACCH \\t1\",\"hex\":\"3ABF032D9ADEE4CB50\"}]}",
+         {0},
+         0,
+         0,
+         0U,
+         0U},
         {"a SACCH tag with an escaped name",
          "{\"protocol\":\"NXDN\",\"version\":2,\"call_type\":\"GROUP\",\"from\":\"5678\",\"to\":\"1234\","
          "\"encrypted\":false,\"frames\":[" K_GOOD_FRAME "," K_GOOD_FRAME
@@ -5669,6 +5678,13 @@ playback_unread_ids_then_a_call(void) {
     const char* pub = publish_of_duration(3LL * 20, &count);
     rc |= expect_int("unread then a call: the unread call recorded once", count, 1);
     rc |= expect_str("unread then a call: the unread call not uploaded", pub ? field_s(pub, "rdio") : "", "false");
+    static char body[4096];
+    read_sidecar_of(&r, pub, body, sizeof body);
+    rc |= expect_str("unread then a call: the unread call kept local, no sidecar", body, "");
+    read_sidecar_of(&r, publish_of_duration(4LL * 20, &count), body, sizeof body);
+    rc |= expect_int("unread then a call: the next call recorded once", count, 1);
+    rc |= expect_true("unread then a call: the next call exported under 1234",
+                      strstr(body, "\"talkgroup\": 1234,") != NULL);
     rdio_fallback_off(&r);
     rig_close(&r);
     return rc;
@@ -5785,6 +5801,10 @@ test_playback_sdrtrunk_written_files_record(void) {
         {"P25 Phase 2", "APCO25-PHASE2", "3ABF032D9ADEE4CB50", NULL, 0, "\n"},
         {"NXDN", "NXDN", "3ABF032D9ADEE4CB50", "SACCH 1", 0, "\n"},
         {"NXDN with an escaped free-text tag", "NXDN", "3ABF032D9ADEE4CB50", "UN\\u004bNOWN", 0, "\n"},
+        {"NXDN with an escaped SACCH tag of no place", "NXDN", "3ABF032D9ADEE4CB50", "SACCH UN\\u004bNOWN", 0, "\n"},
+        {"NXDN with an escaped SACCH tag past the places", "NXDN", "3ABF032D9ADEE4CB50", "SACCH \\u0035", 0, "\n"},
+        {"NXDN with escaped quotes after SACCH", "NXDN", "3ABF032D9ADEE4CB50", "SACCH \\\"1\\\"", 0, "\n"},
+        {"DMR with an escaped SACCH tag", "DMR", "3ABF032D9ADEE4CB50", "SACCH \\u0031", 0, "\n"},
         {"the writer before 2025-11", "APCO25-PHASE1", k_imbe_hex, NULL, 1, "\n"},
         {"Windows line ends", "DMR", "3ABF032D9ADEE4CB50", NULL, 0, "\r\n"},
     };
@@ -5881,6 +5901,7 @@ read_only_dir_denies_removal(const char* dir) {
    on the file. */
 static char g_discard_dir[DSD_TEST_PATH_MAX];
 static int g_discard_hook_ran;
+static int g_discard_modes_set;
 static int g_discard_unreadable;
 
 /* The discard seam (dsd_wav_test_set_discard_hook()), after the close read the recording's size: the recording made
@@ -5888,8 +5909,7 @@ static int g_discard_unreadable;
 static void
 discard_unreadable_hook(const char* path) {
     g_discard_hook_ran = 1;
-    (void)chmod(path, 0000);
-    (void)chmod(g_discard_dir, 0500);
+    g_discard_modes_set = chmod(path, 0000) == 0 && chmod(g_discard_dir, 0500) == 0;
     g_discard_unreadable = dsd_wav_file_size_or_negative(path) < 0;
 }
 #endif
@@ -5922,6 +5942,7 @@ test_empty_segment_discard_checks_the_removal(void) {
         g_unremoved_discards = 0;
 #if !DSD_PLATFORM_WIN_NATIVE
         g_discard_hook_ran = 0;
+        g_discard_modes_set = 0;
         g_discard_unreadable = 0;
         if (unreadable) {
             DSD_SNPRINTF(g_discard_dir, sizeof g_discard_dir, "%s", r.dir);
@@ -5938,8 +5959,10 @@ test_empty_segment_discard_checks_the_removal(void) {
         if (unreadable) {
             DSD_SNPRINTF(tag, sizeof tag, "%s: the discard hook ran", leg);
             rc |= expect_int(tag, g_discard_hook_ran, 1);
+            DSD_SNPRINTF(tag, sizeof tag, "%s: the discard hook set the file's and folder's modes", leg);
+            rc |= expect_int(tag, g_discard_modes_set, 1);
         }
-        if (unreadable && g_discard_hook_ran && !g_discard_unreadable) {
+        if (unreadable && g_discard_hook_ran && g_discard_modes_set && !g_discard_unreadable) {
             DSD_FPRINTF(stderr, "SKIP: %s: a file of mode 0000 can still be read here\n", leg);
             dsd_neo_log_set_tap(NULL, NULL);
             rig_close(&r);

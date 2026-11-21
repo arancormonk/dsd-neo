@@ -419,10 +419,11 @@ Windows console runs:
   to each 16-frame superframe and DES/AES to their 32-frame sessions. Exports that omit the positions of
   FACCH-stolen voice within an RF frame cannot fully reconstruct that frame's keystream alignment.
   NXDN full-rate voice is not supported by this reader.
-  An export is read whole before it plays, up to 64 MiB (hours of one call); a larger file is not played, with one
-  line in the log. Stop during the read, or during the shape check below, ends it within a MiB, and nothing of the
-  file plays or changes: the call an earlier file of the same `-r` left goes on, as it was, with its recording. That
-  call ends only once the next export has been read and checked. A voice frame whose `hex`
+  An export is read whole before it plays, up to 64 MiB (hours of one call); a larger file, or one that cannot be
+  read, is not played, with one line in the log, and changes nothing. Stop during the read, or during the shape check
+  below, ends it within a MiB, and nothing of the file plays or changes. Either way the call an earlier file of the
+  same `-r` left goes on, as it was, with its recording and its speech decoder. That call ends only once a later
+  export has been read and checked, at a raw file, or when the run ends. A voice frame whose `hex`
   is not one SDRTrunk writes (18 hex digits, 36 for P25 Phase 1) is a lost frame, with a warning: it plays nothing,
   but it keeps its place in the call, so the frames after it in an encrypted call still decrypt with their own
   keystream.
@@ -454,8 +455,9 @@ Windows console runs:
   - text as SDRTrunk writes it: valid UTF-8, with no escape in a value the reader reads (`protocol`, `call_type`,
     `from`, `to` and a frame's `encryption_mi`), so `"56\u00378"` is not radio 5678. The free text of `system`,
     `site` and a frame's `tag` may hold JSON's own escapes (`\"`, `\\`, `\/`, `\b`, `\f`, `\n`, `\r`, `\t`, and
-    `\u` with four hex digits), but no other (`\q`). A `tag` the NXDN reader reads, `SACCH <n>`, has no escape, so
-    `"SACCH \u0031"` is not in the shape;
+    `\u` with four hex digits), but no other (`\q`). In an NXDN record, a `tag` that names a SACCH place the reader
+    reads (`SACCH 1` to `SACCH 4`, its escapes read) has no escape, so `"SACCH \u0031"` is not in the shape, while
+    `"SACCH UN\u004bNOWN"` names no place and is free text, as is any tag of a DMR or P25 record;
   - `frames` a list of frames, each with only SDRTrunk's frame members, in its order (`tag`, `encryption_algorithm`,
     `encryption_key_id`, `encryption_mi`, `time`, `hex`), and always a `hex` of hex digits. SDRTrunk added `tag`
     after the current layout, so a frame of a record in the older layout has no `tag`;
@@ -774,8 +776,9 @@ Which calls get a number:
   So a WAV stop in the middle of a call heard with no identity at all does not export that recording. Audio no call
   owns, a call whose row was cleared from the history, and a faded call that is held and then dropped are never
   exported.
-- A YSF call gets a number only when it ended on its own YSF terminator: one whose call mode does not name another
-  kind of call (a group call's terminator, not a private call's). One that ended any other way (its signal faded, the
+- A YSF call gets a number only when it ended on its own YSF terminator: one in the call mode the call's own frames
+  last named (a group call's terminator, not a private or Radio ID call's), and, for a call whose signal faded before
+  it, one whose callsigns, where they decode, are the call's. One that ended any other way (its signal faded, the
   next call's callsigns or call mode arrived in its voice frames with no header or terminator between the two, another
   call's terminator, or another protocol's end, such as a P25 terminator heard next in Auto mode, closed it) is
   recorded but not exported: its recording may also hold the start of what came next. One log line a run says so.

@@ -11,6 +11,7 @@
 #include <dsd-neo/core/bit_packing.h>
 #include <dsd-neo/core/call_state.h>
 #include <dsd-neo/core/dibit.h>
+#include <dsd-neo/core/events.h>
 #include <dsd-neo/core/file_io.h>
 #include <dsd-neo/core/init.h>
 #include <dsd-neo/core/opts.h>
@@ -2863,6 +2864,72 @@ test_sdrtrunk_json_stop_during_the_shape_check(void) {
     return rc;
 }
 
+/* Issue #888: an export the reader refuses (here one byte over DSD_SDRTRUNK_JSON_MAX_BYTES) plays nothing and changes
+   nothing: the call an earlier input left on the slot goes on, its row not committed. Before, the refusal ended that
+   call as a read file's boundary does. */
+static int
+test_sdrtrunk_json_refused_file_leaves_the_earlier_call(void) {
+    char path[DSD_TEST_PATH_MAX];
+    const int fd = dsd_test_mkstemp(path, sizeof path, "dsdneo_sdrtrunk_over_cap");
+    if (fd < 0) {
+        DSD_FPRINTF(stderr, "refused file: no temp file: %s\n", strerror(errno));
+        return 1;
+    }
+    (void)dsd_close(fd);
+    FILE* in = dsd_fopen_private(path, "w+b");
+    if (in == NULL) {
+        DSD_FPRINTF(stderr, "refused file: %s not opened: %s\n", path, strerror(errno));
+        (void)dsd_remove_file(path);
+        return 1;
+    }
+    int rc =
+        fputs("{\"protocol\":\"DMR\",\"version\":2,\"call_type\":\"GROUP\",\"to\":\"1234\",\"frames\":[]}", in) < 0;
+    rc |= fseek(in, (long)DSD_SDRTRUNK_JSON_MAX_BYTES, SEEK_SET) != 0 || fputc(' ', in) == EOF;
+    rc |= fflush(in) != 0 || fseek(in, 0L, SEEK_END) != 0;
+    rc |= expect_true("refused file: one byte over the cap", ftell(in) == (long)DSD_SDRTRUNK_JSON_MAX_BYTES + 1L);
+    rc |= fseek(in, 4L, SEEK_SET) != 0;
+    sdrtrunk_run run;
+    if (rc != 0 || sdrtrunk_run_open(&run) != 0) {
+        (void)fclose(in);
+        (void)dsd_remove_file(path);
+        return expect_true("refused file: written and allocated", 0);
+    }
+    const dsd_call_observation earlier = {
+        .protocol = DSD_SYNC_DMR_BS_DATA_POS,
+        .slot = 0U,
+        .kind = DSD_CALL_KIND_GROUP_VOICE,
+        .ota_target_id = 77U,
+        .policy_target_id = 77U,
+    };
+    rc |= expect_int("refused file: an earlier call",
+                     dsd_call_state_observe(run.state, &earlier, DSD_CALL_BOUNDARY_BEGIN), 1);
+    dsd_event_sync_slot(run.opts, run.state, 0U);
+    dsd_call_snapshot before;
+    DSD_MEMSET(&before, 0, sizeof before);
+    (void)dsd_call_state_get(run.state, 0U, &before);
+    run.state->synctype = DSD_SYNC_NONE;
+    run.opts->mbe_in_f = in;
+    read_sdrtrunk_json_format(run.opts, run.state);
+    dsd_call_snapshot after;
+    DSD_MEMSET(&after, 0, sizeof after);
+    (void)dsd_call_state_get(run.state, 0U, &after);
+    rc |=
+        expect_true("refused file: the earlier call goes on",
+                    after.epoch == before.epoch && after.phase == DSD_CALL_PHASE_ACTIVE && after.ota_target_id == 77U);
+    rc |= expect_true("refused file: the earlier call's row not committed",
+                      sdrtrunk_committed_row(run.state, 77U) == NULL);
+    rc |= expect_int("refused file: nothing played", run.state->synctype, DSD_SYNC_NONE);
+    if (rc != 0) {
+        DSD_FPRINTF(stderr, "  refused file: phase %u, epoch %llu (was %llu)\n", (unsigned)after.phase,
+                    (unsigned long long)after.epoch, (unsigned long long)before.epoch);
+    }
+    run.opts->mbe_in_f = NULL;
+    sdrtrunk_run_close(&run);
+    rc |= fclose(in) != 0;
+    rc |= expect_int("refused file: its input removed", dsd_remove_file(path), 0);
+    return rc;
+}
+
 /* The shape check's looks at the exit flag (dsd_sdrtrunk_test_set_shape_poll_hook()): how many, the widest gap
    between two (and from the file's start to the first), the last one's offset; and the offset past which a look
    raises Stop (0: never). */
@@ -2952,6 +3019,27 @@ test_sdrtrunk_json_playlist_stop_during_the_shape_check(void) {
                              | sdrtrunk_write_named_input(dir, "next.mbe", next_json, next, sizeof next),
                          0);
     }
+    /* The speech decoder's state first.mbe leaves, played alone: not the state a reset leaves. */
+    mbe_parms reference;
+    DSD_MEMSET(&reference, 0, sizeof reference);
+    if (rc == 0) {
+        sdrtrunk_run run;
+        if (sdrtrunk_run_open(&run) != 0) {
+            rc |= expect_true("playlist stop: reference run allocated", 0);
+        } else {
+            prepare_gain_stage(run.state);
+            char* argv[2] = {"dsd-neo", first};
+            run.state->optind = 1;
+            playMbeFiles(run.opts, run.state, 2, argv);
+            reference = *run.state->prev_mp;
+            mbe_parms cur;
+            mbe_parms fresh;
+            mbe_parms fresh_enhanced;
+            mbe_initMbeParms(&cur, &fresh, &fresh_enhanced);
+            rc |= expect_true("playlist stop: first.mbe moves the speech decoder", reference.L != fresh.L);
+            sdrtrunk_run_close(&run);
+        }
+    }
     for (int stop = 1; rc == 0 && stop >= 0; stop--) {
         sdrtrunk_run run;
         if (sdrtrunk_run_open(&run) != 0) {
@@ -2975,6 +3063,13 @@ test_sdrtrunk_json_playlist_stop_during_the_shape_check(void) {
             rc |= expect_true("playlist stop: Stop in next.mbe's check leaves first.mbe's call on", first_on);
             rc |= expect_true("playlist stop: first.mbe's row not committed",
                               sdrtrunk_committed_row(run.state, 77U) == NULL);
+            const mbe_parms* prev = run.state->prev_mp;
+            rc |=
+                expect_true("playlist stop: the speech decoder kept as first.mbe left it",
+                            prev->L == reference.L && prev->K == reference.K && fabsf(prev->w0 - reference.w0) < 1e-6f);
+            if (prev->L != reference.L) {
+                DSD_FPRINTF(stderr, "  playlist stop: speech decoder L %d, first.mbe left %d\n", prev->L, reference.L);
+            }
         } else {
             rc |= expect_true("playlist stop: with no Stop, next.mbe ends first.mbe's call", !first_on);
             rc |= expect_true("playlist stop: with no Stop, first.mbe's row commits",
@@ -5305,6 +5400,7 @@ main(void) {
     rc |= test_sdrtrunk_json_stop_during_the_shape_check();
     rc |= test_sdrtrunk_json_stop_in_a_long_span();
     rc |= test_sdrtrunk_json_playlist_stop_during_the_shape_check();
+    rc |= test_sdrtrunk_json_refused_file_leaves_the_earlier_call();
     rc |= test_sdrtrunk_dmr_capture_and_late_entry();
     rc |= test_sdrtrunk_json_dmr_aes_incomplete_late_entry_mi();
     rc |= test_sdrtrunk_json_tells_the_chain_each_frame();

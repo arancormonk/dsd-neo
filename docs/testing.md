@@ -2273,7 +2273,7 @@ autosaves its options into it. Then it reads the finalized WAV/JSON pairs:
 `DECODE_IQ_YSF_RDIO_DIRWATCH_UNKNOWN_TG` runs the same three legs on the synthetic YSF call `ysf_synth`, which names no
 target or source and has no terminator (the capture ends first), with `-DNO_FALLBACK=ON`: a YSF call takes the
 fallback only once it has ended on a decoded terminator, so every leg leaves its recordings with no sidecar and logs
-the "did not end on a terminator" line exactly once.
+the "did not end on its own terminator" line exactly once.
 
 The canonical paths are pinned in unit tests: `CORE_CALL_ALERT_HISTORY` through the real observation, render and commit
 rotation, its close a stub (`test_m17_rdio_export_by_address_width`: an M17 destination at `UINT32_MAX` is the talkgroup
@@ -2310,27 +2310,28 @@ keeps the recording local; an escaped `from` (`"56\u00378"`, its radio `stream=o
 (`\q`), a short `\u` escape or bytes that are not UTF-8 in `system` or `site`, a `version` with a `site` after the
 frames, no `version` with a `system` before them, a bare `02`, a negative `version`, `time` or key id (`-2`, `-5`,
 `-1`, `-0`), a `version` or key id past 16 bits (65536), an algorithm past 8 bits (256), a `time` past a Java `long`,
-a tagged frame in a record with no `version` (the `site` after `frames`, or no location at all), and a `SACCH` tag
-with an escape (`SACCH \u0031`, `\u0053ACCH 1`) leave nothing recorded, while every JSON escape and UTF-8 text in
-`system` and `site`, and `version` 65535, is exported. A case installs its policy rows by flags (`played_policy`), so
-a talkgroup-0 row is installed too: a `stream=off` talkgroup 0 record alone is recorded and not exported, as is the
-two-record file;
+a tagged frame in a record with no `version` (the `site` after `frames`, or no location at all), and an NXDN tag
+written with an escape that names a SACCH place (`SACCH \u0031`, `\u0053ACCH 1`, `SACCH \t1`) leave nothing
+recorded, while every JSON escape and UTF-8 text in `system` and `site`, and `version` 65535, is exported. A case
+installs its policy rows by flags (`played_policy`), so a talkgroup-0 row is installed too: a `stream=off`
+talkgroup 0 record alone is recorded and not exported, as is the two-record file;
 `test_playback_unread_ids_say_they_stay_local`: a played call with an unreadable `to` (`Q:77`), and one from a roaming
 source to an ISSI talkgroup (no ID and no text on the row, so the run-end early close does not allow the fallback),
 are recorded, kept local, and the run's one line says so; `-r unread.mbe next.mbe` with the roaming call first says it
-at the file boundary, where the event layer drops its row and rotates the recording unexported
-(`playback_unread_ids_then_a_call()`);
+at the file boundary, where the event layer drops its row and rotates the recording unexported, with no sidecar,
+while the next call's is exported under 1234 (`playback_unread_ids_then_a_call()`);
 `test_playback_sdrtrunk_written_files_record`: calls printed as Jackson's pretty printer prints SDRTrunk's (DMR, P25
-Phase 1 and 2, NXDN with `tag`, NXDN with a free-text `tag` holding an escape (`UN\u004bNOWN`), the writer before
+Phase 1 and 2, NXDN with `tag`, NXDN with a free-text `tag` holding an escape (`UN\u004bNOWN`, and naming no SACCH
+place: `SACCH UN\u004bNOWN`, `SACCH \u0035`, `SACCH \"1\"`), DMR with `SACCH \u0031`, the writer before
 2025-11 with `system` and `site` after `frames`, CRLF line ends, a value with escaped quotes) are recorded whole and
 exported under 1234 from 5678;
 `test_playback_empty_file_leaves_the_next_recording`: `-r empty.mbe normal.mbe` (an empty array, or a call of no
 frames from an unread source) records and exports the second file's call;
 `test_empty_segment_discard_checks_the_removal`: an empty recording whose removal fails (a read-only folder, skipped
 where that does not stop a removal; then a read-only folder and a recording made unreadable by the discard seam,
-`dsd_wav_test_set_discard_hook()`, after the close read its size; the leg fails when the hook never ran, and is
-skipped only when it ran and a mode-0000 file can still be read) is left with one warning and an `error` of kind
-`discard` naming it, no `discard`;
+`dsd_wav_test_set_discard_hook()`, after the close read its size; the leg fails when the hook never ran or could not
+set the modes, and is skipped only when it set them and a mode-0000 file can still be read) is left with one warning
+and an `error` of kind `discard` naming it, no `discard`;
 `test_playback_next_file_takes_no_earlier_stamp`: an export of a protocol the reader does not play stages its frame's
 `time` with no call, and the next file's unstamped call is filed on the decode clock, in the journal and the file name;
 `test_playback_long_export_plays_once`: an export with more than 1 MiB of text before its last frames is one recording
@@ -2355,7 +2356,10 @@ a 2 MiB `system` of six-byte `\u00e9` escapes and 2 MiB of white space after it 
 more than a MiB apart, and a Stop the seam raises in the white space after the record leaves the earlier call active.
 `test_sdrtrunk_json_playlist_stop_during_the_shape_check` plays `-r first.mbe next.mbe` through `playMbeFiles()` (the
 same long call as `next.mbe`): a Stop raised in `next.mbe`'s check leaves `first.mbe`'s call active with no committed
-row; with no Stop, `next.mbe` ends it and its row commits.
+row, and the speech decoder as `first.mbe` alone leaves it; with no Stop, `next.mbe` ends it and its row commits.
+`test_sdrtrunk_json_refused_file_leaves_the_earlier_call` reads a sparse export one byte over
+`DSD_SDRTRUNK_JSON_MAX_BYTES`: the reader refuses it and the earlier call on the slot is still active, its row not
+committed.
 `test_sdrtrunk_json_wav_honors_talkgroup_policy` also
 plays a file in no shape of SDRTrunk's (a record-level `hex`, string `version` and `encrypted`): its static WAV is
 written as the policy allows, its per-call WAV gets nothing.
@@ -2492,8 +2496,11 @@ terminator, does. `test_process_ysf_call_takes_the_fallback_only_on_its_own_term
 protocol's terminator ends on the slot (`dsd_call_state_end_ex()` with `DSD_CALL_END_TERMINATOR`, as a P25 TDU heard
 next in Auto mode ends slot 0) gets no fallback number.
 `test_process_ysf_call_takes_the_fallback_only_on_a_terminator_of_its_call_mode`: an open group call (CM 0), then a
-private call's terminator (CM 3) whose FICH verifies and whose DCH fails, ends the call on a terminator, not its own,
-and gives no fallback number; the group call's own terminator (CM 0), its DCH failed too, gives 4242.
+private call's (CM 3) or a Radio ID call's (CM 1) terminator whose FICH verifies and whose DCH fails, ends the call on a
+terminator, not its own, and gives no fallback number; the group call's own terminator (CM 0), its DCH failed too,
+gives 4242. `test_process_ysf_faded_call_takes_no_other_callers_terminator`: a group call ended by a sync loss (its YSF
+strings cleared as `noCarrier()` clears them), then a CM 0 terminator whose verified DCH names another caller, is a
+terminator end but not its own; the caller's own terminator, and one whose DCH failed, are its own.
 `CORE_CALL_STATE` `test_context_restore_clears_the_own_terminator_mark`: a YSF call ended on its own terminator, saved
 and restored as a call context, is an EXPLICIT end with `own_terminator` 0.
 Every CSD2 these tests write is the downlink callsign first, then the uplink, as the YSF spec has it

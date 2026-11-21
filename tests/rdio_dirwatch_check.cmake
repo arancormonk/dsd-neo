@@ -195,7 +195,7 @@ function(_rdio_check_unexported leg wavs log notice)
 endfunction()
 
 set(_no_number "set --rdio-unknown-talkgroup to export them")
-set(_blocked "or it is a YSF call that did not end on a terminator")
+set(_blocked "or it is a YSF call that did not end on its own terminator")
 
 _rdio_leg(rf _rf_wavs _rf_log --iq-replay "${FIXTURE}" -6 "${_raw}")
 if(NO_FALLBACK)

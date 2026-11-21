@@ -486,6 +486,11 @@ dsd_call_state_end_reason_reacquire_gap_s(uint8_t end_reason) {
                                                                      : DSD_CALL_REACQUIRE_GAP_S;
 }
 
+int
+dsd_call_snapshot_contradicted_by(const dsd_call_snapshot* call, const dsd_call_observation* observation) {
+    return call != NULL && observation != NULL && call_state_observation_changes_identity(call, observation);
+}
+
 // Whether the ended epoch may still be reacquired, whatever reopens it: a recoverable end of a call that names a
 // call, within its reason's heal window. call_state_reacquires_ended_epoch() adds what the reopening observation
 // must satisfy.

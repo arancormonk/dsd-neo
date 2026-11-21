@@ -53,17 +53,20 @@ int readAmbe2450Data(dsd_opts* opts, dsd_state* state, char* ambe_d);
  * Supports P25, DMR, and NXDN enhanced-half-rate voice. Uses supplied keys;
  * encrypted NXDN DES/AES frames without an IV and DMR AES frames without
  * explicit or verified late-entry context remain muted. Caller initializes
- * FEC tables and vocoder state as for ordinary MBE playback. The file is read
- * whole before any of it plays; one larger than DSD_SDRTRUNK_JSON_MAX_BYTES is
- * refused with one log line and plays nothing. The call an earlier file left
- * ends (dsd_mbe_file_end_replayed_call()) once the file is read and its shape
- * checked; a Stop before then leaves that call and its recording as they were.
+ * FEC tables and allocates the vocoder state as for ordinary MBE playback.
+ * The file is read whole before any of it plays; one larger than
+ * DSD_SDRTRUNK_JSON_MAX_BYTES, or one that cannot be read, is refused with one
+ * log line and plays nothing. The call an earlier file left ends, and the
+ * vocoder state is reset (dsd_mbe_file_end_replayed_call()), once the file is
+ * read and its shape checked; a refused file, or a Stop before then, leaves
+ * that call, its recording and the vocoder state as they were.
  */
 void read_sdrtrunk_json_format(dsd_opts* opts, dsd_state* state);
 /**
  * The boundary between two played files (playMbeFiles()): ends the call the earlier file left on slot 0, closes the
- * audio no call owns in the slot files, unexported, and starts the next file with no protocol and fresh voice-chain
- * state. read_sdrtrunk_json_format() calls it itself once its file is read and checked, unless Stop came before then.
+ * audio no call owns in the slot files, unexported, and starts the next file with no protocol, a fresh speech decoder
+ * (mbe_initMbeParms()) and fresh voice-chain state. read_sdrtrunk_json_format() calls it itself once its file is read
+ * and checked, unless it refused the file or Stop came before then.
  */
 void dsd_mbe_file_end_replayed_call(dsd_opts* opts, dsd_state* state);
 /** The largest SDRTrunk JSON MBE file read_sdrtrunk_json_format() plays: 64 MiB, hours of one call's frames. */

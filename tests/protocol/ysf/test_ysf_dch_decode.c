@@ -1886,14 +1886,18 @@ test_process_ysf_call_takes_the_fallback_only_on_its_own_terminator(void) {
     ysf_call_rig_close(&rig);
 }
 
-/* Issue #888: a YSF terminator is the call's own only when its verified FICH's call mode does not contradict the call
-   the slot holds. An open group call (CM 0), then a private call's terminator (CM 3) whose FICH verifies but whose DCH
-   fails, so no callsign names the other call: the group call ends on that terminator, but its row does not take the
-   fallback talkgroup. The group call's own terminator (CM 0), its DCH failed too, still gives it the fallback. Before,
-   only the terminator's protocol was checked, so the group row took the fallback on the other call's terminator. */
+/* Issue #888: a YSF terminator is the call's own only when its verified FICH's call mode is the one the call's own
+   verified FICHs last named. An open group call (CM 0), then a terminator whose FICH verifies but whose DCH fails, so no
+   callsign names another call: a private call's (CM 3) or a Radio ID call's (CM 1). The group call ends on that
+   terminator, but its row does not take the fallback talkgroup. The group call's own terminator (CM 0), its DCH failed
+   too, still gives it the fallback. Before, only the terminator's protocol was checked, so the group row took the
+   fallback on the other call's terminator; and then only the call kind its mode maps to, so a Radio ID terminator,
+   generic voice, still did. */
 static void
 test_process_ysf_call_takes_the_fallback_only_on_a_terminator_of_its_call_mode(void) {
-    for (int other_mode = 1; other_mode >= 0; other_mode--) {
+    static const uint8_t k_modes[] = {3U, 1U, 0U};
+    for (size_t m = 0; m < sizeof k_modes; m++) {
+        const uint8_t mode = k_modes[m];
         ysf_call_rig rig;
         ysf_call_rig_open(&rig);
         reset_ysf_stream();
@@ -1903,15 +1907,64 @@ test_process_ysf_call_takes_the_fallback_only_on_a_terminator_of_its_call_mode(v
         ysf_call_rig_play(&rig);
         const dsd_call_snapshot call = get_test_ysf_call(rig.state);
         assert(call.kind == DSD_CALL_KIND_GROUP_VOICE);
-        append_ysf_bound_frame_ex(2U, other_mode ? 3U : 0U, "CALLDST009CALLSRC008", "RPTDNL0007RPTUPL0006", 1);
+        append_ysf_bound_frame_ex(2U, mode, "CALLDST009CALLSRC008", "RPTDNL0007RPTUPL0006", 1);
         ysf_call_rig_play(&rig);
         const dsd_call_snapshot ended = get_test_ysf_call(rig.state);
         assert(ended.epoch == call.epoch && ended.phase == DSD_CALL_PHASE_ENDED);
         assert(ended.end_reason == (uint8_t)DSD_CALL_END_TERMINATOR);
-        assert(ended.own_terminator == (other_mode ? 0U : 1U));
+        assert(ended.own_terminator == (mode == 0U ? 1U : 0U));
         assert(rig.history[0].push_seq == 1U);
         assert(strcmp(rig.history[0].Event_History_Items[1].src_str, "CALLSRC002") == 0);
-        assert(ysf_committed_talkgroup(&rig, 1) == (other_mode ? 0U : 4242U));
+        assert(ysf_committed_talkgroup(&rig, 1) == (mode == 0U ? 4242U : 0U));
+        ysf_call_rig_close(&rig);
+    }
+}
+
+/* Issue #888: a terminator heard after a call faded is that call's own only when its verified callsigns, where it has
+   them, are the call's. A group call from CALLSRC002 ends on a sync loss (its YSF strings cleared, as noCarrier() does),
+   then a group terminator (CM 0) arrives whose verified DCH names another caller, CALLSRC008: the faded call's end
+   becomes a terminator end, but not its own. The caller's own terminator, and one whose DCH failed (no callsign to
+   compare), still mark it as its own. Before, the faded call was marked by any terminator of its call mode. */
+static void
+test_process_ysf_faded_call_takes_no_other_callers_terminator(void) {
+    static const struct {
+        const char* csd1;
+        int corrupt_dch;
+        uint8_t own;
+    } k_cases[] = {
+        {"CALLDST001CALLSRC008", 0, 0U},
+        {"CALLDST001CALLSRC002", 0, 1U},
+        {"CALLDST001CALLSRC008", 1, 1U},
+    };
+
+    for (size_t c = 0; c < sizeof k_cases / sizeof k_cases[0]; c++) {
+        ysf_call_rig rig;
+        ysf_call_rig_open(&rig);
+        reset_ysf_stream();
+        append_ysf_bound_frame(0U, 0U, "CALLDST001CALLSRC002", "RPTDNL0004RPTUPL0003");
+        ysf_call_rig_play(&rig);
+        append_ysf_vd1_frame(0U, 0U, "CALLDST001CALLSRC002");
+        ysf_call_rig_play(&rig);
+        const dsd_call_snapshot call = get_test_ysf_call(rig.state);
+        assert(strcmp(call.source_text, "CALLSRC002") == 0);
+        assert(dsd_call_state_end_ex(rig.state, 0U, 0.0, DSD_CALL_END_SYNC_LOSS) > 0);
+        dsd_event_sync_slot(rig.opts, rig.state, 0U);
+        rig.state->ysf_dt = 9U;
+        rig.state->ysf_fi = 9U;
+        rig.state->ysf_cm = 9U;
+        rig.state->ysf_fich_confirmed = 0U;
+        append_ysf_bound_frame_ex(2U, 0U, k_cases[c].csd1, "RPTDNL0004RPTUPL0003", k_cases[c].corrupt_dch);
+        ysf_call_rig_play(&rig);
+        const dsd_call_snapshot ended = get_test_ysf_call(rig.state);
+        assert(ended.epoch == call.epoch && ended.phase == DSD_CALL_PHASE_ENDED);
+        assert(strcmp(ended.source_text, "CALLSRC002") == 0);
+        assert(ended.end_reason == (uint8_t)DSD_CALL_END_TERMINATOR);
+        if (ended.own_terminator != k_cases[c].own) {
+            DSD_FPRINTF(stderr, "faded call, terminator %s (DCH %s): own %u, want %u\n", k_cases[c].csd1,
+                        k_cases[c].corrupt_dch ? "failed" : "verified", (unsigned)ended.own_terminator,
+                        (unsigned)k_cases[c].own);
+        }
+        assert(ended.own_terminator == k_cases[c].own);
         ysf_call_rig_close(&rig);
     }
 }
@@ -2297,6 +2350,7 @@ main(void) {
     test_process_ysf_call_takes_the_fallback_only_after_a_terminator();
     test_process_ysf_call_takes_the_fallback_only_on_its_own_terminator();
     test_process_ysf_call_takes_the_fallback_only_on_a_terminator_of_its_call_mode();
+    test_process_ysf_faded_call_takes_no_other_callers_terminator();
     test_process_ysf_ehr_voice_leaves_call_wav_to_vocoder();
     test_process_ysf_vd_type2_writes_call_wav_under_record_policy();
     test_process_ysf_vd_type2_captures_each_block();

@@ -3060,6 +3060,10 @@ struct dsd_state {
     uint8_t ysf_dt; //data type -- VD1, VD2, Full Rate, etc.
     uint8_t ysf_fi; //frame information -- HC, CC, TC
     uint8_t ysf_cm; //group or private call
+    /* The call mode (CM) the last verified header or communications FICH named: the call's, which only its own
+     * terminator repeats (issue #888). Kept through noCarrier(), so a terminator after a fade is still matched; 9 for
+     * none, and set to 9 when a verified DCH names a party other than an ended call's (ysf_enrich_identity()). */
+    uint8_t ysf_call_cm;
     /* Sticky for the transmission: set once a FICH passes its Golay+CRC-16, cleared with the
      * rest of the YSF strings on noCarrier(). A later FICH failure still lays the payload out
      * from the previous frame's dt/fi and still synthesizes voice from it, so once one FICH

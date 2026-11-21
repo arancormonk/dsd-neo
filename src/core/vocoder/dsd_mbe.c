@@ -2570,12 +2570,11 @@ playMbeFiles(dsd_opts* opts, dsd_state* state, int argc, char** argv) {
         if (state->mbe_file_type != 3) {
             dsd_mbe_file_end_replayed_call(opts, state);
         }
-        mbe_initMbeParms(state->cur_mp, state->prev_mp, state->prev_mp_enhanced);
         DSD_FPRINTF(stderr, "\n playing %s\n", opts->mbe_in_file);
         if (state->mbe_file_type == 3) {
             // The reader takes the whole SDRTrunk file, or refuses it, in one call: it is never read again from the
-            // start, and it ends the earlier file's call only once no Stop came while it read and checked the file
-            // (issue #888).
+            // start, and it ends the earlier file's call, and resets the speech decoder, only once it has read and
+            // checked the file with no Stop (issue #888).
             read_sdrtrunk_json_format(opts, state);
             if (dsd_exitflag_load() == 1) {
                 dsd_request_shutdown(opts, state);

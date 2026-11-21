@@ -40,12 +40,15 @@
 #include "ysf_frame.h"
 #include "ysf_internal.h"
 
+/* Adds the callsigns a verified DCH named to the slot's active YSF call. An ended one is not observed again; but when
+   they name another party than its own, the call mode it was in is forgotten (ysf_call_cm), so a terminator that
+   carries them is not that call's own (issue #888). */
 static void
 ysf_enrich_identity(dsd_state* state, uint8_t cm, const char* source, const char* target, const char* uplink,
                     const char* downlink) {
     dsd_call_snapshot call;
-    if (dsd_call_state_get(state, 0U, &call) <= 0 || call.phase != DSD_CALL_PHASE_ACTIVE
-        || !DSD_SYNC_IS_YSF(call.protocol)) {
+    if (dsd_call_state_get(state, 0U, &call) <= 0 || !DSD_SYNC_IS_YSF(call.protocol)
+        || call.phase == DSD_CALL_PHASE_IDLE) {
         return;
     }
     const dsd_call_observation observation = {
@@ -61,6 +64,12 @@ ysf_enrich_identity(dsd_state* state, uint8_t cm, const char* source, const char
     DSD_SNPRINTF(enriched.target_text, sizeof(enriched.target_text), "%s", target ? target : "");
     DSD_SNPRINTF(enriched.route_text[0], sizeof(enriched.route_text[0]), "%s", uplink ? uplink : "");
     DSD_SNPRINTF(enriched.route_text[1], sizeof(enriched.route_text[1]), "%s", downlink ? downlink : "");
+    if (call.phase != DSD_CALL_PHASE_ACTIVE) {
+        if (dsd_call_snapshot_contradicted_by(&call, &enriched)) {
+            state->ysf_call_cm = 9U;
+        }
+        return;
+    }
     (void)dsd_call_state_observe(state, &enriched, DSD_CALL_BOUNDARY_CONTINUE);
 }
 
@@ -981,6 +990,9 @@ ysf_frame_call_kind(const ysf_fich_info* info) {
 
 static void
 ysf_update_call_lifecycle(dsd_opts* opts, dsd_state* state, const ysf_fich_info* info) {
+    if (info->err == 0 && (info->fi == 0U || info->fi == 1U)) {
+        state->ysf_call_cm = info->cm;
+    }
     if ((info->err == 0 && (info->fi == 0U || info->fi == 1U)) || ysf_is_fallback_voice_frame(info)) {
         const int protocol = DSD_SYNC_IS_YSF(state->synctype) ? state->synctype : DSD_SYNC_YSF_POS;
         const dsd_call_observation observation = {
@@ -1000,10 +1012,17 @@ ysf_end_call_lifecycle(dsd_opts* opts, dsd_state* state, const ysf_fich_info* in
     // A FICH-verified communication terminator (FI=2) is positive over-the-air end evidence, so
     // the event layer can keep an audible epoch whose callsigns never decoded; EXPLICIT would be
     // indistinguishable from an engine retune and drop that row. It is the YSF call's own terminator, the one end
-    // that lets its row take the rdio fallback talkgroup (issue #888), unless its verified call mode names another
-    // kind of call than the one the slot holds (a group call's end on a private call's terminator).
-    if (info->err == 0 && info->fi == 2U && !ysf_carrier_left(state, info)
-        && dsd_call_state_end_own_terminator(state, 0U, 0.0, DSD_SYNC_YSF_POS, ysf_frame_call_kind(info)) > 0) {
+    // that lets its row take the rdio fallback talkgroup (issue #888), only when its verified call mode is the call's
+    // (ysf_call_cm): a group call's end on a private or Radio ID call's terminator, or on one whose callsigns named
+    // another caller of a faded call, is a terminator end, but not the call's own.
+    if (info->err != 0 || info->fi != 2U || ysf_carrier_left(state, info)) {
+        return;
+    }
+    const int ended =
+        info->cm == state->ysf_call_cm
+            ? dsd_call_state_end_own_terminator(state, 0U, 0.0, DSD_SYNC_YSF_POS, ysf_frame_call_kind(info))
+            : dsd_call_state_end_ex(state, 0U, 0.0, DSD_CALL_END_TERMINATOR);
+    if (ended > 0) {
         dsd_event_sync_slot(opts, state, 0U);
     }
 }

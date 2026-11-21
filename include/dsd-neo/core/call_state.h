@@ -643,6 +643,13 @@ int dsd_call_state_end_reason_is_recoverable(uint8_t end_reason);
  * transmission (dsd_call_snapshot_transmission()) that holds while this is true holds for the call a heal reopens.
  */
 int dsd_call_snapshot_may_reacquire(const dsd_call_snapshot* call, double now_m);
+/**
+ * True when @p observation names another call than @p call: the rule by which an observation begins a new epoch on an
+ * active call (another protocol family, target, source ID or contradicting kind, or identity text that differs where
+ * both are known). A field either side lacks is no contradiction. For a decoder that compares what it verified with an
+ * ended call it may not observe (issue #888).
+ */
+int dsd_call_snapshot_contradicted_by(const dsd_call_snapshot* call, const dsd_call_observation* observation);
 
 /**
  * Called after dsd_call_state_observe() heals a recoverably-ended epoch, with the ending

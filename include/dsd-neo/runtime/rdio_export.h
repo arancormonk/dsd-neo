@@ -111,7 +111,7 @@ uint32_t dsd_rdio_analog_talkgroup(const dsd_opts* opts, const Event_History* ev
  * - A digital row: its target_id when above 0, as decoded (an ID above 2147483647 included). Else, only when
  *   @p allow_fallback is nonzero, the row's category is DSD_EVENT_CATEGORY_VOICE, its sync type names a protocol
  *   (P25, DMR, NXDN, D-STAR, YSF, dPMR, M17, X2-TDMA, ProVoice, EDACS, TETRA; issue #888 D2, D7) and its
- *   fallback_blocked is 0 (an ID its decoder could not read, a YSF call not ended on a terminator): the frequency
+ *   fallback_blocked is 0 (an ID its decoder could not read, a YSF call not ended on its own terminator): the frequency
  *   it was heard on in whole kHz, rounded down, when that is 1..2147483647 (signed 32-bit, as rdio-scanner's databases
  *   store it), else @p opts->rdio_unknown_talkgroup when above 0 (audio input), else 0.
  */

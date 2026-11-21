@@ -1465,7 +1465,7 @@ wav_close_note_fallback_blocked(const Event_History* row) {
     if (row->fallback_blocked != 0U && row->target_id == 0U && row->category == DSD_EVENT_CATEGORY_VOICE
         && wav_recording_fallback_blocked_first_this_run()) {
         LOG_WARN("Rdio export: a call with no talkgroup is recorded but not exported when its ID could not be read (a "
-                 "played SDRTrunk roaming or ISSI ID) or it is a YSF call that did not end on a terminator\n");
+                 "played SDRTrunk roaming or ISSI ID) or it is a YSF call that did not end on its own terminator\n");
     }
 }
 
@@ -3535,8 +3535,9 @@ typedef enum {
     SDRTRUNK_SHAPE_TEXT = 0, /* a String the reader passes over (a system's or site's name): any JSON string */
     SDRTRUNK_SHAPE_WORD,     /* a String the reader reads (a protocol, call type, ID, MI) or a member's name: as the
                                 writer writes it, with no escape */
-    SDRTRUNK_SHAPE_TAG,      /* a frame's tag: free text as TEXT, but with no escape when it is the SACCH place the
-                                reader reads (sdrtrunk_shape_tag_escapes_sacch()) */
+    SDRTRUNK_SHAPE_PROTOCOL, /* the record's protocol: a WORD, which says whether its frames' tags are NXDN's */
+    SDRTRUNK_SHAPE_TAG,      /* a frame's tag: free text as TEXT, but in an NXDN record with no escape when it names
+                                a SACCH place the reader reads (sdrtrunk_shape_tag()) */
     SDRTRUNK_SHAPE_UINT8,    /* a JSON whole number with no sign the reader takes as 8 bits (an ALG ID) */
     SDRTRUNK_SHAPE_UINT16,   /* ... as 16 bits (the record's version, a key id) */
     SDRTRUNK_SHAPE_INT64,    /* ... within Java's long (a frame's time) */
@@ -3569,7 +3570,7 @@ typedef struct {
    "frames"; "version" and the move of "system" and "site" came in one change, so a record is in one layout or the
    other. @JsonInclude(NON_NULL): a member with no value is left out. */
 static const sdrtrunk_shape_member k_sdrtrunk_record_members[] = {
-    {"protocol", SDRTRUNK_SHAPE_WORD, SDRTRUNK_SHAPE_ANY},
+    {"protocol", SDRTRUNK_SHAPE_PROTOCOL, SDRTRUNK_SHAPE_ANY},
     {"version", SDRTRUNK_SHAPE_UINT16, SDRTRUNK_SHAPE_CURRENT},
     {"call_type", SDRTRUNK_SHAPE_WORD, SDRTRUNK_SHAPE_ANY},
     {"from", SDRTRUNK_SHAPE_WORD, SDRTRUNK_SHAPE_ANY},
@@ -3600,12 +3601,17 @@ enum {
 };
 
 /* The shape check's place in the text (from its start, @c text), where it next looks at the exit flag (@c poll_at, an
-   offset), and whether Stop ended it. */
+   offset), and whether Stop ended it; whether the record is NXDN's (@c nxdn), and for the string read last, how far it
+   is a SACCH place (@c tag_at, sdrtrunk_shape_tag_place_next()) and whether it held an escape (@c tag_escaped), both
+   kept only for a tag. */
 typedef struct {
     const char* text;
     const char* p;
     size_t poll_at;
     int stopped;
+    uint8_t nxdn;
+    uint8_t tag_at;
+    uint8_t tag_escaped;
 } sdrtrunk_shape_scan;
 
 /* One object's members read so far: bit i of @c seen for members[i], @c last the latest of them in the writer's order
@@ -3700,18 +3706,83 @@ sdrtrunk_shape_char_len(const char* p, uint8_t type) {
     return dsd_utf8_sequence_len(p, 4U);
 }
 
+/* How far a tag's text is a SACCH place the NXDN reader reads (sdrtrunk_json_handle_nxdn_tag(): "SACCH ", then what
+   dsd_parse_uint8_strict() takes as 1 to 4 after the spaces it passes: strtoull()'s white space, a '+', zeros and one
+   digit 1 to 4, and the end). */
+enum {
+    SDRTRUNK_TAG_SPACE = 6, /* "SACCH " read (0 to 5: that many of its characters) */
+    SDRTRUNK_TAG_ZEROS,     /* then a '+' or a zero */
+    SDRTRUNK_TAG_PLACE,     /* then the digit: a place, if the tag ends here */
+    SDRTRUNK_TAG_OTHER,     /* no place */
+};
+
+/* The ASCII character the JSON escape at @p p (its '\', one sdrtrunk_shape_escape_len() passed) stands for, as far as a
+   SACCH place reads it: the white space of \t \n \f \r, or a \u escape of an ASCII character; 0 for any other (\" \\
+   \/ \b, a character not ASCII), which no place holds. */
+static unsigned
+sdrtrunk_shape_escaped_ascii(const char* p) {
+    switch (p[1]) {
+        case 't': return '\t';
+        case 'n': return '\n';
+        case 'f': return '\f';
+        case 'r': return '\r';
+        case 'u': break;
+        default: return 0U;
+    }
+    if (p[2] != '0' || p[3] != '0' || dsd_hex_nibble_value((unsigned char)p[4]) > 7) {
+        return 0U;
+    }
+    return (unsigned)(dsd_hex_nibble_value((unsigned char)p[4]) * 16 + dsd_hex_nibble_value((unsigned char)p[5]));
+}
+
+/* The SACCH-place state (SDRTRUNK_TAG_SPACE and after) once character @p c follows state @p at. */
+static uint8_t
+sdrtrunk_shape_tag_place_next(uint8_t at, unsigned c) {
+    static const char k_sacch[] = "SACCH ";
+    if (at < SDRTRUNK_TAG_SPACE) {
+        return c == (unsigned char)k_sacch[at] ? (uint8_t)(at + 1U) : (uint8_t)SDRTRUNK_TAG_OTHER;
+    }
+    const int lead = at == SDRTRUNK_TAG_SPACE || at == SDRTRUNK_TAG_ZEROS;
+    if (at == SDRTRUNK_TAG_SPACE && (c == ' ' || (c >= '\t' && c <= '\r'))) {
+        return SDRTRUNK_TAG_SPACE;
+    }
+    if ((at == SDRTRUNK_TAG_SPACE && c == '+') || (lead && c == '0')) {
+        return SDRTRUNK_TAG_ZEROS;
+    }
+    return lead && c >= '1' && c <= '4' ? (uint8_t)SDRTRUNK_TAG_PLACE : (uint8_t)SDRTRUNK_TAG_OTHER;
+}
+
+/* Notes the tag character at @p p (an escape or a character whole) in @p scan's SACCH-place state. */
+static void
+sdrtrunk_shape_tag_char(sdrtrunk_shape_scan* scan, const char* p) {
+    const int escape = *p == '\\';
+    if (escape) {
+        scan->tag_escaped = 1U;
+    }
+    if (scan->tag_at != SDRTRUNK_TAG_OTHER) {
+        scan->tag_at =
+            sdrtrunk_shape_tag_place_next(scan->tag_at, escape ? sdrtrunk_shape_escaped_ascii(p) : (unsigned char)*p);
+    }
+}
+
 /* A quoted string of @p type (SDRTRUNK_SHAPE_TEXT, _WORD, _TAG or _HEX, sdrtrunk_shape_char_len()) next: passed, its
-   text (between the quotes, as written) at *@p text, @p len long. A frame's bits are never empty. */
+   text (between the quotes, as written) at *@p text, @p len long, and a tag's SACCH-place state in @p scan, read in the
+   same pass. A frame's bits are never empty. */
 static int
 sdrtrunk_shape_string(sdrtrunk_shape_scan* scan, uint8_t type, const char** text, size_t* len) {
     if (!sdrtrunk_shape_take(scan, '"')) {
         return 0;
     }
+    scan->tag_at = 0U;
+    scan->tag_escaped = 0U;
     const char* p = scan->p;
     while (*p != '"') {
         const size_t n = sdrtrunk_shape_char_len(p, type);
         if (n == 0U || sdrtrunk_shape_stopped(scan, p, n)) {
             return 0;
+        }
+        if (type == SDRTRUNK_SHAPE_TAG) {
+            sdrtrunk_shape_tag_char(scan, p);
         }
         p += n;
     }
@@ -3820,37 +3891,28 @@ sdrtrunk_shape_member_next(sdrtrunk_shape_scan* scan, sdrtrunk_shape_level* leve
 
 static int sdrtrunk_shape_frames(sdrtrunk_shape_scan* scan, uint8_t current);
 
-/* The ASCII character the JSON escape at @p p (its '\', one sdrtrunk_shape_escape_len() passed) stands for when it is
-   a \u escape of one; 0 for any other, which stands for no letter and no space (\" \\ \/ and controls). */
-static unsigned
-sdrtrunk_shape_escaped_ascii(const char* p) {
-    if (p[1] != 'u' || p[2] != '0' || p[3] != '0' || dsd_hex_nibble_value((unsigned char)p[4]) > 7) {
-        return 0U;
-    }
-    return (unsigned)(dsd_hex_nibble_value((unsigned char)p[4]) * 16 + dsd_hex_nibble_value((unsigned char)p[5]));
-}
-
-/* Whether the frame tag at @p text (@p len bytes as written, its escapes JSON's) is the SACCH place the NXDN reader
-   reads ("SACCH " first, sdrtrunk_json_handle_nxdn_tag()) written with an escape: the reader takes the tag as written,
-   escapes and all, so it would read another place, or none. Any other tag is free text, its escapes as TEXT's. */
+/* The record's protocol next, a WORD: whether it is NXDN's noted in @p scan, as the reader reads it
+   (sdrtrunk_json_set_protocol()). */
 static int
-sdrtrunk_shape_tag_escapes_sacch(const char* text, size_t len) {
-    static const char k_sacch[] = "SACCH ";
-    if (memchr(text, '\\', len) == NULL) {
+sdrtrunk_shape_protocol(sdrtrunk_shape_scan* scan) {
+    const char* text = NULL;
+    size_t len = 0;
+    if (!sdrtrunk_shape_string(scan, SDRTRUNK_SHAPE_WORD, &text, &len)) {
         return 0;
     }
-    const char* p = text;
-    for (size_t i = 0; i + 1U < sizeof k_sacch; i++) {
-        if (p >= text + len) {
-            return 0;
-        }
-        const unsigned c = *p == '\\' ? sdrtrunk_shape_escaped_ascii(p) : (unsigned char)*p;
-        if (c != (unsigned char)k_sacch[i]) {
-            return 0;
-        }
-        p += *p == '\\' ? sdrtrunk_shape_escape_len(p) : 1U;
-    }
+    scan->nxdn = len == 4U && strncmp(text, "NXDN", 4) == 0 ? 1U : 0U;
     return 1;
+}
+
+/* A frame's tag next: free text, as TEXT, but in an NXDN record not one written with an escape whose text, its escapes
+   read, is a SACCH place the reader reads: the reader takes the tag as written, escapes and all, so it would read no
+   place. Any other tag, a DMR or P25 record's included, is free text the reader passes over. */
+static int
+sdrtrunk_shape_tag(sdrtrunk_shape_scan* scan) {
+    const char* text = NULL;
+    size_t len = 0;
+    return sdrtrunk_shape_string(scan, SDRTRUNK_SHAPE_TAG, &text, &len)
+           && !(scan->nxdn != 0U && scan->tag_escaped != 0U && scan->tag_at == SDRTRUNK_TAG_PLACE);
 }
 
 /* A value of @p type next, in an object whose layout @p current names (sdrtrunk_shape_level::current). */
@@ -3862,8 +3924,8 @@ sdrtrunk_shape_value(sdrtrunk_shape_scan* scan, uint8_t type, uint8_t current) {
         case SDRTRUNK_SHAPE_TEXT:
         case SDRTRUNK_SHAPE_WORD:
         case SDRTRUNK_SHAPE_HEX: return sdrtrunk_shape_string(scan, type, &text, &len);
-        case SDRTRUNK_SHAPE_TAG:
-            return sdrtrunk_shape_string(scan, type, &text, &len) && !sdrtrunk_shape_tag_escapes_sacch(text, len);
+        case SDRTRUNK_SHAPE_PROTOCOL: return sdrtrunk_shape_protocol(scan);
+        case SDRTRUNK_SHAPE_TAG: return sdrtrunk_shape_tag(scan);
         case SDRTRUNK_SHAPE_UINT8:
         case SDRTRUNK_SHAPE_UINT16:
         case SDRTRUNK_SHAPE_INT64: return sdrtrunk_shape_integer(scan, type);
@@ -3922,7 +3984,7 @@ enum { SDRTRUNK_JSON_STOPPED = -1, SDRTRUNK_JSON_NONSTANDARD = 0, SDRTRUNK_JSON_
    of the text after the last look (sdrtrunk_shape_stopped()): SDRTRUNK_JSON_STOPPED when Stop came during it. */
 static int
 sdrtrunk_json_shape(const char* text, size_t size) {
-    sdrtrunk_shape_scan scan = {text, text, 0U, 0};
+    sdrtrunk_shape_scan scan = {text, text, 0U, 0, 0U, 0U, 0U};
     sdrtrunk_shape_level record = {k_sdrtrunk_record_members, SDRTRUNK_SHAPE_RECORD_MEMBERS, 0U, -1, 0U};
     const int whole = !sdrtrunk_shape_stopped(&scan, text, 0U) && sdrtrunk_shape_object(&scan, &record)
                       && sdrtrunk_shape_space(&scan) && scan.p == text + size;
@@ -4029,7 +4091,8 @@ sdrtrunk_json_read_whole(FILE* f, const char* name, size_t* out_size) {
 // call's whose row has yet to commit), instead of joining the next file's, or
 // a named call's commit publishing it as that call's. An SDRTrunk JSON file's
 // reader ends the earlier file here itself, once the file is read and checked
-// (read_sdrtrunk_json_format()), so a Stop before then leaves that call as it was.
+// (read_sdrtrunk_json_format()), so a Stop before then, or a file it refuses,
+// leaves that call as it was, its speech decoder included.
 void
 dsd_mbe_file_end_replayed_call(dsd_opts* opts, dsd_state* state) {
     if (dsd_call_state_end(state, 0U, 0.0) > 0) {
@@ -4038,8 +4101,11 @@ dsd_mbe_file_end_replayed_call(dsd_opts* opts, dsd_state* state) {
     dsd_event_flush_orphan_recordings(opts, state);
     state->synctype = DSD_SYNC_NONE;
     state->lastsynctype = DSD_SYNC_NONE;
-    // A file is a reception of its own: its first frame starts from clear high-pass state (issue #653) and the start
-    // gain (issue #518).
+    // A file is a reception of its own: its first frame starts from a fresh speech decoder, clear high-pass state
+    // (issue #653) and the start gain (issue #518).
+    if (state->cur_mp != NULL && state->prev_mp != NULL && state->prev_mp_enhanced != NULL) {
+        mbe_initMbeParms(state->cur_mp, state->prev_mp, state->prev_mp_enhanced);
+    }
     dsd_voice_hpf_reset(state, -1);
     dsd_voice_level_reset(state, -1);
 }
@@ -4049,10 +4115,8 @@ read_sdrtrunk_json_format(dsd_opts* opts, dsd_state* state) {
     size_t source_size = 0;
     char* source_str = sdrtrunk_json_read_whole(opts->mbe_in_f, opts->mbe_in_file, &source_size);
     if (source_str == NULL) {
-        /* A file that cannot be read still ends the earlier one; a Stop during the read leaves it. */
-        if (dsd_exitflag_load() != 1) {
-            dsd_mbe_file_end_replayed_call(opts, state);
-        }
+        /* Unread (refused, cut by Stop, or a read error): it plays nothing and changes nothing, so the earlier file's
+           call goes on as it was. */
         return;
     }
 

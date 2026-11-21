@@ -2103,7 +2103,8 @@ suite runs under this compiler.
   `writeCallSequence()` writes one `MBECallSequence` with Jackson's default pretty printer and no root name. The check
   is a small recursive reader with one `sdrtrunk_shape_level` per object (the members read so far, as bits, the last
   one in the writer's order, and whether a member named the current layout) over two fixed tables:
-  `k_sdrtrunk_record_members` (`MBECallSequence`'s `@JsonPropertyOrder`: `protocol` word, `version` uint16, `call_type`,
+  `k_sdrtrunk_record_members` (`MBECallSequence`'s `@JsonPropertyOrder`: `protocol` (a word that notes an NXDN record,
+  `sdrtrunk_shape_protocol()`), `version` uint16, `call_type`,
   `from`, `to` words, `encrypted` boolean, `system`, `site` text, `frames` array) and `k_sdrtrunk_frame_members`
   (`VoiceFrame`'s: `tag` tag, `encryption_algorithm` uint8, `encryption_key_id` uint16, `encryption_mi` word, `time`
   int64, `hex` hex string). A file is STANDARD when it is exactly one record object with only white space after it (to
@@ -2113,8 +2114,10 @@ suite runs under this compiler.
   UTF-8 with no raw control character; a word (a value the reader reads, or a member's name) has no escape at all, so an
   escaped ID can never reach the policy lookup unread; text (`system`, `site`, which the reader passes over) allows only
   JSON's escapes (`\" \\ \/ \b \f \n \r \t`, `\u` with four hex digits); a frame's `tag` is free text as text is, except
-  that the `SACCH <n>` place `sdrtrunk_json_handle_nxdn_tag()` reads (it takes the value as written) may hold no escape
-  (`sdrtrunk_shape_tag_escapes_sacch()`, which compares the tag's start, its `\u` escapes read, with `SACCH `); an
+  that in an NXDN record a tag naming a SACCH place `sdrtrunk_json_handle_nxdn_tag()` reads (it takes the value as
+  written) may hold no escape (`sdrtrunk_shape_tag()`: in the same polled pass, `sdrtrunk_shape_tag_char()` notes an
+  escape and runs the tag, its escapes read, through `sdrtrunk_shape_tag_place_next()`, the reader's `SACCH ` and
+  `dsd_parse_uint8_strict()` rule for places 1 to 4); an
   integer is JSON's unsigned form (`0|[1-9][0-9]*`: no member the writer writes is negative) within what the member's
   playback handler takes (`version` and `encryption_key_id` 16 bits, `encryption_algorithm` 8 bits, `time` a Java
   `long`), read with `dsd_parse_uint64_strict()`, so the shape never passes a value the playback would pass over;
@@ -2129,9 +2132,11 @@ suite runs under this compiler.
   (`sdrtrunk_shape_stopped(scan, p, n)`: every step of the check, a white-space byte, a structural character, a string
   character or escape, a word or a number's digits, calls it first with the bytes it is about to pass, and it looks
   before a step that would end past the deadline, so a six-byte `\u` escape never puts two looks more than a MiB
-  apart); a Stop during it (`SDRTRUNK_JSON_STOPPED`) makes the reader return before it ends the earlier file's call
+  apart); a Stop during it (`SDRTRUNK_JSON_STOPPED`), like a file the read refuses (over the cap, unreadable, or cut by
+  Stop), makes the reader return before it ends the earlier file's call and resets the speech decoder
   (`dsd_mbe_file_end_replayed_call()`, which `playMbeFiles()` leaves to the reader for an export), resets the call or
-  syncs the slot, so the earlier call and the recordings stay as they were (`CORE_MBE_FILE_IO`
+  syncs the slot, so the earlier call, its vocoder state and the recordings stay as they were (`CORE_MBE_FILE_IO`
+  `test_sdrtrunk_json_refused_file_leaves_the_earlier_call`,
   `test_sdrtrunk_json_stop_during_the_shape_check`, `test_sdrtrunk_json_stop_in_a_long_span` (a `system` of `\u`
   escapes), `test_sdrtrunk_json_playlist_stop_during_the_shape_check` (`-r first.mbe next.mbe` through
   `playMbeFiles()`), through the test seam `dsd_sdrtrunk_test_set_shape_poll_hook()` in
@@ -2709,8 +2714,9 @@ suite runs under this compiler.
     chain keeps across a call learned partway through a reception; a call already active (a republication, a
     reallocation) runs nothing. Each `-r` playback file
     (`dsd_mbe_file_end_replayed_call()` in `dsd_file.c`, once per file opened, after it ends and commits the previous
-    file's call; for an SDRTrunk export, `read_sdrtrunk_json_format()` runs it once the file is read and its shape
-    checked, so a Stop before then leaves the previous call as it was) runs the flush too (issue #888): a raw
+    file's call, and resets the speech decoder; for an SDRTrunk export, `read_sdrtrunk_json_format()` runs it once the
+    file is read and its shape checked, so a refused file or a Stop before then leaves the previous call as it was)
+    runs the flush too (issue #888): a raw
     `.imb`/`.amb`/`.dmb` file plays with no call, so its audio would otherwise join the next file's, and an SDRTrunk
     export's named call would commit and export it as its own; each file is a recording of its own (the last file's
     no-call audio closes at the run's no-carrier pass). Where the receiver is comes from `dsd_engine_receiver_hz()`
@@ -12189,7 +12195,14 @@ control within the CC grace walks its channel map with the ordinary hunts.
   decoder's own reserved-LCN handling; EDACS gets no unit-event semantics (no public spec). Tests:
   `EDACS_GRANT_TUNE_MATRIX` (`edacs_run_status_lcn_cases`).
 - YSF and the rdio fallback (issue #888): a YSF row takes the fallback talkgroup only when its call ended on its own
-  terminator, decoded by YSF. `ysf_end_call_lifecycle()` ends the call with `dsd_call_state_end_own_terminator()`
+  terminator, decoded by YSF. Its own: the terminator's verified CM is `dsd_state::ysf_call_cm`, the CM the last
+  verified header or communications FICH named (set in `ysf_update_call_lifecycle()`, kept through `noCarrier()` so a
+  terminator after a fade still matches; a CM 1 Radio ID terminator does not end a CM 0 group call as its own). An
+  ended (faded) call is not observed again, but `ysf_enrich_identity()` compares a verified DCH's callsigns with it
+  (`dsd_call_snapshot_contradicted_by()`, the call state's own epoch-change rule) and forgets `ysf_call_cm` (9) when
+  they name another party, so a foreign caller's terminator never marks it. Otherwise the terminator ends the call
+  with `dsd_call_state_end_ex()` and `DSD_CALL_END_TERMINATOR`, not its own. On a match
+  `ysf_end_call_lifecycle()` ends the call with `dsd_call_state_end_own_terminator()`
   (`DSD_SYNC_YSF_POS` and the kind the terminator's verified FICH names, `ysf_frame_call_kind()`: data by its DT, else
   group, private or plain voice by its CM), which ends it as `dsd_call_state_end_ex()` with `DSD_CALL_END_TERMINATOR`
   and, when the call is of the same protocol family and the kind does not contradict the call's
@@ -12213,7 +12226,8 @@ control within the CC grace walks its channel map with the ordinary hunts.
   `test_process_ysf_repeater_call_is_one_row_that_takes_the_fallback`,
   `test_process_ysf_call_takes_the_fallback_only_after_a_terminator`,
   `test_process_ysf_call_takes_the_fallback_only_on_its_own_terminator`,
-  `test_process_ysf_call_takes_the_fallback_only_on_a_terminator_of_its_call_mode`; `CORE_CALL_STATE`
+  `test_process_ysf_call_takes_the_fallback_only_on_a_terminator_of_its_call_mode`,
+  `test_process_ysf_faded_call_takes_no_other_callers_terminator`; `CORE_CALL_STATE`
   `test_context_restore_clears_the_own_terminator_mark`; `DECODE_IQ_YSF_RDIO_DIRWATCH_UNKNOWN_TG` (the
   synthetic call has no terminator: never exported, said once a leg) beside `DECODE_IQ_M17_RDIO_DIRWATCH_UNKNOWN_TG`
   (the fallback end to end).
