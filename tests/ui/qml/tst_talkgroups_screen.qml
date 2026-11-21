@@ -48,7 +48,9 @@ Item {
             testContext.setHostRunning(true);
             testContext.resetCommands();
             testContext.setMetric("uiMessage", "");
+            testContext.setMetric("uiMessageSeq", 0);
             screenLoader.item.bulkMessage = "";
+            screenLoader.item.bulkNewer = false;
             verify(testContext.pushTalkgroup(1001, "A", "Fire Dispatch", "FIRE"));
             verify(testContext.pushTalkgroup(1002, "B", "Fire Tactical", "FIRE"));
             verify(testContext.pushTalkgroup(2001, "A", "EMS Dispatch", "EMS"));
@@ -71,7 +73,9 @@ Item {
             testContext.setHostRunning(false);
             testContext.resetCommands();
             testContext.setMetric("uiMessage", "");
+            testContext.setMetric("uiMessageSeq", 0);
             screenLoader.item.bulkMessage = "";
+            screenLoader.item.bulkNewer = false;
         }
 
         function test_long_names_fit_cards_data() {
@@ -301,6 +305,43 @@ Item {
             compare(toast.text, "");
             compare(shownCopies(requested), 0, "an expired answer does not bring back the request");
             compare(shownCopies(refused), 0, "nor the refusal before it");
+        }
+
+        // B3: the engine can answer with exactly the text still shown from its last answer (the same selection applied
+        // twice within the answer's life). Its count moves, so the answer replaces "Update requested", and when it
+        // expires the request does not come back.
+        function test_same_answer_text_again_replaces_the_request() {
+            var toast = findChild(screenLoader.item, "talkgroupCommandToast");
+            var answer = "2 selected talkgroups listened to";
+            testContext.setMetric("uiMessage", answer);
+            testContext.setMetric("uiMessageSeq", 1);
+            tryCompare(toast, "text", answer);
+            applyBulk();
+            compare(toast.text, "Update requested");
+            testContext.setMetric("uiMessageSeq", 2);
+            tryCompare(toast, "text", answer, 5000, "the same text answered again replaces the pending request");
+            compare(shownCopies(answer), 1);
+            compare(shownCopies("Update requested"), 0);
+            testContext.setMetric("uiMessage", "");
+            tryCompare(toast, "visible", false);
+            compare(toast.text, "");
+            compare(shownCopies("Update requested"), 0, "an expired answer does not bring back the request");
+        }
+
+        // B3: an accepted request the engine never answers (decoding stopped) leaves the line after the same 4 s an
+        // engine answer lives, and the older answer it replaced does not come back in its place.
+        function test_unanswered_request_expires() {
+            var toast = findChild(screenLoader.item, "talkgroupCommandToast");
+            testContext.setMetric("uiMessage", "Applied: 2 talkgroups listened to");
+            tryCompare(toast, "text", "Applied: 2 talkgroups listened to");
+            applyBulk();
+            compare(toast.text, "Update requested");
+            wait(3000);
+            compare(toast.text, "Update requested", "still shown inside its 4 s");
+            verify(toast.visible);
+            tryCompare(toast, "visible", false, 3000, "the unanswered request leaves after 4 s");
+            compare(toast.text, "");
+            compare(shownCopies("Applied: 2 talkgroups listened to"), 0, "the older answer does not come back");
         }
 
         function test_session_note_tracks_group_file_configuration() {

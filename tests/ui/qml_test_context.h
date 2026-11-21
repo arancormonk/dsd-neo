@@ -7181,6 +7181,7 @@ class Setup : public QObject {
         metrics[QStringLiteral("relaxedCrcRowOverride")] = false;
 
         metrics[QStringLiteral("uiMessage")] = QString();
+        metrics[QStringLiteral("uiMessageSeq")] = 0U;
         // The decode clock's wall-clock now that recent-call ages read: the fixture's decoder is
         // idle, so it is simply the wall clock the screens used to read.
         metrics[QStringLiteral("decodeNowMs")] = QDateTime::currentMSecsSinceEpoch();

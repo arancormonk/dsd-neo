@@ -15,15 +15,29 @@ Item {
     property string bulkMessage: ""
     // The engine's answer and this screen's own bulk status share one line,
     // the newer of the two on it. A bulk status is newer until the engine
-    // next answers; an answer that expires leaves the line empty rather than
-    // bringing back the status it replaced.
+    // next answers, the same text answered again included (its count moves);
+    // an answer that expires leaves the line empty rather than bringing back
+    // the status it replaced.
     readonly property string engineMessage: metrics.uiMessage
+    readonly property var engineMessageSeq: metrics.uiMessageSeq
     property bool bulkNewer: false
     onEngineMessageChanged: {
         if (engineMessage.length > 0)
             bulkNewer = false;
     }
+    onEngineMessageSeqChanged: {
+        if (metrics.uiMessage.length > 0)
+            bulkNewer = false;
+    }
     readonly property string commandMessage: bulkNewer ? bulkMessage : engineMessage
+    // An accepted request the engine never answers (decoding stopped) leaves
+    // after the life of an engine answer. It stays the newer message, so the
+    // line goes empty rather than back to an older answer.
+    Timer {
+        id: bulkRequestedExpiry
+        interval: 4000
+        onTriggered: screen.bulkMessage = ""
+    }
     function requestBulk(listen) {
         bulkRows = talkgroupView.snapshotSelection();
         bulkContext = talkgroups.policyContext;
@@ -51,6 +65,10 @@ Item {
                 var accepted = commands.setTalkgroupSelection(screen.bulkListen, screen.bulkContext, screen.bulkGeneration, screen.bulkRows);
                 screen.bulkMessage = accepted ? qsTr("Update requested") : qsTr("The update could not be queued. Try again.");
                 screen.bulkNewer = true;
+                if (accepted)
+                    bulkRequestedExpiry.restart();
+                else
+                    bulkRequestedExpiry.stop();
                 bulkConfirm.visible = false;
             }
         }
