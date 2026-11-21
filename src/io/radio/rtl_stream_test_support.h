@@ -1889,6 +1889,10 @@ void rtl_stream_test_session_boundary(void);
  *   12   the status the demod thread publishes. */
 int rtl_stream_test_squelch_plumbing(void);
 
+/* The device part of the auto squelch's floor context for input spec @p spec (NULL: none), as a stream open stores it
+ * (issue #899 B12). */
+uint32_t rtl_stream_test_squelch_device_hash(const char* spec);
+
 /* Open @p opts at 48 kHz, leave @p preset_scale as the output scale an I/Q replay finds (0 in a process that never ran
  * a live stream, or what an earlier session set), and apply a replay capture's settings (1.536 Msps, base decimation
  * 32, 48 kHz demod rate) as a replay open does: @p out_scale receives the output scale the replay then runs. */

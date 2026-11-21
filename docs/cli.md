@@ -1511,7 +1511,12 @@ alone is `auto+10`), so one setting suits every receiver and every channel of a 
 - Per channel. Floors are kept for each frequency, tuner gain (an Airspy's gain settings), tuner AGC state, bias tee,
   device and channel rate for 30 minutes of received time, digital and fixed-level time included, so a scan coming
   back to a channel picks its floor up again; a channel within 5 MHz seeds a new channel's floor until three noise
-  windows confirm it.
+  windows confirm it. The device is the input spec as written, except that an `rtl:`, `rtltcp:` or `airspy:` spec's
+  start frequency, `sql` field and volume do not count (nor empty fields at its end), so a new start on another
+  frequency, squelch or volume finds the floors learned before; a change to the device index, the rtl_tcp host or port,
+  the Airspy serial, the gain, PPM, DSP bandwidth or bias tee keeps them apart, and every other spec (SoapySDR,
+  `--iq-replay`) counts whole. The spec names an RTL-SDR dongle by its index, so a different dongle at the same index
+  can take a floor learned on the one before.
 - Restarts. A retune to another channel starts the windows over and moves to that channel's floor. Any receiver
   restart on the same channel keeps its floor but starts closed: Stop and Start in the app, a stream reopen, an rtl_tcp
   reconnect, a USB recovery, an input overflow gap (an Airspy driver overflow, a full input buffer dropping samples), an

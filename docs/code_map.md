@@ -11411,8 +11411,14 @@ Notes:
     demod thread copies the word into `demod_state` before each block (`demod_take_squelch_setting()`), with the
     floor's context (applied frequency, tuner gain as applied, tuner autogain, bias tee, device hash, channel rate,
     capture chain; on an Airspy a hash of its own gain controls as applied, at open and by
-    `rtl_stream_airspy_controls()`, stands for the tuner gain). After the block it publishes the tracker's status
-    (`rtl_stream_get_squelch_status()`).
+    `rtl_stream_airspy_controls()`, stands for the tuner gain). The device hash (`squelch_device_hash()`, stored at
+    stream open) is FNV-1a of the input spec, leaving out an `rtl:`, `rtltcp:` or `airspy:` spec's start frequency,
+    squelch field and volume and the empty fields at its end (issue #899 B12: none sets the noise, and the key has the
+    applied frequency; a parsed Airspy spec is already its device alone, `airspy[:serial=...]`, when a stream opens),
+    so Explore starting on the last channel it tuned finds the floors already learned; every other field,
+    and every other spec, counts as before, so a floor is never shared more widely than the spec text allows (a
+    different dongle at the same index still shares it). After the block it publishes the tracker's status
+    (`rtl_stream_get_squelch_status()`). Tests: `IO_RTL_SQUELCH_PLUMBING`, `IO_RTL_SQUELCH_DEVICE_KEY`.
   - I/Q replay framing (issue #572; `replay_thread_process_block()` in `rtl_device.cpp`, `demod_read_input_block()`
     in `rtl_sdr_fm.cpp`). Each demod block is exactly one capture chunk:
     - A chunk is at most one live transfer (`dsd_iq_replay_chunk_bytes()`, `<dsd-neo/io/iq_replay.h>`, issue #626):

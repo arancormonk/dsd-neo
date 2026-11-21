@@ -20125,6 +20125,31 @@ if(DSD_HAS_RADIO)
         COMMAND dsd-neo_test_io_rtl_squelch_plumbing
     )
 
+    # The auto squelch's floor key from the input spec (issue #899 B12): an rtl or rtltcp spec's start
+    # frequency, squelch field and volume leave it as it was; every other field and spec as before.
+    add_executable(
+        dsd-neo_test_io_rtl_squelch_device_key
+        io/test_io_rtl_squelch_device_key.cpp
+    )
+    target_include_directories(
+        dsd-neo_test_io_rtl_squelch_device_key
+        PRIVATE ${PROJECT_SOURCE_DIR}/include ${PROJECT_SOURCE_DIR}/src/io/radio
+    )
+    target_link_libraries(
+        dsd-neo_test_io_rtl_squelch_device_key
+        PRIVATE dsd-neo_io_radio_private_test_support dsd-neo_core
+    )
+    if(DSD_HAS_RTLSDR)
+        target_link_libraries(
+            dsd-neo_test_io_rtl_squelch_device_key
+            PRIVATE ${RTLSDR_LIBRARIES} ${CMAKE_THREAD_LIBS_INIT}
+        )
+    endif()
+    add_test(
+        NAME IO_RTL_SQUELCH_DEVICE_KEY
+        COMMAND dsd-neo_test_io_rtl_squelch_device_key
+    )
+
     add_executable(
         dsd-neo_test_io_rtl_analog_family_switch
         io/test_io_rtl_analog_family_switch.cpp

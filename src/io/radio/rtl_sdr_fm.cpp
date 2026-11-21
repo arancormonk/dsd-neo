@@ -9560,13 +9560,62 @@ stream_open_warn_low_dsp_bw(const dsd_opts* opts, int dsp_rate_hz, int cqpsk) {
     return 0;
 }
 
-/* FNV-1a of the input spec: the device part of the auto squelch's floor context. */
+static uint32_t
+squelch_device_hash_byte(uint32_t h, unsigned char c) {
+    return (h ^ (uint32_t)c) * 16777619U;
+}
+
+/* The fields (from 0, colon-separated) of an rtl, rtltcp or Airspy spec that set no noise, into @p skip: its start
+   frequency, squelch field and volume (rtl and rtltcp: frequency, gain, PPM, bandwidth, squelch, volume; Airspy, after
+   an optional serial=: frequency, bandwidth, squelch, volume). Returns 0 for any other spec. */
+static int
+squelch_device_spec_unkeyed_fields(const char* spec, int* skip) {
+    int freq = -1;
+    int sql_after = 4;
+    if (dsd_opts_audio_in_dev_is_rtltcp_spec(spec)) {
+        freq = 3;
+    } else if (dsd_opts_audio_in_dev_is_rtl_spec(spec)) {
+        freq = 2;
+    } else if (dsd_opts_audio_in_dev_is_airspy_spec(spec)) {
+        freq = strncmp(spec, "airspy:serial=", 14) == 0 ? 2 : 1;
+        sql_after = 2;
+    }
+    if (freq < 0) {
+        return 0;
+    }
+    skip[0] = freq;
+    skip[1] = freq + sql_after;
+    skip[2] = freq + sql_after + 1;
+    return 1;
+}
+
+/* FNV-1a of the input spec: the device part of the auto squelch's floor context. In an rtl, rtltcp or Airspy spec the
+   start frequency, the squelch field and the volume are left out (the key has the applied frequency, and the other two
+   set no noise), and so are empty fields at its end, so a start at another frequency, squelch or volume finds the
+   floors learned before; every other field counts as written, and any other spec counts whole. (A parsed Airspy spec
+   is already rewritten to its device alone, airspy[:serial=...], before a stream opens.) */
 static uint32_t
 squelch_device_hash(const char* spec) {
     uint32_t h = 2166136261U;
-    for (const char* c = spec ? spec : ""; *c != '\0'; c++) {
-        h ^= (uint32_t)(unsigned char)*c;
-        h *= 16777619U;
+    const char* text = spec ? spec : "";
+    int skip[3] = {-1, -1, -1};
+    const int layout = squelch_device_spec_unkeyed_fields(text, skip);
+    int field = 0;
+    int separators = 0;
+    for (const char* c = text; *c != '\0'; c++) {
+        if (layout && *c == ':') {
+            field++;
+            separators++;
+            continue;
+        }
+        if (layout && (field == skip[0] || field == skip[1] || field == skip[2])) {
+            continue;
+        }
+        /* The colons before a field's text, so the fields kept keep their places. */
+        for (; separators > 0; separators--) {
+            h = squelch_device_hash_byte(h, (unsigned char)':');
+        }
+        h = squelch_device_hash_byte(h, (unsigned char)*c);
     }
     return h;
 }
@@ -19785,6 +19834,11 @@ rtl_stream_test_squelch_plumbing(void) {
     ring_clear(&output);
     fsk_reacquire_test_cleanup_output_ring(initialized_output);
     return failed;
+}
+
+extern "C" uint32_t
+rtl_stream_test_squelch_device_hash(const char* spec) {
+    return squelch_device_hash(spec);
 }
 
 extern "C" int
