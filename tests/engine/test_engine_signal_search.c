@@ -31,6 +31,7 @@
 #include <dsd-neo/runtime/analog_channel.h>
 #include <dsd-neo/runtime/control_pump.h>
 #include <dsd-neo/runtime/decode_clock.h>
+#include <dsd-neo/runtime/decode_mode.h>
 #include <dsd-neo/runtime/rtl_stream_metrics_hooks.h>
 #include <dsd-neo/runtime/signal_search.h>
 #include <dsd-neo/runtime/signal_search_avoids.h>
@@ -279,16 +280,31 @@ rtl_stream_prepare_retune_analog_profile_for_target(uint32_t hz, const rtl_strea
     return 0;
 }
 
+/* The symbol profile the latest retune queued: its target, CQPSK, symbol rate, levels, TED and whether the TED is kept
+   as an override. */
+static struct {
+    uint32_t hz;
+    int cq, rate, levels, sps, persist;
+} queued_profile;
+
+/* The front end's TED samples-per-symbol override (0: none). */
+static int ted_override;
+
+int
+rtl_stream_get_ted_sps_override(void) {
+    return ted_override;
+}
+
 void
 rtl_stream_prepare_retune_profile_for_target_with_gain(uint32_t hz, int cq, int rate, int levels, int profile, int sps,
                                                        int persist, const rtl_stream_retune_gain_profile* g) {
-    (void)hz;
-    (void)cq;
-    (void)rate;
-    (void)levels;
     (void)profile;
-    (void)sps;
-    (void)persist;
+    queued_profile.hz = hz;
+    queued_profile.cq = cq;
+    queued_profile.rate = rate;
+    queued_profile.levels = levels;
+    queued_profile.sps = sps;
+    queued_profile.persist = persist;
     gain_value = g->tuner_gain_tenth_db;
     gain_auto = g->tuner_gain_is_auto;
     autogain = g->tuner_autogain_on;
@@ -2905,6 +2921,71 @@ test_locked_tuple_timed_for_its_landing(dsd_opts* o, dsd_state* s, const dsd_sig
     put_timing(s, DSD_FRAME_SYNC_SPS_PROFILE_4800_4, 10, 4, 0);
 }
 
+/* Issue #748 B16: Stop tunes back with the radio profile the restored decoder runs, the session's TED override
+   included. A -m2 session (6000/4 CQPSK, the P25 Phase 2 profile pinned) used to queue the Auto preset's 4800/4 for
+   the radio while its decoder went back to 6000/4; a -mc session (4800/4 C4FM) queued its own by chance. */
+static void
+test_stop_queues_restored_profile(dsd_opts* o, dsd_state* s, const dsd_signal_search_config* config) {
+    /* -mc and -m2: C4FM, CQPSK, P25 Phase 2 pin; profile, sps, center, rf_mod; symbol rate; the TED override. */
+    static const struct {
+        int c4fm, qpsk, p2_lock;
+        int timing[4];
+        int rate, override;
+    } locked[] = {
+        {1, 0, 0, {DSD_FRAME_SYNC_SPS_PROFILE_4800_4, 10, 4, 0}, 4800, 0},
+        {0, 1, 1, {DSD_FRAME_SYNC_SPS_PROFILE_6000_4, 8, 3, 1}, 6000, 0},
+        {0, 1, 1, {DSD_FRAME_SYNC_SPS_PROFILE_6000_4, 8, 3, 1}, 6000, 8},
+    };
+
+    const int c4fm = o->mod_c4fm;
+    for (size_t i = 0; i < sizeof(locked) / sizeof(locked[0]); ++i) {
+        const dsd_signal_search_config one = tag_config(config, 94 + (uint64_t)i, 1, 0);
+        o->mod_cli_lock = 1;
+        o->mod_c4fm = locked[i].c4fm;
+        o->mod_qpsk = locked[i].qpsk;
+        o->mod_gfsk = 0;
+        o->mod_p25p2_profile_lock = locked[i].p2_lock;
+        const int* t = locked[i].timing;
+        put_timing(s, t[0], t[1], t[2], t[3]);
+        ted_override = locked[i].override;
+        start_tag_session(o, s, &one);
+        visit_strongest(o, s);
+        // A visit's retune replaces the front end's TED override (it queues none).
+        ted_override = 0;
+        put_timing(s, DSD_FRAME_SYNC_SPS_PROFILE_2400_4, 20, 9, 0);
+        stop_tag_session(o, s);
+        assert(timing_is(s, t[0], t[1], t[2], t[3]));
+        assert(queued_profile.hz == 100000000 && queued_profile.rate == locked[i].rate && queued_profile.levels == 4);
+        assert(queued_profile.cq == (t[3] == 1));
+        if (locked[i].override) {
+            assert(queued_profile.sps == locked[i].override && queued_profile.persist);
+        } else {
+            assert(queued_profile.sps == t[1] && !queued_profile.persist);
+        }
+    }
+    ted_override = 0;
+    o->mod_cli_lock = o->mod_qpsk = o->mod_p25p2_profile_lock = 0;
+    o->mod_c4fm = c4fm;
+
+    // A fixed preset's session keeps its preset's profile: an NXDN48 session started on the command line, whose
+    // decoder runs 2400/4 while the hunt index it never used still names 4800/4.
+    dsd_opts* saved = malloc(sizeof(*saved));
+    assert(saved);
+    DSD_MEMCPY(saved, o, sizeof(*o));
+    (void)dsd_apply_decode_mode_preset(DSDCFG_MODE_NXDN48, DSD_DECODE_PRESET_PROFILE_CONFIG, o, s);
+    put_timing(s, DSD_FRAME_SYNC_SPS_PROFILE_4800_4, 20, 9, 0);
+    const dsd_signal_search_config nxdn = tag_config(config, 97, 1, 0);
+    start_tag_session(o, s, &nxdn);
+    visit_strongest(o, s);
+    stop_tag_session(o, s);
+    assert(timing_is(s, DSD_FRAME_SYNC_SPS_PROFILE_4800_4, 20, 9, 0));
+    assert(queued_profile.hz == 100000000 && queued_profile.rate == 2400 && queued_profile.levels == 4);
+    assert(queued_profile.sps == 20 && !queued_profile.cq && !queued_profile.persist);
+    DSD_MEMCPY(o, saved, sizeof(*o));
+    free(saved);
+    put_timing(s, DSD_FRAME_SYNC_SPS_PROFILE_4800_4, 10, 4, 0);
+}
+
 /* Issue #804 F6: every departure puts the session's own P25 site back whole, never the proof. */
 #define SITE_CODE(wacn, sysid, nac) (((uint64_t)(wacn) << 24) | ((uint64_t)(sysid) << 12) | (uint64_t)(nac))
 static const uint64_t CODE_A = SITE_CODE(0xBEE00, 0x1A3, 0x293);
@@ -4349,6 +4430,7 @@ main(void) {
     test_refusal_then_resume_reaches_frontend(o, s, &config);
     test_failed_start_changes_nothing(o, s, &config);
     test_m17_call_free_lsf_can(o, s, &config);
+    test_stop_queues_restored_profile(o, s, &config);
     s->rtl_ctx = NULL;
     dsd_state_ext_free_all(s);
     free(s);

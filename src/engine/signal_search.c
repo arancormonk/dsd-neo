@@ -92,6 +92,9 @@ typedef struct {
     void* user;
     uint32_t saved_frequency;
     int saved_gain, saved_gain_auto, saved_autogain;
+    /* The front end's TED samples-per-symbol override at Start (0: none): every visit's retune replaces it, and Stop's
+       restore tune puts it back (issue #748 B16). */
+    int saved_ted_override;
     dsd_airspy_config saved_airspy;
     uint32_t suppressed[DSD_SEARCH_MAX_CHANNELS];
     size_t suppressed_count;
@@ -790,6 +793,7 @@ search_commit_start(search_coord* c, dsd_opts* opts, dsd_state* state, dsd_scan_
     dsd_scan_settings_capture(opts, state, &c->saved);
     (void)rtl_stream_get_gain(&c->saved_gain, &c->saved_gain_auto);
     c->saved_autogain = rtl_stream_get_tuner_autogain();
+    c->saved_ted_override = rtl_stream_get_ted_sps_override();
     c->saved_airspy = opts->airspy;
     /* Explicit Auto is the session baseline; ranges constrain it to existing receive classes. The CONFIG profile leaves
        the DMR dispatch flags as the session had them, and a mono preset (-f1) turns both off, which reads no direct-mode
@@ -1606,6 +1610,18 @@ search_close_reception(search_coord* c, dsd_opts* opts, dsd_state* state) {
     dsd_telemetry_publish_both_and_redraw(opts, state);
 }
 
+/* The symbol profile the session's decoder runs once Stop has put its settings back (issue #748 B16): an Auto or custom
+   session's hunt profile (dsd_scan_mode_effective_profile(), the scope left), a -m2 pin's P25 Phase 2 profile, else its
+   preset's; never the Auto preset's for a session whose decoder is on another (a -m2 session's is 6000/4). */
+static dsd_decode_mode_profile
+search_session_profile(const dsd_opts* opts, const dsd_state* state) {
+    const dsdneoUserDecodeMode mode = dsd_infer_decode_mode_preset(opts);
+    if (opts->mod_p25p2_profile_lock && state->sps_hunt_idx == DSD_FRAME_SYNC_SPS_PROFILE_6000_4) {
+        return dsd_decode_mode_profile_for(DSDCFG_MODE_P25P2);
+    }
+    return mode == DSDCFG_MODE_AUTO ? dsd_scan_mode_effective_profile(opts, state) : dsd_decode_mode_profile_for(mode);
+}
+
 static int
 search_restore_tune(search_coord* c, dsd_opts* opts, dsd_state* state) {
     search_end_hit(c);
@@ -1617,12 +1633,15 @@ search_restore_tune(search_coord* c, dsd_opts* opts, dsd_state* state) {
        input lost or a failed restore before this tune lands ends nothing again. */
     search_close_reception(c, opts, state);
     search_restore(c, opts, state);
-    dsd_decode_mode_profile profile = dsd_decode_mode_profile_for(dsd_infer_decode_mode_preset(opts));
+    /* The profile the restored decoder runs, with the session's TED override, which the visits' retunes replaced, kept
+       as one (issue #748 B16). */
+    const dsd_decode_mode_profile profile = search_session_profile(opts, state);
+    const int ted_override = c->saved_ted_override > 0;
     rtl_stream_retune_gain_profile gain = {1, c->saved_gain, c->saved_gain_auto, 1, c->saved_autogain};
     rtl_stream_prepare_retune_profile_for_target_with_gain(
         c->saved_frequency, state->rf_mod == 1, profile.symbol_rate_hz, profile.levels,
         dsd_rtl_channel_profile_for(opts, profile.symbol_rate_hz, profile.levels, state->rf_mod),
-        state->samplesPerSymbol, 0, &gain);
+        ted_override ? c->saved_ted_override : state->samplesPerSymbol, ted_override, &gain);
     /* The retune carries the session's receive family, as each visit's does: search_restore() also requests it live,
        but a retune landing first retires that older request, which would leave an analog session on the digital family
        the search last used. */

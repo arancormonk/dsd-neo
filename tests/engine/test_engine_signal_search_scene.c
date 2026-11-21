@@ -132,6 +132,12 @@ rtl_stream_get_tuner_autogain(void) {
     return autogain;
 }
 
+/* No TED override on this front end. */
+int
+rtl_stream_get_ted_sps_override(void) {
+    return 0;
+}
+
 void
 rtl_stream_enforce_tuner_autogain(int value) {
     autogain = value;

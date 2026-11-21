@@ -265,7 +265,10 @@ Generated (do not edit/commit):
     exit: a search Stop tunes back, running the carrier boundary and acquisition reset as each
     visit's tune does, and its retune carries the session's receive family
     (`rtl_stream_prepare_retune_analog_profile_for_target()`), since a retune landing first
-    retires the older live family request the restore also makes. The engine loop runs no
+    retires the older live family request the restore also makes. Its symbol profile is the one the restored decoder
+    runs (`search_session_profile()`: an Auto or custom session's hunt profile, a `-m2` pin's 6000/4, else its preset's,
+    so a `-m2` session no longer queues its Auto preset's 4800/4), with the front end's TED override from Start put back
+    as one, since every visit's retune replaced it (issue #748 B16, `ENGINE_SIGNAL_SEARCH`). The engine loop runs no
     `noCarrier()`
     while a search is paused or failed, so the first tick that finds it PAUSED or ERROR runs
     them too, once per landing (`search_end_reception()`, re-armed by `search_queue_tune()`):
