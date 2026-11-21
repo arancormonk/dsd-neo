@@ -53,11 +53,13 @@ function(_rdio_leg leg out_wavs out_log)
     set(_calls "${_dir}/calls")
     set(_journal "${_dir}/journal.jsonl")
     file(MAKE_DIRECTORY "${_dir}")
+    # DSD_NEO_CONFIG unset, as for every run the tests start: a leg neither loads the operator's config nor autosaves
+    # the leg's options into it (which would also hand -6 raw.wav to the next leg).
     execute_process(
         COMMAND
-            "${DSD_BIN}" --frontend none ${_mode_args} ${ARGN} -o null -P -7
-            "${_calls}" --wav-journal "${_journal}" --rdio-mode dirwatch
-            --rdio-system-id 48
+            "${CMAKE_COMMAND}" -E env --unset=DSD_NEO_CONFIG "${DSD_BIN}"
+            --frontend none ${_mode_args} ${ARGN} -o null -P -7 "${_calls}"
+            --wav-journal "${_journal}" --rdio-mode dirwatch --rdio-system-id 48
         WORKING_DIRECTORY "${_dir}"
         RESULT_VARIABLE _rc
         OUTPUT_VARIABLE _out
