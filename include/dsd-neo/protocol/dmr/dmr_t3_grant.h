@@ -43,6 +43,12 @@ typedef struct {
 } dmr_t3_grant_class;
 
 /**
+ * Whether CSBKO @p csbk_o is a channel grant opcode (48..56); @p outbound is nonzero for a BS-sourced PDU. 56 is a
+ * grant only outbound: inbound, on MS-sourced data, it is BS_Dwn_Act.
+ */
+int dmr_t3_grant_is_grant_opcode(int csbk_o, int outbound);
+
+/**
  * Classify CSBKO @p csbk_o with its PDU bits @p cs_pdu_bits (at least 80) as a channel grant; @p outbound is nonzero
  * for a BS-sourced PDU. Returns 1 with @p out filled for a grant, 0 (with @p out zeroed) for anything else, a NULL
  * argument included.

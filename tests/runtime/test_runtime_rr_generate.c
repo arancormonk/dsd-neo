@@ -1173,6 +1173,22 @@ test_chan_tier3_control_seeds(void) {
     if (text != NULL && validate_generated(text, 0, &counts) == 0) {
         expect_counts("tier3 seed-only round-trip", &counts, 2U, 0U);
     }
+    expect("tier3 seed-only warns for 2 frequencies",
+           warned(&warnings, "RadioReference lists no channel number for 2 frequencies; add them in the app"));
+    free(text);
+    dsd_rr_warning_list_free(&warnings);
+
+    /* One frequency without a channel number is one frequency, not "1 frequencies". */
+    dsd_rr_site_freq one_missing[2];
+    freq_set(&one_missing[0], 1, 452212500LL, "", "3");
+    freq_set(&one_missing[1], 2, 452312500LL, "", NULL);
+    site_init(&site, one_missing, 2U);
+    text = NULL;
+    DSD_MEMSET(&warnings, 0, sizeof(warnings));
+    expect("tier3 one missing generated",
+           dsd_rr_generate_chan_csv(DSD_RR_PROTO_DMR_TIER3, &site, 1U, &text, &len, &warnings) == 0);
+    expect("tier3 one missing warns in the singular",
+           warned(&warnings, "RadioReference lists no channel number for 1 frequency; add it in the app"));
     free(text);
     dsd_rr_warning_list_free(&warnings);
 }

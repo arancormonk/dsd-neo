@@ -33,7 +33,7 @@
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
-#include "dmr_abs_params.h"
+#include "dmr_mbc_test_support.h"
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
@@ -168,22 +168,6 @@ build_grant_apcn(uint8_t* bits, uint8_t* bytes, uint8_t opcode, uint16_t apcn, u
 
 extern void dmr_cspdu(dsd_opts*, dsd_state*, uint8_t*, uint8_t*, uint32_t, uint32_t);
 
-/* The PDU in @p bits / @p bytes as the assembler hands over a two-block MBC: header LB 0, one continuation carrying
-   LB 1 and the header's CSBKO (TS 102 361-4 CG_AP/MV_AP/BC_AP). */
-static void
-cspdu_mbc(dsd_opts* opts, dsd_state* state, uint8_t* bits, uint8_t* bytes) {
-    const uint8_t csbko = (uint8_t)(bytes[0] & 0x3FU);
-    bytes[0] = csbko;
-    bytes[12] = (uint8_t)(0x80U | csbko);
-    bits[0] = 0U;
-    bits[96] = 1U;
-    for (int i = 0; i < 6; i++) {
-        bits[98 + i] = (uint8_t)((csbko >> (5 - i)) & 1U);
-    }
-    const dmr_cspdu_shape shape = {1U, 1U, csbko, csbko, 1U};
-    dmr_cspdu_ex(opts, state, bits, bytes, 1U, 0U, &shape);
-}
-
 /* ---- Shared environment ---- */
 
 #define MV_F1    852000000L
@@ -257,8 +241,8 @@ recent_row_target(const dsd_state* state, uint8_t index, uint64_t* target) {
 /* ---- C_MOVE: Move TSCC ---- */
 
 /* A Move TSCC CSBK (Table 7.17): Mask, Reg, Backoff, Physical Channel Number @p pcn and MS address @p ms. With @p pcn
-   0xFFF and @p rx_int nonzero, its MV_AP block (Table 7.18) defines CHAN @p apcn on @p rx_int MHz plus @p rx_step 125 Hz
-   steps, and it is handed over as a two-block MBC; otherwise as a single CSBK. */
+   0xFFF and @p rx_int nonzero, its MV_AP block (Table 7.18) defines CHAN @p apcn on @p rx_int MHz plus @p rx_step
+   125 Hz steps, and it is handed over as a two-block MBC; otherwise as a single CSBK. */
 typedef struct {
     uint8_t mask;
     uint8_t reg;
@@ -288,7 +272,7 @@ csbk_move_tscc(dsd_opts* opts, dsd_state* state, const move_tscc* mv) {
         put_bits(bits, 118U, mv->apcn, 12U);
         put_bits(bits, 153U, mv->rx_int, 10U);
         put_bits(bits, 163U, mv->rx_step, 13U);
-        cspdu_mbc(opts, state, bits, bytes);
+        dsd_test_dmr_cspdu_mbc(opts, state, bits, bytes);
         return;
     }
     dmr_cspdu(opts, state, bits, bytes, 1U, 0U);
@@ -377,8 +361,8 @@ test_logical_move_tscc_is_informational(dsd_opts* opts, dsd_state* state) {
 #define MV_TSCC_HZ 453500000L // 453 MHz + 4000 x 125 Hz
 
 /* An absolute Move TSCC learns the TSCC its MV_AP names, SITE when checked and UNVERIFIED when -F accepted it as RAS,
-   and adds it as a current-site candidate; one whose CRC failed, or a single block naming 0xFFF (no MV_AP), does
-   neither. None of them retunes. */
+   and adds it as a current-site candidate unless it is the control channel the receiver is on; one whose CRC failed,
+   or a single block naming 0xFFF (no MV_AP), does neither. None of them retunes. */
 static void
 test_absolute_move_tscc_learns_the_tscc(dsd_opts* opts, dsd_state* state) {
     static const struct {
@@ -419,6 +403,13 @@ test_absolute_move_tscc_learns_the_tscc(dsd_opts* opts, dsd_state* state) {
     assert(strstr(g_out, "Move TSCC: MS 4321") != NULL);
     assert(strstr(g_out, "MBC Absolute Parameters missing or out of range;") != NULL);
     assert(state->trunk_chan_map[0x0123U] == 0 && candidates_count(state) == 0);
+
+    // A move naming the control channel the receiver is on teaches the map its channel, but it is no candidate.
+    move_env(opts, state);
+    state->trunk_cc_freq = MV_TSCC_HZ;
+    csbk_move_tscc(opts, state, &mv);
+    assert(state->trunk_chan_map[0x0123U] == MV_TSCC_HZ);
+    assert(dmr_t3_chan_origin(state, 0x0123U) == DMR_CHAN_ORIGIN_SITE && candidates_count(state) == 0);
 
     // While a call is followed an absolute move still learns, and leaves the call alone.
     follow_call_with_companion(opts, state);
@@ -467,7 +458,7 @@ csbk_absolute(dsd_opts* opts, dsd_state* state, uint8_t opcode, uint16_t apcn, u
     uint8_t bytes[48];
     build_grant_apcn(bits, bytes, opcode, apcn, rx_int, rx_step, slot, target);
     put_bits(bits, 56U, 1234U, 24U);
-    cspdu_mbc(opts, state, bits, bytes);
+    dsd_test_dmr_cspdu_mbc(opts, state, bits, bytes);
 }
 
 /* The slot's call, the followed context and the slot's record (what the policy route is built from) name @p channel of

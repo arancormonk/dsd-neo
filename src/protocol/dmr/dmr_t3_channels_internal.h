@@ -53,8 +53,8 @@ dmr_ext_t* dmr_ext_get_or_create(dsd_state* state);
  * the writer takes and a network change drops. */
 int dmr_t3_chan_origin_is_ota(unsigned origin);
 
-/* Empty the LPCN 1..4094 rows whose recorded origin @p drop accepts, with their trust bytes and origins. Returns whether
- * any row went. */
+/* Empty the LPCN 1..4094 rows whose recorded origin @p drop accepts, with their trust bytes and origins. Returns
+ * whether any row went. */
 int dmr_t3_chan_drop_rows(dsd_state* state, dmr_ext_t* ext, int (*drop)(unsigned origin));
 
 /* A checked C_ALOHA named @p syscode for the control channel the receiver is on: a code whose MODEL or NET differs from

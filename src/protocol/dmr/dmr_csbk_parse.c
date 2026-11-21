@@ -63,7 +63,7 @@ dmr_csbk_handle(const struct dmr_csbk_result* res, dsd_opts* opts, dsd_state* st
     }
 
     /* Only channel grants are routed through the Tier III trunk SM here. */
-    if (res->opcode >= 48 && res->opcode <= 56) {
+    if (dmr_t3_grant_is_grant_opcode(res->opcode, 1)) {
         long freq = res->freq_hz;
         // The call's channel is its LPCN when that names one (the caller resolved an absolute grant's from its MBC).
         const int is_channel = dmr_t3_lpcn_is_channel(res->lpcn);

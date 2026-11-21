@@ -995,9 +995,9 @@ rr_chan_dmr_lcn(dsd_rr_protocol protocol, const dsd_rr_site* site, rr_text* text
     }
     if (!conplus && skips.no_chan > 0U) {
         char msg[DSD_RR_WARNING_TEXT_MAX];
-        (void)DSD_SNPRINTF(msg, sizeof(msg),
-                           "RadioReference lists no channel number for %zu frequencies; add them in the app.",
-                           skips.no_chan);
+        const int one = skips.no_chan == 1U;
+        (void)DSD_SNPRINTF(msg, sizeof(msg), "RadioReference lists no channel number for %zu %s; add %s in the app.",
+                           skips.no_chan, one ? "frequency" : "frequencies", one ? "it" : "them");
         rr_warn(warnings, msg);
         skips.no_chan = 0U;
     }

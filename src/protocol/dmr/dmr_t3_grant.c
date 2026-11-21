@@ -30,8 +30,8 @@ enum {
     DMR_T3_GRANT_DUPLEX_MASK = (1U << 5) | (1U << 6),
 };
 
-static int
-dmr_t3_grant_is_grant(int csbk_o, int outbound) {
+int
+dmr_t3_grant_is_grant_opcode(int csbk_o, int outbound) {
     if (csbk_o < DMR_T3_GRANT_FIRST || csbk_o > DMR_T3_GRANT_LAST) {
         return 0;
     }
@@ -44,7 +44,7 @@ dmr_t3_grant_classify(int csbk_o, const uint8_t* cs_pdu_bits, int outbound, dmr_
         return 0;
     }
     DSD_MEMSET(out, 0, sizeof(*out));
-    if (cs_pdu_bits == NULL || !dmr_t3_grant_is_grant(csbk_o, outbound)) {
+    if (cs_pdu_bits == NULL || !dmr_t3_grant_is_grant_opcode(csbk_o, outbound)) {
         return 0;
     }
     const unsigned bit = 1U << (unsigned)(csbk_o - DMR_T3_GRANT_FIRST);

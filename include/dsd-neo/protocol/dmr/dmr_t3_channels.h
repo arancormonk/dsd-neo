@@ -14,7 +14,8 @@
  * before any of this was recorded) counts as FILE.
  *
  * The origins, a network generation and a revision live in the DMR module's state extension
- * (DSD_STATE_EXT_PROTO_DMR_RC) and are saved per trunk-scan target beside dsd_state::dmr_lcn_trust. Decoder thread only.
+ * (DSD_STATE_EXT_PROTO_DMR_RC) and are saved per trunk-scan target beside dsd_state::dmr_lcn_trust. Decoder thread
+ * only.
  */
 
 #ifndef DSD_NEO_INCLUDE_DSD_NEO_PROTOCOL_DMR_DMR_T3_CHANNELS_H_
@@ -61,8 +62,9 @@ void dmr_t3_chan_note_map_cleared(dsd_state* state);
 
 /**
  * The receiver is on another network (an operator move, or a checked system code whose MODEL or NET differs from the
- * last checked one's; another site of the same network is none): the over-the-air rows (SITE, UNVERIFIED, NEIGHBOUR, ESTIMATE) and their trust bytes are dropped, FILE and USER
- * rows stay, and the network generation bumps. A trip from the control channel to a voice channel and back is none.
+ * last checked one's; another site of the same network is none): the over-the-air rows (SITE, UNVERIFIED, NEIGHBOUR,
+ * ESTIMATE) and their trust bytes are dropped, FILE and USER rows stay, and the network generation bumps. A trip from
+ * the control channel to a voice channel and back is none.
  */
 void dmr_t3_chan_network_changed(dsd_opts* opts, dsd_state* state);
 

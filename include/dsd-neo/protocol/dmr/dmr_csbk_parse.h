@@ -60,6 +60,10 @@ struct dmr_csbk_result {
  * Decode basic CSBK header fields and, for channel-grant opcodes, the
  * common grant fields used by trunking logic.
  *
+ * The PDU is taken as outbound (BS-sourced): opcode 56 reads as a group data
+ * grant (dmr_t3_grant_classify() with outbound 1). The caller tells an inbound
+ * BS_Dwn_Act (56 on MS-sourced data) apart and does not pass it here.
+ *
  * @return 0 on success, negative on error.
  */
 int dmr_csbk_parse(const uint8_t* cs_pdu_bits, const uint8_t* cs_pdu, struct dmr_csbk_result* out);

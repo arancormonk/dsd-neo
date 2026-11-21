@@ -38,7 +38,7 @@ write_temp_csv(char path[DSD_TEST_PATH_MAX], const char* body) {
     fd = dsd_test_mkstemp(path, DSD_TEST_PATH_MAX, "dsdneo_t3_lcn");
     assert(fd >= 0);
 
-    fp = dsd_fdopen(fd, "w");
+    fp = dsd_fdopen(fd, "wb"); /* the bytes as given: a row-length test counts its line ending */
     assert(fp != NULL);
     assert(fputs(body, fp) >= 0);
     assert(fclose(fp) == 0);
@@ -187,6 +187,38 @@ test_overlong_row_and_half_anchor_are_errors(void) {
     clear_dmr_t3_env();
 }
 
+/* "f\n851025000\n" then one row of @p chars characters (a frequency padded with a note) and @p ending. */
+static void
+fill_long_row(char* buf, size_t size, size_t chars, const char* ending) {
+    size_t n = (size_t)DSD_SNPRINTF(buf, size, "f\n851025000\n851037500,");
+    while (n < 12U + chars) {
+        buf[n++] = 'x';
+    }
+    (void)DSD_SNPRINTF(buf + n, size - n, "%s", ending);
+}
+
+/* A row may be 1023 bytes counting its line ending: 1022 characters and a newline, 1021 and CR LF, or 1023 with no
+   line ending at the end of the file. One byte more is an error. */
+static void
+test_row_limit_counts_the_line_ending(void) {
+    static char big[2048];
+    static const char* const want = "lcn,freq\n1,851025000\n2,851037500\n";
+    set_anchor(NULL, NULL, "12500");
+    fill_long_row(big, sizeof big, 1022U, "\n");
+    expect_ok(big, want);
+    fill_long_row(big, sizeof big, 1021U, "\r\n");
+    expect_ok(big, want);
+    fill_long_row(big, sizeof big, 1023U, "");
+    expect_ok(big, want);
+    fill_long_row(big, sizeof big, 1023U, "\n");
+    expect_error(big);
+    fill_long_row(big, sizeof big, 1022U, "\r\n");
+    expect_error(big);
+    fill_long_row(big, sizeof big, 1024U, "");
+    expect_error(big);
+    clear_dmr_t3_env();
+}
+
 static void
 test_missing_file_fails(void) {
     char path[DSD_TEST_PATH_MAX];
@@ -315,6 +347,7 @@ main(void) {
     test_results_outside_range_or_off_grid_print_nothing();
     test_row_cap_is_an_error();
     test_overlong_row_and_half_anchor_are_errors();
+    test_row_limit_counts_the_line_ending();
     printf("RUNTIME_DMR_T3_LCN_CALC: OK\n");
     return 0;
 }

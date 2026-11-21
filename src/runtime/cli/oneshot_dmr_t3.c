@@ -116,8 +116,8 @@ line_parse_frequency_hz(char* line, long* hz_out) {
 }
 
 /* Returns the row count, -1 when the file holds more usable rows than @p capacity (a silent cut would shift the
-   sorted map), or -2 when a line is longer than the read buffer (its fragments would parse as extra rows); the
-   1-based line number is stored in @p bad_line. */
+   sorted map), or -2 when a line, its line ending included, is longer than the read buffer's 1023 bytes (its
+   fragments would parse as extra rows); the 1-based line number is stored in @p bad_line. */
 static int
 read_frequency_rows(FILE* fp, long* freqs, int capacity, int* bad_line) {
     if (!fp || !freqs || capacity <= 0) {
@@ -267,7 +267,7 @@ dsd_cli_calc_dmr_t3_lcn_from_csv(const char* path) {
     fclose(fp);
 
     if (nf == -2) {
-        LOG_ERROR("LCN calc: row %d of '%s' is longer than 1023 bytes.\n", bad_line, path);
+        LOG_ERROR("LCN calc: row %d of '%s' is longer than 1023 bytes with its line ending.\n", bad_line, path);
         return 3;
     }
 

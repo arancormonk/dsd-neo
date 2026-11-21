@@ -114,7 +114,8 @@ dmr_t3_chan_drop_network(dsd_state* state, dmr_ext_t* ext) {
 void
 dmr_t3_chan_network_changed(dsd_opts* opts, dsd_state* state) {
     (void)opts;
-    /* With no record nothing was learned over the air, so nothing goes: a carrier boundary of any protocol runs this. */
+    /* With no record nothing was learned over the air, so nothing goes: a carrier boundary of any protocol runs
+       this. */
     dmr_ext_t* ext = dmr_ext_get(state);
     if (ext != NULL) {
         dmr_t3_chan_drop_network(state, ext);

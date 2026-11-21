@@ -20,7 +20,7 @@
 #include <dsd-neo/runtime/trunk_tuning_hooks.h>
 #include <stdint.h>
 #include <stdio.h>
-#include "dmr_abs_params.h"
+#include "dmr_mbc_test_support.h"
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
@@ -156,22 +156,6 @@ build_pclear(uint8_t* bits, uint8_t* bytes, uint32_t tg) {
 
 extern void dmr_cspdu(dsd_opts*, dsd_state*, uint8_t*, uint8_t*, uint32_t, uint32_t);
 
-/* The PDU in @p bits / @p bytes as the assembler hands over a two-block MBC: header LB 0, one continuation carrying
-   LB 1 and the header's CSBKO (TS 102 361-4 CG_AP/MV_AP/BC_AP). */
-static void
-cspdu_mbc(dsd_opts* opts, dsd_state* state, uint8_t* bits, uint8_t* bytes) {
-    const uint8_t csbko = (uint8_t)(bytes[0] & 0x3FU);
-    bytes[0] = csbko;
-    bytes[12] = (uint8_t)(0x80U | csbko);
-    bits[0] = 0U;
-    bits[96] = 1U;
-    for (int i = 0; i < 6; i++) {
-        bits[98 + i] = (uint8_t)((csbko >> (5 - i)) & 1U);
-    }
-    const dmr_cspdu_shape shape = {1U, 1U, csbko, csbko, 1U};
-    dmr_cspdu_ex(opts, state, bits, bytes, 1U, 0U, &shape);
-}
-
 int
 main(int argc, char** argv) {
     (void)argc;
@@ -199,7 +183,7 @@ main(int argc, char** argv) {
     const uint16_t apcn = 0x0456;
     const long tscc = 453000000 + 4000 * 125;
     build_move_tscc(bits, bytes, /*ms*/ 4321, apcn, /*rx_int*/ 453, /*rx_step*/ 4000);
-    cspdu_mbc(&opts, &state, bits, bytes);
+    dsd_test_dmr_cspdu_mbc(&opts, &state, bits, bytes);
     assert(opts.trunk_is_tuned == 1);
     assert(state.trunk_vc_freq[0] == f1);
     assert(state.trunk_chan_map[apcn] == tscc);

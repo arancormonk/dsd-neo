@@ -93,9 +93,9 @@
 #define M_PI 3.14159265358979323846
 #endif
 #include "analog_call_test_support.h"
-#include "dmr_abs_params.h"
 #include "dmr_block_crypto.h"
 #include "dmr_hytera.h"
+#include "dmr_mbc_test_support.h"
 #include "dmr_vcrypt.h"
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/safe_api.h"
@@ -3328,8 +3328,8 @@ test_scan_first_landing_is_never_held(void) {
     return rc;
 }
 
-/* The DMR trunk machine's two ways off a voice channel with no release: a grant for another channel, and a Capacity Plus
-   status follow (dmr_cspdu_cap_plus_3e_follow()'s tune, then the machine's note). */
+/* The DMR trunk machine's ways off a voice channel with no release: a grant for another channel, a Capacity Plus
+   status follow (dmr_cspdu_cap_plus_3e_follow()'s tune, then the machine's note) and a Capacity Plus rest move. */
 typedef enum {
     DMR_HOP_GRANT = 0,
     DMR_HOP_STATUS_FOLLOW,
@@ -3358,12 +3358,12 @@ dmr_hop_put_bits(uint8_t* bits, size_t start, uint32_t value, size_t nbits) {
 
 /* A CRC-valid Tier III TV_GRANT (opcode 49) for slot 1 of @p lpcn. */
 static void
-dmr_hop_csbk(dsd_opts* opts, dsd_state* state, uint8_t opcode, uint16_t lpcn, uint32_t tg, uint32_t src) {
+dmr_hop_csbk(dsd_opts* opts, dsd_state* state, uint16_t lpcn, uint32_t tg, uint32_t src) {
     uint8_t bits[256];
     uint8_t bytes[48];
     DSD_MEMSET(bits, 0, sizeof bits);
     DSD_MEMSET(bytes, 0, sizeof bytes);
-    bytes[0] = opcode;
+    bytes[0] = 49U;
     dmr_hop_put_bits(bits, 16U, lpcn, 12U);
     dmr_hop_put_bits(bits, 32U, tg, 24U);
     dmr_hop_put_bits(bits, 56U, src, 24U);
@@ -3521,7 +3521,7 @@ dmr_hop_follow_then_leave(dsd_opts* opts, dsd_state* state, dmr_hop_kind kind) {
                                                         .return_to_cc_request = dsd_engine_return_to_cc_request});
     dmr_hop_clock_at(0.0);
     dmr_sm_init(opts, state);
-    dmr_hop_csbk(opts, state, 49U, DMR_HOP_LCN1, 101U, 1001U);
+    dmr_hop_csbk(opts, state, DMR_HOP_LCN1, 101U, 1001U);
     int rc = expect_true("the machine follows the grant to VC1", state->trunk_vc_freq[0] == DMR_HOP_VC1);
 
     dmr_hop_clock_at(1.0);
@@ -3556,7 +3556,7 @@ dmr_hop_follow_then_leave(dsd_opts* opts, dsd_state* state, dmr_hop_kind kind) {
 
     dmr_hop_clock_at(1.5);
     if (kind == DMR_HOP_GRANT) {
-        dmr_hop_csbk(opts, state, 49U, DMR_HOP_LCN2, 202U, 2002U);
+        dmr_hop_csbk(opts, state, DMR_HOP_LCN2, 202U, 2002U);
     } else if (kind == DMR_HOP_REST_MOVE) {
         return rc | dmr_hop_rest_move(opts, state);
     } else {
@@ -4397,7 +4397,7 @@ dmr_composite_cc_grant_case(char frame[4][24], int bp) {
     if (bp) {
         dmr_hold_bp_call(opts, state);
     }
-    dmr_hop_csbk(opts, state, 49U, DMR_HOP_LCN1, 101U, 1001U);
+    dmr_hop_csbk(opts, state, DMR_HOP_LCN1, 101U, 1001U);
     DSD_SNPRINTF(what, sizeof what, "a composite grant, %s: the machine follows it on the control channel's carrier",
                  what_call);
     rc |= expect_true(what, state->trunk_vc_freq[0] == DMR_HOP_CC);
@@ -6447,23 +6447,6 @@ write_csbk_bits(uint8_t* bits, size_t start, uint32_t value, size_t nbits) {
 
 /* A DMR Tier III C_BCAST (opcode 40) announcing @p channel at an absolute frequency: @p rx_int MHz plus @p rx_step
  * steps of 125 Hz, the same receive and transmit. */
-
-/* The PDU in @p bits / @p bytes as the assembler hands over a two-block MBC: header LB 0, one continuation carrying
-   LB 1 and the header's CSBKO (TS 102 361-4 CG_AP/MV_AP/BC_AP). */
-static void
-cspdu_mbc(dsd_opts* opts, dsd_state* state, uint8_t* bits, uint8_t* bytes) {
-    const uint8_t csbko = (uint8_t)(bytes[0] & 0x3FU);
-    bytes[0] = csbko;
-    bytes[12] = (uint8_t)(0x80U | csbko);
-    bits[0] = 0U;
-    bits[96] = 1U;
-    for (int i = 0; i < 6; i++) {
-        bits[98 + i] = (uint8_t)((csbko >> (5 - i)) & 1U);
-    }
-    const dmr_cspdu_shape shape = {1U, 1U, csbko, csbko, 1U};
-    dmr_cspdu_ex(opts, state, bits, bytes, 1U, 0U, &shape);
-}
-
 static void
 build_c_bcast_chan_freq(uint8_t* bits, uint8_t* bytes, uint16_t channel, uint16_t rx_int, uint16_t rx_step) {
     DSD_MEMSET(bits, 0, 256);
@@ -6616,9 +6599,9 @@ test_learned_channels_never_rotate_the_scanner(void) {
     uint8_t bits[256];
     uint8_t bytes[48];
     build_c_bcast_chan_freq(bits, bytes, 77U, 451U, 100U);
-    cspdu_mbc(opts, state, bits, bytes);
+    dsd_test_dmr_cspdu_mbc(opts, state, bits, bytes);
     build_c_bcast_chan_freq(bits, bytes, 78U, 451U, 300U);
-    cspdu_mbc(opts, state, bits, bytes);
+    dsd_test_dmr_cspdu_mbc(opts, state, bits, bytes);
     rc |= expect_true("c_bcast: the site's channels are learned",
                       state->lcn_freq_count == 2 && *dsd_state_trunk_lcn_slot_const(state, 0) == 451012500L);
     rc |= expect_learned_channels_hold(opts, state, "learned from C_BCAST");
@@ -9657,6 +9640,31 @@ test_carrier_boundary_discards_partial_assemblies(void) {
                       state->nxdn_payload_mi == 0ULL && state->nxdn_iv_on_air == 0U);
 
     free_test_runtime(opts, state);
+    return rc;
+}
+
+/* Discussion #900 B7: an MBC is consecutive bursts on one carrier, so the no-carrier reset (noCarrier() and the shared
+   reset a -Y row change runs) ends the one being assembled on either slot: a continuation after it joins nothing. */
+static int
+test_no_carrier_reset_disarms_the_mbc_assembly(void) {
+    int rc = 0;
+    for (int path = 0; path < 2; path++) {
+        dsd_opts* opts = NULL;
+        dsd_state* state = NULL;
+        if (init_test_runtime(&opts, &state) != 0) {
+            return 1;
+        }
+        state->dmr_mbc_armed[0] = 1U;
+        state->dmr_mbc_armed[1] = 1U;
+        if (path == 0) {
+            noCarrier(opts, state);
+        } else {
+            dsd_engine_reset_no_carrier_state(opts, state);
+        }
+        rc |= expect_true(path == 0 ? "noCarrier disarms both slots' MBC" : "the shared reset disarms both slots' MBC",
+                          state->dmr_mbc_armed[0] == 0U && state->dmr_mbc_armed[1] == 0U);
+        free_test_runtime(opts, state);
+    }
     return rc;
 }
 
@@ -19733,6 +19741,7 @@ main(void) {
     rc |= test_receive_boundary_closes_only_rejected_capture();
     rc |= test_receive_boundary_keeps_admitted_p25p2_playout();
     rc |= test_carrier_boundary_discards_partial_assemblies();
+    rc |= test_no_carrier_reset_disarms_the_mbc_assembly();
     rc |= test_no_carrier_reset_discards_the_dmr_mix_media();
     rc |= test_no_carrier_keeps_the_digital_gain_in_either_format();
     rc |= test_carrier_boundaries_start_the_voice_level_over();

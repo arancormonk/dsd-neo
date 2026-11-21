@@ -34,7 +34,7 @@
 #include <string.h>
 #include <time.h>
 
-#include "dmr_abs_params.h"
+#include "dmr_mbc_test_support.h"
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
@@ -202,22 +202,6 @@ dsd_drain_audio_output(dsd_opts* opts) {
 }
 
 extern void dmr_cspdu(dsd_opts*, dsd_state*, uint8_t*, uint8_t*, uint32_t, uint32_t);
-
-/* The PDU in @p bits / @p bytes as the assembler hands over a two-block MBC: header LB 0, one continuation carrying
-   LB 1 and the header's CSBKO (TS 102 361-4 CG_AP/MV_AP/BC_AP). */
-static void
-cspdu_mbc(dsd_opts* opts, dsd_state* state, uint8_t* bits, uint8_t* bytes) {
-    const uint8_t csbko = (uint8_t)(bytes[0] & 0x3FU);
-    bytes[0] = csbko;
-    bytes[12] = (uint8_t)(0x80U | csbko);
-    bits[0] = 0U;
-    bits[96] = 1U;
-    for (int i = 0; i < 6; i++) {
-        bits[98 + i] = (uint8_t)((csbko >> (5 - i)) & 1U);
-    }
-    const dmr_cspdu_shape shape = {1U, 1U, csbko, csbko, 1U};
-    dmr_cspdu_ex(opts, state, bits, bytes, 1U, 0U, &shape);
-}
 
 static void
 init_env(dsd_opts* opts, dsd_state* state) {
@@ -2134,11 +2118,12 @@ test_data_grant_classes(dsd_opts* opts, dsd_state* st, uint16_t lpcn, long freq)
 
     // Opcode 0x38 on MS-sourced data is BS_Dwn_Act, never a grant: no activity row, nothing followed.
     (void)dsd_recent_activity_clear(st, 0U);
+    const int synctype = st->synctype;
     st->synctype = DSD_SYNC_DMR_MS_DATA;
     rc |= expect_true("BS_Dwn_Act on MS data is not followed",
                       !grant_class_followed(opts, st, 0x38U, 1, 1, lpcn, freq, 7500U, 7501U));
     rc |= expect_true("BS_Dwn_Act on MS data publishes no grant activity", recent_activity_is_empty(st, 0U));
-    st->synctype = 0;
+    st->synctype = synctype;
     reset_to_cc(opts, st);
     return rc;
 }
@@ -2254,7 +2239,7 @@ main(void) {
 
     reset_to_cc(opts, st);
     build_absolute_grant(bits, bytes, 49U, 3300U, 4400U, 0U, 88U, 452U, 100U);
-    cspdu_mbc(opts, st, bits, bytes);
+    dsd_test_dmr_cspdu_mbc(opts, st, bits, bytes);
     rc |= expect_true("absolute grant learns mbc lpcn", st->trunk_chan_map[88] == 452012500L);
     rc |= expect_true("absolute grant marks unconfirmed trust while off cc", st->dmr_lcn_trust[88] == 2U);
     rc |= expect_true("absolute grant publishes mbc lpcn activity",
@@ -2266,7 +2251,7 @@ main(void) {
     reset_to_cc(opts, st);
     build_absolute_grant(bits, bytes, 49U, 3310U, 4410U, 0U, 89U, 453U, 200U);
     write_bits_u32(bits, 112U, 3U, 4U);
-    cspdu_mbc(opts, st, bits, bytes);
+    dsd_test_dmr_cspdu_mbc(opts, st, bits, bytes);
     rc |= expect_true("unknown absolute cdef does not learn lpcn", st->trunk_chan_map[89] == 0);
     rc |= expect_true("unknown absolute cdef does not tune", opts->trunk_is_tuned == 0);
 
@@ -2778,7 +2763,7 @@ main(void) {
 
     init_env(&pf0_opts, &pf0_st);
     build_c_bcast_chan_freq(bits, bytes, 77U, 451U, 100U);
-    cspdu_mbc(&pf0_opts, &pf0_st, bits, bytes);
+    dsd_test_dmr_cspdu_mbc(&pf0_opts, &pf0_st, bits, bytes);
     rc |= expect_true("c_bcast channel frequency learned", pf0_st.trunk_chan_map[77] == 451012500L);
     rc |= expect_true("c_bcast channel frequency tracked", pf0_st.trunk_lcn_freq[0] == 451012500L);
     rc |= expect_true("c_bcast first learned frequency sets count", pf0_st.lcn_freq_count == 1);
@@ -2786,11 +2771,11 @@ main(void) {
     /* Distinct announcements append rather than writing modulo a fixed window, and a repeat of
      * an already-tracked frequency is not appended twice. */
     build_c_bcast_chan_freq(bits, bytes, 78U, 451U, 300U);
-    cspdu_mbc(&pf0_opts, &pf0_st, bits, bytes);
+    dsd_test_dmr_cspdu_mbc(&pf0_opts, &pf0_st, bits, bytes);
     rc |= expect_true("c_bcast second frequency appended", pf0_st.trunk_lcn_freq[1] == 451037500L);
     rc |= expect_true("c_bcast second frequency raises count", pf0_st.lcn_freq_count == 2);
     build_c_bcast_chan_freq(bits, bytes, 79U, 451U, 300U);
-    cspdu_mbc(&pf0_opts, &pf0_st, bits, bytes);
+    dsd_test_dmr_cspdu_mbc(&pf0_opts, &pf0_st, bits, bytes);
     rc |= expect_true("c_bcast duplicate frequency not appended", pf0_st.lcn_freq_count == 2);
     dsd_state_ext_free_all(&pf0_st);
 
@@ -2805,7 +2790,7 @@ main(void) {
     }
     pf0_st.lcn_freq_count = 40;
     build_c_bcast_chan_freq(bits, bytes, 77U, 451U, 100U);
-    cspdu_mbc(&pf0_opts, &pf0_st, bits, bytes);
+    dsd_test_dmr_cspdu_mbc(&pf0_opts, &pf0_st, bits, bytes);
     rc |= expect_true("imported map still learns the channel", pf0_st.trunk_chan_map[77] == 451012500L);
     rc |= expect_true("imported map keeps its length", pf0_st.lcn_freq_count == 40);
     int imported_intact = 1;
@@ -2827,7 +2812,7 @@ main(void) {
     pf0_st.trunk_chan_map[10] = 451000000L;
     pf0_st.trunk_chan_map[12] = 451025000L;
     build_c_bcast_adjacent_apcn(bits, bytes, 14U, 451U, 400U);
-    cspdu_mbc(&pf0_opts, &pf0_st, bits, bytes);
+    dsd_test_dmr_cspdu_mbc(&pf0_opts, &pf0_st, bits, bytes);
     rc |= expect_true("c_bcast apcn learned anchor", pf0_st.trunk_chan_map[14] == 451050000L);
     rc |= expect_true("heuristic fill synthesizes missing lcn 11", pf0_st.trunk_chan_map[11] == 451012500L);
     rc |= expect_true("heuristic fill synthesizes missing lcn 13", pf0_st.trunk_chan_map[13] == 451037500L);

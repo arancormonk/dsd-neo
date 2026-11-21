@@ -450,7 +450,11 @@ test_cc_vc_cc_trip_keeps_learned_rows(void) {
     assert(g_opts.trunk_is_tuned == 1);
     const uint32_t gen = dmr_t3_chan_generation(&g_state);
 
-    (void)return_request(&g_opts, &g_state, 0U);
+    /* The machine's own release (a forced one, as a P_CLEAR for the call arms it) takes the receiver back to the
+       control channel. */
+    g_state.trunk_sm_force_release = 1;
+    dmr_sm_emit_release(&g_opts, &g_state, 0);
+    assert(g_opts.trunk_is_tuned == 0);
     send_aloha(0x1234U);
     assert(g_state.trunk_chan_map[90] == 451075000L);
     assert(dmr_t3_chan_origin(&g_state, 90U) == DMR_CHAN_ORIGIN_SITE);

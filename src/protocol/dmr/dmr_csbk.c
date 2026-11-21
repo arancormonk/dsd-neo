@@ -84,9 +84,9 @@ dmr_csbk_note_brand(dsd_state* state, const char* brand) {
     }
 }
 
-/* The CSBK being handled is one -F accepted as RAS, whose keyed CRC no one can check, with nothing else casting doubt on
-   it: the slot's flags say RAS alone (a failed CRC never counts), RAS is confirmed on this carrier, and the burst was
-   read whole from it, as dmr_ras_note_signature() takes a signature. Never the P_CLEAR the decoder synthesized. */
+/* The CSBK being handled is one -F accepted as RAS, whose keyed CRC no one can check, with nothing else casting doubt
+   on it: the slot's flags say RAS alone (a failed CRC never counts), RAS is confirmed on this carrier, and the burst
+   was read whole from it, as dmr_ras_note_signature() takes a signature. Never the P_CLEAR the decoder synthesized. */
 static int
 dmr_csbk_ras_accepted(const dsd_opts* opts, const dsd_state* state) {
     return !s_dmr_cspdu_synthesized && opts->aggressive_framesync == 0
@@ -207,7 +207,8 @@ dmr_cspdu_pf0_should_skip_call(const dsd_opts* opts, const dmr_t3_grant_class* g
     return grant->group ? opts->trunk_tune_group_calls == 0 : opts->trunk_tune_private_calls == 0;
 }
 
-/* The call kind a grant's activity row and its call carry: data whatever its group class, else group or private voice. */
+/* The call kind a grant's activity row and its call carry: data whatever its group class, else group or private
+   voice. */
 static dsd_call_kind
 dmr_cspdu_pf0_grant_call_kind(const dmr_t3_grant_class* grant) {
     if (grant->data) {
@@ -216,8 +217,8 @@ dmr_cspdu_pf0_grant_call_kind(const dmr_t3_grant_class* grant) {
     return grant->group ? DSD_CALL_KIND_GROUP_VOICE : DSD_CALL_KIND_PRIVATE_VOICE;
 }
 
-/* The absolute parameters of the PDU being handled (dmr_abs_params_decode()), or 0 with the reason printed: a reserved
-   Cdeftype, or no usable frequency (no single checked continuation, or one outside Table C.7). */
+/* Why the PDU's absolute parameters are unusable: a reserved Cdeftype (its CdefParms printed raw), or no usable
+   frequency. */
 static void
 dmr_cspdu_abs_params_print_unusable(const uint8_t cs_pdu_bits[], const dmr_abs_params* ap) {
     if (ap->cdeftype != 0U) {
@@ -228,6 +229,8 @@ dmr_cspdu_abs_params_print_unusable(const uint8_t cs_pdu_bits[], const dmr_abs_p
     }
 }
 
+/* The absolute parameters of the PDU being handled (dmr_abs_params_decode()), or 0 with the reason printed: a reserved
+   Cdeftype, or no usable frequency (no single checked continuation, or one outside Table C.7). */
 static int
 dmr_cspdu_abs_params(const uint8_t cs_pdu_bits[], dmr_abs_params* ap) {
     if (dmr_abs_params_decode(cs_pdu_bits, dmr_cspdu_current_shape(), ap)) {
@@ -238,7 +241,8 @@ dmr_cspdu_abs_params(const uint8_t cs_pdu_bits[], dmr_abs_params* ap) {
 }
 
 /* An absolute grant (LPCN 0xFFF): its frequency in @p freq and the LPCN its CdefParms define in @p chan (0 or 4095
-   name no channel). 0 when its parameters are unusable: then it names no frequency and is neither shown nor followed. */
+   name no channel). 0 when its parameters are unusable: then it names no frequency and is neither shown nor
+   followed. */
 static int
 dmr_cspdu_pf0_parse_absolute_grant(dsd_opts* opts, dsd_state* state, uint8_t cs_pdu_bits[], long int* freq,
                                    uint16_t* chan) {
@@ -635,7 +639,7 @@ dmr_cspdu_pf0_handle_tier2_simple(dsd_opts* opts, dsd_state* state, uint8_t cs_p
         dmr_cspdu_pf0_handle_nack_rsp(cs_pdu_bits);
         return;
     }
-    if (csbk_o == 56 && state->synctype == DSD_SYNC_DMR_MS_DATA) {
+    if (csbk_o == 56 && !dmr_t3_grant_is_grant_opcode(csbk_o, state->synctype != DSD_SYNC_DMR_MS_DATA)) {
         dmr_cspdu_pf0_print_tier2_target_source(" BS Outbound Activation (BS_Dwn_Act) - ", cs_pdu_bits);
     }
     UNUSED2(opts, state);
@@ -1047,9 +1051,9 @@ dmr_cspdu_pf0_p_clear_parse(const uint8_t cs_pdu_bits[], dmr_cspdu_p_clear_field
     f->source = (uint32_t)convert_bits_into_output(&cs_pdu_bits[56], 24);
 }
 
-/* The TSCC a P_CLEAR sends its addressed parties to, printed: a logical channel the map knows, or the appended block's
-   (dmr_cspdu_pf0_note_absolute_tscc()). Another TSCC than the control channel becomes a current-site hunt candidate when
-   the clear was checked or RAS-accepted; where the release returns stays the machine's. */
+/* The TSCC a P_CLEAR sends its addressed parties to, printed: a logical channel the map knows, or the appended
+   block's (dmr_cspdu_pf0_note_absolute_tscc()). Another TSCC than the control channel becomes a current-site hunt
+   candidate when the clear was checked or RAS-accepted; where the release returns stays the machine's. */
 static void
 dmr_cspdu_pf0_p_clear_note_tscc(dsd_opts* opts, dsd_state* state, const uint8_t cs_pdu_bits[], uint16_t lpcn) {
     if (lpcn == 0U) {
@@ -1369,8 +1373,8 @@ dmr_cspdu_pf0_c_bcast_ann_wd_absolute(dsd_opts* opts, dsd_state* state, const ui
 
 /* Ann_WD_TSCC (TS 102 361-4 §7.2.19.1, Table 7.69): up to two TSCCs as logical channels, BCAST_CH1/2 (Parms2 bits
    56-67, 68-79) with their colour codes (Parms1 25-28, 29-32) and AW_FLAG1/2 (33, 34: 0 add to the hunt list, 1
-   withdraw), or one TSCC in the MBC form. Only a channel marked add becomes a hunt candidate, and only from a checked or
-   RAS-accepted PDU; withdrawing the control channel the receiver is on moves it to the other one announced. */
+   withdraw), or one TSCC in the MBC form. Only a channel marked add becomes a hunt candidate, and only from a checked
+   or RAS-accepted PDU; withdrawing the control channel the receiver is on moves it to the other one announced. */
 static void
 dmr_cspdu_pf0_c_bcast_handle_ann_wd_tscc(dsd_opts* opts, dsd_state* state, const uint8_t cs_pdu_bits[],
                                          const dmr_cspdu_pf0_c_bcast_fields* f) {
@@ -3149,7 +3153,7 @@ dmr_cspdu_malformed(const dsd_state* state, const uint8_t cs_pdu_bits[], int csb
         }
         return dmr_cspdu_appends_abs_params(csbk_o) && !dmr_abs_params_shape_ok(shape);
     }
-    if (csbk_pf != 0 || csbk_o < 48 || csbk_o > 56 || (csbk_o == 56 && state->synctype == DSD_SYNC_DMR_MS_DATA)) {
+    if (csbk_pf != 0 || !dmr_t3_grant_is_grant_opcode(csbk_o, state->synctype != DSD_SYNC_DMR_MS_DATA)) {
         return 0;
     }
     return convert_bits_into_output(&cs_pdu_bits[16], 12) == 0xFFFU;
