@@ -32,6 +32,17 @@ int wav_recording_analog_rdio_skip_first_this_run(void);
    failure counts. */
 int wav_recording_digital_rdio_skip_first_this_run(void);
 
+/* 1 the first time this decoder run that a played file's recording is kept local because the file held more than one
+   call (issue #888), the one that is logged; reset with the run's failure counts. */
+int wav_recording_played_file_rdio_skip_first_this_run(void);
+
+/* Keep open segment @p file local: its close publishes it, never exports it (issue #888: a played SDRTrunk file in which
+   the call-state layer opened more than one call). A handle that is no per-call segment is left alone. */
+void wav_segment_keep_local(const SNDFILE* file);
+
+/* Whether open segment @p file was kept local (wav_segment_keep_local()); 0 for a handle that is no per-call segment. */
+int wav_segment_kept_local(const SNDFILE* file);
+
 /* Forget @p file's segment, if it is one, and close it through libsndfile (or the test seam); sf_close()'s result.
    @p failed (may be NULL) gets whether a short write had latched the segment (the journal's `failed` flag). */
 int wav_segment_close(SNDFILE* file, int* failed);

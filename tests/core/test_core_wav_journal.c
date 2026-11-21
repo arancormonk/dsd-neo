@@ -76,6 +76,7 @@
 #include "trunk_scan_test_support.h"
 #include "wav_journal.h"
 #include "wav_journal_test_support.h"
+#include "wav_segment.h"
 #include "wav_segment_test_support.h"
 
 static int
@@ -3131,19 +3132,27 @@ test_d7_wav_stop_mid_call(void) {
         uint32_t channel; /* an EDACS grant's LCN, 0 for none */
         unsigned want;
         const char* tag; /* the sidecar's label, when checked */
+        int standard;    /* EDACS standard addressing (ea_mode 0), whose rows carry placeholder strings */
     } cases[] = {
-        {"source-only NXDN call heard on 452.3125 MHz", DSD_SYNC_NXDN_POS, 1234U, 452312500, 0U, 452312U, NULL},
-        {"source-only NXDN call on an audio input", DSD_SYNC_NXDN_POS, 1234U, 0, 0U, 4242U, NULL},
+        {"source-only NXDN call heard on 452.3125 MHz", DSD_SYNC_NXDN_POS, 1234U, 452312500, 0U, 452312U, NULL, 0},
+        {"source-only NXDN call on an audio input", DSD_SYNC_NXDN_POS, 1234U, 0, 0U, 4242U, NULL, 0},
         /* Anonymous-voice protocols, whose identity-less rows the event layer always keeps. */
-        {"X2-TDMA call heard on 452.3125 MHz", DSD_SYNC_X2TDMA_VOICE_POS, 0U, 452312500, 0U, 452312U, NULL},
+        {"X2-TDMA call heard on 452.3125 MHz", DSD_SYNC_X2TDMA_VOICE_POS, 0U, 452312500, 0U, 452312U, NULL, 0},
         /* The event layer's standalone ProVoice row carries no EDACS grant's LCN, so its label keeps "ProVoice". */
         {"standalone ProVoice call heard on 452.3125 MHz", DSD_SYNC_PROVOICE_POS, 0U, 452312500, 0U, 452312U,
-         "\"talkgroup_tag\": \"ProVoice 452.3125 MHz\","},
+         "\"talkgroup_tag\": \"ProVoice 452.3125 MHz\",", 0},
         /* A ProVoice call an EDACS grant named on LCN 4 (an extended-addressing digital all-call) whose row kept no ID:
            not standalone ProVoice, so an early close does not vouch for it. */
-        {"identity-less EDACS ProVoice call on LCN 4", DSD_SYNC_PROVOICE_POS, 0U, 452412500, 4U, 0U, NULL},
-        {"identity-less DMR call", DSD_SYNC_DMR_BS_VOICE_POS, 0U, 452312500, 0U, 0U, NULL},
-        {"identity-less NXDN call", DSD_SYNC_NXDN_POS, 0U, 0, 0U, 0U, NULL},
+        {"identity-less EDACS ProVoice call on LCN 4", DSD_SYNC_PROVOICE_POS, 0U, 452412500, 4U, 0U, NULL, 0},
+        /* Standard addressing renders "LID_UNK" and "000_AFS_00_000" for parties it does not know: a digital all-call
+           whose LID was unavailable (0x800, no source) names no call, and an EDACS row with no IDs neither. A source
+           does. */
+        {"standard-address EDACS ProVoice all-call on LCN 4", DSD_SYNC_PROVOICE_POS, 0U, 452412500, 4U, 0U, NULL, 1},
+        {"standard-address EDACS call with no IDs", DSD_SYNC_EDACS_POS, 0U, 452412500, 4U, 0U, NULL, 1},
+        {"standard-address EDACS ProVoice call from LID 1234", DSD_SYNC_PROVOICE_POS, 1234U, 452412500, 4U, 452412U,
+         NULL, 1},
+        {"identity-less DMR call", DSD_SYNC_DMR_BS_VOICE_POS, 0U, 452312500, 0U, 0U, NULL, 0},
+        {"identity-less NXDN call", DSD_SYNC_NXDN_POS, 0U, 0, 0U, 0U, NULL, 0},
     };
 
     int rc = 0;
@@ -3151,6 +3160,9 @@ test_d7_wav_stop_mid_call(void) {
         rig r;
         rc |= rig_open(&r, "dsdneo_journal_d7_stop");
         rdio_fallback_on(&r, DSD_RDIO_MODE_DIRWATCH);
+        if (cases[i].standard) {
+            r.state->ea_mode = 0;
+        }
         submit(&r, DSD_APP_CMD_WAV_START);
         const dsd_call_observation call = {.protocol = cases[i].protocol,
                                            .kind = DSD_CALL_KIND_GROUP_VOICE,
@@ -4518,7 +4530,7 @@ test_playback_unnumbered_call_export(void) {
 }
 
 /* One record of a played SDRTrunk export: a DMR group call to @p tg (0 for none) from @p src (0: no "from" key), of
-   @p frames voice frames stamped on the recording's clock from @p first_ms, 20 ms apart. */
+   @p frames voice frames stamped on the recording's clock from @p first_ms, 20 ms apart (0: no "time" key). */
 typedef struct {
     uint32_t tg;
     uint32_t src;
@@ -4545,8 +4557,13 @@ records_write(const char* path, const playback_record* recs, int n) {
         }
         len += (size_t)k;
         for (int i = 0; i < recs[c].frames; i++) {
-            k = DSD_SNPRINTF(json + len, sizeof json - len, "%s{\"time\":%llu,\"hex\":\"%s\"}", i > 0 ? "," : "",
-                             (unsigned long long)(recs[c].first_ms + (uint64_t)i * 20ULL), k_playback_dmr_hex);
+            char stamp[48] = "";
+            if (recs[c].first_ms != 0U) {
+                DSD_SNPRINTF(stamp, sizeof stamp, "\"time\":%llu,",
+                             (unsigned long long)(recs[c].first_ms + (uint64_t)i * 20ULL));
+            }
+            k = DSD_SNPRINTF(json + len, sizeof json - len, "%s{%s\"hex\":\"%s\"}", i > 0 ? "," : "", stamp,
+                             k_playback_dmr_hex);
             if (k <= 0 || (size_t)k >= sizeof json - len) {
                 return 1;
             }
@@ -4630,11 +4647,36 @@ expect_record_export(const rig* r, const char* label, const playback_record* rec
     return rc;
 }
 
+/* The recording of @p rec's frames, kept local: published once, filed at @p rec's first frame's second, with no upload
+   and no sidecar, and the run's one line said. */
+static int
+expect_record_local(const rig* r, const char* label, const playback_record* rec) {
+    int rc = 0;
+    char tag[200];
+    int count = 0;
+    const char* pub = publish_of_duration((long long)rec->frames * 20, &count);
+    DSD_SNPRINTF(tag, sizeof tag, "%s: one recording of all %d frames", label, rec->frames);
+    rc |= expect_int(tag, count, 1);
+    DSD_SNPRINTF(tag, sizeof tag, "%s: filed at the stamped record's first frame", label);
+    rc |= expect_int(tag, pub ? field_ll(pub, "start") : -9, (long long)(rec->first_ms / 1000ULL));
+    DSD_SNPRINTF(tag, sizeof tag, "%s: no upload", label);
+    rc |= expect_str(tag, pub ? field_s(pub, "rdio") : "", "false");
+    static char body[4096];
+    read_sidecar_of(r, pub, body, sizeof body);
+    DSD_SNPRINTF(tag, sizeof tag, "%s: kept local, no sidecar", label);
+    rc |= expect_str(tag, body, "");
+    DSD_SNPRINTF(tag, sizeof tag, "%s: said once this run", label);
+    rc |= expect_int(tag, wav_recording_played_file_rdio_skip_first_this_run(), 0);
+    return rc;
+}
+
 /* -P -r with --rdio-unknown-talkgroup: a played file is one call, as SDRTrunk writes them. A file of two records is
-   played as one stream: one recording of both records' audio, one history row, and one export. The records' headers
-   fold into the open call one key at a time, as on air, so the row ends with the last ID each endpoint was given (a
-   0 or a missing ID clears none), and the row is stamped from the first valid frame of the last call the call-state
-   layer opened: the second record's where its source or talkgroup changed, else the first's. */
+   played as one stream: one recording of both records' audio and one history row. The records' headers fold into the
+   open call one key at a time, as on air, so the row ends with the last ID each endpoint was given (a 0 or a missing ID
+   clears none), and the row is stamped from the first valid frame of the last call the call-state layer opened: the
+   second record's where its source or talkgroup changed, else the first's. A file in which the call-state layer opened
+   a second call holds audio of more than one call under the last one's row: it is kept local, with no sidecar and no
+   upload, under any number (issue #888); a file it read as one call is exported. */
 static int
 test_playback_records_play_as_one_call(void) {
     static const struct {
@@ -4644,24 +4686,28 @@ test_playback_records_play_as_one_call(void) {
         uint32_t row_tg;  /* the row's talkgroup, also the sidecar's unless 0 */
         uint32_t row_src; /* the row's and the sidecar's source */
         int stamped;      /* the record whose first frame stamps the row */
+        int local;        /* a second call opened in the file: kept local */
     } k_cases[] = {
         {"two talkgroups",
          "two.mbe",
          {{1234U, 5678U, 3, 1600000100250ULL}, {4321U, 777U, 5, 1600000200750ULL}},
          4321U,
          777U,
+         1,
          1},
         {"zero to after a talkgroup",
          "zero_to.mbe",
          {{1234U, 5678U, 3, 1600000100250ULL}, {0U, 777U, 4, 1600000200750ULL}},
          1234U,
          777U,
+         1,
          1},
         {"identity-less first",
          "anonymous_first.mbe",
          {{0U, 0U, 3, 1600000300250ULL}, {0U, 111U, 4, 1600000400750ULL}},
          0U,
          111U,
+         0,
          0},
     };
 
@@ -4686,11 +4732,77 @@ test_playback_records_play_as_one_call(void) {
             k_cases[c].recs[0].frames + k_cases[c].recs[1].frames,
             k_cases[c].recs[k_cases[c].stamped].first_ms,
         };
-        rc |= expect_record_export(&r, k_cases[c].label, &whole, k_cases[c].row_tg != 0U ? k_cases[c].row_tg : 4242U,
-                                   k_cases[c].row_src);
+        if (k_cases[c].local) {
+            rc |= expect_record_local(&r, k_cases[c].label, &whole);
+        } else {
+            rc |= expect_record_export(&r, k_cases[c].label, &whole,
+                                       k_cases[c].row_tg != 0U ? k_cases[c].row_tg : 4242U, k_cases[c].row_src);
+        }
         rdio_fallback_off(&r);
         rig_close(&r);
     }
+    return rc;
+}
+
+/* A played file whose first record is from a radio set stream=off and whose second is from one with no restriction:
+   the second record's call is the last the file opened, so its row allows the export, but the recording holds the
+   first record's audio too. It is kept local (issue #888). Before, it was exported under the second radio. The
+   unrestricted radio's record played alone is exported as before. */
+static int
+test_playback_stream_off_record_stays_local(void) {
+    static const struct {
+        const char* label;
+        playback_record recs[2];
+        int n;
+    } k_cases[] = {
+        {"stream=off record, then an unrestricted one",
+         {{0U, 5678U, 3, 1600000100250ULL}, {0U, 777U, 4, 1600000200750ULL}},
+         2},
+        {"the unrestricted record alone", {{0U, 777U, 4, 1600000200750ULL}}, 1},
+    };
+
+    int rc = 0;
+    for (size_t c = 0; c < sizeof k_cases / sizeof k_cases[0]; c++) {
+        rig r;
+        rc |= rig_open(&r, "dsdneo_journal_playback_stream_off");
+        rc |= expect_int("stream=off radio row", dsd_test_install_radio_policy(r.state, 5678U, "A", 1, 1, 0), 0);
+        rc |= playback_records_run(&r, "stream_off.mbe", k_cases[c].recs, k_cases[c].n);
+        const playback_record last = {0U, 0U, k_cases[c].n == 2 ? 7 : 4, 1600000200750ULL};
+        if (k_cases[c].n == 2) {
+            rc |= expect_record_local(&r, k_cases[c].label, &last);
+        } else {
+            rc |= expect_record_export(&r, k_cases[c].label, &last, 4242U, 777U);
+        }
+        rdio_fallback_off(&r);
+        rig_close(&r);
+    }
+    return rc;
+}
+
+/* A played file's second call (another source) whose frames carry no "time": its row is not filed at the first call's
+   stamp. The new call clears the staged stamp with the latch, so the recording falls back to the decode clock, in the
+   journal and in its file name. Before, both took the first record's date. */
+static int
+test_playback_new_call_without_time_takes_the_decode_clock(void) {
+    static const playback_record k_recs[2] = {{0U, 5678U, 3, 1600000100250ULL}, {0U, 777U, 4, 0U}};
+    rig r;
+    int rc = rig_open(&r, "dsdneo_journal_playback_unstamped");
+    rc |= playback_records_run(&r, "unstamped.mbe", k_recs, 2);
+    int count = 0;
+    const char* pub = publish_of_duration(7LL * 20LL, &count);
+    rc |= expect_int("unstamped second call: one recording", count, 1);
+    const long long start = pub ? field_ll(pub, "start") : -9;
+    rc |= expect_true("unstamped second call: filed on the decode clock, not the first call's stamp",
+                      start >= (long long)k_t0 && start <= (long long)k_t0 + 60);
+    char first_date[16] = "";
+    (void)dsd_format_local_datetime((time_t)1600000100, DSD_LOCAL_DATETIME_DATE_COMPACT, first_date, sizeof first_date);
+    const char* file = pub ? field_s(pub, "file") : "";
+    rc |= expect_true("unstamped second call: its name is not the first call's date",
+                      first_date[0] != '\0' && strstr(file, first_date) == NULL);
+    if (rc != 0) {
+        DSD_FPRINTF(stderr, "  unstamped second call: start %lld, file %s\n", start, file);
+    }
+    rig_close(&r);
     return rc;
 }
 
@@ -4769,6 +4881,8 @@ main(void) {
     rc |= test_playback_export_starts_at_its_first_frame();
     rc |= test_playback_unnumbered_call_export();
     rc |= test_playback_records_play_as_one_call();
+    rc |= test_playback_stream_off_record_stays_local();
+    rc |= test_playback_new_call_without_time_takes_the_decode_clock();
     if (rc == 0) {
         printf("CORE_WAV_JOURNAL: OK\n");
     }

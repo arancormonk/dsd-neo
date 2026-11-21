@@ -51,7 +51,6 @@
 #include <dsd-neo/platform/atomic_compat.h>
 #include <dsd-neo/platform/file_compat.h>
 #include <dsd-neo/platform/nonce.h>
-#include <dsd-neo/platform/posix_compat.h>
 #include <dsd-neo/platform/threading.h>
 #include <dsd-neo/protocol/p25/p25p1_const.h>
 #include <dsd-neo/runtime/decode_clock.h>
@@ -1363,13 +1362,14 @@ wav_journal_published(const char* id, const char* path, const char* dir, const E
     wav_journal_publish(&rec);
 }
 
-/* What a per-call segment's journal records name (issue #708), read before its close. */
+/* What a per-call segment's journal records name (issue #708), and whether it was kept local, read before its close. */
 typedef struct {
     int on; /* a close with options while the journal is active */
     char id[48];
     int64_t duration_ms;
     int rate;
     int failed;
+    int local; /* never exported (wav_segment_keep_local()) */
 } wav_close_journal;
 
 /* The id a journal record names: none for a segment whose temp name gave none. */
@@ -1386,6 +1386,7 @@ wav_close_segment(SNDFILE* wav_file, const char* wav_out_filename, const char* d
         (void)wav_temp_id(wav_out_filename, journal->id, sizeof journal->id);
         wav_segment_length(wav_file, &journal->duration_ms, &journal->rate);
     }
+    journal->local = wav_segment_kept_local(wav_file);
     if (wav_file == NULL || wav_segment_close(wav_file, &journal->failed) == 0) {
         return 0;
     }
@@ -1413,11 +1414,12 @@ wav_close_discard_empty(const char* path, const wav_close_journal* journal) {
 /* Whether a close in @p export_mode may give @p row the fallback talkgroup (issue #888 D7): a commit rotation's row,
    which the event layer has kept; an early close's only when the event layer is known to keep it: the row names a
    call, as a number or text, or its protocol's voice never carries identity (X2-TDMA, standalone ProVoice), whose
-   identity-less rows are always kept. A ProVoice row with a grant's LCN is an EDACS call, which names its parties,
-   not standalone ProVoice: identity-less, it names no call. Any other identity-less row vouches for itself only by
-   media and a positive end, a verdict not known before its commit. The naming test is the twin of
+   identity-less rows are always kept. An EDACS row (an EDACS sync, or ProVoice with a grant's LCN: an EDACS call, not
+   standalone ProVoice) names its call by its decoded IDs alone: standard addressing renders placeholders
+   ("LID_UNK", "000_AFS_00_000") into its strings for parties it does not know. Any other identity-less row vouches
+   for itself only by media and a positive end, a verdict not known before its commit. The naming test is the twin of
    watchdog_event_row_names_call() (dsd_events.c), the event layer's keep rescue: the two must agree on what names a
-   call. */
+   call, except that the rescue keeps EDACS rows by those placeholders, for history, and an early export does not. */
 static int
 wav_close_allows_fallback(int export_mode, const Event_History* row) {
     if (export_mode == DSD_WAV_EXPORT_COMMITTED) {
@@ -1426,9 +1428,14 @@ wav_close_allows_fallback(int export_mode, const Event_History* row) {
     if (export_mode != DSD_WAV_EXPORT_EARLY || row == NULL || row->category != DSD_EVENT_CATEGORY_VOICE) {
         return 0;
     }
-    return row->target_id != 0U || row->source_id != 0U || row->src_str[0] != '\0' || row->tgt_str[0] != '\0'
-           || (dsd_call_state_protocol_voice_is_anonymous(row->systype)
-               && !(DSD_SYNC_IS_PROVOICE(row->systype) && row->channel != 0U));
+    if (row->target_id != 0U || row->source_id != 0U) {
+        return 1;
+    }
+    if (DSD_SYNC_IS_EDACS_ONLY(row->systype) || (DSD_SYNC_IS_PROVOICE(row->systype) && row->channel != 0U)) {
+        return 0;
+    }
+    return row->src_str[0] != '\0' || row->tgt_str[0] != '\0'
+           || dsd_call_state_protocol_voice_is_anonymous(row->systype);
 }
 
 /* A row with no talkgroup, not exported: said once a run per class while rdio export is on, with no failure line. An
@@ -1448,6 +1455,17 @@ wav_close_note_rdio_skip(const dsd_opts* opts, const Event_History* row, int all
                && wav_recording_digital_rdio_skip_first_this_run()) {
         LOG_WARN("Rdio export: digital calls with no talkgroup and no channel frequency (an audio input has none) are "
                  "not exported; set --rdio-unknown-talkgroup to export them under one talkgroup\n");
+    }
+}
+
+/* A published recording kept local (wav_segment_keep_local()): a played SDRTrunk file in which the call-state layer
+   opened more than one call holds audio of each under the last one's row, so no row's export verdict covers it (issue
+   #888). Not exported under any number; said once a run while rdio export is on. */
+static void
+wav_close_note_kept_local(const dsd_opts* opts) {
+    if (opts->rdio_mode != DSD_RDIO_MODE_OFF && wav_recording_played_file_rdio_skip_first_this_run()) {
+        LOG_WARN("Rdio export: a played file that holds more than one call is recorded as one file, which is not "
+                 "exported\n");
     }
 }
 
@@ -1527,10 +1545,15 @@ wav_close_and_publish(SNDFILE* wav_file, const dsd_opts* opts, const char* wav_o
         return wav_file;
     }
 
-    const int rdio_queued =
-        (export_mode != DSD_WAV_EXPORT_NONE && opts && final_size > 44)
-            ? wav_close_export_rdio(opts, event_struct, event_item, new_filename, opened, started, export_mode)
-            : 0;
+    int rdio_queued = 0;
+    if (export_mode != DSD_WAV_EXPORT_NONE && opts && final_size > 44) {
+        if (journal.local) {
+            wav_close_note_kept_local(opts);
+        } else {
+            rdio_queued =
+                wav_close_export_rdio(opts, event_struct, event_item, new_filename, opened, started, export_mode);
+        }
+    }
     if (journal.on) {
         wav_journal_published(journal.id, new_filename, dir, event_struct,
                               dsd_rdio_recording_start(event_item, opened, started), journal.duration_ms, journal.rate,
@@ -2318,6 +2341,9 @@ typedef struct {
     // Whether the call's row carries its recording start yet, the first frame "time" that parsed (issue #888 B21).
     // Cleared when the call-state layer opens another call inside the file.
     uint8_t time_stamped;
+    // The calls the call-state layer opened while the file was read. Past one, the file's recording holds audio of
+    // more than one call under the last one's row, and is kept local (issue #888).
+    uint8_t calls_opened;
     uint8_t alg_id;
     uint8_t alg_seen;
     uint16_t key_id;
@@ -2347,9 +2373,65 @@ typedef struct {
     uint32_t target_id;
 } sdrtrunk_json_context;
 
+/* The separators the SDRTrunk export's JSON puts between its tokens: white space and structure. */
+#define SDRTRUNK_JSON_SEPARATORS " \t\r\n,:{}[]"
+
+/* The next token of the SDRTrunk export's JSON at *@p cursor, which moves past it: a quoted string whole, spaces and
+   escapes (\" and \\ among them, left as written) included, with its closing quote cut; else bare text (a number,
+   true, false, null) up to the next separator. NULL at the end of the text. *@p is_key, when given, gets whether the
+   token is a member's name, a string a ':' follows: only such a token is a key, so a word inside a value never is. */
+static char*
+sdrtrunk_json_token(char** cursor, int* is_key) {
+    if (is_key != NULL) {
+        *is_key = 0;
+    }
+    char* p = *cursor;
+    if (p == NULL) {
+        return NULL;
+    }
+    p += strspn(p, SDRTRUNK_JSON_SEPARATORS);
+    if (*p == '\0') {
+        *cursor = p;
+        return NULL;
+    }
+    char* token = p;
+    char* end = NULL;
+    if (*p == '"') {
+        token = ++p;
+        while (*p != '\0' && *p != '"') {
+            p += (*p == '\\' && p[1] != '\0') ? 2 : 1;
+        }
+        end = p;
+        if (is_key != NULL) {
+            const char* after = *end == '"' ? end + 1 : end;
+            *is_key = after[strspn(after, " \t\r\n")] == ':';
+        }
+    } else {
+        end = p + strcspn(p, SDRTRUNK_JSON_SEPARATORS);
+    }
+    if (*end != '\0') {
+        *end = '\0';
+        *cursor = end + 1;
+    } else {
+        *cursor = end;
+    }
+    return token;
+}
+
+/* The value of the member whose name was just read: its scalar token whole (sdrtrunk_json_token()); NULL when there is
+   none or it is an object or an array, whose members are then read as keys of their own. */
 static char*
 sdrtrunk_json_next_value(char** str_saveptr) {
-    return dsd_strtok_r(NULL, " : \",{}[]\r\n\t", str_saveptr);
+    char* p = *str_saveptr;
+    if (p == NULL) {
+        return NULL;
+    }
+    p += strspn(p, " \t\r\n:");
+    *str_saveptr = p;
+    if (*p == '{' || *p == '[' || *p == ',' || *p == '}' || *p == ']') {
+        return NULL;
+    }
+    return sdrtrunk_json_token(str_saveptr, NULL);
 }
 
 static void
@@ -2361,6 +2443,7 @@ sdrtrunk_json_context_init(sdrtrunk_json_context* ctx) {
     ctx->is_dmra = 1;
     ctx->dmra_le = 0;
     ctx->time_stamped = 0;
+    ctx->calls_opened = 0;
     ctx->alg_id = 0;
     ctx->alg_seen = 0;
     ctx->key_id = 0;
@@ -2983,13 +3066,14 @@ sdrtrunk_json_handle_nxdn_tag(const char* token, char** str_saveptr, sdrtrunk_js
     if (ctx->protocol != 3 || strcmp(token, "tag") != 0) {
         return;
     }
+    /* "SACCH <n>", one quoted value: the frame's place in the SACCH superframe. */
     const char* value = sdrtrunk_json_next_value(str_saveptr);
-    if (!value || strcmp(value, "SACCH") != 0) {
+    if (!value || strncmp(value, "SACCH ", 6) != 0) {
         return;
     }
-    const char* position = sdrtrunk_json_next_value(str_saveptr);
+    const char* position = value + 6 + strspn(value + 6, " ");
     uint8_t part = 0;
-    if (position && dsd_parse_uint8_strict(position, 10, 4U, &part) == 0 && part != 0U) {
+    if (dsd_parse_uint8_strict(position, 10, 4U, &part) == 0 && part != 0U) {
         ctx->nxdn_sacch = part;
     }
 }
@@ -3076,35 +3160,6 @@ sdrtrunk_json_parse_time(const char* value, time_t* out) {
     return 0;
 }
 
-/* A key's value whole, read from the raw text the tokenizer has not reached (*@p str_saveptr): a quoted string up to its
-   closing quote, spaces and all, else the bare text up to the next delimiter. The tokenizer resumes after it. */
-static const char*
-sdrtrunk_json_next_scalar(char** str_saveptr) {
-    char* p = *str_saveptr;
-    if (p == NULL) {
-        return NULL;
-    }
-    p += strspn(p, " :\t\r\n");
-    char* value = p;
-    char* end = NULL;
-    if (*p == '"') {
-        value = p + 1;
-        end = strchr(value, '"');
-    } else {
-        end = value + strcspn(value, " ,{}[]\"\t\r\n");
-    }
-    if (end == NULL) {
-        end = value + strlen(value);
-    }
-    if (*end != '\0') {
-        *end = '\0';
-        *str_saveptr = end + 1;
-    } else {
-        *str_saveptr = end;
-    }
-    return value;
-}
-
 /* The row of a played call is stamped once, from its first frame's "time" that parses: the recording's start, on the
    recording's own clock. Later frames of the call leave it, so the recording is not filed at its last frame (issue #888
    B21); the row of a --playfiles call keeps no end (see dsd_rdio_recording_start()). Another call in the same file is
@@ -3116,7 +3171,7 @@ sdrtrunk_json_handle_time(const char* token, char** str_saveptr, dsd_state* stat
     }
 
     // The key exactly, not a "timestamp", and its value whole: "1700000000000 junk" is not a time.
-    const char* value = sdrtrunk_json_next_scalar(str_saveptr);
+    const char* value = sdrtrunk_json_next_value(str_saveptr);
     if (!value || ctx->time_stamped != 0U) {
         return 1;
     }
@@ -3140,8 +3195,31 @@ sdrtrunk_json_handle_time(const char* token, char** str_saveptr, dsd_state* stat
     return 1;
 }
 
+/* The call-state layer opened another call while the file is read, the first being the file's own. Its row takes its
+   own first frame's stamp: the latch and the staged row's stamp go, so a call with no valid "time" is filed on the
+   decode clock, not at the last call's. From the second, the recording holds more than one call's audio under the
+   last one's row, whose export verdict does not cover the rest: it is kept local (issue #888). */
 static void
-sdrtrunk_json_publish_call(dsd_state* state, sdrtrunk_json_context* ctx) {
+sdrtrunk_json_call_opened(const dsd_opts* opts, dsd_state* state, sdrtrunk_json_context* ctx) {
+    ctx->time_stamped = 0U;
+    if (ctx->calls_opened < UINT8_MAX) {
+        ctx->calls_opened++;
+    }
+    if (ctx->calls_opened < 2U) {
+        return;
+    }
+    if (state->event_history_s != NULL) {
+        dsd_event_history_transaction transaction;
+        dsd_event_history_transaction_begin(state, &transaction);
+        state->event_history_s[0].Event_History_Items[0].event_time = 0;
+        dsd_event_history_mark_dirty(&state->event_history_s[0]);
+        dsd_event_history_transaction_end(&transaction);
+    }
+    wav_segment_keep_local(opts->wav_out_f);
+}
+
+static void
+sdrtrunk_json_publish_call(const dsd_opts* opts, dsd_state* state, sdrtrunk_json_context* ctx) {
     if (!state || !ctx || state->synctype == DSD_SYNC_NONE) {
         return;
     }
@@ -3154,7 +3232,7 @@ sdrtrunk_json_publish_call(dsd_state* state, sdrtrunk_json_context* ctx) {
         .ota_source_id = ctx->source_id,
     };
     if (dsd_call_state_observe(state, &observation, DSD_CALL_BOUNDARY_CONTINUE) > 0) {
-        ctx->time_stamped = 0U; /* another call: its row takes its own first frame's stamp */
+        sdrtrunk_json_call_opened(opts, state, ctx);
     }
     const dsd_call_crypto_update crypto = {
         .classification = ctx->is_enc == 0U         ? DSD_CALL_CRYPTO_CLEAR
@@ -3188,7 +3266,7 @@ sdrtrunk_json_process_token(dsd_opts* opts, dsd_state* state, sdrtrunk_json_cont
     sdrtrunk_json_handle_nxdn_tag(token, str_saveptr, ctx);
     (void)sdrtrunk_json_handle_hex(opts, state, token, str_saveptr, ctx);
     (void)sdrtrunk_json_handle_time(token, str_saveptr, state, ctx);
-    sdrtrunk_json_publish_call(state, ctx);
+    sdrtrunk_json_publish_call(opts, state, ctx);
 }
 
 void
@@ -3214,21 +3292,20 @@ read_sdrtrunk_json_format(dsd_opts* opts, dsd_state* state) {
     size_t source_size = fread(source_str, 1, 0x100000, opts->mbe_in_f);
     source_str[source_size] = '\0';
 
-    char* str_saveptr = NULL;
-    const char* str_buffer = dsd_strtok_r(source_str, "{ \"", &str_saveptr);
-
-    for (size_t i = 0; i < source_size; i++) {
-        if (str_buffer == NULL) {
+    /* Members are read by name: a token that is no key (a value no handler took) is passed over. */
+    char* cursor = source_str;
+    for (size_t i = 0; i < source_size && dsd_exitflag_load() != 1; i++) {
+        int is_key = 0;
+        const char* token = sdrtrunk_json_token(&cursor, &is_key);
+        if (token == NULL) {
             break;
         }
-        sdrtrunk_json_process_token(opts, state, &ctx, str_buffer, &str_saveptr);
+        if (!is_key) {
+            continue;
+        }
+        sdrtrunk_json_process_token(opts, state, &ctx, token, &cursor);
         if (ctx.is_enc == 0) {
             ctx.ks_idx = 0;
-        }
-
-        str_buffer = sdrtrunk_json_next_value(&str_saveptr);
-        if (str_buffer == NULL || dsd_exitflag_load() == 1) {
-            break;
         }
     }
 

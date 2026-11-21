@@ -860,6 +860,61 @@ test_sdrtrunk_json_time_is_the_first_valid_frame(void) {
     return rc;
 }
 
+/* Issue #888: a quoted string is one value, escapes and all, and only a string before a ':' is a key. Words inside a
+   value ("time", "protocol", "to") are never read as keys: a system name with "time 2000" in it does not stamp the row
+   at second 2, nor does an escaped "time" in a note; a site named "protocol NXDN" does not make a DMR record NXDN, and
+   an alias "to 99" names no target. */
+static int
+test_sdrtrunk_json_words_in_values_are_not_keys(void) {
+    static const struct {
+        const char* label;
+        const char* field; /* one header member, before the record's own "to" and "from" */
+    } k_cases[] = {
+        {"a system name with a time in it", "\"system\":\"Local time 2000\","},
+        {"an escaped time in a note", "\"note\":\"a \\\"time\\\": 3000 \\\\\","},
+        {"a site named for a protocol", "\"site\":\"protocol NXDN\","},
+        {"an alias with a target in it", "\"alias\":\"to 99\","},
+    };
+
+    int rc = 0;
+    dsd_opts* const opts = (dsd_opts*)calloc(1, sizeof(*opts));
+    dsd_state* const state = (dsd_state*)calloc(1, sizeof(*state));
+    Event_History_I* const history = (Event_History_I*)calloc(2, sizeof(*history));
+    if (opts == NULL || state == NULL || history == NULL) {
+        free(history);
+        free(state);
+        free(opts);
+        return expect_true("sdrtrunk values: allocated", 0);
+    }
+    for (size_t c = 0; c < sizeof k_cases / sizeof k_cases[0]; c++) {
+        char json[512];
+        DSD_SNPRINTF(json, sizeof json,
+                     "{\"protocol\":\"DMR\",\"version\":2,\"call_type\":\"GROUP\",\"from\":\"5678\",\"to\":\"1234\",%s"
+                     "\"encrypted\":false,\"frames\":[{\"time\":1700000123456},{\"time\":1700000125456}]}",
+                     k_cases[c].field);
+        DSD_MEMSET(opts, 0, sizeof(*opts));
+        DSD_MEMSET(state, 0, sizeof(*state));
+        DSD_MEMSET(history, 0, 2 * sizeof(*history));
+        opts->playfiles = 1;
+        state->event_history_s = history;
+        char tag[160];
+        rc |= run_sdrtrunk_json(json, opts, state);
+        DSD_SNPRINTF(tag, sizeof tag, "sdrtrunk values, %s: the frame's time stamps the row", k_cases[c].label);
+        rc |= expect_u64(tag, (uint64_t)history[0].Event_History_Items[0].event_time, 1700000123ULL);
+        DSD_SNPRINTF(tag, sizeof tag, "sdrtrunk values, %s: the protocol stays DMR", k_cases[c].label);
+        rc |= expect_int(tag, state->synctype, DSD_SYNC_DMR_BS_DATA_POS);
+        dsd_call_snapshot call = {0};
+        DSD_SNPRINTF(tag, sizeof tag, "sdrtrunk values, %s: the call's target", k_cases[c].label);
+        rc |= expect_true(tag, dsd_call_state_get(state, 0U, &call) > 0 && call.ota_target_id == 1234U
+                                   && call.ota_source_id == 5678U);
+        dsd_state_ext_free_all(state);
+    }
+    free(history);
+    free(state);
+    free(opts);
+    return rc;
+}
+
 /* A run's opts and state, as the engine sets them up, for --playfiles; NULL both on failure. */
 typedef struct {
     dsd_opts* opts;
@@ -4641,6 +4696,7 @@ main(void) {
     rc |= test_sdrtrunk_json_p25p2_encryption_metadata_updates_event();
     rc |= test_sdrtrunk_json_invalid_numeric_fields_reset_to_zero();
     rc |= test_sdrtrunk_json_time_is_the_first_valid_frame();
+    rc |= test_sdrtrunk_json_words_in_values_are_not_keys();
     rc |= test_sdrtrunk_json_time_is_each_calls_own();
     rc |= test_sdrtrunk_json_call_keeps_its_frames_crypto();
     rc |= test_sdrtrunk_json_protocol_token_alone_creates_no_capture();

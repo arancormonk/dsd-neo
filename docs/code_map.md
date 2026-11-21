@@ -2056,10 +2056,19 @@ suite runs under this compiler.
   given (a `to` or `from` of 0, or one left out, clears none). Where the call-state layer opens a new call inside the
   file (`dsd_call_state_observe()` returns a new epoch), the stamp latch resets, so the row is stamped from that
   call's first valid frame: a recording of two records with other talkgroups is filed at the second record's first
-  frame (`CORE_WAV_JOURNAL` `test_playback_records_play_as_one_call`, `CORE_MBE_FILE_IO`). A frame's `time` is matched
-  by its exact key (not `timestamp`) and its value read whole (`sdrtrunk_json_next_scalar()`: a quoted string up to its
-  closing quote, spaces included); only decimal digits are a time (a sign or a space, which `strtoull()` would take,
-  is not), then strict-parsed.
+  frame (`CORE_WAV_JOURNAL` `test_playback_records_play_as_one_call`, `CORE_MBE_FILE_IO`). From the file's second such
+  call on (`sdrtrunk_json_call_opened()`), the staged row's `event_time` is cleared with the latch, so a call with no
+  valid frame `time` falls back to the decode clock instead of the last call's date, and the slot's open segment is
+  kept local (`wav_segment_keep_local()`, `wav_segment.c`): its close publishes and journals it (`rdio` false) but never
+  exports it under any number, as its audio spans calls whose stream verdicts the last row does not carry; one line a
+  run (`CORE_WAV_JOURNAL` `test_playback_stream_off_record_stays_local`,
+  `test_playback_new_call_without_time_takes_the_decode_clock`). The JSON is read token by token
+  (`sdrtrunk_json_token()`): a quoted string is one token, spaces and escapes (`\"`, `\\`) included, and only a string
+  a `:` follows is a key, so a word inside a value (`"system":"Local time 2000"`, `"site":"protocol NXDN"`) is never
+  matched as one; handlers read their member's value with `sdrtrunk_json_next_value()`, which refuses an object or an
+  array, whose members are read as keys of their own. An NXDN frame's `"tag":"SACCH <n>"` is that one value. A frame's
+  `time` is matched by its exact key (not `timestamp`) and its value read whole; only decimal digits are a time (a sign
+  or a space, which `strtoull()` would take, is not), then strict-parsed.
 - API note: the high-pass filter in `<dsd-neo/core/audio_filters.h>` is `dsd_hpf()`. It was renamed from
   `hpf()` because codec2 exports a symbol of that name and Android links codec2 statically, which turns the
   duplicate into a link error. It is the only filter in that header that is prefixed: codec2 exports none of
@@ -2596,8 +2605,10 @@ suite runs under this compiler.
     call record's or the direct-mode call's first publication) runs the flush before it observes the call (issue #888),
     so the speech that reached the slot file before (ahead of the proof or the DM-SETUP, or trailing an ended call)
     closes as no row's or the held epoch's, unexported, and the first call's recording holds its own audio alone; the
-    samples of that speech still waiting to be played (`tetra_voice_t::carry_len`, half an output frame after a half
-    slot) are dropped with it, so they never lead the call's audio; a call already active (a republication, a
+    speech starts over with it (`tetra_voice_call_admitted()`): the samples still waiting to be played
+    (`tetra_voice_t::carry_len`, half an output frame after a half slot), the confirmation and concealment state and the
+    decoder's history go, so nothing played or concealed from that speech (a half slot's stolen first frame) leads the
+    call's audio; a call already active (a republication, a
     reallocation) runs nothing. Each `-r` playback file
     (`mbe_file_end_replayed_call()` in `dsd_mbe.c`, once per file opened, after it ends and commits the previous file's
     call) runs the flush too (issue #888): a raw `.imb`/`.amb`/`.dmb` file plays with no call, so its audio would
@@ -2734,7 +2745,10 @@ suite runs under this compiler.
   early for `close_and_publish_call_wav_ex()`, which allows the fallback only for a row that names a call (a target or
   source, number or text; the twin of `watchdog_event_row_names_call()`) or whose protocol's voice is anonymous
   (`dsd_call_state_protocol_voice_is_anonymous()`: X2-TDMA, standalone ProVoice, whose rows are always kept; a ProVoice
-  row carrying an EDACS grant's LCN is an EDACS call, not standalone, and needs a name like any other): any other
+  row carrying an EDACS grant's LCN is an EDACS call, not standalone, and needs a name like any other; an EDACS row,
+  that or an EDACS sync's, is named by its decoded IDs only, since standard addressing writes `LID_UNK` and
+  `000_AFS_00_000` placeholders into its strings for unknown parties, which the event layer's rescue still keeps for
+  history): any other
   identity-less row's keep verdict (media plus a positive end) is not known before its commit, so a WAV stop mid-call, a
   held fade, a cleared history or a trunk-scan target's empty row never exports under a fallback number. A digital row
   with no number is skipped with no failure line; the one LOG_WARN per run
@@ -5388,8 +5402,9 @@ suite runs under this compiler.
     its copies of the API key and URL wiped (`DSD_SECURE_ZERO`) before it is freed (`dsd_rdio_upload_job_free()`;
     test: `RUNTIME_RDIO_EXPORT`), and the worker wipes the endpoint it builds from the URL after each upload. Should the
     shutdown's join of the worker fail (not expected: one shutdown joins, and the worker never joins itself), the
-    worker may still run, so only the queued jobs' API copies are wiped, under the queue's mutex; the queued jobs are
-    not freed, and the job in flight and the worker's endpoint copy are left to the worker. Uploads are kept while a
+    worker may still run, so the queued jobs are detached under the queue's mutex, which the worker pops under, and
+    released after it is unlocked (their private inputs, holds and API copies); the job in flight and the worker's
+    endpoint copy are left to the worker. Uploads are kept while a
     journal is set:
     `dsd_rdio_journal_keeps_uploads()` reads 1 in a run that names a recording journal and turns
     `rdio_api_delete_after_upload` on, and `dsd_rdio_export_call_ex()` then queues the job without the delete (the

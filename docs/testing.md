@@ -2278,9 +2278,16 @@ proves the carrier, and the speech before it is not; `test_playback_unnumbered_c
 no talkgroup, on a receiver tuned to 452.3125 MHz with colour code 3, is exported under `--rdio-unknown-talkgroup` at
 its first frame's second, labelled `DMR`, with `freq` 0 and no `freqList`, and is kept local without the option;
 `test_playback_records_play_as_one_call`: a played file is one call, so a file of two records makes one history row and
-one recording of both records' frames, exported once under the identity the row ends with: the second record's
-talkgroup when it names one, the first's when it gives `to` 0, the fallback when neither does; it is filed at the first
-frame of the last call the call-state layer opened). The number and label rules themselves are in `RUNTIME_RDIO_EXPORT`,
+one recording of both records' frames, named by the identity the row ends with and filed at the first frame of the last
+call the call-state layer opened; where that layer opened a second call (another talkgroup or radio) the recording is
+kept local, no sidecar and journal `rdio` false, and the run's one line is said, else it is exported once, under the
+fallback when no record names a talkgroup; `test_playback_stream_off_record_stays_local`: a stream=off radio's record
+before an unrestricted one's is not exported with it, and the unrestricted record alone is;
+`test_playback_new_call_without_time_takes_the_decode_clock`: a second call with no frame `time` is filed on the decode
+clock, in the journal and the file name, not at the first call's stamp; `test_tetra_first_call_conceals_nothing_before_it`:
+a TETRA call admitted on a half slot after earlier speech conceals nothing from that speech). `CORE_MBE_FILE_IO`
+`test_sdrtrunk_json_words_in_values_are_not_keys` reads keys only in key position: `time`, `protocol` and `to` inside a
+quoted value, escaped quotes included, change nothing. The number and label rules themselves are in `RUNTIME_RDIO_EXPORT`,
 and which closes may give the number in `CORE_WAV_JOURNAL`'s `test_d7_*` cases. `test_d7_fallback_journal_rdio_flag`
 expects an API-only upload's sidecar removed only when its upload succeeded, which needs the loopback stand-in server
 (`RDIO_CAPTURE`, not on native Windows, where the queued upload fails and keeps the sidecar).
@@ -2293,15 +2300,21 @@ sidecar's publication), and removals that fail (a read-only folder) leaving thei
 faults no real file system gives on demand come from GNU ld `--wrap` link seams (`DSD_TEST_WRAP_RDIO_SEAMS`, GCC or
 Clang builds off macOS and Windows, as the other `--wrap` tests): a hard link that fails as on a drive with none while
 the Stop arrives (the copy fallback then ends), a private open that makes its file and no stream (also with the folder
-turned read-only right after, so that file's removal fails and is the run's one log line), and a worker join that
-reports failure after the worker ended (the queued jobs are released). That last case leaves the upload worker failed
-for good, so it runs last in `main()`. The issue #888 sidecar cases share one heap ring and options
+turned read-only right after, so that file's removal fails and is the run's one log line), a hard link that fails with
+the folder turned read-only first (the WAV's copy then fails, and the private sidecar copy already made, which cannot be
+removed, goes through the same once-a-run warning, not a second line), and a worker join that reports failure after the
+worker ended (the queued jobs are released). That last case leaves the upload worker failed for good, so it runs last
+in `main()`. Under IPO/LTO (`DSD_ENABLE_LTO`, `CMAKE_INTERPROCEDURAL_OPTIMIZATION`) the wrapped calls can be resolved
+before the linker sees them, so the seams and their cases are left out there, as on macOS and Windows. The issue #888 sidecar cases share one heap ring and options
 (`rdio_case_hist()`, `rdio_case_opts()`), zeroed for each case, rather than each keeping a static ring.
 
 `PLATFORM_FILE_COMPAT` checks `dsd_hard_link()` in a folder the test makes (`dsd_test_mkdtemp()`), never the working
 folder. Whether that folder's file system takes hard links is asked of the platform: on Windows the volume's
-`FILE_SUPPORTS_HARD_LINKS` flag, on POSIX a `link()` between names the probe creates exclusively there, removing only
-what it made. Where it takes none, only the refusals are checked.
+`FILE_SUPPORTS_HARD_LINKS` flag, asked through the wide or the ANSI call as `dsd_hard_link()` picks it
+(`dsd_win32_path_wide()`, so the code page 1252 folder with byte `0xE9` is asked as an ANSI path), on POSIX a `link()`
+between names the probe creates exclusively there, removing only what it made. Where it takes none, only the refusals
+are checked. Every fixture and probe name is built with `dsd_test_path_join()`, so under a long `DSD_NEO_TEST_TMPDIR` a
+name that does not fit fails the case before any file is touched, and none is cut short to another folder's name.
 
 ### Digital voice chain checks (issue #653)
 

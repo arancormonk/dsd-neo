@@ -62,6 +62,7 @@ enum { WAV_SEGMENT_SLOTS = 16 };
 typedef struct {
     const SNDFILE* file;
     int failed;
+    int local; /* published, never exported (wav_segment_keep_local()) */
 } wav_segment;
 
 static wav_segment s_wav_segments[WAV_SEGMENT_SLOTS];
@@ -103,6 +104,7 @@ wav_segment_forget_locked(wav_segment* segment) {
     }
     segment->file = NULL;
     segment->failed = 0;
+    segment->local = 0;
 }
 
 void
@@ -150,6 +152,31 @@ wav_segment_close(SNDFILE* file, int* failed) {
         return s_wav_test_close(file);
     }
     return sf_close(file);
+}
+
+void
+wav_segment_keep_local(const SNDFILE* file) {
+    if (file == NULL) {
+        return;
+    }
+    wav_segment_lock();
+    wav_segment* segment = wav_segment_find_locked(file);
+    if (segment != NULL) {
+        segment->local = 1;
+    }
+    dsd_mutex_unlock(&s_wav_segment_mu);
+}
+
+int
+wav_segment_kept_local(const SNDFILE* file) {
+    if (file == NULL) {
+        return 0;
+    }
+    wav_segment_lock();
+    const wav_segment* segment = wav_segment_find_locked(file);
+    const int local = segment != NULL && segment->local;
+    dsd_mutex_unlock(&s_wav_segment_mu);
+    return local;
 }
 
 /* -1 for a handle that is no per-call segment, else whether the segment is latched. */

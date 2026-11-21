@@ -466,7 +466,9 @@ watchdog_event_row_records_crypto(const Event_History* item) {
 // never who the call was. Counting it would rescue every stray-sync noise epoch a scanning
 // receiver opens, which is exactly what the identity gate below exists to drop.
 // Its twin is wav_close_allows_fallback() (dsd_file.c), which gives an early-closed recording the rdio-scanner fallback
-// talkgroup only for a row this would keep (issue #888 D7): the two must agree on what names a call.
+// talkgroup only for a row this would keep (issue #888 D7): the two must agree on what names a call. One difference:
+// an EDACS row's strings hold placeholders for unknown parties ("LID_UNK", "000_AFS_00_000" with standard addressing),
+// which keep the row here, for history, while an early export counts an EDACS row's decoded IDs only.
 static int
 watchdog_event_row_names_call(const Event_History* item) {
     return item->target_id != 0U || item->source_id != 0U || item->src_str[0] != '\0' || item->tgt_str[0] != '\0';

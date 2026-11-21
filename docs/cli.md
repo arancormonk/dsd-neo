@@ -379,7 +379,9 @@ Windows console runs:
   - With `both`, each queued API upload works from its own copies of the call's WAV and JSON, made beside them as
     `<id>.<n>.rdio-upload-audio` and `<id>.<n>.rdio-upload-meta` (a hard link where the drive supports one, else a
     copy), where `<id>` is a random id drawn once a run and `<n>` a number. The names are at most 45 characters,
-    whatever the recording's own name, so any recording whose WAV and JSON names fit can be uploaded. Each run
+    whatever the recording's own name, so any recording whose WAV and JSON names fit can be uploaded, as long as the
+    JSON's temporary name, `<name>.json.tmp.XXXXXX` (11 characters longer), fits the file system's name limit too: the
+    export writes the JSON under it first. Each run
     removes its own copies when that upload ends, sent or not, and never touches another run's, so another run
     exporting to the same folder keeps its pending uploads. They are made before the JSON appears, so a DirWatch with
     "delete after" on the same folder can take the WAV and JSON as soon as it sees them without costing the API
@@ -426,7 +428,9 @@ Windows console runs:
   played as one stream: one history row and one recording of all of them, named and exported under the last talkgroup
   and radio ID the records gave (a `to` or `from` of 0, or one left out, does not clear an earlier one). When a later
   record changes a talkgroup or radio ID an earlier one gave, the recording is filed at that record's first frame
-  `time`, though it starts with the earlier records' audio.
+  `time` (on the decode clock when that record's frames carry no valid `time`), though it starts with the earlier
+  records' audio. Such a recording holds more than one call, so it is never exported to rdio-scanner, whatever its
+  talkgroup and stream settings: no sidecar, no upload, and one line in the log a run.
   Only those SDRTrunk calls are exported to rdio-scanner. They carry
   no frequency or access code, so one with no talkgroup uses `--rdio-unknown-talkgroup` ([Digital calls with no
   talkgroup in rdio-scanner](#digital-calls-with-no-talkgroup-in-rdio-scanner)). A raw `.imb`, `.amb` or `.dmb` file
@@ -721,7 +725,8 @@ Which calls get a number:
 - Voice calls only. A call is exported once its history row is kept, as any call is. A recording that closes before
   that (a WAV stop in the middle of a call, the last close when dsd-neo stops) is exported only when the call names a
   radio or a talkgroup (a number or a callsign), or when its protocol never names one (X2-TDMA, ProVoice on its own;
-  not a ProVoice call an EDACS grant named).
+  not a ProVoice call an EDACS grant named). An EDACS call counts only by a decoded radio or talkgroup number, not by
+  the `LID_UNK` or `000_AFS_00_000` shown for a party it does not know.
   So a WAV stop in the middle of a call heard with no identity at all does not export that recording. Audio no call
   owns, a call whose row was cleared from the history, and a faded call that is held and then dropped are never
   exported.
