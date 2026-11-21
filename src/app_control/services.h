@@ -1336,9 +1336,9 @@ int svc_rtl_set_auto_ppm(dsd_opts* opts, const dsd_state* state, int on);
 int svc_rtl_set_sql_db(dsd_opts* opts, const dsd_state* state, double dB);
 
 /**
- * svc_rtl_set_sql_setting()'s refusals, apart from DSD_ERR_NOT_SUPPORTED (-2): a NOISE setting on the AM monitor
- * (dsd_squelch_noise_has_no_fm()), and an AUTO setting on audio input, where it has no channel power to learn a floor
- * from (issue #628).
+ * svc_rtl_set_sql_setting()'s refusals, apart from DSD_ERR_NOT_SUPPORTED (-2): a NOISE setting on the AM monitor of
+ * audio input (dsd_squelch_noise_has_no_fm(); on a radio input it runs as AUTO, issue #899 D4), and an AUTO setting on
+ * audio input, where it has no channel power to learn a floor from (issue #628).
  */
 enum { SVC_SQL_NOISE_NEEDS_FM = -3, SVC_SQL_AUTO_NEEDS_RADIO = -4 };
 
@@ -1346,7 +1346,8 @@ enum { SVC_SQL_NOISE_NEEDS_FM = -3, SVC_SQL_AUTO_NEEDS_RADIO = -4 };
  * @brief Set the configured squelch to a whole setting (issue #518 follow-up): a level, the auto squelch with its
  * margin, or the noise squelch with its quieting. As svc_rtl_set_sql_db(), a scan row's own squelch stays in force
  * until the scanner leaves it. Returns 0, -1 for NULL arguments, a margin outside 3..30 or a level that is not a
- * number, SVC_SQL_NOISE_NEEDS_FM for NOISE on the AM monitor, or SVC_SQL_AUTO_NEEDS_RADIO for AUTO on audio input.
+ * number, SVC_SQL_NOISE_NEEDS_FM for NOISE on the AM monitor of audio input, or SVC_SQL_AUTO_NEEDS_RADIO for AUTO on
+ * audio input.
  */
 int svc_rtl_set_sql_setting(dsd_opts* opts, const dsd_state* state, const dsd_squelch_setting* setting);
 

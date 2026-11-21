@@ -1565,11 +1565,13 @@ their sensitivity in.
   channel with no channel filter behind the half-band decimation at a channel rate of 16 kHz or less (the width unset at
   those rates, or `DSD_NEO_CHANNEL_LPF=0`): the decimation stages' gentle roll-off is then its only edge and would
   truncate a wide signal into the band; a replay with no decimation keeps its band. The auto squelch runs the setting on
-  such a channel, with N as its margin, and the readout says `as auto`. AM has no discriminator: `-fM --squelch noise`
-  stops at startup (`--squelch noise needs an FM channel and -fM is AM: use --squelch auto[+N] or a level.`), a noise
-  setting from an input spec or the config runs as auto on the AM monitor and says so, the radio panel offers no Noise
-  there, an `am` row or `am-conventional` target refuses `--squelch noise`, and an `am` row that inherits a noise
-  default runs it as auto. Like auto, it is off on digital channels. On audio input it learns its reference from the
+  such a channel, with N as its margin, and the readout says `as auto`. AM has no discriminator: on the AM monitor
+  (`-fM`) of a radio input a noise setting runs as auto with the same N, whatever set it (`--squelch noise`, an input
+  spec, the config, a live edit from the terminal), and the engine says so at startup (`NOTICE: The noise squelch needs
+  an FM channel; this AM channel runs auto+10dB.`). The setting stays noise, so a switch back to `-fA` runs the noise
+  squelch again. (`-fM --squelch noise` used to stop at startup.) The radio panel offers no Noise there, an `am` row
+  or `am-conventional` target refuses `--squelch noise`, and an `am` row that inherits a noise default runs it as
+  auto. Like auto, it is off on digital channels. On audio input it learns its reference from the
   input itself ([below](#noise-squelch-on-audio-input)).
 - The M17 encoder's monitor runs it as the FM monitor does, or as auto where its channel has no band.
 - EDACS analog voice runs it as auto, and the engine says so (`EDACS analog voice runs the noise squelch as

@@ -16,6 +16,7 @@
 #include <dsd-neo/app_control/scan_avoid_view.h>
 #include <dsd-neo/app_control/scan_row_view.h>
 #include <dsd-neo/app_control/signal_search.h>
+#include <dsd-neo/app_control/squelch_view.h>
 #include <dsd-neo/core/access_code.h>
 #include <dsd-neo/core/airspy_config.h>
 #include <dsd-neo/core/analog_tone.h>
@@ -12319,7 +12320,8 @@ test_squelch_setting_command(void) {
     rc |= expect_true("leave puts the auto default in force",
                       opts.rtl_squelch_mode == DSD_SQUELCH_MODE_AUTO && g_cmd_squelch_setting_pushes == 0);
 
-    /* The noise squelch: in force and pushed whole; the AM monitor on its own refuses it and says why. */
+    /* The noise squelch: in force and pushed whole; the AM monitor on its own takes it too (issue #899 D4, it was
+       refused) and runs it as auto with the same N, as it does a noise setting from a spec or the config. */
     rc |= expect_true("noise queued", submit_squelch_setting(DSD_SQUELCH_MODE_NOISE, 14, 0.0) > 0);
     rc |= expect_int("noise drained", dsd_app_drain_cmds(&opts, &state), 1);
     rc |= expect_true("noise in force",
@@ -12332,20 +12334,33 @@ test_squelch_setting_command(void) {
     opts.analog_demod = DSD_ANALOG_DEMOD_AM;
     const dsd_squelch_setting level40 = dsd_squelch_setting_of_level(dsd_squelch_level_from_sql(-40.0));
     dsd_squelch_setting_store(&opts, &level40);
+    g_cmd_squelch_setting_pushes = 0;
     rc |= expect_true("noise on AM queued", submit_squelch_setting(DSD_SQUELCH_MODE_NOISE, 10, 0.0) > 0);
     rc |= expect_int("noise on AM drained", dsd_app_drain_cmds(&opts, &state), 1);
-    rc |= expect_true("noise on AM refused", opts.rtl_squelch_mode == DSD_SQUELCH_MODE_LEVEL);
-    rc |=
-        expect_str("noise on AM toast", state.ui_msg, "Refused: the noise squelch needs an FM channel; AM takes auto");
+    rc |= expect_true("noise on AM configured as noise",
+                      opts.rtl_squelch_mode == DSD_SQUELCH_MODE_NOISE && opts.rtl_squelch_margin_db == 10);
+    rc |= expect_squelch_db("noise on AM keeps the level beneath", opts.rtl_squelch_level, -40.0);
+    rc |= expect_true("noise on AM pushed whole", g_cmd_squelch_setting_pushes == 1
+                                                      && g_cmd_squelch_setting_pushed.mode == DSD_SQUELCH_MODE_NOISE
+                                                      && g_cmd_squelch_setting_pushed.margin_db == 10);
+    rc |= expect_str("noise on AM toast", state.ui_msg, "Applied: squelch -> noise +10 dB; AM runs it as auto");
+    dsd_app_squelch_view am_view;
+    rc |= expect_int("noise on AM view", dsd_app_squelch_view_get(&opts, &state, &am_view), 0);
+    rc |= expect_true("noise on AM runs as auto", am_view.configured_noise == 1U && am_view.effective_noise == 1U
+                                                      && am_view.auto_resolution == DSD_SQUELCH_RESOLVED_AM_AUTO
+                                                      && am_view.noise_as_auto == 1U);
     /* Issue #671: a trunk scan running its targets takes the noise default for their rows (an AM target runs it as
-       auto); paused, the AM monitor runs on its own and refuses it as with no scan. */
+       auto); paused, the AM monitor runs on its own and takes it as with no scan. */
+    dsd_squelch_setting_store(&opts, &level40);
     opts.trunk_scan_enabled = 1;
     state.trunk_scan_paused = 1U;
     rc |= expect_true("noise on AM, scan paused, queued", submit_squelch_setting(DSD_SQUELCH_MODE_NOISE, 10, 0.0) > 0);
     rc |= expect_int("noise on AM, scan paused, drained", dsd_app_drain_cmds(&opts, &state), 1);
-    rc |= expect_true("noise on AM, scan paused, refused", opts.rtl_squelch_mode == DSD_SQUELCH_MODE_LEVEL);
+    rc |= expect_true("noise on AM, scan paused, applied",
+                      opts.rtl_squelch_mode == DSD_SQUELCH_MODE_NOISE && opts.rtl_squelch_margin_db == 10);
     rc |= expect_str("noise on AM, scan paused, toast", state.ui_msg,
-                     "Refused: the noise squelch needs an FM channel; AM takes auto");
+                     "Applied: squelch -> noise +10 dB; AM runs it as auto");
+    dsd_squelch_setting_store(&opts, &level40);
     state.trunk_scan_paused = 0U;
     rc |= expect_true("noise on AM, scan running, queued", submit_squelch_setting(DSD_SQUELCH_MODE_NOISE, 10, 0.0) > 0);
     rc |= expect_int("noise on AM, scan running, drained", dsd_app_drain_cmds(&opts, &state), 1);

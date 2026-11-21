@@ -3303,7 +3303,7 @@ those bounds, so a noise setting run as auto fails them.
 | `_NOISE_FLOOR` | Ten seconds of `noise_floor` never open it at the lowest N (`noise+3`). |
 | `_NFM_REAL_CARRIER` | `nfm_ctcss_real` plays whole after the first window (4320 of the 4360 ms audible with the squelch off). |
 | `_NARROW_AS_AUTO` | An 8 kHz channel has no band above voice: the auto squelch runs the setting, and the burst measures as under `--squelch auto`. |
-| `_AM_REFUSED` | `-fM --squelch noise` stops at startup with its message, before any replay. |
+| `_AM_AS_AUTO`, `_AM_AS_AUTO_EQUALS` | `-fM --squelch noise` (and `--squelch=noise+10`) runs the auto squelch with the same N and says so at startup: the AM burst measures as under `--squelch auto` (issue #899 D4; it stopped the start). |
 | `DECODE_IQ_SCAN_SQL_NOISE_ROW` | A `-Y` nfm row's own `--squelch noise` gates the burst as `-fA` does. |
 | `DECODE_IQ_ANALOG_SQL_NOISE_NFM_DETERMINISM` | Fast, jittered and realtime replays hand the sink the same gated audio (GNU `--wrap` builds). |
 

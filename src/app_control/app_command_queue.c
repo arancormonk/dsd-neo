@@ -2729,12 +2729,14 @@ ui_cmd_toast_squelch_edit(const dsd_opts* opts, dsd_state* state, int rc) {
         char notice[96];
         (void)dsd_app_squelch_view_get(opts, state, &view);
         (void)dsd_app_squelch_view_edit_notice(&view, notice, sizeof notice);
-        ui_set_toast(state, 3, "%s", notice);
-    } else if (rc == SVC_SQL_NOISE_NEEDS_FM && dsd_squelch_input_kind(opts) == DSD_SQUELCH_INPUT_AUDIO) {
-        /* Auto needs a radio input too: AM audio takes a level. */
-        ui_set_toast(state, 4, "Refused: the noise squelch needs an FM channel; AM audio takes a level");
+        /* The AM monitor runs a noise setting as auto (issue #899 D4): the edit says so, as the startup notice does. */
+        ui_set_toast(state, 3, "%s%s", notice,
+                     view.noise_as_auto && view.auto_resolution == DSD_SQUELCH_RESOLVED_AM_AUTO ? "; AM runs it as auto"
+                                                                                                : "");
     } else if (rc == SVC_SQL_NOISE_NEEDS_FM) {
-        ui_set_toast(state, 4, "Refused: the noise squelch needs an FM channel; AM takes auto");
+        /* Only on AM audio: a radio input's AM monitor runs it as auto (issue #899 D4), and auto needs a radio input
+           too, so AM audio takes a level. */
+        ui_set_toast(state, 4, "Refused: the noise squelch needs an FM channel; AM audio takes a level");
     } else if (rc == SVC_SQL_AUTO_NEEDS_RADIO) {
         ui_set_toast(state, 4, "Refused: the auto squelch needs a radio input; audio input takes a level or noise");
     } else if (ui_rc_is_not_supported(rc)) {

@@ -26442,24 +26442,22 @@ if(DSD_HAS_RADIO)
         "Scan row applied: 0 nfm; width 16 kHz; squelch noise [+]10 dB [(]row[)].*ANALOG AUDIO OK"
         "${_analog_off_path}"
     )
-    # The AM monitor has no discriminator to quiet: -fM --squelch noise stops at startup
-    # and says why, before any replay.
-    add_test(
-        NAME DECODE_IQ_ANALOG_SQL_NOISE_AM_REFUSED
-        COMMAND
-            dsd-neo_test_analog_replay --frontend none -fM --squelch noise
-            --iq-replay
-            "${PROJECT_SOURCE_DIR}/tests/fixtures/iq/am_burst_synth.iq.json" -o
-            null
+    # The AM monitor has no discriminator to quiet: -fM --squelch noise runs the auto
+    # squelch with the same N, says so at startup, and the burst gates exactly as under
+    # --squelch auto (issue #899 D4: it stopped the start), in either spelling.
+    dsd_neo_add_analog_replay_test(
+        DECODE_IQ_ANALOG_SQL_NOISE_AM_AS_AUTO
+        am_burst_synth
+        "-fM --squelch noise ${_sql_auto_burst_bounds}"
+        "NOTICE: The noise squelch needs an FM channel; this AM channel runs auto[+]10dB[.].*ANALOG AUDIO OK"
+        "${_analog_off_path}|--squelch noise needs an FM channel"
     )
-    set_tests_properties(
-        DECODE_IQ_ANALOG_SQL_NOISE_AM_REFUSED
-        PROPERTIES
-            LABELS "iq-decode;analog"
-            TIMEOUT 120
-            PASS_REGULAR_EXPRESSION
-                "--squelch noise needs an FM channel and -fM is AM"
-            FAIL_REGULAR_EXPRESSION "ANALOG AUDIO OK|ANALOG METRIC"
+    dsd_neo_add_analog_replay_test(
+        DECODE_IQ_ANALOG_SQL_NOISE_AM_AS_AUTO_EQUALS
+        am_burst_synth
+        "-fM --squelch=noise+10 ${_sql_auto_burst_bounds}"
+        "this AM channel runs auto[+]10dB[.].*ANALOG AUDIO OK"
+        "${_analog_off_path}|--squelch noise needs an FM channel"
     )
 
     # Negative controls: bounds that must NOT hold, run through

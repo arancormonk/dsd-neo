@@ -536,8 +536,9 @@ test_level_finite(void) {
     assert(!dsd_squelch_setting_level_finite(NULL));
 }
 
-/* The AM monitor on its own refuses a NOISE setting; a scan running AM rows runs it as AUTO there. A paused trunk scan
-   runs no row: its manual AM session is on its own (issue #671). */
+/* The AM monitor on its own has no FM channel for a NOISE setting (a radio input runs it as AUTO, audio input refuses
+   it); a scan running AM rows runs it as AUTO there. A paused trunk scan runs no row: its manual AM session is on its
+   own (issue #671). */
 static void
 test_noise_has_no_fm(void) {
     static dsd_opts opts;

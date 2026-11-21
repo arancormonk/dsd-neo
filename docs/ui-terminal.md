@@ -674,7 +674,8 @@ the floor) or `noise` / `noise+N` (N from 3 to 30 dB of quieting), opening on th
 `auto+10`, `noise+10`). A level whose dB would not read back as itself opens as its linear power instead: one within
 0.05 dB of full scale (`0.0` would read as off) and one below -200 dB (the prompt's lowest), so accepting the prompt
 unchanged never turns the squelch off or moves it. On audio input the prompt takes a level, `off` or `noise[+N]`, and refuses `auto` with a toast,
-since audio input has no channel power to learn a floor from. The AM monitor on its own refuses `noise` with a toast. It
+since audio input has no channel power to learn a floor from. The AM monitor on its own takes `noise` on a radio input
+and runs it as auto with the same N (the `SQL:` readout says `as auto`), and refuses it on audio input with a toast. It
 always edits that configured default; if a
 row is overriding it, the change takes effect when the scanner leaves the row, and the toast says so
 (`Default squelch -75.0 dB; this channel overrides it (-60.0 dB)`). The M17 VOX `SQL:` field on a non-RTL input

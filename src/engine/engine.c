@@ -1180,16 +1180,18 @@ dsd_engine_setup_check_analog_width(const dsd_opts* opts) {
 /*
  * The auto squelch needs a radio input: elsewhere it is off, and says so. The noise squelch runs on audio input too
  * (issue #628), where the PCM noise squelch says so itself if the input has no room or no band above voice. It needs
- * FM: on the AM monitor (-fM, no scan) a --squelch noise is refused, and a noise setting from an input spec or the
- * config runs as auto with the same N. A scan's AM rows inherit a noise default as auto without a word: each row
- * resolves its own. EDACS analog voice runs either setting as auto on a radio input and neither on audio input (issue
- * #625); the M17 encoder's VOX says its own once its user data is read (dsd_engine_note_m17_encoder_squelch()).
+ * FM: on the AM monitor (-fM, no scan) of a radio input a noise setting runs as auto with the same N and says so,
+ * whatever set it (issue #899 D4: a --squelch noise there stopped the start, so a saved Noise choice refused AM), and
+ * the configured setting stays noise for a switch back to FM. A scan's AM rows inherit a noise default as auto without
+ * a word: each row resolves its own. EDACS analog voice runs either setting as auto on a radio input and neither on
+ * audio input (issue #625); the M17 encoder's VOX says its own once its user data is read
+ * (dsd_engine_note_m17_encoder_squelch()).
  */
-static int
-dsd_engine_setup_check_noise_squelch(const dsd_opts* opts, const dsd_state* state) {
+static void
+dsd_engine_setup_note_noise_squelch(const dsd_opts* opts, const dsd_state* state) {
     const int mode = opts->rtl_squelch_mode;
     if (!dsd_squelch_mode_is_dynamic(mode)) {
-        return 0;
+        return;
     }
     if (dsd_squelch_edacs_analog_voice(opts, state)) {
         if (!dsd_opts_input_is_radio(opts)) {
@@ -1199,25 +1201,19 @@ dsd_engine_setup_check_noise_squelch(const dsd_opts* opts, const dsd_state* stat
         } else if (mode == DSD_SQUELCH_MODE_NOISE) {
             LOG_INFO("NOTICE: EDACS analog voice runs the noise squelch as auto+%ddB.\n", opts->rtl_squelch_margin_db);
         }
-        return 0;
+        return;
     }
     if (!dsd_opts_input_is_radio(opts)) {
         if (mode == DSD_SQUELCH_MODE_AUTO && !dsd_opts_runs_m17_encoder(opts)) {
             LOG_WARN("WARNING: --squelch auto needs a radio input (rtl:, rtltcp:, soapy:, airspy or --iq-replay); the "
                      "squelch is off on this input. On audio input use --squelch noise[+N] or a level.\n");
         }
-        return 0;
+        return;
     }
-    if (mode != DSD_SQUELCH_MODE_NOISE || !dsd_squelch_noise_has_no_fm(opts, state)) {
-        return 0;
+    if (mode == DSD_SQUELCH_MODE_NOISE && dsd_squelch_noise_has_no_fm(opts, state)) {
+        LOG_INFO("NOTICE: The noise squelch needs an FM channel; this AM channel runs auto+%ddB.\n",
+                 opts->rtl_squelch_margin_db);
     }
-    if (opts->rtl_squelch_cli_set) {
-        LOG_ERROR("--squelch noise needs an FM channel and -fM is AM: use --squelch auto[+N] or a level.\n");
-        return -1;
-    }
-    LOG_INFO("NOTICE: The noise squelch needs an FM channel; this AM channel runs auto+%ddB.\n",
-             opts->rtl_squelch_margin_db);
-    return 0;
 }
 
 /* The UDP specs, read before anything opens: an M17 frame input, a PCM input, an M17 frame output. -1 when one is
@@ -1273,9 +1269,7 @@ dsd_engine_setup_io(dsd_opts* opts, dsd_state* state) {
         return -1;
     }
     dsd_engine_setup_parse_pulse_input(opts);
-    if (dsd_engine_setup_check_noise_squelch(opts, state) != 0) {
-        return -1;
-    }
+    dsd_engine_setup_note_noise_squelch(opts, state);
     if (dsd_engine_setup_parse_udp_output(opts, state) != 0) {
         return -1;
     }

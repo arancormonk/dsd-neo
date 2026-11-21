@@ -1964,10 +1964,11 @@ test_config_channel_map_weighs_the_tone_filter(void) {
 }
 
 /*
- * --squelch noise needs FM (issue #518 follow-up): on the AM monitor (-fM, no scan) a --squelch noise is refused, a
- * noise setting that came from an input spec or the config runs as auto with the same N and says so, and the FM
- * monitor takes it as set. Without a radio input it runs on audio input (issue #628) without a word at startup: the
- * PCM noise squelch says so itself if the input has no room or no band. --squelch auto there is off and says so.
+ * --squelch noise needs FM (issue #518 follow-up): on the AM monitor (-fM, no scan) of a radio input a noise setting
+ * runs as auto with the same N and says so, whatever set it: --squelch as much as an input spec or the config (issue
+ * #899 D4: --squelch noise there stopped the start), and the FM monitor takes it as set. Without a radio input it
+ * runs on audio input (issue #628) without a word at startup, on AM audio too (where it is off): the PCM noise squelch
+ * says so itself if the input has no room or no band. --squelch auto there is off and says so.
  */
 static int
 test_noise_squelch_needs_fm(void) {
@@ -1980,13 +1981,14 @@ test_noise_squelch_needs_fm(void) {
         int mode;
         int ok;
     } cases[] = {
-        {"soapy:driver=test:118.1M:7:0:24", "--squelch noise needs an FM channel", NULL, 1, 1, DSD_SQUELCH_MODE_NOISE,
-         0},
+        {"soapy:driver=test:118.1M:7:0:24", "The noise squelch needs an FM channel; this AM channel runs auto+12dB.",
+         "--squelch noise needs an FM", 1, 1, DSD_SQUELCH_MODE_NOISE, 1},
         {"soapy:driver=test:118.1M:7:0:24:noise+12:2", "runs auto+12dB", "--squelch noise needs an FM", 1, 0,
          DSD_SQUELCH_MODE_NOISE, 1},
         {"soapy:driver=test:162.475M:7:0:24", "SQ=noise+12dB", "--squelch noise needs an FM", 0, 1,
          DSD_SQUELCH_MODE_NOISE, 1},
         {NULL, NULL, "needs a radio input", 0, 1, DSD_SQUELCH_MODE_NOISE, 1},
+        {NULL, NULL, "needs an FM channel", 1, 1, DSD_SQUELCH_MODE_NOISE, 1},
         {NULL, "--squelch auto needs a radio input", "needs an FM", 0, 1, DSD_SQUELCH_MODE_AUTO, 1},
     };
 

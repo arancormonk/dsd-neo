@@ -5203,9 +5203,11 @@ suite runs under this compiler.
     channel) or is off (AUTO off a radio input, either off audio and radio input, a digital channel, NOISE on AM audio:
     `DSD_SQUELCH_RESOLVED_AUDIO_AM`), for the views, the engine's startup check and the scan warnings;
     `dsd_squelch_noise_has_no_fm()` is the AM monitor on its own (`-fM`, no scan running: a paused `-Y` scan or trunk
-    scan runs no row, issue #671), where the engine refuses `--squelch noise` at startup and `svc_rtl_set_sql_setting()`
-    refuses a NOISE request (`SVC_SQL_NOISE_NEEDS_FM`); it refuses AUTO on audio input too (`SVC_SQL_AUTO_NEEDS_RADIO`,
-    issue #628). `dsd_squelch_pcm_noise_in_force()` is NOISE on audio input's FM monitor, the PCM noise squelch (DSP,
+    scan runs no row, issue #671). On a radio input a NOISE setting runs there as AUTO with the same N whatever set it,
+    the engine saying so at startup and `svc_rtl_set_sql_setting()` storing NOISE (issue #899 D4: the engine refused
+    `--squelch noise`, so a saved Noise choice stopped an AM start, and the service refused the request); on audio
+    input `svc_rtl_set_sql_setting()` refuses a NOISE request there (`SVC_SQL_NOISE_NEEDS_FM`), and AUTO anywhere
+    (`SVC_SQL_AUTO_NEEDS_RADIO`, issue #628). `dsd_squelch_pcm_noise_in_force()` is NOISE on audio input's FM monitor, the PCM noise squelch (DSP,
     below). `dsd_squelch_analog_calls_allowed()` (issue #667 D2) is whether an analog reception may become a call:
     always off a radio input; on one only under a dynamic squelch in force, a level above `DSD_SQUELCH_STARTUP_DB`
     (-110, `<dsd-neo/core/power.h>`, which `dsd_init.c` starts from; within the levels' 1e-9 relative tolerance), or a
