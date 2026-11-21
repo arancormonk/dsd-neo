@@ -8951,7 +8951,11 @@ the stream-notice hooks' pattern: one that fails to initialize leaves the hook u
   block counts in every mode (`squelch_cache_age()`, level squelch and digital included); a neighbour within 5 MHz seeds
   a floor provisionally.
   `dsd_demod_reset_filter_state()` (stream open, retunes, family switches, a replay's RESET) makes the next block take
-  its context afresh: at the same context it keeps the floor and starts the windows and coherence history over. A
+  its context afresh, as does a block after a spell under another squelch: at the same context that is a stream
+  boundary (`dsd_squelch_floor_stream_restart()`, issue #899), which keeps the floor (SEEDED, PROVISIONAL or KNOWN),
+  starts the windows and coherence history over, closes the gate, drops the learning windows and a seed's confirmation
+  and a shift's run so far, and holds the power gate (`dsd_squelch_floor::restart_hold`) until a window classes NOISE
+  or CARRIER (an UNDECIDED one, zeros or a power step inside it, keeps the hold); a live plan change (`dsd_squelch_floor_set_plan()`) restarts only the windows, as before. A
   floor the tracker kept through a spell without running ages the same way (`demod_state::squelch_floor_active_s`):
   past `DSD_SQUELCH_FLOOR_STALE_S` it is learned again, neither kept nor stored for its channel with a fresh stamp. Inside `full_demod()` (`squelch_auto_run()`) the tracker runs on an AUTO setting on a path
   `dsd_demod_dynamic_squelch_path()` names:

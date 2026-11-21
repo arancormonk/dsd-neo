@@ -974,8 +974,8 @@ same_double(double a, double b) {
 static int
 same_tracker(const dsd_squelch_floor* a, const dsd_squelch_floor* b) {
     return a->state == b->state && a->gate_open == b->gate_open && a->noise_hold == b->noise_hold
-           && a->windows == b->windows && a->samples == b->samples && a->agree == b->agree
-           && a->shift_windows == b->shift_windows && a->learn_count == b->learn_count
+           && a->restart_hold == b->restart_hold && a->windows == b->windows && a->samples == b->samples
+           && a->agree == b->agree && a->shift_windows == b->shift_windows && a->learn_count == b->learn_count
            && same_double(a->floor_power, b->floor_power) && same_double(a->window_power, b->window_power)
            && same_double(a->w_sa, b->w_sa) && same_double(a->w_sa2, b->w_sa2) && same_double(a->w_su_re, b->w_su_re)
            && same_double(a->w_su_im, b->w_su_im) && same_double(a->s_sa, b->s_sa);
@@ -1064,6 +1064,195 @@ test_block_partitions(void) {
     }
 }
 
+/* ------------------------------------------------------------------------------------------------ stream restart */
+
+/* What a stream restart leaves (issue #899): the floor and its state, the gate closed, no learning windows, no seed
+   confirmation or shift run, and the hold on power-only opening. */
+static void
+assert_restarted(const dsd_squelch_floor* t, int state, double floor_power) {
+    assert(t->state == state && same_double(t->floor_power, floor_power));
+    assert(!t->gate_open && t->restart_hold && t->learn_count == 0 && t->agree == 0 && t->shift_windows == 0);
+    assert(t->samples == 0U && t->hist_fill == 0 && same_double(t->w_n, 0.0));
+}
+
+/* NOISE windows among the learning windows a tracker holds. */
+static int
+learning_noise_windows(const dsd_squelch_floor* t) {
+    int noise = 0;
+    for (int i = 0; i < t->learn_count; i++) {
+        noise += t->learn_class[i] == DSD_SQUELCH_WINDOW_NOISE;
+    }
+    return noise;
+}
+
+/* A stream restart at the same context (issue #899 B9): the gate a carrier left open, or LEARNING's carrier window,
+   does not flag the new stream's first samples open; idle noise louder than the kept floor does not open it before a
+   window has classified; a carrier right after it opens at the end of the first window. */
+static void
+test_stream_restart_gate(void) {
+    static channel ch;
+    static source s;
+    static runner r;
+    const int margin = 10;
+    const int rate = 24000;
+    channel_make(&ch, rate, 12500, NULL, 0);
+
+    /* KNOWN, the gate open on a carrier, then the stream restarts on an idle channel: nothing opens. */
+    source_init(&s, &ch, 0x899A01ULL, 1e-3);
+    runner_init(&r, &ch, &margin, 1);
+    runner_run(&r, &s, 1.0);
+    const double floor0 = status_of(&r.t[0]).floor_power;
+    source_fm(&s, 20.0, 0.0, 1000.0, 2500.0);
+    runner_run(&r, &s, 0.5);
+    assert(status_of(&r.t[0]).state == DSD_SQUELCH_FLOOR_KNOWN && status_of(&r.t[0]).gate_open);
+    assert(same_double(status_of(&r.t[0]).floor_power, floor0));
+    dsd_squelch_floor_stream_restart(&r.t[0]);
+    assert_restarted(&r.t[0], DSD_SQUELCH_FLOOR_KNOWN, floor0);
+    runner_mark(&r);
+    source_noise_only(&s);
+    runner_run(&r, &s, 0.2);
+    assert(r.opens[0] == 0U && status_of(&r.t[0]).state == DSD_SQUELCH_FLOOR_KNOWN);
+
+    /* LEARNING, open for a carrier window, then the stream restarts on an idle channel: nothing opens. */
+    source_init(&s, &ch, 0x899A02ULL, 1e-3);
+    runner_init(&r, &ch, &margin, 1);
+    source_fm(&s, 20.0, 0.0, 1000.0, 2500.0);
+    runner_run(&r, &s, 0.2);
+    assert(status_of(&r.t[0]).state == DSD_SQUELCH_FLOOR_LEARNING && status_of(&r.t[0]).gate_open);
+    dsd_squelch_floor_stream_restart(&r.t[0]);
+    assert_restarted(&r.t[0], DSD_SQUELCH_FLOOR_LEARNING, 0.0);
+    runner_mark(&r);
+    source_noise_only(&s);
+    runner_run(&r, &s, 0.2);
+    assert(r.opens[0] == 0U);
+
+    /* KNOWN and closed, then the stream restarts into idle noise 13 dB louder (past the 10 dB margin): the first
+       sub-window does not open on power, and the first window, NOISE, holds the gate shut. */
+    source_init(&s, &ch, 0x899A03ULL, 1e-3);
+    runner_init(&r, &ch, &margin, 1);
+    runner_run(&r, &s, 1.0);
+    const double floor1 = status_of(&r.t[0]).floor_power;
+    assert(status_of(&r.t[0]).state == DSD_SQUELCH_FLOOR_KNOWN && !status_of(&r.t[0]).gate_open);
+    dsd_squelch_floor_stream_restart(&r.t[0]);
+    runner_mark(&r);
+    s.noise_var = 1e-3 * pow(10.0, 1.3);
+    runner_run(&r, &s, 0.5);
+    assert(r.opens[0] == 0U && status_of(&r.t[0]).state == DSD_SQUELCH_FLOOR_KNOWN && !r.t[0].restart_hold);
+    assert(status_of(&r.t[0]).floor_power > floor1);
+
+    /* A carrier from the restart's first sample opens at the end of the first window, 20 ms after a stream with no
+       restart would, and stays open. */
+    source_init(&s, &ch, 0x899A07ULL, 1e-3);
+    runner_init(&r, &ch, &margin, 1);
+    runner_run(&r, &s, 1.0);
+    assert(status_of(&r.t[0]).state == DSD_SQUELCH_FLOOR_KNOWN);
+    dsd_squelch_floor_stream_restart(&r.t[0]);
+    runner_mark(&r);
+    source_fm(&s, 20.0, 0.0, 1000.0, 2500.0);
+    runner_run(&r, &s, 0.5);
+    assert(r.first_open[0] == window_len(rate) && r.opens[0] == r.samples - r.mark - (uint64_t)window_len(rate));
+
+    /* A carrier keyed inside the first window after the restart (every 2 ms of it) opens by the second window's end,
+       at most 80 ms after the restart, and stays open; one keyed where it leaves that window UNDECIDED waits for the
+       second window. */
+    double worst_ms = 0.0;
+    for (int key_ms = 0; key_ms < 40; key_ms += 2) {
+        source_init(&s, &ch, 0x899A0AULL + (uint64_t)key_ms, 1e-3);
+        runner_init(&r, &ch, &margin, 1);
+        runner_run(&r, &s, 1.0);
+        dsd_squelch_floor_stream_restart(&r.t[0]);
+        runner_mark(&r);
+        runner_run(&r, &s, (double)key_ms / 1000.0);
+        source_fm(&s, 20.0, 0.0, 1000.0, 2500.0);
+        runner_run(&r, &s, 0.3);
+        assert(r.first_open[0] >= key_ms * (rate / 1000) && r.first_open[0] <= 2 * window_len(rate));
+        assert(r.opens[0] == r.samples - r.mark - (uint64_t)r.first_open[0]);
+        const double ms = (double)r.first_open[0] * 1000.0 / (double)rate;
+        worst_ms = ms > worst_ms ? ms : worst_ms;
+    }
+    printf("  a carrier keyed in the first window after a stream restart opens by %.1f ms after it\n", worst_ms);
+
+    /* A restart into a first window with a power step (its first half at the floor, its second 13 dB up: a tuner
+       settling) classes it UNDECIDED; the hold stays, and the louder idle noise after it opens nothing. */
+    source_init(&s, &ch, 0x899A09ULL, 1e-3);
+    runner_init(&r, &ch, &margin, 1);
+    runner_run(&r, &s, 1.0);
+    dsd_squelch_floor_stream_restart(&r.t[0]);
+    runner_mark(&r);
+    runner_run(&r, &s, (double)sub_len(rate) / (double)rate);
+    s.noise_var = 1e-3 * pow(10.0, 1.3);
+    runner_run(&r, &s, (double)sub_len(rate) / (double)rate);
+    assert(status_of(&r.t[0]).last_class == DSD_SQUELCH_WINDOW_UNDECIDED && r.t[0].restart_hold);
+    runner_run(&r, &s, 0.5);
+    assert(r.opens[0] == 0U && !r.t[0].restart_hold);
+
+    /* A window of exact zeros (a muted capture) holds nothing to classify: the hold stays through it. */
+    source_init(&s, &ch, 0x899A08ULL, 1e-3);
+    runner_init(&r, &ch, &margin, 1);
+    runner_run(&r, &s, 1.0);
+    dsd_squelch_floor_stream_restart(&r.t[0]);
+    static float zeros[2 * 24000];
+    dsd_squelch_floor_process(&r.t[0], zeros, window_len(rate), NULL);
+    assert(r.t[0].restart_hold && !r.t[0].gate_open);
+
+    /* A reset starts over without the hold; no tracker, nothing. */
+    dsd_squelch_floor_reset(&r.t[0]);
+    assert(!r.t[0].restart_hold && r.t[0].state == DSD_SQUELCH_FLOOR_LEARNING);
+    dsd_squelch_floor_stream_restart(NULL);
+}
+
+/* Evidence from before a stream restart does not count after it (issue #899 B9): learning windows, a seed's
+   confirmation and a shift's run start over at the boundary. */
+static void
+test_stream_restart_evidence(void) {
+    static channel ch;
+    static source s;
+    static runner r;
+    const int margin = 10;
+    const int rate = 24000;
+    channel_make(&ch, rate, 12500, NULL, 0);
+
+    /* Four NOISE windows, the stream restarts, one louder NOISE window: five NOISE windows, but not one run of them,
+       so no floor. */
+    source_init(&s, &ch, 0x899A04ULL, 1e-3);
+    runner_init(&r, &ch, &margin, 1);
+    runner_run(&r, &s, 4.0 * (double)window_len(rate) / (double)rate);
+    assert(r.t[0].learn_count == 4 && learning_noise_windows(&r.t[0]) == 4);
+    dsd_squelch_floor_stream_restart(&r.t[0]);
+    assert_restarted(&r.t[0], DSD_SQUELCH_FLOOR_LEARNING, 0.0);
+    s.noise_var = 1e-3 * pow(10.0, 0.55);
+    runner_run(&r, &s, (double)window_len(rate) / (double)rate);
+    assert(status_of(&r.t[0]).last_class == DSD_SQUELCH_WINDOW_NOISE && status_of(&r.t[0]).windows == 5U);
+    assert(status_of(&r.t[0]).state == DSD_SQUELCH_FLOOR_LEARNING && same_double(status_of(&r.t[0]).floor_power, 0.0));
+    assert(r.t[0].learn_count == 1);
+
+    /* A seed two NOISE windows into its confirmation, the stream restarts: one more window does not confirm it. */
+    source_init(&s, &ch, 0x899A05ULL, 1e-3);
+    runner_init(&r, &ch, &margin, 1);
+    dsd_squelch_floor_seed(&r.t[0], source_noise_out(&s), 0);
+    runner_run(&r, &s, 2.0 * (double)window_len(rate) / (double)rate);
+    assert(status_of(&r.t[0]).state == DSD_SQUELCH_FLOOR_SEEDED && r.t[0].agree == 2);
+    const double seeded = r.t[0].floor_power;
+    dsd_squelch_floor_stream_restart(&r.t[0]);
+    assert_restarted(&r.t[0], DSD_SQUELCH_FLOOR_SEEDED, seeded);
+    runner_run(&r, &s, (double)window_len(rate) / (double)rate);
+    assert(status_of(&r.t[0]).state == DSD_SQUELCH_FLOOR_SEEDED && r.t[0].agree == 1);
+    runner_run(&r, &s, 2.0 * (double)window_len(rate) / (double)rate);
+    assert(status_of(&r.t[0]).state == DSD_SQUELCH_FLOOR_KNOWN);
+
+    /* A shift's run of windows 14 dB over the floor, the stream restarts: the run starts over, so the 5 s it needs
+       count from the boundary. */
+    source_init(&s, &ch, 0x899A06ULL, 1e-3);
+    runner_init(&r, &ch, &margin, 1);
+    runner_run(&r, &s, 1.0);
+    s.noise_var = 1e-3 * pow(10.0, 1.4);
+    runner_run(&r, &s, 3.0);
+    assert(status_of(&r.t[0]).state == DSD_SQUELCH_FLOOR_KNOWN && r.t[0].shift_windows >= 60);
+    dsd_squelch_floor_stream_restart(&r.t[0]);
+    runner_run(&r, &s, 2.5);
+    assert(status_of(&r.t[0]).state == DSD_SQUELCH_FLOOR_KNOWN && !r.ever_learning[0]);
+}
+
 /* ------------------------------------------------------------------------------------------------ odd corners */
 
 static void
@@ -1139,6 +1328,8 @@ main(void) {
     test_noise_hold_released_by_carrier();
     test_low_margin_opens_promptly();
     test_seeding();
+    test_stream_restart_gate();
+    test_stream_restart_evidence();
     test_set_plan();
     test_cache();
     test_change_context();

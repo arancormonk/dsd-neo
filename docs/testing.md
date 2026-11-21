@@ -3127,6 +3127,13 @@ channel filter designs at; without it every plan it printed was the fallback.
 | `DECODE_IQ_M17_ENCODER_VOX_SQL_{AUTO,NOISE}_NOISE_FLOOR`, `_LEVEL_KEYS` | Ten seconds of receiver noise never key `-fZ` VOX under auto or noise (each keyed on the first frame before); a level the noise clears keys it. |
 | `APP_CONTROL_SQUELCH_VIEW`, `RUNTIME_SQUELCH`, `ENGINE_RUN_SETUP` | The readouts (`EDACS analog calls`, the encoder's tracker reading, `off: no radio input` on audio input), the policy helpers, and the startup notices. |
 
+#### Auto squelch restarts (issue #899, regression cases)
+
+| Case | What it pins |
+| --- | --- |
+| `DSP_SQUELCH_FLOOR` stream-restart case | `dsd_squelch_floor_stream_restart()` at 24 kHz on a 12.5 kHz channel: a KNOWN floor whose gate a carrier left open, and a LEARNING tracker open on a carrier window, flag nothing open on the idle noise after it (before the fix 480 and 960 samples); idle noise 13 dB over the kept floor opens nothing (before the fix the 20-40 ms sub-window), nor does a first window whose second half is 13 dB up (UNDECIDED: the hold stays) followed by that louder noise. Four NOISE windows, the restart, one louder NOISE window stay LEARNING with one learning window; a seed two windows into its confirmation needs three more; a shift's run of windows 14 dB up starts over; a window of exact zeros keeps the hold. A carrier from the restart's first sample opens at the end of the first window (40 ms, 20 ms later than mid-stream) and stays open; one keyed at any 2 ms step of the first window opens by the second window's end (80 ms at worst) and stays open. |
+| `DSP_SQUELCH_AUTO_DEMOD` stream-restart case | The same restarts through `full_demod()` after `dsd_demod_reset_filter_state()`: no open flag on idle noise after Stop on a carrier, on louder idle noise, or after a restart while learning; no floor from windows on both sides of the restart; a carrier right after it opens within 60 ms (40 ms measured) and stays open. |
+
 #### M17 voice output (issue #658, regression cases)
 
 | Case | What it pins |

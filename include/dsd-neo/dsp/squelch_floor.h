@@ -33,6 +33,13 @@
  * when that noise reads within 3 dB of the opening level and at least 1.5 dB above the floor (a floor still rising to
  * meet it), the gate stays shut until a window classed CARRIER. Each sample's flag is the gate as it stood when the sample arrived: a decision applies from
  * the sample after the (sub-)window that took it.
+ *
+ * Stream restart (a stream open or restart, a reconnect, a spell without the tracker, all at the same context): the
+ * floor stays, the gate closes, and nothing from before the boundary counts: not the learning windows, nor a seed's
+ * confirmation or a shift's run. A kept floor does not open on power alone until a 40 ms window after the boundary
+ * classes NOISE or CARRIER, so idle noise louder than before cannot open the gate. A carrier present from the boundary
+ * opens at the first window's end, 20 ms later than it would mid-stream; one keyed inside that window makes it
+ * UNDECIDED and opens at the next window's end, at most 80 ms after the boundary.
  */
 
 #ifndef DSD_NEO_INCLUDE_DSD_NEO_DSP_SQUELCH_FLOOR_H_
@@ -128,6 +135,7 @@ typedef struct {
     int shift_windows;
     int gate_open;
     int noise_hold;
+    int restart_hold; /* after a stream restart: no power-only opening until a NOISE or CARRIER window */
     int last_class;
     double window_power;
     uint64_t windows;
@@ -210,8 +218,13 @@ int dsd_squelch_floor_plan_equal(const dsd_squelch_floor_plan* a, const dsd_sque
 /** @brief Start over: LEARNING, gate closed, windows empty; the plan and margin stay. */
 void dsd_squelch_floor_reset(dsd_squelch_floor* t);
 
-/** @brief A gap in the samples: empty the windows and the lag history; the floor and the gate stay. */
-void dsd_squelch_floor_restart_windows(dsd_squelch_floor* t);
+/**
+ * @brief A stream boundary at the same context (a stream open or restart, a reconnect, a spell without the tracker):
+ * the windows and the lag history start over, a floor (SEEDED, PROVISIONAL or KNOWN) stays, the gate closes, the
+ * learning windows and a seed's confirmation and a shift's run so far are dropped, and the floor does not open on
+ * power alone until a 40 ms window after the boundary classes NOISE or CARRIER.
+ */
+void dsd_squelch_floor_stream_restart(dsd_squelch_floor* t);
 
 /**
  * @brief Take @p plan. A plan that classifies differently starts the windows over; a floor already learned is kept,

@@ -729,9 +729,9 @@ dsd_demod_reset_filter_state(struct demod_state* d) {
         d->cqpsk_agc_avg = 1.0f;
     }
     post_decim_reset_state(d);
-    /* The auto squelch's next block takes its context afresh: at the same context it keeps the floor and starts its
-       windows (and the coherence history) over, so none spans the reset; at another it moves the floor. The noise
-       squelch's next block starts it over. */
+    /* The auto squelch's next block takes its context afresh: at the same context it keeps the floor, closes the gate
+       and starts its windows (and the coherence history) over, so none spans the reset; at another it moves the floor.
+       The noise squelch's next block starts it over. */
     d->squelch_auto_ran = 0;
     d->squelch_noise_ran = 0;
 }
@@ -2224,10 +2224,12 @@ squelch_flag_histories_reset(struct demod_state* d) {
     DSD_MEMSET(d->resamp_flag_hist, DSD_SQUELCH_FLAG_CLOSED, sizeof(d->resamp_flag_hist));
 }
 
-/* The tracker takes the context it runs in: a gap since it last ran starts its windows over, and a new context moves
-   the floor (remembered for the context left, seeded from the cache for the one taken, or learned). A floor kept
-   through a gap ages like a cached one: past DSD_SQUELCH_FLOOR_STALE_S of sample time (the level squelch, digital
-   traffic) it is learned again, neither kept nor stored for its channel with a fresh stamp. */
+/* The tracker takes the context it runs in: a gap since it last ran (a stream open or restart, a reconnect, a spell
+   under another squelch) is a stream boundary, which keeps the floor, closes the gate and starts the windows over, and a
+   new context moves the floor (remembered for the context left, seeded from the cache for the one taken, or learned). A
+   live plan change is not a gap: the tracker takes it in squelch_floor_ensure_plan(). A floor kept through a gap ages
+   like a cached one: past DSD_SQUELCH_FLOOR_STALE_S of sample time (the level squelch, digital traffic) it is learned
+   again, neither kept nor stored for its channel with a fresh stamp. */
 static void
 squelch_auto_take_context(struct demod_state* d) {
     dsd_squelch_floor* t = &d->squelch_floor;
@@ -2241,7 +2243,7 @@ squelch_auto_take_context(struct demod_state* d) {
         dsd_squelch_floor_reset(t);
     }
     if (same) {
-        dsd_squelch_floor_restart_windows(t);
+        dsd_squelch_floor_stream_restart(t);
     } else {
         dsd_squelch_floor_change_context(t, &d->squelch_cache,
                                          d->squelch_context_applied_set ? &d->squelch_context_applied : NULL,
