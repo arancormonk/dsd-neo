@@ -311,18 +311,35 @@ dpmr_read_back_bits(const dsd_state* state, const dpmr_levels* levels, uint8_t i
     }
 }
 
-/* Whether another FS1 being read ends where @p header's MI1 begins (@p header's own word end plus 72 symbols). Its MI0
- * is then the bits @p header read as MI1: a header behind one or more false FS1 words (the last of them 72 symbols
- * before its own) passes in that false word's frame on its MI0 alone, read as MI1, with the false word's frame
- * misplaced 72 symbols early and the end of the header's FS1 taken as its channel code. */
+/* Whether another FS1 being read ends where @p header's MI1 begins (@p header's own word end plus 72 symbols) and will
+ * pass its own check on those bits. Its MI0 is then the bits @p header read as MI1: a header behind one or more false
+ * FS1 words (the last of them 72 symbols before its own) passes in that false word's frame on its MI0 alone, read as
+ * MI1, with the false word's frame misplaced 72 symbols early and the end of the header's FS1 taken as its channel
+ * code. A pending word is a sign pattern only, so it displaces the frame only when its own levels can read a frame
+ * (dpmr_word_levels(), as its own check will) and its MI0, sliced on them, passes; else @p header is the frame. */
 static int
-dpmr_mi1_is_a_later_headers_mi0(const dsd_dpmr_frame_sync* sync, const dsd_dpmr_sync_mark* header) {
+dpmr_mi1_is_a_later_headers_mi0(const dsd_state* state, const dsd_dpmr_sync_mark* header) {
+    const dsd_dpmr_frame_sync* sync = &state->dpmr_sync;
     for (int i = 0; i < DSD_DPMR_PENDING_MAX; i++) {
         const dsd_dpmr_sync_mark* other = &sync->pending[i];
-        if (other != header && other->kind == DSD_DPMR_SYNC_FRAME_HEADER
-            && other->clock == header->clock + DPMR_HEADER_MI1_SYMBOLS && other->epoch == header->epoch
-            && other->input == header->input && other->carrier_seq == header->carrier_seq
-            && other->sps_hunt_idx == header->sps_hunt_idx && other->inverted == header->inverted) {
+        if (other == header || other->kind != DSD_DPMR_SYNC_FRAME_HEADER
+            || other->clock != header->clock + DPMR_HEADER_MI1_SYMBOLS || other->epoch != header->epoch
+            || other->input != header->input || other->carrier_seq != header->carrier_seq
+            || other->sps_hunt_idx != header->sps_hunt_idx || other->inverted != header->inverted
+            || state->symbol_clock < other->clock) {
+            continue;
+        }
+        /* This runs on @p header's last symbol, 132 after its word: the later word ends 60 symbols back, and its MI0
+           is the newest 60 symbols. */
+        dpmr_levels levels;
+        uint8_t mi0[DPMR_MI_WIRE_BITS];
+        uint8_t info[DSD_DPMR_HEADER_MI_BITS];
+        if (!dpmr_word_levels(state, dpmr_received_word(DSD_DPMR_SYNC_FRAME_HEADER, other->inverted), DPMR_FS1_SYMBOLS,
+                              (int)(state->symbol_clock - other->clock), &levels)) {
+            continue;
+        }
+        dpmr_read_back_bits(state, &levels, other->inverted, DPMR_MI_WIRE_BITS / 2, mi0);
+        if (frame_sync_dpmr_decode_mi(mi0, info)) {
             return 1;
         }
     }
@@ -344,9 +361,10 @@ dpmr_check_header(dsd_state* state, const dsd_dpmr_sync_mark* header, const dpmr
     if (copies == 0U) {
         return DSD_SYNC_NONE;
     }
-    /* A frame that passed on MI1 alone, where another FS1 ends right before it, is that later header's MI0: the later
-       candidate reads it in place, both copies and the channel code where they are, at its own frame's end. */
-    if (copies == DSD_DPMR_SYNC_COPY_1 && dpmr_mi1_is_a_later_headers_mi0(sync, header)) {
+    /* A frame that passed on MI1 alone, where another FS1 that can read a frame ends right before it, is that later
+       header's MI0: the later candidate reads it in place, both copies and the channel code where they are, at its own
+       frame's end. */
+    if (copies == DSD_DPMR_SYNC_COPY_1 && dpmr_mi1_is_a_later_headers_mi0(state, header)) {
         return DSD_SYNC_NONE;
     }
     DSD_MEMCPY(sync->checked_bits, info, DSD_DPMR_HEADER_MI_BITS);

@@ -49,6 +49,10 @@ static int g_pos;
 static int g_inverted;
 /* The read at which getSymbol() records an input interruption (a Signal search leaving, a stream gap); -1 none. */
 static int g_interrupt_at = -1;
+/* Stream symbols [g_fade_from, g_fade_to) arrive at g_fade times their level (a fade); none when from == to. */
+static int g_fade_from;
+static int g_fade_to;
+static float g_fade = 1.0f;
 
 static float
 dibit_level(uint8_t dibit) {
@@ -69,7 +73,10 @@ float
 getSymbol(dsd_opts* opts, dsd_state* state, int have_sync) { // NOLINT(misc-use-internal-linkage)
     (void)opts;
     (void)have_sync;
-    const float symbol = dibit_level(g_pos < g_len ? g_dibits[g_pos] : filler_dibit(g_pos));
+    float symbol = dibit_level(g_pos < g_len ? g_dibits[g_pos] : filler_dibit(g_pos));
+    if (g_pos >= g_fade_from && g_pos < g_fade_to) {
+        symbol *= g_fade;
+    }
     if (g_pos == g_interrupt_at) {
         state->input_interrupted = 1;
     }
@@ -86,6 +93,9 @@ stream_reset(void) {
     g_pos = 0;
     g_inverted = 0;
     g_interrupt_at = -1;
+    g_fade_from = 0;
+    g_fade_to = 0;
+    g_fade = 1.0f;
 }
 
 static void
@@ -844,6 +854,53 @@ test_false_fs1_words_before_a_header(void) {
     assert(!failed);
 }
 
+/* A checked header is left to a later FS1 only when that word can read a frame (issue #890). A header whose MI0 is
+   damaged passes on MI1 alone; when the 24 symbols right before its MI1 (MI0's tail and the channel code) carry FS1's
+   signs but faded too far to slice a frame on (DSD_WARM_START_MIN_SPAN), the later word's own check would reject it,
+   so the header is the frame, accepted at its end with its MI1. */
+static void
+test_faded_fs1_sign_pattern_does_not_displace_a_header(void) {
+    static const uint8_t k_preamble[DPMR_SPEC_PREAMBLE_DIBITS] = {
+        1, 1, 3, 3, 1, 1, 3, 3, 1, 1, 3, 3, 1, 1, 3, 3, 1, 1, 3, 3, 1, 1, 3, 3, 1, 1, 3, 3, 1, 1, 3, 3, 1, 1, 3, 3,
+    };
+    uint8_t info[DPMR_SPEC_MI_BITS];
+    uint8_t mi[DPMR_SPEC_MI_WIRE];
+    uint8_t cc[24];
+    uint8_t mi0_cc[(DPMR_SPEC_MI_WIRE + 24) / 2];
+    uint8_t fs1[24];
+    dpmr_spec_header_bits(&k_voice_header, info);
+    dpmr_spec_encode_mi(info, mi);
+    dpmr_spec_put(cc, 0, 24, 0x5D5D55U);
+    dpmr_spec_dibits(mi, DPMR_SPEC_MI_WIRE, mi0_cc);
+    dpmr_spec_dibits(cc, 24, mi0_cc + (DPMR_SPEC_MI_WIRE / 2));
+    assert(dpmr_spec_word(DPMR_FRAME_SYNC_1, fs1) == 24);
+    /* The last 24 symbols before MI1 carry FS1: MI0's tail (so MI0 fails) and the channel code. */
+    DSD_MEMCPY(mi0_cc + sizeof(mi0_cc) - 24U, fs1, 24U);
+
+    setup(g_opts, g_state, MODE_DPMR, 0);
+    stream_reset();
+    put_filler(80);
+    put_dibits(k_preamble, DPMR_SPEC_PREAMBLE_DIBITS);
+    put_word(DPMR_FRAME_SYNC_1);
+    put_dibits(mi0_cc, (int)sizeof(mi0_cc));
+    g_fade_from = g_len - 24;
+    g_fade_to = g_len;
+    g_fade = 0.1f; /* outer levels +-0.3: a span of 0.6 */
+    put_bits(mi, DPMR_SPEC_MI_WIRE);
+    const int header_end = g_len;
+    put_filler(200);
+    const int sync = hunt(g_opts, g_state, g_len);
+    if (sync != DSD_SYNC_DPMR_FS1_POS || g_pos != header_end) {
+        DSD_FPRINTF(stderr, "faded FS1 signs before MI1: sync %d at %d, want %d at %d\n", sync, g_pos,
+                    DSD_SYNC_DPMR_FS1_POS, header_end);
+    }
+    assert(sync == DSD_SYNC_DPMR_FS1_POS);
+    assert(g_pos == header_end);
+    assert(g_state->dpmr_sync.checked_copies == DSD_DPMR_SYNC_COPY_1);
+    assert(checked_bits_equal(g_state, info, DPMR_SPEC_MI_BITS));
+    free_state_buffers(g_state);
+}
+
 /* A Communications_Start copy in the reserved Communications Mode 111 (TS 102 658 Table 5.55) is no copy, whatever its
    CRC: beside a good copy it is no contradiction (the good one is the header), and alone it is no header, so no FS3 is
    looked for behind it. */
@@ -1020,6 +1077,7 @@ main(int argc, char** argv) {
     test_end_reading_with_reserved_fields_is_rejected();
     test_header_payload_holding_fs1_is_kept();
     test_false_fs1_words_before_a_header();
+    test_faded_fs1_sign_pattern_does_not_displace_a_header();
     test_reserved_start_mode_copy_is_no_copy();
     test_header_both_polarities();
     test_header_copies();
