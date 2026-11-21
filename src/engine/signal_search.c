@@ -3,6 +3,7 @@
  * Copyright (C) 2026 by arancormonk <180709949+arancormonk@users.noreply.github.com>
  */
 
+#include <dsd-neo/core/access_code.h>
 #include <dsd-neo/core/airspy_config.h>
 #include <dsd-neo/core/audio.h>
 #include <dsd-neo/core/call_state.h>
@@ -27,6 +28,7 @@
 #include <dsd-neo/runtime/control_pump.h>
 #include <dsd-neo/runtime/decode_clock.h>
 #include <dsd-neo/runtime/decode_mode.h>
+#include <dsd-neo/runtime/receive_policy.h>
 #include <dsd-neo/runtime/rtl_stream_metrics_hooks.h>
 #include <dsd-neo/runtime/scan_mode.h>
 #include <dsd-neo/runtime/scan_options.h>
@@ -117,6 +119,10 @@ typedef struct {
     dsd_signal_search_site site;
     /* The visit's call tuple, from call notes alone; cleared at each landing and when the protocol changes. */
     search_call call;
+    /* The access code the visit's latest admitted carried access note named (issue #748 B14), shown on the hit while
+       the note's sync type is of the hit's protocol; cleared at each landing. */
+    dsd_signal_search_access_note access_note;
+    int access_noted;
     /* The session's own P25 site as Start found it, put back whole after every departure (issue #804). */
     dsd_p25_site_snapshot session_site;
     /* The session's P25 patch table as Start found it (with its owner, listening clock and sequence counter): every
@@ -923,6 +929,24 @@ search_refresh_call(search_coord* c) {
     return 1;
 }
 
+/* The hit carries the visit's noted access code while the note's sync type is of the hit's protocol, and none
+   otherwise; a note made before the protocol is identified shows once it is. 1 when what the hit carries changed. */
+static int
+search_refresh_access(search_coord* c) {
+    dsd_signal_search_hit* hit = &c->status.hit;
+    const int noted =
+        c->access_noted && dsd_engine_signal_search_family_matches(hit->protocol, c->access_note.sync) ? 1 : 0;
+    const uint8_t kind = noted ? c->access_note.kind : 0U;
+    const uint16_t value = noted ? c->access_note.value : 0U;
+    if (hit->access_noted == noted && hit->access_kind == kind && hit->access_value == value) {
+        return 0;
+    }
+    hit->access_noted = (uint8_t)noted;
+    hit->access_kind = kind;
+    hit->access_value = value;
+    return 1;
+}
+
 static void
 search_identified_protocol(search_coord* c, const dsd_state* state, const char* protocol) {
     /* NXDN's sync word is shared by both rates. Preserve the profile that actually
@@ -936,6 +960,7 @@ search_identified_protocol(search_coord* c, const dsd_state* state, const char* 
         hit->target = hit->source = 0;
         hit->slot = 0;
         hit->access[0] = hit->source_text[0] = hit->target_text[0] = hit->crypt[0] = '\0';
+        hit->access_noted = 0;
         /* Another protocol's identity is not this one's site or call: they clear, and only a new note shows one again.
            A site or call noted before any protocol was identified waits for it. */
         if (hit->protocol[0] && !search_site_is(c, identified)) {
@@ -948,6 +973,7 @@ search_identified_protocol(search_coord* c, const dsd_state* state, const char* 
     DSD_SNPRINTF(hit->protocol, sizeof(hit->protocol), "%s", identified);
     (void)search_refresh_site(c);
     (void)search_refresh_call(c);
+    (void)search_refresh_access(c);
 }
 
 /* Whether a protocol observation may join the visit: one is being received, and no input interruption stands (an
@@ -1110,10 +1136,45 @@ search_access_note_applies(const search_coord* c, const dsd_state* state) {
            && !dsd_receive_code_rejects(c->opts, state, state->synctype);
 }
 
+/* Whether the receive policy rejects the code @p note carries, judged by the code alone as dsd_receive_code_rejects()
+   judges the decoder's: the carried value stands in for the one the decoder holds for the note's sync type. */
+static int
+search_note_rejected(const search_coord* c, const dsd_state* state, const dsd_signal_search_access_note* note) {
+    if (!dsd_receive_filters_enabled(c->opts)) {
+        return 0;
+    }
+    dsd_receive_identity identity;
+    dsd_receive_identity_current(state, note->sync, -1, &identity);
+    identity.slot = 0;
+    identity.slot_pending = 0;
+    if (identity.kind != DSD_RECEIVE_NONE) {
+        identity.known = note->kind != DSD_ACCESS_CODE_NONE ? 1U : 0U;
+        identity.value = note->value;
+    }
+    return dsd_receive_policy_match(&c->opts->receive, &identity) == DSD_RECEIVE_REJECTED;
+}
+
+/* A carried code (issue #748 B14): while a visit is receiving and the policy admits the code, it is the visit's noted
+   code, which the hit carries once it is confirmed as a protocol of the note's family; the hit publishes when that
+   changes. Before confirmation it waits for the protocol, as a site note does. */
+static void
+search_note_access_code(search_coord* c, const dsd_state* state, const dsd_signal_search_access_note* note) {
+    if (!c || !search_receiving(c, state) || search_note_rejected(c, state, note)) {
+        return;
+    }
+    c->access_note = *note;
+    c->access_noted = 1;
+    if (c->status.hit.confirmed && search_refresh_access(c)) {
+        search_publish(c, 1);
+    }
+}
+
 void
-dsd_engine_signal_search_access(const dsd_state* state) {
+dsd_engine_signal_search_access(const dsd_state* state, const dsd_signal_search_access_note* note) {
     search_coord* c = search_get(state);
-    if (search_access_note_applies(c, state)) {
+    if (note) {
+        search_note_access_code(c, state, note);
+    } else if (search_access_note_applies(c, state)) {
         search_publish(c, 1);
     }
 }
@@ -1709,6 +1770,7 @@ search_visit_candidate(search_coord* c, dsd_opts* opts, dsd_state* state, const 
     /* Nothing noted before this landing, on the span or an earlier visit, is this detection's. */
     dsd_signal_search_site_clear(&c->site);
     DSD_MEMSET(&c->call, 0, sizeof(c->call));
+    c->access_noted = 0;
     hit->session_id = c->status.session_id;
     hit->hit_id = ++c->next_hit;
     hit->frequency_hz = found->frequency_hz;

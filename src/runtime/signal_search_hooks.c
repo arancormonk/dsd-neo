@@ -77,7 +77,15 @@ dsd_signal_search_access_set(dsd_signal_search_access_fn fn) {
 void
 dsd_signal_search_note_access(const dsd_state* state) {
     if (access_fn) {
-        access_fn(state);
+        access_fn(state, NULL);
+    }
+}
+
+void
+dsd_signal_search_note_access_code(const dsd_state* state, int sync, uint8_t kind, uint16_t value) {
+    if (access_fn) {
+        const dsd_signal_search_access_note note = {sync, kind, value};
+        access_fn(state, &note);
     }
 }
 

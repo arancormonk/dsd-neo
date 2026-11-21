@@ -56,6 +56,7 @@
 #include <dsd-neo/runtime/rtl_stream_io_hooks.h>
 #include <dsd-neo/runtime/rtl_stream_metrics_hooks.h>
 #include <dsd-neo/runtime/shutdown.h>
+#include <dsd-neo/runtime/signal_search_hooks.h>
 #include <dsd-neo/runtime/squelch.h>
 #include <dsd-neo/runtime/telemetry.h>
 #include <dsd-neo/runtime/trunk_scan_hooks.h>
@@ -717,6 +718,10 @@ M17decodeLSF(const dsd_opts* opts, dsd_state* state, int publish_canonical, cons
         const int publishes = carrier->mpkt_call != (uint8_t)M17_MPKT_CALL_NONE;
         if (!s_m17_monitoring_local_tx && publishes) {
             dsd_rxid_note_access(state, DSD_RXID_FAMILY_M17, (uint8_t)DSD_ACCESS_CODE_CAN, (uint16_t)res.cn);
+            /* A Signal search reads the CAN from the call this LSF publishes; one of stream data type 0 publishes
+               none, so the CAN travels with the note itself (issue #748 B14). */
+            dsd_signal_search_note_access_code(state, m17_received_protocol(state), (uint8_t)DSD_ACCESS_CODE_CAN,
+                                               (uint16_t)res.cn);
         }
         m17_lsf_carrier bound = *carrier;
         bound.call_observed =

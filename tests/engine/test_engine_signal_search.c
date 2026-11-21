@@ -4056,6 +4056,86 @@ test_failed_start_changes_nothing(dsd_opts* o, dsd_state* s, const dsd_signal_se
     free(opts_before);
 }
 
+/* What the M17 decoder reports for a CRC-checked LSF of CAN @p can (m17.c, M17decodeLSF() then
+   m17_finalize_lsf_crc()): the CAN it carries through the access hook, then the confirmation and the call note. A
+   call-free LSF (stream data type 0) opens no call record, so the call note finds none. */
+static void
+m17_checked_lsf(dsd_state* s, uint16_t can) {
+    s->synctype = DSD_SYNC_M17_LSF_POS;
+    dsd_signal_search_note_access_code(s, DSD_SYNC_M17_LSF_POS, DSD_ACCESS_CODE_CAN, can);
+    dsd_signal_search_note_evidence(s, "M17", 0, 0, NULL);
+    dsd_signal_search_note_call(s, 0U);
+}
+
+/* Issue #748 B14: a CRC-checked M17 LSF of stream data type 0 names its CAN and opens no call. The access text of the
+   hit, as the store keeps it, is the latest checked LSF's CAN: a second call-free LSF's replaces the first's, the CAN
+   of an older call still running does not come back over it, and the ended hit keeps it. A DMR code the receive policy
+   rejects never reaches the hit through the same hook. */
+static void
+test_m17_call_free_lsf_can(dsd_opts* o, dsd_state* s, const dsd_signal_search_config* config) {
+    const dsd_signal_search_config one = tag_config(config, 93, 1, 0);
+    live = 1;
+    carrier = 0;
+    observed = 1;
+    failed = 0;
+    stalled_ms = 0;
+    o->rtlsdr_center_freq = 100000000;
+    DSD_MEMSET(calls, 0, sizeof(calls));
+    assert(start_action(o, s, &one) == 1);
+    tick(o, s);
+    visit_strongest(o, s);
+    m17_checked_lsf(s, 3U);
+    assert(store_status.hit.confirmed && strcmp(store_status.hit.protocol, "M17") == 0);
+    assert(strcmp(store_status.hit.access, "CAN 3") == 0);
+    m17_checked_lsf(s, 9U);
+    assert(strcmp(store_status.hit.access, "CAN 9") == 0);
+    // A periodic refresh keeps it.
+    advance(100);
+    tick(o, s);
+    assert(strcmp(store_status.hit.access, "CAN 9") == 0);
+    // A voice LSF of CAN 5 opens a call; a call-free LSF of CAN 9 while that call still runs names CAN 9.
+    dsd_call_snapshot* call = put_call(0, 7, 0.0, DSD_SYNC_M17_LSF_POS, 0, 0);
+    call->service_options = 5U;
+    call->has_service_metadata = 1U;
+    m17_checked_lsf(s, 5U);
+    assert(strcmp(store_status.hit.access, "CAN 5") == 0);
+    m17_checked_lsf(s, 9U);
+    assert(strcmp(store_status.hit.access, "CAN 9") == 0);
+    advance(100);
+    tick(o, s);
+    assert(strcmp(store_status.hit.access, "CAN 9") == 0);
+    // The stream frames after it publish under another M17 sync type, the call record unchanged: CAN 9 stays.
+    s->synctype = DSD_SYNC_M17_STR_POS;
+    dsd_signal_search_note_evidence(s, "M17", 0, 0, NULL);
+    assert(strcmp(store_status.hit.access, "CAN 9") == 0);
+    // The ended hit keeps it.
+    advance(600);
+    tick(o, s);
+    assert(store_status.hit.ended && strcmp(store_status.hit.access, "CAN 9") == 0);
+    DSD_MEMSET(calls, 0, sizeof(calls));
+
+    // The next visit: nothing noted on the last one is this one's.
+    land(o, s);
+    ready = 1;
+    tick(o, s);
+    land(o, s);
+    assert(!store_status.hit.ended && store_status.hit.access[0] == '\0' && !store_status.hit.confirmed);
+    // A DMR hit on colour code 7, with colour code 3 blocked: a note of colour code 3 neither reaches the hit nor
+    // publishes it.
+    block_cc3(o);
+    dmr_evidence(s, 7);
+    assert(strcmp(store_status.hit.access, "CC 7") == 0);
+    const int published = hits_published;
+    s->dmr_color_code = 3;
+    dsd_signal_search_note_access_code(s, DSD_SYNC_DMR_BS_DATA_POS, DSD_ACCESS_CODE_COLOR_CODE, 3U);
+    assert(hits_published == published && strcmp(store_status.hit.access, "CC 7") == 0);
+    // An allowed one does.
+    s->dmr_color_code = 5;
+    dsd_signal_search_note_access_code(s, DSD_SYNC_DMR_BS_DATA_POS, DSD_ACCESS_CODE_COLOR_CODE, 5U);
+    assert(hits_published == published + 1 && strcmp(store_status.hit.access, "CC 5") == 0);
+    stop_refusal_session(o, s);
+}
+
 static void
 test_avoid_lists(dsd_opts* o, dsd_state* s, const dsd_signal_search_config* config) {
     test_avoid_lists_room(o, s, config);
@@ -4268,6 +4348,7 @@ main(void) {
     test_avoid_lists(o, s, &config);
     test_refusal_then_resume_reaches_frontend(o, s, &config);
     test_failed_start_changes_nothing(o, s, &config);
+    test_m17_call_free_lsf_can(o, s, &config);
     s->rtl_ctx = NULL;
     dsd_state_ext_free_all(s);
     free(s);

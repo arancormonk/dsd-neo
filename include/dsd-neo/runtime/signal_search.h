@@ -80,6 +80,12 @@ typedef struct {
      * "Encrypted" when only a checked encryption indication was, "" otherwise. Persisted in history (journal
      * version 2). */
     char crypt[48];
+    /** The access code the visit's latest checked access note carried for the hit's protocol (issue #748 B14,
+     * dsd_signal_search_note_access_code()): with access_noted 1, access_kind (dsd_access_code_kind) and access_value
+     * are what the observer formats into access at every publication, live and ended; DSD_ACCESS_CODE_NONE withdraws
+     * the code. 0 when no note named one: access is read as before. Not persisted; access is. */
+    uint8_t access_noted, access_kind;
+    uint16_t access_value;
     /** Applied source settings, copied at detection time for history and save-as-system. */
     char input_spec[1024];
     int ppm, bias_tee;

@@ -84,7 +84,19 @@ typedef void (*dsd_signal_search_evidence_fn)(const dsd_state*, const char*, int
 typedef void (*dsd_signal_search_site_fn)(const dsd_state*, const dsd_signal_search_site_note*);
 typedef void (*dsd_signal_search_call_fn)(const dsd_state*, uint8_t);
 typedef int (*dsd_signal_search_active_fn)(const dsd_state*);
-typedef void (*dsd_signal_search_access_fn)(const dsd_state*);
+
+/** What an access note carries when the producer names the code itself (issue #748 B14): the sync type of the frame
+ * whose check proved it and the code, as dsd_access_code_kind and its value. DSD_ACCESS_CODE_NONE: that frame proved
+ * the carrier sends no code (a withdrawal). */
+typedef struct {
+    int sync;
+    uint8_t kind;
+    uint16_t value;
+} dsd_signal_search_access_note;
+
+/** The access hook: @p note is the code a producer carried (dsd_signal_search_note_access_code()), or NULL when the
+ * decoder holds the code for the engine to read itself (dsd_signal_search_note_access()). */
+typedef void (*dsd_signal_search_access_fn)(const dsd_state*, const dsd_signal_search_access_note*);
 typedef void (*dsd_signal_search_activity_fn)(const dsd_state*);
 /** Decoder-thread query: during a search session the symbol readers take a failed (bounded) live read as an
  * interruption, not the end of the stream. */
@@ -113,6 +125,11 @@ void dsd_signal_search_note_call(const dsd_state* state, uint8_t slot);
  * itself; the default is a no-op. */
 void dsd_signal_search_access_set(dsd_signal_search_access_fn fn);
 void dsd_signal_search_note_access(const dsd_state* state);
+/** Protocol code calls dsd_signal_search_note_access_code() with the access code a frame that passed its CRC/FEC check
+ * carried, @p kind (dsd_access_code_kind) and @p value, read from that frame, when the decoder keeps no code
+ * dsd_access_code_current() reads for @p sync afterwards: an M17 LSF of stream data type 0 names its CAN and opens no
+ * call, whose service options are where the CAN is read from (issue #748 B14). The default is a no-op. */
+void dsd_signal_search_note_access_code(const dsd_state* state, int sync, uint8_t kind, uint16_t value);
 
 /** Install at engine startup. Protocol code calls dsd_signal_search_note_activity() for content of a transmission it
  * already reported as evidence that keeps the visit listening (issue #748: every qualifying TETRA burst), without a

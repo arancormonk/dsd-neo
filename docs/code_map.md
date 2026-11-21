@@ -235,7 +235,16 @@ Generated (do not edit/commit):
     decision `search_access_note_applies()` makes. It confirms nothing
     and changes no phase or activity, so the visit's quiet timing still runs from its last
     evidence; the observer then reads the code through its usual family gate. It exists for a
-    P25 Phase 2 NAC proven after the transmission's last evidence (below, Protocols).
+    P25 Phase 2 NAC proven after the transmission's last evidence (below, Protocols). A producer can carry the code
+    itself (`dsd_signal_search_note_access_code()`, a `dsd_signal_search_access_note` of sync type, kind and value;
+    issue #748 B14): a CRC-checked M17 LSF does, since one of stream data type 0 opens no call whose service options
+    hold the CAN. While a visit receives and the policy admits the carried value (`search_note_rejected()`), it becomes
+    the visit's noted code, cleared at each landing, which the hit carries (`access_noted`, `access_kind`,
+    `access_value`, not persisted) while it is confirmed as a protocol of the note's family, publishing when that
+    changes; a note before confirmation waits for it, as a site note does. The observer formats a carried code into
+    `access` at every publication, live and ended, over the access it copied back and over an older call record's CAN;
+    a carried `DSD_ACCESS_CODE_NONE` withdraws it (`ENGINE_SIGNAL_SEARCH`, `APP_SIGNAL_SEARCH_PROVENANCE`,
+    `M17_STATE_DISPATCH`).
     A site note applies only when the policy does not reject the code of the note's family either
     (`search_site_sync()`: the current sync type when it is of that family, else one of it), before confirmation as
     after, so a rejected code's site never joins a later admitted identity. Both judge by the code alone

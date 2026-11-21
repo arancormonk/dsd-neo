@@ -87,6 +87,18 @@ format_confirmed_access(dsd_signal_search_hit* hit) {
     }
 }
 
+/* The access code a checked note carried for the hit (issue #748 B14), formatted on every publication, live and ended:
+   the latest checked frame's code, so neither the access the hit last carried nor the call record of an older call
+   still running (format_confirmed_access()) stands over it; DSD_ACCESS_CODE_NONE withdraws the code. */
+static void
+format_noted_access(dsd_signal_search_hit* hit) {
+    if (hit->access_noted) {
+        /* A kind with no format (DSD_ACCESS_CODE_NONE) leaves the text empty. */
+        (void)dsd_app_access_code_format(hit->access_kind, hit->access_value, DSD_APP_ACCESS_CODE_SHORT, hit->access,
+                                         sizeof(hit->access));
+    }
+}
+
 /* Watch the received tone on a live publication of the hit. A lock continues the candidate only as the same lock of
    the same reception (its generation and lock epoch), so a tone lost and found again, or replaced, between two
    publications, which may be seconds apart, starts its time over. Anything but a lock ends the candidate and keeps the
@@ -154,6 +166,7 @@ publish_search(const dsd_signal_search_status* status, const dsd_signal_search_h
     if (changed && !hit->ended && hit->confirmed) {
         format_confirmed_access(hit);
     }
+    format_noted_access(hit);
     /* The ended publication keeps the tone the hit last carried. */
     if (!hit->ended) {
         observe_tone();

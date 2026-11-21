@@ -7,6 +7,7 @@
 #include <dsd-neo/app_control/commands.h>
 #include <dsd-neo/app_control/rx_tone_view.h>
 #include <dsd-neo/app_control/signal_search.h>
+#include <dsd-neo/core/access_code.h>
 #include <dsd-neo/core/call_state.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/opts_fwd.h>
@@ -566,6 +567,47 @@ main(void) {
     observer(&status, &status.hit, observer_user);
     observer(&status, &status.hit, observer_user);
     assert(strcmp(published.hit.access, "CAN 5") == 0);
+
+    // Issue #748 B14: the coordinator names the CAN a checked call-free LSF carried (no call record has one). It is the
+    // hit's on every publication: a changed, a periodic and the ended one, over the call record of an older call still
+    // running, and over the CAN the hit last carried. A withdrawal clears it the same way.
+    status.hit.hit_id = 6;
+    state->synctype = DSD_SYNC_M17_LSF_POS;
+    DSD_MEMSET(&call, 0, sizeof(call));
+    call.phase = DSD_CALL_PHASE_IDLE;
+    status.hit.access_noted = 1;
+    status.hit.access_kind = DSD_ACCESS_CODE_CAN;
+    status.hit.access_value = 3;
+    observer(&status, &status.hit, observer_user);
+    assert(strcmp(published.hit.access, "CAN 3") == 0);
+    status.hit.access_value = 9;
+    observer(&status, &status.hit, observer_user);
+    assert(strcmp(published.hit.access, "CAN 9") == 0);
+    observer(&status, NULL, observer_user);
+    assert(strcmp(published.hit.access, "CAN 9") == 0);
+    call.protocol = state->synctype;
+    call.phase = DSD_CALL_PHASE_ACTIVE;
+    call.epoch = 2;
+    call.service_options = 5U;
+    call.has_service_metadata = 1U;
+    observer(&status, &status.hit, observer_user);
+    assert(strcmp(published.hit.access, "CAN 9") == 0);
+    status.hit.ended = 1;
+    observer(&status, &status.hit, observer_user);
+    assert(strcmp(published.hit.access, "CAN 9") == 0);
+    status.hit.ended = 0;
+    status.hit.access_kind = DSD_ACCESS_CODE_NONE;
+    status.hit.access_value = 0;
+    observer(&status, &status.hit, observer_user);
+    assert(published.hit.access[0] == '\0');
+    observer(&status, NULL, observer_user);
+    assert(published.hit.access[0] == '\0');
+    status.hit.ended = 1;
+    observer(&status, &status.hit, observer_user);
+    assert(published.hit.access[0] == '\0');
+    status.hit.ended = 0;
+    status.hit.access_noted = 0;
+    status.hit.access_kind = 0;
     status.hit.hit_id = 2;
 
     test_rejected_code_access(opts, state);

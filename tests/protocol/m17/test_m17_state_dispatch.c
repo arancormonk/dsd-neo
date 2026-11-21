@@ -2843,6 +2843,69 @@ test_lsf_search_evidence_follows_the_published_call(void) {
     return err;
 }
 
+/* The access notes an LSF sends a signal search, the last one's code, and how many noted the evidence before them. */
+static int g_access_code_notes, g_access_code_sync, g_access_code_before_evidence;
+static dsd_signal_search_access_note g_access_code_note;
+
+static void
+capture_access_code(const dsd_state* state, const dsd_signal_search_access_note* note) {
+    (void)state;
+    if (!note) {
+        return;
+    }
+    g_access_code_notes++;
+    g_access_code_note = *note;
+    g_access_code_sync = note->sync;
+    if (g_search_evidence.calls == 0) {
+        g_access_code_before_evidence++;
+    }
+}
+
+/* Issue #748 B14: an LSF of stream data type 0 is neither voice nor data and opens no call, so the CAN a signal search
+ * reads from the LSF's call record is not there. A CRC-valid one carries its CAN to the search through the access hook,
+ * of an M17 sync type, before the confirmation that reports it; one whose CRC failed carries nothing. */
+static int
+test_call_free_lsf_carries_its_can_to_search(void) {
+    dsd_opts* opts = &g_opts;
+    dsd_state* state = &g_state;
+    uint8_t lsf_bits[TEST_M17_LSF_BITS];
+    uint8_t lsf_packed[M17_LSF_BYTES];
+
+    dsd_state_ext_free_all(state);
+    DSD_MEMSET(opts, 0, sizeof(*opts));
+    DSD_MEMSET(state, 0, sizeof(*state));
+    DSD_MEMSET(&g_search_evidence, 0, sizeof(g_search_evidence));
+    g_access_code_notes = g_access_code_before_evidence = 0;
+    const unsigned long long dst = m17_encode_b40_callsign(0ULL, M17_REF_LSF_DST_CSD);
+    const unsigned long long src = m17_encode_b40_callsign(0ULL, M17_REF_LSF_SRC_CSD);
+    build_lsf_bits(lsf_bits, dst, src, m17_compose_frame_info(1U, 0U, 0U, 0U, 9U, 0U, 0U), NULL);
+    const uint16_t crc = m17_attach_lsf_crc(lsf_bits, lsf_packed);
+    state->synctype = DSD_SYNC_M17_LSF_POS;
+    dsd_signal_search_evidence_set(capture_search_evidence);
+    dsd_signal_search_access_set(capture_access_code);
+
+    int err = 0;
+    DSD_MEMCPY(state->m17_lsf, lsf_bits, sizeof(lsf_bits));
+    err |= expect_int("relaxed bad call-free LSF CRC", m17_finalize_lsf_crc(opts, state, lsf_packed, crc ^ 1U), 1);
+    err |= expect_int("a failing LSF CRC carries no CAN", g_access_code_notes, 0);
+
+    DSD_MEMCPY(state->m17_lsf, lsf_bits, sizeof(lsf_bits));
+    err |= expect_int("valid call-free LSF CRC", m17_finalize_lsf_crc(opts, state, lsf_packed, crc), 0);
+    dsd_call_snapshot call;
+    err |= expect_int("a call-free LSF publishes no call", get_m17_call(state, &call), 0);
+    err |= expect_int("a call-free LSF still confirms to search", g_search_evidence.calls, 1);
+    err |= expect_int("a call-free LSF carries its CAN once", g_access_code_notes, 1);
+    err |= expect_int("the CAN is carried before the confirmation", g_access_code_before_evidence, 1);
+    err |= expect_int("the carried CAN is of an M17 sync type", DSD_SYNC_IS_M17(g_access_code_sync) ? 1 : 0, 1);
+    err |= expect_u8("carried CAN kind", g_access_code_note.kind, (uint8_t)DSD_ACCESS_CODE_CAN);
+    err |= expect_int("carried CAN value", g_access_code_note.value, 9);
+
+    dsd_signal_search_evidence_set(NULL);
+    dsd_signal_search_access_set(NULL);
+    dsd_state_ext_free_all(state);
+    return err;
+}
+
 static int
 test_unconfirmed_stream_publishes_no_call(void) {
     dsd_opts* opts = &g_opts;
@@ -7764,6 +7827,7 @@ main(void) {
     err |= test_lsf_crc_confirms_the_transmission();
     err |= test_lsf_names_stream_mode_only_behind_its_crc();
     err |= test_lsf_search_evidence_follows_the_published_call();
+    err |= test_call_free_lsf_carries_its_can_to_search();
     err |= test_unconfirmed_stream_publishes_no_call();
     err |= test_stream_voice_chain_covers_the_whole_frame();
     err |= test_stream_voice_chain_onepoles_run_at_8k();
