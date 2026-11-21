@@ -1552,11 +1552,11 @@ dmr_flco_print_call_class(const dmr_flco_ctx* ctx) {
     }
 }
 
-// An LC that is no voice channel user (ctx->voice_user) carries no service options: the byte in their place shows no
-// emergency, encryption, priority or other option.
+// Only a voice channel user's LC reaches the service-option readers below (dmr_flco_handle_voice_user()): any other
+// LC carries no service options, and dmr_flco_print_non_voice_lc() shows its raw payload instead.
 static void
 dmr_flco_print_emergency_flag(const dmr_flco_ctx* ctx) {
-    if (ctx->voice_user && (ctx->so & 0x80)) {
+    if (ctx->so & 0x80) {
         DSD_FPRINTF(stderr, "%s", KRED);
         DSD_FPRINTF(stderr, "Emergency ");
     }
@@ -1657,10 +1657,6 @@ dmr_flco_arm_enc_lockout(dmr_flco_ctx* ctx, uint8_t eslot, int is_group) {
 
 static void
 dmr_flco_apply_enc_lockout(dmr_flco_ctx* ctx) {
-    // An LC that is no voice channel user names no call to lock out or release, and has no privacy bit to show.
-    if (!ctx->voice_user) {
-        return;
-    }
     // The classification the call's LC set, on the slot its voice is judged on.
     const uint8_t eslot = ctx->voice_slot;
     const int is_group = dmr_flco_call_kind(ctx) == DSD_CALL_KIND_GROUP_VOICE;
@@ -1698,9 +1694,6 @@ dmr_flco_apply_enc_lockout(dmr_flco_ctx* ctx) {
 
 static void
 dmr_flco_print_service_options(const dmr_flco_ctx* ctx) {
-    if (!ctx->voice_user) {
-        return;
-    }
     if ((ctx->fid == 0x10) && (ctx->so & 0x20)) {
         DSD_FPRINTF(stderr, "TXI ");
     }
@@ -1925,6 +1918,45 @@ dmr_flco_finalize(dmr_flco_ctx* ctx) {
     }
 }
 
+/* A voice channel user's LC: its call, scan hold, encryption lockout and the terminal line of its parties and service
+   options. */
+static void
+dmr_flco_handle_voice_user(dmr_flco_ctx* ctx) {
+    dmr_flco_print_regular_header(ctx);
+    dmr_flco_print_call_class(ctx);
+    const int is_private = dmr_flco_call_kind(ctx) == DSD_CALL_KIND_PRIVATE_VOICE;
+    // The scan hold takes only identity that cleared its check. CRCCorrect is also 1 for a RAS-accepted LC under -F;
+    // that exception is deliberate (trunk_scan_hooks.h), so a scanned RAS repeater still holds.
+    if (ctx->CRCCorrect == 1U) {
+        dsd_trunk_scan_hook_dmr_conventional_activity(ctx->opts, ctx->state, ctx->target, ctx->source, is_private,
+                                                      (ctx->so & 0x40U) != 0U, 0);
+    }
+    dmr_flco_print_emergency_flag(ctx);
+    if (ctx->type != 2U && ctx->CRCCorrect == 1U) {
+        dmr_flco_publish_voice(ctx);
+    }
+    dmr_flco_apply_enc_lockout(ctx);
+    dmr_flco_print_service_options(ctx);
+    dmr_flco_print_branding(ctx);
+    dmr_flco_print_tg_label(ctx);
+    dmr_flco_print_loaded_keys(ctx);
+    dmr_flco_print_extended_keys(ctx);
+}
+
+/* An LC that is no voice channel user (an FID 0 FLCO other than 0x00 or 0x03, dmr_flco_opens_voice_call()): it names
+   no call, so no party, call class or service option is read from it through the voice layout. Its FLCO and FID as
+   received and its raw payload are shown instead. */
+static void
+dmr_flco_print_non_voice_lc(const dmr_flco_ctx* ctx) {
+    dmr_flco_print_type_color(ctx->type, KYEL, KYEL, KYEL);
+    dmr_print_slot_tag(ctx->state);
+    DSD_FPRINTF(stderr, " Unknown LC FLCO=0x%02X FID=0x%02X LC:", ctx->raw_flco, ctx->raw_fid);
+    for (size_t i = 0; i < 9U; i++) {
+        DSD_FPRINTF(stderr, " %02X", (unsigned)convert_bits_into_output(&ctx->lc_bits[i * 8U], 8));
+    }
+    DSD_FPRINTF(stderr, "%s ", KNRM);
+}
+
 static void
 dmr_flco_run(dmr_flco_ctx* ctx) {
     dmr_flco_ensure_heal_hook();
@@ -1966,27 +1998,11 @@ dmr_flco_run(dmr_flco_ctx* ctx) {
 
     int regular_state = dmr_flco_prepare_regular_state(ctx);
     if (regular_state > 0) {
-        dmr_flco_print_regular_header(ctx);
-        dmr_flco_print_call_class(ctx);
-        const int is_private = dmr_flco_call_kind(ctx) == DSD_CALL_KIND_PRIVATE_VOICE;
-        // Only a voice channel user opens a call and holds the scan (an FID 0 LC with an FLCO other than 0x00 or 0x03
-        // names no call). The scan hold takes only identity that cleared its check. CRCCorrect is also 1 for a
-        // RAS-accepted LC under -F; that exception is deliberate (trunk_scan_hooks.h), so a scanned RAS repeater
-        // still holds.
-        if (ctx->CRCCorrect == 1U && ctx->voice_user) {
-            dsd_trunk_scan_hook_dmr_conventional_activity(ctx->opts, ctx->state, ctx->target, ctx->source, is_private,
-                                                          (ctx->so & 0x40U) != 0U, 0);
+        if (ctx->voice_user) {
+            dmr_flco_handle_voice_user(ctx);
+        } else {
+            dmr_flco_print_non_voice_lc(ctx);
         }
-        dmr_flco_print_emergency_flag(ctx);
-        if (ctx->type != 2U && ctx->CRCCorrect == 1U && ctx->voice_user) {
-            dmr_flco_publish_voice(ctx);
-        }
-        dmr_flco_apply_enc_lockout(ctx);
-        dmr_flco_print_service_options(ctx);
-        dmr_flco_print_branding(ctx);
-        dmr_flco_print_tg_label(ctx);
-        dmr_flco_print_loaded_keys(ctx);
-        dmr_flco_print_extended_keys(ctx);
     }
 
     dmr_flco_finalize(ctx);
@@ -2398,6 +2414,11 @@ dmr_slco_handle_cap_plus(dsd_opts* opts, dsd_state* state, const dmr_slco_data* 
     DSD_FPRINTF(stderr, " SLCO Capacity Plus Site: %d - Rest LSN: %d - RS: %02X", data->capsite, data->restchannel,
                 data->cap_reserved);
     dmr_slco_note_cap_plus_site(state, data);
+    /* A completed short LC (Hamming and CRC-8) is checked evidence of Capacity Plus: it selects the Cap+ layout
+       (16-bit addresses) for later data headers and preamble CSBKs, as a checked 0x3E status does. On a RAS carrier
+       under -F the statuses never pass their own CRC, so this is the one checked word that names the layout. */
+    DSD_SNPRINTF(state->dmr_branding, sizeof(state->dmr_branding), "%s", "Motorola");
+    DSD_SNPRINTF(state->dmr_branding_sub, sizeof(state->dmr_branding_sub), "%s", "Cap+ ");
 
     const long rest = state->trunk_chan_map[data->restchannel];
     if (rest > 0) {

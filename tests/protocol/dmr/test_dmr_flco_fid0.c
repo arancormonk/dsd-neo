@@ -398,15 +398,24 @@ fid0_non_voice_lc_prints_no_service_options(void) {
     const uint8_t so = 0x80U | 0x40U | 0x08U | 0x04U | 0x03U;
     char out[2048];
     header_print(0x01U, so, out, sizeof out);
-    assert(strstr(out, "TGT=291") != NULL);
+    // No party, call class or call fields read through the voice layout: the opcode and the raw payload instead.
+    assert(strstr(out, "Unknown LC") != NULL);
+    assert(strstr(out, "FLCO=0x01 FID=0x00") != NULL);
+    assert(strstr(out, "LC: 01 00 CF 00 01 23 00 04 56") != NULL);
+    assert(strstr(out, "TGT=") == NULL);
+    assert(strstr(out, "SRC=") == NULL);
+    assert(strstr(out, "Group") == NULL);
+    assert(strstr(out, "Private") == NULL);
+    assert(strstr(out, "Call") == NULL);
     assert(strstr(out, "Encrypted") == NULL);
     assert(strstr(out, "Emergency") == NULL);
     assert(strstr(out, "Priority") == NULL);
     assert(strstr(out, "Broadcast") == NULL);
     assert(strstr(out, "OVCM") == NULL);
 
-    // A voice channel user shows them.
+    // A voice channel user shows them, and its parties.
     header_print(0x00U, so, out, sizeof out);
+    assert(strstr(out, "TGT=291 SRC=1110") != NULL);
     assert(strstr(out, "Encrypted") != NULL);
     assert(strstr(out, "Emergency") != NULL);
     assert(strstr(out, "Priority 3") != NULL);

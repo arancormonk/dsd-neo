@@ -1126,6 +1126,33 @@ test_capmax_dmrla(dsd_opts* opts, dsd_state* state) {
     return rc;
 }
 
+/* A RAS Capacity Plus carrier under -F: its 0x3E statuses never pass their CRC, so they do not brand it, but its
+   Capacity Plus short LC passes Hamming and CRC-8 and selects the Cap+ layout (16-bit addresses) for the data headers
+   and preamble CSBKs that follow. One that fails its CRC-8 selects nothing. */
+static int
+test_capplus_slco_selects_layout(dsd_opts* opts, dsd_state* state) {
+    // A group preamble CSBK (opcode 61) whose source bits 56..79 are 0x123456: 1193046 as 24 bits, 13398 (0x3456) as
+    // the Cap+ 16-bit source.
+    static const uint8_t k_preamble[12] = {0x3D, 0x00, 0x40, 0x00, 0x00, 0x00, 0x01, 0x12, 0x34, 0x56, 0x00, 0x00};
+    static const uint8_t k_status[12] = {0x3E, 0x10, 0xC1, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00};
+    int rc = 0;
+    clear_record(state);
+    state->dmr_branding_sub[0] = '\0';
+    rc |= csbk_send(opts, state, k_status, (uint8_t)DSD_CRC_RAS_UNVERIFIED);
+    rc |= expect_int("a ras 0x3e selects no cap+ layout", strcmp(state->dmr_branding_sub, "Cap+ ") == 0, 0);
+    slco_cap_plus(opts, state, 4, 5, 1);
+    rc |= expect_int("a failed cap+ short lc selects no layout", strcmp(state->dmr_branding_sub, "Cap+ ") == 0, 0);
+    rc |= csbk_send(opts, state, k_preamble, 0U);
+    rc |= expect_log("standard preamble source", "Source: 1193046");
+    slco_cap_plus(opts, state, 4, 5, 0);
+    rc |= expect_text("a checked cap+ short lc selects the layout", state->dmr_branding_sub, "Cap+ ");
+    rc |= csbk_send(opts, state, k_preamble, 0U);
+    rc |= expect_log("cap+ preamble source", "Source: 13398");
+    state->dmr_branding_sub[0] = '\0';
+    clear_record(state);
+    return rc;
+}
+
 static int
 test_capmax_numbering(dsd_opts* opts, dsd_state* state) {
     int rc = 0;
@@ -1150,6 +1177,7 @@ test_site_numbers(dsd_opts* opts, dsd_state* state) {
     rc |= test_capplus_csbk_3b_site(opts, state);
     rc |= test_capplus_slco_reserved_bits_no_site(opts, state);
     rc |= test_capplus_slco_and_3b_agree(opts, state);
+    rc |= test_capplus_slco_selects_layout(opts, state);
     rc |= test_capmax_numbering(opts, state);
     set_dmrla(opts, 1, 0);
     g_search_running = 1;
