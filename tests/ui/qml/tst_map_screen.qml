@@ -92,11 +92,13 @@ Item {
             testContext.resetPositions();
             testContext.useAppPrefs(false);
             testContext.setLocationSupported(false);
+            testContext.resetLocalDay();
             Ui.Theme.resetFontScale();
             Ui.Theme.resetReducedMotion();
         }
         function init() {
             Ui.Theme.resetFontScale();
+            testContext.resetLocalDay();
             root.width = 360;
             root.height = 780;
             testContext.setMapTilesFailing(false);
@@ -1431,6 +1433,50 @@ Item {
             var gapTime = positions.trackFor(0).receivedTime;
             if (gapTime > 0)
                 compare(gapRow.gapTitle, "Positions may be missing from " + expected(gapTime));
+        }
+
+        // Issue #902 B1: the sheet's Measured and Received times, a List row's
+        // and the gap row's follow the local day on the same items: a time of
+        // today takes its date at midnight. Literal local times in a zone west
+        // of UTC.
+        function test_18o_times_follow_the_local_day() {
+            testContext.setLocalTimeZone("America/Los_Angeles");
+            testContext.setLocalNowMs(Date.UTC(2025, 5, 15, 3, 0, 0));
+            sheet().pin = null;
+            sheet().trackId = 0;
+            var noon = Date.UTC(2025, 5, 14, 19, 0, 0) / 1000;
+            sheet().take({trackId: 7, label: "Unit 41", hasPosition: true, hasUnknownFix: false, ageSeconds: -1,
+                          currentFix: {latitude: 10.0, longitude: 20.0, timeText: "12:04:33", newest: true, fixTime: noon, receivedTime: noon}});
+            sheet().visible = true;
+            var measured = item("mapShownFixMeasured");
+            var received = item("mapShownFixReceived");
+            compare(measured.text, "Measured at 12:00:00");
+            compare(received.text, "Received at 12:00:00");
+            testContext.setLocalNowMs(Date.UTC(2025, 5, 15, 7, 0, 5));
+            compare(measured.text, "Measured at 2025-06-14 12:00:00", "midnight dates the measured time");
+            compare(received.text, "Received at 2025-06-14 12:00:00", "and the received time");
+            sheet().visible = false;
+
+            push({source: 1001, lat: 10.0, lon: 20.0, label: "Engine 7", ageSeconds: 30});
+            testContext.startNewPositionStream();
+            screen.mapShown = false;
+            var list = item("mapList");
+            var id = trackNamed("Engine 7");
+            tryVerify(function () { return list.itemAtIndex(positionView.rowForTrack(id)) !== null; });
+            var row = list.itemAtIndex(positionView.rowForTrack(id));
+            var gapRow = list.itemAtIndex(positionView.rowForTrack(0));
+            var rx = positions.trackFor(id).currentFix.receivedTime;
+            var gapTime = positions.trackFor(0).receivedTime;
+            verify(rx > 0 && gapRow !== null && gapRow.gap && gapTime > 0, "a row and a gap with receive times");
+            testContext.setLocalNowMs(rx * 1000);
+            compare(row.clock, Qt.formatDateTime(new Date(rx * 1000), "hh:mm:ss"), "today's row says its clock time");
+            testContext.setLocalNowMs(rx * 1000 + 2 * 86400000);
+            compare(list.itemAtIndex(positionView.rowForTrack(id)), row, "the same row");
+            compare(row.clock, Qt.formatDateTime(new Date(rx * 1000), "yyyy-MM-dd hh:mm:ss"), "two days on, the row's time has its date");
+            testContext.setLocalNowMs(gapTime * 1000);
+            compare(gapRow.gapTitle, "Positions may be missing from " + Qt.formatDateTime(new Date(gapTime * 1000), "hh:mm:ss"));
+            testContext.setLocalNowMs(gapTime * 1000 + 2 * 86400000);
+            compare(gapRow.gapTitle, "Positions may be missing from " + Qt.formatDateTime(new Date(gapTime * 1000), "yyyy-MM-dd hh:mm:ss"), "and the gap's");
         }
 
         // A sheet whose radio is evicted keeps its last details, its times said as times, not frozen ages.

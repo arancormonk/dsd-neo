@@ -52,6 +52,7 @@
 #include <QHash>
 #include <QIODevice>
 #include <QInputMethodEvent>
+#include <QJSEngine>
 #include <QKeyEvent>
 #include <QList>
 #include <QMetaEnum>
@@ -124,6 +125,7 @@
 #include "json_store.h"
 #include "known_frequency_index.h"
 #include "listen_pins.h"
+#include "local_day_watch.h"
 #include "location_feed.h"
 #include "location_requests.h"
 #include "map_view_item.h"
@@ -6931,6 +6933,32 @@ class Setup : public QObject {
         return missing;
     }
 
+    /**
+     * @brief Issue #902: run the shared LocalDayWatch (savedSystems.localDay) on a fake real clock at @p ms (Unix ms),
+     * checked at once; a later call moves that clock and checks again. resetLocalDay() and each new engine go back to
+     * the real clock and the run's own time zone.
+     */
+    Q_INVOKABLE void
+    setLocalNowMs(double ms) {
+        local_now_ms() = static_cast<qint64>(ms);
+        dsd_qt::LocalDayWatch::setClockForTest(&Setup::local_now_clock);
+    }
+
+    /**
+     * @brief Issue #902: make @p id (an IANA name) the process's local zone, as TZ at launch would, for QDateTime and
+     * JavaScript dates alike, and check the watch; "" puts the run's own zone back.
+     */
+    Q_INVOKABLE void
+    setLocalTimeZone(const QString& id) {
+        apply_local_zone(id, m_engine);
+    }
+
+    /** @brief Issue #902: the real clock and the run's own zone again (a case's cleanup). */
+    Q_INVOKABLE void
+    resetLocalDay() {
+        reset_local_day(m_engine);
+    }
+
   public Q_SLOTS:
 
     /**
@@ -6983,6 +7011,8 @@ class Setup : public QObject {
 
     void
     qmlEngineAvailable(QQmlEngine* engine) {
+        /* Issue #902: each test file starts on the real clock, in the run's own zone. */
+        reset_local_day(engine);
         /* Match ui_load() registrations before parsing QML importers. */
         // WP-D4: cancellation observes pointer, keyboard and shortcut input.
         qmlRegisterType<dsd_qt::SiteInteractionGuard>("DsdNeo", 1, 0, "SiteInteractionGuard");
@@ -7722,6 +7752,57 @@ class Setup : public QObject {
                == m_host_readings;
     }
 
+    /* Issue #902: setLocalTimeZone() on @p engine's JavaScript dates (the engine running now, or the new one
+       qmlEngineAvailable() is handed: never one already gone). */
+    void
+    apply_local_zone(const QString& id, QJSEngine* engine) {
+        if (!m_zone_saved) {
+            m_had_tz = qEnvironmentVariableIsSet("TZ");
+            m_saved_tz = qgetenv("TZ");
+            m_zone_saved = true;
+        }
+        if (!id.isEmpty()) {
+            qputenv("TZ", id.toUtf8());
+        } else if (m_had_tz) {
+            qputenv("TZ", m_saved_tz);
+        } else {
+            qunsetenv("TZ");
+        }
+#ifdef _WIN32
+        _tzset();
+#else
+        tzset();
+#endif
+        if (engine != nullptr) {
+            engine->evaluate(QStringLiteral("Date.timeZoneUpdated()"));
+        }
+        dsd_qt::LocalDayWatch::shared()->check();
+    }
+
+    void
+    reset_local_day(QJSEngine* engine) {
+        if (m_zone_saved) {
+            apply_local_zone(QString(), engine);
+        }
+        dsd_qt::LocalDayWatch::resetClockForTest();
+    }
+
+    /* Issue #902: the fake real clock setLocalNowMs() runs the local-day watch on. */
+    static qint64&
+    local_now_ms() {
+        static qint64 ms = 0;
+        return ms;
+    }
+
+    static qint64
+    local_now_clock() {
+        return local_now_ms();
+    }
+
+    /* Issue #902: the TZ the run started with, kept by the first setLocalTimeZone(). */
+    bool m_zone_saved = false;
+    bool m_had_tz = false;
+    QByteArray m_saved_tz;
     /* Issue #782: set when applicationAvailable() turned accessibility on, so teardown turns it off again. */
     bool m_accessibility_activated = false;
     /* Issue #782: the URLs QML opened while captureOpenedUrls() held the handler. */

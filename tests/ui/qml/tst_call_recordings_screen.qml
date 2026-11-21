@@ -84,6 +84,7 @@ Item {
             testContext.resetHostPlayback();
             testContext.setHostReading("recordingExportSupported", false);
             testContext.setPrefs("recordCalls", false);
+            testContext.resetLocalDay();
         }
 
         function test_empty_state() {
@@ -98,24 +99,37 @@ Item {
             compare(item("callRecordingsUsage").text, "Counting recordings…");
         }
 
+        // The span's dates are local (America/Los_Angeles here), with the year
+        // outside the local day's (issue #902).
         function test_folders() {
+            testContext.setLocalTimeZone("America/Los_Angeles");
+            testContext.setLocalNowMs(Date.UTC(2025, 10, 1, 19, 0, 0));
             fill();
             verify(!item("callRecordingsEmpty").visible);
             compare(item("callRecordingsUsage").text, "210 MB of 1 GB · 843 recordings");
             compare(item("callRecordingsFolder0").title, "County P25");
-            var now = new Date(savedSystems.realtimeNowMs());
-            var format = function (stamp) {
-                var date = new Date(stamp * 1000);
-                return Qt.formatDate(date, date.getFullYear() === now.getFullYear() ? "d MMM" : "d MMM yyyy");
-            };
-            compare(item("callRecordingsFolder0").subtitle, "842 recordings · 210 MB · " + format(county.first) + " – " + format(county.last));
-            compare(item("callRecordingsFolder1").subtitle, "1 recording · 96 kB · " + format(metro.first), "one day reads as one date");
+            compare(item("callRecordingsFolder0").subtitle, "842 recordings · 210 MB · 24 Oct – 27 Oct");
+            compare(item("callRecordingsFolder1").subtitle, "1 recording · 96 kB · 26 Oct", "one day reads as one date");
             compare(item("callRecordingsFolder2"), null, "a folder with nothing in it is not listed");
             verify(!item("callRecordingsUnfinished").visible);
             recordings.unfinishedCount = 2;
             recordings.unfinishedBytes = 4100000;
             verify(item("callRecordingsUnfinished").visible);
             compare(item("callRecordingsUnfinished").subtitle, "2 recordings · 4.1 MB · left when listening stopped unexpectedly");
+        }
+
+        // Issue #902 B1: the span follows the local day: the year turning gives
+        // the same folder's dates their year. B11: a stamp at 00:00 UTC is the
+        // day before west of UTC.
+        function test_folder_span_follows_the_local_day() {
+            testContext.setLocalTimeZone("America/Los_Angeles");
+            testContext.setLocalNowMs(Date.UTC(2025, 11, 31, 20, 0, 0));
+            fill();
+            compare(item("callRecordingsFolder0").subtitle, "842 recordings · 210 MB · 24 Oct – 27 Oct");
+            testContext.setLocalNowMs(Date.UTC(2026, 0, 1, 8, 0, 5));
+            compare(item("callRecordingsFolder0").subtitle, "842 recordings · 210 MB · 24 Oct 2025 – 27 Oct 2025", "the new year shows last year's");
+            recordings.folders = [{uid: "u3", kind: "saved", name: "Midnight", count: 1, bytes: 1000, first: Date.UTC(2026, 0, 1) / 1000, last: Date.UTC(2026, 0, 1) / 1000, available: true}];
+            compare(item("callRecordingsFolder0").subtitle, "1 recording · 1 kB · 31 Dec 2025");
         }
 
         function test_storage_away() {

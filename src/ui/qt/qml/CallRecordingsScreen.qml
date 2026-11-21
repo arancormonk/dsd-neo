@@ -89,11 +89,13 @@ Item {
         recordings.acknowledgeNotices();
     }
 
+    // The year shows outside the current one; reading savedSystems.localDay
+    // re-reads the span when the year turns (issue #902).
     function spanText(folder) {
-        var now = new Date(savedSystems.realtimeNowMs());
+        var now = new Date(savedSystems.localDay.startMs);
         var format = function (stamp) {
             var date = new Date(stamp * 1000);
-            return Qt.formatDate(date, date.getFullYear() === now.getFullYear() ? "d MMM" : "d MMM yyyy");
+            return Qt.formatDateTime(date, date.getFullYear() === now.getFullYear() ? "d MMM" : "d MMM yyyy");
         };
         var first = format(folder.first);
         var last = format(folder.last);
@@ -164,7 +166,7 @@ Item {
         }
         exportSelection = selection.selection;
         exportSelectionMap = selection;
-        var stamp = Qt.formatDate(new Date(savedSystems.realtimeNowMs()), "yyyy-MM-dd");
+        var stamp = Qt.formatDateTime(new Date(savedSystems.realtimeNowMs()), "yyyy-MM-dd");
         say("", false);
         var owner = folder ? Util.fileNameText(folder.name) : "";
         exportPicker.suggestedName = (owner.length > 0 ? Util.fill(qsTr("Call recordings %1 %2"), [owner, stamp]) : qsTr("Call recordings %1").arg(stamp)) + ".zip";

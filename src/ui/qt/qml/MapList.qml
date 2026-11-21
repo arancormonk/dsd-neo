@@ -318,7 +318,7 @@ Item {
             readonly property double age: gap ? -1 : currentFirst ? model.ageSeconds : model.unknownAgeSeconds
             // The receive time with its date when not today (MapText.clockText()),
             // said when no age is (a stopped replay's fix).
-            readonly property string clock: gap ? "" : MapText.clockText(shownFix.receivedTime, savedSystems.realtimeNowMs()) || shownFix.timeText || ""
+            readonly property string clock: gap ? "" : MapText.clockText(shownFix.receivedTime, savedSystems.localDay) || shownFix.timeText || ""
             readonly property string ageShown: gap ? "" : MapText.ageText(age).length > 0 ? MapText.ageText(age) : clock
             readonly property double fixLat: Number(shownFix.latitude) || 0
             readonly property double fixLon: Number(shownFix.longitude) || 0
@@ -344,7 +344,7 @@ Item {
             readonly property var states: gap ? [] : MapText.fixWords(shownFix).concat(shownFix.ageAtSendMaxSeconds >= 300 ? [MapText.sentAgeText(shownFix.ageAtSendMaxSeconds)] : [])
                 .concat(model.anonymous ? [qsTr("Radio not confirmed")] : [])
                 .concat(currentDrawn && ringDrawn ? [MapText.ringWords(model.unknownFix)] : [])
-            readonly property string gapClock: !gap ? "" : MapText.clockText(model.receivedTime, savedSystems.realtimeNowMs()) || model.timeText || ""
+            readonly property string gapClock: !gap ? "" : MapText.clockText(model.receivedTime, savedSystems.localDay) || model.timeText || ""
             readonly property string gapTitle: gapClock.length > 0 ? qsTr("Positions may be missing from %1").arg(gapClock) : qsTr("Positions may be missing")
             readonly property string gapDetail: qsTr("Reports that came while the app could not read them were lost. Trails break here.")
             readonly property string spokenNow: gap ? gapTitle : (MapText.agoText(age, clock).length > 0 ? name + ", " + MapText.agoText(age, clock) : name)
