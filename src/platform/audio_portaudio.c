@@ -1000,6 +1000,9 @@ dsd_audio_read(dsd_audio_stream* stream, int16_t* buffer, size_t frames) {
     if (carried == frames) {
         return (int)frames;
     }
+    if (stream->input_carry != NULL) {
+        stream->input_carry->device_counted = 0U; /* this read takes frames the held read's count included */
+    }
     PaError err =
         Pa_ReadStream(stream->handle, buffer + carried * (size_t)stream->channels, (unsigned long)(frames - carried));
     if (err != paNoError && err != paInputOverflowed) {
@@ -1020,15 +1023,23 @@ dsd_audio_read_held(dsd_audio_stream* stream, int16_t* buffer, size_t frames) {
     if (carried == frames) {
         return (int)frames;
     }
-    /* No more than the stream reports available: a read of those never waits for new capture. */
-    const signed long available = Pa_GetStreamReadAvailable(stream->handle);
-    if (available < 0) {
-        set_error_pa((PaError)available);
-        return -1;
-    }
+    /* No more than the stream reports available: a read of those never waits for new capture. The count stands for
+       the frames after it until a read takes them, so a run of buffered frames costs one query. */
     size_t take = frames - carried;
-    if ((size_t)available < take) {
-        take = (size_t)available;
+    size_t counted = stream->input_carry != NULL ? stream->input_carry->device_counted : 0U;
+    if (counted < take) {
+        const signed long available = Pa_GetStreamReadAvailable(stream->handle);
+        if (available < 0) {
+            set_error_pa((PaError)available);
+            return -1;
+        }
+        counted = (size_t)available;
+    }
+    if (counted < take) {
+        take = counted;
+    }
+    if (stream->input_carry != NULL) {
+        stream->input_carry->device_counted = counted - take;
     }
     if (take > 0U) {
         const PaError err =
@@ -1115,6 +1126,7 @@ portaudio_discard_input_timed(const dsd_audio_stream* stream, uint64_t marked_ns
        what was captured since the mark, read without a wait; later frames are kept. The time since the mark is read
        after the count, so frames captured before it, while the decoder waited, are kept too. A negative count is an
        error. */
+    stream->input_carry->device_counted = 0U; /* the drop reads frames the held read's count included */
     const signed long available = Pa_GetStreamReadAvailable(stream->handle);
     if (available < 0) {
         set_error_pa((PaError)available);

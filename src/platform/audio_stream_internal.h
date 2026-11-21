@@ -67,6 +67,10 @@ struct audio_input_carry {
     int16_t* frames;
     size_t len;
     size_t pos;
+    /* PortAudio: frames the device was last counted holding (Pa_GetStreamReadAvailable()) that no read has taken since,
+       so the held read (dsd_audio_read_held()) counts once per run of buffered frames. A blocking read and a discard
+       take frames the count included, and clear it. */
+    size_t device_counted;
 };
 
 /* The frames the carry still holds. */
