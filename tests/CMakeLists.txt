@@ -27689,7 +27689,8 @@ if(Python3_Interpreter_FOUND)
         PROPERTIES SKIP_RETURN_CODE 77 TIMEOUT 120
     )
     # tools/bench_scan_skip_silent.py reports per mode only what the run decoded: an
-    # untyped -Y map runs -ft on every row (issue #834). numpy, as above.
+    # untyped -Y map runs -ft on every row (issue #834). numpy, as above. Its DMR
+    # cases score the call the DMR test generator builds.
     add_test(
         NAME TOOLS_BENCH_SCAN_SKIP_SILENT
         COMMAND
@@ -27699,7 +27700,11 @@ if(Python3_Interpreter_FOUND)
     )
     set_tests_properties(
         TOOLS_BENCH_SCAN_SKIP_SILENT
-        PROPERTIES SKIP_RETURN_CODE 77 TIMEOUT 120
+        PROPERTIES
+            SKIP_RETURN_CODE 77
+            TIMEOUT 120
+            ENVIRONMENT
+                "DSD_NEO_TEST_DMR_SYNTH_GEN=$<TARGET_FILE:dsd-neo_test_dmr_synth_gen>"
     )
     # The report's per-repeat pairing of the analog columns (issue #518), on canned
     # summaries. Stdlib only, so it runs wherever Python does.
