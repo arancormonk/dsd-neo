@@ -62,7 +62,7 @@ check_file() {
   fi
 
   headers=$("$readelf_bin" -hW "$file")
-  machine=$(printf '%s\n' "$headers" | awk -F: '/Machine:/ {gsub(/^[[:space:]]+/, "", $2); print $2; exit}')
+  machine=$(printf '%s\n' "$headers" | awk -F: '!found && /Machine:/ {gsub(/^[[:space:]]+/, "", $2); print $2; found = 1}')
   if [[ "$machine" != *"AArch64"* ]]; then
     echo "FAIL: $file is not AArch64 (Machine: $machine)" >&2
     failed=1
