@@ -207,14 +207,31 @@ Notes:
   frequency is asked of the peer when the site first names the LCN or names another one, so a retune made on the peer
   itself to another site whose control channel has the same LCN keeps the frequency learned before. Frequencies
   learned from site broadcasts (with no list imported) are capped at 26, and a `-Y` scan never steps to them.
+- **DMR Tier III keys.** A Tier III channel number is the decimal logical physical channel number (LPCN) a grant
+  names, `1..4094`. DSD+ and some RadioReference sites number each timeslot instead (`2 x channel + slot`); convert
+  such a number `N` to `floor((N - 1) / 2)`: `603` and `604` are both channel `301`. A row keyed `0` names no channel
+  (0 is the null channel, which no grant uses): it only takes its place in the control-channel hunt list, which is how
+  a control frequency is seeded. A site that sends its channels' frequencies over the air needs no other row; the
+  decoder learns them. See [DMR Tier III channel maps](radioreference-import.md#dmr-tier-iii-channel-maps).
 
-Example:
+Example (a Connect Plus map, as in `examples/connect_plus_chan.csv`):
 
 ```csv
 ChannelNumber(dec),frequency(Hz),note
 999,862093750,default cc
 1,863093750
 2,862093750
+```
+
+The `999` row seeds the control channel at the front of the hunt list. That works for Connect Plus, whose channel
+numbers never reach 999. On DMR Tier III, 999 is a real channel number, so a grant to channel 999 would tune the
+control channel: seed it under key `0` instead.
+
+```csv
+ChannelNumber(dec),frequency(Hz),note
+0,451112500,default cc
+5,451012500
+7,451312500
 ```
 
 Example with names (`examples/conventional_scan_named.csv`):
@@ -1310,6 +1327,8 @@ The `--calc-lcn` one-shot tool is more flexible than the CSV imports above:
 - It scans each line for the first numeric field and treats it as a frequency.
 - Frequencies may be in **Hz** (e.g., `451237500`) or **MHz** (e.g., `451.2375`).
 - The output is printed to stdout as `lcn,freq` CSV.
+- At most 4096 frequency rows, each at most 1023 bytes counting its line ending; the limits and the grid checks are in
+  [Environment Variables](cli.md#environment-variables-advanced-tuning).
 
 ### Frontend-generated scan lists
 

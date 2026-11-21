@@ -6704,8 +6704,10 @@ the stream-notice hooks' pattern: one that fails to initialize leaves the hook u
     publishes against the configured widths a scan leave puts back, a running replay's dry re-plan, each CSV); a
     refusal changes nothing (the profile check passes the after-leave widths down to the NFM-default path too,
     `svc_check_mode_receive_profile_widths()`). After it, a failed mode change keeps its own toast (its reason; the
-    import stops), a file that does not load is a partial apply (`rr_apply_outcome`, "X not loaded; mode applied")
-    that leaves no old file of that kind live (a channel map that fails is cleared, issue #900), and an I/Q replay never tunes or crosses a receiver-move boundary, rigctl peer or not
+    import stops), a file that does not load is a partial apply (`rr_apply_outcome`, "X not loaded; mode applied"): a
+    channel map that fails is cleared rather than kept, as its rows would send the new system's grants to the old
+    system's frequencies (issue #900), while a group list that fails leaves the old one loaded; and an I/Q replay never
+    tunes or crosses a receiver-move boundary, rigctl peer or not
   - Invariant: the import reports its tune (`rr_apply_tune()`, `rr_apply_report()`, issue #803). Only a request the
     tuner took supersedes a pending manual tune: one applied or accepted; a refusal (an RTL request that failed in its
     wait, a rigctl refusal, an RTL input with no stream) and a deferral leave it (issue #644). A failure or
@@ -13354,31 +13356,53 @@ Private per-protocol modules worth knowing about:
   accepted ends a miss streak. Tests: `DMR_SYNTH_SLOT_FLIP`,
   `DMR_SYNTH_INVERTED_*`, `DMR_BS_SYNC_TIMES`, `DECODE_IQ_DMR_T3_CC`, `DECODE_IQ_DMR_POLARITY_AUTO`.
 - Tier III channel provenance (`dmr_t3_channels.c`, `dmr_t3_chan_learn.c`, `<dsd-neo/protocol/dmr/dmr_t3_channels.h>`,
-  discussion #900 F2). Every channel map row LPCN 1..4094 has an origin in the DMR extension: NONE, FILE (a channel
-  map import, `dmr_t3_chan_note_map_loaded()` after `chan_map_adopt()`; a nonzero row with no recorded origin, such as
-  a `-C` map at startup, reads as FILE), USER, SITE, UNVERIFIED, NEIGHBOUR or ESTIMATE. `dmr_t3_chan_learn()` is the
-  only over-the-air writer: `dmr_csbk.c` passes SITE for a CSBK or MBC whose CRC checked (absolute grants, the TSCC an
-  absolute C_MOVE's MV_AP or an absolute P_CLEAR's appended block names, Chan_Freq), UNVERIFIED for one `-F` accepted as RAS (`dmr_csbk_ras_accepted()`, the
-  C_ALOHA recognition's own predicate), NEIGHBOUR for an absolute Vote_Now/Adjacent_Site either way, and nothing for a
-  failed CRC or the synthesized P_CLEAR. FILE and USER are never overwritten over the air; SITE replaces UNVERIFIED,
-  NEIGHBOUR and ESTIMATE always (an origin change at the same frequency counts) and SITE when the frequency differs; the
-  rest fill empty rows only. The trust byte keeps its meaning (2 learned on the control channel, else 1), NEIGHBOUR
-  never 2 and ESTIMATE 0. The learned ("DMR TIII: Learned channel 12 -> 451.012500 MHz;") and changed notices post on
-  the receiving burst's slot with its CRC flags, so `--slot-allow` and the `[RAS]` marker apply. The env-only heuristic
-  fill anchors on every row that is no estimate and writes its rows as ESTIMATE through the writer; any anchor that
-  appears, moves or goes drops every estimate and fills again. A network change (`dmr_t3_chan_network_changed()`)
-  drops the SITE, UNVERIFIED, NEIGHBOUR and ESTIMATE rows with their trust bytes and bumps the generation: a checked
+  discussion #900 F2). The aggregate lives in the DMR module's one state extension (slot 25,
+  `DSD_STATE_EXT_PROTO_DMR_RC`, `dmr_t3_channels_internal.h`) beside the RC notice dedupe. Every channel map row LPCN
+  1..4094 has an origin there: NONE, FILE (a channel map import, `dmr_t3_chan_note_map_loaded()` after
+  `chan_map_adopt()`; a nonzero row with no recorded origin, such as a `-C` map at startup, reads as FILE), USER, SITE,
+  UNVERIFIED, NEIGHBOUR or ESTIMATE. A row keyed 0 (CHNULL, the RadioReference generator's control-frequency seed) names
+  no channel a grant can use: it only takes its positional slot in the control channel hunt list.
+  `dmr_t3_chan_learn()` is the only over-the-air writer: `dmr_csbk.c` (`dmr_csbk_learn_channel()`) passes SITE for a
+  CSBK or MBC whose CRC checked (absolute grants, the TSCC an absolute C_MOVE's MV_AP or an absolute P_CLEAR's appended
+  block names, Chan_Freq, the MBC form of Ann_WD_TSCC), UNVERIFIED for one `-F` accepted as RAS
+  (`dmr_csbk_ras_accepted()`, the C_ALOHA recognition's own predicate), NEIGHBOUR for an absolute Vote_Now or
+  Adjacent_Site either way, and nothing for a failed CRC or the synthesized P_CLEAR. Precedence: FILE and USER are never
+  overwritten over the air; SITE replaces UNVERIFIED, NEIGHBOUR and ESTIMATE always (an origin change at the same
+  frequency counts, and bumps the revision) and another SITE row when the frequency differs; the rest fill empty rows
+  only. The trust byte keeps its meaning (2 learned on the control channel, else 1), NEIGHBOUR never 2 and ESTIMATE 0.
+  The learned ("DMR TIII: Learned channel 12 -> 451.012500 MHz;") and changed notices post on the receiving burst's
+  slot with its CRC flags, so `--slot-allow` and the `[RAS]` marker apply. The env-only heuristic fill anchors on every
+  row that is no estimate and writes its rows as ESTIMATE through the writer; any anchor that appears, moves or goes
+  drops every estimate and fills again. A network change (`dmr_t3_chan_network_changed()`) drops the SITE, UNVERIFIED,
+  NEIGHBOUR and ESTIMATE rows with their trust bytes and bumps the generation; FILE and USER rows stay. It is a checked
   C_ALOHA whose system code names another network than the last checked one, MODEL or NET differing (another SITE of
   the same network is none: the channel plan is the network's, TS 102 361-4 §6.1.2;
-  `dmr_t3_chan_note_checked_syscode()`), and an operator boundary: every app-control tune boundary
+  `dmr_t3_chan_note_checked_syscode()`), or an operator boundary: every app-control tune boundary
   (`svc_operator_carrier_boundary()`: a frequency entry, a cycle with trunking off, a config or RadioReference apply
   that moves the receiver), a source or input switch boundary (`dsd_engine_carrier_boundary()`), and an operator move
-  that keeps trunking (`ui_user_move_leaves_network()`: a CC selection of another system, a candidate or channel
-  cycle; a Return-to-CC keeps them). A -Y step, a replay retune, a signal search visit, a stream gap and a trunked
-  CC -> voice -> CC trip change nothing. Trunk scan saves and restores the origins, generation, revision and system-code baseline per
-  target beside `dmr_lcn_trust` (`dmr_t3_chan_save()`/`_restore()`); the revision moves on every row or origin change
-  and past both sides on a restore. Tests: `DMR_T3_CHANNELS`, `ENGINE_TRUNK_SCAN`, `ENGINE_STREAM_GAP`,
+  that keeps trunking (`ui_user_move_leaves_network()`: a CC selection of another system, a candidate or channel cycle;
+  a Return-to-CC keeps them). A `-Y` step, a replay retune, a signal search visit, a stream gap and a trunked CC ->
+  voice -> CC trip change nothing. Trunk scan saves and restores the origins, generation, revision and system-code
+  baseline per target beside `dmr_lcn_trust` (`dmr_t3_chan_save()`/`_restore()`); the revision moves on every row or
+  origin change and past both sides on a restore. Tests: `DMR_T3_CHANNELS`, `ENGINE_TRUNK_SCAN`, `ENGINE_STREAM_GAP`,
   `ENGINE_SIGNAL_SEARCH`, `APP_COMMAND_QUEUE`.
+- Tier III MBC assembly and absolute parameters (`dmr_block.c`, `dmr_abs_params.{c,h}`, `dmr_csbk.c`, discussion #900
+  B7). An MBC is consecutive bursts on one slot of one carrier (TS 102 361-1 §7.4.0): its header (data type 4) arms
+  the slot (`dsd_state::dmr_mbc_armed`), and a continuation (data type 5) joins only an armed slot, else it is dropped.
+  Any other burst on the slot (`dmr_data_burst_handler_origin()`), a voice burst there (`dmr_bs.c`, `dmr_ms.c`), the
+  end of the MBC, a refused length, a sync loss or retune (`dmr_reset_blocks()`) and the no-carrier reset disarm it;
+  the other slot's bursts do not. A non-UDT MBC holds one to three continuations and its CRC covers exactly those
+  blocks. The assembler hands the PDU over with its shape (`dmr_cspdu_shape`: continuations, header and first
+  continuation CSBKO, that continuation's LB) through `dmr_cspdu_ex()`, and `dmr_cspdu_malformed()` refuses, before
+  the control channel heartbeat, the anchor or any handler, an MBC of no continuation or more than three, one of an
+  absolute-parameter opcode (C_BCAST, P_CLEAR, the grants, C_MOVE: whatever the FID) whose continuation is not exactly
+  one last block carrying its header's CSBKO, and an unprotected single-block grant naming the absolute escape 0xFFF
+  (`dmr_t3_grant_is_grant_opcode()`). `dmr_abs_params_decode()` is the one decoder of CG_AP, MV_AP and BC_AP
+  (Cdeftype 0 only; a receive frequency outside Table C.7, 50..999 MHz and 0..7999 steps of 125 Hz, is no
+  frequency). A grant's valid frequency whose CHAN is 0 or 4095 is tuned and shown but names no channel to learn. The
+  MBC's CRC provenance (checked, RAS-accepted or failed) rides the slot's `event_crc_invalid` as a CSBK's does. Tests:
+  `DMR_T3_CHANNELS`, `DMR_EVENT_CRC`, `DMR_RELAXED_HEADER_IP`, `DMR_BS_SYNC_TIMES`, `DMR_MS_DATA`,
+  `ENGINE_NO_CARRIER_RESET`.
 - Capacity Plus identity (`dmr_flco.c`, `dmr_csbk.c`, `dmr_trunk_sm.c`). Cap+ talkgroups are 8-bit (1..255) and
   radio IDs 16-bit. The FID 0x10 FLCO 0x04 group voice LC carries the talkgroup at bits 40..47, a 5-bit rest LSN at
   51..55 and the radio at 56..71 in every LC type (header, embedded, terminator); bits 24..39 are not part of the
@@ -13434,11 +13458,22 @@ Private per-protocol modules worth knowing about:
   the carrier. The synthesized lockout clear (`dmr_cspdu_release_channel()`) and another FID's opcode 46 keep the
   carrier-wide release unread. Any clear arms `trunk_sm_force_release` only while a call is followed
   (`trunk_is_tuned`): on a composite TSCC's payload slot a latched force would release the next followed grant on its
-  first tick. A checked or
-  RAS-accepted clear naming another TSCC (a mapped LPCN, or a valid appended block, which the map also learns) makes it
-  a current-site hunt candidate, whether or not it is for the followed call; the release still returns where the
-  machine returns. Ann_WD_TSCC, Vote_Now and Adjacent_Site add candidates under the same gate. Tests:
-  `DMR_T3_FORCE_RELEASE`, `DMR_T3_MOVE_RELEASE`, `DMR_GRANT_POLICY`, `DMR_T3_CHANNELS`.
+  first tick. A checked or RAS-accepted clear naming another TSCC than the control channel (a mapped LPCN, or a valid
+  appended block, which the map also learns) makes it a current-site hunt candidate, whether or not it is for the
+  followed call; the release still returns where the machine returns. Tests: `DMR_T3_FORCE_RELEASE`,
+  `DMR_T3_MOVE_RELEASE`, `DMR_GRANT_POLICY`, `DMR_T3_CHANNELS`.
+- Tier III channel announcements (C_BCAST, `dmr_csbk.c`; TS 102 361-4 §7.2.19). Each learns through
+  `dmr_csbk_learn_channel()` and adds hunt candidates (`dmr_sm_on_neighbor_update()`, current site, never the control
+  channel the receiver is on) only from a checked or RAS-accepted PDU. Ann_WD_TSCC (Table 7.69): the single-block form
+  names up to two TSCCs as logical channels, and only a mapped one marked add (AW_FLAG 0) becomes a candidate; the MBC
+  form's BC_AP teaches the map its one TSCC either way and adds it only on add; withdrawing the control channel the
+  receiver is on moves it to the other one announced. A withdraw removes no candidate an earlier announcement added
+  (decided limit). Chan_Freq (Table 7.78) is always an MBC: its header CH names the channel, or 0xFFF leaves it to the
+  BC_AP's CHAN (both naming channels that differ: printed as inconsistent, ignored); a new or changed row also joins the
+  learned hunt list once, unless the user supplied the list, and the candidates. Vote_Now and Adjacent_Site (Tables
+  7.71, 7.79) decode whatever the AC-info-available bit says (it qualifies only Active_connection, §6.7.1.3); an
+  absolute entry is a neighbour's frequency (NEIGHBOUR, fill-only) and a candidate. Tests: `DMR_T3_CHANNELS`,
+  `DMR_T3_ANN_WD_TSCC`, `DMR_GRANT_POLICY`.
 - Tier III grant classes (`dmr_t3_grant.c`, `<dsd-neo/protocol/dmr/dmr_t3_grant.h>`, discussion #900 B8).
   `dmr_t3_grant_classify()` is the one classifier of a channel grant (TS 102 361-4 Tables 7.9-7.15): group {49, 50,
   52, 56} or private {48, 51, 53, 54, 55}, and data {51, 52, 54, 55, 56} or voice, the two kept apart; 56 on MS-sourced
