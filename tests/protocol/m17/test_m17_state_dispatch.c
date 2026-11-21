@@ -6285,7 +6285,7 @@ test_link_setup_boundaries_clear_the_same_set(void) {
             send_ip_stream_frame(opts, state, lsf_bits, 0x7A00U, 0U, 0U, payload, 0);
         }
         err |= expect_u8("the LSF set the link up", state->m17_enc, 2U);
-        const char* label = "";
+        const char* label;
         switch (boundary) {
             case 0: {
                 label = "an EOS, at the next frame's LICH";

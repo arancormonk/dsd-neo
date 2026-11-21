@@ -2064,9 +2064,11 @@ target_include_directories(
     dsd-neo_test_dstar_header_polarity
     PRIVATE ${PROJECT_SOURCE_DIR}/include
 )
+# The real slicer (dsd_dibit.c, core) reads symbols through dsd_symbol.c (dsp), which writes audio through core:
+# list core on both sides of dsp so a single-pass static link (GNU ld, as in the scan-build job) resolves the cycle.
 target_link_libraries(
     dsd-neo_test_dstar_header_polarity
-    PRIVATE dsd-neo_proto_dstar
+    PRIVATE dsd-neo_proto_dstar dsd-neo_core dsd-neo_dsp dsd-neo_core
 )
 add_test(NAME DSTAR_HEADER_POLARITY COMMAND dsd-neo_test_dstar_header_polarity)
 
