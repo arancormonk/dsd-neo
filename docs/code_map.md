@@ -8232,7 +8232,11 @@ the stream-notice hooks' pattern: one that fails to initialize leaves the hook u
   offset walked it off the symbols until a sync was lost. `dsd_symbol_note_sync_anchor()` names a sync word the grid
   just read; one symbol later the samples it decided those symbols on are correlated against the word at every
   sub-symbol shift (coarse), refined by a least-squares fit of the word's zero crossings, and the grid moves up to two
-  samples (a positive offset consumes extra samples) at the next symbol start, whatever `have_sync` says. State lives in
+  samples at 48 kHz, and the same time on a faster radio stream (`anchor_slip_cap()`: three samples at 72 kHz, four at
+  96, from the decoder's active symbol rate on the radio's stream; two on any other input), at the next symbol start (a
+  positive offset consumes extra samples), whatever `have_sync` says. A cap fixed at two samples left M17 LSFs at
+  72 kHz (15 samples per symbol) two or three samples off and failing their CRC; the cap is in time so that no
+  48 kHz stream, 2400 sym/s at 20 samples per symbol included, changes. State lives in
   state-ext slot 12 (borrowed from the io range), allocated by the first note; samples are recorded only on the live
   multi-sample path and only while a caller keeps it armed (DMR BS around a sync, M17 across a preamble).
   A stream flush, an RTL FSK timing reset, a switch to another
