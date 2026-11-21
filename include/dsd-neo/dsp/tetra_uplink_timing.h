@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 /**
  * @file
- * @brief Burst timing and carrier phase for a TETRA uplink session, acquired from each burst's training sequence.
+ * @brief Burst timing and carrier phase for a TETRA uplink session, acquired from each burst's training sequence, and
+ *        the same for a direct mode carrier.
  *
  * Uplink bursts come from different radios, each with a clock of its own, and the Gardner TED and the Costas loop
  * free-run on noise between them. A control uplink burst is 103 symbols and a normal uplink burst 231, too short for
@@ -30,6 +31,14 @@
  * The Gardner runs over a whole demod block before the Costas loop takes any of its symbols, and a block can span
  * many bursts, so each burst's rotation waits in a queue keyed by the symbol it applies at until the Costas loop
  * reaches that symbol: every burst gets its own, however the input is cut into blocks.
+ *
+ * A direct mode carrier (issue #890; dsd_tetra_ul_timing_reset_direct()) has the same problem: a DM-MS keys its
+ * transmitter for its own timeslot only, so between its bursts the receiver hears noise (EN 300 396-3 clause 4.3.1,
+ * EN 300 396-2 clause 9.4.3). Its bursts are both 235 symbols long, and both end their training on symbol 126 (one-based,
+ * EN 300 396-2 tables 15 and 16): normal training sequence 1 or 2, symbols 116 to 126, in a DM normal burst (DNB), the
+ * 19-symbol synchronization training sequence, symbols 108 to 126, in a DM synchronization burst (DSB). Neither
+ * sequence lies inside the other, so a burst is decided as soon as its peak finishes. The look-ahead is
+ * DSD_TETRA_DM_LOOKAHEAD_SYMBOLS there.
  */
 
 #ifndef DSD_NEO_DSP_TETRA_UPLINK_TIMING_H
@@ -45,13 +54,18 @@ extern "C" {
 /* Look-ahead in symbols: a normal uplink burst's training ends 121 symbols after its first symbol, and the decision
  * between a normal and a control burst, the strobe margin and the peak's finishing take a few more. */
 #define DSD_TETRA_UL_LOOKAHEAD_SYMBOLS 128
+/* Look-ahead in symbols on a direct mode carrier: a DNB's or DSB's training ends 126 symbols after its first symbol, and
+ * the strobe margin and the peak's finishing take a few more. */
+#define DSD_TETRA_DM_LOOKAHEAD_SYMBOLS 132
+/* The longer of the two look-aheads, which the buffers that drain one are sized for. */
+#define DSD_TETRA_TIMING_LOOKAHEAD_MAX DSD_TETRA_DM_LOOKAHEAD_SYMBOLS
 /* Samples per symbol the look-ahead runs at: 2 to 8 (the TETRA rate domain, 36 to 144 kHz). */
 #define DSD_TETRA_UL_MIN_SPS           2
 #define DSD_TETRA_UL_MAX_SPS           8
 /* Complex samples the look-ahead ring holds: a power of two above the look-ahead at the largest sps. */
 #define DSD_TETRA_UL_RING              2048
-/* Differential phasors kept: a power of two above the extended training sequence's span at the largest sps. */
-#define DSD_TETRA_UL_DIFF_RING         128
+/* Differential phasors kept: a power of two above the longest training sequence's span (a DSB's) at the largest sps. */
+#define DSD_TETRA_UL_DIFF_RING         256
 /* Bursts found and not yet passed: the one the Gardner is heading for and those behind it. */
 #define DSD_TETRA_UL_BURSTS            4
 /* Burst rotations waiting for the carrier loop (dsd_tetra_ul_timing_align()): the Gardner places every burst of a
@@ -81,8 +95,8 @@ typedef struct {
     float after;      /**< score of the sample after best_n */
 } dsd_tetra_ul_peak;
 
-/* Symbols of the longest training sequence searched: the extended training sequence. */
-#define DSD_TETRA_UL_TRAINING_MAX 15
+/* Symbols of the longest training sequence searched: a DSB's synchronization training sequence. */
+#define DSD_TETRA_UL_TRAINING_MAX 19
 
 /** A training sequence as unit phase steps, in the order sent. */
 typedef struct {
@@ -111,6 +125,7 @@ typedef struct {
 /** The look-ahead and its training search (demod_state::tetra_ul_timing). */
 typedef struct {
     int sps;         /**< samples per symbol it was reset for; 0 = not set up */
+    int direct;      /**< 1 for a direct mode carrier's bursts (dsd_tetra_ul_timing_reset_direct()), 0 an uplink's */
     int delay;       /**< look-ahead in samples */
     uint64_t pushed; /**< samples pushed since the reset */
     float ring[DSD_TETRA_UL_RING * 2];
@@ -118,8 +133,10 @@ typedef struct {
     float diff_pow[DSD_TETRA_UL_DIFF_RING];
     dsd_tetra_ul_training ets_seq; /**< the extended training sequence (a control uplink burst) */
     dsd_tetra_ul_training nts_seq; /**< normal training sequence 1 (a normal uplink burst) */
+    dsd_tetra_ul_training sts_seq; /**< the synchronization training sequence (a DSB, direct mode only) */
     dsd_tetra_ul_peak ets;         /**< extended training sequence: a control uplink burst */
-    dsd_tetra_ul_peak nts;         /**< normal training sequence: a normal uplink burst */
+    dsd_tetra_ul_peak nts;         /**< normal training sequence: a normal uplink burst, or a DNB */
+    dsd_tetra_ul_peak sts;         /**< synchronization training sequence: a DSB */
     int nub_held;                  /**< 1 while a normal burst waits for its decision */
     uint64_t nub_decide;           /**< sample index from which it is a normal burst */
     dsd_tetra_ul_burst nub;        /**< that normal burst */
@@ -141,6 +158,10 @@ typedef struct {
 
 /** Start over at @p sps (DSD_TETRA_UL_MIN_SPS to DSD_TETRA_UL_MAX_SPS): an empty look-ahead, no burst. */
 void dsd_tetra_ul_timing_reset(dsd_tetra_ul_timing* t, int sps);
+
+/** Start over at @p sps for a direct mode carrier's DNBs and DSBs (EN 300 396-2 clause 9.4.3), with the look-ahead of
+ * DSD_TETRA_DM_LOOKAHEAD_SYMBOLS; everything else as dsd_tetra_ul_timing_reset(). */
+void dsd_tetra_ul_timing_reset_direct(dsd_tetra_ul_timing* t, int sps);
 
 /**
  * @brief Push one Gardner input sample and search the trainings that end on it.

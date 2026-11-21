@@ -9906,6 +9906,24 @@ the stream-notice hooks' pattern: one that fails to initialize leaves the hook u
     signal search's drop), `DECODE_IQ_TETRA_UPLINK_PHASE_O1`..`_O7`, `DECODE_IQ_TETRA_UPLINK_SQUELCH`,
     `DECODE_IQ_TETRA_UPLINK_SHORT_TAIL`, `DECODE_IQ_TETRA_UPLINK_SHORT_TAIL_LOOP` and `DECODE_IQ_TETRA_UPLINK_GAP`, each
     also `_REALTIME`.
+  - Direct mode bursts (issue #890). A DM-MS keys its transmitter for its own timeslot only, so on a direct mode carrier
+    the chain's loops free-run on noise between bursts as the uplink's did (on `tetra_dmo_call_synth_72k` it decoded 35
+    of 51 speech bursts and 9 of 12 DM-OCCUPIED). The same look-ahead serves it in a second mode
+    (`dsd_tetra_ul_timing_reset_direct()`, `dsd_tetra_ul_timing::direct`): it correlates normal training sequence 1 (a
+    DNB's; NTS2 is its conjugate) and the 19-symbol synchronization training sequence (a DSB's), both ending on symbol
+    126 of a 235-symbol burst (EN 300 396-2 tables 15 and 16), decides each burst as soon as its peak finishes (neither
+    sequence lies in the other), and holds `DSD_TETRA_DM_LOOKAHEAD_SYMBOLS` (132) symbols back
+    (`DSD_TETRA_TIMING_LOOKAHEAD_MAX` sizes the drain buffers). It runs on the TETRA chain while
+    `demod_state::tetra_direct_bursts` is set, which the demod thread takes before each block from
+    `rtl_stream_set_tetra_direct_bursts()`: the TETRA decoder sets it through the runtime stream hook
+    (`dsd_rtl_stream_io_hook_set_tetra_direct_bursts()`) whenever `tetra_state_t::dmo` changes (`dmo_set_mode()` in
+    `tetra_dmo.c`: a DSB taken on sets it, a carrier boundary or a scan visit reset clears it, and so does freeing the
+    TETRA state). So the first DSB of a direct mode carrier comes on the free-running loops, and every burst from the
+    next block on is timed from its training; a trunked downlink carrier never sets it and costs one test a block. Under
+    an I/Q replay the decoder paces the front end, so the block it lands at is the same on every run
+    (`DECODE_IQ_TETRA_DMO_DETERMINISM`). Switching it starts the look-ahead over, which puts its length of zeros in the
+    symbol stream once, at the switch. Tests: `DSP_TETRA_UPLINK_TIMING` (both direct bursts at every quarter sample),
+    `DECODE_IQ_TETRA_DMO_*` (every burst of the call), `ENGINE_IO_HOOKS_INSTALL`.
   - Published profile. The stream publishes TETRA as the running channel profile
     (`rtl_stream_get_running_symbol_profile()`, behind the metrics hooks' symbol profile, the replay batch tag and so
     the UI channel width) only while the TETRA channel filter runs, WIDE otherwise;

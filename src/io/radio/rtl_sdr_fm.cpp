@@ -535,6 +535,9 @@ static std::atomic<float> g_pub_monitor_deemph_gain{1.0f};
 /* Whether the decoder asks for the FSK voice lane (rtl_stream_set_voice_lane(), issue #518): EDACS, for the length of
    an analog call. The demod thread takes it before each block (demod_take_voice_lane_setting()). */
 static std::atomic<int> g_voice_lane_requested{0};
+/* Whether the TETRA decoder is on a direct mode carrier (rtl_stream_set_tetra_direct_bursts(), issue #890): the demod
+   thread takes it before each block (demod_take_tetra_direct_bursts()). */
+static std::atomic<int> g_tetra_direct_bursts{0};
 /* Stream opens and stops (rtl_stream_session_generation(), issue #671). */
 static std::atomic<uint32_t> g_rtl_session_generation{0U};
 
@@ -5602,6 +5605,13 @@ demod_take_voice_lane_setting(struct demod_state* d) {
     d->voice_lane_enabled = enabled;
 }
 
+/* The demod thread, before a block: whether the TETRA chain takes each burst's timing from its training, as on a direct
+   mode carrier (dsd_demod_tetra_uplink_timing_runs()). */
+static void
+demod_take_tetra_direct_bursts(struct demod_state* d) {
+    d->tetra_direct_bursts = g_tetra_direct_bursts.load(std::memory_order_acquire) ? 1 : 0;
+}
+
 /* The demod thread, after a block: what the dynamic squelch shows (the noise squelch when it ran, else the tracker). */
 static void
 demod_publish_squelch_status(const struct demod_state* d) {
@@ -5822,6 +5832,7 @@ demod_thread_fn(void* arg) {
         demod_feed_wideband_spectrum(d);
         demod_take_squelch_setting(d);
         demod_take_voice_lane_setting(d);
+        demod_take_tetra_direct_bursts(d);
         g_demod_fed_since_reset.store(1, std::memory_order_relaxed);
         full_demod(d);
         demod_publish_block_state(d);
@@ -11891,6 +11902,11 @@ rtl_stream_set_voice_lane(int enable) {
 extern "C" int
 rtl_stream_voice_lane_requested(void) {
     return g_voice_lane_requested.load(std::memory_order_acquire);
+}
+
+extern "C" void
+rtl_stream_set_tetra_direct_bursts(int enable) {
+    g_tetra_direct_bursts.store(enable ? 1 : 0, std::memory_order_release);
 }
 
 /* The ring is set up and torn down with the stream on the decoder thread, which is where this is read. */

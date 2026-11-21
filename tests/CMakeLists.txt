@@ -22630,13 +22630,12 @@ if(DSD_HAS_RADIO)
     )
     # A synthetic direct mode group call at 72 kHz (tetra_dmo_call_synth_72k, TETRA_DMO_NAME in
     # tools/build_iq_fixtures.py; issue #890): DM-SETUP in eight DSBs, three multiframes of full-slot speech in slot 1
-    # with DM-OCCUPIED in frames 6, 12 and 18, then DM-TX CEASED, the carrier off between the bursts. Every DM-SETUP
-    # and DM-TX CEASED must decode, the call must be published as a direct mode group call (-J), and its DNBs,
-    # scrambled with the call's DM colour code, carry speech whose class-2 CRC passes. The replay decodes 9 of the 12
-    # DM-OCCUPIED DSBs (8 required) and 35 of the 51 speech bursts (30 required): the symbol timing and carrier loops
-    # free-run on the noise between bursts and pull in late (the uplink takes each burst's timing from its training,
-    # tetra_uplink_timing.h; direct mode does not). Filled with random symbols between the bursts, the same call
-    # decodes all 51.
+    # with DM-OCCUPIED in frames 6, 12 and 18, then DM-TX CEASED, the carrier off between the bursts as a DM-MS keys it.
+    # Every burst must decode: the 8 DM-SETUP, the 12 DM-OCCUPIED and the 4 DM-TX CEASED, the call published as a
+    # direct mode group call (-J), and all 51 DNBs, scrambled with the call's DM colour code, with the speech CRC passing
+    # and none failing. Before the TETRA chain took each direct mode burst's timing and carrier phase from its training
+    # (tetra_uplink_timing.h, as the uplink does), its loops free-ran on the noise between bursts and the replay decoded
+    # 9 of the 12 DM-OCCUPIED and 35 of the 51 speech bursts.
     dsd_neo_add_iq_decode_test(
         DECODE_IQ_TETRA_DMO_SETUP
         tetra_dmo_call_synth_72k
@@ -22651,7 +22650,7 @@ if(DSD_HAS_RADIO)
         -fT
         "\\| DM-OCCUPIED src=4321 dst=6060 MNI=460/4242 cd=0 dcc=ok \\| group speech"
         ""
-        8
+        12
     )
     dsd_neo_add_iq_decode_test(
         DECODE_IQ_TETRA_DMO_TX_CEASED
@@ -22665,9 +22664,9 @@ if(DSD_HAS_RADIO)
         DECODE_IQ_TETRA_DMO_SPEECH
         tetra_dmo_call_synth_72k
         "-fT -Z"
-        "\\[TETRA TCH/FS\\] CC=0  dec_bits=274  crc=ok"
-        ""
-        30
+        "\\[TETRA TCH/FS\\] CC=0  dec_bits=274  crc=ok  mismatches=0"
+        "crc=bad"
+        51
     )
     # A "." stands for each ";" of the event line, which an add_test argument would split at.
     add_test(
@@ -25012,6 +25011,22 @@ if(DSD_HAS_RADIO)
     # follows. MIN_CQPSK 11,900 and MIN_TOTAL 95,000 sit just under that.
     # The jitter leg sleeps after about one read in 16 of the decoder's ~690 and must still
     # be sleeping past 1.5 s.
+    # The direct mode call (issue #890): the decoder tells the front end it is on a direct mode carrier once its first
+    # DSB decodes, and the TETRA chain takes each burst's timing from its training from the next block on. Under the
+    # decoder's pacing that block is the same in every leg, fast, real time, short reads and seeded sleeps alike, so
+    # all 51 speech bursts decode the same way. Each leg measured fsk_samples=0 cqpsk_symbols=68146 media_ms=3786.67;
+    # MIN_CQPSK 68,000 and MIN_TOTAL 544,000 (8 x 68,000) sit just under it. The jitter leg must still be sleeping past
+    # 1 s, inside the call.
+    dsd_neo_add_iq_determinism_test(
+        DECODE_IQ_TETRA_DMO_DETERMINISM
+        tetra_dmo_call_synth_72k
+        "-fT -Z"
+        "fast;realtime;short:31;jitter:37:120:16:1000"
+        "DM-OCCUPIED src=4321.*\\[TETRA TCH/FS\\] CC=0  dec_bits=274  crc=ok"
+        0
+        68000
+        544000
+    )
     dsd_neo_add_iq_determinism_test(
         DECODE_IQ_P25P2_CC_DETERMINISM
         p25p2_cc

@@ -771,13 +771,16 @@ in slot 3 of frames 6, 12 and 18 and in slot 1 of frame 18, then DM-TX CEASED in
 396-3 clause 4.3). Each burst sits 17 symbols into its slot (EN 300 396-2 tables 14 to 16: preamble, phase adjustment
 symbol, then the trunked blocks and training sequences) with a carrier phase of its own, and the carrier is off between
 bursts (30 dB of noise below the bursts). The DSB blocks are scrambled with the zero colour code, the speech with the DM
-colour code of the MNI and source (EN 300 396-3 clause 8.2.4). `DECODE_IQ_TETRA_DMO_SETUP` and `_TX_CEASED` require all
-8 and 4 of those DSBs, `_OCCUPIED` 8 of the 12 DM-OCCUPIED (9 decode), `_SPEECH` 30 of the 51 speech bursts with the
-class-2 CRC passing (35 decode), and `_CALL_EVENT` the call in the event history as a direct mode group call. The speech
-and DM-OCCUPIED losses are the receiver's: its symbol timing and carrier loops free-run on the noise between bursts and
-pull a burst in late, the uplink's problem before it took each burst's timing from its training sequence
-(`tetra_uplink_timing.h`), which a direct mode session does not do. With random symbols in the empty slots (a carrier
-that never stops) the same call decodes all 51 speech bursts. `TOOLS_BUILD_IQ_FIXTURES_TETRA` checks each burst's
+colour code of the MNI and source (EN 300 396-3 clause 8.2.4). `DECODE_IQ_TETRA_DMO_SETUP`, `_OCCUPIED` and
+`_TX_CEASED` require all 8, 12 and 4 of those DSBs, `_SPEECH` all 51 speech bursts with the class-2 CRC passing, no
+mismatch and none failing, `_CALL_EVENT` the call in the event history as a direct mode group call, and
+`_DETERMINISM` the same decode in fast, real-time, short-read and seeded-sleep legs. The chain's symbol timing and
+carrier loops free-run on the noise between bursts and pulled each burst in late: before the TETRA chain took a
+direct mode burst's timing and carrier phase from its training sequence, as the uplink does (`tetra_uplink_timing.h`,
+code_map "Direct mode bursts"), the replay decoded 9 of the 12 DM-OCCUPIED and 35 of the 51 speech bursts, and with
+random symbols in the empty slots (a carrier that never stops) all of them. The A/B behind the change, 12
+realizations each of this call at 30 and 15 dB (other noise seeds and burst phases, a sample later each) and of the
+real-air trunked captures and the uplink with their first samples dropped, is in the issue #890 PR. `TOOLS_BUILD_IQ_FIXTURES_TETRA` checks each burst's
 layout, its phase adjustment symbol (SN7 to SN126 turn the carrier by whole turns, table 18), the colour code against
 the decoder's seed for the real-air call of `TETRA_DMO`, and the timeslots.
 

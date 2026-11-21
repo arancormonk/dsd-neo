@@ -154,6 +154,14 @@ rtl_stream_set_voice_lane(int enable) {
 /* Whether the stub stream has its voice lane buffer. */
 static int g_voice_lane_available = 1;
 
+/* What the stub stream was last told of a TETRA direct mode carrier (issue #890), -1 before anything. */
+static int g_tetra_direct_bursts = -1;
+
+void
+rtl_stream_set_tetra_direct_bursts(int enable) {
+    g_tetra_direct_bursts = enable;
+}
+
 int
 rtl_stream_voice_lane_available(void) {
     return g_voice_lane_available;
@@ -312,6 +320,11 @@ test_rtl_stream_io_installer(void) {
     g_voice_lane_available = 0;
     assert(dsd_rtl_stream_io_hook_voice_lane_available() == 0);
     g_voice_lane_available = 1;
+    /* A TETRA direct mode carrier (issue #890) goes to rtl_stream_set_tetra_direct_bursts(). */
+    dsd_rtl_stream_io_hook_set_tetra_direct_bursts(1);
+    assert(g_tetra_direct_bursts == 1);
+    dsd_rtl_stream_io_hook_set_tetra_direct_bursts(0);
+    assert(g_tetra_direct_bursts == 0);
 
     /* The dynamic squelch's status reaches the runtime table, and dsd_state through the publication. */
     dsd_rtl_squelch_status status;

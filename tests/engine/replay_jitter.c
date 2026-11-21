@@ -389,6 +389,8 @@ replay_start(dsd_opts* opts, dsd_state* state, void* context) {
     io.read = replay_perturbed_read;
     io.read_ex = replay_perturbed_read_ex;
     io.return_pwr = replay_return_pwr;
+    /* The TETRA decoder's direct mode carrier reaches the stream as the engine's table takes it (issue #890). */
+    io.set_tetra_direct_bursts = rtl_stream_set_tetra_direct_bursts;
     dsd_rtl_stream_io_hooks_set(&io);
     return 0;
 }
