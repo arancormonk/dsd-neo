@@ -2637,6 +2637,11 @@ nxdn_run_conventional_hold_call_types_case(void) {
 /* What decoding @p decode printed on stderr, into @p out. */
 static int
 capture_stderr_of(void (*decode)(void), char* out, size_t out_size) {
+    /* Empty on every failure path, so a caller's checks of the text read a string and fail, never stale bytes. */
+    if (out == NULL || out_size == 0U) {
+        return -1;
+    }
+    out[0] = '\0';
     dsd_test_capture_stderr cap;
     if (dsd_test_capture_stderr_begin(&cap, "nxdn_matrix") != 0) {
         return -1;
@@ -2645,7 +2650,12 @@ capture_stderr_of(void (*decode)(void), char* out, size_t out_size) {
     if (dsd_test_capture_stderr_end(&cap) != 0) {
         return -1;
     }
-    return dsd_test_capture_stderr_read(&cap, out, out_size);
+    if (dsd_test_capture_stderr_read(&cap, out, out_size) != 0) {
+        out[0] = '\0';
+        return -1;
+    }
+    out[out_size - 1U] = '\0';
+    return 0;
 }
 
 static void

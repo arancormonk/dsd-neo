@@ -3399,6 +3399,11 @@ nxdn_vcall_process(dsd_opts* opts, dsd_state* state, const struct nxdn_vcall_inf
         nxdn_call_identity_end(opts, state);
     }
     nxdn_vcall_print_summary(state, info);
+    if (info->message_type == 0x01U && !nxdn_call_type_opens_call(info->call_type)) {
+        /* A VCALL of call type 010, which only a TX_REL carries (TS 1-A Table 6.5-8), names no call: it loads no key
+           and moves neither the live cipher nor the call, whatever cipher it carries. */
+        return;
+    }
     nxdn_vcall_load_key(opts, state, info);
     nxdn_vcall_print_cipher(opts, state, info);
     nxdn_vcall_apply_state(state, info);

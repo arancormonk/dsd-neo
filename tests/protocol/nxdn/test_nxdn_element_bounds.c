@@ -2331,6 +2331,46 @@ test_type_d_vcall_destination_key_uses_low_id(void) {
     return rc;
 }
 
+/* A VCALL of call type 010 (only a TX_REL carries it, TS 1-A Table 6.5-8) names no call: on a clear call, two of them
+ * carrying DES key 5 load no key and move neither the live cipher nor the call. */
+static int
+test_vcall_type_010_changes_no_cipher(void) {
+    dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(*opts));
+    dsd_state* state = (dsd_state*)calloc(1, sizeof(*state));
+    uint8_t bits[96];
+    if (!opts || !state) {
+        DSD_FPRINTF(stderr, "alloc-failed: %s%s\n", !opts ? "dsd_opts" : "", !state ? " dsd_state" : "");
+        free(state);
+        free(opts);
+        return 1;
+    }
+    int rc = 0;
+    state->nxdn_confirmed = 1;
+    state->keyloader = 1;
+    state->rkey_array[5U] = 0x0102030405060708ULL;
+    state->rkey_array_loaded[5U] = 1U;
+    for (int i = 0; i < 2; i++) {
+        DSD_MEMSET(bits, 0, sizeof(bits));
+        write_vcall_fields(bits, 0x01U, 0x00U, 1U, 0U, 100U, 200U, 0U, 0U);
+        NXDN_Elements_Content_decode(opts, state, bits, sizeof(bits));
+    }
+    for (int i = 0; i < 2; i++) {
+        DSD_MEMSET(bits, 0, sizeof(bits));
+        write_vcall_fields(bits, 0x01U, 0x00U, 2U, 0U, 100U, 200U, 2U, 5U);
+        NXDN_Elements_Content_decode(opts, state, bits, sizeof(bits));
+    }
+    dsd_call_snapshot call;
+    rc |= expect_int("vcall-010-live-cipher", (int)state->nxdn_cipher_type, 0);
+    rc |= expect_u64("vcall-010-no-key-loaded", (uint64_t)state->R, 0U);
+    rc |= expect_int("vcall-010-call", dsd_call_state_get(state, 0U, &call), 1);
+    rc |= expect_int("vcall-010-call-clear", call.crypto, DSD_CALL_CRYPTO_CLEAR);
+    rc |= expect_int("vcall-010-call-target", (int)call.ota_target_id, 200);
+    dsd_state_ext_free_all(state);
+    free(state);
+    free(opts);
+    return rc;
+}
+
 static int
 test_vcall_imported_zero_keys_are_present(void) {
     dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(*opts));
@@ -4421,6 +4461,7 @@ main(void) {
     rc |= test_vcall_imported_zero_keys_are_present();
     rc |= test_vcall_reports_the_key_its_cipher_selected();
     rc |= test_type_d_vcall_destination_key_uses_low_id();
+    rc |= test_vcall_type_010_changes_no_cipher();
     rc |= test_type_d_data_headers_keep_prefix_text();
     rc |= test_vcall_aes_fallback_needs_a_full_key();
     rc |= test_vcall_iv_keeps_the_vcall_key_choice();
