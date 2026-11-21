@@ -1894,10 +1894,20 @@ class CommandRecorder : public QObject {
         return true;
     }
 
+    /** @brief The rows asked for are kept either way; a refused request (a full queue) sends nothing. */
     Q_INVOKABLE bool
     setTalkgroupSelection(bool listen, const QString&, unsigned int, const QVariantList& rows) {
         m_last_selection = rows;
+        if (!m_talkgroup_selection_accepted) {
+            return false;
+        }
         return setAllTalkgroupsListening(listen, QString());
+    }
+
+    /** @brief Whether setTalkgroupSelection() reports the request queued, so a case can refuse it. */
+    Q_INVOKABLE void
+    setTalkgroupSelectionAccepted(bool accepted) {
+        m_talkgroup_selection_accepted = accepted;
     }
 
     Q_INVOKABLE QVariantList
@@ -2184,6 +2194,7 @@ class CommandRecorder : public QObject {
         m_all_talkgroups_listen_calls = 0;
         m_last_all_talkgroups_listen = false;
         m_last_all_talkgroups_tag.clear();
+        m_talkgroup_selection_accepted = true;
     }
 
     int
@@ -2507,6 +2518,7 @@ class CommandRecorder : public QObject {
     int m_all_talkgroups_listen_calls = 0;
     bool m_last_all_talkgroups_listen = false;
     QString m_last_all_talkgroups_tag;
+    bool m_talkgroup_selection_accepted = true;
 };
 
 /**
@@ -6716,6 +6728,14 @@ class Setup : public QObject {
     Q_INVOKABLE double
     lastTuneHz() const {
         return (m_commands != nullptr) ? m_commands->lastTuneHz() : 0.0;
+    }
+
+    /** @brief Refuse (false) or admit the next bulk talkgroup requests, as a full command queue would. */
+    Q_INVOKABLE void
+    setTalkgroupSelectionAccepted(bool accepted) {
+        if (m_commands != nullptr) {
+            m_commands->setTalkgroupSelectionAccepted(accepted);
+        }
     }
 
     /** @brief Refuse (false) or admit the next tuner releases, as a full command queue would. */

@@ -13,6 +13,17 @@ Item {
     property int bulkGeneration: 0
     property bool bulkListen: true
     property string bulkMessage: ""
+    // The engine's answer and this screen's own bulk status share one line,
+    // the newer of the two on it. A bulk status is newer until the engine
+    // next answers; an answer that expires leaves the line empty rather than
+    // bringing back the status it replaced.
+    readonly property string engineMessage: metrics.uiMessage
+    property bool bulkNewer: false
+    onEngineMessageChanged: {
+        if (engineMessage.length > 0)
+            bulkNewer = false;
+    }
+    readonly property string commandMessage: bulkNewer ? bulkMessage : engineMessage
     function requestBulk(listen) {
         bulkRows = talkgroupView.snapshotSelection();
         bulkContext = talkgroups.policyContext;
@@ -39,6 +50,7 @@ Item {
             onClicked: {
                 var accepted = commands.setTalkgroupSelection(screen.bulkListen, screen.bulkContext, screen.bulkGeneration, screen.bulkRows);
                 screen.bulkMessage = accepted ? qsTr("Update requested") : qsTr("The update could not be queued. Try again.");
+                screen.bulkNewer = true;
                 bulkConfirm.visible = false;
             }
         }
@@ -342,15 +354,6 @@ Item {
         }
         ReadableText {
             width: parent.width
-            text: metrics.uiMessage || screen.bulkMessage
-            visible: text.length > 0
-            wrapMode: Text.Wrap
-            color: Theme.textPrimary
-            font.pixelSize: Theme.fontSize(13)
-        }
-
-        ReadableText {
-            width: parent.width
             text: screen.saveMessage
             visible: text.length > 0
             color: Theme.textSecondary
@@ -360,7 +363,7 @@ Item {
         ReadableText {
             objectName: "talkgroupCommandToast"
             width: parent.width
-            text: metrics.uiMessage
+            text: screen.commandMessage
             visible: text.length > 0
             color: Theme.textSecondary
             wrapMode: Text.Wrap
