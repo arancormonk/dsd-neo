@@ -347,20 +347,24 @@ sch_s_of(const dsb_spec* d) {
     return b;
 }
 
-/* A DMAC-SYNC SCH/H (EN 300 396-3 table 22) carrying @p msg from source 2 to 1 (the leading 10 bits are the repeater
- * or gateway address, or reserved), its message elements for a call PDU (tables 31, 35, 36). */
+/* The source address of every DMAC-SYNC here. */
+#define DMO_SRC 2u
+
+/* A DMAC-SYNC SCH/H (EN 300 396-3 table 22) carrying @p msg from source DMO_SRC to 1 with MNI @p mni, its leading 10 bits
+ * the repeater or gateway address @p relay (reserved, 0, for direct operation), and the message elements of a call PDU
+ * (tables 31, 35, 36). */
 static ttb_block
-sch_h_of(uint32_t msg) {
+sch_h_as(uint32_t msg, uint32_t relay, uint32_t mni) {
     ttb_block b = {0};
-    ttb_put(&b, 0, 10); /* repeater or gateway address, or reserved */
-    ttb_put(&b, 0, 1);  /* fill bit indication */
-    ttb_put(&b, 0, 1);  /* not fragmented */
-    ttb_put(&b, 0, 2);  /* frame countdown */
+    ttb_put(&b, relay, 10); /* repeater or gateway address, or reserved */
+    ttb_put(&b, 0, 1);      /* fill bit indication */
+    ttb_put(&b, 0, 1);      /* not fragmented */
+    ttb_put(&b, 0, 2);      /* frame countdown */
     ttb_put(&b, 0, 2);
     ttb_put(&b, 1, 24); /* destination */
     ttb_put(&b, 0, 2);
-    ttb_put(&b, 2, 24); /* source */
-    ttb_put(&b, 0, 24); /* MNI */
+    ttb_put(&b, DMO_SRC, 24); /* source */
+    ttb_put(&b, mni, 24);     /* MNI */
     ttb_put(&b, msg, 5);
     ttb_put(&b, 0, 3); /* timing, LCH in frame 3, pre-emption flags */
     ttb_put(&b, 4, 3); /* power class 4 */
@@ -378,6 +382,11 @@ sch_h_of(uint32_t msg) {
         ttb_put(&b, 0, 1);
     }
     return b;
+}
+
+static ttb_block
+sch_h_of(uint32_t msg) {
+    return sch_h_as(msg, 0u, 0u);
 }
 
 /* A presence signal's SCH/H (EN 300 396-4 table 3): repeater address 17, an all-ones MNI (not advertised). */
@@ -416,16 +425,16 @@ dsb(session* s, const dsb_spec* d) {
     dsb_with(s, d, &h, 0);
 }
 
-/* A direct mode normal burst (EN 300 396-2 clause 9.4.3.2.1): an SCH/F under the DM colour code the decoder learned,
+/* A direct mode normal burst (EN 300 396-2 clause 9.4.3.2.1): an SCH/F scrambled with DM colour code seed @p seed,
  * block 1 against the training sequence and block 2 after it. */
 static void
-dnb_full(session* s) {
+dnb_full_with(session* s, uint32_t seed) {
     const tetra_state_t* const ts = tetra_st_existing(s->state);
     assert(ts && ts->dmo && ts->dmo_dcc_valid);
     ttb_block b = {0};
     ttb_finish(&b, TTB_SCH_F_BITS, -1);
     uint8_t slot[2 * TTB_BLOCK_DIBITS];
-    ttb_encode_signalling(b.bits, TTB_SCH_F_BITS, 432, 103, ts->dmo_dcc_seed, slot);
+    ttb_encode_signalling(b.bits, TTB_SCH_F_BITS, 432, 103, seed, slot);
     DSD_MEMCPY(s->state->tetra_sync.b1_dibuf, slot, TTB_BLOCK_DIBITS);
     s->state->tetra_sync.b1_valid = 1;
     s->state->tetra_sync.b1_soft_valid = 0;
@@ -436,6 +445,19 @@ dnb_full(session* s) {
     s->state->synctype = DSD_SYNC_TETRA_NDB_POS;
     feed(s, slot + TTB_BLOCK_DIBITS, TTB_BLOCK_DIBITS);
     (void)processTetraFrame(s->opts, s->state);
+}
+
+/* dnb_full_with() under the DM colour code the decoder learned. */
+static void
+dnb_full(session* s) {
+    dnb_full_with(s, tetra_st_existing(s->state)->dmo_dcc_seed);
+}
+
+/* The DM colour code seed of 6 network bits @p net6 and the source DMO_SRC (EN 300 396-3 clause 8.2.4: e(1) to e(6)
+ * the 6 bits, e(7) to e(30) the source address), in the register form of tetra_test_burst.h, written out here. */
+static uint32_t
+dcc_seed(uint32_t net6) {
+    return ((((net6 & 0x3Fu) << 24) | DMO_SRC) << 2) | 3u;
 }
 
 /* ---- Carrier events --------------------------------------------------------------------------------------------- */
@@ -856,6 +878,44 @@ test_dmo_activity(void) {
     session_close(&s);
 }
 
+/* The DM colour code of a call through a DM-REP is the low six bits of the repeater address with the source address, on
+ * both links (EN 300 396-4 clause 8.2.4, which replaces EN 300 396-3 clause 8.2.4 there), and of a call through a gateway
+ * or a DM-REP/GATE those of the gateway address (EN 300 396-5 clause 8.2.4); a direct call keeps the MNI's. Here the MNI
+ * and the repeater address differ in their low six bits (0x12 against 0x15), so a normal burst encoded independently
+ * with the clause's colour code decodes only under the right one, and keeps the confirmed visit active. */
+static void
+test_relayed_colour_code(void) {
+    static const uint32_t k_mni = ((uint32_t)MCC << 14) | MNC; /* low six bits 0x12 */
+    static const uint32_t k_relay = 0x155u;                    /* low six bits 0x15 */
+
+    static const struct {
+        uint32_t comm_type;
+        uint32_t net6;
+        uint8_t route;
+        const char* what;
+    } k_cases[] = {
+        {0, k_mni & 0x3Fu, DSD_SEARCH_TETRA_ROUTE_DIRECT, "relayed colour code: a direct call keeps the MNI's"},
+        {1, k_relay & 0x3Fu, DSD_SEARCH_TETRA_ROUTE_REPEATER,
+         "relayed colour code: via a DM-REP, the repeater address"},
+        {2, k_relay & 0x3Fu, DSD_SEARCH_TETRA_ROUTE_GATEWAY, "relayed colour code: via a DM-GATE, the gateway address"},
+        {3, k_relay & 0x3Fu, DSD_SEARCH_TETRA_ROUTE_REPEATER_GATEWAY,
+         "relayed colour code: via a DM-REP/GATE, the gateway address"},
+    };
+
+    for (size_t i = 0; i < sizeof k_cases / sizeof k_cases[0]; i++) {
+        session s = session_open();
+        const dsb_spec d = {0xD, 0, k_cases[i].comm_type, 0, 3, 0, 0};
+        const ttb_block h = sch_h_as(TETRA_DMO_MSG_OCCUPIED, k_cases[i].comm_type ? k_relay : 0u, k_mni);
+        dsb_with(&s, &d, &h, 0);
+        check(dmo_evidence() && dmo_note_is(last_note(), k_cases[i].route, 0), "relayed colour code: the DSB confirms");
+        const uint32_t decoded = tetra_st_existing(s.state)->decode_ok;
+        const int activity = g_log.activity;
+        dnb_full_with(&s, dcc_seed(k_cases[i].net6));
+        check(tetra_st_existing(s.state)->decode_ok == decoded + 1U && g_log.activity == activity + 1, k_cases[i].what);
+        session_close(&s);
+    }
+}
+
 /* Outside a Signal search nothing is reported. */
 static void
 test_not_searching(void) {
@@ -885,6 +945,7 @@ main(void) {
     test_gate_d_negatives();
     test_mixed_visits();
     test_dmo_activity();
+    test_relayed_colour_code();
     test_not_searching();
     if (g_fail) {
         DSD_FPRINTF(stderr, "TETRA_SEARCH: %d failed\n", g_fail);

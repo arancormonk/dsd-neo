@@ -1314,16 +1314,23 @@ dmo_sync_role(const tetra_dmo_sync_h_t* h) {
     return h->msg_type < DMO_COUNT(k_roles) ? k_roles[h->msg_type] : DMO_ROLE_NONE;
 }
 
-/* The DM colour code from the "mobile network identity" (or the gateway address) and "source address" of this
- * DMAC-SYNC (EN 300 396-3 clause 8.2.4, EN 300 396-5 clause 8.2.4). */
+/* The six network bits of a DMAC-SYNC's DM colour code: the "mobile network identity" of a direct call (EN 300 396-3
+ * clause 8.2.4), the "repeater address" of one through a DM-REP, on both links (EN 300 396-4 clause 8.2.4, which
+ * replaces the EN 300 396-3 clause there), and the "gateway address" of one through a DM-GATE or a DM-REP/GATE (EN 300
+ * 396-5 clause 8.2.4): every communication type but direct carries the 10-bit address first in its SCH/H. */
+static uint32_t
+dmo_dcc_net_id(const tetra_dmo_sync_s_t* s, const tetra_dmo_sync_h_t* h) {
+    return s->comm_type != 0u ? (uint32_t)h->relay_addr : h->mni;
+}
+
+/* The DM colour code from the network bits (dmo_dcc_net_id()) and "source address" of this DMAC-SYNC. */
 static void
 dmo_learn_dcc(tetra_state_t* ts, const tetra_dmo_sync_s_t* s, const tetra_dmo_sync_h_t* h) {
     if (h->src_type == 2u) {
         ts->dmo_dcc_valid = 0;
         return;
     }
-    const uint32_t net_id = s->comm_type >= 2u ? (uint32_t)h->relay_addr : h->mni;
-    ts->dmo_dcc_seed = tetra_dmo_dcc_seed(net_id, h->src);
+    ts->dmo_dcc_seed = tetra_dmo_dcc_seed(dmo_dcc_net_id(s, h), h->src);
     ts->dmo_dcc_valid = 1;
 }
 
@@ -1421,8 +1428,7 @@ dmo_source_seed(const tetra_dmo_sync_s_t* s, const tetra_dmo_sync_h_t* h) {
     if (h->src_type == 2u) {
         return 0U;
     }
-    const uint32_t net_id = s->comm_type >= 2u ? (uint32_t)h->relay_addr : h->mni;
-    return tetra_dmo_dcc_seed(net_id, h->src);
+    return tetra_dmo_dcc_seed(dmo_dcc_net_id(s, h), h->src);
 }
 
 /* DM-SETUP, DM-CONNECT ACK or DM-OCCUPIED protected as @p crypt. One from another source than the transmission in

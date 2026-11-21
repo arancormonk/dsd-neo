@@ -15732,6 +15732,11 @@ single "current call".
   The event history names the network (`TETRA_<mcc>_<mnc>_CC_<cc>` or `TETRA_DMO`,
   `dsd_events.c`), the access code is the colour code (`access_code.c`), and `call_state.c` gives TETRA its own call
   family.
+- The DM colour code (`dmo_learn_dcc()`, `dmo_source_seed()`, `dmo_dcc_net_id()` in `tetra_dmo.c`) is six network bits
+  and the source address of the DMAC-SYNC that set the transmission up: the MNI's for a direct call (EN 300 396-3
+  clause 8.2.4), the repeater address's through a DM-REP on both links (EN 300 396-4 clause 8.2.4, which replaces that
+  clause there), the gateway address's through a DM-GATE or a DM-REP/GATE (EN 300 396-5 clause 8.2.4). Test:
+  `TETRA_SEARCH` `test_relayed_colour_code()`.
 - Direct mode protection (`tetra_dmo.c`, `tetra_state_t::dmo_crypt`, `tetra_dmo_call_crypt()`) is that of the traffic
   on the channel, which the DMAC-SYNC carrying a DM-SETUP, DM-CONNECT ACK or DM-OCCUPIED sets (EN 300 396-3 clause
   8.5.3); any other message's security class is its own. There is no direct mode decryption, so only CLEAR speech is
@@ -15834,12 +15839,8 @@ itself, so the decoder's own handling stays as it was.
 - A latched withdrawal (sent once) on a second BSCH identity, another location area or main carrier under the gate
   seed, sharing seen after the site, or the other mode's gate. Every burst of the open gate's content calls
   `dsd_signal_search_note_activity()`; evidence and notes go only on change. Test: `TETRA_SEARCH`.
-- Decided limits: the decoder's MAC still applies a SYSINFO from an SCH/F (EN 300 392-2 clause 21.4.4.1 names the
-  half-slot channels), as osmo-tetra, tetra-kit and tetra-bluestation all do; only the search refuses it. A repeater
-  transmission's DM colour code is still derived from the MNI (EN 300 396-4 clause 8.2.4 names the repeater address):
-  of the independent DMO decoders checked only the SDR# TETRA plugin follows the clause, ctn008's TetraDMO-Receiver and
-  the osmo-tetra DMO patch use the MNI, so a repeater call's DSBs confirm and route but its normal bursts and speech do
-  not decode and keep no activity.
+- Decided limit: the decoder's MAC still applies a SYSINFO from an SCH/F (EN 300 392-2 clause 21.4.4.1 names the
+  half-slot channels), as osmo-tetra, tetra-kit and tetra-bluestation all do; only the search refuses it.
 
 #### State and its boundaries
 
