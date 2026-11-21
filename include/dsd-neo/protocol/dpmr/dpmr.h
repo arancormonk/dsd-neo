@@ -68,8 +68,8 @@ typedef struct {
     uint32_t mi_detail;    /**< MI_DET */
     int color_code;        /**< The channel code between MI0 and MI1 as a colour code, or -1 for none (6.1.5) */
     uint8_t copies;        /**< DSD_DPMR_SYNC_COPY_*: the MI copies that passed */
-    /** Symbols between the header frame's last symbol and its dispatch: 0, but for a header held until its END
-        corroborated it (dsd_dpmr_frame_sync::checked_frame_lag). */
+    /** Symbols between the header frame's last symbol and its dispatch: 0, but for a header the frame sync held until
+        a later header candidate was decided (dsd_dpmr_frame_sync::checked_frame_lag). */
     uint32_t lag_symbols;
 } dpmr_header;
 
@@ -92,6 +92,13 @@ int dpmr_take_checked_header(dsd_state* state, dpmr_header* out);
 
 /** @brief Take the end frame the frame sync checked for the FS3 sync being dispatched, as dpmr_take_checked_header(). */
 int dpmr_take_checked_end(dsd_state* state, dpmr_end_frame* out);
+
+/**
+ * @brief Take the end frame the frame sync attached to the header just taken for the FS1 sync being dispatched: the END
+ * that decided a header the frame sync held (src/dsp/frame_sync_dpmr.c), handled in the same dispatch, before any more
+ * input is read. 0 when none is attached.
+ */
+int dpmr_take_checked_end_after_header(dsd_state* state, dpmr_end_frame* out);
 
 /**
  * @brief Whether a checked header opens a call: a Communications_Start header (MT 0000) whose Communications Mode is

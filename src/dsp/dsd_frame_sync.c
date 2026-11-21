@@ -1297,6 +1297,20 @@ frame_sync_accept_dpmr_checked(frame_sync_match_ctx* ctx, int synctype) {
     return synctype;
 }
 
+/* The dPMR frame sync at a cut input (an input that ended, a stream gap, a Signal search leaving): a held header and the
+ * END that corroborated it, both read whole before the cut, are accepted as any checked dPMR frame is, except that
+ * the window that matched them is gone; else nothing. The hunt's dPMR candidates are forgotten either way. */
+static int
+frame_sync_dpmr_cut(const dsd_opts* opts, dsd_state* state) {
+    const int synctype = frame_sync_dpmr_take_at_cut(opts, state);
+    if (synctype != DSD_SYNC_NONE) {
+        state->carrier = 1;
+        DSD_SNPRINTF(state->ftype, sizeof(state->ftype), "dPMR ");
+        state->lastsynctype = synctype;
+    }
+    return synctype;
+}
+
 /* dPMR (ETSI TS 102 658 6.1): FS2 opens a voice frame and is accepted on its word; FS1 (a header) and FS3 (an end
  * frame, only where one can be) mark a candidate whose frame the hunt reads on, every matcher with it, and are accepted
  * once their frame passed its check (src/dsp/frame_sync_dpmr.c). The configured polarity alone, as for FS2: the other
@@ -6130,9 +6144,9 @@ getFrameSync(dsd_opts* opts, dsd_state* state) {
             if (dsd_frame_sync_hook_signal_search_should_yield(opts, state)) {
                 dsd_state_raise_input_interrupt(state, DSD_INTERRUPT_SEARCH);
                 frame_sync_history_drop(state);
-                frame_sync_dpmr_forget(state);
+                const int dpmr = frame_sync_dpmr_cut(opts, state);
                 frame_sync_sps_hunt_mark_return(state);
-                return DSD_SYNC_NONE;
+                return dpmr;
             }
             /* A trunk-scan target's idle dwell ran out inside the pass (discussion #717). On dead air the hunt hands
                back once per 1800-symbol pass, so a dwell checked only between passes ran up to a pass long (375 ms at
@@ -6157,10 +6171,10 @@ getFrameSync(dsd_opts* opts, dsd_state* state) {
                met a stream gap (issue #518): no symbol came and no pass ran, so nothing of it is counted. The engine
                loop applies the command, switches the input or resets what the gap cut; the next call hunts afresh. */
             frame_sync_history_drop(state);
-            /* A dPMR frame being read lost its symbols too. */
-            frame_sync_dpmr_forget(state);
+            /* A dPMR frame being read lost its symbols too; frames read whole before the cut are taken. */
+            const int dpmr = frame_sync_dpmr_cut(opts, state);
             frame_sync_sps_hunt_mark_return(state);
-            return DSD_SYNC_NONE;
+            return dpmr;
         }
         frame_sync_history_confirm(&rt, state);
         frame_sync_update_symbol_ring(opts, state, rt.symbol, rt.lbuf, &rt.lidx, &rt.level_count, rt.t_max);

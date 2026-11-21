@@ -9157,11 +9157,17 @@ the stream-notice hooks' pattern: one that fails to initialize leaves the hook u
   faded MI0 can pass on the earlier word's levels and fail on its own). A pending word is a sign pattern only, so one
   that cannot read a frame (faded below `DSD_WARM_START_MIN_SPAN`) displaces nothing. The earlier header is not
   dropped either: it is held (`dsd_dpmr_frame_sync::held_at`) with the END window its frame predicts, which is looked
-  at while the later candidate is read (the one FS3 matched inside a candidate's frame). An END that passes there
-  corroborates the held header: the header is accepted on that END's last symbol and the END on the next symbol, each
-  with `checked_frame_lag`, the symbols since its own frame ended, which the header run timing
-  (`dpmr_header_continues_call()`, `dpmr_header::lag_symbols`) measures from. With no END the held header expires once
-  its END window has passed, and should the later candidate then fail too, neither frame is published. Only FS2 and FS3 stand down inside a candidate. Once the
+  at while the later candidate is read (the one FS3 matched inside a candidate's frame); an END that passes there is
+  held with it, unpublished, since it lies inside the later candidate's frame (a sign error can make FS3 of a real
+  header's channel code). Nothing is published until the later candidate is decided, at its own frame's end
+  (`dpmr_decide_held_header()`): on two agreeing MI copies the later header is the frame; else the held header with
+  its END, when that passed; else the later header on one copy; else neither. An input that ends or is cut before the
+  later candidate is decided takes the held header and its END, both read whole (`frame_sync_dpmr_take_at_cut()`,
+  returned from the cut instead of nothing). A held header taken with its END carries the END attached
+  (`checked_end_attached`): the dispatcher handles both in the one FS1 dispatch, the header first
+  (`dpmr_take_checked_end_after_header()`), before any more input is read. Its `checked_frame_lag`, the symbols since
+  its own frame ended, is what the header run timing (`dpmr_header_continues_call()`, `dpmr_header::lag_symbols`)
+  measures from. Only FS2 and FS3 stand down inside a candidate. Once the
   frame's last symbol is in, it is
   read back from the soft symbol history, sliced on its own sync word's outer levels, and checked, in the
   specification's receive order: each 120-bit MI copy descrambled from a fresh X^9 + X^5 + 1 scrambler, then the 12 x

@@ -218,6 +218,9 @@ int frame_sync_dpmr_arm_end(const dsd_opts* opts, dsd_state* state, const char* 
 void frame_sync_dpmr_note_fs2(const dsd_opts* opts, dsd_state* state);
 /** An input interruption cut the stream: no header or end frame being read, and no FS3 boundary, survives it. */
 void frame_sync_dpmr_forget(dsd_state* state);
+/* frame_sync_dpmr_forget() for an input that ended or was cut: a held header and the END that corroborated it, read
+   whole before the cut, are taken first (its synctype, the END attached), else DSD_SYNC_NONE. */
+int frame_sync_dpmr_take_at_cut(const dsd_opts* opts, dsd_state* state);
 /** Drop every candidate being read (dsd_dpmr_frame_sync::pending). */
 void frame_sync_dpmr_forget_candidates(dsd_state* state);
 /** A sync of any protocol was accepted (@p synctype): the anchor is spent, and another protocol's leaves no P25p1
