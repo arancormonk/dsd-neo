@@ -4228,6 +4228,43 @@ test_avoid_lists(dsd_opts* o, dsd_state* s, const dsd_signal_search_config* conf
     test_avoid_interleaving(o, s, config);
 }
 
+/* ---- TETRA identification (issue #748) ---- */
+
+/* The first TETRA mode a visit confirms names the detection: a later report of the other mode changes nothing (the
+   decoder withdraws the site and access instead), and its activity keeps no visit listening. A TETRA detection shows
+   the access code its own evidence carries and no call details: a TETRA call record names nothing on it. */
+static void
+test_tetra_protocol_latched(dsd_opts* o, dsd_state* s, const dsd_signal_search_config* config) {
+    DSD_MEMSET(calls, 0, sizeof(calls));
+    for (int first = 0; first < 2; ++first) {
+        const char* latched = first ? "TETRA DMO" : "TETRA";
+        const char* other = first ? "TETRA" : "TETRA DMO";
+        const dsd_signal_search_config one = tag_config(config, 80 + (uint64_t)first, 1, 0);
+        start_tag_session(o, s, &one);
+        visit_strongest(o, s);
+        assert(status.phase == DSD_SEARCH_IDENTIFYING);
+        s->synctype = DSD_SYNC_TETRA_SB_POS;
+        dsd_signal_search_note_evidence_at(s, latched, DSD_SYNC_TETRA_SB_POS, -1, 0, 0, first ? NULL : "CC 5");
+        assert(status.hit.confirmed && strcmp(status.hit.protocol, latched) == 0);
+        assert(strcmp(status.hit.access, first ? "" : "CC 5") == 0);
+        const uint64_t revision = status.revision;
+        advance(400);
+        dsd_signal_search_note_evidence_at(s, other, DSD_SYNC_TETRA_NDB_POS, -1, 7, 8, "CC 9");
+        assert(strcmp(status.hit.protocol, latched) == 0 && status.revision == revision);
+        assert(strcmp(status.hit.access, first ? "" : "CC 5") == 0 && status.hit.target == 0);
+        /* No call details: a checked TETRA call record names no target, source or slot. */
+        (void)put_call(0, 1, 1.0, DSD_SYNC_TETRA_NDB_POS, 100, 200);
+        dsd_signal_search_note_call(s, 0);
+        assert(tuple_is(&status.hit, 0, 0, 0, "") && status.revision == revision);
+        DSD_MEMSET(calls, 0, sizeof(calls));
+        /* The other mode's report refreshed nothing: the visit's own quiet time runs from its own evidence. */
+        dsd_signal_search_note_evidence_at(s, latched, DSD_SYNC_TETRA_SB_POS, -1, 0, 0, NULL);
+        assert(strcmp(status.hit.protocol, latched) == 0);
+        s->synctype = DSD_SYNC_NONE;
+        stop_tag_session(o, s);
+    }
+}
+
 int
 main(void) {
     dsd_opts* o = calloc(1, sizeof(*o));
@@ -4431,6 +4468,7 @@ main(void) {
     test_failed_start_changes_nothing(o, s, &config);
     test_m17_call_free_lsf_can(o, s, &config);
     test_stop_queues_restored_profile(o, s, &config);
+    test_tetra_protocol_latched(o, s, &config);
     s->rtl_ctx = NULL;
     dsd_state_ext_free_all(s);
     free(s);

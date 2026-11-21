@@ -101,14 +101,19 @@ void dsd_engine_signal_search_call(const dsd_state* state, uint8_t slot);
  * (dsd_signal_search_hit::access_noted) while it is confirmed as a protocol of the note's sync type's family, publishing
  * when that changes. Either way it confirms nothing and changes no phase or activity. Anything else it drops. */
 void dsd_engine_signal_search_access(const dsd_state* state, const dsd_signal_search_access_note* note);
-/** The Signal search family name of @p synctype ("DMR", "P25", "NXDN", "dPMR", "M17", "YSF", "D-STAR"), the name a
- * hit's protocol starts with when that sync type's protocol confirmed it ("NXDN" for NXDN48 and NXDN96); NULL for a
- * sync type the search does not identify by its calls (ProVoice, EDACS, X2-TDMA, TETRA, analog, none). */
+/** The Signal search family name of @p synctype ("DMR", "P25", "NXDN", "dPMR", "M17", "YSF", "D-STAR", "TETRA"), the
+ * name a hit's protocol starts with when that sync type's protocol confirmed it ("NXDN" for NXDN48 and NXDN96); NULL
+ * for a sync type the search does not identify (ProVoice, EDACS, X2-TDMA, analog, none). TETRA direct mode shares the
+ * trunked-mode sync words, so no sync type names "TETRA DMO" (issue #748). */
 const char* dsd_engine_signal_search_sync_protocol(int synctype);
 /** Whether @p synctype is of the family of a hit whose protocol is @p hit_protocol: the sync type has a family name
- * (dsd_engine_signal_search_sync_protocol()) and @p hit_protocol starts with it ("NXDN" for NXDN48 and NXDN96). 0 for a
- * sync type with no family name, or a NULL @p hit_protocol. */
+ * (dsd_engine_signal_search_sync_protocol()) and @p hit_protocol starts with it ("NXDN" for NXDN48 and NXDN96), except
+ * that TETRA's family is "TETRA" exactly, never "TETRA DMO". 0 for a sync type with no family name, or a NULL
+ * @p hit_protocol. */
 int dsd_engine_signal_search_family_matches(const char* hit_protocol, int synctype);
+/** Whether @p protocol is a TETRA identification, "TETRA" (trunked) or "TETRA DMO" (issue #748): the hit's access and
+ * site then come from the TETRA decoder's own notes alone, and it shows no call details. */
+int dsd_engine_signal_search_protocol_is_tetra(const char* protocol);
 #ifdef __cplusplus
 }
 #endif

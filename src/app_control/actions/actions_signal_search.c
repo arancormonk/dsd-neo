@@ -154,16 +154,21 @@ publish_search(const dsd_signal_search_status* status, const dsd_signal_search_h
         publish_store(&copy, NULL);
         return;
     }
+    /* A TETRA detection's access code is the coordinator's, from the TETRA decoder's own gate, and a withdrawal clears
+       it there for the rest of the visit (issue #748): this neither reads one nor carries the one it had. */
+    const int coordinator_access = dsd_engine_signal_search_protocol_is_tetra(hit->protocol);
     if (hit->session_id == observer.last.session_id && hit->hit_id == observer.last.hit_id
         && strcmp(hit->protocol, observer.last.protocol) == 0) {
-        DSD_MEMCPY(hit->access, observer.last.access, sizeof(hit->access));
+        if (!coordinator_access) {
+            DSD_MEMCPY(hit->access, observer.last.access, sizeof(hit->access));
+        }
         DSD_MEMCPY(hit->tone, observer.last.tone, sizeof(hit->tone));
     } else {
         DSD_MEMSET(&observer.tone, 0, sizeof(observer.tone));
     }
     /* A periodic refresh can follow an unconfirmed sync or a damaged frame. Read
        decoded fields only in the synchronous, protocol-confirmed publication. */
-    if (changed && !hit->ended && hit->confirmed) {
+    if (changed && !hit->ended && hit->confirmed && !coordinator_access) {
         format_confirmed_access(hit);
     }
     format_noted_access(hit);

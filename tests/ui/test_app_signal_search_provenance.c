@@ -12,6 +12,7 @@
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/opts_fwd.h>
 #include <dsd-neo/core/receive_types.h>
+#include <dsd-neo/core/received_identity.h>
 #include <dsd-neo/core/safe_api.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/state_fwd.h>
@@ -412,6 +413,50 @@ test_rejected_code_access(dsd_opts* opts, dsd_state* state) {
     state->p2_proven_nac = -1;
 }
 
+/* Issue #748: a TETRA detection's access code is the coordinator's, from the TETRA decoder's own gate (CC n), never the
+   decoder's generic received identity, which a reserved SYNC can set. A withdrawal the coordinator publishes (access and
+   site cleared) reaches the store as it is, in the live and the ended publication: the observer neither reads a code
+   nor carries the one the hit had. A direct mode hit has no access code. */
+static void
+test_tetra_access_is_the_coordinators(dsd_state* state) {
+    dsd_signal_search_status status = {0};
+    status.session_id = status.hit.session_id = 11;
+    status.hit.hit_id = 1;
+    status.hit.confirmed = 1;
+    status.phase = DSD_SEARCH_LISTENING;
+    DSD_SNPRINTF(status.hit.protocol, sizeof(status.hit.protocol), "%s", "TETRA");
+    DSD_SNPRINTF(status.hit.access, sizeof(status.hit.access), "%s", "CC 5");
+    DSD_SNPRINTF(status.hit.site, sizeof(status.hit.site), "%s", "MCC 228 \xC2\xB7 MNC 8889");
+    DSD_MEMSET(&call, 0, sizeof(call));
+    state->synctype = DSD_SYNC_TETRA_SB_POS;
+    state->rx_id.family = (uint8_t)DSD_RXID_FAMILY_TETRA;
+    state->rx_id.valid = DSD_RXID_TETRA_NET | DSD_RXID_ACCESS;
+    state->rx_id.access_kind = (uint8_t)DSD_ACCESS_CODE_COLOR_CODE;
+    state->rx_id.access = 9;
+    observer(&status, &status.hit, observer_user);
+    assert(strcmp(published.hit.access, "CC 5") == 0);
+    observer(&status, NULL, observer_user);
+    assert(strcmp(published.hit.access, "CC 5") == 0);
+    /* Withdrawn: both go, and stay gone through refreshes and the ended hit. */
+    status.hit.access[0] = '\0';
+    status.hit.site[0] = '\0';
+    observer(&status, &status.hit, observer_user);
+    assert(published.hit.access[0] == '\0' && published.hit.site[0] == '\0');
+    observer(&status, NULL, observer_user);
+    assert(published.hit.access[0] == '\0');
+    status.hit.ended = 1;
+    observer(&status, &status.hit, observer_user);
+    assert(published.hit.access[0] == '\0' && published.hit.site[0] == '\0');
+    /* A direct mode hit takes no code at all. */
+    status.hit.hit_id = 2;
+    status.hit.ended = 0;
+    DSD_SNPRINTF(status.hit.protocol, sizeof(status.hit.protocol), "%s", "TETRA DMO");
+    observer(&status, &status.hit, observer_user);
+    assert(published.hit.access[0] == '\0');
+    DSD_MEMSET(&state->rx_id, 0, sizeof(state->rx_id));
+    state->synctype = DSD_SYNC_NONE;
+}
+
 int
 main(void) {
     dsd_opts* opts = calloc(1, sizeof(*opts));
@@ -611,6 +656,7 @@ main(void) {
     status.hit.hit_id = 2;
 
     test_rejected_code_access(opts, state);
+    test_tetra_access_is_the_coordinators(state);
     test_detection_tone();
 
     // Issue #828: the session's own avoid list is the coordinator's (the runtime list the screens read), so the

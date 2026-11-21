@@ -1006,6 +1006,16 @@ search_evidence_verdict(const search_coord* c, const dsd_state* state, int sync,
                      : dsd_receive_current_status(c->opts, state, state->currentslot);
 }
 
+/* Whether @p protocol is the other TETRA mode of a hit a TETRA mode already confirmed (issue #748): the first gate that
+   opened names the visit's detection, and the TETRA decoder withdraws its site and access when the other mode's gate
+   opens later, so such a report changes nothing, its activity included. */
+static int
+search_tetra_mode_latched(const search_coord* c, const char* protocol) {
+    const dsd_signal_search_hit* hit = &c->status.hit;
+    return hit->confirmed && dsd_engine_signal_search_protocol_is_tetra(hit->protocol)
+           && dsd_engine_signal_search_protocol_is_tetra(protocol) && strcmp(hit->protocol, protocol) != 0;
+}
+
 void
 dsd_engine_signal_search_evidence_at(const dsd_state* state, const char* protocol, int sync, int slot, uint32_t target,
                                      uint32_t source, const char* access) {
@@ -1013,7 +1023,7 @@ dsd_engine_signal_search_evidence_at(const dsd_state* state, const char* protoco
     /* The decoders drop a frame an input interruption cut; this refuses whatever one still reports. Traffic the receive
        policy rejects or is still checking neither confirms the hit nor keeps the search listening (issue #637); traffic
        it rejects also has the visit leave when its probe ends unconfirmed (issue #802 B9). */
-    if (!c || !search_receiving(c, state)) {
+    if (!c || !search_receiving(c, state) || search_tetra_mode_latched(c, protocol)) {
         return;
     }
     const dsd_receive_verdict verdict = search_evidence_verdict(c, state, sync, slot);
@@ -1230,7 +1240,9 @@ search_call_admit(const search_coord* c, const dsd_state* state, uint8_t slot, d
     }
     const char* protocol = dsd_engine_signal_search_sync_protocol(record->protocol);
     const dsd_signal_search_hit* hit = &c->status.hit;
-    if (!protocol || (hit->protocol[0] && !dsd_engine_signal_search_family_matches(hit->protocol, record->protocol))) {
+    /* A TETRA detection shows no call details (issue #748): it names its cell or route, from its own notes. */
+    if (!protocol || dsd_engine_signal_search_protocol_is_tetra(protocol)
+        || (hit->protocol[0] && !dsd_engine_signal_search_family_matches(hit->protocol, record->protocol))) {
         return NULL;
     }
     return protocol;
