@@ -160,8 +160,13 @@ frame_sync_dpmr_decode_mi(const uint8_t* wire, uint8_t* info) {
                != dpmr_bits_value(data + DSD_DPMR_HEADER_MI_BITS, DPMR_MI_CODED_BITS - DSD_DPMR_HEADER_MI_BITS)) {
         return 0;
     }
-    /* Table 5.3 reserves message type 1101: a copy naming it is no message, whatever its CRC. */
-    if (dpmr_bits_value(data, 4) == 0xDU) {
+    /* Table 5.3 reserves message type 1101, and Table 5.55 Communications Mode 111 in the headers whose M field
+       describes the payload (Communications_Start, the ACK to a System Request and System Delivery: Tables 5.4, 5.22,
+       5.23): a copy naming either is no message, whatever its CRC, so it neither stands for the frame nor contradicts
+       the other copy. */
+    const uint32_t mt = dpmr_bits_value(data, 4);
+    const uint32_t mode = dpmr_bits_value(data + 52, 3);
+    if (mt == 0xDU || ((mt == 0x0U || mt == 0x5U || mt == 0x6U) && mode == 7U)) {
         return 0;
     }
     DSD_MEMCPY(info, data, DSD_DPMR_HEADER_MI_BITS);
@@ -396,25 +401,38 @@ dpmr_complete_candidate(const dsd_opts* opts, dsd_state* state, dsd_dpmr_sync_ma
 int
 frame_sync_dpmr_candidate_complete(const dsd_opts* opts, dsd_state* state) {
     dsd_dpmr_frame_sync* sync = &state->dpmr_sync;
-    const int synctype = dpmr_complete_candidate(opts, state, &sync->pending);
-    if (synctype != DSD_SYNC_NONE) {
-        /* A later FS1 inside the frame just accepted was its payload's. */
-        sync->pending_next.kind = DSD_DPMR_SYNC_FRAME_NONE;
-        return synctype;
-    }
-    if (sync->pending.kind == DSD_DPMR_SYNC_FRAME_NONE && sync->pending_next.kind != DSD_DPMR_SYNC_FRAME_NONE) {
-        /* The older candidate was no frame: the FS1 found inside it is the one being read now. */
-        sync->pending = sync->pending_next;
-        sync->pending_next.kind = DSD_DPMR_SYNC_FRAME_NONE;
-        return dpmr_complete_candidate(opts, state, &sync->pending);
+    /* Candidates began at different symbols, so at most one reaches its frame's last symbol here. */
+    for (int i = 0; i < DSD_DPMR_PENDING_MAX; i++) {
+        const int synctype = dpmr_complete_candidate(opts, state, &sync->pending[i]);
+        if (synctype != DSD_SYNC_NONE) {
+            /* Every other candidate began inside the frame just accepted (none ends before it and every one began
+               before now): its word was that frame's payload. */
+            frame_sync_dpmr_forget_candidates(state);
+            return synctype;
+        }
     }
     return DSD_SYNC_NONE;
 }
 
 int
 frame_sync_dpmr_candidate_reading(const dsd_state* state) {
-    return state->dpmr_sync.pending.kind != DSD_DPMR_SYNC_FRAME_NONE
-           || state->dpmr_sync.pending_next.kind != DSD_DPMR_SYNC_FRAME_NONE;
+    for (int i = 0; i < DSD_DPMR_PENDING_MAX; i++) {
+        if (state->dpmr_sync.pending[i].kind != DSD_DPMR_SYNC_FRAME_NONE) {
+            return 1;
+        }
+    }
+    return 0;
+}
+
+/* A free candidate slot, or NULL when every one is being read. */
+static dsd_dpmr_sync_mark*
+dpmr_free_candidate(dsd_state* state) {
+    for (int i = 0; i < DSD_DPMR_PENDING_MAX; i++) {
+        if (state->dpmr_sync.pending[i].kind == DSD_DPMR_SYNC_FRAME_NONE) {
+            return &state->dpmr_sync.pending[i];
+        }
+    }
+    return NULL;
 }
 
 int
@@ -427,9 +445,14 @@ frame_sync_dpmr_arm_header(const dsd_opts* opts, dsd_state* state, const char* w
     }
     dsd_dpmr_frame_sync* sync = &state->dpmr_sync;
     /* A candidate being read is kept until its own check: a real header's payload can hold FS1's sign pattern (a
-       peer-to-peer Communications_Start does), so the later word is read beside it, not instead. If the older frame
-       passes, the later word was its payload; if it fails, the later one is read on. A third replaces the later. */
-    dsd_dpmr_sync_mark* slot = sync->pending.kind == DSD_DPMR_SYNC_FRAME_NONE ? &sync->pending : &sync->pending_next;
+       peer-to-peer Communications_Start does) and a false FS1 can come just before a real one, so a later word is read
+       beside the others, not instead of any. The one that passes is accepted and the rest, which began inside it,
+       dropped. With every slot taken (DSD_DPMR_PENDING_MAX words within one header's 132 symbols) the newest word
+       waits: the older ones are still owed their checks. */
+    dsd_dpmr_sync_mark* slot = dpmr_free_candidate(state);
+    if (slot == NULL) {
+        return 0;
+    }
     dpmr_mark_here(slot, state, state->symbol_clock, DSD_DPMR_SYNC_FRAME_HEADER, inverted);
     sync->fs3_at.kind = DSD_DPMR_SYNC_FRAME_NONE;
     return 1;
@@ -450,7 +473,7 @@ frame_sync_dpmr_arm_end(const dsd_opts* opts, dsd_state* state, const char* wind
         return 0;
     }
     at->kind = DSD_DPMR_SYNC_FRAME_NONE;
-    dpmr_mark_here(&state->dpmr_sync.pending, state, state->symbol_clock, DSD_DPMR_SYNC_FRAME_END,
+    dpmr_mark_here(&state->dpmr_sync.pending[0], state, state->symbol_clock, DSD_DPMR_SYNC_FRAME_END,
                    (uint8_t)(opts->inverted_dpmr == 1));
     return 1;
 }
@@ -464,7 +487,13 @@ frame_sync_dpmr_note_fs2(const dsd_opts* opts, dsd_state* state) {
 
 void
 frame_sync_dpmr_forget(dsd_state* state) {
-    state->dpmr_sync.pending.kind = DSD_DPMR_SYNC_FRAME_NONE;
-    state->dpmr_sync.pending_next.kind = DSD_DPMR_SYNC_FRAME_NONE;
+    frame_sync_dpmr_forget_candidates(state);
     state->dpmr_sync.fs3_at.kind = DSD_DPMR_SYNC_FRAME_NONE;
+}
+
+void
+frame_sync_dpmr_forget_candidates(dsd_state* state) {
+    for (int i = 0; i < DSD_DPMR_PENDING_MAX; i++) {
+        state->dpmr_sync.pending[i].kind = DSD_DPMR_SYNC_FRAME_NONE;
+    }
 }

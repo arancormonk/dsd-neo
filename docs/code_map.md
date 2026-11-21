@@ -9134,9 +9134,10 @@ the stream-notice hooks' pattern: one that fails to initialize leaves the hook u
   pairs: 4.2.3.2 to 4.2.3.5, status polls in Tables 10.7, 10.8, 10.15, 10.16, a BS_Access poll in 10.2.7.1.0 a; only
   an END that passes its own check is taken). Nothing is accepted at the word: the hunt goes on over the candidate's
   frame (132 dibits for a header, 36 for an end frame), every matcher with it, so a rejected candidate costs no
-  protocol a frame (an NXDN48 frame sync inside it is matched where it is). An FS1 found while a candidate is read is
-  kept beside it (`pending_next`), not instead: a real header's payload can hold FS1's sign pattern, so the older is
-  checked first and, if it fails, the later one is read on. Only FS2 and FS3 stand down inside a candidate. Once the
+  protocol a frame (an NXDN48 frame sync inside it is matched where it is). An FS1 found while candidates are read is
+  kept beside them (`pending[]`, up to `DSD_DPMR_PENDING_MAX`), not instead: a real header's payload can hold FS1's sign
+  pattern and a false FS1 can come just before a real one, so each is checked on its own last symbol, the one that
+  passes is accepted and the rest, begun inside it, dropped. Only FS2 and FS3 stand down inside a candidate. Once the
   frame's last symbol is in, it is
   read back from the soft symbol history, sliced on its own sync word's outer levels, and checked, in the
   specification's receive order: each 120-bit MI copy descrambled from a fresh X^9 + X^5 + 1 scrambler, then the 12 x
@@ -9147,7 +9148,8 @@ the stream-notice hooks' pattern: one that fails to initialize leaves the hook u
   sends) and from a fresh scrambler, each CRC-checked, the reading that agrees with a passing first copy taken. A
   copy passes when every word is correctable and its CRC matches; one copy is enough, two that pass with different
   contents are no frame. A copy naming what no transmitter sends is no copy whatever its CRC: message type 1101
-  (Table 5.3), End_Type or ARQ 10/11 (Tables 5.61, 5.48), or nonzero END reserved bits (11.6). Both CRCs run MSB
+  (Table 5.3), Communications Mode 111 in the headers whose M describes the payload (Table 5.55; MT 0000, 0101, 0110),
+  End_Type or ARQ 10/11 (Tables 5.61, 5.48), or nonzero END reserved bits (11.6). Both CRCs run MSB
   first from a zero register with no final inversion, which the spec does not
   say but the same recording (sigidwiki DPMR.zip, `SDRSharp_20160101_231640Z_12kHz_IQ.wav`) confirms: all 18 MI
   copies of its 9 headers pass the CRC-8 so and none with a preset of all ones; its end frame's first copy and its CCH
@@ -14079,7 +14081,11 @@ Private per-protocol modules worth knowing about:
   CRC-valid half: that half's service and call kind (a data CCH is a data call), with the identity
   `dpmr_update_superframe_part()` bound (`dPMRVoiceFS2Frame_t::BoundIdKind`: both halves CRC-valid and numbered 0/1,
   the called ID, or 2/3, the calling ID). A frame with no CRC-valid half only keeps an open dPMR call going and opens
-  none. The shared scrambler reloads only at a checked frame 0: a half that passed numbered 0, or a failed first half
+  none. A half plays by its checked Communications Mode: its own when its CRC-7 passed, else the transmission's last
+  checked half's or header's (`dsd_state::dpmr_mode`, learned and forgotten with `dpmr_scrambled`), else this frame's
+  other checked half's, else none and it plays nothing (`dPMRVoiceFS2Frame_t::ServiceMode`); its own failed mode bits
+  never decide it. Powersave bits are read only from the traffic headers whose PARMS end in MI_TYPE and MI_DET
+  (message types 0000 to 1010; 5.5.19.1). The shared scrambler reloads only at a checked frame 0: a half that passed numbered 0, or a failed first half
   whose second half passed numbered 1 (`dpmr_play_voice_frames()`). Tests: `DPMR_SYNC_DISPATCH`,
   `DPMR_VOICE_BRIDGE`, `FRAME_SYNC_DPMR`.
 - Signal search site notes (`dsd_signal_search_note_site()` in `<dsd-neo/runtime/signal_search_hooks.h>`): each writer

@@ -307,6 +307,27 @@ dpmr_print_ids(const dsd_state* state) {
  * and plays nothing (a transmission boundary leaves confirmation standing, so a scrambled call after a clear one must
  * not play its first undecodable halves as clear). Unverified bits never decide it: a failed half reading Version 3
  * does not scramble a clear call, and one reading 0 does not unscramble a scrambled one. */
+/* Which Communications Mode each half plays by (issue #890), by the same rule as its scrambling: a half whose CRC-7
+ * passed by its own (and the transmission learns it), a failed half by the transmission's last checked half or header,
+ * or, with none yet, by this frame's other checked half; with neither, by none, and it plays nothing. A failed half's
+ * own mode bits never decide it: a damaged data half reading voice must not reach the vocoder. */
+static void
+dpmr_resolve_half_modes(dsd_state* state) {
+    dPMRVoiceFS2Frame_t* f = &state->dPMRVoiceFS2Frame;
+    for (int o = 0; o < NB_OF_DPMR_VOICE_FRAME_TO_DECODE; o++) {
+        if (f->CCHDataCrcOk[o] != 0U) {
+            state->dpmr_mode = (uint8_t)(f->CommunicationMode[o] + 1U);
+        }
+        unsigned int mode = state->dpmr_mode != 0U ? state->dpmr_mode - 1U : DPMR_HALF_MODE_UNVERIFIED;
+        for (int other = 0; mode == DPMR_HALF_MODE_UNVERIFIED && other < NB_OF_DPMR_VOICE_FRAME_TO_DECODE; other++) {
+            if (other != o && f->CCHDataCrcOk[other] != 0U) {
+                mode = f->CommunicationMode[other];
+            }
+        }
+        f->ServiceMode[o] = mode;
+    }
+}
+
 void
 dpmr_resolve_half_scrambling(dsd_state* state) {
     dPMRVoiceFS2Frame_t* f = &state->dPMRVoiceFS2Frame;
@@ -325,6 +346,7 @@ dpmr_resolve_half_scrambling(dsd_state* state) {
         }
         f->Scrambled[o] = known == 2U ? DPMR_HALF_SCRAMBLED : known == 1U ? DPMR_HALF_CLEAR : DPMR_HALF_UNVERIFIED;
     }
+    dpmr_resolve_half_modes(state);
 }
 
 static void DSD_ATTR_USED
@@ -475,8 +497,8 @@ dpmr_play_voice_frames(dsd_opts* opts, dsd_state* state, char ambe_fr[NB_OF_DPMR
             continue;
         }
         int realsynctype = state->synctype;
-        if ((state->dPMRVoiceFS2Frame.CommunicationMode[o] == 0) || (state->dPMRVoiceFS2Frame.CommunicationMode[o] == 1)
-            || (state->dPMRVoiceFS2Frame.CommunicationMode[o] == 5)) {
+        /* The half's checked mode (dpmr_resolve_half_modes()), never its own unchecked bits. */
+        if (dpmr_call_kind_for_mode(state->dPMRVoiceFS2Frame.ServiceMode[o]) == DSD_CALL_KIND_VOICE) {
             /* Each half is scrambled or clear on its own (issue #655): a scrambled half decodes through the NXDN
              * scrambler, and the verdict the vocoder and mixers take from nxdn_cipher_type follows it half by half. */
             const int scrambled = state->dPMRVoiceFS2Frame.Scrambled[o] == DPMR_HALF_SCRAMBLED;

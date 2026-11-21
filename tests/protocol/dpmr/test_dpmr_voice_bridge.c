@@ -235,6 +235,9 @@ test_first_group_scrambler_bridge_mutes_without_key(void) {
     state.dPMRVoiceFS2Frame.CCHDataCrcOk[0] = 1;
     state.dPMRVoiceFS2Frame.FrameNumbering[1] = 2;
     state.dPMRVoiceFS2Frame.CommunicationMode[1] = 2;
+    /* A checked data half: it plays nothing (a failed half would play by the transmission's checked mode). */
+    state.dPMRVoiceFS2Frame.CCHDataCrcOk[1] = 1;
+    state.dPMRVoiceFS2Frame.Version[1] = 3;
 
     dpmr_resolve_half_scrambling(&state);
     dpmr_play_voice_frames(&opts, &state, ambe_fr);
@@ -269,6 +272,7 @@ test_second_group_scrambler_bridge_unmutes_with_key(void) {
     state.nxdn_payload_mi = 0x8888ULL;
     state.dPMRVoiceFS2Frame.FrameNumbering[0] = 1;
     state.dPMRVoiceFS2Frame.CommunicationMode[0] = 2;
+    state.dPMRVoiceFS2Frame.CCHDataCrcOk[0] = 1; /* a checked data half, which plays nothing */
     state.dPMRVoiceFS2Frame.FrameNumbering[1] = 0;
     state.dPMRVoiceFS2Frame.CommunicationMode[1] = 5;
     state.dPMRVoiceFS2Frame.Version[1] = 3;
@@ -1280,6 +1284,89 @@ test_new_call_without_a_channel_code_has_none(void) {
     return rc;
 }
 
+/* Issue #890: a half whose CCH CRC-7 failed plays by the transmission's checked Communications Mode (TS 102 658 Table
+   5.55), never by its own damaged bits: after a checked header for Type 1 data, a frame whose halves both fail while
+   reading voice plays nothing; after a checked voice header the same frame plays; with no checked mode at all, nothing
+   plays though the transmission is confirmed. */
+static int
+test_failed_halves_play_by_the_checked_mode(void) {
+    int rc = 0;
+
+    static const struct {
+        int header_mode; /* -1: no header */
+        size_t want_mbe;
+        const char* tag;
+    } k_cases[] = {
+        {2, 0U, "data-header-failed-voice-halves"}, {1, 8U, "voice-header-failed-halves"}, {-1, 0U, "no-checked-mode"}};
+
+    for (size_t c = 0; c < sizeof(k_cases) / sizeof(k_cases[0]); c++) {
+        static dsd_opts opts;
+        static dsd_state state;
+        DSD_MEMSET(&opts, 0, sizeof(opts));
+        DSD_MEMSET(&state, 0, sizeof(state));
+        state.synctype = DSD_SYNC_DPMR_FS2_POS;
+        state.dpmr_color_code = -1;
+        state.dPMRVoiceFS2Frame.ColorCode[0] = (unsigned int)(-1);
+        if (k_cases[c].header_mode >= 0) {
+            const dpmr_header header = {.message_type = DPMR_MT_COMMUNICATIONS_START,
+                                        .called_id = 1464100U,
+                                        .calling_id = 2928210U,
+                                        .mode = (uint32_t)k_cases[c].header_mode,
+                                        .format = 1U,
+                                        .color_code = -1,
+                                        .copies = DSD_DPMR_SYNC_COPY_0};
+            dpmr_process_header(&opts, &state, &header, 0);
+        } else {
+            state.dpmr_confirmed = 1;
+            state.dpmr_scrambled = 1U; /* clear, learned; no mode learned */
+        }
+        reset_capture();
+        g_fail_both = 1; /* both halves fail, their mode bits reading 000, voice */
+        (void)processdPMRvoice(&opts, &state);
+        rc |= expect_int(k_cases[c].tag, (int)g_mbe_calls, (int)k_cases[c].want_mbe);
+    }
+    return rc;
+}
+
+/* Issue #890: only the traffic headers whose PARMS end in MI_TYPE and MI_DET can be powersave headers (TS 102 658
+   5.5.19.1); a UDT Appended_Data header (1111) carries payload in those bits (5.6.2), whose ones are no WU=15. */
+static int
+test_powersave_read_only_from_headers_that_carry_it(void) {
+    int rc = 0;
+
+    static const struct {
+        uint32_t mt;
+        int powersave;
+    } k_cases[] = {{DPMR_MT_COMMUNICATIONS_START, 1}, {0xFU, 0}, {0xEU, 0}, {0xBU, 0}};
+
+    for (size_t c = 0; c < sizeof(k_cases) / sizeof(k_cases[0]); c++) {
+        static dsd_opts opts;
+        static dsd_state state;
+        DSD_MEMSET(&opts, 0, sizeof(opts));
+        DSD_MEMSET(&state, 0, sizeof(state));
+        state.dpmr_color_code = -1;
+        const dpmr_header header = {.message_type = k_cases[c].mt,
+                                    .called_id = 1464100U,
+                                    .calling_id = 2928210U,
+                                    .mode = 0U,
+                                    .mi_type = 7U,
+                                    .mi_detail = 0xFFU,
+                                    .color_code = -1};
+        dsd_test_capture_stderr cap;
+        char printed[512];
+        if (dsd_test_capture_stderr_begin(&cap, "dpmr_powersave") != 0) {
+            return 1;
+        }
+        dpmr_process_header(&opts, &state, &header, 0);
+        if (dsd_test_capture_stderr_end(&cap) != 0
+            || dsd_test_capture_stderr_read(&cap, printed, sizeof(printed)) != 0) {
+            return 1;
+        }
+        rc |= expect_text("powersave-print", printed, "Powersave WU=15", k_cases[c].powersave);
+    }
+    return rc;
+}
+
 /* Issue #890: the frame's line prints the identity the frame itself bound. Publication comes first, so the first good
    0/1 pair of a late entry prints its called ID, not the CRC ERR fields of the call snapshot before it. */
 static int
@@ -1356,6 +1443,8 @@ main(void) {
     rc |= test_process_dpmr_voice_weak_frames_confirm_only_when_they_run();
     rc |= test_frame_after_a_checked_end_must_reconfirm();
     rc |= test_frame_prints_the_identity_it_bound();
+    rc |= test_failed_halves_play_by_the_checked_mode();
+    rc |= test_powersave_read_only_from_headers_that_carry_it();
     rc |= test_non_call_header_authorizes_no_playback();
     rc |= test_new_call_without_a_channel_code_has_none();
     rc |= test_superframe_part_updates_called_and_calling_ids();

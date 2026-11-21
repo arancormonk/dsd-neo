@@ -200,6 +200,8 @@ dpmr_publish_header_call(dsd_opts* opts, dsd_state* state, const dpmr_header* he
     /* The transmission's scrambling, as a CRC-verified CCH half's Version would set it (issue #655). */
     const int scrambled = header->version == 3U;
     state->dpmr_scrambled = scrambled ? 2U : 1U;
+    /* And its checked service, which a later CCH half whose CRC-7 failed plays by (dpmr_resolve_half_modes()). */
+    state->dpmr_mode = (uint8_t)(header->mode + 1U);
     dpmr_publish_crypto(state, scrambled ? DPMR_HALF_SCRAMBLED : DPMR_HALF_CLEAR,
                         scrambled ? DSD_CALL_ENC_OBSERVED_ENCRYPTED : DSD_CALL_ENC_OBSERVED_CLEAR);
     dsd_event_sync_slot(opts, state, 0U);
@@ -257,6 +259,18 @@ dpmr_header_continues_call(const dsd_state* state, const dpmr_header* header) {
            && dpmr_header_names_open_call(state, header);
 }
 
+/* A powersave header's WU, or -1 when @p header is no powersave header. Only the traffic channel headers whose PARMS
+ * end in MI_TYPE and MI_DET (Tables 5.4 to 5.28: message types 0000 to 1010) can be one (5.5.19.1, Tables 5.69, 5.71:
+ * MI_TYPE 111, WU the low four bits of MI_DET); a Broadcast (1011) gives MI_TYPE its own meanings, and the beacon and UDT
+ * messages (1100, 1110, 1111; an Appended_Data header carries payload there, 5.6.2) another layout. */
+static int
+dpmr_header_powersave_wu(const dpmr_header* header) {
+    if (header->message_type > 0xAU || header->mi_type != 7U) {
+        return -1;
+    }
+    return (int)(header->mi_detail & 0xFU);
+}
+
 static void
 dpmr_note_call_header(dsd_state* state, const dpmr_header* header, int continues) {
     dsd_dpmr_sync_mark* mark = &state->dpmr_sync.call_header;
@@ -268,7 +282,8 @@ dpmr_note_call_header(dsd_state* state, const dpmr_header* header, int continues
     mark->kind = DSD_DPMR_SYNC_FRAME_HEADER;
     mark->inverted = (uint8_t)(state->synctype == DSD_SYNC_DPMR_FS1_NEG);
     /* How many header frames this one says follow it: a powersave header's WU (Table 5.71), none for a normal one. */
-    state->dpmr_sync.call_header_wu = header->mi_type == 7U ? (uint8_t)(header->mi_detail & 0xFU) : 0U;
+    const int wu = dpmr_header_powersave_wu(header);
+    state->dpmr_sync.call_header_wu = wu > 0 ? (uint8_t)wu : 0U;
     /* The run's colour code: a new call's header's own (or none); a repeat keeps it, or supplies the one it lacked. */
     if (!continues || state->dpmr_sync.call_header_color_code < 0) {
         state->dpmr_sync.call_header_color_code = header->color_code;
@@ -281,9 +296,10 @@ dpmr_process_header(dsd_opts* opts, dsd_state* state, const dpmr_header* header,
         return;
     }
     DSD_FPRINTF(stderr, "%s%s%s", KYEL, dpmr_message_type_name(header->message_type), KNRM);
-    if (header->mi_type == 7U) {
-        /* A powersave wake-up header: WU (MI_DET's low four bits) more follow before the normal one (Table 5.71). */
-        DSD_FPRINTF(stderr, " Powersave WU=%u", (unsigned)(header->mi_detail & 0xFU));
+    const int wu = dpmr_header_powersave_wu(header);
+    if (wu >= 0) {
+        /* A powersave wake-up header: WU more follow before the normal one (Table 5.71). */
+        DSD_FPRINTF(stderr, " Powersave WU=%d", wu);
     }
     if (dpmr_header_opens_call(header)) {
         /* A checked MI stands behind an exact 24-symbol FS1 (one noise window in 2^24), and a noise copy passes its

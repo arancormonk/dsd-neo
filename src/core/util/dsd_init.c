@@ -930,6 +930,7 @@ init_state_dpmr_confirmation(dsd_state* state) {
     state->dpmr_confirm_last_frame_valid = 0;
     state->dpmr_confirm_last_frame_symbol = 0;
     state->dpmr_scrambled = 0;
+    state->dpmr_mode = 0;
     state->dpmr_cch_evidence = 0;
     state->dpmr_cch_evidence_symbolcnt = 0;
 }

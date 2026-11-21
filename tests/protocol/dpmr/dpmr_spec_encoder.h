@@ -24,6 +24,7 @@
 
 #include <stdint.h>
 #include <string.h>
+#include "dsd-neo/core/safe_api.h"
 
 enum {
     DPMR_SPEC_MI_BITS = 72,
@@ -63,8 +64,8 @@ dpmr_spec_put(uint8_t* bits, int at, int count, uint32_t value) {
 static inline uint32_t
 dpmr_spec_crc(const uint8_t* bits, int count, const uint8_t* gen, int width) {
     uint8_t work[128];
-    memset(work, 0, sizeof(work));
-    memcpy(work, bits, (size_t)count);
+    DSD_MEMSET(work, 0, sizeof(work));
+    DSD_MEMCPY(work, bits, (size_t)count);
     for (int i = 0; i < count; i++) {
         if (work[i]) {
             for (int j = 0; j <= width; j++) {
@@ -111,7 +112,7 @@ dpmr_spec_encode_mi_crc(const uint8_t* info72, uint32_t crc, uint8_t* wire120) {
     uint8_t data[80];
     uint8_t coded[120];
     uint8_t key[120];
-    memcpy(data, info72, 72);
+    DSD_MEMCPY(data, info72, 72);
     dpmr_spec_put(data, 72, 8, crc);
     for (int w = 0; w < 10; w++) {
         dpmr_spec_hamming(data + (w * 8), coded + (w * 12));
@@ -136,7 +137,7 @@ static inline void
 dpmr_spec_encode_end_crc(const uint8_t* info17, uint32_t crc, int key_offset, uint8_t* wire36) {
     uint8_t data[24];
     uint8_t key[72];
-    memcpy(data, info17, 17);
+    DSD_MEMCPY(data, info17, 17);
     dpmr_spec_put(data, 17, 7, crc);
     dpmr_spec_keystream(key, 72);
     for (int w = 0; w < 3; w++) {
@@ -160,7 +161,7 @@ typedef struct {
 
 static inline void
 dpmr_spec_header_bits(const dpmr_spec_header* h, uint8_t* info72) {
-    memset(info72, 0, 72);
+    DSD_MEMSET(info72, 0, 72);
     dpmr_spec_put(info72, 0, 4, h->mt);
     dpmr_spec_put(info72, 4, 24, h->called);
     dpmr_spec_put(info72, 28, 24, h->calling);

@@ -126,6 +126,9 @@ enum {
     DPMR_HALF_UNVERIFIED = 2U, /**< No verified half says which since the transmission's boundary. */
 };
 
+/** @brief dPMRVoiceFS2Frame_t::ServiceMode when no checked half or header says the half's Communications Mode. */
+#define DPMR_HALF_MODE_UNVERIFIED 8U
+
 /**
  * @brief Forget the scrambling the current transmission's CRC-verified halves signalled (issue #655).
  *

@@ -286,6 +286,7 @@ enum {
 #define DSD_DPMR_HEADER_CC_BITS        24 /* the channel code between MI0 and MI1 */
 #define DSD_DPMR_END_INFO_BITS         17 /* ET, ARQ, Tx_WAIT, STAT, RSVD before the CRC-7 (11.6) */
 #define DSD_DPMR_HEADER_DIBITS         132
+#define DSD_DPMR_PENDING_MAX           4   /* dPMR frame sync candidates read at once (dsd_dpmr_frame_sync::pending) */
 #define DSD_DPMR_MESSAGE_FRAME_SYMBOLS 192 /* a whole Message_Frame on air: preamble 36, FS1 24, MI0 + CC + MI1 132 */
 #define DSD_DPMR_END_DIBITS            36
 #define DSD_DPMR_SYNC_COPY_0           0x1U
@@ -312,9 +313,10 @@ typedef struct {
  * FS2 frame after an accepted FS2, or straight after any checked header. Written
  * by the frame sync, read by the dPMR decoder; decoder-thread private. */
 typedef struct {
-    dsd_dpmr_sync_mark pending;
-    /* A header candidate whose FS1 came while pending was being read: checked in its turn if pending fails. */
-    dsd_dpmr_sync_mark pending_next;
+    /* The candidates being read, each checked on its own frame's last symbol: a header's FS1 that comes while another
+       is read is kept beside it (a real header's payload can hold FS1's sign pattern, and a false FS1 can come just
+       before a real one), so none is given up before its own check. */
+    dsd_dpmr_sync_mark pending[DSD_DPMR_PENDING_MAX];
     dsd_dpmr_sync_mark fs3_at;
     uint64_t checked_clock; /* dsd_state::symbol_clock when the checked frame was accepted */
     uint32_t checked_epoch;
@@ -1097,6 +1099,10 @@ typedef struct {
        5.5 to 5.8), else DPMR_FRAME_ID_NONE; BoundIdValue is the 24-bit air interface ID. */
     unsigned int BoundIdKind;
     unsigned int BoundIdValue;
+    /* Per half (dpmr_resolve_half_scrambling()): the Communications Mode the half plays by, its own when its CRC-7
+       passed, else the transmission's checked one (dsd_state::dpmr_mode) or this frame's other checked half's;
+       DPMR_HALF_MODE_UNVERIFIED with none, which plays nothing. CommunicationMode itself is the raw field. */
+    unsigned int ServiceMode[NB_OF_DPMR_VOICE_FRAME_TO_DECODE];
 } dPMRVoiceFS2Frame_t;
 
 /**
@@ -2379,6 +2385,10 @@ struct dsd_state {
     /* The scrambling the current dPMR transmission's last CRC-verified CCH half signalled (issue #655): 0 none yet,
        1 clear, 2 scrambled (Version 3). A half whose CRC-7 failed takes it; a transmission boundary forgets it. */
     uint8_t dpmr_scrambled;
+    /* The Communications Mode (TS 102 658 Table 5.55) the transmission's last checked CCH half or header signalled,
+       plus one; 0 none yet (issue #890). A half whose CRC-7 failed takes it, as it takes dpmr_scrambled; the same
+       boundaries forget it. */
+    uint8_t dpmr_mode;
 
     /* How recently a dPMR CCH CRC-7 passed, for the SPS hunt's profile accounting
      * (src/engine/dispatch/dispatch_dpmr.c). The flag, not the stamp, opens the window,

@@ -91,7 +91,7 @@ stream_reset(void) {
 static void
 put_dibits(const uint8_t* dibits, int count) {
     assert(g_len + count <= STREAM_MAX);
-    memcpy(g_dibits + g_len, dibits, (size_t)count);
+    DSD_MEMCPY(g_dibits + g_len, dibits, (size_t)count);
     g_len += count;
 }
 
@@ -202,7 +202,7 @@ static const dpmr_spec_header k_voice_header = {
 /* An end frame with status message 21 (11.6: ET 01, no ARQ, no Tx_Wait). */
 static void
 end_info(uint8_t* info17) {
-    memset(info17, 0, DPMR_SPEC_END_BITS);
+    DSD_MEMSET(info17, 0, DPMR_SPEC_END_BITS);
     dpmr_spec_put(info17, 0, 2, 1U);
     dpmr_spec_put(info17, 8, 5, 21U);
 }
@@ -303,7 +303,7 @@ test_wire_codecs(void) {
     assert(frame_sync_dpmr_decode_mi(wire, out) == 1 && memcmp(out, info, sizeof out) == 0);
     for (int bit = 0; bit < DPMR_SPEC_MI_WIRE; bit++) {
         wire[bit] ^= 1U;
-        memset(out, 0xAA, sizeof out);
+        DSD_MEMSET(out, 0xAA, sizeof out);
         assert(frame_sync_dpmr_decode_mi(wire, out) == 1 && memcmp(out, info, sizeof out) == 0);
         wire[bit] ^= 1U;
     }
@@ -314,12 +314,12 @@ test_wire_codecs(void) {
     wire[10] ^= 1U;
     /* A CRC-8 that does not match: the information changed, its CRC not. */
     uint8_t other[DPMR_SPEC_MI_BITS];
-    memcpy(other, info, sizeof other);
+    DSD_MEMCPY(other, info, sizeof other);
     other[71] ^= 1U;
     uint8_t wrong[DPMR_SPEC_MI_WIRE];
     dpmr_spec_encode_mi(other, wrong);
     uint8_t mixed[DPMR_SPEC_MI_WIRE];
-    memcpy(mixed, wire, sizeof mixed);
+    DSD_MEMCPY(mixed, wire, sizeof mixed);
     /* Hamming word 8 holds information bits 64..71: take it whole from the other copy, the CRC word from this one. */
     for (int r = 0; r < 12; r++) {
         mixed[(r * 10) + 8] = wrong[(r * 10) + 8];
@@ -674,14 +674,14 @@ test_end_reading_with_reserved_fields_is_rejected(void) {
     uint8_t out[DPMR_SPEC_END_BITS];
     end_info(end);
     dpmr_spec_encode_end(end, 0, wire);
-    memcpy(bad, wire, sizeof bad);
+    DSD_MEMCPY(bad, wire, sizeof bad);
     bad[0] ^= 1U;
     bad[14] ^= 1U;
     assert(frame_sync_dpmr_decode_end(bad, DPMR_SPEC_END_WIRE, out) == 0);
     assert(frame_sync_dpmr_decode_end(bad, 0, out) == 1 && memcmp(out, end, sizeof out) == 0);
 
     uint8_t lost[DPMR_SPEC_END_WIRE];
-    memcpy(lost, wire, sizeof lost);
+    DSD_MEMCPY(lost, wire, sizeof lost);
     lost[0] ^= 1U;
     lost[1] ^= 1U; /* a double error in Hamming word 0 */
     setup(g_opts, g_state, MODE_DPMR, 0);
@@ -704,7 +704,7 @@ test_end_reading_with_reserved_fields_is_rejected(void) {
     /* End_Type 10 and ARQ 10 are reserved too (Tables 5.61, 5.48): such a copy is no END, its CRC passing or not. */
     for (int field = 0; field < 2; field++) {
         uint8_t reserved[DPMR_SPEC_END_BITS];
-        memcpy(reserved, end, sizeof reserved);
+        DSD_MEMCPY(reserved, end, sizeof reserved);
         dpmr_spec_put(reserved, field * 2, 2, 2U);
         dpmr_spec_encode_end(reserved, 0, wire);
         assert(frame_sync_dpmr_decode_end(wire, 0, out) == 0);
@@ -755,6 +755,57 @@ test_header_payload_holding_fs1_is_kept(void) {
     assert(hunt(g_opts, g_state, g_len) == DSD_SYNC_DPMR_FS1_POS);
     assert(g_pos == header_end);
     assert(checked_bits_equal(g_state, info, DPMR_SPEC_MI_BITS));
+    assert(hunt(g_opts, g_state, g_len) == DSD_SYNC_NONE);
+    free_state_buffers(g_state);
+
+    /* A false FS1 just before it: three words read at once (the false one, the header's, its payload's), none given up
+       before its own check; the header is the frame. */
+    setup(g_opts, g_state, MODE_DPMR, 0);
+    stream_reset();
+    put_filler(80);
+    put_word(DPMR_FRAME_SYNC_1);
+    const int real_at = g_len + DPMR_SPEC_PREAMBLE_DIBITS;
+    put_header_cc(DPMR_FRAME_SYNC_1, info, 0x775DD7U);
+    assert(header_payload_holds_fs1(real_at));
+    const int real_end = g_len;
+    put_filler(200);
+    assert(hunt(g_opts, g_state, g_len) == DSD_SYNC_DPMR_FS1_POS);
+    assert(g_pos == real_end);
+    assert(checked_bits_equal(g_state, info, DPMR_SPEC_MI_BITS));
+    free_state_buffers(g_state);
+}
+
+/* A Communications_Start copy in the reserved Communications Mode 111 (TS 102 658 Table 5.55) is no copy, whatever its
+   CRC: beside a good copy it is no contradiction (the good one is the header), and alone it is no header, so no FS3 is
+   looked for behind it. */
+static void
+test_reserved_start_mode_copy_is_no_copy(void) {
+    uint8_t good[DPMR_SPEC_MI_BITS];
+    uint8_t reserved[DPMR_SPEC_MI_BITS];
+    uint8_t end[DPMR_SPEC_END_BITS];
+    dpmr_spec_header bad = k_voice_header;
+    bad.mode = 7U;
+    dpmr_spec_header_bits(&k_voice_header, good);
+    dpmr_spec_header_bits(&bad, reserved);
+    end_info(end);
+    setup(g_opts, g_state, MODE_DPMR, 0);
+    stream_reset();
+    put_filler(80);
+    put_header(DPMR_FRAME_SYNC_1, reserved, good, 0, 0);
+    const int header_end = g_len;
+    put_filler(200);
+    assert(hunt(g_opts, g_state, g_len) == DSD_SYNC_DPMR_FS1_POS);
+    assert(g_pos == header_end);
+    assert(g_state->dpmr_sync.checked_copies == DSD_DPMR_SYNC_COPY_1);
+    assert(checked_bits_equal(g_state, good, DPMR_SPEC_MI_BITS));
+    free_state_buffers(g_state);
+
+    setup(g_opts, g_state, MODE_DPMR, 0);
+    stream_reset();
+    put_filler(80);
+    put_header(DPMR_FRAME_SYNC_1, reserved, NULL, 0, 0);
+    put_end(DPMR_FRAME_SYNC_3, end, END_ONE_RUN, 0, 0);
+    put_filler(200);
     assert(hunt(g_opts, g_state, g_len) == DSD_SYNC_NONE);
     free_state_buffers(g_state);
 }
@@ -899,6 +950,7 @@ main(int argc, char** argv) {
     test_powersave_headers_back_to_back();
     test_end_reading_with_reserved_fields_is_rejected();
     test_header_payload_holding_fs1_is_kept();
+    test_reserved_start_mode_copy_is_no_copy();
     test_header_both_polarities();
     test_header_copies();
     test_header_cut_by_an_interruption();
