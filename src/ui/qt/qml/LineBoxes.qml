@@ -44,7 +44,15 @@ Item {
         }
     }
 
+    // A Text's font.pixelSize rounds a fractional size (17.6 draws at 18)
+    // and Qt.font() truncates it (17), so sizes are rounded here first: a
+    // box measured at the truncated size was a pixel short of the line it
+    // holds at text 1.6.
+    function pixelSizeOf(pixelSize) {
+        return Math.round(pixelSize);
+    }
     function probe(text, family, pixelSize, weight) {
+        pixelSize = pixelSizeOf(pixelSize);
         var key = [Theme.fontRevision, family, pixelSize, weight, text].join("|");
         var made = probes[key];
         if (!made) {
@@ -68,8 +76,8 @@ Item {
     }
 
     // ---- The call row (CallRow) ----
-    readonly property font callRowNameFont: Qt.font({family: Theme.sans, pixelSize: Theme.fontSize(16), weight: Font.DemiBold})
-    readonly property font callRowMetaFont: Qt.font({family: Theme.mono, pixelSize: Theme.fontSize(12), weight: Font.Normal})
+    readonly property font callRowNameFont: Qt.font({family: Theme.sans, pixelSize: pixelSizeOf(Theme.fontSize(16)), weight: Font.DemiBold})
+    readonly property font callRowMetaFont: Qt.font({family: Theme.mono, pixelSize: pixelSizeOf(Theme.fontSize(12)), weight: Font.Normal})
 
     // The tags and the glyph a row can carry at its right, at their natural
     // size: what the worst-case right side is measured with.

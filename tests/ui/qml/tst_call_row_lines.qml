@@ -207,6 +207,38 @@ Item {
             verify(inside(rectOf(name, latin), latin) && inside(rectOf(meta, latin), latin) && inside(rectOf(time, latin), latin));
         }
 
+        // A box holds the Latin line a Text draws in that font at any text
+        // size. A Text rounds a fractional pixel size (17.6 draws at 18) and
+        // Qt.font() truncates it (17), so a box measured with the truncated
+        // size was a pixel short at 1.6, and the row's lines were drawn a
+        // size smaller than every other Text at that size.
+        function test_box_holds_the_drawn_line_data() {
+            return [{tag: "1.0", scale: 1.0}, {tag: "1.3", scale: 1.3}, {tag: "1.6", scale: 1.6}, {tag: "2.0", scale: 2.0}];
+        }
+        function test_box_holds_the_drawn_line(data) {
+            Ui.Theme.fontScale = data.scale;
+            var line = Qt.createQmlObject("import QtQuick; Text { visible: false; textFormat: Text.PlainText; text: \"Ag\" }", root);
+            try {
+                for (var size of [11, 12, 14, 16, 20]) {
+                    line.font.family = Ui.Theme.mono;
+                    line.font.weight = Font.Normal;
+                    line.font.pixelSize = Ui.Theme.fontSize(size);
+                    var box = Ui.LineBoxes.lineHeight(Ui.Theme.mono, Ui.Theme.fontSize(size), Font.Normal);
+                    verify(box >= Math.ceil(line.implicitHeight), size + " px mono: box " + box + " under the line's " + line.implicitHeight);
+                    line.font.family = Ui.Theme.sans;
+                    line.font.weight = Font.DemiBold;
+                    box = Ui.LineBoxes.lineHeight(Ui.Theme.sans, Ui.Theme.fontSize(size), Font.DemiBold);
+                    verify(box >= Math.ceil(line.implicitHeight), size + " px sans: box " + box + " under the line's " + line.implicitHeight);
+                }
+                line.font.pixelSize = Ui.Theme.fontSize(16);
+                compare(Ui.LineBoxes.callRowNameFont.pixelSize, line.font.pixelSize, "the row's name is drawn at another size");
+                line.font.pixelSize = Ui.Theme.fontSize(12);
+                compare(Ui.LineBoxes.callRowMetaFont.pixelSize, line.font.pixelSize, "the row's meta line is drawn at another size");
+            } finally {
+                line.destroy();
+            }
+        }
+
         // D10's limit: a line in a taller script keeps its box and is still
         // drawn, centred and unclipped, not dropped or elided away.
         function test_tall_script_is_drawn_in_its_box() {
