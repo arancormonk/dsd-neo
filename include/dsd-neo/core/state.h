@@ -1779,6 +1779,11 @@ struct dsd_state {
     double minbuf_sum;
     int minmax_sum_window;
     int midx;
+    /* Bumped by the symbol reader (DSP) each time it hands back a stand-in instead of input it read: a failed audio
+       read, a symbol capture that ended, cannot be read or reopened. Only those rare paths touch it, and a decoder
+       that must judge a frame by what it read compares it from the frame's first symbol to its last (M17, issue #890):
+       a frame read across a change holds a stand-in. Outside the UI snapshot's copied ranges: no frontend reads it. */
+    uint32_t input_substitute_seq;
     char err_str[64];
     char err_buf[64];
     char err_strR[64];

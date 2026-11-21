@@ -9190,6 +9190,17 @@ target_link_libraries(
         ${DSD_NEO_TEST_MATH_LIB}
         ${LIBSNDFILE_LIBRARIES}
 )
+# Issue #890: the local audio input's read is wrapped, where the linker can wrap it, to fail it.
+if(NOT APPLE AND (CMAKE_C_COMPILER_ID MATCHES "GNU|Clang"))
+    target_compile_definitions(
+        dsd-neo_test_dsp_symbol_replay
+        PRIVATE DSD_NEO_TEST_AUDIO_READ_WRAP
+    )
+    target_link_options(
+        dsd-neo_test_dsp_symbol_replay
+        PRIVATE "-Wl,--wrap=dsd_audio_read"
+    )
+endif()
 add_test(NAME DSP_SYMBOL_REPLAY COMMAND dsd-neo_test_dsp_symbol_replay)
 
 add_executable(

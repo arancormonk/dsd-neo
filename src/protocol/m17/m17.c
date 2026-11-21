@@ -98,11 +98,14 @@ typedef struct {
        META, but it publishes no call and notes no received identity, so the open stream's call and the carrier's
        identity stay the stream's. 0 for anything else. */
     uint8_t mpkt_call;
+    /* 1: text is NULL because the LSF has no assembler (the M17 extension could not be made for it): its META text is
+       shown and assembled into nothing, and no second allocation is tried for it (issue #890). */
+    uint8_t text_none;
 } m17_lsf_carrier;
 
 enum { M17_MPKT_CALL_DATA = 1, M17_MPKT_CALL_NONE = 2 };
 
-static const m17_lsf_carrier k_m17_rf_carrier = {0U, 0U, 0U, 0U, 0U, 0U, NULL, 0U};
+static const m17_lsf_carrier k_m17_rf_carrier = {0U, 0U, 0U, 0U, 0U, 0U, NULL, 0U, 0U};
 
 /* 64-bit FNV-1a over a network frame's @p len bytes (its CRC included): what tells a byte-identical copy of a datagram
  * from another frame for the GNSS META repeat rule. Not a check (the frame's own CRC is that), and nothing secret. */
@@ -119,7 +122,7 @@ m17_datagram_digest(const uint8_t* bytes, size_t len) {
 static int M17decodeLSF(const dsd_opts* opts, dsd_state* state, int publish_canonical, const m17_lsf_carrier* carrier);
 static void M17decodeLSFFields(dsd_state* state, const struct m17_lsf_result* res);
 static void m17_retire_if_ended(dsd_state* state);
-static void m17_pkt_arm(dsd_state* state);
+static void m17_pkt_arm(dsd_state* state, m17_state_ext* g);
 static void m17_pkt_disarm(dsd_state* state);
 static int m17_lsf_result_usable(const struct m17_lsf_result* res);
 static void M17logLSFSummary(const struct m17_lsf_result* res);
@@ -571,8 +574,11 @@ M17decodeLSF(const dsd_opts* opts, dsd_state* state, int publish_canonical, cons
            2.2): a META position is the received station's, and the call it describes is the one just published,
            when this LSF published one. */
         if (!s_m17_monitoring_local_tx) {
-            M17decodeLSFMeta(opts, state, &res, &bound,
-                             carrier->text != NULL ? carrier->text : m17_transmission_text(state));
+            struct m17_meta_text_assembler* text = carrier->text;
+            if (text == NULL && carrier->text_none == 0U) {
+                text = m17_transmission_text(state);
+            }
+            M17decodeLSFMeta(opts, state, &res, &bound, text);
         }
     }
     M17logLSFTrailer(&res);
@@ -2074,6 +2080,13 @@ m17_finalize_lsf_crc(const dsd_opts* opts, dsd_state* state, const uint8_t* lsf_
     /* Any LSF frame drops whatever was being assembled, as an LSF frame never stands between one packet's chunks; only
        a checked packet-mode LSF frame that M17decodeLSF() applied starts a packet (below). */
     m17_pkt_disarm(state);
+    /* The M17 extension is requested once for this LSF frame, and its META text and the packet it may start both use
+       that one result: an allocation that failed for one is not retried for the other, so a packet is never armed
+       behind an LSF whose own state could not be made (the strict RF packet rule). */
+    m17_state_ext* const ext = m17_ext_st(state);
+    m17_lsf_carrier rf_carrier = k_m17_rf_carrier;
+    rf_carrier.text = ext != NULL ? &ext->text_meta : NULL;
+    rf_carrier.text_none = (uint8_t)(ext == NULL);
     /* The boundary emptied the raw LSF bits: this frame's own go back in for its decode. */
     (void)dsd_unpack_bytes_to_bits(lsf_packed, M17_LSF_BYTES, state->m17_lsf, sizeof(state->m17_lsf), M17_LSF_BYTES);
     /* TYPE is bytes 12-13; its bit 0 is the packet/stream indicator. Only an LSF whose CRC passed says which. */
@@ -2081,12 +2094,12 @@ m17_finalize_lsf_crc(const dsd_opts* opts, dsd_state* state, const uint8_t* lsf_
 
     int applied = 0;
     if (crc_err == 0 || opts->aggressive_framesync == 0) {
-        applied = M17decodeLSF(opts, state, crc_err == 0, &k_m17_rf_carrier);
+        applied = M17decodeLSF(opts, state, crc_err == 0, &rf_carrier);
     }
     if (applied && (lsf_packed[13] & 1U) == 0U) {
         /* The strict RF packet rule (m17_pkt_arm()): its own checked packet-mode link setup, applied (an invalid
            address or reserved TYPE bits leave it unapplied, and nothing armed). */
-        m17_pkt_arm(state);
+        m17_pkt_arm(state, ext);
     }
 
     if (crc_err == 0) {
@@ -2139,6 +2152,32 @@ m17_decode_lsf_soft_bits(const dsd_opts* opts, dsd_state* state, const uint16_t*
     return m17_finalize_lsf_crc(opts, state, lsf_packed, crc_ext);
 }
 
+/* Where an RF LSF or packet frame's read began (issue #890): the carrier, the symbol clock epoch and the count of
+   stand-ins the symbol reader handed back (dsd_state::input_substitute_seq). */
+typedef struct {
+    uint32_t carrier_seq;
+    uint32_t epoch;
+    uint32_t substitutes;
+} m17_frame_read;
+
+static m17_frame_read
+m17_frame_read_begin(const dsd_state* state) {
+    const m17_frame_read read = {state->carrier_seq, state->symbol_clock_epoch, state->input_substitute_seq};
+    return read;
+}
+
+/* Whether the frame just read is not one continuous reception, so it is dropped before anything of it takes effect (no
+   publication, arming or end of a packet): a carrier boundary or an input interruption cut it; the input ended inside
+   it (a symbol or binary capture's end, shutdown, a fallback to another input: dsd_state_note_input_end()); the
+   symbol clock restarted inside it (a looping capture rewound, an input switched or flushed); or the reader stood in
+   for input it could not read (a failed audio read, a capture that cannot be read or reopened). */
+static int
+m17_frame_read_cut(dsd_state* state, const m17_frame_read* read) {
+    dsd_state_note_input_end(state, dsd_exitflag_load() == 1);
+    return dsd_state_frame_read_lost(state, read->carrier_seq) || state->symbol_clock_epoch != read->epoch
+           || state->input_substitute_seq != read->substitutes;
+}
+
 // Decode an RF LSF using captured soft symbols.
 int
 processM17LSF(dsd_opts* opts, dsd_state* state) {
@@ -2153,13 +2192,11 @@ processM17LSF(dsd_opts* opts, dsd_state* state) {
     /* An LSF a carrier boundary split (issue #575) or an input interruption cut (a Signal search left it, or a live
        read gave up on a stalled input) decodes nothing: the rest of it is another carrier's or erasures the reader
        stood in, through which the soft Viterbi decode can still clear the CRC and publish and confirm a link setup
-       that is not this transmission's. It is dropped, as on a sync loss. */
-    const uint32_t carrier_seq = state->carrier_seq;
+       that is not this transmission's. So does any other read that was not one continuous reception
+       (m17_frame_read_cut()). It is dropped, as on a sync loss. */
+    const m17_frame_read read = m17_frame_read_begin(state);
     m17_capture_soft_symbols(opts, state, soft_symbols);
-    /* The input ended inside the frame (a symbol or binary capture's end, a short read, shutdown, a fallback to
-       another input): past the end the reader stood in silence or erasures, so the frame counts as cut. */
-    dsd_state_note_input_end(state, dsd_exitflag_load() == 1);
-    if (dsd_state_frame_read_lost(state, carrier_seq)) {
+    if (m17_frame_read_cut(state, &read)) {
         /* No checked LSF frame: nothing a packet could be assembled behind (the strict RF packet rule). */
         m17_pkt_disarm(state);
         DSD_FPRINTF(stderr, "\n");
@@ -4179,12 +4216,12 @@ m17_pkt_disarm(dsd_state* state) {
     }
 }
 
-/* A checked packet-mode LSF frame ends here: a packet starts, its chunk 0 due one frame on. With no extension (out of
-   memory) nothing is armed, and its packet is not decoded. */
+/* A checked packet-mode LSF frame ends here: a packet starts, its chunk 0 due one frame on. @p g: the extension that LSF
+   frame obtained (m17_finalize_lsf_crc()); with none (out of memory) nothing is armed, and its packet is not decoded,
+   even if a later request made one. */
 static void
-m17_pkt_arm(dsd_state* state) {
+m17_pkt_arm(dsd_state* state, m17_state_ext* g) {
     m17_pkt_disarm(state);
-    m17_state_ext* g = m17_ext_st(state);
     if (g != NULL) {
         g->pkt_armed = 1U;
         g->pkt_ref_symbol = state->symbolcnt;
@@ -4345,16 +4382,15 @@ processM17PKT(dsd_opts* opts, dsd_state* state) {
 
     /* A packet frame a carrier boundary split (issue #575) or an input interruption cut (a Signal search left it, or a
        live read gave up on a stalled input) adds no chunk and ends, decodes and confirms no packet: the rest of it is
-       another carrier's or erasures the reader stood in, which the soft Viterbi decode reads as symbols. It is
-       dropped, as on a sync loss. */
-    const uint32_t carrier_seq = state->carrier_seq;
+       another carrier's or erasures the reader stood in, which the soft Viterbi decode reads as symbols. So does any
+       other read that was not one continuous reception (m17_frame_read_cut()), a last frame (EOF) included: nothing
+       of it ends the packet. It is dropped, as on a sync loss. */
+    const m17_frame_read read = m17_frame_read_begin(state);
     m17_capture_soft_symbols(opts, state, soft_symbols);
-    /* The input ended inside the frame (a symbol or binary capture's end, a short read, shutdown, a fallback to
-       another input): past the end the reader stood in silence or erasures, so the frame counts as cut. */
-    dsd_state_note_input_end(state, dsd_exitflag_load() == 1);
-    if (dsd_state_frame_read_lost(state, carrier_seq)) {
+    if (m17_frame_read_cut(state, &read)) {
         /* The lost frame was one of the packet's: the whole packet goes (the strict RF packet rule), whatever the
-           symbol count since the frame before says (a cut read counts no stood-in symbols). */
+           symbol count since the frame before says (an interrupted read counts no stood-in symbols, an ended or
+           failed input's do). */
         m17_pkt_disarm(state);
         DSD_FPRINTF(stderr, "\n");
         return 0;
@@ -4589,7 +4625,7 @@ m17_ip_take_stream_frame(const dsd_opts* opts, dsd_state* state, const uint8_t* 
     m17_store_current_aes_counter(state, stream_frame_number);
     const m17_state_ext* g = m17_state_ext_find(state);
     const m17_lsf_carrier carrier = {
-        1U, sid, 0U, g != NULL ? g->ip_stream_gen : 0U, 54U, m17_datagram_digest(ip_frame, 54U), NULL, 0U};
+        1U, sid, 0U, g != NULL ? g->ip_stream_gen : 0U, 54U, m17_datagram_digest(ip_frame, 54U), NULL, 0U, 0U};
     (void)M17decodeLSF(opts, state, 1, &carrier);
     if (state->m17_ip_stream_signed != 0U) {
         /* Signed once, signed for the rest of the stream (m17_ip_continue_stream()): its signature range stays no
@@ -4776,7 +4812,8 @@ m17_ip_handle_mpkt_frame(const dsd_opts* opts, dsd_state* state, const uint8_t* 
                                          (uint32_t)err,
                                          m17_datagram_digest(ip_frame, (size_t)err),
                                          &text,
-                                         (uint8_t)(interleaved ? M17_MPKT_CALL_NONE : M17_MPKT_CALL_DATA)};
+                                         (uint8_t)(interleaved ? M17_MPKT_CALL_NONE : M17_MPKT_CALL_DATA),
+                                         0U};
         applied = M17decodeLSF(opts, state, 1, &carrier);
     }
     if (opts->payload == 1) {

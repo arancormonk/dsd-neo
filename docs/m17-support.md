@@ -56,7 +56,9 @@ Implemented decode coverage:
   valid source address, no reserved type bits), and every one of its frames followed in order, one frame apart, up to
   its last frame. A packet with a lost or cut frame (also one cut by the end of a file or of the input), a frame whose
   frame number or byte count cannot be right, one whose link setup frame failed its CRC, could not be used or was
-  missed, or one with no data at all, is not decoded (a decided limit), and still ends at its last frame. A packet that
+  missed, or one with no data at all, is not decoded (a decided limit). Its last frame still ends it when that frame
+  was received whole and is valid, even if earlier frames were lost; a last frame that was cut, or whose byte count
+  cannot be right, does not end it. A packet that
   arrived whole but whose own checksum (CRC) failed is not decoded either; under `-F` it is still shown, marked
   `CRC ERR`. A standalone network packet (MPKT: one heard while no network stream is live, also after a stream went
   idle or ended) always shows as a call of its own, never joined to the stream before it. A stream is treated as

@@ -7459,94 +7459,7 @@ test_rf_packet_not_whole_is_not_decoded(void) {
     return err;
 }
 
-#ifdef DSD_NEO_TEST_ALLOC_WRAP
-/* The real-time monotonic clock the M17 network idle rule reads, held where a test puts it (0: the real clock). */
-static uint64_t g_fake_realtime_ms;
-
-// NOLINTNEXTLINE(bugprone-reserved-identifier,misc-use-internal-linkage)
-uint64_t __real_dsd_realtime_mono_ms(void);
-// NOLINTNEXTLINE(bugprone-reserved-identifier,misc-use-internal-linkage)
-uint64_t __wrap_dsd_realtime_mono_ms(void);
-
-uint64_t
-__wrap_dsd_realtime_mono_ms(void) {
-    return g_fake_realtime_ms != 0U ? g_fake_realtime_ms : __real_dsd_realtime_mono_ms();
-}
-
-/* The M17 extension cannot be made when a packet's checked LSF frame arms the assembler: no packet is assembled behind
-   it, and once memory is back its chunk 0 (no counter or allocation alone resumes an assembly) and its EOF still decode
-   nothing (the strict RF packet rule). */
-static int
-test_rf_packet_unarmed_without_memory(void) {
-    dsd_opts* opts = &g_opts;
-    dsd_state* state = &g_state;
-    uint8_t pkt[48];
-    uint8_t frame[26];
-    char out[8192];
-    int err = 0;
-    const size_t len = build_sms_packet(pkt, sizeof(pkt), "ABCDEFGHIJKLMNOPQRSTUVWXYZ012");
-
-    ip_test_state(opts, state);
-    opts->aggressive_framesync = 0;
-    dsd_test_capture_stderr cap;
-    if (dsd_test_capture_stderr_begin(&cap, "m17_pkt_no_memory") != 0) {
-        return 1;
-    }
-    g_fail_m17_ext_allocs = 1;
-    rf_packet_lsf_frame(opts, state, 0);
-    g_fail_m17_ext_allocs = 0;
-    rf_frames_pass(state, 1U);
-    build_sms_frame(frame, pkt, len, 0U);
-    (void)m17_packet_take_chunk(opts, state, frame);
-    rf_frames_pass(state, 1U);
-    build_sms_frame(frame, pkt, len, 1U);
-    (void)m17_packet_take_chunk(opts, state, frame);
-    (void)dsd_test_capture_stderr_end(&cap);
-    (void)dsd_test_capture_stderr_read(&cap, out, sizeof(out));
-    err |= expect_int("a packet its LSF could not arm is not decoded", capture_has(out, sizeof(out), "Protocol:"), 0);
-    dsd_state_ext_free_all(state);
-    return err;
-}
-
-/* A data stream on the network whose end was lost goes idle; an MPKT then heard with the same source, destination and
-   CAN is a transmission of its own: it starts its own call, not a continuation of the stream's. */
-static int
-test_ip_mpkt_after_an_idle_like_stream_starts_its_own_call(void) {
-    dsd_opts* opts = &g_opts;
-    dsd_state* state = &g_state;
-    uint8_t data_bits[TEST_M17_LSF_BITS];
-    uint8_t packet_bits[TEST_M17_LSF_BITS];
-    uint8_t sms[8];
-    uint8_t mpkt_frame[34U + sizeof(sms) + 2U];
-    uint8_t payload[M17_SIGNATURE_DIGEST_BYTES];
-    int err = 0;
-    const unsigned long long dst = m17_encode_b40_callsign(0ULL, M17_REF_LSF_DST_CSD);
-    const unsigned long long src = m17_encode_b40_callsign(0ULL, M17_REF_LSF_SRC_CSD);
-    build_lsf_bits(data_bits, dst, src, m17_compose_frame_info(1U, 1U, 0U, 0U, 5U, 0U, 0U), NULL);
-    build_lsf_bits(packet_bits, dst, src, m17_compose_frame_info(0U, 0U, 0U, 0U, 5U, 0U, 0U), NULL);
-    DSD_MEMSET(sms, 0, sizeof(sms));
-    sms[0] = 0x05U;
-    DSD_MEMCPY(sms + 1, "HELLO", 5U);
-    DSD_MEMSET(payload, 0x64, sizeof(payload));
-
-    ip_test_state(opts, state);
-    g_fake_realtime_ms = 2000000U;
-    send_ip_stream_frame(opts, state, data_bits, 0x7F90U, 0U, 0U, payload, 0);
-    dsd_call_snapshot call;
-    err |= expect_int("the data stream's call", get_m17_call(state, &call), 1);
-    const uint64_t epoch = call.epoch;
-    g_fake_realtime_ms += 8000U;
-    const size_t len = build_ip_mpkt_frame(mpkt_frame, sizeof(mpkt_frame), packet_bits, 0x7F91U, sms, sizeof(sms));
-    m17_ip_dispatch_frame(opts, state, mpkt_frame, (int)len);
-    err |= expect_int("after the MPKT: call", get_m17_call(state, &call), 1);
-    err |= expect_int("the MPKT starts its own call", call.epoch != epoch, 1);
-    err |=
-        expect_int("the idle stream stays open for its own frames", (int)state->m17_ip_stream, DSD_M17_IP_STREAM_OPEN);
-    g_fake_realtime_ms = 0U;
-    dsd_state_ext_free_all(state);
-    return err;
-}
-
+/* Needs no linker wrap: it ends the call and drops the stream itself. */
 /* A data stream on the network a lost carrier ended (noCarrier(), as sim_nocar runs it: a recoverable end, and every
    M17 boundary dropped); an MPKT then heard at once with the same source, destination and CAN, within the end's
    reacquisition window, is a transmission of its own: its call is a new epoch and a new transmission, not the stream's
@@ -7586,6 +7499,104 @@ test_ip_mpkt_after_a_faded_stream_is_its_own_transmission(void) {
     err |= expect_int("the MPKT's call is a transmission of its own",
                       dsd_call_snapshot_transmission(&call) != stream_tx, 1);
     err |= expect_int("its call is a data call", call.kind, DSD_CALL_KIND_DATA);
+    dsd_state_ext_free_all(state);
+    return err;
+}
+
+#ifdef DSD_NEO_TEST_ALLOC_WRAP
+/* The real-time monotonic clock the M17 network idle rule reads, held where a test puts it (0: the real clock). */
+static uint64_t g_fake_realtime_ms;
+
+// NOLINTNEXTLINE(bugprone-reserved-identifier,misc-use-internal-linkage)
+uint64_t __real_dsd_realtime_mono_ms(void);
+// NOLINTNEXTLINE(bugprone-reserved-identifier,misc-use-internal-linkage)
+uint64_t __wrap_dsd_realtime_mono_ms(void);
+
+uint64_t
+__wrap_dsd_realtime_mono_ms(void) {
+    return g_fake_realtime_ms != 0U ? g_fake_realtime_ms : __real_dsd_realtime_mono_ms();
+}
+
+/* The M17 extension cannot be made when a packet's checked LSF frame requests it (once, for its text and the packet
+   it starts): no packet is assembled behind it, also when a second request in the same frame would succeed, and once
+   memory is back its chunk 0 (no counter or allocation alone resumes an assembly) and its EOF still decode nothing
+   (the strict RF packet rule). */
+static int
+test_rf_packet_unarmed_without_memory(void) {
+    dsd_opts* opts = &g_opts;
+    dsd_state* state = &g_state;
+    uint8_t pkt[48];
+    uint8_t frame[26];
+    char out[8192];
+    int err = 0;
+    const size_t len = build_sms_packet(pkt, sizeof(pkt), "ABCDEFGHIJKLMNOPQRSTUVWXYZ012");
+
+    /* The LSF frame's one request fails (a retry within the same frame would succeed), then every request during it. */
+    for (int every = 0; every <= 1; every++) {
+        ip_test_state(opts, state);
+        opts->aggressive_framesync = 0;
+        dsd_test_capture_stderr cap;
+        if (dsd_test_capture_stderr_begin(&cap, "m17_pkt_no_memory") != 0) {
+            return 1;
+        }
+        g_fail_m17_ext_alloc = 1;
+        g_fail_m17_ext_allocs = every;
+        rf_packet_lsf_frame(opts, state, 0);
+        const int tried = g_fail_m17_ext_alloc == 0;
+        g_fail_m17_ext_alloc = 0;
+        g_fail_m17_ext_allocs = 0;
+        rf_frames_pass(state, 1U);
+        build_sms_frame(frame, pkt, len, 0U);
+        (void)m17_packet_take_chunk(opts, state, frame);
+        rf_frames_pass(state, 1U);
+        build_sms_frame(frame, pkt, len, 1U);
+        (void)m17_packet_take_chunk(opts, state, frame);
+        (void)dsd_test_capture_stderr_end(&cap);
+        DSD_MEMSET(out, 0, sizeof(out));
+        (void)dsd_test_capture_stderr_read(&cap, out, sizeof(out));
+        err |= expect_int("the LSF frame's allocation was tried and failed", tried, 1);
+        err |=
+            expect_int("a packet its LSF could not arm is not decoded", capture_has(out, sizeof(out), "Protocol:"), 0);
+        dsd_state_ext_free_all(state);
+    }
+    return err;
+}
+
+/* A data stream on the network whose end was lost goes idle; an MPKT then heard with the same source, destination and
+   CAN is a transmission of its own: it starts its own call, not a continuation of the stream's. */
+static int
+test_ip_mpkt_after_an_idle_like_stream_starts_its_own_call(void) {
+    dsd_opts* opts = &g_opts;
+    dsd_state* state = &g_state;
+    uint8_t data_bits[TEST_M17_LSF_BITS];
+    uint8_t packet_bits[TEST_M17_LSF_BITS];
+    uint8_t sms[8];
+    uint8_t mpkt_frame[34U + sizeof(sms) + 2U];
+    uint8_t payload[M17_SIGNATURE_DIGEST_BYTES];
+    int err = 0;
+    const unsigned long long dst = m17_encode_b40_callsign(0ULL, M17_REF_LSF_DST_CSD);
+    const unsigned long long src = m17_encode_b40_callsign(0ULL, M17_REF_LSF_SRC_CSD);
+    build_lsf_bits(data_bits, dst, src, m17_compose_frame_info(1U, 1U, 0U, 0U, 5U, 0U, 0U), NULL);
+    build_lsf_bits(packet_bits, dst, src, m17_compose_frame_info(0U, 0U, 0U, 0U, 5U, 0U, 0U), NULL);
+    DSD_MEMSET(sms, 0, sizeof(sms));
+    sms[0] = 0x05U;
+    DSD_MEMCPY(sms + 1, "HELLO", 5U);
+    DSD_MEMSET(payload, 0x64, sizeof(payload));
+
+    ip_test_state(opts, state);
+    g_fake_realtime_ms = 2000000U;
+    send_ip_stream_frame(opts, state, data_bits, 0x7F90U, 0U, 0U, payload, 0);
+    dsd_call_snapshot call;
+    err |= expect_int("the data stream's call", get_m17_call(state, &call), 1);
+    const uint64_t epoch = call.epoch;
+    g_fake_realtime_ms += 8000U;
+    const size_t len = build_ip_mpkt_frame(mpkt_frame, sizeof(mpkt_frame), packet_bits, 0x7F91U, sms, sizeof(sms));
+    m17_ip_dispatch_frame(opts, state, mpkt_frame, (int)len);
+    err |= expect_int("after the MPKT: call", get_m17_call(state, &call), 1);
+    err |= expect_int("the MPKT starts its own call", call.epoch != epoch, 1);
+    err |=
+        expect_int("the idle stream stays open for its own frames", (int)state->m17_ip_stream, DSD_M17_IP_STREAM_OPEN);
+    g_fake_realtime_ms = 0U;
     dsd_state_ext_free_all(state);
     return err;
 }
@@ -7708,8 +7719,8 @@ main(void) {
     err |= test_ip_idle_stream_does_not_hold_back_packets();
     err |= test_rf_packet_unarmed_without_memory();
     err |= test_ip_mpkt_after_an_idle_like_stream_starts_its_own_call();
-    err |= test_ip_mpkt_after_a_faded_stream_is_its_own_transmission();
 #endif
+    err |= test_ip_mpkt_after_a_faded_stream_is_its_own_transmission();
     err |= test_lsf_rejects_reserved_type_without_replacing_state();
     err |= test_lsf_rejects_invalid_addresses_without_replacing_state();
     err |= test_lsf_null_meta_decodes_text_and_honors_can_filter();

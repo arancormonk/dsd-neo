@@ -20,9 +20,15 @@ extern "C" {
 #endif
 
 /* The four RF frame decoders return non-zero when the frame validated something -- a CRC, a
- * LICH, a PRBS9 lock -- or when an earlier frame in the same transmission already did. A zero
- * means the decoder consumed a frame's worth of symbols and proved nothing, which is what the
- * SPS hunt needs to hear to stop crediting a false sync (#399, #419). */
+ * LICH, a PRBS9 lock -- or, for the stream, LSF and BERT decoders, when an earlier frame in the
+ * same transmission already did. A zero means the decoder consumed a frame's worth of symbols and
+ * proved nothing, which is what the SPS hunt needs to hear to stop crediting a false sync (#399,
+ * #419). A frame any of them drops as cut (an interruption, a carrier boundary, the input's end, a
+ * symbol clock restart, a stood-in read) returns zero. processM17PKT() returns only the packet
+ * frame's own verdict (issue #890): zero for a frame the strict RF packet rule rejects (a chunk out
+ * of order or out of step, malformed metadata, an empty packet, a failed packet CRC) even while the
+ * transmission stays confirmed (m17_confirm_is_confirmed()), so a caller tells a rejected frame
+ * from a lost confirmation by asking the latter. */
 int processM17STR(dsd_opts* opts, dsd_state* state);
 int processM17PKT(dsd_opts* opts, dsd_state* state);
 int processM17LSF(dsd_opts* opts, dsd_state* state);

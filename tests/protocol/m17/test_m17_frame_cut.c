@@ -65,14 +65,20 @@ static size_t g_interrupt_at = SIZE_MAX;
    (dsd_engine_carrier_boundary(), issue #575); SIZE_MAX for none. The frame's own dibits follow it, the worst case of
    another carrier's symbols that pass the frame's checks. */
 static size_t g_boundary_at = SIZE_MAX;
-/* The read at which the input ends (SIZE_MAX for none): from it on the reader stands in silence, as a symbol or binary
-   capture's reader does past the file's end, and asks for shutdown (TEST_END_EXIT) or for the fallback to another
-   input (TEST_END_FALLBACK), without raising an interruption. */
+/* The read at which the input ends (SIZE_MAX for none): from it on the reader stands in silence, without raising an
+   interruption, and counts each stand-in as a symbol, as getSymbol() does. It asks for shutdown (TEST_END_EXIT: an RTL
+   read that failed), for the fallback to another input (TEST_END_FALLBACK: a PCM file's end), or only counts the
+   stand-in as a substitute (TEST_END_SUBSTITUTE: a failed audio read, a looping capture that cannot reopen;
+   dsd_state::input_substitute_seq, which a symbol or binary capture's end bumps too). The symbol count then says the
+   frame was read whole. */
 static size_t g_input_end_at = SIZE_MAX;
 
-enum { TEST_END_EXIT = 0, TEST_END_FALLBACK = 1 };
+enum { TEST_END_EXIT = 0, TEST_END_FALLBACK = 1, TEST_END_SUBSTITUTE = 2 };
 
 static int g_input_end_mode;
+/* The read at which the symbol clock restarts (SIZE_MAX for none): a looping capture rewound, its next pass's symbols
+   read on (dsd_state::symbol_clock_epoch). */
+static size_t g_epoch_at = SIZE_MAX;
 /* The one decoder state and options the newer cases share, on the heap (main()). */
 static dsd_opts* g_opts;
 static dsd_state* g_state;
@@ -127,13 +133,19 @@ next_dibit(dsd_state* state, float* symbol) {
     if (g_pos == g_interrupt_at) {
         state->input_interrupted = 1;
     }
+    if (g_pos == g_epoch_at) {
+        state->symbol_clock_epoch++;
+    }
     const int ended = g_pos >= g_input_end_at;
     if (g_pos == g_input_end_at) {
         if (g_input_end_mode == TEST_END_EXIT) {
             dsd_exitflag_store(1);
-        } else {
+        } else if (g_input_end_mode == TEST_END_FALLBACK) {
             state->input_fallback_pending = 1;
         }
+    }
+    if (ended && g_input_end_mode == TEST_END_SUBSTITUTE) {
+        state->input_substitute_seq++;
     }
     int dibit = g_frame[g_pos];
     *symbol = (float)m17_symbol_from_dibit(g_frame[g_pos]);
@@ -142,10 +154,11 @@ next_dibit(dsd_state* state, float* symbol) {
         *symbol = 0.0F;
     }
     g_pos++;
-    /* Every real symbol read counts, as getSymbol() counts it, and a stood-in erasure does not (the production reader
-       returns it uncounted): the packet's frame spacing is read from the count (issue #890). The frame's 8 sync
-       symbols are the hunt's, so frames here end 184 symbols apart. */
-    if (!state->input_interrupted && !ended) {
+    /* Every symbol getSymbol() reads counts, a stand-in for an ended or failed input too, and an erasure an
+       interruption stood in does not (the production reader returns it before counting): the packet's frame spacing
+       is read from the count (issue #890). The frame's 8 sync symbols are the hunt's, so frames here end 184 symbols
+       apart. */
+    if (!state->input_interrupted) {
         state->symbolcnt++;
     }
     return dibit;
@@ -232,6 +245,7 @@ load_randomized_frame(const uint8_t rnd[M17_PAYLOAD_BITS]) {
     g_interrupt_at = SIZE_MAX;
     g_boundary_at = SIZE_MAX;
     g_input_end_at = SIZE_MAX;
+    g_epoch_at = SIZE_MAX;
 }
 
 static void
@@ -352,6 +366,7 @@ prepare(dsd_opts* opts, dsd_state* state) {
     g_interrupt_at = SIZE_MAX;
     g_boundary_at = SIZE_MAX;
     g_input_end_at = SIZE_MAX;
+    g_epoch_at = SIZE_MAX;
     dsd_exitflag_store(0);
     g_codec2_decodes = 0;
     g_search_evidence = 0;
@@ -720,43 +735,82 @@ test_packet_behind_an_unapplied_lsf_is_not_decoded(void) {
     }
 }
 
-/* Issue #890: a packet frame that ends the input (a symbol or binary capture cut short: the reader stands in silence
-   past its end and asks for shutdown, or for the fallback to another input, without raising an interruption) is cut:
-   the one-frame packet missing its last six symbols is not decoded or credited. So is a packet LSF frame the input's
-   end cuts: no packet follows it. */
+/* Issue #890: a packet frame the input's end cuts (an RTL read that failed and asked for shutdown, a PCM file's end
+   with the fallback asked for, a failed audio read or a looping capture that cannot reopen, each standing in silence
+   for the last six symbols) is cut, though the symbol count says it was read whole: the one-frame packet is not
+   decoded or credited. So is a packet LSF frame the input's end cuts: no packet follows it. */
 static void
 test_packet_frame_at_the_input_end_decodes_nothing(void) {
     dsd_opts* opts = g_opts;
     dsd_state* state = g_state;
     static const char text[] = "HI";
-    for (int mode = TEST_END_EXIT; mode <= TEST_END_FALLBACK; mode++) {
+    uint8_t lsf_bits[TEST_M17_LSF_BITS];
+    build_packet_lsf_bits(lsf_bits);
+    for (int mode = TEST_END_EXIT; mode <= TEST_END_SUBSTITUTE; mode++) {
         prepare(opts, state);
         read_packet_lsf_frame(opts, state);
         const int evidence = g_search_evidence;
+        const uint32_t count = state->symbolcnt;
         (void)load_packet_frame(text, 0);
         g_input_end_mode = mode;
         g_input_end_at = 178U;
         assert(processM17PKT(opts, state) == 0);
-        assert(state->input_interrupted == 1);
+        assert(state->symbolcnt - count == M17_PAYLOAD_SYMBOLS);
         assert(g_search_evidence == evidence);
         assert(state->m17_pbc_ct == 0U);
         finish(state);
-    }
-    dsd_exitflag_store(0);
 
+        prepare(opts, state);
+        state->synctype = DSD_SYNC_M17_LSF_POS;
+        load_lsf_frame(lsf_bits);
+        g_input_end_mode = mode;
+        g_input_end_at = 178U;
+        assert(processM17LSF(opts, state) == 0);
+        dsd_exitflag_store(0);
+        state->input_interrupted = 0;
+        state->input_fallback_pending = 0;
+        state->synctype = DSD_SYNC_M17_PKT_POS;
+        (void)load_packet_frame(text, 0);
+        assert(processM17PKT(opts, state) == 0);
+        finish(state);
+    }
+}
+
+/* Issue #890: a frame read across a symbol clock restart (a looping capture rewound inside it, the next pass's symbols
+   read on) is no one reception, whatever its CRC says: a packet LSF frame split on its last symbol arms nothing, so
+   the packet after it is not decoded; a last frame (EOF) split in its middle neither decodes nor ends the packet. */
+static void
+test_frames_split_by_a_symbol_clock_restart_are_dropped(void) {
+    dsd_opts* opts = g_opts;
+    dsd_state* state = g_state;
+    static const char text[] = "HI";
+    static const char two_frames[] = "CUT FRAMES DECODE NOTHING";
     uint8_t lsf_bits[TEST_M17_LSF_BITS];
     build_packet_lsf_bits(lsf_bits);
+
     prepare(opts, state);
     state->synctype = DSD_SYNC_M17_LSF_POS;
     load_lsf_frame(lsf_bits);
-    g_input_end_mode = TEST_END_FALLBACK;
-    g_input_end_at = 178U;
+    g_epoch_at = M17_PAYLOAD_SYMBOLS - 1U;
     assert(processM17LSF(opts, state) == 0);
-    state->input_interrupted = 0;
-    state->input_fallback_pending = 0;
     state->synctype = DSD_SYNC_M17_PKT_POS;
+    const int evidence = g_search_evidence;
     (void)load_packet_frame(text, 0);
     assert(processM17PKT(opts, state) == 0);
+    assert(g_search_evidence == evidence);
+    finish(state);
+
+    prepare(opts, state);
+    read_packet_lsf_frame(opts, state);
+    assert(load_packet_frame(two_frames, 0) == 2);
+    assert(processM17PKT(opts, state) == 1);
+    const int chunk_evidence = g_search_evidence;
+    (void)load_packet_frame(two_frames, 1);
+    g_epoch_at = 100U;
+    assert(processM17PKT(opts, state) == 0);
+    assert(state->m17_tx_ended == 0U);
+    assert(state->m17_pbc_ct == 0U);
+    assert(g_search_evidence == chunk_evidence);
     finish(state);
 }
 
@@ -936,6 +990,7 @@ main(void) {
     test_packet_behind_an_unapplied_lsf_is_not_decoded();
     test_packet_frame_at_the_input_end_decodes_nothing();
     test_packet_after_a_symbol_clock_restart_is_not_decoded();
+    test_frames_split_by_a_symbol_clock_restart_are_dropped();
     test_bert_frame_cut_by_an_input_interruption_counts_nothing();
     test_frames_split_by_a_carrier_boundary_are_dropped();
     test_packet_frames_before_their_crc_are_partial();
