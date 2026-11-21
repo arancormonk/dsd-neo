@@ -165,8 +165,10 @@ uint32_t scan_quiet_request_deadline_ms(uint32_t windows);
  * capture rate @p rate_hz, with the span those sub-windows take over every checked width there; with @p dmr_floor the
  * line for a DMR visit read for @p windows sub-windows, the DMR floor, instead. Radio builds only. Returns the snprintf
  * result. */
+#ifdef USE_RADIO
 int scan_quiet_format_short_warn(char* out, size_t out_size, int setting_ms, uint32_t windows, uint32_t rate_hz,
                                  int dmr_floor);
+#endif
 
 /** The width classes of a typed row's or a conventional target's @p mode; 0 for a mode in no class. */
 uint8_t scan_quiet_mode_classes(dsd_scan_mode mode);
@@ -387,8 +389,10 @@ int dsd_engine_scan_quiet_take_republish(const dsd_opts* opts, dsd_state* state,
 void dsd_engine_scan_quiet_invalidate(dsd_state* state);
 /** The setting changed (dsd_scan_quiet_setting_changed()): as dsd_engine_scan_quiet_invalidate(). With @p turned_on
  * (off before, on now) the setting applies from the next visit, that is from the next scan tune: the visit landed now
- * is DONE, and so is any visit tuned before, in flight or landed but not yet noted, at its publication. */
-void dsd_engine_scan_quiet_setting_changed(dsd_state* state, int turned_on);
+ * is DONE, and so is any visit tuned before, in flight or landed but not yet noted, at its publication. With
+ * @p reading_changed (the switch or the reading length differs from before) a shortened reading's WARN lines are
+ * logged again. */
+void dsd_engine_scan_quiet_setting_changed(dsd_state* state, int turned_on, int reading_changed);
 
 /* Facts the scans own, read by the check. */
 /** The trunk-scan coordinator's session-edit counter (0 with none). trunk_scan.c. */

@@ -17298,7 +17298,7 @@ test_y_quiet_turned_on_mid_visit_keeps_the_row(void) {
         expect_true("the first step lands row 0 with the setting off", yq_list(opts, state, 3, 0, 0, base_hz) == 0);
     noCarrier(opts, state);
     opts->scan_skip_silent = 1;
-    dsd_engine_scan_quiet_setting_changed(state, 1);
+    dsd_engine_scan_quiet_setting_changed(state, 1, 1);
     noCarrier(opts, state);
     noCarrier(opts, state);
     rc |= expect_true("on mid-visit: the row is not measured and keeps its hangtime",
@@ -17335,7 +17335,7 @@ test_y_quiet_turned_on_after_the_walk_tune(void) {
     g_rtl_tune_result = RTL_STREAM_TUNE_OK;
     land_outstanding_tune(&g_retune_in_flight, DSD_TRUNK_TUNE_RESULT_OK);
     opts->scan_skip_silent = 1;
-    dsd_engine_scan_quiet_setting_changed(state, 1);
+    dsd_engine_scan_quiet_setting_changed(state, 1, 1);
     rc |= expect_true("the walk lands after the setting turned on",
                       dsd_engine_scan_untyped_poll(opts, state) == DSD_MANUAL_TUNE_LANDED
                           && dsd_engine_scan_landing_is_row(state, 1));

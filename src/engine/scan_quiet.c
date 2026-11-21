@@ -17,6 +17,7 @@
 #include <dsd-neo/runtime/log.h>
 #include <dsd-neo/runtime/scan_mode.h>
 #include <dsd-neo/runtime/scan_options.h>
+#include <math.h>
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
@@ -591,6 +592,35 @@ quiet_revisions_equal(const scan_quiet_revisions* a, const scan_quiet_revisions*
            && a->am_width_hz == b->am_width_hz;
 }
 
+/* The shortened readings a WARN line was logged for (issue #834 follow-up, D3): the setting it was logged under and the
+   capture rates, one slot for each rate a check can be made at; a new setting, or a setting transition, starts it
+   again. */
+typedef struct {
+    uint32_t rates_hz[DSD_SIGNAL_QUIET_RATE_COUNT];
+    int setting_ms;
+    int count;
+} quiet_warned_reading;
+
+/* Whether a WARN line for @p setting_ms at @p rate_hz is new to @p w, noting it if so. */
+static int
+quiet_warned_new(quiet_warned_reading* w, int setting_ms, uint32_t rate_hz) {
+    if (w->setting_ms != setting_ms) {
+        DSD_MEMSET(w, 0, sizeof *w);
+        w->setting_ms = setting_ms;
+    }
+    for (int i = 0; i < w->count; i++) {
+        if (w->rates_hz[i] == rate_hz) {
+            return 0;
+        }
+    }
+    /* Only a supported rate is read, so every one has a slot; a full table logs nothing more rather than repeat. */
+    if (w->count >= (int)(sizeof w->rates_hz / sizeof w->rates_hz[0])) {
+        return 0;
+    }
+    w->rates_hz[w->count++] = rate_hz;
+    return 1;
+}
+
 typedef struct {
     scan_quiet_phase phase;
     scan_quiet_visit_key key;
@@ -621,10 +651,8 @@ typedef struct {
     int capture_read;
     /* The shortened reading a WARN line was last logged for (--scan-skip-silent-ms, its sub-window count at the
        capture rate), and the DMR sub-window floor's own line: each once per setting and rate. */
-    int short_warned_ms;
-    uint32_t short_warned_rate_hz;
-    int dmr_warned_ms;
-    uint32_t dmr_warned_rate_hz;
+    quiet_warned_reading short_warned;
+    quiet_warned_reading dmr_warned;
     /* The frame-boundary settle wait (issue #834 R1): a request a frame-boundary service starts waits
        SCAN_QUIET_FRAME_SETTLE_MS (realtime) from settle_from_ms, the first qualifying capture the service saw (the first
        request) or the retryable failure it collected (a retry); settle_set 0 while there is neither. capture_seen: a
@@ -976,16 +1004,19 @@ scan_quiet_format_short_warn(char* out, size_t out_size, int setting_ms, uint32_
     double lo = 0.0;
     double hi = 0.0;
     quiet_window_range_ms(rate_hz, &lo, &hi);
+    /* The reading's span over every checked width, in whole ms: one figure when both ends print the same. */
+    const long first = lround(lo * windows);
+    const long last = lround(hi * windows);
     char span[48];
-    if (hi - lo < 0.5) {
-        DSD_SNPRINTF(span, sizeof span, "%.0f ms", lo * windows);
+    if (first == last) {
+        DSD_SNPRINTF(span, sizeof span, "%ld ms", first);
     } else {
-        DSD_SNPRINTF(span, sizeof span, "%.0f to %.0f ms", lo * windows, hi * windows);
+        DSD_SNPRINTF(span, sizeof span, "%ld to %ld ms", first, last);
     }
     if (dmr_floor) {
         return DSD_SNPRINTF(out, out_size,
                             "WARNING: scan: --scan-skip-silent-ms %d: DMR channels are read for %u slices (%s), the "
-                            "fewest that always hold a whole DMR burst.\n",
+                            "fewest that always hold one whole slice inside a burst of an ongoing DMR transmission.\n",
                             setting_ms, (unsigned)windows, span);
     }
     return DSD_SNPRINTF(out, out_size,
@@ -1002,15 +1033,11 @@ quiet_warn_short(const dsd_opts* opts, scan_quiet_check* c, uint32_t rate_hz, ui
         return;
     }
     char line[320];
-    if (c->short_warned_ms != opts->scan_skip_silent_ms || c->short_warned_rate_hz != rate_hz) {
-        c->short_warned_ms = opts->scan_skip_silent_ms;
-        c->short_warned_rate_hz = rate_hz;
+    if (quiet_warned_new(&c->short_warned, opts->scan_skip_silent_ms, rate_hz)) {
         (void)scan_quiet_format_short_warn(line, sizeof line, opts->scan_skip_silent_ms, setting, rate_hz, 0);
         LOG_WARN("%s", line);
     }
-    if (windows > setting && (c->dmr_warned_ms != opts->scan_skip_silent_ms || c->dmr_warned_rate_hz != rate_hz)) {
-        c->dmr_warned_ms = opts->scan_skip_silent_ms;
-        c->dmr_warned_rate_hz = rate_hz;
+    if (windows > setting && quiet_warned_new(&c->dmr_warned, opts->scan_skip_silent_ms, rate_hz)) {
         (void)scan_quiet_format_short_warn(line, sizeof line, opts->scan_skip_silent_ms, windows, rate_hz, 1);
         LOG_WARN("%s", line);
     }
@@ -2064,7 +2091,7 @@ scan_quiet_timing_fill(const dsd_opts* opts, dsd_state* state, const scan_quiet_
 }
 
 void
-dsd_engine_scan_quiet_setting_changed(dsd_state* state, int turned_on) {
+dsd_engine_scan_quiet_setting_changed(dsd_state* state, int turned_on, int reading_changed) {
     dsd_engine_scan_quiet_invalidate(state);
     /* Nothing noted while the setting was on is waited for once it changes. */
     dsd_engine_scan_quiet_pending_reset(state);
@@ -2079,6 +2106,12 @@ dsd_engine_scan_quiet_setting_changed(dsd_state* state, int turned_on) {
     if (c) {
         c->visit_set = 0;
         quiet_warn_channels_forget(c);
+        /* A shortened reading's WARN lines are logged again once it takes effect again: after the switch or the
+           length really changed, not after an apply that left both as they were. */
+        if (reading_changed) {
+            DSD_MEMSET(&c->short_warned, 0, sizeof c->short_warned);
+            DSD_MEMSET(&c->dmr_warned, 0, sizeof c->dmr_warned);
+        }
     }
     if (turned_on && owner) {
         owner->quiet_first_tune_seq = owner->tune_seq + 1U;
@@ -2086,6 +2119,7 @@ dsd_engine_scan_quiet_setting_changed(dsd_state* state, int turned_on) {
     }
 #else
     (void)turned_on;
+    (void)reading_changed;
 #endif
 }
 

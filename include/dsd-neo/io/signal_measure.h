@@ -218,6 +218,8 @@ dsd_signal_quiet_params dsd_signal_quiet_params_default(void);
  * 0: at any other rate a scan visit makes no quiet check. The rates are those the capture paths run: the RTL rate
  * planner's, an Airspy's, and the common RTL-SDR rates a SoapySDR device may be given. */
 int dsd_signal_quiet_rate_supported(uint32_t rate_hz);
+/** How many capture rates dsd_signal_quiet_rate_supported() admits. */
+#define DSD_SIGNAL_QUIET_RATE_COUNT 16
 
 /** 1 when an analog class of @p width_hz for analog @p kind (dsd_analog_demod: DSD_ANALOG_DEMOD_FM or
  * DSD_ANALOG_DEMOD_AM, as dsd_opts.analog_demod carries it) at capture rate @p rate_hz was rendered and validated as

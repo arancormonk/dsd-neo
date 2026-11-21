@@ -155,9 +155,9 @@ dsd_frame_sync_hook_tick_guard_leave(int taken) {
 }
 
 void
-dsd_scan_quiet_setting_changed(dsd_state* state, int turned_on) {
+dsd_scan_quiet_setting_changed(dsd_state* state, int turned_on, int reading_changed) {
     if (g_frame_sync_hooks.scan_quiet_setting_changed) {
-        g_frame_sync_hooks.scan_quiet_setting_changed(state, turned_on);
+        g_frame_sync_hooks.scan_quiet_setting_changed(state, turned_on, reading_changed);
     }
 }
 

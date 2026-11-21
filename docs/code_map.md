@@ -585,7 +585,9 @@ Generated (do not edit/commit):
       `--scan-skip-silent-ms` its sub-window count (`scan_quiet_setting_windows()`, `scan_quiet_request_windows()`: at
       least `SCAN_QUIET_DMR_MIN_WINDOWS` on a visit whose `scan_quiet_eligibility::dmr` is set, compared at publication
       and at the decision like the classes) and a deadline grown by `SCAN_QUIET_DEADLINE_PER_WINDOW_MS` per sub-window
-      above nine; a shortened reading logs its WARN lines once per setting and rate (`scan_quiet_format_short_warn()`).
+      above nine; a shortened reading logs its WARN lines once per setting and rate (`scan_quiet_format_short_warn()`,
+      one slot for each of the `DSD_SIGNAL_QUIET_RATE_COUNT` supported rates), and again only after the switch or the
+      length really changed (the setting hook's `reading_changed`), not after an apply that left both as they were.
     - Frame-boundary service (issue #834 R1, `dsd_engine_scan_quiet_frame_service()`): a sync its protocol's gate
       rejects no longer ends the check, so a channel whose noise keeps passing a sync word (NXDN48, dPMR) restarts
       short hunts that rarely reach the hunt's 300-symbol service, and the trunk scan's per-frame ticks publish only
@@ -5626,7 +5628,9 @@ the P25 profiles (see the startup control-channel hunt below); with nothing inst
 `scan_quiet_setting_changed` (`dsd_scan_quiet_setting_changed()`, #834) tells the engine that the session-wide
 `opts->scan_skip_silent` was written, so it can drop the quiet checks it already made; app-control's
 `DSD_APP_CMD_SCAN_SKIP_SILENT_SET` handler and every config apply call it on the decoder thread, with `turned_on` set
-when the write turned the setting on from off (the landed visit is then not checked). It lives in this table, not the
+when the write turned the setting on from off (the landed visit is then not checked) and `reading_changed` set when the
+switch or `opts->scan_skip_silent_ms` differs from before the write (a shortened reading's WARN lines are then logged
+again). It lives in this table, not the
 trunk-scan one, because this table outlives any trunk-scan coordinator and the setting serves `-Y` too. A no-op with
 nothing installed.
 `scan_quiet_service` (`dsd_frame_sync_hook_scan_quiet_service()`, #834) is the scan quiet check's in-hunt service

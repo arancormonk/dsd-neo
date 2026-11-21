@@ -1421,6 +1421,8 @@ dsd_signal_detector_feed(dsd_signal_detector* detector, const float* iq, size_t 
    between two admitted ones is not admitted. */
 static const uint32_t kQuietRatesHz[] = {960000,  1024000, 1152000, 1200000, 1280000, 1440000, 1536000, 1600000,
                                          1800000, 1920000, 2048000, 2400000, 2500000, 3000000, 6000000, 10000000};
+static_assert(sizeof kQuietRatesHz / sizeof kQuietRatesHz[0] == DSD_SIGNAL_QUIET_RATE_COUNT,
+              "DSD_SIGNAL_QUIET_RATE_COUNT names every supported quiet rate");
 static const uint32_t kQuietNfmWidthsHz[] = {8000, 10000, 11250, 12000, 12500, 15000, 16000, 20000, 25000};
 static const uint32_t kQuietAmWidthsHz[] = {5000, 6000, 8000, 8333, 10000, 15000, 20000};
 

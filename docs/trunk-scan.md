@@ -1105,7 +1105,7 @@ its calibrated nine slices, exactly as without the option. It is session-wide, l
 - When the setting shortens the reading, the first check logs
   `WARNING: scan: --scan-skip-silent-ms 50 reads 5 slices (50 to 53 ms), shorter than the calibrated 9: a weak or fading signal can read silent and be skipped.`
   (with the span at the receiver's rate), and the first DMR channel read for its floor logs
-  `WARNING: scan: --scan-skip-silent-ms 50: DMR channels are read for 6 slices (60 to 64 ms), the fewest that always hold a whole DMR burst.`
+  `WARNING: scan: --scan-skip-silent-ms 50: DMR channels are read for 6 slices (60 to 64 ms), the fewest that always hold one whole slice inside a burst of an ongoing DMR transmission.`
   A value that rounds to nine or more slices logs nothing. The option has no effect without `--scan-skip-silent`, and
   says so at start.
 
