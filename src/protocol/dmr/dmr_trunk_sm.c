@@ -1713,6 +1713,14 @@ dmr_sm_publish_slot_channel(const dmr_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* 
     state->event_crc_invalid[slot] = saved_crc_invalid;
 }
 
+/* Whether a voice sync on slot @p s opens the followed grant's call: a voice grant's, not yet published, on its slot.
+   A data grant's is no voice call: voice on its channel is some other transmission, which its own LC names. */
+static int
+dmr_sm_voice_sync_publishes_grant(const dmr_sm_ctx_t* ctx, int s) {
+    return ctx->state == DMR_SM_TUNED && ctx->vc_identity_published == 0 && ctx->vc_data_call == 0
+           && (ctx->vc_slot < 0 || ctx->vc_slot == s);
+}
+
 static void
 handle_voice_sync(dmr_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, int slot) {
     if (!ctx) {
@@ -1728,10 +1736,7 @@ handle_voice_sync(dmr_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, int slot)
     dmr_sm_note_voice_evidence(ctx, state, s, now_m);
     update_voice_sync_state(ctx, state, s, now_m);
 
-    /* A voice sync opens the followed voice grant's call. A data grant's is no voice call: voice on its channel is
-       some other transmission, which its own LC names. */
-    if (state && ctx->state == DMR_SM_TUNED && ctx->vc_identity_published == 0 && ctx->vc_data_call == 0
-        && (ctx->vc_slot < 0 || ctx->vc_slot == s)) {
+    if (state && dmr_sm_voice_sync_publishes_grant(ctx, s)) {
         int protocol = DSD_SYNC_IS_DMR(state->synctype) ? state->synctype : state->lastsynctype;
         if (!DSD_SYNC_IS_DMR(protocol)) {
             protocol = DSD_SYNC_DMR_BS_VOICE_POS;
