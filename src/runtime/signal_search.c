@@ -420,8 +420,9 @@ site_tetra_dmo_text(const dsd_signal_search_tetra_note* t) {
     }
 }
 
-/* "MCC 228 · MNC 8889 · LA 12 · Main carrier 426.70625 MHz": the LA only when known and the cell has a main carrier,
-   the carrier in MHz to five decimals (10 Hz), or "No main carrier"; a direct mode record's route text. */
+/* "Main carrier 426.70625 MHz · MCC 228 · MNC 8889 · LA 12": the main carrier first, so a detail cut short keeps it
+   (issue #748), in MHz to five decimals (10 Hz), or "No main carrier", or nothing when no SYSINFO is shown; the LA only
+   when known and the cell has a main carrier; a direct mode record's route text. */
 static int
 site_tetra_format(const dsd_signal_search_site* record, char* out, size_t capacity) {
     const dsd_signal_search_tetra_note* t = &record->tetra;
@@ -431,22 +432,22 @@ site_tetra_format(const dsd_signal_search_site* record, char* out, size_t capaci
     if (t->mode == DSD_SEARCH_TETRA_DMO) {
         return DSD_SNPRINTF(out, capacity, "%s", site_tetra_dmo_text(t));
     }
-    char la[24] = "";
     char main_carrier[48] = "";
+    char la[24] = "";
     if (t->main_state == DSD_SEARCH_TETRA_MAIN_NO_CA) {
-        DSD_SNPRINTF(main_carrier, sizeof(main_carrier), "%sNo main carrier", site_dot);
+        DSD_SNPRINTF(main_carrier, sizeof(main_carrier), "No main carrier%s", site_dot);
     } else {
+        if (t->main_state == DSD_SEARCH_TETRA_MAIN_HZ) {
+            const uint64_t tens = ((uint64_t)t->main_hz + 5U) / 10U;
+            DSD_SNPRINTF(main_carrier, sizeof(main_carrier), "Main carrier %u.%05u MHz%s", (unsigned)(tens / 100000U),
+                         (unsigned)(tens % 100000U), site_dot);
+        }
         if (t->la_valid) {
             DSD_SNPRINTF(la, sizeof(la), "%sLA %u", site_dot, (unsigned)t->la);
         }
-        if (t->main_state == DSD_SEARCH_TETRA_MAIN_HZ) {
-            const uint64_t tens = ((uint64_t)t->main_hz + 5U) / 10U;
-            DSD_SNPRINTF(main_carrier, sizeof(main_carrier), "%sMain carrier %u.%05u MHz", site_dot,
-                         (unsigned)(tens / 100000U), (unsigned)(tens % 100000U));
-        }
     }
-    return DSD_SNPRINTF(out, capacity, "MCC %u%sMNC %u%s%s", (unsigned)t->mcc, site_dot, (unsigned)t->mnc, la,
-                        main_carrier);
+    return DSD_SNPRINTF(out, capacity, "%sMCC %u%sMNC %u%s", main_carrier, (unsigned)t->mcc, site_dot, (unsigned)t->mnc,
+                        la);
 }
 
 size_t

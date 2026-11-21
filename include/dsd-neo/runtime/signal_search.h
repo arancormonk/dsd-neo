@@ -205,8 +205,8 @@ void dsd_signal_search_site_clear(dsd_signal_search_site* record);
  * empties the record and latches (dsd_signal_search_site::withdrawn), so a TETRA note after it changes nothing. */
 int dsd_signal_search_site_apply(dsd_signal_search_site* record, const dsd_signal_search_site_note* note);
 /** Format @p record for display ("" for an empty or withdrawn record); returns the length written. TETRA TMO:
- * "MCC 228 · MNC 8889 · LA 12 · Main carrier 426.70625 MHz", the LA only when known, the main carrier only when
- * shown ("No main carrier", without the LA, for a cell with none); DMO: "Direct", "Via repeater", "Via gateway",
+ * "Main carrier 426.70625 MHz · MCC 228 · MNC 8889 · LA 12", the main carrier first and only when shown ("No main
+ * carrier", without the LA, for a cell with none), the LA only when known; DMO: "Direct", "Via repeater", "Via gateway",
  * "Via repeater/gateway", or "presence signal". Every TETRA text fits the hit's site field. */
 size_t dsd_signal_search_site_format(const dsd_signal_search_site* record, char* out, size_t capacity);
 

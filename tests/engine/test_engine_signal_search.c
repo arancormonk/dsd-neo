@@ -4884,7 +4884,7 @@ tetra_tmo_note(void) {
    of the visit, and no repeated withdrawal, brings them back or publishes again. */
 static void
 test_tetra_site_and_withdraw(dsd_opts* o, dsd_state* s, const dsd_signal_search_config* config) {
-    static const char tmo_text[] = "MCC 228 \xC2\xB7 MNC 8889 \xC2\xB7 LA 12 \xC2\xB7 Main carrier 426.70625 MHz";
+    static const char tmo_text[] = "Main carrier 426.70625 MHz \xC2\xB7 MCC 228 \xC2\xB7 MNC 8889 \xC2\xB7 LA 12";
     use_tetra_rate();
     /* Filters on every kind that rejects everything they can name: none names TETRA. */
     o->receive.filters[DSD_RECEIVE_DCC].enabled = 1;
@@ -4911,7 +4911,7 @@ test_tetra_site_and_withdraw(dsd_opts* o, dsd_state* s, const dsd_signal_search_
     int published = hits_published;
     dsd_signal_search_note_site(s, &tmo);
     assert(hits_published == published + 1);
-    assert(strcmp(status.hit.site, "MCC 228 \xC2\xB7 MNC 8889 \xC2\xB7 No main carrier") == 0);
+    assert(strcmp(status.hit.site, "No main carrier \xC2\xB7 MCC 228 \xC2\xB7 MNC 8889") == 0);
     dsd_signal_search_note_site(s, &tmo);
     assert(hits_published == published + 1);
 

@@ -129,13 +129,13 @@ test_tmo_format(void) {
     note.tetra.main_state = DSD_SEARCH_TETRA_MAIN_HZ;
     note.tetra.main_hz = 426706250;
     assert(dsd_signal_search_site_apply(&record, &note));
-    assert(shows(&record, "MCC 228" DOT "MNC 8889" DOT "LA 12" DOT "Main carrier 426.70625 MHz"));
+    assert(shows(&record, "Main carrier 426.70625 MHz" DOT "MCC 228" DOT "MNC 8889" DOT "LA 12"));
     assert(!dsd_signal_search_site_apply(&record, &note));
 
     /* No LA part without la_valid; the stored LA is not read. */
     note.tetra.la_valid = 0;
     assert(dsd_signal_search_site_apply(&record, &note));
-    assert(shows(&record, "MCC 228" DOT "MNC 8889" DOT "Main carrier 426.70625 MHz"));
+    assert(shows(&record, "Main carrier 426.70625 MHz" DOT "MCC 228" DOT "MNC 8889"));
     /* A value the note does not mark valid makes no difference to the record. */
     note.tetra.la = 99;
     assert(!dsd_signal_search_site_apply(&record, &note));
@@ -145,7 +145,7 @@ test_tmo_format(void) {
     note.tetra.main_state = DSD_SEARCH_TETRA_MAIN_NO_CA;
     note.tetra.main_hz = 426706250;
     assert(dsd_signal_search_site_apply(&record, &note));
-    assert(shows(&record, "MCC 228" DOT "MNC 8889" DOT "No main carrier"));
+    assert(shows(&record, "No main carrier" DOT "MCC 228" DOT "MNC 8889"));
 
     /* SYSINFO with no main carrier shown: the LA alone. */
     note.tetra.main_state = DSD_SEARCH_TETRA_MAIN_NONE;
@@ -157,7 +157,7 @@ test_tmo_format(void) {
     note.tetra.main_hz = 390000000;
     note.tetra.la_valid = 0;
     assert(dsd_signal_search_site_apply(&record, &note));
-    assert(shows(&record, "MCC 228" DOT "MNC 8889" DOT "Main carrier 390.00000 MHz"));
+    assert(shows(&record, "Main carrier 390.00000 MHz" DOT "MCC 228" DOT "MNC 8889"));
 
     /* Another identity replaces the record whole. */
     note = tmo_note(1, 2);
@@ -255,8 +255,8 @@ test_withdraw_latches(void) {
    stores sizeof the hit's field, NUL included) without truncation. */
 static void
 test_worst_case_bytes(void) {
-    static const char worst[] = "MCC 1023" DOT "MNC 16383" DOT "LA 16383" DOT "Main carrier 1002.38750 MHz";
-    static const char no_ca[] = "MCC 1023" DOT "MNC 16383" DOT "No main carrier";
+    static const char worst[] = "Main carrier 1002.38750 MHz" DOT "MCC 1023" DOT "MNC 16383" DOT "LA 16383";
+    static const char no_ca[] = "No main carrier" DOT "MCC 1023" DOT "MNC 16383";
     dsd_signal_search_site record;
     dsd_signal_search_site_clear(&record);
     dsd_signal_search_site_note note = tmo_note(1023, 16383);
@@ -283,7 +283,7 @@ test_worst_case_bytes(void) {
     note.tetra.la = UINT16_MAX;
     assert(dsd_signal_search_site_apply(&record, &note));
     assert(dsd_signal_search_site_format(&record, text, sizeof text) < sizeof hit.site - 1);
-    assert(shows(&record, "MCC 65535" DOT "MNC 65535" DOT "LA 65535" DOT "Main carrier 4294.96730 MHz"));
+    assert(shows(&record, "Main carrier 4294.96730 MHz" DOT "MCC 65535" DOT "MNC 65535" DOT "LA 65535"));
 }
 
 int
