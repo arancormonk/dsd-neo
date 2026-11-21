@@ -21876,13 +21876,18 @@ if(DSD_HAS_RADIO)
                 PROPERTIES LABELS "iq-decode" TIMEOUT 120
             )
             # A raw I/Q stream on loopback (issue #743): the UDP receiving notice follows the bind, a mode switch to
-            # TETRA over the control API reconnects the TCP stream, and no rigctl peer beside it is ever connected.
+            # TETRA over the control API reconnects the TCP stream, and no rigctl peer beside it is ever connected. A
+            # build without the control API, whose CLI refuses --api, runs every case but the API's (--no-api).
+            set(_iq_stream_live_api_arg)
+            if(NOT DSD_ENABLE_API)
+                set(_iq_stream_live_api_arg --no-api)
+            endif()
             add_test(
                 NAME RUNTIME_IQ_STREAM_LIVE
                 COMMAND
                     ${Python3_EXECUTABLE}
                     ${CMAKE_CURRENT_SOURCE_DIR}/iq_stream_live_check.py
-                    $<TARGET_FILE:dsd-neo>
+                    $<TARGET_FILE:dsd-neo> ${_iq_stream_live_api_arg}
             )
             set_tests_properties(
                 RUNTIME_IQ_STREAM_LIVE

@@ -10,6 +10,9 @@
   commands a stream cannot take reach no rigctl peer: rigctl_connect_cfg and manual_tune are refused, and the peer
   never sees a connection.
 - -U beside a stream exits 1 before anything opens, and the rigctl peer never sees a connection.
+
+With --no-api (a build without the control API, DSD_ENABLE_API off, whose CLI refuses --api) the re-plan case, which
+drives the decoder through that API, is left out and says so; every other case runs.
 """
 import argparse
 import contextlib
@@ -322,12 +325,16 @@ def check_rigctl_refused_at_start(binary, cwd):
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("binary")
+    parser.add_argument("--no-api", action="store_true", help="the build has no control API: leave its case out")
     args = parser.parse_args()
     binary = str(Path(args.binary).resolve())
     with tempfile.TemporaryDirectory(prefix="dsd-iq-stream-") as temporary:
         check_udp_notice(binary, temporary)
         check_startup_notes_once(binary, temporary)
-        check_tcp_replan_and_tuning(binary, temporary)
+        if args.no_api:
+            print("SKIP: the TCP re-plan case drives the decoder through the control API, which this build has not")
+        else:
+            check_tcp_replan_and_tuning(binary, temporary)
         check_rigctl_refused_at_start(binary, temporary)
 
 
