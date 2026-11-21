@@ -13406,8 +13406,9 @@ Private per-protocol modules worth knowing about:
   alias through `dmr_flco()`).
 - DMR talkgroup priority and preemption (`dmr_trunk_sm.c`, `dmr_csbk.c`, `dmr_csbk_parse.c`, `dmr_flco.c`). Policy
   stays at the CSBK/status layer, which alone knows each grant's classification (a Tier III grant is group or
-  individual by its own opcode, TS 102 361-4 Table B.1: TV/BTV/TD/TD_MI normalised to group 49, PV/PV_DX and the
-  private data grants PD/PD_DX/PD_MI individual, the latter followed only with both the private and the data switch on.
+  individual by its own opcode, as the Target / Destination_Address row of its PDU table in TS 102 361-4 Tables
+  7.9-7.15 defines: TV/BTV/TD/TD_MI normalised to group 49, PV/PV_DX and the private data grants PD/PD_DX/PD_MI
+  individual, the latter followed only with both the private and the data switch on.
   An individual grant, voice or data, is judged by the private evaluator: an exact row on either party decides it, a
   range row never does (a Block range covering the called radio does not stop it), and its activity row names the
   called radio as `TGT:`. A data grant's identity is never published at voice sync; Connect Plus private refused with

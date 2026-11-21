@@ -2211,6 +2211,62 @@ test_pd_grant_notice_and_voice_sync(dsd_opts* opts, dsd_state* st, uint16_t lpcn
     return rc;
 }
 
+/* Allow-list mode: a private data grant is judged as a private call, exactly as a private voice grant is. Unlisted it
+   is refused; an exact Allow row on the called radio or on the caller admits it; an Allow range covering the called
+   radio (a talkgroup row) does not, since a private endpoint is looked up by its exact row alone. */
+static int
+test_pd_grant_allow_list(dsd_opts* opts, dsd_state* st, uint16_t lpcn, long freq) {
+    enum { AL_NONE = 0, AL_TARGET = 1, AL_SOURCE = 2, AL_RANGE = 3 };
+
+    static const uint8_t ops[] = {48U, 51U};
+    const uint32_t target = 0x001234U;
+    const uint32_t source = 0x005678U;
+    uint8_t bits[256];
+    uint8_t bytes[48];
+    char tag[160];
+    int rc = 0;
+    install_trunk_tuning_hooks();
+    for (size_t i = 0; i < sizeof ops / sizeof ops[0]; i++) {
+        for (int row = AL_NONE; row <= AL_RANGE; row++) {
+            init_env(opts, st);
+            st->trunk_chan_map[lpcn] = freq;
+            opts->trunk_use_allow_list = 1;
+            if (row == AL_TARGET || row == AL_SOURCE) {
+                if (seed_exact(st, row == AL_TARGET ? target : source, "A", "ALLOW-ROW") != 0) {
+                    abort();
+                }
+            } else if (row == AL_RANGE) {
+                dsd_tg_policy_entry range;
+                if (dsd_tg_policy_make_exact_entry(target - 4U, "A", "ALLOW-RANGE", DSD_TG_POLICY_SOURCE_IMPORTED,
+                                                   &range)
+                    != 0) {
+                    abort();
+                }
+                range.id_end = target + 4U;
+                range.kind = DSD_TG_POLICY_ROW_RANGE;
+                if (dsd_tg_policy_add_range_entry(st, &range) != 0) {
+                    abort();
+                }
+            }
+            build_grant(bits, bytes, ops[i], lpcn, target, source, 0U);
+            dmr_cspdu(opts, st, bits, bytes, 1U, 0U);
+            const int expected = row == AL_TARGET || row == AL_SOURCE;
+            const int followed = opts->trunk_is_tuned == 1 && st->trunk_vc_freq[0] == freq;
+            DSD_SNPRINTF(tag, sizeof tag, "allow-list opcode %u row %d: followed %d, want %d", (unsigned)ops[i], row,
+                         followed, expected);
+            rc |= expect_true(tag, followed == expected);
+            if (followed) {
+                DSD_SNPRINTF(tag, sizeof tag, "allow-list opcode %u followed as an individual grant", (unsigned)ops[i]);
+                rc |= expect_true(tag,
+                                  dmr_sm_get_ctx()->vc_is_group == 0 && (uint32_t)dmr_sm_get_ctx()->vc_dst == target);
+            }
+            reset_to_cc(opts, st);
+        }
+    }
+    dsd_state_ext_free_all(st);
+    return rc;
+}
+
 /* A private voice grant's activity row names the called radio as a private target (TGT:), as a private data grant's
    does; a talkgroup voice grant's names its group (TG:). */
 static int
@@ -2271,6 +2327,7 @@ main(void) {
     rc |= test_pd_grant_is_individual(opts, st, lpcn, freq);
     rc |= test_pd_grant_notice_and_voice_sync(opts, st, lpcn, freq);
     rc |= test_private_voice_grant_notice(opts, st, lpcn, freq);
+    rc |= test_pd_grant_allow_list(opts, st, lpcn, freq);
     install_trunk_tuning_hooks();
     init_env(opts, st);
     st->trunk_chan_map[lpcn] = freq;

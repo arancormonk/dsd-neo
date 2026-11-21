@@ -382,10 +382,11 @@ dmr_cspdu_pf0_is_data_grant_opcode(int csbk_o) {
     return csbk_o == 51 || csbk_o == 52 || csbk_o == 54 || csbk_o == 55 || csbk_o == 56;
 }
 
-/* Whether a channel grant names a talkgroup, from its own opcode (TS 102 361-4 Table B.1): TV_GRANT (49), BTV_GRANT
-   (50), TD_GRANT (52) and TD_GRANT_MI (56) do. PV_GRANT (48), PV_GRANT_DX (53), PD_GRANT (51), PD_GRANT_DX (54) and
-   PD_GRANT_MI (55) name the called individual MS or gateway (Table 7.13: "Called party Individual MS Address or
-   Gateway"). */
+/* Whether a channel grant names a talkgroup, from its own opcode, as the Target / Destination_Address row of its PDU
+   table defines (TS 102 361-4): TV_GRANT (49, Table 7.11), BTV_GRANT (50, Table 7.12), TD_GRANT and TD_GRANT_MI (52,
+   56, Table 7.15) carry an "MS Talkgroup Address". PV_GRANT (48, Table 7.9), PD_GRANT and PD_GRANT_MI (51, 55, Table
+   7.13) carry the "Called party Individual MS Address or Gateway", PV_GRANT_DX (53, Table 7.10) and PD_GRANT_DX (54,
+   Table 7.14) the target MS. */
 static int
 dmr_cspdu_pf0_is_group_grant_opcode(int csbk_o) {
     return csbk_o == 49 || csbk_o == 50 || csbk_o == 52 || csbk_o == 56;
