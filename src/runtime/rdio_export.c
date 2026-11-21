@@ -1154,7 +1154,8 @@ dsd_rdio_call_fallback_eligible(const Event_History* event, int allow_fallback) 
     // Fail closed on a row of no known protocol: its label would be a bare frequency, and a v8 DirWatch, which resolves
     // the system from short_name, could pick none.
     return allow_fallback && event != NULL && event->systype != DSD_SYNC_ANALOG && event->target_id == 0U
-           && event->category == DSD_EVENT_CATEGORY_VOICE && dsd_rdio_row_protocol_word(event)[0] != '\0';
+           && event->category == DSD_EVENT_CATEGORY_VOICE && event->fallback_blocked == 0U
+           && dsd_rdio_row_protocol_word(event)[0] != '\0';
 }
 
 uint32_t

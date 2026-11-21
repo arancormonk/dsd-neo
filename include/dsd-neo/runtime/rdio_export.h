@@ -109,8 +109,9 @@ uint32_t dsd_rdio_analog_talkgroup(const dsd_opts* opts, const Event_History* ev
  * decoded target.
  * - An analog row (DSD_SYNC_ANALOG): dsd_rdio_analog_talkgroup(), whatever @p allow_fallback says.
  * - A digital row: its target_id when above 0, as decoded (an ID above 2147483647 included). Else, only when
- *   @p allow_fallback is nonzero, the row's category is DSD_EVENT_CATEGORY_VOICE and its sync type names a protocol
- *   (P25, DMR, NXDN, D-STAR, YSF, dPMR, M17, X2-TDMA, ProVoice, EDACS, TETRA; issue #888 D2, D7): the frequency
+ *   @p allow_fallback is nonzero, the row's category is DSD_EVENT_CATEGORY_VOICE, its sync type names a protocol
+ *   (P25, DMR, NXDN, D-STAR, YSF, dPMR, M17, X2-TDMA, ProVoice, EDACS, TETRA; issue #888 D2, D7) and its
+ *   fallback_blocked is 0 (an ID its decoder could not read, a YSF call not ended on a terminator): the frequency
  *   it was heard on in whole kHz, rounded down, when that is 1..2147483647 (signed 32-bit, as rdio-scanner's databases
  *   store it), else @p opts->rdio_unknown_talkgroup when above 0 (audio input), else 0.
  */
@@ -118,9 +119,9 @@ uint32_t dsd_rdio_call_talkgroup(const dsd_opts* opts, const Event_History* even
 
 /**
  * 1 when dsd_rdio_call_talkgroup() with the same @p allow_fallback numbers @p event by the fallback, or would with a
- * frequency or --rdio-unknown-talkgroup: a digital row with no target_id whose category is DSD_EVENT_CATEGORY_VOICE and
- * whose sync type names a protocol, with @p allow_fallback nonzero. 0 for every other row, NULL and analog rows
- * included.
+ * frequency or --rdio-unknown-talkgroup: a digital row with no target_id whose category is DSD_EVENT_CATEGORY_VOICE,
+ * whose sync type names a protocol and whose fallback_blocked is 0, with @p allow_fallback nonzero. 0 for every other
+ * row, NULL and analog rows included.
  * The WAV close asks it to tell a call skipped for want of a number (said once a run) from one the fallback never
  * numbers (issue #888 B3).
  */

@@ -771,6 +771,12 @@ typedef struct {
     // membership is current, else the call's policy target, else target_id (a private call: target_id); 0 while the
     // call has not been judged. Bookkeeping as stream_blocked is.
     uint32_t policy_target_id;
+    // Set when the recording of the row's call, if it has no talkgroup, must not be exported under rdio's fallback
+    // talkgroup (--rdio-unknown-talkgroup, a frequency in kHz; issue #888): its call named a party its decoder could
+    // not read as an ID (dsd_call_snapshot::identity_unread: a played SDRTrunk roaming or ISSI identity), or it is a
+    // YSF call that has not ended on a decoded terminator. Set by each render from the call; 0 for a row never
+    // rendered. Bookkeeping as stream_blocked is.
+    uint8_t fallback_blocked;
     // Who held the tuner when this row's call was first rendered; frozen with channel_label, so a
     // call a later release or resume ends keeps the identity it began with. operator_tuned: the
     // operator held the receiver (a paused scan, a tuner release, a manual tune). scan_member: a scan was running,

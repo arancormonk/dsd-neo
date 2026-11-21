@@ -2255,19 +2255,25 @@ P25 Phase 1 decoders reach the capture writer.
 
 ### rdio-scanner export of digital calls with no talkgroup (issue #888)
 
-`DECODE_IQ_YSF_RDIO_DIRWATCH_UNKNOWN_TG` (CTest label `iq-decode`, radio builds) runs the real binary three times
-through `tests/rdio_dirwatch_check.cmake`, each with `-P -7 <dir>/calls --wav-journal <dir>/journal.jsonl --rdio-mode
-dirwatch --rdio-system-id 48`, on the synthetic YSF call `ysf_synth` (851.375 MHz), which names no target or source.
-Every leg must exit 0, print the decode regex, report no sanitizer error, and leave at least one recording, no
-`TEMP_` file, and one journal `publish` line a recording, not failed, naming a file in the folder, with an empty
-`target`: the number is the export's alone. Each leg runs with `DSD_NEO_CONFIG` unset (`cmake -E env --unset`), so it
-neither loads a developer's config nor autosaves its options into it. Then it reads the finalized WAV/JSON pairs:
+`DECODE_IQ_M17_RDIO_DIRWATCH_UNKNOWN_TG` (CTest label `iq-decode`, radio builds with Codec2) runs the real binary three
+times through `tests/rdio_dirwatch_check.cmake`, each with `-P -7 <dir>/calls --wav-journal <dir>/journal.jsonl
+--rdio-mode dirwatch --rdio-system-id 48`, on the synthetic M17 call `m17` (851.375 MHz), which names its parties by
+callsign alone (no talkgroup number). Every leg must exit 0, print the decode regex, report no sanitizer error, and
+leave at least one recording, no `TEMP_` file, and one journal `publish` line a recording, not failed, naming a file in
+the folder, with the `target` the script is given (`-DTARGET=BROADCAST`; empty by default): the number is the export's
+alone. Each leg runs with `DSD_NEO_CONFIG` unset (`cmake -E env --unset`), so it neither loads a developer's config nor
+autosaves its options into it. Then it reads the finalized WAV/JSON pairs:
 
 | Leg | Input | What each recording's sidecar must hold |
 | --- | --- | --- |
-| `rf` | `--iq-replay ysf_synth.iq.json -6 raw.wav` (the replay's discriminator audio is saved for the next legs) | talkgroup `851375` (the frequency in kHz), tag `YSF 851.3750 MHz`, `freq` 851375000 and a `freqList` naming it, system 48, `short_name` `YSF`, an empty `srcList`, not emergency, not encrypted |
-| `audio` | `-i raw.wav --rdio-unknown-talkgroup 4242`, an audio input with no frequency | talkgroup `4242`, tag `YSF` (the protocol alone), `freq` 0 and no `freqList`, system 48, `short_name` `YSF`, an empty `srcList` |
+| `rf` | `--iq-replay m17.iq.json -6 raw.wav` (the replay's discriminator audio is saved for the next legs) | talkgroup `851375` (the frequency in kHz), tag `M17 CAN 7 851.3750 MHz`, `freq` 851375000 and a `freqList` naming it, system 48, `short_name` `M17_CAN_7`, not emergency, not encrypted |
+| `audio` | `-i raw.wav --rdio-unknown-talkgroup 4242`, an audio input with no frequency | talkgroup `4242`, tag `M17 CAN 7` (no MHz), `freq` 0 and no `freqList`, system 48, `short_name` `M17_CAN_7` |
 | `audio_off` | `-i raw.wav` with no `--rdio-unknown-talkgroup` | no sidecar at all; the "not exported" line logged exactly once, and no "skipped" or "export failed" line |
+
+`DECODE_IQ_YSF_RDIO_DIRWATCH_UNKNOWN_TG` runs the same three legs on the synthetic YSF call `ysf_synth`, which names no
+target or source and has no terminator (the capture ends first), with `-DNO_FALLBACK=ON`: a YSF call takes the
+fallback only once it has ended on a decoded terminator, so every leg leaves its recordings with no sidecar and logs
+the "did not end on a terminator" line exactly once.
 
 The canonical paths are pinned in unit tests: `CORE_CALL_ALERT_HISTORY` through the real observation, render and commit
 rotation, its close a stub (`test_m17_rdio_export_by_address_width`: an M17 destination at `UINT32_MAX` is the talkgroup
@@ -2287,19 +2293,28 @@ first call's;
 `test_tetra_first_call_conceals_nothing_before_it`: a TETRA call admitted on a half slot after earlier speech conceals
 nothing from that speech; `test_tetra_first_call_starts_the_high_pass_over`: with the digital high-pass on, the call's
 recording after five bursts of speech no call owned is sample for sample the one it makes with none before it;
-`test_playback_malformed_frames_play_nothing`: an empty, short, long or non-hex `hex`, and an 18-digit frame in a P25
-Phase 1 export, play and record nothing, and a file of nothing else records nothing;
-`test_playback_file_shape_decides_its_recording`: a file is classified before it plays, so a `from` after the frames,
-two records (one of frames alone, or the first with its frames before its protocol), a `to` after the frames that a
-Stop leaves unread leave no WAV, no temp file and nothing published, the run's one line said; a `to` the reader cannot
-read (`Q:77`), and a roaming source (`ROAM 5678(...)`) to an ISSI talkgroup, are recorded but get no fallback
-talkgroup (no sidecar), and a roaming source to talkgroup 1234 is exported under 1234; a file in SDRTrunk's own order is
-exported, a Stop part-way included (the Stop is the log tap setting the exit flag at a malformed frame's warning, so it
-lands after three frames); a trailing `metadata` `from` changes nothing; an SDRTrunk patch group's `to` (`P:1234`,
-`P:1234 [5001, 5002]`) is talkgroup 1234, whose `stream=off` row keeps the recording local;
-`test_playback_discard_checks_the_removal`: a discarded recording whose
-close fails (the close seam) is still removed and journaled `discard`, and one whose removal fails (a read-only folder,
-skipped where that does not stop a removal) is left with a warning and an `error` of kind `discard` naming it, no
+`test_playback_malformed_frames_play_nothing`: a short or long `hex` of hex digits, and an 18-digit frame in a P25
+Phase 1 export, play and record nothing while the file's good frames are recorded, and an empty or non-hex `hex`
+leaves the file out of SDRTrunk's shape, so nothing of it is recorded;
+`test_playback_file_shape_decides_its_recording`: a file is checked against SDRTrunk's writer before it plays. A
+`from`, `to` or `encrypted` after the frames, two records (one of frames alone, or the first with its frames before
+its protocol), a `metadata` object (with or without frames of its own), an escaped key (`"\u0074o"`), an unclosed
+record, an outer array, `"to":[]` and a frame with no `hex` leave no WAV, no temp file (counted apart from the WAVs:
+a `TEMP_` name has no extension) and nothing published, the run's one line said; a file in SDRTrunk's own order is
+exported, a Stop part-way included (the Stop is the log tap setting the exit flag at a 17-digit frame's warning, so it
+lands after three frames); a zero-padded source (`"00000005678"`) is radio 5678, whose `stream=off` row keeps the
+recording local; a `to` the reader cannot read (`Q:77`), and a roaming source (`ROAM 5678(...)`) to an ISSI
+talkgroup, are recorded but get no fallback talkgroup (no sidecar), and a roaming source to talkgroup 1234 is exported
+under 1234; an SDRTrunk patch group's `to` (`P:1234`, `P:1234 [5001, 5002]`) is talkgroup 1234, whose `stream=off` row
+keeps the recording local. A case installs its policy rows by flags (`played_policy`), so a talkgroup-0 row is
+installed too: a `stream=off` talkgroup 0 record alone is recorded and not exported, as is the two-record file;
+`test_playback_sdrtrunk_written_files_record`: calls printed as Jackson's pretty printer prints SDRTrunk's (DMR, P25
+Phase 1 and 2, NXDN with `tag`, the writer before 2025-11 with `system` and `site` after `frames`, CRLF line ends, a
+value with escaped quotes) are recorded whole and exported under 1234 from 5678;
+`test_playback_empty_file_leaves_the_next_recording`: `-r empty.mbe normal.mbe` (an empty array, or a call of no
+frames from an unread source) records and exports the second file's call;
+`test_empty_segment_discard_checks_the_removal`: an empty recording whose removal fails (a read-only folder, skipped
+where that does not stop a removal) is left with one warning and an `error` of kind `discard` naming it, no
 `discard`;
 `test_playback_next_file_takes_no_earlier_stamp`: an export of a protocol the reader does not play stages its frame's
 `time` with no call, and the next file's unstamped call is filed on the decode clock, in the journal and the file name;
@@ -2316,12 +2331,17 @@ bits), and NXDN's published DES-OFB vectors with one frame lost still decrypt to
 late-entry fragments (an MI whose first Golay word is all zero), played as AES and with a forced RC4 algorithm, and
 checks the MI is taken from the whole superframe and not when that word's six frames are lost;
 `test_sdrtrunk_json_stop_during_the_read` sets the exit flag and plays a 3 MiB export, written with `dsd_test_mkstemp()`
-in the test temp folder and removed after, on `sdrtrunk_run_open()`'s heap fixtures: the reader reads no more than its
-first MiB.
+in the test temp folder and removed after with `dsd_remove_file()`, on `sdrtrunk_run_open()`'s heap fixtures: the
+reader reads no more than its first MiB. `test_sdrtrunk_json_stop_during_the_shape_check` sets it before a small
+export, which the read takes whole: the shape check sees the Stop and the reader returns before it touches the call, so
+an earlier call on the slot is still active with its epoch. `test_sdrtrunk_json_wav_honors_talkgroup_policy` also
+plays a file in no shape of SDRTrunk's (a record-level `hex`, string `version` and `encrypted`): its static WAV is
+written as the policy allows, its per-call WAV gets nothing.
 `CORE_WAV_JOURNAL` `test_playback_record_reads_only_its_own_members` plays one-record files whose headers carry members
 the reader does not know: `total_frames`, `from_site` and `protocol_name` (names that start with a key's name) leave the
-call one call, exported under its own talkgroup and radio, and a `time` of the record, of a `metadata` object or of
-another object's `frames` does not stamp it (each is filed at its first voice frame's second). The number and label
+call one call, whose row has its own talkgroup and radio, and a `time` of the record, of a `metadata` object or of
+another object's `frames` does not stamp it (each row is filed at its first voice frame's second); none of these
+members is SDRTrunk's, so the files get no per-call recording. The number and label
 rules themselves are in `RUNTIME_RDIO_EXPORT`, and which closes may give the number in `CORE_WAV_JOURNAL`'s `test_d7_*`
 cases. `test_d7_fallback_journal_rdio_flag` expects an API-only upload's sidecar removed only when its upload succeeded,
 which needs the loopback stand-in server (`RDIO_CAPTURE`, not on native Windows, where the queued upload fails and keeps
@@ -2441,9 +2461,12 @@ override plays it, and YSF full rate on the P25 decoder decodable; P25 Phase 2 d
 while unknown); D-STAR and ProVoice decodable. `CORE_MBE_FILE_IO` plays `.amb` (speech, tone, silence, a recorded C0
 count that repeats), `.dmb` and `.imb` records and SDRTrunk JSON (clear and encrypted with no key, speech, silence
 and a repeat). `YSF_DCH_DECODE` checks
-V/D2's frames from stubbed mbelib results, and `test_process_ysf_vd_type2_next_call_keeps_the_recording_local` that a
-V/D2 frame whose destination begins another call keeps the slot's open recording local, and one naming the same
-destination does not. `M17_STATE_DISPATCH` checks received Codec2 voice is decodable, admitted
+V/D2's frames from stubbed mbelib results. `test_process_ysf_repeater_call_is_one_row_that_takes_the_fallback` plays a
+V/D1 call through a repeater (header, frame 0 with CSD1, frame 1 with the repeaters' CSD2, terminator), syncing the
+history after each frame as the frame sync does, on heap fixtures: one epoch and one row, the caller's, which takes
+the fallback talkgroup. `test_process_ysf_call_takes_the_fallback_only_after_a_terminator`: a call ended by a sync
+loss, and a group call that a private one follows in band, get no fallback number; the private call, ended by its
+terminator, does. `M17_STATE_DISPATCH` checks received Codec2 voice is decodable, admitted
 speech and the stream encoder's own decoded monitor is the monitor's (`DSD_VOICE_MEDIA_TX_MONITOR`): it plays the
 decoded samples as they are under a fixed `-g 3` and under auto, and leaves the receive slot's speech AGC as it
 started. `TETRA_VOICE_PIPELINE` checks the 240-to-160

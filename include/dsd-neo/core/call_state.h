@@ -134,6 +134,11 @@ typedef struct {
     uint8_t priority;
     uint8_t has_service_metadata; /**< Non-zero when service options, emergency, and priority were observed. */
     /**
+     * Non-zero when the call names a party its decoder could not read as an ID (a played SDRTrunk roaming or ISSI
+     * identity, issue #888): sticky for the epoch (dsd_call_snapshot::identity_unread). 0 says nothing.
+     */
+    uint8_t identity_unread;
+    /**
      * dsd_analog_mode (<dsd-neo/core/analog_mode.h>) of an analog (DSD_SYNC_ANALOG) call; 0 (unknown) otherwise.
      * Taken by the observation that begins an epoch; a later observation never changes it.
      */
@@ -305,6 +310,12 @@ typedef struct {
     uint8_t media_active;
     uint8_t end_reason;  /**< dsd_call_end_reason; meaningful only while phase is DSD_CALL_PHASE_ENDED. */
     uint8_t crc_invalid; /**< Sticky DSD_CRC_* bits (crc_provenance.h) for this transmission; zero is not verified. */
+    /**
+     * 1 once an observation of this transmission named a party its decoder could not read as an ID
+     * (dsd_call_observation::identity_unread); a reacquired epoch carries it. Its history row never takes the rdio
+     * fallback talkgroup (Event_History::fallback_blocked, issue #888).
+     */
+    uint8_t identity_unread;
     /**
      * DSD_CALL_CRYPTO_RX_* bits: which of received_algid and received_kid this transmission received over the air.
      * Sticky for the epoch: an update that did not receive a field leaves its received value alone, so a forced or

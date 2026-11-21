@@ -18,7 +18,7 @@ static atomic_int s_table_full_reported;
 static atomic_int s_analog_rdio_skip_reported;
 static atomic_int s_digital_rdio_skip_reported;
 static atomic_int s_played_file_unrecorded_reported;
-static atomic_int s_kept_local_rdio_skip_reported;
+static atomic_int s_fallback_blocked_reported;
 
 void
 dsd_wav_recording_status_get(dsd_wav_recording_status* out) {
@@ -63,8 +63,8 @@ wav_recording_played_file_unrecorded_first_this_run(void) {
 }
 
 int
-wav_recording_kept_local_rdio_skip_first_this_run(void) {
-    return atomic_exchange(&s_kept_local_rdio_skip_reported, 1) == 0;
+wav_recording_fallback_blocked_first_this_run(void) {
+    return atomic_exchange(&s_fallback_blocked_reported, 1) == 0;
 }
 
 void
@@ -73,7 +73,7 @@ dsd_wav_recording_session_reset(void) {
     atomic_store(&s_analog_rdio_skip_reported, 0);
     atomic_store(&s_digital_rdio_skip_reported, 0);
     atomic_store(&s_played_file_unrecorded_reported, 0);
-    atomic_store(&s_kept_local_rdio_skip_reported, 0);
+    atomic_store(&s_fallback_blocked_reported, 0);
     for (int kind = 0; kind < DSD_WAV_RECORDING_ERROR_KINDS; kind++) {
         atomic_store(&s_failures[kind], 0);
         atomic_store(&s_reported[kind], 0);

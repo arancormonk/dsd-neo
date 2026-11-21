@@ -26,16 +26,17 @@
 #include <dsd-neo/platform/posix_compat.h>
 #include <dsd-neo/protocol/ysf/ysf.h>
 #include <dsd-neo/runtime/frame_sync_hooks.h>
+#include <dsd-neo/runtime/rdio_export.h>
 #include <dsd-neo/runtime/signal_search_hooks.h>
 #include <math.h>
 #include <mbelib-neo/mbelib.h>
 #include <sndfile.h>
 #include <stdint.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 #include "core/audio/voice_chain_internal.h"
-#include "core/file/wav_segment.h"
 #include "dsd-neo/core/opts_fwd.h"
 #ifdef DSD_YSF_TEST_REAL_VOCODER
 /* The real-vocoder build (YSF_MBE_CAPTURE) runs only its capture cases; the stubbed-vocoder cases stay compiled. */
@@ -1699,64 +1700,157 @@ reset_ysf_stream(void) {
     g_mbe_fail_at = -1;
 }
 
-/* A V/D2 frame whose FICH names DCH part @p fn and whose DCH carries @p text (ten characters). */
+/* A FICH with fields @p fi, @p cm, @p fn, @p ft and @p dt, the rest as a V/D type 1 frame's. */
 static void
-append_vd_type2_frame_with_dch(uint8_t fn, const char* text) {
-    uint8_t fich_bits[48];
-    uint8_t fich_input[100];
-    uint8_t dch2[100];
-    make_fich_bits_for_vd_type2(fich_bits);
+make_ysf_fich(uint8_t fich_bits[48], uint8_t fi, uint8_t cm, uint8_t fn, uint8_t ft, uint8_t dt) {
+    make_fich_bits_for_vd_type1(fich_bits);
+    set_bits_msb(fich_bits, 0U, 2U, fi);
+    set_bits_msb(fich_bits, 4U, 2U, cm);
     set_bits_msb(fich_bits, 10U, 3U, fn);
+    set_bits_msb(fich_bits, 13U, 3U, ft);
+    set_bits_msb(fich_bits, 22U, 2U, dt);
     append_ysf_crc(fich_bits);
-    encode_fich_input(fich_bits, 0, 0, fich_input);
-    encode_dch_payload_to_input(text, 10U, dch2, 96U, 5U, 0);
-    append_dibits_to_stream(fich_input, 100U);
-    for (size_t block = 0; block < 5U; block++) {
-        append_dibits_to_stream(&dch2[block * 20U], 20U);
-        append_type2_vech_dibits(0U);
-    }
 }
 
-/* Issue #888: a V/D2 frame's DCH is read after its five voice blocks were written to the slot's recording. A frame whose
-   destination begins another call, with no header or terminator between the two, leaves its 100 ms in the recording of
-   the call it ended, so that recording is kept local: published, never exported. A frame that names the call's own
-   destination again leaves the recording alone. Before, the recording was exported with the next call's first
-   frame. */
+/* The header (@p fi 0) or terminator (2) of a V/D type 1 call in call mode @p cm, carrying CSD1 @p csd1 (destination,
+   source) and CSD2 @p csd2 (uplink, downlink), twenty characters each. */
 static void
-test_process_ysf_vd_type2_next_call_keeps_the_recording_local(void) {
-    static dsd_opts opts;
-    static dsd_state state;
-    for (int changes = 1; changes >= 0; --changes) {
-        InitAllFecFunction();
-        DSD_MEMSET(&opts, 0, sizeof(opts));
-        DSD_MEMSET(&state, 0, sizeof(state));
+append_ysf_bound_frame(uint8_t fi, uint8_t cm, const char* csd1, const char* csd2) {
+    uint8_t fich_bits[48];
+    uint8_t fich_input[100];
+    uint8_t dch0[180];
+    uint8_t dch1[180];
+    make_ysf_fich(fich_bits, fi, cm, 0U, 1U, 0U);
+    encode_fich_input(fich_bits, 0, 0, fich_input);
+    encode_dch_payload_to_input(csd1, 20U, dch0, 176U, 9U, 0);
+    encode_dch_payload_to_input(csd2, 20U, dch1, 176U, 9U, 0);
+    append_dibits_to_stream(fich_input, 100U);
+    append_interleaved_full_rate_dch_blocks(dch0, dch1);
+}
+
+/* V/D type 1 voice frame @p fn of a call in call mode @p cm, its DCH @p dch_text (twenty characters): CSD1 in frame 0,
+   CSD2 in frame 1. */
+static void
+append_ysf_vd1_frame(uint8_t cm, uint8_t fn, const char* dch_text) {
+    uint8_t fich_bits[48];
+    uint8_t fich_input[100];
+    uint8_t dch[180];
+    make_ysf_fich(fich_bits, 1U, cm, fn, 6U, 0U);
+    encode_fich_input(fich_bits, 0, 0, fich_input);
+    encode_dch_payload_to_input(dch_text, 20U, dch, 176U, 9U, 0);
+    append_dibits_to_stream(fich_input, 100U);
+    append_vd_type1_blocks(dch, 1U);
+}
+
+/* A YSF decoder on the heap, its history kept, with --rdio-unknown-talkgroup 4242. */
+typedef struct {
+    dsd_opts* opts;
+    dsd_state* state;
+    Event_History_I* history;
+} ysf_call_rig;
+
+static void
+ysf_call_rig_open(ysf_call_rig* rig) {
+    InitAllFecFunction();
+    rig->opts = (dsd_opts*)calloc(1, sizeof(*rig->opts));
+    rig->state = (dsd_state*)calloc(1, sizeof(*rig->state));
+    rig->history = (Event_History_I*)calloc(2, sizeof(*rig->history));
+    assert(rig->opts != NULL && rig->state != NULL && rig->history != NULL);
+    init_event_history(&rig->history[0], 0U, 255U);
+    init_event_history(&rig->history[1], 0U, 255U);
+    rig->state->event_history_s = rig->history;
+    rig->opts->rdio_unknown_talkgroup = 4242;
+}
+
+static void
+ysf_call_rig_close(ysf_call_rig* rig) {
+    dsd_state_ext_free_all(rig->state);
+    free(rig->history);
+    free(rig->state);
+    free(rig->opts);
+}
+
+/* Plays the frame the stream holds and syncs the slot's history, as the frame sync does before the next frame, then
+   empties the stream. */
+static void
+ysf_call_rig_play(ysf_call_rig* rig) {
+    processYSF(rig->opts, rig->state);
+    assert(g_dibit_stream_pos == g_dibit_stream_len);
+    dsd_event_sync_slot(rig->opts, rig->state, 0U);
+    reset_ysf_stream();
+}
+
+/* The talkgroup the export gives committed row @p n (1 the latest), the fallback allowed: 4242 when the row takes
+   it. */
+static uint32_t
+ysf_committed_talkgroup(const ysf_call_rig* rig, int n) {
+    return dsd_rdio_call_talkgroup(rig->opts, &rig->history[0].Event_History_Items[n], 1);
+}
+
+/* Issue #888: an ordinary V/D type 1 call through a repeater, between a header and a terminator: frame 1's DCH (CSD2)
+   names the repeaters, which the call keeps as its route; its endpoints stay the caller's. The call is one row, the
+   caller's, and, ended by its terminator, it takes the fallback talkgroup. Before, every V/D type 1 frame's DCH was
+   read as CSD1, so frame 1 named the repeaters as the call's endpoints and began another call. */
+static void
+test_process_ysf_repeater_call_is_one_row_that_takes_the_fallback(void) {
+    ysf_call_rig rig;
+    ysf_call_rig_open(&rig);
+    reset_ysf_stream();
+    append_ysf_bound_frame(0U, 0U, "CALLDST001CALLSRC002", "RPTUPL0003RPTDNL0004");
+    ysf_call_rig_play(&rig);
+    append_ysf_vd1_frame(0U, 0U, "CALLDST001CALLSRC002");
+    ysf_call_rig_play(&rig);
+    append_ysf_vd1_frame(0U, 1U, "RPTUPL0003RPTDNL0004");
+    ysf_call_rig_play(&rig);
+    const dsd_call_snapshot call = get_test_ysf_call(rig.state);
+    assert(strcmp(call.source_text, "CALLSRC002") == 0);
+    assert(strcmp(call.target_text, "CALLDST001") == 0);
+    assert(strcmp(call.route_text[0], "RPTUPL0003") == 0);
+    append_ysf_vd1_frame(0U, 0U, "CALLDST001CALLSRC002");
+    ysf_call_rig_play(&rig);
+    append_ysf_bound_frame(2U, 0U, "CALLDST001CALLSRC002", "RPTUPL0003RPTDNL0004");
+    ysf_call_rig_play(&rig);
+    const dsd_call_snapshot ended = get_test_ysf_call(rig.state);
+    assert(ended.epoch == call.epoch && ended.phase == DSD_CALL_PHASE_ENDED);
+    assert(rig.history[0].push_seq == 1U);
+    assert(strcmp(rig.history[0].Event_History_Items[1].src_str, "CALLSRC002") == 0);
+    assert(ysf_committed_talkgroup(&rig, 1) == 4242U);
+    ysf_call_rig_close(&rig);
+}
+
+/* Issue #888: a YSF call takes the fallback talkgroup only when it has ended on a decoded terminator, as the export
+   reads its row. A call ended by a sync loss, or by a change of call mode in band (a group call, then a private one
+   with no header or terminator between them), does not: its recording may also hold the start of what came next. The
+   private call, ended by its terminator, does. Before, every committed YSF row took the fallback. */
+static void
+test_process_ysf_call_takes_the_fallback_only_after_a_terminator(void) {
+    for (int sync_loss = 1; sync_loss >= 0; sync_loss--) {
+        ysf_call_rig rig;
+        ysf_call_rig_open(&rig);
         reset_ysf_stream();
-        opts.floating_point = 1;
-        prepare_gain_stage(&state);
-        opts.dmr_stereo_wav = 1;
-        char dir[DSD_TEST_PATH_MAX];
-        assert(dsd_test_mkdtemp(dir, sizeof dir, "dsdneo_ysf_next_call") != NULL);
-        DSD_SNPRINTF(opts.wav_out_dir, sizeof opts.wav_out_dir, "%s", dir);
-        opts.wav_out_f = open_wav_file(opts.wav_out_dir, opts.wav_out_file, sizeof opts.wav_out_file, 8000, 0);
-        assert(opts.wav_out_f != NULL);
-
-        append_vd_type2_frame_with_dch(0U, "GROUP A   ");
-        processYSF(&opts, &state);
-        const dsd_call_snapshot first = get_test_ysf_call(&state);
-        assert(strcmp(first.target_text, "GROUP A") == 0);
-        assert(wav_segment_kept_local(opts.wav_out_f) == 0);
-
-        reset_ysf_stream();
-        append_vd_type2_frame_with_dch(0U, changes ? "GROUP B   " : "GROUP A   ");
-        processYSF(&opts, &state);
-        const dsd_call_snapshot second = get_test_ysf_call(&state);
-        assert((second.epoch != first.epoch) == (changes != 0));
-        assert(dsd_wav_segment_frames(opts.wav_out_f) == (int64_t)10 * 160);
-        assert(wav_segment_kept_local(opts.wav_out_f) == changes);
-
-        opts.wav_out_f = discard_analog_wav_file(opts.wav_out_f, opts.wav_out_file);
-        assert(dsd_test_rmdir(dir) == 0);
-        dsd_state_ext_free_all(&state);
+        append_ysf_bound_frame(0U, 0U, "CALLDST001CALLSRC002", "RPTUPL0003RPTDNL0004");
+        ysf_call_rig_play(&rig);
+        append_ysf_vd1_frame(0U, 0U, "CALLDST001CALLSRC002");
+        ysf_call_rig_play(&rig);
+        if (sync_loss) {
+            assert(dsd_call_state_end_ex(rig.state, 0U, 0.0, DSD_CALL_END_SYNC_LOSS) > 0);
+            dsd_event_sync_slot(rig.opts, rig.state, 0U);
+            assert(rig.history[0].push_seq == 1U);
+            assert(ysf_committed_talkgroup(&rig, 1) == 0U);
+        } else {
+            append_ysf_vd1_frame(3U, 0U, "CALLDST001CALLSRC002");
+            ysf_call_rig_play(&rig);
+            assert(get_test_ysf_call(rig.state).kind == DSD_CALL_KIND_PRIVATE_VOICE);
+            assert(rig.history[0].push_seq == 1U);
+            assert(rig.history[0].Event_History_Items[1].gi == 0);
+            assert(ysf_committed_talkgroup(&rig, 1) == 0U);
+            append_ysf_bound_frame(2U, 3U, "CALLDST001CALLSRC002", "RPTUPL0003RPTDNL0004");
+            ysf_call_rig_play(&rig);
+            assert(rig.history[0].push_seq == 2U);
+            assert(rig.history[0].Event_History_Items[1].gi == 1);
+            assert(ysf_committed_talkgroup(&rig, 1) == 4242U);
+        }
+        ysf_call_rig_close(&rig);
     }
 }
 
@@ -2137,9 +2231,10 @@ main(void) {
     test_process_ysf_vd_type2_routes_dch2_voice_and_audio_errors();
     test_process_ysf_vd_type2_tells_the_chain_each_frame();
     test_process_ysf_terminator_enriches_identity_before_call_end();
+    test_process_ysf_repeater_call_is_one_row_that_takes_the_fallback();
+    test_process_ysf_call_takes_the_fallback_only_after_a_terminator();
     test_process_ysf_ehr_voice_leaves_call_wav_to_vocoder();
     test_process_ysf_vd_type2_writes_call_wav_under_record_policy();
-    test_process_ysf_vd_type2_next_call_keeps_the_recording_local();
     test_process_ysf_vd_type2_captures_each_block();
     test_process_ysf_capture_waits_for_a_verified_fich();
     test_process_ysf_header_and_terminator_end_the_capture();

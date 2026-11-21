@@ -36,22 +36,10 @@ int wav_recording_digital_rdio_skip_first_this_run(void);
    recording (issue #888), the one that is logged; reset with the run's failure counts. */
 int wav_recording_played_file_unrecorded_first_this_run(void);
 
-/* 1 the first time this decoder run that a recording kept local (dsd_wav_segment_keep_local()) is not exported to
-   rdio-scanner (issue #888), the one that is logged; reset with the run's failure counts. */
-int wav_recording_kept_local_rdio_skip_first_this_run(void);
-
-/* Whether open segment @p file was kept local (dsd_wav_segment_keep_local()); 0 for a handle that is no per-call
-   segment. */
-int wav_segment_kept_local(const SNDFILE* file);
-
-/* Discard open segment @p file at its close: removed and journaled as discarded, never published (issue #888: a played
-   SDRTrunk file not in SDRTrunk's own shape, whose audio its IDs do not all judge). A handle that is no per-call segment
-   is left alone. */
-void wav_segment_discard_at_close(const SNDFILE* file);
-
-/* Whether open segment @p file is to be discarded at its close (wav_segment_discard_at_close()); 0 for a handle that is
-   no per-call segment. */
-int wav_segment_discarded(const SNDFILE* file);
+/* 1 the first time this decoder run that a digital voice call with no talkgroup is not exported because its row may not
+   take the fallback (Event_History::fallback_blocked, issue #888), the one that is logged; reset with the run's failure
+   counts. */
+int wav_recording_fallback_blocked_first_this_run(void);
 
 /* Forget @p file's segment, if it is one, and close it through libsndfile (or the test seam); sf_close()'s result.
    @p failed (may be NULL) gets whether a short write had latched the segment (the journal's `failed` flag). */

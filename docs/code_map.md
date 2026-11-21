@@ -2078,46 +2078,63 @@ suite runs under this compiler.
   `event_time` is cleared with the latch, so a call with no valid frame `time` falls back to the decode clock instead
   of the last call's date (`CORE_WAV_JOURNAL` `test_playback_records_play_as_one_call`,
   `test_playback_new_call_without_time_takes_the_decode_clock`, `CORE_MBE_FILE_IO`). The JSON is read token by token
-  (`sdrtrunk_json_token()`, the cut of `sdrtrunk_json_token_span()`, which finds a token without changing the text): a
+  (`sdrtrunk_json_token()`): a
   quoted string is one token, spaces and escapes (`\"`, `\\`) included, and only a string a `:` follows is a key, so a
   word inside a value (`"system":"Local time 2000"`, `"site":"protocol NXDN"`) is never matched as one; handlers read
   their member's value with `sdrtrunk_json_next_value()`, which refuses an object or an array, whose members are read
   as keys of their own. Every key is matched by its full name (`total_frames` is not `to`, `from_site` not `from`,
   `protocol_name` not `protocol`). The cursor (`sdrtrunk_json_cursor`) counts the braces and brackets the tokenizer
-  passes over, including the one that ends a bare value, so it knows the depth of each key and how many records began
-  (`records`): a record's own members sit at depth 1 (2 in a file that is one array of records), and a record-level
+  passes over, including the one that ends a bare value, so it knows the depth of each key: a record's own members sit
+  at depth 1 (2 in a file that is one array of records), and a record-level
   `frames` whose value is an array marks its elements' members as voice-frame members. Only such a member's `time`
   stamps the row; a `time` of the record, of a `metadata` object, or of another object's `frames` is passed over. The
   call's IDs (`protocol`, `call_type`, `to`, `from`) are read only at record depth (`sdrtrunk_json_at_record()`), so a
   `metadata` object's `from` is not the call's. The other keys keep their depth-free reading (some exports carry
-  `encryption_*` at record level). A `to` or `from` is read by `sdrtrunk_json_parse_id()`: decimal digits, or for a
-  `to` an SDRTrunk P25 patch group (`PatchGroup.toString()`, `P:<group>` and ` [<patched talkgroups>]`), which is its
-  group's talkgroup, so its talkgroup rows apply. An NXDN frame's `"tag":"SACCH <n>"` is that one value. A frame's
+  `encryption_*` at record level). A `to` or `from` is read by `sdrtrunk_json_parse_id()`: decimal digits, read by value
+  (leading zeros dropped, then the strict parser checks the range, so `"00000005678"` is 5678), or for a `to` an
+  SDRTrunk P25 patch group (`PatchGroup.toString()`, `P:<group>` and ` [<patched talkgroups>]`), which is its group's
+  talkgroup, so its talkgroup rows apply. An NXDN frame's `"tag":"SACCH <n>"` is that one value. A frame's
   `time` is matched by its exact key (not `timestamp`) and its value read whole; only decimal digits are a time (a sign
   or a space, which `strtoull()` would take, is not), then strict-parsed. The reader clears the staged row's
   `event_time` after its start sync, so a stamp an earlier file staged with no call to commit it (an export of a
   protocol the reader does not play) never files this file's call (`test_playback_next_file_takes_no_earlier_stamp`).
-  Recording and export are fail closed (issue #888). Before the file plays, `sdrtrunk_json_is_standard()` reads the
-  buffered text once, with the span tokenizer and the cursor's depth and record count, side-effect free: a file is
-  standard (SDRTrunk's own shape: `MBECallSequence` writes `protocol, version, call_type, from, to, encrypted, system,
-  site, frames`) when it holds exactly one record, none of whose ID members (`sdrtrunk_json_is_id_key()`: what the
-  record and stream verdicts read from the call snapshot, its protocol, kind, target and source) comes after its first
-  voice frame (its record-level `frames`, or any `hex` before them). A `to` or `from` present but unreadable
-  (`sdrtrunk_json_parse_id()` fails: SDRTrunk's roaming and ISSI forms among them) sets `id_unread`, and the ID is 0;
-  such a call must not take the fallback, so at the file's end `sdrtrunk_json_mark_segment()` keeps the segment local
-  (`dsd_wav_segment_keep_local()`) when the call has no talkgroup, and leaves it to export under a talkgroup it does
-  have. A standard file is recorded and exported as its policies allow, a Stop part-way included: its call is complete
-  before any audio, and the policy does not change while a file is read (the decoder thread is in the reader and
-  drains no commands), so the row's own record and stream verdicts judge all its audio. Any other file plays and makes
-  its history rows, but its segment is marked at the file's end, before the closing sync and so before any close,
-  Stop included: `wav_segment_discard_at_close()` (`wav_segment.c`), whose close removes it and journals `discard`
-  (`wav_close_discard()`), never publishes or exports it; one line a run while per-call recording is on
-  (`sdrtrunk_json_note_unrecorded()`). SDRTrunk's own exports are standard, so they record and export as before
-  (`CORE_WAV_JOURNAL` `test_playback_file_shape_decides_its_recording`: a `from` after the frames, a second record of
-  frames alone, frames before the protocol, a `to` after a Stop; an unreadable `to`, or a roaming source to an ISSI
-  talkgroup, records but stays local, and a roaming source to a numbered talkgroup exports under it; a trailing
-  `metadata` `from` and the patch groups still export). The static WAV and MBE captures are written as before: neither
-  is exported, and neither can be taken back in part.
+  Recording and export are fail closed (issue #888). Before the file plays, `sdrtrunk_json_shape()` checks the buffered
+  text once against an allowlist of SDRTrunk's writer, changing nothing: `MBECallSequenceRecorder`'s
+  `writeCallSequence()` writes one `MBECallSequence` with Jackson's default pretty printer and no root name. The check
+  is a small recursive reader with one `sdrtrunk_shape_level` per object (the members read so far, as bits, and the last
+  one in the writer's order) over two fixed tables: `k_sdrtrunk_record_members` (`MBECallSequence`'s
+  `@JsonPropertyOrder`: `protocol` string, `version` integer, `call_type`, `from`, `to` strings, `encrypted` boolean,
+  `system`, `site` strings, `frames` array) and `k_sdrtrunk_frame_members` (`VoiceFrame`'s: `tag` string,
+  `encryption_algorithm`, `encryption_key_id` integers, `encryption_mi` string, `time` integer, `hex` hex string). A
+  file is STANDARD when it is exactly one record object with only white space after it (to the buffer's end, so a NUL
+  inside the text is not an end), each member is one of its table's, at most once, after the last one read (absent ones
+  allowed), with a value of its type (a string in quotes with no raw control character, an integer `-?[0-9]+`,
+  `true`/`false`); `frames` is an array of frame objects, each with a `hex` of hex digits that is not empty; no member
+  name holds an escape; and there is no other object or array. Historical variant: the writer before 2025-11 listed
+  `protocol, call_type, from, to, encrypted, frames` with no `version`, so Jackson put the unlisted `system` and `site`
+  after `frames`; those two (`late` in the table) may also come after `frames`, in either order. `VoiceFrame` gained
+  `tag` (first) in 2026-07. The check looks at the exit flag before each frame; a Stop during it
+  (`SDRTRUNK_JSON_STOPPED`) makes the reader return before it resets the call or syncs the slot, so the earlier call and
+  the recordings stay as they were (`CORE_MBE_FILE_IO` `test_sdrtrunk_json_stop_during_the_shape_check`). A STANDARD
+  file is recorded and exported as its policies allow, a Stop part-way included: its call is complete before any audio,
+  and the policy does not change while a file is read (the decoder thread is in the reader and drains no commands), so
+  the row's own record and stream verdicts judge all its audio. Any other file (NONSTANDARD) plays, makes its history
+  rows, and writes the static WAV and MBE captures, but `s_sdrtrunk_per_call_off` keeps every frame out of the per-call
+  segment (`run_decode_audio_output_path()`, one compare a frame), so the segment stays empty and its close discards it
+  as any empty one: nothing is marked, so nothing can reach the next file's recording (`CORE_WAV_JOURNAL`
+  `test_playback_empty_file_leaves_the_next_recording`). One line a run while per-call recording is on
+  (`sdrtrunk_json_note_unrecorded()`). A `to` or `from` that is a string but does not read (`sdrtrunk_json_parse_id()`
+  fails: SDRTrunk's roaming and ISSI forms among them) sets `id_unread`, and the ID is 0; the call is published with
+  `dsd_call_observation::identity_unread`, which the call snapshot keeps for the epoch, and the event layer's render
+  gives its row `Event_History::fallback_blocked`, so it never takes the fallback (`dsd_rdio_call_fallback_eligible()`);
+  with a talkgroup it is exported under it. A `to` or `from` that is not a string is not allowlisted, so its file is
+  NONSTANDARD. Tests: `CORE_WAV_JOURNAL` `test_playback_file_shape_decides_its_recording` (a `from`, `to` or `encrypted`
+  after the frames, a second record, frames before the protocol, a nested object with frames, an escaped key, an
+  unclosed record, an outer array, `"to":[]`, a frame with no `hex`: no per-call audio; a zero-padded source keeps its
+  radio's `stream=off`; a patch group, an unreadable `to`, a roaming source),
+  `test_playback_sdrtrunk_written_files_record` (Jackson-printed DMR, P25 Phase 1 and 2, NXDN with SACCH tags, the older
+  writer, CRLF line ends: all STANDARD), `CORE_MBE_FILE_IO` `test_sdrtrunk_json_wav_honors_talkgroup_policy` (a
+  NONSTANDARD file writes the static WAV, never the per-call one).
 - API note: the high-pass filter in `<dsd-neo/core/audio_filters.h>` is `dsd_hpf()`. It was renamed from
   `hpf()` because codec2 exports a symbol of that name and Android links codec2 statically, which turns the
   duplicate into a link error. It is the only filter in that header that is prefixed: codec2 exports none of
@@ -2591,15 +2608,16 @@ suite runs under this compiler.
   fsync. A journal whose last byte is not `\n` gets one at open, so a line torn by a crash never swallows the next
   record. A failed open, write or flush turns the journal off for the rest of the run (`DSD_WAV_JOURNAL_FAILED`, one
   LOG_ERROR, the recording view's `journal_state` FAILED until the next run opens one); recording itself goes on.
-  - - Publication: `wav_close_and_publish()` (`dsd_file.c`) journals every close that has options: `publish` after the
-    rename (and the rdio export), `discard` for a 44-byte WAV or a segment marked `wav_segment_discard_at_close()` once
-    `wav_close_discard()` has removed it (a marked segment is removed even when its close fails: none of it was to be
-    kept), `error` for a close (`sf_close()`) or rename failure that keeps the temp file, and `error` of kind `discard`,
-    with a warning, for a file whose removal failed (a read-only folder; a Windows reader that shares no delete), which
-    names the file left (issue #888). `open_wav_file()` journals an open failure. The analog teardown close
-    (`close_and_rename_analog_wav_file()`, no options, no row, named from the parts the call kept) and the discard of an
-    unpublished analog recording (`discard_analog_wav_file()`) write nothing. Each segment's id is its temp name's token
-    and sequence (`TEMP_<date>_<time>_<token>_<seq>`), so an open, its discard and its errors name one id.
+  - Publication: `wav_close_and_publish()` (`dsd_file.c`) journals every close that has options: `publish` after the
+    rename (and the rdio export), `discard` for a 44-byte WAV once `wav_close_discard()` has removed it (or found it
+    already gone, `ENOENT`), `error` for a close (`sf_close()`) or rename failure that keeps the temp file, and `error`
+    of kind `discard`, with a warning, for a file whose removal failed with any other error (a read-only folder, a
+    folder that cannot be searched, a Windows reader that shares no delete), which names the file left (issue #888). The
+    removal's own error decides, never whether the file can be read afterwards. `open_wav_file()` journals an open
+    failure. The analog teardown close (`close_and_rename_analog_wav_file()`, no options, no row, named from the parts
+    the call kept) and the discard of an unpublished analog recording (`discard_analog_wav_file()`) write nothing. Each
+    segment's id is its temp name's token and sequence (`TEMP_<date>_<time>_<token>_<seq>`), so an open, its discard and
+    its errors name one id.
   - Whose recording: the event layer's rotation (`watchdog_event_retire_staged_row()` to
     `close_and_rename_wav_file_ex()`) passes the row explicitly (`dsd_wav_owner`): the pushed row's stamp
     (`push_seq` right after the push) on a commit, the retained row's (`push_seq - (retained_index - 1)`) on a
@@ -2816,7 +2834,7 @@ suite runs under this compiler.
   close paths, `test_d7_*`; a TETRA anonymous call exported under the fallback once the carrier is proven, its earlier
   speech not; a played SDRTrunk call with no talkgroup under `--rdio-unknown-talkgroup` with no tuner frequency or
   code, and kept local without it), `CORE_RECEIVE` (the skip line), `ENGINE_NO_CARRIER_RESET`, `ENGINE_TRUNK_SCAN`,
-  `APP_CONTROL_SNAPSHOT_EVENT_HISTORY`, and end to end `DECODE_IQ_YSF_RDIO_DIRWATCH_UNKNOWN_TG` (`docs/testing.md`).
+  `APP_CONTROL_SNAPSHOT_EVENT_HISTORY`, and end to end `DECODE_IQ_M17_RDIO_DIRWATCH_UNKNOWN_TG` (`docs/testing.md`).
 - History system and site (`dsd_events.c`, `watchdog_event_current_load_system()`): a voice row's system and site slots
   come from the received identity record of the call's protocol family, never from decoder state a seed, a preset, a
   control-channel anchor or another carrier wrote: P25 WACN, SYSID, RFSS and SITE (`sys_id1`, `_2`, `_4`, `_5`), the DMR
@@ -12142,16 +12160,22 @@ control within the CC grace walks its channel map with the ordinary hunts.
   data (`edacs_lcn_names_channel()`); main published LCNs 26-30 as grants on a 0 Hz channel. This rests on the
   decoder's own reserved-LCN handling; EDACS gets no unit-event semantics (no public spec). Tests:
   `EDACS_GRANT_TUNE_MATRIX` (`edacs_run_status_lcn_cases`).
-- YSF in-band identity change (`src/protocol/ysf/ysf.c`, issue #888): a V/D1, V/D2 or full-rate voice frame's DCH is
-  decoded after its voice was written to the slot's per-call WAV, so when its callsigns begin another call
-  (`ysf_enrich_identity()`'s observe opens a new epoch, with no header or terminator between the two calls) the ended
-  call's recording holds the new call's first frame (100 ms). The voice handlers read the slot's epoch before the DCH
-  (`dsd_call_state_get_revision()`, no snapshot copy) and, when it moved, mark the open segment
-  `dsd_wav_segment_keep_local()` (`<dsd-neo/core/file_io.h>`): its close publishes and journals it (`rdio` false) but
-  never exports it, one line a run (`wav_close_note_kept_local()`, shared with a played SDRTrunk call whose ID could
-  not be read). A header's or terminator's DCH carries no voice and
-  marks nothing. Fail closed rather than reorder the frame (the DCH is read after the voice blocks on air). Test:
-  `YSF_DCH_DECODE` `test_process_ysf_vd_type2_next_call_keeps_the_recording_local`.
+- YSF and the rdio fallback (issue #888): a YSF row takes the fallback talkgroup only when its call ended on a decoded
+  terminator. The event layer's render sets `Event_History::fallback_blocked` from the call
+  (`watchdog_event_call_blocks_fallback()`, `dsd_events.c`): a YSF call not ENDED with `DSD_CALL_END_TERMINATOR` (a
+  sync loss, an in-band change of call mode or callsign that began another epoch, a teardown, or an early close while
+  it is active) is blocked, as is any call whose snapshot has `identity_unread`. The flag is copied with the row
+  (`push_event_history()`, the merge re-render keeps the committed row's), and `dsd_rdio_call_fallback_eligible()`
+  refuses a blocked row, so `dsd_rdio_call_talkgroup()` gives it no fallback number (a talkgroup it has stays). The WAV
+  close says it once a run (`wav_recording_fallback_blocked_first_this_run()`). A YSF voice frame's DCH is read after
+  its voice was written, so a call that ends any other way may hold the start of the next one; the rule replaces the
+  in-band epoch check of an earlier round, which a V/D1 repeater call tripped. V/D1 DCH fields are selected by frame
+  number (`ysf_vd_type1_dch_field()`: frame 0 CSD1, frame 1 CSD2, later frames none), not by the block number, which
+  read frame 1's repeater callsigns as the call's endpoints and split the call. Tests: `YSF_DCH_DECODE`
+  `test_process_ysf_repeater_call_is_one_row_that_takes_the_fallback`,
+  `test_process_ysf_call_takes_the_fallback_only_after_a_terminator`; `DECODE_IQ_YSF_RDIO_DIRWATCH_UNKNOWN_TG` (the
+  synthetic call has no terminator: never exported, said once a leg) beside `DECODE_IQ_M17_RDIO_DIRWATCH_UNKNOWN_TG`
+  (the fallback end to end).
 - YSF call mode 1 ("radio ID", `src/protocol/ysf/ysf.c`): the CSD1 destination field is printed as a 5-character
   destination radio ID and a 5-character source radio ID, but the call's target text keeps all 10 characters. The
   split is not changed: the two independent decoders checked disagree (DSDcc `processCSD1()` reads destination and

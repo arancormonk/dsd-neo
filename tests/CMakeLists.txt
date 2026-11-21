@@ -24125,11 +24125,34 @@ if(DSD_HAS_RADIO)
         MIN_FILES 1
         MIN_FRAMES 160
     )
-    # rdio-scanner DirWatch export of a digital call with no talkgroup (issue #888): the synthetic YSF call names no
-    # target or source. Replayed, it is exported under its frequency in kHz, labelled by its protocol and MHz; decoded
-    # from the replay's discriminator audio (an audio input, no frequency) under --rdio-unknown-talkgroup, labelled by
-    # its protocol alone, with freq 0 and no freqList; without the option it is recorded but not exported, said once.
-    # tests/rdio_dirwatch_check.cmake reads the finalized WAV/JSON pairs and the journal.
+    # rdio-scanner DirWatch export of a digital call with no talkgroup (issue #888), through
+    # tests/rdio_dirwatch_check.cmake, which reads the finalized WAV/JSON pairs and the journal. The synthetic M17 call
+    # is named by callsigns alone (target BROADCAST). Replayed, it is exported under its frequency in kHz, labelled by
+    # its protocol and MHz; decoded from the replay's discriminator audio (an audio input, no frequency) under
+    # --rdio-unknown-talkgroup, labelled by its protocol alone, with freq 0 and no freqList; without the option it is
+    # recorded but not exported, said once. Only a Codec2 build decodes its voice.
+    if(DSD_HAS_CODEC2)
+        add_test(
+            NAME DECODE_IQ_M17_RDIO_DIRWATCH_UNKNOWN_TG
+            COMMAND
+                ${CMAKE_COMMAND} "-DDSD_BIN=$<TARGET_FILE:dsd-neo>" "-DMODE=-fz"
+                "-DFIXTURE=${_DSD_NEO_IQ_FIXTURE_DIR}/m17.iq.json"
+                "-DEXPECTED=SRC: N0CALL"
+                "-DWORK_DIR=${CMAKE_CURRENT_BINARY_DIR}/rdio_dirwatch/DECODE_IQ_M17_RDIO_DIRWATCH_UNKNOWN_TG"
+                "-DTARGET=BROADCAST"
+                "-DRF_SIDECAR=talkgroup=851375,talkgroup_tag=M17 CAN 7 851.3750 MHz,freq=851375000,system=48,short_name=M17_CAN_7,emergency=false,encrypted=false"
+                "-DAUDIO_TALKGROUP=4242"
+                "-DAUDIO_SIDECAR=talkgroup_tag=M17 CAN 7,freq=0,system=48,short_name=M17_CAN_7"
+                -P "${CMAKE_CURRENT_SOURCE_DIR}/rdio_dirwatch_check.cmake"
+        )
+        set_tests_properties(
+            DECODE_IQ_M17_RDIO_DIRWATCH_UNKNOWN_TG
+            PROPERTIES LABELS "iq-decode" TIMEOUT 360
+        )
+    endif()
+    # The synthetic YSF call names no target or source and ends with the capture, on no terminator: a YSF call takes
+    # the fallback only once it has ended on a decoded terminator, so in every leg it is recorded but not exported,
+    # said once.
     add_test(
         NAME DECODE_IQ_YSF_RDIO_DIRWATCH_UNKNOWN_TG
         COMMAND
@@ -24137,10 +24160,9 @@ if(DSD_HAS_RADIO)
             "-DFIXTURE=${_DSD_NEO_IQ_FIXTURE_DIR}/ysf_synth.iq.json"
             "-DEXPECTED=FN: [1-8]/8 "
             "-DWORK_DIR=${CMAKE_CURRENT_BINARY_DIR}/rdio_dirwatch/DECODE_IQ_YSF_RDIO_DIRWATCH_UNKNOWN_TG"
-            "-DRF_SIDECAR=talkgroup=851375,talkgroup_tag=YSF 851.3750 MHz,freq=851375000,system=48,short_name=YSF,srcList=[],emergency=false,encrypted=false"
-            "-DAUDIO_TALKGROUP=4242"
-            "-DAUDIO_SIDECAR=talkgroup_tag=YSF,freq=0,system=48,short_name=YSF,srcList=[]"
-            -P "${CMAKE_CURRENT_SOURCE_DIR}/rdio_dirwatch_check.cmake"
+            "-DNO_FALLBACK=ON" "-DRF_SIDECAR=" "-DAUDIO_TALKGROUP=4242"
+            "-DAUDIO_SIDECAR=" -P
+            "${CMAKE_CURRENT_SOURCE_DIR}/rdio_dirwatch_check.cmake"
     )
     set_tests_properties(
         DECODE_IQ_YSF_RDIO_DIRWATCH_UNKNOWN_TG

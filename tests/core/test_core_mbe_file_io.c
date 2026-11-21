@@ -2099,7 +2099,7 @@ test_sdrtrunk_json_voice_wav_is_pcm16_scale(void) {
 
     char json[256];
     DSD_SNPRINTF(json, sizeof json,
-                 "{\"version\":\"2\",\"protocol\":\"DMR\",\"call_type\":\"GROUP\",\"encrypted\":\"false\","
+                 "{\"protocol\":\"DMR\",\"version\":2,\"call_type\":\"GROUP\",\"encrypted\":false,"
                  "\"frames\":[{\"hex\":\"%s\"},{\"hex\":\"%s\"}]}",
                  k_sdrtrunk_dmr_voice_hex, k_sdrtrunk_dmr_voice_hex);
 
@@ -2184,20 +2184,33 @@ apply_record_policy(dsd_opts* opts, dsd_state* state, int policy) {
     return 0;
 }
 
+/* A replayed DMR call to 1234 from 5678 in SDRTrunk's shape (one record, its members in the writer's order). */
+static const char k_sdrtrunk_policy_json[] =
+    "{\"protocol\":\"DMR\",\"version\":2,\"call_type\":\"GROUP\",\"from\":\"5678\",\"to\":\"1234\","
+    "\"encrypted\":false,\"frames\":[{\"hex\":\"000000000000000000\"}]}";
+/* The same call in a shape SDRTrunk never writes: a string "version" and "encrypted", a record-level "hex". */
+static const char k_sdrtrunk_nonstandard_json[] =
+    "{\"version\":\"2\",\"protocol\":\"DMR\",\"call_type\":\"GROUP\",\"encrypted\":\"false\","
+    "\"to\":\"1234\",\"from\":\"5678\",\"hex\":\"000000000000000000\"}";
+
 /* SDRTrunk JSON playback writes its static and per-call WAVs itself; both
- * honour the replayed call's talkgroup policy, as live decode does. */
+ * honour the replayed call's talkgroup policy, as live decode does. A file not in
+ * SDRTrunk's shape (issue #888) writes its static WAV as before, but none of its
+ * audio reaches the per-call WAV, whatever the policy allows. Before, it was
+ * written there and removed only when the recording closed. */
 static int
 test_sdrtrunk_json_wav_honors_talkgroup_policy(void) {
-    static const char json[] =
-        "{\"version\":\"2\",\"protocol\":\"DMR\",\"call_type\":\"GROUP\",\"encrypted\":\"false\","
-        "\"to\":\"1234\",\"from\":\"5678\",\"hex\":\"000000000000000000\"}";
     static dsd_opts opts;
     static dsd_state state;
     static Event_History_I history[2];
     int rc = 0;
-    for (int per_call = 0; per_call <= 1; ++per_call) {
+    /* Static and per-call WAVs of the file in SDRTrunk's shape, then of the one in no shape of SDRTrunk's. */
+    for (int leg = 0; leg < 4; ++leg) {
+        const int per_call = leg % 2;
+        const int nonstandard = leg >= 2;
+        const char* json = nonstandard ? k_sdrtrunk_nonstandard_json : k_sdrtrunk_policy_json;
         for (int policy = 0; policy < RECORD_POLICY_CASES; ++policy) {
-            const int blocked = policy <= RECORD_POLICY_KNOWN_UNKNOWN_ONLY;
+            const int blocked = policy <= RECORD_POLICY_KNOWN_UNKNOWN_ONLY || (nonstandard && per_call);
             DSD_MEMSET(&opts, 0, sizeof opts);
             DSD_MEMSET(&state, 0, sizeof state);
             DSD_MEMSET(history, 0, sizeof history);
@@ -2237,9 +2250,12 @@ test_sdrtrunk_json_wav_honors_talkgroup_policy(void) {
             if (written) {
                 sf_close(written);
             }
-            rc |=
-                expect_int(blocked ? "sdrtrunk wav omits blocked talkgroup" : "sdrtrunk wav records allowed talkgroup",
-                           info.frames > 0, !blocked);
+            const char* what =
+                blocked ? "sdrtrunk wav omits blocked talkgroup" : "sdrtrunk wav records allowed talkgroup";
+            if (nonstandard && per_call) {
+                what = "sdrtrunk per-call wav omits a file not in SDRTrunk's shape";
+            }
+            rc |= expect_int(what, info.frames > 0, !blocked);
             dsd_state_ext_free_all(&state);
             (void)remove(wav_path);
         }
@@ -2773,7 +2789,7 @@ test_sdrtrunk_json_stop_during_the_read(void) {
     FILE* in = dsd_fopen_private(path, "w+b");
     if (in == NULL) {
         DSD_FPRINTF(stderr, "stop during the read: %s not opened: %s\n", path, strerror(errno));
-        (void)remove(path);
+        (void)dsd_remove_file(path);
         return 1;
     }
     int rc = fputs("{\"protocol\":\"DMR\",\"version\":2,\"call_type\":\"GROUP\",\"to\":\"1234\",\"frames\":[", in) < 0;
@@ -2787,7 +2803,7 @@ test_sdrtrunk_json_stop_during_the_read(void) {
     sdrtrunk_run run;
     if (sdrtrunk_run_open(&run) != 0) {
         (void)fclose(in);
-        (void)remove(path);
+        (void)dsd_remove_file(path);
         return expect_true("stop during the read: allocated", 0);
     }
     run.state->synctype = DSD_SYNC_NONE;
@@ -2804,7 +2820,45 @@ test_sdrtrunk_json_stop_during_the_read(void) {
     run.opts->mbe_in_f = NULL;
     sdrtrunk_run_close(&run);
     rc |= fclose(in) != 0;
-    rc |= expect_int("stop during the read: its input removed", remove(path), 0);
+    rc |= expect_int("stop during the read: its input removed", dsd_remove_file(path), 0);
+    return rc;
+}
+
+/* Issue #888: Stop after the read, while the file's shape is checked, ends the file before anything of it changes: the
+   call an earlier input left on the slot goes on, and nothing plays. Before, the check ran to its end, and the reader
+   then ended that call. */
+static int
+test_sdrtrunk_json_stop_during_the_shape_check(void) {
+    sdrtrunk_run run;
+    if (sdrtrunk_run_open(&run) != 0) {
+        return expect_true("stop during the shape check: allocated", 0);
+    }
+    const dsd_call_observation earlier = {
+        .protocol = DSD_SYNC_DMR_BS_DATA_POS,
+        .slot = 0U,
+        .kind = DSD_CALL_KIND_GROUP_VOICE,
+        .ota_target_id = 77U,
+        .policy_target_id = 77U,
+    };
+    int rc = expect_int("stop during the shape check: an earlier call",
+                        dsd_call_state_observe(run.state, &earlier, DSD_CALL_BOUNDARY_BEGIN), 1);
+    dsd_call_snapshot before;
+    DSD_MEMSET(&before, 0, sizeof before);
+    (void)dsd_call_state_get(run.state, 0U, &before);
+    run.state->synctype = DSD_SYNC_NONE;
+    dsd_exitflag_store(1);
+    rc |= run_sdrtrunk_json("{\"protocol\":\"DMR\",\"version\":2,\"call_type\":\"GROUP\",\"to\":\"1234\","
+                            "\"frames\":[{\"hex\":\"3ABF032D9ADEE4CB50\"}]}",
+                            run.opts, run.state);
+    dsd_exitflag_store(0);
+    dsd_call_snapshot after;
+    DSD_MEMSET(&after, 0, sizeof after);
+    (void)dsd_call_state_get(run.state, 0U, &after);
+    rc |=
+        expect_true("stop during the shape check: the earlier call goes on",
+                    after.epoch == before.epoch && after.phase == DSD_CALL_PHASE_ACTIVE && after.ota_target_id == 77U);
+    rc |= expect_int("stop during the shape check: nothing played", run.state->synctype, DSD_SYNC_NONE);
+    sdrtrunk_run_close(&run);
     return rc;
 }
 
@@ -5058,6 +5112,7 @@ main(void) {
     rc |= test_sdrtrunk_nxdn_missing_context_and_sacch_alignment();
     rc |= test_sdrtrunk_json_lost_frame_keeps_the_keystream_place();
     rc |= test_sdrtrunk_json_stop_during_the_read();
+    rc |= test_sdrtrunk_json_stop_during_the_shape_check();
     rc |= test_sdrtrunk_dmr_capture_and_late_entry();
     rc |= test_sdrtrunk_json_dmr_aes_incomplete_late_entry_mi();
     rc |= test_sdrtrunk_json_tells_the_chain_each_frame();

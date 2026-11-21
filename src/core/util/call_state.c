@@ -583,6 +583,7 @@ call_state_seed_reacquired_snapshot(dsd_call_snapshot* snapshot, const dsd_call_
     snapshot->received_kid = previous->received_kid;
     snapshot->service_options = previous->service_options;
     snapshot->has_service_metadata = previous->has_service_metadata;
+    snapshot->identity_unread = previous->identity_unread;
     snapshot->emergency = previous->emergency;
     snapshot->priority = previous->priority;
     snapshot->media_started_m = previous->media_started_m;
@@ -682,6 +683,9 @@ call_state_apply_observation(dsd_call_snapshot* snapshot, const dsd_call_observa
         snapshot->emergency = observation->emergency;
         snapshot->priority = observation->priority;
         snapshot->has_service_metadata = 1U;
+    }
+    if (observation->identity_unread != 0U) {
+        snapshot->identity_unread = 1U;
     }
 }
 

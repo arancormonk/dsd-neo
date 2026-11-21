@@ -125,6 +125,7 @@ init_event_history(Event_History_I* event_struct, uint8_t start, uint8_t stop) {
         event_struct->Event_History_Items[i].channel_label_resolved = 0;
         /* Never judged: exports as before (issue #773 D7). */
         event_struct->Event_History_Items[i].stream_blocked = 0U;
+        event_struct->Event_History_Items[i].fallback_blocked = 0U;
         event_struct->Event_History_Items[i].operator_tuned = 0;
         event_struct->Event_History_Items[i].scan_member = 0;
         event_struct->Event_History_Items[i].channel = 0;
@@ -211,6 +212,8 @@ push_event_history(Event_History_I* event_struct) {
         event_struct->Event_History_Items[i].channel_label_resolved =
             event_struct->Event_History_Items[i - 1].channel_label_resolved;
         event_struct->Event_History_Items[i].stream_blocked = event_struct->Event_History_Items[i - 1].stream_blocked;
+        event_struct->Event_History_Items[i].fallback_blocked =
+            event_struct->Event_History_Items[i - 1].fallback_blocked;
         event_struct->Event_History_Items[i].operator_tuned = event_struct->Event_History_Items[i - 1].operator_tuned;
         event_struct->Event_History_Items[i].scan_member = event_struct->Event_History_Items[i - 1].scan_member;
         event_struct->Event_History_Items[i].channel = event_struct->Event_History_Items[i - 1].channel;
@@ -1737,6 +1740,8 @@ typedef struct {
     /* The rdio-scanner export verdict (issue #773 D7) and, beside the system IDs above, the talkgroup it was judged
      * on (policy_target_id); see watchdog_event_current_load_stream_export(). */
     uint8_t stream_blocked;
+    /* Whether the row may not take rdio's fallback talkgroup (Event_History::fallback_blocked). */
+    uint8_t fallback_blocked;
     /* Seconds the call has run on the canonical epoch's own timeline — through its
      * last observation while active, through its end once ended. Anchors the row's
      * stamps: the first render subtracts it from the wall clock to fix
@@ -1835,6 +1840,19 @@ watchdog_event_set_ysf_text_message(dsd_state* state, Event_History* item) {
     }
 }
 
+/* Whether @p call's row may not take rdio's fallback talkgroup (Event_History::fallback_blocked, issue #888): it named
+   a party its decoder could not read as an ID, or it is a YSF call that has not ended on a decoded terminator. A YSF
+   call that ended any other way (a sync loss, a change of call mode or callsign in band, a teardown) may hold the
+   start of what came next: a voice frame's callsigns are read after its voice. */
+static uint8_t
+watchdog_event_call_blocks_fallback(const dsd_call_snapshot* call) {
+    if (call->identity_unread != 0U) {
+        return 1U;
+    }
+    const int terminated = call->phase == DSD_CALL_PHASE_ENDED && call->end_reason == (uint8_t)DSD_CALL_END_TERMINATOR;
+    return DSD_SYNC_IS_YSF(call->protocol) && !terminated ? 1U : 0U;
+}
+
 static void
 watchdog_event_current_init_base(const dsd_state* state, uint8_t slot, const dsd_call_snapshot* call,
                                  watchdog_event_current_ctx* ctx) {
@@ -1877,6 +1895,7 @@ watchdog_event_current_init_base(const dsd_state* state, uint8_t slot, const dsd
         }
     }
     ctx->start_wall = call->start_wall;
+    ctx->fallback_blocked = watchdog_event_call_blocks_fallback(call);
     DSD_SNPRINTF(ctx->src_str, sizeof ctx->src_str, "%s", call->source_text);
     DSD_SNPRINTF(ctx->tgt_str, sizeof ctx->tgt_str, "%s", call->target_text);
 
@@ -2455,6 +2474,7 @@ watchdog_event_current_update_item(const dsd_opts* opts, dsd_state* state, uint8
     item->target_id = ctx->target_id;
     item->policy_target_id = ctx->policy_target_id;
     item->stream_blocked = ctx->stream_blocked;
+    item->fallback_blocked = ctx->fallback_blocked;
     item->channel = ctx->channel;
     item->call_channel_kind = ctx->channel_kind;
     item->analog_mode = ctx->analog_mode;
@@ -3114,6 +3134,7 @@ watchdog_event_ctx_from_row(const dsd_call_event_render_env* env, const Event_Hi
     // A committed row's export verdict stands as its last render judged it; a merge re-renders only its text.
     ctx->policy_target_id = item->policy_target_id;
     ctx->stream_blocked = item->stream_blocked;
+    ctx->fallback_blocked = item->fallback_blocked;
     ctx->svc_opts = item->svc;
     ctx->enc = item->enc;
     ctx->emergency = item->emergency;

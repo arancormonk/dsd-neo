@@ -342,21 +342,21 @@ Windows console runs:
   (`docs/api.md`).
 - `-7 <dir>` Set folder for per‑call WAVs, before or after `-P`; the folder is created when decoding starts if it does
   not exist. A path longer than 511 bytes is refused.
-- - `--wav-journal <file>` Append one JSON line to `<file>` for each per-call WAV published (`publish`: its name, start,
-  length, and the call history row it belongs to), each one deleted for holding no audio or for being a played SDRTrunk
-  file's that is not in SDRTrunk's own shape (`discard`), kept under its `TEMP_` name (`error`) or left in place because
-  its deletion failed (`error` of kind `discard`, naming the file), and `link`/`unlink` lines for a recording closed
-  before its call's history row (a WAV stop mid-call, a conventional analog call's end) once that row commits or never
-  will. A program that manages the recordings, such as the app's call recording store, reads it to tie files to calls. A
-  journal that ends in a torn line gets a newline first. A record's `start` is when the call started, or when the
-  recording opened if that was later (recording switched on mid-call); an analog recording's is its own first sample (an
-  NFM one's pre-roll included). A recording received while a Signal search was listening to a detection names that
-  detection (`search`), so the app can list a detection's recordings. A journal that cannot be opened or written is
-  turned off for the rest of the run with one error in the log; decoding and recording go on. A run with a journal keeps
-  every file it uploads: while the journal is set, `--rdio-api-delete-after-upload` (or the config's
-  `rdio_api_delete_after_upload`) deletes nothing, with one warning in the log, because the journal's owner manages the
-  recordings' retention. The option keeps its value, so a config saved from the run (the exit's autosave included) still
-  has it. The record format is in `docs/code_map.md` ("Recording journal").
+- `--wav-journal <file>` Append one JSON line to `<file>` for each per-call WAV published (`publish`: its name, start,
+  length, and the call history row it belongs to), each one deleted for holding no audio (`discard`), kept under its
+  `TEMP_` name (`error`) or left in place because its deletion failed (`error` of kind `discard`, naming the file), and
+  `link`/`unlink` lines for a recording closed before its call's history row (a WAV stop mid-call, a conventional analog
+  call's end) once that row commits or never will. A program that manages the recordings, such as the app's call
+  recording store, reads it to tie files to calls. A journal that ends in a torn line gets a newline first. A record's
+  `start` is when the call started, or when the recording opened if that was later (recording switched on mid-call); an
+  analog recording's is its own first sample (an NFM one's pre-roll included). A recording received while a Signal
+  search was listening to a detection names that detection (`search`), so the app can list a detection's recordings. A
+  journal that cannot be opened or written is turned off for the rest of the run with one error in the log; decoding and
+  recording go on. A run with a journal keeps every file it uploads: while the journal is set,
+  `--rdio-api-delete-after-upload` (or the config's `rdio_api_delete_after_upload`) deletes nothing, with one warning in
+  the log, because the journal's owner manages the recordings' retention. The option keeps its value, so a config saved
+  from the run (the exit's autosave included) still has it. The record format is in `docs/code_map.md` ("Recording
+  journal").
 - `--analog-record-max-gap-ms <ms>` (or `--analog-record-max-gap-ms=<ms>`) Keep a conventional analog call in one
   recording, and one call history row, through a pause of up to `<ms>`. It works only with per-call recording on (`-P`);
   without it, calls end as before. When the signal comes back in time, the pause is saved as silence (its end as heard,
@@ -420,7 +420,8 @@ Windows console runs:
   FACCH-stolen voice within an RF frame cannot fully reconstruct that frame's keystream alignment.
   NXDN full-rate voice is not supported by this reader.
   An export is read whole before it plays, up to 64 MiB (hours of one call); a larger file is not played, with one
-  line in the log. Stop during the read ends it within a MiB, and nothing of the file plays. A voice frame whose `hex`
+  line in the log. Stop during the read, or during the shape check below, ends it within a MiB, and nothing of the
+  file plays or changes. A voice frame whose `hex`
   is not one SDRTrunk writes (18 hex digits, 36 for P25 Phase 1) is a lost frame, with a warning: it plays nothing,
   but it keeps its place in the call, so the frames after it in an encrypted call still decrypt with their own
   keystream.
@@ -435,22 +436,33 @@ Windows console runs:
   `protocol`, `call_type`, `to` and `from` are read only as the record's own members (a `from` inside a `metadata`
   object is not the call's). A `to` written as an SDRTrunk patch group (`P:1234`, or `P:1234 [5001, 5002]` with its
   patched talkgroups) is talkgroup 1234, whose talkgroup settings apply.
-  Before it plays, each export is checked once for SDRTrunk's own shape: one record, whose `protocol`, `call_type`,
-  `to` and `from` all come before its `frames` (and before any `hex`). Such a file is recorded and exported as its
-  talkgroup and radio settings allow, also when Stop ends it part-way, since its call is known before any of its audio.
-  Any other file still plays, and makes its history rows, but gets no per-call recording and is never exported: no
-  WAV, no sidecar, no upload, and one line in the log a run. That covers a file of several records, a member the
-  settings judge after the frames, and frames before the protocol. A `to` or `from` the reader cannot read as a number
-  (or, for `to`, a patch group), such as SDRTrunk's roaming and ISSI forms (`ROAM 5678(...)`, `ISSI ...`), counts as
-  no ID and never takes the fallback talkgroup: such a call is recorded as before, exported under its talkgroup when it
-  has one, and otherwise kept local (no sidecar, no upload, one line in the log a run). A file of several records is
-  played as one stream with one history row, named under the last talkgroup and radio ID the records gave. A record's
-  members are read in the order they are written, so a `to` or `from` of 0, or one left out, keeps an earlier ID only
-  while the record changes no other: when it also changes a talkgroup or radio ID an earlier record gave, the ID it gave
-  as 0 before that change stays 0. When a later record changes a talkgroup or radio ID, the row is filed at that
-  record's first frame `time` read after the change (on the decode clock when there is none). The static WAV (`-w`) and
-  MBE captures (`-d`) are written as before for every file. The SDRTrunk calls that are exported carry no frequency or
-  access code, so one with no talkgroup uses `--rdio-unknown-talkgroup` ([Digital calls with no talkgroup in
+  Before it plays, each export is checked once against the shape SDRTrunk writes a call in:
+  - one call record, with nothing but white space after it;
+  - only the members SDRTrunk writes, each at most once and in SDRTrunk's order: `protocol`, `version`, `call_type`,
+    `from`, `to`, `encrypted`, `system`, `site`, `frames` (any may be missing). `frames` comes last, except that the
+    `system` and `site` of SDRTrunk versions before November 2025 come after it;
+  - each value of the kind SDRTrunk writes: text in quotes, a whole number (`version`), or `true`/`false`
+    (`encrypted`);
+  - `frames` a list of frames, each with only SDRTrunk's frame members, in its order (`tag`, `encryption_algorithm`,
+    `encryption_key_id`, `encryption_mi`, `time`, `hex`), and always a `hex` of hex digits;
+  - no member name written with an escape (`"\u0074o"` is not `to`).
+
+  A file in that shape is recorded and exported as its talkgroup and radio settings allow, also when Stop ends it
+  part-way, since its call is known before any of its audio. Any other file still plays, makes its history rows and
+  writes the static WAV (`-w`) and MBE captures (`-d`), but none of its audio goes into a per-call recording: it leaves
+  no per-call WAV, no sidecar and no upload, and one line in the log a run says so. That covers, among others, a file of
+  several records, a `to` or `from` after the frames, a member SDRTrunk never writes (such as a `metadata` object), a
+  `to` that is a list, a frame with no `hex`, and a file cut off part-way. An ID is read by its value, so
+  `"00000005678"` is radio 5678. A `to` or `from` the reader cannot read as a number (or, for `to`, a patch group), such
+  as SDRTrunk's roaming and ISSI forms (`ROAM 5678(...)`, `ISSI ...`), counts as no ID and never takes the fallback
+  talkgroup: such a call is recorded as before, exported under its talkgroup when it has one, and otherwise not exported
+  (no sidecar, no upload, one line in the log a run). A file of several records is played as one stream with one history
+  row, named under the last talkgroup and radio ID the records gave. A record's members are read in the order they are
+  written, so a `to` or `from` of 0, or one left out, keeps an earlier ID only while the record changes no other: when
+  it also changes a talkgroup or radio ID an earlier record gave, the ID it gave as 0 before that change stays 0. When a
+  later record changes a talkgroup or radio ID, the row is filed at that record's first frame `time` read after the
+  change (on the decode clock when there is none). The SDRTrunk calls that are exported carry no frequency or access
+  code, so one with no talkgroup uses `--rdio-unknown-talkgroup` ([Digital calls with no talkgroup in
   rdio-scanner](#digital-calls-with-no-talkgroup-in-rdio-scanner)). A raw `.imb`, `.amb` or `.dmb` file names no call:
   it is recorded, one recording per file, and never exported.
 - `-c <file>` Save symbol captures to a .bin file
@@ -748,9 +760,11 @@ Which calls get a number:
   So a WAV stop in the middle of a call heard with no identity at all does not export that recording. Audio no call
   owns, a call whose row was cleared from the history, and a faded call that is held and then dropped are never
   exported.
-- A YSF call that ends because the next call's callsigns arrive in its voice frames, with no header or terminator
-  between the two, is recorded but not exported: YSF sends a frame's callsigns after its voice, so that recording
-  also holds the next call's first frame (100 ms). One log line a run says so.
+- A YSF call gets a number only when it ended on a decoded terminator. One that ended any other way (its signal faded,
+  or the next call's callsigns or call mode arrived in its voice frames with no header or terminator between the two)
+  is recorded but not exported: its recording may also hold the start of what came next. One log line a run says so.
+  A YSF call with no terminator in a capture, as when the capture stops before the call ends, is therefore not
+  exported.
 - The talkgroup is the frequency the call was heard on, in kHz, rounded down: 452.3125 MHz is talkgroup `452312`. On
   a trunked system that is the voice channel's frequency.
 - A call heard with no known frequency (an audio input such as PulseAudio, UDP, TCP or a WAV file, or a call of an

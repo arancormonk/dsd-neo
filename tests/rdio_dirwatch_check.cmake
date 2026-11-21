@@ -11,13 +11,18 @@
 #   audio_off decodes raw.wav without the option: the recordings are published with no sidecar, and one log line says
 #             why, once.
 #
+# With NO_FALLBACK set, the calls are ones the fallback may not number (a YSF call that does not end on a decoded
+# terminator): no leg leaves a sidecar, and each says once that such a call is not exported (RF_SIDECAR and
+# AUDIO_SIDECAR are then not read).
+#
 # Each leg must exit 0, print the EXPECTED payload regex and report no sanitizer error, and leave at least one
 # recording and no TEMP_ file. Its journal has one "publish" line a recording, not failed, naming a file in the folder,
-# with an empty "target": the number is the export's alone, and the call's row keeps no talkgroup.
+# with "target" TARGET (default empty: a call named by no text): the number is the export's alone, and the call's row
+# keeps no talkgroup.
 #
-# Expected -D inputs: DSD_BIN, MODE, FIXTURE, EXPECTED, WORK_DIR, RF_SIDECAR, AUDIO_TALKGROUP, AUDIO_SIDECAR.
-# A *_SIDECAR is a comma-separated list of key=value pairs, each a whole field of the sidecar: a number, true, false
-# or [] as it is, any other value as a JSON string.
+# Expected -D inputs: DSD_BIN, MODE, FIXTURE, EXPECTED, WORK_DIR, RF_SIDECAR, AUDIO_TALKGROUP, AUDIO_SIDECAR; optional
+# TARGET, NO_FALLBACK. A *_SIDECAR is a comma-separated list of key=value pairs, each a whole field of the sidecar: a
+# number, true, false or [] as it is, any other value as a JSON string.
 foreach(
     _var
     DSD_BIN
@@ -33,6 +38,10 @@ foreach(
         message(FATAL_ERROR "rdio_dirwatch_check: missing -D${_var}")
     endif()
 endforeach()
+
+if(NOT DEFINED TARGET)
+    set(TARGET "")
+endif()
 
 file(REMOVE_RECURSE "${WORK_DIR}")
 file(MAKE_DIRECTORY "${WORK_DIR}")
@@ -101,7 +110,7 @@ function(_rdio_leg leg out_wavs out_log)
         endif()
         if(
             NOT _line MATCHES "\"failed\":false"
-            OR NOT _line MATCHES "\"target\":\"\""
+            OR NOT _line MATCHES "\"target\":\"${TARGET}\""
         )
             _rdio_fail("${leg}: not a published call with no talkgroup: '${_line}'")
         endif()
@@ -167,33 +176,49 @@ function(_rdio_check_sidecars leg wavs pairs freq_list)
     endforeach()
 endfunction()
 
+# No recording in @p wavs has a sidecar, and @p log says @p notice once and nothing of an export that failed.
+function(_rdio_check_unexported leg wavs log notice)
+    foreach(_wav IN LISTS wavs)
+        string(REGEX REPLACE "\\.wav$" ".json" _sidecar "${_wav}")
+        if(EXISTS "${_sidecar}")
+            _rdio_fail("${leg}: ${_wav} was exported with no number to give it")
+        endif()
+    endforeach()
+    string(REGEX MATCHALL "${notice}" _notices "${log}")
+    list(LENGTH _notices _notice_count)
+    if(NOT _notice_count EQUAL 1)
+        _rdio_fail("${leg}: ${_notice_count} '${notice}' log lines, expected one\n${log}")
+    endif()
+    if(log MATCHES "Rdio export( failed|: skipped)")
+        _rdio_fail("${leg}: a skipped call was logged as a failure\n${log}")
+    endif()
+endfunction()
+
+set(_no_number "set --rdio-unknown-talkgroup to export them")
+set(_blocked "or it is a YSF call that did not end on a terminator")
+
 _rdio_leg(rf _rf_wavs _rf_log --iq-replay "${FIXTURE}" -6 "${_raw}")
-_rdio_check_sidecars(rf "${_rf_wavs}" "${RF_SIDECAR}" ON)
+if(NO_FALLBACK)
+    _rdio_check_unexported(rf "${_rf_wavs}" "${_rf_log}" "${_blocked}")
+else()
+    _rdio_check_sidecars(rf "${_rf_wavs}" "${RF_SIDECAR}" ON)
+endif()
 if(NOT EXISTS "${_raw}")
     _rdio_fail("rf: no discriminator audio saved for the audio legs")
 endif()
 
 _rdio_leg(audio _audio_wavs _audio_log -i "${_raw}" --rdio-unknown-talkgroup "${AUDIO_TALKGROUP}")
-_rdio_check_sidecars(audio "${_audio_wavs}" "talkgroup=${AUDIO_TALKGROUP},${AUDIO_SIDECAR}" OFF)
+if(NO_FALLBACK)
+    _rdio_check_unexported(audio "${_audio_wavs}" "${_audio_log}" "${_blocked}")
+else()
+    _rdio_check_sidecars(audio "${_audio_wavs}" "talkgroup=${AUDIO_TALKGROUP},${AUDIO_SIDECAR}" OFF)
+endif()
 
 _rdio_leg(audio_off _off_wavs _off_log -i "${_raw}")
-foreach(_wav IN LISTS _off_wavs)
-    string(REGEX REPLACE "\\.wav$" ".json" _sidecar "${_wav}")
-    if(EXISTS "${_sidecar}")
-        _rdio_fail("audio_off: ${_wav} was exported with no number to give it")
-    endif()
-endforeach()
-string(
-    REGEX MATCHALL "set --rdio-unknown-talkgroup to export them"
-    _notices
-    "${_off_log}"
-)
-list(LENGTH _notices _notice_count)
-if(NOT _notice_count EQUAL 1)
-    _rdio_fail("audio_off: ${_notice_count} 'not exported' log lines, expected one\n${_off_log}")
-endif()
-if(_off_log MATCHES "Rdio export( failed|: skipped)")
-    _rdio_fail("audio_off: a skipped call was logged as a failure\n${_off_log}")
+if(NO_FALLBACK)
+    _rdio_check_unexported(audio_off "${_off_wavs}" "${_off_log}" "${_blocked}")
+else()
+    _rdio_check_unexported(audio_off "${_off_wavs}" "${_off_log}" "${_no_number}")
 endif()
 
 file(REMOVE_RECURSE "${WORK_DIR}")

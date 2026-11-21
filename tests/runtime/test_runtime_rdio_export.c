@@ -2337,8 +2337,11 @@ test_call_talkgroup_number(void) {
 }
 
 // Issue #888 B3: dsd_rdio_call_fallback_eligible() says whether the fallback numbers a row, or would with a frequency or
-// --rdio-unknown-talkgroup: a digital VOICE row with no target whose sync type names a protocol, with the fallback on.
-// The WAV close spends its once-a-run "no number" line only on such a row.
+// --rdio-unknown-talkgroup: a digital VOICE row with no target whose sync type names a protocol and whose
+// fallback_blocked is clear, with the fallback on. The WAV close spends its once-a-run "no number" line only on such a
+// row. A row the fallback may not number (an ID its decoder could not read, a YSF call not ended on a terminator; issue
+// #888) is not, and dsd_rdio_call_talkgroup() gives it none, though --rdio-unknown-talkgroup is set; a talkgroup it
+// does have it keeps.
 static int
 test_call_fallback_eligible(void) {
     static const struct {
@@ -2347,18 +2350,24 @@ test_call_fallback_eligible(void) {
         uint8_t category;
         uint32_t target;
         int allow;
+        uint8_t blocked;
         int want;
     } cases[] = {
-        {"NXDN voice, no target", DSD_SYNC_NXDN_POS, DSD_EVENT_CATEGORY_VOICE, 0U, 1, 1},
-        {"X2-TDMA voice, no target", DSD_SYNC_X2TDMA_VOICE_POS, DSD_EVENT_CATEGORY_VOICE, 0U, 1, 1},
-        {"fallback off", DSD_SYNC_NXDN_POS, DSD_EVENT_CATEGORY_VOICE, 0U, 0, 0},
-        {"numbered: no fallback needed", DSD_SYNC_DMR_BS_VOICE_POS, DSD_EVENT_CATEGORY_VOICE, 77U, 1, 0},
-        {"data row", DSD_SYNC_NXDN_POS, DSD_EVENT_CATEGORY_DATA, 0U, 1, 0},
-        {"cleared row", DSD_SYNC_NXDN_POS, DSD_EVENT_CATEGORY_UNKNOWN, 0U, 1, 0},
-        {"no protocol word", DSD_SYNC_DIGITAL, DSD_EVENT_CATEGORY_VOICE, 0U, 1, 0},
-        {"no sync", DSD_SYNC_NONE, DSD_EVENT_CATEGORY_VOICE, 0U, 1, 0},
-        {"analog: its own rule", DSD_SYNC_ANALOG, DSD_EVENT_CATEGORY_VOICE, 0U, 1, 0},
+        {"NXDN voice, no target", DSD_SYNC_NXDN_POS, DSD_EVENT_CATEGORY_VOICE, 0U, 1, 0U, 1},
+        {"X2-TDMA voice, no target", DSD_SYNC_X2TDMA_VOICE_POS, DSD_EVENT_CATEGORY_VOICE, 0U, 1, 0U, 1},
+        {"fallback off", DSD_SYNC_NXDN_POS, DSD_EVENT_CATEGORY_VOICE, 0U, 0, 0U, 0},
+        {"numbered: no fallback needed", DSD_SYNC_DMR_BS_VOICE_POS, DSD_EVENT_CATEGORY_VOICE, 77U, 1, 0U, 0},
+        {"data row", DSD_SYNC_NXDN_POS, DSD_EVENT_CATEGORY_DATA, 0U, 1, 0U, 0},
+        {"cleared row", DSD_SYNC_NXDN_POS, DSD_EVENT_CATEGORY_UNKNOWN, 0U, 1, 0U, 0},
+        {"no protocol word", DSD_SYNC_DIGITAL, DSD_EVENT_CATEGORY_VOICE, 0U, 1, 0U, 0},
+        {"no sync", DSD_SYNC_NONE, DSD_EVENT_CATEGORY_VOICE, 0U, 1, 0U, 0},
+        {"analog: its own rule", DSD_SYNC_ANALOG, DSD_EVENT_CATEGORY_VOICE, 0U, 1, 0U, 0},
+        {"YSF voice, blocked", DSD_SYNC_YSF_POS, DSD_EVENT_CATEGORY_VOICE, 0U, 1, 1U, 0},
+        {"P25 voice, blocked", DSD_SYNC_P25P2_POS, DSD_EVENT_CATEGORY_VOICE, 0U, 1, 1U, 0},
+        {"P25 voice, blocked, numbered", DSD_SYNC_P25P2_POS, DSD_EVENT_CATEGORY_VOICE, 1234U, 1, 1U, 0},
     };
+
+    dsd_opts* const opts = rdio_case_opts();
 
     Event_History_I* const hist = rdio_case_hist();
     if (hist == NULL) {
@@ -2369,10 +2378,21 @@ test_call_fallback_eligible(void) {
         unnumbered_row(hist, cases[i].systype, 0, DSD_ACCESS_CODE_NONE, 0);
         hist->Event_History_Items[0].category = cases[i].category;
         hist->Event_History_Items[0].target_id = cases[i].target;
+        hist->Event_History_Items[0].fallback_blocked = cases[i].blocked;
         const int got = dsd_rdio_call_fallback_eligible(&hist->Event_History_Items[0], cases[i].allow);
         if (got != cases[i].want) {
             DSD_FPRINTF(stderr, "%s: eligible %d, want %d\n", cases[i].label, got, cases[i].want);
             rc = 1;
+        }
+        if (cases[i].blocked != 0U && opts != NULL) {
+            opts->rdio_unknown_talkgroup = 9000;
+            const uint32_t tg = dsd_rdio_call_talkgroup(opts, &hist->Event_History_Items[0], cases[i].allow);
+            if (tg != cases[i].target) {
+                DSD_FPRINTF(stderr, "%s: talkgroup %u, want %u\n", cases[i].label, (unsigned)tg,
+                            (unsigned)cases[i].target);
+                rc = 1;
+            }
+            opts->rdio_unknown_talkgroup = 0;
         }
     }
     if (dsd_rdio_call_fallback_eligible(NULL, 1) != 0) {
