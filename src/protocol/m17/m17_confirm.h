@@ -55,8 +55,8 @@ typedef enum {
 void m17_confirm_reset(dsd_state* state);
 
 /**
- * @brief Forget the transmission's stream signature: the digest and its fold, the signature chunks collected, the
- * verdict, and the frame numbers counted into the digest. Whether the signature is advertised stays: that is the
+ * @brief Forget the transmission's stream signature: the digest and its voice run, the signature chunks collected,
+ * the verdict and whether the transmission ended. Whether the signature is advertised stays: that is the
  * checked link setup's (m17_confirm_reset_link() forgets it), so a repeat of a checked LSF whose CRC failed does not
  * take it back.
  *
