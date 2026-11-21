@@ -1271,6 +1271,15 @@ dsd_fd_is_stream(int fd) {
     return (handle != INVALID_HANDLE_VALUE && GetFileType(handle) == FILE_TYPE_PIPE) ? 1 : 0;
 }
 
+int
+dsd_fd_read_unbounded(int fd) {
+    if (dsd_fd_is_negative(fd)) {
+        return 0;
+    }
+    const HANDLE handle = (HANDLE)_get_osfhandle(fd);
+    return (handle != INVALID_HANDLE_VALUE && GetFileType(handle) == FILE_TYPE_CHAR) ? 1 : 0;
+}
+
 long
 dsd_fd_readable_bytes(int fd) {
     if (!dsd_fd_is_stream(fd)) {
