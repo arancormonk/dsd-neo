@@ -50,40 +50,35 @@ typedef enum {
  * stream frames. */
 #define M17_CONFIRM_PARTIAL_HOLD_MS 80U
 
-/** @brief Forget everything learned about the current transmission: its confirmation, and its link setup and signature
- * (m17_confirm_reset_link()). The EOT marker, a lost carrier and a retune run it. */
+/** @brief dsd_state::m17_str_dt with no link setup decoded: no stream type, so nothing plays, marks media or names a
+ * signature (the value noCarrier() and initState() have always left). */
+#define M17_STREAM_TYPE_UNKNOWN     9U
+
+/**
+ * @brief The one M17 transmission boundary (issue #890): drop everything held from the transmission, so nothing of it
+ * is ever combined with the next one's: its confirmation; its decoded link setup (the stream type, M17_STREAM_TYPE_UNKNOWN,
+ * the CAN, encryption type and subtype, whether the payload decrypted, the META/IV, the signature advertisement, whether
+ * a checked LSF bound them, and the stream mode an LSF declared); the raw LSF bits (dsd_state::m17_lsf) and the LICH
+ * chunks held in them with their binding; the packet and the BERT receiver; the 1600 bit/s arbitrary data and the text
+ * META being assembled (in the M17 extension); the network stream; and the signature (m17_confirm_reset_signature()).
+ *
+ * Every end runs it: the EOT marker, a lost carrier and a carrier boundary at once; a decoded EOS and a packet's end at
+ * the next transmission's first frame (m17_retire_if_ended() in m17.c), so the marker after them is still recognized; a
+ * network stream's end or replacement at once. Every start runs it too: an LSF frame whose CRC passed, a network stream
+ * admitted.
+ */
 void m17_confirm_reset(dsd_state* state);
 
 /**
  * @brief Forget the transmission's stream signature: the digest and its voice run, the signature chunks collected,
- * the verdict and whether the transmission ended. Whether the signature is advertised stays: that is the
- * checked link setup's (m17_confirm_reset_link() forgets it), so a repeat of a checked LSF whose CRC failed does not
- * take it back.
+ * the verdict and whether the transmission ended. Whether the signature is advertised stays: that is the decoded link
+ * setup's (m17_confirm_reset() forgets it), so a repeat of a checked LSF whose CRC failed does not take it back.
  *
  * The transmitter signs the digest of every stream frame since the stream began (M17 spec 2.0.11, Digital
  * Signatures), so this runs only where a transmission begins or ends, never at an LSF applied mid-stream (a LICH
  * rebuild, an IP frame's LSF).
  */
 void m17_confirm_reset_signature(dsd_state* state);
-
-/** @brief dsd_state::m17_str_dt with no link setup decoded: no stream type, so nothing plays, marks media or names a
- * signature (the value noCarrier() and initState() have always left). */
-#define M17_STREAM_TYPE_UNKNOWN 9U
-
-/**
- * @brief Retire the decoded link setup: the stream type (M17_STREAM_TYPE_UNKNOWN), CAN, encryption type and subtype,
- * whether the payload decrypted, the META/IV, the signature advertisement and whether a checked LSF bound them
- * (dsd_state::m17_lsf_checked). Every transmission boundary runs it, through m17_confirm_reset_link() or, at a network
- * stream's end, alone (issue #890): what the next transmission plays, credits or publishes is set up by its own LSF.
- */
-void m17_confirm_reset_link_setup(dsd_state* state);
-
-/**
- * @brief A transmission boundary: forget the decoded link setup (m17_confirm_reset_link_setup()), the network stream,
- * the 1600 bit/s arbitrary data and the text META being assembled (in the M17 extension) and the signature
- * (m17_confirm_reset_signature()).
- */
-void m17_confirm_reset_link(dsd_state* state);
 
 /** @brief Start a frame's evidence accounting; call once before decoding its contents. */
 void m17_confirm_begin_frame(dsd_state* state);

@@ -3271,12 +3271,13 @@ struct dsd_state {
     uint8_t m17_signature_public_key[64];
     uint8_t m17_signature_public_key_loaded;
     uint8_t m17_signature_verification_status;
-    /* The transmission's checked link setup and its stream signature (src/protocol/m17/m17_confirm.c,
-     * m17_confirm_reset_link()): kept from frame to frame and forgotten only at a transmission boundary (an LSF frame,
-     * an end of transmission, a lost carrier, a carrier boundary, another network stream). Every boundary retires the
-     * decoded link setup (m17_str_dt, m17_can, m17_enc, m17_enc_st, m17_payload_decrypted, m17_meta,
-     * m17_signature_advertised, m17_lsf_checked) through m17_confirm_reset_link_setup(), the stream type to
-     * M17_STREAM_TYPE_UNKNOWN (issue #890).
+    /* The transmission's checked link setup and its stream signature: kept from frame to frame and forgotten only at a
+     * transmission boundary (an LSF frame, an end of transmission, a lost carrier, a carrier boundary, another network
+     * stream). Every boundary drops everything held from the transmission through one helper,
+     * src/protocol/m17/m17_confirm.c m17_confirm_reset(): the decoded link setup (m17_str_dt to M17_STREAM_TYPE_UNKNOWN,
+     * m17_can, m17_enc, m17_enc_st, m17_payload_decrypted, m17_meta, m17_signature_advertised, m17_lsf_checked), the raw
+     * m17_lsf bits and m17_lich chunks, the packet, the BERT receiver, the signature and the texts being assembled
+     * (issue #890).
      * m17_lsf_checked: an LSF whose CRC passed (the LSF frame's, one rebuilt whole from LICH chunks, an IP frame's) set
      *   m17_can (0 included), m17_enc, m17_enc_st, m17_str_dt and m17_meta for this transmission; an LSF -F decodes
      *   despite a failed CRC is then shown and never replaces them.
@@ -3284,8 +3285,8 @@ struct dsd_state {
      *   it takes), and whether one was missed (the first not frame 0, or one skipped): a signature is verified only
      *   when every voice frame arrived once and in order, and is "incomplete" otherwise (M17 spec 2.0.11, Signature
      *   Verification: the receiver needs the whole stream).
-     * m17_signature_ended: the transmission ended (a stream frame's EOS bit, an IP EOT); the next one starts with a
-     *   fresh signature state (m17_confirm_reset_signature()) even when no EOT marker or LSF frame came between.
+     * m17_tx_ended: the transmission ended (a stream frame's EOS bit, a packet's end, an IP EOT); the next one starts
+     *   with nothing of it (m17_confirm_reset() at its first frame) even when no EOT marker or LSF frame came between.
      * m17_ip_stream / _sid / _src / _last_fn / _signed: the open network stream (DSD_M17_IP_STREAM_NONE or _OPEN), its
      *   stream ID, the station its LSF names, the last frame number used and whether any of its LSFs was signed: each
      *   frame number of it is used once and in order (an unsigned stream through the counter's wrap, a signed one
@@ -3293,12 +3294,16 @@ struct dsd_state {
     uint8_t m17_lsf_checked;
     uint16_t m17_signature_voice_next;
     uint8_t m17_signature_voice_gap;
-    uint8_t m17_signature_ended;
+    uint8_t m17_tx_ended;
     uint8_t m17_ip_stream;
     uint16_t m17_ip_stream_sid;
     uint16_t m17_ip_stream_last_fn;
     uint64_t m17_ip_stream_src;
     uint8_t m17_ip_stream_signed;
+    /* An ended network stream's end may have gone unrecorded this session (one forgotten to make room in the M17
+     * extension's fixed table, or no table could be made): from then on a stream neither open nor remembered starts
+     * only at its frame 0 (fail closed, issue #890). Kept here, outside the allocation it stands in for. */
+    uint8_t m17_ip_ended_lost;
     int m17encoder_tx;  // If TX (encode + decode) M17 Stream is enabled
     int m17encoder_eot; //signal if we need to send the EOT frame
 

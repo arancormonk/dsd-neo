@@ -29,8 +29,9 @@ int processM17LSF(dsd_opts* opts, dsd_state* state);
 int processM17BRT(dsd_opts* opts, dsd_state* state);
 int processM17IPF(dsd_opts* opts, dsd_state* state);
 
-/** @brief Forget what the current M17 transmission proved, and its checked link setup and stream signature; the next
- * one proves itself again. */
+/** @brief The one M17 transmission boundary: drop everything held from the current transmission (what it proved, its
+ * link setup, raw LSF bits and LICH chunks, packet, BERT receiver, signature and texts being assembled), so nothing of
+ * it is combined with the next one, which proves itself again (src/protocol/m17/m17_confirm.h). */
 void m17_confirm_reset(dsd_state* state);
 
 /** @brief Whether the current M17 transmission has produced CRC-verified content. */

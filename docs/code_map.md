@@ -13896,16 +13896,20 @@ Private per-protocol modules worth knowing about:
   CRC-16 that passed: the LSF frame's, an LSF rebuilt from LICH chunks when all six were heard under one binding
   (`M17finalizeLICH()`, issue #890), a packet's, and a PRBS9 BERT lock; a LICH whose four Golay(24,12) words cleared is
   weak and confirms on the second frame running; an LSF `-F` decodes despite a failed CRC is no evidence.
-  `m17_confirm_reset()` also forgets the transmission's link setup and stream signature
-  (`m17_confirm_reset_link()`, `m17_confirm_reset_signature()`; issue #890): `dsd_state::m17_lsf_checked` marks that an
-  LSF whose CRC passed set the live CAN (0 included), encryption, stream type and IV for this transmission, and while it
-  stands a relaxed (`-F`) LSF is shown and replaces none of them. Every transmission boundary retires the same decoded
-  link setup through one helper, `m17_confirm_reset_link_setup()`: the stream type (`M17_STREAM_TYPE_UNKNOWN`, the 9
-  `noCarrier()` always left, so nothing plays, marks media or names a signature), CAN, encryption type and subtype,
-  whether the payload decrypted, the META/IV, the signature advertisement and `m17_lsf_checked`. The boundaries: an LSF
-  frame whose CRC passed (before it applies its own), the EOT marker, `noCarrier()` and a carrier boundary (all through
-  `m17_confirm_reset()`; `noCarrier()` no longer sets the fields itself), the next RF frame after a decoded EOS, and a
-  network stream's end (`m17_ip_end_stream()`). The digest and the signature chunks are the
+  `dsd_state::m17_lsf_checked` marks that an LSF whose CRC passed set the live CAN (0 included), encryption, stream
+  type and IV for this transmission, and while it stands a relaxed (`-F`) LSF is shown and replaces none of them.
+  `m17_confirm_reset()` is the one M17 transmission boundary (decided, issue #890: nothing of transmission A is ever
+  combined with anything of B). It drops everything held from the transmission: its confirmation; the decoded link
+  setup (the stream type, `M17_STREAM_TYPE_UNKNOWN`, the 9 `noCarrier()` always left, so nothing plays, marks media or
+  names a signature; CAN, encryption type and subtype, whether the payload decrypted, the META/IV, the signature
+  advertisement, `m17_lsf_checked`, the stream mode an LSF declared); the raw LSF bits (`dsd_state::m17_lsf`) and the
+  LICH chunks held in them with their binding (`m17_lich`); the packet being assembled; the BERT receiver; the 1600
+  bit/s arbitrary data and the text META being assembled (`m17_state_ext::adata`, `::text_meta`); the network stream;
+  and the signature (`m17_confirm_reset_signature()`). Every end runs it: the EOT marker (`dsd_dispatch_handle_m17()`),
+  `noCarrier()` and a carrier boundary (none of them sets the M17 fields itself any more), a network stream's end or
+  replacement (`m17_ip_end_stream()`), and a decoded EOS or a packet's end at the next transmission's first frame
+  (below). Every start runs it too: an LSF frame whose CRC passed (its own LSF bits go back in for its decode), an
+  admitted network stream. The digest and the signature chunks are the
   transmission's and survive every LSF applied mid-stream (a LICH rebuild, each IP frame's LSF); they are forgotten only
   at a boundary: an LSF frame, an EOT, `noCarrier()`, a carrier boundary, or another IP stream. The signature
   advertisement is the checked link setup's: a repeat LSF frame whose CRC failed resets the digest but keeps it. The RF
@@ -13919,13 +13923,14 @@ Private per-protocol modules worth knowing about:
   Verification needs the whole stream), also when only the EOT marker ends the transmission
   (`m17_note_transmission_end()` before the marker's `m17_confirm_reset()`). A voice frame lost just before the
   signature frames cannot be told from the end of voice, so such a stream is judged, and fails. A decoded EOS
-  (`m17_stream_end_of_stream()`) ends the transmission (`m17_signature_end_transmission()`): its evidence stands until
-  the next RF LICH or LSF frame, so its EOT marker is still recognized, and that frame retires all of it
-  (`m17_signature_retire_if_ended()` at the next stream, LSF, packet or BERT frame, a full `m17_confirm_reset()`:
-  confirmation, link setup and signature), so the next transmission never runs on the ended one's CAN, encryption or
-  type even with no EOT marker between: one acquired from its LICH alone plays nothing, earns no media and opens no
-  call until its own LSF applies (its rebuilt LSF, checked or under -F the relaxed one; the scan side marks the binding
-  disputed at the EOS, PR B). In a signed RF voice stream every frame that may reach playback is either counted into
+  (`m17_stream_end_of_stream()`) and a packet's end (`m17_pkt_finalize_eot()`, its CRC passed or not: a packet is a
+  whole transmission with its own LSF, M17 spec 2.0.11 Packet Mode) end the transmission (`dsd_state::m17_tx_ended`):
+  its evidence stands until the next RF frame, so its EOT marker is still recognized, and that frame drops all of it
+  (`m17_retire_if_ended()` at the next stream, LSF, packet or BERT frame, the full `m17_confirm_reset()`), so the next
+  transmission never runs on the ended one's CAN, encryption or type, nor rebuilds its LSF from the ended one's raw
+  bits or chunks, even with no EOT marker between: one acquired from its LICH alone plays nothing, earns no media and
+  opens no call until its own LSF applies (its rebuilt LSF, checked or under -F the relaxed one, made of its own chunks
+  only; the scan side marks the binding disputed at the EOS, PR B). In a signed RF voice stream every frame that may reach playback is either counted into
   the digest or leaves the signature incomplete: the signature range 0x7FFC-0x7FFF (either end bit) holds no voice
   (M17 spec 2.0.11, Digital Signatures: signature use shortens the stream by four frames, numbered 0x7FFC, 0x7FFD,
   0x7FFE, 0xFFFF), so a frame there that is no signature chunk (0x7FFF without the end bit, 0xFFFC-0xFFFE) is consumed
@@ -13945,13 +13950,17 @@ Private per-protocol modules worth knowing about:
   stream, ending the open one and its call first (two transmissions, two calls), but a final frame other than frame 0
   never replaces the open stream, and still ends the stream it names (remembered as ended, so only its frame 0 starts
   it); a stream's EOT, or EOTX and DISC naming its station, end it, drop the carrier and sync type and retire its link
-  setup (`m17_ip_end_stream()`); after a stream ends every datagram of it (stream ID and station) is ignored until frame
+  setup with everything else held from it (`m17_ip_end_stream()`, `m17_confirm_reset()`; its verdict too); the signed
+  flag is taken only from an accepted frame (`m17_ip_continue_stream()`: a refused signed copy checks its order as signed
+  and signs nothing); after a stream ends every datagram of it (stream ID and station) is ignored until frame
   0 starts it again (`m17_ip_note_ended()`). The ended keys are a fixed table of `M17_IP_ENDED_CAPACITY` (64) in the
   M17 state extension (`m17_state_ext`, `src/protocol/m17/m17_state_ext.h`): no allocation and no moves on the
   decoder thread; when it is full the oldest end is forgotten, and from then on for the session (fail closed,
-  `ip_ended_evicted`) a stream neither open nor in the table opens only on a CRC-valid frame 0, never joined at a later
-  frame. The extension is created before a stream opens, and a stream it cannot be created for does not open, so every
-  open stream's end is recorded. Accepted limits: a copy of a one-frame stream's frame 0 after its EOT starts it again;
+  `dsd_state::m17_ip_ended_lost`) a stream neither open nor in the table opens only on a CRC-valid frame 0, never joined
+  at a later frame. No allocation can lose an end: the extension is created before a stream opens, a stream it cannot
+  be created for does not open, and that refusal (the frame might be an end), like any end with no table to take it,
+  sets the same flag, which lives in `dsd_state`, outside the allocation (`M17_STATE_DISPATCH`
+  `test_ip_unrecordable_end_fails_closed`, with the extension's allocation failed through a `calloc` wrap). Accepted limits: a copy of a one-frame stream's frame 0 after its EOT starts it again;
   a stream ID reused by the same station with no end received between is not taken; after the table first filled, a
   network stream whose first frames were lost is not joined until its station starts another. A checked IP frame plays on its own check; its decoded speech marks the call's media
   (`m17_note_received_speech()`), which also returns whether the speech is checked speech (a checked LSF bound its type,
@@ -13960,12 +13969,13 @@ Private per-protocol modules worth knowing about:
   `dsd_scan_uses_checked_media()` in `m17_play_codec2_voice()`; `M17_STATE_DISPATCH` "unchecked-LSF M17 speech earns no
   checked media"). The 1600 bit/s arbitrary data is assembled per six-frame group and emptied at a stream change
   (`m17_stream_1600_arbitrary_assemble()`, `m17_state_ext::adata`: decoder scratch, in the M17 state extension and so
-  never in a frontend's snapshot); the text META is assembled the same way (`m17_state_ext::text_meta`) and emptied at
-  every transmission boundary (`m17_confirm_reset_link()`), so no text is put together from two transmissions'
-  blocks. A packet is a whole transmission with its own LSF (M17 spec 2.0.11, Packet Mode), so its text is its own
-  too (`m17_text_meta_forget()`): an MPKT's text starts empty when its CRC passes and is emptied after its packet is
-  decoded, and an RF packet's, which starts at its LSF frame, is emptied once its packet is decoded at its end frame
-  (CRC passed, or under -F); a packet whose CRC failed and is not decoded leaves the text alone. Tests:
+  never in a frontend's snapshot). Text META has one assembler per transmission, and a block joins only its own
+  transmission's, and only from content whose check passed (decided, issue #890): the RF transmission's or the admitted
+  network stream's is `m17_state_ext::text_meta` (`m17_transmission_text()`), emptied at every boundary by
+  `m17_confirm_reset()`; an MPKT has its own on the stack for its LSF's META and its packet (`m17_lsf_carrier::text`),
+  so an MPKT heard while a stream is open neither adds to nor clears the stream's text; a checked LSF's META and a packet
+  whose CRC passed commit their block (`decodeM17PKT()`, `m17_decode_pkt_print_meta_or_arb()` take the assembler), and
+  a packet whose CRC failed, shown only under -F, commits to and clears no assembler (NULL). Tests:
   `M17_STATE_DISPATCH`
   (`test_signed_ip_stream_is_not_verified`, `test_signed_rf_stream_needs_every_frame_once`,
   `test_rf_marker_end_reports_an_incomplete_signature`, `test_rf_eos_retires_the_link_setup`,
@@ -13977,7 +13987,9 @@ Private per-protocol modules worth knowing about:
   `test_ip_signed_stream_frame_order_never_wraps`, `test_ip_foreign_eot_is_remembered`,
   `test_ip_signed_stream_end_without_chunks`, `test_ip_ended_streams_are_bounded_and_fail_closed`,
   `test_ip_1600_arbitrary_data_is_one_streams`, `test_text_meta_is_one_transmissions`,
-  `test_packet_text_meta_is_one_packets`; each lifecycle case builds and runs without Codec2 too, its playback
+  `test_packet_text_meta_is_one_packets`, `test_rf_eos_drops_the_raw_lsf_bits`,
+  `test_rf_packet_text_is_its_transmissions`, `test_ip_mpkt_leaves_the_open_streams_text`,
+  `test_ip_refused_signed_copy_signs_nothing`, `test_ip_unrecordable_end_fails_closed`; each lifecycle case builds and runs without Codec2 too, its playback
   counts guarded), `M17_LSF_PARSE`, `M17_GNSS_POSITION` (`test_ip_counter_wrap_is_one_report`). A stream frame's EOS bit,
   an IP EOT, EOTX or DISC, the EOT marker and a packet's end end the slot's call only when it is an M17 one, and an M17
   call a fade already ended is made final by it (`m17_end_call()`, `m17_call_end.c`, public in

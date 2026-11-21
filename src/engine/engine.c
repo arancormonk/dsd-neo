@@ -3725,17 +3725,8 @@ carrier_boundary_forget_assemblies(dsd_opts* opts, dsd_state* state) {
     DSD_MEMSET(state->p25_l3h_alias_phase1, 0, sizeof(state->p25_l3h_alias_phase1));
     /* dPMR: the superframe part the next frame's identity half is read against. */
     opts->dPMR_next_part_of_superframe = 0;
-    /* M17: the LSF from LICH chunks, the packet and the signature. */
-    DSD_MEMSET(state->m17_lsf, 0, sizeof(state->m17_lsf));
-    DSD_MEMSET(&state->m17_lich, 0, sizeof(state->m17_lich));
-    DSD_MEMSET(state->m17_pkt, 0, sizeof(state->m17_pkt));
-    state->m17_pbc_ct = 0;
-    state->m17_signature_advertised = 0;
-    DSD_MEMSET(state->m17_signature_digest, 0, sizeof(state->m17_signature_digest));
-    DSD_MEMSET(state->m17_signature, 0, sizeof(state->m17_signature));
-    state->m17_signature_received_mask = 0;
-    state->m17_signature_complete = 0;
-    state->m17_signature_bad_sequence = 0;
+    /* M17: the LSF from LICH chunks, the packet, the signature and the texts went in carrier_boundary_forget_evidence()
+       (m17_confirm_reset(), the one M17 boundary, issue #890). */
     /* YSF: the text assembled frame by frame. */
     DSD_MEMSET(state->ysf_txt, 0, sizeof(state->ysf_txt));
     /* P25 Phase 2: the slots' ESS_B, which a 2V burst ahead of any 4V burst would decode as the new carrier's
@@ -4044,21 +4035,9 @@ dsd_engine_leave_replay_carrier(dsd_opts* opts, dsd_state* state) {
 
 static void
 no_carrier_reset_m17_and_sample_buffers(dsd_state* state) {
-    DSD_MEMSET(state->m17_lsf, 0, sizeof(state->m17_lsf));
-    DSD_MEMSET(&state->m17_lich, 0, sizeof(state->m17_lich));
-    DSD_MEMSET(state->m17_pkt, 0, sizeof(state->m17_pkt));
-    state->m17_pbc_ct = 0;
-    state->m17_bert_locked = 0;
-    state->m17_bert_lfsr = 1;
-    state->m17_bert_lock_count = 0;
-    state->m17_bert_window_bits = 0;
-    state->m17_bert_window_errors = 0;
-    state->m17_bert_bits = 0;
-    state->m17_bert_errors = 0;
-    state->m17_bert_resyncs = 0;
-    /* The link setup (stream type, CAN, encryption, IV, signature advertisement) and the signature went with the
-       transmission's evidence in no_carrier_reset_decode_state() (m17_confirm_reset()), the one reset every M17
-       boundary runs (issue #890). */
+    /* Everything the M17 transmission held (link setup, LSF bits and LICH chunks, packet, BERT receiver, signature,
+       texts) went with its evidence in no_carrier_reset_decode_state() (m17_confirm_reset(), the one M17 boundary,
+       issue #890). */
 
     DSD_MEMSET(state->audio_out_temp_buf, 0.0f, sizeof(state->audio_out_temp_buf));
     DSD_MEMSET(state->audio_out_temp_bufR, 0.0f, sizeof(state->audio_out_temp_bufR));

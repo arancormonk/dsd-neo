@@ -53,7 +53,7 @@ typedef struct {
 
 /* How many ended network streams are remembered (m17_state_ext::ip_ended). A fixed table: no allocation and no moves
  * on the decoder thread; past it the oldest is forgotten, and the rule set fails closed from then on
- * (m17_state_ext::ip_ended_evicted). */
+ * (dsd_state::m17_ip_ended_lost). */
 enum { M17_IP_ENDED_CAPACITY = 64 };
 
 /* One ended network stream: its key (station << 16 | stream ID) and when it ended (m17_state_ext::ip_ended_seq at
@@ -65,7 +65,7 @@ typedef struct {
 } m17_ip_ended_key;
 
 /* The 1600 bit/s stream's arbitrary data being assembled (m17_stream_1600_arbitrary_assemble()): one six-frame group's
- * chunks, which slots are in and the group. Emptied at a transmission boundary (m17_confirm_reset_link()). */
+ * chunks, which slots are in and the group. Emptied at a transmission boundary (m17_confirm_reset()). */
 typedef struct {
     uint8_t data[48];
     uint8_t mask;
@@ -83,17 +83,17 @@ typedef struct m17_state_ext {
     /* Network streams that ended (EOT, a matching EOTX or DISC, another stream replacing them, or a final frame heard
        while another stream was open), each by its stream ID and the station its LSF named, remembered until frame 0
        starts that stream again so that a datagram of one arriving late is ignored (issue #890). ip_ended_seq counts
-       the ends; ip_ended_evicted: an ended stream was forgotten to make room, so from then on a stream neither open
-       nor remembered is started only by its frame 0. */
+       the ends. Once one was forgotten to make room, a stream neither open nor remembered is started only by its frame
+       0 (dsd_state::m17_ip_ended_lost, outside this allocation). */
     m17_ip_ended_key ip_ended[M17_IP_ENDED_CAPACITY];
     uint32_t ip_ended_seq;
-    uint8_t ip_ended_evicted;
     /* Counts the network streams admission opened: the GNSS repeat rule's stream boundary (a stream numbers on through
        its counter's wrap, so a frame number that falls is no boundary). */
     uint32_t ip_stream_gen;
     m17_adata_assembly adata;
-    /* The text META being assembled from its blocks (m17_meta_text_assembler_push()), emptied at a transmission
-       boundary (m17_confirm_reset_link()) so that no text is made of two transmissions' blocks. */
+    /* The text META of the RF transmission or the admitted network stream being assembled from its blocks
+       (m17_meta_text_assembler_push()), emptied at every transmission boundary (m17_confirm_reset()) so that no text
+       is made of two transmissions' blocks. An MPKT has its own, on the stack. */
     struct m17_meta_text_assembler text_meta;
 } m17_state_ext;
 

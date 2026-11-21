@@ -84,23 +84,15 @@ dsd_dispatch_handle_m17(dsd_opts* opts, dsd_state* state) {
         /* A signature the transmission advertised and never judged (its last chunk, with the EOS, was lost) is
            reported incomplete before the reset below forgets it. */
         m17_note_transmission_end(state);
-        DSD_MEMSET(state->m17_lsf, 0, sizeof(state->m17_lsf));
-        DSD_MEMSET(&state->m17_lich, 0, sizeof(state->m17_lich));
-        state->m17_pbc_ct = 0;
+        /* What the transmission held (its link setup, LSF bits and LICH chunks, packet, BERT receiver, signature and
+           text) goes with its evidence in m17_confirm_reset() below, the one M17 boundary; the hunt's own state goes
+           here. */
         state->m17_polarity = 0;
         state->m17_pre_run = 0;
         state->m17_pre_candidate = 0;
         state->m17_pre_candidate_ttl = 0;
         dsd_sync_hit_history_clear(&state->m17_join_hits);
         dsd_nxdn96_sync_clear(&state->nxdn96_sync);
-        state->m17_bert_locked = 0;
-        state->m17_bert_lfsr = 1;
-        state->m17_bert_lock_count = 0;
-        state->m17_bert_window_bits = 0;
-        state->m17_bert_window_errors = 0;
-        state->m17_bert_bits = 0;
-        state->m17_bert_errors = 0;
-        state->m17_bert_resyncs = 0;
         state->lastsynctype = DSD_SYNC_NONE;
         /* The marker is seven outer symbols of one sign to one of the other, and the levels its words leave behind
          * are skewed with it: the centre sat near half the outer level. The hunt for the next transmission slices and

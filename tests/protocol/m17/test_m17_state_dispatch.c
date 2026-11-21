@@ -1870,6 +1870,17 @@ capture_has(const char* out, size_t cap, const char* needle) {
     return 0;
 }
 
+/* The next transmission's first stream frame (a clean LICH chunk 0 of an empty LSF): it drops what an ended
+   transmission held (m17_retire_if_ended()). */
+static void
+drop_ended_transmission(dsd_opts* opts, dsd_state* state) {
+    uint8_t lsf_bits[TEST_M17_LSF_BITS];
+    uint8_t encoded[M17_LICH_BITS];
+    DSD_MEMSET(lsf_bits, 0, sizeof(lsf_bits));
+    build_encoded_lich_chunk(lsf_bits, 0U, encoded);
+    (void)m17_process_lich(state, opts, encoded);
+}
+
 static int
 test_packet_eot_finalization_crc_gates_decode_and_clears_state(void) {
     dsd_opts* opts = &g_opts;
@@ -1904,9 +1915,13 @@ test_packet_eot_finalization_crc_gates_decode_and_clears_state(void) {
 
     int err = 0;
     err |= expect_int("valid packet EOT starts canonical epoch", first_epoch != 0U, 1);
-    /* The packet's one-block text completes, and goes with the packet transmission it ends. */
+    /* The packet's one-block text completes. The packet's end is its transmission's end: what it held goes at the next
+       transmission's first frame (its evidence stands for the EOT marker until then). */
     err |= expect_int("valid packet EOT text completes", capture_has(out, sizeof(out), "Complete: RF-PKT-OK"), 1);
-    err |= expect_u8("valid packet EOT text ends with it", text_meta_received(state), 0U);
+    err |= expect_u8("valid packet EOT ends the transmission", state->m17_tx_ended, 1U);
+    err |= expect_u8("valid packet EOT text held to the next frame", text_meta_received(state), 1U);
+    drop_ended_transmission(opts, state);
+    err |= expect_u8("the next frame drops the packet's text", text_meta_received(state), 0U);
     (void)expected_text;
     err |= expect_int("valid packet EOT clears PBC", state->m17_pbc_ct, 0);
     for (size_t i = 0U; i < total_len; i++) {
@@ -1965,9 +1980,10 @@ test_packet_eot_finalization_crc_gates_decode_and_clears_state(void) {
     (void)dsd_test_capture_stderr_end(&cap);
     (void)dsd_test_capture_stderr_read(&cap, out, sizeof(out));
 
-    err |= expect_int("non-aggressive bad CRC still decodes the text",
-                      capture_has(out, sizeof(out), "Complete: RF-PKT-OK"), 1);
-    err |= expect_u8("non-aggressive bad CRC text ends with the packet", text_meta_received(state), 0U);
+    /* -F shows the packet despite its failed CRC, and commits its text block to no assembler. */
+    err |= expect_int("non-aggressive bad CRC still shows the text", capture_has(out, sizeof(out), "RF-PKT-OK"), 1);
+    err |= expect_int("non-aggressive bad CRC assembles no text", capture_has(out, sizeof(out), "Complete:"), 0);
+    err |= expect_u8("non-aggressive bad CRC commits no block", text_meta_received(state), 0U);
     dsd_state_ext_free_all(state);
     return err;
 }
@@ -5191,9 +5207,13 @@ test_signed_ip_stream_is_not_verified(void) {
         send_ip_stream_frame(opts, state, lsf_bits, sid, (uint16_t)(fn & M17_STREAM_FRAME_COUNTER_MAX),
                              (uint8_t)((fn & M17_STREAM_FRAME_END_MASK) != 0U), M17_REF_SIGNATURE_BYTES + (i * 16U), 0);
         err |= expect_int("a signature frame plays nothing", g_codec2_decode_calls - decodes, 0);
+        if (i == 2U) {
+            /* Before its last frame: the verdict, and no chunk; its end drops everything held from it. */
+            err |= expect_u8("no signature chunk is collected", state->m17_signature_received_mask, 0U);
+            err |= expect_u8("the network stream is not verified", state->m17_signature_verification_status, 6U);
+        }
     }
-    err |= expect_u8("no signature chunk is collected", state->m17_signature_received_mask, 0U);
-    err |= expect_u8("the network stream is not verified", state->m17_signature_verification_status, 6U);
+    err |= expect_u8("its end drops the verdict with the rest of it", state->m17_signature_verification_status, 0U);
 
     dsd_call_snapshot ended_call;
     err |= expect_int("signed IP stream had a call", get_m17_call(state, &ended_call), 1);
@@ -5388,9 +5408,11 @@ test_ip_late_copy_after_joining_on_signature_frames(void) {
         const uint16_t fn = k_test_signature_fns[i];
         send_ip_stream_frame(opts, state, lsf_bits, sid, (uint16_t)(fn & M17_STREAM_FRAME_COUNTER_MAX),
                              (uint8_t)((fn & M17_STREAM_FRAME_END_MASK) != 0U), M17_REF_SIGNATURE_BYTES + (i * 16U), 0);
+        if (i == 2U) {
+            err |= expect_u8("joined on the signature: not verified over the network",
+                             state->m17_signature_verification_status, 6U);
+        }
     }
-    err |= expect_u8("joined on the signature: not verified over the network", state->m17_signature_verification_status,
-                     6U);
     dsd_call_snapshot call;
     err |= expect_int("joined stream call record", get_m17_call(state, &call), 1);
     const uint64_t epoch = call.epoch;
@@ -6262,9 +6284,10 @@ test_rf_eos_retires_the_decoded_link_setup(void) {
     return err;
 }
 
-/* Every boundary that ends a transmission retires the same decoded link setup (m17_confirm_reset_link_setup()): a
-   decoded EOS (at the next transmission's first frame), the EOT marker, a lost carrier or a retune, and a network
-   stream's end. */
+/* Every boundary that ends a transmission drops everything held from it through one helper (m17_confirm_reset()): the
+   decoded link setup, the raw LSF bits and the LICH chunks held in them, the signature and the text being assembled. The
+   boundaries: a decoded EOS and a packet's end (at the next transmission's first frame), the EOT marker, a lost carrier
+   or a retune, a network stream's end. */
 static int
 test_link_setup_boundaries_clear_the_same_set(void) {
     dsd_opts* opts = &g_opts;
@@ -6276,15 +6299,20 @@ test_link_setup_boundaries_clear_the_same_set(void) {
     const uint16_t crc = build_encrypted_lsf(lsf_bits, lsf_packed, 1U);
     DSD_MEMSET(payload, 0x6C, sizeof(payload));
 
-    for (int boundary = 0; boundary < 5; boundary++) {
+    for (int boundary = 0; boundary < 6; boundary++) {
         ip_test_state(opts, state);
-        if (boundary < 3) {
+        if (boundary < 3 || boundary == 5) {
             DSD_MEMCPY(state->m17_lsf, lsf_bits, sizeof(lsf_bits));
             err |= expect_int("checked LSF frame", m17_finalize_lsf_crc(opts, state, lsf_packed, crc), 0);
         } else {
             send_ip_stream_frame(opts, state, lsf_bits, 0x7A00U, 0U, 0U, payload, 0);
         }
         err |= expect_u8("the LSF set the link up", state->m17_enc, 2U);
+        seed_text_meta(state);
+        /* A LICH chunk held under the transmission's binding. */
+        uint8_t held[M17_LICH_BITS];
+        build_encoded_lich_chunk(lsf_bits, 1U, held);
+        (void)m17_process_lich(state, opts, held);
         const char* label;
         switch (boundary) {
             case 0: {
@@ -6310,15 +6338,39 @@ test_link_setup_boundaries_clear_the_same_set(void) {
                 label = "a network stream's EOT";
                 send_ip_stream_frame(opts, state, lsf_bits, 0x7A00U, 1U, 1U, payload, 0);
                 break;
-            default: {
+            case 4: {
                 label = "a network stream's EOTX";
                 uint8_t eotx[10];
                 build_ip_control(eotx, "EOTX", M17_REF_LSF_SRC_CSD);
                 m17_ip_dispatch_frame(opts, state, eotx, sizeof(eotx));
                 break;
             }
+            default: {
+                label = "a packet's end, at the next frame's LICH";
+                uint8_t app[2U + M17_META_BYTES];
+                build_packet_text_meta_app(app, "PACKET-END-XX");
+                stage_packet_with_crc(state, app, (uint16_t)sizeof(app), m17_crc16(app, (uint16_t)sizeof(app)));
+                m17_pkt_finalize_eot(opts, state, (uint16_t)sizeof(app), (int)(sizeof(app) + M17_PACKET_CRC_BYTES));
+                uint8_t encoded[M17_LICH_BITS];
+                build_encoded_lich_chunk(lsf_bits, 4U, encoded);
+                (void)m17_process_lich(state, opts, encoded);
+                break;
+            }
         }
         err |= expect_link_setup_unknown(label, state);
+        /* The raw LSF bits and LICH chunks: at a next frame's LICH only its own chunk is held, elsewhere none. */
+        const int next_chunk = boundary == 0 || boundary == 5;
+        err |= expect_u8(label, state->m17_lich.held, (uint8_t)(next_chunk ? (1U << 4U) : 0U));
+        for (size_t i = 0U; i < sizeof(state->m17_lsf); i++) {
+            const int in_next = next_chunk && i >= (4U * M17_LICH_CHUNK_BITS) && i < (5U * M17_LICH_CHUNK_BITS);
+            if (!in_next && state->m17_lsf[i] != 0U) {
+                DSD_FPRINTF(stderr, "%s: LSF bit %zu kept from the ended transmission\n", label, i);
+                err = 1;
+                break;
+            }
+        }
+        err |= expect_u8(label, text_meta_received(state), 0U);
+        err |= expect_u8(label, state->m17_signature_verification_status, 0U);
     }
     dsd_state_ext_free_all(state);
     return err;
@@ -6447,14 +6499,14 @@ test_ip_signed_stream_frame_order_never_wraps(void) {
                          M17_REF_SIGNATURE_BYTES + 16U, 0);
     err |= expect_int("an unsigned datagram in a signed stream's signature range plays nothing",
                       g_codec2_decode_calls - decodes, 0);
+    err |=
+        expect_u8("the signed stream is not verified over the network", state->m17_signature_verification_status, 6U);
     for (size_t i = 2U; i < 4U; i++) {
         const uint16_t fn = k_test_signature_fns[i];
         send_ip_stream_frame(opts, state, lsf_bits, sid, (uint16_t)(fn & M17_STREAM_FRAME_COUNTER_MAX),
                              (uint8_t)((fn & M17_STREAM_FRAME_END_MASK) != 0U), M17_REF_SIGNATURE_BYTES + (i * 16U), 0);
     }
     err |= expect_int("the signed stream ends at its last chunk", (int)state->m17_ip_stream, DSD_M17_IP_STREAM_NONE);
-    err |=
-        expect_u8("the signed stream is not verified over the network", state->m17_signature_verification_status, 6U);
     dsd_state_ext_free_all(state);
     return err;
 }
@@ -6529,7 +6581,8 @@ test_ip_signed_stream_end_without_chunks(void) {
         const uint8_t status_end = state->m17_signature_verification_status;
         (void)dsd_test_capture_stderr_end(&cap);
         (void)dsd_test_capture_stderr_read(&cap, out, sizeof(out));
-        if (status_open != 6U || (end < 2 && status_end != 6U) || capture_has(out, sizeof(out), "SIG INCOMPLETE")
+        /* The end drops the verdict with everything else held from the stream (m17_confirm_reset()). */
+        if (status_open != 6U || status_end != 0U || capture_has(out, sizeof(out), "SIG INCOMPLETE")
             || !capture_has(out, sizeof(out), "SIG NOT VERIFIED OVER NETWORK")) {
             DSD_FPRINTF(stderr, "signed IP stream ended by %s: status %u then %u, incomplete %d\n", k_ends[end],
                         (unsigned)status_open, (unsigned)status_end, capture_has(out, sizeof(out), "SIG INCOMPLETE"));
@@ -6664,7 +6717,8 @@ test_text_meta_is_one_transmissions(void) {
 }
 
 /* Each packet is a whole transmission with its own LSF (M17 spec 2.0.11, Packet Mode), so its text META is its own:
-   the blocks of two MPKTs, or of two packets over the air, never make one text, though both texts are as long. */
+   the blocks of two MPKTs, or of two packets over the air (the second's LSF frame failed its CRC, its EOT marker
+   between was missed), never make one text, though both texts are as long. */
 static int
 test_packet_text_meta_is_one_packets(void) {
     dsd_opts* opts = &g_opts;
@@ -6673,10 +6727,12 @@ test_packet_text_meta_is_one_packets(void) {
     uint8_t first[2U + M17_META_BYTES];
     uint8_t second[2U + M17_META_BYTES];
     uint8_t mpkt_frame[34U + sizeof(first) + 2U];
+    uint8_t lsf_packed[M17_LSF_BYTES];
     int err = 0;
     const unsigned long long dst = m17_encode_b40_callsign(0ULL, M17_REF_LSF_DST_CSD);
     const unsigned long long src = m17_encode_b40_callsign(0ULL, M17_REF_LSF_SRC_CSD);
     build_lsf_bits(lsf_bits, dst, src, m17_compose_frame_info(0U, 0U, 0U, 0U, 5U, 0U, 0U), NULL);
+    const uint16_t lsf_crc = m17_attach_lsf_crc(lsf_bits, lsf_packed);
     /* Two-block texts: the first packet carries block 1 of 2, the second block 2 of 2. */
     build_packet_text_meta_app(first, "FIRST-PART-AA");
     first[2] = 0x31U;
@@ -6694,6 +6750,10 @@ test_packet_text_meta_is_one_packets(void) {
         for (int i = 0; i < 2; i++) {
             if (rf) {
                 const uint16_t app_len = (uint16_t)sizeof(first);
+                if (i == 1) {
+                    DSD_MEMCPY(state->m17_lsf, lsf_bits, sizeof(lsf_bits));
+                    (void)m17_finalize_lsf_crc(opts, state, lsf_packed, (uint16_t)(lsf_crc ^ 1U));
+                }
                 stage_packet_with_crc(state, apps[i], app_len, m17_crc16(apps[i], app_len));
                 m17_pkt_finalize_eot(opts, state, app_len, (int)(app_len + M17_PACKET_CRC_BYTES));
             } else {
@@ -6707,11 +6767,276 @@ test_packet_text_meta_is_one_packets(void) {
         err |= expect_int(rf ? "two RF packets' text blocks never make one text"
                              : "two MPKTs' text blocks never make one text",
                           capture_has(out, sizeof(out), "Complete:"), 0);
-        err |= expect_u8("a packet's text is gone at its end", text_meta_received(state), 0U);
+        if (rf) {
+            /* The RF packet's text goes at the next transmission's first frame. */
+            err |= expect_u8("an RF packet's end ends its transmission", state->m17_tx_ended, 1U);
+            drop_ended_transmission(opts, state);
+        }
+        err |= expect_u8("a packet's text is gone after it", text_meta_received(state), 0U);
     }
     dsd_state_ext_free_all(state);
     return err;
 }
+
+/* Gate round 5 (issue #890): one boundary for everything a transmission held, and a text assembler per transmission. */
+
+/* Under -F, A's LSF frame failed its CRC (its bits stay in the LSF being rebuilt), two clean chunks of A follow, the
+   second with its EOS. With the EOT marker and B's LSF frame missed, B (encrypted, CAN 9) is acquired from its LICH:
+   none of A's LSF bits or chunks may complete B's LSF, so B never plays as A's clear CAN 3. */
+static int
+test_rf_eos_drops_the_raw_lsf_bits(void) {
+    dsd_opts* opts = &g_opts;
+    dsd_state* state = &g_state;
+    uint8_t a_bits[TEST_M17_LSF_BITS];
+    uint8_t a_packed[M17_LSF_BYTES];
+    uint8_t b_bits[TEST_M17_LSF_BITS];
+    uint8_t b_packed[M17_LSF_BYTES];
+    uint8_t payload[M17_SIGNATURE_DIGEST_BYTES];
+    uint8_t payload_bits[M17_STREAM_PAYLOAD_BITS];
+    uint8_t processed_bits[M17_STREAM_PAYLOAD_BITS];
+    uint16_t a_crc = 0U;
+    int err = 0;
+    ip_test_state(opts, state);
+    opts->aggressive_framesync = 0;
+    build_checked_lsf(a_bits, a_packed, m17_compose_frame_info(1U, 2U, 0U, 0U, 3U, 0U, 0U), &a_crc);
+    (void)build_encrypted_lsf(b_bits, b_packed, 0U);
+    DSD_MEMSET(payload, 0x6D, sizeof(payload));
+    bytes_to_bits(payload, payload_bits, sizeof(payload));
+
+    DSD_MEMCPY(state->m17_lsf, a_bits, sizeof(a_bits));
+    err |= expect_int("A's LSF frame fails its CRC", m17_finalize_lsf_crc(opts, state, a_packed, a_crc ^ 1U), 1);
+    err |= expect_u8("-F sets A up from it", state->m17_can, 3U);
+    (void)feed_stream_lich(opts, state, a_bits, 0U);
+    (void)feed_stream_lich(opts, state, a_bits, 1U);
+    m17_stream_end_of_stream(opts, state);
+
+    (void)feed_stream_lich(opts, state, b_bits, 5U);
+    /* Its last-chunk rebuild held B's chunk alone: -F took nothing of A's setup from it. */
+    err |= expect_u8("the rebuild at B's chunk 5 takes no stream type of A's", state->m17_str_dt,
+                     (uint8_t)TEST_STREAM_TYPE_UNKNOWN);
+    (void)feed_stream_lich(opts, state, b_bits, 0U);
+    err |= expect_int("B is confirmed by its LICH", m17_confirm_is_confirmed(state), 1);
+    err |= expect_int("B is not A's CAN 3", state->m17_can == 3U, 0);
+    const int decodes = g_codec2_decode_calls;
+    (void)m17_dispatch_stream_payload(opts, state, payload_bits, 6U, processed_bits);
+    err |= expect_int("B never plays as A's clear voice", g_codec2_decode_calls - decodes, 0);
+    dsd_state_ext_free_all(state);
+    return err;
+}
+
+/* The LSF bits of a packet-mode LSF (CAN 5) carrying text META @p meta0 and @p text, CRC attached. */
+static uint16_t
+build_packet_text_lsf(uint8_t lsf_bits[TEST_M17_LSF_BITS], uint8_t lsf_packed[M17_LSF_BYTES], uint8_t meta0,
+                      const char text[M17_TEXT_BLOCK_BYTES]) {
+    uint8_t meta[M17_AES_NONCE_BYTES];
+    DSD_MEMSET(meta, 0, sizeof(meta));
+    meta[0] = meta0;
+    DSD_MEMCPY(meta + 1, text, M17_TEXT_BLOCK_BYTES);
+    const unsigned long long dst = m17_encode_b40_callsign(0ULL, M17_REF_LSF_DST_CSD);
+    const unsigned long long src = m17_encode_b40_callsign(0ULL, M17_REF_LSF_SRC_CSD);
+    build_lsf_bits(lsf_bits, dst, src, m17_compose_frame_info(0U, 0U, 0U, 0U, 5U, 0U, 0U), meta);
+    return m17_attach_lsf_crc(lsf_bits, lsf_packed);
+}
+
+/* Packet A over the air: its checked LSF frame carries text block 1 of 2 and its packet fails its CRC. With A's EOT
+   marker missed and B's LSF frame failing its CRC, B's checked packet carries block 2 of 2: the two never make one
+   text. Then, under -F, a packet whose CRC failed is shown but neither adds its block nor clears the block its
+   transmission's checked LSF gave. */
+static int
+test_rf_packet_text_is_its_transmissions(void) {
+    dsd_opts* opts = &g_opts;
+    dsd_state* state = &g_state;
+    uint8_t a_bits[TEST_M17_LSF_BITS];
+    uint8_t a_packed[M17_LSF_BYTES];
+    uint8_t sms[2U + M17_META_BYTES];
+    uint8_t second[2U + M17_META_BYTES];
+    int err = 0;
+    const uint16_t a_crc = build_packet_text_lsf(a_bits, a_packed, 0x31U, "FIRST-PART-AA");
+    DSD_MEMSET(sms, 0, sizeof(sms));
+    sms[0] = 0x05U;
+    DSD_MEMCPY(sms + 1, "HELLO", 5U);
+    build_packet_text_meta_app(second, "OTHER-TEXT-BB");
+    second[2] = 0x32U;
+    const uint16_t app_len = (uint16_t)sizeof(second);
+
+    for (int relaxed = 0; relaxed < 2; relaxed++) {
+        ip_test_state(opts, state);
+        opts->aggressive_framesync = relaxed ? 0 : 1;
+        dsd_test_capture_stderr cap;
+        char out[16384];
+        if (dsd_test_capture_stderr_begin(&cap, "m17_rf_pkt_text") != 0) {
+            return 1;
+        }
+        DSD_MEMCPY(state->m17_lsf, a_bits, sizeof(a_bits));
+        (void)m17_finalize_lsf_crc(opts, state, a_packed, a_crc);
+        const uint8_t after_lsf = text_meta_received(state);
+        if (relaxed) {
+            /* A's own packet fails its CRC: -F shows it, and its block joins nothing. */
+            stage_packet_with_crc(state, second, app_len, (uint16_t)(m17_crc16(second, app_len) ^ 1U));
+            m17_pkt_finalize_eot(opts, state, app_len, (int)(app_len + M17_PACKET_CRC_BYTES));
+        } else {
+            stage_packet_with_crc(state, sms, app_len, (uint16_t)(m17_crc16(sms, app_len) ^ 1U));
+            m17_pkt_finalize_eot(opts, state, app_len, (int)(app_len + M17_PACKET_CRC_BYTES));
+        }
+        const uint8_t after_bad_packet = text_meta_received(state);
+        if (!relaxed) {
+            DSD_MEMCPY(state->m17_lsf, a_bits, sizeof(a_bits));
+            (void)m17_finalize_lsf_crc(opts, state, a_packed, (uint16_t)(a_crc ^ 1U));
+            stage_packet_with_crc(state, second, app_len, m17_crc16(second, app_len));
+            m17_pkt_finalize_eot(opts, state, app_len, (int)(app_len + M17_PACKET_CRC_BYTES));
+        }
+        (void)dsd_test_capture_stderr_end(&cap);
+        (void)dsd_test_capture_stderr_read(&cap, out, sizeof(out));
+        err |= expect_u8("the checked LSF gives its block", after_lsf, 0x01U);
+        err |= expect_u8(relaxed ? "a packet -F shows commits nothing and clears nothing"
+                                 : "a packet whose CRC failed clears nothing",
+                         after_bad_packet, 0x01U);
+        err |= expect_int(relaxed ? "a packet -F shows completes no text" : "two packets' blocks never make one text",
+                          capture_has(out, sizeof(out), "Complete:"), 0);
+    }
+    dsd_state_ext_free_all(state);
+    return err;
+}
+
+/* An MPKT heard while a network stream is open is its own transmission: it neither adds to nor clears the open
+   stream's text, whose blocks still make one text across it. */
+static int
+test_ip_mpkt_leaves_the_open_streams_text(void) {
+    dsd_opts* opts = &g_opts;
+    dsd_state* state = &g_state;
+    uint8_t first_bits[TEST_M17_LSF_BITS];
+    uint8_t second_bits[TEST_M17_LSF_BITS];
+    uint8_t packet_bits[TEST_M17_LSF_BITS];
+    uint8_t lsf_packed[M17_LSF_BYTES];
+    uint8_t meta[M17_AES_NONCE_BYTES];
+    uint8_t payload[M17_SIGNATURE_DIGEST_BYTES];
+    uint8_t sms[8];
+    uint8_t mpkt_frame[34U + sizeof(sms) + 2U];
+    int err = 0;
+    const unsigned long long dst = m17_encode_b40_callsign(0ULL, M17_REF_LSF_DST_CSD);
+    const unsigned long long src = m17_encode_b40_callsign(0ULL, M17_REF_LSF_SRC_CSD);
+    DSD_MEMSET(meta, 0, sizeof(meta));
+    meta[0] = 0x31U;
+    DSD_MEMCPY(meta + 1, "STREAM-PART-1", M17_TEXT_BLOCK_BYTES);
+    build_lsf_bits(first_bits, dst, src, m17_compose_frame_info(1U, 2U, 0U, 0U, 3U, 0U, 0U), meta);
+    (void)m17_attach_lsf_crc(first_bits, lsf_packed);
+    meta[0] = 0x32U;
+    DSD_MEMCPY(meta + 1, "STREAM-PART-2", M17_TEXT_BLOCK_BYTES);
+    build_lsf_bits(second_bits, dst, src, m17_compose_frame_info(1U, 2U, 0U, 0U, 3U, 0U, 0U), meta);
+    (void)m17_attach_lsf_crc(second_bits, lsf_packed);
+    build_lsf_bits(packet_bits, dst, src, m17_compose_frame_info(0U, 0U, 0U, 0U, 5U, 0U, 0U), NULL);
+    DSD_MEMSET(sms, 0, sizeof(sms));
+    sms[0] = 0x05U;
+    DSD_MEMCPY(sms + 1, "HELLO", 5U);
+    DSD_MEMSET(payload, 0x5D, sizeof(payload));
+
+    ip_test_state(opts, state);
+    dsd_test_capture_stderr cap;
+    char out[16384];
+    if (dsd_test_capture_stderr_begin(&cap, "m17_mpkt_stream_text") != 0) {
+        return 1;
+    }
+    send_ip_stream_frame(opts, state, first_bits, 0x7F10U, 0U, 0U, payload, 0);
+    const size_t len = build_ip_mpkt_frame(mpkt_frame, sizeof(mpkt_frame), packet_bits, 0x7F11U, sms, sizeof(sms));
+    m17_ip_dispatch_frame(opts, state, mpkt_frame, (int)len);
+    const uint8_t after_mpkt = text_meta_received(state);
+    send_ip_stream_frame(opts, state, second_bits, 0x7F10U, 1U, 0U, payload, 0);
+    (void)dsd_test_capture_stderr_end(&cap);
+    (void)dsd_test_capture_stderr_read(&cap, out, sizeof(out));
+    err |= expect_u8("an MPKT leaves the open stream's text", after_mpkt, 0x01U);
+    err |= expect_int("the stream's blocks still make its text",
+                      capture_has(out, sizeof(out), "Complete: STREAM-PART-1STREAM-PART-2"), 1);
+    dsd_state_ext_free_all(state);
+    return err;
+}
+
+/* A signed stream ends; its station starts an unsigned stream on the same stream ID at frame 0. A delayed signed copy
+   of the old stream's frame 1 arriving after the new stream took its frame 1 is refused, and it does not make the new
+   stream signed: its next frame plays, with no network signature note, and the stream keeps its counter's wrap. */
+static int
+test_ip_refused_signed_copy_signs_nothing(void) {
+    dsd_opts* opts = &g_opts;
+    dsd_state* state = &g_state;
+    uint8_t signed_bits[TEST_M17_LSF_BITS];
+    uint8_t lsf_packed[M17_LSF_BYTES];
+    uint8_t unsigned_bits[TEST_M17_LSF_BITS];
+    uint8_t payload[M17_SIGNATURE_DIGEST_BYTES];
+    int err = 0;
+    build_checked_lsf(signed_bits, lsf_packed, m17_compose_frame_info(1U, 2U, 0U, 0U, 3U, 1U, 0U), NULL);
+    build_voice_lsf(unsigned_bits, 3U, 0);
+    DSD_MEMSET(payload, 0x5E, sizeof(payload));
+    const uint16_t sid = 0x7F20U;
+
+    ip_test_state(opts, state);
+    for (uint16_t fn = 0U; fn < 4U; fn++) {
+        send_ip_stream_frame(opts, state, signed_bits, sid, fn, (uint8_t)(fn == 3U), payload, 0);
+    }
+    send_ip_stream_frame(opts, state, unsigned_bits, sid, 0U, 0U, payload, 0);
+    send_ip_stream_frame(opts, state, unsigned_bits, sid, 1U, 0U, payload, 0);
+    send_ip_stream_frame(opts, state, signed_bits, sid, 1U, 0U, payload, 0);
+    err |= expect_u8("a refused signed copy signs nothing", state->m17_ip_stream_signed, 0U);
+    dsd_test_capture_stderr cap;
+    char out[8192];
+    if (dsd_test_capture_stderr_begin(&cap, "m17_ip_signed_copy") != 0) {
+        return 1;
+    }
+    send_ip_stream_frame(opts, state, unsigned_bits, sid, 2U, 0U, payload, 0);
+    (void)dsd_test_capture_stderr_end(&cap);
+    (void)dsd_test_capture_stderr_read(&cap, out, sizeof(out));
+    err |= expect_int("the unsigned stream's next frame is taken", (int)state->m17_ip_stream_last_fn, 2);
+    err |= expect_int("it gets no network signature note",
+                      capture_has(out, sizeof(out), "SIG NOT VERIFIED OVER NETWORK"), 0);
+    err |= expect_u8("it has no signature verdict", state->m17_signature_verification_status, 0U);
+    dsd_state_ext_free_all(state);
+    return err;
+}
+
+#ifdef DSD_NEO_TEST_ALLOC_WRAP
+/* Fail the next allocation the size of the M17 extension (its first creation). */
+static int g_fail_m17_ext_alloc;
+
+// NOLINTNEXTLINE(bugprone-reserved-identifier,misc-use-internal-linkage)
+void* __real_calloc(size_t count, size_t size);
+// NOLINTNEXTLINE(bugprone-reserved-identifier,misc-use-internal-linkage)
+void* __wrap_calloc(size_t count, size_t size);
+
+void*
+__wrap_calloc(size_t count, size_t size) {
+    if (g_fail_m17_ext_alloc != 0 && count == 1U && size == sizeof(m17_state_ext)) {
+        g_fail_m17_ext_alloc = 0;
+        return NULL;
+    }
+    return __real_calloc(count, size);
+}
+
+/* The first network frame heard is stream A's final frame, and the table that would record A's end cannot be made:
+   A's end is lost, so from then on a stream neither open nor remembered starts only at frame 0. An earlier frame of A
+   arriving after stream B opened does not displace B. */
+static int
+test_ip_unrecordable_end_fails_closed(void) {
+    dsd_opts* opts = &g_opts;
+    dsd_state* state = &g_state;
+    uint8_t a_bits[TEST_M17_LSF_BITS];
+    uint8_t b_bits[TEST_M17_LSF_BITS];
+    uint8_t payload[M17_SIGNATURE_DIGEST_BYTES];
+    int err = 0;
+    build_voice_lsf(a_bits, 3U, 0);
+    build_voice_lsf_from(b_bits, "N0OTHR");
+    DSD_MEMSET(payload, 0x5F, sizeof(payload));
+
+    ip_test_state(opts, state);
+    g_fail_m17_ext_alloc = 1;
+    send_ip_stream_frame(opts, state, a_bits, 0x7F30U, 9U, 1U, payload, 0);
+    err |= expect_int("the allocation was tried and failed", g_fail_m17_ext_alloc, 0);
+    send_ip_stream_frame(opts, state, b_bits, 0x7F31U, 0U, 0U, payload, 0);
+    err |= expect_int("B opens at its frame 0", (int)state->m17_ip_stream_sid, 0x7F31);
+    send_ip_stream_frame(opts, state, a_bits, 0x7F30U, 7U, 0U, payload, 0);
+    err |= expect_int("A's earlier frame does not displace B", (int)state->m17_ip_stream_sid, 0x7F31);
+    err |= expect_int("B stays open", (int)state->m17_ip_stream, DSD_M17_IP_STREAM_OPEN);
+    dsd_state_ext_free_all(state);
+    return err;
+}
+#endif
 
 int
 main(void) {
@@ -6768,6 +7093,13 @@ main(void) {
     err |= test_ip_1600_arbitrary_data_is_one_streams();
     err |= test_text_meta_is_one_transmissions();
     err |= test_packet_text_meta_is_one_packets();
+    err |= test_rf_eos_drops_the_raw_lsf_bits();
+    err |= test_rf_packet_text_is_its_transmissions();
+    err |= test_ip_mpkt_leaves_the_open_streams_text();
+    err |= test_ip_refused_signed_copy_signs_nothing();
+#ifdef DSD_NEO_TEST_ALLOC_WRAP
+    err |= test_ip_unrecordable_end_fails_closed();
+#endif
     err |= test_lsf_rejects_reserved_type_without_replacing_state();
     err |= test_lsf_rejects_invalid_addresses_without_replacing_state();
     err |= test_lsf_null_meta_decodes_text_and_honors_can_filter();

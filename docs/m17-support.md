@@ -14,15 +14,18 @@ Implemented decode coverage:
 - M17 address classification for reserved, standard, extended, and destination-only broadcast addresses.
 - Stream metadata for text, GNSS position, and extended callsign blocks, read only from an LSF (or a stream's LSD, or an
   IP stream or packet frame) whose CRC passed, and never from what the local encoder transmits. A text is put together
-  only from the blocks of one transmission; each packet (over the air or MPKT) is a transmission of its own. Under `-F` an LSF that
+  only from the blocks of one transmission whose check passed: each packet (over the air or MPKT) is a transmission of
+  its own, an MPKT heard during a network stream does not touch the stream's text, and a packet whose CRC failed (shown
+  under `-F`) neither adds to a text nor clears one. Under `-F` an LSF that
   failed its CRC still sets up the stream, but its META is not read, and once an LSF whose CRC passed has set up the
   transmission, one that failed it is only shown: it does not change the CAN, encryption or stream type. If the end of
   one transmission is missed and the next one's LSF fails its CRC, the previous transmission's CAN and encryption stay
   in force until the new stream's LSF is rebuilt from its LICH with a good CRC: one LICH cycle (six stream frames, 240
-  ms) when those frames are received cleanly. When a transmission's end is decoded (its last frame's end bit, or the
-  end-of-transmission marker) the next one starts with no setup at all: until its own LSF is read (its LSF frame, or
-  its LSF rebuilt from the LICH; under `-F` also one that failed its CRC), it plays nothing and opens no call, and it
-  never runs on the previous transmission's CAN, encryption or stream type. A stream's LSD counts only when all six of
+  ms) when those frames are received cleanly. When a transmission's end is decoded (its last frame's end bit, a
+  packet's end, the end-of-transmission marker, a lost signal or a retune, a network stream's end) everything received
+  from it is dropped, and the next one starts with nothing of it: until its own LSF is read (its LSF frame, or its LSF
+  rebuilt from its own LICH pieces; under `-F` also one that failed its CRC), it plays nothing and opens no call, and it
+  never runs on the previous transmission's CAN, encryption or stream type nor reuses its LSF pieces. A stream's LSD counts only when all six of
   its LICH pieces were heard in
   one transmission, on one tuning, and on the same side of the moment the stream was confirmed; one put together across
   a retune or another change is dropped, and the next whole set is read.
@@ -42,9 +45,10 @@ Implemented decode coverage:
   does not end the open one, but that other stream counts as ended. A stream's own end, or EOTX and DISC from its
   station, end it and drop the carrier. After a network stream ends, its stream ID (from that station) is ignored until
   a frame 0 starts it again; a stream ID that the same station reuses with no end received between is not taken. The
-  last 64 ended streams are remembered. Once more than 64 have ended in a session, the oldest are forgotten, and from
-  then on a stream that is not open and not remembered starts only at its frame 0: a stream whose first frames were
-  lost is not joined part-way through. A GNSS position repeated in one network stream is one report, also across the
+  last 64 ended streams are remembered. Once more than 64 have ended in a session (or an end could not be recorded
+  for lack of memory), the oldest are forgotten, and from then on a stream that is not open and not remembered starts
+  only at its frame 0: a stream whose first frames were lost is not joined part-way through. A stream is treated as
+  signed only once one of its own frames with a signed LSF is taken. A GNSS position repeated in one network stream is one report, also across the
   frame counter's wrap.
 - Signed voice streams: over the air, the signature is collected and checked (secp256r1) when
   `--m17-signature-public-key <hex>` is provided (M17 2.0.11 signatures). The digest runs over the whole stream from its
