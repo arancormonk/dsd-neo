@@ -732,7 +732,7 @@ m17_transmission_text(dsd_state* state) {
     return g != NULL ? &g->text_meta : NULL;
 }
 
-/* The transmission ended (stream EOT, EOTX, DISC, an MPKT's end): a later one that reuses its stream ID is another.
+/* The network stream ended (its EOT, EOTX, DISC, another stream replacing it): a later one that reuses its stream ID is another.
  * The frames remembered stay: a copy of one is still no new transmission. Never creates the state. */
 static void
 m17_gnss_tx_end(const dsd_state* state) {
@@ -891,6 +891,38 @@ m17_gnss_note_admitted(m17_state_ext* g, const dsd_state* state, const m17_gnss_
     DSD_MEMCPY(g->gnss_meta_admitted, state->m17_meta, M17_META_BYTES);
 }
 
+/* The repeat key of a report from @p res on @p carrier, in the call of epoch @p epoch (0 none), heard on reception
+   generation @p gen (m17_gnss_tx_key). */
+static void
+m17_gnss_build_key(m17_gnss_tx_key* key, const struct m17_lsf_result* res, const m17_lsf_carrier* carrier,
+                   uint64_t epoch, uint64_t gen) {
+    DSD_MEMSET(key, 0, sizeof(*key));
+    key->kind = carrier->network ? 2U : 1U;
+    key->epoch = epoch;
+    key->id = carrier->network ? (uint64_t)carrier->stream_id : epoch;
+    key->src = res->src;
+    key->dst = res->dst;
+    key->type_word = res->type_word;
+    key->stream_gen = carrier->stream_gen;
+    key->gen = gen;
+}
+
+/* Remember the report just admitted as the one its transmission repeats. An MPKT is a whole transmission of its own,
+   with its own repeat scope (as its own text assembler): its only repeats are byte copies of it
+   (m17_gnss_is_duplicate()), so it neither reads (m17_publish_gnss_position()) nor replaces the repeat key, which stays
+   the RF transmission's or the network stream's, an open one it interleaves with included (issue #890). An RF report
+   with no active call has no transmission to repeat within: the next one is admitted again. */
+static void
+m17_gnss_remember(m17_state_ext* g, const dsd_state* state, const m17_lsf_carrier* carrier, m17_gnss_tx_key* key) {
+    if (carrier->mpkt_call != 0U) {
+        return;
+    }
+    if (!carrier->network && key->id == 0U) {
+        key->kind = 0U;
+    }
+    m17_gnss_note_admitted(g, state, key);
+}
+
 static m17_gnss_verdict
 m17_publish_gnss_position(const dsd_opts* opts, dsd_state* state, const struct m17_lsf_result* res,
                           const struct m17_gnss_result* gnss, const m17_lsf_carrier* carrier) {
@@ -916,18 +948,10 @@ m17_publish_gnss_position(const dsd_opts* opts, dsd_state* state, const struct m
        sending to another destination, reusing one stream ID are two transmissions), as is the network stream admission
        opened (m17_ip_admit_frame(); never a frame number that falls: a long stream numbers on through its counter's
        wrap), and the reception generation: a repeat is only ever one heard on the same reception. */
-    m17_gnss_tx_key key;
-    DSD_MEMSET(&key, 0, sizeof(key));
-    key.kind = carrier->network ? 2U : 1U;
-    key.epoch = active ? call.epoch : 0U;
-    key.id = carrier->network ? (uint64_t)carrier->stream_id : key.epoch;
-    key.src = res->src;
-    key.dst = res->dst;
-    key.type_word = res->type_word;
-    key.stream_gen = carrier->stream_gen;
     dsd_position_origin heard;
     dsd_position_origin_capture(opts, state, &heard);
-    key.gen = heard.gen;
+    m17_gnss_tx_key key;
+    m17_gnss_build_key(&key, res, carrier, active ? call.epoch : 0U, heard.gen);
     m17_state_ext* g = m17_ext_st(state);
     if (g == NULL) {
         return M17_GNSS_REFUSED; /* no repeat rule to tell one report from its repeats: none is admitted */
@@ -936,7 +960,8 @@ m17_publish_gnss_position(const dsd_opts* opts, dsd_state* state, const struct m
     if (m17_gnss_is_duplicate(g, carrier, key.gen, now_ms)) {
         return M17_GNSS_ADMITTED; /* a copy of a frame it came in, admitted or repeated already */
     }
-    if (m17_gnss_is_repeat(g, state, &key)) {
+    /* An MPKT has its own repeat scope (m17_gnss_remember()): it never reads the repeat key. */
+    if (carrier->mpkt_call == 0U && m17_gnss_is_repeat(g, state, &key)) {
         m17_gnss_note_datagram(g, carrier, key.gen, now_ms);
         return M17_GNSS_ADMITTED; /* admitted already, on this reception, within this transmission */
     }
@@ -944,11 +969,7 @@ m17_publish_gnss_position(const dsd_opts* opts, dsd_state* state, const struct m
         return M17_GNSS_REFUSED;
     }
     m17_gnss_note_datagram(g, carrier, key.gen, now_ms);
-    /* An RF report with no active call has no transmission to repeat within: the next one is admitted again. */
-    if (!carrier->network && key.id == 0U) {
-        key.kind = 0U;
-    }
-    m17_gnss_note_admitted(g, state, &key);
+    m17_gnss_remember(g, state, carrier, &key);
     char text[128];
     m17_gnss_row_text(&fix, text, sizeof(text));
     if (active) {
@@ -4680,7 +4701,6 @@ m17_ip_handle_mpkt_frame(const dsd_opts* opts, dsd_state* state, const uint8_t* 
         decodeM17PKT(opts, state, &text, ip_frame + 34, err - 34 - 2);
         if (!interleaved) {
             m17_end_call(opts, state, DSD_CALL_END_EXPLICIT, 1);
-            m17_gnss_tx_end(state);
         }
     } else {
         DSD_FPRINTF(stderr, " MPKT link setup not usable: packet not decoded;");

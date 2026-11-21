@@ -3193,7 +3193,10 @@ suite runs under this compiler.
     (stream frame or MPKT) whose META was admitted or repeated -- a duplicated datagram, the latest frame's or a late one
     from a slower network path, its length and 64-bit FNV-1a digest equal, heard on the same reception within
     `DSD_POSITION_REPEAT_MS` -- is always a repeat, never a restart, after an EOT or an MPKT's end too
-    (`m17_gnss_is_duplicate()`); this repeat state lives in the M17 state extension, slot 31, `m17_state_ext`, freed
+    (`m17_gnss_is_duplicate()`); an MPKT, a whole transmission of its own, has its own repeat scope (issue #890, as its
+    own text assembler): its only repeats are such copies, and it neither reads nor replaces the repeat key, so a
+    network stream it interleaves with keeps its key and the stream's next unchanged META is still a repeat
+    (`M17_GNSS_POSITION` `test_ip_interleaved_mpkt_keeps_the_streams_repeat_key`); this repeat state lives in the M17 state extension, slot 31, `m17_state_ext`, freed
     with the run; one that cannot be created admits no META position), so two stations, or one station sending to another destination,
     reusing one stream ID with no call between them, or one report heard again on another reception, are two reports;
     the published target stays unknown). The epoch is the call

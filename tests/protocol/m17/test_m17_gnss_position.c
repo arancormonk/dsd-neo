@@ -1147,6 +1147,46 @@ test_ip_counter_wrap_is_one_report(void) {
     dsd_decode_clock_use_system();
 }
 
+/* Issue #890: an MPKT heard while a network stream is open is its own transmission, with its own repeat scope: its
+ * GNSS META is a report of its own, and it leaves the stream's repeat key alone, so the stream's next unchanged META
+ * is still a repeat, however long after the stream's report it comes. */
+static void
+test_ip_interleaved_mpkt_keeps_the_streams_repeat_key(void) {
+    uint8_t meta[M17_META_BYTES];
+    uint8_t other_meta[M17_META_BYTES];
+    uint8_t bits[LSF_BITS];
+    uint8_t mpkt_bits[LSF_BITS];
+    uint8_t packed[M17_LSF_BYTES];
+    uint8_t sms[8];
+    uint8_t frame[128];
+    gnss_meta(meta, GNSS_ALL_VALID, 3U, TEST_BEARING_DEG, RAW_QUARTER, RAW_QUARTER);
+    gnss_meta(other_meta, GNSS_ALL_VALID, 3U, TEST_BEARING_DEG, RAW_QUARTER / 2, RAW_QUARTER / 2);
+    (void)build_lsf(bits, packed, 0, 1U, meta);
+    (void)build_lsf(mpkt_bits, packed, 0, 1U, other_meta);
+    DSD_MEMSET(sms, 0, sizeof(sms));
+    sms[0] = 0x05U;
+    DSD_MEMCPY(sms + 1, "HELLO", 5U);
+    uint64_t now_ns = 4000ULL * 1000000000ULL;
+    dsd_decode_clock_use_test(now_ns);
+    rig r;
+    rig_open(&r);
+    long long admitted = 0;
+    for (uint16_t fn = 0U; fn < 3U; fn++) {
+        admitted += send_ip_stream_frame(&r, bits, fn, (uint8_t)(0x30U + fn), 0);
+    }
+    expect_int("the stream's report admitted once", admitted, 1);
+    const size_t len = build_mpkt(frame, sizeof(frame), mpkt_bits, sms, sizeof(sms));
+    uint64_t rev = dsd_position_last_rev();
+    m17_ip_dispatch_frame(r.opts, r.state, frame, (int)len);
+    expect_int("the interleaved MPKT's own report admitted", (long long)(dsd_position_last_rev() - rev), 1);
+    /* Past the feed's 30 s repeat window: only the M17 repeat key can tell the stream's next frame is a repeat. */
+    now_ns += 31ULL * 1000000000ULL;
+    dsd_decode_clock_test_set_ns(now_ns);
+    expect_int("the stream's next unchanged META is a repeat", send_ip_stream_frame(&r, bits, 3U, 0x33U, 0), 0);
+    rig_close(&r);
+    dsd_decode_clock_use_system();
+}
+
 /* Issue #800 (g62-r9): one MPKT is one whole transmission, but a byte-identical copy of it (a duplicated datagram)
  * heard within DSD_POSITION_REPEAT_MS is no new one: its META is a repeat. The same bytes heard later, or another
  * packet with the same LSF, are another transmission and admitted again. */
@@ -1272,6 +1312,7 @@ main(void) {
     test_mpkt_duplicate_is_a_repeat();
     test_ip_late_copy_is_a_repeat();
     test_ip_counter_wrap_is_one_report();
+    test_ip_interleaved_mpkt_keeps_the_streams_repeat_key();
     test_local_tx_monitor_gives_nothing();
     test_local_tx_stream_monitor_gives_nothing();
     test_ip_stream_position();
