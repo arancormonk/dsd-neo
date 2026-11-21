@@ -906,7 +906,9 @@ dmr_flco_sync_active_call_state(dmr_flco_ctx* ctx) {
     // aggressive default the masked CRC never verifies, so those observations must repeat
     // before they can flip an established classification.
     ctx->lc_so = ctx->so;
-    if (ctx->voice_slot_known) {
+    // Only a voice channel user carries the call's service options: any other LC's byte there (an FID 0 FLCO other
+    // than 0x00 or 0x03) says nothing of the call's encryption, so it neither moves the classification nor ends a hold.
+    if (ctx->voice_slot_known && dmr_flco_opens_voice_call(ctx->raw_fid, ctx->raw_flco)) {
         // A checked LC on a held slot ends the hold (dmr_flco_release_voice_hold()) on its own word: what the slot
         // classified while held is forgotten first, since every checked LC or PI header naming a cipher ends a hold as
         // it is decoded, so it came from data no check of the call's passed (an embedded LC whose checksum failed, a

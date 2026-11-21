@@ -12,6 +12,9 @@
  * - The Hytera XPT branding changes how later LCs are read (a 16-bit target), so an LC accepted under relaxed RAS
  *   handling must not set it: a later clean standard header keeps its 24-bit target.
  * - The XPT group call alert names 250-254 as emergency groups and 255 as All Call; 249 is an ordinary group.
+ * - The same holds for an XPT CSBK: one accepted under relaxed RAS handling does not brand the site.
+ * - A FID 0 LC that is no voice channel user carries no service options: it neither moves the slot's encryption
+ *   classification nor ends a voice hold.
  */
 
 #include <assert.h>
@@ -246,6 +249,90 @@ ras_relaxed_lc_does_not_brand_xpt(void) {
     free(opts);
 }
 
+/* An XPT CSBK (FID 0x68) with opcode @p csbk_o on slot 0, its CRC passing or accepted by RAS. */
+static void
+run_xpt_csbk(dsd_opts* opts, dsd_state* state, uint8_t csbk_o, int ras_relaxed) {
+    uint8_t pdu[12];
+    uint8_t pdu_bits[96];
+    DSD_MEMSET(pdu, 0, sizeof(pdu));
+    pdu[0] = csbk_o;
+    pdu[1] = 0x68U;
+    for (size_t i = 0; i < sizeof(pdu_bits); i++) {
+        pdu_bits[i] = (uint8_t)((pdu[i / 8U] >> (7U - (i % 8U))) & 1U);
+    }
+    state->event_crc_invalid[0] = ras_relaxed ? DSD_CRC_RAS_UNVERIFIED : 0U;
+    dmr_cspdu(opts, state, pdu_bits, pdu, 1U, 0U);
+    state->event_crc_invalid[0] = 0U;
+}
+
+static void
+ras_relaxed_csbk_does_not_brand_xpt(void) {
+    dsd_opts* opts = (dsd_opts*)calloc(1U, sizeof(*opts));
+    assert(opts != NULL);
+    // 0x0A: XPT site status; 0x0B: XPT adjacent sites.
+    const uint8_t opcodes[2] = {0x0AU, 0x0BU};
+    for (size_t i = 0; i < 2U; i++) {
+        dsd_state* state = new_state();
+        run_xpt_csbk(opts, state, opcodes[i], 1);
+        assert(strcmp(state->dmr_branding_sub, "XPT ") != 0);
+        dsd_call_snapshot call;
+        assert(run_header(opts, state, 0x00U, 0x00U, 0x00U, 0x123456U, 0x000042U, &call));
+        assert(call.ota_target_id == 0x123456U);
+        free_state(state);
+
+        // A checked XPT CSBK still brands the site.
+        state = new_state();
+        run_xpt_csbk(opts, state, opcodes[i], 0);
+        assert(strcmp(state->dmr_branding_sub, "XPT ") == 0);
+        free_state(state);
+    }
+    free(opts);
+}
+
+/* A checked LC of the given type on slot 0. */
+static void
+run_lc(dsd_opts* opts, dsd_state* state, uint8_t type, uint8_t flco, uint8_t so) {
+    uint8_t bits[80];
+    build_lc(bits, flco, 0x00U, so, 0x123U, 0x456U);
+    uint32_t irr = 0;
+    dmr_flco(opts, state, bits, 1U, &irr, type);
+}
+
+static void
+fid0_non_voice_lc_leaves_privacy_and_hold(void) {
+    dsd_opts* opts = (dsd_opts*)calloc(1U, sizeof(*opts));
+    assert(opts != NULL);
+
+    // An open clear call stays clear: a type-1 header with FLCO 0x04 (strong evidence, were it a voice user) and
+    // repeated embedded FLCO 0x01 LCs whose service-option byte would read as encrypted.
+    dsd_state* state = new_state();
+    run_lc(opts, state, 1U, 0x00U, 0x00U);
+    assert(dmr_enc_class_established_clear(state, 0U));
+    run_lc(opts, state, 1U, 0x04U, 0x40U);
+    for (int i = 0; i < 4; i++) {
+        run_lc(opts, state, 3U, 0x01U, 0x40U);
+    }
+    assert(dmr_enc_class_established_clear(state, 0U));
+    assert(!dmr_enc_class_established_enc(state, 0U));
+    assert((state->dmr_so & 0x40U) == 0U);
+    dsd_call_snapshot call;
+    assert(dsd_call_state_get(state, 0U, &call) > 0 && call.phase == DSD_CALL_PHASE_ACTIVE);
+    assert(call.ota_target_id == 0x123U);
+    free_state(state);
+
+    // A held slot stays held until a voice user's checked LC says what the call is.
+    state = new_state();
+    dmr_enc_class_hold(state);
+    assert(state->dmr_enc_class_held[0] == 1U);
+    run_lc(opts, state, 1U, 0x04U, 0x00U);
+    run_lc(opts, state, 3U, 0x01U, 0x00U);
+    assert(state->dmr_enc_class_held[0] == 1U);
+    run_lc(opts, state, 1U, 0x00U, 0x00U);
+    assert(state->dmr_enc_class_held[0] == 0U);
+    free_state(state);
+    free(opts);
+}
+
 static void
 xpt_alert_label(uint32_t target, char* out, size_t out_size) {
     dsd_opts* opts = (dsd_opts*)calloc(1U, sizeof(*opts));
@@ -289,6 +376,8 @@ main(void) {
     opens_voice_call_table();
     ras_relaxed_lc_does_not_brand_xpt();
     xpt_alert_labels();
+    ras_relaxed_csbk_does_not_brand_xpt();
+    fid0_non_voice_lc_leaves_privacy_and_hold();
     printf("DMR FLCO FID 0 gate tests passed.\n");
     return 0;
 }

@@ -80,6 +80,17 @@ dmr_csbk_note_brand(dsd_state* state, const char* brand) {
     }
 }
 
+/* The Hytera XPT branding changes how later LCs, preamble CSBKs and data headers are read (a standard header's target
+   becomes 16 bits), so only a CSBK whose own CRC passed sets it: one accepted under relaxed RAS handling (-F) never
+   does, or a later clean standard header would lose its target's high bits. */
+static void
+dmr_csbk_brand_xpt(dsd_state* state) {
+    if (dmr_csbk_crc_checked(state)) {
+        DSD_SNPRINTF(state->dmr_branding_sub, sizeof(state->dmr_branding_sub), "XPT ");
+        dsd_rxid_note_dmr_brand(state, "Hytera XPT");
+    }
+}
+
 /* The label of a grant's target as the call history names it (dsd_call_target_label_lookup(), issue #773 D4). */
 static void
 dmr_csbk_print_target_label(const dsd_state* state, dsd_call_kind kind, uint32_t id) {
@@ -3020,8 +3031,7 @@ dmr_cspdu_xpt_handle_site_status(dsd_opts* opts, dsd_state* state, uint8_t cs_pd
         dmr_cspdu_xpt_try_tune(opts, state, entries, xpt_bank);
     }
 
-    DSD_SNPRINTF(state->dmr_branding_sub, sizeof(state->dmr_branding_sub), "XPT ");
-    dmr_csbk_note_brand(state, "Hytera XPT");
+    dmr_csbk_brand_xpt(state);
 }
 
 static void
@@ -3051,8 +3061,7 @@ dmr_cspdu_xpt_handle_adjacent(uint8_t cs_pdu_bits[], dsd_state* state, int csbk_
             DSD_FPRINTF(stderr, "Site:%d Free:%d; ", xpt_site_id[i], xpt_site_rp[i]);
         }
     }
-    DSD_SNPRINTF(state->dmr_branding_sub, sizeof(state->dmr_branding_sub), "XPT ");
-    dmr_csbk_note_brand(state, "Hytera XPT");
+    dmr_csbk_brand_xpt(state);
 }
 
 static void
