@@ -5112,13 +5112,10 @@ test_reacq_merge_logs_the_replacement_alias(void) {
                 expect_int("the replacement's row drops the first alias", strstr(row->alias, "FIRSTRADIO") == NULL, 1);
         }
     }
-    FILE* f = fopen(path, "rb");
     char buf[8192] = {0};
-    if (f != NULL) {
-        (void)fread(buf, 1, sizeof(buf) - 1, f);
-        fclose(f);
-    }
+    const int read_rc = read_event_log(path, buf, sizeof buf);
     remove(path);
+    rc |= expect_int("the event log was readable", read_rc, 0);
     rc |= expect_has_substr("the event log reports the replacement's alias", buf, "Talker Alias: SECONDRADIO");
     dsd_state_ext_free_all(state);
     free(event_history);
