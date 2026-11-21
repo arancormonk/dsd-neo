@@ -1717,19 +1717,25 @@ make_ysf_fich(uint8_t fich_bits[48], uint8_t fi, uint8_t cm, uint8_t fn, uint8_t
 }
 
 /* The header (@p fi 0) or terminator (2) of a V/D type 1 call in call mode @p cm, carrying CSD1 @p csd1 (destination,
-   source) and CSD2 @p csd2 (downlink, uplink), twenty characters each. */
+   source) and CSD2 @p csd2 (downlink, uplink), twenty characters each; with @p corrupt_dch, both DCH blocks fail their
+   CRC while the FICH verifies. */
 static void
-append_ysf_bound_frame(uint8_t fi, uint8_t cm, const char* csd1, const char* csd2) {
+append_ysf_bound_frame_ex(uint8_t fi, uint8_t cm, const char* csd1, const char* csd2, int corrupt_dch) {
     uint8_t fich_bits[48];
     uint8_t fich_input[100];
     uint8_t dch0[180];
     uint8_t dch1[180];
     make_ysf_fich(fich_bits, fi, cm, 0U, 1U, 0U);
     encode_fich_input(fich_bits, 0, 0, fich_input);
-    encode_dch_payload_to_input(csd1, 20U, dch0, 176U, 9U, 0);
-    encode_dch_payload_to_input(csd2, 20U, dch1, 176U, 9U, 0);
+    encode_dch_payload_to_input(csd1, 20U, dch0, 176U, 9U, corrupt_dch);
+    encode_dch_payload_to_input(csd2, 20U, dch1, 176U, 9U, corrupt_dch);
     append_dibits_to_stream(fich_input, 100U);
     append_interleaved_full_rate_dch_blocks(dch0, dch1);
+}
+
+static void
+append_ysf_bound_frame(uint8_t fi, uint8_t cm, const char* csd1, const char* csd2) {
+    append_ysf_bound_frame_ex(fi, cm, csd1, csd2, 0);
 }
 
 /* V/D type 1 voice frame @p fn of a call in call mode @p cm, its DCH @p dch_text (twenty characters): CSD1 in frame 0,
@@ -1878,6 +1884,36 @@ test_process_ysf_call_takes_the_fallback_only_on_its_own_terminator(void) {
     assert(strcmp(rig.history[0].Event_History_Items[1].src_str, "CALLSRC002") == 0);
     assert(ysf_committed_talkgroup(&rig, 1) == 0U);
     ysf_call_rig_close(&rig);
+}
+
+/* Issue #888: a YSF terminator is the call's own only when its verified FICH's call mode does not contradict the call
+   the slot holds. An open group call (CM 0), then a private call's terminator (CM 3) whose FICH verifies but whose DCH
+   fails, so no callsign names the other call: the group call ends on that terminator, but its row does not take the
+   fallback talkgroup. The group call's own terminator (CM 0), its DCH failed too, still gives it the fallback. Before,
+   only the terminator's protocol was checked, so the group row took the fallback on the other call's terminator. */
+static void
+test_process_ysf_call_takes_the_fallback_only_on_a_terminator_of_its_call_mode(void) {
+    for (int other_mode = 1; other_mode >= 0; other_mode--) {
+        ysf_call_rig rig;
+        ysf_call_rig_open(&rig);
+        reset_ysf_stream();
+        append_ysf_bound_frame(0U, 0U, "CALLDST001CALLSRC002", "RPTDNL0004RPTUPL0003");
+        ysf_call_rig_play(&rig);
+        append_ysf_vd1_frame(0U, 0U, "CALLDST001CALLSRC002");
+        ysf_call_rig_play(&rig);
+        const dsd_call_snapshot call = get_test_ysf_call(rig.state);
+        assert(call.kind == DSD_CALL_KIND_GROUP_VOICE);
+        append_ysf_bound_frame_ex(2U, other_mode ? 3U : 0U, "CALLDST009CALLSRC008", "RPTDNL0007RPTUPL0006", 1);
+        ysf_call_rig_play(&rig);
+        const dsd_call_snapshot ended = get_test_ysf_call(rig.state);
+        assert(ended.epoch == call.epoch && ended.phase == DSD_CALL_PHASE_ENDED);
+        assert(ended.end_reason == (uint8_t)DSD_CALL_END_TERMINATOR);
+        assert(ended.own_terminator == (other_mode ? 0U : 1U));
+        assert(rig.history[0].push_seq == 1U);
+        assert(strcmp(rig.history[0].Event_History_Items[1].src_str, "CALLSRC002") == 0);
+        assert(ysf_committed_talkgroup(&rig, 1) == (other_mode ? 0U : 4242U));
+        ysf_call_rig_close(&rig);
+    }
 }
 
 #ifndef DSD_YSF_TEST_REAL_VOCODER
@@ -2260,6 +2296,7 @@ main(void) {
     test_process_ysf_repeater_call_is_one_row_that_takes_the_fallback();
     test_process_ysf_call_takes_the_fallback_only_after_a_terminator();
     test_process_ysf_call_takes_the_fallback_only_on_its_own_terminator();
+    test_process_ysf_call_takes_the_fallback_only_on_a_terminator_of_its_call_mode();
     test_process_ysf_ehr_voice_leaves_call_wav_to_vocoder();
     test_process_ysf_vd_type2_writes_call_wav_under_record_policy();
     test_process_ysf_vd_type2_captures_each_block();

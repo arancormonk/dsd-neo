@@ -973,6 +973,12 @@ ysf_is_fallback_voice_frame(const ysf_fich_info* info) {
     return info->err != 0 && info->fi == 1U && (info->dt == 0U || info->dt == 2U || info->dt == 3U);
 }
 
+/* The kind of call the frame's FICH names: data by its data type, else by its call mode. */
+static dsd_call_kind
+ysf_frame_call_kind(const ysf_fich_info* info) {
+    return info->dt == 1U ? DSD_CALL_KIND_DATA : ysf_call_kind(info->cm);
+}
+
 static void
 ysf_update_call_lifecycle(dsd_opts* opts, dsd_state* state, const ysf_fich_info* info) {
     if ((info->err == 0 && (info->fi == 0U || info->fi == 1U)) || ysf_is_fallback_voice_frame(info)) {
@@ -980,7 +986,7 @@ ysf_update_call_lifecycle(dsd_opts* opts, dsd_state* state, const ysf_fich_info*
         const dsd_call_observation observation = {
             .protocol = protocol,
             .slot = 0U,
-            .kind = info->dt == 1U ? DSD_CALL_KIND_DATA : ysf_call_kind(info->cm),
+            .kind = ysf_frame_call_kind(info),
         };
         const dsd_call_boundary boundary = info->fi == 0U ? DSD_CALL_BOUNDARY_BEGIN : DSD_CALL_BOUNDARY_CONTINUE;
         if (dsd_call_state_observe(state, &observation, boundary) > 0) {
@@ -994,9 +1000,10 @@ ysf_end_call_lifecycle(dsd_opts* opts, dsd_state* state, const ysf_fich_info* in
     // A FICH-verified communication terminator (FI=2) is positive over-the-air end evidence, so
     // the event layer can keep an audible epoch whose callsigns never decoded; EXPLICIT would be
     // indistinguishable from an engine retune and drop that row. It is the YSF call's own terminator, the one end
-    // that lets its row take the rdio fallback talkgroup (issue #888).
+    // that lets its row take the rdio fallback talkgroup (issue #888), unless its verified call mode names another
+    // kind of call than the one the slot holds (a group call's end on a private call's terminator).
     if (info->err == 0 && info->fi == 2U && !ysf_carrier_left(state, info)
-        && dsd_call_state_end_own_terminator(state, 0U, 0.0, DSD_SYNC_YSF_POS) > 0) {
+        && dsd_call_state_end_own_terminator(state, 0U, 0.0, DSD_SYNC_YSF_POS, ysf_frame_call_kind(info)) > 0) {
         dsd_event_sync_slot(opts, state, 0U);
     }
 }

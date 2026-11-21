@@ -2533,29 +2533,6 @@ mbe_post_audio_and_recording(dsd_opts* opts, dsd_state* state, const mbe_frame_c
     }
 }
 
-// Each file replays its own traffic. An SDRTrunk JSON export leaves its last
-// call open and its protocol set at EOF, and a raw .imb/.amb/.dmb that follows
-// publishes neither, so the output gates would judge it on the previous file's
-// talkgroup, or as an unclassified live P25 call. Start each file as a fresh
-// -r run does: no call and no protocol. Nor does a file record into another's
-// recording (issue #888): a raw file plays with no call, so the audio it left
-// in the slot file closes here, unexported and as no row's (or as the ended
-// call's whose row has yet to commit), instead of joining the next file's, or
-// a named call's commit publishing it as that call's.
-static void
-mbe_file_end_replayed_call(dsd_opts* opts, dsd_state* state) {
-    if (dsd_call_state_end(state, 0U, 0.0) > 0) {
-        dsd_event_sync_slot(opts, state, 0U);
-    }
-    dsd_event_flush_orphan_recordings(opts, state);
-    state->synctype = DSD_SYNC_NONE;
-    state->lastsynctype = DSD_SYNC_NONE;
-    // A file is a reception of its own: its first frame starts from clear high-pass state (issue #653) and the start
-    // gain (issue #518).
-    dsd_voice_hpf_reset(state, -1);
-    dsd_voice_level_reset(state, -1);
-}
-
 /* Plays the open raw .imb/.amb/.dmb file's frames to its end, or until the exit flag is set. */
 static void
 play_mbe_file_frames(dsd_opts* opts, dsd_state* state, int want_static_wav) {
@@ -2590,12 +2567,15 @@ playMbeFiles(dsd_opts* opts, dsd_state* state, int argc, char** argv) {
         if (opts->mbe_in_f == NULL) {
             continue;
         }
-        mbe_file_end_replayed_call(opts, state);
+        if (state->mbe_file_type != 3) {
+            dsd_mbe_file_end_replayed_call(opts, state);
+        }
         mbe_initMbeParms(state->cur_mp, state->prev_mp, state->prev_mp_enhanced);
         DSD_FPRINTF(stderr, "\n playing %s\n", opts->mbe_in_file);
         if (state->mbe_file_type == 3) {
             // The reader takes the whole SDRTrunk file, or refuses it, in one call: it is never read again from the
-            // start (issue #888).
+            // start, and it ends the earlier file's call only once no Stop came while it read and checked the file
+            // (issue #888).
             read_sdrtrunk_json_format(opts, state);
             if (dsd_exitflag_load() == 1) {
                 dsd_request_shutdown(opts, state);

@@ -317,9 +317,11 @@ typedef struct {
      */
     uint8_t identity_unread;
     /**
-     * 1 when the call ended on a terminator its own protocol's decoder verified (dsd_call_state_end_own_terminator()),
-     * 0 for any other end, another protocol's terminator on the slot included, and while the call is active. A YSF
-     * row takes the rdio fallback talkgroup only with it (Event_History::fallback_blocked, issue #888).
+     * 1 when the call ended on a terminator its own protocol's decoder verified, of a call kind that does not
+     * contradict its own (dsd_call_state_end_own_terminator()), 0 for any other end, another protocol's terminator or
+     * another call's on the slot included, a restored context's teardown (dsd_call_context_restore_snapshot()), and
+     * while the call is active. A YSF row takes the rdio fallback talkgroup only with it
+     * (Event_History::fallback_blocked, issue #888).
      */
     uint8_t own_terminator;
     /**
@@ -609,12 +611,15 @@ int dsd_call_state_update_media(dsd_state* state, uint8_t slot, int media_active
  */
 int dsd_call_state_end_ex(dsd_state* state, uint8_t slot, double observed_m, dsd_call_end_reason reason);
 /**
- * End the slot's call on a terminator @p protocol's decoder verified: as dsd_call_state_end_ex() with
- * DSD_CALL_END_TERMINATOR, whatever call the slot holds, and, when that call is @p protocol's
- * (dsd_call_state_protocol_family()), marked as ended on its own terminator (dsd_call_snapshot::own_terminator).
+ * End the slot's call on a terminator @p protocol's decoder verified, which names a call of @p kind
+ * (DSD_CALL_KIND_UNKNOWN: none): as dsd_call_state_end_ex() with DSD_CALL_END_TERMINATOR, whatever call the slot
+ * holds, and, when that call is @p protocol's (dsd_call_state_protocol_family()) and @p kind does not contradict the
+ * call's kind (a group call's end on a private call's terminator does; a generic voice kind contradicts no voice
+ * kind), marked as ended on its own terminator (dsd_call_snapshot::own_terminator).
  * Returns as dsd_call_state_end_ex(); -1 also for @p protocol DSD_SYNC_NONE.
  */
-int dsd_call_state_end_own_terminator(dsd_state* state, uint8_t slot, double observed_m, int protocol);
+int dsd_call_state_end_own_terminator(dsd_state* state, uint8_t slot, double observed_m, int protocol,
+                                      dsd_call_kind kind);
 /** End the active epoch as a deliberate teardown (DSD_CALL_END_EXPLICIT). */
 int dsd_call_state_end(dsd_state* state, uint8_t slot, double observed_m);
 

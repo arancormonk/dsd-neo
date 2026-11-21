@@ -2884,8 +2884,8 @@ shape_poll_hook(size_t offset) {
     }
 }
 
-/* One call with a 2 MiB "system" name and 2 MiB of white space after it, at the heap buffer it returns (NULL when it
-   cannot be allocated), the record's length in *@p record_len. */
+/* One call with a 2 MiB "system" name of six-byte \\u escapes and 2 MiB of white space after it, at the heap buffer it
+   returns (NULL when it cannot be allocated), the record's length in *@p record_len. */
 static char*
 sdrtrunk_json_long_spans(size_t* record_len) {
     enum { SPAN = 2 * 1024 * 1024 };
@@ -2900,7 +2900,10 @@ sdrtrunk_json_long_spans(size_t* record_len) {
         return NULL;
     }
     DSD_MEMCPY(json, k_head, head);
-    DSD_MEMSET(json + head, 'n', SPAN);
+    for (size_t i = 0; i + 6U <= (size_t)SPAN; i += 6U) {
+        DSD_MEMCPY(json + head + i, "\\u00e9", 6U);
+    }
+    DSD_MEMSET(json + head + ((size_t)SPAN / 6U) * 6U, 'n', (size_t)SPAN % 6U);
     DSD_MEMCPY(json + head + SPAN, k_tail, tail);
     DSD_MEMSET(json + head + SPAN + tail, ' ', SPAN);
     json[head + SPAN + tail + SPAN] = '\0';
@@ -2908,11 +2911,92 @@ sdrtrunk_json_long_spans(size_t* record_len) {
     return json;
 }
 
+/* Writes @p json to @p leaf in @p dir, its path at @p path; 0 when written. */
+static int
+sdrtrunk_write_named_input(const char* dir, const char* leaf, const char* json, char* path, size_t cap) {
+    if (dsd_test_path_join(path, cap, dir, leaf) != 0) {
+        return 1;
+    }
+    FILE* f = dsd_fopen_private(path, "wb");
+    if (f == NULL) {
+        return 1;
+    }
+    const size_t len = strlen(json);
+    int rc = fwrite(json, 1, len, f) != len;
+    rc |= fclose(f) != 0;
+    return rc;
+}
+
+/* Issue #888: -r first.mbe next.mbe through playMbeFiles(), the run's entry point: a Stop while next.mbe's shape is
+   checked (in the white space after its record) leaves the call first.mbe left open as it was, ACTIVE and its row not
+   committed; with no Stop, next.mbe's boundary ends it and its row commits. Before, the playlist ended first.mbe's call
+   at the file boundary, before next.mbe was read or checked. */
+static int
+test_sdrtrunk_json_playlist_stop_during_the_shape_check(void) {
+    char dir[DSD_TEST_PATH_MAX];
+    if (!dsd_test_mkdtemp(dir, sizeof dir, "dsdneo_sdrtrunk_playlist_stop")) {
+        return expect_true("playlist stop: temp folder", 0);
+    }
+    size_t record_len = 0;
+    char* next_json = sdrtrunk_json_long_spans(&record_len);
+    char first[DSD_TEST_PATH_MAX * 2];
+    char next[DSD_TEST_PATH_MAX * 2];
+    int rc = expect_true("playlist stop: allocated", next_json != NULL);
+    if (next_json != NULL) {
+        rc |= expect_int("playlist stop: inputs written",
+                         sdrtrunk_write_named_input(dir, "first.mbe",
+                                                    "{\"protocol\":\"DMR\",\"version\":2,\"call_type\":\"GROUP\","
+                                                    "\"from\":\"5678\",\"to\":\"77\",\"frames\":[{\"hex\":"
+                                                    "\"3ABF032D9ADEE4CB50\"}]}",
+                                                    first, sizeof first)
+                             | sdrtrunk_write_named_input(dir, "next.mbe", next_json, next, sizeof next),
+                         0);
+    }
+    for (int stop = 1; rc == 0 && stop >= 0; stop--) {
+        sdrtrunk_run run;
+        if (sdrtrunk_run_open(&run) != 0) {
+            rc |= expect_true("playlist stop: run allocated", 0);
+            break;
+        }
+        prepare_gain_stage(run.state);
+        DSD_MEMSET(&g_shape_polls, 0, sizeof g_shape_polls);
+        g_shape_polls.stop_after = stop ? record_len : 0U;
+        char* argv[3] = {"dsd-neo", first, next};
+        run.state->optind = 1;
+        dsd_sdrtrunk_test_set_shape_poll_hook(shape_poll_hook);
+        playMbeFiles(run.opts, run.state, 3, argv);
+        dsd_sdrtrunk_test_set_shape_poll_hook(NULL);
+        dsd_exitflag_store(0);
+        dsd_call_snapshot after;
+        DSD_MEMSET(&after, 0, sizeof after);
+        (void)dsd_call_state_get(run.state, 0U, &after);
+        const int first_on = after.phase == DSD_CALL_PHASE_ACTIVE && after.ota_target_id == 77U;
+        if (stop) {
+            rc |= expect_true("playlist stop: Stop in next.mbe's check leaves first.mbe's call on", first_on);
+            rc |= expect_true("playlist stop: first.mbe's row not committed",
+                              sdrtrunk_committed_row(run.state, 77U) == NULL);
+        } else {
+            rc |= expect_true("playlist stop: with no Stop, next.mbe ends first.mbe's call", !first_on);
+            rc |= expect_true("playlist stop: with no Stop, first.mbe's row commits",
+                              sdrtrunk_committed_row(run.state, 77U) != NULL);
+        }
+        if (rc != 0) {
+            DSD_FPRINTF(stderr, "  playlist stop (stop %d): phase %u, target %u\n", stop, (unsigned)after.phase,
+                        (unsigned)after.ota_target_id);
+        }
+        sdrtrunk_run_close(&run);
+    }
+    free(next_json);
+    remove_dir_tree(dir);
+    return rc;
+}
+
 /* Issue #888: the shape check looks at the exit flag at least once each MiB of the file it passes, inside a long
-   string and a long run of white space too, through the white space after the record; a Stop that comes while it
-   passes the white space after the record ends the file before anything of it changes. Before, it looked only at the
-   start, before each frame and before that last white space, so a Stop in a long span went unseen and the reader
-   ended the earlier call. */
+   string of escapes and a long run of white space too, through the white space after the record; a Stop that comes
+   while it passes the white space after the record ends the file before anything of it changes. Before, it looked only
+   at the start, before each frame and before that last white space, so a Stop in a long span went unseen and the
+   reader ended the earlier call; and then it looked only once past each MiB, so an escape that crossed the MiB put two
+   looks more than a MiB apart. */
 static int
 test_sdrtrunk_json_stop_in_a_long_span(void) {
     size_t record_len = 0;
@@ -5220,6 +5304,7 @@ main(void) {
     rc |= test_sdrtrunk_json_stop_during_the_read();
     rc |= test_sdrtrunk_json_stop_during_the_shape_check();
     rc |= test_sdrtrunk_json_stop_in_a_long_span();
+    rc |= test_sdrtrunk_json_playlist_stop_during_the_shape_check();
     rc |= test_sdrtrunk_dmr_capture_and_late_entry();
     rc |= test_sdrtrunk_json_dmr_aes_incomplete_late_entry_mi();
     rc |= test_sdrtrunk_json_tells_the_chain_each_frame();

@@ -55,9 +55,17 @@ int readAmbe2450Data(dsd_opts* opts, dsd_state* state, char* ambe_d);
  * explicit or verified late-entry context remain muted. Caller initializes
  * FEC tables and vocoder state as for ordinary MBE playback. The file is read
  * whole before any of it plays; one larger than DSD_SDRTRUNK_JSON_MAX_BYTES is
- * refused with one log line and plays nothing.
+ * refused with one log line and plays nothing. The call an earlier file left
+ * ends (dsd_mbe_file_end_replayed_call()) once the file is read and its shape
+ * checked; a Stop before then leaves that call and its recording as they were.
  */
 void read_sdrtrunk_json_format(dsd_opts* opts, dsd_state* state);
+/**
+ * The boundary between two played files (playMbeFiles()): ends the call the earlier file left on slot 0, closes the
+ * audio no call owns in the slot files, unexported, and starts the next file with no protocol and fresh voice-chain
+ * state. read_sdrtrunk_json_format() calls it itself once its file is read and checked, unless Stop came before then.
+ */
+void dsd_mbe_file_end_replayed_call(dsd_opts* opts, dsd_state* state);
 /** The largest SDRTrunk JSON MBE file read_sdrtrunk_json_format() plays: 64 MiB, hours of one call's frames. */
 #define DSD_SDRTRUNK_JSON_MAX_BYTES (64UL * 1024UL * 1024UL)
 void openMbeInFile(dsd_opts* opts, dsd_state* state);

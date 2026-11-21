@@ -421,7 +421,8 @@ Windows console runs:
   NXDN full-rate voice is not supported by this reader.
   An export is read whole before it plays, up to 64 MiB (hours of one call); a larger file is not played, with one
   line in the log. Stop during the read, or during the shape check below, ends it within a MiB, and nothing of the
-  file plays or changes. A voice frame whose `hex`
+  file plays or changes: the call an earlier file of the same `-r` left goes on, as it was, with its recording. That
+  call ends only once the next export has been read and checked. A voice frame whose `hex`
   is not one SDRTrunk writes (18 hex digits, 36 for P25 Phase 1) is a lost frame, with a warning: it plays nothing,
   but it keeps its place in the call, so the frames after it in an encrypted call still decrypt with their own
   keystream.
@@ -438,20 +439,26 @@ Windows console runs:
   patched talkgroups) is talkgroup 1234, whose talkgroup settings apply.
   Before it plays, each export is checked once against the shape SDRTrunk writes a call in:
   - one call record, with nothing but white space after it;
-  - only the members SDRTrunk writes, each at most once and in the order of one of SDRTrunk's two layouts (any member
-    may be missing):
-    - since November 2025: `protocol`, `version`, `call_type`, `from`, `to`, `encrypted`, `system`, `site`, `frames`;
-    - before that: the same with no `version`, and `system` and `site` after `frames`, in either order. A record with
-      `version` and a `system` or `site` after `frames` is in neither;
+  - only the members SDRTrunk writes, each at most once and in the order of one of SDRTrunk's two layouts. `version`
+    selects the layout: a record with it is in the current one, and a record without it in the older one. Any other
+    member may be missing:
+    - current, since November 2025: `protocol`, `version`, `call_type`, `from`, `to`, `encrypted`, `system`, `site`,
+      `frames`;
+    - older: the same with no `version`, and `system` and `site` only after an actual `frames` member, in either
+      order. So a record with no `version` and a `system` or `site` before `frames` (or with no `frames`) is in
+      neither layout, as is a record with `version` and a `system` or `site` after `frames`;
   - each value of the kind SDRTrunk writes: text in quotes, a whole number, or `true`/`false` (`encrypted`). A whole
-    number has no sign (SDRTrunk writes none negative) and no leading zero, so not `-2` or `02`, and fits SDRTrunk's
-    type: a Java `int` for `version`, `encryption_algorithm` and `encryption_key_id`, a Java `long` for `time`;
+    number has no sign (SDRTrunk writes none negative) and no leading zero, so not `-2` or `02`, and is one the
+    playback reads: at most 65535 for `version` and `encryption_key_id`, at most 255 for `encryption_algorithm`, and
+    within a Java `long` for `time`;
   - text as SDRTrunk writes it: valid UTF-8, with no escape in a value the reader reads (`protocol`, `call_type`,
-    `from`, `to`, a frame's `tag` and `encryption_mi`), so `"56\u00378"` is not radio 5678. The free text of `system`
-    and `site` may hold JSON's own escapes (`\"`, `\\`, `\/`, `\b`, `\f`, `\n`, `\r`, `\t`, and `\u` with four hex
-    digits), but no other (`\q`);
+    `from`, `to` and a frame's `encryption_mi`), so `"56\u00378"` is not radio 5678. The free text of `system`,
+    `site` and a frame's `tag` may hold JSON's own escapes (`\"`, `\\`, `\/`, `\b`, `\f`, `\n`, `\r`, `\t`, and
+    `\u` with four hex digits), but no other (`\q`). A `tag` the NXDN reader reads, `SACCH <n>`, has no escape, so
+    `"SACCH \u0031"` is not in the shape;
   - `frames` a list of frames, each with only SDRTrunk's frame members, in its order (`tag`, `encryption_algorithm`,
-    `encryption_key_id`, `encryption_mi`, `time`, `hex`), and always a `hex` of hex digits;
+    `encryption_key_id`, `encryption_mi`, `time`, `hex`), and always a `hex` of hex digits. SDRTrunk added `tag`
+    after the current layout, so a frame of a record in the older layout has no `tag`;
   - no member name written with an escape (`"\u0074o"` is not `to`).
 
   A file in that shape is recorded and exported as its talkgroup and radio settings allow, also when Stop ends it
@@ -767,10 +774,11 @@ Which calls get a number:
   So a WAV stop in the middle of a call heard with no identity at all does not export that recording. Audio no call
   owns, a call whose row was cleared from the history, and a faded call that is held and then dropped are never
   exported.
-- A YSF call gets a number only when it ended on its own YSF terminator. One that ended any other way (its signal
-  faded, the next call's callsigns or call mode arrived in its voice frames with no header or terminator between the
-  two, or another protocol's end, such as a P25 terminator heard next in Auto mode, closed it) is recorded but not
-  exported: its recording may also hold the start of what came next. One log line a run says so.
+- A YSF call gets a number only when it ended on its own YSF terminator: one whose call mode does not name another
+  kind of call (a group call's terminator, not a private call's). One that ended any other way (its signal faded, the
+  next call's callsigns or call mode arrived in its voice frames with no header or terminator between the two, another
+  call's terminator, or another protocol's end, such as a P25 terminator heard next in Auto mode, closed it) is
+  recorded but not exported: its recording may also hold the start of what came next. One log line a run says so.
   A YSF call with no terminator in a capture, as when the capture stops before the call ends, is therefore not
   exported.
 - The talkgroup is the frequency the call was heard on, in kHz, rounded down: 452.3125 MHz is talkgroup `452312`. On

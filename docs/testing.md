@@ -2309,22 +2309,28 @@ under 1234; an SDRTrunk patch group's `to` (`P:1234`, `P:1234 [5001, 5002]`) is 
 keeps the recording local; an escaped `from` (`"56\u00378"`, its radio `stream=off`) or `to`, an escape JSON has not
 (`\q`), a short `\u` escape or bytes that are not UTF-8 in `system` or `site`, a `version` with a `site` after the
 frames, no `version` with a `system` before them, a bare `02`, a negative `version`, `time` or key id (`-2`, `-5`,
-`-1`, `-0`), a `version` past a Java `int` and a `time` past a Java `long` leave nothing recorded, while every JSON
-escape and UTF-8 text in `system` and `site` is exported. A case installs its policy rows by flags (`played_policy`), so
+`-1`, `-0`), a `version` or key id past 16 bits (65536), an algorithm past 8 bits (256), a `time` past a Java `long`,
+a tagged frame in a record with no `version` (the `site` after `frames`, or no location at all), and a `SACCH` tag
+with an escape (`SACCH \u0031`, `\u0053ACCH 1`) leave nothing recorded, while every JSON escape and UTF-8 text in
+`system` and `site`, and `version` 65535, is exported. A case installs its policy rows by flags (`played_policy`), so
 a talkgroup-0 row is installed too: a `stream=off` talkgroup 0 record alone is recorded and not exported, as is the
 two-record file;
 `test_playback_unread_ids_say_they_stay_local`: a played call with an unreadable `to` (`Q:77`), and one from a roaming
 source to an ISSI talkgroup (no ID and no text on the row, so the run-end early close does not allow the fallback),
-are recorded, kept local, and the run's one line says so;
+are recorded, kept local, and the run's one line says so; `-r unread.mbe next.mbe` with the roaming call first says it
+at the file boundary, where the event layer drops its row and rotates the recording unexported
+(`playback_unread_ids_then_a_call()`);
 `test_playback_sdrtrunk_written_files_record`: calls printed as Jackson's pretty printer prints SDRTrunk's (DMR, P25
-Phase 1 and 2, NXDN with `tag`, the writer before 2025-11 with `system` and `site` after `frames`, CRLF line ends, a
-value with escaped quotes) are recorded whole and exported under 1234 from 5678;
+Phase 1 and 2, NXDN with `tag`, NXDN with a free-text `tag` holding an escape (`UN\u004bNOWN`), the writer before
+2025-11 with `system` and `site` after `frames`, CRLF line ends, a value with escaped quotes) are recorded whole and
+exported under 1234 from 5678;
 `test_playback_empty_file_leaves_the_next_recording`: `-r empty.mbe normal.mbe` (an empty array, or a call of no
 frames from an unread source) records and exports the second file's call;
 `test_empty_segment_discard_checks_the_removal`: an empty recording whose removal fails (a read-only folder, skipped
 where that does not stop a removal; then a read-only folder and a recording made unreadable by the discard seam,
-`dsd_wav_test_set_discard_hook()`, after the close read its size, skipped where a mode-0000 file can still be read) is
-left with one warning and an `error` of kind `discard` naming it, no `discard`;
+`dsd_wav_test_set_discard_hook()`, after the close read its size; the leg fails when the hook never ran, and is
+skipped only when it ran and a mode-0000 file can still be read) is left with one warning and an `error` of kind
+`discard` naming it, no `discard`;
 `test_playback_next_file_takes_no_earlier_stamp`: an export of a protocol the reader does not play stages its frame's
 `time` with no call, and the next file's unstamped call is filed on the decode clock, in the journal and the file name;
 `test_playback_long_export_plays_once`: an export with more than 1 MiB of text before its last frames is one recording
@@ -2344,9 +2350,12 @@ in the test temp folder and removed after with `dsd_remove_file()`, on `sdrtrunk
 reader reads no more than its first MiB. `test_sdrtrunk_json_stop_during_the_shape_check` sets it before a small
 export, which the read takes whole: the shape check sees the Stop and the reader returns before it touches the call, so
 an earlier call on the slot is still active with its epoch. `test_sdrtrunk_json_stop_in_a_long_span` plays a call with
-a 2 MiB `system` and 2 MiB of white space after it through the shape check's poll seam
-(`dsd_sdrtrunk_test_set_shape_poll_hook()`, `src/core/file/sdrtrunk_test_support.h`): the check looks at the exit flag
-at least once a MiB, and a Stop the seam raises in the white space after the record leaves the earlier call active.
+a 2 MiB `system` of six-byte `\u00e9` escapes and 2 MiB of white space after it through the shape check's poll seam
+(`dsd_sdrtrunk_test_set_shape_poll_hook()`, `src/core/file/sdrtrunk_test_support.h`): no two looks at the exit flag are
+more than a MiB apart, and a Stop the seam raises in the white space after the record leaves the earlier call active.
+`test_sdrtrunk_json_playlist_stop_during_the_shape_check` plays `-r first.mbe next.mbe` through `playMbeFiles()` (the
+same long call as `next.mbe`): a Stop raised in `next.mbe`'s check leaves `first.mbe`'s call active with no committed
+row; with no Stop, `next.mbe` ends it and its row commits.
 `test_sdrtrunk_json_wav_honors_talkgroup_policy` also
 plays a file in no shape of SDRTrunk's (a record-level `hex`, string `version` and `encrypted`): its static WAV is
 written as the policy allows, its per-call WAV gets nothing.
@@ -2482,6 +2491,11 @@ loss, and a group call that a private one follows in band, get no fallback numbe
 terminator, does. `test_process_ysf_call_takes_the_fallback_only_on_its_own_terminator`: a call that another
 protocol's terminator ends on the slot (`dsd_call_state_end_ex()` with `DSD_CALL_END_TERMINATOR`, as a P25 TDU heard
 next in Auto mode ends slot 0) gets no fallback number.
+`test_process_ysf_call_takes_the_fallback_only_on_a_terminator_of_its_call_mode`: an open group call (CM 0), then a
+private call's terminator (CM 3) whose FICH verifies and whose DCH fails, ends the call on a terminator, not its own,
+and gives no fallback number; the group call's own terminator (CM 0), its DCH failed too, gives 4242.
+`CORE_CALL_STATE` `test_context_restore_clears_the_own_terminator_mark`: a YSF call ended on its own terminator, saved
+and restored as a call context, is an EXPLICIT end with `own_terminator` 0.
 Every CSD2 these tests write is the downlink callsign first, then the uplink, as the YSF spec has it
 (`test_dch_csd2_tracks_uplink_and_downlink`; V/D2 frame 2 downlink, frame 3 uplink). `M17_STATE_DISPATCH` checks received Codec2 voice is decodable, admitted
 speech and the stream encoder's own decoded monitor is the monitor's (`DSD_VOICE_MEDIA_TX_MONITOR`): it plays the
