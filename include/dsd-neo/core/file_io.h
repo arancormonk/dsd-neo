@@ -53,9 +53,13 @@ int readAmbe2450Data(dsd_opts* opts, dsd_state* state, char* ambe_d);
  * Supports P25, DMR, and NXDN enhanced-half-rate voice. Uses supplied keys;
  * encrypted NXDN DES/AES frames without an IV and DMR AES frames without
  * explicit or verified late-entry context remain muted. Caller initializes
- * FEC tables and vocoder state as for ordinary MBE playback.
+ * FEC tables and vocoder state as for ordinary MBE playback. The file is read
+ * whole before any of it plays; one larger than DSD_SDRTRUNK_JSON_MAX_BYTES is
+ * refused with one log line and plays nothing.
  */
 void read_sdrtrunk_json_format(dsd_opts* opts, dsd_state* state);
+/** The largest SDRTrunk JSON MBE file read_sdrtrunk_json_format() plays: 64 MiB, hours of one call's frames. */
+#define DSD_SDRTRUNK_JSON_MAX_BYTES (64UL * 1024UL * 1024UL)
 void openMbeInFile(dsd_opts* opts, dsd_state* state);
 
 /** Record format of an MBE capture (-d) file; its 4-byte header and its extension name it. */

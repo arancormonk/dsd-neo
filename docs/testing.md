@@ -2286,16 +2286,22 @@ before an unrestricted one's is not exported with it, and the unrestricted recor
 `test_playback_new_call_without_time_takes_the_decode_clock`: a second call with no frame `time` is filed on the decode
 clock, in the journal and the file name, not at the first call's stamp;
 `test_tetra_first_call_conceals_nothing_before_it`: a TETRA call admitted on a half slot after earlier speech conceals
-nothing from that speech). `CORE_MBE_FILE_IO` `test_sdrtrunk_json_words_in_values_are_not_keys` reads keys only in key
-position: `time`, `protocol` and `to` inside a quoted value, escaped quotes included, change nothing. `CORE_WAV_JOURNAL`
-`test_playback_record_reads_only_its_own_members` plays one-record files whose headers carry members the reader does not
-know: `total_frames`, `from_site` and `protocol_name` (names that start with a key's name) leave the call one call,
-exported under its own talkgroup and radio, and a `time` of the record, of a `metadata` object or of another object's
-`frames` does not stamp it (each is filed at its first voice frame's second). The number and label rules themselves are
-in `RUNTIME_RDIO_EXPORT`, and which closes may give the number in `CORE_WAV_JOURNAL`'s `test_d7_*` cases.
-`test_d7_fallback_journal_rdio_flag` expects an API-only upload's sidecar removed only when its upload succeeded, which
-needs the loopback stand-in server (`RDIO_CAPTURE`, not on native Windows, where the queued upload fails and keeps the
-sidecar).
+nothing from that speech; `test_tetra_first_call_starts_the_high_pass_over`: with the digital high-pass on, the call's
+recording after five bursts of speech no call owned is sample for sample the one it makes with none before it;
+`test_playback_malformed_frames_play_nothing`: an empty, short, long or non-hex `hex`, and an 18-digit frame in a P25
+Phase 1 export, play and record nothing, and a file of nothing else records nothing;
+`test_playback_long_export_plays_once`: an export with more than 1 MiB of text before its last frames is one recording
+of all its frames, exported once, and an export over `DSD_SDRTRUNK_JSON_MAX_BYTES` (written sparse) is refused with one
+log line and records nothing). `CORE_MBE_FILE_IO` `test_sdrtrunk_json_words_in_values_are_not_keys` reads keys only in
+key position: `time`, `protocol` and `to` inside a quoted value, escaped quotes included, change nothing.
+`CORE_WAV_JOURNAL` `test_playback_record_reads_only_its_own_members` plays one-record files whose headers carry members
+the reader does not know: `total_frames`, `from_site` and `protocol_name` (names that start with a key's name) leave the
+call one call, exported under its own talkgroup and radio, and a `time` of the record, of a `metadata` object or of
+another object's `frames` does not stamp it (each is filed at its first voice frame's second). The number and label
+rules themselves are in `RUNTIME_RDIO_EXPORT`, and which closes may give the number in `CORE_WAV_JOURNAL`'s `test_d7_*`
+cases. `test_d7_fallback_journal_rdio_flag` expects an API-only upload's sidecar removed only when its upload succeeded,
+which needs the loopback stand-in server (`RDIO_CAPTURE`, not on native Windows, where the queued upload fails and keeps
+the sidecar).
 
 `RUNTIME_RDIO_EXPORT` checks `--rdio-mode both`'s private upload inputs: short names under a 230-character public stem
 (the test folder's file system must allow 255-byte names), no copy and no job after a Stop, a Stop at the sidecar's

@@ -3126,11 +3126,7 @@ sdrtrunk_json_handle_nxdn_tag(const char* token, sdrtrunk_json_cursor* str_savep
 
 static void
 sdrtrunk_json_decode_nxdn_hex(dsd_opts* opts, dsd_state* state, sdrtrunk_json_context* ctx, const char* value) {
-    // NXDN EHR transports 72 bits per 49-bit vocoder frame. Do not interpret EFR as EHR.
-    if (strlen(value) != 18U) {
-        LOG_WARN("Unsupported NXDN MBE voice frame length\n");
-        return;
-    }
+    // NXDN EHR transports 72 bits per 49-bit vocoder frame (sdrtrunk_json_frame_is_valid()): EFR is not read as EHR.
     if (ctx->nxdn_sacch != 0U) {
         unsigned position = (ctx->ks_idx / (16U * 49U)) * (16U * 49U) + (ctx->nxdn_sacch - 1U) * (4U * 49U);
         if (position < ctx->ks_idx) {
@@ -3165,6 +3161,16 @@ sdrtrunk_json_decode_nxdn_hex(dsd_opts* opts, dsd_state* state, sdrtrunk_json_co
         ambe2_str_to_decode(opts, state, value, ctx->ks, ctx->ks_idx, 0, 0, NULL, ctx->is_enc, ctx->ks_available);
 }
 
+/* Whether @p value is a voice frame as SDRTrunk writes one (BinaryMessage.toHexString()): the frame's bits as hex
+   digits, 36 for a P25 Phase 1 IMBE frame (144 bits), 18 for an AMBE frame (72 bits: DMR, P25 Phase 2, NXDN EHR). The
+   decoders read that many digits, so any other value (empty, short, long, or with a character that is no hex digit)
+   is passed over and plays nothing. */
+static int
+sdrtrunk_json_frame_is_valid(const sdrtrunk_json_context* ctx, const char* value) {
+    const size_t want = ctx->protocol == 1 ? 36U : 18U;
+    return strspn(value, "0123456789ABCDEFabcdef") == want && value[want] == '\0';
+}
+
 static int
 sdrtrunk_json_handle_hex(dsd_opts* opts, dsd_state* state, const char* token, sdrtrunk_json_cursor* str_saveptr,
                          sdrtrunk_json_context* ctx) {
@@ -3173,14 +3179,18 @@ sdrtrunk_json_handle_hex(dsd_opts* opts, dsd_state* state, const char* token, sd
     }
 
     const char* value = sdrtrunk_json_next_value(str_saveptr);
-    if (!value) {
+    if (!value || ctx->protocol < 1 || ctx->protocol > 3) {
+        return 1;
+    }
+    if (!sdrtrunk_json_frame_is_valid(ctx, value)) {
+        LOG_WARN("Skipping malformed SDRTrunk MBE voice frame\n");
         return 1;
     }
     if (ctx->protocol == 1) {
         sdrtrunk_json_decode_imbe_hex(opts, state, ctx, value);
     } else if (ctx->protocol == 2) {
         sdrtrunk_json_decode_ambe_hex(opts, state, ctx, value);
-    } else if (ctx->protocol == 3) {
+    } else {
         sdrtrunk_json_decode_nxdn_hex(opts, state, ctx, value);
     }
     return 1;
@@ -3333,17 +3343,56 @@ sdrtrunk_json_process_token(dsd_opts* opts, dsd_state* state, sdrtrunk_json_cont
     sdrtrunk_json_publish_call(opts, state, ctx);
 }
 
-void
-read_sdrtrunk_json_format(dsd_opts* opts, dsd_state* state) {
+/* The whole SDRTrunk export at @p f, read from its start through EOF into one NUL-terminated buffer the caller frees,
+   its length in *@p out_size; NULL (with one log line) when it cannot be read or is larger than
+   DSD_SDRTRUNK_JSON_MAX_BYTES. A file is one call (issue #888), so it is parsed with one state: a long call's text is
+   not cut at a buffer's end and read again from the start. */
+static char*
+sdrtrunk_json_read_whole(FILE* f, const char* name, size_t* out_size) {
     // openMbeInFile() probes a four-byte binary cookie even for JSON exports.
     // Rewind so compact JSON does not lose the start of its first property.
-    if (fseek(opts->mbe_in_f, 0L, SEEK_SET) != 0) {
+    if (fseek(f, 0L, SEEK_SET) != 0) {
         LOG_ERROR("Failed to rewind MBE JSON input\n");
-        return;
+        return NULL;
     }
-    char* source_str = (char*)malloc(0x100000 + 1);
+    size_t cap = 0x100000;
+    size_t size = 0;
+    char* text = NULL;
+    for (;;) {
+        char* grown = (char*)realloc(text, cap + 1U);
+        if (grown == NULL) {
+            free(text);
+            LOG_ERROR("Failed to allocate memory for MBE file buffer\n");
+            return NULL;
+        }
+        text = grown;
+        size += fread(text + size, 1, cap - size, f);
+        if (size < cap || cap >= DSD_SDRTRUNK_JSON_MAX_BYTES) {
+            break;
+        }
+        cap = cap * 2U < DSD_SDRTRUNK_JSON_MAX_BYTES ? cap * 2U : DSD_SDRTRUNK_JSON_MAX_BYTES;
+    }
+    if (size == cap && fgetc(f) != EOF) {
+        free(text);
+        LOG_ERROR("SDRTrunk MBE file %s is larger than %lu MiB: not played\n", name,
+                  DSD_SDRTRUNK_JSON_MAX_BYTES / (1024UL * 1024UL));
+        return NULL;
+    }
+    if (ferror(f)) {
+        free(text);
+        LOG_ERROR("Failed to read SDRTrunk MBE file %s\n", name);
+        return NULL;
+    }
+    text[size] = '\0';
+    *out_size = size;
+    return text;
+}
+
+void
+read_sdrtrunk_json_format(dsd_opts* opts, dsd_state* state) {
+    size_t source_size = 0;
+    char* source_str = sdrtrunk_json_read_whole(opts->mbe_in_f, opts->mbe_in_file, &source_size);
     if (source_str == NULL) {
-        LOG_ERROR("Failed to allocate memory for MBE file buffer\n");
         return;
     }
 
@@ -3352,9 +3401,6 @@ read_sdrtrunk_json_format(dsd_opts* opts, dsd_state* state) {
     sdrtrunk_json_reset_event_state(state);
     sdrtrunk_json_reset_crypto_state(state);
     dsd_event_sync_slot(opts, state, 0);
-
-    size_t source_size = fread(source_str, 1, 0x100000, opts->mbe_in_f);
-    source_str[source_size] = '\0';
 
     /* Members are read by name: a token that is no key (a value no handler took) is passed over. */
     sdrtrunk_json_cursor cursor;

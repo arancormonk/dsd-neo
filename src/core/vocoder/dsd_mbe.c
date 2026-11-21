@@ -2556,13 +2556,31 @@ mbe_file_end_replayed_call(dsd_opts* opts, dsd_state* state) {
     dsd_voice_level_reset(state, -1);
 }
 
-void
-playMbeFiles(dsd_opts* opts, dsd_state* state, int argc, char** argv) {
-
+/* Plays the open raw .imb/.amb/.dmb file's frames to its end, or until the exit flag is set. */
+static void
+play_mbe_file_frames(dsd_opts* opts, dsd_state* state, int want_static_wav) {
     char imbe_d[88];
     char ambe_d[49];
     char file_err_str[260];
+    while (opts->mbe_in_f != NULL && feof(opts->mbe_in_f) == 0) {
+        if (state->mbe_file_type == 0) {
+            if (play_imbe_file_frame(opts, state, imbe_d, file_err_str, want_static_wav) != 0) {
+                break;
+            }
+        } else if (state->mbe_file_type > 0) {
+            if (play_ambe_file_frame(opts, state, ambe_d, file_err_str, want_static_wav) != 0) {
+                break;
+            }
+        }
+        if (dsd_exitflag_load() == 1) {
+            dsd_request_shutdown(opts, state);
+            break;
+        }
+    }
+}
 
+void
+playMbeFiles(dsd_opts* opts, dsd_state* state, int argc, char** argv) {
     // Playback mode: keep static WAV writing functional even when audio output is disabled (-o null).
     const int want_static_wav = (opts->wav_out_f != NULL && opts->static_wav_file == 1) ? 1 : 0;
 
@@ -2575,22 +2593,15 @@ playMbeFiles(dsd_opts* opts, dsd_state* state, int argc, char** argv) {
         mbe_file_end_replayed_call(opts, state);
         mbe_initMbeParms(state->cur_mp, state->prev_mp, state->prev_mp_enhanced);
         DSD_FPRINTF(stderr, "\n playing %s\n", opts->mbe_in_file);
-        while (opts->mbe_in_f != NULL && feof(opts->mbe_in_f) == 0) {
-            if (state->mbe_file_type == 0) {
-                if (play_imbe_file_frame(opts, state, imbe_d, file_err_str, want_static_wav) != 0) {
-                    break;
-                }
-            } else if (state->mbe_file_type == 3) {
-                read_sdrtrunk_json_format(opts, state);
-            } else if (state->mbe_file_type > 0) {
-                if (play_ambe_file_frame(opts, state, ambe_d, file_err_str, want_static_wav) != 0) {
-                    break;
-                }
-            }
+        if (state->mbe_file_type == 3) {
+            // The reader takes the whole SDRTrunk file, or refuses it, in one call: it is never read again from the
+            // start (issue #888).
+            read_sdrtrunk_json_format(opts, state);
             if (dsd_exitflag_load() == 1) {
                 dsd_request_shutdown(opts, state);
-                break;
             }
+        } else {
+            play_mbe_file_frames(opts, state, want_static_wav);
         }
         if (opts->mbe_in_f != NULL) {
             fclose(opts->mbe_in_f); //close file after playing it

@@ -2045,7 +2045,13 @@ suite runs under this compiler.
   `IO_UDP_SOCKET_BACKENDS`, `DSP_SYMBOL_REPLAY`, and the `DECODE_IQ_STDOUT_*` end-to-end cases.
 - `src/core/file/dsd_file.c` reads SDRTrunk JSON MBE exports. Its file-local crypto context owns NXDN SACCH
   position/session tracking and DMR AES late-entry context; playback does not call protocol-layer state-mutating IV
-  expansion. Voice bits are FEC-decoded before decryption and then passed to the normal vocoder/output path. The row's
+  expansion. Voice bits are FEC-decoded before decryption and then passed to the normal vocoder/output path. The file
+  is read whole (`sdrtrunk_json_read_whole()`, a buffer grown to at most `DSD_SDRTRUNK_JSON_MAX_BYTES`, 64 MiB, in
+  `file_io.h`) and parsed with one state, once: `playMbeFiles()` calls the reader once a file, so a long call is not cut
+  at a buffer's end and replayed from the start, and a larger file is refused with one log line before anything of it
+  plays or is published. A frame's `hex` must be the frame as SDRTrunk writes it (`sdrtrunk_json_frame_is_valid()`:
+  36 hex digits for P25 Phase 1, 18 for the AMBE protocols), since the decoders read that many; any other value is
+  passed over with a warning and plays nothing. The row's
   `event_time` is the recording's start, from its call's first frame `time` that parses (issue #888 B21, below). A
   played file is one call, as SDRTrunk writes them (issue #888): the event layer is synced at the file's start and end
   only, never per frame or per record, and the reader observes the call on each key with `DSD_CALL_BOUNDARY_CONTINUE`. A
@@ -2617,7 +2623,8 @@ suite runs under this compiler.
     speech starts over with it (`tetra_voice_call_admitted()`): the samples still waiting to be played
     (`tetra_voice_t::carry_len`, half an output frame after a half slot), the confirmation and concealment state and the
     decoder's history go, so nothing played or concealed from that speech (a half slot's stolen first frame) leads the
-    call's audio; a call already active (a republication, a
+    call's audio, and so does slot 0's digital high-pass state (`dsd_voice_hpf_reset()`, `-v 0x9`), which the voice
+    chain keeps across a call learned partway through a reception; a call already active (a republication, a
     reallocation) runs nothing. Each `-r` playback file
     (`mbe_file_end_replayed_call()` in `dsd_mbe.c`, once per file opened, after it ends and commits the previous file's
     call) runs the flush too (issue #888): a raw `.imb`/`.amb`/`.dmb` file plays with no call, so its audio would

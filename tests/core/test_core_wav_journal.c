@@ -107,12 +107,17 @@ expect_str(const char* what, const char* got, const char* want) {
 }
 
 static int g_journal_errors;
+static int g_sdrtrunk_refusals;
 
+/* The process's one log tap (it is installed once and never replaced): the errors the tests count. */
 static void
 count_log_lines(dsd_neo_log_level_t level, const char* text, void* ctx) {
     (void)ctx;
     if (level == LOG_LEVEL_ERROR && text && strstr(text, "Call recording journal") != NULL) {
         g_journal_errors++;
+    }
+    if (level == LOG_LEVEL_ERROR && text && strstr(text, "SDRTrunk MBE file") != NULL) {
+        g_sdrtrunk_refusals++;
     }
 }
 
@@ -4076,6 +4081,82 @@ test_tetra_first_call_conceals_nothing_before_it(void) {
     return rc;
 }
 
+/* The samples of the one published recording in a folder that is @p frames long. */
+typedef struct {
+    const char* dir;
+    sf_count_t frames;
+    short pcm[2 * TETRA_FIRST_BURST_FRAMES];
+    int found;
+} tetra_call_pcm;
+
+static int
+tetra_call_pcm_cb(const char* name, void* user) {
+    tetra_call_pcm* want = (tetra_call_pcm*)user;
+    const size_t len = strlen(name);
+    char path[DSD_TEST_PATH_MAX * 2];
+    if (len < 4 || strcmp(name + len - 4, ".wav") != 0 || strncmp(name, "TEMP_", 5) == 0
+        || dsd_test_path_join(path, sizeof path, want->dir, name) != 0) {
+        return 0;
+    }
+    SF_INFO info;
+    DSD_MEMSET(&info, 0, sizeof info);
+    SNDFILE* f = sf_open(path, SFM_READ, &info);
+    if (f == NULL) {
+        return 0;
+    }
+    if (info.frames == want->frames && info.channels == 1 && want->frames <= (sf_count_t)(sizeof want->pcm / 2U)
+        && sf_readf_short(f, want->pcm, want->frames) == want->frames) {
+        want->found++;
+    }
+    (void)sf_close(f);
+    return 0;
+}
+
+/* The admitted call's recording, its two full slots, with the digital high-pass on (-v 0x9): after @p prefill bursts
+   of speech no call owned, or none. */
+static int
+tetra_first_call_hpf_run(int prefill, tetra_call_pcm* out) {
+    rig r;
+    int rc = rig_open(&r, "dsdneo_journal_tetra_hpf");
+    tetra_first_rig(&r, TETRA_FIRST_ANON);
+    r.opts->use_hpf_d = 1;
+    submit(&r, DSD_APP_CMD_WAV_START);
+    tetra_first_speech(&r, prefill);
+    clock_at(g_now_s + 1);
+    tetra_first_admit(&r, TETRA_FIRST_ANON);
+    tetra_first_speech(&r, 2);
+    rc |= expect_true("tetra hpf: its speech admitted the call", call_epoch(&r) != 0U);
+    clock_at(g_now_s + 2);
+    end_call(&r, DSD_CALL_END_TERMINATOR);
+    DSD_MEMSET(out, 0, sizeof *out);
+    out->dir = r.dir;
+    out->frames = 2 * TETRA_FIRST_BURST_FRAMES;
+    (void)dsd_dir_list(r.dir, tetra_call_pcm_cb, out);
+    rc |= expect_int("tetra hpf: the call's recording", out->found, 1);
+    r.opts->rdio_mode = DSD_RDIO_MODE_OFF;
+    r.opts->rdio_unknown_talkgroup = 0;
+    rig_close(&r);
+    return rc;
+}
+
+/* Issue #888: with the digital high-pass on, the speech no call owned before the admission leaves nothing in the
+   admitted call's audio: the slot's filter starts over with the call, so its recording is sample for sample the one
+   it makes with no speech before it. Before, the filter kept the earlier speech's state, which the call's first
+   samples carried. */
+static int
+test_tetra_first_call_starts_the_high_pass_over(void) {
+    static tetra_call_pcm alone;
+    static tetra_call_pcm after;
+    int rc = tetra_first_call_hpf_run(0, &alone);
+    rc |= tetra_first_call_hpf_run(5, &after);
+    int differ = 0;
+    for (sf_count_t i = 0; i < alone.frames; i++) {
+        differ += alone.pcm[i] != after.pcm[i] ? 1 : 0;
+    }
+    rc |= expect_int("tetra hpf: the call's audio is the same after the earlier speech", differ, 0);
+    return rc;
+}
+
 /* An identity-less TETRA call (anonymous, admitted once signalling proved the carrier) fades: its row is held for the
    reacquisition window, the drop verdict pending, and its audio stays in slot 1's file. Speech then admits a new call
    on the slot: the admission closes the held call's audio as its own recording, pending on its epoch and unexported
@@ -4874,6 +4955,195 @@ test_playback_new_call_without_time_takes_the_decode_clock(void) {
     return rc;
 }
 
+/* Writes @p count stamped frames of the clear DMR call to @p f, the first numbered @p first (for its "time"), each but
+   the file's first after a comma. */
+static int
+long_write_frames(FILE* f, int first, int count) {
+    int rc = 0;
+    for (int i = first; i < first + count; i++) {
+        rc |= DSD_FPRINTF(f, "%s{\"time\":%llu,\"hex\":\"%s\"}", i > 0 ? "," : "",
+                          (unsigned long long)(k_stamped_first_ms + (uint64_t)i * 20ULL), k_playback_dmr_hex)
+                      < 0
+                  ? 1
+                  : 0;
+    }
+    return rc;
+}
+
+/* An SDRTrunk export of one clear DMR group call to 1234 from 5678, STAMPED_FRAMES stamped frames, with @p pad bytes
+   of white space between its first @p head frames and the rest (as a long call's text grows past any one read). With
+   @p sparse_to nonzero, the file is then extended to that many bytes with a hole after the record. */
+static int
+long_write_export(const char* path, int head, size_t pad, long sparse_to) {
+    FILE* f = dsd_fopen_private(path, "wb");
+    if (f == NULL) {
+        return 1;
+    }
+    int rc = fputs("{\"protocol\":\"DMR\",\"version\":2,\"call_type\":\"GROUP\",\"from\":\"5678\",\"to\":\"1234\","
+                   "\"encrypted\":false,\"frames\":[",
+                   f) < 0
+                 ? 1
+                 : 0;
+    rc |= long_write_frames(f, 0, head);
+    static char spaces[4096];
+    DSD_MEMSET(spaces, ' ', sizeof spaces);
+    for (size_t done = 0; done < pad; done += sizeof spaces) {
+        const size_t n = pad - done < sizeof spaces ? pad - done : sizeof spaces;
+        rc |= fwrite(spaces, 1, n, f) != n ? 1 : 0;
+    }
+    rc |= long_write_frames(f, head, STAMPED_FRAMES - head);
+    rc |= fputs("]}", f) < 0 ? 1 : 0;
+    if (sparse_to > 0) {
+        rc |= fseek(f, sparse_to - 1L, SEEK_SET) != 0 || fputc('\n', f) == EOF ? 1 : 0;
+    }
+    rc |= fclose(f) != 0 ? 1 : 0;
+    return rc;
+}
+
+/* Issue #888: -P -r of one SDRTrunk export longer than the reader's old 1 MiB buffer is one call, played once, whole.
+   Before, the reader filled the buffer, the file was not at EOF, and playMbeFiles() called the reader again, which
+   rewound and replayed the same first MiB over and over: one export after another of the first frames, the rest of the
+   file and the files after it never reached. An export over the reader's cap (DSD_SDRTRUNK_JSON_MAX_BYTES) is refused
+   with one log line before anything of it plays or is recorded. */
+static int
+test_playback_long_export_plays_once(void) {
+    int rc = 0;
+    {
+        rig r;
+        rc |= rig_open(&r, "dsdneo_journal_playback_long");
+        r.opts->audio_out = 0;
+        r.opts->playfiles = 1;
+        rdio_fallback_on(&r, DSD_RDIO_MODE_DIRWATCH);
+        submit(&r, DSD_APP_CMD_WAV_START);
+        char path[DSD_TEST_PATH_MAX * 2];
+        rc |= expect_int("long export: input written",
+                         dsd_test_path_join(path, sizeof path, r.dir, "long.mbe") == 0
+                             ? long_write_export(path, STAMPED_FRAMES / 2, (size_t)0x100000 + 4096U, 0L)
+                             : 1,
+                         0);
+        char* argv[2] = {"dsd-neo", path};
+        r.state->optind = 1;
+        playMbeFiles(r.opts, r.state, 2, argv);
+        playback_end_run(&r);
+        reload(&r);
+        rc |= expect_int("long export: one recording", count_records(&g_j, "publish"), 1);
+        rc |= expect_int("long export: one history row", (long long)r.state->event_history_s[0].push_seq, 1);
+        const playback_record rec = {1234U, 5678U, STAMPED_FRAMES, k_stamped_first_ms};
+        rc |= expect_record_export(&r, "long export", &rec, 1234U, 5678U);
+        rdio_fallback_off(&r);
+        rig_close(&r);
+    }
+    {
+        rig r;
+        rc |= rig_open(&r, "dsdneo_journal_playback_over_cap");
+        r.opts->audio_out = 0;
+        r.opts->playfiles = 1;
+        rdio_fallback_on(&r, DSD_RDIO_MODE_DIRWATCH);
+        submit(&r, DSD_APP_CMD_WAV_START);
+        char path[DSD_TEST_PATH_MAX * 2];
+        rc |= expect_int("over-cap export: input written",
+                         dsd_test_path_join(path, sizeof path, r.dir, "over_cap.mbe") == 0
+                             ? long_write_export(path, STAMPED_FRAMES, 0U, (long)DSD_SDRTRUNK_JSON_MAX_BYTES + 1L)
+                             : 1,
+                         0);
+        char* argv[2] = {"dsd-neo", path};
+        r.state->optind = 1;
+        dsd_neo_log_set_tap(count_log_lines, NULL);
+        g_sdrtrunk_refusals = 0;
+        playMbeFiles(r.opts, r.state, 2, argv);
+        playback_end_run(&r);
+        reload(&r);
+        rc |= expect_int("over-cap export: refused with one log line", g_sdrtrunk_refusals, 1);
+        rc |= expect_int("over-cap export: nothing recorded", count_records(&g_j, "publish"), 0);
+        rc |= expect_int("over-cap export: no history row", (long long)r.state->event_history_s[0].push_seq, 0);
+        rdio_fallback_off(&r);
+        rig_close(&r);
+    }
+    return rc;
+}
+
+/* Plays the SDRTrunk export @p json from one file, as playback_records_run() does. */
+static int
+playback_json_run(rig* r, const char* leaf, const char* json) {
+    r->opts->audio_out = 0;
+    r->opts->playfiles = 1;
+    rdio_fallback_on(r, DSD_RDIO_MODE_DIRWATCH);
+    submit(r, DSD_APP_CMD_WAV_START);
+    char path[DSD_TEST_PATH_MAX * 2];
+    int rc = dsd_test_path_join(path, sizeof path, r->dir, leaf) != 0 ? 1 : 0;
+    FILE* f = rc == 0 ? dsd_fopen_private(path, "wb") : NULL;
+    if (f != NULL) {
+        rc |= fputs(json, f) < 0 ? 1 : 0;
+        rc |= fclose(f) != 0 ? 1 : 0;
+    } else {
+        rc = 1;
+    }
+    rc = expect_int("json: input written", rc, 0);
+    char* argv[2] = {"dsd-neo", path};
+    r->state->optind = 1;
+    playMbeFiles(r->opts, r->state, 2, argv);
+    playback_end_run(r);
+    reload(r);
+    return rc;
+}
+
+#define K_GOOD_FRAME "{\"hex\":\"3ABF032D9ADEE4CB50\"}"
+#define K_DMR_HEAD                                                                                                     \
+    "{\"protocol\":\"DMR\",\"version\":2,\"call_type\":\"GROUP\",\"from\":\"5678\",\"to\":\"1234\","                   \
+    "\"encrypted\":false,\"frames\":["
+
+/* Issue #888: a voice frame whose "hex" is not one SDRTrunk writes (18 hex digits, 36 for P25 Phase 1: empty, short,
+   long, or with a character that is no hex digit) is passed over, so it plays no audio and records none. Before, the
+   decoders read 18 or 36 characters whatever the value's length: an empty final frame played a frame of audio from
+   the text after it, and a file of nothing else was exported as a call. */
+static int
+test_playback_malformed_frames_play_nothing(void) {
+    static const struct {
+        const char* label;
+        const char* json;
+        int frames; /* the good frames: the recording's length; 0 for none */
+    } k_cases[] = {
+        {"an empty final frame", K_DMR_HEAD K_GOOD_FRAME "," K_GOOD_FRAME "," K_GOOD_FRAME ",{\"hex\":\"\"}]}", 3},
+        {"malformed frames",
+         K_DMR_HEAD K_GOOD_FRAME ",{\"hex\":\"3ABF032D9ADEE4CB5\"}," K_GOOD_FRAME ",{\"hex\":\"3ABF032D9ADEE4CB5Z\"},"
+                                 "{\"hex\":\"3ABF032D9ADEE4CB5000\"}," K_GOOD_FRAME "]}",
+         3},
+        {"only an empty frame",
+         "{\"protocol\":\"DMR\",\"version\":2,\"call_type\":\"GROUP\",\"from\":\"5678\",\"to\":\"0\","
+         "\"encrypted\":false,\"frames\":[{\"hex\":\"\"}]}",
+         0},
+        {"P25 Phase 1 frames of 18 digits",
+         "{\"protocol\":\"APCO25-PHASE1\",\"version\":2,\"call_type\":\"GROUP\",\"from\":\"5678\",\"to\":\"1234\","
+         "\"encrypted\":false,\"frames\":[" K_GOOD_FRAME "," K_GOOD_FRAME "]}",
+         0},
+    };
+
+    int rc = 0;
+    for (size_t c = 0; c < sizeof k_cases / sizeof k_cases[0]; c++) {
+        char tag[200];
+        rig r;
+        rc |= rig_open(&r, "dsdneo_journal_playback_malformed");
+        rc |= playback_json_run(&r, "malformed.mbe", k_cases[c].json);
+        const int want = k_cases[c].frames;
+        DSD_SNPRINTF(tag, sizeof tag, "%s: %s", k_cases[c].label, want ? "one recording" : "nothing recorded");
+        rc |= expect_int(tag, count_records(&g_j, "publish"), want ? 1 : 0);
+        if (want) {
+            int count = 0;
+            (void)publish_of_duration((long long)want * 20, &count);
+            DSD_SNPRINTF(tag, sizeof tag, "%s: of its %d good frames alone", k_cases[c].label, want);
+            rc |= expect_int(tag, count, 1);
+        }
+        if (rc != 0) {
+            const char* pub = record(&g_j, "publish", 0);
+            DSD_FPRINTF(stderr, "  %s: first recording %lld ms\n", k_cases[c].label,
+                        pub ? field_ll(pub, "duration_ms") : -1LL);
+        }
+        rdio_fallback_off(&r);
+        rig_close(&r);
+    }
+    return rc;
+}
+
 int
 main(void) {
     dsd_neo_config_init();
@@ -4945,6 +5215,7 @@ main(void) {
     rc |= test_tetra_first_call_drops_carried_samples();
     rc |= test_tetra_first_call_conceals_nothing_before_it();
     rc |= test_tetra_held_call_then_readmitted();
+    rc |= test_tetra_first_call_starts_the_high_pass_over();
     rc |= test_playback_files_record_apart();
     rc |= test_playback_export_starts_at_its_first_frame();
     rc |= test_playback_record_reads_only_its_own_members();
@@ -4952,6 +5223,8 @@ main(void) {
     rc |= test_playback_records_play_as_one_call();
     rc |= test_playback_stream_off_record_stays_local();
     rc |= test_playback_new_call_without_time_takes_the_decode_clock();
+    rc |= test_playback_malformed_frames_play_nothing();
+    rc |= test_playback_long_export_plays_once();
     if (rc == 0) {
         printf("CORE_WAV_JOURNAL: OK\n");
     }

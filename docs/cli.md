@@ -418,6 +418,9 @@ Windows console runs:
   to each 16-frame superframe and DES/AES to their 32-frame sessions. Exports that omit the positions of
   FACCH-stolen voice within an RF frame cannot fully reconstruct that frame's keystream alignment.
   NXDN full-rate voice is not supported by this reader.
+  An export is read whole before it plays, up to 64 MiB (hours of one call); a larger file is not played, with one
+  line in the log. A voice frame whose `hex` is not one SDRTrunk writes (18 hex digits, 36 for P25 Phase 1) is passed
+  over with a warning and plays nothing.
   DMR AES-128/AES-256 exports use ALGID `0x24`/`0x25` and a 32-bit MI. For metadata-free DMR exports, use
   `-H '<key>' --dmr-force-algid 24` (or `25`); audio remains muted until a Golay/CRC-verified late-entry MI
   supplies the next superframe's context. For example:
