@@ -777,7 +777,8 @@ dsd_engine_signal_search_test_fail_start(int point) {
 }
 #endif
 
-/* Every start refusal past validation is a failed allocation: the session, its scan scope or its saved P25 site. */
+/* Every start refusal past validation is a failed allocation: the session, its saved P25 site, its scan scope or the
+   scan owner (search_reserve_start()). */
 static void
 search_refuse_start(char* error, size_t capacity) {
     if (error && capacity) {
