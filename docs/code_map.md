@@ -15748,7 +15748,7 @@ Build files: `src/protocol/CMakeLists.txt` and per‑protocol `src/protocol/<nam
     and appended after advanced arguments in `session_args.cpp`, so a confirmed choice wins on restart.
     The saved decoder flag also updates wizard/list metadata; a later wizard preset replaces its saved live
     decoder/modulation override. Manual scan lists inherit saved squelch and modulation (an entry's explicit
-    modulation wins). `SavedSystemsModel::clearRadioSetting(uid, key)` takes one
+    modulation wins; the squelch as each row runs it, below). `SavedSystemsModel::clearRadioSetting(uid, key)` takes one
     saved control out ("Clear saved squelch", issue #899 B11), keeping the others. `UI_QT_PERSISTENCE`,
     `UI_QT_SESSION_ARGS`, `UI_QT_SCAN_LIST_TARGETS` and the Radio persistence QML test cover disk reload, restart,
     validation and temporary scopes.
@@ -15770,8 +15770,14 @@ Build files: `src/protocol/CMakeLists.txt` and per‑protocol `src/protocol/<nam
     app's default not in force, it sends the default (`DSD_APP_CMD_RTL_SET_SQL_SETTING`); back to a digital mode with it
     in force, it sends off (level 0, as the spec's `0`); otherwise, and whenever the user or the session owns the
     squelch, nothing. A fresh policy (no start seen, e.g. an Activity recreated over a running session) sends nothing.
-    Tests: `UI_QT_SESSION_ARGS`, `UI_QT_SQUELCH_DEFAULT_POLICY`, `UI_QT_SESSION_ARGS_PARSE` (live switches through the
-    real bridge and queue), `UI_QT_PERSISTENCE`, `UI_QT_BACKUP_MODEL`.
+    Generated scan lists (`scan_list_targets(list, systems, defaultSquelch)`) give each row a squelch its type takes
+    (B13): a saved noise on an AM row as `auto+N`, a saved dynamic one on a digital row as `off` (an Advanced session
+    level must not gate it), a saved level as whole dB -120..-1 (rounded, with a warning, when it is not whole), and an
+    analog row with none of its own the app's default (noise as auto on AM); the starter passes no default when the
+    Advanced arguments set the session's squelch. Tests: `UI_QT_SESSION_ARGS`, `UI_QT_SQUELCH_DEFAULT_POLICY`,
+    `UI_QT_SCAN_LIST_TARGETS`, `UI_QT_SESSION_ARGS_PARSE` (live switches through the real bridge and queue),
+    `ENGINE_TRUNK_SCAN_SCAN_LIST` (generated rows through the real parser and coordinator), `UI_QT_PERSISTENCE`,
+    `UI_QT_BACKUP_MODEL`.
   - Qt/Android tuner gain: `qml/GainEditor.qml` is the one gain editor (Settings' Radio defaults, the system editor, the
     scan list editor). It shows `[Automatic | Set]`, or `[App default | Automatic | Set]` when `inheritable`, with one
     canonical `mode` in both layouts (0 App default, 1 Automatic, 2 Set). An optional `hint` sits right under the strip

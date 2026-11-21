@@ -21,6 +21,7 @@
 extern "C" {
 #include <dsd-neo/core/init.h>
 #include <dsd-neo/core/opts.h>
+#include <dsd-neo/core/power.h>
 #include <dsd-neo/core/safe_api.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/state_ext.h>
@@ -29,12 +30,14 @@ extern "C" {
 #include <dsd-neo/runtime/analog_channel.h>
 #include <dsd-neo/runtime/cli.h>
 #include <dsd-neo/runtime/config.h>
+#include <dsd-neo/runtime/input_spec.h>
 #include <dsd-neo/runtime/trunk_scan_hooks.h>
 #include <dsd-neo/runtime/trunk_tuning_hooks.h>
 }
 #include <QCoreApplication>
 #include <QFile>
 #include <QTemporaryDir>
+#include <cmath>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -666,6 +669,157 @@ mixedAnalogRotation() {
 }
 #endif
 
+#if !DSD_PLATFORM_WIN_NATIVE
+// Issue #899 (B13 + D1): a list generated from saved systems whose squelch its rows did not take (noise on an AM row,
+// auto on a P25 row, a fractional level) and plain analog and digital frequency rows, started as the app starts it:
+// the argv of session_args_scan_build_lists() parses, the real coordinator loads every row, and each row runs the
+// squelch it should on air. With an Advanced session level (--squelch -1) the starter gives no default, so plain rows
+// inherit the level, but the P25 row with a saved dynamic squelch runs off, as it ran on its own; with no Advanced
+// squelch plain analog rows run the app's default (noise as auto on AM) and plain digital rows the session's off.
+struct RowSquelch {
+    int mode;
+    int margin;
+    int db; // the LEVEL's whole dB; 0 is off
+};
+
+static bool
+squelchIs(const dsd_opts* opts, const RowSquelch& want) {
+    if (opts->rtl_squelch_mode != want.mode) {
+        return false;
+    }
+    if (want.mode != DSD_SQUELCH_MODE_LEVEL) {
+        return opts->rtl_squelch_margin_db == want.margin;
+    }
+    const double level = dsd_squelch_level_from_sql(static_cast<double>(want.db));
+    return want.db == 0 ? !(opts->rtl_squelch_level > 0.0) : std::fabs(opts->rtl_squelch_level - level) <= level * 1e-9;
+}
+
+static void
+generatedRowSquelch(const QString& extraArgs, const QString& fallback, const QList<RowSquelch>& rows) {
+    QTemporaryDir dir;
+    const QVariantList systems{QVariantMap{{"uid", "nfmlevel"},
+                                           {"decodeFlag", "-fA"},
+                                           {"freqMhz", "155.1"},
+                                           {"radioSettings", QVariantMap{{"squelch", "-95"}}}},
+                               QVariantMap{{"uid", "amnoise"},
+                                           {"decodeFlag", "-fM"},
+                                           {"freqMhz", "118.3"},
+                                           {"radioSettings", QVariantMap{{"squelch", "noise+17"}}}},
+                               QVariantMap{{"uid", "p25auto"},
+                                           {"decodeFlag", "-ft"},
+                                           {"freqMhz", "851.5"},
+                                           {"radioSettings", QVariantMap{{"squelch", "auto+12"}}}},
+                               QVariantMap{{"uid", "nfmfrac"},
+                                           {"decodeFlag", "-fA"},
+                                           {"freqMhz", "155.2"},
+                                           {"radioSettings", QVariantMap{{"squelch", "-65.5"}}}}};
+    QVariantList entries;
+    for (const char* uid : {"nfmlevel", "amnoise", "p25auto", "nfmfrac"}) {
+        entries << QVariantMap{{"uid", uid}, {"kind", "system"}, {"systemUid", uid}};
+    }
+    entries << QVariantMap{{"uid", "ops"}, {"kind", "freq"}, {"protocol", "nfm"}, {"freqMhz", "154.43"}}
+            << QVariantMap{{"uid", "guard"}, {"kind", "freq"}, {"protocol", "am"}, {"freqMhz", "121.5"}}
+            << QVariantMap{{"uid", "plant"}, {"kind", "freq"}, {"protocol", "dmr"}, {"freqMhz", "461.1125"}};
+    const QVariantMap list{{"sourceType", "usb"}, {"entries", entries}};
+    const auto generated = dsd_qt::scan_list_targets(list, systems, fallback);
+    check(generated.ok && generated.targetCount == rows.size());
+    const QString path = dir.filePath("squelch.csv");
+    QFile file(path);
+    check(file.open(QIODevice::WriteOnly) && file.write(generated.csv) == generated.csv.size());
+    file.close();
+    dsd_qt::SessionArgPrefs prefs;
+    prefs.extraArgs = extraArgs;
+    QString why;
+    const QStringList args =
+        dsd_qt::session_args_scan_build_lists(list, generated.firstFreqMhz, QStringList{path}, prefs, &why);
+    check(!args.isEmpty() && why.isEmpty());
+    QList<QByteArray> storage{QByteArray("scan-squelch-test")};
+    for (const auto& arg : args) {
+        storage << arg.toUtf8();
+    }
+    QList<char*> argv;
+    for (auto& arg : storage) {
+        argv << arg.data();
+    }
+    auto* opts = new dsd_opts{};
+    auto* state = new dsd_state{};
+    initOpts(opts);
+    opts->audio_out_type = 9; // no sound card (keyMuteRotation())
+    initState(state);
+    int effective = 0, exitCode = 0;
+    check(dsd_parse_args(static_cast<int>(argv.size()), argv.data(), opts, state, &effective, &exitCode) == 0);
+    // The spec's tuning fields, its squelch among them, as the engine reads them when the input opens.
+    check(dsd_rtl_input_spec_apply(opts) == 1);
+    // The analog rows retune through a rigctl peer, over audio input, as mixedAnalogRotation() runs them.
+    FakeRigctlPeer peer;
+    char host[] = "127.0.0.1";
+    check(dsd_socket_init() == 0 && peer.start());
+    opts->audio_out_type = 9;
+    opts->audio_in_type = AUDIO_IN_UDP;
+    opts->use_rigctl = 1;
+    opts->rigctl_sockfd = Connect(host, peer.port);
+    dsd_trunk_tuning_hooks hooks{};
+    hooks.tune_to_freq_request = tune;
+    hooks.tune_to_cc_request = tune;
+    dsd_trunk_tuning_hooks_set(hooks);
+    char error[256]{};
+    const bool initialized =
+        opts->rigctl_sockfd != DSD_INVALID_SOCKET && dsd_engine_trunk_scan_init(opts, state, error, sizeof error) == 0;
+    check(initialized);
+    if (!initialized) {
+        std::fprintf(stderr, "generated row squelch initialization: %s\n", error);
+    }
+    if (initialized) {
+        check(dsd_engine_trunk_scan_target_count(state) == static_cast<unsigned>(rows.size()));
+        for (qsizetype i = 0; i <= rows.size(); ++i) {
+            // Round once and back to the first row: each visit puts its own setting in force, never the last row's.
+            const RowSquelch& want = rows.at(i % rows.size());
+            if (!squelchIs(opts, want)) {
+                ++failures;
+                std::fprintf(stderr, "row %d squelch: mode %d margin %d level %g, want mode %d margin %d %d dB\n",
+                             static_cast<int>(i), opts->rtl_squelch_mode, opts->rtl_squelch_margin_db,
+                             opts->rtl_squelch_level, want.mode, want.margin, want.db);
+            }
+            check(dsd_engine_trunk_scan_control(opts, state, DSD_TRUNK_SCAN_CONTROL_ADVANCE) == 0);
+        }
+    }
+    dsd_engine_trunk_scan_shutdown(opts, state);
+    if (opts->rigctl_sockfd != DSD_INVALID_SOCKET) {
+        (void)dsd_socket_close(opts->rigctl_sockfd);
+        opts->rigctl_sockfd = DSD_INVALID_SOCKET;
+    }
+    peer.stop();
+    dsd_trunk_tuning_hooks_set({});
+    dsd_trunk_scan_hooks_set(nullptr);
+    freeState(state);
+    delete state;
+    delete opts;
+}
+
+static void
+generatedRowSquelchCases() {
+    const int level = DSD_SQUELCH_MODE_LEVEL;
+    const int automatic = DSD_SQUELCH_MODE_AUTO;
+    const int noise = DSD_SQUELCH_MODE_NOISE;
+    generatedRowSquelch(QStringLiteral("--squelch -1"), QString(),
+                        {{level, 0, -95},
+                         {automatic, 17, 0},
+                         {level, 0, 0},
+                         {level, 0, -66},
+                         {level, 0, -1},
+                         {level, 0, -1},
+                         {level, 0, -1}});
+    generatedRowSquelch(QString(), QStringLiteral("noise+10"),
+                        {{level, 0, -95},
+                         {automatic, 17, 0},
+                         {level, 0, 0},
+                         {level, 0, -66},
+                         {noise, 10, 0},
+                         {automatic, 10, 0},
+                         {level, 0, 0}});
+}
+#endif
+
 int
 main(int argc, char** argv) {
     QCoreApplication app(argc, argv);
@@ -761,6 +915,7 @@ main(int argc, char** argv) {
     twoGeneratedLists();
 #if !DSD_PLATFORM_WIN_NATIVE
     mixedAnalogRotation();
+    generatedRowSquelchCases();
 #endif
     return failures ? 1 : 0;
 }

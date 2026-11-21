@@ -32,6 +32,94 @@ check(bool ok) {
     }
 }
 
+/* The options cell of the single row @p targets holds (its last CSV cell). */
+static QString
+optionsCell(const ScanListTargets& targets) {
+    const QStringList lines = QString::fromUtf8(targets.csv).split(QLatin1Char('\n'), Qt::SkipEmptyParts);
+    return lines.size() == 2 ? lines.at(1).section(QLatin1Char(','), 13)
+                             : QStringLiteral("<rows: %1>").arg(lines.size());
+}
+
+/* Issue #899 (B13 + D1): every row's squelch is one its row type takes. A saved system's own setting goes to its row
+   as the row runs it; an analog row with none gets the app's default, noise as auto on AM; a digital row gets none. */
+static void
+rowSquelch() {
+    QVariantMap entry{{"uid", "entry"}, {"kind", "system"}, {"systemUid", "sys"}, {"enabled", true}};
+    QVariantMap list{{"uid", "list"}, {"sourceType", "usb"}, {"entries", QVariantList{entry}}};
+    QVariantMap sys{{"uid", "sys"}, {"name", "Example"}, {"freqMhz", "851.5"}};
+    const auto saved = [&](const QString& flag, const QString& squelch, const QString& fallback = QString()) {
+        sys["decodeFlag"] = flag;
+        sys["radioSettings"] = QVariantMap{{"squelch", squelch}};
+        return scan_list_targets(list, QVariantList{sys}, fallback);
+    };
+
+    const struct {
+        const char* flag;
+        const char* saved;
+        const char* row;
+        bool warns;
+    } cases[] = {
+        {"-fM", "noise+17", "--squelch auto+17", false},
+        {"-fM", "noise", "--squelch auto+10", false},
+        {"-fM", "auto+12", "--squelch auto+12", false},
+        {"-fA", "noise+17", "--squelch noise+17", false},
+        {"-fA", "AUTO+9", "--squelch auto+9", false},
+        {"-ft", "auto+12", "--squelch off", false},
+        {"-ft", "noise+8", "--squelch off", false},
+        {"-fs", "noise+8", "--squelch off", false},
+        {"-ft", "-60", "--squelch -60", false},
+        {"-fA", "-110", "--squelch -110", false},
+        {"-fA", "-65.5", "--squelch -66", true},
+        {"-fA", "-0.25", "--squelch -1", true},
+        {"-fA", "1", "--squelch -1", true},
+        {"-fA", "-130", "--squelch -120", true},
+        {"-fA", "off", "--squelch off", false},
+        {"-fA", "0", "--squelch off", false},
+    };
+
+    for (const auto& c : cases) {
+        // The app's default never replaces a squelch of the system's own.
+        for (const QString& fallback : {QString(), QStringLiteral("noise+10")}) {
+            const auto targets = saved(c.flag, c.saved, fallback);
+            check(targets.ok && optionsCell(targets) == QLatin1String(c.row));
+            check(targets.warnings.isEmpty() != c.warns);
+        }
+    }
+    sys.remove("radioSettings");
+
+    const struct {
+        const char* flag;
+        const char* fallback;
+        const char* row;
+    } defaults[] = {
+        {"-fA", "noise+10", "--squelch noise+10"},
+        {"-fM", "noise+10", "--squelch auto+10"},
+        {"-fA", "auto+15", "--squelch auto+15"},
+        {"-fM", "auto+15", "--squelch auto+15"},
+        {"-ft", "noise+10", ""},
+        {"-fs", "noise+10", ""},
+        {"-fA", "off", ""},
+        {"-fA", "", ""},
+    };
+
+    for (const auto& d : defaults) {
+        sys["decodeFlag"] = d.flag;
+        const auto targets = scan_list_targets(list, QVariantList{sys}, QLatin1String(d.fallback));
+        check(targets.ok && optionsCell(targets) == QLatin1String(d.row) && targets.warnings.isEmpty());
+    }
+    // A frequency entry takes it as a saved system does: nfm and am get the default, a digital protocol none.
+    for (const auto& freq : {qMakePair(QStringLiteral("nfm"), QStringLiteral("--squelch noise+10")),
+                             qMakePair(QStringLiteral("am"), QStringLiteral("--squelch auto+10")),
+                             qMakePair(QStringLiteral("p25"), QString())}) {
+        const QVariantMap freqEntry{
+            {"uid", "f"}, {"kind", "freq"}, {"protocol", freq.first}, {"freqMhz", "462.5625"}, {"enabled", true}};
+        const auto targets =
+            scan_list_targets({{"uid", "list"}, {"sourceType", "usb"}, {"entries", QVariantList{freqEntry}}},
+                              QVariantList{}, QStringLiteral("noise+10"));
+        check(targets.ok && optionsCell(targets) == freq.second);
+    }
+}
+
 int
 main(int argc, char** argv) {
     QCoreApplication app(argc, argv);
@@ -41,10 +129,12 @@ main(int argc, char** argv) {
     QVariantMap sys{{"uid", "sys"}, {"name", "Example"}, {"decodeFlag", "-ft"}, {"freqMhz", "851.5"}};
     auto build = [&]() { return scan_list_targets(list, QVariantList{sys}); };
     sys["radioSettings"] = QVariantMap{{"modulation", 1}, {"squelch", "auto+12"}};
-    check(build().ok && build().csv.contains(",cqpsk,,\"Example\",--squelch auto+12"));
+    // Issue #899 (B13): a P25 row takes no auto squelch (the row parser refuses one), and the system ran it as off on
+    // its own: the row says off, so a session level from the extra options cannot gate it either.
+    check(build().ok && build().csv.contains(",cqpsk,,\"Example\",--squelch off"));
     entry["modulation"] = "c4fm";
     list["entries"] = QVariantList{entry};
-    check(build().ok && build().csv.contains(",c4fm,,\"Example\",--squelch auto+12"));
+    check(build().ok && build().csv.contains(",c4fm,,\"Example\",--squelch off"));
     entry.remove("modulation");
     list["entries"] = QVariantList{entry};
     sys["decodeFlag"] = "-fA";
@@ -357,5 +447,6 @@ main(int argc, char** argv) {
     raw["gainDb"] = 60;
     const auto rawTargets = scan_list_targets(savedList, QVariantList{raw});
     check(!rawTargets.ok && rawTargets.error.contains("Gain must be 0..49 dB"));
+    rowSquelch();
     return failures ? 1 : 0;
 }

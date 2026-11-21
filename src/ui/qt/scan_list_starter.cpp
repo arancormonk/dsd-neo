@@ -410,6 +410,18 @@ ScanListStarter::retainProfiles(const QVariantMap& list) const {
     }
 }
 
+namespace {
+
+/* The squelch a generated list's analog rows with none of their own run (issue #899): the app's default, unless the
+   extra options set the session's squelch, which those rows then run as they always have (empty). */
+QString
+rowDefaultSquelch(const AppPrefs* prefs) {
+    const SessionArgPrefs mapped = session_args_prefs(prefs);
+    return session_args_extra_sets_squelch(mapped.extraArgs) ? QString() : mapped.squelchDefault;
+}
+
+} // namespace
+
 QVariantMap
 ScanListStarter::startPrepared(const QVariantList& lists, DecoderHost* host, const QStringList& companionPaths,
                                const QString& holdTargetId) const {
@@ -772,7 +784,7 @@ ScanListStarter::prepare(const QVariantMap& list, bool materialize, const QStrin
     if (!resolveEntryProfiles(prepared, &preparationError)) {
         return fail(preparationError);
     }
-    auto generated = scan_list_targets(prepared, systems);
+    auto generated = scan_list_targets(prepared, systems, rowDefaultSquelch(m_prefs));
     if (!generated.ok) {
         return fail(generated.error, generated.warnings);
     }
