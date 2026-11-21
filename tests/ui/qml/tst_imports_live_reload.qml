@@ -71,6 +71,7 @@ Item {
             testContext.setHostRunning(false);
             testContext.useRadioReferenceModel(null);
             testContext.resetCommands();
+            testContext.resetLocalDay();
             for (var k = importedFiles.count; k > 0 && importedFiles.count > 0; k--)
                 importedFiles.remove(0);
             compare(importedFiles.count, 0, "the library did not empty");
@@ -220,6 +221,15 @@ Item {
             compare(tc.screen.summaryFor("group", 0, 0, 0).indexOf("Empty list · "), 0);
             compare(tc.screen.summaryFor("group", 0, 2, 0), "No usable rows — check the file format");
             compare(tc.screen.summaryFor("chan", 0, 0, 0), "No usable rows — check the file format");
+        }
+
+        // Issue #902 B11: the import's day is its local date, also for an
+        // import at 00:00 UTC, which is the day before west of UTC.
+        function test_row_summary_says_the_local_date() {
+            testContext.setLocalTimeZone("America/Los_Angeles");
+            var at = Date.UTC(2026, 0, 1) / 1000;
+            compare(tc.screen.summaryFor("group", 0, 0, at), "Empty list · Dec 31");
+            compare(tc.screen.summaryFor("group", 3, 1, at), "3 talkgroups · 1 row skipped · Dec 31");
         }
     }
 }

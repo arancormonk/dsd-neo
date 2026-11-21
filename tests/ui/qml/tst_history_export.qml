@@ -39,10 +39,12 @@ Item {
     }
 
     // A fixed clock: local noon on 2026-11-09, so an export's suggested name
-    // is known whenever the test runs.
+    // is known whenever the test runs. A case may move it.
     QtObject {
         id: clockStub
-        function realtimeNowMs() { return new Date(2026, 10, 9, 12, 0, 0).getTime(); }
+        readonly property double noon: new Date(2026, 10, 9, 12, 0, 0).getTime()
+        property double nowMs: noon
+        function realtimeNowMs() { return nowMs; }
     }
 
     TestCase {
@@ -134,6 +136,8 @@ Item {
             callHistory.setSaveFailing(false);
             Ui.Theme.resetFontScale();
             root.width = 360;
+            clockStub.nowMs = clockStub.noon;
+            testContext.resetLocalDay();
         }
 
         // Export… sits left of Clear in both screens, on Clear's rule: shown while History holds a row.
@@ -222,6 +226,15 @@ Item {
             compare(calls("prepare"), JSON.stringify([["prepare", "4004", 1]]));
             wait(300);
             compare(historyView.filterText, "4004", "no older debounce overwrites it");
+        }
+
+        // Issue #902 B11: the name is the local date, also for a moment at
+        // 00:00 UTC, which is the day before west of UTC.
+        function test_export_name_is_the_local_date() {
+            testContext.setLocalTimeZone("America/Los_Angeles");
+            clockStub.nowMs = Date.UTC(2026, 0, 1);
+            beginExport(sessionLoader.item);
+            compare(testContext.lastDocumentRequest().name, "Call history 2025-12-31.csv");
         }
 
         // One CSV save picker, named for the day.

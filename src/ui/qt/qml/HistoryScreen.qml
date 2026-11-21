@@ -82,7 +82,7 @@ Item {
         flushPendingSearch();
         setExportMessage("", false);
         // Read before the exporter holds a file: a failure here leaves nothing pending.
-        var stamp = Qt.formatDate(new Date(screen.systems.realtimeNowMs()), "yyyy-MM-dd");
+        var stamp = Qt.formatDateTime(new Date(screen.systems.realtimeNowMs()), "yyyy-MM-dd");
         // The exporter builds the whole file now; a list that changes later does not change it.
         var prepared = historyExport.prepare(historyView) || {};
         var token = Number(prepared.token) || 0;
