@@ -138,18 +138,30 @@ ModalSheet {
                 squelch.currentIndex = currentIndex === 1 ? 1 : 2;
             }
         }
-        PlexTextField { id: bandwidthField; width: parent.width; label: qsTr("Channel bandwidth · Hz"); inputMethodHints: Qt.ImhDigitsOnly }
+        PlexTextField { id: bandwidthField; objectName: "searchRangeBandwidth"; width: parent.width; label: qsTr("Channel bandwidth · Hz"); inputMethodHints: Qt.ImhDigitsOnly }
         ReadableText { text: qsTr("Digital identification"); color: Theme.textPrimary; font.family: Theme.sans; font.pixelSize: Theme.fontSize(15) }
         PlexComboBox {
             id: digital
+            objectName: "searchRangeDigital"
             width: parent.width
             enabled: modulation.currentIndex === 0
             Accessible.name: qsTr("Digital identification profile")
-            model: [qsTr("Analog only"), "Auto", "P25", "DMR", "NXDN96", "NXDN48", "dPMR", "D-STAR", "YSF", "M17"]
+            // The index is the range's stored value: TETRA is 10 (issue #748).
+            model: [qsTr("Analog only"), "Auto", "P25", "DMR", "NXDN96", "NXDN48", "dPMR", "D-STAR", "YSF", "M17", "TETRA"]
+            // Picking TETRA fills in a 25 kHz channel and a four-second probe,
+            // long enough to read a cell's identity; both stay editable, and an
+            // opened range keeps its own values.
+            onActivated: function (index) {
+                if (index === 10) {
+                    bandwidthField.text = "25000";
+                    probeField.text = "4";
+                }
+            }
         }
         ReadableText {
+            objectName: "searchDigitalHint"
             width: parent.width
-            text: qsTr("With Auto, a three-second probe has time to identify P25 Phase 1 and 2, DMR, NXDN, dPMR, YSF and M17. ProVoice needs about five seconds, D-STAR about seven.")
+            text: qsTr("With Auto, a three-second probe has time to identify P25 Phase 1 and 2, DMR, NXDN, dPMR, YSF and M17. ProVoice needs about five seconds, D-STAR about seven. Auto does not include TETRA. With a TETRA range turned on, the search runs at 72 kHz instead of 48 kHz. The default bandwidth in Settings does not apply to Signal search.")
             wrapMode: Text.Wrap
             color: Theme.textSecondary
             font.family: Theme.sans
@@ -158,7 +170,7 @@ ModalSheet {
         Row {
             width: parent.width
             spacing: 12
-            PlexTextField { id: probeField; width: (parent.width - 12) / 2; label: qsTr("Probe · seconds (2–10)"); inputMethodHints: Qt.ImhDigitsOnly }
+            PlexTextField { id: probeField; objectName: "searchRangeProbe"; width: (parent.width - 12) / 2; label: qsTr("Probe · seconds (2–10)"); inputMethodHints: Qt.ImhDigitsOnly }
             PlexTextField { id: visitField; width: (parent.width - 12) / 2; label: qsTr("Max visit · seconds"); placeholderText: qsTr("0 disables"); inputMethodHints: Qt.ImhDigitsOnly }
         }
         ReadableText { heading: true; text: qsTr("RF detection"); color: Theme.textPrimary; font.family: Theme.sans; font.pixelSize: Theme.fontSize(17); font.weight: Font.DemiBold }

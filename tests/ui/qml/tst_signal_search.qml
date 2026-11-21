@@ -519,6 +519,74 @@ Item {
             compare(findChild(editor, "searchStepDenominator").text, "1");
             compare(preset.currentIndex, 2);
         }
+        // Issue #748: TETRA is the eleventh choice, stored as 10. Picking it
+        // fills in a 25 kHz channel and a four-second probe; both stay
+        // editable, and a range opened again keeps the values it was saved
+        // with. Another choice changes neither.
+        function test_range_editor_offers_tetra_with_presets() {
+            var ranges = model.ranges;
+            loader.item.sessionActive = false;
+            var editor = findChild(loader.item, "signalSearchRangeEditor");
+            var digital = findChild(editor, "searchRangeDigital");
+            var width = findChild(editor, "searchRangeBandwidth");
+            var probe = findChild(editor, "searchRangeProbe");
+            editor.openFor(0, model.defaultRange());
+            waitForRendering(editor);
+            compare(digital.count, 11);
+            compare(digital.textAt(9), "M17");
+            compare(digital.textAt(10), "TETRA");
+            compare(width.text, "16000");
+            compare(probe.text, "3");
+            digital.currentIndex = 10;
+            digital.activated(10);
+            compare(width.text, "25000");
+            compare(probe.text, "4");
+            compare(editor.formValue().digital, 10);
+            width.text = "20000";
+            probe.text = "6";
+            findChild(editor, "searchRangeSave").activate();
+            tryCompare(editor, "visible", false);
+            compare(model.ranges[0].digital, 10);
+            compare(String(model.ranges[0].bandwidth), "20000");
+            compare(String(model.ranges[0].probe), "6");
+            editor.openFor(0, model.ranges[0]);
+            waitForRendering(editor);
+            compare(digital.currentIndex, 10);
+            compare(width.text, "20000", "an opened TETRA range keeps its own width");
+            compare(probe.text, "6", "and its own probe");
+            digital.currentIndex = 3;
+            digital.activated(3);
+            compare(width.text, "20000", "another choice leaves the width alone");
+            compare(probe.text, "6");
+            editor.visible = false;
+            model.ranges = ranges;
+        }
+        // The hint under the choice says what a TETRA range changes, and wraps
+        // whole inside the sheet at the narrowest phone and the largest text.
+        function test_range_editor_tetra_hint_wraps_data() {
+            return [{tag: "411 dp, default text", scale: 1.0, width: 411}, {tag: "360 dp, largest text", scale: 1.6, width: 360}];
+        }
+        function test_range_editor_tetra_hint_wraps(data) {
+            root.width = data.width;
+            Ui.Theme.fontScale = data.scale;
+            loader.item.sessionActive = false;
+            var editor = findChild(loader.item, "signalSearchRangeEditor");
+            editor.openFor(0, model.defaultRange());
+            waitForRendering(editor);
+            var hint = findChild(editor, "searchDigitalHint");
+            scrollTo(editor, hint);
+            verify(hint.text.indexOf("Auto does not include TETRA.") >= 0);
+            verify(hint.text.indexOf("72 kHz instead of 48 kHz") >= 0);
+            verify(hint.text.indexOf("The default bandwidth in Settings does not apply to Signal search.") >= 0);
+            verify(hint.lineCount > 2, "the hint wraps");
+            verify(!hint.truncated);
+            verify(hint.contentWidth <= hint.width + 0.5, "no line runs past the hint");
+            verify(hint.height >= hint.contentHeight - 0.5, "no line is clipped");
+            var panel = hint.parent;
+            verify(hint.mapToItem(panel, 0, 0).x + hint.width <= panel.width + 0.5, "the hint stays inside the sheet");
+            compare(hint.Accessible.name, hint.text);
+            editor.visible = false;
+        }
         function test_controls_are_tagged_and_save_is_a_snapshot() {
             findChild(loader.item, "searchSkip").clicked();
             compare(model.actions.join(","), "4,17,42");
