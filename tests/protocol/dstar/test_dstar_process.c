@@ -5,6 +5,7 @@
 
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/state_fwd.h"
+#include "dstar_confirm.h"
 #include "dstar_sd_state.h"
 
 #include <assert.h>
@@ -66,6 +67,8 @@ static int soft_symbol_calls;
 static int mbe_frame_calls;
 static int voice_play_calls;
 static int slow_data_calls;
+/* 1: the stubbed slow data holds a header rebroadcast whose CRC passed, strong evidence, as dstar_slow_data.c notes it. */
+static int slow_data_proves;
 static int ui_calls;
 /* Publishing now follows the installed telemetry hooks, not the frontend kind. */
 static int telemetry_active;
@@ -164,6 +167,7 @@ reset_counters(void) {
     call_end_reason = -1;
     call_present = 1;
     call_protocol = DSD_SYNC_DSTAR_VOICE_POS;
+    slow_data_proves = 0;
     DSD_MEMSET(captured_slow_data, 0, sizeof(captured_slow_data));
     DSD_MEMSET(captured_ambe_frames, 0, sizeof(captured_ambe_frames));
     DSD_MEMSET(captured_soft_symbols, 0, sizeof(captured_soft_symbols));
@@ -252,6 +256,9 @@ processDSTAR_SD(const dsd_opts* opts, dsd_state* state, uint8_t* sd) {
     assert(sd != NULL);
     DSD_MEMCPY(captured_slow_data, sd, sizeof(captured_slow_data));
     slow_data_calls++;
+    if (slow_data_proves) {
+        dstar_confirm_note_evidence(opts, state, DSTAR_EVIDENCE_STRONG);
+    }
 }
 
 int
@@ -555,6 +562,8 @@ test_voice_superframe_split_by_a_carrier_boundary_is_dropped(void) {
         (20 * DSTAR_FRAME_DIBITS) + 5,                                 /* inside the last voice frame */
     };
     static const int voice_frames_before[3] = {10, 20, 20};
+    /* A cut in a data frame drops the superframe there: the next voice frame is not read (issue #890). */
+    static const int voice_frames_read[3] = {11, 20, 21};
     for (int b = 0; b < 3; b++) {
         static dsd_opts opts;
         static dsd_state state;
@@ -572,7 +581,8 @@ test_voice_superframe_split_by_a_carrier_boundary_is_dropped(void) {
         assert(slow_data_calls == 0);
         assert(mbe_frame_calls == voice_frames_before[b]);
         assert(voice_play_calls == voice_frames_before[b]);
-        assert(soft_symbol_calls == (voice_frames_before[b] + 1) * DSTAR_VOICE_DIBITS_PER_FRAME);
+        assert(soft_symbol_calls == voice_frames_read[b] * DSTAR_VOICE_DIBITS_PER_FRAME);
+        assert(hand_back_calls == 0);
     }
 }
 
@@ -589,6 +599,7 @@ test_voice_superframe_cut_by_an_input_interruption_is_dropped(void) {
         (20 * DSTAR_FRAME_DIBITS) + 71,                                /* the last voice symbol */
     };
     static const int voice_frames_before[4] = {0, 10, 20, 20};
+    static const int voice_frames_read[4] = {1, 11, 20, 21};
     for (int c = 0; c < 4; c++) {
         static dsd_opts opts;
         static dsd_state state;
@@ -607,7 +618,8 @@ test_voice_superframe_cut_by_an_input_interruption_is_dropped(void) {
         assert(slow_data_calls == 0);
         assert(mbe_frame_calls == voice_frames_before[c]);
         assert(voice_play_calls == voice_frames_before[c]);
-        assert(soft_symbol_calls == (voice_frames_before[c] + 1) * DSTAR_VOICE_DIBITS_PER_FRAME);
+        assert(soft_symbol_calls == voice_frames_read[c] * DSTAR_VOICE_DIBITS_PER_FRAME);
+        assert(hand_back_calls == 0);
     }
 }
 
@@ -1069,6 +1081,66 @@ test_end_after_the_last_data_frame_decodes_the_slow_data(void) {
     }
 }
 
+/* Issue #890 (gate r2): a carrier boundary inside any data frame of the superframe behind a header (the 20th among
+ * them) drops the read at that frame's end: the voice frame after it, which is the new carrier's, is not read, so a
+ * sync in it stays the hunt's; nothing more plays, the slow data is dropped and nothing goes back to the hunt. */
+static void
+test_header_led_superframe_split_in_a_data_frame_stops_there(void) {
+    static const int frames[2] = {5, 19};
+    for (int f = 0; f < 2; f++) {
+        static dsd_opts opts;
+        static dsd_state state;
+        DSD_MEMSET(&opts, 0, sizeof(opts));
+        DSD_MEMSET(&state, 0, sizeof(state));
+        opts.floating_point = 1;
+        opts.pulse_digi_out_channels = 1;
+        reset_counters();
+        header_decode_soft_result = 1;
+        const int superframe = DSTAR_HEADER_DIBITS + DSTAR_FRAME_DIBITS;
+        boundary_at = superframe + (frames[f] * DSTAR_FRAME_DIBITS) + DSTAR_VOICE_DIBITS_PER_FRAME + 10;
+
+        assert(processDSTAR_HD(&opts, &state) == 1);
+
+        assert(state.carrier_seq == 1U);
+        /* Voice frame 0 and the superframe's voice frames up to the cut data frame. */
+        assert(mbe_frame_calls == frames[f] + 2);
+        assert(soft_symbol_calls == DSTAR_HEADER_DIBITS + ((frames[f] + 2) * DSTAR_VOICE_DIBITS_PER_FRAME));
+        assert(stream_pos == superframe + ((frames[f] + 1) * DSTAR_FRAME_DIBITS));
+        assert(slow_data_calls == 0);
+        assert(hand_back_calls == 0);
+    }
+}
+
+/* Issue #890 (gate r2): behind an RF header that failed its CRC, a header rebroadcast whose CRC passes in the
+ * superframe's slow data proves the read: processDSTAR_HD() reports it productive, as processDSTAR() would. The
+ * resynchronization word does not, nor a weak streak it completes, which confirms the audio without checking content. */
+static void
+test_failed_header_read_is_productive_on_checked_slow_data_only(void) {
+    for (int c = 0; c < 2; c++) {
+        static dsd_opts opts;
+        static dsd_state state;
+        DSD_MEMSET(&opts, 0, sizeof(opts));
+        DSD_MEMSET(&state, 0, sizeof(state));
+        opts.floating_point = 1;
+        opts.pulse_digi_out_channels = 1;
+        reset_counters();
+        header_decode_soft_result = 0;
+        script_bits(DSTAR_HEADER_DIBITS + DSTAR_VOICE_DIBITS_PER_FRAME, RESYNC_WORD, 24);
+        if (c == 0) {
+            slow_data_proves = 1;
+        } else {
+            /* The superframe before ended on its word alone: this one's word completes the streak. */
+            state.dstar_confirm_weak_streak = 1;
+        }
+
+        const int verdict = processDSTAR_HD(&opts, &state);
+
+        assert(state.dstar_confirmed == 1);
+        assert(verdict == (c == 0 ? 1 : 0));
+    }
+    header_decode_soft_result = 1;
+}
+
 int
 main(void) {
     test_voice_process_without_telemetry();
@@ -1092,6 +1164,8 @@ main(void) {
     test_end_pattern_near_miss_behind_a_header_reads_on();
     test_end_pattern_clears_the_transmission_confirmation();
     test_end_after_the_last_data_frame_decodes_the_slow_data();
+    test_header_led_superframe_split_in_a_data_frame_stops_there();
+    test_failed_header_read_is_productive_on_checked_slow_data_only();
     printf("DSTAR_PROCESS: OK\n");
     return 0;
 }

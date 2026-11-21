@@ -13970,7 +13970,9 @@ Private per-protocol modules worth knowing about:
   `processDSTAR_HD()` decodes the RF header, then reads voice frame 0 and the word in its data frame (JARL STD 6.0
   4.1.2 (c)), then the same superframe, so the first superframe's slow data is aligned (a header rebroadcast in it is
   read whole) and no 20 ms is dropped (issue #890, B11); the superframe behind a header counts as weak evidence only
-  when that word was there. Neither changes `state->synctype`, so the voice frames behind a header reach the vocoder as
+  when that word was there, and `processDSTAR_HD()` reports the read productive when the header's CRC passed or a CRC
+  in that superframe's slow data did (a header rebroadcast or a D-PRS record; never the word or a weak streak). A cut
+  in any frame, a data frame included, drops the read at that frame's end. Neither changes `state->synctype`, so the voice frames behind a header reach the vocoder as
   `DSD_SYNC_DSTAR_HD_*`. The end pattern (4.1.2 (g)-(h), `0xAAAAAAAA135E`) is matched exactly on the 48 bits ending on
   any step of the frames' 24-symbol grid (JARL, and the capture behind `DECODE_IQ_DSTAR`, start it on a data frame,
   MMDVM on a voice frame, MMDVMHost's end frame ends it with a data frame), from voice frame 0 behind a header on: it

@@ -220,6 +220,11 @@ dstar_read_superframe(dsd_opts* opts, dsd_state* state, dstar_end_window* w, int
         if (dstar_read_data_frame(opts, state, sd + ((size_t)j * DSTAR_DATA_SYMBOLS), w)) {
             return dstar_end_or_lost(state, carrier_seq);
         }
+        /* A cut inside the data frame drops the superframe here: the next voice frame would be read from the new
+           carrier (or from erasures), and a sync in it would be lost to the hunt. */
+        if (dsd_state_frame_read_lost(state, carrier_seq)) {
+            return DSTAR_READ_LOST;
+        }
         dstar_frame_done(opts, state);
     }
     return dstar_read_resync_slot(opts, state, w, carrier_seq);
@@ -244,9 +249,13 @@ dstar_transmission_ended(dsd_opts* opts, dsd_state* state) {
 }
 
 /* A superframe and its accounting (dstar_confirm.h). @p behind_resync: the frames follow an exact resynchronization
- * word, the only thing about them that can be checked from here. @p carrier_seq: as dstar_read_superframe(). */
+ * word, the only thing about them that can be checked from here. @p carrier_seq: as dstar_read_superframe().
+ * @p checked (may be NULL): 1 when a CRC in this superframe's slow data proved the transmission (strong evidence: a
+ * header rebroadcast or a D-PRS record), never for its resynchronization words alone. Returns whether the transmission
+ * stands confirmed as the superframe ends. */
 static int
-dstar_voice_superframe(dsd_opts* opts, dsd_state* state, dstar_end_window* w, int behind_resync, uint32_t carrier_seq) {
+dstar_voice_superframe(dsd_opts* opts, dsd_state* state, dstar_end_window* w, int behind_resync, uint32_t carrier_seq,
+                       int* checked) {
     /* A CRC-16 in the slow data below may yet prove the transmission outright. The word on its own is weak, so it has
      * to repeat -- see dstar_confirm.h. */
     dstar_confirm_begin_frame(state);
@@ -266,6 +275,9 @@ dstar_voice_superframe(dsd_opts* opts, dsd_state* state, dstar_end_window* w, in
     dstar_confirm_end_frame(opts, state);
     /* The superframe's verdict is the transmission's as it was read, whatever its end clears after. */
     const int confirmed = dstar_confirm_is_confirmed(state);
+    if (checked != NULL) {
+        *checked = state->dstar_confirm_frame_evidence == (uint8_t)DSTAR_EVIDENCE_STRONG;
+    }
     if (outcome == DSTAR_READ_END) {
         dstar_transmission_ended(opts, state);
     }
@@ -278,7 +290,7 @@ processDSTAR(dsd_opts* opts, dsd_state* state) {
     dstar_end_window w;
     DSD_MEMSET(&w, 0, sizeof(w));
     /* The hunt matched the resynchronization word exactly (strcmp, no error budget). */
-    return dstar_voice_superframe(opts, state, &w, 1, state->carrier_seq);
+    return dstar_voice_superframe(opts, state, &w, 1, state->carrier_seq, NULL);
 }
 
 /* Voice frame 0 behind an RF header and its data frame, which is the resynchronization word (JARL STD 6.0 section 4.1.2
@@ -353,8 +365,12 @@ processDSTAR_HD(dsd_opts* opts, dsd_state* state) {
     int behind_resync = 0;
     const dstar_read_outcome outcome = dstar_read_frame_zero(opts, state, &w, carrier_seq, &behind_resync);
     if (outcome == DSTAR_READ_ON) {
-        (void)dstar_voice_superframe(opts, state, &w, behind_resync, carrier_seq);
-        return header_ok;
+        /* A header that failed its CRC is no verdict on the read when the superframe behind it proved itself: a header
+           rebroadcast or D-PRS record whose CRC passed makes it productive, as it would behind a resynchronization word
+           the hunt matched. The word alone, or a weak streak, never does. */
+        int checked = 0;
+        (void)dstar_voice_superframe(opts, state, &w, behind_resync, carrier_seq, &checked);
+        return header_ok || checked;
     }
     DSD_FPRINTF(stderr, "\n");
     if (outcome == DSTAR_READ_END) {
