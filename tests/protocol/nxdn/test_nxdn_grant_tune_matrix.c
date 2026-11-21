@@ -328,11 +328,11 @@ nxdn_install_hooks(void) {
 }
 
 static int
-nxdn_expect(int cond, const char* test_case, const char* result_name, const char* check) {
+nxdn_expect(int cond, const char* case_label, const char* step, const char* check) {
     if (cond) {
         return 0;
     }
-    DSD_FPRINTF(stderr, "FAIL case=%s result=%s check=%s\n", test_case, result_name, check);
+    DSD_FPRINTF(stderr, "FAIL case=%s result=%s check=%s\n", case_label, step, check);
     return 1;
 }
 
