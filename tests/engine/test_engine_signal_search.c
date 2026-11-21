@@ -31,6 +31,7 @@
 #include <dsd-neo/protocol/p25/p25_cc_candidates.h>
 #include <dsd-neo/protocol/tetra/tetra.h>
 #include <dsd-neo/runtime/analog_channel.h>
+#include <dsd-neo/runtime/config.h>
 #include <dsd-neo/runtime/control_pump.h>
 #include <dsd-neo/runtime/decode_clock.h>
 #include <dsd-neo/runtime/decode_mode.h>
@@ -47,6 +48,7 @@
 #include "../../src/app_control/command_dispatch.h"
 #include "../../src/app_control/commands_internal.h"
 #include "../../src/engine/scan_owner.h"
+#include "test_env.h"
 
 static dsd_signal_search_status status;
 static dsd_signal_capture capture = {1536000, 100384000, 1, 384000, 384000, 0, 0, DSD_SIGNAL_CLIP_LEVEL_DEFAULT};
@@ -4556,6 +4558,104 @@ test_tetra_visit_resets_on_departures(dsd_opts* o, dsd_state* s, const dsd_signa
     end_tetra_rate(o, s);
 }
 
+/* A start of @p config is refused with @p why and changes nothing: no boundary, tune, owner or running search. */
+static void
+start_refused(dsd_opts* o, dsd_state* s, const dsd_signal_search_config* config, const char* why) {
+    const int before = boundary;
+    const uint32_t tickets = ticket;
+    char error[192] = "";
+    assert(dsd_engine_signal_search_start_refused(o, s, config, error, sizeof(error)) < 0);
+    assert(strcmp(error, why) == 0);
+    error[0] = '\0';
+    assert(dsd_engine_signal_search_start(o, s, config, observer, NULL, error, sizeof(error)) < 0);
+    assert(strcmp(error, why) == 0);
+    tick(o, s);
+    assert(boundary == before && ticket == tickets && !dsd_signal_search_is_running(s) && !tuner_owner);
+}
+
+/* Issue #748: a search with an enabled TETRA range starts only where the TETRA chain can run, one reason per cause,
+   checked before it changes anything: a published DSP rate TETRA runs at (an unpublished one is no refusal: the visit
+   that lands where TETRA cannot run hears nothing and ends unresolved), the channel filter, the downlink and a TED
+   timing the TETRA profile published is the rate's. A fresh start on a session that decodes TETRA is refused for any
+   ranges, since the Auto baseline would free its decoder; a paused search's Resume never is. */
+static void
+test_tetra_start_checks(dsd_opts* o, dsd_state* s, const dsd_signal_search_config* config) {
+    live = 1;
+    failed = 0;
+    stalled_ms = 0;
+    const dsd_signal_search_config tetra = tetra_config(config, 90);
+    const dsd_signal_search_config auto_only = tag_config(config, 90, 1, 0);
+    dsp_rate_hz = 48000;
+    start_refused(o, s, &tetra, "Identifying TETRA needs a 72 kHz DSP bandwidth, not 48 kHz");
+    dsp_rate_hz = 72000;
+    o->tetra_uplink = 1;
+    start_refused(o, s, &tetra, "Identifying TETRA decodes the downlink, which --tetra-uplink turns off");
+    o->tetra_uplink = 0;
+    (void)dsd_test_setenv("DSD_NEO_CHANNEL_LPF", "0", 1);
+    dsd_neo_config_init();
+    start_refused(o, s, &tetra, "Identifying TETRA needs the channel filter, which DSD_NEO_CHANNEL_LPF=0 turns off");
+    (void)dsd_test_unsetenv("DSD_NEO_CHANNEL_LPF");
+    dsd_neo_config_init();
+    tetra_ted_override = 3;
+    start_refused(o, s, &tetra,
+                  "Identifying TETRA needs the TED timed at the DSP rate over 18000 symbols/s, and the stream runs "
+                  "another timing");
+    /* An override the rate's own is no refusal, and a rate the stream has not published yet is none either. */
+    tetra_ted_override = 4;
+    char error[192] = "";
+    assert(dsd_engine_signal_search_start_refused(o, s, &tetra, error, sizeof(error)) == 0 && error[0] == '\0');
+    tetra_ted_override = 0;
+    dsp_rate_hz = 0;
+    assert(dsd_engine_signal_search_start_refused(o, s, &tetra, error, sizeof(error)) == 0);
+    /* The rate checks are TETRA's: an Auto search at 48 kHz starts. */
+    dsp_rate_hz = 48000;
+    assert(dsd_engine_signal_search_start_refused(o, s, &auto_only, error, sizeof(error)) == 0);
+    /* A disabled TETRA range needs nothing. */
+    dsd_signal_search_config off = tetra;
+    off.range_count = 2;
+    off.ranges[1] = auto_only.ranges[0];
+    off.ranges[1].start_hz = 100100000;
+    off.ranges[1].end_hz = 100125000;
+    off.ranges[0].enabled = 0;
+    assert(dsd_engine_signal_search_start_refused(o, s, &off, error, sizeof(error)) == 0);
+
+    /* A session decoding TETRA: any fresh start is refused. */
+    o->frame_tetra = 1;
+    start_refused(o, s, &auto_only, "Stop TETRA decoding before Signal search");
+    dsp_rate_hz = 72000;
+    start_refused(o, s, &tetra, "Stop TETRA decoding before Signal search");
+    o->frame_tetra = 0;
+
+    /* A 48 kHz search paused with a TETRA range edited in: its Resume says how to identify TETRA, and the search stays
+       paused as it was. A paused TETRA search's own Resume is never refused for its TETRA decoder. */
+    dsp_rate_hz = 48000;
+    start_tag_session(o, s, &auto_only);
+    visit_strongest(o, s);
+    act(o, s, DSD_SEARCH_ACTION_PAUSE);
+    assert(status.phase == DSD_SEARCH_PAUSED);
+    error[0] = '\0';
+    assert(dsd_engine_signal_search_start(o, s, &tetra, observer, NULL, error, sizeof(error)) < 0);
+    assert(strcmp(error, "To identify TETRA, stop the search and start it again (this clears the session's avoids "
+                         "and learned Phase 2 codes)")
+           == 0);
+    assert(dsd_engine_signal_search_active(s) && status.phase == DSD_SEARCH_PAUSED);
+    stop_tag_session(o, s);
+    dsp_rate_hz = 72000;
+    use_tetra_rate();
+    const dsd_signal_search_config tetra_session = tetra_config(config, 91);
+    start_tag_session(o, s, &tetra_session);
+    tetra_visit(o, s);
+    act(o, s, DSD_SEARCH_ACTION_PAUSE);
+    assert(status.phase == DSD_SEARCH_PAUSED);
+    o->frame_tetra = 1; /* whatever the decoder runs while paused */
+    assert(dsd_engine_signal_search_start(o, s, &tetra_session, observer, NULL, error, sizeof(error)) == 0);
+    assert(status.phase == DSD_SEARCH_SEARCHING);
+    stop_tag_session(o, s);
+    assert(o->frame_tetra == 0);
+    o->frame_tetra = 0;
+    end_tetra_rate(o, s);
+}
+
 int
 main(void) {
     dsd_opts* o = calloc(1, sizeof(*o));
@@ -4762,6 +4862,7 @@ main(void) {
     test_tetra_protocol_latched(o, s, &config);
     test_tetra_visit_lands_tetra_profile(o, s, &config);
     test_tetra_visit_resets_on_departures(o, s, &config);
+    test_tetra_start_checks(o, s, &config);
     s->rtl_ctx = NULL;
     dsd_state_ext_free_all(s);
     free(s);
