@@ -122,10 +122,10 @@ run_csbk_crc(dsd_opts* opts, dsd_state* state, const uint8_t ten[10], uint32_t c
     DSD_MEMSET(bytes, 0, sizeof bytes);
     DSD_MEMCPY(bytes, ten, 10);
     bytes_to_bits(bytes, sizeof bytes, bits);
-    dsd_test_capture_stderr cap;
-    assert(dsd_test_capture_stderr_begin(&cap, "dmr_unit_activity") == 0);
+    dsd_test_quiet_stderr cap;
+    assert(dsd_test_quiet_stderr_begin(&cap) == 0);
     dmr_cspdu(opts, state, bits, bytes, crc_correct, 0);
-    assert(dsd_test_capture_stderr_end(&cap) == 0);
+    assert(dsd_test_quiet_stderr_end(&cap) == 0);
 }
 
 static void
@@ -380,10 +380,10 @@ run_ars(dsd_opts* opts, dsd_state* state, const uint8_t* ars, size_t ars_len, ui
     state->currentslot = 0;
     state->dmr_lrrp_source[0] = source;
     state->dmr_lrrp_target[0] = 5678;
-    dsd_test_capture_stderr cap;
-    assert(dsd_test_capture_stderr_begin(&cap, "dmr_unit_activity_ars") == 0);
+    dsd_test_quiet_stderr cap;
+    assert(dsd_test_quiet_stderr_begin(&cap) == 0);
     dmr_udp_comp_pdu(opts, state, (uint16_t)(ars_len + 9U), pdu);
-    assert(dsd_test_capture_stderr_end(&cap) == 0);
+    assert(dsd_test_quiet_stderr_end(&cap) == 0);
 }
 
 static void

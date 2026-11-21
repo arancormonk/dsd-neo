@@ -67,10 +67,10 @@ send_header(dsd_opts* opts, dsd_state* state, uint8_t slot, uint8_t format, uint
     for (size_t i = 0; i < 6U && text[i] != '\0'; i++) {
         put_bits(lc, 24U + (i * 8U), (uint8_t)text[i], 8);
     }
-    dsd_test_capture_stderr cap;
-    assert(dsd_test_capture_stderr_begin(&cap, "dmr_alias_learn") == 0);
+    dsd_test_quiet_stderr cap;
+    assert(dsd_test_quiet_stderr_begin(&cap) == 0);
     dmr_talker_alias_lc_header(opts, state, slot, lc);
-    assert(dsd_test_capture_stderr_end(&cap) == 0);
+    assert(dsd_test_quiet_stderr_end(&cap) == 0);
 }
 
 /* Talker_Alias_blk1..3 (Table 7.5): seven octets from bit 16. @p index 0..2 is block 1..3. */
@@ -82,10 +82,10 @@ send_block_octets(dsd_opts* opts, dsd_state* state, uint8_t slot, uint8_t index,
     for (size_t i = 0; i < 7U && i < count; i++) {
         put_bits(lc, 16U + (i * 8U), octets[i], 8);
     }
-    dsd_test_capture_stderr cap;
-    assert(dsd_test_capture_stderr_begin(&cap, "dmr_alias_learn") == 0);
+    dsd_test_quiet_stderr cap;
+    assert(dsd_test_quiet_stderr_begin(&cap) == 0);
     dmr_talker_alias_lc_blocks(opts, state, slot, index, lc);
-    assert(dsd_test_capture_stderr_end(&cap) == 0);
+    assert(dsd_test_quiet_stderr_end(&cap) == 0);
 }
 
 static void
@@ -356,10 +356,10 @@ send_lc(dsd_opts* opts, dsd_state* st, uint8_t bits[96], int crc_ok, uint8_t typ
     const uint8_t saved = st->event_crc_invalid[0];
     st->event_crc_invalid[0] = (uint8_t)(saved | (crc_ok ? 0U : DSD_CRC_FAILED));
     uint32_t errors = 0;
-    dsd_test_capture_stderr cap;
-    assert(dsd_test_capture_stderr_begin(&cap, "dmr_alias_learn_flco") == 0);
+    dsd_test_quiet_stderr cap;
+    assert(dsd_test_quiet_stderr_begin(&cap) == 0);
     dmr_flco(opts, st, bits, crc_ok ? 1U : 0U, &errors, type);
-    assert(dsd_test_capture_stderr_end(&cap) == 0);
+    assert(dsd_test_quiet_stderr_end(&cap) == 0);
     st->event_crc_invalid[0] = saved;
 }
 

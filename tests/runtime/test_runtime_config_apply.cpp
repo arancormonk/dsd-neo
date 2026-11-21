@@ -3785,6 +3785,23 @@ main(void) {
         DSD_FPRINTF(stderr, "FAIL: dsd_socket_init\n");
         return 1;
     }
+    /* Some cases apply a PulseAudio configuration, whose hot restart opens the device. libpulse then makes its runtime
+       folder, in TMPDIR wherever XDG_RUNTIME_DIR is unset (the CI runners), and leaves it. It gets a folder of this
+       test's own, removed at the end, and a server that does not exist, so it neither reaches a desktop's real sound
+       server nor starts one. */
+    char pulse_runtime[DSD_TEST_PATH_MAX];
+    char pulse_server[DSD_TEST_PATH_MAX + 16];
+    if (!dsd_test_mkdtemp(pulse_runtime, sizeof pulse_runtime, "pulse_runtime")) {
+        DSD_FPRINTF(stderr, "FAIL: pulse runtime folder\n");
+        return 1;
+    }
+    DSD_SNPRINTF(pulse_server, sizeof pulse_server, "unix:%s/no-server", pulse_runtime);
+    if (dsd_test_setenv("PULSE_RUNTIME_PATH", pulse_runtime, 1) != 0
+        || dsd_test_setenv("PULSE_SERVER", pulse_server, 1) != 0) {
+        DSD_FPRINTF(stderr, "FAIL: pulse environment\n");
+        (void)dsd_test_rmdir(pulse_runtime);
+        return 1;
+    }
     int rc = 0;
     rc |= test_basic_pulse_config_apply();
     rc |= test_input_warn_db_apply_clamps_to_window();
@@ -3843,6 +3860,10 @@ main(void) {
     rc |= test_stream_restart_on_another_source_is_a_carrier_boundary();
 #endif
 #endif
+    if (dsd_test_rmdir(pulse_runtime) != 0) {
+        DSD_FPRINTF(stderr, "FAIL: the pulse runtime folder %s could not be removed\n", pulse_runtime);
+        rc = 1;
+    }
     return rc ? 1 : 0;
 }
 

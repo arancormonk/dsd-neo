@@ -211,9 +211,10 @@ assert_signal_stops_run() {
   local sig="$3"
   local pidfile="$WORK/${name}.child.pid"
 
+  # The PID file goes in as an argument, quoted for the case script: TMPDIR, so the path, can hold a space.
   write_case "$name" "
 runner_init t ${serial}
-run_check 'long check' bash -c 'echo \$\$ > ${pidfile}; sleep 60'
+run_check 'long check' bash -c 'echo \$\$ > \"\$1\"; sleep 60' _ $(printf '%q' "$pidfile")
 "
   rm -f "$pidfile"
   bash "$WORK/${name}.sh" > "$WORK/${name}.out" 2>&1 &

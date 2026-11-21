@@ -312,6 +312,9 @@ rig_open_ex(rig* r, const char* prefix, int with_journal) {
     g_now_s = k_t0;
     initOpts(r->opts);
     initState(r->state);
+    /* No sound card: initOpts() picks the PulseAudio output, which a scan opens (dsd_engine_scan_ensure_output()), and
+       libpulse then makes a runtime folder in TMPDIR wherever XDG_RUNTIME_DIR is unset. */
+    r->opts->audio_out_type = 9;
     DSD_SNPRINTF(r->opts->wav_out_dir, sizeof r->opts->wav_out_dir, "%s", r->dir);
     (void)dsd_test_path_join(r->journal, sizeof r->journal, r->dir, "calls.jsonl");
     dsd_wav_recording_session_reset();

@@ -166,4 +166,18 @@ fi
 # remote base covers both the pushed commit range and every staged, unstaged,
 # untracked, or deleted worktree path without asking analyzers to read stale
 # content from HEAD.
-printf '%s %s %s %s\n' "$local_ref" "$analysis_sha" "$remote_ref" "$remote_sha" | "$hook_path" "$REMOTE_NAME" "$remote_url"
+hook_rc=0
+printf '%s %s %s %s\n' "$local_ref" "$analysis_sha" "$remote_ref" "$remote_sha" | "$hook_path" "$REMOTE_NAME" "$remote_url" ||
+  hook_rc=$?
+
+# What the last local ctest run left in its per-test temp folders (cmake/TestTmpdir.cmake), as CI checks after its own.
+tmp_rc=0
+if [[ -d build/dev-debug/test-tmp ]]; then
+  tools/check_test_tmp_leftovers.sh build/dev-debug || tmp_rc=$?
+else
+  echo "preflight: no build/dev-debug/test-tmp yet (no local ctest run); skipping the test temp folder check"
+fi
+if [[ $hook_rc -ne 0 ]]; then
+  exit "$hook_rc"
+fi
+[[ $tmp_rc -eq 0 ]]

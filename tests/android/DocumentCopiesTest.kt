@@ -801,8 +801,27 @@ private fun anAbortCancelsHeldProviderCallsAndRefusesNewOnes() {
     checkNoTransferInFlight("refused transfers")
 }
 
-fun main() {
+/**
+ * Run [body], then remove [root] and everything in it without following a link, failing when anything cannot be
+ * removed (on Windows, a file a handle still holds), so the test cannot pass with its temp folder left behind. A
+ * failure of [body] stays the failure, with the removal's own attached.
+ */
+private fun withScratchRemoved(root: File, body: () -> Unit) {
     try {
+        body()
+    } catch (e: Throwable) {
+        runCatching { removeTree(root) }.exceptionOrNull()?.let(e::addSuppressed)
+        throw e
+    }
+    removeTree(root)
+}
+
+private fun removeTree(root: File) {
+    Files.walk(root.toPath()).use { paths -> paths.sorted(Comparator.reverseOrder()).forEach(Files::delete) }
+}
+
+fun main() {
+    withScratchRemoved(scratch) {
         aSaveReplacesTheDocumentAndSyncsIt()
         aProviderThatRefusesWtIsWrittenWithWAndTrimmed()
         aProviderThatIgnoresTheTIsTrimmedToo()
@@ -823,8 +842,7 @@ fun main() {
         aProbeThatCannotReadFails()
         aCancelStopsAProbeWhereverItWaits()
         anAbortCancelsHeldProviderCallsAndRefusesNewOnes()
-    } finally {
-        scratch.deleteRecursively()
+        check(ParcelFileDescriptor.openCount() == 0) { "every descriptor is closed: ${ParcelFileDescriptor.openCount()} open" }
     }
     println(
         "PASS: document copies size, open, trim, sync, report failures, delete and cancel as specified; " +
