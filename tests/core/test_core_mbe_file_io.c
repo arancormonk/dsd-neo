@@ -26,6 +26,7 @@
 #include <dsd-neo/dsp/speech_agc.h>
 #include <dsd-neo/fec/block_codes.h>
 #include <dsd-neo/runtime/decode_clock.h>
+#include <dsd-neo/runtime/exitflag.h>
 #include <dsd-neo/runtime/rdio_export.h>
 #include <dsd-neo/runtime/receive_policy.h>
 #include <errno.h>
@@ -2605,6 +2606,175 @@ test_sdrtrunk_nxdn_missing_context_and_sacch_alignment(void) {
     return rc;
 }
 
+enum { LOST_FRAME_COUNT = 4, LOST_FRAME_AT = 1 };
+
+/* An encrypted export of LOST_FRAME_COUNT all-zero voice frames of @p digits hex digits after @p head (the record's
+   members up to "frames":[), the one at @p lost (-1: none) replaced by a value that is no hex. */
+static void
+build_lost_frame_json(char* out, size_t cap, const char* head, size_t digits, int lost) {
+    char good[40];
+    char bad[40];
+    DSD_MEMSET(good, '0', digits);
+    good[digits] = '\0';
+    DSD_MEMSET(bad, 'Z', digits);
+    bad[digits] = '\0';
+    size_t off = (size_t)DSD_SNPRINTF(out, cap, "%s", head);
+    for (int i = 0; i < LOST_FRAME_COUNT && off < cap; i++) {
+        off += (size_t)DSD_SNPRINTF(out + off, cap - off, "%s{\"hex\":\"%s\"}", i ? "," : "", i == lost ? bad : good);
+    }
+    if (off < cap) {
+        (void)DSD_SNPRINTF(out + off, cap - off, "]}");
+    }
+}
+
+/* Issue #888: a malformed voice frame of a decryptable call is a lost frame. It plays and records nothing, but it
+   takes its place in the call: its keystream bits and its count in the frame sequence go by, so each later frame is
+   decrypted with its own bits. The records after it are those of the same frames in the call played whole. Before, the
+   rejected frame took no keystream, so every later frame was decrypted with the bits of the one before it. NXDN's
+   published DES-OFB vectors, with one lost, still decrypt to their tone. */
+static int
+test_sdrtrunk_json_lost_frame_keeps_the_keystream_place(void) {
+    static const struct {
+        const char* label;
+        const char* head;
+        size_t digits;
+        size_t record;
+        int dmr_keys;
+    } k_cases[] = {
+        {"P25 Phase 1 v2 RC4",
+         "{\"version\":\"2\",\"protocol\":\"APCO25-PHASE1\",\"call_type\":\"GROUP\",\"to\":\"1\",\"from\":\"2\","
+         "\"encrypted\":\"true\",\"encryption_algorithm\":\"170\",\"encryption_key_id\":\"7\","
+         "\"encryption_mi\":\"0011223344556677\",\"frames\":[",
+         36, 12, 0},
+        {"P25 Phase 1 v1 RC4",
+         "{\"version\":\"1\",\"protocol\":\"APCO25-PHASE1\",\"call_type\":\"GROUP\",\"to\":\"1\",\"from\":\"2\","
+         "\"encrypted\":\"true\",\"encryption_algorithm\":\"170\",\"encryption_key_id\":\"7\","
+         "\"encryption_mi\":\"0011223344556677\",\"frames\":[",
+         36, 12, 0},
+        {"P25 Phase 2 RC4",
+         "{\"version\":\"2\",\"protocol\":\"APCO25-PHASE2\",\"call_type\":\"GROUP\",\"to\":\"1\",\"from\":\"2\","
+         "\"encrypted\":\"true\",\"encryption_algorithm\":\"170\",\"encryption_key_id\":\"7\","
+         "\"encryption_mi\":\"0011223344556677\",\"frames\":[",
+         18, 8, 0},
+        {"DMR RC4",
+         "{\"version\":\"2\",\"protocol\":\"DMR\",\"call_type\":\"GROUP\",\"to\":\"1\",\"from\":\"2\","
+         "\"encrypted\":\"true\",\"encryption_algorithm\":\"33\",\"encryption_key_id\":\"123\","
+         "\"encryption_mi\":\"001122334455667788\",\"frames\":[",
+         18, 8, 1},
+    };
+
+    int rc = 0;
+    for (size_t c = 0; c < sizeof k_cases / sizeof k_cases[0]; c++) {
+        static dsd_state state;
+        unsigned char whole[LOST_FRAME_COUNT * 12];
+        unsigned char lost[LOST_FRAME_COUNT * 12];
+        size_t whole_len = 0;
+        size_t lost_len = 0;
+        char json[1024];
+        char tag[160];
+        const size_t rec = k_cases[c].record;
+        for (int pass = 0; pass < 2; pass++) {
+            DSD_MEMSET(&state, 0, sizeof state);
+            if (k_cases[c].dmr_keys) {
+                seed_sdrtrunk_dmr_replay_keys(&state);
+            } else {
+                state.R = 0x0102030405ULL;
+            }
+            build_lost_frame_json(json, sizeof json, k_cases[c].head, k_cases[c].digits, pass ? LOST_FRAME_AT : -1);
+            DSD_SNPRINTF(tag, sizeof tag, "lost frame: %s%s", k_cases[c].label, pass ? ", one lost" : ", whole");
+            rc |= capture_sdrtrunk_replay_records(tag, json, &state, pass ? lost : whole, sizeof whole,
+                                                  pass ? &lost_len : &whole_len);
+            dsd_state_ext_free_all(&state);
+        }
+        DSD_SNPRINTF(tag, sizeof tag, "lost frame: %s: a record for each frame played", k_cases[c].label);
+        rc |= expect_true(tag, whole_len == LOST_FRAME_COUNT * rec && lost_len == (LOST_FRAME_COUNT - 1) * rec);
+        if (whole_len != LOST_FRAME_COUNT * rec || lost_len != (LOST_FRAME_COUNT - 1) * rec) {
+            DSD_FPRINTF(stderr, "  %s: %zu and %zu bytes\n", k_cases[c].label, whole_len, lost_len);
+            continue;
+        }
+        DSD_SNPRINTF(tag, sizeof tag, "lost frame: %s: the frames' keystreams differ", k_cases[c].label);
+        rc |= expect_true(tag, memcmp(whole + LOST_FRAME_AT * rec, whole + (LOST_FRAME_AT + 1) * rec, rec) != 0);
+        DSD_SNPRINTF(tag, sizeof tag, "lost frame: %s: the frame before it", k_cases[c].label);
+        rc |= expect_u8_bits(tag, lost, whole, LOST_FRAME_AT * rec);
+        DSD_SNPRINTF(tag, sizeof tag, "lost frame: %s: the frames after it, with their own bits", k_cases[c].label);
+        rc |= expect_u8_bits(tag, lost + LOST_FRAME_AT * rec, whole + (LOST_FRAME_AT + 1) * rec,
+                             (LOST_FRAME_COUNT - 1 - LOST_FRAME_AT) * rec);
+    }
+
+    dsd_state* nxdn = nxdn_replay_test_state(2);
+    if (!nxdn) {
+        return 1;
+    }
+    char json[8000];
+    size_t off = (size_t)DSD_SNPRINTF(json, sizeof json,
+                                      "{\"protocol\":\"NXDN\",\"version\":2,\"encrypted\":true,"
+                                      "\"encryption_algorithm\":2,\"encryption_key_id\":1,"
+                                      "\"encryption_mi\":\"ABCDEF1234567890\",\"frames\":[");
+    for (size_t i = 0; i < 32U && off < sizeof json; i++) {
+        off += (size_t)DSD_SNPRINTF(json + off, sizeof json - off, "%s{", i ? "," : "");
+        if (i % 4U == 0U) {
+            off += (size_t)DSD_SNPRINTF(json + off, sizeof json - off, "\"tag\":\"SACCH %u\",",
+                                        (unsigned)((i / 4U) % 4U + 1U));
+        }
+        off += (size_t)DSD_SNPRINTF(json + off, sizeof json - off, "\"hex\":\"%s\"}",
+                                    i == 5U ? "ZZZZZZZZZZZZZZZZZZ" : nxdn_des_ofb_frames[i]);
+    }
+    if (off < sizeof json) {
+        (void)DSD_SNPRINTF(json + off, sizeof json - off, "]}");
+    }
+    unsigned char records[32U * 8U];
+    size_t size = 0;
+    rc |= capture_sdrtrunk_replay_records("lost frame: NXDN DES-OFB", json, nxdn, records, sizeof records, &size);
+    rc |= expect_nxdn_tone_records(records, size, 31U);
+    dsd_state_ext_free_all(nxdn);
+    free(nxdn);
+    return rc;
+}
+
+/* Issue #888: Stop while an export is being read ends the read between two chunks of at most 1 MiB, and the part read
+   is dropped: nothing of the file plays. Before, the reader read the whole file (up to 64 MiB) before it looked at the
+   exit flag. */
+static int
+test_sdrtrunk_json_stop_during_the_read(void) {
+    FILE* in = tmpfile();
+    if (in == NULL) {
+        DSD_FPRINTF(stderr, "tmpfile failed: %s\n", strerror(errno));
+        return 1;
+    }
+    int rc = fputs("{\"protocol\":\"DMR\",\"version\":2,\"call_type\":\"GROUP\",\"to\":\"1234\",\"frames\":[", in) < 0;
+    static char spaces[4096];
+    DSD_MEMSET(spaces, ' ', sizeof spaces);
+    for (int i = 0; i < 3 * 256; i++) {
+        rc |= fwrite(spaces, 1, sizeof spaces, in) != sizeof spaces;
+    }
+    rc |= fputs("{\"hex\":\"3ABF032D9ADEE4CB50\"}]}", in) < 0;
+    rc |= fflush(in) != 0 || fseek(in, 4L, SEEK_SET) != 0;
+    static dsd_opts opts;
+    static dsd_state state;
+    static Event_History_I history[2];
+    DSD_MEMSET(&opts, 0, sizeof opts);
+    DSD_MEMSET(&state, 0, sizeof state);
+    DSD_MEMSET(history, 0, sizeof history);
+    opts.playfiles = 1;
+    state.event_history_s = history;
+    state.synctype = DSD_SYNC_NONE;
+    prepare_gain_stage(&state);
+    opts.mbe_in_f = in;
+    dsd_exitflag_store(1);
+    read_sdrtrunk_json_format(&opts, &state);
+    dsd_exitflag_store(0);
+    const long at = ftell(in);
+    rc |= expect_true("stop during the read: no more than the first MiB read", at >= 0 && at <= 0x100000L);
+    rc |= expect_int("stop during the read: nothing played", state.synctype, DSD_SYNC_NONE);
+    if (at < 0 || at > 0x100000L) {
+        DSD_FPRINTF(stderr, "  stop during the read: read to %ld\n", at);
+    }
+    opts.mbe_in_f = NULL;
+    (void)fclose(in);
+    dsd_state_ext_free_all(&state);
+    return rc;
+}
+
 /* An IMBE record as saveImbe4400Data() writes it: the error count and eleven packed bytes, LF, CR and Ctrl-Z among
  * them, as in the AMBE probe. */
 static const unsigned char kBinaryProbeImbe[12] = {0x0A, 0x0D, 0x0A, 0x1A, 0x0A, 0x00,
@@ -4712,6 +4882,8 @@ main(void) {
     rc |= test_sdrtrunk_json_encrypted_keystreams_write_voice_records();
     rc |= test_sdrtrunk_nxdn_published_voice_vectors();
     rc |= test_sdrtrunk_nxdn_missing_context_and_sacch_alignment();
+    rc |= test_sdrtrunk_json_lost_frame_keeps_the_keystream_place();
+    rc |= test_sdrtrunk_json_stop_during_the_read();
     rc |= test_sdrtrunk_dmr_capture_and_late_entry();
     rc |= test_sdrtrunk_json_tells_the_chain_each_frame();
     rc |= test_play_mbe_files_tell_the_chain_each_frame();

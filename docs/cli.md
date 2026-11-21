@@ -419,8 +419,10 @@ Windows console runs:
   FACCH-stolen voice within an RF frame cannot fully reconstruct that frame's keystream alignment.
   NXDN full-rate voice is not supported by this reader.
   An export is read whole before it plays, up to 64 MiB (hours of one call); a larger file is not played, with one
-  line in the log. A voice frame whose `hex` is not one SDRTrunk writes (18 hex digits, 36 for P25 Phase 1) is passed
-  over with a warning and plays nothing.
+  line in the log. Stop during the read ends it within a MiB, and nothing of the file plays. A voice frame whose `hex`
+  is not one SDRTrunk writes (18 hex digits, 36 for P25 Phase 1) is a lost frame, with a warning: it plays nothing,
+  but it keeps its place in the call, so the frames after it in an encrypted call still decrypt with their own
+  keystream.
   DMR AES-128/AES-256 exports use ALGID `0x24`/`0x25` and a 32-bit MI. For metadata-free DMR exports, use
   `-H '<key>' --dmr-force-algid 24` (or `25`); audio remains muted until a Golay/CRC-verified late-entry MI
   supplies the next superframe's context. For example:
@@ -436,9 +438,15 @@ Windows console runs:
   changed `from` leaves the recording with no talkgroup; after it, the earlier talkgroup stays). When a later record
   changes a talkgroup or radio ID, the recording is filed at that record's first frame `time` read after the change (on
   the decode clock when there is none, as when the record's `frames` come before its changed `to` or `from`), though it
-  starts with the earlier records' audio. Such a recording holds more than one call, so it is never exported to
-  rdio-scanner, whatever its talkgroup and stream settings: no sidecar, no upload, and one line in the log a run.
-  Only those SDRTrunk calls are exported to rdio-scanner. They carry
+  starts with the earlier records' audio.
+  A played file is exported to rdio-scanner only when it holds one call, every member its policies judge (`protocol`,
+  `call_type`, `to`, `from`) comes before its first voice frame, as in the files SDRTrunk writes, and its call is not
+  `stream=off` from its first voice frame on. Any other file is recorded as its record policy allows but never
+  exported, whatever its talkgroup and stream settings: no sidecar, no upload, and one line in the log a run. A file of
+  several records is never exported, since the later records' members come after the earlier records' frames. When a
+  member read after the frames turns the call's recording off (`record=off`), the audio already written is discarded,
+  not published.
+  The SDRTrunk calls that are exported carry
   no frequency or access code, so one with no talkgroup uses `--rdio-unknown-talkgroup` ([Digital calls with no
   talkgroup in rdio-scanner](#digital-calls-with-no-talkgroup-in-rdio-scanner)). A raw `.imb`, `.amb` or `.dmb` file
   names no call: it is recorded, one recording per file, and never exported.

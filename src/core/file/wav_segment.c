@@ -62,7 +62,8 @@ enum { WAV_SEGMENT_SLOTS = 16 };
 typedef struct {
     const SNDFILE* file;
     int failed;
-    int local; /* published, never exported (wav_segment_keep_local()) */
+    int local;   /* published, never exported (wav_segment_keep_local()) */
+    int discard; /* removed at the close, never published (wav_segment_discard_at_close()) */
 } wav_segment;
 
 static wav_segment s_wav_segments[WAV_SEGMENT_SLOTS];
@@ -105,6 +106,7 @@ wav_segment_forget_locked(wav_segment* segment) {
     segment->file = NULL;
     segment->failed = 0;
     segment->local = 0;
+    segment->discard = 0;
 }
 
 void
@@ -154,29 +156,55 @@ wav_segment_close(SNDFILE* file, int* failed) {
     return sf_close(file);
 }
 
-void
-wav_segment_keep_local(const SNDFILE* file) {
+/* Set one of @p file's close marks: 0 local, 1 discard. */
+static void
+wav_segment_mark(const SNDFILE* file, int discard) {
     if (file == NULL) {
         return;
     }
     wav_segment_lock();
     wav_segment* segment = wav_segment_find_locked(file);
     if (segment != NULL) {
-        segment->local = 1;
+        if (discard) {
+            segment->discard = 1;
+        } else {
+            segment->local = 1;
+        }
     }
     dsd_mutex_unlock(&s_wav_segment_mu);
 }
 
-int
-wav_segment_kept_local(const SNDFILE* file) {
+/* One of @p file's close marks: 0 local, 1 discard; 0 for a handle that is no per-call segment. */
+static int
+wav_segment_marked(const SNDFILE* file, int discard) {
     if (file == NULL) {
         return 0;
     }
     wav_segment_lock();
     const wav_segment* segment = wav_segment_find_locked(file);
-    const int local = segment != NULL && segment->local;
+    const int marked = segment != NULL && (discard ? segment->discard : segment->local);
     dsd_mutex_unlock(&s_wav_segment_mu);
-    return local;
+    return marked;
+}
+
+void
+wav_segment_keep_local(const SNDFILE* file) {
+    wav_segment_mark(file, 0);
+}
+
+int
+wav_segment_kept_local(const SNDFILE* file) {
+    return wav_segment_marked(file, 0);
+}
+
+void
+wav_segment_discard_at_close(const SNDFILE* file) {
+    wav_segment_mark(file, 1);
+}
+
+int
+wav_segment_discarded(const SNDFILE* file) {
+    return wav_segment_marked(file, 1);
 }
 
 /* -1 for a handle that is no per-call segment, else whether the segment is latched. */

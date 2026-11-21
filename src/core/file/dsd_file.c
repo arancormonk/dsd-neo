@@ -69,6 +69,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
+#include "../audio/dsd_audio_gate_internal.h"
 #include "../mbe_result_context.h"
 #include "../util/call_state_internal.h"
 #include "dsd-neo/core/dibit.h"
@@ -1369,7 +1370,8 @@ typedef struct {
     int64_t duration_ms;
     int rate;
     int failed;
-    int local; /* never exported (wav_segment_keep_local()) */
+    int local;   /* never exported (wav_segment_keep_local()) */
+    int discard; /* never published (wav_segment_discard_at_close()) */
 } wav_close_journal;
 
 /* The id a journal record names: none for a segment whose temp name gave none. */
@@ -1378,8 +1380,8 @@ wav_close_journal_id(const wav_close_journal* journal) {
     return journal->id[0] ? journal->id : NULL;
 }
 
-/* Close the segment, reading what its journal records name first. 0 once closed (or with nothing to close); -1 when
-   the close failed, journaled and reported, the file keeping its temp name. */
+/* Close the segment, reading what its journal records name and its close marks first. 0 once closed (or with nothing
+   to close); -1 when the close failed, journaled and reported, the file keeping its temp name. */
 static int
 wav_close_segment(SNDFILE* wav_file, const char* wav_out_filename, const char* dir, wav_close_journal* journal) {
     if (journal->on) {
@@ -1387,6 +1389,7 @@ wav_close_segment(SNDFILE* wav_file, const char* wav_out_filename, const char* d
         wav_segment_length(wav_file, &journal->duration_ms, &journal->rate);
     }
     journal->local = wav_segment_kept_local(wav_file);
+    journal->discard = wav_segment_discarded(wav_file);
     if (wav_file == NULL || wav_segment_close(wav_file, &journal->failed) == 0) {
         return 0;
     }
@@ -1402,9 +1405,10 @@ wav_close_segment(SNDFILE* wav_file, const char* wav_out_filename, const char* d
     return -1;
 }
 
-/* An empty segment (the header alone) at @p path: removed, and journaled as discarded. */
+/* A segment not kept at @p path, an empty one (the header alone) or one marked to be discarded
+   (wav_segment_discard_at_close()): removed, and journaled as discarded. */
 static void
-wav_close_discard_empty(const char* path, const wav_close_journal* journal) {
+wav_close_discard(const char* path, const wav_close_journal* journal) {
     (void)dsd_remove_file(path);
     if (journal->on) {
         wav_journal_discard(wav_close_journal_id(journal));
@@ -1458,14 +1462,15 @@ wav_close_note_rdio_skip(const dsd_opts* opts, const Event_History* row, int all
     }
 }
 
-/* A published recording kept local (wav_segment_keep_local()): a played SDRTrunk file in which the call-state layer
-   opened more than one call holds audio of each under the last one's row, so no row's export verdict covers it (issue
-   #888). Not exported under any number; said once a run while rdio export is on. */
+/* A published recording kept local (wav_segment_keep_local()): a played SDRTrunk file whose row's export verdict does
+   not cover all its audio (issue #888). It held more than one call (audio of each under the last one's row), named a
+   call ID after its first voice frame (audio written before the verdicts judged that ID), or its stream verdict
+   blocked while its audio was written. Not exported under any number; said once a run while rdio export is on. */
 static void
 wav_close_note_kept_local(const dsd_opts* opts) {
     if (opts->rdio_mode != DSD_RDIO_MODE_OFF && wav_recording_played_file_rdio_skip_first_this_run()) {
-        LOG_WARN("Rdio export: a played file that holds more than one call is recorded as one file, which is not "
-                 "exported\n");
+        LOG_WARN("Rdio export: a played file is recorded but not exported when it holds more than one call, names a "
+                 "call ID after its voice frames, or its call has stream=off\n");
     }
 }
 
@@ -1493,6 +1498,18 @@ wav_close_export_rdio(const dsd_opts* opts, const Event_History_I* event_struct,
     return rdio_queued;
 }
 
+/* A published recording's export (wav_close_export_rdio()), unless it was kept local (wav_close_note_kept_local()). */
+static int
+wav_close_export_unless_local(const dsd_opts* opts, const wav_close_journal* journal,
+                              const Event_History_I* event_struct, const Event_History* event_item, const char* path,
+                              time_t opened, time_t started, int export_mode) {
+    if (journal->local) {
+        wav_close_note_kept_local(opts);
+        return 0;
+    }
+    return wav_close_export_rdio(opts, event_struct, event_item, path, opened, started, export_mode);
+}
+
 /* @p analog_name names an NFM recording that has no row (its teardown, issue #668); NULL for every other close. */
 static SNDFILE*
 wav_close_and_publish(SNDFILE* wav_file, const dsd_opts* opts, const char* wav_out_filename, const char* dir,
@@ -1510,6 +1527,11 @@ wav_close_and_publish(SNDFILE* wav_file, const dsd_opts* opts, const char* wav_o
         return NULL;
     }
 
+    if (journal.discard) {
+        wav_close_discard(wav_out_filename, &journal);
+        return NULL;
+    }
+
     const Event_History* event_item = wav_rename_get_event_item(event_struct);
     wav_rename_metadata metadata;
     DSD_MEMSET(&metadata, 0, sizeof(metadata));
@@ -1521,7 +1543,7 @@ wav_close_and_publish(SNDFILE* wav_file, const dsd_opts* opts, const char* wav_o
 
     const int64_t size = dsd_wav_file_size_or_negative(wav_out_filename);
     if (size == 44) {
-        wav_close_discard_empty(wav_out_filename, &journal);
+        wav_close_discard(wav_out_filename, &journal);
         wav_file = NULL;
         return wav_file;
     }
@@ -1540,19 +1562,15 @@ wav_close_and_publish(SNDFILE* wav_file, const dsd_opts* opts, const char* wav_o
 
     const int64_t final_size = dsd_wav_file_size_or_negative(new_filename);
     if (final_size == 44) {
-        wav_close_discard_empty(new_filename, &journal);
+        wav_close_discard(new_filename, &journal);
         wav_file = NULL;
         return wav_file;
     }
 
     int rdio_queued = 0;
     if (export_mode != DSD_WAV_EXPORT_NONE && opts && final_size > 44) {
-        if (journal.local) {
-            wav_close_note_kept_local(opts);
-        } else {
-            rdio_queued =
-                wav_close_export_rdio(opts, event_struct, event_item, new_filename, opened, started, export_mode);
-        }
+        rdio_queued = wav_close_export_unless_local(opts, &journal, event_struct, event_item, new_filename, opened,
+                                                    started, export_mode);
     }
     if (journal.on) {
         wav_journal_published(journal.id, new_filename, dir, event_struct,
@@ -2207,9 +2225,41 @@ store_sdrtrunk_process_result(dsd_state* state, int ret, const mbe_process_resul
     mbe_formatProcessResult(state->err_str, sizeof(state->err_str), result);
 }
 
+/* The frame's DMR late-entry MI fragment @p fragment, stored at its place in the superframe during a late entry. */
+static void
+ambe2_store_late_entry_fragment(dsd_state* state, uint8_t dmra_le, const int* ambe2_counter, uint8_t fragment) {
+    if (dmra_le != 0 && ambe2_counter != NULL && *ambe2_counter >= 0 && *ambe2_counter < 18) {
+        state->currentslot = 0;
+        state->late_entry_mi_fragment[0][(*ambe2_counter / 3) + 1][*ambe2_counter % 3] = fragment;
+    }
+}
+
+/* The late-entry MI fragment an AMBE frame carries: the four bits of its C3 word's first nibble. */
+static uint8_t
+ambe2_late_entry_fragment_of(const char (*ambe_fr)[24]) {
+    uint8_t c3[24];
+    for (int i = 0; i < 24; i++) {
+        c3[i] = (uint8_t)ambe_fr[3][i];
+    }
+    return (uint8_t)convert_bits_into_output(c3, 4);
+}
+
+/* A lost AMBE frame (a malformed "hex", sdrtrunk_json_frame_is_valid()): nothing is decoded, played or recorded, but
+   it takes its keystream bits, as a decoded frame does, and its DMR late-entry MI fragment is unknown (0, which the
+   MI's CRC then judges). Returns the keystream position after it. */
+static uint16_t
+ambe2_lost_frame(dsd_state* state, uint16_t ks_idx, uint8_t dmra, uint8_t dmra_le, const int* ambe2_counter) {
+    ambe2_store_late_entry_fragment(state, dmra_le, ambe2_counter, 0U);
+    return (uint16_t)(ks_idx + 49U + (dmra == 1 ? 7U : 0U));
+}
+
+/* @p ambe_str NULL: a lost frame (ambe2_lost_frame()). */
 static uint16_t
 ambe2_str_to_decode(dsd_opts* opts, dsd_state* state, const char* ambe_str, const uint8_t* ks, uint16_t ks_idx,
                     uint8_t dmra, uint8_t dmra_le, const int* ambe2_counter, uint8_t is_enc, uint8_t ks_available) {
+    if (ambe_str == NULL) {
+        return ambe2_lost_frame(state, ks_idx, dmra, dmra_le, ambe2_counter);
+    }
     char ambe_fr[4][24];
     DSD_MEMSET(ambe_fr, 0, sizeof(ambe_fr));
     uint8_t dibits[DSD_AMBE_2450_DIBITS];
@@ -2220,16 +2270,9 @@ ambe2_str_to_decode(dsd_opts* opts, dsd_state* state, const char* ambe_str, cons
         ambe_fr[map->low_row][map->low_col] = (char)(dibits[i] & 1U);
     }
 
-    if (dmra_le != 0 && ambe2_counter != NULL && *ambe2_counter >= 0 && *ambe2_counter < 18) {
-        uint8_t c3[24];
-        DSD_MEMSET(c3, 0, sizeof(c3));
-        for (int i = 0; i < 24; i++) {
-            c3[i] = (uint8_t)ambe_fr[3][i];
-        }
-
-        state->currentslot = 0;
-        uint8_t c3_hex = (uint8_t)convert_bits_into_output(c3, 4);
-        state->late_entry_mi_fragment[0][(*ambe2_counter / 3) + 1][*ambe2_counter % 3] = c3_hex;
+    if (dmra_le != 0) {
+        ambe2_store_late_entry_fragment(state, dmra_le, ambe2_counter,
+                                        ambe2_late_entry_fragment_of((const char (*)[24])ambe_fr));
     }
 
     char ambe_d[49];
@@ -2276,9 +2319,14 @@ ambe2_str_to_decode(dsd_opts* opts, dsd_state* state, const char* ambe_str, cons
     return ks_idx; //return current ks_idx
 }
 
+/* @p imbe_str NULL: a lost frame (a malformed "hex"), which decodes, plays and records nothing but takes its 88
+   keystream bits, as a decoded frame does. */
 static uint16_t
 imbe_str_to_decode(dsd_opts* opts, dsd_state* state, const char* imbe_str, const uint8_t* ks, uint16_t ks_idx,
                    uint8_t is_enc, uint8_t ks_available) {
+    if (imbe_str == NULL) {
+        return (uint16_t)(ks_idx + 88U);
+    }
     char imbe_fr[8][23];
     DSD_MEMSET(imbe_fr, 0, sizeof(imbe_fr));
     uint8_t dibits[72];
@@ -2344,6 +2392,12 @@ typedef struct {
     // The calls the call-state layer opened while the file was read. Past one, the file's recording holds audio of
     // more than one call under the last one's row, and is kept local (issue #888).
     uint8_t calls_opened;
+    // Sticky for the file (issue #888, fail closed): a voice frame was read (played or lost); the recording is kept
+    // local (an ID its policies judge was read after the first voice frame, or the stream verdict blocked at it); the
+    // recording is discarded (such a late ID turned the record verdict off).
+    uint8_t frame_seen;
+    uint8_t keep_local;
+    uint8_t discard;
     uint8_t alg_id;
     uint8_t alg_seen;
     uint16_t key_id;
@@ -2486,6 +2540,9 @@ sdrtrunk_json_context_init(sdrtrunk_json_context* ctx) {
     ctx->dmra_le = 0;
     ctx->time_stamped = 0;
     ctx->calls_opened = 0;
+    ctx->frame_seen = 0;
+    ctx->keep_local = 0;
+    ctx->discard = 0;
     ctx->alg_id = 0;
     ctx->alg_seen = 0;
     ctx->key_id = 0;
@@ -3164,11 +3221,36 @@ sdrtrunk_json_decode_nxdn_hex(dsd_opts* opts, dsd_state* state, sdrtrunk_json_co
 /* Whether @p value is a voice frame as SDRTrunk writes one (BinaryMessage.toHexString()): the frame's bits as hex
    digits, 36 for a P25 Phase 1 IMBE frame (144 bits), 18 for an AMBE frame (72 bits: DMR, P25 Phase 2, NXDN EHR). The
    decoders read that many digits, so any other value (empty, short, long, or with a character that is no hex digit)
-   is passed over and plays nothing. */
+   is a lost frame: it plays nothing but keeps its place (sdrtrunk_json_handle_hex()). */
 static int
 sdrtrunk_json_frame_is_valid(const sdrtrunk_json_context* ctx, const char* value) {
     const size_t want = ctx->protocol == 1 ? 36U : 18U;
     return strspn(value, "0123456789ABCDEFabcdef") == want && value[want] == '\0';
+}
+
+/* The file's first voice frame (issue #888, fail closed). Every ID the policies judge is read by now in a file in
+   SDRTrunk's own order, and a later one keeps the recording local (sdrtrunk_json_id_after_frames()), so the call's
+   stream verdict here is the one for all its audio: the policy does not change while a file is read. When it blocks,
+   the recording is kept local whatever the verdict at its close. */
+static void
+sdrtrunk_json_first_frame(const dsd_opts* opts, const dsd_state* state, sdrtrunk_json_context* ctx) {
+    ctx->frame_seen = 1U;
+    dsd_call_snapshot call;
+    if (dsd_call_state_get(state, 0U, &call) > 0 && call.phase == DSD_CALL_PHASE_ACTIVE
+        && !dsd_audio_stream_export_allowed(opts, state, &call, 0U, NULL)) {
+        ctx->keep_local = 1U;
+    }
+}
+
+/* An ID the policies judge (protocol, call type, to, from) read after the file's first voice frame: audio was written
+   before the verdicts judged it, so the recording is kept local, and when the verdict with it turns recording off, the
+   audio already written is discarded (issue #888, fail closed). */
+static void
+sdrtrunk_json_id_after_frames(const dsd_opts* opts, const dsd_state* state, sdrtrunk_json_context* ctx) {
+    ctx->keep_local = 1U;
+    if (!sdrtrunk_json_record_allowed(opts, state)) {
+        ctx->discard = 1U;
+    }
 }
 
 static int
@@ -3182,9 +3264,14 @@ sdrtrunk_json_handle_hex(dsd_opts* opts, dsd_state* state, const char* token, sd
     if (!value || ctx->protocol < 1 || ctx->protocol > 3) {
         return 1;
     }
+    if (ctx->frame_seen == 0U) {
+        sdrtrunk_json_first_frame(opts, state, ctx);
+    }
+    /* A malformed frame is a lost one: it plays nothing, but it keeps its place in the frame count and the keystream,
+       so the frames after it decrypt with their own bits. */
     if (!sdrtrunk_json_frame_is_valid(ctx, value)) {
         LOG_WARN("Skipping malformed SDRTrunk MBE voice frame\n");
-        return 1;
+        value = NULL;
     }
     if (ctx->protocol == 1) {
         sdrtrunk_json_decode_imbe_hex(opts, state, ctx, value);
@@ -3268,6 +3355,19 @@ sdrtrunk_json_handle_time(const char* token, sdrtrunk_json_cursor* str_saveptr, 
     return 1;
 }
 
+/* The staged row's stamp cleared, so a call with no valid "time" is filed on the decode clock. */
+static void
+sdrtrunk_json_clear_staged_stamp(dsd_state* state) {
+    if (state->event_history_s == NULL) {
+        return;
+    }
+    dsd_event_history_transaction transaction;
+    dsd_event_history_transaction_begin(state, &transaction);
+    state->event_history_s[0].Event_History_Items[0].event_time = 0;
+    dsd_event_history_mark_dirty(&state->event_history_s[0]);
+    dsd_event_history_transaction_end(&transaction);
+}
+
 /* The call-state layer opened another call while the file is read, the first being the file's own. Its row takes its
    own first frame's stamp: the latch and the staged row's stamp go, so a call with no valid "time" is filed on the
    decode clock, not at the last call's. From the second, the recording holds more than one call's audio under the
@@ -3281,13 +3381,7 @@ sdrtrunk_json_call_opened(const dsd_opts* opts, dsd_state* state, sdrtrunk_json_
     if (ctx->calls_opened < 2U) {
         return;
     }
-    if (state->event_history_s != NULL) {
-        dsd_event_history_transaction transaction;
-        dsd_event_history_transaction_begin(state, &transaction);
-        state->event_history_s[0].Event_History_Items[0].event_time = 0;
-        dsd_event_history_mark_dirty(&state->event_history_s[0]);
-        dsd_event_history_transaction_end(&transaction);
-    }
+    sdrtrunk_json_clear_staged_stamp(state);
     wav_segment_keep_local(opts->wav_out_f);
 }
 
@@ -3323,8 +3417,8 @@ static void
 sdrtrunk_json_process_token(dsd_opts* opts, dsd_state* state, sdrtrunk_json_context* ctx, const char* token,
                             sdrtrunk_json_cursor* str_saveptr) {
     (void)sdrtrunk_json_handle_version(opts, token, str_saveptr, ctx);
-    (void)sdrtrunk_json_handle_protocol(state, token, str_saveptr, ctx);
-    (void)sdrtrunk_json_handle_call_type(token, str_saveptr, ctx);
+    int id_key = sdrtrunk_json_handle_protocol(state, token, str_saveptr, ctx);
+    id_key |= sdrtrunk_json_handle_call_type(token, str_saveptr, ctx);
     (void)sdrtrunk_json_handle_encrypted(token, str_saveptr, ctx);
     if (ctx->protocol == 3) {
         sdrtrunk_json_apply_forced_nxdn(state, ctx);
@@ -3332,7 +3426,7 @@ sdrtrunk_json_process_token(dsd_opts* opts, dsd_state* state, sdrtrunk_json_cont
         sdrtrunk_json_apply_forced_algid(state, ctx);
     }
     sdrtrunk_json_apply_dmr_tg_key_map(opts, state, ctx);
-    (void)sdrtrunk_json_handle_to_from(ctx, token, str_saveptr);
+    id_key |= sdrtrunk_json_handle_to_from(ctx, token, str_saveptr);
     (void)sdrtrunk_json_handle_alg(opts, token, str_saveptr, ctx);
     (void)sdrtrunk_json_handle_key_id(opts, token, str_saveptr, ctx);
     (void)sdrtrunk_json_handle_mi(opts, state, token, str_saveptr, ctx);
@@ -3341,12 +3435,38 @@ sdrtrunk_json_process_token(dsd_opts* opts, dsd_state* state, sdrtrunk_json_cont
     (void)sdrtrunk_json_handle_time(token, str_saveptr, state, ctx);
     sdrtrunk_json_handle_frames(token, str_saveptr);
     sdrtrunk_json_publish_call(opts, state, ctx);
+    if (id_key && ctx->frame_seen != 0U) {
+        sdrtrunk_json_id_after_frames(opts, state, ctx);
+    }
+}
+
+enum { SDRTRUNK_JSON_READ_CHUNK = 0x100000 };
+
+/* Reads up to @p want bytes into @p dst, one SDRTRUNK_JSON_READ_CHUNK at most at a time, Stop looked at between
+   chunks. The bytes read; *@p stopped set when the exit flag ended the read. */
+static size_t
+sdrtrunk_json_read_chunks(FILE* f, char* dst, size_t want, int* stopped) {
+    size_t got = 0;
+    while (got < want) {
+        const size_t n = want - got < SDRTRUNK_JSON_READ_CHUNK ? want - got : SDRTRUNK_JSON_READ_CHUNK;
+        const size_t r = fread(dst + got, 1, n, f);
+        got += r;
+        if (r < n) {
+            break;
+        }
+        if (dsd_exitflag_load() == 1) {
+            *stopped = 1;
+            break;
+        }
+    }
+    return got;
 }
 
 /* The whole SDRTrunk export at @p f, read from its start through EOF into one NUL-terminated buffer the caller frees,
    its length in *@p out_size; NULL (with one log line) when it cannot be read or is larger than
-   DSD_SDRTRUNK_JSON_MAX_BYTES. A file is one call (issue #888), so it is parsed with one state: a long call's text is
-   not cut at a buffer's end and read again from the start. */
+   DSD_SDRTRUNK_JSON_MAX_BYTES, and NULL (silently, the part read dropped) when Stop comes during the read, which looks
+   at the exit flag after each MiB. A file is one call (issue #888), so it is parsed with one state: a long call's text
+   is not cut at a buffer's end and read again from the start. */
 static char*
 sdrtrunk_json_read_whole(FILE* f, const char* name, size_t* out_size) {
     // openMbeInFile() probes a four-byte binary cookie even for JSON exports.
@@ -3355,9 +3475,10 @@ sdrtrunk_json_read_whole(FILE* f, const char* name, size_t* out_size) {
         LOG_ERROR("Failed to rewind MBE JSON input\n");
         return NULL;
     }
-    size_t cap = 0x100000;
+    size_t cap = SDRTRUNK_JSON_READ_CHUNK;
     size_t size = 0;
     char* text = NULL;
+    int stopped = 0;
     for (;;) {
         char* grown = (char*)realloc(text, cap + 1U);
         if (grown == NULL) {
@@ -3366,11 +3487,15 @@ sdrtrunk_json_read_whole(FILE* f, const char* name, size_t* out_size) {
             return NULL;
         }
         text = grown;
-        size += fread(text + size, 1, cap - size, f);
-        if (size < cap || cap >= DSD_SDRTRUNK_JSON_MAX_BYTES) {
+        size += sdrtrunk_json_read_chunks(f, text + size, cap - size, &stopped);
+        if (stopped || size < cap || cap >= DSD_SDRTRUNK_JSON_MAX_BYTES) {
             break;
         }
         cap = cap * 2U < DSD_SDRTRUNK_JSON_MAX_BYTES ? cap * 2U : DSD_SDRTRUNK_JSON_MAX_BYTES;
+    }
+    if (stopped) {
+        free(text);
+        return NULL;
     }
     if (size == cap && fgetc(f) != EOF) {
         free(text);
@@ -3401,6 +3526,11 @@ read_sdrtrunk_json_format(dsd_opts* opts, dsd_state* state) {
     sdrtrunk_json_reset_event_state(state);
     sdrtrunk_json_reset_crypto_state(state);
     dsd_event_sync_slot(opts, state, 0);
+    /* A stamp staged before the file (an earlier file's frame, with no call to commit it) is not this file's; a row
+       still waiting on its verdict keeps its own. */
+    if (dsd_call_state_pending_row_epoch(state, 0U) == 0U) {
+        sdrtrunk_json_clear_staged_stamp(state);
+    }
 
     /* Members are read by name: a token that is no key (a value no handler took) is passed over. */
     sdrtrunk_json_cursor cursor;
@@ -3422,6 +3552,12 @@ read_sdrtrunk_json_format(dsd_opts* opts, dsd_state* state) {
 
     free(source_str);
     source_str = NULL;
+    /* The marks go on the segment holding the file's audio, before any close publishes it. */
+    if (ctx.discard != 0U) {
+        wav_segment_discard_at_close(opts->wav_out_f);
+    } else if (ctx.keep_local != 0U) {
+        wav_segment_keep_local(opts->wav_out_f);
+    }
     dsd_event_sync_slot(opts, state, 0);
     if (opts->mbe_out_f != NULL) {
         closeMbeOutFile(opts, state);

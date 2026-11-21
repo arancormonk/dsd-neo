@@ -2049,9 +2049,15 @@ suite runs under this compiler.
   is read whole (`sdrtrunk_json_read_whole()`, a buffer grown to at most `DSD_SDRTRUNK_JSON_MAX_BYTES`, 64 MiB, in
   `file_io.h`) and parsed with one state, once: `playMbeFiles()` calls the reader once a file, so a long call is not cut
   at a buffer's end and replayed from the start, and a larger file is refused with one log line before anything of it
-  plays or is published. A frame's `hex` must be the frame as SDRTrunk writes it (`sdrtrunk_json_frame_is_valid()`:
-  36 hex digits for P25 Phase 1, 18 for the AMBE protocols), since the decoders read that many; any other value is
-  passed over with a warning and plays nothing. The row's
+  plays or is published. The read takes at most 1 MiB at a time (`sdrtrunk_json_read_chunks()`) and looks at the exit
+  flag between chunks: on Stop the part read is dropped and nothing plays. A frame's `hex` must be the frame as SDRTrunk
+  writes it (`sdrtrunk_json_frame_is_valid()`: 36 hex digits for P25 Phase 1, 18 for the AMBE protocols), since the
+  decoders read that many; any other value is a lost frame, with a warning: `imbe_str_to_decode()` /
+  `ambe2_str_to_decode()` take a NULL frame, decode, play and record nothing, and return the keystream position past
+  its bits (88, or 49 plus DMR's 7 spare), while the callers count it in the frame sequence as usual (IMBE frame
+  counter, AMBE superframe counter, NXDN session position), so the frames after it decrypt with their own keystream; a
+  lost frame's DMR late-entry MI fragment is 0, which the MI's CRC then judges (`CORE_MBE_FILE_IO`
+  `test_sdrtrunk_json_lost_frame_keeps_the_keystream_place`). The row's
   `event_time` is the recording's start, from its call's first frame `time` that parses (issue #888 B21, below). A
   played file is one call, as SDRTrunk writes them (issue #888): the event layer is synced at the file's start and end
   only, never per frame or per record, and the reader observes the call on each key with `DSD_CALL_BOUNDARY_CONTINUE`. A
@@ -2083,7 +2089,25 @@ suite runs under this compiler.
   that one value. A frame's `time` is matched by its exact key (not `timestamp`) and its value read whole; only decimal
   digits are a time (a sign or a space, which `strtoull()` would take, is not), then strict-parsed. A record whose
   `frames` come before its changed `to` or `from` has no frame `time` after the change, so it is filed on the decode
-  clock; such a file holds several calls and is kept local anyway.
+  clock; such a file holds several calls and is kept local anyway. The reader clears the staged row's `event_time`
+  after its start sync, so a stamp an earlier file staged with no call to commit it (an export of a protocol the reader
+  does not play) never files this file's call (`test_playback_next_file_takes_no_earlier_stamp`).
+  Export is fail closed (issue #888): a played file's recording is exported only when (a) every member the record
+  and stream policies judge (`protocol`, `call_type`, `to`, `from`: the call snapshot's protocol, kind, target
+  and source) was read before the file's first voice frame, played or lost; (b) the stream verdict did not block at that
+  first frame (`sdrtrunk_json_first_frame()`, `dsd_audio_stream_export_allowed()` on the slot's active call), which by
+  (a) is the verdict for all its audio, since the policy does not change while a file is read (the decoder thread is in
+  the reader and drains no commands); and (c) it holds one call (above). The context keeps three sticky flags for the
+  file, set where the reader already passes: `frame_seen` at the first frame, `keep_local` there or when
+  `sdrtrunk_json_process_token()` sees an ID key after it (`sdrtrunk_json_id_after_frames()`), and `discard` when, with
+  that late ID observed, the record verdict (`sdrtrunk_json_record_allowed()`) is off: the audio written before it was
+  recorded under a verdict that did not judge it. At the file's end, before the closing sync, the slot's open segment is
+  marked: `wav_segment_discard_at_close()` (its close removes it and journals `discard`, never publishes it) or
+  `wav_segment_keep_local()` (published, never exported, one line a run). SDRTrunk writes every ID before `frames`
+  (`MBECallSequence`: `protocol, version, call_type, from, to, encrypted, system, site, frames`), so its own exports
+  export as before; a file of several records is always kept local, its later records' IDs coming after the earlier
+  frames (`CORE_WAV_JOURNAL` `test_playback_identity_after_the_frames_stays_local`). The static WAV and MBE captures are
+  written as before: neither is exported, and neither can be taken back in part.
 - API note: the high-pass filter in `<dsd-neo/core/audio_filters.h>` is `dsd_hpf()`. It was renamed from
   `hpf()` because codec2 exports a symbol of that name and Android links codec2 statically, which turns the
   duplicate into a link error. It is the only filter in that header that is prefixed: codec2 exports none of
