@@ -4025,6 +4025,45 @@ test_tetra_first_call_drops_carried_samples(void) {
     return rc;
 }
 
+/* Anonymous speech before signalling proves the carrier leaves the slot's speech decoder confirmed, with its history.
+   When the admitted call's first burst is a half slot, its stolen first frame is not concealed from that earlier
+   speech: the admission starts the speech over, so the burst plays its own speech frame alone (240 samples, 160 out and
+   80 carried) and nothing concealed. Before, the stolen frame was concealed from the earlier speech and led the call's
+   recording by 240 samples (30 ms). */
+static int
+test_tetra_first_call_conceals_nothing_before_it(void) {
+    rig r;
+    int rc = rig_open(&r, "dsdneo_journal_tetra_conceal");
+    tetra_first_rig(&r, TETRA_FIRST_ANON);
+    submit(&r, DSD_APP_CMD_WAV_START);
+    tetra_first_speech(&r, 5);
+    const tetra_state_t* ts = tetra_st(r.state);
+    rc |= expect_true("tetra conceal: the earlier speech confirmed the decoder", ts->voice.confirmed != 0U);
+    tetra_first_admit(&r, TETRA_FIRST_ANON);
+    const uint32_t concealed = ts->voice.concealed;
+    tetra_first_half_speech(&r, 1);
+    rc |= expect_true("tetra conceal: the half slot admitted the call", call_epoch(&r) != 0U);
+    rc |=
+        expect_int("tetra conceal: the stolen frame is not concealed", (long long)(ts->voice.concealed - concealed), 0);
+    rc |= expect_int("tetra conceal: the speech frame alone, half a frame carried", (long long)ts->voice.carry_len, 80);
+    tetra_first_speech(&r, 1);
+    clock_at(g_now_s + 2);
+    end_call(&r, DSD_CALL_END_TERMINATOR);
+    tetra_first_files files;
+    DSD_MEMSET(&files, 0, sizeof files);
+    files.dir = r.dir;
+    files.prefill_frames = 5 * TETRA_FIRST_BURST_FRAMES;
+    files.call_frames = 160 + TETRA_FIRST_BURST_FRAMES;
+    (void)dsd_dir_list(r.dir, tetra_first_files_cb, &files);
+    rc |= expect_int("tetra conceal: the earlier speech is published once", files.prefill, 1);
+    rc |= expect_int("tetra conceal: the call's recording is its own speech", files.call, 1);
+    rc |= expect_int("tetra conceal: no other recording", files.other, 0);
+    r.opts->rdio_mode = DSD_RDIO_MODE_OFF;
+    r.opts->rdio_unknown_talkgroup = 0;
+    rig_close(&r);
+    return rc;
+}
+
 /* An identity-less TETRA call (anonymous, admitted once signalling proved the carrier) fades: its row is held for the
    reacquisition window, the drop verdict pending, and its audio stays in slot 1's file. Speech then admits a new call
    on the slot: the admission closes the held call's audio as its own recording, pending on its epoch and unexported
@@ -4724,6 +4763,7 @@ main(void) {
     rc |= test_edacs_same_lid_group_after_all_call();
     rc |= test_tetra_first_call_leaves_unowned_audio();
     rc |= test_tetra_first_call_drops_carried_samples();
+    rc |= test_tetra_first_call_conceals_nothing_before_it();
     rc |= test_tetra_held_call_then_readmitted();
     rc |= test_playback_files_record_apart();
     rc |= test_playback_export_starts_at_its_first_frame();
