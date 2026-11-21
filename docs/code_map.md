@@ -1722,7 +1722,8 @@ Tests: `tests/engine/test_engine_trunk_scan.c` (`ENGINE_TRUNK_SCAN`) and
   - Hard link (issue #888): `dsd_hard_link()` gives a file a second name, `link()` on POSIX, `CreateHardLinkW/A()` on
     Windows (one call for the pair, as `dsd_win32_path_wide()` picks), never over an existing name (EEXIST) and never
     a copy; a file system without links fails and the caller copies (the rdio-scanner exporter's private inputs).
-    Tests: `PLATFORM_FILE_COMPAT` (also in the non-ASCII folders)
+    Tests: `PLATFORM_FILE_COMPAT` (also in the non-ASCII folders; the success cases only where the test folder's file
+    system takes hard links, asked of `link()` itself, `dir_takes_hard_links()`; the refusals everywhere)
   - No-follow existence probe (issue #828): `dsd_path_exists_nofollow()` answers for the name itself (`lstat()`,
     `GetFileAttributes()`): 1 for any type, a dangling link included; 0 only for a confirmed absence (ENOENT,
     ENOTDIR); -1 with errno when it cannot tell (EACCES on an unsearchable parent), which a caller that must not lose

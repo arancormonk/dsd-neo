@@ -1039,8 +1039,29 @@ expect_rename_noreplace_in(const char* dir) {
     return ok ? 0 : 1;
 }
 
+/* Whether the filesystem holding @p dir ("" for the working folder) takes hard links, asked of the platform itself:
+   some (FAT-like, some FUSE) do not, and the fallbacks then claim the name or copy instead. NTFS, the Windows test
+   filesystem, does. */
+static int
+dir_takes_hard_links(const char* dir) {
+#if DSD_PLATFORM_WIN_NATIVE
+    (void)dir;
+    return 1;
+#else
+    char a[512];
+    char b[512];
+    DSD_SNPRINTF(a, sizeof a, "%s%slink_probe.a", dir, dir[0] ? "/" : "");
+    DSD_SNPRINTF(b, sizeof b, "%s%slink_probe.b", dir, dir[0] ? "/" : "");
+    int ok = write_text_file(a, "p") == 0 && link(a, b) == 0;
+    (void)remove(b);
+    (void)remove(a);
+    return ok;
+#endif
+}
+
 /* Issue #888: a hard link names the same file under a second name, never over an existing one (EEXIST, both files as
-   they were), and keeps every byte once the first name is removed. */
+   they were), and keeps every byte once the first name is removed. Where the filesystem takes none (the exporter then copies),
+   only the refusals are checked. */
 static int
 expect_hard_link_in(const char* dir) {
     char from[512];
@@ -1062,9 +1083,15 @@ expect_hard_link_in(const char* dir) {
     errno = 0;
     ok = ok && dsd_hard_link(from, taken) == -1 && errno == EEXIST;
     ok = ok && file_text_is(from, "from") && file_text_is(taken, "taken");
-    ok = ok && dsd_hard_link(from, to) == 0 && file_text_is(to, "from");
-    ok = ok && dsd_path_same_file(from, to, &same) == 0 && same == 1;
-    ok = ok && dsd_remove_file(from) == 0 && file_text_is(to, "from");
+    const int links = dir_takes_hard_links(dir);
+    if (links) {
+        ok = ok && dsd_hard_link(from, to) == 0 && file_text_is(to, "from");
+        ok = ok && dsd_path_same_file(from, to, &same) == 0 && same == 1;
+    } else {
+        ok = ok && dsd_hard_link(from, to) == -1 && !file_exists(to);
+    }
+    ok = ok && dsd_remove_file(from) == 0;
+    ok = ok && (links ? file_text_is(to, "from") : !file_exists(to));
     errno = 0;
     ok = ok && dsd_hard_link(from, taken) == -1 && errno == ENOENT;
     (void)dsd_remove_file(from);
@@ -1608,20 +1635,6 @@ expect_move_helpers_refuse_other_volume(void) {
     (void)remove(from);
     (void)remove(to);
     return ok ? 0 : 1;
-}
-
-/* Whether the filesystem holding @p dir takes hard links: some (FAT-like, some FUSE) do not, and the fallback then
-   claims the name instead. */
-static int
-dir_takes_hard_links(const char* dir) {
-    char a[256];
-    char b[256];
-    DSD_SNPRINTF(a, sizeof a, "%s/link_probe.a", dir);
-    DSD_SNPRINTF(b, sizeof b, "%s/link_probe.b", dir);
-    int ok = write_text_file(a, "p") == 0 && link(a, b) == 0;
-    (void)remove(b);
-    (void)remove(a);
-    return ok;
 }
 
 #endif
