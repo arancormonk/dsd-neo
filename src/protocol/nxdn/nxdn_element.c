@@ -3863,11 +3863,59 @@ nxdn_scch_named_kind(const dsd_call_snapshot* call, uint32_t target_id, dsd_call
     return call->kind;
 }
 
+/* Whether an SCCH naming @p target_id (its text @p target_text, "pp-iiii") names another call than @p call: another
+ * target, by its prefix as by its ID (issue #903). A call no target named yet takes the message's. */
+static int
+nxdn_scch_names_new_call(const dsd_call_snapshot* call, uint16_t target_id, const char* target_text) {
+    if (target_id == 0U || call->ota_target_id == 0U) {
+        return 0;
+    }
+    return call->ota_target_id != target_id
+           || (call->target_text[0] != '\0' && strcmp(call->target_text, target_text) != 0);
+}
+
+/* What the live call @p call carries into an SCCH's observation: its talker (unless the message names one) and its
+ * service metadata, only while the message names the same call (@p new_call 0). */
+static void
+nxdn_scch_carry_call(dsd_call_observation* observation, const dsd_call_snapshot* call, int new_call) {
+    if (new_call) {
+        return;
+    }
+    if (observation->ota_source_id == 0U) {
+        observation->ota_source_id = call->ota_source_id;
+        DSD_MEMCPY(observation->source_text, call->source_text, sizeof(observation->source_text));
+    }
+    observation->service_options = call->service_options;
+    observation->emergency = call->emergency;
+    observation->priority = call->priority;
+    observation->has_service_metadata = call->has_service_metadata;
+}
+
+/* The crypto and media the live call @p call had, again on the epoch an SCCH reopened (dsd_call_state_observe() > 0):
+ * the crypto only for the same call (@p new_call 0), the media whichever call the carrier's voice is. */
+static void
+nxdn_scch_carry_crypto_media(dsd_state* state, const dsd_call_snapshot* call, int new_call) {
+    if (!new_call) {
+        const dsd_call_crypto_update crypto = {
+            .classification = call->crypto,
+            .algid = call->algid,
+            .kid = call->kid,
+            .mi = call->mi,
+            .audio_permitted = call->audio_permitted,
+        };
+        (void)dsd_call_state_update_crypto(state, 0U, DSD_SYNC_NXDN_POS, &crypto);
+    }
+    if (call->media_active != 0U) {
+        (void)dsd_call_state_update_media(state, 0U, 1, 0.0);
+    }
+}
+
 /* The live call takes an SCCH's source or target (0: keep the call's), named under @p prefix (the message's Home
  * Repeater / Prefix, "pp-iiii", nxdn_typed_id_text()), and @p kind when the message classifies it
  * (a busy message's G/U bit; DSD_CALL_KIND_UNKNOWN keeps the call's for the same target, and gives a new target no
  * class, nxdn_scch_named_kind()), so a later unclassified message for the same target reads the class this one
- * verified, never a previous call's. */
+ * verified, never a previous call's. A message naming another target is another call: it carries none of the previous
+ * call's talker, emergency or crypto (nxdn_scch_names_new_call()). */
 static void
 nxdn_scch_enrich_identity(dsd_state* state, uint16_t source_id, uint16_t target_id, uint8_t prefix,
                           dsd_call_kind kind) {
@@ -3876,45 +3924,31 @@ nxdn_scch_enrich_identity(dsd_state* state, uint16_t source_id, uint16_t target_
         || !DSD_SYNC_IS_NXDN(call.protocol)) {
         return;
     }
+    char target_text[DSD_CALL_IDENTITY_TEXT_SIZE];
+    nxdn_typed_id_text(target_text, sizeof(target_text), prefix, target_id);
+    const int new_call = nxdn_scch_names_new_call(&call, target_id, target_text);
     dsd_call_observation observation = {
         .protocol = call.protocol,
         .slot = 0U,
         .kind = nxdn_scch_named_kind(&call, target_id, kind),
         .ota_target_id = target_id != 0U ? target_id : call.ota_target_id,
         .policy_target_id = target_id != 0U ? target_id : call.policy_target_id,
-        .ota_source_id = source_id != 0U ? source_id : call.ota_source_id,
+        .ota_source_id = source_id,
         .channel = call.channel,
         .frequency_hz = call.frequency_hz,
-        .service_options = call.service_options,
-        .emergency = call.emergency,
-        .priority = call.priority,
-        .has_service_metadata = call.has_service_metadata,
     };
-    if (source_id == 0U) {
-        DSD_MEMCPY(observation.source_text, call.source_text, sizeof(observation.source_text));
-    } else {
-        nxdn_typed_id_text(observation.source_text, sizeof(observation.source_text), prefix, source_id);
-    }
+    nxdn_typed_id_text(observation.source_text, sizeof(observation.source_text), prefix, source_id);
+    nxdn_scch_carry_call(&observation, &call, new_call);
     if (target_id == 0U) {
         DSD_MEMCPY(observation.target_text, call.target_text, sizeof(observation.target_text));
     } else {
-        nxdn_typed_id_text(observation.target_text, sizeof(observation.target_text), prefix, target_id);
+        DSD_MEMCPY(observation.target_text, target_text, sizeof(observation.target_text));
     }
     DSD_MEMCPY(observation.route_text[0], call.route_text[0], sizeof(observation.route_text[0]));
     DSD_MEMCPY(observation.route_text[1], call.route_text[1], sizeof(observation.route_text[1]));
 
     if (dsd_call_state_observe(state, &observation, DSD_CALL_BOUNDARY_CONTINUE) > 0) {
-        const dsd_call_crypto_update crypto = {
-            .classification = call.crypto,
-            .algid = call.algid,
-            .kid = call.kid,
-            .mi = call.mi,
-            .audio_permitted = call.audio_permitted,
-        };
-        (void)dsd_call_state_update_crypto(state, 0U, DSD_SYNC_NXDN_POS, &crypto);
-        if (call.media_active != 0U) {
-            (void)dsd_call_state_update_media(state, 0U, 1, 0.0);
-        }
+        nxdn_scch_carry_crypto_media(state, &call, new_call);
     }
 }
 

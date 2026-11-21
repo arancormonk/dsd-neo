@@ -933,18 +933,16 @@ nxdn_run_scch_identity_context_case(void) {
     rc |= nxdn_expect(call.ota_target_id == 1500U && call.policy_target_id == 1500U, context.name, "target-fragment",
                       "target updated");
     rc |= nxdn_expect(call.epoch != previous_epoch, context.name, "target-fragment", "replacement epoch started");
-    rc |= nxdn_expect(call.ota_source_id == 1100U, context.name, "target-fragment", "source preserved");
+    /* Another target is another call (issue #903): it takes the carrier and its media, never the previous call's
+       talker, service metadata or crypto. */
+    rc |= nxdn_expect(call.ota_source_id == 0U && call.source_text[0] == '\0', context.name, "target-fragment",
+                      "no talker carried");
     rc |= nxdn_expect(call.channel == 7U && call.frequency_hz == 938012500L, context.name, "target-fragment",
                       "route preserved");
-    rc |= nxdn_expect(call.service_options == 0x85U && call.has_service_metadata == 1U && call.emergency == 1U
-                          && call.priority == 5U,
-                      context.name, "target-fragment", "service metadata preserved");
-    rc |= nxdn_expect(call.crypto == DSD_CALL_CRYPTO_ENCRYPTED_PENDING && call.algid == 3U && call.kid == 42U
-                          && call.mi == 0x12345678U && call.audio_permitted == 0U,
-                      context.name, "target-fragment", "crypto preserved");
+    rc |= nxdn_expect(call.has_service_metadata == 0U && call.emergency == 0U, context.name, "target-fragment",
+                      "no service metadata carried");
+    rc |= nxdn_expect(call.crypto == DSD_CALL_CRYPTO_UNKNOWN, context.name, "target-fragment", "no crypto carried");
     rc |= nxdn_expect(call.media_active == 1U, context.name, "target-fragment", "media state preserved");
-    rc |= nxdn_expect(strcmp(call.source_text, "SOURCE 1100") == 0, context.name, "target-fragment",
-                      "counterpart text preserved");
     rc |=
         nxdn_expect(strcmp(call.route_text[0], "RAN 7") == 0, context.name, "target-fragment", "route text preserved");
     previous_epoch = call.epoch;
@@ -956,15 +954,9 @@ nxdn_run_scch_identity_context_case(void) {
     rc |= nxdn_expect(call.ota_target_id == 1500U && call.policy_target_id == 1500U, context.name, "source-fragment",
                       "target preserved");
     rc |= nxdn_expect(call.ota_source_id == 1200U, context.name, "source-fragment", "source updated");
-    rc |= nxdn_expect(call.epoch != previous_epoch, context.name, "source-fragment", "replacement epoch started");
+    rc |= nxdn_expect(call.epoch == previous_epoch, context.name, "source-fragment", "the talker fills the call in");
     rc |= nxdn_expect(call.channel == 7U && call.frequency_hz == 938012500L, context.name, "source-fragment",
                       "route preserved");
-    rc |= nxdn_expect(call.service_options == 0x85U && call.has_service_metadata == 1U && call.emergency == 1U
-                          && call.priority == 5U,
-                      context.name, "source-fragment", "service metadata preserved");
-    rc |= nxdn_expect(call.crypto == DSD_CALL_CRYPTO_ENCRYPTED_PENDING && call.algid == 3U && call.kid == 42U
-                          && call.mi == 0x12345678U && call.audio_permitted == 0U,
-                      context.name, "source-fragment", "crypto preserved");
     rc |= nxdn_expect(call.media_active == 1U, context.name, "source-fragment", "media state preserved");
     return rc;
 }
@@ -2877,6 +2869,61 @@ type_d_prefix_call_allowed(const dsd_call_snapshot* call) {
     return decision.tune_allowed ? 1 : 0;
 }
 
+/* An INFO2 naming another target, 07-0005 after an emergency DES call 03-0005 from 03-0100, is another call (issue
+ * #903): it carries neither that call's talker, its emergency flag nor its crypto. An INFO3 for the same call still
+ * keeps them. */
+static int
+nxdn_run_type_d_new_target_drops_old_call_case(void) {
+    static const char* const name = "type-d-new-target-drops-old-call";
+    const nxdn_case busy = {
+        "type-d-new-target", NXDN_MATRIX_TYPE_D, 0U, 0U, 0U, 0U, 0U, 0, 0, 0, 6U, 3U, 5U, 938012500L,
+    };
+    nxdn_setup_fixture(&busy);
+    DSD_SNPRINTF(g_state.nxdn_location_category, sizeof(g_state.nxdn_location_category), "%s", "Type-D");
+    g_opts.trunk_is_tuned = 1;
+    g_opts.trunk_tune_enc_calls = 1; /* --enc-follow: the encrypted call stays */
+    g_state.trunk_vc_freq[0] = g_state.trunk_vc_freq[1] = busy.expected_freq;
+    nxdn_install_hooks();
+    int rc = 0;
+
+    for (int i = 0; i < 2; i++) {
+        at_seconds(9500.0 + (0.1 * (double)i));
+        voice_live();
+        uint8_t bits[96];
+        DSD_MEMSET(bits, 0, sizeof(bits));
+        set_message_type(bits, 0x01U);
+        write_bits_u32(bits, 8U, 0x80U, 8U); /* emergency */
+        write_bits_u32(bits, 16U, 1U, 3U);
+        write_bits_u32(bits, 24U, 0x1864U, 16U);
+        write_bits_u32(bits, 40U, 0x1805U, 16U);
+        write_bits_u32(bits, 56U, 2U, 2U); /* DES */
+        write_bits_u32(bits, 58U, 5U, 6U);
+        g_state.nxdn_confirmed = 1;
+        NXDN_Elements_Content_decode(&g_opts, &g_state, bits, sizeof(bits));
+    }
+    dsd_call_snapshot call;
+    rc |= nxdn_expect(dsd_call_state_get(&g_state, 0U, &call) == 1 && call.emergency == 1U && call.ota_source_id == 100U
+                          && call.crypto != DSD_CALL_CRYPTO_UNKNOWN && call.crypto != DSD_CALL_CRYPTO_CLEAR,
+                      name, "vcall", "an encrypted emergency call 03-0005 from 03-0100");
+
+    at_seconds(9500.3);
+    voice_live();
+    send_scch_prefixed(1U, 6U, 3U, 100U); /* INFO3: the same call's talker */
+    rc |= nxdn_expect(dsd_call_state_get(&g_state, 0U, &call) == 1 && call.emergency == 1U
+                          && call.crypto != DSD_CALL_CRYPTO_UNKNOWN,
+                      name, "info3", "the same call keeps its emergency and crypto");
+
+    at_seconds(9500.4);
+    voice_live();
+    send_scch_prefixed(2U, 6U, 7U, 5U); /* INFO2: 07-0005 */
+    rc |= nxdn_expect(dsd_call_state_get(&g_state, 0U, &call) == 1 && strcmp(call.target_text, "07-0005") == 0, name,
+                      "info2", "the call is 07-0005");
+    rc |= nxdn_expect(call.ota_source_id == 0U && call.source_text[0] == '\0', name, "info2", "no talker carried");
+    rc |= nxdn_expect(call.emergency == 0U && call.has_service_metadata == 0U, name, "info2", "no emergency carried");
+    rc |= nxdn_expect(call.crypto == DSD_CALL_CRYPTO_UNKNOWN, name, "info2", "no crypto carried");
+    return rc;
+}
+
 /* A Type-D unit or group ID is unique only under its Home Repeater / Prefix (NXDN TS 1-E §6.6.6-§6.6.8). The call keeps
  * the 11-bit IDs every policy, lockout, skip, hold and key consumer reads, and names them "pp-iiii" (issue #903 D7):
  * group 5 under prefixes 3 and 7 are two calls by their text, judged by the one row "5" (a list allowing 5 and blocking
@@ -3083,6 +3130,7 @@ main(void) {
     rc |= nxdn_run_type_d_abandoned_grant_fade_case();
     rc |= nxdn_run_type_d_refollow_during_fade_case();
     rc |= nxdn_run_type_d_prefix_identity_case();
+    rc |= nxdn_run_type_d_new_target_drops_old_call_case();
 #endif
 
     dsd_trunk_tuning_hooks_set((dsd_trunk_tuning_hooks){0});
