@@ -10,10 +10,10 @@
 #include <dsd-neo/runtime/airspy_config.h>
 #include <dsd-neo/runtime/analog_channel.h>
 #include <dsd-neo/runtime/freq_parse.h>
+#include <dsd-neo/runtime/input_spec.h>
 #include <dsd-neo/runtime/log.h>
 #include <dsd-neo/runtime/squelch.h>
 #include <limits.h>
-#include <math.h>
 #include <stddef.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -182,23 +182,14 @@ parse_airspy_bandwidth(const char* text, airspy_tuning* tuning) {
     tuning->bw = airspy_dsp_bandwidth(bw);
 }
 
-static void
+/* The squelch field as --squelch reads it (issue #899 B14: a linear power over 300 was refused, and a field it cannot
+   read kept the squelch with a warning): one it refuses refuses the spec. An empty field leaves the squelch. */
+static int
 parse_airspy_squelch(const char* text, airspy_tuning* tuning) {
-    double sql = 0.0;
-    /* A level is a dB figure; anything beyond this span is a typo rather than a level. */
-    if (dsd_parse_double_strict(text, -300.0, 300.0, &sql) == 0 && isfinite(sql)) {
-        tuning->squelch = dsd_squelch_setting_of_level(dsd_squelch_level_from_sql(sql));
-        return;
+    if (text[0] == '\0') {
+        return 0;
     }
-    /* Otherwise one of the squelch grammar's words: off, auto[+N], noise[+N]. A number the grammar takes here is one
-       out of that span. */
-    dsd_squelch_setting setting;
-    if (dsd_squelch_setting_parse(text, &setting, NULL, 0U) != 0
-        || (setting.mode == DSD_SQUELCH_MODE_LEVEL && !dsd_squelch_setting_is_off(&setting))) {
-        LOG_WARN("Invalid Airspy squelch '%s'; keeping previous/default value.\n", text);
-        return;
-    }
-    tuning->squelch = setting;
+    return dsd_spec_squelch_field_parse("airspy:", text, &tuning->squelch);
 }
 
 static void
@@ -239,8 +230,8 @@ parse_airspy_tuning(char* text, airspy_tuning* tuning) {
     if (count > 1) {
         parse_airspy_bandwidth(fields[1], tuning);
     }
-    if (count > 2) {
-        parse_airspy_squelch(fields[2], tuning);
+    if (count > 2 && parse_airspy_squelch(fields[2], tuning) != 0) {
+        return -1;
     }
     if (count > 3) {
         parse_airspy_volume(fields[3], tuning);

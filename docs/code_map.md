@@ -5192,8 +5192,12 @@ suite runs under this compiler.
     `dsd_squelch_mode_is_dynamic()` -- the AUTO margin or NOISE quieting in whole dB 3..30, the LEVEL threshold in
     mean-power units) and its one grammar, `off | 0 | <negative dB> | <positive linear> | auto[+N] | noise[+N]`
     (`dsd_squelch_setting_parse()`, `dsd_squelch_setting_format()`), which `--squelch`, the `sql` field of every radio
-    spec (`dsd_squelch_spec_field_apply()`, which leaves the setting alone once `--squelch` set it:
-    `dsd_opts::rtl_squelch_cli_set`) and the terminal prompt share; scan rows (`scan_options.c`, `--squelch` sharing
+    spec and the terminal prompt share. A spec's field is read by `dsd_spec_squelch_field_parse()` (`input_spec.c`) before the spec sets
+    anything (`rtl:`/`rtltcp:` in `dsd_rtl_input_spec_apply()`, `soapy:` once its frequency place holds a frequency,
+    however many fields follow, Airspy's third tuning field): one `--squelch` would refuse is logged naming the field
+    and refuses the spec (issue #899 B14), an empty one keeps its place and the setting, and
+    `dsd_squelch_spec_field_apply()` stores it unless `--squelch` set the squelch (`dsd_opts::rtl_squelch_cli_set`).
+    The Soapy tail reads its fields in place (`dsd_spec_split_fields()`), an empty first field being no device args; scan rows (`scan_options.c`, `--squelch` sharing
     `--squelch-db`'s option bit) take whole dB, `off`, `auto[+N]` on analog rows and `noise[+N]` on nfm rows only.
     `dsd_opts` holds it as `rtl_squelch_mode`, `rtl_squelch_margin_db` and `rtl_squelch_level` (the level kept beneath
     a dynamic setting, for a switch back), the config as `[input] rtl_sql_mode`, `rtl_sql_margin_db` and `rtl_sql`.

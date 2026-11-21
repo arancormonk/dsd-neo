@@ -144,10 +144,11 @@ dsd_squelch_setting dsd_squelch_setting_of_opts(const dsd_opts* opts);
 void dsd_squelch_setting_store(dsd_opts* opts, const dsd_squelch_setting* setting);
 
 /**
- * @brief Apply an input spec's `sql` field (`rtl:`, `rtltcp:`, `soapy:`, Airspy) in the squelch grammar.
+ * @brief Apply an input spec's `sql` field in the squelch grammar, which dsd_spec_squelch_field_parse()
+ * (`<dsd-neo/runtime/input_spec.h>`) has read.
  *
  * @return 0 when it set the squelch, 1 when `--squelch` already did (the command line wins), -1 when the field does not
- * read as a setting (nothing changes: a field that is not a squelch says nothing about it).
+ * read as a setting (nothing changes; the spec's reader refuses such a field first).
  */
 int dsd_squelch_spec_field_apply(dsd_opts* opts, const char* text);
 

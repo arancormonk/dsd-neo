@@ -11910,6 +11910,22 @@ add_test(
         DSD_NEO_CLI_SMOKE_MODE=print-config-rtltcp-bad-port -P
         ${CMAKE_CURRENT_SOURCE_DIR}/cmake/RunCliSmoke.cmake
 )
+# Issue #899 B14: a spec's squelch field --squelch would refuse fails the export.
+foreach(_mode IN ITEMS rtl-bad-squelch soapy-bad-squelch)
+    string(TOUPPER "${_mode}" _mode_upper)
+    string(REPLACE "-" "_" _mode_upper "${_mode_upper}")
+    add_test(
+        NAME RUNTIME_BOOTSTRAP_PRINT_CONFIG_${_mode_upper}
+        COMMAND
+            ${CMAKE_COMMAND} -D DSD_NEO_CLI=$<TARGET_FILE:dsd-neo> -D
+            DSD_NEO_CLI_SMOKE_MODE=print-config-${_mode} -P
+            ${CMAKE_CURRENT_SOURCE_DIR}/cmake/RunCliSmoke.cmake
+    )
+    set_tests_properties(
+        RUNTIME_BOOTSTRAP_PRINT_CONFIG_${_mode_upper}
+        PROPERTIES WORKING_DIRECTORY "${_DSD_BOOTSTRAP_FIXTURE_DIR}"
+    )
+endforeach()
 # --no-config does nothing since config loading became opt-in; it says so.
 add_test(
     NAME RUNTIME_CLI_NO_CONFIG_NOTICE

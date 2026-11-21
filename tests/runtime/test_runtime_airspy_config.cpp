@@ -154,9 +154,9 @@ test_forgiving_tail() {
         int bandwidth;
         int volume;
         const char* warning_field;
-    } cases[] = {{"airspy:851.375M:25:0:2", 48, 2, "bandwidth"},     {"airspy:851.375M:12:0:0", 12, 0, ""},
-                 {"airspy:851.375M:24:-55.5:9", 24, 3, "volume"},    {"airspy:851.375M:24:bad:-1", 24, 0, "volume"},
-                 {"airspy:851.375M:extra:bad:bad", 48, 0, "volume"}, {"airspy:851.375M:24:nan:2", 24, 2, "squelch"}};
+    } cases[] = {{"airspy:851.375M:25:0:2", 48, 2, "bandwidth"},  {"airspy:851.375M:12:0:0", 12, 0, ""},
+                 {"airspy:851.375M:24:-55.5:9", 24, 3, "volume"}, {"airspy:851.375M:24::-1", 24, 0, "volume"},
+                 {"airspy:851.375M:extra::bad", 48, 0, "volume"}, {"airspy:851.375M:24::2", 24, 2, ""}};
 
     for (const auto& c : cases) {
         DSD_SNPRINTF(opts.audio_in_dev, sizeof opts.audio_in_dev, "%s", c.spec);
@@ -166,10 +166,29 @@ test_forgiving_tail() {
         CHECK(opts.rtlsdr_center_freq == 851375000 && opts.rtl_dsp_bw_khz == c.bandwidth
               && opts.rtl_volume_multiplier == c.volume);
         CHECK(strstr(last_warning, c.warning_field) != NULL);
-        if (strstr(c.spec, ":bad:") || strstr(c.spec, ":nan:")) {
-            CHECK(fabs(opts.rtl_squelch_level - old_sql) < 1e-12);
+        /* An empty squelch field leaves the squelch as it was. */
+        if (strstr(c.spec, "::")) {
+            CHECK(fabs(opts.rtl_squelch_level - old_sql) < 1e-12 && strstr(last_warning, "squelch") == NULL);
         }
     }
+
+    /* Issue #899 B14: the squelch field is no part of the forgiving tail: one --squelch refuses fails the spec, naming
+       the field, as on rtl:, rtltcp: and soapy: (it was skipped with a warning), and the spec changes nothing. */
+    for (const char* spec : {"airspy:851.375M:24:bad:2", "airspy:851.375M:24:nan:2", "airspy:851.375M:24:auto+31:2",
+                             "airspy:851.375M:extra:bad:bad"}) {
+        opts.rtl_squelch_mode = DSD_SQUELCH_MODE_NOISE;
+        opts.rtl_squelch_margin_db = 12;
+        opts.rtl_volume_multiplier = 1;
+        opts.rtlsdr_center_freq = 155340000U;
+        DSD_SNPRINTF(opts.audio_in_dev, sizeof opts.audio_in_dev, "%s", spec);
+        last_error[0] = '\0';
+        CHECK(dsd_normalize_airspy_input_spec(&opts) != 0);
+        CHECK(strstr(last_error, "squelch field") != NULL);
+        CHECK(strcmp(opts.audio_in_dev, spec) == 0 && opts.rtlsdr_center_freq == 155340000U
+              && opts.rtl_volume_multiplier == 1 && opts.rtl_squelch_mode == DSD_SQUELCH_MODE_NOISE
+              && opts.rtl_squelch_margin_db == 12);
+    }
+    opts.rtl_squelch_mode = DSD_SQUELCH_MODE_LEVEL;
 }
 
 /* Issue #806 BUG-4: --validate-config and the startup's config apply agree on an Airspy at a 72 kHz DSP bandwidth
@@ -257,7 +276,7 @@ main(int argc, char** argv) {
           && dsd_squelch_is_off(opts.rtl_squelch_level));
 
     /* The squelch field takes the squelch grammar's words too (issue #518 follow-up): auto[+N] keeps the level for a
-       switch back, off is off, a number out of the dB span still warns, and --squelch wins over the field. */
+       switch back, off is off, and --squelch wins over the field. */
     opts.rtl_squelch_level = 1e-6;
     DSD_SNPRINTF(opts.audio_in_dev, sizeof opts.audio_in_dev, "%s", "airspy:851.375M:24:auto+6:2");
     CHECK(dsd_normalize_airspy_input_spec(&opts) == 0 && opts.rtl_squelch_mode == DSD_SQUELCH_MODE_AUTO
@@ -265,10 +284,18 @@ main(int argc, char** argv) {
     DSD_SNPRINTF(opts.audio_in_dev, sizeof opts.audio_in_dev, "%s", "airspy:851.375M:24:off:2");
     CHECK(dsd_normalize_airspy_input_spec(&opts) == 0 && opts.rtl_squelch_mode == DSD_SQUELCH_MODE_LEVEL
           && dsd_squelch_is_off(opts.rtl_squelch_level));
-    last_warning[0] = '\0';
-    DSD_SNPRINTF(opts.audio_in_dev, sizeof opts.audio_in_dev, "%s", "airspy:851.375M:24:500:2");
-    CHECK(dsd_normalize_airspy_input_spec(&opts) == 0 && strstr(last_warning, "squelch") != NULL
-          && dsd_squelch_is_off(opts.rtl_squelch_level));
+    /* Issue #899 B14: a positive number is a linear mean power, as --squelch reads it (301 and up were refused). */
+    for (double linear : {301.0, 500.0}) {
+        last_warning[0] = '\0';
+        DSD_SNPRINTF(opts.audio_in_dev, sizeof opts.audio_in_dev, "airspy:851.375M:24:%.0f:2", linear);
+        CHECK(dsd_normalize_airspy_input_spec(&opts) == 0 && last_warning[0] == '\0'
+              && opts.rtl_squelch_mode == DSD_SQUELCH_MODE_LEVEL && fabs(opts.rtl_squelch_level - linear) < 1e-9);
+    }
+    DSD_SNPRINTF(opts.audio_in_dev, sizeof opts.audio_in_dev, "%s", "airspy:851.375M:24:-65.5:2");
+    CHECK(dsd_normalize_airspy_input_spec(&opts) == 0
+          && fabs(opts.rtl_squelch_level - dsd_squelch_level_from_sql(-65.5)) < 1e-15);
+    DSD_SNPRINTF(opts.audio_in_dev, sizeof opts.audio_in_dev, "%s", "airspy:851.375M:24:off:2");
+    CHECK(dsd_normalize_airspy_input_spec(&opts) == 0 && dsd_squelch_is_off(opts.rtl_squelch_level));
     opts.rtl_squelch_cli_set = 1;
     DSD_SNPRINTF(opts.audio_in_dev, sizeof opts.audio_in_dev, "%s", "airspy:851.375M:24:auto:2");
     CHECK(dsd_normalize_airspy_input_spec(&opts) == 0 && opts.rtl_squelch_mode == DSD_SQUELCH_MODE_LEVEL);

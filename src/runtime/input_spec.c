@@ -6,7 +6,6 @@
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/parse.h>
 #include <dsd-neo/core/power.h>
-#include <dsd-neo/platform/posix_compat.h>
 #include <dsd-neo/runtime/analog_channel.h>
 #include <dsd-neo/runtime/freq_parse.h>
 #include <dsd-neo/runtime/input_spec.h>
@@ -21,6 +20,17 @@
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/safe_api.h"
 #include "freq_parse_internal.h"
+
+int
+dsd_spec_squelch_field_parse(const char* input, const char* text, dsd_squelch_setting* out) {
+    char why[96];
+    if (dsd_squelch_setting_parse(text, out, why, sizeof why) == 0) {
+        return 0;
+    }
+    /* The field is the user's own squelch text, which no key shares a spec place with; the reason never repeats it. */
+    LOG_ERROR("Invalid squelch field \"%s\" in the %s input: %s.\n", text ? text : "", input ? input : "radio", why);
+    return -1;
+}
 
 static int
 looks_like_soapy_kv_args(const char* tok) {
@@ -119,6 +129,9 @@ restore_opaque_soapy_args(dsd_opts* opts, const char* raw_tail) {
 
 enum { SOFTY_TOK_MAX = 16 };
 
+/* The tail's fields, each in its place, empty ones included (dsd_spec_split_fields(), as every other spec reads its
+   fields: skipping an empty one read every later field one place early). @p tail_copy keeps the tail as it was. At most
+   SOFTY_TOK_MAX are stored; *out_count is how many the tail has, which can be more. */
 static int
 tokenize_soapy_tail(const char* raw_tail, char* tail_copy, size_t tail_copy_size, char* scratch, size_t scratch_size,
                     char* tok[SOFTY_TOK_MAX], size_t* out_count) {
@@ -128,29 +141,50 @@ tokenize_soapy_tail(const char* raw_tail, char* tail_copy, size_t tail_copy_size
 
     DSD_SNPRINTF(tail_copy, tail_copy_size, "%s", raw_tail);
     tail_copy[tail_copy_size - 1] = '\0';
-    DSD_SNPRINTF(scratch, scratch_size, "%s", raw_tail);
-    scratch[scratch_size - 1] = '\0';
-
-    size_t n = 0;
-    char* saveptr = NULL;
-    char* p = dsd_strtok_r(scratch, ":", &saveptr);
-    while (p != NULL && n < SOFTY_TOK_MAX) {
-        tok[n++] = p;
-        p = dsd_strtok_r(NULL, ":", &saveptr);
-    }
-    if (p != NULL) {
+    const int count = dsd_spec_split_fields(tail_copy, scratch, scratch_size, tok, SOFTY_TOK_MAX);
+    if (count < 0) {
         return -1;
     }
-
-    *out_count = n;
+    *out_count = (size_t)count;
     return 0;
 }
 
-enum { SOAPY_HEAD_FREQ_OUT_OF_RANGE = -2 };
+/* Whether every stored field is empty ("soapy::"): the default device, as "soapy:" is. */
+static int
+soapy_fields_all_empty(char* tok[SOFTY_TOK_MAX], size_t n) {
+    for (size_t i = 0; i < n; i++) {
+        if (tok[i][0] != '\0') {
+            return 0;
+        }
+    }
+    return 1;
+}
 
-/* Reads the optional device args and the frequency. Returns 0 when they parse; SOAPY_HEAD_FREQ_OUT_OF_RANGE, with
-   *out_idx at the frequency token, when that place holds a suffixed number out of range; and -1 when the head is not
-   shorthand (opaque args). */
+enum { SOAPY_HEAD_FREQ_OUT_OF_RANGE = -2, SOAPY_HEAD_FREQ_LATE = -3 };
+
+/* Why the frequency place @p idx of the @p n stored fields holds no frequency: SOAPY_HEAD_FREQ_OUT_OF_RANGE for a
+   suffixed number out of range, SOAPY_HEAD_FREQ_LATE when the place is empty and the field after it is a suffixed
+   number (*out_idx at that number), else -1 (opaque args). A K, M or G number is never device args, so one after an
+   empty frequency place (`driver=x::851M`, which skipping empty fields once read as tuning) is a frequency one place
+   late. */
+static int
+soapy_head_not_a_frequency(char* tok[SOFTY_TOK_MAX], size_t n, size_t idx, size_t* out_idx) {
+    if (is_suffixed_freq_token(tok[idx])) {
+        *out_idx = idx;
+        return SOAPY_HEAD_FREQ_OUT_OF_RANGE;
+    }
+    if (tok[idx][0] == '\0' && idx + 1U < n && is_suffixed_freq_token(tok[idx + 1U])) {
+        *out_idx = idx + 1U;
+        return SOAPY_HEAD_FREQ_LATE;
+    }
+    return -1;
+}
+
+/* Reads the optional device args and the frequency from the @p n stored fields. Returns 0 when they parse;
+   SOAPY_HEAD_FREQ_OUT_OF_RANGE, with *out_idx at the frequency token, when that place holds a suffixed number out of
+   range; SOAPY_HEAD_FREQ_LATE, with *out_idx at it, when the frequency place is empty and the field after it holds a
+   suffixed number; and -1 when the head is not shorthand (opaque args). An empty first field is a device-args place
+   left empty (`soapy::154.43M`): *out_arg_tokens counts only args that are there. */
 static int
 parse_soapy_head_tokens(char* tok[SOFTY_TOK_MAX], size_t n, size_t* out_arg_tokens, size_t* out_idx,
                         uint32_t* out_freq_hz) {
@@ -163,6 +197,8 @@ parse_soapy_head_tokens(char* tok[SOFTY_TOK_MAX], size_t n, size_t* out_arg_toke
     if (looks_like_soapy_kv_args(tok[0])) {
         arg_tokens = 1;
         idx = 1;
+    } else if (tok[0][0] == '\0') {
+        idx = 1;
     }
     if (idx >= n) {
         return -1;
@@ -170,11 +206,7 @@ parse_soapy_head_tokens(char* tok[SOFTY_TOK_MAX], size_t n, size_t* out_arg_toke
 
     uint32_t freq_hz = 0;
     if (parse_freq_hz_token(tok[idx], &freq_hz) != 0) {
-        if (is_suffixed_freq_token(tok[idx])) {
-            *out_idx = idx;
-            return SOAPY_HEAD_FREQ_OUT_OF_RANGE;
-        }
-        return -1;
+        return soapy_head_not_a_frequency(tok, n, idx, out_idx);
     }
 
     if (arg_tokens > 0 && (n - idx) == 1 && !has_freq_hint_chars(tok[idx])) {
@@ -187,9 +219,28 @@ parse_soapy_head_tokens(char* tok[SOFTY_TOK_MAX], size_t n, size_t* out_arg_toke
     return 0;
 }
 
+/* The squelch field of a shorthand tuning tail whose frequency is at @p freq_idx, read before anything else of it: once
+   the tail is shorthand, one --squelch would refuse refuses the spec (issue #899 B14), however many fields follow; it
+   turned the whole tail into device args, which tuned the default frequency. Empty, or not there: nothing to read. */
+static int
+soapy_check_squelch(char* tok[SOFTY_TOK_MAX], size_t n, size_t freq_idx) {
+    const size_t at = freq_idx + 4U;
+    dsd_squelch_setting setting;
+    if (at >= n || tok[at][0] == '\0') {
+        return 0;
+    }
+    return dsd_spec_squelch_field_parse("soapy:", tok[at], &setting);
+}
+
+/* An integer field at *cur: 1 read into @p out, 0 when the tail stops before it or leaves it empty (the option stays),
+   -1 when it does not parse. */
 static int
 parse_optional_int_at(char* tok[SOFTY_TOK_MAX], size_t n, size_t* cur, int* out) {
     if (!tok || !cur || !out || *cur >= n) {
+        return 0;
+    }
+    if (tok[*cur][0] == '\0') {
+        (*cur)++;
         return 0;
     }
     if (parse_int_strict(tok[*cur], out) != 0) {
@@ -243,30 +294,25 @@ parse_soapy_optional_front(char* tok[SOFTY_TOK_MAX], size_t n, size_t* cur, int*
     return 0;
 }
 
-/* The squelch field in the squelch grammar (off, a level, auto[+N], noise[+N]): @p out points at its text. */
-static int
+/* The squelch field in the squelch grammar (off, a level, auto[+N], noise[+N]), which soapy_check_squelch() has read:
+   @p out points at its text, and stays NULL for an empty field or one the tail stops before. */
+static void
 parse_optional_squelch_at(char* tok[SOFTY_TOK_MAX], size_t n, size_t* cur, const char** out) {
     if (!tok || !cur || !out || *cur >= n) {
-        return 0;
+        return;
     }
-    dsd_squelch_setting setting;
-    if (dsd_squelch_setting_parse(tok[*cur], &setting, NULL, 0U) != 0) {
-        return -1;
+    if (tok[*cur][0] != '\0') {
+        *out = tok[*cur];
     }
-    *out = tok[*cur];
     (*cur)++;
-    return 1;
 }
 
 static int
 parse_soapy_optional_tail(char* tok[SOFTY_TOK_MAX], size_t n, size_t* cur, const char** sql, int* vol) {
-    int rc = parse_optional_squelch_at(tok, n, cur, sql);
-    if (rc < 0) {
-        return -1;
-    }
+    parse_optional_squelch_at(tok, n, cur, sql);
 
     int iv = 0;
-    rc = parse_optional_int_at(tok, n, cur, &iv);
+    const int rc = parse_optional_int_at(tok, n, cur, &iv);
     if (rc < 0) {
         return -1;
     }
@@ -295,6 +341,69 @@ parse_soapy_optional_tokens(char* tok[SOFTY_TOK_MAX], size_t n, size_t start_idx
     return (cur == n) ? 0 : -1;
 }
 
+/* What a Soapy tail is: the default device, opaque device args, a shorthand tuning tail, or refused. */
+enum { SOAPY_TAIL_DEFAULT, SOAPY_TAIL_OPAQUE, SOAPY_TAIL_TUNING, SOAPY_TAIL_REFUSED };
+
+/* Classify the tail of @p count fields, of which @p tok holds the first n (at most SOFTY_TOK_MAX). A tuning tail's
+   device args count and frequency place go to *arg_tokens and *idx, its frequency to *freq_hz. */
+static int
+soapy_classify_tail(char* tok[SOFTY_TOK_MAX], size_t count, size_t* arg_tokens, size_t* idx, uint32_t* freq_hz) {
+    /* The fields stored: a tail with more than a tuning tail holds is device args, once its squelch has been read. */
+    const size_t n = count < SOFTY_TOK_MAX ? count : SOFTY_TOK_MAX;
+    if (soapy_fields_all_empty(tok, n) && count <= SOFTY_TOK_MAX) {
+        return SOAPY_TAIL_DEFAULT;
+    }
+    const int head_rc = parse_soapy_head_tokens(tok, n, arg_tokens, idx, freq_hz);
+    if (head_rc == SOAPY_HEAD_FREQ_OUT_OF_RANGE) {
+        LOG_ERROR("Soapy frequency '%s' is out of range (1 to 4294.967295 MHz)\n", tok[*idx]);
+        return SOAPY_TAIL_REFUSED;
+    }
+    if (head_rc == SOAPY_HEAD_FREQ_LATE) {
+        LOG_ERROR("Soapy frequency must follow the device args (field %zu, '%s', comes after an empty field): write "
+                  "soapy:<args>:<freq>\n",
+                  *idx + 1U, tok[*idx]);
+        return SOAPY_TAIL_REFUSED;
+    }
+    if (head_rc == 0 && soapy_check_squelch(tok, n, *idx) != 0) {
+        return SOAPY_TAIL_REFUSED;
+    }
+    return (head_rc != 0 || count > n) ? SOAPY_TAIL_OPAQUE : SOAPY_TAIL_TUNING;
+}
+
+/* A tuning tail's fields after the frequency into @p opts, and @p opts->audio_in_dev to its device args alone: 1, or 0
+   with nothing changed when one does not parse (the caller keeps the tail as device args). */
+static int
+soapy_apply_tuning(dsd_opts* opts, char* tok[SOFTY_TOK_MAX], size_t n, size_t arg_tokens, size_t idx,
+                   uint32_t freq_hz) {
+    int gain = opts->rtl_gain_value;
+    int ppm = opts->rtlsdr_ppm_error;
+    int bw = -1; /* stays -1 when the spec has no bandwidth field */
+    const char* sql = NULL;
+    int vol = opts->rtl_volume_multiplier;
+    if (parse_soapy_optional_tokens(tok, n, idx + 1, &gain, &ppm, &bw, &sql, &vol) != 0) {
+        return 0;
+    }
+
+    opts->rtlsdr_center_freq = freq_hz;
+    opts->rtl_gain_value = gain;
+    opts->rtlsdr_ppm_error = ppm;
+    if (bw != -1) {
+        dsd_opts_set_rtl_dsp_bw(opts, bw, DSD_RTL_DSP_BW_SOURCE_EXPLICIT);
+    }
+    if (sql) {
+        (void)dsd_squelch_spec_field_apply(opts, sql);
+    }
+    opts->rtl_volume_multiplier = dsd_opts_rtl_volume_multiplier_or_default(vol);
+
+    if (arg_tokens > 0) {
+        DSD_SNPRINTF(opts->audio_in_dev, sizeof opts->audio_in_dev, "soapy:%s", tok[0]);
+    } else {
+        DSD_SNPRINTF(opts->audio_in_dev, sizeof opts->audio_in_dev, "%s", "soapy");
+    }
+    opts->audio_in_dev[sizeof opts->audio_in_dev - 1] = '\0';
+    return 1;
+}
+
 int
 dsd_normalize_soapy_input_spec(dsd_opts* opts, int* out_tuning_applied) {
     if (out_tuning_applied) {
@@ -320,60 +429,28 @@ dsd_normalize_soapy_input_spec(dsd_opts* opts, int* out_tuning_applied) {
     char tail_copy[sizeof opts->audio_in_dev];
     char scratch[sizeof opts->audio_in_dev];
     char* tok[SOFTY_TOK_MAX];
-    size_t n = 0;
-    if (tokenize_soapy_tail(raw_tail, tail_copy, sizeof tail_copy, scratch, sizeof scratch, tok, &n) != 0) {
-        restore_opaque_soapy_args(opts, raw_tail);
-        return 0;
-    }
-    if (n == 0) {
-        DSD_SNPRINTF(opts->audio_in_dev, sizeof opts->audio_in_dev, "%s", "soapy");
+    size_t count = 0;
+    if (tokenize_soapy_tail(raw_tail, tail_copy, sizeof tail_copy, scratch, sizeof scratch, tok, &count) != 0) {
         return 0;
     }
 
     size_t arg_tokens = 0;
     size_t idx = 0;
     uint32_t freq_hz = 0;
-    const int head_rc = parse_soapy_head_tokens(tok, n, &arg_tokens, &idx, &freq_hz);
-    if (head_rc == SOAPY_HEAD_FREQ_OUT_OF_RANGE) {
-        LOG_ERROR("Soapy frequency '%s' is out of range (1 to 4294.967295 MHz)\n", tok[idx]);
-        return -1;
+    switch (soapy_classify_tail(tok, count, &arg_tokens, &idx, &freq_hz)) {
+        case SOAPY_TAIL_DEFAULT: DSD_SNPRINTF(opts->audio_in_dev, sizeof opts->audio_in_dev, "%s", "soapy"); return 0;
+        case SOAPY_TAIL_REFUSED: return -1;
+        case SOAPY_TAIL_TUNING:
+            if (soapy_apply_tuning(opts, tok, count, arg_tokens, idx, freq_hz)) {
+                if (out_tuning_applied) {
+                    *out_tuning_applied = 1;
+                }
+                return 0;
+            }
+            break;
+        default: break;
     }
-    if (head_rc != 0) {
-        restore_opaque_soapy_args(opts, tail_copy);
-        return 0;
-    }
-
-    int gain = opts->rtl_gain_value;
-    int ppm = opts->rtlsdr_ppm_error;
-    int bw = -1; /* stays -1 when the spec has no bandwidth field */
-    const char* sql = NULL;
-    int vol = opts->rtl_volume_multiplier;
-    if (parse_soapy_optional_tokens(tok, n, idx + 1, &gain, &ppm, &bw, &sql, &vol) != 0) {
-        restore_opaque_soapy_args(opts, tail_copy);
-        return 0;
-    }
-
-    opts->rtlsdr_center_freq = freq_hz;
-    opts->rtl_gain_value = gain;
-    opts->rtlsdr_ppm_error = ppm;
-    if (bw != -1) {
-        dsd_opts_set_rtl_dsp_bw(opts, bw, DSD_RTL_DSP_BW_SOURCE_EXPLICIT);
-    }
-    if (sql) {
-        (void)dsd_squelch_spec_field_apply(opts, sql);
-    }
-    opts->rtl_volume_multiplier = dsd_opts_rtl_volume_multiplier_or_default(vol);
-
-    if (arg_tokens > 0) {
-        DSD_SNPRINTF(opts->audio_in_dev, sizeof opts->audio_in_dev, "soapy:%s", tok[0]);
-    } else {
-        DSD_SNPRINTF(opts->audio_in_dev, sizeof opts->audio_in_dev, "%s", "soapy");
-    }
-    opts->audio_in_dev[sizeof opts->audio_in_dev - 1] = '\0';
-
-    if (out_tuning_applied) {
-        *out_tuning_applied = 1;
-    }
+    restore_opaque_soapy_args(opts, tail_copy);
     return 0;
 }
 
@@ -545,8 +622,8 @@ rtl_spec_apply_tuning_fields(dsd_opts* opts, char* const* fields, int count, int
     if (field) {
         dsd_opts_set_rtl_dsp_bw(opts, dsd_rtl_spec_bw_khz_or_default(field), DSD_RTL_DSP_BW_SOURCE_EXPLICIT);
     }
-    /* The squelch grammar (off, a level, auto[+N], noise[+N]); a field that is not a squelch says nothing about it, and
-       --squelch wins over the spec. */
+    /* The squelch grammar (off, a level, auto[+N], noise[+N]), which rtl_spec_check_squelch() has read; --squelch
+       wins over the spec. */
     field = rtl_spec_field(fields, count, first + 4);
     if (field) {
         (void)dsd_squelch_spec_field_apply(opts, field);
@@ -559,6 +636,16 @@ rtl_spec_apply_tuning_fields(dsd_opts* opts, char* const* fields, int count, int
             rtl_spec_apply_bias_token(opts, fields[i]);
         }
     }
+}
+
+/* The squelch field of a spec whose tuning fields start at @p first, read before anything is set: one --squelch would
+   refuse refuses the spec, which then changes nothing (issue #899 B14; it was ignored). An empty field leaves the
+   squelch. */
+static int
+rtl_spec_check_squelch(const char* input, char* const* fields, int count, int first) {
+    const char* field = rtl_spec_field(fields, count, first + 4);
+    dsd_squelch_setting setting;
+    return field && dsd_spec_squelch_field_parse(input, field, &setting) != 0 ? -1 : 0;
 }
 
 /* The endpoint of an rtltcp spec. The port is read before anything is set, so a spec it refuses changes nothing. */
@@ -596,18 +683,22 @@ dsd_rtl_input_spec_apply(dsd_opts* opts) {
     if (count > RTL_SPEC_FIELDS_MAX) {
         count = RTL_SPEC_FIELDS_MAX;
     }
+    const int first = rtltcp ? 3 : 2;
+    if (rtl_spec_check_squelch(rtltcp ? "rtltcp:" : "rtl:", fields, count, first) != 0) {
+        return -1;
+    }
     if (rtltcp) {
         if (rtl_spec_apply_endpoint(opts, fields, count) != 0) {
             return -1;
         }
-        rtl_spec_apply_tuning_fields(opts, fields, count, 3);
+        rtl_spec_apply_tuning_fields(opts, fields, count, first);
         return 1;
     }
     int parsed = 0;
     if (rtl_spec_int_field(fields, count, 1, &parsed)) {
         opts->rtl_dev_index = parsed;
     }
-    rtl_spec_apply_tuning_fields(opts, fields, count, 2);
+    rtl_spec_apply_tuning_fields(opts, fields, count, first);
     return 1;
 }
 

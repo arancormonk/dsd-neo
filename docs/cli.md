@@ -1489,8 +1489,12 @@ alone is `auto+10`), so one setting suits every receiver and every channel of a 
 - `--squelch <setting>` takes the squelch grammar: `off` or `0`, a negative level in dB (`-60`), a positive linear mean
   power (the legacy `sql` form), `auto[+N]`, or `noise[+N]` (the [noise squelch](#noise-squelch---squelch-noise)). It
   works with `--iq-replay`, which has no spec field, and wins over the `sql` field of an `rtl:`, `rtltcp:`, `soapy:` or
-  Airspy spec (which takes `auto[+N]` and `noise[+N]` too), which wins over `[input] rtl_sql_mode` and
-  `rtl_sql_margin_db` in a config (`docs/config-system.md`). The terminal's Input > `Squelch...` row and the Qt/Android
+  Airspy spec (which takes the same grammar), which wins over `[input] rtl_sql_mode` and `rtl_sql_margin_db` in a
+  config (`docs/config-system.md`). A spec's `sql` field `--squelch` would refuse stops the start and
+  `--print-config`, naming the field (`Invalid squelch field "auto+31" in the rtl: input: the auto margin must be a
+  whole number of dB from 3 to 30.`), even with `--squelch`, which wins only over a field it can read; it used to be
+  ignored, leaving the default. An empty field (`:24::3`) keeps its
+  place and leaves the squelch as it was. The terminal's Input > `Squelch...` row and the Qt/Android
   radio panel's `dB | Auto | Noise` choice set it live; on audio input the Qt/Android monitor's `SQUELCH` row offers
   `dB | Noise`.
 - Learning. The demodulator classes each 40 ms window of the channel-filtered I/Q as noise, carrier or undecided from
@@ -2908,7 +2912,7 @@ does.
 
 ## RTL‑SDR details (`-i rtl` / `-i rtltcp`)
 
-- Fields: `dev` (device index), `freq` (Hz/MHz), `gain` (`0` automatic, `1`–`49` manual dB; see below), `ppm`, `bw` (kHz: 4, 6, 8, 12, 16, 24, 48 or 72; anything else runs at the 48 kHz default), `sql` (negative = threshold in dB, `0` = off, positive = linear mean power, `auto[+N]` = the [auto squelch](#auto-squelch---squelch-auto), `noise[+N]` = the [noise squelch](#noise-squelch---squelch-noise)), `vol` (monitor gain, 0–3; typical 1–3), optional `bias[=on|off]`. `bias` alone (or `b`) turns the bias tee on; a value
+- Fields: `dev` (device index), `freq` (Hz/MHz), `gain` (`0` automatic, `1`–`49` manual dB; see below), `ppm`, `bw` (kHz: 4, 6, 8, 12, 16, 24, 48 or 72; anything else runs at the 48 kHz default), `sql` (negative = threshold in dB, `0` = off, positive = linear mean power, `auto[+N]` = the [auto squelch](#auto-squelch---squelch-auto), `noise[+N]` = the [noise squelch](#noise-squelch---squelch-noise); one `--squelch` refuses stops the start, naming the field), `vol` (monitor gain, 0–3; typical 1–3), optional `bias[=on|off]`. `bias` alone (or `b`) turns the bias tee on; a value
   is one whole word: `on`/`off`, `1`/`0`, `true`/`false` or `yes`/`no` (any case). A value or trailing option it cannot
   read is ignored with a warning and leaves the bias tee as it was; the startup `RTL #N:` line ends in `BIAS=on` when
   it is on. 72 kHz is TETRA's bandwidth: it gives `-fT` a whole 4 samples per symbol at 18 ksym/s. The other modes run
@@ -3035,7 +3039,13 @@ Advanced (env)
   5. Start with `-i soapy` (default args) or `-i soapy:<args>`
 - `soapy[:args]` sets backend/device selection only.
 - Optional shorthand supports RTL-style startup tuning in the same `-i` string:
-  `soapy[:args]:freq[:gain[:ppm[:bw[:sql[:vol]]]]]`.
+  `soapy[:args]:freq[:gain[:ppm[:bw[:sql[:vol]]]]]`. Each field keeps its place, as in an `rtl:` string: an empty
+  one leaves its setting (`soapy:driver=airspy:154.43M:30:0:24::3` keeps the squelch and sets volume 3), and an empty
+  `args` field is the default device (`soapy::154.43M:30`). Once the `freq` place holds a frequency, a `sql` field
+  `--squelch` would refuse stops the start and `--print-config`, naming the field, however many fields follow; it
+  used to turn the whole string into device args. The frequency comes right after the args: `soapy:<args>::<freq>`
+  leaves the frequency place empty, and a K, M or G number after it stops the start (`Soapy frequency must follow the
+  device args`).
 - A number with a `K`, `M` or `G` suffix in the `freq` place is always a frequency, never device args, signed or with
   an exponent too (`+5.8G`, `5.8e0G`). One outside 1 MHz to 4294.967295 MHz (`soapy:driver=hackrf:5.8G`,
   `soapy:500k`) is an error at startup and in `--print-config`:

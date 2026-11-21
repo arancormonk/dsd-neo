@@ -1209,15 +1209,38 @@ test_rtltcp_invalid_and_partial_tuning_tokens(void) {
     if (init_test_runtime(&opts, &state) != 0) {
         return 1;
     }
-    /* An unparseable squelch token is not a request to switch the squelch off:
-     * the setting the session already had has to survive it. */
-    DSD_SNPRINTF(opts->audio_in_dev, sizeof opts->audio_in_dev, "%s", "rtltcp:sql.example:1234:450M:11:0:24:loud:3");
+    /* An unparseable squelch token is not a request to switch the squelch off, nor one to keep the squelch the session
+     * already had (issue #899 B14): --squelch refuses it, so the start stops, naming the field, and the spec changes
+     * nothing. An empty field keeps its place and the squelch, and the volume after it still reads. */
+    static const char* const unparseable[] = {"rtltcp:sql.example:1234:450M:11:0:24:loud:3",
+                                              "rtltcp:sql.example:1234:450M:11:0:24:auto+31:3"};
+    for (size_t i = 0; i < sizeof unparseable / sizeof unparseable[0]; i++) {
+        DSD_SNPRINTF(opts->audio_in_dev, sizeof opts->audio_in_dev, "%s", unparseable[i]);
+        opts->rtl_squelch_level = 0.25;
+        opts->rtl_volume_multiplier = 2;
+        char log[4096] = {0};
+        if (run_lifecycle_capturing_banner(opts, state, log, sizeof log, &rc) != 0) {
+            free_test_runtime(opts, state);
+            return 1;
+        }
+        test_rc |= expect_true("rtltcp unparseable sql refuses the start", rc != 0);
+        test_rc |= expect_contains("rtltcp unparseable sql names the field", log, "squelch field");
+        test_rc |=
+            expect_double_near("rtltcp unparseable sql keeps the threshold", opts->rtl_squelch_level, 0.25, 1e-12);
+        test_rc |= expect_true("rtltcp unparseable sql sets nothing",
+                               opts->rtl_volume_multiplier == 2 && opts->rtlsdr_center_freq != 450000000U);
+    }
+    free_test_runtime(opts, state);
+
+    if (init_test_runtime(&opts, &state) != 0) {
+        return 1;
+    }
+    DSD_SNPRINTF(opts->audio_in_dev, sizeof opts->audio_in_dev, "%s", "rtltcp:sql.example:1234:450M:11:0:24::3");
     opts->rtl_squelch_level = 0.25;
     rc = dsd_engine_run_with_lifecycle(opts, state, NULL);
-    test_rc |= expect_true("rtltcp unparseable sql run ok", rc == 0);
-    test_rc |=
-        expect_double_near("rtltcp unparseable sql keeps previous threshold", opts->rtl_squelch_level, 0.25, 1e-12);
-    test_rc |= expect_true("rtltcp unparseable sql still parses volume", opts->rtl_volume_multiplier == 3);
+    test_rc |= expect_true("rtltcp empty sql run ok", rc == 0);
+    test_rc |= expect_double_near("rtltcp empty sql keeps the threshold", opts->rtl_squelch_level, 0.25, 1e-12);
+    test_rc |= expect_true("rtltcp empty sql still parses volume", opts->rtl_volume_multiplier == 3);
 
     free_test_runtime(opts, state);
 
