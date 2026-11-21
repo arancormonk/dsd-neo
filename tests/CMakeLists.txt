@@ -8198,6 +8198,18 @@ target_include_directories(
 target_link_libraries(dsd-neo_test_core_p25_patch_policy PRIVATE dsd-neo_core)
 add_test(NAME CORE_P25_PATCH_POLICY COMMAND dsd-neo_test_core_p25_patch_policy)
 
+# Remembered-talkgroup classifier: per-variant id ranges, both edges
+add_executable(
+    dsd-neo_test_core_heard_talkgroup
+    core/test_core_heard_talkgroup.c
+)
+target_include_directories(
+    dsd-neo_test_core_heard_talkgroup
+    PRIVATE ${PROJECT_SOURCE_DIR}/include
+)
+target_link_libraries(dsd-neo_test_core_heard_talkgroup PRIVATE dsd-neo_core)
+add_test(NAME CORE_HEARD_TALKGROUP COMMAND dsd-neo_test_core_heard_talkgroup)
+
 # UTF-16 decoding / UTF-8 encoding for radio-sourced text (header-only)
 add_executable(dsd-neo_test_core_utf16 core/test_core_utf16.c)
 target_include_directories(

@@ -43,6 +43,7 @@ target_sources(
         util/scan_profile.c
         util/channel_label.c
         util/access_code.c
+        util/heard_talkgroup.c
         util/id_pattern.c
         util/received_identity.c
         util/received_identity_site.c
