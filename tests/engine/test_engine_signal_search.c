@@ -4656,6 +4656,94 @@ test_tetra_start_checks(dsd_opts* o, dsd_state* s, const dsd_signal_search_confi
     end_tetra_rate(o, s);
 }
 
+/* Measure spans until the next detection is chosen, and land on it. */
+static void
+next_detection(dsd_opts* o, dsd_state* s) {
+    for (int n = 0; n < 24; ++n) {
+        if (status.phase == DSD_SEARCH_SEARCHING) {
+            ready = 1;
+            tick(o, s);
+            if (status.phase == DSD_SEARCH_TUNING && status.hit.hit_id && !status.hit.ended) {
+                land(o, s);
+                return;
+            }
+        } else {
+            assert(status.phase == DSD_SEARCH_TUNING);
+            land(o, s);
+        }
+    }
+    assert(0 && "no detection");
+}
+
+/* Confirm the visit as @p protocol and let it go quiet, back to its span. */
+static void
+confirm_and_leave(dsd_opts* o, dsd_state* s, const char* protocol) {
+    dsd_signal_search_note_evidence(s, protocol, 0, 0, NULL);
+    assert(status.hit.confirmed && strcmp(status.hit.protocol, protocol) == 0);
+    advance(3000);
+    tick(o, s);
+    assert(status.phase == DSD_SEARCH_TUNING && status.hit.ended);
+}
+
+/* Two one-channel ranges on 100.025 MHz: an Auto range and a TETRA range, in @p tetra_first order. */
+static dsd_signal_search_config
+overlap_config(const dsd_signal_search_config* base, uint64_t session, int tetra_first) {
+    dsd_signal_search_config two = tag_config(base, session, 1, 0);
+    two.range_count = 2;
+    two.ranges[0].start_hz = two.ranges[0].end_hz = 100025000;
+    two.ranges[1] = two.ranges[0];
+    two.ranges[tetra_first ? 0 : 1].digital = DSD_SEARCH_DIGITAL_TETRA;
+    two.ranges[tetra_first ? 0 : 1].bandwidth_hz = 25000;
+    return two;
+}
+
+/* Issue #748: a pass suppresses a visited frequency per identification kind, TETRA or other, so an overlapping range
+   of the other kind still visits it in the same pass, whichever range comes first. Operator Skip keeps its pass-wide
+   meaning for every kind, avoids apply to both, and the next pass visits everything again. */
+static void
+test_tetra_suppression_per_kind(dsd_opts* o, dsd_state* s, const dsd_signal_search_config* config) {
+    for (int tetra_first = 0; tetra_first < 2; ++tetra_first) {
+        const char* first = tetra_first ? "TETRA" : "P25";
+        const char* second = tetra_first ? "P25" : "TETRA";
+        const dsd_signal_search_config two = overlap_config(config, 92 + (uint64_t)tetra_first, tetra_first);
+        start_tag_session(o, s, &two);
+        next_detection(o, s);
+        assert(status.hit.range_index == 0 && status.hit.frequency_hz == 100025000 && status.pass == 1);
+        confirm_and_leave(o, s, first);
+        /* The other kind's range visits it in this pass. */
+        next_detection(o, s);
+        assert(status.hit.range_index == 1 && status.hit.frequency_hz == 100025000 && status.pass == 1);
+        confirm_and_leave(o, s, second);
+        /* Both kinds visited it: the pass wraps, and the next one visits it again. */
+        next_detection(o, s);
+        assert(status.hit.range_index == 0 && status.pass == 2);
+        /* Skip suppresses it for the pass whatever the kind: the other range does not visit it. */
+        act(o, s, DSD_SEARCH_ACTION_SKIP);
+        next_detection(o, s);
+        assert(status.hit.range_index == 0 && status.pass == 3);
+        confirm_and_leave(o, s, first);
+        next_detection(o, s);
+        assert(status.hit.range_index == 1 && status.pass == 3);
+        act(o, s, DSD_SEARCH_ACTION_SKIP);
+        next_detection(o, s);
+        assert(status.hit.range_index == 0 && status.pass == 4);
+        /* An avoid takes it from both, for the session. */
+        act(o, s, DSD_SEARCH_ACTION_AVOID);
+        for (int n = 0; n < 40 && (status.pass < 6 || status.phase == DSD_SEARCH_TUNING); ++n) {
+            if (status.phase == DSD_SEARCH_TUNING) {
+                land(o, s);
+            } else {
+                ready = 1;
+                tick(o, s);
+            }
+            assert(status.phase == DSD_SEARCH_TUNING || status.phase == DSD_SEARCH_SEARCHING);
+            assert(!(status.phase == DSD_SEARCH_TUNING && !status.hit.ended));
+        }
+        assert(status.pass >= 6 && status.phase == DSD_SEARCH_SEARCHING);
+        stop_tag_session(o, s);
+    }
+}
+
 int
 main(void) {
     dsd_opts* o = calloc(1, sizeof(*o));
@@ -4863,6 +4951,7 @@ main(void) {
     test_tetra_visit_lands_tetra_profile(o, s, &config);
     test_tetra_visit_resets_on_departures(o, s, &config);
     test_tetra_start_checks(o, s, &config);
+    test_tetra_suppression_per_kind(o, s, &config);
     s->rtl_ctx = NULL;
     dsd_state_ext_free_all(s);
     free(s);

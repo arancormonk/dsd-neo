@@ -71,6 +71,10 @@ enum {
     SEARCH_MEASURE_MAX_MS = 5000
 };
 
+/* What a pass suppresses a visited frequency for (issue #748). A visit suppresses it for its range's identification
+   kind only, so an overlapping range of the other kind still visits it this pass; an operator Skip, for every kind. */
+enum { SEARCH_SUPPRESS_OTHER = 1U << 0, SEARCH_SUPPRESS_TETRA = 1U << 1, SEARCH_SUPPRESS_ALL = 1U << 2 };
+
 /* The call tuple: what one checked canonical call record says, copied whole when its call is noted. */
 typedef struct {
     /* The record's protocol as the search names it ("DMR", "P25", "NXDN", ...); "" for no tuple. */
@@ -99,7 +103,9 @@ typedef struct {
        restore tune puts it back (issue #748 B16). */
     int saved_ted_override;
     dsd_airspy_config saved_airspy;
+    /* The frequencies this pass suppressed, each with the kinds it is suppressed for (SEARCH_SUPPRESS_*). */
     uint32_t suppressed[DSD_SEARCH_MAX_CHANNELS];
+    uint8_t suppressed_kinds[DSD_SEARCH_MAX_CHANNELS];
     size_t suppressed_count;
     /* The store's permanent avoids as of permanent_revision (the runtime list), taken at each tick, action and in-frame
        yield check when the revision moved (search_refresh_permanent()); issue #828. */
@@ -293,16 +299,44 @@ search_error(search_coord* c, const char* message) {
     search_publish(c, 0);
 }
 
-static int
-search_excluded(const search_coord* c, uint32_t f) {
-    return search_contains(c->permanent, c->permanent_count, f)
-           || search_contains(c->session_avoids, c->session_avoid_count, f)
-           || search_contains(c->suppressed, c->suppressed_count, f);
+/* The suppression kind of a visit to range @p r. */
+static unsigned
+search_range_kind(const dsd_signal_search_range* r) {
+    return dsd_signal_search_range_is_tetra(r) ? SEARCH_SUPPRESS_TETRA : SEARCH_SUPPRESS_OTHER;
 }
 
+/* The kinds this pass suppresses @p f for; 0 for none. */
+static unsigned
+search_suppressed_kinds(const search_coord* c, uint32_t f) {
+    for (size_t i = 0; i < c->suppressed_count; ++i) {
+        if (c->suppressed[i] == f) {
+            return c->suppressed_kinds[i];
+        }
+    }
+    return 0;
+}
+
+/* Whether @p f is out of the current range's choice: avoided, permanently or for the session, whatever the kind, or
+   suppressed this pass for the range's kind or every kind. */
+static int
+search_excluded(const search_coord* c, uint32_t f) {
+    const unsigned kind = search_range_kind(&c->config.ranges[c->status.range_index]);
+    return search_contains(c->permanent, c->permanent_count, f)
+           || search_contains(c->session_avoids, c->session_avoid_count, f)
+           || (search_suppressed_kinds(c, f) & (kind | SEARCH_SUPPRESS_ALL)) != 0U;
+}
+
+/* Suppress @p f for the rest of the pass for @p kinds. */
 static void
-search_suppress(search_coord* c, uint32_t f) {
-    if (!search_contains(c->suppressed, c->suppressed_count, f) && c->suppressed_count < DSD_SEARCH_MAX_CHANNELS) {
+search_suppress(search_coord* c, uint32_t f, unsigned kinds) {
+    for (size_t i = 0; i < c->suppressed_count; ++i) {
+        if (c->suppressed[i] == f) {
+            c->suppressed_kinds[i] = (uint8_t)(c->suppressed_kinds[i] | kinds);
+            return;
+        }
+    }
+    if (c->suppressed_count < DSD_SEARCH_MAX_CHANNELS) {
+        c->suppressed_kinds[c->suppressed_count] = (uint8_t)kinds;
         c->suppressed[c->suppressed_count++] = f;
     }
 }
@@ -1686,7 +1720,11 @@ search_apply_action(search_coord* c, const dsd_signal_search_control* action) {
         case DSD_SEARCH_ACTION_AVOID:
         case DSD_SEARCH_ACTION_AVOID_PERMANENT:
         case DSD_SEARCH_ACTION_AVOID_FREQUENCY: return search_avoid_action(c, action);
-        case DSD_SEARCH_ACTION_SKIP: c->skip = 1; return 0;
+        case DSD_SEARCH_ACTION_SKIP:
+            /* The operator's Skip is pass-wide: no range of either kind visits the frequency again this pass. */
+            search_suppress(c, c->status.hit.frequency_hz, SEARCH_SUPPRESS_ALL);
+            c->skip = 1;
+            return 0;
         case DSD_SEARCH_ACTION_UNAVOID: return search_unavoid(c, action->frequency_hz);
         default: return -1;
     }
@@ -1947,7 +1985,7 @@ search_visit_candidate(search_coord* c, dsd_opts* opts, dsd_state* state, const 
     hit->bias_tee = opts->rtl_bias_tee;
     DSD_SNPRINTF(hit->input_spec, sizeof(hit->input_spec), "%s", opts->audio_in_dev);
     DSD_SNPRINTF(hit->range_name, sizeof(hit->range_name), "%s", r->name);
-    search_suppress(c, hit->frequency_hz);
+    search_suppress(c, hit->frequency_hz, search_range_kind(r));
     search_publish(c, 1);
     c->acquired = 0;
     (void)search_queue_tune(c, opts, state, hit->frequency_hz, 1, !r->digital);
