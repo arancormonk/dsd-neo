@@ -17765,10 +17765,12 @@ set_tests_properties(
 )
 
 # tetra_calls_followed_route() is a DSD_NEO_TEST_HOOKS accessor: the call records test builds its own tetra_calls.c with
-# the hooks on, ahead of the library's.
+# the hooks on, ahead of the library's, and heard_talkgroup.c too, to count the verified talkgroup classifier's runs.
 target_sources(
     dsd-neo_test_tetra_tetra_calls
-    PRIVATE ${PROJECT_SOURCE_DIR}/src/protocol/tetra/tetra_calls.c
+    PRIVATE
+        ${PROJECT_SOURCE_DIR}/src/protocol/tetra/tetra_calls.c
+        ${PROJECT_SOURCE_DIR}/src/core/util/heard_talkgroup.c
 )
 target_compile_definitions(
     dsd-neo_test_tetra_tetra_calls

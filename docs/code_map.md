@@ -2412,8 +2412,8 @@ suite runs under this compiler.
   `--playfiles`): set at the row's first render, ANDed at every render and at the commit, ANDed across a merge, and
   cleared when a proof revises a committed row after the epoch's staged row saw non-live input. All three ride
   `push_event_history()`, `init_event_history()` and the whole-row copies (trunk-scan snapshots, the UI snapshot,
-  `dsd_app_history_tap_copy()`). No protocol calls the note yet. Test: `CORE_HEARD_TALKGROUP` (its build counts
-  classifier runs through `dsd_heard_tg_test_eval_count()`).
+  `dsd_app_history_tap_copy()`). Producers: TETRA TMO (TETRA Calls, "Verified talkgroup"). Test:
+  `CORE_HEARD_TALKGROUP` (its build counts classifier runs through `dsd_heard_tg_test_eval_count()`).
 - API note (call history rows, issue #575): every `Event_History` row records the frequency its call was heard on
   (`freq_hz`, Hz, 0 unknown) and its access code (`access_code_kind`, a `dsd_access_code_kind`, and `access_code`; zero
   means none, so a memset-zero row reads as unknown). `<dsd-neo/core/access_code.h>` (`src/core/util/access_code.c`,
@@ -15255,6 +15255,18 @@ single "current call".
   against that copy by the same rules, so speech of the same transmission after a short gap starts a new decoder but
   keeps the count. A rename and a grant after D-TX CEASED apply to the copy as to a bound transmission; any other reset
   (`tetra_voice_reset()`: a BSCH of another cell, the end of the heard speech) drops it.
+- Verified talkgroup (issue #903). Trunked mode only (never direct mode or anonymous speech). Eligibility is read
+  while the CRC-checked D-SETUP is applied, before its address becomes the record's `called_ssi`
+  (`setup_verified_gssi()` into `tetra_call_t::verified_gssi`): the MAC address must name an SSI in the clear (address
+  type 001, 101 or 110), never a USSI, an SMI, an event label alone or an encrypted short identity left unrecovered,
+  and the basic service must be circuit mode speech, point to multipoint, acknowledged or broadcast (table 14.35). A
+  later D-SETUP of the call that names another identity or service takes it back; one naming no identity keeps it.
+  D-CONNECT and the floor PDUs never set it. Speech consumes it (`speech_proves_group()` in `speech_of_record()`):
+  the speech CRC passed, encrypted speech included, on a timeslot of the record's own allocation, while canonical
+  slot 0 carries the call with that group as its target, through `dsd_call_state_note_verified_target()` on the
+  active transmission. Each floor grant is a transmission of its own (D-TX CEASED ends it, and its trail opens
+  nothing), so a second grant on the call identifier is proven only by its own speech, and a set-up or grant followed
+  by silence proves nothing. Tests: `TETRA_CALLS` (`test_verified_group_*`).
 - Speech decoding. mbelib-neo's TETRA decoder (`mbe_tetraDecodeFrame()`, mbe-neo 2.6+) turns each 137-bit speech frame
   into 240 samples at 8 kHz; a CRC-failed or stolen frame goes to it as a bad frame, which it conceals. `tetra_voice.c`
   makes one decoder (`tetra_voice_t::codec`) at the first frame that plays, resets it (`mbe_tetraDecoderReset()`) when

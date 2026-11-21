@@ -254,6 +254,8 @@ typedef struct {
                                       is no new marker (tetra_calls.c) */
     uint8_t pair_kind;           /**< 1 + the kind of the last floor PDU, when a group-addressed one may pair with it
                                       (floor_transition() in tetra_calls.c); 0 for none */
+    uint32_t verified_gssi; /**< the group SSI a CRC-checked D-SETUP of this call addressed for group speech, which its
+                                 speech proves (issue #903, setup_verified_gssi() in tetra_calls.c); 0 none */
 } tetra_call_t;
 
 /* The CMCE calls tracked at once. The MCCH of a carrier with four timeslots signals the calls of every carrier of the

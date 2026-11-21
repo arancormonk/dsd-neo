@@ -15,6 +15,7 @@
 #include <dsd-neo/core/enc_lockout.h>
 #include <dsd-neo/core/events.h>
 #include <dsd-neo/core/file_io.h>
+#include <dsd-neo/core/heard_talkgroup.h>
 #include <dsd-neo/core/key_set.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/opts_fwd.h>
@@ -4843,6 +4844,301 @@ test_radio_policy_follow(void) {
     session_close(&s);
 }
 
+/* ---- Verified talkgroups (issue #903) ------------------------------------------------------------------------- */
+
+/* Not trunking, with an event history, the receiver on carrier 100: the record whose channel is a timeslot there is
+ * the heard call, published from its speech. */
+static session
+session_heard(void) {
+    session s = session_open();
+    session_history(&s);
+    s.opts->trunk_enable = 0;
+    tetra_sm_tick(s.opts, s.state);
+    s.opts->audio_in_type = AUDIO_IN_RTL;
+    s.opts->rtlsdr_center_freq = (uint32_t)CARRIER_HZ(100);
+    return s;
+}
+
+/* D-SETUP (table 14.15) of call @p call_id with @p basic_service in a MAC-RESOURCE addressed by type @p addr_type
+ * (table 21.55) with identity @p ssi, and an allocation of @p timeslots on @p carrier. */
+static void
+send_setup_to(session* s, uint32_t addr_type, uint32_t ssi, uint16_t call_id, uint32_t basic_service,
+              uint32_t timeslots, uint32_t carrier) {
+    ttb_block cmce = {0};
+    ttb_d_setup(&cmce, call_id, basic_service);
+    ttb_block b = {0};
+    const int start = ttb_resource(&b, 0, addr_type, ssi);
+    if (addr_type == TETRA_MAC_ADDR_EVENT_LABEL) {
+        ttb_put(&b, ssi, 10);
+    }
+    ttb_resource_flags(&b, 1u);
+    ttb_allocation(&b, timeslots, 1, carrier);
+    ttb_put(&b, 2, 4); /* BL-UDATA */
+    ttb_put_bits(&b, cmce.bits, cmce.n);
+    ttb_close_resource(&b, start);
+    ttb_finish(&b, TTB_SCH_F_BITS, -1);
+    tetra_confirm_note_signalling(s->state);
+    tetra_mac_parse_schd(b.bits, b.n, 1, s->opts, s->state);
+}
+
+/* A D-SETUP of group speech call @p call_id handed to the call records with a MAC address of type @p addr_type,
+ * identity @p ssi and encrypted short identity flag @p esi, and an allocation of TN2 on carrier 100. */
+static void
+send_setup_sdu(session* s, uint32_t addr_type, uint32_t ssi, int esi, uint16_t call_id) {
+    tetra_call_event setup;
+    DSD_MEMSET(&setup, 0, sizeof setup);
+    setup.kind = TETRA_CALL_EV_SETUP;
+    setup.call_id = call_id;
+    setup.basic_service = TTB_SPEECH_GROUP;
+    tetra_mac_sdu sdu;
+    DSD_MEMSET(&sdu, 0, sizeof sdu);
+    sdu.addr.type = (uint8_t)addr_type;
+    sdu.addr.esi = (uint8_t)esi;
+    sdu.addr.ssi = ssi;
+    sdu.addr.event_label = 0x55;
+    sdu.has_addr = 1;
+    sdu.has_alloc = 1;
+    sdu.alloc.timeslots = 4;
+    sdu.alloc.up_down = 1;
+    sdu.alloc.carrier = 100;
+    sdu.alloc.freq_hz = CARRIER_HZ(100);
+    tetra_calls_on_event(s->opts, s->state, &setup, &sdu);
+}
+
+/* The verified talkgroup canonical slot 0 carries: 1 when noted as TETRA group @p gssi, 0 when not noted at all. */
+static int
+canonical_verified(const session* s, uint32_t gssi) {
+    const dsd_call_snapshot call = canonical(s->state);
+    if (call.heard_noted == 0U) {
+        return 0;
+    }
+    assert(call.heard_variant == DSD_HEARD_TG_TETRA && call.heard_id == gssi);
+    return 1;
+}
+
+/* Committed history row @p i (0 the newest; item 0 is the staged row). */
+static const Event_History*
+committed_row(const session* s, int i) {
+    return &s->state->event_history_s[0].Event_History_Items[1 + i];
+}
+
+/* The proof of committed history row @p i. */
+static uint8_t
+row_proof(const session* s, int i) {
+    return committed_row(s, i)->heard_variant;
+}
+
+/* A CRC-checked D-SETUP of a group speech call to its GSSI makes the call eligible (stored on its record), and the
+ * first speech associated with it proves the group: noted once for the transmission, classified once, written to the
+ * history row. Speech never reaches the classifier again for the same transmission. */
+static void
+test_verified_group_setup_then_speech(void) {
+    session s = session_heard();
+    send_setup(&s, 0x300u, 0x0C, TTB_SPEECH_GROUP, 4, 100); /* TN2 of the carrier being received */
+    const tetra_call_t* const c = tetra_calls_peek(s.state, 0x0C);
+    assert(c && c->verified_gssi == 0x300u && c->alloc.carrier == 100U && c->alloc.timeslots == 4u);
+    assert(canonical(s.state).phase == DSD_CALL_PHASE_IDLE);
+    const long evals = dsd_heard_tg_test_eval_count();
+    speech(&s, 2);
+    assert(canonical(s.state).phase == DSD_CALL_PHASE_ACTIVE && canonical_verified(&s, 0x300u));
+    for (int i = 0; i < 5; i++) {
+        speech(&s, 2);
+    }
+    assert(dsd_heard_tg_test_eval_count() == evals + 1);
+    send_call_pdu(&s, 0x300u, TETRA_CMCE_D_TX_CEASED, 0x0C, 1);
+    assert(canonical(s.state).phase == DSD_CALL_PHASE_ENDED && canonical_verified(&s, 0x300u));
+    assert(row_proof(&s, 0) == DSD_HEARD_TG_TETRA && committed_row(&s, 0)->heard_id == 0x300u
+           && committed_row(&s, 0)->event_string[0] != '\0');
+    session_close(&s);
+
+    /* Trunking: the followed call publishes at its D-SETUP, which proves nothing until its speech. */
+    s = session_open();
+    session_history(&s);
+    send_setup(&s, 0x100u, 0x0A, TTB_SPEECH_GROUP, 4, 120);
+    assert(followed_call(s.state) == 0x0A && canonical(s.state).phase == DSD_CALL_PHASE_ACTIVE);
+    assert(!canonical_verified(&s, 0x100u));
+    send_tx_granted(&s, 0x100u, 0x0A, 0x4444u);
+    assert(!canonical_verified(&s, 0x100u));
+    speech(&s, 3); /* not the call's timeslot */
+    assert(!canonical_verified(&s, 0x100u));
+    speech(&s, 2);
+    assert(canonical(s.state).media_active == 1U && canonical_verified(&s, 0x100u));
+    session_close(&s);
+}
+
+/* The proof is the speech of the call's own allocation: speech the state machine still takes as the followed call's on
+ * a channel its record no longer holds (another cell's BSCH took the record's allocation) proves nothing, and the
+ * record's next allocation there lets its speech prove the group. */
+static void
+test_verified_group_needs_the_allocation(void) {
+    session s = session_open();
+    send_setup(&s, 0x100u, 0x0A, TTB_SPEECH_GROUP, 4, 120);
+    send_tx_granted(&s, 0x100u, 0x0A, 0x4444u);
+    tetra_calls_forget_cell(s.state);
+    const tetra_call_t* const c = tetra_calls_peek(s.state, 0x0A);
+    assert(c && c->alloc.timeslots == 0u && c->verified_gssi == 0x100u && followed_call(s.state) == 0x0A);
+    speech(&s, 2);
+    const dsd_call_snapshot call = canonical(s.state);
+    assert(call.phase == DSD_CALL_PHASE_ACTIVE && call.media_active == 1U && !canonical_verified(&s, 0x100u));
+    send_tx_granted_on(&s, 0x100u, 0x0A, 0x4444u, 4, 120);
+    assert(c->alloc.timeslots == 4u && followed_call(s.state) == 0x0A);
+    speech(&s, 2);
+    assert(canonical_verified(&s, 0x100u));
+    session_close(&s);
+}
+
+/* End-to-end encrypted speech, which nothing here decrypts and which does not play, still proves the group. */
+static void
+test_verified_group_encrypted_speech(void) {
+    session s = session_heard();
+    s.opts->dmr_mute_encL = 1;
+    send_setup(&s, 0x300u, 0x0C, TTB_SPEECH_GROUP | 0x10u, 4, 100);
+    speech(&s, 2);
+    const dsd_call_snapshot call = canonical(s.state);
+    assert(call.phase == DSD_CALL_PHASE_ACTIVE && call.crypto == DSD_CALL_CRYPTO_ENCRYPTED_PENDING);
+    assert(canonical_verified(&s, 0x300u));
+    session_close(&s);
+
+    s = session_open();
+    send_setup(&s, 0x100u, 0x0A, TTB_SPEECH_GROUP | 0x10u, 4, 120);
+    send_tx_granted(&s, 0x100u, 0x0A, 0x4444u);
+    speech(&s, 2);
+    assert(canonical(s.state).media_active == 1U && canonical_verified(&s, 0x100u));
+    session_close(&s);
+}
+
+/* A group setup followed by silence proves nothing: its canonical call ends, and its history row, without a proof. */
+static void
+test_verified_group_setup_then_silence(void) {
+    session s = session_open();
+    session_history(&s);
+    send_setup(&s, 0x100u, 0x0A, TTB_SPEECH_GROUP, 4, 120);
+    send_tx_granted(&s, 0x100u, 0x0A, 0x4444u);
+    assert(canonical(s.state).phase == DSD_CALL_PHASE_ACTIVE);
+    send_call_pdu(&s, 0x100u, TETRA_CMCE_D_TX_CEASED, 0x0A, 1);
+    speech(&s, 2); /* the trail of the transmission that ceased */
+    assert(canonical(s.state).phase == DSD_CALL_PHASE_ENDED && !canonical_verified(&s, 0x100u));
+    send_call_pdu(&s, 0x100u, TETRA_CMCE_D_RELEASE, 0x0A, 5);
+    assert(committed_row(&s, 0)->event_string[0] != '\0');
+    for (int i = 0; i < 4; i++) {
+        assert(row_proof(&s, i) == DSD_HEARD_TG_NONE);
+    }
+    session_close(&s);
+}
+
+/* Only a group SSI qualifies: a D-SETUP addressed by a USSI (another network's numbering), an SMI, an event label alone
+ * or an encrypted short identity that could not be recovered leaves the call ineligible, whatever speech follows; and
+ * so does a speech call that is not a group call. */
+static void
+test_verified_group_needs_a_group_ssi(void) {
+    static const uint32_t k_types[] = {TETRA_MAC_ADDR_USSI, TETRA_MAC_ADDR_SMI, TETRA_MAC_ADDR_EVENT_LABEL};
+    for (size_t i = 0; i < sizeof k_types / sizeof k_types[0]; i++) {
+        session s = session_heard();
+        send_setup_to(&s, k_types[i], k_types[i] == TETRA_MAC_ADDR_EVENT_LABEL ? 0x55u : 0x300u, 0x0C, TTB_SPEECH_GROUP,
+                      4, 100);
+        const tetra_call_t* const c = tetra_calls_peek(s.state, 0x0C);
+        assert(c && c->alloc.carrier == 100U);
+        speech(&s, 2);
+        assert(canonical(s.state).phase == DSD_CALL_PHASE_ACTIVE && !canonical_verified(&s, 0x300u));
+        if (k_types[i] == TETRA_MAC_ADDR_USSI) {
+            assert(canonical(s.state).ota_target_id == 0x300u); /* published as the number, yet not proven */
+        }
+        session_close(&s);
+    }
+
+    /* An encrypted short identity names no one, even where its bits equal the number the call was set up to. */
+    session s = session_heard();
+    send_setup_to(&s, TETRA_MAC_ADDR_USSI, 0x300u, 0x0C, TTB_SPEECH_GROUP, 4, 100);
+    send_setup_sdu(&s, TETRA_MAC_ADDR_SSI, 0x300u, 1, 0x0C);
+    assert(tetra_calls_peek(s.state, 0x0C)->called_ssi == 0x300u);
+    speech(&s, 2);
+    assert(canonical(s.state).phase == DSD_CALL_PHASE_ACTIVE && !canonical_verified(&s, 0x300u));
+    session_close(&s);
+
+    /* The same SSI address, recovered (clear): eligible. */
+    s = session_heard();
+    send_setup_sdu(&s, TETRA_MAC_ADDR_SSI, 0x300u, 0, 0x0C);
+    speech(&s, 2);
+    assert(canonical_verified(&s, 0x300u));
+    session_close(&s);
+
+    /* An individual speech call and a group data call are no group speech. */
+    s = session_heard();
+    send_setup(&s, 0x300u, 0x0C, TTB_SPEECH_P2P, 4, 100);
+    speech(&s, 2);
+    assert(canonical(s.state).phase == DSD_CALL_PHASE_ACTIVE && !canonical_verified(&s, 0x300u));
+    session_close(&s);
+    s = session_heard();
+    send_setup(&s, 0x300u, 0x0C, 0x20u | TTB_SPEECH_GROUP, 4, 100);
+    speech(&s, 2);
+    assert(!canonical_verified(&s, 0x300u));
+    session_close(&s);
+
+    /* A later D-SETUP of the call by USSI takes the eligibility back; one by event label alone keeps it. */
+    s = session_heard();
+    send_setup(&s, 0x300u, 0x0C, TTB_SPEECH_GROUP, 4, 100);
+    send_setup_to(&s, TETRA_MAC_ADDR_EVENT_LABEL, 0x55u, 0x0C, TTB_SPEECH_GROUP, 4, 100);
+    assert(tetra_calls_peek(s.state, 0x0C)->verified_gssi == 0x300u);
+    send_setup_to(&s, TETRA_MAC_ADDR_USSI, 0x300u, 0x0C, TTB_SPEECH_GROUP, 4, 100);
+    assert(tetra_calls_peek(s.state, 0x0C)->verified_gssi == 0u);
+    speech(&s, 2);
+    assert(canonical(s.state).phase == DSD_CALL_PHASE_ACTIVE && !canonical_verified(&s, 0x300u));
+    session_close(&s);
+}
+
+/* D-CONNECT goes to the calling party and never names the called group: one for a call no D-SETUP set up, or after
+ * a D-SETUP that did not qualify, proves nothing, with its allocation and speech. */
+static void
+test_verified_group_never_from_connect(void) {
+    session s = session_heard();
+    ttb_block cmce = {0};
+    put_connect(&cmce, 0x0E, 0);
+    send_block(&s, 0x300u, &cmce, 4, 100);
+    speech(&s, 2);
+    assert(canonical(s.state).phase == DSD_CALL_PHASE_ACTIVE && !canonical_verified(&s, 0x300u));
+    session_close(&s);
+
+    s = session_heard();
+    send_setup_to(&s, TETRA_MAC_ADDR_USSI, 0x300u, 0x0C, TTB_SPEECH_GROUP, 4, 100);
+    ttb_block connect = {0};
+    put_connect(&connect, 0x0C, 0);
+    send_block(&s, 0x300u, &connect, 4, 100);
+    assert(tetra_calls_peek(s.state, 0x0C)->verified_gssi == 0u);
+    speech(&s, 2);
+    assert(canonical(s.state).phase == DSD_CALL_PHASE_ACTIVE && !canonical_verified(&s, 0x300u));
+    session_close(&s);
+}
+
+/* Each floor grant is a transmission of its own, which D-TX CEASED ends: the call stays eligible, but a second grant on
+ * the same call identifier is proven only by its own speech, and one that ends in silence keeps no proof. */
+static void
+test_verified_group_per_floor_grant(void) {
+    session s = session_heard();
+    send_setup(&s, 0x300u, 0x0C, TTB_SPEECH_GROUP, 4, 100);
+    speech(&s, 2);
+    const uint64_t first = canonical(s.state).epoch;
+    assert(canonical_verified(&s, 0x300u));
+    send_call_pdu(&s, 0x300u, TETRA_CMCE_D_TX_CEASED, 0x0C, 1);
+    assert(row_proof(&s, 0) == DSD_HEARD_TG_TETRA);
+
+    send_tx_granted(&s, 0x300u, 0x0C, 0x5555u);
+    dsd_call_snapshot call = canonical(s.state);
+    assert(call.phase == DSD_CALL_PHASE_ACTIVE && call.epoch != first && !canonical_verified(&s, 0x300u));
+    send_call_pdu(&s, 0x300u, TETRA_CMCE_D_TX_CEASED, 0x0C, 1);
+    assert(canonical(s.state).phase == DSD_CALL_PHASE_ENDED && !canonical_verified(&s, 0x300u));
+    assert(row_proof(&s, 0) == DSD_HEARD_TG_NONE && row_proof(&s, 1) == DSD_HEARD_TG_TETRA);
+
+    send_tx_granted(&s, 0x300u, 0x0C, 0x6666u);
+    assert(!canonical_verified(&s, 0x300u));
+    speech(&s, 2);
+    call = canonical(s.state);
+    assert(call.phase == DSD_CALL_PHASE_ACTIVE && call.ota_source_id == 0x6666u && canonical_verified(&s, 0x300u));
+    send_call_pdu(&s, 0x300u, TETRA_CMCE_D_TX_CEASED, 0x0C, 1);
+    assert(row_proof(&s, 0) == DSD_HEARD_TG_TETRA && row_proof(&s, 1) == DSD_HEARD_TG_NONE
+           && row_proof(&s, 2) == DSD_HEARD_TG_TETRA && committed_row(&s, 1)->event_string[0] != '\0');
+    session_close(&s);
+}
+
 int
 main(void) {
     test_pdus_act_on_their_own_call();
@@ -4949,6 +5245,13 @@ main(void) {
     test_receive_permission_round_four();
     test_receive_permission_round_five();
     test_radio_policy_follow();
+    test_verified_group_setup_then_speech();
+    test_verified_group_needs_the_allocation();
+    test_verified_group_encrypted_speech();
+    test_verified_group_setup_then_silence();
+    test_verified_group_needs_a_group_ssi();
+    test_verified_group_never_from_connect();
+    test_verified_group_per_floor_grant();
     DSD_FPRINTF(stdout, "TETRA_CALLS: OK\n");
     return 0;
 }
