@@ -5516,6 +5516,13 @@ simplex_identity(int numeric) {
     return id;
 }
 
+/* The DSP rate a two-target list of @p type is visited at: a TETRA DMO target only at a TETRA rate (issue #890 D3),
+   every other type at the fixture's own (0, none published). */
+static int
+simplex_case_dsp_rate_hz(const char* type) {
+    return strncmp(type, "tetra-dmo", 9) == 0 ? 72000 : 0;
+}
+
 /* Two conventional targets of @p type (250 ms dwell and hold): a checked report of @p protocol through the runtime hook
    holds the first past its dwell, one of @p other (another family) does not, and none does under voice-only scanning
    or the allow list for a numeric family (the stand-in evaluator refuses every listed lookup); a callsign family takes
@@ -5535,6 +5542,7 @@ run_digital_activity_family_case(const char* type, int protocol, int other, int 
     const dsd_trunk_scan_activity_identity id = simplex_identity(numeric);
     for (int pass = 0; pass < 4; pass++) {
         reset_scan_opts_state(&opts, &state);
+        g_scan_dsp_rate_hz = simplex_case_dsp_rate_hz(type);
         DSD_SNPRINTF(opts.trunk_scan_lists[0].path, sizeof opts.trunk_scan_lists[0].path, "%s", target_path);
         opts.trunk_scan_list_count = 1;
         /* pass 1: another family's report; 2: voice-only; 3: the allow list, with a slot filter set. */
@@ -5567,6 +5575,7 @@ run_digital_activity_family_case(const char* type, int protocol, int other, int 
         }
         dsd_engine_trunk_scan_shutdown(&opts, &state);
     }
+    g_scan_dsp_rate_hz = 0;
     trunk_scan_test_clear_now();
     cleanup_paths(dir, target_path, NULL);
     return test_rc;
@@ -5963,6 +5972,7 @@ run_presence_case(const char* type, int protocol, const dsd_trunk_scan_activity_
     static dsd_opts opts;
     static dsd_state state;
     reset_scan_opts_state(&opts, &state);
+    g_scan_dsp_rate_hz = simplex_case_dsp_rate_hz(type);
     opts.trunk_tune_enc_calls = enc_lockout ? 0 : 1;
     DSD_SNPRINTF(opts.trunk_scan_lists[0].path, sizeof opts.trunk_scan_lists[0].path, "%s", target_path);
     opts.trunk_scan_list_count = 1;
@@ -5988,6 +5998,7 @@ run_presence_case(const char* type, int protocol, const dsd_trunk_scan_activity_
         }
     }
     dsd_engine_trunk_scan_shutdown(&opts, &state);
+    g_scan_dsp_rate_hz = 0;
     trunk_scan_test_clear_now();
     cleanup_paths(dir, target_path, NULL);
     return test_rc;
