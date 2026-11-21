@@ -609,7 +609,11 @@ symbol_accumulate_add(symbol_work_ctx* work, float sample) {
  * The 2400 sym/s grid rules (NXDN48, dPMR): the averaging window and the slip bands below. They were measured at
  * 20 samples per symbol, a 2400 sym/s stream at 48 kHz, and are written in twentieths of a symbol so a 2400 sym/s
  * stream at another whole-sample span (30 at 72 kHz, 15 at 36 kHz, 40 at 96 kHz) gets the same rule. At 20 samples
- * per symbol the arithmetic is exactly the original 7..13 window and 7..10 / 11..14 bands.
+ * per symbol the arithmetic is exactly the original 7..13 window and 7..10 / 11..14 bands. The window is the samples
+ * whose instants fall in 7/20..13/20 of a symbol. A crossing index J says the crossing came after sample J - 1 and by
+ * sample J, so a band takes the indices whose such interval lies in it: 6/20..10/20 and 10/20..14/20. Taking J's own
+ * instant instead parked the grid half a sample of 40 later than at 20 (the first index under 7/20 is 13, 6.5/20),
+ * and a 96 kHz dPMR stream lost 2 of its 29 headers at every timing phase.
  *
  * They follow the active symbol rate above 10 samples per symbol. At 10 and below the 4800 sym/s rules are already
  * tuned for that span (a 2400 sym/s stream at 24 kHz is the same geometry as 4800 sym/s at 48 kHz), so those spans
@@ -628,7 +632,7 @@ symbol_uses_2400_grid(const dsd_state* state) {
 static inline int
 symbol_accumulate_nxdn_window(const dsd_state* state, int i) {
     const int sps = state->samplesPerSymbol;
-    return symbol_uses_2400_grid(state) && 20 * i >= 7 * sps && 20 * i < 14 * sps;
+    return symbol_uses_2400_grid(state) && 20 * i >= 7 * sps && 20 * i <= 13 * sps;
 }
 
 #ifdef USE_RADIO
@@ -717,12 +721,12 @@ symbol_accumulate_sample(const dsd_state* state, symbol_work_ctx* work, int i, f
  */
 static inline void
 symbol_adjust_timing_nxdn(const dsd_state* state, int* i) {
-    /* 7..10 and 11..14 at 20 samples per symbol, in twentieths of a symbol at any span. */
+    /* 7..10 and 11..14 at 20 samples per symbol: a crossing in 6/20..10/20 or 10/20..14/20 of a symbol at any span. */
     const int sps = state->samplesPerSymbol;
     const int jitter20 = 20 * state->jitter;
-    if (jitter20 >= 7 * sps && jitter20 < 11 * sps) {
+    if (jitter20 > 6 * sps && jitter20 <= 10 * sps) {
         (*i)--;
-    } else if (jitter20 >= 11 * sps && jitter20 < 15 * sps) {
+    } else if (jitter20 > 10 * sps && jitter20 <= 14 * sps) {
         (*i)++;
     }
 }
@@ -815,6 +819,23 @@ dsd_symbol_test_adjust_timing_index(int samples_per_symbol, int symbol_center, i
     if (jitter_after) {
         *jitter_after = state.jitter;
     }
+    return i;
+}
+
+int
+dsd_symbol_test_2400_grid(int samples_per_symbol, int symbol_rate_hz, int jitter, int index, int* in_window) {
+    static dsd_state state;
+    DSD_MEMSET(&state, 0, sizeof(state));
+    state.samplesPerSymbol = samples_per_symbol;
+    state.symbolCenter = dsd_opts_symbol_center(samples_per_symbol);
+    state.rf_mod = 2;
+    state.sps_hunt_idx = symbol_rate_hz == 2400 ? DSD_FRAME_SYNC_SPS_PROFILE_2400_4 : DSD_FRAME_SYNC_SPS_PROFILE_4800_4;
+    state.jitter = jitter;
+    if (in_window) {
+        *in_window = symbol_accumulate_nxdn_window(&state, index);
+    }
+    int i = 0;
+    symbol_adjust_timing_index(&state, 0, samples_per_symbol, &i);
     return i;
 }
 

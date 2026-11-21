@@ -766,6 +766,45 @@ test_float_symbol_replay_bounds_stored_symbols(void) {
     exitflag = 0;
 }
 
+/* The 2400 sym/s grid rules hold the same instants of a symbol at every span they run at. At 20 samples per symbol
+   (48 kHz) a crossing at index 7..10 slips the grid back a sample and 11..14 forward, so a grid walking back stops with
+   its crossing at 6/20 of a symbol and one walking forward at 14/20; the averaging window is samples 7..13. At 30 and
+   40 samples per symbol (72 and 96 kHz) the grid stops at the same 6/20 and 14/20, and the window holds the samples
+   whose instants lie in 7/20..13/20. At 40 the rule once parked the grid at 13 (6.5/20), and a 96 kHz dPMR stream lost
+   2 of its 29 headers at every timing phase. 4800 sym/s keeps its GFSK rule at 40. */
+static void
+test_2400_grid_rules_scale_by_time(void) {
+    static const int kSpans[] = {20, 30, 40, 60};
+    for (size_t k = 0; k < sizeof(kSpans) / sizeof(kSpans[0]); k++) {
+        const int sps = kSpans[k];
+        const int back_stop = (6 * sps) / 20;
+        const int forward_stop = (14 * sps) / 20;
+        assert(dsd_symbol_test_2400_grid(sps, 2400, back_stop, 0, NULL) == 0);
+        assert(dsd_symbol_test_2400_grid(sps, 2400, back_stop + 1, 0, NULL) == -1);
+        assert(dsd_symbol_test_2400_grid(sps, 2400, (10 * sps) / 20, 0, NULL) == -1);
+        assert(dsd_symbol_test_2400_grid(sps, 2400, (10 * sps) / 20 + 1, 0, NULL) == 1);
+        assert(dsd_symbol_test_2400_grid(sps, 2400, forward_stop, 0, NULL) == 1);
+        assert(dsd_symbol_test_2400_grid(sps, 2400, forward_stop + 1, 0, NULL) == 0);
+        for (int i = 0; i < sps; i++) {
+            int in_window = -1;
+            (void)dsd_symbol_test_2400_grid(sps, 2400, -1, i, &in_window);
+            assert(in_window == (20 * i >= 7 * sps && 20 * i <= 13 * sps));
+        }
+    }
+    int in_window = -1;
+    (void)dsd_symbol_test_2400_grid(20, 2400, -1, 7, &in_window);
+    assert(in_window == 1);
+    (void)dsd_symbol_test_2400_grid(20, 2400, -1, 13, &in_window);
+    assert(in_window == 1);
+    (void)dsd_symbol_test_2400_grid(20, 2400, -1, 14, &in_window);
+    assert(in_window == 0);
+    /* 4800 sym/s at 40 samples per symbol: the GFSK rule (centre 19), no 2400 sym/s window. */
+    assert(dsd_symbol_test_2400_grid(40, 4800, 13, 0, NULL) == 0);
+    assert(dsd_symbol_test_2400_grid(40, 4800, 19, 0, NULL) == -1);
+    (void)dsd_symbol_test_2400_grid(40, 4800, -1, 20, &in_window);
+    assert(in_window == 0);
+}
+
 static void
 test_symbol_helper_window_sync_and_timing_contracts(void) {
     int l_edge = 0;
@@ -7058,6 +7097,7 @@ main(void) {
     test_soft_symbol_replay_bounds_stored_symbols();
     test_float_symbol_replay_bounds_stored_symbols();
     test_symbol_helper_window_sync_and_timing_contracts();
+    test_2400_grid_rules_scale_by_time();
     test_symbol_helper_analog_i16_conversion_contract();
     test_symbol_matched_filter_uses_active_nxdn_variant();
     test_symbol_matched_filter_runs_m17_rrc_after_an_m17_sync();

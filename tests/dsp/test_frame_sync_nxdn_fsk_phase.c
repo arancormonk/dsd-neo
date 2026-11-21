@@ -28,8 +28,15 @@
  * The stream runs at several output rates. The 2400 sym/s grid rules were once
  * keyed on exactly 20 samples per symbol (48 kHz), so at 72 kHz (30 samples per
  * symbol) the grid never slipped out of a bad starting phase and a third of the
- * phases decoded wrong; 36 and 60 kHz failed the same way. 24 kHz (10 samples per
- * symbol) keeps the 4800 sym/s rules for that span and must still decode.
+ * phases decoded wrong; 36, 60 and 96 kHz failed the same way. 24 kHz (10 samples
+ * per symbol) keeps the 4800 sym/s rules for that span and must still decode.
+ *
+ * 96 kHz runs the shorter transition only. This boxcar shape and the open-loop grid
+ * leave some transition lengths on the slicer's edge at every rate: at 48 kHz a
+ * transition of 12 or 16 samples (instead of 8 or 14) fails 10 and 12 phases, and at
+ * 96 kHz the 14-sample share does the same. Which lengths land there moves with the
+ * span; the grid's stopping instants do not (DSP_SYMBOL_REPLAY,
+ * test_2400_grid_rules_scale_by_time()).
  */
 
 #include <dsd-neo/core/dibit.h>
@@ -334,13 +341,14 @@ main(void) {
        bias. Neither is the transmitted clock. Two read chunk sizes vary how much
        sits in the decoder's cache when a symbol is composed. Every starting
        sample offset of a symbol is tried at each rate. */
-    static const unsigned int kRates[] = {24000U, 36000U, 48000U, 60000U, 72000U};
+    static const unsigned int kRates[] = {24000U, 36000U, 48000U, 60000U, 72000U, 96000U};
     static const size_t kRampsAt20[] = {8U, 14U};
     static const size_t kChunks[] = {512U, 37U};
     for (size_t q = 0; q < sizeof(kRates) / sizeof(kRates[0]); q++) {
         g_output_rate_hz = kRates[q];
         g_sps = kRates[q] / NXDN48_BAUD;
-        for (size_t r = 0; r < sizeof(kRampsAt20) / sizeof(kRampsAt20[0]); r++) {
+        const size_t ramps = kRates[q] == 96000U ? 1U : sizeof(kRampsAt20) / sizeof(kRampsAt20[0]);
+        for (size_t r = 0; r < ramps; r++) {
             if (!build_waveform((kRampsAt20[r] * g_sps) / 20U)) {
                 DSD_FPRINTF(stderr, "failed to build NXDN48 phase fixture\n");
                 return 1;
