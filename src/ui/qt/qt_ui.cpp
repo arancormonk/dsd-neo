@@ -485,6 +485,12 @@ wire_heard_talkgroups(QQmlApplicationEngine& engine, UiController* controller, S
     heard_talkgroups_follow_systems(heard, systems, restore);
     controller->setHeardTalkgroups(heard);
     history->setHeardSink(heard);
+    // A forget or clear first makes the spill History folded unable to come back; History may be gone at teardown.
+    heard->setBeforeEdit([history = QPointer<CallHistoryModel>(history)]() {
+        if (history) {
+            (void)history->settleSpill();
+        }
+    });
     return heard;
 }
 

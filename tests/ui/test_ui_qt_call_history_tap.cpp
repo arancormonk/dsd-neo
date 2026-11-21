@@ -52,6 +52,7 @@
 #include <QTemporaryDir>
 #include <QVariant>
 #include <QVariantMap>
+#include <QVector>
 #include <Qt>
 #include <QtGlobal>
 #include <algorithm>
@@ -77,6 +78,7 @@
 #include "call_history_model.h"
 #include "call_history_tap.h"
 #include "heard_talkgroup_sink.h"
+#include "heard_talkgroup_store.h"
 #include "json_store.h"
 
 using dsd_qt::CallHistoryModel;
@@ -1538,6 +1540,75 @@ test_heard_tap_learns_only_owned_live_calls(void) {
            sink.seen.size() == 1 && sink.count(QStringLiteral("sys-a"), 43200U) == 1);
 }
 
+/* Copy every file under @p from into @p to, keeping the folders (a process's disk at one instant). */
+void
+copy_tree(const QString& from, const QString& to) {
+    const QDir source(from);
+    QDir().mkpath(to);
+    for (const QFileInfo& info : source.entryInfoList(QDir::Files | QDir::Dirs | QDir::NoDotAndDotDot | QDir::Hidden)) {
+        const QString target = QDir(to).filePath(info.fileName());
+        if (info.isDir()) {
+            copy_tree(info.absoluteFilePath(), target);
+        } else {
+            QFile::copy(info.absoluteFilePath(), target);
+        }
+    }
+}
+
+/* Issue #903 (ruling on the refold window): a Forget after the handoff folded the spill, then the process dies before
+ * History's own save: the relaunch refolds nothing the Forget removed, because the Forget first had History write its
+ * log, which acknowledges and empties the spill (CallHistoryModel::settleSpill(), as qt_ui.cpp wires it). The death is
+ * the app data folder as it was right after the Forget's write, put back after the process's teardown wrote more. */
+void
+test_heard_forget_after_a_fold_survives_a_death(void) {
+    resetStorage();
+    const QString name = QString::fromLatin1(dsd_qt::HeardTalkgroupStore::kFileName);
+    const QString owner = QStringLiteral("sys-a");
+    const auto allow = [](const QString& uid) { return uid == QStringLiteral("sys-a"); };
+    const QString dataDir = QStandardPaths::writableLocation(QStandardPaths::AppDataLocation);
+    QTemporaryDir atDeath;
+    expect("forget after fold: a folder for the disk at death", atDeath.isValid());
+    Decoder decoder;
+    const time_t when = 1755600000;
+    {
+        dsd_qt::HeardTalkgroupStore store(name);
+        store.setOwnerPolicy(allow);
+        CallHistoryModel model;
+        start_tap(model);
+        model.setHeardSink(&store);
+        store.setBeforeEdit([&model]() { (void)model.settleSpill(); });
+        start_saved(model, owner);
+        gui_ingest(model);
+        set_app_state(Qt::ApplicationSuspended);
+        decoder.commit(0, 44000U, 99U, when);
+        prove_newest(decoder, 0, 44000U);
+        decoder.commit(0, 44001U, 99U, when + 60);
+        prove_newest(decoder, 0, 44001U);
+        decoder.publish();
+        model.waitForBackgroundPollForTest();
+        set_app_state(Qt::ApplicationActive);
+        gui_ingest(model);
+        expect("forget after fold: the fold taught both groups", store.entriesFor(owner).size() == 2);
+        expect("forget after fold: the folded spill waits for History's save", spill_lines() == 2);
+        store.forget(owner, 44000U);
+        store.waitForWrites();
+        model.waitForSaveForTest();
+        expect("forget after fold: the forget emptied the spill first", spill_size() == 0);
+        // The process dies here, before History's own (debounced) save.
+        copy_tree(dataDir, atDeath.path());
+    }
+    QDir(dataDir).removeRecursively();
+    copy_tree(atDeath.path(), dataDir);
+    dsd_qt::HeardTalkgroupStore relaunchedStore(name);
+    relaunchedStore.setOwnerPolicy(allow);
+    CallHistoryModel relaunched;
+    relaunched.setHeardSink(&relaunchedStore);
+    gui_ingest(relaunched);
+    const QVector<dsd_qt::HeardTalkgroupStore::Entry> left = relaunchedStore.entriesFor(owner);
+    expect("forget after fold: the forgotten group does not come back", left.size() == 1 && left.at(0).id == 44001U);
+    expect("forget after fold: History kept both calls", relaunched.count() == 2);
+}
+
 /* Issue #903 (r2 finding 2): the backlog the tap could not spill reaches the remembered talkgroups at the model's
  * teardown, before its last save; the sink outlives the model, as the app builds them. */
 void
@@ -1619,6 +1690,7 @@ main(int argc, char** argv) {
     test_heard_last_call_of_a_during_b_start();
     test_heard_tap_learns_only_owned_live_calls();
     test_heard_teardown_backlog_reaches_the_sink();
+    test_heard_forget_after_a_fold_survives_a_death();
 
     QDir(dataDir).removeRecursively();
     if (g_failures != 0) {

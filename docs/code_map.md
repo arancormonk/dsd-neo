@@ -17080,12 +17080,18 @@ Qt Quick frontend (`src/ui/qt`):
     fragment part keeps its own proof and latch (`FragmentPart::heardVariant`, `heardId`, `liveInput`); the row shows
     its first proven part's proof and is live only while every part is. Persisted on rows, parts and seen entries
     (`hv`, `hid`, `live`; older ones read none and not live), and change detection counts a proof gained or the latch
-    closed (`absorbSeenProof()`), so a late proof on a committed row is read again. Tests: `UI_QT_CALL_HISTORY_MODEL`
+    closed (`absorbSeenProof()`), so a late proof on a committed row is read again. A Forget or Clear in the store
+    cannot be undone by a later fold of a spill History already folded: `HeardTalkgroupStore::setBeforeEdit()` runs
+    `CallHistoryModel::settleSpill()` first (wired in `qt_ui.cpp`, through a `QPointer`), which folds what a running tap
+    holds and, while a folded spill waits for its acknowledgement, waits out the queued saves and writes History now, so
+    the spill is acknowledged and emptied before the store removes anything (a failed write keeps the spill, as every
+    failed save does). Tests: `UI_QT_CALL_HISTORY_MODEL`
     (`test_heard_*`: once per fragment, live/operator/scan/no-owner/no-options gates, a late proof and a CRC revision,
     a merged conversation in both orders, the ring-bound owner across a relaunch, scan targets, the round trip),
     `UI_QT_CALL_HISTORY_TAP` (`test_heard_*`: 1,001 groups spilled while suspended, by handoff and by process death; A's
     last call during B's start; a shared scan id, a live-to-file switch and an operator tune through the tap; the
-    teardown backlog), `UI_QT_SIGNAL_SEARCH` (`testKnownFrequencySessionTargetOwners`), `UI_QT_QML_SESSION_TOOLS`
+    teardown backlog; a Forget after a fold, then a death before History's save), `UI_QT_HEARD_TALKGROUP_STORE`
+    (`test_before_edit_hook`), `UI_QT_SIGNAL_SEARCH` (`testKnownFrequencySessionTargetOwners`), `UI_QT_QML_SESSION_TOOLS`
     (`test_accepted_starts_name_their_heard_owners`).
   - Tests: `UI_QT_CALL_HISTORY_MODEL` (uids, fragments, recording roles, B6), `UI_QT_CALL_HISTORY_TAP` (300 commits
     while suspended, a spill across a process death, a stop and a clear while away, write volume, a spill unwritable

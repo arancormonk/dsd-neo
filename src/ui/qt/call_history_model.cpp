@@ -3049,6 +3049,25 @@ CallHistoryModel::setSessionOwnersFromMap(qlonglong session, const QString& sing
     setSessionOwners(session, singleOwnerUid, scan);
 }
 
+bool
+CallHistoryModel::settleSpill() {
+    const bool resumeTap = handOffBackgroundCaptureForSession();
+    bool settled = true;
+    if (m_spillFoldedBytes >= 0) {
+        // One writer at a time, as the destructor's last save: the queued saves finish first.
+        m_saveTimer.stop();
+        m_savePool.waitForDone();
+        m_saveDirty = false;
+        settled = saveSync();
+        if (!settled) {
+            m_saveDirty = true;
+            scheduleSave();
+        }
+    }
+    resumeBackgroundCapture(resumeTap);
+    return settled;
+}
+
 void
 CallHistoryModel::saveHeardOwners() {
     m_settings.setValue(QLatin1String(kHeardOwnersKey), heard_owners_to_text(m_heardOwners));

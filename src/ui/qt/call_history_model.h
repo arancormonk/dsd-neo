@@ -348,6 +348,15 @@ class CallHistoryModel : public QAbstractListModel, public HeardTalkgroupSource 
      */
     void setSessionOwners(qint64 session, const QString& singleOwnerUid, const QHash<QString, QString>& scanEntryOwner);
 
+    /**
+     * @brief Make the background spill this model folded unable to come back (issue #903): fold what a running tap
+     * holds (it starts again), then, when a folded spill still waits for a save's acknowledgement, wait out the saves in
+     * flight and write both stores now, which acknowledges it and empties the spill. For HeardTalkgroupStore's forget
+     * and clear (HeardTalkgroupStore::setBeforeEdit()), so a relaunch after the process dies refolds nothing they
+     * removed. @return false when that write failed (the spill is kept, as every failed save keeps it).
+     */
+    bool settleSpill();
+
     /** @brief setSessionOwners() for QML: @p scanEntryOwner maps each target id to a saved system's uid (a string). */
     Q_INVOKABLE void setSessionOwnersFromMap(qlonglong session, const QString& singleOwnerUid,
                                              const QVariantMap& scanEntryOwner);

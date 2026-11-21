@@ -179,6 +179,11 @@ HeardTalkgroupStore::loaded() const {
 }
 
 void
+HeardTalkgroupStore::setBeforeEdit(std::function<void()> hook) {
+    m_beforeEdit = std::move(hook);
+}
+
+void
 HeardTalkgroupStore::setOwnerPolicy(std::function<bool(const QString&)> policy) {
     m_policy = std::move(policy);
 }
@@ -232,8 +237,14 @@ HeardTalkgroupStore::entriesFor(const QString& ownerUid) const {
 
 void
 HeardTalkgroupStore::forget(const QString& ownerUid, quint32 id) {
-    if (!m_loaded) {
+    const auto held = m_owners.constFind(ownerUid);
+    if (!m_loaded || held == m_owners.constEnd()
+        || std::none_of(held->keyBegin(), held->keyEnd(), [id](quint64 key) { return key_id(key) == id; })) {
         return;
+    }
+    // Before the removal: what the hook folds may observe the id again, and the forget then takes it too.
+    if (m_beforeEdit) {
+        m_beforeEdit();
     }
     const auto owner = m_owners.find(ownerUid);
     if (owner == m_owners.end()) {
@@ -253,7 +264,13 @@ HeardTalkgroupStore::forget(const QString& ownerUid, quint32 id) {
 
 void
 HeardTalkgroupStore::clear(const QString& ownerUid) {
-    if (!m_loaded || m_owners.remove(ownerUid) == 0) {
+    if (!m_loaded || !m_owners.contains(ownerUid)) {
+        return;
+    }
+    if (m_beforeEdit) {
+        m_beforeEdit();
+    }
+    if (m_owners.remove(ownerUid) == 0) {
         return;
     }
     changed(ownerUid);

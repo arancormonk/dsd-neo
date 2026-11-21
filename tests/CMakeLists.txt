@@ -27040,6 +27040,8 @@ if(DSD_ENABLE_QT_UI)
         ${PROJECT_SOURCE_DIR}/src/ui/qt/call_history_payload.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/call_history_heard.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/call_history_tap.cpp
+        # Issue #903: the remembered talkgroups a forget after a fold must keep.
+        ${PROJECT_SOURCE_DIR}/src/ui/qt/heard_talkgroup_store.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/json_store.cpp
     )
     target_include_directories(

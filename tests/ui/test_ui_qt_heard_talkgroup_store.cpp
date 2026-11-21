@@ -569,6 +569,39 @@ test_policy() {
     fresh(name);
 }
 
+/* Issue #903: forget and clear run the before-edit hook first, and only when they remove something; what the hook
+   observes (History folding what its background tap held) is removed with the rest. */
+void
+test_before_edit_hook() {
+    const QString name = QStringLiteral("heard_before_edit.json");
+    fresh(name);
+    HeardTalkgroupStore store(name);
+    store.setOwnerPolicy(allow_all);
+    int runs = 0;
+    store.setBeforeEdit([&store, &runs]() {
+        runs++;
+        store.observe(kOwnerA, 2, 100, 50);
+        store.observe(kOwnerA, 1, 300, 60);
+    });
+    store.forget(kOwnerA, 100);
+    store.clear(kOwnerA);
+    expect("before edit: nothing held, the hook does not run", runs == 0);
+    store.observe(kOwnerA, 1, 100, 10);
+    store.observe(kOwnerA, 1, 200, 20);
+    store.forget(kOwnerA, 100);
+    QVector<HeardTalkgroupStore::Entry> left = store.entriesFor(kOwnerA);
+    expect("before edit: forget runs the hook once, first", runs == 1);
+    expect("before edit: what the hook observed of the id goes with the forget",
+           left.size() == 2 && std::none_of(left.cbegin(), left.cend(), [](const HeardTalkgroupStore::Entry& e) {
+               return e.id == 100U;
+           }));
+    store.clear(kOwnerA);
+    expect("before edit: clear runs the hook first and removes what it observed",
+           runs == 2 && store.entriesFor(kOwnerA).isEmpty());
+    store.waitForWrites();
+    fresh(name);
+}
+
 /* What is owed at teardown is written by the destructor. */
 void
 test_teardown_writes() {
@@ -609,6 +642,7 @@ main(int argc, char** argv) {
     test_forget_clear_not_undone();
     test_purge();
     test_policy();
+    test_before_edit_hook();
     test_teardown_writes();
     test_burst_coalesced();
     test_pause_hook();

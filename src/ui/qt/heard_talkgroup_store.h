@@ -91,11 +91,26 @@ class HeardTalkgroupStore : public QObject, public HeardTalkgroupSink {
     /** @brief @p ownerUid's entries, heard most recently first (ties: lower variant, then lower id). */
     QVector<Entry> entriesFor(const QString& ownerUid) const;
 
-    /** @brief Remove every variant of @p id for @p ownerUid, and write at once. Not gated by the policy. */
+    /**
+     * @brief Remove every variant of @p id for @p ownerUid, and write at once. Not gated by the policy.
+     *
+     * When it holds the id, the before-edit hook (setBeforeEdit()) runs first, so nothing learnt before the forget can
+     * come back after it.
+     */
     void forget(const QString& ownerUid, quint32 id);
 
-    /** @brief Remove every entry of @p ownerUid, and write at once. Not gated by the policy. */
+    /** @brief Remove every entry of @p ownerUid, and write at once. Not gated by the policy. Runs the before-edit hook
+     * first when it holds the owner, as forget() does. */
     void clear(const QString& ownerUid);
+
+    /**
+     * @brief What forget() and clear() run before they remove anything (empty: nothing).
+     *
+     * The app passes History's CallHistoryModel::settleSpill(): it folds what the background tap holds (which may
+     * observe here) and writes History, so the background spill it folded is acknowledged and gone, and no later fold of
+     * it (a relaunch after the process dies) observes again what the edit removes.
+     */
+    void setBeforeEdit(std::function<void()> hook);
 
     /**
      * @brief Remove every owner not in @p liveUids, and write at once.
@@ -151,6 +166,7 @@ class HeardTalkgroupStore : public QObject, public HeardTalkgroupSink {
     QHash<QString, OwnerEntries> m_owners;
     QJsonArray m_kept; // elements of another v, written back as they were read
     std::function<bool(const QString&)> m_policy;
+    std::function<void()> m_beforeEdit;
 
     quint64 m_generation = 0;       // bumped by every change
     quint64 m_queuedGeneration = 0; // the state the last queued write carries
