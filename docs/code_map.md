@@ -13351,8 +13351,12 @@ Private per-protocol modules worth knowing about:
   the 16-bit source and 4-bit rest LSN read from the header only. A rest LSN outside 1..16 announces none, and an LC
   announces one only when its own check passed (`CRCCorrect`: the RS check of a header or terminator, the 5-bit
   checksum of an embedded LC); clean FEC alone does not. Under `-F` a RAS-accepted LC counts as checked, as a
-  RAS-accepted 0x3E status does. The LC's vendor ID (`dmr_mfid`, shown as the branding), the Hytera XPT branding and
-  an XPT alert's free channel take the same gate. The 0x3E
+  RAS-accepted 0x3E status does. The LC's vendor ID (`dmr_mfid`, shown as the branding) and an XPT alert's free
+  channel take the same gate. The Hytera XPT branding takes a stricter one (`dmr_flco_crc_checked()`: a RAS-accepted
+  LC never sets it), since it makes later standard LCs read a 16-bit target. Only a voice channel user opens a call,
+  holds the scan and arms or releases the encryption lockout (`dmr_flco_opens_voice_call()`, keyed on the raw FID
+  before the Kenwood and Capacity Max normalisation): under FID 0 only FLCO 0x00 and 0x03 (TS 102 361-2 Table B.1);
+  the Motorola and Hytera FIDs keep every FLCO the decoder reads as a call. The 0x3E
   channel status reads its rest LSN as 5 bits (19..23) and decodes each active LSN's ID in the parser, one byte per
   active group LSN and one 16-bit word per active private LSN, so which LSNs the display window shows never moves an
   offset. Cap+ follows a call already in progress on that status alone, outside the DMR SM grant path, so the voice
@@ -13372,7 +13376,7 @@ Private per-protocol modules worth knowing about:
   leaves it. The slot's LSN is the followed carrier's (LSN n is slot (n - 1) & 1 of the channel-map frequency,
   `dmr_cspdu_cap_plus_slot_lsn()`), not the record's, so a slot whose identity expired with its call while the
   companion kept the carrier busy (no record left) takes the group a status names for its next call. Tests:
-  `DMR_FLCO_PRIVACY_MODES`, `DMR_GRANT_POLICY`.
+  `DMR_FLCO_PRIVACY_MODES`, `DMR_GRANT_POLICY`, `DMR_FLCO_FID0`.
 - DMR reasons and C_AHOY meaning (`src/protocol/dmr/dmr_reason.{c,h}`). The Tier II NACK_Rsp Reason Code (TS 102 361-2
   Table 7.13) and the Tier III C_ACKD / C_ACKU / P_ACKD / P_ACKU Reason (TS 102 361-4 Tables 7.42-7.45, plus
   MS_Duplex_Not_Supported 0x16 from the clause 7.2.8.2 text) are separate tables, as they give 0x21 different meanings;

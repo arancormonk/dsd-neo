@@ -135,6 +135,11 @@ void dmr_note_published_live_crypto(dsd_state* state, uint8_t slot, int algid, i
 int dmr_pi_precall_fresh(const dsd_state* state, uint8_t slot, double now_m);
 void dmr_flco(dsd_opts* opts, dsd_state* state, uint8_t lc_bits[], uint32_t CRCCorrect, uint32_t* IrrecoverableErrors,
               uint8_t type);
+/** Non-zero when a Full LC with raw FID @p raw_fid (before any vendor normalisation) and FLCO @p flco is a voice
+ * channel user, which opens a call. Under FID 0 (and the Kenwood scrambler's FID 0x20, a standard LC) only FLCO 0x00
+ * (group) and 0x03 (unit to unit) are (TS 102 361-2 Table B.1). The Motorola (0x10) and Hytera (0x68, 0x08) FIDs keep
+ * the voice FLCOs dmr_flco() reads as calls: every one but their non-voice LCs. No other FID opens a call. */
+int dmr_flco_opens_voice_call(uint8_t raw_fid, uint8_t flco);
 uint8_t dmr_cach(dsd_opts* opts, dsd_state* state, uint8_t cach_bits[25]);
 /** A DMR burst of the sender kind its sync word names is on over-the-air slot @p slot (0/1; -1 when not known: both)
  * (issue #800, fail closed): the sender evidence and data header binding of another sender kind on its lanes are

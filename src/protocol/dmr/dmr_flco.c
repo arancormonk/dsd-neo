@@ -87,6 +87,10 @@ typedef struct {
     uint8_t reserved;
     uint8_t flco;
     uint8_t fid;
+    /* The FLCO and FID as received, before the Kenwood scrambler and Capacity Max talker alias/GPS forms are
+       normalised onto FID 0 (dmr_flco_detect_kenwood_sc(), dmr_flco_store_flco_and_normalize()). */
+    uint8_t raw_flco;
+    uint8_t raw_fid;
     uint8_t so;
     /* This LC's own service options, before the classification hysteresis filters the privacy bit into `so`: what the
        call record keeps as the call's checked encryption indication (dsd_call_crypto_update::enc_observed). */
@@ -270,6 +274,8 @@ dmr_flco_ctx_init(dmr_flco_ctx* ctx, dsd_opts* opts, dsd_state* state, uint8_t l
     ctx->reserved = lc_bits[1];
     ctx->flco = (uint8_t)convert_bits_into_output(&lc_bits[2], 6);
     ctx->fid = (uint8_t)convert_bits_into_output(&lc_bits[8], 8);
+    ctx->raw_flco = ctx->flco;
+    ctx->raw_fid = ctx->fid;
     ctx->so = (uint8_t)convert_bits_into_output(&lc_bits[16], 8);
     ctx->lc_so = ctx->so;
     ctx->target = (uint32_t)convert_bits_into_output(&lc_bits[24], 24);
@@ -297,15 +303,15 @@ dmr_flco_detect_kirisun_le(dmr_flco_ctx* ctx, int crc_ok) {
     }
 }
 
-// The XPT branding changes how later LCs, preamble CSBKs and data headers are read, so only a checked LC sets it.
+// The XPT branding changes how later LCs, preamble CSBKs and data headers are read (a standard header's target becomes
+// 16 bits), so only an LC whose own check passed sets it: one accepted under relaxed RAS handling (-F) never does, or a
+// later clean standard header would lose its target's high bits.
 static void
-dmr_flco_detect_hytera_xpt(dmr_flco_ctx* ctx, int crc_ok) {
-    if (crc_ok && ctx->flco == 0x09 && ctx->fid == 0x68) {
+dmr_flco_detect_hytera_xpt(dmr_flco_ctx* ctx) {
+    if (ctx->flco == 0x09 && ctx->fid == 0x68 && dmr_flco_crc_checked(ctx)) {
         DSD_SNPRINTF(ctx->state->dmr_branding, sizeof(ctx->state->dmr_branding), "%s", "  Hytera");
         DSD_SNPRINTF(ctx->state->dmr_branding_sub, sizeof(ctx->state->dmr_branding_sub), "XPT ");
-        if (dmr_flco_crc_checked(ctx)) {
-            dsd_rxid_note_dmr_brand(ctx->state, "Hytera XPT");
-        }
+        dsd_rxid_note_dmr_brand(ctx->state, "Hytera XPT");
     }
 }
 
@@ -321,7 +327,7 @@ dmr_flco_detect_special_modes(dmr_flco_ctx* ctx) {
     const int crc_ok = (*ctx->IrrecoverableErrors == 0 && ctx->CRCCorrect == 1);
     dmr_flco_detect_kenwood_sc(ctx, crc_ok);
     dmr_flco_detect_kirisun_le(ctx, crc_ok);
-    dmr_flco_detect_hytera_xpt(ctx, crc_ok);
+    dmr_flco_detect_hytera_xpt(ctx);
     dmr_flco_detect_invalid_hytera_enhanced(ctx);
     if (strcmp(ctx->state->dmr_branding_sub, "XPT ") == 0) {
         ctx->is_xpt = 1;
@@ -511,7 +517,8 @@ static void
 dmr_flco_print_hytera_xpt_alert_kind(const dmr_flco_ctx* ctx) {
     if (ctx->reserved == 1) {
         DSD_FPRINTF(stderr, "Group ");
-        if (ctx->target > 248 && ctx->target < 255) {
+        // Hytera XPT reserves groups 250-254 for emergency calls and 255 for All Call.
+        if (ctx->target >= 250 && ctx->target <= 254) {
             DSD_FPRINTF(stderr, "Emergency ");
         }
         if (ctx->target == 255) {
@@ -934,6 +941,34 @@ dmr_flco_sync_active_call_state(dmr_flco_ctx* ctx) {
 static int
 dmr_flco_is_capmax_private(const dmr_flco_ctx* ctx) {
     return ctx->fid == 0x10 && ctx->flco == 0x13;
+}
+
+// Motorola (FID 0x10): every FLCO dmr_flco() reads as a call, all but its non-voice LCs (0x08, 0x28, 0x29) and the
+// Capacity Max talker alias and GPS LCs (0x14..0x18, FID 0's 0x04..0x08 with bit 0x10 set).
+static int
+dmr_flco_motorola_opens_voice_call(uint8_t flco) {
+    return flco != 0x08U && flco != 0x28U && flco != 0x29U && (flco < 0x14U || flco > 0x18U);
+}
+
+// Hytera (FID 0x68): every FLCO dmr_flco() reads as a call, all but Hytera Enhanced privacy (0x02), the XPT call alert
+// (0x09) and the other Hytera LCs it names without reading (0x13, 0x2E, 0x2F, 0x31).
+static int
+dmr_flco_hytera_opens_voice_call(uint8_t flco) {
+    return flco != 0x02U && flco != 0x09U && flco != 0x13U && flco != 0x2EU && flco != 0x2FU && flco != 0x31U;
+}
+
+int
+dmr_flco_opens_voice_call(uint8_t raw_fid, uint8_t flco) {
+    switch (raw_fid) {
+        case 0x00U:
+        case 0x20U: // the Kenwood scrambler's standard LC, read under FID 0
+            // TS 102 361-2 Table B.1: Grp_V_Ch_Usr and UU_V_Ch_Usr are the only voice channel users.
+            return flco == 0x00U || flco == 0x03U;
+        case 0x10U: return dmr_flco_motorola_opens_voice_call(flco);
+        case 0x68U: return dmr_flco_hytera_opens_voice_call(flco);
+        case 0x08U: return 1;
+        default: return 0;
+    }
 }
 
 static dsd_call_kind
@@ -1610,8 +1645,9 @@ dmr_flco_apply_enc_lockout(dmr_flco_ctx* ctx) {
     // mode would drop entries that then owe a fresh probe once lockout returns.
     // Only an LC whose check passed (a RAS acceptance under -F included) names the talkgroup it acts on: one whose
     // checksum failed may name another call's, which it must neither lock out nor release.
-    const int lockout_active =
-        (ctx->opts->trunk_enable == 1 && ctx->opts->trunk_tune_enc_calls == 0) && ctx->CRCCorrect == 1U;
+    // An LC that is no voice channel user names no call to lock out or release.
+    const int lockout_active = (ctx->opts->trunk_enable == 1 && ctx->opts->trunk_tune_enc_calls == 0)
+                               && ctx->CRCCorrect == 1U && dmr_flco_opens_voice_call(ctx->raw_fid, ctx->raw_flco);
     if (!(ctx->so & 0x40)) {
         // Corroborated clear voice on this target releases any retained
         // lockout entry so a talkgroup that stopped encrypting recovers.
@@ -1905,14 +1941,17 @@ dmr_flco_run(dmr_flco_ctx* ctx) {
         dmr_flco_print_regular_header(ctx);
         dmr_flco_print_call_class(ctx);
         const int is_private = dmr_flco_call_kind(ctx) == DSD_CALL_KIND_PRIVATE_VOICE;
-        // The scan hold takes only identity that cleared its check. CRCCorrect is also 1 for a RAS-accepted LC
-        // under -F; that exception is deliberate (trunk_scan_hooks.h), so a scanned RAS repeater still holds.
-        if (ctx->CRCCorrect == 1U) {
+        // Only a voice channel user opens a call and holds the scan (an FID 0 LC with an FLCO other than 0x00 or 0x03
+        // names no call). The scan hold takes only identity that cleared its check. CRCCorrect is also 1 for a
+        // RAS-accepted LC under -F; that exception is deliberate (trunk_scan_hooks.h), so a scanned RAS repeater
+        // still holds.
+        const int voice_user = dmr_flco_opens_voice_call(ctx->raw_fid, ctx->raw_flco);
+        if (ctx->CRCCorrect == 1U && voice_user) {
             dsd_trunk_scan_hook_dmr_conventional_activity(ctx->opts, ctx->state, ctx->target, ctx->source, is_private,
                                                           (ctx->so & 0x40U) != 0U, 0);
         }
         dmr_flco_print_emergency_flag(ctx);
-        if (ctx->type != 2U && ctx->CRCCorrect == 1U) {
+        if (ctx->type != 2U && ctx->CRCCorrect == 1U && voice_user) {
             dmr_flco_publish_voice(ctx);
         }
         dmr_flco_apply_enc_lockout(ctx);

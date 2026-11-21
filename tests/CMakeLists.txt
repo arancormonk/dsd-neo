@@ -16089,6 +16089,19 @@ add_test(
     COMMAND dsd-neo_test_dmr_flco_capmax_private
 )
 
+# Under FID 0 only FLCO 0x00 and 0x03 open voice calls; a RAS-relaxed LC never sets the Hytera XPT branding; the XPT
+# group alert names 250-254 as emergency groups and 255 as All Call.
+add_executable(dsd-neo_test_dmr_flco_fid0 protocol/dmr/test_dmr_flco_fid0.c)
+target_include_directories(
+    dsd-neo_test_dmr_flco_fid0
+    PRIVATE ${PROJECT_SOURCE_DIR}/include
+)
+target_link_libraries(
+    dsd-neo_test_dmr_flco_fid0
+    PRIVATE dsd-neo_proto_dmr dsd-neo_app_control dsd-neo_test_support
+)
+add_test(NAME DMR_FLCO_FID0 COMMAND dsd-neo_test_dmr_flco_fid0)
+
 add_executable(
     dsd-neo_test_dmr_bs_alg_refresh_error
     protocol/dmr/test_dmr_bs_alg_refresh_error.c
