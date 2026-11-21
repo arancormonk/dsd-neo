@@ -25,6 +25,7 @@
 #include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include "dpmr_internal.h"
 #include "dsd-neo/core/opts_fwd.h"
@@ -35,6 +36,11 @@
 #pragma GCC diagnostic push
 #pragma GCC diagnostic ignored "-Wmissing-prototypes"
 #endif
+
+/* One decoder for every case, on the heap (AGENTS.md: dsd_state and dsd_opts are heap-allocated; one dsd_state is about
+   2 MiB): each case clears it before use, so none sees another's. */
+static dsd_opts* g_opts;
+static dsd_state* g_state;
 
 static size_t g_mbe_calls;
 static int g_ms_calls;
@@ -219,28 +225,28 @@ capture_print_ids(const dsd_state* state, char* out, size_t out_size) {
 
 static int
 test_first_group_scrambler_bridge_mutes_without_key(void) {
-    static dsd_opts opts;
-    static dsd_state state;
+    dsd_opts* opts = g_opts;
+    dsd_state* state = g_state;
     char ambe_fr[NB_OF_DPMR_VOICE_FRAME_TO_DECODE * 4][4][24];
-    DSD_MEMSET(&opts, 0, sizeof(opts));
-    DSD_MEMSET(&state, 0, sizeof(state));
+    DSD_MEMSET(opts, 0, sizeof(*opts));
+    DSD_MEMSET(state, 0, sizeof(*state));
     DSD_MEMSET(ambe_fr, 0, sizeof(ambe_fr));
     reset_capture();
 
-    state.synctype = DSD_SYNC_DPMR_FS2_POS;
-    state.nxdn_payload_mi = 0x7777ULL;
-    state.dPMRVoiceFS2Frame.FrameNumbering[0] = 0;
-    state.dPMRVoiceFS2Frame.CommunicationMode[0] = 0;
-    state.dPMRVoiceFS2Frame.Version[0] = 3;
-    state.dPMRVoiceFS2Frame.CCHDataCrcOk[0] = 1;
-    state.dPMRVoiceFS2Frame.FrameNumbering[1] = 2;
-    state.dPMRVoiceFS2Frame.CommunicationMode[1] = 2;
+    state->synctype = DSD_SYNC_DPMR_FS2_POS;
+    state->nxdn_payload_mi = 0x7777ULL;
+    state->dPMRVoiceFS2Frame.FrameNumbering[0] = 0;
+    state->dPMRVoiceFS2Frame.CommunicationMode[0] = 0;
+    state->dPMRVoiceFS2Frame.Version[0] = 3;
+    state->dPMRVoiceFS2Frame.CCHDataCrcOk[0] = 1;
+    state->dPMRVoiceFS2Frame.FrameNumbering[1] = 2;
+    state->dPMRVoiceFS2Frame.CommunicationMode[1] = 2;
     /* A checked data half: it plays nothing (a failed half would play by the transmission's checked mode). */
-    state.dPMRVoiceFS2Frame.CCHDataCrcOk[1] = 1;
-    state.dPMRVoiceFS2Frame.Version[1] = 3;
+    state->dPMRVoiceFS2Frame.CCHDataCrcOk[1] = 1;
+    state->dPMRVoiceFS2Frame.Version[1] = 3;
 
-    dpmr_resolve_half_scrambling(&state);
-    dpmr_play_voice_frames(&opts, &state, ambe_fr);
+    dpmr_resolve_half_scrambling(state);
+    dpmr_play_voice_frames(opts, state, ambe_fr);
 
     int rc = 0;
     rc |= expect_int("first-group-mbe-calls", (int)g_mbe_calls, 4);
@@ -250,36 +256,36 @@ test_first_group_scrambler_bridge_mutes_without_key(void) {
         rc |= expect_int("first-group-cipher", g_mbe_cipher[i], 1);
         rc |= expect_u64("first-group-mi-reset", g_mbe_mi[i], 0ULL);
     }
-    rc |= expect_int("first-group-synctype-restored", state.synctype, DSD_SYNC_DPMR_FS2_POS);
-    rc |= expect_int("first-group-cipher-reset", (int)state.nxdn_cipher_type, 0);
-    rc |= expect_int("first-group-transmission-scrambled", state.dpmr_scrambled, 2);
+    rc |= expect_int("first-group-synctype-restored", state->synctype, DSD_SYNC_DPMR_FS2_POS);
+    rc |= expect_int("first-group-cipher-reset", (int)state->nxdn_cipher_type, 0);
+    rc |= expect_int("first-group-transmission-scrambled", state->dpmr_scrambled, 2);
     return rc;
 }
 
 static int
 test_second_group_scrambler_bridge_unmutes_with_key(void) {
-    static dsd_opts opts;
-    static dsd_state state;
+    dsd_opts* opts = g_opts;
+    dsd_state* state = g_state;
     char ambe_fr[NB_OF_DPMR_VOICE_FRAME_TO_DECODE * 4][4][24];
-    DSD_MEMSET(&opts, 0, sizeof(opts));
-    DSD_MEMSET(&state, 0, sizeof(state));
+    DSD_MEMSET(opts, 0, sizeof(*opts));
+    DSD_MEMSET(state, 0, sizeof(*state));
     DSD_MEMSET(ambe_fr, 0, sizeof(ambe_fr));
     reset_capture();
 
-    opts.floating_point = 1;
-    state.synctype = DSD_SYNC_DPMR_FS3_POS;
-    state.R = 0x12345ULL;
-    state.nxdn_payload_mi = 0x8888ULL;
-    state.dPMRVoiceFS2Frame.FrameNumbering[0] = 1;
-    state.dPMRVoiceFS2Frame.CommunicationMode[0] = 2;
-    state.dPMRVoiceFS2Frame.CCHDataCrcOk[0] = 1; /* a checked data half, which plays nothing */
-    state.dPMRVoiceFS2Frame.FrameNumbering[1] = 0;
-    state.dPMRVoiceFS2Frame.CommunicationMode[1] = 5;
-    state.dPMRVoiceFS2Frame.Version[1] = 3;
-    state.dPMRVoiceFS2Frame.CCHDataCrcOk[1] = 1;
+    opts->floating_point = 1;
+    state->synctype = DSD_SYNC_DPMR_FS3_POS;
+    state->R = 0x12345ULL;
+    state->nxdn_payload_mi = 0x8888ULL;
+    state->dPMRVoiceFS2Frame.FrameNumbering[0] = 1;
+    state->dPMRVoiceFS2Frame.CommunicationMode[0] = 2;
+    state->dPMRVoiceFS2Frame.CCHDataCrcOk[0] = 1; /* a checked data half, which plays nothing */
+    state->dPMRVoiceFS2Frame.FrameNumbering[1] = 0;
+    state->dPMRVoiceFS2Frame.CommunicationMode[1] = 5;
+    state->dPMRVoiceFS2Frame.Version[1] = 3;
+    state->dPMRVoiceFS2Frame.CCHDataCrcOk[1] = 1;
 
-    dpmr_resolve_half_scrambling(&state);
-    dpmr_play_voice_frames(&opts, &state, ambe_fr);
+    dpmr_resolve_half_scrambling(state);
+    dpmr_play_voice_frames(opts, state, ambe_fr);
 
     int rc = 0;
     rc |= expect_int("second-group-mbe-calls", (int)g_mbe_calls, 4);
@@ -290,8 +296,8 @@ test_second_group_scrambler_bridge_unmutes_with_key(void) {
         rc |= expect_int("second-group-cipher", g_mbe_cipher[i], 1);
         rc |= expect_u64("second-group-mi-reset", g_mbe_mi[i], 0ULL);
     }
-    rc |= expect_int("second-group-synctype-restored", state.synctype, DSD_SYNC_DPMR_FS3_POS);
-    rc |= expect_int("second-group-cipher-reset", (int)state.nxdn_cipher_type, 0);
+    rc |= expect_int("second-group-synctype-restored", state->synctype, DSD_SYNC_DPMR_FS3_POS);
+    rc |= expect_int("second-group-cipher-reset", (int)state->nxdn_cipher_type, 0);
     return rc;
 }
 
@@ -302,25 +308,25 @@ test_second_group_scrambler_bridge_unmutes_with_key(void) {
  * is speech (DP = 00) in every case. Returns the frames sent to the vocoder. */
 static int
 attached_data_run(unsigned sld1, unsigned crc1) {
-    static dsd_opts opts;
-    static dsd_state state;
+    dsd_opts* opts = g_opts;
+    dsd_state* state = g_state;
     char ambe_fr[NB_OF_DPMR_VOICE_FRAME_TO_DECODE * 4][4][24];
-    DSD_MEMSET(&opts, 0, sizeof(opts));
-    DSD_MEMSET(&state, 0, sizeof(state));
+    DSD_MEMSET(opts, 0, sizeof(*opts));
+    DSD_MEMSET(state, 0, sizeof(*state));
     DSD_MEMSET(ambe_fr, 0, sizeof(ambe_fr));
     reset_capture();
-    state.synctype = DSD_SYNC_DPMR_FS2_POS;
+    state->synctype = DSD_SYNC_DPMR_FS2_POS;
     for (int o = 0; o < 2; o++) {
-        state.dPMRVoiceFS2Frame.FrameNumbering[o] = (unsigned)(2 + o);
-        state.dPMRVoiceFS2Frame.CommunicationMode[o] = 5;
-        state.dPMRVoiceFS2Frame.Version[o] = 0;
+        state->dPMRVoiceFS2Frame.FrameNumbering[o] = (unsigned)(2 + o);
+        state->dPMRVoiceFS2Frame.CommunicationMode[o] = 5;
+        state->dPMRVoiceFS2Frame.Version[o] = 0;
     }
-    state.dPMRVoiceFS2Frame.CCHDataCrcOk[0] = 1;
-    state.dPMRVoiceFS2Frame.SlowData[0] = 0x00080U; /* DP 00, a format and length: speech */
-    state.dPMRVoiceFS2Frame.CCHDataCrcOk[1] = crc1;
-    state.dPMRVoiceFS2Frame.SlowData[1] = sld1;
-    dpmr_resolve_half_scrambling(&state);
-    dpmr_play_voice_frames(&opts, &state, ambe_fr);
+    state->dPMRVoiceFS2Frame.CCHDataCrcOk[0] = 1;
+    state->dPMRVoiceFS2Frame.SlowData[0] = 0x00080U; /* DP 00, a format and length: speech */
+    state->dPMRVoiceFS2Frame.CCHDataCrcOk[1] = crc1;
+    state->dPMRVoiceFS2Frame.SlowData[1] = sld1;
+    dpmr_resolve_half_scrambling(state);
+    dpmr_play_voice_frames(opts, state, ambe_fr);
     return (int)g_mbe_calls;
 }
 
@@ -347,23 +353,23 @@ test_attached_data_frames_are_no_voice(void) {
                         {5U, 0U, 4, "attached data: a damaged half of a 101 call reading 000 does not"}};
 
     for (size_t c = 0; c < sizeof(k_by_checked) / sizeof(k_by_checked[0]); c++) {
-        static dsd_opts opts;
-        static dsd_state state;
+        dsd_opts* opts = g_opts;
+        dsd_state* state = g_state;
         char ambe_fr[NB_OF_DPMR_VOICE_FRAME_TO_DECODE * 4][4][24];
-        DSD_MEMSET(&opts, 0, sizeof(opts));
-        DSD_MEMSET(&state, 0, sizeof(state));
+        DSD_MEMSET(opts, 0, sizeof(*opts));
+        DSD_MEMSET(state, 0, sizeof(*state));
         DSD_MEMSET(ambe_fr, 0, sizeof(ambe_fr));
         reset_capture();
-        state.synctype = DSD_SYNC_DPMR_FS2_POS;
-        state.dPMRVoiceFS2Frame.FrameNumbering[0] = 2U;
-        state.dPMRVoiceFS2Frame.FrameNumbering[1] = 3U;
-        state.dPMRVoiceFS2Frame.CommunicationMode[0] = k_by_checked[c].checked_mode;
-        state.dPMRVoiceFS2Frame.CCHDataCrcOk[0] = 1U;
-        state.dPMRVoiceFS2Frame.SlowData[0] = 0x00080U; /* DP 00 */
-        state.dPMRVoiceFS2Frame.CommunicationMode[1] = k_by_checked[c].damaged_bits;
-        state.dPMRVoiceFS2Frame.CCHDataCrcOk[1] = 0U;
-        dpmr_resolve_half_scrambling(&state);
-        dpmr_play_voice_frames(&opts, &state, ambe_fr);
+        state->synctype = DSD_SYNC_DPMR_FS2_POS;
+        state->dPMRVoiceFS2Frame.FrameNumbering[0] = 2U;
+        state->dPMRVoiceFS2Frame.FrameNumbering[1] = 3U;
+        state->dPMRVoiceFS2Frame.CommunicationMode[0] = k_by_checked[c].checked_mode;
+        state->dPMRVoiceFS2Frame.CCHDataCrcOk[0] = 1U;
+        state->dPMRVoiceFS2Frame.SlowData[0] = 0x00080U; /* DP 00 */
+        state->dPMRVoiceFS2Frame.CommunicationMode[1] = k_by_checked[c].damaged_bits;
+        state->dPMRVoiceFS2Frame.CCHDataCrcOk[1] = 0U;
+        dpmr_resolve_half_scrambling(state);
+        dpmr_play_voice_frames(opts, state, ambe_fr);
         rc |= expect_int(k_by_checked[c].tag, (int)g_mbe_calls, k_by_checked[c].want);
     }
     return rc;
@@ -376,9 +382,9 @@ test_attached_data_frames_are_no_voice(void) {
  * confirmation outlives the boundary, so a scrambled call after a clear one never plays an undecodable half as clear. */
 static int
 bridge_run(dsd_state* state, unsigned v0, unsigned crc0, unsigned v1, unsigned crc1) {
-    static dsd_opts opts;
+    dsd_opts* opts = g_opts;
     char ambe_fr[NB_OF_DPMR_VOICE_FRAME_TO_DECODE * 4][4][24];
-    DSD_MEMSET(&opts, 0, sizeof(opts));
+    DSD_MEMSET(opts, 0, sizeof(*opts));
     DSD_MEMSET(ambe_fr, 0, sizeof(ambe_fr));
     reset_capture();
     state->synctype = DSD_SYNC_DPMR_FS2_POS;
@@ -391,7 +397,7 @@ bridge_run(dsd_state* state, unsigned v0, unsigned crc0, unsigned v1, unsigned c
     state->dPMRVoiceFS2Frame.CCHDataCrcOk[0] = crc0;
     state->dPMRVoiceFS2Frame.CCHDataCrcOk[1] = crc1;
     dpmr_resolve_half_scrambling(state);
-    dpmr_play_voice_frames(&opts, state, ambe_fr);
+    dpmr_play_voice_frames(opts, state, ambe_fr);
     return (int)g_mbe_calls;
 }
 
@@ -411,60 +417,60 @@ expect_halves(const char* tag, int scrambled0, int scrambled1) {
 
 static int
 test_scrambling_is_per_half_and_crc_verified(void) {
-    static dsd_state state;
-    DSD_MEMSET(&state, 0, sizeof(state));
+    dsd_state* state = g_state;
+    DSD_MEMSET(state, 0, sizeof(*state));
     int rc = 0;
 
-    rc |= expect_int("scrambled then clear calls", bridge_run(&state, 3U, 1U, 0U, 1U), 8);
+    rc |= expect_int("scrambled then clear calls", bridge_run(state, 3U, 1U, 0U, 1U), 8);
     rc |= expect_halves("scrambled then clear", 1, 0);
-    rc |= expect_int("scrambled then clear leaves clear", state.dpmr_scrambled, 1);
-    rc |= expect_int("next clear frame", bridge_run(&state, 0U, 1U, 0U, 1U), 8);
+    rc |= expect_int("scrambled then clear leaves clear", state->dpmr_scrambled, 1);
+    rc |= expect_int("next clear frame", bridge_run(state, 0U, 1U, 0U, 1U), 8);
     rc |= expect_halves("next clear frame", 0, 0);
 
-    rc |= expect_int("failed Version 3 in a clear call", bridge_run(&state, 3U, 0U, 0U, 1U), 8);
+    rc |= expect_int("failed Version 3 in a clear call", bridge_run(state, 3U, 0U, 0U, 1U), 8);
     rc |= expect_halves("failed Version 3 in a clear call", 0, 0);
 
-    rc |= expect_int("verified scrambled", bridge_run(&state, 3U, 1U, 3U, 1U), 8);
+    rc |= expect_int("verified scrambled", bridge_run(state, 3U, 1U, 3U, 1U), 8);
     rc |= expect_halves("verified scrambled", 1, 1);
-    rc |= expect_int("failed clear-looking halves in a scrambled call", bridge_run(&state, 0U, 0U, 0U, 0U), 8);
+    rc |= expect_int("failed clear-looking halves in a scrambled call", bridge_run(state, 0U, 0U, 0U, 0U), 8);
     rc |= expect_halves("failed clear-looking halves in a scrambled call", 1, 1);
 
-    dpmr_scrambling_reset(&state);
-    rc |= expect_int("boundary forgets", state.dpmr_scrambled, 0);
-    rc |= expect_int("failed half before a verified scrambled one", bridge_run(&state, 0U, 0U, 3U, 1U), 8);
+    dpmr_scrambling_reset(state);
+    rc |= expect_int("boundary forgets", state->dpmr_scrambled, 0);
+    rc |= expect_int("failed half before a verified scrambled one", bridge_run(state, 0U, 0U, 3U, 1U), 8);
     rc |= expect_halves("failed half before a verified scrambled one", 1, 1);
     // A verified clear call, its end frame, then a call whose first frame fails both CRCs: nothing of it plays.
-    rc |= expect_int("verified clear call", bridge_run(&state, 0U, 1U, 0U, 1U), 8);
-    dpmr_scrambling_reset(&state);
-    rc |= expect_int("nothing verified since the boundary", bridge_run(&state, 0U, 0U, 3U, 0U), 0);
-    rc |= expect_int("nothing verified halves", (int)state.dPMRVoiceFS2Frame.Scrambled[0], DPMR_HALF_UNVERIFIED);
-    rc |= expect_int("nothing verified cipher reset", (int)state.nxdn_cipher_type, 0);
+    rc |= expect_int("verified clear call", bridge_run(state, 0U, 1U, 0U, 1U), 8);
+    dpmr_scrambling_reset(state);
+    rc |= expect_int("nothing verified since the boundary", bridge_run(state, 0U, 0U, 3U, 0U), 0);
+    rc |= expect_int("nothing verified halves", (int)state->dPMRVoiceFS2Frame.Scrambled[0], DPMR_HALF_UNVERIFIED);
+    rc |= expect_int("nothing verified cipher reset", (int)state->nxdn_cipher_type, 0);
     // Its next frame verifies one half: both play by it.
-    rc |= expect_int("then a verified scrambled half", bridge_run(&state, 0U, 0U, 3U, 1U), 8);
+    rc |= expect_int("then a verified scrambled half", bridge_run(state, 0U, 0U, 3U, 1U), 8);
     rc |= expect_halves("then a verified scrambled half", 1, 1);
     return rc;
 }
 
 static int
 test_scrambler_secret_is_not_published_as_key_id(void) {
-    static dsd_opts opts;
-    static dsd_state state;
-    DSD_MEMSET(&opts, 0, sizeof(opts));
-    DSD_MEMSET(&state, 0, sizeof(state));
+    dsd_opts* opts = g_opts;
+    dsd_state* state = g_state;
+    DSD_MEMSET(opts, 0, sizeof(*opts));
+    DSD_MEMSET(state, 0, sizeof(*state));
 
-    state.synctype = DSD_SYNC_DPMR_FS2_POS;
-    state.R = 0x12345ULL;
-    state.dPMRVoiceFS2Frame.Version[0] = 3U;
-    state.dPMRVoiceFS2Frame.CCHDataCrcOk[0] = 1U;
-    dpmr_resolve_half_scrambling(&state);
-    state.dPMRVoiceFS2Frame.ColorCode[0] = (unsigned int)(-1);
+    state->synctype = DSD_SYNC_DPMR_FS2_POS;
+    state->R = 0x12345ULL;
+    state->dPMRVoiceFS2Frame.Version[0] = 3U;
+    state->dPMRVoiceFS2Frame.CCHDataCrcOk[0] = 1U;
+    dpmr_resolve_half_scrambling(state);
+    state->dPMRVoiceFS2Frame.ColorCode[0] = (unsigned int)(-1);
     /* Redaction, not the gate: publishing at all needs a proved transmission (#407). */
-    state.dpmr_confirmed = 1;
-    dpmr_publish_call(&opts, &state);
+    state->dpmr_confirmed = 1;
+    dpmr_publish_call(opts, state);
 
     dsd_call_snapshot call;
     int rc = 0;
-    rc |= expect_int("scrambler-call-present", dsd_call_state_get(&state, 0U, &call) > 0, 1);
+    rc |= expect_int("scrambler-call-present", dsd_call_state_get(state, 0U, &call) > 0, 1);
     rc |= expect_int("scrambler-call-decryptable", call.crypto, DSD_CALL_CRYPTO_DECRYPTABLE);
     rc |= expect_int("scrambler-call-audio-permitted", call.audio_permitted, 1);
     rc |= expect_int("scrambler-secret-not-key-id", call.kid, 0);
@@ -477,45 +483,44 @@ test_scrambler_secret_is_not_published_as_key_id(void) {
    clear clears it. */
 static int
 test_enc_indication_is_the_frames_own(void) {
-    static dsd_opts opts;
-    static dsd_state state;
-    DSD_MEMSET(&opts, 0, sizeof(opts));
-    DSD_MEMSET(&state, 0, sizeof(state));
+    dsd_opts* opts = g_opts;
+    dsd_state* state = g_state;
+    DSD_MEMSET(opts, 0, sizeof(*opts));
+    DSD_MEMSET(state, 0, sizeof(*state));
     int rc = 0;
     dsd_call_snapshot call;
 
-    state.synctype = DSD_SYNC_DPMR_FS2_POS;
-    state.dpmr_confirmed = 1;
-    state.dPMRVoiceFS2Frame.ColorCode[0] = (unsigned int)(-1);
-    state.dPMRVoiceFS2Frame.Version[0] = 3U;
-    state.dPMRVoiceFS2Frame.CCHDataCrcOk[0] = 1U;
-    dpmr_resolve_half_scrambling(&state);
-    dpmr_publish_call(&opts, &state);
-    rc |=
-        expect_int("verified scrambled call", dsd_call_state_get(&state, 0U, &call) > 0 && call.enc_received == 1U, 1);
+    state->synctype = DSD_SYNC_DPMR_FS2_POS;
+    state->dpmr_confirmed = 1;
+    state->dPMRVoiceFS2Frame.ColorCode[0] = (unsigned int)(-1);
+    state->dPMRVoiceFS2Frame.Version[0] = 3U;
+    state->dPMRVoiceFS2Frame.CCHDataCrcOk[0] = 1U;
+    dpmr_resolve_half_scrambling(state);
+    dpmr_publish_call(opts, state);
+    rc |= expect_int("verified scrambled call", dsd_call_state_get(state, 0U, &call) > 0 && call.enc_received == 1U, 1);
     const uint64_t first = call.epoch;
 
     // The call ends; the next one's first frame verifies neither half, so the learned scrambling would play it, but a
     // frame with no checked half opens no call (issue #890) and says nothing of encryption.
-    (void)dsd_call_state_end_ex(&state, 0U, 0.0, DSD_CALL_END_TERMINATOR);
-    state.dPMRVoiceFS2Frame.Version[0] = 0U;
-    state.dPMRVoiceFS2Frame.CCHDataCrcOk[0] = 0U;
-    state.dPMRVoiceFS2Frame.CCHDataCrcOk[1] = 0U;
-    dpmr_resolve_half_scrambling(&state);
-    rc |= expect_int("learned scrambling plays it", (int)state.dPMRVoiceFS2Frame.Scrambled[0], DPMR_HALF_SCRAMBLED);
-    dpmr_publish_call(&opts, &state);
-    rc |= expect_int("unchecked frame opens no call", dsd_call_state_get(&state, 0U, &call) > 0 && call.epoch == first,
-                     1);
+    (void)dsd_call_state_end_ex(state, 0U, 0.0, DSD_CALL_END_TERMINATOR);
+    state->dPMRVoiceFS2Frame.Version[0] = 0U;
+    state->dPMRVoiceFS2Frame.CCHDataCrcOk[0] = 0U;
+    state->dPMRVoiceFS2Frame.CCHDataCrcOk[1] = 0U;
+    dpmr_resolve_half_scrambling(state);
+    rc |= expect_int("learned scrambling plays it", (int)state->dPMRVoiceFS2Frame.Scrambled[0], DPMR_HALF_SCRAMBLED);
+    dpmr_publish_call(opts, state);
+    rc |=
+        expect_int("unchecked frame opens no call", dsd_call_state_get(state, 0U, &call) > 0 && call.epoch == first, 1);
 
     // Its next frame's second half verifies clear: the call opens, its first half still played by the learned
     // scrambling, and the call's own indication is the checked half's: clear.
-    state.dPMRVoiceFS2Frame.CCHDataCrcOk[1] = 1U;
-    state.dPMRVoiceFS2Frame.Version[1] = 0U;
-    dpmr_resolve_half_scrambling(&state);
-    rc |= expect_int("learned scrambling still plays half 0", (int)state.dPMRVoiceFS2Frame.Scrambled[0],
+    state->dPMRVoiceFS2Frame.CCHDataCrcOk[1] = 1U;
+    state->dPMRVoiceFS2Frame.Version[1] = 0U;
+    dpmr_resolve_half_scrambling(state);
+    rc |= expect_int("learned scrambling still plays half 0", (int)state->dPMRVoiceFS2Frame.Scrambled[0],
                      DPMR_HALF_SCRAMBLED);
-    dpmr_publish_call(&opts, &state);
-    rc |= expect_int("next call opens", dsd_call_state_get(&state, 0U, &call) > 0 && call.epoch != first, 1);
+    dpmr_publish_call(opts, state);
+    rc |= expect_int("next call opens", dsd_call_state_get(state, 0U, &call) > 0 && call.epoch != first, 1);
     rc |= expect_int("verified clear", call.enc_received, 0);
     return rc;
 }
@@ -613,24 +618,24 @@ publish_part(dsd_opts* opts, dsd_state* state, const dpmr_superframe_part* part,
    Hamming words merely correct, or a pair numbered otherwise, names nobody. */
 static int
 test_superframe_part_updates_called_and_calling_ids(void) {
-    static dsd_opts opts;
-    static dsd_state state;
+    dsd_opts* opts = g_opts;
+    dsd_state* state = g_state;
     dpmr_superframe_part part;
     dsd_call_snapshot call;
     int rc = 0;
 
-    DSD_MEMSET(&opts, 0, sizeof(opts));
-    DSD_MEMSET(&state, 0, sizeof(state));
+    DSD_MEMSET(opts, 0, sizeof(*opts));
+    DSD_MEMSET(state, 0, sizeof(*state));
     part = (dpmr_superframe_part){.frame_number = {0U, 1U},
                                   .id_value = 1464100U,
                                   .crc_ok = {true, true},
                                   .hamming_ok = {{false, false}, {false, false}}};
-    publish_part(&opts, &state, &part, 0U, 0U);
-    (void)dsd_call_state_get(&state, 0U, &call);
+    publish_part(opts, state, &part, 0U, 0U);
+    (void)dsd_call_state_get(state, 0U, &call);
     rc |= expect_int("called-id", strcmp(call.target_text, "1000000"), 0);
     rc |= expect_int("called-with-service", call.has_service_metadata, 1);
     rc |= expect_int("called-service", call.service_options, 0x0001);
-    rc |= expect_int("called-next-part", opts.dPMR_next_part_of_superframe, 2);
+    rc |= expect_int("called-next-part", opts->dPMR_next_part_of_superframe, 2);
     rc |= expect_int("calling-id-preserved-empty", strcmp(call.source_text, ""), 0);
 
     /* Calling halves whose CRC-7 failed and whose Hamming words all corrected: no calling identity. */
@@ -638,10 +643,10 @@ test_superframe_part_updates_called_and_calling_ids(void) {
                                   .id_value = 1464110U,
                                   .crc_ok = {false, false},
                                   .hamming_ok = {{true, true}, {true, true}}};
-    publish_part(&opts, &state, &part, 0U, 0U);
-    (void)dsd_call_state_get(&state, 0U, &call);
+    publish_part(opts, state, &part, 0U, 0U);
+    (void)dsd_call_state_get(state, 0U, &call);
     rc |= expect_int("hamming-only-calling-id-not-published", strcmp(call.source_text, ""), 0);
-    rc |= expect_int("calling-next-part", opts.dPMR_next_part_of_superframe, 1);
+    rc |= expect_int("calling-next-part", opts->dPMR_next_part_of_superframe, 1);
     rc |= expect_int("called-id-preserved", strcmp(call.target_text, "1000000"), 0);
 
     /* One calling half CRC-valid, the other not: no calling identity either. */
@@ -649,16 +654,16 @@ test_superframe_part_updates_called_and_calling_ids(void) {
                                   .id_value = 1464110U,
                                   .crc_ok = {true, false},
                                   .hamming_ok = {{true, true}, {true, true}}};
-    publish_part(&opts, &state, &part, 0U, 0U);
-    (void)dsd_call_state_get(&state, 0U, &call);
+    publish_part(opts, state, &part, 0U, 0U);
+    (void)dsd_call_state_get(state, 0U, &call);
     rc |= expect_int("half-failed-calling-id-not-published", strcmp(call.source_text, ""), 0);
 
     part = (dpmr_superframe_part){.frame_number = {2U, 3U},
                                   .id_value = 1464110U,
                                   .crc_ok = {true, true},
                                   .hamming_ok = {{false, false}, {false, false}}};
-    publish_part(&opts, &state, &part, 0U, 0U);
-    (void)dsd_call_state_get(&state, 0U, &call);
+    publish_part(opts, state, &part, 0U, 0U);
+    (void)dsd_call_state_get(state, 0U, &call);
     rc |= expect_int("calling-id", strcmp(call.source_text, "100000*"), 0);
     rc |= expect_int("calling-preserves-called-id", strcmp(call.target_text, "1000000"), 0);
     const uint64_t first_caller_epoch = call.epoch;
@@ -667,8 +672,8 @@ test_superframe_part_updates_called_and_calling_ids(void) {
                                   .id_value = 2928210U,
                                   .crc_ok = {true, true},
                                   .hamming_ok = {{false, false}, {false, false}}};
-    publish_part(&opts, &state, &part, 0U, 0U);
-    (void)dsd_call_state_get(&state, 0U, &call);
+    publish_part(opts, state, &part, 0U, 0U);
+    (void)dsd_call_state_get(state, 0U, &call);
     rc |= expect_int("changed-calling-id", strcmp(call.source_text, "200000*"), 0);
     rc |= expect_int("changed-calling-starts-epoch", call.epoch != first_caller_epoch, 1);
     const uint64_t second_caller_epoch = call.epoch;
@@ -678,8 +683,8 @@ test_superframe_part_updates_called_and_calling_ids(void) {
                                   .id_value = 10U,
                                   .crc_ok = {true, true},
                                   .hamming_ok = {{false, false}, {false, false}}};
-    publish_part(&opts, &state, &part, 0U, 0U);
-    (void)dsd_call_state_get(&state, 0U, &call);
+    publish_part(opts, state, &part, 0U, 0U);
+    (void)dsd_call_state_get(state, 0U, &call);
     rc |= expect_int("mismatched-pair-names-nobody", strcmp(call.target_text, "000000*") != 0, 1);
     rc |= expect_int("mismatched-pair-keeps-the-call", call.epoch == second_caller_epoch, 1);
 
@@ -687,18 +692,18 @@ test_superframe_part_updates_called_and_calling_ids(void) {
                                   .id_value = 0U,
                                   .crc_ok = {false, false},
                                   .hamming_ok = {{false, false}, {false, false}}};
-    publish_part(&opts, &state, &part, 0U, 0U);
-    (void)dsd_call_state_get(&state, 0U, &call);
+    publish_part(opts, state, &part, 0U, 0U);
+    (void)dsd_call_state_get(state, 0U, &call);
     rc |= expect_int("unknown-preserves-calling", strcmp(call.source_text, "200000*"), 0);
-    rc |= expect_int("unknown-toggles-next-part", opts.dPMR_next_part_of_superframe, 1);
+    rc |= expect_int("unknown-toggles-next-part", opts->dPMR_next_part_of_superframe, 1);
 
-    opts.dPMR_next_part_of_superframe = 2;
-    dpmr_update_superframe_part(&opts, &state, &part);
-    rc |= expect_int("unknown-toggles-next-part-back", opts.dPMR_next_part_of_superframe, 1);
+    opts->dPMR_next_part_of_superframe = 2;
+    dpmr_update_superframe_part(opts, state, &part);
+    rc |= expect_int("unknown-toggles-next-part-back", opts->dPMR_next_part_of_superframe, 1);
 
-    opts.dPMR_next_part_of_superframe = 0;
-    dpmr_update_superframe_part(&opts, &state, &part);
-    rc |= expect_int("unknown-keeps-zero-part", opts.dPMR_next_part_of_superframe, 0);
+    opts->dPMR_next_part_of_superframe = 0;
+    dpmr_update_superframe_part(opts, state, &part);
+    rc |= expect_int("unknown-keeps-zero-part", opts->dPMR_next_part_of_superframe, 0);
     return rc;
 }
 
@@ -706,47 +711,47 @@ test_superframe_part_updates_called_and_calling_ids(void) {
    checked data CCH is a data call: never voice, and never voice first and data after. */
 static int
 test_service_and_kind_come_from_the_checked_half(void) {
-    static dsd_opts opts;
-    static dsd_state state;
+    dsd_opts* opts = g_opts;
+    dsd_state* state = g_state;
     dpmr_superframe_part part;
     dsd_call_snapshot call;
     int rc = 0;
 
-    DSD_MEMSET(&opts, 0, sizeof(opts));
-    DSD_MEMSET(&state, 0, sizeof(state));
+    DSD_MEMSET(opts, 0, sizeof(*opts));
+    DSD_MEMSET(state, 0, sizeof(*state));
     /* Half 0 failed, reading voice and emergency; half 1 passed: Type 2 data, no emergency. */
     part = (dpmr_superframe_part){.frame_number = {0U, 1U},
                                   .id_value = 1464100U,
                                   .crc_ok = {false, true},
                                   .hamming_ok = {{true, true}, {true, true}}};
-    state.dPMRVoiceFS2Frame.EmergencyPriority[0] = 1U;
-    publish_part(&opts, &state, &part, 0U, 3U);
-    state.dPMRVoiceFS2Frame.EmergencyPriority[0] = 0U;
-    rc |= expect_int("checked-half-call", dsd_call_state_get(&state, 0U, &call) > 0, 1);
+    state->dPMRVoiceFS2Frame.EmergencyPriority[0] = 1U;
+    publish_part(opts, state, &part, 0U, 3U);
+    state->dPMRVoiceFS2Frame.EmergencyPriority[0] = 0U;
+    rc |= expect_int("checked-half-call", dsd_call_state_get(state, 0U, &call) > 0, 1);
     rc |= expect_int("checked-half-kind-data", call.kind, DSD_CALL_KIND_DATA);
     rc |= expect_int("checked-half-service", call.service_options, 0x0031);
     rc |= expect_int("checked-half-no-emergency", call.emergency, 0);
     rc |= expect_int("failed-half-names-nobody", call.target_text[0] == '\0', 1);
 
     /* Both halves checked data: a data call. */
-    DSD_MEMSET(&state, 0, sizeof(state));
+    DSD_MEMSET(state, 0, sizeof(*state));
     part = (dpmr_superframe_part){.frame_number = {0U, 1U},
                                   .id_value = 1464100U,
                                   .crc_ok = {true, true},
                                   .hamming_ok = {{true, true}, {true, true}}};
-    publish_part(&opts, &state, &part, 2U, 2U);
-    rc |= expect_int("data-cch-call", dsd_call_state_get(&state, 0U, &call) > 0, 1);
+    publish_part(opts, state, &part, 2U, 2U);
+    rc |= expect_int("data-cch-call", dsd_call_state_get(state, 0U, &call) > 0, 1);
     rc |= expect_int("data-cch-not-voice", call.kind, DSD_CALL_KIND_DATA);
     rc |= expect_int("data-cch-identity-with-it", strcmp(call.target_text, "1000000"), 0);
 
     /* A confirmed frame with no checked half opens nothing. */
-    DSD_MEMSET(&state, 0, sizeof(state));
+    DSD_MEMSET(state, 0, sizeof(*state));
     part = (dpmr_superframe_part){.frame_number = {0U, 1U},
                                   .id_value = 1464100U,
                                   .crc_ok = {false, false},
                                   .hamming_ok = {{true, true}, {true, true}}};
-    publish_part(&opts, &state, &part, 0U, 0U);
-    rc |= expect_int("unchecked-frame-opens-no-call", dsd_call_state_get(&state, 0U, &call) > 0, 0);
+    publish_part(opts, state, &part, 0U, 0U);
+    rc |= expect_int("unchecked-frame-opens-no-call", dsd_call_state_get(state, 0U, &call) > 0, 0);
     return rc;
 }
 
@@ -755,26 +760,26 @@ test_service_and_kind_come_from_the_checked_half(void) {
    half is numbered 1. */
 static int
 test_scrambler_reloads_only_at_a_checked_frame_zero(void) {
-    static dsd_opts opts;
-    static dsd_state state;
+    dsd_opts* opts = g_opts;
+    dsd_state* state = g_state;
     char ambe_fr[NB_OF_DPMR_VOICE_FRAME_TO_DECODE * 4][4][24];
     int rc = 0;
 
     for (int second = 1; second <= 3; second += 2) {
-        DSD_MEMSET(&opts, 0, sizeof(opts));
-        DSD_MEMSET(&state, 0, sizeof(state));
+        DSD_MEMSET(opts, 0, sizeof(*opts));
+        DSD_MEMSET(state, 0, sizeof(*state));
         DSD_MEMSET(ambe_fr, 0, sizeof(ambe_fr));
         reset_capture();
-        state.synctype = DSD_SYNC_DPMR_FS2_POS;
-        state.dpmr_scrambled = 2U; /* a scrambled transmission, learned from an earlier verified half */
-        state.nxdn_payload_mi = 0x7777ULL;
-        state.dPMRVoiceFS2Frame.FrameNumbering[0] = 0U; /* failed: reads 0 */
-        state.dPMRVoiceFS2Frame.CCHDataCrcOk[0] = 0U;
-        state.dPMRVoiceFS2Frame.FrameNumbering[1] = (unsigned)second;
-        state.dPMRVoiceFS2Frame.CCHDataCrcOk[1] = 1U;
-        state.dPMRVoiceFS2Frame.Version[1] = 3U;
-        dpmr_resolve_half_scrambling(&state);
-        dpmr_play_voice_frames(&opts, &state, ambe_fr);
+        state->synctype = DSD_SYNC_DPMR_FS2_POS;
+        state->dpmr_scrambled = 2U; /* a scrambled transmission, learned from an earlier verified half */
+        state->nxdn_payload_mi = 0x7777ULL;
+        state->dPMRVoiceFS2Frame.FrameNumbering[0] = 0U; /* failed: reads 0 */
+        state->dPMRVoiceFS2Frame.CCHDataCrcOk[0] = 0U;
+        state->dPMRVoiceFS2Frame.FrameNumbering[1] = (unsigned)second;
+        state->dPMRVoiceFS2Frame.CCHDataCrcOk[1] = 1U;
+        state->dPMRVoiceFS2Frame.Version[1] = 3U;
+        dpmr_resolve_half_scrambling(state);
+        dpmr_play_voice_frames(opts, state, ambe_fr);
         rc |= expect_int("bad-frame0-plays", (int)g_mbe_calls, 8);
         const unsigned long long want = second == 1 ? 0ULL : 0x7777ULL;
         rc |= expect_u64(second == 1 ? "checked-pair-frame0-reloads" : "bad-frame0-keeps-the-register", g_mbe_mi[0],
@@ -788,26 +793,26 @@ test_scrambler_reloads_only_at_a_checked_frame_zero(void) {
    superframes do. Without a passing CRC-7 there is nothing here to publish. */
 static int
 test_unconfirmed_superframe_part_publishes_nothing(void) {
-    static dsd_opts opts;
-    static dsd_state state;
+    dsd_opts* opts = g_opts;
+    dsd_state* state = g_state;
     dpmr_superframe_part part;
     int rc = 0;
 
-    DSD_MEMSET(&opts, 0, sizeof(opts));
-    DSD_MEMSET(&state, 0, sizeof(state));
+    DSD_MEMSET(opts, 0, sizeof(*opts));
+    DSD_MEMSET(state, 0, sizeof(*state));
 
     part = (dpmr_superframe_part){.frame_number = {0U, 1U},
                                   .id_value = 1464100U,
                                   .crc_ok = {false, false},
                                   .hamming_ok = {{true, true}, {true, true}}};
-    dpmr_update_superframe_part(&opts, &state, &part);
-    dpmr_publish_call(&opts, &state);
+    dpmr_update_superframe_part(opts, state, &part);
+    dpmr_publish_call(opts, state);
 
     dsd_call_snapshot call;
-    rc |= expect_int("unconfirmed-no-call-row", dsd_call_state_get(&state, 0U, &call) > 0, 0);
+    rc |= expect_int("unconfirmed-no-call-row", dsd_call_state_get(state, 0U, &call) > 0, 0);
     /* The superframe bookkeeping still advances: it tracks which half comes next, not
        whether anything decoded. */
-    rc |= expect_int("unconfirmed-next-part-still-tracked", opts.dPMR_next_part_of_superframe, 2);
+    rc |= expect_int("unconfirmed-next-part-still-tracked", opts->dPMR_next_part_of_superframe, 2);
     return rc;
 }
 
@@ -815,11 +820,11 @@ test_unconfirmed_superframe_part_publishes_nothing(void) {
    carrier's colour code from: dpmr_publish_call() does that, on the confirmed path. */
 static int
 test_id_print_does_not_publish_the_color_code(void) {
-    static dsd_state state;
+    dsd_state* state = g_state;
     int rc = 0;
 
-    DSD_MEMSET(&state, 0, sizeof(state));
-    state.dpmr_color_code = -1;
+    DSD_MEMSET(state, 0, sizeof(*state));
+    state->dpmr_color_code = -1;
     dsd_call_observation observation = {
         .protocol = DSD_SYNC_DPMR_FS2_POS,
         .slot = 0U,
@@ -827,16 +832,16 @@ test_id_print_does_not_publish_the_color_code(void) {
     };
     DSD_SNPRINTF(observation.target_text, sizeof(observation.target_text), "%s", "1000000");
     DSD_SNPRINTF(observation.source_text, sizeof(observation.source_text), "%s", "200000*");
-    (void)dsd_call_state_observe(&state, &observation, DSD_CALL_BOUNDARY_BEGIN);
-    state.dPMRVoiceFS2Frame.ColorCode[0] = 12U;
+    (void)dsd_call_state_observe(state, &observation, DSD_CALL_BOUNDARY_BEGIN);
+    state->dPMRVoiceFS2Frame.ColorCode[0] = 12U;
 
-    dpmr_print_ids(&state);
+    dpmr_print_ids(state);
 
     dsd_call_snapshot call;
-    (void)dsd_call_state_get(&state, 0U, &call);
+    (void)dsd_call_state_get(state, 0U, &call);
     rc |= expect_int("print-target-id", strcmp(call.target_text, "1000000"), 0);
     rc |= expect_int("print-caller-id", strcmp(call.source_text, "200000*"), 0);
-    rc |= expect_int("print-leaves-color-code", state.dpmr_color_code, -1);
+    rc |= expect_int("print-leaves-color-code", state->dpmr_color_code, -1);
     return rc;
 }
 
@@ -844,49 +849,49 @@ test_id_print_does_not_publish_the_color_code(void) {
    (issue #575): a target-only call is still a call on this carrier. */
 static int
 test_confirmed_target_only_call_publishes_the_color_code(void) {
-    static dsd_opts opts;
-    static dsd_state state;
+    dsd_opts* opts = g_opts;
+    dsd_state* state = g_state;
     int rc = 0;
 
-    DSD_MEMSET(&opts, 0, sizeof(opts));
-    DSD_MEMSET(&state, 0, sizeof(state));
-    state.dpmr_color_code = -1;
-    state.synctype = DSD_SYNC_DPMR_FS2_POS;
-    state.dpmr_confirmed = 1;
+    DSD_MEMSET(opts, 0, sizeof(*opts));
+    DSD_MEMSET(state, 0, sizeof(*state));
+    state->dpmr_color_code = -1;
+    state->synctype = DSD_SYNC_DPMR_FS2_POS;
+    state->dpmr_confirmed = 1;
     dsd_call_observation observation = {
         .protocol = DSD_SYNC_DPMR_FS2_POS,
         .slot = 0U,
         .kind = DSD_CALL_KIND_VOICE,
     };
     DSD_SNPRINTF(observation.target_text, sizeof(observation.target_text), "%s", "1000000");
-    (void)dsd_call_state_observe(&state, &observation, DSD_CALL_BOUNDARY_BEGIN);
-    state.dPMRVoiceFS2Frame.ColorCode[0] = 12U;
+    (void)dsd_call_state_observe(state, &observation, DSD_CALL_BOUNDARY_BEGIN);
+    state->dPMRVoiceFS2Frame.ColorCode[0] = 12U;
 
-    dpmr_print_ids(&state);
-    dpmr_publish_call(&opts, &state);
+    dpmr_print_ids(state);
+    dpmr_publish_call(opts, state);
 
     dsd_call_snapshot call;
-    rc |= expect_int("target-only-call-present", dsd_call_state_get(&state, 0U, &call) > 0, 1);
+    rc |= expect_int("target-only-call-present", dsd_call_state_get(state, 0U, &call) > 0, 1);
     rc |= expect_int("target-only-no-caller", call.source_text[0] == '\0', 1);
-    rc |= expect_int("target-only-color-code", state.dpmr_color_code, 12);
+    rc |= expect_int("target-only-color-code", state->dpmr_color_code, 12);
     /* The carrier's received identity: the colour code of the confirmed transmission. */
-    rc |= expect_int("target-only-identity-family", state.rx_id.family, DSD_RXID_FAMILY_DPMR);
-    rc |= expect_int("target-only-identity-parts", (int)state.rx_id.valid, (int)DSD_RXID_ACCESS);
-    rc |= expect_int("target-only-identity-colour", state.rx_id.access, 12);
-    rc |= expect_int("target-only-identity-kind", state.rx_id.access_kind, DSD_ACCESS_CODE_COLOR_CODE);
+    rc |= expect_int("target-only-identity-family", state->rx_id.family, DSD_RXID_FAMILY_DPMR);
+    rc |= expect_int("target-only-identity-parts", (int)state->rx_id.valid, (int)DSD_RXID_ACCESS);
+    rc |= expect_int("target-only-identity-colour", state->rx_id.access, 12);
+    rc |= expect_int("target-only-identity-kind", state->rx_id.access_kind, DSD_ACCESS_CODE_COLOR_CODE);
 
     /* A later superframe whose channel code did not decode keeps the code the call already published. */
-    state.dPMRVoiceFS2Frame.ColorCode[0] = (unsigned int)(-1);
-    dpmr_publish_call(&opts, &state);
-    rc |= expect_int("undecoded-channel-code-keeps-color", state.dpmr_color_code, 12);
-    rc |= expect_int("undecoded-channel-code-keeps-identity", state.rx_id.access, 12);
+    state->dPMRVoiceFS2Frame.ColorCode[0] = (unsigned int)(-1);
+    dpmr_publish_call(opts, state);
+    rc |= expect_int("undecoded-channel-code-keeps-color", state->dpmr_color_code, 12);
+    rc |= expect_int("undecoded-channel-code-keeps-identity", state->rx_id.access, 12);
 
     /* An unconfirmed transmission names nothing. */
-    dsd_rxid_reset(&state);
-    state.dpmr_confirmed = 0;
-    state.dPMRVoiceFS2Frame.ColorCode[0] = 33U;
-    dpmr_publish_call(&opts, &state);
-    rc |= expect_int("unconfirmed-no-identity", (int)state.rx_id.valid, 0);
+    dsd_rxid_reset(state);
+    state->dpmr_confirmed = 0;
+    state->dPMRVoiceFS2Frame.ColorCode[0] = 33U;
+    dpmr_publish_call(opts, state);
+    rc |= expect_int("unconfirmed-no-identity", (int)state->rx_id.valid, 0);
     return rc;
 }
 
@@ -895,27 +900,27 @@ test_confirmed_target_only_call_publishes_the_color_code(void) {
    access code. */
 static int
 test_dpmr_channel_not_colour_code(void) {
-    static dsd_opts opts;
-    static dsd_state state;
+    dsd_opts* opts = g_opts;
+    dsd_state* state = g_state;
     int rc = 0;
 
-    DSD_MEMSET(&opts, 0, sizeof(opts));
-    DSD_MEMSET(&state, 0, sizeof(state));
-    state.dpmr_color_code = -1;
-    state.synctype = DSD_SYNC_DPMR_FS2_POS;
-    state.dpmr_confirmed = 1;
-    state.dPMRVoiceFS2Frame.ColorCode[0] = 12U;
-    state.dPMRVoiceFS2Frame.CCHDataCrcOk[0] = 1U; /* a frame publishes a call from a checked half (issue #890) */
-    dpmr_publish_call(&opts, &state);
+    DSD_MEMSET(opts, 0, sizeof(*opts));
+    DSD_MEMSET(state, 0, sizeof(*state));
+    state->dpmr_color_code = -1;
+    state->synctype = DSD_SYNC_DPMR_FS2_POS;
+    state->dpmr_confirmed = 1;
+    state->dPMRVoiceFS2Frame.ColorCode[0] = 12U;
+    state->dPMRVoiceFS2Frame.CCHDataCrcOk[0] = 1U; /* a frame publishes a call from a checked half (issue #890) */
+    dpmr_publish_call(opts, state);
 
     dsd_call_snapshot call;
-    rc |= expect_int("cc-call-present", dsd_call_state_get(&state, 0U, &call) > 0, 1);
+    rc |= expect_int("cc-call-present", dsd_call_state_get(state, 0U, &call) > 0, 1);
     rc |= expect_int("cc-call-channel", (int)call.channel, 0);
     uint8_t kind = 0U;
     uint16_t code = 0U;
     rc |= expect_int(
         "cc-access-code-read",
-        dsd_access_code_current(&state, call.protocol, call.service_options, call.has_service_metadata, &kind, &code),
+        dsd_access_code_current(state, call.protocol, call.service_options, call.has_service_metadata, &kind, &code),
         1);
     rc |= expect_int("cc-access-code-kind", kind, DSD_ACCESS_CODE_COLOR_CODE);
     rc |= expect_int("cc-access-code", code, 12);
@@ -926,14 +931,14 @@ test_dpmr_channel_not_colour_code(void) {
    earlier transmission in the canonical call (issue #575). */
 static int
 test_unconfirmed_frame_with_retained_caller_publishes_no_color_code(void) {
-    static dsd_opts opts;
-    static dsd_state state;
+    dsd_opts* opts = g_opts;
+    dsd_state* state = g_state;
     int rc = 0;
 
-    DSD_MEMSET(&opts, 0, sizeof(opts));
-    DSD_MEMSET(&state, 0, sizeof(state));
-    state.dpmr_color_code = -1;
-    state.synctype = DSD_SYNC_DPMR_FS2_POS;
+    DSD_MEMSET(opts, 0, sizeof(*opts));
+    DSD_MEMSET(state, 0, sizeof(*state));
+    state->dpmr_color_code = -1;
+    state->synctype = DSD_SYNC_DPMR_FS2_POS;
     dsd_call_observation observation = {
         .protocol = DSD_SYNC_DPMR_FS2_POS,
         .slot = 0U,
@@ -941,19 +946,19 @@ test_unconfirmed_frame_with_retained_caller_publishes_no_color_code(void) {
     };
     DSD_SNPRINTF(observation.target_text, sizeof(observation.target_text), "%s", "1000000");
     DSD_SNPRINTF(observation.source_text, sizeof(observation.source_text), "%s", "200000*");
-    (void)dsd_call_state_observe(&state, &observation, DSD_CALL_BOUNDARY_BEGIN);
-    (void)dsd_call_state_end(&state, 0U, 0.0);
-    state.dpmr_confirmed = 0;
-    state.dPMRVoiceFS2Frame.ColorCode[0] = 21U;
+    (void)dsd_call_state_observe(state, &observation, DSD_CALL_BOUNDARY_BEGIN);
+    (void)dsd_call_state_end(state, 0U, 0.0);
+    state->dpmr_confirmed = 0;
+    state->dPMRVoiceFS2Frame.ColorCode[0] = 21U;
 
     char printed[256];
-    rc |= capture_print_ids(&state, printed, sizeof(printed));
-    dpmr_publish_call(&opts, &state);
+    rc |= capture_print_ids(state, printed, sizeof(printed));
+    dpmr_publish_call(opts, state);
 
     dsd_call_snapshot call;
-    rc |= expect_int("retained-caller-text", dsd_call_state_get(&state, 0U, &call) > 0, 1);
+    rc |= expect_int("retained-caller-text", dsd_call_state_get(state, 0U, &call) > 0, 1);
     rc |= expect_int("retained-caller-is-kept", strcmp(call.source_text, "200000*"), 0);
-    rc |= expect_int("unconfirmed-no-color-code", state.dpmr_color_code, -1);
+    rc |= expect_int("unconfirmed-no-color-code", state->dpmr_color_code, -1);
     /* The retained text belongs to the earlier transmission: this unconfirmed frame decoded no identity to show. */
     rc |= expect_text("retained-target-not-printed", printed, "1000000", 0);
     rc |= expect_text("retained-caller-not-printed", printed, "200000*", 0);
@@ -965,12 +970,12 @@ test_unconfirmed_frame_with_retained_caller_publishes_no_color_code(void) {
 /* A confirmed transmission shows the identities its own frames published, and the channel code read with them. */
 static int
 test_confirmed_call_prints_its_identities(void) {
-    static dsd_state state;
+    dsd_state* state = g_state;
     int rc = 0;
 
-    DSD_MEMSET(&state, 0, sizeof(state));
-    state.synctype = DSD_SYNC_DPMR_FS2_POS;
-    state.dpmr_confirmed = 1;
+    DSD_MEMSET(state, 0, sizeof(*state));
+    state->synctype = DSD_SYNC_DPMR_FS2_POS;
+    state->dpmr_confirmed = 1;
     dsd_call_observation observation = {
         .protocol = DSD_SYNC_DPMR_FS2_POS,
         .slot = 0U,
@@ -978,11 +983,11 @@ test_confirmed_call_prints_its_identities(void) {
     };
     DSD_SNPRINTF(observation.target_text, sizeof(observation.target_text), "%s", "1000000");
     DSD_SNPRINTF(observation.source_text, sizeof(observation.source_text), "%s", "200000*");
-    (void)dsd_call_state_observe(&state, &observation, DSD_CALL_BOUNDARY_BEGIN);
-    state.dPMRVoiceFS2Frame.ColorCode[0] = 12U;
+    (void)dsd_call_state_observe(state, &observation, DSD_CALL_BOUNDARY_BEGIN);
+    state->dPMRVoiceFS2Frame.ColorCode[0] = 12U;
 
     char printed[256];
-    rc |= capture_print_ids(&state, printed, sizeof(printed));
+    rc |= capture_print_ids(state, printed, sizeof(printed));
     rc |= expect_text("confirmed-prints-target", printed, "TG=1000000", 1);
     rc |= expect_text("confirmed-prints-caller", printed, "Src=200000*", 1);
     rc |= expect_text("confirmed-prints-channel-code", printed, "Channel Code=12", 1);
@@ -998,10 +1003,10 @@ static int
 test_noise_frame_after_another_protocols_call_prints_no_identity(void) {
     int rc = 0;
     for (int still_open = 0; still_open < 2; still_open++) {
-        static dsd_opts opts;
-        static dsd_state state;
-        DSD_MEMSET(&opts, 0, sizeof(opts));
-        DSD_MEMSET(&state, 0, sizeof(state));
+        dsd_opts* opts = g_opts;
+        dsd_state* state = g_state;
+        DSD_MEMSET(opts, 0, sizeof(*opts));
+        DSD_MEMSET(state, 0, sizeof(*state));
         reset_capture();
         dsd_call_observation observation = {
             .protocol = DSD_SYNC_DSTAR_VOICE_POS,
@@ -1010,13 +1015,13 @@ test_noise_frame_after_another_protocols_call_prints_no_identity(void) {
         };
         DSD_SNPRINTF(observation.target_text, sizeof(observation.target_text), "%s", "CQCQCQ");
         DSD_SNPRINTF(observation.source_text, sizeof(observation.source_text), "%s", "N0CALL");
-        (void)dsd_call_state_observe(&state, &observation, DSD_CALL_BOUNDARY_BEGIN);
+        (void)dsd_call_state_observe(state, &observation, DSD_CALL_BOUNDARY_BEGIN);
         if (!still_open) {
-            (void)dsd_call_state_end(&state, 0U, 0.0);
+            (void)dsd_call_state_end(state, 0U, 0.0);
         }
-        state.synctype = DSD_SYNC_DPMR_FS2_POS;
-        state.dpmr_color_code = -1;
-        state.dPMRVoiceFS2Frame.ColorCode[0] = (unsigned int)(-1);
+        state->synctype = DSD_SYNC_DPMR_FS2_POS;
+        state->dpmr_color_code = -1;
+        state->dPMRVoiceFS2Frame.ColorCode[0] = (unsigned int)(-1);
         g_cch_noise = 1;
 
         dsd_test_capture_stderr cap;
@@ -1025,7 +1030,7 @@ test_noise_frame_after_another_protocols_call_prints_no_identity(void) {
             DSD_FPRINTF(stderr, "capture stderr begin failed\n");
             return 1;
         }
-        const int verdict = processdPMRvoice(&opts, &state);
+        const int verdict = processdPMRvoice(opts, state);
         if (dsd_test_capture_stderr_end(&cap) != 0
             || dsd_test_capture_stderr_read(&cap, printed, sizeof(printed)) != 0) {
             DSD_FPRINTF(stderr, "capture stderr failed\n");
@@ -1033,9 +1038,9 @@ test_noise_frame_after_another_protocols_call_prints_no_identity(void) {
         }
 
         rc |= expect_int("noise-verdict", verdict, 0);
-        rc |= expect_int("noise-crc-0", (int)state.dPMRVoiceFS2Frame.CCHDataCrcOk[0], 0);
-        rc |= expect_int("noise-crc-1", (int)state.dPMRVoiceFS2Frame.CCHDataCrcOk[1], 0);
-        rc |= expect_int("noise-unconfirmed", state.dpmr_confirmed, 0);
+        rc |= expect_int("noise-crc-0", (int)state->dPMRVoiceFS2Frame.CCHDataCrcOk[0], 0);
+        rc |= expect_int("noise-crc-1", (int)state->dPMRVoiceFS2Frame.CCHDataCrcOk[1], 0);
+        rc |= expect_int("noise-unconfirmed", state->dpmr_confirmed, 0);
         rc |= expect_int("noise-no-voice", (int)g_mbe_calls, 0);
         rc |= expect_text("noise-no-foreign-target", printed, "CQCQCQ", 0);
         rc |= expect_text("noise-no-foreign-caller", printed, "N0CALL", 0);
@@ -1044,7 +1049,7 @@ test_noise_frame_after_another_protocols_call_prints_no_identity(void) {
 
         /* The other protocol's call is left as it was. */
         dsd_call_snapshot call;
-        rc |= expect_int("noise-other-call-kept", dsd_call_state_get(&state, 0U, &call) > 0, 1);
+        rc |= expect_int("noise-other-call-kept", dsd_call_state_get(state, 0U, &call) > 0, 1);
         rc |= expect_int("noise-other-call-protocol", call.protocol, DSD_SYNC_DSTAR_VOICE_POS);
         rc |= expect_int("noise-other-call-phase", (int)call.phase,
                          still_open ? (int)DSD_CALL_PHASE_ACTIVE : (int)DSD_CALL_PHASE_ENDED);
@@ -1054,31 +1059,31 @@ test_noise_frame_after_another_protocols_call_prints_no_identity(void) {
 
 static int
 test_id_print_side_effects_suppress_invalid_ids(void) {
-    static dsd_state state;
+    dsd_state* state = g_state;
     int rc = 0;
 
-    DSD_MEMSET(&state, 0, sizeof(state));
-    state.dpmr_color_code = 7;
-    state.dPMRVoiceFS2Frame.ColorCode[0] = 4U;
+    DSD_MEMSET(state, 0, sizeof(*state));
+    state->dpmr_color_code = 7;
+    state->dPMRVoiceFS2Frame.ColorCode[0] = 4U;
 
-    dpmr_print_ids(&state);
-    rc |= expect_int("invalid-called-keeps-color", state.dpmr_color_code, 7);
+    dpmr_print_ids(state);
+    rc |= expect_int("invalid-called-keeps-color", state->dpmr_color_code, 7);
     return rc;
 }
 
 static int
 test_process_dpmr_voice_zero_stream_updates_cch_and_dispatches_voice(void) {
-    static dsd_opts opts;
-    static dsd_state state;
+    dsd_opts* opts = g_opts;
+    dsd_state* state = g_state;
     int rc = 0;
 
-    DSD_MEMSET(&opts, 0, sizeof(opts));
-    DSD_MEMSET(&state, 0, sizeof(state));
-    state.synctype = DSD_SYNC_DPMR_FS1_POS;
-    state.dPMRVoiceFS2Frame.ColorCode[0] = (unsigned int)(-1);
+    DSD_MEMSET(opts, 0, sizeof(*opts));
+    DSD_MEMSET(state, 0, sizeof(*state));
+    state->synctype = DSD_SYNC_DPMR_FS1_POS;
+    state->dPMRVoiceFS2Frame.ColorCode[0] = (unsigned int)(-1);
     reset_capture();
 
-    processdPMRvoice(&opts, &state);
+    processdPMRvoice(opts, state);
 
     rc |= expect_int("process-dibit-count", g_dibit_calls, 372);
     rc |= expect_int("process-mbe-calls", (int)g_mbe_calls, 8);
@@ -1092,28 +1097,28 @@ test_process_dpmr_voice_zero_stream_updates_cch_and_dispatches_voice(void) {
     for (uint32_t i = 0; i < NB_OF_DPMR_VOICE_FRAME_TO_DECODE; i++) {
         char tag[64];
         DSD_SNPRINTF(tag, sizeof(tag), "process-hamming-ok-%u", (unsigned)i);
-        rc |= expect_int(tag, (int)state.dPMRVoiceFS2Frame.CCHDataHammingOk[i], 1);
+        rc |= expect_int(tag, (int)state->dPMRVoiceFS2Frame.CCHDataHammingOk[i], 1);
         DSD_SNPRINTF(tag, sizeof(tag), "process-crc-ok-%u", (unsigned)i);
-        rc |= expect_int(tag, (int)state.dPMRVoiceFS2Frame.CCHDataCrcOk[i], 1);
+        rc |= expect_int(tag, (int)state->dPMRVoiceFS2Frame.CCHDataCrcOk[i], 1);
         DSD_SNPRINTF(tag, sizeof(tag), "process-frame-number-%u", (unsigned)i);
-        rc |= expect_int(tag, (int)state.dPMRVoiceFS2Frame.FrameNumbering[i], 0);
+        rc |= expect_int(tag, (int)state->dPMRVoiceFS2Frame.FrameNumbering[i], 0);
         DSD_SNPRINTF(tag, sizeof(tag), "process-comm-mode-%u", (unsigned)i);
-        rc |= expect_int(tag, (int)state.dPMRVoiceFS2Frame.CommunicationMode[i], 0);
+        rc |= expect_int(tag, (int)state->dPMRVoiceFS2Frame.CommunicationMode[i], 0);
         DSD_SNPRINTF(tag, sizeof(tag), "process-version-%u", (unsigned)i);
-        rc |= expect_int(tag, (int)state.dPMRVoiceFS2Frame.Version[i], 0);
+        rc |= expect_int(tag, (int)state->dPMRVoiceFS2Frame.Version[i], 0);
     }
 
     /* Both halves read frame number 0: no 0/1 pair, so no identity (issue #890), though the frame confirms, plays and
        publishes its checked service. */
     dsd_call_snapshot call;
-    rc |= expect_int("process-call", dsd_call_state_get(&state, 0U, &call) > 0, 1);
+    rc |= expect_int("process-call", dsd_call_state_get(state, 0U, &call) > 0, 1);
     rc |= expect_int("process-unpaired-halves-name-nobody", call.target_text[0] == '\0', 1);
     rc |= expect_int("process-service", call.has_service_metadata, 1);
-    rc |= expect_int("process-next-part", opts.dPMR_next_part_of_superframe, 2);
-    rc |= expect_int("process-invalid-color-code", (int)state.dPMRVoiceFS2Frame.ColorCode[0], -1);
+    rc |= expect_int("process-next-part", opts->dPMR_next_part_of_superframe, 2);
+    rc |= expect_int("process-invalid-color-code", (int)state->dPMRVoiceFS2Frame.ColorCode[0], -1);
     /* The call this frame opens decoded no channel code: it has none (issue #890), not the 0 the state began with. */
-    rc |= expect_int("process-new-call-no-color-code", state.dpmr_color_code, -1);
-    rc |= expect_int("process-final-synctype", state.synctype, DSD_SYNC_DPMR_FS1_POS);
+    rc |= expect_int("process-new-call-no-color-code", state->dpmr_color_code, -1);
+    rc |= expect_int("process-final-synctype", state->synctype, DSD_SYNC_DPMR_FS1_POS);
     return rc;
 }
 
@@ -1123,29 +1128,29 @@ test_process_dpmr_voice_zero_stream_updates_cch_and_dispatches_voice(void) {
    code: the pair is dropped, as on a sync loss. */
 static int
 test_process_dpmr_voice_split_by_a_carrier_boundary_publishes_nothing(void) {
-    static dsd_opts opts;
-    static dsd_state state;
+    dsd_opts* opts = g_opts;
+    dsd_state* state = g_state;
     int rc = 0;
 
-    DSD_MEMSET(&opts, 0, sizeof(opts));
-    DSD_MEMSET(&state, 0, sizeof(state));
-    state.synctype = DSD_SYNC_DPMR_FS1_POS;
-    state.dpmr_color_code = -1;
-    state.dPMRVoiceFS2Frame.ColorCode[0] = (unsigned int)(-1);
+    DSD_MEMSET(opts, 0, sizeof(*opts));
+    DSD_MEMSET(state, 0, sizeof(*state));
+    state->synctype = DSD_SYNC_DPMR_FS1_POS;
+    state->dpmr_color_code = -1;
+    state->dPMRVoiceFS2Frame.ColorCode[0] = (unsigned int)(-1);
     reset_capture();
     g_boundary_at = 300;
 
-    const int verdict = processdPMRvoice(&opts, &state);
+    const int verdict = processdPMRvoice(opts, state);
 
     dsd_call_snapshot call;
-    rc |= expect_int("split-moved-carrier-count", (int)state.carrier_seq, 1);
+    rc |= expect_int("split-moved-carrier-count", (int)state->carrier_seq, 1);
     rc |= expect_int("split-dibit-count", g_dibit_calls, 372);
     rc |= expect_int("split-verdict", verdict, 0);
     rc |= expect_int("split-mbe-calls", (int)g_mbe_calls, 0);
-    rc |= expect_int("split-no-call", dsd_call_state_get(&state, 0U, &call) > 0, 0);
-    rc |= expect_int("split-no-crc", (int)state.dPMRVoiceFS2Frame.CCHDataCrcOk[0], 0);
-    rc |= expect_int("split-no-confirmation", state.dpmr_confirmed, 0);
-    rc |= expect_int("split-no-color-code", state.dpmr_color_code, -1);
+    rc |= expect_int("split-no-call", dsd_call_state_get(state, 0U, &call) > 0, 0);
+    rc |= expect_int("split-no-crc", (int)state->dPMRVoiceFS2Frame.CCHDataCrcOk[0], 0);
+    rc |= expect_int("split-no-confirmation", state->dpmr_confirmed, 0);
+    rc |= expect_int("split-no-color-code", state->dpmr_color_code, -1);
     return rc;
 }
 
@@ -1185,31 +1190,31 @@ capture_search_evidence(const dsd_state* state, const char* protocol, int sync, 
  * proved nothing reports nothing. */
 static int
 test_process_dpmr_voice_search_evidence_follows_the_published_call(void) {
-    static dsd_opts opts;
-    static dsd_state state;
+    dsd_opts* opts = g_opts;
+    dsd_state* state = g_state;
     int rc = 0;
 
-    DSD_MEMSET(&opts, 0, sizeof(opts));
-    DSD_MEMSET(&state, 0, sizeof(state));
+    DSD_MEMSET(opts, 0, sizeof(*opts));
+    DSD_MEMSET(state, 0, sizeof(*state));
     DSD_MEMSET(&g_search_evidence, 0, sizeof(g_search_evidence));
-    state.synctype = DSD_SYNC_DPMR_FS1_POS;
-    state.dpmr_color_code = -1;
-    state.dPMRVoiceFS2Frame.ColorCode[0] = (unsigned int)(-1);
+    state->synctype = DSD_SYNC_DPMR_FS1_POS;
+    state->dpmr_color_code = -1;
+    state->dPMRVoiceFS2Frame.ColorCode[0] = (unsigned int)(-1);
     dsd_signal_search_evidence_set(capture_search_evidence);
 
     /* A pair split by a carrier boundary decodes nothing. */
     reset_capture();
     g_boundary_at = 300;
-    (void)processdPMRvoice(&opts, &state);
+    (void)processdPMRvoice(opts, state);
     rc |= expect_int("search-split-reports-nothing", g_search_evidence.calls, 0);
 
     reset_capture();
     g_channel_code = 0x55FF7FU;  /* channel code 7 */
     g_second_half_frame_one = 1; /* halves 0/1: the called identity */
-    (void)processdPMRvoice(&opts, &state);
+    (void)processdPMRvoice(opts, state);
     dsd_signal_search_evidence_set(NULL);
 
-    rc |= expect_int("search-frame-color-code-decoded", (int)state.dPMRVoiceFS2Frame.ColorCode[0], 7);
+    rc |= expect_int("search-frame-color-code-decoded", (int)state->dPMRVoiceFS2Frame.ColorCode[0], 7);
     rc |= expect_int("search-one-confirmation", g_search_evidence.calls, 1);
     rc |= expect_int("search-sees-the-call", g_search_evidence.call_active, 1);
     rc |= expect_int("search-sees-the-called-id", strcmp(g_search_evidence.target_text, "0000000"), 0);
@@ -1223,30 +1228,30 @@ test_process_dpmr_voice_search_evidence_follows_the_published_call(void) {
    boundary splits is: no call, no colour code, no confirmation, and nothing plays. */
 static int
 test_process_dpmr_voice_cut_by_an_input_interruption_publishes_nothing(void) {
-    static dsd_opts opts;
-    static dsd_state state;
+    dsd_opts* opts = g_opts;
+    dsd_state* state = g_state;
     int rc = 0;
 
-    DSD_MEMSET(&opts, 0, sizeof(opts));
-    DSD_MEMSET(&state, 0, sizeof(state));
-    state.synctype = DSD_SYNC_DPMR_FS1_POS;
-    state.dpmr_color_code = -1;
-    state.dPMRVoiceFS2Frame.ColorCode[0] = (unsigned int)(-1);
+    DSD_MEMSET(opts, 0, sizeof(*opts));
+    DSD_MEMSET(state, 0, sizeof(*state));
+    state->synctype = DSD_SYNC_DPMR_FS1_POS;
+    state->dpmr_color_code = -1;
+    state->dPMRVoiceFS2Frame.ColorCode[0] = (unsigned int)(-1);
     reset_capture();
     g_interrupt_at = 300;
 
-    const int verdict = processdPMRvoice(&opts, &state);
+    const int verdict = processdPMRvoice(opts, state);
 
     dsd_call_snapshot call;
-    rc |= expect_int("cut-interrupted", state.input_interrupted, 1);
-    rc |= expect_int("cut-no-carrier-move", (int)state.carrier_seq, 0);
+    rc |= expect_int("cut-interrupted", state->input_interrupted, 1);
+    rc |= expect_int("cut-no-carrier-move", (int)state->carrier_seq, 0);
     rc |= expect_int("cut-dibit-count", g_dibit_calls, 372);
     rc |= expect_int("cut-verdict", verdict, 0);
     rc |= expect_int("cut-mbe-calls", (int)g_mbe_calls, 0);
-    rc |= expect_int("cut-no-call", dsd_call_state_get(&state, 0U, &call) > 0, 0);
-    rc |= expect_int("cut-no-crc", (int)state.dPMRVoiceFS2Frame.CCHDataCrcOk[0], 0);
-    rc |= expect_int("cut-no-confirmation", state.dpmr_confirmed, 0);
-    rc |= expect_int("cut-no-color-code", state.dpmr_color_code, -1);
+    rc |= expect_int("cut-no-call", dsd_call_state_get(state, 0U, &call) > 0, 0);
+    rc |= expect_int("cut-no-crc", (int)state->dPMRVoiceFS2Frame.CCHDataCrcOk[0], 0);
+    rc |= expect_int("cut-no-confirmation", state->dpmr_confirmed, 0);
+    rc |= expect_int("cut-no-color-code", state->dpmr_color_code, -1);
     return rc;
 }
 
@@ -1256,40 +1261,40 @@ test_process_dpmr_voice_cut_by_an_input_interruption_publishes_nothing(void) {
    noise, published a call and decoded its voice. */
 static int
 test_process_dpmr_voice_weak_frames_confirm_only_when_they_run(void) {
-    static dsd_opts opts;
-    static dsd_state state;
+    dsd_opts* opts = g_opts;
+    dsd_state* state = g_state;
     int rc = 0;
     dsd_call_snapshot call;
 
-    DSD_MEMSET(&opts, 0, sizeof(opts));
-    DSD_MEMSET(&state, 0, sizeof(state));
-    state.synctype = DSD_SYNC_DPMR_FS2_POS;
-    state.dpmr_color_code = -1;
-    state.dPMRVoiceFS2Frame.ColorCode[0] = (unsigned int)(-1);
+    DSD_MEMSET(opts, 0, sizeof(*opts));
+    DSD_MEMSET(state, 0, sizeof(*state));
+    state->synctype = DSD_SYNC_DPMR_FS2_POS;
+    state->dpmr_color_code = -1;
+    state->dPMRVoiceFS2Frame.ColorCode[0] = (unsigned int)(-1);
 
     reset_capture();
     g_fail_half = 1;
-    state.symbolcnt = 10000U;
-    rc |= expect_int("weak-first-verdict", processdPMRvoice(&opts, &state), 1);
-    rc |= expect_int("weak-first-unconfirmed", state.dpmr_confirmed, 0);
+    state->symbolcnt = 10000U;
+    rc |= expect_int("weak-first-verdict", processdPMRvoice(opts, state), 1);
+    rc |= expect_int("weak-first-unconfirmed", state->dpmr_confirmed, 0);
 
     /* Seconds later, other protocols' syncs between: no run. */
     reset_capture();
     g_fail_half = 1;
-    state.symbolcnt = 10000U + 5000U;
-    rc |= expect_int("weak-apart-verdict", processdPMRvoice(&opts, &state), 1);
-    rc |= expect_int("weak-apart-unconfirmed", state.dpmr_confirmed, 0);
+    state->symbolcnt = 10000U + 5000U;
+    rc |= expect_int("weak-apart-verdict", processdPMRvoice(opts, state), 1);
+    rc |= expect_int("weak-apart-unconfirmed", state->dpmr_confirmed, 0);
     rc |= expect_int("weak-apart-plays-nothing", (int)g_mbe_calls, 0);
-    rc |= expect_int("weak-apart-no-call", dsd_call_state_get(&state, 0U, &call) > 0, 0);
+    rc |= expect_int("weak-apart-no-call", dsd_call_state_get(state, 0U, &call) > 0, 0);
 
     /* The next frame runs on from it, a symbol late: a transmission, which publishes and plays. */
     reset_capture();
     g_fail_half = 1;
-    state.symbolcnt = 10000U + 5000U + 385U;
-    rc |= expect_int("weak-run-verdict", processdPMRvoice(&opts, &state), 1);
-    rc |= expect_int("weak-run-confirmed", state.dpmr_confirmed, 1);
+    state->symbolcnt = 10000U + 5000U + 385U;
+    rc |= expect_int("weak-run-verdict", processdPMRvoice(opts, state), 1);
+    rc |= expect_int("weak-run-confirmed", state->dpmr_confirmed, 1);
     rc |= expect_int("weak-run-plays", (int)g_mbe_calls, 8);
-    rc |= expect_int("weak-run-call", dsd_call_state_get(&state, 0U, &call) > 0, 1);
+    rc |= expect_int("weak-run-call", dsd_call_state_get(state, 0U, &call) > 0, 1);
     return rc;
 }
 
@@ -1298,36 +1303,36 @@ test_process_dpmr_voice_weak_frames_confirm_only_when_they_run(void) {
    halves both fail still plays nothing and opens no row. */
 static int
 test_non_call_header_authorizes_no_playback(void) {
-    static dsd_opts opts;
-    static dsd_state state;
+    dsd_opts* opts = g_opts;
+    dsd_state* state = g_state;
     dsd_call_snapshot call;
     int rc = 0;
-    DSD_MEMSET(&opts, 0, sizeof(opts));
-    DSD_MEMSET(&state, 0, sizeof(state));
-    state.synctype = DSD_SYNC_DPMR_FS2_POS;
-    state.dpmr_color_code = -1;
-    state.dPMRVoiceFS2Frame.ColorCode[0] = (unsigned int)(-1);
+    DSD_MEMSET(opts, 0, sizeof(*opts));
+    DSD_MEMSET(state, 0, sizeof(*state));
+    state->synctype = DSD_SYNC_DPMR_FS2_POS;
+    state->dpmr_color_code = -1;
+    state->dPMRVoiceFS2Frame.ColorCode[0] = (unsigned int)(-1);
     reset_capture();
     g_fail_half = 1;
-    state.symbolcnt = 30000U;
-    (void)processdPMRvoice(&opts, &state);
-    rc |= expect_int("weak-frame-unconfirmed", state.dpmr_confirmed, 0);
-    rc |= expect_int("weak-frame-learned-scrambling", state.dpmr_scrambled != 0U, 1);
+    state->symbolcnt = 30000U;
+    (void)processdPMRvoice(opts, state);
+    rc |= expect_int("weak-frame-unconfirmed", state->dpmr_confirmed, 0);
+    rc |= expect_int("weak-frame-learned-scrambling", state->dpmr_scrambled != 0U, 1);
 
     const dpmr_header ack = {.message_type = DPMR_MT_ACK,
                              .called_id = 1464100U,
                              .calling_id = 2928210U,
                              .color_code = -1,
                              .copies = DSD_DPMR_SYNC_COPY_0};
-    dpmr_process_header(&opts, &state, &ack, 0);
-    rc |= expect_int("ack-confirms-nothing", state.dpmr_confirmed, 0);
+    dpmr_process_header(opts, state, &ack, 0);
+    rc |= expect_int("ack-confirms-nothing", state->dpmr_confirmed, 0);
 
     reset_capture();
     g_fail_both = 1;
-    state.symbolcnt = 30000U + 384U;
-    (void)processdPMRvoice(&opts, &state);
+    state->symbolcnt = 30000U + 384U;
+    (void)processdPMRvoice(opts, state);
     rc |= expect_int("failed-frame-after-ack-plays-nothing", (int)g_mbe_calls, 0);
-    rc |= expect_int("failed-frame-after-ack-no-row", dsd_call_state_get(&state, 0U, &call) > 0, 0);
+    rc |= expect_int("failed-frame-after-ack-no-row", dsd_call_state_get(state, 0U, &call) > 0, 0);
     return rc;
 }
 
@@ -1335,26 +1340,26 @@ test_non_call_header_authorizes_no_playback(void) {
    (the call's access code is its own, dsd_access_code_current()); an open call keeps the one it published. */
 static int
 test_new_call_without_a_channel_code_has_none(void) {
-    static dsd_opts opts;
-    static dsd_state state;
+    dsd_opts* opts = g_opts;
+    dsd_state* state = g_state;
     int rc = 0;
-    DSD_MEMSET(&opts, 0, sizeof(opts));
-    DSD_MEMSET(&state, 0, sizeof(state));
-    state.synctype = DSD_SYNC_DPMR_FS2_POS;
-    state.dpmr_confirmed = 1;
-    state.dpmr_color_code = 40; /* an earlier call's, on this carrier */
-    state.dPMRVoiceFS2Frame.ColorCode[0] = (unsigned int)(-1);
-    state.dPMRVoiceFS2Frame.CCHDataCrcOk[0] = 1U;
-    dpmr_resolve_half_scrambling(&state);
-    dpmr_publish_call(&opts, &state);
+    DSD_MEMSET(opts, 0, sizeof(*opts));
+    DSD_MEMSET(state, 0, sizeof(*state));
+    state->synctype = DSD_SYNC_DPMR_FS2_POS;
+    state->dpmr_confirmed = 1;
+    state->dpmr_color_code = 40; /* an earlier call's, on this carrier */
+    state->dPMRVoiceFS2Frame.ColorCode[0] = (unsigned int)(-1);
+    state->dPMRVoiceFS2Frame.CCHDataCrcOk[0] = 1U;
+    dpmr_resolve_half_scrambling(state);
+    dpmr_publish_call(opts, state);
     dsd_call_snapshot call;
-    rc |= expect_int("new-call-opens", dsd_call_state_get(&state, 0U, &call) > 0, 1);
-    rc |= expect_int("new-call-no-inherited-colour", state.dpmr_color_code, -1);
-    state.dPMRVoiceFS2Frame.ColorCode[0] = 12U;
-    dpmr_publish_call(&opts, &state);
-    state.dPMRVoiceFS2Frame.ColorCode[0] = (unsigned int)(-1);
-    dpmr_publish_call(&opts, &state);
-    rc |= expect_int("open-call-keeps-its-colour", state.dpmr_color_code, 12);
+    rc |= expect_int("new-call-opens", dsd_call_state_get(state, 0U, &call) > 0, 1);
+    rc |= expect_int("new-call-no-inherited-colour", state->dpmr_color_code, -1);
+    state->dPMRVoiceFS2Frame.ColorCode[0] = 12U;
+    dpmr_publish_call(opts, state);
+    state->dPMRVoiceFS2Frame.ColorCode[0] = (unsigned int)(-1);
+    dpmr_publish_call(opts, state);
+    rc |= expect_int("open-call-keeps-its-colour", state->dpmr_color_code, 12);
     return rc;
 }
 
@@ -1374,13 +1379,13 @@ test_failed_halves_play_by_the_checked_mode(void) {
         {2, 0U, "data-header-failed-voice-halves"}, {1, 8U, "voice-header-failed-halves"}, {-1, 0U, "no-checked-mode"}};
 
     for (size_t c = 0; c < sizeof(k_cases) / sizeof(k_cases[0]); c++) {
-        static dsd_opts opts;
-        static dsd_state state;
-        DSD_MEMSET(&opts, 0, sizeof(opts));
-        DSD_MEMSET(&state, 0, sizeof(state));
-        state.synctype = DSD_SYNC_DPMR_FS2_POS;
-        state.dpmr_color_code = -1;
-        state.dPMRVoiceFS2Frame.ColorCode[0] = (unsigned int)(-1);
+        dsd_opts* opts = g_opts;
+        dsd_state* state = g_state;
+        DSD_MEMSET(opts, 0, sizeof(*opts));
+        DSD_MEMSET(state, 0, sizeof(*state));
+        state->synctype = DSD_SYNC_DPMR_FS2_POS;
+        state->dpmr_color_code = -1;
+        state->dPMRVoiceFS2Frame.ColorCode[0] = (unsigned int)(-1);
         if (k_cases[c].header_mode >= 0) {
             const dpmr_header header = {.message_type = DPMR_MT_COMMUNICATIONS_START,
                                         .called_id = 1464100U,
@@ -1389,14 +1394,14 @@ test_failed_halves_play_by_the_checked_mode(void) {
                                         .format = 1U,
                                         .color_code = -1,
                                         .copies = DSD_DPMR_SYNC_COPY_0};
-            dpmr_process_header(&opts, &state, &header, 0);
+            dpmr_process_header(opts, state, &header, 0);
         } else {
-            state.dpmr_confirmed = 1;
-            state.dpmr_scrambled = 1U; /* clear, learned; no mode learned */
+            state->dpmr_confirmed = 1;
+            state->dpmr_scrambled = 1U; /* clear, learned; no mode learned */
         }
         reset_capture();
         g_fail_both = 1; /* both halves fail, their mode bits reading 000, voice */
-        (void)processdPMRvoice(&opts, &state);
+        (void)processdPMRvoice(opts, state);
         rc |= expect_int(k_cases[c].tag, (int)g_mbe_calls, (int)k_cases[c].want_mbe);
     }
     return rc;
@@ -1414,11 +1419,11 @@ test_powersave_read_only_from_headers_that_carry_it(void) {
     } k_cases[] = {{DPMR_MT_COMMUNICATIONS_START, 1}, {0xFU, 0}, {0xEU, 0}, {0xBU, 0}};
 
     for (size_t c = 0; c < sizeof(k_cases) / sizeof(k_cases[0]); c++) {
-        static dsd_opts opts;
-        static dsd_state state;
-        DSD_MEMSET(&opts, 0, sizeof(opts));
-        DSD_MEMSET(&state, 0, sizeof(state));
-        state.dpmr_color_code = -1;
+        dsd_opts* opts = g_opts;
+        dsd_state* state = g_state;
+        DSD_MEMSET(opts, 0, sizeof(*opts));
+        DSD_MEMSET(state, 0, sizeof(*state));
+        state->dpmr_color_code = -1;
         const dpmr_header header = {.message_type = k_cases[c].mt,
                                     .called_id = 1464100U,
                                     .calling_id = 2928210U,
@@ -1431,7 +1436,7 @@ test_powersave_read_only_from_headers_that_carry_it(void) {
         if (dsd_test_capture_stderr_begin(&cap, "dpmr_powersave") != 0) {
             return 1;
         }
-        dpmr_process_header(&opts, &state, &header, 0);
+        dpmr_process_header(opts, state, &header, 0);
         if (dsd_test_capture_stderr_end(&cap) != 0
             || dsd_test_capture_stderr_read(&cap, printed, sizeof(printed)) != 0) {
             return 1;
@@ -1445,14 +1450,14 @@ test_powersave_read_only_from_headers_that_carry_it(void) {
    0/1 pair of a late entry prints its called ID, not the CRC ERR fields of the call snapshot before it. */
 static int
 test_frame_prints_the_identity_it_bound(void) {
-    static dsd_opts opts;
-    static dsd_state state;
+    dsd_opts* opts = g_opts;
+    dsd_state* state = g_state;
     int rc = 0;
-    DSD_MEMSET(&opts, 0, sizeof(opts));
-    DSD_MEMSET(&state, 0, sizeof(state));
-    state.synctype = DSD_SYNC_DPMR_FS2_POS;
-    state.dpmr_color_code = -1;
-    state.dPMRVoiceFS2Frame.ColorCode[0] = (unsigned int)(-1);
+    DSD_MEMSET(opts, 0, sizeof(*opts));
+    DSD_MEMSET(state, 0, sizeof(*state));
+    state->synctype = DSD_SYNC_DPMR_FS2_POS;
+    state->dpmr_color_code = -1;
+    state->dPMRVoiceFS2Frame.ColorCode[0] = (unsigned int)(-1);
     reset_capture();
     g_second_half_frame_one = 1;
     dsd_test_capture_stderr cap;
@@ -1460,7 +1465,7 @@ test_frame_prints_the_identity_it_bound(void) {
     if (dsd_test_capture_stderr_begin(&cap, "dpmr_frame_ids") != 0) {
         return 1;
     }
-    (void)processdPMRvoice(&opts, &state);
+    (void)processdPMRvoice(opts, state);
     if (dsd_test_capture_stderr_end(&cap) != 0 || dsd_test_capture_stderr_read(&cap, printed, sizeof(printed)) != 0) {
         return 1;
     }
@@ -1474,38 +1479,46 @@ test_frame_prints_the_identity_it_bound(void) {
    only a running second frame confirms again. */
 static int
 test_frame_after_a_checked_end_must_reconfirm(void) {
-    static dsd_opts opts;
-    static dsd_state state;
+    dsd_opts* opts = g_opts;
+    dsd_state* state = g_state;
     dsd_call_snapshot call;
     int rc = 0;
 
-    DSD_MEMSET(&opts, 0, sizeof(opts));
-    DSD_MEMSET(&state, 0, sizeof(state));
-    state.synctype = DSD_SYNC_DPMR_FS2_POS;
-    state.dpmr_color_code = -1;
-    state.dPMRVoiceFS2Frame.ColorCode[0] = (unsigned int)(-1);
-    state.dpmr_confirmed = 1; /* the transmission the end frame closed */
-    dpmr_confirm_reset(&state);
+    DSD_MEMSET(opts, 0, sizeof(*opts));
+    DSD_MEMSET(state, 0, sizeof(*state));
+    state->synctype = DSD_SYNC_DPMR_FS2_POS;
+    state->dpmr_color_code = -1;
+    state->dPMRVoiceFS2Frame.ColorCode[0] = (unsigned int)(-1);
+    state->dpmr_confirmed = 1; /* the transmission the end frame closed */
+    dpmr_confirm_reset(state);
 
     reset_capture();
     g_fail_half = 1;
-    state.symbolcnt = 20000U;
-    rc |= expect_int("tail-frame-verdict", processdPMRvoice(&opts, &state), 1);
-    rc |= expect_int("tail-frame-unconfirmed", state.dpmr_confirmed, 0);
-    rc |= expect_int("tail-frame-no-call", dsd_call_state_get(&state, 0U, &call) > 0, 0);
+    state->symbolcnt = 20000U;
+    rc |= expect_int("tail-frame-verdict", processdPMRvoice(opts, state), 1);
+    rc |= expect_int("tail-frame-unconfirmed", state->dpmr_confirmed, 0);
+    rc |= expect_int("tail-frame-no-call", dsd_call_state_get(state, 0U, &call) > 0, 0);
     rc |= expect_int("tail-frame-plays-nothing", (int)g_mbe_calls, 0);
 
     reset_capture();
     g_fail_half = 1;
-    state.symbolcnt = 20000U + 384U;
-    (void)processdPMRvoice(&opts, &state);
-    rc |= expect_int("running-frame-confirms", state.dpmr_confirmed, 1);
-    rc |= expect_int("running-frame-call", dsd_call_state_get(&state, 0U, &call) > 0, 1);
+    state->symbolcnt = 20000U + 384U;
+    (void)processdPMRvoice(opts, state);
+    rc |= expect_int("running-frame-confirms", state->dpmr_confirmed, 1);
+    rc |= expect_int("running-frame-call", dsd_call_state_get(state, 0U, &call) > 0, 1);
     return rc;
 }
 
 int
 main(void) {
+    g_opts = (dsd_opts*)calloc(1U, sizeof(*g_opts));
+    g_state = (dsd_state*)calloc(1U, sizeof(*g_state));
+    if (g_opts == NULL || g_state == NULL) {
+        free(g_state);
+        free(g_opts);
+        DSD_FPRINTF(stderr, "fixture allocation failed\n");
+        return 1;
+    }
     int rc = 0;
     rc |= test_first_group_scrambler_bridge_mutes_without_key();
     rc |= test_second_group_scrambler_bridge_unmutes_with_key();
@@ -1538,6 +1551,8 @@ main(void) {
     rc |= test_process_dpmr_voice_search_evidence_follows_the_published_call();
     rc |= test_process_dpmr_voice_cut_by_an_input_interruption_publishes_nothing();
 
+    free(g_state);
+    free(g_opts);
     if (rc == 0) {
         printf("DPMR_VOICE_BRIDGE: OK\n");
     }

@@ -35,6 +35,7 @@
 #include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include "dpmr_internal.h"
 #include "dpmr_reference_vectors.h"
@@ -45,6 +46,11 @@
 #pragma GCC diagnostic push
 #pragma GCC diagnostic ignored "-Wmissing-prototypes"
 #endif
+
+/* One decoder for every case, on the heap (AGENTS.md: dsd_state and dsd_opts are heap-allocated; one dsd_state is about
+   2 MiB): each case clears it before use, so none sees another's. */
+static dsd_opts* g_opts;
+static dsd_state* g_state;
 
 /* The dibit stream processdPMRvoice() reads, and how far into it we are. A frame body is
    copied in rather than pointed at: callers build one on their own stack, and nothing at
@@ -396,17 +402,17 @@ run_frame(dsd_opts* opts, dsd_state* state, const uint8_t* body, size_t count) {
 
 static void
 test_reference_frames_decode_through_process_dpmr_voice(void) {
-    static dsd_opts opts;
-    static dsd_state state;
-    DSD_MEMSET(&opts, 0, sizeof(opts));
-    DSD_MEMSET(&state, 0, sizeof(state));
-    state.synctype = DSD_SYNC_DPMR_FS2_POS;
+    dsd_opts* opts = g_opts;
+    dsd_state* state = g_state;
+    DSD_MEMSET(opts, 0, sizeof(*opts));
+    DSD_MEMSET(state, 0, sizeof(*state));
+    state->synctype = DSD_SYNC_DPMR_FS2_POS;
 
     for (int f = 0; f < DPMR_REF_FRAME_COUNT; f++) {
         const dpmr_ref_frame* frame = &DPMR_REF_FRAMES[f];
         char tag[96];
 
-        run_frame(&opts, &state, frame->body_dibits, sizeof(frame->body_dibits));
+        run_frame(opts, state, frame->body_dibits, sizeof(frame->body_dibits));
 
         DSD_SNPRINTF(tag, sizeof(tag), "%s-dibits-consumed", frame->name);
         expect_int(tag, (long)g_dibit_pos, 372);
@@ -414,26 +420,26 @@ test_reference_frames_decode_through_process_dpmr_voice(void) {
         for (uint32_t i = 0; i < NB_OF_DPMR_VOICE_FRAME_TO_DECODE; i++) {
             /* The check this whole issue turns on. */
             DSD_SNPRINTF(tag, sizeof(tag), "%s-crc-ok-%u", frame->name, i);
-            expect_int(tag, (long)state.dPMRVoiceFS2Frame.CCHDataCrcOk[i], 1);
+            expect_int(tag, (long)state->dPMRVoiceFS2Frame.CCHDataCrcOk[i], 1);
             DSD_SNPRINTF(tag, sizeof(tag), "%s-hamming-ok-%u", frame->name, i);
-            expect_int(tag, (long)state.dPMRVoiceFS2Frame.CCHDataHammingOk[i], 1);
+            expect_int(tag, (long)state->dPMRVoiceFS2Frame.CCHDataHammingOk[i], 1);
             DSD_SNPRINTF(tag, sizeof(tag), "%s-crc-value-%u", frame->name, i);
-            expect_int(tag, (long)state.dPMRVoiceFS2Frame.CCHDataCRC[i], frame->crc[i]);
+            expect_int(tag, (long)state->dPMRVoiceFS2Frame.CCHDataCRC[i], frame->crc[i]);
             /* The whole 48-bit block, so the fields nothing else asserts are covered too. */
             DSD_SNPRINTF(tag, sizeof(tag), "%s-cch-bits-%u", frame->name, i);
-            expect_bits(tag, state.dPMRVoiceFS2Frame.CCHData[i], frame->cch_decoded[i], 48U);
+            expect_bits(tag, state->dPMRVoiceFS2Frame.CCHData[i], frame->cch_decoded[i], 48U);
             DSD_SNPRINTF(tag, sizeof(tag), "%s-frame-number-%u", frame->name, i);
-            expect_int(tag, (long)state.dPMRVoiceFS2Frame.FrameNumbering[i], frame->frame_number[i]);
+            expect_int(tag, (long)state->dPMRVoiceFS2Frame.FrameNumbering[i], frame->frame_number[i]);
             DSD_SNPRINTF(tag, sizeof(tag), "%s-comm-mode-%u", frame->name, i);
-            expect_int(tag, (long)state.dPMRVoiceFS2Frame.CommunicationMode[i], frame->communication_mode[i]);
+            expect_int(tag, (long)state->dPMRVoiceFS2Frame.CommunicationMode[i], frame->communication_mode[i]);
             DSD_SNPRINTF(tag, sizeof(tag), "%s-version-%u", frame->name, i);
-            expect_int(tag, (long)state.dPMRVoiceFS2Frame.Version[i], frame->version[i]);
+            expect_int(tag, (long)state->dPMRVoiceFS2Frame.Version[i], frame->version[i]);
             DSD_SNPRINTF(tag, sizeof(tag), "%s-comms-format-%u", frame->name, i);
-            expect_int(tag, (long)state.dPMRVoiceFS2Frame.CommsFormat[i], frame->comms_format[i]);
+            expect_int(tag, (long)state->dPMRVoiceFS2Frame.CommsFormat[i], frame->comms_format[i]);
         }
 
         DSD_SNPRINTF(tag, sizeof(tag), "%s-colour-code", frame->name);
-        expect_int(tag, (int)state.dPMRVoiceFS2Frame.ColorCode[0], DPMR_REF_COLOUR_CODE);
+        expect_int(tag, (int)state->dPMRVoiceFS2Frame.ColorCode[0], DPMR_REF_COLOUR_CODE);
         DSD_SNPRINTF(tag, sizeof(tag), "%s-voice-frames", frame->name);
         expect_int(tag, (long)g_mbe_calls, 8);
     }
@@ -441,45 +447,53 @@ test_reference_frames_decode_through_process_dpmr_voice(void) {
     /* Frame numbers 0/1 published the called party, 2/3 the calling party. */
     dsd_call_snapshot call;
     DSD_MEMSET(&call, 0, sizeof(call));
-    expect_int("call-present", dsd_call_state_get(&state, 0U, &call) > 0, 1);
+    expect_int("call-present", dsd_call_state_get(state, 0U, &call) > 0, 1);
     expect_int("called-id", strcmp(call.target_text, DPMR_REF_FRAMES[0].id_string), 0);
     expect_int("calling-id", strcmp(call.source_text, DPMR_REF_FRAMES[1].id_string), 0);
 }
 
 static void
 test_a_corrected_bit_error_still_passes_and_two_do_not(void) {
-    static dsd_opts opts;
-    static dsd_state state;
+    dsd_opts* opts = g_opts;
+    dsd_state* state = g_state;
     uint8_t body[372];
 
     /* One flipped on-air bit inside the first CCH half: Hamming places it, CRC still passes. */
-    DSD_MEMSET(&opts, 0, sizeof(opts));
-    DSD_MEMSET(&state, 0, sizeof(state));
-    state.synctype = DSD_SYNC_DPMR_FS2_POS;
+    DSD_MEMSET(opts, 0, sizeof(*opts));
+    DSD_MEMSET(state, 0, sizeof(*state));
+    state->synctype = DSD_SYNC_DPMR_FS2_POS;
     DSD_MEMCPY(body, DPMR_REF_FRAMES[0].body_dibits, sizeof(body));
     body[3] ^= 1U; /* low bit of dibit 3, i.e. on-air bit 7 of CCH half 0 */
-    run_frame(&opts, &state, body, sizeof(body));
-    expect_int("one-error-crc-ok", (long)state.dPMRVoiceFS2Frame.CCHDataCrcOk[0], 1);
-    expect_int("one-error-hamming-ok", (long)state.dPMRVoiceFS2Frame.CCHDataHammingOk[0], 1);
-    expect_bits("one-error-cch-bits", state.dPMRVoiceFS2Frame.CCHData[0], DPMR_REF_FRAMES[0].cch_decoded[0], 48U);
+    run_frame(opts, state, body, sizeof(body));
+    expect_int("one-error-crc-ok", (long)state->dPMRVoiceFS2Frame.CCHDataCrcOk[0], 1);
+    expect_int("one-error-hamming-ok", (long)state->dPMRVoiceFS2Frame.CCHDataHammingOk[0], 1);
+    expect_bits("one-error-cch-bits", state->dPMRVoiceFS2Frame.CCHData[0], DPMR_REF_FRAMES[0].cch_decoded[0], 48U);
 
     /* The interleave sends the bits of one Hamming block six apart on air, so two flips
        six on-air bits apart land in the same codeword and defeat it -- which is the point
        of interleaving, and why the CRC is what stands behind it. */
-    DSD_MEMSET(&opts, 0, sizeof(opts));
-    DSD_MEMSET(&state, 0, sizeof(state));
-    state.synctype = DSD_SYNC_DPMR_FS2_POS;
+    DSD_MEMSET(opts, 0, sizeof(*opts));
+    DSD_MEMSET(state, 0, sizeof(*state));
+    state->synctype = DSD_SYNC_DPMR_FS2_POS;
     DSD_MEMCPY(body, DPMR_REF_FRAMES[0].body_dibits, sizeof(body));
     body[0] ^= 2U; /* on-air bit 0 -> block 0 */
     body[3] ^= 2U; /* on-air bit 6 -> block 0 */
-    run_frame(&opts, &state, body, sizeof(body));
-    expect_int("two-errors-crc-fails", (long)state.dPMRVoiceFS2Frame.CCHDataCrcOk[0], 0);
+    run_frame(opts, state, body, sizeof(body));
+    expect_int("two-errors-crc-fails", (long)state->dPMRVoiceFS2Frame.CCHDataCrcOk[0], 0);
     /* The second half was untouched and must be unaffected. */
-    expect_int("two-errors-other-half-ok", (long)state.dPMRVoiceFS2Frame.CCHDataCrcOk[1], 1);
+    expect_int("two-errors-other-half-ok", (long)state->dPMRVoiceFS2Frame.CCHDataCrcOk[1], 1);
 }
 
 int
 main(void) {
+    g_opts = (dsd_opts*)calloc(1U, sizeof(*g_opts));
+    g_state = (dsd_state*)calloc(1U, sizeof(*g_state));
+    if (g_opts == NULL || g_state == NULL) {
+        free(g_state);
+        free(g_opts);
+        DSD_FPRINTF(stderr, "fixture allocation failed\n");
+        return 1;
+    }
     Hamming_12_8_init();
 
     test_reference_vector_metadata();
@@ -490,6 +504,8 @@ main(void) {
     test_cch_stages_decode_the_reference_frames();
     test_reference_frames_decode_through_process_dpmr_voice();
     test_a_corrected_bit_error_still_passes_and_two_do_not();
+    free(g_state);
+    free(g_opts);
 
     if (g_failures == 0) {
         printf("DPMR_REFERENCE_VECTORS: OK\n");
