@@ -2015,14 +2015,16 @@ dmo_call_forget(tetra_dmo_call_t* d) {
  * the DM-SDU, each when the security class left it clear. */
 static void
 dmo_call_from(tetra_dmo_call_t* d, const tetra_dmo_sync_h_t* h) {
-    if (!d->active || !tetra_dmo_party_continues(&d->party, h) || (!h->dst_encrypted && d->dst != h->dst)) {
+    if (!d->active || !tetra_dmo_party_repeats(&d->party, h)) {
         dmo_call_forget(d);
     }
     d->active = 1;
     d->addressed = 1;
-    d->src = h->src;
-    tetra_dmo_party_of(h, &d->party);
-    d->dst = h->dst_encrypted ? 0u : h->dst;
+    tetra_dmo_party_note(&d->party, h);
+    d->src = d->party.src;
+    /* The called party by its true SSI where one was named: a later message of the call may address it by the pseudo
+     * SSI its DM-CONNECT gave (EN 300 396-3 clause 8.5.2.1.1 note 3), which is the same called party. */
+    d->dst = d->party.called_ssi ? d->party.called : (d->party.dst_clear ? d->party.dst : 0u);
     if (h->md_ok) {
         d->circuit_mode = (uint8_t)h->e[TETRA_DMO_E_CIRCUIT_MODE];
         d->circuit_known = 1;
@@ -2087,11 +2089,11 @@ dmo_sds_notice(dsd_opts* opts, dsd_state* state, tetra_state_t* ts, const tetra_
 
 /* A DM-RESERVED is for the call on the channel (EN 300 396-3 clause 8.5.2.1.1, note 5): the call is open and the
  * reservation is from its master, the party of the set-up that started the transmission (source address of the same
- * type, its MNI for a true SSI, the same repeater or gateway). The same rule as the transmission's
- * (tetra_dmo_party_reserves(), dmo_apply_reserved()). */
+ * type, its MNI for a true SSI, the same route, the same called party: a group's TSI in a group call). The same rule
+ * as the transmission's (tetra_dmo_party_repeats(), dmo_apply_reserved()). */
 static int
 dmo_reserved_for_call(const tetra_dmo_call_t* d, const tetra_dmo_sync_h_t* h) {
-    return d->active && tetra_dmo_party_reserves(&d->party, h);
+    return d->active && tetra_dmo_party_repeats(&d->party, h);
 }
 
 /* A DM-RESERVED whose SCH/H passed its CRC (tetra_dmo_reservation()). It never opens traffic or a call, and one for
@@ -2125,18 +2127,21 @@ dmo_reserved(dsd_opts* opts, dsd_state* state, tetra_state_t* ts, const tetra_dm
  * (tetra_state_t::dmo_tx_seq): a transmission keeps its source and security class (EN 300 396-3 clauses 8.2.4,
  * 8.5.3), so what describes another is another call, which an identity the two calls do not both know could not tell
  * apart. A call its set-up announced before any transmission began (DM-SETUP PRES, whose DM-CONNECT ACK from the same
- * calling party starts the traffic, clause 6.2; DM-GSETUP) takes the first transmission of its own party as its own:
- * the PDU that describes it now (@p h, NULL when none is known) is from the set-up's party with a source address
- * (tetra_dmo_party_continues(): the same address type, address, MNI and repeater or gateway, clause 8.5.2.1.1), so a
- * co-channel network's master of the same SSI never takes the pending set-up's call. 1 when the call on the channel is
- * the transmission in progress's. */
+ * calling party starts the traffic, clause 6.2; DM-GSETUP) takes the first transmission of its own party as its own,
+ * and so does a call whose transmission a DM-RESERVED ended: the PDU that describes it now (@p h, NULL when none is
+ * known) repeats the set-up's addresses with a source address (tetra_dmo_party_repeats(), clause 8.5.2.1.1: the same
+ * source address type, address and route, the MNI for a true SSI only, the same called party), so a co-channel
+ * network's master of the same SSI never takes the pending set-up's call, while the caller's DM-CONNECT ACK to the
+ * called party's new pseudo SSI, which may carry another dummy MNI, does. The stricter DM-OCCUPIED rule
+ * (tetra_dmo_party_continues(), note 4) holds only within a transmission. 1 when the call on the channel is the
+ * transmission in progress's. */
 static int
 dmo_call_of_transmission(dsd_opts* opts, dsd_state* state, tetra_state_t* ts, const tetra_dmo_sync_h_t* h) {
     tetra_dmo_call_t* const d = &ts->calls.dmo;
     if (d->tx_seq == ts->dmo_tx_seq) {
         return 1;
     }
-    if (!d->in_tx && d->active && h && h->src_type != 2u && tetra_dmo_party_continues(&d->party, h)) {
+    if (!d->in_tx && d->active && h && h->src_type != 2u && tetra_dmo_party_repeats(&d->party, h)) {
         d->tx_seq = ts->dmo_tx_seq;
         return 1;
     }

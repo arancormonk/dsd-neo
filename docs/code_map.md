@@ -15053,14 +15053,26 @@ single "current call".
   even where neither names the other's parties (a clear call after an encrypted DM-2-C one, or the other way, and a
   DM-2-C one after a DM-2-A or DM-2-B one, which encrypt the air interface too). A call
   its set-up announced before any transmission began (DM-SETUP PRES, whose calling party's DM-CONNECT ACK starts the
-  traffic, clause 6.2; DM-GSETUP) takes the first transmission of its own party as its own (`dmo_call_of_transmission()`
-  with `tetra_dmo_party_continues()`: a co-channel network's DM-OCCUPIED of the same SSIs opens a row of its own).
-  DM-RESERVED
+  traffic, clause 6.2; DM-GSETUP) takes the first transmission of its own party as its own, as does a call whose
+  transmission a DM-RESERVED ended (`dmo_call_of_transmission()` with `tetra_dmo_party_repeats()`, the rule of the
+  messages that repeat the set-up's addresses: a co-channel network's DM-OCCUPIED of the same SSIs opens a row of its
+  own, while the caller's DM-CONNECT ACK to the called party's new pseudo SSI under another dummy MNI goes on with the
+  set-up's row, which keeps showing the called party's true SSI, clause 8.5.2.1.1 note 3). A party
+  (`tetra_dmo_party`, `tetra_dmo_party_note()`) is the source address and its type (clause 9.3.27), the MNI, the
+  route a DSB names (communication type, table 21: direct operation is a known route with no relay, never a wildcard;
+  only a DMAC-DATA, table 23, leaves it unsaid, and one that leaves its source out is the set-up's source, clause
+  8.5.2.1.2), the repeater or gateway address (table 22), and the called party: a true SSI destination with the MNI is
+  its TSI (clauses 8.5.2.1.1, 8.5.2.2), which group-addressed occupation and reservation messages carry, so the MNI
+  can be a dummy only from a pseudo source to a pseudo destination. Within a transmission `tetra_dmo_party_continues()`
+  also holds the MNI wherever both carry one (note 4: a DM-OCCUPIED repeats its initiator's MNI, which the scrambling
+  uses), and both rules hold the called party: two true destinations are one only with the same MNI and SSI, a group
+  call's never a pseudo SSI, two pseudo destinations only the same one. DM-RESERVED
   (`tetra_dmo_reservation()`, `dmo_reserved()`, `dmo_apply_reserved()`; EN 300 396-3 clauses 8.4.3.3, 8.6.2, 9.6.2,
   9.6.15) is read from DSBs only and never opens traffic; for the call on the channel (from its master's party, one
-  rule for the call record and the transmission, `tetra_dmo_party_reserves()`: the source address of the same type,
-  clause 9.3.27, its MNI for a true SSI only, clause 8.5.2.1.1, and the same repeater or gateway, whose pseudo
-  addresses carry no MNI, table 22) one after a call transaction
+  rule for the call record and the transmission, `tetra_dmo_party_repeats()`: the source address of the same type,
+  its MNI for a true SSI only, note 5, the same route and the same called party, so a direct reservation of a
+  gateway call's pseudo SSI, or another network's group of the same GSSI, is another call's) one after a call
+  transaction
   ends the transmission as its unheard DM-TX CEASED would (the canonical call ends as a terminator, the colour code and
   protection go), keeping the call record open for the reservation; reservation time remaining 0 sent in a frame 6, 12
   or 18 (`tetra_dmo_sync_h_t::sync_frame`) ends the call too, while 0 in another frame runs to the next one; a gateway
@@ -15079,7 +15091,7 @@ single "current call".
   DM-2-B and DM-2-C all encrypt the air interface, but are three classes), which its DM-OCCUPIED shall repeat (clause
   8.5.3): one that agrees confirms it, opening what an unread DMAC-SYNC sealed, one that contradicts it leaves the more
   closed of the two (`dmo_apply_setup()`), and a set-up from another party (`tetra_dmo_party` /
-  `tetra_dmo_party_continues()`: source address type and address, MNI wherever both carry one, repeater or gateway,
+  `tetra_dmo_party_continues()`: source address type and address, MNI wherever both carry one, route, called party,
   EN 300 396-3 clause 8.5.2.1.1; the colour code seed holds only six MNI bits, so two co-channel networks' masters of
   one SSI share it) or of another class, like a DM-2-C
   DMAC-SYNC after a transmission of any other class, DM-2-A and DM-2-B included, starts the next transmission

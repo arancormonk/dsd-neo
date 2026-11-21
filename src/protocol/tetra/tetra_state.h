@@ -299,8 +299,8 @@ typedef struct {
     double sds_m;          /**< decode clock: when the last short data notice went out */
     tetra_dmo_sds_key sds; /**< the message of the last short data notice; type 0 for none */
     uint32_t src;          /**< source address (talker) */
-    tetra_dmo_party party; /**< who its source is (tetra_dmo_party_of()): address type, MNI, repeater or gateway */
-    uint32_t dst;          /**< destination address; 0 when DM-2-B hides it */
+    tetra_dmo_party party; /**< its parties (tetra_dmo_party_note()): source, MNI, route, called party */
+    uint32_t dst;          /**< destination: the called party's true SSI where known; 0 when DM-2-B hides it */
     uint32_t tx_seq;       /**< the transmission it is a call of (tetra_state_t::dmo_tx_seq) */
     uint8_t active;        /**< a DM-SETUP, DM-CONNECT ACK or DM-OCCUPIED set it up and no end has come since */
     uint8_t in_tx;         /**< it was published with a transmission in progress, not only announced by its set-up */
@@ -580,7 +580,7 @@ typedef struct tetra_state {
  *                 ciphering parameters do not change within a call transaction, EN 300 396-6 clause 5.2); 0 otherwise.
  * dmo_tx_seed:    the DM colour code seed of that transmission's source, 0 when none is known.
  * dmo_tx_party:   the party of the set-up that started that transmission (tetra_dmo_party: source address and its
- *                 type, MNI, repeater or gateway), which its DM-OCCUPIED and DM-RESERVED shall repeat (clause
+ *                 type, MNI, route, called party), which its DM-OCCUPIED and DM-RESERVED shall repeat (clause
  *                 8.5.2.1.1); not known for a DM-2-C one, which names none.
      * dmo_tx_seq:     counts the transmissions started: the direct mode call canonical slot 0 shows is of one of them.
      * dmo_since_sync: DNBs processed since the last DMAC-SYNC (colour code staleness). */

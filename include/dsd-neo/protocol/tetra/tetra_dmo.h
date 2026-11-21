@@ -174,7 +174,9 @@ typedef enum {
 typedef struct {
     uint16_t relay_addr; /* DMAC-SYNC: repeater or gateway address, valid when has_relay */
     uint8_t has_relay;
-    uint8_t enc_state; /* air interface encryption state the PDU was read under, TETRA_DMO_AIE_* */
+    uint8_t route_known; /* DMAC-SYNC: its SCH/S named the route (comm_type); a DMAC-DATA names none (table 23) */
+    uint8_t comm_type;   /* valid when route_known: 0 direct, 1 via DM-REP, 2 via DM-GATE, 3 via DM-REP/GATE */
+    uint8_t enc_state;   /* air interface encryption state the PDU was read under, TETRA_DMO_AIE_* */
     uint8_t fill_bit;
     uint8_t stolen2; /* DMAC-DATA: second half slot stolen flag */
     uint8_t frag_flag;
@@ -297,34 +299,60 @@ typedef enum {
  * frame not known, the reservation runs to the end of the next one (clause 8.4.5.1.8 note 2). */
 tetra_dmo_reservation_e tetra_dmo_reservation(const tetra_dmo_sync_h_t* h);
 
-/* Who sent a DMAC-SYNC or DMAC-DATA, as EN 300 396-3 clause 8.5.2.1.1 names the master of a call transaction: the
- * source address with its type (clause 9.3.27: a true SSI, a pseudo SSI or none), the MNI when the PDU carried one, and
- * the repeater or gateway address a DMAC-SYNC carries for a call through one (table 22). The SSI alone names no one:
- * co-channel networks may share a true SSI, a pseudo SSI is any random value, and a gateway's pseudo addresses come
- * with no MNI at all. */
+/* Who sent a DMAC-SYNC or DMAC-DATA, and to whom, as EN 300 396-3 clause 8.5.2.1.1 names the master of a call
+ * transaction and its called party: the source address with its type (clause 9.3.27: a true SSI, a pseudo SSI or
+ * none), the MNI when the PDU carried one, the route a DMAC-SYNC names (table 21, communication type: direct, or via a
+ * repeater or gateway, whose address table 22 adds), and the destination. The SSI alone names no one: co-channel
+ * networks may share a true SSI, a pseudo SSI is any random value, and a gateway's pseudo addresses come with no MNI at
+ * all. Direct operation is a route known to have no relay; only a DMAC-DATA, which carries no communication type
+ * (table 23), leaves the route unsaid. A destination that is a true SSI, with the MNI, is the called party's TSI
+ * (clauses 8.5.2.1.1 and 8.5.2.2), a group's in a group call, and the MNI is a true MNI wherever either address is a
+ * true SSI: only a pseudo source to a pseudo destination may carry a dummy one. */
 typedef struct {
     uint32_t src;
     uint32_t mni;
-    uint16_t relay;
+    uint32_t dst;        /* valid when dst_clear */
+    uint32_t called;     /* the called party's true SSI, valid when called_ssi */
+    uint32_t called_mni; /* the called party's MNI, valid when called_tsi */
+    uint16_t relay;      /* repeater or gateway address, valid when route_known and comm_type is not 0 */
     uint8_t src_type;
     uint8_t has_mni;
-    uint8_t has_relay;
+    uint8_t route_known;
+    uint8_t comm_type;
+    uint8_t dst_type;   /* 0 true SSI, 1 pseudo SSI, 2 none (clause 9.3.5) */
+    uint8_t dst_clear;  /* the destination address was read (not absent, not encrypted by DM-2-B) */
+    uint8_t called_tsi; /* a destination that was a true SSI with its MNI was read */
+    uint8_t called_ssi; /* and its SSI in the clear */
+    uint8_t group;      /* the call type was read in the clear and said a group call, valid when group_known */
+    uint8_t group_known;
     uint8_t known; /* set from a PDU whose addresses were read in the clear */
 } tetra_dmo_party;
 
 /* The party @p h names in @p out; not known when its addresses were not read (DM-2-C). */
 void tetra_dmo_party_of(const tetra_dmo_sync_h_t* h, tetra_dmo_party* out);
 
+/* @p h goes on with party @p p (tetra_dmo_party_continues() or tetra_dmo_party_repeats() said so): @p p takes what @p h
+ * names, and keeps what @p h leaves unsaid that @p p knew: the route a DMAC-DATA does not carry, the source a DMAC-DATA
+ * may leave out (clause 8.5.2.1.2), the called party's true TSI where @p h addresses it by its pseudo SSI (clause
+ * 8.5.2.1.1 note 3), the destination DM-2-B hides, and the call type an encrypted DM-SDU hides. With @p p not known it
+ * is tetra_dmo_party_of(). */
+void tetra_dmo_party_note(tetra_dmo_party* p, const tetra_dmo_sync_h_t* h);
+
 /* 1 when @p h is from party @p p as a message of its transmission must be (clause 8.5.2.1.1): the same source address
- * type and address, the same repeater or gateway where both name one, and the same MNI where both carry one, whatever
- * the address type, since a DM-OCCUPIED repeats the MNI of the set-up that started its transmission, which the
- * scrambling uses (note 4). A source that names none matches one that names none. */
+ * type and address, the same route where both name one, and the same MNI where both carry one, whatever the address
+ * type, since a DM-OCCUPIED repeats the MNI of the set-up that started its transmission, which the scrambling uses
+ * (note 4); and to the same called party (as tetra_dmo_party_repeats()). A source that names none matches one that
+ * names none, and a DMAC-DATA that leaves its source out is the set-up's source (clause 8.5.2.1.2). */
 int tetra_dmo_party_continues(const tetra_dmo_party* p, const tetra_dmo_sync_h_t* h);
 
-/* 1 when the DM-RESERVED @p h is from party @p p (clause 8.5.2.1.1): as tetra_dmo_party_continues(), but the MNI
- * counts only for a true SSI, for which alone a DM-RESERVED shall repeat it; behind a pseudo SSI it need not be a true
- * MNI. */
-int tetra_dmo_party_reserves(const tetra_dmo_party* p, const tetra_dmo_sync_h_t* h);
+/* 1 when @p h repeats the addresses of the set-up of party @p p, as a DM-CONNECT ACK, DM-TX CEASED, DM-RELEASE or
+ * DM-RESERVED shall (clause 8.5.2.1.1, note 5), and as the first transmission of a call its set-up announced does: the
+ * same source address type, address and route as tetra_dmo_party_continues(), the MNI for a true source SSI only,
+ * and the same called party where both name it: the same true TSI (MNI and SSI) where both destinations are true
+ * SSIs, which a group-addressed occupation or reservation always carries, so a group call's is never one for a pseudo
+ * destination; the same pseudo SSI where both are pseudo SSIs (the called party's stays valid for the call, a DM-MS
+ * holds one at a time); a true SSI and a pseudo SSI may both be one individual's (note 3). */
+int tetra_dmo_party_repeats(const tetra_dmo_party* p, const tetra_dmo_sync_h_t* h);
 
 /* The carrier was left: forget its DM colour code (and its seed) and the protection of its call, so no normal burst of
  * the next carrier is descrambled with them and its traffic is not classified by them, and direct mode itself: the next
