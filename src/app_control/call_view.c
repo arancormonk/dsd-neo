@@ -106,15 +106,16 @@ staged_group_name(const dsd_state* state, uint8_t slot, uint64_t tg_id, char* ou
  * @brief Copy the target label the event layer cached on an ended call's epoch (issue #773 B11).
  *
  * Once the call's row commits, the staged row no longer names it, so the ended-call hold reads the label cached on the
- * epoch when the row committed -- only for the target it was cached for (target_label_id), and never over a textual
- * target, whose text names the call itself.
+ * epoch when the row committed -- only for the numeric target it was cached for (target_label_id). A text-only target
+ * (D-STAR, YSF, M17, dPMR: no numeric target, @p tg_id 0) names the call itself and takes none; a numeric target shown
+ * as text (an NXDN Type-D "pp-iiii" group, issue #903) keeps its ID's label, as it does while live.
  *
  * @return Non-zero when a name was written.
  */
 static int
 cached_group_name(const dsd_call_snapshot* call, uint64_t tg_id, char* out, size_t out_size) {
-    if (call->phase != DSD_CALL_PHASE_ENDED || call->target_text[0] != '\0' || tg_id == 0U
-        || call->target_label_id != tg_id || call->target_label[0] == '\0') {
+    if (call->phase != DSD_CALL_PHASE_ENDED || tg_id == 0U || call->target_label_id != tg_id
+        || call->target_label[0] == '\0') {
         return 0;
     }
     DSD_SNPRINTF(out, out_size, "%s", call->target_label);

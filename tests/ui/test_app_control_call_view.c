@@ -899,6 +899,33 @@ test_ended_hold_keeps_target_name(void) {
     dsd_app_slot_call_view(state, 0U, 13.0, &view);
     assert(view.state == DSD_APP_CALL_LINE_ENDED);
     assert(strcmp(view.name, "KD9ABC") == 0);
+    assert(view.tg_label[0] == '\0');
+    destroy_state(state);
+
+    /* A numeric target shown as text (an NXDN Type-D group, 11-bit ID 5 under prefix 3, "03-0005", issue #903) keeps
+       the label cached for its ID: the text shows the prefix, the ID still names the group. */
+    state = make_state_with_history(&history);
+    dsd_call_observation type_d = dsd_call_observation_data(DSD_SYNC_NXDN_POS, 0U, 100U, 5U);
+    type_d.kind = DSD_CALL_KIND_GROUP_VOICE;
+    type_d.policy_target_id = 5U;
+    type_d.observed_m = 10.0;
+    DSD_SNPRINTF(type_d.target_text, sizeof(type_d.target_text), "%s", "03-0005");
+    DSD_SNPRINTF(type_d.source_text, sizeof(type_d.source_text), "%s", "03-0100");
+    assert(dsd_call_state_observe(state, &type_d, DSD_CALL_BOUNDARY_BEGIN) > 0);
+    stage_group_name(history, 0U, 5U, "Fireground");
+    assert(dsd_call_state_end_ex(state, 0U, 12.0, DSD_CALL_END_TERMINATOR) > 0);
+    DSD_MEMSET(&history[0].Event_History_Items[0], 0, sizeof(history[0].Event_History_Items[0]));
+    cache_target_label(state, 0U, 5U, "Fireground");
+    dsd_app_slot_call_view(state, 0U, 12.0 + DSD_APP_CALL_LINE_ENDED_HOLD_S - 0.5, &view);
+    assert(view.state == DSD_APP_CALL_LINE_ENDED);
+    assert(strcmp(view.tg_text, "03-0005") == 0);
+    assert(strcmp(view.tg_label, "Fireground") == 0);
+    assert(strcmp(view.name, "Fireground") == 0);
+    /* Still only for the ID it was cached for. */
+    cache_target_label(state, 0U, 6U, "Elsewhere");
+    dsd_app_slot_call_view(state, 0U, 13.0, &view);
+    assert(view.tg_label[0] == '\0');
+    assert(strcmp(view.name, "03-0005") == 0);
     destroy_state(state);
 }
 

@@ -2914,8 +2914,8 @@ suite runs under this compiler.
   (`slot_source_text()`) reads that cache for an ended call whose staged row is gone, so the held Monitor view names
   the talker without a source-table search per render. The row's target label is cached beside it when the row
   commits (`target_label`, keyed by `target_label_id`, the call's OTA target else its policy target; issue #773 B11),
-  and `cached_group_name()` names an ENDED call from it once the staged row no longer matches; a textual target keeps
-  its text. The row's channel label is cached the same way (`channel_label`, keyed by `channel_label_epoch`; issue
+  and `cached_group_name()` names an ENDED call from it once the staged row no longer matches. A text-only target (no
+  numeric target) keeps its text; a numeric target shown as text (an NXDN Type-D "pp-iiii" group) keeps its ID's label. The row's channel label is cached the same way (`channel_label`, keyed by `channel_label_epoch`; issue
   #782), so a held call with no name of its own is still named for the channel it was heard on (a held call on a
   trunk-scan target read "TG <n>" for the hold before). Tests: `APP_CONTROL_CALL_VIEW`
   (`test_ended_hold_keeps_target_name`), `CORE_CALL_ALERT_HISTORY` (`test_commit_caches_target_label`),
