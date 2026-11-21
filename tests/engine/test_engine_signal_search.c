@@ -4863,6 +4863,117 @@ test_tetra_quiet_and_activity(dsd_opts* o, dsd_state* s, const dsd_signal_search
     end_tetra_rate(o, s);
 }
 
+static dsd_signal_search_site_note
+tetra_tmo_note(void) {
+    dsd_signal_search_site_note note;
+    DSD_MEMSET(&note, 0, sizeof(note));
+    note.kind = DSD_SEARCH_SITE_NOTE_TETRA;
+    note.tetra.mode = DSD_SEARCH_TETRA_TMO;
+    note.tetra.mcc = 228;
+    note.tetra.mnc = 8889;
+    note.tetra.la = 12;
+    note.tetra.la_valid = 1;
+    note.tetra.main_state = DSD_SEARCH_TETRA_MAIN_HZ;
+    note.tetra.main_hz = 426706250;
+    return note;
+}
+
+/* Issue #748: a TETRA detection shows the site its own notes give, by mode ("TETRA DMO" never takes a trunked cell's
+   record), with the access code its evidence carries; no receive filter applies to TETRA. A withdrawal clears site
+   and access together, publishes at once, and keeps them cleared for the rest of the visit: no later note or evidence
+   of the visit, and no repeated withdrawal, brings them back or publishes again. */
+static void
+test_tetra_site_and_withdraw(dsd_opts* o, dsd_state* s, const dsd_signal_search_config* config) {
+    static const char tmo_text[] = "MCC 228 \xC2\xB7 MNC 8889 \xC2\xB7 LA 12 \xC2\xB7 Main carrier 426.70625 MHz";
+    use_tetra_rate();
+    /* Filters on every kind that rejects everything they can name: none names TETRA. */
+    o->receive.filters[DSD_RECEIVE_DCC].enabled = 1;
+    o->receive.filters[DSD_RECEIVE_DCC].allow.bits[0] = UINT64_C(1) << 15;
+    o->receive.filters[DSD_RECEIVE_NAC].enabled = 1;
+    o->receive.filters[DSD_RECEIVE_NAC].allow.bits[0] = UINT64_C(1) << 1;
+    o->receive.filters[DSD_RECEIVE_RAN].enabled = 1;
+    o->receive.filters[DSD_RECEIVE_RAN].allow.bits[0] = UINT64_C(1) << 1;
+    o->receive.filters[DSD_RECEIVE_SLOT].enabled = 1;
+    o->receive.filters[DSD_RECEIVE_SLOT].allow.bits[0] = UINT64_C(1) << 2;
+    dsd_signal_search_config one = tetra_config(config, 70);
+    start_tag_session(o, s, &one);
+    tetra_visit(o, s);
+    s->synctype = DSD_SYNC_TETRA_SB_POS;
+    dsd_signal_search_site_note tmo = tetra_tmo_note();
+    /* A site noted before the confirmation shows with it. */
+    dsd_signal_search_note_site(s, &tmo);
+    assert(status.hit.site[0] == '\0');
+    dsd_signal_search_note_evidence_at(s, "TETRA", DSD_SYNC_TETRA_SB_POS, 1, 0, 0, "CC 5");
+    assert(status.hit.confirmed && strcmp(status.hit.site, tmo_text) == 0 && strcmp(status.hit.access, "CC 5") == 0);
+    assert(strcmp(published_hit.site, tmo_text) == 0);
+    /* A changed SYSINFO publishes the new line; a repeat publishes nothing. */
+    tmo.tetra.main_state = DSD_SEARCH_TETRA_MAIN_NO_CA;
+    int published = hits_published;
+    dsd_signal_search_note_site(s, &tmo);
+    assert(hits_published == published + 1);
+    assert(strcmp(status.hit.site, "MCC 228 \xC2\xB7 MNC 8889 \xC2\xB7 No main carrier") == 0);
+    dsd_signal_search_note_site(s, &tmo);
+    assert(hits_published == published + 1);
+
+    /* Withdrawn: site and access together, at once. */
+    dsd_signal_search_site_note withdraw;
+    DSD_MEMSET(&withdraw, 0, sizeof(withdraw));
+    withdraw.kind = DSD_SEARCH_SITE_NOTE_TETRA_WITHDRAW;
+    published = hits_published;
+    dsd_signal_search_note_site(s, &withdraw);
+    assert(hits_published == published + 1 && published_hit.site[0] == '\0' && published_hit.access[0] == '\0');
+    assert(status.hit.confirmed && strcmp(status.hit.protocol, "TETRA") == 0);
+    /* Nothing of the visit brings them back, and a repeat publishes nothing. */
+    dsd_signal_search_note_site(s, &withdraw);
+    tmo = tetra_tmo_note();
+    dsd_signal_search_note_site(s, &tmo);
+    assert(hits_published == published + 1);
+    dsd_signal_search_note_evidence_at(s, "TETRA", DSD_SYNC_TETRA_NDB_POS, -1, 0, 0, "CC 5");
+    assert(status.hit.site[0] == '\0' && status.hit.access[0] == '\0' && published_hit.access[0] == '\0');
+    /* Nor the ended hit. */
+    advance(2100);
+    tick(o, s);
+    assert(status.phase == DSD_SEARCH_TUNING && published_hit.ended);
+    assert(published_hit.site[0] == '\0' && published_hit.access[0] == '\0');
+    /* The next detection starts with nothing withdrawn. */
+    land(o, s);
+    tetra_visit(o, s);
+    dsd_signal_search_note_evidence_at(s, "TETRA", DSD_SYNC_TETRA_SB_POS, -1, 0, 0, "CC 6");
+    dsd_signal_search_note_site(s, &tmo);
+    assert(strcmp(status.hit.site, tmo_text) == 0 && strcmp(status.hit.access, "CC 6") == 0);
+    /* A withdrawal with no site shown still clears the access. */
+    act(o, s, DSD_SEARCH_ACTION_SKIP);
+    tetra_visit(o, s);
+    dsd_signal_search_note_evidence_at(s, "TETRA", DSD_SYNC_TETRA_SB_POS, -1, 0, 0, "CC 7");
+    published = hits_published;
+    dsd_signal_search_note_site(s, &withdraw);
+    assert(hits_published == published + 1 && status.hit.access[0] == '\0' && published_hit.access[0] == '\0');
+
+    /* Direct mode: the route, never a trunked cell's record. */
+    act(o, s, DSD_SEARCH_ACTION_SKIP);
+    tetra_visit(o, s);
+    dsd_signal_search_note_site(s, &tmo);
+    dsd_signal_search_note_evidence_at(s, "TETRA DMO", DSD_SYNC_TETRA_SB_POS, -1, 0, 0, NULL);
+    assert(strcmp(status.hit.protocol, "TETRA DMO") == 0 && status.hit.site[0] == '\0');
+    dsd_signal_search_site_note dmo;
+    DSD_MEMSET(&dmo, 0, sizeof(dmo));
+    dmo.kind = DSD_SEARCH_SITE_NOTE_TETRA;
+    dmo.tetra.mode = DSD_SEARCH_TETRA_DMO;
+    dmo.tetra.route = DSD_SEARCH_TETRA_ROUTE_REPEATER;
+    dsd_signal_search_note_site(s, &dmo);
+    assert(strcmp(status.hit.site, "Via repeater") == 0 && status.hit.access[0] == '\0');
+    dsd_signal_search_note_site(s, &withdraw);
+    assert(status.hit.site[0] == '\0');
+    dmo.tetra.route = DSD_SEARCH_TETRA_ROUTE_DIRECT;
+    dsd_signal_search_note_site(s, &dmo);
+    assert(status.hit.site[0] == '\0');
+
+    s->synctype = DSD_SYNC_NONE;
+    DSD_MEMSET(&o->receive, 0, sizeof(o->receive));
+    stop_tag_session(o, s);
+    end_tetra_rate(o, s);
+}
+
 int
 main(void) {
     dsd_opts* o = calloc(1, sizeof(*o));
@@ -5072,6 +5183,7 @@ main(void) {
     test_tetra_start_checks(o, s, &config);
     test_tetra_suppression_per_kind(o, s, &config);
     test_tetra_quiet_and_activity(o, s, &config);
+    test_tetra_site_and_withdraw(o, s, &config);
     s->rtl_ctx = NULL;
     dsd_state_ext_free_all(s);
     free(s);

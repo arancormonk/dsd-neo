@@ -1043,11 +1043,26 @@ dsd_engine_signal_search_start_with_commit(dsd_opts* opts, dsd_state* state, con
 #endif
 }
 
-/* Whether the visit's site record belongs to @p protocol ("NXDN" for NXDN48 and NXDN96). */
+/* Whether the visit's site record belongs to @p protocol ("NXDN" for NXDN48 and NXDN96). A TETRA record says its mode
+   itself (issue #748): a trunked cell's is "TETRA"'s, a direct mode route "TETRA DMO"'s, and a withdrawn record is
+   either's, so the withdrawal stays with the visit's TETRA detection. */
 static int
 search_site_is(const search_coord* c, const char* protocol) {
+    if (strcmp(c->site.protocol, "TETRA") == 0) {
+        if (c->site.withdrawn) {
+            return dsd_engine_signal_search_protocol_is_tetra(protocol);
+        }
+        return strcmp(protocol, c->site.tetra.mode == DSD_SEARCH_TETRA_DMO ? "TETRA DMO" : "TETRA") == 0;
+    }
     const size_t n = strlen(c->site.protocol);
     return n && strncmp(protocol, c->site.protocol, n) == 0;
+}
+
+/* Whether the visit's TETRA site and access were withdrawn (issue #748): no later note or evidence of the visit gives
+   the hit either again. */
+static int
+search_tetra_withdrawn(const search_coord* c) {
+    return c->site.withdrawn && strcmp(c->site.protocol, "TETRA") == 0;
 }
 
 /* The hit shows the visit's site record only while it belongs to the hit's protocol: a site noted before the protocol
@@ -1215,7 +1230,7 @@ dsd_engine_signal_search_evidence_at(const dsd_state* state, const char* protoco
             c->status.hit.source = source;
         }
     }
-    if (access && access[0]) {
+    if (access && access[0] && !(search_tetra_withdrawn(c) && search_site_is(c, c->status.hit.protocol))) {
         DSD_SNPRINTF(c->status.hit.access, sizeof(c->status.hit.access), "%s", access);
     }
     search_publish(c, 1);
@@ -1230,6 +1245,9 @@ search_site_sync(const dsd_state* state, int kind) {
         family = DSD_SYNC_DMR_BS_DATA_POS;
     } else if (kind == DSD_SEARCH_SITE_NOTE_NXDN) {
         family = DSD_SYNC_NXDN_POS;
+    } else if (kind == DSD_SEARCH_SITE_NOTE_TETRA || kind == DSD_SEARCH_SITE_NOTE_TETRA_WITHDRAW) {
+        /* No receive filter names a TETRA code (issue #748): judged by a TETRA burst, nothing rejects the note. */
+        family = DSD_SYNC_TETRA_SB_POS;
     }
     const char* name = dsd_engine_signal_search_sync_protocol(family);
     return dsd_engine_signal_search_family_matches(name, state->synctype) ? state->synctype : family;
@@ -1247,7 +1265,15 @@ dsd_engine_signal_search_site(const dsd_state* state, const dsd_signal_search_si
         || !dsd_signal_search_site_apply(&c->site, note)) {
         return;
     }
-    if (search_refresh_site(c)) {
+    int changed = search_refresh_site(c);
+    /* A TETRA withdrawal takes the access code with the site (issue #748), from a TETRA detection: published at once,
+       and kept cleared for the visit (search_tetra_withdrawn()). */
+    if (note->kind == DSD_SEARCH_SITE_NOTE_TETRA_WITHDRAW && search_site_is(c, c->status.hit.protocol)
+        && c->status.hit.access[0]) {
+        c->status.hit.access[0] = '\0';
+        changed = 1;
+    }
+    if (changed) {
         search_publish(c, 1);
     }
 }
