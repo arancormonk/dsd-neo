@@ -1896,30 +1896,35 @@ test_event_line_prints_wide_ids_unsigned(void) {
         {"edacs ea", DSD_SYNC_EDACS_POS, 1, "TEST TGT: 4294967295; SRC: 3000000000; LCN: "},
     };
 
-    static dsd_opts opts;
-    static dsd_state state;
-    static Event_History_I event_history[2];
+    // On the heap (AGENTS.md), freed at the end: no permanent static copy of the fixture per test.
+    dsd_opts* opts = (dsd_opts*)calloc(1U, sizeof(*opts));
+    dsd_state* state = (dsd_state*)calloc(1U, sizeof(*state));
+    Event_History_I* event_history = (Event_History_I*)calloc(2U, sizeof(*event_history));
+    assert(opts && state && event_history);
     int rc = 0;
     for (size_t i = 0; i < sizeof cases / sizeof cases[0]; i++) {
-        reset_fixture(&opts, &state, event_history);
-        state.lastsynctype = cases[i].sync;
-        state.ea_mode = cases[i].ea;
-        assert(observe_test_call(&state, 0U, cases[i].sync, DSD_CALL_KIND_GROUP_VOICE, 4294967295ULL, 3000000000ULL, 0U,
+        reset_fixture(opts, state, event_history);
+        state->lastsynctype = cases[i].sync;
+        state->ea_mode = cases[i].ea;
+        assert(observe_test_call(state, 0U, cases[i].sync, DSD_CALL_KIND_GROUP_VOICE, 4294967295ULL, 3000000000ULL, 0U,
                                  0U, DSD_CALL_BOUNDARY_BEGIN)
                == 1);
-        watchdog_event_current(&opts, &state, 0);
-        const Event_History* item = &state.event_history_s[0].Event_History_Items[0];
+        watchdog_event_current(opts, state, 0);
+        const Event_History* item = &state->event_history_s[0].Event_History_Items[0];
         rc |= expect_has_substr(cases[i].label, item->event_string, cases[i].want);
     }
-    reset_fixture(&opts, &state, event_history);
-    state.lastsynctype = DSD_SYNC_DMR_BS_VOICE_POS;
-    assert(observe_test_call(&state, 0U, DSD_SYNC_DMR_BS_VOICE_POS, DSD_CALL_KIND_GROUP_VOICE, 61U, 7U, 0U, 0U,
+    reset_fixture(opts, state, event_history);
+    state->lastsynctype = DSD_SYNC_DMR_BS_VOICE_POS;
+    assert(observe_test_call(state, 0U, DSD_SYNC_DMR_BS_VOICE_POS, DSD_CALL_KIND_GROUP_VOICE, 61U, 7U, 0U, 0U,
                              DSD_CALL_BOUNDARY_BEGIN)
            == 1);
-    watchdog_event_current(&opts, &state, 0);
-    rc |= expect_has_substr("small ids keep their width", state.event_history_s[0].Event_History_Items[0].event_string,
+    watchdog_event_current(opts, state, 0);
+    rc |= expect_has_substr("small ids keep their width", state->event_history_s[0].Event_History_Items[0].event_string,
                             "TEST TGT: 00000061; SRC: 00000007; CC: ");
-    dsd_state_ext_free_all(&state);
+    dsd_state_ext_free_all(state);
+    free(event_history);
+    free(state);
+    free(opts);
     return rc;
 }
 
@@ -6274,21 +6279,24 @@ test_m17_rdio_export_by_address_width(void) {
         {"M17 source above UINT32_MAX", 1234U, "N0CALL", 0x100000000ULL, "N0WIDE", 1234U, "N0CALL", "\"srcList\": [],"},
     };
 
-    static dsd_opts opts;
-    static dsd_state state;
-    static Event_History_I event_history[2];
+    // On the heap (AGENTS.md), freed at the end: no permanent static copy of the fixture per test.
+    dsd_opts* opts = (dsd_opts*)calloc(1U, sizeof(*opts));
+    dsd_state* state = (dsd_state*)calloc(1U, sizeof(*state));
+    Event_History_I* event_history = (Event_History_I*)calloc(2U, sizeof(*event_history));
+    assert(opts && state && event_history);
     static max_align_t wav_sentinel;
     int rc = 0;
     for (size_t i = 0; i < sizeof cases / sizeof cases[0]; i++) {
-        reset_fixture(&opts, &state, event_history);
-        state.lastsynctype = DSD_SYNC_M17_STR_POS;
-        opts.wav_out_f = (SNDFILE*)&wav_sentinel;
+        reset_fixture(opts, state, event_history);
+        state->lastsynctype = DSD_SYNC_M17_STR_POS;
+        opts->wav_out_f = (SNDFILE*)&wav_sentinel;
         g_open_wav_result = &wav_sentinel;
-        opts.rdio_mode = DSD_RDIO_MODE_DIRWATCH;
-        opts.rdio_system_id = 48;
+        opts->rdio_mode = DSD_RDIO_MODE_DIRWATCH;
+        opts->rdio_system_id = 48;
         if (!dsd_test_mkdtemp(g_close_wav_export_dir, sizeof g_close_wav_export_dir, "dsdneo_rdio_m17")) {
             DSD_FPRINTF(stderr, "dsd_test_mkdtemp failed for the M17 rdio test\n");
-            return 1;
+            rc = 1;
+            break;
         }
         dsd_call_observation observation = {
             .protocol = DSD_SYNC_M17_STR_POS,
@@ -6304,10 +6312,10 @@ test_m17_rdio_export_by_address_width(void) {
         DSD_SNPRINTF(observation.target_text, sizeof observation.target_text, "%s", cases[i].dst_text);
         DSD_SNPRINTF(observation.source_text, sizeof observation.source_text, "%s", cases[i].src_text);
         g_observed_m += 0.1;
-        assert(dsd_call_state_observe(&state, &observation, DSD_CALL_BOUNDARY_BEGIN) == 1);
-        dsd_event_sync_slot(&opts, &state, 0U);
-        assert(end_test_call(&state, 0U, DSD_CALL_END_TERMINATOR) == 1);
-        dsd_event_sync_slot(&opts, &state, 0U);
+        assert(dsd_call_state_observe(state, &observation, DSD_CALL_BOUNDARY_BEGIN) == 1);
+        dsd_event_sync_slot(opts, state, 0U);
+        assert(end_test_call(state, 0U, DSD_CALL_END_TERMINATOR) == 1);
+        dsd_event_sync_slot(opts, state, 0U);
 
         char tag[160];
         DSD_SNPRINTF(tag, sizeof tag, "%s: the commit closes and exports its recording", cases[i].label);
@@ -6332,7 +6340,10 @@ test_m17_rdio_export_by_address_width(void) {
         (void)dsd_test_rmdir(g_close_wav_export_dir);
         g_close_wav_export_dir[0] = '\0';
     }
-    dsd_state_ext_free_all(&state);
+    dsd_state_ext_free_all(state);
+    free(event_history);
+    free(state);
+    free(opts);
     return rc;
 }
 

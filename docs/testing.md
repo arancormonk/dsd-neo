@@ -2279,7 +2279,9 @@ its first frame's second, labelled `DMR`, with `freq` 0 and no `freqList`, and i
 `test_playback_records_are_calls_of_their_own`: in one export, a record with `to` 0 after a call to 1234 is exported
 under the fallback, and an identity-less record before a sourced one is a recording of its own, unexported, each
 recording holding its own record's frames alone). The number and label rules themselves are in `RUNTIME_RDIO_EXPORT`,
-and which closes may give the number in `CORE_WAV_JOURNAL`'s `test_d7_*` cases.
+and which closes may give the number in `CORE_WAV_JOURNAL`'s `test_d7_*` cases. `test_d7_fallback_journal_rdio_flag`
+expects an API-only upload's sidecar removed only when its upload succeeded, which needs the loopback stand-in server
+(`RDIO_CAPTURE`, not on native Windows, where the queued upload fails and keeps the sidecar).
 
 `RUNTIME_RDIO_EXPORT` checks `--rdio-mode both`'s private upload inputs: short names under a 230-character public stem
 (the test folder's file system must allow 255-byte names), no copy and no job after a Stop, and removals that fail (a read-only

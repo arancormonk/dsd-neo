@@ -3340,7 +3340,8 @@ test_d7_both_slots(void) {
 
 /* The journal's `rdio` says whether an API job was queued for a fallback call: off and DirWatch never, API and both
    when it was (the upload carrying the fallback number and the system), an API config the queue refuses never, which
-   leaves the pair; without libcurl never, with the sidecar still written. */
+   leaves the pair; without libcurl never, with the sidecar still written. An API-only upload removes its sidecar only
+   when it succeeds, which needs the stand-in server (RDIO_CAPTURE). */
 static int
 test_d7_fallback_journal_rdio_flag(void) {
     static const struct {
@@ -3388,7 +3389,14 @@ test_d7_fallback_journal_rdio_flag(void) {
         char tag[160];
 #ifdef USE_CURL
         const int queued = cases[i].queued;
-        const int sidecar = cases[i].sidecar;
+        /* The sidecar goes only with a successful upload: without the stand-in server (native Windows) a queued
+           upload fails against the rig's dead endpoint and keeps it. */
+#ifdef RDIO_CAPTURE
+        const int uploaded = queued && capturing;
+#else
+        const int uploaded = 0;
+#endif
+        const int sidecar = cases[i].sidecar || (queued && !uploaded);
 #else
         const int queued = 0;
         const int sidecar = cases[i].mode != DSD_RDIO_MODE_OFF;
