@@ -4407,11 +4407,21 @@ static atomic_int g_seam_stream_fails = 0;
 static atomic_int g_seam_join_fails = 0;
 /* With g_seam_stream_fails: the folder made read-only once the open has made its file, so removing that file fails. */
 static const char* g_seam_lock_dir = NULL;
+/* The private WAV's hard link fails as on a drive with none, its folder made read-only first: the copy that follows
+   cannot be made, nor the private sidecar copy already made removed. */
+static const char* g_seam_link_locks_dir = NULL;
 
 int
 __wrap_dsd_hard_link(const char* existing, const char* new_path) {
     if (seam_names_private(new_path, ".rdio-upload-audio") && atomic_exchange(&g_seam_link_then_stop, 0) != 0) {
         dsd_rdio_upload_cancel();
+        errno = EPERM;
+        return -1;
+    }
+    const char* lock = seam_names_private(new_path, ".rdio-upload-audio") ? g_seam_link_locks_dir : NULL;
+    if (lock != NULL) {
+        g_seam_link_locks_dir = NULL;
+        (void)chmod(lock, 0500);
         errno = EPERM;
         return -1;
     }
@@ -4644,6 +4654,48 @@ rdio_partial_copy_removal_said(const dsd_opts* opts, Event_History_I* hist, int*
     rdio_test_remove_dir_tree(dir);
     return rc;
 }
+
+/* The private sidecar copy made, then the WAV's link and copy failing in a folder that turned read-only: that copy
+   cannot be removed, and its removal is a private input's, said by the run's one warning (already said here, so not
+   again), not as an upload's own file. 0 when so. Before, it was said again as "private upload metadata", with no
+   word on removing it by hand. */
+static int
+rdio_meta_left_after_failed_wav_said_once(const dsd_opts* opts, Event_History_I* hist) {
+    char dir[DSD_TEST_PATH_MAX] = {0};
+    char wav[DSD_TEST_PATH_MAX] = {0};
+    if (!dsd_test_mkdtemp(dir, sizeof(dir), "dsdneo_rdio_both_wav_fails")
+        || dsd_test_path_join(wav, sizeof(wav), dir, "wav_fails.wav") != 0 || write_pcm16_mono_wav(wav, 8000, 1) != 0) {
+        rdio_test_remove_dir_tree(dir);
+        return 1;
+    }
+    hist->Event_History_Items[0].event_time = (time_t)1700000000;
+    hist->Event_History_Items[0].target_id = 1208;
+    g_seam_link_locks_dir = dir;
+    dsd_test_capture_stderr cap;
+    const int capturing = dsd_test_capture_stderr_begin(&cap, "rdio_wav_fails") == 0;
+    int queued = -1;
+    (void)dsd_rdio_export_call_ex(opts, hist, wav, 0, 0, &queued);
+    char out[4096] = "";
+    if (capturing) {
+        dsd_test_capture_stderr_end(&cap);
+        (void)dsd_test_capture_stderr_read(&cap, out, sizeof(out));
+    }
+    (void)chmod(dir, 0700);
+    const int armed = g_seam_link_locks_dir != NULL;
+    g_seam_link_locks_dir = NULL;
+    const int left = rdio_test_private_inputs_in(dir, NULL);
+    int rc = 0;
+    if (!capturing || armed || queued != 0 || left != 1 || strstr(out, "private upload metadata") != NULL
+        || strstr(out, "failed to delete the private upload input") != NULL) {
+        DSD_FPRINTF(stderr,
+                    "both WAV copy failed: queued %d, %d private inputs left, seam %s, want 0, 1, used, and no second "
+                    "removal warning\n%s\n",
+                    queued, left, armed ? "unused" : "used", out);
+        rc = 1;
+    }
+    rdio_test_remove_dir_tree(dir);
+    return rc;
+}
 #endif
 
 // Issue #888 (Windows limit, here by a read-only folder): private inputs whose removal fails are left in place and said
@@ -4677,6 +4729,7 @@ test_both_mode_failed_private_removal_said_once(void) {
     int said_before = 0;
 #ifdef DSD_TEST_WRAP_RDIO_SEAMS
     rc |= rdio_partial_copy_removal_said(opts, hist, &said_before);
+    rc |= rdio_meta_left_after_failed_wav_said_once(opts, hist);
 #endif
     for (int i = 0; i < 2 && rc == 0; i++) {
         char leaf[32];
@@ -4704,6 +4757,7 @@ test_both_mode_failed_private_removal_said_once(void) {
                     said, said_before, left, out);
         rc = 1;
     }
+
     rdio_test_remove_dir_tree(dir);
     (void)dsd_socket_close(stalled);
     dsd_socket_cleanup();

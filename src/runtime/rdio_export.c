@@ -742,7 +742,7 @@ dsd_rdio_make_private_inputs(dsd_rdio_upload_job* job, const char* wav_path, con
             return 0;
         }
         err = errno;
-        dsd_rdio_remove_after_upload(job->meta_path, "private upload metadata");
+        dsd_rdio_remove_private_input(job->meta_path);
     }
     if (err == DSD_RDIO_ECANCELED && atomic_load(&g_rdio_upload_cancel) != 0) {
         return DSD_RDIO_UPLOAD_CANCELLED;
