@@ -699,6 +699,10 @@ Item {
                 for (var text of ["Sites", "Radio", "Spectrum", "Talkgroups", "Activity", "Map", "History", "Compact view", "Settings", "Diagnostics", "Edit saved system", "Cancel"])
                     rows.push({tag: text + "-" + height, text: text, height: height});
             }
+            // Issue #901: Compact view starts past tier 1 on a tall phone too,
+            // which leaves Sites and Spectrum to this menu.
+            for (var moved of ["Sites", "Spectrum"])
+                rows.push({tag: moved + "-900-compact", text: moved, height: 900, compact: true});
             return rows;
         }
         function test_session_menu_routes(data) {
@@ -709,7 +713,11 @@ Item {
             testContext.setMetric("radioInput", true);
             app.height = data.height;
             var monitor = item("monitorScreen");
-            if (data.height < 500) {
+            if (data.compact) {
+                prefs.compactView = true;
+                tryVerify(function () { return monitor.tier >= 2; });
+            }
+            if (data.height < 500 || data.compact) {
                 // A short phone moves Sites and Spectrum into this menu (#718).
                 tryVerify(function () { return monitor.tier >= 1; });
                 tryCompare(item("runningSiteChooserButton"), "visible", false);

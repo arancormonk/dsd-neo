@@ -90,6 +90,7 @@ Item {
         }
 
         Text {
+            id: subtitleLine
             width: parent.width
             // An expandable row may carry its whole label in the title. A reading
             // keeps its line while empty, so the row's height never follows it.
@@ -102,6 +103,15 @@ Item {
             wrapMode: row.subtitleReading ? Text.NoWrap : Text.Wrap
             elide: row.subtitleReading ? Text.ElideRight : Text.ElideNone
             maximumLineCount: row.subtitleReading ? 1 : 1000
+            // A reading's line is a fixed box (LineBoxes, issue #901 D10): its
+            // font's height, never its text's, so no script a reading or an
+            // answer in its place shows (the Monitor's) changes the row's
+            // height. A hint keeps its own wrapped height.
+            verticalAlignment: Text.AlignVCenter
+            Binding on height {
+                when: row.subtitleReading
+                value: LineBoxes.lineHeight(subtitleLine.font.family, subtitleLine.font.pixelSize, subtitleLine.font.weight)
+            }
         }
     }
 

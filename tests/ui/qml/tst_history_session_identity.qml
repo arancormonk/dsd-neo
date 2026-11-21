@@ -310,5 +310,50 @@ Item {
             compare(callHistory.sessionUid, "previous-session")
             compare(loader.item.startError, "Enter hang time in seconds from 0 to 30.")
         }
+
+        // Issue #901 (B8): the rows the Monitor's list has built.
+        function monitorRows() {
+            var list = findChild(findChild(loader.item, "monitorScreen"), "recentCallsList")
+            var rows = 0
+            for (var child of list.contentItem.children) {
+                if (child.metaText !== undefined && child.node !== undefined)
+                    ++rows
+            }
+            return rows
+        }
+        // A cold launch with calls kept from earlier sessions: Main keeps the
+        // Monitor hidden under Home, and it builds no row for them, nor for
+        // calls landing meanwhile. Shown by a start, it lists the session's
+        // calls only, and the session's Settings, which covers it while it
+        // stays drawn, leave its rows in place.
+        function test_hidden_monitor_builds_no_rows_until_a_session_shows_it() {
+            loader.source = ""
+            callHistory.clearAll()
+            callHistory.pushMany(12, "TODAY")
+            loader.source = uiDir + "/Main.qml"
+            verify(loader.item !== null)
+            var monitor = findChild(loader.item, "monitorScreen")
+            var list = findChild(monitor, "recentCallsList")
+            verify(!monitor.visible, "no session, no Monitor")
+            wait(50)
+            compare(monitorRows(), 0, "a hidden Monitor built rows for the kept calls")
+            callHistory.pushAt(Math.floor(Date.now() / 1000) - 60)
+            wait(50)
+            compare(monitorRows(), 0, "a call landing under the hidden Monitor built a row")
+            loader.item.startSystem(0)
+            compare(decoderHost.sessionState, 1)
+            var name = callHistory.pushAt(1262304000)
+            tryVerify(function () { return monitor.visible }, 1000, "the session shows the Monitor")
+            compare(monitorView.count, 1, "the session's call, and only that, is the Monitor's")
+            tryCompare(list, "count", 1)
+            tryVerify(function () { return monitorRows() === 1 }, 1000, "the Monitor lists the session's call")
+            compare(list.itemAtIndex(0).name, name)
+            loader.item.sessionDestination = "settings"
+            wait(50)
+            verify(monitor.visible, "the session's Settings covers the Monitor without hiding it")
+            compare(list.model, monitorView, "covered, the Monitor keeps its calls")
+            compare(monitorRows(), 1)
+            loader.item.sessionDestination = ""
+        }
     }
 }

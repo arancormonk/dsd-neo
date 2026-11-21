@@ -877,5 +877,45 @@ Item {
             tryVerify(function () { return tc.atNewest() }, 5000,
                       "the deferred pin never ran after the release")
         }
+
+        // Issue #901 (B8): the rows a list has built, whatever its model says.
+        function rowsBuilt(list) {
+            var rows = 0
+            for (var child of list.contentItem.children) {
+                if (child.metaText !== undefined && child.node !== undefined)
+                    ++rows
+            }
+            return rows
+        }
+
+        // A hidden Monitor (no session: Main keeps it under Home) holds no rows,
+        // as the hidden lists of issue #782 do: each row built under a hidden
+        // screen is announced to accessibility clients. Calls landing meanwhile
+        // build none either; the empty state reads the calls there are, so it
+        // keeps the calls card closed. Shown, it lists the calls at its newest.
+        function test_06_a_hidden_monitor_builds_no_rows() {
+            var hidden = createTemporaryObject(Qt.createComponent(uiDir + "/MonitorScreen.qml"), root,
+                                               {width: 420, height: 900, visible: false})
+            verify(hidden !== null)
+            var list = findChild(hidden, "recentCallsList")
+            verify(list !== null)
+            tc.wait(50)
+            compare(rowsBuilt(list), 0, "a hidden Monitor built rows for the persisted calls")
+            callHistory.pushMany(3, "TODAY")
+            tc.wait(50)
+            compare(rowsBuilt(list), 0, "calls landing under a hidden Monitor built rows")
+            verify(list.footerItem !== null)
+            compare(list.footerItem.height, 6, "the empty state follows the calls there are, not the detached list")
+            var newest = callHistory.push("TODAY")
+            hidden.visible = true
+            tryVerify(function () { return rowsBuilt(list) > 0 }, 1000, "shown, the Monitor lists the calls")
+            compare(list.count, monitorView.count)
+            compare(list.itemAtIndex(0).name, newest)
+            verify(Math.abs(list.contentY - list.originY) < 1, "shown at its start")
+            compare(list.footerItem.height, 6)
+            // Hidden again, it lets the rows go.
+            hidden.visible = false
+            tryVerify(function () { return rowsBuilt(list) === 0 }, 1000, "hidden again, the rows stayed")
+        }
     }
 }

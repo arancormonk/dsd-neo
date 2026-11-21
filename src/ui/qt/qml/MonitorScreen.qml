@@ -298,17 +298,27 @@ Item {
     //   4  no RECENT CALLS label;
     //   5  even 4 leaves less than one row: only Stop stays put and everything
     //      else scrolls with the calls, so every control stays reachable.
-    // Only the size, the fonts and which live-strip parts the session shows feed
-    // it, never call content, so traffic never moves the screen. A scan's hops
-    // between two-slot and single-slot carriers do not move it either: the
-    // rotation keeps the slot strip's place (rotationReservesStrip).
+    // Compact view (issue #901, D4) starts the search at 2, draws no label in
+    // any tier (labelCandidate) and has compact rows; the hero, strip, actions
+    // and Stop keep their size.
+    // Only the size, the fonts, the user's density and which live-strip parts
+    // the session shows feed it, never call content, so traffic never moves the
+    // screen. A scan's hops between two-slot and single-slot carriers do not
+    // move it either: the rotation keeps the slot strip's place
+    // (rotationReservesStrip).
     readonly property int tier: {
         var two = 2 * callRowHeight;
-        for (var t = 0; t <= 4; ++t) {
+        for (var t = compactView ? 2 : 0; t <= 4; ++t) {
             if (callSpaceFor(t) >= two)
                 return t;
         }
         return callSpaceFor(4) < callRowHeight ? 5 : 4;
+    }
+    // Whether tier t draws the RECENT CALLS label: the budget's label part, the
+    // label itself, the spacer that stands in for it and where the calls card
+    // starts all follow this one rule. The list keeps its accessible name.
+    function labelCandidate(t) {
+        return t < 4 && !compactView;
     }
     // Wide screens fit every header action beside the title in any tier. Where
     // the host brokers a USB receiver (#647 B16), the actions must also fit the
@@ -318,15 +328,15 @@ Item {
     readonly property bool wideHeaderActions: (tier === 0 || width >= 500) && headerActionsFit
     readonly property bool heroCompact: tier >= 2
     readonly property bool stripInList: tier >= 3
-    readonly property bool labelShown: tier < 4
+    readonly property bool labelShown: labelCandidate(tier)
     readonly property bool scrollAll: tier >= 5
 
     // The measured parts of the budget. Each is the height the layout below
     // gives that part, so the budget and the screen cannot disagree.
     readonly property real pillHeight: Math.max(48, 30 * Theme.fontScale)
     // The rows' own height (LineBoxes, issue #901): their fonts' line boxes,
-    // in the form the rows take at their width.
-    readonly property real callRowHeight: LineBoxes.callRowHeight(false, LineBoxes.callRowNarrow(recentList.width - 2, rowTimeProbe))
+    // at the user's density, in the form the rows take at their width.
+    readonly property real callRowHeight: LineBoxes.callRowHeight(compactView, LineBoxes.callRowNarrow(recentList.width - 2, rowTimeProbe))
     // The widest age a row shows (Util.shortAge), one per line.
     readonly property string rowTimeProbe: [qsTr("now"), "59m", "23h", "999d"].join("\n")
     readonly property real heroMicroHeight: Math.ceil(heroMicroMetrics.height)
@@ -367,7 +377,7 @@ Item {
         if (t >= 3 && stripHeight > 0)
             header.push(stripHeight);
         header.push(detailsCard.height);
-        header.push(t < 4 ? labelBlock.height : labelSpacer.height);
+        header.push(labelCandidate(t) ? labelBlock.height : labelSpacer.height);
         return viewport - columnHeight(header);
     }
 
@@ -428,6 +438,25 @@ Item {
     property var prefsStore: typeof prefs !== "undefined" ? prefs : null
     property bool localDetailsExpanded: false
     property bool detailsExpanded: prefsStore && prefsStore.monitorDetailsExpanded !== undefined ? prefsStore.monitorDetailsExpanded === true : localDetailsExpanded
+    // Issue #901: Compact view (AppPrefs ui/compactView), read from the same
+    // store, else the app's prefs. The one value the budget, the rows' form
+    // and height and the follower's row height all read.
+    readonly property bool compactView: prefsStore && prefsStore.compactView !== undefined ? prefsStore.compactView === true : (typeof prefs !== "undefined" && !!prefs && prefs.compactView === true)
+    // Issue #901 (D11): a change of density puts the calls back at their
+    // start, the list header in view; the focus stays where it is. Deferred so
+    // the rows and the tier take their new heights first, by a timer the
+    // screen owns, so nothing runs after it closes; the rows are laid out at
+    // their new height before the view is placed, or the start it found was
+    // the old layout's and the view was left short of the header.
+    onCompactViewChanged: listToStart.restart()
+    Timer {
+        id: listToStart
+        interval: 0
+        onTriggered: {
+            recentList.forceLayout();
+            recentList.positionViewAtBeginning();
+        }
+    }
     function setDetailsExpanded(on) {
         if (prefsStore && prefsStore.monitorDetailsExpanded !== undefined)
             prefsStore.monitorDetailsExpanded = on;
@@ -1330,9 +1359,10 @@ Item {
         // tuner gate: plain trunking owns the tuner too and has nothing to hold
         // or avoid at channel scope. Hold reads the engine back like Hold TG
         // does, and the engine's refusals ("Cannot avoid the last usable scan
-        // channel") arrive through uiMessage below. While the operator has the
-        // scan paused (issue #671) there is nothing on air to hold, avoid or
-        // step past, and the one thing to do is resume it.
+        // channel") arrive through uiMessage, on the "Signal & site" row's
+        // line. While the operator has the scan paused (issue #671) there is
+        // nothing on air to hold, avoid or step past, and the one thing to do
+        // is resume it.
         Item {
             id: scanControls
             // Named so UI_QT_QML_CALL_LISTS can reach it with findChild().
@@ -1571,7 +1601,16 @@ Item {
         anchors.bottomMargin: 14
         clip: true
         boundsBehavior: Flickable.StopAtBounds
-        model: monitorView
+        // Its model is monitorView, given by recentPlace below only while the
+        // screen shows (issue #901, B8).
+        //
+        // The calls there are, which the empty state reads: the model's count
+        // while hidden, when the list has no model and counts none, and the
+        // list's own while shown. The view's count moves in step with its rows;
+        // the model's runs ahead of it on a clear, and the footer resized by it
+        // then had the view cancel a row it was still building
+        // (DelegateModel::cancel).
+        readonly property int callCount: model ? count : monitorView.count
         // No current row. A ListView is a focus scope that hands focus to its
         // current item as rows land, which would pull keyboard focus off the
         // disclosure in its header; Tab moves between rows instead.
@@ -1604,7 +1643,7 @@ Item {
         // Closes the calls card, or says why it is empty.
         footer: Item {
             width: recentList.width
-            height: recentList.count === 0 ? Math.max(screen.callRowHeight, emptyText.implicitHeight + 24) : 6
+            height: recentList.callCount === 0 ? Math.max(screen.callRowHeight, emptyText.implicitHeight + 24) : 6
 
             ReadableText {
                 id: emptyText
@@ -1612,7 +1651,7 @@ Item {
                 width: parent.width - 2 * Theme.cardPadding
                 horizontalAlignment: Text.AlignHCenter
                 wrapMode: Text.Wrap
-                visible: recentList.count === 0
+                visible: recentList.callCount === 0
                 text: qsTr("Calls will appear here as they land.")
                 font.family: Theme.sans
                 font.pixelSize: Theme.fontSize(13)
@@ -1638,6 +1677,7 @@ Item {
             // Inset by the card's border, so a row's divider never paints over it.
             x: 1
             width: ListView.view.width - 2
+            compact: screen.compactView
             timeProbe: screen.rowTimeProbe
             name: model.name
             metaText: {
@@ -1696,6 +1736,19 @@ Item {
         list: recentList
         headerAnchor: detailsCard
         rowHeight: screen.callRowHeight
+    }
+
+    // Issue #901 (B8): hidden, the list holds no rows ("Hidden lists" in
+    // docs/code_map.md, issue #782). Main keeps the Monitor hidden under Home
+    // whenever no session runs, with the kept calls in its model, and each row
+    // built there was announced to accessibility clients. A screen pushed over
+    // the session (its Settings, the map) covers the Monitor without hiding it,
+    // so the rows stay. It is hidden only between sessions, and a session shows
+    // its calls from the newest, so no place is kept (no keyOf).
+    KeepPlace {
+        id: recentPlace
+        list: recentList
+        model: monitorView
     }
 
     // Keyboard focus moving onto a row, or into the header, scrolls it into view.
@@ -1757,13 +1810,21 @@ Item {
                 objectName: "monitorDetailsRow"
                 width: parent.width
                 title: qsTr("Signal & site")
-                subtitle: screen.detailsSummary.markup
+                // Issue #901 (D9): the engine's answer to the last command
+                // ("Output: Muted", "Output: open failed") takes the summary's
+                // line while it lasts, as plain text in cyan; without it a tap
+                // that failed inside the engine reads as a button that did
+                // nothing. Then the summary returns. The line is a fixed box
+                // (DisclosureRow, D10), so neither moves the list header.
+                readonly property bool answering: metrics.uiMessage.length > 0
+                subtitle: answering ? metrics.uiMessage : screen.detailsSummary.markup
                 subtitleReading: true
-                subtitleTextFormat: Text.StyledText
-                subtitleColor: Theme.textSecondary
+                subtitleTextFormat: answering ? Text.PlainText : Text.StyledText
+                subtitleColor: answering ? Theme.cyan : Theme.textSecondary
                 accessibleDescription: screen.detailsSummary.plain
-                // The summary's SNR moves every tick: read at the readings' pace (issue #782).
-                Accessible.description: detailsSpeech.spoken
+                // The answer is said as it is while it shows. The summary's SNR
+                // moves every tick: read at the readings' pace (issue #782).
+                Accessible.description: !answering ? detailsSpeech.spoken : detailsRow.Accessible.ignored ? "" : metrics.uiMessage
                 SpeechPacer {
                     id: detailsSpeech
                     shown: !detailsRow.Accessible.ignored
@@ -1777,19 +1838,6 @@ Item {
                 expanded: screen.detailsExpanded
                 onTapped: screen.setDetailsExpanded(!screen.detailsExpanded)
             }
-        }
-
-        // The engine's answer to the last command ("Output: Muted", "Output:
-        // open failed") — without it a tap that failed inside the engine reads
-        // as a button that did nothing.
-        ReadableText {
-            width: parent.width
-            visible: metrics.uiMessage.length > 0
-            text: metrics.uiMessage
-            font.family: Theme.mono
-            font.pixelSize: Theme.fontSize(12)
-            color: Theme.cyan
-            elide: Text.ElideRight
         }
 
         // Each group of readings below (a label and its value, a strip of
