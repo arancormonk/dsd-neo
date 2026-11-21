@@ -3128,18 +3128,22 @@ test_d7_wav_stop_mid_call(void) {
         int protocol;
         uint32_t src;
         int64_t freq_hz;
+        uint32_t channel; /* an EDACS grant's LCN, 0 for none */
         unsigned want;
         const char* tag; /* the sidecar's label, when checked */
     } cases[] = {
-        {"source-only NXDN call heard on 452.3125 MHz", DSD_SYNC_NXDN_POS, 1234U, 452312500, 452312U, NULL},
-        {"source-only NXDN call on an audio input", DSD_SYNC_NXDN_POS, 1234U, 0, 4242U, NULL},
+        {"source-only NXDN call heard on 452.3125 MHz", DSD_SYNC_NXDN_POS, 1234U, 452312500, 0U, 452312U, NULL},
+        {"source-only NXDN call on an audio input", DSD_SYNC_NXDN_POS, 1234U, 0, 0U, 4242U, NULL},
         /* Anonymous-voice protocols, whose identity-less rows the event layer always keeps. */
-        {"X2-TDMA call heard on 452.3125 MHz", DSD_SYNC_X2TDMA_VOICE_POS, 0U, 452312500, 452312U, NULL},
+        {"X2-TDMA call heard on 452.3125 MHz", DSD_SYNC_X2TDMA_VOICE_POS, 0U, 452312500, 0U, 452312U, NULL},
         /* The event layer's standalone ProVoice row carries no EDACS grant's LCN, so its label keeps "ProVoice". */
-        {"standalone ProVoice call heard on 452.3125 MHz", DSD_SYNC_PROVOICE_POS, 0U, 452312500, 452312U,
+        {"standalone ProVoice call heard on 452.3125 MHz", DSD_SYNC_PROVOICE_POS, 0U, 452312500, 0U, 452312U,
          "\"talkgroup_tag\": \"ProVoice 452.3125 MHz\","},
-        {"identity-less DMR call", DSD_SYNC_DMR_BS_VOICE_POS, 0U, 452312500, 0U, NULL},
-        {"identity-less NXDN call", DSD_SYNC_NXDN_POS, 0U, 0, 0U, NULL},
+        /* A ProVoice call an EDACS grant named on LCN 4 (an extended-addressing digital all-call) whose row kept no ID:
+           not standalone ProVoice, so an early close does not vouch for it. */
+        {"identity-less EDACS ProVoice call on LCN 4", DSD_SYNC_PROVOICE_POS, 0U, 452412500, 4U, 0U, NULL},
+        {"identity-less DMR call", DSD_SYNC_DMR_BS_VOICE_POS, 0U, 452312500, 0U, 0U, NULL},
+        {"identity-less NXDN call", DSD_SYNC_NXDN_POS, 0U, 0, 0U, 0U, NULL},
     };
 
     int rc = 0;
@@ -3148,7 +3152,15 @@ test_d7_wav_stop_mid_call(void) {
         rc |= rig_open(&r, "dsdneo_journal_d7_stop");
         rdio_fallback_on(&r, DSD_RDIO_MODE_DIRWATCH);
         submit(&r, DSD_APP_CMD_WAV_START);
-        begin_kind_call_on(&r, 0U, cases[i].protocol, DSD_CALL_KIND_GROUP_VOICE, 0U, cases[i].src, cases[i].freq_hz);
+        const dsd_call_observation call = {.protocol = cases[i].protocol,
+                                           .kind = DSD_CALL_KIND_GROUP_VOICE,
+                                           .ota_source_id = cases[i].src,
+                                           .frequency_hz = cases[i].freq_hz,
+                                           .channel = cases[i].channel};
+        (void)dsd_call_state_observe(r.state, &call, DSD_CALL_BOUNDARY_BEGIN);
+        dsd_event_sync_slot(r.opts, r.state, 0);
+        rc |= expect_int(cases[i].label, (long long)r.state->event_history_s[0].Event_History_Items[0].channel,
+                         (long long)cases[i].channel);
         voice_frames(&r, 0, 2);
         char id[64];
         slot_id(&r, 0, id, sizeof id);

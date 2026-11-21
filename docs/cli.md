@@ -720,7 +720,8 @@ Which calls get a number:
 
 - Voice calls only. A call is exported once its history row is kept, as any call is. A recording that closes before
   that (a WAV stop in the middle of a call, the last close when dsd-neo stops) is exported only when the call names a
-  radio or a talkgroup (a number or a callsign), or when its protocol never names one (X2-TDMA, ProVoice on its own).
+  radio or a talkgroup (a number or a callsign), or when its protocol never names one (X2-TDMA, ProVoice on its own;
+  not a ProVoice call an EDACS grant named).
   So a WAV stop in the middle of a call heard with no identity at all does not export that recording. Audio no call
   owns, a call whose row was cleared from the history, and a faded call that is held and then dropped are never
   exported.
