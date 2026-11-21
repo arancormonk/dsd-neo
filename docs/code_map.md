@@ -16039,13 +16039,50 @@ Qt Quick frontend (`src/ui/qt`):
   condition of its own to be shown or collapsed: its height is `fullHeight`, and a row that leaves the model goes with
   its delegate. The section stays keyed on its tab, never on `visible`, which also goes false while Main hides Home:
   a collapsing section would cut the body's range and Flickable would clamp the scroll position. `fullHeight` follows
-  the content: the label column is centred 10 px
-  above the middle of the actions' box, `[0, actionsBottom + cardPadding]` (More at the top, Play at
-  `minimumTouchSize + 6`, the site button centred on Play; 122 px at normal text), never above the top padding; the
-  refresh hint takes the full width 8 px below the lower of labels and actions; the card ends `cardPadding` below the
-  lowest. A card without the hint is 122 px at normal text, as before, and grows at large text. The site button lines up
-  against Play's own condition (`playShown`, the card's `playUid` being set), not Play's `visible`, so a hidden card's
-  site button stays clear of Play.
+  the content. Where the actions go is worked out across the card by `Util.listenCardActions()` and down it by
+  `Util.listenCardRows()` (issue #901 D7, B1, B4), from the card's width and padding, the density, the controls'
+  natural sizes and the labels' heights, never the title's laid-out width, so nothing feeds back; `ScanListCard.qml`
+  uses the same two. By default More is at the top, Play under it at `moreHeight + 6`, the site button left of Play
+  and centred on it, and the label column is centred 10 px above the middle of the actions' box,
+  `[0, actionsBottom + cardPadding]` (122 px at normal text), never above the top padding. Where that column leaves
+  the title less than max(96, 35% of the card) (B1: a one-site card with Play at 320 dp and text 2.0), the labels
+  start at the top padding and the actions go on a right-aligned row under them, More at the right edge (`stacked`);
+  where that row is wider than the card, Play and More keep it and the site button takes a second right-aligned row
+  (`wrapped`). The refresh hint takes the full width 8 px below the lower of labels and actions; the card ends
+  `cardPadding` below the lowest. A card without the hint is 122 px at normal text, as before, and grows at large
+  text. The site button lines up against Play's own condition (`playShown`, the card's `playUid` being set), not
+  Play's `visible`, so a hidden card's site button stays clear of Play.
+  Compact view (D7) keeps the same delegate (no second Repeater or Loader) and makes each card one row: the bold
+  17 px title over a supporting line, with the site button, Play and More right-aligned on the title's row, centred on
+  a head of max(the two lines + 24, Play + 16) px, and 12 px of padding; 68 px at normal text, a receiver line under
+  the two lines growing it, the refresh hint under everything. The place and meta lines (the key and when last heard)
+  are not drawn (`shown: !compact`; both sit in slot Items and are listed in `lackableParts`, so under a screen reader
+  they are held), and the title's `Accessible.description` reads their words instead (`undrawnWords`, built from the
+  card's place label and meta text, set only in compact and gated on navigation, `visible` and `held`). The site
+  button is drawn only while the title keeps max(96, 35% of the card) beside it (`siteDrawn`); otherwise the
+  supporting line names the count, and it reads [the distance, in Nearest order] · [`N sites`, while the site button
+  is not drawn] · `Util.systemMeta()`, so cards that share a title still differ by endpoint, file or frequency. The
+  site chooser stays reachable: the card's More menu, and a long press, offer **Sites** for every grouped card, one
+  site included, in both views (`manageCard(…, hasSites)` → `manageMenu.openFor(row, name, rrLinked, hasSites)`, which
+  also still offers it for 2+ sibling rows). Play and More alone leave the title its minimum on any card 248 px wide
+  or more (a 284 dp window); below that the title takes what is left. A scan-list card (B4) has the system card's
+  bold title, label spacing, insets and action places (Play under More, `scanListTitle`, `scanListCount`), its height
+  from its parts (122 px at normal text), and in compact view the name over its count with Play and More on the title's
+  row; draft and transition gating and the live entry count are as before. Covered or hidden cards are silent (B11): the
+  section heading, the site button, Play and More (and a scan-list card's Play and More) are named only while
+  `navigationAllowed && visible` (plus `shown` and not held where those apply). A change of density holds or shows
+  parts of every card with no rebuild, wherever Home is (it is made in Settings or the session menu), so with a screen
+  reader on it owes the tree refresh below (`systemsTreeOwed`). An owed refresh, this one or an ordinary one noted for
+  a rebuild, stays owed through rebuilds, other tabs, Home hidden and a sheet over it, until the Systems tab is shown
+  and in reach (`systemsInReach()`: visible, on Systems, `Navigation.allows(listenSystemsSection)`); then the owned
+  0 ms `systemsTreeTimer` lays the section out and gives it once (`refreshSystemsTree()` clears the owed flag only
+  when it refreshes, or when no screen reader is on). The timer restarts on Home's `visible` and `section` and on
+  `Navigation`'s `topModal`, `layers` and `rootSurfaces` while a refresh is owed. So an ordinary refresh noted while a
+  sheet is open is given when the sheet closes, and one noted just before Home was hidden is given on return. D11:
+  `resetListenPlaces()` forgets the Systems and Scan lists places (`sectionScroll`); when one of those tabs is current
+  the owned 0 ms `listenToStart` cancels the place chase and any flick, lays the body out and moves it to `originY`,
+  hidden or not, and does nothing while a restore is owed (the restore lands at the top anyway). Explore keeps its
+  place.
   Keyboard focus moving onto a control in the body restarts the owned `revealFocusTimer`, which reveals
   `activeFocusItem` through `Theme.revealFocus(scrollBody, scrollBody.contentItem, item)`; the timer lets a stronger
   scroll writer cancel a pending reveal (the precedence is under Listen tabs, above). `Theme.revealFocus` maps the
@@ -16054,8 +16091,16 @@ Qt Quick frontend (`src/ui/qt`):
   (`tst_home_layout_fixes.qml`: range and place held through frames drawn while hidden, refresh-hint and plain cards at
   320 px x 1.0/1.6/2.0, Tab through 12 systems and through 12 scan lists on their tabs on both hosts, at 411 x 700 with the tabs fixed and at
   640 wide at 1.6 with the tabs in the body (where they are body stops kept in view), the
-  helper with an offset column, the site button held while hidden; the scroll-across-tabs cases in
-  `tst_home_dongle_status.qml` and `tst_home_pinned_strip.qml` also check after a layout while hidden).
+  helper with an offset column, the site button held while hidden, `test_one_playable_site_card_reflows`,
+  `test_reflow_follows_width_and_text`, `test_scan_list_card_matches_the_system_card`; the scroll-across-tabs cases in
+  `tst_home_dongle_status.qml` and `tst_home_pinned_strip.qml` also check after a layout while hidden;
+  `tst_home_compact_cards.qml`: compact cards at 320/360/411 x 1.0/1.6/2.0, one row, 68 px at normal text, the site
+  button drawn only where the title keeps its minimum and the count leading the line otherwise, More → Sites for a
+  one-site group in both views, the Nearest line, the title's description, held lines under a screen reader, compact
+  scan-list cards, the D11 reset shown and hidden, and the card stride, 135 px by default and 81 compact at 411 x 914),
+  `UI_QT_QML_A11Y_CHURN` (`tst_a11y_scan_churn.qml` `test_m6_density_change_refreshes_the_tree_once`: one refresh
+  per flip at 300 cards, given on return or when the sheet closes and none while elsewhere, with no delegate made and
+  no show or hide; `test_m7_covered_cards_say_nothing`).
 - Listen Systems search and sort (`qml/SavedSystemsControls.qml`, `objectName` `savedSystemsControls`; inside
   `listenSystemsSection` of `HomeScreen.qml`). The controls show while at least one system is saved. They hold the
   search row (a `PlexTextField` "Search saved systems", `Accessible.searchEdit`, 250 ms debounce, a "Clear search text"
@@ -16111,8 +16156,9 @@ Qt Quick frontend (`src/ui/qt`):
   now there. A held row is drawn at no opacity, its parts leave the tree with empty names (as the Network sheet's held
   rows, "Qt QML editing convention"), it takes no press or keyboard (`parked`, set once the keyboard was handed on),
   and `listenSystemsSection` ends at the bottom of the last card shown (`shownBottom`), so held rows take no scroll
-  room and holding one moves nothing. A part one card has and another lacks (the section heading, the place and
-  receiver lines, the refresh hint, the site button, Play; over the cards the ×, the count, location and place lines
+  room and holding one moves nothing. A part one card has and another lacks (the section heading, the place,
+  receiver and meta lines, the refresh hint, the site button, Play, of which Compact view draws no place or meta line
+  and can leave the site button out; over the cards the ×, the count, location and place lines
   and the no-match card) is shown or hidden with `visible` without a screen reader. With one (`entry.positional`,
   `SavedSystemsControls.holdsParts`) it stays visible and is held instead, part by part as a held row is: transparent,
   out of the tree and unnamed, disabled (no Tab stop, and a tap reaches what is under it: the field under the ×), and
@@ -17412,9 +17458,10 @@ Qt Quick frontend (`src/ui/qt`):
   talkgroup call as before; a private call (`slotNCallKind` 3) by its other party -- `slotNTgLabel`, else its text, else
   `ID <n>` for a known nonzero target, else `Private call`, never a service or channel name -- with a `PrivateTag.qml`
   (the ENC/EMERGENCY tag metrics, neutral `Theme.privateBorder`) leading the hero subline before `SRC ...`, or beside
-  the strip's identity; a call no party named (no target text or id, no source, a `slotNProtocolLabel`) by `<protocol> call`, TETRA
-  alone adding "identity not decoded" (`heroIdentityNote`). The hero's channel shows whenever it differs from the
-  headline. The Android notification applies the same rules (`SlotCall.headline`). The painted hero headline
+  the strip's identity; a call no party named (no target text or id, no source, a `slotNProtocolLabel`) by
+  `<protocol> call`, TETRA alone adding "identity not decoded" (`heroIdentityNote`). The hero's channel shows
+  whenever it differs from the headline. The Android notification applies the same rules (`SlotCall.headline`). The
+  painted hero headline
   (`heroHeadlineText`, a Canvas, out of the tree) is read by the hero, whose accessible name leads with it. On a
   private call the actions name the radio: **Hold** (the strip menu's **Hold radio n**) holds it, as the decoder's hold
   matches either party of a private call, and **Avoid TG**/**Lock out** are disabled, since the decoder refuses a
@@ -17429,9 +17476,10 @@ Qt Quick frontend (`src/ui/qt`):
   algorithm, channel; the ids first get min(their width, 96), then EMERGENCY, PRIVATE, ENC and the algorithm text
   (`ALG nn · KID nnnn`, cut to no less than `ALG nn…`, else left out), and the channel only after every status
   drawn. What is left out stays in the accessible text: the strip identity's name carries the slot (while its label is
-  not drawn), PRIVATE, EMERGENCY and ENC, and the hero reads its subline from `heroSublineSpeech()`, every part the call
-  has. On a 320 px phone a long name can leave the strip's identity alone on its line (decided limit: the status words
-  are still heard, and the hero shows its own call's).
+  not drawn), PRIVATE, EMERGENCY and ENC (each tag's `label`, which `EmergencyTag` and `EncTag` now have as
+  `PrivateTag` had), and the hero reads its subline from `heroSublineSpeech()`, every part the call has. The strip's
+  identity line is a fixed box (`otherIdentityBox`, `LineBoxes`). On a 320 px phone a long name can leave the strip's
+  identity alone on its line (decided limit: the status words are still heard, and the hero shows its own call's).
   Tests: `tst_monitor_call_identity.qml`, `tst_monitor_other_slot.qml`, `tst_monitor_status_lines.qml`
   (320/360/411 at text 1.0, 1.6 and 2.0), `UI_QT_METRICS_MODEL`
   (`test_slot_kind_and_labels()`). The panel sits in a plain `Item` (`otherSlotHost`) that holds its place: during a
@@ -17610,7 +17658,14 @@ Qt Quick frontend (`src/ui/qt`):
   seq through `UnitActivityFilterModel::rowForSeq()`) and the Map's List (`MapList.qml`, keyed by track id through
   `positionView.rowForTrack()`; issue #800) get their models from a `KeepPlace` only
   while the view is visible, and their empty states read the model's own `count`. A session runs on the monitor with
-  them under it, and each row built there was announced to accessibility clients. Setting a view's model puts it at its
+  them under it, and each row built there was announced to accessibility clients. The Monitor's recent calls
+  (`recentCallsList`, issue #901 B8) take `monitorView` the same way (`recentPlace`, no `keyOf`): Main keeps the
+  Monitor hidden under Home whenever no session runs, with the kept calls in its model, and a session shows its calls
+  from the newest, so no place is kept. A screen pushed over the session (its Settings, the map) covers the Monitor
+  without hiding it, so its rows stay. Its empty state reads `recentList.callCount`: the model's count while detached
+  (the list then counts none), the view's own while shown, since the model's runs ahead of the view's on a clear and
+  the footer resized by it had the view cancel a row it was still building (`DelegateModel::cancel`). Setting a view's
+  model puts it at its
   start, so `KeepPlace` notes the top row's identity (`rowUid`; a card's `idStart` and `idEnd`, since an exact row and a
   range can share a start) and on-screen offset on hide, unless the reader is at the start (History:
   `FollowLatest.atLatest`), and on show restores them in the same handler (History: `callHistory.rowForUid()` and
@@ -17635,7 +17690,9 @@ Qt Quick frontend (`src/ui/qt`):
   Tests: `UI_QT_QML_A11Y_CHURN` (`test_e_calls_leave_hidden_lists_quiet`,
   `tst_a11y_talkgroups.qml` `test_hidden_screen_keeps_the_readers_place`), `UI_QT_QML_CALL_LISTS`
   (`tst_call_log_follow.qml` `test_00`, `test_08` to `test_12`; `tst_call_recording_rows.qml`
-  `test_home_recent_calls_*`), `UI_QT_TALKGROUP_LIST_MODEL`.
+  `test_home_recent_calls_*`; `tst_monitor_recent_calls.qml` `test_06_a_hidden_monitor_builds_no_rows`;
+  `tst_history_session_identity.qml` `test_hidden_monitor_builds_no_rows_until_a_session_shows_it`),
+  `UI_QT_TALKGROUP_LIST_MODEL`.
 - Monitor layout (issue #718, `qml/MonitorScreen.qml`): calls first. Top to bottom: header, hero, live strip
   (`monitorLiveStrip`: the second-slot strip, the scan controls, then Listen with its settings, each only when the
   session has them), one
@@ -17644,8 +17701,14 @@ Qt Quick frontend (`src/ui/qt`):
   holds the "Signal & site" disclosure (`monitorDetailsRow`, a `DisclosureRow` in `monitorDetailsCard`), the readings it
   folds away (`monitorDetails`: site, decryption, signal strip, quality, TETRA, ENC LOCKOUT, received tone, tone filter,
   squelch, passband and scan avoids, in that order with their own objectNames) and the `RECENT CALLS` label; the rows
-  are `CallRow`s over one `recentCallsPanel` card in the view's `contentItem`. The engine's last answer (`uiMessage`) is
-  the line under the disclosure. The disclosure is closed by default and remembered in the device-local
+  are `CallRow`s over one `recentCallsPanel` card in the view's `contentItem`. While the engine's last answer
+  (`metrics.uiMessage`, "Output: Muted", "Output: open failed") lasts, it takes the disclosure's subtitle, the summary's
+  one line, as plain text in `Theme.cyan`, then the summary returns (issue #901 D9), so a tap that failed inside the
+  engine does not read as a button that did nothing. A `subtitleReading` `DisclosureRow`'s subtitle is a fixed line box
+  (`LineBoxes.lineHeight()` of the font it draws in, `AlignVCenter`, a `Binding` so hint rows keep their wrapped
+  height), so neither the answer nor a script in it moves the list header or the tier (B2). The row's accessible
+  description is the answer while it shows (empty while a modal covers the row), else the summary at the readings'
+  pace (`detailsSpeech`); nothing is announced. The disclosure is closed by default and remembered in the device-local
   `AppPrefs::monitorDetailsExpanded` (`monitor/detailsExpanded`, kept out of backups and kept on restore); its summary
   is built only from readings the rows show (SNR on radio input, the quality row's lead reading with a TETRA codec fault
   ahead of it in `Theme.alert`, the decryption state, an ENC LOCKOUT count in `Theme.magenta`, `Util.siteShortForm()`:
@@ -17657,14 +17720,32 @@ Qt Quick frontend (`src/ui/qt`):
   hero, duration on the name line), 3 (live strip in the list header above the disclosure), 4 (no label) whose
   `callSpaceFor()` (viewport less the closed list header) holds two `callRowHeight`s; 4 when no tier does but 4
   leaves a row, else 5, where only Stop (and, for a lost receiver, the line above it) stays put and header, hero, strip
-  and actions move into slots at the top of the list header. The header's lines are fixed line boxes (`LineBoxes`,
-  issue #901 B9): the title, the scan target, the scan timing and the roaming line, so a target or phrase in a script
-  with a taller line (Burmese) never changes the header or the tier, and `headerBarHeight(t)` sums them for tier t
-  (`headingHeight(t)`), never reading the column back. A scan of several lists whose title room in tier t (the header
-  actions that tier shows, the pill at its widest label) cannot hold "+ N lists" and max(96, 35% of the room) of the
-  name takes the two-line title (B12, `titleTwoLine(t)`): the name elided on the first line, the count
-  (`monitorHeaderTitleCount`) on a line of the header's whole width below the actions; the heading is still read as
-  "name… + N lists". Parts move by `parent` bindings between fixed hosts
+  and actions move into slots at the top of the list header. Compact view (issue #901 D4; `compactView` is
+  `prefsStore.compactView` when the store has it, else `prefs.compactView`) starts the search at 2 and draws no label
+  in any tier: `labelCandidate(t)` (`t < 4 && !compactView`) is the one rule that the budget's label part, the label,
+  the 1 px `labelSpacer` standing in for it and where `recentCallsPanel` starts all follow (`labelShown`); the list
+  keeps its accessible name. Tiers 2 to 4 then have the same call space (moving the strip into the list header costs
+  what it frees), so compact view lands on 2, 4 or 5. The hero, strip, actions and Stop keep their sizes; the rows
+  take the compact form. `callRowHeight` is the shared `LineBoxes.callRowHeight(compactView, narrow)`, with `narrow`
+  from `LineBoxes.callRowNarrow()` at the rows' width and `rowTimeProbe`, the widest ages a row shows (`now`, `59m`,
+  `23h`, `999d`; "Call rows" below), and the delegates and `FollowLatest.rowHeight` take the same density and
+  height. On a 360 dp phone at text 1.6 the rows take the narrow form (about 119 px against 87 wide), which the tier
+  search counts (decided limit: fewer rows at very large text, and a name that stays readable). A change of density
+  restarts the owned 0 ms `listToStart`, which lays the rows out at their new height (`forceLayout()`; without it the
+  view was placed against the old heights and left short of the header) and puts the list at its start, header in view,
+  the focus left where it is (D11). The header's lines are fixed line boxes (issue #901 B9): the scan target, the scan
+  timing and the roaming line each take `headerMetaBox` (`LineBoxes`, mono 11), so a target or phrase in a script with a
+  taller line (Burmese) never changes the header or the tier. The title, which changes only with the session, keeps the
+  Latin line box it always had (`titleLineProbe`, "Ag" in the title font), so the header and the tiers are what they
+  were; a CJK session name draws centred in it and unclipped into a few pixels of padding (the D10 limit under "Call
+  rows"). `headerBarHeight(t)` sums these boxes for tier t and the session's line conditions (`headingHeight(t)`,
+  `scanTimingLineShown`, `roamingLineShown`), never reading the column back. A scan of several lists whose title
+  room in tier t (the header actions that tier shows, the pill at its widest label) cannot hold "+ N lists" and
+  max(96, 35% of the room) of the name takes the two-line title (B12, `titleTwoLine(t)`): the name elided on the first
+  line, the count (`monitorHeaderTitleCount`) on a line of the header's whole width below the actions (it starts
+  `max(0, pillHeight - titleLineBox)` down beside them, at once when stacked), and `headingHeight(t)` adds that line;
+  the heading is still read as "name… + N lists" (`withOtherLists()`), the count line with it. The count's width is
+  session configuration, not traffic. Parts move by `parent` bindings between fixed hosts
   (`topHost`, `stripHost`, `actionsHost`) and those slots; slots and hosts size from the budget's own numbers
   (`stripHeight`), since an Item hides its children. The hero's height is reserved from its fixed lines
   (`heroFullHeight`, `heroCompactHeight`) so waiting, a call and its end share
@@ -17679,8 +17760,61 @@ Qt Quick frontend (`src/ui/qt`):
   The header's end is read off the first row; the footer stands in only for an empty list, and with the first row
   recycled far down a long list the header's own geometry is used while it is in view, else the view is left alone.
   Tests: `tst_monitor_layout_budget.qml` (tiers at 360x690, 411x780, 411x914, 640x360 by scale and live strip,
-  disclosure, summary, follow and focus), `tst_monitor_recent_calls.qml`, `tst_monitor_compact.qml`,
-  `tst_main_safe_area.qml`, `UI_QT_PERSISTENCE` (`test_prefs_key_table`).
+  disclosure, summary, follow and focus; Compact view: `test_compact_tier_budget`, `test_compact_brokered_header`,
+  `test_compact_landscape_keeps_stop_fixed`, `test_injected_density_wins`, `test_density_change_returns_to_the_start`,
+  and the traffic and two-slot rows in both densities; `test_engine_answer_moves_nothing` with a Latin and a Burmese
+  answer), `tst_monitor_scan_target.qml` (`test_header_lines_ignore_the_script`, `test_multi_list_title_two_lines`),
+  `tst_monitor_recent_calls.qml`, `tst_monitor_compact.qml`, `tst_main_safe_area.qml`, `UI_QT_PERSISTENCE`
+  (`test_prefs_key_table`).
+- Compact view (issue #901): `AppPrefs::compactView` (`ui/compactView`, device-local, off by default; a stored value
+  that is not a true flag reads as off through `stored_flag()`, and the setter writes and notifies only on a change)
+  makes the Monitor, History, Home's Recent activity and Listen's system and scan-list cards denser, so more fit on
+  the screen. Layout heights still come only from the size, the fonts and this setting, never from call content. Two
+  places set it: Settings → Appearance's `settingsCompactView` `ToggleRow` ("Compact view", "Fit more systems, scan
+  lists and calls on the screen."), under the theme control and its note, spanning the card as the Units row does,
+  and the session menu's **Compact view** row (`sessionMenuCompactView`, just before Settings), whose description
+  line reads On or Off. That row flips the preference and opens nothing; the menu closes and the session-menu return
+  gives the focus back to Session options, as for every row. Its On/Off must compare equal across the re-runs of
+  `sessionMenu.actions` that each metrics tick makes: as a new function on each run it made the list differ from the
+  last, and every row of the closed menu was rebuilt each tick (`UI_QT_QML_A11Y_CHURN`). The Monitor and Home read
+  an injected `prefsStore.compactView` first, else `prefs.compactView`; History reads `prefs`. A change puts each list
+  it reaches back at its start (D11): the Monitor's calls (above), History's log and Home's Recent activity ("Call
+  rows" below), and Listen's Systems and Scan lists tabs ("Listen body layout"). The QML fixture's `prefs` map
+  carries `compactView: false`, and the real key is set back to off for each test file. Tests: `UI_QT_PERSISTENCE`
+  (`test_compact_view_pref`, `test_prefs_key_table`), `UI_QT_BACKUP_ARCHIVE` (left out of a backup and dropped from
+  an edited one), `UI_QT_QML_CALL_LISTS` (`tst_settings_layout.qml` `test_compact_view_row` at text 1.0 and 2.0,
+  `tst_main_session_tools.qml` `test_session_menu_compact_view`, `tst_back_modals.qml` `test_session_menu_routes`).
+- Call rows (issue #901 B5, B7, D5, D10; `qml/CallRow.qml`, `qml/LineBoxes.qml`): a row's height is its fonts', never
+  its call's. `LineBoxes` is a singleton (`qmldir`), an `Item` never shown so the probes it makes have an item parent.
+  `lineHeight(family, pixelSize, weight)` is the ceiled `implicitHeight` of a hidden plain-text probe reading "Ag返🚒"
+  (a Latin ascender and descender, a CJK ideograph and an emoji, each drawn by its own face), one per key
+  (`Theme.fontRevision`, family, pixel size, weight, text), made on first use and kept, so a new text size or font
+  mapping measures again; `textWidth()` gives the widest line of a text. Sizes are rounded first (`pixelSizeOf()`): a
+  Text's `font.pixelSize` rounds a fractional size and `Qt.font()` truncates it, and the boxes were a pixel short of
+  the lines they hold at text 1.3 and 1.6. A box is read through a property or a `Binding`, never inline in a
+  `ReadableText`'s own `height` binding, where the first probe of a size warned of a binding loop (MonitorScreen's
+  `otherIdentityBox`). `CallRow`'s name and meta lines are exactly their boxes (`callRowNameBox()`, sans 16
+  DemiBold; `callRowMetaBox()`, mono 12), in the fonts `LineBoxes` gives (`callRowNameFont`, `callRowMetaFont`),
+  centred, unclipped. Its `implicitHeight` is `LineBoxes.callRowHeight(compact, narrow)`: name + 3 + meta (+ 3 + the
+  third line when narrow) + twice the padding (12, or 6 when `compact`), at least `Theme.rowHeight` (a compact row at
+  least `Theme.minimumTouchSize`); about 65 px by default and 53 compact at text 1.0. The narrow form (B7):
+  `narrow` is `LineBoxes.callRowNarrow(width, timeProbe)`, true when the widest right side the view can show
+  (EMERGENCY, 8, the play glyph, 8, then ENC or the widest time in `timeProbe`, measured on hidden instances of the
+  real tags) would leave the name less than max(96, 35% of the row). The right side then moves to a third line under
+  the meta line (`callRowClusterBox()`: the meta box, or a tag's height where that is taller), starting where the
+  labels start, and the name and meta take the full width. Width and fonts only, so every row of a view takes the
+  same form and height, the one the Monitor's budget, History's `rowHeight` and `FollowLatest.rowHeight` read
+  (`FollowLatest` keeps `Theme.rowHeight` by default, as Activity and the Map's List use it). `timeProbe` is the
+  Monitor's ages, `00:00` on History and Home, whose rows show HH:mm. The accessible name and description are the same
+  in every form. Decided limit (D10): a rarer script whose glyphs stand taller than the box (Tibetan stacks) is drawn
+  centred in it and unclipped, into the row's padding; the row keeps its height. History (both instances) and Home's
+  Recent activity pass `compact` from the preference; on a change each forgets its kept place (`KeepPlace.forget()`)
+  and an owned 0 ms timer (`logToStart`, `recentToStart`) puts the list at its newest call, so a list hidden through
+  the change comes back there too. Tests: `UI_QT_QML_CALL_LISTS` (`tst_call_row_lines.qml`: Latin, emoji, CJK and
+  Tibetan rows of one height at 1.0/1.6/2.0 in both densities, the compact floor, the 280 px narrow form clear of the
+  lines, one form per view, `test_box_holds_the_drawn_line`, Home's injected density and its reset;
+  `tst_call_log_follow.qml` `test_13_compact_rows`, `test_14_a_density_change_returns_to_the_newest_call`,
+  `test_06i` at 1.6 and 2.0).
 - Monitor receiver pill (issue #647; brokered hosts only, `qml/MonitorScreen.qml`): the live pill (`monitorLiveStatus`,
   label `monitorLiveLabel`, dot `monitorLiveDot`) reads `LOST` with a `Theme.alert` dot (no halo) as soon as the host's
   `receiverHealth` reports the session's receiver lost or failed (`receiverLost`, read through a `DeviceStatus`), while
@@ -18639,7 +18773,21 @@ Qt Quick frontend (`src/ui/qt`):
   any other history model is read by role name. Coverage is a binary search over the listed rows sorted by start
   with a running maximum end, so overlapping ranges cover correctly (issue #718).
   `talkgroup_filter_model.{h,cpp}` filters by category and name/ID for `qml/TalkgroupsScreen.qml`, opened by the
-  monitor session menu's **Talkgroups** entry.
+  monitor session menu's **Talkgroups** entry. The screen shows a command's answer on one line,
+  `talkgroupCommandToast` (issue #901 B3; it had a second copy above it): `commandMessage` is the newer of the
+  engine's answer (`metrics.uiMessage`) and the screen's own bulk status ("Update requested", or "The update could not
+  be queued. Try again." when `setTalkgroupSelection()` refuses). A bulk confirm sets `bulkNewer`; a non-empty engine
+  answer clears it, also when the same text is set again, which leaves `uiMessage` unchanged but moves
+  `MetricsModel::uiMessageSeq` (the engine's `ui_msg_seq`, its own `uiMessageSeqChanged`, emitted after
+  `uiMessageChanged` so a screen that reads the text on the count reads the new one). An answer that expires leaves
+  the line empty rather than bringing back the status it replaced, and an accepted request the engine never answers
+  (decoding stopped) is cleared after 4 s by the owned `bulkRequestedExpiry`, which a refusal stops; a refusal does
+  not expire. The save result line (`saveMessage`) stays a line of its own. Tests: `UI_QT_QML_CALL_LISTS`
+  (`tst_talkgroups_screen.qml`: `test_engine_answer_shows_once`, `test_command_line_shows_the_newest_message`,
+  `test_same_answer_text_again_replaces_the_request`, `test_unanswered_request_expires`), `UI_QT_QML_A11Y_CHURN`
+  (`tst_a11y_talkgroups.qml` `test_engine_answer_is_one_node`), `UI_QT_METRICS_MODEL`
+  (`test_ui_message_seq_moves_with_the_same_text`). The fixture's commands fake refuses a selection after
+  `testContext.setTalkgroupSelectionAccepted(false)`.
   `CommandBridge` submits `TG_LISTEN_SET`/`TG_LISTEN_SET_ALL` through app-control; only the decoder thread mutates
   policy and atomically rewrites a configured group file. Scan-row lists remain session-only. **Lock out** shares
   this mutation path, preserving labels; with `persist_tg_lockouts` off it becomes **Avoid TG**, adding a session
@@ -19046,8 +19194,9 @@ Qt Quick frontend (`src/ui/qt`):
     so a change to them changes the card. Text from a backup (app version, `notIncluded`) renders as `Text.PlainText`.
   - Supporting changes: `AppPrefs` names every key once in a table (`keyTable()`) that marks it portable or device-local
     (device-local: first-run state (`ui/onboardingDone`, `ui/notificationExplained`), the last location fix
-    (`location/*`), how this device's screens were left (`monitor/detailsExpanded`, `listen/section`), whether this
-    device opens DSD-neo's file browser first (`ui/chooseFilesInApp`, issue #830) and the session
+    (`location/*`), how this device's screens were left or are arranged (`monitor/detailsExpanded`, `listen/section`,
+    `ui/compactView`, issue #901), whether this device opens DSD-neo's file browser first (`ui/chooseFilesInApp`,
+    issue #830) and the session
     this device's service runs (`listen/acceptedStart*`, `listen/lastStartedCompanions`); `UI_QT_PERSISTENCE` pins the
     set), with `readPortable()`/`replacePortable()`; a new key must be classed there. `DecryptionProfilesModel` compiles at load
     any row without a compiled form, which every restored row is, and persists once; a row that cannot compile is kept,
