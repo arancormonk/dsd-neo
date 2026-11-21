@@ -15142,6 +15142,31 @@ single "current call".
   protection go), keeping the call record open for the reservation; reservation time remaining 0 sent in a frame 6, 12
   or 18 (`tetra_dmo_sync_h_t::sync_frame`) ends the call too, while 0 in another frame runs to the next one; a gateway
   set-up's reservation (type 1) keeps the set-up.
+  Known limits of direct mode call tracking (decided for issue #890; one direct mode call per carrier is followed):
+  - An end message (DM-TX CEASED, DM-RELEASE, DM-DISCONNECT, DM-GRELEASE), in a DSB or on the STCH, ends the call and
+    its transmission whoever sends it (`dmo_apply_call()`, `dmo_log_data()`, `tetra_calls_dmo_pdu()`): another
+    co-channel call's or another network's too.
+  - A direct mode DM-RESERVED from the same pseudo SSI is not told apart from a gateway's or repeater's call
+    (or the other way round): `tetra_dmo_party` matches the repeater or gateway address only when both PDUs carry
+    one, so it can retire the transmission (colour code and protection) and end the call.
+  - A group reservation from another network that uses the same pseudo source SSI and group SSI can retire the call
+    (`tetra_dmo_party_reserves()` counts the MNI for a true source SSI only and compares no destination).
+  - A DM-CONNECT ACK addressed to the called party's new pseudo SSI starts a new call row (`dmo_call_from()` compares
+    the destination as sent); under a different dummy MNI it starts a new transmission as well.
+  - Through a gateway, the gateway's own DM-RESERVED, sent from the gateway's pseudo SSI (EN 300 396-5 clauses 8.4.6.1,
+    13.5.2.1.2), is not taken as the call's: it neither retires the transmission nor keeps a gateway set-up open, so
+    such a call ends by its idle timeout; a reservation from the DM-MS's own pseudo SSI through a gateway is taken as
+    the call's.
+  - A DMAC-DATA call PDU that leaves its source address out (EN 300 396-3 clause 8.5.2.1.2) replaces the call's master
+    with no source, so the master's later DM-RESERVED no longer reaches the call record.
+  - A DMAC-DATA is read with the communication type of the last DSB on the carrier (`tetra_state_t::dmo_comm_type`),
+    even one of another call, so after another party's direct mode DSB a gateway call's STCH can be misread and its end
+    missed.
+  - A co-channel caller's DM-SETUP PRES during a call takes the call's row while the first call's traffic goes on.
+  - A co-channel short data DSB sent in pieces replaces the colour code of the transmission in progress
+    (`dmo_learn_dcc()`), so the call's normal bursts stop decoding until its next DSB.
+  - A second direct mode call on the carrier (its set-up or occupation, or a DM-2-C DSB after a call of another class)
+    ends the call on the channel and takes over.
   The event history names the network (`TETRA_<mcc>_<mnc>_CC_<cc>` or `TETRA_DMO`,
   `dsd_events.c`), the access code is the colour code (`access_code.c`), and `call_state.c` gives TETRA its own call
   family.

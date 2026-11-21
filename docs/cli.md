@@ -1046,6 +1046,16 @@ Android session whose saved extra arguments carry one refuses to start the same 
   permission, only while the followed cell's own checked blocks were heard on the channel in the last 4 seconds (a live
   cell sends its SYNC about once a second); three saying the channel is no longer the call's can still end a call early,
   as noise can, and the decoder then returns to the control channel.
+  Direct mode follows one call per carrier. Known limits there: an end message (DM-TX CEASED, DM-RELEASE,
+  DM-DISCONNECT, DM-GRELEASE) ends the call whoever sends it, another co-channel call's or another network's included;
+  a direct mode reservation from the same pseudo SSI is not told apart from a gateway's or repeater's call, and a group
+  reservation from another network that uses the same pseudo source and group can end the call's transmission; a
+  DM-CONNECT ACK to the called party's new pseudo SSI shows the call as a new row; through a gateway, the gateway's own
+  reservation is not recognised, so such a call ends after 3 seconds without signalling or speech; a stolen-channel
+  message that leaves its source out loses the call's caller, so its later reservation is missed; stolen-channel
+  signalling is read with the route of the last sync burst on the carrier, even another call's; a co-channel caller's
+  presence check, a short data message sent in pieces, or a second call's set-up or occupation can take the call's row
+  or stop its traffic decoding until its next sync burst.
   `--tetra-uplink` decodes a trunked mode uplink carrier, the radios' transmissions, instead of a downlink: its control
   uplink bursts (random access) and its normal uplink bursts. The uplink does not run the downlink's receive chain,
   which lost bursts the generic CQPSK path decodes: it runs that path with the TETRA channel filter (at the same DSP
