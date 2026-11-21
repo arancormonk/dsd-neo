@@ -2770,6 +2770,126 @@ test_invalidate_path_provenance() {
     empty_systems(model);
 }
 
+/* The tuning a Save talkgroup list request captures: the fields whose change ends a site's provenance. */
+QVariantMap
+captured_tuning(const SavedSystemsModel& model, int row) {
+    QVariantMap tuning;
+    const QVariantMap system = model.get(row);
+    for (const QString& key : model.tuningProvenanceFields()) {
+        tuning.insert(key, system.value(key));
+    }
+    return tuning;
+}
+
+/* The RadioReference site @p row still holds: its ids, avoid, name, position and place (grouped_site()). */
+bool
+site_kept(const QVariantMap& row, int site) {
+    return row.value("rrSid").toInt() == 12 && row.value("rrSiteId").toInt() == site && row.value("avoidSite").toBool()
+           && row.value("siteName") == "North" && row.value("hasSitePos").toBool()
+           && std::abs(row.value("siteLat").toDouble() - 41.65503) < 1e-9 && row.value("place").toMap() == iowa_place();
+}
+
+/* Issue #903 (B2): a saved talkgroup list is attached to the system it was saved for without the edit path, so a
+ * RadioReference site keeps its ids, avoid, name, position and place. It attaches only to a system that still exists,
+ * has no list and runs the tuning the request captured; a refusal or a failed save changes nothing. */
+void
+test_attach_group_list_keeps_site() {
+    const QString path = QStringLiteral("/data/imports/talkgroups-0001.csv");
+    QStringList log;
+    SavedSystemsModel model;
+    empty_systems(model);
+    expect("attach: a site with no list", model.add(grouped_site("Metro — North", 3)));
+    expect("attach: a second site with no list", model.add(grouped_site("Metro — North", 4)));
+    const QString uid = model.get(0).value("uid").toString();
+    const QVariantMap tuning = captured_tuning(model, 0);
+    expect("attach: the captured tuning names every provenance field",
+           tuning.size() == model.tuningProvenanceFields().size());
+
+    QVariantMap retuned = tuning;
+    retuned.insert("freqMhz", "852.0125");
+    expect("attach: a changed frequency is refused",
+           !model.groupListAttachable(uid, retuned) && !model.attachGroupList(uid, path, retuned));
+    QVariantMap rekeyed = tuning;
+    rekeyed.insert("keyCsvHex", true);
+    expect("attach: a changed key format is refused", !model.attachGroupList(uid, path, rekeyed));
+    QVariantMap partial = tuning;
+    partial.remove("decodeFlag");
+    expect("attach: a tuning missing a field is refused", !model.attachGroupList(uid, path, partial));
+    expect("attach: an unknown system is refused",
+           !model.groupListAttachable(QStringLiteral("00000000-0000-4000-8000-000000000903"), tuning));
+    expect("attach: an empty path is refused", !model.attachGroupList(uid, QString(), tuning));
+    expect("attach: refusals change nothing", model.get(0).value("groupCsvPath").toString().isEmpty());
+
+    record_signals(model, log);
+    expect("attach: store blocked", block_systems_store());
+    expect("attach: still attachable while the store is blocked", model.groupListAttachable(uid, tuning));
+    expect("attach: a failed save reports failure", !model.attachGroupList(uid, path, tuning));
+    expect("attach: a failed save keeps the row",
+           model.get(0).value("groupCsvPath").toString().isEmpty() && site_kept(model.get(0), 3));
+    expect("attach: a failed save sends no signal", log.isEmpty());
+    expect("attach: store unblocked", unblock_systems_store());
+
+    expect("attach: the attach saves", model.attachGroupList(uid, path, tuning));
+    expect("attach: the list is attached", model.get(0).value("groupCsvPath") == path);
+    expect("attach: the site keeps its ids, avoid, name, position and place", site_kept(model.get(0), 3));
+    expect("attach: the other site is untouched", model.get(1).value("groupCsvPath").toString().isEmpty());
+    expect("attach: one dataChanged, the site group unchanged", log == QStringList{"dataChanged"});
+    expect("attach: a system that has a list is refused",
+           !model.groupListAttachable(uid, captured_tuning(model, 0))
+               && !model.attachGroupList(uid, QStringLiteral("/data/imports/other.csv"), captured_tuning(model, 0)));
+    {
+        SavedSystemsModel reloaded;
+        expect("attach: persists with the site",
+               reloaded.get(0).value("groupCsvPath") == path && site_kept(reloaded.get(0), 3));
+    }
+
+    // A retune of the same system after the request was captured: the list was exported from the old tuning.
+    const QString second = model.get(1).value("uid").toString();
+    const QVariantMap before = captured_tuning(model, 1);
+    expect("attach: the second site retuned", model.update(1, {{"freqMhz", "852.0125"}}));
+    expect("attach: a retuned system is refused", !model.attachGroupList(second, path, before));
+    empty_systems(model);
+}
+
+/* Issue #903 (B2, r3 13): removing a library file the user made (an exported talkgroup list) lets the systems naming it
+ * as their group list go of it and keeps their site; two sites sharing it both keep theirs. A RadioReference file, or
+ * a user file used for any other field, still clears the provenance as before. */
+void
+test_clear_user_group_csv_keeps_site() {
+    const QString mine = QStringLiteral("/data/imports/talkgroups-0002.csv");
+    const QString radioReference = QStringLiteral("/data/imports/Metro group.csv");
+    SavedSystemsModel model;
+    empty_systems(model);
+    expect("user list: two sites sharing it",
+           model.add(grouped_site("Metro — North", 3, mine)) && model.add(grouped_site("Metro — North", 4, mine)));
+    QVariantMap channelMap = grouped_site("Metro — North", 5);
+    channelMap.insert("chanCsvPath", mine);
+    expect("user list: a site using it as its channel map", model.add(channelMap));
+    expect("user list: a site on a RadioReference list", model.add(grouped_site("Metro — North", 6, radioReference)));
+    expect("user list: fixture grouped", model.get(2).value("chanCsvPath") == mine && site_kept(model.get(2), 5));
+
+    expect("user list: store blocked", block_systems_store());
+    expect("user list: a failed save reports failure", !model.clearCsvPath(mine, false));
+    expect("user list: a failed save keeps every reference", model.get(0).value("groupCsvPath") == mine);
+    expect("user list: store unblocked", unblock_systems_store());
+
+    expect("user list: the clear saves", model.clearCsvPath(mine, false));
+    expect("user list: both sites let go of the list", model.get(0).value("groupCsvPath").toString().isEmpty()
+                                                           && model.get(1).value("groupCsvPath").toString().isEmpty());
+    expect("user list: both sites keep their site", site_kept(model.get(0), 3) && site_kept(model.get(1), 4));
+    expect("user list: a channel map from the user still ends the site",
+           model.get(2).value("chanCsvPath").toString().isEmpty() && geography_cleared(model.get(2)));
+    {
+        SavedSystemsModel reloaded;
+        expect("user list: persists", reloaded.get(0).value("groupCsvPath").toString().isEmpty()
+                                          && site_kept(reloaded.get(0), 3) && site_kept(reloaded.get(1), 4));
+    }
+    expect("user list: a RadioReference file still clears provenance", model.clearCsvPath(radioReference, true));
+    expect("user list: the RadioReference site is cleared",
+           model.get(3).value("groupCsvPath").toString().isEmpty() && geography_cleared(model.get(3)));
+    empty_systems(model);
+}
+
 /* A resolved state's names reach every row whose place names its ids: the state's name, its counties' names and
  * links, and the state itself on a row whose county now links to it. One save and one ranged signal; a failed save
  * leaves every row as it was. */
@@ -4332,6 +4452,8 @@ main(int argc, char** argv) {
     test_clear_csv_path_clears_geography();
     test_load_drops_orphan_position();
     test_invalidate_path_provenance();
+    test_attach_group_list_keeps_site();
+    test_clear_user_group_csv_keeps_site();
     test_apply_place_names();
     test_place_name_cache();
     test_reimport_keeps_place_names();

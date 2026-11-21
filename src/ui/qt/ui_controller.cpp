@@ -3,7 +3,9 @@
  * Copyright (C) 2026 by arancormonk <180709949+arancormonk@users.noreply.github.com>
  */
 
+#include <algorithm>
 #include <utility>
+#include <vector>
 #include "auto_start_attachment.h"
 #include "auto_start_policy.h"
 #include "command_bridge.h"
@@ -12,6 +14,7 @@
 
 #include <QCoreApplication>
 #include <QGuiApplication>
+#include <QVariantList>
 #include <Qt>
 // WP0's C export payload uses a flexible array; only its fixed header is read in C++.
 #if defined(__GNUC__)
@@ -197,17 +200,36 @@ UiController::clearLiveModels() {
 
 void
 UiController::pollTalkgroupExport() {
-    // WP-D1: retained export completion is independent of redraw and host lifecycle.
-    dsd_app_tg_export_result result = {};
-    if (dsd_app_tg_export_result_get(&result) && result.sequence != m_talkgroupExportSequence) {
-        m_talkgroupExportSequence = result.sequence;
-        m_talkgroupExportResult = {{QStringLiteral("sequence"), QString::number(result.sequence)},
+    // WP-D1: retained export completion is independent of redraw and host lifecycle. The newest one first, so an
+    // idle tick reads one result and allocates nothing.
+    dsd_app_tg_export_result newest = {};
+    if (dsd_app_tg_export_result_get(&newest) == 0 || newest.sequence == m_talkgroupExportSequence) {
+        return;
+    }
+    // Issue #903: every completion since the last poll, so a second export finishing before the poll is not lost.
+    std::vector<dsd_app_tg_export_result> read(DSD_APP_RESULT_HISTORY);
+    const int count = dsd_app_tg_export_results_since(m_talkgroupExportSequence, read.data(), DSD_APP_RESULT_HISTORY);
+    QVariantList results;
+    quint64 missedThrough = 0;
+    // One published after the read above is in this batch too: the next poll starts after it.
+    quint64 last = newest.sequence;
+    for (int i = 0; i < count; ++i) {
+        const dsd_app_tg_export_result& result = read[static_cast<size_t>(i)];
+        if (i == 0 && result.sequence > m_talkgroupExportSequence + 1U) {
+            // Older than the history keeps: those completions are gone, and the flow must say so.
+            missedThrough = result.sequence - 1U;
+        }
+        results.append(QVariantMap{{QStringLiteral("sequence"), QString::number(result.sequence)},
                                    {QStringLiteral("policyContext"), QString::number(result.policy_context)},
                                    {QStringLiteral("policyGeneration"), result.policy_generation},
                                    {QStringLiteral("path"), QString::fromUtf8(result.path)},
-                                   {QStringLiteral("success"), result.success == 1}};
-        Q_EMIT talkgroupExportResultChanged();
+                                   {QStringLiteral("success"), result.success == 1}});
+        last = std::max<quint64>(last, result.sequence);
     }
+    m_talkgroupExportSequence = last;
+    m_talkgroupExportResults = {{QStringLiteral("results"), results},
+                                {QStringLiteral("missedThrough"), QString::number(missedThrough)}};
+    Q_EMIT talkgroupExportResultChanged();
 }
 
 void

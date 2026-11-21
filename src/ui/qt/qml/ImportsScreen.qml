@@ -764,7 +764,9 @@ Item {
                 // Issue #801: what names the file lets go of it before the file goes, so no system or list is left
                 // pointing at a deleted file. Each step stops the removal when it fails, and running it again
                 // finishes what is left: a step already done does nothing the second time.
-                if (!savedSystems.clearCsvPath(path)) {
+                // Issue #903: a file the user made (a saved talkgroup list) never described a site, so the sites
+                // naming it as their group list keep theirs; a RadioReference file still ends its sites' provenance.
+                if (!savedSystems.clearCsvPath(path, importedFiles.fromRadioReference(screen.actionRow))) {
                     screen.notice = qsTr("Could not save the systems that use this file, so nothing was removed. Try again.");
                     screen.noticeIsProblem = true;
                     return;

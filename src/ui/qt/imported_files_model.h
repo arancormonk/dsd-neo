@@ -132,9 +132,20 @@ class ImportedFilesModel : public QAbstractListModel {
     Q_INVOKABLE QString newTalkgroupListPath() const;
     /**
      * Register a successfully exported list in place; the engine keeps writing this path. False, with no row added,
-     * when the library cannot be saved; the file stays where it is.
+     * when the library cannot be saved; the file stays where it is. A registered path is no longer reserved: its row
+     * holds the name from then on.
      */
     Q_INVOKABLE bool registerTalkgroupList(const QString& path);
+    /**
+     * Give back a newTalkgroupListPath() name the decoder will never write: its export failed, or was never queued.
+     * An export that may still complete (its answer is late) keeps its name.
+     */
+    Q_INVOKABLE void releaseTalkgroupListPath(const QString& path);
+    /**
+     * Whether row @p row's file came from RadioReference (its origin, or a RadioReference system id): the one rule an
+     * update in place and a removal read. False for a row out of range.
+     */
+    Q_INVOKABLE bool fromRadioReference(int row) const;
 
     /**
      * @brief Import a picked document: copied and checked on the import worker, published on the Qt thread.
@@ -258,6 +269,11 @@ class ImportedFilesModel : public QAbstractListModel {
      * before anything could have connected to one.
      */
     Q_INVOKABLE QStringList takePrunedPaths();
+    /**
+     * @brief Of the paths load() pruned, those whose file was the user's own (not fromRadioReference()), then forgets
+     * them: a saved system naming one as its group list keeps its site (SavedSystemsModel::clearCsvPath()).
+     */
+    QStringList takePrunedUserPaths();
 
   Q_SIGNALS:
     void countChanged();
@@ -377,6 +393,8 @@ class ImportedFilesModel : public QAbstractListModel {
      * complexity ceiling; the roles have no behaviour of their own.
      */
     static QVariant provenanceRole(const Row& row, int role);
+    /** @brief fromRadioReference() for one row. */
+    static bool rowFromRadioReference(const Row& row);
 
     /** @brief Append @p row, saved first: false, with nothing changed, when the index cannot be saved. */
     bool appendRow(Row row);
@@ -407,6 +425,7 @@ class ImportedFilesModel : public QAbstractListModel {
     BeforeUserReplace m_beforeUserReplace;
     QList<Row> m_rows;
     QStringList m_pruned_paths;
+    QStringList m_pruned_user_paths;
     /* The library revision: every change takes the next one. */
     quint64 m_revision = 0;
 

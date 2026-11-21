@@ -51,7 +51,10 @@ Item {
 
     property bool canSaveList: false
     property string saveListText: qsTr("Save talkgroup list")
-    signal saveListRequested
+    // The decoder refuses an export while a scan row with its own talkgroup list is on air: every Save talkgroup list
+    // button on this screen honours this.
+    readonly property bool scanRowRefusesSave: talkgroups.persistenceScope === "scan"
+    signal saveListRequested(string context, int generation)
     signal closed
     // Shown, fade included (issue #782). Hidden, the cards and category chips
     // let their models go: a scan brings each target's own table, and every
@@ -334,15 +337,19 @@ Item {
         spacing: 8
 
         ReadableText {
+            objectName: "talkgroupScopeNote"
             width: parent.width
-            text: talkgroups.persistenceScope === "scan" ? qsTr("This scan target · session changes; the source CSV is unchanged") : talkgroups.persistent ? qsTr("Edits are saved to the attached CSV and affect other systems sharing it") : qsTr("This session · save a talkgroup list to keep edits")
+            // In scan scope edits are not written, but a learned radio alias still goes to the target's own list.
+            text: talkgroups.persistenceScope === "scan" ? qsTr("Edits last for this session; learned names may still be added to this target's list") : talkgroups.persistent ? qsTr("Edits are saved to the attached CSV and affect other systems sharing it") : qsTr("This session · save a talkgroup list to keep edits")
             wrapMode: Text.Wrap
             color: Theme.textSecondary
             font.pixelSize: Theme.fontSize(12)
         }
         ReadableText {
             width: parent.width
-            text: metrics.uiMessage || screen.bulkMessage
+            // The decoder's message has its own line below (talkgroupCommandToast); while it shows, this line gives
+            // way to it rather than repeat it.
+            text: metrics.uiMessage ? "" : screen.bulkMessage
             visible: text.length > 0
             wrapMode: Text.Wrap
             color: Theme.textPrimary
@@ -394,7 +401,9 @@ Item {
         objectName: "talkgroupEditSheet"
         saveListText: screen.saveListText
         saveMessage: screen.saveMessage
-        canSaveList: screen.canSaveList && !talkgroups.persistent && decoderHost.running
-        onSaveListRequested: screen.saveListRequested()
+        canSaveList: screen.canSaveList && !screen.scanRowRefusesSave && decoderHost.running
+        onSaveListRequested: function (context, generation) {
+            screen.saveListRequested(context, generation);
+        }
     }
 }

@@ -35,6 +35,11 @@ Item {
         anchors.fill: parent
         source: uiDir + "/TalkgroupEditSheet.qml"
     }
+    SignalSpy {
+        id: saveSpy
+        target: loader.item
+        signalName: "saveListRequested"
+    }
     TestCase {
         name: "TalkgroupEditSheet"
         when: windowShown
@@ -328,6 +333,22 @@ Item {
             mouseClick(findChild(loader.item, "saveTalkgroup"));
             compare(recorder.edits, 1);
             verify(!loader.item.visible); // Reopen through the model for a fresh version.
+        }
+
+        // Issue #903: Save talkgroup list carries the policy version the sheet opened with, so the export and its
+        // completion name the table the user was looking at, not whatever is current when the flow completes.
+        function test_save_list_carries_the_opened_context() {
+            var sheet = loader.item;
+            sheet.canSaveList = true;
+            saveSpy.clear();
+            var button = findChild(sheet, "saveTalkgroupList");
+            verify(button !== null && button.visible);
+            button.clicked();
+            compare(saveSpy.count, 1);
+            compare(saveSpy.signalArguments[0][0], "18446744073709551614");
+            compare(saveSpy.signalArguments[0][1], 9);
+            sheet.canSaveList = false;
+            verify(!button.visible);
         }
     }
 }

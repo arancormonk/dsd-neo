@@ -2146,6 +2146,73 @@ test_positions_poll_without_redraw() {
 
 } // namespace
 
+/* The newest export completion the controller's last poll read: the last of its batch. */
+static QVariantMap
+latest_export(const dsd_qt::UiController& controller) {
+    const QVariantList results = controller.talkgroupExportResults().value("results").toList();
+    return results.isEmpty() ? QVariantMap() : results.constLast().toMap();
+}
+
+/* Issue #903 (S1): the controller reads every export completion since its last poll, oldest first, so two that finish
+ * between polls both reach the save flow; when more finished than app-control keeps, it names the newest sequence it
+ * could not read, so a request whose completion was among them is reported, not left waiting. */
+static void
+test_export_results_between_polls(dsd_qt::UiController& controller, const dsd_qt::CommandBridge& bridge, dsd_opts* opts,
+                                  dsd_state* state, const QString& dir) {
+    dsd_app_frontend_runtime_start(nullptr, nullptr);
+    const auto run = [&controller] {
+        QEventLoop loop;
+        QTimer::singleShot(65, &loop, &QEventLoop::quit);
+        controller.start();
+        loop.exec();
+        controller.stop();
+    };
+    run();
+    const quint64 before = latest_export(controller).value("sequence").toString().toULongLong();
+    dsd_app_telemetry_publish_snapshot(state);
+    uint64_t context = 0;
+    unsigned int generation = 0;
+    dsd_tg_policy_table_version(state, &context, &generation);
+    const QString version = QString::number(context);
+    const QString first = dir + QStringLiteral("/first.csv");
+    const QString second = dir + QStringLiteral("/second.csv");
+    check(bridge.saveTalkgroupList(version, generation, first));
+    check(bridge.saveTalkgroupList(version, generation, second));
+    check(dsd_app_drain_cmds(opts, state) == 2);
+    run();
+    QVariantMap batch = controller.talkgroupExportResults();
+    QVariantList results = batch.value("results").toList();
+    check(results.size() == 2);
+    check(results.value(0).toMap().value("path").toString() == first);
+    check(results.value(1).toMap().value("path").toString() == second);
+    check(results.value(0).toMap().value("success").toBool() && results.value(1).toMap().value("success").toBool());
+    check(results.value(0).toMap().value("sequence").toString() == QString::number(before + 1));
+    check(batch.value("missedThrough").toString() == "0");
+
+    // More completions than the history keeps: the oldest are gone, and the batch says which.
+    const int burst = DSD_APP_RESULT_HISTORY + 6;
+    for (int i = 0; i < burst; ++i) {
+        // A stale version: refused at once, and still a completion with a sequence.
+        check(bridge.saveTalkgroupList(QString::number(context + 1), generation,
+                                       dir + QStringLiteral("/burst-%1.csv").arg(i)));
+        check(dsd_app_drain_cmds(opts, state) == 1);
+    }
+    run();
+    batch = controller.talkgroupExportResults();
+    results = batch.value("results").toList();
+    check(results.size() == DSD_APP_RESULT_HISTORY);
+    const quint64 newest = before + 2 + burst;
+    check(results.constLast().toMap().value("sequence").toString() == QString::number(newest));
+    check(results.constFirst().toMap().value("sequence").toString()
+          == QString::number(newest - DSD_APP_RESULT_HISTORY + 1));
+    check(batch.value("missedThrough").toString() == QString::number(newest - DSD_APP_RESULT_HISTORY));
+
+    // A poll with nothing new keeps the batch it last published.
+    run();
+    check(controller.talkgroupExportResults().value("results").toList().size() == DSD_APP_RESULT_HISTORY);
+    dsd_app_frontend_runtime_stop();
+}
+
 int
 main(int argc, char** argv) {
     dsd_qt::applyQmlGcPolicy();
@@ -2449,12 +2516,12 @@ main(int argc, char** argv) {
     const QString exportPath = exportDir.filePath("groups.csv");
     check(bridge.saveTalkgroupList(version, generation, exportPath));
     check(!QFile::exists(exportPath));
-    check(controller.talkgroupExportResult().isEmpty());
+    check(latest_export(controller).isEmpty());
     bool restarted = false;
     bool restartHasGroupFile = false;
     QObject::connect(&host, &dsd_qt::DecoderHost::localDeviceAttached, &controller, [&]() {
         // The saved map is associated by the retained completion before argv is built.
-        const auto completion = controller.talkgroupExportResult();
+        const auto completion = latest_export(controller);
         QVariantMap system{{"sourceType", "rtltcp"},
                            {"host", "127.0.0.1"},
                            {"port", 1234},
@@ -2485,7 +2552,7 @@ main(int argc, char** argv) {
     controller.stop();
     check(restarted && restartHasGroupFile);
     host.onRefresh = {};
-    const auto exported = controller.talkgroupExportResult();
+    const auto exported = latest_export(controller);
     check(exported.value("success").toBool());
     check(exported.value("path").toString() == exportPath);
     check(exported.value("policyContext").toString() == version);
@@ -2494,6 +2561,7 @@ main(int argc, char** argv) {
     check(QString::fromUtf8(opts.group_in_file) == exportPath);
     check(!bridge.renameTalkgroup(42, 42, version, generation, "After stop"));
     check(dsd_app_drain_cmds(&opts, &state) == 0);
+    test_export_results_between_polls(controller, bridge, &opts, &state, exportDir.path());
     freeState(&state);
     return 0;
 }

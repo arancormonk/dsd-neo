@@ -86,15 +86,27 @@ appears in the screen's message line. Over-the-air radio aliases learned while t
 stale; a list reload, an edit from another frontend or a scan rotation does, and then the sheet must be reopened.
 
 When the running session has no group file, **Save talkgroup list** exports the
-canonical policy, including aliases and ranges, to app-owned Imports storage.
-The UI waits for the decoder's retained successful result before registering the
-file and setting the saved system's group-list path. Later edits write that same
-file. If the saved system was deleted or acquired another group file while saving,
-the export remains in Imports without changing that system. Explore sessions save
-to Imports for later selection in a saved system. Scan-row exports are refused by
-the decoder. If completion fails or the session ends, the pending save is cleared.
-After 15 seconds without a result, **Try again** allows a new request. A retry uses
-a new path; late results from abandoned requests never associate a file.
+canonical policy, including aliases and ranges, to app-owned Imports storage. The
+export saves the table the edit sheet was opened on. The UI waits for the
+decoder's retained successful result, then adds the file to Imports, then sets it
+as the saved system's group list. Setting the list changes nothing else about
+the system: a RadioReference site keeps its site details, group and avoid. Later
+edits write that same file. Each step reports its own result. If a step after
+the export fails, the message says which, and **Try again** repeats only that
+step, keeping the file the decoder already writes to. If the saved system was
+deleted, retuned or acquired another group file while saving, the export remains
+in Imports without changing that system. Explore sessions, scan lists and
+operator holds save to Imports for later selection in a saved system. Scan-row
+exports are refused by the decoder, so Save is not offered there. A pending save
+survives the session ending: a result that arrives after Stop still completes
+it. After 15 seconds without a result, **Try again** allows a new request with a
+new path. A late success for an abandoned request is added to Imports but never
+attached to a system. If more exports finish at once than the app can read back,
+the message says the result was not received.
+
+Removing a talkgroup list you saved from Imports clears it from the systems that
+use it and keeps their RadioReference site details. Removing a RadioReference
+file still clears the site details of the systems that use it.
 
 ## The two-mode UI
 

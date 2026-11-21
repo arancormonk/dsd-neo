@@ -51,8 +51,10 @@ class UiController : public QObject {
     Q_OBJECT
     // WP-S2: QML supplies its complete overlay/pending-permission gate.
     Q_PROPERTY(bool autoStartBlocked MEMBER m_autoStartBlocked)
-    // WP-D1: copied retained outcome, polled even without decoder redraw.
-    Q_PROPERTY(QVariantMap talkgroupExportResult READ talkgroupExportResult NOTIFY talkgroupExportResultChanged)
+    // WP-D1: copied retained outcomes, polled even without decoder redraw. Issue #903: every export completion the
+    // last poll read, oldest first ({results: [...], missedThrough}), so two finishing between polls both arrive;
+    // missedThrough is the newest sequence that poll could not read (more finished than app-control keeps), else "0".
+    Q_PROPERTY(QVariantMap talkgroupExportResults READ talkgroupExportResults NOTIFY talkgroupExportResultChanged)
     Q_PROPERTY(QVariantMap decryptionResult READ decryptionResult NOTIFY decryptionResultChanged)
     Q_PROPERTY(int pollIntervalMs READ pollIntervalMs WRITE setPollIntervalMs NOTIFY pollIntervalChanged)
 
@@ -68,8 +70,8 @@ class UiController : public QObject {
     }
 
     QVariantMap
-    talkgroupExportResult() const {
-        return m_talkgroupExportResult;
+    talkgroupExportResults() const {
+        return m_talkgroupExportResults;
     }
 
     int pollIntervalMs() const;
@@ -183,7 +185,7 @@ class UiController : public QObject {
     RecordingStatus* m_recordingStatus = nullptr;
     HeardTalkgroupStore* m_heardTalkgroups = nullptr;
     QTimer m_timer;
-    QVariantMap m_talkgroupExportResult;
+    QVariantMap m_talkgroupExportResults;
     quint64 m_talkgroupExportSequence = 0;
     QPointer<CommandBridge> m_commands;
     QVariantMap m_decryptionResult;

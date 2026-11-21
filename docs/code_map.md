@@ -18299,7 +18299,7 @@ Qt Quick frontend (`src/ui/qt`):
   (a bundle's companions too, from `CsvBundleImport::stagedNames`; a reason still naming the staging folder is dropped
   for the generic line; none for a talkgroup list, whose parser skips bad rows rather than refusing). The commit, on the
   Qt thread, only renames and saves the index: a new file moves in under a free name (`unique_import_destination`,
-  skipping every `newTalkgroupListPath()` this process handed out, then `dsd_rename_noreplace`, the next name on
+  skipping every `newTalkgroupListPath()` name still reserved, then `dsd_rename_noreplace`, the next name on
   `EEXIST`) before `saveRows`, which on failure removes it again; a replace rechecks the row's path, in-memory revision
   and type (else `stale`), saves the index with the new counts first and then moves the copy over the stored path
   (`dsd_replace_file_with_temp`), putting the old index back if the move fails (both failing keeps the new rows in
@@ -18381,6 +18381,10 @@ Qt Quick frontend (`src/ui/qt`):
   a failure shows under the row and keeps the earlier file, and closing or reopening the wizard cancels the copy and
   drops its answer.
   `registerTalkgroupList()` saves the index before it adds the row and answers false, adding nothing, when it cannot.
+  An export name stays reserved while the decoder may still write it (issue #903): a registration hands it to its row,
+  and `releaseTalkgroupListPath()` gives back the name of an export that failed or was never queued; an export whose
+  answer is late keeps it. `fromRadioReference(row)` (its origin, or a RadioReference system id) is the one rule an
+  update in place and a removal read; load keeps the pruned user files apart (`takePrunedUserPaths()`).
   Document probes (#831): a document opened from another app is told apart before anything is asked.
   `inspectDocument(reference)` returns an id and `documentInspected(id, {kind, name})` answers it exactly once, queued;
   the probe runs on the import worker (`ImportService::probeDocument()`, capped at `backup::kMaxSealedBytes`) and
@@ -18916,7 +18920,12 @@ Qt Quick frontend (`src/ui/qt`):
   sends `name` only when its field no longer reads as it opened, so an editor opened before an Update from
   RadioReference does not undo that rename). `clearCsvPath` (a library file removed) and
   `invalidatePathProvenance` (a library file replaced with the user's own bytes, keeping the path; see "Replacing a
-  library file in place") apply it to every row naming the path. Load drops what a row outside a group cannot use: its
+  library file in place") apply it to every row naming the path, except that `clearCsvPath(path, false)` (the user's
+  own file, issue #903) keeps the provenance of a row that named the file only as its group list: a list the user
+  saved never described the site, so two sites sharing it both stay in their group. `attachGroupList(uid, path,
+  tuning)` (Save talkgroup list, issue #903) sets `groupCsvPath` alone, no edit and no provenance cleared, and only
+  while `groupListAttachable(uid, tuning)`: the system exists, has no list, and every tuning-provenance field equals
+  the tuning captured when the list was requested. Load drops what a row outside a group cannot use: its
   `avoidSite` (a lone RadioReference site keeps its avoid: its "1 site" chooser lifts it), and the `siteName` and
   position older edits left when they cleared only the ids; its `place` stays (a conventional multi-repeater row has one
   and no ids). Load saves that with the UID repair (one warning when that save fails; the clear repeats at the next
@@ -19017,7 +19026,8 @@ Qt Quick frontend (`src/ui/qt`):
   Listen" above). User text lives in `ListenPins::text()`. The QML fixture publishes it over the real `AppPrefs`, clears
   pins for each test file, and `testContext.resetPins()` clears them between cases. Tests: `UI_QT_PERSISTENCE`.
 - Removing a library file (issue #801) runs in this order: `ImportsScreen.qml`'s Remove file clears the path from saved
-  systems (`SavedSystemsModel::clearCsvPath`), then from scan lists (`ScanListsModel::clearCsvPath`), then calls
+  systems (`SavedSystemsModel::clearCsvPath`, told the file's origin by `ImportedFilesModel::fromRadioReference()`;
+  the startup cleanup passes the pruned user files the same way), then from scan lists (`ScanListsModel::clearCsvPath`), then calls
   `ImportedFilesModel::remove()`, which deletes the file (one already gone counts as deleted) and its bundle folder
   before it saves the index without the row. File first, so a failure never leaves a copy no row names: a file that will
   not delete keeps its row, and an index save that fails after the delete leaves the row listed, naming a missing file,
@@ -19080,7 +19090,16 @@ Qt Quick frontend (`src/ui/qt`):
   any other history model is read by role name. Coverage is a binary search over the listed rows sorted by start
   with a running maximum end, so overlapping ranges cover correctly (issue #718).
   `talkgroup_filter_model.{h,cpp}` filters by category and name/ID for `qml/TalkgroupsScreen.qml`, opened by the
-  monitor session menu's **Talkgroups** entry.
+  monitor session menu's **Talkgroups** entry. **Save talkgroup list** (`qml/TalkgroupSaveFlow.qml`, issue #903): the
+  edit sheet sends the policy context and generation it opened with; `Main.qml` adds the standalone saved system
+  (`sessionSavedSystemUid`, empty for Explore, a scan list or a hold, which save to Imports only) and its tuning. The
+  flow reads every completion since the last poll (`UiController::talkgroupExportResults`, from
+  `dsd_app_tg_export_results_since()`, with `missedThrough` naming a gap past the 64 kept). A request's completion runs
+  registration in Imports, then `SavedSystemsModel::attachGroupList()`, each reporting its own failure; a failed step
+  keeps the exported file (the decoder writes to it already) and Try again repeats that step only. A request given up
+  on (15 s, or its completion in a gap) is registered when its success arrives, never attached; a failed or unqueued
+  export releases its reserved name. The screen's `scanRowRefusesSave` (persistence scope `scan`) hides every Save
+  button where the decoder refuses the export.
   `CommandBridge` submits `TG_LISTEN_SET`/`TG_LISTEN_SET_ALL` through app-control; only the decoder thread mutates
   policy and atomically rewrites a configured group file. Scan-row lists remain session-only. **Lock out** shares
   this mutation path, preserving labels; with `persist_tg_lockouts` off it becomes **Avoid TG**, adding a session

@@ -224,6 +224,69 @@ Item {
             });
         }
 
+        // Every visible text under @p item reading @p text.
+        function visibleTexts(item, text) {
+            var found = 0;
+            if (item.visible && item.text === text)
+                found++;
+            for (var i = 0; i < item.children.length; ++i)
+                found += visibleTexts(item.children[i], text);
+            return found;
+        }
+
+        // Issue #903 (B3): a decoder message shows once in the footer, and a bulk request's line gives way to it.
+        function test_decoder_message_shown_once() {
+            var message = "Applied: Talkgroup updated";
+            screenLoader.item.bulkMessage = "Update requested";
+            tryVerify(function () {
+                return visibleTexts(screenLoader.item, "Update requested") === 1;
+            });
+            testContext.setMetric("uiMessage", message);
+            tryVerify(function () {
+                return visibleTexts(screenLoader.item, message) === 1;
+            }, 5000, "the decoder message must show exactly once");
+            compare(visibleTexts(screenLoader.item, "Update requested"), 0);
+            testContext.setMetric("uiMessage", "");
+            screenLoader.item.bulkMessage = "";
+        }
+
+        // Issue #903 (B4): on a scan row with its own list, edits stay in the session, but learned names may still be
+        // written to that target's list; and the decoder refuses an export there, so Save is not offered.
+        function test_scan_scope_footer_and_save_refusal() {
+            var screen = screenLoader.item;
+            var sheet = findChild(screen, "talkgroupEditSheet");
+            var note = findChild(screen, "talkgroupScopeNote");
+            verify(sheet !== null && note !== null);
+            screen.canSaveList = true;
+            verify(!screen.scanRowRefusesSave);
+            verify(sheet.canSaveList);
+            testContext.setTalkgroupScanScope(true);
+            tryCompare(talkgroups, "persistenceScope", "scan");
+            compare(note.text, "Edits last for this session; learned names may still be added to this target's list");
+            verify(screen.scanRowRefusesSave);
+            verify(!sheet.canSaveList);
+            testContext.setTalkgroupScanScope(false);
+            tryCompare(talkgroups, "persistenceScope", "session");
+            verify(!screen.scanRowRefusesSave);
+            verify(sheet.canSaveList);
+            screen.canSaveList = false;
+            verify(!sheet.canSaveList);
+        }
+
+        // The sheet's request reaches the screen's owner with the version the sheet captured.
+        function test_save_request_forwards_the_sheet_context() {
+            var screen = screenLoader.item;
+            var sheet = findChild(screen, "talkgroupEditSheet");
+            var received = [];
+            var forward = function (context, generation) {
+                received = [context, generation];
+            };
+            screen.saveListRequested.connect(forward);
+            sheet.saveListRequested("123", 7);
+            screen.saveListRequested.disconnect(forward);
+            compare(received, ["123", 7]);
+        }
+
         function test_session_note_tracks_group_file_configuration() {
             var note = findChild(screenLoader.item, "sessionOnlyNote");
             verify(note !== null, "the session-only persistence note is missing");

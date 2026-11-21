@@ -188,6 +188,21 @@ class SavedSystemsModel : public QAbstractListModel {
     Q_INVOKABLE bool updateRadioSettings(const QString& uid, const QVariantMap& changes);
 
     /**
+     * @brief Whether attachGroupList() would attach a list to system @p uid: it exists, has no group list, and every
+     * tuningProvenanceFields() value equals what @p tuning (captured when the list was requested) holds for it, a
+     * missing one included. Lets the caller tell a refusal from a failed save.
+     */
+    Q_INVOKABLE bool groupListAttachable(const QString& uid, const QVariantMap& tuning) const;
+    /**
+     * @brief Attach the talkgroup list at @p path as system @p uid's group list (issue #903, Save talkgroup list).
+     *
+     * Only when groupListAttachable(uid, tuning) and @p path is not empty. It sets groupCsvPath alone and is no edit:
+     * the RadioReference ids, avoid, site name, position and place stay, since a list saved from the session describes
+     * nothing of the site (update() would clear them). Persists first; false leaves the row as it was. One dataChanged.
+     */
+    Q_INVOKABLE bool attachGroupList(const QString& uid, const QString& path, const QVariantMap& tuning);
+
+    /**
      * @brief Remove one system. Persists first: on a failed save it returns false, keeps the row and signals nothing.
      *
      * A saved removal signals rowsAboutToBeRemoved/rowsRemoved, then sitesChanged and countChanged, so whatever
@@ -249,11 +264,14 @@ class SavedSystemsModel : public QAbstractListModel {
      * Called when a library file is removed: a saved system pointing at a
      * deleted file would otherwise fail its next start with an opaque
      * "configure failed". A row that loses a file loses its RadioReference
-     * provenance and geography too (rr_provenance_cleared()). One dataChanged
-     * spans the changed rows. Returns false, with every row unchanged, when the
-     * save fails, and true when nothing referenced @p path.
+     * provenance and geography too (rr_provenance_cleared()), except where
+     * @p fromRadioReference is false (the user's own file, such as a saved
+     * talkgroup list) and the file was only the row's group list: that file
+     * never described the site, so the row keeps it. One dataChanged spans the
+     * changed rows. Returns false, with every row unchanged, when the save
+     * fails, and true when nothing referenced @p path.
      */
-    Q_INVOKABLE bool clearCsvPath(const QString& path);
+    Q_INVOKABLE bool clearCsvPath(const QString& path, bool fromRadioReference = true);
 
     /**
      * @brief Clear the RadioReference provenance and geography of every system whose CSV fields name @p path, keeping
@@ -385,7 +403,7 @@ class SavedSystemsModel : public QAbstractListModel {
      *  its ids differ from @p previous's or it still lacks a name. */
     void fillPlaceNames(Row& row, const QVariantMap& previous) const;
     /** Clear the provenance of every row with a CSV field naming @p path, blanking those fields too if asked. */
-    bool clearPathProvenance(const QString& path, bool clearFields);
+    bool clearPathProvenance(const QString& path, bool clearFields, bool fromRadioReference = true);
     /** Install @p next, saved, and signal one dataChanged from @p first to @p last. */
     void commitChangedRange(QList<Row>&& next, int first, int last, const QList<int>& roles);
 

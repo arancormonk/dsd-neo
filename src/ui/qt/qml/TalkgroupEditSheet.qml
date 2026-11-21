@@ -33,7 +33,8 @@ ModalSheet {
     readonly property bool canAssignDmrKey: pattern.length === 0 && idStart === idEnd && (keyProfile.uid || "").length > 0 && keyProfile.mode === "automatic" && (observedCrypto.dmr === true || (listed && keyProfile.protocol === "dmr"))
     property bool canSaveList: false
     property string saveListText: qsTr("Save talkgroup list")
-    signal saveListRequested
+    // The policy version this sheet opened with: the export saves that table (issue #903).
+    signal saveListRequested(string context, int generation)
 
     // @p record is the row's record flag (issue #708); a heard talkgroup without a
     // row records whenever it is tuned, so it reads as listening.
@@ -246,11 +247,12 @@ ModalSheet {
         }
     }
     OutlineButton {
+        objectName: "saveTalkgroupList"
         width: parent.width
         height: Math.max(48, implicitHeight)
         visible: sheet.canSaveList
         text: sheet.saveListText
-        onClicked: sheet.saveListRequested()
+        onClicked: sheet.saveListRequested(sheet.policyContext, sheet.policyGeneration)
     }
     ReadableText {
         width: parent.width

@@ -2461,7 +2461,7 @@ Window {
         }
     }
 
-    // WP-D1: associate only the retained completion, using the captured system UUID.
+    // WP-D1: associate only the retained completion, using the captured system UUID and tuning.
     TalkgroupSaveFlow {
         id: talkgroupSave
         onSaved: function (uid, path) {
@@ -2479,10 +2479,15 @@ Window {
         objectName: "talkgroupsScreen"
         anchors.fill: safeArea
         systemName: monitor.systemName
-        canSaveList: !talkgroups.persistent && (talkgroupSave.pending === null || talkgroupSave.retryAvailable)
+        // A step left to retry is offered even once the decoder writes the exported file (the list is then persistent).
+        canSaveList: talkgroupSave.stalled !== null || (!talkgroups.persistent && talkgroupSave.pending === null)
         saveListText: talkgroupSave.retryAvailable ? qsTr("Try again") : qsTr("Save talkgroup list")
         saveMessage: talkgroupSave.message
-        onSaveListRequested: talkgroupSave.save(mainRoot.sessionSystem ? mainRoot.sessionSystem.uid || "" : "", talkgroups.policyContext, talkgroups.policyGeneration)
+        // The sheet's own policy version; the standalone saved system (none for Explore, a scan list or a hold) and the
+        // tuning it runs, captured now for the attachment to compare.
+        onSaveListRequested: function (context, generation) {
+            talkgroupSave.save(mainRoot.sessionSavedSystemUid, context, generation, talkgroupSave.tuningOf(mainRoot.sessionSystem));
+        }
         opacity: mainRoot.monitorMode && mainRoot.talkgroupsOpen && !mainRoot.wizardOpen ? 1.0 : 0.0
         visible: opacity > 0.0
         enabled: opacity > 0.9 && mainRoot.monitorMode && mainRoot.talkgroupsOpen && !mainRoot.wizardOpen && !mainRoot.radioReferenceOpen

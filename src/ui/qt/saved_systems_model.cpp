@@ -5,6 +5,7 @@
 
 #include <algorithm>
 #include <initializer_list> // IWYU pragma: keep -- braced range-for lists require this header.
+#include <iterator>
 #include <qanystringview.h>
 #include <utility>
 #include "saved_systems_model.h"
@@ -933,6 +934,37 @@ SavedSystemsModel::updateRadioSettings(const QString& uid, const QVariantMap& ch
 }
 
 bool
+SavedSystemsModel::groupListAttachable(const QString& uid, const QVariantMap& tuning) const {
+    const int row = rowForUid(uid);
+    if (row < 0 || !m_rows.at(row).groupCsvPath.isEmpty()) {
+        return false;
+    }
+    const QVariantMap stored = get(row);
+    // Compared as text: QML hands a bool or a string over as the variant it made, the store as its own.
+    return std::all_of(std::begin(kTuningProvenanceKeys), std::end(kTuningProvenanceKeys), [&](const char* key) {
+        const QString name = QLatin1String(key);
+        return tuning.contains(name) && tuning.value(name).toString() == stored.value(name).toString();
+    });
+}
+
+bool
+SavedSystemsModel::attachGroupList(const QString& uid, const QString& path, const QVariantMap& tuning) {
+    if (path.isEmpty() || !groupListAttachable(uid, tuning)) {
+        return false;
+    }
+    const int row = rowForUid(uid);
+    auto next = m_rows;
+    next[row].groupCsvPath = path;
+    if (!saveRows(next)) {
+        return false;
+    }
+    m_rows = std::move(next);
+    const QModelIndex idx = index(row);
+    Q_EMIT dataChanged(idx, idx);
+    return true;
+}
+
+bool
 SavedSystemsModel::remove(int row) {
     if (row < 0 || row >= m_rows.size()) {
         return false;
@@ -1121,8 +1153,8 @@ SavedSystemsModel::csvPaths() const {
 }
 
 bool
-SavedSystemsModel::clearCsvPath(const QString& path) {
-    return clearPathProvenance(path, true);
+SavedSystemsModel::clearCsvPath(const QString& path, bool fromRadioReference) {
+    return clearPathProvenance(path, true, fromRadioReference);
 }
 
 bool
@@ -1131,7 +1163,7 @@ SavedSystemsModel::invalidatePathProvenance(const QString& path) {
 }
 
 bool
-SavedSystemsModel::clearPathProvenance(const QString& path, bool clearFields) {
+SavedSystemsModel::clearPathProvenance(const QString& path, bool clearFields, bool fromRadioReference) {
     if (path.isEmpty()) {
         return true;
     }
@@ -1142,10 +1174,13 @@ SavedSystemsModel::clearPathProvenance(const QString& path, bool clearFields) {
     for (int i = 0; i < next.size(); i++) {
         Row& row = next[i];
         bool names = false;
+        // Whether the file named anything that decides the site: every field but a user file's group list does.
+        bool describesSite = false;
         for (QString Row::* field :
              {&Row::chanCsvPath, &Row::groupCsvPath, &Row::keyCsvPath, &Row::p25BandplanCsvPath, &Row::srcCsvPath}) {
             if (row.*field == path) {
                 names = true;
+                describesSite = describesSite || fromRadioReference || field != &Row::groupCsvPath;
                 if (clearFields) {
                     (row.*field).clear();
                 }
@@ -1156,7 +1191,7 @@ SavedSystemsModel::clearPathProvenance(const QString& path, bool clearFields) {
         }
         // The file no longer describes the site, and the site leaves its group with the only chooser that could lift
         // its avoid. A row with nothing to clear (and no field cleared) is left out: no save, no signal for it.
-        const Row clearedRow = rowFromMap(cleared, row);
+        const Row clearedRow = describesSite ? rowFromMap(cleared, row) : row;
         if (clearFields || mapFromRow(clearedRow) != mapFromRow(row)) {
             row = clearedRow;
             first = first < 0 ? i : first;

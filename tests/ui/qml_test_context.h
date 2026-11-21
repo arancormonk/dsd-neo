@@ -98,6 +98,7 @@
 #include <dsd-neo/protocol/p25/p25_cc_candidates.h>
 #include <dsd-neo/runtime/analog_tones.h>
 #include <dsd-neo/runtime/decode_clock.h>
+#include <dsd-neo/runtime/scan_mode.h>
 #include <dsd-neo/runtime/scan_row_edit.h>
 #include <functional>
 #include <iterator>
@@ -1358,14 +1359,14 @@ class TestUiController : public QObject {
     // WP-S2: exercise Main.qml signal routing and overlay binding.
     Q_PROPERTY(bool autoStartBlocked MEMBER autoStartBlocked)
     // WP-D1: retained export result starts empty, like the real controller.
-    Q_PROPERTY(QVariantMap talkgroupExportResult READ talkgroupExportResult CONSTANT)
+    Q_PROPERTY(QVariantMap talkgroupExportResults READ talkgroupExportResults CONSTANT)
     Q_PROPERTY(QVariantMap decryptionResult MEMBER decryptionResult NOTIFY decryptionResultChanged)
   public:
     using QObject::QObject;
 
     QVariantMap
     // cppcheck-suppress functionStatic // Qt meta-object entry point must remain an instance method.
-    talkgroupExportResult() const {
+    talkgroupExportResults() const {
         return {};
     }
 
@@ -4381,6 +4382,22 @@ class Setup : public QObject {
     setGroupFileConfigured(bool configured) {
         DSD_SNPRINTF(m_talkgroup_opts->group_in_file, sizeof(m_talkgroup_opts->group_in_file), "%s",
                      configured ? "fixture-talkgroups.csv" : "");
+        m_applied_table = nullptr;
+        m_talkgroups->refresh(m_talkgroup_opts.get(), m_talkgroup_state.get());
+    }
+
+    /* Issue #903: a scan row with its own talkgroup list on air (persistence scope "scan"), or none. */
+    Q_INVOKABLE void
+    setTalkgroupScanScope(bool on) {
+        if (on) {
+            dsd_scan_option_values row = {};
+            row.present = DSD_SCAN_OPT_GROUP;
+            DSD_SNPRINTF(row.group_file, sizeof row.group_file, "%s", "fixture-row-talkgroups.csv");
+            (void)dsd_scan_mode_begin(m_talkgroup_opts.get(), m_talkgroup_state.get());
+            (void)dsd_scan_mode_options(m_talkgroup_opts.get(), m_talkgroup_state.get(), &row);
+        } else {
+            dsd_scan_mode_leave(m_talkgroup_opts.get(), m_talkgroup_state.get());
+        }
         m_applied_table = nullptr;
         m_talkgroups->refresh(m_talkgroup_opts.get(), m_talkgroup_state.get());
     }
