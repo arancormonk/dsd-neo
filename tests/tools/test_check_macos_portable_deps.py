@@ -52,10 +52,10 @@ case "$mode" in
             "$n" "$value"
           ;;
         later)
-          # More load commands, written once the reader has had time to take
-          # the ones before; a reader that left early ends this with SIGPIPE.
-          sleep 0.3
-          printf 'Load command %d\n      cmd LC_SOURCE_VERSION\n  cmdsize 16\n  version %s\n' "$n" "$value"
+          # Far more load commands than a pipe and a reader's read-ahead hold,
+          # so a reader that leaves early ends this with SIGPIPE every time.
+          printf 'Load command %d\n' "$n"
+          awk 'BEGIN { for (i = 0; i < 50000; i++) print "      cmd LC_SOURCE_VERSION" }'
           ;;
       esac
       n=$((n + 1))
@@ -151,8 +151,8 @@ class CheckMacosPortableDeps(unittest.TestCase):
         self.assertIn("bin/dsd-neo is built for macOS 11.0, not the deployment target 26.0", result.stderr)
 
     def test_version_before_later_load_commands_is_read(self):
-        # otool goes on writing after the version's load command; the check
-        # reads it all, so the pipe does not end otool early.
+        # otool goes on writing long after the version's load command; the
+        # check reads it all, so the pipe does not end otool early.
         self.write("bin/dsd-neo", "dep @rpath/libusb-1.0.0.dylib", "dep /usr/lib/libSystem.B.dylib",
                    "rpath @executable_path/../lib", "minos 26.0", "later 0.0")
         self.write("lib/libusb-1.0.0.dylib", "dep @rpath/libusb-1.0.0.dylib", "rpath @loader_path",

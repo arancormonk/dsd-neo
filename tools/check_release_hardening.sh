@@ -29,7 +29,9 @@ check_macho_hardening() {
 
   local header
   header="$(otool -hv "$artifact")"
-  if printf '%s\n' "$header" | grep -Eq '(^|[[:space:]])(MH_)?DYLIB([[:space:]]|$)'; then
+  # grep -q leaves at its first match, so it reads from a here-string: a pipe
+  # writer still writing would end with SIGPIPE, which pipefail reports.
+  if grep -Eq '(^|[[:space:]])(MH_)?DYLIB([[:space:]]|$)' <<< "$header"; then
     local install_name
     install_name="$(otool -D "$artifact" | sed -n '2p')"
     if [[ ! "$install_name" == @rpath/* ]]; then
@@ -39,8 +41,8 @@ check_macho_hardening() {
     return 0
   fi
 
-  if printf '%s\n' "$header" | grep -q 'EXECUTE'; then
-    if ! printf '%s\n' "$header" | grep -q 'PIE'; then
+  if grep -q 'EXECUTE' <<< "$header"; then
+    if ! grep -q 'PIE' <<< "$header"; then
       echo "Mach-O executable is missing PIE flag." >&2
       exit 1
     fi
@@ -70,22 +72,19 @@ fi
 
 # Each listing is read in full before grep -q looks at it: grep -q leaves at
 # its first match, and a readelf still writing would end with SIGPIPE, which
-# pipefail turns into a failed check.
-elf_header=$(readelf -h "$artifact")
-program_headers=$(readelf -l "$artifact")
-dynamic_section=$(readelf -d "$artifact")
-
-if ! grep -Eq 'Type:[[:space:]]*DYN' <<< "$elf_header"; then
+# pipefail turns into a failed check. A readelf that fails takes the check's
+# own failure branch.
+if ! elf_header=$(readelf -h "$artifact") || ! grep -Eq 'Type:[[:space:]]*DYN' <<< "$elf_header"; then
   echo "release artifact is not position-independent (ELF type DYN expected)." >&2
   exit 1
 fi
 
-if ! grep -q 'GNU_RELRO' <<< "$program_headers"; then
+if ! program_headers=$(readelf -l "$artifact") || ! grep -q 'GNU_RELRO' <<< "$program_headers"; then
   echo "release artifact is missing GNU_RELRO." >&2
   exit 1
 fi
 
-if ! grep -Eq 'BIND_NOW|FLAGS_1.*NOW' <<< "$dynamic_section"; then
+if ! dynamic_section=$(readelf -d "$artifact") || ! grep -Eq 'BIND_NOW|FLAGS_1.*NOW' <<< "$dynamic_section"; then
   echo "release artifact is missing BIND_NOW/full RELRO." >&2
   exit 1
 fi
