@@ -161,12 +161,28 @@ enum class SessionArgsError {
     TetraRate,
     /* Issue #743 (D4 a): extra options that pick an I/Q stream input (-i iqtcp:... / -i iqudp:...). Every check before
        the extras describes the saved source, so a start would be judged, and argued, as that source. */
-    IqStreamExtra
+    IqStreamExtra,
+    /* Issue #899 (B17): an extra-options field with a "--" the decoder reads as the end of its options, or one that
+       ends with an option still waiting for its value (session_args_extra_incomplete()). Either would turn what the
+       app appends after it, a saved squelch among them, into something else. */
+    ExtraIncomplete
 };
 
 /* The last SessionArgsError value. A value added after it takes its place here, and session_args_error_text() then
  * needs its text: a static_assert there holds the text table to this value. */
-constexpr SessionArgsError SessionArgsErrorLast = SessionArgsError::IqStreamExtra;
+constexpr SessionArgsError SessionArgsErrorLast = SessionArgsError::ExtraIncomplete;
+
+/**
+ * @brief Whether one extra-options field @p tokens would change what follows it in the argv (issue #899, B17).
+ *
+ * Walked as the decoder walks its argv (option_tokens()): a "--" its long-option pass reaches, which is no long
+ * option's value ("--api-token --" is one, "-c --" is not: the long pass stops at it), ends the options there, and a
+ * long option that takes a value (dsd_cli_long_option_arity() DSD_CLI_LONG_NEXT) or a short one written apart from its
+ * value (dsd_cli_short_option_takes_value()) as the field's last option would take the first token after the field.
+ * Either is refused: the app appends the decode choices and the saved squelch after the extra options, and the saved
+ * choice has to stay the last word.
+ */
+bool session_args_extra_incomplete(const QString& tokens);
 
 /**
  * @brief Whether the extra options @p tokens set the squelch themselves (--squelch or --squelch-db, in either form),

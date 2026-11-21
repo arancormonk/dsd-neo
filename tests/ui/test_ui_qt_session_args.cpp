@@ -1913,8 +1913,8 @@ test_every_error_has_text() {
             g_failures++;
         }
     }
-    expect("the last error value is an I/Q stream in the extra options",
-           dsd_qt::SessionArgsErrorLast == SessionArgsError::IqStreamExtra);
+    expect("the last error value is an extra-options field that hides what follows it",
+           dsd_qt::SessionArgsErrorLast == SessionArgsError::ExtraIncomplete);
     expect("a value past the last one has no text",
            dsd_qt::session_args_error_text(static_cast<SessionArgsError>(last + 1)).isEmpty());
 }
@@ -2375,8 +2375,16 @@ test_scan_hold_option(void) {
            dsd_qt::session_args_extra_safe(QStringLiteral("--trunk-scan-holdover")));
 
     SessionArgPrefs prefs;
+    /* Issue #899 (B17): a bare "--" ends the options, so extra options never carry one; a "--" that is an option's
+       value is still passed as it is, after the hold. */
     prefs.extraArgs = QStringLiteral("-F -- operand");
     QString why;
+    expect("a scan list's extra options refuse a bare \"--\"",
+           dsd_qt::session_args_scan_build_lists(usb_system(), QStringLiteral("851.012500"),
+                                                 {QStringLiteral("/t/a.csv")}, prefs, &why)
+                   .isEmpty()
+               && why == dsd_qt::session_args_error_text(SessionArgsError::ExtraIncomplete));
+    prefs.extraArgs = QStringLiteral("-F --api-token --");
     const QStringList args =
         dsd_qt::session_args_scan_build_lists(usb_system(), QStringLiteral("851.012500"),
                                               {QStringLiteral("/t/a.csv"), QStringLiteral("/t/b.csv")}, prefs, &why);
@@ -2512,6 +2520,54 @@ test_default_squelch_spec(void) {
            input_spec(session_args_build(later, prefs, nullptr)) == QStringLiteral("rtl:0:851.375M:30:0:48:0:2"));
 }
 
+/* Issue #899 (B17): the app appends the decode choices and a saved squelch after the extra options, as their last
+   word. A bare "--" in either extra-options field ended the options there (args.c), so "--squelch off --" turned a
+   saved Noise system's squelch into an operand and the session started with hiss; a field ending with an option that
+   still waits for its value took the next token as it. Both are refused with their own error. */
+static void
+test_extra_incomplete(void) {
+    for (const QString& bad : {QStringLiteral("--squelch off --"), QStringLiteral("--squelch off --api-token"),
+                               QStringLiteral("-c"), QStringLiteral("-Z -c"), QStringLiteral("-c --"),
+                               QStringLiteral("--"), QStringLiteral("-- --squelch noise+17")}) {
+        expect("an extra-options field that hides what follows it is incomplete",
+               dsd_qt::session_args_extra_incomplete(bad));
+        QVariantMap sys = usb_system();
+        sys["decodeFlag"] = "-fA";
+        sys["radioSettings"] = QVariantMap{{"squelch", "noise+17"}};
+        sys["extraArgs"] = bad;
+        SessionArgsError error = SessionArgsError::None;
+        expect("a saved system's field refuses the start", session_args_build(sys, SessionArgPrefs(), &error).isEmpty()
+                                                               && error == SessionArgsError::ExtraIncomplete);
+        sys.remove("extraArgs");
+        SessionArgPrefs prefs;
+        prefs.extraArgs = bad;
+        error = SessionArgsError::None;
+        expect("the app's field refuses it too",
+               session_args_build(sys, prefs, &error).isEmpty() && error == SessionArgsError::ExtraIncomplete);
+    }
+    for (const QString& good :
+         {QString(), QStringLiteral("--squelch off --api-token --"), QStringLiteral("--squelch off"),
+          QStringLiteral("-c5"), QStringLiteral("-c 5"), QStringLiteral("--config"), QStringLiteral("-Z"),
+          QStringLiteral("--squelch=noise+12 -mq")}) {
+        expect("a complete field is not", !dsd_qt::session_args_extra_incomplete(good));
+        QVariantMap sys = usb_system();
+        sys["decodeFlag"] = "-fA";
+        sys["radioSettings"] = QVariantMap{{"squelch", "noise+17"}};
+        sys["extraArgs"] = good;
+        SessionArgsError error = SessionArgsError::None;
+        const QStringList args = session_args_build(sys, SessionArgPrefs(), &error);
+        expect("a complete field starts, the saved squelch last",
+               error == SessionArgsError::None && args.mid(args.size() - 2) == QStringList({"--squelch", "noise+17"}));
+    }
+    QVariantMap sys = usb_system();
+    sys["extraArgs"] = "-c";
+    QVariantMap result = dsd_qt::SessionArgsBuilder(nullptr).build(sys);
+    expect("the start check names it",
+           !result.value("ok").toBool() && result.value("error").toString() == QStringLiteral("extra-incomplete")
+               && result.value("errorText").toString()
+                      == dsd_qt::session_args_error_text(SessionArgsError::ExtraIncomplete));
+}
+
 /* Issue #899: each start tells the squelch policy who owns the session's squelch, so a live decode switch brings the
    app's default in or takes it out only where it is the app's. */
 static void
@@ -2629,6 +2685,7 @@ main(int argc, char** argv) {
     test_scan_lists_argv();
     test_scan_join_conflict();
     test_default_squelch_spec();
+    test_extra_incomplete();
     test_start_tells_squelch_policy();
     if (g_failures != 0) {
         DSD_FPRINTF(stderr, "%d failure(s)\n", g_failures);

@@ -18,6 +18,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstddef>
+#include <iterator>
 
 #include <QByteArray>
 #include <QChar>
@@ -551,7 +552,68 @@ extra_replaces_input(const QString& tokens) {
     return !inputs.isEmpty() || extra_sets_long_option(tokens, QLatin1String("--iq-replay"));
 }
 
+/* session_args_extra_incomplete()'s long-option pass, as long_option_tokens() takes the long options out: true for a
+   "--" that is no long option's value, or a long option that needs a value as the last token; @p rest gets what getopt
+   reads. */
+bool
+long_pass_incomplete(const QStringList& split, QStringList* rest) {
+    for (qsizetype i = 0; i < split.size(); ++i) {
+        const QString& token = split.at(i);
+        if (token == QLatin1String("--")) {
+            return true;
+        }
+        const dsd_cli_long_arity arity = dsd_cli_long_option_arity(token.toUtf8().constData());
+        const bool hasNext = i + 1 < split.size();
+        if (arity == DSD_CLI_LONG_UNKNOWN) {
+            rest->append(token);
+        } else if (arity == DSD_CLI_LONG_NEXT) {
+            if (!hasNext) {
+                return true;
+            }
+            ++i;
+        } else if (arity == DSD_CLI_LONG_NEXT_NON_OPTION && hasNext && !split.at(i + 1).startsWith(QLatin1Char('-'))) {
+            ++i;
+        }
+    }
+    return false;
+}
+
+/* session_args_extra_incomplete()'s getopt pass over @p rest, as short_option_tokens() reads it: true when the last
+   option getopt reads takes a value it would find only after the field. */
+bool
+short_pass_incomplete(const QStringList& rest) {
+    for (qsizetype i = 0; i < rest.size(); ++i) {
+        const QString& token = rest.at(i);
+        if (token.size() < 2 || !token.startsWith(QLatin1Char('-')) || token.startsWith(QLatin1String("--"))) {
+            continue;
+        }
+        for (qsizetype at = 1; at < token.size(); ++at) {
+            const QChar letter = token.at(at);
+            if (!short_known(letter)) {
+                return false;
+            }
+            if (short_takes_value(letter)) {
+                if (at + 1 == token.size()) {
+                    if (i + 1 >= rest.size()) {
+                        return true;
+                    }
+                    ++i;
+                }
+                break;
+            }
+        }
+    }
+    return false;
+}
+
 } // namespace
+
+bool
+session_args_extra_incomplete(const QString& tokens) {
+    const QStringList split = tokens.split(QRegularExpression(QStringLiteral("\\s+")), Qt::SkipEmptyParts);
+    QStringList rest;
+    return long_pass_incomplete(split, &rest) || short_pass_incomplete(rest);
+}
 
 static QString
 validateScanEndpoint(const QVariantMap& list) {
@@ -634,6 +696,9 @@ static QString
 scanBuildRefusal(const QVariantMap& list, const QStringList& csvPaths, const SessionArgPrefs& prefs) {
     if (!session_args_scan_extra_safe(prefs.extraArgs)) {
         return session_args_error_text(SessionArgsError::UnsafeOption);
+    }
+    if (session_args_extra_incomplete(prefs.extraArgs)) {
+        return session_args_error_text(SessionArgsError::ExtraIncomplete);
     }
     const SessionArgsError recordingError =
         session_args_recording_extra_error(prefs.extraArgs, prefs.recordCalls, prefs.recordingUnavailable);
@@ -917,6 +982,9 @@ constexpr SessionArgsErrorText k_error_texts[] = {
                                   "to 72 kHz, or choose another decode mode."},
     {SessionArgsError::IqStreamExtra, "An I/Q stream input is not available from saved systems yet. Run dsd-neo from "
                                       "the command line, or remove the -i option from the extra decoder arguments."},
+    {SessionArgsError::ExtraIncomplete,
+     "The extra decoder arguments contain \"--\" or end with an option that needs a value. Remove the \"--\", or give "
+     "the option its value."},
 };
 
 constexpr std::size_t k_error_text_count = sizeof k_error_texts / sizeof k_error_texts[0];
@@ -1244,12 +1312,18 @@ session_args_source_error(const QVariantMap& system, const QString& sourceType, 
                : SessionArgsError::None;
 }
 
-/* What the extra options refuse: one that could reveal keys (WP-F5), an I/Q stream input, which every check before the
-   extras would judge as the saved source (issue #743, D4), then a call recording option (issue #708). */
+/* What the extra options refuse: one that could reveal keys (WP-F5), a field that would hide what follows it (issue
+   #899, B17: each of the system's and the app's on its own, since the system's is followed by the app's and both by
+   what the app appends), an I/Q stream input, which every check before the extras would judge as the saved source
+   (issue #743, D4), then a call recording option (issue #708). @p tokens is every field together. */
 static SessionArgsError
-session_args_extra_error(const QString& tokens, const SessionArgPrefs& prefs) {
+session_args_extra_error(const QVariantMap& system, const QString& tokens, const SessionArgPrefs& prefs) {
     if (!session_args_extra_safe(tokens)) {
         return SessionArgsError::UnsafeOption;
+    }
+    if (session_args_extra_incomplete(system.value(QStringLiteral("extraArgs")).toString())
+        || session_args_extra_incomplete(prefs.extraArgs)) {
+        return SessionArgsError::ExtraIncomplete;
     }
     if (extra_names_iq_stream(tokens)) {
         return SessionArgsError::IqStreamExtra;
@@ -1272,7 +1346,7 @@ session_args_build(const QVariantMap& system, const SessionArgPrefs& prefs, Sess
     // WP-F5: never permit a saved/pasted option to reveal keys in any sink.
     const QString tokens = system.value(QStringLiteral("extraArgs")).toString() + QLatin1Char(' ') + prefs.extraArgs
                            + QLatin1Char(' ') + system.value(QStringLiteral("decodeFlag")).toString();
-    const SessionArgsError extraError = session_args_extra_error(tokens, prefs);
+    const SessionArgsError extraError = session_args_extra_error(system, tokens, prefs);
     if (extraError != SessionArgsError::None) {
         return fail(extraError);
     }
@@ -1423,24 +1497,37 @@ SessionArgsBuilder::buildArgs(const QVariantMap& system, SessionArgsError* error
     return session_args_build(input, prefs, error);
 }
 
-/* The category the start screen maps a refusal by; empty for None. */
+/* The category the start screen maps a refusal by; empty for None. Every key and profile refusal not named here is
+   "encryption". */
 static QString
 error_category(SessionArgsError error) {
-    return error == SessionArgsError::Frequency          ? QStringLiteral("frequency")
-           : error == SessionArgsError::Ppm              ? QStringLiteral("ppm")
-           : error == SessionArgsError::Hangtime         ? QStringLiteral("hangtime")
-           : error == SessionArgsError::UnsafeOption     ? QStringLiteral("unsafe-option")
-           : error == SessionArgsError::AmNeedsRadio     ? QStringLiteral("am-needs-radio")
-           : error == SessionArgsError::AmBandwidth      ? QStringLiteral("am-bandwidth")
-           : error == SessionArgsError::TetraNeedsIq     ? QStringLiteral("tetra-needs-iq")
-           : error == SessionArgsError::TetraRate        ? QStringLiteral("tetra-rate")
-           : error == SessionArgsError::RecordingMissing ? QStringLiteral("recording-missing")
-           : error == SessionArgsError::CallRecordingOption || error == SessionArgsError::CallRecordingNoStorage
-               ? QStringLiteral("call-recording-option")
-           : error == SessionArgsError::CallRecordingStaticWav ? QStringLiteral("call-recording-static-wav")
-           : error == SessionArgsError::IqStreamExtra          ? QStringLiteral("iq-stream-extra")
-           : error == SessionArgsError::None                   ? QString()
-                                                               : QStringLiteral("encryption");
+    static const struct {
+        SessionArgsError error;
+        const char* category;
+    } k_categories[] = {
+        {SessionArgsError::Frequency, "frequency"},
+        {SessionArgsError::Ppm, "ppm"},
+        {SessionArgsError::Hangtime, "hangtime"},
+        {SessionArgsError::UnsafeOption, "unsafe-option"},
+        {SessionArgsError::AmNeedsRadio, "am-needs-radio"},
+        {SessionArgsError::AmBandwidth, "am-bandwidth"},
+        {SessionArgsError::TetraNeedsIq, "tetra-needs-iq"},
+        {SessionArgsError::TetraRate, "tetra-rate"},
+        {SessionArgsError::RecordingMissing, "recording-missing"},
+        {SessionArgsError::CallRecordingOption, "call-recording-option"},
+        {SessionArgsError::CallRecordingNoStorage, "call-recording-option"},
+        {SessionArgsError::CallRecordingStaticWav, "call-recording-static-wav"},
+        {SessionArgsError::IqStreamExtra, "iq-stream-extra"},
+        {SessionArgsError::ExtraIncomplete, "extra-incomplete"},
+    };
+
+    if (error == SessionArgsError::None) {
+        return QString();
+    }
+    const auto* const end = std::end(k_categories);
+    const auto* const row = std::find_if(std::begin(k_categories), end,
+                                         [error](const auto& candidate) { return candidate.error == error; });
+    return row != end ? QString::fromLatin1(row->category) : QStringLiteral("encryption");
 }
 
 /* The start check's verdict. */

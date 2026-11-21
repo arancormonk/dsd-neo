@@ -15774,10 +15774,12 @@ Build files: `src/protocol/CMakeLists.txt` and per‑protocol `src/protocol/<nam
     (B13): a saved noise on an AM row as `auto+N`, a saved dynamic one on a digital row as `off` (an Advanced session
     level must not gate it), a saved level as whole dB -120..-1 (rounded, with a warning, when it is not whole), and an
     analog row with none of its own the app's default (noise as auto on AM); the starter passes no default when the
-    Advanced arguments set the session's squelch. Tests: `UI_QT_SESSION_ARGS`, `UI_QT_SQUELCH_DEFAULT_POLICY`,
-    `UI_QT_SCAN_LIST_TARGETS`, `UI_QT_SESSION_ARGS_PARSE` (live switches through the real bridge and queue),
-    `ENGINE_TRUNK_SCAN_SCAN_LIST` (generated rows through the real parser and coordinator), `UI_QT_PERSISTENCE`,
-    `UI_QT_BACKUP_MODEL`.
+    Advanced arguments set the session's squelch. Advanced fields that would hide the saved squelch are refused (B17,
+    `session_args_extra_incomplete()`, `SessionArgsError::ExtraIncomplete`, category "extra-incomplete"): a `--` the
+    long-option pass reaches, or a field ending with an option still waiting for its value, by the CLI's own arity, each
+    field on its own. Tests: `UI_QT_SESSION_ARGS`, `UI_QT_SQUELCH_DEFAULT_POLICY`, `UI_QT_SCAN_LIST_TARGETS`,
+    `UI_QT_SESSION_ARGS_PARSE` (live switches through the real bridge and queue), `ENGINE_TRUNK_SCAN_SCAN_LIST`
+    (generated rows through the real parser and coordinator), `UI_QT_PERSISTENCE`, `UI_QT_BACKUP_MODEL`.
   - Qt/Android tuner gain: `qml/GainEditor.qml` is the one gain editor (Settings' Radio defaults, the system editor, the
     scan list editor). It shows `[Automatic | Set]`, or `[App default | Automatic | Set]` when `inheritable`, with one
     canonical `mode` in both layouts (0 App default, 1 Automatic, 2 Set). An optional `hint` sits right under the strip
