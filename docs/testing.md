@@ -2291,11 +2291,13 @@ recording after five bursts of speech no call owned is sample for sample the one
 Phase 1 export, play and record nothing, and a file of nothing else records nothing;
 `test_playback_file_shape_decides_its_recording`: a file is classified before it plays, so a `from` after the frames,
 two records (one of frames alone, or the first with its frames before its protocol), a `to` after the frames that a
-Stop leaves unread, and a `to` the reader cannot read (`Q:77`) leave no WAV, no temp file and nothing published, the
-run's one line said; a file in SDRTrunk's own order is exported, a Stop part-way included (the Stop is the log tap
-setting the exit flag at a malformed frame's warning, so it lands after three frames); a trailing `metadata` `from`
-changes nothing; an SDRTrunk patch group's `to` (`P:1234`, `P:1234 [5001, 5002]`) is talkgroup 1234, whose
-`stream=off` row keeps the recording local; `test_playback_discard_checks_the_removal`: a discarded recording whose
+Stop leaves unread leave no WAV, no temp file and nothing published, the run's one line said; a `to` the reader cannot
+read (`Q:77`), and a roaming source (`ROAM 5678(...)`) to an ISSI talkgroup, are recorded but get no fallback
+talkgroup (no sidecar), and a roaming source to talkgroup 1234 is exported under 1234; a file in SDRTrunk's own order is
+exported, a Stop part-way included (the Stop is the log tap setting the exit flag at a malformed frame's warning, so it
+lands after three frames); a trailing `metadata` `from` changes nothing; an SDRTrunk patch group's `to` (`P:1234`,
+`P:1234 [5001, 5002]`) is talkgroup 1234, whose `stream=off` row keeps the recording local;
+`test_playback_discard_checks_the_removal`: a discarded recording whose
 close fails (the close seam) is still removed and journaled `discard`, and one whose removal fails (a read-only folder,
 skipped where that does not stop a removal) is left with a warning and an `error` of kind `discard` naming it, no
 `discard`;
@@ -2310,11 +2312,12 @@ P25 Phase 2 and DMR RC4 calls of four frames whole and with the second malformed
 holding a `hex` of its own), each pass on a state of its own on the heap, and compares the MBE capture records: the
 frames after the lost one are byte for byte those of the same frames in the whole call (so each took its own keystream
 bits), and NXDN's published DES-OFB vectors with one frame lost still decrypt to their tone;
-`test_sdrtrunk_json_dmr_aes_incomplete_late_entry_mi` builds an AES superframe whose frames carry a chosen MI's
-late-entry fragments (an MI whose first Golay word is all zero) and checks the MI is taken from the whole superframe
-and not when that word's six frames are lost; `test_sdrtrunk_json_stop_during_the_read` sets the exit flag and plays a
-3 MiB export, written with `dsd_test_mkstemp()` in the test temp folder and removed after, on `sdrtrunk_run_open()`'s
-heap fixtures: the reader reads no more than its first MiB.
+`test_sdrtrunk_json_dmr_aes_incomplete_late_entry_mi` builds a superframe whose frames carry a chosen MI's
+late-entry fragments (an MI whose first Golay word is all zero), played as AES and with a forced RC4 algorithm, and
+checks the MI is taken from the whole superframe and not when that word's six frames are lost;
+`test_sdrtrunk_json_stop_during_the_read` sets the exit flag and plays a 3 MiB export, written with `dsd_test_mkstemp()`
+in the test temp folder and removed after, on `sdrtrunk_run_open()`'s heap fixtures: the reader reads no more than its
+first MiB.
 `CORE_WAV_JOURNAL` `test_playback_record_reads_only_its_own_members` plays one-record files whose headers carry members
 the reader does not know: `total_frames`, `from_site` and `protocol_name` (names that start with a key's name) leave the
 call one call, exported under its own talkgroup and radio, and a `time` of the record, of a `metadata` object or of

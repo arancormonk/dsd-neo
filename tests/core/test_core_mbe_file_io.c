@@ -4610,14 +4610,63 @@ dmr_fragment_frame_hex(uint8_t nibble, char hex[19]) {
     hex[18] = '\0';
 }
 
-/* Issue #888: a DMR AES late-entry MI is assembled only from fragments that were received, as the live decoder's
-   dmr_late_entry_mi() requires all six bursts. An MI whose first Golay word is all zero is carried by a superframe;
-   with the six frames of that word lost (malformed), the fragments that remain, the missing ones read as zero, would
-   decode to the same MI with a matching CRC. That incomplete MI is not installed for the next superframe; the whole
-   superframe's is. Before, a lost frame's fragment was stored as zero, received evidence. */
+/* The payload MI after a played DMR superframe of @p head's call (members up to "frames":[) whose 18 frames carry
+   @p nibbles as their late-entry fragments, Golay word 0's six frames lost (malformed) when @p lost; -M @p forced_alg
+   (0: none). 0 with the MI in *@p mi. */
+static int
+late_entry_mi_after(const char* head, int forced_alg, const uint8_t nibbles[18], int lost, unsigned long long* mi) {
+    char json[2048];
+    size_t off = (size_t)DSD_SNPRINTF(json, sizeof json, "%s", head);
+    for (unsigned k = 0; k < 18U && off < sizeof json; k++) {
+        char hex[19];
+        dmr_fragment_frame_hex(nibbles[k], hex);
+        off += (size_t)DSD_SNPRINTF(json + off, sizeof json - off, "%s{\"hex\":\"%s\"}", k ? "," : "",
+                                    lost && k % 3U == 0U ? "ZZZZZZZZZZZZZZZZZZ" : hex);
+    }
+    if (off < sizeof json) {
+        (void)DSD_SNPRINTF(json + off, sizeof json - off, "]}");
+    }
+    dsd_state* state = (dsd_state*)calloc(1, sizeof(*state));
+    if (state == NULL) {
+        return 1;
+    }
+    state->M = forced_alg;
+    unsigned char records[18U * 8U];
+    size_t size = 0;
+    const int rc = capture_sdrtrunk_replay_records("late-entry MI", json, state, records, sizeof records, &size);
+    *mi = state->payload_mi;
+    dsd_state_ext_free_all(state);
+    free(state);
+    return rc;
+}
+
+/* Issue #888: a DMR late-entry MI is assembled only from fragments that were received, as the live decoder's
+   dmr_late_entry_mi() requires all six bursts: in an AES call (the export's metadata) and in a call played with a
+   forced RC4 algorithm (-M 0x21, no metadata), whose MI comes from the late entry alone. An MI whose first Golay word
+   is all zero is carried by a superframe; with the six frames of that word lost (malformed), the fragments that
+   remain, the missing ones read as zero, would decode to the same MI with a matching CRC. That incomplete MI is not
+   installed for the next superframe; the whole superframe's is. Before, a lost frame's fragment was stored as zero,
+   received evidence. */
 static int
 test_sdrtrunk_json_dmr_aes_incomplete_late_entry_mi(void) {
     static const uint32_t k_mi = 0x0004D2A7U; /* MI bits 0..11 zero: Golay word 0 is the all-zero codeword */
+
+    static const struct {
+        const char* label;
+        const char* head;
+        int forced_alg;
+    } k_cases[] = {
+        {"AES",
+         "{\"protocol\":\"DMR\",\"version\":2,\"call_type\":\"GROUP\",\"from\":\"5678\",\"to\":\"1234\","
+         "\"encrypted\":true,\"encryption_algorithm\":36,\"encryption_key_id\":5,\"encryption_mi\":\"12345678\","
+         "\"frames\":[",
+         0},
+        {"forced RC4",
+         "{\"protocol\":\"DMR\",\"version\":2,\"call_type\":\"GROUP\",\"from\":\"5678\",\"to\":\"1234\","
+         "\"encrypted\":true,\"frames\":[",
+         0x21},
+    };
+
     uint8_t nibbles[18];
     dmr_late_entry_nibbles(k_mi, nibbles);
     uint64_t fragments[8][3];
@@ -4628,38 +4677,22 @@ test_sdrtrunk_json_dmr_aes_incomplete_late_entry_mi(void) {
     dsd_dmr_late_entry_result decoded = {0};
     int rc = expect_true("incomplete late-entry MI: the superframe carries the MI",
                          dsd_dmr_late_entry_decode(&fragments[0][0], &decoded) && decoded.crc_ok && decoded.mi == k_mi);
-    for (int lost = 0; lost < 2; lost++) {
-        char json[2048];
-        size_t off =
-            (size_t)DSD_SNPRINTF(json, sizeof json,
-                                 "{\"protocol\":\"DMR\",\"version\":2,\"call_type\":\"GROUP\",\"from\":\"5678\","
-                                 "\"to\":\"1234\",\"encrypted\":true,\"encryption_algorithm\":36,"
-                                 "\"encryption_key_id\":5,\"encryption_mi\":\"12345678\",\"frames\":[");
-        for (unsigned k = 0; k < 18U && off < sizeof json; k++) {
-            char hex[19];
-            dmr_fragment_frame_hex(nibbles[k], hex);
-            const int in_word0 = k % 3U == 0U;
-            off += (size_t)DSD_SNPRINTF(json + off, sizeof json - off, "%s{\"hex\":\"%s\"}", k ? "," : "",
-                                        lost && in_word0 ? "ZZZZZZZZZZZZZZZZZZ" : hex);
+    for (size_t c = 0; c < sizeof k_cases / sizeof k_cases[0]; c++) {
+        char tag[160];
+        for (int lost = 0; lost < 2; lost++) {
+            unsigned long long mi = 0;
+            DSD_SNPRINTF(tag, sizeof tag, "incomplete late-entry MI, %s: played", k_cases[c].label);
+            rc |= expect_int(tag, late_entry_mi_after(k_cases[c].head, k_cases[c].forced_alg, nibbles, lost, &mi), 0);
+            if (lost) {
+                DSD_SNPRINTF(tag, sizeof tag, "incomplete late-entry MI, %s: six fragments lost, the MI is not taken",
+                             k_cases[c].label);
+                rc |= expect_true(tag, mi != (unsigned long long)k_mi);
+            } else {
+                DSD_SNPRINTF(tag, sizeof tag, "incomplete late-entry MI, %s: the whole superframe's MI is taken",
+                             k_cases[c].label);
+                rc |= expect_u64(tag, mi, k_mi);
+            }
         }
-        if (off < sizeof json) {
-            (void)DSD_SNPRINTF(json + off, sizeof json - off, "]}");
-        }
-        dsd_state* state = (dsd_state*)calloc(1, sizeof(*state));
-        if (state == NULL) {
-            return expect_true("incomplete late-entry MI: state allocated", 0);
-        }
-        unsigned char records[18U * 8U];
-        size_t size = 0;
-        rc |= capture_sdrtrunk_replay_records("incomplete late-entry MI", json, state, records, sizeof records, &size);
-        if (lost) {
-            rc |= expect_true("incomplete late-entry MI: six fragments lost, the MI is not taken",
-                              state->payload_mi != (unsigned long long)k_mi);
-        } else {
-            rc |= expect_u64("incomplete late-entry MI: the whole superframe's MI is taken", state->payload_mi, k_mi);
-        }
-        dsd_state_ext_free_all(state);
-        free(state);
     }
     return rc;
 }

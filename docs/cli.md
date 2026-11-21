@@ -436,18 +436,20 @@ Windows console runs:
   object is not the call's). A `to` written as an SDRTrunk patch group (`P:1234`, or `P:1234 [5001, 5002]` with its
   patched talkgroups) is talkgroup 1234, whose talkgroup settings apply.
   Before it plays, each export is checked once for SDRTrunk's own shape: one record, whose `protocol`, `call_type`,
-  `to` and `from` all come before its `frames` (and before any `hex`), each `to` and `from` a number (or, for `to`, a
-  patch group) the reader can read. Such a file is recorded and exported as its talkgroup and radio settings allow,
-  also when Stop ends it part-way, since its call is known before any of its audio. Any other file still plays, and
-  makes its history rows, but gets no per-call recording and is never exported: no WAV, no sidecar, no upload, and
-  one line in the log a run. That covers a file of several records, a member the settings judge after the frames,
-  frames before the protocol, and a `to` or `from` the reader cannot read. A file of several records is played as one
-  stream with one history row, named under the last talkgroup and radio ID the records gave. A record's members are
-  read in the order they are written, so a `to` or `from` of 0, or one left out, keeps an earlier ID only while the
-  record changes no other: when it also changes a talkgroup or radio ID an earlier record gave, the ID it gave as 0
-  before that change stays 0. When a later record changes a talkgroup or radio ID, the row is filed at that record's
-  first frame `time` read after the change (on the decode clock when there is none). The static WAV (`-w`) and MBE
-  captures (`-d`) are written as before for every file. The SDRTrunk calls that are exported carry no frequency or
+  `to` and `from` all come before its `frames` (and before any `hex`). Such a file is recorded and exported as its
+  talkgroup and radio settings allow, also when Stop ends it part-way, since its call is known before any of its audio.
+  Any other file still plays, and makes its history rows, but gets no per-call recording and is never exported: no
+  WAV, no sidecar, no upload, and one line in the log a run. That covers a file of several records, a member the
+  settings judge after the frames, and frames before the protocol. A `to` or `from` the reader cannot read as a number
+  (or, for `to`, a patch group), such as SDRTrunk's roaming and ISSI forms (`ROAM 5678(...)`, `ISSI ...`), counts as
+  no ID and never takes the fallback talkgroup: such a call is recorded as before, exported under its talkgroup when it
+  has one, and otherwise kept local (no sidecar, no upload, one line in the log a run). A file of several records is
+  played as one stream with one history row, named under the last talkgroup and radio ID the records gave. A record's
+  members are read in the order they are written, so a `to` or `from` of 0, or one left out, keeps an earlier ID only
+  while the record changes no other: when it also changes a talkgroup or radio ID an earlier record gave, the ID it gave
+  as 0 before that change stays 0. When a later record changes a talkgroup or radio ID, the row is filed at that
+  record's first frame `time` read after the change (on the decode clock when there is none). The static WAV (`-w`) and
+  MBE captures (`-d`) are written as before for every file. The SDRTrunk calls that are exported carry no frequency or
   access code, so one with no talkgroup uses `--rdio-unknown-talkgroup` ([Digital calls with no talkgroup in
   rdio-scanner](#digital-calls-with-no-talkgroup-in-rdio-scanner)). A raw `.imb`, `.amb` or `.dmb` file names no call:
   it is recorded, one recording per file, and never exported.

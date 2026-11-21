@@ -2062,8 +2062,8 @@ suite runs under this compiler.
   context marks the fragments each superframe's frames gave (`le_fragments`, `sdrtrunk_json_note_fragment()`, reset at
   position 0), and at position 18 the MI is decoded only from all 18 (`sdrtrunk_json_finish_dmr_aes()`,
   `sdrtrunk_dmr_process_late_entry_mi()` take `complete`), as the live `dmr_late_entry_mi()` requires all six bursts;
-  an incomplete one carries the last MI on (`test_sdrtrunk_json_dmr_aes_incomplete_late_entry_mi`: a missing Golay word
-  read as zeros would pass Golay and the CRC). The row's
+  an incomplete one carries the last MI on (`test_sdrtrunk_json_dmr_aes_incomplete_late_entry_mi`, for AES and for a
+  forced RC4 late entry: a missing Golay word read as zeros would pass Golay and the CRC). The row's
   `event_time` is the recording's start, from its call's first frame `time` that parses (issue #888 B21, below). A
   played file is one call, as SDRTrunk writes them (issue #888): the event layer is synced at the file's start and end
   only, never per frame or per record, and the reader observes the call on each key with `DSD_CALL_BOUNDARY_CONTINUE`.
@@ -2102,9 +2102,11 @@ suite runs under this compiler.
   standard (SDRTrunk's own shape: `MBECallSequence` writes `protocol, version, call_type, from, to, encrypted, system,
   site, frames`) when it holds exactly one record, none of whose ID members (`sdrtrunk_json_is_id_key()`: what the
   record and stream verdicts read from the call snapshot, its protocol, kind, target and source) comes after its first
-  voice frame (its record-level `frames`, or any `hex` before them), and each `to` and `from` reads
-  (`sdrtrunk_json_id_value_reads()`; a value present but unreadable must not become "no talkgroup" for the fallback).
-  A standard file is recorded and exported as its policies allow, a Stop part-way included: its call is complete
+  voice frame (its record-level `frames`, or any `hex` before them). A `to` or `from` present but unreadable
+  (`sdrtrunk_json_parse_id()` fails: SDRTrunk's roaming and ISSI forms among them) sets `id_unread`, and the ID is 0;
+  such a call must not take the fallback, so at the file's end `sdrtrunk_json_mark_segment()` keeps the segment local
+  (`dsd_wav_segment_keep_local()`) when the call has no talkgroup, and leaves it to export under a talkgroup it does
+  have. A standard file is recorded and exported as its policies allow, a Stop part-way included: its call is complete
   before any audio, and the policy does not change while a file is read (the decoder thread is in the reader and
   drains no commands), so the row's own record and stream verdicts judge all its audio. Any other file plays and makes
   its history rows, but its segment is marked at the file's end, before the closing sync and so before any close,
@@ -2112,9 +2114,10 @@ suite runs under this compiler.
   (`wav_close_discard()`), never publishes or exports it; one line a run while per-call recording is on
   (`sdrtrunk_json_note_unrecorded()`). SDRTrunk's own exports are standard, so they record and export as before
   (`CORE_WAV_JOURNAL` `test_playback_file_shape_decides_its_recording`: a `from` after the frames, a second record of
-  frames alone, frames before the protocol, a `to` after a Stop, an unreadable `to`; a trailing `metadata` `from` and
-  the patch groups still export). The static WAV and MBE captures are written as before: neither is exported, and
-  neither can be taken back in part.
+  frames alone, frames before the protocol, a `to` after a Stop; an unreadable `to`, or a roaming source to an ISSI
+  talkgroup, records but stays local, and a roaming source to a numbered talkgroup exports under it; a trailing
+  `metadata` `from` and the patch groups still export). The static WAV and MBE captures are written as before: neither
+  is exported, and neither can be taken back in part.
 - API note: the high-pass filter in `<dsd-neo/core/audio_filters.h>` is `dsd_hpf()`. It was renamed from
   `hpf()` because codec2 exports a symbol of that name and Android links codec2 statically, which turns the
   duplicate into a link error. It is the only filter in that header that is prefixed: codec2 exports none of
@@ -12145,7 +12148,8 @@ control within the CC grace walks its channel map with the ordinary hunts.
   call's recording holds the new call's first frame (100 ms). The voice handlers read the slot's epoch before the DCH
   (`dsd_call_state_get_revision()`, no snapshot copy) and, when it moved, mark the open segment
   `dsd_wav_segment_keep_local()` (`<dsd-neo/core/file_io.h>`): its close publishes and journals it (`rdio` false) but
-  never exports it, one line a run (`wav_close_note_kept_local()`). A header's or terminator's DCH carries no voice and
+  never exports it, one line a run (`wav_close_note_kept_local()`, shared with a played SDRTrunk call whose ID could
+  not be read). A header's or terminator's DCH carries no voice and
   marks nothing. Fail closed rather than reorder the frame (the DCH is read after the voice blocks on air). Test:
   `YSF_DCH_DECODE` `test_process_ysf_vd_type2_next_call_keeps_the_recording_local`.
 - YSF call mode 1 ("radio ID", `src/protocol/ysf/ysf.c`): the CSD1 destination field is printed as a 5-character

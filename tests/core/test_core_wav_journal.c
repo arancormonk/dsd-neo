@@ -5164,7 +5164,7 @@ install_tg_row(rig* r, uint32_t tg, int record, int stream) {
 #define K_STOPPED_AFTER K_THREE_FRAMES "," K_BAD_FRAME "," K_GOOD_FRAME
 
 /* What a played file's case expects: the recording of @p frames frames (0: none, and no WAV at all), exported under
-   @p tg from @p src (tg 0: no sidecar, no upload). */
+   @p tg from @p src (tg 0: no sidecar, no upload; src 0: not checked). */
 static int
 expect_played_file(const rig* r, const char* label, int frames, unsigned tg, unsigned src) {
     char tag[200];
@@ -5195,9 +5195,11 @@ expect_played_file(const rig* r, const char* label, int frames, unsigned tg, uns
         DSD_SNPRINTF(want, sizeof want, "\"talkgroup\": %u,", tg);
         DSD_SNPRINTF(tag, sizeof tag, "%s: exported under %u", label, tg);
         rc |= expect_true(tag, strstr(body, want) != NULL);
-        DSD_SNPRINTF(want, sizeof want, "\"srcList\": [{\"pos\":0,\"src\":%u}],", src);
-        DSD_SNPRINTF(tag, sizeof tag, "%s: from %u", label, src);
-        rc |= expect_true(tag, strstr(body, want) != NULL);
+        if (src != 0U) {
+            DSD_SNPRINTF(want, sizeof want, "\"srcList\": [{\"pos\":0,\"src\":%u}],", src);
+            DSD_SNPRINTF(tag, sizeof tag, "%s: from %u", label, src);
+            rc |= expect_true(tag, strstr(body, want) != NULL);
+        }
     }
     if (rc != 0) {
         DSD_FPRINTF(stderr, "  %s sidecar: %s\n", label, body);
@@ -5207,14 +5209,16 @@ expect_played_file(const rig* r, const char* label, int frames, unsigned tg, uns
 
 /* Issue #888 (fail closed): a played SDRTrunk file is classified before it plays. A file in SDRTrunk's own shape
    (MBECallSequence: one record, every member the policies judge -- protocol, call type, to, from -- before its
-   frames, each "to" and "from" an ID the reader reads) is recorded and exported as its policies allow, Stop during it
-   included, since its call is known before any of its audio. Any other file is played, but it gets no per-call
-   recording and no export (one line a run): its audio would be judged by IDs read after it. Only a record's own
-   members count (a "metadata" object's "from" is not the call's). An SDRTrunk patch group's "to" ("P:<group>", with
-   its patched talkgroups after it) is that talkgroup. Before: a "from" after the frames, a second record of frames
-   alone, frames before the protocol, a "to" read after Stop, or a "to" the reader could not read exported audio its
-   policies never judged (under the fallback talkgroup 4242); a trailing "metadata" "from" kept a call local; a patch
-   group's call was exported under the fallback, its stream=off row unread. */
+   frames) is recorded and exported as its policies allow, Stop during it included, since its call is known before any
+   of its audio. Any other file is played, but it gets no per-call recording and no export (one line a run): its audio
+   would be judged by IDs read after it. Only a record's own members count (a "metadata" object's "from" is not the
+   call's). An SDRTrunk patch group's "to" ("P:<group>", with its patched talkgroups after it) is that talkgroup. A
+   "to" or "from" the reader cannot read (an SDRTrunk roaming or ISSI identity, "Q:77") leaves the call recorded but
+   gives it no fallback talkgroup: with no talkgroup it is kept local, with one it is exported under it. Before: a
+   "from" after the frames, a second record of frames alone, frames before the protocol, a "to" read after Stop, or a
+   "to" the reader could not read exported audio its policies never judged (under the fallback talkgroup 4242); a
+   trailing "metadata" "from" kept a call local; a patch group's call was exported under the fallback, its stream=off
+   row unread. */
 static int
 test_playback_file_shape_decides_its_recording(void) {
     static const struct {
@@ -5268,7 +5272,17 @@ test_playback_file_shape_decides_its_recording(void) {
         {"a to the reader cannot read",
          "{\"protocol\":\"DMR\",\"version\":2,\"call_type\":\"GROUP\",\"from\":\"5678\",\"to\":\"Q:77\","
          "\"encrypted\":false,\"frames\":[" K_THREE_FRAMES "]}",
-         0, 0U, 0, 0, 0, 0, 0U, 0U},
+         0, 0U, 0, 0, 0, 3, 0U, 0U},
+        {"a roaming source to an ISSI talkgroup",
+         "{\"protocol\":\"APCO25-PHASE2\",\"version\":2,\"call_type\":\"GROUP\","
+         "\"from\":\"ROAM 5678(BEE01.2A3.5678)\",\"to\":\"ISSI BEE01.2A3.1234\",\"encrypted\":false,"
+         "\"frames\":[" K_THREE_FRAMES "]}",
+         0, 0U, 0, 0, 0, 3, 0U, 0U},
+        {"a roaming source to talkgroup 1234",
+         "{\"protocol\":\"APCO25-PHASE2\",\"version\":2,\"call_type\":\"GROUP\","
+         "\"from\":\"ROAM 5678(BEE01.2A3.5678)\",\"to\":\"1234\",\"encrypted\":false,"
+         "\"frames\":[" K_THREE_FRAMES "]}",
+         0, 0U, 0, 0, 0, 3, 1234U, 0U},
     };
 
     int rc = 0;

@@ -1474,14 +1474,16 @@ wav_close_note_rdio_skip(const dsd_opts* opts, const Event_History* row, int all
 }
 
 /* A published recording kept local (dsd_wav_segment_keep_local()): its row's export verdict does not cover all its
-   audio (issue #888), as a YSF call's whose recording also holds the start of the next call. Not exported under any
-   number; said once a run while rdio export is on. */
+   audio, as a YSF call's whose recording also holds the start of the next call, or its call has an identity the reader
+   could not read and no talkgroup but the fallback (a played SDRTrunk roaming or ISSI ID; issue #888). Not exported
+   under any number; said once a run while rdio export is on. */
 static void
 wav_close_note_kept_local(const dsd_opts* opts) {
     if (opts->rdio_mode != DSD_RDIO_MODE_OFF && wav_recording_kept_local_rdio_skip_first_this_run()) {
         LOG_WARN(
-            "Rdio export: a YSF call followed by another with no header or terminator between them is recorded but "
-            "not exported, as its recording also holds the next call's first frame\n");
+            "Rdio export: a call is recorded but not exported when its recording also holds the next call's first "
+            "frame (YSF, no header or terminator between them) or its ID could not be read and it has no talkgroup (a "
+            "played SDRTrunk roaming or ISSI ID)\n");
     }
 }
 
@@ -2431,6 +2433,9 @@ typedef struct {
     dsd_call_kind kind;
     uint32_t source_id;
     uint32_t target_id;
+    // A "to" or "from" the reader could not read (sdrtrunk_json_parse_id()), such as an SDRTrunk roaming or ISSI
+    // identity: the call is not given the fallback talkgroup (issue #888).
+    uint8_t id_unread;
 } sdrtrunk_json_context;
 
 /* The separators the SDRTrunk export's JSON puts between its tokens: white space and structure. */
@@ -2540,28 +2545,20 @@ sdrtrunk_json_token(sdrtrunk_json_cursor* cursor, int* is_key) {
     return sdrtrunk_json_cut(token, end);
 }
 
-/* The value of the member whose name was just read: its scalar token whole (sdrtrunk_json_token_span()), *@p end where
-   it ends; NULL when there is none or it is an object or an array, whose members are then read as keys of their own. */
+/* The value of the member whose name was just read: its scalar token whole (sdrtrunk_json_token()); NULL when there is
+   none or it is an object or an array, whose members are then read as keys of their own. */
 static char*
-sdrtrunk_json_value_span(sdrtrunk_json_cursor* cursor, char** end) {
-    char* p = cursor->p;
+sdrtrunk_json_next_value(sdrtrunk_json_cursor* str_saveptr) {
+    char* p = str_saveptr->p;
     if (p == NULL) {
         return NULL;
     }
     p += strspn(p, " \t\r\n:");
-    cursor->p = p;
+    str_saveptr->p = p;
     if (*p == '{' || *p == '[' || *p == ',' || *p == '}' || *p == ']') {
         return NULL;
     }
-    return sdrtrunk_json_token_span(cursor, NULL, end);
-}
-
-/* As sdrtrunk_json_value_span(), the value cut (sdrtrunk_json_cut()). */
-static char*
-sdrtrunk_json_next_value(sdrtrunk_json_cursor* str_saveptr) {
-    char* end = NULL;
-    char* value = sdrtrunk_json_value_span(str_saveptr, &end);
-    return sdrtrunk_json_cut(value, end);
+    return sdrtrunk_json_token(str_saveptr, NULL);
 }
 
 /* Passes over the object or array at @p cursor whole, its strings read as text, so none of its members is read as a
@@ -2621,6 +2618,7 @@ sdrtrunk_json_context_init(sdrtrunk_json_context* ctx) {
     ctx->kind = DSD_CALL_KIND_VOICE;
     ctx->source_id = 0U;
     ctx->target_id = 0U;
+    ctx->id_unread = 0U;
 }
 
 static void
@@ -2859,7 +2857,8 @@ sdrtrunk_json_handle_encrypted(const char* token, sdrtrunk_json_cursor* str_save
 /* An SDRTrunk "to" or "from" value, the @p len characters at @p value: a radio or talkgroup ID in decimal, or, when
    @p patch_group (a "to"), a P25 patch group as SDRTrunk writes one (PatchGroup.toString(): "P:<group>", then
    " [<patched talkgroups>]" and " [<patched radios>]" when it has any), which is its group's talkgroup. 0 with the ID in
-   *@p out; -1 for any other value, which names no ID the reader can read (issue #888). */
+   *@p out; -1 for any other value (an SDRTrunk roaming or ISSI identity among them), which names no ID the reader can
+   read: the call then gets no fallback talkgroup (sdrtrunk_json_mark_segment(), issue #888). */
 static int
 sdrtrunk_json_parse_id(const char* value, size_t len, int patch_group, uint32_t* out) {
     if (patch_group && len > 2U && value[0] == 'P' && value[1] == ':') {
@@ -2893,7 +2892,12 @@ sdrtrunk_json_handle_to_from(sdrtrunk_json_context* ctx, const char* token, sdrt
         return;
     }
     uint32_t parsed = 0;
-    const uint32_t id = sdrtrunk_json_parse_id(value, strlen(value), is_to, &parsed) == 0 ? parsed : 0U;
+    uint32_t id = 0U;
+    if (sdrtrunk_json_parse_id(value, strlen(value), is_to, &parsed) == 0) {
+        id = parsed;
+    } else {
+        ctx->id_unread = 1U;
+    }
     if (is_to) {
         ctx->target_id = id;
         DSD_FPRINTF(stderr, "\n To: %s", value);
@@ -3532,26 +3536,10 @@ sdrtrunk_json_is_id_key(const char* key, size_t len) {
            || sdrtrunk_json_span_is(key, len, "to") || sdrtrunk_json_span_is(key, len, "from");
 }
 
-/* Whether the value at @p cursor of ID member @p key (@p len characters) is one the reader reads as that ID: any value
-   of a "protocol" or a "call_type", a "to" or a "from" that sdrtrunk_json_parse_id() reads. The cursor moves past a
-   scalar value. */
-static int
-sdrtrunk_json_id_value_reads(sdrtrunk_json_cursor* cursor, const char* key, size_t len) {
-    const int is_to = sdrtrunk_json_span_is(key, len, "to");
-    if (!is_to && !sdrtrunk_json_span_is(key, len, "from")) {
-        return 1;
-    }
-    char* end = NULL;
-    const char* value = sdrtrunk_json_value_span(cursor, &end);
-    uint32_t id = 0;
-    return value != NULL && sdrtrunk_json_parse_id(value, (size_t)(end - value), is_to, &id) == 0;
-}
-
 /* Whether the export at @p text, read whole, is in SDRTrunk's own shape (MBECallSequence writes one record, every member
    the policies judge before its "frames": protocol, version, call_type, from, to, encrypted, system, site, frames):
    one record, whose ID members (sdrtrunk_json_is_id_key()) all come before its first voice frame (its "frames", or a
-   "hex" anywhere before them), each "to" and "from" one the reader reads. Only the record's own members count: a
-   "metadata" object's "from" is not the call's. Read once, before the file plays, with the reader's own tokenizer; the
+   "hex" anywhere before them). Only the record's own members count: a "metadata" object's "from" is not the call's. Read once, before the file plays, with the reader's own tokenizer; the
    text is not changed (issue #888). */
 static int
 sdrtrunk_json_is_standard(char* text) {
@@ -3572,8 +3560,7 @@ sdrtrunk_json_is_standard(char* text) {
         }
         if (sdrtrunk_json_span_is(key, len, "hex") || (at_record && sdrtrunk_json_span_is(key, len, "frames"))) {
             audio_seen = 1;
-        } else if (at_record && sdrtrunk_json_is_id_key(key, len)
-                   && (audio_seen || !sdrtrunk_json_id_value_reads(&cursor, key, len))) {
+        } else if (audio_seen && at_record && sdrtrunk_json_is_id_key(key, len)) {
             return 0;
         }
     }
@@ -3581,7 +3568,7 @@ sdrtrunk_json_is_standard(char* text) {
 }
 
 /* A played file not in SDRTrunk's own shape (sdrtrunk_json_is_standard()) plays, but its audio would be judged by IDs
-   read after it, or a call's IDs the reader cannot read: it gets no per-call recording and no export. Said once a run
+   read after it: it gets no per-call recording and no export. Said once a run
    while per-call recording is on. */
 static void
 sdrtrunk_json_note_unrecorded(const dsd_opts* opts) {
@@ -3589,6 +3576,19 @@ sdrtrunk_json_note_unrecorded(const dsd_opts* opts) {
         LOG_WARN("Played file %s is not one SDRTrunk call (one record, every ID before its frames): it plays, but it "
                  "is not recorded per call or exported; later such files are not logged\n",
                  opts->mbe_in_file);
+    }
+}
+
+/* The file's segment marked at its end (the event layer is synced at the file's start and end only, so its audio is in
+   one segment), before any close publishes it, a Stop part-way included: discarded when the file is not @p standard;
+   else kept local when a "to" or "from" did not read and the call has no talkgroup, which only the fallback would
+   number: an identity the reader cannot read never takes the fallback (issue #888). */
+static void
+sdrtrunk_json_mark_segment(const dsd_opts* opts, const sdrtrunk_json_context* ctx, int standard) {
+    if (!standard) {
+        wav_segment_discard_at_close(opts->wav_out_f);
+    } else if (ctx->id_unread != 0U && ctx->target_id == 0U) {
+        dsd_wav_segment_keep_local(opts->wav_out_f);
     }
 }
 
@@ -3710,11 +3710,7 @@ read_sdrtrunk_json_format(dsd_opts* opts, dsd_state* state) {
 
     free(source_str);
     source_str = NULL;
-    /* The mark goes on the segment holding the file's audio (the event layer is synced at the file's start and end
-       only, so it is one segment), before any close publishes it, a Stop part-way included. */
-    if (!standard) {
-        wav_segment_discard_at_close(opts->wav_out_f);
-    }
+    sdrtrunk_json_mark_segment(opts, &ctx, standard);
     dsd_event_sync_slot(opts, state, 0);
     if (opts->mbe_out_f != NULL) {
         closeMbeOutFile(opts, state);

@@ -119,8 +119,8 @@ void dsd_wav_segment_write(SNDFILE* file, const short* samples, size_t count, co
 int64_t dsd_wav_segment_frames(SNDFILE* file);
 /**
  * Keep open per-call segment @p file local: its close publishes it but never exports it to rdio-scanner (issue #888: a
- * YSF call whose recording also holds the next call's first frame). A handle that is no per-call segment (NULL, the
- * static WAV) is left alone.
+ * YSF call whose recording also holds the next call's first frame; a played SDRTrunk call whose ID could not be read
+ * and that has no talkgroup). A handle that is no per-call segment (NULL, the static WAV) is left alone.
  */
 void dsd_wav_segment_keep_local(const SNDFILE* file);
 
