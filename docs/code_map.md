@@ -412,25 +412,24 @@ Generated (do not edit/commit):
     without a key never earns any: such a call holds a target only in normal scanning, from its checked call signalling.
     Every producer keeps checked media only while a scan that reads it runs (`dsd_scan_uses_checked_media()` in
     `tuner_owner.h`: the -Y scan or the trunk scan owns the tuner, so not while a trunk scan is paused); otherwise the
-    voice path takes no lock and reads no clock for it. The probe's policy table applies the encrypted-call tuning rule before
-    anything needs a target (`dsd_tg_policy_encrypted_tune_denied()`): an encrypted call with no talkgroup yet, or an
-    M17 call, holds nothing under it. Never the media mark `dsd_call_state_update_media()` makes before the decode,
-    which playback, the -Y call count and the history keep. Each checked frame carries its scan observation origin
-    (below); the probe counts only media whose origin is the reception in force now, so a call another visit heard,
-    ended or not, holds nothing whatever its decode times say, and a frame of another origin starts the span again.
-    Issue #890 family binding: the probe takes only calls of the row's family
-    (`scan_voice_call_of_row_family()`: the class `dsd_scan_mode_active()` names, every protocol on an untyped row;
-    on a `tetra-dmo` row only direct mode speech, `dsd_call_snapshot::checked_media_tetra_direct`, which
-    `dsd_call_state_note_checked_media_tetra()` sets from the burst's mode and a frame of the other mode restarts), and
-    judges each through the policy table (`dsd_scan_activity_policy_allows()`, also the simplex reports' rule): known
-    data/party/encryption restrictions and an unknown field a restriction depends on (F9: withheld), no talkgroup
-    policy for the callsign families (YSF, D-STAR, M17), and for the numeric ones nothing anonymous under a Hold, the
-    allow list or a blocked known source. A dPMR call keeps its IDs as dial-string text only, so its voice reaches the
-    table anonymous (a decided limit: under a Hold or the allow list voice-only holds no dPMR row; its protocol
-    reports carry the numeric IDs). `dsd_scan_tg_hold_call_active()` takes only a call of the row's family too, and on
-    a `tetra-dmo` row only an admitted direct mode talkspurt whose checked speech is of this visit (F7), for both the
-    -Y and the trunk-scan visit cap. TETRA voice the gate mutes for policy or encryption is never decoded, so it never
-    earns checked media.
+    voice path takes no lock and reads no clock for it. The probe's policy table applies the encrypted-call tuning rule
+    before anything needs a target (`dsd_tg_policy_encrypted_tune_denied()`): an encrypted call with no talkgroup yet,
+    or an M17 call, holds nothing under it. Never the media mark `dsd_call_state_update_media()` makes before the
+    decode, which playback, the -Y call count and the history keep. Each checked frame carries its scan observation
+    origin (below); the probe counts only media whose origin is the reception in force now, so a call another visit
+    heard, ended or not, holds nothing whatever its decode times say, and a frame of another origin starts the span
+    again. Issue #890 family binding: the probe takes only calls of the row's family (`scan_voice_call_of_row_family()`:
+    the class `dsd_scan_mode_active()` names, every protocol on an untyped row; on a `tetra-dmo` row only direct mode
+    speech, `dsd_call_snapshot::checked_media_tetra_direct`, which `dsd_call_state_note_checked_media_tetra()` sets from
+    the burst's mode and a frame of the other mode restarts), and judges each through the policy table
+    (`dsd_scan_activity_policy_allows()`, also the simplex reports' rule): known data/party/encryption restrictions and
+    an unknown field a restriction depends on (F9: withheld), no talkgroup policy for the callsign families (YSF,
+    D-STAR, M17), and for the numeric ones nothing anonymous under a Hold, the allow list or a blocked known source. A
+    dPMR call keeps its IDs as dial-string text only, so its voice reaches the table anonymous (a decided limit: under a
+    Hold or the allow list voice-only holds no dPMR row; its protocol reports carry the numeric IDs).
+    `dsd_scan_tg_hold_call_active()` takes only a call of the row's family too, and on a `tetra-dmo` row only an
+    admitted direct mode talkspurt whose checked speech is of this visit (F7), for both the -Y and the trunk-scan visit
+    cap. TETRA voice the gate mutes for policy or encryption is never decoded, so it never earns checked media.
   - Scan observation origin (issue #890; `include/dsd-neo/core/state.h`): `dsd_state::scan_landing_visit` is the
     epoch of the scan landing in force (written only by `scan_landing.h`, at a landing's install and forget; 0 while
     none is: a tune in flight, failed or forgotten), and `processFrame()` copies it into `frame_dispatch_scan_visit`
@@ -1057,8 +1056,9 @@ the CLI/config options live in `docs/trunk-scan.md`; `include/dsd-neo/engine/tru
   without a "retune failed" line). The target on air is judged again at its landing and every tick
   (`trunk_scan_judge_tetra_on_air()`: landed, against the applied TED; a park in flight waits for its landing): a cause
   other than `RATE_UNKNOWN` sets `coord->active_tetra_skip`, which `trunk_scan_active_out_of_rotation()` reads, so it
-  owes the departure a target out of the rotation owes (ahead of an operator's hold, `dsd_engine_trunk_scan_departure_due()`
-  included), named once in the log and on the status line. A resume judges the target it resumes at the same way first.
+  owes the departure a target out of the rotation owes (ahead of an operator's hold,
+  `dsd_engine_trunk_scan_departure_due()` included), named once in the log and on the status line. A resume judges the
+  target it resumes at the same way first.
   The start warns once per target (`trunk_scan_warn_targets()`, `trunk_scan_warn_tetra_target()`: the full reason with
   its fix, "it is skipped at every visit until then"; `INPUT` is for good) and again when the DSP rate changes
   (`trunk_scan_recheck_analog_targets()`), adding each to the status line's "Skipped at every visit". A start none of
@@ -1088,8 +1088,8 @@ the CLI/config options live in `docs/trunk-scan.md`; `include/dsd-neo/engine/tru
   step's pacing, the frame-boundary step and the quiet check read): it leaves at once (`lcn_avoid_depart_m` cleared)
   for another row (`dsd_engine_channel_scan_has_other_row()`), under its carrier and an operator hold, which stays. The
   frame boundary asks only while something is avoided or the list has a tetra-dmo row
-  (`dsd_engine_channel_scan_tetra_rows()`). An untyped `-Y` row under `-fT` is no TETRA DMO row. The TETRA state's lifetime
-  across a session's landings is the TETRA module's "State and its boundaries" (Scan sessions).
+  (`dsd_engine_channel_scan_tetra_rows()`). An untyped `-Y` row under `-fT` is no TETRA DMO row. The TETRA state's
+  lifetime across a session's landings is the TETRA module's "State and its boundaries" (Scan sessions).
 
 - Target list and loader: `dsd_trunk_scan_target` / `dsd_trunk_scan_target_list`, `dsd_trunk_scan_load_targets_csv()`,
   `dsd_trunk_scan_target_list_reset()`, and `dsd_trunk_scan_max_targets()` — the target count is bounded by a memory

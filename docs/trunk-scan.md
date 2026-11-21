@@ -1063,11 +1063,11 @@ no pick. Checking the list itself (Qt, `--validate-config`) does not look at the
   typing its frequency. Unlike a start without a hold, these do not wait for a radio that has not published its rate
   yet: a hold is tied to the park it asks for, which the scan cannot tune before the rate is known, so it would be lost
   anyway. Give the hold again, or type the frequency again, once the radio is up.
-- **Every visit starts cold.** Each time the scan parks on a TETRA DMO target, even right after another TETRA DMO target,
-  the TETRA decoder starts with nothing from before: no network or colour code, no calls, no polarity, nothing shown.
-  So a radio heard on one row is never shown on the next. The decoder's memory is set up once for the scan and kept
-  between rows, so a mixed list costs nothing extra per hop. Pausing the scan or stopping it leaves the decoder cold
-  too; a session you started with `-fT` keeps decoding TETRA after it.
+- - **Every visit starts cold.** Each time the scan parks on a TETRA DMO target, even right after another TETRA DMO
+  target, the TETRA decoder starts with nothing from before: no network or colour code, no calls, no polarity, nothing
+  shown. So a radio heard on one row is never shown on the next. The decoder's memory is set up once for the scan and
+  kept between rows, so a mixed list costs nothing extra per hop. Pausing the scan or stopping it leaves the decoder
+  cold too; a session you started with `-fT` keeps decoding TETRA after it.
 - **Dwell.** A DMO call sends its synchronisation bursts in frames 6, 12 and 18, about every 340 ms. A dwell shorter
   than about 400 ms can pass a busy channel without one, so give `tetra-dmo-conventional` targets a `dwell_ms` of 500
   or more.
