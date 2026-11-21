@@ -368,8 +368,15 @@ test_ip_repeated_meta_is_one_report(void) {
  * its call's row takes the position. */
 static void
 test_ip_stream_end_admits_next_stream(void) {
-    static const uint8_t eotx[10] = {'E', 'O', 'T', 'X', 0x01, 0x23, 0x45, 0x67, 0x89, 0xAB};
-    static const uint8_t disc[10] = {'D', 'I', 'S', 'C', 0x01, 0x23, 0x45, 0x67, 0x89, 0xAB};
+    /* EOTX and DISC name the stream's station, the source its LSF names (issue #890: one from another station is no
+       end of it). */
+    uint8_t eotx[10] = {'E', 'O', 'T', 'X'};
+    uint8_t disc[10] = {'D', 'I', 'S', 'C'};
+    const unsigned long long station = m17_encode_b40_callsign(0ULL, TEST_SRC_CALLSIGN);
+    for (int i = 0; i < 6; i++) {
+        eotx[4 + i] = (uint8_t)(station >> (40U - (8U * (unsigned)i)));
+        disc[4 + i] = eotx[4 + i];
+    }
     static const char* const ends[] = {"EOTX", "DISC", "call end"};
     for (int end = 0; end < 3; end++) {
         rig r;
@@ -384,8 +391,12 @@ test_ip_stream_end_admits_next_stream(void) {
         for (int stream = 0; stream < 2; stream++) {
             const uint64_t rev = dsd_position_last_rev();
             /* A stream starts at frame 0: after EOTX or DISC that is what starts the stream ID again (issue #890). */
+            /* With no network end (a call end alone, a timeout) the same stream ID would go on numbering one stream
+               (issue #890: each frame number once and in order): the next transmission there has a stream ID of its
+               own. */
+            const uint16_t sid = (end == 2 && stream == 1) ? 0xBEF0U : 0xBEEFU;
             for (uint16_t fn = 0U; fn <= 2U; fn++) {
-                build_ip_stream_frame_fn(frame, bits, 0xBEEFU, fn, 0);
+                build_ip_stream_frame_fn(frame, bits, sid, fn, 0);
                 /* Each stream's own voice: a byte-identical frame would be a copy of the last stream's, no new one. */
                 DSD_MEMSET(frame + 36, 0x40 + stream, 16U);
                 const uint16_t crc = m17_crc16(frame, 52U);
@@ -1017,7 +1028,9 @@ test_ip_unbound_stream_repeat_includes_destination_and_frame_number(void) {
                            m17_encode_b40_callsign(0ULL, TEST_SRC_CALLSIGN));
     expect_int("same sender, another destination, admitted once", send_ip_stream(&r, bits, 4U, 6U), 1);
     expect_int("its stream's later frames are repeats", send_ip_stream(&r, bits, 7U, 9U), 0);
-    expect_int("the stream started again admitted once", send_ip_stream(&r, bits, 1U, 3U), 1);
+    /* Each frame number of a stream is used once and in order (issue #890): the same stream ID and station starting its
+       numbers again with no end between is not taken. */
+    expect_int("the stream started again without its end is dropped", send_ip_stream(&r, bits, 1U, 3U), 0);
     rig_close(&r);
 }
 
@@ -1040,9 +1053,10 @@ send_ip_stream_frame(rig* r, const uint8_t bits[LSF_BITS], uint16_t fn, uint8_t 
 }
 
 /* Issue #800 (g62-r9): a byte-identical copy of the latest IP stream frame (a duplicated datagram) is no evidence of a
- * new stream: its unchanged GNSS META is a repeat, however long the stream has run, and the stream goes on after it. A
- * frame at the same number with another payload is another stream (its EOT missed) and is admitted again, as is one
- * whose number goes back. A copy of the stream's EOT frame, heard after the EOT ended the stream, is a repeat too. */
+ * new stream: its unchanged GNSS META is a repeat, however long the stream has run, and the stream goes on after it.
+ * Issue #890: each frame number of a stream is used once and in order, so a frame at a number already used is dropped
+ * whatever its payload, as is one whose number goes back; a copy of the stream's EOT frame, and any frame of the ended
+ * stream but frame 0, is ignored after the EOT ended it; frame 0 starts the stream ID again. */
 static void
 test_ip_duplicate_frame_is_a_repeat(void) {
     rig r;
@@ -1060,12 +1074,10 @@ test_ip_duplicate_frame_is_a_repeat(void) {
     expect_int("the stream admitted once", admitted, 1);
     expect_int("a duplicate of the latest frame is a repeat", send_ip_stream_frame(&r, bits, 3U, 0x13U, 0), 0);
     expect_int("the stream goes on after the duplicate", send_ip_stream_frame(&r, bits, 4U, 0x14U, 0), 0);
-    expect_int("the same number with another payload is another stream", send_ip_stream_frame(&r, bits, 4U, 0x55U, 0),
-               1);
-    expect_int("its own duplicate is a repeat", send_ip_stream_frame(&r, bits, 4U, 0x55U, 0), 0);
-    expect_int("a number going back is another stream", send_ip_stream_frame(&r, bits, 2U, 0x55U, 0), 1);
-    expect_int("the stream's EOT frame is a repeat", send_ip_stream_frame(&r, bits, 3U, 0x56U, 1), 0);
-    expect_int("a copy of the EOT frame is a repeat", send_ip_stream_frame(&r, bits, 3U, 0x56U, 1), 0);
+    expect_int("the same number with another payload is dropped", send_ip_stream_frame(&r, bits, 4U, 0x55U, 0), 0);
+    expect_int("a number going back is dropped", send_ip_stream_frame(&r, bits, 2U, 0x55U, 0), 0);
+    expect_int("the stream's EOT frame is a repeat", send_ip_stream_frame(&r, bits, 5U, 0x56U, 1), 0);
+    expect_int("a copy of the EOT frame is ignored", send_ip_stream_frame(&r, bits, 5U, 0x56U, 1), 0);
     /* After the EOT the stream ID starts again only at frame 0 (issue #890): any other frame of it is a late copy. */
     expect_int("a late frame after the EOT is no new stream", send_ip_stream_frame(&r, bits, 1U, 0x57U, 0), 0);
     expect_int("a new stream after the EOT is admitted", send_ip_stream_frame(&r, bits, 0U, 0x57U, 0), 1);

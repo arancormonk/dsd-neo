@@ -339,50 +339,16 @@ test_signature_collector(void) {
     err |= expect_eq_u8("signature out of order bad sequence", collector.bad_sequence, 1U);
     err |= expect_eq_u8("signature out of order incomplete", collector.complete, 0U);
 
-    /* Chunks arriving 0, 1, 3, 2 (a network reorders datagrams): the set completes on the chunk that fills it, the
-       third one here, whichever chunk that is (issue #890). A repeat of a chunk after that completes nothing again. */
+    /* Chunks arriving 0, 1, 3, 2: the last chunk (0xFFFF) is the end, and the set is not complete there; the chunk
+       after it completes nothing (issue #890: every chunk must arrive before or with the end). */
     static const uint16_t k_reordered[4] = {M17_STREAM_SIGNATURE_FN0, M17_STREAM_SIGNATURE_FN1,
                                             M17_STREAM_SIGNATURE_FN3, M17_STREAM_SIGNATURE_FN2};
     DSD_MEMSET(&collector, 0, sizeof collector);
     for (size_t i = 0U; i < 4U; i++) {
         const int rc = m17_signature_collector_push(&collector, k_reordered[i], payload);
-        err |= expect_eq_u64("reordered signature completes on the last chunk", (uint64_t)(rc > 0), i == 3U ? 1U : 0U);
+        err |= expect_eq_u64("a set out of order completes nowhere", (uint64_t)(rc > 0), 0U);
     }
-    err |= expect_eq_u8("reordered signature complete", collector.complete, 1U);
-    err |=
-        expect_eq_u64("a repeated chunk completes nothing again",
-                      (uint64_t)(m17_signature_collector_push(&collector, M17_STREAM_SIGNATURE_FN3, payload) > 0), 0U);
-    return err;
-}
-
-/* The digest folded frame by frame in any order, each frame at its own frame number, equals the M17 2.0.11 digest
-   (Message Digest Algorithm for Voice Streams) taken in frame order: XOR the payload in, rotate left one byte. */
-static int
-test_signature_digest_fold_any_order(void) {
-    int err = 0;
-
-    enum { FRAMES = 21 };
-
-    uint8_t payloads[FRAMES][M17_SIGNATURE_DIGEST_BYTES];
-    uint8_t in_order[M17_SIGNATURE_DIGEST_BYTES];
-    DSD_MEMSET(in_order, 0, sizeof(in_order));
-    for (size_t f = 0U; f < FRAMES; f++) {
-        for (size_t i = 0U; i < M17_SIGNATURE_DIGEST_BYTES; i++) {
-            payloads[f][i] = (uint8_t)((f * 29U) + (i * 7U) + 3U);
-        }
-        m17_signature_digest_update(in_order, payloads[f]);
-    }
-    static const uint8_t k_order[FRAMES] = {0, 2, 1, 3, 5, 4, 6, 7, 9, 8, 10, 12, 11, 13, 14, 16, 15, 17, 20, 18, 19};
-    uint8_t acc[M17_SIGNATURE_DIGEST_BYTES];
-    uint8_t folded[M17_SIGNATURE_DIGEST_BYTES];
-    DSD_MEMSET(acc, 0, sizeof(acc));
-    for (size_t i = 0U; i < FRAMES; i++) {
-        m17_signature_digest_fold(acc, k_order[i], payloads[k_order[i]]);
-    }
-    m17_signature_digest_from_fold(acc, FRAMES, folded);
-    for (size_t i = 0U; i < M17_SIGNATURE_DIGEST_BYTES; i++) {
-        err |= expect_eq_u8("folded digest", folded[i], in_order[i]);
-    }
+    err |= expect_eq_u8("a set out of order is not complete", collector.complete, 0U);
     return err;
 }
 
@@ -632,7 +598,6 @@ main(void) {
     err |= test_stream_signature_frame_numbers();
     err |= test_signature_digest();
     err |= test_signature_collector();
-    err |= test_signature_digest_fold_any_order();
     err |= test_stream_1600_arbitrary_assemble();
     err |= test_parse_gnss_meta();
     err |= test_text_meta_blocks();

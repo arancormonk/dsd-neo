@@ -1333,8 +1333,8 @@ enum { DSD_DMR_MONO_RX_NONE = 0, DSD_DMR_MONO_RX_PENDING = 1, DSD_DMR_MONO_RX_TS
    audio both would. */
 enum { DSD_X2TDMA_CRYPTO_UNKNOWN = 0, DSD_X2TDMA_CRYPTO_CLEAR = 1, DSD_X2TDMA_CRYPTO_ENCRYPTED = 2 };
 
-/* dsd_state::m17_ip_stream: the M17 network stream the signature state belongs to. */
-enum { DSD_M17_IP_STREAM_NONE = 0, DSD_M17_IP_STREAM_OPEN = 1, DSD_M17_IP_STREAM_ENDED = 2 };
+/* dsd_state::m17_ip_stream: whether an M17 network stream is open. */
+enum { DSD_M17_IP_STREAM_NONE = 0, DSD_M17_IP_STREAM_OPEN = 1 };
 
 /** Where received-tone detection stands (issue #522).
  * INACTIVE: nothing has been processed since the last reset (a retune, row or target change,
@@ -3259,20 +3259,23 @@ struct dsd_state {
      * m17_lsf_checked: an LSF whose CRC passed (the LSF frame's, one rebuilt whole from LICH chunks, an IP frame's) set
      *   m17_can (0 included), m17_enc, m17_enc_st, m17_str_dt and m17_meta for this transmission; an LSF -F decodes
      *   despite a failed CRC is then shown and never replaces them.
-     * m17_signature_fold / _frames / _next_fn / _window: the digest in any frame order (m17_signature_digest_fold()):
-     *   the fold of the frames counted, the frame count it is read at (the highest frame number counted, plus one),
-     *   the lowest frame number not yet counted, and which of the 64 frames from there were (bit i: _next_fn + i).
-     *   Each frame number is counted once, so a datagram a network delivers twice or out of order counts once, in its
-     *   place; m17_signature_digest is the digest read from the fold after each frame.
-     * m17_ip_stream / m17_ip_stream_sid: the network stream's lifecycle, apart from its digest
-     *   (DSD_M17_IP_STREAM_NONE, _OPEN, or _ENDED by its EOT, EOTX or DISC, its verdict kept until another stream). */
+     * m17_signature_voice_next / _voice_gap: the voice frames the digest counted, in order from frame 0 (the next one
+     *   it takes), and whether one was missed (the first not frame 0, or one skipped): a signature is verified only
+     *   when every voice frame arrived once and in order, and is "incomplete" otherwise (M17 spec 2.0.11, Signature
+     *   Verification: the receiver needs the whole stream).
+     * m17_signature_ended: the transmission ended (a stream frame's EOS bit, an IP EOT); the next one starts with a
+     *   fresh signature state (m17_confirm_reset_signature()) even when no EOT marker or LSF frame came between.
+     * m17_ip_stream / _sid / _src / _last_fn: the open network stream (DSD_M17_IP_STREAM_NONE or _OPEN), its stream ID,
+     *   the station its LSF names and the last frame number used: each frame number of it is used once and in order,
+     *   so a datagram delivered again or late is dropped before anything (m17_ip_take_stream_frame()). */
     uint8_t m17_lsf_checked;
-    uint8_t m17_signature_fold[16];
-    uint16_t m17_signature_frames;
-    uint16_t m17_signature_next_fn;
-    uint64_t m17_signature_window;
+    uint16_t m17_signature_voice_next;
+    uint8_t m17_signature_voice_gap;
+    uint8_t m17_signature_ended;
     uint8_t m17_ip_stream;
     uint16_t m17_ip_stream_sid;
+    uint16_t m17_ip_stream_last_fn;
+    uint64_t m17_ip_stream_src;
     int m17encoder_tx;  // If TX (encode + decode) M17 Stream is enabled
     int m17encoder_eot; //signal if we need to send the EOT frame
 

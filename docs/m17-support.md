@@ -29,15 +29,17 @@ Implemented decode coverage:
   written to `-L` (its source column is a number; M17 sends a callsign). Packets never carry a position: M17 defines no
   GNSS packet protocol, and a packet with protocol 0x91 is shown as an unknown protocol.
 - Stream payload descrambling and AES-CTR decrypt when the corresponding key material is configured.
-- M17 over UDP/IP: a network frame whose CRC failed is dropped (not played, no call). After a network stream ends, the
-  same stream ID starts a new call only with frame 0; other frames of the ended stream are late copies and are
-  ignored apart from completing its signature.
+- M17 over UDP/IP: a network frame whose CRC failed, or whose own link setup cannot be used, is dropped (not played, no
+  call). Each frame of a stream is used once and in order: a frame received again, or after a later one, is dropped.
+  EOTX and DISC end a stream only when they come from its station. After a network stream ends, its stream ID is
+  ignored until a frame 0 starts it again; a stream ID that the same station reuses with no end received between is not
+  taken.
 - Signed voice-stream collection and secp256r1 verification when `--m17-signature-public-key <hex>` is provided (M17
   2.0.11 signatures). The digest runs over the whole stream from its first frame: the LSF repeated in the LICH or in
-  each network frame does not restart it, a network frame received twice counts once, network frames that arrive out of
-  order still count in their place, and a network frame whose CRC failed never counts. The signature is checked as soon
-  as its last missing piece arrives, in whatever order the pieces came. The SHA-256 stream hash and Authentication Frame
-  of the M17 2.1 revisions are not implemented.
+  each network frame does not restart it. The signature is checked at the end of the transmission, and only when every
+  voice frame and every signature piece arrived once and in order; otherwise it is reported as incomplete, never as a
+  failed signature. A voice frame lost just before the signature frames cannot be detected, and then the check fails.
+  The SHA-256 stream hash and Authentication Frame of the M17 2.1 revisions are not implemented.
 - Packet assembly with the current 823-byte application-payload ceiling and packet CRC validation.
 - BERT PRBS9 payload checking without requiring a preceding LSF.
 

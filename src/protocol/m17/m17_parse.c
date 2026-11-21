@@ -75,32 +75,6 @@ m17_signature_digest_update(uint8_t digest[M17_SIGNATURE_DIGEST_BYTES],
     digest[M17_SIGNATURE_DIGEST_BYTES - 1U] = first;
 }
 
-void
-m17_signature_digest_fold(uint8_t acc[M17_SIGNATURE_DIGEST_BYTES], uint16_t frame_number,
-                          const uint8_t payload[M17_SIGNATURE_DIGEST_BYTES]) {
-    if (acc == NULL || payload == NULL) {
-        return;
-    }
-    /* payload rotated right by frame_number bytes: byte i of it is payload byte i - k. */
-    const uint32_t k = (uint32_t)frame_number % M17_SIGNATURE_DIGEST_BYTES;
-    for (uint32_t i = 0U; i < M17_SIGNATURE_DIGEST_BYTES; i++) {
-        acc[i] ^= payload[(i + M17_SIGNATURE_DIGEST_BYTES - k) % M17_SIGNATURE_DIGEST_BYTES];
-    }
-}
-
-void
-m17_signature_digest_from_fold(const uint8_t acc[M17_SIGNATURE_DIGEST_BYTES], uint32_t frames,
-                               uint8_t digest[M17_SIGNATURE_DIGEST_BYTES]) {
-    if (acc == NULL || digest == NULL) {
-        return;
-    }
-    /* acc rotated left by frames bytes: byte i of it is acc byte i + N. */
-    const uint32_t n = frames % M17_SIGNATURE_DIGEST_BYTES;
-    for (uint32_t i = 0U; i < M17_SIGNATURE_DIGEST_BYTES; i++) {
-        digest[i] = acc[(i + n) % M17_SIGNATURE_DIGEST_BYTES];
-    }
-}
-
 int
 m17_signature_collector_push(struct m17_signature_collector* collector, uint16_t frame_number,
                              const uint8_t payload[M17_SIGNATURE_DIGEST_BYTES]) {
@@ -119,7 +93,7 @@ m17_signature_collector_push(struct m17_signature_collector* collector, uint16_t
     DSD_MEMCPY(&collector->signature[(size_t)index * M17_SIGNATURE_DIGEST_BYTES], payload, M17_SIGNATURE_DIGEST_BYTES);
     collector->received_mask = (uint8_t)(collector->received_mask | (uint8_t)(1U << (uint8_t)index));
 
-    if (collector->received_mask == 0x0FU && collector->complete == 0U) {
+    if (index == 3 && collector->received_mask == 0x0FU) {
         collector->complete = 1U;
         return 1;
     }

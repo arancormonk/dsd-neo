@@ -40,6 +40,9 @@ int m17_apply_lsf_result(dsd_state* state, const struct m17_lsf_result* res);
 int m17_finalize_lsf_crc(const dsd_opts* opts, dsd_state* state, const uint8_t* lsf_packed, uint16_t crc_ext);
 int m17_dispatch_stream_payload(const dsd_opts* opts, dsd_state* state, const uint8_t* payload, uint16_t frame_number,
                                 uint8_t* processed_payload);
+/* An RF stream frame's EOS bit (m17.c): the slot's M17 call ends as by a terminator, a signature not judged by then is
+   incomplete, and the next transmission starts with a fresh signature state. */
+void m17_stream_end_of_stream(const dsd_opts* opts, dsd_state* state);
 
 void m17_process_bert_payload(const dsd_opts* opts, dsd_state* state, const uint8_t* bert_bits);
 void m17_depuncture_p2_hard(const uint8_t* punctured, uint8_t* depunc, int depunc_bits);

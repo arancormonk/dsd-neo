@@ -213,23 +213,9 @@ int m17_stream_signature_frame_index(uint16_t frame_number);
 void m17_signature_digest_update(uint8_t digest[M17_SIGNATURE_DIGEST_BYTES],
                                  const uint8_t payload[M17_SIGNATURE_DIGEST_BYTES]);
 /**
- * Fold stream frame @p frame_number's payload into @p acc, in any order.
- *
- * The voice-stream digest (M17 spec 2.0.11, Message Digest Algorithm for Voice Streams) XORs each frame's payload in
- * and rotates left one byte, frame by frame from frame 0: after N frames it is the XOR of each payload k rotated left
- * N - k bytes. That is the XOR of each payload rotated right k bytes, rotated left N bytes as a whole, so a frame can
- * be folded in whenever it arrives (a network reorders datagrams) and the digest read for any N
- * (m17_signature_digest_from_fold()). Each frame must be folded once.
- */
-void m17_signature_digest_fold(uint8_t acc[M17_SIGNATURE_DIGEST_BYTES], uint16_t frame_number,
-                               const uint8_t payload[M17_SIGNATURE_DIGEST_BYTES]);
-/** The digest of frames 0 to @p frames - 1 from their fold @p acc (m17_signature_digest_fold()). */
-void m17_signature_digest_from_fold(const uint8_t acc[M17_SIGNATURE_DIGEST_BYTES], uint32_t frames,
-                                    uint8_t digest[M17_SIGNATURE_DIGEST_BYTES]);
-/**
- * Store a signature chunk (frame numbers 0x7FFC, 0x7FFD, 0x7FFE, 0xFFFF). Returns 1 when this chunk completed the set,
- * whichever chunk it is (a network can reorder them), 0 when stored, -3 when stored out of sequence, -2 for a frame
- * number that is no signature chunk, -1 for NULL.
+ * Store a signature chunk (frame numbers 0x7FFC, 0x7FFD, 0x7FFE, 0xFFFF). Returns 1 when the last chunk (0xFFFF, the
+ * end of the transmission) completes the set, 0 when stored, -3 when stored out of sequence, -2 for a frame number
+ * that is no signature chunk, -1 for NULL. A set is complete only when every chunk arrived before or with the last.
  */
 int m17_signature_collector_push(struct m17_signature_collector* collector, uint16_t frame_number,
                                  const uint8_t payload[M17_SIGNATURE_DIGEST_BYTES]);
