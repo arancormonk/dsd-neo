@@ -1446,6 +1446,46 @@ Item {
             compare(explored.signalArguments[1][0].frequency, 462575000);
             model.history = [];
         }
+        // Issue #748 B18: a detection made on a receiver the app cannot open
+        // (its model row carries the reason) is neither explored nor saved:
+        // both actions are disabled and say why, from its history row and from
+        // the Now panel, whose Save as system is disabled too.
+        function test_unopenable_receiver_disables_explore_and_save() {
+            var screen = loader.item;
+            var reason = "Found on a SoapySDR receiver, which this app cannot open";
+            model.history = [historyHit({inputSpec: "soapy:driver=rtlsdr", receiverRefusal: reason})];
+            wait(0);
+            findChild(screen, "searchHistoryActions").activate();
+            compare(menuTexts(), ["Explore here (disabled)", "Save as system (disabled)", "Avoid this session", "Avoid permanently", "Recordings (disabled)"]);
+            var menu = findChild(screen, "searchDetectionMenu");
+            compare(findChild(menu, "actionMenuDescription0").text, reason);
+            compare(findChild(menu, "actionMenuDescription1").text, reason);
+            verify(!menuItem("searchActionExplore").enabled);
+            verify(!menuItem("searchActionSave").enabled);
+            menuItem("searchActionExplore").activate();
+            menuItem("searchActionSave").activate();
+            compare(explored.count, 0);
+            compare(saved.count, 0);
+            menu.cancel();
+            // A receiver the app opens offers both.
+            model.history = [historyHit({inputSpec: "rtl:0:462.575M", receiverRefusal: ""})];
+            wait(0);
+            findChild(screen, "searchHistoryActions").activate();
+            verify(menuItem("searchActionExplore").enabled && menuItem("searchActionSave").enabled);
+            menu.cancel();
+            model.history = [];
+
+            var hit = model.status.hit;
+            model.status = Object.assign({}, model.status, {hit: Object.assign({}, hit, {inputSpec: "soapy:driver=rtlsdr", receiverRefusal: reason})});
+            var save = findChild(screen, "searchSave");
+            verify(save.visible && !save.enabled);
+            findChild(screen, "searchMore").clicked();
+            compare(menuTexts(), ["Explore here (disabled)"]);
+            compare(findChild(menu, "actionMenuDescription0").text, reason);
+            menu.cancel();
+            model.status = Object.assign({}, model.status, {hit: hit});
+            verify(save.enabled);
+        }
         // The Now panel's More leaves for the current detection: Explore here
         // and the saved systems it matched; the rest are its own buttons.
         function test_now_more_offers_leaving_for_the_detection() {

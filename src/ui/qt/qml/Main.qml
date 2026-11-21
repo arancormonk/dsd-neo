@@ -2535,6 +2535,10 @@ Window {
             mainRoot.spectrumOpen = false;
         }
         onExploreDetection: function (hit) {
+            // Issue #748 B18: no other receiver stands in for one the app
+            // cannot open; the screen offers neither action for it.
+            if (hit.receiverRefusal)
+                return;
             mainRoot.leaveSearchFor({
                 kind: "explore",
                 system: mainRoot.exploreHereSystem(hit, mainRoot.exploreSystem(sourceType, host, port, hit.freqMHz)),
@@ -2550,6 +2554,8 @@ Window {
         onSaveDetection: function (hit) {
             var source = mainRoot.sessionSystem || mainRoot.exploreSystem(sourceType, host, port, hit.freqMHz);
             var found = searchModel.systemForHit(hit, source);
+            if (found.receiverRefusal)
+                return;
             wizard.openForFound(found, hit.freqMHz, found);
             mainRoot.wizardOpen = true;
         }

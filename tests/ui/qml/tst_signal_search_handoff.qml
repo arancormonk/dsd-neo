@@ -35,8 +35,11 @@ Item {
         // handed, retuned to the detection with its mode and gain.
         // A detection that recorded its receiver ("inputSpec") gets that receiver's own settings instead: an RTL's
         // PPM, bias tee and tuner gain, an rtl_tcp server's endpoint too.
+        // A receiver the app cannot open gives only the reason (issue #748 B18).
         function systemForHit(hit, source) {
             var spec = hit.inputSpec || "";
+            if (spec.indexOf("soapy") === 0)
+                return {receiverRefusal: "Found on a SoapySDR receiver, which this app cannot open"};
             if (spec.length) {
                 var parts = spec.split(":");
                 var heard = {sourceType: spec.indexOf("rtltcp") === 0 ? "rtltcp" : "usb", ppm: "3", biasTee: 1,
@@ -413,6 +416,28 @@ Item {
             activateMenuItem("searchActionExplore");
             compare(decoderHost.sessionState, 1);
             compare(app.sessionSystem.name, "Exploring");
+            searchStub.history = [];
+        }
+        // Issue #748 B18: a history row found on a SoapySDR receiver offers
+        // neither Explore here nor Save as system, and a handoff asked for it
+        // anyway starts nothing and opens no wizard: no USB RTL-SDR stands in.
+        function test_unopenable_receiver_row_hands_off_nothing() {
+            var soapy = Object.assign({}, detection, {inputSpec: "soapy:driver=rtlsdr",
+                receiverRefusal: "Found on a SoapySDR receiver, which this app cannot open"});
+            searchStub.history = [soapy];
+            enterState(0);
+            wait(0);
+            findChild(screen(), "searchHistoryActions").activate();
+            var menu = findChild(screen(), "searchDetectionMenu");
+            verify(menu.visible);
+            verify(!findChild(menu, "searchActionExplore").enabled);
+            verify(!findChild(menu, "searchActionSave").enabled);
+            menu.cancel();
+            screen().exploreDetection(soapy);
+            screen().saveDetection(soapy);
+            compare(decoderHost.sessionState, 0);
+            verify(!app.wizardOpen);
+            verify(app.signalSearchOpen);
             searchStub.history = [];
         }
         // A USB permission wait keeps the request whole: granted, it starts

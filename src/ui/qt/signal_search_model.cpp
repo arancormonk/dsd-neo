@@ -20,6 +20,7 @@
 #include <cmath>
 #include <dsd-neo/app_control/signal_search.h>
 #include <dsd-neo/core/airspy_config.h>
+#include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/power.h>
 #include <dsd-neo/core/safe_api.h>
 #include <dsd-neo/runtime/airspy_config.h>
@@ -571,6 +572,34 @@ knownLabel(const QStringList& names) {
     return names.join(QStringLiteral(" / "));
 }
 
+/* The saved-system receiver a detection's recorded input names (issue #748 B18): "usb" for an RTL-SDR, "rtltcp",
+   "airspy", by the engine's own spec checks; "" for one the app cannot open (SoapySDR, which the backend searches
+   with, or any other input). */
+static QString
+receiverKind(const QByteArray& spec) {
+    const char* dev = spec.constData();
+    if (dsd_opts_audio_in_dev_is_airspy_spec(dev)) {
+        return QStringLiteral("airspy");
+    }
+    if (dsd_opts_audio_in_dev_is_rtltcp_spec(dev)) {
+        return QStringLiteral("rtltcp");
+    }
+    return dsd_opts_audio_in_dev_is_rtl_spec(dev) ? QStringLiteral("usb") : QString();
+}
+
+/* Why a detection made on @p spec cannot be saved or explored here: its receiver is none the app opens. "" when it is
+   one, or when no receiver was recorded (the session's source stands). */
+static QString
+receiverRefusal(const QString& spec) {
+    const QByteArray dev = spec.toUtf8();
+    if (spec.isEmpty() || !receiverKind(dev).isEmpty()) {
+        return {};
+    }
+    return dsd_opts_audio_in_dev_is_soapy_spec(dev.constData())
+               ? QObject::tr("Found on a SoapySDR receiver, which this app cannot open")
+               : QObject::tr("Found on a receiver this app cannot open");
+}
+
 QVariantMap
 SignalSearchModel::hitMap(const dsd_signal_search_hit& h) const {
     auto matches = knownMatches(h.frequency_hz, matchWidth(h));
@@ -599,6 +628,7 @@ SignalSearchModel::hitMap(const dsd_signal_search_hit& h) const {
             {QStringLiteral("slot"), h.slot},
             {QStringLiteral("crypt"), QString::fromUtf8(h.crypt)},
             {QStringLiteral("inputSpec"), QString::fromUtf8(h.input_spec)},
+            {QStringLiteral("receiverRefusal"), receiverRefusal(QString::fromUtf8(h.input_spec))},
             {QStringLiteral("ppm"), h.ppm},
             {QStringLiteral("biasTee"), h.bias_tee != 0},
             {QStringLiteral("airspy"), airspyMap(h.airspy)},
@@ -814,15 +844,19 @@ savedGainDb(const QVariantMap& hit) {
 
 QVariantMap
 SignalSearchModel::systemForHit(const QVariantMap& hit, const QVariantMap& source) const {
-    QVariantMap result = source;
     QString spec = hit.value(QStringLiteral("inputSpec")).toString();
+    /* A receiver the app cannot open is no other receiver either (issue #748 B18): the reason, and no system. */
+    const QString refusal = receiverRefusal(spec);
+    if (!refusal.isEmpty()) {
+        return {{QStringLiteral("receiverRefusal"), refusal}};
+    }
+    QVariantMap result = source;
     if (!spec.isEmpty()) {
         result.clear();
-        const bool airspy = spec.startsWith(QLatin1String("airspy"));
-        result[QStringLiteral("sourceType")] = airspy                                     ? QStringLiteral("airspy")
-                                               : spec.startsWith(QLatin1String("rtltcp")) ? QStringLiteral("rtltcp")
-                                                                                          : QStringLiteral("usb");
-        if (spec.startsWith(QLatin1String("rtltcp:"))) {
+        const QString kind = receiverKind(spec.toUtf8());
+        const bool airspy = kind == QLatin1String("airspy");
+        result[QStringLiteral("sourceType")] = kind;
+        if (kind == QLatin1String("rtltcp")) {
             const auto parts = spec.split(QLatin1Char(':'));
             result[QStringLiteral("host")] = parts.value(1);
             result[QStringLiteral("port")] = parts.value(2).toInt();

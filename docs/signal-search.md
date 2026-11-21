@@ -532,6 +532,11 @@ so are the receiver settings the detection was made with: PPM correction and bia
 tee on an RTL-SDR or rtl_tcp source, serial, sample rate, gain and bias tee on an
 Airspy. They are saved as explicit values, so a later change to the app-wide
 defaults does not change the saved system; a bias tee that was off stays off.
+A detection made on a receiver the app cannot open (a SoapySDR source the shared
+backend searched with, or any input that is not an RTL-SDR, rtl_tcp or Airspy)
+is never saved or explored as another receiver: **Save as system** and **Explore
+here** are disabled for it, and its menu says why ("Found on a SoapySDR
+receiver, which this app cannot open").
 A saved system holds an RTL-SDR or rtl_tcp gain in whole dB, where 0 means the
 tuner's automatic gain, so a detection made on automatic gain saves automatic
 gain, and a manual gain saves as the nearest whole dB from 1 to 49: a detection

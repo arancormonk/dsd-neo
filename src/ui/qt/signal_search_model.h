@@ -107,6 +107,10 @@ class SignalSearchModel : public QObject {
     /** Remove a permanent avoid from the store, here; a running search lifts it at its next tick. */
     Q_INVOKABLE void removeAvoid(double frequency);
     Q_INVOKABLE bool removeSessionAvoid(double frequency);
+    /** The saved-system map detection @p hit starts (Save as system, Explore here): its recorded receiver's settings,
+     * else @p source's, retuned to it with its mode and gain. A detection whose recorded receiver the app cannot open
+     * (SoapySDR, or any input that is no RTL-SDR, rtl_tcp or Airspy) gives only {receiverRefusal: why}, the reason its
+     * row carries too (issue #748 B18). */
     Q_INVOKABLE QVariantMap systemForHit(const QVariantMap& hit, const QVariantMap& source) const;
 
     /**

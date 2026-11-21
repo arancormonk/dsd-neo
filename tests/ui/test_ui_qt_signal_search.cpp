@@ -552,7 +552,7 @@ testResumeWhileWindingDown(dsd_qt::KnownFrequencyIndex* index) {
 } // namespace
 
 static void
-publish(uint64_t id, bool confirmed = false) {
+publish(uint64_t id, bool confirmed = false, const char* input_spec = "rtltcp:127.0.0.2:1235:463.55M") {
     dsd_signal_search_status s{};
     s.session_id = 17;
     s.revision = id + (confirmed ? 2000 : 0);
@@ -568,7 +568,7 @@ publish(uint64_t id, bool confirmed = false) {
     h.confirmed = confirmed;
     h.unresolved = !confirmed;
     h.gain_tenth_db = 123;
-    DSD_SNPRINTF(h.input_spec, sizeof(h.input_spec), "%s", "rtltcp:127.0.0.2:1235:463.55M");
+    DSD_SNPRINTF(h.input_spec, sizeof(h.input_spec), "%s", input_spec);
     if (confirmed) {
         DSD_SNPRINTF(h.protocol, sizeof(h.protocol), "%s", "DMR");
         h.source = 123;
@@ -3001,6 +3001,44 @@ main(int argc, char** argv) {
                == QStringLiteral("48"));
     }
     assert(model.systemForHit(airspyAm, {}).value(QStringLiteral("decodeFlag")) == QStringLiteral("-fM"));
+
+    // Issue #748 B18: a detection made on a receiver the app cannot open (SoapySDR, which the backend searches with,
+    // or any input that is no RTL-SDR, rtl_tcp or Airspy) is never saved or explored as a USB RTL-SDR: its row says
+    // why, and systemForHit() gives that reason and no system. Detections on a receiver the app opens, and one with no
+    // recorded receiver (the session's source stands), carry no reason.
+    const struct {
+        const char* spec;
+        const char* reason;
+    } receivers[] = {{"soapy:driver=rtlsdr", "Found on a SoapySDR receiver, which this app cannot open"},
+                     {"soapy", "Found on a SoapySDR receiver, which this app cannot open"},
+                     {"pulse:monitor", "Found on a receiver this app cannot open"},
+                     {"rtl:0:463.55M", ""},
+                     {"rtltcp:127.0.0.2:1235:463.55M", ""},
+                     {"airspy:463.55M", ""},
+                     {"", ""}};
+
+    uint64_t receiverHit = 180;
+    for (const auto& receiver : receivers) {
+        publish(receiverHit, false, receiver.spec);
+        model.refresh();
+        const auto row = model.history().front().toMap();
+        assert(row.value(QStringLiteral("id")) == QString::number(receiverHit));
+        ++receiverHit;
+        const QString reason = QString::fromUtf8(receiver.reason);
+        assert(row.value(QStringLiteral("receiverRefusal")).toString() == reason);
+        const auto found = model.systemForHit(row, {{QStringLiteral("sourceType"), QStringLiteral("usb")}});
+        if (reason.isEmpty()) {
+            assert(!found.contains(QStringLiteral("receiverRefusal")));
+            assert(!found.value(QStringLiteral("sourceType")).toString().isEmpty());
+            assert(found.value(QStringLiteral("freqMhz")) == QStringLiteral("463.552100"));
+        } else {
+            assert(found.size() == 1 && found.value(QStringLiteral("receiverRefusal")).toString() == reason);
+        }
+    }
+    assert(model.systemForHit(model.history().value(1).toMap(), {}).value(QStringLiteral("sourceType"))
+           == QStringLiteral("airspy"));
+    assert(model.systemForHit(model.history().value(3).toMap(), {}).value(QStringLiteral("sourceType"))
+           == QStringLiteral("usb"));
 
     // History is copied and rebuilt only when the store changed it, not on every status revision.
     int historySignals = 0, statusSignals = 0, avoidSignals = 0;
