@@ -793,35 +793,39 @@ test_sdrtrunk_json_metadata_protocols_and_time(void) {
 static int
 test_sdrtrunk_json_time_is_the_first_valid_frame(void) {
     int rc = 0;
-    static dsd_opts opts;
-    static dsd_state state;
-    static Event_History_I history[2];
+    /* The run's options, state and two rings on the heap, freed at the end. */
+    dsd_opts* const opts = (dsd_opts*)calloc(1, sizeof(*opts));
+    dsd_state* const state = (dsd_state*)calloc(1, sizeof(*state));
+    Event_History_I* const history = (Event_History_I*)calloc(2, sizeof(*history));
+    if (opts == NULL || state == NULL || history == NULL) {
+        free(history);
+        free(state);
+        free(opts);
+        return expect_true("sdrtrunk start: allocated", 0);
+    }
     static const char json[] =
         "{\"protocol\":\"DMR\",\"version\":2,\"call_type\":\"GROUP\",\"from\":\"5678\",\"to\":\"1234\","
         "\"encrypted\":false,\"frames\":[{\"time\":1700000000000x},{\"time\":170000000000000000000000},"
         "{\"time\":999},{\"time\":1700000123456},{\"time\":1700000125456},{\"time\":1700000127456}]}";
 
-    DSD_MEMSET(&opts, 0, sizeof opts);
-    DSD_MEMSET(&state, 0, sizeof state);
-    DSD_MEMSET(history, 0, sizeof history);
-    opts.playfiles = 1;
-    state.event_history_s = history;
-    rc |= run_sdrtrunk_json(json, &opts, &state);
+    opts->playfiles = 1;
+    state->event_history_s = history;
+    rc |= run_sdrtrunk_json(json, opts, state);
     rc |= expect_u64("sdrtrunk start is the first valid frame's second",
                      (uint64_t)history[0].Event_History_Items[0].event_time, 1700000123ULL);
-    dsd_state_ext_free_all(&state);
+    dsd_state_ext_free_all(state);
 
     /* A file whose stamps all fail keeps none, not the row's earlier one. */
     static const char json_bad[] = "{\"protocol\":\"DMR\",\"version\":2,\"call_type\":\"GROUP\",\"from\":\"5678\","
                                    "\"to\":\"1234\",\"encrypted\":false,\"frames\":[{\"time\":12x},{\"time\":999}]}";
-    DSD_MEMSET(&state, 0, sizeof state);
-    DSD_MEMSET(history, 0, sizeof history);
-    state.event_history_s = history;
+    DSD_MEMSET(state, 0, sizeof(*state));
+    DSD_MEMSET(history, 0, 2 * sizeof(*history));
+    state->event_history_s = history;
     history[0].Event_History_Items[0].event_time = (time_t)1700000123;
-    rc |= run_sdrtrunk_json(json_bad, &opts, &state);
+    rc |= run_sdrtrunk_json(json_bad, opts, state);
     rc |= expect_u64("sdrtrunk stamps that all fail leave no start",
                      (uint64_t)history[0].Event_History_Items[0].event_time, 0ULL);
-    dsd_state_ext_free_all(&state);
+    dsd_state_ext_free_all(state);
 
     /* The key is "time" exactly, and its value the whole scalar: a "timestamp" key, and a quoted value with text after
        its digits, name no start; a quoted whole number does. */
@@ -829,13 +833,13 @@ test_sdrtrunk_json_time_is_the_first_valid_frame(void) {
         "{\"protocol\":\"DMR\",\"version\":2,\"call_type\":\"GROUP\",\"from\":\"5678\",\"to\":\"1234\","
         "\"encrypted\":false,\"frames\":[{\"timestamp\":1700000000000},{\"time\":\"1700000050000 junk\"},"
         "{\"time\":\"1700000123456\"},{\"time\":1700000125456}]}";
-    DSD_MEMSET(&state, 0, sizeof state);
-    DSD_MEMSET(history, 0, sizeof history);
-    state.event_history_s = history;
-    rc |= run_sdrtrunk_json(json_scalar, &opts, &state);
+    DSD_MEMSET(state, 0, sizeof(*state));
+    DSD_MEMSET(history, 0, 2 * sizeof(*history));
+    state->event_history_s = history;
+    rc |= run_sdrtrunk_json(json_scalar, opts, state);
     rc |= expect_u64("sdrtrunk start is the first whole \"time\" value",
                      (uint64_t)history[0].Event_History_Items[0].event_time, 1700000123ULL);
-    dsd_state_ext_free_all(&state);
+    dsd_state_ext_free_all(state);
 
     /* A time is decimal digits only: a quoted value with a sign or a leading space (which strtoull() would skip, and
        wrap " -1" to UINT64_MAX) names no start, and the next valid frame's does. */
@@ -843,13 +847,16 @@ test_sdrtrunk_json_time_is_the_first_valid_frame(void) {
         "{\"protocol\":\"DMR\",\"version\":2,\"call_type\":\"GROUP\",\"from\":\"5678\",\"to\":\"1234\","
         "\"encrypted\":false,\"frames\":[{\"time\":\" -1\"},{\"time\":\"+1700000050000\"},"
         "{\"time\":\" 1700000060000\"},{\"time\":1700000123456}]}";
-    DSD_MEMSET(&state, 0, sizeof state);
-    DSD_MEMSET(history, 0, sizeof history);
-    state.event_history_s = history;
-    rc |= run_sdrtrunk_json(json_signed, &opts, &state);
+    DSD_MEMSET(state, 0, sizeof(*state));
+    DSD_MEMSET(history, 0, 2 * sizeof(*history));
+    state->event_history_s = history;
+    rc |= run_sdrtrunk_json(json_signed, opts, state);
     rc |= expect_u64("sdrtrunk start skips signed and spaced times",
                      (uint64_t)history[0].Event_History_Items[0].event_time, 1700000123ULL);
-    dsd_state_ext_free_all(&state);
+    dsd_state_ext_free_all(state);
+    free(history);
+    free(state);
+    free(opts);
     return rc;
 }
 

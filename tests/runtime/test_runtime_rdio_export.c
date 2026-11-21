@@ -2004,21 +2004,49 @@ test_sidecar_tag_of_unknown_kind_is_empty(void) {
     return rc;
 }
 
+/* The ring and options the issue #888 sidecar cases share, zeroed for each case that asks: one ring (about 3.7 MiB)
+   for the run, not one a case, and the options on the heap. NULL when they cannot be had. Freed at the end of main(). */
+static Event_History_I* g_rdio_case_hist = NULL;
+static dsd_opts* g_rdio_case_opts = NULL;
+
+static Event_History_I*
+rdio_case_hist(void) {
+    if (g_rdio_case_hist == NULL) {
+        g_rdio_case_hist = (Event_History_I*)calloc(1, sizeof(*g_rdio_case_hist));
+    } else {
+        DSD_MEMSET(g_rdio_case_hist, 0, sizeof(*g_rdio_case_hist));
+    }
+    return g_rdio_case_hist;
+}
+
+static dsd_opts*
+rdio_case_opts(void) {
+    if (g_rdio_case_opts == NULL) {
+        g_rdio_case_opts = (dsd_opts*)calloc(1, sizeof(*g_rdio_case_opts));
+    } else {
+        DSD_MEMSET(g_rdio_case_opts, 0, sizeof(*g_rdio_case_opts));
+    }
+    return g_rdio_case_opts;
+}
+
 // Issue #888 B6: the sidecar's emergency is the row's own flag (an NXDN VCALL with the emergency bit, say), never a
 // constant false.
 static int
 test_sidecar_emergency_from_the_row(void) {
-    static Event_History_I hist;
+    Event_History_I* const hist = rdio_case_hist();
+    if (hist == NULL) {
+        return 1;
+    }
     int rc = 0;
     for (int emergency = 0; emergency <= 1; emergency++) {
-        DSD_MEMSET(&hist, 0, sizeof(hist));
-        Event_History* item = &hist.Event_History_Items[0];
+        DSD_MEMSET(hist, 0, sizeof(*hist));
+        Event_History* item = &hist->Event_History_Items[0];
         item->systype = DSD_SYNC_NXDN_POS;
         item->event_time = (time_t)1700001200;
         item->target_id = 301U;
         item->emergency = (uint8_t)emergency;
         char body[4096];
-        if (export_sidecar_body(&hist, 1, 0, 0, body, sizeof body) != 0) {
+        if (export_sidecar_body(hist, 1, 0, 0, body, sizeof body) != 0) {
             rc = 1;
             continue;
         }
@@ -2045,17 +2073,20 @@ test_sidecar_short_name_falls_back_to_the_protocol(void) {
         {"no protocol", DSD_SYNC_DIGITAL, "", "\"short_name\": \"\","},
     };
 
-    static Event_History_I hist;
+    Event_History_I* const hist = rdio_case_hist();
+    if (hist == NULL) {
+        return 1;
+    }
     int rc = 0;
     for (size_t i = 0; i < sizeof cases / sizeof cases[0]; i++) {
-        DSD_MEMSET(&hist, 0, sizeof(hist));
-        Event_History* item = &hist.Event_History_Items[0];
+        DSD_MEMSET(hist, 0, sizeof(*hist));
+        Event_History* item = &hist->Event_History_Items[0];
         item->systype = (int8_t)cases[i].systype;
         item->event_time = (time_t)1700001300;
         item->target_id = 12U;
         DSD_SNPRINTF(item->sysid_string, sizeof item->sysid_string, "%s", cases[i].sysid);
         char body[4096];
-        if (export_sidecar_body(&hist, 1, 0, 0, body, sizeof body) != 0) {
+        if (export_sidecar_body(hist, 1, 0, 0, body, sizeof body) != 0) {
             rc = 1;
             continue;
         }
@@ -2083,11 +2114,14 @@ test_sidecar_dash_tag_is_absent(void) {
         {"a name that starts with a dash", "-East", "Ops", "", "", "\"talkgroup_tag\": \"-East\","},
     };
 
-    static Event_History_I hist;
+    Event_History_I* const hist = rdio_case_hist();
+    if (hist == NULL) {
+        return 1;
+    }
     int rc = 0;
     for (size_t i = 0; i < sizeof cases / sizeof cases[0]; i++) {
-        DSD_MEMSET(&hist, 0, sizeof(hist));
-        Event_History* item = &hist.Event_History_Items[0];
+        DSD_MEMSET(hist, 0, sizeof(*hist));
+        Event_History* item = &hist->Event_History_Items[0];
         item->systype = DSD_SYNC_DMR_BS_VOICE_POS;
         item->event_time = (time_t)1700001400;
         item->target_id = 77U;
@@ -2097,17 +2131,17 @@ test_sidecar_dash_tag_is_absent(void) {
         DSD_SNPRINTF(item->tgt_str, sizeof item->tgt_str, "%s", cases[i].tgt_str);
         DSD_SNPRINTF(item->channel_label, sizeof item->channel_label, "%s", cases[i].channel);
         char body[4096];
-        if (export_sidecar_body(&hist, 1, 0, 0, body, sizeof body) != 0) {
+        if (export_sidecar_body(hist, 1, 0, 0, body, sizeof body) != 0) {
             rc = 1;
             continue;
         }
         rc |= expect_body_has(cases[i].label, body, cases[i].want);
     }
-    analog_row(&hist, 154437500);
-    DSD_SNPRINTF(hist.Event_History_Items[0].channel_label, sizeof hist.Event_History_Items[0].channel_label, "%s",
+    analog_row(hist, 154437500);
+    DSD_SNPRINTF(hist->Event_History_Items[0].channel_label, sizeof hist->Event_History_Items[0].channel_label, "%s",
                  "-");
     char body[4096];
-    if (export_sidecar_body(&hist, 1, 0, 0, body, sizeof body) != 0) {
+    if (export_sidecar_body(hist, 1, 0, 0, body, sizeof body) != 0) {
         return 1;
     }
     rc |= expect_body_has("analog dash channel label", body, "\"talkgroup_tag\": \"NFM 154.4375 MHz\",");
@@ -2146,18 +2180,21 @@ test_sidecar_strings_are_valid_utf8(void) {
         {"escape after a bad byte", "\xFF\"", "\xEF\xBF\xBD\\\""},
     };
 
-    static Event_History_I hist;
+    Event_History_I* const hist = rdio_case_hist();
+    if (hist == NULL) {
+        return 1;
+    }
     int rc = 0;
     for (size_t i = 0; i < sizeof cases / sizeof cases[0]; i++) {
-        DSD_MEMSET(&hist, 0, sizeof(hist));
-        Event_History* item = &hist.Event_History_Items[0];
+        DSD_MEMSET(hist, 0, sizeof(*hist));
+        Event_History* item = &hist->Event_History_Items[0];
         item->systype = DSD_SYNC_NXDN_POS;
         item->event_time = (time_t)1700001500;
         item->target_id = 77U;
         DSD_SNPRINTF(item->t_name, sizeof item->t_name, "%s", cases[i].in);
         DSD_SNPRINTF(item->sysid_string, sizeof item->sysid_string, "%s", cases[i].in);
         char body[4096];
-        if (export_sidecar_body(&hist, 1, 0, 0, body, sizeof body) != 0) {
+        if (export_sidecar_body(hist, 1, 0, 0, body, sizeof body) != 0) {
             rc = 1;
             continue;
         }
@@ -2189,26 +2226,29 @@ unnumbered_row(Event_History_I* hist, int systype, int64_t freq_hz, uint8_t kind
 // nor through the new one with the fallback off: no sidecar is written, whatever the row and options hold.
 static int
 test_unnumbered_digital_call_without_fallback_writes_nothing(void) {
-    static Event_History_I hist;
-    static dsd_opts opts;
-    DSD_MEMSET(&opts, 0, sizeof(opts));
-    opts.rdio_mode = DSD_RDIO_MODE_DIRWATCH;
-    opts.rdio_system_id = 48;
-    opts.rdio_unknown_talkgroup = 9000;
-    opts.rdio_analog_talkgroup = 8000;
-    unnumbered_row(&hist, DSD_SYNC_NXDN_POS, 452312500, DSD_ACCESS_CODE_RAN, 9);
-    hist.Event_History_Items[0].source_id = 1234U;
+    Event_History_I* const hist = rdio_case_hist();
+    dsd_opts* const opts = rdio_case_opts();
+    if (hist == NULL || opts == NULL) {
+        return 1;
+    }
+    DSD_MEMSET(opts, 0, sizeof(*opts));
+    opts->rdio_mode = DSD_RDIO_MODE_DIRWATCH;
+    opts->rdio_system_id = 48;
+    opts->rdio_unknown_talkgroup = 9000;
+    opts->rdio_analog_talkgroup = 8000;
+    unnumbered_row(hist, DSD_SYNC_NXDN_POS, 452312500, DSD_ACCESS_CODE_RAN, 9);
+    hist->Event_History_Items[0].source_id = 1234U;
     char body[4096];
     int rc = 0;
-    if (export_sidecar_body_full(&opts, &hist, 1, 0, 0, -1, body, sizeof body) != -1) {
+    if (export_sidecar_body_full(opts, hist, 1, 0, 0, -1, body, sizeof body) != -1) {
         DSD_FPRINTF(stderr, "dsd_rdio_export_call_ex() gave an unnumbered digital call a talkgroup\n");
         rc = 1;
     }
-    if (export_sidecar_body_full(&opts, &hist, 1, 0, 0, 0, body, sizeof body) != -1) {
+    if (export_sidecar_body_full(opts, hist, 1, 0, 0, 0, body, sizeof body) != -1) {
         DSD_FPRINTF(stderr, "the fallback entry with the fallback off exported an unnumbered digital call\n");
         rc = 1;
     }
-    if (dsd_rdio_call_talkgroup(&opts, &hist.Event_History_Items[0], 0) != 0U) {
+    if (dsd_rdio_call_talkgroup(opts, &hist->Event_History_Items[0], 0) != 0U) {
         DSD_FPRINTF(stderr, "dsd_rdio_call_talkgroup() gave a number with the fallback off\n");
         rc = 1;
     }
@@ -2261,32 +2301,35 @@ test_call_talkgroup_number(void) {
         {"analog never takes the digital option", 0, DSD_SYNC_ANALOG, 0U, 1, 9000, 0U, DSD_EVENT_CATEGORY_VOICE},
     };
 
-    static Event_History_I hist;
-    static dsd_opts opts;
+    Event_History_I* const hist = rdio_case_hist();
+    dsd_opts* const opts = rdio_case_opts();
+    if (hist == NULL || opts == NULL) {
+        return 1;
+    }
     int rc = 0;
     for (size_t i = 0; i < sizeof cases / sizeof cases[0]; i++) {
-        unnumbered_row(&hist, cases[i].systype, cases[i].freq_hz, DSD_ACCESS_CODE_NONE, 0);
-        hist.Event_History_Items[0].category = cases[i].category;
-        hist.Event_History_Items[0].target_id = cases[i].target;
-        DSD_MEMSET(&opts, 0, sizeof(opts));
-        opts.rdio_unknown_talkgroup = cases[i].option;
-        const uint32_t got = dsd_rdio_call_talkgroup(&opts, &hist.Event_History_Items[0], cases[i].allow);
+        unnumbered_row(hist, cases[i].systype, cases[i].freq_hz, DSD_ACCESS_CODE_NONE, 0);
+        hist->Event_History_Items[0].category = cases[i].category;
+        hist->Event_History_Items[0].target_id = cases[i].target;
+        DSD_MEMSET(opts, 0, sizeof(*opts));
+        opts->rdio_unknown_talkgroup = cases[i].option;
+        const uint32_t got = dsd_rdio_call_talkgroup(opts, &hist->Event_History_Items[0], cases[i].allow);
         if (got != cases[i].want) {
             DSD_FPRINTF(stderr, "%s: talkgroup %u, want %u\n", cases[i].label, (unsigned)got, (unsigned)cases[i].want);
             rc = 1;
         }
     }
-    if (dsd_rdio_call_talkgroup(&opts, NULL, 1) != 0U) {
+    if (dsd_rdio_call_talkgroup(opts, NULL, 1) != 0U) {
         DSD_FPRINTF(stderr, "no row, no talkgroup\n");
         rc = 1;
     }
-    unnumbered_row(&hist, DSD_SYNC_NXDN_POS, 452312500, DSD_ACCESS_CODE_NONE, 0);
-    if (dsd_rdio_call_talkgroup(NULL, &hist.Event_History_Items[0], 1) != 452312U) {
+    unnumbered_row(hist, DSD_SYNC_NXDN_POS, 452312500, DSD_ACCESS_CODE_NONE, 0);
+    if (dsd_rdio_call_talkgroup(NULL, &hist->Event_History_Items[0], 1) != 452312U) {
         DSD_FPRINTF(stderr, "no options: still the kHz\n");
         rc = 1;
     }
-    unnumbered_row(&hist, DSD_SYNC_NXDN_POS, 0, DSD_ACCESS_CODE_NONE, 0);
-    if (dsd_rdio_call_talkgroup(NULL, &hist.Event_History_Items[0], 1) != 0U) {
+    unnumbered_row(hist, DSD_SYNC_NXDN_POS, 0, DSD_ACCESS_CODE_NONE, 0);
+    if (dsd_rdio_call_talkgroup(NULL, &hist->Event_History_Items[0], 1) != 0U) {
         DSD_FPRINTF(stderr, "no options and no frequency: no talkgroup\n");
         rc = 1;
     }
@@ -2317,13 +2360,16 @@ test_call_fallback_eligible(void) {
         {"analog: its own rule", DSD_SYNC_ANALOG, DSD_EVENT_CATEGORY_VOICE, 0U, 1, 0},
     };
 
-    static Event_History_I hist;
+    Event_History_I* const hist = rdio_case_hist();
+    if (hist == NULL) {
+        return 1;
+    }
     int rc = 0;
     for (size_t i = 0; i < sizeof cases / sizeof cases[0]; i++) {
-        unnumbered_row(&hist, cases[i].systype, 0, DSD_ACCESS_CODE_NONE, 0);
-        hist.Event_History_Items[0].category = cases[i].category;
-        hist.Event_History_Items[0].target_id = cases[i].target;
-        const int got = dsd_rdio_call_fallback_eligible(&hist.Event_History_Items[0], cases[i].allow);
+        unnumbered_row(hist, cases[i].systype, 0, DSD_ACCESS_CODE_NONE, 0);
+        hist->Event_History_Items[0].category = cases[i].category;
+        hist->Event_History_Items[0].target_id = cases[i].target;
+        const int got = dsd_rdio_call_fallback_eligible(&hist->Event_History_Items[0], cases[i].allow);
         if (got != cases[i].want) {
             DSD_FPRINTF(stderr, "%s: eligible %d, want %d\n", cases[i].label, got, cases[i].want);
             rc = 1;
@@ -2392,12 +2438,15 @@ test_fallback_call_label(void) {
          "M17 2400.0000 MHz"},
     };
 
-    static Event_History_I hist;
-    static dsd_opts opts;
+    Event_History_I* const hist = rdio_case_hist();
+    dsd_opts* const opts = rdio_case_opts();
+    if (hist == NULL || opts == NULL) {
+        return 1;
+    }
     int rc = 0;
     for (size_t i = 0; i < sizeof cases / sizeof cases[0]; i++) {
-        unnumbered_row(&hist, cases[i].systype, cases[i].freq_hz, cases[i].kind, cases[i].code);
-        Event_History* item = &hist.Event_History_Items[0];
+        unnumbered_row(hist, cases[i].systype, cases[i].freq_hz, cases[i].kind, cases[i].code);
+        Event_History* item = &hist->Event_History_Items[0];
         item->gi = (int8_t)cases[i].gi;
         item->source_id = 4321U;
         DSD_SNPRINTF(item->service_label, sizeof item->service_label, "%s", cases[i].service);
@@ -2406,11 +2455,11 @@ test_fallback_call_label(void) {
         DSD_SNPRINTF(item->t_name, sizeof item->t_name, "%s", "Some Name");
         DSD_SNPRINTF(item->tgt_str, sizeof item->tgt_str, "%s", "CQCQCQ");
         DSD_SNPRINTF(item->src_str, sizeof item->src_str, "%s", "N0CALL");
-        DSD_MEMSET(&opts, 0, sizeof(opts));
-        opts.rdio_mode = DSD_RDIO_MODE_DIRWATCH;
-        opts.rdio_unknown_talkgroup = 9000;
+        DSD_MEMSET(opts, 0, sizeof(*opts));
+        opts->rdio_mode = DSD_RDIO_MODE_DIRWATCH;
+        opts->rdio_unknown_talkgroup = 9000;
         char body[4096];
-        if (export_sidecar_body_full(&opts, &hist, 1, 0, 0, 1, body, sizeof body) != 0) {
+        if (export_sidecar_body_full(opts, hist, 1, 0, 0, 1, body, sizeof body) != 0) {
             DSD_FPRINTF(stderr, "%s: export failed\n", cases[i].label);
             rc = 1;
             continue;
@@ -2452,20 +2501,23 @@ test_fallback_edacs_provoice_label(void) {
         {"standalone ProVoice, no system string", DSD_SYNC_PROVOICE_NEG, 0U, 0, "", "ProVoice", "ProVoice"},
     };
 
-    static Event_History_I hist;
-    static dsd_opts opts;
+    Event_History_I* const hist = rdio_case_hist();
+    dsd_opts* const opts = rdio_case_opts();
+    if (hist == NULL || opts == NULL) {
+        return 1;
+    }
     int rc = 0;
     for (size_t i = 0; i < sizeof cases / sizeof cases[0]; i++) {
-        unnumbered_row(&hist, cases[i].systype, cases[i].freq_hz, DSD_ACCESS_CODE_NONE, 0);
-        Event_History* item = &hist.Event_History_Items[0];
+        unnumbered_row(hist, cases[i].systype, cases[i].freq_hz, DSD_ACCESS_CODE_NONE, 0);
+        Event_History* item = &hist->Event_History_Items[0];
         item->source_id = 4321U;
         item->channel = cases[i].channel;
         DSD_SNPRINTF(item->sysid_string, sizeof item->sysid_string, "%s", cases[i].sysid);
-        DSD_MEMSET(&opts, 0, sizeof(opts));
-        opts.rdio_mode = DSD_RDIO_MODE_DIRWATCH;
-        opts.rdio_unknown_talkgroup = 9000;
+        DSD_MEMSET(opts, 0, sizeof(*opts));
+        opts->rdio_mode = DSD_RDIO_MODE_DIRWATCH;
+        opts->rdio_unknown_talkgroup = 9000;
         char body[4096];
-        if (export_sidecar_body_full(&opts, &hist, 1, 0, 0, 1, body, sizeof body) != 0) {
+        if (export_sidecar_body_full(opts, hist, 1, 0, 0, 1, body, sizeof body) != 0) {
             DSD_FPRINTF(stderr, "%s: export failed\n", cases[i].label);
             rc = 1;
             continue;
@@ -2485,17 +2537,20 @@ test_fallback_edacs_provoice_label(void) {
 // the number, freq is 0 and freqList is left out. A numbered row exported with the fallback on is unchanged.
 static int
 test_fallback_call_sidecar(void) {
-    static Event_History_I hist;
-    static dsd_opts opts;
-    DSD_MEMSET(&opts, 0, sizeof(opts));
-    opts.rdio_mode = DSD_RDIO_MODE_DIRWATCH;
-    opts.rdio_system_id = 5;
-    opts.rdio_analog_system_id = 9;
-    opts.rdio_unknown_talkgroup = 9000;
-    unnumbered_row(&hist, DSD_SYNC_NXDN_POS, 452312500, DSD_ACCESS_CODE_RAN, 9);
-    hist.Event_History_Items[0].enc = 1;
+    Event_History_I* const hist = rdio_case_hist();
+    dsd_opts* const opts = rdio_case_opts();
+    if (hist == NULL || opts == NULL) {
+        return 1;
+    }
+    DSD_MEMSET(opts, 0, sizeof(*opts));
+    opts->rdio_mode = DSD_RDIO_MODE_DIRWATCH;
+    opts->rdio_system_id = 5;
+    opts->rdio_analog_system_id = 9;
+    opts->rdio_unknown_talkgroup = 9000;
+    unnumbered_row(hist, DSD_SYNC_NXDN_POS, 452312500, DSD_ACCESS_CODE_RAN, 9);
+    hist->Event_History_Items[0].enc = 1;
     char body[4096];
-    if (export_sidecar_body_full(&opts, &hist, 2, 0, 0, 1, body, sizeof body) != 0) {
+    if (export_sidecar_body_full(opts, hist, 2, 0, 0, 1, body, sizeof body) != 0) {
         DSD_FPRINTF(stderr, "fallback sidecar: export failed\n");
         return 1;
     }
@@ -2509,15 +2564,15 @@ test_fallback_call_sidecar(void) {
     rc |= expect_body_has("fallback sidecar", body, "\"short_name\": \"NXDN\",");
     rc |= expect_body_has("fallback sidecar", body, "\"encrypted\": true");
     rc |= expect_sidecar_times("fallback sidecar", body, 1700002000LL, 1700002002LL);
-    if (hist.Event_History_Items[0].target_id != 0U) {
+    if (hist->Event_History_Items[0].target_id != 0U) {
         DSD_FPRINTF(stderr, "fallback sidecar: the export number was stored on the row\n");
         rc = 1;
     }
 
-    unnumbered_row(&hist, DSD_SYNC_YSF_POS, 0, DSD_ACCESS_CODE_NONE, 0);
-    DSD_SNPRINTF(hist.Event_History_Items[0].sysid_string, sizeof hist.Event_History_Items[0].sysid_string, "%s",
+    unnumbered_row(hist, DSD_SYNC_YSF_POS, 0, DSD_ACCESS_CODE_NONE, 0);
+    DSD_SNPRINTF(hist->Event_History_Items[0].sysid_string, sizeof hist->Event_History_Items[0].sysid_string, "%s",
                  "YSF_DG-ID_0");
-    if (export_sidecar_body_full(&opts, &hist, 1, 0, 0, 1, body, sizeof body) != 0) {
+    if (export_sidecar_body_full(opts, hist, 1, 0, 0, 1, body, sizeof body) != 0) {
         DSD_FPRINTF(stderr, "audio-input fallback sidecar: export failed\n");
         return 1;
     }
@@ -2530,16 +2585,16 @@ test_fallback_call_sidecar(void) {
         rc = 1;
     }
 
-    opts.rdio_unknown_talkgroup = 0;
-    if (export_sidecar_body_full(&opts, &hist, 1, 0, 0, 1, body, sizeof body) != -1) {
+    opts->rdio_unknown_talkgroup = 0;
+    if (export_sidecar_body_full(opts, hist, 1, 0, 0, 1, body, sizeof body) != -1) {
         DSD_FPRINTF(stderr, "no frequency and no option: a fallback call was exported\n");
         rc = 1;
     }
 
-    unnumbered_row(&hist, DSD_SYNC_DMR_BS_VOICE_POS, 452312500, DSD_ACCESS_CODE_COLOR_CODE, 3);
-    hist.Event_History_Items[0].target_id = 77U;
-    hist.Event_History_Items[0].gi = 0;
-    if (export_sidecar_body_full(&opts, &hist, 1, 0, 0, 1, body, sizeof body) != 0) {
+    unnumbered_row(hist, DSD_SYNC_DMR_BS_VOICE_POS, 452312500, DSD_ACCESS_CODE_COLOR_CODE, 3);
+    hist->Event_History_Items[0].target_id = 77U;
+    hist->Event_History_Items[0].gi = 0;
+    if (export_sidecar_body_full(opts, hist, 1, 0, 0, 1, body, sizeof body) != 0) {
         DSD_FPRINTF(stderr, "numbered row with the fallback on: export failed\n");
         return 1;
     }
@@ -4652,5 +4707,7 @@ main(void) {
     rc |= test_both_mode_failed_private_removal_said_once();
     /* Last: it leaves the upload worker failed for good. */
     rc |= test_failed_join_releases_queued_jobs();
+    free(g_rdio_case_hist);
+    free(g_rdio_case_opts);
     return rc;
 }
