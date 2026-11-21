@@ -295,21 +295,30 @@ typedef struct {
 
 /** The direct mode call on the channel, from its DMAC-SYNC and DMAC-DATA PDUs (EN 300 396-3 clause 9). */
 typedef struct {
-    double seen_m;         /**< decode clock: the last PDU or speech of the call */
-    double sds_m;          /**< decode clock: when the last short data notice went out */
-    tetra_dmo_sds_key sds; /**< the message of the last short data notice; type 0 for none */
-    uint32_t src;          /**< source address (talker) */
-    tetra_dmo_party party; /**< its master (tetra_dmo_party_of()): source, MNI, route, called group */
-    tetra_dmo_named named; /**< every party its own set-up, connect-ack and occupation DSBs named, exactly */
-    uint32_t dst;          /**< destination: the first SSI its PDUs named, else the last read; 0 when none was read */
-    uint32_t tx_seq;       /**< the transmission it is a call of (tetra_state_t::dmo_tx_seq) */
-    uint8_t active;        /**< a DM-SETUP, DM-CONNECT ACK or DM-OCCUPIED set it up and no end has come since */
-    uint8_t in_tx;         /**< it was published with a transmission in progress, not only announced by its set-up */
-    uint8_t addressed;     /**< the addresses were clear (no DM-2-C) */
-    uint8_t group;         /**< call type element: 1 group call, 0 individual call (group_known) */
-    uint8_t group_known;   /**< the DM-SDU with the call type was clear */
-    uint8_t circuit_mode;  /**< circuit mode type (0 speech); circuit_known */
+    double seen_m;          /**< decode clock: the last PDU or speech of the call */
+    double sds_m;           /**< decode clock: when the last short data notice went out */
+    tetra_dmo_sds_key sds;  /**< the message of the last short data notice; type 0 for none */
+    uint32_t src;           /**< source address (talker) */
+    tetra_dmo_party master; /**< its current master, as the DSB of its current set-up, ACK or occupation named it */
+    tetra_dmo_addr called;  /**< the called party as its set-up named it (type 2: a DM-GSETUP named none yet) */
+    tetra_dmo_addr alias;   /**< the called party's pseudo SSI a later set-up or ACK addressed (has_alias) */
+    tetra_dmo_addr caller;  /**< the source of the call's first set-up: through a gateway, the DM-MS end of a set-up a
+                                 DM-MS sent (EN 300 396-5 clause 13.5.2.1.2) */
+    uint32_t gw_pseudo;     /**< the call's gateway's pseudo SSI, when a gateway-generated DSB of the call named it */
+    uint32_t dst;           /**< destination shown: the called party's SSI, else its pseudo SSI; 0 when none read */
+    uint32_t tx_seq;        /**< the transmission it is a call of (tetra_state_t::dmo_tx_seq) */
+    uint8_t active;         /**< a DM-SETUP, DM-CONNECT ACK or DM-OCCUPIED set it up and no end has come since */
+    uint8_t in_tx;          /**< it was published with a transmission in progress, not only announced by its set-up */
+    uint8_t addressed;      /**< the addresses were clear (no DM-2-C) */
+    uint8_t group;          /**< call type element: 1 group call, 0 individual call (group_known) */
+    uint8_t group_known;    /**< the DM-SDU with the call type was clear */
+    uint8_t circuit_mode;   /**< circuit mode type (0 speech); circuit_known */
     uint8_t circuit_known;
+    uint8_t has_alias;
+    uint8_t setup_by_gw; /**< a gateway sent the call's first set-up (EN 300 396-5 clause 13.5.2.1.4) */
+    uint8_t gw_pseudo_known;
+    uint8_t pending_pres; /**< an individual DM-SETUP PRES no DM-CONNECT, ACK or traffic answered yet (clause 9.5.4) */
+    uint8_t pending_gsetup; /**< a DM-MS's DM-GSETUP no set-up naming its group followed yet (EN 300 396-5 4.3.2.2) */
 } tetra_dmo_call_t;
 
 /* The D-CONNECTs of calls no record holds that are remembered for the D-SETUP that may follow them (tetra_calls.c). */
@@ -572,6 +581,8 @@ typedef struct tetra_state {
      * dmo_comm_type:  communication type of the last DSB: 0 direct, 1 DM-REP, 2 DM-GATE, 3 DM-REP/GATE.
  * dmo_dcc_comm_type: the communication type of the DSB the colour code dmo_dcc_seed came from, with which the normal
  *                 bursts it descrambles are read (EN 300 396-5 clauses 8.5.2.1.5, 13.5.2.1.5).
+ * dmo_dcc_tx:     dmo_dcc_seed is the colour code of the transmission in progress, from its set-up, ACK or occupation
+ *                 (EN 300 396-3 clause 8.2.4), so a normal burst it descrambles is that transmission's.
      * dmo_crypt:      tetra_dmo_crypt_e of the current call's traffic, what its speech is classified by.
      * dmo_tx_crypt:   tetra_dmo_crypt_e the set-up of the traffic transmission in progress gave (EN 300 396-3 clause
      *                 8.5.3), which its DM-OCCUPIED repeats; UNKNOWN while none is in progress.
@@ -583,9 +594,8 @@ typedef struct tetra_state {
  *                 ciphering parameters do not change within a call transaction, EN 300 396-6 clause 5.2); 0 otherwise.
  * dmo_tx_seed:    the DM colour code seed of that transmission's source, 0 when none is known.
  * dmo_tx_party:   the party of the set-up that started that transmission (tetra_dmo_party: source address and its
- *                 type, MNI, route, called group), which its DM-OCCUPIED shall repeat (clause 8.5.2.1.1); not
- *                 known for a DM-2-C one, which names none. End messages and reservations are matched against the
- *                 parties the call named instead (tetra_dmo_call_t::named).
+ *                 type, MNI, route, sending side), which its DM-OCCUPIED and its sync-burst end messages repeat
+ *                 (clause 8.5.2.1.1); not known for a DM-2-C one, which names none.
      * dmo_tx_seq:     counts the transmissions started: the direct mode call canonical slot 0 shows is of one of them.
      * dmo_since_sync: DNBs processed since the last DMAC-SYNC (colour code staleness). */
     uint32_t dmo_dcc_seed;
@@ -597,6 +607,7 @@ typedef struct tetra_state {
     uint8_t dmo_dcc_valid;
     uint8_t dmo_comm_type;
     uint8_t dmo_dcc_comm_type;
+    uint8_t dmo_dcc_tx;
     uint8_t dmo_crypt;
     uint8_t dmo_tx_crypt;
     uint8_t dmo_tx_aie;
