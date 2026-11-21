@@ -24,10 +24,12 @@
 #include <dsd-neo/fec/block_codes.h>
 #include <dsd-neo/protocol/m17/m17.h>
 #include <dsd-neo/protocol/m17/m17_parse.h>
+#include <dsd-neo/runtime/exitflag.h>
 #include <dsd-neo/runtime/frame_sync_hooks.h>
 #include <dsd-neo/runtime/signal_search_hooks.h>
 #include <stddef.h>
 #include <stdint.h>
+#include <stdlib.h>
 #include <string.h>
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/safe_api.h"
@@ -63,6 +65,17 @@ static size_t g_interrupt_at = SIZE_MAX;
    (dsd_engine_carrier_boundary(), issue #575); SIZE_MAX for none. The frame's own dibits follow it, the worst case of
    another carrier's symbols that pass the frame's checks. */
 static size_t g_boundary_at = SIZE_MAX;
+/* The read at which the input ends (SIZE_MAX for none): from it on the reader stands in silence, as a symbol or binary
+   capture's reader does past the file's end, and asks for shutdown (TEST_END_EXIT) or for the fallback to another
+   input (TEST_END_FALLBACK), without raising an interruption. */
+static size_t g_input_end_at = SIZE_MAX;
+
+enum { TEST_END_EXIT = 0, TEST_END_FALLBACK = 1 };
+
+static int g_input_end_mode;
+/* The one decoder state and options the newer cases share, on the heap (main()). */
+static dsd_opts* g_opts;
+static dsd_state* g_state;
 static int g_codec2_decodes;
 static int g_search_evidence;
 
@@ -114,9 +127,17 @@ next_dibit(dsd_state* state, float* symbol) {
     if (g_pos == g_interrupt_at) {
         state->input_interrupted = 1;
     }
+    const int ended = g_pos >= g_input_end_at;
+    if (g_pos == g_input_end_at) {
+        if (g_input_end_mode == TEST_END_EXIT) {
+            dsd_exitflag_store(1);
+        } else {
+            state->input_fallback_pending = 1;
+        }
+    }
     int dibit = g_frame[g_pos];
     *symbol = (float)m17_symbol_from_dibit(g_frame[g_pos]);
-    if (state->input_interrupted) {
+    if (state->input_interrupted || ended) {
         dibit = TEST_STOOD_IN_DIBIT;
         *symbol = 0.0F;
     }
@@ -124,7 +145,7 @@ next_dibit(dsd_state* state, float* symbol) {
     /* Every real symbol read counts, as getSymbol() counts it, and a stood-in erasure does not (the production reader
        returns it uncounted): the packet's frame spacing is read from the count (issue #890). The frame's 8 sync
        symbols are the hunt's, so frames here end 184 symbols apart. */
-    if (!state->input_interrupted) {
+    if (!state->input_interrupted && !ended) {
         state->symbolcnt++;
     }
     return dibit;
@@ -182,15 +203,23 @@ build_lsf_bits(uint8_t lsf_bits[TEST_M17_LSF_BITS]) {
     (void)m17_attach_lsf_crc(lsf_bits, packed);
 }
 
+/* A link setup from @p src to @p dst with TYPE @p type, its CRC attached. */
+static void
+build_lsf_bits_with(uint8_t lsf_bits[TEST_M17_LSF_BITS], unsigned long long dst, unsigned long long src,
+                    unsigned long long type) {
+    uint8_t packed[M17_LSF_BYTES];
+    DSD_MEMSET(lsf_bits, 0, TEST_M17_LSF_BITS);
+    m17_load_lsf_callsigns(lsf_bits, dst, src);
+    write_bits(lsf_bits + 96, type, 16U);
+    (void)m17_attach_lsf_crc(lsf_bits, packed);
+}
+
 /* A packet transmission's link setup (packet mode, CAN 5) from EF2GH to AB1CD, its CRC attached: what the strict RF
    packet rule needs before any packet frame (issue #890). */
 static void
 build_packet_lsf_bits(uint8_t lsf_bits[TEST_M17_LSF_BITS]) {
-    uint8_t packed[M17_LSF_BYTES];
-    DSD_MEMSET(lsf_bits, 0, TEST_M17_LSF_BITS);
-    m17_load_lsf_callsigns(lsf_bits, m17_encode_b40_callsign(0ULL, "AB1CD"), m17_encode_b40_callsign(0ULL, "EF2GH"));
-    write_bits(lsf_bits + 96, m17_compose_frame_info(0U, 0U, 0U, 0U, 5U, 0U, 0U), 16U);
-    (void)m17_attach_lsf_crc(lsf_bits, packed);
+    build_lsf_bits_with(lsf_bits, m17_encode_b40_callsign(0ULL, "AB1CD"), m17_encode_b40_callsign(0ULL, "EF2GH"),
+                        m17_compose_frame_info(0U, 0U, 0U, 0U, 5U, 0U, 0U));
 }
 
 /* Hands the readers the frame next, read whole unless a test then sets a cut or a boundary. */
@@ -202,6 +231,7 @@ load_randomized_frame(const uint8_t rnd[M17_PAYLOAD_BITS]) {
     g_pos = 0U;
     g_interrupt_at = SIZE_MAX;
     g_boundary_at = SIZE_MAX;
+    g_input_end_at = SIZE_MAX;
 }
 
 static void
@@ -259,21 +289,28 @@ load_packet_frame(const char* text, int index) {
     return frame_count;
 }
 
-/* A packet frame carrying @p bytes (@p n of them, the rest zero) with metadata (@p eof, @p value). */
+/* A packet frame carrying @p bytes (@p n of them, the rest zero) with the metadata byte @p metadata as sent, valid or
+   not. */
 static void
-load_raw_packet_frame(const uint8_t* bytes, size_t n, uint8_t eof, uint8_t value) {
+load_packet_frame_metadata(const uint8_t* bytes, size_t n, uint8_t metadata) {
     uint8_t chunk_bits[M17_PACKET_CHUNK_BITS];
     DSD_MEMSET(chunk_bits, 0, sizeof(chunk_bits));
     for (size_t i = 0U; i < n * 8U && i < sizeof(chunk_bits); i++) {
         chunk_bits[i] = (uint8_t)((bytes[i / 8U] >> (7U - (i % 8U))) & 1U);
     }
-    uint8_t metadata = 0U;
-    assert(m17_packet_metadata_byte(eof, value, &metadata) == 0);
     uint8_t type1[M17_PACKET_TYPE1_FLUSH_BITS];
     uint8_t rnd[M17_PAYLOAD_BITS];
     m17_packet_build_type1_bits(chunk_bits, metadata, type1);
     (void)m17_packet_encode_type1_bits(type1, rnd, NULL);
     load_randomized_frame(rnd);
+}
+
+/* A packet frame carrying @p bytes (@p n of them, the rest zero) with metadata (@p eof, @p value). */
+static void
+load_raw_packet_frame(const uint8_t* bytes, size_t n, uint8_t eof, uint8_t value) {
+    uint8_t metadata = 0U;
+    assert(m17_packet_metadata_byte(eof, value, &metadata) == 0);
+    load_packet_frame_metadata(bytes, n, metadata);
 }
 
 /* A packet transmission's checked LSF frame, read as the frame before its packet frames. */
@@ -314,6 +351,8 @@ prepare(dsd_opts* opts, dsd_state* state) {
     state->m17_bert_lfsr = 1U;
     g_interrupt_at = SIZE_MAX;
     g_boundary_at = SIZE_MAX;
+    g_input_end_at = SIZE_MAX;
+    dsd_exitflag_store(0);
     g_codec2_decodes = 0;
     g_search_evidence = 0;
     dsd_signal_search_evidence_set(count_search_evidence);
@@ -519,40 +558,40 @@ test_packet_frame_cut_by_an_input_interruption_decodes_nothing(void) {
    and never printed, under -F too. Without its checked LSF frame a packet is not decoded at all. */
 static void
 test_packet_cut_early_is_lost(void) {
-    static dsd_opts opts;
-    static dsd_state state;
+    dsd_opts* opts = g_opts;
+    dsd_state* state = g_state;
     static const char text[] = "THIS SMS IS LONG ENOUGH TO TAKE THREE PACKET FRAMES TO SEND";
     char out[8192];
 
-    prepare(&opts, &state);
-    opts.aggressive_framesync = 0;
+    prepare(opts, state);
+    opts->aggressive_framesync = 0;
     dsd_test_capture_stderr cap;
     assert(dsd_test_capture_stderr_begin(&cap, "m17_pkt_cut_early") == 0);
     /* The checks run once the capture ends, so a failed one is seen. */
-    read_packet_lsf_frame(&opts, &state);
+    read_packet_lsf_frame(opts, state);
     const int frames = load_packet_frame(text, 0);
-    const int chunk0 = processM17PKT(&opts, &state);
+    const int chunk0 = processM17PKT(opts, state);
     (void)load_packet_frame(text, 1);
     g_interrupt_at = 4U;
-    (void)processM17PKT(&opts, &state);
-    state.input_interrupted = 0;
+    (void)processM17PKT(opts, state);
+    state->input_interrupted = 0;
     (void)load_packet_frame(text, 2);
-    const int eof = processM17PKT(&opts, &state);
+    const int eof = processM17PKT(opts, state);
     (void)dsd_test_capture_stderr_end(&cap);
     (void)dsd_test_capture_stderr_read(&cap, out, sizeof(out));
     assert(frames == 3);
     assert(chunk0 == 1);
     assert(eof == 0);
     assert(strstr(out, "SMS") == NULL);
-    finish(&state);
+    finish(state);
 
     /* A whole packet with no LSF frame before it: not decoded. */
-    prepare(&opts, &state);
-    state.synctype = DSD_SYNC_M17_PKT_POS;
+    prepare(opts, state);
+    state->synctype = DSD_SYNC_M17_PKT_POS;
     (void)load_packet_frame(text, 0);
-    assert(processM17PKT(&opts, &state) == 0);
-    assert(state.m17_pbc_ct == 0U);
-    finish(&state);
+    assert(processM17PKT(opts, state) == 0);
+    assert(state->m17_pbc_ct == 0U);
+    finish(state);
 }
 
 /* Issue #890: the last frame (EOF) answers for itself through processM17PKT(): an empty packet (two bytes FF FF, the
@@ -560,28 +599,185 @@ test_packet_cut_early_is_lost(void) {
    EOT marker; so does an EOF rejected for a lost frame before it. */
 static void
 test_packet_eof_verdict_is_its_own(void) {
-    static dsd_opts opts;
-    static dsd_state state;
+    dsd_opts* opts = g_opts;
+    dsd_state* state = g_state;
     static const uint8_t k_empty[2] = {0xFFU, 0xFFU};
 
-    prepare(&opts, &state);
-    read_packet_lsf_frame(&opts, &state);
+    prepare(opts, state);
+    read_packet_lsf_frame(opts, state);
     load_raw_packet_frame(k_empty, sizeof(k_empty), 1U, 2U);
-    assert(processM17PKT(&opts, &state) == 0);
-    assert(state.m17_confirmed == 1U);
-    assert(state.m17_tx_ended == 1U);
-    finish(&state);
+    assert(processM17PKT(opts, state) == 0);
+    assert(state->m17_confirmed == 1U);
+    assert(state->m17_tx_ended == 1U);
+    finish(state);
 
     static const char text[] = "CUT FRAMES DECODE NOTHING";
-    prepare(&opts, &state);
-    read_packet_lsf_frame(&opts, &state);
+    prepare(opts, state);
+    read_packet_lsf_frame(opts, state);
     (void)load_packet_frame(text, 0);
-    assert(processM17PKT(&opts, &state) == 1);
-    state.symbolcnt += 192U; /* a whole frame lost */
+    assert(processM17PKT(opts, state) == 1);
+    state->symbolcnt += 192U; /* a whole frame lost */
     (void)load_packet_frame(text, 1);
-    assert(processM17PKT(&opts, &state) == 0);
-    assert(state.m17_confirmed == 1U);
-    finish(&state);
+    assert(processM17PKT(opts, state) == 0);
+    assert(state->m17_confirmed == 1U);
+    finish(state);
+}
+
+/* Issue #890: every packet frame answers for itself, apart from the confirmation the transmission's EOT marker needs.
+   After a checked LSF frame, an EOF whose byte count (26) no frame can carry, a first chunk numbered 10 and a whole
+   packet whose payload CRC fails each earn no consumption credit; the LSF's confirmation stands. The malformed EOF is
+   not trusted to end the transmission; the failed packet ends it, its CRC ERR logged, and only -F shows its content.
+   The packet is an SMS "HI" whose CRC is wrong. */
+static const uint8_t k_bad_crc_sms[6] = {0x05U, 'H', 'I', 0x00U, 0x12U, 0x34U};
+
+static void
+test_packet_malformed_eof_earns_no_credit(void) {
+    dsd_opts* opts = g_opts;
+    dsd_state* state = g_state;
+
+    prepare(opts, state);
+    read_packet_lsf_frame(opts, state);
+    const int evidence = g_search_evidence;
+    load_packet_frame_metadata(k_bad_crc_sms, sizeof(k_bad_crc_sms), (uint8_t)(0x80U | (26U << 2U)));
+    assert(processM17PKT(opts, state) == 0);
+    assert(state->m17_confirmed == 1U);
+    assert(state->m17_tx_ended == 0U);
+    assert(g_search_evidence == evidence);
+    finish(state);
+}
+
+static void
+test_packet_out_of_order_first_chunk_earns_no_credit(void) {
+    dsd_opts* opts = g_opts;
+    dsd_state* state = g_state;
+
+    prepare(opts, state);
+    read_packet_lsf_frame(opts, state);
+    load_raw_packet_frame(k_bad_crc_sms, sizeof(k_bad_crc_sms), 0U, 10U);
+    assert(processM17PKT(opts, state) == 0);
+    assert(state->m17_confirmed == 1U);
+    assert(state->m17_pbc_ct == 0U);
+    finish(state);
+}
+
+static void
+test_packet_crc_failure_earns_no_credit(void) {
+    dsd_opts* opts = g_opts;
+    dsd_state* state = g_state;
+    char out[8192];
+    for (int relaxed = 0; relaxed <= 1; relaxed++) {
+        prepare(opts, state);
+        opts->aggressive_framesync = relaxed ? 0 : 1;
+        dsd_test_capture_stderr cap;
+        assert(dsd_test_capture_stderr_begin(&cap, "m17_pkt_crc_fail") == 0);
+        read_packet_lsf_frame(opts, state);
+        const int lsf_evidence = g_search_evidence;
+        load_raw_packet_frame(k_bad_crc_sms, sizeof(k_bad_crc_sms), 1U, (uint8_t)sizeof(k_bad_crc_sms));
+        const int verdict = processM17PKT(opts, state);
+        (void)dsd_test_capture_stderr_end(&cap);
+        DSD_MEMSET(out, 0, sizeof(out));
+        (void)dsd_test_capture_stderr_read(&cap, out, sizeof(out));
+        assert(verdict == 0);
+        assert(g_search_evidence == lsf_evidence);
+        assert(state->m17_confirmed == 1U);
+        assert(state->m17_tx_ended == 1U);
+        assert(strstr(out, "CRC ERR") != NULL);
+        assert((strstr(out, "HI") != NULL) == relaxed);
+        finish(state);
+    }
+}
+
+/* Issue #890: a packet starts only behind a checked packet-mode LSF frame the decoder applied. One whose source is the
+   broadcast address (a destination only), or whose TYPE sets a reserved bit, passes its CRC but is not applied: the
+   packet after it is not decoded (its CAN would be the reset one). The same packet behind a usable LSF decodes. */
+static void
+test_packet_behind_an_unapplied_lsf_is_not_decoded(void) {
+    dsd_opts* opts = g_opts;
+    dsd_state* state = g_state;
+    static const char text[] = "HI";
+    uint8_t lsf_bits[TEST_M17_LSF_BITS];
+    const unsigned long long dst = m17_encode_b40_callsign(0ULL, "AB1CD");
+    const unsigned long long src = m17_encode_b40_callsign(0ULL, "EF2GH");
+    const unsigned long long packet_can5 = m17_compose_frame_info(0U, 0U, 0U, 0U, 5U, 0U, 0U);
+    const unsigned long long setups[3][2] = {
+        {0xFFFFFFFFFFFFULL, packet_can5}, /* the broadcast address as the source */
+        {src, packet_can5 | 0x0002ULL},   /* a reserved TYPE bit */
+        {src, packet_can5},               /* usable */
+    };
+    for (size_t i = 0U; i < 3U; i++) {
+        prepare(opts, state);
+        build_lsf_bits_with(lsf_bits, dst, setups[i][0], setups[i][1]);
+        state->synctype = DSD_SYNC_M17_LSF_POS;
+        load_lsf_frame(lsf_bits);
+        (void)processM17LSF(opts, state);
+        state->synctype = DSD_SYNC_M17_PKT_POS;
+        const int evidence = g_search_evidence;
+        assert(load_packet_frame(text, 0) == 1);
+        const int usable = i == 2U;
+        assert(processM17PKT(opts, state) == usable);
+        assert(g_search_evidence == evidence + usable);
+        finish(state);
+    }
+}
+
+/* Issue #890: a packet frame that ends the input (a symbol or binary capture cut short: the reader stands in silence
+   past its end and asks for shutdown, or for the fallback to another input, without raising an interruption) is cut:
+   the one-frame packet missing its last six symbols is not decoded or credited. So is a packet LSF frame the input's
+   end cuts: no packet follows it. */
+static void
+test_packet_frame_at_the_input_end_decodes_nothing(void) {
+    dsd_opts* opts = g_opts;
+    dsd_state* state = g_state;
+    static const char text[] = "HI";
+    for (int mode = TEST_END_EXIT; mode <= TEST_END_FALLBACK; mode++) {
+        prepare(opts, state);
+        read_packet_lsf_frame(opts, state);
+        const int evidence = g_search_evidence;
+        (void)load_packet_frame(text, 0);
+        g_input_end_mode = mode;
+        g_input_end_at = 178U;
+        assert(processM17PKT(opts, state) == 0);
+        assert(state->input_interrupted == 1);
+        assert(g_search_evidence == evidence);
+        assert(state->m17_pbc_ct == 0U);
+        finish(state);
+    }
+    dsd_exitflag_store(0);
+
+    uint8_t lsf_bits[TEST_M17_LSF_BITS];
+    build_packet_lsf_bits(lsf_bits);
+    prepare(opts, state);
+    state->synctype = DSD_SYNC_M17_LSF_POS;
+    load_lsf_frame(lsf_bits);
+    g_input_end_mode = TEST_END_FALLBACK;
+    g_input_end_at = 178U;
+    assert(processM17LSF(opts, state) == 0);
+    state->input_interrupted = 0;
+    state->input_fallback_pending = 0;
+    state->synctype = DSD_SYNC_M17_PKT_POS;
+    (void)load_packet_frame(text, 0);
+    assert(processM17PKT(opts, state) == 0);
+    finish(state);
+}
+
+/* Issue #890: the spacing between packet frames is counted in one symbol clock epoch. A rewound or switched input
+   starts another (dsd_state::symbol_clock_epoch), however many symbols the count says passed: a packet read in it is
+   not one the LSF frame read before started. */
+static void
+test_packet_after_a_symbol_clock_restart_is_not_decoded(void) {
+    dsd_opts* opts = g_opts;
+    dsd_state* state = g_state;
+    static const char text[] = "HI";
+    for (int restart = 0; restart <= 1; restart++) {
+        prepare(opts, state);
+        read_packet_lsf_frame(opts, state);
+        if (restart) {
+            state->symbol_clock_epoch++;
+        }
+        (void)load_packet_frame(text, 0);
+        assert(processM17PKT(opts, state) == !restart);
+        finish(state);
+    }
 }
 
 /* A BERT frame cut late in its frame still decodes enough of the PRBS9 sequence to lock. A cut frame counts no bits,
@@ -726,14 +922,25 @@ test_packet_frames_before_their_crc_are_partial(void) {
 int
 main(void) {
     InitAllFecFunction();
+    g_opts = (dsd_opts*)calloc(1U, sizeof(*g_opts));
+    g_state = (dsd_state*)calloc(1U, sizeof(*g_state));
+    assert(g_opts != NULL && g_state != NULL);
     test_stream_frame_cut_by_an_input_interruption_is_dropped();
     test_lsf_cut_by_an_input_interruption_publishes_nothing();
     test_packet_frame_cut_by_an_input_interruption_decodes_nothing();
     test_packet_cut_early_is_lost();
     test_packet_eof_verdict_is_its_own();
+    test_packet_malformed_eof_earns_no_credit();
+    test_packet_out_of_order_first_chunk_earns_no_credit();
+    test_packet_crc_failure_earns_no_credit();
+    test_packet_behind_an_unapplied_lsf_is_not_decoded();
+    test_packet_frame_at_the_input_end_decodes_nothing();
+    test_packet_after_a_symbol_clock_restart_is_not_decoded();
     test_bert_frame_cut_by_an_input_interruption_counts_nothing();
     test_frames_split_by_a_carrier_boundary_are_dropped();
     test_packet_frames_before_their_crc_are_partial();
+    free(g_state);
+    free(g_opts);
     return 0;
 }
 

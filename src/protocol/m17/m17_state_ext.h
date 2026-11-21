@@ -100,6 +100,9 @@ typedef struct m17_state_ext {
        a frame number). */
     uint8_t pkt_armed;
     uint32_t pkt_ref_symbol;
+    /* The symbol clock epoch (dsd_state::symbol_clock_epoch) pkt_ref_symbol was counted in: a frame counted in another
+       (the input rewound or switched) is no next frame. */
+    uint32_t pkt_ref_epoch;
     m17_adata_assembly adata;
     /* The text META of the RF transmission or the admitted network stream being assembled from its blocks
        (m17_meta_text_assembler_push()), emptied at every transmission boundary (m17_confirm_reset()) so that no text

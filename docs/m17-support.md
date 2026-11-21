@@ -52,10 +52,14 @@ Implemented decode coverage:
   during untouched: the stream's call goes on as one call, and the packet opens no call of its own then. A stream
   that has sent nothing for 2 seconds (its end lost) no longer counts for this. Otherwise an
   MPKT shows as a data call that ends with it, never as a voice call. One whose link setup cannot be used is not
-  decoded. An over-the-air packet is decoded only when its own link setup frame passed its CRC and every one of its
-  frames followed in order, one frame apart, up to its last frame. A packet with any lost, cut or damaged frame, one
-  whose link setup frame failed its CRC or was missed, or one with no data at all, is not decoded (a decided limit),
-  and still ends at its last frame. A network packet (MPKT) always shows as a call of its own. A stream is treated as
+  decoded. An over-the-air packet is decoded only when its own link setup frame passed its CRC and was usable (a
+  valid source address, no reserved type bits), and every one of its frames followed in order, one frame apart, up to
+  its last frame. A packet with a lost or cut frame (also one cut by the end of a file or of the input), a frame whose
+  frame number or byte count cannot be right, one whose link setup frame failed its CRC, could not be used or was
+  missed, or one with no data at all, is not decoded (a decided limit), and still ends at its last frame. A packet that
+  arrived whole but whose own checksum (CRC) failed is not decoded either; under `-F` it is still shown, marked
+  `CRC ERR`. A standalone network packet (MPKT: one heard while no network stream is live, also after a stream went
+  idle or ended) always shows as a call of its own, never joined to the stream before it. A stream is treated as
   signed only once one of its own frames with a signed LSF is taken. A GNSS position repeated in one network stream is one report, also across the
   frame counter's wrap.
 - Signed voice streams: over the air, the signature is collected and checked (secp256r1) when
