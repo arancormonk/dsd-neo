@@ -1293,12 +1293,14 @@ frames) in bounded polled waits (`symbol_audio_read_wait()`), so a suspended sou
 hold the beat; frame decoding reads with the blocking `dsd_audio_read()`. It covers a live RTL read that finds the
 output empty (`DSD_RTL_READ_WANT_EMPTY_RETURN`: the read comes back `DSD_RTL_READ_EMPTY` before it waits, after the idle
 bound and, with no stream, a queued command's yield, `rtl_live_read_empty_poll()`; the hunt services the beat and
-reads again to wait), the RTL idle-bounded read, and a TCP reconnect's backoff and connect waits (its cancel check). A
-named pipe given by its path (`-i /path/to/fifo`) is read through libsndfile, whose read blocks while the producer keeps
-the pipe open and writes nothing: a quiet named pipe holds the beat, and every tick, until data arrives or the pipe
-closes. PCM piped into stdin (`-i -`) is waited on in the bounded reads above instead. The engine's main pass and the
-hunt's entry run the decoder's own tick (`p25_sm_try_tick()`), which spends a standing beat too, so no later point runs
-a second tick for it. A beat with no recovery to run (trunking off, -Y, no P25 to follow, a startup hunt:
+reads again to wait), the RTL idle-bounded read, and a TCP reconnect's backoff and connect waits (its cancel check; a
+tick that retunes while the connect is under way, before the reconnect knows the socket, is marked again on the
+connection once it is opening, so what the server queued before is dropped, `symbol_tcp_mark_connect_retune()`). A named
+pipe given by its path (`-i /path/to/fifo`) is read through libsndfile, whose read blocks while the producer keeps the
+pipe open and writes nothing: a quiet named pipe holds the beat, and every tick, until data arrives or the pipe closes.
+PCM piped into stdin (`-i -`) is waited on in the bounded reads above instead. The engine's main pass and the hunt's
+entry run the decoder's own tick (`p25_sm_try_tick()`), which spends a standing beat too, so no later point runs a
+second tick for it. A beat with no recovery to run (trunking off, -Y, no P25 to follow, a startup hunt:
 `p25_sm_tick_eligible()`) is let go at once and hands no read back. Otherwise shutdown, a queued command or a put-off
 publication comes first: `p25_sm_watchdog_service()` then runs no tick and answers `P25_SM_WATCHDOG_DEFERRED`, the beat
 standing, so no tune starts on a receiver being stopped or replaced; a hunt read that meets it hands back (a TCP

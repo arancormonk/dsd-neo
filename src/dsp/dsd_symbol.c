@@ -2899,7 +2899,9 @@ symbol_read_sample_rtl(dsd_opts* opts, dsd_state* state, float* sample_out, symb
 typedef struct {
     dsd_opts* opts;
     dsd_state* state;
-    int moved; /* a P25 tick in one of the reconnect's waits moved the chain */
+    int moved;            /* a P25 tick in one of the reconnect's waits moved the chain */
+    int connecting;       /* the connect is under way: its socket exists, and the server may already send on it */
+    int moved_in_connect; /* a tick moved the chain while the connect was under way */
 } symbol_tcp_reconnect_ctx;
 
 static int
@@ -2930,8 +2932,26 @@ symbol_tcp_reconnect_cancelled_hunting(void* context) {
     }
     if (serviced == FRAME_SYNC_WD_MOVED) {
         ctx->moved = 1;
+        ctx->moved_in_connect |= ctx->connecting;
     }
     return 0;
+}
+
+/* A tick that retuned while the connect was under way ran before the reconnect knew the socket, so its mark measured
+   no input, though the server may have accepted the connection and queued the old channel's audio on it by then. Once
+   the connection is opening (dsd_input_backlog_opening()), the retune is marked again on it and held as a watchdog
+   post is (dsd_frame_sync_note_off_thread_unflushed_retune()): what the connection holds now is dropped before its
+   first sample is read, and what reaches it after is kept. The fail-closed side: audio of the new channel that reached
+   the connection between the retune and this mark (the rest of one connect wait, which ends once the socket is
+   writable) is dropped with it. */
+static void
+symbol_tcp_mark_connect_retune(const symbol_tcp_reconnect_ctx* context) {
+    if (!context->moved_in_connect) {
+        return;
+    }
+    dsd_input_cut cut;
+    dsd_input_backlog_mark(&cut);
+    dsd_frame_sync_note_off_thread_unflushed_retune(&cut);
 }
 
 /* Wait out the reconnect backoff in slices, to one deadline on the real-time clock that counts the cancel checks' own
@@ -3011,13 +3031,16 @@ symbol_tcp_reconnect(dsd_opts* opts, dsd_state* state, dsd_socket_cancel_fn canc
         }
 
         /* The address the connection was made to: a reconnect looks nothing up (issue #634). */
+        context->connecting = 1;
         opts->tcp_sockfd =
             dsd_net_audio_input_hook_tcp_connect(opts->tcp_hostname, opts->tcp_portno, 0, cancelled, context);
+        context->connecting = 0;
         if (opts->tcp_sockfd != DSD_INVALID_SOCKET) {
             /* The new connection exists: a watchdog retune marked from now on may find the old channel's audio on it,
                and is measured on it, its reader going on from that count; one marked during the backoff measured no
                input and is not this one's drop (issue #834). */
             dsd_input_backlog_opening(opts->tcp_sockfd, dsd_pcm_stream_socket_arrived);
+            symbol_tcp_mark_connect_retune(context);
             opts->tcp_in_ctx = dsd_net_audio_input_hook_tcp_open(opts->tcp_sockfd, opts->wav_sample_rate);
             if (opts->tcp_in_ctx == NULL) {
                 DSD_FPRINTF(stderr, "Error, couldn't Reconnect to TCP audio input\n");
@@ -3060,7 +3083,7 @@ symbol_tcp_reconnect_read(dsd_opts* opts, dsd_state* state, float* sample_out, c
     }
     const dsd_socket_cancel_fn cancelled =
         work->hunting ? symbol_tcp_reconnect_cancelled_hunting : symbol_tcp_reconnect_cancelled_decoding;
-    symbol_tcp_reconnect_ctx context = {opts, state, 0};
+    symbol_tcp_reconnect_ctx context = {opts, state, 0, 0, 0};
     const int reconnected = symbol_tcp_reconnect(opts, state, cancelled, &context);
     /* A P25 tick moved the chain while the reconnect waited: the old connection's staged tail and resampler history
        are a carrier the receiver left, and go whatever the reconnect's outcome. */
