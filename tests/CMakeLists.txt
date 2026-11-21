@@ -3323,6 +3323,8 @@ add_executable(
     ${PROJECT_SOURCE_DIR}/src/app_control/analog_width_view.c
     ${PROJECT_SOURCE_DIR}/src/app_control/menu_services.c
     ${PROJECT_SOURCE_DIR}/src/app_control/next_start_check.c
+    # chan_map_adopt()/svc_clear_channel_map() note the DMR rows' origins (discussion #900).
+    ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_t3_channels.c
     ${PROJECT_SOURCE_DIR}/src/app_control/radio_source_view.c
     ${PROJECT_SOURCE_DIR}/src/app_control/rtl_gain_view.c
     # A typed frequency's go-to names its outcome (issue #644); the engine side is stubbed.
@@ -10499,6 +10501,10 @@ add_executable(
     ${PROJECT_SOURCE_DIR}/src/core/util/received_identity.c
     ${PROJECT_SOURCE_DIR}/src/engine/end_calls.c
     ${PROJECT_SOURCE_DIR}/src/engine/trunk_scan.c
+    # The DMR channel provenance a target switch saves and restores, and its writer, which a test seeds through
+    # (discussion #900).
+    ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_t3_channels.c
+    ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_t3_chan_learn.c
     ${PROJECT_SOURCE_DIR}/src/core/util/p25_patch_state.c
     ${PROJECT_SOURCE_DIR}/src/engine/p25_site_snapshot.c
     # The typed-frequency match, which reads a target's width at the DSP rate (issue #644).
@@ -10567,6 +10573,7 @@ add_executable(
     engine/test_engine_dmr_cc_recovery.c
     ${PROJECT_SOURCE_DIR}/src/dsp/dsd_frame_sync.c
     ${PROJECT_SOURCE_DIR}/src/engine/trunk_scan.c
+    ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_t3_channels.c
     ${PROJECT_SOURCE_DIR}/src/app_control/app_command_queue.c
 )
 target_include_directories(
@@ -10593,6 +10600,7 @@ add_executable(
     dsd-neo_test_engine_trunk_scan_pause
     engine/test_engine_trunk_scan_pause.c
     ${PROJECT_SOURCE_DIR}/src/engine/trunk_scan.c
+    ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_t3_channels.c
     ${PROJECT_SOURCE_DIR}/src/core/util/key_set.c
     ${PROJECT_SOURCE_DIR}/src/app_control/app_command_queue.c
 )
@@ -10733,6 +10741,7 @@ add_executable(
     engine/test_engine_scan_squelch_gate.c
     ${PROJECT_SOURCE_DIR}/src/dsp/dsd_frame_sync.c
     ${PROJECT_SOURCE_DIR}/src/engine/trunk_scan.c
+    ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_t3_channels.c
 )
 target_include_directories(
     dsd-neo_test_engine_scan_squelch_gate
@@ -11217,6 +11226,7 @@ add_executable(
     dsd-neo_test_core_wav_journal
     core/test_core_wav_journal.c
     ${PROJECT_SOURCE_DIR}/src/engine/trunk_scan.c
+    ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_t3_channels.c
 )
 target_include_directories(
     dsd-neo_test_core_wav_journal
@@ -14421,6 +14431,8 @@ add_executable(
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_trunk_sm.c
     ${PROJECT_SOURCE_DIR}/tests/test_support/dmr_carrier_leave_stubs.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_csbk.c
+    ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_t3_channels.c
+    ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_t3_chan_learn.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_reason.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_csbk_parse.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_csbk_tables.c
@@ -14472,6 +14484,8 @@ add_executable(
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_trunk_sm.c
     ${PROJECT_SOURCE_DIR}/tests/test_support/dmr_carrier_leave_stubs.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_csbk.c
+    ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_t3_channels.c
+    ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_t3_chan_learn.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_reason.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_csbk_parse.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_csbk_tables.c
@@ -14518,6 +14532,8 @@ add_executable(
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_trunk_sm.c
     ${PROJECT_SOURCE_DIR}/tests/test_support/dmr_carrier_leave_stubs.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_csbk.c
+    ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_t3_channels.c
+    ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_t3_chan_learn.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_reason.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_csbk_parse.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_csbk_tables.c
@@ -14568,6 +14584,8 @@ add_executable(
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_trunk_sm.c
     ${PROJECT_SOURCE_DIR}/tests/test_support/dmr_carrier_leave_stubs.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_csbk.c
+    ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_t3_channels.c
+    ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_t3_chan_learn.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_reason.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_csbk_parse.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_csbk_tables.c
@@ -17481,6 +17499,18 @@ target_include_directories(
 )
 target_link_libraries(dsd-neo_test_dmr_grant_policy PRIVATE dsd-neo_proto_dmr)
 add_test(NAME DMR_GRANT_POLICY COMMAND dsd-neo_test_dmr_grant_policy)
+
+# DMR Tier III channel provenance: one over-the-air writer, origins, network change, notices (discussion #900 F2)
+add_executable(dsd-neo_test_dmr_t3_channels protocol/dmr/test_dmr_t3_channels.c)
+target_include_directories(
+    dsd-neo_test_dmr_t3_channels
+    PRIVATE ${PROJECT_SOURCE_DIR}/include ${PROJECT_SOURCE_DIR}/src/protocol/dmr
+)
+target_link_libraries(
+    dsd-neo_test_dmr_t3_channels
+    PRIVATE dsd-neo_proto_dmr dsd-neo_test_support
+)
+add_test(NAME DMR_T3_CHANNELS COMMAND dsd-neo_test_dmr_t3_channels)
 
 # DMR talkgroup priority and preemption (busy view, hold-or-preempt gate, slot identities, ledger)
 add_executable(dsd-neo_test_dmr_preempt protocol/dmr/test_dmr_preempt.c)

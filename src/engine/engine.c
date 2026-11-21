@@ -74,6 +74,7 @@
 #include <dsd-neo/platform/sockets.h>
 #include <dsd-neo/platform/timing.h>
 #include <dsd-neo/protocol/dmr/dmr.h>
+#include <dsd-neo/protocol/dmr/dmr_t3_channels.h>
 #include <dsd-neo/protocol/dmr/dmr_trunk_sm.h>
 #include <dsd-neo/protocol/dpmr/dpmr.h>
 #include <dsd-neo/protocol/dstar/dstar.h>
@@ -3888,6 +3889,9 @@ dsd_engine_carrier_boundary(dsd_opts* opts, dsd_state* state, dsd_carrier_bounda
        DMR RAS evidence. */
     dsd_rxid_reset(state);
     dmr_ras_reset(state);
+    /* Nor need the next carrier be the same network: the DMR Tier III channels the air taught go (discussion #900 F2),
+       the channel map's own rows stay. */
+    dmr_t3_chan_network_changed(opts, state);
     /* Nor are its P25 patches the next carrier's: a manual tune, a new source or input, a scan step or a replay retune
        names no system, so the table, its owner and its listening clock start over. */
     dsd_p25_patch_clear_all(state);

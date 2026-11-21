@@ -73,6 +73,7 @@
 #include <dsd-neo/platform/platform.h>
 #include <dsd-neo/platform/threading.h>
 #include <dsd-neo/protocol/dmr/dmr.h>
+#include <dsd-neo/protocol/dmr/dmr_t3_channels.h>
 #include <dsd-neo/protocol/dmr/dmr_trunk_sm.h>
 #include <dsd-neo/protocol/nxdn/nxdn.h>
 #include <dsd-neo/protocol/nxdn/nxdn_cc_hunt.h>
@@ -1510,6 +1511,18 @@ ui_user_move_forgets_identity(dsd_state* state, int guard_held, int same_system)
     ui_rxid_guard_leave(taken);
 }
 
+/* ui_user_move_forgets_identity() for a move that can leave the network followed: anything but a return to, or a
+   selection of, the control channel of the system already followed (@p same_system). The DMR Tier III channels the air
+   taught there are not the next network's (dmr_t3_chan_network_changed(), discussion #900 F2); a Return-to-CC goes
+   back to the same network and keeps them. */
+static void
+ui_user_move_leaves_network(dsd_opts* opts, dsd_state* state, int guard_held, int same_system) {
+    ui_user_move_forgets_identity(state, guard_held, same_system);
+    if (!same_system) {
+        dmr_t3_chan_network_changed(opts, state);
+    }
+}
+
 /* Whether a manual move to @p freq lands on the control channel of the P25 system the patch table belongs to (its
    p25_cc_freq, read before the move): a same-system move. */
 static int
@@ -2179,7 +2192,7 @@ ui_cmd_handle_p25_cc_selection(dsd_opts* opts, dsd_state* state, uint32_t hz) {
            as the frequency entry's other branch drops it. */
         dsd_analog_rx_reset(state);
         /* the selection ended the calls left */
-        ui_user_move_forgets_identity(state, g_apply_cmd_guard_held, same_system);
+        ui_user_move_leaves_network(opts, state, g_apply_cmd_guard_held, same_system);
         ui_set_toast(state, 3, "%s: P25 control channel -> %s MHz",
                      result == DSD_TRUNK_TUNE_RESULT_PENDING ? "Accepted (pending)" : "Applied", mhz);
         return UI_CMD_APPLY_COMPLETED;
@@ -4158,7 +4171,7 @@ try_manual_candidate_cycle_locked(dsd_opts* opts, dsd_state* state, int p25_live
            (issue #575). */
         dsd_engine_carrier_boundary(opts, state, DSD_CARRIER_BOUNDARY_TUNE, p25_live);
     } else {
-        ui_user_move_forgets_identity(state, p25_live, 0);
+        ui_user_move_leaves_network(opts, state, p25_live, 0);
         manual_move_judge_after(opts, state, &judge, cand);
     }
     hand_tetra_sm_over(opts, state);
@@ -4217,7 +4230,7 @@ lcn_cycle_finish(dsd_opts* opts, dsd_state* state, int row, long freq, int p25_l
            (issue #575), but the user moved, so what was received before is not this channel's identity. */
         dsd_engine_carrier_boundary(opts, state, DSD_CARRIER_BOUNDARY_TUNE, p25_live);
     } else {
-        ui_user_move_forgets_identity(state, p25_live, 0);
+        ui_user_move_leaves_network(opts, state, p25_live, 0);
         manual_move_judge_after(opts, state, judge, freq);
     }
     hand_tetra_sm_over(opts, state);

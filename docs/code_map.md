@@ -2960,7 +2960,9 @@ suite runs under this compiler.
   app-control owns 16, from the ui range: `DSD_STATE_EXT_APP_SCAN_ENTRY`, the frequency entry whose go-to still waits on
   its tune (issue #644); protocols own 24-31, among them 30, `DSD_STATE_EXT_PROTO_DSTAR_SLOW_DATA`, the D-STAR
   slow-data assemblies (`src/protocol/dstar/dstar_sd_state.h`), and 31, `DSD_STATE_EXT_PROTO_M17_GNSS`, the M17 GNSS
-  META repeat state (`m17.c` `m17_gnss_state`), both issue #800. `CORE_STATE_EXT` pins these nine.
+  META repeat state (`m17.c` `m17_gnss_state`), both issue #800. `CORE_STATE_EXT` pins these nine. Slot 25,
+  `DSD_STATE_EXT_PROTO_DMR_RC`, is the DMR module's one extension (`src/protocol/dmr/dmr_t3_channels_internal.h`): the
+  RC notice dedupe and the Tier III channel provenance (discussion #900).
 - API note: the verified position feed (`<dsd-neo/core/position.h>`, `src/core/gps/position_feed.c`, state extension
   17, issue #800). Producers fill one `dsd_position_fix` (from `dsd_position_fix_init()`'s unknown sentinels; fixed
   point: degrees x 1e7, decimetres, 0.1 km/h, 0.1 degree) and call `dsd_position_admit()` with the verdicts of the
@@ -13265,7 +13267,8 @@ Tests: `P25_SEARCH_SITE_NOTES`, `P25_P1_SYNC_DISPATCH`, `P25_P2_ESS_CARRIER`, `D
 
 Key public headers (selection):
 
-- DMR: `<dsd-neo/protocol/dmr/dmr_utils_api.h>`, `<dsd-neo/protocol/dmr/dmr_trunk_sm.h>`
+- DMR: `<dsd-neo/protocol/dmr/dmr_utils_api.h>`, `<dsd-neo/protocol/dmr/dmr_trunk_sm.h>`,
+  `<dsd-neo/protocol/dmr/dmr_t3_channels.h>` (Tier III channel provenance, below)
 - P25: `<dsd-neo/protocol/p25/p25p1_const.h>`, `<dsd-neo/protocol/p25/p25_trunk_sm.h>`,
   `<dsd-neo/protocol/p25/p25_sm_watchdog.h>` (a watchdog thread that cannot start leaves the watchdog off, logged, and
   a stop joins only a thread that started; `p25_sm_watchdog_set_thread_create_for_test()`, compiled only with
@@ -13345,6 +13348,27 @@ Private per-protocol modules worth knowing about:
   likelier a QR(16,7,6) miscorrection; a second miss in a row ends it as before, and only an EMB the colour-code check
   accepted ends a miss streak. Tests: `DMR_SYNTH_SLOT_FLIP`,
   `DMR_SYNTH_INVERTED_*`, `DMR_BS_SYNC_TIMES`, `DECODE_IQ_DMR_T3_CC`, `DECODE_IQ_DMR_POLARITY_AUTO`.
+- Tier III channel provenance (`dmr_t3_channels.c`, `dmr_t3_chan_learn.c`, `<dsd-neo/protocol/dmr/dmr_t3_channels.h>`,
+  discussion #900 F2). Every channel map row LPCN 1..4094 has an origin in the DMR extension: NONE, FILE (a channel
+  map import, `dmr_t3_chan_note_map_loaded()` after `chan_map_adopt()`; a nonzero row with no recorded origin, such as
+  a `-C` map at startup, reads as FILE), USER, SITE, UNVERIFIED, NEIGHBOUR or ESTIMATE. `dmr_t3_chan_learn()` is the
+  only over-the-air writer: `dmr_csbk.c` passes SITE for a CSBK or MBC whose CRC checked (absolute grants, C_MOVE,
+  Chan_Freq), UNVERIFIED for one `-F` accepted as RAS (`dmr_csbk_ras_accepted()`, the C_ALOHA recognition's own
+  predicate), NEIGHBOUR for an absolute Vote_Now/Adjacent_Site either way, and nothing for a failed CRC or the
+  synthesized P_CLEAR. FILE and USER are never overwritten over the air; SITE replaces UNVERIFIED, NEIGHBOUR and
+  ESTIMATE always (an origin change at the same frequency counts) and SITE when the frequency differs; the rest fill
+  empty rows only. The trust byte keeps its meaning (2 learned on the control channel, else 1), NEIGHBOUR never 2 and
+  ESTIMATE 0. The learned ("DMR TIII: Learned channel 12 -> 451.012500 MHz;") and changed notices post on the
+  receiving burst's slot with its CRC flags, so `--slot-allow` and the `[RAS]` marker apply. The env-only heuristic
+  fill anchors on every row that is no estimate and writes its rows as ESTIMATE through the writer; any anchor that
+  appears, moves or goes drops every estimate and fills again. A network change (`dmr_t3_chan_network_changed()`)
+  drops the SITE, UNVERIFIED, NEIGHBOUR and ESTIMATE rows with their trust bytes and bumps the generation: a checked
+  C_ALOHA whose system code differs from the last checked one (`dmr_t3_chan_note_checked_syscode()`), every carrier
+  boundary but a stream gap, and an operator move that keeps trunking (`ui_user_move_leaves_network()`: a CC
+  selection of another system, a candidate or channel cycle; a Return-to-CC keeps them). A trunked CC -> voice -> CC
+  trip changes nothing. Trunk scan saves and restores the origins, generation, revision and system-code baseline per
+  target beside `dmr_lcn_trust` (`dmr_t3_chan_save()`/`_restore()`); the revision moves on every row or origin change
+  and past both sides on a restore. Tests: `DMR_T3_CHANNELS`, `ENGINE_TRUNK_SCAN`.
 - Capacity Plus identity (`dmr_flco.c`, `dmr_csbk.c`, `dmr_trunk_sm.c`). Cap+ talkgroups are 8-bit (1..255) and
   radio IDs 16-bit. The FID 0x10 FLCO 0x04 group voice LC carries the talkgroup at bits 40..47, a 5-bit rest LSN at
   51..55 and the radio at 56..71 in every LC type (header, embedded, terminator); bits 24..39 are not part of the

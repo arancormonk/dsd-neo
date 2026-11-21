@@ -369,7 +369,7 @@ test_ras_data_provenance(dsd_opts* opts, dsd_state* state) {
         const uint16_t lpcn = ras ? 291U : 292U;
         send_mbc_grant(opts, state, ras, lpcn, 1);
         expect_event(state, slot, before++, 1, ras ? DSD_CRC_RAS_UNVERIFIED : 0U,
-                     ras ? "Learned LCN 0291 -> 851.012500 MHz" : "Learned LCN 0292 -> 851.012500 MHz");
+                     ras ? "Learned channel 291 -> 851.012500 MHz" : "Learned channel 292 -> 851.012500 MHz");
     }
 
     // The separate relaxed-CRC configuration accepts failures but never runs the RAS heuristic: the same RAS-shaped

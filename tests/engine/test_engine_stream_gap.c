@@ -41,6 +41,7 @@
 #include <dsd-neo/engine/engine.h>
 #include <dsd-neo/engine/frame_processing.h>
 #include <dsd-neo/io/rtl_stream_c.h>
+#include <dsd-neo/protocol/dmr/dmr_t3_channels.h>
 #include <dsd-neo/protocol/dmr/dmr_trunk_sm.h>
 #include <dsd-neo/protocol/nxdn/nxdn_lfsr.h>
 #include <dsd-neo/protocol/p25/p25_sm_watchdog.h>
@@ -569,6 +570,29 @@ test_gap_resets_dmr_confirmation_keeps_colour_code(dsd_opts* opts, dsd_state* st
                && state->p2_cc_verified == 1U && state->p2_proven_nac == 0x293);
 }
 
+/* A gap is the same carrier, so the DMR Tier III channels the air taught stay; a tune to another carrier may be another
+   network, so they go, a file's row staying (discussion #900 F2). */
+static void
+test_boundary_dmr_learned_channels(dsd_opts* opts, dsd_state* state) {
+    state->trunk_chan_map[11] = 452000000L;
+    dmr_t3_chan_note_map_loaded(state);
+    expect("dmr channels: a site's channel is learned",
+           dmr_t3_chan_learn(opts, state, 12U, 452012500L, DMR_CHAN_ORIGIN_SITE) == 1);
+    const uint32_t generation = dmr_t3_chan_generation(state);
+
+    dsd_engine_carrier_boundary(opts, state, DSD_CARRIER_BOUNDARY_STREAM_GAP, 0);
+    expect("dmr channels: a gap keeps the learned channel",
+           state->trunk_chan_map[12] == 452012500L && dmr_t3_chan_generation(state) == generation);
+
+    dsd_engine_carrier_boundary(opts, state, DSD_CARRIER_BOUNDARY_TUNE, 0);
+    expect("dmr channels: a tune drops the learned channel and its trust",
+           state->trunk_chan_map[12] == 0L && state->dmr_lcn_trust[12] == 0U
+               && dmr_t3_chan_generation(state) == generation + 1U);
+    expect("dmr channels: a tune keeps the file's row", state->trunk_chan_map[11] == 452000000L);
+    dsd_state_set_trunk_chan_freq(state, 11U, 0L);
+    dmr_t3_chan_note_map_cleared(state);
+}
+
 /* Whether two received identities hold the same values, every field (the record carries padding, so not memcmp). */
 static int
 rxid_equal(const dsd_received_identity* a, const dsd_received_identity* b) {
@@ -833,6 +857,7 @@ main(void) {
     test_gap_resets_dmr_confirmation_keeps_colour_code(opts, state);
     test_stream_gap_mid_call_keeps_follow(opts, state);
     test_stream_start_takes_up_the_count(opts, state);
+    test_boundary_dmr_learned_channels(opts, state);
     for (int replay = 1; replay >= 0; replay--) {
         test_gap_ends_the_analog_call(replay, 670);
         test_gap_ends_the_analog_call(replay, 0);

@@ -38,6 +38,7 @@
 #include <dsd-neo/protocol/dmr/dmr.h>
 #include <dsd-neo/protocol/dmr/dmr_csbk_parse.h>
 #include <dsd-neo/protocol/dmr/dmr_csbk_tables.h>
+#include <dsd-neo/protocol/dmr/dmr_t3_channels.h>
 #include <dsd-neo/protocol/dmr/dmr_trunk_sm.h>
 #include <dsd-neo/protocol/dmr/dmr_utils_api.h>
 #include <dsd-neo/runtime/colors.h>
@@ -45,7 +46,6 @@
 #include <dsd-neo/runtime/trunk_scan_hooks.h>
 #include <dsd-neo/runtime/trunk_tuning_hooks.h>
 #include <inttypes.h>
-#include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -53,6 +53,7 @@
 #include "dmr_call_channel.h"
 #include "dmr_crc_provenance.h"
 #include "dmr_reason.h"
+#include "dmr_t3_channels_internal.h"
 #include "dmr_tiii_site.h"
 #include "dmr_unit_activity.h"
 #include "dsd-neo/core/opts_fwd.h"
@@ -78,6 +79,31 @@ dmr_csbk_note_brand(dsd_state* state, const char* brand) {
     if (dmr_csbk_crc_checked(state)) {
         dsd_rxid_note_dmr_brand(state, brand);
     }
+}
+
+/* The CSBK being handled is one -F accepted as RAS, whose keyed CRC no one can check, with nothing else casting doubt on
+   it: the slot's flags say RAS alone (a failed CRC never counts), RAS is confirmed on this carrier, and the burst was
+   read whole from it, as dmr_ras_note_signature() takes a signature. Never the P_CLEAR the decoder synthesized. */
+static int
+dmr_csbk_ras_accepted(const dsd_opts* opts, const dsd_state* state) {
+    return !s_dmr_cspdu_synthesized && opts->aggressive_framesync == 0
+           && state->event_crc_invalid[state->currentslot & 1] == DSD_CRC_RAS_UNVERIFIED && dmr_ras_confirmed(state)
+           && state->input_interrupted == 0
+           && !(state->frame_dispatch_active && dsd_state_frame_read_lost(state, state->frame_dispatch_carrier_seq));
+}
+
+/* Record a frequency the CSBK being handled names for @p lpcn (dmr_t3_chan_learn()): SITE when its CRC checked,
+   UNVERIFIED when -F accepted it as RAS, nothing otherwise; a neighbour site's (@p neighbour) is NEIGHBOUR either way.
+   Returns whether the row or its origin changed. */
+static int
+dmr_csbk_learn_channel(dsd_opts* opts, dsd_state* state, uint16_t lpcn, long freq, int neighbour) {
+    dmr_chan_origin_e origin = DMR_CHAN_ORIGIN_UNVERIFIED;
+    if (dmr_csbk_crc_checked(state)) {
+        origin = DMR_CHAN_ORIGIN_SITE;
+    } else if (!dmr_csbk_ras_accepted(opts, state)) {
+        return 0;
+    }
+    return dmr_t3_chan_learn(opts, state, lpcn, freq, neighbour ? DMR_CHAN_ORIGIN_NEIGHBOUR : origin);
 }
 
 /* The label of a grant's target as the call history names it (dsd_call_target_label_lookup(), issue #773 D4). */
@@ -168,204 +194,6 @@ static void dmr_gateway_identifier(uint32_t source, uint32_t target);
 static void dmr_decode_syscode(const dsd_opts* opts, dsd_state* state, const uint8_t* cs_pdu_bits, int csbk_fid,
                                int type);
 
-enum { DMR_T3_MAX_LCN = 4094 };
-
-typedef struct {
-    int first_lcn;
-    int last_lcn;
-    long first_freq;
-    long long sum_df;
-    long long sum_dl;
-    int anchors;
-} dmr_heuristic_anchor_stats;
-
-static void
-dmr_heuristic_collect_anchor_stats(const dsd_state* state, dmr_heuristic_anchor_stats* stats) {
-    int prev_lcn = 0;
-    long prev_freq = 0;
-    int have_prev = 0;
-
-    if (!state || !stats) {
-        return;
-    }
-
-    DSD_MEMSET(stats, 0, sizeof(*stats));
-    for (int l = 1; l <= DMR_T3_MAX_LCN; l++) {
-        long f = state->trunk_chan_map[l];
-        if (f == 0) {
-            continue;
-        }
-        if (stats->first_lcn == 0) {
-            stats->first_lcn = l;
-            stats->first_freq = f;
-        }
-        stats->last_lcn = l;
-        stats->anchors++;
-        if (have_prev) {
-            int dl = l - prev_lcn;
-            if (dl > 0) {
-                long df = f - prev_freq;
-                stats->sum_dl += dl;
-                stats->sum_df += df;
-            }
-        }
-        prev_lcn = l;
-        prev_freq = f;
-        have_prev = 1;
-    }
-}
-
-static long
-dmr_heuristic_estimate_step(const dmr_heuristic_anchor_stats* stats) {
-    if (!stats || stats->anchors < 2 || stats->sum_dl <= 0) {
-        return 0;
-    }
-    double slope = (double)stats->sum_df / (double)stats->sum_dl;
-    long step = (long)llround(slope / 125.0) * 125L;
-    return (step > 0) ? step : 0;
-}
-
-static int
-dmr_heuristic_validate_model(const dsd_state* state, const dmr_heuristic_anchor_stats* stats, long step) {
-    long max_err = 0;
-
-    if (!state || !stats || step <= 0) {
-        return 0;
-    }
-    for (int l = 1; l <= DMR_T3_MAX_LCN; l++) {
-        long f = state->trunk_chan_map[l];
-        if (f == 0) {
-            continue;
-        }
-        long model = stats->first_freq + (long)(l - stats->first_lcn) * step;
-        long err = labs(f - model);
-        if (err > max_err) {
-            max_err = err;
-        }
-    }
-    return max_err <= 500;
-}
-
-static int
-dmr_heuristic_fill_gaps(dsd_state* state, const dmr_heuristic_anchor_stats* stats, long step) {
-    int filled = 0;
-
-    if (!state || !stats || step <= 0) {
-        return 0;
-    }
-    for (int l = stats->first_lcn; l <= stats->last_lcn; l++) {
-        if (state->trunk_chan_map[l] != 0) {
-            continue;
-        }
-        long f = stats->first_freq + (long)(l - stats->first_lcn) * step;
-        if (f <= 0) {
-            continue;
-        }
-        dsd_state_set_trunk_chan_freq(state, (uint32_t)l, f);
-        filled++;
-    }
-    return filled;
-}
-
-// Channel-map notices deliberately use history slot 0 even when learned on slot 1.
-// Carry the originating burst's CRC failure across that attribution change.
-static void
-dmr_cspdu_emit_channel_notice(dsd_opts* opts, dsd_state* state, const char* msg) {
-    const int prev_alert = opts->call_alert;
-    const uint8_t saved_crc_invalid = state->event_crc_invalid[0];
-    opts->call_alert = 0;
-    state->event_crc_invalid[0] |= state->event_crc_invalid[state->currentslot & 1];
-    const dsd_call_observation observation = dsd_call_observation_data(state->lastsynctype, 0U, 0xFFFFFFU, 0xFFFFFFU);
-    (void)dsd_event_emit_data_notice(opts, state, 0U, &observation, msg);
-    state->event_crc_invalid[0] = saved_crc_invalid;
-    opts->call_alert = prev_alert;
-    dsd_event_sync_slot(opts, state, 0);
-}
-
-static void
-dmr_heuristic_report_fill(dsd_opts* opts, dsd_state* state, const dmr_heuristic_anchor_stats* stats, long step,
-                          int filled) {
-    char msg[160];
-    double mhz0;
-    double step_khz;
-
-    if (!opts || !state || !stats || filled <= 0) {
-        return;
-    }
-
-    mhz0 = (double)stats->first_freq / 1000000.0;
-    step_khz = (double)step / 1000.0;
-    DSD_SNPRINTF(msg, sizeof(msg), "DMR TIII: Heuristic filled %d LCNs (%0.3f kHz step) from %04d@%0.6f MHz;", filled,
-                 step_khz, stats->first_lcn, mhz0);
-    dmr_cspdu_emit_channel_notice(opts, state, msg);
-}
-
-// Attempt to fill missing LCNs heuristically from learned anchors.
-static void
-dmr_try_heuristic_fill(dsd_opts* opts, dsd_state* state) {
-    dmr_heuristic_anchor_stats stats;
-    long step;
-    int filled;
-
-    if (!opts || !state) {
-        return;
-    }
-    if (!opts->dmr_t3_heuristic_fill) {
-        return; // opt-in only
-    }
-
-    dmr_heuristic_collect_anchor_stats(state, &stats);
-    step = dmr_heuristic_estimate_step(&stats);
-    if (step <= 0) {
-        return;
-    }
-    if (!dmr_heuristic_validate_model(state, &stats, step)) {
-        return;
-    }
-    filled = dmr_heuristic_fill_gaps(state, &stats, step);
-    dmr_heuristic_report_fill(opts, state, &stats, step, filled);
-}
-
-// Conservative auto-learn helper: record LCN -> frequency if empty and announce in event history
-static inline void
-dmr_learn_chan_map(dsd_opts* opts, dsd_state* state, uint16_t lpcn, long int freq) {
-    if (!state) {
-        return;
-    }
-    // A Tier III channel is LPCN 1..4094: neither CHNULL (0) nor the absolute escape (0xFFF) names one.
-    if (!dmr_t3_lpcn_is_channel(lpcn)) {
-        return;
-    }
-    if (freq <= 0) {
-        return;
-    }
-    if (state->trunk_chan_map[lpcn] != 0) {
-        return;
-    }
-
-    dsd_state_set_trunk_chan_freq(state, lpcn, freq);
-    // Mark provenance: trusted if learned while on CC for current site, else unconfirmed
-    if (lpcn < 0x1000) {
-        uint8_t trust = 1;
-        if (state->trunk_cc_freq != 0 && opts && opts->trunk_is_tuned == 0) {
-            trust = 2;
-        }
-        state->dmr_lcn_trust[lpcn] = trust;
-    }
-
-    // Emit a one-line event so users can see learning progress in ncurses
-    if (opts) {
-        char msg[160];
-        // Print in MHz with 6 decimal places
-        double mhz = (double)freq / 1000000.0;
-        DSD_SNPRINTF(msg, sizeof(msg), "DMR TIII: Learned LCN %04u -> %010.6f MHz;", lpcn, mhz);
-        dmr_cspdu_emit_channel_notice(opts, state, msg);
-    }
-
-    // Try heuristic gap fill after learning a new anchor
-    dmr_try_heuristic_fill(opts, state);
-}
-
 static int
 dmr_cspdu_pf0_is_data_grant_opcode(int csbk_o) {
     return csbk_o == 51 || csbk_o == 52 || csbk_o == 54 || csbk_o == 55 || csbk_o == 56;
@@ -404,7 +232,7 @@ dmr_cspdu_pf0_parse_absolute_grant(dsd_opts* opts, dsd_state* state, uint8_t cs_
     DSD_FPRINTF(stderr, "\n");
     DSD_FPRINTF(stderr, "  RX APCN: %04d; RX INT: %d; RX STEP: %d;", mbc_lpchannum, mbc_abs_rx_int, mbc_abs_rx_step);
     *freq = (mbc_abs_rx_int * 1000000L) + (mbc_abs_rx_step * 125L);
-    dmr_learn_chan_map(opts, state, mbc_lpchannum, *freq);
+    (void)dmr_csbk_learn_channel(opts, state, mbc_lpchannum, *freq, 0);
     return mbc_lpchannum;
 }
 
@@ -588,7 +416,7 @@ dmr_cspdu_pf0_move_resolve_freq(dsd_opts* opts, dsd_state* state, uint8_t cs_pdu
             uint16_t mbc_abs_rx_step = (uint16_t)convert_bits_into_output(&cs_pdu_bits[163], 13);
             *move_lpcn = mbc_lpchannum;
             *move_freq = (mbc_abs_rx_int * 1000000L) + (mbc_abs_rx_step * 125L);
-            dmr_learn_chan_map(opts, state, *move_lpcn, *move_freq);
+            (void)dmr_csbk_learn_channel(opts, state, *move_lpcn, *move_freq, 0);
         }
         return;
     }
@@ -1381,10 +1209,10 @@ dmr_cspdu_pf0_c_bcast_track_freq(const dsd_opts* opts, dsd_state* state, long fr
 
 static void
 dmr_cspdu_pf0_c_bcast_maybe_store_channel(dsd_opts* opts, dsd_state* state, uint16_t a_channel, long freqr) {
-    if (a_channel == 0 || a_channel == 0xFFF || freqr == 0 || state->trunk_chan_map[a_channel] != 0) {
+    if (a_channel == 0 || a_channel == 0xFFF || freqr == 0
+        || !dmr_csbk_learn_channel(opts, state, a_channel, freqr, 0)) {
         return;
     }
-    dsd_state_set_trunk_chan_freq(state, (uint32_t)a_channel, freqr);
     dmr_cspdu_pf0_c_bcast_track_freq(opts, state, freqr);
     const long cand[1] = {freqr};
     dmr_sm_on_neighbor_update(opts, state, cand, 1);
@@ -1587,7 +1415,7 @@ dmr_cspdu_pf0_c_bcast_handle_vote_or_adjacent(dsd_opts* opts, dsd_state* state, 
     dmr_cspdu_pf0_c_bcast_abs_freqs abs_freqs;
     dmr_cspdu_pf0_c_bcast_parse_abs_freqs(cs_pdu_bits, &abs_freqs);
     dmr_cspdu_pf0_c_bcast_print_abs_freqs(&abs_freqs, 1);
-    dmr_learn_chan_map(opts, state, abs_freqs.lpchannum, abs_freqs.freqr);
+    (void)dmr_csbk_learn_channel(opts, state, abs_freqs.lpchannum, abs_freqs.freqr, 1);
     const long cand[1] = {abs_freqs.freqr};
     dmr_sm_on_neighbor_update(opts, state, cand, 1);
 }
@@ -3304,12 +3132,7 @@ dmr_aloha_recognises_capmax(const dsd_opts* opts, const dsd_state* state, const 
     if (s_dmr_cspdu_synthesized || cs_pdu_bits[0] != 1U) {
         return 0;
     }
-    if (dmr_csbk_crc_checked(state)) {
-        return 1;
-    }
-    return opts->aggressive_framesync == 0 && state->event_crc_invalid[state->currentslot & 1] == DSD_CRC_RAS_UNVERIFIED
-           && dmr_ras_confirmed(state) && state->input_interrupted == 0
-           && !(state->frame_dispatch_active && dsd_state_frame_read_lost(state, state->frame_dispatch_carrier_seq));
+    return dmr_csbk_crc_checked(state) || dmr_csbk_ras_accepted(opts, state);
 }
 
 /* The C_ALOHA line. It names Capacity Max only on a recognised network (@p capmax), whose numbers it shows raw: a
@@ -3411,6 +3234,8 @@ dmr_decode_syscode(const dsd_opts* opts, dsd_state* state, const uint8_t* cs_pdu
            accepted by RAS, or an MBC whose header CRC failed: the dispatcher flags those for the slot, and only a CRC
            that matched names the site. */
         if (dmr_csbk_crc_checked(state)) {
+            /* Another checked code than the last is another network: what the air taught goes. */
+            dmr_t3_chan_note_checked_syscode(state, syscode);
             dmr_tiii_note_search_site(state, syscode, dmrla);
             /* A C_ALOHA comes from a Tier III control channel: this carrier, where the receiver is tuned. */
             dsd_rxid_note_cc_freq(state, DSD_RXID_FAMILY_DMR, dsd_opts_tuned_freq_hz(opts));

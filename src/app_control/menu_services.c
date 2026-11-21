@@ -45,6 +45,7 @@
 #include <dsd-neo/platform/input_backlog.h>
 #include <dsd-neo/platform/platform.h>
 #include <dsd-neo/platform/posix_compat.h>
+#include <dsd-neo/protocol/dmr/dmr_t3_channels.h>
 #include <dsd-neo/protocol/dmr/dmr_trunk_sm.h>
 #include <dsd-neo/protocol/p25/p25_cc_candidates.h>
 #include <dsd-neo/protocol/p25/p25_frequency.h>
@@ -744,7 +745,7 @@ svc_udp_output_config(dsd_opts* opts, dsd_state* state, const char* host, int po
  * dmr_lcn_trust is provenance for the map, not a separate table: leaving it
  * behind would let a stale "learned on the control channel" byte authorize an
  * off-CC tune to a frequency that only the new CSV asserts. Clearing it matches
- * what -C produces at startup, and dmr_learn_chan_map() re-earns trust for any
+ * what -C produces at startup, and dmr_t3_chan_learn() re-earns trust for any
  * LCN the new map leaves empty. lcn_freq_roll indexes trunk_lcn_freq, so a
  * shorter list has to restart the hunt rather than resume mid-way.
  *
@@ -806,6 +807,8 @@ chan_map_adopt(dsd_opts* opts, dsd_state* dst, dsd_state* src) {
     dst->scan_visit_roll_seen = 0;
     dst->scan_visit_rearm_pending = 0U;
     DSD_MEMSET(dst->dmr_lcn_trust, 0, sizeof dst->dmr_lcn_trust);
+    // And the DMR rows' origins: every row the file sets is the file's, which nothing over the air overwrites.
+    dmr_t3_chan_note_map_loaded(dst);
     // So is the NXDN DFA record: the rows it named went with the old map, and a row the new file sets is the file's.
     dsd_nxdn_dfa_disown_all(dst);
     dst->trunk_chan_map_seq++;
@@ -969,6 +972,7 @@ svc_clear_channel_map(dsd_opts* opts, dsd_state* state) {
     // "learned on the control channel" byte would authorize an off-CC tune to a
     // frequency no longer in the map.
     DSD_MEMSET(state->dmr_lcn_trust, 0, sizeof state->dmr_lcn_trust);
+    dmr_t3_chan_note_map_cleared(state);
     dsd_nxdn_dfa_disown_all(state);
     state->trunk_chan_map_seq++;
     return 0;

@@ -56,6 +56,7 @@
 #include <dsd-neo/platform/platform.h>
 #include <dsd-neo/platform/sockets.h>
 #include <dsd-neo/protocol/dmr/dmr.h>
+#include <dsd-neo/protocol/dmr/dmr_t3_channels.h>
 #include <dsd-neo/protocol/dmr/dmr_trunk_sm.h>
 #include <dsd-neo/protocol/nxdn/nxdn_trunk_diag.h>
 #include <dsd-neo/protocol/p25/p25_cc_activity.h>
@@ -2034,6 +2035,72 @@ test_coordinator_idle_rotation_and_state_restore(void) {
         test_rc = 1;
     }
     test_rc |= expect_target0_p25_state(&state);
+
+    dsd_engine_trunk_scan_shutdown(&opts, &state);
+    trunk_scan_test_clear_now();
+    cleanup_paths(dir, target_path, NULL);
+    return test_rc;
+}
+
+/* Two DMR targets that share LPCN 12 (discussion #900 F2): A learns it over the air (SITE), B has it from a file. Each
+   switch saves the target left and restores the one parked on, so neither origin nor row leaks across. */
+static int
+test_dmr_channel_origins_restore_per_target(void) {
+    char dir[DSD_TEST_PATH_MAX];
+    char target_path[DSD_TEST_PATH_MAX];
+    if (make_runtime_targets("a,dmr-trunk,452000000,,250,,tier iii\n"
+                             "b,dmr-trunk,453000000,,250,,tier iii\n",
+                             target_path, sizeof target_path, dir, sizeof dir)
+        != 0) {
+        return 1;
+    }
+
+    static dsd_opts opts;
+    static dsd_state state;
+    reset_scan_opts_state(&opts, &state);
+    DSD_SNPRINTF(opts.trunk_scan_lists[0].path, sizeof opts.trunk_scan_lists[0].path, "%s", target_path);
+    opts.trunk_scan_list_count = 1;
+
+    char err[256] = {0};
+    trunk_scan_test_set_now(0.0);
+    int test_rc = 0;
+    if (dsd_engine_trunk_scan_init(&opts, &state, err, sizeof err) != 0
+        || dsd_engine_trunk_scan_active_index(&state) != 0) {
+        DSD_FPRINTF(stderr, "dmr origins: scan init failed err=%s\n", err);
+        test_rc = 1;
+    }
+
+    if (dmr_t3_chan_learn(&opts, &state, 12U, 452012500L, DMR_CHAN_ORIGIN_SITE) != 1) {
+        DSD_FPRINTF(stderr, "dmr origins: target A did not learn LPCN 12\n");
+        test_rc = 1;
+    }
+    trunk_scan_test_set_now(0.26);
+    dsd_engine_trunk_scan_tick(&opts, &state);
+    if (dsd_engine_trunk_scan_active_index(&state) != 1 || state.trunk_chan_map[12] != 0
+        || dmr_t3_chan_origin(&state, 12U) != DMR_CHAN_ORIGIN_NONE) {
+        DSD_FPRINTF(stderr, "dmr origins: target A's LPCN 12 leaked into B\n");
+        test_rc = 1;
+    }
+
+    dsd_state_set_trunk_chan_freq(&state, 12U, 453025000L);
+    dmr_t3_chan_note_map_loaded(&state);
+    trunk_scan_test_set_now(0.52);
+    dsd_engine_trunk_scan_tick(&opts, &state);
+    if (dsd_engine_trunk_scan_active_index(&state) != 0 || state.trunk_chan_map[12] != 452012500L
+        || dmr_t3_chan_origin(&state, 12U) != DMR_CHAN_ORIGIN_SITE) {
+        DSD_FPRINTF(stderr, "dmr origins: target A's LPCN 12 not restored (%ld, origin %d)\n", state.trunk_chan_map[12],
+                    (int)dmr_t3_chan_origin(&state, 12U));
+        test_rc = 1;
+    }
+    trunk_scan_test_set_now(0.78);
+    dsd_engine_trunk_scan_tick(&opts, &state);
+    if (dsd_engine_trunk_scan_active_index(&state) != 1 || state.trunk_chan_map[12] != 453025000L
+        || dmr_t3_chan_origin(&state, 12U) != DMR_CHAN_ORIGIN_FILE
+        || dmr_t3_chan_learn(&opts, &state, 12U, 452012500L, DMR_CHAN_ORIGIN_SITE) != 0) {
+        DSD_FPRINTF(stderr, "dmr origins: target B's file row not restored (%ld, origin %d)\n",
+                    state.trunk_chan_map[12], (int)dmr_t3_chan_origin(&state, 12U));
+        test_rc = 1;
+    }
 
     dsd_engine_trunk_scan_shutdown(&opts, &state);
     trunk_scan_test_clear_now();
@@ -27189,6 +27256,7 @@ main(void) {
     rc |= run_with_default_tune_hook(test_parser_accepts_100_targets);
     rc |= run_with_default_tune_hook(test_parser_refuses_a_non_utf8_id);
     rc |= run_with_default_tune_hook(test_coordinator_idle_rotation_and_state_restore);
+    rc |= run_with_default_tune_hook(test_dmr_channel_origins_restore_per_target);
     rc |= run_with_default_tune_hook(test_assoc_trunk_scan_restore);
     rc |= run_with_default_tune_hook(test_unit_activity_ring_spans_trunk_scan_switch);
     rc |= run_with_default_tune_hook(test_target_patch_clock_survives_other_reception);
@@ -27554,6 +27622,19 @@ dsd_engine_scan_untyped_goto_row(dsd_opts* opts, dsd_state* state, int row) {
 
 void
 dsd_engine_legacy_tune_caches_forget(void) {}
+
+/* The DMR channel writer's notice (dmr_t3_channels.c, linked for the per-target provenance): DMR_T3_CHANNELS runs the
+   real emitter. */
+int
+dsd_event_emit_data_notice(dsd_opts* opts, dsd_state* state, uint8_t slot, const dsd_call_observation* observation,
+                           const char* notice) {
+    (void)opts;
+    (void)state;
+    (void)slot;
+    (void)observation;
+    (void)notice;
+    return 0;
+}
 
 /* The close of the recordings no call owns, which a target switch runs as it leaves the carrier (issue #809 B4):
    counted. CORE_WAV_JOURNAL runs the real one through the real switch. */

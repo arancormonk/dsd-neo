@@ -69,6 +69,7 @@
 #include <dsd-neo/platform/threading.h>
 #include <dsd-neo/platform/timing.h>
 #include <dsd-neo/protocol/dmr/dmr.h>
+#include <dsd-neo/protocol/dmr/dmr_t3_channels.h>
 #include <dsd-neo/protocol/dmr/dmr_trunk_sm.h>
 #include <dsd-neo/protocol/nxdn/nxdn.h>
 #include <dsd-neo/protocol/p25/p25_cc_candidates.h>
@@ -13185,11 +13186,17 @@ test_user_moves_while_trunking_forget_the_record(void) {
     seed_p25_record(&state);
     reset_cc_tune_stub(DSD_TRUNK_TUNE_RESULT_PENDING);
     state.dmr_ras_signatures = 1U; /* the carrier left's RAS evidence */
+    rc |= expect_int("a DMR channel learned before the return",
+                     dmr_t3_chan_learn(&opts, &state, 12U, 451012500L, DMR_CHAN_ORIGIN_SITE), 1);
     rc |= expect_int("user return-to-CC queued", dsd_app_command_action(DSD_APP_CMD_RETURN_CC),
                      DSD_APP_COMMAND_SUBMIT_QUEUED);
     rc |= expect_int("user return-to-CC drained", dsd_app_drain_cmds(&opts, &state), 1);
     rc |= expect_int("a user return-to-CC forgets the record", (int)state.rx_id.valid, 0);
     rc |= expect_int("a user return-to-CC forgets the RAS evidence", (int)state.dmr_ras_signatures, 0);
+    /* The same network's control channel: what its site taught stays (discussion #900 F2). */
+    rc |=
+        expect_true("a user return-to-CC keeps the learned DMR channel",
+                    state.trunk_chan_map[12] == 451012500L && dmr_t3_chan_origin(&state, 12U) == DMR_CHAN_ORIGIN_SITE);
     rc |= expect_true("the ended call keeps the system it ended with",
                       state.event_history_s[0].Event_History_Items[1].sys_id2 == 0x348U);
     freeState(&state);
@@ -13202,12 +13209,17 @@ test_user_moves_while_trunking_forget_the_record(void) {
     state.trunk_lcn_freq[0] = 851000000L;
     state.trunk_lcn_freq[1] = 851500000L;
     seed_p25_record(&state);
+    rc |= expect_int("a DMR channel learned before the cycle",
+                     dmr_t3_chan_learn(&opts, &state, 12U, 451012500L, DMR_CHAN_ORIGIN_SITE), 1);
     reset_io_control_tune_stub(RTL_STREAM_TUNE_OK);
     rc |= expect_int("trunked channel cycle queued", dsd_app_command_action(DSD_APP_CMD_CHANNEL_CYCLE),
                      DSD_APP_COMMAND_SUBMIT_QUEUED);
     rc |= expect_int("trunked channel cycle drained", dsd_app_drain_cmds(&opts, &state), 1);
     rc |= expect_int("trunked channel cycle tuned", g_io_control_tune_calls, 1);
     rc |= expect_int("a trunked channel cycle forgets the record", (int)state.rx_id.valid, 0);
+    /* The move can land on another network: what the air taught goes, its trust with it (discussion #900 F2). */
+    rc |= expect_true("a trunked channel cycle drops the learned DMR channel",
+                      state.trunk_chan_map[12] == 0L && state.dmr_lcn_trust[12] == 0U);
     freeState(&state);
     return rc;
 }
