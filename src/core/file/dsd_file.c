@@ -3510,8 +3510,8 @@ typedef enum {
     SDRTRUNK_SHAPE_TEXT = 0, /* a String the reader passes over (a system's or site's name): any JSON string */
     SDRTRUNK_SHAPE_WORD,     /* a String the reader reads (a protocol, call type, ID, tag, MI) or a member's name: as
                                 the writer writes it, with no escape */
-    SDRTRUNK_SHAPE_INT32,    /* an Integer: a JSON whole number within Java's int */
-    SDRTRUNK_SHAPE_INT64,    /* a long: a JSON whole number within Java's long */
+    SDRTRUNK_SHAPE_INT32,    /* an Integer: a JSON whole number with no sign, within Java's int */
+    SDRTRUNK_SHAPE_INT64,    /* a long: a JSON whole number with no sign, within Java's long */
     SDRTRUNK_SHAPE_BOOLEAN,  /* a boolean: true or false */
     SDRTRUNK_SHAPE_HEX,      /* a frame's bits: a quoted string of hex digits, not empty */
     SDRTRUNK_SHAPE_FRAMES,   /* the call's List<VoiceFrame>: an array of frame objects */
@@ -3705,9 +3705,11 @@ sdrtrunk_shape_word(sdrtrunk_shape_scan* scan, const char* word) {
     return 1;
 }
 
-/* A whole number next as Jackson writes the writer's @p type (SDRTRUNK_SHAPE_INT32: an Integer, _INT64: a long): JSON's
-   integer form, a '-' before a negative one and no leading zero ("-0" neither, which Java never writes), and a value
-   the type holds, read with the strict parser. */
+/* A whole number next as the writer writes the writer's @p type (SDRTRUNK_SHAPE_INT32: an Integer, _INT64: a long):
+   JSON's integer form with no sign and no leading zero, and a value the type holds, read with the strict parser. No
+   member the writer writes is ever negative: "version" is the constant 2 (MBECallSequence.getVersion()), "time" a
+   message's epoch milliseconds, and the key fields an 8-bit ALG ID and a 16-bit key id, unsigned (only the P25 writers
+   set them, from their HDU, LDU2 ESP, MAC PTT and ESS fields). */
 static int
 sdrtrunk_shape_integer(sdrtrunk_shape_scan* scan, uint8_t type) {
     enum { LONG_DIGITS = 19 }; /* Long.MAX_VALUE, 9223372036854775807 */
@@ -3715,21 +3717,20 @@ sdrtrunk_shape_integer(sdrtrunk_shape_scan* scan, uint8_t type) {
     if (!sdrtrunk_shape_space(scan)) {
         return 0;
     }
-    const int negative = *scan->p == '-';
-    const char* digits = scan->p + (negative ? 1 : 0);
+    const char* digits = scan->p;
     char number[LONG_DIGITS + 1];
     size_t n = 0;
     while (n <= LONG_DIGITS && digits[n] >= '0' && digits[n] <= '9') {
         n++;
     }
-    if (n == 0U || n > LONG_DIGITS || (digits[0] == '0' && (n > 1U || negative))) {
+    if (n == 0U || n > LONG_DIGITS || (digits[0] == '0' && n > 1U)) {
         return 0;
     }
     DSD_MEMCPY(number, digits, n);
     number[n] = '\0';
     const uint64_t max = type == SDRTRUNK_SHAPE_INT32 ? (uint64_t)INT32_MAX : (uint64_t)INT64_MAX;
     uint64_t value = 0;
-    if (dsd_parse_uint64_strict(number, 10, max + (negative ? 1U : 0U), &value) != 0) {
+    if (dsd_parse_uint64_strict(number, 10, max, &value) != 0) {
         return 0;
     }
     scan->p = digits + n;

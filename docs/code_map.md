@@ -2112,12 +2112,13 @@ suite runs under this compiler.
   object or array. Values (`sdrtrunk_shape_char_len()`, `sdrtrunk_shape_integer()`): every string is valid UTF-8 with
   no raw control character; a word (a value the reader reads, or a member's name) has no escape at all, so an escaped
   ID can never reach the policy lookup unread; text (`system`, `site`, which the reader passes over) allows only JSON's
-  escapes (`\" \\ \/ \b \f \n \r \t`, `\u` with four hex digits); an integer is JSON's form (`-?(0|[1-9][0-9]*)`, not
-  `-0`) within its Java type (`int` or `long`), read with `dsd_parse_uint64_strict()`; `frames` is an array of frame
-  objects, each with a `hex` of hex digits that is not empty. Layouts: the writer before 2025-11 listed `protocol,
-  call_type, from, to, encrypted, frames` with no `version`, so Jackson put the unlisted `system` and `site` after
-  `frames`, in either order; d09fad56 added `version` and moved the two before `frames` in one change. So a record is
-  in the current layout once it has `version` (`SDRTRUNK_SHAPE_CURRENT`), and `system` and `site`
+  escapes (`\" \\ \/ \b \f \n \r \t`, `\u` with four hex digits); an integer is JSON's unsigned form (`0|[1-9][0-9]*`:
+  no member the writer writes is negative) within its Java type (`int` or `long`), read with
+  `dsd_parse_uint64_strict()`; `frames` is an array of frame objects, each with a `hex` of hex digits that is not empty.
+  Layouts: the writer before 2025-11 listed `protocol, call_type, from, to, encrypted, frames` with no `version`, so
+  Jackson put the unlisted `system` and `site` after `frames`, in either order; d09fad56 added `version` and moved the
+  two before `frames` in one change. So a record is in the current layout once it has `version`
+  (`SDRTRUNK_SHAPE_CURRENT`), and `system` and `site`
   (`SDRTRUNK_SHAPE_LOCATION`) come before `frames` there and after it otherwise. `VoiceFrame` gained `tag` (first) in
   2026-07, which the one frame order covers. The check looks at the exit flag as it starts and ends and once each MiB
   it passes (`sdrtrunk_shape_stopped()`, by bytes: inside strings and white-space runs and through the white space
@@ -2142,10 +2143,10 @@ suite runs under this compiler.
   after the frames, a second record, frames before the protocol, a nested object with frames, an escaped key, an
   unclosed record, an outer array, `"to":[]`, a frame with no `hex`, an escaped `from` or `to`, an escape JSON has not
   or bytes that are not UTF-8 in `system` or `site`, `version` with a `site` after `frames`, no `version` with `system`
-  before them, `02`, `-0`, a `version` past `int` and a `time` past `long`: no per-call audio; every JSON escape and
-  UTF-8 in `system` and `site` stays STANDARD; a zero-padded source keeps its radio's `stream=off`; a patch group, an
-  unreadable `to`, a roaming source), `test_playback_unread_ids_say_they_stay_local` (the once-a-run line for an
-  unreadable ID, said whether or not the close allows the fallback: `wav_close_note_rdio_skip()`),
+  before them, `02`, a `-` on any number, a `version` past `int` and a `time` past `long`: no per-call audio; every
+  JSON escape and UTF-8 in `system` and `site` stays STANDARD; a zero-padded source keeps its radio's `stream=off`; a
+  patch group, an unreadable `to`, a roaming source), `test_playback_unread_ids_say_they_stay_local` (the once-a-run
+  line for an unreadable ID, said whether or not the close allows the fallback: `wav_close_note_rdio_skip()`),
   `test_playback_sdrtrunk_written_files_record` (Jackson-printed DMR, P25 Phase 1 and 2, NXDN with SACCH tags, the older
   writer, CRLF line ends: all STANDARD), `CORE_MBE_FILE_IO` `test_sdrtrunk_json_wav_honors_talkgroup_policy` (a
   NONSTANDARD file writes the static WAV, never the per-call one).

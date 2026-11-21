@@ -2308,10 +2308,11 @@ talkgroup, are recorded but get no fallback talkgroup (no sidecar), and a roamin
 under 1234; an SDRTrunk patch group's `to` (`P:1234`, `P:1234 [5001, 5002]`) is talkgroup 1234, whose `stream=off` row
 keeps the recording local; an escaped `from` (`"56\u00378"`, its radio `stream=off`) or `to`, an escape JSON has not
 (`\q`), a short `\u` escape or bytes that are not UTF-8 in `system` or `site`, a `version` with a `site` after the
-frames, no `version` with a `system` before them, a bare `02`, a key id of `-0`, a `version` past a Java `int` and a
-`time` past a Java `long` leave nothing recorded, while every JSON escape and UTF-8 text in `system` and `site` is
-exported. A case installs its policy rows by flags (`played_policy`), so a talkgroup-0 row is
-installed too: a `stream=off` talkgroup 0 record alone is recorded and not exported, as is the two-record file;
+frames, no `version` with a `system` before them, a bare `02`, a negative `version`, `time` or key id (`-2`, `-5`,
+`-1`, `-0`), a `version` past a Java `int` and a `time` past a Java `long` leave nothing recorded, while every JSON
+escape and UTF-8 text in `system` and `site` is exported. A case installs its policy rows by flags (`played_policy`), so
+a talkgroup-0 row is installed too: a `stream=off` talkgroup 0 record alone is recorded and not exported, as is the
+two-record file;
 `test_playback_unread_ids_say_they_stay_local`: a played call with an unreadable `to` (`Q:77`), and one from a roaming
 source to an ISSI talkgroup (no ID and no text on the row, so the run-end early close does not allow the fallback),
 are recorded, kept local, and the run's one line says so;

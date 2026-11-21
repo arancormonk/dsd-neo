@@ -444,8 +444,8 @@ Windows console runs:
     - before that: the same with no `version`, and `system` and `site` after `frames`, in either order. A record with
       `version` and a `system` or `site` after `frames` is in neither;
   - each value of the kind SDRTrunk writes: text in quotes, a whole number, or `true`/`false` (`encrypted`). A whole
-    number is written as JSON writes one (no leading zero, so not `02`, and not `-0`) and fits SDRTrunk's type: a Java
-    `int` for `version`, `encryption_algorithm` and `encryption_key_id`, a Java `long` for `time`;
+    number has no sign (SDRTrunk writes none negative) and no leading zero, so not `-2` or `02`, and fits SDRTrunk's
+    type: a Java `int` for `version`, `encryption_algorithm` and `encryption_key_id`, a Java `long` for `time`;
   - text as SDRTrunk writes it: valid UTF-8, with no escape in a value the reader reads (`protocol`, `call_type`,
     `from`, `to`, a frame's `tag` and `encryption_mi`), so `"56\u00378"` is not radio 5678. The free text of `system`
     and `site` may hold JSON's own escapes (`\"`, `\\`, `\/`, `\b`, `\f`, `\n`, `\r`, `\t`, and `\u` with four hex
