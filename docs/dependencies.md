@@ -151,7 +151,7 @@ CI and local quality tools are tracked through:
 Hashed Python requirements are used where Python tooling is installed in CI.
 GitHub Actions are pinned to immutable commit SHAs by policy.
 
-Semgrep 1.184.0 pins two vulnerable dependency ranges:
+Semgrep 1.185.0 pins three vulnerable dependency ranges:
 
 - `mcp==1.29.0`, which is affected by
   [GHSA-84m7-p3x7-pcfv](https://github.com/modelcontextprotocol/python-sdk/security/advisories/GHSA-84m7-p3x7-pcfv).
@@ -160,12 +160,15 @@ Semgrep 1.184.0 pins two vulnerable dependency ranges:
   the fix for [GHSA-xcq7-p3pf-p88h](https://github.com/advisories/GHSA-xcq7-p3pf-p88h).
   The Semgrep requirements override the OpenTelemetry packages Semgrep names
   with 1.45.2 and 0.66b2, so the family stays in step.
+- `wcmatch~=8.3`, which holds `wcmatch` below the fix for
+  [GHSA-53pm-wgxf-c6qf](https://github.com/advisories/GHSA-53pm-wgxf-c6qf) (11.2).
+  The Semgrep requirements override it with `wcmatch==12.0.3`.
 
 Regenerate the complete hashed lockfile with the command in its header, including
 `--override .github/requirements/semgrep.in`. Install it with
 `python -m pip install --require-hashes --no-deps -r .github/requirements/semgrep.txt`
 in a dedicated Python 3.14 environment. CI checks that `pip check` reports only
-the exact Semgrep/MCP and Semgrep/OpenTelemetry metadata conflicts, then runs
+the exact Semgrep/MCP, Semgrep/OpenTelemetry and Semgrep/wcmatch metadata conflicts, then runs
 the Semgrep guardrails. When a Semgrep release accepts a patched version, drop
 that override and its expected conflict lines. When none remain, also remove
 `--no-deps` and the expected-conflict check; regenerate the lockfile and require

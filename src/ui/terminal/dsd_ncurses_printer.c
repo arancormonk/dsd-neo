@@ -3045,6 +3045,18 @@ ui_render_nxdn_site_line(const dsd_state* state, int idas) {
 
 /* Whether the NXDN decoder's talker alias may show (issue #637): the decoder keeps it whatever the receive policy says,
    so like the call's identity it shows only for reception the policy admits, with or without a canonical call. */
+/* The live talker alias of @p slot as @p call may show it: an alias published for a call shows only on that call (a
+   header can open the next call before anything drops the last talker's alias), and on a P25 call never one another
+   decoder set outside call enrichment (epoch 0). */
+static const char*
+ui_live_alias_for_call(const dsd_state* state, int slot, const dsd_call_snapshot* call) {
+    const uint64_t alias_epoch = state->generic_talker_alias_epoch[slot];
+    if ((alias_epoch != 0U || DSD_SYNC_IS_P25(call->protocol)) && call->epoch != alias_epoch) {
+        return "";
+    }
+    return state->generic_talker_alias[slot];
+}
+
 static int
 ui_nxdn_alias_admitted(const dsd_opts* opts, const dsd_state* state) {
     dsd_call_snapshot call;
@@ -3053,6 +3065,24 @@ ui_nxdn_alias_admitted(const dsd_opts* opts, const dsd_state* state) {
         return 0;
     }
     return dsd_receive_allows(opts, state, DSD_SYNC_NXDN_POS, 0);
+}
+
+/* The NXDN line's alias. NXDN publishes an alias decoded before its call untagged (epoch 0) for immediate display;
+   tagged text shows only on the NXDN call it was published for, never another protocol's call the slot still holds. */
+static const char*
+ui_nxdn_alias_text(const dsd_opts* opts, const dsd_state* state) {
+    if (!ui_nxdn_alias_admitted(opts, state)) {
+        return "";
+    }
+    const uint64_t alias_epoch = state->generic_talker_alias_epoch[0];
+    if (alias_epoch == 0U) {
+        return state->generic_talker_alias[0];
+    }
+    dsd_call_snapshot alias_call;
+    DSD_MEMSET(&alias_call, 0, sizeof(alias_call));
+    (void)dsd_call_state_get(state, 0U, &alias_call);
+    return DSD_SYNC_IS_NXDN(alias_call.protocol) && alias_call.epoch == alias_epoch ? state->generic_talker_alias[0]
+                                                                                    : "";
 }
 
 static void
@@ -3064,7 +3094,7 @@ ui_render_nxdn_tgt_src_line(const dsd_opts* opts, const dsd_state* state) {
     printw("| ");
     printw("TGT: [%5lu] ", target);
     printw("SRC: [%5lu] ", source);
-    printw("Alias: [%s]", ui_nxdn_alias_admitted(opts, state) ? state->generic_talker_alias[0] : "");
+    printw("Alias: [%s]", ui_nxdn_alias_text(opts, state));
     {
         char group_mode[8];
         char group_name[50];
@@ -3572,6 +3602,9 @@ ui_build_slot_view(const dsd_opts* opts, const dsd_state* state, int slot_idx) {
             }
         }
     }
+    if (slot.talker_alias[0] != '\0') {
+        slot.talker_alias = ui_live_alias_for_call(state, slot_idx, &slot.call);
+    }
     const int p25p2_context = DSD_SYNC_IS_P25P2(state->synctype) || DSD_SYNC_IS_P25P2(state->lastsynctype);
     const int lockout_active = opts != NULL && opts->trunk_enable == 1 && opts->trunk_tune_enc_calls == 0;
     if (p25p2_context
@@ -3808,7 +3841,16 @@ ui_render_slot_header_line(const dsd_state* state, const ui_slot_view* slot, ui_
 
     ui_set_slot_render_flags(state, slot, flags);
     char call_tags[16] = {0};
-    if (flags->show_ids) {
+    char home_src[24];
+    int id_excess = 0; /* columns a source wider than the 8-wide field takes from the banner */
+    if (flags->show_ids && slot->source == 0 && slot->canonical_active
+        && dsd_call_state_format_home_source(&slot->call, home_src, sizeof home_src)) {
+        /* A roaming P25 radio named only by its home identity (`unit@system`): no working address to show. */
+        printw("TGT: [%8i] SRC: [%8s]", slot->target, home_src);
+        id_excess = (int)strlen(home_src) > 8 ? (int)strlen(home_src) - 8 : 0;
+        ui_compose_slot_call_tags(slot, call_tags, sizeof call_tags);
+        printw("%s", call_tags);
+    } else if (flags->show_ids) {
         printw("TGT: [%8i] SRC: [%8i]", slot->target, slot->source);
         ui_compose_slot_call_tags(slot, call_tags, sizeof call_tags);
         printw("%s", call_tags);
@@ -3821,7 +3863,7 @@ ui_render_slot_header_line(const dsd_state* state, const ui_slot_view* slot, ui_
     }
     ui_restore_call_info_color(state);
 
-    int banner_width = UI_SLOT_CALL_STATUS_WIDTH - (int)strlen(call_tags);
+    int banner_width = UI_SLOT_CALL_STATUS_WIDTH - (int)strlen(call_tags) - id_excess;
     if (banner_width < 0) {
         banner_width = 0;
     }

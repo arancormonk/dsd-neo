@@ -7372,7 +7372,9 @@ if(DSD_HAS_CURL)
     # The built-in transport with the real libcurl against a loopback server, over
     # plain http (DSD_TILE_FETCH_TEST_PLAIN_HTTP; the shipped library is https
     # only): an answer over the body cap keeps its status and the header lines
-    # libcurl delivered (Retry-After), with a declared length and without.
+    # libcurl delivered (Retry-After), with a declared length and without. Plain
+    # http is pinned by the CURLOPT_PROTOCOLS bitmask, deprecated in current
+    # headers, hence CURL_DISABLE_DEPRECATION.
     if(NOT WIN32)
         add_executable(
             dsd-neo_test_runtime_tile_fetch_plain_http
@@ -7389,7 +7391,7 @@ if(DSD_HAS_CURL)
         )
         target_compile_definitions(
             dsd-neo_test_runtime_tile_fetch_plain_http
-            PRIVATE DSD_TILE_FETCH_TEST_PLAIN_HTTP
+            PRIVATE DSD_TILE_FETCH_TEST_PLAIN_HTTP CURL_DISABLE_DEPRECATION
         )
         target_link_libraries(
             dsd-neo_test_runtime_tile_fetch_plain_http

@@ -18,7 +18,9 @@ import "MapText.js" as MapText
 // the canvas itself is not in the accessibility tree.
 //
 // The tile settings, the age filter and the view are kept in this device's
-// prefs (map/*, never in a backup); follow is never saved.
+// prefs (map/*, never in a backup); follow is never saved. The map opens on
+// the user's own position when location is allowed, and a return keeps the
+// view as it was left.
 Item {
     id: screen
 
@@ -39,13 +41,17 @@ Item {
 
     // Which view shows: the map (true) or the List.
     property bool mapShown: true
+    // The List stops a Locate me still on its way where it is (MapView), so
+    // the next press locates again rather than following.
+    onMapShownChanged: if (!mapShown) locator.cameraMoved()
     // A History row's saved fix dropped as one pin ("Show on map"), or null.
     property var pin: null
     // The tiles prompt set aside: for the rest of the app's run (the screen
     // is kept between visits). A listener who keeps tiles off on purpose is
     // not asked again on every open.
     property bool tilesPromptDismissed: false
-    // Whether the camera was set up once; the view keeps its place after.
+    // Whether the camera was set up once: at the first open of the app's run.
+    // The screen is kept between visits, so the view keeps its place after.
     property bool cameraPlaced: false
     // Whether the app is in the foreground. On Android an Item stays visible
     // while the app is hidden, so the live position and the age clock follow
@@ -92,8 +98,15 @@ Item {
 
     onVisibleChanged: {
         if (visible) {
-            map.resetCameraUsedDevicePosition();
             Qt.callLater(screen.placeCamera);
+            // A radio followed while away is centred below the chips once
+            // they are laid out again (the canvas caught up before they were).
+            Qt.callLater(function () {
+                if (!screen.visible)
+                    return;
+                status.forceLayout();
+                map.recentreFollow();
+            });
             // With a screen reader on, the focus goes to Back, a node: TalkBack
             // follows only a focus change on one (issue #800, P9), so it no
             // longer stays a moment on the covered control that opened the
@@ -109,22 +122,31 @@ Item {
         } else {
             positionSheet.visible = false;
             locator.stopFollow();
-            // Leaving puts back a view the device did not shape (the keeper),
-            // so the next press locates again rather than following.
+            // A Locate me still on its way stops where it is (MapView), so
+            // the next press locates again rather than following.
             locator.cameraMoved();
         }
     }
 
-    // The first open shows every radio (or the saved dot); later opens keep
-    // the view where it was left.
+    // The first open centres on the user when location is allowed: on the
+    // saved dot at once with precise location, then on a fresh fix asked for
+    // without a prompt. Otherwise it opens on the saved view, else every
+    // radio. A saved dot places nothing without precise location: it may be
+    // a precise fix from before access was lowered, and the tile server would
+    // see the streets around it. Later opens keep the view where it was left.
     function placeCamera() {
         if (cameraPlaced || !visible)
             return;
         cameraPlaced = true;
         if (pin)
             return;
-        if (!map.fitAll() && locator.deviceValid)
+        var access = locator.access();
+        if (access === "precise" && locator.deviceValid)
             map.centerOnDevice();
+        else if (!keeper.restore())
+            map.fitAll(false);
+        if (locator.allowed())
+            locator.locateQuietly();
     }
 
     // A History row's fix ("Show on map"): its pin, centred, on the map.
@@ -133,6 +155,9 @@ Item {
             return;
         pin = record;
         mapShown = true;
+        // A first visit starts from the saved view's zoom, as an open would.
+        if (!cameraPlaced)
+            keeper.restore();
         cameraPlaced = true;
         map.selectedTrackId = 0;
         // A one-shot move: a follow left on would take the camera back on its
@@ -410,7 +435,10 @@ Item {
         id: area
         objectName: "mapArea"
 
-        anchors.top: promptScroll.visible ? promptScroll.bottom : chrome.bottom
+        // The prompt's own condition, not its visibility: that turns false
+        // with the whole screen as it closes, and the canvas would grow
+        // under the view it keeps for the next visit.
+        anchors.top: tilesPrompt.shown ? promptScroll.bottom : chrome.bottom
         anchors.topMargin: 10
         anchors.left: parent.left
         anchors.right: parent.right
@@ -1041,11 +1069,18 @@ Item {
         objectName: "mapLocator"
         shown: screen.visible && screen.mapShown
         foreground: screen.appForeground
-        onLocated: {
+        onLocated: function (canFollow) {
             screen.userMovedCamera();
             // A radio followed would take the camera back from the dot.
             map.followTrackId = 0;
-            locator.readyToFollow = true;
+            // Follow needs precise location and a press that located: after
+            // the opening fix, or without precise location, the button stays
+            // Locate me, so every press finds the user again.
+            locator.readyToFollow = canFollow;
+            // At the fix's own zoom: the streets around a precise fix, the
+            // whole circle of an approximate one. Below the chips as the
+            // answer just changed them (an approximate fix's notice).
+            status.forceLayout();
             map.centerOnDevice();
         }
         onFollowMeChanged: map.followDevice = followMe
@@ -1061,6 +1096,7 @@ Item {
 
     // Spec 4.8: the age filter and the view are kept between visits.
     MapViewKeeper {
+        id: keeper
         screen: screen
         map: map
     }

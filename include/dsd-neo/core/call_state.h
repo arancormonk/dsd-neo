@@ -16,6 +16,7 @@
 #include <dsd-neo/core/received_identity.h>
 #include <dsd-neo/core/safe_api.h>
 #include <dsd-neo/core/state_fwd.h>
+#include <stddef.h>
 
 #include <stdint.h>
 
@@ -115,6 +116,19 @@ typedef enum {
      */
     DSD_CALL_BOUNDARY_BEGIN,
 } dsd_call_boundary;
+
+/**
+ * A P25 radio's home identity, its Source SUID (WACN, System ID, unit ID), as an extended voice user names it. It is
+ * shown, and matched against a talker alias that names the same SUID, but it is never a local radio ID: the call's
+ * ota_source_id stays the radio's working address on the system received (0 when the message names none).
+ */
+typedef struct {
+    uint32_t wacn;  /**< 20 bits. */
+    uint32_t unit;  /**< 24 bits; names a radio when valid. */
+    uint16_t sysid; /**< 12 bits. */
+    uint8_t valid;  /**< 0: no home identity. */
+    uint8_t reserved;
+} dsd_call_source_home;
 
 typedef struct {
     int protocol; /**< DSD_SYNC_* value; use DSD_SYNC_NONE when unobserved. */
@@ -331,6 +345,14 @@ typedef struct {
     char source_text[DSD_CALL_IDENTITY_TEXT_SIZE];
     char target_text[DSD_CALL_IDENTITY_TEXT_SIZE];
     char route_text[DSD_CALL_ROUTE_COUNT][DSD_CALL_IDENTITY_TEXT_SIZE];
+    dsd_call_source_home source_home; /**< The talker's P25 home SUID, when a voice user named it. */
+    /** The P25 trunk state machine's identity verdict on ota_source_id (issue #800), mirrored from its record of the
+        call (dsd_call_state_note_source_verdict()): the source it checked, and the reception it was checked under. A
+        talker alias is learned for a P25 source only while this positively names it (dsd_call_state_source_learnable()):
+        never for a foreign home unit ID, an unchecked decode, or a working address an addressless roamer replaced. */
+    uint8_t source_checked;
+    uint32_t source_checked_id;
+    uint64_t source_checked_rx_gen;
     dsd_call_key_selection key_selection;
     dsd_receive_identity receive_identity;
     uint8_t receive_verdict;
@@ -636,6 +658,24 @@ int dsd_call_state_copy_snapshot(const dsd_state* state, dsd_call_state_snapshot
 int dsd_call_state_restore_snapshot(dsd_state* state, const dsd_call_state_snapshot* snapshot);
 int dsd_call_context_copy_snapshot(const dsd_state* state, dsd_call_context_snapshot* out);
 int dsd_call_context_restore_snapshot(dsd_state* state, const dsd_call_context_snapshot* snapshot);
+/** Records @p home on slot @p slot's ACTIVE call of @p protocol's family (display and alias matching only, as an
+ * observation's dsd_call_observation::source_home). @p replaced is set to 1 when it replaced another valid home: a
+ * different radio now talks on the call. Returns 1 when applied, 0 when the slot holds no such call, -1 on bad
+ * arguments. */
+int dsd_call_state_note_source_home(dsd_state* state, uint8_t slot, int protocol, const dsd_call_source_home* home,
+                                    int* replaced);
+/** Mirrors the P25 trunk state machine's identity verdict on slot @p slot's call at @p epoch: @p checked 1 when its
+ * record checks @p source under reception generation @p rx_gen, 0 when it withdrew or never earned it. Returns 1 when
+ * applied, 0 when the slot holds another call. */
+int dsd_call_state_note_source_verdict(dsd_state* state, uint8_t slot, uint64_t epoch, uint32_t source, int checked,
+                                       uint64_t rx_gen);
+/** Whether a talker alias may be learned for @p call's P25 source: its mirrored verdict (source_checked) names that
+ * source under the reception @p state is in now. Other protocols' calls: 1 for a nonzero source. */
+int dsd_call_state_source_learnable(const dsd_state* state, const dsd_call_snapshot* call);
+/** The display-only source of a P25 call with no working address whose extended voice user named the talker's home
+ * SUID (a roaming radio): `unit@system`, the decimal unit ID and the hex home System ID, into @p out. Returns 1 when
+ * written; 0, with @p out empty, for any other call. Never a radio ID: shown, never matched against local lists. */
+int dsd_call_state_format_home_source(const dsd_call_snapshot* call, char* out, size_t out_size);
 /** Set the active epoch @p epoch's identity text, a call of @p protocol (dsd_call_state_update_crypto()); a NULL text
  * keeps its own. Returns 1 when applied, 0 when the slot holds no such call, -1 on bad arguments. */
 int dsd_call_state_enrich_text(dsd_state* state, uint8_t slot, int protocol, uint64_t epoch, const char* source_text,

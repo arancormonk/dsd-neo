@@ -2792,6 +2792,22 @@ suite runs under this compiler.
   understated length, the KE8NAX sample's 2 for six characters), is shown but never learned (a decided limit). A block
   that completes the set out of order waits for the next cycle's decode; an empty alias and one with a U+FFFD are never
   learned. Tests: `DMR_TALKER_ALIAS_UTF8`, `DMR_TALKER_ALIAS_UTF16`, `DMR_TALKER_ALIAS_HEADER_LEN`, `DMR_ALIAS_LEARN`.
+- Invariant (live talker alias, `dsd_state::generic_talker_alias`): the alias the terminal UI shows for a slot is set by
+  alias enrichment (`dsd_event_enrich_alias()`), which tags it with the call epoch and the reception generation it was
+  published under (`generic_talker_alias_epoch`, `_rx_gen`). A P25 Phase 1 voice-user link control repeats in every LDU1
+  while the alias arrives in pieces across later superframes, so it keeps the alias when it goes on with the open call
+  the alias was published for, under the same reception, and drops it otherwise: a new call or talker, a declined start,
+  a TDULC, another system, a source other than the call's own talker, no source or a special address, the same number
+  switching between a local address and one needing a Source ID Extension within the call (another system's radio:
+  `p25_p1_voice_user_epoch` / `_local`), an alias from an earlier call or set outside enrichment
+  (`p25_lcw_drop_alias_unless_continued()`). Dropping it at every LDU1 made a Phase 1 alias flash on and off. Phase 2
+  drops it when a voice user begins a new epoch, or when another roaming radio's home replaces the call's
+  (`p25p2_note_voice_home()`); the trunk state machine drops it when a slot's media closes. The terminal UI shows an
+  alias only on the call it was published for, and on a P25 call never an untagged one; the NXDN line shows NXDN's
+  untagged text, and tagged text only on its own call. A decoder that sets the text outside call enrichment (NXDN) sets
+  the tag to 0. Decided limits: a reception change inside one call epoch drops the alias at the next voice-user link
+  control, not at once; Harris and Motorola alias fragments that straddle a reception change are assembled as before.
+  Tests: `P25_P1_LCW_GATING`, `CORE_ALIAS_HANGTIME`.
 - Invariant (Motorola talker alias reassembly, `src/core/util/dsd_alias.c`, `<dsd-neo/core/embedded_alias.h>`): the
   MFID 0x90 alias (Phase 1 LCW 0x15/0x17, Phase 2 MAC 0x91/0x95) assembles in `dsd_state::p25_apx_alias_rx[slot]`
   (`p25_apx_alias_rx_state_t`), which owns its header copy, block bitmap and record store; it never touches the
@@ -5363,7 +5379,8 @@ suite runs under this compiler.
       stop before the closing blank line (7.81 and 8.5: every line but it; 7.65: the status line only), so the lines
       seen so far are kept; a write refusal can be the header cap, so there the block must be whole.
       `RUNTIME_TILE_FETCH_PLAIN_HTTP` drives the real libcurl against a loopback server (plain http via the
-      test-only `DSD_TILE_FETCH_TEST_PLAIN_HTTP`). A URL libcurl rejects as malformed
+      test-only `DSD_TILE_FETCH_TEST_PLAIN_HTTP`, pinned by the `CURLPROTO_HTTP` bitmask so no build hands libcurl a
+      plain-http protocol name). A URL libcurl rejects as malformed
       (`CURLE_URL_MALFORMAT`) is `ERR_INVALID`, a settings problem, never retried as an outage.
     - Connection reuse: `dsd_tile_fetch_session` (one per fetching thread, `request.session`) is a curl share handle
       for the connection (7.57+), DNS and TLS session caches; any one the library cannot share is skipped. The
@@ -13610,7 +13627,37 @@ Private per-protocol modules worth knowing about:
   source address as well as the home SUID names the talker by the working address, which is local: the extended voice
   users (Group and Unit to Unit Voice Channel User - Extended, 0x21/0x22, as MAC_SIGNAL and inside
   MAC_PTT/MAC_ACTIVE: `p25p2_mac_decode_voice_identity()`, `p25p2_vpdu_observe_voice()`), as the extended grants that
-  carry one do; the SUID is only shown (`SUID:`), so a roaming radio's checked voice user names it like any other.
+  carry one do; the SUID is then only shown (`SUID:`), so a roaming radio's checked voice user names it like any other.
+  Its Source SUID is recorded on the call as the talker's home identity (`dsd_call_snapshot::source_home`, only from a
+  MAC whose CRC passed: `p25p2_vpdu_source_home()` for the voice-user pass, `p25p2_mac_decode_voice_identity()` for the
+  MAC_ACTIVE voice start when the call it published names the voice user's nonzero target, both through
+  `p25p2_note_voice_home()` and `dsd_call_state_note_source_home()`), for display and alias matching only: it never
+  takes part in the call's identity, boundaries, source fields or any local list. An L3Harris site sends Source Address
+  0 for a roaming radio; that call keeps source 0 and is shown as `unit@system` (decimal unit ID, hex home System ID,
+  `dsd_call_state_format_home_source()`) on the history line (kept with the row as `Event_History::src_home` for a
+  re-render with `src_home_key`, the full SUID: a reacquired segment naming another full SUID takes the new home and
+  alias, and the event log reports that alias), in the terminal call window and in the app's call view. Another radio's
+  home on the same call (two roaming radios with no end decoded between them) replaces it and drops the alias the
+  earlier radio's call showed; such an addressless voice user is `source_nonlocal` to the trunk state machine, so a
+  working address the call keeps from an earlier talker loses its verdict. A P25 talker alias is learned only for a
+  source the state machine's identity record positively checks under the reception now: every publication of that record
+  mirrors the verdict onto the call (`p25_sm_merge_published_identity()` -> `dsd_call_state_note_source_verdict()`; in
+  hangtime a claim withdrawing or contradicting the retained call's source clears it, anything else leaves it, so an
+  alias completed in hangtime is still learned), and every P25 learner (Harris, Motorola, Tait, Soft ID) reads it
+  (`dsd_call_state_source_learnable()`), so a foreign home unit ID from a grant, an unchecked decode or a withdrawn
+  source is shown and never learned; a full SUID ($49, Tait's Subscriber FQ-SUID, `p25_lcw_note_full_suid_source()`)
+  naming another system's home withdraws the verdict even for the number a local voice user checked. A Harris alias
+  (0xA8, which names no radio) attaches to the call's talker, a working address or a home identity; a Motorola alias
+  names a fully qualified SUID and matches a call with a home identity only by that whole SUID, any other call by its
+  working address, and is learned only when that checked address is the alias's unit ID (`alias_call_names_suid()`).
+  Decided limits (display only): a radio named only by its home SUID cannot be allowed, blocked or named through the
+  radio list (a numeric source from a foreign grant still can, as on main; only learning is gated); a voice user with no
+  working address never ends a call (two roaming radios back to back with no end decoded share one call, as on main);
+  the row's `source_id` and source text, CSV, WAV names and app History merging carry no home identity, while display
+  text (the history line, the call view's `src_text`, and the JSON fields that carry them) shows it; a long home ID may
+  shorten the call window's status banner; on a call that keeps an earlier radio's working address, a roaming radio
+  named only by its home shows that working address (its verdict withdrawn, nothing learned); an alias clear made while
+  a live slot filter withholds the call does not reach the staged row.
   A foreign unit's home ID alone therefore never names a report's sender, a sender scope or a local radio-list label.
   The
   verdicts are bound to their reception: a claim applied after the reception generation moved (another access code
@@ -18038,7 +18085,27 @@ Qt Quick frontend (`src/ui/qt`):
   newer request ends the one before it and only its own id is answered: fixes must be at most 30 seconds old, a cache
   must also be within 100 m to finish immediately,
   and current providers compete for accuracy up to the 20-second deadline. GPS participates with fine foreground
-  permission; approximate permission remains usable. The new JNI entry point is retained in `proguard-rules.pro`.
+  permission; approximate permission remains usable. With fine permission the fused provider is asked at
+  `QUALITY_HIGH_ACCURACY` (API 31+); with GPS asked, only GPS's own cache counts, and another provider's answer within
+  100 m settles only once `GPS_GRACE_MS` (10 s from the request's start) has passed: Google's fused provider answers a
+  new request at once with the position it already holds, stamped as new, so taking it at once made every Locate me
+  after the first come back where the first one was. A fresh GPS fix within 100 m settles at once, on itself or on a
+  more accurate network answer still fresh (never a fused one). Each provider's newest usable answer is kept (one unusable
+  on arrival, a future-dated one included, never is), and the one used is the most accurate still fresh when the request settles (every provider answered,
+  the grace, or the deadline). `requestPreciseLocation` (the map's Locate me) is a site request that first asks for
+  precise and approximate together when only approximate is allowed (Android's upgrade prompt; after two refusals
+  Android 11 and later answer at once and the request goes on with approximate); `requestQuietLocation` (the map's
+  opening fix) never prompts and ends at once without permission; it runs only while the Activity is started
+  (`LocationSupport.onActivityStart()`/`onActivityStop()`, called from `DsdNeoActivity` and checked by
+  `location_wiring`), and a stop ends one in flight as cancelled. With no provider to ask, the answer is
+  `LOCATION_OFF_ERROR` when the device's location switch is off (also for a request that ends with no fix after the
+  switch went off), `PRECISE_NEEDED_ERROR` for approximate access with no provider but GPS (Android 10-11 with the
+  network provider off; the map points to App info), and `PROVIDER_ERROR` otherwise. Locate me offers no precise
+  upgrade with the switch off. Every answer's `fixAtMs` is the phone's wall time less the fix's age on the elapsed
+  clock, not the provider's own `time` (GPS or network time, which a phone clock set ahead or behind does not match,
+  while Qt ages the saved fix on the phone's clock). A prompt's answer resumes only the request that
+  asked, while it is still the active one, and every real answer also reaches `LocationStream.permissionAnswered()`,
+  so precise location allowed from the map starts a stream roaming already holds. The new JNI entry point is retained in `proguard-rules.pro`.
   `SiteChooserSheet` orders eligible saved siblings by distance (each measured once per revision or fix into its
   `measured`, which `rows`, `nearest`, `uncertainNearest` and each row's label read), names the nearest site, exposes
   missing positions and saved-fix/accuracy limitations, and gates the nearest action during a lookup. While Running that
@@ -19120,11 +19187,14 @@ Qt Quick frontend (`src/ui/qt`):
     host sends only changes). A lease taken on a running feed changes nothing: its consumer reads the standing
     `record` itself. Test: `UI_QT_LOCATION_FEED`.
   - `location_requests.{h,cpp}` (`LocationRequests`, context property `locationRequests`): the one-shot broker over
-    `DecoderHost::requestSiteLocation()`/`requestCurrentLocation()`. Android keeps one request and cancels the previous
+    `DecoderHost::requestSiteLocation()`/`requestPreciseLocation()`/`requestCurrentLocation()`. Android keeps one request and cancels the previous
     one on every new request (`LocationSupport.kt`), so the broker owns the single request in flight: the newest
     wins, the one it replaces is cancelled and its requester told with `ended()`, and only the pending id is ever
     answered (`answered(requester, id, result)`). Requesters: "siteChooser", "savedSystems" (Listen's Nearest),
-    "radioReference" (Use my location, `requestCurrent()`) and "map" (Locate me). An answer a host gives inside the
+    "radioReference" (Use my location, `requestCurrent()`) and "map" (Locate me, `requestPrecise()`; the map's opening
+    fix, `requestQuiet()`). `DecoderHost::locationAccess()` ("none", "approximate", "precise"; Android reads the
+    permissions over JNI each call) tells the map whether it may locate without a prompt and whether Follow can run.
+    An answer a host gives inside the
     request call is delivered once the event loop turns. Saving the one-shot fix stays the requester's
     (`prefs.setLocationFix()`). Test: `UI_QT_LOCATION_REQUESTS`. Both objects are published by `qt_ui.cpp`
     `publish_location()` and, under the same names, by the QML harness (`tests/ui/qml_test_context.h`, over
@@ -19166,7 +19236,9 @@ Qt Quick frontend (`src/ui/qt`):
     for a re-requested view) keeps its toned copy and texture serial, so a pan does not re-tone and re-upload it.
     The item holds no gesture state: the screen's
     handlers call `panBy()`, `zoomAbout()`, `zoomIn()`/`zoomOut()`, `fitAll()`, `fitAllWith(lat, lon)` (a fit that
-    also takes in one point the screen draws, the History pin), `centerOnTrack()`, `centerOnDevice()`, `centerOn()`,
+    also takes in one point the screen draws, the History pin), `centerOnTrack()`, `centerOnDevice()` (at `deviceZoom()`: the streets around the
+    dot, the accuracy circle about half the shorter side across, 15 at most, kept even where the projection's edge stops
+    the centre), `centerOn()`,
     `trackAt()`, `markerPoint()`, `pointFor()` (where the pin is drawn). Both fits go through `fitPoints()`, which adds
     the device dot when valid and marks `cameraUsedDevicePosition` before the camera moves. `topInset` is the height
     of the chips the screen lays over the canvas top: fits fit into the view less it and every `centerOn*` (so follow)
@@ -19186,8 +19258,8 @@ Qt Quick frontend (`src/ui/qt`):
     remains once live follow lets go. Every one-shot centring (`centredOn()`) and a follow's first raise a zoom too low
     to put the point in the middle (the whole world shorter than the canvas) just enough; a follow's later steps keep
     the zoom the user chose. `cameraUsedDevicePosition` turns true once the
-    camera centred on, followed or fitted the device dot, until `resetCameraUsedDevicePosition()` (every open): the
-    saved-view rule below reads it, and so do the tile requests. `tilesFromDevice()` (`cameraUsedDevicePosition` or
+    camera centred on, followed or fitted the device dot, for the item's life (the app's run; only tests call
+    `resetCameraUsedDevicePosition()`), since the screen keeps the view between visits: the saved-view rule below reads it, and so do the tile requests. `tilesFromDevice()` (`cameraUsedDevicePosition` or
     `followDevice`) is the one place that decides a request's `MapTileWorker::ViewOrigin`; a change of origin alone asks
     for the same keys again, so a device-placed view never rides on a request made by hand. Tile loading stops at once
     (not at the next polish, which a hidden window never gets) when the app goes Hidden/Suspended, the item hides or
@@ -19241,13 +19313,38 @@ Qt Quick frontend (`src/ui/qt`):
     (`Navigation.allows(map)`, as Spectrum's do); taps go through `GatedTapHandler`. The History pin is hit-tested
     before the marks (it is drawn over them) and sits in a layer clipped to the canvas.
   - Own position (spec 4.7): the dot is the saved one-shot fix (`prefs.lastLat`/`lastLon`, 24 h), which Locate me
-    refreshes as requester "map" (disabled while another requester's request runs); the second press, with the view
-    still on the found dot, is Follow my position, the "map" lease, held only while the map canvas shows with follow on,
+    refreshes as requester "map" (`requestPrecise()`, disabled while another requester's request runs) and centres at
+    `deviceZoom()`. The first open of a run with location allowed (`MapLocator.allowed()`) centres on the saved dot at
+    once only with precise access (a saved dot may be a precise fix from before access was lowered, and the tile
+    server would see the streets around it; otherwise the saved view, else the radios without the dot,
+    `fitAll(false)`), and asks for a fresh fix that never prompts (`locateQuietly()`, `requestQuiet()`, dropped when the app goes to
+    the background): it shows no notice, does not hold the button or arm Follow, starts only while the map shows in
+    the foreground, and its answer moves only a view nobody moved. Every answer is saved as the shared fix (the map's
+    own measurement, newest for the map; decided limit: it can replace a fix another screen saved moments before), unless
+    location was switched off or revoked while it waited: then it is not used at all.
+    `MapLocator.access()` reads `DecoderHost::locationAccess()`: "none", "off" (permission kept, the device's
+    location switched off: no opening fix, no placement on the saved dot), "approximate" or "precise".
+    `AppPrefs::setLocationFix()` stores a stamp ahead of the wall clock as now, so a fix is never expired (and the one
+    it replaced lost) as it is written. The second press after an explicit Locate me, with
+    the view still on the found dot and precise location allowed, is Follow my position; with approximate location the button stays Locate me (each
+    press finds the user again) and an explicit answer says "Your location is approximate. Allow precise location for a
+    closer fix." with a Settings action; a failed Locate me offers App info without permission and the location settings
+    when location is off; the "map" lease, held only while the map canvas shows with follow on,
     precise only ("Live position needs precise location." otherwise; a feed roaming already runs is read as it stands
     when the lease is taken, since the host repeats nothing). A stream fix is live while at most
     `MapLocator.maxFixAgeMs` (60 s, roaming's limit) old on `locationFeed.nowMs()`, aged once a second: older, the dot
-    stays on it as the last known position and following says "Finding your position…". Leaving the map clears the
-    Follow step (the keeper puts back a view the device did not shape), and every explicit one-shot move (Show on map
+    stays on it as the last known position and following says "Finding your position…". Leaving the map (or switching
+    to the List) clears the Follow step and keeps the view as it was left: the canvas stops a running camera move
+    where it is when it hides, no follow step moves it while hidden (`followNow()`), so the dot going back from a live fix to the saved
+    one cannot carry it. The canvas's top follows the tiles prompt's own condition (`tilesPrompt.shown`), not its
+    visibility, which turns false with the whole screen as it closes. A size change clamps from the view last asked
+    for (`m_asked`), not the clamped one; a follow re-centres after it at its own zoom, never raised as a first centring
+    would (`rearmFollow()`), and not while hidden. On return the view is fitted to the canvas and a follow still on
+    catches up at the user's zoom (a mark that moved, a canvas resized while hidden, a follow move cut short by the
+    hiding (`m_animFollow`, `m_followCatchUp`), or a first centring cut short, done again as a first
+    (`m_followStepFirst`)); the screen calls `recentreFollow()` once the chips are laid out again, and lays them out
+    before centring a located dot under a new notice. A History pin opening
+    the map first starts from the saved view's zoom. Every explicit one-shot move (Show on map
     for another radio, a History pin, a located dot) ends any follow first (`MapScreen.endFollows()`). A Locate me still
     running when the view is placed on purpose (every explicit camera action: a follow, Show on map, a pin, the device
     row, a fit, the zoom buttons, the wheel, a drag or pinch) keeps the view: its answer saves the dot but neither
@@ -19287,13 +19384,14 @@ Qt Quick frontend (`src/ui/qt`):
     one, when the app leaves the foreground, or when `AppPrefs` goes, since a pan writes every frame and each QSettings
     write rewrites the file. Follow is never saved. Rule: no view derived from the device's position is ever stored.
     `MapViewKeeper.qml` saves the view on every change only while `cameraUsedDevicePosition` is false; once Locate me,
-    follow or a fit that took in the device dot has used it, nothing more is saved that visit (a later pan or zoom
-    still starts from there), and closing the map puts the view back on the last saved one (or on the whole world,
-    with the camera placed again at the next open, when none is saved), so the next visit starts from a view the
-    device did not shape. A first open restores the saved view instead of fitting the radios. Tests:
+    follow, a fit that took in the device dot or the opening placement has used it, nothing more is saved for the rest
+    of the run (a later pan or zoom still starts from there). Closing the map keeps the view as it was left (the screen
+    lives for the run). A run's first open (`MapScreen.placeCamera()`) centres on the user when location is allowed;
+    otherwise it restores the saved view, else fits the radios. Tests:
     `UI_QT_PERSISTENCE` (`test_map_prefs()`, the pinned key table, a backup leaving the map keys out and a restore
     leaving them alone), `UI_QT_BACKUP_ARCHIVE` (an edited backup's map keys dropped), `tst_map_prefs.qml` (follow
-    on, follow off then zoom, follow off then fit, close, restart, a first fit with the device, the pin).
+    on, follow off then zoom, follow off then fit, close and reopen keeping the view, a run opening on the user, the
+    opening fix leaving a moved view and failing quietly, no access, approximate access, the pin).
   - Accessibility: the canvas is `Accessible.ignored`; the List is its complete equivalent (every mark, each state in
     words, the same sheet and Follow), detached while hidden (`KeepPlace`), its row names paced (`SpeechPacer`,
     `Navigation.speechPeriodMs`), rows updated in place. An unnamed radio is its bare ID everywhere (List, sheet title,
@@ -20241,8 +20339,9 @@ upgrade dialog), asks nothing when fine is granted, and asks once per id (each u
 re-registers the current subscription only if that start is still the newest call, so a stop during the prompt
 starts nothing, and empty grants (an interrupted prompt) change nothing. `openAppLocationSettings(activity)` (App info,
 through the `SettingsScreens.kt` intent helper FileBrowser shares) and `openLocationSourceSettings(activity)` post to
-main and swallow a missing screen. `LocationSupport` keeps its behaviour through the broker (an existing coarse grant
-skips its prompt). Tests: `ANDROID_LOCATION_JVM` (`LocationStreamTest.kt`, `LocationPermissionTest.kt`,
+main and swallow a missing screen. `access(context)` answers "precise", "approximate" or "none" from any thread.
+`LocationSupport` keeps its behaviour through the broker (an existing coarse grant skips its prompt, except the map's
+`requestPreciseLocation`, which offers precise). Tests: `ANDROID_LOCATION_JVM` (`LocationStreamTest.kt`, `LocationPermissionTest.kt`,
 `LocationSupportTest.kt`, and the `location_wiring` source check of `DsdNeoActivity`'s calls).
 
 Session end and the notification (issue #782): `stopSelf()` makes ActiveServices (`bringDownServiceLocked()`) cancel the

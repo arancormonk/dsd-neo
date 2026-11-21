@@ -107,6 +107,10 @@ class DecoderHostAndroid : public dsd_qt::DecoderHost {
 
     void requestCurrentLocation(qint64 requestId) override;
     void requestSiteLocation(qint64 requestId) override;
+    void requestPreciseLocation(qint64 requestId) override;
+    void requestQuietLocation(qint64 requestId) override;
+    /** @brief LocationPermission.access(): what the app's location permission allows now. */
+    QString locationAccess() const override;
     void cancelLocationRequest(qint64 requestId) override;
 
     /*

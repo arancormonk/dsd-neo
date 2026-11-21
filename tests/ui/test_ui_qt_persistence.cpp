@@ -1851,6 +1851,18 @@ test_foundation_persistence() {
                                                 && !stored.contains("location/lastAccuracyM"));
 }
 
+/* A fix stamped ahead of the wall clock (GPS time ahead of a phone clock set behind) is kept, stamped now: written as
+ * it came, it read as future-dated and expired at once, taking the fix it replaced with it. */
+void
+test_location_future_stamp_is_kept() {
+    AppPrefs prefs;
+    const qint64 before = QDateTime::currentMSecsSinceEpoch();
+    prefs.setLocationFix(12.5, -40.5, before + 60LL * 1000, 8);
+    const qint64 after = QDateTime::currentMSecsSinceEpoch();
+    expect("future stamp: the fix is kept", std::abs(prefs.lastLat() - 12.5) < 1e-9 && prefs.lastFixAt() > 0);
+    expect("future stamp: stored as now", prefs.lastFixAt() >= before && prefs.lastFixAt() <= after);
+}
+
 /* A fix that lapses with no expiry timer (it runs on the monotonic clock, which stops while a phone sleeps) is dropped
  * at the first read 24 wall-clock hours on. That read tells every reader once, queued: never inside the read itself
  * (a reader in the middle of a rebuild), never again for the reads after it, and never for a read with no fix. */
@@ -4133,6 +4145,7 @@ main(int argc, char** argv) {
     test_units_preference();
     test_migration_write_failure();
     test_foundation_persistence();
+    test_location_future_stamp_is_kept();
     test_location_lazy_expiry_notifies();
     // WP-S2: opting out preserves the last successful target, including scan lists.
     {

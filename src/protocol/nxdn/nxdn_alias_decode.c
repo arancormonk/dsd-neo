@@ -46,6 +46,7 @@ nxdn_alias_publish(dsd_state* state, const char* alias) {
         return;
     }
     DSD_SNPRINTF(state->generic_talker_alias[0], sizeof(state->generic_talker_alias[0]), "%s", alias);
+    state->generic_talker_alias_epoch[0] = 0U; /* not bound to a call (P25 keeps only its own) */
     // The display takes the alias either way; the history row only through the open call, since an
     // alias decoded ahead of the VCALL has no row of its own yet (it repeats once the call is open).
     char row_alias[sizeof(state->generic_talker_alias[0]) + 2U];

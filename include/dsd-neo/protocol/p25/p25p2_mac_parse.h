@@ -62,6 +62,12 @@ struct p25p2_mac_voice_identity {
     int is_group;
     int svc_bits;
     int source_optional;
+    /* An extended voice user's (0x21 / 0x22) Source SUID when its unit ID names a radio: the talker's home identity,
+       never its source (@ref src stays the working address). home_valid 0: none. */
+    int home_valid;
+    uint32_t home_wacn;
+    uint32_t home_sysid;
+    uint32_t home_unit;
 };
 
 struct p25p2_iden_update {

@@ -2819,7 +2819,7 @@ run_cases(void) {
     rc |= test_source_less_conventional_voice_user_requires_matching_end();
 
     // Case 14: extended private voice (0x22) names the talker by its working source address; the SUID after it is the
-    // radio's home identity, shown apart, never the source (issue #800).
+    // radio's home identity, never the source (issue #800).
     {
         static dsd_opts opts;
         static dsd_state state;
@@ -2851,6 +2851,8 @@ run_cases(void) {
         rc |= expect_eq_long("p2_private_ext_working_source", (long)call.ota_source_id, 0x010203);
         rc |= expect_eq_long("p2_private_ext_kind", (long)call.kind, DSD_CALL_KIND_PRIVATE_VOICE);
         dsd_state_ext_free_all(&state);
+
+        dsd_state_ext_free_all(&state);
     }
 
     rc |= run_tdma_paging_and_sndcp_metadata_cases();
@@ -2860,6 +2862,96 @@ run_cases(void) {
     rc |= run_standard_mac_multifragment_cases();
     rc |= run_vendor_mac_display_only_cases();
 
+    return rc;
+}
+
+/* One extended voice user on FACCH as MAC_ACTIVE, its MAC CRC @p crc_ok: group (0x21, TG 0x1234) or unit to unit
+   (0x22, target 0x012345), Source Address @p address, Source SUID WACN 0xABCDE, System ID @p sysid, unit @p unit. */
+static void
+run_extended_voice_user(dsd_opts* opts, dsd_state* state, int group, uint32_t address, uint32_t sysid, uint32_t unit,
+                        int crc_ok) {
+    unsigned long long int MAC[24] = {0};
+    int pos = 1;
+    MAC[pos++] = group ? 0x21 : 0x22;
+    MAC[pos++] = 0x00; // SVC: clear
+    if (!group) {
+        MAC[pos++] = 0x01;
+    }
+    MAC[pos++] = group ? 0x12 : 0x23;
+    MAC[pos++] = group ? 0x34 : 0x45;
+    MAC[pos++] = (address >> 16) & 0xFFU;
+    MAC[pos++] = (address >> 8) & 0xFFU;
+    MAC[pos++] = address & 0xFFU;
+    MAC[pos++] = 0xAB;
+    MAC[pos++] = 0xCD;
+    MAC[pos++] = 0xE0 | ((sysid >> 8) & 0x0FU);
+    MAC[pos++] = sysid & 0xFFU;
+    MAC[pos++] = (unit >> 16) & 0xFFU;
+    MAC[pos++] = (unit >> 8) & 0xFFU;
+    MAC[pos++] = unit & 0xFFU;
+    process_MAC_VPDU_crc(opts, state, 0 /* FACCH */, P25_MAC_PDU_ACTIVE, MAC, crc_ok);
+}
+
+/* A roaming radio's extended voice user with Source Address 0 names it by its home SUID alone (an L3Harris site does).
+   The call records that home identity for display (`unit@system`) and alias matching only: its source stays the working
+   address, 0, so no local list, boundary or identity record takes a home unit ID for a local radio (issue #800). A
+   MAC whose CRC failed records none. */
+static int
+test_roaming_radio_home_identity(int group) {
+    dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(dsd_opts));
+    dsd_state* state = (dsd_state*)calloc(1, sizeof(dsd_state));
+    int rc = 0;
+    if (!opts || !state) {
+        free(opts);
+        free(state);
+        return 1;
+    }
+    p25_sm_init_ctx(p25_sm_get_ctx(), opts, state);
+
+    run_extended_voice_user(opts, state, group, 0U, 0x2A7U, 1234567U, 0);
+    dsd_call_snapshot call = {0};
+    char text[24];
+    rc |= expect_true("p2_roam crc-failed call", dsd_call_state_get(state, 0U, &call) > 0);
+    rc |= expect_true("p2_roam crc-failed MAC names no home", call.source_home.valid == 0U);
+    dsd_state_ext_free_all(state);
+    DSD_MEMSET(state, 0, sizeof(*state));
+    p25_sm_init_ctx(p25_sm_get_ctx(), opts, state);
+
+    run_extended_voice_user(opts, state, group, 0U, 0x2A7U, 1234567U, 1);
+    rc |= expect_true("p2_roam call", dsd_call_state_get(state, 0U, &call) > 0);
+    const uint64_t epoch = call.epoch;
+    rc |= expect_eq_long("p2_roam target", (long)call.ota_target_id, group ? 0x1234 : 0x012345);
+    rc |= expect_eq_long("p2_roam no working address", (long)call.ota_source_id, 0);
+    rc |= expect_true("p2_roam no source text", call.source_text[0] == '\0');
+    rc |= expect_true("p2_roam home recorded", call.source_home.valid == 1U && call.source_home.unit == 1234567U
+                                                   && call.source_home.wacn == 0xABCDEU
+                                                   && call.source_home.sysid == 0x2A7U);
+    rc |= expect_true("p2_roam shown as unit@system", dsd_call_state_format_home_source(&call, text, sizeof text) == 1
+                                                          && strcmp(text, "1234567@2A7") == 0);
+    rc |= expect_eq_long("p2_roam no identity source", (long)p25_sm_get_ctx()->slots[0].published.source, 0);
+
+    run_extended_voice_user(opts, state, group, 3002U, 0x2A7U, 1234567U, 1);
+    rc |= expect_true("p2_roam working address", dsd_call_state_get(state, 0U, &call) > 0);
+    rc |= expect_eq_long("p2_roam working address keeps the call", (long)(call.epoch == epoch), 1);
+    rc |= expect_eq_long("p2_roam working address source", (long)call.ota_source_id, 3002);
+    rc |=
+        expect_true("p2_roam checked working address is learnable", dsd_call_state_source_learnable(state, &call) == 1);
+    rc |= expect_true("p2_roam working address shown, not home",
+                      dsd_call_state_format_home_source(&call, text, sizeof text) == 0);
+
+    /* Another roaming radio on the same call (no end decoded): its home replaces the first, whose alias goes. */
+    DSD_SNPRINTF(state->generic_talker_alias[0], sizeof state->generic_talker_alias[0], "%s", "FIRSTRADIO");
+    run_extended_voice_user(opts, state, group, 0U, 0x2A7U, 7654321U, 1);
+    rc |= expect_true("p2_roam other radio", dsd_call_state_get(state, 0U, &call) > 0);
+    rc |= expect_true("p2_roam other radio's home", call.source_home.unit == 7654321U);
+    rc |= expect_true("p2_roam first radio's alias dropped", state->generic_talker_alias[0][0] == '\0');
+    rc |= expect_eq_long("p2_roam call keeps the first working address", (long)call.ota_source_id, 3002);
+    rc |= expect_true("p2_roam the kept working address is not learnable for another radio",
+                      dsd_call_state_source_learnable(state, &call) == 0);
+
+    dsd_state_ext_free_all(state);
+    free(state);
+    free(opts);
     return rc;
 }
 
@@ -2877,6 +2969,8 @@ main(void) {
     }
     int rc = run_cases();
     rc |= test_harris_gps_source_comes_from_the_open_p25_call_only();
+    rc |= test_roaming_radio_home_identity(1);
+    rc |= test_roaming_radio_home_identity(0);
     dsd_test_capture_stderr_end(&cap);
     if (rc != 0) {
         FILE* diagnostics = fopen(cap.path, "rb");

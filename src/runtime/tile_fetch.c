@@ -35,10 +35,13 @@
 
 #ifdef DSD_TILE_FETCH_TEST_PLAIN_HTTP
 /* Test builds only (RUNTIME_TILE_FETCH_PLAIN_HTTP): the same transport over plain http to a loopback server, so a real
- * libcurl's header and size handling can be driven without TLS. The shipped library is https only. */
+ * libcurl's header and size handling can be driven without TLS. The shipped library is https only. That test pins
+ * the protocol by the CURLPROTO_HTTP bitmask (it builds with CURL_DISABLE_DEPRECATION), so no build ever hands
+ * libcurl a plain-http protocol name. */
 #define TF_SCHEME       "http://"
 #define TF_PROTOCOL     "http"
 #define TF_PROTOCOL_BIT CURLPROTO_HTTP
+#define TF_PIN_BY_NAME  0
 #else
 #define TF_SCHEME       "https://"
 #define TF_PROTOCOL     "https"
@@ -287,6 +290,11 @@ tf_cancel_requested(const void* ctx) {
 #define TF_CURL_VERSION_NUM LIBCURL_VERSION_NUM
 #endif
 
+#ifndef TF_PIN_BY_NAME
+/* CURLOPT_PROTOCOLS_STR landed in 7.85.0; older libcurl takes the CURLOPT_PROTOCOLS bitmask. */
+#define TF_PIN_BY_NAME (TF_CURL_VERSION_NUM >= 0x075500)
+#endif
+
 /** @return 1 when @p protocols (curl_version_info()'s NULL-ended list) names https. */
 static int
 tf_lists_https(const char* const* protocols) {
@@ -384,7 +392,7 @@ tf_apply_options(CURL* curl, tf_transfer* t) {
         TF_OPT_L(CURLOPT_TIMEOUT_MS, total_ms),
         TF_OPT_L(CURLOPT_NOSIGNAL, 1L),
         TF_OPT_L(CURLOPT_FOLLOWLOCATION, 0L),
-#if TF_CURL_VERSION_NUM >= 0x075500 /* CURLOPT_PROTOCOLS_STR landed in 7.85.0 */
+#if TF_PIN_BY_NAME
         TF_OPT_P(CURLOPT_PROTOCOLS_STR, TF_PROTOCOL),
 #else
         TF_OPT_L(CURLOPT_PROTOCOLS, TF_PROTOCOL_BIT),
