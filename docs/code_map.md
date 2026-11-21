@@ -13953,7 +13953,11 @@ Private per-protocol modules worth knowing about:
   21 words left) up to the first word that is not the marker and hands that word back to the hunt as its window's
   history (`dsd_frame_sync_hand_back_word()`, the carry a no-sync exit keeps), scored once at its own end
   before the next symbol is read (`score_on_resume`), so a sync word that began in it, or is all of it, is still found;
-  the blind 184-symbol skip it replaces ran into the next frame when the marker's first words were lost. Outside M17 the
+  the blind 184-symbol skip it replaces ran into the next frame when the marker's first words were lost. The hunt then
+  starts from what the marker's reset leaves (no sync before, polarity, evidence or join hits), so the stream that
+  follows joins on three exact stream words a frame apart, the handed-back word able to be the first of them and never
+  enough alone. Like the symbol hand-back, the word hand-back does nothing for a null state or no symbols
+  (`FRAME_SYNC_HISTORY_CARRY`). Outside M17 the
   hunt pays one state check a window while M17 is enabled, and nothing when it is not (`M17_FRAME_SYNC`,
   `M17_SYNC_DISPATCH`).
 - `src/protocol/dstar/dstar_confirm.{c,h}` and `src/protocol/provoice/provoice_confirm.{c,h}` — the same shape again,

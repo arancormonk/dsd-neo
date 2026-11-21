@@ -833,9 +833,25 @@ test_dstar_word_handed_back_is_matched_where_it_ends(void) {
     }
 }
 
+/* Issue #890: the word hand-back keeps the symbol hand-back's guards. A hand-back of no symbols marks no window an
+   earlier exit saved for rescoring, and a null state is nothing. */
+static void
+test_word_hand_back_guards_its_input(void) {
+    static dsd_state state;
+    DSD_MEMSET(&state, 0, sizeof(state));
+    state.frame_sync_carry.valid = 1; /* the window an earlier no-sync exit kept */
+    dsd_frame_sync_hand_back_word(&state, 0);
+    assert(state.frame_sync_carry.score_on_resume == 0);
+    dsd_frame_sync_hand_back_word(&state, -8);
+    assert(state.frame_sync_carry.score_on_resume == 0);
+    assert(state.frame_sync_carry.valid == 1);
+    dsd_frame_sync_hand_back_word(NULL, 8);
+}
+
 int
 main(void) {
     test_burst_across_the_exit_locks();
+    test_word_hand_back_guards_its_input();
     test_burst_across_a_dwell_hand_back_locks();
     test_burst_across_a_quiet_hand_back_locks();
     test_carrier_change_starts_blind();

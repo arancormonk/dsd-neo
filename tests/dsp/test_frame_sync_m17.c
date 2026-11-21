@@ -233,12 +233,38 @@ run_m17_after_lsf_case(int lsf_type, uint8_t stream_mode, const char* pattern, i
     return rc;
 }
 
+/* How the word the drain read past the marker goes back to the hunt: not at all, as history only
+   (dsd_frame_sync_hand_back_symbols()), or as history whose window is scored where it ends
+   (dsd_frame_sync_hand_back_word(), what dispatch_m17.c does). */
+enum { M17_DRAIN_KEEP_NONE = 0, M17_DRAIN_KEEP_SYMBOLS = 1, M17_DRAIN_KEEP_WORD = 2 };
+
+/* The air for the drain cases: @p lead, then @p words stream sync words one 192-symbol frame apart, each followed by a
+   frame body of '3' (none after the last). */
+static const char*
+m17_drain_air(char* out, size_t cap, const char* lead, int words) {
+    size_t n = 0U;
+    for (const char* c = lead; *c != '\0' && n + 1U < cap; c++) {
+        out[n++] = *c;
+    }
+    for (int w = 0; w < words; w++) {
+        for (const char* c = M17_STR; *c != '\0' && n + 1U < cap; c++) {
+            out[n++] = *c;
+        }
+        for (unsigned i = 0U; w + 1 < words && i < DSD_FRAME_SYNC_M17_FRAME_SYMBOLS - 8U && n + 1U < cap; i++) {
+            out[n++] = '3';
+        }
+    }
+    out[n] = '\0';
+    return out;
+}
+
 /* The hunt after an end-of-transmission marker, whose drain read one word past it (dispatch_m17.c): the word, the
-   first eight signs of @p air, is read on the decode path and handed back
-   (dsd_frame_sync_hand_back_word()) when @p resume, and the hunt reads on from there. A sync word that
-   began in the word is found where it ends. */
+   first eight signs of @p air, is read on the decode path and goes back to the hunt as @p keep says, and the hunt reads
+   on from there. The hunt starts from what dsd_dispatch_handle_m17() leaves after the marker: no sync before, no
+   polarity, no evidence, no preamble candidate and no join hits, so a stream joins only on three exact stream words one
+   frame apart (frame_sync_try_m17_join()). @p expected_symbols: the symbols read when the sync is taken, 0 for none. */
 static int
-run_m17_after_drain_case(const char* air, int resume, int expected_sync, const char* label) {
+run_m17_after_drain_case(const char* air, int keep, int expected_sync, int expected_symbols, const char* label) {
     static dsd_opts opts;
     static dsd_state state;
     static int fake_rtl_context;
@@ -247,25 +273,30 @@ run_m17_after_drain_case(const char* air, int resume, int expected_sync, const c
     if (!init_m17_sync_case(&opts, &state, &fake_rtl_context)) {
         return 1;
     }
-    state.lastsynctype = DSD_SYNC_M17_STR_POS;
-    state.m17_polarity = 1U;
-    state.m17_confirm_weak_streak = 1U;
+    state.lastsynctype = DSD_SYNC_NONE;
+    state.m17_polarity = 0U;
+    state.m17_confirm_weak_streak = 0U;
+    state.m17_confirmed = 0U;
 
     install_hooks();
     g_sample_index = 0U;
     g_sync_pattern = air;
-    g_fill_symbol = g_fill_override != 0 ? g_fill_override : '3';
+    g_fill_symbol = '3';
     for (int i = 0; i < (int)DSD_FRAME_SYNC_M17_EOT_WORD_SYMBOLS; i++) {
         (void)getSymbol(&opts, &state, 1);
     }
-    if (resume) {
+    if (keep == M17_DRAIN_KEEP_SYMBOLS) {
+        dsd_frame_sync_hand_back_symbols(&state, (int)DSD_FRAME_SYNC_M17_EOT_WORD_SYMBOLS);
+    } else if (keep == M17_DRAIN_KEEP_WORD) {
         dsd_frame_sync_hand_back_word(&state, (int)DSD_FRAME_SYNC_M17_EOT_WORD_SYMBOLS);
     }
     const int sync = getFrameSync(&opts, &state);
+    const int symbols = (int)state.symbolcnt;
     clear_hooks();
     free_state_buffers(&state);
-    if (sync != expected_sync) {
-        DSD_FPRINTF(stderr, "%s returned %d, expected %d\n", label, sync, expected_sync);
+    if (sync != expected_sync || (expected_symbols > 0 && symbols != expected_symbols)) {
+        DSD_FPRINTF(stderr, "%s returned %d after %d symbols, expected %d after %d\n", label, sync, symbols,
+                    expected_sync, expected_symbols);
         return 1;
     }
     return 0;
@@ -324,13 +355,27 @@ main(void) {
     rc |= run_m17_sync_case(DSD_SYNC_M17_STR_NEG, 2U, M17_EOT_INV M17_EOT_INV "33333333", -1,
                             "M17 interrupted inverted EOT");
     g_fill_override = 0;
-    /* The word after a drained marker goes back to the hunt: a stream sync word that began in it is found. */
-    g_fill_override = '3';
-    rc |= run_m17_after_drain_case("111133331131", 1, DSD_SYNC_M17_STR_POS, "M17 sync after a drained EOT");
-    rc |= run_m17_after_drain_case("111133331131", 0, -1, "M17 sync after a drained EOT needs the word kept");
-    /* The handed-back word may be a whole sync word itself: its window is scored where it ends (issue #890). */
-    rc |= run_m17_after_drain_case(M17_STR, 1, DSD_SYNC_M17_STR_POS, "M17 whole sync word handed back after an EOT");
-    g_fill_override = 0;
+    /* The word after a drained marker goes back to the hunt, which starts from the state the marker leaves: the stream
+     * that follows joins on three exact stream words one frame apart (issue #890). A stream word that began in the
+     * handed-back word is the first of the three; one word, or two, is no join. */
+    {
+        char air[600];
+        const int third = (int)DSD_FRAME_SYNC_M17_EOT_WORD_SYMBOLS + (2 * (int)DSD_FRAME_SYNC_M17_FRAME_SYMBOLS);
+        rc |= run_m17_after_drain_case(m17_drain_air(air, sizeof air, "1111", 3), M17_DRAIN_KEEP_SYMBOLS,
+                                       DSD_SYNC_M17_STR_POS, third + 4, "M17 join begun in the drained word");
+        rc |= run_m17_after_drain_case(m17_drain_air(air, sizeof air, "1111", 3), M17_DRAIN_KEEP_NONE, -1, 0,
+                                       "M17 join begun in the drained word needs the word kept");
+        /* The handed-back word may be a whole sync word itself: its window is scored where it ends, and it is the
+           join's first word. */
+        rc |= run_m17_after_drain_case(m17_drain_air(air, sizeof air, "", 3), M17_DRAIN_KEEP_WORD, DSD_SYNC_M17_STR_POS,
+                                       third, "M17 join whose first word is the handed-back word");
+        rc |= run_m17_after_drain_case(m17_drain_air(air, sizeof air, "", 3), M17_DRAIN_KEEP_SYMBOLS, -1, 0,
+                                       "M17 join on a handed-back whole word needs it scored");
+        rc |= run_m17_after_drain_case(m17_drain_air(air, sizeof air, "", 1), M17_DRAIN_KEEP_WORD, -1, 0,
+                                       "M17 handed-back word alone is no join");
+        rc |= run_m17_after_drain_case(m17_drain_air(air, sizeof air, "", 2), M17_DRAIN_KEEP_WORD, -1, 0,
+                                       "M17 handed-back word and one more are no join");
+    }
     /* A sync word that arrives while the words after a first marker word are still being read is taken: the lookahead
      * keeps the hunt running. */
     rc |= run_m17_sync_case(DSD_SYNC_M17_STR_POS, 1U, M17_EOT M17_STR, DSD_SYNC_M17_STR_POS,

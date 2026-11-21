@@ -4024,6 +4024,10 @@ dsd_frame_sync_hand_back_symbols(dsd_state* state, int symbols) {
 
 void
 dsd_frame_sync_hand_back_word(dsd_state* state, int symbols) {
+    /* The symbol hand-back's own guards: nothing handed back marks no window, least of all one an earlier exit kept. */
+    if (state == NULL || symbols <= 0) {
+        return;
+    }
     dsd_frame_sync_hand_back_symbols(state, symbols);
     /* The handed-back word may be a whole sync word itself (a co-channel stream right after a shortened M17 marker):
        its window is scored where it ends, before the next symbol is read. */
