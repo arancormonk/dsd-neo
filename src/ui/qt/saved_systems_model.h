@@ -238,6 +238,11 @@ class SavedSystemsModel : public QAbstractListModel {
     /** @brief The local day as LocalDayWatch publishes it: {startMs, revision}. */
     QVariantMap localDay() const;
 
+#ifdef DSD_NEO_TEST_HOOKS
+    /** @brief Read @p clock (ms since the Unix epoch) for realtimeNowMs() and touch(); null is the real clock again. */
+    void setRealtimeClockForTest(qint64 (*clock)());
+#endif
+
     /** @brief Names of systems whose CSV fields reference @p path; for delete warnings. */
     Q_INVOKABLE QStringList systemsReferencingPath(const QString& path) const;
 

@@ -1049,6 +1049,13 @@ SavedSystemsModel::realtimeNowMs() const {
     return m_realtime_now_ms();
 }
 
+#ifdef DSD_NEO_TEST_HOOKS
+void
+SavedSystemsModel::setRealtimeClockForTest(qint64 (*clock)()) {
+    m_realtime_now_ms = clock != nullptr ? clock : &realtimeMSecsSinceEpoch;
+}
+#endif
+
 QVariantMap
 SavedSystemsModel::localDay() const {
     const LocalDayWatch::Day day = LocalDayWatch::current();

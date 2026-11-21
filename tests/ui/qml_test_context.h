@@ -6935,14 +6935,17 @@ class Setup : public QObject {
     }
 
     /**
-     * @brief Issue #902: run the shared LocalDayWatch (savedSystems.localDay) on a fake real clock at @p ms (Unix ms),
-     * checked at once; a later call moves that clock and checks again. resetLocalDay() and each new engine go back to
-     * the real clock and the run's own time zone.
+     * @brief Issue #902: run the shared LocalDayWatch (savedSystems.localDay) and savedSystems.realtimeNowMs() on a fake
+     * real clock at @p ms (Unix ms), the watch checked at once; a later call moves that clock and checks again.
+     * resetLocalDay() and each new engine go back to the real clock and the run's own time zone.
      */
     Q_INVOKABLE void
     setLocalNowMs(double ms) {
         local_now_ms() = static_cast<qint64>(ms);
         dsd_qt::LocalDayWatch::setClockForTest(&Setup::local_now_clock);
+        if (m_saved_systems != nullptr) {
+            m_saved_systems->setRealtimeClockForTest(&Setup::local_now_clock);
+        }
     }
 
     /**
@@ -6965,6 +6968,10 @@ class Setup : public QObject {
     Q_INVOKABLE void
     resetLocalDay() {
         reset_local_day(m_engine);
+        /* Here, not in reset_local_day(): a new engine's model starts on the real clock, and the old one is gone. */
+        if (m_saved_systems != nullptr) {
+            m_saved_systems->setRealtimeClockForTest(nullptr);
+        }
     }
 
   public Q_SLOTS:

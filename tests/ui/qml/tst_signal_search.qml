@@ -2798,8 +2798,8 @@ Item {
             waitForRendering(screen);
             var row = findChildren(screen, "searchHistoryRow")[0];
             var detail = findChild(row, "searchHistoryDetail");
-            // The count as the run's locale writes it (Util.countText()); the time is written the one way.
-            var before = "14:32:05 · RF only · ended\nTIII Small · Net 12 · Site 3 · SYS 1183\n" + Util.countText(3) + " recordings";
+            // The count as the run's locale writes a whole number; the time is written the one way.
+            var before = "14:32:05 · RF only · ended\nTIII Small · Net 12 · Site 3 · SYS 1183\n" + Number(3).toLocaleString(Qt.locale(), "f", 0) + " recordings";
             compare(detail.fullText, before);
             scroll.contentY = Math.max(0, scroll.contentHeight - scroll.height - 40);
             waitForRendering(screen);

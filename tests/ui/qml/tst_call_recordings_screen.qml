@@ -3,7 +3,6 @@
 
 import QtQuick
 import QtTest
-import "../../../src/ui/qt/qml/Util.js" as Util
 
 // Issue #708: Settings → Manage call recordings. The store is the `recordings` map (qml_test_context.h): a case sets
 // its readings and reads back the calls the screen made; the decoderHost map runs the export.
@@ -100,10 +99,10 @@ Item {
             compare(item("callRecordingsUsage").text, "Counting recordings…");
         }
 
-        // A count as the screen says it in the run's locale (Util.countText());
-        // the dates beside it are always written the one way.
+        // A count as the run's locale writes a whole number (the screen's
+        // digits); the dates beside it are always written the one way.
         function counted(n) {
-            return Util.countText(n);
+            return Number(n).toLocaleString(Qt.locale(), "f", 0);
         }
 
         // Local noon on @p d @p m (1-12) 2025, in seconds: a recording stamp
@@ -525,7 +524,11 @@ Item {
             compare(item("callRecordingsDeletesWaiting").text, "3 recordings are deleted once they stop playing, uploading or exporting.");
         }
 
+        // The owner's name made file-safe, and the day as a local date (issue
+        // #902 B11): 00:00 UTC on 1 January is still 31 December west of UTC.
         function test_export_file_name_is_safe() {
+            var zoned = testContext.setLocalTimeZone("America/Los_Angeles");
+            testContext.setLocalNowMs(Date.UTC(2026, 0, 1));
             recordings.folders = [{uid: "u9", kind: "saved", name: "Fire/EMS: \"North\" <1>", count: 2, bytes: 2000, first: 1761300000, last: 1761300000, available: true}];
             recordings.recordingCount = 2;
             recordings.setSelection(2, 2000, ["/r/a.wav"]);
@@ -534,6 +537,9 @@ Item {
             verify(name.indexOf("Fire_EMS_ _North_ _1_") >= 0, name);
             compare(testContext.lastDocumentRequest().name, name, "the host is asked with that name");
             testContext.answerDocumentCancelled(exportRequest());
+            if (!zoned)
+                skip("this host cannot make America/Los_Angeles the process time zone");
+            compare(name, "Call recordings Fire_EMS_ _North_ _1_ 2025-12-31.zip");
         }
 
         function test_storage_away_wording_matches_settings() {
