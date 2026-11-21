@@ -23,7 +23,6 @@
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
-#include <time.h>
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
@@ -414,6 +413,15 @@ capture_mbt_output(const char* name, const uint8_t* mbt, size_t mbt_len, char* o
 
 static int g_follow_tune_calls;
 
+/* The stale-regrant case runs on the decode clock's TEST source, held far from any platform clock reading and moved
+   in whole milliseconds, so a scheduling pause between its events cannot age the guard past its windows. */
+#define MBT_TEST_DECODE_T0_NS 1000000000000000000ULL
+
+static void
+decode_clock_advance_ms(uint64_t ms) {
+    dsd_decode_clock_test_set_ns(dsd_decode_now_mono_ns() + (ms * 1000000ULL));
+}
+
 static dsd_trunk_tune_result
 follow_tune_request(dsd_opts* opts, dsd_state* state, long int freq, int ted_sps, uint64_t request_id) {
     (void)ted_sps;
@@ -439,7 +447,7 @@ follow_return_request(dsd_opts* opts, dsd_state* state, uint64_t request_id) {
    assignment clears the post-call stale-regrant guard when the source is unchanged, so the same source re-granted on
    the ended call's carrier inside the guard is followed, while a genuine update for it is still held. */
 static int
-test_explicit_group_grant_is_an_assignment(void) {
+explicit_group_grant_case(void) {
     static dsd_opts opts;
     static dsd_state state;
     uint8_t grant[48];
@@ -478,32 +486,47 @@ test_explicit_group_grant_is_an_assignment(void) {
     rc |= expect_eq_int("mbt 0x00 grant followed", g_follow_tune_calls, 1);
     rc |= expect_eq_int("mbt 0x00 grant tuned", ctx->state, P25_SM_TUNED);
 
+    decode_clock_advance_ms(10U);
     p25_sm_event_t ev = p25_sm_ev_ptt_call(0, tg, 0, src, 1, 0);
     p25_sm_event(ctx, &opts, &state, &ev);
+    decode_clock_advance_ms(10U);
     ev = p25_sm_ev_end_call_at(0, tg, src, dsd_decode_now_mono_s());
     p25_sm_event(ctx, &opts, &state, &ev);
+    decode_clock_advance_ms(10U);
     ctx->slots[0].last_followed_m = dsd_decode_now_mono_s() - 3.0; // hangtime ran out
     ctx->slots[1].last_followed_m = 0.0;
     p25_sm_tick_ctx(ctx, &opts, &state);
-    const double cc_decoded_m = ctx->t_cc_tune_m > 0.0 ? ctx->t_cc_tune_m + 0.010 : dsd_decode_now_mono_s();
-    state.last_cc_sync_time = time(NULL);
+    decode_clock_advance_ms(10U);
+    const double cc_decoded_m = dsd_decode_now_mono_s();
+    state.last_cc_sync_time = dsd_decode_time();
     state.last_cc_sync_time_m = cc_decoded_m;
     state.p25_last_cc_msg_time = state.last_cc_sync_time;
     state.p25_last_cc_msg_time_m = cc_decoded_m;
     rc |= expect_eq_int("call end returned to the CC", ctx->state, P25_SM_ON_CC);
     rc |= expect_eq_int("call end armed the stale-regrant guard", ctx->recent_call_ends[0].valid, 1);
 
+    decode_clock_advance_ms(10U);
     ev = p25_sm_ev_group_grant_update(channel, 0, tg, src, 0);
     p25_sm_event(ctx, &opts, &state, &ev);
     rc |= expect_eq_int("same-source update inside the guard held", g_follow_tune_calls, 1);
     rc |= expect_eq_int("held update stays on the CC", ctx->state, P25_SM_ON_CC);
 
+    decode_clock_advance_ms(10U);
     (void)p25_decode_pdu_trunking(&opts, &state, grant, sizeof grant);
     rc |= expect_eq_int("same-source explicit grant inside the guard followed", g_follow_tune_calls, 2);
     rc |= expect_eq_int("explicit grant tuned", ctx->state, P25_SM_TUNED);
     rc |= expect_eq_int("explicit grant cleared the guard", ctx->recent_call_ends[0].valid, 0);
 
     dsd_state_ext_free_all(&state);
+    install_trunk_tuning_hooks();
+    return rc;
+}
+
+static int
+test_explicit_group_grant_is_an_assignment(void) {
+    dsd_decode_clock_use_test(MBT_TEST_DECODE_T0_NS);
+    const int rc = explicit_group_grant_case();
+    dsd_decode_clock_use_system();
     install_trunk_tuning_hooks();
     return rc;
 }
