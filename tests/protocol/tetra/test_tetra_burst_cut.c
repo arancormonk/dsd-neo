@@ -34,6 +34,7 @@
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 
 #include <dsd-neo/core/received_identity.h>
 #include <dsd-neo/protocol/tetra/tetra_fec.h>
@@ -211,9 +212,10 @@ dispatch_sync_burst(session* s, const uint8_t* block, int inverted, int soft_onl
     return dsd_dispatch_handle_tetra(s->opts, s->state);
 }
 
-/* A DSB with k_dmo_sch_s and k_dmo_sch_h: SCH/H right after the training sequence, then the 15 dibits it skips. */
+/* A DSB with k_dmo_sch_s and k_dmo_sch_h: SCH/H right after the training sequence, then the 15 dibits it skips. With
+   @p corrupt_h the SCH/H's first 40 dibits are received wrong, so its CRC fails. */
 static dsd_frame_verdict
-dsb(session* s, int inverted, int soft_only, int cut_at, cut_kind kind) {
+dsb_as(session* s, int inverted, int soft_only, int corrupt_h, int cut_at, cut_kind kind) {
     uint8_t sch_s[TTB_BSCH_BITS] = {0};
     uint8_t sch_h[SCH_H_BITS] = {0};
     bits_of(k_dmo_sch_s, sch_s);
@@ -222,8 +224,16 @@ dsb(session* s, int inverted, int soft_only, int cut_at, cut_kind kind) {
     ttb_encode_bsch(sch_s, sch_s_dibits);
     uint8_t tail[TAIL_DIBITS] = {0};
     ttb_encode_sch_hd(sch_h, TTB_BSCH_SEED, tail);
+    for (int i = 0; corrupt_h && i < 40; i++) {
+        tail[i] ^= 3U;
+    }
     serve(tail, inverted, cut_at, kind);
     return dispatch_sync_burst(s, sch_s_dibits, inverted, soft_only);
+}
+
+static dsd_frame_verdict
+dsb(session* s, int inverted, int soft_only, int cut_at, cut_kind kind) {
+    return dsb_as(s, inverted, soft_only, 0, cut_at, kind);
 }
 
 /* A trunked SB of the BSCH and SYSINFO vectors (MCC 460, MNC 4242, colour code 17): the broadcast block, then block 2. */
@@ -319,12 +329,68 @@ test_soft_only_dsb_tail(void) {
     expect_nothing_of_the_dsb(&s, epoch + 1U, "soft-only DSB, carrier boundary in its tail");
     session_close(&s);
 
+    /* A cut inside its SCH/H, which starts right after the training sequence. */
     s = session_open();
-    assert(dsb(&s, 1, 1, -1, CUT_BOUNDARY) == DSD_FRAME_VERDICT_PROFILE_PROVEN);
-    assert(tetra_st_existing(s.state)->dmo && s.state->tetra_sync.polarity == 1);
-    /* Its SCH/H went by unread: the burst proved the profile only, no content. */
-    assert(tetra_burst_proof(s.state) == DSD_TETRA_BURST_PROOF_PROFILE && s.state->scan_y_content_seq == 0U);
+    const uint32_t epoch2 = s.state->rx_id.epoch;
+    (void)dsb(&s, 0, 1, 5, CUT_BOUNDARY);
+    assert(g_cuts == 1 && g_pos == TAIL_DIBITS);
+    expect_nothing_of_the_dsb(&s, epoch2 + 1U, "soft-only DSB, carrier boundary inside its SCH/H");
     session_close(&s);
+}
+
+/* The burst was labelled a DSB of direct mode, not the BSCH a trunked SB is. */
+static void
+expect_dsb_label(const session* s, const char* what) {
+    const int ok = strncmp(s->state->fsubtype, " DSB ", 5) == 0 && strcmp(s->state->ftype, " TETRA DMO") == 0;
+    if (!ok) {
+        DSD_FPRINTF(stderr, "FAIL %s: subtype '%s' type '%s'\n", what, s->state->fsubtype, s->state->ftype);
+    }
+    assert(ok);
+}
+
+/* A DSB whose SCH/S only the soft decision decodes (its hard decisions lost) still reads its SCH/H, right after the
+   training sequence as in every DSB (EN 300 396-2 table 16), not at the trunked SB's block 2 15 dibits later: a valid
+   SCH/H is the call's DMAC-SYNC, with its DM colour code and content, in either polarity. The burst reads as many
+   dibits as any synchronisation burst, so the next one stays aligned, and it is labelled a DSB. */
+static void
+test_soft_only_dsb_reads_its_sch_h(void) {
+    for (int inverted = 0; inverted <= 1; inverted++) {
+        session s = session_open();
+        assert(dsb(&s, inverted, 1, -1, CUT_BOUNDARY) == DSD_FRAME_VERDICT_PROFILE_PROVEN);
+        assert(g_pos == TAIL_DIBITS);
+        const tetra_state_t* ts = tetra_st_existing(s.state);
+        const int ok = ts->dmo && ts->dmo_dcc_valid && ts->calls.dmo.active && ts->calls.published == TETRA_PUB_DMO
+                       && s.state->tetra_sync.polarity == (uint8_t)inverted
+                       && tetra_burst_proof(s.state) == DSD_TETRA_BURST_PROOF_DMO_SERVICE
+                       && s.state->scan_y_content_seq == 1U;
+        if (!ok) {
+            DSD_FPRINTF(stderr, "FAIL soft-only DSB (inverted %d): dmo=%d dcc=%d call=%d polarity=%d proof=%d\n",
+                        inverted, ts->dmo, ts->dmo_dcc_valid, ts->calls.dmo.active, s.state->tetra_sync.polarity,
+                        (int)tetra_burst_proof(s.state));
+        }
+        assert(ok);
+        expect_dsb_label(&s, "soft-only DSB");
+        /* The next synchronisation burst is read from its own start: a trunked SB decodes whole. */
+        assert(sb(&s, inverted, -1, CUT_BOUNDARY) == DSD_FRAME_VERDICT_PROFILE_PROVEN);
+        assert(g_pos == TAIL_DIBITS && tetra_st_existing(s.state)->frames_sysinfo == 1U);
+        session_close(&s);
+    }
+}
+
+/* A soft-only DSB whose SCH/H fails its CRC: direct mode from its SCH/S, nothing of a call, the profile only, and the
+   DSB label. The hard decision's DSB with the same corrupt SCH/H is alike. */
+static void
+test_dsb_with_a_corrupt_sch_h(void) {
+    for (int soft_only = 0; soft_only <= 1; soft_only++) {
+        session s = session_open();
+        assert(dsb_as(&s, 1, soft_only, 1, -1, CUT_BOUNDARY) == DSD_FRAME_VERDICT_PROFILE_PROVEN);
+        assert(g_pos == TAIL_DIBITS);
+        const tetra_state_t* ts = tetra_st_existing(s.state);
+        assert(ts->dmo && !ts->dmo_dcc_valid && !ts->calls.dmo.active && s.state->tetra_sync.polarity == 1);
+        assert(tetra_burst_proof(s.state) == DSD_TETRA_BURST_PROOF_PROFILE && s.state->scan_y_content_seq == 0U);
+        expect_dsb_label(&s, soft_only ? "soft-only DSB, corrupt SCH/H" : "DSB, corrupt SCH/H");
+        session_close(&s);
+    }
 }
 
 /* A trunked SB whose BSCH passed, received inverted, with the cut in its block 2 (or its broadcast block): the BSCH is
@@ -438,6 +504,8 @@ main(void) {
     test_dsb_tail_after_a_good_sch_h(CUT_INTERRUPT);
     test_dsb_cut_inside_sch_h();
     test_soft_only_dsb_tail();
+    test_soft_only_dsb_reads_its_sch_h();
+    test_dsb_with_a_corrupt_sch_h();
     test_sb_tail(SB_BB_DIBITS, CUT_BOUNDARY);
     test_sb_tail(SB_BB_DIBITS + 60, CUT_BOUNDARY);
     test_sb_tail(3, CUT_BOUNDARY);

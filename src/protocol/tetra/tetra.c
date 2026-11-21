@@ -81,6 +81,9 @@ enum {
     SB_BSCH_BITS = 120,
     SB_BB_DIBITS = 15,
     SB_BKN2_DIBITS = 108,
+    /* What a synchronisation burst carries after its training sequence: a trunked SB's broadcast block and block 2, a
+       DSB's SCH/H and the 15 dibits after it (EN 300 396-2 table 16). */
+    SB_TAIL_DIBITS = SB_BB_DIBITS + SB_BKN2_DIBITS,
     SB_BSCH_A = 11,
     SB_TYPE1 = 60,
     SB_TYPE2 = 80,
@@ -760,29 +763,26 @@ tetra_enter_dmo(dsd_opts* opts, dsd_state* state) {
     ts->ul_enc = TETRA_UL_ENC_UNKNOWN;
 }
 
-/* Direct-mode synchronisation burst whose SCH/S (@p sch_s, CRC passed) carries a DMO system code. Its SCH/H follows
-   the training sequence at once, with no broadcast block as in a trunked SB; it is read here and the broadcast
-   block's 15 dibits skipped after it, so the burst consumes as many dibits as a trunked one. A read that a carrier
-   boundary crossed (a replay retune inside it) or an input interruption cut is lost (tetra_confirm_burst_current()):
-   nothing of the burst is applied, logged as a call or published, so the mode, DM colour code, protection and call it
-   describes never land on the carrier the receiver is on now, and an interrupted read on the same trunked carrier
-   ends none of its calls (tetra_enter_dmo() runs after the check). Returns 1 when the burst was taken, for its
-   polarity. */
+/* Direct-mode synchronisation burst whose SCH/S (@p sch_s, CRC passed, by the hard or the soft decision) carries a DMO
+   system code. Its SCH/H follows the training sequence at once, with no broadcast block as in a trunked SB (EN 300 396-2
+   table 16): the first SB_BKN2_DIBITS of the burst's tail (@p tail, @p tail_soft, read whole before this), the 15
+   dibits after it unused. A read that a carrier boundary crossed (a replay retune inside it) or an input interruption
+   cut is lost (tetra_confirm_burst_current()): nothing of the burst is applied, logged as a call or published, so the
+   mode, DM colour code, protection and call it describes never land on the carrier the receiver is on now, and an
+   interrupted read on the same trunked carrier ends none of its calls (tetra_enter_dmo() runs after the check).
+   Returns 1 when the burst was taken, for its polarity. */
 static int
-tetra_dmo_process_dsb(dsd_opts* opts, dsd_state* state, const uint8_t* sch_s) {
+tetra_dmo_process_dsb(dsd_opts* opts, dsd_state* state, const uint8_t* sch_s, const uint8_t* tail,
+                      const float* tail_soft) {
     tetra_state_t* const ts = tetra_st(state);
     if (!ts) {
         return 0;
     }
-    uint8_t b2_dibits[SB_BKN2_DIBITS];
-    float b2_soft[SB_BKN2_DIBITS];
     uint16_t b2_costs[NB_BLOCK_BITS];
     uint8_t sch_h[HD_TYPE2];
     tetra_dmo_sync_s_t s;
     tetra_dmo_sync_h_t h;
 
-    tetra_read_dibits(opts, state, b2_dibits, b2_soft, SB_BKN2_DIBITS);
-    skipDibit(opts, state, SB_BB_DIBITS);
     if (!tetra_confirm_burst_current(state)) {
         return 0;
     }
@@ -791,7 +791,7 @@ tetra_dmo_process_dsb(dsd_opts* opts, dsd_state* state, const uint8_t* sch_s) {
     tetra_enter_dmo(opts, state);
     (void)tetra_dmo_parse_sync_s(sch_s, &s);
 
-    tetra_expand_sb_dibits(state, b2_dibits, b2_soft, SB_BKN2_DIBITS, b2_costs);
+    tetra_expand_sb_dibits(state, tail, tail_soft, SB_BKN2_DIBITS, b2_costs);
     tetra_descramble_soft(b2_costs, NB_BLOCK_BITS, TETRA_SB_SCRAMB_SEED);
     const int h_ok = tetra_hd_decode_bits(b2_costs, sch_h);
     if (h_ok) {
@@ -885,12 +885,24 @@ tetra_dmo_guarded(const dsd_opts* opts, dsd_state* state, const uint8_t* sch_s) 
     return 1;
 }
 
+/* A DSB whose SCH/S (@p sch_s, CRC passed) the hard or the soft decision decoded, with the burst's tail (@p tail,
+   @p tail_soft): a guarded one (tetra_dmo_guarded()) is consumed undecoded, any other read as direct mode
+   (tetra_dmo_process_dsb()), its polarity the carrier's once taken. */
+static void
+tetra_sb_dsb(dsd_opts* opts, dsd_state* state, const uint8_t* sch_s, const uint8_t* tail, const float* tail_soft) {
+    if (tetra_dmo_guarded(opts, state, sch_s)) {
+        return;
+    }
+    if (tetra_dmo_process_dsb(opts, state, sch_s, tail, tail_soft)) {
+        tetra_dmo_dsb_commit_polarity(state);
+    }
+}
+
 /* A direct-mode synchronisation burst is told from a trunked one by its SCH/S system code (EN 300 396-3 clause
-   9.3.29), decoded from the hard decisions first: they do not consume symbols or depend on the slicer, so a trunked
-   burst then takes exactly the path it would have taken. 1 when the burst was a DSB and is done; a guarded one
-   (tetra_dmo_guarded()) is read past undecoded, as many dibits as any synchronisation burst. */
+   9.3.29), decoded from the hard decisions first: they do not depend on the slicer, so a trunked burst then takes
+   exactly the path it would have taken. 1 when the burst was a DSB and is done. */
 static int
-tetra_sb_try_dmo(dsd_opts* opts, dsd_state* state) {
+tetra_sb_try_dmo(dsd_opts* opts, dsd_state* state, const uint8_t* tail, const float* tail_soft) {
     tetra_state_t* const ts = tetra_st(state);
     if (!ts) {
         return 0;
@@ -903,56 +915,41 @@ tetra_sb_try_dmo(dsd_opts* opts, dsd_state* state) {
     ts->decode_ok++;
     tetra_confirm_note_block(state);
     tetra_sb_log_bits(state, ts, pre);
-    if (tetra_dmo_guarded(opts, state, pre)) {
-        skipDibit(opts, state, SB_BKN2_DIBITS + SB_BB_DIBITS);
-        return 1;
-    }
-    if (tetra_dmo_process_dsb(opts, state, pre)) {
-        tetra_dmo_dsb_commit_polarity(state);
-    }
+    tetra_sb_dsb(opts, state, pre, tail, tail_soft);
     return 1;
 }
 
-/* A DSB that only the soft decision decoded (@p sch_s, its SCH/S): its SCH/H went by unread, and timing and mode come
-   from its SCH/S. */
-static void
-tetra_sb_soft_dsb(dsd_opts* opts, dsd_state* state, const uint8_t* sch_s) {
-    tetra_confirm_note_block(state);
-    if (tetra_dmo_guarded(opts, state, sch_s)) {
-        return;
-    }
-    tetra_dmo_sync_s_t s;
-    (void)tetra_dmo_parse_sync_s(sch_s, &s);
-    tetra_dmo_dsb_commit_polarity(state);
-    tetra_enter_dmo(opts, state);
-    tetra_dmo_apply_sync(state, &s, NULL);
-    tetra_calls_dmo_protection(opts, state);
-    DSD_FPRINTF(stderr, "[TETRA DMO DSB] sys=%u comm=%u ch=%u slot=%u frame=%u enc=%u | SCH/H skipped\n", s.system_code,
-                s.comm_type, s.ab_usage, s.slot, s.frame, s.enc_state);
-}
+/* What tetra_sb_bsch() made of the burst's BSCH block. */
+typedef enum {
+    TETRA_SB_CELL = 0,  /* block 2 is to be decoded as the cell's */
+    TETRA_SB_NO_BLOCK2, /* another cell's burst: block 2 is not the cell's */
+    TETRA_SB_DSB,       /* a DSB only the soft decision decoded, done (tetra_sb_dsb()) */
+} tetra_sb_kind;
 
-/* The BSCH of a trunked synchronisation burst, read once the rest of the burst has been: 1 when block 2 is to be
-   decoded as the cell's, 0 when block 2 is not a trunked block of the cell (a DSB, or another cell's burst). A DMO
-   system code that only the soft decision decoded is a DSB (tetra_sb_soft_dsb()). A BSCH that failed its CRC still sits
+/* The BSCH of a trunked synchronisation burst, read once the rest of the burst (@p tail, @p tail_soft) has been:
+   TETRA_SB_CELL when block 2 is to be decoded as the cell's, TETRA_SB_NO_BLOCK2 when it is another cell's burst. A DMO
+   system code that only the soft decision decoded is a DSB, whose SCH/H is read from the tail's start as any DSB's
+   (tetra_sb_dsb()): TETRA_SB_DSB. A BSCH that failed its CRC still sits
    in the slot after the last burst's: the TDMA clock runs to it on the symbol count, as for a normal burst, so block 2
    is decoded in its own timeslot rather than the last burst's. So does one of another cell on the followed carrier
    (TETRA_BSCH_FOREIGN), whose burst is that cell's: its block 2 is scrambled with another colour code and is not
    decoded, and the BSCH is no evidence about the carrier nor sets its polarity. One taken on is the home cell's
    evidence on a followed carrier (tetra_sm_note_home_crc()). */
-static int
-tetra_sb_bsch(dsd_opts* opts, dsd_state* state, tetra_state_t* ts) {
+static tetra_sb_kind
+tetra_sb_bsch(dsd_opts* opts, dsd_state* state, tetra_state_t* ts, const uint8_t* tail, const float* tail_soft) {
     uint8_t decoded[SB_TYPE2];
     const int crc_ok = tetra_sb_decode_block(state, 1, decoded);
     state->tetra_sync.sb1_soft_valid = 0;
     tetra_sb_log_bits(state, ts, decoded);
     if (!crc_ok) {
         tetra_tdma_follow(state, state->symbolcnt - TETRA_TDMA_SB_PARSE_SYMBOL);
-        return 1;
+        return TETRA_SB_CELL;
     }
     ts->decode_ok++;
     if (tetra_dmo_system_code_is_dmo(decoded)) {
-        tetra_sb_soft_dsb(opts, state, decoded);
-        return 0;
+        tetra_confirm_note_block(state);
+        tetra_sb_dsb(opts, state, decoded, tail, tail_soft);
+        return TETRA_SB_DSB;
     }
     tetra_dmo_leave(opts, state);
     if (tetra_bsch_parse(decoded, SB_TYPE1, opts, state) == TETRA_BSCH_FOREIGN) {
@@ -960,12 +957,12 @@ tetra_sb_bsch(dsd_opts* opts, dsd_state* state, tetra_state_t* ts) {
         tetra_confirm_note_block(state);
         /* No evidence about the followed carrier, but a trunked cell's checked broadcast on the channel all the same. */
         tetra_confirm_note_proof(state, DSD_TETRA_BURST_PROOF_TMO);
-        return 0;
+        return TETRA_SB_NO_BLOCK2;
     }
     tetra_tmo_sb_commit_polarity(state);
     tetra_confirm_note_signalling(state);
     tetra_sm_note_home_crc(state);
-    return 1;
+    return TETRA_SB_CELL;
 }
 
 /* Block 2 of a trunked synchronisation burst: the BNCH (EN 300 392-2 clause 9.5.2) or an SCH/HD, coded like an SCH/HD
@@ -985,8 +982,10 @@ tetra_sb_block2(dsd_opts* opts, dsd_state* state, const uint8_t* dibits, const f
 }
 
 /* A synchronisation burst (EN 300 392-2 clause 9.4.4.2.6): the BSCH block before the training sequence, which the frame
-   sync captured, then the broadcast block (the AACH, not decoded) and block 2. Block 2 is read before the BSCH is
-   parsed, so tetra_bsch_parse() sees the symbol count of the burst's end it expects. */
+   sync captured, then the broadcast block (the AACH, not decoded) and block 2; or a DSB (EN 300 396-2 clause 9.4.3.3),
+   whose SCH/H follows the training sequence at once. The whole tail is read, hard and soft, before the burst is told
+   apart, so either layout's block is at hand and tetra_bsch_parse() sees the symbol count of the burst's end it
+   expects: a trunked SB's block 2 SB_BB_DIBITS into it, a DSB's SCH/H at its start. */
 static void
 tetra_process_sb(dsd_opts* opts, dsd_state* state) {
     tetra_state_t* const ts = tetra_st(state);
@@ -994,11 +993,10 @@ tetra_process_sb(dsd_opts* opts, dsd_state* state) {
         return;
     }
     soft_symbol_frame_begin(state);
-    uint8_t b2_dibits[SB_BKN2_DIBITS];
-    float b2_soft[SB_BKN2_DIBITS];
+    uint8_t tail[SB_TAIL_DIBITS];
+    float tail_soft[SB_TAIL_DIBITS];
     if (!state->tetra_sync.sb1_valid) {
-        skipDibit(opts, state, SB_BB_DIBITS);
-        skipDibit(opts, state, SB_BKN2_DIBITS);
+        skipDibit(opts, state, SB_TAIL_DIBITS);
         TETRA_LOG_PAYLOAD(ts, "[TETRA SB] no BSCH block captured\n");
         state->tetra_sync.sb1_soft_valid = 0;
         return;
@@ -1006,18 +1004,16 @@ tetra_process_sb(dsd_opts* opts, dsd_state* state) {
     if (!tetra_confirm_burst_current(state)) {
         /* The settle at the burst's entry moved the receiver (tetra_burst_enter()): the burst's symbols go by
          * undecoded, its BSCH block with them. */
-        skipDibit(opts, state, SB_BB_DIBITS);
-        skipDibit(opts, state, SB_BKN2_DIBITS);
+        skipDibit(opts, state, SB_TAIL_DIBITS);
         state->tetra_sync.sb1_valid = 0;
         state->tetra_sync.sb1_soft_valid = 0;
         return;
     }
     state->tetra_sync.sb1_valid = 0;
-    if (tetra_sb_try_dmo(opts, state)) {
+    tetra_read_dibits(opts, state, tail, tail_soft, SB_TAIL_DIBITS);
+    if (tetra_sb_try_dmo(opts, state, tail, tail_soft)) {
         return;
     }
-    skipDibit(opts, state, SB_BB_DIBITS);
-    tetra_read_dibits(opts, state, b2_dibits, b2_soft, SB_BKN2_DIBITS);
     if (!tetra_confirm_burst_current(state)) {
         /* A carrier boundary inside the read (a replay retune) or an input interruption lost the burst: its BSCH, or
          * the DSB only the soft decision decodes, is the last carrier's, so neither its network and colour code nor
@@ -1025,8 +1021,12 @@ tetra_process_sb(dsd_opts* opts, dsd_state* state) {
         state->tetra_sync.sb1_soft_valid = 0;
         return;
     }
-    if (tetra_sb_bsch(opts, state, ts)) {
-        tetra_sb_block2(opts, state, b2_dibits, b2_soft);
+    const tetra_sb_kind kind = tetra_sb_bsch(opts, state, ts, tail, tail_soft);
+    if (kind == TETRA_SB_DSB) {
+        return;
+    }
+    if (kind == TETRA_SB_CELL) {
+        tetra_sb_block2(opts, state, tail + SB_BB_DIBITS, tail_soft + SB_BB_DIBITS);
     }
 
     DSD_SNPRINTF(state->fsubtype, sizeof(state->fsubtype), " %-13s", "BSCH");

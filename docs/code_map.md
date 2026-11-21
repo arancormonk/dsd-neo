@@ -821,8 +821,8 @@ Generated (do not edit/commit):
       which holds the row
       only while such frames keep coming, so the default set's -Y row on NXDN48 or dPMR noise leaves like a typed
       one; a TETRA burst is no unchecked frame since issue #890: its decoder notes PROVEN content for checked content
-      alone, `tetra_burst_proof_is_content()` in `tetra_frame_leave()`, so failed bursts, a soft-only DSB, a DSB whose
-      SCH/H failed and DM-RESERVED hold nothing: `ENGINE_NO_CARRIER_RESET`
+      alone, `tetra_burst_proof_is_content()` in `tetra_frame_leave()`, so failed bursts, a DSB whose SCH/H failed
+      (whichever decision decoded its SCH/S) and DM-RESERVED hold nothing: `ENGINE_NO_CARRIER_RESET`
       `test_y_tetra_holds_only_on_checked_content()`, real bursts through the real decoder), nothing keeps the row
       (`live_scanner_y_frame_step_may_decide()`: hold, awaited tune, typed step in flight, avoided row, no other row),
       and it has not yielded for this stay and anchor yet (`dsd_engine_scan_owner::y_frame_yield_epoch`,
@@ -6080,7 +6080,7 @@ the implementations from `dsd_engine_trunk_scan_init()` and clears them again on
   396-3 clause 9.3.29, shown and recorded as a call but the profile only for the scan); the circuit mode classifies
   data only for its defined values (EN 300 396-3 clause 9.6.3: 0 and 8 speech, 1 to 7 data; 9 to 15 reserved, left
   unknown), SDS after its FCS check and before the notice dedupe (DM-SDS DATA, the acknowledged service, is private,
-  clauses 6.3 and 6.3.1.1.2; DM-SDS UDATA's party stays unknown), and DMO speech through `tetra_calls_dmo_speech_activity()`; never TMO, soft-only DSBs,
+  clauses 6.3 and 6.3.1.1.2; DM-SDS UDATA's party stays unknown), and DMO speech through `tetra_calls_dmo_speech_activity()`; never TMO, DSBs whose SCH/H failed,
   DM-RESERVED, DM-SETUP PRES or gateway set-up).
   Tests: `RUNTIME_TRUNK_SCAN_HOOKS`, `YSF_DCH_DECODE`, `DSTAR_PROCESS`, `DSTAR_DPRS`, `DPMR_REFERENCE_VECTORS`,
   `M17_FRAME_CUT`, `TETRA_CALLS`, `TETRA_BURST_VERDICT` (recorded through
@@ -14811,7 +14811,7 @@ Private per-protocol modules worth knowing about:
   speech; see TETRA below. The engine clears it with the carrier through `tetra_confirm_reset()`, exported in
   `<dsd-neo/protocol/tetra/tetra.h>`. Burst proof (issue #890): each burst closes with what it proved of the channel,
   `tetra_burst_proof()` (`dsd_tetra_burst_proof` in `<dsd-neo/protocol/tetra/tetra.h>`): NONE, PROFILE (a CRC passed on
-  nothing below: a DSB of which only SCH/S decoded, soft-only or with its SCH/H failed, a presence signal, a direct
+  nothing below: a DSB of which only SCH/S decoded (its SCH/H failed), a presence signal, a direct
   mode PDU that sets up no call, DM-RESERVED included), TMO (any trunked CRC-16 block, a foreign cell's BSCH and
   trunked speech included), DMO_OPAQUE (a DM-2-C DMAC-SYNC: transmission or reservation, no one can tell), DMO_SERVICE
   (a clear DMO call PDU or short data whose FCS did not fail, from `tetra_calls_dmo_pdu()`) or DMO_SPEECH (direct
@@ -15179,8 +15179,8 @@ it, and nothing in it is global. TETRA is not a trunk-scan target type; trunk sc
     burst's slot as for a failed BSCH, counts the burst for its verdict only (no signalling evidence, no polarity, no
     home evidence) and leaves block 2, which is that cell's, undecoded. The home's seed stays, so the other cell's
     CRC-protected blocks and speech fail as they would for an MS, and its grants, allocations and releases do nothing.
-  - Direct mode. A DSB, read by the hard decision (`tetra_sb_try_dmo()`) or only the soft one (`tetra_sb_soft_dsb()`),
-    is consumed (`tetra_dmo_guarded()`): it does not enter direct mode, forget what the trunked carrier proved, set the
+  - Direct mode. A DSB, read by the hard decision (`tetra_sb_try_dmo()`) or only the soft one (`tetra_sb_bsch()`),
+    both through `tetra_sb_dsb()`, is consumed (`tetra_dmo_guarded()`): it does not enter direct mode, forget what the trunked carrier proved, set the
     polarity or publish, since a trunked call's carrier is no direct mode channel; it logs (`opts->verbose > 0`, the
     default) `[TETRA DMO DSB] sys=... comm=...: direct mode on the followed carrier; not taken on`.
   - SYSINFO. `sysinfo_applies()` in `tetra_mac.c` applies one only when its main carrier is a valid frequency equal to
@@ -15305,9 +15305,10 @@ it, and nothing in it is global. TETRA is not a trunk-scan target type; trunk sc
   `tetra_process_sb()`). A tune completed inside a burst (a grant in its first block) leaves the rest of that
   burst on the carrier left: `tetra_confirm_burst_current()` turns 0, the MAC stops parsing the block and the
   normal-burst decoder skips the second half, and nothing the burst decoded counts for the new carrier, though the
-  burst's verdict still does. A synchronisation burst reads its tail before it acts (the DSB's SCH/H and the 15 dibits
-  after it, an SB's broadcast block and block 2 before its BSCH is parsed), so `tetra_dmo_process_dsb()` and
-  `tetra_process_sb()` check `tetra_confirm_burst_current()` after the read: a replay retune or an input interruption
+  burst's verdict still does. A synchronisation burst reads its whole tail, hard and soft, before it acts (123
+  dibits: a DSB's SCH/H at its start, EN 300 396-2 table 16, and the 15 after it; an SB's broadcast block and block 2
+  before its BSCH is parsed), so a DSB whose SCH/S only the soft decision decoded reads its SCH/H as a hard-decoded one
+  does, and `tetra_dmo_process_dsb()` and `tetra_process_sb()` check `tetra_confirm_burst_current()` after the read: a replay retune or an input interruption
   inside it leaves the mode, DM colour code, protection, call, network, received identity and polarity of the burst
   off the carrier the receiver is on now. The DSB takes direct mode on (`tetra_enter_dmo()`, which ends what the
   trunked carrier left: its calls, fragments and uplink protection) only after that check, so an interrupted DSB on

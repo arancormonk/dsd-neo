@@ -25,8 +25,8 @@ int processTetraSBFrame(dsd_opts* opts, dsd_state* state);
  *   clause 8.5.3): an encrypted direct mode transmission, or a reservation, that no one can tell apart.
  * - TMO: a trunked mode block whose CRC passed: a BSCH (the home cell's or another's), a downlink MAC block, an uplink
  *   SCH/HU or MAC block, or trunked speech.
- * - PROFILE: a CRC passed, but on nothing of the above: a DSB of which only SCH/S decoded (its SCH/H failed, or only the
- *   soft decision decoded it and SCH/H went by unread), a presence signal, or a direct mode PDU that sets up no call
+ * - PROFILE: a CRC passed, but on nothing of the above: a DSB of which only SCH/S decoded (its SCH/H failed, whichever
+ *   decision decoded its SCH/S), a presence signal, or a direct mode PDU that sets up no call
  *   (DM-RESERVED and the other reservation, end and request signalling).
  * - NONE: no CRC passed, or the burst was read across a carrier boundary or cut by an input interruption.
  *
