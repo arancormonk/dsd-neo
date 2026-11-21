@@ -52,11 +52,28 @@ private fun oldShareCopiesGoAtAppStart() {
     check(DsdNative.diagnostics.isEmpty()) { "the share did not fail" }
 }
 
-fun main() {
+/**
+ * Run [body], then remove [root] and everything in it without following a link, failing when anything cannot be
+ * removed (on Windows, a file a handle still holds), so the test cannot pass with its temp folder left behind. A
+ * failure of [body] stays the failure, with the removal's own attached.
+ */
+private fun withScratchRemoved(root: File, body: () -> Unit) {
     try {
+        body()
+    } catch (e: Throwable) {
+        runCatching { removeTree(root) }.exceptionOrNull()?.let(e::addSuppressed)
+        throw e
+    }
+    removeTree(root)
+}
+
+private fun removeTree(root: File) {
+    Files.walk(root.toPath()).use { paths -> paths.sorted(Comparator.reverseOrder()).forEach(Files::delete) }
+}
+
+fun main() {
+    withScratchRemoved(scratch) {
         oldShareCopiesGoAtAppStart()
-    } finally {
-        scratch.deleteRecursively()
     }
     println("PASS: diagnostics share copies past their hour go at app start and at the next share")
 }
