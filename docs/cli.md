@@ -3496,7 +3496,8 @@ DMR Tier III (env helpers for `--calc-lcn`)
 `--calc-lcn` is for a known, fixed channel plan: it lays your frequencies on one channel grid (the given step, or
 the smallest spacing it can infer) from the anchor, or from the lowest frequency and the start LCN. It cannot
 discover a site's plan from a frequency list. Every input and the anchor must sit on that grid, every LCN must fall
-in 1..4094 and be unique, and a file may hold at most 4096 frequency rows. On any problem it prints the reason to
+in 1..4094 and be unique, a file may hold at most 4096 frequency rows, and no row may exceed 1023 bytes. Set the
+anchor frequency and anchor LCN together or not at all; one alone is an error. On any problem it prints the reason to
 stderr, writes nothing to stdout and exits nonzero. A single frequency needs the step to be placed against an anchor
 it does not equal.
 

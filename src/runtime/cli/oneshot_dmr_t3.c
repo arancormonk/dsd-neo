@@ -17,6 +17,7 @@
 #include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 
 // --- Local helpers -----------------------------------------------------------
 
@@ -114,17 +115,24 @@ line_parse_frequency_hz(char* line, long* hz_out) {
     return 1;
 }
 
-/* Returns the row count, or -1 when the file holds more usable rows than @p capacity: a silent cut would shift the
-   sorted map. */
+/* Returns the row count, -1 when the file holds more usable rows than @p capacity (a silent cut would shift the
+   sorted map), or -2 when a line is longer than the read buffer (its fragments would parse as extra rows); the
+   1-based line number is stored in @p bad_line. */
 static int
-read_frequency_rows(FILE* fp, long* freqs, int capacity) {
+read_frequency_rows(FILE* fp, long* freqs, int capacity, int* bad_line) {
     if (!fp || !freqs || capacity <= 0) {
         return 0;
     }
 
     int count = 0;
     char line[1024];
+    int line_no = 0;
     while (fgets(line, sizeof(line), fp)) {
+        line_no++;
+        if (!strchr(line, '\n') && getc(fp) != EOF) {
+            *bad_line = line_no;
+            return -2;
+        }
         long hz = 0;
         if (!line_parse_frequency_hz(line, &hz)) {
             continue;
@@ -223,13 +231,21 @@ resolve_step_hz(const dsdneoRuntimeConfig* cfg, const long* freqs, int count, lo
     return 0;
 }
 
-static void
+/* The anchor is both settings or neither: half of one cannot place the grid. */
+static int
 apply_anchor(const dsdneoRuntimeConfig* cfg, long long* ref_freq, long long* ref_lcn) {
-    if (cfg && cfg->dmr_t3_cc_freq_is_set && cfg->dmr_t3_cc_lcn_is_set && cfg->dmr_t3_cc_freq_hz > 0
-        && cfg->dmr_t3_cc_lcn > 0) {
+    if (!cfg) {
+        return 0;
+    }
+    if (cfg->dmr_t3_cc_freq_is_set != cfg->dmr_t3_cc_lcn_is_set) {
+        LOG_ERROR("LCN calc: set both DSD_NEO_DMR_T3_CC_FREQ and DSD_NEO_DMR_T3_CC_LCN, or neither.\n");
+        return 3;
+    }
+    if (cfg->dmr_t3_cc_freq_is_set) {
         *ref_freq = cfg->dmr_t3_cc_freq_hz;
         *ref_lcn = cfg->dmr_t3_cc_lcn;
     }
+    return 0;
 }
 
 // --- Public API --------------------------------------------------------------
@@ -246,8 +262,14 @@ dsd_cli_calc_dmr_t3_lcn_from_csv(const char* path) {
     }
     long freqs[4096];
     long long lcns[4096];
-    int nf = read_frequency_rows(fp, freqs, (int)(sizeof(freqs) / sizeof(freqs[0])));
+    int bad_line = 0;
+    int nf = read_frequency_rows(fp, freqs, (int)(sizeof(freqs) / sizeof(freqs[0])), &bad_line);
     fclose(fp);
+
+    if (nf == -2) {
+        LOG_ERROR("LCN calc: row %d of '%s' is longer than 1023 bytes.\n", bad_line, path);
+        return 3;
+    }
 
     if (nf < 0) {
         LOG_ERROR("LCN calc: '%s' has more than %d frequency rows.\n", path, (int)(sizeof(freqs) / sizeof(freqs[0])));
@@ -268,7 +290,9 @@ dsd_cli_calc_dmr_t3_lcn_from_csv(const char* path) {
 
     long long ref_freq = freqs[0];
     long long ref_lcn = dmr_t3_start_lcn_or_default(cfg);
-    apply_anchor(cfg, &ref_freq, &ref_lcn);
+    if (apply_anchor(cfg, &ref_freq, &ref_lcn) != 0) {
+        return 3;
+    }
 
     const int rc = compute_lcns(freqs, nf, ref_freq, ref_lcn, step, lcns);
     if (rc != 0) {

@@ -166,6 +166,28 @@ test_row_cap_is_an_error(void) {
 }
 
 static void
+test_overlong_row_and_half_anchor_are_errors(void) {
+    static char big[4096];
+    size_t n = (size_t)DSD_SNPRINTF(big, sizeof big, "f\n851025000\n851,");
+    for (int i = 0; i < 1100; i++) {
+        big[n++] = '9';
+    }
+    big[n++] = '\n';
+    big[n] = '\0';
+    set_anchor(NULL, NULL, "12500");
+    expect_error(big);
+    /* the same long line as the last line, with no newline */
+    big[n - 1] = '\0';
+    expect_error(big);
+
+    set_anchor("851.025", NULL, "12500");
+    expect_error("f\n851025000\n851037500\n");
+    set_anchor(NULL, "10", "12500");
+    expect_error("f\n851025000\n851037500\n");
+    clear_dmr_t3_env();
+}
+
+static void
 test_missing_file_fails(void) {
     char path[DSD_TEST_PATH_MAX];
 
@@ -292,6 +314,7 @@ main(void) {
     test_one_row_applies_anchor_and_step();
     test_results_outside_range_or_off_grid_print_nothing();
     test_row_cap_is_an_error();
+    test_overlong_row_and_half_anchor_are_errors();
     printf("RUNTIME_DMR_T3_LCN_CALC: OK\n");
     return 0;
 }
