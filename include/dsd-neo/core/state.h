@@ -2397,6 +2397,10 @@ struct dsd_state {
        plus one; 0 none yet (issue #890). A half whose CRC-7 failed takes it, as it takes dpmr_scrambled; the same
        boundaries forget it. */
     uint8_t dpmr_mode;
+    /* Where the next dPMR half's first AMBE frame lies in its superframe's scrambler, 0 to 15, plus one; 0 not known
+       (issue #890). Learned from checked frame numbers, kept by dPMR alone (a frame before confirmation writes no NXDN
+       state), applied to nxdn_payload_mi when a confirmed scrambled half plays; the same boundaries forget it. */
+    uint8_t dpmr_scramble_place;
 
     /* How recently a dPMR CCH CRC-7 passed, for the SPS hunt's profile accounting
      * (src/engine/dispatch/dispatch_dpmr.c). The flag, not the stamp, opens the window,

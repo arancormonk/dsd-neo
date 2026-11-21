@@ -823,9 +823,9 @@ test_service_and_kind_come_from_the_checked_half(void) {
     return rc;
 }
 
-/* Issue #890 (B19): the scrambler reloads only at a checked frame 0. A failed half that reads 0 is not frame 0 when the
-   frame's checked half is numbered 3, so the register goes on; a failed first half is frame 0 when the checked second
-   half is numbered 1. */
+/* Issue #890 (B19): a half's place in the scrambler comes from checked frame numbers only. A failed half that reads 0
+   is frame 2, not frame 0, when the frame's checked half is numbered 3, so it does not descramble from the key; a
+   failed first half is frame 0 when the checked second half is numbered 1. */
 static int
 test_scrambler_reloads_only_at_a_checked_frame_zero(void) {
     dsd_opts* opts = g_opts;
@@ -840,6 +840,7 @@ test_scrambler_reloads_only_at_a_checked_frame_zero(void) {
         reset_capture();
         state->synctype = DSD_SYNC_DPMR_FS2_POS;
         state->dpmr_scrambled = 2U; /* a scrambled transmission, learned from an earlier verified half */
+        state->R = 0x12345ULL;
         state->nxdn_payload_mi = 0x7777ULL;
         state->dPMRVoiceFS2Frame.FrameNumbering[0] = 0U; /* failed: reads 0 */
         state->dPMRVoiceFS2Frame.CCHDataCrcOk[0] = 0U;
@@ -849,9 +850,8 @@ test_scrambler_reloads_only_at_a_checked_frame_zero(void) {
         dpmr_resolve_half_scrambling(state);
         dpmr_play_voice_frames(opts, state, ambe_fr);
         rc |= expect_int("bad-frame0-plays", (int)g_mbe_calls, 8);
-        const unsigned long long want = second == 1 ? 0ULL : 0x7777ULL;
-        rc |= expect_u64(second == 1 ? "checked-pair-frame0-reloads" : "bad-frame0-keeps-the-register", g_mbe_mi[0],
-                         want);
+        const unsigned long long want = scramble_register_at(0x12345ULL, second == 1 ? 0 : 8);
+        rc |= expect_u64(second == 1 ? "checked-pair-frame0-reloads" : "bad-frame0-is-frame-2", g_mbe_mi[0], want);
     }
     return rc;
 }
@@ -1567,12 +1567,12 @@ bridge_play(dsd_opts* opts, dsd_state* state, const bridge_frame* frame) {
     dpmr_play_voice_frames(opts, state, ambe_fr);
 }
 
-/* Issue #890: a half the bridge does not play still takes its place in the Scramble (four AMBE frames of 49 bits, the
-   steps the vocoder takes for a played half), so the next half played descrambles in phase. In a keyed Voice and
+/* Issue #890: a half the bridge does not play keeps its place in the Scramble (four AMBE frames of 49 bits a half,
+   frame 0 of each superframe from the key), so the next half played descrambles in phase. In a keyed Voice and
    attached data call (M = 101, TS 102 658 5.5.7, 11.1.1 Figure 11.3) consecutive payload frames carry speech; a frame
    0 whose CCH failed is not known to hold speech and stays muted, and the checked frame 1 after it (DP = 00) must play
-   from frame 4 of the superframe's Scramble, not from the key. The same holds for every half the bridge mutes: an
-   unverified half, a data half, a data call's half. A half known clear takes no step, as it takes none when played. */
+   from frame 4 of the superframe's Scramble, not from the key. The same holds behind every half the bridge mutes: an
+   unverified half, a data half, a data call's half, a clear half. */
 static int
 test_muted_halves_keep_the_scrambler_in_phase(void) {
     const unsigned long long key = 0x12345ULL;
@@ -1595,7 +1595,6 @@ test_muted_halves_keep_the_scrambler_in_phase(void) {
     for (int i = 0; i < 4; i++) {
         rc |= expect_u64("frame 1 descrambles in phase", g_mbe_mi[i], scramble_register_at(key, 4 + i));
     }
-    rc |= expect_int("the muted half took its four steps", g_skip_calls, 4);
     rc |= expect_u64("the frame leaves the register at frame 8", state->nxdn_payload_mi, scramble_register_at(key, 8));
 
     /* A frame whose halves both fail before anything is verified plays nothing, but the next, checked frames 2 and 3,
@@ -1616,7 +1615,7 @@ test_muted_halves_keep_the_scrambler_in_phase(void) {
         rc |= expect_u64("frames 2 and 3 descramble in phase", g_mbe_mi[i], scramble_register_at(key, 8 + i));
     }
 
-    /* Speech, then the attached data after PTT release (DP 11): the data half takes its steps too. */
+    /* Speech, then the attached data after PTT release (DP 11): the data half keeps its place, frames 2 and 3 next. */
     DSD_MEMSET(opts, 0, sizeof(*opts));
     DSD_MEMSET(state, 0, sizeof(*state));
     reset_capture();
@@ -1626,9 +1625,9 @@ test_muted_halves_keep_the_scrambler_in_phase(void) {
         .crc = {1U, 1U}, .fn = {0U, 1U}, .mode = {5U, 5U}, .version = {3U, 3U}, .sld = {speech, data}};
     bridge_play(opts, state, &speech_then_data);
     rc |= expect_int("speech plays, data does not", (int)g_mbe_calls, 4);
-    rc |= expect_u64("the data half took its steps", state->nxdn_payload_mi, scramble_register_at(key, 8));
+    rc |= expect_int("the data half kept its place", (int)state->dpmr_scramble_place, 9);
 
-    /* A scrambled data call's halves reach no vocoder and take their steps. */
+    /* A scrambled data call's halves reach no vocoder, write no register, and keep their place. */
     DSD_MEMSET(opts, 0, sizeof(*opts));
     DSD_MEMSET(state, 0, sizeof(*state));
     reset_capture();
@@ -1637,20 +1636,22 @@ test_muted_halves_keep_the_scrambler_in_phase(void) {
     const bridge_frame data_call = {.crc = {1U, 1U}, .fn = {0U, 1U}, .mode = {2U, 2U}, .version = {3U, 3U}};
     bridge_play(opts, state, &data_call);
     rc |= expect_int("a data call plays nothing", (int)g_mbe_calls, 0);
-    rc |= expect_u64("its halves took their steps", state->nxdn_payload_mi, scramble_register_at(key, 8));
+    rc |= expect_u64("its halves wrote no register", state->nxdn_payload_mi, 0ULL);
+    rc |= expect_int("its halves kept their place", (int)state->dpmr_scramble_place, 9);
 
-    /* A half known clear takes no step, muted or played; the scrambled half beside it plays from the register. */
+    /* A clear data half is muted; the scrambled frame 3 beside it plays from its own place, frame 12. */
     DSD_MEMSET(opts, 0, sizeof(*opts));
     DSD_MEMSET(state, 0, sizeof(*state));
     reset_capture();
     state->synctype = DSD_SYNC_DPMR_FS2_POS;
     state->R = key;
-    state->nxdn_payload_mi = scramble_register_at(key, 8);
+    state->nxdn_payload_mi = 0x7777ULL; /* whatever the register held */
     const bridge_frame clear_data_half = {.crc = {1U, 1U}, .fn = {2U, 3U}, .mode = {2U, 0U}, .version = {0U, 3U}};
     bridge_play(opts, state, &clear_data_half);
     rc |= expect_int("the clear data half is muted", (int)g_mbe_calls, 4);
-    rc |= expect_int("the clear half took no step", g_skip_calls, 0);
-    rc |= expect_u64("the scrambled half plays from the register", g_mbe_mi[0], scramble_register_at(key, 8));
+    for (int i = 0; i < 4; i++) {
+        rc |= expect_u64("frame 3 plays from its place", g_mbe_mi[i], scramble_register_at(key, 12 + i));
+    }
 
     /* Without a key nothing steps, as nothing descrambles. */
     DSD_MEMSET(opts, 0, sizeof(*opts));
@@ -1720,6 +1721,49 @@ test_unconfirmed_frame_keeps_the_scrambler_in_phase(void) {
     return rc;
 }
 
+/* Issue #890: under Auto a false dPMR FS2 during an NXDN48 call can read one CRC-valid CCH half that says scrambled
+   without confirming dPMR. Before confirmation the dPMR voice path writes no state another protocol owns: the NXDN
+   call's cipher type, working register, IV flag and the synctype stay as they were, with a scalar key loaded or
+   not. */
+static int
+test_unconfirmed_frame_leaves_nxdn_crypto_alone(void) {
+    int rc = 0;
+    for (int keyed = 0; keyed < 2; keyed++) {
+        dsd_opts* opts = g_opts;
+        dsd_state* state = g_state;
+        DSD_MEMSET(opts, 0, sizeof(*opts));
+        DSD_MEMSET(state, 0, sizeof(*state));
+        opts->frame_nxdn48 = 1;
+        opts->frame_dpmr = 1;
+        state->synctype = DSD_SYNC_DPMR_FS2_POS;
+        state->dpmr_color_code = -1;
+        state->dPMRVoiceFS2Frame.ColorCode[0] = (unsigned int)(-1);
+        state->R = keyed ? 0x12345ULL : 0ULL;
+        /* The NXDN48 call: AES (cipher 3) with the IV its VCALL_IV carried. */
+        state->nxdn_cipher_type = 0x03;
+        state->nxdn_payload_mi = 0x0102030405060708ULL;
+        state->nxdn_iv_on_air = 1U;
+        reset_capture();
+        g_version3 = 1;
+        g_second_half_frame_one = 1;
+        g_fail_half = 1; /* half 0 checked, frame 0, scrambled */
+        state->symbolcnt = 60000U;
+        rc |= expect_int("false fs2 checks one half", processdPMRvoice(opts, state), 1);
+        rc |= expect_int("false fs2 unconfirmed", state->dpmr_confirmed, 0);
+        rc |= expect_int("false fs2 plays nothing", (int)g_mbe_calls, 0);
+        rc |= expect_int("nxdn cipher type kept", (int)state->nxdn_cipher_type, 0x03);
+        rc |= expect_u64("nxdn register kept", state->nxdn_payload_mi, 0x0102030405060708ULL);
+        rc |= expect_int("nxdn iv flag kept", (int)state->nxdn_iv_on_air, 1);
+        rc |= expect_int("synctype kept", state->synctype, DSD_SYNC_DPMR_FS2_POS);
+        rc |= expect_int("no scramble step", g_skip_calls, 0);
+        /* dPMR keeps its own place (frames 2 and 3 next), which a transmission boundary forgets. */
+        rc |= expect_int("dpmr place learned", (int)state->dpmr_scramble_place, 9);
+        dpmr_scrambling_reset(state);
+        rc |= expect_int("boundary forgets the place", (int)state->dpmr_scramble_place, 0);
+    }
+    return rc;
+}
+
 /* Issue #890: a checked end frame forgets the transmission's confirmation (dsd_dispatch_handle_dpmr() calls
    dpmr_confirm_reset()). A false FS2 on the carrier's tail with one CRC-valid half then opens no row and plays nothing;
    only a running second frame confirms again. */
@@ -1771,6 +1815,7 @@ main(void) {
     rc |= test_attached_data_frames_are_no_voice();
     rc |= test_muted_halves_keep_the_scrambler_in_phase();
     rc |= test_unconfirmed_frame_keeps_the_scrambler_in_phase();
+    rc |= test_unconfirmed_frame_leaves_nxdn_crypto_alone();
     rc |= test_scrambler_secret_is_not_published_as_key_id();
     rc |= test_scrambling_is_per_half_and_crc_verified();
     rc |= test_enc_indication_is_the_frames_own();

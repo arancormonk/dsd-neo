@@ -21,9 +21,9 @@ typedef struct {
 
 void dpmr_play_voice_frames(dsd_opts* opts, dsd_state* state,
                             char ambe_fr[NB_OF_DPMR_VOICE_FRAME_TO_DECODE * 4][4][24]);
-/* A frame no half of which may play (its transmission is not confirmed yet): the scrambler reloads at a checked frame
-   0 and every half takes its place in it, as dpmr_play_voice_frames() does for a half it mutes. */
-void dpmr_skip_voice_frames(dsd_state* state);
+/* A frame no half of which may play (its transmission is not confirmed yet): its halves' place in the scrambler is
+   learned (dsd_state::dpmr_scramble_place) and nothing else is written. */
+void dpmr_track_voice_frames(dsd_state* state);
 void dpmr_deinterleave_6x12(const uint8_t* input, uint8_t* output);
 uint8_t dpmr_crc7(const uint8_t* input, uint32_t bit_length);
 /* The dialled string of a 24-bit air interface ID (TS 102 658 A.1.2.1.1.6, A.1.2.3.3): seven digits and '*' by the B2
