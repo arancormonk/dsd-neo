@@ -295,6 +295,80 @@ test_second_group_scrambler_bridge_unmutes_with_key(void) {
     return rc;
 }
 
+/* Issue #890: in a Voice and attached data call (M = 101, TS 102 658 §5.5.7, §11.1.1 Figure 11.3) a payload frame is
+ * AMBE only while its CRC-checked SLD says it holds no data (DP = 00). The frames after PTT release carry the attached
+ * data (DP = 11): they reach no vocoder, so they neither play nor become the scan's voice credit. A half whose CRC-7
+ * failed, or with a reserved DP, is not known to be speech. @p sld1 is half 1's SLD, @p crc1 its CRC verdict; half 0
+ * is speech (DP = 00) in every case. Returns the frames sent to the vocoder. */
+static int
+attached_data_run(unsigned sld1, unsigned crc1) {
+    static dsd_opts opts;
+    static dsd_state state;
+    char ambe_fr[NB_OF_DPMR_VOICE_FRAME_TO_DECODE * 4][4][24];
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    DSD_MEMSET(&state, 0, sizeof(state));
+    DSD_MEMSET(ambe_fr, 0, sizeof(ambe_fr));
+    reset_capture();
+    state.synctype = DSD_SYNC_DPMR_FS2_POS;
+    for (int o = 0; o < 2; o++) {
+        state.dPMRVoiceFS2Frame.FrameNumbering[o] = (unsigned)(2 + o);
+        state.dPMRVoiceFS2Frame.CommunicationMode[o] = 5;
+        state.dPMRVoiceFS2Frame.Version[o] = 0;
+    }
+    state.dPMRVoiceFS2Frame.CCHDataCrcOk[0] = 1;
+    state.dPMRVoiceFS2Frame.SlowData[0] = 0x00080U; /* DP 00, a format and length: speech */
+    state.dPMRVoiceFS2Frame.CCHDataCrcOk[1] = crc1;
+    state.dPMRVoiceFS2Frame.SlowData[1] = sld1;
+    dpmr_resolve_half_scrambling(&state);
+    dpmr_play_voice_frames(&opts, &state, ambe_fr);
+    return (int)g_mbe_calls;
+}
+
+static int
+test_attached_data_frames_are_no_voice(void) {
+    int rc = 0;
+    /* SLD bits, first bit first: 5 reserved, DP (2), format (4), CONT (1), length (6). */
+    const unsigned dp_data = 3U << 11U;
+    rc |= expect_int("attached data: both halves speech", attached_data_run(0x00080U, 1), 8);
+    rc |= expect_int("attached data: a data half (DP 11) reaches no vocoder",
+                     attached_data_run(dp_data | (0U << 6U) | 20U, 1), 4);
+    rc |= expect_int("attached data: a reserved DP (01) is not speech", attached_data_run(1U << 11U, 1), 4);
+    rc |= expect_int("attached data: a damaged half is not known to be speech", attached_data_run(0x00080U, 0), 4);
+
+    /* The rule reads the half's checked mode, not its own bits (dpmr_resolve_half_modes()): a damaged half whose bits
+       read 101 in a voice call (checked 000) is voice, and one whose bits read 000 in a call checked 101 is not known
+       to hold no data. */
+    static const struct {
+        unsigned checked_mode;
+        unsigned damaged_bits;
+        int want;
+        const char* tag;
+    } k_by_checked[] = {{0U, 5U, 8, "attached data: a damaged half of a voice call reading 101 plays"},
+                        {5U, 0U, 4, "attached data: a damaged half of a 101 call reading 000 does not"}};
+
+    for (size_t c = 0; c < sizeof(k_by_checked) / sizeof(k_by_checked[0]); c++) {
+        static dsd_opts opts;
+        static dsd_state state;
+        char ambe_fr[NB_OF_DPMR_VOICE_FRAME_TO_DECODE * 4][4][24];
+        DSD_MEMSET(&opts, 0, sizeof(opts));
+        DSD_MEMSET(&state, 0, sizeof(state));
+        DSD_MEMSET(ambe_fr, 0, sizeof(ambe_fr));
+        reset_capture();
+        state.synctype = DSD_SYNC_DPMR_FS2_POS;
+        state.dPMRVoiceFS2Frame.FrameNumbering[0] = 2U;
+        state.dPMRVoiceFS2Frame.FrameNumbering[1] = 3U;
+        state.dPMRVoiceFS2Frame.CommunicationMode[0] = k_by_checked[c].checked_mode;
+        state.dPMRVoiceFS2Frame.CCHDataCrcOk[0] = 1U;
+        state.dPMRVoiceFS2Frame.SlowData[0] = 0x00080U; /* DP 00 */
+        state.dPMRVoiceFS2Frame.CommunicationMode[1] = k_by_checked[c].damaged_bits;
+        state.dPMRVoiceFS2Frame.CCHDataCrcOk[1] = 0U;
+        dpmr_resolve_half_scrambling(&state);
+        dpmr_play_voice_frames(&opts, &state, ambe_fr);
+        rc |= expect_int(k_by_checked[c].tag, (int)g_mbe_calls, k_by_checked[c].want);
+    }
+    return rc;
+}
+
 /* Issue #655: each half is scrambled or clear on its own, and only a half whose CCH CRC-7 passed says which. A clear
  * half after a scrambled one decodes clear (no NXDN scrambler, synctype left dPMR); a failed half reading Version 3 in
  * a clear transmission stays clear; a failed half after a verified scrambled one stays scrambled; a transmission
@@ -1435,6 +1509,7 @@ main(void) {
     int rc = 0;
     rc |= test_first_group_scrambler_bridge_mutes_without_key();
     rc |= test_second_group_scrambler_bridge_unmutes_with_key();
+    rc |= test_attached_data_frames_are_no_voice();
     rc |= test_scrambler_secret_is_not_published_as_key_id();
     rc |= test_scrambling_is_per_half_and_crc_verified();
     rc |= test_enc_indication_is_the_frames_own();

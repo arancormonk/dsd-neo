@@ -468,6 +468,16 @@ dpmr_publish_call(dsd_opts* opts, dsd_state* state) {
     dsd_event_sync_slot(opts, state, 0U);
 }
 
+/* Whether half @p o's payload frame carries speech in a Voice and attached data call (M = 101, TS 102 658 §5.5.7 Table
+   5.55): its TCH is AMBE only while the SLD of its CRC-checked CCH says the frame holds no data (DP = 00, §5.5.29.2
+   Table 5.95; §11.1.1 Figure 11.3: after PTT release the remaining frames carry the attached data with DP = 11). A
+   half whose CRC-7 failed, or with a reserved DP, is not known to be speech (issue #890). The SLD's 18 bits are read
+   first bit first: 5 reserved bits, then DP. */
+static int
+dpmr_attached_data_half_is_voice(const dsd_state* state, short o) {
+    return state->dPMRVoiceFS2Frame.CCHDataCrcOk[o] != 0U && ((state->dPMRVoiceFS2Frame.SlowData[o] >> 11U) & 3U) == 0U;
+}
+
 /* Whether half @p o of the frame is frame 0 of its superframe, checked (issue #890, B19): its own CRC-7 passed and it
  * is numbered 0, or it is the first half and the second passed numbered 1 (one FS2 frame carries frames 0 and 1 or 2
  * and 3, Figure 4.8). Only then does the scrambler reload: a failed half reading 0 is no frame 0. */
@@ -494,6 +504,10 @@ dpmr_play_voice_frames(dsd_opts* opts, dsd_state* state, char ambe_fr[NB_OF_DPMR
         }
 
         if (state->dPMRVoiceFS2Frame.Scrambled[o] == DPMR_HALF_UNVERIFIED) {
+            continue;
+        }
+        /* Attached data is never AMBE: it is neither played nor the scan's voice credit (issue #890). */
+        if (state->dPMRVoiceFS2Frame.ServiceMode[o] == 5U && !dpmr_attached_data_half_is_voice(state, o)) {
             continue;
         }
         int realsynctype = state->synctype;

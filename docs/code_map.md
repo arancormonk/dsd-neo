@@ -14084,8 +14084,13 @@ Private per-protocol modules worth knowing about:
   none. A half plays by its checked Communications Mode: its own when its CRC-7 passed, else the transmission's last
   checked half's or header's (`dsd_state::dpmr_mode`, learned and forgotten with `dpmr_scrambled`), else this frame's
   other checked half's, else none and it plays nothing (`dPMRVoiceFS2Frame_t::ServiceMode`); its own failed mode bits
-  never decide it. Powersave bits are read only from the traffic headers whose PARMS end in MI_TYPE and MI_DET
-  (message types 0000 to 1010; 5.5.19.1). The shared scrambler reloads only at a checked frame 0: a half that passed numbered 0, or a failed first half
+  never decide it. A half whose checked mode is Voice and attached data (101) plays only while its own CRC-checked
+  SLD says the frame holds no data (DP = 00, 5.5.29.2 Table 5.95; 11.1.1 Figure 11.3: after PTT release the remaining
+  frames carry the attached data with DP = 11), so attached data is never played or credited as speech
+  (`dpmr_attached_data_half_is_voice()`). Powersave bits are read only from the traffic headers whose PARMS end in
+  MI_TYPE and MI_DET
+  (message types 0000 to 1010; 5.5.19.1). The shared scrambler reloads only at a checked frame 0: a half that passed
+  numbered 0, or a failed first half
   whose second half passed numbered 1 (`dpmr_play_voice_frames()`). Tests: `DPMR_SYNC_DISPATCH`,
   `DPMR_VOICE_BRIDGE`, `FRAME_SYNC_DPMR`.
 - Signal search site notes (`dsd_signal_search_note_site()` in `<dsd-neo/runtime/signal_search_hooks.h>`): each writer
