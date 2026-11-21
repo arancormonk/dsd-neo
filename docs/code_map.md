@@ -15047,7 +15047,8 @@ single "current call".
   as terminators, the state machine leaving it as a teardown, the heard speech stopping as a sync loss. Direct mode
   (`tetra_calls_dmo_pdu()`, EN 300 396-3) publishes the call on the channel from DM-SETUP, DM-SETUP PRES, DM-CONNECT
   ACK, DM-OCCUPIED and DM-GSETUP with what its security class leaves clear (DM-2-B hides the destination, DM-2-C every
-  identity), ends it at DM-TX CEASED, DM-RELEASE, DM-DISCONNECT and DM-GRELEASE, after `TETRA_CALL_DMO_IDLE_S`
+  identity), ends it at its own DM-TX CEASED, DM-RELEASE, DM-DISCONNECT and DM-GRELEASE (`tetra_dmo_party_ends()`,
+  below), after `TETRA_CALL_DMO_IDLE_S`
   without a PDU or speech of it, and when the channel's traffic is another transmission's (`dmo_tx_seq`,
   `dmo_call_of_transmission()`): a transmission keeps its source and class, so one of another class is another call
   even where neither names the other's parties (a clear call after an encrypted DM-2-C one, or the other way, and a
@@ -15071,7 +15072,10 @@ single "current call".
   9.6.15) is read from DSBs only and never opens traffic; for the call on the channel (from its master's party, one
   rule for the call record and the transmission, `tetra_dmo_party_repeats()`: the source address of the same type,
   its MNI for a true SSI only, note 5, the same route and the same called party, so a direct reservation of a
-  gateway call's pseudo SSI, or another network's group of the same GSSI, is another call's) one after a call
+  gateway call's pseudo SSI, or another network's group of the same GSSI, is another call's; through a gateway,
+  communication type 10 or 11, `tetra_dmo_party_reserves()`: a DM-MS sends no DM-RESERVED, the call's gateway sends it
+  from its pseudo SSI, whose 10 most significant bits are its gateway address, to the group's TSI or the DM-MS's layer
+  2 address, EN 300 396-5 clauses 8.4.6.1, 13.5.2.1.2, 13.5.2.1.3) one after a call
   transaction
   ends the transmission as its unheard DM-TX CEASED would (the canonical call ends as a terminator, the colour code and
   protection go), keeping the call record open for the reservation; reservation time remaining 0 sent in a frame 6, 12
@@ -15100,10 +15104,18 @@ single "current call".
   clear, says whose it is. The canonical direct mode
   call takes a protection that no call PDU republishes at once (`tetra_calls_dmo_protection()`). The protection and the
   DM colour code belong to one traffic transmission (clauses 8.2.4, 8.5.3) and end with it
-  (`tetra_dmo_transmission_over()`): at DM-TX CEASED, DM-RELEASE or DM-DISCONNECT, in a DMAC-SYNC or on the STCH in a
-  DMAC-DATA (one under DM-2-C, whose message type is unread, ends nothing: a DMAC-DATA's security class is its own
-  message's), and when the call is idle for `TETRA_CALL_DMO_IDLE_S`, so a next transmission is never descrambled or
-  classified by the last one's.
+  (`tetra_dmo_transmission_over()`): at its own DM-TX CEASED, DM-RELEASE, DM-DISCONNECT or DM-GRELEASE, in a
+  DMAC-SYNC or on the STCH in a DMAC-DATA (`tetra_dmo_transmission_ended_by()`; one under DM-2-C, whose message type
+  is unread, ends nothing: a DMAC-DATA's security class is its own message's), and when the call is idle for
+  `TETRA_CALL_DMO_IDLE_S`, so a next transmission is never descrambled or classified by the last one's. An end message
+  ends the transmission and the call record only when it is theirs (`tetra_dmo_party_ends()`, one rule for both
+  layers): a DM-TX CEASED or DM-RELEASE repeats the set-up's addresses (`tetra_dmo_party_repeats()`, EN 300 396-3
+  clause 8.5.2.1.1 note 5; a DMAC-DATA's unsaid route and left-out source match, clause 8.5.2.1.2); a DM-DISCONNECT,
+  the called party's rejection of a DM-SETUP PRES (clause 9.5.4), is addressed to the master and comes from the called
+  party's true SSI or a pseudo SSI; a DM-GRELEASE names no source (EN 300 396-5 clause 13.5.2.1.1), so it ends the
+  call only through the call's gateway and addressed to the master. A transmission whose party no PDU named (DM-2-C)
+  ends at any end message, as nothing tells one apart. The short data repeat key (`tetra_dmo_sds_key`) leaves the
+  route out on purpose: a DSB copy names it and a DMAC-DATA copy of the same message does not.
 - Notices. D-SDS-DATA becomes a data notice with its text as the message, D-STATUS and MM D-ENABLE / D-DISABLE
   control notices, once the carrier is proven (`tetra_calls_notice()`); direct mode short data becomes a data notice,
   a repeat within 10 s not again: a repeat is the same message (`tetra_dmo_sds_key`: message type, source,

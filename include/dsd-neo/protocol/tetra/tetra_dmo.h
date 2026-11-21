@@ -354,14 +354,33 @@ int tetra_dmo_party_continues(const tetra_dmo_party* p, const tetra_dmo_sync_h_t
  * holds one at a time); a true SSI and a pseudo SSI may both be one individual's (note 3). */
 int tetra_dmo_party_repeats(const tetra_dmo_party* p, const tetra_dmo_sync_h_t* h);
 
+/* 1 when the DM-RESERVED @p h is for party @p p's call. In direct mode and through a DM-REP the master sends it, so
+ * tetra_dmo_party_repeats(). Through a gateway (communication type 10 or 11) a DM-MS sends none (EN 300 396-5 clause
+ * 8.4.6.1): the call's gateway does, from its own pseudo SSI, whose 10 most significant bits are its gateway address
+ * (clause 13.5.2.1.3), addressed to the group's TSI in a group call or to the DM-MS's layer 2 address in an individual
+ * call (clause 13.5.2.1.2). */
+int tetra_dmo_party_reserves(const tetra_dmo_party* p, const tetra_dmo_sync_h_t* h);
+
+/* 1 when the end message @p h ends party @p p's transmission and call: a DM-TX CEASED or DM-RELEASE that repeats the
+ * set-up's addresses (tetra_dmo_party_repeats(): EN 300 396-3 clause 8.5.2.1.1 note 5, and clause 8.5.2.1.2 for a
+ * DMAC-DATA, whose route and left-out source match); a DM-DISCONNECT from the called party addressed to the master
+ * (clause 9.5.4); a DM-GRELEASE through the call's gateway addressed to the master (EN 300 396-5 clause 13.5.2.1.1).
+ * With @p p not known (DM-2-C names no one) every end message counts, as nothing can tell it apart. */
+int tetra_dmo_party_ends(const tetra_dmo_party* p, const tetra_dmo_sync_h_t* h);
+
+/* An end message @p h on the channel's STCH (DMAC-DATA): tetra_dmo_transmission_over() when it is the transmission's
+ * own (tetra_dmo_party_ends()). Never creates TETRA state. */
+void tetra_dmo_transmission_ended_by(dsd_state* state, const tetra_dmo_sync_h_t* h);
+
 /* The carrier was left: forget its DM colour code (and its seed) and the protection of its call, so no normal burst of
  * the next carrier is descrambled with them and its traffic is not classified by them, and direct mode itself: the next
  * carrier is trunked until its own DSB says otherwise. Never creates TETRA state. */
 void tetra_dmo_forget_carrier(dsd_state* state);
 
-/* The direct mode channel's traffic transmission is over: a DM-TX CEASED, DM-RELEASE or DM-DISCONNECT on its STCH, or
- * nothing of its call heard for a while. Its DM colour code and protection are no other transmission's (EN 300 396-3
- * clauses 8.2.4 and 8.5.3): the next one's DMAC-SYNC gives its own. Never creates TETRA state. */
+/* The direct mode channel's traffic transmission is over: its own DM-TX CEASED, DM-RELEASE or DM-DISCONNECT
+ * (tetra_dmo_transmission_ended_by()), or nothing of its call heard for a while. Its DM colour code and protection
+ * are no other transmission's (EN 300 396-3 clauses 8.2.4 and 8.5.3): the next one's DMAC-SYNC gives its own. Never
+ * creates TETRA state. */
 void tetra_dmo_transmission_over(dsd_state* state);
 
 /* A trunked mode burst proved the carrier: a BSCH of a trunked system code or a control uplink burst's SCH/HU passed

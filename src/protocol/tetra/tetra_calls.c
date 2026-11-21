@@ -2089,11 +2089,12 @@ dmo_sds_notice(dsd_opts* opts, dsd_state* state, tetra_state_t* ts, const tetra_
 
 /* A DM-RESERVED is for the call on the channel (EN 300 396-3 clause 8.5.2.1.1, note 5): the call is open and the
  * reservation is from its master, the party of the set-up that started the transmission (source address of the same
- * type, its MNI for a true SSI, the same route, the same called party: a group's TSI in a group call). The same rule
- * as the transmission's (tetra_dmo_party_repeats(), dmo_apply_reserved()). */
+ * type, its MNI for a true SSI, the same route, the same called party: a group's TSI in a group call), or through a
+ * gateway from the call's gateway (EN 300 396-5 clauses 8.4.6.1, 13.5.2.1.2). The same rule as the transmission's
+ * (tetra_dmo_party_reserves(), dmo_apply_reserved()). */
 static int
 dmo_reserved_for_call(const tetra_dmo_call_t* d, const tetra_dmo_sync_h_t* h) {
-    return d->active && tetra_dmo_party_repeats(&d->party, h);
+    return d->active && tetra_dmo_party_reserves(&d->party, h);
 }
 
 /* A DM-RESERVED whose SCH/H passed its CRC (tetra_dmo_reservation()). It never opens traffic or a call, and one for
@@ -2184,6 +2185,11 @@ tetra_calls_dmo_pdu(dsd_opts* opts, dsd_state* state, int sync_enc_state, const 
             dmo_publish(opts, state, ts);
             break;
         case DMO_PDU_END:
+            /* Only the call's own end (tetra_dmo_party_ends()): another network's, route's or call's DM-TX CEASED,
+             * DM-RELEASE, DM-DISCONNECT or DM-GRELEASE leaves it (EN 300 396-3 clause 8.5.2.1.1 note 5). */
+            if (d->active && !tetra_dmo_party_ends(&d->party, h)) {
+                break;
+            }
             d->active = 0;
             if (ts->calls.published == TETRA_PUB_DMO) {
                 calls_end_published(opts, state, ts, DSD_CALL_END_TERMINATOR);

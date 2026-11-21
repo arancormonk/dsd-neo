@@ -2256,22 +2256,34 @@ test_direct_mode_reservation_names_the_party(void) {
     assert(dmo_transmission_retired(&s, epoch));
     session_close(&s);
 
-    /* Through a gateway, with pseudo addresses and so no MNI: the gateway is part of who the master is. */
+    /* Through a gateway, with pseudo addresses and so no MNI: the gateway is part of who the master is, and the
+       reservation is the gateway's own, from its pseudo SSI to the DM-MS's address (EN 300 396-5 clauses 8.4.6.1,
+       13.5.2.1.2, 13.5.2.1.3). */
     s = session_open();
     session_history(&s);
-    test_dmo_party gw = {2u, 0x155u, 1u, 100u, 0u};
+    const test_dmo_party gw = {2u, 0x155u, 1u, 100u, 0u};
     dmo_dsb_party(&s, &gw, TETRA_DMO_MSG_OCCUPIED, 0u, 3u);
     epoch = canonical(s.state).epoch;
     assert(dmo_call_goes_on(&s, epoch));
-    gw.relay = 0x2AAu;
-    dmo_dsb_party(&s, &gw, TETRA_DMO_MSG_RESERVED, 5u, 6u);
-    dmo_dsb_party(&s, &gw, TETRA_DMO_MSG_RESERVED, 0u, 6u);
+    const test_dmo_called to_master = {1u, 100u, 0u};
+    const test_dmo_party other_gateway = {2u, 0x2AAu, 1u, (0x2AAu << 14) | 0x123u, 0u};
+    dmo_dsb_to(&s, &other_gateway, &to_master, TETRA_DMO_MSG_RESERVED, 5u, 6u);
+    dmo_dsb_to(&s, &other_gateway, &to_master, TETRA_DMO_MSG_RESERVED, 0u, 6u);
     if (!dmo_call_goes_on(&s, epoch)) {
-        DSD_FPRINTF(stderr, "FAIL another gateway's DM-RESERVED of the same pseudo SSI ended the call\n");
+        DSD_FPRINTF(stderr, "FAIL another gateway's DM-RESERVED ended the call\n");
     }
     assert(dmo_call_goes_on(&s, epoch) && tetra_st_existing(s.state)->calls.dmo.active);
-    gw.relay = 0x155u;
+    /* A DM-MS sends no DM-RESERVED through a gateway: one from the master's own pseudo SSI is no reservation of it. */
     dmo_dsb_party(&s, &gw, TETRA_DMO_MSG_RESERVED, 5u, 6u);
+    if (!dmo_call_goes_on(&s, epoch)) {
+        DSD_FPRINTF(stderr, "FAIL a DM-MS's own DM-RESERVED through a gateway ended the call\n");
+    }
+    assert(dmo_call_goes_on(&s, epoch));
+    const test_dmo_party own_gateway = {2u, 0x155u, 1u, (0x155u << 14) | 0x123u, 0u};
+    const test_dmo_called to_other = {1u, 101u, 0u};
+    dmo_dsb_to(&s, &own_gateway, &to_other, TETRA_DMO_MSG_RESERVED, 5u, 6u);
+    assert(dmo_call_goes_on(&s, epoch));
+    dmo_dsb_to(&s, &own_gateway, &to_master, TETRA_DMO_MSG_RESERVED, 5u, 6u);
     assert(dmo_transmission_retired(&s, epoch));
     session_close(&s);
 }
@@ -2345,7 +2357,10 @@ test_direct_mode_reservation_knows_the_route(void) {
     }
     assert(dmo_call_goes_on(&s, epoch) && tetra_st_existing(s.state)->calls.dmo.active
            && tetra_st_existing(s.state)->calls.dmo.in_tx);
-    dmo_dsb_party(&s, &gw, TETRA_DMO_MSG_RESERVED, 5u, 6u);
+    /* The gateway's own reservation, from its pseudo SSI to the master (EN 300 396-5 clause 13.5.2.1.2). */
+    const test_dmo_party gateway = {2u, 0x155u, 1u, (0x155u << 14) | 0x123u, 0u};
+    const test_dmo_called to_master = {1u, 100u, 0u};
+    dmo_dsb_to(&s, &gateway, &to_master, TETRA_DMO_MSG_RESERVED, 5u, 6u);
     assert(dmo_transmission_retired(&s, epoch));
     session_close(&s);
 
@@ -2356,6 +2371,7 @@ test_direct_mode_reservation_knows_the_route(void) {
     const uint64_t direct_epoch = canonical(s.state).epoch;
     assert(dmo_call_goes_on(&s, direct_epoch));
     dmo_dsb_party(&s, &gw, TETRA_DMO_MSG_RESERVED, 5u, 6u);
+    dmo_dsb_to(&s, &gateway, &to_master, TETRA_DMO_MSG_RESERVED, 5u, 6u);
     dmo_dsb_party(&s, &rep, TETRA_DMO_MSG_RESERVED, 5u, 6u);
     if (!dmo_call_goes_on(&s, direct_epoch)) {
         DSD_FPRINTF(stderr, "FAIL a relayed DM-RESERVED of a direct call's pseudo SSI ended it\n");
@@ -2913,6 +2929,202 @@ static void
 send_dmo_sds(session* s, uint32_t src, uint32_t dst, uint32_t sdti, const uint8_t* data, int data_bits, int length_bits,
              int fcs, int flip) {
     send_dmo_sds_mni(s, 0x41901u, src, dst, sdti, data, data_bits, length_bits, fcs, flip);
+}
+
+/* A DMAC-DATA on the STCH (EN 300 396-3 table 23), clear, to group 0x800001 under MNI @p mni, carrying DM-TX CEASED or
+ * DM-RELEASE @p msg (tables 37, 38) from source address type @p src_type and source @p src (left out for type 2,
+ * clause 8.5.2.1.2). Decoded as the decoder takes a DNB's STCH (tetra_dmo_log_dnb_pdu()). */
+static void
+send_dmo_data_end(session* s, uint32_t msg, uint32_t src_type, uint32_t src, uint32_t mni) {
+    ttb_block b = {0};
+    ttb_put(&b, 0, 2);          /* MAC PDU type 00: DMAC-DATA */
+    ttb_put(&b, 0, 4);          /* fill bit, second half slot stolen, fragmentation and null PDU flags */
+    ttb_put(&b, 0, 2);          /* frame countdown */
+    ttb_put(&b, 0, 2);          /* air interface encryption state DM-1 */
+    ttb_put(&b, 0, 2);          /* destination address type: true SSI */
+    ttb_put(&b, 0x800001u, 24); /* destination address */
+    ttb_put(&b, src_type, 2);
+    if (src_type != 2u) {
+        ttb_put(&b, src, 24);
+    }
+    ttb_put(&b, mni, 24); /* always present in direct mode */
+    ttb_put(&b, msg, 5);
+    ttb_put(&b, 0, 24); /* DM-TX CEASED: reservation, flags, priority, cease cause; DM-RELEASE: cause, SDTI 0, data */
+    (void)tetra_dmo_log_dnb_pdu(b.bits, TTB_SCH_F_BITS, "STCH", s->opts, s->state);
+}
+
+/* A DSB through gateway @p relay (DM-GATE, communication type 10) carrying DM-GRELEASE (EN 300 396-5 table 12): the
+ * gateway names no source (clause 13.5.2.1.1); the destination is @p dst of address type @p dst_type, with MNI @p mni
+ * (present for a true destination, clause 8.5.2.3). Applied and handed to the call records as the decoder does. */
+static void
+dmo_dsb_grelease(session* s, uint32_t relay, uint32_t dst_type, uint32_t dst, uint32_t mni) {
+    uint8_t bits[128];
+    DSD_MEMSET(bits, 0, sizeof bits);
+    bits_of(k_dmo_sch_s, bits);
+    tetra_dmo_sync_s_t sync_s;
+    (void)tetra_dmo_parse_sync_s(bits, &sync_s);
+    sync_s.comm_type = 2u;
+    sync_s.frame = 1u;
+    DSD_MEMSET(bits, 0, sizeof bits);
+    int at = 0;
+    put_bits(bits, at, 10, relay);
+    at += 10 + 1 + 1 + 2;
+    put_bits(bits, at, 2, dst_type);
+    put_bits(bits, at + 2, 24, dst);
+    at += 26;
+    put_bits(bits, at, 2, 2u); /* no source address */
+    at += 2;
+    if (dst_type == 0u) {
+        put_bits(bits, at, 24, mni);
+        at += 24;
+    }
+    put_bits(bits, at, 5, TETRA_DMO_MSG_GATEWAY);
+    put_bits(bits, at + 5, 5, TETRA_DMO_GW_RELEASE);
+    put_bits(bits, at + 10, 4, 1u); /* gateway release cause */
+    tetra_dmo_sync_h_t sync_h;
+    (void)tetra_dmo_parse_sync_h(bits, 2, &sync_h);
+    assert(sync_h.has_addrs && sync_h.md_ok && sync_h.msg_type == TETRA_DMO_MSG_GATEWAY
+           && sync_h.e[TETRA_DMO_E_GW_SUBTYPE] == TETRA_DMO_GW_RELEASE && sync_h.src_type == 2u && sync_h.dst == dst);
+    tetra_dmo_apply_sync(s->state, &sync_s, &sync_h);
+    tetra_calls_dmo_pdu(s->opts, s->state, sync_s.enc_state, &sync_h);
+}
+
+/* A DM-TX CEASED or DM-RELEASE carries the set-up's source address, with its MNI for a true SSI (EN 300 396-3 clause
+ * 8.5.2.1.1 note 5; clause 8.5.2.1.2 on the STCH, where the source may be left out), so another network's, another
+ * route's or a pseudo SSI's of the same value leaves the call and its transmission, in a DSB or on the STCH, while the
+ * master's own ends both, as does an STCH one that leaves the source out. */
+static void
+test_direct_mode_end_names_the_master(void) {
+    session s = session_open();
+    session_history(&s);
+    const test_dmo_party master = {0u, 0u, 0u, 100u, TEST_DMO_MNI};
+    dmo_dsb_party(&s, &master, TETRA_DMO_MSG_OCCUPIED, 0u, 3u);
+    uint64_t epoch = canonical(s.state).epoch;
+    assert(dmo_call_goes_on(&s, epoch));
+    test_dmo_party other_net = master;
+    other_net.mni = TEST_DMO_MNI + 0x40u;
+    const test_dmo_party via_gateway = {2u, 0x155u, 0u, 100u, TEST_DMO_MNI};
+    const test_dmo_party pseudo = {0u, 0u, 1u, 100u, TEST_DMO_MNI};
+    dmo_dsb_party(&s, &other_net, TETRA_DMO_MSG_TX_CEASED, 0u, 4u);
+    dmo_dsb_party(&s, &via_gateway, TETRA_DMO_MSG_RELEASE, 0u, 4u);
+    dmo_dsb_party(&s, &pseudo, TETRA_DMO_MSG_TX_CEASED, 0u, 4u);
+    if (!dmo_call_goes_on(&s, epoch)) {
+        DSD_FPRINTF(stderr, "FAIL another party's DM-TX CEASED or DM-RELEASE ended the call\n");
+    }
+    assert(dmo_call_goes_on(&s, epoch) && tetra_st_existing(s.state)->calls.dmo.active);
+    dmo_dsb_party(&s, &master, TETRA_DMO_MSG_TX_CEASED, 0u, 4u);
+    assert(dmo_transmission_retired(&s, epoch) && !tetra_st_existing(s.state)->calls.dmo.active);
+    assert(canonical(s.state).end_reason == DSD_CALL_END_TERMINATOR);
+    session_close(&s);
+
+    s = session_open();
+    session_history(&s);
+    dmo_dsb_party(&s, &master, TETRA_DMO_MSG_OCCUPIED, 0u, 3u);
+    epoch = canonical(s.state).epoch;
+    dmo_dsb_party(&s, &master, TETRA_DMO_MSG_RELEASE, 0u, 4u);
+    assert(dmo_transmission_retired(&s, epoch));
+    session_close(&s);
+
+    /* On the STCH: another network's ends nothing; one that leaves its source out is the master's. */
+    s = session_open();
+    session_history(&s);
+    dmo_dsb_party(&s, &master, TETRA_DMO_MSG_OCCUPIED, 0u, 3u);
+    epoch = canonical(s.state).epoch;
+    send_dmo_data_end(&s, TETRA_DMO_MSG_TX_CEASED, 0u, 100u, TEST_DMO_MNI + 0x40u);
+    send_dmo_data_end(&s, TETRA_DMO_MSG_RELEASE, 0u, 101u, TEST_DMO_MNI);
+    if (!dmo_call_goes_on(&s, epoch)) {
+        DSD_FPRINTF(stderr, "FAIL another party's DM-TX CEASED on the STCH ended the call\n");
+    }
+    assert(dmo_call_goes_on(&s, epoch));
+    send_dmo_data_end(&s, TETRA_DMO_MSG_TX_CEASED, 2u, 0u, TEST_DMO_MNI);
+    assert(dmo_transmission_retired(&s, epoch));
+    session_close(&s);
+}
+
+/* A DM-DISCONNECT is the called party's rejection of a DM-SETUP PRES, addressed to the caller (EN 300 396-3 clauses
+ * 8.5.2.1.1, 9.5.4): it ends the pending call when it comes from the called party's true SSI, or from a pseudo SSI
+ * the called party may choose for it, to the master's address on the call's route; one to another master, from
+ * another true SSI or through another route is another call's. */
+static void
+test_direct_mode_disconnect_names_the_parties(void) {
+    session s = session_open();
+    session_history(&s);
+    const test_dmo_party caller = {0u, 0u, 1u, 100u, TEST_DMO_MNI};
+    const test_dmo_called called = {0u, 300u, 0u};
+    const test_dmo_called to_caller = {1u, 100u, 0u};
+    const test_dmo_called to_other = {1u, 101u, 0u};
+    dmo_dsb_to(&s, &caller, &called, TETRA_DMO_MSG_SETUP_PRES, 0u, 3u);
+    const uint64_t pending = canonical(s.state).epoch;
+    const test_dmo_party called_true = {0u, 0u, 0u, 300u, TEST_DMO_MNI};
+    const test_dmo_party not_called = {0u, 0u, 0u, 999u, TEST_DMO_MNI};
+    const test_dmo_party via_gateway = {2u, 0x155u, 0u, 300u, TEST_DMO_MNI};
+    dmo_dsb_to(&s, &called_true, &to_other, TETRA_DMO_MSG_DISCONNECT, 0u, 4u);
+    dmo_dsb_to(&s, &not_called, &to_caller, TETRA_DMO_MSG_DISCONNECT, 0u, 4u);
+    dmo_dsb_to(&s, &via_gateway, &to_caller, TETRA_DMO_MSG_DISCONNECT, 0u, 4u);
+    dsd_call_snapshot call = canonical(s.state);
+    if (call.phase != DSD_CALL_PHASE_ACTIVE || call.epoch != pending) {
+        DSD_FPRINTF(stderr, "FAIL another call's DM-DISCONNECT ended the pending set-up\n");
+    }
+    assert(call.phase == DSD_CALL_PHASE_ACTIVE && call.epoch == pending
+           && tetra_st_existing(s.state)->calls.dmo.active);
+    dmo_dsb_to(&s, &called_true, &to_caller, TETRA_DMO_MSG_DISCONNECT, 0u, 4u);
+    call = canonical(s.state);
+    assert(call.phase == DSD_CALL_PHASE_ENDED && call.epoch == pending && call.end_reason == DSD_CALL_END_TERMINATOR
+           && !tetra_st_existing(s.state)->calls.dmo.active);
+    session_close(&s);
+
+    s = session_open();
+    session_history(&s);
+    dmo_dsb_to(&s, &caller, &called, TETRA_DMO_MSG_SETUP_PRES, 0u, 3u);
+    const uint64_t second = canonical(s.state).epoch;
+    const test_dmo_party called_pseudo = {0u, 0u, 1u, 555u, 0x123456u};
+    dmo_dsb_to(&s, &called_pseudo, &to_caller, TETRA_DMO_MSG_DISCONNECT, 0u, 4u);
+    call = canonical(s.state);
+    assert(call.phase == DSD_CALL_PHASE_ENDED && call.epoch == second);
+    session_close(&s);
+}
+
+/* Through a gateway (EN 300 396-5): the gateway, not a DM-MS, sends the DM-RESERVED after a call transaction, from its
+ * pseudo SSI (whose 10 most significant bits are its gateway address) to the group's TSI in a group call (clauses
+ * 8.4.6.1, 13.5.2.1.2, 13.5.2.1.3); and its DM-GRELEASE names no source and is addressed to the master (clause
+ * 13.5.2.1.1). So in a group call through gateway 0x155 the gateway's reservation for another group, or the master's
+ * own reservation, leaves the call, and the gateway's for the group retires the transmission; a DM-GRELEASE of another
+ * gateway, or to another DM-MS, leaves the call, while the call's gateway's to the master ends it. */
+static void
+test_direct_mode_gateway_reservation_and_release(void) {
+    session s = session_open();
+    session_history(&s);
+    const test_dmo_party master = {2u, 0x155u, 0u, 100u, TEST_DMO_MNI};
+    const test_dmo_called group = {0u, 0x800001u, 1u};
+    const test_dmo_called other_group = {0u, 0x800002u, 1u};
+    dmo_dsb_to(&s, &master, &group, TETRA_DMO_MSG_OCCUPIED, 0u, 3u);
+    uint64_t epoch = canonical(s.state).epoch;
+    assert(dmo_call_goes_on(&s, epoch));
+    const test_dmo_party gateway = {2u, 0x155u, 1u, (0x155u << 14) | 0x2Bu, TEST_DMO_MNI};
+    dmo_dsb_to(&s, &gateway, &other_group, TETRA_DMO_MSG_RESERVED, 5u, 6u);
+    dmo_dsb_to(&s, &master, &group, TETRA_DMO_MSG_RESERVED, 5u, 6u);
+    if (!dmo_call_goes_on(&s, epoch)) {
+        DSD_FPRINTF(stderr, "FAIL a DM-RESERVED that is not the call's gateway's for its group ended the call\n");
+    }
+    assert(dmo_call_goes_on(&s, epoch));
+    dmo_dsb_to(&s, &gateway, &group, TETRA_DMO_MSG_RESERVED, 5u, 6u);
+    assert(dmo_transmission_retired(&s, epoch) && tetra_st_existing(s.state)->calls.dmo.active);
+    session_close(&s);
+
+    s = session_open();
+    session_history(&s);
+    dmo_dsb_to(&s, &master, &group, TETRA_DMO_MSG_OCCUPIED, 0u, 3u);
+    epoch = canonical(s.state).epoch;
+    dmo_dsb_grelease(&s, 0x2AAu, 0u, 100u, TEST_DMO_MNI);
+    dmo_dsb_grelease(&s, 0x155u, 0u, 101u, TEST_DMO_MNI);
+    dmo_dsb_grelease(&s, 0x155u, 1u, 100u, 0u);
+    if (!dmo_call_goes_on(&s, epoch)) {
+        DSD_FPRINTF(stderr, "FAIL a DM-GRELEASE not of the call's gateway to its master ended the call\n");
+    }
+    assert(dmo_call_goes_on(&s, epoch));
+    dmo_dsb_grelease(&s, 0x155u, 0u, 100u, TEST_DMO_MNI);
+    assert(dmo_transmission_retired(&s, epoch) && !tetra_st_existing(s.state)->calls.dmo.active);
+    session_close(&s);
 }
 
 /* Direct mode short data whose FCS fails is discarded (EN 300 396-3 clauses 6.3.2 and 6.3.4): no notice, and nothing of
@@ -5516,6 +5728,9 @@ main(void) {
     test_direct_mode_data_without_source_is_the_masters();
     test_direct_mode_group_reservation_names_the_group();
     test_direct_mode_pending_setup_takes_the_pseudo_ack();
+    test_direct_mode_end_names_the_master();
+    test_direct_mode_disconnect_names_the_parties();
+    test_direct_mode_gateway_reservation_and_release();
     test_direct_mode_short_data();
     test_direct_mode_short_data_fcs();
     test_direct_mode_short_data_repeats();
