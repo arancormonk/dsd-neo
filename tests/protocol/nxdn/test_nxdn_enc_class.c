@@ -523,12 +523,15 @@ test_vcall_lockout_endpoint_by_call_type(void) {
         build_typed_vcall(bits, no_lockout[i], 2U, 5U, 100U, 1234U);
         NXDN_Elements_Content_decode(&opts, &state, bits, sizeof(bits));
         assert(dsd_call_state_get(&state, 0U, &call) > 0 && call.phase == DSD_CALL_PHASE_ACTIVE);
-        assert(!dsd_tg_policy_call_skip_active(&state, 1234U, dsd_decode_now_mono_s()));
+        assert(state.nxdn_enc_skip_valid == 0U);
         NXDN_Elements_Content_decode(&opts, &state, bits, sizeof(bits));
         assert(dsd_call_state_get(&state, 0U, &call) > 0 && call.phase == DSD_CALL_PHASE_ENDED);
         assert(!dsd_enc_lockout_lookup(&state, 1234U, 0, NULL));
         assert(!dsd_enc_lockout_lookup(&state, 1234U, 1, NULL));
-        assert(dsd_tg_policy_call_skip_active(&state, 1234U, dsd_decode_now_mono_s()));
+        /* The call alone, never an operator call skip of its number (issue #903). */
+        assert(state.nxdn_enc_skip_valid == 1U && state.nxdn_enc_skip_target == 1234U
+               && state.nxdn_enc_skip_source == 100U && state.nxdn_enc_skip_call_type == no_lockout[i]);
+        assert(!dsd_tg_policy_call_skip_active(&state, 1234U, dsd_decode_now_mono_s()));
         dsd_state_ext_free_all(&state);
     }
 }
@@ -553,7 +556,8 @@ test_vcall_interconnect_no_endpoint_lockout(void) {
     // Still suppressed: dropped by the forced DISC and skipped as a call for a short while.
     dsd_call_snapshot call;
     assert(dsd_call_state_get(&state, 0U, &call) > 0 && call.phase == DSD_CALL_PHASE_ENDED);
-    assert(dsd_tg_policy_call_skip_active(&state, 4321U, dsd_decode_now_mono_s()));
+    assert(state.nxdn_enc_skip_valid == 1U && state.nxdn_enc_skip_target == 4321U
+           && state.nxdn_enc_skip_call_type == 6U);
     dsd_state_ext_free_all(&state);
 }
 
