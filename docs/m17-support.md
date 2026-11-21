@@ -61,8 +61,10 @@ Implemented decode coverage:
   cannot be right, does not end it. A packet that
   arrived whole but whose own checksum (CRC) failed is not decoded either; under `-F` it is still shown, marked
   `CRC ERR`. Known limit: an M17 frame split by a looping replay's rewind (`-~`), or completed by stand-in samples
-  after a failed device or file read, or by a low-rate WAV's resampler padding at end of file, is not detected, and
-  its own CRC is all that guards it. One case has no CRC guard at all: when a rewind falls inside the last frame of a
+  after a failed device or file read, or by a low-rate WAV's resampler padding at end of file, is not detected. An
+  LSF frame is then guarded by its own CRC. A packet's other frames have no CRC of their own: the packet's data is
+  checked by the packet CRC at its last frame, and the last frame's end flag ends the transmission whatever that CRC
+  says. One case has no CRC guard at all: when a rewind falls inside the last frame of a
   packet being received, that packet's data is thrown away, but if the last frame still reads as a valid end, it ends
   the transmission (the end marker is not covered by the CRC). A standalone network packet (MPKT: one heard while no network stream is live, also after a stream went
   idle or ended) always shows as a call of its own, never joined to the stream before it. A stream is treated as

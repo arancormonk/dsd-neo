@@ -14143,12 +14143,11 @@ target_link_libraries(
     PRIVATE dsd-neo_proto_m17 dsd-neo_test_support
 )
 # Issue #625: the stream encoder's end of stream drains a local output around its dead air; the
-# wraps record the order of writes and drains where the linker can wrap them. Issue #890: calloc is
-# wrapped too, to fail the M17 extension's first allocation, and the real-time clock, to age a network stream.
+# wraps record the order of writes and drains where the linker can wrap them.
 if(NOT APPLE AND (CMAKE_C_COMPILER_ID MATCHES "GNU|Clang"))
     target_compile_definitions(
         dsd-neo_test_m17_state_dispatch
-        PRIVATE DSD_NEO_TEST_AUDIO_WRAP DSD_NEO_TEST_ALLOC_WRAP
+        PRIVATE DSD_NEO_TEST_AUDIO_WRAP
     )
     target_link_options(
         dsd-neo_test_m17_state_dispatch
@@ -14156,8 +14155,23 @@ if(NOT APPLE AND (CMAKE_C_COMPILER_ID MATCHES "GNU|Clang"))
             "-Wl,--wrap=dsd_audio_write"
             "-Wl,--wrap=dsd_audio_drain"
             "-Wl,--wrap=dsd_audio_output_health_get"
-            "-Wl,--wrap=calloc"
-            "-Wl,--wrap=dsd_realtime_mono_ms"
+    )
+endif()
+# Issue #890: calloc is wrapped to fail the M17 extension's allocation, and the real-time clock to age a network
+# stream. The M17 decoder must be linked into the executable (a static build) for GNU ld --wrap to reach its calls.
+if(
+    NOT APPLE
+    AND NOT WIN32
+    AND NOT BUILD_SHARED_LIBS
+    AND CMAKE_C_COMPILER_ID MATCHES "GNU|Clang"
+)
+    target_compile_definitions(
+        dsd-neo_test_m17_state_dispatch
+        PRIVATE DSD_NEO_TEST_ALLOC_WRAP
+    )
+    target_link_options(
+        dsd-neo_test_m17_state_dispatch
+        PRIVATE "-Wl,--wrap=calloc" "-Wl,--wrap=dsd_realtime_mono_ms"
     )
 endif()
 add_test(NAME M17_STATE_DISPATCH COMMAND dsd-neo_test_m17_state_dispatch)
@@ -14219,8 +14233,14 @@ target_link_libraries(
     dsd-neo_test_m17_gnss_position
     PRIVATE dsd-neo_proto_m17 dsd-neo_test_support
 )
-# Issue #890: calloc is wrapped, where the linker can wrap it, to count and fail the M17 extension's allocation.
-if(NOT APPLE AND (CMAKE_C_COMPILER_ID MATCHES "GNU|Clang"))
+# Issue #890: calloc is wrapped to count and fail the M17 extension's allocation. The M17 decoder must be linked into
+# the executable (a static build) for GNU ld --wrap to reach its calls.
+if(
+    NOT APPLE
+    AND NOT WIN32
+    AND NOT BUILD_SHARED_LIBS
+    AND CMAKE_C_COMPILER_ID MATCHES "GNU|Clang"
+)
     target_compile_definitions(
         dsd-neo_test_m17_gnss_position
         PRIVATE DSD_NEO_TEST_ALLOC_WRAP

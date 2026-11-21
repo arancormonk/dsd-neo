@@ -13968,8 +13968,9 @@ Private per-protocol modules worth knowing about:
   one-frame packet needs its checked LSF frame too. Limit (decided, issue #890): continuity is checked between frames
   (the spacing and the symbol clock epoch from the frame before) and against the cuts above, not inside a frame's own
   read. An M17 frame split by a looping replay's rewind (`-~`), or completed by stand-in samples after a failed device
-  or file read, or by a low-rate WAV's resampler padding at end of file, is not detected; its own CRC is all that
-  guards it. A rewind inside an armed packet's last frame moves the epoch, so `m17_pkt_in_step()` rejects it and the
+  or file read, or by a low-rate WAV's resampler padding at end of file, is not detected. An LSF frame is then
+  guarded by its own CRC; a packet's other frames have no CRC of their own, so its data is guarded only by the packet
+  CRC that `m17_pkt_finalize_eot()` checks, and the EOF flag ends the transmission whatever that CRC says. A rewind inside an armed packet's last frame moves the epoch, so `m17_pkt_in_step()` rejects it and the
   payload is dropped with its CRC never checked, but a syntactically valid EOF still ends the transmission
   (`m17_pkt_end_transmission()`): that end is not CRC-protected. Limit (decided): a packet with any lost, cut or
   structurally rejected frame is dropped, under -F too; one that is structurally complete but whose payload CRC fails
