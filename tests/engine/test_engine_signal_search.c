@@ -4744,6 +4744,125 @@ test_tetra_suppression_per_kind(dsd_opts* o, dsd_state* s, const dsd_signal_sear
     }
 }
 
+/* The visit is still listening (or held) by both expiration paths: the in-frame yield check and the tick. */
+static int
+still_listening(dsd_opts* o, dsd_state* s) {
+    if (dsd_engine_signal_search_should_yield(o, s)) {
+        return 0;
+    }
+    tick(o, s);
+    return status.phase == DSD_SEARCH_LISTENING || status.phase == DSD_SEARCH_HELD;
+}
+
+/* Issue #748: a confirmed TETRA visit, trunked or direct mode, goes quiet 2.1 s after its last activity (one
+   multiframe and a lost frame 18), in the in-frame yield check and the tick alike; the decoder's activity notes refresh
+   that time on the decode clock without publishing, only while a confirmed visit receives. Hold keeps the visit, Skip
+   leaves it, and a finite maximum visit still ends it; with none, activity keeps it. */
+static void
+test_tetra_quiet_and_activity(dsd_opts* o, dsd_state* s, const dsd_signal_search_config* config) {
+    static const char* const modes[] = {"TETRA", "TETRA DMO"};
+    use_tetra_rate();
+    for (int m = 0; m < 2; ++m) {
+        for (int yield_path = 0; yield_path < 2; ++yield_path) {
+            dsd_signal_search_config one = tetra_config(config, 94 + (uint64_t)(m * 2 + yield_path));
+            start_tag_session(o, s, &one);
+            tetra_visit(o, s);
+            /* Before confirmation an activity note keeps nothing: the probe runs its own time. */
+            dsd_signal_search_note_activity(s);
+            assert(status.phase == DSD_SEARCH_IDENTIFYING && !status.hit.confirmed);
+            dsd_signal_search_note_evidence_at(s, modes[m], DSD_SYNC_TETRA_SB_POS, -1, 0, 0, NULL);
+            assert(status.phase == DSD_SEARCH_LISTENING);
+            /* A lost multiframe (1.02 s) and more: still the visit's. */
+            advance(2099);
+            if (yield_path) {
+                assert(!dsd_engine_signal_search_should_yield(o, s));
+            } else {
+                tick(o, s);
+                assert(status.phase == DSD_SEARCH_LISTENING);
+            }
+            /* An activity note refreshes the time without a publication. */
+            const uint64_t revision = status.revision;
+            const int published = hits_published;
+            dsd_signal_search_note_activity(s);
+            assert(status.revision == revision && hits_published == published);
+            advance(2099);
+            if (yield_path) {
+                assert(!dsd_engine_signal_search_should_yield(o, s));
+            } else {
+                tick(o, s);
+                assert(status.phase == DSD_SEARCH_LISTENING);
+            }
+            /* One from a frame an input interruption cut refreshes nothing. */
+            s->input_interrupted = 1;
+            dsd_signal_search_note_activity(s);
+            s->input_interrupted = 0;
+            advance(1);
+            if (yield_path) {
+                assert(dsd_engine_signal_search_should_yield(o, s));
+            }
+            tick(o, s);
+            assert(status.phase == DSD_SEARCH_TUNING && status.hit.ended);
+            land(o, s);
+            stop_tag_session(o, s);
+        }
+    }
+
+    /* Hold keeps a quiet confirmed visit, Skip leaves it. */
+    dsd_signal_search_config one = tetra_config(config, 98);
+    start_tag_session(o, s, &one);
+    tetra_visit(o, s);
+    dsd_signal_search_note_evidence_at(s, "TETRA", DSD_SYNC_TETRA_SB_POS, -1, 0, 0, NULL);
+    act(o, s, DSD_SEARCH_ACTION_HOLD);
+    advance(30000);
+    assert(still_listening(o, s) && status.phase == DSD_SEARCH_HELD);
+    act(o, s, DSD_SEARCH_ACTION_SKIP);
+    assert(status.phase == DSD_SEARCH_TUNING && status.hit.ended);
+    land(o, s);
+    stop_tag_session(o, s);
+
+    /* A finite maximum visit ends a visit its activity keeps; with none, the activity keeps it. */
+    one = tetra_config(config, 99);
+    one.ranges[0].max_visit_ms = 5000;
+    start_tag_session(o, s, &one);
+    tetra_visit(o, s);
+    dsd_signal_search_note_evidence_at(s, "TETRA", DSD_SYNC_TETRA_SB_POS, -1, 0, 0, NULL);
+    for (int i = 0; i < 4; ++i) {
+        advance(1000);
+        dsd_signal_search_note_activity(s);
+        assert(still_listening(o, s));
+    }
+    advance(999);
+    assert(still_listening(o, s));
+    advance(1);
+    assert(dsd_engine_signal_search_should_yield(o, s));
+    tick(o, s);
+    assert(status.phase == DSD_SEARCH_TUNING && status.hit.ended);
+    land(o, s);
+    stop_tag_session(o, s);
+    one.ranges[0].max_visit_ms = 0;
+    start_tag_session(o, s, &one);
+    tetra_visit(o, s);
+    dsd_signal_search_note_evidence_at(s, "TETRA", DSD_SYNC_TETRA_SB_POS, -1, 0, 0, NULL);
+    for (int i = 0; i < 60; ++i) {
+        advance(2000);
+        dsd_signal_search_note_activity(s);
+        assert(still_listening(o, s));
+    }
+    stop_tag_session(o, s);
+
+    /* Another protocol keeps its own quiet time. */
+    one = tag_config(config, 97, 1, 0);
+    start_tag_session(o, s, &one);
+    visit_strongest(o, s);
+    dsd_signal_search_note_evidence(s, "P25", 0, 0, NULL);
+    advance(499);
+    assert(still_listening(o, s));
+    advance(1);
+    assert(dsd_engine_signal_search_should_yield(o, s));
+    stop_tag_session(o, s);
+    end_tetra_rate(o, s);
+}
+
 int
 main(void) {
     dsd_opts* o = calloc(1, sizeof(*o));
@@ -4952,6 +5071,7 @@ main(void) {
     test_tetra_visit_resets_on_departures(o, s, &config);
     test_tetra_start_checks(o, s, &config);
     test_tetra_suppression_per_kind(o, s, &config);
+    test_tetra_quiet_and_activity(o, s, &config);
     s->rtl_ctx = NULL;
     dsd_state_ext_free_all(s);
     free(s);

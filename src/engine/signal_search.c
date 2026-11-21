@@ -52,6 +52,9 @@
 enum {
     /* A listening visit ends this long after its last relevant activity. */
     SEARCH_QUIET_MS = 500,
+    /* A confirmed TETRA visit, trunked or direct mode (issue #748): one multiframe (1.02 s) and a lost frame 18 on a
+       trunked carrier, above the 1.70 s of five 340 ms DSB gaps on a direct mode channel B master. */
+    SEARCH_TETRA_QUIET_MS = 2100,
     /* An analog visit whose monitor has not judged the landed channel yet keeps waiting for a verdict this long:
        the front end may be designing a noise-squelch plan before it delivers any sample. */
     SEARCH_ANALOG_VERDICT_MAX_MS = 3000,
@@ -972,6 +975,7 @@ search_commit_start(search_coord* c, dsd_opts* opts, dsd_state* state, dsd_scan_
     dsd_signal_search_site_set(dsd_engine_signal_search_site);
     dsd_signal_search_call_set(dsd_engine_signal_search_call);
     dsd_signal_search_access_set(dsd_engine_signal_search_access);
+    dsd_signal_search_activity_set(dsd_engine_signal_search_activity);
     dsd_signal_search_active_set(dsd_engine_signal_search_active);
     dsd_signal_search_p25p2_codes_set(dsd_engine_signal_search_p25p2_codes);
     dsd_signal_search_p25p2_code_set(dsd_engine_signal_search_p25p2_code);
@@ -1342,6 +1346,15 @@ search_note_access_code(search_coord* c, const dsd_state* state, const dsd_signa
 }
 
 void
+dsd_engine_signal_search_activity(const dsd_state* state) {
+    search_coord* c = search_get(state);
+    /* Only the visit's listening time, on the decode clock: no publication, no confirmation, no phase. */
+    if (c && search_receiving(c, state) && c->status.hit.confirmed) {
+        c->activity = dsd_decode_now_mono_ms();
+    }
+}
+
+void
 dsd_engine_signal_search_access(const dsd_state* state, const dsd_signal_search_access_note* note) {
     search_coord* c = search_get(state);
     if (note) {
@@ -1536,6 +1549,15 @@ search_note_activity(search_coord* c, const dsd_opts* opts, const dsd_state* sta
     c->activity = now;
 }
 
+/* How long the visit listens past its last activity: TETRA's quiet time once a TETRA mode confirmed it, else the
+   search's. */
+static uint64_t
+search_quiet_ms(const search_coord* c) {
+    const dsd_signal_search_hit* hit = &c->status.hit;
+    return hit->confirmed && dsd_engine_signal_search_protocol_is_tetra(hit->protocol) ? SEARCH_TETRA_QUIET_MS
+                                                                                       : SEARCH_QUIET_MS;
+}
+
 static int
 search_visit_expired(const search_coord* c, uint64_t now) {
     if (c->hold) {
@@ -1543,7 +1565,7 @@ search_visit_expired(const search_coord* c, uint64_t now) {
     }
     const dsd_signal_search_range* r = &c->config.ranges[c->status.range_index];
     return (r->max_visit_ms && now - c->acquired >= (uint64_t)r->max_visit_ms)
-           || (!c->probing && now - c->activity >= SEARCH_QUIET_MS);
+           || (!c->probing && now - c->activity >= search_quiet_ms(c));
 }
 
 int
@@ -2137,7 +2159,7 @@ search_visit_tick(search_coord* c, dsd_opts* opts, dsd_state* state) {
         search_probe_expired(c, opts, state);
         return 1;
     }
-    if (!c->hold && !c->probing && now - c->activity >= SEARCH_QUIET_MS) {
+    if (!c->hold && !c->probing && now - c->activity >= search_quiet_ms(c)) {
         search_return_to_span(c, opts, state);
         return 1;
     }

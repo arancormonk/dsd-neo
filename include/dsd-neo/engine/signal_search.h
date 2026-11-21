@@ -102,6 +102,10 @@ void dsd_engine_signal_search_call(const dsd_state* state, uint8_t slot);
  * (dsd_signal_search_hit::access_noted) while it is confirmed as a protocol of the note's sync type's family, publishing
  * when that changes. Either way it confirms nothing and changes no phase or activity. Anything else it drops. */
 void dsd_engine_signal_search_access(const dsd_state* state, const dsd_signal_search_access_note* note);
+/** Runtime activity hook (issue #748): content of a transmission the decoder already reported as evidence keeps the
+ * visit listening. While a visit receives a confirmed hit, it refreshes the visit's activity time on the decode clock;
+ * it publishes, confirms and changes nothing else. Anything else it drops. */
+void dsd_engine_signal_search_activity(const dsd_state* state);
 /** The Signal search family name of @p synctype ("DMR", "P25", "NXDN", "dPMR", "M17", "YSF", "D-STAR", "TETRA"), the
  * name a hit's protocol starts with when that sync type's protocol confirmed it ("NXDN" for NXDN48 and NXDN96); NULL
  * for a sync type the search does not identify (ProVoice, EDACS, X2-TDMA, analog, none). TETRA direct mode shares the
