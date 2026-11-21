@@ -35,7 +35,7 @@ typedef enum {
 typedef struct {
     dsd_heard_tg_variant variant;
     uint32_t id;               /**< NXDN Type-D: full (prefix << 11) | id11. */
-    uint8_t nxdn_call_type;    /**< NXDN call type bits (000 trunked group, 001 group). */
+    uint8_t nxdn_call_type;    /**< NXDN call type bits: Type-C and Type-D admit 000/001, conventional 001. */
     uint8_t nxdn_inter_system; /**< NXDN Type-C: CC Option bit 6 (inter-system) set. */
     uint8_t p25_supergroup;    /**< P25: the id is a supergroup. */
 } dsd_heard_tg_input;

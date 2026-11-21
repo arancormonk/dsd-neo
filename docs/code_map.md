@@ -12657,11 +12657,11 @@ Call frequency and access-code provenance (issue #575). A call's canonical `freq
   message decodes, the LICH values a composite control channel shares with Type-D read as Type-D (above), so a
   cold-start composite VCALL with either layout is not noted. The ARIB VCALL never is. The classifier gets the 16-bit
   group (Type-C, conventional) or the full Type-D address `(prefix << 11) | id` (the call state keeps the 11-bit id),
-  the call type and CC Option bit 6. A noted call costs a later VCALL one field check. Known limits: a Type-C traffic
-  channel heard with nothing decoded that says Type-C (trunking off, its control channel never heard) reads as
-  conventional, whose classifier row refuses 000; the SCCH run is two 7-bit CRCs, so a cold-start composite frame
-  whose SACCH passes as an SCCH two frames running (1 in 16384) still reads as Type-D. Tests: `NXDN_COMPOSITE_CONTROL`
-  (`test_heard_*`).
+  the call type (its NXDN rows admit only 000/001, conventional only 001) and CC Option bit 6. A noted call costs a
+  later VCALL one field check. Known limits: a Type-C traffic channel heard with nothing decoded that says Type-C
+  (trunking off, its control channel never heard) reads as conventional, whose classifier row refuses 000; the SCCH
+  run is two 7-bit CRCs, so a cold-start composite frame whose SACCH passes as an SCCH two frames running (1 in 16384)
+  still reads as Type-D. Tests: `NXDN_COMPOSITE_CONTROL` (`test_heard_*`).
 - NXDN control traffic of another channel on a followed traffic channel (`dsd_nxdn_control_heard_is_foreign()`: trunking
   on, a voice channel tuned, and the followed frequency not this site's control channel; compared by channel,
   `dsd_nxdn_same_channel()`: closer than half the 6.25 kHz raster, since the control channel fields may hold the

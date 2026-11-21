@@ -24,6 +24,8 @@
 #include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
 
+_Static_assert(sizeof(int) == sizeof(dsd_heard_tg_variant), "an unknown variant is written as an int");
+
 static int
 t(dsd_heard_tg_variant v, uint32_t id) {
     dsd_heard_tg_input in = {v, id, 1, 0, 0};
@@ -97,6 +99,15 @@ test_classifier(void) {
     assert(t(DSD_HEARD_TG_NXDN_D, (30u << 11) | 2047u) == 0);
     assert(t(DSD_HEARD_TG_NXDN_D, (31u << 11) | 1u) == 0);
     assert(t(DSD_HEARD_TG_NXDN_D, (31u << 11) | 2000u) == 0);
+    /* Type-D call types (TS 1-E Table 6.6-15): only 000 Broadcast and 001 Conference name a group. */
+    assert(nx(DSD_HEARD_TG_NXDN_D, (3u << 11) | 5u, 0, 0) == 1);
+    assert(nx(DSD_HEARD_TG_NXDN_D, (3u << 11) | 5u, 1, 0) == 1);
+    assert(nx(DSD_HEARD_TG_NXDN_D, (3u << 11) | 5u, 2, 0) == 0);
+    assert(nx(DSD_HEARD_TG_NXDN_D, (3u << 11) | 5u, 3, 0) == 0);
+    assert(nx(DSD_HEARD_TG_NXDN_D, (3u << 11) | 5u, 4, 0) == 0);
+    assert(nx(DSD_HEARD_TG_NXDN_D, (3u << 11) | 5u, 6, 0) == 0);
+    assert(nx(DSD_HEARD_TG_NXDN_D, (3u << 11) | 5u, 7, 0) == 0);
+    assert(nx(DSD_HEARD_TG_NXDN_D, (31u << 11) | 5u, 1, 0) == 0);
 
     assert(t(DSD_HEARD_TG_TETRA, 0) == 0);
     assert(t(DSD_HEARD_TG_TETRA, 1) == 1);
@@ -105,7 +116,13 @@ test_classifier(void) {
 
     assert(t(DSD_HEARD_TG_NONE, 1) == 0);
     assert(t(DSD_HEARD_TG_NONE, 100) == 0);
-    assert(t((dsd_heard_tg_variant)99, 100) == 0);
+    {
+        /* A variant no build of this classifier knows (a later persisted value): its bytes, not a cast to the enum. */
+        dsd_heard_tg_input in = {DSD_HEARD_TG_NONE, 100, 1, 0, 0};
+        const int unknown = 99;
+        DSD_MEMCPY(&in.variant, &unknown, sizeof in.variant);
+        assert(dsd_heard_tg_ordinary(&in) == 0);
+    }
 }
 
 /* ---- Verified-talkgroup proof on calls and history rows ---- */

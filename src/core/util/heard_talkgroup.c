@@ -71,10 +71,12 @@ dsd_heard_tg_ordinary(const dsd_heard_tg_input* in) {
         return 0;
     }
     if (in->variant == DSD_HEARD_TG_NXDN_D) {
-        /* NXDN Type-D: prefix 0-30, id11 1-2000 (TS 1-E Table 6.6-4/6.6-6); id 0, 2001-2047 and prefix 31 excluded. */
+        /* NXDN Type-D: prefix 0-30, id11 1-2000 (TS 1-E Table 6.6-4/6.6-6); id 0, 2001-2047 and prefix 31 excluded.
+           Call types 000/001 only (Table 6.6-15), as on Type-C: no other call type names a group. */
         uint32_t prefix = in->id >> 11;
         uint32_t id11 = in->id & 0x7FFu;
-        return (prefix <= 30u && id11 >= 1u && id11 <= 2000u) ? 1 : 0;
+        const int group_call = in->nxdn_call_type == 0u || in->nxdn_call_type == 1u;
+        return (group_call && prefix <= 30u && id11 >= 1u && id11 <= 2000u) ? 1 : 0;
     }
     for (size_t i = 0; i < sizeof kRanges / sizeof kRanges[0]; i++) {
         const heard_tg_range* r = &kRanges[i];
