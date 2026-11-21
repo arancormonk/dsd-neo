@@ -17,7 +17,7 @@
  * and the frozen verdict survives the patch expiring.
  *
  * The messages run through the real link control and MAC decoders, trunk state machine and call state; traffic is a
- * real 2V burst (process_2V()).
+ * 4V burst through the frame decoder's DUID dispatch, whose DUID must match its codeword exactly.
  */
 
 #include <dsd-neo/core/call_state.h>
@@ -38,6 +38,11 @@
 #include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_ext.h"
 #include "dsd-neo/core/state_fwd.h"
+#include "p25p2_frame_internal.h"
+
+/* The frame decoder's window bits and their LLRs (p25p2_frame.c). */
+extern int p2bit[4320];
+extern int16_t p2llr[1400];
 
 #define TEST_TG      0x1234
 #define TEST_SG      0x2345
@@ -93,6 +98,7 @@ reset_session(int tdma) {
     g_state.p2_sysid = 0x1A2;
     g_state.p2_cc = 0x293;
     g_state.synctype = g_state.lastsynctype = tdma ? DSD_SYNC_P25P2_POS : DSD_SYNC_P25P1_POS;
+    p25_p2_frame_reset();
     dsd_trunk_tuning_hooks_set((dsd_trunk_tuning_hooks){
         .tune_to_freq_request = test_tune_request,
         .tune_to_cc_request = test_tune_request,
@@ -347,11 +353,44 @@ p2_regroup_voice_user(uint8_t slot, uint32_t sg) {
     facch(slot, MAC_ACTIVE, body, (int)sizeof(body));
 }
 
-/* Traffic: a 2V burst on @p slot through the real voice path. */
+/* DUID codewords (p25p2_frame.c duid_canonical). */
+enum { DUID_4V = 0x00, DUID_SACCH = 0x39 };
+
+/* Window timeslot @p timeslot_index sends DUID bits @p duid: every bit confident, except those @p weak_mask names
+   (MSB first), sent with a reliability below the soft-erasure threshold. */
+static void
+seed_duid(int timeslot_index, uint8_t duid, uint8_t weak_mask) {
+    static const int duid_offsets[8] = {0, 1, 74, 75, 244, 245, 318, 319};
+    const int base = timeslot_index * 360;
+    for (int i = 0; i < 8; i++) {
+        const int abs_bit = base + duid_offsets[i];
+        const int bit = (duid >> (7 - i)) & 1;
+        const int16_t magnitude = (int16_t)(((weak_mask >> (7 - i)) & 1U) ? 5 : 200);
+        p2bit[abs_bit] = bit;
+        p2llr[abs_bit] = bit ? magnitude : (int16_t)-magnitude;
+    }
+}
+
+/* One window from superframe timeslot 0 through the frame decoder's DUID dispatch: slot @p slot's first timeslot
+   sends a 4V burst as DUID bits @p duid (@p weak_mask as seed_duid()), every other timeslot a SACCH. */
+static void
+p2_traffic_as(uint8_t slot, uint8_t duid, uint8_t weak_mask) {
+    g_state.p2_scramble_offset = 0;
+    g_state.currentslot = 0;
+    for (int i = 0; i < 4; i++) {
+        if (i == (int)slot) {
+            seed_duid(i, duid, weak_mask);
+        } else {
+            seed_duid(i, DUID_SACCH, 0U);
+        }
+    }
+    p25p2_process_duid(&g_opts, &g_state);
+}
+
+/* Traffic: a 4V burst on @p slot whose DUID is its codeword exactly, through the real voice path. */
 static void
 p2_traffic(uint8_t slot) {
-    g_state.currentslot = slot;
-    process_2V(&g_opts, &g_state);
+    p2_traffic_as(slot, DUID_4V, 0U);
 }
 
 static int
@@ -398,6 +437,41 @@ test_p2_voice_user_then_traffic_proves_group(void) {
     }
     rc |= expect("P2 later voice users and traffic never classify again", dsd_heard_tg_test_eval_count() == evals);
     rc |= expect("P2 later bursts wait on nothing", g_state.p25_p2_heard_vu_epoch[0] == 0U);
+    return rc;
+}
+
+/* A 4V burst whose DUID decoded only after a correction is voice for the decoder, but not traffic that proves a voice
+ * user: one bit off the codeword (the hard table corrects it), then two weak bits off (only the soft lookup matches
+ * it). The next burst whose DUID matched exactly proves the group. */
+static int
+test_p2_corrected_duid_traffic_proves_nothing(void) {
+    int rc = 0;
+    follow_grant(1, TEST_TG);
+    p2_voice_user(0U, MAC_ACTIVE, TEST_TG);
+    const int fourv_before = g_state.fourv_counter[0];
+    p2_traffic_as(0U, 0x01U, 0x01U);
+    rc |= expect("P2 hard-corrected DUID still decodes a 4V", g_state.fourv_counter[0] != fourv_before);
+    rc |= expect("P2 hard-corrected DUID burst proves nothing", active_on(0U, TEST_TG) && not_noted(0U));
+    p2_voice_user(0U, MAC_ACTIVE, TEST_TG);
+    const int fourv_soft = g_state.fourv_counter[0];
+    p2_traffic_as(0U, 0x03U, 0x03U);
+    rc |= expect("P2 soft-matched DUID still decodes a 4V", g_state.fourv_counter[0] != fourv_soft);
+    rc |= expect("P2 soft-matched DUID burst proves nothing", active_on(0U, TEST_TG) && not_noted(0U));
+    p2_voice_user(0U, MAC_ACTIVE, TEST_TG);
+    p2_traffic(0U);
+    rc |= expect("P2 exact DUID burst then proves the group", remembered(0U, TEST_TG));
+    return rc;
+}
+
+/* A voice burst run outside the DUID dispatch carries no DUID verdict and proves nothing. */
+static int
+test_p2_voice_outside_dispatch_proves_nothing(void) {
+    int rc = 0;
+    follow_grant(1, TEST_TG);
+    p2_voice_user(0U, MAC_ACTIVE, TEST_TG);
+    g_state.currentslot = 0;
+    process_2V(&g_opts, &g_state);
+    rc |= expect("P2 2V outside the DUID dispatch proves nothing", active_on(0U, TEST_TG) && not_noted(0U));
     return rc;
 }
 
@@ -518,6 +592,8 @@ main(void) {
     rc |= test_p2_ptt_proves_group();
     rc |= test_p2_failed_setup_proves_nothing();
     rc |= test_p2_voice_user_then_traffic_proves_group();
+    rc |= test_p2_corrected_duid_traffic_proves_nothing();
+    rc |= test_p2_voice_outside_dispatch_proves_nothing();
     rc |= test_p2_tracking_only_voice_users_prove_nothing();
     rc |= test_p2_recent_end_repeat_proves_nothing();
     rc |= test_p2_addressless_start_after_end_proves_nothing();

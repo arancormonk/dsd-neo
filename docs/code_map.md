@@ -14003,11 +14003,15 @@ Private per-protocol modules worth knowing about:
   live group voice user (`p25p2_vpdu_observe_voice()` → `p25p2_heard_tg_voice_user()`), which only waits on its call
   (`dsd_state::p25_p2_heard_vu_epoch` and its group) until a 4V/2V burst of that same epoch on the slot proves it
   (`p25p2_emit_voice_activity()` → `p25p2_heard_tg_traffic()`, a field check while nothing waits): BBAC §7.3.1 sends
-  voice users for setups that fail. Tracking-only returns (IDLE, HANGTIME, a recent-end repeat) never wait, and an
+  voice users for setups that fail. Only a burst the DUID dispatch ran with its DUID bits exactly the codeword counts
+  (`s_voice_duid_exact` in `p25p2_frame.c`); a hard- or soft-corrected DUID, or a burst run outside the dispatch, is
+  voice but no proof. Tracking-only returns (IDLE, HANGTIME, a recent-end repeat) never wait, and an
   epoch an addressless start reopens after a clean END is another epoch. Supergroup evidence is the message's own (a
   regroup voice user: LCGRGR, MFID 0x90 regroup, standard group regroup; passed into the observer before its handler
   updates the patch table) or an active patch entry naming the group when the proof is noted, frozen there with it.
-  Test: `P25_HEARD_TALKGROUP`.
+  Documented limit: a MAC_PTT names no supergroup itself, so one naming a supergroup that no regroup grant or voice
+  user has yet put in the patch table (and no regroup voice user waiting on the same epoch) is remembered as an
+  ordinary group. Test: `P25_HEARD_TALKGROUP`.
 - P25 identity provenance (`p25_trunk_sm.c`, `<dsd-neo/protocol/p25/p25_trunk_sm.h>`, issue #800). Each slot's
   assignment and each `p25_sm_event_t` carry `identity_checked`: `P25_SM_IDENTITY_CHECKED_SOURCE`, `_TARGET` and
   `_KIND` (group or private), set only from the check the producer ran on the message (a grant's or MAC message's own

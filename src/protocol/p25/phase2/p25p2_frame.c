@@ -291,6 +291,9 @@ static int framing_counter = 0;
 static int isch_decoded = -1;
 static uint8_t p2_duid[8] = {0};
 static int16_t duid_decoded = -1;
+/* 1 only while the DUID dispatch runs a voice burst whose DUID bits were its codeword exactly, with no hard or soft
+   correction (p25p2_duid_dispatch_voice()): the only traffic that proves a voice user's group (issue #903). */
+static int s_voice_duid_exact = 0;
 
 static int ess_b[2][96] = {0}; //96 bits for 4 - 24 bit ESS_B fields starting bit 168 (RS 44,16,29)
 int ess_a[2][168] = {0};       //ESS_A 1 (96 bit) and 2 (72 bit) fields, starting at bit 168 and bit 266 (RS Parity)
@@ -836,8 +839,10 @@ p25p2_emit_voice_activity(dsd_opts* opts, dsd_state* state) {
         return;
     }
     p25_sm_emit_active(opts, state, slot);
-    /* Traffic proves the group a voice user of its transmission named (issue #903). */
-    p25p2_heard_tg_traffic(state, (uint8_t)slot);
+    /* Traffic whose DUID matched exactly proves the group a voice user of its call named (issue #903). */
+    if (s_voice_duid_exact) {
+        p25p2_heard_tg_traffic(state, (uint8_t)slot);
+    }
     /* Only traffic the receive policy admits holds the voice channel (issue #637). */
     if (dsd_receive_allows(opts, state, DSD_SYNC_P25P2_POS, slot)) {
         state->last_vc_sync_time = dsd_decode_time();
@@ -1684,6 +1689,16 @@ p25p2_duid_refresh_recent_voice(const dsd_opts* opts, dsd_state* state, time_t n
    descrambler offset are guesses, and no slot-attributed burst may act. */
 static int s_window_proven = 1;
 
+/* 1 when the DUID bits of the timeslot being dispatched (p2_duid) are the codeword it decoded to exactly. */
+static int
+p25p2_duid_read_exact(void) {
+    uint8_t received = 0U;
+    for (int i = 0; i < 8; i++) {
+        received = (uint8_t)((received << 1) | (p2_duid[i] & 1U));
+    }
+    return p25p2_duid_is_exact(received, duid_decoded);
+}
+
 // A voice burst (DUID 0: 4V, 6: 2V), decoded only on a site whose descrambler seed is set.
 static void
 p25p2_duid_dispatch_voice(dsd_opts* opts, dsd_state* state, time_t now, int valid_site) {
@@ -1696,11 +1711,13 @@ p25p2_duid_dispatch_voice(dsd_opts* opts, dsd_state* state, time_t now, int vali
         return;
     }
     p25p2_duid_refresh_recent_voice(opts, state, now);
+    s_voice_duid_exact = p25p2_duid_read_exact();
     if (duid_decoded == 0) {
         process_4V(opts, state);
     } else {
         process_2V(opts, state);
     }
+    s_voice_duid_exact = 0;
 }
 
 // Return to the control channel, and tear the call down only once the receiver has left the voice channel: a return

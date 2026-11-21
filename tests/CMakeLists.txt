@@ -14105,7 +14105,9 @@ add_executable(
 )
 target_include_directories(
     dsd-neo_test_p25_heard_talkgroup
-    PRIVATE ${PROJECT_SOURCE_DIR}/include
+    PRIVATE
+        ${PROJECT_SOURCE_DIR}/include
+        ${PROJECT_SOURCE_DIR}/src/protocol/p25/phase2
 )
 target_compile_definitions(
     dsd-neo_test_p25_heard_talkgroup
