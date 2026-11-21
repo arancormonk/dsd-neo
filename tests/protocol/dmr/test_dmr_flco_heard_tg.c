@@ -484,7 +484,7 @@ xpt_group(void) {
 }
 
 /* Capacity Max group voice (FID 0x10 FLCO 0x10): a 24-bit group as DMR, only on a carrier a checked Tier III system
-   code named. */
+   code named. The Capacity Max marker alone (which -F may take from a RAS C_ALOHA) is no Tier III evidence. */
 static void
 capmax_group(void) {
     dsd_opts* opts = new_opts();
@@ -494,9 +494,74 @@ capmax_group(void) {
     free_state(state);
 
     state = new_state();
+    dsd_rxid_note_dmr_t3_capmax(state, 0U, 1U);
+    assert(dsd_rxid_dmr_t3_is_capmax(state, 0U, 1U));
+    run_lc(opts, state, LC_HEADER, 0, 0x10U, 0x10U, 0x000321U, 0x456U);
+    assert(slot_call(state, 0U).phase == DSD_CALL_PHASE_ACTIVE && not_noted(state, 0U));
+    free_state(state);
+
+    state = new_state();
     dsd_rxid_note_dmr_t3_syscode(state, 0x1234U);
     run_lc(opts, state, LC_HEADER, 0, 0x10U, 0x10U, 0x000321U, 0x456U);
     assert(proved(state, 0U, DSD_HEARD_TG_DMR, 0x000321U));
+    free_state(state);
+    free(opts);
+}
+
+typedef enum { CARRIER_XPT, CARRIER_CONPLUS, CARRIER_CAPMAX } trunk_carrier;
+
+/* A fresh state on a carrier whose checked messages named @p carrier. */
+static dsd_state*
+carrier_state(dsd_opts* opts, trunk_carrier carrier) {
+    dsd_state* state = new_state();
+    if (carrier == CARRIER_XPT) {
+        xpt_alert(opts, state, 0);
+    } else if (carrier == CARRIER_CONPLUS) {
+        dsd_rxid_note_dmr_brand(state, "Connect Plus");
+    } else {
+        dsd_rxid_note_dmr_t3_syscode(state, 0x1234U);
+    }
+    return state;
+}
+
+/* Late entry on @p carrier: an embedded LC (FLCO @p flco, FID @p fid) opens the call with 24-bit target field
+   @p call_target, then a checked terminator with target field @p term_target ends it. */
+static dsd_state*
+late_entry_terminated(dsd_opts* opts, trunk_carrier carrier, uint8_t flco, uint8_t fid, uint32_t call_target,
+                      uint32_t term_target) {
+    dsd_state* state = carrier_state(opts, carrier);
+    run_lc(opts, state, LC_EMBEDDED, 0, flco, fid, call_target, 0x3456U);
+    assert(slot_call(state, 0U).phase == DSD_CALL_PHASE_ACTIVE && not_noted(state, 0U));
+    run_lc(opts, state, LC_TERMINATOR, 0, flco, fid, term_target, 0x3456U);
+    assert(slot_call(state, 0U).phase == DSD_CALL_PHASE_ENDED);
+    return state;
+}
+
+/* A terminator on an XPT, Connect Plus or Capacity Max carrier promotes the open transmission it names, its target read
+   from its bits in the carrier's layout before the slot ends (XPT: the 16-bit target, whatever bits 24..31 hold); one
+   naming another target promotes nothing. */
+static void
+terminator_on_vendor_carriers(void) {
+    dsd_opts* opts = new_opts();
+    dsd_state* state = late_entry_terminated(opts, CARRIER_XPT, 0x00U, 0x00U, 0x120007U, 0x340007U);
+    assert(proved(state, 0U, DSD_HEARD_TG_XPT, 0x0007U));
+    free_state(state);
+    state = late_entry_terminated(opts, CARRIER_XPT, 0x00U, 0x00U, 0x120007U, 0x120008U);
+    assert(not_noted(state, 0U));
+    free_state(state);
+
+    state = late_entry_terminated(opts, CARRIER_CONPLUS, 0x00U, 0x00U, 0x00ABCDU, 0x00ABCDU);
+    assert(proved(state, 0U, DSD_HEARD_TG_CONPLUS, 0x00ABCDU));
+    free_state(state);
+    state = late_entry_terminated(opts, CARRIER_CONPLUS, 0x00U, 0x00U, 0x00ABCDU, 0x01ABCDU);
+    assert(not_noted(state, 0U));
+    free_state(state);
+
+    state = late_entry_terminated(opts, CARRIER_CAPMAX, 0x10U, 0x10U, 0x000321U, 0x000321U);
+    assert(proved(state, 0U, DSD_HEARD_TG_DMR, 0x000321U));
+    free_state(state);
+    state = late_entry_terminated(opts, CARRIER_CAPMAX, 0x10U, 0x10U, 0x000321U, 0x000322U);
+    assert(not_noted(state, 0U));
     free_state(state);
     free(opts);
 }
@@ -531,6 +596,7 @@ main(void) {
     conplus_group();
     xpt_group();
     capmax_group();
+    terminator_on_vendor_carriers();
     noted_once_per_transmission();
     printf("DMR_FLCO_HEARD_TG: OK\n");
     return 0;
