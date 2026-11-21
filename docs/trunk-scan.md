@@ -1030,8 +1030,12 @@ turned it on).
   judged too, on an untyped row and on a typed digital row or target alike, since the monitor plays there as well; an
   `-8` monitor with no NFM width set gets those rows and targets no check. Judging more widths can only mean fewer
   skips, never an extra one.
-- An ongoing DMR transmission from a single radio sends a 27.5 ms burst every 60 ms. A reading of 90 ms or more always
-  holds a whole slice inside one of those bursts, so the burst timing alone never makes such a channel read silent.
+- An ongoing DMR transmission from a single radio sends a 27.5 ms burst every 60 ms (ETSI TS 102 361-1 clauses 4.2.2
+  and 10.2.3). Back-to-back slices of at most 13.75 ms hold one slice wholly inside one of those bursts at any phase
+  once there are at least ceil(32.5 / slice length) + 2 of them: six at the check's slice lengths. The nine slices of
+  the reading are three more than that, so the burst timing alone never makes such a channel read silent. This is
+  about an ongoing train of bursts: a single short burst (a wake-up, a data or status burst) can fall outside the
+  reading (see the [limits](#limits)).
 - The threshold and the rest of the measurement come from a calibration against DSD-neo's own reception: a signal
   1 dB weaker than the weakest one DSD-neo still receives was never read as silent in testing, in any mode, width or
   supported sample rate, with or without busy neighbours (10,316 signal conditions, 30.9 million trials). Every NFM
@@ -1044,31 +1048,30 @@ turned it on).
 
 - A visit is skipped at most once. The check starts as soon as the channel lands, on a `-Y` row as on a trunk-scan
   target. It waits for the first samples from the new frequency (up to 1 second after the tune lands, or after the check
-  starts again later in the visit), then needs about 100 ms of them and up to 400 ms for its answer. The scan acts on
-  the answer at its next check: on a channel with nothing on it that comes every 300 symbols of the sync search (62.5 ms
-  at 4800 symbols/s, 125 ms at 2400 symbols/s). Noise on some channels keeps looking like the start of a frame (NXDN48
-  and dPMR noise often does); there the scan also checks at the end of each such frame, and a reading it starts there
-  first lets 125 ms of the new channel's samples go by. So a skipped visit lasts about as long as the tune and the
-  reading take, not a whole dwell or hangtime.
+  starts again later in the visit), and starts its reading as soon as they come: it lets the first 10 ms of them go by,
+  then reads for about 90 ms, and has up to 400 ms for its answer. The scan acts on the answer as soon as it comes. A
+  frame being decoded comes first: noise on some channels keeps looking like the start of a frame (NXDN48 and dPMR
+  noise often does), and a reading that waits for such frames to end (rather than starting at once) first lets 125 ms
+  of the new channel's samples go by. So a skipped visit lasts about as long as the tune, the receiver's retune mute
+  and the reading take, not a whole dwell or hangtime.
 - The skip races the channel's normal wait: a trunk-scan conventional target's idle dwell (`dwell_ms`, 3 s by default;
   `-t` does not set it), or a `-Y` row's hangtime (`-t`). A dwell or hangtime shorter than the check's own time gains
   nothing: the visit ends on its dwell before the answer comes, and no skip line is logged. On the rtl_tcp loopback
-  bench below the check took about 0.27 to 0.39 s at the default retune mute, less with a shorter mute, and up to about
-  0.5 s on NXDN48 noise. The other way round, with skip-silent on a longer dwell costs little: a silent channel is still
+  bench below a skipped visit took about 0.24 s at the default retune mute and 0.15 s with a shorter one, NXDN48 and
+  dPMR noise included. The other way round, with skip-silent on a longer dwell costs little: a silent channel is still
   left as soon as the check answers, so the extra time is spent only on channels that read busy or get no check, which
   is where a call may be starting.
 - Measured on a synthetic test scene over an rtl_tcp loopback (`tools/bench_scan_skip_silent.py`: 12 silent channels and
-  three that each call for 4 s about every 20 s, 240 s per run, with a 3 s dwell, or `-t 2`), every silent DMR, NFM and
-  P25 visit was skipped and no channel was skipped while a call was on it (a call that started during the reading was
-  missed up to once a run, a limit listed below). With the default retune mute a skipped visit took 0.27 to 0.34 s on
-  the rtl_tcp loopback; with a 25 ms mute (`DSD_NEO_RETUNE_MUTE_MS=25`, closer to a USB dongle, but still the rtl_tcp
-  loopback, not real hardware) it took 0.17 to 0.26 s. The scan caught 17 to 27 of the 35 calls with the setting on,
-  against 2 of 34 with it off (`-Y`, default mute). On a second loopback scene whose silent channels are NXDN48 and dPMR
-  channels carrying only noise, 99 to 100 % of those visits were skipped, in a median of 0.30 to 0.49 s each (0 to 65 %
-  before these fixes). CPU use on the first scene was the same as without these changes (2.5 to 3.5 % of one core on a
-  host busy with other work). On the noise scene it rose by up to about 0.5 points on the rtl_tcp loopback (from
-  2.79 to 3.31 % on trunk scan with the 25 ms mute), because the scan made more visits: about twice as many on trunk
-  scan, and five to seven times as many on `-Y`, whose NXDN48 noise rows had been held to the visit cap before.
+  three that each call for 4 s about every 20 s, 240 s per run, three runs, with a 3 s dwell, or `-t 2`), every silent
+  DMR, NFM and P25 visit was skipped, and no channel was skipped while a call was on air through the reading. With a
+  25 ms mute (`DSD_NEO_RETUNE_MUTE_MS=25`, closer to a USB dongle, but still the rtl_tcp loopback, not real hardware) a
+  skipped visit took a median of 0.15 s (0.24 s before the check acted as soon as its capture and answer were there),
+  and with the default mute 0.24 s (0.32 s before). On a second scene whose silent channels are NXDN48 and dPMR
+  channels carrying only noise, every visit was skipped, in a median of 0.15 s (0.28 s on dPMR and 0.39 s on NXDN48
+  before). On the desktop's own RTL-SDR a skip took 0.17 s over USB (0.24 s before), 0.26 s through an rtl_tcp server
+  (0.35 s before) and 0.52 s through SoapySDR, unchanged: there the time is the wait for the receiver's first samples
+  after the retune and the delivery of the reading's samples. CPU use was the same as before per second of scan (2.0 to
+  2.8 % of one core on a host busy with other work), with more visits per second.
 - A check that cannot finish (no samples in time, no answer in time, clipped samples) changes nothing: the visit runs
   its normal timing.
 - Each skip logs one line, for example
@@ -1223,6 +1226,8 @@ Turning the setting on accepts these:
   hang time, or dPMR Mode 2 replies sent without a hang period.
 - A signal more than about 1 dB weaker than the weakest one DSD-neo still receives can read silent, so a weak
   transmission can be skipped.
+- The calibration used steady signals (with the power droop inside a DMR burst), not fading: a signal that fades
+  through the whole reading, from a radio on the move for example, can read silent and be skipped.
 - An always-keyed channel (a control channel, a repeater that never drops) is never skipped, so the setting saves
   nothing there.
 - Busy neighbours were tested 12.5 or 25 kHz away, on one side and on both, from 5 to 50 dB stronger than the wanted

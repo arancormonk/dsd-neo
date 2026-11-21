@@ -1213,6 +1213,8 @@ levels: their sideband blocks hold the neighbours.
 
 ### Limits
 
+- The conditions are steady signals, with the deterministic power droop inside a DMR burst; propagation fading was
+  not simulated, so a signal that fades through a whole reading can read silent.
 - A channel whose sideband floor stands more than 8.7 dB over the capture's noise is never skipped, whatever it
   carries: one between transmitters that crowd its sidebands, or on a floor that stands that far over the rest of the
   capture (a strong broad interferer, a sloped floor). That is a speed cost only.
