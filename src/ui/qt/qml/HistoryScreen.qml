@@ -10,6 +10,13 @@ Item {
     id: screen
 
     property bool showTitle: true
+    // Issue #901 (D6): Compact view; the log's rows follow it.
+    readonly property bool compactView: typeof prefs !== "undefined" && !!prefs && prefs.compactView === true
+    // The time a row shows is HH:mm; the rows' form and height are decided
+    // with it (CallRow.timeProbe).
+    readonly property string rowTimeProbe: "00:00"
+    // The height every row of the log has at its width and fonts.
+    readonly property real rowHeight: LineBoxes.callRowHeight(compactView, LineBoxes.callRowNarrow(logList.width, rowTimeProbe))
     // Issue #800: the map (its kept tracks stay reachable after Stop), and a
     // row's "Show on map" with the sheet to return to.
     signal openMap
@@ -522,6 +529,8 @@ Item {
 
             interactive: true
             width: ListView.view.width
+            compact: screen.compactView
+            timeProbe: screen.rowTimeProbe
             name: model.name
             metaText: {
                 // A notice row's payload (the SMS body, the GPS string) is its
@@ -611,7 +620,9 @@ Item {
     // Keeps the newest call in view for a reader parked at the top of the log.
     FollowLatest {
         id: follow
+        objectName: "callLogFollow"
         list: logList
+        rowHeight: screen.rowHeight
     }
 
     // Hidden, the log holds no rows (issue #782): a session runs on the monitor
@@ -663,6 +674,20 @@ Item {
             logPlace.forget();
             Qt.callLater(logList.positionViewAtBeginning);
         }
+    }
+
+    // Issue #901 (D11): a change of density puts the log back at the newest
+    // call, as a new search does; hidden, it comes back there rather than at
+    // the place it held. Deferred so the rows take their new height first, by
+    // a timer the screen owns, so nothing runs after it closes.
+    onCompactViewChanged: {
+        logPlace.forget();
+        logToStart.restart();
+    }
+    Timer {
+        id: logToStart
+        interval: 0
+        onTriggered: logList.positionViewAtBeginning()
     }
 
     // A sibling of the view, not a child: ListView reparents declared children

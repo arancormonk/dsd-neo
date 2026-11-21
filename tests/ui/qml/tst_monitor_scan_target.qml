@@ -134,8 +134,14 @@ Item {
             tryCompare(title, "text", "Security + 1 list");
             screen.system = {name: "Countywide public safety and municipal services", sourceType: "usb"};
             screen.otherListCount = 7;
+            // A phone at 2x text, tall enough for the stacked header, where the
+            // title has the row to itself. Checked once the layout has settled:
+            // the tier follows the text size a turn of the event loop later.
             root.width = 320;
+            root.height = 1300;
             Ui.Theme.fontScale = 2;
+            waitForRendering(screen);
+            tryVerify(function () { return screen.tier === 0 && screen.headerStacked; }, 1000, "the stacked header");
             tryVerify(function () { return title.text.endsWith(" + 7 lists"); });
             verify(title.text.indexOf("…") > 0, title.text);
             verify(!title.truncated, "the count was elided");
@@ -143,6 +149,7 @@ Item {
             screen.otherListCount = 0;
             Ui.Theme.resetFontScale();
             root.width = 420;
+            root.height = 900;
         }
 
         // Issue #671: a paused scan is named as one, apart from the rotation's

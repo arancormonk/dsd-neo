@@ -57,6 +57,14 @@ Item {
             tc.waitForRendering(tc.list)
         }
 
+        function rectIn(item, under) {
+            var at = item.mapToItem(under, 0, 0)
+            return {x: at.x, y: at.y, width: item.width, height: item.height}
+        }
+        function overlaps(a, b) {
+            return a.x < b.x + b.width && b.x < a.x + a.width && a.y < b.y + b.height && b.y < a.y + a.height
+        }
+
         function rowAtViewportTop() {
             var idx = tc.list.indexAt(tc.list.width / 2, tc.list.contentY + 40)
             verify(idx >= 0, "no row under the top of the viewport")
@@ -609,9 +617,12 @@ Item {
 
         // On an emergency call the frequency leads ahead of EMERGENCY, which the
         // badge also shows, and it fits on a phone at the larger text sizes: the
-        // meta line is only as wide as the badge and the time leave it.
+        // meta line is only as wide as the badge and the time leave it. Where
+        // they would leave too little (issue #901, B7), they move to a line of
+        // their own under the meta line, clear of both lines.
         function test_06i_an_emergency_row_keeps_the_frequency_in_view_data() {
-            return [{tag: "1.0", scale: 1.0}, {tag: "1.3", scale: 1.3}]
+            return [{tag: "1.0", scale: 1.0, narrow: false}, {tag: "1.3", scale: 1.3, narrow: false},
+                {tag: "1.6", scale: 1.6, narrow: true}, {tag: "2.0", scale: 2.0, narrow: true}]
         }
         function test_06i_an_emergency_row_keeps_the_frequency_in_view(data) {
             var width = root.width
@@ -629,6 +640,23 @@ Item {
                 frequencyWidth.font = meta.font
                 verify(frequencyWidth.advanceWidth <= meta.width,
                        "the frequency is elided: " + frequencyWidth.advanceWidth + " > " + meta.width)
+                compare(row.narrow, data.narrow, "the row's form at 360 px")
+                var tag = findChild(row, "rowEmergencyTag")
+                var time = findChild(row, "callRowTime")
+                verify(tag.visible && time.visible)
+                var lines = [findChild(row, "callRowName"), meta].map(function (line) { return tc.rectIn(line, row) })
+                for (var part of [tag, time]) {
+                    var r = tc.rectIn(part, row)
+                    verify(r.x >= 0 && r.y >= 0 && r.x + r.width <= row.width && r.y + r.height <= row.height,
+                           part.objectName + " leaves the row")
+                    for (var line of lines)
+                        verify(!tc.overlaps(r, line), part.objectName + " covers a line: " + JSON.stringify(r) + " " + JSON.stringify(line))
+                    // Wide: beside the lines; narrow: below them.
+                    if (data.narrow)
+                        verify(r.y >= lines[1].y + lines[1].height, part.objectName + " is not below the meta line")
+                    else
+                        verify(r.x >= lines[1].x + lines[1].width, part.objectName + " is not beside the meta line")
+                }
             } finally {
                 Ui.Theme.fontScale = scale
                 root.width = width
@@ -909,6 +937,67 @@ Item {
             screen.visible = true
             tc.waitForRendering(tc.list)
             verify(tc.atTop(), "a new search starts at the top")
+        }
+
+        // Issue #901 (D6): Compact view reaches the log's rows, which keep the
+        // one height the shared measure gives, and the pin's "at the latest"
+        // slack follows that height.
+        function test_13_compact_rows() {
+            var screen = screenLoader.item
+            var follow = findChild(screen, "callLogFollow")
+            verify(follow !== null, "the log's follower is missing")
+            testContext.useAppPrefs(true)
+            try {
+                prefs.compactView = false
+                tc.waitForRendering(tc.list)
+                var normal = Ui.LineBoxes.callRowHeight(false, tc.list.itemAtIndex(0).narrow)
+                compare(tc.list.itemAtIndex(0).height, normal)
+                compare(follow.rowHeight, normal)
+                prefs.compactView = true
+                tc.waitForRendering(tc.list)
+                for (var i = 0; i < 3; i++) {
+                    var row = tc.list.itemAtIndex(i)
+                    verify(row.compact, "row " + i + " is not compact")
+                    compare(row.timeProbe, "00:00")
+                    compare(row.narrow, Ui.LineBoxes.callRowNarrow(tc.list.width, "00:00"))
+                    compare(row.height, Ui.LineBoxes.callRowHeight(true, row.narrow))
+                }
+                verify(tc.list.itemAtIndex(0).height < normal, "a compact row is no smaller")
+                compare(follow.rowHeight, tc.list.itemAtIndex(0).height, "the pin's slack is the row's height")
+            } finally {
+                prefs.compactView = false
+                testContext.useAppPrefs(false)
+            }
+        }
+
+        // Issue #901 (D11): a change of density puts the log back at the newest
+        // call, shown or hidden; the focus stays where it was.
+        function test_14_a_density_change_returns_to_the_newest_call() {
+            var screen = screenLoader.item
+            testContext.useAppPrefs(true)
+            try {
+                prefs.compactView = false
+                tc.waitForRendering(tc.list)
+                tc.scrollBack()
+                var field = findChild(screen, "historySearch")
+                field.input.forceActiveFocus()
+                var focused = screen.Window.window.activeFocusItem
+                prefs.compactView = true
+                tryVerify(function () { return tc.atTop() }, 1000, "the log stayed back")
+                compare(screen.Window.window.activeFocusItem, focused, "the change moved the focus")
+
+                tc.scrollBack()
+                verify(!tc.atTop())
+                screen.visible = false
+                prefs.compactView = false
+                tc.waitForRendering(screen.parent)
+                screen.visible = true
+                tc.waitForRendering(tc.list)
+                tryVerify(function () { return tc.atTop() }, 1000, "a log hidden through the change came back where it was")
+            } finally {
+                prefs.compactView = false
+                testContext.useAppPrefs(false)
+            }
         }
     }
 }

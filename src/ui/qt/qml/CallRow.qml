@@ -8,6 +8,15 @@ import "Util.js" as Util
 // Encrypted rows carry the ENC tag while retaining readable text contrast. A
 // call with a recording carries a small play glyph before the time or ENC tag
 // (issue #708); a row without one is unchanged.
+//
+// Issue #901: the row's height is its fonts', never its call's. The name and
+// meta lines each get a fixed line box (LineBoxes, D10), so a name in another
+// script does not move the row, and the view's width and fonts decide its
+// form: where the widest right side the view can show would leave the name
+// less than max(96, 35% of the row), the right side moves to a third line of
+// its own under the meta line (the narrow form). Every row of a view takes
+// the same form, so all share one height: LineBoxes.callRowHeight(), which the
+// Monitor's budget reads too. Compact view (D5) halves the padding.
 Item {
     id: row
     property string accessibleName: name
@@ -61,8 +70,16 @@ Item {
     property bool enc: false
     property bool emergency: false
     property bool showDivider: true
+    // Compact view: 6 px above and below the lines instead of 12, floored at
+    // a touch target instead of Theme.rowHeight.
+    property bool compact: false
+    // The widest time the view shows (one per line when there are several),
+    // which sizes the right side the form is decided with.
+    property string timeProbe: "00:00"
+    // From the row's width and the fonts only, never from what it shows.
+    readonly property bool narrow: LineBoxes.callRowNarrow(width, timeProbe)
 
-    implicitHeight: Math.max(Theme.rowHeight, labels.implicitHeight + 24)
+    implicitHeight: LineBoxes.callRowHeight(compact, narrow)
 
     Item {
         id: rowNode
@@ -92,9 +109,9 @@ Item {
         Column {
             id: labels
             anchors.left: parent.left
-            anchors.right: right.left
+            anchors.right: row.narrow ? parent.right : right.left
             anchors.leftMargin: 18
-            anchors.rightMargin: 12
+            anchors.rightMargin: row.narrow ? 18 : 12
             anchors.verticalCenter: parent.verticalCenter
             spacing: 3
 
@@ -102,14 +119,18 @@ Item {
             // SMS bodies), and Qt's automatic rich-text detection would render a tag
             // in them as markup instead of the characters received. One line each:
             // a line break in that text is drawn as a space.
+            //
+            // Each line is exactly its font's box, its text centred in it. A
+            // script that stands taller than the box (Tibetan stacks) is drawn
+            // unclipped into the row's padding: the decided limit of D10.
             Text {
                 objectName: "callRowName"
                 width: parent.width
+                height: LineBoxes.callRowNameBox()
+                verticalAlignment: Text.AlignVCenter
                 text: Util.oneLine(row.name)
                 textFormat: Text.PlainText
-                font.family: Theme.sans
-                font.pixelSize: Theme.fontSize(16)
-                font.weight: Font.DemiBold
+                font: LineBoxes.callRowNameFont
                 color: Theme.textPrimary
                 elide: Text.ElideRight
             }
@@ -117,23 +138,34 @@ Item {
             Text {
                 objectName: "callRowMeta"
                 width: parent.width
+                height: LineBoxes.callRowMetaBox()
+                verticalAlignment: Text.AlignVCenter
                 text: Util.oneLine(row.metaText)
                 textFormat: Text.PlainText
-                font.family: Theme.mono
-                font.pixelSize: Theme.fontSize(12)
+                font: LineBoxes.callRowMetaFont
                 color: Theme.textSubdued
                 elide: Text.ElideRight
             }
+
+            // The narrow form's third line, where the right side sits.
+            Item {
+                id: clusterLine
+                visible: row.narrow
+                width: parent.width
+                height: LineBoxes.callRowClusterBox()
+            }
         }
 
+        // The tags and the time, laid out from its right edge and exactly as
+        // wide as they are: at the row's right, or in the narrow form on the
+        // third line, starting where the labels start.
         Item {
             id: right
 
-            anchors.right: parent.right
-            anchors.rightMargin: 18
-            anchors.verticalCenter: parent.verticalCenter
-            width: (emergencyTag.visible ? emergencyTag.implicitWidth + 6 : 0) + (recordingGlyph.visible ? recordingGlyph.implicitWidth + 8 : 0) + Math.max(encTag.visible ? encTag.implicitWidth : 0, timeText.visible ? timeText.implicitWidth : 0)
-            height: parent.height
+            x: row.narrow ? labels.x : parent.width - 18 - width
+            y: row.narrow ? labels.y + clusterLine.y : 0
+            width: (emergencyTag.visible ? emergencyTag.implicitWidth + emergencyTag.anchors.rightMargin : 0) + (recordingGlyph.visible ? recordingGlyph.implicitWidth + 8 : 0) + Math.max(encTag.visible ? encTag.implicitWidth : 0, timeText.visible ? timeText.implicitWidth : 0)
+            height: row.narrow ? clusterLine.height : parent.height
 
             EmergencyTag {
                 id: emergencyTag
@@ -168,8 +200,7 @@ Item {
                 anchors.right: parent.right
                 anchors.verticalCenter: parent.verticalCenter
                 text: row.rightText
-                font.family: Theme.mono
-                font.pixelSize: Theme.fontSize(12)
+                font: LineBoxes.callRowMetaFont
                 color: Theme.textSubdued
             }
         }

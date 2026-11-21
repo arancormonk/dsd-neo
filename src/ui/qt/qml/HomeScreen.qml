@@ -166,6 +166,9 @@ Item {
     // still switches the tab. prefsStore is the app's AppPrefs; a test may
     // hand in its own.
     property var prefsStore: typeof prefs !== "undefined" ? prefs : null
+    // Issue #901 (D6): Compact view, read from the same store; Recent
+    // activity's rows follow it.
+    readonly property bool compactView: prefsStore && prefsStore.compactView !== undefined ? prefsStore.compactView === true : (typeof prefs !== "undefined" && !!prefs && prefs.compactView === true)
     property string section: "systems"
     readonly property var sectionTabs: [
         {id: "systems", label: qsTr("Systems")},
@@ -2028,6 +2031,9 @@ Item {
                 // The row's identity, for recentPlace.
                 readonly property var rowUid: model.uid
                 width: recentList.width
+                compact: screen.compactView
+                // The time is HH:mm.
+                timeProbe: "00:00"
                 name: model.name
                 metaText: model.systemName
                 rightText: model.timeText
@@ -2055,6 +2061,7 @@ Item {
         // Shown again, it lists the calls as they are then, and a reader who
         // had scrolled down is back on the same row.
         KeepPlace {
+            id: recentPlace
             list: recentList
             model: callHistory
             keyOf: function (row) {
@@ -2064,6 +2071,19 @@ Item {
                 return callHistory.rowForUid(uid);
             }
         }
+    }
+    // Issue #901 (D11): a change of density puts Recent activity back at the
+    // newest call; hidden, it comes back there rather than at the place it
+    // held. Deferred, as History's filter change is: the rows take their new
+    // height first. A timer the screen owns, so nothing runs after it closes.
+    onCompactViewChanged: {
+        recentPlace.forget();
+        recentToStart.restart();
+    }
+    Timer {
+        id: recentToStart
+        interval: 0
+        onTriggered: recentList.positionViewAtBeginning()
     }
     HistoryDetailSheet {
         id: recentDetail

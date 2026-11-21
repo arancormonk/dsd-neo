@@ -324,7 +324,11 @@ Item {
     // The measured parts of the budget. Each is the height the layout below
     // gives that part, so the budget and the screen cannot disagree.
     readonly property real pillHeight: Math.max(48, 30 * Theme.fontScale)
-    readonly property real callRowHeight: Math.max(Theme.rowHeight, Math.ceil(rowNameProbe.implicitHeight + 3 + rowMetaProbe.implicitHeight) + 24)
+    // The rows' own height (LineBoxes, issue #901): their fonts' line boxes,
+    // in the form the rows take at their width.
+    readonly property real callRowHeight: LineBoxes.callRowHeight(false, LineBoxes.callRowNarrow(recentList.width - 2, rowTimeProbe))
+    // The widest age a row shows (Util.shortAge), one per line.
+    readonly property string rowTimeProbe: [qsTr("now"), "59m", "23h", "999d"].join("\n")
     readonly property real heroMicroHeight: Math.ceil(heroMicroMetrics.height)
     readonly property real heroSublineHeight: Math.ceil(Math.max(heroSublineMetrics.height, heroEncTag.implicitHeight, heroEmergencyTag.implicitHeight, heroPrivateTag.implicitHeight))
     readonly property real heroFullHeight: 2 * 14 + heroMicroHeight + 6 + Math.ceil(Theme.fontSize(40)) + 6 + heroSublineHeight + 6 + Math.max(26, Math.ceil(heroDurationMetrics.height))
@@ -398,21 +402,6 @@ Item {
         text: [qsTr("LIVE"), qsTr("LOST"), "STARTING…", "STOPPING…", screen.liveLabel].join("\n")
         textFormat: Text.PlainText
         font: liveLabel.font
-    }
-    Text {
-        id: rowNameProbe
-        visible: false
-        text: "Ag"
-        font.family: Theme.sans
-        font.pixelSize: Theme.fontSize(16)
-        font.weight: Font.DemiBold
-    }
-    Text {
-        id: rowMetaProbe
-        visible: false
-        text: "Ag"
-        font.family: Theme.mono
-        font.pixelSize: Theme.fontSize(12)
     }
     FontMetrics {
         id: heroMicroMetrics
@@ -1649,6 +1638,7 @@ Item {
             // Inset by the card's border, so a row's divider never paints over it.
             x: 1
             width: ListView.view.width - 2
+            timeProbe: screen.rowTimeProbe
             name: model.name
             metaText: {
                 // A notice keeps its payload first, the pane being too
@@ -1705,6 +1695,7 @@ Item {
         objectName: "recentCallsFollow"
         list: recentList
         headerAnchor: detailsCard
+        rowHeight: screen.callRowHeight
     }
 
     // Keyboard focus moving onto a row, or into the header, scrolls it into view.
