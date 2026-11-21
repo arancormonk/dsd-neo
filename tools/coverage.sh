@@ -16,8 +16,13 @@ THIRD_PARTY_EXCLUDES=("${ROOT_DIR}/src/third_party/*")
 JOBS=$(nproc 2> /dev/null || sysctl -n hw.ncpu 2> /dev/null || echo 4)
 cmake --preset coverage-debug > /dev/null
 cmake --build --preset "$BUILD_PRESET" -j "$JOBS" > /dev/null
-ctest --preset "$TEST_PRESET" --output-on-failure
-"$ROOT_DIR/tools/check_test_tmp_leftovers.sh" "$BUILD_DIR"
+# Every test preset runs in build/<its name> (CMakePresets.json), which is where its per-test temp folders are.
+ctest_status=0
+ctest --preset "$TEST_PRESET" --output-on-failure || ctest_status=$?
+"$ROOT_DIR/tools/check_test_tmp_leftovers.sh" "$ROOT_DIR/build/$TEST_PRESET"
+if [[ $ctest_status -ne 0 ]]; then
+  exit "$ctest_status"
+fi
 
 if ! command -v lcov > /dev/null 2>&1 || ! command -v genhtml > /dev/null 2>&1; then
   echo "lcov/genhtml are required for tools/coverage.sh." >&2

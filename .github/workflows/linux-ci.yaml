@@ -215,8 +215,11 @@ jobs:
           DSD_NEO_REQUIRE_TEST_TOOLS: "1"
         run: |
           ctest --preset dev-debug -N | tail -n 1
-          ctest --preset dev-debug --parallel 2 --output-on-failure
+          # The leftover check runs whatever ctest returned, then the step fails on either.
+          ctest_status=0
+          ctest --preset dev-debug --parallel 2 --output-on-failure || ctest_status=$?
           tools/check_test_tmp_leftovers.sh build/dev-debug
+          exit "$ctest_status"
 
   # Manual only: dispatch this workflow on a branch with dsp_bench set. It builds
   # dsd-neo_bench_dsp (perf-bench preset) for the branch and for its merge base
@@ -458,8 +461,11 @@ jobs:
           DSD_NEO_REQUIRE_TEST_TOOLS: "1"
         run: |
           ctest --preset dev-debug -N | tail -n 1
-          ctest --preset dev-debug --parallel 2 --output-on-failure
+          # The leftover check runs whatever ctest returned, then the step fails on either.
+          ctest_status=0
+          ctest --preset dev-debug --parallel 2 --output-on-failure || ctest_status=$?
           tools/check_test_tmp_leftovers.sh build/dev-debug
+          exit "$ctest_status"
 
   # Every other ctest job is a -O0 Debug build, but what ships is optimized with
   # fast-math. This one runs the suite at -O2 with fast-math and AVX2/FMA code
@@ -534,8 +540,11 @@ jobs:
           DSD_NEO_REQUIRE_TEST_TOOLS: "1"
         run: |
           ctest --preset perf-bench -N | tail -n 1
-          ctest --preset perf-bench --parallel 2 --output-on-failure
+          # The leftover check runs whatever ctest returned, then the step fails on either.
+          ctest_status=0
+          ctest --preset perf-bench --parallel 2 --output-on-failure || ctest_status=$?
           tools/check_test_tmp_leftovers.sh build/perf-bench
+          exit "$ctest_status"
 
   # The same suite built by Clang, the toolchain of the macOS DMG, which treats
   # fast-math more aggressively than GCC: it folds bit tests on floats it computed
@@ -646,8 +655,11 @@ jobs:
             # A test whose tool is missing fails here instead of skipping.
             export DSD_NEO_REQUIRE_TEST_TOOLS=1
             ctest --preset perf-bench -N | tail -n 1
-            ctest --preset perf-bench --parallel 2 --output-on-failure
+            # The leftover check runs whatever ctest returned, then the step fails on either.
+            ctest_status=0
+            ctest --preset perf-bench --parallel 2 --output-on-failure || ctest_status=$?
             tools/check_test_tmp_leftovers.sh build/perf-bench
+            exit "$ctest_status"
           '
 
   build-linux:
@@ -1935,8 +1947,11 @@ jobs:
             export LSAN_OPTIONS="suppressions=${GITHUB_WORKSPACE}/tools/lsan.supp"
             export UBSAN_OPTIONS="halt_on_error=1:print_stacktrace=1"
           fi
-          ctest --preset ${{ matrix.preset }} --parallel 2 --output-on-failure
+          # The leftover check runs whatever ctest returned, then the step fails on either.
+          ctest_status=0
+          ctest --preset ${{ matrix.preset }} --parallel 2 --output-on-failure || ctest_status=$?
           tools/check_test_tmp_leftovers.sh build/${{ matrix.preset }}
+          exit "$ctest_status"
 
       - name: Show ccache stats
         if: env.CI_RUN_CHECK == 'true' && (always())

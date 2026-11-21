@@ -129,6 +129,7 @@ jobs:
         run: cmake --build --preset win-msvc-debug -- -k 0
 
       - name: Test (MSVC Debug)
+        id: test
         shell: pwsh
         env:
           # A test whose tool is missing fails here instead of skipping.
@@ -137,8 +138,10 @@ jobs:
           ctest --preset win-msvc-debug -N | Select-Object -Last 1
           ctest --preset win-msvc-debug --parallel 2 --output-on-failure
 
-      # Every test's temp folder must be empty after it (cmake/TestTmpdir.cmake).
+      # Every test's temp folder must be empty after it (cmake/TestTmpdir.cmake),
+      # checked whenever the tests ran, failed or not.
       - name: Check the tests' temp folders
+        if: ${{ !cancelled() && (steps.test.outcome == 'success' || steps.test.outcome == 'failure') }}
         shell: bash
         run: bash tools/check_test_tmp_leftovers.sh build/win-msvc-debug
 

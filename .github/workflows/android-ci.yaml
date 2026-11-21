@@ -404,8 +404,11 @@ jobs:
       - name: Test
         shell: bash
         run: |
-          ctest --preset dev-debug -R '^(UI_QT_|ENGINE_TRUNK_SCAN_SCAN_LIST$)' --parallel 2 --output-on-failure
+          # The leftover check runs whatever ctest returned, then the step fails on either.
+          ctest_status=0
+          ctest --preset dev-debug -R '^(UI_QT_|ENGINE_TRUNK_SCAN_SCAN_LIST$)' --parallel 2 --output-on-failure || ctest_status=$?
           tools/check_test_tmp_leftovers.sh build/dev-debug
+          exit "$ctest_status"
 
       # The baked RadioReference key is a compile-time constant, so the shipped
       # configuration — a build that carries its own key and must ignore any
@@ -429,8 +432,11 @@ jobs:
             -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
           cmake --build --preset dev-debug -j "$(nproc)" \
             --target dsd-neo_test_ui_qt_radio_reference_model
-          ctest --preset dev-debug -R '^UI_QT_RADIO_REFERENCE$' --parallel 2 --output-on-failure
+          # The leftover check runs whatever ctest returned, then the step fails on either.
+          ctest_status=0
+          ctest --preset dev-debug -R '^UI_QT_RADIO_REFERENCE$' --parallel 2 --output-on-failure || ctest_status=$?
           tools/check_test_tmp_leftovers.sh build/dev-debug
+          exit "$ctest_status"
 
       - name: Show ccache stats
         shell: bash

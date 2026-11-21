@@ -5,15 +5,17 @@
 # tools/check_test_tmp_leftovers.sh over a made-up build tree whose path has a
 # space and glob characters in it: empty per-test folders pass; a leftover named
 # 0, a hidden file, a folder, and a link (named, not followed) each fail naming
-# their test; an entry that is not a folder fails; a missing test-tmp is an
-# error. The check deletes nothing.
+# their test, and two tests' leftovers are each named under their own test; an
+# entry that is not a folder, a linked test folder, a test folder the names file
+# lists but that is missing, an unreadable folder, and a linked test-tmp each
+# fail; a missing test-tmp or names file is an error. The check deletes nothing.
 set -euo pipefail
 
 ROOT_DIR=$(CDPATH='' cd -- "$(dirname -- "$0")/../.." && pwd)
 CHECK="$ROOT_DIR/tools/check_test_tmp_leftovers.sh"
 
 WORK=$(mktemp -d)
-trap 'rm -rf "$WORK"' EXIT
+trap 'chmod -R u+rwx "$WORK" 2> /dev/null || true; rm -rf "$WORK"' EXIT
 BUILD="$WORK/build [debug] *x"
 TMP="$BUILD/test-tmp"
 failures=0
@@ -34,22 +36,23 @@ run() {
   fi
 }
 
-run 2 "does not exist"
-
-mkdir -p "$TMP/CLEAN_A" "$TMP/CLEAN_B"
-run 0 "2 test temp folders .* all empty"
+mkdir -p "$BUILD"
+run 2 "test-tmp is missing"
+mkdir -p "$TMP/CLEAN_A" "$TMP/CLEAN_B" "$TMP/CLEAN_A_B"
+run 2 "test-tmp.names is missing"
+printf 'CLEAN_A\nCLEAN_A_B\nCLEAN_B\n' > "$BUILD/test-tmp.names"
+run 0 "3 test temp folders .* all empty"
 
 touch "$TMP/CLEAN_A/0"
 run 1 "CLEAN_A left 1 entries in its temp folder:"$'\n'"  0"
 rm "$TMP/CLEAN_A/0"
 
-touch "$TMP/CLEAN_B/.hidden"
+touch "$TMP/CLEAN_B/.hidden" "$TMP/CLEAN_A_B/b"
 mkdir "$TMP/CLEAN_A/sub dir"
 touch "$TMP/CLEAN_A/sub dir/inner"
-run 1 "CLEAN_A left 1 entries in its temp folder:"$'\n'"  sub dir"
-run 1 "CLEAN_B left 1 entries in its temp folder:"$'\n'"  \.hidden"
+run 1 "CLEAN_A left 1 entries in its temp folder:"$'\n'"  sub dir"$'\n'".*CLEAN_A_B left 1 entries in its temp folder:"$'\n'"  b"$'\n'".*CLEAN_B left 1 entries in its temp folder:"$'\n'"  \.hidden"
 [[ -e "$TMP/CLEAN_A/sub dir/inner" && -e "$TMP/CLEAN_B/.hidden" ]] || fail "the check deleted a leftover"
-rm -r "$TMP/CLEAN_A/sub dir" "$TMP/CLEAN_B/.hidden"
+rm -r "$TMP/CLEAN_A/sub dir" "$TMP/CLEAN_B/.hidden" "$TMP/CLEAN_A_B/b"
 
 mkdir "$WORK/outside"
 touch "$WORK/outside/keep"
@@ -63,9 +66,28 @@ rm "$TMP/CLEAN_A/link"
 touch "$TMP/stray"
 run 1 "stray in .* is not a test's folder"
 rm "$TMP/stray"
-ln -s "$WORK/outside" "$TMP/LINKED"
-run 1 "LINKED in .* is not a test's folder"
-rm "$TMP/LINKED"
+
+mv "$TMP/CLEAN_B" "$WORK/clean_b"
+run 1 "1 of the folders .* are missing"
+ln -s "$WORK/clean_b" "$TMP/CLEAN_B"
+run 1 "CLEAN_B in .* is not a test's folder"
+rm "$TMP/CLEAN_B"
+mv "$WORK/clean_b" "$TMP/CLEAN_B"
+
+if [[ $(id -u) -ne 0 ]]; then
+  # A folder the walk cannot read fails the check rather than reading as empty.
+  touch "$TMP/CLEAN_B/hidden-by-mode"
+  chmod 000 "$TMP/CLEAN_B"
+  run 1 "could not be read completely"
+  chmod 755 "$TMP/CLEAN_B"
+  rm "$TMP/CLEAN_B/hidden-by-mode"
+fi
+
+mv "$TMP" "$WORK/real-tmp"
+ln -s "$WORK/real-tmp" "$TMP"
+run 2 "test-tmp is missing or not a folder"
+rm "$TMP"
+mv "$WORK/real-tmp" "$TMP"
 
 run 0 "all empty"
 

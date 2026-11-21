@@ -4149,11 +4149,18 @@ CTest gives every test a temp directory of its own,
 step in the generated `CTestCustom.cmake`), so a run starts clean even after one
 that left files; run one ctest at a time per build tree.
 `tools/check_test_tmp_leftovers.sh build/<preset>` runs after ctest in every CI
-job that runs it and in `tools/preflight_ci.sh` (on `build/dev-debug`). It lists
-each test's directory one level deep, without following links, fails naming
-each test whose directory is not empty and what it left, and deletes nothing:
-the files stay for a look until the next ctest run. Run it yourself after a
-local ctest run:
+job that runs it, whether ctest passed or not, and in `tools/preflight_ci.sh`
+(on `build/dev-debug`). It walks `test-tmp` two levels deep in one traversal,
+without following links, fails naming each test whose directory is not empty
+and what it left, and deletes nothing: the files stay for a look until the next
+ctest run. It fails closed: an unreadable directory, a linked `test-tmp` or test
+directory, a stray entry, or a test directory `build/<preset>/test-tmp.names`
+lists but that is missing each fail the check. The pre-test step is written
+into each binary directory that registers tests as well as the top, so
+`ctest --test-dir build/<preset>/tests` starts clean too. Each test also gets
+`GIT_CEILING_DIRECTORIES` at `test-tmp`, so git run in a test's scratch
+repository never finds the checkout's own repository above it. Run the check
+yourself after a local ctest run:
 
 ```sh
 ctest --preset dev-debug --output-on-failure
@@ -4164,18 +4171,19 @@ tools/check_test_tmp_leftovers.sh build/dev-debug
 tests (`tests/`, `tests/fuzz/`, `apps/dsd-cli/`); a test registered after that
 call gets no directory of its own.
 
-The JVM ignores `TMPDIR`, so `tests/android/run_jvm_tests.py` runs each Kotlin
-test in a directory of its own, as its `java.io.tmpdir`, native temp directory
-and working directory, and fails naming anything the test left there, also when
-the test itself failed. Before each test it asks the JVM which `java.io.tmpdir`
-it ends up with (`-XshowSettings:properties`): `_JAVA_OPTIONS`, or an options
-file named there, can replace the command line's, and the runner refuses to run
-the test then. Relative files that `JAVA_TOOL_OPTIONS`, `JDK_JAVA_OPTIONS` or
-`_JAVA_OPTIONS` name (`@argfiles`, `-XX:VMOptionsFile=`, `-XX:Flags=`) are made
-absolute first, since the working directory changes. The compiler JVM's
-`java.io.tmpdir` is the build's own temp directory. Every JVM runs with
-`-XX:-UsePerfData`, whose `hsperfdata_<user>` directory would otherwise stay in
-the system temp directory.
+The JVM ignores `TMPDIR`, so `tests/android/run_jvm_tests.py` gives each Kotlin
+test a directory of its own as its `java.io.tmpdir` and native temp directory,
+and fails naming anything the test left there, also when the test itself
+failed. Tests run in the caller's working directory, so relative files the
+caller's JVM options name still resolve; only `FileListingTest`, which binds a
+Unix socket by a short relative name, runs in its temp directory. Every JVM
+runs with `-XX:-UsePerfData`, whose `hsperfdata_<user>` directory would
+otherwise stay in the system temp directory. Before compiling and before each
+test, the runner asks the JVM what it ends up with (`-XshowSettings:properties`
+and `-XX:+PrintFlagsFinal`): `_JAVA_OPTIONS`, or an options file named there,
+can override the command line, and the runner refuses to run when the
+`java.io.tmpdir` is not its own or `UsePerfData` is back on. It also refuses a
+`JAVA_OPTS` for kotlinc that sets either.
 
 That does not catch a file a test creates by a relative path, which lands in its
 working directory: `build/dev-debug/tests` for most tests, the source tree for
