@@ -233,11 +233,61 @@ unchecked_capmax_aloha_keeps_checked_cap_plus(void) {
     free(opts);
 }
 
+/* The C_ALOHA brands the carrier Motorola only when its own CRC passed. */
+static void
+unchecked_aloha_sets_no_motorola_branding(void) {
+    dsd_opts* opts = (dsd_opts*)calloc(1U, sizeof(*opts));
+    assert(opts != NULL);
+    dsd_state* state = new_state();
+    run_aloha(opts, state, 1);
+    assert(state->dmr_branding[0] == '\0');
+    free_state(state);
+
+    state = new_state();
+    run_aloha(opts, state, 0);
+    assert(strcmp(state->dmr_branding, "Motorola") == 0);
+    free_state(state);
+    free(opts);
+}
+
+/* On a Tier III record a checked system code named, a RAS-accepted C_ALOHA of the same network still recognises
+   Capacity Max (the RAS Capacity Max site whose checked system code came first); one of another network adds no
+   marker beside the checked code. Network 1 is code 0x2101 (Large, net 1, site 1), network 2 is 0x2201. */
+static void
+unchecked_aloha_on_tier3_record(void) {
+    dsd_opts* opts = (dsd_opts*)calloc(1U, sizeof(*opts));
+    assert(opts != NULL);
+    dsd_state* state = new_state();
+    dsd_rxid_note_dmr_t3_syscode(state, 0x2101U);
+    assert(state->rx_id.dmr_trunk == (uint8_t)DSD_RXID_DMR_TRUNK_TIER3);
+    run_aloha(opts, state, 1);
+    assert(dsd_rxid_dmr_t3_is_capmax(state, 2U, 1U));
+    free_state(state);
+
+    state = new_state();
+    dsd_rxid_note_dmr_t3_syscode(state, 0x2201U);
+    run_aloha(opts, state, 1);
+    assert((state->rx_id.valid & DSD_RXID_DMR_T3_CAPMAX) == 0U);
+    assert(!dsd_rxid_dmr_t3_is_capmax(state, 2U, 1U));
+    assert((state->rx_id.valid & DSD_RXID_DMR_T3_SYSCODE) != 0U && state->rx_id.dmr_t3_syscode == 0x2201U);
+    free_state(state);
+
+    // Control: a checked C_ALOHA of the other network is new checked evidence and recognises it.
+    state = new_state();
+    dsd_rxid_note_dmr_t3_syscode(state, 0x2201U);
+    run_aloha(opts, state, 0);
+    assert(dsd_rxid_dmr_t3_is_capmax(state, 2U, 1U));
+    free_state(state);
+    free(opts);
+}
+
 int
 main(void) {
     unchecked_lc_keeps_checked_brand();
     unchecked_csbk_keeps_checked_vendor();
     unchecked_capmax_aloha_keeps_checked_cap_plus();
+    unchecked_aloha_sets_no_motorola_branding();
+    unchecked_aloha_on_tier3_record();
     dsd_opts* opts = (dsd_opts*)calloc(1U, sizeof(*opts));
     assert(opts != NULL);
     for (size_t i = 0; i < sizeof(k_cases) / sizeof(k_cases[0]); i++) {

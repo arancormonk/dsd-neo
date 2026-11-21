@@ -4520,22 +4520,22 @@ suite runs under this compiler.
   numbers (`dmr_net`, `dmr_site`, Tier III's `dmr_t3_model`; `DSD_RXID_DMR_NET`/`DSD_RXID_DMR_SITE`, noted with the
   text by `dsd_rxid_note_dmr_site()`, the only way a DMR site is noted), and only they tell one site from another:
   the site text is presentation (it follows `-D` and the network's numbering, see Protocols, "Received identity note
-  points") and is never compared. Text copies zero their whole field, so equal notes leave equal bytes. One part is
-  the decoder's, not the carrier's identity: the Capacity Max marker (`DSD_RXID_DMR_T3_CAPMAX`,
-  `dmr_t3_capmax_model`/`dmr_t3_capmax_net`, `dsd_rxid_note_dmr_t3_capmax()`, `dsd_rxid_dmr_t3_is_capmax()`) names
-  the Tier III network (model and raw network, never `syscode >> SITE width`, which two models can share) a C_ALOHA
+  points") and is never compared. Text copies zero their whole field, so equal notes leave equal bytes. One part is the
+  decoder's, not the carrier's identity: the Capacity Max marker (`DSD_RXID_DMR_T3_CAPMAX`,
+  `dmr_t3_capmax_model`/`dmr_t3_capmax_net`, `dsd_rxid_note_dmr_t3_capmax()`, `dsd_rxid_dmr_t3_is_capmax()`) names the
+  Tier III network (model and raw network, never `syscode >> SITE width`, which two models can share) a C_ALOHA
   recognised as Motorola Capacity Max, so the DMR decoder writes that network's site text with raw numbers and the
   `DSD_RXID_T3_CAPMAX_TOKEN` part. It is the one note a RAS-accepted message under `-F` may make (it publishes no
-  number), and such a note never displaces another trunking system's checked parts
-  (`dsd_rxid_note_dmr_t3_capmax_unchecked()`: on a record of another system it changes nothing). It is set valid
-  and never fresh, noting or dropping it alone never moves the epoch, and no site snapshot,
-  compare, union, store or API feed carries it. It goes with the DMR system parts (another access code, the DMR reset)
-  and the trunking parts (another trunking system), and a Tier III system code of another network drops it; another
-  site of the same network, a trunk tune, the RAS reset and the no-carrier pass keep it. One site can so carry two
-  texts (standard before recognition, Capacity Max after): a merge keeps the one that names Capacity Max
-  (`dsd_rxid_site_union()`), the `-J` event line keeps the part (`SITE: Capacity Max Net 1 Site 1;`), and Qt History
-  re-reads a row whose text alone changed (its seen digest, Frontends, "Call history site and channel"). Threading:
-  the decoder thread owns the record and is its only writer; wherever the P25 watchdog's tick can run beside it, every write is made under the P25 SM tick
+  number), and such a note never contradicts a checked part (`dsd_rxid_note_dmr_t3_capmax_unchecked()`: on a record of
+  another trunking system, or beside a checked Tier III system code of another network, it changes nothing). It is set
+  valid and never fresh, noting or dropping it alone never moves the epoch, and no site snapshot, compare, union, store
+  or API feed carries it. It goes with the DMR system parts (another access code, the DMR reset) and the trunking parts
+  (another trunking system), and a Tier III system code of another network drops it; another site of the same network, a
+  trunk tune, the RAS reset and the no-carrier pass keep it. One site can so carry two texts (standard before
+  recognition, Capacity Max after): a merge keeps the one that names Capacity Max (`dsd_rxid_site_union()`), the `-J`
+  event line keeps the part (`SITE: Capacity Max Net 1 Site 1;`), and Qt History re-reads a row whose text alone changed
+  (its seen digest, Frontends, "Call history site and channel"). Threading: the decoder thread owns the record and is
+  its only writer; wherever the P25 watchdog's tick can run beside it, every write is made under the P25 SM tick
   guard (a frame's notes in `processFrame()`, the no-carrier pass's step, the trunk-scan switches and rollbacks, and the
   user-move, DMR reset and decoder settings commands, `ui_rxid_guard_enter()`, unless `apply_cmd()` holds it), because
   the watchdog's tick reads the record under that guard (the calls its release ends keep it as
