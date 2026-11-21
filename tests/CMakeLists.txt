@@ -16102,6 +16102,21 @@ target_link_libraries(
 )
 add_test(NAME DMR_FLCO_FID0 COMMAND dsd-neo_test_dmr_flco_fid0)
 
+# The Capacity Plus and Connect Plus CSBK branding is set only from a CSBK whose own CRC passed (no RAS/-F acceptance).
+add_executable(
+    dsd-neo_test_dmr_csbk_branding
+    protocol/dmr/test_dmr_csbk_branding.c
+)
+target_include_directories(
+    dsd-neo_test_dmr_csbk_branding
+    PRIVATE ${PROJECT_SOURCE_DIR}/include
+)
+target_link_libraries(
+    dsd-neo_test_dmr_csbk_branding
+    PRIVATE dsd-neo_proto_dmr dsd-neo_app_control dsd-neo_test_support
+)
+add_test(NAME DMR_CSBK_BRANDING COMMAND dsd-neo_test_dmr_csbk_branding)
+
 add_executable(
     dsd-neo_test_dmr_bs_alg_refresh_error
     protocol/dmr/test_dmr_bs_alg_refresh_error.c

@@ -72,14 +72,6 @@ dmr_csbk_crc_checked(const dsd_state* state) {
     return !s_dmr_cspdu_synthesized && state->event_crc_invalid[state->currentslot & 1] == 0U;
 }
 
-/* The trunking brand a checked CSBK names, to the received identity record. */
-static void
-dmr_csbk_note_brand(dsd_state* state, const char* brand) {
-    if (dmr_csbk_crc_checked(state)) {
-        dsd_rxid_note_dmr_brand(state, brand);
-    }
-}
-
 /* The Hytera XPT branding changes how later LCs, preamble CSBKs and data headers are read (a standard header's target
    becomes 16 bits), so only a CSBK whose own CRC passed sets it: one accepted under relaxed RAS handling (-F) never
    does, or a later clean standard header would lose its target's high bits. */
@@ -2128,8 +2120,14 @@ dmr_cspdu_cap_plus_3e_render_activity(const dsd_opts* opts, dsd_state* state, dm
     }
 }
 
+/* Only a CSBK whose own CRC passed brands the site (dmr_csbk_crc_checked(): never one -F accepted as RAS): "Cap+ " reads
+   later data headers and preamble CSBKs with a 16-bit target and source (dmr_block.c, dmr_cspdu_pf0_handle_preamble()),
+   and any brand replaces a checked "XPT " one. */
 static void
 dmr_cspdu_cap_plus_3e_set_branding(dsd_state* state) {
+    if (!dmr_csbk_crc_checked(state)) {
+        return;
+    }
     state->dmr_mfid = 0x10;
     DSD_SNPRINTF(state->dmr_branding, sizeof(state->dmr_branding), "%s", "Motorola");
     DSD_SNPRINTF(state->dmr_branding_sub, sizeof(state->dmr_branding_sub), "%s", "Cap+ ");
@@ -2457,12 +2455,17 @@ dmr_cspdu_handle_cap_plus(dsd_opts* opts, dsd_state* state, uint8_t cs_pdu_bits[
     dmr_cspdu_cap_plus_handle_3e(opts, state, cs_pdu_bits, csbk_o);
 }
 
+/* As dmr_cspdu_cap_plus_3e_set_branding(): only a checked CSBK brands the site, as a "Con+ " brand replaces a "Cap+ "
+   or "XPT " one and the 16-bit layouts they set. */
 static void
 dmr_cspdu_con_plus_set_branding(dsd_state* state) {
+    if (!dmr_csbk_crc_checked(state)) {
+        return;
+    }
     state->dmr_mfid = 0x06;
     DSD_SNPRINTF(state->dmr_branding, sizeof(state->dmr_branding), "%s", "Motorola");
     DSD_SNPRINTF(state->dmr_branding_sub, sizeof(state->dmr_branding_sub), "Con+ ");
-    dmr_csbk_note_brand(state, "Connect Plus");
+    dsd_rxid_note_dmr_brand(state, "Connect Plus");
 }
 
 static void
