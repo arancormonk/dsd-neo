@@ -10825,9 +10825,12 @@ Key public headers:
     2) for the active profile: the Gardner period is clamped around the rounded SPS and slips symbols, so the warning
     says it cannot, with the DSP bandwidths that give that symbol rate a whole number (P25 Phase 2 at 12 kHz has 2 and
     is not warned; TETRA's rate has its own warnings). The FSK decoder is judged at the rate digital_resample hands it
-    (`rtl_demod_digital_resample_target_for()`). The CQPSK stream gets neither the low-DSP-bandwidth warnings nor the
-    rate-chain log's 48 kHz resampler advice, which its symbols bypass. Test: `IO_RTL_DEMOD_CONFIG`
-    (`expect_symbol_timing_warnings()`, `expect_timing_warning_names_planned_rate()`, `expect_low_dsp_bw_warnings()`).
+    (`rtl_demod_digital_resample_target_for()`). The CQPSK stream gets no low-DSP-bandwidth warnings. The rate-chain
+    log's derived-SPS line (`stream_open_log_sps_line()`) is information only: its old "Output rate ... implies
+    atypical SPS" warning, fixed 48 kHz-era windows that fired for every FSK session at 72 kHz, is gone, since the
+    symbol timing scales to any whole number of samples per symbol and this warning covers a fractional one. Test:
+    `IO_RTL_DEMOD_CONFIG` (`expect_symbol_timing_warnings()`, `expect_timing_warning_names_planned_rate()`,
+    `expect_low_dsp_bw_warnings()`, `expect_rate_chain_sps_lines()`).
   - Frontend telemetry is value-only: frontends poll the metrics getter (`src/app_control/frontend.c`) from their own
     threads while the decoder thread soft-stops the stream or replaces the input, which frees the device, the stream
     internals (`g_stream`) and the stream context a UI snapshot copied the pointer of. So every getter on that path

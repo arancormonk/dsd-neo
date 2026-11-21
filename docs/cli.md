@@ -3108,7 +3108,10 @@ Advanced (env)
   own rate now runs at the DSP bandwidth, as an RTL-SDR does, so `auto` looks at that bandwidth: an Airspy at 24 kHz
   gives 4800 sym/s a whole 5 samples per symbol and is no longer resampled to 48 kHz, while at 12 kHz (2.5 samples)
   it still is. A mode change that moves the symbol rate (ProVoice's 9600 sym/s at 24 kHz) makes the same decision
-  again.
+  again. The rate-chain log's `Derived SPS` line is information only. The one FSK timing warning is for a decoder
+  that gets a fractional number of samples per symbol after this decision (`WARNING: The decoder gets 72000 Hz, 7.500
+  samples per symbol for 9600 sym/s; ...`); a rate away from 48 kHz with a whole number is no reason to warn, and the
+  old `Output rate ... implies atypical SPS` warning is gone.
 - RX-888 family radios use the SDDC Soapy module and the `sddc` profile; see `docs/soapysdr.md` for the antenna,
   ADC clock, and throughput requirements.
 - A HackRF runs at 10 MS/s (the `hackrf` profile's preferred rate; near the top of the tuning range it may run a lower
