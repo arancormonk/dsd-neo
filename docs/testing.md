@@ -1039,7 +1039,7 @@ The unit tests:
 | Case | What it pins |
 | --- | --- |
 | `IO_IQ_WAV` | The parser's container rules (RIFF, RF64 and BW64 with chunks after `data`, unfinalized RIFFs with RIFF size 0 and 0xFFFFFFFF, pad bytes and the ambiguous missing-pad layouts, `fmt` after `data`, an empty `data` chunk refused), every encoding and EXTENSIBLE through the reader's `cf32` conversion, 64-bit float extremes (DBL_MAX, infinities, NaN), the reader's partial-read contract (complete frames of a short read returned, the error on the next call; reads smaller than one frame), truncation, rewind and seek, the refusals with their messages, the centre and start time from `auxi` and from file names, `--iq-info`, a sidecar beside a WAV (bogus, or semantically invalid) ignored whether the replay is opened by the `.wav` or the `.json` path, and an unfinalized WAV read near its end past 4 GiB (a sparse file; skipped where the filesystem cannot make one). |
-| `PLATFORM_FILE_LARGE` | `dsd_stat_path()`/`dsd_fstat()` sizes and `dsd_fseek64()`/`dsd_ftell64()` offsets past 2 GiB and 4 GiB, on sparse files (skipped where they cannot be made). |
+| `PLATFORM_FILE_LARGE` | `dsd_stat_path()`/`dsd_fstat()` sizes and `dsd_fseek64()`/`dsd_ftell64()` offsets past 2 GiB and 4 GiB, on sparse files (skipped where they cannot be made). The sparse fixtures (`tests/test_support/sparse_file.h`, also used by `IO_IQ_WAV` and `CORE_WAV_SIZE_PROBE`) set the file's end without writing the gap: on Windows the file is marked sparse, then its end is set with `SetFilePointerEx()` and `SetEndOfFile()` (`_chsize_s()` would write the gap as zeros, which NTFS allocates). |
 | `DSP_IQ_RESAMPLER` | The ratio and its ppm error per case (48,254 to 72,000 Hz is 4063/2723, +0.01 ppm), the filter's edges, passband ripple within 0.1 dB and at least 60 dB at every frequency that folds into the protected band (2.048 to 1.152 MS/s, 48,254 Hz to 72 kHz and others), tone frequency, group delay (measured against the reported one), output independent of how input is cut into calls, no I/Q cross-talk, a clear equal to a fresh design, the output bound, and the refusals. |
 | `IO_IQ_REPLAY_RATE_PLAN` | Every committed fixture sidecar keeps its recorded chain (and every TETRA one under TETRA but the 50 kHz source, which is resampled), the fold of a power-of-two `post_downsample`, the general rule's examples, an explicit request met exactly, the refusals, the applied config passing the replay validators, and the chunk rule (`dsd_iq_replay_chunk_bytes_for()` equal to `dsd_iq_replay_chunk_bytes()` at equal rates, and a resampled chunk within one live transfer). The source-neutral planner (issue #743): for 28 stream rates from 8 kHz to 1.152 MS/s at TETRA's 72 kHz, 48 kHz and 24 kHz, a WAV's and an explicit sidecar's replay plans equal `dsd_iq_plan_general_rate()`'s and a stream's equals the sidecar's, with its R = D x 2^k shape; the stream refusals in its own words (a stream above the 3.2 MS/s ceiling among them, a sidecar at that rate still planned) and the replay's unchanged; and the live block size (`dsd_iq_live_block_samples()`, the replay's equal-rate chunk in samples). |
 | `IO_RTL_REPLAY_RESAMPLE` (radio) | A 48 kHz `cu8` capture with the fs/4 shift, a `MUTE`, a `RETUNE` and `RESET` and a second `MUTE`, replayed at its own chain and under TETRA at 72 kHz: each TETRA block is the native block of the same capture span resampled, the resampler starting over at each event, media spans contiguous but for what a `MUTE` omits, the input level taken from the raw chunk, and identical blocks fast, realtime and with short reads; and a 30 kHz WAV with no centre looping under `--iq-loop`, every pass the same. |
@@ -2315,11 +2315,14 @@ cases. `test_d7_fallback_journal_rdio_flag` expects an API-only upload's sidecar
 which needs the loopback stand-in server (`RDIO_CAPTURE`, not on native Windows, where the queued upload fails and keeps
 the sidecar).
 
-`RUNTIME_RDIO_EXPORT` checks `--rdio-mode both`'s private upload inputs: short names under a 230-character public stem
-(the test folder's file system must allow 255-byte names), no copy and no job after a Stop, a Stop at the sidecar's
+`RUNTIME_RDIO_EXPORT` checks `--rdio-mode both`'s private upload inputs: short names under the longest public stem
+whose temp sidecar (`<stem>.json.tmp.XXXXXX`) fits the test folder's name limit (`pathconf(_PC_NAME_MAX)`, at most 255;
+the case is skipped below 64), no copy and no job after a Stop, a Stop at the sidecar's
 publication (through `dsd_rdio_set_sidecar_published_observer()`, after the private inputs and before the enqueue)
 leaving the job unqueued and its WAV unheld, no private input made for a call a full queue refuses (counted at its
-sidecar's publication), and removals that fail (a read-only folder) leaving their files with one log line a run. The
+sidecar's publication), and removals that fail (a read-only folder) leaving their files with one log line a run; those
+cases first check that a folder turned read-only (`chmod` 0500) really refuses a removal there, and are skipped where it
+does not (as root, or on a FAT or CIFS mount whose options fix the permissions). The
 failures no real file system gives on demand are simulated by test doubles of the calls, linked in through GNU ld
 `--wrap` (`DSD_TEST_WRAP_RDIO_SEAMS`, GCC or Clang builds off macOS and Windows, as the other `--wrap` tests): a hard
 link that fails as on a drive with none while the Stop arrives (the copy fallback then ends), a private open that makes
@@ -2346,7 +2349,9 @@ path (`GetFullPathName()`: for a relative path `GetVolumePathName()` answers the
 between names the probe creates exclusively there, removing only what it made. A link over a taken name must fail with
 `EEXIST`, and a missing source with `ENOENT`, only where the volume takes links; where it takes none, a refusal with the
 files as they were is enough, as a FAT or exFAT volume can refuse the link before it looks at the name, and a runner
-whose policy denies `link()` refuses it with `EPERM` before the source is looked up. A missing source is linked to an
+whose policy denies `link()` refuses it with `EPERM` before the source is looked up. Where the Windows volume cannot be
+asked (its full path or root does not resolve), the capability is unknown: only what holds either way is checked, that
+neither refused link (over a taken name, from a missing source) changes or makes a file. A missing source is linked to an
 unused name, so `ENOENT` does not compete with a taken name. Every fixture and probe name is built with
 `dsd_test_path_join()`, so under a long `DSD_NEO_TEST_TMPDIR` a name that does not fit fails the case before any file is
 touched, and none is cut short to another folder's name.

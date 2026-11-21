@@ -1069,21 +1069,31 @@ win_volume_flags(const char* dir, DWORD* flags) {
 }
 #endif
 
+/* dir_takes_hard_links() answers besides yes (1) and no (0). */
+enum {
+    DIR_LINKS_NAMES_TOO_LONG = -1, /* a probe name does not fit */
+    DIR_LINKS_UNKNOWN = -2,        /* the volume cannot be asked (Windows) */
+};
+
 /* Whether the filesystem holding @p dir, a folder the test made, takes hard links, asked of the platform itself: some
    (FAT-like, exFAT, some FUSE, some shares) do not, and the fallbacks then claim the name or copy instead. On Windows
-   its volume says so (win_volume_flags()); on POSIX a link is tried between names the probe makes in @p dir, and only
-   what it made is removed. -1 when a probe name does not fit, before any file is touched. */
+   its volume says so (win_volume_flags()), DIR_LINKS_UNKNOWN when it cannot be asked; on POSIX a link is tried between
+   names the probe makes in @p dir, and only what it made is removed. DIR_LINKS_NAMES_TOO_LONG when a probe name does
+   not fit, before any file is touched. */
 static int
 dir_takes_hard_links(const char* dir) {
 #if DSD_PLATFORM_WIN_NATIVE
     DWORD flags = 0;
-    return win_volume_flags(dir, &flags) && (flags & FILE_SUPPORTS_HARD_LINKS) != 0;
+    if (!win_volume_flags(dir, &flags)) {
+        return DIR_LINKS_UNKNOWN;
+    }
+    return (flags & FILE_SUPPORTS_HARD_LINKS) != 0;
 #else
     char a[DSD_TEST_PATH_MAX];
     char b[DSD_TEST_PATH_MAX];
     if (dsd_test_path_join(a, sizeof a, dir, "link_probe.a") != 0
         || dsd_test_path_join(b, sizeof b, dir, "link_probe.b") != 0) {
-        return -1;
+        return DIR_LINKS_NAMES_TOO_LONG;
     }
     int opened = 0;
     FILE* fp = dsd_fopen_private_ex(a, "wbx", &opened);
@@ -1108,8 +1118,9 @@ dir_takes_hard_links(const char* dir) {
    name, asked against an unused one so a taken name cannot answer first. Where the filesystem takes none (the exporter
    then copies), a link over an existing name, and a link from a missing source, are refused with the files as they
    were, whatever the reason given: such a volume (FAT, exFAT) can refuse the link before it looks at the name, and a
-   runner whose policy denies link() refuses it (EPERM) before the source is looked up. A fixture name that does not
-   fit fails the test before any file is touched. */
+   runner whose policy denies link() refuses it (EPERM) before the source is looked up. Where the volume cannot be
+   asked (DIR_LINKS_UNKNOWN), only what holds either way is: neither refused link changes or makes a file. A fixture
+   name that does not fit fails the test before any file is touched. */
 static int
 expect_hard_link_in(const char* dir) {
     char from[DSD_TEST_PATH_MAX];
@@ -1122,10 +1133,11 @@ expect_hard_link_in(const char* dir) {
         return 1;
     }
     const int links = dir_takes_hard_links(dir);
-    if (links < 0) {
+    if (links == DIR_LINKS_NAMES_TOO_LONG) {
         DSD_FPRINTF(stderr, "hard link: the probe names do not fit under %s\n", dir);
         return 1;
     }
+    const int known = links >= 0;
     (void)dsd_remove_file(from);
     (void)dsd_remove_file(taken);
     (void)dsd_remove_file(to);
@@ -1137,19 +1149,20 @@ expect_hard_link_in(const char* dir) {
     int ok = 1;
     int same = 0;
     errno = 0;
-    ok = ok && dsd_hard_link(from, taken) == -1 && (!links || errno == EEXIST);
+    ok = ok && dsd_hard_link(from, taken) == -1 && (links != 1 || errno == EEXIST);
     ok = ok && file_text_is(from, "from") && file_text_is(taken, "taken");
-    if (links) {
+    if (links == 1) {
         ok = ok && dsd_hard_link(from, to) == 0 && file_text_is(to, "from");
         ok = ok && dsd_path_same_file(from, to, &same) == 0 && same == 1;
-    } else {
+    } else if (known) {
         ok = ok && dsd_hard_link(from, to) == -1 && !file_exists(to);
     }
     ok = ok && dsd_remove_file(from) == 0;
-    ok = ok && (links ? file_text_is(to, "from") : !file_exists(to));
-    ok = ok && (!links || dsd_remove_file(to) == 0);
+    ok = ok && (links == 1 ? file_text_is(to, "from") : !file_exists(to));
+    ok = ok && (links != 1 || dsd_remove_file(to) == 0);
     errno = 0;
-    ok = ok && dsd_hard_link(from, to) == -1 && (!links || errno == ENOENT) && !file_exists(to) && !file_exists(from);
+    ok = ok && dsd_hard_link(from, to) == -1 && (links != 1 || errno == ENOENT) && !file_exists(to)
+         && !file_exists(from);
     (void)dsd_remove_file(from);
     (void)dsd_remove_file(taken);
     (void)dsd_remove_file(to);

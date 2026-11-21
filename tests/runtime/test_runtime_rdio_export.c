@@ -4310,32 +4310,54 @@ rdio_eager_watch_measures(const char* meta_path) {
 }
 #endif
 
-// Issue #888: a "both" recording whose public names fit the file system's 255-byte name limit is uploaded, however
-// long its stem: the private inputs are named by this run's id and a number, at most 45 characters, not after the
-// public stem. Before, they were the stem with the id and suffix appended, 35 characters more, so a 230-character
-// stem that fits the WAV, the sidecar and its temp file had no private inputs and was never uploaded.
+#if defined(USE_CURL) && !DSD_PLATFORM_WIN_NATIVE
+/* The longest stem whose temp sidecar (<stem>.json.tmp.XXXXXX, 16 characters more) still fits the name limit of
+   folder @p dir, at most 255 characters; 0 when that limit leaves no room for the test (the private names' 45
+   characters, and a stem longer than them). */
+static size_t
+rdio_test_longest_stem_in(const char* dir) {
+    errno = 0;
+    const long name_max = pathconf(dir, _PC_NAME_MAX);
+    const long limit = (name_max < 0 || name_max > 255) ? 255 : name_max;
+    return limit >= 64 ? (size_t)(limit - 16) : 0U;
+}
+#endif
+
+// Issue #888: a "both" recording whose public names fit the file system's name limit is uploaded, however long its
+// stem: the private inputs are named by this run's id and a number, at most 45 characters, not after the public stem.
+// Before, they were the stem with the id and suffix appended, 35 characters more, so the longest stem that fits the
+// WAV, the sidecar and its temp file (239 characters under the usual 255-byte limit) had no private inputs and was
+// never uploaded. The stem is sized from the test folder's own limit (an eCryptfs folder takes 143).
 static int
 test_both_mode_private_names_do_not_grow_with_the_stem(void) {
 #if !defined(USE_CURL) || DSD_PLATFORM_WIN_NATIVE
     return 0;
 #else
     static const char* const audio = "RIFF-both-long-stem-audio";
-    char stem[231];
-    DSD_MEMSET(stem, 'L', sizeof(stem) - 1U);
-    stem[sizeof(stem) - 1U] = '\0';
-    char want_wav[240];
-    char want_json[240];
-    DSD_SNPRINTF(want_wav, sizeof(want_wav), "%s.wav", stem);
-    DSD_SNPRINTF(want_json, sizeof(want_json), "%s.json", stem);
     rdio_test_http_server server;
     char api_url[128] = {0};
     char dir[DSD_TEST_PATH_MAX] = {0};
     char wav[DSD_TEST_PATH_MAX] = {0};
     char json[DSD_TEST_PATH_MAX] = {0};
+    if (!dsd_test_mkdtemp(dir, sizeof(dir), "dsdneo_rdio_both_long")) {
+        return 1;
+    }
+    const size_t stem_len = rdio_test_longest_stem_in(dir);
+    if (stem_len == 0U) {
+        DSD_FPRINTF(stderr, "both long stem: skipped, the test folder's name limit is too short\n");
+        rdio_test_remove_dir_tree(dir);
+        return 0;
+    }
+    char stem[256];
+    DSD_MEMSET(stem, 'L', stem_len);
+    stem[stem_len] = '\0';
+    char want_wav[264];
+    char want_json[264];
+    DSD_SNPRINTF(want_wav, sizeof(want_wav), "%s.wav", stem);
+    DSD_SNPRINTF(want_json, sizeof(want_json), "%s.json", stem);
     dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(*opts));
     Event_History_I* hist = (Event_History_I*)calloc(1, sizeof(*hist));
-    if (!opts || !hist || !dsd_test_mkdtemp(dir, sizeof(dir), "dsdneo_rdio_both_long")
-        || dsd_test_path_join(wav, sizeof(wav), dir, want_wav) != 0
+    if (!opts || !hist || dsd_test_path_join(wav, sizeof(wav), dir, want_wav) != 0
         || rdio_test_http_server_start_n(&server, api_url, sizeof(api_url), NULL, 0, 5000U, 1) != 0) {
         rdio_test_remove_dir_tree(dir);
         free(hist);
@@ -4700,26 +4722,52 @@ rdio_meta_left_after_failed_wav_said_once(const dsd_opts* opts, Event_History_I*
 }
 #endif
 
+#if defined(USE_CURL) && !DSD_PLATFORM_WIN_NATIVE
+/* Whether a read-only folder (chmod 0500) keeps a file in @p dir from being removed here: not as root, nor on a mount
+   whose permissions are fixed by its options (FAT, CIFS), where chmod fails or changes nothing. The folder is left
+   writable and empty of the probe. */
+static int
+rdio_test_read_only_dir_denies_removal(const char* dir) {
+    char probe[DSD_TEST_PATH_MAX];
+    if (dsd_test_path_join(probe, sizeof(probe), dir, "ro_probe") != 0) {
+        return 0;
+    }
+    FILE* f = dsd_fopen_private(probe, "wb");
+    if (f == NULL) {
+        return 0;
+    }
+    (void)fclose(f);
+    const int denied = chmod(dir, 0500) == 0 && remove(probe) != 0;
+    (void)chmod(dir, 0700);
+    (void)remove(probe);
+    return denied;
+}
+#endif
+
 // Issue #888 (Windows limit, here by a read-only folder): private inputs whose removal fails are left in place and said
 // once a run, not once a job: a partial copy's (where the link seams can make one) and those of the jobs' end. Skipped
-// as root, whom a read-only folder does not stop.
+// where a read-only folder does not stop a removal (as root, or on a mount that ignores the folder's mode).
 static int
 test_both_mode_failed_private_removal_said_once(void) {
 #if !defined(USE_CURL) || DSD_PLATFORM_WIN_NATIVE
     return 0;
 #else
-    if (geteuid() == 0) {
-        return 0;
-    }
     dsd_socket_t stalled = DSD_INVALID_SOCKET;
     char api_url[128] = {0};
     char dir[DSD_TEST_PATH_MAX] = {0};
     char wav[2][DSD_TEST_PATH_MAX] = {{0}};
     char json[2][DSD_TEST_PATH_MAX] = {{0}};
+    if (!dsd_test_mkdtemp(dir, sizeof(dir), "dsdneo_rdio_both_ro")) {
+        return 1;
+    }
+    if (!rdio_test_read_only_dir_denies_removal(dir)) {
+        DSD_FPRINTF(stderr, "both read-only folder: skipped, a read-only folder does not stop a removal here\n");
+        rdio_test_remove_dir_tree(dir);
+        return 0;
+    }
     dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(*opts));
     Event_History_I* hist = (Event_History_I*)calloc(1, sizeof(*hist));
-    if (!opts || !hist || !dsd_test_mkdtemp(dir, sizeof(dir), "dsdneo_rdio_both_ro")
-        || rdio_test_stalled_server_start(&stalled, api_url, sizeof(api_url)) != 0) {
+    if (!opts || !hist || rdio_test_stalled_server_start(&stalled, api_url, sizeof(api_url)) != 0) {
         rdio_test_remove_dir_tree(dir);
         free(hist);
         free(opts);
