@@ -105,7 +105,6 @@ plant_checked_header(dsd_state* state, uint32_t mt, uint32_t mode, uint32_t vers
     sync->checked_clock = state->symbol_clock;
     sync->checked_epoch = state->symbol_clock_epoch;
     sync->checked_frame_lag = 0U;
-    sync->checked_end_attached = 0U;
     state->synctype = DSD_SYNC_DPMR_FS1_POS;
 }
 
@@ -331,35 +330,6 @@ test_dispatch_end_sync_tightens_sync_loss_end(void) {
     assert(dsd_call_state_get(state, 0U, &call) > 0);
     assert(call.phase == DSD_CALL_PHASE_ENDED);
     assert(call.end_reason == (uint8_t)DSD_CALL_END_TERMINATOR);
-}
-
-/* Issue #890: a header the frame sync held comes with the END that decided it attached, and the one dispatch handles
-   both, the header first: a status poll's header then its END, the END ending the call as a terminator and forgetting
-   the confirmation, with no further sync or input needed (an input that ends at the terminator keeps it). A header
-   without one ends nothing. */
-static void
-test_dispatch_header_with_its_end_attached(void) {
-    dsd_opts* opts = g_opts;
-    dsd_state* state = g_state;
-    DSD_MEMSET(opts, 0, sizeof(*opts));
-    DSD_MEMSET(state, 0, sizeof(*state));
-    open_voice_call(state);
-    state->dpmr_confirmed = 1;
-
-    plant_checked_header(state, 0x8U, 0U, 0U); /* a Status Polling Request: no call of its own */
-    assert(dsd_dispatch_handle_dpmr(opts, state) == DSD_FRAME_VERDICT_PROFILE_PROVEN);
-    dsd_call_snapshot call;
-    assert(dsd_call_state_get(state, 0U, &call) > 0 && call.phase == DSD_CALL_PHASE_ACTIVE);
-
-    plant_checked_header(state, 0x8U, 0U, 0U);
-    state->dpmr_sync.checked_end_attached = 1U;
-    state->dpmr_sync.checked_end_copies = DSD_DPMR_SYNC_COPY_0;
-    DSD_MEMSET(state->dpmr_sync.checked_end_bits, 0, sizeof(state->dpmr_sync.checked_end_bits));
-    assert(dsd_dispatch_handle_dpmr(opts, state) == DSD_FRAME_VERDICT_PROFILE_PROVEN);
-    assert(dsd_call_state_get(state, 0U, &call) > 0 && call.phase == DSD_CALL_PHASE_ENDED);
-    assert(call.end_reason == (uint8_t)DSD_CALL_END_TERMINATOR);
-    assert(state->dpmr_confirmed == 0);
-    assert(state->dpmr_sync.checked_end_attached == 0U); /* taken once */
 }
 
 /* Issue #890 (A6, B9): only an end frame that passed its CRC-7 ends the call; an FS3 no checked END stands behind leaves
@@ -824,7 +794,6 @@ main(void) {
     test_dispatch_unconfirmed_voice_sync_opens_no_capture();
     test_dispatch_end_sync_tightens_sync_loss_end();
     test_dispatch_unchecked_end_keeps_the_call();
-    test_dispatch_header_with_its_end_attached();
     test_dispatch_checked_header_opens_its_call();
     test_dispatch_powersave_headers_open_one_call();
     test_dispatch_powersave_headers_with_lost_ones();

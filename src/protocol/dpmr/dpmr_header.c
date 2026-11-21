@@ -78,37 +78,18 @@ dpmr_take_checked_header(dsd_state* state, dpmr_header* out) {
     return 1;
 }
 
-static void
-dpmr_end_fields(const uint8_t* end, uint8_t copies, dpmr_end_frame* out) {
-    /* Table 5.44: ET 2, ARQ 2, Tx_WAIT 4, STAT 5, RSVD 4 (17 bits, 11.6). */
-    out->end_type = dpmr_field(end, 0, 2);
-    out->ack_request = dpmr_field(end, 2, 2);
-    out->tx_wait = dpmr_field(end, 4, 4);
-    out->status = dpmr_field(end, 8, 5);
-    out->copies = copies;
-}
-
 int
 dpmr_take_checked_end(dsd_state* state, dpmr_end_frame* out) {
     if (state == NULL || out == NULL || !dpmr_take_checked(state, DSD_DPMR_SYNC_FRAME_END)) {
         return 0;
     }
-    dpmr_end_fields(state->dpmr_sync.checked_bits, state->dpmr_sync.checked_copies, out);
-    return 1;
-}
-
-int
-dpmr_take_checked_end_after_header(dsd_state* state, dpmr_end_frame* out) {
-    if (state == NULL || out == NULL) {
-        return 0;
-    }
-    dsd_dpmr_frame_sync* sync = &state->dpmr_sync;
-    if (sync->checked_end_attached == 0U || sync->checked_clock != state->symbol_clock
-        || sync->checked_epoch != state->symbol_clock_epoch) {
-        return 0;
-    }
-    sync->checked_end_attached = 0U;
-    dpmr_end_fields(sync->checked_end_bits, sync->checked_end_copies, out);
+    const uint8_t* end = state->dpmr_sync.checked_bits;
+    /* Table 5.44: ET 2, ARQ 2, Tx_WAIT 4, STAT 5, RSVD 4 (17 bits, 11.6). */
+    out->end_type = dpmr_field(end, 0, 2);
+    out->ack_request = dpmr_field(end, 2, 2);
+    out->tx_wait = dpmr_field(end, 4, 4);
+    out->status = dpmr_field(end, 8, 5);
+    out->copies = state->dpmr_sync.checked_copies;
     return 1;
 }
 

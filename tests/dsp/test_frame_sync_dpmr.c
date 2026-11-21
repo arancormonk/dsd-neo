@@ -908,10 +908,8 @@ test_faded_fs1_sign_pattern_does_not_displace_a_header(void) {
 
 /* A header that passed on MI1 alone while a later FS1 that can read a frame is pending keeps its END window (issue
    #890): the 24 symbols before a status poll's MI1 carry FS1's signs at half level (MI0's tail, so MI0 fails, and the
-   channel code), and its END follows at once. The END, checked where the header puts it, corroborates the header once
-   the later candidate fails its two copies: the header is accepted with the END attached, both dispatched together,
-   the header timed from its own frame. So is it when the input ends right after the END, before the later candidate
-   could be decided: the END is not lost with the cut. */
+   channel code), and its END follows at once. The END, checked where the header puts it, corroborates the header:
+   both are accepted, the header first, each at its own frame's end, as they are when no FS1 pattern is there. */
 static void
 test_end_corroborates_a_header_a_later_fs1_shadows(void) {
     static const uint8_t k_preamble[DPMR_SPEC_PREAMBLE_DIBITS] = {
@@ -934,97 +932,36 @@ test_end_corroborates_a_header_a_later_fs1_shadows(void) {
     assert(dpmr_spec_word(DPMR_FRAME_SYNC_1, fs1) == 24);
     DSD_MEMCPY(mi0_cc + sizeof(mi0_cc) - 24U, fs1, 24U);
 
-    for (int cut = 0; cut < 2; cut++) {
-        setup(g_opts, g_state, MODE_DPMR, 0);
-        stream_reset();
-        put_filler(80);
-        put_dibits(k_preamble, DPMR_SPEC_PREAMBLE_DIBITS);
-        put_word(DPMR_FRAME_SYNC_1);
-        put_dibits(mi0_cc, (int)sizeof(mi0_cc));
-        fade(g_len - 24, g_len, 0.5f); /* outer levels +-1.5: a span of 3, a word that can read a frame */
-        put_bits(mi, DPMR_SPEC_MI_WIRE);
-        const int header_end = g_len;
-        put_end(DPMR_FRAME_SYNC_3, end, END_ONE_RUN, 0, 0);
-        const int end_at = g_len;
-        put_filler(200);
-        if (cut) {
-            g_interrupt_at = end_at; /* the read after the END's last symbol: the input ends there */
-        }
-        const int sync = hunt(g_opts, g_state, g_len);
-        const dsd_dpmr_frame_sync* sync_state = &g_state->dpmr_sync;
-        if (sync != DSD_SYNC_DPMR_FS1_POS || sync_state->checked_end_attached != 1U) {
-            DSD_FPRINTF(stderr, "shadowed header (cut %d): sync %d at %d end %u, want %d with its END (frame end %d)\n",
-                        cut, sync, g_pos, (unsigned)sync_state->checked_end_attached, DSD_SYNC_DPMR_FS1_POS,
-                        header_end);
-        }
-        assert(sync == DSD_SYNC_DPMR_FS1_POS);
-        assert(checked_bits_equal(g_state, info, DPMR_SPEC_MI_BITS));
-        assert(sync_state->checked_copies == DSD_DPMR_SYNC_COPY_1);
-        assert(sync_state->checked_frame_lag == (uint32_t)(g_state->symbol_clock - (uint64_t)header_end));
-        assert(sync_state->checked_end_attached == 1U);
-        assert(memcmp(sync_state->checked_end_bits, end, DPMR_SPEC_END_BITS) == 0);
-        assert(hunt(g_opts, g_state, g_len) == DSD_SYNC_NONE);
-        free_state_buffers(g_state);
+    setup(g_opts, g_state, MODE_DPMR, 0);
+    stream_reset();
+    put_filler(80);
+    put_dibits(k_preamble, DPMR_SPEC_PREAMBLE_DIBITS);
+    put_word(DPMR_FRAME_SYNC_1);
+    put_dibits(mi0_cc, (int)sizeof(mi0_cc));
+    fade(g_len - 24, g_len, 0.5f); /* outer levels +-1.5: a span of 3, a word that can read a frame */
+    put_bits(mi, DPMR_SPEC_MI_WIRE);
+    const int header_end = g_len;
+    put_end(DPMR_FRAME_SYNC_3, end, END_ONE_RUN, 0, 0);
+    const int end_at = g_len;
+    put_filler(200);
+    int sync = hunt(g_opts, g_state, g_len);
+    if (sync != DSD_SYNC_DPMR_FS1_POS) {
+        DSD_FPRINTF(stderr, "shadowed header: sync %d at %d, want %d (frame end %d)\n", sync, g_pos,
+                    DSD_SYNC_DPMR_FS1_POS, header_end);
     }
-}
-
-/* An END that overlaps a later header candidate still unresolved is not published before the candidate (issue #890).
-   A false FS1 72 symbols before a voice header (called 1, calling 2, mode 0, format 1, TS 102 658 Table 5.4) frames
-   the header's MI0 as its own MI1; one sign error in the header's channel code (colour code 28, 7D5FF5, Table 6.1)
-   makes it FS3 where the false frame's END would be, and the start of MI1 reads there as an END copy that passes. Both
-   of the header's MI copies pass, so the header is the frame: accepted at its end, with no END. */
-static void
-test_end_inside_a_later_header_waits_for_it(void) {
-    static const uint8_t k_preamble[DPMR_SPEC_PREAMBLE_DIBITS] = {
-        1, 1, 3, 3, 1, 1, 3, 3, 1, 1, 3, 3, 1, 1, 3, 3, 1, 1, 3, 3, 1, 1, 3, 3, 1, 1, 3, 3, 1, 1, 3, 3, 1, 1, 3, 3,
-    };
-    const dpmr_spec_header voice = {.mt = 0U, .called = 1U, .calling = 2U, .mode = 0U, .version = 0U, .format = 1U};
-    uint8_t info[DPMR_SPEC_MI_BITS];
-    uint8_t mi[DPMR_SPEC_MI_WIRE];
-    uint8_t cc_bits[24];
-    uint8_t cc[12];
-    dpmr_spec_header_bits(&voice, info);
-    dpmr_spec_encode_mi(info, mi);
-    dpmr_spec_put(cc_bits, 0, 24, 0x7D5FF5U);
-    dpmr_spec_dibits(cc_bits, 24, cc);
-    cc[4] ^= 2U; /* one sign error: the channel code now reads FS3 */
-    char signs[13];
-    for (int i = 0; i < 12; i++) {
-        signs[i] = cc[i] <= 1U ? '1' : '3';
+    assert(sync == DSD_SYNC_DPMR_FS1_POS);
+    assert(checked_bits_equal(g_state, info, DPMR_SPEC_MI_BITS));
+    assert(g_state->dpmr_sync.checked_frame_lag == (uint32_t)(g_pos - header_end));
+    sync = hunt(g_opts, g_state, g_len);
+    if (sync != DSD_SYNC_DPMR_FS3_POS) {
+        DSD_FPRINTF(stderr, "its END: sync %d at %d, want %d (frame end %d)\n", sync, g_pos, DSD_SYNC_DPMR_FS3_POS,
+                    end_at);
     }
-    signs[12] = '\0';
-    assert(strcmp(signs, DPMR_FRAME_SYNC_3) == 0);
-
-    int failed = 0;
-    for (int preamble = 0; preamble <= DPMR_SPEC_PREAMBLE_DIBITS; preamble += DPMR_SPEC_PREAMBLE_DIBITS) {
-        setup(g_opts, g_state, MODE_DPMR, 0);
-        stream_reset();
-        put_filler(80);
-        put_word(DPMR_FRAME_SYNC_1);
-        put_filler(48 - preamble);
-        put_dibits(k_preamble + (DPMR_SPEC_PREAMBLE_DIBITS - preamble), preamble);
-        put_word(DPMR_FRAME_SYNC_1);
-        put_bits(mi, DPMR_SPEC_MI_WIRE);
-        put_dibits(cc, 12);
-        put_bits(mi, DPMR_SPEC_MI_WIRE);
-        const int header_end = g_len;
-        put_filler(300);
-        const int sync = hunt(g_opts, g_state, g_len);
-        const unsigned copies = g_state->dpmr_sync.checked_copies;
-        const unsigned end_attached = g_state->dpmr_sync.checked_end_attached;
-        const int at = g_pos;
-        const int next = hunt(g_opts, g_state, g_len);
-        if (sync != DSD_SYNC_DPMR_FS1_POS || at != header_end || copies != (DSD_DPMR_SYNC_COPY_0 | DSD_DPMR_SYNC_COPY_1)
-            || end_attached != 0U || next != DSD_SYNC_NONE) {
-            DSD_FPRINTF(stderr,
-                        "END inside a later header (%d preamble): sync %d at %d copies %u end %u next %d, want %d at "
-                        "%d\n",
-                        preamble, sync, at, copies, end_attached, next, DSD_SYNC_DPMR_FS1_POS, header_end);
-            failed = 1;
-        }
-        free_state_buffers(g_state);
-    }
-    assert(!failed);
+    assert(sync == DSD_SYNC_DPMR_FS3_POS);
+    assert(checked_bits_equal(g_state, end, DPMR_SPEC_END_BITS));
+    assert(g_state->dpmr_sync.checked_frame_lag == (uint32_t)(g_pos - end_at));
+    assert(hunt(g_opts, g_state, g_len) == DSD_SYNC_NONE);
+    free_state_buffers(g_state);
 }
 
 /* A later FS1 whose levels can read a frame is kept to its own check, MI1 included, before either frame is published
@@ -1242,7 +1179,6 @@ main(int argc, char** argv) {
     test_faded_fs1_sign_pattern_does_not_displace_a_header();
     test_viable_later_fs1_is_checked_on_both_copies();
     test_end_corroborates_a_header_a_later_fs1_shadows();
-    test_end_inside_a_later_header_waits_for_it();
     test_reserved_start_mode_copy_is_no_copy();
     test_header_both_polarities();
     test_header_copies();
