@@ -22608,6 +22608,62 @@ if(DSD_HAS_RADIO)
         "crc=bad"
         24
     )
+    # A synthetic direct mode group call at 72 kHz (tetra_dmo_call_synth_72k, TETRA_DMO_NAME in
+    # tools/build_iq_fixtures.py; issue #890): DM-SETUP in eight DSBs, three multiframes of full-slot speech in slot 1
+    # with DM-OCCUPIED in frames 6, 12 and 18, then DM-TX CEASED, the carrier off between the bursts. Every DM-SETUP
+    # and DM-TX CEASED must decode, the call must be published as a direct mode group call (-J), and its DNBs,
+    # scrambled with the call's DM colour code, carry speech whose class-2 CRC passes. The replay decodes 9 of the 12
+    # DM-OCCUPIED DSBs (8 required) and 35 of the 51 speech bursts (30 required): the symbol timing and carrier loops
+    # free-run on the noise between bursts and pull in late (the uplink takes each burst's timing from its training,
+    # tetra_uplink_timing.h; direct mode does not). Filled with random symbols between the bursts, the same call
+    # decodes all 51.
+    dsd_neo_add_iq_decode_test(
+        DECODE_IQ_TETRA_DMO_SETUP
+        tetra_dmo_call_synth_72k
+        -fT
+        "\\[TETRA DMO DSB\\] sys=13 comm=0 ch=0 slot=[1-4] frame=1[78] enc=0 \\| DM-SETUP src=4321 dst=6060 MNI=460/4242 cd=[01] dcc=ok \\| group speech"
+        "TETRA needs a DSP rate"
+        8
+    )
+    dsd_neo_add_iq_decode_test(
+        DECODE_IQ_TETRA_DMO_OCCUPIED
+        tetra_dmo_call_synth_72k
+        -fT
+        "\\| DM-OCCUPIED src=4321 dst=6060 MNI=460/4242 cd=0 dcc=ok \\| group speech"
+        ""
+        8
+    )
+    dsd_neo_add_iq_decode_test(
+        DECODE_IQ_TETRA_DMO_TX_CEASED
+        tetra_dmo_call_synth_72k
+        -fT
+        "slot=[13] frame=[12] enc=0 \\| DM-TX CEASED src=4321 dst=6060 MNI=460/4242"
+        ""
+        4
+    )
+    dsd_neo_add_iq_decode_test(
+        DECODE_IQ_TETRA_DMO_SPEECH
+        tetra_dmo_call_synth_72k
+        "-fT -Z"
+        "\\[TETRA TCH/FS\\] CC=0  dec_bits=274  crc=ok"
+        ""
+        30
+    )
+    # A "." stands for each ";" of the event line, which an add_test argument would split at.
+    add_test(
+        NAME DECODE_IQ_TETRA_DMO_CALL_EVENT
+        COMMAND
+            ${CMAKE_COMMAND} "-DDSD_BIN=$<TARGET_FILE:dsd-neo>" -DMODE=-fT
+            "-DFIXTURE=${_DSD_NEO_IQ_FIXTURE_DIR}/tetra_dmo_call_synth_72k.iq.json"
+            "-DEXPECTED=DM-SETUP src=4321 dst=6060"
+            "-DEVENT_EXPECTED=TETRA DMO TGT: 00006060. SRC: 00004321. FREQ: 433\\.000000 MHz. Group."
+            "-DWORK_DIR=${CMAKE_CURRENT_BINARY_DIR}/iq_decode_events/DECODE_IQ_TETRA_DMO_CALL_EVENT"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/iq_decode_check.cmake"
+    )
+    set_tests_properties(
+        DECODE_IQ_TETRA_DMO_CALL_EVENT
+        PROPERTIES LABELS "iq-decode" TIMEOUT 120
+    )
     # Apache-2.0 real-air SCBS capture from GopherTrunk, deterministically
     # resampled from its preserved 50 kHz source to 54 kHz (3 samples/symbol).
     # The identity was independently checked upstream with a commercial

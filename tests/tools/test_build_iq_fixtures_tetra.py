@@ -9,6 +9,7 @@
 - The uplink fixture's bursts have the control and normal uplink burst layouts and carry their SSIs in the MAC vectors.
 - Its sampling-phase variants move only the bursts, by their offset in samples, over the same noise.
 - The stress set's 144 kHz round trip leaves an unstressed call alone and keeps a neighbour's set ratio.
+- The direct mode call's DSBs and DNBs have their layouts, phase adjustment and DM colour code, in their timeslots.
 """
 
 import math
@@ -196,6 +197,67 @@ class TetraUplinkPhaseOffsets(unittest.TestCase):
             lags = list(range(-8, 9))
             scores = [float(np.dot(power[8:-8], moved_power[8 + lag : len(moved_power) - 8 + lag])) for lag in lags]
             self.assertEqual(lags[int(np.argmax(scores))], offset)
+
+
+class TetraDmoCall(unittest.TestCase):
+    """The direct mode call fixture's bursts (EN 300 396-2 clause 9.4.3.2, tables 15 and 16) and timeslots (EN 300 396-3
+    clause 4.3.1)."""
+
+    def text(self, dibits):
+        return "".join(str(d) for d in dibits)
+
+    def assert_phase_adjusted(self, dibits):
+        """SN7, the phase adjustment symbol, and SN8 to SN126 turn the carrier by a whole number of turns (table 18)."""
+        total = sum(fixtures.TETRA_PHASE_STEP[d] for d in dibits[6:126])
+        self.assertAlmostEqual(math.remainder(total, 2.0 * math.pi), 0.0, delta=1e-9)
+
+    def test_dsb_layout(self):
+        dsb = fixtures.tetra_dmo_dsb(3, 6, fixtures.TETRA_DMO_MSG_OCCUPIED)
+        self.assertEqual(len(dsb), 235)
+        self.assertEqual(tuple(dsb[:6]), fixtures.TETRA_DMO_P3)
+        self.assertEqual(self.text(dsb[7:47]), "3333" + "0" * 32 + "3333")  # frequency correction
+        self.assertEqual(dsb[47:107], fixtures.tetra_dmo_sch_s_dibits(3, 6))
+        self.assertEqual(self.text(dsb[107:126]), fixtures.TETRA_SSB_SYNC)
+        self.assertEqual(dsb[126:234], fixtures.tetra_dmo_sch_h_dibits(fixtures.TETRA_DMO_MSG_OCCUPIED))
+        self.assertEqual(dsb[234], 0)
+        self.assert_phase_adjusted(dsb)
+
+    def test_dnb_layout(self):
+        dnb = fixtures.tetra_dmo_dnb_speech()
+        self.assertEqual(len(dnb), 235)
+        self.assertEqual(tuple(dnb[:6]), fixtures.TETRA_DMO_P1)
+        block1, block2 = fixtures.tetra_tch_fs_dibits(fixtures.tetra_dmo_dcc_seed())
+        self.assertEqual(dnb[7:115], block1)
+        self.assertEqual(self.text(dnb[115:126]), fixtures.TETRA_NTS_SYNC)
+        self.assertEqual(dnb[126:234], block2)
+        self.assertEqual(dnb[234], 0)
+        self.assert_phase_adjusted(dnb)
+
+    def test_dcc_seed_is_the_decoders(self):
+        """The real-air call of tests/protocol/tetra/test_tetra_dmo.c: MNI 753/2361 and source 100 give the decoder's
+        seed 0xE4000193 (tetra_dmo_dcc_seed())."""
+        self.assertEqual(fixtures.tetra_dmo_dcc_seed((753 << 14) | 2361, 100), 0xE4000193)
+
+    def test_timeslots(self):
+        slots = fixtures.tetra_dmo_slots(multiframes=1)
+        self.assertEqual(len(slots), (2 + 18 + 2) * 4)
+        sent = [s for s in slots if s is not None]
+        dnb = fixtures.tetra_dmo_dnb_speech()
+        self.assertEqual(sum(1 for s in sent if s == dnb), 17)
+        self.assertEqual(len(sent), 8 + 17 + 4 + 4)
+        # Set-up in every slot of frames 17 and 18, then speech in slot 1 of frame 1.
+        self.assertTrue(all(s is not None and s != dnb for s in slots[:8]))
+        self.assertEqual(slots[8], dnb)
+        # Frame 6: speech in slot 1, DM-OCCUPIED in slot 3; frame 18: DM-OCCUPIED in slots 1 and 3.
+        frame6 = slots[8 + 5 * 4 : 8 + 6 * 4]
+        self.assertEqual(frame6[0], dnb)
+        self.assertEqual(frame6[2], fixtures.tetra_dmo_dsb(3, 6, fixtures.TETRA_DMO_MSG_OCCUPIED))
+        self.assertIsNone(frame6[1])
+        self.assertIsNone(frame6[3])
+        frame18 = slots[8 + 17 * 4 : 8 + 18 * 4]
+        self.assertEqual(frame18[0], fixtures.tetra_dmo_dsb(1, 18, fixtures.TETRA_DMO_MSG_OCCUPIED))
+        self.assertEqual(frame18[2], fixtures.tetra_dmo_dsb(3, 18, fixtures.TETRA_DMO_MSG_OCCUPIED))
+        self.assertIn(fixtures.TETRA_DMO_NAME, fixtures.derived_fixture_names())
 
 
 class TetraStress(unittest.TestCase):
