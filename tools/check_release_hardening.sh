@@ -68,17 +68,24 @@ if ! command -v readelf > /dev/null 2>&1; then
   exit 2
 fi
 
-if ! readelf -h "$artifact" | grep -Eq 'Type:[[:space:]]*DYN'; then
+# Each listing is read in full before grep -q looks at it: grep -q leaves at
+# its first match, and a readelf still writing would end with SIGPIPE, which
+# pipefail turns into a failed check.
+elf_header=$(readelf -h "$artifact")
+program_headers=$(readelf -l "$artifact")
+dynamic_section=$(readelf -d "$artifact")
+
+if ! grep -Eq 'Type:[[:space:]]*DYN' <<< "$elf_header"; then
   echo "release artifact is not position-independent (ELF type DYN expected)." >&2
   exit 1
 fi
 
-if ! readelf -l "$artifact" | grep -q 'GNU_RELRO'; then
+if ! grep -q 'GNU_RELRO' <<< "$program_headers"; then
   echo "release artifact is missing GNU_RELRO." >&2
   exit 1
 fi
 
-if ! readelf -d "$artifact" | grep -Eq 'BIND_NOW|FLAGS_1.*NOW'; then
+if ! grep -Eq 'BIND_NOW|FLAGS_1.*NOW' <<< "$dynamic_section"; then
   echo "release artifact is missing BIND_NOW/full RELRO." >&2
   exit 1
 fi

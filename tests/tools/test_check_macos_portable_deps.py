@@ -51,6 +51,12 @@ case "$mode" in
           printf 'Load command %d\n      cmd LC_VERSION_MIN_MACOSX\n  cmdsize 16\n  version %s\n      sdk 26.5\n' \
             "$n" "$value"
           ;;
+        later)
+          # More load commands, written once the reader has had time to take
+          # the ones before; a reader that left early ends this with SIGPIPE.
+          sleep 0.3
+          printf 'Load command %d\n      cmd LC_SOURCE_VERSION\n  cmdsize 16\n  version %s\n' "$n" "$value"
+          ;;
       esac
       n=$((n + 1))
     done < "$file"
@@ -143,6 +149,17 @@ class CheckMacosPortableDeps(unittest.TestCase):
         result = self.run_check("26.0")
         self.assertEqual(result.returncode, 1, result.stdout)
         self.assertIn("bin/dsd-neo is built for macOS 11.0, not the deployment target 26.0", result.stderr)
+
+    def test_version_before_later_load_commands_is_read(self):
+        # otool goes on writing after the version's load command; the check
+        # reads it all, so the pipe does not end otool early.
+        self.write("bin/dsd-neo", "dep @rpath/libusb-1.0.0.dylib", "dep /usr/lib/libSystem.B.dylib",
+                   "rpath @executable_path/../lib", "minos 26.0", "later 0.0")
+        self.write("lib/libusb-1.0.0.dylib", "dep @rpath/libusb-1.0.0.dylib", "rpath @loader_path",
+                   "legacy 26.0", "later 0.0")
+        result = self.run_check("26.0")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("check passed", result.stdout)
 
     def test_file_without_a_version_fails(self):
         self.write("lib/libusb-1.0.0.dylib", "dep @rpath/libusb-1.0.0.dylib", "rpath @loader_path")
