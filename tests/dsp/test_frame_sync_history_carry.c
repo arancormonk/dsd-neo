@@ -38,6 +38,7 @@
 #include <dsd-neo/runtime/trunk_tuning_hooks.h>
 #include <stdint.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
@@ -837,15 +838,17 @@ test_dstar_word_handed_back_is_matched_where_it_ends(void) {
    earlier exit saved for rescoring, and a null state is nothing. */
 static void
 test_word_hand_back_guards_its_input(void) {
-    static dsd_state state;
-    DSD_MEMSET(&state, 0, sizeof(state));
-    state.frame_sync_carry.valid = 1; /* the window an earlier no-sync exit kept */
-    dsd_frame_sync_hand_back_word(&state, 0);
-    assert(state.frame_sync_carry.score_on_resume == 0);
-    dsd_frame_sync_hand_back_word(&state, -8);
-    assert(state.frame_sync_carry.score_on_resume == 0);
-    assert(state.frame_sync_carry.valid == 1);
+    /* On the heap for this case alone: a dsd_state is megabytes. */
+    dsd_state* state = (dsd_state*)calloc(1U, sizeof(*state));
+    assert(state != NULL);
+    state->frame_sync_carry.valid = 1; /* the window an earlier no-sync exit kept */
+    dsd_frame_sync_hand_back_word(state, 0);
+    assert(state->frame_sync_carry.score_on_resume == 0);
+    dsd_frame_sync_hand_back_word(state, -8);
+    assert(state->frame_sync_carry.score_on_resume == 0);
+    assert(state->frame_sync_carry.valid == 1);
     dsd_frame_sync_hand_back_word(NULL, 8);
+    free(state);
 }
 
 int
