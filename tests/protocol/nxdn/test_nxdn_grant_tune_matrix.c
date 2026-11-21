@@ -15,6 +15,7 @@
  */
 
 #include <dsd-neo/core/call_state.h>
+#include <dsd-neo/core/enc_lockout.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/source_alias.h>
 #include <dsd-neo/core/state.h>
@@ -2746,6 +2747,55 @@ nxdn_run_type_d_private_busy_label_case(void) {
     return rc;
 }
 
+/* A checked VCALL of a confirmed transmission, of call type @p call_type, encrypted (DES, key id 5) to @p target. */
+static void
+send_encrypted_vcall(uint8_t call_type, uint16_t target) {
+    uint8_t bits[96];
+    DSD_MEMSET(bits, 0, sizeof(bits));
+    set_message_type(bits, 0x01U);
+    write_bits_u32(bits, 16U, call_type, 3U);
+    write_bits_u32(bits, 24U, 2100U, 16U);
+    write_bits_u32(bits, 40U, target, 16U);
+    write_bits_u32(bits, 56U, 2U, 2U);
+    write_bits_u32(bits, 58U, 5U, 6U);
+    g_state.nxdn_confirmed = 1;
+    NXDN_Elements_Content_decode(&g_opts, &g_state, bits, sizeof(bits));
+}
+
+/* Under --enc-lockout an encrypted interconnect call (110) without a key is dropped like any other (the synthesized
+ * DISC takes the receiver back to the control channel), but locks nothing out for the session: a short call skip keeps
+ * the next assignment of the same call from re-following it, and once that lapses the target is followed again. */
+static int
+nxdn_run_encrypted_interconnect_dropped_case(void) {
+    static const char* const name = "encrypted-interconnect-dropped";
+    type_c_fixture();
+    g_opts.trunk_tune_enc_calls = 0; /* --enc-lockout */
+    int rc = 0;
+    at_seconds(12000.0);
+    send_typed_assignment(0x04U, 6U, 0U, 1234U, 16U);
+    rc |= nxdn_expect(g_tune_count == 1 && g_opts.trunk_is_tuned == 1, name, "follow", "interconnect followed");
+    at_seconds(12000.2);
+    voice_live();
+    send_encrypted_vcall(6U, 1234U);
+    rc |= nxdn_expect(g_tune_cc_count == 0, name, "tentative", "a lone encrypted VCALL drops nothing");
+    at_seconds(12000.4);
+    voice_live();
+    send_encrypted_vcall(6U, 1234U);
+    rc |= nxdn_expect(g_tune_cc_count == 1 && g_opts.trunk_is_tuned == 0, name, "drop",
+                      "the corroborated encrypted call is dropped back to the control channel");
+    rc |= nxdn_expect(!dsd_enc_lockout_lookup(&g_state, 1234U, 0, NULL)
+                          && !dsd_enc_lockout_lookup(&g_state, 1234U, 1, NULL),
+                      name, "drop", "no session-long lockout entry");
+    at_seconds(12001.0);
+    send_typed_assignment(0x04U, 6U, 0U, 1234U, 16U);
+    rc |= nxdn_expect(g_tune_count == 1, name, "skip", "the same call is not followed again at once");
+    at_seconds(12020.0);
+    g_state.last_vc_sync_time = dsd_decode_time() - 4;
+    send_typed_assignment(0x04U, 6U, 0U, 1234U, 16U);
+    rc |= nxdn_expect(g_tune_count == 2, name, "lapsed", "a later assignment of the target is followed");
+    return rc;
+}
+
 #ifdef NXDN_MATRIX_REAL_CALL_STATE
 /* The assignment's recent-activity row: its kind by the call type, and its notice says TG only for a group call (a
  * private or interconnect call's destination is a radio or PSTN ID). 010 publishes no row. */
@@ -2879,6 +2929,7 @@ main(void) {
     rc |= nxdn_run_conventional_hold_call_types_case();
     rc |= nxdn_run_call_type_labels_case();
     rc |= nxdn_run_type_d_private_busy_label_case();
+    rc |= nxdn_run_encrypted_interconnect_dropped_case();
 #ifdef NXDN_MATRIX_REAL_CALL_STATE
     rc |= nxdn_run_assignment_activity_kind_case();
     rc |= nxdn_run_release_reply_keeps_dwell_case();

@@ -166,7 +166,8 @@ nxdn_location_is_type_d(const dsd_state* state) {
 /* Whether an encrypted call of @p call_type takes a session-long lockout entry on its endpoint: a group call (000,
  * 001) its talkgroup, an individual call (100) its called radio. An interconnect or speed dial call's endpoint is a PSTN
  * ID or a radio behind the gateway, and a generic voice call (011, 101) has no known class, so neither locks anything
- * out (nor releases an entry a group or individual call left). */
+ * out (nor releases an entry a group or individual call left); such a call is still dropped, and skipped for a short
+ * while (nxdn_vcall_suppress_encrypted_call()). */
 static int
 nxdn_call_type_locks_endpoint(uint8_t call_type) {
     const uint8_t type = (uint8_t)(call_type & 0x7U);
@@ -767,7 +768,7 @@ nxdn_sdcall_iv(dsd_opts* opts, dsd_state* state, const uint8_t* Message) {
         return;
     }
 
-    uint8_t idas = (strcmp(state->nxdn_location_category, "Type-D") == 0) ? 1U : 0U;
+    uint8_t idas = (uint8_t)nxdn_location_is_type_d(state);
     if (idas != 0U) {
         state->payload_mi = (unsigned long long int)convert_bits_into_output(Message + 8, 22);
     } else {
@@ -811,7 +812,7 @@ nxdn_data_header_report_scan_activity(const dsd_opts* opts, const dsd_state* sta
  * position report the call carries is qualified by it (dsd_state::dmr_data_checked_group). */
 static uint8_t
 nxdn_data_call_type_is_group(uint8_t call_type) {
-    return (uint8_t)(call_type == 0U || call_type == 1U);
+    return (uint8_t)(nxdn_call_type_kind(call_type, 0) == DSD_CALL_KIND_GROUP_VOICE);
 }
 
 static void
@@ -823,7 +824,7 @@ nxdn_sdcall_header(const dsd_opts* opts, dsd_state* state, const uint8_t* Messag
     state->payload_mi = 0ULL;
     DSD_MEMSET(state->aes_ivR, 0, sizeof(state->aes_ivR));
 
-    uint8_t idas = (strcmp(state->nxdn_location_category, "Type-D") == 0) ? 1U : 0U;
+    uint8_t idas = (uint8_t)nxdn_location_is_type_d(state);
     uint8_t cc_option = (uint8_t)convert_bits_into_output(Message + 8, 8);
     uint8_t call_type = (uint8_t)convert_bits_into_output(Message + 16, 3);
     uint8_t dcall_opt = (uint8_t)convert_bits_into_output(Message + 19, 5);
@@ -943,7 +944,7 @@ nxdn_dcall_header_parse(struct nxdn_dcall_header_info* info, dsd_state* state, c
     };
 
     DSD_MEMSET(info, 0, sizeof(*info));
-    info->idas = (strcmp(state->nxdn_location_category, "Type-D") == 0) ? 1U : 0U;
+    info->idas = (uint8_t)nxdn_location_is_type_d(state);
     info->cc_option = (uint8_t)convert_bits_into_output(Message + 8, 8);
     info->call_type = (uint8_t)convert_bits_into_output(Message + 16, 3);
     info->dcall_opt = (uint8_t)convert_bits_into_output(Message + 19, 5);
@@ -3243,21 +3244,49 @@ nxdn_vcall_apply_state(dsd_state* state, const struct nxdn_vcall_info* info) {
     }
 }
 
+/* Suppress the corroborated encrypted call @p info names, without a usable key. A group or individual call's endpoint
+ * takes the session-long lockout entry (nxdn_call_type_locks_endpoint()). Any other call's (an interconnect or speed
+ * dial call's PSTN ID or gateway radio, or a generic voice call's unclassed target) takes none: the call alone is
+ * skipped, by the call skip ledger's short fallback skip (dsd_tg_policy_call_skip_arm(), DSD_TG_CALL_SKIP_QUIET_S from
+ * its last corroborated VCALL), so the disconnect that follows is not undone by the next assignment of the same call. */
 static void
-nxdn_vcall_run_enc_lockout(dsd_opts* opts, dsd_state* state, const struct nxdn_vcall_info* info) {
-    if (opts->trunk_enable != 1 || opts->trunk_tune_enc_calls != 0 || info->message_type != 0x01U
-        || info->destination_id == 0 || !nxdn_call_type_locks_endpoint(info->call_type)) {
+nxdn_vcall_suppress_encrypted_call(dsd_opts* opts, dsd_state* state, const struct nxdn_vcall_info* info) {
+    char note[128];
+    if (!nxdn_call_type_locks_endpoint(info->call_type)) {
+        const double now_m = dsd_decode_now_mono_s();
+        const int skipped = dsd_tg_policy_call_skip_active(state, info->destination_id, now_m);
+        if (dsd_tg_policy_call_skip_arm(state, info->destination_id, info->source_unit_id, 1, now_m) == 0 && !skipped) {
+            DSD_SNPRINTF(note, sizeof note, "Target: %d; encrypted call skipped; Encryption Lock Out Enabled.",
+                         info->destination_id);
+            dsd_event_note_current_call(opts, state, 0U, note);
+        }
         return;
     }
     const int is_group = nxdn_call_type_kind(info->call_type, info->idas) == DSD_CALL_KIND_GROUP_VOICE ? 1 : 0;
+    if (dsd_enc_lockout_note(state, info->destination_id, is_group, (int)state->nxdn_cipher_type,
+                             (int)state->nxdn_key)) {
+        DSD_SNPRINTF(note, sizeof note, "Target: %d; has been locked out; Encryption Lock Out Enabled.",
+                     info->destination_id);
+        dsd_event_note_current_call(opts, state, 0U, note);
+    }
+}
+
+static void
+nxdn_vcall_run_enc_lockout(dsd_opts* opts, dsd_state* state, const struct nxdn_vcall_info* info) {
+    if (opts->trunk_enable != 1 || opts->trunk_tune_enc_calls != 0 || info->message_type != 0x01U
+        || info->destination_id == 0 || !nxdn_call_type_opens_call(info->call_type)) {
+        return;
+    }
     if (state->dmr_encL != 1) {
         // Corroborated clear -- or encrypted-but-decryptable -- voice on this
         // target releases any retained lockout entry so a talkgroup that
-        // stopped encrypting (or gained a key) recovers.
+        // stopped encrypting (or gained a key) recovers. Only a call type that
+        // takes an entry releases one.
         const int established_recoverable =
             nxdn_cipher_established_clear(state)
             || (nxdn_cipher_established_enc(state) && nxdn_vcall_has_key(state, (uint8_t)state->nxdn_cipher_type));
-        if (established_recoverable) {
+        if (established_recoverable && nxdn_call_type_locks_endpoint(info->call_type)) {
+            const int is_group = nxdn_call_type_kind(info->call_type, info->idas) == DSD_CALL_KIND_GROUP_VOICE ? 1 : 0;
             (void)dsd_enc_lockout_release(state, info->destination_id, is_group);
         }
         return;
@@ -3271,13 +3300,7 @@ nxdn_vcall_run_enc_lockout(dsd_opts* opts, dsd_state* state, const struct nxdn_v
         return;
     }
 
-    if (dsd_enc_lockout_note(state, info->destination_id, is_group, (int)state->nxdn_cipher_type,
-                             (int)state->nxdn_key)) {
-        char note[128];
-        DSD_SNPRINTF(note, sizeof note, "Target: %d; has been locked out; Encryption Lock Out Enabled.",
-                     info->destination_id);
-        dsd_event_note_current_call(opts, state, 0U, note);
-    }
+    nxdn_vcall_suppress_encrypted_call(opts, state, info);
 
     // Deliberately unconditional (the event above fires once per lock, the
     // disconnect fires per corroborated VCALL): retrying the synthesized

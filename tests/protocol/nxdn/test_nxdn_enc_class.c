@@ -23,6 +23,7 @@
 #include <dsd-neo/core/talkgroup_policy.h>
 #include <dsd-neo/protocol/nxdn/nxdn.h>
 #include <dsd-neo/protocol/nxdn/nxdn_deperm.h>
+#include <dsd-neo/runtime/decode_clock.h>
 #include <stdint.h>
 #include <stdio.h>
 #include "dsd-neo/core/opts_fwd.h"
@@ -505,28 +506,35 @@ test_vcall_lockout_endpoint_by_call_type(void) {
     static Event_History_I history[2];
     uint8_t bits[96];
 
+    dsd_call_snapshot call;
     reset_fixture(&opts, &state, history);
     build_typed_vcall(bits, 0x04U, 2U, 5U, 100U, 1234U);
     NXDN_Elements_Content_decode(&opts, &state, bits, sizeof(bits));
     NXDN_Elements_Content_decode(&opts, &state, bits, sizeof(bits));
     assert(dsd_enc_lockout_entry_active(&state, 1234U, 0));
     assert(!dsd_enc_lockout_lookup(&state, 1234U, 1, NULL));
+    assert(dsd_call_state_get(&state, 0U, &call) > 0 && call.phase == DSD_CALL_PHASE_ENDED); // the forced DISC
     dsd_state_ext_free_all(&state);
 
+    // Dropped all the same (the forced DISC ends the call), skipped as a call, never locked out for the session.
     static const uint8_t no_lockout[] = {0x03U, 0x05U, 0x06U, 0x07U};
     for (size_t i = 0; i < sizeof(no_lockout); i++) {
         reset_fixture(&opts, &state, history);
         build_typed_vcall(bits, no_lockout[i], 2U, 5U, 100U, 1234U);
         NXDN_Elements_Content_decode(&opts, &state, bits, sizeof(bits));
+        assert(dsd_call_state_get(&state, 0U, &call) > 0 && call.phase == DSD_CALL_PHASE_ACTIVE);
+        assert(!dsd_tg_policy_call_skip_active(&state, 1234U, dsd_decode_now_mono_s()));
         NXDN_Elements_Content_decode(&opts, &state, bits, sizeof(bits));
-        assert(nxdn_cipher_established_enc(&state));
+        assert(dsd_call_state_get(&state, 0U, &call) > 0 && call.phase == DSD_CALL_PHASE_ENDED);
         assert(!dsd_enc_lockout_lookup(&state, 1234U, 0, NULL));
         assert(!dsd_enc_lockout_lookup(&state, 1234U, 1, NULL));
+        assert(dsd_tg_policy_call_skip_active(&state, 1234U, dsd_decode_now_mono_s()));
         dsd_state_ext_free_all(&state);
     }
 }
 
-/* An encrypted interconnect call (110) under --enc-lockout leaves no session-long lockout on its endpoint. */
+/* An encrypted interconnect call (110) under --enc-lockout leaves no session-long lockout on its endpoint, but is still
+   dropped and skipped as a call. */
 static void
 test_vcall_interconnect_no_endpoint_lockout(void) {
     static dsd_opts opts;
@@ -542,6 +550,10 @@ test_vcall_interconnect_no_endpoint_lockout(void) {
     assert(state.dmr_encL == 1);
     assert(!dsd_enc_lockout_lookup(&state, 4321U, 0, NULL));
     assert(!dsd_enc_lockout_lookup(&state, 4321U, 1, NULL));
+    // Still suppressed: dropped by the forced DISC and skipped as a call for a short while.
+    dsd_call_snapshot call;
+    assert(dsd_call_state_get(&state, 0U, &call) > 0 && call.phase == DSD_CALL_PHASE_ENDED);
+    assert(dsd_tg_policy_call_skip_active(&state, 4321U, dsd_decode_now_mono_s()));
     dsd_state_ext_free_all(&state);
 }
 

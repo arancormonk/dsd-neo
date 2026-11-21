@@ -2716,7 +2716,10 @@ channel is delayed.
     target clear (or decryptable), when key material changes (each locked target then re-verifies with one silent
     probe on its next grant), or via the menu's "Clear lockouts" action, which purges every target's
     ledger including the copies parked by trunk scan. DMR and NXDN lockouts share the same session ledger instead of
-    writing "ENC LO" rows into the group list. While `--enc-follow` is active the ledger is suspended rather than
+    writing "ENC LO" rows into the group list. An encrypted NXDN interconnect or speed dial call (and a Type-D session
+    call) is dropped the same way but locks nothing out for the session, since its far end is a phone line or the
+    gateway: it is skipped as a call skip that lasts 15 s from its last encrypted VCALL, so the receiver does not go
+    straight back to it. While `--enc-follow` is active the ledger is suspended rather than
     erased, so toggling back to `--enc-lockout` does not owe a fresh probe per target.
   - A locked P25 supergroup stays locked for the whole patch: its member talkgroups are not locked themselves, but
     they do not readmit the supergroup's grants.

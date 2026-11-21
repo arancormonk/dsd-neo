@@ -12572,10 +12572,15 @@ Call frequency and access-code provenance (issue #575). A call's canonical `freq
     1-E Table 6.6-15): one matrix for VCALL, VCALL_ASSGN, TX_REL, the encryption lockout, the reconcile, the
     conventional scan hold and the data call headers. 000/001 are group calls (the group switch); 100 Individual, 110
     Interconnect and 111 Speed Dial are private (the private switch, the radio list's label); 010, 011 (a Session Call
-    on Type-D, reserved on Type-C) and 101 are generic voice, never followed and never holding a conventional scan;
-    010 is a TX_REL's alone, so a VCALL or assignment of it opens no call. Only 000/001 and 100 take a session-long
-    encryption lockout entry: an interconnect or speed dial endpoint is a PSTN ID or a radio behind the gateway. CC
-    Option bit 6 is Intra/Inter and prints "Inter-System".
+    on Type-D, reserved on Type-C) and 101 are generic voice: never followed, and a VCALL of them never holds a
+    conventional scan. A data call header holds the scan as a data call of any call type, private for 100/110/111 and
+    reported as group for every other type, 010/011/101 included. 010 is a TX_REL's alone, so a VCALL or assignment of
+    it opens no call. Under `--enc-lockout` every corroborated encrypted VCALL without a key is dropped (the
+    synthesized DISC), but only 000/001 and 100 take a session-long lockout entry: an interconnect or speed dial
+    endpoint is a PSTN ID or a radio behind the gateway, so 110/111 (and 011/101) take a fallback call skip
+    (`dsd_tg_policy_call_skip_arm()`, 15 s from the last corroborated VCALL) that keeps the next assignment of the
+    same call from re-following it (`nxdn_vcall_suppress_encrypted_call()`). CC Option bit 6 is Intra/Inter and
+    prints "Inter-System".
   - The receiver's frequency (`nxdn_receiver_freq()`): the valid route, else the tuned voice channel, else the
     tuner's own (`dsd_opts_tuned_freq_hz()`), else, rigctl on an audio input, the peer's, asked through the
     hunt's per-tuning-generation attribution (`nxdn_cc_hunt_receiver_frequency()`: one rigctl round trip per
