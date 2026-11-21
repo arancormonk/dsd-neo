@@ -2482,7 +2482,8 @@ tetra_calls_on_timeslot(const dsd_opts* opts, const dsd_state* state, uint8_t tn
  * active transmission and classifies once); each floor grant D-TX CEASED ended is another, proven by its own speech.
  * Encrypted speech counts: the burst's speech CRC passed, played or not. */
 static void
-speech_proves_group(dsd_state* state, const tetra_call_t* c, const tetra_speech* sp, const dsd_call_snapshot* call) {
+speech_proves_group(const dsd_opts* opts, dsd_state* state, const tetra_call_t* c, const tetra_speech* sp,
+                    const dsd_call_snapshot* call) {
     if (c->verified_gssi == 0u || call->heard_noted != 0U || c->called_ssi != c->verified_gssi
         || call->ota_target_id != c->verified_gssi || !basic_is_group_speech(c->basic_service)
         || (c->alloc.timeslots & tetra_slot_bit(sp->tn)) == 0u) {
@@ -2492,7 +2493,7 @@ speech_proves_group(dsd_state* state, const tetra_call_t* c, const tetra_speech*
     DSD_MEMSET(&in, 0, sizeof in);
     in.variant = DSD_HEARD_TG_TETRA;
     in.id = c->verified_gssi;
-    dsd_call_state_note_verified_target(state, 0U, dsd_call_snapshot_transmission(call), &in);
+    dsd_call_state_note_verified_target(opts, state, 0U, dsd_call_snapshot_transmission(call), &in);
 }
 
 /* Speech of a call record: the followed call may have turned undecryptable; a transmission that has not ceased
@@ -2529,7 +2530,7 @@ speech_of_record(dsd_opts* opts, dsd_state* state, tetra_state_t* ts, const tetr
     if (!calls_carried(state, ts, TETRA_PUB_CALL, c->call_id, &call)) {
         return 0;
     }
-    speech_proves_group(state, c, sp, &call);
+    speech_proves_group(opts, state, c, sp, &call);
     return 1;
 }
 

@@ -14,9 +14,11 @@
 #include <dsd-neo/core/events.h>
 #include <dsd-neo/core/heard_talkgroup.h>
 #include <dsd-neo/core/opts.h>
+#include <dsd-neo/core/receive_types.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/state_ext.h>
 #include <dsd-neo/core/synctype_ids.h>
+#include <dsd-neo/runtime/receive_policy.h>
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
@@ -157,9 +159,9 @@ fixture_close(proof_fixture* f) {
 }
 
 static int
-observe(proof_fixture* f, uint64_t tg, uint64_t src, dsd_call_boundary boundary) {
+observe_as(proof_fixture* f, int protocol, uint64_t tg, uint64_t src, dsd_call_boundary boundary) {
     const dsd_call_observation observation = {
-        .protocol = DSD_SYNC_P25P1_POS,
+        .protocol = protocol,
         .slot = 0U,
         .kind = DSD_CALL_KIND_GROUP_VOICE,
         .ota_target_id = tg,
@@ -171,6 +173,11 @@ observe(proof_fixture* f, uint64_t tg, uint64_t src, dsd_call_boundary boundary)
     const int rc = dsd_call_state_observe(f->state, &observation, boundary);
     dsd_event_sync_slot(f->opts, f->state, 0U);
     return rc;
+}
+
+static int
+observe(proof_fixture* f, uint64_t tg, uint64_t src, dsd_call_boundary boundary) {
+    return observe_as(f, DSD_SYNC_P25P1_POS, tg, src, boundary);
 }
 
 static void
@@ -190,7 +197,7 @@ slot_call(const proof_fixture* f) {
 static void
 note(proof_fixture* f, uint64_t transmission, dsd_heard_tg_variant variant, uint32_t id) {
     const dsd_heard_tg_input in = {variant, id, 0, 0, 0};
-    dsd_call_state_note_verified_target(f->state, 0U, transmission, &in);
+    dsd_call_state_note_verified_target(f->opts, f->state, 0U, transmission, &in);
 }
 
 static const Event_History*
@@ -265,11 +272,11 @@ test_stale_epoch_and_new_epoch(void) {
     const uint64_t first_tx = dsd_call_snapshot_transmission(&first);
     note(&f, first_tx + 1U, DSD_HEARD_TG_P25, 100U);
     note(&f, 0U, DSD_HEARD_TG_P25, 100U);
-    dsd_call_state_note_verified_target(f.state, 0U, first_tx, NULL);
-    dsd_call_state_note_verified_target(NULL, 0U, first_tx, NULL);
+    dsd_call_state_note_verified_target(f.opts, f.state, 0U, first_tx, NULL);
+    dsd_call_state_note_verified_target(f.opts, NULL, 0U, first_tx, NULL);
     {
         const dsd_heard_tg_input in = {DSD_HEARD_TG_P25, 100U, 0, 0, 0};
-        dsd_call_state_note_verified_target(f.state, DSD_CALL_STATE_SLOT_COUNT, first_tx, &in);
+        dsd_call_state_note_verified_target(f.opts, f.state, DSD_CALL_STATE_SLOT_COUNT, first_tx, &in);
     }
     assert(dsd_heard_tg_test_eval_count() == before);
     assert(slot_call(&f).heard_variant == DSD_HEARD_TG_NONE);
@@ -505,6 +512,206 @@ test_live_input_committed_revision(void) {
     fixture_close(&f);
 }
 
+/* ---- Receive filters (issue #903): traffic a filter says is not this system proves no talkgroup ---- */
+
+/* One access-code filter and the protocol it judges: the code the carrier is decoded with (@ref set_code, known or
+   not yet verified), how the filter spells it, and how it spells another code. */
+typedef struct {
+    const char* name;
+    int protocol;
+    int kind;
+    const char* code;
+    const char* other;
+    void (*set_code)(dsd_state* state, int known);
+    dsd_heard_tg_variant variant;
+} receive_case;
+
+static void
+set_p25p1_nac(dsd_state* state, int known) {
+    state->nac = known ? 0x293 : 0;
+}
+
+static void
+set_p25p2_nac(dsd_state* state, int known) {
+    state->p2_proven_nac = known ? 0x293 : 0;
+}
+
+static void
+set_dmr_cc(dsd_state* state, int known) {
+    state->dmr_color_code = known ? 5U : 16U;
+}
+
+static void
+set_nxdn_ran(dsd_state* state, int known) {
+    state->nxdn_last_ran = known ? 23U : 64U;
+    state->nxdn_last_ran_stand_in = 0U;
+}
+
+static const receive_case k_receive_cases[] = {
+    {"P25 Phase 1 NAC", DSD_SYNC_P25P1_POS, DSD_RECEIVE_NAC, "293", "294", set_p25p1_nac, DSD_HEARD_TG_P25},
+    {"P25 Phase 2 NAC", DSD_SYNC_P25P2_POS, DSD_RECEIVE_NAC, "293", "294", set_p25p2_nac, DSD_HEARD_TG_P25},
+    {"DMR colour code", DSD_SYNC_DMR_BS_VOICE_POS, DSD_RECEIVE_DCC, "5", "6", set_dmr_cc, DSD_HEARD_TG_DMR},
+    {"NXDN RAN", DSD_SYNC_NXDN_POS, DSD_RECEIVE_RAN, "23", "24", set_nxdn_ran, DSD_HEARD_TG_NXDN_C},
+};
+
+static void
+set_filter(proof_fixture* f, int kind, const char* allow, const char* block) {
+    assert(dsd_receive_edit_parse(&f->opts->receive, kind, 1, allow, block, "", NULL, 0) == 0);
+}
+
+/* The call of @p rc's protocol on slot 0, begun with the carrier's code known or not, and its transmission. */
+static uint64_t
+receive_call_begin(proof_fixture* f, const receive_case* rc, int known) {
+    rc->set_code(f->state, known);
+    assert(observe_as(f, rc->protocol, 100U, 200U, DSD_CALL_BOUNDARY_BEGIN) == 1);
+    const dsd_call_snapshot call = slot_call(f);
+    return dsd_call_snapshot_transmission(&call);
+}
+
+static void
+expect_not_noted(const proof_fixture* f, long evals_before) {
+    const dsd_call_snapshot call = slot_call(f);
+    assert(dsd_heard_tg_test_eval_count() == evals_before);
+    assert(call.heard_noted == 0U && call.heard_variant == DSD_HEARD_TG_NONE && call.heard_id == 0U);
+    assert(row(f, 0)->heard_variant == DSD_HEARD_TG_NONE && row(f, 0)->heard_id == 0U);
+}
+
+static void
+expect_noted(const proof_fixture* f, const receive_case* rc) {
+    const dsd_call_snapshot call = slot_call(f);
+    assert(call.heard_noted == 1U && call.heard_variant == (uint8_t)rc->variant && call.heard_id == 100U);
+}
+
+/* A filter that rejects the call's code, by its block list or by an allow list without it: the note does nothing, and
+   the call stays open to a later note. The same call with the filter off, allowing its code, or blocking only another
+   code is noted. */
+static void
+test_receive_filter_rejects(void) {
+    for (size_t i = 0; i < sizeof k_receive_cases / sizeof k_receive_cases[0]; i++) {
+        const receive_case* rc = &k_receive_cases[i];
+        for (int variant = 0; variant < 2; variant++) {
+            proof_fixture f;
+            fixture_open(&f, AUDIO_IN_RTL);
+            set_filter(&f, rc->kind, variant == 0 ? "" : rc->other, variant == 0 ? rc->code : "");
+            const uint64_t tx = receive_call_begin(&f, rc, 1);
+            const long before = dsd_heard_tg_test_eval_count();
+            note(&f, tx, rc->variant, 100U);
+            note(&f, tx, rc->variant, 100U);
+            expect_not_noted(&f, before);
+            end_call(&f, DSD_CALL_END_TERMINATOR);
+            assert(row(&f, 1)->heard_variant == DSD_HEARD_TG_NONE && row(&f, 1)->heard_id == 0U);
+            fixture_close(&f);
+        }
+
+        static const struct {
+            int enabled;
+            int allow; /* 1: allow the call's code; 0: block another code */
+        } k_admitting[] = {{0, 0}, {1, 1}, {1, 0}};
+
+        for (size_t j = 0; j < sizeof k_admitting / sizeof k_admitting[0]; j++) {
+            proof_fixture f;
+            fixture_open(&f, AUDIO_IN_RTL);
+            if (k_admitting[j].enabled) {
+                set_filter(&f, rc->kind, k_admitting[j].allow ? rc->code : "", k_admitting[j].allow ? "" : rc->other);
+            }
+            const uint64_t tx = receive_call_begin(&f, rc, 1);
+            note(&f, tx, rc->variant, 100U);
+            expect_noted(&f, rc);
+            fixture_close(&f);
+        }
+    }
+}
+
+/* A filter still checking (its code not verified yet on the carrier) admits nothing yet: the note does nothing and
+   leaves the call open, so a checked message after the code is verified and admitted proves it, and one after a code
+   the filter rejects does not. */
+static void
+test_receive_filter_checking(void) {
+    for (size_t i = 0; i < sizeof k_receive_cases / sizeof k_receive_cases[0]; i++) {
+        const receive_case* rc = &k_receive_cases[i];
+        for (int admitted = 0; admitted < 2; admitted++) {
+            proof_fixture f;
+            fixture_open(&f, AUDIO_IN_RTL);
+            set_filter(&f, rc->kind, admitted ? rc->code : rc->other, "");
+            const uint64_t tx = receive_call_begin(&f, rc, 0);
+            const long before = dsd_heard_tg_test_eval_count();
+            note(&f, tx, rc->variant, 100U);
+            expect_not_noted(&f, before);
+            rc->set_code(f.state, 1);
+            note(&f, tx, rc->variant, 100U);
+            if (admitted) {
+                expect_noted(&f, rc);
+                assert(row(&f, 0)->heard_variant == (uint8_t)rc->variant && row(&f, 0)->heard_id == 100U);
+            } else {
+                expect_not_noted(&f, before);
+            }
+            fixture_close(&f);
+        }
+    }
+}
+
+/* A call admitted when it began that a policy edit rejects part-way: a note after the rejection does nothing (fail
+   closed), while a proof noted before it stays on the call and its row (fragment trust). */
+static void
+test_receive_filter_rejects_midcall(void) {
+    for (size_t i = 0; i < sizeof k_receive_cases / sizeof k_receive_cases[0]; i++) {
+        const receive_case* rc = &k_receive_cases[i];
+        proof_fixture f;
+        fixture_open(&f, AUDIO_IN_RTL);
+        uint64_t tx = receive_call_begin(&f, rc, 1);
+        set_filter(&f, rc->kind, "", rc->code);
+        const long before = dsd_heard_tg_test_eval_count();
+        note(&f, tx, rc->variant, 100U);
+        expect_not_noted(&f, before);
+        fixture_close(&f);
+
+        fixture_open(&f, AUDIO_IN_RTL);
+        tx = receive_call_begin(&f, rc, 1);
+        note(&f, tx, rc->variant, 100U);
+        expect_noted(&f, rc);
+        assert(row(&f, 0)->heard_variant == (uint8_t)rc->variant);
+        set_filter(&f, rc->kind, "", rc->code);
+        note(&f, tx, rc->variant, 100U);
+        expect_noted(&f, rc);
+        assert(row(&f, 0)->heard_variant == (uint8_t)rc->variant && row(&f, 0)->heard_id == 100U);
+        end_call(&f, DSD_CALL_END_TERMINATOR);
+        assert(row(&f, 1)->heard_variant == (uint8_t)rc->variant && row(&f, 1)->heard_id == 100U);
+        fixture_close(&f);
+    }
+}
+
+/* Only a filter that says the traffic is not this system counts. A slot filter chooses a timeslot of the same system,
+   so a talkgroup heard on a slot it rejects is still the system's; another protocol's access-code filter does not judge
+   this call; and TETRA has no receive filter at all. */
+static void
+test_receive_filter_scope(void) {
+    proof_fixture f;
+    fixture_open(&f, AUDIO_IN_RTL);
+    assert(dsd_receive_edit_parse(&f.opts->receive, DSD_RECEIVE_SLOT, 1, "", "1", "", NULL, 0) == 0);
+    uint64_t tx = receive_call_begin(&f, &k_receive_cases[2], 1); /* DMR, lane 0: over-the-air slot 1 */
+    note(&f, tx, DSD_HEARD_TG_DMR, 100U);
+    expect_noted(&f, &k_receive_cases[2]);
+    fixture_close(&f);
+
+    fixture_open(&f, AUDIO_IN_RTL);
+    set_filter(&f, DSD_RECEIVE_DCC, "", "5");
+    set_filter(&f, DSD_RECEIVE_RAN, "", "23");
+    tx = receive_call_begin(&f, &k_receive_cases[0], 1); /* P25 Phase 1, NAC 293: no NAC filter */
+    note(&f, tx, DSD_HEARD_TG_P25, 100U);
+    expect_noted(&f, &k_receive_cases[0]);
+    fixture_close(&f);
+
+    fixture_open(&f, AUDIO_IN_RTL);
+    set_filter(&f, DSD_RECEIVE_DCC, "", "0/1/2/3/4/5/6/7/8/9/10/11/12/13/14/15");
+    set_filter(&f, DSD_RECEIVE_NAC, "", "293");
+    set_filter(&f, DSD_RECEIVE_RAN, "", "0");
+    assert(observe_as(&f, DSD_SYNC_TETRA_NDB_POS, 100U, 200U, DSD_CALL_BOUNDARY_BEGIN) == 1);
+    const dsd_call_snapshot call = slot_call(&f);
+    note(&f, dsd_call_snapshot_transmission(&call), DSD_HEARD_TG_TETRA, 100U);
+    assert(slot_call(&f).heard_variant == DSD_HEARD_TG_TETRA && slot_call(&f).heard_id == 100U);
+    fixture_close(&f);
+}
+
 int
 main(void) {
     test_classifier();
@@ -517,5 +724,9 @@ main(void) {
     test_live_input();
     test_live_input_merge();
     test_live_input_committed_revision();
+    test_receive_filter_rejects();
+    test_receive_filter_checking();
+    test_receive_filter_rejects_midcall();
+    test_receive_filter_scope();
     return 0;
 }

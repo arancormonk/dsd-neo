@@ -547,8 +547,9 @@ dsd_call_state_note_key_selection(dsd_state* state, uint8_t slot, int protocol, 
 
 /* The verified talkgroup proof (issue #903) is not under test here: these calls are never noted. */
 void
-dsd_call_state_note_verified_target(dsd_state* state, uint8_t slot, uint64_t transmission_epoch,
+dsd_call_state_note_verified_target(const dsd_opts* opts, dsd_state* state, uint8_t slot, uint64_t transmission_epoch,
                                     const dsd_heard_tg_input* in) {
+    (void)opts;
     (void)state;
     (void)slot;
     (void)transmission_epoch;

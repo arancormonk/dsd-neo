@@ -224,7 +224,7 @@ p25p2_xcch_emit_ptt(dsd_opts* opts, dsd_state* state, uint8_t slot, const unsign
     ev.facch = facch ? 1 : 0;
     const int accepted = p25p2_xcch_emit_checked_voice_start(opts, state, &ev);
     if (accepted && tg > 0) {
-        p25p2_heard_tg_ptt(state, slot, (uint32_t)tg);
+        p25p2_heard_tg_ptt(opts, state, slot, (uint32_t)tg);
     }
     return accepted;
 }

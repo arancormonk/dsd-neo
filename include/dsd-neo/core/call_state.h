@@ -745,15 +745,19 @@ int dsd_call_state_update_policy_target(dsd_state* state, uint8_t slot, uint64_t
  *
  * Called by a protocol, on the decoder thread, at the voice channel's own checked message for this transmission. It
  * binds to the slot's ACTIVE call whose logical transmission (dsd_call_snapshot_transmission()) is
- * @p transmission_epoch, and does nothing for any other call, an ended one, or one already noted. The first note runs
+ * @p transmission_epoch, and does nothing for any other call, an ended one, or one already noted. Nor does it note
+ * traffic the receive policy in force (@p opts; NULL: none) does not admit as this system's: while an access-code
+ * filter (DCC, RAN, NAC) rejects the code the call's carrier is decoded with, or is still checking for one, or the
+ * carrier's code is no longer the one the call was received with, the call stays unnoted, so a later checked message
+ * once its code is admitted can prove it. The slot filter is not asked. The first note runs
  * dsd_heard_tg_ordinary() on @p in, once, and freezes the result on the call (dsd_call_snapshot::heard_variant,
  * heard_id; none when the id is not an ordinary talkgroup), and writes it to the epoch's history row: the staged row,
  * and its committed row when the epoch already committed one (a revision, which bumps the ring's commit_rev). A later
  * CRC failure on the transmission marks its row but never takes the proof back. Never per voice frame: a note costs a
  * lookup once the epoch is noted.
  */
-void dsd_call_state_note_verified_target(dsd_state* state, uint8_t slot, uint64_t transmission_epoch,
-                                         const dsd_heard_tg_input* in);
+void dsd_call_state_note_verified_target(const dsd_opts* opts, dsd_state* state, uint8_t slot,
+                                         uint64_t transmission_epoch, const dsd_heard_tg_input* in);
 
 int dsd_recent_activity_publish(dsd_state* state, uint8_t index, const dsd_call_observation* observation,
                                 const char* notice, uint64_t observed_m_ms);

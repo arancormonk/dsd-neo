@@ -1322,7 +1322,7 @@ dmr_flco_note_heard_group(const dmr_flco_ctx* ctx) {
     DSD_MEMSET(&in, 0, sizeof in);
     in.variant = variant;
     in.id = target;
-    dsd_call_state_note_verified_target(ctx->state, ctx->slot, dsd_call_snapshot_transmission(&call), &in);
+    dsd_call_state_note_verified_target(ctx->opts, ctx->state, ctx->slot, dsd_call_snapshot_transmission(&call), &in);
 }
 
 static void

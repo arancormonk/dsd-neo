@@ -3353,7 +3353,7 @@ nxdn_vcall_heard_variant(const dsd_opts* opts, const dsd_state* state, const str
  * Type-D reading, while no Type-C has been decoded and slot 0 still carries that transmission's call to the group. Once:
  * the pending group is dropped whatever it finds. */
 static void
-nxdn_heard_note_pending_type_d(dsd_state* state) {
+nxdn_heard_note_pending_type_d(const dsd_opts* opts, dsd_state* state) {
     dsd_nxdn_heard_pending* const pending = &state->nxdn_heard_pending;
     if (pending->transmission == 0U) {
         return;
@@ -3373,7 +3373,7 @@ nxdn_heard_note_pending_type_d(dsd_state* state) {
     in.id = held.full_id;
     in.nxdn_call_type = held.call_type;
     in.nxdn_inter_system = held.inter_system;
-    dsd_call_state_note_verified_target(state, 0U, held.transmission, &in);
+    dsd_call_state_note_verified_target(opts, state, 0U, held.transmission, &in);
 }
 
 /*
@@ -3412,7 +3412,7 @@ nxdn_vcall_note_heard_group(const dsd_opts* opts, dsd_state* state, const struct
         state->nxdn_heard_pending.inter_system = in.nxdn_inter_system;
         return;
     }
-    dsd_call_state_note_verified_target(state, 0U, transmission, &in);
+    dsd_call_state_note_verified_target(opts, state, 0U, transmission, &in);
 }
 
 /* A VCALL naming no party continues a DCR call (dsd_call_state_observe(): it names no other call) but describes it no
@@ -3858,7 +3858,7 @@ nxdn_scch_prepare_type_d(const dsd_opts* opts, dsd_state* state, const struct nx
     if (nxdn_confirm_scch_confirmed(state)) {
         dsd_rxid_note_nxdn_idas_area(state, info->area);
         /* The SCCH run proves the Type-D reading a header frame's VCALL waits on (issue #903). */
-        nxdn_heard_note_pending_type_d(state);
+        nxdn_heard_note_pending_type_d(opts, state);
     }
     state->nxdn_last_ran = info->area;
     state->nxdn_last_ran_stand_in = 1U;

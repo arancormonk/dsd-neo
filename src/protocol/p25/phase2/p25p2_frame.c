@@ -841,7 +841,7 @@ p25p2_emit_voice_activity(dsd_opts* opts, dsd_state* state) {
     p25_sm_emit_active(opts, state, slot);
     /* Traffic whose DUID matched exactly proves the group a voice user of its call named (issue #903). */
     if (s_voice_duid_exact) {
-        p25p2_heard_tg_traffic(state, (uint8_t)slot);
+        p25p2_heard_tg_traffic(opts, state, (uint8_t)slot);
     }
     /* Only traffic the receive policy admits holds the voice channel (issue #637). */
     if (dsd_receive_allows(opts, state, DSD_SYNC_P25P2_POS, slot)) {

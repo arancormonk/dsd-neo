@@ -2400,7 +2400,18 @@ suite runs under this compiler.
 - API note (verified talkgroup proof, issue #903): `dsd_call_state_note_verified_target()` records that a checked
   message of the slot's ACTIVE call proved its group. It binds to the call whose `dsd_call_snapshot_transmission()` is
   the given epoch and does nothing for any other, an ended one, or one already noted (`dsd_call_snapshot::heard_noted`).
-  The first note runs `dsd_heard_tg_ordinary()` (`<dsd-neo/core/heard_talkgroup.h>`) once and freezes the result as
+  It takes the options for the receive policy (issue #637) and notes no traffic the policy says is not this system's:
+  while an access-code filter (DCC, RAN, NAC) rejects the code the call's protocol and slot are decoded with now, or
+  is still Checking for one, or that code is no longer the one the call was received with
+  (`dsd_receive_identity_changed()`), the note does nothing and leaves the epoch unnoted, so a checked message once the
+  code is admitted can still prove it; a proof noted before a policy edit rejects the call stays (fragment trust). The
+  slot filter is not asked: it picks a timeslot of the same system, as a talkgroup avoid or lockout picks a talkgroup,
+  and neither stops a talkgroup being remembered. TETRA has no receive filter. The check runs once per note, after the
+  epoch and noted checks, and costs nothing with every filter off (`call_state_receive_code_admits()`). A proof that
+  rests on a message sent once per transmission (a P25 Phase 2 MAC_PTT, an NXDN Type-D VCALL) is lost for a call still
+  Checking when it came (fail closed); a repeated one (a P25 Phase 1 LDU1, a Phase 2 voice user and its traffic, a DMR
+  terminator after the header) can prove the call once its code is admitted. The first note runs
+  `dsd_heard_tg_ordinary()` (`<dsd-neo/core/heard_talkgroup.h>`) once and freezes the result as
   `heard_variant` (a `dsd_heard_tg_variant`, NONE when the id is not an ordinary talkgroup) and `heard_id`; renders and
   staged-row rebuilds only copy it. A new epoch, a reacquired one included, starts with none, so a proof is never
   inherited from a grant, an earlier epoch or a reacquired identity. The note writes the epoch's own staged row and,
@@ -22494,7 +22505,9 @@ passbands. The scan-list, Home and Monitor QML cases run in `UI_QT_QML_CALL_LIST
   without the slot filter, for carrier-level facts such as a site broadcast (Signal search, issue #802 B11).
   Shared-vocoder invocations carry their owning protocol through `dsd_state::receive_context_*`, since YSF/dPMR
   temporarily borrow another protocol's decoder.
-- Core audio, recording and event paths combine receive admission with existing policy/provenance gates. Internal
+- Core audio, recording and event paths combine receive admission with existing policy/provenance gates. Traffic an
+  access-code filter rejects or still checks proves no remembered talkgroup (`dsd_call_state_note_verified_target()`,
+  issue #903; the slot filter does not count there). Internal
   acquisition continues while output is Checking/rejected. Scanner and trunking activity cannot turn rejected media into
   a hold. Restoring a scan target preserves acquisition hints but clears its current received-code proof. The P25 and
   DMR trunk state machines keep `dsd_receive_carriers` (the code last verified on each voice frequency, 16 entries) and

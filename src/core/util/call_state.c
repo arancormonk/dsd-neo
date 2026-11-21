@@ -1618,8 +1618,31 @@ call_state_stamp_verified_rows(dsd_state* state, const dsd_call_state_ext* ext, 
     }
 }
 
+/* Whether the receive policy in force lets @p call's traffic prove a talkgroup of the system (issue #903): an
+   access-code filter (DCC, RAN, NAC) admits the code its carrier is decoded with now, for the call's protocol and
+   slot, which must still be the service the call was received with. A filter still checking (no code verified yet)
+   admits nothing yet, and a code the filter rejects is traffic of another system. The slot filter is not asked: it
+   picks a timeslot of the same system, as a talkgroup avoid picks a talkgroup. Protocols with no access-code filter
+   (TETRA among them) are always admitted, as is everything with no filter on. Caller holds the call-state mutex. */
+static int
+call_state_receive_code_admits(const dsd_opts* opts, const dsd_state* state, const dsd_call_snapshot* call,
+                               uint8_t slot) {
+    if (!dsd_receive_filters_enabled(opts)) {
+        return 1;
+    }
+    dsd_receive_identity live;
+    dsd_receive_identity_current(state, call->protocol, slot, &live);
+    if (dsd_receive_identity_changed(&call->receive_identity, &live)) {
+        return 0;
+    }
+    live.slot = 0U;
+    live.slot_pending = 0U;
+    const dsd_receive_verdict verdict = dsd_receive_policy_match(&opts->receive, &live);
+    return verdict == DSD_RECEIVE_OFF || verdict == DSD_RECEIVE_ALLOWED;
+}
+
 void
-dsd_call_state_note_verified_target(dsd_state* state, uint8_t slot, uint64_t transmission_epoch,
+dsd_call_state_note_verified_target(const dsd_opts* opts, dsd_state* state, uint8_t slot, uint64_t transmission_epoch,
                                     const dsd_heard_tg_input* in) {
     if (!state || slot >= DSD_CALL_STATE_SLOT_COUNT || transmission_epoch == 0U || !in) {
         return;
@@ -1630,8 +1653,11 @@ dsd_call_state_note_verified_target(dsd_state* state, uint8_t slot, uint64_t tra
     }
     dsd_call_state_ext_lock(ext);
     dsd_call_snapshot* snapshot = &ext->calls.slots[slot];
+    /* Traffic the receive filters do not admit proves nothing and leaves the epoch unclassified, so a checked message
+       once its code is verified and admitted can still prove it. */
     if (snapshot->phase != DSD_CALL_PHASE_ACTIVE || snapshot->heard_noted != 0U
-        || dsd_call_snapshot_transmission(snapshot) != transmission_epoch) {
+        || dsd_call_snapshot_transmission(snapshot) != transmission_epoch
+        || !call_state_receive_code_admits(opts, state, snapshot, slot)) {
         dsd_call_state_ext_unlock(ext);
         return;
     }

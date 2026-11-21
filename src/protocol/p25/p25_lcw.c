@@ -319,7 +319,7 @@ p25_lcw_accept_group_voice_user(p25_lcw_ctx* ctx, uint16_t group, uint32_t sourc
         return 0;
     }
     if (open && ctx->lc_hard) {
-        p25_heard_tg_note(ctx->state, 0U, &call, group, regroup);
+        p25_heard_tg_note(ctx->opts, ctx->state, 0U, &call, group, regroup);
     }
     p25_lcw_mark_encrypted_voice_pending(ctx, group, 1);
     return 1;

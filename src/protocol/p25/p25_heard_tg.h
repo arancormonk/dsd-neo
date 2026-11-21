@@ -22,6 +22,7 @@
 #define DSD_NEO_SRC_PROTOCOL_P25_P25_HEARD_TG_H_
 
 #include <dsd-neo/core/call_state.h>
+#include <dsd-neo/core/opts_fwd.h>
 #include <dsd-neo/core/state_fwd.h>
 #include <stdint.h>
 
@@ -32,7 +33,8 @@ extern "C" {
 /* Note that a checked message proved @p group for @p call, slot @p slot's ACTIVE P25 group call naming that group, with
  * @p supergroup 1 when the message itself named a supergroup; an active patch entry naming the group as its supergroup
  * counts too. Nothing for any other call, or one already noted. */
-void p25_heard_tg_note(dsd_state* state, uint8_t slot, const dsd_call_snapshot* call, uint32_t group, int supergroup);
+void p25_heard_tg_note(const dsd_opts* opts, dsd_state* state, uint8_t slot, const dsd_call_snapshot* call,
+                       uint32_t group, int supergroup);
 
 /* Phase 2: a CRC-passed, live group voice-user message observed slot @p slot's call as @p group (@p regroup 1 for a
  * regroup voice user): kept for that call (its epoch) until its traffic proves it (p25p2_heard_tg_traffic()). */
@@ -40,10 +42,10 @@ void p25p2_heard_tg_voice_user(dsd_state* state, uint8_t slot, uint32_t group, i
 
 /* Phase 2: a voice burst on slot @p slot proves the group a voice user of the same call named. A field check when none
  * waits. */
-void p25p2_heard_tg_traffic(dsd_state* state, uint8_t slot);
+void p25p2_heard_tg_traffic(const dsd_opts* opts, dsd_state* state, uint8_t slot);
 
 /* Phase 2: a CRC-passed MAC_PTT naming @p group started or continued slot @p slot's call, which it proves. */
-void p25p2_heard_tg_ptt(dsd_state* state, uint8_t slot, uint32_t group);
+void p25p2_heard_tg_ptt(const dsd_opts* opts, dsd_state* state, uint8_t slot, uint32_t group);
 
 #ifdef __cplusplus
 }

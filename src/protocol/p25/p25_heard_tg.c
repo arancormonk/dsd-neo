@@ -13,6 +13,7 @@
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/synctype_ids.h>
 #include <stdint.h>
+#include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
 
@@ -39,7 +40,8 @@ p25_heard_tg_call_names(const dsd_call_snapshot* call, uint32_t group) {
 }
 
 void
-p25_heard_tg_note(dsd_state* state, uint8_t slot, const dsd_call_snapshot* call, uint32_t group, int supergroup) {
+p25_heard_tg_note(const dsd_opts* opts, dsd_state* state, uint8_t slot, const dsd_call_snapshot* call, uint32_t group,
+                  int supergroup) {
     if (!state || !call || call->heard_noted != 0U || !p25_heard_tg_call_names(call, group)) {
         return;
     }
@@ -49,7 +51,7 @@ p25_heard_tg_note(dsd_state* state, uint8_t slot, const dsd_call_snapshot* call,
     in.id = group;
     /* Read now and frozen with the proof: a patch that expires before the call commits changes nothing. */
     in.p25_supergroup = (uint8_t)(supergroup != 0 || p25_heard_tg_patch_names_sg(state, group));
-    dsd_call_state_note_verified_target(state, slot, dsd_call_snapshot_transmission(call), &in);
+    dsd_call_state_note_verified_target(opts, state, slot, dsd_call_snapshot_transmission(call), &in);
 }
 
 static void
@@ -86,7 +88,7 @@ p25p2_heard_tg_voice_user(dsd_state* state, uint8_t slot, uint32_t group, int re
 }
 
 void
-p25p2_heard_tg_traffic(dsd_state* state, uint8_t slot) {
+p25p2_heard_tg_traffic(const dsd_opts* opts, dsd_state* state, uint8_t slot) {
     if (!state || slot > 1U || state->p25_p2_heard_vu_epoch[slot] == 0U) {
         return;
     }
@@ -99,12 +101,12 @@ p25p2_heard_tg_traffic(dsd_state* state, uint8_t slot) {
     p25p2_heard_tg_clear(state, slot);
     dsd_call_snapshot call;
     if (p25p2_heard_tg_call(state, slot, group, &call) && call.epoch == epoch) {
-        p25_heard_tg_note(state, slot, &call, group, regroup);
+        p25_heard_tg_note(opts, state, slot, &call, group, regroup);
     }
 }
 
 void
-p25p2_heard_tg_ptt(dsd_state* state, uint8_t slot, uint32_t group) {
+p25p2_heard_tg_ptt(const dsd_opts* opts, dsd_state* state, uint8_t slot, uint32_t group) {
     if (!state || slot > 1U) {
         return;
     }
@@ -117,5 +119,5 @@ p25p2_heard_tg_ptt(dsd_state* state, uint8_t slot, uint32_t group) {
     if (waiting) {
         p25p2_heard_tg_clear(state, slot);
     }
-    p25_heard_tg_note(state, slot, &call, group, regroup);
+    p25_heard_tg_note(opts, state, slot, &call, group, regroup);
 }
