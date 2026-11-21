@@ -2836,6 +2836,35 @@ dmr_sm_follows(const dmr_sm_ctx_t* ctx, long freq_hz) {
     return ctx && freq_hz > 0 && ctx->state == DMR_SM_TUNED && ctx->vc_freq_hz == freq_hz;
 }
 
+int
+dmr_sm_follows_slot(const dmr_sm_ctx_t* ctx, int slot) {
+    return ctx && ctx->state == DMR_SM_TUNED && slot >= 0 && slot <= 1 && (ctx->vc_slot < 0 || ctx->vc_slot == slot);
+}
+
+/* Whether identity @p id is the call an address of class @p is_group and @p target names: its talkgroup, or either
+   party of a private call. */
+static int
+dmr_sm_identity_addressed(const dmr_sm_slot_ctx_t* id, int is_group, uint32_t target) {
+    if (is_group) {
+        return id->judged_group && id->target == target;
+    }
+    return !id->judged_group && (id->target == target || (id->source != 0U && id->source == target));
+}
+
+int
+dmr_sm_names_followed_call(const dmr_sm_ctx_t* ctx, int slot, int is_group, uint32_t target) {
+    if (!dmr_sm_follows_slot(ctx, slot) || target == 0U) {
+        return 0;
+    }
+    dmr_sm_slot_ctx_t grant;
+    if (dmr_sm_grant_identity(ctx, &grant) && dmr_sm_identity_addressed(&grant, is_group, target)) {
+        return 1;
+    }
+    const dmr_sm_slot_ctx_t* rec = &ctx->slots[slot];
+    return dmr_sm_slot_identity_known(rec) && rec->carrier_hz == ctx->vc_freq_hz
+           && dmr_sm_identity_addressed(rec, is_group, target);
+}
+
 long
 dmr_sm_receiver_frequency(const dsd_opts* opts) {
     if (!opts) {

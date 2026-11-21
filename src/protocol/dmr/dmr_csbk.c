@@ -432,11 +432,11 @@ dmr_cspdu_pf0_handle_grants(dsd_opts* opts, dsd_state* state, uint8_t cs_pdu_bit
                                      dmr_cspdu_pf0_call_channel(lpchannum, mbc_lpchannum), freq, target, source);
 }
 
-/* The TSCC an absolute C_MOVE's MV_AP names (CHAN @p chan, which may name no channel, on @p freq): the channel map learns
-   it (dmr_csbk_learn_channel()) and the control channel hunt takes it as a current-site candidate, both only from a
-   checked or RAS-accepted PDU. */
+/* The TSCC an absolute C_MOVE's MV_AP or an absolute P_CLEAR's appended block names (CHAN @p chan, which may name no
+   channel, on @p freq): the channel map learns it (dmr_csbk_learn_channel()) and the control channel hunt takes it as a
+   current-site candidate, both only from a checked or RAS-accepted PDU. */
 static void
-dmr_cspdu_pf0_move_note_tscc(dsd_opts* opts, dsd_state* state, uint16_t chan, long int freq) {
+dmr_cspdu_pf0_note_absolute_tscc(dsd_opts* opts, dsd_state* state, uint16_t chan, long int freq) {
     if (!dmr_csbk_crc_checked(state) && !dmr_csbk_ras_accepted(opts, state)) {
         return;
     }
@@ -492,7 +492,7 @@ dmr_cspdu_pf0_handle_move(dsd_opts* opts, dsd_state* state, uint8_t cs_pdu_bits[
         dmr_cspdu_abs_params_print_unusable(cs_pdu_bits, &ap);
         return;
     }
-    dmr_cspdu_pf0_move_note_tscc(opts, state, chan, freq);
+    dmr_cspdu_pf0_note_absolute_tscc(opts, state, chan, freq);
 }
 
 static void
@@ -1026,39 +1026,116 @@ dmr_cspdu_pf0_p_clear_log_status(const dsd_state* state, int clear, int csbk_fid
     return clear;
 }
 
+/* The release a clear asks the machine for: of @p slot (-1: the carrier). */
 static void
-dmr_cspdu_pf0_p_clear_emit_release(dsd_opts* opts, dsd_state* state, int clear) {
+dmr_cspdu_pf0_p_clear_emit_release(dsd_opts* opts, dsd_state* state, int clear, int slot) {
     if (clear == 1 || clear == 2 || clear == 3 || clear == 4 || clear == 5) {
         state->trunk_sm_force_release = 1;
     }
     if (state->trunk_cc_freq != 0 && opts->trunk_is_tuned == 1) {
         watchdog_event_current(opts, state, 0);
         watchdog_event_current(opts, state, 1);
-        dmr_sm_emit_release(opts, state, -1);
+        dmr_sm_emit_release(opts, state, slot);
     }
 }
 
-static void
-dmr_cspdu_pf0_handle_p_clear(dsd_opts* opts, dsd_state* state, int csbk_o, int csbk_fid) {
-    int clear;
-    int pslot;
-    int oslot;
+/* ALLMSI, the totality of all individual MSs and talkgroups (TS 102 361-4 Table A.4), which most Tier III networks
+   address to clear a payload channel whatever it carries (§7.1.1.3.2, with G/I 0), and ALLMSID, every MS in the
+   system, which a clear to all MSs may name instead. */
+#define DMR_CSBK_ALLMSI  0xFFFED4U
+#define DMR_CSBK_ALLMSID 0xFFFFFFU
 
+/* A received P_CLEAR's content (TS 102 361-4 Table 7.30). */
+typedef struct {
+    uint16_t lpcn;   // bits 16-27: the TSCC to move to; 0 the last confirmed one, 0xFFF the appended block's
+    uint8_t gi;      // bit 31: 1 the target is a talkgroup, 0 an MS (or ALLMSI)
+    uint32_t target; // bits 32-55
+    uint32_t source; // bits 56-79
+} dmr_cspdu_p_clear_fields;
+
+static void
+dmr_cspdu_pf0_p_clear_parse(const uint8_t cs_pdu_bits[], dmr_cspdu_p_clear_fields* f) {
+    f->lpcn = (uint16_t)convert_bits_into_output(&cs_pdu_bits[16], 12);
+    f->gi = cs_pdu_bits[31];
+    f->target = (uint32_t)convert_bits_into_output(&cs_pdu_bits[32], 24);
+    f->source = (uint32_t)convert_bits_into_output(&cs_pdu_bits[56], 24);
+}
+
+/* The TSCC a P_CLEAR sends its addressed parties to, printed: a logical channel the map knows, or the appended block's
+   (dmr_cspdu_pf0_note_absolute_tscc()). Another TSCC than the control channel becomes a current-site hunt candidate when
+   the clear was checked or RAS-accepted; where the release returns stays the machine's. */
+static void
+dmr_cspdu_pf0_p_clear_note_tscc(dsd_opts* opts, dsd_state* state, const uint8_t cs_pdu_bits[], uint16_t lpcn) {
+    if (lpcn == 0U) {
+        return;
+    }
+    if (lpcn == 0xFFFU) {
+        dmr_abs_params ap;
+        if (!dmr_cspdu_abs_params(cs_pdu_bits, &ap)) {
+            return;
+        }
+        DSD_FPRINTF(stderr, " TSCC: %u (%.6f MHz);", (unsigned)ap.chan, (double)ap.rx_hz / 1000000.0);
+        dmr_cspdu_pf0_note_absolute_tscc(opts, state, ap.chan, ap.rx_hz);
+        return;
+    }
+    const long freq = dmr_t3_lpcn_is_channel(lpcn) ? state->trunk_chan_map[lpcn] : 0L;
+    DSD_FPRINTF(stderr, " TSCC: %u", (unsigned)lpcn);
+    if (freq <= 0) {
+        DSD_FPRINTF(stderr, ";");
+        return;
+    }
+    DSD_FPRINTF(stderr, " (%.6f MHz);", (double)freq / 1000000.0);
+    if (freq != state->trunk_cc_freq && (dmr_csbk_crc_checked(state) || dmr_csbk_ras_accepted(opts, state))) {
+        (void)dsd_trunk_cc_candidates_add(state, freq, 1, DSD_TRUNK_CC_CANDIDATE_CURRENT_SITE);
+    }
+}
+
+/* Whether a received standard P_CLEAR clears the call the machine follows: received on that call's slot and addressed
+   to it (its talkgroup, either party of a private call, or every MS). */
+static int
+dmr_cspdu_pf0_p_clear_for_followed_call(const dsd_state* state, const dmr_cspdu_p_clear_fields* f) {
+    const dmr_sm_ctx_t* ctx = dmr_sm_get_ctx();
+    const int slot = state->currentslot & 1;
+    if (f->gi == 0U && (f->target == DMR_CSBK_ALLMSI || f->target == DMR_CSBK_ALLMSID)) {
+        return dmr_sm_follows_slot(ctx, slot);
+    }
+    return dmr_sm_names_followed_call(ctx, slot, f->gi, f->target);
+}
+
+/* P_CLEAR (TS 102 361-4 §7.1.1.3.2). The standard one (FID 0) is read as Table 7.30: it applies only on the followed
+   call's slot and when its address names that call, otherwise nothing changes; applied, it releases only its own slot,
+   so a busy companion slot keeps the carrier. The clear the encryption lockout synthesizes
+   (dmr_cspdu_release_channel()) always applies, to the carrier, as does another feature set's opcode 46, whose content
+   is the manufacturer's. */
+static void
+dmr_cspdu_pf0_handle_p_clear(dsd_opts* opts, dsd_state* state, const uint8_t cs_pdu_bits[], int csbk_o, int csbk_fid) {
     if (csbk_o != 46) {
         return;
     }
 
-    pslot = state->currentslot + 1;
-    oslot = ((state->currentslot ^ 1) & 1) + 1;
-    clear = dmr_cspdu_pf0_p_clear_compute(opts, state);
+    const int pslot = state->currentslot + 1;
+    const int oslot = ((state->currentslot ^ 1) & 1) + 1;
+    int clear = dmr_cspdu_pf0_p_clear_compute(opts, state);
+    const int addressed = csbk_fid == 0 && !s_dmr_cspdu_synthesized;
+    dmr_cspdu_p_clear_fields f;
+    DSD_MEMSET(&f, 0, sizeof(f));
     DSD_FPRINTF(stderr, "\n");
     DSD_FPRINTF(stderr, " Clear (P_CLEAR) ");
+    if (addressed) {
+        dmr_cspdu_pf0_p_clear_parse(cs_pdu_bits, &f);
+        DSD_FPRINTF(stderr, "%s: %" PRIu32 "; Source: %" PRIu32 ";", f.gi ? "TG" : "Target", f.target, f.source);
+        dmr_cspdu_pf0_p_clear_note_tscc(opts, state, cs_pdu_bits, f.lpcn);
+    }
     if (opts->trunk_enable != 1) {
+        return;
+    }
+    if (addressed && !dmr_cspdu_pf0_p_clear_for_followed_call(state, &f)) {
+        DSD_FPRINTF(stderr, " not for the followed call;");
         return;
     }
     dmr_cspdu_pf0_p_clear_mark_slots_idle(state);
     clear = dmr_cspdu_pf0_p_clear_log_status(state, clear, csbk_fid, pslot, oslot);
-    dmr_cspdu_pf0_p_clear_emit_release(opts, state, clear);
+    dmr_cspdu_pf0_p_clear_emit_release(opts, state, clear, addressed ? (state->currentslot & 1) : -1);
 }
 
 typedef struct {
@@ -1304,8 +1381,8 @@ dmr_cspdu_pf0_c_bcast_ann_wd_absolute(dsd_opts* opts, dsd_state* state, const ui
 
 /* Ann_WD_TSCC (TS 102 361-4 §7.2.19.1, Table 7.69): up to two TSCCs as logical channels, BCAST_CH1/2 (Parms2 bits
    56-67, 68-79) with their colour codes (Parms1 25-28, 29-32) and AW_FLAG1/2 (33, 34: 0 add to the hunt list, 1
-   withdraw), or one TSCC in the MBC form. Only a channel marked add becomes a hunt candidate; withdrawing the control
-   channel the receiver is on moves it to the other one announced. */
+   withdraw), or one TSCC in the MBC form. Only a channel marked add becomes a hunt candidate, and only from a checked or
+   RAS-accepted PDU; withdrawing the control channel the receiver is on moves it to the other one announced. */
 static void
 dmr_cspdu_pf0_c_bcast_handle_ann_wd_tscc(dsd_opts* opts, dsd_state* state, const uint8_t cs_pdu_bits[],
                                          const dmr_cspdu_pf0_c_bcast_fields* f) {
@@ -1340,7 +1417,7 @@ dmr_cspdu_pf0_c_bcast_handle_ann_wd_tscc(dsd_opts* opts, dsd_state* state, const
     if (f2 > 0 && ch2_flag == 0U && (ccount == 0 || f2 != cand[0])) {
         cand[ccount++] = f2;
     }
-    if (ccount > 0) {
+    if (ccount > 0 && (dmr_csbk_crc_checked(state) || dmr_csbk_ras_accepted(opts, state))) {
         dmr_sm_on_neighbor_update(opts, state, cand, ccount);
     }
 
@@ -1452,7 +1529,7 @@ dmr_cspdu_pf0_c_bcast_handle_chan_freq(dsd_opts* opts, dsd_state* state, const u
    channel priorities (58-60, 61-63), 4 reserved bits and the channel (68-79). Vote_Now's 0xFFF appends a VN_AP; the
    spec defines Adjacent_Site with a logical channel only, and its absolute form (a BC_AP after 0xFFF) is read as
    SDRTrunk reads it. An absolute entry is a neighbour's frequency: NEIGHBOUR, filling empty rows only, and a hunt
-   candidate as before. */
+   candidate, both only from a checked or RAS-accepted PDU. */
 static void
 dmr_cspdu_pf0_c_bcast_handle_vote_or_adjacent(dsd_opts* opts, dsd_state* state, const uint8_t cs_pdu_bits[],
                                               int csbk_fid, const dmr_cspdu_pf0_c_bcast_fields* f) {
@@ -1487,6 +1564,9 @@ dmr_cspdu_pf0_c_bcast_handle_vote_or_adjacent(dsd_opts* opts, dsd_state* state, 
 
     dmr_cspdu_pf0_c_bcast_abs_freqs abs_freqs;
     if (!dmr_cspdu_pf0_c_bcast_abs(cs_pdu_bits, f, f->a_type == 2, 1, &abs_freqs)) {
+        return;
+    }
+    if (!dmr_csbk_crc_checked(state) && !dmr_csbk_ras_accepted(opts, state)) {
         return;
     }
     (void)dmr_csbk_learn_channel(opts, state, abs_freqs.lpchannum, abs_freqs.freqr, 1);
@@ -1653,7 +1733,7 @@ dmr_cspdu_handle_pf0(dsd_opts* opts, dsd_state* state, uint8_t cs_pdu_bits[], ui
         dmr_cspdu_pf0_handle_move(opts, state, cs_pdu_bits, csbk_o);
         dmr_cspdu_pf0_handle_aloha(opts, state, cs_pdu_bits, csbk_o, csbk_fid);
 
-        dmr_cspdu_pf0_handle_p_clear(opts, state, csbk_o, csbk_fid);
+        dmr_cspdu_pf0_handle_p_clear(opts, state, cs_pdu_bits, csbk_o, csbk_fid);
 
         dmr_cspdu_pf0_handle_p_protect(opts, state, cs_pdu_bits, csbk_o);
 

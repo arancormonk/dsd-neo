@@ -141,12 +141,17 @@ build_move_tscc(uint8_t* bits, uint8_t* bytes, uint32_t ms, uint16_t apcn, uint1
     }
 }
 
+/* A P_CLEAR (TS 102 361-4 Table 7.30) to group @p tg: G/I bit 31, target bits 32-55. */
 static void
-build_pclear(uint8_t* bits, uint8_t* bytes) {
+build_pclear(uint8_t* bits, uint8_t* bytes, uint32_t tg) {
     DSD_MEMSET(bits, 0, 256);
     DSD_MEMSET(bytes, 0, 48);
     // Opcode = 46
     bytes[0] = (uint8_t)(46 & 0x3F);
+    bits[31] = 1U;
+    for (int i = 0; i < 24; i++) {
+        bits[32 + i] = (uint8_t)((tg >> (23 - i)) & 1U);
+    }
 }
 
 extern void dmr_cspdu(dsd_opts*, dsd_state*, uint8_t*, uint8_t*, uint32_t, uint32_t);
@@ -203,7 +208,7 @@ main(int argc, char** argv) {
 
     // Step 3: P_CLEAR on the followed call's slot, then SM should return to CC immediately
     state.currentslot = 1;
-    build_pclear(bits, bytes);
+    build_pclear(bits, bytes, 1001U);
     dmr_cspdu(&opts, &state, bits, bytes, /*crc ok*/ 1, /*errs*/ 0);
 
     assert(opts.trunk_is_tuned == 0);

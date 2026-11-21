@@ -14468,7 +14468,7 @@ target_link_libraries(
 )
 add_test(NAME DMR_T3_CMOVE COMMAND dsd-neo_test_dmr_t3_cmove)
 
-# DMR Tier III forced release via TG hold override on P_CLEAR
+# DMR Tier III P_CLEAR: addressed to the followed call on its slot; TG hold forces the release
 add_executable(
     dsd-neo_test_dmr_t3_force_release
     protocol/dmr/test_dmr_t3_force_release.c

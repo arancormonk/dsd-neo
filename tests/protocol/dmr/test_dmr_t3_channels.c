@@ -561,7 +561,7 @@ test_chan_freq_inconsistent_channels_ignored(void) {
 }
 
 /* A checked Chan_Freq is a SITE row with its learned notice; announced again it changes nothing and the hunt list
-   holds its frequency once. A user's list is never appended to. */
+   holds its frequency once. */
 static void
 test_chan_freq_learned_notice_and_origin(void) {
     reset();
@@ -578,6 +578,61 @@ test_chan_freq_learned_notice_and_origin(void) {
     assert(hunt_list_count(451187500L) == 1 && g_state.lcn_freq_count == 1);
     assert(candidate_count(451187500L) == 1);
     dsd_state_trunk_lcn_free(&g_state);
+}
+
+/* A user's list (-C) is never appended to: the channel is still learned, the hunt list keeps the user's rows. */
+static void
+test_chan_freq_user_list_not_appended(void) {
+    reset();
+    dmr_sm_init(&g_opts, &g_state);
+    DSD_SNPRINTF(g_opts.chan_in_file, sizeof g_opts.chan_in_file, "%s", "user_channels.csv");
+    assert(dsd_state_trunk_lcn_freq_write(&g_state, 0, CC_HZ) == 0);
+    dsd_state_trunk_lcn_count_raise(&g_state, 1);
+    assert(dsd_state_trunk_lcn_user_list_present(&g_opts, &g_state));
+    send_chan_freq(141U, 451U, 2300U);
+    assert(g_state.trunk_chan_map[141] == 451287500L);
+    assert(g_state.lcn_freq_count == 1);
+    assert(hunt_list_count(451287500L) == 0);
+    dsd_state_trunk_lcn_free(&g_state);
+}
+
+/* A C_BCAST Ann_WD_TSCC (type 0) as a single CSBK: BCAST_CH1 @p ch1 marked add, BCAST_CH2 CHNULL. */
+static void
+send_ann_wd_logical(uint16_t ch1) {
+    uint8_t bits[256];
+    uint8_t bytes[48];
+    build_pf0(bits, bytes, 40U);
+    put_bits(bits, 16, 0U, 5);
+    put_bits(bits, 56, ch1 & 0x0FFFU, 12);
+    dmr_cspdu(&g_opts, &g_state, bits, bytes, 1U, 0U);
+}
+
+/* A TSCC an Ann_WD_TSCC, Vote_Now or Adjacent_Site names becomes a hunt candidate only from a checked or RAS-accepted
+   PDU: a RAS signature on a carrier where RAS is not confirmed adds none. */
+static void
+test_announced_candidates_need_checked_content(void) {
+    reset();
+    dmr_sm_init(&g_opts, &g_state);
+    g_opts.aggressive_framesync = 0; /* -F */
+    g_state.currentslot = 0;
+    g_state.trunk_chan_map[142] = 451300000L;
+    g_state.event_crc_invalid[0] = DSD_CRC_RAS_UNVERIFIED;
+    g_state.dmr_ras_signatures = 0U;
+    send_ann_wd_logical(142U);
+    send_c_bcast_mbc(2U, 0x0FFFU, 143U, 451U, 2500U, 1U);
+    send_adjacent(144U, 451U, 2600U);
+    assert(candidate_count(451300000L) == 0);
+    assert(candidate_count(451312500L) == 0);
+    assert(candidate_count(451325000L) == 0);
+
+    /* RAS confirmed on the carrier: accepted, so each is a candidate. */
+    g_state.dmr_ras_signatures = 2U;
+    send_ann_wd_logical(142U);
+    send_c_bcast_mbc(2U, 0x0FFFU, 143U, 451U, 2500U, 1U);
+    send_adjacent(144U, 451U, 2600U);
+    assert(candidate_count(451300000L) == 1);
+    assert(candidate_count(451312500L) == 1);
+    assert(candidate_count(451325000L) == 1);
 }
 
 /* Vote_Now with "Active_connection information not available" (§6.7.1.3) still names its channel: only the
@@ -917,6 +972,8 @@ main(void) {
     test_chan_freq_header_fff_uses_bcap_chan();
     test_chan_freq_inconsistent_channels_ignored();
     test_chan_freq_learned_notice_and_origin();
+    test_chan_freq_user_list_not_appended();
+    test_announced_candidates_need_checked_content();
     test_vote_now_ac_unavailable_still_decodes_channel();
     test_adjacent_absolute_is_neighbour_fill_only();
     dsd_state_ext_free_all(&g_state);

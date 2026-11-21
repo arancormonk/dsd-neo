@@ -13353,7 +13353,7 @@ Private per-protocol modules worth knowing about:
   map import, `dmr_t3_chan_note_map_loaded()` after `chan_map_adopt()`; a nonzero row with no recorded origin, such as
   a `-C` map at startup, reads as FILE), USER, SITE, UNVERIFIED, NEIGHBOUR or ESTIMATE. `dmr_t3_chan_learn()` is the
   only over-the-air writer: `dmr_csbk.c` passes SITE for a CSBK or MBC whose CRC checked (absolute grants, the TSCC an
-  absolute C_MOVE's MV_AP names, Chan_Freq), UNVERIFIED for one `-F` accepted as RAS (`dmr_csbk_ras_accepted()`, the
+  absolute C_MOVE's MV_AP or an absolute P_CLEAR's appended block names, Chan_Freq), UNVERIFIED for one `-F` accepted as RAS (`dmr_csbk_ras_accepted()`, the
   C_ALOHA recognition's own predicate), NEIGHBOUR for an absolute Vote_Now/Adjacent_Site either way, and nothing for a
   failed CRC or the synthesized P_CLEAR. FILE and USER are never overwritten over the air; SITE replaces UNVERIFIED,
   NEIGHBOUR and ESTIMATE always (an origin change at the same frequency counts) and SITE when the frequency differs; the
@@ -13420,6 +13420,17 @@ Private per-protocol modules worth knowing about:
   decodes these opcodes today; one added later must take its opcode out of `dmr_cspdu_pf0_is_standard_only()`, or both
   lines print. Grants, moves, C_ALOHA (Capacity Max recognition included), P_CLEAR, P_PROTECT, C_BCAST and preambles
   still run for any FID. Tests: `DMR_CSBK_FIXES`, `DMR_EMBEDDED_LC_CHECKSUM` (a UTF-8 alias through `dmr_flco()`).
+- DMR P_CLEAR addressing (`dmr_csbk.c`, `dmr_trunk_sm.c`; TS 102 361-4 Table 7.30). A standard P_CLEAR (FID 0) applies
+  only when received on the followed call's slot (`dmr_sm_follows_slot()`: either slot before a slotless grant's first
+  voice) and addressed to that call (`dmr_sm_names_followed_call()`: G/I 1 and its talkgroup, G/I 0 and either party of
+  a private call, as the grant or the slot's identity names it; or G/I 0 and ALLMSI 0xFFFED4 or ALLMSID 0xFFFFFF).
+  Otherwise it prints "not for the followed call" and changes nothing: no burst hint, activity, force latch or release.
+  Applied, it releases its own slot only, so a busy companion slot keeps the carrier. The synthesized lockout clear
+  (`dmr_cspdu_release_channel()`) and another FID's opcode 46 keep the carrier-wide release unread. A checked or
+  RAS-accepted clear naming another TSCC (a mapped LPCN, or a valid appended block, which the map also learns) makes it
+  a current-site hunt candidate, whether or not it is for the followed call; the release still returns where the
+  machine returns. Ann_WD_TSCC, Vote_Now and Adjacent_Site add candidates under the same gate. Tests:
+  `DMR_T3_FORCE_RELEASE`, `DMR_T3_MOVE_RELEASE`, `DMR_GRANT_POLICY`, `DMR_T3_CHANNELS`.
 - DMR talkgroup priority and preemption (`dmr_trunk_sm.c`, `dmr_csbk.c`, `dmr_csbk_parse.c`, `dmr_flco.c`). Policy
   stays at the CSBK/status layer, which alone knows each grant's classification (Tier III data grants rewritten to
   group, Connect Plus private refused with group tuning off, Cap+ private LSNs, XPT kinds); its decision, call kind,

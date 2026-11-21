@@ -587,9 +587,12 @@ build_c_move(uint8_t* bits, uint8_t* bytes, uint16_t lpcn, uint8_t slot, uint32_
     write_bits_u32(bits, 56U, source & 0x00FFFFFFU, 24U);
 }
 
+/* A P_CLEAR (TS 102 361-4 Table 7.30) addressed to @p target, a talkgroup when @p gi (bit 31). */
 static void
-build_p_clear(uint8_t* bits, uint8_t* bytes, uint8_t fid) {
-    build_pf0(bits, bytes, 46U, fid);
+build_p_clear(uint8_t* bits, uint8_t* bytes, uint8_t gi, uint32_t target) {
+    build_pf0(bits, bytes, 46U, 0U);
+    bits[31] = (uint8_t)(gi & 1U);
+    write_bits_u32(bits, 32U, target & 0x00FFFFFFU, 24U);
 }
 
 static void
@@ -2565,21 +2568,25 @@ main(void) {
     pf0_st.dmrburstL = 6;
     pf0_st.dmrburstR = 6;
     seed_voice_call(&pf0_st, 0U, DSD_CALL_KIND_GROUP_VOICE, 4400U, 3300U);
-    build_p_clear(bits, bytes, 0U);
+    build_p_clear(bits, bytes, 1U, 4400U);
     dmr_cspdu(&pf0_opts, &pf0_st, bits, bytes, 1U, 0U);
     rc |= expect_true("p_clear trunk disabled leaves slot 1 burst", pf0_st.dmrburstL == 6);
     rc |= expect_true("p_clear trunk disabled leaves opposite burst", pf0_st.dmrburstR == 6);
     rc |= expect_true("p_clear trunk disabled leaves canonical slot 1 call",
                       active_call_matches(&pf0_st, 0U, DSD_CALL_KIND_GROUP_VOICE, 4400U, 3300U));
 
+    // The followed call on slot 2 cleared while slot 1 carries data: only slot 2 goes idle, and nothing is forced.
     init_env(&pf0_opts, &pf0_st);
-    pf0_opts.trunk_is_tuned = 1;
+    pf0_st.trunk_chan_map[lpcn] = freq;
+    build_grant(bits, bytes, 49U, lpcn, 9900U, 6500U, 1U);
+    dmr_cspdu(&pf0_opts, &pf0_st, bits, bytes, 1U, 0U);
+    rc |= expect_true("p_clear data setup tunes vc", pf0_opts.trunk_is_tuned == 1);
     pf0_st.currentslot = 1;
     pf0_st.dmrburstL = 6;
     pf0_st.dmrburstR = 16;
     const dsd_call_observation slot_two_data = dsd_call_observation_data(DSD_SYNC_DMR_BS_DATA_POS, 1U, 0U, 9900U);
     (void)dsd_recent_activity_publish(&pf0_st, 1U, &slot_two_data, "slot two data channel", 1U);
-    build_p_clear(bits, bytes, 0U);
+    build_p_clear(bits, bytes, 1U, 9900U);
     dmr_cspdu(&pf0_opts, &pf0_st, bits, bytes, 1U, 0U);
     rc |= expect_true("p_clear data clears slot 2 burst state", pf0_st.dmrburstR == 9);
     rc |= expect_true("p_clear data leaves companion burst hint alone", pf0_st.dmrburstL == 6);
@@ -2595,12 +2602,15 @@ main(void) {
     static const unsigned int companion_hints[] = {2U, 6U, 9U, 15U, 17U};
     for (size_t h = 0; h < sizeof(companion_hints) / sizeof(companion_hints[0]); h++) {
         init_env(&pf0_opts, &pf0_st);
-        pf0_opts.trunk_is_tuned = 1;
+        pf0_st.trunk_chan_map[lpcn] = freq;
+        build_grant(bits, bytes, 49U, lpcn, 4400U, 3300U, 0U);
+        dmr_cspdu(&pf0_opts, &pf0_st, bits, bytes, 1U, 0U);
+        rc |= expect_true("p_clear active companion setup tunes vc", pf0_opts.trunk_is_tuned == 1);
         pf0_st.currentslot = 0;
         pf0_st.dmrburstL = 9;
         pf0_st.dmrburstR = companion_hints[h];
         seed_voice_call(&pf0_st, 1U, DSD_CALL_KIND_GROUP_VOICE, 7700U, 8800U);
-        build_p_clear(bits, bytes, 0U);
+        build_p_clear(bits, bytes, 1U, 4400U);
         dmr_cspdu(&pf0_opts, &pf0_st, bits, bytes, 1U, 0U);
         rc |= expect_true("p_clear active companion does not force release", pf0_st.trunk_sm_force_release == 0);
         rc |= expect_true("p_clear active companion does not return to cc", pf0_st.p25_sm_release_count == 0);
@@ -2634,7 +2644,7 @@ main(void) {
         .tune_to_cc_request = test_tune_request,
         .return_to_cc_request = result_return_to_cc,
     });
-    build_p_clear(bits, bytes, 0U);
+    build_p_clear(bits, bytes, 1U, 5500U);
     dmr_cspdu(&pf0_opts, &pf0_st, bits, bytes, 1U, 0U);
     install_trunk_tuning_hooks();
     rc |= expect_true("p_clear hold forced return hook called", g_return_to_cc_result_calls == 1);
