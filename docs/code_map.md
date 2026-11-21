@@ -69,6 +69,14 @@ Generated (do not edit/commit):
     Start needs a running radio DSD-neo tunes (`dsd_opts_radio_can_tune()`) on the system's
     decode clock, so an I/Q replay restarted onto the system clock, or an I/Q stream, is
     refused before the search takes the tuner or runs a carrier boundary (issue #743).
+    Start is validate-then-commit (issue #748 B13, `ENGINE_SIGNAL_SEARCH`): every check runs first, then a fresh start
+    reserves everything it can fail on (the coordinator, the session's P25 site with its channel map's storage, the scan
+    scope's storage through `dsd_scan_mode_reserve()`, and the scan owner last), and only then commits: the caller's
+    commit hook (`dsd_engine_signal_search_start_with_commit()`; app-control's takes back a `-Y` resume still waiting on
+    its row), the scan-quiet invalidation, the settings capture, the Auto preset, and the scope's baseline
+    (`dsd_scan_mode_begin_reserved()`, so the baseline is still the Auto one, never the session's decoder). A start that
+    fails has changed nothing, a scan owner it would have made included; a paused session's edited Resume reserves
+    nothing and runs the same hook.
     Its decoder baseline is the CONFIG-profile Auto preset, which leaves the DMR dispatch
     flags as the session had them; when a mono preset (`-f1`) has turned both off, the
     baseline takes dual-slot dispatch (`dmr_stereo`), since with both off no direct-mode

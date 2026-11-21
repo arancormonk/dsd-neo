@@ -29051,7 +29051,10 @@ if(DSD_HAS_RADIO)
     )
     target_compile_definitions(
         dsd-neo_test_engine_signal_search
-        PRIVATE USE_RADIO dsd_realtime_mono_ms=test_dsd_realtime_mono_ms
+        PRIVATE
+            USE_RADIO
+            DSD_NEO_TEST_HOOKS
+            dsd_realtime_mono_ms=test_dsd_realtime_mono_ms
     )
     target_link_libraries(
         dsd-neo_test_engine_signal_search

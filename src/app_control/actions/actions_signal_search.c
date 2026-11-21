@@ -22,6 +22,7 @@
 #include <stdint.h>
 #include <string.h>
 #include "../command_dispatch.h"
+#include "../commands_internal.h"
 
 /* How long one lock must be seen held before it becomes a detection's tone: longer than the brief locks a voice's
    talk-off, a 150.0/151.4 Hz neighbour read or the old channel's tone after a retune make (issue #802 B3). */
@@ -185,7 +186,9 @@ start_search(dsd_opts* opts, dsd_state* state, const struct dsd_app_command* cmd
     observer.opts = opts;
     observer.state = state;
     char error[192] = "";
-    if (dsd_engine_signal_search_start(opts, state, &config, publish_search, NULL, error, sizeof(error))) {
+    if (dsd_engine_signal_search_start_with_commit(opts, state, &config, publish_search, NULL,
+                                                   dsd_app_signal_search_take_back_scan_resume, NULL, error,
+                                                   sizeof(error))) {
         dsd_signal_search_status status = {0};
         dsd_app_signal_search_status_get(&status, NULL, 0);
         if (!dsd_engine_signal_search_active(state)) {

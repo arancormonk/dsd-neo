@@ -42,6 +42,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include "../../src/app_control/command_dispatch.h"
+#include "../../src/app_control/commands_internal.h"
 #include "../../src/engine/scan_owner.h"
 
 static dsd_signal_search_status status;
@@ -3877,6 +3878,20 @@ dsd_app_command_submit(int id, const void* data, size_t size) {
     return DSD_APP_COMMAND_SUBMIT_QUEUED;
 }
 
+/* The command queue's -Y take-back, the start's commit hook (issue #748 B13): a -Y resume waiting on its row is taken
+   back, leaving its row's scope (here, a voice-only row's setting) for the session's own. */
+static int scan_resumes_taken;
+
+void
+dsd_app_signal_search_take_back_scan_resume(dsd_opts* opts, dsd_state* state, void* user) {
+    (void)user;
+    if (state->lcn_scan_resume_pending) {
+        state->lcn_scan_resume_pending = 0;
+        opts->scan_voice_only = 0;
+        ++scan_resumes_taken;
+    }
+}
+
 double
 dsd_analog_rx_clock_s(void) {
     return 0.0;
@@ -3967,6 +3982,78 @@ test_refusal_then_resume_reaches_frontend(dsd_opts* o, dsd_state* s, const dsd_s
     tick(o, s);
     land(o, s);
     stop_tag_session(o, s);
+}
+
+/* Issue #748 B13: a start is validate-then-commit. Each step a fresh start can fail at fails it with nothing changed:
+   the options, the decoder state (a scan owner made for the start goes again), the quiet check a scan owner holds, a -Y
+   resume still waiting on its row, the tuner and the carrier. */
+static void
+test_failed_start_changes_nothing(dsd_opts* o, dsd_state* s, const dsd_signal_search_config* config) {
+    static const int points[] = {DSD_SEARCH_START_FAIL_COORD, DSD_SEARCH_START_FAIL_SCOPE, DSD_SEARCH_START_FAIL_SITE,
+                                 DSD_SEARCH_START_FAIL_OWNER};
+    dsd_opts* opts_before = malloc(sizeof(*opts_before));
+    dsd_state* state_before = malloc(sizeof(*state_before));
+    assert(opts_before && state_before);
+    dsd_signal_search_config one = tag_config(config, 92, 1, 0);
+    o->rtlsdr_center_freq = 100000000;
+    // A session the preset would change, a mono -f1 decoder on a NXDN48 hunt, and a typed -Y row (voice only) whose
+    // resume waits on its tune.
+    o->dmr_stereo = o->dmr_mono = 0;
+    o->frame_dmr = 0;
+    o->scan_voice_only = 1;
+    s->lcn_scan_resume_pending = 1;
+    put_timing(s, DSD_FRAME_SYNC_SPS_PROFILE_2400_4, 20, 9, 0);
+    for (int owned = 0; owned < 2; ++owned) {
+        for (size_t i = 0; i < sizeof(points) / sizeof(points[0]); ++i) {
+            if (owned) {
+                assert(dsd_engine_scan_owner_ensure(s) != NULL);
+            } else {
+                (void)dsd_state_ext_set(s, DSD_STATE_EXT_ENGINE_TRUNK_SCAN, NULL, NULL);
+            }
+            const dsd_engine_scan_owner* owner = dsd_engine_scan_owner_get(s);
+            const uint32_t quiet_inv = owner ? owner->quiet_inv_seq : 0U;
+            const int before_boundary = boundary;
+            DSD_MEMCPY(opts_before, o, sizeof(*o));
+            DSD_MEMCPY(state_before, s, sizeof(*s));
+            dsd_engine_signal_search_test_fail_start(points[i]);
+            assert(start_action(o, s, &one) == 2);
+            dsd_engine_signal_search_test_fail_start(DSD_SEARCH_START_FAIL_NONE);
+            assert(strcmp(store_status.message, "Not enough memory to start Signal search") == 0);
+            assert(store_status.phase == DSD_SEARCH_ERROR && !store_status.owned);
+            assert(memcmp(opts_before, o, sizeof(*o)) == 0);
+            assert(memcmp(state_before, s, sizeof(*s)) == 0);
+            owner = dsd_engine_scan_owner_get(s);
+            assert(owned ? owner && owner->quiet_inv_seq == quiet_inv : owner == NULL);
+            assert(!dsd_engine_signal_search_active(s) && !dsd_signal_search_is_running(s));
+            assert(boundary == before_boundary && !tuner_owner && !scan_resumes_taken);
+        }
+    }
+    // Nothing was left half made: the same start goes on. It takes the -Y resume back first, so the settings it puts
+    // back at Stop are the session's, not the row's.
+    live = 1;
+    carrier = 0;
+    observed = 1;
+    failed = 0;
+    stalled_ms = 0;
+    assert(start_action(o, s, &one) == 1 && scan_resumes_taken == 1 && !s->lcn_scan_resume_pending);
+    tick(o, s);
+    visit_strongest(o, s);
+    // A paused search's edited Resume goes on, through the same commit hook.
+    act(o, s, DSD_SEARCH_ACTION_PAUSE);
+    s->lcn_scan_resume_pending = 1;
+    one.ranges[0].end_hz = 100012500;
+    assert(start_action(o, s, &one) == 1 && scan_resumes_taken == 2 && status.phase == DSD_SEARCH_SEARCHING);
+    tick(o, s);
+    land(o, s);
+    stop_tag_session(o, s);
+    assert(timing_is(s, DSD_FRAME_SYNC_SPS_PROFILE_2400_4, 20, 9, 0) && !o->dmr_stereo && !o->dmr_mono);
+    assert(o->scan_voice_only == 0 && !o->frame_dmr);
+    o->frame_dmr = 1;
+    o->dmr_stereo = 1;
+    scan_resumes_taken = 0;
+    put_timing(s, DSD_FRAME_SYNC_SPS_PROFILE_4800_4, 10, 4, 0);
+    free(state_before);
+    free(opts_before);
 }
 
 static void
@@ -4180,6 +4267,7 @@ main(void) {
     test_p25_site_and_codes(o, s, &config);
     test_avoid_lists(o, s, &config);
     test_refusal_then_resume_reaches_frontend(o, s, &config);
+    test_failed_start_changes_nothing(o, s, &config);
     s->rtl_ctx = NULL;
     dsd_state_ext_free_all(s);
     free(s);

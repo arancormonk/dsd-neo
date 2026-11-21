@@ -24,6 +24,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include "command_dispatch.h"
+#include "commands_internal.h"
 
 static dsd_signal_search_publish_fn observer;
 static void* observer_user;
@@ -40,16 +41,30 @@ static int permanent_calls_at_control;
 static dsd_signal_search_control last_control;
 static char notice[192];
 
-int
-dsd_engine_signal_search_start(dsd_opts* opts, dsd_state* state, const dsd_signal_search_config* config,
-                               dsd_signal_search_publish_fn callback, void* user, char* error, size_t capacity) {
+/* The start's commit hook the handler passes, and how often a start committed with it. */
+static dsd_signal_search_commit_fn commit_hook;
+static int commits;
+
+void
+dsd_app_signal_search_take_back_scan_resume(dsd_opts* opts, dsd_state* state, void* user) {
     (void)opts;
     (void)state;
+    (void)user;
+}
+
+int
+dsd_engine_signal_search_start_with_commit(dsd_opts* opts, dsd_state* state, const dsd_signal_search_config* config,
+                                           dsd_signal_search_publish_fn callback, void* user,
+                                           dsd_signal_search_commit_fn commit, void* commit_user, char* error,
+                                           size_t capacity) {
     (void)config;
+    commit_hook = commit;
     if (reject_start) {
         DSD_SNPRINTF(error, capacity, "%s", "A search supports up to 100,000 enabled channels");
         return -1;
     }
+    commit(opts, state, commit_user);
+    ++commits;
     observer = callback;
     observer_user = user;
     return 0;
@@ -404,7 +419,9 @@ main(void) {
     assert(opts && state && command);
     command->n = sizeof(dsd_signal_search_config);
     assert(dsd_app_actions_signal_search[0].fn(opts, state, command) == 1);
-    assert(observer);
+    // The handler hands the start its -Y take-back as the commit hook, which only a start that goes on runs (issue
+    // #748 B13).
+    assert(observer && commit_hook == dsd_app_signal_search_take_back_scan_resume && commits == 1);
 
     dsd_signal_search_status status = {0};
     status.session_id = status.hit.session_id = 1;
@@ -651,7 +668,7 @@ main(void) {
     published.message[0] = '\0';
     coordinator_active = 1;
     assert(dsd_app_actions_signal_search[0].fn(opts, state, command) == 2);
-    assert(published.phase == DSD_SEARCH_PAUSED && published.owned && published.session_id == 5);
+    assert(published.phase == DSD_SEARCH_PAUSED && published.owned && published.session_id == 5 && commits == 1);
     assert(published.revision == before_refusal + 2 && strstr(published.message, "100,000") != NULL);
     assert(dsd_signal_search_status_revision_next() == before_refusal + 3);
 

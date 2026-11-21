@@ -600,6 +600,15 @@ search_validate_start(const dsd_opts* opts, const dsd_state* state, const dsd_si
     return dsd_signal_search_validate_config(config, error, capacity);
 }
 
+#ifdef DSD_NEO_TEST_HOOKS
+static int g_search_test_start_fail = DSD_SEARCH_START_FAIL_NONE;
+
+void
+dsd_engine_signal_search_test_fail_start(int point) {
+    g_search_test_start_fail = point;
+}
+#endif
+
 /* Every start refusal past validation is a failed allocation: the session, its scan scope or its saved P25 site. */
 static void
 search_refuse_start(char* error, size_t capacity) {
@@ -658,55 +667,115 @@ dsd_engine_signal_search_start_refused(const dsd_opts* opts, const dsd_state* st
 #endif
 }
 
-int
-dsd_engine_signal_search_start(dsd_opts* opts, dsd_state* state, const dsd_signal_search_config* config,
-                               dsd_signal_search_publish_fn observer, void* user, char* error, size_t capacity) {
-#ifndef USE_RADIO
-    (void)opts;
-    (void)state;
-    (void)config;
-    (void)observer;
-    (void)user;
-    if (error && capacity) {
-        DSD_SNPRINTF(error, capacity, "%s", "Signal search needs a radio-enabled build");
+#ifdef USE_RADIO
+/* A paused session's start with edited ranges: the same coordinator searches them from their start. It allocates
+   nothing and cannot fail. */
+static void
+search_restart_paused(search_coord* previous, const dsd_signal_search_config* config) {
+    /* Keep the native session's avoids, including those made before an Activity recreation: both lists live in the
+       coordinator and the runtime, never in a start. */
+    previous->config.range_count = config->range_count;
+    DSD_MEMCPY(previous->config.ranges, config->ranges, sizeof(config->ranges));
+    previous->status.range_index = previous->status.channel_index = 0;
+    ++previous->status.pass;
+    previous->suppressed_count = 0;
+    previous->need_span = 1;
+    previous->visit = previous->skip = previous->hold = 0;
+    previous->status.phase = DSD_SEARCH_SEARCHING;
+    /* Edited ranges (a lower gain) are measured afresh: a span that still clips warns again at its skip. */
+    search_clear_overload(previous);
+    /* The edited ranges show from this Resume on, not while they were being edited. */
+    (void)search_select_range(previous);
+    search_publish(previous, 0);
+}
+
+/* What a fresh start can fail to get, had before it changes anything (issue #748 B13). */
+typedef struct {
+    search_coord* coord;
+    dsd_scan_scope_reserve* scope;
+} search_start_reserve;
+
+static void
+search_release_reserve(search_start_reserve* r) {
+    dsd_scan_mode_reserve_free(r->scope);
+    search_coord_free(r->coord);
+    r->scope = NULL;
+    r->coord = NULL;
+}
+
+/* The coordinator's storage; NULL when it cannot be had (or a test has the start fail there). */
+static search_coord*
+search_reserve_coord(void) {
+#ifdef DSD_NEO_TEST_HOOKS
+    if (g_search_test_start_fail == DSD_SEARCH_START_FAIL_COORD) {
+        return NULL;
     }
-    return -1;
-#else
-    if (search_validate_start(opts, state, config, error, capacity)) {
+#endif
+    return (search_coord*)calloc(1, sizeof(search_coord));
+}
+
+/* The session's P25 site into @p site, its channel map's storage grown to hold it; -1 when it cannot be (or a test has
+   the start fail there). A session site saved without its channel map would empty the map at every departure. */
+static int
+search_reserve_site(const dsd_state* state, dsd_p25_site_snapshot* site) {
+#ifdef DSD_NEO_TEST_HOOKS
+    if (g_search_test_start_fail == DSD_SEARCH_START_FAIL_SITE) {
         return -1;
     }
-    /* A scan quiet check made before the search is not the search's (issue #834): it is dropped at its next reconcile,
-       and the tap lets the search's first request supersede its request meanwhile. */
-    dsd_engine_scan_quiet_note_change(state);
-    search_coord* previous = search_get(state);
-    if (previous && previous->status.phase == DSD_SEARCH_PAUSED) {
-        /* Keep the native session's avoids, including those made before an Activity recreation: both lists live in the
-           coordinator and the runtime, never in a start. */
-        previous->config.range_count = config->range_count;
-        DSD_MEMCPY(previous->config.ranges, config->ranges, sizeof(config->ranges));
-        previous->status.range_index = previous->status.channel_index = 0;
-        ++previous->status.pass;
-        previous->suppressed_count = 0;
-        previous->need_span = 1;
-        previous->visit = previous->skip = previous->hold = 0;
-        previous->status.phase = DSD_SEARCH_SEARCHING;
-        /* Edited ranges (a lower gain) are measured afresh: a span that still clips warns again at its skip. */
-        search_clear_overload(previous);
-        /* The edited ranges show from this Resume on, not while they were being edited. */
-        (void)search_select_range(previous);
-        search_publish(previous, 0);
-        return 0;
+#endif
+    return dsd_p25_site_snapshot_save(state, site);
+}
+
+/* The scan scope's storage; NULL when it cannot be had (or a test has the start fail there). */
+static dsd_scan_scope_reserve*
+search_reserve_scope(void) {
+#ifdef DSD_NEO_TEST_HOOKS
+    if (g_search_test_start_fail == DSD_SEARCH_START_FAIL_SCOPE) {
+        return NULL;
     }
-    search_coord* c = (search_coord*)calloc(1, sizeof(*c));
-    if (!c) {
-        search_refuse_start(error, capacity);
+#endif
+    return dsd_scan_mode_reserve();
+}
+
+/* The scan owner the coordinator attaches to, made when the session has none; -1 when it cannot be (or a test has the
+   start fail there, before any is made). */
+static int
+search_reserve_owner(dsd_state* state) {
+#ifdef DSD_NEO_TEST_HOOKS
+    if (g_search_test_start_fail == DSD_SEARCH_START_FAIL_OWNER) {
         return -1;
     }
-    c->config = *config;
-    c->opts = opts;
-    c->publish = observer;
-    c->user = user;
-    c->status.session_id = config->session_id;
+#endif
+    return dsd_engine_scan_owner_ensure(state) ? 0 : -1;
+}
+
+/* Everything a fresh start can fail on, with nothing changed: the coordinator, the session's P25 site with its channel
+   map's storage, the scan scope's storage and the scan owner, which a session with none gets last, so a failure before
+   it leaves no owner made. The site is saved here, before the commit: none of what follows it before the first tune
+   (taking back a -Y resume, the Auto preset, the start profile) touches the P25 site or its channel map. */
+static int
+search_reserve_start(dsd_state* state, search_start_reserve* r) {
+    DSD_MEMSET(r, 0, sizeof(*r));
+    r->coord = search_reserve_coord();
+    if (!r->coord) {
+        return -1;
+    }
+    if (search_reserve_site(state, &r->coord->session_site) == 0) {
+        r->scope = search_reserve_scope();
+    }
+    if (!r->scope || search_reserve_owner(state)) {
+        search_release_reserve(r);
+        return -1;
+    }
+    return 0;
+}
+
+/* The fresh start's changes, past every check and with everything it can fail on had: the coordinator takes the
+   session's settings and puts the Auto baseline in force, the scope captures that baseline (not the session's
+   decoder), and the coordinator attaches to the scan owner the reservation made sure of. */
+static void
+search_commit_start(search_coord* c, dsd_opts* opts, dsd_state* state, dsd_scan_scope_reserve* scope) {
+    c->status.session_id = c->config.session_id;
     c->status.pass = 1;
     c->status.phase = DSD_SEARCH_SEARCHING;
     c->need_span = 1;
@@ -726,15 +795,9 @@ dsd_engine_signal_search_start(dsd_opts* opts, dsd_state* state, const dsd_signa
     }
     search_start_profile(opts, state);
     dsd_p25_patch_snapshot_save(state, &c->session_patches);
-    /* A session site saved without its channel map would empty the map at every departure: no search then. */
-    if (dsd_p25_site_snapshot_save(state, &c->session_site) || dsd_scan_mode_begin(opts, state)
-        || dsd_engine_scan_own(state, 1, c, search_coord_free)) {
-        dsd_scan_mode_leave(opts, state);
-        dsd_scan_settings_restore(&c->saved, opts, state);
-        search_coord_free(c);
-        search_refuse_start(error, capacity);
-        return -1;
-    }
+    dsd_scan_mode_begin_reserved(opts, state, scope);
+    /* The owner exists (search_reserve_start()), so attaching to it allocates nothing and cannot fail. */
+    (void)dsd_engine_scan_own(state, 1, c, search_coord_free);
     /* No visit is on the air before this search's first landing: what its first tune's boundary closes was received
        before the search, so no tag an earlier session left may name it (issue #809). */
     dsd_signal_search_visit_clear();
@@ -750,6 +813,60 @@ dsd_engine_signal_search_start(dsd_opts* opts, dsd_state* state, const dsd_signa
     /* The first enabled range: validation guarantees one, so this neither wraps the pass nor fails. */
     (void)search_select_range(c);
     search_publish(c, 0);
+}
+#endif
+
+int
+dsd_engine_signal_search_start(dsd_opts* opts, dsd_state* state, const dsd_signal_search_config* config,
+                               dsd_signal_search_publish_fn observer, void* user, char* error, size_t capacity) {
+    return dsd_engine_signal_search_start_with_commit(opts, state, config, observer, user, NULL, NULL, error, capacity);
+}
+
+int
+dsd_engine_signal_search_start_with_commit(dsd_opts* opts, dsd_state* state, const dsd_signal_search_config* config,
+                                           dsd_signal_search_publish_fn observer, void* user,
+                                           dsd_signal_search_commit_fn commit, void* commit_user, char* error,
+                                           size_t capacity) {
+#ifndef USE_RADIO
+    (void)opts;
+    (void)state;
+    (void)config;
+    (void)observer;
+    (void)user;
+    (void)commit;
+    (void)commit_user;
+    if (error && capacity) {
+        DSD_SNPRINTF(error, capacity, "%s", "Signal search needs a radio-enabled build");
+    }
+    return -1;
+#else
+    /* Validate, then reserve, then commit (issue #748 B13): a start that fails changes nothing at all. */
+    if (search_validate_start(opts, state, config, error, capacity)) {
+        return -1;
+    }
+    search_coord* previous = search_get(state);
+    const int paused = previous && previous->status.phase == DSD_SEARCH_PAUSED;
+    search_start_reserve reserve = {NULL, NULL};
+    if (!paused && search_reserve_start(state, &reserve)) {
+        search_refuse_start(error, capacity);
+        return -1;
+    }
+    if (commit) {
+        commit(opts, state, commit_user);
+    }
+    /* A scan quiet check made before the search is not the search's (issue #834): it is dropped at its next reconcile,
+       and the tap lets the search's first request supersede its request meanwhile. */
+    dsd_engine_scan_quiet_note_change(state);
+    if (paused) {
+        search_restart_paused(previous, config);
+        return 0;
+    }
+    search_coord* c = reserve.coord;
+    c->config = *config;
+    c->opts = opts;
+    c->publish = observer;
+    c->user = user;
+    search_commit_start(c, opts, state, reserve.scope);
     return 0;
 #endif
 }

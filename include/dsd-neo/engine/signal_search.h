@@ -16,13 +16,42 @@ extern "C" {
 #endif
 /** Decoder-thread observer; must copy the records and must not perform file I/O. */
 typedef void (*dsd_signal_search_publish_fn)(const dsd_signal_search_status*, const dsd_signal_search_hit*, void*);
+/** Called once by a start that goes on, on the decoder thread, after every check has passed and everything the start
+ * could fail on is had, right before its first change (issue #748 B13): what a caller does only for a start that goes
+ * on, and before the search takes the session's settings (issue #671: taking back a -Y resume still waiting on its
+ * row, whose staged scopes must not become those settings). */
+typedef void (*dsd_signal_search_commit_fn)(dsd_opts* opts, dsd_state* state, void* user);
+/** Start a search, or restart a paused session's with edited ranges. Validate, then reserve, then commit: a start that
+ * fails (-1, the reason in @p error) has changed nothing. */
 int dsd_engine_signal_search_start(dsd_opts* opts, dsd_state* state, const dsd_signal_search_config* config,
                                    dsd_signal_search_publish_fn observer, void* user, char* error, size_t capacity);
+/** dsd_engine_signal_search_start() calling @p commit (NULL: none) with @p commit_user at its commit point. */
+int dsd_engine_signal_search_start_with_commit(dsd_opts* opts, dsd_state* state, const dsd_signal_search_config* config,
+                                               dsd_signal_search_publish_fn observer, void* user,
+                                               dsd_signal_search_commit_fn commit, void* commit_user, char* error,
+                                               size_t capacity);
 /** Whether dsd_engine_signal_search_start() would refuse @p config now, by the checks it makes before it changes
- * anything: 0 when it would go on, -1 (the reason in @p error) when it would refuse. Changes nothing. A caller that must
- * act only for a start that goes on (issue #671: taking back a -Y resume) asks first. */
+ * anything: 0 when it would go on, -1 (the reason in @p error) when it would refuse. Changes nothing. A start can still
+ * fail past these checks for memory; what must happen only for a start that goes on belongs in its commit hook. */
 int dsd_engine_signal_search_start_refused(const dsd_opts* opts, const dsd_state* state,
                                            const dsd_signal_search_config* config, char* error, size_t capacity);
+
+/** The steps a fresh start can fail at (issue #748 B13), for dsd_engine_signal_search_test_fail_start(). */
+typedef enum {
+    DSD_SEARCH_START_FAIL_NONE = 0,
+    /** The coordinator's own allocation. */
+    DSD_SEARCH_START_FAIL_COORD,
+    /** The scan scope that holds the Auto baseline. */
+    DSD_SEARCH_START_FAIL_SCOPE,
+    /** The session's P25 site, with its channel map's storage. */
+    DSD_SEARCH_START_FAIL_SITE,
+    /** The scan owner the coordinator attaches to. */
+    DSD_SEARCH_START_FAIL_OWNER
+} dsd_signal_search_start_fail;
+#ifdef DSD_NEO_TEST_HOOKS
+/** Have every later fresh start fail at @p point as if its allocation there failed (DSD_SEARCH_START_FAIL_NONE: none). */
+void dsd_engine_signal_search_test_fail_start(int point);
+#endif
 int dsd_engine_signal_search_control(dsd_opts* opts, dsd_state* state, const dsd_signal_search_control* action);
 /** Whether @p action is valid for the running search now, without acting on it: 0 with the frequency it acts on (the
  * current hit's, or frequency_hz for UNAVOID and AVOID_FREQUENCY), -1 for a stale session or hit. */
