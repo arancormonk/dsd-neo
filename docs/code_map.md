@@ -2792,6 +2792,22 @@ suite runs under this compiler.
   understated length, the KE8NAX sample's 2 for six characters), is shown but never learned (a decided limit). A block
   that completes the set out of order waits for the next cycle's decode; an empty alias and one with a U+FFFD are never
   learned. Tests: `DMR_TALKER_ALIAS_UTF8`, `DMR_TALKER_ALIAS_UTF16`, `DMR_TALKER_ALIAS_HEADER_LEN`, `DMR_ALIAS_LEARN`.
+- Invariant (live talker alias, `dsd_state::generic_talker_alias`): the alias the terminal UI shows for a slot is set by
+  alias enrichment (`dsd_event_enrich_alias()`), which tags it with the call epoch and the reception generation it was
+  published under (`generic_talker_alias_epoch`, `_rx_gen`). A P25 Phase 1 voice-user link control repeats in every LDU1
+  while the alias arrives in pieces across later superframes, so it keeps the alias when it goes on with the open call
+  the alias was published for, under the same reception, and drops it otherwise: a new call or talker, a declined start,
+  a TDULC, another system, a source other than the call's own talker, no source or a special address, the same number
+  switching between a local address and one needing a Source ID Extension within the call (another system's radio:
+  `p25_p1_voice_user_epoch` / `_local`), an alias from an earlier call or set outside enrichment
+  (`p25_lcw_drop_alias_unless_continued()`). Dropping it at every LDU1 made a Phase 1 alias flash on and off. Phase 2
+  drops it when a voice user begins a new epoch, or when another roaming radio's home replaces the call's
+  (`p25p2_note_voice_home()`); the trunk state machine drops it when a slot's media closes. The terminal UI shows an
+  alias only on the call it was published for, and on a P25 call never an untagged one; the NXDN line shows NXDN's
+  untagged text, and tagged text only on its own call. A decoder that sets the text outside call enrichment (NXDN) sets
+  the tag to 0. Decided limits: a reception change inside one call epoch drops the alias at the next voice-user link
+  control, not at once; Harris and Motorola alias fragments that straddle a reception change are assembled as before.
+  Tests: `P25_P1_LCW_GATING`, `CORE_ALIAS_HANGTIME`.
 - Invariant (Motorola talker alias reassembly, `src/core/util/dsd_alias.c`, `<dsd-neo/core/embedded_alias.h>`): the
   MFID 0x90 alias (Phase 1 LCW 0x15/0x17, Phase 2 MAC 0x91/0x95) assembles in `dsd_state::p25_apx_alias_rx[slot]`
   (`p25_apx_alias_rx_state_t`), which owns its header copy, block bitmap and record store; it never touches the
@@ -13610,7 +13626,37 @@ Private per-protocol modules worth knowing about:
   source address as well as the home SUID names the talker by the working address, which is local: the extended voice
   users (Group and Unit to Unit Voice Channel User - Extended, 0x21/0x22, as MAC_SIGNAL and inside
   MAC_PTT/MAC_ACTIVE: `p25p2_mac_decode_voice_identity()`, `p25p2_vpdu_observe_voice()`), as the extended grants that
-  carry one do; the SUID is only shown (`SUID:`), so a roaming radio's checked voice user names it like any other.
+  carry one do; the SUID is then only shown (`SUID:`), so a roaming radio's checked voice user names it like any other.
+  Its Source SUID is recorded on the call as the talker's home identity (`dsd_call_snapshot::source_home`, only from a
+  MAC whose CRC passed: `p25p2_vpdu_source_home()` for the voice-user pass, `p25p2_mac_decode_voice_identity()` for the
+  MAC_ACTIVE voice start when the call it published names the voice user's nonzero target, both through
+  `p25p2_note_voice_home()` and `dsd_call_state_note_source_home()`), for display and alias matching only: it never
+  takes part in the call's identity, boundaries, source fields or any local list. An L3Harris site sends Source Address
+  0 for a roaming radio; that call keeps source 0 and is shown as `unit@system` (decimal unit ID, hex home System ID,
+  `dsd_call_state_format_home_source()`) on the history line (kept with the row as `Event_History::src_home` for a
+  re-render with `src_home_key`, the full SUID: a reacquired segment naming another full SUID takes the new home and
+  alias, and the event log reports that alias), in the terminal call window and in the app's call view. Another radio's
+  home on the same call (two roaming radios with no end decoded between them) replaces it and drops the alias the
+  earlier radio's call showed; such an addressless voice user is `source_nonlocal` to the trunk state machine, so a
+  working address the call keeps from an earlier talker loses its verdict. A P25 talker alias is learned only for a
+  source the state machine's identity record positively checks under the reception now: every publication of that record
+  mirrors the verdict onto the call (`p25_sm_merge_published_identity()` -> `dsd_call_state_note_source_verdict()`; in
+  hangtime a claim withdrawing or contradicting the retained call's source clears it, anything else leaves it, so an
+  alias completed in hangtime is still learned), and every P25 learner (Harris, Motorola, Tait, Soft ID) reads it
+  (`dsd_call_state_source_learnable()`), so a foreign home unit ID from a grant, an unchecked decode or a withdrawn
+  source is shown and never learned; a full SUID ($49, Tait's Subscriber FQ-SUID, `p25_lcw_note_full_suid_source()`)
+  naming another system's home withdraws the verdict even for the number a local voice user checked. A Harris alias
+  (0xA8, which names no radio) attaches to the call's talker, a working address or a home identity; a Motorola alias
+  names a fully qualified SUID and matches a call with a home identity only by that whole SUID, any other call by its
+  working address, and is learned only when that checked address is the alias's unit ID (`alias_call_names_suid()`).
+  Decided limits (display only): a radio named only by its home SUID cannot be allowed, blocked or named through the
+  radio list (a numeric source from a foreign grant still can, as on main; only learning is gated); a voice user with no
+  working address never ends a call (two roaming radios back to back with no end decoded share one call, as on main);
+  the row's `source_id` and source text, CSV, WAV names and app History merging carry no home identity, while display
+  text (the history line, the call view's `src_text`, and the JSON fields that carry them) shows it; a long home ID may
+  shorten the call window's status banner; on a call that keeps an earlier radio's working address, a roaming radio
+  named only by its home shows that working address (its verdict withdrawn, nothing learned); an alias clear made while
+  a live slot filter withholds the call does not reach the staged row.
   A foreign unit's home ID alone therefore never names a report's sender, a sender scope or a local radio-list label.
   The
   verdicts are bound to their reception: a claim applied after the reception generation moved (another access code

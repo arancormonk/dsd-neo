@@ -756,9 +756,11 @@ int p25_sm_call_source_withdrawn(const dsd_state* state, int slot, uint64_t epoc
  * @param target Talkgroup (group) or destination RID (private) the message named; 0 when none.
  * @param is_group 1 for a group call, 0 for a private call.
  * @param checked P25_SM_IDENTITY_CHECKED_* bits: the message's own check (0 when it failed).
+ * @param source_nonlocal 1 when the message names its talker by no local working address (an extended voice user with
+ *        Source Address 0 and a home SUID, p25_sm_event_t::source_nonlocal): the source the call keeps loses its flag.
  */
-void p25_sm_note_call_identity(const dsd_state* state, int slot, uint32_t source, uint32_t target, int is_group,
-                               uint8_t checked);
+void p25_sm_note_call_identity(dsd_state* state, int slot, uint32_t source, uint32_t target, int is_group,
+                               uint8_t checked, uint8_t source_nonlocal);
 
 /**
  * @brief Check whether a voice-user observation re-describes a call that just ended.

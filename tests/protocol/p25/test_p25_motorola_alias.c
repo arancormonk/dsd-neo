@@ -308,6 +308,13 @@ begin_call(fixture* f, int protocol, uint8_t slot, uint32_t tg, uint32_t src) {
         DSD_FPRINTF(stderr, "call did not begin\n");
         exit(2);
     }
+    /* The trunk state machine's #800 verdict on a checked voice user's source, mirrored on the call
+       (dsd_call_state_note_source_verdict()): a P25 alias is learned only for such a source. */
+    dsd_call_snapshot opened;
+    if (dsd_call_state_get(f->st, slot, &opened) > 0) {
+        (void)dsd_call_state_note_source_verdict(f->st, slot, opened.epoch, (uint32_t)src, 1,
+                                                 dsd_state_reception_generation(f->st));
+    }
     dsd_event_sync_slot(f->opts, f->st, slot);
 }
 
