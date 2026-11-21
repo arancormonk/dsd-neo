@@ -20,8 +20,50 @@ typedef enum {
     /** DMR Tier III system identity (CSBK Aloha or C/P_SYS_PARMS short LC): text. */
     DSD_SEARCH_SITE_NOTE_DMR_TIII,
     /** NXDN current-site location ID: nxdn_site and nxdn_sys. */
-    DSD_SEARCH_SITE_NOTE_NXDN
+    DSD_SEARCH_SITE_NOTE_NXDN,
+    /** TETRA (issue #748): what the visit's checked TETRA content shows, in tetra (see dsd_signal_search_tetra_note). */
+    DSD_SEARCH_SITE_NOTE_TETRA,
+    /** TETRA (issue #748): the visit's TETRA identity turned ambiguous (a second identity, the other mode's gate, or a
+     * changed SYSINFO under the same seed): the hit's site and access are withdrawn for the rest of the visit. */
+    DSD_SEARCH_SITE_NOTE_TETRA_WITHDRAW
 } dsd_signal_search_site_note_kind;
+
+/** dsd_signal_search_tetra_note.mode. */
+enum { DSD_SEARCH_TETRA_TMO = 1, DSD_SEARCH_TETRA_DMO = 2 };
+
+/** dsd_signal_search_tetra_note.main_state: what the SYSINFO says of the cell's conventional-access main carrier. */
+enum {
+    /** No SYSINFO shown: colour code 0, a withheld (shared) carrier, no SYSINFO yet, or a band with no base frequency. */
+    DSD_SEARCH_TETRA_MAIN_NONE = 0,
+    /** main_hz is the downlink frequency of the advertised main carrier (bands 1-9). */
+    DSD_SEARCH_TETRA_MAIN_HZ = 1,
+    /** Band 0 and carrier 0: the cell has no conventional-access main carrier (EN 300 392-2 table 21.65 note 3). */
+    DSD_SEARCH_TETRA_MAIN_NO_CA = 2
+};
+
+/** dsd_signal_search_tetra_note.route (DMO): the SCH/S communication type of a checked DMAC-SYNC. */
+enum {
+    DSD_SEARCH_TETRA_ROUTE_NONE = 0,
+    DSD_SEARCH_TETRA_ROUTE_DIRECT = 1,
+    DSD_SEARCH_TETRA_ROUTE_REPEATER = 2,
+    DSD_SEARCH_TETRA_ROUTE_GATEWAY = 3,
+    DSD_SEARCH_TETRA_ROUTE_REPEATER_GATEWAY = 4
+};
+
+/** A TETRA site note (issue #748), built only from the visit's own checked bursts: for TMO the gate's BSCH identity and a
+ * SYSINFO decoded under its seed; for DMO the route of a checked DMAC-SYNC or a presence-only confirmation. It carries no
+ * call details, subscriber identity or DM colour code. */
+typedef struct {
+    uint8_t mode; /* DSD_SEARCH_TETRA_TMO or _DMO */
+    uint16_t mcc; /* TMO: from the gate's BSCH */
+    uint16_t mnc; /* TMO */
+    uint16_t la;  /* TMO: SYSINFO location area, when la_valid */
+    uint8_t la_valid;
+    uint8_t main_state;    /* DSD_SEARCH_TETRA_MAIN_* */
+    uint32_t main_hz;      /* DSD_SEARCH_TETRA_MAIN_HZ only */
+    uint8_t route;         /* DMO: DSD_SEARCH_TETRA_ROUTE_* */
+    uint8_t presence_only; /* DMO: confirmed by presence signals only */
+} dsd_signal_search_tetra_note;
 
 /** The site identity decoded from one message that passed its protocol's CRC/FEC check, never a cached, user-set or
  * synthesized value. Only the fields its kind names are read. */
@@ -33,6 +75,7 @@ typedef struct {
     char text[64];
     uint32_t nxdn_sys;
     uint16_t nxdn_site;
+    dsd_signal_search_tetra_note tetra;
 } dsd_signal_search_site_note;
 
 /* The evidence: the reporting protocol's name, the synctype and slot its traffic is judged by (synctype < 0: the
@@ -42,6 +85,7 @@ typedef void (*dsd_signal_search_site_fn)(const dsd_state*, const dsd_signal_sea
 typedef void (*dsd_signal_search_call_fn)(const dsd_state*, uint8_t);
 typedef int (*dsd_signal_search_active_fn)(const dsd_state*);
 typedef void (*dsd_signal_search_access_fn)(const dsd_state*);
+typedef void (*dsd_signal_search_activity_fn)(const dsd_state*);
 /** Decoder-thread query: during a search session the symbol readers take a failed (bounded) live read as an
  * interruption, not the end of the stream. */
 void dsd_signal_search_active_set(dsd_signal_search_active_fn fn);
@@ -69,6 +113,12 @@ void dsd_signal_search_note_call(const dsd_state* state, uint8_t slot);
  * itself; the default is a no-op. */
 void dsd_signal_search_access_set(dsd_signal_search_access_fn fn);
 void dsd_signal_search_note_access(const dsd_state* state);
+
+/** Install at engine startup. Protocol code calls dsd_signal_search_note_activity() for content of a transmission it
+ * already reported as evidence that keeps the visit listening (issue #748: every qualifying TETRA burst), without a
+ * publication: the engine only refreshes the visit's activity time (decode clock). The default is a no-op. */
+void dsd_signal_search_activity_set(dsd_signal_search_activity_fn fn);
+void dsd_signal_search_note_activity(const dsd_state* state);
 
 /** Where a P25 Phase 2 scrambling code (WACN(20) << 24 | SYSID(12) << 12 | NAC(12)) a protocol reports came from
  * (issue #804). */
