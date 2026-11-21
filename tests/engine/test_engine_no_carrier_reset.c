@@ -1260,6 +1260,10 @@ init_test_runtime(dsd_opts** opts_out, dsd_state** state_out) {
 
     initOpts(opts);
     initState(state);
+    /* No sound card: initOpts() picks the PulseAudio output, which a scan's commit opens (dsd_engine_scan_ensure_output()),
+       and libpulse then makes a runtime folder in TMPDIR wherever XDG_RUNTIME_DIR is unset. A case that tests an output
+       sets its own type. */
+    opts->audio_out_type = 9;
 
     *opts_out = opts;
     *state_out = state;

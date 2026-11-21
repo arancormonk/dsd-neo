@@ -52,12 +52,12 @@ send_fragment(dsd_opts* opts, dsd_state* state, uint8_t number, uint8_t total, c
     for (size_t i = 0U; i < 4U; i++) {
         put_bits(bits, 40U + (i * 8U), (uint8_t)text[i], 8U);
     }
-    dsd_test_capture_stderr cap;
-    if (dsd_test_capture_stderr_begin(&cap, "nxdn_alias_learn") != 0) {
+    dsd_test_quiet_stderr cap;
+    if (dsd_test_quiet_stderr_begin(&cap) != 0) {
         abort();
     }
     NXDN_Elements_Content_decode(opts, state, bits, sizeof bits);
-    if (dsd_test_capture_stderr_end(&cap) != 0) {
+    if (dsd_test_quiet_stderr_end(&cap) != 0) {
         abort();
     }
 }

@@ -402,8 +402,27 @@ private fun anAbortStopsExportsForGood() {
     check(provider.calls.isEmpty()) { "an export after the abort asks the provider nothing" }
 }
 
-fun main() {
+/**
+ * Run [body], then remove [root] and everything in it without following a link, failing when anything cannot be
+ * removed (on Windows, a file a handle still holds), so the test cannot pass with its temp folder left behind. A
+ * failure of [body] stays the failure, with the removal's own attached.
+ */
+private fun withScratchRemoved(root: File, body: () -> Unit) {
     try {
+        body()
+    } catch (e: Throwable) {
+        runCatching { removeTree(root) }.exceptionOrNull()?.let(e::addSuppressed)
+        throw e
+    }
+    removeTree(root)
+}
+
+private fun removeTree(root: File) {
+    Files.walk(root.toPath()).use { paths -> paths.sorted(Comparator.reverseOrder()).forEach(Files::delete) }
+}
+
+fun main() {
+    withScratchRemoved(scratch) {
         anExportWritesAZipIntoARegularFile()
         anExportIntoAPipeIsNeitherTrimmedNorSynced()
         aFailedWriteIntoAPipeTellsTheProviderAndDeletes()
@@ -416,8 +435,7 @@ fun main() {
         moreThan65535EntriesWriteZip64()
         anErrorStillFailsTheDocument()
         anAbortStopsExportsForGood()
-    } finally {
-        scratch.deleteRecursively()
+        check(ParcelFileDescriptor.openCount() == 0) { "every descriptor is closed: ${ParcelFileDescriptor.openCount()} open" }
     }
     println("PASS: call recording exports stream a ZIP into the document, fail, cancel and report gone files as specified")
 }

@@ -244,6 +244,15 @@ if(NOT WIN32)
                 ${PROJECT_SOURCE_DIR}/tests/tools/test_ci_arch_toolchain_pull_retry.sh
             WORKING_DIRECTORY ${PROJECT_SOURCE_DIR}
         )
+        # The after-ctest check of the per-test temp folders (cmake/TestTmpdir.cmake):
+        # it names each test that left something, follows no link, deletes nothing.
+        add_test(
+            NAME TOOLS_CHECK_TEST_TMP_LEFTOVERS
+            COMMAND
+                ${DSD_NEO_BASH_EXECUTABLE}
+                ${PROJECT_SOURCE_DIR}/tests/tools/test_check_test_tmp_leftovers.sh
+            WORKING_DIRECTORY ${PROJECT_SOURCE_DIR}
+        )
         add_test(
             NAME TOOLS_CI_CHANGED_FILES_HEADER_EXPANSION
             COMMAND
@@ -27534,12 +27543,11 @@ if(Python3_Interpreter_FOUND)
     # dumpbin.
     find_program(DSD_NEO_PWSH_FOR_TESTS pwsh)
     if(NOT WIN32 AND DSD_NEO_PWSH_FOR_TESTS)
-        # The tests' folders, and the scripts' own, go under the build tree, not the
-        # system temp folder: off Windows, pwsh reads every folder of a path it resolves
-        # from the root down, so each resolution under a temp folder that holds many
-        # thousand entries costs a full read of it.
-        set(_dsd_pwsh_test_scratch "${PROJECT_BINARY_DIR}/pwsh-test-scratch")
-        file(MAKE_DIRECTORY "${_dsd_pwsh_test_scratch}")
+        # The tests' folders, and the scripts' own, go in each test's temp folder under
+        # the build tree (cmake/TestTmpdir.cmake), not the system temp folder: off
+        # Windows, pwsh reads every folder of a path it resolves from the root down, so
+        # each resolution under a temp folder that holds many thousand entries costs a
+        # full read of it.
         # About 30 runs of the script under pwsh: a busy machine can take minutes, so
         # the class runs as two entries that ctest -j runs side by side. Each keeps
         # the tests DSD_NEO_TEST_SHARD names (tests/tools/unittest_shards.py), and
@@ -27556,7 +27564,7 @@ if(Python3_Interpreter_FOUND)
                 PROPERTIES
                     TIMEOUT 300
                     ENVIRONMENT
-                        "DSD_NEO_TEST_PWSH=${DSD_NEO_PWSH_FOR_TESTS};DSD_NEO_TEST_SHARD=${_dsd_shard}/2;TMPDIR=${_dsd_pwsh_test_scratch}"
+                        "DSD_NEO_TEST_PWSH=${DSD_NEO_PWSH_FOR_TESTS};DSD_NEO_TEST_SHARD=${_dsd_shard}/2"
             )
         endforeach()
         # tools/windows/stage_release_tree.ps1 over a fake vcpkg tree,
@@ -27576,7 +27584,7 @@ if(Python3_Interpreter_FOUND)
                 PROPERTIES
                     TIMEOUT 600
                     ENVIRONMENT
-                        "DSD_NEO_TEST_PWSH=${DSD_NEO_PWSH_FOR_TESTS};DSD_NEO_TEST_SHARD=${_dsd_shard}/4;TMPDIR=${_dsd_pwsh_test_scratch}"
+                        "DSD_NEO_TEST_PWSH=${DSD_NEO_PWSH_FOR_TESTS};DSD_NEO_TEST_SHARD=${_dsd_shard}/4"
             )
         endforeach()
     endif()
@@ -28909,3 +28917,12 @@ foreach(_dsd_dmr_pdu_target IN LISTS _dsd_dmr_pdu_position_targets)
         PRIVATE dsd-neo_test_position_support
     )
 endforeach()
+
+# Every test here gets a temp folder of its own in the build tree, emptied
+# before each ctest run; tools/check_test_tmp_leftovers.sh, run after ctest,
+# names each test that left something there (cmake/TestTmpdir.cmake). Keep this
+# last, after every add_test() in this directory. tests/fuzz and apps/dsd-cli
+# record theirs before this point, so the pre-test step covers them too.
+include(TestTmpdir)
+dsd_neo_add_test_tmpdirs()
+dsd_neo_write_test_tmpdir_prepare()

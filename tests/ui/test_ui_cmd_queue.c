@@ -31852,6 +31852,25 @@ main(void) {
         DSD_FPRINTF(stderr, "dsd_socket_init failed\n");
         return 1;
     }
+    /* Where openAudioInput() is not wrapped (macOS, Windows, other compilers), the Pulse input command opens the real
+       device. libpulse then makes its runtime folder, in TMPDIR wherever XDG_RUNTIME_DIR is unset (the CI runners), and
+       leaves it. It gets a folder of this test's own, removed at the end, and a server that does not exist, so it
+       neither reaches a desktop's real sound server nor starts one. */
+    char pulse_runtime[DSD_TEST_PATH_MAX];
+    char pulse_server[DSD_TEST_PATH_MAX + 16];
+    if (!dsd_test_mkdtemp(pulse_runtime, sizeof pulse_runtime, "pulse_runtime")) {
+        DSD_FPRINTF(stderr, "FAIL: pulse runtime folder\n");
+        dsd_socket_cleanup();
+        return 1;
+    }
+    DSD_SNPRINTF(pulse_server, sizeof pulse_server, "unix:%s/no-server", pulse_runtime);
+    if (dsd_test_setenv("PULSE_RUNTIME_PATH", pulse_runtime, 1) != 0
+        || dsd_test_setenv("PULSE_SERVER", pulse_server, 1) != 0) {
+        DSD_FPRINTF(stderr, "FAIL: pulse environment\n");
+        (void)dsd_test_rmdir(pulse_runtime);
+        dsd_socket_cleanup();
+        return 1;
+    }
     dsd_neo_log_set_tap(record_test_log, NULL);
     int rc = test_session_queue_cancellation();
     rc |= test_quit_takes_effect_at_submit();
@@ -32332,6 +32351,10 @@ main(void) {
 #if defined(USE_RADIO) && defined(DSD_NEO_TEST_RTL_WRAP)
     rc |= expect_int("no case re-entered the P25 SM tick guard", g_guard_reentries, 0);
 #endif
+    if (dsd_test_rmdir(pulse_runtime) != 0) {
+        DSD_FPRINTF(stderr, "FAIL: the pulse runtime folder %s could not be removed\n", pulse_runtime);
+        rc = 1;
+    }
     dsd_socket_cleanup();
     if (rc == 0) {
         printf("DSD_APP_CMD_QUEUE: OK\n");

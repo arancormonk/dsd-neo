@@ -178,10 +178,10 @@ run_cac_crc(dsd_opts* opts, dsd_state* state, const uint8_t* e, uint16_t crc) {
     DSD_MEMSET(m_data, 0, sizeof m_data);
     DSD_MEMCPY(trellis + 8, e, CAC_ELEMENTS);
     state->nxdn_frame_channel = (uint8_t)NXDN_FRAME_CHANNEL_CONTROL;
-    dsd_test_capture_stderr cap;
-    assert(dsd_test_capture_stderr_begin(&cap, "nxdn_unit_activity") == 0);
+    dsd_test_quiet_stderr cap;
+    assert(dsd_test_quiet_stderr_begin(&cap) == 0);
     nxdn_handle_cac(opts, state, trellis, m_data, crc);
-    assert(dsd_test_capture_stderr_end(&cap) == 0);
+    assert(dsd_test_quiet_stderr_end(&cap) == 0);
 }
 
 static void
@@ -193,10 +193,10 @@ run_cac(dsd_opts* opts, dsd_state* state, const uint8_t* e) {
 static void
 run_elements(dsd_opts* opts, dsd_state* state, const uint8_t* e, size_t bits, uint8_t channel) {
     state->nxdn_frame_channel = channel;
-    dsd_test_capture_stderr cap;
-    assert(dsd_test_capture_stderr_begin(&cap, "nxdn_unit_activity_elements") == 0);
+    dsd_test_quiet_stderr cap;
+    assert(dsd_test_quiet_stderr_begin(&cap) == 0);
     NXDN_Elements_Content_decode(opts, state, e, bits);
-    assert(dsd_test_capture_stderr_end(&cap) == 0);
+    assert(dsd_test_quiet_stderr_end(&cap) == 0);
 }
 
 static void

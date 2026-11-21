@@ -292,6 +292,9 @@ test_protocol_hangtime_publication(const char* protocol, float configured_hangti
     assert(opts && state);
     initOpts(opts);
     initState(state);
+    /* No sound card: initOpts() picks the PulseAudio output, which a scan opens (dsd_engine_scan_ensure_output()), and
+       libpulse then makes a runtime folder in TMPDIR wherever XDG_RUNTIME_DIR is unset. */
+    opts->audio_out_type = 9;
     opts->trunk_scan_enabled = 1;
     opts->use_rigctl = 1;
     opts->trunk_hangtime = configured_hangtime;

@@ -240,7 +240,12 @@ run_one() {
           -DDSD_ENABLE_RTLSDR=ON \
           -DDSD_ENABLE_SOAPYSDR=ON
         cmake --build /tmp/dsd-neo-build-debug -j "$DSD_NEO_BUILD_JOBS"
-        ctest --test-dir /tmp/dsd-neo-build-debug -j "$DSD_NEO_BUILD_JOBS" --output-on-failure
+        ctest_status=0
+        ctest --test-dir /tmp/dsd-neo-build-debug -j "$DSD_NEO_BUILD_JOBS" --output-on-failure || ctest_status=$?
+        check_status=0
+        bash tools/check_test_tmp_leftovers.sh /tmp/dsd-neo-build-debug || check_status=$?
+        if [ "$ctest_status" -ne 0 ]; then exit "$ctest_status"; fi
+        exit "$check_status"
       '
 }
 
