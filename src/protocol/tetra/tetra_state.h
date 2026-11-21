@@ -16,6 +16,7 @@
 #include <stdint.h>
 #include <time.h>
 
+#include "tetra_search.h"
 #include "tetra_voice_state.h"
 
 #ifdef __cplusplus
@@ -462,6 +463,10 @@ typedef struct tetra_state {
     /* Call following (tetra_trunk_sm.c) and the CRC evidence it and the speech path rely on (tetra_confirm.c). */
     tetra_sm_t sm;
     tetra_confirm_t confirm;
+
+    /* What a Signal search visit's own bursts proved (tetra_search.c, issue #748): kept across the hunt's no-carrier
+     * passes, cleared by tetra_scan_visit_reset(). */
+    tetra_search_t search;
 
     /* The calls the decoder tracks, follows and publishes (tetra_calls.c). */
     tetra_calls_t calls;

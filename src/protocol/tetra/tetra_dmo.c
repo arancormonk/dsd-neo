@@ -599,10 +599,10 @@ dmo_read_pres_s(tetra_bit_reader* r, tetra_dmo_sync_s_t* s, tetra_dmo_pres_t* p)
     const int gateway = s->comm_type >= 2u;
     p->comm_type = s->comm_type;
     p->mdmo = (uint8_t)tetra_bits_read(r, 1);
-    const uint32_t gw_flags = tetra_bits_read(r, 2); /* SwMI availability and DM-REP function flags, or reserved */
-    const uint32_t two_freq = tetra_bits_read(r, 1); /* two-frequency repeater flag, or reserved */
-    (void)tetra_bits_skip(r, 2);                     /* repeater operating modes, or reserved */
-    const uint32_t spacing = tetra_bits_read(r, 5);  /* spacing of uplink: duplex spacing, then normal/reverse */
+    const uint32_t gw_flags = tetra_bits_read(r, 2);  /* SwMI availability and DM-REP function flags, or reserved */
+    const uint32_t two_freq = tetra_bits_read(r, 1);  /* two-frequency repeater flag, or reserved */
+    const uint32_t rep_modes = tetra_bits_read(r, 2); /* repeater operating modes, or reserved */
+    const uint32_t spacing = tetra_bits_read(r, 5);   /* spacing of uplink: duplex spacing, then normal/reverse */
     const uint32_t reverse = tetra_bits_read(r, 1);
     p->ms_link = (uint8_t)tetra_bits_read(r, 1);
     p->channel_usage = (uint8_t)tetra_bits_read(r, 2);
@@ -621,6 +621,7 @@ dmo_read_pres_s(tetra_bit_reader* r, tetra_dmo_sync_s_t* s, tetra_dmo_pres_t* p)
     p->swmi_up = (uint8_t)(gateway ? (gw_flags >> 1) : 0u);
     p->dmrep = (uint8_t)(gateway ? (gw_flags & 1u) : 0u);
     p->two_freq = (uint8_t)((!gateway || s->comm_type == 3u || p->dmrep) ? two_freq : 0u);
+    p->rep_modes = (uint8_t)((!gateway || p->dmrep) ? rep_modes : 0u);
     p->spacing = (uint8_t)(p->two_freq ? spacing : 0u);
     p->reverse = (uint8_t)(p->two_freq ? reverse : 0u);
     p->priority = (uint8_t)(p->channel_state != 0u ? priority : 0u);

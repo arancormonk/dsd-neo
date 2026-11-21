@@ -35,6 +35,26 @@ extern "C" {
 #define TETRA_TDMA_SB_PARSE_SYMBOL 249u
 #define TETRA_TDMA_NDB_SYNC_SYMBOL 133u
 
+/* The fields of a SYNC PDU (table 21.76, D-MLE-SYNC table 18.17) a reader of the BSCH may act on. */
+typedef struct {
+    uint8_t system_code; /* 0xxx V+D (EN 300 392-2 table 21.76), 100y reserved, 101y and 11zz direct mode */
+    uint8_t colour;      /* 6-bit colour code */
+    uint8_t tn;          /* timeslot number 1..4 */
+    uint8_t fn;          /* frame number as sent: 1..18, else reserved */
+    uint8_t mn;          /* multiframe number as sent: 1..60, else reserved */
+    uint8_t
+        sharing_mode; /* 00 continuous transmission, 01 carrier sharing, 10 MCCH sharing, 11 traffic carrier sharing */
+    uint16_t mcc;
+    uint16_t mnc;
+} tetra_bsch_sync;
+
+/* Read the SYNC PDU of a CRC-checked BSCH (`len` >= 60 type-1 bits) into @p p, without acting on it. Returns 1 when
+ * the PDU fits. */
+int tetra_bsch_read_sync(const uint8_t* bits, int len, tetra_bsch_sync* p);
+
+/* 1 when TN, FN and MN are in their ranges (1..4, 1..18, 1..60); the rest are reserved values. */
+int tetra_bsch_tdma_numbers_ok(uint8_t tn, uint8_t fn, uint8_t mn);
+
 /* What tetra_bsch_parse() made of a SYNC PDU. */
 enum {
     TETRA_BSCH_UNREAD = 0,  /* too short, or no TETRA state: nothing taken */

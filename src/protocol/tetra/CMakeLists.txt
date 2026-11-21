@@ -14,6 +14,7 @@ target_sources(
         tetra_mac.c
         tetra_mle.c
         tetra_mm.c
+        tetra_search.c
         tetra_state.c
         tetra_trunk_sm.c
         tetra_ul.c

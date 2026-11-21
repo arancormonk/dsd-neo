@@ -50,6 +50,7 @@
 #include "tetra_confirm.h"
 #include "tetra_log.h"
 #include "tetra_mac_pdu.h"
+#include "tetra_search.h"
 #include "tetra_state.h"
 #include "tetra_ul.h"
 #include "tetra_voice_state.h"
@@ -338,6 +339,7 @@ tetra_nb_signalling(dsd_opts* opts, dsd_state* state, const tetra_nb_ctx* ctx, c
     if (ctx->direct) {
         (void)tetra_dmo_log_dnb_pdu(decoded, len, kind, opts, state);
         tetra_confirm_note_block(state);
+        tetra_search_note_dmo_content(state);
         return;
     }
     tetra_note_proven_cell(state, ctx->seed);
@@ -356,6 +358,7 @@ tetra_nb_signalling(dsd_opts* opts, dsd_state* state, const tetra_nb_ctx* ctx, c
     if (own) {
         tetra_sm_note_home_crc(state);
     }
+    tetra_search_note_tmo_block(state, ctx->seed, decoded, len);
 }
 
 /* Speech whose CRC passed in a trunked downlink burst: the home cell's evidence on a followed carrier
@@ -367,6 +370,7 @@ tetra_nb_speech_decoded(const dsd_opts* opts, dsd_state* state, const tetra_nb_c
     if (ctx->direct) {
         /* Direct mode speech holds a tetra-dmo-conventional scan target (issue #890); trunked speech never does. */
         tetra_calls_dmo_speech_activity(opts, state);
+        tetra_search_note_dmo_content(state);
     } else if (!ctx->uplink) {
         tetra_sm_note_home_crc(state);
     }
@@ -817,6 +821,8 @@ tetra_dmo_process_dsb(dsd_opts* opts, dsd_state* state, const uint8_t* sch_s, co
         DSD_FPRINTF(stderr, "[TETRA DMO DSB] sys=%u reserved SYNC PDU type %u\n", s.system_code, s.sync_pdu_type);
     }
 
+    tetra_search_note_dsb(state, sch_s, h_ok ? sch_h : NULL);
+
     DSD_SNPRINTF(state->fsubtype, sizeof(state->fsubtype), " %-13s", "DSB");
     DSD_SNPRINTF(state->ftype, sizeof(state->ftype), " TETRA DMO");
     return 1;
@@ -954,7 +960,11 @@ tetra_sb_bsch(dsd_opts* opts, dsd_state* state, tetra_state_t* ts, const uint8_t
         return TETRA_SB_DSB;
     }
     tetra_dmo_leave(opts, state);
-    if (tetra_bsch_parse(decoded, SB_TYPE1, opts, state) == TETRA_BSCH_FOREIGN) {
+    const int parsed = tetra_bsch_parse(decoded, SB_TYPE1, opts, state);
+    if (parsed != TETRA_BSCH_UNREAD) {
+        tetra_search_note_bsch(state, decoded, SB_TYPE1);
+    }
+    if (parsed == TETRA_BSCH_FOREIGN) {
         tetra_tdma_follow(state, state->symbolcnt - TETRA_TDMA_SB_PARSE_SYMBOL);
         tetra_confirm_note_block(state);
         /* No evidence about the followed carrier, but a trunked cell's checked broadcast on the channel all the same. */
@@ -1286,6 +1296,7 @@ tetra_frame_leave(dsd_opts* opts, dsd_state* state, const tetra_state_t* ts) {
     }
     tetra_burst_done(opts, state);
     const int proven = tetra_confirm_burst_end(state);
+    tetra_search_burst_end(state);
     if (tetra_burst_proof_is_row_content(state, tetra_burst_proof(state))) {
         dsd_frame_sync_hook_content_evidence(opts, state, DSD_CONTENT_EVIDENCE_PROVEN, 0U);
     }
@@ -1306,6 +1317,7 @@ tetra_burst_enter(dsd_opts* opts, dsd_state* state) {
     const uint32_t captured = tetra_confirm_carrier_epoch(state);
     (void)tetra_sm_settle(opts, state);
     tetra_confirm_burst_begin_captured(state, captured);
+    tetra_search_burst_begin(state);
 }
 
 int
@@ -1363,8 +1375,10 @@ tetra_scan_visit_reset(dsd_opts* opts, dsd_state* state) {
     }
     tetra_state_t* const ts = tetra_st_existing(state);
     if (ts) {
-        /* What this visit's bursts proved, and the direct mode call with its canonical call. */
+        /* What this visit's bursts proved, for the decoder and for a Signal search, and the direct mode call with its
+           canonical call. */
         tetra_confirm_reset(state);
+        tetra_search_reset(state);
         tetra_calls_dmo_forget(opts, state);
         /* The network, each part once (tetra_bsch_forget_network()): what it told its MSs (the D-MM STATUS), the
            trunked call records with their canonical calls and the short data being rebuilt, then its cell (SYSINFO,

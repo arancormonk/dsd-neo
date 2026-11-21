@@ -17848,6 +17848,27 @@ set_tests_properties(
     PROPERTIES LABELS "protocol;tetra"
 )
 
+# What a Signal search visit's own TETRA bursts prove (issue #748): gate A, gate D, the site note, its withdrawal and the
+# visit's activity, through the burst entry with real bursts read from a symbol file and the search hooks stood in for.
+add_executable(dsd-neo_test_tetra_search protocol/tetra/test_search.c)
+target_include_directories(
+    dsd-neo_test_tetra_search
+    PRIVATE
+        ${PROJECT_SOURCE_DIR}/include
+        ${PROJECT_SOURCE_DIR}/src/protocol/tetra
+)
+target_link_libraries(
+    dsd-neo_test_tetra_search
+    PRIVATE
+        dsd-neo_proto_tetra
+        dsd-neo_core
+        dsd-neo_fec
+        dsd-neo_test_support
+        ${LIBS}
+)
+add_test(NAME TETRA_SEARCH COMMAND dsd-neo_test_tetra_search)
+set_tests_properties(TETRA_SEARCH PROPERTIES LABELS "protocol;tetra")
+
 # tetra_calls_followed_route() is a DSD_NEO_TEST_HOOKS accessor: the call records test builds its own tetra_calls.c with
 # the hooks on, ahead of the library's.
 target_sources(

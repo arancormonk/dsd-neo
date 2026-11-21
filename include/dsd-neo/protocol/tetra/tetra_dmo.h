@@ -216,6 +216,8 @@ typedef struct {
     uint8_t swmi_up;       /* gateway: SwMI availability flag */
     uint8_t dmrep;         /* gateway: DM-REP function flag */
     uint8_t two_freq;      /* 1: duplex pair (type 1B / type 2, or a gateway acting as one) */
+    uint8_t rep_modes;     /* repeater operating modes (EN 300 396-4 clause 10.3.12; 00 a type 1 DM-REP), valid from a
+                              DM-REP or a gateway with the DM-REP function */
     uint8_t spacing;       /* 5-bit duplex spacing code, valid when two_freq */
     uint8_t reverse;       /* 1: uplink = downlink - spacing */
     uint8_t ms_link;       /* 0 slave link, 1 master link */

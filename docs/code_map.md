@@ -14786,7 +14786,9 @@ Private per-protocol modules worth knowing about:
   their channel decoders; see "this site" under Protocols) once `nxdn_confirm_is_confirmed()`, so a single short SACCH
   CRC does not show a site; a CCH_INFO or another site's broadcast notes nothing; adjacent sites, the reserved
   category, reserved system and site codes and the Type-D site identity (`nxdn_idas_*`) are not notes
-  (`NXDN_SEARCH_SITE_NOTES`).
+  (`NXDN_SEARCH_SITE_NOTES`). TETRA (issue #748): `src/protocol/tetra/tetra_search.c` (see "Signal search" in the TETRA
+  module) builds its `DSD_SEARCH_SITE_NOTE_TETRA` note from the visit's own gate bursts only, never decoder state, and
+  sends `DSD_SEARCH_SITE_NOTE_TETRA_WITHDRAW` once when the identity turns ambiguous (`TETRA_SEARCH`).
 - Signal search call notes (`dsd_signal_search_note_call()` in `<dsd-neo/runtime/signal_search_hooks.h>`): each
   writer passes the slot of a canonical call record it just published after its check, and the engine reads that
   record (see Signal search under Engine). DMR: `dmr_flco_publish_voice()` (a CRC-checked voice LC, after the call and
@@ -15810,6 +15812,35 @@ grant), `TETRA_AACH` (the Reed-Muller code and table 21.82 against AACH words re
 `DECODE_IQ_TETRA_REAL_AIR_CALL_AACH`, `DECODE_IQ_TETRA_REAL_AIR_GAP_AACH_GATE`, `TETRA_AIR`, `TETRA_CRYPTO` (TB5),
 `TETRA_MLE_CMCE`, `CORE_ACCESS_CODE`.
 
+#### Signal search (issue #748)
+
+`src/protocol/tetra/tetra_search.{c,h}` reports what a Signal search visit's own TETRA bursts prove, through the runtime
+Signal search hooks and only while a search runs (`dsd_signal_search_is_running()`); the rules and their sources are in
+`tetra_search.h`. The decoder calls it at fixed points only: `tetra_burst_enter()` and `tetra_frame_leave()` open and
+close its burst (after the burst's proof is in), `tetra_sb_bsch()` hands it every BSCH `tetra_bsch_parse()` read,
+`tetra_nb_signalling()` every trunked downlink block after the MAC acted on it, with the seed it was descrambled with,
+`tetra_dmo_process_dsb()` every DSB it took with its SCH/H when that passed, and the direct mode normal burst and speech
+paths their checked content. It re-reads the SYNC (`tetra_bsch_read_sync()`, with the sharing mode the parser skipped),
+the SYSINFO (`tetra_mac_broadcast_decode()`) and the SCH/S (`tetra_dmo_parse_sync_s()`, `tetra_dmo_parse_presence()`)
+itself, so the decoder's own handling stays as it was.
+- Gate A (trunked mode): an observed BSCH (CRC, system code 0xxx, TN/FN/MN in range, once per burst by the symbol clock)
+  and, for a colour code not 0, a CRC-16 downlink block under exactly its seed from its burst or later, or, for colour
+  code 0, a second observed BSCH of the identity from a later burst. Evidence `"TETRA"`, the burst's sync type, access
+  `CC n`. Site: MCC, MNC and, for a colour code not 0, the location area and advertised main carrier of a half-slot
+  SYSINFO under the seed (the one in the opening block supplies it); none while the gate cell's sharing mode is not 00.
+- Gate D (direct mode): one DSB with SCH/S and SCH/H CRCs, system code 1100/1101, a parsed DMAC-SYNC or DPRES-SYNC,
+  frame 1-18 and a valid A/B channel usage. Evidence `"TETRA DMO"`, no access; note: the latest checked DMAC-SYNC's
+  route, or presence only.
+- A latched withdrawal (sent once) on a second BSCH identity, another location area or main carrier under the gate
+  seed, sharing seen after the site, or the other mode's gate. Every burst of the open gate's content calls
+  `dsd_signal_search_note_activity()`; evidence and notes go only on change. Test: `TETRA_SEARCH`.
+- Decided limits: the decoder's MAC still applies a SYSINFO from an SCH/F (EN 300 392-2 clause 21.4.4.1 names the
+  half-slot channels), as osmo-tetra, tetra-kit and tetra-bluestation all do; only the search refuses it. A repeater
+  transmission's DM colour code is still derived from the MNI (EN 300 396-4 clause 8.2.4 names the repeater address):
+  of the independent DMO decoders checked only the SDR# TETRA plugin follows the clause, ctn008's TetraDMO-Receiver and
+  the osmo-tetra DMO patch use the MNI, so a repeater call's DSBs confirm and route but its normal bursts and speech do
+  not decode and keep no activity.
+
 #### State and its boundaries
 
 What each part of the TETRA decoder state belongs to, what sets it, and what forgets it. A boundary the engine sees (a
@@ -15838,6 +15869,7 @@ decoded, so the decoder forgets the same whatever moved the receiver.
 | A record's channel allocation and event label (`alloc`, `alloc_m`, `event_label`, `label_chan`, `usage_marker`) | the cell (a label: one channel of it, the allocated one or the one its assignment came on; Calls, "Event labels") | an allocation (`call_attach()`), an SSI + event label assignment at its PDU's delivery, a usage marker assignment with the downlink allocation of its own PDU; a label's channel also a KEEP with an allocation | a "go to the MCCH" allocation, the record ending, another cell (`tetra_calls_forget_cell()`); the usage marker also any other allocation of the downlink; the allocation also another call's allocation of a timeslot of its downlink (`calls_take_channel()`: one call per traffic channel, EN 300 392-2 clauses 23.5.5, 23.5.6.1.1); a label also its assignment to another party on a channel that meets its own, its withdrawal (label 0), an assignment or KEEP to a channel the decoder cannot tell, and, assigned without an allocation, a carrier boundary or retune (it applies there no more) |
 | D-MM STATUS shown (`mm_status_valid`, `mm_status_code`) | the network; published only on a trunked carrier | D-MM STATUS | a BSCH of another network |
 | Timeslot speech context (`calls.slot_enc`, the heard timeslot) and the heard or anonymous canonical call | the carrier (the anonymous call: one timeslot of it) | addressed MAC-RESOURCEs; heard speech | the heard speech stopping, another cell, entering direct mode, a carrier boundary, another network; the anonymous call also speech of another timeslot or of a call record |
+| Signal search evidence (`search`: the observed BSCH, gate A's cell and first SYSINFO, gate D, the first mode, the withdrawal, the last site note) | one Signal search visit | the visit's own checked bursts while a search runs (`tetra_search.c`) | `tetra_scan_visit_reset()` (every landing and departure); the observed BSCH also at a carrier boundary, a stream flush and an input interruption, never at the hunt's no-carrier pass |
 | Carrier evidence (`confirm`: `carrier_blocks` for publication, `signalling_blocks`, downlink only, for grants) | the carrier | CRC-passed blocks (an uplink SCH/HU or MAC block counts for publication only) | a carrier boundary and a trunking retune (`tetra_confirm_reset()`); the followed call's proof also at another cell, entering direct mode and every change of follow |
 | The followed call's receive permission and AACH counts (`confirm.rx_perm`, `rx_run`, `rx_adverse`, `rx_chan_bad`, `rx_qual_start`) | the followed call on the carrier | its U-plane switching, N.213 qualifying ACCESS-ASSIGN PDUs | its U-plane switching off, N.212, T.212, with its proof (carrier boundary, follow change, retirement); a failed tune puts the permission back, the counts start over |
 | Follow (`sm`) | the session | a grant | release, hangtime, grant timeout, abandon at a carrier boundary, an external return, its channel allocated to a call it does not follow (it moves to one it does); a decode-mode change disowns its tune in flight; trunking off lets go of its call but keeps the channel and asks for no return; trunking on again returns home at once |
