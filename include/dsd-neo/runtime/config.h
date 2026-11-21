@@ -562,6 +562,10 @@ typedef struct dsdneoUserConfig {
        always sets it, so a save always writes them. A PCM source applies the keys a loaded config holds only then
        (issue #628): a config without them leaves its squelch alone. */
     int rtl_sql_is_set;
+    /* 1 when a session's snapshot rounded its level to rtl_sql's whole dB (issue #899 B15), whose dB it held is
+       rtl_sql_unrounded_db: a render of the snapshot says so. 0 in a loaded config. */
+    int rtl_sql_rounded;
+    double rtl_sql_unrounded_db;
     int rtl_volume;   /* monitor/non-symbol gain; does not scale symbol streams */
     int rtl_auto_ppm; /* bool */
     char rtltcp_host[128];

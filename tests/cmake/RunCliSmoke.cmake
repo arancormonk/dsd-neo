@@ -71,6 +71,18 @@ elseif(DSD_NEO_CLI_SMOKE_MODE STREQUAL "print-config-soapy-bad-squelch")
     set(_want_stdout_regex "")
     set(_want_stderr_regex "squelch field \"auto[+]31\".*3 to 30")
     set(_forbid_output_regex "rtl_freq|soapy_args")
+elseif(DSD_NEO_CLI_SMOKE_MODE STREQUAL "print-config-rtl-rounded-squelch")
+    # Issue #899 B15: rtl_sql holds whole dB; an export rounds a level to the nearest one
+    # and says so, and an active level never exports as 0 (off).
+    set(_args
+        "--no-config"
+        "-i"
+        "rtl:0:155.34M:30:5:24:-65.5:3"
+        "--print-config"
+    )
+    set(_want_rc 0)
+    set(_want_stdout_regex "rtl_sql = -66\n")
+    set(_want_stderr_regex "squelch level -65[.]50 dB.*rounded")
 elseif(DSD_NEO_CLI_SMOKE_MODE STREQUAL "no-config-notice")
     # --no-config was accepted and silently did nothing once config loading became opt-in: it says so now, once,
     # and the run goes on.

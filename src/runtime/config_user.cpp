@@ -174,22 +174,6 @@ user_config_strip_wrapping_quotes(char* val) {
     }
 }
 
-// Local helper to convert linear power to dB (avoids dependency on dsd_misc.c)
-static double
-local_pwr_to_dB(double mean_power) {
-    if (mean_power <= 0) {
-        return -120.0;
-    }
-    double dB = 10.0 * std::log10(mean_power);
-    if (dB > 0.0) {
-        dB = 0.0;
-    }
-    if (dB < -120.0) {
-        dB = -120.0;
-    }
-    return dB;
-}
-
 void
 user_cfg_reset(dsdneoUserConfig* cfg) {
     if (!cfg) {
@@ -483,15 +467,18 @@ apply_soapy_tuning_from_config(const dsdneoUserConfig* cfg, dsd_opts* opts) {
 
 /* The squelch a save writes: the configured default beneath any scan row's own (--squelch-db, issue #521), whose
    value is effective state. Off is a setting in its own right, and 0 is how the CLI and the config key both spell it:
-   rendering it through pwr_to_dB() saved -120, which reloaded as a real threshold. A level saves as it runs, down to
-   pwr_to_dB()'s -120 dB floor (the key's range), so a level gate decides after a reload as it did before: the unset
-   -110 dB default reloads as -110. The mode and margin the same way; the level stays the level under auto and
-   noise. */
+   rendering it through pwr_to_dB() saved -120, which reloaded as a real threshold. A level saves as the key's whole
+   dB from -120 to -1 (dsd_squelch_level_whole_db()), so a whole-dB gate decides after a reload as it did before (the
+   unset -110 dB default reloads as -110), an active level never saves as off (truncating saved -0.25 dB and a linear
+   1 as 0; issue #899 B15), and one the key cannot hold saves as the nearest, which the render says. The mode and
+   margin the same way; the level stays the level under auto and noise. */
 static void
 snapshot_squelch_values(const dsd_opts* opts, const dsd_state* state, dsdneoUserConfig* cfg) {
     const dsd_scan_settings* configured = dsd_scan_mode_configured_view(state);
     const double squelch = configured ? configured->rtl_squelch_level : opts->rtl_squelch_level;
-    cfg->rtl_sql = dsd_squelch_is_off(squelch) ? 0 : (int)local_pwr_to_dB(squelch);
+    (void)dsd_squelch_level_whole_db(squelch, &cfg->rtl_sql);
+    cfg->rtl_sql_rounded = !dsd_squelch_level_is_whole_db(squelch, NULL);
+    cfg->rtl_sql_unrounded_db = cfg->rtl_sql_rounded ? 10.0 * std::log10(squelch) : 0.0;
     cfg->rtl_sql_mode = configured ? configured->rtl_squelch_mode : opts->rtl_squelch_mode;
     cfg->rtl_sql_margin_db = configured ? configured->rtl_squelch_margin_db : opts->rtl_squelch_margin_db;
 }
@@ -913,9 +900,17 @@ render_input_source(FILE* out, dsdneoUserInputSource source) {
     }
 }
 
-/* The squelch keys: rtl_sql always, and the mode and margin under auto or noise. */
+/* The squelch keys: rtl_sql always, and the mode and margin under auto or noise. A level a snapshot rounded to rtl_sql's
+   whole dB is said (issue #899 B15): the fixed gate compares the level itself, so the reload decides a little
+   differently. */
 static void
 render_input_squelch(FILE* out, const dsdneoUserConfig* cfg) {
+    if (cfg->rtl_sql_rounded) {
+        LOG_WARN(
+            "WARNING: The squelch level %.2f dB is saved as rtl_sql = %d: the key holds whole dB, so it is rounded "
+            "to the nearest one from -120 to -1.\n",
+            cfg->rtl_sql_unrounded_db, cfg->rtl_sql);
+    }
     DSD_FPRINTF(out, "rtl_sql = %d\n", cfg->rtl_sql);
     if (dsd_squelch_mode_is_dynamic(cfg->rtl_sql_mode)) {
         DSD_FPRINTF(out, "rtl_sql_mode = \"%s\"\n", cfg->rtl_sql_mode == DSD_SQUELCH_MODE_NOISE ? "noise" : "auto");

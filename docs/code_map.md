@@ -5192,13 +5192,17 @@ suite runs under this compiler.
     `dsd_squelch_mode_is_dynamic()` -- the AUTO margin or NOISE quieting in whole dB 3..30, the LEVEL threshold in
     mean-power units) and its one grammar, `off | 0 | <negative dB> | <positive linear> | auto[+N] | noise[+N]`
     (`dsd_squelch_setting_parse()`, `dsd_squelch_setting_format()`), which `--squelch`, the `sql` field of every radio
-    spec and the terminal prompt share. A spec's field is read by `dsd_spec_squelch_field_parse()` (`input_spec.c`) before the spec sets
-    anything (`rtl:`/`rtltcp:` in `dsd_rtl_input_spec_apply()`, `soapy:` once its frequency place holds a frequency,
-    however many fields follow, Airspy's third tuning field): one `--squelch` would refuse is logged naming the field
-    and refuses the spec (issue #899 B14), an empty one keeps its place and the setting, and
+    spec and the terminal prompt share. A spec's field is read by `dsd_spec_squelch_field_parse()` (`input_spec.c`)
+    before the spec sets anything (`rtl:`/`rtltcp:` in `dsd_rtl_input_spec_apply()`, `soapy:` once its frequency place
+    holds a frequency, however many fields follow, Airspy's third tuning field): one `--squelch` would refuse is logged naming the field
+    and refuses the spec (issue #899 B14), even under `--squelch`, an empty one keeps its place and the setting, and
     `dsd_squelch_spec_field_apply()` stores it unless `--squelch` set the squelch (`dsd_opts::rtl_squelch_cli_set`).
-    The Soapy tail reads its fields in place (`dsd_spec_split_fields()`), an empty first field being no device args; scan rows (`scan_options.c`, `--squelch` sharing
-    `--squelch-db`'s option bit) take whole dB, `off`, `auto[+N]` on analog rows and `noise[+N]` on nfm rows only.
+    The Soapy tail reads its fields in place (`dsd_spec_split_fields()`), an empty first field being no device args;
+    a K/M/G number after an empty frequency place is refused (`SOAPY_HEAD_FREQ_LATE`).
+    `dsd_squelch_level_whole_db()` is the whole dB a level saves as in `rtl_sql` (nearest, -120..-1, never 0 while
+    active; 0 for off) and `dsd_squelch_level_is_whole_db()` whether a level is exactly one (or off): a config
+    snapshot sets `rtl_sql_rounded` when it rounds (a retained [input] merges it with `rtl_sql`), and the INI
+    render warns (issue #899 B15); scan rows (`scan_options.c`, `--squelch` sharing `--squelch-db`'s option bit) take whole dB, `off`, `auto[+N]` on analog rows and `noise[+N]` on nfm rows only.
     `dsd_opts` holds it as `rtl_squelch_mode`, `rtl_squelch_margin_db` and `rtl_squelch_level` (the level kept beneath
     a dynamic setting, for a switch back), the config as `[input] rtl_sql_mode`, `rtl_sql_margin_db` and `rtl_sql`.
     `dsd_squelch_setting_resolve()`, the one policy every surface shares, takes the input kind

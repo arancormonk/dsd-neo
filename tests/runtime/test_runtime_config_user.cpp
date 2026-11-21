@@ -1905,6 +1905,38 @@ retained_of(const dsd_state* state) {
     return &out;
 }
 
+/* Issue #899 B15: the rounding note of a retained [input] travels with its rtl_sql. A loaded config's rtl_sql merged
+   over a snapshot that rounded -65.5 dB to -66 holds a whole dB, so a save during the replay says nothing about the
+   -65.5 dB it no longer writes. */
+static int
+test_retained_input_merge_clears_the_rounding_note(void) {
+    static dsd_state state;
+    static dsdneoUserConfig snap;
+    static dsdneoUserConfig patch;
+    dsd_user_config_init(&snap);
+    snap.has_input = 1;
+    snap.input_source = DSDCFG_INPUT_RTL;
+    snap.rtl_sql = -66;
+    snap.rtl_sql_is_set = 1;
+    snap.rtl_sql_rounded = 1;
+    snap.rtl_sql_unrounded_db = -65.5;
+    int rc = dsd_user_config_retain_input(&state, &snap) == 0 ? 0 : 1;
+    dsd_user_config_init(&patch);
+    patch.has_input = 1;
+    patch.rtl_sql = -40;
+    patch.rtl_sql_is_set = 1;
+    rc |= dsd_user_config_merge_retained_input(&state, &patch) == 0 ? 0 : 1;
+    const dsdneoUserConfig* kept = retained_of(&state);
+    if (kept->rtl_sql != -40 || kept->rtl_sql_rounded != 0) {
+        DSD_FPRINTF(stderr, "FAIL: merged rtl_sql %d keeps the rounding note %d (%.2f dB)\n", kept->rtl_sql,
+                    kept->rtl_sql_rounded, kept->rtl_sql_unrounded_db);
+        rc |= 1;
+    }
+    dsd_user_config_forget_retained_input(&state);
+    dsd_state_ext_free_all(&state);
+    return rc;
+}
+
 /*
  * Issue #743 (G4): a config patch applied during a replay (the control API's config_apply, built from
  * dsd_user_config_init() and the keys given) merges the [input] keys it sets into the retained [input]: one naming no
@@ -2604,8 +2636,9 @@ test_snapshot_roundtrip_soapy_args(void) {
                     snap.rtl_gain, snap.rtl_ppm, snap.rtl_bw_khz, snap.rtl_volume);
         rc |= 1;
     }
-    if (snap.rtl_sql != 0) {
-        DSD_FPRINTF(stderr, "snapshot rtl_sql expected 0 from unit squelch power, got %d\n", snap.rtl_sql);
+    /* A unit power is 0 dB, an active level: it saves as -1, never as 0 (off; issue #899 B15). */
+    if (snap.rtl_sql != -1) {
+        DSD_FPRINTF(stderr, "snapshot rtl_sql expected -1 from unit squelch power, got %d\n", snap.rtl_sql);
         rc |= 1;
     }
     if (strcmp(snap.soapy_profile, "sdrplay") != 0 || strcmp(snap.soapy_stream_format, "cs16") != 0
@@ -2855,7 +2888,7 @@ test_snapshot_rtl_and_rtltcp_device_specs(void) {
         rc |= 1;
     }
     if (strcmp(snap.rtl_freq, "451125000") != 0 || snap.rtl_gain != 21 || snap.rtl_ppm != -4 || snap.rtl_bw_khz != 12
-        || snap.rtl_sql != 0 || snap.rtl_volume != 6 || !snap.rtl_ppm_is_set || snap.rtl_auto_ppm != 1) {
+        || snap.rtl_sql != -1 || snap.rtl_volume != 6 || !snap.rtl_ppm_is_set || snap.rtl_auto_ppm != 1) {
         DSD_FPRINTF(stderr, "snapshot RTL tuning mismatch freq=%s gain=%d ppm=%d bw=%d sql=%d vol=%d auto=%d\n",
                     snap.rtl_freq, snap.rtl_gain, snap.rtl_ppm, snap.rtl_bw_khz, snap.rtl_sql, snap.rtl_volume,
                     snap.rtl_auto_ppm);
@@ -2970,6 +3003,87 @@ test_snapshot_disabled_squelch_roundtrips_as_off(void) {
         rc |= 1;
     }
 
+    return rc;
+}
+
+/* Issue #899 B15: an export writes a level as the whole dB the rtl_sql key holds, the nearest one, and says so when
+ * that rounds it. An active level never saves as 0 (off): the export truncated, so -0.25 dB and a linear 1 (0 dB)
+ * saved as rtl_sql = 0 and reloaded with the squelch off. A whole dB saves as itself with no word, and off as 0. */
+static int
+test_snapshot_squelch_level_whole_db(void) {
+    static const struct {
+        double db; /* the level in dB; NAN for a linear power of 1, -999 for off */
+        int sql;
+        const char* warned; /* NULL: no warning */
+    } cases[] = {
+        {-0.25, -1, "-0.25 dB"}, {NAN, -1, "0.00 dB"}, {-65.5, -66, "-65.50 dB"},    {-4.49, -4, "-4.49 dB"},
+        {-60.0, -60, NULL},      {-999.0, 0, NULL},    {-160.0, -120, "-160.00 dB"},
+    };
+
+    static dsd_opts opts;
+    static dsd_state state;
+    int rc = 0;
+    for (size_t i = 0; i < sizeof cases / sizeof cases[0]; i++) {
+        reset_opts_and_state(opts, state);
+        DSD_SNPRINTF(opts.audio_in_dev, sizeof opts.audio_in_dev, "%s", "rtl:0:851.375M:22:0:24:-50:2");
+        opts.rtlsdr_center_freq = 851375000U;
+        opts.rtl_gain_value = 22;
+        opts.rtl_dsp_bw_khz = 24;
+        opts.rtl_volume_multiplier = 2;
+        if (isnan(cases[i].db)) {
+            opts.rtl_squelch_level = 1.0;
+        } else if (cases[i].db < -900.0) {
+            opts.rtl_squelch_level = 0.0;
+        } else {
+            opts.rtl_squelch_level = dsd_squelch_level_from_sql(cases[i].db);
+        }
+        dsdneoUserConfig snap;
+        dsd_snapshot_opts_to_user_config(&opts, &state, &snap);
+        g_log_text[0] = '\0';
+        char text[32768];
+        if (render_config_to_buffer(&snap, text, sizeof text) != 0) {
+            return 1;
+        }
+        char want[32];
+        DSD_SNPRINTF(want, sizeof want, "rtl_sql = %d\n", cases[i].sql);
+        rc |= expect_contains("whole-dB export", text, want);
+        if (cases[i].warned) {
+            rc |= expect_contains("rounded export warning", g_log_text, "rounded");
+            rc |= expect_contains("rounded export names the level", g_log_text, cases[i].warned);
+        } else if (strstr(g_log_text, "rounded")) {
+            DSD_FPRINTF(stderr, "FAIL: case %zu warned about a level it did not round: %s\n", i, g_log_text);
+            rc |= 1;
+        }
+
+        /* Reloaded, the squelch stays on (or off) and gates at the whole dB the file holds. */
+        char path[DSD_TEST_PATH_MAX];
+        if (write_temp_config(text, path, sizeof path) != 0) {
+            return 1;
+        }
+        dsdneoUserConfig reloaded;
+        const int loaded = dsd_user_config_load(path, &reloaded);
+        (void)remove(path);
+        if (loaded != 0 || reloaded.rtl_sql != cases[i].sql) {
+            DSD_FPRINTF(stderr, "FAIL: case %zu reloaded rtl_sql %d, want %d\n", i, reloaded.rtl_sql, cases[i].sql);
+            rc |= 1;
+            continue;
+        }
+        static dsd_opts back;
+        static dsd_state back_state;
+        reset_opts_and_state(back, back_state);
+        dsd_apply_user_config_to_opts(&reloaded, &back, &back_state);
+        if (dsd_rtl_input_spec_apply(&back) != 1) {
+            DSD_FPRINTF(stderr, "FAIL: case %zu reloaded spec %s refused\n", i, back.audio_in_dev);
+            rc |= 1;
+            continue;
+        }
+        const double want_level = cases[i].sql == 0 ? 0.0 : dsd_squelch_level_from_sql((double)cases[i].sql);
+        if (fabs(back.rtl_squelch_level - want_level) > 1e-9 * want_level
+            || (cases[i].sql != 0) != (back.rtl_squelch_level > 0.0)) {
+            DSD_FPRINTF(stderr, "FAIL: case %zu reloaded level %g, want %g\n", i, back.rtl_squelch_level, want_level);
+            rc |= 1;
+        }
+    }
     return rc;
 }
 
@@ -6512,6 +6626,7 @@ main(void) {
     rc |= test_replay_snapshot_saves_the_loaded_input();
     rc |= test_replay_snapshot_turns_off_tuning_beside_a_stream_input();
     rc |= test_retained_input_merges_a_patch();
+    rc |= test_retained_input_merge_clears_the_rounding_note();
     rc |= test_validate_refuses_a_replay_file_path();
     rc |= test_iq_stream_input_load_apply_snapshot();
     rc |= test_validate_iq_stream_input();
@@ -6526,6 +6641,7 @@ main(void) {
     rc |= test_snapshot_roundtrip_agc_rtl_gain();
     rc |= test_snapshot_rtl_and_rtltcp_device_specs();
     rc |= test_snapshot_disabled_squelch_roundtrips_as_off();
+    rc |= test_snapshot_squelch_level_whole_db();
     rc |= test_auto_squelch_keys_roundtrip();
     rc |= test_noise_squelch_keys_roundtrip();
     rc |= test_pcm_squelch_keys_roundtrip();

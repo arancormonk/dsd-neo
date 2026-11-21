@@ -153,6 +153,24 @@ void dsd_squelch_setting_store(dsd_opts* opts, const dsd_squelch_setting* settin
 int dsd_squelch_spec_field_apply(dsd_opts* opts, const char* text);
 
 /**
+ * @brief The whole dB the `[input] rtl_sql` key saves @p level (mean-power units) as (issue #899 B15): 0 for off (at or
+ * below 0, or not a number), and for an active level the nearest whole dB held to -120..-1, never 0 (off): -0.25 dB and
+ * a linear 1 (0 dB) are -1, a level under -120 dB is -120.
+ *
+ * @return 0 with the dB in @p out_db, -1 when @p out_db is NULL.
+ */
+int dsd_squelch_level_whole_db(double level, int* out_db);
+
+/**
+ * @brief Whether @p level is exactly what a whole dB from -120 to -1 makes (dsd_squelch_level_from_sql() of it, within
+ * 1e-9 dB), or off: the levels dsd_squelch_level_whole_db() writes without rounding. The dB (0 for off) goes to
+ * @p out_db when it is not NULL and the level has that form.
+ *
+ * @return 1 when it has the form, else 0.
+ */
+int dsd_squelch_level_is_whole_db(double level, int* out_db);
+
+/**
  * @brief Publish the dynamic squelch's status into @p state for the frontends (dsd_state::squelch_auto_*,
  * squelch_noise_*). On radio input (or with @p opts NULL) it is the RTL stream's
  * (dsd_rtl_stream_io_hook_squelch_status()), not running without a stream; the floor goes on rtl_squelch_level's scale

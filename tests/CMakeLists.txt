@@ -11910,8 +11910,9 @@ add_test(
         DSD_NEO_CLI_SMOKE_MODE=print-config-rtltcp-bad-port -P
         ${CMAKE_CURRENT_SOURCE_DIR}/cmake/RunCliSmoke.cmake
 )
-# Issue #899 B14: a spec's squelch field --squelch would refuse fails the export.
-foreach(_mode IN ITEMS rtl-bad-squelch soapy-bad-squelch)
+# Issue #899: a spec's squelch field --squelch would refuse fails the export (B14), and a
+# level the rtl_sql key cannot hold exactly exports as the nearest whole dB, with a word (B15).
+foreach(_mode IN ITEMS rtl-bad-squelch soapy-bad-squelch rtl-rounded-squelch)
     string(TOUPPER "${_mode}" _mode_upper)
     string(REPLACE "-" "_" _mode_upper "${_mode_upper}")
     add_test(

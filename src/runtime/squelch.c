@@ -487,6 +487,48 @@ dsd_squelch_spec_field_apply(dsd_opts* opts, const char* text) {
     return 0;
 }
 
+/* The rtl_sql key's span for an active level: -120 dB (pwr_to_dB()'s floor) to -1 (0 is off). */
+enum { SQUELCH_WHOLE_DB_MIN = -120, SQUELCH_WHOLE_DB_MAX = -1 };
+
+/* How close in dB a level is to a whole dB's own to be it: far wider than a dB-to-power-to-dB round trip's error, far
+   narrower than any level a person writes. */
+static const double k_whole_db_tolerance = 1e-9;
+
+int
+dsd_squelch_level_whole_db(double level, int* out_db) {
+    if (!out_db) {
+        return -1;
+    }
+    if (dsd_squelch_is_off(level)) {
+        *out_db = 0;
+        return 0;
+    }
+    /* IEEE here (src/runtime/CMakeLists.txt): an infinite level reads as above -1 dB, and the comparisons hold the
+       rounding to the span before lround() sees the figure. */
+    const double db = 10.0 * log10(level);
+    if (!(db < (double)SQUELCH_WHOLE_DB_MAX)) {
+        *out_db = SQUELCH_WHOLE_DB_MAX;
+    } else if (!(db > (double)SQUELCH_WHOLE_DB_MIN)) {
+        *out_db = SQUELCH_WHOLE_DB_MIN;
+    } else {
+        *out_db = (int)lround(db);
+    }
+    return 0;
+}
+
+int
+dsd_squelch_level_is_whole_db(double level, int* out_db) {
+    int db = 0;
+    (void)dsd_squelch_level_whole_db(level, &db);
+    if (db != 0 && !(fabs(10.0 * log10(level) - (double)db) <= k_whole_db_tolerance)) {
+        return 0;
+    }
+    if (out_db) {
+        *out_db = db;
+    }
+    return 1;
+}
+
 /* Nothing running: every field at rest. */
 static void
 squelch_clear_status(dsd_state* state) {
