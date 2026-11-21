@@ -560,13 +560,18 @@ build_aloha(uint8_t* bits, uint8_t* bytes, uint8_t fid) {
     build_pf0(bits, bytes, 25U, fid);
 }
 
+/* A single-block C_MOVE (TS 102 361-4 Table 7.17): Mask 25..29, Reg 35, Backoff 36..39, PCN 44..55, MS address 56..79;
+   bits 16..24, 30..34 and 40..43 reserved. */
 static void
-build_c_move(uint8_t* bits, uint8_t* bytes, uint16_t lpcn, uint8_t slot, uint32_t target, uint32_t source) {
-    build_pf0(bits, bytes, 57U, 0U);
-    write_bits_u32(bits, 16U, lpcn & 0x0FFFU, 12U);
-    bits[28] = (uint8_t)(slot & 1U);
-    write_bits_u32(bits, 32U, target & 0x00FFFFFFU, 24U);
-    write_bits_u32(bits, 56U, source & 0x00FFFFFFU, 24U);
+build_c_move(uint8_t* bits, uint8_t* bytes, uint8_t fid, uint8_t mask, uint8_t reg, uint8_t backoff, uint16_t pcn,
+             uint32_t ms) {
+    build_pf0(bits, bytes, 57U, fid);
+    bytes[0] |= 0x80U; // LB: a single block
+    write_bits_u32(bits, 25U, mask & 0x1FU, 5U);
+    bits[35] = (uint8_t)(reg & 1U);
+    write_bits_u32(bits, 36U, backoff & 0x0FU, 4U);
+    write_bits_u32(bits, 44U, pcn & 0x0FFFU, 12U);
+    write_bits_u32(bits, 56U, ms & 0x00FFFFFFU, 24U);
 }
 
 static void
@@ -2526,25 +2531,24 @@ main(void) {
     rc |= expect_true("aloha rtl learns control-channel frequency", pf0_st.trunk_cc_freq == 460012500L);
     rc |= expect_true("aloha rtl rotates output file on cc", g_rotate_symbol_out_file_calls == 1);
 
-    init_env(&pf0_opts, &pf0_st);
-    pf0_opts.trunk_enable = 0;
-    build_c_move(bits, bytes, 12U, 0U, 0x001234U, 0x005678U);
-    dmr_cspdu(&pf0_opts, &pf0_st, bits, bytes, 1U, 0U);
-    rc |= expect_true("c_move slot 1 activity",
-                      recent_activity_matches(&pf0_st, 0U, DSD_CALL_KIND_GROUP_VOICE, 0x001234U, 0x005678U, 12U,
-                                              "Active Ch: 000C (TDMA S1) TG: 4660;"));
-    rc |= expect_true("c_move slot 1 does not create a call", no_active_call(&pf0_st, 0U));
-    rc |= expect_true("c_move slot 1 debounces opposite slot", pf0_st.dmrburstL == 16 && pf0_st.dmrburstR == 9);
-
-    init_env(&pf0_opts, &pf0_st);
-    pf0_opts.trunk_enable = 0;
-    build_c_move(bits, bytes, 13U, 1U, 0x002345U, 0x006789U);
-    dmr_cspdu(&pf0_opts, &pf0_st, bits, bytes, 1U, 0U);
-    rc |= expect_true("c_move slot 2 activity",
-                      recent_activity_matches(&pf0_st, 1U, DSD_CALL_KIND_GROUP_VOICE, 0x002345U, 0x006789U, 13U,
-                                              "Active Ch: 000D (TDMA S2) TG: 9029;"));
-    rc |= expect_true("c_move slot 2 does not create a call", no_active_call(&pf0_st, 1U));
-    rc |= expect_true("c_move slot 2 debounces opposite slot", pf0_st.dmrburstR == 16 && pf0_st.dmrburstL == 9);
+    /* A C_MOVE names a control channel and a radio, no call: the spec frame (read with the grant layout it would be
+       LPCN 2, TS 1, TG 1245189) publishes no activity row, opens no call and leaves both slots' burst state. So does
+       opcode 57 under a manufacturer's FID, which is no C_MOVE. */
+    static const uint8_t k_move_fids[] = {0x00U, 0x10U};
+    for (size_t i = 0; i < sizeof k_move_fids / sizeof k_move_fids[0]; i++) {
+        init_env(&pf0_opts, &pf0_st);
+        pf0_opts.trunk_enable = 0;
+        pf0_st.trunk_chan_map[2] = 852000000L;
+        pf0_st.trunk_chan_map[5] = 853000000L;
+        pf0_st.dmrburstL = 16;
+        pf0_st.dmrburstR = 16;
+        build_c_move(bits, bytes, k_move_fids[i], 8U, 1U, 3U, 5U, 0x001234U);
+        dmr_cspdu(&pf0_opts, &pf0_st, bits, bytes, 1U, 0U);
+        rc |= expect_true("c_move publishes no activity row",
+                          recent_activity_is_empty(&pf0_st, 0U) && recent_activity_is_empty(&pf0_st, 1U));
+        rc |= expect_true("c_move does not create a call", no_active_call(&pf0_st, 0U) && no_active_call(&pf0_st, 1U));
+        rc |= expect_true("c_move leaves both slots' burst state", pf0_st.dmrburstL == 16 && pf0_st.dmrburstR == 16);
+    }
 
     init_env(&pf0_opts, &pf0_st);
     pf0_opts.trunk_enable = 0;

@@ -3327,11 +3327,10 @@ test_scan_first_landing_is_never_held(void) {
     return rc;
 }
 
-/* The DMR trunk machine's three ways off a voice channel with no release: a grant for another channel, a C_MOVE of the
-   followed call, and a Capacity Plus status follow (dmr_cspdu_cap_plus_3e_follow()'s tune, then the machine's note). */
+/* The DMR trunk machine's two ways off a voice channel with no release: a grant for another channel, and a Capacity
+   Plus status follow (dmr_cspdu_cap_plus_3e_follow()'s tune, then the machine's note). */
 typedef enum {
     DMR_HOP_GRANT = 0,
-    DMR_HOP_MOVE,
     DMR_HOP_STATUS_FOLLOW,
     DMR_HOP_REST_MOVE,
 } dmr_hop_kind;
@@ -3356,7 +3355,7 @@ dmr_hop_put_bits(uint8_t* bits, size_t start, uint32_t value, size_t nbits) {
     }
 }
 
-/* A CRC-valid Tier III TV_GRANT (opcode 49) or C_MOVE (57) for slot 1 of @p lpcn. */
+/* A CRC-valid Tier III TV_GRANT (opcode 49) for slot 1 of @p lpcn. */
 static void
 dmr_hop_csbk(dsd_opts* opts, dsd_state* state, uint8_t opcode, uint16_t lpcn, uint32_t tg, uint32_t src) {
     uint8_t bits[256];
@@ -3557,8 +3556,6 @@ dmr_hop_follow_then_leave(dsd_opts* opts, dsd_state* state, dmr_hop_kind kind) {
     dmr_hop_clock_at(1.5);
     if (kind == DMR_HOP_GRANT) {
         dmr_hop_csbk(opts, state, 49U, DMR_HOP_LCN2, 202U, 2002U);
-    } else if (kind == DMR_HOP_MOVE) {
-        dmr_hop_csbk(opts, state, 57U, DMR_HOP_LCN2, 101U, 1001U);
     } else if (kind == DMR_HOP_REST_MOVE) {
         return rc | dmr_hop_rest_move(opts, state);
     } else {
@@ -3629,7 +3626,7 @@ dmr_hop_pi_header(dsd_opts* opts, dsd_state* state) {
    loaded with -1 stays the user's. */
 static int
 test_dmr_trunk_hop_leaves_no_call_crypto(void) {
-    static const char* const names[] = {"a grant for another channel", "a C_MOVE", "a status follow"};
+    static const char* const names[] = {"a grant for another channel", "a status follow"};
     char frame[4][24];
     int rc = expect_true("an active voice frame", dmr_hop_active_frame(frame) == 0);
     char reference[49] = {0};

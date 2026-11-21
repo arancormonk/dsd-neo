@@ -14406,7 +14406,8 @@ target_link_libraries(
 )
 add_test(NAME DMR_T3_SHIM COMMAND dsd-neo_test_dmr_t3_shim)
 
-# DMR Tier III C_MOVE retune (grant -> move -> retune, gated on VC)
+# DMR Tier III C_MOVE parsed by TS 102 361-4 Table 7.17 and printed only (no row, no grant, no tune, no slot or burst
+# change; FID 0 only), next to the logical and absolute grants that still tune
 add_executable(
     dsd-neo_test_dmr_t3_cmove
     protocol/dmr/test_dmr_t3_cmove.c
@@ -14449,6 +14450,7 @@ target_link_libraries(
     PRIVATE
         dsd-neo_test_call_state_support
         dsd-neo_test_event_sync_stub
+        dsd-neo_test_support
         dsd-neo_platform
         dsd-neo_test_runtime_link_only
         ${DSD_NEO_TEST_MATH_LIB}
@@ -14503,7 +14505,7 @@ target_link_libraries(
 )
 add_test(NAME DMR_T3_FORCE_RELEASE COMMAND dsd-neo_test_dmr_t3_force_release)
 
-# DMR Tier III move then release (grant -> move TS2->TS1 -> P_CLEAR -> return CC)
+# DMR Tier III grant, then a C_MOVE (another TSCC: the followed call stays), then P_CLEAR -> return CC
 add_executable(
     dsd-neo_test_dmr_t3_move_release
     protocol/dmr/test_dmr_t3_move_release.c

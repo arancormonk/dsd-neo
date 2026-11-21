@@ -4,13 +4,15 @@
  */
 
 /*
- * Verify C_MOVE handling: retunes only while on VC and updates to new VC.
- * Also verify that a CRC-valid CSBK anchors an unknown control channel at the
- * radio's tuned frequency in a build without librtlsdr (SoapySDR or Airspy only).
- * A move of the followed call is matched whatever slot it names, keeps the call's follow time and is refused only
- * when the call's own classification is now denied tuning (not for a Hold mismatch or a media-only restriction); any
- * other move is an ordinary grant under the policy and the busy gate. Its burst-indicator and companion-row effects
- * apply only once accepted.
+ * DMR Tier III C_MOVE (CSBKO 57, TS 102 361-4 §7.1.1.1.3 Table 7.17): a Move TSCC PDU tells the radios its MS address
+ * and Mask select to go to another control channel, the Physical Channel Number or, for the absolute escape (0xFFF),
+ * the frequency the appended MV_AP block's CdefParms give (Table 7.18). It names no talkgroup, source or timeslot.
+ * Its FID is 0: under another FID opcode 57 is a manufacturer's CSBK.
+ *
+ * The decoder prints the move's fields and acts on none of them: no activity row, no grant to the trunk state
+ * machine, no tune, no slot or burst state change, and nothing learned into the channel map. Ordinary grants (logical
+ * and absolute) still tune and name their channel, and a CRC-valid CSBK still anchors an unknown control channel at
+ * the radio's tuned frequency in a build without librtlsdr (SoapySDR or Airspy only).
  */
 
 #include <dsd-neo/protocol/dmr/dmr_utils_api.h>
@@ -23,15 +25,16 @@
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/state_ext.h>
 #include <dsd-neo/core/synctype_ids.h>
-#include <dsd-neo/core/talkgroup_policy.h>
 #include <dsd-neo/protocol/dmr/dmr_trunk_sm.h>
 #include <dsd-neo/runtime/decode_clock.h>
 #include <dsd-neo/runtime/trunk_tuning_hooks.h>
 #include <stdint.h>
 #include <stdio.h>
+#include <string.h>
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
+#include "test_support.h"
 
 #ifdef USE_RTLSDR
 #error "This test must compile dmr_csbk.c without USE_RTLSDR."
@@ -77,6 +80,8 @@ rotate_symbol_out_file(dsd_opts* opts, dsd_state* state) {
     (void)state;
 }
 
+static unsigned int g_tunes;
+
 static dsd_trunk_tune_result
 test_tune_to_freq(dsd_opts* opts, dsd_state* state, long int freq, int ted_sps, uint64_t request_id) {
     (void)request_id;
@@ -84,6 +89,7 @@ test_tune_to_freq(dsd_opts* opts, dsd_state* state, long int freq, int ted_sps, 
     if (!opts || !state || freq <= 0) {
         return DSD_TRUNK_TUNE_RESULT_FAILED;
     }
+    g_tunes++;
     state->trunk_vc_freq[0] = state->trunk_vc_freq[1] = freq;
     opts->trunk_is_tuned = 1;
     return DSD_TRUNK_TUNE_RESULT_OK;
@@ -116,65 +122,19 @@ crc8(uint8_t bits[], unsigned int len) {
     return 0xFF;
 }
 
-// --- Helpers ---
-static void
-init_env(dsd_opts* opts, dsd_state* state) {
-    // Free what an earlier step attached (the call-state extension) before the wipe drops its pointer
-    dsd_state_ext_free_all(state);
-    DSD_MEMSET(opts, 0, sizeof(*opts));
-    DSD_MEMSET(state, 0, sizeof(*state));
-    opts->trunk_enable = 1;
-    // The followed call is a group call: a C_MOVE of it is judged with its own classification, as it was followed.
-    opts->trunk_tune_group_calls = 1;
-    state->trunk_cc_freq = 851000000; // mock CC
-}
-
-// Compose a minimal C_MOVE CSBK + MBC absolute channel parms into bit and byte arrays
-static void
-build_cmove_apcn(uint8_t* bits, uint8_t* bytes, uint16_t apcn, uint16_t rx_int_mhz, uint16_t rx_step_125hz,
-                 uint8_t slot, uint32_t target) {
-    DSD_MEMSET(bits, 0, 256);
-    DSD_MEMSET(bytes, 0, 48);
-    // Opcode (low 6 bits of first byte) = 57
-    bytes[0] = (uint8_t)(57 & 0x3F);
-    // LPCN field (bits 16..27) = 0xFFF (absolute)
-    for (int i = 0; i < 12; i++) {
-        bits[16 + i] = ((0xFFF >> (11 - i)) & 1);
-    }
-    // Slot bit (bit 28)
-    bits[28] = (slot & 1);
-    // Target (bits 32..55): the call the move is for
-    for (int i = 0; i < 24; i++) {
-        bits[32 + i] = (uint8_t)((target >> (23 - i)) & 1u);
-    }
-    // MBC CDEFTYPE (bits 112..115) = 0 (absolute channel parms)
-    // already zeroed
-    // APCN (bits 118..129)
-    for (int i = 0; i < 12; i++) {
-        bits[118 + i] = ((apcn >> (11 - i)) & 1);
-    }
-    // RX_INT (bits 153..162) 10 bits
-    for (int i = 0; i < 10; i++) {
-        bits[153 + i] = ((rx_int_mhz >> (9 - i)) & 1);
-    }
-    // RX_STEP (bits 163..175) 13 bits
-    for (int i = 0; i < 13; i++) {
-        bits[163 + i] = ((rx_step_125hz >> (12 - i)) & 1);
-    }
-}
-
 extern void dmr_cspdu(dsd_opts*, dsd_state*, uint8_t*, uint8_t*, uint32_t, uint32_t);
 
-/* ---- Move admission and commit ---- */
+// --- Helpers ---
 
-#define MV_F1    852000000L
-#define MV_F2    853000000L
-#define MV_F3    854000000L
-#define MV_LPCN1 0x0010U
-#define MV_LPCN2 0x0011U
-#define MV_LPCN3 0x0012U
+#define CC_F     851000000L
+#define VC_F1    852000000L
+#define VC_F2    853000000L
+#define VC_F3    854000000L
+#define CH_F4    855000000L // 855 MHz: RX INT 855, RX STEP 0
+#define VC_LPCN1 0x0010U
 
 static const uint64_t k_t0_ns = 1000000ULL * 1000000000ULL;
+static char g_out[8192];
 
 static void
 clock_at(double seconds) {
@@ -189,8 +149,32 @@ put_bits(uint8_t* bits, size_t start, uint32_t value, size_t nbits) {
 }
 
 static void
-csbk_grant_or_move(dsd_opts* opts, dsd_state* state, uint8_t opcode, uint16_t lpcn, uint8_t slot, uint32_t target,
-                   uint32_t source) {
+init_env(dsd_opts* opts, dsd_state* state) {
+    // Free what an earlier step attached (the call-state extension) before the wipe drops its pointer
+    dsd_state_ext_free_all(state);
+    DSD_MEMSET(opts, 0, sizeof(*opts));
+    DSD_MEMSET(state, 0, sizeof(*state));
+    opts->trunk_enable = 1;
+    opts->trunk_tune_group_calls = 1;
+    state->trunk_cc_freq = CC_F; // mock CC
+}
+
+static void
+trunk_env(dsd_opts* opts, dsd_state* state) {
+    init_env(opts, state);
+    opts->trunk_tune_private_calls = 1;
+    opts->trunk_hangtime = 2.0f;
+    state->trunk_chan_map[VC_LPCN1] = VC_F1;
+    state->synctype = DSD_SYNC_DMR_BS_VOICE_POS;
+    clock_at(0.0);
+    dmr_sm_init(opts, state);
+    g_tunes = 0U;
+}
+
+/* A CRC-valid TV_GRANT-layout CSBK (opcode @p opcode): LPCN @p lpcn, slot @p slot, target, source. */
+static void
+csbk_grant(dsd_opts* opts, dsd_state* state, uint8_t opcode, uint16_t lpcn, uint8_t slot, uint32_t target,
+           uint32_t source) {
     uint8_t bits[256];
     uint8_t bytes[48];
     DSD_MEMSET(bits, 0, sizeof(bits));
@@ -203,26 +187,25 @@ csbk_grant_or_move(dsd_opts* opts, dsd_state* state, uint8_t opcode, uint16_t lp
     dmr_cspdu(opts, state, bits, bytes, 1U, 0U);
 }
 
+/* A CRC-valid MBC grant whose channel is the absolute escape (0xFFF), defined by its CdefParms: LPCN @p apcn on
+   @p rx_int MHz plus @p rx_step 125 Hz steps. */
 static void
-move_env(dsd_opts* opts, dsd_state* state) {
-    init_env(opts, state);
-    opts->trunk_tune_private_calls = 1;
-    opts->trunk_hangtime = 2.0f;
-    state->trunk_chan_map[MV_LPCN1] = MV_F1;
-    state->trunk_chan_map[MV_LPCN2] = MV_F2;
-    state->trunk_chan_map[MV_LPCN3] = MV_F3;
-    state->synctype = DSD_SYNC_DMR_BS_VOICE_POS;
-    clock_at(0.0);
-    dmr_sm_init(opts, state);
-}
-
-static void
-seed_row(dsd_state* state, uint32_t id, const char* mode, int priority, int preempt) {
-    dsd_tg_policy_entry row;
-    assert(dsd_tg_policy_make_exact_entry(id, mode, "ROW", DSD_TG_POLICY_SOURCE_IMPORTED, &row) == 0);
-    row.priority = priority;
-    row.preempt = preempt ? 1U : 0U;
-    assert(dsd_tg_policy_upsert_exact(state, &row, DSD_TG_POLICY_UPSERT_REPLACE_FIRST) == 0);
+csbk_absolute_grant(dsd_opts* opts, dsd_state* state, uint8_t opcode, uint16_t apcn, uint16_t rx_int, uint16_t rx_step,
+                    uint8_t slot, uint32_t target) {
+    uint8_t bits[256];
+    uint8_t bytes[48];
+    DSD_MEMSET(bits, 0, sizeof(bits));
+    DSD_MEMSET(bytes, 0, sizeof(bytes));
+    bytes[0] = opcode;
+    put_bits(bits, 16U, 0xFFFU, 12U);
+    bits[28] = (uint8_t)(slot & 1U);
+    put_bits(bits, 32U, target, 24U);
+    put_bits(bits, 56U, 1234U, 24U);
+    // CdefParms Cdeftype 0 (bits 112..115) stays zero; LPCN 118..129, RX INT 153..162, RX STEP 163..175
+    put_bits(bits, 118U, apcn, 12U);
+    put_bits(bits, 153U, rx_int, 10U);
+    put_bits(bits, 163U, rx_step, 13U);
+    dmr_cspdu(opts, state, bits, bytes, 1U, 0U);
 }
 
 static void
@@ -230,175 +213,6 @@ accepted_voice(dsd_opts* opts, dsd_state* state, int slot) {
     state->dmr_confidence_voice_open[slot] = 1;
     state->dmr_confidence_voice_m[slot] = dsd_decode_now_mono_s();
     dmr_sm_emit_voice_sync(opts, state, slot);
-}
-
-static int
-recent_row_target(const dsd_state* state, uint8_t index, uint64_t* target) {
-    dsd_recent_activity_snapshot recent;
-    if (dsd_recent_activity_copy_snapshot(state, &recent) <= 0
-        || recent.entries[index].observation.kind == DSD_CALL_KIND_UNKNOWN) {
-        return 0;
-    }
-    *target = recent.entries[index].observation.ota_target_id;
-    return 1;
-}
-
-/* A slot-changing move of the followed call keeps its follow time: a preemption candidate's dwell still runs from
-   the grant. */
-static void
-test_move_keeps_follow_time(dsd_opts* opts, dsd_state* state) {
-    move_env(opts, state);
-    seed_row(state, 101, "A", 10, 0);
-    seed_row(state, 300, "A", 60, 1);
-    csbk_grant_or_move(opts, state, 49U, MV_LPCN1, 0, 101, 1234);
-    assert(state->trunk_vc_freq[0] == MV_F1);
-    clock_at(0.6);
-    accepted_voice(opts, state, 0);
-    csbk_grant_or_move(opts, state, 57U, MV_LPCN2, 1, 101, 1234);
-    assert(state->trunk_vc_freq[0] == MV_F2);
-    assert(dmr_sm_get_ctx()->vc_slot == 1 && dmr_sm_get_ctx()->vc_tg == 101);
-    clock_at(0.8);
-    csbk_grant_or_move(opts, state, 49U, MV_LPCN3, 0, 300, 3);
-    assert(state->trunk_vc_freq[0] == MV_F3 && dmr_sm_get_ctx()->vc_tg == 300);
-}
-
-/* A refused move (a blocked talkgroup; the companion's call while the followed one is held) leaves the burst indicators
-   and the other slot's activity row alone. */
-static void
-test_refused_moves_commit_nothing(dsd_opts* opts, dsd_state* state) {
-    move_env(opts, state);
-    seed_row(state, 777, "B", 0, 0);
-    csbk_grant_or_move(opts, state, 49U, MV_LPCN1, 0, 101, 1234);
-    clock_at(0.5);
-    accepted_voice(opts, state, 0);
-    const dsd_call_observation companion = {
-        .protocol = DSD_SYNC_DMR_BS_VOICE_POS, .slot = 1U, .kind = DSD_CALL_KIND_GROUP_VOICE, .ota_target_id = 202U};
-    (void)dsd_recent_activity_publish(state, 1U, &companion, "companion", 0U);
-    state->dmrburstL = 16;
-    state->dmrburstR = 16;
-
-    csbk_grant_or_move(opts, state, 57U, MV_LPCN2, 0, 777, 9);
-    uint64_t target = 0;
-    assert(state->trunk_vc_freq[0] == MV_F1);
-    assert(state->dmrburstL == 16 && state->dmrburstR == 16);
-    assert(recent_row_target(state, 1U, &target) && target == 202U);
-
-    csbk_grant_or_move(opts, state, 57U, MV_LPCN2, 1, 202, 9);
-    assert(state->trunk_vc_freq[0] == MV_F1);
-    assert(state->dmrburstL == 16 && state->dmrburstR == 16);
-
-    // Hold on the companion's group: its move takes the receiver.
-    state->tg_hold = 202;
-    csbk_grant_or_move(opts, state, 57U, MV_LPCN2, 1, 202, 9);
-    assert(state->trunk_vc_freq[0] == MV_F2 && dmr_sm_get_ctx()->vc_tg == 202);
-    assert(state->dmrburstR == 16 && state->dmrburstL == 9);
-    state->tg_hold = 0;
-}
-
-/* A same-carrier move of the followed call to the other slot is taken in place, with its debounce. */
-static void
-test_move_in_place(dsd_opts* opts, dsd_state* state) {
-    move_env(opts, state);
-    csbk_grant_or_move(opts, state, 49U, MV_LPCN1, 0, 101, 1234);
-    clock_at(0.5);
-    accepted_voice(opts, state, 0);
-    state->dmrburstL = 16;
-    state->dmrburstR = 16;
-    const unsigned int tunes = state->p25_sm_tune_count;
-    csbk_grant_or_move(opts, state, 57U, MV_LPCN1, 1, 101, 1234);
-    assert(state->trunk_vc_freq[0] == MV_F1 && state->p25_sm_tune_count == tunes);
-    assert(dmr_sm_get_ctx()->vc_slot == 1 && dmr_sm_get_ctx()->slots[1].target == 101U);
-    assert(state->dmrburstR == 16 && state->dmrburstL == 9);
-}
-
-/* A same-carrier move takes the call's activity to its new slot: the vacated slot is no phantom held call, so a
-   priority candidate elsewhere still preempts. */
-static void
-test_move_in_place_vacates(dsd_opts* opts, dsd_state* state) {
-    move_env(opts, state);
-    seed_row(state, 101, "A", 10, 0);
-    seed_row(state, 300, "A", 60, 1);
-    csbk_grant_or_move(opts, state, 49U, MV_LPCN1, 0, 101, 1234);
-    clock_at(0.5);
-    accepted_voice(opts, state, 0);
-    csbk_grant_or_move(opts, state, 57U, MV_LPCN1, 1, 101, 1234);
-    const dmr_sm_ctx_t* ctx = dmr_sm_get_ctx();
-    assert(ctx->vc_slot == 1 && ctx->slots[0].voice_active == 0 && ctx->slots[0].last_active_m <= 0.0);
-    assert(ctx->slots[1].voice_active == 1);
-    clock_at(1.0);
-    csbk_grant_or_move(opts, state, 49U, MV_LPCN3, 0, 300, 3);
-    assert(state->trunk_vc_freq[0] == MV_F3 && dmr_sm_get_ctx()->vc_tg == 300);
-}
-
-/* A move after a checked LC renamed the followed call republishes the LC's identity on the new carrier, not the
-   grant's. */
-static void
-test_move_carries_lc_identity(dsd_opts* opts, dsd_state* state) {
-    move_env(opts, state);
-    csbk_grant_or_move(opts, state, 49U, MV_LPCN1, 0, 101, 1234);
-    clock_at(0.5);
-    accepted_voice(opts, state, 0);
-    dmr_sm_note_lc_identity(opts, state, 0, DSD_CALL_KIND_GROUP_VOICE, 202U, 1234U);
-    csbk_grant_or_move(opts, state, 57U, MV_LPCN2, 0, 202, 1234);
-    assert(state->trunk_vc_freq[0] == MV_F2);
-    assert(dmr_sm_get_ctx()->vc_tg == 202 && dmr_sm_get_ctx()->slots[0].target == 202U);
-}
-
-/* A matched move is judged with the followed call's own classification: a Hold mismatch or a media-only restriction
-   never stops following it, a private call keeps moving with group tuning off, and a lockout since it started does. */
-static void
-test_matched_move_policy(dsd_opts* opts, dsd_state* state) {
-    move_env(opts, state);
-    dsd_tg_policy_entry quiet;
-    assert(dsd_tg_policy_make_exact_entry(101, "A", "QUIET", DSD_TG_POLICY_SOURCE_IMPORTED, &quiet) == 0);
-    quiet.record = 0U; // media only: the call is still tuned
-    assert(dsd_tg_policy_upsert_exact(state, &quiet, DSD_TG_POLICY_UPSERT_REPLACE_FIRST) == 0);
-    csbk_grant_or_move(opts, state, 49U, MV_LPCN1, 0, 101, 1234);
-    assert(state->trunk_vc_freq[0] == MV_F1);
-    clock_at(0.5);
-    accepted_voice(opts, state, 0);
-    state->tg_hold = 999; // a Hold set since: the followed call no longer matches it
-    csbk_grant_or_move(opts, state, 57U, MV_LPCN2, 0, 101, 1234);
-    assert(state->trunk_vc_freq[0] == MV_F2);
-    state->tg_hold = 0;
-
-    move_env(opts, state);
-    opts->trunk_tune_group_calls = 0;
-    csbk_grant_or_move(opts, state, 48U, MV_LPCN1, 0, 5001, 5002);
-    assert(state->trunk_vc_freq[0] == MV_F1 && dmr_sm_get_ctx()->vc_is_group == 0);
-    clock_at(0.5);
-    accepted_voice(opts, state, 0);
-    csbk_grant_or_move(opts, state, 57U, MV_LPCN2, 0, 5001, 5002);
-    assert(state->trunk_vc_freq[0] == MV_F2);
-
-    move_env(opts, state);
-    csbk_grant_or_move(opts, state, 49U, MV_LPCN1, 0, 101, 1234);
-    clock_at(0.5);
-    accepted_voice(opts, state, 0);
-    seed_row(state, 101, "B", 0, 0);
-    state->dmrburstL = 16;
-    state->dmrburstR = 16;
-    csbk_grant_or_move(opts, state, 57U, MV_LPCN2, 0, 101, 1234);
-    assert(state->trunk_vc_freq[0] == MV_F1);
-    assert(state->dmrburstL == 16 && state->dmrburstR == 16);
-}
-
-/* ---- The call's channel (its LPCN): one resolved value for the machine, the slot record (the policy route) and the
-   call ---- */
-
-#define CH_F4 855000000L // 855 MHz: RX INT 855, RX STEP 0
-
-/* A grant or C_MOVE whose channel is the absolute escape (0xFFF), defined by the MBC's CdefParms: LPCN @p apcn on
-   @p rx_int MHz plus @p rx_step 125 Hz steps. */
-static void
-csbk_absolute(dsd_opts* opts, dsd_state* state, uint8_t opcode, uint16_t apcn, uint16_t rx_int, uint16_t rx_step,
-              uint8_t slot, uint32_t target) {
-    uint8_t bits[256];
-    uint8_t bytes[48];
-    build_cmove_apcn(bits, bytes, apcn, rx_int, rx_step, slot, target);
-    bytes[0] = opcode;
-    put_bits(bits, 56U, 1234U, 24U);
-    dmr_cspdu(opts, state, bits, bytes, 1U, 0U);
 }
 
 /* The slot's call, the followed context and the slot's record (what the policy route is built from) name @p channel of
@@ -413,21 +227,286 @@ expect_channel(const dsd_state* state, int slot, uint32_t channel, uint8_t kind)
     assert(ctx->slots[slot].channel == (int)channel && ctx->slots[slot].channel_kind == kind);
 }
 
+/* ---- C_MOVE frames (Table 7.17, and the MV_AP block of Table 7.18) ---- */
+
+typedef struct {
+    uint8_t fid;
+    uint8_t mask;
+    uint8_t reg;
+    uint8_t backoff;
+    uint16_t pcn;
+    uint32_t ms;
+} cmove_fields;
+
+/* A Move TSCC PDU: LB set for a single block, clear for an MBC header. Reserved bits 16..24, 30..34 and 40..43 are 0. */
+static void
+build_cmove(uint8_t* bits, uint8_t* bytes, const cmove_fields* f, int mbc) {
+    DSD_MEMSET(bits, 0, 256);
+    DSD_MEMSET(bytes, 0, 48);
+    bytes[0] = (uint8_t)((mbc ? 0x00U : 0x80U) | 57U);
+    bytes[1] = f->fid;
+    put_bits(bits, 0U, bytes[0], 8U);
+    put_bits(bits, 8U, f->fid, 8U);
+    put_bits(bits, 25U, f->mask, 5U);
+    bits[35] = (uint8_t)(f->reg & 1U);
+    put_bits(bits, 36U, f->backoff, 4U);
+    put_bits(bits, 44U, f->pcn, 12U);
+    put_bits(bits, 56U, f->ms, 24U);
+}
+
+/* The MV_AP block appended to an MBC move: Cdeftype 0, CdefParms naming LPCN @p lpcn on @p rx_int MHz plus
+   @p rx_step 125 Hz steps (TX the same). */
+static void
+append_mv_ap(uint8_t* bits, uint16_t lpcn, uint16_t rx_int, uint16_t rx_step) {
+    put_bits(bits, 96U, 0x80U | 57U, 8U); // LB 1, PF 0, CSBKO of the header
+    put_bits(bits, 118U, lpcn, 12U);
+    put_bits(bits, 130U, rx_int, 10U);
+    put_bits(bits, 140U, rx_step, 13U);
+    put_bits(bits, 153U, rx_int, 10U);
+    put_bits(bits, 163U, rx_step, 13U);
+}
+
+/* Send the frame through the CSBK dispatcher, its terminal output in g_out. */
+static void
+run_captured(dsd_opts* opts, dsd_state* state, uint8_t* bits, uint8_t* bytes) {
+    dsd_test_capture_stderr cap;
+    assert(dsd_test_capture_stderr_begin(&cap, "dmr_t3_cmove") == 0);
+    dmr_cspdu(opts, state, bits, bytes, 1U, 0U);
+    assert(dsd_test_capture_stderr_end(&cap) == 0);
+    assert(dsd_test_capture_stderr_read(&cap, g_out, sizeof g_out) == 0);
+}
+
+static void
+expect_out(const char* needle, int present, const char* tag) {
+    const int found = strstr(g_out, needle) != NULL;
+    if (found != present) {
+        DSD_FPRINTF(stderr, "FAIL: %s: %s '%s' in '%s'\n", tag, present ? "missing" : "unexpected", needle, g_out);
+        assert(0);
+    }
+}
+
+/* What a C_MOVE must leave alone: the activity rows, the burst indicators, the slots' calls, the trunk machine and the
+   tuner. */
+typedef struct {
+    dsd_recent_activity_snapshot recent;
+    int recent_ok;
+    int burst_l;
+    int burst_r;
+    long vc_freq[2];
+    int tuned;
+    unsigned int tunes;
+    unsigned int tune_count;
+    dmr_sm_ctx_t sm;
+    dsd_call_snapshot call[2];
+    int call_ok[2];
+} cmove_view;
+
+static void
+view_take(const dsd_state* state, const dsd_opts* opts, cmove_view* v) {
+    DSD_MEMSET(v, 0, sizeof(*v));
+    v->recent_ok = dsd_recent_activity_copy_snapshot(state, &v->recent);
+    v->burst_l = state->dmrburstL;
+    v->burst_r = state->dmrburstR;
+    v->vc_freq[0] = state->trunk_vc_freq[0];
+    v->vc_freq[1] = state->trunk_vc_freq[1];
+    v->tuned = opts->trunk_is_tuned;
+    v->tunes = g_tunes;
+    v->tune_count = state->p25_sm_tune_count;
+    v->sm = *dmr_sm_get_ctx();
+    for (uint8_t s = 0; s < 2U; s++) {
+        v->call_ok[s] = dsd_call_state_get(state, s, &v->call[s]);
+    }
+}
+
+static int
+recent_entries_equal(const dsd_recent_activity_snapshot* a, const dsd_recent_activity_snapshot* b) {
+    for (size_t i = 0; i < (size_t)DSD_RECENT_ACTIVITY_COUNT; i++) {
+        const dsd_call_observation* x = &a->entries[i].observation;
+        const dsd_call_observation* y = &b->entries[i].observation;
+        if (x->kind != y->kind || x->ota_target_id != y->ota_target_id || x->ota_source_id != y->ota_source_id
+            || x->channel != y->channel || x->slot != y->slot
+            || strcmp(a->entries[i].notice, b->entries[i].notice) != 0) {
+            return 0;
+        }
+    }
+    return 1;
+}
+
+static void
+expect_untouched(const dsd_state* state, const dsd_opts* opts, const cmove_view* before, const char* tag) {
+    cmove_view after;
+    view_take(state, opts, &after);
+    int ok = 1;
+    if (after.recent_ok != before->recent_ok
+        || (after.recent_ok > 0 && !recent_entries_equal(&after.recent, &before->recent))) {
+        DSD_FPRINTF(stderr, "FAIL: %s: an activity row changed\n", tag);
+        ok = 0;
+    }
+    if (after.burst_l != before->burst_l || after.burst_r != before->burst_r) {
+        DSD_FPRINTF(stderr, "FAIL: %s: burst state %d/%d -> %d/%d\n", tag, before->burst_l, before->burst_r,
+                    after.burst_l, after.burst_r);
+        ok = 0;
+    }
+    if (after.tunes != before->tunes || after.tune_count != before->tune_count || after.tuned != before->tuned
+        || after.vc_freq[0] != before->vc_freq[0] || after.vc_freq[1] != before->vc_freq[1]) {
+        DSD_FPRINTF(stderr, "FAIL: %s: the tuner moved (%u -> %u tunes, VC %ld -> %ld)\n", tag, before->tunes,
+                    after.tunes, before->vc_freq[0], after.vc_freq[0]);
+        ok = 0;
+    }
+    if (after.sm.state != before->sm.state || after.sm.vc_freq_hz != before->sm.vc_freq_hz
+        || after.sm.vc_slot != before->sm.vc_slot || after.sm.vc_tg != before->sm.vc_tg
+        || after.sm.vc_lpcn != before->sm.vc_lpcn || after.sm.slots[0].target != before->sm.slots[0].target
+        || after.sm.slots[1].target != before->sm.slots[1].target) {
+        DSD_FPRINTF(stderr, "FAIL: %s: the trunk machine changed\n", tag);
+        ok = 0;
+    }
+    for (int s = 0; s < 2; s++) {
+        if (after.call_ok[s] != before->call_ok[s]
+            || (after.call_ok[s] > 0
+                && (after.call[s].phase != before->call[s].phase
+                    || after.call[s].ota_target_id != before->call[s].ota_target_id))) {
+            DSD_FPRINTF(stderr, "FAIL: %s: slot %d's call changed\n", tag, s + 1);
+            ok = 0;
+        }
+    }
+    assert(ok);
+}
+
+/* The three places a C_MOVE is heard: while a voice channel call is followed (with a companion row on the other slot),
+   on the control channel with nothing followed, and with trunking off. */
+typedef enum {
+    CMOVE_CTX_FOLLOWING = 0,
+    CMOVE_CTX_ON_CC,
+    CMOVE_CTX_NO_TRUNKING,
+} cmove_ctx;
+
+static void
+cmove_context(dsd_opts* opts, dsd_state* state, cmove_ctx where) {
+    trunk_env(opts, state);
+    state->trunk_chan_map[2] = VC_F3; // what the grant layout misreads this move's channel as (LPCN 2)
+    state->trunk_chan_map[5] = VC_F2; // the move's PCN 5
+    if (where == CMOVE_CTX_FOLLOWING) {
+        csbk_grant(opts, state, 49U, VC_LPCN1, 0, 101, 1234);
+        assert(state->trunk_vc_freq[0] == VC_F1);
+        clock_at(0.5);
+        accepted_voice(opts, state, 0);
+        const dsd_call_observation companion = {.protocol = DSD_SYNC_DMR_BS_VOICE_POS,
+                                                .slot = 1U,
+                                                .kind = DSD_CALL_KIND_GROUP_VOICE,
+                                                .ota_target_id = 202U};
+        (void)dsd_recent_activity_publish(state, 1U, &companion, "companion", 0U);
+    } else if (where == CMOVE_CTX_NO_TRUNKING) {
+        opts->trunk_enable = 0;
+    }
+    state->dmrburstL = 16;
+    state->dmrburstR = 16;
+    clock_at(0.6);
+}
+
+/* The spec frame (Mask 8, Reg 1, Backoff 3, PCN 5, MS 0x001234), which the grant layout reads as LPCN 2, TS 1 and
+   TG 1245189: printed with its own fields, acted on nowhere. */
+static void
+cmove_spec_frame_prints_only(dsd_opts* opts, dsd_state* state) {
+    static const cmove_fields k_move = {.fid = 0x00U, .mask = 8U, .reg = 1U, .backoff = 3U, .pcn = 5U, .ms = 0x001234U};
+    static const char* const k_names[] = {"following a call", "on the control channel", "trunking off"};
+    for (int where = CMOVE_CTX_FOLLOWING; where <= CMOVE_CTX_NO_TRUNKING; where++) {
+        cmove_context(opts, state, (cmove_ctx)where);
+        cmove_view before;
+        view_take(state, opts, &before);
+        uint8_t bits[256];
+        uint8_t bytes[48];
+        build_cmove(bits, bytes, &k_move, 0);
+        run_captured(opts, state, bits, bytes);
+        expect_untouched(state, opts, &before, k_names[where]);
+        expect_out("Move TSCC (C_MOVE)", 1, k_names[where]);
+        expect_out("Mask: 8; Reg: 1; Backoff: 3; PCN: 0005; MS: 00004660", 1, k_names[where]);
+        expect_out("Frequency: 853.000000 MHz", 1, k_names[where]);
+        expect_out("1245189", 0, k_names[where]);
+    }
+
+    // The move leaves an idle control channel ready: the next grant is followed.
+    cmove_context(opts, state, CMOVE_CTX_ON_CC);
+    uint8_t bits[256];
+    uint8_t bytes[48];
+    build_cmove(bits, bytes, &k_move, 0);
+    run_captured(opts, state, bits, bytes);
+    csbk_grant(opts, state, 49U, VC_LPCN1, 0, 101, 1234);
+    assert(g_tunes == 1U && state->trunk_vc_freq[0] == VC_F1 && dmr_sm_get_ctx()->vc_tg == 101);
+}
+
+/* The absolute escape: PCN 0xFFF on an MBC header, the TSCC's frequency in the appended MV_AP block's CdefParms.
+   Printed; not tuned, not published, and not learned into the channel map. Without an appended block (a single block)
+   there is no frequency to print. */
+static void
+cmove_mbc_channel_form_prints_only(dsd_opts* opts, dsd_state* state) {
+    static const cmove_fields k_move = {
+        .fid = 0x00U, .mask = 0U, .reg = 0U, .backoff = 2U, .pcn = 0xFFFU, .ms = 0x000000U};
+    for (int where = CMOVE_CTX_FOLLOWING; where <= CMOVE_CTX_NO_TRUNKING; where++) {
+        cmove_context(opts, state, (cmove_ctx)where);
+        cmove_view before;
+        view_take(state, opts, &before);
+        uint8_t bits[256];
+        uint8_t bytes[48];
+        build_cmove(bits, bytes, &k_move, 1);
+        append_mv_ap(bits, 0x123U, 855U, 0U);
+        run_captured(opts, state, bits, bytes);
+        expect_untouched(state, opts, &before, "mbc move");
+        assert(state->trunk_chan_map[0x123] == 0);
+        expect_out("Move TSCC (C_MOVE) - Absolute", 1, "mbc move");
+        expect_out("PCN: 4095; MS: 00000000", 1, "mbc move");
+        expect_out("TSCC APCN: 0291; RX INT: 855; RX STEP: 0;", 1, "mbc move");
+        expect_out("Frequency: 855.000000 MHz", 1, "mbc move");
+    }
+
+    cmove_context(opts, state, CMOVE_CTX_ON_CC);
+    cmove_view before;
+    view_take(state, opts, &before);
+    uint8_t bits[256];
+    uint8_t bytes[48];
+    build_cmove(bits, bytes, &k_move, 0);
+    append_mv_ap(bits, 0x123U, 855U, 0U); // stale bits past a single block are no appended block
+    run_captured(opts, state, bits, bytes);
+    expect_untouched(state, opts, &before, "single-block absolute move");
+    expect_out("Move TSCC (C_MOVE) - Absolute", 1, "single-block absolute move");
+    expect_out("Frequency", 0, "single-block absolute move");
+    expect_out("APCN", 0, "single-block absolute move");
+}
+
+/* Opcode 57 under a manufacturer's FID is not a C_MOVE: it prints as a manufacturer CSBK and nothing else. */
+static void
+cmove_nonzero_fid_ignored(dsd_opts* opts, dsd_state* state) {
+    static const cmove_fields k_move = {.fid = 0x10U, .mask = 8U, .reg = 1U, .backoff = 3U, .pcn = 5U, .ms = 0x001234U};
+    for (int where = CMOVE_CTX_FOLLOWING; where <= CMOVE_CTX_NO_TRUNKING; where++) {
+        cmove_context(opts, state, (cmove_ctx)where);
+        cmove_view before;
+        view_take(state, opts, &before);
+        uint8_t bits[256];
+        uint8_t bytes[48];
+        build_cmove(bits, bytes, &k_move, 0);
+        run_captured(opts, state, bits, bytes);
+        expect_untouched(state, opts, &before, "FID 0x10 opcode 57");
+        expect_out("C_MOVE", 0, "FID 0x10 opcode 57");
+        expect_out("Manufacturer CSBK: FID 10; Opcode 39;", 1, "FID 0x10 opcode 57");
+    }
+}
+
+/* ---- Grants: the call's channel (its LPCN), one resolved value for the machine, the slot record and the call ---- */
+
 /* A logical grant names its LPCN, 1..4094 alike; LPCN 0 (CHNULL) names no channel, and nothing to tune. */
 static void
 test_t3_grant_lpcn_kind(dsd_opts* opts, dsd_state* state) {
     static const uint16_t lpcns[] = {12U, 1U, 4094U};
     for (size_t i = 0; i < sizeof lpcns / sizeof lpcns[0]; i++) {
-        move_env(opts, state);
+        trunk_env(opts, state);
         state->trunk_chan_map[lpcns[i]] = CH_F4;
-        csbk_grant_or_move(opts, state, 49U, lpcns[i], 0, 101, 1234);
+        csbk_grant(opts, state, 49U, lpcns[i], 0, 101, 1234);
         assert(state->trunk_vc_freq[0] == CH_F4);
         clock_at(0.5);
         accepted_voice(opts, state, 0);
         expect_channel(state, 0, lpcns[i], DSD_CALL_CHANNEL_LPCN);
     }
-    move_env(opts, state);
-    csbk_grant_or_move(opts, state, 49U, 0U, 0, 101, 1234);
+    trunk_env(opts, state);
+    csbk_grant(opts, state, 49U, 0U, 0, 101, 1234);
     assert(state->trunk_vc_freq[0] == 0 && dmr_sm_get_ctx()->state != DMR_SM_TUNED);
 }
 
@@ -436,8 +515,8 @@ static void
 test_t3_absolute_grant_uses_mbc_lpcn(dsd_opts* opts, dsd_state* state) {
     static const uint16_t lpcns[] = {37U, 1U, 4094U};
     for (size_t i = 0; i < sizeof lpcns / sizeof lpcns[0]; i++) {
-        move_env(opts, state);
-        csbk_absolute(opts, state, 49U, lpcns[i], 855U, 0U, 0, 101);
+        trunk_env(opts, state);
+        csbk_absolute_grant(opts, state, 49U, lpcns[i], 855U, 0U, 0, 101);
         assert(state->trunk_vc_freq[0] == CH_F4);
         assert(state->trunk_chan_map[lpcns[i]] == CH_F4);
         clock_at(0.5);
@@ -452,8 +531,8 @@ static void
 test_t3_absolute_grant_invalid_mbc_lpcn(dsd_opts* opts, dsd_state* state) {
     static const uint16_t lpcns[] = {0U, 4095U};
     for (size_t i = 0; i < sizeof lpcns / sizeof lpcns[0]; i++) {
-        move_env(opts, state);
-        csbk_absolute(opts, state, 49U, lpcns[i], 855U, 0U, 0, 101);
+        trunk_env(opts, state);
+        csbk_absolute_grant(opts, state, 49U, lpcns[i], 855U, 0U, 0, 101);
         assert(state->trunk_vc_freq[0] == CH_F4);
         assert(state->trunk_chan_map[0] == 0 && state->trunk_chan_map[4095] == 0);
         clock_at(0.5);
@@ -462,78 +541,20 @@ test_t3_absolute_grant_invalid_mbc_lpcn(dsd_opts* opts, dsd_state* state) {
     }
 }
 
-/* A C_MOVE of the followed call to another carrier names the move's LPCN (a logical one, or the MBC's for the absolute
-   escape: 1..4094); one whose CdefParms LPCN is 0 or 4095 moves the call but names no channel, and is not learned. */
+/* With no CC known yet, a CRC-valid CSBK received on a radio input anchors the CC at the tuned frequency. */
 static void
-test_t3_cmove_lpcn_bounds(dsd_opts* opts, dsd_state* state) {
-    move_env(opts, state);
-    csbk_grant_or_move(opts, state, 49U, MV_LPCN1, 0, 101, 1234);
-    clock_at(0.5);
-    accepted_voice(opts, state, 0);
-    expect_channel(state, 0, MV_LPCN1, DSD_CALL_CHANNEL_LPCN);
-    csbk_grant_or_move(opts, state, 57U, MV_LPCN2, 0, 101, 1234);
-    assert(state->trunk_vc_freq[0] == MV_F2);
-    clock_at(1.0);
-    accepted_voice(opts, state, 0);
-    expect_channel(state, 0, MV_LPCN2, DSD_CALL_CHANNEL_LPCN);
-
-    static const struct {
-        uint16_t apcn;
-        uint32_t channel;
-        uint8_t kind;
-    } cases[] = {
-        {1U, 1U, DSD_CALL_CHANNEL_LPCN},
-        {4094U, 4094U, DSD_CALL_CHANNEL_LPCN},
-        {0U, 0U, DSD_CALL_CHANNEL_NONE},
-        {4095U, 0U, DSD_CALL_CHANNEL_NONE},
-    };
-
-    for (size_t i = 0; i < sizeof cases / sizeof cases[0]; i++) {
-        move_env(opts, state);
-        csbk_grant_or_move(opts, state, 49U, MV_LPCN1, 0, 101, 1234);
-        clock_at(0.5);
-        accepted_voice(opts, state, 0);
-        csbk_absolute(opts, state, 57U, cases[i].apcn, 855U, 0U, 0, 101);
-        assert(state->trunk_vc_freq[0] == CH_F4);
-        assert(state->trunk_chan_map[0] == 0 && state->trunk_chan_map[4095] == 0);
-        clock_at(1.0);
-        accepted_voice(opts, state, 0);
-        expect_channel(state, 0, cases[i].channel, cases[i].kind);
-    }
-}
-
-/* L9: a same-carrier move to the other slot under another LPCN keeps the channel the follow published first. */
-static void
-test_same_freq_cmove_keeps_channel(dsd_opts* opts, dsd_state* state) {
-    move_env(opts, state);
-    state->trunk_chan_map[0x13] = MV_F1;
-    csbk_grant_or_move(opts, state, 49U, MV_LPCN1, 0, 101, 1234);
-    clock_at(0.5);
-    accepted_voice(opts, state, 0);
-    expect_channel(state, 0, MV_LPCN1, DSD_CALL_CHANNEL_LPCN);
-    const unsigned int tunes = state->p25_sm_tune_count;
-    csbk_grant_or_move(opts, state, 57U, 0x13U, 1, 101, 1234);
-    assert(state->trunk_vc_freq[0] == MV_F1 && state->p25_sm_tune_count == tunes && dmr_sm_get_ctx()->vc_slot == 1);
-    clock_at(1.0);
-    accepted_voice(opts, state, 1);
-    expect_channel(state, 1, MV_LPCN1, DSD_CALL_CHANNEL_LPCN);
-}
-
-static void
-test_move_admission(dsd_opts* opts, dsd_state* state) {
-    dsd_decode_clock_use_test(k_t0_ns);
-    test_move_keeps_follow_time(opts, state);
-    test_refused_moves_commit_nothing(opts, state);
-    test_move_in_place(opts, state);
-    test_move_in_place_vacates(opts, state);
-    test_move_carries_lc_identity(opts, state);
-    test_matched_move_policy(opts, state);
-    test_t3_grant_lpcn_kind(opts, state);
-    test_t3_absolute_grant_uses_mbc_lpcn(opts, state);
-    test_t3_absolute_grant_invalid_mbc_lpcn(opts, state);
-    test_t3_cmove_lpcn_bounds(opts, state);
-    test_same_freq_cmove_keeps_channel(opts, state);
-    dsd_decode_clock_use_system();
+test_csbk_anchors_unknown_cc(dsd_opts* opts, dsd_state* state) {
+    static const cmove_fields k_move = {.fid = 0x00U, .mask = 8U, .reg = 1U, .backoff = 3U, .pcn = 5U, .ms = 0x001234U};
+    init_env(opts, state);
+    state->trunk_cc_freq = 0;
+    opts->audio_in_type = AUDIO_IN_RTL;
+    opts->rtlsdr_center_freq = 851012500U;
+    uint8_t bits[256];
+    uint8_t bytes[48];
+    build_cmove(bits, bytes, &k_move, 0);
+    run_captured(opts, state, bits, bytes);
+    assert(opts->trunk_is_tuned == 0);
+    assert(state->trunk_cc_freq == 851012500);
 }
 
 int
@@ -547,50 +568,17 @@ main(int argc, char** argv) {
         .tune_to_freq_request = test_tune_to_freq,
         .return_to_cc_request = test_return_to_cc,
     });
+    dsd_decode_clock_use_test(k_t0_ns);
 
-    // Step 1: tune to initial VC via SM grant
-    long f1 = 852000000;
-    dmr_sm_emit_group_grant(&opts, &state, f1, /*lpcn*/ 0x0010, /*tg*/ 101, /*src*/ 1234);
-    assert(opts.trunk_is_tuned == 1);
-    assert(state.trunk_vc_freq[0] == f1);
+    cmove_spec_frame_prints_only(&opts, &state);
+    cmove_mbc_channel_form_prints_only(&opts, &state);
+    cmove_nonzero_fid_ignored(&opts, &state);
+    test_t3_grant_lpcn_kind(&opts, &state);
+    test_t3_absolute_grant_uses_mbc_lpcn(&opts, &state);
+    test_t3_absolute_grant_invalid_mbc_lpcn(&opts, &state);
+    test_csbk_anchors_unknown_cc(&opts, &state);
 
-    // Step 2: issue a C_MOVE of the followed call (TG 101) to a new absolute channel (eg. 853.500000 MHz). A move
-    // naming another call would be an ordinary grant, which the followed call's acquisition keeps out.
-    uint8_t bits[256];
-    uint8_t bytes[48];
-    uint16_t apcn = 0x0123;           // also learned into map
-    uint16_t rx_int = 853;            // MHz
-    uint16_t rx_step = 4000;          // 4000 * 125 Hz = 500 kHz
-    long f2 = 853000000 + 4000 * 125; // 853.500000 MHz
-    build_cmove_apcn(bits, bytes, apcn, rx_int, rx_step, /*slot*/ 0, /*target*/ 101);
-    dmr_cspdu(&opts, &state, bits, bytes, /*crc ok*/ 1, /*errs*/ 0);
-    assert(opts.trunk_is_tuned == 1);
-    assert(state.trunk_vc_freq[0] == f2);
-
-    // Step 3: while on CC (not on VC), a C_MOVE should NOT cause a retune
-    assert(dsd_trunk_tuning_hook_return_to_cc(&opts, &state, NULL) == DSD_TRUNK_TUNE_RESULT_OK);
-    assert(opts.trunk_is_tuned == 0);
-    // Build another move to 854.000000 MHz
-    rx_int = 854;
-    rx_step = 0;
-    build_cmove_apcn(bits, bytes, apcn, rx_int, rx_step, /*slot*/ 0, /*target*/ 101);
-    dmr_cspdu(&opts, &state, bits, bytes, /*crc ok*/ 1, /*errs*/ 0);
-    // Expect no tune while on CC
-    assert(opts.trunk_is_tuned == 0);
-    assert(state.trunk_vc_freq[0] == 0);
-
-    // Step 4: with no CC known yet, a CRC-valid CSBK received on a radio input anchors the CC at the tuned frequency
-    init_env(&opts, &state);
-    state.trunk_cc_freq = 0;
-    opts.audio_in_type = AUDIO_IN_RTL;
-    opts.rtlsdr_center_freq = 851012500U;
-    build_cmove_apcn(bits, bytes, apcn, rx_int, rx_step, /*slot*/ 0, /*target*/ 101);
-    dmr_cspdu(&opts, &state, bits, bytes, /*crc ok*/ 1, /*errs*/ 0);
-    assert(opts.trunk_is_tuned == 0);
-    assert(state.trunk_cc_freq == 851012500);
-
-    test_move_admission(&opts, &state);
-
+    dsd_decode_clock_use_system();
     dsd_trunk_tuning_hooks_set((dsd_trunk_tuning_hooks){0});
     dsd_state_ext_free_all(&state);
     printf("DMR_T3_CMOVE: OK\n");

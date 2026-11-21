@@ -1075,7 +1075,7 @@ dmr_sm_forget_left_crypto(dsd_state* state) {
     dmr_vcrypt_forget(state, 1U);
 }
 
-/* A follow, a move or a status follow took the receiver off the carrier whose calls the slots carried. Nothing of those
+/* A follow or a status follow took the receiver off the carrier whose calls the slots carried. Nothing of those
    calls says how the next carrier's are encrypted: their privacy bit and talkgroup keys go first
    (dmr_forget_call_decryption()), then the calls end, so their final rows keep the FID their vendor annotations render
    by, then the FID (dmr_forget_call_privacy()), their ALG, key ID and MI and each slot's MI chain
@@ -2409,226 +2409,6 @@ dmr_sm_follow_grant(dmr_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, const d
     return DMR_SM_GRANT_FOLLOWED;
 }
 
-/* The identity of the call the machine follows, judged as it was followed: the followed slot's record, else the
-   grant's. */
-static int
-dmr_sm_followed_identity(const dmr_sm_ctx_t* ctx, dmr_sm_slot_ctx_t* out) {
-    if (ctx->vc_slot >= 0 && ctx->vc_slot <= 1) {
-        const dmr_sm_slot_ctx_t* rec = &ctx->slots[ctx->vc_slot];
-        if (dmr_sm_slot_identity_known(rec) && rec->carrier_hz == ctx->vc_freq_hz) {
-            *out = *rec;
-            return 1;
-        }
-    }
-    return dmr_sm_grant_identity(ctx, out);
-}
-
-/* A C_MOVE of the call the machine follows, whichever slot it names: its target names the followed call (the
-   talkgroup, or either party of a private call) as the followed slot's identity knows it, the grant's only while that
-   slot names none. A checked LC that renamed the call makes the grant's talkgroup another call's, and a move of the
-   companion slot's call is not the followed call's. */
-static int
-dmr_sm_move_matches(const dmr_sm_ctx_t* ctx, const dmr_sm_event_t* ev) {
-    if (ctx->state != DMR_SM_TUNED) {
-        return 0;
-    }
-    const uint32_t target = (uint32_t)(ev->is_group ? ev->tg : ev->dst);
-    if (target == 0U) {
-        return 0;
-    }
-    dmr_sm_slot_ctx_t followed;
-    if (!dmr_sm_followed_identity(ctx, &followed)) {
-        return 0;
-    }
-    return followed.target == target || (!followed.judged_group && followed.source != 0U && followed.source == target);
-}
-
-/* The policy's verdict on the moved call @p moved, in @p decision: 0 when it is denied tuning for a reason other than a
-   Hold mismatch or a radio-list block of its talker (logged), or cannot be judged; media-only restrictions never stop
-   following it, and a followed call is never let go for a radio rule. */
-static int
-dmr_sm_move_decision(const dsd_opts* opts, const dsd_state* state, const dmr_sm_slot_ctx_t* moved,
-                     dsd_tg_policy_decision* decision) {
-    if (!dmr_sm_slot_identity_decision(opts, state, moved, decision)) {
-        return 0;
-    }
-    if (decision->tune_allowed || dsd_tg_policy_decision_only_radio_blocks(decision)) {
-        return 1;
-    }
-    // The Hold allowance: a Hold mismatch (with or without a radio block) never stops following the moved call either.
-    const uint32_t non_tuning = (uint32_t)DSD_TG_POLICY_BLOCK_HOLD | (uint32_t)DSD_TG_POLICY_BLOCK_AUDIO
-                                | (uint32_t)DSD_TG_POLICY_BLOCK_RECORD | (uint32_t)DSD_TG_POLICY_BLOCK_STREAM;
-    if ((decision->block_reasons & ~non_tuning & ~(uint32_t)DSD_TG_POLICY_BLOCK_SOURCE) != 0U) {
-        sm_log(opts, "move-refused-policy");
-        return 0;
-    }
-    return 1;
-}
-
-/* Whether the canonical call on @p slot is the moved call @p moved still published there: active, and naming its target
-   (or, for a private call, either party). */
-static int
-dmr_sm_slot_publishes_call(const dsd_state* state, int slot, const dmr_sm_slot_ctx_t* moved) {
-    dsd_call_snapshot call;
-    if (dsd_call_state_get(state, (uint8_t)slot, &call) <= 0 || call.phase != DSD_CALL_PHASE_ACTIVE) {
-        return 0;
-    }
-    const uint64_t target = call.policy_target_id != 0U ? call.policy_target_id : call.ota_target_id;
-    return target == moved->target || (!moved->judged_group && moved->source != 0U && target == moved->source);
-}
-
-/* A move on the carrier already tuned: when it names the other slot, the moved call's record goes there with its
-   follow time, and that slot becomes the followed one. The call's canonical epoch on the vacated slot ends there
-   (EXPLICIT, as a retune's) before its first voice on the new slot publishes it again, so one call never shows on both
-   slots. */
-static void
-dmr_sm_move_slot_in_place(dmr_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, const dmr_sm_slot_ctx_t* moved,
-                          int new_slot) {
-    if (new_slot >= 0 && new_slot != ctx->vc_slot) {
-        if (ctx->vc_slot >= 0) {
-            if (dmr_sm_slot_publishes_call(state, ctx->vc_slot, moved)
-                && dsd_call_state_end_ex(state, (uint8_t)ctx->vc_slot, dsd_decode_now_mono_s(), DSD_CALL_END_EXPLICIT)
-                       > 0) {
-                dsd_event_sync_slot(opts, state, (uint8_t)ctx->vc_slot);
-            }
-            // The call's activity moves with it: the vacated slot must not stay live or in hangtime as a phantom held
-            // call of unknown identity.
-            dmr_sm_slot_ctx_t* vacated = &ctx->slots[ctx->vc_slot];
-            ctx->slots[new_slot].voice_active = vacated->voice_active;
-            ctx->slots[new_slot].last_active_m = vacated->last_active_m;
-            vacated->voice_active = 0;
-            vacated->last_active_m = 0.0;
-            dmr_sm_slot_identity_clear(vacated);
-        }
-        dmr_sm_slot_name(ctx, state, new_slot, moved, 0, dsd_decode_now_mono_s());
-        ctx->slots[new_slot].follow_m = moved->follow_m;
-        ctx->vc_slot = new_slot;
-        state->dmr_mono_slot = new_slot;
-        /* The call's canonical identity was published on the vacated slot: its first voice on the new one publishes it
-           there, as a move to another carrier does, with the moved identity's provenance and this move's burst. */
-        ctx->vc_identity_published = ctx->vc_identity_known ? 0 : 1;
-        ctx->vc_crc_flags = moved->crc_flags;
-    }
-}
-
-/* The followed call's identity as its slot record now knows it: a checked LC may have named it differently than the
-   grant did, and what a move republishes on the new slot or carrier must be that. @p moved is a known identity
-   (dmr_sm_followed_identity()), so the grant's identity names a call again even when the end of the call it first
-   named had withdrawn it (dmr_sm_drop_grant_identity()), and the move's first voice publishes it. */
-static void
-dmr_sm_vc_identity_from_slot(dmr_sm_ctx_t* ctx, const dmr_sm_slot_ctx_t* moved) {
-    ctx->vc_identity_known = 1;
-    ctx->vc_is_group = moved->judged_group ? 1 : 0;
-    if (ctx->vc_is_group) {
-        ctx->vc_tg = (int)moved->target;
-    } else {
-        ctx->vc_dst = (int)moved->target;
-    }
-    ctx->vc_src = (int)moved->source;
-    ctx->vc_data_call = moved->data_call ? 1 : 0;
-}
-
-/* A matched C_MOVE: the followed call goes where the system moved it unless its own classification is now denied
-   tuning for a reason other than a Hold mismatch (a lockout, skip, avoid or mode change since it started); media-only
-   restrictions never stop following it. The move keeps the call's follow time, so a later candidate's dwell runs from
-   the conversation's first follow. */
-static dmr_sm_grant_result_e
-dmr_sm_follow_move(dmr_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, const dmr_sm_event_t* ev) {
-    dmr_sm_slot_ctx_t moved;
-    if (!dmr_sm_followed_identity(ctx, &moved)) {
-        return DMR_SM_GRANT_REFUSED;
-    }
-    dsd_tg_policy_decision decision;
-    if (!dmr_sm_move_decision(opts, state, &moved, &decision)) {
-        return DMR_SM_GRANT_REFUSED;
-    }
-    long freq = 0;
-    const dmr_sm_resolve_e resolved = dmr_sm_resolve_tunable_grant(ctx, opts, state, ev, &freq);
-    if (resolved == DMR_SM_RESOLVE_REFUSED) {
-        return DMR_SM_GRANT_REFUSED;
-    }
-    const int new_slot = (ev->slot >= 0 && ev->slot <= 1) ? ev->slot : ctx->vc_slot;
-    const double now_m = dsd_decode_now_mono_s();
-    /* The move names the call's target from its own burst, but republishes the identity the record holds (its source
-       included), which keeps the provenance of what named it: a RAS-accepted grant or LC stays unverified, whatever the
-       move's own check. */
-    moved.crc_flags |= state->event_crc_invalid[state->currentslot & 1];
-    if (resolved == DMR_SM_RESOLVE_SAME_FREQ) {
-        dmr_sm_vc_identity_from_slot(ctx, &moved);
-        dmr_sm_move_slot_in_place(ctx, opts, state, &moved, new_slot);
-        sm_log(opts, "move-in-place");
-        return DMR_SM_GRANT_IN_PLACE;
-    }
-
-    const long receiver_hz = dmr_sm_ctx_receiver_frequency(ctx, opts);
-    uint64_t request_id = 0U;
-    dsd_trunk_tune_result tune_result = dmr_sm_tune_to_freq(opts, state, freq, &request_id);
-    if (!dsd_trunk_tune_result_is_ok(tune_result)) {
-        sm_log(opts, "move-tune-deferred");
-        return DMR_SM_GRANT_DEFERRED; // nothing changed: a repeat of the followed grant still names its call
-    }
-    /* The carrier left behind keeps no active call, as for any follow (dmr_sm_follow_grant()): the moved call's epoch
-       there ends, and its first voice on the new carrier publishes it again in an epoch of its own, which the moved
-       identity binds to (one awaiting a call after the ended epoch), as a same-carrier move does on its new slot. A
-       tune still in flight leaves the rest of the judgement to its landing. */
-    const int in_flight = dmr_sm_follow_tune_in_flight(tune_result, request_id);
-    if (in_flight) {
-        dmr_sm_end_left_calls(opts, state);
-    } else {
-        dmr_sm_leave_carrier(opts, state);
-    }
-    dmr_sm_vc_identity_from_slot(ctx, &moved);
-    ctx->vc_freq_hz = freq;
-    ctx->vc_lpcn = ev->lpcn;
-    ctx->vc_channel_kind = ev->channel_kind;
-    ctx->vc_slot = new_slot;
-    ctx->vc_identity_published = ctx->vc_identity_known ? 0 : 1;
-    ctx->vc_crc_flags = moved.crc_flags;
-    ctx->t_tune_m = now_m; // a new acquisition on the new carrier
-    ctx->t_carrier_m = now_m;
-    ctx->t_voice_m = 0.0;
-    ctx->cc_acquiring = 0;
-    dmr_sm_leave_judgement_abandon(ctx, state);
-    ctx->cc_tune_request_id = 0U;
-    ctx->cc_tune_superseded = 0;
-    if (in_flight) {
-        dmr_sm_leave_carrier_once_landed(ctx, request_id, receiver_hz, freq);
-    }
-    state->dmr_mono_slot = new_slot;
-    dmr_sm_slots_reset(ctx);
-    if (new_slot >= 0) {
-        dmr_sm_slot_ctx_t named;
-        dmr_sm_slot_identity_set(&named, (dsd_call_kind)moved.kind, moved.target, moved.source, moved.judged_group,
-                                 moved.data_call, (dmr_sm_identity_prov_e)moved.prov, ev->lpcn, freq, moved.follow_m);
-        named.channel_kind = ev->channel_kind;
-        named.channel_crc_flags = moved.crc_flags; // the move's burst with what it moved
-        named.crc_flags = moved.crc_flags;
-        dmr_sm_slot_name(ctx, state, new_slot, &named, 0, now_m);
-        ctx->slots[new_slot].follow_m = moved.follow_m;
-    }
-    const dsd_tg_policy_call_route route = {
-        .target_id = moved.target,
-        .source_id = moved.source,
-        .freq_hz = freq,
-        .channel = ev->lpcn,
-        .slot = new_slot,
-        .requires_tuner_retune = 0,
-    };
-    if (new_slot >= 0) {
-        (void)dsd_tg_policy_clear_active_call(state, 1 - new_slot);
-    }
-    (void)dsd_tg_policy_describe_followed_call(state, &route, &decision, moved.follow_m, now_m);
-
-    dmr_reset_blocks(opts, state);
-    state->last_t3_tune_time_m = now_m;
-    state->p25_sm_tune_count++;
-    if (sm_status_log_enabled(opts)) {
-        DSD_FPRINTF(stderr, "\n  DMR SM: Move VC freq=%.6lf MHz\n", (double)freq / 1000000.0);
-    }
-    set_state(ctx, opts, DMR_SM_TUNED, "move");
-    return DMR_SM_GRANT_FOLLOWED;
-}
-
 /* Whether grant @p ev on @p freq may take the receiver, and how (@p displace): one on the held carrier, or while nothing
    is held (nor the caller's window says so), always; one on another carrier only by a displacement. */
 static int
@@ -2706,12 +2486,9 @@ dmr_sm_submit_grant_ctx(dmr_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, con
         return DMR_SM_GRANT_REFUSED;
     }
     dsd_trunk_recovery_note_protocol(state, DSD_TRUNK_RECOVERY_DMR);
-    // The slots' identities as of their canonical calls now: a C_MOVE or in-place grant matches the calls they name.
+    // The slots' identities as of their canonical calls now: an in-place grant matches the calls they name.
     dmr_sm_slot_identities_refresh(ctx, state, dsd_decode_now_mono_s());
 
-    if (ev->origin == DMR_SM_ORIGIN_MOVE && dmr_sm_move_matches(ctx, ev)) {
-        return dmr_sm_follow_move(ctx, opts, state, ev);
-    }
     if (ev->policy_valid && !ev->policy.tune_allowed) {
         sm_log(opts, "grant-policy-blocked");
         return DMR_SM_GRANT_REFUSED;
