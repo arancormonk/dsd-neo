@@ -8,7 +8,8 @@
  * @brief Classifier for verified group ids worth remembering as talkgroups.
  */
 
-#pragma once
+#ifndef DSD_NEO_INCLUDE_DSD_NEO_CORE_HEARD_TALKGROUP_H_H
+#define DSD_NEO_INCLUDE_DSD_NEO_CORE_HEARD_TALKGROUP_H_H
 
 #include <stdint.h>
 
@@ -54,3 +55,5 @@ long dsd_heard_tg_test_eval_count(void);
 #ifdef __cplusplus
 }
 #endif
+
+#endif /* DSD_NEO_INCLUDE_DSD_NEO_CORE_HEARD_TALKGROUP_H_H */
