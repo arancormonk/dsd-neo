@@ -35,8 +35,10 @@ def decoded(text, pattern):
 def decoder_environment(cwd):
     """The decoders' environment. When a TCP or file input ends, the engine falls back to the PulseAudio input, by
     design, and libpulse then makes its runtime folder: in TMPDIR when XDG_RUNTIME_DIR is unset (as on CI runners),
-    where it would be left behind. PULSE_RUNTIME_PATH puts it in this test's own temporary folder, which goes with it."""
-    return dict(os.environ, PULSE_RUNTIME_PATH=str(Path(cwd) / "pulse-runtime"))
+    where it would be left behind. PULSE_RUNTIME_PATH puts it in this test's own temporary folder, which goes with it,
+    and a server that does not exist keeps it from a desktop's real sound server and from starting one."""
+    runtime = Path(cwd) / "pulse-runtime"
+    return dict(os.environ, PULSE_RUNTIME_PATH=str(runtime), PULSE_SERVER=f"unix:{runtime / 'no-server'}")
 
 
 def run(binary, mode, source, cwd, stdin=None):
