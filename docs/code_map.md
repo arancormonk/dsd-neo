@@ -22505,12 +22505,12 @@ passbands. The scan-list, Home and Monitor QML cases run in `UI_QT_QML_CALL_LIST
   without the slot filter, for carrier-level facts such as a site broadcast (Signal search, issue #802 B11).
   Shared-vocoder invocations carry their owning protocol through `dsd_state::receive_context_*`, since YSF/dPMR
   temporarily borrow another protocol's decoder.
-- Core audio, recording and event paths combine receive admission with existing policy/provenance gates. Traffic an
-  access-code filter rejects or still checks proves no remembered talkgroup (`dsd_call_state_note_verified_target()`,
-  issue #903; the slot filter does not count there). Internal
-  acquisition continues while output is Checking/rejected. Scanner and trunking activity cannot turn rejected media into
-  a hold. Restoring a scan target preserves acquisition hints but clears its current received-code proof. The P25 and
-  DMR trunk state machines keep `dsd_receive_carriers` (the code last verified on each voice frequency, 16 entries) and
+- Core audio, recording and event paths combine receive admission with existing policy/provenance gates. Traffic that
+  an access-code filter rejects, or is still checking, proves no remembered talkgroup (issue #903,
+  `dsd_call_state_note_verified_target()`); the slot filter does not count for that. Internal acquisition continues
+  while output is Checking/rejected. Scanner and trunking activity cannot turn rejected media into a hold. Restoring a
+  scan target preserves acquisition hints but clears its current received-code proof. The P25 and DMR trunk state
+  machines keep `dsd_receive_carriers` (the code last verified on each voice frequency, 16 entries) and
   skip a grant whose remembered code the current policy rejects; a channel never verified still gets the acquisition
   window. Receive admission gates only holds and output: decode-progress evidence (the P25 reacquire watchdog, CQPSK
   timing memory, the CQPSK retry) runs whatever the verdict. The P25 conventional-activity hook carries its call's

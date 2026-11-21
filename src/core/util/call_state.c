@@ -1637,8 +1637,7 @@ call_state_receive_code_admits(const dsd_opts* opts, const dsd_state* state, con
     }
     live.slot = 0U;
     live.slot_pending = 0U;
-    const dsd_receive_verdict verdict = dsd_receive_policy_match(&opts->receive, &live);
-    return verdict == DSD_RECEIVE_OFF || verdict == DSD_RECEIVE_ALLOWED;
+    return dsd_receive_identity_admitted(opts, &live);
 }
 
 void

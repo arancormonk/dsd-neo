@@ -23,6 +23,7 @@
 #include <dsd-neo/core/call_state.h>
 #include <dsd-neo/core/heard_talkgroup.h>
 #include <dsd-neo/core/opts.h>
+#include <dsd-neo/core/receive_types.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/protocol/p25/p25_crc.h>
@@ -32,6 +33,7 @@
 #include <dsd-neo/protocol/p25/p25_xcch.h>
 #include <dsd-neo/protocol/p25/p25p2_frame.h>
 #include <dsd-neo/runtime/decode_clock.h>
+#include <dsd-neo/runtime/receive_policy.h>
 #include <dsd-neo/runtime/trunk_tuning_hooks.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -236,6 +238,28 @@ test_p1_conventional_hard_lcw_proves_group(void) {
     rc |= expect("conventional P1 soft LCW proves nothing", active_on(0U, TEST_TG) && not_noted(0U));
     p1_ldu1_voice_user(0x00, TEST_TG, 0);
     rc |= expect("conventional P1 hard LCW proves the group", remembered(0U, TEST_TG));
+    return rc;
+}
+
+/* The LDU1 producer passes the receive policy to the note (issue #903): a hard LCW on a carrier whose NAC a NAC filter
+ * rejects proves nothing, and the call stays open to proof; once the filter admits the NAC, the next LDU1 proves it.
+ * The call is opened unproven (a soft LCW) before the filter is set, so the open call is what is judged. */
+static int
+test_p1_nac_filter_gates_proof(void) {
+    int rc = 0;
+    conventional_p1();
+    g_state.nac = 0x293;
+    p1_ldu1_voice_user(0x00, TEST_TG, 1);
+    rc |= expect("P1 NAC filter: soft LCW opens the call unproven", active_on(0U, TEST_TG) && not_noted(0U));
+    rc |= expect("P1 NAC filter: block parses",
+                 dsd_receive_edit_parse(&g_opts.receive, DSD_RECEIVE_NAC, 1, "", "293", "", NULL, 0) == 0);
+    p1_ldu1_voice_user(0x00, TEST_TG, 0);
+    rc |= expect("P1 hard LCW under a NAC filter that rejects the NAC proves nothing",
+                 active_on(0U, TEST_TG) && not_noted(0U));
+    rc |= expect("P1 NAC filter: allow parses",
+                 dsd_receive_edit_parse(&g_opts.receive, DSD_RECEIVE_NAC, 1, "293", "", "", NULL, 0) == 0);
+    p1_ldu1_voice_user(0x00, TEST_TG, 0);
+    rc |= expect("P1 hard LCW under a NAC filter that admits the NAC proves the group", remembered(0U, TEST_TG));
     return rc;
 }
 
@@ -726,6 +750,7 @@ main(void) {
     rc |= test_p1_soft_lcw_proves_nothing();
     rc |= test_p1_tdulc_voice_user_proves_nothing();
     rc |= test_p1_conventional_hard_lcw_proves_group();
+    rc |= test_p1_nac_filter_gates_proof();
     rc |= test_p1_classifies_once();
     rc |= test_p1_regroup_voice_user_is_supergroup();
     rc |= test_p1_patched_group_verdict_frozen();

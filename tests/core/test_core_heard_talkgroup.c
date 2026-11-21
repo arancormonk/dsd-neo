@@ -517,12 +517,12 @@ test_live_input_committed_revision(void) {
 /* One access-code filter and the protocol it judges: the code the carrier is decoded with (@ref set_code, known or
    not yet verified), how the filter spells it, and how it spells another code. */
 typedef struct {
-    const char* name;
     int protocol;
     int kind;
     const char* code;
     const char* other;
     void (*set_code)(dsd_state* state, int known);
+    void (*set_other)(dsd_state* state);
     dsd_heard_tg_variant variant;
 } receive_case;
 
@@ -547,11 +547,34 @@ set_nxdn_ran(dsd_state* state, int known) {
     state->nxdn_last_ran_stand_in = 0U;
 }
 
+/* The other code each case's filter spells (@ref receive_case::other), verified on the carrier. */
+static void
+set_p25p1_other(dsd_state* state) {
+    state->nac = 0x294;
+}
+
+static void
+set_p25p2_other(dsd_state* state) {
+    state->p2_proven_nac = 0x294;
+}
+
+static void
+set_dmr_other(dsd_state* state) {
+    state->dmr_color_code = 6U;
+}
+
+static void
+set_nxdn_other(dsd_state* state) {
+    state->nxdn_last_ran = 24U;
+    state->nxdn_last_ran_stand_in = 0U;
+}
+
+/* P25 Phase 1 NAC, P25 Phase 2 NAC (the carrier's proven one), DMR colour code, NXDN RAN. */
 static const receive_case k_receive_cases[] = {
-    {"P25 Phase 1 NAC", DSD_SYNC_P25P1_POS, DSD_RECEIVE_NAC, "293", "294", set_p25p1_nac, DSD_HEARD_TG_P25},
-    {"P25 Phase 2 NAC", DSD_SYNC_P25P2_POS, DSD_RECEIVE_NAC, "293", "294", set_p25p2_nac, DSD_HEARD_TG_P25},
-    {"DMR colour code", DSD_SYNC_DMR_BS_VOICE_POS, DSD_RECEIVE_DCC, "5", "6", set_dmr_cc, DSD_HEARD_TG_DMR},
-    {"NXDN RAN", DSD_SYNC_NXDN_POS, DSD_RECEIVE_RAN, "23", "24", set_nxdn_ran, DSD_HEARD_TG_NXDN_C},
+    {DSD_SYNC_P25P1_POS, DSD_RECEIVE_NAC, "293", "294", set_p25p1_nac, set_p25p1_other, DSD_HEARD_TG_P25},
+    {DSD_SYNC_P25P2_POS, DSD_RECEIVE_NAC, "293", "294", set_p25p2_nac, set_p25p2_other, DSD_HEARD_TG_P25},
+    {DSD_SYNC_DMR_BS_VOICE_POS, DSD_RECEIVE_DCC, "5", "6", set_dmr_cc, set_dmr_other, DSD_HEARD_TG_DMR},
+    {DSD_SYNC_NXDN_POS, DSD_RECEIVE_RAN, "23", "24", set_nxdn_ran, set_nxdn_other, DSD_HEARD_TG_NXDN_C},
 };
 
 static void
@@ -680,6 +703,27 @@ test_receive_filter_rejects_midcall(void) {
     }
 }
 
+/* The carrier verified another code since the call began (its service changed; the receive check would end the call
+   at its next refresh): even a code the filter allows proves nothing for the call, which was received with the first
+   one. With no filter on the policy is not asked. */
+static void
+test_receive_filter_code_changed(void) {
+    for (size_t i = 0; i < sizeof k_receive_cases / sizeof k_receive_cases[0]; i++) {
+        const receive_case* rc = &k_receive_cases[i];
+        char both[16];
+        DSD_SNPRINTF(both, sizeof both, "%s/%s", rc->code, rc->other);
+        proof_fixture f;
+        fixture_open(&f, AUDIO_IN_RTL);
+        set_filter(&f, rc->kind, both, "");
+        const uint64_t tx = receive_call_begin(&f, rc, 1);
+        rc->set_other(f.state);
+        const long before = dsd_heard_tg_test_eval_count();
+        note(&f, tx, rc->variant, 100U);
+        expect_not_noted(&f, before);
+        fixture_close(&f);
+    }
+}
+
 /* Only a filter that says the traffic is not this system counts. A slot filter chooses a timeslot of the same system,
    so a talkgroup heard on a slot it rejects is still the system's; another protocol's access-code filter does not judge
    this call; and TETRA has no receive filter at all. */
@@ -727,6 +771,7 @@ main(void) {
     test_receive_filter_rejects();
     test_receive_filter_checking();
     test_receive_filter_rejects_midcall();
+    test_receive_filter_code_changed();
     test_receive_filter_scope();
     return 0;
 }
