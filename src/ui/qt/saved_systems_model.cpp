@@ -27,6 +27,7 @@
 
 #include <dsd-neo/runtime/log.h>
 #include "json_store.h"
+#include "local_day_watch.h"
 #include "radio_settings.h"
 #include "realtime_clock.h"
 #include "replay_store.h"
@@ -464,6 +465,7 @@ SavedSystemsModel::fillPlaceNames(Row& row, const QVariantMap& previous) const {
 
 SavedSystemsModel::SavedSystemsModel(QObject* parent)
     : QAbstractListModel(parent), m_realtime_now_ms(&realtimeMSecsSinceEpoch) {
+    connect(LocalDayWatch::shared(), &LocalDayWatch::dayChanged, this, &SavedSystemsModel::localDayChanged);
     load();
 }
 
@@ -1043,6 +1045,12 @@ SavedSystemsModel::getByUid(const QString& uid) const {
 qint64
 SavedSystemsModel::realtimeNowMs() const {
     return m_realtime_now_ms();
+}
+
+QVariantMap
+SavedSystemsModel::localDay() const {
+    const LocalDayWatch* watch = LocalDayWatch::shared();
+    return {{QStringLiteral("startMs"), watch->dayStartMs()}, {QStringLiteral("revision"), watch->revision()}};
 }
 
 void
