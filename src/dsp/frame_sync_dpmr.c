@@ -14,8 +14,8 @@
  * frame's last symbol is in, the frame is read back from the soft symbol history, sliced on the levels of its own
  * sync word, and checked. Only a frame that passes is accepted; one that fails has cost nothing, since no symbol was
  * taken from the hunt (an NXDN48 frame inside it is matched as it would have been). FS3 is looked for only where an
- * end frame can be: one FS2 frame after an accepted FS2, and straight after a checked header whose message type an END
- * frame follows (Table 5.3 and its note 2: an unsolicited status is a header and an end frame, 4.1.5.1.2 b).
+ * end frame can be: one FS2 frame after an accepted FS2, and straight after any checked header (an unsolicited status,
+ * 4.1.5.1.2 b and Table 5.3 note 2, a request, a poll: many are a header and an end frame).
  *
  * The wire coding is the specification's, receive direction:
  *  - MI (7.6, 11.5, Figure 11.8): 72 information bits, CRC-8 (X^8 + X^2 + X + 1, 7.1) to 80, ten Hamming(12,8) words
@@ -160,6 +160,10 @@ frame_sync_dpmr_decode_mi(const uint8_t* wire, uint8_t* info) {
                != dpmr_bits_value(data + DSD_DPMR_HEADER_MI_BITS, DPMR_MI_CODED_BITS - DSD_DPMR_HEADER_MI_BITS)) {
         return 0;
     }
+    /* Table 5.3 reserves message type 1101: a copy naming it is no message, whatever its CRC. */
+    if (dpmr_bits_value(data, 4) == 0xDU) {
+        return 0;
+    }
     DSD_MEMCPY(info, data, DSD_DPMR_HEADER_MI_BITS);
     return 1;
 }
@@ -179,6 +183,11 @@ frame_sync_dpmr_decode_end(const uint8_t* wire, int key_offset, uint8_t* info) {
     if (!correctable
         || dpmr_crc(data, DSD_DPMR_END_INFO_BITS, 0x09U, 7)
                != dpmr_bits_value(data + DSD_DPMR_END_INFO_BITS, DPMR_END_CODED_BITS - DSD_DPMR_END_INFO_BITS)) {
+        return 0;
+    }
+    /* A reading no transmitter sends is no END, whatever its CRC: End_Type 10 and 11 and ARQ 10 and 11 are reserved
+       (Tables 5.61, 5.48), and the four reserved bits are 0000 (11.6). */
+    if (dpmr_bits_value(data, 2) > 1U || dpmr_bits_value(data + 2, 2) > 1U || dpmr_bits_value(data + 13, 4) != 0U) {
         return 0;
     }
     DSD_MEMCPY(info, data, DSD_DPMR_END_INFO_BITS);
@@ -289,13 +298,6 @@ dpmr_read_back_bits(const dsd_state* state, const dpmr_levels* levels, uint8_t i
     }
 }
 
-/* Message types an END frame follows (Table 5.3): Communications_Start (note 2, an unsolicited status),
- * Connection_Request, Disconnect_Request, System_Request (the uplink reading of 0100) and Status Polling Response. */
-static int
-dpmr_message_type_ends(uint32_t mt) {
-    return mt == 0x0U || mt == 0x1U || mt == 0x2U || mt == 0x4U || mt == 0x7U;
-}
-
 static int
 dpmr_check_header(dsd_state* state, const dpmr_levels* levels, uint8_t inverted) {
     dsd_dpmr_frame_sync* sync = &state->dpmr_sync;
@@ -314,12 +316,12 @@ dpmr_check_header(dsd_state* state, const dpmr_levels* levels, uint8_t inverted)
     sync->checked_copies = copies;
     sync->checked_clock = state->symbol_clock;
     sync->checked_epoch = state->symbol_clock_epoch;
-    if (dpmr_message_type_ends(dpmr_bits_value(sync->checked_bits, 4))) {
-        /* An END frame may follow at once (F8): its FS3 ends twelve symbols from here. */
-        dpmr_mark_here(&sync->fs3_at, state, state->symbol_clock + DPMR_FS3_SYMBOLS, DSD_DPMR_SYNC_FRAME_END, inverted);
-    } else {
-        sync->fs3_at.kind = DSD_DPMR_SYNC_FRAME_NONE;
-    }
+    /* An END frame may follow any header at once, its FS3 twelve symbols from here: Table 5.3 names several (an
+       unsolicited status, note 2; Connection_Request, Disconnect_Request, System_Request, Status Polling Response), and
+       the procedures send others as header and END pairs too (4.2.3.2 to 4.2.3.5; a status poll, Tables 10.7, 10.8,
+       10.15, 10.16; a BS_Access poll, 10.2.7.1.0 a). Looking for one costs a compare at one window, and only an END that
+       passes its own check is taken, so every checked header arms it. */
+    dpmr_mark_here(&sync->fs3_at, state, state->symbol_clock + DPMR_FS3_SYMBOLS, DSD_DPMR_SYNC_FRAME_END, inverted);
     return inverted ? DSD_SYNC_DPMR_FS1_NEG : DSD_SYNC_DPMR_FS1_POS;
 }
 
@@ -362,9 +364,8 @@ dpmr_check_end(dsd_state* state, const dpmr_levels* levels, uint8_t inverted) {
     return inverted ? DSD_SYNC_DPMR_FS3_NEG : DSD_SYNC_DPMR_FS3_POS;
 }
 
-int
-frame_sync_dpmr_candidate_complete(const dsd_opts* opts, dsd_state* state) {
-    dsd_dpmr_sync_mark* pending = &state->dpmr_sync.pending;
+static int
+dpmr_complete_candidate(const dsd_opts* opts, dsd_state* state, dsd_dpmr_sync_mark* pending) {
     if (pending->kind == DSD_DPMR_SYNC_FRAME_NONE) {
         return DSD_SYNC_NONE;
     }
@@ -393,8 +394,27 @@ frame_sync_dpmr_candidate_complete(const dsd_opts* opts, dsd_state* state) {
 }
 
 int
+frame_sync_dpmr_candidate_complete(const dsd_opts* opts, dsd_state* state) {
+    dsd_dpmr_frame_sync* sync = &state->dpmr_sync;
+    const int synctype = dpmr_complete_candidate(opts, state, &sync->pending);
+    if (synctype != DSD_SYNC_NONE) {
+        /* A later FS1 inside the frame just accepted was its payload's. */
+        sync->pending_next.kind = DSD_DPMR_SYNC_FRAME_NONE;
+        return synctype;
+    }
+    if (sync->pending.kind == DSD_DPMR_SYNC_FRAME_NONE && sync->pending_next.kind != DSD_DPMR_SYNC_FRAME_NONE) {
+        /* The older candidate was no frame: the FS1 found inside it is the one being read now. */
+        sync->pending = sync->pending_next;
+        sync->pending_next.kind = DSD_DPMR_SYNC_FRAME_NONE;
+        return dpmr_complete_candidate(opts, state, &sync->pending);
+    }
+    return DSD_SYNC_NONE;
+}
+
+int
 frame_sync_dpmr_candidate_reading(const dsd_state* state) {
-    return state->dpmr_sync.pending.kind != DSD_DPMR_SYNC_FRAME_NONE;
+    return state->dpmr_sync.pending.kind != DSD_DPMR_SYNC_FRAME_NONE
+           || state->dpmr_sync.pending_next.kind != DSD_DPMR_SYNC_FRAME_NONE;
 }
 
 int
@@ -406,7 +426,11 @@ frame_sync_dpmr_arm_header(const dsd_opts* opts, dsd_state* state, const char* w
         return 0;
     }
     dsd_dpmr_frame_sync* sync = &state->dpmr_sync;
-    dpmr_mark_here(&sync->pending, state, state->symbol_clock, DSD_DPMR_SYNC_FRAME_HEADER, inverted);
+    /* A candidate being read is kept until its own check: a real header's payload can hold FS1's sign pattern (a
+       peer-to-peer Communications_Start does), so the later word is read beside it, not instead. If the older frame
+       passes, the later word was its payload; if it fails, the later one is read on. A third replaces the later. */
+    dsd_dpmr_sync_mark* slot = sync->pending.kind == DSD_DPMR_SYNC_FRAME_NONE ? &sync->pending : &sync->pending_next;
+    dpmr_mark_here(slot, state, state->symbol_clock, DSD_DPMR_SYNC_FRAME_HEADER, inverted);
     sync->fs3_at.kind = DSD_DPMR_SYNC_FRAME_NONE;
     return 1;
 }
@@ -441,5 +465,6 @@ frame_sync_dpmr_note_fs2(const dsd_opts* opts, dsd_state* state) {
 void
 frame_sync_dpmr_forget(dsd_state* state) {
     state->dpmr_sync.pending.kind = DSD_DPMR_SYNC_FRAME_NONE;
+    state->dpmr_sync.pending_next.kind = DSD_DPMR_SYNC_FRAME_NONE;
     state->dpmr_sync.fs3_at.kind = DSD_DPMR_SYNC_FRAME_NONE;
 }

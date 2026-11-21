@@ -1317,8 +1317,8 @@ frame_sync_try_dpmr(frame_sync_match_ctx* ctx) {
     if (!frame_sync_match_window_ready(ctx, 12)) {
         return DSD_SYNC_NONE;
     }
-    /* FS1's own 24-symbol window, all of it the carrier's. A newer FS1 replaces a candidate being read: a real frame
-       holds an exact FS1 only by chance (one window in 2^24), so it is the older candidate that was no frame. */
+    /* FS1's own 24-symbol window, all of it the carrier's. An FS1 while a candidate is read is kept beside it, read on
+       if the older candidate fails (frame_sync_dpmr_arm_header()). */
     if (frame_sync_match_window_ready(ctx, 24) && !frame_sync_burst_settling(ctx, 24)
         && frame_sync_dpmr_arm_header(opts, state, ctx->synctest)) {
         return DSD_SYNC_NONE;

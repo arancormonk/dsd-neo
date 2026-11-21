@@ -176,6 +176,11 @@ dpmr_publish_header_call(dsd_opts* opts, dsd_state* state, const dpmr_header* he
     char calling[8];
     dpmr_convert_air_interface_id(header->called_id, called);
     dpmr_convert_air_interface_id(header->calling_id, calling);
+    if (!continues) {
+        /* A new call's code is its own header's: none when its channel code did not decode, never the code an earlier
+           call left. A repeat keeps the run's, or supplies the one it lacked. */
+        state->dpmr_color_code = -1;
+    }
     dpmr_publish_color_code(state, header->color_code);
     dsd_call_observation observation = {
         .protocol = DSD_SYNC_IS_DPMR(state->synctype) ? state->synctype : DSD_SYNC_DPMR_FS1_POS,
@@ -280,19 +285,24 @@ dpmr_process_header(dsd_opts* opts, dsd_state* state, const dpmr_header* header,
         /* A powersave wake-up header: WU (MI_DET's low four bits) more follow before the normal one (Table 5.71). */
         DSD_FPRINTF(stderr, " Powersave WU=%u", (unsigned)(header->mi_detail & 0xFU));
     }
-    /* A checked MI stands behind an exact 24-symbol FS1 (one noise window in 2^24), and a noise copy passes its ten
-       Hamming words and CRC-8 about once in 2000: it confirms the transmission at once, as both CCH halves do. */
-    dpmr_confirm_begin_frame(state);
-    dpmr_confirm_note_evidence(state, DPMR_EVIDENCE_STRONG);
     if (dpmr_header_opens_call(header)) {
+        /* A checked MI stands behind an exact 24-symbol FS1 (one noise window in 2^24), and a noise copy passes its
+           ten Hamming words and CRC-8 about once in 2000: a header that opens a call confirms its transmission at once,
+           as both CCH halves do. */
+        dpmr_confirm_begin_frame(state);
+        dpmr_confirm_note_evidence(state, DPMR_EVIDENCE_STRONG);
         dpmr_publish_header_call(opts, state, header, continues);
         dpmr_note_call_header(state, header, continues);
         /* The search and a scan quiet check hear it after the call is published (dpmr_confirm_end_frame()). */
         dpmr_confirm_end_frame(opts, state);
+    } else if (header->message_type == DPMR_MT_COMMUNICATIONS_START && header->mode == 7U) {
+        /* Communications Mode 111 is reserved (Table 5.55), as message type 1101 is (Table 5.3, which the frame sync
+           refuses): a Communications_Start naming it describes nothing a transmitter sends, so it is no activity. */
+        DSD_FPRINTF(stderr, " (reserved mode)");
     } else {
-        /* Checked content of a message that opens no call: the channel is in use, but there is no call to report. The
-           STRONG note above set the sticky confirmation without dpmr_confirm_end_frame(), which only adds the search's
-           call report and the quiet check's PROVEN note, both made here without a call. */
+        /* Checked content of a message that opens no call (an ACK, a request, a poll): the channel is in use, so a
+           search and a scan quiet check hear it, but it confirms no transmission. The confirmation is what lets the
+           frames after it publish and play (#407), and this message opens no call whose frames may. */
         dsd_signal_search_note_evidence(state, "dPMR", 0, 0, NULL);
         dsd_frame_sync_hook_content_evidence(opts, state, DSD_CONTENT_EVIDENCE_PROVEN, 0U);
     }

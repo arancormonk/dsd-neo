@@ -309,10 +309,12 @@ typedef struct {
  * other protocol a frame) and, once its last symbol is in, the frame is read back from the soft symbol history and
  * checked. Only a frame that passed its CRC and FEC is accepted, as DSD_SYNC_DPMR_FS1_* or DSD_SYNC_DPMR_FS3_*, with
  * what it decoded in checked_* for the dispatcher (dpmr_take_checked_frame()). fs3_at is where an FS3 may end: one
- * FS2 frame after an accepted FS2, or straight after a checked header whose message type an END frame follows. Written
+ * FS2 frame after an accepted FS2, or straight after any checked header. Written
  * by the frame sync, read by the dPMR decoder; decoder-thread private. */
 typedef struct {
     dsd_dpmr_sync_mark pending;
+    /* A header candidate whose FS1 came while pending was being read: checked in its turn if pending fails. */
+    dsd_dpmr_sync_mark pending_next;
     dsd_dpmr_sync_mark fs3_at;
     uint64_t checked_clock; /* dsd_state::symbol_clock when the checked frame was accepted */
     uint32_t checked_epoch;

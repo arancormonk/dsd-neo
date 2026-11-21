@@ -244,7 +244,8 @@ test_dispatch_checked_header_opens_its_call(void) {
     plant_checked_header(&state, 0x3U /* T_ACK */, 0U, 0U);
     assert(dsd_dispatch_handle_dpmr(&opts, &state) == DSD_FRAME_VERDICT_PROFILE_PROVEN);
     assert(dsd_call_state_get(&state, 0U, &call) > 0 && call.epoch == before && call.phase == DSD_CALL_PHASE_ACTIVE);
-    assert(state.dpmr_confirmed == 1); /* checked content all the same */
+    /* Checked content, but no call: it confirms no transmission, so the frames after it must prove their own. */
+    assert(state.dpmr_confirmed == 0);
 
     plant_checked_header(&state, 0x0U, 6U /* service by MI_TYPE */, 0U);
     (void)dsd_dispatch_handle_dpmr(&opts, &state);
@@ -532,6 +533,9 @@ test_dispatch_unchecked_frames_are_partial(void) {
         (void)dsd_dispatch_handle_dpmr(&opts, &state);
         plant_checked_end(&state);
         (void)dsd_dispatch_handle_dpmr(&opts, &state);
+        /* A Communications_Start in the reserved mode 111 (Table 5.55) is no activity. */
+        plant_checked_header(&state, 0x0U, 7U, 0U);
+        (void)dsd_dispatch_handle_dpmr(&opts, &state);
         assert(g_quiet_proven == (on ? 3 : 0));
         assert(g_quiet_partial == 0);
         quiet_notes_install(0);
@@ -690,6 +694,29 @@ test_dispatch_header_run_learns_its_colour_code(void) {
     assert(dsd_call_state_get(&state, 0U, &call) > 0 && call.epoch != epoch);
 }
 
+/* Issue #890: a new call whose header's channel code did not decode has no colour code, not the one the call before it
+   on the carrier left (TS 102 658 6.1.5: the channel code is read apart from the MI's CRC). */
+static void
+test_dispatch_new_call_without_a_channel_code(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    DSD_MEMSET(&state, 0, sizeof(state));
+    state.dpmr_color_code = -1;
+    state.symbol_clock = 3000U;
+    plant_checked_header(&state, 0x0U, 0U, 0U); /* colour code 12 */
+    (void)dsd_dispatch_handle_dpmr(&opts, &state);
+    assert(state.dpmr_color_code == 12);
+    state.symbol_clock += 192U * 20U; /* another key-up */
+    plant_checked_header(&state, 0x0U, 0U, 0U);
+    put_bits(state.dpmr_sync.checked_bits, 28, 24, 11206075U);
+    put_bits(state.dpmr_sync.checked_cc, 0, 24, 0U); /* unread */
+    (void)dsd_dispatch_handle_dpmr(&opts, &state);
+    dsd_call_snapshot call;
+    assert(dsd_call_state_get(&state, 0U, &call) > 0 && strcmp(call.source_text, "7654321") == 0);
+    assert(state.dpmr_color_code == -1);
+}
+
 /* Issue #890: a header to the All Call address names the All Talkgroup string, not a place-value conversion of it
    (TS 102 658 A.1.2.3.3, Table A.4). */
 static void
@@ -722,6 +749,7 @@ main(void) {
     test_dispatch_powersave_headers_with_lost_ones();
     test_dispatch_header_run_learns_its_colour_code();
     test_dispatch_all_call_header();
+    test_dispatch_new_call_without_a_channel_code();
     test_dispatch_voice_verdicts_follow_the_cch_crc();
     test_dispatch_voice_sync_alone_opens_no_call();
     test_dispatch_boundaries_forget_the_scrambling();

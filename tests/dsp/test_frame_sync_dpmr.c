@@ -144,6 +144,23 @@ put_header(const char* fs1, const uint8_t* info0, const uint8_t* info1, int flip
     put_bits(mi1, DPMR_SPEC_MI_WIRE);
 }
 
+/* A clean header with channel code bits @p cc. */
+static void
+put_header_cc(const char* fs1, const uint8_t* info, uint32_t cc_bits) {
+    static const uint8_t k_preamble[DPMR_SPEC_PREAMBLE_DIBITS] = {
+        1, 1, 3, 3, 1, 1, 3, 3, 1, 1, 3, 3, 1, 1, 3, 3, 1, 1, 3, 3, 1, 1, 3, 3, 1, 1, 3, 3, 1, 1, 3, 3, 1, 1, 3, 3,
+    };
+    uint8_t mi[DPMR_SPEC_MI_WIRE];
+    uint8_t cc[24];
+    dpmr_spec_encode_mi(info, mi);
+    dpmr_spec_put(cc, 0, 24, cc_bits);
+    put_dibits(k_preamble, DPMR_SPEC_PREAMBLE_DIBITS);
+    put_word(fs1);
+    put_bits(mi, DPMR_SPEC_MI_WIRE);
+    put_bits(cc, 24);
+    put_bits(mi, DPMR_SPEC_MI_WIRE);
+}
+
 /* An FS2 frame: the word and a body of filler. */
 static void
 put_fs2_frame(const char* fs2) {
@@ -547,17 +564,36 @@ test_status_header_then_end_frame(void) {
         free_state_buffers(g_state);
     }
 
-    /* A header whose message type no END follows (an ACK, Table 5.3): no FS3 is looked for behind it. */
-    dpmr_spec_header ack = k_voice_header;
-    ack.mt = 3U;
-    dpmr_spec_header_bits(&ack, info);
+    /* Headers of other message types an END follows too, and the hunt looks for it behind every checked header:
+       a Status Polling Request (1000, Tables 10.7, 10.8, 10.15, 10.16), a BS_Access poll (1010, MI_TYPE 000,
+       10.2.7.1.0 a), an ACK (0011). */
+    static const uint32_t k_end_after[] = {0x8U, 0xAU, 0x3U};
+    for (size_t m = 0; m < sizeof(k_end_after) / sizeof(k_end_after[0]); m++) {
+        dpmr_spec_header poll = k_voice_header;
+        poll.mt = k_end_after[m];
+        dpmr_spec_header_bits(&poll, info);
+        setup(g_opts, g_state, MODE_DPMR, 0);
+        stream_reset();
+        put_filler(80);
+        put_header(DPMR_FRAME_SYNC_1, info, NULL, 0, 0);
+        put_end(DPMR_FRAME_SYNC_3, end, END_ONE_RUN, 0, 0);
+        const int poll_end = g_len;
+        put_filler(200);
+        assert(hunt(g_opts, g_state, g_len) == DSD_SYNC_DPMR_FS1_POS);
+        assert(hunt(g_opts, g_state, g_len) == DSD_SYNC_DPMR_FS3_POS);
+        assert(g_pos == poll_end);
+        free_state_buffers(g_state);
+    }
+
+    /* Table 5.3 reserves message type 1101: a header naming it is no header, CRC passing or not. */
+    dpmr_spec_header reserved = k_voice_header;
+    reserved.mt = 0xDU;
+    dpmr_spec_header_bits(&reserved, info);
     setup(g_opts, g_state, MODE_DPMR, 0);
     stream_reset();
     put_filler(80);
     put_header(DPMR_FRAME_SYNC_1, info, NULL, 0, 0);
-    put_end(DPMR_FRAME_SYNC_3, end, END_ONE_RUN, 0, 0);
     put_filler(200);
-    assert(hunt(g_opts, g_state, g_len) == DSD_SYNC_DPMR_FS1_POS);
     assert(hunt(g_opts, g_state, g_len) == DSD_SYNC_NONE);
     free_state_buffers(g_state);
 }
@@ -626,52 +662,100 @@ test_powersave_headers_back_to_back(void) {
     free_state_buffers(g_state);
 }
 
-/* An end frame sent the 11.6 way (each copy from a fresh scrambler) whose second copy took bit errors, one at most in
-   each Hamming word, that its fresh reading corrects but that also make it pass, by chance, read as the second half of
-   one 72-bit run, with other bits. The codes are linear, so whether that run reading passes depends on the error
-   pattern alone (here searched for), not on the END's contents. The reading that agrees with the first copy is the
-   frame's: the frame is not two copies that disagree. */
+/* An end frame sent the 11.6 way (each copy from a fresh scrambler), its first copy lost and its second with wire bits 0
+   and 14 in error: read from a fresh scrambler it corrects to what was sent (ET 01, status 21); read as the second half
+   of one 72-bit run it passes its CRC-7 too, naming End_Type 00 with the reserved bits set, which 11.6 rules out
+   ("the 4 reserved bits are set to 0000"). That reading is no END, so the fresh one is the frame's, with its status. */
 static void
-test_end_second_copy_agreeing_reading_wins(void) {
+test_end_reading_with_reserved_fields_is_rejected(void) {
     uint8_t end[DPMR_SPEC_END_BITS];
     uint8_t wire[DPMR_SPEC_END_WIRE];
-    uint8_t hit[DPMR_SPEC_END_WIRE];
+    uint8_t bad[DPMR_SPEC_END_WIRE];
     uint8_t out[DPMR_SPEC_END_BITS];
     end_info(end);
     dpmr_spec_encode_end(end, 0, wire);
-    int found = 0;
-    for (int e0 = 0; e0 <= 12 && !found; e0++) {
-        for (int e1 = 0; e1 <= 12 && !found; e1++) {
-            for (int e2 = 0; e2 <= 12 && !found; e2++) {
-                memcpy(hit, wire, sizeof hit);
-                const int err[3] = {e0, e1, e2};
-                for (int w = 0; w < 3; w++) {
-                    if (err[w] > 0) {
-                        hit[(w * 12) + err[w] - 1] ^= 1U;
-                    }
-                }
-                found = frame_sync_dpmr_decode_end(hit, DPMR_SPEC_END_WIRE, out) == 1
-                        && memcmp(out, end, sizeof out) != 0 && frame_sync_dpmr_decode_end(hit, 0, out) == 1
-                        && memcmp(out, end, sizeof out) == 0;
-            }
-        }
-    }
-    assert(found);
+    memcpy(bad, wire, sizeof bad);
+    bad[0] ^= 1U;
+    bad[14] ^= 1U;
+    assert(frame_sync_dpmr_decode_end(bad, DPMR_SPEC_END_WIRE, out) == 0);
+    assert(frame_sync_dpmr_decode_end(bad, 0, out) == 1 && memcmp(out, end, sizeof out) == 0);
+
+    uint8_t lost[DPMR_SPEC_END_WIRE];
+    memcpy(lost, wire, sizeof lost);
+    lost[0] ^= 1U;
+    lost[1] ^= 1U; /* a double error in Hamming word 0 */
     setup(g_opts, g_state, MODE_DPMR, 0);
     stream_reset();
     put_filler(80);
     put_fs2_frame(DPMR_FRAME_SYNC_2);
     put_word(DPMR_FRAME_SYNC_3);
-    put_bits(wire, DPMR_SPEC_END_WIRE);
-    put_bits(hit, DPMR_SPEC_END_WIRE);
+    put_bits(lost, DPMR_SPEC_END_WIRE);
+    put_bits(bad, DPMR_SPEC_END_WIRE);
     const int end_at = g_len;
     put_filler(200);
     assert(hunt(g_opts, g_state, g_len) == DSD_SYNC_DPMR_FS2_POS);
     read_fs2_body(g_opts, g_state);
     assert(hunt(g_opts, g_state, g_len) == DSD_SYNC_DPMR_FS3_POS);
     assert(g_pos == end_at);
-    assert(g_state->dpmr_sync.checked_copies == (DSD_DPMR_SYNC_COPY_0 | DSD_DPMR_SYNC_COPY_1));
+    assert(g_state->dpmr_sync.checked_copies == DSD_DPMR_SYNC_COPY_1);
     assert(checked_bits_equal(g_state, end, DPMR_SPEC_END_BITS));
+    free_state_buffers(g_state);
+
+    /* End_Type 10 and ARQ 10 are reserved too (Tables 5.61, 5.48): such a copy is no END, its CRC passing or not. */
+    for (int field = 0; field < 2; field++) {
+        uint8_t reserved[DPMR_SPEC_END_BITS];
+        memcpy(reserved, end, sizeof reserved);
+        dpmr_spec_put(reserved, field * 2, 2, 2U);
+        dpmr_spec_encode_end(reserved, 0, wire);
+        assert(frame_sync_dpmr_decode_end(wire, 0, out) == 0);
+    }
+}
+
+/* Whether the header just put at @p at (its FS1's first dibit) holds FS1's sign pattern in its payload. */
+static int
+header_payload_holds_fs1(int at) {
+    const char* word = DPMR_FRAME_SYNC_1;
+    for (int start = at + 24; start + 24 <= at + 24 + DSD_DPMR_HEADER_DIBITS; start++) {
+        int same = 1;
+        for (int i = 0; i < 24 && same; i++) {
+            const char sign = g_dibits[start + i] <= 1U ? '1' : '3';
+            same = sign == word[i];
+        }
+        if (same) {
+            return 1;
+        }
+    }
+    return 0;
+}
+
+/* A real header whose payload holds FS1's sign pattern (TS 102 658 6.1.1 gives FS1 no exclusion from the MI, so a
+   clean header can carry it): a peer-to-peer Communications_Start from 4279584 to 8402415 (air interface IDs 5F963F
+   and BBB522, A.1.2.1.1.6) at colour code 16 does, at payload dibit 40. The later word must not replace the header
+   being read: the header passes and is accepted, the word inside it dropped as its payload. */
+static void
+test_header_payload_holding_fs1_is_kept(void) {
+    uint8_t info[DPMR_SPEC_MI_BITS];
+    const dpmr_spec_header header = {
+        .mt = 0U,
+        .called = 0xBBB522U,
+        .calling = 0x5F963FU,
+        .mode = 0U,
+        .version = 0U,
+        .format = 1U,
+    };
+    dpmr_spec_header_bits(&header, info);
+    setup(g_opts, g_state, MODE_DPMR, 0);
+    stream_reset();
+    put_filler(80);
+    const int header_at = g_len + DPMR_SPEC_PREAMBLE_DIBITS;
+    put_header_cc(DPMR_FRAME_SYNC_1, info, 0x775DD7U);
+    assert(header_payload_holds_fs1(header_at));
+    const int header_end = g_len;
+    put_filler(200);
+    assert(hunt(g_opts, g_state, g_len) == DSD_SYNC_DPMR_FS1_POS);
+    assert(g_pos == header_end);
+    assert(checked_bits_equal(g_state, info, DPMR_SPEC_MI_BITS));
+    assert(hunt(g_opts, g_state, g_len) == DSD_SYNC_NONE);
     free_state_buffers(g_state);
 }
 
@@ -813,7 +897,8 @@ main(int argc, char** argv) {
     test_wire_codecs();
     test_crc_conventions_off_air();
     test_powersave_headers_back_to_back();
-    test_end_second_copy_agreeing_reading_wins();
+    test_end_reading_with_reserved_fields_is_rejected();
+    test_header_payload_holding_fs1_is_kept();
     test_header_both_polarities();
     test_header_copies();
     test_header_cut_by_an_interruption();

@@ -64,6 +64,9 @@ static int g_hamming_calls;
 /* Nonzero: the second CCH half decodes frame number 1 with its CRC-7 passing, so the frame's halves are the bound 0/1
    pair a called identity needs (TS 102 658 Tables 5.5, 5.6); the all-zero stream's halves are both numbered 0. */
 static int g_second_half_frame_one;
+/* Nonzero: both CCH halves fail their CRC-7 (each half's first block decodes a bit the zero CRC does not cover), their
+   other fields reading voice. */
+static int g_fail_both;
 
 static void
 reset_capture(void) {
@@ -81,6 +84,7 @@ reset_capture(void) {
     g_hamming_calls = 0;
     g_cch_noise = 0;
     g_second_half_frame_one = 0;
+    g_fail_both = 0;
 }
 
 int
@@ -106,7 +110,8 @@ Hamming_12_8_decode(unsigned char* rxBits, unsigned char* decodedBits, int nbCod
     (void)rxBits;
     if (decodedBits != NULL && nbCodewords > 0) {
         DSD_MEMSET(decodedBits, g_cch_noise ? 1 : 0, (size_t)nbCodewords * 8U);
-        if (g_fail_half >= 0 && g_hamming_calls % 12 == g_fail_half * 6) {
+        if ((g_fail_half >= 0 && g_hamming_calls % 12 == g_fail_half * 6)
+            || (g_fail_both && g_hamming_calls % 6 == 0)) {
             decodedBits[0] = 1;
         }
         if (g_second_half_frame_one && !g_cch_noise && nbCodewords == 1) {
@@ -1028,7 +1033,8 @@ test_process_dpmr_voice_zero_stream_updates_cch_and_dispatches_voice(void) {
     rc |= expect_int("process-service", call.has_service_metadata, 1);
     rc |= expect_int("process-next-part", opts.dPMR_next_part_of_superframe, 2);
     rc |= expect_int("process-invalid-color-code", (int)state.dPMRVoiceFS2Frame.ColorCode[0], -1);
-    rc |= expect_int("process-no-color-side-effect", state.dpmr_color_code, 0);
+    /* The call this frame opens decoded no channel code: it has none (issue #890), not the 0 the state began with. */
+    rc |= expect_int("process-new-call-no-color-code", state.dpmr_color_code, -1);
     rc |= expect_int("process-final-synctype", state.synctype, DSD_SYNC_DPMR_FS1_POS);
     return rc;
 }
@@ -1209,6 +1215,71 @@ test_process_dpmr_voice_weak_frames_confirm_only_when_they_run(void) {
     return rc;
 }
 
+/* Issue #890: a checked header that opens no call (an ACK, TS 102 658 5.2.4) is channel activity, not a transmission:
+   it confirms nothing, so after one weak frame that learned the scrambling but confirmed no call, a frame whose CCH
+   halves both fail still plays nothing and opens no row. */
+static int
+test_non_call_header_authorizes_no_playback(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    dsd_call_snapshot call;
+    int rc = 0;
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    DSD_MEMSET(&state, 0, sizeof(state));
+    state.synctype = DSD_SYNC_DPMR_FS2_POS;
+    state.dpmr_color_code = -1;
+    state.dPMRVoiceFS2Frame.ColorCode[0] = (unsigned int)(-1);
+    reset_capture();
+    g_fail_half = 1;
+    state.symbolcnt = 30000U;
+    (void)processdPMRvoice(&opts, &state);
+    rc |= expect_int("weak-frame-unconfirmed", state.dpmr_confirmed, 0);
+    rc |= expect_int("weak-frame-learned-scrambling", state.dpmr_scrambled != 0U, 1);
+
+    const dpmr_header ack = {.message_type = DPMR_MT_ACK,
+                             .called_id = 1464100U,
+                             .calling_id = 2928210U,
+                             .color_code = -1,
+                             .copies = DSD_DPMR_SYNC_COPY_0};
+    dpmr_process_header(&opts, &state, &ack, 0);
+    rc |= expect_int("ack-confirms-nothing", state.dpmr_confirmed, 0);
+
+    reset_capture();
+    g_fail_both = 1;
+    state.symbolcnt = 30000U + 384U;
+    (void)processdPMRvoice(&opts, &state);
+    rc |= expect_int("failed-frame-after-ack-plays-nothing", (int)g_mbe_calls, 0);
+    rc |= expect_int("failed-frame-after-ack-no-row", dsd_call_state_get(&state, 0U, &call) > 0, 0);
+    return rc;
+}
+
+/* Issue #890: a call a frame opens takes no colour code an earlier call left when its own channel code did not decode
+   (the call's access code is its own, dsd_access_code_current()); an open call keeps the one it published. */
+static int
+test_new_call_without_a_channel_code_has_none(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    int rc = 0;
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    DSD_MEMSET(&state, 0, sizeof(state));
+    state.synctype = DSD_SYNC_DPMR_FS2_POS;
+    state.dpmr_confirmed = 1;
+    state.dpmr_color_code = 40; /* an earlier call's, on this carrier */
+    state.dPMRVoiceFS2Frame.ColorCode[0] = (unsigned int)(-1);
+    state.dPMRVoiceFS2Frame.CCHDataCrcOk[0] = 1U;
+    dpmr_resolve_half_scrambling(&state);
+    dpmr_publish_call(&opts, &state);
+    dsd_call_snapshot call;
+    rc |= expect_int("new-call-opens", dsd_call_state_get(&state, 0U, &call) > 0, 1);
+    rc |= expect_int("new-call-no-inherited-colour", state.dpmr_color_code, -1);
+    state.dPMRVoiceFS2Frame.ColorCode[0] = 12U;
+    dpmr_publish_call(&opts, &state);
+    state.dPMRVoiceFS2Frame.ColorCode[0] = (unsigned int)(-1);
+    dpmr_publish_call(&opts, &state);
+    rc |= expect_int("open-call-keeps-its-colour", state.dpmr_color_code, 12);
+    return rc;
+}
+
 /* Issue #890: the frame's line prints the identity the frame itself bound. Publication comes first, so the first good
    0/1 pair of a late entry prints its called ID, not the CRC ERR fields of the call snapshot before it. */
 static int
@@ -1285,6 +1356,8 @@ main(void) {
     rc |= test_process_dpmr_voice_weak_frames_confirm_only_when_they_run();
     rc |= test_frame_after_a_checked_end_must_reconfirm();
     rc |= test_frame_prints_the_identity_it_bound();
+    rc |= test_non_call_header_authorizes_no_playback();
+    rc |= test_new_call_without_a_channel_code_has_none();
     rc |= test_superframe_part_updates_called_and_calling_ids();
     rc |= test_service_and_kind_come_from_the_checked_half();
     rc |= test_scrambler_reloads_only_at_a_checked_frame_zero();

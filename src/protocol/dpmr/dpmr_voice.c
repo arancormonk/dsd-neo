@@ -373,7 +373,7 @@ dpmr_checked_half(const dPMRVoiceFS2Frame_t* f) {
  * (dpmr_update_superframe_part()) with the service and call kind of its checked half, so a checked data CCH is a data
  * call and never voice. A frame with no checked half names nothing: it only keeps an open dPMR call going, never opens
  * one. */
-static void
+static int
 dpmr_publish_frame_observation(dsd_state* state) {
     const dPMRVoiceFS2Frame_t* f = &state->dPMRVoiceFS2Frame;
     int protocol = DSD_SYNC_IS_DPMR(state->synctype) ? state->synctype : state->lastsynctype;
@@ -393,7 +393,7 @@ dpmr_publish_frame_observation(dsd_state* state) {
             observation.kind = call.kind; /* the call's own: nothing here says otherwise */
             (void)dsd_call_state_observe(state, &observation, DSD_CALL_BOUNDARY_CONTINUE);
         }
-        return;
+        return 0;
     }
     /* No channel: dPMR names no trunk channel, and the colour code is the row's access code. */
     observation.kind = dpmr_call_kind_for_mode(f->CommunicationMode[c]);
@@ -407,7 +407,15 @@ dpmr_publish_frame_observation(dsd_state* state) {
         char* text = f->BoundIdKind == DPMR_FRAME_ID_CALLED ? observation.target_text : observation.source_text;
         dsd_strncpy_s(text, DSD_CALL_IDENTITY_TEXT_SIZE, identity, DSD_CALL_IDENTITY_TEXT_SIZE - 1U);
     }
-    (void)dsd_call_state_observe(state, &observation, DSD_CALL_BOUNDARY_CONTINUE);
+    return dsd_call_state_observe(state, &observation, DSD_CALL_BOUNDARY_CONTINUE) > 0;
+}
+
+/* Whether a dPMR call is open on the slot. */
+static int
+dpmr_call_open(const dsd_state* state) {
+    dsd_call_snapshot call;
+    return dsd_call_state_get(state, 0U, &call) > 0 && call.phase == DSD_CALL_PHASE_ACTIVE
+           && DSD_SYNC_IS_DPMR(call.protocol);
 }
 
 void
@@ -417,11 +425,18 @@ dpmr_publish_call(dsd_opts* opts, dsd_state* state) {
          * proved itself; publishing them would put a call row on the air alone (#407). */
         return;
     }
-    /* The colour code is published on the confirmed path whether or not a caller identity decoded with it. */
-    if (state->dPMRVoiceFS2Frame.ColorCode[0] != (unsigned int)(-1)) {
+    /* The colour code is published on the confirmed path whether or not a caller identity decoded with it. A frame
+       whose channel code did not decode keeps an open call's code, but a call it opens has none of its own: the code
+       an earlier call left is not this one's access code (issue #890). */
+    const int known = state->dPMRVoiceFS2Frame.ColorCode[0] != (unsigned int)(-1);
+    if (known) {
         dpmr_publish_color_code(state, (int)state->dPMRVoiceFS2Frame.ColorCode[0]);
+    } else if (!dpmr_call_open(state) && dpmr_checked_half(&state->dPMRVoiceFS2Frame) >= 0) {
+        state->dpmr_color_code = -1;
     }
-    dpmr_publish_frame_observation(state);
+    if (dpmr_publish_frame_observation(state) && !known) {
+        state->dpmr_color_code = -1; /* the observation began another call (another identity) */
+    }
 
     /* A frame no verified half speaks for since the transmission's boundary leaves the call's classification alone. */
     if (state->dPMRVoiceFS2Frame.Scrambled[0] != DPMR_HALF_UNVERIFIED) {

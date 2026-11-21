@@ -9129,12 +9129,15 @@ the stream-notice hooks' pattern: one that fails to initialize leaves the hook u
   window, readiness and settling check) marks a header candidate (`dsd_dpmr_frame_sync::pending`) under the
   configured polarity alone: FS4 is FS1's symbol-wise complement (TS 102 658 6.1.4 NOTE), so the other polarity's FS1
   is an FS4, which is not read. FS3 (12 symbols) marks an end frame candidate only where an end frame can be
-  (`fs3_at`, within a symbol): one FS2 frame (384 symbols) after an accepted FS2, and twelve symbols after a checked
-  header whose message type an END frame follows (Table 5.3 and note 2: Communications_Start for an unsolicited
-  status, Connection_Request, Disconnect_Request, System_Request, Status Polling Response). Nothing is accepted at the
-  word: the hunt goes on over the candidate's frame (132 dibits for a header, 36 for an end frame), every matcher with
-  it, so a rejected candidate costs no protocol a frame (an NXDN48 frame sync inside it is matched where it is), and
-  a newer FS1 replaces the candidate. Only FS2 and FS3 stand down inside it. Once the frame's last symbol is in, it is
+  (`fs3_at`, within a symbol): one FS2 frame (384 symbols) after an accepted FS2, and twelve symbols after every
+  checked header (Table 5.3 and note 2 name several an END follows, and the procedures send others as header and END
+  pairs: 4.2.3.2 to 4.2.3.5, status polls in Tables 10.7, 10.8, 10.15, 10.16, a BS_Access poll in 10.2.7.1.0 a; only
+  an END that passes its own check is taken). Nothing is accepted at the word: the hunt goes on over the candidate's
+  frame (132 dibits for a header, 36 for an end frame), every matcher with it, so a rejected candidate costs no
+  protocol a frame (an NXDN48 frame sync inside it is matched where it is). An FS1 found while a candidate is read is
+  kept beside it (`pending_next`), not instead: a real header's payload can hold FS1's sign pattern, so the older is
+  checked first and, if it fails, the later one is read on. Only FS2 and FS3 stand down inside a candidate. Once the
+  frame's last symbol is in, it is
   read back from the soft symbol history, sliced on its own sync word's outer levels, and checked, in the
   specification's receive order: each 120-bit MI copy descrambled from a fresh X^9 + X^5 + 1 scrambler, then the 12 x
   10 deinterleave, ten Hamming(12,8) words and the CRC-8 (7.6, 11.5); each 36-bit END copy through three
@@ -9143,7 +9146,9 @@ the stream-notice hooks' pattern: one that fails to initialize leaves the hook u
   the second is read both as the run's bits 36 to 71 (what the off-air recording behind `tests/fixtures/iq/dpmr.iq`
   sends) and from a fresh scrambler, each CRC-checked, the reading that agrees with a passing first copy taken. A
   copy passes when every word is correctable and its CRC matches; one copy is enough, two that pass with different
-  contents are no frame. Both CRCs run MSB first from a zero register with no final inversion, which the spec does not
+  contents are no frame. A copy naming what no transmitter sends is no copy whatever its CRC: message type 1101
+  (Table 5.3), End_Type or ARQ 10/11 (Tables 5.61, 5.48), or nonzero END reserved bits (11.6). Both CRCs run MSB
+  first from a zero register with no final inversion, which the spec does not
   say but the same recording (sigidwiki DPMR.zip, `SDRSharp_20160101_231640Z_12kHz_IQ.wav`) confirms: all 18 MI
   copies of its 9 headers pass the CRC-8 so and none with a preset of all ones; its end frame's first copy and its CCH
   halves pass the CRC-7 so. A frame that passes is accepted as `DSD_SYNC_DPMR_FS1_*`/`FS3_*` on its last symbol
@@ -14043,7 +14048,11 @@ Private per-protocol modules worth knowing about:
   ends the call before it, forgets its scrambling and closes its capture, then opens its call once (`BEGIN`) with
   its checked called/calling IDs (target/source text), service options, emergency, kind (voice, or data for modes
   010 to 100), channel code and scrambling (Version 3); every other checked header (requests, ACKs, maintenance,
-  status messages) confirms the transmission and reports PROVEN content without a call. A header that repeats the
+  status messages) reports PROVEN content without a call and confirms nothing: confirmation is what lets the frames
+  after it publish and play, and a message that opens no call has none that may (a Communications_Start in the
+  reserved mode 111 reports nothing at all). A call a header opens has the header's colour code, or none when its
+  channel code did not decode, never one an earlier call left; so has a call an FS2 frame opens. A header that
+  repeats the
   open call's (same called/calling IDs and service options; colour codes that do not differ, a code the run has not
   read yet being missing, since the channel code is sent outside the MI's CRC) k message frames (k x 192 symbols,
   within one) after the last call header on the same stream, k from 1 to that header's WU (1 when it is 0), goes on
