@@ -377,13 +377,17 @@ Windows console runs:
   conventional analog calls ([Analog calls in rdio-scanner](#analog-calls-in-rdio-scanner), [Digital calls with no
   talkgroup in rdio-scanner](#digital-calls-with-no-talkgroup-in-rdio-scanner))
   - With `both`, each queued API upload works from its own copies of the call's WAV and JSON, made beside them as
-    `<name>.<id>.rdio-upload-audio` and `<name>.<id>.rdio-upload-meta` (a hard link where the drive supports one, else
-    a copy), where `<id>` is a random id drawn once a run, and removed when that upload ends, sent or not. They are
-    made before the JSON appears, so a DirWatch with "delete after" on the same folder can take the WAV and JSON as
-    soon as it sees them without costing the API upload its files. No rdio-scanner watch reads those names. Copies
-    another run left behind (it was killed, say) are removed the next time a `both` run exports a call to that folder,
-    once they are more than a day old (longer with long upload timeouts), so another run exporting to the same folder
-    keeps its pending uploads.
+    `<id>.<n>.rdio-upload-audio` and `<id>.<n>.rdio-upload-meta` (a hard link where the drive supports one, else a
+    copy), where `<id>` is a random id drawn once a run and `<n>` a number. The names are at most 45 characters,
+    whatever the recording's own name, so any recording whose WAV and JSON names fit can be uploaded. Each run
+    removes its own copies when that upload ends, sent or not, and never touches another run's, so another run
+    exporting to the same folder keeps its pending uploads. They are made before the JSON appears, so a DirWatch with
+    "delete after" on the same folder can take the WAV and JSON as soon as it sees them without costing the API
+    upload its files. No rdio-scanner watch reads those names. After a Stop no copies are made and no upload is
+    queued; a Stop during a copy ends it and removes what it made. The WAV and JSON are written either way.
+  - Copies a run could not remove are left: one that was killed, or (Windows) one whose copy was still open in a
+    DirWatch that does not allow deleting it. The first such removal failure is logged once a run. With no dsd-neo
+    running on that folder, files ending in `.rdio-upload-audio` or `.rdio-upload-meta` there can be deleted by hand.
 - `--rdio-system-id <N>` Set rdio-scanner system ID (required for API upload mode)
 - `--rdio-analog-system-id <N>` rdio-scanner system ID for conventional NFM calls, 0 to 65535. 0, the default, uses
   `--rdio-system-id`. With it set, API uploads of NFM calls work even when `--rdio-system-id` is not set. INI:

@@ -7206,6 +7206,22 @@ target_link_libraries(
     dsd-neo_test_runtime_rdio_export
     PRIVATE dsd-neo_runtime dsd-neo_test_support
 )
+# The cases that need a fault at one call (a hard link, a private open, the worker's join) wrap those calls, so they
+# exist only where GNU ld --wrap links, like the other wrap tests (on POSIX dsd_thread_join() is pthread_join()).
+if(NOT APPLE AND NOT WIN32 AND (CMAKE_C_COMPILER_ID MATCHES "GNU|Clang"))
+    target_compile_definitions(
+        dsd-neo_test_runtime_rdio_export
+        PRIVATE DSD_TEST_WRAP_RDIO_SEAMS=1
+    )
+    target_link_options(
+        dsd-neo_test_runtime_rdio_export
+        PRIVATE
+            "LINKER:--wrap=dsd_hard_link"
+            "LINKER:--wrap=dsd_fopen_private"
+            "LINKER:--wrap=dsd_fopen_private_ex"
+            "LINKER:--wrap=pthread_join"
+    )
+endif()
 add_test(NAME RUNTIME_RDIO_EXPORT COMMAND dsd-neo_test_runtime_rdio_export)
 
 # Issue #800: the map's tile fetch. The public suite runs against the library as

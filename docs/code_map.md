@@ -5403,34 +5403,39 @@ suite runs under this compiler.
     that file, then the WAV's, and only then is the temp file renamed to the public name and the job queued), so a
     watch that takes and deletes the pair the moment the sidecar appears never beats them: a copy of the sidecar and a
     hard link of the WAV (`dsd_hard_link()`, a copy where the file system has none), named
-    `<base>.<token>[.<N>].rdio-upload-audio` / `.rdio-upload-meta` (the token: 16 uppercase hex digits drawn once per
-    process with `dsd_nonce_fill()`; N the first free index, 1 to 63), which no 6.6.3 or v8 watch reads (they
-    look at the last extension only: `.json`, `.mp3`, or the default type's configured one, `.wav` by default). The
-    worker uploads from them under the published names (`curl_mime_filename()`), and the job's release
-    (`dsd_rdio_upload_job_free()`: sent, failed, cancelled, dropped at shutdown, or never queued) removes them; the
-    public pair is published at close as before, the job's `public_wav_path` is what `dsd_rdio_upload_holds()` names,
-    and API-only and DirWatch-only runs make no private inputs. A run that ends without that release (killed, a
-    removal that failed, a failed join) leaves them behind: the first `both` export into a folder in each run (the
-    per-run list, under `g_rdio_private_mutex`, resets at `dsd_rdio_upload_shutdown()`), once its job's inputs exist and
-    its sidecar is public, removes from that folder alone names `dsd_rdio_upload_private_name()`
-    (`rdio_export_internal.h`) matches, never one carrying this process's token
-    (`dsd_rdio_upload_private_name_token()`), and another run's (another token, or none) only when its modification time
-    is older than `dsd_rdio_leftover_min_age_s()`: a day, or (queue max + 1) x attempts x (timeout + 150 ms backoff) at
-    this run's settings when that is longer. So a second run exporting to the same folder keeps its live inputs. The age
-    is wall-clock (`dsd_realtime_time()` against `st_mtime` from `dsd_stat_path()`), not a decode decision. A copy that
-    cannot be made fails the export (no job, journal `rdio` false), as a full queue does; the public pair is still
-    published. Accepted limit: the copy fallback and the leftover scan run in the export, on the closing thread, and a
-    commit rotation closes under the call-state lock (`dsd_event_sync_slot()`), so on a drive with no hard links a long
-    recording's copy, or a first export's scan of a large folder, also holds off the P25 watchdog thread, which takes
-    that lock. Moving them to the worker would reopen the race above.
+    `<token>.<N>.rdio-upload-audio` / `.rdio-upload-meta` in the WAV's folder (the token: 16 uppercase hex digits drawn
+    once per process with `dsd_nonce_fill()`; N from a process-wide counter, the next one on a name in use, 64 tries),
+    which no 6.6.3 or v8 watch reads (they look at the last extension only: `.json`, `.mp3`, or the default type's
+    configured one, `.wav` by default). The names do not grow with the public stem (at most 45 characters), so any
+    recording whose public names fit the file system's name limit has them. The worker uploads from them under the
+    published names (`curl_mime_filename()`), and the job's release (`dsd_rdio_upload_job_free()`: sent, failed,
+    cancelled, dropped at shutdown, released after a failed join, or never queued) removes them; the public pair is
+    published at close as before, the job's `public_wav_path` is what `dsd_rdio_upload_holds()` names, and API-only and
+    DirWatch-only runs make no private inputs. The copy (`dsd_rdio_copy_file()`) opens its destination exclusively with
+    `dsd_fopen_private_ex()` and, on a failure, removes it only when this open created it (never a file already there),
+    and checks the user's Stop (`g_rdio_upload_cancel`) between 16 KiB chunks. After a Stop no private inputs are made
+    and no job is queued (the worker would never send it): the export logs it and returns success with the public pair
+    published (`DSD_RDIO_UPLOAD_CANCELLED` from the preparation). A run only ever removes its own private inputs, at
+    each job's end: there is no cleanup of other runs' files. A run that ends without that release (killed) leaves
+    them, and so does a removal that fails (Windows: a DirWatch holding the public WAV open without delete sharing
+    also blocks the delete of its hard link), which is not retried and is logged once a process
+    (`dsd_rdio_remove_private_input()`); `docs/cli.md` says how to delete such files by hand. A copy that cannot be made
+    fails the export (no job, journal `rdio` false), as a full queue does; the public pair is still published. A
+    failed join of the worker at shutdown (not expected) detaches the queued jobs under the queue's mutex, which the
+    worker pops under, and releases them (private inputs, holds, API copies); the job in flight stays the worker's.
+    Accepted limit: the copy fallback runs in the export, on the closing thread, and a commit rotation closes under the
+    call-state lock (`dsd_event_sync_slot()`), so on a drive with no hard links a long recording's copy also holds off
+    the P25 watchdog thread, which takes that lock. Moving it to the worker would reopen the race above.
     Tests: `RUNTIME_RDIO_EXPORT` (stalled endpoint, cancel before and during the drain, holds with a blocked uploader
     through 140 later publications, release after the delete, the name rule under POSIX and Windows rules on every host;
     analog sidecar fields, kHz and fallback talkgroups, stable tags, the analog system in the sidecar and the form part,
     the NFM upload's completion, failure, journal retention, BOTH mode and holds; issue #888 B15: a held first upload
     while the second pair is deleted as a watch would, the second request's audio, meta and part names, private inputs
     gone after success, refusal, Stop and a full queue, the private inputs in place before the sidecar appears (a watch
-    that deletes the pair at that moment, `dsd_rdio_set_sidecar_published_observer()`), the leftover clearing once per
-    run and folder by token and age, the private-name and token rules; the fallback number and its eligibility, the
+    that deletes the pair at that moment, `dsd_rdio_set_sidecar_published_observer()`), short private names under a
+    230-character stem, no copy and no job after a Stop and a Stop that ends a copy, a private open that made its file
+    but no stream, a failed removal said once, the queued jobs released after a failed join (the last three through
+    GNU ld `--wrap` link seams, `DSD_TEST_WRAP_RDIO_SEAMS`, POSIX only); the fallback number and its eligibility, the
     generated label (`EDACS` for a ProVoice call an EDACS grant named), `freq`/`freqList` at their bounds, emergency,
     the protocol `short_name`, `"-"` tags, UTF-8 strings, and a fallback call's API `meta` and `system` parts),
     `CORE_RECEIVE` and `CORE_WAV_JOURNAL` (NFM exports through the real closer, the per-run skip line),

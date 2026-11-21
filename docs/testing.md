@@ -2281,6 +2281,14 @@ under the fallback, and an identity-less record before a sourced one is a record
 recording holding its own record's frames alone). The number and label rules themselves are in `RUNTIME_RDIO_EXPORT`,
 and which closes may give the number in `CORE_WAV_JOURNAL`'s `test_d7_*` cases.
 
+`RUNTIME_RDIO_EXPORT` checks `--rdio-mode both`'s private upload inputs: short names under a 230-character public stem
+(the test folder's file system must allow 255-byte names), no copy and no job after a Stop, and removals that fail (a read-only
+folder) leaving their files with one log line a run. The faults no real file system gives on demand come from GNU ld `--wrap` link seams
+(`DSD_TEST_WRAP_RDIO_SEAMS`, GCC or Clang builds off macOS and Windows, as the other `--wrap` tests): a hard link that
+fails as on a drive with none while the Stop arrives (the copy fallback then ends), a private open that makes its file
+and no stream, and a worker join that reports failure after the worker ended (the queued jobs are released). That
+last case leaves the upload worker failed for good, so it runs last in `main()`.
+
 ### Digital voice chain checks (issue #653)
 
 Every decoded voice frame runs once through its slot's voice chain (high-pass, then gain) before anything consumes it,

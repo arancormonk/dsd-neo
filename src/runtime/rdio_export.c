@@ -24,7 +24,6 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <sys/stat.h>
 #include <time.h>
 #include "curl_common.h"
 #include "dsd-neo/core/opts_fwd.h"
@@ -78,102 +77,6 @@ dsd_rdio_upload_names_same_file(const char* job_path, const char* path, int win)
     }
 }
 
-#define DSD_RDIO_PRIVATE_AUDIO_SUFFIX ".rdio-upload-audio"
-#define DSD_RDIO_PRIVATE_META_SUFFIX  ".rdio-upload-meta"
-
-static int
-dsd_rdio_name_has_suffix(const char* name, const char* suffix) {
-    const size_t n = strlen(name);
-    const size_t k = strlen(suffix);
-    return n > k && strcmp(name + n - k, suffix) == 0;
-}
-
-int
-dsd_rdio_upload_private_name(const char* name) {
-    if (name == NULL) {
-        return 0;
-    }
-    return dsd_rdio_name_has_suffix(name, DSD_RDIO_PRIVATE_AUDIO_SUFFIX)
-           || dsd_rdio_name_has_suffix(name, DSD_RDIO_PRIVATE_META_SUFFIX);
-}
-
-#define DSD_RDIO_PRIVATE_TOKEN_LEN 16U
-
-/* This process's token in its private input names: 64 random bits drawn at first use, as 16 uppercase hex digits. A
-   run's leftover cleanup never touches a name that carries its own token. */
-static char g_rdio_private_token[DSD_RDIO_PRIVATE_TOKEN_LEN + 1U];
-static atomic_int g_rdio_private_token_state = 0; /* 0 none, 1 drawing, 2 ready */
-
-static const char*
-dsd_rdio_private_token(void) {
-    if (atomic_load(&g_rdio_private_token_state) != 2) {
-        int expected = 0;
-        if (atomic_compare_exchange_strong(&g_rdio_private_token_state, &expected, 1)) {
-            uint64_t token = 0;
-            dsd_nonce_fill(&token, sizeof token);
-            DSD_SNPRINTF(g_rdio_private_token, sizeof g_rdio_private_token, "%016llX", (unsigned long long)token);
-            atomic_store(&g_rdio_private_token_state, 2);
-        } else {
-            while (atomic_load(&g_rdio_private_token_state) != 2) {
-                dsd_thread_yield();
-            }
-        }
-    }
-    return g_rdio_private_token;
-}
-
-int
-dsd_rdio_upload_private_token_text(char* out, size_t out_size) {
-    if (out == NULL || out_size <= DSD_RDIO_PRIVATE_TOKEN_LEN) {
-        return -1;
-    }
-    DSD_SNPRINTF(out, out_size, "%s", dsd_rdio_private_token());
-    return 0;
-}
-
-static int
-dsd_rdio_is_upper_hex(char c) {
-    return (c >= '0' && c <= '9') || (c >= 'A' && c <= 'F');
-}
-
-/* Whether the @p len characters at @p s are all digits (an index) or all uppercase hex (a token). */
-static int
-dsd_rdio_span_is(const char* s, size_t len, int hex) {
-    for (size_t i = 0; i < len; i++) {
-        if (!(hex ? dsd_rdio_is_upper_hex(s[i]) : (s[i] >= '0' && s[i] <= '9'))) {
-            return 0;
-        }
-    }
-    return len > 0U;
-}
-
-int
-dsd_rdio_upload_private_name_token(const char* name, char* out, size_t out_size) {
-    if (!dsd_rdio_upload_private_name(name) || out == NULL || out_size <= DSD_RDIO_PRIVATE_TOKEN_LEN) {
-        return 0;
-    }
-    const size_t suffix_len = dsd_rdio_name_has_suffix(name, DSD_RDIO_PRIVATE_AUDIO_SUFFIX)
-                                  ? strlen(DSD_RDIO_PRIVATE_AUDIO_SUFFIX)
-                                  : strlen(DSD_RDIO_PRIVATE_META_SUFFIX);
-    size_t end = strlen(name) - suffix_len; /* the stem: "<base>.<token>" or "<base>.<token>.<index>" */
-    const char* dot = NULL;
-    for (size_t i = end; i > 0U && dot == NULL; i--) {
-        dot = name[i - 1U] == '.' ? name + i - 1U : NULL;
-    }
-    /* An index is one or two digits, so a 16-character last part is the token even when it is all digits. */
-    const size_t last_len = dot ? (size_t)(name + end - dot - 1) : 0U;
-    if (dot && last_len <= 2U && dsd_rdio_span_is(dot + 1, last_len, 0)) {
-        end = (size_t)(dot - name);
-    }
-    if (end < DSD_RDIO_PRIVATE_TOKEN_LEN + 1U || name[end - DSD_RDIO_PRIVATE_TOKEN_LEN - 1U] != '.'
-        || !dsd_rdio_span_is(name + end - DSD_RDIO_PRIVATE_TOKEN_LEN, DSD_RDIO_PRIVATE_TOKEN_LEN, 1)) {
-        return 0;
-    }
-    DSD_MEMCPY(out, name + end - DSD_RDIO_PRIVATE_TOKEN_LEN, DSD_RDIO_PRIVATE_TOKEN_LEN);
-    out[DSD_RDIO_PRIVATE_TOKEN_LEN] = '\0';
-    return 1;
-}
-
 static int dsd_rdio_path_with_suffix(const char* wav_path, const char* suffix, char* out, size_t out_size);
 
 #ifdef USE_CURL
@@ -219,17 +122,35 @@ dsd_rdio_remove_after_upload(const char* path, const char* kind) {
     }
 }
 
-/* An upload job's end, sent, failed, dropped or abandoned at the stop, or never queued: its private inputs go (a
- * removal that fails leaves a leftover the next run's first export there removes), and its copies of the API key and
- * URL (a URL can carry credentials) are wiped before the memory goes back. */
+static atomic_int g_rdio_private_remove_warned = 0;
+
+/* A private input of a job that is over, removed. One that cannot be (on Windows, while a DirWatch still holds the
+   public WAV open without delete sharing, its hard link too) is left: no retry, said once a process, with how to remove
+   such files by hand. */
+static void
+dsd_rdio_remove_private_input(const char* path) {
+    if (path[0] == '\0' || dsd_remove_file(path) == 0 || errno == ENOENT) {
+        return;
+    }
+    if (atomic_exchange(&g_rdio_private_remove_warned, 1) == 0) {
+        LOG_WARN("Rdio API upload: failed to delete the private upload input %s: %s; files ending in "
+                 ".rdio-upload-audio or .rdio-upload-meta in a recording folder no dsd-neo is exporting to can be "
+                 "deleted\n",
+                 path, strerror(errno));
+    }
+}
+
+/* An upload job's end, sent, failed, dropped or abandoned at the stop, or never queued: its private inputs go
+ * (dsd_rdio_remove_private_input()), and its copies of the API key and URL (a URL can carry credentials) are wiped
+ * before the memory goes back. */
 static void
 dsd_rdio_upload_job_free(dsd_rdio_upload_job* job) {
     if (!job) {
         return;
     }
     if (job->private_inputs) {
-        dsd_rdio_remove_after_upload(job->wav_path, "private upload audio");
-        dsd_rdio_remove_after_upload(job->meta_path, "private upload metadata");
+        dsd_rdio_remove_private_input(job->wav_path);
+        dsd_rdio_remove_private_input(job->meta_path);
     }
     DSD_SECURE_ZERO(&job->api, sizeof job->api);
     if (g_rdio_upload_release_observer) {
@@ -243,9 +164,6 @@ dsd_rdio_upload_job_free(dsd_rdio_upload_job* job) {
  * asks dsd_rdio_upload_holds() from its own thread at any time, a shutdown included. 0 = not initialized,
  * 1 = initializing, 2 = ready, 3 = its init failed, for good: no worker starts and nothing is held. */
 static dsd_mutex_t g_rdio_upload_mutex;
-/* Guards the folders this run has cleared of leftover private inputs; never held with g_rdio_upload_mutex.
- * Initialized with the queue's mutex. */
-static dsd_mutex_t g_rdio_private_mutex;
 static atomic_int g_rdio_upload_mutex_state = 0;
 static dsd_cond_t g_rdio_upload_cond;
 static dsd_thread_t g_rdio_upload_worker;
@@ -290,7 +208,7 @@ dsd_rdio_upload_mutex_ensure(void) {
     }
     int expected = 0;
     if (atomic_compare_exchange_strong(&g_rdio_upload_mutex_state, &expected, 1)) {
-        const int ok = dsd_mutex_init(&g_rdio_upload_mutex) == 0 && dsd_mutex_init(&g_rdio_private_mutex) == 0;
+        const int ok = dsd_mutex_init(&g_rdio_upload_mutex) == 0;
         atomic_store(&g_rdio_upload_mutex_state, ok ? 2 : 3);
         return ok ? 0 : -1;
     }
@@ -425,15 +343,6 @@ dsd_rdio_upload_worker_init(void) {
     }
 }
 
-/* The jobs still queued keep their place, but no copy of the API key or URL: for a worker that may still run after a
- * failed join, which pops a job only under the queue's mutex (held here) and then finds nothing to upload with. */
-static void
-dsd_rdio_wipe_queued_secrets_locked(void) {
-    for (dsd_rdio_upload_job* job = g_rdio_upload_head; job != NULL; job = job->next) {
-        DSD_SECURE_ZERO(&job->api, sizeof job->api);
-    }
-}
-
 /* Empty the queue, handing back its jobs for dsd_rdio_free_upload_jobs() after the unlock: their release removes
    files, which the recording store's dsd_rdio_upload_holds() should not wait behind. */
 static dsd_rdio_upload_job*
@@ -453,8 +362,6 @@ dsd_rdio_free_upload_jobs(dsd_rdio_upload_job* jobs) {
         jobs = next;
     }
 }
-
-static void dsd_rdio_forget_cleared_folders(void);
 
 void
 dsd_rdio_upload_cancel(void) {
@@ -495,12 +402,14 @@ dsd_rdio_upload_shutdown(void) {
         /* Not expected: the handle comes from the create that set the state to 2, only the shutdown that moved it to 4
            joins, and the worker never joins itself. If it happens the worker may still be running, so nothing it can
            reach unlocked is touched: the job in flight and the worker's own stack copy of the endpoint keep the key and
-           URL until it ends them, and the queued jobs are not freed. Only their API copies are wiped, under the mutex
-           the worker pops them under. */
+           URL until it ends them. The queued jobs are the worker's only through the queue, which it pops under the
+           mutex: detached under it, they are released here (their private inputs, holds and API copies), and the
+           worker finds nothing more to take. */
         LOG_ERROR("Rdio export: failed to join upload worker during shutdown\n");
         dsd_mutex_lock(&g_rdio_upload_mutex);
-        dsd_rdio_wipe_queued_secrets_locked();
+        dsd_rdio_upload_job* queued = dsd_rdio_detach_upload_queue_locked();
         dsd_mutex_unlock(&g_rdio_upload_mutex);
+        dsd_rdio_free_upload_jobs(queued);
         atomic_store(&g_rdio_upload_state, 3);
         atomic_store(&g_rdio_upload_cancel, 0);
         return;
@@ -514,8 +423,6 @@ dsd_rdio_upload_shutdown(void) {
     g_rdio_upload_aborted = 0;
     dsd_mutex_unlock(&g_rdio_upload_mutex);
     dsd_rdio_free_upload_jobs(dropped);
-    /* The run is over, and with it every private input it made: the next one clears its folders again. */
-    dsd_rdio_forget_cleared_folders();
     if (not_sent > 0U) {
         LOG_WARN("Rdio API upload: stopped by the user; %lu pending upload(s) not sent, their files kept\n",
                  (unsigned long)not_sent);
@@ -654,59 +561,80 @@ dsd_rdio_enqueue_upload_job(dsd_rdio_upload_job* job, const char* wav_path) {
     return 0;
 }
 
-#define DSD_RDIO_PRIVATE_NAME_TRIES  64U
-#define DSD_RDIO_CLEARED_FOLDERS_MAX 64U
+#define DSD_RDIO_PRIVATE_AUDIO_SUFFIX ".rdio-upload-audio"
+#define DSD_RDIO_PRIVATE_META_SUFFIX  ".rdio-upload-meta"
+#define DSD_RDIO_PRIVATE_NAME_TRIES   64U
 
-/* A folder this run has cleared of leftover private inputs, by its canonical spelling. */
-typedef struct dsd_rdio_cleared_folder {
-    struct dsd_rdio_cleared_folder* next;
-    char path[DSD_RDIO_PATH_MAX];
-} dsd_rdio_cleared_folder;
+/* This process's random id in its private input names: 64 random bits drawn at first use, as 16 uppercase hex digits,
+   so another run exporting to the same folder makes other names. */
+static char g_rdio_private_token[17];
+static atomic_int g_rdio_private_token_state = 0; /* 0 none, 1 drawing, 2 ready */
+/* The number of the next private input pair, one per try. */
+static atomic_int g_rdio_private_seq = 0;
 
-/* Each folder is cleared once per run, at the first job with private inputs there. Under g_rdio_private_mutex. */
-static dsd_rdio_cleared_folder* g_rdio_cleared_folders = NULL;
-static size_t g_rdio_cleared_folder_count = 0;
-
-static void
-dsd_rdio_forget_cleared_folders(void) {
-    if (dsd_rdio_upload_mutex_ensure() != 0) {
-        return;
+static const char*
+dsd_rdio_private_token(void) {
+    if (atomic_load(&g_rdio_private_token_state) != 2) {
+        int expected = 0;
+        if (atomic_compare_exchange_strong(&g_rdio_private_token_state, &expected, 1)) {
+            uint64_t token = 0;
+            dsd_nonce_fill(&token, sizeof token);
+            DSD_SNPRINTF(g_rdio_private_token, sizeof g_rdio_private_token, "%016llX", (unsigned long long)token);
+            atomic_store(&g_rdio_private_token_state, 2);
+        } else {
+            while (atomic_load(&g_rdio_private_token_state) != 2) {
+                dsd_thread_yield();
+            }
+        }
     }
-    dsd_mutex_lock(&g_rdio_private_mutex);
-    while (g_rdio_cleared_folders != NULL) {
-        dsd_rdio_cleared_folder* next = g_rdio_cleared_folders->next;
-        free(g_rdio_cleared_folders);
-        g_rdio_cleared_folders = next;
-    }
-    g_rdio_cleared_folder_count = 0;
-    dsd_mutex_unlock(&g_rdio_private_mutex);
+    return g_rdio_private_token;
 }
 
-/* A copy of the file at @p src, created at @p dst, which must not exist (EEXIST); owner-only. */
+/* errno for a copy the user's Stop cut short. */
+#ifdef ECANCELED
+#define DSD_RDIO_ECANCELED ECANCELED
+#else
+#define DSD_RDIO_ECANCELED EINTR
+#endif
+
+/* Copy @p in to @p out in 16 KiB chunks: 0, or the errno of what stopped it, DSD_RDIO_ECANCELED for the user's Stop
+   (dsd_rdio_upload_cancel()), checked between chunks. */
+static int
+dsd_rdio_copy_chunks(FILE* in, FILE* out) {
+    unsigned char buf[16384];
+    size_t n = 0;
+    while ((n = fread(buf, 1, sizeof buf, in)) > 0) {
+        if (atomic_load(&g_rdio_upload_cancel) != 0) {
+            return DSD_RDIO_ECANCELED;
+        }
+        if (fwrite(buf, 1, n, out) != n) {
+            return errno != 0 ? errno : EIO;
+        }
+    }
+    return ferror(in) ? (errno != 0 ? errno : EIO) : 0;
+}
+
+/* A copy of the file at @p src, created at @p dst, which must not exist (EEXIST); owner-only. The user's Stop ends it
+   between chunks with DSD_RDIO_ECANCELED (dsd_rdio_copy_chunks()). On a failure a @p dst this copy created is removed,
+   never one that was there. */
 static int
 dsd_rdio_copy_file(const char* src, const char* dst) {
     FILE* in = dsd_fopen_existing_regular_file(src, "rb");
     if (!in) {
         return -1;
     }
-    FILE* out = dsd_fopen_private(dst, "wbx");
+    int opened = 0;
+    FILE* out = dsd_fopen_private_ex(dst, "wbx", &opened);
     if (!out) {
         const int err = errno;
+        if (opened) {
+            (void)dsd_remove_file(dst);
+        }
         (void)fclose(in);
         errno = err;
         return -1;
     }
-    unsigned char buf[16384];
-    int err = 0;
-    size_t n = 0;
-    while (err == 0 && (n = fread(buf, 1, sizeof buf, in)) > 0) {
-        if (fwrite(buf, 1, n, out) != n) {
-            err = errno != 0 ? errno : EIO;
-        }
-    }
-    if (err == 0 && ferror(in)) {
-        err = errno != 0 ? errno : EIO;
-    }
+    int err = dsd_rdio_copy_chunks(in, out);
     if (fclose(out) != 0 && err == 0) {
         err = errno != 0 ? errno : EIO;
     }
@@ -731,36 +659,50 @@ dsd_rdio_link_or_copy(const char* src, const char* dst) {
     return dsd_rdio_copy_file(src, dst);
 }
 
-/* Try @p index's names for the private pair of @p wav_path: "<base>.<token>.rdio-upload-audio" and
-   "<base>.<token>.rdio-upload-meta" for 0, "<base>.<token>.<index>.rdio-upload-…" after it, with this process's
-   token (dsd_rdio_private_token()). */
+/* The folder part of @p path with its trailing separator, "" for a bare file name. */
 static int
-dsd_rdio_private_input_paths(dsd_rdio_upload_job* job, const char* wav_path, unsigned int index) {
-    char tag[40];
-    if (index > 0U) {
-        DSD_SNPRINTF(tag, sizeof tag, ".%s.%u", dsd_rdio_private_token(), index);
-    } else {
-        DSD_SNPRINTF(tag, sizeof tag, ".%s", dsd_rdio_private_token());
-    }
-    char suffix[64];
-    DSD_SNPRINTF(suffix, sizeof suffix, "%s%s", tag, DSD_RDIO_PRIVATE_AUDIO_SUFFIX);
-    if (dsd_rdio_path_with_suffix(wav_path, suffix, job->wav_path, sizeof job->wav_path) != 0) {
+dsd_rdio_path_folder(const char* path, char* out, size_t out_size) {
+    const size_t len = (size_t)(dsd_rdio_path_file_name(path, DSD_PLATFORM_WIN_NATIVE) - path);
+    if (len >= out_size) {
         return -1;
     }
-    DSD_SNPRINTF(suffix, sizeof suffix, "%s%s", tag, DSD_RDIO_PRIVATE_META_SUFFIX);
-    return dsd_rdio_path_with_suffix(wav_path, suffix, job->meta_path, sizeof job->meta_path);
+    DSD_MEMCPY(out, path, len);
+    out[len] = '\0';
+    return 0;
+}
+
+/* The names of a private pair beside @p wav_path, numbered @p seq: "<id>.<seq>.rdio-upload-audio" and
+   "<id>.<seq>.rdio-upload-meta", with this process's id (dsd_rdio_private_token()). At most 45 characters whatever
+   the published name, so any recording whose public names fit can have them. */
+static int
+dsd_rdio_private_input_paths(dsd_rdio_upload_job* job, const char* wav_path, unsigned int seq) {
+    char folder[DSD_RDIO_PATH_MAX];
+    if (dsd_rdio_path_folder(wav_path, folder, sizeof folder) != 0) {
+        return -1;
+    }
+    const char* token = dsd_rdio_private_token();
+    const int wn = DSD_SNPRINTF(job->wav_path, sizeof job->wav_path, "%s%s.%u%s", folder, token, seq,
+                                DSD_RDIO_PRIVATE_AUDIO_SUFFIX);
+    const int mn = DSD_SNPRINTF(job->meta_path, sizeof job->meta_path, "%s%s.%u%s", folder, token, seq,
+                                DSD_RDIO_PRIVATE_META_SUFFIX);
+    return (wn < 0 || mn < 0 || (size_t)wn >= sizeof job->wav_path || (size_t)mn >= sizeof job->meta_path) ? -1 : 0;
 }
 
 /* --rdio-mode both: the job's own inputs, a copy of the sidecar (from @p meta_src, its temp file, before the public one
-   is in place) and a hard link (or copy) of the published WAV, under names no rdio-scanner watch reads
-   (dsd_rdio_upload_private_name()). A DirWatch that deletes the published pair after taking it then leaves this upload
-   its bytes. A name in use (a leftover, or a WAV name published twice) moves on to the next index. On a failure nothing
-   is left behind. */
+   is in place) and a hard link (or copy) of the published WAV, under names no rdio-scanner watch reads: neither suffix
+   is one a watch looks at (6.6.3 and v8 read the last extension only: ".json" for a trunk-recorder watch, ".mp3" for
+   SDRTrunk and DSDPlus, the configured one, ".wav" by default). A DirWatch that deletes the published pair after
+   taking it then leaves this upload its bytes. A name in use moves on to the next number. On a failure nothing is left
+   behind. 0, -1, or DSD_RDIO_UPLOAD_CANCELLED when the user's Stop came first or cut the copy short. */
 static int
 dsd_rdio_make_private_inputs(dsd_rdio_upload_job* job, const char* wav_path, const char* meta_src) {
     int err = EEXIST;
-    for (unsigned int index = 0; index < DSD_RDIO_PRIVATE_NAME_TRIES && err == EEXIST; index++) {
-        if (dsd_rdio_private_input_paths(job, wav_path, index) != 0) {
+    for (unsigned int tries = 0; tries < DSD_RDIO_PRIVATE_NAME_TRIES && err == EEXIST; tries++) {
+        if (atomic_load(&g_rdio_upload_cancel) != 0) {
+            return DSD_RDIO_UPLOAD_CANCELLED;
+        }
+        const unsigned int seq = (unsigned int)atomic_fetch_add(&g_rdio_private_seq, 1);
+        if (dsd_rdio_private_input_paths(job, wav_path, seq) != 0) {
             err = ENAMETOOLONG;
             break;
         }
@@ -775,131 +717,17 @@ dsd_rdio_make_private_inputs(dsd_rdio_upload_job* job, const char* wav_path, con
         err = errno;
         dsd_rdio_remove_after_upload(job->meta_path, "private upload metadata");
     }
+    if (err == DSD_RDIO_ECANCELED && atomic_load(&g_rdio_upload_cancel) != 0) {
+        return DSD_RDIO_UPLOAD_CANCELLED;
+    }
     LOG_ERROR("Rdio export: unable to make the upload's own copy of %s: %s\n", wav_path, strerror(err));
     return -1;
 }
 
-typedef struct {
-    const char* folder; /* "" for the current folder, else ending in its separator */
-    time_t now;         /* wall clock, the scale of a file's modification time */
-    int64_t min_age_s;  /* another run's file younger than this may still be its live input */
-    unsigned long removed;
-} dsd_rdio_leftover_walk;
-
-/* Whether @p name is another run's private input (any token but this process's, or none) old enough that no upload
-   can still be reading it. */
-static int
-dsd_rdio_leftover_is_stale(const dsd_rdio_leftover_walk* walk, const char* name, const char* path) {
-    char token[DSD_RDIO_PRIVATE_TOKEN_LEN + 1U];
-    if (dsd_rdio_upload_private_name_token(name, token, sizeof token) && strcmp(token, dsd_rdio_private_token()) == 0) {
-        return 0;
-    }
-    dsd_stat_t st;
-    if (dsd_stat_path(path, &st) != 0 || !dsd_stat_is_regular(&st)) {
-        return 0;
-    }
-    /* A modification time ahead of the clock (a clock set back) reads as young. */
-    return (int64_t)walk->now - (int64_t)st.st_mtime > walk->min_age_s;
-}
-
-static int
-dsd_rdio_remove_leftover_visit(const char* name, void* user) {
-    dsd_rdio_leftover_walk* walk = (dsd_rdio_leftover_walk*)user;
-    if (!dsd_rdio_upload_private_name(name)) {
-        return 0;
-    }
-    char path[DSD_RDIO_PATH_MAX];
-    const int n = DSD_SNPRINTF(path, sizeof path, "%s%s", walk->folder, name);
-    if (n < 0 || (size_t)n >= sizeof path || !dsd_rdio_leftover_is_stale(walk, name, path)) {
-        return 0;
-    }
-    if (dsd_remove_file(path) == 0) {
-        walk->removed++;
-    } else if (errno != ENOENT) {
-        LOG_WARN("Rdio export: failed to delete leftover private upload input %s: %s\n", path, strerror(errno));
-    }
-    return 0;
-}
-
-/* The folder part of @p path with its trailing separator, "" for a bare file name. */
-static int
-dsd_rdio_path_folder(const char* path, char* out, size_t out_size) {
-    const size_t len = (size_t)(dsd_rdio_path_file_name(path, DSD_PLATFORM_WIN_NATIVE) - path);
-    if (len >= out_size) {
-        return -1;
-    }
-    DSD_MEMCPY(out, path, len);
-    out[len] = '\0';
-    return 0;
-}
-
-static int
-dsd_rdio_folder_cleared_locked(const char* key) {
-    for (const dsd_rdio_cleared_folder* f = g_rdio_cleared_folders; f != NULL; f = f->next) {
-        if ((DSD_PLATFORM_WIN_NATIVE ? dsd_strcasecmp(f->path, key) : strcmp(f->path, key)) == 0) {
-            return 1;
-        }
-    }
-    return 0;
-}
-
-static int dsd_rdio_normalize_upload_options(const dsd_rdio_api_config* api, int* timeout_ms, int* attempts);
-
-/* How old another run's private input must be before it counts as left behind: a day, or longer when a full queue
-   behind one upload in flight, each at its every attempt's timeout and the pauses between them (this run's settings,
-   the best estimate of the other run's), would outlast it. */
-static int64_t
-dsd_rdio_leftover_min_age_s(const dsd_rdio_api_config* api) {
-    int timeout_ms = 5000;
-    int attempts = 1;
-    (void)dsd_rdio_normalize_upload_options(api, &timeout_ms, &attempts);
-    const uint64_t job_ms = (uint64_t)attempts * ((uint64_t)timeout_ms + DSD_RDIO_RETRY_BACKOFF_MS);
-    const uint64_t lifetime_s = (job_ms * (DSD_RDIO_UPLOAD_QUEUE_MAX + 1U) + 999U) / 1000U;
-    const uint64_t day_s = UINT64_C(24) * 60U * 60U;
-    return (int64_t)(lifetime_s > day_s ? lifetime_s : day_s);
-}
-
-/* Once per run per folder, after the first job's private inputs there exist: remove what a run that ended without its
-   cleanup (killed, or a removal that failed) left in it. Only names dsd_rdio_upload_private_name() matches, in that
-   folder alone (no subfolder), never one with this process's token, and another run's only once it is older than
-   dsd_rdio_leftover_min_age_s(), so a second run exporting to the same folder keeps its live inputs. The age is a wall
-   clock one, read against the files' modification times. */
-static void
-dsd_rdio_clear_leftovers(const char* wav_path, const dsd_rdio_api_config* api) {
-    char folder[DSD_RDIO_PATH_MAX];
-    char key[DSD_RDIO_PATH_MAX];
-    if (dsd_rdio_path_folder(wav_path, folder, sizeof folder) != 0) {
-        return;
-    }
-    const char* list_dir = folder[0] != '\0' ? folder : ".";
-    if (dsd_path_canonical(list_dir, key, sizeof key) != 0) {
-        DSD_SNPRINTF(key, sizeof key, "%s", list_dir);
-    }
-    dsd_mutex_lock(&g_rdio_private_mutex);
-    int first = !dsd_rdio_folder_cleared_locked(key) && g_rdio_cleared_folder_count < DSD_RDIO_CLEARED_FOLDERS_MAX;
-    dsd_rdio_cleared_folder* entry = first ? (dsd_rdio_cleared_folder*)calloc(1, sizeof(*entry)) : NULL;
-    if (entry) {
-        DSD_SNPRINTF(entry->path, sizeof entry->path, "%s", key);
-        entry->next = g_rdio_cleared_folders;
-        g_rdio_cleared_folders = entry;
-        g_rdio_cleared_folder_count++;
-    }
-    dsd_mutex_unlock(&g_rdio_private_mutex);
-    if (!entry) {
-        return;
-    }
-
-    dsd_rdio_leftover_walk walk = {folder, dsd_realtime_time(), dsd_rdio_leftover_min_age_s(api), 0UL};
-    (void)dsd_dir_list(list_dir, dsd_rdio_remove_leftover_visit, &walk);
-    if (walk.removed > 0UL) {
-        LOG_INFO("Rdio export: removed %lu private upload input(s) an earlier run left in %s\n", walk.removed,
-                 list_dir);
-    }
-}
-
 /* The upload job of @p wav_path and @p meta_path, its API config checked, into @p out_job: 0, or -1 with none. With
    @p private_meta_src (--rdio-mode both: the sidecar's temp file) the job uploads from its own copies of the pair
-   (dsd_rdio_make_private_inputs()), made here, before the public sidecar is in place. */
+   (dsd_rdio_make_private_inputs()), made here, before the public sidecar is in place; after the user's Stop none are
+   made, and DSD_RDIO_UPLOAD_CANCELLED says so. */
 static int
 dsd_rdio_prepare_api_job(const dsd_opts* opts, int system_id, const char* wav_path, const char* meta_path,
                          const char* private_meta_src, int remove_meta_on_success, int remove_wav_on_success,
@@ -918,10 +746,12 @@ dsd_rdio_prepare_api_job(const dsd_opts* opts, int system_id, const char* wav_pa
     }
     /* The job holds its own copy now: this one goes. */
     DSD_SECURE_ZERO(&api, sizeof api);
-    if (rc == 0 && private_meta_src && dsd_rdio_make_private_inputs(*out_job, wav_path, private_meta_src) != 0) {
-        dsd_rdio_upload_job_free(*out_job);
-        *out_job = NULL;
-        rc = -1;
+    if (rc == 0 && private_meta_src) {
+        rc = dsd_rdio_make_private_inputs(*out_job, wav_path, private_meta_src);
+        if (rc != 0) {
+            dsd_rdio_upload_job_free(*out_job);
+            *out_job = NULL;
+        }
     }
     return rc;
 }
@@ -1989,11 +1819,13 @@ dsd_rdio_export_api(const dsd_opts* opts, const Event_History_I* event_struct, c
         dsd_rdio_upload_job_free(job);
         return -1;
     }
+    if (prepared == DSD_RDIO_UPLOAD_CANCELLED) {
+        /* The user's Stop: no upload of this run is sent any more. The public pair is DirWatch's all the same. */
+        LOG_INFO("Rdio API upload of %s not queued: uploads were stopped\n", wav_path);
+        return 0;
+    }
     if (prepared != 0) {
         return -1;
-    }
-    if (job->private_inputs) {
-        dsd_rdio_clear_leftovers(wav_path, &job->api);
     }
     if (dsd_rdio_enqueue_upload_job(job, wav_path) != 0) {
         dsd_rdio_upload_job_free(job);
