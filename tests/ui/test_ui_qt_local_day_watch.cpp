@@ -277,7 +277,7 @@ test_zone_change_moves_midnight(LocalDayWatch* watch) {
 }
 
 void
-test_reset(LocalDayWatch* watch) {
+test_reset(const LocalDayWatch* watch) {
     const QDate before = dsd_qt::realtimeCurrentDate();
     LocalDayWatch::resetClockForTest();
     const QDate after = dsd_qt::realtimeCurrentDate();
