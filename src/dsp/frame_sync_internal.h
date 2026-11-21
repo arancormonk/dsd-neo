@@ -205,9 +205,6 @@ int frame_sync_dpmr_decode_end(const uint8_t* wire, int key_offset, uint8_t* inf
 int frame_sync_dpmr_candidate_complete(const dsd_opts* opts, dsd_state* state);
 /** Whether a header or end frame is being read: no FS2 is taken inside it. */
 int frame_sync_dpmr_candidate_reading(const dsd_state* state);
-/* Whether a checked header is held for the END its frame predicts (frame_sync_dpmr.c): that END window is looked at
-   while candidates are read. */
-int frame_sync_dpmr_header_held(const dsd_state* state);
 /** Make the FS1 window @p window24 (sign-sliced, the newest symbol last) a pending header when it is the configured
  * polarity's FS1: 1 if it did. */
 int frame_sync_dpmr_arm_header(const dsd_opts* opts, dsd_state* state, const char* window24);

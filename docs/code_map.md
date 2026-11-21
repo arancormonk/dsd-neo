@@ -9155,13 +9155,8 @@ the stream-notice hooks' pattern: one that fails to initialize leaves the hook u
   FS1's misplaced 72 symbols early with the end of the header's FS1 read as its channel code, and the later candidate
   is checked on both its copies, MI1 included, at its own frame's end; no reading of its MI0 alone rules it out (a
   faded MI0 can pass on the earlier word's levels and fail on its own). A pending word is a sign pattern only, so one
-  that cannot read a frame (faded below `DSD_WARM_START_MIN_SPAN`) displaces nothing. The earlier header is not
-  dropped either: it is held (`dsd_dpmr_frame_sync::held_at`) with the END window its frame predicts, which is looked
-  at while the later candidate is read (the one FS3 matched inside a candidate's frame). An END that passes there
-  corroborates the held header: the header is accepted on that END's last symbol and the END on the next symbol, each
-  with `checked_frame_lag`, the symbols since its own frame ended, which the header run timing
-  (`dpmr_header_continues_call()`, `dpmr_header::lag_symbols`) measures from. With no END the held header expires once
-  its END window has passed, and should the later candidate then fail too, neither frame is published. Only FS2 and FS3 stand down inside a candidate. Once the
+  that cannot read a frame (faded below `DSD_WARM_START_MIN_SPAN`) displaces nothing. Should the later candidate then
+  fail, neither frame is published. Only FS2 and FS3 stand down inside a candidate. Once the
   frame's last symbol is in, it is
   read back from the soft symbol history, sliced on its own sync word's outer levels, and checked, in the
   specification's receive order: each 120-bit MI copy descrambled from a fresh X^9 + X^5 + 1 scrambler, then the 12 x

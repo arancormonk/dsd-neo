@@ -74,7 +74,6 @@ dpmr_take_checked_header(dsd_state* state, dpmr_header* out) {
     out->mi_detail = dpmr_field(mi, 64, 8);
     out->color_code = (int)GetdPmrColorCode(state->dpmr_sync.checked_cc);
     out->copies = state->dpmr_sync.checked_copies;
-    out->lag_symbols = state->dpmr_sync.checked_frame_lag;
     return 1;
 }
 
@@ -215,26 +214,19 @@ dpmr_publish_header_call(dsd_opts* opts, dsd_state* state, const dpmr_header* he
     }
 }
 
-/* Where @p header's frame ended on the stream: dispatched on its last symbol, or @p header's lag later. */
-static uint64_t
-dpmr_header_frame_end(const dsd_state* state, const dpmr_header* header) {
-    return header->lag_symbols <= state->symbol_clock ? state->symbol_clock - header->lag_symbols : 0U;
-}
-
 /* Whether the header being dispatched is the next message frame after the last call header, on the same stream. */
 static int
-dpmr_header_follows_call_header(const dsd_state* state, const dpmr_header* header) {
+dpmr_header_follows_call_header(const dsd_state* state) {
     const dsd_dpmr_sync_mark* last = &state->dpmr_sync.call_header;
-    const uint64_t frame_end = dpmr_header_frame_end(state, header);
     if (last->kind != DSD_DPMR_SYNC_FRAME_HEADER || last->epoch != state->symbol_clock_epoch
         || last->carrier_seq != state->carrier_seq || last->input != state->symbol_clock_input
-        || frame_end < last->clock) {
+        || state->symbol_clock < last->clock) {
         return 0;
     }
     /* Back to back: k message frames on, within the symbol a frame may slip, k up to the frames the last header said
        follow it (Table 5.71: a powersave header's WU), so a header lost in the run does not split the call; one, the
        next frame, after a normal header. */
-    const uint64_t since = frame_end - last->clock;
+    const uint64_t since = state->symbol_clock - last->clock;
     const uint64_t frames = (since + 1U) / DSD_DPMR_MESSAGE_FRAME_SYMBOLS;
     const uint64_t most = state->dpmr_sync.call_header_wu != 0U ? state->dpmr_sync.call_header_wu : 1U;
     const uint64_t at = frames * DSD_DPMR_MESSAGE_FRAME_SYMBOLS;
@@ -263,7 +255,7 @@ dpmr_header_names_open_call(const dsd_state* state, const dpmr_header* header) {
 
 int
 dpmr_header_continues_call(const dsd_state* state, const dpmr_header* header) {
-    return state != NULL && dpmr_header_opens_call(header) && dpmr_header_follows_call_header(state, header)
+    return state != NULL && dpmr_header_opens_call(header) && dpmr_header_follows_call_header(state)
            && dpmr_header_names_open_call(state, header);
 }
 
@@ -282,7 +274,7 @@ dpmr_header_powersave_wu(const dpmr_header* header) {
 static void
 dpmr_note_call_header(dsd_state* state, const dpmr_header* header, int continues) {
     dsd_dpmr_sync_mark* mark = &state->dpmr_sync.call_header;
-    mark->clock = dpmr_header_frame_end(state, header);
+    mark->clock = state->symbol_clock;
     mark->epoch = state->symbol_clock_epoch;
     mark->input = state->symbol_clock_input;
     mark->carrier_seq = state->carrier_seq;

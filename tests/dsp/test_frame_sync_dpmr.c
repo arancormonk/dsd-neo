@@ -906,64 +906,6 @@ test_faded_fs1_sign_pattern_does_not_displace_a_header(void) {
     free_state_buffers(g_state);
 }
 
-/* A header that passed on MI1 alone while a later FS1 that can read a frame is pending keeps its END window (issue
-   #890): the 24 symbols before a status poll's MI1 carry FS1's signs at half level (MI0's tail, so MI0 fails, and the
-   channel code), and its END follows at once. The END, checked where the header puts it, corroborates the header:
-   both are accepted, the header first, each at its own frame's end, as they are when no FS1 pattern is there. */
-static void
-test_end_corroborates_a_header_a_later_fs1_shadows(void) {
-    static const uint8_t k_preamble[DPMR_SPEC_PREAMBLE_DIBITS] = {
-        1, 1, 3, 3, 1, 1, 3, 3, 1, 1, 3, 3, 1, 1, 3, 3, 1, 1, 3, 3, 1, 1, 3, 3, 1, 1, 3, 3, 1, 1, 3, 3, 1, 1, 3, 3,
-    };
-    uint8_t info[DPMR_SPEC_MI_BITS];
-    uint8_t end[DPMR_SPEC_END_BITS];
-    uint8_t mi[DPMR_SPEC_MI_WIRE];
-    uint8_t cc[24];
-    uint8_t mi0_cc[(DPMR_SPEC_MI_WIRE + 24) / 2];
-    uint8_t fs1[24];
-    dpmr_spec_header poll = k_voice_header;
-    poll.mt = 0x8U; /* a Status Polling Request, which an END follows (Tables 10.7, 10.8) */
-    dpmr_spec_header_bits(&poll, info);
-    end_info(end);
-    dpmr_spec_encode_mi(info, mi);
-    dpmr_spec_put(cc, 0, 24, 0x5D5D55U);
-    dpmr_spec_dibits(mi, DPMR_SPEC_MI_WIRE, mi0_cc);
-    dpmr_spec_dibits(cc, 24, mi0_cc + (DPMR_SPEC_MI_WIRE / 2));
-    assert(dpmr_spec_word(DPMR_FRAME_SYNC_1, fs1) == 24);
-    DSD_MEMCPY(mi0_cc + sizeof(mi0_cc) - 24U, fs1, 24U);
-
-    setup(g_opts, g_state, MODE_DPMR, 0);
-    stream_reset();
-    put_filler(80);
-    put_dibits(k_preamble, DPMR_SPEC_PREAMBLE_DIBITS);
-    put_word(DPMR_FRAME_SYNC_1);
-    put_dibits(mi0_cc, (int)sizeof(mi0_cc));
-    fade(g_len - 24, g_len, 0.5f); /* outer levels +-1.5: a span of 3, a word that can read a frame */
-    put_bits(mi, DPMR_SPEC_MI_WIRE);
-    const int header_end = g_len;
-    put_end(DPMR_FRAME_SYNC_3, end, END_ONE_RUN, 0, 0);
-    const int end_at = g_len;
-    put_filler(200);
-    int sync = hunt(g_opts, g_state, g_len);
-    if (sync != DSD_SYNC_DPMR_FS1_POS) {
-        DSD_FPRINTF(stderr, "shadowed header: sync %d at %d, want %d (frame end %d)\n", sync, g_pos,
-                    DSD_SYNC_DPMR_FS1_POS, header_end);
-    }
-    assert(sync == DSD_SYNC_DPMR_FS1_POS);
-    assert(checked_bits_equal(g_state, info, DPMR_SPEC_MI_BITS));
-    assert(g_state->dpmr_sync.checked_frame_lag == (uint32_t)(g_pos - header_end));
-    sync = hunt(g_opts, g_state, g_len);
-    if (sync != DSD_SYNC_DPMR_FS3_POS) {
-        DSD_FPRINTF(stderr, "its END: sync %d at %d, want %d (frame end %d)\n", sync, g_pos, DSD_SYNC_DPMR_FS3_POS,
-                    end_at);
-    }
-    assert(sync == DSD_SYNC_DPMR_FS3_POS);
-    assert(checked_bits_equal(g_state, end, DPMR_SPEC_END_BITS));
-    assert(g_state->dpmr_sync.checked_frame_lag == (uint32_t)(g_pos - end_at));
-    assert(hunt(g_opts, g_state, g_len) == DSD_SYNC_NONE);
-    free_state_buffers(g_state);
-}
-
 /* A later FS1 whose levels can read a frame is kept to its own check, MI1 included, before either frame is published
    (issue #890). A false FS1 72 symbols before a header's frames the header's MI0 as its own MI1; with the false word
    and the header's MI0 faded alike, that MI0 passes on the false word's levels but fails on the header's own FS1
@@ -1178,7 +1120,6 @@ main(int argc, char** argv) {
     test_false_fs1_words_before_a_header();
     test_faded_fs1_sign_pattern_does_not_displace_a_header();
     test_viable_later_fs1_is_checked_on_both_copies();
-    test_end_corroborates_a_header_a_later_fs1_shadows();
     test_reserved_start_mode_copy_is_no_copy();
     test_header_both_polarities();
     test_header_copies();

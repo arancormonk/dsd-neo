@@ -333,22 +333,6 @@ typedef struct {
     /* A header's MT and PARMS (DSD_DPMR_HEADER_MI_BITS), or an END's information bits (DSD_DPMR_END_INFO_BITS). */
     uint8_t checked_bits[DSD_DPMR_HEADER_MI_BITS];
     uint8_t checked_cc[DSD_DPMR_HEADER_CC_BITS]; /* a header's channel code bits, as received */
-    /* Symbols between the checked frame's last symbol and checked_clock: 0, but for a held header its END corroborated
-       and that END (frame_sync_dpmr.c), accepted that much later. */
-    uint32_t checked_frame_lag;
-    /* A header that passed on MI1 alone while a later FS1 that can read a frame is read, whose MI0 its MI1 may be
-       (frame_sync_dpmr.c): neither is taken on that sign pattern alone. The held header is accepted only when the END
-       its frame predicts (fs3_at) passes its check; held_at is its frame's last symbol and stream, kind
-       DSD_DPMR_SYNC_FRAME_HEADER while held. */
-    dsd_dpmr_sync_mark held_at;
-    uint8_t held_copies;
-    uint8_t held_bits[DSD_DPMR_HEADER_MI_BITS];
-    uint8_t held_cc[DSD_DPMR_HEADER_CC_BITS];
-    /* The END that corroborated a held header, accepted on the symbol after it (one frame a symbol); queued_end_at is
-       its frame's last symbol and stream, kind DSD_DPMR_SYNC_FRAME_END while queued. */
-    dsd_dpmr_sync_mark queued_end_at;
-    uint8_t queued_end_copies;
-    uint8_t queued_end_bits[DSD_DPMR_END_INFO_BITS];
     /* The dPMR decoder's own: where the last checked header that opened or went on with a call was accepted
        (src/protocol/dpmr/dpmr_header.c, dpmr_header_continues_call()), kind DSD_DPMR_SYNC_FRAME_HEADER when set. */
     dsd_dpmr_sync_mark call_header;
