@@ -9056,7 +9056,10 @@ the stream-notice hooks' pattern: one that fails to initialize leaves the hook u
   audio filters, which then carry the flags as the tracker's. On an AM channel, one with no plan (8 and 10 kHz NFM,
   low DSP rates, an unfiltered channel at 16 kHz or less), or the 9600 bit/s FSK path EDACS reads (its discriminator's
   output is slowly centred on the carrier and scaled to counts, not the radians the plan is calibrated on), `squelch_auto_wanted()` runs the tracker instead, N as its margin. Its plan follows the same `dsd_demod_squelch_plan_key` as the tracker's, which carries the cascade's pass
-  count (designed only when NOISE needs it), and it keeps its own context record (`demod_state::noise_context`), so a
+  count (designed only when NOISE needs it; the last four valid plans stay kept in `demod_state::noise_plan_cache`,
+  the one taken longest ago giving way, since a design calibrates on 2 s of noise, 30-45 ms on the desktop, and a scan
+  alternating NFM widths would otherwise design one at every visit, issue #899), and it keeps its own context record
+  (`demod_state::noise_context`), so a
   spell under NOISE never stores the tracker's floor under another channel; a new context or
   `dsd_demod_reset_filter_state()` starts it over, closed. The IO layer's status adds which squelch ran and its quieting
   (`rtl_stream_squelch_status::noise`, `quieting_db`). Tests: `DSP_NFM_NOISE_SQUELCH`, `DSP_NOISE_SQUELCH_DEMOD`,

@@ -125,6 +125,17 @@ typedef struct {
     dsd_live_iq_step_plan step;
 } dsd_demod_squelch_plan_key;
 
+/* Noise squelch plans kept for the channel plans run last (issue #899): designing one calibrates on 2 s of noise (tens
+   of milliseconds on the demod thread), so a scan that alternates NFM widths designs each one once. */
+enum { DSD_DEMOD_NOISE_PLAN_CACHE = 4 };
+
+/* One kept plan: what it was designed for, and when it was last taken (0: empty). */
+typedef struct {
+    dsd_demod_squelch_plan_key key;
+    dsd_noise_squelch_plan plan;
+    uint64_t used;
+} dsd_demod_noise_plan_entry;
+
 struct demod_state {
 #ifdef __cplusplus
     demod_state() noexcept { DSD_MEMSET(this, 0, sizeof(*this)); }
@@ -334,6 +345,11 @@ struct demod_state {
     dsd_squelch_floor_key noise_context;
     dsd_demod_squelch_plan_key noise_plan;
     dsd_noise_squelch noise_squelch;
+    /* The valid plans designed for the last channel plans, the one taken longest ago giving way, and how many plans
+       were designed (a count for tests). Demod thread only. */
+    dsd_demod_noise_plan_entry noise_plan_cache[DSD_DEMOD_NOISE_PLAN_CACHE];
+    uint64_t noise_plan_cache_clock;
+    uint64_t noise_plan_designs;
     /* The noise both squelches see through the live I/Q rate step (issue #806): built for the step's active plan in
        the rate chain's transaction (dsd_demod_squelch_step_model_sync()), and the source of both plans while the
        step runs. Released by rtl_demod_cleanup(). */
