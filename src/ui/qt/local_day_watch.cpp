@@ -6,11 +6,12 @@
 #include "local_day_watch.h"
 
 #include <QCoreApplication>
-#include <QDateTime>
+#include <QDebug>
 #include <QGuiApplication>
 #include <QPointer>
 #include <QTimeZone>
 #include <Qt>
+#include <type_traits>
 
 #include "realtime_clock.h"
 

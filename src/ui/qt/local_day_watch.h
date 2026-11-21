@@ -30,7 +30,7 @@
 #ifndef DSD_NEO_SRC_UI_QT_LOCAL_DAY_WATCH_H_
 #define DSD_NEO_SRC_UI_QT_LOCAL_DAY_WATCH_H_
 
-#include <QDate>
+#include <QDateTime>
 #include <QObject>
 #include <QTimer>
 #include <QtGlobal>
