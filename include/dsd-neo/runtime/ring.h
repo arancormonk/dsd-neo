@@ -16,6 +16,7 @@
 #include <stdint.h>
 
 #include <dsd-neo/platform/threading.h>
+#include <dsd-neo/runtime/decode_clock.h>
 
 /* The flag bit (struct output_state::flags) that says the voice lane ran for a sample and its voice sample is in
    struct output_state::voice. The squelch's DSD_SQUELCH_FLAG_CLOSED is bit 0. */
@@ -39,12 +40,25 @@ struct output_state {
     size_t capacity = 0;
     std::atomic<size_t> head{0U};
     std::atomic<size_t> tail{0U};
+    /* Set up for monotonic waits (dsd_cond_init_monotonic()), and waited on only through output_ring_wait_ready(). */
     dsd_cond_t ready;
     dsd_mutex_t ready_m;
     dsd_cond_t space;
     std::atomic<uint64_t> write_timeouts{0U}; /* producer waited for space */
     std::atomic<uint64_t> read_timeouts{0U};  /* consumer waited for data */
 };
+
+/**
+ * @brief Wait on @p o's ready condition, @p o->ready_m held, at most @p timeout_ms to a monotonic deadline, so a wall
+ * clock set back never stretches the wait (and with it a hunt's service of what waits on the decoder).
+ *
+ * @return 0 when signaled, non-zero on timeout or error.
+ */
+static inline int
+output_ring_wait_ready(struct output_state* o, unsigned int timeout_ms) {
+    return dsd_cond_timedwait_monotonic(&o->ready, &o->ready_m,
+                                        dsd_realtime_mono_ns() + (uint64_t)timeout_ms * 1000000ULL);
+}
 
 /**
  * @brief Number of queued samples in the output ring.

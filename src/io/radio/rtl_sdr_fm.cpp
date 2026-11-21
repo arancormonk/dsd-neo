@@ -8445,7 +8445,8 @@ dongle_init(struct dongle_state* s) {
 static void
 output_init(struct output_state* s) {
     s->rate = rtl_dsp_bw_hz;
-    dsd_cond_init(&s->ready);
+    /* Waited on to monotonic deadlines (output_ring_wait_ready()): a wall clock set back never stretches a wait. */
+    dsd_cond_init_monotonic(&s->ready);
     dsd_cond_init(&s->space);
     dsd_mutex_init(&s->ready_m);
     /* Allocate SPSC ring buffer */
@@ -11352,7 +11353,7 @@ rtl_stream_read_live_samples(float* out, float* voice, uint8_t* flags, size_t co
         }
 
         dsd_mutex_lock(&output.ready_m);
-        int wait_rc = dsd_cond_timedwait(&output.ready, &output.ready_m, 10);
+        int wait_rc = output_ring_wait_ready(&output, 10U);
         dsd_mutex_unlock(&output.ready_m);
         if (wait_rc != 0) {
             output.read_timeouts.fetch_add(1, std::memory_order_relaxed);
@@ -11522,7 +11523,7 @@ rtl_stream_replay_wait_for_output(void) {
             dsd_cond_broadcast(&s->replay_demand_cond);
         }
         if (!rtl_stream_replay_input_finished() && !rtl_stream_replay_read_stopped()) {
-            (void)dsd_cond_timedwait(&output.ready, &output.ready_m, 10);
+            (void)output_ring_wait_ready(&output, 10U);
         }
     }
     dsd_mutex_unlock(&output.ready_m);
