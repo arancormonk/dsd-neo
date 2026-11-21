@@ -1052,7 +1052,9 @@ Android session whose saved extra arguments carry one refuses to start the same 
   reservation from another network that uses the same pseudo source and group can end the call's transmission; a
   DM-CONNECT ACK to the called party's new pseudo SSI shows the call as a new row; through a gateway, the gateway's own
   reservation is not recognised, so such a call ends after 3 seconds without signalling or speech; a stolen-channel
-  message that leaves its source out loses the call's caller, so its later reservation is missed; stolen-channel
+  message that leaves its source out loses the call's caller, so its later reservation is missed; a stolen-channel
+  message of the call also makes the decoder forget the repeater the call came through, so a later reservation of the
+  same source through another repeater ends the call shown while its traffic still decodes; stolen-channel
   signalling is read with the route of the last sync burst on the carrier, even another call's; a co-channel caller's
   presence check, a short data message sent in pieces, or a second call's set-up or occupation can take the call's row
   or stop its traffic decoding until its next sync burst.

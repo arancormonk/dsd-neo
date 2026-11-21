@@ -15177,6 +15177,10 @@ single "current call".
     the call's.
   - A DMAC-DATA call PDU that leaves its source address out (EN 300 396-3 clause 8.5.2.1.2) replaces the call's master
     with no source, so the master's later DM-RESERVED no longer reaches the call record.
+  - A DMAC-DATA call PDU (a stolen-channel DM-OCCUPIED, say) carries no repeater or gateway address (table 23), and
+    `dmo_call_from()` takes the call record's party from it (`tetra_dmo_party_of()`), so the record forgets the relay
+    its DSB named: a later DM-RESERVED of the same source SSI and MNI through another repeater then ends the published
+    call, while the transmission, whose party (`dmo_tx_party`) comes from DSBs alone, stays in progress.
   - A DMAC-DATA is read with the communication type of the last DSB on the carrier (`tetra_state_t::dmo_comm_type`),
     even one of another call, so after another party's direct mode DSB a gateway call's STCH can be misread and its end
     missed.
