@@ -332,6 +332,8 @@ static int g_beat_during_connect = 0;
 /* The services the reconnect made before its connect, and how long each service takes (a tick waiting on a rigctl
    reply). */
 static int g_services_before_connect = -1;
+/* A beat the watchdog posts after the connect's last cancel check, as its final wait times out (set by a case). */
+static int g_beat_after_connect_check = 0;
 static unsigned int g_service_ms = 0U;
 static int g_services;
 static int g_beat;
@@ -354,6 +356,10 @@ fake_tcp_connect(const char* host, int port, int resolve, dsd_socket_cancel_fn c
     }
     if (cancelled && cancelled(context)) {
         return DSD_INVALID_SOCKET;
+    }
+    if (g_beat_after_connect_check) {
+        g_beat = g_beat_after_connect_check;
+        g_beat_after_connect_check = 0;
     }
     if (g_tcp_connects >= 3 && !g_pending) {
         exitflag = 1; /* end an M17 session's endless retry */
@@ -771,6 +777,22 @@ test_a_tcp_reconnect_services_the_beat(void) {
     }
     close_owned_tcp_socket(opts);
     g_defer = 0;
+    g_beat = BEAT_NONE;
+
+    /* A connect that timed out, with a beat posted after its last check: telling a cancel from a lost server runs no
+       tick (a rigctl round trip past the connect's deadline, which would put off the input's fallback). The beat stands
+       for the engine loop. */
+    install_watchdog_service();
+    init_tcp_session(opts, state, 0);
+    g_beat_after_connect_check = BEAT_REFUSED;
+    (void)getSymbol(opts, state, 0);
+    if (g_beat != BEAT_REFUSED || state->input_fallback_pending != 1) {
+        DSD_FPRINTF(stderr,
+                    "FAIL: a timed-out connect ran a tick to tell a cancel from a lost server (beat left %d, fallback "
+                    "%d)\n",
+                    g_beat, state->input_fallback_pending);
+        g_failures++;
+    }
     g_beat = BEAT_NONE;
     g_beat_during_connect = 0;
     dsd_frame_sync_hooks_set(NULL);

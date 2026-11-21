@@ -2902,12 +2902,17 @@ typedef struct {
     int moved;            /* a P25 tick in one of the reconnect's waits moved the chain */
     int connecting;       /* the connect is under way: its socket exists, and the server may already send on it */
     int moved_in_connect; /* a tick moved the chain while the connect was under way */
+    int gave_up;          /* a cancel check answered that the reconnect gives up */
 } symbol_tcp_reconnect_ctx;
 
 static int
 symbol_tcp_reconnect_cancelled_decoding(void* context) {
-    (void)context;
-    return dsd_exitflag_load() == 1;
+    symbol_tcp_reconnect_ctx* ctx = context;
+    const int cancelled = dsd_exitflag_load() == 1;
+    if (ctx != NULL && cancelled) {
+        ctx->gave_up = 1;
+    }
+    return cancelled;
 }
 
 /* A hunt's reconnect gives way to shutdown and to a queued command, checked first so that neither starts a tune on a
@@ -2919,15 +2924,19 @@ symbol_tcp_reconnect_cancelled_decoding(void* context) {
    read hands back before the new connection's first sample (symbol_tcp_reconnect_read()). */
 static int
 symbol_tcp_reconnect_cancelled_hunting(void* context) {
+    symbol_tcp_reconnect_ctx* ctx = context;
     if (dsd_exitflag_load() == 1 || dsd_runtime_controls_pending()) {
+        if (ctx != NULL) {
+            ctx->gave_up = 1;
+        }
         return 1;
     }
-    symbol_tcp_reconnect_ctx* ctx = context;
     if (ctx == NULL) {
         return 0;
     }
     const int serviced = frame_sync_service_p25_watchdog(ctx->opts, ctx->state);
     if (serviced == FRAME_SYNC_WD_DEFERRED) {
+        ctx->gave_up = 1;
         return 1;
     }
     if (serviced == FRAME_SYNC_WD_MOVED) {
@@ -3056,8 +3065,11 @@ symbol_tcp_reconnect(dsd_opts* opts, dsd_state* state, dsd_socket_cancel_fn canc
             return 1;
         }
         LOG_ERROR("TCP Socket Connection Error.\n");
-        /* A connect a queued command cancelled lost no server: the read gives way to the command first. */
-        if (cancelled(context)) {
+        /* A connect a queued command cancelled lost no server: the read gives way to the command first. Told from the
+           checks' own answers and from shutdown, never by another check, which would service a beat (a tick, and a
+           rigctl round trip) after the connect's deadline. */
+        if (context->gave_up || dsd_exitflag_load() == 1
+            || (cancelled == symbol_tcp_reconnect_cancelled_hunting && dsd_runtime_controls_pending())) {
             return -1;
         }
         if (!dsd_m17_only_session(opts)) {
@@ -3083,7 +3095,7 @@ symbol_tcp_reconnect_read(dsd_opts* opts, dsd_state* state, float* sample_out, c
     }
     const dsd_socket_cancel_fn cancelled =
         work->hunting ? symbol_tcp_reconnect_cancelled_hunting : symbol_tcp_reconnect_cancelled_decoding;
-    symbol_tcp_reconnect_ctx context = {opts, state, 0, 0, 0};
+    symbol_tcp_reconnect_ctx context = {opts, state, 0, 0, 0, 0};
     const int reconnected = symbol_tcp_reconnect(opts, state, cancelled, &context);
     /* A P25 tick moved the chain while the reconnect waited: the old connection's staged tail and resampler history
        are a carrier the receiver left, and go whatever the reconnect's outcome. */
