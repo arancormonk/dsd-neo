@@ -2143,7 +2143,13 @@ test_process_mbe_frame_dstar_checked_media_follows_the_decode(void) {
     processMbeFrame(&opts, &state, owner_of(state.synctype), NULL, good, NULL);
     rc |= expect_eq_int("dstar-checked no scan: a call", dsd_call_state_get(&state, 0U, &call) > 0, 1);
     rc |= expect_eq_int("dstar-checked no scan: no checked media", call.checked_media_updated_m > 0.0, 0);
+    /* A paused trunk scan keeps its configured flag, but its manual session has no reader either. */
     opts.trunk_scan_enabled = 1;
+    state.trunk_scan_paused = 1U;
+    processMbeFrame(&opts, &state, owner_of(state.synctype), NULL, good, NULL);
+    rc |= expect_eq_int("dstar-checked paused scan: a call", dsd_call_state_get(&state, 0U, &call) > 0, 1);
+    rc |= expect_eq_int("dstar-checked paused scan: no checked media", call.checked_media_updated_m > 0.0, 0);
+    state.trunk_scan_paused = 0U;
     for (int f = 0; f < 6; f++) {
         now_ns += 20000000ULL;
         dsd_decode_clock_test_set_ns(now_ns);
@@ -2183,8 +2189,8 @@ test_process_mbe_frame_dstar_checked_media_follows_the_decode(void) {
 }
 
 /* Issue #890: P25 speech the decoder cannot decrypt (encrypted, no key, played under the unmute override) earns no
- * vocoder credit, however cleanly mbelib decodes the ciphertext: its scan credit is the checked LDU or ESS. The same
- * frames of a clear call do earn it. */
+ * scan voice credit, however cleanly mbelib decodes the ciphertext: --scan-voice-only counts decoded speech only. The
+ * same frames of a clear call do earn it. */
 static int
 test_process_mbe_frame_p25_undecryptable_speech_earns_no_checked_media(void) {
     int rc = 0;
@@ -3068,6 +3074,59 @@ test_process_mbe_frame_mixed_clear_and_bp(void) {
         DSD_FPRINTF(stderr, "mixed clear/BP production processing regression\n");
     }
     dsd_state_ext_free_all(state);
+    free(state);
+    free(opts);
+    return rc;
+}
+
+/* Issue #890: the scan's voice credit is decoded speech the chain could play, in every protocol. A DMR frame whose call
+ * is encrypted with no key decodes as speech (the FEC holds on the ciphertext) but cannot be decrypted: no checked
+ * media, whatever --scan-voice-only would make of it. The same frame clear, or decrypted with its Basic Privacy key,
+ * is checked media. */
+static int
+test_process_mbe_frame_dmr_undecryptable_speech_earns_no_checked_media(void) {
+    dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(*opts));
+    dsd_state* state = (dsd_state*)calloc(1, sizeof(*state));
+    if (!opts || !state) {
+        free(opts);
+        free(state);
+        return 1;
+    }
+    static mbe_parms cur, prev, enhanced, cur2, prev2, enhanced2;
+    char imbe[8][23] = {{0}}, ambe[4][24] = {{0}}, imbe7100[7][24] = {{0}};
+    int rc = 0;
+    static const char* const names[] = {"dmr clear", "dmr encrypted, no key", "dmr encrypted, key"};
+    for (int scenario = 0; scenario < 3; scenario++) {
+        char decoded[49];
+        int errs = 0, errs2 = 0;
+        mbe_process_result result;
+        rc |= prepare_active_ambe2450_fixture(ambe, decoded, &errs, &errs2, &result);
+        init_mbe_state(state, &cur, &prev, &enhanced, &cur2, &prev2, &enhanced2);
+        DSD_MEMSET(opts, 0, sizeof(*opts));
+        pass_through_voice_chain(opts);
+        opts->floating_point = 1;
+        opts->audio_gain = 1.0f;
+        opts->audio_gainR = 1.0f;
+        opts->trunk_scan_enabled = 1;
+        state->synctype = DSD_SYNC_DMR_BS_VOICE_POS;
+        state->currentslot = 0;
+        state->K = scenario == 2 ? 1 : 0;
+        state->dmr_fid = state->dmr_fidR = 0x10;
+        state->dmr_so = state->dmr_soR = scenario == 0 ? 0 : 0x40;
+        dsd_decode_clock_use_test(3000000000000ULL);
+        for (int f = 0; f < 8; f++) {
+            dsd_decode_clock_test_set_ns(3000000000000ULL + ((uint64_t)f * 20000000ULL));
+            processMbeFrame(opts, state, owner_of(state->synctype), imbe, ambe, imbe7100);
+        }
+        dsd_call_snapshot call;
+        char label[96];
+        DSD_SNPRINTF(label, sizeof label, "%s: a call with media", names[scenario]);
+        rc |= expect_eq_int(label, dsd_call_state_get(state, 0U, &call) > 0 && call.media_updated_m > 0.0, 1);
+        DSD_SNPRINTF(label, sizeof label, "%s: checked media", names[scenario]);
+        rc |= expect_eq_int(label, call.checked_media_updated_m > 0.0, scenario != 1);
+        dsd_decode_clock_use_system();
+        dsd_state_ext_free_all(state);
+    }
     free(state);
     free(opts);
     return rc;
@@ -7638,6 +7697,7 @@ main(void) {
     rc |= test_process_mbe_frame_dstar_header_voice_decodes_as_ambe2400();
     rc |= test_process_mbe_frame_dstar_checked_media_follows_the_decode();
     rc |= test_process_mbe_frame_p25_undecryptable_speech_earns_no_checked_media();
+    rc |= test_process_mbe_frame_dmr_undecryptable_speech_earns_no_checked_media();
     rc |= test_process_mbe_frame_x2_dstar_wav_honors_talkgroup_policy();
     rc |= test_process_mbe_frame_mbe_capture_honors_record_policy();
     rc |= test_process_mbe_frame_p25p1_capture_honors_reverse_mute();

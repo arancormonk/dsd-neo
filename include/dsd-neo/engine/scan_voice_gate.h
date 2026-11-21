@@ -34,12 +34,13 @@ typedef struct {
 /**
  * Probe both call slots for policy-allowed checked voice media (issue #890).
  *
- * Only a call's checked media counts: the frames its decoder output as speech, successfully and unconcealed
- * (dsd_call_state_note_checked_media()), at least 100 ms of it, never a frame's media mark before
+ * Only a call's checked media counts: the frames its decoder output as speech, successfully and unconcealed, clear or
+ * decrypted (dsd_call_state_note_checked_media()), at least 100 ms of it, never a frame's media mark before
  * it is decoded; and only media read on the scan visit and carrier in force now (dsd_state_scan_observation_is_current()):
  * a call another visit or a tune still in flight heard, ended or not, counts nothing, even with the same decode times.
  * Within the visit the timestamps are raw call-state anchors and may predate the hold window: callers apply their own
- * freshness bound, and a trunk-scan caller its own check that the visit is its target's landing. Both result fields
+ * freshness bound, and a trunk-scan caller its own check that the visit is its target's landing. The encrypted-call
+ * tuning rule applies before any talkgroup is needed: under it an encrypted call counts nothing. Both result fields
  * are initialized to -1. Returns -1 for invalid arguments, 0 when no qualifying media exists, and 1 when retained media
  * exists.
  */

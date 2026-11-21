@@ -587,6 +587,47 @@ test_probe_binds_media_to_its_visit(void) {
     fixture_free(&fix);
 }
 
+/* Issue #890: the encrypted-call tuning rule needs no talkgroup. A call known encrypted, its target not decoded yet (or
+ * an M17 call, outside talkgroup policy), holds nothing under --enc-lockout; with encrypted calls allowed it holds. */
+static void
+test_encrypted_lockout_needs_no_target(void) {
+    for (int m17 = 0; m17 <= 1; m17++) {
+        for (int allowed = 0; allowed <= 1; allowed++) {
+            gate_fixture fix;
+            if (fixture_init(&fix) != 0) {
+                DSD_FPRINTF(stderr, "FAIL: %s: fixture\n", __func__);
+                g_failures++;
+                return;
+            }
+            fix.opts->trunk_tune_enc_calls = allowed;
+            dsd_call_observation obs;
+            DSD_MEMSET(&obs, 0, sizeof(obs));
+            obs.protocol = m17 ? DSD_SYNC_M17_STR_POS : DSD_SYNC_P25P1_POS;
+            obs.slot = 0U;
+            obs.kind = DSD_CALL_KIND_GROUP_VOICE;
+            obs.observed_m = 100.0;
+            (void)dsd_call_state_observe(fix.state, &obs, DSD_CALL_BOUNDARY_BEGIN);
+            dsd_call_crypto_update update;
+            DSD_MEMSET(&update, 0, sizeof(update));
+            update.classification = DSD_CALL_CRYPTO_ENCRYPTED;
+            update.observed_m = 100.0;
+            (void)dsd_call_state_update_crypto(fix.state, 0U, obs.protocol, &update);
+            (void)decoded_media(fix.state, 0U, 1, 100.0);
+            (void)decoded_media(fix.state, 0U, 1, 100.2);
+            const dsd_scan_voice_probe_result media = probe_voice(&fix);
+            if (allowed) {
+                CHECK(m17 ? "M17 encrypted, allowed: holds" : "no target, encrypted allowed: holds",
+                      media.retained_media_m > 0.0);
+            } else {
+                CHECK(m17 ? "M17 encrypted under the lockout: nothing"
+                          : "no target, encrypted under the lockout: nothing",
+                      media.retained_media_m < 0.0);
+            }
+            fixture_free(&fix);
+        }
+    }
+}
+
 static void
 test_reacquired_segment_reearns_span(void) {
     static const dsd_call_end_reason reasons[] = {
@@ -2139,6 +2180,7 @@ main(void) {
     test_terminator_before_first_tick_holds();
     test_span_debounce();
     test_unchecked_media_never_qualifies();
+    test_encrypted_lockout_needs_no_target();
     test_probe_binds_media_to_its_visit();
     test_reacquired_segment_reearns_span();
     test_non_media_updates_do_not_extend_hold();

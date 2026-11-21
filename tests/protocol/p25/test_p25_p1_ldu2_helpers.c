@@ -361,30 +361,6 @@ p25_crypto_resolve_checked(dsd_opts* opts, dsd_state* state, dsd_p25_crypto_phas
     return resolved;
 }
 
-/* Issue #890: what the LDU told its crypto-gated voice's scan credit (p25p1_ldu_note_gated_voice(), unit-tested in
-   P25_P1_LDU_HELPERS): the start it read, whether its voice was gated, and whether its RS check passed hard. */
-static int g_gated_note_calls;
-static int g_gated_note_gated;
-static int g_gated_note_checked;
-static double g_gated_note_begun;
-
-double
-// NOLINTNEXTLINE(misc-use-internal-linkage)
-p25p1_ldu_gated_voice_begin(const dsd_opts* opts) {
-    return dsd_opts_scan_uses_checked_media(opts) ? 7.0 : -1.0;
-}
-
-void
-// NOLINTNEXTLINE(misc-use-internal-linkage)
-p25p1_ldu_note_gated_voice(const dsd_opts* opts, dsd_state* state, double begun_m, int gated, int hard_checked) {
-    (void)opts;
-    (void)state;
-    g_gated_note_calls++;
-    g_gated_note_begun = begun_m;
-    g_gated_note_gated = gated;
-    g_gated_note_checked = hard_checked;
-}
-
 #include "../../../src/protocol/p25/phase1/p25p1_ldu2.c"
 
 #if defined(__GNUC__) && !defined(__cplusplus)
@@ -1178,38 +1154,6 @@ test_ldu2_soft_recovered_crypto_is_not_received(void) {
     return rc;
 }
 
-/* Issue #890: an LDU2 whose voice the crypto gate keeps from the vocoder (encrypted, no key) is the call's scan voice
-   credit once its RS check passed hard; one whose check failed is none; one whose voice was decoded names no gating. */
-static int
-test_ldu2_gated_voice_is_credited_by_its_encryption_sync(void) {
-    static dsd_opts opts;
-    static dsd_state state;
-    int rc = 0;
-    for (int c = 0; c < 4; c++) {
-        DSD_MEMSET(&opts, 0, sizeof(opts));
-        DSD_MEMSET(&state, 0, sizeof(state));
-        reset_hook_counters();
-        opts.trunk_scan_enabled = 1;
-        /* Case 3: the unmute override plays the undecryptable voice, which still earns no vocoder credit. */
-        opts.trunk_tune_enc_calls = c == 3 ? 1 : 0;
-        opts.unmute_encrypted_p25 = c == 3 ? 1 : 0;
-        state.p25_crypto_state[0] = c == 2 ? DSD_P25_CRYPTO_CLEAR : DSD_P25_CRYPTO_BLOCKED;
-        g_hard_rs_result = c == 1 ? 1 : 0;
-        g_soft_rs_result = 1; /* no soft recovery either */
-        g_gated_note_calls = 0;
-        processLDU2(&opts, &state);
-        static const char* const whats[] = {"gated, checked", "gated, RS failed", "decoded", "unmuted, undecryptable"};
-        const char* what = whats[c];
-        if (g_gated_note_calls != 1 || g_gated_note_gated != (c != 2) || g_gated_note_checked != (c != 1)
-            || g_gated_note_begun < 6.5) {
-            DSD_FPRINTF(stderr, "LDU2 gated voice %s: %d notes, gated %d, checked %d, begun %.1f\n", what,
-                        g_gated_note_calls, g_gated_note_gated, g_gated_note_checked, g_gated_note_begun);
-            rc = 1;
-        }
-    }
-    return rc;
-}
-
 int
 main(void) {
     int rc = 0;
@@ -1233,7 +1177,6 @@ main(void) {
     rc |= test_ldu2_encrypted_trunk_lockout_state();
     rc |= test_ldu2_split_by_a_carrier_boundary_publishes_no_encryption_sync();
     rc |= test_ldu2_cut_by_an_input_interruption_plays_and_publishes_nothing_after_the_cut();
-    rc |= test_ldu2_gated_voice_is_credited_by_its_encryption_sync();
     dsd_decode_clock_use_system();
     return rc;
 }

@@ -46,6 +46,7 @@
 #include <dsd-neo/runtime/exitflag.h>
 #include <dsd-neo/runtime/rtl_stream_metrics_hooks.h>
 #include <dsd-neo/runtime/shutdown.h>
+#include <dsd-neo/runtime/tuner_owner.h>
 #include <mbelib-neo/mbelib.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -2494,10 +2495,40 @@ mbe_capture_frame(dsd_opts* opts, dsd_state* state, const mbe_frame_ctx_t* frame
     }
 }
 
+/* The call slot a frame of @p protocol on @p current_slot is media of: X2-TDMA, DMR and P25 Phase 2 by the slot being
+   decoded, every other protocol slot 0. */
+static uint8_t
+mbe_checked_media_slot(int protocol, int current_slot) {
+    if ((DSD_SYNC_IS_X2TDMA(protocol) || DSD_SYNC_IS_DMR(protocol) || DSD_SYNC_IS_P25P2(protocol))
+        && current_slot == 1) {
+        return 1U;
+    }
+    return 0U;
+}
+
+/* What the vocoder output for the frame (issue #890): decoded speech, the scan's voice credit
+   (dsd_call_state_note_checked_media()). A speech frame mbelib-neo synthesized with nothing concealed counts only when
+   the voice chain could play it as speech: the receive policy admits it (@p j's admission) and it is clear or decrypted
+   (mbe_frame_decodable(), the chain's own decodability, never a user mute). Encrypted voice without a key never counts,
+   whatever its FEC made of the ciphertext, in every protocol; nor does a failed, concealed, muted or tone frame, though
+   it plays. Judged by the frame's own protocol (a YSF or dPMR frame through another protocol's decoder included), and
+   only while a scan that reads it runs: otherwise nothing more is done on the voice path. */
+static void
+mbe_note_checked_media(const dsd_opts* opts, dsd_state* state, int slot, const mbe_frame_ctx_t* frame_ctx,
+                       const mbe_frame_judgement* j) {
+    if (frame_ctx->media != DSD_VOICE_MEDIA_SPEECH || !dsd_scan_uses_checked_media(opts, state) || !j->admitted
+        || !mbe_frame_decodable(state, slot, frame_ctx, j)) {
+        return;
+    }
+    const int protocol = state->frame_dispatch_active ? state->frame_dispatch_synctype : state->synctype;
+    (void)dsd_call_state_note_checked_media(state, mbe_checked_media_slot(protocol, state->currentslot), protocol, 0.0);
+}
+
 static void
 mbe_post_audio_and_recording(dsd_opts* opts, dsd_state* state, const mbe_frame_ctx_t* frame_ctx) {
     const int slot = state->currentslot == 1 ? 1 : 0;
     const mbe_frame_judgement judgement = mbe_frame_judge(opts, state, slot, frame_ctx);
+    mbe_note_checked_media(opts, state, slot, frame_ctx, &judgement);
     // The frame goes through its slot's voice chain once, before anything reads it (issue #653): the shared short
     // staging and the per-call WAV take the same filtered, gained samples, whatever the output format, the output
     // type or the mute. An exhausted keystream produced no decoded media: keep that silence out of the HPF so its
@@ -2726,43 +2757,6 @@ mark_vocoder_call_media(dsd_opts* opts, dsd_state* state, dsd_call_snapshot* out
     return 0;
 }
 
-/* The call slot a frame of @p protocol on @p current_slot is media of: X2-TDMA, DMR and P25 Phase 2 by the slot being
-   decoded, every other protocol slot 0. */
-static uint8_t
-mbe_checked_media_slot(int protocol, int current_slot) {
-    if ((DSD_SYNC_IS_X2TDMA(protocol) || DSD_SYNC_IS_DMR(protocol) || DSD_SYNC_IS_P25P2(protocol))
-        && current_slot == 1) {
-        return 1U;
-    }
-    return 0U;
-}
-
-/* What the vocoder output for the frame (issue #890): a speech frame mbelib-neo synthesized with nothing concealed is
-   checked media of the call it belongs to, the scan's voice credit (dsd_call_state_note_checked_media()); a failed,
-   concealed, muted or tone frame is none, though it plays. Judged after the decode, by the frame's own protocol (a YSF
-   or dPMR frame through another protocol's decoder included) and only for traffic the receive policy admits, as the
-   media mark before the decode is. */
-static void
-mbe_note_checked_media(const dsd_opts* opts, dsd_state* state, const mbe_frame_ctx_t* frame_ctx) {
-    /* No scan to read it: nothing more on the voice path. */
-    if (frame_ctx->media != DSD_VOICE_MEDIA_SPEECH || !dsd_opts_scan_uses_checked_media(opts)) {
-        return;
-    }
-    const int protocol = state->frame_dispatch_active ? state->frame_dispatch_synctype : state->synctype;
-    const uint8_t slot = mbe_checked_media_slot(protocol, state->currentslot);
-    /* P25 speech the decoder cannot decrypt (encrypted, no key, played under the unmute override) is no vocoder credit:
-       an IMBE or AMBE+2 decode of ciphertext tells nothing of the transmission. Its scan credit is the checked
-       signalling of its LDU or ESS instead (p25p1_ldu_note_gated_voice(), p25p2_note_gated_voice_frame()). */
-    if ((frame_ctx->protocol == DSD_VOICE_PROTOCOL_P25P1 || frame_ctx->protocol == DSD_VOICE_PROTOCOL_P25P2)
-        && !p25_crypto_audio_permitted(NULL, state, slot)) {
-        return;
-    }
-    if (!dsd_receive_current_allows(opts, state, slot)) {
-        return;
-    }
-    (void)dsd_call_state_note_checked_media(state, slot, protocol, 0.0);
-}
-
 /* Admission follows the owner, including YSF/dPMR borrowing an NXDN or P25 decoder. */
 static dsd_receive_context
 receive_vocoder_context(dsd_state* state, dsd_voice_protocol protocol) {
@@ -2820,7 +2814,6 @@ processMbeFrameInternal(dsd_opts* opts, dsd_state* state, dsd_voice_protocol pro
         mbe_process_slot_traffic(opts, state, ambe_fr, ambe_soft_fr, &frame_ctx);
     }
 
-    mbe_note_checked_media(opts, state, &frame_ctx);
     mbe_post_audio_and_recording(opts, state, &frame_ctx);
     dsd_receive_context_end(state, saved);
 }

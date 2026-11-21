@@ -162,6 +162,13 @@ scan_voice_snapshot_policy_allows(const dsd_opts* opts, const dsd_state* state, 
     if (!dsd_receive_identity_admitted(opts, &call->receive_identity)) {
         return 0;
     }
+    const int encrypted =
+        call->crypto == DSD_CALL_CRYPTO_ENCRYPTED || call->crypto == DSD_CALL_CRYPTO_ENCRYPTED_PENDING;
+    /* The encrypted-call tuning rule needs no talkgroup (issue #890): a call known encrypted is held back under it
+       before its target is known, and whatever its addressing (M17's callsigns included). */
+    if (dsd_tg_policy_encrypted_tune_denied(opts, encrypted)) {
+        return 0;
+    }
     if (DSD_SYNC_IS_M17(call->protocol)) {
         /* M17 addresses calls by callsign, outside talkgroup policy: its 48-bit values must never reach a lookup. */
         return 1;
@@ -169,8 +176,6 @@ scan_voice_snapshot_policy_allows(const dsd_opts* opts, const dsd_state* state, 
     const uint64_t wide_target = call->policy_target_id != 0U ? call->policy_target_id : call->ota_target_id;
     /* A source that does not fit 32 bits is unknown, not its truncated low half. */
     const uint32_t source = call->ota_source_id > UINT32_MAX ? 0U : (uint32_t)call->ota_source_id;
-    const int encrypted =
-        call->crypto == DSD_CALL_CRYPTO_ENCRYPTED || call->crypto == DSD_CALL_CRYPTO_ENCRYPTED_PENDING;
     const uint32_t patch_sg = scan_voice_call_patch_sg(state, call);
     if (patch_sg != 0U) {
         return scan_voice_patch_allows(opts, state, call, patch_sg, source, encrypted);

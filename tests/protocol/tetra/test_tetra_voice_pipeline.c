@@ -471,6 +471,30 @@ test_encryption_gate(void) {
     fixture_close(&f);
 }
 
+/* Issue #890: air-encrypted speech no loaded key decrypts plays with the encrypted-audio mute off, but it is no
+   decoded speech: no checked media, so --scan-voice-only never holds on it. The same call with its key is. */
+static void
+test_undecryptable_speech_is_no_checked_media(void) {
+    fixture f;
+    expect(fixture_open(&f) == 0, "crypto credit: fixture");
+    f.opts->trunk_scan_enabled = 1;
+    dsd_decode_clock_use_test(80000000000ULL);
+    air_encrypted_call(&f, 0);
+    tetra_confirm_note_signalling(f.state); /* a CRC-16 block proved the carrier: anonymous speech opens a call */
+    f.opts->dmr_mute_encL = 0;
+    expect(played_by_burst(&f) == 2 * FRAME, "crypto credit: undecrypted speech plays unmuted");
+    dsd_call_snapshot call;
+    expect(dsd_call_state_get(f.state, 0U, &call) > 0 && call.checked_media_updated_m <= 0.0,
+           "crypto credit: undecrypted speech is no checked media");
+    air_encrypted_call(&f, 1);
+    dsd_decode_clock_test_set_ns(80100000000ULL);
+    expect(played_by_burst(&f) == 2 * FRAME, "crypto credit: decrypted speech plays");
+    expect(dsd_call_state_get(f.state, 0U, &call) > 0 && call.checked_media_updated_m > 0.0,
+           "crypto credit: decrypted speech is checked media");
+    dsd_decode_clock_use_system();
+    fixture_close(&f);
+}
+
 /* @p count bits of @p plain XORed with the TEA1 key stream from bit @p kss on (EN 300 392-7 table 6.4), for the
    call air_encrypted_call() sets up: the key stream of the cipher key's ECK for its carrier (TB5, clause 6.3.2.2). */
 static void
@@ -1723,6 +1747,7 @@ main(void) {
     test_half_slot_and_carry();
     test_follow_gate();
     test_encryption_gate();
+    test_undecryptable_speech_is_no_checked_media();
     test_air_key_stream_positions();
     test_reduced_key_speech();
     test_talkgroup_gate();

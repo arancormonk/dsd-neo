@@ -905,47 +905,6 @@ p25p2_audio_gate_diag(dsd_opts* opts, const dsd_state* state, const char* at) {
 /* Per slot: its voice decodes, muted, while the receive policy is still checking it (p25p2_prepare_voice_crypto()). */
 static int s_receive_pending_decode[2] = {0, 0};
 
-/* Encrypted voice with no key holds a scan unless the talkgroup policy blocks it (issue #890), and the next ESS of the
-   slot, once its Reed-Solomon check passes with no soft erasure, is its proof (p25p2_process_ess()). A 2V burst settles
-   its ESS before its own two voice frames, so those two are credited by the next superframe's ESS. */
-void
-p25p2_note_gated_voice_frame(const dsd_opts* opts, dsd_state* state, int slot) {
-    if (!state || (slot != 0 && slot != 1) || !dsd_opts_scan_uses_checked_media(opts)) {
-        return;
-    }
-    dsd_scan_observation_origin origin;
-    if (!dsd_state_scan_observation_origin(state, &origin)) {
-        return; /* a cut read is no visit's voice */
-    }
-    /* A span of another visit or carrier (a landing, a carrier boundary since its first frame) is not this one's. */
-    if (state->p25_p2_gated_voice_m[slot] > 0.0 && state->p25_p2_gated_voice_visit[slot] == origin.visit
-        && state->p25_p2_gated_voice_carrier[slot] == origin.carrier_seq) {
-        return;
-    }
-    state->p25_p2_gated_voice_m[slot] = dsd_decode_now_mono_s();
-    state->p25_p2_gated_voice_visit[slot] = origin.visit;
-    state->p25_p2_gated_voice_carrier[slot] = origin.carrier_seq;
-}
-
-/* The slot's ESS was decoded (@p hard_checked: its RS check passed with no soft erasure) or failed: the gated voice
-   noted since the last one is the call's checked media from its first frame to now when it was read under the origin
-   the ESS itself is read under, else nothing. */
-static void
-p25p2_ess_settle_gated_voice(dsd_state* state, int slot, int hard_checked) {
-    const double begun_m = state->p25_p2_gated_voice_m[slot];
-    const dsd_scan_observation_origin noted = {state->p25_p2_gated_voice_visit[slot],
-                                               state->p25_p2_gated_voice_carrier[slot]};
-    state->p25_p2_gated_voice_m[slot] = 0.0;
-    dsd_scan_observation_origin origin;
-    if (begun_m <= 0.0 || !hard_checked || !dsd_state_scan_observation_origin(state, &origin)
-        || origin.visit != noted.visit || origin.carrier_seq != noted.carrier_seq) {
-        return;
-    }
-    if (dsd_call_state_note_checked_media(state, (uint8_t)slot, DSD_SYNC_P25P2_POS, begun_m) > 0) {
-        (void)dsd_call_state_note_checked_media(state, (uint8_t)slot, DSD_SYNC_P25P2_POS, 0.0);
-    }
-}
-
 /* The slot's audio gate for this burst from its crypto, talkgroup and receive policy. */
 static void
 p25p2_take_voice_verdict(const dsd_opts* opts, dsd_state* state, int slot) {
@@ -1082,11 +1041,6 @@ p25p2_decode_and_store_voice_frame(dsd_opts* opts, dsd_state* state, dsd_vocoder
     int slot = state->currentslot;
     if (slot != 0 && slot != 1) {
         return;
-    }
-    /* Voice the decoder cannot decrypt earns no vocoder credit, played under the unmute override or not: its ESS is its
-       scan credit (issue #890). */
-    if (!p25_crypto_audio_permitted(NULL, state, slot)) {
-        p25p2_note_gated_voice_frame(opts, state, slot);
     }
     if (!p25_crypto_audio_permitted(opts, state, slot) || !state->p25_p2_audio_allowed[slot]) {
         if (s_receive_pending_decode[slot] && p25_crypto_audio_permitted(opts, state, slot)) {
@@ -1491,7 +1445,6 @@ p25p2_process_ess(dsd_opts* opts, dsd_state* state, int defer_rekey) {
         return;
     }
     const p25p2_ess_result result = p25p2_ess_decode(state, slot);
-    p25p2_ess_settle_gated_voice(state, slot, result.accepted && result.soft_depth == 0);
 
     DSD_FPRINTF(stderr, "%s", KYEL);
     if (opts->payload == 1) {
@@ -1970,7 +1923,6 @@ p25p2_frame_forget_carrier(dsd_state* state) {
     p25p2_seed_recover_forget(state);
     for (int slot = 0; slot < 2; slot++) {
         state->fourv_counter[slot] = 0;
-        state->p25_p2_gated_voice_m[slot] = 0.0; /* gated voice of the carrier left is no voice of the next one's */
         DSD_MEMSET(&state->p25_p2_rekey[slot], 0, sizeof(state->p25_p2_rekey[slot]));
         /* With weak ESS_A symbols a 2V burst's decode erases all of the parity and returns whatever ESS_B it holds, so
            the carrier left's would come back as the new carrier's ALG/KID/MI: it goes, and stays unread until a 4V

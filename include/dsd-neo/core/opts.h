@@ -667,15 +667,6 @@ dsd_opts_set_relaxed_crc(dsd_opts* opts, int on) {
     opts->dmr_crc_relaxed_default = (uint8_t)(on ? 1U : 0U);
 }
 
-/** @brief Return 1 while a scan runs that can use a call's checked media (issue #890): the -Y scanner or the trunk scan,
- * whose voice gates and receive-policy leave read it through dsd_scan_voice_probe(). With neither running, the
- * decoders keep no checked-media clocks at all: no call-state lock and no clock read on the voice path. A scan turned
- * on mid-call starts its span from the next checked frame. */
-static inline int
-dsd_opts_scan_uses_checked_media(const dsd_opts* opts) {
-    return opts && (opts->scanner_mode == 1 || opts->trunk_scan_enabled == 1);
-}
-
 /** @brief Return 1 when Relaxed CRC is on: either field relaxing a gate counts, so a pair set apart from
  * dsd_opts_set_relaxed_crc() reads as on and turning it off clears both. */
 static inline int

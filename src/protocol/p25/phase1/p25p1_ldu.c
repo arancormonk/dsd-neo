@@ -1,9 +1,7 @@
 // SPDX-License-Identifier: ISC
-#include <dsd-neo/core/call_state.h>
 #include <dsd-neo/core/dibit.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
-#include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/core/vocoder.h>
 #include <dsd-neo/fec/block_codes.h>
 #include <dsd-neo/protocol/p25/p25_crypto.h>
@@ -12,7 +10,6 @@
 #include <dsd-neo/protocol/p25/p25p1_hdu.h>
 #include <dsd-neo/protocol/p25/p25p1_ldu.h>
 #include <dsd-neo/protocol/p25/p25p1_soft.h>
-#include <dsd-neo/runtime/decode_clock.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
@@ -89,22 +86,6 @@ process_imbe_or_skip_non_standard(dsd_opts* opts, dsd_state* state, char imbe_fr
     }
     processMbeFrameSoft(opts, state, DSD_VOICE_PROTOCOL_P25P1, imbe_soft_fr, NULL, NULL);
     return 1;
-}
-
-double
-p25p1_ldu_gated_voice_begin(const dsd_opts* opts) {
-    return dsd_opts_scan_uses_checked_media(opts) ? dsd_decode_now_mono_s() : -1.0;
-}
-
-void
-p25p1_ldu_note_gated_voice(const dsd_opts* opts, dsd_state* state, double begun_m, int gated, int hard_checked) {
-    if (!opts || !state || begun_m < 0.0 || !gated || !hard_checked) {
-        return;
-    }
-    /* The checked LDU spans its nine voice frames: from its start to now. */
-    if (dsd_call_state_note_checked_media(state, 0U, DSD_SYNC_P25P1_POS, begun_m) > 0) {
-        (void)dsd_call_state_note_checked_media(state, 0U, DSD_SYNC_P25P1_POS, 0.0);
-    }
 }
 
 int

@@ -20,6 +20,7 @@
 #include <dsd-neo/protocol/tetra/tetra_voice.h>
 #include <dsd-neo/runtime/decode_clock.h>
 #include <dsd-neo/runtime/log.h>
+#include <dsd-neo/runtime/tuner_owner.h>
 #include <mbelib-neo/mbelib.h>
 #include <stddef.h>
 #include <stdint.h>
@@ -267,7 +268,7 @@ voice_frame_play(const dsd_opts* opts, dsd_state* state, tetra_voice_t* v, const
     v->frames++;
     if (bad) {
         v->concealed++;
-    } else if (route->admitted && dsd_opts_scan_uses_checked_media(opts)) {
+    } else if (route->admitted && route->decodable && dsd_scan_uses_checked_media(opts, state)) {
         /* A good frame the codec decoded is the scan's voice credit (issue #890); a concealed one plays but is none. */
         (void)dsd_call_state_note_checked_media(state, 0U, DSD_SYNC_TETRA_NDB_POS, 0.0);
     }

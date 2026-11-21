@@ -30,20 +30,6 @@
 int process_IMBE(dsd_opts* opts, dsd_state* state, int* status_count);
 
 /**
- * Scan voice credit for an LDU whose voice earns no vocoder credit (issue #890): encrypted with no key, whether the
- * crypto gate kept it from the vocoder or the unmute override played it undecrypted. Such voice holds a voice-only scan
- * unless the talkgroup policy blocks it, and its proof is the LDU's own Reed-Solomon check. p25p1_ldu_gated_voice_begin()
- * is read as the LDU starts: the decode-mono time then, or -1 while no scan can use checked media
- * (dsd_opts_scan_uses_checked_media(): no clock read, nothing more done). p25p1_ldu_note_gated_voice() is called once
- * the LDU's link control or encryption sync has been checked: when @p gated (its voice is not decryptable) and
- * @p hard_checked (the RS(24,12,13) or RS(24,16,9) check passed with no soft erasure), the slot 0 P25 call takes checked
- * media from @p begun_m to now (dsd_call_state_note_checked_media(), under the LDU's own observation origin). Decryptable
- * voice earns its own per frame from the vocoder instead.
- */
-double p25p1_ldu_gated_voice_begin(const dsd_opts* opts);
-void p25p1_ldu_note_gated_voice(const dsd_opts* opts, dsd_state* state, double begun_m, int gated, int hard_checked);
-
-/**
  * Reads an hex word, its parity bits and attempts to error correct it using the Hamming FEC.
  * \param opts The DSD options.
  * \param state The DSD state.

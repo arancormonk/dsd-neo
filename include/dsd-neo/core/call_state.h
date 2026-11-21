@@ -589,9 +589,11 @@ int dsd_call_state_update_retained_crypto(dsd_state* state, uint8_t slot, int pr
                                           const dsd_call_crypto_update* update);
 int dsd_call_state_update_media(dsd_state* state, uint8_t slot, int media_active, double observed_m);
 /**
- * A frame of the slot's active call that its decoder output as speech, successfully and unconcealed (issue #890): an
- * AMBE or IMBE frame mbelib-neo synthesized with no erasure, repeat, mute, silence or uncorrectable C0 (and no tone), an
- * M17 Codec2 frame Codec2 decoded, a TETRA speech frame whose CRC passed and the codec decoded. It raises the call's
+ * A frame of the slot's active call that its decoder output as speech, successfully and unconcealed, and could play
+ * clear or decrypted (issue #890): an AMBE or IMBE frame mbelib-neo synthesized with no erasure, repeat, mute, silence
+ * or uncorrectable C0 (and no tone), an M17 Codec2 frame Codec2 decoded, a TETRA speech frame whose CRC passed and the
+ * codec decoded. Encrypted voice without a key is never one, however its FEC decodes. Producers note it only while a
+ * scan that reads it runs (dsd_scan_uses_checked_media()). It raises the call's
  * checked media clocks (dsd_call_snapshot::checked_media_started_m, checked_media_updated_m, at @p observed_m, 0 for
  * now on the decode clock) under the frame's scan observation origin (dsd_state_scan_observation_origin()); a frame of
  * another origin starts the span again, and a frame a carrier boundary or an input interruption cut raises nothing. The

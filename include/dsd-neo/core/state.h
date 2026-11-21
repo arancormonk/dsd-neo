@@ -2474,15 +2474,6 @@ struct dsd_state {
     /* The slot's ESS_B is the carrier left's (issue #575): set by p25p2_frame_forget_carrier(), cleared when the slot's
        next 4V burst collects a fragment. A 2V burst decodes no ESS while it is set. */
     uint8_t p25_p2_ess_b_stale[2];
-    /* Issue #890, per slot: the first P25 Phase 2 voice frame since the slot's last ESS that earns no vocoder credit
-       (encrypted with no key: crypto-gated, or decoded under the unmute override but not decryptable), as decode-mono
-       time (0 for none), and the scan observation origin it was read under (dsd_state_scan_observation_origin()).
-       Kept only while a scan can use checked media (dsd_opts_scan_uses_checked_media()); the slot's next ESS whose RS
-       check passes with no soft erasure makes them checked media of the slot's call, and only under the origin it was
-       itself read under (p25p2_frame.c). */
-    double p25_p2_gated_voice_m[2];
-    uint64_t p25_p2_gated_voice_visit[2];
-    uint32_t p25_p2_gated_voice_carrier[2];
     int p2_is_lcch; //flag to tell us when a frame is lcch and not sacch
     // Authoritative P25 voice crypto classification. Slot 0 is also used by P25 Phase 1.
     dsd_p25_crypto_state p25_crypto_state[2];

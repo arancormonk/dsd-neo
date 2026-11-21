@@ -470,11 +470,7 @@ processLDU1(dsd_opts* opts, dsd_state* state) {
     p25p1_ldu1_init_decode_ctx(state, &ctx);
 
     const uint32_t carrier_seq = state->carrier_seq;
-    const double gated_begun_m = p25p1_ldu_gated_voice_begin(opts);
     p25p1_ldu1_collect_voice_and_data(opts, state, &ctx);
-    /* Whether this LDU's voice earns no vocoder credit (issue #890): encrypted with no key, kept from the vocoder or
-       played under the unmute override undecrypted, read before its link control applies. */
-    const int voice_gated = !p25_crypto_audio_permitted(NULL, state, 0);
     if (opts->errorbars == 1) {
         DSD_FPRINTF(stderr, "\n");
     }
@@ -509,9 +505,6 @@ processLDU1(dsd_opts* opts, dsd_state* state) {
     // Only the hard decode checks the link control; p25p1_ldu1_apply_rs_fec() counts each soft-erasure recovery.
     state->p25_p1_lcw_soft = (uint8_t)(state->p25_p1_soft_rs_ok != soft_rs_before);
     p25p1_ldu1_handle_lcw_output(opts, state, LCW_bits, irrecoverable_errors);
-    /* Encrypted voice with no key: the link control's hard RS check is the voice's scan credit (issue #890). */
-    p25p1_ldu_note_gated_voice(opts, state, gated_begun_m, voice_gated,
-                               irrecoverable_errors == 0 && state->p25_p1_lcw_soft == 0U);
     state->p25_p1_lcw_soft = 0U;
 
     p25p1_ldu1_correct_lsd(state, &ctx);
