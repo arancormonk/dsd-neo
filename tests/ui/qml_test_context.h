@@ -2632,6 +2632,20 @@ class CallLogStore : public QAbstractListModel {
         setSessionUid(uid);
     }
 
+    /** @brief Who owns the session's calls (CallHistoryModel::setSessionOwnersFromMap(), issue #903), kept for a case
+     * to read: {session, single, scan}. */
+    Q_INVOKABLE void
+    setSessionOwnersFromMap(qlonglong session, const QString& singleOwnerUid, const QVariantMap& scanEntryOwner) {
+        m_sessionOwners = QVariantMap{{QStringLiteral("session"), session},
+                                      {QStringLiteral("single"), singleOwnerUid},
+                                      {QStringLiteral("scan"), scanEntryOwner}};
+    }
+
+    Q_INVOKABLE QVariantMap
+    sessionOwners() const {
+        return m_sessionOwners;
+    }
+
     /** @brief The scan channels' names (CallHistoryModel::setChannelNames(), issue #671), kept for a case to read. */
     Q_INVOKABLE void
     setChannelNames(const QVariantMap& names) {
@@ -3178,6 +3192,7 @@ class CallLogStore : public QAbstractListModel {
     QHash<QString, qint64> m_fragmentUids;
     QString m_systemName = QStringLiteral("Test Site");
     QVariantMap m_channelNames;
+    QVariantMap m_sessionOwners;
     QString m_sessionUid = QStringLiteral("test-system");
     QString m_sessionLabel = QStringLiteral("Test Site");
     qint64 m_session = 0;

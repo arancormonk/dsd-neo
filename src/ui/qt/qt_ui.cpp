@@ -476,13 +476,15 @@ load_replays(DecoderHost* host, ImportService* imports, SavedSystemsModel* syste
 
 // Issue #903: the talkgroups each saved system was heard on. Made after History, so it is destroyed after it (the
 // engine's children go in creation order) and takes what History's teardown still ingests. It follows the saved
-// systems through heard_talkgroups_follow_systems().
+// systems through heard_talkgroups_follow_systems(), and History hands it each verified talkgroup it ingests: the ones
+// the spill folded at History's construction too, now that the owner policy is in place.
 static HeardTalkgroupStore*
 wire_heard_talkgroups(QQmlApplicationEngine& engine, UiController* controller, SavedSystemsModel* systems,
-                      backup::ApplyOutcome restore) {
+                      CallHistoryModel* history, backup::ApplyOutcome restore) {
     auto* heard = new HeardTalkgroupStore(QLatin1String(HeardTalkgroupStore::kFileName), &engine);
     heard_talkgroups_follow_systems(heard, systems, restore);
     controller->setHeardTalkgroups(heard);
+    history->setHeardSink(heard);
     return heard;
 }
 
@@ -535,7 +537,7 @@ ui_load(QQmlApplicationEngine& engine, DecoderHost* host) {
     controller->setP25Network(network); // WP-F2
     auto* recordingStatus = wire_recording_status(engine, host, controller, commands);
     wire_attachment(host, controller, prefs, systems, scanLists);
-    wire_heard_talkgroups(engine, controller, systems, restoreOutcome.outcome);
+    wire_heard_talkgroups(engine, controller, systems, history, restoreOutcome.outcome);
 
     auto* listenPins = load_listen_pins(prefs, importedFiles, systems, scanLists, &engine);
 

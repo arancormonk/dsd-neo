@@ -41,5 +41,9 @@ QString scan_list_settings_error(const QVariantMap& list);
  * digital entry. @p systemDecodeFlag is the saved system's decodeFlag for a system entry, ignored otherwise. An analog
  * entry carries no keys, talkgroups, decryption profile or modulation. */
 int scan_list_entry_analog_kind(const QVariantMap& entry, const QString& systemDecodeFlag);
+/** Issue #903: the saved system's uid behind target @p id of scan list @p list, as the list's generated target file
+ * names it: an enabled saved-system entry of a list of manual entries whose uid is @p id. Empty for a frequency entry,
+ * a disabled or missing one, and every target of a list that runs an imported target file. */
+QString scan_list_entry_owner(const QVariantMap& list, const QString& id);
 } // namespace dsd_qt
 #endif

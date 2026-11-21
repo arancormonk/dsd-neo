@@ -740,6 +740,44 @@ Item {
                 savedSystems.remove(row);
             }
         }
+        // Issue #903: an accepted start tells History who owns the calls its
+        // session hears: a scan list each target a saved system's entry gives
+        // (a frequency entry's is no one's), a saved system itself, and an
+        // Explore start no one.
+        function test_accepted_starts_name_their_heard_owners() {
+            testContext.setLifecyclePhase(0);
+            savedSystems.add({name: "Owned site", sourceType: "rtltcp", host: "127.0.0.1", port: 1234, freqMhz: "851.5", decodeFlag: "-fs"});
+            var row = savedSystems.count - 1;
+            var sys = savedSystems.get(row);
+            scanLists.add({name: "Owned scan", sourceType: "rtltcp", host: "127.0.0.1", port: 1234,
+                entries: [{kind: "system", systemUid: sys.uid, enabled: true},
+                          {kind: "freq", name: "Gate", protocol: "p25", freqMhz: "852.0125", enabled: true}]});
+            var list = scanLists.get(scanLists.count - 1);
+            try {
+                app.startScanBundle(scanLists.rowForUid(list.uid), []);
+                var owners = callHistory.sessionOwners();
+                compare(owners.session, callHistory.session, "the owners are not the session's just begun");
+                compare(owners.single, "");
+                compare(Object.keys(owners.scan).length, 1, "a frequency entry was given an owner");
+                compare(owners.scan[list.entries[0].uid], sys.uid);
+                testContext.setLifecyclePhase(0);
+                app.startSystem(row);
+                owners = callHistory.sessionOwners();
+                compare(owners.session, callHistory.session);
+                compare(owners.single, sys.uid);
+                compare(Object.keys(owners.scan).length, 0);
+                testContext.setLifecyclePhase(0);
+                app.startWithMap(app.exploreSystem("rtltcp", "127.0.0.1", 1234, "851.5"), -1, false);
+                owners = callHistory.sessionOwners();
+                compare(owners.session, callHistory.session);
+                compare(owners.single, "", "an Explore start owned its calls");
+            } finally {
+                testContext.resetScanLists();
+                testContext.setLifecyclePhase(2);
+                removeScanLists([list.uid]);
+                savedSystems.remove(row);
+            }
+        }
         // A recreated Activity finds the tuner held: no session map came with it,
         // so it names the session Exploring until the resume, then by the label
         // the history kept.

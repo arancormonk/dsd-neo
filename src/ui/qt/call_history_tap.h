@@ -31,6 +31,7 @@
 #include <mutex>
 #include <thread>
 
+#include "call_history_heard.h"
 #include "call_history_model.h"
 
 class QFile;
@@ -161,6 +162,9 @@ class CallHistoryTap {
         CallHistoryModel::ClearMark clear;
         /* The session ordinals the model has given (issue #800), with the block the tap gives new ones from. */
         CallHistoryModel::SessionOrdinals ordinals;
+        /* Issue #903: who owns each recent session's calls, and the rings bound to them; a ring the tap reads first is
+         * bound to its session. */
+        HeardOwners heardOwners;
     };
 
     /** @brief What the tap leaves: the clear mark as its reads settled it, the ring position it read last, and the
@@ -172,6 +176,8 @@ class CallHistoryTap {
         quint64 ring = 0U;
         /* Every ring's session ordinal as the tap left them, the ones it gave included (issue #800). */
         QHash<quint64, qint64> ordinals;
+        /* Issue #903: every ring's History session as the tap left them, the ones it bound included. */
+        QHash<quint64, qint64> heardRings;
         /* Spill lines, oldest first, that never reached the spill (it was still unwritable at stop). Only the model
          * has them now: the next start clears what the tap holds. */
         QByteArray unwritten;

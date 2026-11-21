@@ -856,6 +856,70 @@ testKnownFrequencySessionTargetsShared(const QString& dir) {
     assert(twice.size() == 2 && twice.at(1).toMap().value(QStringLiteral("listNumber")).toInt() == 1);
 }
 
+/* Issue #903: the owner map a scan-list session hands History: each target id one saved system's entry gives, read from
+   every list's launched file before the engine keeps only an id's first. An id an imported target file also gives, one
+   a frequency entry gives, one two saved systems give and a disabled entry are no one's; one saved system giving an id
+   in two lists keeps it. A list whose file cannot be read names nothing. */
+static void
+testKnownFrequencySessionTargetOwners(const QString& dir) {
+    dsd_qt::SavedSystemsModel systems;
+    dsd_qt::ScanListsModel lists;
+    const dsd_qt::KnownFrequencyIndex index(&systems, &lists);
+    const QString header = QStringLiteral("id,type,frequency_hz,chan_csv,dwell_ms,activity_hold_ms,notes,label\n");
+    const QString manual = QDir(dir).filePath(QStringLiteral("owners-manual.csv"));
+    writeFile(manual, (header
+                       + "own-a,dmr-conventional,851000000,,,,,A\n"
+                         "freq-b,dmr-conventional,452000000,,,,,B\n"
+                         "both-c,dmr-conventional,852000000,,,,,C\n"
+                         "two-d,dmr-conventional,853000000,,,,,D\n")
+                          .toUtf8()
+                          .constData());
+    const QString other = QDir(dir).filePath(QStringLiteral("owners-other.csv"));
+    writeFile(other, (header
+                      + "own-a,dmr-conventional,851000000,,,,,A again\n"
+                        "two-d,dmr-conventional,854000000,,,,,D elsewhere\n")
+                         .toUtf8()
+                         .constData());
+    const QString imported = QDir(dir).filePath(QStringLiteral("owners-imported.csv"));
+    writeFile(imported, (header + "both-c,dmr-conventional,460000000,,,,,Imported\n").toUtf8().constData());
+    const auto entry = [](const char* uid, const char* kind, const char* systemUid, bool enabled = true) {
+        return QVariantMap{{QStringLiteral("uid"), QString::fromLatin1(uid)},
+                           {QStringLiteral("kind"), QString::fromLatin1(kind)},
+                           {QStringLiteral("systemUid"), QString::fromLatin1(systemUid)},
+                           {QStringLiteral("enabled"), enabled}};
+    };
+    const QVariantMap first{{QStringLiteral("uid"), QStringLiteral("owners-first")},
+                            {QStringLiteral("path"), manual},
+                            {QStringLiteral("targetSource"), QStringLiteral("entries")},
+                            {QStringLiteral("entries"),
+                             QVariantList{entry("own-a", "system", "sys-a"), entry("freq-b", "freq", ""),
+                                          entry("both-c", "system", "sys-c"), entry("two-d", "system", "sys-d")}}};
+    const QVariantMap second{{QStringLiteral("uid"), QStringLiteral("owners-second")},
+                             {QStringLiteral("path"), other},
+                             {QStringLiteral("targetSource"), QStringLiteral("entries")},
+                             {QStringLiteral("entries"),
+                              QVariantList{entry("own-a", "system", "sys-a"), entry("two-d", "system", "sys-e")}}};
+    const QVariantMap csv{{QStringLiteral("uid"), QStringLiteral("owners-csv")},
+                          {QStringLiteral("path"), imported},
+                          {QStringLiteral("targetSource"), QStringLiteral("csv")}};
+    const QVariantMap owners = index.sessionTargetOwners({first, second, csv});
+    assert(owners.size() == 1);
+    assert(owners.value(QStringLiteral("own-a")).toString() == QStringLiteral("sys-a"));
+    // The imported file listed first: the engine runs its target under the shared id, and the id is still no one's.
+    const QVariantMap reversed = index.sessionTargetOwners({csv, first});
+    assert(reversed.size() == 2 && reversed.value(QStringLiteral("two-d")).toString() == QStringLiteral("sys-d")
+           && !reversed.contains(QStringLiteral("both-c")));
+    // A disabled entry is not in the launched file; one the file still names is no one's.
+    QVariantMap disabled = first;
+    disabled.insert(QStringLiteral("entries"), QVariantList{entry("own-a", "system", "sys-a", false)});
+    assert(index.sessionTargetOwners({disabled}).isEmpty());
+    // A list whose file is gone: which ids it gave is not known, so none is named.
+    const QVariantMap missing{{QStringLiteral("uid"), QStringLiteral("owners-missing")},
+                              {QStringLiteral("path"), QDir(dir).filePath(QStringLiteral("owners-missing.csv"))},
+                              {QStringLiteral("targetSource"), QStringLiteral("entries")}};
+    assert(index.sessionTargetOwners({first, missing}).isEmpty());
+}
+
 /* Issue #644: Qt reads a target CSV and a channel map as the engine's loaders do, so a session's own targets and the
    saved index hold what the session runs. A target CSV: its header is row 1, a blank row is skipped, and nothing is a
    comment, so a `#desk` row is a target (the in-place Listen reaches it); a header off row 1, or a row longer than the
@@ -3082,6 +3146,7 @@ main(int argc, char** argv) {
     testKnownFrequencyEngineIds(temp.path());
     testKnownFrequencyEngineGrammar(temp.path());
     testKnownFrequencySessionTargetsShared(temp.path());
+    testKnownFrequencySessionTargetOwners(temp.path());
     testKnownFrequencyQuotedCells(temp.path());
     testKnownFrequencyRowCap(temp.path());
     testKnownFrequencyWatchesUnparsedFiles(temp.path());

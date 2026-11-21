@@ -9,6 +9,7 @@
 #include <QDir>
 #include <QFile>
 #include <QFileInfo>
+#include <QHash>
 #include <QIODevice>
 #include <QLatin1String>
 #include <QProcess>
@@ -32,6 +33,7 @@
 #include "known_frequency_index.h"
 #include "saved_systems_model.h"
 #include "scan_entry_name.h"
+#include "scan_list_targets.h"
 #include "scan_lists_model.h"
 #include "session_args.h"
 
@@ -780,6 +782,41 @@ KnownFrequencyIndex::sessionTargets(const QVariantList& lists) const {
         appendSessionTargets(list.value(QStringLiteral("path")).toString(), static_cast<int>(i) + 1,
                              list.value(QStringLiteral("uid")).toString(),
                              list.value(QStringLiteral("name")).toString(), &ids, &out);
+    }
+    return out;
+}
+
+QVariantMap
+KnownFrequencyIndex::sessionTargetOwners(const QVariantList& lists) const {
+    QHash<QString, QString> owners;
+    QSet<QString> shared;
+    for (const QVariant& value : lists) {
+        const QVariantMap list = value.toMap();
+        const QString path = list.value(QStringLiteral("path")).toString();
+        EngineCsv csv;
+        if (path.isEmpty() || !readEngineCsv(path, EngineCsvGrammar::Targets, &csv)) {
+            // What it gives is not known, so neither is which ids it shares.
+            return {};
+        }
+        for (const EngineCsvRow& row : csv.rows) {
+            const QString id = engineTargetId(row.line, csv.columns.id);
+            if (id.isEmpty()) {
+                continue;
+            }
+            const QString owner = scan_list_entry_owner(list, id);
+            const auto held = owners.constFind(id);
+            if (owner.isEmpty() || (held != owners.constEnd() && held.value() != owner)) {
+                shared.insert(id);
+            } else {
+                owners.insert(id, owner);
+            }
+        }
+    }
+    QVariantMap out;
+    for (auto it = owners.constBegin(); it != owners.constEnd(); ++it) {
+        if (!shared.contains(it.key())) {
+            out.insert(it.key(), it.value());
+        }
     }
     return out;
 }

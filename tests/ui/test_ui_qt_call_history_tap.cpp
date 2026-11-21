@@ -41,6 +41,7 @@
 #include <QJsonObject>
 #include <QJsonValue>
 #include <QLatin1String>
+#include <QList>
 #include <QModelIndex>
 #include <QObject>
 #include <QSet>
@@ -53,6 +54,7 @@
 #include <QVariantMap>
 #include <Qt>
 #include <QtGlobal>
+#include <algorithm>
 #include <atomic>
 #include <dsd-neo/app_control/history_tap.h>
 #include <dsd-neo/app_control/snapshot.h>
@@ -74,6 +76,7 @@
 #include "../test_support/qt_test_paths.h"
 #include "call_history_model.h"
 #include "call_history_tap.h"
+#include "heard_talkgroup_sink.h"
 #include "json_store.h"
 
 using dsd_qt::CallHistoryModel;
@@ -1365,6 +1368,210 @@ test_tap_attributes_by_row_stamp(void) {
            row_attributed(model, 35002U, session, QStringLiteral("Exploring"), QString()));
 }
 
+/* Issue #903: what History hands the remembered talkgroups (HeardTalkgroupSink), recorded. */
+class RecordingHeardSink : public dsd_qt::HeardTalkgroupSink {
+  public:
+    struct Observation {
+        QString owner;
+        quint32 id = 0;
+        qint64 when = 0;
+    };
+
+    QList<Observation> seen;
+
+    void
+    observe(const QString& ownerUid, int variant, quint32 id, qint64 whenSecs) override {
+        (void)variant;
+        seen.append(Observation{ownerUid, id, whenSecs});
+    }
+
+    /** How many observations of @p id under @p owner. */
+    int
+    count(const QString& owner, quint32 id) const {
+        return static_cast<int>(std::count_if(seen.cbegin(), seen.cend(),
+                                              [&](const Observation& o) { return o.owner == owner && o.id == id; }));
+    }
+};
+
+/* The proof the core freezes on the newest committed row of @p slot (issue #903): ordinary talkgroup @p id, verified,
+ * heard on live input unless @p live is false. */
+void
+prove_newest(Decoder& decoder, int slot, uint32_t id, bool live = true) {
+    Event_History* item = &decoder.state->event_history_s[slot].Event_History_Items[1];
+    item->heard_variant = 1U;
+    item->heard_id = id;
+    item->live_input = live ? 1U : 0U;
+}
+
+/* Main.startWithMap's accepted start on saved system @p uid: the session, then its owner. */
+void
+start_saved(CallHistoryModel& model, const QString& uid) {
+    model.beginSessionOn(uid, uid);
+    model.setSessionOwners(model.session(), uid, {});
+}
+
+/* Issue #903 (r3 finding 1): a suspended phone spills 1,001 distinct verified groups, more than History's 1,000 rows.
+ * Every one reaches the remembered talkgroups, whether the app returns and hands off or the process dies and the
+ * relaunch folds the spill at construction (held until the sink is set): fed before History trims. */
+void
+test_heard_long_spill_reaches_the_sink_before_the_trim(void) {
+    for (int death = 0; death < 2; death++) {
+        resetStorage();
+        Decoder decoder;
+        const time_t when = 1755100000 + death * 100000;
+        RecordingHeardSink sink;
+        {
+            CallHistoryModel model;
+            start_tap(model);
+            model.setHeardSink(&sink);
+            start_saved(model, QStringLiteral("sys-a"));
+            gui_ingest(model);
+            set_app_state(Qt::ApplicationSuspended);
+            for (int done = 0; done < 1001; done += 200) {
+                const int batch = qMin(200, 1001 - done);
+                for (int i = 0; i < batch; i++) {
+                    const uint32_t tg = 42000U + static_cast<uint32_t>(done + i);
+                    decoder.commit(0, tg, 100U, when + 30 * static_cast<time_t>(done + i));
+                    prove_newest(decoder, 0, tg);
+                }
+                decoder.publish();
+                model.waitForBackgroundPollForTest();
+            }
+            expect("long spill: nothing is handed on while the app is away", sink.seen.isEmpty());
+            if (death == 0) {
+                set_app_state(Qt::ApplicationActive);
+                gui_ingest(model);
+                expect("long spill: the handoff trims History to its bound", model.count() == 1000);
+            }
+        } // death: the tap's stop writes what it holds, and nothing folds it
+        if (death == 1) {
+            expect("long spill: the dead process handed nothing on", sink.seen.isEmpty());
+            CallHistoryModel relaunched;
+            expect("long spill: the relaunch trims History to its bound", relaunched.count() == 1000);
+            relaunched.setHeardSink(&sink);
+        }
+        int each = 0;
+        for (uint32_t tg = 42000U; tg <= 43000U; tg++) {
+            each += sink.count(QStringLiteral("sys-a"), tg) == 1;
+        }
+        expect(death == 0 ? "long spill: the handoff hands on all 1,001 groups, each once"
+                          : "long spill: the relaunch hands on all 1,001 groups, each once",
+               sink.seen.size() == 1001 && each == 1001);
+    }
+}
+
+/* Issue #903 (r3 finding 8): the last call of system A, flushed while B starts in the background, lands under A: the
+ * owners are bound to the ring the tap read, not to the session the UI moved on to. A's final publish after B's start
+ * is A's too. */
+void
+test_heard_last_call_of_a_during_b_start(void) {
+    resetStorage();
+    RecordingHeardSink sink;
+    CallHistoryModel model;
+    start_tap(model);
+    model.setHeardSink(&sink);
+    start_saved(model, QStringLiteral("sys-a"));
+    const time_t when = 1755300000;
+    Decoder a;
+    a.commit(0, 43100U, 99U, when);
+    prove_newest(a, 0, 43100U);
+    a.publish();
+    gui_ingest(model);
+    set_app_state(Qt::ApplicationHidden);
+    a.commit(0, 43101U, 99U, when + 60);
+    prove_newest(a, 0, 43101U);
+    a.publish();
+    // A start that completes while hidden: the new session, then its owners.
+    start_saved(model, QStringLiteral("sys-b"));
+    Decoder b;
+    b.commit(0, 43102U, 100U, when + 120);
+    prove_newest(b, 0, 43102U);
+    b.publish();
+    model.waitForBackgroundPollForTest();
+    a.commit(0, 43103U, 99U, when + 180);
+    prove_newest(a, 0, 43103U);
+    a.publish();
+    model.waitForBackgroundPollForTest();
+    set_app_state(Qt::ApplicationActive);
+    gui_ingest(model);
+    expect("A during B: A's calls are A's, the one flushed at B's start and A's late one included",
+           sink.count(QStringLiteral("sys-a"), 43100U) == 1 && sink.count(QStringLiteral("sys-a"), 43101U) == 1
+               && sink.count(QStringLiteral("sys-a"), 43103U) == 1);
+    expect("A during B: B's call is B's", sink.count(QStringLiteral("sys-b"), 43102U) == 1);
+    expect("A during B: nothing else", sink.seen.size() == 4);
+}
+
+/* Issue #903 (r3 finding 8): through the background tap, a scan target id an imported target file also gives (left out
+ * of the owner map), a running switch from live input to a file, and a call the operator tuned to learn nothing. */
+void
+test_heard_tap_learns_only_owned_live_calls(void) {
+    resetStorage();
+    RecordingHeardSink sink;
+    CallHistoryModel model;
+    start_tap(model);
+    model.setHeardSink(&sink);
+    model.beginSessionOn(QStringLiteral("County scan"), QString());
+    model.setSessionOwners(model.session(), QString(), {{QStringLiteral("entry-a"), QStringLiteral("sys-a")}});
+    const time_t when = 1755400000;
+    Decoder decoder;
+    gui_ingest(model);
+    set_app_state(Qt::ApplicationSuspended);
+    const auto scanCall = [&](uint32_t tg, const char* target, time_t start, bool live) {
+        decoder.commit(0, tg, 99U, start);
+        prove_newest(decoder, 0, tg, live);
+        Event_History* item = &decoder.state->event_history_s[0].Event_History_Items[1];
+        item->scan_member = 1U;
+        DSD_SNPRINTF(item->channel_label, sizeof(item->channel_label), "%s", target);
+    };
+    scanCall(43200U, "entry-a", when, true);
+    scanCall(43201U, "entry-shared", when + 60, true);
+    // The running decoder switches to a file: every row after it is off live input.
+    scanCall(43202U, "entry-a", when + 120, false);
+    scanCall(43203U, "entry-a", when + 180, true);
+    decoder.state->event_history_s[0].Event_History_Items[1].operator_tuned = 1U;
+    decoder.publish();
+    model.waitForBackgroundPollForTest();
+    set_app_state(Qt::ApplicationActive);
+    gui_ingest(model);
+    expect("tap learning: every call is in History", model.count() == 4);
+    expect("tap learning: only the owned target's live call is handed on",
+           sink.seen.size() == 1 && sink.count(QStringLiteral("sys-a"), 43200U) == 1);
+}
+
+/* Issue #903 (r2 finding 2): the backlog the tap could not spill reaches the remembered talkgroups at the model's
+ * teardown, before its last save; the sink outlives the model, as the app builds them. */
+void
+test_heard_teardown_backlog_reaches_the_sink(void) {
+    resetStorage();
+    Decoder decoder;
+    RecordingHeardSink sink;
+    const time_t when = 1755500000;
+    {
+        CallHistoryModel model;
+        start_tap(model);
+        model.setHeardSink(&sink);
+        start_saved(model, QStringLiteral("sys-a"));
+        gui_ingest(model);
+        expect("teardown heard: the spill is blocked", QDir().mkpath(spill_path()));
+        set_app_state(Qt::ApplicationSuspended);
+        for (int i = 0; i < 20; i++) {
+            const uint32_t tg = 43300U + static_cast<uint32_t>(i);
+            decoder.commit(0, tg, 99U, when + 30 * static_cast<time_t>(i));
+            prove_newest(decoder, 0, tg);
+        }
+        decoder.publish();
+        model.waitForBackgroundPollForTest();
+        expect("teardown heard: nothing reached the spill or the sink", spill_lines() == 0 && sink.seen.isEmpty());
+    }
+    QDir(spill_path()).removeRecursively();
+    expect("teardown heard: the teardown hands on every group held", sink.seen.size() == 20);
+    CallHistoryModel relaunched;
+    RecordingHeardSink later;
+    relaunched.setHeardSink(&later);
+    gui_ingest(relaunched);
+    expect("teardown heard: the relaunch hands on none again", relaunched.count() == 20 && later.seen.isEmpty());
+}
+
 } // namespace
 
 int
@@ -1408,6 +1615,10 @@ main(int argc, char** argv) {
     test_tap_saves_a_settled_site_text_digest();
     test_failed_spill_read_after_a_newer_run();
     test_background_gps_withdrawal();
+    test_heard_long_spill_reaches_the_sink_before_the_trim();
+    test_heard_last_call_of_a_during_b_start();
+    test_heard_tap_learns_only_owned_live_calls();
+    test_heard_teardown_backlog_reaches_the_sink();
 
     QDir(dataDir).removeRecursively();
     if (g_failures != 0) {

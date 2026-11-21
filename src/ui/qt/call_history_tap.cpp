@@ -205,6 +205,7 @@ CallHistoryTap::stop() {
     m_running = false;
     m_rings.reset();
     m_result.ordinals = m_context.ordinals.rings;
+    m_result.heardRings = m_context.heardOwners.rings;
     m_context = Context();
     // The final append failed too (the spill is still unwritable): the rows go to the model with the rest of the
     // result, since the next start clears what the tap holds.
@@ -284,6 +285,9 @@ CallHistoryTap::slotWalk(int slot, const dsd_app_history_tap_meta& meta) {
     // As refresh() attributes: unknown options cannot establish identity, and which rows carry it is each row's own
     // tuner-owner stamp (row_from_item(), issue #671), not the scan flags when the tap reads the ring.
     walk.systemUid = meta.opts_published != 0 ? m_context.sessionUid : QString();
+    // Issue #903: as refresh() resolves a row's owner, by the session its ring is bound to.
+    walk.heardOwners = &m_context.heardOwners;
+    walk.optsPublished = meta.opts_published != 0;
     walk.cleared = clear.active && (!clear.pending || m_clearBound[slot]);
     walk.clearedThrough = clear.pushSeq[slot];
     return walk;

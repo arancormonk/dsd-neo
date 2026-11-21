@@ -36,6 +36,7 @@ target_sources(
         backup_model.cpp
         backup_stage.cpp
         call_history_filter.cpp
+        call_history_heard.cpp # Issue #903
         call_history_model.cpp
         call_history_payload.cpp
         call_history_tap.cpp

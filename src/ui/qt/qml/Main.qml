@@ -412,6 +412,19 @@ Window {
     // Activity, so a list edited, saved or deleted since changes nothing here
     // (the session still runs what it started with).
     property var sessionTargets: []
+    // Issue #903: the saved system behind each target id the scan-list
+    // session runs, read when its start is accepted from every target file
+    // that start wrote, before the engine keeps only an id's first: an id a
+    // frequency entry, an imported target file or another saved system also
+    // gives is no one's.
+    function sessionTargetOwners() {
+        return mainRoot.sessionScanList && typeof knownFrequencies !== "undefined"
+            && typeof scanListStarter !== "undefined"
+            ? knownFrequencies.sessionTargetOwners(mainRoot.sessionLists.map(function (list) {
+                return {uid: list.uid || "", path: scanListStarter.sessionCsvPath(list),
+                    targetSource: list.targetSource || "entries", entries: list.entries || []};
+            })) : ({});
+    }
     function captureSessionTargets() {
         mainRoot.sessionTargets = mainRoot.sessionScanList && typeof knownFrequencies !== "undefined"
             && typeof scanListStarter !== "undefined"
@@ -1989,6 +2002,10 @@ Window {
         // stamped after a clock reading: a replay's calls carry the capture's time,
         // and the decode clock may not have moved to it yet.
         callHistory.beginSessionOn(sys.name, (!scan && sys.uid) ? sys.uid : "");
+        // Issue #903: who owns the verified talkgroups this session hears, bound to the session just begun: the
+        // saved system a saved-system start runs, or each scan target's own; Explore and Signal search own none.
+        callHistory.setSessionOwnersFromMap(callHistory.session, (!scan && row >= 0) ? (sys.uid || "") : "",
+                                            scan ? mainRoot.sessionTargetOwners() : ({}));
         monitorView.historySession = callHistory.session;
         talkgroups.historySession = callHistory.session;
     }

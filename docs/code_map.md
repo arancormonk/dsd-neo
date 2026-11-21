@@ -17054,6 +17054,39 @@ Qt Quick frontend (`src/ui/qt`):
     in the log). Measured (`-O2`, this host): a poll that finds nothing new costs 0.05 us; one new commit costs about
     210 us on the tap thread, of which the 62 us copy holds the snapshot lock (as the publisher's own copy does); a
     minimal row spills as about 440 bytes (a named row about a kilobyte).
+  - Verified talkgroups to the remembered list (issue #903; `call_history_heard.{h,cpp}`, `heard_talkgroup_sink.h`).
+    `setHeardSink()` (`qt_ui.cpp` `wire_heard_talkgroups()`: the `HeardTalkgroupStore`, made after History so it
+    outlives it) receives `observe(owner, variant, id, when)` for each fragment reading that is the first to carry its
+    proof (`Event_History::heard_variant`, `heard_id`), taken on live input (`live_input`) and not operator tuned, whose
+    owner resolves. It is called at every ingest point, before any trim: the foreground `refresh()`, the spill fold
+    (handoff and load) and the teardown fold of the tap's unwritten backlog (`ingestReading()`), at the fragment's own
+    time (its end, else its start), never the merged conversation's. A reload of the saved log observes nothing, and
+    the store applies its owner policy at the call (frozen there; nothing is re-ingested). What the load's spill fold
+    finds before a sink is set waits (`HeardSighting`, first and last per talkgroup, at most 20,000). Once per fragment:
+    the walk hands an owner only when the fragment's seen entry held no proof (`seenProven()`), and the ingest skips a
+    fragment whose row already holds its part's proof (`fragmentProven()`), so a spill line folded again adds nothing.
+    Owners: `setSessionOwners(session, single, scan)` (QML: `setSessionOwnersFromMap()`, called by
+    `Main.startWithMap()` right after `beginSessionOn()`): the saved system of a saved-system start, or for a scan-list
+    start each target id one saved system's entry gives (`KnownFrequencyIndex::sessionTargetOwners()`: every launched
+    target file read before the engine's id dedupe; an id an imported file, a frequency entry or another saved system
+    also gives, and every id when a file cannot be read, is no one's; `scan_list_entry_owner()`). Explore and Signal
+    search own nothing. Owners are bound to the decoder ring (`HeardOwners::rings`): a ring belongs to the session it
+    was first walked in, by the model or the tap (`heard_owners_bind_ring()`; the tap returns its bindings in
+    `Result::heardRings`), so the last call of A's ring read after B began stays A's. A row heard off any scan is the
+    single owner's; a scan member is its target's (`channel_label`), and an unnamed scan member (`-Y`) or any scan row
+    of a saved-system start is no one's; a read without published options resolves none. The tap resolves the owner
+    where it reads and the spill line carries it (`ho`). The newest 8 sessions' owners and their rings (at most 32) are
+    persisted (`callHistory/heardOwners`, JSON), so a relaunched UI rejoining the running session keeps them. Each
+    fragment part keeps its own proof and latch (`FragmentPart::heardVariant`, `heardId`, `liveInput`); the row shows
+    its first proven part's proof and is live only while every part is. Persisted on rows, parts and seen entries
+    (`hv`, `hid`, `live`; older ones read none and not live), and change detection counts a proof gained or the latch
+    closed (`absorbSeenProof()`), so a late proof on a committed row is read again. Tests: `UI_QT_CALL_HISTORY_MODEL`
+    (`test_heard_*`: once per fragment, live/operator/scan/no-owner/no-options gates, a late proof and a CRC revision,
+    a merged conversation in both orders, the ring-bound owner across a relaunch, scan targets, the round trip),
+    `UI_QT_CALL_HISTORY_TAP` (`test_heard_*`: 1,001 groups spilled while suspended, by handoff and by process death; A's
+    last call during B's start; a shared scan id, a live-to-file switch and an operator tune through the tap; the
+    teardown backlog), `UI_QT_SIGNAL_SEARCH` (`testKnownFrequencySessionTargetOwners`), `UI_QT_QML_SESSION_TOOLS`
+    (`test_accepted_starts_name_their_heard_owners`).
   - Tests: `UI_QT_CALL_HISTORY_MODEL` (uids, fragments, recording roles, B6), `UI_QT_CALL_HISTORY_TAP` (300 commits
     while suspended, a spill across a process death, a stop and a clear while away, write volume, a spill unwritable
     at the handoff and at teardown, a 50,000-row spill, a 200,000-row one and a long one of notices heard again in bounded memory, a read error mid-spill;

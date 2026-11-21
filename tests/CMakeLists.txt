@@ -5615,6 +5615,7 @@ if(DSD_ENABLE_QT_UI)
         ${PROJECT_SOURCE_DIR}/src/ui/qt/talkgroup_filter_model.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/call_history_model.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/call_history_payload.cpp
+        ${PROJECT_SOURCE_DIR}/src/ui/qt/call_history_heard.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/call_history_tap.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/json_store.cpp
         ${PROJECT_SOURCE_DIR}/src/app_control/access_code_view.c
@@ -5660,6 +5661,7 @@ if(DSD_ENABLE_QT_UI)
         ui/test_ui_qt_call_history_model.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/call_history_model.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/call_history_payload.cpp
+        ${PROJECT_SOURCE_DIR}/src/ui/qt/call_history_heard.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/call_history_tap.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/call_history_filter.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/frequency_query.cpp
@@ -26980,6 +26982,7 @@ if(DSD_ENABLE_QT_UI)
         ${PROJECT_SOURCE_DIR}/src/ui/qt/scan_list_toggle_model.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/call_history_model.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/call_history_payload.cpp
+        ${PROJECT_SOURCE_DIR}/src/ui/qt/call_history_heard.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/call_history_tap.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/talkgroup_list_model.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/json_store.cpp
@@ -27035,6 +27038,7 @@ if(DSD_ENABLE_QT_UI)
         ui/test_ui_qt_call_history_tap.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/call_history_model.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/call_history_payload.cpp
+        ${PROJECT_SOURCE_DIR}/src/ui/qt/call_history_heard.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/call_history_tap.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/json_store.cpp
     )
@@ -27074,6 +27078,7 @@ if(DSD_ENABLE_QT_UI)
         ${PROJECT_SOURCE_DIR}/src/ui/qt/app_prefs.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/call_history_model.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/call_history_payload.cpp
+        ${PROJECT_SOURCE_DIR}/src/ui/qt/call_history_heard.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/call_history_tap.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/decoder_host.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/document_import_transport.cpp

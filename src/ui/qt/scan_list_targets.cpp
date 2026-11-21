@@ -386,6 +386,22 @@ scan_list_entry_analog_kind(const QVariantMap& entry, const QString& systemDecod
     return entry.value("kind") == "system" ? analogKindForFlag(systemDecodeFlag) : -1;
 }
 
+QString
+scan_list_entry_owner(const QVariantMap& list, const QString& id) {
+    if (list.value("targetSource", "entries").toString() != QStringLiteral("entries")) {
+        return {};
+    }
+    for (const auto& value : list.value("entries").toList()) {
+        const auto entry = value.toMap();
+        if (entry.value("uid").toString() == id) {
+            return entry.value("enabled", true).toBool() && entry.value("kind") == "system"
+                       ? entry.value("systemUid").toString()
+                       : QString();
+        }
+    }
+    return {};
+}
+
 ScanListTargets
 scan_list_targets(const QVariantMap& list, const QVariantList& systems) {
     ScanListTargets out;
