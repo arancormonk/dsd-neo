@@ -2537,9 +2537,10 @@ Window {
             mainRoot.spectrumOpen = false;
         }
         onExploreDetection: function (hit) {
-            // Issue #748 B18: no other receiver stands in for one the app
-            // cannot open; the screen offers neither action for it.
-            if (hit.receiverRefusal)
+            // Issue #748 B18, B6: no other receiver stands in for one the app
+            // cannot open, nor another decoder for a protocol it does not
+            // decode; the screen offers neither action for it.
+            if (hit.handoffRefusal)
                 return;
             mainRoot.leaveSearchFor({
                 kind: "explore",
@@ -2556,7 +2557,7 @@ Window {
         onSaveDetection: function (hit) {
             var source = mainRoot.sessionSystem || mainRoot.exploreSystem(sourceType, host, port, hit.freqMHz);
             var found = searchModel.systemForHit(hit, source);
-            if (found.receiverRefusal)
+            if (found.handoffRefusal)
                 return;
             wizard.openForFound(found, hit.freqMHz, found);
             mainRoot.wizardOpen = true;

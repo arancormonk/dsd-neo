@@ -1514,14 +1514,19 @@ Item {
             compare(explored.signalArguments[1][0].frequency, 462575000);
             model.history = [];
         }
-        // Issue #748 B18: a detection made on a receiver the app cannot open
-        // (its model row carries the reason) is neither explored nor saved:
-        // both actions are disabled and say why, from its history row and from
-        // the Now panel, whose Save as system is disabled too.
-        function test_unopenable_receiver_disables_explore_and_save() {
+        // Issue #748 B18 and B6: a detection made on a receiver the app cannot
+        // open, or confirmed as a protocol this build does not decode (its
+        // model row carries the reason), is neither explored nor saved: both
+        // actions are disabled and say why, from its history row and from the
+        // Now panel, whose Save as system is disabled too.
+        function test_unopenable_receiver_disables_explore_and_save_data() {
+            return [{tag: "SoapySDR receiver", reason: "Found on a SoapySDR receiver, which this app cannot open", refused: {inputSpec: "soapy:driver=rtlsdr"}},
+                {tag: "unknown protocol", reason: "This version cannot decode Tetrapol", refused: {inputSpec: "rtl:0:462.575M", confirmed: true, protocol: "Tetrapol"}}];
+        }
+        function test_unopenable_receiver_disables_explore_and_save(data) {
             var screen = loader.item;
-            var reason = "Found on a SoapySDR receiver, which this app cannot open";
-            model.history = [historyHit({inputSpec: "soapy:driver=rtlsdr", receiverRefusal: reason})];
+            var reason = data.reason;
+            model.history = [historyHit(Object.assign({handoffRefusal: reason}, data.refused))];
             wait(0);
             findChild(screen, "searchHistoryActions").activate();
             compare(menuTexts(), ["Explore here (disabled)", "Save as system (disabled)", "Avoid this session", "Avoid permanently", "Recordings (disabled)"]);
@@ -1536,7 +1541,7 @@ Item {
             compare(saved.count, 0);
             menu.cancel();
             // A receiver the app opens offers both.
-            model.history = [historyHit({inputSpec: "rtl:0:462.575M", receiverRefusal: ""})];
+            model.history = [historyHit({inputSpec: "rtl:0:462.575M", handoffRefusal: ""})];
             wait(0);
             findChild(screen, "searchHistoryActions").activate();
             verify(menuItem("searchActionExplore").enabled && menuItem("searchActionSave").enabled);
@@ -1544,7 +1549,7 @@ Item {
             model.history = [];
 
             var hit = model.status.hit;
-            model.status = Object.assign({}, model.status, {hit: Object.assign({}, hit, {inputSpec: "soapy:driver=rtlsdr", receiverRefusal: reason})});
+            model.status = Object.assign({}, model.status, {hit: Object.assign({}, hit, data.refused, {handoffRefusal: reason})});
             var save = findChild(screen, "searchSave");
             verify(save.visible && !save.enabled);
             findChild(screen, "searchMore").clicked();

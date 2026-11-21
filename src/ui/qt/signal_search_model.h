@@ -111,9 +111,10 @@ class SignalSearchModel : public QObject {
     Q_INVOKABLE void removeAvoid(double frequency);
     Q_INVOKABLE bool removeSessionAvoid(double frequency);
     /** The saved-system map detection @p hit starts (Save as system, Explore here): its recorded receiver's settings,
-     * else @p source's, retuned to it with its mode and gain. A detection whose recorded receiver the app cannot open
-     * (SoapySDR, or any input that is no RTL-SDR, rtl_tcp or Airspy) gives only {receiverRefusal: why}, the reason its
-     * row carries too (issue #748 B18). */
+     * else @p source's, retuned to it with its mode, gain and DSP bandwidth (72 kHz for TETRA's -fT, else 48, never
+     * the source's; issue #748). A detection whose recorded receiver the app cannot open (SoapySDR, or any input that
+     * is no RTL-SDR, rtl_tcp or Airspy; B18), or whose confirmed protocol this build does not decode (B6), gives only
+     * {handoffRefusal: why}, the reason its row carries too. */
     Q_INVOKABLE QVariantMap systemForHit(const QVariantMap& hit, const QVariantMap& source) const;
 
     /**

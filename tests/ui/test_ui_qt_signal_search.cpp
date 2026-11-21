@@ -627,6 +627,100 @@ publish(uint64_t id, bool confirmed = false, const char* input_spec = "rtltcp:12
     dsd_app_signal_search_publish(&s, &h, nullptr);
 }
 
+/* A confirmed detection of @p protocol on @p input_spec, published as the engine publishes one. */
+static void
+publishProtocol(uint64_t id, const char* protocol, const char* input_spec) {
+    dsd_signal_search_status s{};
+    s.session_id = 17;
+    s.revision = id + 4000;
+    s.phase = DSD_SEARCH_LISTENING;
+    auto& h = s.hit;
+    h.session_id = 17;
+    h.hit_id = id;
+    h.frequency_hz = 426706250;
+    h.bandwidth_hz = 25000;
+    h.confirmed = 1;
+    DSD_SNPRINTF(h.protocol, sizeof(h.protocol), "%s", protocol);
+    DSD_SNPRINTF(h.input_spec, sizeof(h.input_spec), "%s", input_spec);
+    dsd_app_signal_search_publish(&s, &h, nullptr);
+}
+
+/* Issue #748: Save as system and Explore here decode a TETRA detection, trunked or direct mode, with -fT at the 72 kHz
+   TETRA runs at; every other detection runs at 48 kHz on both of systemForHit()'s branches, the recorded receiver's
+   and the session source's, so one found by a 72 kHz search does not inherit its rate. The visited frequency and the
+   receiver settings are kept either way. */
+static void
+testSystemForHitTetra(const dsd_qt::SignalSearchModel& model) {
+    const QVariantMap searchSource{{QStringLiteral("sourceType"), QStringLiteral("rtltcp")},
+                                   {QStringLiteral("host"), QStringLiteral("10.0.0.7")},
+                                   {QStringLiteral("port"), 1234},
+                                   {QStringLiteral("bandwidthKhz"), 72},
+                                   {QStringLiteral("signalSearch"), true}};
+    const QVariantMap base{{QStringLiteral("freqMHz"), QStringLiteral("426.706250")},
+                           {QStringLiteral("frequency"), 426706250},
+                           {QStringLiteral("width"), 25000},
+                           {QStringLiteral("gain"), 20.0},
+                           {QStringLiteral("gainAuto"), false},
+                           {QStringLiteral("ppm"), -3},
+                           {QStringLiteral("biasTee"), true}};
+
+    const struct {
+        const char* protocol;
+        bool confirmed;
+        const char* flag;
+        int khz;
+    } cases[] = {{"TETRA", true, "-fT", 72}, {"TETRA DMO", true, "-fT", 72}, {"DMR", true, "-fs", 48},
+                 {"P25", true, "-ft", 48},   {"NXDN48", true, "-fi", 48},    {"", false, "-fA", 48}};
+
+    for (const auto& c : cases) {
+        for (const char* spec : {"rtl:0:426.7M", ""}) {
+            QVariantMap hit = base;
+            hit[QStringLiteral("protocol")] = QString::fromLatin1(c.protocol);
+            hit[QStringLiteral("confirmed")] = c.confirmed;
+            hit[QStringLiteral("unresolved")] = !c.confirmed;
+            hit[QStringLiteral("inputSpec")] = QString::fromLatin1(spec);
+            const QVariantMap found = model.systemForHit(hit, searchSource);
+            const bool recorded = *spec != '\0';
+            if (found.value(QStringLiteral("decodeFlag")).toString() != QLatin1String(c.flag)
+                || found.value(QStringLiteral("bandwidthKhz")).toInt() != c.khz) {
+                std::fprintf(stderr, "systemForHit(%s, spec \"%s\"): %s at %d kHz\n", c.protocol, spec,
+                             qPrintable(found.value(QStringLiteral("decodeFlag")).toString()),
+                             found.value(QStringLiteral("bandwidthKhz")).toInt());
+            }
+            assert(found.value(QStringLiteral("decodeFlag")).toString() == QLatin1String(c.flag));
+            assert(found.value(QStringLiteral("bandwidthKhz")).typeId() == QMetaType::Int);
+            assert(found.value(QStringLiteral("bandwidthKhz")).toInt() == c.khz);
+            assert(found.value(QStringLiteral("freqMhz")) == QStringLiteral("426.706250"));
+            assert(found.value(QStringLiteral("gainDb")).toInt() == 20);
+            assert(!found.contains(QStringLiteral("handoffRefusal")));
+            if (recorded) {
+                assert(found.value(QStringLiteral("sourceType")) == QStringLiteral("usb"));
+                assert(found.value(QStringLiteral("ppm")).toString() == QStringLiteral("-3"));
+                assert(found.value(QStringLiteral("biasTee")).toInt() == 1);
+            } else {
+                assert(found.value(QStringLiteral("sourceType")) == QStringLiteral("rtltcp"));
+                assert(found.value(QStringLiteral("host")) == QStringLiteral("10.0.0.7"));
+            }
+            dsd_qt::SessionArgsError error = dsd_qt::SessionArgsError::None;
+            const QStringList args = dsd_qt::session_args_build(found, {}, &error);
+            assert(error == dsd_qt::SessionArgsError::None);
+            assert(args.contains(QLatin1String(c.flag)));
+        }
+    }
+    // Issue #748 B6: a confirmed protocol this build cannot decode (a newer build's history, say) is neither saved nor
+    // explored: no Auto session stands in for it.
+    QVariantMap unknown = base;
+    unknown[QStringLiteral("protocol")] = QStringLiteral("Tetrapol");
+    unknown[QStringLiteral("confirmed")] = true;
+    for (const char* spec : {"rtl:0:426.7M", ""}) {
+        unknown[QStringLiteral("inputSpec")] = QString::fromLatin1(spec);
+        const QVariantMap refused = model.systemForHit(unknown, searchSource);
+        assert(refused.size() == 1);
+        assert(refused.value(QStringLiteral("handoffRefusal"))
+               == QStringLiteral("This version cannot decode Tetrapol"));
+    }
+}
+
 static void
 writeFile(const QString& path, const char* text) {
     FILE* f = dsd_fopen_private(path.toUtf8().constData(), "wb");
@@ -3070,20 +3164,43 @@ main(int argc, char** argv) {
         assert(row.value(QStringLiteral("id")) == QString::number(receiverHit));
         ++receiverHit;
         const QString reason = QString::fromUtf8(receiver.reason);
-        assert(row.value(QStringLiteral("receiverRefusal")).toString() == reason);
+        assert(row.value(QStringLiteral("handoffRefusal")).toString() == reason);
         const auto found = model.systemForHit(row, {{QStringLiteral("sourceType"), QStringLiteral("usb")}});
         if (reason.isEmpty()) {
-            assert(!found.contains(QStringLiteral("receiverRefusal")));
+            assert(!found.contains(QStringLiteral("handoffRefusal")));
             assert(!found.value(QStringLiteral("sourceType")).toString().isEmpty());
             assert(found.value(QStringLiteral("freqMhz")) == QStringLiteral("463.552100"));
         } else {
-            assert(found.size() == 1 && found.value(QStringLiteral("receiverRefusal")).toString() == reason);
+            assert(found.size() == 1 && found.value(QStringLiteral("handoffRefusal")).toString() == reason);
         }
     }
     assert(model.systemForHit(model.history().value(1).toMap(), {}).value(QStringLiteral("sourceType"))
            == QStringLiteral("airspy"));
     assert(model.systemForHit(model.history().value(3).toMap(), {}).value(QStringLiteral("sourceType"))
            == QStringLiteral("usb"));
+
+    // The row says the same, and a receiver the app cannot open is said first.
+    testSystemForHitTetra(model);
+
+    const struct {
+        const char* protocol;
+        const char* spec;
+        const char* reason;
+    } rows[] = {{"TETRA", "rtl:0:426.7M", ""},
+                {"TETRA DMO", "rtl:0:426.7M", ""},
+                {"Tetrapol", "rtl:0:426.7M", "This version cannot decode Tetrapol"},
+                {"Tetrapol", "soapy:driver=rtlsdr", "Found on a SoapySDR receiver, which this app cannot open"}};
+
+    uint64_t protocolHit = 190;
+    for (const auto& r : rows) {
+        publishProtocol(protocolHit, r.protocol, r.spec);
+        model.refresh();
+        const auto row = model.history().front().toMap();
+        assert(row.value(QStringLiteral("id")) == QString::number(protocolHit));
+        assert(row.value(QStringLiteral("protocol")) == QString::fromLatin1(r.protocol));
+        assert(row.value(QStringLiteral("handoffRefusal")).toString() == QString::fromUtf8(r.reason));
+        ++protocolHit;
+    }
 
     // History is copied and rebuilt only when the store changed it, not on every status revision.
     int historySignals = 0, statusSignals = 0, avoidSignals = 0;

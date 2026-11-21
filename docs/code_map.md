@@ -16166,9 +16166,13 @@ Build files: `src/protocol/CMakeLists.txt` and per‑protocol `src/protocol/<nam
   passes none and keeps the app defaults its session ran on (`tst_wizard_search_save.qml`, `UI_QT_SIGNAL_SEARCH`).
   The receiver comes from the recorded input spec by the engine's own checks (`dsd_opts_audio_in_dev_is_*_spec()`:
   RTL-SDR as `usb`, rtl_tcp, Airspy); a spec the app cannot open (SoapySDR, which the backend searches with, or any
-  other input) gives `systemForHit()` only `{receiverRefusal}`, the reason `hitMap()` also puts on the row, and
-  SignalSearchScreen disables Explore here and Save as system with it while Main hands off nothing for it (issue #748
-  B18, `UI_QT_SIGNAL_SEARCH`, `UI_QT_QML_SIGNAL_SEARCH`, `UI_QT_QML_SIGNAL_SEARCH_HANDOFF`).
+  other input), or a confirmed protocol this build does not decode ("This version cannot decode <protocol>", e.g. a
+  newer build's history), gives `systemForHit()` only `{handoffRefusal}`, the reason `hitMap()` also puts on the row,
+  and SignalSearchScreen disables Explore here and Save as system with it while Main hands off nothing for it (issue
+  #748 B18 and B6, `UI_QT_SIGNAL_SEARCH`, `UI_QT_QML_SIGNAL_SEARCH`, `UI_QT_QML_SIGNAL_SEARCH_HANDOFF`). The found
+  system's `bandwidthKhz` is set on both branches, the recorded receiver's and the session source's: 72 for a TETRA or
+  TETRA DMO detection (`-fT`), else 48, so a detection from a 72 kHz search (`searchBandwidthKhz()`: 72 while an enabled
+  range identifies TETRA, else 48; Main starts the search with it) never inherits that rate (issue #748).
   Export (#826): `SignalSearchModel::prepareExport(kind)` builds the whole file on the GUI thread when the button is
   pressed, from the store's snapshots, and keeps it as the one pending export (a new prepare drops the one before it):
   `"detections"` is every stored detection, newest first; `"avoids"` is the permanent list in saved order, then the

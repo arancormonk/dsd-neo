@@ -572,9 +572,10 @@ Item {
      * recordings first when it kept any. */
     function detectionActions(h, all) {
         var items = all ? recordingsAction(h) : [];
-        // A detection made on a receiver the app cannot open is neither
-        // explored nor saved, and says why (issue #748 B18).
-        var refusal = h.receiverRefusal || "";
+        // A detection made on a receiver the app cannot open, or confirmed as
+        // a protocol this build does not decode, is neither explored nor
+        // saved, and says why (issue #748 B18, B6).
+        var refusal = h.handoffRefusal || "";
         items.push({ text: qsTr("Explore here"), key: "explore", objectName: "searchActionExplore", enabled: !refusal, description: refusal });
         var targets = savedTargets(h);
         for (var i = 0; i < targets.length; ++i) {
@@ -1015,10 +1016,11 @@ Item {
                                 // Hidden, not removed, while nothing is received.
                                 visible: screen.receiving
                                 // Save as system is off for a receiver the app
-                                // cannot open; More says why (issue #748 B18).
-                                enabled: !(cell.save && screen.hit.receiverRefusal)
+                                // cannot open or a protocol it does not decode;
+                                // More says why (issue #748 B18, B6).
+                                enabled: !(cell.save && screen.hit.handoffRefusal)
                                 text: cell.label
-                                accessibleName: enabled ? cell.accessibleName || cell.label : cell.label + ". " + screen.hit.receiverRefusal
+                                accessibleName: enabled ? cell.accessibleName || cell.label : cell.label + ". " + screen.hit.handoffRefusal
                                 onClicked: {
                                     if (cell.more)
                                         screen.openDetectionMenu(screen.hit, false);

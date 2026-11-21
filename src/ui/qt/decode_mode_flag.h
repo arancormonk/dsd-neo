@@ -67,7 +67,7 @@ decode_mode_for_flag(const QString& flag) {
  * - a scan list's frequency entries (scan_protocol_catalog.h, issue #890):
  *   -ft -fs -fn -fi -fm -fd -fy -fz -fT -fA -fM;
  * - signal search's detections (signal_search_model.cpp confirmedDecodeFlag()
- *   and systemForHit()): -ft -fs -fa -fd -fi -fn -fm -fz -fy -fp -fA -fM;
+ *   and systemForHit()): -ft -fs -fa -fd -fi -fn -fm -fz -fy -fp -fT -fA -fM;
  * - the RadioReference generator (src/runtime/radioreference/rr_generate.c
  *   k_protocols, through dsd_rr_decode_flag() into radio_reference_model.cpp's
  *   plan): -ft -mq -^ -fs -fi -fn -fT -Y and the EDACS selectors -fh -fH -fe -fE.

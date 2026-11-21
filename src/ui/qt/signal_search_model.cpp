@@ -586,6 +586,20 @@ knownLabel(const QStringList& names) {
     return names.join(QStringLiteral(" / "));
 }
 
+/* The decode flag a confirmed detection of @p protocol is saved and explored with; "" for a protocol this build does
+   not decode. TETRA decodes trunked (TMO) and direct mode (DMO) cells alike with -fT (issue #748). */
+static QString
+confirmedDecodeFlag(const QString& protocol) {
+    static const QHash<QString, QString> flags{
+        {QStringLiteral("P25"), QStringLiteral("-ft")},    {QStringLiteral("DMR"), QStringLiteral("-fs")},
+        {QStringLiteral("NXDN"), QStringLiteral("-fa")},   {QStringLiteral("D-STAR"), QStringLiteral("-fd")},
+        {QStringLiteral("NXDN48"), QStringLiteral("-fi")}, {QStringLiteral("NXDN96"), QStringLiteral("-fn")},
+        {QStringLiteral("dPMR"), QStringLiteral("-fm")},   {QStringLiteral("M17"), QStringLiteral("-fz")},
+        {QStringLiteral("YSF"), QStringLiteral("-fy")},    {QStringLiteral("ProVoice"), QStringLiteral("-fp")},
+        {QStringLiteral("TETRA"), QStringLiteral("-fT")},  {QStringLiteral("TETRA DMO"), QStringLiteral("-fT")}};
+    return flags.value(protocol);
+}
+
 /* The saved-system receiver a detection's recorded input names (issue #748 B18): "usb" for an RTL-SDR, "rtltcp",
    "airspy", by the engine's own spec checks; "" for one the app cannot open (SoapySDR, which the backend searches
    with, or any other input). */
@@ -612,6 +626,18 @@ receiverRefusal(const QString& spec) {
     return dsd_opts_audio_in_dev_is_soapy_spec(dev.constData())
                ? QObject::tr("Found on a SoapySDR receiver, which this app cannot open")
                : QObject::tr("Found on a receiver this app cannot open");
+}
+
+/* Why a detection cannot be saved or explored here (Save as system, Explore here): a receiver the app cannot open
+   (issue #748 B18), else a confirmed protocol this build does not decode, such as one a newer build stored in the
+   history (B6). "" when both can go ahead. */
+static QString
+handoffRefusal(const QString& spec, bool confirmed, const QString& protocol) {
+    const QString receiver = receiverRefusal(spec);
+    if (!receiver.isEmpty() || !confirmed || protocol.isEmpty() || !confirmedDecodeFlag(protocol).isEmpty()) {
+        return receiver;
+    }
+    return QObject::tr("This version cannot decode %1").arg(protocol);
 }
 
 QVariantMap
@@ -642,7 +668,8 @@ SignalSearchModel::hitMap(const dsd_signal_search_hit& h) const {
             {QStringLiteral("slot"), h.slot},
             {QStringLiteral("crypt"), QString::fromUtf8(h.crypt)},
             {QStringLiteral("inputSpec"), QString::fromUtf8(h.input_spec)},
-            {QStringLiteral("receiverRefusal"), receiverRefusal(QString::fromUtf8(h.input_spec))},
+            {QStringLiteral("handoffRefusal"),
+             handoffRefusal(QString::fromUtf8(h.input_spec), h.confirmed != 0, QString::fromUtf8(h.protocol))},
             {QStringLiteral("ppm"), h.ppm},
             {QStringLiteral("biasTee"), h.bias_tee != 0},
             {QStringLiteral("airspy"), airspyMap(h.airspy)},
@@ -828,17 +855,6 @@ SignalSearchModel::refresh() {
     Q_EMIT changed();
 }
 
-static QString
-confirmedDecodeFlag(const QString& protocol) {
-    static const QHash<QString, QString> flags{
-        {QStringLiteral("P25"), QStringLiteral("-ft")},    {QStringLiteral("DMR"), QStringLiteral("-fs")},
-        {QStringLiteral("NXDN"), QStringLiteral("-fa")},   {QStringLiteral("D-STAR"), QStringLiteral("-fd")},
-        {QStringLiteral("NXDN48"), QStringLiteral("-fi")}, {QStringLiteral("NXDN96"), QStringLiteral("-fn")},
-        {QStringLiteral("dPMR"), QStringLiteral("-fm")},   {QStringLiteral("M17"), QStringLiteral("-fz")},
-        {QStringLiteral("YSF"), QStringLiteral("-fy")},    {QStringLiteral("ProVoice"), QStringLiteral("-fp")}};
-    return flags.value(protocol);
-}
-
 /* A detection's tuner gain as the saved system's gainDb: the whole-dB override a saved session starts with, the -i
    spec's gain field (session_args_build()). There 0 is the tuner's AGC and a manual gain is 1 to 49 dB, so AGC stays 0
    and a manual gain is rounded to the nearest whole dB in that range. A manual 0 or 0.9 dB therefore stays manual, at
@@ -859,10 +875,12 @@ savedGainDb(const QVariantMap& hit) {
 QVariantMap
 SignalSearchModel::systemForHit(const QVariantMap& hit, const QVariantMap& source) const {
     QString spec = hit.value(QStringLiteral("inputSpec")).toString();
-    /* A receiver the app cannot open is no other receiver either (issue #748 B18): the reason, and no system. */
-    const QString refusal = receiverRefusal(spec);
+    const bool confirmed = hit.value(QStringLiteral("confirmed")).toBool();
+    /* A receiver the app cannot open is no other receiver either (issue #748 B18), and no other decoder stands in for a
+       protocol this build does not decode (B6): the reason, and no system. */
+    const QString refusal = handoffRefusal(spec, confirmed, hit.value(QStringLiteral("protocol")).toString());
     if (!refusal.isEmpty()) {
-        return {{QStringLiteral("receiverRefusal"), refusal}};
+        return {{QStringLiteral("handoffRefusal"), refusal}};
     }
     QVariantMap result = source;
     if (!spec.isEmpty()) {
@@ -884,20 +902,22 @@ SignalSearchModel::systemForHit(const QVariantMap& hit, const QVariantMap& sourc
             result[QStringLiteral("ppm")] = QString::number(hit.value(QStringLiteral("ppm")).toInt());
             result[QStringLiteral("biasTee")] = hit.value(QStringLiteral("biasTee")).toBool() ? 1 : 0;
         }
-        /* The 48 kHz default, whatever the app's: every radio runs it as it is, an Airspy's capture rate stepped to it
-           (issue #806), so the width saved below is held to the same DSP rate on each. */
-        result[QStringLiteral("bandwidthKhz")] = 48;
     }
     result[QStringLiteral("freqMhz")] = hit.value(QStringLiteral("freqMHz"));
-    QString flag = hit.value(QStringLiteral("confirmed")).toBool()
+    QString flag = confirmed
                        ? confirmedDecodeFlag(hit.value(QStringLiteral("protocol")).toString())
                        : (hit.value(QStringLiteral("am")).toBool() ? QStringLiteral("-fM") : QStringLiteral("-fA"));
     result[QStringLiteral("decodeFlag")] = flag;
+    /* The DSP rate, whatever the app's default or the search session's: 72 kHz for TETRA, which runs only at a multiple
+       of 18 kHz (issue #748), else 48 kHz, so a DMR detection from a 72 kHz search does not inherit 72. Every radio runs
+       it as it is, an Airspy's capture rate stepped to it (issue #806), so the width saved below is held to the same
+       DSP rate on each. */
+    result[QStringLiteral("bandwidthKhz")] = flag == QLatin1String("-fT") ? 72 : 48;
     /* An Airspy's gains are its native map's; the RTL tuner gain the detection records does not describe it. */
     result[QStringLiteral("gainDb")] =
         result.value(QStringLiteral("sourceType")).toString() == QLatin1String("airspy") ? -1 : savedGainDb(hit);
     result[QStringLiteral("trunking")] = false;
-    if (!hit.value(QStringLiteral("confirmed")).toBool()) {
+    if (!confirmed) {
         result[QStringLiteral("extraArgs")] =
             QStringLiteral("%1 %2")
                 .arg(hit.value(QStringLiteral("am")).toBool() ? QStringLiteral("--am-bandwidth-hz")
