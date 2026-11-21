@@ -1320,9 +1320,9 @@ capture_gain_now(rig& r, const char* data_path, const char* meta_path, char* out
  * the setters say the control is not there (issue #743 B2). */
 void
 expect_replay_keeps_gain_mode(const dsd_iq_replay_config& meta, int want_auto, int want_tenths) {
-    input_ring_state ring{};
-    assert(input_ring_init(&ring, 1U << 16) == 0);
-    rtl_device* dev = rtl_device_create_iq_replay(&meta, &ring, nullptr);
+    auto ring = std::make_unique<input_ring_state>();
+    assert(input_ring_init(ring.get(), 1U << 16) == 0);
+    rtl_device* dev = rtl_device_create_iq_replay(&meta, ring.get(), nullptr);
     assert(dev != nullptr);
     int gain = 12345;
     for (int pass = 0; pass < 3; pass++) {
@@ -1341,7 +1341,7 @@ expect_replay_keeps_gain_mode(const dsd_iq_replay_config& meta, int want_auto, i
         }
     }
     rtl_device_destroy(dev);
-    input_ring_destroy(&ring);
+    input_ring_destroy(ring.get());
 }
 
 /* Issue #743 B2: a replay of the manual capture @p meta (297 tenths of a dB) has no tuner, so every tuner setter refuses
@@ -1351,9 +1351,9 @@ void
 expect_replay_setters_not_supported(const dsd_iq_replay_config& meta) {
     const uint32_t center_hz = (uint32_t)meta.capture_center_frequency_hz;
     const uint32_t rate_hz = meta.sample_rate_hz;
-    input_ring_state ring{};
-    assert(input_ring_init(&ring, 1U << 16) == 0);
-    rtl_device* dev = rtl_device_create_iq_replay(&meta, &ring, nullptr);
+    auto ring = std::make_unique<input_ring_state>();
+    assert(input_ring_init(ring.get(), 1U << 16) == 0);
+    rtl_device* dev = rtl_device_create_iq_replay(&meta, ring.get(), nullptr);
     assert(dev != nullptr);
     for (int pass = 0; pass < 2; pass++) {
         int selected = 4242;
@@ -1388,7 +1388,7 @@ expect_replay_setters_not_supported(const dsd_iq_replay_config& meta) {
         assert(rtl_device_get_native_sample_format(dev) == DSD_IQ_FORMAT_CU8);
     }
     rtl_device_destroy(dev);
-    input_ring_destroy(&ring);
+    input_ring_destroy(ring.get());
 }
 
 /* B8: a capture records the gain mode the tuner runs. Under automatic gain librtlsdr's getter still reports the last

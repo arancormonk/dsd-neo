@@ -5379,7 +5379,8 @@ suite runs under this compiler.
       stop before the closing blank line (7.81 and 8.5: every line but it; 7.65: the status line only), so the lines
       seen so far are kept; a write refusal can be the header cap, so there the block must be whole.
       `RUNTIME_TILE_FETCH_PLAIN_HTTP` drives the real libcurl against a loopback server (plain http via the
-      test-only `DSD_TILE_FETCH_TEST_PLAIN_HTTP`). A URL libcurl rejects as malformed
+      test-only `DSD_TILE_FETCH_TEST_PLAIN_HTTP`, pinned by the `CURLPROTO_HTTP` bitmask so no build hands libcurl a
+      plain-http protocol name). A URL libcurl rejects as malformed
       (`CURLE_URL_MALFORMAT`) is `ERR_INVALID`, a settings problem, never retried as an outage.
     - Connection reuse: `dsd_tile_fetch_session` (one per fetching thread, `request.session`) is a curl share handle
       for the connection (7.57+), DNS and TLS session caches; any one the library cannot share is skipped. The
