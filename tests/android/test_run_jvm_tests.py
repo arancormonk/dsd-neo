@@ -201,22 +201,28 @@ class CollectorChoice(unittest.TestCase):
         _argv, env, _runtime = runner.compile_command(JAVA_EXE, KOTLINC_BAT, None, FILES, OUTPUT, {})
         self.assertNotIn("JAVA_TOOL_OPTIONS", env)
 
-    def test_relative_jvm_option_files_are_made_absolute(self):
-        # The tests run in folders of their own, where the caller's relative names would not resolve.
-        base = Path.cwd() / "caller dir"
-        absolute = str(Path.cwd() / "abs" / "x.args")
-        flags = f"-XX:Flags={Path.cwd() / 'abs' / 'hotspotrc'}"
-        env = runner.absolute_jvm_files({"JDK_JAVA_OPTIONS": f"-Xss1M @opts.args @@literal \"@{absolute}\"",
-                                         "_JAVA_OPTIONS": '-XX:VMOptionsFile=vm.options "-Dname=a b"',
-                                         "JAVA_TOOL_OPTIONS": f'"{flags}"', "PATH": "/bin"}, base)
-        self.assertEqual(runner.jvm_option_words(env["JDK_JAVA_OPTIONS"]),
-                         ["-Xss1M", f"@{base / 'opts.args'}", "@@literal", f"@{absolute}"])
-        self.assertEqual(runner.jvm_option_words(env["_JAVA_OPTIONS"]),
-                         [f"-XX:VMOptionsFile={base / 'vm.options'}", "-Dname=a b"])
-        self.assertEqual(env["JAVA_TOOL_OPTIONS"], f'"{flags}"')  # nothing relative: left as it was
-        self.assertEqual(env["PATH"], "/bin")
-        with self.assertRaises(ValueError):
-            runner.absolute_jvm_files({"_JAVA_OPTIONS": """@rel "-Dq='a\"b'" """}, base)
+    def test_kotlinc_options_that_undo_the_isolation_are_refused(self):
+        # kotlinc puts JAVA_OPTS on the command line after JAVA_TOOL_OPTIONS: its own temp folder or perf data would win.
+        for words in ("-Xss1M -Djava.io.tmpdir=/tmp/shared", "-XX:+UsePerfData"):
+            with self.subTest(words=words):
+                with self.assertRaises(RuntimeError):
+                    runner.compiler_isolation(JAVA_EXE, KOTLINC_BAT, [], {"JAVA_OPTS": words}, "scratch")
+
+    def test_isolation_settings_come_from_the_jvm_output(self):
+        flags = "     bool UseParallelGC = false {product} {default}\n     bool UsePerfData   = false {product} {command line}\n"
+        properties = "Property settings:\n    java.io.tmpdir = /b d/t1\n"
+        self.assertEqual(runner.isolation_settings(flags, properties), ("/b d/t1", False))
+        self.assertEqual(runner.isolation_settings(flags.replace("= false {product} {command", "= true {product} {command"),
+                                                   properties), ("/b d/t1", True))
+        self.assertIsNone(runner.isolation_settings("", properties))
+        self.assertIsNone(runner.isolation_settings(flags, "openjdk version 21\n"))
+
+    def test_only_named_tests_run_in_their_temp_folder(self):
+        # The others keep the caller's working directory, so relative files the caller's JVM options name resolve.
+        builds = [build for suite in runner.SUITES.values() for build in suite.builds]
+        self.assertEqual(sorted(test for build in builds for test in build.in_folder), ["FileListingTest.kt"])
+        for build in builds:
+            self.assertTrue(set(build.in_folder) <= set(build.tests), build)
 
     def test_the_effective_temp_folder_is_read_from_the_jvm_settings(self):
         settings = "Property settings:\n    file.encoding = UTF-8\n    java.io.tmpdir = /b d/t1\n    os.name = Linux\n"

@@ -134,6 +134,10 @@ class Build(NamedTuple):
     # Android platform stubs from stubs/ that compile with it. A build with none has no android.* classes at all, so an
     # Android import in its sources fails the compile.
     stubs: tuple = ()
+    # Tests that also run with their temp folder as working directory: FileListingTest binds a Unix socket by a name
+    # relative to it, since the absolute name under a build tree is longer than a socket address holds. The others run
+    # in the caller's working directory, so a relative path the caller gave the JVM still resolves.
+    in_folder: tuple = ()
 
 
 class Suite(NamedTuple):
@@ -1720,7 +1724,7 @@ SUITES = {
     "file_browser": Suite(
         checks=(file_browser_wiring, storage_permissions_policy),
         builds=(
-            Build(sources=("FileListing.kt",), tests=("FileListingTest.kt",)),
+            Build(sources=("FileListing.kt",), tests=("FileListingTest.kt",), in_folder=("FileListingTest.kt",)),
             Build(
                 sources=("FileListing.kt", "FileBrowser.kt", "SettingsScreens.kt"),
                 tests=("FileBrowserTest.kt",),
@@ -1912,42 +1916,40 @@ def quote_jvm_word(word):
     return None
 
 
-# The arguments in a JVM-wide option variable that name a file: the launcher's @argfiles (JDK_JAVA_OPTIONS) and
-# HotSpot's options files. Relative, they would be looked up in the test's own working directory.
-JVM_FILE_ARGUMENTS = ("-XX:VMOptionsFile=", "-XX:Flags=")
+def jvm_isolation(java, options, environ, cwd):
+    """What a JVM started as @p java @p options under @p environ in @p cwd ends up with: its java.io.tmpdir and
+    whether it writes shared performance data. _JAVA_OPTIONS comes after the command line, and an options file named
+    there can say anything, so only the JVM can tell. Raises RuntimeError, with what the JVM printed, when it does not
+    start or does not say."""
+    probe = subprocess.run([java, *options, "-XshowSettings:properties", "-XX:+PrintFlagsFinal", "-version"],
+                           env=environ, cwd=cwd, capture_output=True, text=True, timeout=60)
+    settings = isolation_settings(probe.stdout, probe.stderr) if probe.returncode == 0 else None
+    if settings is None:
+        raise RuntimeError(f"{java} {' '.join(options)} did not start or did not report its settings "
+                           f"(exit {probe.returncode}):\n{probe.stderr.strip()}")
+    return settings
 
 
-def absolute_jvm_files(environ, base):
-    """@p environ with each relative file a JVM-wide option variable names made absolute against @p base, the
-    runner's working directory, since the tests run in folders of their own. Raises ValueError for one it cannot
-    rewrite."""
-    env = dict(environ)
-    for name in JVM_WIDE_OPTIONS:
-        words = jvm_option_words(environ.get(name, ""))
-        changed = False
-        for i, word in enumerate(words):
-            prefix = next((p for p in JVM_FILE_ARGUMENTS if word.startswith(p)), None)
-            if prefix is None and word.startswith("@") and not word.startswith("@@"):
-                prefix = "@"
-            if prefix is None or Path(word[len(prefix):]).is_absolute():
-                continue
-            words[i] = prefix + str(Path(base) / word[len(prefix):])
-            changed = True
-        if changed:
-            quoted = [quote_jvm_word(word) for word in words]
-            if None in quoted:
-                raise ValueError(f"{name}: an argument holds both quote characters and cannot be rewritten")
-            env[name] = " ".join(quoted)
-    return env
+def isolation_settings(flags, properties):
+    """(java.io.tmpdir, UsePerfData) from what -XX:+PrintFlagsFinal (@p flags) and -XshowSettings:properties
+    (@p properties) print; None when either is missing."""
+    tmpdir = tmpdir_setting(properties)
+    perf = re.search(r"\bbool\s+UsePerfData\s*=\s*(true|false)\b", flags)
+    if tmpdir is None or perf is None:
+        return None
+    return tmpdir, perf.group(1) == "true"
 
 
-def effective_tmpdir(java, environ, cwd, tmpdir):
-    """The java.io.tmpdir a test JVM ends up with, given @p tmpdir on its command line: _JAVA_OPTIONS, which HotSpot
-    reads after the command line, or an options file named there, can replace it, and only the JVM can say which
-    wins. None when it does not say."""
-    probe = subprocess.run([java, *jvm_options(environ), f"-Djava.io.tmpdir={tmpdir}", "-XshowSettings:properties",
-                            "-version"], env=environ, cwd=cwd, capture_output=True, text=True, timeout=30)
-    return tmpdir_setting(probe.stderr)
+def require_isolation(who, java, options, environ, cwd, tmpdir):
+    """Refuse to run @p who unless its JVM's java.io.tmpdir is @p tmpdir and it writes no shared performance data,
+    whatever the caller's JVM options say: a file it wrote elsewhere would escape every check."""
+    seen, perf = jvm_isolation(java, options, environ, cwd)
+    if seen != str(tmpdir):
+        raise RuntimeError(f"{who}: the JVM's java.io.tmpdir would be {seen!r}, not {str(tmpdir)!r}; unset what sets it "
+                           "(_JAVA_OPTIONS, or an options file it names)")
+    if perf:
+        raise RuntimeError(f"{who}: the JVM would write shared performance data (hsperfdata) to the system temp "
+                           "folder; unset what turns UsePerfData back on")
 
 
 def tmpdir_setting(settings):
@@ -1964,21 +1966,18 @@ def leftovers(folder):
     return sorted(entry.name for entry in Path(folder).iterdir())
 
 
-def run_test(java, runtime, test, directory):
-    """Run the compiled @p test in a temp folder of its own inside @p directory, which is its java.io.tmpdir, its native
-    temp folder and its working directory (so a Unix socket can be bound by a short relative name). Each test must
-    remove what it creates there: what is left fails the run, named, whether the test passed or not, and is removed."""
+def run_test(java, runtime, test, directory, in_folder=False):
+    """Run the compiled @p test with a temp folder of its own inside @p directory as its java.io.tmpdir and native temp
+    folder (and, with @p in_folder, its working directory). Each test must remove what it creates there: what is left
+    fails the run, named, whether the test passed or not, and is removed."""
     jvm_tmp = Path(tempfile.mkdtemp(prefix="t", dir=directory))
-    env = temp_environment(absolute_jvm_files(os.environ, Path.cwd()), jvm_tmp)
+    env = temp_environment(os.environ, jvm_tmp)
+    cwd = jvm_tmp if in_folder else None
     try:
-        seen = effective_tmpdir(java, env, jvm_tmp, jvm_tmp)
-        if seen != str(jvm_tmp):
-            raise RuntimeError(f"{test}: the test JVM's java.io.tmpdir would be {seen!r}, not its own folder "
-                               f"{str(jvm_tmp)!r}; unset what sets it (_JAVA_OPTIONS or an options file it names)")
+        require_isolation(test, java, [*jvm_options(env), f"-Djava.io.tmpdir={jvm_tmp}"], env, cwd, jvm_tmp)
         failure = None
         try:
-            subprocess.run(test_command(java, runtime, test, env, jvm_tmp), env=env, cwd=jvm_tmp, check=True,
-                           timeout=30)
+            subprocess.run(test_command(java, runtime, test, env, jvm_tmp), env=env, cwd=cwd, check=True, timeout=30)
         except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as error:
             failure = error
         left = leftovers(jvm_tmp)
@@ -1992,6 +1991,18 @@ def run_test(java, runtime, test, directory):
         raise RuntimeError(f"{test} left files in its temp folder")
 
 
+def compiler_isolation(java, kotlinc, argv, env, directory):
+    """Refuse to compile unless the compiler JVM's java.io.tmpdir is @p directory and it writes no shared performance
+    data. kotlinc puts JAVA_OPTS on its java command line, after JAVA_TOOL_OPTIONS, so a setting there would win."""
+    if kotlinc:
+        words = java_opts_words(env.get("JAVA_OPTS", ""), kotlinc)
+        if any(word.startswith("-Djava.io.tmpdir=") or word == "-XX:+UsePerfData" for word in words):
+            raise RuntimeError("JAVA_OPTS sets java.io.tmpdir or turns UsePerfData on for kotlinc; unset that")
+        require_isolation("the Kotlin compiler", java, words, env, None, directory)
+    else:
+        require_isolation("the Kotlin compiler", java, argv[1:argv.index("-cp")], env, None, directory)
+
+
 def run_build(name, build, java, kotlinc, cached):
     app = REPO / APP_SOURCES
     files = [
@@ -2003,9 +2014,10 @@ def run_build(name, build, java, kotlinc, cached):
         output = Path(directory) / "tests.jar"
         argv, env, runtime = compile_command(java, kotlinc, cached, files, output,
                                              temp_environment(os.environ, directory), directory)
+        compiler_isolation(java, kotlinc, argv, env, directory)
         subprocess.run(argv, env=env, check=True)
         for test in build.tests:
-            run_test(java, runtime, test, directory)
+            run_test(java, runtime, test, directory, test in build.in_folder)
 
 
 def run_suite(name, suite, java, kotlinc, cached):
@@ -2034,8 +2046,11 @@ def main():
                 return 1
     # CI jobs that run the suite set DSD_NEO_REQUIRE_TEST_TOOLS=1, so a missing compiler fails there instead of skipping.
     require_tools = args.require_tools or os.environ.get("DSD_NEO_REQUIRE_TEST_TOOLS") == "1"
+    # Absolute: FileListingTest runs in a working directory of its own, where a relative PATH entry means nothing.
     java = shutil.which("java")
+    java = os.path.abspath(java) if java else None
     kotlinc = shutil.which("kotlinc")
+    kotlinc = os.path.abspath(kotlinc) if kotlinc else None
     cached = cached_compiler() if not kotlinc else None
     if not java or (not kotlinc and not cached):
         print("Android JVM tests need Java and kotlinc, or the Kotlin compiler in the Gradle cache.")
