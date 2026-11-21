@@ -24,6 +24,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/stat.h>
 #include <time.h>
 #include "curl_common.h"
 #include "dsd-neo/core/opts_fwd.h"

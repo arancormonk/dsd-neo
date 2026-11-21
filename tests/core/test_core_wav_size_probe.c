@@ -12,7 +12,6 @@
 #include <dsd-neo/platform/file_compat.h>
 #include <stdint.h>
 #include <stdio.h>
-#include <string.h>
 #include "core/file/wav_size_test_support.h"
 #include "test_support.h"
 #ifdef _WIN32
