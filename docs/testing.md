@@ -2308,18 +2308,24 @@ the Stop arrives (the copy fallback then ends), a private open that makes its fi
 turned read-only right after, so that file's removal fails and is the run's one log line), a hard link that fails with
 the folder turned read-only first (the WAV's copy then fails, and the private sidecar copy already made, which cannot be
 removed, goes through the same once-a-run warning, not a second line), and a worker join that reports failure after the
-worker ended (the queued jobs are released). That last case leaves the upload worker failed for good, so it runs last
-in `main()`. Under IPO/LTO (`DSD_ENABLE_LTO`, `CMAKE_INTERPROCEDURAL_OPTIMIZATION`) the wrapped calls can be resolved
-before the linker sees them, so the seams and their cases are left out there, as on macOS and Windows. The issue #888 sidecar cases share one heap ring and options
-(`rdio_case_hist()`, `rdio_case_opts()`), zeroed for each case, rather than each keeping a static ring.
+worker ended (the queued jobs are released). That last case leaves the upload worker failed for good, so it runs last in
+`main()`. Under IPO/LTO the wrapped calls can be resolved before the linker sees them, so the seams and their cases are
+left out there, as on macOS and Windows: with `DSD_ENABLE_LTO`, and in any configuration whose
+`CMAKE_INTERPROCEDURAL_OPTIMIZATION` or `CMAKE_INTERPROCEDURAL_OPTIMIZATION_<CONFIG>` is on (generator expressions on
+the target's IPO properties, so a multi-config build decides per configuration; the definition and the `--wrap` options
+follow the same answer). The issue #888 sidecar cases share one heap ring and options (`rdio_case_hist()`,
+`rdio_case_opts()`), zeroed for each case, rather than each keeping a static ring.
 
 `PLATFORM_FILE_COMPAT` checks `dsd_hard_link()` in a folder the test makes (`dsd_test_mkdtemp()`), never the working
 folder. Whether that folder's file system takes hard links is asked of the platform: on Windows the volume's
 `FILE_SUPPORTS_HARD_LINKS` flag, asked through the wide or the ANSI call as `dsd_hard_link()` picks it
 (`dsd_win32_path_wide()`, so the code page 1252 folder with byte `0xE9` is asked as an ANSI path), on POSIX a `link()`
-between names the probe creates exclusively there, removing only what it made. Where it takes none, only the refusals
-are checked. Every fixture and probe name is built with `dsd_test_path_join()`, so under a long `DSD_NEO_TEST_TMPDIR` a
-name that does not fit fails the case before any file is touched, and none is cut short to another folder's name.
+between names the probe creates exclusively there, removing only what it made. A link over a taken name must fail with
+`EEXIST` only where the volume takes links; where it takes none, a refusal with both files as they were is enough, as a
+FAT or exFAT volume can refuse the link before it looks at the name. A missing source is linked to an unused name, so
+`ENOENT` does not compete with a taken name. Every fixture and probe name is built with `dsd_test_path_join()`, so under
+a long `DSD_NEO_TEST_TMPDIR` a name that does not fit fails the case before any file is touched, and none is cut short
+to another folder's name.
 
 ### Digital voice chain checks (issue #653)
 

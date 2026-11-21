@@ -7209,28 +7209,36 @@ target_link_libraries(
 # The cases that need a fault at one call (a hard link, a private open, the worker's join) wrap those calls, so they
 # exist only where GNU ld --wrap links, like the other wrap tests (on POSIX dsd_thread_join() is pthread_join()). Not
 # under IPO/LTO, which can inline or resolve the wrapped calls before the linker sees them: the cases are skipped
-# there.
+# there. IPO is asked of the configuration being built, through the target's INTERPROCEDURAL_OPTIMIZATION and
+# INTERPROCEDURAL_OPTIMIZATION_<CONFIG> (set from CMAKE_INTERPROCEDURAL_OPTIMIZATION[_<CONFIG>] for every target
+# alike), either one on; the definition and the link options follow the same answer, as --wrap without the __wrap_
+# definitions would not link.
 if(
     NOT APPLE
     AND NOT WIN32
     AND (CMAKE_C_COMPILER_ID MATCHES "GNU|Clang")
     AND NOT DSD_ENABLE_LTO
-    AND NOT CMAKE_INTERPROCEDURAL_OPTIMIZATION
-    AND NOT CMAKE_INTERPROCEDURAL_OPTIMIZATION_RELEASE
-    AND NOT CMAKE_INTERPROCEDURAL_OPTIMIZATION_RELWITHDEBINFO
 )
+    set(_dsd_rdio_tgt dsd-neo_test_runtime_rdio_export)
+    set(_dsd_rdio_ipo
+        "$<OR:$<BOOL:$<TARGET_PROPERTY:${_dsd_rdio_tgt},INTERPROCEDURAL_OPTIMIZATION>>,$<BOOL:$<TARGET_PROPERTY:${_dsd_rdio_tgt},INTERPROCEDURAL_OPTIMIZATION_$<UPPER_CASE:$<CONFIG>>>>>"
+    )
+    set(_dsd_rdio_wrap "$<NOT:${_dsd_rdio_ipo}>")
     target_compile_definitions(
         dsd-neo_test_runtime_rdio_export
-        PRIVATE DSD_TEST_WRAP_RDIO_SEAMS=1
+        PRIVATE "$<${_dsd_rdio_wrap}:DSD_TEST_WRAP_RDIO_SEAMS=1>"
     )
     target_link_options(
         dsd-neo_test_runtime_rdio_export
         PRIVATE
-            "LINKER:--wrap=dsd_hard_link"
-            "LINKER:--wrap=dsd_fopen_private"
-            "LINKER:--wrap=dsd_fopen_private_ex"
-            "LINKER:--wrap=pthread_join"
+            "$<${_dsd_rdio_wrap}:LINKER:--wrap=dsd_hard_link>"
+            "$<${_dsd_rdio_wrap}:LINKER:--wrap=dsd_fopen_private>"
+            "$<${_dsd_rdio_wrap}:LINKER:--wrap=dsd_fopen_private_ex>"
+            "$<${_dsd_rdio_wrap}:LINKER:--wrap=pthread_join>"
     )
+    unset(_dsd_rdio_wrap)
+    unset(_dsd_rdio_ipo)
+    unset(_dsd_rdio_tgt)
 endif()
 add_test(NAME RUNTIME_RDIO_EXPORT COMMAND dsd-neo_test_runtime_rdio_export)
 

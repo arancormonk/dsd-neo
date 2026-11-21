@@ -4432,6 +4432,8 @@ __wrap_dsd_hard_link(const char* existing, const char* new_path) {
 static FILE*
 seam_open_without_stream(const char* path, int* out_opened) {
     FILE* made = __real_dsd_fopen_private_ex(path, "wbx", NULL);
+    // Asked before the close: a closed stream's pointer has no value to compare.
+    const int created = made != NULL;
     if (made != NULL) {
         (void)fclose(made);
     }
@@ -4441,7 +4443,7 @@ seam_open_without_stream(const char* path, int* out_opened) {
         (void)chmod(lock, 0500);
     }
     if (out_opened != NULL) {
-        *out_opened = made != NULL;
+        *out_opened = created;
     }
     errno = ENOMEM;
     return NULL;

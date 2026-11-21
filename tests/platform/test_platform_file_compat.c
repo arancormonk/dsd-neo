@@ -1091,8 +1091,11 @@ dir_takes_hard_links(const char* dir) {
 }
 
 /* Issue #888: a hard link names the same file under a second name, never over an existing one (EEXIST, both files as
-   they were), and keeps every byte once the first name is removed. Where the filesystem takes none (the exporter then copies),
-   only the refusals are checked. A fixture name that does not fit fails the test before any file is touched. */
+   they were), and keeps every byte once the first name is removed; a missing source fails with ENOENT and makes no
+   name, asked against an unused one so a taken name cannot answer first. Where the filesystem takes none (the exporter
+   then copies), a link over an existing name is refused with both files as they were, whatever the reason given: such
+   a volume (FAT, exFAT) can refuse the link before it looks at the name. A fixture name that does not fit fails the
+   test before any file is touched. */
 static int
 expect_hard_link_in(const char* dir) {
     char from[DSD_TEST_PATH_MAX];
@@ -1120,7 +1123,7 @@ expect_hard_link_in(const char* dir) {
     int ok = 1;
     int same = 0;
     errno = 0;
-    ok = ok && dsd_hard_link(from, taken) == -1 && errno == EEXIST;
+    ok = ok && dsd_hard_link(from, taken) == -1 && (!links || errno == EEXIST);
     ok = ok && file_text_is(from, "from") && file_text_is(taken, "taken");
     if (links) {
         ok = ok && dsd_hard_link(from, to) == 0 && file_text_is(to, "from");
@@ -1130,8 +1133,9 @@ expect_hard_link_in(const char* dir) {
     }
     ok = ok && dsd_remove_file(from) == 0;
     ok = ok && (links ? file_text_is(to, "from") : !file_exists(to));
+    ok = ok && (!links || dsd_remove_file(to) == 0);
     errno = 0;
-    ok = ok && dsd_hard_link(from, taken) == -1 && errno == ENOENT;
+    ok = ok && dsd_hard_link(from, to) == -1 && errno == ENOENT && !file_exists(to) && !file_exists(from);
     (void)dsd_remove_file(from);
     (void)dsd_remove_file(taken);
     (void)dsd_remove_file(to);
