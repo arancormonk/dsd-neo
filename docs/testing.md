@@ -4170,6 +4170,15 @@ ctest --preset dev-debug --output-on-failure
 tools/check_test_tmp_leftovers.sh build/dev-debug
 ```
 
+A test must not open a real sound device either: where `XDG_RUNTIME_DIR` is
+unset, as on the CI runners, libpulse makes its runtime directory in `TMPDIR`
+and leaves it there. `initOpts()` picks the PulseAudio output, so a test whose
+code can open output sets `opts->audio_out_type = 9` (no audio output), and a
+CLI run passes `-o null`. A test whose decoder falls back to the PulseAudio
+input by design (a TCP or file input that ends) gives it
+`PULSE_RUNTIME_PATH` inside its own temp directory, as
+`tests/pcm_input_paths_check.py` does.
+
 `dsd_neo_add_test_tmpdirs()` is called last in each directory that registers
 tests (`tests/`, `tests/fuzz/`, `apps/dsd-cli/`); a test registered after that
 call gets no directory of its own.
