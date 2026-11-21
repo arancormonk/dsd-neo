@@ -915,7 +915,11 @@ Android session whose saved extra arguments carry one refuses to start the same 
 - EDACS/ProVoice: `-fh` (standard), `-fH` (with ESK 0xA0)
   - Custom AFS bit splits: `-fh344`, `-fH434`
 - EDACS EA/ProVoice: `-fe` (standard), `-fE` (with ESK 0xA0)
-- dPMR: `-fm`
+- dPMR: `-fm`. Known limits of its header and end frame reading: a header whose first MI copy is damaged and whose
+  24 symbols before the second copy happen to look like a header sync word can be missed, or shown 30 ms late with a
+  wrong colour code, and an end frame right after it is then missed; a false header sync word exactly 72 symbols
+  before a real header whose own sync word is badly faded can be shown in its place, 30 ms early with a wrong colour
+  code.
 - TETRA: `-fT`. Like every `-f` selector it is replaced by a later one (`-fT -fp` decodes ProVoice alone). TETRA's
   pi/4-DQPSK runs at 18 ksym/s and its symbols are timed at a whole number of samples each, 2 to 8, so
   it decodes only at a DSP rate that is a multiple of 18 kHz from 36 to 144 kHz. `-fT` therefore sets the DSP

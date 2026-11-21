@@ -9156,7 +9156,15 @@ the stream-notice hooks' pattern: one that fails to initialize leaves the hook u
   is checked on both its copies, MI1 included, at its own frame's end; no reading of its MI0 alone rules it out (a
   faded MI0 can pass on the earlier word's levels and fail on its own). A pending word is a sign pattern only, so one
   that cannot read a frame (faded below `DSD_WARM_START_MIN_SPAN`) displaces nothing. Should the later candidate then
-  fail, neither frame is published. Only FS2 and FS3 stand down inside a candidate. Once the
+  fail, neither frame is published.
+  Known limits of the overlap rule (decided for issue #890; each needs FS1's exact 24-symbol sign pattern 72 symbols
+  from another FS1):
+  - A header whose MI0 fails and whose last 24 symbols before MI1 (MI0's tail and the channel code) carry FS1's signs
+    at a level that can read a frame is lost, or is reported 72 symbols late on its MI1 alone with a wrong colour code.
+  - An END right after such a header (a status poll's, say) is lost: the FS3 window follows the frame reported, or none.
+  - A false FS1 exactly 72 symbols before a real header whose own FS1 is too faded to read a frame takes the header's
+    place: it is reported 72 symbols early, on the real MI0, with a wrong colour code, and the real header is dropped.
+  Only FS2 and FS3 stand down inside a candidate. Once the
   frame's last symbol is in, it is
   read back from the soft symbol history, sliced on its own sync word's outer levels, and checked, in the
   specification's receive order: each 120-bit MI copy descrambled from a fresh X^9 + X^5 + 1 scrambler, then the 12 x
