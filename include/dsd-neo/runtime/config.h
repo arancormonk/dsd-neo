@@ -290,6 +290,12 @@ typedef struct dsdneoRuntimeConfig {
     int dmr_t3_cc_freq_is_set;
     int dmr_t3_cc_lcn_is_set;
     int dmr_t3_start_lcn_is_set;
+    /* Supplied (env or the --calc-* flag) but unusable: the matching *_is_set stays 0, and the calculator refuses
+       the run rather than print a map without that setting. */
+    int dmr_t3_step_hz_invalid;
+    int dmr_t3_cc_freq_invalid;
+    int dmr_t3_cc_lcn_invalid;
+    int dmr_t3_start_lcn_invalid;
 
     /* DMR TIII heuristic fill (opt-in) */
     int dmr_t3_heur_is_set;

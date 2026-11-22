@@ -231,6 +231,32 @@ resolve_step_hz(const dsdneoRuntimeConfig* cfg, const long* freqs, int count, lo
     return 0;
 }
 
+/* A setting that was supplied but unusable (zero, out of range, not a number) is an error, never an omitted one: the
+   tool would otherwise print a map the caller did not ask for. */
+static int
+refuse_invalid_settings(const dsdneoRuntimeConfig* cfg) {
+    if (!cfg) {
+        return 0;
+    }
+    if (cfg->dmr_t3_step_hz_invalid) {
+        LOG_ERROR("LCN calc: --calc-step (DSD_NEO_DMR_T3_STEP_HZ) is not a usable step in Hz.\n");
+        return 3;
+    }
+    if (cfg->dmr_t3_cc_freq_invalid) {
+        LOG_ERROR("LCN calc: --calc-cc-freq (DSD_NEO_DMR_T3_CC_FREQ) is not a usable frequency.\n");
+        return 3;
+    }
+    if (cfg->dmr_t3_cc_lcn_invalid) {
+        LOG_ERROR("LCN calc: --calc-cc-lcn (DSD_NEO_DMR_T3_CC_LCN) is not a usable LCN.\n");
+        return 3;
+    }
+    if (cfg->dmr_t3_start_lcn_invalid) {
+        LOG_ERROR("LCN calc: --calc-start-lcn (DSD_NEO_DMR_T3_START_LCN) is not a usable LCN.\n");
+        return 3;
+    }
+    return 0;
+}
+
 /* The anchor is both settings or neither: half of one cannot place the grid. */
 static int
 apply_anchor(const dsdneoRuntimeConfig* cfg, long long* ref_freq, long long* ref_lcn) {
@@ -257,6 +283,9 @@ apply_anchor(const dsdneoRuntimeConfig* cfg, long long* ref_freq, long long* ref
 int
 dsd_cli_calc_dmr_t3_lcn_from_csv(const char* path) {
     const dsdneoRuntimeConfig* cfg = resolve_runtime_config();
+    if (refuse_invalid_settings(cfg) != 0) {
+        return 3;
+    }
 
     char opened_path[2048];
     FILE* fp = dsd_path_fopen_user_read_file(path, opened_path, sizeof opened_path);

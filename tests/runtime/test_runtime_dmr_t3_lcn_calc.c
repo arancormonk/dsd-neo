@@ -144,6 +144,31 @@ test_results_outside_range_or_off_grid_print_nothing(void) {
     clear_dmr_t3_env();
 }
 
+/* A setting that was supplied but is unusable fails the run with nothing on stdout, never an unanchored map. */
+static void
+test_invalid_supplied_settings_are_errors(void) {
+    const char* const csv = "f\n451000000\n451012500\n";
+    set_anchor(NULL, "0", NULL);
+    expect_error(csv); /* --calc-cc-lcn 0 alone */
+    set_anchor("0", "0", NULL);
+    expect_error(csv); /* both anchors 0 */
+    set_anchor("0", "10", NULL);
+    expect_error(csv);
+    set_anchor("451.0", "abc", NULL);
+    expect_error(csv);
+    set_anchor(NULL, NULL, "0");
+    expect_error(csv);
+    set_anchor(NULL, NULL, "-12500");
+    expect_error(csv);
+    clear_dmr_t3_env();
+    (void)dsd_test_setenv("DSD_NEO_DMR_T3_START_LCN", "0", 1);
+    dsd_neo_config_init();
+    expect_error(csv);
+    clear_dmr_t3_env();
+    dsd_neo_config_init();
+    expect_ok(csv, "lcn,freq\n1,451000000\n2,451012500\n");
+}
+
 static size_t
 fill_rows(char* buf, size_t size, int rows, int stepped) {
     size_t n = 0;
@@ -355,6 +380,7 @@ main(void) {
     test_row_cap_is_an_error();
     test_overlong_row_and_half_anchor_are_errors();
     test_row_limit_counts_the_line_ending();
+    test_invalid_supplied_settings_are_errors();
     printf("RUNTIME_DMR_T3_LCN_CALC: OK\n");
     return 0;
 }
