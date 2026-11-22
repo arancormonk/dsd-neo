@@ -4088,12 +4088,19 @@ render_code_row(dsd_opts* opts, dsd_state* state, Event_History_I event_history[
 // repeater prefixes apart; a Type-C row keeps its numbers.
 static int
 test_nxdn_event_line_names_type_d_text(void) {
-    static dsd_opts opts;
-    static dsd_state state;
-    static Event_History_I event_history[2];
+    /* On the heap and freed after the case (dsd_opts and dsd_state are never static or on the stack here). */
+    dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(*opts));
+    dsd_state* state = (dsd_state*)calloc(1, sizeof(*state));
+    Event_History_I* event_history = (Event_History_I*)calloc(2, sizeof(*event_history));
+    if (opts == NULL || state == NULL || event_history == NULL) {
+        free(event_history);
+        free(state);
+        free(opts);
+        return 1;
+    }
     int rc = 0;
 
-    reset_fixture(&opts, &state, event_history);
+    reset_fixture(opts, state, event_history);
     dsd_call_observation observation = {
         .protocol = DSD_SYNC_NXDN_POS,
         .slot = 0U,
@@ -4105,14 +4112,18 @@ test_nxdn_event_line_names_type_d_text(void) {
     };
     DSD_SNPRINTF(observation.target_text, sizeof(observation.target_text), "%s", "07-0005");
     DSD_SNPRINTF(observation.source_text, sizeof(observation.source_text), "%s", "03-0100");
-    rc |= expect_int("type-d row opens", dsd_call_state_observe(&state, &observation, DSD_CALL_BOUNDARY_BEGIN), 1);
-    watchdog_event_current(&opts, &state, 0);
+    rc |= expect_int("type-d row opens", dsd_call_state_observe(state, &observation, DSD_CALL_BOUNDARY_BEGIN), 1);
+    watchdog_event_current(opts, state, 0);
     rc |= expect_has_substr("type-d event names text", event_history[0].Event_History_Items[0].event_string,
                             "TGT: 07-0005; SRC: 03-0100; RAN: ");
 
-    reset_fixture(&opts, &state, event_history);
-    const Event_History* item = render_code_row(&opts, &state, event_history, DSD_SYNC_NXDN_POS);
+    reset_fixture(opts, state, event_history);
+    const Event_History* item = render_code_row(opts, state, event_history, DSD_SYNC_NXDN_POS);
     rc |= expect_has_substr("type-c event keeps numbers", item->event_string, "TGT: 00051002; SRC: 00041001; ");
+    dsd_state_ext_free_all(state);
+    free(event_history);
+    free(state);
+    free(opts);
     return rc;
 }
 
