@@ -109,7 +109,10 @@ Generated (do not edit/commit):
     the scan scope (the tetra-dmo class, which decodes trunked and direct mode alike; `search_tune_mode()`), runs CQPSK
     whatever a `-m` lock names (`search_tetra_modulation()`), and its retune queues the 18000/4 profile with TETRA's
     filter and the TED at the DSP rate over 18000 symbols/s (`search_retune_ted_sps()`); its span tunes, a span return
-    and the next Auto visit run the baseline. A search with a TETRA range (`needs_tetra`) holds the TETRA state across
+    and the next Auto visit run the baseline, and so does a TETRA visit a Pause or a search error leaves: its closed
+    reception puts the span tune's decoder profile back before the paused snapshot, the search keeping the tuner and
+    staging nothing over a visit tune the controller still owns (`search_leave_tetra_visit()`). A search with a TETRA
+    range (`needs_tetra`) holds the TETRA state across
     its landings and starts it cold at every departure, after the boundary and before the session's P25 site returns
     (`dsd_engine_scan_tetra_landing()`), and lets it go at the end (`dsd_engine_scan_tetra_release()`). A start with an
     enabled TETRA range is refused, before anything changes, for a published DSP rate TETRA cannot run at, the channel

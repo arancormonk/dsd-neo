@@ -546,7 +546,9 @@ and on the second once.
   both lists from the same place the search does, so what it lists is what the
   search avoids.
 - **Pause** ends any call in progress on the channel and permits range edits. A search
-  that fails (its input stalls, for example) ends that call too.
+  that fails (its input stalls, for example) ends that call too. Paused or failed
+  during a TETRA visit, the decoder goes back to the settings the search scans
+  with, so it shows no TETRA decoding until a TETRA visit lands again.
   **Resume** applies them and restarts the pass under the same session, retaining
   session avoids; a start after **Stop** is always a new session. **Stop** ends the radio session and leaves Signal
   search open on the same receiver, ready to start again. The session's settings

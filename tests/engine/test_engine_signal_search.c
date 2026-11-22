@@ -4583,6 +4583,100 @@ test_tetra_visit_resets_on_departures(dsd_opts* o, dsd_state* s, const dsd_signa
     end_tetra_rate(o, s);
 }
 
+/* The decoder settings a receive profile puts in force, for comparing a pause's against a span tune's. */
+typedef struct {
+    int frame_tetra, mod_cli_lock, mod_c4fm, mod_qpsk, mod_gfsk, mod_p2lock;
+    int rf_mod, sps_hunt_idx, sps, center;
+    dsd_scan_mode row;
+} decoder_profile;
+
+static decoder_profile
+decoder_profile_of(const dsd_opts* o, const dsd_state* s) {
+    const decoder_profile p = {o->frame_tetra,      o->mod_cli_lock,           o->mod_c4fm,         o->mod_qpsk,
+                               o->mod_gfsk,         o->mod_p25p2_profile_lock, s->rf_mod,           s->sps_hunt_idx,
+                               s->samplesPerSymbol, s->symbolCenter,           dsd_scan_mode_row(s)};
+    return p;
+}
+
+static int
+decoder_profile_is(const dsd_opts* o, const dsd_state* s, const decoder_profile* want) {
+    const decoder_profile now = decoder_profile_of(o, s);
+    return memcmp(&now, want, sizeof(now)) == 0;
+}
+
+/* Issue #748: a Pause or a search error during a TETRA visit closes the visit and puts back the idle receive profile a
+   span tune of the range runs (no TETRA decoder or scan class, the session's modulation lock and timing), while the
+   search keeps the tuner. Paused while the controller owns the visit's tune, the tune keeps the profile it was queued
+   with and its late landing changes nothing; Resume waits for it, then visits TETRA again. Under no lock and -m2. */
+static void
+test_tetra_pause_restores_idle_profile(dsd_opts* o, dsd_state* s, const dsd_signal_search_config* config) {
+    static const struct {
+        int lock, c4fm, qpsk, p2lock, rf_mod, profile;
+    } locks[] = {
+        {0, 1, 0, 0, 0, DSD_FRAME_SYNC_SPS_PROFILE_4800_4},
+        {1, 0, 1, 1, 1, DSD_FRAME_SYNC_SPS_PROFILE_6000_4},
+    };
+
+    use_tetra_rate();
+    for (size_t i = 0; i < sizeof(locks) / sizeof(locks[0]); ++i) {
+        o->mod_cli_lock = locks[i].lock;
+        o->mod_c4fm = locks[i].c4fm;
+        o->mod_qpsk = locks[i].qpsk;
+        o->mod_gfsk = 0;
+        o->mod_p25p2_profile_lock = locks[i].p2lock;
+        put_timing(s, locks[i].profile, 15, 7, locks[i].rf_mod);
+        const dsd_signal_search_config one = tetra_config(config, 64 + (uint64_t)i);
+        start_tag_session(o, s, &one);
+        /* The span tune's profile is the idle one. */
+        const decoder_profile idle = decoder_profile_of(o, s);
+        assert(idle.frame_tetra == 0 && idle.row != DSD_SCAN_MODE_TETRA_DMO);
+
+        tetra_visit(o, s);
+        assert(o->frame_tetra == 1 && s->rf_mod == 1 && dsd_scan_mode_row(s) == DSD_SCAN_MODE_TETRA_DMO);
+        const int snapshots_before = snapshots;
+        act(o, s, DSD_SEARCH_ACTION_PAUSE);
+        assert(status.phase == DSD_SEARCH_PAUSED && decoder_profile_is(o, s, &idle));
+        assert(snapshots > snapshots_before && tuner_owner == one.session_id && dsd_signal_search_is_running(s));
+        act(o, s, DSD_SEARCH_ACTION_RESUME);
+        tetra_visit(o, s);
+        assert(o->frame_tetra == 1 && s->rf_mod == 1);
+
+        /* Paused while the controller owns the next visit's tune. */
+        act(o, s, DSD_SEARCH_ACTION_SKIP);
+        for (int n = 0; n < 16 && !(status.phase == DSD_SEARCH_TUNING && !status.hit.ended); ++n) {
+            if (status.phase == DSD_SEARCH_TUNING) {
+                land(o, s);
+            } else {
+                ready = 1;
+                tick(o, s);
+            }
+        }
+        assert(status.phase == DSD_SEARCH_TUNING && !status.hit.ended && tune_pending && tetra_profile_queued());
+        const uint32_t owned = ticket;
+        act(o, s, DSD_SEARCH_ACTION_PAUSE);
+        assert(status.phase == DSD_SEARCH_PAUSED && decoder_profile_is(o, s, &idle));
+        assert(ticket == owned && tetra_profile_queued() && tuner_owner == one.session_id);
+        land(o, s);
+        assert(status.phase == DSD_SEARCH_PAUSED && decoder_profile_is(o, s, &idle));
+        act(o, s, DSD_SEARCH_ACTION_RESUME);
+        tetra_visit(o, s);
+        assert(o->frame_tetra == 1);
+
+        /* A search error during the visit. */
+        stalled_ms = 20000;
+        tick(o, s);
+        assert(status.phase == DSD_SEARCH_ERROR && decoder_profile_is(o, s, &idle));
+        assert(tuner_owner == one.session_id && dsd_signal_search_is_running(s));
+        stalled_ms = 0;
+        act(o, s, DSD_SEARCH_ACTION_STOP);
+        land(o, s);
+        assert(status.phase == DSD_SEARCH_STOPPED);
+        assert(session_modulation_back(o, s, locks[i].lock, locks[i].c4fm, locks[i].qpsk, locks[i].p2lock,
+                                       locks[i].rf_mod));
+    }
+    end_tetra_rate(o, s);
+}
+
 /* A start of @p config is refused with @p why and changes nothing: no boundary, tune, owner or running search. */
 static void
 start_refused(dsd_opts* o, dsd_state* s, const dsd_signal_search_config* config, const char* why) {
@@ -5220,6 +5314,7 @@ main(void) {
     test_tetra_protocol_latched(o, s, &config);
     test_tetra_visit_lands_tetra_profile(o, s, &config);
     test_tetra_visit_resets_on_departures(o, s, &config);
+    test_tetra_pause_restores_idle_profile(o, s, &config);
     test_tetra_start_checks(o, s, &config);
     test_tetra_suppression_per_kind(o, s, &config);
     test_tetra_quiet_and_activity(o, s, &config);

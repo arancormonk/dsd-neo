@@ -493,13 +493,11 @@ search_tetra_modulation(dsd_opts* opts, dsd_state* state) {
     state->rf_mod = 1;
 }
 
+/* The decoder side of a tune of range @p r in scan class @p mode: the class, a TETRA visit's modulation, a typed visit's
+   timing and the range's row options. -1 when the scope refuses. */
 static int
-search_prepare_profile(search_coord* c, dsd_opts* opts, dsd_state* state, uint32_t target, int analog) {
-    const dsd_signal_search_range* r = &c->config.ranges[c->status.range_index];
-    if (search_apply_airspy(c, opts)) {
-        return -1;
-    }
-    const dsd_scan_mode mode = search_tune_mode(r, c->visit, analog);
+search_enter_tune_mode(dsd_opts* opts, dsd_state* state, const dsd_signal_search_range* r, dsd_scan_mode mode,
+                       int analog) {
     if (dsd_scan_mode_enter(opts, state, mode)) {
         return -1;
     }
@@ -518,7 +516,17 @@ search_prepare_profile(search_coord* c, dsd_opts* opts, dsd_state* state, uint32
         values.channel_bw_hz = (int)r->bandwidth_hz;
         values.channel_bw_kind = r->am ? DSD_ANALOG_DEMOD_AM : DSD_ANALOG_DEMOD_FM;
     }
-    if (dsd_scan_mode_options(opts, state, &values)) {
+    return dsd_scan_mode_options(opts, state, &values) ? -1 : 0;
+}
+
+static int
+search_prepare_profile(search_coord* c, dsd_opts* opts, dsd_state* state, uint32_t target, int analog) {
+    const dsd_signal_search_range* r = &c->config.ranges[c->status.range_index];
+    if (search_apply_airspy(c, opts)) {
+        return -1;
+    }
+    const dsd_scan_mode mode = search_tune_mode(r, c->visit, analog);
+    if (search_enter_tune_mode(opts, state, r, mode, analog)) {
         return -1;
     }
     if (search_open_audio(c, opts, state, analog) < 0) {
@@ -1815,10 +1823,28 @@ dsd_engine_signal_search_notice(dsd_state* state, uint64_t session_id, const cha
 }
 
 #ifdef USE_RADIO
-/* End what the decoder was receiving on the search's channel: the carrier boundary and acquisition reset, then the
-   snapshots, which the engine loop does not publish while the search is paused, failed or stopping (frame sync does,
-   and it is not running), so frontends learn here that the call ended. The visit's recordings closed at the boundary,
-   under its tag, which then clears: the next landing names its own visit (issue #809). */
+/* A TETRA visit a Pause or a search error left (issue #748): no tune follows it, so the decoder goes back to the idle
+   receive profile a span tune of the range runs (the session's Auto baseline with its modulation lock and timing), and
+   no TETRA decoder, scan class or CQPSK of the visit stays in force while the search is paused or failed. The search
+   keeps the tuner and its scope. Nothing is staged for the receiver: a visit tune the controller still owns lands with
+   the profile it was queued with, and Resume's span tune or Stop's restore tune, which wait for it, set the receiver's
+   profile again. */
+static void
+search_leave_tetra_visit(search_coord* c, dsd_opts* opts, dsd_state* state) {
+    if (dsd_scan_mode_row(state) != DSD_SCAN_MODE_TETRA_DMO) {
+        return;
+    }
+    const dsd_signal_search_range* r = &c->config.ranges[c->status.range_index];
+    if (search_enter_tune_mode(opts, state, r, search_tune_mode(r, 0, 0), 0) && c->status.phase != DSD_SEARCH_ERROR) {
+        search_error(c, "The receiver cannot apply this range's receive profile");
+    }
+}
+
+/* End what the decoder was receiving on the search's channel: the carrier boundary and acquisition reset, a paused or
+   failed search's idle receive profile, then the snapshots, which the engine loop does not publish while the search is
+   paused, failed or stopping (frame sync does, and it is not running), so frontends learn here that the call ended and
+   what the decoder runs now. The visit's recordings closed at the boundary, under its tag, which then clears: the next
+   landing names its own visit (issue #809). A Stop's settings come back with its restore tune. */
 static void
 search_close_reception(search_coord* c, dsd_opts* opts, dsd_state* state) {
     c->reception_ended = 1;
@@ -1827,6 +1853,9 @@ search_close_reception(search_coord* c, dsd_opts* opts, dsd_state* state) {
     search_restore_site(c, state);
     dsd_signal_search_visit_clear();
     dsd_frame_sync_reset_acquisition(opts, state, 1);
+    if (!c->stopping) {
+        search_leave_tetra_visit(c, opts, state);
+    }
     dsd_telemetry_publish_both_and_redraw(opts, state);
 }
 
