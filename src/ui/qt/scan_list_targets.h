@@ -41,11 +41,10 @@ struct ScanListTargets {
  * system's own squelch goes to its row as the row runs it: noise on an AM row as auto with the same margin (as the
  * engine runs it there), a dynamic one on a digital row as off (there it ran as off on its own, and a session level
  * from the extra options must not gate the row either), a level in whole dB, -120..-1, rounded with a warning when it
- * is not a whole dB. An analog row with no squelch of its own gets @p defaultSquelch (the app's default, "off",
- * "auto+N" or "noise+N"; empty or off for none: the session's own then runs), noise as auto on an AM row.
+ * is not a whole dB. A row with no squelch of its own carries none: it inherits the session's, and on an analog row the
+ * decoder runs the app's default there (--squelch-analog-default) while nothing sets a squelch.
  */
-ScanListTargets scan_list_targets(const QVariantMap& list, const QVariantList& systems,
-                                  const QString& defaultSquelch = QString());
+ScanListTargets scan_list_targets(const QVariantMap& list, const QVariantList& systems);
 QString scan_list_settings_error(const QVariantMap& list);
 /** Issue #526: the analog demodulator (dsd_analog_demod) a scan entry runs -- a frequency entry's nfm or am protocol,
  * a saved system whose decode flags are exactly -fA or -fM, the only analog flags a scan list maps -- or -1 for a

@@ -1396,40 +1396,6 @@ class TestUiController : public QObject {
 };
 
 /**
- * @brief Stand-in for CommandBridge's SquelchDefaultPolicy (`commands.squelchDefaults`, issue #899): counts the
- * user squelch edits the sheets report and keeps the last record Main adopts.
- */
-class SquelchDefaultsRecorder : public QObject {
-    Q_OBJECT
-
-  public:
-    Q_INVOKABLE void
-    noteUserSquelchChange() {
-        m_user_notes++;
-    }
-
-    Q_INVOKABLE void
-    adopt(const QString& text) {
-        m_adopted = text;
-    }
-
-    int
-    userNotes() const {
-        return m_user_notes;
-    }
-
-    void
-    reset() {
-        m_user_notes = 0;
-        m_adopted.clear();
-    }
-
-  private:
-    int m_user_notes = 0;
-    QString m_adopted;
-};
-
-/**
  * @brief Stand-in for CommandBridge that records instead of submitting.
  *
  * The whole point of a tap-to-tune test is what the screen asks for, so the
@@ -1460,24 +1426,11 @@ class CommandRecorder : public QObject {
     Q_PROPERTY(int squelchMarginMinDb READ squelchMarginMinDb CONSTANT)
     Q_PROPERTY(int squelchMarginMaxDb READ squelchMarginMaxDb CONSTANT)
     Q_PROPERTY(int squelchMarginDefaultDb READ squelchMarginDefaultDb CONSTANT)
-    /* Issue #899: who owns the squelch, which every user squelch edit tells. */
-    Q_PROPERTY(QObject* squelchDefaults READ squelchDefaults CONSTANT)
     quint64 m_next_key_request = 1;
     QString m_last_key_request;
     QVariantList m_last_selection;
 
   public:
-    QObject*
-    squelchDefaults() {
-        return &m_squelch_defaults;
-    }
-
-    /** @brief How many user squelch edits the sheets reported to the policy. */
-    int
-    userSquelchNotes() const {
-        return m_squelch_defaults.userNotes();
-    }
-
     static int
     scanRowFieldSquelch() {
         return DSD_SCAN_ROW_FIELD_SQUELCH;
@@ -2191,7 +2144,6 @@ class CommandRecorder : public QObject {
         m_squelch_auto_calls = 0;
         m_squelch_noise_calls = 0;
         m_restore_squelch_calls = 0;
-        m_squelch_defaults.reset();
         m_last_nfm_bandwidth_hz = -1;
         m_nfm_bandwidth_calls = 0;
         m_last_modulation = -1;
@@ -2536,7 +2488,6 @@ class CommandRecorder : public QObject {
     int m_squelch_noise_calls = 0;
     int m_squelch_auto_calls = 0;
     int m_restore_squelch_calls = 0;
-    SquelchDefaultsRecorder m_squelch_defaults;
     int m_last_nfm_bandwidth_hz = -1;
     int m_nfm_bandwidth_calls = 0;
     int m_last_modulation = -1;
@@ -6842,12 +6793,6 @@ class Setup : public QObject {
         return (m_commands != nullptr) ? m_commands->restoreSquelchCalls() : -1;
     }
 
-    /** @brief Issue #899: how many user squelch edits the sheets reported (commands.squelchDefaults). */
-    Q_INVOKABLE int
-    userSquelchNotes() const {
-        return (m_commands != nullptr) ? m_commands->userSquelchNotes() : -1;
-    }
-
     /** @brief The last NFM channel width the Radio sheet asked for (issue #525), and how many times it asked. */
     Q_INVOKABLE int
     lastNfmBandwidthHz() const {
@@ -7129,7 +7074,6 @@ class Setup : public QObject {
         prefs[QStringLiteral("acceptedStartCompanions")] = QStringList();
         prefs[QStringLiteral("acceptedStartKind")] = QString();
         prefs[QStringLiteral("acceptedStartUid")] = QString();
-        prefs[QStringLiteral("acceptedStartSquelch")] = QString(); // issue #899
         /* Issue #644: the accepted scan session's targets, none before a start. */
         prefs[QStringLiteral("acceptedStartTargets")] = QVariantList();
         prefs[QStringLiteral("lastLat")] = 0.0;
@@ -7405,6 +7349,7 @@ class Setup : public QObject {
         metrics[QStringLiteral("configuredSquelchOff")] = false;
         metrics[QStringLiteral("effectiveSquelchOff")] = false;
         metrics[QStringLiteral("squelchRowOverride")] = false;
+        metrics[QStringLiteral("squelchAnalogDefault")] = false; // issue #899
         metrics[QStringLiteral("squelchReadout")] = QStringLiteral("-120.0 dB");
         // The dynamic squelches: whether each setting is AUTO or NOISE, its margin (kept under a level; 0 here, which
         // the sheet reads as the default), whether the default may be NOISE, and the status of the one in force (""

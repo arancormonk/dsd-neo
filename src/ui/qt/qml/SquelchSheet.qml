@@ -176,7 +176,6 @@ ModalSheet {
         pendingSquelchMargin = NaN;
         pendingSquelch = db;
         squelchTtl.restart();
-        noteUserSquelch();
         // A row keeps its margin through a level, for a switch back to Noise.
         if (rowSquelch)
             rowEdit(sheet.bridge.scanRowEditSet, {"squelchDb": Math.round(db), "squelchMarginDb": margin});
@@ -188,7 +187,6 @@ ModalSheet {
         pendingSquelch = NaN;
         pendingSquelchMargin = margin;
         squelchTtl.restart();
-        noteUserSquelch();
         if (rowSquelch)
             rowEdit(sheet.bridge.scanRowEditSet, {"squelchMode": sheet.bridge.squelchModeNoise, "squelchMarginDb": margin});
         else if (sheet.bridge.setSquelchNoise(margin))
@@ -230,7 +228,6 @@ ModalSheet {
         pendingSquelchMargin = NaN;
         pendingSquelch = levelOff ? 0 : Math.min(db, -0.001);
         squelchTtl.restart();
-        noteUserSquelch();
         if (sheet.bridge.restoreSquelchLevel())
             settingRequested("squelch", {mode: "level", restore: true});
         else
@@ -251,11 +248,6 @@ ModalSheet {
             squelchModeControl.focusSegment();
         else
             squelchDownButton.forceActiveFocus();
-    }
-    /** Issue #899: a user squelch edit; the app default no longer follows this session's decode switches. */
-    function noteUserSquelch() {
-        if (sheet.bridge.squelchDefaults)
-            sheet.bridge.squelchDefaults.noteUserSquelchChange();
     }
 
     Timer {

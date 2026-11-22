@@ -5307,7 +5307,6 @@ if(DSD_ENABLE_QT_UI)
         ${PROJECT_SOURCE_DIR}/src/ui/qt/scan_list_targets.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/scan_lists_model.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/session_args.cpp
-        ${PROJECT_SOURCE_DIR}/src/ui/qt/squelch_default_policy.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/decoder_host.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/document_import_transport.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/document_save_transport.cpp
@@ -5666,7 +5665,6 @@ if(DSD_ENABLE_QT_UI)
         ${PROJECT_SOURCE_DIR}/src/ui/qt/json_store.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/app_prefs.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/session_args.cpp
-        ${PROJECT_SOURCE_DIR}/src/ui/qt/squelch_default_policy.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/decoder_host.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/document_import_transport.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/document_save_transport.cpp
@@ -5693,7 +5691,6 @@ if(DSD_ENABLE_QT_UI)
         ui/test_ui_qt_scan_list_targets.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/scan_list_targets.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/session_args.cpp
-        ${PROJECT_SOURCE_DIR}/src/ui/qt/squelch_default_policy.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/decoder_host.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/document_import_transport.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/document_save_transport.cpp
@@ -5739,33 +5736,6 @@ if(DSD_ENABLE_QT_UI)
     )
     target_link_libraries(dsd-neo_test_ui_qt_qml_gc_policy PRIVATE Qt6::Core)
     add_test(NAME UI_QT_QML_GC_POLICY COMMAND dsd-neo_test_ui_qt_qml_gc_policy)
-
-    # Issue #899: who owns a session's squelch, and what a live decode switch asks the app to send.
-    add_executable(
-        dsd-neo_test_ui_qt_squelch_default_policy
-        ui/test_ui_qt_squelch_default_policy.cpp
-        ${PROJECT_SOURCE_DIR}/src/ui/qt/squelch_default_policy.cpp
-    )
-    target_include_directories(
-        dsd-neo_test_ui_qt_squelch_default_policy
-        PRIVATE ${PROJECT_SOURCE_DIR}/include ${PROJECT_SOURCE_DIR}/src/ui/qt
-    )
-    target_link_libraries(
-        dsd-neo_test_ui_qt_squelch_default_policy
-        PRIVATE Qt6::Core
-    )
-    target_compile_definitions(
-        dsd-neo_test_ui_qt_squelch_default_policy
-        PRIVATE QT_NO_KEYWORDS
-    )
-    set_target_properties(
-        dsd-neo_test_ui_qt_squelch_default_policy
-        PROPERTIES AUTOMOC ON
-    )
-    add_test(
-        NAME UI_QT_SQUELCH_DEFAULT_POLICY
-        COMMAND dsd-neo_test_ui_qt_squelch_default_policy
-    )
 
     # The one rule that names a stored import and finds it a free name.
     add_executable(
@@ -6352,7 +6322,6 @@ if(DSD_ENABLE_QT_UI)
         ${PROJECT_SOURCE_DIR}/src/ui/qt/system_search_query.cpp
         # The search reads a saved frequency as the tuner does.
         ${PROJECT_SOURCE_DIR}/src/ui/qt/session_args.cpp
-        ${PROJECT_SOURCE_DIR}/src/ui/qt/squelch_default_policy.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/frequency_query.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/text_order.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/app_prefs.cpp
@@ -6579,7 +6548,6 @@ if(DSD_ENABLE_QT_UI)
             ${PROJECT_SOURCE_DIR}/src/ui/qt/scan_list_targets.cpp
             ${PROJECT_SOURCE_DIR}/src/ui/qt/scan_list_starter.cpp
             ${PROJECT_SOURCE_DIR}/src/ui/qt/session_args.cpp
-            ${PROJECT_SOURCE_DIR}/src/ui/qt/squelch_default_policy.cpp
             # Issue #644: the known-frequency index Main offers Listen with its settings from.
             ${PROJECT_SOURCE_DIR}/src/ui/qt/known_frequency_index.cpp
             # Issue #801: the shortcuts pinned to Listen.
@@ -10972,6 +10940,21 @@ add_test(NAME RUNTIME_SCAN_ROW_EDIT COMMAND dsd-neo_test_runtime_scan_row_edit)
 add_executable(dsd-neo_test_runtime_squelch runtime/test_runtime_squelch.c)
 target_link_libraries(dsd-neo_test_runtime_squelch PRIVATE dsd-neo_runtime)
 add_test(NAME RUNTIME_SQUELCH COMMAND dsd-neo_test_runtime_squelch)
+
+# Issue #899: the analog default squelch (--squelch-analog-default) in and out of
+# force by channel, input, scan row and explicit squelch, and the AM notice.
+add_executable(
+    dsd-neo_test_runtime_squelch_analog_default
+    runtime/test_runtime_squelch_analog_default.c
+)
+target_link_libraries(
+    dsd-neo_test_runtime_squelch_analog_default
+    PRIVATE dsd-neo_runtime dsd-neo_test_support
+)
+add_test(
+    NAME RUNTIME_SQUELCH_ANALOG_DEFAULT
+    COMMAND dsd-neo_test_runtime_squelch_analog_default
+)
 
 # Issue #621: the passband a rigctl peer that demodulates audio input is asked
 # for, and the opts predicates that say whether one is there.
@@ -26533,6 +26516,53 @@ if(DSD_HAS_RADIO)
         "this AM channel runs auto[+]10dB[.].*ANALOG AUDIO OK"
         "${_analog_off_path}|--squelch noise needs an FM channel"
     )
+    # The analog default squelch (issue #899, --squelch-analog-default): with no squelch
+    # set, the -fA monitor gates exactly as under --squelch noise, ten seconds of noise
+    # never open it, and AM runs it as auto with the notice. --squelch off, a squelch
+    # someone set, ends it: the noise plays. A -Y map row on a DMR session with no
+    # squelch of its own runs it too.
+    dsd_neo_add_analog_replay_test(
+        DECODE_IQ_ANALOG_SQL_DEFAULT_NFM_BURST
+        nfm_burst_synth
+        "-fA --squelch-analog-default noise ${_sql_noise_burst_bounds}"
+        ""
+        "${_analog_off_path}"
+    )
+    dsd_neo_add_analog_replay_test(
+        DECODE_IQ_ANALOG_SQL_DEFAULT_NOISE_FLOOR
+        noise_floor
+        "-fA --squelch-analog-default noise+3 --analog-max-audible-ms 0 --analog-min-total-ms 9900"
+        ""
+        "${_analog_off_path}"
+    )
+    dsd_neo_add_analog_replay_test(
+        DECODE_IQ_ANALOG_SQL_DEFAULT_EXPLICIT_OFF
+        noise_floor
+        "-fA --squelch-analog-default noise --squelch off --analog-audible-dbfs -40 --analog-min-audible-ms 5000 --analog-min-total-ms 9900"
+        ""
+        "${_analog_off_path}"
+    )
+    dsd_neo_add_analog_replay_test(
+        DECODE_IQ_ANALOG_SQL_DEFAULT_AM_AS_AUTO
+        am_burst_synth
+        "-fM --squelch-analog-default=noise ${_sql_auto_burst_bounds}"
+        "this AM channel runs auto[+]10dB[.].*ANALOG AUDIO OK"
+        "${_analog_off_path}"
+    )
+    set(_scan_sql_default_csv
+        "${CMAKE_CURRENT_BINARY_DIR}/scan_mode_sql_default_row.csv"
+    )
+    file(
+        WRITE "${_scan_sql_default_csv}"
+        "channel,frequency_hz,mode,options\n1,150000000,nfm,\n"
+    )
+    dsd_neo_add_analog_replay_test(
+        DECODE_IQ_SCAN_SQL_DEFAULT_ROW
+        nfm_burst_synth
+        "-fs -C ${_scan_sql_default_csv} --analog-scan-row 0 --squelch-analog-default noise ${_sql_noise_burst_bounds}"
+        "Scan row applied: 0 nfm; width 16 kHz; squelch noise [+]10 dB.*ANALOG AUDIO OK"
+        "${_analog_off_path}|squelch noise [+]10 dB [(]row[)]"
+    )
 
     # Negative controls: bounds that must NOT hold, run through
     # analog_replay_fail_check.cmake, which requires the host's exit code (1 for a
@@ -26866,7 +26896,6 @@ if(DSD_ENABLE_QT_UI)
         dsd-neo_test_ui_qt_controller
         ui/test_ui_qt_controller.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/session_args.cpp
-        ${PROJECT_SOURCE_DIR}/src/ui/qt/squelch_default_policy.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/site_groups.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/saved_systems_model.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/replay_store.cpp
@@ -28039,7 +28068,6 @@ if(DSD_ENABLE_QT_UI)
         ${PROJECT_SOURCE_DIR}/src/ui/qt/import_service.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/json_store.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/session_args.cpp
-        ${PROJECT_SOURCE_DIR}/src/ui/qt/squelch_default_policy.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/decoder_host.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/document_import_transport.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/document_save_transport.cpp
@@ -28087,7 +28115,6 @@ if(DSD_ENABLE_QT_UI)
         engine/test_engine_trunk_scan_scan_list.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/scan_list_targets.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/session_args.cpp
-        ${PROJECT_SOURCE_DIR}/src/ui/qt/squelch_default_policy.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/decoder_host.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/document_import_transport.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/document_save_transport.cpp

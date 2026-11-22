@@ -5233,6 +5233,41 @@ suite runs under this compiler.
     (`squelch_noise_state`, the `dsd_squelch_noise_state` learning, provisional, known, no-band or no-room, among them),
     and elsewhere it clears them; the frame sync's throttled UI publish calls it. Tests: `RUNTIME_SQUELCH`,
     `RUNTIME_CLI_PARSE`, `INPUT_SPEC`, `RUNTIME_CONFIG_USER`, `RUNTIME_SCAN_OPTIONS`, `ENGINE_IO_HOOKS_INSTALL`.
+  - Analog default squelch (`--squelch-analog-default`, issue #899; `squelch.h`, `src/runtime/squelch.c` for its
+    standing, `src/runtime/squelch_analog_default.c` for `dsd_squelch_analog_default_sync()`): an AUTO or NOISE setting
+    (`dsd_squelch_analog_default_parse()`; off or absent is none, a level refused) the decoder runs on an analog channel
+    of a radio input while no squelch was set. No INI key. `dsd_opts::squelch_default_mode`/`_margin_db` hold it and
+    `squelch_default_state` (a `dsd_squelch_default_state`, decoder thread only) where it stands: IDLE, APPLIED (the
+    `rtl_squelch_*` fields run it, the `squelch_default_base_*` fields keep what they held, the level beneath kept) or
+    ENDED. In force (`dsd_squelch_analog_default_wanted()`): pending (given, not ENDED), `dsd_opts_input_is_radio()`,
+    `dsd_opts_is_analog_family()` (so not EDACS, not the M17 encoder, not digital) and the scan row on air, if any,
+    without its own `DSD_SCAN_OPT_SQUELCH` (a row's `--squelch`/`--squelch-db`, a signal-search range's squelch), never
+    while a scan scope is suspended (its resume decides). Explicit, and so ENDED for the session
+    (`dsd_squelch_analog_default_end()`, which first puts the base back): `--squelch` (`cli_parse_squelch_option()`),
+    a spec's `sql` field other than exactly `0` (`dsd_squelch_spec_field_apply()`, Airspy's `squelch_explicit`), a
+    config with `[input]` and its squelch keys (`rtl_sql_is_set`: `dsd_apply_user_config_to_opts_impl()` and the live
+    `apply_cfg_rtl_receive()`), and every successful configured-squelch edit
+    (`dsd_scan_mode_set_configured_squelch_setting()`, which `svc_rtl_set_sql_setting()` and `svc_rtl_set_sql_db()` call
+    for the terminal, Qt, Android and the control API alike; a refused request ends nothing). Every other write of the
+    fields marks an applied default out (`dsd_squelch_analog_default_note_written()`: `dsd_squelch_setting_store()`, the
+    scan scope's restores, a config's values), setting `squelch_default_moved` so the next sync returns 1 and its
+    caller pushes. Snapshots of the configured squelch take the base (`dsd_squelch_configured_fields()`: the scan
+    scope's captures, config saves, the Airspy spec's kept squelch), so neither a scope's configured setting nor a save
+    ever holds the default; `ui_radio_input` keeps the whole standing, so an input put back puts back whether its spec
+    ended it. `dsd_squelch_analog_default_sync()` moves it in or out and is called where the engine hands the receiver
+    its squelch: `dsd_engine_setup_io()` before the stream opens; `dsd_scan_mode_options()` (a row's commit, before its
+    one push), `dsd_scan_mode_leave()` (its options cleared, so the decoder left on air decides) and
+    `dsd_scan_mode_resume()`; `decode_mode_apply_value_noted()` once the preset is staged and before its republish, so
+    the receiver holds the default before the analog channel request; and `dsd_app_drain_cmds()` after each command and
+    each receive-request settle (`ui_sync_analog_default_squelch()`, which pushes with `svc_rtl_push_squelch()`), for
+    input changes, put-back switches and edits. It also logs the AM notice each time a NOISE setting starts running as
+    AUTO on a standalone AM monitor of a radio input (`squelch_am_auto_noted`), whatever started it, never as a toast;
+    `dsd_engine_setup_note_noise_squelch()` no longer says it. `dsd_app_squelch_view` sets `analog_default` while it is
+    APPLIED and no row overrides, filling the configured fields from it, and `dsd_app_squelch_view_format()` reads
+    `noise +10 dB (default; ...)`. `channel_scan_analog_squelch()` counts it for an analog row's open-squelch warning.
+    Tests: `RUNTIME_SQUELCH_ANALOG_DEFAULT` (channel kinds, explicit sources, scan rows, suspend/resume, saves, the AM
+    notice), `RUNTIME_CLI_PARSE`, `APP_COMMAND_QUEUE` (a live decode switch's order, refusals, explicit edits, an input
+    change), `DECODE_IQ_ANALOG_SQL_DEFAULT_*` and `DECODE_IQ_SCAN_SQL_DEFAULT_ROW` (what the monitor plays).
   - Sub-audible signalling tables and text (`include/dsd-neo/runtime/analog_tones.h`, `src/runtime/analog_tones.c`):
     the 50 CTCSS tones radios commonly offer (TIA-603-E's 39 and 11 more) and 150.0 Hz in tenths of a hertz, index
     lookup and the
@@ -15769,53 +15804,34 @@ Build files: `src/protocol/CMakeLists.txt` and per‑protocol `src/protocol/<nam
     level is the setting; the next squelch request (a step or a mode change) clears it. A dynamic save
     stores only the dynamic choice. The steppers of both sheets (`Util.squelchStep()`) always ask for a whole dB,
     never step against their direction (-5 dB is the top a step makes; a level above it set elsewhere stays), stop on
-    the -120 dB floor before Off, and take a row's own level down to -120 dB too. Every user squelch edit on either
-    sheet calls `commands.squelchDefaults.noteUserSquelchChange()`. `UI_QT_PERSISTENCE`, `UI_QT_SESSION_ARGS`,
+    the -120 dB floor before Off, and take a row's own level down to -120 dB too. A user squelch edit on either sheet is
+    an explicit squelch in the decoder, which ends the analog default there. `UI_QT_PERSISTENCE`, `UI_QT_SESSION_ARGS`,
     `UI_QT_SCAN_LIST_TARGETS` and the Radio persistence QML test cover disk reload, restart, validation and temporary
     scopes.
   - Qt/Android default squelch (issue #899): `AppPrefs::squelch` (`radio/squelch`, portable; exactly `off`, `auto+N` or
     `noise+N`, N 3..30, `app_squelch_default_valid()` in `app_squelch_default.h`; `noise+10` when absent or damaged, a
     refused write writes nothing, a valid one repairs damage; a backup without it restores the default) maps to
-    `SessionArgPrefs::squelchDefault`. It is applied on analog sessions only, so digital sessions run off as before and
-    pay no dynamic-squelch work: `session_args_squelch_default()` puts it in the radio spec's squelch field (the
-    RTL/rtl_tcp `sql` field, an Airspy's third tuning field; otherwise `0`) when the input is a radio spec the app
-    builds (not an audio or file source, not replaced by an Advanced `-i` or `--iq-replay`), nothing names a squelch of
-    its own (a saved Radio-sheet `squelch`, which stays the last `--squelch`; an Advanced `--squelch` in either field,
-    walked as the decoder reads options; `--squelch-db` is a scan row's option only) and the start is analog (the last
-    decode preset the argv names is `-fA` or `-fM`, the saved decode choice `radio_settings_append()` puts after the
-    extras included; on AM the engine runs noise as auto). A live switch is `SquelchDefaultPolicy`'s
-    (`squelch_default_policy.{h,cpp}`, `CommandBridge::squelchDefaults`), which holds only who owns the squelch:
-    `SessionArgsBuilder::start()` tells it each start (`sessionStarted(default, ownSquelch)`, or
-    `sessionStartedWithoutDefault()` for a signal search, an audio source or a replaced input), `ScanListStarter` tells
-    it a scan session's rows own the squelch, and every user squelch edit (`CommandBridge::setSquelch*()`,
-    `restoreSquelchLevel()`, and QML's `noteUserSquelchChange()`) makes it the user's for the session.
-    `CommandBridge::setDecodeMode()` queues, after the switch and only while the app owns the squelch, the internal
-    `DSD_APP_CMD_RTL_SQL_DEFAULT_FOLLOW` (`dsd_app_squelch_follow_payload`, not in the control API): on the decoder
-    thread it puts the default in only on the analog monitor with the configured squelch off
-    (`DSD_APP_SQL_FOLLOW_DEFAULT_IF_OFF`), and off (level 0, the spec's `0`) only off the monitor with the configured
-    squelch exactly the default (`DSD_APP_SQL_FOLLOW_OFF_IF_DEFAULT`). A switch the decoder refused, or a squelch the
-    control API or a config set meanwhile, is left as it is, and the follow-up posts no toast, so the switch's own
-    message (its refusal, the TETRA rate advice) stands. The owner travels with the accepted start: `record()`
-    ("app:<default>", "user", "session") goes to the device-local `listen/acceptedStartSquelch` on every `changed()`
-    (`qt_ui.cpp`), and `Main.qml adoptReattachedSession()` hands it to `adopt()`; a missing or unreadable record adopts
-    as the session's (nothing is ever sent). A decode switch the front end takes and later rolls back (a retune that
-    moved the DSP rate, `ui_analog_entry_rollback()`) keeps a default it brought in. Generated scan lists
-    (`scan_list_targets(list, systems, defaultSquelch)`) give each row a squelch its type takes (B13): a saved noise on
-    an AM row as `auto+N`, a saved dynamic one on a digital row as `off` (an Advanced session level must not gate it), a
-    saved level as whole dB -120..-1 (`dsd_squelch_level_whole_db()`, with a warning when
-    `dsd_squelch_level_is_whole_db()` says it rounded), and an analog row with none of its own the app's default (noise
-    as auto on AM); the starter passes no default (`rowDefaultSquelch()`) when the Advanced arguments set the session's
-    squelch. An imported target CSV runs what the file says (a decided limit, documented in `csv-formats.md`). Advanced
-    fields that would hide the saved squelch are refused (B17, `session_args_extra_incomplete()`,
-    `SessionArgsError::ExtraIncomplete`, category "extra-incomplete"): a `--` the long-option pass reaches, or a field
-    ending with an option still waiting for its value, by the CLI's own arity, each field on its own. Tests:
-    `UI_QT_SESSION_ARGS`, `UI_QT_SQUELCH_DEFAULT_POLICY`, `UI_QT_SCAN_LIST_TARGETS`, `UI_QT_SESSION_ARGS_PARSE` (live
-    and reattached switches through the real bridge and queue, a refused switch, the messages, outside edits, the
-    starter's row default), `ENGINE_TRUNK_SCAN_SCAN_LIST` (generated rows through the real parser and coordinator),
-    `UI_QT_PERSISTENCE`, `UI_QT_BACKUP_MODEL`, `API_COMMANDS` (the follow-up stays out of the control API), and
-    `UI_QT_LISTENER_SQUELCH_*` (what a listener hears: builder argv through `dsd_runtime_bootstrap()` and the real
-    engine over a fixture replay that keeps the app's radio spec, read with `dsd_rtl_input_spec_apply()`, for an NFM
-    saved system, Explore switched live to NFM through the bridge, and a generated scan row; `docs/testing.md`).
+    `SessionArgPrefs::squelchDefault`, which `session_args_build()` passes as `--squelch-analog-default <pref>` with
+    every radio session it builds (`append_squelch_default_args()`: RTL-SDR USB, rtl_tcp, Airspy; saved systems,
+    Explore, pins, scan lists through `session_args_scan_build_lists()`, Explore here), right after the input and
+    before the extra options, so an Advanced `--squelch` or default wins. The decoder owns the rest (Runtime, "Analog
+    default squelch"): the spec's squelch field is always `0`, a saved Radio-sheet `squelch` stays the last `--squelch`
+    (explicit), and generated scan rows (`scan_list_targets(list, systems)`) carry no default of their own: a row with
+    no saved squelch inherits, and the decoder runs the default on it when it is analog, as on an imported list's rows.
+    B13 still resolves each saved squelch to one its row takes (noise on an AM row as `auto+N`, a dynamic one on a
+    digital row as `off`, a level as whole dB -120..-1 through `dsd_squelch_level_whole_db()`, with a warning when
+    `dsd_squelch_level_is_whole_db()` says it rounded). Advanced fields that would hide what the app appends are
+    refused (B17, `session_args_extra_incomplete()`, `SessionArgsError::ExtraIncomplete`, category "extra-incomplete"),
+    each field on its own, by the CLI's own arity: a `--` the long-option pass reaches, or a field ending with an option
+    still waiting for its value. Tests: `UI_QT_SESSION_ARGS`, `UI_QT_SCAN_LIST_TARGETS`, `UI_QT_SESSION_ARGS_PARSE` (live
+    switches, outside and user edits, a refused switch, a recreated bridge, scan rows that inherit, through the real
+    bridge, queue and engine options), `ENGINE_TRUNK_SCAN_SCAN_LIST` (generated rows through the real parser and
+    coordinator, on audio input and on a radio input with the receiver's squelch and the readout's badge checked each
+    visit), `UI_QT_PERSISTENCE`, `UI_QT_BACKUP_MODEL`, and `UI_QT_LISTENER_SQUELCH_*` (what a listener hears: builder
+    argv through `dsd_runtime_bootstrap()` and the real engine over a fixture replay that keeps the app's radio spec,
+    read with `dsd_rtl_input_spec_apply()`, for an NFM saved system with per-call recording and the speech level at
+    the opening, Explore switched live to NFM through the bridge with another UI command 200 ms of stream time later,
+    and a generated scan row; `docs/testing.md`).
   - Qt/Android default squelch editor (issue #899 D5): `qml/SquelchEditor.qml` in Settings' Radio defaults, beside the
     tuner gain, edits `prefs.squelch` only in the forms the pref holds: `[Off | Auto | Noise]` and, for Auto and Noise,
     a `−`/`+` margin stepper (3..30 dB, `commands.squelchMarginMinDb/MaxDb`) with a help line per mode; Off keeps the

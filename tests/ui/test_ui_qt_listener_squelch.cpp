@@ -4,14 +4,16 @@
  */
 
 /*
- * Issue #899, end to end: what a listener hears from a session the app starts with its default squelch. Each case
- * builds the session's argv with the app's own builder (SessionArgsBuilder, or ScanListStarter for a scan list), starts
- * it through dsd_runtime_bootstrap() as the decoder host does, and runs the real engine over a committed capture.
+ * Issue #899, end to end: what a listener hears from a session the app starts with its default squelch, which the app
+ * passes as --squelch-analog-default and the decoder runs on each analog channel while nothing sets a squelch. Each
+ * case builds the session's argv with the app's own builder (SessionArgsBuilder, or ScanListStarter for a scan list),
+ * starts it through dsd_runtime_bootstrap() as the decoder host does, and runs the real engine over a committed
+ * capture.
  *
  * The receiver is an I/Q replay, but the app's radio spec is kept: `--iq-replay` alone would put its own input in place
- * of the `-i rtl:...` spec, and with it the spec's squelch field, which is where the app puts its default. So the spec
- * is read as the engine reads it when the radio opens (dsd_rtl_input_spec_apply()); its squelch and volume fields stay
- * in force, and its tuning fields are the capture's own (851.375 MHz, 48 kHz), which the replay then keeps.
+ * of the `-i rtl:...` spec. So the spec is read as the engine reads it when the radio opens
+ * (dsd_rtl_input_spec_apply()); its squelch field (always 0, no squelch) and volume field stay in force, and its tuning
+ * fields are the capture's own (851.375 MHz, 48 kHz), which the replay then keeps.
  *
  * The capture is made from the committed fixtures: 3 s of receiver noise (noise_floor), the 9.3 s NFM speech
  * transmission (speech_nfm_synth, a carrier from its first sample, the talker from 0.25 s), then 2 s of noise again.
@@ -19,17 +21,21 @@
  * -40 dBFS RMS, on the stream time the decoder has read, as tests/engine/analog_replay.c does.
  *
  * Cases (one per process, argv[1]):
- *   saved-nfm         an NFM saved system with no squelch of its own: the spec carries noise+10; the idle channel
- *                     plays nothing, the transmission plays from its talker's start, nothing plays after it.
+ *   saved-nfm         an NFM saved system with no squelch of its own: the decoder runs noise+10; the idle channel
+ *                     plays nothing, the transmission plays from its talker's start, nothing plays after it. With
+ *                     per-call recording on (-P), the transmission is one recording and the idle channel none; the
+ *                     speech level at the opening is the level later in the call (no AGC trained on muted noise).
  *   saved-nfm-off     the same with the Settings default Off: the idle channel plays its hiss (the control, which shows
- *                     the scoring hears hiss).
- *   explore-live-nfm  Explore on Auto, then NFM picked 1 s in through the real command bridge and queue (the switch
- *                     and the app's follow-up command): the same as saved-nfm once switched.
- *   scan-row          a scan list's NFM row as ScanListStarter generates it (`--squelch noise+10` in its options cell,
+ *                     the scoring hears hiss), and analog calls are paused (no recording).
+ *   explore-live-nfm  Explore on Auto, then NFM picked 1 s in through the real command bridge and queue, and another
+ *                     UI command 200 ms of stream time later: the switch carries the default with it (one command, the
+ *                     receiver told before the channel), so the same as saved-nfm once switched.
+ *   scan-row          a scan list's NFM row as ScanListStarter generates it (no squelch of its own in its options cell,
  *                     read by the row parser the scan loader uses and committed as the coordinator commits a row): the
- *                     same audio, and the scanners' hold signal (dsd_scan_analog_carrier_open()) never up on the idle
- *                     channel, up through the transmission and down again after it.
- *   scan-row-off      the same list with the Settings default Off: the row has no squelch and the idle channel holds
+ *                     decoder runs the default for it, so the same audio, and the scanners' hold signal
+ *                     (dsd_scan_analog_carrier_open()) never up on the idle channel, up through the transmission and
+ *                     down again after it.
+ *   scan-row-off      the same list with the Settings default Off: the row runs no squelch and the idle channel holds
  *                     the scan (the control).
  *
  * Not covered here: the scan coordinator stepping between rows (an I/Q replay cannot retune; the rows' settings on air
@@ -47,6 +53,7 @@
 #include <QJsonObject>
 #include <QList>
 #include <QMap>
+#include <QPair>
 #include <QStandardPaths>
 #include <QString>
 #include <QStringList>
@@ -72,6 +79,7 @@
 #include <dsd-neo/runtime/input_spec.h>
 #include <dsd-neo/runtime/scan_mode.h>
 #include <dsd-neo/runtime/scan_options.h>
+#include <dsd-neo/runtime/squelch.h>
 #include <dsd-neo/runtime/udp_audio_hooks.h>
 #include <memory>
 #include <stdint.h>
@@ -113,6 +121,9 @@ constexpr double kCarrierEndMs = kIdleMs + kCarrierMs;
 /* The squelch's closing tail and the monitor's latency after the carrier ends: not judged. */
 constexpr double kCloseMs = 100.0;
 constexpr double kAudibleDbfs = -40.0;
+/* How far the speech level in the first 500 ms a call plays may sit from its level 2-6 s on: an AGC trained on the
+   muted idle channel would start the call far off it. */
+constexpr double kOnsetLevelDb = 6.0;
 constexpr int kRateHz = 48000;
 
 enum Segment { kIdle = 0, kCarrier = 1, kAfter = 2, kSegments = 3 };
@@ -120,6 +131,8 @@ enum Segment { kIdle = 0, kCarrier = 1, kAfter = 2, kSegments = 3 };
 /* What the listener heard, and what held a scanner, by stream time. */
 struct Heard {
     double readMs = 0.0;
+    /* Each audible block's level, with the stream time it was heard at: for the speech level over the call. */
+    QList<QPair<double, double>> audibleDbfs;
     double audibleMs[kSegments] = {0.0, 0.0, 0.0};
     double firstAudibleMs = -1.0;
     double lastAudibleMs = -1.0;
@@ -131,10 +144,13 @@ struct Heard {
 Heard g_heard;
 const dsd_opts* g_opts = nullptr;
 const dsd_state* g_state = nullptr;
-/* The live decode switch: the bridge it goes through, and the stream time it is made at (< 0: none). */
+/* The live decode switch: the bridge it goes through, and the stream time it is made at (< 0: none); a later UI
+   command follows it 200 ms of stream time after. */
 dsd_qt::CommandBridge* g_bridge = nullptr;
 double g_switchAtMs = -1.0;
 int g_switched = 0;
+int g_followed = 0;
+constexpr double kFollowMs = 200.0;
 
 /* Which part of the capture @p ms falls in; -1 inside the closing tail after the carrier. */
 int
@@ -165,6 +181,10 @@ countingReadEx(void* ctx, float* out, uint8_t* flags, size_t count, int* outGot)
         if (g_bridge != nullptr && !g_switched && g_switchAtMs >= 0.0 && g_heard.readMs >= g_switchAtMs) {
             g_switched = 1;
             expect("NFM is picked live", g_bridge->setDecodeMode(DSDCFG_MODE_ANALOG));
+        }
+        if (g_bridge != nullptr && g_switched && !g_followed && g_heard.readMs >= g_switchAtMs + kFollowMs) {
+            g_followed = 1;
+            expect("another UI command follows", g_bridge->setRelaxedCrc(false));
         }
     }
     return rc;
@@ -209,6 +229,7 @@ captureBlast(const dsd_opts* opts, dsd_state* state, size_t nbytes, const void* 
         g_heard.firstAudibleMs = g_heard.readMs;
     }
     g_heard.lastAudibleMs = g_heard.readMs;
+    g_heard.audibleDbfs.append(qMakePair(g_heard.readMs, dbfs));
 }
 
 /* After the engine installed its hooks and opened its (null) output: the monitor goes to the capture. */
@@ -328,11 +349,11 @@ struct Session {
 };
 
 /* Starts @p appArgs as the decoder host does, over the replay of @p capture with the app's radio spec kept, and runs
-   the engine to the capture's end. @p want_mode / @p want_margin: the squelch the session must hold before it runs
-   (after @p before). Returns whether it ran. */
+   the engine to the capture's end. @p want_mode / @p want_margin: the squelch the session's channel runs once the
+   engine has set it up (after @p before), the analog default when @p by_default. Returns whether it ran. */
 bool
-listen(const QStringList& appArgs, const QString& capture, int wantMode, int wantMargin, BeforeRun before,
-       const QString& rowOptions, Session& session) {
+listen(const QStringList& appArgs, const QString& capture, int wantMode, int wantMargin, bool byDefault,
+       BeforeRun before, const QString& rowOptions, Session& session) {
     const qsizetype at = appArgs.indexOf(QStringLiteral("-i"));
     const QString spec = at >= 0 ? appArgs.value(at + 1) : QString();
     DSD_FPRINTF(stderr, "app argv: %s\n", qPrintable(appArgs.join(QLatin1Char(' '))));
@@ -376,14 +397,20 @@ listen(const QStringList& appArgs, const QString& capture, int wantMode, int wan
     opts->rtlsdr_center_freq = replayFreq;
     opts->rtlsdr_ppm_error = replayPpm;
     opts->rtl_gain_value = replayGain;
+    expect("the app's spec sets no squelch", spec.contains(QStringLiteral(":48:0:2")));
     if (before != nullptr && !before(opts, state, rowOptions)) {
         return false;
     }
-    if (!squelchIs(opts, wantMode, wantMargin)) {
-        DSD_FPRINTF(stderr, "  squelch mode %d margin %d level %g, want mode %d margin %d\n", opts->rtl_squelch_mode,
-                    opts->rtl_squelch_margin_db, opts->rtl_squelch_level, wantMode, wantMargin);
+    /* The squelch the engine's setup hands the receiver (dsd_engine_setup_io()), from what the command line left. */
+    (void)dsd_squelch_analog_default_sync(opts, state);
+    const bool inDefault = opts->squelch_default_state == DSD_SQUELCH_DEFAULT_APPLIED;
+    if (!squelchIs(opts, wantMode, wantMargin) || inDefault != byDefault) {
+        DSD_FPRINTF(stderr, "  squelch mode %d margin %d level %g default %d, want mode %d margin %d default %d\n",
+                    opts->rtl_squelch_mode, opts->rtl_squelch_margin_db, opts->rtl_squelch_level, inDefault ? 1 : 0,
+                    wantMode, wantMargin, byDefault ? 1 : 0);
     }
-    expect("the session holds the squelch it should before it runs", squelchIs(opts, wantMode, wantMargin));
+    expect("the channel runs the squelch it should before it runs",
+           squelchIs(opts, wantMode, wantMargin) && inDefault == byDefault);
     g_opts = opts;
     g_state = state;
     dsd_app_frontend_runtime_start(opts, state);
@@ -428,23 +455,83 @@ nfmSystem() {
             {QStringLiteral("decodeFlag"), QStringLiteral("-fA")}};
 }
 
+/* The value the argv gives --squelch-analog-default, the one the parser keeps; empty for none. */
+QString
+squelchDefaultArg(const QStringList& argv) {
+    const qsizetype at = argv.lastIndexOf(QStringLiteral("--squelch-analog-default"));
+    return at >= 0 ? argv.value(at + 1) : QString();
+}
+
+/* The length of the WAV at @p path, from its header's rate, block size and data size; -1 when it reads as no WAV. */
+double
+wavDurationMs(const QString& path) {
+    QFile file(path);
+    if (!file.open(QIODevice::ReadOnly)) {
+        return -1.0;
+    }
+    const QByteArray bytes = file.readAll();
+    const auto u32 = [&bytes](qsizetype at) {
+        return static_cast<quint32>(static_cast<unsigned char>(bytes.at(at)))
+               | (static_cast<quint32>(static_cast<unsigned char>(bytes.at(at + 1))) << 8)
+               | (static_cast<quint32>(static_cast<unsigned char>(bytes.at(at + 2))) << 16)
+               | (static_cast<quint32>(static_cast<unsigned char>(bytes.at(at + 3))) << 24);
+    };
+    const qsizetype data = bytes.indexOf("data", 12);
+    if (bytes.size() < 44 || !bytes.startsWith("RIFF") || data < 0 || data + 8 > bytes.size()) {
+        return -1.0;
+    }
+    const quint32 rate = u32(24);
+    const quint32 blockAlign = u32(32) & 0xFFFFU;
+    const quint32 size = u32(data + 4);
+    return rate > 0U && blockAlign > 0U ? static_cast<double>(size / blockAlign) * 1000.0 / rate : -1.0;
+}
+
+/* The mean level, in dBFS, of the audible blocks heard in [@p fromMs, @p toMs) of stream time; -200 for none. */
+double
+meanDbfs(double fromMs, double toMs) {
+    double sum = 0.0;
+    int n = 0;
+    for (const auto& block : g_heard.audibleDbfs) {
+        if (block.first >= fromMs && block.first < toMs) {
+            sum += block.second;
+            n++;
+        }
+    }
+    return n > 0 ? sum / n : -200.0;
+}
+
 int
-caseSavedNfm(dsd_qt::AppPrefs& prefs, const QString& capture, bool off) {
+caseSavedNfm(dsd_qt::AppPrefs& prefs, const QString& capture, const QTemporaryDir& dir, bool off) {
     prefs.setSquelch(off ? QStringLiteral("off") : QStringLiteral("noise+10"));
     dsd_qt::SessionArgsBuilder builder(&prefs);
     Host host;
     expect("the NFM saved system starts",
            builder.start(nfmSystem(), &host, QStringLiteral("saved")).value("started").toBool());
-    expect("its spec carries the default",
-           off ? host.argv.contains(QStringLiteral("rtl:0:851.375M:30:0:48:0:2"))
-               : host.argv.contains(QStringLiteral("rtl:0:851.375M:30:0:48:noise+10:2")));
+    expect("it passes the Settings default, its spec setting no squelch",
+           squelchDefaultArg(host.argv) == (off ? QStringLiteral("off") : QStringLiteral("noise+10"))
+               && host.argv.contains(QStringLiteral("rtl:0:851.375M:30:0:48:0:2")));
+    // Per-call recording, as Settings > Record calls runs it: does the squelch admit the call, and only the call?
+    const QString calls = dir.filePath(QStringLiteral("calls"));
+    QStringList args = host.argv;
+    args << QStringLiteral("-P") << QStringLiteral("-7") << calls;
     Session session;
-    if (listen(host.argv, capture, off ? DSD_SQUELCH_MODE_LEVEL : DSD_SQUELCH_MODE_NOISE, off ? 0 : 10, nullptr,
+    if (listen(args, capture, off ? DSD_SQUELCH_MODE_LEVEL : DSD_SQUELCH_MODE_NOISE, off ? 0 : 10, !off, nullptr,
                QString(), session)) {
+        const QStringList wavs = QDir(calls).entryList({QStringLiteral("*.wav")}, QDir::Files, QDir::Name);
+        const double recordedMs = wavs.isEmpty() ? -1.0 : wavDurationMs(QDir(calls).filePath(wavs.first()));
+        DSD_FPRINTF(stderr, "recordings: %lld, the first %.0f ms\n", static_cast<long long>(wavs.size()), recordedMs);
         if (off) {
             expectHiss();
+            expect("analog calls are paused with the squelch off on a radio", wavs.isEmpty());
         } else {
             expectQuietThenPlays();
+            expect("the transmission is one recording, the idle channel none", wavs.size() == 1);
+            expect("which holds the call", recordedMs >= 4000.0 && recordedMs <= kCarrierMs + 500.0);
+            const double onset = meanDbfs(g_heard.firstAudibleMs, g_heard.firstAudibleMs + 500.0);
+            const double steady = meanDbfs(g_heard.firstAudibleMs + 2000.0, g_heard.firstAudibleMs + 6000.0);
+            DSD_FPRINTF(stderr, "speech level: %.1f dBFS at the opening, %.1f dBFS later\n", onset, steady);
+            expect("the speech level at the opening is the level later in the call",
+                   onset > kAudibleDbfs && std::fabs(onset - steady) <= kOnsetLevelDb);
         }
     }
     return 0;
@@ -464,7 +551,6 @@ caseExploreLiveNfm(dsd_qt::AppPrefs& prefs, const QString& capture) {
     prefs.setSquelch(QStringLiteral("noise+10"));
     dsd_qt::CommandBridge bridge;
     dsd_qt::SessionArgsBuilder builder(&prefs);
-    builder.setSquelchDefaults(bridge.squelchDefaults());
     Host host;
     const QVariantMap explore{{QStringLiteral("sourceType"), QStringLiteral("usb")},
                               {QStringLiteral("freqMhz"), QStringLiteral("851.375")}};
@@ -473,15 +559,16 @@ caseExploreLiveNfm(dsd_qt::AppPrefs& prefs, const QString& capture) {
     for (const QString& arg : host.argv) {
         decodeFlag = decodeFlag || arg.startsWith(QStringLiteral("-f"));
     }
-    expect("on Auto decode (no -f), its spec with the squelch off",
-           !decodeFlag && host.argv.contains(QStringLiteral("rtl:0:851.375M:30:0:48:0:2")));
+    expect("on Auto decode (no -f), passing the default",
+           !decodeFlag && squelchDefaultArg(host.argv) == QStringLiteral("noise+10"));
     g_bridge = &bridge;
     g_switchAtMs = 1000.0;
     Session session;
-    if (listen(host.argv, capture, DSD_SQUELCH_MODE_LEVEL, 0, startsDigital, QString(), session)) {
-        expect("NFM was picked 1 s into the run", g_switched == 1);
+    if (listen(host.argv, capture, DSD_SQUELCH_MODE_LEVEL, 0, false, startsDigital, QString(), session)) {
+        expect("NFM was picked 1 s into the run, another command after it", g_switched == 1 && g_followed == 1);
         expect("and the app's default came in with it",
-               session.opts->analog_only == 1 && squelchIs(session.opts.get(), DSD_SQUELCH_MODE_NOISE, 10));
+               session.opts->analog_only == 1 && squelchIs(session.opts.get(), DSD_SQUELCH_MODE_NOISE, 10)
+                   && session.opts->squelch_default_state == DSD_SQUELCH_DEFAULT_APPLIED);
         expectQuietThenPlays();
     }
     g_bridge = nullptr;
@@ -553,11 +640,12 @@ caseScanRow(dsd_qt::AppPrefs& prefs, const QString& capture, bool off) {
     Host host;
     expect("the scan list starts", starter.start(lists.get(lists.count() - 1), &host).value("started").toBool());
     const QString rowOptions = firstRowOptions(host.argv);
-    expect("the generated nfm row carries the default", off ? !rowOptions.contains(QStringLiteral("--squelch"))
-                                                            : rowOptions == QStringLiteral("--squelch noise+10"));
+    expect("the generated nfm row has no squelch of its own", !rowOptions.contains(QStringLiteral("--squelch")));
+    expect("and the session passes the Settings default",
+           squelchDefaultArg(host.argv) == (off ? QStringLiteral("off") : QStringLiteral("noise+10")));
     Session session;
     if (listen(withoutTargetList(host.argv), capture, off ? DSD_SQUELCH_MODE_LEVEL : DSD_SQUELCH_MODE_NOISE,
-               off ? 0 : 10, commitNfmRow, rowOptions, session)) {
+               off ? 0 : 10, !off, commitNfmRow, rowOptions, session)) {
         if (off) {
             expectHiss();
             expect("and the idle channel holds the scan", g_heard.holdSeen[kIdle] == 1);
@@ -589,9 +677,9 @@ main(int argc, char** argv) {
     if (!capture.isEmpty()) {
         dsd_qt::AppPrefs prefs;
         if (which == QStringLiteral("saved-nfm")) {
-            caseSavedNfm(prefs, capture, false);
+            caseSavedNfm(prefs, capture, dir, false);
         } else if (which == QStringLiteral("saved-nfm-off")) {
-            caseSavedNfm(prefs, capture, true);
+            caseSavedNfm(prefs, capture, dir, true);
         } else if (which == QStringLiteral("explore-live-nfm")) {
             caseExploreLiveNfm(prefs, capture);
         } else if (which == QStringLiteral("scan-row")) {

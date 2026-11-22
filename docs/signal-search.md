@@ -409,9 +409,9 @@ showed.
   tuner gain, and an Airspy's own settings (its serial among them) never go to a
   dongle. A P25 Phase 2 channel's scrambling code does not go with it (see
   [Ranges and reception](#ranges-and-reception)). Nor does the range's listening
-  squelch: Explore here on a detection heard as NFM or AM starts with the app's
+  squelch: Explore here on a detection heard as NFM or AM runs the app's
   default squelch (Settings, **Radio defaults · next start**, **Squelch**;
-  `noise+10` unless changed, which AM runs as `auto+10`), and on a digital one
+  `noise+10` unless changed, which AM runs as `auto+10`), and a digital one runs
   with the squelch off, as any Explore start does (`android/README.md`
   "Squelch"). A running search applies each range's own listening squelch at
   every landing and never the app's default. Explore here does not change where

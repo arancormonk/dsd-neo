@@ -143,7 +143,8 @@ Item {
             at(-65.5);
             mouseClick(item("squelchUp"));
             compare(testContext.lastSquelchDb(), -60);
-            compare(testContext.userSquelchNotes(), 1);
+            // One edit, which the decoder takes as an explicit squelch: the app's default ends there (issue #899).
+            compare(testContext.squelchCalls(), 1);
             at(-3);
             mouseClick(item("squelchUp"));
             compare(testContext.squelchCalls(), 1, "up from -3 dB stays, never down to -5");

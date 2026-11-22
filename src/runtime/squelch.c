@@ -465,6 +465,7 @@ dsd_squelch_setting_store(dsd_opts* opts, const dsd_squelch_setting* setting) {
     if (!opts || !setting) {
         return;
     }
+    dsd_squelch_analog_default_note_written(opts);
     if (dsd_squelch_mode_is_dynamic(setting->mode)) {
         opts->rtl_squelch_mode = setting->mode;
         opts->rtl_squelch_margin_db = squelch_clamp_margin(setting->margin_db);
@@ -482,6 +483,11 @@ dsd_squelch_spec_field_apply(dsd_opts* opts, const char* text) {
     }
     if (opts->rtl_squelch_cli_set) {
         return 1;
+    }
+    /* `0` is how a spec leaves its squelch field unset (the frontends write it there); any other setting is the
+       squelch someone chose, and the analog default stays out for the session (issue #899). */
+    if (strcmp(text, "0") != 0) {
+        dsd_squelch_analog_default_end(opts);
     }
     dsd_squelch_setting_store(opts, &setting);
     return 0;
@@ -527,6 +533,97 @@ dsd_squelch_level_is_whole_db(double level, int* out_db) {
         *out_db = db;
     }
     return 1;
+}
+
+/* ---- The analog default squelch's standing (issue #899); dsd_squelch_analog_default_sync() moves it. ---- */
+
+int
+dsd_squelch_analog_default_parse(dsd_opts* opts, const char* text, char* err, size_t err_size) {
+    dsd_squelch_setting setting;
+    if (dsd_squelch_setting_parse(text, &setting, err, err_size) != 0) {
+        return -1;
+    }
+    if (!dsd_squelch_setting_is_dynamic(&setting) && !dsd_squelch_setting_is_off(&setting)) {
+        if (err && err_size > 0U) {
+            DSD_SNPRINTF(err, err_size, "%s", "expects off, auto[+N] or noise[+N] (N from 3 to 30), not a level");
+        }
+        return -1;
+    }
+    if (!opts) {
+        return 0;
+    }
+    opts->squelch_default_mode = dsd_squelch_mode_or_level(setting.mode);
+    opts->squelch_default_margin_db = dsd_squelch_setting_is_dynamic(&setting) ? setting.margin_db : 0;
+    return 0;
+}
+
+int
+dsd_squelch_analog_default_pending(const dsd_opts* opts) {
+    return opts && dsd_squelch_mode_is_dynamic(opts->squelch_default_mode)
+           && opts->squelch_default_state != DSD_SQUELCH_DEFAULT_ENDED;
+}
+
+dsd_squelch_setting
+dsd_squelch_analog_default_setting(const dsd_opts* opts) {
+    if (!opts || !dsd_squelch_mode_is_dynamic(opts->squelch_default_mode)) {
+        return dsd_squelch_setting_of_level(0.0);
+    }
+    return dsd_squelch_setting_dynamic(opts->squelch_default_mode, opts->squelch_default_margin_db);
+}
+
+/* Write the squelch fields as given, without what dsd_squelch_setting_store() notes about an applied default. */
+static void
+squelch_default_write(dsd_opts* opts, int mode, double level, int margin_db) {
+    opts->rtl_squelch_mode = mode;
+    opts->rtl_squelch_level = level;
+    opts->rtl_squelch_margin_db = margin_db;
+}
+
+int
+dsd_squelch_analog_default_release(dsd_opts* opts) {
+    if (!opts || opts->squelch_default_state != DSD_SQUELCH_DEFAULT_APPLIED) {
+        return 0;
+    }
+    const dsd_squelch_setting before = dsd_squelch_setting_of_opts(opts);
+    squelch_default_write(opts, opts->squelch_default_base_mode, opts->squelch_default_base_level,
+                          opts->squelch_default_base_margin_db);
+    opts->squelch_default_state = DSD_SQUELCH_DEFAULT_IDLE;
+    const dsd_squelch_setting after = dsd_squelch_setting_of_opts(opts);
+    return !dsd_squelch_setting_equal(&before, &after);
+}
+
+void
+dsd_squelch_analog_default_end(dsd_opts* opts) {
+    if (!opts) {
+        return;
+    }
+    (void)dsd_squelch_analog_default_release(opts);
+    opts->squelch_default_state = DSD_SQUELCH_DEFAULT_ENDED;
+}
+
+void
+dsd_squelch_analog_default_note_written(dsd_opts* opts) {
+    if (opts && opts->squelch_default_state == DSD_SQUELCH_DEFAULT_APPLIED) {
+        opts->squelch_default_state = DSD_SQUELCH_DEFAULT_IDLE;
+        opts->squelch_default_moved = 1;
+    }
+}
+
+void
+dsd_squelch_configured_fields(const dsd_opts* opts, double* level, int* mode, int* margin_db) {
+    if (!opts) {
+        return;
+    }
+    const int applied = opts->squelch_default_state == DSD_SQUELCH_DEFAULT_APPLIED;
+    if (level) {
+        *level = applied ? opts->squelch_default_base_level : opts->rtl_squelch_level;
+    }
+    if (mode) {
+        *mode = applied ? opts->squelch_default_base_mode : opts->rtl_squelch_mode;
+    }
+    if (margin_db) {
+        *margin_db = applied ? opts->squelch_default_base_margin_db : opts->rtl_squelch_margin_db;
+    }
 }
 
 /* Nothing running: every field at rest. */

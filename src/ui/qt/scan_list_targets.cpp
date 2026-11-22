@@ -1,6 +1,5 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include <QChar>
-#include <QLatin1String>
 #include <QMap>
 #include <QPair>
 #include <QRegularExpression>
@@ -326,16 +325,13 @@ rowLevelText(double level, bool* rounded) {
 
 /* The --squelch value target @p target's row carries (issue #899, B13; see scan_list_targets()), or empty for none. */
 QString
-rowSquelch(const QVariantMap& sys, const Target& target, const QString& defaultSquelch, ScanListTargets& out) {
+rowSquelch(const QVariantMap& sys, const Target& target, ScanListTargets& out) {
     const int kind = analogKindForFlag(target.decode);
     const auto radio = sys.value("radioSettings").toMap();
-    QString text = radio.value("squelch").toString();
     if (!radio.contains("squelch")) {
-        if (kind < 0 || defaultSquelch.isEmpty() || defaultSquelch == QLatin1String("off")) {
-            return {};
-        }
-        text = defaultSquelch;
+        return {};
     }
+    const QString text = radio.value("squelch").toString();
     dsd_squelch_setting setting{};
     const QByteArray bytes = text.toUtf8();
     if (dsd_squelch_setting_parse(bytes.constData(), &setting, nullptr, 0U) != 0) {
@@ -362,7 +358,7 @@ rowSquelch(const QVariantMap& sys, const Target& target, const QString& defaultS
 
 QString
 appendTarget(const QVariantMap& entry, const QVariantList& systems, const QVariantMap& list, QSet<QString>& seen,
-             QSet<QString>& ids, QString& csv, ScanListTargets& out, const QString& defaultSquelch) {
+             QSet<QString>& ids, QString& csv, ScanListTargets& out) {
     QVariantMap sys;
     QString error = resolveSystem(entry, systems, sys);
     if (!error.isEmpty()) {
@@ -389,7 +385,7 @@ appendTarget(const QVariantMap& entry, const QVariantList& systems, const QVaria
     if (!error.isEmpty()) {
         return sys.value("name").toString() + QStringLiteral(": ") + error;
     }
-    const QString squelch = rowSquelch(sys, target, defaultSquelch, out);
+    const QString squelch = rowSquelch(sys, target, out);
     if (!squelch.isEmpty()) {
         options << QStringLiteral("--squelch") << squelch;
     }
@@ -444,7 +440,7 @@ scan_list_entry_analog_kind(const QVariantMap& entry, const QString& systemDecod
 }
 
 ScanListTargets
-scan_list_targets(const QVariantMap& list, const QVariantList& systems, const QString& defaultSquelch) {
+scan_list_targets(const QVariantMap& list, const QVariantList& systems) {
     ScanListTargets out;
     const auto fail = [&out](const QString& reason) {
         out.error = reason;
@@ -470,7 +466,7 @@ scan_list_targets(const QVariantMap& list, const QVariantList& systems, const QS
         if (!entry.value("enabled", true).toBool()) {
             continue;
         }
-        const QString error = appendTarget(entry, systems, list, seen, ids, csv, out, defaultSquelch);
+        const QString error = appendTarget(entry, systems, list, seen, ids, csv, out);
         if (!error.isEmpty()) {
             return fail(error);
         }

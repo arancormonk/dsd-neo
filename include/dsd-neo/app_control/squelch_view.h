@@ -68,6 +68,9 @@ typedef struct {
     uint8_t edacs_voice;      /**< EDACS analog voice on a radio input under a dynamic setting (issue #625): the tracker
                                    gates its analog calls, NOISE as AUTO. */
     uint8_t edacs_call;       /**< edacs_voice, and an analog call is on air (dsd_state::squelch_edacs_call). */
+    uint8_t analog_default;   /**< The setting in force is the session's analog default (--squelch-analog-default,
+                                   issue #899), shown as the configured one too: no squelch was set, and the channel
+                                   is analog on a radio input. An edit makes it the edited setting. */
 } dsd_app_squelch_view;
 
 /**
@@ -81,7 +84,8 @@ int dsd_app_squelch_view_get(const dsd_opts* opts, const dsd_state* state, dsd_a
 
 /**
  * @brief Render the readout: "-60.0 dB (row; default -80.0 dB)" while a row overrides the
- * squelch, otherwise just "-80.0 dB". Either level reads "off" when it gates nothing.
+ * squelch, otherwise just "-80.0 dB". Either level reads "off" when it gates nothing. The analog default in force
+ * reads "noise +10 dB (default; quieting 23 dB)".
  * A dynamic squelch reads "auto +10 dB" or "noise +10 dB" with what it shows in force
  * (dsd_app_squelch_view_dynamic_status()), joined with the row note:
  * "auto +6 dB (floor -81.0 dB; row; default -60.0 dB)".

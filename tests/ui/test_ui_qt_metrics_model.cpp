@@ -3427,6 +3427,24 @@ main(int argc, char** argv) {
     model.refresh(&opts, &state);
     expect("leaving the row clears the badge", !model.squelchRowOverride());
     expect("leaving the row restores the default", std::fabs(model.effectiveSquelchDb() - (-80.0)) < 1e-6);
+    /* Issue #899: the analog default in force reads as the configured setting, marked; out of force, as before. */
+    expect("no analog default here", !model.squelchAnalogDefault());
+    {
+        const int analog_only = opts.analog_only;
+        opts.analog_only = 1;
+        expect("an analog default is given", dsd_squelch_analog_default_parse(&opts, "noise+12", nullptr, 0U) == 0);
+        expect("and comes in on the monitor", dsd_squelch_analog_default_sync(&opts, &state) == 1);
+        model.refresh(&opts, &state);
+        expect("the panel marks the analog default", model.squelchAnalogDefault());
+        expect("as the configured noise", model.configuredSquelchNoise() && model.configuredSquelchMarginDb() == 12);
+        expect("the readout says so", model.squelchReadout().startsWith(QStringLiteral("noise +12 dB (default")));
+        opts.analog_only = analog_only;
+        expect("and goes out off the monitor", dsd_squelch_analog_default_sync(&opts, &state) == 1);
+        model.refresh(&opts, &state);
+        expect("unmarked again, the session's own level shown",
+               !model.squelchAnalogDefault() && std::fabs(model.configuredSquelchDb() - (-80.0)) < 1e-6);
+        opts.squelch_default_mode = DSD_SQUELCH_MODE_LEVEL;
+    }
     opts.rtl_squelch_margin_db = 7;
     model.refresh(&opts, &state);
     expect("a level is not auto",

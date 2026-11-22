@@ -798,6 +798,8 @@ test_option_arity_matches_the_parser(void) {
         {"--iq-replay", DSD_CLI_LONG_NEXT},
         {"--api-token", DSD_CLI_LONG_NEXT},
         {"--config", DSD_CLI_LONG_NEXT_NON_OPTION},
+        {"--squelch-analog-default", DSD_CLI_LONG_NEXT},
+        {"--squelch-analog-default=noise+10", DSD_CLI_LONG_ALONE},
         {"--no-such-option", DSD_CLI_LONG_UNKNOWN},
     };
 
@@ -812,6 +814,7 @@ test_option_arity_matches_the_parser(void) {
         DSD_FPRINTF(stderr, "FAIL: NULL has an arity\n");
         rc = 1;
     }
+
     const char takes[] = "7wPcoiF";
     const int want[] = {1, 1, 0, 1, 1, 1, 0};
     for (size_t i = 0; i < sizeof want / sizeof want[0]; i++) {

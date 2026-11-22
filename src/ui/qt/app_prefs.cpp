@@ -141,12 +141,9 @@ enum Key {
     kMapTileAttribution,
     kMapViewport,
     kMapAgeFilter,
-    // Issue #899: the squelch analog sessions start with (off, auto+N, noise+N). Portable with the other tuner
+    // Issue #899: the squelch analog channels run while nothing sets one (off, auto+N, noise+N). Portable with the other tuner
     // defaults; a backup without it restores the default, as an install that never chose one reads it.
     kRadioSquelch,
-    // Issue #899: who owns the accepted session's squelch (SquelchDefaultPolicy::record()), so a recreated Activity
-    // takes it back. Device-local with the rest of the accepted start.
-    kAcceptedStartSquelch,
     kKeyCount
 };
 
@@ -209,7 +206,6 @@ constexpr AppPrefs::KeySpec kKeyTable[] = {
     {"map/viewport", false},
     {"map/ageFilter", false},
     {"radio/squelch", true},
-    {"listen/acceptedStartSquelch", false},
 };
 static_assert(sizeof(kKeyTable) / sizeof(kKeyTable[0]) == kKeyCount, "key table and Key enum must stay in step");
 
@@ -1371,20 +1367,6 @@ AppPrefs::setAcceptedStartUid(const QString& value) {
         return;
     }
     m_settings.setValue(key_name(kAcceptedStartUid), value);
-    Q_EMIT acceptedStartChanged();
-}
-
-QString
-AppPrefs::acceptedStartSquelch() const {
-    return m_settings.value(key_name(kAcceptedStartSquelch), QString()).toString();
-}
-
-void
-AppPrefs::setAcceptedStartSquelch(const QString& value) {
-    if (acceptedStartSquelch() == value) {
-        return;
-    }
-    m_settings.setValue(key_name(kAcceptedStartSquelch), value);
     Q_EMIT acceptedStartChanged();
 }
 

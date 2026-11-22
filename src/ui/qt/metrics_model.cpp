@@ -1047,6 +1047,7 @@ MetricsModel::fillSquelchOverride(View& next, const dsd_opts* opts_snapshot, con
         next.configured_squelch_off = false;
         next.effective_squelch_off = false;
         next.squelch_row_override = false;
+        next.squelch_analog_default = false;
         next.squelch_readout.clear();
         next.configured_squelch_auto = false;
         next.effective_squelch_auto = false;
@@ -1067,6 +1068,7 @@ MetricsModel::fillSquelchOverride(View& next, const dsd_opts* opts_snapshot, con
     next.configured_squelch_off = squelch.configured_off != 0U;
     next.effective_squelch_off = squelch.effective_off != 0U;
     next.squelch_row_override = squelch.row_override != 0U;
+    next.squelch_analog_default = squelch.analog_default != 0U;
     char readout[96];
     (void)dsd_app_squelch_view_format(&squelch, readout, sizeof readout);
     next.squelch_readout = QString::fromUtf8(readout);

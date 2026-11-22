@@ -405,6 +405,7 @@ apply_shared_radio_tuning_from_config(const dsdneoUserConfig* cfg, dsd_opts* opt
     /* rtl_sql is the level under every mode, kept for a switch back from auto or noise. */
     opts->rtl_squelch_level = dsd_squelch_level_from_sql((double)sql);
     opts->rtl_squelch_mode = DSD_SQUELCH_MODE_LEVEL;
+    dsd_squelch_analog_default_note_written(opts);
     if (dsd_squelch_mode_is_dynamic(cfg->rtl_sql_mode)) {
         const dsd_squelch_setting setting =
             dsd_squelch_setting_dynamic(cfg->rtl_sql_mode, user_config_sql_margin_db(cfg));
@@ -475,12 +476,18 @@ apply_soapy_tuning_from_config(const dsdneoUserConfig* cfg, dsd_opts* opts) {
 static void
 snapshot_squelch_values(const dsd_opts* opts, const dsd_state* state, dsdneoUserConfig* cfg) {
     const dsd_scan_settings* configured = dsd_scan_mode_configured_view(state);
-    const double squelch = configured ? configured->rtl_squelch_level : opts->rtl_squelch_level;
+    /* Outside a scope, the session's squelch beneath an analog default in force: the default is no INI key (issue
+       #899), so a save never makes it an explicit squelch. */
+    double own_level = 0.0;
+    int own_mode = DSD_SQUELCH_MODE_LEVEL;
+    int own_margin_db = DSD_SQUELCH_MARGIN_DEFAULT_DB;
+    dsd_squelch_configured_fields(opts, &own_level, &own_mode, &own_margin_db);
+    const double squelch = configured ? configured->rtl_squelch_level : own_level;
     (void)dsd_squelch_level_whole_db(squelch, &cfg->rtl_sql);
     cfg->rtl_sql_rounded = !dsd_squelch_level_is_whole_db(squelch, NULL);
     cfg->rtl_sql_unrounded_db = cfg->rtl_sql_rounded ? 10.0 * std::log10(squelch) : 0.0;
-    cfg->rtl_sql_mode = configured ? configured->rtl_squelch_mode : opts->rtl_squelch_mode;
-    cfg->rtl_sql_margin_db = configured ? configured->rtl_squelch_margin_db : opts->rtl_squelch_margin_db;
+    cfg->rtl_sql_mode = configured ? configured->rtl_squelch_mode : own_mode;
+    cfg->rtl_sql_margin_db = configured ? configured->rtl_squelch_margin_db : own_margin_db;
 }
 
 /* A PCM session (issue #628) saves its squelch, off included (`rtl_sql = 0`), so loading the save puts back what ran,
@@ -1749,6 +1756,7 @@ apply_pcm_squelch_from_config(const dsdneoUserConfig* cfg, dsd_opts* opts) {
     }
     opts->rtl_squelch_level = dsd_squelch_level_from_sql((double)cfg->rtl_sql);
     opts->rtl_squelch_mode = DSD_SQUELCH_MODE_LEVEL;
+    dsd_squelch_analog_default_note_written(opts);
     if (dsd_squelch_mode_is_dynamic(cfg->rtl_sql_mode)) {
         const dsd_squelch_setting setting =
             dsd_squelch_setting_dynamic(cfg->rtl_sql_mode, user_config_sql_margin_db(cfg));
@@ -2190,6 +2198,11 @@ dsd_apply_user_config_to_opts_impl(const dsdneoUserConfig* cfg, dsd_opts* opts, 
         return;
     }
 
+    /* A config's squelch keys are a squelch someone chose: the analog default stays out for the session (issue
+       #899). */
+    if (cfg->has_input && cfg->rtl_sql_is_set) {
+        dsd_squelch_analog_default_end(opts);
+    }
     const int old_effective_input_rate = dsd_opts_effective_input_rate(opts);
     apply_input_config(cfg, opts, apply_file_input_rate_now);
     apply_output_config(cfg, opts);

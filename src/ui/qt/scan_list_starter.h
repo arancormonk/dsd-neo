@@ -3,15 +3,12 @@
 #define DSD_NEO_UI_QT_SCAN_LIST_STARTER_H
 #include <QList>
 #include <QObject>
-#include <QPointer>
 #include <QString>
 #include <QStringList>
 #include <QVariantList>
 #include <QVariantMap>
 #include <functional>
-#include <type_traits> // IWYU pragma: keep -- QPointer<SquelchDefaultPolicy> needs it in some includers only.
 #include <utility>
-#include "squelch_default_policy.h"
 Q_MOC_INCLUDE("decoder_host.h")
 
 namespace dsd_qt {
@@ -92,12 +89,6 @@ class ScanListStarter : public QObject {
         m_recordingSessions = sessions;
     }
 
-    /** @brief Who start() tells that a scan session's rows own its squelch (issue #899); nullptr: no one. */
-    void
-    setSquelchDefaults(SquelchDefaultPolicy* policy) {
-        m_squelchDefaults = policy;
-    }
-
   private:
     QVariantList resolveSystems(const QVariantMap& list, QString* error) const;
     bool resolveEntryProfiles(QVariantMap& prepared, QString* error) const;
@@ -135,7 +126,6 @@ class ScanListStarter : public QObject {
     const SavedSystemsModel* m_systems;
     DecryptionProfileProvider* m_profiles = nullptr;
     RecordingSessions* m_recordingSessions = nullptr;
-    QPointer<SquelchDefaultPolicy> m_squelchDefaults;
 };
 } // namespace dsd_qt
 #endif

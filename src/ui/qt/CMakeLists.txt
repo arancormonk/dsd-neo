@@ -95,7 +95,6 @@ target_sources(
         spectrum_trace_geometry.cpp
         screen_reader_state.cpp # Issue #782
         session_args.cpp
-        squelch_default_policy.cpp # Issue #899
         settings_recovery.cpp # Issue #828
         store_notices.cpp # Issue #828
         sign_in_autofill.cpp

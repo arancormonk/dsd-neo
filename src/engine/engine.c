@@ -1203,17 +1203,11 @@ dsd_engine_setup_note_noise_squelch(const dsd_opts* opts, const dsd_state* state
         }
         return;
     }
-    if (!dsd_opts_input_is_radio(opts)) {
-        if (mode == DSD_SQUELCH_MODE_AUTO && !dsd_opts_runs_m17_encoder(opts)) {
-            LOG_WARN("WARNING: --squelch auto needs a radio input (rtl:, rtltcp:, soapy:, airspy or --iq-replay); the "
-                     "squelch is off on this input. On audio input use --squelch noise[+N] or a level.\n");
-        }
-        return;
+    if (!dsd_opts_input_is_radio(opts) && mode == DSD_SQUELCH_MODE_AUTO && !dsd_opts_runs_m17_encoder(opts)) {
+        LOG_WARN("WARNING: --squelch auto needs a radio input (rtl:, rtltcp:, soapy:, airspy or --iq-replay); the "
+                 "squelch is off on this input. On audio input use --squelch noise[+N] or a level.\n");
     }
-    if (mode == DSD_SQUELCH_MODE_NOISE && dsd_squelch_noise_has_no_fm(opts, state)) {
-        LOG_INFO("NOTICE: The noise squelch needs an FM channel; this AM channel runs auto+%ddB.\n",
-                 opts->rtl_squelch_margin_db);
-    }
+    /* The AM monitor's notice is dsd_squelch_analog_default_sync()'s, which says it at each start of noise as auto. */
 }
 
 /* The UDP specs, read before anything opens: an M17 frame input, a PCM input, an M17 frame output. -1 when one is
@@ -1269,6 +1263,9 @@ dsd_engine_setup_io(dsd_opts* opts, dsd_state* state) {
         return -1;
     }
     dsd_engine_setup_parse_pulse_input(opts);
+    /* The squelch the receiver opens with: the analog default on an analog channel of a radio input while no squelch
+       was set (issue #899), from the decoder the CLI and a config left; and the AM monitor's notice. */
+    (void)dsd_squelch_analog_default_sync(opts, state);
     dsd_engine_setup_note_noise_squelch(opts, state);
     if (dsd_engine_setup_parse_udp_output(opts, state) != 0) {
         return -1;

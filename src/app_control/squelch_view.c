@@ -108,7 +108,10 @@ dsd_app_squelch_view_get(const dsd_opts* opts, const dsd_state* state, dsd_app_s
     }
     const dsd_scan_option_values* row = dsd_scan_mode_row_options(state);
     out->row_override = (row && (row->present & DSD_SCAN_OPT_SQUELCH)) ? 1U : 0U;
-    squelch_view_fill_configured(opts, dsd_scan_mode_configured_view(state), out);
+    /* The analog default in force (issue #899) reads as the configured setting: what runs, and what an edit starts
+       from. dsd_opts holds it then, in a scan row as outside one. */
+    out->analog_default = !out->row_override && opts->squelch_default_state == DSD_SQUELCH_DEFAULT_APPLIED ? 1U : 0U;
+    squelch_view_fill_configured(opts, out->analog_default ? NULL : dsd_scan_mode_configured_view(state), out);
     squelch_view_fill_effective(opts, row, out);
     if (out->effective_auto || out->effective_noise) {
         squelch_view_fill_dynamic(opts, state, out);
@@ -302,8 +305,10 @@ dsd_app_squelch_view_format_ex(const dsd_app_squelch_view* view, unsigned flags,
     }
     const int pad = squelch_view_status_pad(view, flags, strlen(detail));
     if (!view->row_override) {
-        if (detail[0] != '\0') {
-            DSD_SNPRINTF(out, out_size, "%s (%s)%*s", effective, detail, pad, "");
+        const char* marker = view->analog_default ? "default" : "";
+        const char* sep = marker[0] != '\0' && detail[0] != '\0' ? "; " : "";
+        if (detail[0] != '\0' || marker[0] != '\0') {
+            DSD_SNPRINTF(out, out_size, "%s (%s%s%s)%*s", effective, marker, sep, detail, pad, "");
         } else {
             DSD_SNPRINTF(out, out_size, "%s", effective);
         }

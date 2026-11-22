@@ -343,6 +343,9 @@ class MetricsModel : public QObject {
     Q_PROPERTY(bool configuredSquelchOff READ configuredSquelchOff NOTIFY controlChanged)
     Q_PROPERTY(bool effectiveSquelchOff READ effectiveSquelchOff NOTIFY controlChanged)
     Q_PROPERTY(bool squelchRowOverride READ squelchRowOverride NOTIFY controlChanged)
+    /* Issue #899: the squelch in force is the session's analog default (--squelch-analog-default), which the configured
+     * fields above show; the readout marks it "(default)". */
+    Q_PROPERTY(bool squelchAnalogDefault READ squelchAnalogDefault NOTIFY controlChanged)
     Q_PROPERTY(QString squelchReadout READ squelchReadout NOTIFY controlChanged)
     /* The auto squelch (issue #518 follow-up): whether each setting is AUTO, its margin over the learned floor, and
      * what the one in force shows ("floor -78.3 dB", "learning", "off on digital"), from the same squelch view. */
@@ -1151,6 +1154,12 @@ class MetricsModel : public QObject {
     bool
     squelchRowOverride() const {
         return m_view.squelch_row_override;
+    }
+
+    /** @brief Whether the squelch in force is the analog default nothing has replaced yet (issue #899). */
+    bool
+    squelchAnalogDefault() const {
+        return m_view.squelch_analog_default;
     }
 
     /**
@@ -2534,6 +2543,7 @@ class MetricsModel : public QObject {
         bool trunkable_sync = false;
         bool squelch_off = false;
         bool squelch_row_override = false;
+        bool squelch_analog_default = false;
         bool configured_squelch_off = false;
         bool effective_squelch_off = false;
         bool audio_muted = false;
@@ -2759,7 +2769,8 @@ class MetricsModel : public QObject {
         bool
         squelchOverrideEquals(const View& other) const {
             return squelchSettingEquals(other) && squelch_row_override == other.squelch_row_override
-                   && squelch_readout == other.squelch_readout && squelch_noise_offered == other.squelch_noise_offered
+                   && squelch_analog_default == other.squelch_analog_default && squelch_readout == other.squelch_readout
+                   && squelch_noise_offered == other.squelch_noise_offered
                    && squelch_audio_input == other.squelch_audio_input
                    && squelch_auto_status == other.squelch_auto_status && squelch_gate_open == other.squelch_gate_open;
         }

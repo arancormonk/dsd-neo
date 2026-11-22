@@ -26,6 +26,7 @@ target_sources(
         scan_options.c
         scan_row_edit.c
         squelch.c
+        squelch_analog_default.c
         rigctl_passband.c
         config_expand.c
         control_pump.c

@@ -736,13 +736,17 @@ channel_scan_check_rows(const dsd_opts* opts, dsd_state* state, channel_scan* sc
     channel_scan_warn_rows_width(opts, state, dsp_rate_hz, same_rate ? configured_changed : 0U);
 }
 
-/* The squelch an analog row runs with: its own, else the configured one. */
+/* The squelch an analog row runs with: its own, else the analog default on a radio input while no squelch was set
+   (issue #899), else the configured one. */
 static dsd_squelch_setting
 channel_scan_analog_squelch(const dsd_opts* opts, const dsd_state* state, const dsd_scan_option_values* row) {
     if (row && (row->present & DSD_SCAN_OPT_SQUELCH)) {
         return dsd_squelch_mode_is_dynamic(row->squelch_mode)
                    ? dsd_squelch_setting_dynamic(row->squelch_mode, row->squelch_margin_db)
                    : dsd_squelch_setting_of_level(dsd_squelch_level_from_sql((double)row->squelch_db));
+    }
+    if (dsd_squelch_analog_default_pending(opts) && dsd_opts_input_is_radio(opts)) {
+        return dsd_squelch_analog_default_setting(opts);
     }
     const dsd_scan_settings* configured = dsd_scan_mode_configured_view(state);
     if (configured) {

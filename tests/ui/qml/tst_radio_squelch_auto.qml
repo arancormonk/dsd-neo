@@ -354,12 +354,11 @@ Item {
             compare(testContext.squelchNoiseCalls(), 1);
             compare(testContext.lastSquelchMarginDb(), 18);
             compare(testContext.squelchAutoCalls(), 0, "the margin keeps Noise");
-            compare(testContext.userSquelchNotes(), 1, "a user edit tells the policy");
             sheet.forgetRequests();
             mode.selected(1);
             compare(testContext.squelchAutoCalls(), 1, "an explicit Auto tap is Auto");
             compare(testContext.lastSquelchMarginDb(), 17);
-            compare(testContext.userSquelchNotes(), 2);
+            compare(testContext.squelchNoiseCalls(), 1, "an Auto tap sends no Noise (each edit is explicit in the decoder)");
             testContext.setMetric("decodeMode", 1);
         }
 

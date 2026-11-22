@@ -71,7 +71,7 @@ The two builds also differ in file access: Google Play does not allow the "All f
 Android 11 and newer the Google Play build's file browser sees only its own files. Pick files with Android's file
 picker there.
 
-The app starts analog FM and AM sessions with the squelch on (Noise, +10 dB), so an idle channel stays quiet instead
+The app runs analog FM and AM channels with the squelch on (Noise, +10 dB), so an idle channel stays quiet instead
 of hissing; digital modes are not affected. To change it, open Settings, then **Radio defaults · next start**, then
 **Squelch**. Updating from an older version turns it on too: very weak FM signals stop playing, analog calls start to
 show in History, and scan lists no longer stop on noise ([Squelch](android/README.md#squelch) lists every effect).

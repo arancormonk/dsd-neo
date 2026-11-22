@@ -69,7 +69,6 @@
 #include "site_roaming_controller.h"
 #include "spectrum_model.h"
 #include "spectrum_view_item.h"
-#include "squelch_default_policy.h"
 #include "store_notices.h"
 #include "talkgroup_filter_model.h"
 #include "talkgroup_list_model.h"
@@ -149,18 +148,6 @@ make_command_bridge(QQmlApplicationEngine& engine, MetricsModel* metrics) {
     auto* commands = new CommandBridge(&engine);
     commands->setScanAvoids(metrics->scanAvoidModel());
     return commands;
-}
-
-/* Issue #899: both start paths tell the bridge's squelch policy who owns each session's squelch, and the owner is kept
-   with the accepted start, so a recreated Activity takes it back (Main.qml adoptReattachedSession()). */
-static void
-wire_squelch_defaults(const CommandBridge* commands, AppPrefs* prefs, SessionArgsBuilder* sessionArgs,
-                      ScanListStarter* scanListStarter) {
-    SquelchDefaultPolicy* policy = commands->squelchDefaults();
-    sessionArgs->setSquelchDefaults(policy);
-    scanListStarter->setSquelchDefaults(policy);
-    QObject::connect(policy, &SquelchDefaultPolicy::changed, prefs,
-                     [prefs, policy]() { prefs->setAcceptedStartSquelch(policy->record()); });
 }
 
 static DecryptionProfilesModel*
@@ -512,7 +499,6 @@ ui_load(QQmlApplicationEngine& engine, DecoderHost* host) {
     // WP-S1: persisted lists and the pre-start validation facade.
     auto* scanLists = new ScanListsModel(&engine);
     auto* scanListStarter = new ScanListStarter(prefs, systems, &engine);
-    wire_squelch_defaults(commands, prefs, sessionArgs, scanListStarter);
     auto* importedFiles = new ImportedFilesModel(host, imports, &engine);
     wire_target_files(scanListStarter, scanLists, importedFiles);
     wire_library_replace(importedFiles, systems);

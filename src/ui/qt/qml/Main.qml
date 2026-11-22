@@ -1365,10 +1365,6 @@ Window {
             }
         }
         mainRoot.syncOperatorHold();
-        // #899: who owns its squelch, as the start that was accepted left it,
-        // so the app's default still follows a decode switch (or never does).
-        if (commands.squelchDefaults)
-            commands.squelchDefaults.adopt(prefs.acceptedStartSquelch || "");
         // #786: a session this window did not start never arms GPS roaming,
         // and says so.
         siteRoaming.noteSessionAdopted(mainRoot.sessionStartKind);

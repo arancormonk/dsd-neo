@@ -1602,6 +1602,12 @@ typedef struct {
     double rtl_squelch_level;
     int rtl_squelch_mode;
     int rtl_squelch_margin_db;
+    /* Where the analog default stood, and the session's squelch beneath it (issue #899): an input put back puts back
+       whether a spec it tried ended the default. */
+    int squelch_default_state;
+    double squelch_default_base_level;
+    int squelch_default_base_mode;
+    int squelch_default_base_margin_db;
     int rtl_volume_multiplier;
     int digital_resample_mode;
     dsd_airspy_config airspy;
@@ -1644,6 +1650,10 @@ ui_capture_radio_input(const dsd_opts* opts, const dsd_state* state, ui_radio_in
     out->rtl_squelch_level = opts->rtl_squelch_level;
     out->rtl_squelch_mode = opts->rtl_squelch_mode;
     out->rtl_squelch_margin_db = opts->rtl_squelch_margin_db;
+    out->squelch_default_state = opts->squelch_default_state;
+    out->squelch_default_base_level = opts->squelch_default_base_level;
+    out->squelch_default_base_mode = opts->squelch_default_base_mode;
+    out->squelch_default_base_margin_db = opts->squelch_default_base_margin_db;
     out->rtl_volume_multiplier = opts->rtl_volume_multiplier;
     out->digital_resample_mode = opts->digital_resample_mode;
     out->airspy = opts->airspy;
@@ -1675,6 +1685,10 @@ ui_restore_radio_input(dsd_opts* opts, const ui_radio_input* in) {
     opts->rtl_squelch_level = in->rtl_squelch_level;
     opts->rtl_squelch_mode = in->rtl_squelch_mode;
     opts->rtl_squelch_margin_db = in->rtl_squelch_margin_db;
+    opts->squelch_default_state = in->squelch_default_state;
+    opts->squelch_default_base_level = in->squelch_default_base_level;
+    opts->squelch_default_base_mode = in->squelch_default_base_mode;
+    opts->squelch_default_base_margin_db = in->squelch_default_base_margin_db;
     opts->rtl_volume_multiplier = in->rtl_volume_multiplier;
     opts->digital_resample_mode = in->digital_resample_mode;
     opts->airspy = in->airspy;
@@ -2777,46 +2791,6 @@ ui_cmd_handle_rtl_set_sql_setting(dsd_opts* opts, dsd_state* state, const struct
     return ui_cmd_apply_status_from_service_rc(rc);
 }
 
-/* Whether the configured squelch is what a DSD_APP_CMD_RTL_SQL_DEFAULT_FOLLOW @p p expects before it acts: off for
-   DEFAULT_IF_OFF, exactly the default for OFF_IF_DEFAULT. */
-static int
-ui_cmd_sql_follow_expected(const dsd_app_squelch_view* view, const dsd_app_squelch_follow_payload* p) {
-    if (p->action == DSD_APP_SQL_FOLLOW_DEFAULT_IF_OFF) {
-        return view->configured_off && !view->configured_auto && !view->configured_noise;
-    }
-    const int same_mode = p->mode == DSD_SQUELCH_MODE_NOISE ? view->configured_noise : view->configured_auto;
-    return same_mode && view->configured_margin_db == p->margin_db;
-}
-
-/* DSD_APP_CMD_RTL_SQL_DEFAULT_FOLLOW (issue #899): after a decode switch the app asked for, its default squelch comes
-   in (the decoder is on the analog monitor and the configured squelch is off) or goes out (it is off the monitor and
-   the configured squelch is the default). A switch the decoder refused, or a squelch someone else set meanwhile (the
-   control API, a config), leaves it unapplied. No toast: the switch's own message (its refusal, the TETRA rate advice)
-   is the one the operator reads. */
-static int
-ui_cmd_handle_rtl_sql_default_follow(dsd_opts* opts, const dsd_state* state, const struct dsd_app_command* c) {
-    dsd_app_squelch_follow_payload p;
-    if (!state || c->n != sizeof p) {
-        return UI_CMD_APPLY_INVALID_PAYLOAD;
-    }
-    DSD_MEMCPY(&p, c->data, sizeof p);
-    const int known_action =
-        p.action == DSD_APP_SQL_FOLLOW_DEFAULT_IF_OFF || p.action == DSD_APP_SQL_FOLLOW_OFF_IF_DEFAULT;
-    if (!known_action || !dsd_squelch_mode_is_dynamic(p.mode) || p.margin_db < DSD_SQUELCH_MARGIN_MIN_DB
-        || p.margin_db > DSD_SQUELCH_MARGIN_MAX_DB) {
-        return UI_CMD_APPLY_INVALID_PAYLOAD;
-    }
-    const int want_analog = p.action == DSD_APP_SQL_FOLLOW_DEFAULT_IF_OFF;
-    dsd_app_squelch_view view;
-    if (dsd_opts_is_analog_family(opts) != want_analog || dsd_app_squelch_view_get(opts, state, &view) != 0
-        || !ui_cmd_sql_follow_expected(&view, &p)) {
-        return UI_CMD_APPLY_COMPLETED;
-    }
-    const dsd_squelch_setting setting =
-        want_analog ? dsd_squelch_setting_dynamic(p.mode, p.margin_db) : dsd_squelch_setting_of_level(0.0);
-    return ui_cmd_apply_status_from_service_rc(svc_rtl_set_sql_setting(opts, state, &setting));
-}
-
 static int
 apply_cmd_io_and_import_squelch(dsd_opts* opts, dsd_state* state, const struct dsd_app_command* c) {
     static const struct dsd_app_command_handler_entry k_handlers[] = {
@@ -2825,9 +2799,6 @@ apply_cmd_io_and_import_squelch(dsd_opts* opts, dsd_state* state, const struct d
     };
     if (!opts || !c) {
         return 0;
-    }
-    if (c->id == DSD_APP_CMD_RTL_SQL_DEFAULT_FOLLOW) {
-        return ui_cmd_handle_rtl_sql_default_follow(opts, state, c);
     }
     return ui_cmd_apply_handler_table(k_handlers, sizeof k_handlers / sizeof k_handlers[0], opts, state, c);
 }
@@ -4520,6 +4491,11 @@ apply_cfg_rtl_receive(dsd_opts* opts, const dsdneoUserConfig* cfg) {
         dsd_opts_set_rtl_dsp_bw(opts, dsd_analog_rtl_dsp_bw_or_default(cfg->rtl_bw_khz),
                                 DSD_RTL_DSP_BW_SOURCE_EXPLICIT);
     }
+    /* A config's squelch keys are a squelch someone chose (issue #899); without them the analog default comes back
+       over the off this writes wherever it belongs (the drain's dsd_squelch_analog_default_sync()). */
+    if (cfg->rtl_sql_is_set) {
+        dsd_squelch_analog_default_end(opts);
+    }
     /* rtl_sql is the same setting the CLI `sql` field carries, so it converts the
      * same way: negative is decibels, 0 is off. Storing the raw integer put a
      * -50 dB request in as a power of -50, which switches the squelch off.
@@ -4529,6 +4505,7 @@ apply_cfg_rtl_receive(dsd_opts* opts, const dsdneoUserConfig* cfg) {
     /* The mode beside it: rtl_sql_mode = auto or noise puts rtl_sql_margin_db (over the learned floor, or of FM
        quieting) in force (issue #518 follow-up), the level kept beneath for a switch back. */
     opts->rtl_squelch_mode = DSD_SQUELCH_MODE_LEVEL;
+    dsd_squelch_analog_default_note_written(opts);
     if (dsd_squelch_mode_is_dynamic(cfg->rtl_sql_mode)) {
         const dsd_squelch_setting dynamic = dsd_squelch_setting_dynamic(
             cfg->rtl_sql_mode, cfg->rtl_sql_margin_db > 0 ? cfg->rtl_sql_margin_db : DSD_SQUELCH_MARGIN_DEFAULT_DB);
@@ -5613,7 +5590,6 @@ static const struct ui_cmd_payload_min_size_rule k_ui_cmd_payload_min_size_rules
     {DSD_APP_CMD_INPUT_WARN_DB_SET, sizeof(double)},
     {DSD_APP_CMD_RTL_SET_SQL_DB, sizeof(double)},
     {DSD_APP_CMD_RTL_SET_SQL_SETTING, sizeof(dsd_app_squelch_setting_payload)},
-    {DSD_APP_CMD_RTL_SQL_DEFAULT_FOLLOW, sizeof(dsd_app_squelch_follow_payload)},
     {DSD_APP_CMD_HANGTIME_SET, sizeof(double)},
     {DSD_APP_CMD_CONST_GATE_DELTA, sizeof(float)},
     {DSD_APP_CMD_UDP_OUT_CFG, sizeof(dsd_app_endpoint_payload)},
@@ -6908,6 +6884,15 @@ decode_mode_toast_applied(const dsd_opts* opts, dsd_state* state, dsdneoUserDeco
     }
 }
 
+/* The analog default squelch (issue #899) follows what the session runs now: a command's decode switch, input change,
+   scan leave or explicit edit, or a receive request the front end refused. The receiver hears it when it moved. */
+static void
+ui_sync_analog_default_squelch(dsd_opts* opts, const dsd_state* state) {
+    if (opts && dsd_squelch_analog_default_sync(opts, state) && opts->audio_in_type == AUDIO_IN_RTL) {
+        svc_rtl_push_squelch(opts);
+    }
+}
+
 /* Whether the front end takes the analog receive profile @p mode publishes (ui_check_mode_receive_profile()): 0, or
    -1 with a toast naming why not. */
 static int
@@ -7047,6 +7032,9 @@ decode_mode_apply_value_noted(dsd_opts* opts, dsd_state* state, dsdneoUserDecode
     opts->pulse_digi_rate_out = audio_rate;
     decode_mode_ensure_output(opts, state);
     decode_mode_drop_old_analog_block(opts, state, was_analog, was_kind);
+    /* The analog default squelch (issue #899) reaches the receiver before the switch's channel does, so the analog
+       monitor's first block is already gated; a switch put back below gets the session's own again at the drain. */
+    ui_sync_analog_default_squelch(opts, state);
     /* The presets write symbol timing for a 48 kHz input, and on an RTL front end
        the demod output rate is whatever the capture rate decimates to, so the
        timing has to be recomputed at the live rate or the decoder is put on the
@@ -11761,7 +11749,6 @@ static const int k_deferred_commands[] = {
     DSD_APP_CMD_PPM_DELTA,
     DSD_APP_CMD_RTL_SET_SQL_DB,
     DSD_APP_CMD_RTL_SET_SQL_SETTING,
-    DSD_APP_CMD_RTL_SQL_DEFAULT_FOLLOW,
     DSD_APP_CMD_RTL_SET_VOL_MULT,
     DSD_APP_CMD_RTL_SET_BIAS_TEE,
     DSD_APP_CMD_RTLTCP_SET_AUTOTUNE,
@@ -12111,6 +12098,7 @@ dsd_app_drain_cmds(dsd_opts* opts, dsd_state* state) {
            two commands, and a switch between analog kinds or onto the monitor keeps the baseline of one still armed
            only while that one is unsettled (ui_arm_analog_entry()). */
         ui_settle_receive_requests(opts, state);
+        ui_sync_analog_default_squelch(opts, state);
         struct dsd_app_command cmd;
         int have = 0;
         dsd_mutex_lock(&g_mu);
@@ -12146,6 +12134,7 @@ dsd_app_drain_cmds(dsd_opts* opts, dsd_state* state) {
         }
         int32_t scan_list_code = DSD_APP_SCAN_LIST_SET_INVALID;
         const int result = apply_cmd(opts, state, &cmd, &scan_list_code);
+        ui_sync_analog_default_squelch(opts, state);
         ui_forget_saved_input_off_replay(opts, state);
 #ifdef DSD_NEO_TEST_HOOKS
         g_test_last_result = result;

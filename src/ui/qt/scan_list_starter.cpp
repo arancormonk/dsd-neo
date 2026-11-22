@@ -38,7 +38,6 @@
 #include "scan_list_starter.h"
 #include "scan_list_targets.h"
 #include "session_args.h"
-#include "squelch_default_policy.h"
 #include "stored_int.h"
 
 namespace dsd_qt {
@@ -410,18 +409,6 @@ ScanListStarter::retainProfiles(const QVariantMap& list) const {
     }
 }
 
-namespace {
-
-/* The squelch a generated list's analog rows with none of their own run (issue #899): the app's default, unless the
-   extra options set the session's squelch, which those rows then run as they always have (empty). */
-QString
-rowDefaultSquelch(const AppPrefs* prefs) {
-    const SessionArgPrefs mapped = session_args_prefs(prefs);
-    return session_args_extra_sets_squelch(mapped.extraArgs) ? QString() : mapped.squelchDefault;
-}
-
-} // namespace
-
 QVariantMap
 ScanListStarter::startPrepared(const QVariantList& lists, DecoderHost* host, const QStringList& companionPaths,
                                const QString& holdTargetId) const {
@@ -441,11 +428,6 @@ ScanListStarter::startPrepared(const QVariantList& lists, DecoderHost* host, con
     }
     const bool started = result.value("ok").toBool() && host && host->start(args);
     endUnstartedRecording(recording, started, host);
-    if (started && m_squelchDefaults != nullptr) {
-        // Each row runs its own squelch, the app's default among them (scan_list_targets()): a decode switch on a row
-        // never brings the default in or takes it out.
-        m_squelchDefaults->sessionStartedWithoutDefault();
-    }
     result.insert("started", started);
     if (started && host->sessionActive() && m_profiles) {
         for (const auto& value : lists) {
@@ -784,7 +766,7 @@ ScanListStarter::prepare(const QVariantMap& list, bool materialize, const QStrin
     if (!resolveEntryProfiles(prepared, &preparationError)) {
         return fail(preparationError);
     }
-    auto generated = scan_list_targets(prepared, systems, rowDefaultSquelch(m_prefs));
+    auto generated = scan_list_targets(prepared, systems);
     if (!generated.ok) {
         return fail(generated.error, generated.warnings);
     }

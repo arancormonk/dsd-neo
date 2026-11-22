@@ -43,17 +43,18 @@ optionsCell(const ScanListTargets& targets) {
                              : QStringLiteral("<rows: %1>").arg(lines.size());
 }
 
-/* Issue #899 (B13 + D1): every row's squelch is one its row type takes. A saved system's own setting goes to its row
-   as the row runs it; an analog row with none gets the app's default, noise as auto on AM; a digital row gets none. */
+/* Issue #899 (B13): every row's squelch is one its row type takes. A saved system's own setting goes to its row as
+   the row runs it; a row with none carries none (it inherits; the decoder runs the app's default on an analog row,
+   --squelch-analog-default), an analog row as much as a digital one. */
 static void
 rowSquelch() {
     QVariantMap entry{{"uid", "entry"}, {"kind", "system"}, {"systemUid", "sys"}, {"enabled", true}};
     QVariantMap list{{"uid", "list"}, {"sourceType", "usb"}, {"entries", QVariantList{entry}}};
     QVariantMap sys{{"uid", "sys"}, {"name", "Example"}, {"freqMhz", "851.5"}};
-    const auto saved = [&](const QString& flag, const QString& squelch, const QString& fallback = QString()) {
+    const auto saved = [&](const QString& flag, const QString& squelch) {
         sys["decodeFlag"] = flag;
         sys["radioSettings"] = QVariantMap{{"squelch", squelch}};
-        return scan_list_targets(list, QVariantList{sys}, fallback);
+        return scan_list_targets(list, QVariantList{sys});
     };
 
     const struct {
@@ -81,45 +82,24 @@ rowSquelch() {
     };
 
     for (const auto& c : cases) {
-        // The app's default never replaces a squelch of the system's own.
-        for (const QString& fallback : {QString(), QStringLiteral("noise+10")}) {
-            const auto targets = saved(c.flag, c.saved, fallback);
-            check(targets.ok && optionsCell(targets) == QLatin1String(c.row));
-            check(targets.warnings.isEmpty() != c.warns);
-        }
+        const auto targets = saved(c.flag, c.saved);
+        check(targets.ok && optionsCell(targets) == QLatin1String(c.row));
+        check(targets.warnings.isEmpty() != c.warns);
     }
     sys.remove("radioSettings");
 
-    const struct {
-        const char* flag;
-        const char* fallback;
-        const char* row;
-    } defaults[] = {
-        {"-fA", "noise+10", "--squelch noise+10"},
-        {"-fM", "noise+10", "--squelch auto+10"},
-        {"-fA", "auto+15", "--squelch auto+15"},
-        {"-fM", "auto+15", "--squelch auto+15"},
-        {"-ft", "noise+10", ""},
-        {"-fs", "noise+10", ""},
-        {"-fA", "off", ""},
-        {"-fA", "", ""},
-    };
-
-    for (const auto& d : defaults) {
-        sys["decodeFlag"] = d.flag;
-        const auto targets = scan_list_targets(list, QVariantList{sys}, QLatin1String(d.fallback));
-        check(targets.ok && optionsCell(targets) == QLatin1String(d.row) && targets.warnings.isEmpty());
+    for (const char* flag : {"-fA", "-fM", "-ft", "-fs"}) {
+        sys["decodeFlag"] = QLatin1String(flag);
+        const auto targets = scan_list_targets(list, QVariantList{sys});
+        check(targets.ok && optionsCell(targets).isEmpty() && targets.warnings.isEmpty());
     }
-    // A frequency entry takes it as a saved system does: nfm and am get the default, a digital protocol none.
-    for (const auto& freq : {qMakePair(QStringLiteral("nfm"), QStringLiteral("--squelch noise+10")),
-                             qMakePair(QStringLiteral("am"), QStringLiteral("--squelch auto+10")),
-                             qMakePair(QStringLiteral("p25"), QString())}) {
+    // A frequency entry carries none either, nfm, am or digital.
+    for (const QString& protocol : {QStringLiteral("nfm"), QStringLiteral("am"), QStringLiteral("p25")}) {
         const QVariantMap freqEntry{
-            {"uid", "f"}, {"kind", "freq"}, {"protocol", freq.first}, {"freqMhz", "462.5625"}, {"enabled", true}};
-        const auto targets =
-            scan_list_targets({{"uid", "list"}, {"sourceType", "usb"}, {"entries", QVariantList{freqEntry}}},
-                              QVariantList{}, QStringLiteral("noise+10"));
-        check(targets.ok && optionsCell(targets) == freq.second);
+            {"uid", "f"}, {"kind", "freq"}, {"protocol", protocol}, {"freqMhz", "462.5625"}, {"enabled", true}};
+        const auto targets = scan_list_targets(
+            {{"uid", "list"}, {"sourceType", "usb"}, {"entries", QVariantList{freqEntry}}}, QVariantList{});
+        check(targets.ok && optionsCell(targets).isEmpty());
     }
 }
 

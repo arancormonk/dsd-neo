@@ -340,7 +340,8 @@ Item {
             squelch.requestSquelchDb(-50);
             setLevel(-50, true);
             tryCompare(savedSystems.get(0), "radioSettings", {squelch: "-50"});
-            compare(testContext.userSquelchNotes(), 1);
+            // The edit went to the decoder, which takes it as an explicit squelch (issue #899).
+            compare(testContext.lastSquelchDb(), -50);
             squelch.requestSquelchNoise(9);
             testContext.setMetric("configuredSquelchMarginDb", 9);
             testContext.setMetric("configuredSquelchNoise", true);

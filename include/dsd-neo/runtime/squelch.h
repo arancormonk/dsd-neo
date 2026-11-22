@@ -139,13 +139,16 @@ dsd_squelch_setting dsd_squelch_setting_of_opts(const dsd_opts* opts);
 
 /**
  * @brief Store @p setting in @p opts: its mode, and under LEVEL its level, under AUTO or NOISE its margin (the level
- * stays, for a switch back). Nothing is pushed to the receiver.
+ * stays, for a switch back). Nothing is pushed to the receiver. An applied analog default is no longer in the fields
+ * afterwards (dsd_squelch_analog_default_note_written()).
  */
 void dsd_squelch_setting_store(dsd_opts* opts, const dsd_squelch_setting* setting);
 
 /**
  * @brief Apply an input spec's `sql` field in the squelch grammar, which dsd_spec_squelch_field_parse()
  * (`<dsd-neo/runtime/input_spec.h>`) has read.
+ *
+ * A field other than `0` is an explicit squelch: it ends the analog default (dsd_squelch_analog_default_end()).
  *
  * @return 0 when it set the squelch, 1 when `--squelch` already did (the command line wins), -1 when the field does not
  * read as a setting (nothing changes; the spec's reader refuses such a field first).
@@ -169,6 +172,79 @@ int dsd_squelch_level_whole_db(double level, int* out_db);
  * @return 1 when it has the form, else 0.
  */
 int dsd_squelch_level_is_whole_db(double level, int* out_db);
+
+/** @brief Where the analog default squelch stands (dsd_opts::squelch_default_state, issue #899). */
+typedef enum {
+    DSD_SQUELCH_DEFAULT_IDLE = 0,    /**< not in the squelch fields: absent, or not in force on the channel now */
+    DSD_SQUELCH_DEFAULT_APPLIED = 1, /**< the squelch fields run it; the base fields keep what they held before */
+    DSD_SQUELCH_DEFAULT_ENDED = 2,   /**< a squelch was set explicitly this session, so it stays out */
+} dsd_squelch_default_state;
+
+/**
+ * @brief Read `--squelch-analog-default`'s @p text into @p opts (issue #899): `off`, `auto[+N]` or `noise[+N]` (N
+ * 3..30, the squelch grammar). Off, like the option left out, is no default. A level is refused: the default opens on
+ * what each channel shows, never at a fixed threshold.
+ *
+ * @return 0, or -1 with a short reason in @p err (when not NULL), @p opts untouched.
+ */
+int dsd_squelch_analog_default_parse(dsd_opts* opts, const char* text, char* err, size_t err_size);
+
+/**
+ * @brief Whether @p opts has an analog default that can still come in: one was given (not off) and no squelch was set
+ * explicitly this session (DSD_SQUELCH_DEFAULT_ENDED). 0 for NULL.
+ */
+int dsd_squelch_analog_default_pending(const dsd_opts* opts);
+
+/** @brief The analog default @p opts holds as a setting (off when it has none). */
+dsd_squelch_setting dsd_squelch_analog_default_setting(const dsd_opts* opts);
+
+/**
+ * @brief Whether the analog default belongs in force on @p opts's channel now: it is pending
+ * (dsd_squelch_analog_default_pending()), the input is a radio (RTL-SDR, rtl_tcp, SoapySDR, Airspy, I/Q replay), the
+ * channel is the analog monitor (dsd_opts_is_analog_family(): a -fA/-fM session or an analog scan row; not EDACS nor
+ * the M17 encoder) and the scan row on air, if any, sets no squelch of its own. Not while a scan scope is suspended
+ * for a command (its resume decides). 0 for NULL @p opts.
+ */
+int dsd_squelch_analog_default_wanted(const dsd_opts* opts, const dsd_state* state);
+
+/**
+ * @brief Put the analog default in or out of @p opts's squelch fields as dsd_squelch_analog_default_wanted() says, on
+ * the decoder thread, at each point the engine hands the receiver its squelch (the start, a decode or input change, a
+ * scan row's commit, leave and resume): the caller pushes the fields to the receiver when this returns 1. Coming in it
+ * keeps the fields' setting as the base (the level stays beneath, for a switch back); going out it puts the base back.
+ * Also logs the AM notice each time a NOISE setting starts running as AUTO on a standalone AM monitor of a radio input,
+ * whatever made it so.
+ *
+ * @return 1 when the squelch fields changed, or were written over an applied default since the last sync (the
+ * receiver may still hold the default), else 0.
+ */
+int dsd_squelch_analog_default_sync(dsd_opts* opts, const dsd_state* state);
+
+/**
+ * @brief Take an applied analog default out of @p opts's squelch fields, putting the base back (nothing pushed).
+ *
+ * @return 1 when the fields changed, else 0 (nothing was applied).
+ */
+int dsd_squelch_analog_default_release(dsd_opts* opts);
+
+/**
+ * @brief A squelch was set explicitly (`--squelch`, a spec's sql field other than `0`, a config's squelch keys, a live
+ * edit from any frontend): the analog default ends for the session. While it was applied the base comes back first,
+ * so the caller's own write lands over the session's setting.
+ */
+void dsd_squelch_analog_default_end(dsd_opts* opts);
+
+/**
+ * @brief The squelch fields of @p opts were just written with a setting of their own (a snapshot put back, a config's
+ * value): an applied default is no longer in them. The next dsd_squelch_analog_default_sync() decides again.
+ */
+void dsd_squelch_analog_default_note_written(dsd_opts* opts);
+
+/**
+ * @brief The squelch @p opts runs apart from the analog default: the rtl_squelch_* fields, or the base while the
+ * default is applied. What snapshots of the configured squelch and saves take. Any pointer may be NULL.
+ */
+void dsd_squelch_configured_fields(const dsd_opts* opts, double* level, int* mode, int* margin_db);
 
 /**
  * @brief Publish the dynamic squelch's status into @p state for the frontends (dsd_state::squelch_auto_*,

@@ -26,7 +26,6 @@
 #include <dsd-neo/app_control/commands.h>
 #include <dsd-neo/app_control/recording_view.h>
 #include <type_traits> // IWYU pragma: keep -- QPointer's conversion checks.
-#include "squelch_default_policy.h"
 class QTemporaryFile;
 
 namespace dsd_qt {
@@ -53,9 +52,6 @@ class CommandBridge : public QObject {
     Q_PROPERTY(int squelchMarginMinDb READ squelchMarginMinDb CONSTANT)
     Q_PROPERTY(int squelchMarginMaxDb READ squelchMarginMaxDb CONSTANT)
     Q_PROPERTY(int squelchMarginDefaultDb READ squelchMarginDefaultDb CONSTANT)
-    /* Issue #899: who owns the running session's squelch, for the app's default to follow a live decode switch;
-     * every user squelch edit tells it (noteUserSquelchChange()). */
-    Q_PROPERTY(dsd_qt::SquelchDefaultPolicy* squelchDefaults READ squelchDefaults CONSTANT)
 
   public:
     static int scanRowFieldSquelch();
@@ -71,12 +67,6 @@ class CommandBridge : public QObject {
     static int squelchMarginMinDb();
     static int squelchMarginMaxDb();
     static int squelchMarginDefaultDb();
-
-    /** @brief The squelch policy setDecodeMode() consults (issue #899); the session builders tell it each start. */
-    SquelchDefaultPolicy*
-    squelchDefaults() const {
-        return m_squelchDefaults;
-    }
 
     /**
      * @brief The scan row on air, captured when a "this channel" editor opens (issue #518): active, scanner, session,
@@ -293,8 +283,7 @@ class CommandBridge : public QObject {
     /** @brief Set tuner gain in dB (0 selects automatic gain). */
     Q_INVOKABLE bool setTunerGain(int gain_db) const;
 
-    /** @brief Set the RTL power squelch threshold, in dB. Like every squelch setter here, a user's edit: the app's
-     *  default squelch no longer follows decode switches this session (squelchDefaults). */
+    /** @brief Set the RTL power squelch threshold, in dB. */
     Q_INVOKABLE bool setSquelchDb(double db) const;
 
     /**
@@ -368,10 +357,6 @@ class CommandBridge : public QObject {
      * @param mode A dsdneoUserDecodeMode. Use decodeModeForFlag() to get one from
      *        the same decode-chip flag a saved system stores, so the mapping from
      *        flag to preset exists once and is the CLI's own.
-     *
-     * Issue #899: once sent, and while squelchDefaults() says the squelch is the app's, the app's default squelch follows
-     * it (DSD_APP_CMD_RTL_SQL_DEFAULT_FOLLOW, queued after it): in on a switch to NFM or AM over an off squelch, out on a
-     * switch to a digital mode over the default, and nothing where the decoder refused the switch.
      */
     Q_INVOKABLE bool setDecodeMode(int mode) const;
 
@@ -468,10 +453,6 @@ class CommandBridge : public QObject {
     /* Send the i32 @p command with @p value while the session records each call; answer true, sending nothing, while
        it does not. */
     bool sendWhileRecording(int command, int value) const;
-    /* Send what the squelch policy asked a decode switch for (issue #899): its default, or off. */
-    void followSquelchDefault(SquelchDefaultPolicy::Action action) const;
-
-    SquelchDefaultPolicy* m_squelchDefaults = nullptr;
 
     DecryptionProfileProvider* m_profiles = nullptr;
     RecordingStatus* m_recordingStatus = nullptr;

@@ -19,6 +19,7 @@
 #include "scan_list_targets.h"
 #include "session_args.h"
 extern "C" {
+#include <dsd-neo/app_control/squelch_view.h>
 #include <dsd-neo/core/init.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/power.h>
@@ -31,6 +32,8 @@ extern "C" {
 #include <dsd-neo/runtime/cli.h>
 #include <dsd-neo/runtime/config.h>
 #include <dsd-neo/runtime/input_spec.h>
+#include <dsd-neo/runtime/rtl_stream_metrics_hooks.h>
+#include <dsd-neo/runtime/squelch.h>
 #include <dsd-neo/runtime/trunk_scan_hooks.h>
 #include <dsd-neo/runtime/trunk_tuning_hooks.h>
 }
@@ -673,14 +676,17 @@ mixedAnalogRotation() {
 // Issue #899 (B13 + D1): a list generated from saved systems whose squelch its rows did not take (noise on an AM row,
 // auto on a P25 row, a fractional level) and plain analog and digital frequency rows, started as the app starts it:
 // the argv of session_args_scan_build_lists() parses, the real coordinator loads every row, and each row runs the
-// squelch it should on air. With an Advanced session level (--squelch -1) the starter gives no default, so plain rows
-// inherit the level, but the P25 row with a saved dynamic squelch runs off, as it ran on its own; with no Advanced
-// squelch plain analog rows run the app's default (noise as auto on AM) and plain digital rows the session's off.
+// squelch it should on air, the receiver told the same, round once and back to the first row. Plain rows carry no
+// squelch: they inherit, and on a radio input the decoder runs the app's default (--squelch-analog-default) on the
+// plain analog ones (noise, which an AM row runs as auto) while the digital ones run the session's own. With an
+// Advanced session level (--squelch -1, explicit) plain rows inherit the level, but the P25 row with a saved dynamic
+// squelch runs off, as it ran on its own. On audio input (a rigctl peer tunes) the default never runs.
 namespace {
 struct RowSquelch {
     int mode;
     int margin;
-    int db; // the LEVEL's whole dB; 0 is off
+    int db;                 // the LEVEL's whole dB; 0 is off
+    bool byDefault = false; // the analog default runs it (issue #899)
 };
 } // namespace
 
@@ -696,8 +702,25 @@ squelchIs(const dsd_opts* opts, const RowSquelch& want) {
     return want.db == 0 ? !(opts->rtl_squelch_level > 0.0) : std::fabs(opts->rtl_squelch_level - level) <= level * 1e-9;
 }
 
+/* What the rotation hands the receiver, on a radio input. */
+static int g_rowPushes;
+static dsd_squelch_setting g_rowPushed;
+
 static void
-generatedRowSquelch(const QString& extraArgs, const QString& fallback, const QList<RowSquelch>& rows) {
+recordRowPush(const dsd_squelch_setting* setting) {
+    ++g_rowPushes;
+    g_rowPushed = *setting;
+}
+
+/* Whether the receiver last heard what @p opts holds. */
+static bool
+receiverHolds(const dsd_opts* opts) {
+    const dsd_squelch_setting held = dsd_squelch_setting_of_opts(opts);
+    return g_rowPushes > 0 && dsd_squelch_setting_equal(&g_rowPushed, &held);
+}
+
+static void
+generatedRowSquelch(const QString& extraArgs, bool radio, const QList<RowSquelch>& rows) {
     QTemporaryDir dir;
     const QVariantList systems{QVariantMap{{"uid", "nfmlevel"},
                                            {"decodeFlag", "-fA"},
@@ -723,7 +746,7 @@ generatedRowSquelch(const QString& extraArgs, const QString& fallback, const QLi
             << QVariantMap{{"uid", "guard"}, {"kind", "freq"}, {"protocol", "am"}, {"freqMhz", "121.5"}}
             << QVariantMap{{"uid", "plant"}, {"kind", "freq"}, {"protocol", "dmr"}, {"freqMhz", "461.1125"}};
     const QVariantMap list{{"sourceType", "usb"}, {"entries", entries}};
-    const auto generated = dsd_qt::scan_list_targets(list, systems, fallback);
+    const auto generated = dsd_qt::scan_list_targets(list, systems);
     check(generated.ok && generated.targetCount == rows.size());
     const QString path = dir.filePath("squelch.csv");
     QFile file(path);
@@ -752,14 +775,22 @@ generatedRowSquelch(const QString& extraArgs, const QString& fallback, const QLi
     check(dsd_parse_args(static_cast<int>(argv.size()), argv.data(), opts, state, &effective, &exitCode) == 0);
     // The spec's tuning fields, its squelch among them, as the engine reads them when the input opens.
     check(dsd_rtl_input_spec_apply(opts) == 1);
-    // The analog rows retune through a rigctl peer, over audio input, as mixedAnalogRotation() runs them.
+    // The rows retune through a rigctl peer, as mixedAnalogRotation() runs them, over audio input or over a test
+    // radio: an RTL input whose stream is not running (the peer tunes, the receiver's squelch is recorded).
     FakeRigctlPeer peer;
     char host[] = "127.0.0.1";
-    check(dsd_socket_init() == 0 && peer.start());
     opts->audio_out_type = 9;
-    opts->audio_in_type = AUDIO_IN_UDP;
+    dsd_rtl_stream_metrics_hooks metrics{};
+    metrics.set_channel_squelch_setting = recordRowPush;
+    g_rowPushes = 0;
+    check(dsd_socket_init() == 0 && peer.start());
+    opts->audio_in_type = radio ? AUDIO_IN_RTL : AUDIO_IN_UDP;
     opts->use_rigctl = 1;
     opts->rigctl_sockfd = Connect(host, peer.port);
+    if (radio) {
+        dsd_rtl_stream_metrics_hooks_set(&metrics);
+        (void)dsd_squelch_analog_default_sync(opts, state); // as the engine's setup does
+    }
     dsd_trunk_tuning_hooks hooks{};
     hooks.tune_to_freq_request = tune;
     hooks.tune_to_cc_request = tune;
@@ -778,14 +809,22 @@ generatedRowSquelch(const QString& extraArgs, const QString& fallback, const QLi
             const RowSquelch& want = rows.at(i % rows.size());
             if (!squelchIs(opts, want)) {
                 ++failures;
-                std::fprintf(stderr, "row %d squelch: mode %d margin %d level %g, want mode %d margin %d %d dB\n",
-                             static_cast<int>(i), opts->rtl_squelch_mode, opts->rtl_squelch_margin_db,
-                             opts->rtl_squelch_level, want.mode, want.margin, want.db);
+                std::fprintf(stderr, "row %d squelch (%s): mode %d margin %d level %g, want mode %d margin %d %d dB\n",
+                             static_cast<int>(i), radio ? "radio" : "audio", opts->rtl_squelch_mode,
+                             opts->rtl_squelch_margin_db, opts->rtl_squelch_level, want.mode, want.margin, want.db);
+            }
+            if (radio) {
+                // The receiver runs the row's squelch, and the readout's badge says whose it is.
+                check(receiverHolds(opts));
+                dsd_app_squelch_view view;
+                check(dsd_app_squelch_view_get(opts, state, &view) == 0);
+                check(view.analog_default == (want.byDefault ? 1U : 0U));
             }
             check(dsd_engine_trunk_scan_control(opts, state, DSD_TRUNK_SCAN_CONTROL_ADVANCE) == 0);
         }
     }
     dsd_engine_trunk_scan_shutdown(opts, state);
+    dsd_rtl_stream_metrics_hooks_set(nullptr);
     if (opts->rigctl_sockfd != DSD_INVALID_SOCKET) {
         (void)dsd_socket_close(opts->rigctl_sockfd);
         opts->rigctl_sockfd = DSD_INVALID_SOCKET;
@@ -803,21 +842,31 @@ generatedRowSquelchCases() {
     const int level = DSD_SQUELCH_MODE_LEVEL;
     const int automatic = DSD_SQUELCH_MODE_AUTO;
     const int noise = DSD_SQUELCH_MODE_NOISE;
-    generatedRowSquelch(QStringLiteral("--squelch -1"), QString(),
+    for (const bool radio : {false, true}) {
+        generatedRowSquelch(QStringLiteral("--squelch -1"), radio,
+                            {{level, 0, -110},
+                             {automatic, 17, 0},
+                             {level, 0, 0},
+                             {level, 0, -66},
+                             {level, 0, -1},
+                             {level, 0, -1},
+                             {level, 0, -1}});
+    }
+    generatedRowSquelch(QString(), false,
                         {{level, 0, -110},
                          {automatic, 17, 0},
                          {level, 0, 0},
                          {level, 0, -66},
-                         {level, 0, -1},
-                         {level, 0, -1},
-                         {level, 0, -1}});
-    generatedRowSquelch(QString(), QStringLiteral("noise+10"),
+                         {level, 0, 0},
+                         {level, 0, 0},
+                         {level, 0, 0}});
+    generatedRowSquelch(QString(), true,
                         {{level, 0, -110},
                          {automatic, 17, 0},
                          {level, 0, 0},
                          {level, 0, -66},
-                         {noise, 10, 0},
-                         {automatic, 10, 0},
+                         {noise, 10, 0, true},
+                         {noise, 10, 0, true},
                          {level, 0, 0}});
 }
 #endif

@@ -528,7 +528,6 @@ ModalSheet {
         pendingSquelchMargin = NaN;
         pendingSquelch = db;
         squelchTtl.restart();
-        noteUserSquelch();
         // A row keeps its margin through a level, for a switch back to Auto.
         if (rowSquelch)
             rowEdit(commands.scanRowFieldSquelch, commands.scanRowEditSet,
@@ -546,7 +545,6 @@ ModalSheet {
         pendingSquelchMode = mode;
         pendingSquelchMargin = margin;
         squelchTtl.restart();
-        noteUserSquelch();
         if (rowSquelch)
             rowEdit(commands.scanRowFieldSquelch, commands.scanRowEditSet,
                 {"squelchMode": mode, "squelchMarginDb": margin});
@@ -607,7 +605,6 @@ ModalSheet {
         pendingSquelchMargin = NaN;
         pendingSquelch = levelOff ? 0 : Math.min(db, -0.001);
         squelchTtl.restart();
-        noteUserSquelch();
         if (commands.restoreSquelchLevel())
             settingRequested("squelch", {mode: "level", restore: true});
         else
@@ -632,12 +629,6 @@ ModalSheet {
             savedSquelchCleared ? squelchClearedNote.text : squelchSaveError);
         if (hadFocus && savedSquelchCleared)
             squelchModeControl.focusSegment();
-    }
-
-    /** Issue #899: a user squelch edit; the app default no longer follows this session's decode switches. */
-    function noteUserSquelch() {
-        if (commands.squelchDefaults)
-            commands.squelchDefaults.noteUserSquelchChange();
     }
 
     Timer {

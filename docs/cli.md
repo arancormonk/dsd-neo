@@ -11,7 +11,7 @@ Friendly, practical overview of the `dsd-neo` command line. This covers what you
 - IQ capture/replay: `--iq-capture <path>`, `--iq-capture-format cu8|cf32`, `--iq-capture-max-mb <n>`, `--iq-replay <path>`, `--iq-replay-rate fast|realtime`, `--iq-loop`, `--iq-info <path>`
 - Levels/Audio: `-g 0|0.001..50`, `-n 0|1..100`, `-nm`, `-8`, `-V 0|1|2|3`, `-z 0|1|2`, `-y`, `-v 0x1`
 - Modes: `-fa | -ft | -fs | -fr | -f1 | -f2 | -fd | -fx | -fy | -fz | -fU | -fi | -fn | -fp | -fh | -fH | -fe | -fE | -fm | -fT | -fA | -fM` (Auto, `-fa`, is the default)
-- Analog: `-fA` (NFM monitor), `--nfm-bandwidth-hz <Hz>` (8000..25000, default 16000); `-fM` (native AM, radio/I/Q inputs only), `--am-bandwidth-hz <Hz>` (5000..20000, default 6000); `--tone-allow <list>` / `--tone-block <list>` / `--no-tone-filter` (CTCSS/DCS receive policy on the FM monitor, e.g. `67.0/100.0/D023N`); `--squelch auto[+N]` (open N dB over each analog channel's learned noise floor, radio inputs); `--squelch noise[+N]` (open an FM channel at N dB of quieting, as a radio's squelch does; on audio input from a reference it learns); see [Analog reception](#analog-reception--fa--fm), [Tone filter](#tone-filter-ctcssdcs-receive-policy), [Auto squelch](#auto-squelch---squelch-auto) and [Noise squelch](#noise-squelch---squelch-noise)
+- Analog: `-fA` (NFM monitor), `--nfm-bandwidth-hz <Hz>` (8000..25000, default 16000); `-fM` (native AM, radio/I/Q inputs only), `--am-bandwidth-hz <Hz>` (5000..20000, default 6000); `--tone-allow <list>` / `--tone-block <list>` / `--no-tone-filter` (CTCSS/DCS receive policy on the FM monitor, e.g. `67.0/100.0/D023N`); `--squelch auto[+N]` (open N dB over each analog channel's learned noise floor, radio inputs); `--squelch noise[+N]` (open an FM channel at N dB of quieting, as a radio's squelch does; on audio input from a reference it learns); `--squelch-analog-default <off|auto[+N]|noise[+N]>` (the squelch analog channels of a radio input run until a squelch is set); see [Analog reception](#analog-reception--fa--fm), [Tone filter](#tone-filter-ctcssdcs-receive-policy), [Auto squelch](#auto-squelch---squelch-auto), [Noise squelch](#noise-squelch---squelch-noise) and [Analog default squelch](#analog-default-squelch---squelch-analog-default)
 - Inversions/filtering: `-xx`, `-xr`, `-xd`, `-xz`, `-l`, `-q`
 - Trunking/scan: `-T`, `-Y`, `--trunk-scan targets.csv` (repeatable; `--trunk-scan-off targets.csv` adds a list that starts off; `--trunk-scan-hold <target-id>` starts held on one target; P25/DMR/NXDN96/NXDN48 trunk and conventional targets and analog NFM and AM conventional targets; each type selects its decoder class), `-C chan.csv`, `-G group.csv`, `--src-csv src.csv`, `--p25-bandplan plan.csv`, `--p25-bandplan-export plan.csv`, `-W`, `-E`, `-p`, `-e`, `-I 1234`, `-U 4532`, `-B 12000`, `-t 1`, `--enc-lockout|--enc-follow`, `--tg-lockout-session|--tg-lockout-persist`, `--scan-voice-only`, `--scan-voice-qualify-ms <ms>`, `--scan-voice-hold-ms <ms>`, `--scan-max-visit-ms <ms>`, `--scan-skip-silent`
 - RTL‑SDR strings: `-i rtl:dev:freq:gain:ppm:bw:sql:vol[:bias=on|off]` or `-i rtltcp:host:port:freq:gain:ppm:bw:sql:vol[:bias=on|off]` (`gain` `0` = automatic, `1`–`49` = manual dB)
@@ -104,7 +104,9 @@ Tip: If you run with no arguments and no config is loaded, `dsd-neo` starts the 
     `--squelch <setting>` sets the same thing on any radio input and wins over the spec. A `-Y` channel-map row or
     `--trunk-scan` target can replace it while that row is on air with `--squelch-db <dB>` or `--squelch <setting>` in
     its `options` column (whole dB, `-120..0`, `0` = off, `auto[+N]` on analog rows, `noise[+N]` on nfm rows, omitted
-    = inherit this value); see `docs/csv-formats.md`.
+    = inherit this value); see `docs/csv-formats.md`. A field of `0` sets no squelch of its own, so
+    `--squelch-analog-default` still runs on analog channels; any other value is a squelch someone set and ends it
+    ([Analog default squelch](#analog-default-squelch---squelch-analog-default)).
     An analog session makes calls (history rows, `-J` lines, recordings) only under a squelch above -110 dB, the
     startup default: see [Analog calls need a squelch](#analog-calls-need-a-squelch-on-a-radio-input).
 - RTL‑TCP: `-i rtltcp[:host:port[:freq:gain:ppm:bw:sql:vol[:bias[=on|off]]]]`
@@ -1481,7 +1483,8 @@ visit.
   a spur cannot be told from a weak transmission arriving, so the gain is left as it is. A squelch avoids it, since
   the gain hears nothing while the gate is closed: the noise squelch keeps a spur up to about 5 dB over the noise
   closed (a stronger one quiets the noise as a carrier does, and opens it), and a level over the spur does the same.
-  The Qt/Android app starts analog sessions with the noise squelch by default (`android/README.md` "Squelch").
+  The Qt/Android app runs the noise squelch on analog channels by default (`--squelch-analog-default noise+10`;
+  `android/README.md` "Squelch").
 - The channel squelch measures power after the channel filter, so the noise it sees scales with the width: halving
   the width lowers the noise power by about 3 dB. Re-check a squelch threshold (`sql`, `rtl_sql`) after changing the
   width. The auto and noise squelches (below) need no re-check: the auto squelch rescales its floor with the filter,
@@ -1688,6 +1691,35 @@ quieting, closed under max(N - 3, 1.5) dB. Quieting reads about the carrier-to-n
   scan while the noise squelch runs (it is closed while learning), as on a radio input; with no band or no room the
   row holds on noise as with the squelch off. `docs/testing.md` "PCM noise squelch design gate" has the figures behind
   these numbers.
+
+### Analog default squelch (`--squelch-analog-default`)
+
+`--squelch-analog-default <off|auto[+N]|noise[+N]>` (the squelch grammar's dynamic settings, N 3..30; a level is
+refused) is the squelch the decoder runs on an analog channel of a radio input (RTL-SDR, rtl_tcp, SoapySDR, Airspy,
+`--iq-replay`) while no squelch was set. It is for a frontend that starts every radio session the same way: the
+Qt/Android app passes its Settings default (`noise+10` unless changed) with every radio session it starts, so its
+analog channels play only traffic while digital decoding is left exactly as it was. It is no INI key: a config saves
+the squelch the session set, never this default.
+
+- In force on: the standalone `-fA` / `-fM` monitor, from the start and after any live decode switch to it (from the
+  terminal, the app, the control API, or a config whose `[mode]` makes the decode analog), and a `-Y` row or trunk-scan
+  target that is analog (`nfm`, `am`, `nfm-conventional`, `am-conventional`) and sets no squelch of its own, in
+  generated and imported lists alike. On AM a `noise` default runs as auto with the same N, and the engine says so each
+  time that starts (`NOTICE: The noise squelch needs an FM channel; this AM channel runs auto+10dB.`), without taking
+  the place of a decode switch's own message.
+- Not in force: digital channels and rows, audio input, EDACS analog voice and the M17 encoder run the session's own
+  squelch (off unless set), exactly as without the option, so digital decoding costs nothing more. A switch to audio
+  input takes it out; a switch back to a radio input brings it back if no squelch was set meanwhile.
+- A squelch set explicitly ends it for the rest of the session: `--squelch` in any form, an input spec's `sql` field
+  other than `0`, a config's `rtl_sql` / `rtl_sql_mode`, and any live edit from any frontend (the terminal's Input
+  menu, the Qt/Android Radio and Squelch sheets, the control API's `rtl_set_sql_setting`), an Off or a value equal to
+  the default as much as any other. A refused edit ends nothing. A scan row's own `--squelch` / `--squelch-db`, and a
+  signal-search range's listening squelch, replace it for that row or those landings only.
+- It reaches the receiver at the points the engine hands the receiver its squelch (the start, a decode switch, an input
+  change, a scan row's commit, leave and resume), in the same step: on a live switch to the monitor the receiver has it
+  before the switch's channel, so no analog block runs with the squelch off.
+- What it shows: the readout names the default as the configured setting, marked `(default)` (`SQL: noise +10 dB
+  (default; quieting 23 dB)`); after an explicit edit it reads as any other squelch.
 
 ### Native AM (`-fM`)
 
@@ -2226,8 +2258,9 @@ hold one call open. Set --squelch <dB>, --squelch auto or noise, or --tone-allow
 Any one of these lifts it: a level above -110 dB (`--squelch -60`), `--squelch auto`, `--squelch noise` on NFM, or on
 NFM a `--tone-allow` list, which lets only its tones through. A `--tone-block` list does not, as noise carries no tone
 to block. `auto` and `noise` lift it even on the rare channel where they cannot run (see "No channel plan" under
-[Auto squelch](#auto-squelch---squelch-auto)). By default the Qt/Android app starts NFM and AM sessions with
-`noise+10` (see `android/README.md` "Squelch"), so their calls are on. On AM dsd-neo checks no tones, so the AM notice
+[Auto squelch](#auto-squelch---squelch-auto)). So does the analog default
+([`--squelch-analog-default`](#analog-default-squelch---squelch-analog-default)) where it runs: by default the
+Qt/Android app passes `noise+10`, so the calls of its analog channels are on (see `android/README.md` "Squelch"). On AM dsd-neo checks no tones, so the AM notice
 names only `--squelch <dB>` and `--squelch auto`. A squelch
 set while dsd-neo runs (the terminal's `Squelch...` row, the Qt/Android radio panel, the API) or a scan row's own
 `--squelch` applies at once: a call in progress ends when the squelch drops back to the default. The lift is logged once

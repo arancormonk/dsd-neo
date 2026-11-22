@@ -245,7 +245,8 @@ int dsd_scan_mode_rigctl_request_is_session(const dsd_opts* opts, const dsd_stat
  * the scan scope attached to @p state; the pointer is const only because that scope lives in the
  * state's extension slot, as with dsd_scan_mode_target_modulation(). Call it only on the decoder
  * thread with the live state, never with a frontend snapshot (dsd_app_get_latest_snapshot()): it
- * would edit the snapshot's scope copy while frontends read it, and the live scope would not change. */
+ * would edit the snapshot's scope copy while frontends read it, and the live scope would not change. An edit is an
+ * explicit squelch: the analog default ends for the session (dsd_squelch_analog_default_end(), issue #899). */
 int dsd_scan_mode_set_configured_squelch(dsd_opts* opts, const dsd_state* state, double level);
 /** dsd_scan_mode_set_configured_squelch() for a whole setting (a LEVEL threshold or an AUTO margin, runtime/squelch.h):
  * the same contract. */

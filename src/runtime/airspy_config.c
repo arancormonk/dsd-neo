@@ -156,7 +156,8 @@ typedef struct {
     int bw;
     dsd_squelch_setting squelch;
     int volume;
-    int bw_set; /* the spec carries a bandwidth field */
+    int bw_set;           /* the spec carries a bandwidth field */
+    int squelch_explicit; /* the spec carries a squelch field other than 0 (issue #899) */
 } airspy_tuning;
 
 /* The DSP bandwidth an Airspy runs @p bw at: @p bw when it is a selectable one, which an Airspy runs as an RTL-SDR does
@@ -189,6 +190,7 @@ parse_airspy_squelch(const char* text, airspy_tuning* tuning) {
     if (text[0] == '\0') {
         return 0;
     }
+    tuning->squelch_explicit = strcmp(text, "0") != 0;
     return dsd_spec_squelch_field_parse("airspy:", text, &tuning->squelch);
 }
 
@@ -239,6 +241,31 @@ parse_airspy_tuning(char* text, airspy_tuning* tuning) {
     return 0;
 }
 
+/* The squelch the session runs apart from an analog default in force (issue #899): what a spec without a squelch field
+   keeps. */
+static dsd_squelch_setting
+airspy_configured_squelch(const dsd_opts* opts) {
+    double level = 0.0;
+    int mode = DSD_SQUELCH_MODE_LEVEL;
+    int margin_db = DSD_SQUELCH_MARGIN_DEFAULT_DB;
+    dsd_squelch_configured_fields(opts, &level, &mode, &margin_db);
+    return dsd_squelch_mode_is_dynamic(mode) ? dsd_squelch_setting_dynamic(mode, margin_db)
+                                             : dsd_squelch_setting_of_level(level);
+}
+
+/* The spec's squelch, which --squelch wins over; as an rtl: spec's field, one other than 0 is a squelch someone chose
+   (issue #899). */
+static void
+airspy_store_squelch(dsd_opts* opts, const airspy_tuning* tuning) {
+    if (opts->rtl_squelch_cli_set) {
+        return;
+    }
+    if (tuning->squelch_explicit) {
+        dsd_squelch_analog_default_end(opts);
+    }
+    dsd_squelch_setting_store(opts, &tuning->squelch);
+}
+
 int
 dsd_normalize_airspy_input_spec(dsd_opts* opts) {
     if (!opts || !dsd_opts_audio_in_dev_is_airspy_spec(opts->audio_in_dev)) {
@@ -249,8 +276,12 @@ dsd_normalize_airspy_input_spec(dsd_opts* opts) {
     char spec[sizeof opts->audio_in_dev];
     DSD_SNPRINTF(spec, sizeof spec, "%s", opts->audio_in_dev);
     char* tail = strchr(spec, ':');
-    airspy_tuning tuning = {opts->rtlsdr_center_freq, opts->rtl_dsp_bw_khz, dsd_squelch_setting_of_opts(opts),
-                            opts->rtl_volume_multiplier, 0};
+    airspy_tuning tuning = {opts->rtlsdr_center_freq,
+                            opts->rtl_dsp_bw_khz,
+                            airspy_configured_squelch(opts),
+                            opts->rtl_volume_multiplier,
+                            0,
+                            0};
     if (tail) {
         ++tail;
         if (strncmp(tail, "serial=", 7) == 0) {
@@ -286,10 +317,7 @@ dsd_normalize_airspy_input_spec(dsd_opts* opts) {
     if (tuning.bw_set) {
         opts->rtl_dsp_bw_source = DSD_RTL_DSP_BW_SOURCE_EXPLICIT;
     }
-    /* --squelch wins over the spec's field. */
-    if (!opts->rtl_squelch_cli_set) {
-        dsd_squelch_setting_store(opts, &tuning.squelch);
-    }
+    airspy_store_squelch(opts, &tuning);
     opts->rtl_volume_multiplier = tuning.volume;
     opts->audio_in_type = AUDIO_IN_RTL;
     opts->rtltcp_enabled = 0;

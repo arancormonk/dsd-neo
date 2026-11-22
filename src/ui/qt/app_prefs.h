@@ -39,11 +39,6 @@ class AppPrefs : public QObject {
      * auto-start: a recreated Activity takes the identity of the session it finds running from these. Device-local. */
     Q_PROPERTY(QString acceptedStartKind READ acceptedStartKind WRITE setAcceptedStartKind NOTIFY acceptedStartChanged)
     Q_PROPERTY(QString acceptedStartUid READ acceptedStartUid WRITE setAcceptedStartUid NOTIFY acceptedStartChanged)
-    /* Issue #899: who owns the accepted session's squelch (SquelchDefaultPolicy::record(): "app:noise+10", "user",
-     * "session"), written as it changes, so a recreated Activity takes it back (SquelchDefaultPolicy::adopt()).
-     * Device-local. */
-    Q_PROPERTY(QString acceptedStartSquelch READ acceptedStartSquelch WRITE setAcceptedStartSquelch NOTIFY
-                   acceptedStartChanged)
     /* Issue #697: the other scan lists a scan session scans with its list (the UID above), in list order: the rest of
      * the session's identity, written with acceptedStart* and lastStarted* (acceptedStartCompanions,
      * lastStartedCompanions), empty for every other start. Device-local: a backup carries no list identity a restore
@@ -88,8 +83,8 @@ class AppPrefs : public QObject {
     Q_PROPERTY(int ppm READ ppm WRITE setPpm NOTIFY ppmChanged)
     Q_PROPERTY(int bandwidthKhz READ bandwidthKhz WRITE setBandwidthKhz NOTIFY bandwidthKhzChanged)
     Q_PROPERTY(bool biasTee READ biasTee WRITE setBiasTee NOTIFY biasTeeChanged)
-    /* Issue #899: the squelch analog sessions start with ("off", "auto+N" or "noise+N", N 3..30); "noise+10" unless
-     * chosen. Portable. */
+    /* Issue #899: the squelch a radio session's analog channels run while nothing sets one ("off", "auto+N" or "noise+N",
+     * N 3..30; --squelch-analog-default); "noise+10" unless chosen. Portable. */
     Q_PROPERTY(QString squelch READ squelch WRITE setSquelch NOTIFY squelchChanged)
     Q_PROPERTY(QString extraArgs READ extraArgs WRITE setExtraArgs NOTIFY extraArgsChanged)
     /* RadioReference account. The password is deliberately absent: it is held in
@@ -212,8 +207,6 @@ class AppPrefs : public QObject {
     void setAcceptedStartKind(const QString& value);
     QString acceptedStartUid() const;
     void setAcceptedStartUid(const QString& value);
-    QString acceptedStartSquelch() const;
-    void setAcceptedStartSquelch(const QString& value);
     QStringList acceptedStartCompanions() const;
     void setAcceptedStartCompanions(const QStringList& value);
     QStringList lastStartedCompanions() const;
@@ -300,8 +293,9 @@ class AppPrefs : public QObject {
     void setBiasTee(bool on);
 
     /**
-     * @brief The squelch the app gives analog sessions that have none of their own (issue #899): "off", "auto+N" or
-     *        "noise+N" with N a whole 3..30 dB, as app_squelch_default_valid() takes it; else, absent or anything
+     * @brief The squelch the app has the decoder run on analog channels that have none of their own (issue #899,
+     *        --squelch-analog-default): "off", "auto+N" or "noise+N" with N a whole 3..30 dB, as
+     *        app_squelch_default_valid() takes it; else, absent or anything
      *        stored that is not one of those, the default "noise+10". A write of anything else is refused and writes
      *        nothing; a valid write over a damaged stored value replaces it.
      */

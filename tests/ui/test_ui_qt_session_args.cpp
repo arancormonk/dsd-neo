@@ -48,7 +48,6 @@
 #include "dsd-neo/core/safe_api.h"
 #include "saved_systems_model.h"
 #include "session_args.h"
-#include "squelch_default_policy.h"
 
 using dsd_qt::session_args_build;
 using dsd_qt::session_args_freq_valid;
@@ -79,6 +78,13 @@ usb_system(void) {
 QString
 input_spec(const QStringList& args) {
     const qsizetype i = args.indexOf(QStringLiteral("-i"));
+    return (i >= 0 && i + 1 < args.size()) ? args.at(i + 1) : QString();
+}
+
+/* The value the argv gives --squelch-analog-default (issue #899), the last one the parser keeps; empty for none. */
+QString
+squelch_default_arg(const QStringList& args) {
+    const qsizetype i = args.lastIndexOf(QStringLiteral("--squelch-analog-default"));
     return (i >= 0 && i + 1 < args.size()) ? args.at(i + 1) : QString();
 }
 
@@ -997,8 +1003,10 @@ test_nfm_system(void) {
     expect("an NFM system names no digital decoder", !args.contains(QStringLiteral("-fa"))
                                                          && !args.contains(QStringLiteral("-ft"))
                                                          && !args.contains(QStringLiteral("-fs")));
-    expect("an NFM system tunes where it was told, with the app's default squelch (issue #899)",
-           input_spec(args) == QStringLiteral("rtl:0:851.375M:30:0:48:noise+10:2"));
+    expect("an NFM system tunes where it was told, its spec's squelch field unset",
+           input_spec(args) == QStringLiteral("rtl:0:851.375M:30:0:48:0:2"));
+    expect("and it carries the app's default for the decoder to run (issue #899)",
+           squelch_default_arg(args) == QStringLiteral("noise+10"));
 
     sys.insert(QStringLiteral("sourceType"), QStringLiteral("rtltcp"));
     sys.insert(QStringLiteral("host"), QStringLiteral("10.0.2.2"));
@@ -1007,8 +1015,9 @@ test_nfm_system(void) {
     expect("an NFM system builds over rtl_tcp", error == SessionArgsError::None);
     expect("NFM over rtl_tcp is still -fA",
            remote.count(QStringLiteral("-fA")) == 1 && !remote.contains(QStringLiteral("-T")));
-    expect("NFM over rtl_tcp reaches the remote tuner, with the app's default squelch",
-           input_spec(remote) == QStringLiteral("rtltcp:10.0.2.2:1234:851.375M:30:0:48:noise+10:2"));
+    expect("NFM over rtl_tcp reaches the remote tuner",
+           input_spec(remote) == QStringLiteral("rtltcp:10.0.2.2:1234:851.375M:30:0:48:0:2")
+               && squelch_default_arg(remote) == QStringLiteral("noise+10"));
 }
 
 /*
@@ -2413,129 +2422,91 @@ test_scan_hold_option(void) {
                .isEmpty());
 }
 
-/* Issue #899 (D1): an analog start with no squelch of its own carries the app's default in its radio spec's squelch
-   field, on every radio the app builds a spec for; a digital or Auto start, a source with no radio spec, a saved
-   Radio-sheet squelch and an Advanced squelch or input keep the field at 0 (off), as every start did before. */
+/* Issue #899 (D1, after the final-diff review): every radio session the app builds passes its Settings default as
+   --squelch-analog-default, whatever it decodes: the decoder runs it on analog channels while nothing sets a squelch,
+   and nowhere else. The spec's squelch field is always 0 (no squelch). A saved Radio-sheet squelch is still the last
+   word (--squelch, explicit), and extra options come after the default, so an Advanced --squelch or a default of their
+   own win. A source with no radio spec passes none. */
 static void
-test_default_squelch_spec(void) {
+test_default_squelch_option(void) {
     const SessionArgPrefs prefs;
-    QVariantMap nfm = usb_system();
-    nfm["decodeFlag"] = "-fA";
-    expect("an NFM start carries the default on a USB radio",
-           input_spec(session_args_build(nfm, prefs, nullptr)) == QStringLiteral("rtl:0:851.375M:30:0:48:noise+10:2"));
-    QVariantMap am = nfm;
-    am["decodeFlag"] = "-fM";
-    expect("an AM start carries it too (the engine runs noise as auto on AM)",
-           input_spec(session_args_build(am, prefs, nullptr)) == QStringLiteral("rtl:0:851.375M:30:0:48:noise+10:2"));
-    QVariantMap remote = nfm;
+    QVariantMap remote = usb_system();
     remote["sourceType"] = "rtltcp";
     remote["host"] = "10.0.2.2";
     remote["port"] = 1234;
-    expect("an NFM start carries the default over rtl_tcp",
-           input_spec(session_args_build(remote, prefs, nullptr))
-               == QStringLiteral("rtltcp:10.0.2.2:1234:851.375M:30:0:48:noise+10:2"));
-    QVariantMap airspy = nfm;
+    QVariantMap airspy = usb_system();
     airspy["sourceType"] = "airspy";
-    expect("an NFM start carries the default in an Airspy's third tuning field",
-           input_spec(session_args_build(airspy, prefs, nullptr)) == QStringLiteral("airspy:851.375M:48:noise+10:2"));
 
+    const struct {
+        QVariantMap system;
+        QString spec;
+    } radios[] = {
+        {usb_system(), QStringLiteral("rtl:0:851.375M:30:0:48:0:2")},
+        {remote, QStringLiteral("rtltcp:10.0.2.2:1234:851.375M:30:0:48:0:2")},
+        {airspy, QStringLiteral("airspy:851.375M:48:0:2")},
+    };
+
+    for (const auto& radio : radios) {
+        for (const QString& decode : {QStringLiteral("-fA"), QStringLiteral("-fM"), QString(), QStringLiteral("-ft"),
+                                      QStringLiteral("-fs"), QStringLiteral("-fh")}) {
+            QVariantMap sys = radio.system;
+            sys["decodeFlag"] = decode;
+            const QStringList args = session_args_build(sys, prefs, nullptr);
+            expect("every radio start passes the default, its spec's squelch field 0",
+                   squelch_default_arg(args) == QStringLiteral("noise+10") && input_spec(args) == radio.spec
+                       && args.count(QStringLiteral("--squelch-analog-default")) == 1);
+        }
+    }
     SessionArgPrefs automatic;
     automatic.squelchDefault = QStringLiteral("auto+15");
-    expect("the default Settings holds is the one carried", input_spec(session_args_build(nfm, automatic, nullptr))
-                                                                == QStringLiteral("rtl:0:851.375M:30:0:48:auto+15:2"));
+    expect("the default Settings holds is the one passed",
+           squelch_default_arg(session_args_build(usb_system(), automatic, nullptr)) == QStringLiteral("auto+15"));
     SessionArgPrefs off;
     off.squelchDefault = QStringLiteral("off");
-    expect("a default of off keeps the field at 0",
-           input_spec(session_args_build(nfm, off, nullptr)) == QStringLiteral("rtl:0:851.375M:30:0:48:0:2"));
-
-    for (const QString& digital : {QString(), QStringLiteral("-ft"), QStringLiteral("-fs"), QStringLiteral("-fh")}) {
-        QVariantMap sys = usb_system();
-        sys["decodeFlag"] = digital;
-        expect("a digital or Auto start keeps the squelch off",
-               input_spec(session_args_build(sys, prefs, nullptr)) == QStringLiteral("rtl:0:851.375M:30:0:48:0:2"));
-        QVariantMap remoteDigital = remote;
-        remoteDigital["decodeFlag"] = digital;
-        expect("over rtl_tcp too", input_spec(session_args_build(remoteDigital, prefs, nullptr))
-                                       == QStringLiteral("rtltcp:10.0.2.2:1234:851.375M:30:0:48:0:2"));
-        QVariantMap airspyDigital = airspy;
-        airspyDigital["decodeFlag"] = digital;
-        expect("and on an Airspy", input_spec(session_args_build(airspyDigital, prefs, nullptr))
-                                       == QStringLiteral("airspy:851.375M:48:0:2"));
-    }
-
-    QVariantMap saved = nfm;
-    saved["radioSettings"] = QVariantMap{{"squelch", "-60"}};
-    const QStringList savedArgs = session_args_build(saved, prefs, nullptr);
-    expect("a saved squelch keeps the field at 0 and is the last word",
-           input_spec(savedArgs) == QStringLiteral("rtl:0:851.375M:30:0:48:0:2")
-               && savedArgs.mid(savedArgs.size() - 2) == QStringList({"--squelch", "-60"}));
-    expect("and owns the session's squelch", dsd_qt::session_args_squelch_default(saved, prefs).ownSquelch
-                                                 && !dsd_qt::session_args_squelch_default(saved, prefs).inSpec);
-
-    for (const QString& extra :
-         {QStringLiteral("--squelch off"), QStringLiteral("--squelch=auto+20"), QStringLiteral("-Z --squelch -70")}) {
-        QVariantMap own = nfm;
-        own["extraArgs"] = extra;
-        expect("a system's Advanced squelch keeps the field at 0",
-               input_spec(session_args_build(own, prefs, nullptr)) == QStringLiteral("rtl:0:851.375M:30:0:48:0:2"));
-        SessionArgPrefs global;
-        global.extraArgs = extra;
-        expect("so does the app's",
-               input_spec(session_args_build(nfm, global, nullptr)) == QStringLiteral("rtl:0:851.375M:30:0:48:0:2"));
-        expect("and either owns the squelch", dsd_qt::session_args_squelch_default(own, prefs).ownSquelch
-                                                  && dsd_qt::session_args_squelch_default(nfm, global).ownSquelch);
-    }
-    QVariantMap value = nfm;
-    value["extraArgs"] = "--api-token --squelch";
-    expect("a squelch option that is another option's value is no squelch",
-           !dsd_qt::session_args_squelch_default(value, prefs).ownSquelch
-               && dsd_qt::session_args_squelch_default(value, prefs).inSpec);
-
-    QVariantMap replaced = nfm;
-    replaced["extraArgs"] = "-i rtl:0:155M:30:0:48:0:2";
-    expect("an Advanced -i replaces the app's spec: no default",
-           !dsd_qt::session_args_squelch_default(replaced, prefs).eligible
-               && !dsd_qt::session_args_squelch_default(replaced, prefs).inSpec);
-    replaced["extraArgs"] = "--iq-replay /tmp/capture.iq";
-    expect("so does --iq-replay", !dsd_qt::session_args_squelch_default(replaced, prefs).eligible);
+    expect("a default of off is passed as off",
+           squelch_default_arg(session_args_build(usb_system(), off, nullptr)) == QStringLiteral("off"));
+    SessionArgPrefs damaged;
+    damaged.squelchDefault = QStringLiteral("auto+31");
+    expect("a damaged default is the app's own",
+           squelch_default_arg(session_args_build(usb_system(), damaged, nullptr)) == QStringLiteral("noise+10"));
     for (const QString& source : {QStringLiteral("udp"), QStringLiteral("tcp"), QStringLiteral("file")}) {
-        QVariantMap audio = nfm;
+        QVariantMap audio = usb_system();
+        audio["decodeFlag"] = "-fA";
         audio["sourceType"] = source;
         audio["host"] = "10.0.2.2";
         audio["port"] = 7355;
         audio["filePath"] = "/tmp/audio.wav";
-        expect("an audio source gets no default", !dsd_qt::session_args_squelch_default(audio, prefs).eligible
-                                                      && !dsd_qt::session_args_squelch_default(audio, prefs).inSpec);
+        expect("an audio source passes none", squelch_default_arg(session_args_build(audio, prefs, nullptr)).isEmpty());
     }
 
-    QVariantMap explore = usb_system();
-    SessionArgPrefs advancedNfm;
-    advancedNfm.extraArgs = QStringLiteral("-fA");
-    expect("the last decode preset the argv names is the start's: Advanced -fA starts analog",
-           input_spec(session_args_build(explore, advancedNfm, nullptr))
-               == QStringLiteral("rtl:0:851.375M:30:0:48:noise+10:2"));
-    QVariantMap later = nfm;
-    later["extraArgs"] = "-ft";
-    expect("and Advanced -ft after an NFM flag starts digital",
-           input_spec(session_args_build(later, prefs, nullptr)) == QStringLiteral("rtl:0:851.375M:30:0:48:0:2"));
-    // The saved decode choice is appended after the extra options (-ma <flag>, Auto as -fa), so it is the start's.
-    QVariantMap savedChoice = nfm;
-    savedChoice["decodeFlag"] = "-ft";
-    savedChoice["extraArgs"] = "-fA";
-    savedChoice["radioSettings"] = QVariantMap{{"decodeFlag", "-ft"}};
-    QStringList choiceArgs = session_args_build(savedChoice, prefs, nullptr);
-    expect("a saved P25 choice after Advanced -fA starts digital: no default",
-           input_spec(choiceArgs) == QStringLiteral("rtl:0:851.375M:30:0:48:0:2")
-               && choiceArgs.mid(choiceArgs.size() - 2) == QStringList({"-ma", "-ft"}));
-    savedChoice["decodeFlag"] = "";
-    savedChoice["radioSettings"] = QVariantMap{{"decodeFlag", ""}};
-    expect("so does a saved Auto choice",
-           input_spec(session_args_build(savedChoice, prefs, nullptr)) == QStringLiteral("rtl:0:851.375M:30:0:48:0:2"));
-    savedChoice["decodeFlag"] = "-fA";
-    savedChoice["extraArgs"] = "";
-    savedChoice["radioSettings"] = QVariantMap{{"decodeFlag", "-fA"}};
-    expect("and a saved NFM choice starts analog", input_spec(session_args_build(savedChoice, prefs, nullptr))
-                                                       == QStringLiteral("rtl:0:851.375M:30:0:48:noise+10:2"));
+    QVariantMap saved = usb_system();
+    saved["decodeFlag"] = "-fA";
+    saved["radioSettings"] = QVariantMap{{"squelch", "-60"}};
+    const QStringList savedArgs = session_args_build(saved, prefs, nullptr);
+    expect("a saved squelch is the last word, after the default",
+           input_spec(savedArgs) == QStringLiteral("rtl:0:851.375M:30:0:48:0:2")
+               && savedArgs.mid(savedArgs.size() - 2) == QStringList({"--squelch", "-60"})
+               && savedArgs.indexOf(QStringLiteral("--squelch-analog-default"))
+                      < savedArgs.lastIndexOf(QStringLiteral("--squelch")));
+    for (const QString& extra : {QStringLiteral("--squelch off"), QStringLiteral("--squelch=auto+20")}) {
+        QVariantMap own = usb_system();
+        own["extraArgs"] = extra;
+        const QStringList ownArgs = session_args_build(own, prefs, nullptr);
+        expect("a system's Advanced squelch comes after the default",
+               ownArgs.indexOf(QStringLiteral("--squelch-analog-default"))
+                   < ownArgs.indexOf(extra.split(QLatin1Char(' ')).first()));
+    }
+    SessionArgPrefs advanced;
+    advanced.extraArgs = QStringLiteral("--squelch-analog-default auto+20");
+    expect("an Advanced default of its own is the one the parser keeps",
+           squelch_default_arg(session_args_build(usb_system(), advanced, nullptr)) == QStringLiteral("auto+20"));
+
+    QString why;
+    const QStringList scan = dsd_qt::session_args_scan_build_lists(usb_system(), QStringLiteral("851.012500"),
+                                                                   {QStringLiteral("/t/a.csv")}, prefs, &why);
+    expect("a scan list passes it for its rows", why.isEmpty()
+                                                     && squelch_default_arg(scan) == QStringLiteral("noise+10")
+                                                     && input_spec(scan).contains(QStringLiteral(":0:2")));
 }
 
 /* Issue #899 (B17): the app appends the decode choices and a saved squelch after the extra options, as their last
@@ -2586,12 +2557,14 @@ test_extra_incomplete(void) {
                       == dsd_qt::session_args_error_text(SessionArgsError::ExtraIncomplete));
 }
 
-/* Issue #899: each start tells the squelch policy who owns the session's squelch, so a live decode switch brings the
-   app's default in or takes it out only where it is the app's. */
+/* Issue #899: every start kind of a radio system (Explore, saved, a search's) passes the default through the builder's
+   start, and a start the host refuses passes nothing anywhere. */
 static void
-test_start_tells_squelch_policy(void) {
+test_start_passes_squelch_default(void) {
     class Host : public dsd_qt::DecoderHost {
       public:
+        QStringList last;
+
         bool
         isRunning() const override {
             return false;
@@ -2603,7 +2576,8 @@ test_start_tells_squelch_policy(void) {
         }
 
         bool
-        start(const QStringList&) override {
+        start(const QStringList& args) override {
+            last = args;
             return true;
         }
 
@@ -2611,40 +2585,21 @@ test_start_tells_squelch_policy(void) {
         stop() override {}
     } host;
 
-    using Action = dsd_qt::SquelchDefaultPolicy::Action;
-    dsd_qt::SquelchDefaultPolicy policy;
     dsd_qt::SessionArgsBuilder builder(nullptr);
-    builder.setSquelchDefaults(&policy);
-
-    QVariantMap explore = usb_system();
-    expect("an Explore start on Auto",
-           builder.start(explore, &host, QStringLiteral("explore")).value("started").toBool());
-    expect("brings the default in on a switch to NFM", policy.decodeModeChanged(true) == Action::DefaultIfOff
-                                                           && policy.defaultSetting() == QStringLiteral("noise+10"));
-    expect("and takes it out on a switch back to P25", policy.decodeModeChanged(false) == Action::OffIfDefault);
-
-    QVariantMap nfm = usb_system();
-    nfm["decodeFlag"] = "-fA";
-    (void)builder.start(nfm, &host, QStringLiteral("saved"));
-    expect("an NFM start is the app's: a switch to P25 takes the default out",
-           policy.decodeModeChanged(false) == Action::OffIfDefault);
-
-    QVariantMap saved = nfm;
-    saved["radioSettings"] = QVariantMap{{"squelch", "auto+20"}};
-    (void)builder.start(saved, &host, QStringLiteral("saved"));
-    expect("a saved squelch is never touched",
-           policy.decodeModeChanged(false) == Action::None && policy.decodeModeChanged(true) == Action::None);
-
     QVariantMap search = usb_system();
     search["signalSearch"] = true;
-    (void)builder.start(search, &host, QStringLiteral("search"));
-    expect("a signal search's ranges own the squelch", policy.decodeModeChanged(true) == Action::None);
 
-    QVariantMap audio = nfm;
-    audio["sourceType"] = "udp";
-    audio["port"] = 7355;
-    (void)builder.start(audio, &host, QStringLiteral("saved"));
-    expect("an audio source gets no default", policy.decodeModeChanged(true) == Action::None);
+    const struct {
+        QVariantMap system;
+        const char* kind;
+    } starts[] = {{usb_system(), "explore"}, {usb_system(), "saved"}, {search, "search"}};
+
+    for (const auto& start : starts) {
+        host.last.clear();
+        expect("a radio start",
+               builder.start(start.system, &host, QString::fromLatin1(start.kind)).value("started").toBool());
+        expect("passes the default", squelch_default_arg(host.last) == QStringLiteral("noise+10"));
+    }
 }
 
 int
@@ -2702,9 +2657,9 @@ main(int argc, char** argv) {
     test_grouped_hex_keys();
     test_scan_lists_argv();
     test_scan_join_conflict();
-    test_default_squelch_spec();
+    test_default_squelch_option();
     test_extra_incomplete();
-    test_start_tells_squelch_policy();
+    test_start_passes_squelch_default();
     if (g_failures != 0) {
         DSD_FPRINTF(stderr, "%d failure(s)\n", g_failures);
         return 1;
