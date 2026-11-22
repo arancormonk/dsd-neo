@@ -537,15 +537,17 @@ function systemMeta(sys) {
         // picked, while the source does not appear anywhere else on the card.
         // A saved-system card whose title another card shares names its
         // receiver on a line of its own (receiverLabel: "USB", "RTL-TCP
-        // host:port", "Airspy serial"), which says RTL-TCP itself.
+        // host:port", "Airspy serial", with the frequency or the decode mode
+        // where those differ: issue #901 r2 A), which says RTL-TCP itself.
         if (sys.sourceType === "rtltcp" && !sys.receiverLabel)
             parts.push("RTL-TCP")
         var decode = decodeLabel(sys.decodeFlag)
         parts.push(sys.trunking ? decode + " trunked" : decode)
     } else if (sys.sourceType === "udp") {
         // A card whose title another card shares names its port, address or
-        // file on its receiver line, which wraps (issue #901 G1), not here,
-        // where a long one is cut.
+        // file (the shortest end of its path no other file of the title ends
+        // with) on its receiver line, which wraps (issue #901 G1, r2 A), not
+        // here, where a long one is cut.
         if (!sys.receiverLabel)
             parts.push("UDP :" + sys.port)
         parts.push(decodeLabel(sys.decodeFlag))

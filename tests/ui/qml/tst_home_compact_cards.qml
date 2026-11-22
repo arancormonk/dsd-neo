@@ -405,6 +405,98 @@ Item {
             }
         }
 
+        // Issue #901 r2 A: two cards of one title must look different, whatever single fact tells them apart. At
+        // 320 dp and text 2.0 in Nearest order two systems of one name on one USB dongle at one place, on 151 and
+        // 851 MHz, both drew "6.9 mi ·…" over "USB"; two replay files of one name in different folders both drew
+        // "Auto" over "dispatch.wav". A card whose title another shown card shares names what sets it apart on its
+        // receiver line, which wraps and is never cut: the receiver, endpoint or file (the shortest end of its path
+        // that no other card's path shares), the frequency where theirs differ, and the decode mode where theirs
+        // differ. Each pair below differs in one fact only; the two cards' faces as drawn (each line cut as it is
+        // drawn, the receiver line whole) differ, in both views, in Order added and Nearest order.
+        function sharedTitlePairs() {
+            var at = {siteLat: 10.1, siteLon: 20.0, hasSitePos: true};
+            return [
+                {title: "Ridge Dispatch Freq", a: {sourceType: "usb", freqMhz: "151.0000"}, b: {sourceType: "usb", freqMhz: "851.0000"}},
+                {title: "Ridge Dispatch Receiver", a: {sourceType: "usb"}, b: {sourceType: "airspy", airspy: {serial: "a1b2c3d4"}}},
+                {title: "Ridge Dispatch Endpoint", a: {sourceType: "rtltcp", host: "10.0.0.1"}, b: {sourceType: "rtltcp", host: "10.0.0.2"}},
+                {title: "Ridge Dispatch Audio", a: {sourceType: "tcp", host: "10.0.0.1", port: 7355}, b: {sourceType: "tcp", host: "10.0.0.2", port: 7355}},
+                {title: "Ridge Dispatch Folder", a: {sourceType: "file", filePath: "/east/dispatch.wav"}, b: {sourceType: "file", filePath: "/west/dispatch.wav"}},
+                {title: "Ridge Dispatch Mode", a: {sourceType: "usb", decodeFlag: "-fs"}, b: {sourceType: "usb", decodeFlag: "-fi"}}
+            ].map(function (pair) {
+                pair.a = Object.assign({}, at, pair.a);
+                pair.b = Object.assign({}, at, pair.b);
+                return pair;
+            });
+        }
+        function test_shared_titles_look_different_data() {
+            var rows = [];
+            for (var sort of ["added", "nearest"]) {
+                for (var compact of [true, false]) {
+                    for (var scale of [1.0, 2.0])
+                        rows.push({tag: sort + (compact ? " compact" : " full") + " at " + scale, sort: sort, compact: compact, scale: scale});
+                }
+            }
+            return rows;
+        }
+        function test_shared_titles_look_different(data) {
+            testContext.setLocationSupported(true);
+            prefs.compactView = data.compact;
+            root.width = 320;
+            Ui.Theme.fontScale = data.scale;
+            var pairs = sharedTitlePairs();
+            for (var pair of pairs) {
+                add(pair.title, pair.a);
+                add(pair.title, pair.b);
+            }
+            add("Ridge Dispatch Alone", {sourceType: "usb"});
+            prefs.systemsSort = data.sort;
+            if (data.sort === "nearest")
+                prefs.setLocationFix(10.0, 20.0, savedSystems.realtimeNowMs(), 25);
+            settle();
+            compare(savedSystemCards.effectiveSort, data.sort);
+            // A line as drawn: cut at its width where it elides, whole where it wraps; nothing where it is not shown.
+            var drawn = Qt.createQmlObject("import QtQuick; TextMetrics { elide: Text.ElideRight }", root);
+            var face = function (entry) {
+                var card = findChild(entry, "savedSystemCard");
+                var lines = [];
+                for (var name of ["savedSystemTitle", "savedSystemSource", "savedSystemPlace", "savedSystemMeta"]) {
+                    var line = part(card, name);
+                    if (!line.visible || line.opacity === 0 || line.height === 0) {
+                        lines.push("");
+                        continue;
+                    }
+                    drawn.font = line.font;
+                    drawn.text = line.text;
+                    drawn.elideWidth = line.width;
+                    lines.push(drawn.elidedText);
+                }
+                var receiver = part(card, "savedSystemReceiver");
+                lines.push(receiver.visible && receiver.opacity > 0 ? receiver.text : "");
+                return lines.join(" | ");
+            };
+            try {
+                for (var p of pairs) {
+                    var shown = entries().filter(function (e) {
+                        return e.title === p.title;
+                    });
+                    compare(shown.length, 2, p.title);
+                    var faces = shown.map(face);
+                    verify(faces[0] !== faces[1], p.title + " cards look the same: " + JSON.stringify(faces));
+                    for (var e of shown) {
+                        var receiver = part(findChild(e, "savedSystemCard"), "savedSystemReceiver");
+                        verify(receiver.visible && receiver.opacity === 1 && !receiver.truncated, p.title + ": the receiver line, whole");
+                        verify(receiver.contentWidth <= receiver.width + 0.5, p.title + ": the receiver line fits its width");
+                    }
+                }
+                // A title no other card shares draws no receiver line.
+                var alone = part(cardOf("Ridge Dispatch Alone"), "savedSystemReceiver");
+                verify(!(alone.visible && alone.opacity > 0 && alone.height > 0), "a lone title draws a receiver line");
+            } finally {
+                drawn.destroy();
+                prefs.systemsSort = "added";
+            }
+        }
+
         // Nearest: the supporting line leads with the distance when it is known; with no location fix, or no
         // coordinates for the system, it is the source line alone. With the site count on the line too (320 dp),
         // the order is distance, count, source.

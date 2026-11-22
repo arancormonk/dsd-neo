@@ -353,15 +353,111 @@ mark_section_starts(QList<Card>& cards) {
     }
 }
 
-/* A card whose title another shown card has too (one system saved on two receivers) names its receiver. */
-void
-mark_shared_titles(QList<Card>& cards) {
-    QHash<QString, int> titles;
-    for (const Card& card : cards) {
-        ++titles[card.title];
+/* A tuner the card tunes to its frequency: a dongle, an Airspy or an RTL-TCP server. */
+bool
+tunes_frequency(const Card& card) {
+    return card.sourceType == QLatin1String("usb") || card.sourceType == QLatin1String("airspy")
+           || card.sourceType == QLatin1String("rtltcp");
+}
+
+/* A source receiver_text() names by its file: none of the tuners or network audio. */
+bool
+reads_file(const Card& card) {
+    return !tunes_frequency(card) && card.sourceType != QLatin1String("tcp") && card.sourceType != QLatin1String("udp");
+}
+
+/* The card's decode mode by the label its source line gives it (Util.systemMeta()); the raw flag where no labels
+   are set. */
+QString
+mode_text(const Card& card, const QVariantMap& labels) {
+    const QString label = labels.value(card.decodeFlag, labels.value(QString())).toString();
+    return label.isEmpty() ? card.decodeFlag : label;
+}
+
+/* The shortest end of @p path, whole parts of it, that none of @p others ends with; the whole path when every end
+   is shared (the same file twice). */
+QString
+distinct_path_end(const QString& path, const QStringList& others) {
+    const QStringList parts = path.split(QLatin1Char('/'));
+    for (int count = 1; count < parts.size(); ++count) {
+        const QString end = parts.mid(parts.size() - count).join(QLatin1Char('/'));
+        const bool shared = std::any_of(others.cbegin(), others.cend(), [&end](const QString& other) {
+            return other == end || other.endsWith(QLatin1Char('/') + end);
+        });
+        if (!shared) {
+            return end;
+        }
     }
-    for (Card& card : cards) {
-        card.receiverLabel = titles.value(card.title) > 1 ? card.receiver : QString();
+    return path;
+}
+
+/* How @p cards[@p at] stands beside the other cards of its title (@p group, their indexes): the other files'
+   paths, and whether a tuner among them is on another frequency or any of them decodes in another mode. */
+struct PeerFacts {
+    QStringList paths;
+    bool freqDiffers = false;
+    bool modeDiffers = false;
+};
+
+PeerFacts
+peer_facts(const QList<Card>& cards, const QList<int>& group, int at, const QVariantMap& labels) {
+    const Card& card = cards.at(at);
+    const QString mode = mode_text(card, labels);
+    PeerFacts facts;
+    for (const int other : group) {
+        if (other == at) {
+            continue;
+        }
+        const Card& peer = cards.at(other);
+        if (reads_file(peer)) {
+            facts.paths.append(peer.filePath.trimmed());
+        }
+        facts.freqDiffers =
+            facts.freqDiffers || (tunes_frequency(peer) && peer.freqMhz.trimmed() != card.freqMhz.trimmed());
+        facts.modeDiffers = facts.modeDiffers || mode_text(peer, labels) != mode;
+    }
+    return facts;
+}
+
+/* What tells @p cards[@p at] apart from the other cards of its title (@p group, their indexes), for its receiver
+   line, which wraps and is never cut (issue #901 r2 A): its receiver, endpoint or file (the shortest end of its
+   path no other file of the title ends with), then its frequency where the tuners' frequencies differ, then its
+   decode mode where the modes differ. */
+QString
+shared_title_label(const QList<Card>& cards, const QList<int>& group, int at, const QVariantMap& labels) {
+    const Card& card = cards.at(at);
+    const PeerFacts facts = peer_facts(cards, group, at, labels);
+    const QString path = card.filePath.trimmed();
+    const QString freq = card.freqMhz.trimmed();
+    const QString mode = mode_text(card, labels);
+    QStringList parts;
+    parts.append(reads_file(card) && !path.isEmpty() ? distinct_path_end(path, facts.paths) : card.receiver);
+    if (facts.freqDiffers && tunes_frequency(card) && !freq.isEmpty()) {
+        parts.append(QStringLiteral("%1 MHz").arg(freq));
+    }
+    if (facts.modeDiffers && !mode.isEmpty()) {
+        parts.append(mode);
+    }
+    parts.removeAll(QString());
+    return parts.join(QStringLiteral(" · "));
+}
+
+/* A card whose title another shown card has too (one system saved on two receivers, two files of one name, one
+   name on two frequencies) names what tells it apart (shared_title_label()); any other card names nothing. */
+void
+mark_shared_titles(QList<Card>& cards, const QVariantMap& labels) {
+    QHash<QString, QList<int>> titles;
+    for (int i = 0; i < cards.size(); ++i) {
+        titles[cards.at(i).title].append(i);
+    }
+    QList<QString> next;
+    next.reserve(cards.size());
+    for (int i = 0; i < cards.size(); ++i) {
+        const QList<int>& group = titles.value(cards.at(i).title);
+        next.append(group.size() > 1 ? shared_title_label(cards, group, i, labels) : QString());
+    }
+    for (int i = 0; i < cards.size(); ++i) {
+        cards[i].receiverLabel = next.at(i);
     }
 }
 
@@ -922,7 +1018,7 @@ SavedSystemCards::publish(QList<Card>&& next, bool userAsked) {
     }
     m_reorderHeld = hold;
     mark_section_starts(next);
-    mark_shared_titles(next);
+    mark_shared_titles(next, m_protocolLabels);
     if (m_screenReaderActive) {
         applyPositional(std::move(next));
         return;

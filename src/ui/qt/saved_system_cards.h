@@ -102,8 +102,10 @@ class SavedSystemCards : public QAbstractListModel {
         SectionRole,       // the section header text in place and nearest orders; "" otherwise
         SectionStartRole,  // the first shown card of its (non-empty) section
         RrLinkedRole,      // a member is a RadioReference site or has a place: Update from RadioReference applies
-        ReceiverLabelRole, // the receiver ("USB", "RTL-TCP host:port", "Airspy serial") when another shown card has
-                           // the same title and the card's meta does not name it already; else empty
+        ReceiverLabelRole, // when another shown card has the same title, what tells this one apart: the receiver
+                           // ("USB", "RTL-TCP host:port", "Airspy serial", "TCP host:port", "UDP :port") or the
+                           // shortest distinct end of its file's path, then " · <freq> MHz" where the tuners'
+                           // frequencies differ and " · <mode>" where the decode modes differ; else empty
         HeldRole           // a row past the shown cards, kept for a longer list (screen reader only): it reads nothing
     };
 
@@ -249,7 +251,7 @@ class SavedSystemCards : public QAbstractListModel {
         QString distanceState;
         QString section;
         QString receiver;       // what tells this receiver apart, where the meta does not ("USB"); else empty
-        QString receiverLabel;  // receiver, while another shown card has the same title
+        QString receiverLabel;  // what tells it apart, while another shown card has the same title
         QString haystack;       // system_search_text() of the members' texts, lines joined by '\n'
         QList<qint64> hz;       // the members' frequencies
         QString placeState;     // the one state's name, when the place names exactly one

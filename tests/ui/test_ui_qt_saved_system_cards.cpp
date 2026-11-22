@@ -844,6 +844,63 @@ test_receiver_label_for_endpoints_and_files() {
                               QStringLiteral("dispatch-01.wav"), QStringLiteral("dispatch-02.wav")}));
 }
 
+/* Issue #901 r2 A: cards of one title that differ in one fact only name it on their receiver line: the frequency
+   where the tuners' differ, the decode mode where the modes differ, and for files the shortest end of the path no
+   other file of the title ends with (the whole path for the same file twice). A lone title names nothing. */
+void
+test_receiver_label_tells_shared_titles_apart() {
+    Fixture f;
+    f.cards->setProtocolLabels({{QString(), QStringLiteral("Auto")},
+                                {QStringLiteral("-ft"), QStringLiteral("P25")},
+                                {QStringLiteral("-fs"), QStringLiteral("DMR")}});
+    QVariantMap dmr = plain(QStringLiteral("Mode Mesa"), QStringLiteral("851.0"));
+    dmr.insert(QStringLiteral("decodeFlag"), QStringLiteral("-fs"));
+    const auto file = [](const QString& name, const QString& path) {
+        QVariantMap row = plain(name, QString());
+        row.insert(QStringLiteral("sourceType"), QStringLiteral("file"));
+        row.insert(QStringLiteral("filePath"), path);
+        return row;
+    };
+    f.add({plain(QStringLiteral("Freq Mesa"), QStringLiteral("151.0")),
+           plain(QStringLiteral("Freq Mesa"), QStringLiteral("851.0")),
+           plain(QStringLiteral("Mode Mesa"), QStringLiteral("851.0")), dmr,
+           file(QStringLiteral("Tape Mesa"), QStringLiteral("/east/dispatch.wav")),
+           file(QStringLiteral("Tape Mesa"), QStringLiteral("/west/dispatch.wav")),
+           file(QStringLiteral("Deep Mesa"), QStringLiteral("/a/north/x.wav")),
+           file(QStringLiteral("Deep Mesa"), QStringLiteral("/b/north/x.wav")),
+           file(QStringLiteral("Deep Mesa"), QStringLiteral("/north/x.wav")),
+           file(QStringLiteral("Twice Mesa"), QStringLiteral("/same/x.wav")),
+           file(QStringLiteral("Twice Mesa"), QStringLiteral("/same/x.wav")),
+           plain(QStringLiteral("Lone Mesa"), QStringLiteral("151.0"))});
+    check("shared: twelve cards", f.cards->shownCount() == 12);
+    const auto pairs = [&f]() {
+        const QStringList titles = f.column(SavedSystemCards::TitleRole);
+        const QStringList labels = f.column(SavedSystemCards::ReceiverLabelRole);
+        QStringList out;
+        for (int i = 0; i < titles.size() && i < labels.size(); ++i) {
+            out.append(titles.at(i) + QStringLiteral(": ") + labels.at(i));
+        }
+        out.sort();
+        return out;
+    };
+    const QStringList all = pairs();
+    const QStringList expected = {
+        QStringLiteral("Deep Mesa: /north/x.wav"),      QStringLiteral("Deep Mesa: a/north/x.wav"),
+        QStringLiteral("Deep Mesa: b/north/x.wav"),     QStringLiteral("Freq Mesa: USB · 151.0 MHz"),
+        QStringLiteral("Freq Mesa: USB · 851.0 MHz"),   QStringLiteral("Lone Mesa: "),
+        QStringLiteral("Mode Mesa: USB · DMR"),         QStringLiteral("Mode Mesa: USB · P25"),
+        QStringLiteral("Tape Mesa: east/dispatch.wav"), QStringLiteral("Tape Mesa: west/dispatch.wav"),
+        QStringLiteral("Twice Mesa: /same/x.wav"),      QStringLiteral("Twice Mesa: /same/x.wav")};
+    check("shared: each card names what sets it apart", all == expected);
+    if (all != expected) {
+        DSD_FPRINTF(stderr, "labels: %s\n", qPrintable(all.join(QStringLiteral(" | "))));
+    }
+    f.cards->setQuery(QStringLiteral("151.0"));
+    settle();
+    check("shared: a title alone in the search names nothing",
+          pairs() == QStringList({QStringLiteral("Freq Mesa: "), QStringLiteral("Lone Mesa: ")}));
+}
+
 void
 test_metadata_edit_and_hold() {
     Fixture f;
@@ -1477,6 +1534,7 @@ main(int argc, char** argv) {
     test_positional_rows();
     test_receiver_label_for_shared_titles();
     test_receiver_label_for_endpoints_and_files();
+    test_receiver_label_tells_shared_titles_apart();
     test_metadata_edit_and_hold();
     test_held_order_starts_each_section_once();
     test_place_other_sections_by_name();
