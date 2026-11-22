@@ -13643,9 +13643,10 @@ Private per-protocol modules worth knowing about:
   its payload is not parsed yet. Eligible raw shapes and variants (`dmr_flco_heard_group_variant()`), the carrier's
   trunking system read from the received identity's checked parts (`dmr_flco_checked_trunk()`; the Capacity Max marker
   alone is no evidence): FLCO 0x00 under FID 0, a Kenwood scrambler LC or Hytera FID 0x68 is DMR (no trunking system or
-  Tier III) or Connect Plus with its 24-bit target, and Hytera XPT with its 16-bit target only while the XPT branding
-  that selected that layout and the checked XPT evidence agree (either alone proves nothing); a Capacity Plus
-  carrier's standard LC proves nothing. FID 0x10 FLCO 0x04 is Capacity Plus (its 8-bit group) on a carrier checked
+  Tier III) or Connect Plus with its 24-bit target, and Hytera XPT with its 16-bit target only while the XPT layout
+  the LC was read with (`dmr_address_layout_of()`) and the checked XPT evidence agree (either alone proves nothing); a
+  Capacity Plus carrier's standard LC proves nothing, and so does one read with the standard layout while the display
+  branding still names Capacity Plus or XPT (a trunk-scan revisit restores it before fresh evidence arrives). FID 0x10 FLCO 0x04 is Capacity Plus (its 8-bit group) on a carrier checked
   messages named Capacity Plus, a rest LSN of the same checked LC included; FID 0x10 FLCO 0x10 (Capacity Max group
   voice) is DMR on a checked Tier III carrier. Unit-to-unit calls and every other FLCO prove nothing.
   `dsd_call_state_note_verified_target()` classifies the first proof of the transmission once. Tests:

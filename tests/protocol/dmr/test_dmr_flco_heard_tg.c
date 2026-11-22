@@ -420,6 +420,15 @@ capplus_group(void) {
     run_lc(opts, state, LC_HEADER, 0, 0x00U, 0x00U, 0x2AU, 0x1234U);
     assert(not_noted(state, 0U));
     free_state(state);
+
+    // A trunk-scan revisit restores the Capacity Plus branding while the received identity starts over: the standard
+    // layout the LC is read with until fresh evidence arrives proves nothing.
+    state = new_state();
+    DSD_SNPRINTF(state->dmr_branding_sub, sizeof(state->dmr_branding_sub), "%s", "Cap+ ");
+    run_lc(opts, state, LC_HEADER, 0, 0x00U, 0x00U, 0x12002AU, 0x1234U);
+    assert(slot_call(state, 0U).ota_target_id == 0x12002AU);
+    assert(not_noted(state, 0U));
+    free_state(state);
     free(opts);
 }
 
@@ -449,7 +458,8 @@ xpt_alert(dsd_opts* opts, dsd_state* state, int ras) {
 
 /* Hytera XPT: where a checked message named XPT, the standard LC is read with the 16-bit XPT target and proves it as
    XPT. A relaxed XPT indication changes nothing: a later clean standard header keeps its 24-bit target as DMR. Branding
-   that outlived its carrier's checked evidence reads a layout nothing current established, so nothing is proved. */
+   that outlived its carrier's checked evidence leaves the LC read with the standard layout, which may have misread a
+   16-bit target, so nothing is proved. */
 static void
 xpt_group(void) {
     dsd_opts* opts = new_opts();
@@ -476,8 +486,9 @@ xpt_group(void) {
 
     state = new_state();
     xpt_alert(opts, state, 0);
-    dsd_rxid_reset(state); // a carrier boundary; the branding text stays
+    dsd_rxid_reset(state); // a trunk-scan revisit; the restored branding text stays
     run_lc(opts, state, LC_HEADER, 0, 0x00U, 0x00U, 0x120007U, 0x3456U);
+    assert(slot_call(state, 0U).ota_target_id == 0x120007U); // read with the standard layout
     assert(not_noted(state, 0U));
     free_state(state);
     free(opts);

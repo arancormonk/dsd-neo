@@ -42,6 +42,7 @@
 #include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
+#include <string.h>
 #include <time.h>
 #include "dmr_address_layout.h"
 #include "dmr_call_channel.h"
@@ -1228,14 +1229,27 @@ dmr_flco_is_standard_group_lc(const dmr_flco_ctx* ctx) {
            && (ctx->raw_fid == 0x00U || ctx->raw_fid == 0x68U || (ctx->raw_fid == 0x20U && ctx->is_kenwood_sc != 0U));
 }
 
+/* Whether the display branding names a trunking system whose LCs carry 16-bit addresses (Capacity Plus, Hytera XPT).
+   The branding is set only from checked messages but outlives their evidence: a trunk-scan revisit restores it while
+   the received identity starts over, and the decoder then reads the standard layout until fresh evidence arrives. */
+static int
+dmr_flco_branded_short_layout(const dsd_state* state) {
+    return strncmp(state->dmr_branding_sub, "XPT", 3U) == 0 || strncmp(state->dmr_branding_sub, "Cap+", 4U) == 0;
+}
+
 /* The variant a standard group LC proves on a carrier of checked trunking system @p trunk. Hytera XPT reads its target
-   with the 16-bit layout: only where the XPT branding that selected that layout (is_xpt) and the carrier's checked
-   evidence agree, never one without the other. A Capacity Plus carrier's standard LC is not read. */
+   with the 16-bit layout: only where the layout the LC was read with (is_xpt, dmr_address_layout_of()) and the
+   carrier's checked evidence agree, never one without the other. A Capacity Plus carrier's standard LC is not read,
+   and neither is one read with the standard layout while the branding still names Capacity Plus or XPT: its 24 bits
+   may be a 16-bit address with another field above it. */
 static dsd_heard_tg_variant
 dmr_flco_standard_group_variant(const dmr_flco_ctx* ctx, uint8_t trunk) {
     const int xpt_carrier = trunk == (uint8_t)DSD_RXID_DMR_TRUNK_XPT;
     if (xpt_carrier || ctx->is_xpt) {
         return (xpt_carrier && ctx->is_xpt) ? DSD_HEARD_TG_XPT : DSD_HEARD_TG_NONE;
+    }
+    if (dmr_flco_branded_short_layout(ctx->state)) {
+        return DSD_HEARD_TG_NONE;
     }
     switch (trunk) {
         case DSD_RXID_DMR_TRUNK_NONE:
