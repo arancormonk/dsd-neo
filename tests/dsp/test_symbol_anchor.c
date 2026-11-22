@@ -262,8 +262,9 @@ run_switch_at(int sps, double offset, int lead_symbols, int radio) {
     /* The grid's centre is sample (sps - 1) / 2 of its span (dsd_opts_symbol_center()), which leaves the half symbol
        the measurement reads past the last centre inside the sync word's own span: one sample before
        make_word_signal_at()'s at an even span, half a sample before at an odd one. */
-    make_word_signal_at(sps, k_sync, SYNC_LEN, offset - ((0.5 * (double)sps) - (double)((sps - 1) / 2)), 1.0, 0.0,
-                        samples, centres, dibits);
+    const int centre = (sps - 1) / 2;
+    make_word_signal_at(sps, k_sync, SYNC_LEN, offset - ((0.5 * (double)sps) - (double)centre), 1.0, 0.0, samples,
+                        centres, dibits);
     dsd_state* state = calloc(1, sizeof(*state));
     assert(state != NULL);
     state->rtl_ctx = radio ? FAKE_RTL_CTX : NULL;
