@@ -36,8 +36,11 @@ enum {
     /* The direct mode system codes a DSB confirms with (EN 300 396-3 clause 9.3.29): 1100 and 1101. */
     SEARCH_DMO_CODE_ETS = 0xC,
     SEARCH_DMO_CODE_EN = 0xD,
-    /* A/B channel usage 11 is reserved (EN 300 396-3 clause 9.3.1). */
+    /* A/B channel usage 11 is reserved (EN 300 396-3 clause 9.3.1), and so is a presence signal's channel usage 11
+       (EN 300 396-4 clause 10.3.6, EN 300 396-5 clause 14.3.6). */
     SEARCH_AB_RESERVED = 3,
+    /* Repeater operating modes 11 is reserved (EN 300 396-4 clause 10.3.12). */
+    SEARCH_REP_MODES_RESERVED = 3,
 };
 
 /* The open burst's read is lost: a stream flush (the symbol clock's stream moved, which raises no interruption) or a
@@ -378,8 +381,11 @@ dmac_sync_checked(const tetra_dmo_sync_s_t* s) {
     return s->comm_type < 2u || s->ab_usage == 0u;
 }
 
-/* A DPRES-SYNC's: read by its parser with its SCH/H, frame number in range, channel usage not reserved, 00 from a type
- * 1 DM-REP. */
+/* A DPRES-SYNC's: read by its parser with its SCH/H, frame number in range, and a channel usage its equipment may send.
+ * The repeater operating modes, sent by a DM-REP and by a gateway offering the DM-REP function (EN 300 396-4 table 2,
+ * EN 300 396-5 table 5), are not the reserved 11. Channel usage 01 (channel A, frequency efficient mode) or 10
+ * (channel B) comes only from a type 2 repeater function: a type 1 DM-REP sends 00 (EN 300 396-4 table 2), and so does
+ * a gateway, unless it serves a type 2 call of its DM-REP function (EN 300 396-5 clause 13.4.7.12). */
 static int
 dpres_sync_checked(const uint8_t* sch_s, const uint8_t* sch_h, tetra_dmo_sync_s_t* s) {
     tetra_dmo_pres_t p;
@@ -387,7 +393,11 @@ dpres_sync_checked(const uint8_t* sch_s, const uint8_t* sch_h, tetra_dmo_sync_s_
         || p.channel_usage == SEARCH_AB_RESERVED) {
         return 0;
     }
-    return p.comm_type != 1u || p.rep_modes != 0u || p.channel_usage == 0u;
+    const int repeater = p.comm_type == 1u || p.dmrep != 0u;
+    if (repeater && p.rep_modes == SEARCH_REP_MODES_RESERVED) {
+        return 0;
+    }
+    return p.channel_usage == 0u || (repeater && p.rep_modes != 0u);
 }
 
 /* Whether a DSB meets gate D, and what it shows: the route of a DMAC-SYNC (@p route), or a presence signal. */

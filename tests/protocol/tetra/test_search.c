@@ -306,10 +306,15 @@ typedef struct {
     uint32_t ab_usage;
     uint32_t fn;
     uint32_t enc;       /* DMAC-SYNC air interface encryption state */
-    uint32_t rep_modes; /* DPRES-SYNC from a DM-REP */
+    uint32_t rep_modes; /* DPRES-SYNC from a DM-REP, or a gateway offering the DM-REP function */
+    uint32_t
+        gw_flags; /* DPRES-SYNC from a gateway: SwMI availability and DM-REP function flags (EN 300 396-5 table 5) */
 } dsb_spec;
 
-static const dsb_spec k_direct = {0xD, 0, 0, 0, 3, 0, 0};
+/* A gateway presence signal's DM-REP function flag. */
+#define GW_DMREP 1u
+
+static const dsb_spec k_direct = {0xD, 0, 0, 0, 3, 0, 0, 0};
 
 /* The SCH/S of @p d (EN 300 396-3 table 21; a presence signal EN 300 396-4 table 2). */
 static ttb_block
@@ -320,7 +325,7 @@ sch_s_of(const dsb_spec* d) {
     ttb_put(&b, d->comm_type, 2);
     if (d->pdu_type == 1u) {
         ttb_put(&b, 0, 1);            /* not managed direct mode */
-        ttb_put(&b, 0, 2);            /* reserved, or the gateway flags */
+        ttb_put(&b, d->gw_flags, 2);  /* reserved, or the gateway flags */
         ttb_put(&b, 0, 1);            /* one frequency */
         ttb_put(&b, d->rep_modes, 2); /* repeater operating modes */
         ttb_put(&b, 0, 6);            /* spacing of uplink */
@@ -815,11 +820,11 @@ test_gate_d_opens(void) {
     check(g_log.notes == 1 && dmo_note_is(last_note(), DSD_SEARCH_TETRA_ROUTE_DIRECT, 0), "gate D: direct route");
     dsb(&s, &k_direct);
     check(g_log.evidence == 1 && g_log.notes == 1, "gate D: a repeated DSB publishes nothing");
-    static const dsb_spec k_rep = {0xD, 0, 1, 0, 3, 0, 0};
+    static const dsb_spec k_rep = {0xD, 0, 1, 0, 3, 0, 0, 0};
     dsb(&s, &k_rep);
     check(g_log.notes == 2 && dmo_note_is(last_note(), DSD_SEARCH_TETRA_ROUTE_REPEATER, 0),
           "gate D: the route follows the latest DMAC-SYNC");
-    static const dsb_spec k_pres = {0xD, 1, 2, 0, 3, 0, 0};
+    static const dsb_spec k_pres = {0xD, 1, 2, 0, 3, 0, 0, 0};
     dsb(&s, &k_pres);
     check(g_log.notes == 2, "gate D: a presence signal is no route");
     no_carrier(&s);
@@ -841,15 +846,15 @@ test_gate_d_negatives(void) {
         dsb_spec d;
         const char* what;
     } k_cases[] = {
-        {{0xA, 0, 0, 0, 3, 0, 0}, "gate D: a reserved direct mode system code"},
-        {{0xD, 2, 0, 0, 3, 0, 0}, "gate D: SYNC PDU type 10"},
-        {{0xD, 3, 0, 0, 3, 0, 0}, "gate D: SYNC PDU type 11"},
-        {{0xD, 0, 0, 0, 0, 0, 0}, "gate D: frame number 0"},
-        {{0xD, 0, 0, 0, 19, 0, 0}, "gate D: frame number 19"},
-        {{0xD, 0, 0, 3, 3, 0, 0}, "gate D: A/B channel usage 11"},
-        {{0xD, 0, 2, 1, 3, 0, 0}, "gate D: a gateway DMAC-SYNC on channel usage 01"},
-        {{0xD, 1, 1, 1, 3, 0, 0}, "gate D: a type 1 DM-REP presence signal on channel usage 01"},
-        {{0xD, 1, 1, 2, 3, 0, 0}, "gate D: a type 1 DM-REP presence signal on channel B"},
+        {{0xA, 0, 0, 0, 3, 0, 0, 0}, "gate D: a reserved direct mode system code"},
+        {{0xD, 2, 0, 0, 3, 0, 0, 0}, "gate D: SYNC PDU type 10"},
+        {{0xD, 3, 0, 0, 3, 0, 0, 0}, "gate D: SYNC PDU type 11"},
+        {{0xD, 0, 0, 0, 0, 0, 0, 0}, "gate D: frame number 0"},
+        {{0xD, 0, 0, 0, 19, 0, 0, 0}, "gate D: frame number 19"},
+        {{0xD, 0, 0, 3, 3, 0, 0, 0}, "gate D: A/B channel usage 11"},
+        {{0xD, 0, 2, 1, 3, 0, 0, 0}, "gate D: a gateway DMAC-SYNC on channel usage 01"},
+        {{0xD, 1, 1, 1, 3, 0, 0, 0}, "gate D: a type 1 DM-REP presence signal on channel usage 01"},
+        {{0xD, 1, 1, 2, 3, 0, 0, 0}, "gate D: a type 1 DM-REP presence signal on channel B"},
     };
 
     for (size_t i = 0; i < sizeof k_cases / sizeof k_cases[0]; i++) {
@@ -868,7 +873,7 @@ test_gate_d_negatives(void) {
 
     /* A type 2 DM-REP's presence signal on channel B confirms, presence only. */
     s = session_open();
-    static const dsb_spec k_type2 = {0xD, 1, 1, 2, 3, 0, 1};
+    static const dsb_spec k_type2 = {0xD, 1, 1, 2, 3, 0, 1, 0};
     dsb(&s, &k_type2);
     check(dmo_evidence() && dmo_note_is(last_note(), DSD_SEARCH_TETRA_ROUTE_NONE, 1),
           "gate D: a type 2 DM-REP's channel B presence signal confirms as presence");
@@ -883,6 +888,51 @@ test_gate_d_negatives(void) {
     sb(&s, &k_z, NULL, 0);
     check(g_log.evidence == 1 && strcmp(g_log.protocol, "TETRA") == 0, "gate D: trunked bursts are no DSB");
     session_close(&s);
+}
+
+/* A presence signal's channel usage and repeater operating modes must fit the equipment that sends it: the operating
+ * modes, where they are sent (a DM-REP, a gateway offering the DM-REP function), are never the reserved 11
+ * (EN 300 396-4 clause 10.3.12); channel A frequency efficient (01) or channel B (10) comes only from a type 2 repeater
+ * function, never from a type 1 DM-REP (EN 300 396-4 table 2), a gateway without the DM-REP function or one offering a
+ * type 1 function only (EN 300 396-5 clause 13.4.7.12). */
+static void
+test_gate_d_presence_layouts(void) {
+    static const struct {
+        dsb_spec d;
+        int confirms;
+        const char* what;
+    } k_cases[] = {
+        {{0xD, 1, 1, 0, 3, 0, 3, 0}, 0, "presence: a DM-REP's reserved operating modes 11"},
+        {{0xD, 1, 1, 2, 3, 0, 3, 0}, 0, "presence: a DM-REP's reserved operating modes 11 on channel B"},
+        {{0xD, 1, 2, 1, 3, 0, 0, 0},
+         0,
+         "presence: a DM-GATE without the DM-REP function on channel A frequency efficient"},
+        {{0xD, 1, 2, 2, 3, 0, 0, 0}, 0, "presence: a DM-GATE without the DM-REP function on channel B"},
+        {{0xD, 1, 3, 2, 3, 0, 0, 0}, 0, "presence: a DM-REP/GATE without the DM-REP function on channel B"},
+        {{0xD, 1, 2, 2, 3, 0, 0, GW_DMREP}, 0, "presence: a DM-GATE offering a type 1 DM-REP function on channel B"},
+        {{0xD, 1, 3, 0, 3, 0, 3, GW_DMREP}, 0, "presence: a DM-REP/GATE's reserved operating modes 11"},
+        {{0xD, 1, 1, 0, 3, 0, 0, 0}, 1, "presence: a type 1 DM-REP on the carrier"},
+        {{0xD, 1, 1, 1, 3, 0, 2, 0}, 1, "presence: a type 2 DM-REP on channel A frequency efficient"},
+        {{0xD, 1, 2, 0, 3, 0, 0, 0}, 1, "presence: a DM-GATE without the DM-REP function on the carrier"},
+        {{0xD, 1, 3, 0, 3, 0, 0, 0}, 1, "presence: a DM-REP/GATE without the DM-REP function on the carrier"},
+        {{0xD, 1, 2, 2, 3, 0, 1, GW_DMREP}, 1, "presence: a DM-GATE offering a type 2 DM-REP function on channel B"},
+        {{0xD, 1, 3, 1, 3, 0, 2, GW_DMREP},
+         1,
+         "presence: a DM-REP/GATE offering a type 2 DM-REP function on channel A frequency efficient"},
+    };
+
+    for (size_t i = 0; i < sizeof k_cases / sizeof k_cases[0]; i++) {
+        session s = session_open();
+        dsb(&s, &k_cases[i].d);
+        dsb(&s, &k_cases[i].d); /* reported twice */
+        if (k_cases[i].confirms) {
+            check(dmo_evidence() && g_log.notes == 1 && dmo_note_is(last_note(), DSD_SEARCH_TETRA_ROUTE_NONE, 1),
+                  k_cases[i].what);
+        } else {
+            check(g_log.evidence == 0 && g_log.notes == 0, k_cases[i].what);
+        }
+        session_close(&s);
+    }
 }
 
 /* Mixed visits, both orders: the first gate names the detection, the other gate's opening withdraws its site and
@@ -957,10 +1007,10 @@ test_dmo_activity(void) {
     const ttb_block reserved = sch_h_of(TETRA_DMO_MSG_RESERVED);
     dsb_with(&s, &k_direct, &reserved, 0);
     check(g_log.activity == 2, "DMO activity: DM-RESERVED is none");
-    static const dsb_spec k_pres = {0xD, 1, 1, 0, 3, 0, 0};
+    static const dsb_spec k_pres = {0xD, 1, 1, 0, 3, 0, 0, 0};
     dsb(&s, &k_pres);
     check(g_log.activity == 2 && g_log.evidence == 1, "DMO activity: a presence signal is none");
-    static const dsb_spec k_dm2c = {0xD, 0, 0, 0, 3, 1, 0};
+    static const dsb_spec k_dm2c = {0xD, 0, 0, 0, 3, 1, 0, 0};
     dsb(&s, &k_dm2c);
     check(g_log.activity == 2, "DMO activity: a DM-2-C DSB is none");
     session_close(&s);
@@ -999,7 +1049,7 @@ test_relayed_colour_code(void) {
 
     for (size_t i = 0; i < sizeof k_cases / sizeof k_cases[0]; i++) {
         session s = session_open();
-        const dsb_spec d = {0xD, 0, k_cases[i].comm_type, 0, 3, 0, 0};
+        const dsb_spec d = {0xD, 0, k_cases[i].comm_type, 0, 3, 0, 0, 0};
         const ttb_block h = sch_h_as(TETRA_DMO_MSG_OCCUPIED, k_cases[i].comm_type ? k_relay : 0u, k_mni);
         dsb_with(&s, &d, &h, 0);
         check(dmo_evidence() && dmo_note_is(last_note(), k_cases[i].route, 0), "relayed colour code: the DSB confirms");
@@ -1038,6 +1088,7 @@ main(void) {
     test_gate_a_lost_and_reserved();
     test_gate_d_opens();
     test_gate_d_negatives();
+    test_gate_d_presence_layouts();
     test_mixed_visits();
     test_mixed_activity();
     test_dmo_activity();

@@ -35,10 +35,12 @@
  *
  * Direct mode (gate D). One DSB whose SCH/S passed its CRC with system code 1100 or 1101 (the reserved direct mode
  * codes never count), SYNC PDU type 00 (DMAC-SYNC) or 01 (DPRES-SYNC) read by its parser, frame number 1 to 18 and an
- * A/B channel usage valid for its layout (not 11; a gateway's DMAC-SYNC 00, EN 300 396-5 clause 14.1.1; a type 1 DM-REP's
- * presence signal 00, EN 300 396-4 table 2), and whose SCH/H passed its CRC in the same burst. Its evidence is "TETRA
- * DMO" with no access text, its note the route of a checked DMAC-SYNC's communication type (the latest one), or a
- * presence-only confirmation; never an MNI, an address or the DM colour code.
+ * A/B channel usage valid for its layout (not 11; a gateway's DMAC-SYNC 00, EN 300 396-5 clause 14.1.1), a presence
+ * signal's layout valid for the equipment that sends it (repeater operating modes, where sent, not the reserved 11,
+ * EN 300 396-4 clause 10.3.12; channel usage 01 or 10 only from a DM-REP or a gateway's DM-REP function of type 2, else
+ * 00, EN 300 396-4 table 2 and EN 300 396-5 clause 13.4.7.12), and whose SCH/H passed its CRC in the same burst.
+ * Its evidence is "TETRA DMO" with no access text, its note the route of a checked DMAC-SYNC's communication type (the
+ * latest one), or a presence-only confirmation; never an MNI, an address or the DM colour code.
  *
  * The first gate to open names the detection. A latched withdrawal (DSD_SEARCH_SITE_NOTE_TETRA_WITHDRAW, sent once)
  * takes the hit's site and access back for the rest of the visit when its identity turns ambiguous: a second BSCH

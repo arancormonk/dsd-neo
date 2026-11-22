@@ -15901,8 +15901,9 @@ itself, so the decoder's own handling stays as it was.
   follows at once, but the first publication must not carry what is already ambiguous). Site: MCC, MNC and, for a colour code not 0, the location area and advertised main carrier of a half-slot
   SYSINFO under the seed (the one in the opening block supplies it); none while the gate cell's sharing mode is not 00.
 - Gate D (direct mode): one DSB with SCH/S and SCH/H CRCs, system code 1100/1101, a parsed DMAC-SYNC or DPRES-SYNC,
-  frame 1-18 and a valid A/B channel usage. Evidence `"TETRA DMO"`, no access; note: the latest checked DMAC-SYNC's
-  route, or presence only.
+  frame 1-18 and a valid A/B channel usage; a presence signal's channel usage and repeater operating modes valid for the
+  equipment that sends it (no reserved operating modes 11; 01 or 10 only from a type 2 repeater function). Evidence
+  `"TETRA DMO"`, no access; note: the latest checked DMAC-SYNC's route, or presence only.
 - A latched withdrawal (sent once) on a second BSCH identity, another location area or main carrier under the gate
   seed, sharing seen after the site, or the other mode's gate. Every burst of the naming gate's mode content calls
   `dsd_signal_search_note_activity()` (the other mode's never does); evidence and notes go only on change. Test: `TETRA_SEARCH`.
