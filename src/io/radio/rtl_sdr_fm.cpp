@@ -12401,15 +12401,22 @@ rtl_stream_get_iq_balance(void) {
     return g_pub_iq_balance.load(std::memory_order_relaxed);
 }
 
+/* Put the demod on the CQPSK chain. @p entering: the chain was off, so the differential demodulator starts from the
+ * unit phasor; a publish that finds CQPSK on already (a frame-sync republish of the same chain, issue #890: a -m lock's
+ * reapply on a tetra-dmo row) keeps the previous symbol's phasor, since resetting it would measure the next block's first
+ * differential symbol against the wrong phase and could change a dibit with no retune. A retune resets it on its own
+ * (demod_reset_common_state_for_retune()). */
 static void
-rtl_stream_enable_cqpsk_mode(void) {
+rtl_stream_enable_cqpsk_mode(int entering) {
     demod.output_kind = DSD_DEMOD_OUTPUT_SYMBOL_CQPSK;
     rtl_stream_invalidate_fsk_phase_cfo_snapshot();
     demod.symbol_levels = 4;
     demod.ted_enabled = 1;
     demod.mode_demod = &qpsk_differential_demod;
-    demod.cqpsk_diff_prev_r = 1.0f;
-    demod.cqpsk_diff_prev_j = 0.0f;
+    if (entering) {
+        demod.cqpsk_diff_prev_r = 1.0f;
+        demod.cqpsk_diff_prev_j = 0.0f;
+    }
     demod.channel_lpf_profile = rtl_demod_cqpsk_channel_profile(demod.symbol_rate_hz);
 }
 
@@ -12520,7 +12527,7 @@ rtl_stream_apply_cqpsk_toggle(int onoff) {
         demod.cqpsk_enable = next;
     }
     if (demod.cqpsk_enable) {
-        rtl_stream_enable_cqpsk_mode();
+        rtl_stream_enable_cqpsk_mode(was == 0);
     } else {
         rtl_stream_disable_cqpsk_mode();
     }
@@ -15653,6 +15660,8 @@ cqpsk_toggle_test_collect(rtl_stream_test_cqpsk_toggle_result* out_result) {
     out_result->fsk_reset_pending_after_toggle = g_fsk_modem_reset_pending.load(std::memory_order_acquire);
     out_result->reset_consumed = rtl_stream_consume_fsk_modem_reset_pending(&demod);
     out_result->have_prev_after_consume = demod.fsk_modem_state.have_prev;
+    out_result->cqpsk_prev_r_after = demod.cqpsk_diff_prev_r;
+    out_result->cqpsk_prev_j_after = demod.cqpsk_diff_prev_j;
 }
 
 extern "C" int

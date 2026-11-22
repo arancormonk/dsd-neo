@@ -559,6 +559,24 @@ expect_cqpsk_toggle_clears_output_contract_backlog(void) {
     failed |= expect_int_eq("FSK to CQPSK does not queue FSK reset", result.fsk_reset_pending_after_toggle, 0);
     failed |= expect_int_eq("FSK to CQPSK reset not consumed", result.reset_consumed, 0);
     failed |= expect_int_eq("FSK to CQPSK leaves FSK modem history untouched", result.have_prev_after_consume, 1);
+    failed |= expect_int_eq(
+        "FSK to CQPSK starts the differential phasor at 1+0i",
+        std::fabs(result.cqpsk_prev_r_after - 1.0f) < 1e-6f && std::fabs(result.cqpsk_prev_j_after) < 1e-6f, 1);
+
+    /* Issue #890: a publish that finds CQPSK on already (a frame-sync republish of a tetra-dmo row's chain) keeps the
+       previous symbol's phasor: resetting it would measure the next block's first symbol against the wrong phase. */
+    result = {};
+    rc = rtl_stream_test_cqpsk_toggle_output_clear(1, 1, 1, 9U, 4, &result);
+    failed |= expect_int_eq("CQPSK republish helper rc", rc, 0);
+    failed |= expect_generation_eq("CQPSK republish keeps output generation", result.generation_before,
+                                   result.generation_after);
+    failed |= expect_size_eq("CQPSK republish leaves queued output", result.used_after, 9U);
+    failed |=
+        expect_int_eq("CQPSK republish keeps CQPSK symbols", result.output_kind_after, RTL_STREAM_OUTPUT_SYMBOL_CQPSK);
+    failed |= expect_int_eq("CQPSK republish keeps the differential phasor",
+                            std::fabs(result.cqpsk_prev_r_after - 0.25f) < 1e-6f
+                                && std::fabs(result.cqpsk_prev_j_after + 0.25f) < 1e-6f,
+                            1);
 
     result = {};
     rc = rtl_stream_test_cqpsk_toggle_output_clear(1, 0, 1, 13U, 6, &result);
