@@ -1622,6 +1622,11 @@ make_runtime_targets(const char* body, char* out_path, size_t out_sz, char* out_
     return write_targets_file(out_dir, body, out_path, out_sz);
 }
 
+/* One options and state pair on the heap that the issue #890 cases reuse in turn (allocated in main()): each case
+   resets it as it starts (reset_scan_opts_state()), so none keeps a 2 MB state of its own for the whole run. */
+static dsd_opts* g_case_opts = NULL;
+static dsd_state* g_case_state = NULL;
+
 static void
 reset_scan_opts_state(dsd_opts* opts, dsd_state* state) {
     dsd_state_ext_free_all(state);
@@ -5237,60 +5242,60 @@ run_conventional_activity_origin_case(const char* tag, const char* body, convent
     if (make_runtime_targets(body, target_path, sizeof target_path, dir, sizeof dir) != 0) {
         return 1;
     }
-    static dsd_opts opts;
-    static dsd_state state;
-    reset_scan_opts_state(&opts, &state);
-    DSD_SNPRINTF(opts.trunk_scan_lists[0].path, sizeof opts.trunk_scan_lists[0].path, "%s", target_path);
-    opts.trunk_scan_list_count = 1;
+    dsd_opts* opts = g_case_opts;
+    dsd_state* state = g_case_state;
+    reset_scan_opts_state(opts, state);
+    DSD_SNPRINTF(opts->trunk_scan_lists[0].path, sizeof opts->trunk_scan_lists[0].path, "%s", target_path);
+    opts->trunk_scan_list_count = 1;
     char err[256] = {0};
     trunk_scan_test_set_now(0.0);
     int test_rc = 0;
-    if (dsd_engine_trunk_scan_init(&opts, &state, err, sizeof err) != 0) {
+    if (dsd_engine_trunk_scan_init(opts, state, err, sizeof err) != 0) {
         DSD_FPRINTF(stderr, "%s: origin scan init failed: %s\n", tag, err);
         test_rc = 1;
     }
     /* A frame whose read begins on a. */
-    const uint64_t visit_a = state.scan_landing_visit;
-    const uint32_t carrier_a = state.carrier_seq;
+    const uint64_t visit_a = state->scan_landing_visit;
+    const uint32_t carrier_a = state->carrier_seq;
     if (visit_a == 0U) {
         DSD_FPRINTF(stderr, "%s: a's landing set no visit\n", tag);
         test_rc = 1;
     }
     trunk_scan_test_set_now(0.26);
-    dsd_engine_trunk_scan_tick(&opts, &state);
-    test_rc |= expect_active_target(&state, "origin: rotation to b", 1U);
-    if (state.scan_landing_visit == visit_a || state.scan_landing_visit == 0U) {
+    dsd_engine_trunk_scan_tick(opts, state);
+    test_rc |= expect_active_target(state, "origin: rotation to b", 1U);
+    if (state->scan_landing_visit == visit_a || state->scan_landing_visit == 0U) {
         DSD_FPRINTF(stderr, "%s: b's landing set no visit of its own\n", tag);
         test_rc = 1;
     }
     /* That frame reports now, at b's landing time. */
-    state.frame_dispatch_active = 1;
-    state.frame_dispatch_carrier_seq = carrier_a;
-    state.frame_dispatch_scan_visit = visit_a;
-    report(&opts, &state, 1001, 2002, 0, 0, 0);
+    state->frame_dispatch_active = 1;
+    state->frame_dispatch_carrier_seq = carrier_a;
+    state->frame_dispatch_scan_visit = visit_a;
+    report(opts, state, 1001, 2002, 0, 0, 0);
     /* b's own frames, cut by an input interruption and by a carrier boundary. */
-    state.frame_dispatch_scan_visit = state.scan_landing_visit;
-    state.input_interrupted = 1;
-    report(&opts, &state, 1001, 2002, 0, 0, 0);
-    state.input_interrupted = 0;
-    state.frame_dispatch_carrier_seq = state.carrier_seq - 1U;
-    report(&opts, &state, 1001, 2002, 0, 0, 0);
-    state.frame_dispatch_active = 0;
+    state->frame_dispatch_scan_visit = state->scan_landing_visit;
+    state->input_interrupted = 1;
+    report(opts, state, 1001, 2002, 0, 0, 0);
+    state->input_interrupted = 0;
+    state->frame_dispatch_carrier_seq = state->carrier_seq - 1U;
+    report(opts, state, 1001, 2002, 0, 0, 0);
+    state->frame_dispatch_active = 0;
     trunk_scan_test_set_now(0.52);
-    dsd_engine_trunk_scan_tick(&opts, &state);
-    if (dsd_engine_trunk_scan_active_index(&state) != 0) {
+    dsd_engine_trunk_scan_tick(opts, state);
+    if (dsd_engine_trunk_scan_active_index(state) != 0) {
         DSD_FPRINTF(stderr, "%s: a delayed, interrupted or cut report held b\n", tag);
         test_rc = 1;
     }
     /* Back on a: a report from its own frame holds it past the dwell. */
-    state.frame_dispatch_active = 1;
-    state.frame_dispatch_carrier_seq = state.carrier_seq;
-    state.frame_dispatch_scan_visit = state.scan_landing_visit;
-    report(&opts, &state, 1001, 2002, 0, 0, 0);
-    state.frame_dispatch_active = 0;
+    state->frame_dispatch_active = 1;
+    state->frame_dispatch_carrier_seq = state->carrier_seq;
+    state->frame_dispatch_scan_visit = state->scan_landing_visit;
+    report(opts, state, 1001, 2002, 0, 0, 0);
+    state->frame_dispatch_active = 0;
     trunk_scan_test_set_now(0.80);
-    dsd_engine_trunk_scan_tick(&opts, &state);
-    if (dsd_engine_trunk_scan_active_index(&state) != 0) {
+    dsd_engine_trunk_scan_tick(opts, state);
+    if (dsd_engine_trunk_scan_active_index(state) != 0) {
         DSD_FPRINTF(stderr, "%s: a report of the visit's own frame did not hold it\n", tag);
         test_rc = 1;
     }
@@ -5300,32 +5305,32 @@ run_conventional_activity_origin_case(const char* tag, const char* body, convent
     g_scan_tune_to_freq_pending = 1;
     g_scan_tune_pending_request = 0U;
     trunk_scan_test_set_now(2.85);
-    dsd_engine_trunk_scan_tick(&opts, &state);
+    dsd_engine_trunk_scan_tick(opts, state);
     g_scan_tune_to_freq_pending = 0;
-    test_rc |= expect_active_target(&state, "origin: rotation to b in flight", 1U);
-    if (g_scan_tune_pending_request == 0U || state.scan_landing_visit != 0U) {
+    test_rc |= expect_active_target(state, "origin: rotation to b in flight", 1U);
+    if (g_scan_tune_pending_request == 0U || state->scan_landing_visit != 0U) {
         DSD_FPRINTF(stderr, "%s: b's park is not in flight (request %llu, visit %llu)\n", tag,
-                    (unsigned long long)g_scan_tune_pending_request, (unsigned long long)state.scan_landing_visit);
+                    (unsigned long long)g_scan_tune_pending_request, (unsigned long long)state->scan_landing_visit);
         test_rc = 1;
     }
     trunk_scan_test_set_now(2.86);
-    report(&opts, &state, 1001, 2002, 0, 0, 0);
+    report(opts, state, 1001, 2002, 0, 0, 0);
     dsd_trunk_tuning_request_publish(g_scan_tune_pending_request, DSD_TRUNK_TUNE_RESULT_OK);
     trunk_scan_test_set_now(2.87);
-    dsd_engine_trunk_scan_tick(&opts, &state);
-    test_rc |= expect_active_target(&state, "origin: b landed", 1U);
-    if (state.scan_landing_visit == 0U) {
+    dsd_engine_trunk_scan_tick(opts, state);
+    test_rc |= expect_active_target(state, "origin: b landed", 1U);
+    if (state->scan_landing_visit == 0U) {
         DSD_FPRINTF(stderr, "%s: b's park landed no visit\n", tag);
         test_rc = 1;
     }
     trunk_scan_test_set_now(3.15);
-    dsd_engine_trunk_scan_tick(&opts, &state);
-    if (dsd_engine_trunk_scan_active_index(&state) != 0) {
+    dsd_engine_trunk_scan_tick(opts, state);
+    if (dsd_engine_trunk_scan_active_index(state) != 0) {
         DSD_FPRINTF(stderr, "%s: a report decoded while b's park was in flight held b\n", tag);
         test_rc = 1;
     }
 
-    dsd_engine_trunk_scan_shutdown(&opts, &state);
+    dsd_engine_trunk_scan_shutdown(opts, state);
     trunk_scan_test_clear_now();
     cleanup_paths(dir, target_path, NULL);
     return test_rc;
@@ -5346,52 +5351,52 @@ run_conventional_activity_after_restart_case(int elsewhere) {
         != 0) {
         return 1;
     }
-    static dsd_opts opts;
-    static dsd_state state;
-    reset_scan_opts_state(&opts, &state);
-    DSD_SNPRINTF(opts.trunk_scan_lists[0].path, sizeof opts.trunk_scan_lists[0].path, "%s", target_path);
-    opts.trunk_scan_list_count = 1;
+    dsd_opts* opts = g_case_opts;
+    dsd_state* state = g_case_state;
+    reset_scan_opts_state(opts, state);
+    DSD_SNPRINTF(opts->trunk_scan_lists[0].path, sizeof opts->trunk_scan_lists[0].path, "%s", target_path);
+    opts->trunk_scan_list_count = 1;
     char err[256] = {0};
     trunk_scan_test_set_now(0.0);
     int test_rc = 0;
-    if (dsd_engine_trunk_scan_init(&opts, &state, err, sizeof err) != 0) {
+    if (dsd_engine_trunk_scan_init(opts, state, err, sizeof err) != 0) {
         DSD_FPRINTF(stderr, "%s: scan init failed: %s\n", tag, err);
         test_rc = 1;
     }
-    const uint64_t visit_before = state.scan_landing_visit;
-    const uint32_t carrier_before = state.carrier_seq;
-    state.carrier_source_key = 1U;
+    const uint64_t visit_before = state->scan_landing_visit;
+    const uint32_t carrier_before = state->carrier_seq;
+    state->carrier_source_key = 1U;
     trunk_scan_test_set_now(0.05);
     p25_sm_tick_guard_enter();
-    dsd_engine_trunk_scan_stream_stopping(&opts, &state);
+    dsd_engine_trunk_scan_stream_stopping(opts, state);
     /* The stream start (dsd_engine_note_stream_source()): the same source's reopen is a stream gap, and every landing
        is forgotten. */
-    state.carrier_seq++;
-    dsd_engine_scan_landing_forget(&state);
-    opts.rtlsdr_center_freq = elsewhere ? 461500000U : 461000000U;
-    dsd_engine_trunk_scan_stream_reopened(&opts, &state, 1);
+    state->carrier_seq++;
+    dsd_engine_scan_landing_forget(state);
+    opts->rtlsdr_center_freq = elsewhere ? 461500000U : 461000000U;
+    dsd_engine_trunk_scan_stream_reopened(opts, state, 1);
     p25_sm_tick_guard_leave();
-    if (elsewhere ? state.scan_landing_visit != 0U
-                  : (state.scan_landing_visit == 0U || state.scan_landing_visit == visit_before
-                     || !dsd_engine_trunk_scan_target_confirmed(&state, 0))) {
+    if (elsewhere ? state->scan_landing_visit != 0U
+                  : (state->scan_landing_visit == 0U || state->scan_landing_visit == visit_before
+                     || !dsd_engine_trunk_scan_target_confirmed(state, 0))) {
         DSD_FPRINTF(stderr, "%s: visit %llu after the reopen (before %llu)\n", tag,
-                    (unsigned long long)state.scan_landing_visit, (unsigned long long)visit_before);
+                    (unsigned long long)state->scan_landing_visit, (unsigned long long)visit_before);
         test_rc = 1;
     }
     /* A frame read before the restart reports now: nothing. Then the target's own traffic after it. */
-    state.frame_dispatch_active = 1;
-    state.frame_dispatch_carrier_seq = carrier_before;
-    state.frame_dispatch_scan_visit = visit_before;
-    dsd_engine_trunk_scan_dmr_conventional_activity(&opts, &state, 1001, 2002, 0, 0, 0);
-    state.frame_dispatch_carrier_seq = state.carrier_seq;
-    state.frame_dispatch_scan_visit = state.scan_landing_visit;
+    state->frame_dispatch_active = 1;
+    state->frame_dispatch_carrier_seq = carrier_before;
+    state->frame_dispatch_scan_visit = visit_before;
+    dsd_engine_trunk_scan_dmr_conventional_activity(opts, state, 1001, 2002, 0, 0, 0);
+    state->frame_dispatch_carrier_seq = state->carrier_seq;
+    state->frame_dispatch_scan_visit = state->scan_landing_visit;
     trunk_scan_test_set_now(0.10);
-    dsd_engine_trunk_scan_dmr_conventional_activity(&opts, &state, 1001, 2002, 0, 0, 0);
-    state.frame_dispatch_active = 0;
+    dsd_engine_trunk_scan_dmr_conventional_activity(opts, state, 1001, 2002, 0, 0, 0);
+    state->frame_dispatch_active = 0;
     trunk_scan_test_set_now(0.30);
-    dsd_engine_trunk_scan_tick(&opts, &state);
-    test_rc |= expect_active_target(&state, tag, elsewhere ? 1U : 0U);
-    dsd_engine_trunk_scan_shutdown(&opts, &state);
+    dsd_engine_trunk_scan_tick(opts, state);
+    test_rc |= expect_active_target(state, tag, elsewhere ? 1U : 0U);
+    dsd_engine_trunk_scan_shutdown(opts, state);
     trunk_scan_test_clear_now();
     cleanup_paths(dir, target_path, NULL);
     return test_rc;
@@ -5414,15 +5419,15 @@ run_restart_relands_nothing_case(int mode) {
         != 0) {
         return 1;
     }
-    static dsd_opts opts;
-    static dsd_state state;
-    reset_scan_opts_state(&opts, &state);
-    DSD_SNPRINTF(opts.trunk_scan_lists[0].path, sizeof opts.trunk_scan_lists[0].path, "%s", target_path);
-    opts.trunk_scan_list_count = 1;
+    dsd_opts* opts = g_case_opts;
+    dsd_state* state = g_case_state;
+    reset_scan_opts_state(opts, state);
+    DSD_SNPRINTF(opts->trunk_scan_lists[0].path, sizeof opts->trunk_scan_lists[0].path, "%s", target_path);
+    opts->trunk_scan_list_count = 1;
     char err[256] = {0};
     trunk_scan_test_set_now(0.0);
     int test_rc = 0;
-    if (dsd_engine_trunk_scan_init(&opts, &state, err, sizeof err) != 0) {
+    if (dsd_engine_trunk_scan_init(opts, state, err, sizeof err) != 0) {
         DSD_FPRINTF(stderr, "%s: scan init failed: %s\n", tag, err);
         test_rc = 1;
     }
@@ -5432,34 +5437,34 @@ run_restart_relands_nothing_case(int mode) {
         g_scan_tune_to_freq_pending = 1;
         g_scan_tune_pending_request = 0U;
         trunk_scan_test_set_now(0.26);
-        dsd_engine_trunk_scan_tick(&opts, &state);
+        dsd_engine_trunk_scan_tick(opts, state);
         g_scan_tune_to_freq_pending = 0;
-        test_rc |= expect_active_target(&state, tag, 1U);
+        test_rc |= expect_active_target(state, tag, 1U);
         reopen_hz = 462000000U;
     }
-    state.carrier_source_key = 1U;
+    state->carrier_source_key = 1U;
     p25_sm_tick_guard_enter();
-    dsd_engine_trunk_scan_stream_stopping(&opts, &state);
+    dsd_engine_trunk_scan_stream_stopping(opts, state);
     p25_sm_tick_guard_leave();
-    if (mode == 0 && dsd_engine_trunk_scan_pause_locked(&opts, &state, DSD_TRUNK_SCAN_PAUSE_TUNE) != 0) {
+    if (mode == 0 && dsd_engine_trunk_scan_pause_locked(opts, state, DSD_TRUNK_SCAN_PAUSE_TUNE) != 0) {
         DSD_FPRINTF(stderr, "%s: the pause failed\n", tag);
         test_rc = 1;
     }
     p25_sm_tick_guard_enter();
-    state.carrier_seq++;
-    dsd_engine_scan_landing_forget(&state);
+    state->carrier_seq++;
+    dsd_engine_scan_landing_forget(state);
     if (mode == 2) {
-        state.carrier_source_key = 2U;
+        state->carrier_source_key = 2U;
     }
-    opts.rtlsdr_center_freq = reopen_hz;
-    dsd_engine_trunk_scan_stream_reopened(&opts, &state, 1);
+    opts->rtlsdr_center_freq = reopen_hz;
+    dsd_engine_trunk_scan_stream_reopened(opts, state, 1);
     p25_sm_tick_guard_leave();
-    if (state.scan_landing_visit != 0U) {
-        DSD_FPRINTF(stderr, "%s: the reopen landed visit %llu\n", tag, (unsigned long long)state.scan_landing_visit);
+    if (state->scan_landing_visit != 0U) {
+        DSD_FPRINTF(stderr, "%s: the reopen landed visit %llu\n", tag, (unsigned long long)state->scan_landing_visit);
         test_rc = 1;
     }
     g_scan_tune_pending_request = 0U;
-    dsd_engine_trunk_scan_shutdown(&opts, &state);
+    dsd_engine_trunk_scan_shutdown(opts, state);
     trunk_scan_test_clear_now();
     cleanup_paths(dir, target_path, NULL);
     return test_rc;
@@ -5477,31 +5482,31 @@ test_conventional_activity_stale_visit_same_carrier(void) {
         != 0) {
         return 1;
     }
-    static dsd_opts opts;
-    static dsd_state state;
-    reset_scan_opts_state(&opts, &state);
-    DSD_SNPRINTF(opts.trunk_scan_lists[0].path, sizeof opts.trunk_scan_lists[0].path, "%s", target_path);
-    opts.trunk_scan_list_count = 1;
+    dsd_opts* opts = g_case_opts;
+    dsd_state* state = g_case_state;
+    reset_scan_opts_state(opts, state);
+    DSD_SNPRINTF(opts->trunk_scan_lists[0].path, sizeof opts->trunk_scan_lists[0].path, "%s", target_path);
+    opts->trunk_scan_list_count = 1;
     char err[256] = {0};
     trunk_scan_test_set_now(0.0);
     int test_rc = 0;
-    if (dsd_engine_trunk_scan_init(&opts, &state, err, sizeof err) != 0) {
+    if (dsd_engine_trunk_scan_init(opts, state, err, sizeof err) != 0) {
         DSD_FPRINTF(stderr, "stale visit: scan init failed: %s\n", err);
         test_rc = 1;
     }
-    const uint64_t visit_a = state.scan_landing_visit;
+    const uint64_t visit_a = state->scan_landing_visit;
     trunk_scan_test_set_now(0.26);
-    dsd_engine_trunk_scan_tick(&opts, &state);
-    test_rc |= expect_active_target(&state, "stale visit: on b", 1U);
-    state.frame_dispatch_active = 1;
-    state.frame_dispatch_carrier_seq = state.carrier_seq; /* the carrier count is the current one */
-    state.frame_dispatch_scan_visit = visit_a;
-    dsd_engine_trunk_scan_dmr_conventional_activity(&opts, &state, 1001, 2002, 0, 0, 0);
-    state.frame_dispatch_active = 0;
+    dsd_engine_trunk_scan_tick(opts, state);
+    test_rc |= expect_active_target(state, "stale visit: on b", 1U);
+    state->frame_dispatch_active = 1;
+    state->frame_dispatch_carrier_seq = state->carrier_seq; /* the carrier count is the current one */
+    state->frame_dispatch_scan_visit = visit_a;
+    dsd_engine_trunk_scan_dmr_conventional_activity(opts, state, 1001, 2002, 0, 0, 0);
+    state->frame_dispatch_active = 0;
     trunk_scan_test_set_now(0.52);
-    dsd_engine_trunk_scan_tick(&opts, &state);
-    test_rc |= expect_active_target(&state, "stale visit: a's report held nothing", 0U);
-    dsd_engine_trunk_scan_shutdown(&opts, &state);
+    dsd_engine_trunk_scan_tick(opts, state);
+    test_rc |= expect_active_target(state, "stale visit: a's report held nothing", 0U);
+    dsd_engine_trunk_scan_shutdown(opts, state);
     trunk_scan_test_clear_now();
     cleanup_paths(dir, target_path, NULL);
     return test_rc;
@@ -5546,44 +5551,44 @@ run_digital_activity_family_case(const char* type, int protocol, int other, int 
     if (make_runtime_targets(body, target_path, sizeof target_path, dir, sizeof dir) != 0) {
         return 1;
     }
-    static dsd_opts opts;
-    static dsd_state state;
+    dsd_opts* opts = g_case_opts;
+    dsd_state* state = g_case_state;
     int test_rc = 0;
     const dsd_trunk_scan_activity_identity id = simplex_identity(numeric);
     for (int pass = 0; pass < 4; pass++) {
-        reset_scan_opts_state(&opts, &state);
+        reset_scan_opts_state(opts, state);
         g_scan_dsp_rate_hz = simplex_case_dsp_rate_hz(type);
-        DSD_SNPRINTF(opts.trunk_scan_lists[0].path, sizeof opts.trunk_scan_lists[0].path, "%s", target_path);
-        opts.trunk_scan_list_count = 1;
+        DSD_SNPRINTF(opts->trunk_scan_lists[0].path, sizeof opts->trunk_scan_lists[0].path, "%s", target_path);
+        opts->trunk_scan_list_count = 1;
         /* pass 1: another family's report; 2: voice-only; 3: the allow list, with a slot filter set. */
-        opts.scan_voice_only = pass == 2;
-        opts.trunk_use_allow_list = pass == 3;
+        opts->scan_voice_only = pass == 2;
+        opts->trunk_use_allow_list = pass == 3;
         if (pass == 3) {
             unsigned int seen = 0U;
             char ferr[128] = {0};
-            if (dsd_receive_option_apply(&opts.receive, &seen, "--slot-allow", "2", ferr, sizeof ferr) != 0) {
+            if (dsd_receive_option_apply(&opts->receive, &seen, "--slot-allow", "2", ferr, sizeof ferr) != 0) {
                 DSD_FPRINTF(stderr, "%s: slot filter: %s\n", type, ferr);
                 test_rc = 1;
             }
         }
         char err[256] = {0};
         trunk_scan_test_set_now(0.0);
-        if (dsd_engine_trunk_scan_init(&opts, &state, err, sizeof err) != 0) {
+        if (dsd_engine_trunk_scan_init(opts, state, err, sizeof err) != 0) {
             DSD_FPRINTF(stderr, "%s: init failed: %s\n", type, err);
             test_rc = 1;
             break;
         }
         trunk_scan_test_set_now(0.10);
-        dsd_trunk_scan_hook_digital_conventional_activity(&opts, &state, pass == 1 ? other : protocol, -1, &id);
+        dsd_trunk_scan_hook_digital_conventional_activity(opts, state, pass == 1 ? other : protocol, -1, &id);
         trunk_scan_test_set_now(0.30);
-        dsd_engine_trunk_scan_tick(&opts, &state);
+        dsd_engine_trunk_scan_tick(opts, state);
         const int held = pass == 0 || (pass == 3 && !numeric);
-        if ((dsd_engine_trunk_scan_active_index(&state) == 0) != held) {
+        if ((dsd_engine_trunk_scan_active_index(state) == 0) != held) {
             DSD_FPRINTF(stderr, "%s pass %d: active %zu, want %s\n", type, pass,
-                        dsd_engine_trunk_scan_active_index(&state), held ? "held on a" : "rotated to b");
+                        dsd_engine_trunk_scan_active_index(state), held ? "held on a" : "rotated to b");
             test_rc = 1;
         }
-        dsd_engine_trunk_scan_shutdown(&opts, &state);
+        dsd_engine_trunk_scan_shutdown(opts, state);
     }
     g_scan_dsp_rate_hz = 0;
     trunk_scan_test_clear_now();
@@ -5614,34 +5619,34 @@ test_digital_activity_binds_its_visit(void) {
         != 0) {
         return 1;
     }
-    static dsd_opts opts;
-    static dsd_state state;
-    reset_scan_opts_state(&opts, &state);
-    DSD_SNPRINTF(opts.trunk_scan_lists[0].path, sizeof opts.trunk_scan_lists[0].path, "%s", target_path);
-    opts.trunk_scan_list_count = 1;
+    dsd_opts* opts = g_case_opts;
+    dsd_state* state = g_case_state;
+    reset_scan_opts_state(opts, state);
+    DSD_SNPRINTF(opts->trunk_scan_lists[0].path, sizeof opts->trunk_scan_lists[0].path, "%s", target_path);
+    opts->trunk_scan_list_count = 1;
     char err[256] = {0};
     int test_rc = 0;
     trunk_scan_test_set_now(0.0);
-    if (dsd_engine_trunk_scan_init(&opts, &state, err, sizeof err) != 0) {
+    if (dsd_engine_trunk_scan_init(opts, state, err, sizeof err) != 0) {
         DSD_FPRINTF(stderr, "ysf visit: init failed: %s\n", err);
         cleanup_paths(dir, target_path, NULL);
         return 1;
     }
-    const uint64_t visit_a = state.scan_landing_visit;
-    const uint32_t carrier_a = state.carrier_seq;
+    const uint64_t visit_a = state->scan_landing_visit;
+    const uint32_t carrier_a = state->carrier_seq;
     trunk_scan_test_set_now(0.26);
-    dsd_engine_trunk_scan_tick(&opts, &state);
-    test_rc |= expect_active_target(&state, "ysf visit: rotation to b", 1U);
+    dsd_engine_trunk_scan_tick(opts, state);
+    test_rc |= expect_active_target(state, "ysf visit: rotation to b", 1U);
     const dsd_trunk_scan_activity_identity id = simplex_identity(0);
-    state.frame_dispatch_active = 1;
-    state.frame_dispatch_carrier_seq = carrier_a;
-    state.frame_dispatch_scan_visit = visit_a;
-    dsd_trunk_scan_hook_digital_conventional_activity(&opts, &state, DSD_SYNC_YSF_POS, -1, &id);
-    state.frame_dispatch_active = 0;
+    state->frame_dispatch_active = 1;
+    state->frame_dispatch_carrier_seq = carrier_a;
+    state->frame_dispatch_scan_visit = visit_a;
+    dsd_trunk_scan_hook_digital_conventional_activity(opts, state, DSD_SYNC_YSF_POS, -1, &id);
+    state->frame_dispatch_active = 0;
     trunk_scan_test_set_now(0.52);
-    dsd_engine_trunk_scan_tick(&opts, &state);
-    test_rc |= expect_active_target(&state, "ysf visit: a's report held b nothing", 0U);
-    dsd_engine_trunk_scan_shutdown(&opts, &state);
+    dsd_engine_trunk_scan_tick(opts, state);
+    test_rc |= expect_active_target(state, "ysf visit: a's report held b nothing", 0U);
+    dsd_engine_trunk_scan_shutdown(opts, state);
     trunk_scan_test_clear_now();
     cleanup_paths(dir, target_path, NULL);
     return test_rc;
@@ -5730,15 +5735,15 @@ run_live_key_change_case(const char* type, int keyed) {
     if (make_runtime_targets(body, target_path, sizeof target_path, dir, sizeof dir) != 0) {
         return 1;
     }
-    static dsd_opts opts;
-    static dsd_state state;
-    reset_scan_opts_state(&opts, &state);
-    DSD_SNPRINTF(opts.trunk_scan_lists[0].path, sizeof opts.trunk_scan_lists[0].path, "%s", target_path);
-    opts.trunk_scan_list_count = 1;
+    dsd_opts* opts = g_case_opts;
+    dsd_state* state = g_case_state;
+    reset_scan_opts_state(opts, state);
+    DSD_SNPRINTF(opts->trunk_scan_lists[0].path, sizeof opts->trunk_scan_lists[0].path, "%s", target_path);
+    opts->trunk_scan_list_count = 1;
     char err[256] = {0};
     int test_rc = 0;
     trunk_scan_test_set_now(0.0);
-    if (dsd_engine_trunk_scan_init(&opts, &state, err, sizeof err) != 0) {
+    if (dsd_engine_trunk_scan_init(opts, state, err, sizeof err) != 0) {
         DSD_FPRINTF(stderr, "%s: live keys init failed: %s\n", type, err);
         cleanup_paths(dir, target_path, NULL);
         return 1;
@@ -5792,7 +5797,7 @@ run_live_key_change_case(const char* type, int keyed) {
         }
         const int want = keyed && k_keyed_takes[op] ? DSD_TRUNK_KEY_APPLIED : DSD_TRUNK_KEY_INVALID;
         const int got =
-            dsd_trunk_scan_hook_decryption_apply(&opts, &state, "a", generation, fields, &keys, &no_map, force);
+            dsd_trunk_scan_hook_decryption_apply(opts, state, "a", generation, fields, &keys, &no_map, force);
         if (got != want) {
             DSD_FPRINTF(stderr, "%s: live key op %d: %d, want %d\n", type, op, got, want);
             test_rc = 1;
@@ -5804,12 +5809,12 @@ run_live_key_change_case(const char* type, int keyed) {
     map.count = 1U;
     dsd_key_set none;
     DSD_MEMSET(&none, 0, sizeof none);
-    if (dsd_trunk_scan_hook_decryption_apply(&opts, &state, "a", generation, DSD_TRUNK_KEY_MAP, &none, &map, 0)
+    if (dsd_trunk_scan_hook_decryption_apply(opts, state, "a", generation, DSD_TRUNK_KEY_MAP, &none, &map, 0)
         != DSD_TRUNK_KEY_INVALID) {
         DSD_FPRINTF(stderr, "%s: a DMR key map was taken\n", type);
         test_rc = 1;
     }
-    dsd_engine_trunk_scan_shutdown(&opts, &state);
+    dsd_engine_trunk_scan_shutdown(opts, state);
     trunk_scan_test_clear_now();
     cleanup_paths(dir, target_path, NULL);
     return test_rc;
@@ -5844,59 +5849,59 @@ test_keyed_dpmr_alternates_with_m17(void) {
         cleanup_paths(dir, NULL, NULL);
         return 1;
     }
-    static dsd_opts opts;
-    static dsd_state state;
-    reset_scan_opts_state(&opts, &state);
-    state.R = 0x1234U; /* the session's M17 scrambler seed */
-    state.M = 0;
-    DSD_SNPRINTF(opts.trunk_scan_lists[0].path, sizeof opts.trunk_scan_lists[0].path, "%s", path);
-    opts.trunk_scan_list_count = 1;
+    dsd_opts* opts = g_case_opts;
+    dsd_state* state = g_case_state;
+    reset_scan_opts_state(opts, state);
+    state->R = 0x1234U; /* the session's M17 scrambler seed */
+    state->M = 0;
+    DSD_SNPRINTF(opts->trunk_scan_lists[0].path, sizeof opts->trunk_scan_lists[0].path, "%s", path);
+    opts->trunk_scan_list_count = 1;
     g_scan_tune_to_freq_failures_remaining = 0;
     char error[256] = {0};
     trunk_scan_test_set_now(0.0);
-    int failed = dsd_engine_trunk_scan_init(&opts, &state, error, sizeof(error)) != 0;
+    int failed = dsd_engine_trunk_scan_init(opts, state, error, sizeof(error)) != 0;
     if (!failed) {
-        failed |= dsd_engine_trunk_scan_active_index(&state) != 0 || state.R != 17U || state.M != 1;
+        failed |= dsd_engine_trunk_scan_active_index(state) != 0 || state->R != 17U || state->M != 1;
         trunk_scan_test_set_now(0.26);
-        dsd_engine_trunk_scan_tick(&opts, &state);
-        failed |= dsd_engine_trunk_scan_active_index(&state) != 1 || state.R != 0x1234U || state.M != 0;
+        dsd_engine_trunk_scan_tick(opts, state);
+        failed |= dsd_engine_trunk_scan_active_index(state) != 1 || state->R != 0x1234U || state->M != 0;
         trunk_scan_test_set_now(0.52);
-        dsd_engine_trunk_scan_tick(&opts, &state);
-        failed |= dsd_engine_trunk_scan_active_index(&state) != 0 || state.R != 17U;
+        dsd_engine_trunk_scan_tick(opts, state);
+        failed |= dsd_engine_trunk_scan_active_index(state) != 0 || state->R != 17U;
         if (failed) {
             DSD_FPRINTF(stderr, "dpmr/m17 rotation: active %zu R %llu M %d\n",
-                        dsd_engine_trunk_scan_active_index(&state), (unsigned long long)state.R, state.M);
+                        dsd_engine_trunk_scan_active_index(state), (unsigned long long)state->R, state->M);
         }
         /* Paused on dPMR: the manual session runs its own keys. Resumed: dPMR's again. */
-        failed |= dsd_engine_trunk_scan_pause_locked(&opts, &state, DSD_TRUNK_SCAN_PAUSE_TUNE) != 0;
-        failed |= state.R != 0x1234U || state.M != 0;
-        failed |= dsd_engine_trunk_scan_resume_locked(&opts, &state) != 0;
-        failed |= dsd_engine_trunk_scan_active_index(&state) != 0 || state.R != 17U;
+        failed |= dsd_engine_trunk_scan_pause_locked(opts, state, DSD_TRUNK_SCAN_PAUSE_TUNE) != 0;
+        failed |= state->R != 0x1234U || state->M != 0;
+        failed |= dsd_engine_trunk_scan_resume_locked(opts, state) != 0;
+        failed |= dsd_engine_trunk_scan_active_index(state) != 0 || state->R != 17U;
         if (failed) {
-            DSD_FPRINTF(stderr, "dpmr/m17 pause: R %llu M %d\n", (unsigned long long)state.R, state.M);
+            DSD_FPRINTF(stderr, "dpmr/m17 pause: R %llu M %d\n", (unsigned long long)state->R, state->M);
         }
         /* A switch to M17 that fails keeps dPMR on air with its own key; the retry lands with the session's. */
         g_scan_tune_to_freq_failures_remaining = 1;
         trunk_scan_test_set_now(0.90);
-        dsd_engine_trunk_scan_tick(&opts, &state);
+        dsd_engine_trunk_scan_tick(opts, state);
         /* The switch was tried (its one failure spent) and rolled back. */
         failed |= g_scan_tune_to_freq_failures_remaining != 0;
-        failed |= dsd_engine_trunk_scan_active_index(&state) != 0 || state.R != 17U || state.M != 1;
+        failed |= dsd_engine_trunk_scan_active_index(state) != 0 || state->R != 17U || state->M != 1;
         g_scan_tune_to_freq_failures_remaining = 0;
         trunk_scan_test_set_now(4.00);
-        dsd_engine_trunk_scan_tick(&opts, &state);
-        failed |= dsd_engine_trunk_scan_active_index(&state) != 1 || state.R != 0x1234U || state.M != 0;
+        dsd_engine_trunk_scan_tick(opts, state);
+        failed |= dsd_engine_trunk_scan_active_index(state) != 1 || state->R != 0x1234U || state->M != 0;
         if (failed) {
             DSD_FPRINTF(stderr, "dpmr/m17 failed switch: active %zu R %llu M %d\n",
-                        dsd_engine_trunk_scan_active_index(&state), (unsigned long long)state.R, state.M);
+                        dsd_engine_trunk_scan_active_index(state), (unsigned long long)state->R, state->M);
         }
-        dsd_engine_trunk_scan_shutdown(&opts, &state);
-        failed |= state.R != 0x1234U || state.M != 0;
+        dsd_engine_trunk_scan_shutdown(opts, state);
+        failed |= state->R != 0x1234U || state->M != 0;
     } else {
         DSD_FPRINTF(stderr, "dpmr/m17 init failed: %s\n", error);
     }
-    dsd_state_trunk_lcn_free(&state);
-    dsd_state_ext_free_all(&state);
+    dsd_state_trunk_lcn_free(state);
+    dsd_state_ext_free_all(state);
     trunk_scan_test_clear_now();
     cleanup_paths(dir, path, NULL);
     return failed;
@@ -5920,26 +5925,26 @@ run_simplex_merge_case(const char* tag, const char* first, const char* second, i
     int failed = write_text_file(path_a, body) != 0;
     DSD_SNPRINTF(body, sizeof body, "%s%s", header, second);
     failed |= write_text_file(path_b, body) != 0;
-    static dsd_opts opts;
-    static dsd_state state;
-    reset_scan_opts_state(&opts, &state);
-    DSD_SNPRINTF(opts.trunk_scan_lists[0].path, sizeof opts.trunk_scan_lists[0].path, "%s", path_a);
-    DSD_SNPRINTF(opts.trunk_scan_lists[1].path, sizeof opts.trunk_scan_lists[1].path, "%s", path_b);
-    opts.trunk_scan_list_count = 2;
+    dsd_opts* opts = g_case_opts;
+    dsd_state* state = g_case_state;
+    reset_scan_opts_state(opts, state);
+    DSD_SNPRINTF(opts->trunk_scan_lists[0].path, sizeof opts->trunk_scan_lists[0].path, "%s", path_a);
+    DSD_SNPRINTF(opts->trunk_scan_lists[1].path, sizeof opts->trunk_scan_lists[1].path, "%s", path_b);
+    opts->trunk_scan_list_count = 2;
     char err[DSD_TRUNK_SCAN_ERROR_MAX] = {0};
     trunk_scan_test_set_now(0.0);
-    const int rc = failed ? -1 : dsd_engine_trunk_scan_init(&opts, &state, err, sizeof err);
+    const int rc = failed ? -1 : dsd_engine_trunk_scan_init(opts, state, err, sizeof err);
     if (want_err == NULL) {
-        if (rc != 0 || dsd_engine_trunk_scan_target_count(&state) != (size_t)want_targets) {
+        if (rc != 0 || dsd_engine_trunk_scan_target_count(state) != (size_t)want_targets) {
             DSD_FPRINTF(stderr, "%s: rc %d, %zu targets, want %d: %s\n", tag, rc,
-                        dsd_engine_trunk_scan_target_count(&state), want_targets, err);
+                        dsd_engine_trunk_scan_target_count(state), want_targets, err);
             failed = 1;
         }
     } else if (rc == 0 || strstr(err, want_err) == NULL) {
         DSD_FPRINTF(stderr, "%s: rc %d err '%s', want '%s'\n", tag, rc, err, want_err);
         failed = 1;
     }
-    dsd_engine_trunk_scan_shutdown(&opts, &state);
+    dsd_engine_trunk_scan_shutdown(opts, state);
     trunk_scan_test_clear_now();
     (void)remove(path_a);
     (void)remove(path_b);
@@ -5979,35 +5984,35 @@ run_presence_case(const char* type, int protocol, const dsd_trunk_scan_activity_
     if (make_runtime_targets(body, target_path, sizeof target_path, dir, sizeof dir) != 0) {
         return 1;
     }
-    static dsd_opts opts;
-    static dsd_state state;
-    reset_scan_opts_state(&opts, &state);
+    dsd_opts* opts = g_case_opts;
+    dsd_state* state = g_case_state;
+    reset_scan_opts_state(opts, state);
     g_scan_dsp_rate_hz = simplex_case_dsp_rate_hz(type);
-    opts.trunk_tune_enc_calls = enc_lockout ? 0 : 1;
-    DSD_SNPRINTF(opts.trunk_scan_lists[0].path, sizeof opts.trunk_scan_lists[0].path, "%s", target_path);
-    opts.trunk_scan_list_count = 1;
+    opts->trunk_tune_enc_calls = enc_lockout ? 0 : 1;
+    DSD_SNPRINTF(opts->trunk_scan_lists[0].path, sizeof opts->trunk_scan_lists[0].path, "%s", target_path);
+    opts->trunk_scan_list_count = 1;
     char err[256] = {0};
     int test_rc = 0;
     trunk_scan_test_set_now(0.0);
-    if (dsd_engine_trunk_scan_init(&opts, &state, err, sizeof err) != 0) {
+    if (dsd_engine_trunk_scan_init(opts, state, err, sizeof err) != 0) {
         DSD_FPRINTF(stderr, "%s presence: init failed: %s\n", type, err);
         test_rc = 1;
     } else {
-        if (opts.trunk_tune_data_calls != 0) {
+        if (opts->trunk_tune_data_calls != 0) {
             DSD_FPRINTF(stderr, "%s presence: the defaults follow data calls\n", type);
             test_rc = 1;
         }
         trunk_scan_test_set_now(0.10);
-        dsd_trunk_scan_hook_digital_conventional_activity(&opts, &state, protocol, -1, id);
+        dsd_trunk_scan_hook_digital_conventional_activity(opts, state, protocol, -1, id);
         trunk_scan_test_set_now(0.30);
-        dsd_engine_trunk_scan_tick(&opts, &state);
-        if ((dsd_engine_trunk_scan_active_index(&state) == 0) != want_held) {
+        dsd_engine_trunk_scan_tick(opts, state);
+        if ((dsd_engine_trunk_scan_active_index(state) == 0) != want_held) {
             DSD_FPRINTF(stderr, "%s presence (enc lockout %d): active %zu, want %s\n", type, enc_lockout,
-                        dsd_engine_trunk_scan_active_index(&state), want_held ? "held" : "rotated");
+                        dsd_engine_trunk_scan_active_index(state), want_held ? "held" : "rotated");
             test_rc = 1;
         }
     }
-    dsd_engine_trunk_scan_shutdown(&opts, &state);
+    dsd_engine_trunk_scan_shutdown(opts, state);
     g_scan_dsp_rate_hz = 0;
     trunk_scan_test_clear_now();
     cleanup_paths(dir, target_path, NULL);
@@ -6068,39 +6073,39 @@ run_voice_gate_media_origin_case(const char* tag, const char* body, int protocol
     if (make_runtime_targets(body, target_path, sizeof target_path, dir, sizeof dir) != 0) {
         return 1;
     }
-    static dsd_opts opts;
-    static dsd_state state;
-    reset_scan_opts_state(&opts, &state);
-    opts.scan_voice_only = 1;
-    opts.scan_voice_qualify_ms = 1000;
-    opts.scan_voice_hold_ms = 2000;
-    DSD_SNPRINTF(opts.trunk_scan_lists[0].path, sizeof opts.trunk_scan_lists[0].path, "%s", target_path);
-    opts.trunk_scan_list_count = 1;
+    dsd_opts* opts = g_case_opts;
+    dsd_state* state = g_case_state;
+    reset_scan_opts_state(opts, state);
+    opts->scan_voice_only = 1;
+    opts->scan_voice_qualify_ms = 1000;
+    opts->scan_voice_hold_ms = 2000;
+    DSD_SNPRINTF(opts->trunk_scan_lists[0].path, sizeof opts->trunk_scan_lists[0].path, "%s", target_path);
+    opts->trunk_scan_list_count = 1;
     char err[256] = {0};
     trunk_scan_test_set_now(0.0);
     int test_rc = 0;
-    if (dsd_engine_trunk_scan_init(&opts, &state, err, sizeof err) != 0) {
+    if (dsd_engine_trunk_scan_init(opts, state, err, sizeof err) != 0) {
         DSD_FPRINTF(stderr, "%s: voice origin scan init failed: %s\n", tag, err);
         test_rc = 1;
     }
-    const uint64_t visit_a = state.scan_landing_visit;
-    const uint32_t carrier_a = state.carrier_seq;
+    const uint64_t visit_a = state->scan_landing_visit;
+    const uint32_t carrier_a = state->carrier_seq;
     trunk_scan_test_set_now(0.26);
-    dsd_engine_trunk_scan_tick(&opts, &state);
-    test_rc |= expect_active_target(&state, "voice origin: rotation to b", 1U);
+    dsd_engine_trunk_scan_tick(opts, state);
+    test_rc |= expect_active_target(state, "voice origin: rotation to b", 1U);
     /* Frames read on a, decoded now: checked media up to b's landing time, then the call ends. */
-    state.frame_dispatch_active = 1;
-    state.frame_dispatch_carrier_seq = carrier_a;
-    state.frame_dispatch_scan_visit = visit_a;
-    if (seed_voice_gate_media_epoch_proto(&state, protocol, 0.16, 0.26, DSD_CALL_CRYPTO_CLEAR) != 0) {
+    state->frame_dispatch_active = 1;
+    state->frame_dispatch_carrier_seq = carrier_a;
+    state->frame_dispatch_scan_visit = visit_a;
+    if (seed_voice_gate_media_epoch_proto(state, protocol, 0.16, 0.26, DSD_CALL_CRYPTO_CLEAR) != 0) {
         test_rc = 1;
     }
-    state.frame_dispatch_active = 0;
-    (void)dsd_call_state_end_ex(&state, 0U, 0.26, DSD_CALL_END_TERMINATOR);
-    dsd_engine_trunk_scan_tick(&opts, &state);
+    state->frame_dispatch_active = 0;
+    (void)dsd_call_state_end_ex(state, 0U, 0.26, DSD_CALL_END_TERMINATOR);
+    dsd_engine_trunk_scan_tick(opts, state);
     trunk_scan_test_set_now(0.52);
-    dsd_engine_trunk_scan_tick(&opts, &state);
-    if (dsd_engine_trunk_scan_active_index(&state) != 0) {
+    dsd_engine_trunk_scan_tick(opts, state);
+    if (dsd_engine_trunk_scan_active_index(state) != 0) {
         DSD_FPRINTF(stderr, "%s: a's ended call held b\n", tag);
         test_rc = 1;
     }
@@ -6114,53 +6119,53 @@ run_voice_gate_media_origin_case(const char* tag, const char* body, int protocol
     obs.ota_target_id = 1001U;
     obs.policy_target_id = 1001U;
     obs.observed_m = 0.53;
-    (void)dsd_call_state_observe(&state, &obs, DSD_CALL_BOUNDARY_BEGIN);
+    (void)dsd_call_state_observe(state, &obs, DSD_CALL_BOUNDARY_BEGIN);
     for (int f = 0; f < 13; f++) {
-        (void)dsd_call_state_update_media(&state, 0U, 1, 0.53 + (0.02 * f));
+        (void)dsd_call_state_update_media(state, 0U, 1, 0.53 + (0.02 * f));
     }
     trunk_scan_test_set_now(0.78);
-    dsd_engine_trunk_scan_tick(&opts, &state);
-    if (dsd_engine_trunk_scan_active_index(&state) != 1) {
+    dsd_engine_trunk_scan_tick(opts, state);
+    if (dsd_engine_trunk_scan_active_index(state) != 1) {
         DSD_FPRINTF(stderr, "%s: media marks with no checked media held a\n", tag);
         test_rc = 1;
     }
 
     /* On b (landed 0.78): its own checked media holds it past its dwell, a sync loss after it too. */
-    if (seed_voice_gate_media_epoch_proto(&state, protocol, 0.79, 0.95, DSD_CALL_CRYPTO_CLEAR) != 0) {
+    if (seed_voice_gate_media_epoch_proto(state, protocol, 0.79, 0.95, DSD_CALL_CRYPTO_CLEAR) != 0) {
         test_rc = 1;
     }
-    (void)dsd_call_state_end_ex(&state, 0U, 0.96, DSD_CALL_END_SYNC_LOSS);
+    (void)dsd_call_state_end_ex(state, 0U, 0.96, DSD_CALL_END_SYNC_LOSS);
     trunk_scan_test_set_now(1.10);
-    dsd_engine_trunk_scan_tick(&opts, &state);
-    test_rc |= expect_active_target(&state, "voice origin: b held by its own media past a sync loss", 1U);
+    dsd_engine_trunk_scan_tick(opts, state);
+    test_rc |= expect_active_target(state, "voice origin: b held by its own media past a sync loss", 1U);
 
     /* b's hold ends at 1.20 and its dwell at 1.45: the park to a goes in flight, and media decoded meanwhile is no
        media of a's. */
     g_scan_tune_to_freq_pending = 1;
     g_scan_tune_pending_request = 0U;
     trunk_scan_test_set_now(1.50);
-    dsd_engine_trunk_scan_tick(&opts, &state);
+    dsd_engine_trunk_scan_tick(opts, state);
     g_scan_tune_to_freq_pending = 0;
-    test_rc |= expect_active_target(&state, "voice origin: rotation to a in flight", 0U);
+    test_rc |= expect_active_target(state, "voice origin: rotation to a in flight", 0U);
     if (g_scan_tune_pending_request == 0U) {
         DSD_FPRINTF(stderr, "%s: a's park is not in flight\n", tag);
         test_rc = 1;
     }
-    if (seed_voice_gate_media_epoch_proto(&state, protocol, 1.51, 1.70, DSD_CALL_CRYPTO_CLEAR) != 0) {
+    if (seed_voice_gate_media_epoch_proto(state, protocol, 1.51, 1.70, DSD_CALL_CRYPTO_CLEAR) != 0) {
         test_rc = 1;
     }
     dsd_trunk_tuning_request_publish(g_scan_tune_pending_request, DSD_TRUNK_TUNE_RESULT_OK);
     trunk_scan_test_set_now(1.71);
-    dsd_engine_trunk_scan_tick(&opts, &state);
-    test_rc |= expect_active_target(&state, "voice origin: a landed", 0U);
+    dsd_engine_trunk_scan_tick(opts, state);
+    test_rc |= expect_active_target(state, "voice origin: a landed", 0U);
     trunk_scan_test_set_now(1.97);
-    dsd_engine_trunk_scan_tick(&opts, &state);
-    if (dsd_engine_trunk_scan_active_index(&state) != 1) {
+    dsd_engine_trunk_scan_tick(opts, state);
+    if (dsd_engine_trunk_scan_active_index(state) != 1) {
         DSD_FPRINTF(stderr, "%s: media decoded while a's park was in flight held a\n", tag);
         test_rc = 1;
     }
 
-    dsd_engine_trunk_scan_shutdown(&opts, &state);
+    dsd_engine_trunk_scan_shutdown(opts, state);
     trunk_scan_test_clear_now();
     cleanup_paths(dir, target_path, NULL);
     return test_rc;
@@ -16822,18 +16827,18 @@ test_invalid_type_names_every_type(void) {
         test_rc = 1;
     }
 #endif
-    static dsd_opts opts;
-    static dsd_state state;
-    reset_scan_opts_state(&opts, &state);
-    DSD_SNPRINTF(opts.trunk_scan_lists[0].path, sizeof opts.trunk_scan_lists[0].path, "%s", target_path);
-    opts.trunk_scan_list_count = 1;
+    dsd_opts* opts = g_case_opts;
+    dsd_state* state = g_case_state;
+    reset_scan_opts_state(opts, state);
+    DSD_SNPRINTF(opts->trunk_scan_lists[0].path, sizeof opts->trunk_scan_lists[0].path, "%s", target_path);
+    opts->trunk_scan_list_count = 1;
     char init_err[DSD_TRUNK_SCAN_ERROR_MAX] = {0};
-    if (dsd_engine_trunk_scan_init(&opts, &state, init_err, sizeof init_err) == 0 || !strstr(init_err, target_path)
+    if (dsd_engine_trunk_scan_init(opts, state, init_err, sizeof init_err) == 0 || !strstr(init_err, target_path)
         || !strstr(init_err, k_every_type)) {
         DSD_FPRINTF(stderr, "session start with a long path: err '%s'\n", init_err);
         test_rc = 1;
     }
-    dsd_engine_trunk_scan_shutdown(&opts, &state);
+    dsd_engine_trunk_scan_shutdown(opts, state);
     (void)remove(target_path);
     for (size_t i = made; i > 0U; i--) {
         (void)dsd_test_rmdir(folders[i - 1U]);
@@ -17040,8 +17045,8 @@ test_simplex_targets_land_their_class_profile(void) {
     for (int locked = 0; locked <= 1; locked++) {
         char dir[DSD_TEST_PATH_MAX];
         char target_path[DSD_TEST_PATH_MAX];
-        static dsd_opts opts;
-        static dsd_state state;
+        dsd_opts* opts = g_case_opts;
+        dsd_state* state = g_case_state;
         if (make_temp_dir(dir, sizeof dir) != 0
             || write_targets_file_with_header(dir, k_nfm_targets_header,
                                               "fire,nfm-conventional,154430000,,250,250,,,,,,,\n"
@@ -17057,13 +17062,13 @@ test_simplex_targets_land_their_class_profile(void) {
             cleanup_paths(dir, NULL, NULL);
             return 1;
         }
-        reset_scan_opts_state(&opts, &state);
-        DSD_SNPRINTF(opts.trunk_scan_lists[0].path, sizeof opts.trunk_scan_lists[0].path, "%s", target_path);
-        opts.trunk_scan_list_count = 1;
+        reset_scan_opts_state(opts, state);
+        DSD_SNPRINTF(opts->trunk_scan_lists[0].path, sizeof opts->trunk_scan_lists[0].path, "%s", target_path);
+        opts->trunk_scan_list_count = 1;
         if (locked) {
-            opts.mod_cli_lock = 1;
-            opts.mod_qpsk = 1;
-            state.rf_mod = 1;
+            opts->mod_cli_lock = 1;
+            opts->mod_qpsk = 1;
+            state->rf_mod = 1;
         }
         dsd_rtl_stream_metrics_hooks hooks = {0};
         hooks.output_rate_hz = landing_output_rate_hz;
@@ -17076,12 +17081,12 @@ test_simplex_targets_land_their_class_profile(void) {
         g_scan_dsp_rate_hz = 72000;
         char err[256] = {0};
         trunk_scan_test_set_now(0.0);
-        if (dsd_engine_trunk_scan_init(&opts, &state, err, sizeof err) != 0) {
+        if (dsd_engine_trunk_scan_init(opts, state, err, sizeof err) != 0) {
             DSD_FPRINTF(stderr, "simplex landing init failed: %s\n", err);
             test_rc = 1;
         }
-        test_rc |= expect_active_target(&state, "simplex landing init", 0U);
-        if (dsd_engine_trunk_scan_active_landing(&state, NULL) != 0 || g_fake_family_analog != 1) {
+        test_rc |= expect_active_target(state, "simplex landing init", 0U);
+        if (dsd_engine_trunk_scan_active_landing(state, NULL) != 0 || g_fake_family_analog != 1) {
             DSD_FPRINTF(stderr, "the nfm target has a landing profile or did not land the analog family\n");
             test_rc = 1;
         }
@@ -17093,57 +17098,57 @@ test_simplex_targets_land_their_class_profile(void) {
                 g_fake_family_last_explicit = -1;
                 g_scan_tune_to_freq_ted_sps = 0;
                 trunk_scan_test_set_now(now);
-                dsd_engine_trunk_scan_tick(&opts, &state);
+                dsd_engine_trunk_scan_tick(opts, state);
                 test_rc |=
-                    expect_class_landing(&opts, &state, &want[i], locked, round == 0 ? "landing" : "second landing");
+                    expect_class_landing(opts, state, &want[i], locked, round == 0 ? "landing" : "second landing");
                 if (i == 0
                     && (g_fake_family_last_cqpsk != 0 || g_fake_family_last_explicit != 1 || g_fake_family_analog != 0
-                        || opts.frame_ysf != 1 || opts.mod_c4fm != 1 || opts.mod_gfsk != 0)) {
+                        || opts->frame_ysf != 1 || opts->mod_c4fm != 1 || opts->mod_gfsk != 0)) {
                     DSD_FPRINTF(stderr,
                                 "ysf after nfm: cqpsk asked %d explicit %d analog %d frame_ysf %d c4fm %d gfsk %d\n",
                                 g_fake_family_last_cqpsk, g_fake_family_last_explicit, g_fake_family_analog,
-                                opts.frame_ysf, opts.mod_c4fm, opts.mod_gfsk);
+                                opts->frame_ysf, opts->mod_c4fm, opts->mod_gfsk);
                     test_rc = 1;
                 }
-                if (want[i].mode == DSD_SCAN_MODE_M17 && (opts.frame_m17 != 1 || opts.frame_ysf != 0)) {
-                    DSD_FPRINTF(stderr, "m17 on the ysf frequency runs ysf=%d m17=%d\n", opts.frame_ysf,
-                                opts.frame_m17);
+                if (want[i].mode == DSD_SCAN_MODE_M17 && (opts->frame_m17 != 1 || opts->frame_ysf != 0)) {
+                    DSD_FPRINTF(stderr, "m17 on the ysf frequency runs ysf=%d m17=%d\n", opts->frame_ysf,
+                                opts->frame_m17);
                     test_rc = 1;
                 }
-                if (want[i].mode == DSD_SCAN_MODE_TETRA_DMO && (opts.frame_tetra != 1 || opts.frame_dmr != 0)) {
-                    DSD_FPRINTF(stderr, "the TETRA DMO target runs tetra=%d dmr=%d\n", opts.frame_tetra,
-                                opts.frame_dmr);
+                if (want[i].mode == DSD_SCAN_MODE_TETRA_DMO && (opts->frame_tetra != 1 || opts->frame_dmr != 0)) {
+                    DSD_FPRINTF(stderr, "the TETRA DMO target runs tetra=%d dmr=%d\n", opts->frame_tetra,
+                                opts->frame_dmr);
                     test_rc = 1;
                 }
                 /* A command under the target: the resume keeps the landing. */
-                (void)dsd_scan_mode_suspend(&opts, &state);
-                (void)dsd_scan_mode_resume(&opts, &state);
-                test_rc |= expect_class_landing(&opts, &state, &want[i], locked, "resume");
+                (void)dsd_scan_mode_suspend(opts, state);
+                (void)dsd_scan_mode_resume(opts, state);
+                test_rc |= expect_class_landing(opts, state, &want[i], locked, "resume");
                 if (round == 0 && want[i].mode == DSD_SCAN_MODE_M17) {
                     /* The decoder left on GFSK: under the -mq lock the next landing takes the lock's QPSK, not this. */
-                    state.rf_mod = 2;
+                    state->rf_mod = 2;
                 }
                 if (round == 0 && want[i].mode == DSD_SCAN_MODE_YSF) {
                     /* What the decoder runs when the target is left goes into its snapshot: another class's timing. */
-                    state.samplesPerSymbol = 4;
-                    state.symbolCenter = 1;
-                    state.rf_mod = 1;
-                    state.sps_hunt_idx = DSD_FRAME_SYNC_SPS_PROFILE_18000_4;
+                    state->samplesPerSymbol = 4;
+                    state->symbolCenter = 1;
+                    state->rf_mod = 1;
+                    state->sps_hunt_idx = DSD_FRAME_SYNC_SPS_PROFILE_18000_4;
                 }
             }
             now += 0.26;
             g_scan_tune_to_freq_ted_sps = -1;
             trunk_scan_test_set_now(now);
-            dsd_engine_trunk_scan_tick(&opts, &state);
-            test_rc |= expect_active_target(&state, "the analog target again", 0U);
+            dsd_engine_trunk_scan_tick(opts, state);
+            test_rc |= expect_active_target(state, "the analog target again", 0U);
             if (g_scan_tune_to_freq_ted_sps != 0 || g_fake_family_analog != 1
-                || dsd_engine_trunk_scan_active_landing(&state, NULL) != 0) {
+                || dsd_engine_trunk_scan_active_landing(state, NULL) != 0) {
                 DSD_FPRINTF(stderr, "nfm after dmr: ted %d analog %d\n", g_scan_tune_to_freq_ted_sps,
                             g_fake_family_analog);
                 test_rc = 1;
             }
         }
-        dsd_engine_trunk_scan_shutdown(&opts, &state);
+        dsd_engine_trunk_scan_shutdown(opts, state);
         g_fake_family_tracking = 0;
         g_fake_family_analog = 0;
         g_scan_dsp_rate_hz = 0;
@@ -17459,47 +17464,47 @@ test_tetra_dmo_target_skipped_off_a_tetra_rate(void) {
     char path[DSD_TEST_PATH_MAX];
     char err[512] = {0};
     char log[8192] = {0};
-    static dsd_opts opts;
-    static dsd_state state;
-    int rc = tetra_rig_start(&opts, &state, dir, sizeof dir, path, sizeof path, k_tetra_mixed_targets, 48000, err,
+    dsd_opts* opts = g_case_opts;
+    dsd_state* state = g_case_state;
+    int rc = tetra_rig_start(opts, state, dir, sizeof dir, path, sizeof path, k_tetra_mixed_targets, 48000, err,
                              sizeof err, log, sizeof log)
              != 0;
-    rc |= expect_active_target(&state, "a TETRA target at 48 kHz: the start", 0U);
+    rc |= expect_active_target(state, "a TETRA target at 48 kHz: the start", 0U);
     if (count_text(log, "WARNING: Trunk scan target 'dmo': TETRA needs a 72 kHz DSP bandwidth, not 48 kHz") != 1
         || count_text(log, "it is skipped at every visit until then.") != 1
-        || strstr(state.ui_msg, "Skipped at every visit: Trunk scan target 'dmo': TETRA DMO needs a 72 kHz DSP "
-                                "bandwidth, not 48 kHz")
+        || strstr(state->ui_msg, "Skipped at every visit: Trunk scan target 'dmo': TETRA DMO needs a 72 kHz DSP "
+                                 "bandwidth, not 48 kHz")
                == NULL) {
-        DSD_FPRINTF(stderr, "TETRA at 48 kHz: start log '%s', status '%s'\n", log, state.ui_msg);
+        DSD_FPRINTF(stderr, "TETRA at 48 kHz: start log '%s', status '%s'\n", log, state->ui_msg);
         rc = 1;
     }
     double now = 0.0;
     for (int hop = 0; hop < 4; hop++) {
         now += 0.3;
-        tick_at(&opts, &state, now);
-        rc |= dsd_engine_trunk_scan_active_index(&state) == 1U;
+        tick_at(opts, state, now);
+        rc |= dsd_engine_trunk_scan_active_index(state) == 1U;
     }
     rc |= g_scan_tune_watch_calls != 0;
-    rc |= state.trunk_scan_entry_reason_count != 3U || state.trunk_scan_entry_reasons[1] != DSD_SCAN_ENTRY_TETRA_RATE;
+    rc |= state->trunk_scan_entry_reason_count != 3U || state->trunk_scan_entry_reasons[1] != DSD_SCAN_ENTRY_TETRA_RATE;
     dsd_scan_entry_match_t match;
-    rc |= dsd_engine_scan_entry_match(&opts, &state, 425000000U, &match) != 0
-          || match.reason != DSD_SCAN_ENTRY_TETRA_RATE || match.row != 1;
+    rc |= dsd_engine_scan_entry_match(opts, state, 425000000U, &match) != 0 || match.reason != DSD_SCAN_ENTRY_TETRA_RATE
+          || match.row != 1;
     g_scan_dsp_rate_hz = 72000;
-    dsd_engine_trunk_scan_tick(&opts, &state);
-    rc |= state.trunk_scan_entry_reasons[1] != DSD_SCAN_ENTRY_OK;
-    rc |= dsd_engine_scan_entry_match(&opts, &state, 425000000U, &match) != 1 || match.row != 1;
+    dsd_engine_trunk_scan_tick(opts, state);
+    rc |= state->trunk_scan_entry_reasons[1] != DSD_SCAN_ENTRY_OK;
+    rc |= dsd_engine_scan_entry_match(opts, state, 425000000U, &match) != 1 || match.row != 1;
     int visited = 0;
     for (int hop = 0; hop < 4 && !visited; hop++) {
         now += 0.3;
-        tick_at(&opts, &state, now);
-        visited = dsd_engine_trunk_scan_active_index(&state) == 1U;
+        tick_at(opts, state, now);
+        visited = dsd_engine_trunk_scan_active_index(state) == 1U;
     }
     if (rc || !visited || g_scan_tune_watch_calls != 1) {
         DSD_FPRINTF(stderr, "TETRA at 48 then 72 kHz: rc %d visited %d tunes %d reason %d\n", rc, visited,
                     g_scan_tune_watch_calls, match.reason);
         rc = 1;
     }
-    tetra_rig_finish(&opts, &state, dir, path);
+    tetra_rig_finish(opts, state, dir, path);
     return rc;
 }
 
@@ -17546,34 +17551,34 @@ test_tetra_dmo_start_refused_when_nothing_can_be_visited(void) {
         char dir[DSD_TEST_PATH_MAX];
         char path[DSD_TEST_PATH_MAX];
         char err[DSD_TRUNK_SCAN_ERROR_MAX] = {0};
-        static dsd_opts opts;
-        static dsd_state state;
+        dsd_opts* opts = g_case_opts;
+        dsd_state* state = g_case_state;
         if (make_temp_dir(dir, sizeof dir) != 0
             || write_targets_file_with_header(dir, k_nfm_targets_header, k_cases[i].body, path, sizeof path) != 0) {
             return 1;
         }
-        reset_scan_opts_state(&opts, &state);
-        DSD_SNPRINTF(opts.trunk_scan_lists[0].path, sizeof opts.trunk_scan_lists[0].path, "%s", path);
-        opts.trunk_scan_list_count = 1;
+        reset_scan_opts_state(opts, state);
+        DSD_SNPRINTF(opts->trunk_scan_lists[0].path, sizeof opts->trunk_scan_lists[0].path, "%s", path);
+        opts->trunk_scan_list_count = 1;
         if (k_cases[i].rigctl_audio) {
-            opts.audio_in_type = AUDIO_IN_PULSE;
-            opts.use_rigctl = 1;
+            opts->audio_in_type = AUDIO_IN_PULSE;
+            opts->use_rigctl = 1;
         }
-        opts.tetra_uplink = k_cases[i].uplink;
+        opts->tetra_uplink = k_cases[i].uplink;
         if (k_cases[i].lpf_off) {
             (void)dsd_test_setenv("DSD_NEO_CHANNEL_LPF", "0", 1);
             dsd_neo_config_init();
         }
         if (k_cases[i].hold) {
-            DSD_SNPRINTF(opts.trunk_scan_hold_id, sizeof opts.trunk_scan_hold_id, "%s", k_cases[i].hold);
+            DSD_SNPRINTF(opts->trunk_scan_hold_id, sizeof opts->trunk_scan_hold_id, "%s", k_cases[i].hold);
         }
         g_scan_dsp_rate_hz = k_cases[i].rate_hz;
         g_scan_tune_watch_hz = 425000000L;
         g_scan_tune_watch_calls = 0;
         trunk_scan_test_set_now(0.0);
-        const int init_rc = dsd_engine_trunk_scan_init(&opts, &state, err, sizeof err);
-        const int attached = dsd_engine_trunk_scan_target_count(&state) != 0U;
-        dsd_engine_trunk_scan_shutdown(&opts, &state);
+        const int init_rc = dsd_engine_trunk_scan_init(opts, state, err, sizeof err);
+        const int attached = dsd_engine_trunk_scan_target_count(state) != 0U;
+        dsd_engine_trunk_scan_shutdown(opts, state);
         if (k_cases[i].lpf_off) {
             (void)dsd_test_unsetenv("DSD_NEO_CHANNEL_LPF");
             dsd_neo_config_init();
@@ -17593,23 +17598,22 @@ test_tetra_dmo_start_refused_when_nothing_can_be_visited(void) {
     char dir[DSD_TEST_PATH_MAX];
     char path[DSD_TEST_PATH_MAX];
     char err[512] = {0};
-    static dsd_opts opts;
-    static dsd_state state;
-    int wait_rc =
-        tetra_rig_start(&opts, &state, dir, sizeof dir, path, sizeof path, k_two, 0, err, sizeof err, NULL, 0U);
+    dsd_opts* opts = g_case_opts;
+    dsd_state* state = g_case_state;
+    int wait_rc = tetra_rig_start(opts, state, dir, sizeof dir, path, sizeof path, k_two, 0, err, sizeof err, NULL, 0U);
     const int waited_tunes = g_scan_tune_watch_calls;
     g_scan_dsp_rate_hz = 72000;
     int parked = 0;
     for (int t = 1; t <= 40 && !parked; t++) {
-        tick_at(&opts, &state, 0.1 * t);
-        parked = g_scan_tune_watch_calls > 0 && dsd_engine_trunk_scan_target_confirmed(&state, 0);
+        tick_at(opts, state, 0.1 * t);
+        parked = g_scan_tune_watch_calls > 0 && dsd_engine_trunk_scan_target_confirmed(state, 0);
     }
     if (wait_rc != 0 || waited_tunes != 0 || !parked) {
         DSD_FPRINTF(stderr, "TETRA start with the rate unknown: rc %d (%s), tunes while unknown %d, parked %d\n",
                     wait_rc, err, waited_tunes, parked);
         rc = 1;
     }
-    tetra_rig_finish(&opts, &state, dir, path);
+    tetra_rig_finish(opts, state, dir, path);
     return rc;
 }
 
@@ -17621,51 +17625,49 @@ test_tetra_dmo_target_on_air_judged_again(void) {
     char dir[DSD_TEST_PATH_MAX];
     char path[DSD_TEST_PATH_MAX];
     char err[512] = {0};
-    static dsd_opts opts;
-    static dsd_state state;
+    dsd_opts* opts = g_case_opts;
+    dsd_state* state = g_case_state;
     static const char k_body[] = "dmo,tetra-dmo-conventional,425000000,,250,250,,,,,,,\n"
                                  "dmr,dmr-conventional,461000000,,250,250,,,,,,,\n";
     int rc =
-        tetra_rig_start(&opts, &state, dir, sizeof dir, path, sizeof path, k_body, 72000, err, sizeof err, NULL, 0U)
-        != 0;
-    rc |= expect_active_target(&state, "the TETRA target first", 0U);
-    rc |=
-        expect_control_rc("hold", dsd_engine_trunk_scan_control(&opts, &state, DSD_TRUNK_SCAN_CONTROL_HOLD_TOGGLE), 1);
+        tetra_rig_start(opts, state, dir, sizeof dir, path, sizeof path, k_body, 72000, err, sizeof err, NULL, 0U) != 0;
+    rc |= expect_active_target(state, "the TETRA target first", 0U);
+    rc |= expect_control_rc("hold", dsd_engine_trunk_scan_control(opts, state, DSD_TRUNK_SCAN_CONTROL_HOLD_TOGGLE), 1);
     g_tetra_ted_applied = 4; /* 72 kHz over 18000 symbols/s */
-    tick_at(&opts, &state, 0.1);
-    rc |= expect_active_target(&state, "the TED timing the rate's", 0U);
+    tick_at(opts, state, 0.1);
+    rc |= expect_active_target(state, "the TED timing the rate's", 0U);
     /* The radio reopening: no rate yet. */
     g_scan_dsp_rate_hz = 0;
-    tick_at(&opts, &state, 0.2);
-    rc |= expect_active_target(&state, "the rate not known yet", 0U);
+    tick_at(opts, state, 0.2);
+    rc |= expect_active_target(state, "the rate not known yet", 0U);
     g_scan_dsp_rate_hz = 72000;
     g_tetra_ted_applied = 5; /* a TED timing the 72 kHz chain does not run at */
     dsd_test_capture_stderr cap;
     char log[4096] = {0};
     const int captured = dsd_test_capture_stderr_begin(&cap, "trunkscantetraonair") == 0;
-    tick_at(&opts, &state, 0.3);
+    tick_at(opts, state, 0.3);
     if (captured) {
         (void)dsd_test_capture_stderr_end(&cap);
         (void)dsd_test_capture_stderr_read(&cap, log, sizeof log);
     }
-    rc |= expect_active_target(&state, "a TED timing that disagrees, held", 1U);
+    rc |= expect_active_target(state, "a TED timing that disagrees, held", 1U);
     if (count_text(log, "WARNING: Trunk scan target 'dmo': TETRA DMO needs the TED timed at the DSP rate") != 1
-        || strstr(state.ui_msg, "TETRA DMO's TED timing does not fit the DSP rate") == NULL) {
-        DSD_FPRINTF(stderr, "TETRA TED on air: log '%s' status '%s'\n", log, state.ui_msg);
+        || strstr(state->ui_msg, "TETRA DMO's TED timing does not fit the DSP rate") == NULL) {
+        DSD_FPRINTF(stderr, "TETRA TED on air: log '%s' status '%s'\n", log, state->ui_msg);
         rc = 1;
     }
     /* Back on it with the timing right, then the rate changed under it. */
     g_tetra_ted_applied = 4;
-    rc |= expect_control_rc("advance back",
-                            dsd_engine_trunk_scan_control(&opts, &state, DSD_TRUNK_SCAN_CONTROL_ADVANCE), 0);
-    rc |= expect_active_target(&state, "back on the TETRA target", 0U);
-    tick_at(&opts, &state, 0.4);
-    rc |= expect_active_target(&state, "still on it", 0U);
+    rc |= expect_control_rc("advance back", dsd_engine_trunk_scan_control(opts, state, DSD_TRUNK_SCAN_CONTROL_ADVANCE),
+                            0);
+    rc |= expect_active_target(state, "back on the TETRA target", 0U);
+    tick_at(opts, state, 0.4);
+    rc |= expect_active_target(state, "still on it", 0U);
     g_scan_dsp_rate_hz = 48000;
     g_tetra_ted_applied = 0;
-    tick_at(&opts, &state, 0.5);
-    rc |= expect_active_target(&state, "the rate moved to 48 kHz", 1U);
-    tetra_rig_finish(&opts, &state, dir, path);
+    tick_at(opts, state, 0.5);
+    rc |= expect_active_target(state, "the rate moved to 48 kHz", 1U);
+    tetra_rig_finish(opts, state, dir, path);
     return rc;
 }
 
@@ -17677,40 +17679,38 @@ test_tetra_dmo_failed_departure_keeps_its_cause(void) {
     char dir[DSD_TEST_PATH_MAX];
     char path[DSD_TEST_PATH_MAX];
     char err[512] = {0};
-    static dsd_opts opts;
-    static dsd_state state;
+    dsd_opts* opts = g_case_opts;
+    dsd_state* state = g_case_state;
     static const char k_body[] = "dmo,tetra-dmo-conventional,425000000,,250,250,,,,,,,\n"
                                  "dmr,dmr-conventional,461000000,,250,250,,,,,,,\n";
     int rc =
-        tetra_rig_start(&opts, &state, dir, sizeof dir, path, sizeof path, k_body, 72000, err, sizeof err, NULL, 0U)
-        != 0;
-    rc |=
-        expect_control_rc("hold", dsd_engine_trunk_scan_control(&opts, &state, DSD_TRUNK_SCAN_CONTROL_HOLD_TOGGLE), 1);
+        tetra_rig_start(opts, state, dir, sizeof dir, path, sizeof path, k_body, 72000, err, sizeof err, NULL, 0U) != 0;
+    rc |= expect_control_rc("hold", dsd_engine_trunk_scan_control(opts, state, DSD_TRUNK_SCAN_CONTROL_HOLD_TOGGLE), 1);
     g_tetra_ted_applied = 5;
     g_scan_tune_to_freq_failures_remaining = 1; /* the departure's park of dmr */
     dsd_test_capture_stderr cap;
     char log[8192] = {0};
     const int captured = dsd_test_capture_stderr_begin(&cap, "trunkscantetrafaileddeparture") == 0;
-    tick_at(&opts, &state, 0.1);
-    const int stayed = dsd_engine_trunk_scan_active_index(&state) == 0U;
-    const int due_early = dsd_engine_trunk_scan_departure_due(&opts, &state);
-    tick_at(&opts, &state, 0.2);
-    tick_at(&opts, &state, 0.3);
-    const int still = dsd_engine_trunk_scan_active_index(&state) == 0U;
+    tick_at(opts, state, 0.1);
+    const int stayed = dsd_engine_trunk_scan_active_index(state) == 0U;
+    const int due_early = dsd_engine_trunk_scan_departure_due(opts, state);
+    tick_at(opts, state, 0.2);
+    tick_at(opts, state, 0.3);
+    const int still = dsd_engine_trunk_scan_active_index(state) == 0U;
     if (captured) {
         (void)dsd_test_capture_stderr_end(&cap);
         (void)dsd_test_capture_stderr_read(&cap, log, sizeof log);
     }
     const int named = count_text(log, "WARNING: Trunk scan target 'dmo': TETRA DMO needs the TED timed");
-    tick_at(&opts, &state, 2.2); /* past the failed park's cooldown */
-    const int left = dsd_engine_trunk_scan_active_index(&state) == 1U;
+    tick_at(opts, state, 2.2); /* past the failed park's cooldown */
+    const int left = dsd_engine_trunk_scan_active_index(state) == 1U;
     if (rc || !stayed || due_early || !still || named != 1 || !left) {
         DSD_FPRINTF(stderr, "TETRA failed departure: rc %d stayed %d due %d still %d named %d left %d\n%s\n", rc,
                     stayed, due_early, still, named, left, log);
         rc = 1;
     }
     g_scan_tune_to_freq_failures_remaining = 0;
-    tetra_rig_finish(&opts, &state, dir, path);
+    tetra_rig_finish(opts, state, dir, path);
     return rc;
 }
 
@@ -17722,41 +17722,40 @@ test_tetra_dmo_entry_reads_the_on_air_verdict(void) {
     char dir[DSD_TEST_PATH_MAX];
     char path[DSD_TEST_PATH_MAX];
     char err[512] = {0};
-    static dsd_opts opts;
-    static dsd_state state;
+    dsd_opts* opts = g_case_opts;
+    dsd_state* state = g_case_state;
     static const char k_body[] = "dmo,tetra-dmo-conventional,425000000,,250,250,,,,,,,\n"
                                  "dmr,dmr-conventional,461000000,,250,250,,,,,,,\n";
     int rc =
-        tetra_rig_start(&opts, &state, dir, sizeof dir, path, sizeof path, k_body, 72000, err, sizeof err, NULL, 0U)
-        != 0;
+        tetra_rig_start(opts, state, dir, sizeof dir, path, sizeof path, k_body, 72000, err, sizeof err, NULL, 0U) != 0;
     g_tetra_ted_applied = 5;
     g_scan_tune_to_freq_failures_remaining = 1; /* the departure's park of dmr */
     dsd_test_capture_stderr cap;
     const int captured = dsd_test_capture_stderr_begin(&cap, "trunkscantetraentry") == 0;
-    tick_at(&opts, &state, 0.1);
+    tick_at(opts, state, 0.1);
     if (captured) {
         (void)dsd_test_capture_stderr_end(&cap);
     }
     dsd_scan_entry_match_t match;
     DSD_MEMSET(&match, 0, sizeof match);
-    const int stayed = dsd_engine_trunk_scan_active_index(&state) == 0U;
-    const int picked = dsd_engine_scan_entry_match(&opts, &state, 425000000U, &match);
+    const int stayed = dsd_engine_trunk_scan_active_index(state) == 0U;
+    const int picked = dsd_engine_scan_entry_match(opts, state, 425000000U, &match);
     if (rc || !stayed || picked != 0 || match.reason != DSD_SCAN_ENTRY_TETRA_CHAIN) {
         DSD_FPRINTF(stderr, "TETRA entry on air: rc %d stayed %d picked %d reason %d\n", rc, stayed, picked,
                     (int)match.reason);
         rc = 1;
     }
     g_tetra_ted_applied = 4;
-    tick_at(&opts, &state, 0.2);
+    tick_at(opts, state, 0.2);
     DSD_MEMSET(&match, 0, sizeof match);
-    if (dsd_engine_scan_entry_match(&opts, &state, 425000000U, &match) != 1 || match.row != 0 || !match.on_air) {
+    if (dsd_engine_scan_entry_match(opts, state, 425000000U, &match) != 1 || match.row != 0 || !match.on_air) {
         DSD_FPRINTF(stderr, "TETRA entry, timing right: reason %d row %d on air %d\n", (int)match.reason, match.row,
                     match.on_air);
         rc = 1;
     }
     g_scan_tune_to_freq_failures_remaining = 0;
     g_tetra_ted_applied = 0;
-    tetra_rig_finish(&opts, &state, dir, path);
+    tetra_rig_finish(opts, state, dir, path);
     return rc;
 }
 
@@ -17770,32 +17769,31 @@ test_tetra_dmo_two_targets_named_once_and_published(void) {
     char dir[DSD_TEST_PATH_MAX];
     char path[DSD_TEST_PATH_MAX];
     char err[512] = {0};
-    static dsd_opts opts;
-    static dsd_state state;
+    dsd_opts* opts = g_case_opts;
+    dsd_state* state = g_case_state;
     static const char k_body[] = "dmoa,tetra-dmo-conventional,425000000,,250,250,,,,,,,\n"
                                  "dmob,tetra-dmo-conventional,425500000,,250,250,,,,,,,\n";
     static const uint32_t k_hz[2] = {425000000U, 425500000U};
     int rc =
-        tetra_rig_start(&opts, &state, dir, sizeof dir, path, sizeof path, k_body, 72000, err, sizeof err, NULL, 0U)
-        != 0;
+        tetra_rig_start(opts, state, dir, sizeof dir, path, sizeof path, k_body, 72000, err, sizeof err, NULL, 0U) != 0;
     g_tetra_ted_applied = 5;
     dsd_test_capture_stderr cap;
     char log[16384] = {0};
     const int captured = dsd_test_capture_stderr_begin(&cap, "trunkscantetratwo") == 0;
     int mismatches = 0;
     int switches = 0;
-    size_t last = dsd_engine_trunk_scan_active_index(&state);
+    size_t last = dsd_engine_trunk_scan_active_index(state);
     for (int t = 1; t <= 8; t++) {
-        tick_at(&opts, &state, 0.1 * t);
-        const size_t now = dsd_engine_trunk_scan_active_index(&state);
+        tick_at(opts, state, 0.1 * t);
+        const size_t now = dsd_engine_trunk_scan_active_index(state);
         switches += now != last;
         last = now;
         for (size_t i = 0; i < 2U; i++) {
             dsd_scan_entry_match_t match;
             DSD_MEMSET(&match, 0, sizeof match);
-            (void)dsd_engine_scan_entry_match(&opts, &state, k_hz[i], &match);
-            const int published = state.trunk_scan_entry_reason_count == 2U && state.trunk_scan_entry_reasons
-                                      ? (int)state.trunk_scan_entry_reasons[i]
+            (void)dsd_engine_scan_entry_match(opts, state, k_hz[i], &match);
+            const int published = state->trunk_scan_entry_reason_count == 2U && state->trunk_scan_entry_reasons
+                                      ? (int)state->trunk_scan_entry_reasons[i]
                                       : -1;
             mismatches += published != (int)match.reason;
         }
@@ -17812,7 +17810,7 @@ test_tetra_dmo_two_targets_named_once_and_published(void) {
         rc = 1;
     }
     g_tetra_ted_applied = 0;
-    tetra_rig_finish(&opts, &state, dir, path);
+    tetra_rig_finish(opts, state, dir, path);
     return rc;
 }
 
@@ -17825,50 +17823,49 @@ test_tetra_state_held_across_mixed_hops(void) {
     char dir[DSD_TEST_PATH_MAX];
     char path[DSD_TEST_PATH_MAX];
     char err[512] = {0};
-    static dsd_opts opts;
-    static dsd_state state;
+    dsd_opts* opts = g_case_opts;
+    dsd_state* state = g_case_state;
     static const char k_body[] = "fire,nfm-conventional,154430000,,250,250,,,,,,,\n"
                                  "dmo,tetra-dmo-conventional,425000000,,250,250,,,,,,,\n"
                                  "dmo2,tetra-dmo-conventional,425500000,,250,250,,,,,,,\n"
                                  "dmr,dmr-conventional,461000000,,250,250,,,,,,,\n";
     int rc =
-        tetra_rig_start(&opts, &state, dir, sizeof dir, path, sizeof path, k_body, 72000, err, sizeof err, NULL, 0U)
-        != 0;
-    rc |= state.tetra_ext_scan_held != 1U || g_tetra_visit_resets != 1;
+        tetra_rig_start(opts, state, dir, sizeof dir, path, sizeof path, k_body, 72000, err, sizeof err, NULL, 0U) != 0;
+    rc |= state->tetra_ext_scan_held != 1U || g_tetra_visit_resets != 1;
     /* The decoder's state, made on the first TETRA burst. */
-    fake_tetra_ext_install(&state);
+    fake_tetra_ext_install(state);
     double now = 0.0;
     int resets = g_tetra_visit_resets;
     for (int hop = 0; hop < 8; hop++) {
         now += 0.3;
-        tick_at(&opts, &state, now);
+        tick_at(opts, state, now);
         rc |= g_tetra_visit_resets != resets + 1 || !g_tetra_visit_reset_held;
         resets = g_tetra_visit_resets;
-        const size_t on = dsd_engine_trunk_scan_active_index(&state);
-        rc |= (on == 1U || on == 2U) != (opts.frame_tetra == 1);
+        const size_t on = dsd_engine_trunk_scan_active_index(state);
+        rc |= (on == 1U || on == 2U) != (opts->frame_tetra == 1);
     }
-    if (rc || !fake_tetra_ext_present(&state) || g_fake_tetra_ext_frees != 0) {
+    if (rc || !fake_tetra_ext_present(state) || g_fake_tetra_ext_frees != 0) {
         DSD_FPRINTF(stderr, "TETRA held across hops: rc %d present %d frees %d resets %d\n", rc,
-                    fake_tetra_ext_present(&state), g_fake_tetra_ext_frees, g_tetra_visit_resets);
+                    fake_tetra_ext_present(state), g_fake_tetra_ext_frees, g_tetra_visit_resets);
         rc = 1;
     }
     /* A pause into manual decoding (the configured DMR session): cold, then freed. */
     p25_sm_tick_guard_enter();
-    rc |= dsd_engine_trunk_scan_pause_locked(&opts, &state, DSD_TRUNK_SCAN_PAUSE_IN_PLACE) != 0;
+    rc |= dsd_engine_trunk_scan_pause_locked(opts, state, DSD_TRUNK_SCAN_PAUSE_IN_PLACE) != 0;
     p25_sm_tick_guard_leave();
-    rc |= state.tetra_ext_scan_held != 0U || g_tetra_visit_resets != resets + 1 || fake_tetra_ext_present(&state)
-          || g_fake_tetra_ext_frees != 1 || opts.frame_tetra != 0;
+    rc |= state->tetra_ext_scan_held != 0U || g_tetra_visit_resets != resets + 1 || fake_tetra_ext_present(state)
+          || g_fake_tetra_ext_frees != 1 || opts->frame_tetra != 0;
     /* A resume takes the hold again at its park. */
     p25_sm_tick_guard_enter();
-    rc |= dsd_engine_trunk_scan_resume_locked(&opts, &state) < 0;
+    rc |= dsd_engine_trunk_scan_resume_locked(opts, state) < 0;
     p25_sm_tick_guard_leave();
-    rc |= state.tetra_ext_scan_held != 1U;
-    tetra_rig_finish(&opts, &state, dir, path);
-    rc |= state.tetra_ext_scan_held != 0U;
+    rc |= state->tetra_ext_scan_held != 1U;
+    tetra_rig_finish(opts, state, dir, path);
+    rc |= state->tetra_ext_scan_held != 0U;
     if (rc) {
         DSD_FPRINTF(stderr, "TETRA pause/resume: held %u resets %d frees %d frame_tetra %d\n",
-                    (unsigned)state.tetra_ext_scan_held, g_tetra_visit_resets, g_fake_tetra_ext_frees,
-                    opts.frame_tetra);
+                    (unsigned)state->tetra_ext_scan_held, g_tetra_visit_resets, g_fake_tetra_ext_frees,
+                    opts->frame_tetra);
     }
 
     /* A configured -fT session, whose first parks fail: its state is held, reset, and kept for it at the stop. */
@@ -17880,12 +17877,12 @@ test_tetra_state_held_across_mixed_hops(void) {
                != 0) {
         return 1;
     }
-    reset_scan_opts_state(&opts, &state);
-    DSD_SNPRINTF(opts.trunk_scan_lists[0].path, sizeof opts.trunk_scan_lists[0].path, "%s", path);
-    opts.trunk_scan_list_count = 1;
-    (void)dsd_apply_decode_mode_preset(DSDCFG_MODE_TETRA, DSD_DECODE_PRESET_PROFILE_CLI, &opts, &state);
-    fake_tetra_ext_install(&state);
-    state.tetra_pub.mcc = 460U;
+    reset_scan_opts_state(opts, state);
+    DSD_SNPRINTF(opts->trunk_scan_lists[0].path, sizeof opts->trunk_scan_lists[0].path, "%s", path);
+    opts->trunk_scan_list_count = 1;
+    (void)dsd_apply_decode_mode_preset(DSDCFG_MODE_TETRA, DSD_DECODE_PRESET_PROFILE_CLI, opts, state);
+    fake_tetra_ext_install(state);
+    state->tetra_pub.mcc = 460U;
     g_fake_tetra_ext_frees = 0;
     g_tetra_visit_resets = 0;
     g_scan_dsp_rate_hz = 72000;
@@ -17893,25 +17890,25 @@ test_tetra_state_held_across_mixed_hops(void) {
     trunk_scan_test_set_now(0.0);
     dsd_test_capture_stderr cap;
     const int captured = dsd_test_capture_stderr_begin(&cap, "trunkscantetrafailed") == 0;
-    const int init_rc = dsd_engine_trunk_scan_init(&opts, &state, err, sizeof err);
+    const int init_rc = dsd_engine_trunk_scan_init(opts, state, err, sizeof err);
     if (captured) {
         (void)dsd_test_capture_stderr_end(&cap);
         (void)remove(cap.path);
     }
-    const int held = state.tetra_ext_scan_held;
-    dsd_engine_trunk_scan_shutdown(&opts, &state);
-    if (init_rc != 0 || held != 1 || g_tetra_visit_resets < 2 || !fake_tetra_ext_present(&state)
-        || g_fake_tetra_ext_frees != 0 || state.tetra_ext_scan_held != 0U || opts.frame_tetra != 1
-        || state.tetra_pub.mcc != 0U) {
+    const int held = state->tetra_ext_scan_held;
+    dsd_engine_trunk_scan_shutdown(opts, state);
+    if (init_rc != 0 || held != 1 || g_tetra_visit_resets < 2 || !fake_tetra_ext_present(state)
+        || g_fake_tetra_ext_frees != 0 || state->tetra_ext_scan_held != 0U || opts->frame_tetra != 1
+        || state->tetra_pub.mcc != 0U) {
         DSD_FPRINTF(stderr,
                     "configured -fT, failed parks: rc %d (%s) held %d resets %d present %d frees %d held after %u "
                     "frame_tetra %d mcc %u\n",
-                    init_rc, err, held, g_tetra_visit_resets, fake_tetra_ext_present(&state), g_fake_tetra_ext_frees,
-                    (unsigned)state.tetra_ext_scan_held, opts.frame_tetra, (unsigned)state.tetra_pub.mcc);
+                    init_rc, err, held, g_tetra_visit_resets, fake_tetra_ext_present(state), g_fake_tetra_ext_frees,
+                    (unsigned)state->tetra_ext_scan_held, opts->frame_tetra, (unsigned)state->tetra_pub.mcc);
         rc = 1;
     }
     g_scan_tune_to_freq_failures_remaining = 0;
-    tetra_rig_finish(&opts, &state, dir, path);
+    tetra_rig_finish(opts, state, dir, path);
     return rc;
 }
 
@@ -17922,29 +17919,28 @@ test_tetra_entry_reasons_follow_the_chain(void) {
     char dir[DSD_TEST_PATH_MAX];
     char path[DSD_TEST_PATH_MAX];
     char err[512] = {0};
-    static dsd_opts opts;
-    static dsd_state state;
+    dsd_opts* opts = g_case_opts;
+    dsd_state* state = g_case_state;
     static const char k_body[] = "dmr,dmr-conventional,461000000,,250,250,,,,,,,\n"
                                  "dmo,tetra-dmo-conventional,425000000,,250,250,,,,,,,\n";
     int rc =
-        tetra_rig_start(&opts, &state, dir, sizeof dir, path, sizeof path, k_body, 72000, err, sizeof err, NULL, 0U)
-        != 0;
-    dsd_engine_trunk_scan_tick(&opts, &state);
-    rc |= expect_entry_reasons(&state, "at 72 kHz", DSD_SCAN_ENTRY_OK, DSD_SCAN_ENTRY_OK);
-    uint64_t rev = state.trunk_scan_entry_rev;
-    opts.tetra_uplink = 1;
-    dsd_engine_trunk_scan_tick(&opts, &state);
-    rc |= expect_entry_reasons(&state, "--tetra-uplink on", DSD_SCAN_ENTRY_OK, DSD_SCAN_ENTRY_TETRA_CHAIN);
-    rc |= state.trunk_scan_entry_rev == rev;
-    rev = state.trunk_scan_entry_rev;
-    opts.tetra_uplink = 0;
-    dsd_engine_trunk_scan_tick(&opts, &state);
-    rc |= expect_entry_reasons(&state, "--tetra-uplink off", DSD_SCAN_ENTRY_OK, DSD_SCAN_ENTRY_OK);
-    rc |= state.trunk_scan_entry_rev == rev;
+        tetra_rig_start(opts, state, dir, sizeof dir, path, sizeof path, k_body, 72000, err, sizeof err, NULL, 0U) != 0;
+    dsd_engine_trunk_scan_tick(opts, state);
+    rc |= expect_entry_reasons(state, "at 72 kHz", DSD_SCAN_ENTRY_OK, DSD_SCAN_ENTRY_OK);
+    uint64_t rev = state->trunk_scan_entry_rev;
+    opts->tetra_uplink = 1;
+    dsd_engine_trunk_scan_tick(opts, state);
+    rc |= expect_entry_reasons(state, "--tetra-uplink on", DSD_SCAN_ENTRY_OK, DSD_SCAN_ENTRY_TETRA_CHAIN);
+    rc |= state->trunk_scan_entry_rev == rev;
+    rev = state->trunk_scan_entry_rev;
+    opts->tetra_uplink = 0;
+    dsd_engine_trunk_scan_tick(opts, state);
+    rc |= expect_entry_reasons(state, "--tetra-uplink off", DSD_SCAN_ENTRY_OK, DSD_SCAN_ENTRY_OK);
+    rc |= state->trunk_scan_entry_rev == rev;
     g_scan_dsp_rate_hz = 0;
-    dsd_engine_trunk_scan_tick(&opts, &state);
-    rc |= expect_entry_reasons(&state, "the rate not known", DSD_SCAN_ENTRY_OK, DSD_SCAN_ENTRY_TETRA_WAIT);
-    tetra_rig_finish(&opts, &state, dir, path);
+    dsd_engine_trunk_scan_tick(opts, state);
+    rc |= expect_entry_reasons(state, "the rate not known", DSD_SCAN_ENTRY_OK, DSD_SCAN_ENTRY_TETRA_WAIT);
+    tetra_rig_finish(opts, state, dir, path);
     return rc;
 }
 
@@ -21106,35 +21102,35 @@ test_tetra_dmo_list_toggle_reads_the_on_air_verdict(void) {
     static const char* const names[] = {"dmo", "dmr"};
     static const char* const bodies[] = {"dmo,tetra-dmo-conventional,425000000,,250,250,,,,,,,\n",
                                          "dmr,dmr-conventional,461000000,,250,250,,,,,,,\n"};
-    static dsd_opts opts;
-    static dsd_state state;
+    dsd_opts* opts = g_case_opts;
+    dsd_state* state = g_case_state;
     scan_list_files files;
     g_scan_dsp_rate_hz = 72000;
     g_scan_tune_to_freq_failures_remaining = 0;
     g_tetra_ted_override = 0;
     g_tetra_ted_applied = 4;
-    if (scan_lists_init(&files, k_nfm_targets_header, names, bodies, NULL, 2, &opts, &state) != 0) {
+    if (scan_lists_init(&files, k_nfm_targets_header, names, bodies, NULL, 2, opts, state) != 0) {
         return 1;
     }
-    int rc = expect_active_target(&state, "the TETRA target first", 0U);
+    int rc = expect_active_target(state, "the TETRA target first", 0U);
     g_tetra_ted_applied = 5;                    /* a TED timing the 72 kHz chain does not run at */
     g_scan_tune_to_freq_failures_remaining = 1; /* the departure's park of dmr */
     dsd_test_capture_stderr cap;
     const int captured = dsd_test_capture_stderr_begin(&cap, "trunkscantetratoggle") == 0;
-    tick_at(&opts, &state, 0.1);
+    tick_at(opts, state, 0.1);
     if (captured) {
         (void)dsd_test_capture_stderr_end(&cap);
         (void)remove(cap.path);
     }
-    rc |= expect_active_target(&state, "the failed departure keeps the receiver", 0U);
-    rc |= expect_list_rc("dmr's list off beside a TETRA target leaving", list_set(&opts, &state, 2, 0),
+    rc |= expect_active_target(state, "the failed departure keeps the receiver", 0U);
+    rc |= expect_list_rc("dmr's list off beside a TETRA target leaving", list_set(opts, state, 2, 0),
                          DSD_TRUNK_SCAN_LIST_SET_REFUSED_LAST);
     g_tetra_ted_applied = 4;
-    rc |= expect_list_rc("dmr's list off, the timing right", list_set(&opts, &state, 2, 0), DSD_TRUNK_SCAN_LIST_SET_OK);
+    rc |= expect_list_rc("dmr's list off, the timing right", list_set(opts, state, 2, 0), DSD_TRUNK_SCAN_LIST_SET_OK);
     g_scan_tune_to_freq_failures_remaining = 0;
     g_tetra_ted_applied = 0;
     g_scan_dsp_rate_hz = 0;
-    scan_lists_finish(&files, &opts, &state);
+    scan_lists_finish(&files, opts, state);
     return rc;
 }
 
@@ -23258,24 +23254,24 @@ test_lists_start_refused_when_no_target_can_be_visited(void) {
     static const char* const bodies[] = {"a,nfm-conventional,154430000,,250,2000,,\n",
                                          "wide,nfm-conventional,155430000,,250,2000,,--nfm-bandwidth-hz 20000\n"};
     static const int off[] = {1, 0};
-    static dsd_opts opts;
-    static dsd_state state;
+    dsd_opts* opts = g_case_opts;
+    dsd_state* state = g_case_state;
     scan_list_files files;
     if (scan_list_files_write(&files, k_squelch_targets_header, names, bodies, 2) != 0) {
         scan_list_files_remove(&files);
         return 1;
     }
-    reset_scan_opts_state(&opts, &state);
-    scan_list_files_to_opts(&files, off, &opts);
+    reset_scan_opts_state(opts, state);
+    scan_list_files_to_opts(&files, off, opts);
     g_scan_tune_refuses_unfit_width = 1;
     g_scan_tune_width_refusals = 0;
     g_scan_dsp_rate_hz = 16000;
     char err[512] = {0};
     trunk_scan_test_set_now(0.0);
-    const int rc = dsd_engine_trunk_scan_init(&opts, &state, err, sizeof err);
-    const int attached = dsd_engine_trunk_scan_target_count(&state) != 0;
+    const int rc = dsd_engine_trunk_scan_init(opts, state, err, sizeof err);
+    const int attached = dsd_engine_trunk_scan_target_count(state) != 0;
     const int refusals = g_scan_tune_width_refusals;
-    dsd_engine_trunk_scan_shutdown(&opts, &state);
+    dsd_engine_trunk_scan_shutdown(opts, state);
     g_scan_tune_refuses_unfit_width = 0;
     g_scan_dsp_rate_hz = 0;
     trunk_scan_test_clear_now();
@@ -29491,6 +29487,14 @@ test_scan_quiet_all(void) {
 int
 main(void) {
     int rc = 0;
+    g_case_opts = (dsd_opts*)calloc(1, sizeof(*g_case_opts));
+    g_case_state = (dsd_state*)calloc(1, sizeof(*g_case_state));
+    if (!g_case_opts || !g_case_state) {
+        DSD_FPRINTF(stderr, "case fixture allocation failed\n");
+        free(g_case_opts);
+        free(g_case_state);
+        return 1;
+    }
     rc |= test_scan_quiet_all();
     rc |= run_with_default_tune_hook(test_parser_valid_mixed_targets_and_relative_chan_csv);
     rc |= run_with_default_tune_hook(test_target_confirmed_only_by_its_park);
@@ -29847,6 +29851,9 @@ main(void) {
     rc |= run_with_default_tune_hook(test_hold_start_refused_park_runs_on_unheld);
     rc |= run_with_default_tune_hook(test_hold_start_single_target_refused_stays_unheld);
     qt_shared_state_free();
+    reset_scan_opts_state(g_case_opts, g_case_state);
+    free(g_case_state);
+    free(g_case_opts);
     return rc;
 }
 
