@@ -270,6 +270,10 @@ Item {
                 verify(monitor.stripIdle, "the ended call leaves the strip idle");
                 verify(monitor.otherEmergency && monitor.otherEnc, "the hold keeps the flags");
                 compare(item("otherSlotLabel").text, "SLOT 2 · idle");
+                // r7 K5: nor does it draw them, so the text-reach walk's exemption for idle tags is only for its
+                // every-branch pass, which forces them visible.
+                for (var tag of ["otherPrivateTag", "otherEmergencyTag", "otherEncTag"])
+                    verify(!item(tag).visible, "the idle strip draws " + tag);
                 compare(item("otherSlotNode").Accessible.name, "SLOT 2 · idle", "the idle strip says only what it draws");
             } finally {
                 testContext.setMetric("slot2CallEmergency", false);

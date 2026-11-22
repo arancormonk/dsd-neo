@@ -341,6 +341,8 @@ Item {
                 reason: "Sizing probes, never shown (visible: false); only the every-branch pass shows them."}
         ]
         property var used: ({})
+        // Set while test_3_every_branch_shown walks what reveal() forced visible (r7 K5).
+        property bool everyBranchShown: false
 
         function isSheet(item) {
             return item !== null && item.closesOnOutsideTap !== undefined && typeof item.requestDismiss === "function";
@@ -364,8 +366,11 @@ Item {
             return null;
         }
         // Whether @p text is a tag's word on the second-slot strip while the strip is idle (MonitorScreen's
-        // stripIdle), where only the every-branch pass shows a tag.
+        // stripIdle), in the every-branch pass, the only walk that shows a tag there (r7 K5: any other walk that
+        // finds one has found a tag the idle strip left on screen).
         function idleStripTag(text) {
+            if (!everyBranchShown)
+                return false;
             var node = text.parent ? text.parent.parent : null;
             if (node === null || node.objectName !== "otherSlotNode")
                 return false;
@@ -630,11 +635,16 @@ Item {
             // A group whose rows the reveal rebuilt names them once the rebuild is over (SpeechPacer).
             wait(40);
             Ui.Navigation.speechPeriodMs = 5000;
-            var problems = unexplained(item, nested, data.spec.file);
-            for (var i = 0; i < nested.length; ++i) {
-                Ui.Navigation.modals = [nested[i]];
-                problems = problems.concat(unexplained(nested[i], sheetsWithin(nested[i], []),
-                                                       data.spec.file + " > " + (nested[i].objectName || nested[i].accessibleName)));
+            everyBranchShown = true;
+            try {
+                var problems = unexplained(item, nested, data.spec.file);
+                for (var i = 0; i < nested.length; ++i) {
+                    Ui.Navigation.modals = [nested[i]];
+                    problems = problems.concat(unexplained(nested[i], sheetsWithin(nested[i], []),
+                                                           data.spec.file + " > " + (nested[i].objectName || nested[i].accessibleName)));
+                }
+            } finally {
+                everyBranchShown = false;
             }
             dispose(item);
             compare(problems.length, 0, report(problems));
