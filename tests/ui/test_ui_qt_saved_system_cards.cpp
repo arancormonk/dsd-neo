@@ -849,6 +849,17 @@ test_shared_title_compares_the_drawn_title() {
                               QStringLiteral("false")}));
     check("drawn title: the stored names are kept",
           f.at(1, SavedSystemCards::TitleRole).toString() == QStringLiteral("Fire\nDispatch"));
+    /* Issue #901 r5 H4: a precomposed "Café" and "Cafe" with a combining acute draw alike, so they share a title
+       (compared in NFC); each keeps its stored spelling. */
+    Fixture g;
+    g.add({plain(QStringLiteral("Caf\u00e9 Dispatch"), QStringLiteral("151.0")),
+           plain(QStringLiteral("Cafe\u0301 Dispatch"), QStringLiteral("152.0")),
+           plain(QStringLiteral("Cafe Dispatch"), QStringLiteral("153.0"))});
+    check("drawn title: composed and decomposed accents share a title",
+          g.column(SavedSystemCards::SharedTitleRole)
+              == QStringList({QStringLiteral("true"), QStringLiteral("true"), QStringLiteral("false")}));
+    check("drawn title: the decomposed name is kept",
+          g.at(1, SavedSystemCards::TitleRole).toString() == QStringLiteral("Cafe\u0301 Dispatch"));
 }
 
 /* Issue #901 r3 S1: marking shared titles counts each title once, so a rebuild over 1000 cards of one title costs

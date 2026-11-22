@@ -357,6 +357,9 @@ Item {
                 {title: "Ridge Dispatch Place", a: Object.assign({sourceType: "usb"}, place("Westmark")), b: Object.assign({sourceType: "usb"}, place("Eastmark"))},
                 // Drawn alike: an imported name's line break is drawn as a space.
                 {title: "Fire Dispatch", aName: "Fire\nDispatch", a: {sourceType: "tcp", host: "10.0.0.1", port: 7355},
+                    b: {sourceType: "tcp", host: "10.0.0.2", port: 7355}},
+                // Drawn alike too: a combining acute and a precomposed é (r5 H4, compared in NFC).
+                {title: "Caf\u00e9 Dispatch", aName: "Cafe\u0301 Dispatch", a: {sourceType: "tcp", host: "10.0.0.1", port: 7355},
                     b: {sourceType: "tcp", host: "10.0.0.2", port: 7355}}
             ].map(function (pair) {
                 pair.a = Object.assign({}, at, pair.a);

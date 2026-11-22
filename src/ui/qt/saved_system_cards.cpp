@@ -346,13 +346,14 @@ mark_section_starts(QList<Card>& cards) {
     }
 }
 
-/* A title as Home draws it (Util.oneLine()): each run of line breaks (LF, VT, FF, CR, NEL, U+2028, U+2029) a
-   space. */
+/* A title as Home draws it, for comparing titles: each run of line breaks (LF, VT, FF, CR, NEL, U+2028, U+2029) a
+   space (Util.oneLine()), in Unicode NFC, so a precomposed "é" and an "e" with a combining acute, which draw alike,
+   compare equal (issue #901 r5 H4). Only the key: the stored name is never changed. */
 QString
-one_line(const QString& text) {
+title_key(const QString& text) {
     static const QRegularExpression breaks(QStringLiteral("[\\x{000A}-\\x{000D}\\x{0085}\\x{2028}\\x{2029}]+"));
     QString out = text;
-    return out.replace(breaks, QStringLiteral(" "));
+    return out.replace(breaks, QStringLiteral(" ")).normalized(QString::NormalizationForm_C);
 }
 
 /* A card whose title, as drawn, another shown card draws too (one system saved on two receivers, two files of one
@@ -365,7 +366,7 @@ mark_shared_titles(QList<Card>& cards) {
     QStringList keys;
     keys.reserve(cards.size());
     for (const Card& card : cards) {
-        keys.append(one_line(card.title));
+        keys.append(title_key(card.title));
         ++titles[keys.constLast()];
     }
     for (qsizetype i = 0; i < cards.size(); ++i) {

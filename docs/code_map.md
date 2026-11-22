@@ -18826,9 +18826,10 @@ Qt Quick frontend (`src/ui/qt`):
   sort, the first fix newer than the stored one after `markLocationRequested()`; an expiry meanwhile keeps the mark), so
   TalkBack's swipe order always matches the screen; the count is read once. A held order can show a section in two runs,
   so `sectionStart` marks only a section's first card in the shown order. `sharedTitle` marks a card whose title, as
-  Home draws it, another shown card draws too (`mark_shared_titles()`: the key is `one_line()` of the title, each run
-  of line breaks a space as `Util.oneLine()` draws it, so an imported `Fire\nDispatch` and a typed `Fire Dispatch`
-  share one; one count per key, so a rebuild stays linear however many cards share a title). Such a card's
+  Home draws it, another shown card draws too (`mark_shared_titles()`: the key is `title_key()` of the title, each run
+  of line breaks a space as `Util.oneLine()` draws it, then Unicode NFC, so an imported `Fire\nDispatch` and a typed
+  `Fire Dispatch` share one, and so do a precomposed `Café` and `Cafe` with a combining acute, r5 H4; the stored name
+  is kept; one count per key, so a rebuild stays linear however many cards share a title). Such a card's
   `receiverLabel` is its receiver ("USB", "RTL-TCP host:port", "Airspy SERIAL"); every other card's is empty, and so is
   a TCP or UDP source's or a file's, whose source line already names its address or path. Home then draws every line
   the full card has that tells the cards apart, in both views, each wrapping whole instead of cut (issue #901 r3 S1,
