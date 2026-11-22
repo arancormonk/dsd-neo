@@ -250,6 +250,53 @@ Item {
             compare(header.height, screen.headerBarHeight(screen.tier));
         }
 
+        // Issue #901 r2 B1: every header line is one line in its fixed box. A line break in a session name, a scan
+        // target's name or a stay phrase (U+2028, U+2029, a newline) is drawn as a space: the header keeps its height,
+        // each line holds one line, and the title is read with every word.
+        function test_header_lines_draw_one_line_data() {
+            return [{tag: "U+2028", sep: "\u2028"}, {tag: "U+2029", sep: "\u2029"}, {tag: "newline", sep: "\n"}];
+        }
+        function test_header_lines_draw_one_line(data) {
+            var sep = data.sep;
+            testContext.setHostRunning(true);
+            root.width = 360;
+            root.height = 900;
+            screen.system = {name: "County Fire", sourceType: "usb"};
+            testContext.setMetric("scanRotationActive", true);
+            testContext.setMetric("scanTargetOrdinal", 2);
+            testContext.setMetric("scanTargetCount", 3);
+            testContext.setMetric("scanTimingVisible", true);
+            testContext.setMetric("scanStayPhrase", "Following call");
+            screen.scanTargetName = "East";
+            var header = findChild(screen, "monitorHeader");
+            var title = findChild(screen, "monitorHeaderTitle");
+            var target = findChild(screen, "scanTargetHeader");
+            var timing = findChild(screen, "scanTimingRow");
+            tryCompare(target, "text", "SCANNING · 2/3 · East");
+            waitForRendering(screen);
+            var height = header.height;
+            var tier = screen.tier;
+            screen.system = {name: "County" + sep + "Fire" + sep + "East", sourceType: "usb"};
+            screen.scanTargetName = "East" + sep + "Gate";
+            testContext.setMetric("scanStayPhrase", "Following" + sep + "call");
+            waitForRendering(screen);
+            compare(title.text, "County Fire East");
+            compare(target.text, "SCANNING · 2/3 · East Gate");
+            compare(timing.text, "Following call");
+            for (var line of [title, target, timing]) {
+                compare(line.lineCount, 1, line.objectName + " draws one line");
+                verify(line.contentHeight <= line.height + 1, line.objectName + " stays in its box: " + line.contentHeight + " in " + line.height);
+            }
+            compare(header.height, height, "the header's height");
+            compare(screen.tier, tier, "the tier");
+            compare(title.Accessible.name, "County Fire East");
+            // Several lists: the name's line and the count's.
+            screen.otherListCount = 2;
+            waitForRendering(screen);
+            compare(title.lineCount, 1);
+            compare(title.Accessible.name, "County Fire East + 2 lists");
+        }
+
         // Issue #901 B9: the header's lines are fixed line boxes, so a scan
         // target or a timing phrase in a script whose line is taller (Burmese)
         // changes neither the header's height nor the tier.

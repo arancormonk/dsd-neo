@@ -368,5 +368,83 @@ Item {
             clearCall(1);
             m("leadSlot", 0);
         }
+
+        // Issue #901 r2 B1: the hero's subline, the strip's identity and the disclosure's answer each draw one line in
+        // their fixed box. An imported channel name with line separators kept by dsd_channel_label_sanitize() drew
+        // three lines (84 px) in a 29 px subline and painted into the strip. A break (U+2028, U+2029, a newline) is
+        // drawn and measured as a space, and the words are all still said.
+        function test_lines_draw_one_line_data() {
+            var rows = [];
+            for (var w of [320, 411]) {
+                for (var sc of [1, 1.6]) {
+                    rows.push({tag: w + "@" + sc + " U+2028", width: w, scale: sc, sep: "\u2028"});
+                    rows.push({tag: w + "@" + sc + " U+2029", width: w, scale: sc, sep: "\u2029"});
+                    rows.push({tag: w + "@" + sc + " newline", width: w, scale: sc, sep: "\n"});
+                }
+            }
+            return rows;
+        }
+        function test_lines_draw_one_line(data) {
+            var sep = data.sep;
+            var breaks = /[\r\n\v\f\u0085\u2028\u2029]/;
+            root.width = data.width;
+            root.height = 1300;
+            Ui.Theme.fontScale = data.scale;
+            m("twoSlotCarrier", true);
+            setCall(1, {kind: 2, name: "Fire" + sep + "Dispatch", tg: "4001", id: 4001, src: "E" + sep + "W",
+                        channel: "E" + sep + "W" + sep + "S", enc: true, encText: "ALG 84" + sep + "KID 0001"});
+            setCall(2, {kind: 2, name: "North" + sep + "Zone", tg: "4002", id: 4002, src: "7002"});
+            m("leadSlot", 1);
+            testContext.setMetric("uiMessage", "Output:" + sep + "Muted");
+            settle();
+            var subline = item("heroIds").parent;
+            var lines = [item("heroIds"), item("heroChannel"), item("heroAlgorithm"), item("otherSlotIdentity")];
+            var drawn = 0;
+            for (var line of lines) {
+                verify(!breaks.test(line.text), line.objectName + " draws a line break: " + JSON.stringify(line.text));
+                if (!line.visible)
+                    continue;
+                ++drawn;
+                compare(line.lineCount, 1, line.objectName + " draws one line");
+            }
+            verify(item("heroIds").visible && item("otherSlotIdentity").visible, "the ids and the strip's identity are drawn");
+            // The algorithm can be left out beside ENC at 320 dp and large text (a decided limit); a clear call has
+            // room for the channel at every size here, so each of the four is drawn in one of the two calls.
+            var algorithmDrawn = item("heroAlgorithm").visible;
+            m("slot1CallEnc", false);
+            settle();
+            verify(item("heroChannel").visible, "a clear call draws its channel");
+            compare(item("heroChannel").lineCount, 1, "the channel draws one line");
+            compare(item("heroChannel").text, "· E W S");
+            verify(subline.height <= subline.parent.height + 0.5, "clear, the subline " + subline.height + " in its box " + subline.parent.height);
+            m("slot1CallEnc", true);
+            settle();
+            if (data.width === 411)
+                verify(algorithmDrawn, "at 411 dp the algorithm is drawn beside ENC");
+            // The subline's row stays in its box, so nothing paints into the strip below.
+            verify(subline.height <= subline.parent.height + 0.5, "the subline " + subline.height + " in its box " + subline.parent.height);
+            var identity = item("otherSlotIdentity");
+            verify(identity.contentHeight <= identity.height + 1, "the identity " + identity.contentHeight + " in its box " + identity.height);
+            // The disclosure's answer in place of its summary: one line, said whole.
+            var details = item("monitorDetailsRow");
+            var subtitle = null;
+            for (var t of [details].concat(details.children)) {
+                (function walk(n) {
+                    if (n.text !== undefined && n.text === "Output: Muted")
+                        subtitle = n;
+                    for (var c of n.children || [])
+                        walk(c);
+                })(t);
+            }
+            verify(subtitle !== null, "the answer is drawn on one line as 'Output: Muted'");
+            compare(subtitle.lineCount, 1);
+            // Every word is said: the hero's subline, the identity's name.
+            var speech = tc.monitor.heroSublineSpeech();
+            verify(speech.indexOf("SRC E W") >= 0, speech);
+            verify(speech.indexOf("ALG 84 KID 0001") >= 0, speech);
+            verify(speech.indexOf("· E W S") >= 0, speech);
+            verify(identity.Accessible.name.indexOf("North Zone") >= 0, identity.Accessible.name);
+            testContext.setMetric("uiMessage", "");
+        }
     }
 }

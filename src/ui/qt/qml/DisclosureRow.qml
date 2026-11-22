@@ -2,6 +2,7 @@
 // Copyright (C) 2026 by arancormonk <180709949+arancormonk@users.noreply.github.com>
 
 import QtQuick
+import "Util.js" as Util
 
 // One disclosure row: title, helper line, trailing caret. The shape of every row
 // that goes somewhere - the wizard's trunking-data pickers, the settings entry
@@ -95,7 +96,10 @@ Item {
             // An expandable row may carry its whole label in the title. A reading
             // keeps its line while empty, so the row's height never follows it.
             visible: text.length > 0 || !row.expandable || row.subtitleReading
-            text: row.subtitle
+            // A reading draws one line (issue #901 r2 B1): a line break in it
+            // (an engine answer, a name in the summary) is a space, so the
+            // words after it are not lost to maximumLineCount.
+            text: row.subtitleReading ? Util.oneLine(row.subtitle) : row.subtitle
             textFormat: row.subtitleTextFormat
             font.family: row.subtitleReading ? Theme.mono : Theme.sans
             font.pixelSize: Theme.fontSize(row.subtitleReading ? 11 : 12)

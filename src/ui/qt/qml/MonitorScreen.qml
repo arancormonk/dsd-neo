@@ -86,6 +86,9 @@ Item {
         return screen.otherListCount === 1 ? qsTr("%1 + 1 list").arg(name) : Util.fill(qsTr("%1 + %2 lists"), [name, screen.otherListCount]);
     }
     property string systemName: withOtherLists(sessionName)
+    // The title's line is a fixed box (issue #901 B9): a line break in an
+    // imported or typed name is drawn as a space (r2 B1), and read as one.
+    readonly property string sessionLine: Util.oneLine(sessionName)
 
     // Which slot the hero shows: the earliest active call keeps the headline, then a
     // recently ended one; exact start ties and ended calls prefer the lower slot.
@@ -672,7 +675,7 @@ Item {
                 TextMetrics {
                     id: titleNameMetrics
                     font: monitorTitle.font
-                    text: screen.sessionName
+                    text: screen.sessionLine
                     elide: Text.ElideRight
                     elideWidth: Math.max(0, monitorTitle.width - titleSuffixMetrics.advanceWidth)
                 }
@@ -685,7 +688,7 @@ Item {
                 TextMetrics {
                     id: titleLineMetrics
                     font: monitorTitle.font
-                    text: screen.sessionName
+                    text: screen.sessionLine
                     elide: Text.ElideRight
                     elideWidth: monitorTitle.width
                 }
@@ -697,7 +700,8 @@ Item {
                     height: screen.titleLineBox
                     verticalAlignment: Text.AlignVCenter
                     objectName: "monitorHeaderTitle"
-                    text: twoLine ? titleLineMetrics.elidedText : screen.otherListCount > 0 ? screen.withOtherLists(titleNameMetrics.elidedText) : screen.systemName
+                    text: twoLine ? titleLineMetrics.elidedText : screen.otherListCount > 0 ? screen.withOtherLists(titleNameMetrics.elidedText) : screen.sessionLine
+                    maximumLineCount: 1
                     // The heading is read as one: the name, then the count
                     // on the line below it.
                     Accessible.name: navigationAllowed && visible ? (twoLine ? screen.withOtherLists(text) : text) : ""
@@ -740,7 +744,10 @@ Item {
                     verticalAlignment: Text.AlignVCenter
                     objectName: "scanTargetHeader"
                     step: screen.scanPaused ? "paused" : metrics.scanRotationActive ? ["scan", metrics.scanHold].join("|") : text
-                    text: screen.scanPaused ? screen.pausedScanText(width) : screen.scanningText() || (screen.system ? Util.monitorMeta(screen.system) : "")
+                    // One line in its box (r2 B1): a break in a target's or
+                    // system's name is a space.
+                    text: Util.oneLine(screen.scanPaused ? screen.pausedScanText(width) : screen.scanningText() || (screen.system ? Util.monitorMeta(screen.system) : ""))
+                    maximumLineCount: 1
                     font.family: Theme.mono
                     font.pixelSize: Theme.fontSize(11)
                     font.letterSpacing: 0.8
@@ -827,8 +834,10 @@ Item {
                                 ? Util.fill(qsTr("Visit: %1s/%2s"), [(metrics.scanVisitRemainingDs / 10).toFixed(1), (metrics.scanVisitMs / 1000).toFixed(1)])
                                 : qsTr("Visit: paused"));
                         }
-                        return out;
+                        // One line in its box (r2 B1).
+                        return Util.oneLine(out);
                     }
+                    maximumLineCount: 1
                     font.family: Theme.mono
                     font.pixelSize: Theme.fontSize(11)
                     font.letterSpacing: 0.8
@@ -863,7 +872,9 @@ Item {
                     height: screen.headerMetaBox
                     verticalAlignment: Text.AlignVCenter
                     visible: screen.roamingLineShown
-                    text: fullFits ? siteRoaming.headerText : siteRoaming.headerShortText
+                    // One line in its box (r2 B1); the sentence is read whole.
+                    text: Util.oneLine(fullFits ? siteRoaming.headerText : siteRoaming.headerShortText)
+                    maximumLineCount: 1
                     Accessible.ignored: !navigationAllowed || !visible || text.length === 0
                     Accessible.focusable: navigationAllowed && visible && text.length > 0
                     Accessible.name: navigationAllowed && visible && text.length > 0 ? siteRoaming.statusText : ""
@@ -875,7 +886,7 @@ Item {
                     TextMetrics {
                         id: roamingHeaderMetrics
                         font: roamingHeader.font
-                        text: siteRoaming.headerText
+                        text: Util.oneLine(siteRoaming.headerText)
                     }
                     readonly property string step: [siteRoaming.state, siteRoaming.reason, siteRoaming.candidateUid, siteRoaming.destinationUid].join("|")
                     // Once the bindings have settled, and only while it is shown.
@@ -1164,7 +1175,8 @@ Item {
                         onPaint: {
                             var ctx = getContext("2d");
                             ctx.reset();
-                            var label = screen.heroHeadline;
+                            // One line (r2 B1): a break in a name is a space.
+                            var label = Util.oneLine(screen.heroHeadline);
                             ctx.font = "bold " + Theme.fontSize(screen.heroCompact ? 25 : 31) + "px \"" + Theme.sans + "\"";
                             ctx.textBaseline = "middle";
                             var gradient = ctx.createLinearGradient(0, 0, Math.max(ctx.measureText(label).width, 1), 0);
@@ -1351,13 +1363,17 @@ Item {
                             visible: text.length > 0 && heroSubline.plan.ids > 0
                             width: heroSubline.plan.ids
                             elide: Text.ElideRight
+                            maximumLineCount: 1
+                            // One line, measured and drawn as the same text
+                            // (r2 B1): a break in an imported alias is a space,
+                            // the words kept for speech.
                             text: {
                                 var parts = [];
                                 if (!screen.heroPrivate && !screen.heroDuplicate && screen.heroTg.length > 0)
                                     parts.push("TG " + screen.heroTg);
                                 if (screen.heroSrc.length > 0)
                                     parts.push("SRC " + screen.heroSrc);
-                                return parts.join(" · ");
+                                return Util.oneLine(parts.join(" · "));
                             }
                             // Target and source text come off the air or from
                             // an imported alias: drawn as written.
@@ -1412,7 +1428,8 @@ Item {
                             visible: shown && heroSubline.plan.algorithm > 0
                             width: heroSubline.plan.algorithm
                             elide: Text.ElideRight
-                            text: screen.heroEncText
+                            maximumLineCount: 1
+                            text: Util.oneLine(screen.heroEncText)
                             font.family: Theme.mono
                             font.pixelSize: Theme.fontSize(11)
                             color: Theme.textSubdued
@@ -1432,7 +1449,11 @@ Item {
                             visible: shown && heroSubline.plan.channel > 0
                             width: heroSubline.plan.channel
                             elide: Text.ElideRight
-                            text: "· " + screen.heroChannel
+                            maximumLineCount: 1
+                            // An imported channel name can hold line separators
+                            // (dsd_channel_label_sanitize() keeps them): drawn
+                            // and measured on one line (r2 B1).
+                            text: "· " + Util.oneLine(screen.heroChannel)
                             // A scan row's typed or imported name.
                             textFormat: Text.PlainText
                             font.family: Theme.mono
@@ -1535,7 +1556,7 @@ Item {
                 TextMetrics {
                     id: otherIdentityMetrics
                     font: otherIdentityText.font
-                    text: screen.otherIdentity
+                    text: otherIdentityText.text
                 }
 
                 MicroLabel {
@@ -1570,7 +1591,9 @@ Item {
                     // script draws centred in it, unclipped.
                     height: screen.otherIdentityBox
                     verticalAlignment: Text.AlignVCenter
-                    text: screen.otherIdentity
+                    // One line in its box (r2 B1): a break in a name is a space.
+                    text: Util.oneLine(screen.otherIdentity)
+                    maximumLineCount: 1
                     font.family: Theme.sans
                     font.pixelSize: Theme.fontSize(14)
                     font.weight: Font.DemiBold
