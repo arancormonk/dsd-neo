@@ -2422,11 +2422,13 @@ test_scan_hold_option(void) {
                .isEmpty());
 }
 
-/* Issue #899 (D1, after the final-diff review): every radio session the app builds passes its Settings default as
-   --squelch-analog-default, whatever it decodes: the decoder runs it on analog channels while nothing sets a squelch,
-   and nowhere else. The spec's squelch field is always 0 (no squelch). A saved Radio-sheet squelch is still the last
-   word (--squelch, explicit), and extra options come after the default, so an Advanced --squelch or a default of their
-   own win. A source with no radio spec passes none. */
+/* Issue #899 (D1, after the final-diff reviews): every session the app builds passes its Settings default as
+   --squelch-analog-default, whatever it decodes and whatever its saved source: the decoder runs it on analog channels
+   of a radio input while nothing sets a squelch, and nowhere else, so it decides, not the saved source type (an
+   Advanced -i or --iq-replay can make an audio system's input a radio). A default of Off passes no option at all (the
+   decoder takes only auto[+N] or noise[+N]). The spec's squelch field is always 0 (no squelch). A saved Radio-sheet
+   squelch is still the last word (--squelch, explicit), and extra options come after the default, so an Advanced
+   --squelch or a default of their own win. */
 static void
 test_default_squelch_option(void) {
     const SessionArgPrefs prefs;
@@ -2463,8 +2465,12 @@ test_default_squelch_option(void) {
            squelch_default_arg(session_args_build(usb_system(), automatic, nullptr)) == QStringLiteral("auto+15"));
     SessionArgPrefs off;
     off.squelchDefault = QStringLiteral("off");
-    expect("a default of off is passed as off",
-           squelch_default_arg(session_args_build(usb_system(), off, nullptr)) == QStringLiteral("off"));
+    for (const auto& radio : radios) {
+        const QStringList offArgs = session_args_build(radio.system, off, nullptr);
+        expect("a default of Off passes no option", !offArgs.isEmpty()
+                                                        && !offArgs.contains(QStringLiteral("--squelch-analog-default"))
+                                                        && input_spec(offArgs) == radio.spec);
+    }
     SessionArgPrefs damaged;
     damaged.squelchDefault = QStringLiteral("auto+31");
     expect("a damaged default is the app's own",
@@ -2476,7 +2482,24 @@ test_default_squelch_option(void) {
         audio["host"] = "10.0.2.2";
         audio["port"] = 7355;
         audio["filePath"] = "/tmp/audio.wav";
-        expect("an audio source passes none", squelch_default_arg(session_args_build(audio, prefs, nullptr)).isEmpty());
+        const QStringList audioArgs = session_args_build(audio, prefs, nullptr);
+        expect("an audio source passes it too (the decoder ignores it on audio)",
+               squelch_default_arg(audioArgs) == QStringLiteral("noise+10")
+                   && audioArgs.count(QStringLiteral("--squelch-analog-default")) == 1);
+        expect("and none for a default of Off",
+               !session_args_build(audio, off, nullptr).contains(QStringLiteral("--squelch-analog-default")));
+        /* The review's cases: an allowed Advanced -i or --iq-replay makes the input a radio, and the default still
+           comes before it, so the input the parser keeps decides. */
+        for (const QString& extra :
+             {QStringLiteral("-i rtl:0:154.43M:30:0:48:0:2"), QStringLiteral("--iq-replay /tmp/capture.cu8")}) {
+            QVariantMap radioOverride = audio;
+            radioOverride["extraArgs"] = extra;
+            const QStringList overrideArgs = session_args_build(radioOverride, prefs, nullptr);
+            const qsizetype extraAt = overrideArgs.lastIndexOf(extra.split(QLatin1Char(' ')).first());
+            expect("an Advanced input that makes it a radio still gets the default",
+                   squelch_default_arg(overrideArgs) == QStringLiteral("noise+10") && extraAt > 0
+                       && overrideArgs.indexOf(QStringLiteral("--squelch-analog-default")) < extraAt);
+        }
     }
 
     QVariantMap saved = usb_system();

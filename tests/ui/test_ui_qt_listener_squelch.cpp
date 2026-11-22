@@ -542,8 +542,8 @@ caseSavedNfm(dsd_qt::AppPrefs& prefs, const QString& capture, const QTemporaryDi
     Host host;
     expect("the NFM saved system starts",
            builder.start(nfmSystem(), &host, QStringLiteral("saved")).value("started").toBool());
-    expect("it passes the Settings default, its spec setting no squelch",
-           squelchDefaultArg(host.argv) == (off ? QStringLiteral("off") : QStringLiteral("noise+10"))
+    expect("it passes the Settings default (no option for Off), its spec setting no squelch",
+           squelchDefaultArg(host.argv) == (off ? QString() : QStringLiteral("noise+10"))
                && host.argv.contains(QStringLiteral("rtl:0:851.375M:30:0:48:0:2")));
     // Per-call recording, as Settings > Record calls runs it: does the squelch admit the call, and only the call?
     const QString calls = dir.filePath(QStringLiteral("calls"));
@@ -676,8 +676,8 @@ caseScanRow(dsd_qt::AppPrefs& prefs, const QString& capture, bool off) {
     expect("the scan list starts", starter.start(lists.get(lists.count() - 1), &host).value("started").toBool());
     const QString rowOptions = firstRowOptions(host.argv);
     expect("the generated nfm row has no squelch of its own", !rowOptions.contains(QStringLiteral("--squelch")));
-    expect("and the session passes the Settings default",
-           squelchDefaultArg(host.argv) == (off ? QStringLiteral("off") : QStringLiteral("noise+10")));
+    expect("and the session passes the Settings default (no option for Off)",
+           squelchDefaultArg(host.argv) == (off ? QString() : QStringLiteral("noise+10")));
     Session session;
     if (listen(withoutTargetList(host.argv), capture, off ? DSD_SQUELCH_MODE_LEVEL : DSD_SQUELCH_MODE_NOISE,
                off ? 0 : 10, !off, commitNfmRow, rowOptions, session)) {

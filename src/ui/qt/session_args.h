@@ -48,8 +48,9 @@ struct SessionArgPrefs {
     bool relaxedCrc = false;
     double hangtimeSec = 2.0;
     QString extraArgs;
-    /* Issue #899: the squelch the decoder runs on a radio session's analog channels while nothing sets one
-       (AppPrefs::squelch(), passed as --squelch-analog-default): "off", "auto+N" or "noise+N". */
+    /* Issue #899: the squelch the decoder runs on a radio input's analog channels while nothing sets one
+       (AppPrefs::squelch()): "off", "auto+N" or "noise+N". Every session passes it as --squelch-analog-default, but
+       for "off", which passes no option. */
     QString squelchDefault = QString::fromLatin1(kAppSquelchDefault);
     /* Call recording (issue #708). The folder the session records into, from the recording store: with one, the argv
        names it (-7) and its journal (--wav-journal), records per call (-P) when recordCalls is on and records only

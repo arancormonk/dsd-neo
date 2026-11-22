@@ -15849,9 +15849,11 @@ Build files: `src/protocol/CMakeLists.txt` and per‑protocol `src/protocol/<nam
     `noise+N`, N 3..30, `app_squelch_default_valid()` in `app_squelch_default.h`; `noise+10` when absent or damaged, a
     refused write writes nothing, a valid one repairs damage; a backup without it restores the default) maps to
     `SessionArgPrefs::squelchDefault`, which `session_args_build()` passes as `--squelch-analog-default <pref>` with
-    every radio session it builds (`append_squelch_default_args()`: RTL-SDR USB, rtl_tcp, Airspy; saved systems,
-    Explore, pins, scan lists through `session_args_scan_build_lists()`, Explore here), right after the input and
-    before the extra options, so an Advanced `--squelch` or default wins. The decoder owns the rest (Runtime, "Analog
+    every session it builds, whatever its saved source (`append_squelch_default_args()`; saved systems, Explore, pins,
+    scan lists through `session_args_scan_build_lists()`, Explore here): the decoder applies it only on a radio
+    input, and an Advanced `-i` or `--iq-replay` can make an audio system's input one. A default of `off` passes no
+    option (the decoder takes only `auto[+N]` or `noise[+N]`). It goes right after the input and before the extra
+    options, so an Advanced `--squelch` or default wins. The decoder owns the rest (Runtime, "Analog
     default squelch"): the spec's squelch field is always `0`, a saved Radio-sheet `squelch` stays the last `--squelch`
     (explicit), and generated scan rows (`scan_list_targets(list, systems)`) carry no default of their own: a row with
     no saved squelch inherits, and the decoder runs the default on it when it is analog, as on an imported list's rows.

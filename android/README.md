@@ -51,9 +51,9 @@ within its first 40 ms. To change it, open Settings, then **Radio defaults · ne
 start**, and under **Squelch** choose **Off**, **Auto** or **Noise**, with its
 margin for Auto and Noise. The change applies from the next start.
 
-The app hands the setting to the decoder with every session on a radio (an
-RTL-SDR, rtl_tcp or an Airspy), and the decoder runs it on each analog channel
-until a squelch is set:
+The app hands the setting to the decoder with every session, and when the input
+is a radio (an RTL-SDR, rtl_tcp, an Airspy, or one that Extra decoder arguments
+choose) the decoder runs it on each analog channel until a squelch is set:
 
 - a saved system or pin set to NFM or AM, unless it has a squelch of its own,
   saved from the Radio sheet while listening, which always wins;

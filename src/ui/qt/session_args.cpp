@@ -254,13 +254,14 @@ airspy_bandwidth(int requested) {
     return dsd_analog_rtl_dsp_bw_nearest(requested, DSD_ANALOG_AIRSPY_DSP_BW_MAX_KHZ);
 }
 
-/* The app's default squelch for a radio session (issue #899): the decoder runs it on each analog channel while nothing
-   sets a squelch, and nowhere else (digital channels, audio input), so every radio start carries it. Before the extra
-   options and the saved squelch (radio_settings_append()), which win as any --squelch does. */
+/* The app's default squelch (issue #899): the decoder runs it on each analog channel of a radio input while nothing
+   sets a squelch, and nowhere else (digital channels, audio input), so every start carries it whatever the saved
+   source: the input the decoder opens decides, and an Advanced -i or --iq-replay can make it a radio. A default of Off
+   passes nothing (the decoder takes only auto[+N] or noise[+N]). Before the extra options and the saved squelch
+   (radio_settings_append()), which win as any --squelch does. */
 void
-append_squelch_default_args(QStringList& args, const QString& sourceType, const SessionArgPrefs& prefs) {
-    if (sourceType != QLatin1String("usb") && sourceType != QLatin1String("rtltcp")
-        && sourceType != QLatin1String("airspy")) {
+append_squelch_default_args(QStringList& args, const SessionArgPrefs& prefs) {
+    if (prefs.squelchDefault == QLatin1String("off")) {
         return;
     }
     const QString setting = app_squelch_default_valid(prefs.squelchDefault) ? prefs.squelchDefault
@@ -1379,7 +1380,7 @@ session_args_build(const QVariantMap& system, const SessionArgPrefs& prefs, Sess
 
     QStringList args{QStringLiteral("--frontend"), QStringLiteral("none")};
     append_input_args(args, system, sourceType, tail, bias);
-    append_squelch_default_args(args, sourceType, prefs);
+    append_squelch_default_args(args, prefs);
     args << QStringLiteral("-o") << QStringLiteral("pulse");
     append_csv_args(args, system);
     append_profile_args(args, system);
