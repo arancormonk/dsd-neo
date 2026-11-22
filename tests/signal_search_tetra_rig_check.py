@@ -35,9 +35,11 @@ Checks: every transmitter is visited and has one history row at its frequency; t
 their protocol, access code and site line, and the live status shows them confirmed while their carrier is on; the
 noise is not confirmed, and its visit ends "digital unresolved"; the history read back from the journal matches the live
 one; the front end ran the source at the 72 kHz capture rate alone; and a confirmed TETRA visit leaves the channel
-TETRA_QUIET_S (2.1 s) after its carrier stops, not the 0.5 s an ordinary visit would, within LEAVE_PAD_S. A presence
-signal never refreshes the visit's activity, so pres_on leaves TETRA_QUIET_S after its first confirmation, with its
-train still on, not 2.1 s after it stops.
+TETRA_QUIET_S (2.1 s) after its carrier stops, not the 0.5 s an ordinary visit would, within LEAVE_PAD_S. A DMO visit's
+activity refreshes only on checked call content, so a DMO visit is timed from the last such burst the scene sent before
+the stop (the call fixture's loop has no call content for 0.64 s around its set-up). A presence signal never
+refreshes the visit's activity, so pres_on leaves TETRA_QUIET_S after its first confirmation, with its train still on,
+not 2.1 s after it stops.
 
 Usage: signal_search_tetra_rig_check.py RIG FIXTURE_DIR [--keep DIR] [--only a|b]
 Exit 0 on success, 1 on a failed check, 77 when numpy is missing. Serves the loopback interface only and never opens
@@ -63,6 +65,8 @@ sys.path.insert(0, str(ROOT / "tools"))
 
 tcp_bench = importlib.import_module("bench_signal_search_tcp")
 bif = importlib.import_module("build_iq_fixtures")
+# The scene's block: it plays a transmitter a whole block at a time.
+BLOCK = importlib.import_module("bench_scan_skip_silent").BLOCK
 
 DSP_KHZ = 72
 # The capture rate the RTL front end asks the source for at a 72 kHz DSP bandwidth (16 times it).
@@ -73,7 +77,10 @@ ON_S = 4.0
 NOISE_ON_S = 6.0
 TETRA_QUIET_S = 2.1
 # The decoder reads a little behind the paced stream, and its quiet timing runs on its own clock: this much past the
-# quiet time still passes. Under it on the other side: the last burst before the stop can be up to a slot early.
+# quiet time still passes. Under it on the other side: a TMO downlink is continuous, so the last block that refreshes
+# the visit can come up to a slot (14 ms) before the stop, and the retune is stamped when the source hears it. A DMO
+# visit is timed from the last refreshing burst the scene sent, not from the stop (dmo_refresh_ends()). Tight enough
+# either way to catch a quiet time that is wrong: an ordinary visit's 0.5 s, or one twice as long.
 LEAVE_PAD_S = 1.5
 LEAVE_EARLY_S = 0.3
 RUN_SECONDS = 180
@@ -143,6 +150,37 @@ def dmo_samples(kind):
     return bif.tetra_dmo_samples(slots, 0.0, 0.0), bif.TETRA_DMO_RATE_HZ
 
 
+def dmo_refresh_ends(kind):
+    """(end times, in seconds into one loop, of the bursts of a DMO transmitter that refresh its visit's activity; the
+    loop's length), or None for one this script does not time so (a presence signal never refreshes it; see
+    presence_only()).
+
+    A direct mode visit's activity refreshes only on checked call content (tetra_search.h): direct mode speech and a
+    DMAC-SYNC the call records take as a call, DM-SETUP and DM-OCCUPIED here, never DM-TX CEASED. The call fixture
+    loops with DM-TX CEASED and 0.25 s of noise each side of its set-up, so its last refresh can come up to about
+    0.64 s before the transmitter stops; the traffic train has a gap of at most a frame. The layouts are
+    tools/build_iq_fixtures.py's own, laid out again here (tetra_dmo_samples()) and checked against the fixture's
+    length in Transmitter."""
+    if kind == "dmo traffic":
+        slots, lead_s, tail_s = bif.tetra_dmo_traffic_slots(1), 0.0, 0.0
+    elif kind == bif.TETRA_DMO_NAME:
+        slots, lead_s, tail_s = bif.tetra_dmo_slots(), bif.TETRA_DMO_LEAD_S, bif.TETRA_DMO_TAIL_S
+    else:
+        return None
+    ceased = {tuple(bif.tetra_dmo_dsb(slot, frame, bif.TETRA_DMO_MSG_TX_CEASED)) for frame in (1, 2) for slot in (1, 3)}
+    rate = bif.TETRA_DMO_RATE_HZ
+    sps = rate // bif.TETRA_SYMBOL_RATE
+    lead = int(round(lead_s * rate))
+    ends = []
+    for index, dibits in enumerate(slots):
+        if dibits is None or tuple(dibits) in ceased:
+            continue
+        start = lead + index * bif.TETRA_SLOT_SYMBOLS * sps + bif.TETRA_DMO_BURST_DELAY * sps
+        ends.append((start + (len(dibits) + 1) * sps) / rate)
+    count = lead + len(slots) * bif.TETRA_SLOT_SYMBOLS * sps + int(round(tail_s * rate))
+    return ends, count / rate
+
+
 class Transmitter(tcp_bench.Transmitter):
     """A scene transmitter with what its range searches for and what its detection must show."""
 
@@ -152,6 +190,14 @@ class Transmitter(tcp_bench.Transmitter):
         samples = dmo_samples(fixture) if fixture and fixture.startswith("dmo ") else None
         super().__init__(name, frequency, None if samples else fixture, snr_db=SNR_DB, on_s=on_s, step=step,
                          fixture_dir=fixture_dir, samples=samples)
+        layout = dmo_refresh_ends(fixture)
+        self.refresh_ends = None
+        if layout is not None:
+            self.refresh_ends, loop_s = layout
+            # The layout must be the one the scene plays: a fixture rebuilt with another one fails here, not by a
+            # departure measured from the wrong burst.
+            if abs(loop_s - self.seconds) > 0.5 / bif.TETRA_DMO_RATE_HZ:
+                raise ValueError(f"{name}: {fixture} lasts {self.seconds:.6f} s, its layout {loop_s:.6f} s")
         # How long the run goes on after its stop: a visit that heard nothing waits out its 4 s probe.
         self.linger_s = 4.0 + LEAVE_PAD_S + 1.0 if self.play == "until landing" else TETRA_QUIET_S + LEAVE_PAD_S + 1.0
 
@@ -228,14 +274,33 @@ def presence_only(tx):
     return tx.expect is not None and tx.expect[2] is not None and "presence" in tx.expect[2].pattern
 
 
+def last_refresh(tx):
+    """Scene time of the end of the last burst that refreshes @p tx's visit (dmo_refresh_ends()) the scene sent whole
+    before the transmitter went off, or None. The scene plays whole blocks: the transmitter goes off at the first block
+    that starts at or after its stop."""
+    if tx.stop_at is None or tx.refresh_ends is None:
+        return None
+    block_s = BLOCK / CAPTURE_HZ
+    off = math.ceil(tx.stop_at / block_s - 1e-9) * block_s
+    start = tx.call_at(tx.stop_at - 1e-9)
+    if start is None:
+        return None
+    sent = [start + end for end in tx.refresh_ends if start + end <= off]
+    # Off before this loop's first refresh (in its lead or its set-up): the last one came in the loop before.
+    return max(sent) if sent else start - tx.seconds + max(tx.refresh_ends)
+
+
 def departure_from(record, tx):
-    """(the scene time a departure is measured from, its name): the stop for a transmitter whose activity holds the
-    visit; for a presence signal, which never refreshes the visit's activity, its first confirmation. (None, name)
-    when there is none."""
-    if not presence_only(tx):
-        return tx.stop_at, "its carrier stopped"
-    confirmed = tcp_bench.confirm_time(record, tx)
-    return (None if confirmed is None else tx.landed + confirmed), "its first confirmation"
+    """(the scene time a departure is measured from, its name): for a DMO transmitter whose bursts this script times,
+    the last refreshing burst it sent; for a presence signal, which never refreshes the visit's activity, its first
+    confirmation; for the rest, whose downlink refreshes the visit every slot, the stop. (None, name) when there is
+    none."""
+    if presence_only(tx):
+        confirmed = tcp_bench.confirm_time(record, tx)
+        return (None if confirmed is None else tx.landed + confirmed), "its first confirmation"
+    if tx.refresh_ends is not None:
+        return last_refresh(tx), "its last refreshing burst"
+    return tx.stop_at, "its carrier stopped"
 
 
 def departure(record, tx):
@@ -324,7 +389,7 @@ def report(record):
                           f"site={r['site']!r}" for r in mine)
         landed = "never" if tx.landed is None else f"{tx.landed:6.2f} s"
         left_text = "-" if left is None else f"{left:.2f} s"
-        since = "confirmation" if presence_only(tx) else "stop"
+        since = "confirmation" if presence_only(tx) else "last refresh" if tx.refresh_ends is not None else "stop"
         confirm = tcp_bench.confirm_time(record, tx)
         confirm_text = "-" if confirm is None else f"{confirm:.2f} s"
         phase = ""
