@@ -1910,7 +1910,8 @@ retained_of(const dsd_state* state) {
    -65.5 dB it no longer writes. */
 static int
 test_retained_input_merge_clears_the_rounding_note(void) {
-    static dsd_state state;
+    auto state_storage = std::unique_ptr<dsd_state>(new dsd_state{});
+    dsd_state& state = *state_storage;
     static dsdneoUserConfig snap;
     static dsdneoUserConfig patch;
     dsd_user_config_init(&snap);
@@ -3011,17 +3012,29 @@ test_snapshot_disabled_squelch_roundtrips_as_off(void) {
  * saved as rtl_sql = 0 and reloaded with the squelch off. A whole dB saves as itself with no word, and off as 0. */
 static int
 test_snapshot_squelch_level_whole_db(void) {
+    /* What sets each case's level, tagged rather than told by a NaN sentinel, which fast math folds away. */
+    enum level_kind { LEVEL_DB, LEVEL_LINEAR_ONE, LEVEL_OFF };
+
     static const struct {
-        double db; /* the level in dB; NAN for a linear power of 1, -999 for off */
+        level_kind kind;
+        double db; /* LEVEL_DB: the level in dB */
         int sql;
         const char* warned; /* NULL: no warning */
     } cases[] = {
-        {-0.25, -1, "-0.25 dB"}, {NAN, -1, "0.00 dB"}, {-65.5, -66, "-65.50 dB"},    {-4.49, -4, "-4.49 dB"},
-        {-60.0, -60, NULL},      {-999.0, 0, NULL},    {-160.0, -120, "-160.00 dB"},
+        {LEVEL_DB, -0.25, -1, "-0.25 dB"},      {LEVEL_LINEAR_ONE, 0.0, -1, "0.00 dB"},
+        {LEVEL_DB, -65.5, -66, "-65.50 dB"},    {LEVEL_DB, -4.49, -4, "-4.49 dB"},
+        {LEVEL_DB, -60.0, -60, NULL},           {LEVEL_OFF, 0.0, 0, NULL},
+        {LEVEL_DB, -160.0, -120, "-160.00 dB"},
     };
 
-    static dsd_opts opts;
-    static dsd_state state;
+    auto opts_storage = std::unique_ptr<dsd_opts>(new dsd_opts{});
+    auto state_storage = std::unique_ptr<dsd_state>(new dsd_state{});
+    auto back_storage = std::unique_ptr<dsd_opts>(new dsd_opts{});
+    auto back_state_storage = std::unique_ptr<dsd_state>(new dsd_state{});
+    dsd_opts& opts = *opts_storage;
+    dsd_state& state = *state_storage;
+    dsd_opts& back = *back_storage;
+    dsd_state& back_state = *back_state_storage;
     int rc = 0;
     for (size_t i = 0; i < sizeof cases / sizeof cases[0]; i++) {
         reset_opts_and_state(opts, state);
@@ -3030,9 +3043,9 @@ test_snapshot_squelch_level_whole_db(void) {
         opts.rtl_gain_value = 22;
         opts.rtl_dsp_bw_khz = 24;
         opts.rtl_volume_multiplier = 2;
-        if (isnan(cases[i].db)) {
+        if (cases[i].kind == LEVEL_LINEAR_ONE) {
             opts.rtl_squelch_level = 1.0;
-        } else if (cases[i].db < -900.0) {
+        } else if (cases[i].kind == LEVEL_OFF) {
             opts.rtl_squelch_level = 0.0;
         } else {
             opts.rtl_squelch_level = dsd_squelch_level_from_sql(cases[i].db);
@@ -3068,8 +3081,6 @@ test_snapshot_squelch_level_whole_db(void) {
             rc |= 1;
             continue;
         }
-        static dsd_opts back;
-        static dsd_state back_state;
         reset_opts_and_state(back, back_state);
         dsd_apply_user_config_to_opts(&reloaded, &back, &back_state);
         if (dsd_rtl_input_spec_apply(&back) != 1) {
