@@ -15812,7 +15812,10 @@ Build files: `src/protocol/CMakeLists.txt` and per‑protocol `src/protocol/<nam
     `UI_QT_SESSION_ARGS`, `UI_QT_SQUELCH_DEFAULT_POLICY`, `UI_QT_SCAN_LIST_TARGETS`, `UI_QT_SESSION_ARGS_PARSE` (live
     and reattached switches through the real bridge and queue, a refused switch, the messages, outside edits, the
     starter's row default), `ENGINE_TRUNK_SCAN_SCAN_LIST` (generated rows through the real parser and coordinator),
-    `UI_QT_PERSISTENCE`, `UI_QT_BACKUP_MODEL`, `API_COMMANDS` (the follow-up stays out of the control API).
+    `UI_QT_PERSISTENCE`, `UI_QT_BACKUP_MODEL`, `API_COMMANDS` (the follow-up stays out of the control API), and
+    `UI_QT_LISTENER_SQUELCH_*` (what a listener hears: builder argv through `dsd_runtime_bootstrap()` and the real
+    engine over a fixture replay that keeps the app's radio spec, read with `dsd_rtl_input_spec_apply()`, for an NFM
+    saved system, Explore switched live to NFM through the bridge, and a generated scan row; `docs/testing.md`).
   - Qt/Android default squelch editor (issue #899 D5): `qml/SquelchEditor.qml` in Settings' Radio defaults, beside the
     tuner gain, edits `prefs.squelch` only in the forms the pref holds: `[Off | Auto | Noise]` and, for Auto and Noise,
     a `−`/`+` margin stepper (3..30 dB, `commands.squelchMarginMinDb/MaxDb`) with a help line per mode; Off keeps the
@@ -20070,9 +20073,11 @@ External dependencies (resolved via CMake):
   accepts whole dB `DSD_SCAN_ROW_SQUELCH_DB_MIN..0` (`-120..0`, 0 = off; issue #899 took it below `-100` so the CLI's
   `-110` default and the frontends' `-120` floor fit) on every class and target type (`ANY_MODES`, not the
   `DIGITAL_MODES` of the protocol switches); `dsd_scan_row_edit_value_valid()` and the terminal's "This channel"
-  prompt hold a session edit to the same range. Its spec sets `signed_numeric`, the single exception to "a following
-  `-` token is a missing value" (a negative number, `-.25` included, which the setter then refuses as fractional),
-  applied in `option_argument()` so the parser and `dsd_scan_options_visit_files()` agree. The level lives in
+  prompt hold a session edit to the same range, and that prompt opens a row following a session level on
+  `dsd_squelch_level_whole_db()` (nearest whole dB, -120..-1), so it always takes its own prefill back. Its spec sets
+  `signed_numeric`, the single exception to "a following `-` token is a missing value" (a negative number, `-.25`
+  included, which the setter then refuses as fractional), applied in `option_argument()` so the parser and
+  `dsd_scan_options_visit_files()` agree. The level lives in
   `dsd_scan_settings::rtl_squelch_level` (a double, first in the struct, compared with a tolerance) beside the other
   row options, outside `dsd_scan_settings_equal()`. It reaches the demod through the runtime metrics hook
   `set_channel_squelch`, only for `AUDIO_IN_RTL`, and at most once per row change: `dsd_scan_mode_enter` pushes

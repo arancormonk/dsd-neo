@@ -1474,6 +1474,14 @@ visit.
   100 ms of speech after the hiss play up to about 1.7 dB low, and a weak transmission whose first syllables do not
   stand out of the hiss plays lower until they do (20 dB down at worst on one low-VHF recording). A squelch
   (`--squelch auto`, `noise` or a level) avoids all of this: each transmission then starts at the band's level.
+- A decided limit, with the squelch off: on a channel that also carries a weak steady carrier or spur (a dongle's
+  birdie, or a distant carrier a few dB over the noise), the hiss does not stay eased. The spur makes the hiss's level
+  waver, the automatic gain takes a quieter moment for a carrier arriving and lets go, and the hiss jumps back up for a
+  moment (from about -33 dBFS to as loud as -8 to -17 dBFS, every few seconds) before it eases again. In the audio such
+  a spur cannot be told from a weak transmission arriving, so the gain is left as it is. A squelch avoids it, since
+  the gain hears nothing while the gate is closed: the noise squelch keeps a spur up to about 5 dB over the noise
+  closed (a stronger one quiets the noise as a carrier does, and opens it), and a level over the spur does the same.
+  The Qt/Android app starts analog sessions with the noise squelch by default (`android/README.md` "Squelch").
 - The channel squelch measures power after the channel filter, so the noise it sees scales with the width: halving
   the width lowers the noise power by about 3 dB. Re-check a squelch threshold (`sql`, `rtl_sql`) after changing the
   width. The auto and noise squelches (below) need no re-check: the auto squelch rescales its floor with the filter,
@@ -1501,7 +1509,11 @@ alone is `auto+10`), so one setting suits every receiver and every channel of a 
   its envelope and phase statistics, and takes the floor from noise windows only (5 of the last 8). Until it has one
   (`learning`) only carrier windows open, so landing in the middle of a transmission plays it. A carrier is never
   learned as the floor: a channel with no noise windows (a continuous carrier or a birdie) stays learning and plays,
-  as with the squelch off; lock it out, or let `--scan-max-visit-ms` move a scan on.
+  as with the squelch off; lock it out, or let `--scan-max-visit-ms` move a scan on. A weak steady spur is enough:
+  from about 6 dB under the channel's noise up, the auto squelch takes it for a carrier, never learns a floor and
+  plays the hiss. Choose the [noise squelch](#noise-squelch---squelch-noise) where the channel allows it (an FM channel
+  with room for its band, below): it learns nothing, and keeps such a channel closed unless the spur itself quiets the
+  noise by N dB, as a carrier does (under `noise+10`, a spur about 6 dB or more over the noise).
 - Gating. With a floor, the gate opens on a 20 ms stretch at the floor plus the margin and closes 3 dB lower or on a
   noise window. It is decided per sample and travels with the audio, so the edges fall on the right samples whatever
   the read sizes: the monitor ramps in over 5 ms and out over 10 ms to exact silence, and the analog AGC learns
@@ -1555,6 +1567,12 @@ alone is `auto+10`), so one setting suits every receiver and every channel of a 
   input)`, `(off on digital)`, or in the rare front end it has no plan for `(off: no channel plan)`. On EDACS it reads
   `(EDACS analog calls)` between calls and the tracker's reading during one. The startup banner shows `SQ=auto+10dB`,
   and the DSP panel and the Qt/Android radio panel show the same.
+- No channel plan (a decided limit). When the auto or noise squelch cannot build its channel plan for the front end,
+  its gate stays open and the readout says `off: no channel plan`. The monitor then plays the hiss, and the receiver
+  counts the noise as a carrier, so a `-Y` scan or a trunk scan stays on that row on noise, as with the squelch off,
+  and the open-squelch scan warning is not given. Unlike the squelch off, analog call history and recordings are not
+  paused (they follow the squelch asked for), so idle noise there can make a history row or a recording. Use a level
+  there.
 - Scans: a row or target's own `--squelch auto[+N]` (`nfm` and `am` rows, `nfm-conventional` and `am-conventional`
   targets) replaces the default while it is on air, as `--squelch-db` does. Under the auto squelch an analog row's
   noise no longer holds the scan, so the open-squelch warning does not apply to it. See `docs/csv-formats.md`.
@@ -2207,7 +2225,10 @@ hold one call open. Set --squelch <dB>, --squelch auto or noise, or --tone-allow
 
 Any one of these lifts it: a level above -110 dB (`--squelch -60`), `--squelch auto`, `--squelch noise` on NFM, or on
 NFM a `--tone-allow` list, which lets only its tones through. A `--tone-block` list does not, as noise carries no tone
-to block. On AM dsd-neo checks no tones, so the AM notice names only `--squelch <dB>` and `--squelch auto`. A squelch
+to block. `auto` and `noise` lift it even on the rare channel where they cannot run (see "No channel plan" under
+[Auto squelch](#auto-squelch---squelch-auto)). By default the Qt/Android app starts NFM and AM sessions with
+`noise+10` (see `android/README.md` "Squelch"), so their calls are on. On AM dsd-neo checks no tones, so the AM notice
+names only `--squelch <dB>` and `--squelch auto`. A squelch
 set while dsd-neo runs (the terminal's `Squelch...` row, the Qt/Android radio panel, the API) or a scan row's own
 `--squelch` applies at once: a call in progress ends when the squelch drops back to the default. The lift is logged once
 too: `NOTICE: Analog call history and recordings are back on.` The monitor audio is not affected either way. Audio input

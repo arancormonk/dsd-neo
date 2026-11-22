@@ -408,7 +408,13 @@ showed.
   on an RTL dongle starts on an Airspy without the dongle's PPM, bias tee and
   tuner gain, and an Airspy's own settings (its serial among them) never go to a
   dongle. A P25 Phase 2 channel's scrambling code does not go with it (see
-  [Ranges and reception](#ranges-and-reception)). Explore here does not change where
+  [Ranges and reception](#ranges-and-reception)). Nor does the range's listening
+  squelch: Explore here on a detection heard as NFM or AM starts with the app's
+  default squelch (Settings, **Radio defaults · next start**, **Squelch**;
+  `noise+10` unless changed, which AM runs as `auto+10`), and on a digital one
+  with the squelch off, as any Explore start does (`android/README.md`
+  "Squelch"). A running search applies each range's own listening squelch at
+  every landing and never the app's default. Explore here does not change where
   Explore resumes from Home, even through a USB permission request. A saved
   system starts as saved (keys, decoder and trunking). A system whose site is
   avoided is refused with a message on the search screen, and nothing stops.
