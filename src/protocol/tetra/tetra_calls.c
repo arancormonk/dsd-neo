@@ -2088,7 +2088,8 @@ dmo_scan_crypt(const dsd_state* state, dsd_trunk_scan_activity_identity* id) {
 
 /* What the direct mode call @p d set up says of its transmission: its source (ISSI) and destination (GSSI or ISSI) as
    numeric IDs while its addresses were clear (DM-2-B hides the destination), its call type (EN 300 396-3 clause 9.3.4:
-   group or individual) and its circuit mode type (clause 9.3.5: 0 speech, 1-7 circuit mode data) when read. */
+   group or individual) and its circuit mode type when read and defined (clause 9.6.3: 0 and 8 speech, 1-7 circuit mode
+   data; 9-15 are reserved, which say nothing of the service, so a reserved one leaves it unknown). */
 static void
 dmo_scan_call_identity(const dsd_state* state, const tetra_dmo_call_t* d, dsd_trunk_scan_activity_identity* id) {
     DSD_MEMSET(id, 0, sizeof(*id));
@@ -2104,7 +2105,7 @@ dmo_scan_call_identity(const dsd_state* state, const tetra_dmo_call_t* d, dsd_tr
         id->is_private = (uint8_t)(d->group == 0u);
         id->known |= DSD_SCAN_ACTIVITY_KNOWN_PARTY;
     }
-    if (d->circuit_known) {
+    if (d->circuit_known && d->circuit_mode <= 8u) {
         id->data_call = (uint8_t)(d->circuit_mode >= 1u && d->circuit_mode <= 7u);
         id->known |= DSD_SCAN_ACTIVITY_KNOWN_DATA;
     }
@@ -2157,6 +2158,13 @@ dmo_sds_notice(dsd_opts* opts, dsd_state* state, tetra_state_t* ts, const tetra_
     identity.source = h->src;
     identity.data_call = 1U;
     identity.encrypted = (uint8_t)(h->enc_state != TETRA_DMO_AIE_DM1);
+    /* Acknowledged short data (DM-SDS DATA) is an individual service: the unacknowledged one (DM-SDS UDATA) shall be
+       used for a group and may be used for an individual (EN 300 396-3 clauses 6.3, 6.3.1.1.2), so only the
+       acknowledged one says its party. */
+    if (h->msg_type == TETRA_DMO_MSG_SDS_DATA) {
+        identity.is_private = 1U;
+        identity.known |= DSD_SCAN_ACTIVITY_KNOWN_PARTY;
+    }
     if (!h->dst_encrypted && h->dst != 0u) {
         identity.target = h->dst;
         identity.known |= DSD_SCAN_ACTIVITY_KNOWN_TARGET;
