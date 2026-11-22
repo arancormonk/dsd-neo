@@ -643,8 +643,30 @@ ScanListStarter::joinConflict(const QVariantMap& primary, const QVariantMap& oth
             session << value;
         }
     }
-    const bool tetraTargets = sessionHasTetra(session);
     const SessionArgPrefs prefs = session_args_prefs(m_prefs);
+    /* The chosen lists that stay switched on without @p other: one that cannot join the primary in the session the
+       others make leaves the choice (the sheet drops it), and with it any TETRA DMO target it set the bandwidth by, so
+       those go until every one left joins at the bandwidth they share. A list dropped so names no reason for
+       @p other: switching a TETRA DMO list off drops a list fixed at 72 kHz, not a compatible one beside it. */
+    for (bool pruned = true; pruned;) {
+        pruned = false;
+        QVariantList stay{primary};
+        for (qsizetype i = 2; i < session.size(); ++i) {
+            stay << session.at(i);
+        }
+        const bool stayTetra = sessionHasTetra(stay);
+        for (qsizetype i = 2; i < session.size();) {
+            if (session_args_scan_join_conflict(primary, session.at(i).toMap(), prefs, stayTetra).isEmpty()) {
+                ++i;
+            } else {
+                session.removeAt(i);
+                pruned = true;
+            }
+        }
+    }
+    /* @p other joins when it and every list that stays join the primary at the bandwidth they would all run at: one
+       whose TETRA DMO target would move a staying list off its fixed bandwidth is named for it. */
+    const bool tetraTargets = sessionHasTetra(session);
     for (qsizetype i = 1; i < session.size(); ++i) {
         const QString conflict = session_args_scan_join_conflict(primary, session.at(i).toMap(), prefs, tetraTargets);
         if (!conflict.isEmpty()) {

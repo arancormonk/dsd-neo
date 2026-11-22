@@ -425,6 +425,35 @@ Item {
             }
         }
 
+        // Issue #890: switching the TETRA DMO list off takes the session back to the app's 48 kHz, so
+        // a list fixed at 72 kHz leaves the choice; a Default list beside it stays switched on.
+        function test_scan_with_other_lists_keeps_compatible_lists_when_tetra_goes() {
+            var oldOnboarding = prefs.onboardingDone;
+            prefs.onboardingDone = true;
+            testContext.setPrefs("bandwidthKhz", 48);
+            try {
+                var sheet = openScanTogether([p25List("Wide", {bandwidthKhz: 72}), p25List("Beside"), {name: "Direct", sourceType: "rtltcp", host: "127.0.0.1", port: 1234,
+                    entries: [{kind: "freq", name: "DMO", protocol: "tetra_dmo", freqMhz: "430.5", enabled: true}]}]);
+                var wide = scanLists.get(scanLists.count - 3);
+                var beside = scanLists.get(scanLists.count - 2);
+                var direct = scanLists.get(scanLists.count - 1);
+                findChild(sheet, "scanTogetherRow_" + direct.uid).activate();
+                tryCompare(findChild(sheet, "scanTogetherRow_" + wide.uid), "enabled", true);
+                findChild(sheet, "scanTogetherRow_" + wide.uid).activate();
+                findChild(sheet, "scanTogetherRow_" + beside.uid).activate();
+                compare(sheet.chosen.join(), [wide.uid, beside.uid, direct.uid].join());
+                findChild(sheet, "scanTogetherRow_" + direct.uid).activate();
+                tryCompare(sheet, "chosen", [beside.uid]);
+                var besideRow = findChild(sheet, "scanTogetherRow_" + beside.uid);
+                verify(besideRow.enabled && besideRow.checked, besideRow.subtitle);
+                tryCompare(findChild(sheet, "scanTogetherRow_" + wide.uid), "enabled", false);
+                compare(findChild(sheet, "scanTogetherRow_" + wide.uid).subtitle, "Different bandwidth");
+                findChild(sheet, "scanTogetherCancel").clicked();
+            } finally {
+                prefs.onboardingDone = oldOnboarding;
+            }
+        }
+
         // A list removed while the sheet is open leaves the choice alone; the others it held stay
         // switched on and joinable, rather than every row being judged against a list that is gone.
         function test_scan_with_other_lists_keeps_choice_when_one_is_removed() {

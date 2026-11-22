@@ -78,7 +78,9 @@ class ScanListStarter : public QObject {
      * session the start would run (issue #890): App default is 72 kHz when any of them has a TETRA DMO target, so
      * @p other is named for a bandwidth that differs from @p primary's, its own or one a chosen list's would set, and
      * "TETRA DMO needs 72 kHz" when the session's bandwidth cannot decode the TETRA DMO targets
-     * (session_args_scan_list_rate_error()).
+     * (session_args_scan_list_rate_error()). The chosen lists counted are those that stay without @p other: one that
+     * cannot join the primary in the session the other chosen lists make (a list fixed at 72 kHz once the TETRA DMO
+     * list is switched off) leaves the choice, as the sheet drops it, and names no reason for @p other.
      */
     Q_INVOKABLE QString joinConflict(const QVariantMap& primary, const QVariantMap& other,
                                      const QVariantList& chosen = QVariantList()) const;

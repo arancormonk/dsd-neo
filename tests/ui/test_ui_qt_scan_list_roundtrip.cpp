@@ -896,6 +896,16 @@ checkTetraListRate(const QTemporaryDir& dir) {
     check(starter.joinConflict(primaryDefault, narrowP25, {QVariantMap()}).isEmpty());
     // A list counts once: one already on is judged as itself, not twice.
     check(starter.joinConflict(primaryDefault, defaultDmo, {defaultDmo, primaryDefault}).isEmpty());
+    // Switching the TETRA DMO list off: a list fixed at 72 kHz no longer joins and leaves the choice, but it names no
+    // reason for a Default list beside it, which still joins the Default primary at the app's 48 kHz.
+    const QVariantMap wideP25 = listOf("wide", {p25}, 72);
+    const QVariantMap defaultP25 = listOf("default-p25", {p25}, -1);
+    check(starter.joinConflict(primaryDefault, wideP25, {defaultDmo, wideP25, defaultP25}).isEmpty());
+    check(starter.joinConflict(primaryDefault, defaultP25, {defaultDmo, wideP25, defaultP25}).isEmpty());
+    check(starter.joinConflict(primaryDefault, wideP25, {wideP25, defaultP25}) == "Different bandwidth");
+    check(starter.joinConflict(primaryDefault, defaultP25, {wideP25, defaultP25}).isEmpty());
+    // The TETRA DMO list switched on again joins both: the session runs at 72 kHz.
+    check(starter.joinConflict(primaryDefault, defaultDmo, {defaultP25}).isEmpty());
     // Two lists at the same explicit 48 kHz agree on the bandwidth, but TETRA cannot decode at it.
     check(starter.joinConflict(listOf("p48", {p25}, 48), listOf("d48", {dmo}, 48), {}) == "TETRA DMO needs 72 kHz");
     check(starter.joinConflict(listOf("p48", {p25}, 48), narrowP25, {}).isEmpty());
