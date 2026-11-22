@@ -145,17 +145,32 @@ Item {
         function describe(r) {
             return "[" + Math.round(r.x) + "," + Math.round(r.y) + " " + Math.round(r.w) + "x" + Math.round(r.h) + "]";
         }
-        // A compact card's height from its measured boxes (issue #901 r5 H3, as the call rows' S2 rule): its head, the
-        // title's and one supporting line's boxes with 4 px between and 12 px a side, at least Play plus 8 a side. 68 px
-        // at normal text wherever the boxes are the base face's lines (within 2 px); a taller fallback face (Noto CJK)
-        // makes the boxes, and the card, taller, which the fixed boxes keep (decided).
-        function compactHeight(card, what) {
-            var expected = Math.max(card.titleBox + 4 + card.sourceBox + 24, part(card, "savedSystemPlay").implicitHeight + 16);
-            fuzzyCompare(card.height, expected, 0.5, what + ": a compact card is its boxes and padding");
-            var excess = card.titleBox - latinTitle.implicitHeight + card.sourceBox - latinSource.implicitHeight;
-            if (Ui.Theme.fontScale === 1.0 && excess <= 2)
-                fuzzyCompare(card.height, 68, 0.5, what + ": a compact card at normal text");
+        // A compact card's height from its measured lines (issue #901 r5 H3, as the call rows' S2 rule): its head, the
+        // title's box and one supporting line with 4 px between and 12 px a side, at least Play plus 8 a side. A taller
+        // fallback face (Noto CJK) makes the boxes, and the card, taller, which the fixed boxes keep (decided). Where
+        // the boxes are the base face's own lines, the card is the one those lines made before the boxes (r6 J5: the
+        // 2 px tolerance this had demanded 68 px of a 69 px card under Noto CJK, 25 + 4 + 16 + 24), and 68 px where
+        // they give 68, as they do at normal text with the app's fonts.
+        function cardHead(card, supportLine, supportLatin, play, what) {
+            var expected = Math.max(card.titleBox + 4 + supportLine + 24, play.implicitHeight + 16);
+            fuzzyCompare(card.height, expected, 0.5, what + ": a compact card is its lines and padding");
+            var titleLatin = Math.ceil(latinTitle.implicitHeight);
+            if (card.titleBox === titleLatin && supportLine === supportLatin) {
+                var latin = Math.max(titleLatin + 4 + supportLatin + 24, play.implicitHeight + 16);
+                fuzzyCompare(card.height, latin, 0.5, what + ": a compact card in the base face's lines");
+                if (Ui.Theme.fontScale === 1.0 && latin === 68)
+                    fuzzyCompare(card.height, 68, 0.5, what + ": a compact card at normal text");
+            }
             return expected;
+        }
+        // A saved system's compact card: the title's box over the source line's box.
+        function compactHeight(card, what) {
+            return cardHead(card, card.sourceBox, Math.ceil(latinSource.implicitHeight), part(card, "savedSystemPlay"), what);
+        }
+        // A scan list's compact card: its name's box over its count line, a fixed app string drawn at its own height.
+        function compactListHeight(card, what) {
+            var count = part(card, "scanListCount");
+            return cardHead(card, count.height, count.height, part(card, "scanListPlay"), what);
         }
         // The title's minimum beside the site button (issue #901 G4): 96 px.
         function minimumTitle(card) {
@@ -740,8 +755,9 @@ Item {
             verify(!overlaps(play, more) && !overlaps(labels, play) && !overlaps(labels, more), data.tag + ": apart");
             fuzzyCompare(play.y + play.h / 2, more.y + more.h / 2, 0.5, "one row");
             verify(name.width >= minimumTitle(card) - 0.5, "the name at its minimum at least");
-            if (data.scale === 1.0)
-                fuzzyCompare(card.height, 68, 0.5);
+            // r6 J5: from its measured lines at every size, and 68 px at normal text where they give 68 (under Noto CJK
+            // at QT_SCALE_FACTOR=1.25 the name's box is 25 px and the card 69).
+            compactListHeight(card, data.tag + ": the scan list");
             tap(part(card, "scanListPlay"));
             compare(listPlayed.count, 1);
             verify(scanLists.update(0, {entries: [{kind: "freq", name: "Simplex", protocol: "p25", freqMhz: "851.5",
