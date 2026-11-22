@@ -319,7 +319,7 @@ Item {
         // "SLOT 2 · idle, 4002" (the label had changed, the identity was still shown), then to "SLOT 2 · idle". Each
         // name the node takes across the change is recorded as it is set: exactly one, the idle name, with one
         // NameChanged from the node; and back once to the call's name as a call starts again. Also as the leading call
-        // ends and the strip turns to the other slot (r7 K2).
+        // ends and the strip turns to the other slot (r7 K2), and through the held ended state for both (r8 L5).
         function test_h2_the_strip_renames_once_as_its_call_ends() {
             var monitor = findChild(app, "monitorScreen");
             var node = findChild(monitor, "otherSlotNode");
@@ -383,6 +383,28 @@ Item {
                 compare(JSON.stringify(names), JSON.stringify(["SLOT 1, TG 4001"]), "the names the strip took as slot 1's call came back");
                 owned = counts.owners["otherSlotNode"] || {};
                 compare(owned.NameChanged || 0, 1, "the strip's renames as slot 1's call came back: " + churn(counts));
+                // r8 L5: through the held ended state. 3 is DSD_APP_CALL_LINE_ENDED, whose hold keeps the call's
+                // identity and flags (MetricsModel::slotCallView()); 1 is DSD_APP_CALL_LINE_IDLE. The strip turns idle
+                // once, at 3, and says nothing more at 1, for the non-leading call (slot 1 under slot 2's lead) and the
+                // leading one (slot 2, the lead going back to slot 1).
+                var step = function (label, metrics, expected) {
+                    names = [];
+                    testContext.startAccessibilityCount();
+                    for (var key in metrics)
+                        testContext.setMetric(key, metrics[key]);
+                    waitForRendering(app.contentItem);
+                    wait(20);
+                    var stepCounts = testContext.accessibilityCount();
+                    testContext.stopAccessibilityCount();
+                    compare(JSON.stringify(names), JSON.stringify(expected), "the names the strip took as " + label);
+                    var stepOwned = stepCounts.owners["otherSlotNode"] || {};
+                    compare(stepOwned.NameChanged || 0, expected.length, "the strip's renames as " + label + ": " + churn(stepCounts));
+                };
+                step("the non-leading call ended, held", {slot1CallState: 3}, ["SLOT 1 · idle"]);
+                step("the non-leading call's hold ran out", {slot1CallState: 1}, []);
+                step("slot 1's call came back again", {slot1CallState: 2}, ["SLOT 1, TG 4001"]);
+                step("the leading call ended, held", {slot2CallState: 3, leadSlot: 1}, ["SLOT 2 · idle"]);
+                step("the leading call's hold ran out", {slot2CallState: 1}, []);
             } finally {
                 node.Accessible.nameChanged.disconnect(record);
                 testContext.stopAccessibilityCount();
