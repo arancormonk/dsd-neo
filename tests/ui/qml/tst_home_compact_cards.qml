@@ -24,6 +24,10 @@ Item {
     Text { id: latinTitle; visible: false; text: "Ag"; font.family: Ui.Theme.sans; font.pixelSize: Ui.Theme.fontSize(17); font.weight: Font.Bold }
     Text { id: latinSource; visible: false; text: "Ag"; font.family: Ui.Theme.mono; font.pixelSize: Ui.Theme.fontSize(12) }
     Text { id: latinCount; visible: false; text: "Ag"; font.family: Ui.Theme.sans; font.pixelSize: Ui.Theme.fontSize(12) }
+    // The same fonts' mixed-script lines, Latin, CJK and emoji, measured here as LineBoxes measures a box (r8 L1): where
+    // they are the Latin lines, no fallback face is taller, and the card is the desktop's.
+    Text { id: mixedTitle; visible: false; text: "Ag返🚒"; font.family: Ui.Theme.sans; font.pixelSize: Ui.Theme.fontSize(17); font.weight: Font.Bold }
+    Text { id: mixedSource; visible: false; text: "Ag返🚒"; font.family: Ui.Theme.mono; font.pixelSize: Ui.Theme.fontSize(12) }
     SignalSpy { id: played; target: home; signalName: "playSystem" }
     SignalSpy { id: sitesChosen; target: home; signalName: "chooseSites" }
     SignalSpy { id: listPlayed; target: home; signalName: "playScanList" }
@@ -149,26 +153,34 @@ Item {
         // A compact card's height (issue #901 r5 H3, as the call rows' S2 rule). At every size, from its measured lines:
         // the title's box and one supporting line with 4 px between and 12 px a side, at least Play plus 8 a side. A
         // taller fallback face (Noto CJK) makes the boxes, and the card, taller, which the fixed boxes keep (decided).
-        // At normal text, wherever the card's lines are the base face's own (independent "Ag" probes in the same fonts),
-        // also from those probes and the specified constants alone, 12 px padding and the 68 px floor (Play's 52 plus 8
-        // a side), never the card's own Play: 68 px with the app's fonts on a desktop (r7 K3: deciding from the card's
-        // own numbers whether to check 68 let a taller Play pass).
-        function cardHead(card, supportLine, supportLatin, play, what) {
+        // At normal text, wherever the test's own probes find no fallback face taller than the base face (each font's
+        // mixed-script line, "Ag返🚒", is its Latin line, "Ag"), also from those probes and the specified constants
+        // alone, 12 px padding and the 68 px floor (Play's 52 plus 8 a side): 68 px with the app's fonts on a desktop.
+        // Nothing of the card under test decides whether that check runs (r7 K3: its own Play; r8 L1: its own title
+        // box, so title boxes 4 px too tall turned the check off and passed).
+        function cardHead(card, supportLine, supportLatin, supportHasFallback, play, what) {
             var expected = Math.max(card.titleBox + 4 + supportLine + 2 * 12, play.implicitHeight + 2 * 8);
             fuzzyCompare(card.height, expected, 0.5, what + ": a compact card is its lines and padding");
             var titleLatin = Math.ceil(latinTitle.implicitHeight);
-            if (Ui.Theme.fontScale === 1.0 && card.titleBox === titleLatin && supportLine === supportLatin)
-                fuzzyCompare(card.height, Math.max(titleLatin + 4 + supportLatin + 2 * 12, 68), 0.5,
-                             what + ": a compact card at normal text in the base face's lines (68 px with the desktop fonts)");
+            var baseFace = Math.ceil(mixedTitle.implicitHeight) === titleLatin && !supportHasFallback;
+            if (Ui.Theme.fontScale === 1.0 && baseFace) {
+                var baseline = Math.max(titleLatin + 4 + supportLatin + 2 * 12, 68);
+                fuzzyCompare(card.height, baseline, 0.5, what + ": a compact card at normal text with no taller fallback face ("
+                             + baseline + " px from the probes)");
+                if (titleLatin + 4 + supportLatin + 2 * 12 <= 68)
+                    fuzzyCompare(card.height, 68, 0.5, what + ": 68 px, as with the desktop fonts");
+            }
             return expected;
         }
         // A saved system's compact card: the title's box over the source line's box.
         function compactHeight(card, what) {
-            return cardHead(card, card.sourceBox, Math.ceil(latinSource.implicitHeight), part(card, "savedSystemPlay"), what);
+            var latin = Math.ceil(latinSource.implicitHeight);
+            return cardHead(card, card.sourceBox, latin, Math.ceil(mixedSource.implicitHeight) !== latin, part(card, "savedSystemPlay"), what);
         }
         // A scan list's compact card: its name's box over its count line, a fixed app string drawn at its own height.
         function compactListHeight(card, what) {
-            return cardHead(card, part(card, "scanListCount").height, Math.ceil(latinCount.implicitHeight), part(card, "scanListPlay"), what);
+            return cardHead(card, part(card, "scanListCount").height, Math.ceil(latinCount.implicitHeight), false,
+                            part(card, "scanListPlay"), what);
         }
         // The title's minimum beside the site button (issue #901 G4): 96 px.
         function minimumTitle(card) {
