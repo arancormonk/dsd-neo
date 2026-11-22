@@ -357,18 +357,22 @@ to 25,000 Hz and the probe to 4 seconds. Both stay editable, and a range opened
 again keeps the values you saved. Auto never includes TETRA, so a TETRA carrier
 on an Auto range is monitored as NFM.
 
-TETRA needs a 72 kHz DSP bandwidth (four samples per symbol). A search with an
-enabled TETRA range starts at 72 kHz, and any other search at 48 kHz. The default
-bandwidth in Settings › Bandwidth never applies to Signal search. A 72 kHz
-search runs every range at 72 kHz, its Auto and analog ranges too (see [Other
-protocols at 72 kHz](#other-protocols-at-72-khz)). Start is refused, with the
-reason, when TETRA cannot run:
+TETRA runs at a DSP bandwidth that is a multiple of 18 kHz from 36 to 144 kHz
+(two to eight samples per symbol). The app starts a search with an enabled
+TETRA range at 72 kHz (four samples per symbol), and any other search at 48 kHz.
+The default bandwidth in Settings › Bandwidth never applies to Signal search. A
+72 kHz search runs every range at 72 kHz, its Auto and analog ranges too (see
+[Other protocols at 72 kHz](#other-protocols-at-72-khz)). The decoder itself
+takes a TETRA search at any of those rates, a native search on a 144 kHz
+receiver for example, with the symbol timing matched to the rate (the rate over
+18,000 symbols per second). Start is refused, with the reason, when TETRA cannot
+run:
 
 - the session already decodes TETRA: **Stop TETRA decoding before Signal search**;
-- the DSP bandwidth is not 72 kHz, `--tetra-uplink` is on, the channel filter is
-  off (`DSD_NEO_CHANNEL_LPF=0`), or the symbol timing the receiver runs for
-  TETRA (a timing override, or the timing it applied itself) does not match
-  72 kHz;
+- the DSP bandwidth is not one of those rates (the message names 72 kHz, the
+  rate the app uses), `--tetra-uplink` is on, the channel filter is off
+  (`DSD_NEO_CHANNEL_LPF=0`), or the symbol timing the receiver runs for TETRA (a
+  timing override, or the timing it applied itself) does not match the rate;
 - a paused 48 kHz search whose edited ranges now enable TETRA cannot take it on
   at **Resume**: **To identify TETRA, stop the search and start it again (this
   clears the session's avoids and learned Phase 2 codes)**.
