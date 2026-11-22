@@ -412,7 +412,8 @@ dpmr_frame_checked_pair(const dPMRVoiceFS2Frame_t* f) {
     return first_pair >= 0 ? first_pair : second_pair;
 }
 
-/* Where the scrambler reloads from the key (FN 0, frame 1), per half (issue #903): at a checked frame number 0, or, in
+/* Where the scrambler reloads from the key (FN 0, frame 1), per half (issue #903): at the first half of the pair the
+ * checked frame numbers resolve (the same pair the cadence follows), or, in
  * a frame neither of whose halves checked, at the first half of the pair the transmission's cadence predicts. A
  * verified pair says the next on-time FS2 carries the other one, so a failed FN 0/1 pair after a verified FN 2/3 one
  * still reloads where the transmission's register does, instead of descrambling a whole superframe with the old one.
@@ -436,11 +437,10 @@ dpmr_resolve_scrambler_reload(dsd_state* state) {
         next = 1U;
     }
     state->dpmr_expected_pair = next;
-    for (int o = 0; o < NB_OF_DPMR_VOICE_FRAME_TO_DECODE; o++) {
-        const int predicted_first = o == 0 && none_checked && pair == 0;
-        const int own_zero = pair == 0 && dpmr_half_checked_frame_number(f, o) == 0;
-        f->ScramblerReload[o] = (own_zero || predicted_first) ? 1U : 0U;
-    }
+    /* The first half of pair 0 is FN 0 (frame 1); the second half is never FN 0. Checked or predicted, it is the same
+     * pair the cadence follows. */
+    f->ScramblerReload[0] = pair == 0 ? 1U : 0U;
+    f->ScramblerReload[1] = 0U;
 }
 
 /* Which halves of the frame are scrambled (issue #655), and which carry voice (issue #903), in order: a half whose CCH

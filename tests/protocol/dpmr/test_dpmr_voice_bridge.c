@@ -519,6 +519,14 @@ test_failed_cch_frame_number_does_not_reset_the_scrambler(void) {
     set_half(state, 1, 1U, 0U, 0U, 3U, 0U);
     rc |= expect_int("misplaced second half plays", play_frame(fx.opts, state, 0xF012ULL), 8);
     rc |= expect_u64("misplaced second half keeps the register", g_mbe_mi[4], 0xF012ULL);
+
+    /* Both halves pass, the first reading FN 1 which a first half cannot carry, the second FN 1: the second places
+       pair 0, the same pair the cadence follows, so the first half reloads. */
+    set_half(state, 0, 1U, 1U, 0U, 3U, 0U);
+    set_half(state, 1, 1U, 1U, 0U, 3U, 0U);
+    rc |= expect_int("mixed-validity pair plays", play_frame(fx.opts, state, 0x1357ULL), 8);
+    rc |= expect_u64("mixed-validity pair reloads the first half", g_mbe_mi[0], 0ULL);
+    rc |= expect_int("mixed-validity pair predicts frames 3/4", state->dpmr_expected_pair, 2);
     release_fixture(&fx);
     return rc;
 }

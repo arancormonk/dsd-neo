@@ -14156,7 +14156,8 @@ Private per-protocol modules worth knowing about:
   play a data transmission. The scrambler reloads (FN 0) only on a checked frame number, the half's own or the one
   its verified pair partner implies (`dpmr_half_checked_frame_number()`; a passing half whose number its position cannot
   carry, FN 1 or 3 in the first half or FN 0 or 2 in the second, counts as none, and passing halves that name different
-  pairs place the frame nowhere, so nothing reloads and no prediction follows), or, in a frame neither half of which
+  pairs place the frame nowhere, so nothing reloads and no prediction follows; the reload uses the same resolved pair as the
+  cadence, so a first half whose own number is unusable still reloads when the second half places pair 0), or, in a frame neither half of which
   checked, at the first half of the pair the cadence predicts (`dsd_state::dpmr_expected_pair`: a placed frame says
   the next on-time FS2 carries the other pair; `dpmr_confirm_note_frame_start()` drops it at any gap, and the
   boundaries with the scrambling). `dPMRVoiceFS2Frame.ScramblerReload[]` holds the result; `FrameNumbering[]` and
