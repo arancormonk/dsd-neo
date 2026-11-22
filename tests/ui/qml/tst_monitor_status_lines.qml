@@ -556,5 +556,104 @@ Item {
             verify(item("otherSlotNode").Accessible.name.indexOf("North Zone") >= 0, item("otherSlotNode").Accessible.name);
             testContext.setMetric("uiMessage", "");
         }
+
+        // ---- r6: what a fitted line draws ----
+
+        // The width @p text takes in @p font, as the plans measure it (TextMetrics' advance).
+        function advanceOf(text, font) {
+            var mirror = Qt.createQmlObject("import QtQuick; TextMetrics {}", root);
+            mirror.font = font;
+            mirror.text = text;
+            var width = mirror.advanceWidth;
+            mirror.destroy();
+            return width;
+        }
+        // The font a fitted @p line is drawn in: its own, at the size VerticalFit chose.
+        function drawnFont(line) {
+            return Qt.font({family: line.font.family, weight: line.font.weight, pixelSize: line.fontInfo.pixelSize});
+        }
+        // Whether @p line's text stands taller than its box at the size asked for, so the fit draws it smaller.
+        function standsTaller(line) {
+            var mirror = Qt.createQmlObject("import QtQuick; Text { visible: false; textFormat: Text.PlainText }", root);
+            mirror.font = line.font;
+            mirror.text = line.text;
+            var taller = mirror.implicitHeight > line.height + 0.5;
+            mirror.destroy();
+            return taller;
+        }
+
+        // Issue #901 r6 J1: the plans measure a fitted line at the size it is drawn in. VerticalFit draws a taller
+        // script smaller, but the strip's and the hero's plans measured the identity and the ids at the size asked
+        // for: at 320 dp and 1.0 a Tibetan private-call name drew in 31 px of the 132 px before Skip, and the 77 px
+        // EMERGENCY tag was left out although both fit; the hero left ENC out beside fitted ids the same way. With a
+        // Tibetan name and source on a private emergency encrypted call: the line is drawn smaller (where a face
+        // draws the script taller than its box), the lead takes min(its drawn width, 96), and the first item left
+        // out could not have fitted beside what is drawn.
+        function test_fitted_lines_plan_at_their_drawn_size_data() {
+            var rows = [];
+            for (var w of [320, 360, 411]) {
+                for (var s of [1, 1.6, 2])
+                    rows.push({tag: w + "@" + s, width: w, scale: s});
+            }
+            return rows;
+        }
+        function test_fitted_lines_plan_at_their_drawn_size(data) {
+            var tall = "བོད་སྐད";
+            root.width = data.width;
+            root.height = 1300;
+            Ui.Theme.fontScale = data.scale;
+            m("twoSlotCarrier", true);
+            setCall(1, {kind: 3, name: "Dispatcher 7", tgLabel: "Dispatcher 7", tg: "2001234", id: 2001234, src: tall,
+                        enc: true, emergency: true, encText: "ALG 84 · KID 0001"});
+            setCall(2, {kind: 3, name: tall, tgLabel: tall, tg: "2001235", id: 2001235, src: "7001", enc: true, emergency: true});
+            m("leadSlot", 1);
+            settle();
+
+            // The strip: EMERGENCY, the label, PRIVATE, ENC after the identity's lead, up to Skip.
+            var identity = item("otherSlotIdentity");
+            verify(identity.visible);
+            if (standsTaller(identity))
+                verify(identity.fontInfo.pixelSize < identity.font.pixelSize, data.tag + ": the identity is drawn smaller");
+            var drawnWidth = Math.ceil(advanceOf(identity.text, drawnFont(identity)));
+            var room = item("otherSlotSkip").x - 10 - Ui.Theme.cardPadding;
+            var used = Math.min(drawnWidth, 96);
+            var dropped = null;
+            for (var part of [item("otherEmergencyTag"), item("otherSlotLabel"), item("otherPrivateTag"), item("otherEncTag")]) {
+                if (part.visible) {
+                    verify(dropped === null, data.tag + ": " + part.objectName + " drawn while " + (dropped ? dropped.objectName : "") + " is not");
+                    used += 10 + part.implicitWidth;
+                } else if (dropped === null) {
+                    dropped = part;
+                    verify(used + 10 + part.implicitWidth > room + 0.5, data.tag + ": " + part.objectName + " (" + part.implicitWidth
+                           + " px) left out beside an identity drawn " + drawnWidth + " px wide, " + used + " of " + room + " px used");
+                }
+            }
+            if (drawnWidth <= identity.width + 0.5)
+                verify(!identity.truncated, data.tag + ": the identity is cut in room for it");
+
+            // The hero: EMERGENCY, PRIVATE, ENC, then the algorithm (no less than "ALG 84…"), after the ids' lead.
+            var ids = item("heroIds");
+            var subline = ids.parent;
+            verify(ids.visible);
+            if (standsTaller(ids))
+                verify(ids.fontInfo.pixelSize < ids.font.pixelSize, data.tag + ": the ids are drawn smaller");
+            var idsWidth = Math.ceil(advanceOf(ids.text, drawnFont(ids)));
+            used = Math.min(idsWidth, 96);
+            dropped = null;
+            var algorithm = item("heroAlgorithm");
+            for (part of [item("heroEmergencyTag"), item("heroPrivateTag"), item("heroEncTag"), algorithm]) {
+                var need = part === algorithm
+                        ? Math.min(Math.ceil(advanceOf(algorithm.text, drawnFont(algorithm))), Math.ceil(advanceOf("ALG 84…", drawnFont(algorithm))))
+                        : part.implicitWidth;
+                if (part.visible) {
+                    verify(dropped === null, data.tag + ": " + part.objectName + " drawn while " + (dropped ? dropped.objectName : "") + " is not");
+                    used += 8 + (part === algorithm ? part.width : need);
+                } else if (dropped === null) {
+                    dropped = part;
+                    verify(used + 8 + need > subline.width + 0.5, data.tag + ": " + part.objectName + " (" + need + " px) left out beside ids drawn "
+                           + idsWidth + " px wide, " + used + " of " + subline.width + " px used");
+                }
+            }
+        }
     }
 }
