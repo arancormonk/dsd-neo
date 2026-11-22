@@ -1537,8 +1537,9 @@ history row at its frequency; the TETRA rows show their protocol (`TETRA`, `TETR
 names 408.03125 MHz; `Direct`), and the live status shows them confirmed while their carrier is on; the noise visit
 confirms nothing and ends unresolved; the reloaded history matches; the source only ever runs at 1.152 MHz; and a
 confirmed TETRA visit leaves 2.1 s after its carrier stops (1.8 to 3.6 s; the runs measured 2.0 to 2.15 s, and the
-analog and DMR visits 0.5 to 0.8 s). A trunked downlink refreshes the visit every slot, so its departure is timed from
-the stop. A direct mode visit refreshes only on checked call content (speech, DM-SETUP, DM-OCCUPIED; never DM-TX
+analog and DMR visits 0.5 to 0.8 s). The departure is the retune that leaves the search's first visit to the
+transmitter, so a visit that leaves too early fails rather than a later range's retune standing in for it. A trunked
+downlink refreshes the visit every slot, so its departure is timed from the stop. A direct mode visit refreshes only on checked call content (speech, DM-SETUP, DM-OCCUPIED; never DM-TX
 CEASED), so a DMO departure is timed from the end of the last such burst the scene sent before the stop, from the
 fixture's own layout: the call fixture's loop has no call content for 0.64 s around its set-up, and a run whose stop
 fell 0.36 s into that gap once left 1.77 s after the stop (2.13 s after the last refresh). The presence signal's visit

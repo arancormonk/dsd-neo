@@ -35,7 +35,8 @@ Checks: every transmitter is visited and has one history row at its frequency; t
 their protocol, access code and site line, and the live status shows them confirmed while their carrier is on; the
 noise is not confirmed, and its visit ends "digital unresolved"; the history read back from the journal matches the live
 one; the front end ran the source at the 72 kHz capture rate alone; and a confirmed TETRA visit leaves the channel
-TETRA_QUIET_S (2.1 s) after its carrier stops, not the 0.5 s an ordinary visit would, within LEAVE_PAD_S. A DMO visit's
+TETRA_QUIET_S (2.1 s) after its carrier stops, not the 0.5 s an ordinary visit would, within LEAVE_PAD_S, timed at the
+retune that leaves the search's first visit to it (an early departure fails). A DMO visit's
 activity refreshes only on checked call content, so a DMO visit is timed from the last such burst the scene sent before
 the stop (the call fixture's loop has no call content for 0.64 s around its set-up). A presence signal never
 refreshes the visit's activity, so pres_on leaves TETRA_QUIET_S after its first confirmation, with its train still on,
@@ -421,6 +422,15 @@ class Transmitter(LoopedTransmitter):
         """Whether the search's visit tune has come by @p t."""
         return any(tt <= t for tt in self.landing_tunes())
 
+    def leaving_tune(self):
+        """Scene time of the retune that leaves the search's first visit to this transmitter: the first tune after
+        that visit's landing tune that tunes elsewhere, or None (not landed, or not left yet)."""
+        tunes = list(self.scene.tunes)
+        for index, (_t, _w, centre, rate) in enumerate(tunes):
+            if abs(centre - rate / 4 - self.frequency) < 1000:
+                return next((t for t, _w2, other, _r in tunes[index + 1:] if other != centre), None)
+        return None
+
     def call_at(self, t):
         if self.play == "until landing":
             return None if self.landing_tune(t) else super().call_at(t)
@@ -504,12 +514,12 @@ def departure_from(record, tx):
 
 
 def departure(record, tx):
-    """Seconds from departure_from() to the first retune after it, or None."""
+    """Seconds from departure_from() to the retune that left the visit the search first landed on @p tx in
+    (Transmitter.leaving_tune()), or None. Negative when that visit left before departure_from(): a retune from a later
+    range must not stand in for a departure that came too early."""
     since, _name = departure_from(record, tx)
-    if since is None:
-        return None
-    later = [t for t, _wall, _centre, _rate in record["tunes"] if t > since]
-    return later[0] - since if later else None
+    left = tx.leaving_tune()
+    return None if since is None or left is None else left - since
 
 
 def check_row(tx, rows, failures):
@@ -573,7 +583,7 @@ def check(record):
         left = departure(record, tx)
         _since, since_name = departure_from(record, tx)
         if left is None:
-            failures.append(f"{tx.id}: no retune after {since_name}")
+            failures.append(f"{tx.id}: no retune left its visit (measured from {since_name})")
         elif not TETRA_QUIET_S - LEAVE_EARLY_S <= left <= TETRA_QUIET_S + LEAVE_PAD_S:
             failures.append(f"{tx.id}: left {left:.2f} s after {since_name}, not about {TETRA_QUIET_S} s")
     return failures
