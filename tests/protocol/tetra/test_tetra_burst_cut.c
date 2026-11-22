@@ -35,6 +35,8 @@
 #include <stdio.h>
 #include <stdlib.h>
 
+#include <dsd-neo/core/received_identity.h>
+#include <dsd-neo/protocol/tetra/tetra_fec.h>
 #include "protocol_dispatch_impl.h"
 #include "tetra_state.h"
 #include "tetra_test_burst.h"

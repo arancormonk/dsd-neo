@@ -13,6 +13,7 @@
 #include <dsd-neo/core/state.h>
 #include <stdint.h>
 
+#include <dsd-neo/protocol/m17/m17_parse.h>
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/state_fwd.h"
 

@@ -30,6 +30,7 @@
 #include <stdint.h>
 #include <stdio.h>
 
+#include <dsd-neo/protocol/tetra/tetra.h>
 #include "tetra_air_sig.h"
 #include "tetra_confirm.h"
 #include "tetra_log.h"

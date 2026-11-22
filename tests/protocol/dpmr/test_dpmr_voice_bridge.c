@@ -24,6 +24,7 @@
 #include <dsd-neo/protocol/dpmr/dpmr.h>
 #include <dsd-neo/runtime/signal_search_hooks.h>
 #include <stdbool.h>
+#include <stddef.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -194,7 +195,7 @@ Hamming_12_8_decode(unsigned char* rxBits, unsigned char* decodedBits, int nbCod
             /* The decoder runs six blocks a half, half 0's first: block b carries bits 8b to 8b + 7. */
             unsigned char bits[48];
             stub_half_bits((g_hamming_calls % 12) / 6, bits);
-            DSD_MEMCPY(decodedBits, bits + (8 * (g_hamming_calls % 6)), 8U);
+            DSD_MEMCPY(decodedBits, bits + ((size_t)8 * (size_t)(g_hamming_calls % 6)), 8U);
         }
     }
     g_hamming_calls++;

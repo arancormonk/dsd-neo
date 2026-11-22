@@ -587,7 +587,7 @@ test_dispatch_powersave_headers_open_one_call(void) {
     epoch = call.epoch;
 
     /* The same header again after a gap: a new key-up. */
-    state->symbol_clock += 192U * 5U;
+    state->symbol_clock += (uint64_t)192U * 5U;
     plant_checked_header(state, 0x0U, 0U, 0U);
     put_bits(state->dpmr_sync.checked_bits, 28, 24, 11206075U);
     (void)dsd_dispatch_handle_dpmr(opts, state);
@@ -657,7 +657,7 @@ test_dispatch_powersave_headers_with_lost_ones(void) {
         (void)dsd_dispatch_handle_dpmr(opts, state);
         assert(dsd_call_state_get(state, 0U, &call) > 0);
         const uint64_t first = call.epoch;
-        state->symbol_clock += 2U * 192U;
+        state->symbol_clock += (uint64_t)2U * 192U;
         plant_checked_header(state, 0x0U, 0U, 0U);
         (void)dsd_dispatch_handle_dpmr(opts, state);
         assert(dsd_call_state_get(state, 0U, &call) > 0 && call.epoch != first);
@@ -713,7 +713,7 @@ test_dispatch_new_call_without_a_channel_code(void) {
     plant_checked_header(state, 0x0U, 0U, 0U); /* colour code 12 */
     (void)dsd_dispatch_handle_dpmr(opts, state);
     assert(state->dpmr_color_code == 12);
-    state->symbol_clock += 192U * 20U; /* another key-up */
+    state->symbol_clock += (uint64_t)192U * 20U; /* another key-up */
     plant_checked_header(state, 0x0U, 0U, 0U);
     put_bits(state->dpmr_sync.checked_bits, 28, 24, 11206075U);
     put_bits(state->dpmr_sync.checked_cc, 0, 24, 0U); /* unread */

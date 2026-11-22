@@ -133,6 +133,7 @@
 #include "scan_owner.h"
 #include "scan_quiet.h"
 #include "scan_step_untyped.h"
+#include "tetra_test_pdu.h"
 #endif
 
 #if defined(__GNUC__) && !defined(__cplusplus)

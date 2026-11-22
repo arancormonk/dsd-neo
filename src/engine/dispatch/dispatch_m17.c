@@ -5,7 +5,6 @@
 
 #include <dsd-neo/core/call_state.h>
 #include <dsd-neo/core/dibit.h>
-#include <dsd-neo/core/safe_api.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/dsp/frame_sync.h>
@@ -13,6 +12,7 @@
 #include <dsd-neo/protocol/m17/m17.h>
 #include <stdint.h>
 
+#include <stddef.h>
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/state_fwd.h"
 #include "protocol_dispatch_impl.h"

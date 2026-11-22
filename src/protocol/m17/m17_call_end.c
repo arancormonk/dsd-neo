@@ -12,6 +12,7 @@
 #include <dsd-neo/core/state_fwd.h>
 #include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/protocol/m17/m17.h>
+#include <stddef.h>
 
 void
 m17_end_call(const dsd_opts* opts, dsd_state* state, dsd_call_end_reason reason, int data_only) {

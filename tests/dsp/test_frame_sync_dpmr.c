@@ -23,6 +23,7 @@
 #include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/dsp/frame_sync.h>
 #include <dsd-neo/dsp/sync_calibration.h>
+#include <stddef.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -148,10 +149,10 @@ put_header(const char* fs1, const uint8_t* info0, const uint8_t* info1, int flip
     dpmr_spec_encode_mi(info1 != NULL ? info1 : info0, mi1);
     /* Wire bit 10r + c is coded bit 12c + r: wire bits 0 and 10 are bits 0 and 1 of Hamming word 0. */
     for (int i = 0; i < flip0; i++) {
-        mi0[i * 10] ^= 1U;
+        mi0[(size_t)i * 10U] ^= 1U;
     }
     for (int i = 0; i < flip1; i++) {
-        mi1[i * 10] ^= 1U;
+        mi1[(size_t)i * 10U] ^= 1U;
     }
     dpmr_spec_put(cc, 0, 24, 0x5D5D55U);
     put_dibits(k_preamble, DPMR_SPEC_PREAMBLE_DIBITS);
