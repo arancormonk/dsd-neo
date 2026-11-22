@@ -2835,11 +2835,13 @@ type_d_prefix_call_allowed(const dsd_call_snapshot* call) {
     return decision.tune_allowed ? 1 : 0;
 }
 
-/* An INFO2 naming another call after an emergency DES group call 03-0005 from 03-0100 (issue #903): another target,
- * 07-0005, or another class, unit 03-0005 by its G/U bit. That call carries neither the group call's talker, its
- * emergency flag nor its crypto. An INFO3 for the same call still keeps them. */
+/* An INFO2 naming another call after an emergency DES group call from 03-0100 to @p group (issue #903): 03-0005 and
+ * another target, 07-0005, or another class, unit 03-0005 by its G/U bit; or the Null Group ID 03-0000 (no numeric
+ * target) and a unit 03-0005. That call carries neither the group call's talker, its emergency flag nor its crypto. An
+ * INFO3 for the same call still keeps them. */
 static int
-nxdn_run_type_d_new_call_case(const char* variant, uint8_t rep2, uint8_t gu, const char* text, dsd_call_kind kind) {
+nxdn_run_type_d_new_call_case(const char* variant, uint16_t group, uint8_t rep2, uint8_t gu, const char* text,
+                              dsd_call_kind kind) {
     static const char* const name = "type-d-new-call-drops-old-call";
     const nxdn_case busy = {
         "type-d-new-target", NXDN_MATRIX_TYPE_D, 0U, 0U, 0U, 0U, 0U, 0, 0, 0, 6U, 3U, 5U, 938012500L,
@@ -2861,7 +2863,7 @@ nxdn_run_type_d_new_call_case(const char* variant, uint8_t rep2, uint8_t gu, con
         write_bits_u32(bits, 8U, 0x80U, 8U); /* emergency */
         write_bits_u32(bits, 16U, 1U, 3U);
         write_bits_u32(bits, 24U, 0x1864U, 16U);
-        write_bits_u32(bits, 40U, 0x1805U, 16U);
+        write_bits_u32(bits, 40U, group, 16U);
         write_bits_u32(bits, 56U, 2U, 2U); /* DES */
         write_bits_u32(bits, 58U, 5U, 6U);
         g_state.nxdn_confirmed = 1;
@@ -2899,8 +2901,10 @@ nxdn_run_type_d_new_call_case(const char* variant, uint8_t rep2, uint8_t gu, con
 static int
 nxdn_run_type_d_new_target_drops_old_call_case(void) {
     int rc = 0;
-    rc |= nxdn_run_type_d_new_call_case("other-prefix", 7U, 0U, "07-0005", DSD_CALL_KIND_GROUP_VOICE);
-    rc |= nxdn_run_type_d_new_call_case("unit-of-same-number", 3U, 1U, "03-0005", DSD_CALL_KIND_PRIVATE_VOICE);
+    rc |= nxdn_run_type_d_new_call_case("other-prefix", 0x1805U, 7U, 0U, "07-0005", DSD_CALL_KIND_GROUP_VOICE);
+    rc |= nxdn_run_type_d_new_call_case("unit-of-same-number", 0x1805U, 3U, 1U, "03-0005", DSD_CALL_KIND_PRIVATE_VOICE);
+    rc |=
+        nxdn_run_type_d_new_call_case("unit-after-null-group", 0x1800U, 3U, 1U, "03-0005", DSD_CALL_KIND_PRIVATE_VOICE);
     return rc;
 }
 

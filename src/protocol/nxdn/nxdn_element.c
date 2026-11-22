@@ -3840,20 +3840,26 @@ nxdn_scch_named_kind(const dsd_call_snapshot* call, uint32_t target_id, dsd_call
 }
 
 /* Whether an SCCH naming @p target_id (its text @p target_text, "pp-iiii") of class @p kind (its G/U bit;
- * DSD_CALL_KIND_UNKNOWN when it has none) names another call than @p call: another target, by its prefix as by its ID,
- * or another class, a unit 03-0005 after a group 03-0005 (issue #903). A call no target named yet takes the
- * message's. */
+ * DSD_CALL_KIND_UNKNOWN when it has none) names another call than @p call: another class, a unit 03-0005 after a group
+ * 03-0005 or after a group call to the Null Group ID (no numeric target, a talker named all the same), or another
+ * target, by its prefix as by its ID (issue #903). A call of the message's class (or none known) that no target named
+ * yet takes the message's. */
 static int
 nxdn_scch_names_new_call(const dsd_call_snapshot* call, uint16_t target_id, const char* target_text,
                          dsd_call_kind kind) {
-    if (target_id == 0U || call->ota_target_id == 0U) {
+    if (target_id == 0U) {
         return 0;
     }
     const int classed = (call->kind == DSD_CALL_KIND_GROUP_VOICE || call->kind == DSD_CALL_KIND_PRIVATE_VOICE)
                         && (kind == DSD_CALL_KIND_GROUP_VOICE || kind == DSD_CALL_KIND_PRIVATE_VOICE);
+    if (classed && call->kind != kind) {
+        return 1;
+    }
+    if (call->ota_target_id == 0U) {
+        return 0;
+    }
     return call->ota_target_id != target_id
-           || (call->target_text[0] != '\0' && strcmp(call->target_text, target_text) != 0)
-           || (classed && call->kind != kind);
+           || (call->target_text[0] != '\0' && strcmp(call->target_text, target_text) != 0);
 }
 
 /* What the live call @p call carries into an SCCH's observation: its talker (unless the message names one) and its

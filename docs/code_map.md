@@ -12643,7 +12643,8 @@ Call frequency and access-code provenance (issue #575). A call's canonical `freq
     frequency unknown). The live call takes the message's target (`nxdn_scch_enrich_identity()`) only on MATCH, and the
     message's G/U bit (INFO2 has INFO4's format, TS 1-E §6.5.2.3, §6.5.3.3) sets the canonical call's group or private
     kind, so a later message for that target never reads a previous call's class: an INFO2 naming another target than
-    the live call's (by its prefix and ID, or by its G/U class, `nxdn_scch_names_new_call()`) names another call, of its
+    the live call's (by its prefix and ID, or by its G/U class, also against a group call to the Null Group ID that
+    names no numeric target, `nxdn_scch_names_new_call()`) names another call, of its
     own G/U class, held and judged for preemption as that class, which carries the carrier and its media but none of the
     previous call's talker, service metadata or crypto (issue #903); an INFO2 or busy INFO4 with ID 0 (the Null ID)
     names no destination and changes nothing (no identity, no recent activity, no tune; an End of Transmission still
