@@ -1245,6 +1245,7 @@ typedef struct {
     uint8_t mbc_cdeftype;
     uint8_t mbc_res2;
     unsigned long long mbc_cdefparms;
+    uint8_t mbc_received; // the MBC continuation (the mbc_* fields) was received; else they are all 0
     uint16_t a_channel;
 } dmr_cspdu_pf0_c_bcast_fields;
 
@@ -1258,8 +1259,12 @@ typedef struct {
     long freqr;
 } dmr_cspdu_pf0_c_bcast_abs_freqs;
 
+/* The C_BCAST fields: the header's always; the appended block's (bits 96..191: CSBKO, colour code, Cdeftype and
+   CdefParms) only when the MBC assembler handed it over (@p appended_blocks). A header heard as a standalone CSBK
+   carries only its own 96 bits, so its mbc_* fields stay 0 and nothing reads a frequency from the bits past it. */
 static void
-dmr_cspdu_pf0_c_bcast_parse(const uint8_t cs_pdu_bits[], dmr_cspdu_pf0_c_bcast_fields* f) {
+dmr_cspdu_pf0_c_bcast_parse(const uint8_t cs_pdu_bits[], uint8_t appended_blocks, dmr_cspdu_pf0_c_bcast_fields* f) {
+    DSD_MEMSET(f, 0, sizeof(*f));
     f->a_type = (uint8_t)convert_bits_into_output(&cs_pdu_bits[16], 5);
     f->bparms1 = (uint16_t)convert_bits_into_output(&cs_pdu_bits[21], 14);
     for (int i = 0; i < 14; i++) {
@@ -1275,12 +1280,15 @@ dmr_cspdu_pf0_c_bcast_parse(const uint8_t cs_pdu_bits[], dmr_cspdu_pf0_c_bcast_f
         f->bpbits2[i] = cs_pdu_bits[56 + i];
     }
 
-    f->mbc_csbko = (uint8_t)convert_bits_into_output(&cs_pdu_bits[98], 6);
-    f->mbc_res = (uint8_t)convert_bits_into_output(&cs_pdu_bits[104], 4);
-    f->mbc_cc = (uint8_t)convert_bits_into_output(&cs_pdu_bits[108], 4);
-    f->mbc_cdeftype = (uint8_t)convert_bits_into_output(&cs_pdu_bits[112], 4);
-    f->mbc_res2 = (uint8_t)convert_bits_into_output(&cs_pdu_bits[116], 2);
-    f->mbc_cdefparms = (unsigned long long)convert_bits_into_output(&cs_pdu_bits[118], 58);
+    if (appended_blocks != 0U) {
+        f->mbc_received = 1U;
+        f->mbc_csbko = (uint8_t)convert_bits_into_output(&cs_pdu_bits[98], 6);
+        f->mbc_res = (uint8_t)convert_bits_into_output(&cs_pdu_bits[104], 4);
+        f->mbc_cc = (uint8_t)convert_bits_into_output(&cs_pdu_bits[108], 4);
+        f->mbc_cdeftype = (uint8_t)convert_bits_into_output(&cs_pdu_bits[112], 4);
+        f->mbc_res2 = (uint8_t)convert_bits_into_output(&cs_pdu_bits[116], 2);
+        f->mbc_cdefparms = (unsigned long long)convert_bits_into_output(&cs_pdu_bits[118], 58);
+    }
 
     f->a_channel = (uint16_t)convert_bits_into_output(&f->bpbits2[12], 12);
 }
@@ -1534,6 +1542,10 @@ dmr_cspdu_pf0_c_bcast_handle_chan_freq(dsd_opts* opts, dsd_state* state, const u
         DSD_FPRINTF(stderr, " LPCN: Null;");
         return;
     }
+    if (!f->mbc_received) {
+        DSD_FPRINTF(stderr, " LPCN: %d; Frequencies Not Received;", f->a_channel);
+        return;
+    }
     if (f->mbc_cdeftype != 0) {
         dmr_cspdu_pf0_c_bcast_print_unknown_cdef(f, 0);
         return;
@@ -1574,6 +1586,10 @@ dmr_cspdu_pf0_c_bcast_handle_vote_or_adjacent(dsd_opts* opts, dsd_state* state, 
     }
 
     if (f->a_channel != 0xFFF) {
+        return;
+    }
+    if (!f->mbc_received) {
+        DSD_FPRINTF(stderr, " Absolute Parameters Not Received;");
         return;
     }
     if (f->mbc_cdeftype != 0) {
@@ -1668,7 +1684,8 @@ dmr_cspdu_pf0_c_bcast_dispatch(dsd_opts* opts, dsd_state* state, const uint8_t c
 }
 
 static void
-dmr_cspdu_pf0_handle_c_bcast(dsd_opts* opts, dsd_state* state, uint8_t cs_pdu_bits[], int csbk_o, int csbk_fid) {
+dmr_cspdu_pf0_handle_c_bcast(dsd_opts* opts, dsd_state* state, uint8_t cs_pdu_bits[], int csbk_o, int csbk_fid,
+                             uint8_t appended_blocks) {
     if (csbk_o != 40) {
         return;
     }
@@ -1677,7 +1694,7 @@ dmr_cspdu_pf0_handle_c_bcast(dsd_opts* opts, dsd_state* state, uint8_t cs_pdu_bi
     DSD_FPRINTF(stderr, " Announcements (C_BCAST)");
 
     dmr_cspdu_pf0_c_bcast_fields f;
-    dmr_cspdu_pf0_c_bcast_parse(cs_pdu_bits, &f);
+    dmr_cspdu_pf0_c_bcast_parse(cs_pdu_bits, appended_blocks, &f);
     dmr_cspdu_pf0_c_bcast_print_type(f.a_type);
     dmr_cspdu_pf0_c_bcast_dispatch(opts, state, cs_pdu_bits, csbk_fid, &f);
     dmr_cspdu_pf0_c_bcast_print_payload(opts, &f);
@@ -1753,7 +1770,7 @@ dmr_cspdu_handle_pf0(dsd_opts* opts, dsd_state* state, uint8_t cs_pdu_bits[], ui
 
         dmr_cspdu_pf0_handle_p_protect(opts, state, cs_pdu_bits, csbk_o);
 
-        dmr_cspdu_pf0_handle_c_bcast(opts, state, cs_pdu_bits, csbk_o, csbk_fid);
+        dmr_cspdu_pf0_handle_c_bcast(opts, state, cs_pdu_bits, csbk_o, csbk_fid, appended_blocks);
 
         dmr_cspdu_pf0_handle_standard_only(opts, state, cs_pdu_bits, cs_pdu, csbk_o, csbk_fid, appended_blocks);
 

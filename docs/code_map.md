@@ -467,8 +467,8 @@ Generated (do not edit/commit):
     (`dsd_engine_channel_scan_reachable_rows()`) when it refuses to avoid the last one, and with no user list it avoids
     nothing ("No channel map: nothing to avoid"). With no user list the -Y timing tick publishes `DSD_SCAN_STAY_NO_LIST`
     ("No channel map") with no window, so no frontend counts down to a step that never comes. `-T` hunts are unchanged.
-    Tests: `ENGINE_NO_CARRIER_RESET` (C_BCAST through `dmr_cspdu()` included), `ENGINE_DMR_CC_RECOVERY` (the frame-sync
-    yield hook), `APP_COMMAND_QUEUE` (after Clear channel map; the avoid), `ENGINE_SCAN_VOICE_GATE`,
+    Tests: `ENGINE_NO_CARRIER_RESET` (C_BCAST through `dmr_cspdu_mbc()` included), `ENGINE_DMR_CC_RECOVERY` (the
+    frame-sync yield hook), `APP_COMMAND_QUEUE` (after Clear channel map; the avoid), `ENGINE_SCAN_VOICE_GATE`,
     `APP_CONTROL_SCAN_TIMING_VIEW`, `UI_NCURSES_PRINTER_HELPERS`.
   - Stepped slicer threshold refresh after each getFrameSync() return: `src/engine/slicer_thresholds.c` behind
     `include/dsd-neo/engine/slicer_thresholds.h` (test: `ENGINE_SLICER_THRESHOLDS`)
@@ -13466,8 +13466,12 @@ Private per-protocol modules worth knowing about:
   decodes these opcodes today; one added later must take its opcode out of `dmr_cspdu_pf0_is_standard_only()`, or both
   lines print. Grants, C_ALOHA (Capacity Max recognition included), P_CLEAR, P_PROTECT, C_BCAST and preambles
   still run for any FID. Grants are outbound only: opcode 56 on MS data is BS_Dwn_Act (TS 102 361-2 Table 7.5a)
-  under any FID and never reaches the grant parser. Tests: `DMR_CSBK_FIXES`, `DMR_EMBEDDED_LC_CHECKSUM` (a UTF-8
-  alias through `dmr_flco()`).
+  under any FID and never reaches the grant parser. Fields of an appended MBC block (bit 96 on: an absolute grant's
+  or C_MOVE's CdefParms, a C_BCAST's Chan_Freq frequencies and Vote_Now/Adjacent_Site absolute parameters) are read
+  only when the MBC assembler handed the block over (`dmr_cspdu_mbc()`'s `appended_blocks`); a header heard as a
+  standalone CSBK (`dmr_cspdu()`) prints its own fields and teaches, publishes or follows no frequency. Tests:
+  `DMR_CSBK_FIXES`, `DMR_EMBEDDED_LC_CHECKSUM` (a UTF-8 alias through `dmr_flco()`), `DMR_GRANT_POLICY` (lone
+  C_BCAST headers), `DMR_T3_CMOVE`, `DMR_EVENT_CRC`.
 - DMR talkgroup priority and preemption (`dmr_trunk_sm.c`, `dmr_csbk.c`, `dmr_csbk_parse.c`, `dmr_flco.c`). Policy
   stays at the CSBK/status layer, which alone knows each grant's classification (a Tier III grant is group or
   individual by its own opcode, as the Target / Destination_Address row of its PDU table in TS 102 361-4 Tables

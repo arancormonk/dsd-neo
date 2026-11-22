@@ -71,8 +71,8 @@ bytes_to_bits(const uint8_t* bytes, size_t count, uint8_t* bits) {
     }
 }
 
-/* One CRC-correct CSBK through the dispatcher; @p ten holds its octets 0-9 (the rest of the 24-octet buffer the
-   C_BCAST MBC parser reads stays zero). */
+/* One CRC-correct standalone CSBK through the dispatcher; @p ten holds its octets 0-9 (the rest of the 24-octet
+   buffer stays zero; no parser reads an appended block from a standalone CSBK). */
 static void
 run_csbk(dsd_opts* opts, dsd_state* state, const uint8_t ten[10]) {
     uint8_t bytes[24];

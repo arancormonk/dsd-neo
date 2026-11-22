@@ -2939,9 +2939,18 @@ main(void) {
     rc |= expect_true("p_clear hold clears slot 2 activity", recent_activity_is_empty(&pf0_st, 1U));
     pf0_st.tg_hold = 0;
 
+    /* A C_BCAST's frequencies are in the block appended to its MBC header: the header alone (a standalone CSBK, the
+       CdefParms bits then only buffer content) teaches the channel map and the hunt list nothing. */
     init_env(&pf0_opts, &pf0_st);
     build_c_bcast_chan_freq(bits, bytes, 77U, 451U, 100U);
     dmr_cspdu(&pf0_opts, &pf0_st, bits, bytes, 1U, 0U);
+    rc |= expect_true("lone c_bcast chan_freq header learns nothing",
+                      pf0_st.trunk_chan_map[77] == 0 && pf0_st.lcn_freq_count == 0);
+    dsd_state_ext_free_all(&pf0_st);
+
+    init_env(&pf0_opts, &pf0_st);
+    build_c_bcast_chan_freq(bits, bytes, 77U, 451U, 100U);
+    dmr_cspdu_mbc(&pf0_opts, &pf0_st, bits, bytes, 1U, 0U, 1U);
     rc |= expect_true("c_bcast channel frequency learned", pf0_st.trunk_chan_map[77] == 451012500L);
     rc |= expect_true("c_bcast channel frequency tracked", pf0_st.trunk_lcn_freq[0] == 451012500L);
     rc |= expect_true("c_bcast first learned frequency sets count", pf0_st.lcn_freq_count == 1);
@@ -2949,11 +2958,11 @@ main(void) {
     /* Distinct announcements append rather than writing modulo a fixed window, and a repeat of
      * an already-tracked frequency is not appended twice. */
     build_c_bcast_chan_freq(bits, bytes, 78U, 451U, 300U);
-    dmr_cspdu(&pf0_opts, &pf0_st, bits, bytes, 1U, 0U);
+    dmr_cspdu_mbc(&pf0_opts, &pf0_st, bits, bytes, 1U, 0U, 1U);
     rc |= expect_true("c_bcast second frequency appended", pf0_st.trunk_lcn_freq[1] == 451037500L);
     rc |= expect_true("c_bcast second frequency raises count", pf0_st.lcn_freq_count == 2);
     build_c_bcast_chan_freq(bits, bytes, 79U, 451U, 300U);
-    dmr_cspdu(&pf0_opts, &pf0_st, bits, bytes, 1U, 0U);
+    dmr_cspdu_mbc(&pf0_opts, &pf0_st, bits, bytes, 1U, 0U, 1U);
     rc |= expect_true("c_bcast duplicate frequency not appended", pf0_st.lcn_freq_count == 2);
     dsd_state_ext_free_all(&pf0_st);
 
@@ -2968,7 +2977,7 @@ main(void) {
     }
     pf0_st.lcn_freq_count = 40;
     build_c_bcast_chan_freq(bits, bytes, 77U, 451U, 100U);
-    dmr_cspdu(&pf0_opts, &pf0_st, bits, bytes, 1U, 0U);
+    dmr_cspdu_mbc(&pf0_opts, &pf0_st, bits, bytes, 1U, 0U, 1U);
     rc |= expect_true("imported map still learns the channel", pf0_st.trunk_chan_map[77] == 451012500L);
     rc |= expect_true("imported map keeps its length", pf0_st.lcn_freq_count == 40);
     int imported_intact = 1;
@@ -2991,6 +3000,17 @@ main(void) {
     pf0_st.trunk_chan_map[12] = 451025000L;
     build_c_bcast_adjacent_apcn(bits, bytes, 14U, 451U, 400U);
     dmr_cspdu(&pf0_opts, &pf0_st, bits, bytes, 1U, 0U);
+    rc |=
+        expect_true("lone c_bcast adjacent header learns nothing",
+                    pf0_st.trunk_chan_map[14] == 0 && pf0_st.trunk_chan_map[11] == 0 && pf0_st.trunk_chan_map[13] == 0);
+    dsd_state_ext_free_all(&pf0_st);
+
+    init_env(&pf0_opts, &pf0_st);
+    pf0_opts.dmr_t3_heuristic_fill = 1;
+    pf0_st.trunk_chan_map[10] = 451000000L;
+    pf0_st.trunk_chan_map[12] = 451025000L;
+    build_c_bcast_adjacent_apcn(bits, bytes, 14U, 451U, 400U);
+    dmr_cspdu_mbc(&pf0_opts, &pf0_st, bits, bytes, 1U, 0U, 1U);
     rc |= expect_true("c_bcast apcn learned anchor", pf0_st.trunk_chan_map[14] == 451050000L);
     rc |= expect_true("heuristic fill synthesizes missing lcn 11", pf0_st.trunk_chan_map[11] == 451012500L);
     rc |= expect_true("heuristic fill synthesizes missing lcn 13", pf0_st.trunk_chan_map[13] == 451037500L);

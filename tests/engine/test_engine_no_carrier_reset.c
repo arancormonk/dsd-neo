@@ -6445,7 +6445,8 @@ write_csbk_bits(uint8_t* bits, size_t start, uint32_t value, size_t nbits) {
 }
 
 /* A DMR Tier III C_BCAST (opcode 40) announcing @p channel at an absolute frequency: @p rx_int MHz plus @p rx_step
- * steps of 125 Hz, the same receive and transmit. */
+ * steps of 125 Hz, the same receive and transmit. The frequencies are in the appended block: hand it over through
+ * dmr_cspdu_mbc() with one appended block. */
 static void
 build_c_bcast_chan_freq(uint8_t* bits, uint8_t* bytes, uint16_t channel, uint16_t rx_int, uint16_t rx_step) {
     DSD_MEMSET(bits, 0, 256);
@@ -6598,9 +6599,9 @@ test_learned_channels_never_rotate_the_scanner(void) {
     uint8_t bits[256];
     uint8_t bytes[48];
     build_c_bcast_chan_freq(bits, bytes, 77U, 451U, 100U);
-    dmr_cspdu(opts, state, bits, bytes, 1U, 0U);
+    dmr_cspdu_mbc(opts, state, bits, bytes, 1U, 0U, 1U); // the header and its CdefParms block
     build_c_bcast_chan_freq(bits, bytes, 78U, 451U, 300U);
-    dmr_cspdu(opts, state, bits, bytes, 1U, 0U);
+    dmr_cspdu_mbc(opts, state, bits, bytes, 1U, 0U, 1U);
     rc |= expect_true("c_bcast: the site's channels are learned",
                       state->lcn_freq_count == 2 && *dsd_state_trunk_lcn_slot_const(state, 0) == 451012500L);
     rc |= expect_learned_channels_hold(opts, state, "learned from C_BCAST");
