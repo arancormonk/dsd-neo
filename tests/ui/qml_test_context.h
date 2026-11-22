@@ -4639,10 +4639,11 @@ class Setup : public QObject {
      * UiController's tick does from a snapshot. The model reads it only while a sheet has it active.
      *
      * @p spec: `missing` [{lpcn, slot (0/1, the view's), group, data, caller, recipient, agoMs (heard that long before
-     * the first record since clearDmrChannels(); absent: unknown), unverified}] newest first, `extra` [lpcn] (in the ledger past its
-     * details, named in a checked grant), `channels` [{lpcn, origin (DSD_UI_DMR_T3_ORIGIN_*), hz, hidden, baseHz}], `names` [{tg, name}], `tier3`
-     * (default true), `ccHz` (with it, cc_confirmed_here), `generation`, `revision`, `session` (default 1), `trunkScan`.
-     * Every call is a new body (content_seq moves), as a snapshot copied anew is.
+     * the first record since clearDmrChannels(); absent: unknown), unverified}] newest first, `extra` [lpcn] (in the
+     * ledger past its details, named in a checked grant), `channels` [{lpcn, origin (DSD_UI_DMR_T3_ORIGIN_*), hz,
+     * hidden, baseHz}], `names` [{tg, name}], `tier3` (default true), `ccHz` (with it, cc_confirmed_here),
+     * `generation`, `revision`, `session` (default 1), `trunkScan`. Every call is a new body (content_seq moves), as a
+     * snapshot copied anew is.
      */
     Q_INVOKABLE void
     setDmrChannelsView(const QVariantMap& spec) {

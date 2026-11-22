@@ -64,12 +64,13 @@ class DmrChannelsModel : public QObject {
     /** @brief What an edit expects: the network generation, and the channel revision the rows were read at. */
     Q_PROPERTY(quint32 generation READ generation NOTIFY stateChanged)
     Q_PROPERTY(quint32 revision READ revision NOTIFY stateChanged)
-    /** @brief The command session the rows were read in, in decimal (CommandBridge::setDmrChannel()'s @c session); empty
-     *  when none is known. */
+    /** @brief The command session the rows were read in, in decimal (CommandBridge::setDmrChannel()'s @c session);
+     *  empty when none is known. */
     Q_PROPERTY(QString session READ session NOTIFY stateChanged)
     /** @brief The session runs a trunk scan: every edit is refused (read only). */
     Q_PROPERTY(bool trunkScanActive READ trunkScanActive NOTIFY stateChanged)
-    /** @brief The saved system the session runs, set by QML (empty: Explore, a scan, a search): where edits are kept. */
+    /** @brief The saved system the session runs, set by QML (empty: Explore, a scan, a search): where edits are
+     *  kept. */
     Q_PROPERTY(QString sessionSystemUid READ sessionSystemUid WRITE setSessionSystemUid NOTIFY stateChanged)
     Q_PROPERTY(bool sessionHasSavedSystem READ sessionHasSavedSystem NOTIFY stateChanged)
     /* The command's operations, the channel numbers and frequencies it takes, and the most entries the user keeps. */
@@ -92,12 +93,13 @@ class DmrChannelsModel : public QObject {
 
     void setActive(bool enabled);
     /**
-     * @brief Read @p snapshot's Tier III view (and @p opts_snapshot's trunk scan setting) while active. @p commandSession
-     * is the command session it was read in (dsd_app_command_session_generation(); 0 for none known), published as
-     * session().
+     * @brief Read @p snapshot's Tier III view (and @p opts_snapshot's trunk scan setting) while active.
+     * @p commandSession is the command session it was read in (dsd_app_command_session_generation(); 0 for none known),
+     * published as session().
      */
     void refresh(const dsd_opts* opts_snapshot, const dsd_state* snapshot, quint64 commandSession = 0);
-    /** @brief A new scan target, or no live session (nullptr): publish @p snapshot's rows in one replacement, or none. */
+    /** @brief A new scan target, or no live session (nullptr): publish @p snapshot's rows in one replacement, or
+     *  none. */
     void replaceForTarget(const dsd_opts* opts_snapshot, const dsd_state* snapshot, quint64 commandSession = 0);
     /** @brief No session: no rows, nothing expected. */
     void clear();

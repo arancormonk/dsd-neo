@@ -765,14 +765,15 @@ typedef struct {
     uint32_t pad2;      /* explicit, so a copy carries no indeterminate padding */
 } dsd_app_scan_list_result;
 
-/** DSD_APP_CMD_DMR_CHANNEL_SET (discussion #900 F3): set, hide or restore Tier III channel @c lpcn (1..4094).
- * @c op is a dmr_t3_overlay_op (<dsd-neo/protocol/dmr/dmr_t3_channels.h>: 1 SET, 2 HIDE, 3 RESTORE) and @c hz SET's
- * frequency (100000..2147483647 Hz; ignored, not checked, for HIDE and RESTORE). At most 256 channels have an entry
- * (DMR_T3_OVERLAY_MAX_ROWS): a SET or HIDE of one more is refused FULL; an edit of a channel that has one never is. The rest is the row as the editor read it, so an edit made
- * against a row that changed since is refused (STALE), changing nothing: @c session_seq is
- * dsd_app_command_session_generation(), @c generation dmr_t3_chan_generation(), @c expected_hz the row's live
- * frequency (0 for none or hidden) and @c expected_origin its dmr_chan_origin_e (USER for a hidden row). @c request is
- * the caller's id from dsd_app_dmr_channel_request_next(), which the retained result carries back. */
+/** DSD_APP_CMD_DMR_CHANNEL_SET (discussion #900 F3): set, hide or restore Tier III channel @c lpcn (1..4094). @c op is
+ * a dmr_t3_overlay_op (<dsd-neo/protocol/dmr/dmr_t3_channels.h>: 1 SET, 2 HIDE, 3 RESTORE) and @c hz SET's frequency
+ * (100000..2147483647 Hz; ignored, not checked, for HIDE and RESTORE). At most 256 channels have an entry
+ * (DMR_T3_OVERLAY_MAX_ROWS): a SET or HIDE of one more is refused FULL; an edit of a channel that has one never is. The
+ * rest is the row as the editor read it, so an edit made against a row that changed since is refused (STALE), changing
+ * nothing: @c session_seq is dsd_app_command_session_generation(), @c generation dmr_t3_chan_generation(),
+ * @c expected_hz the row's live frequency (0 for none or hidden) and @c expected_origin its dmr_chan_origin_e (USER for
+ * a hidden row). @c request is the caller's id from dsd_app_dmr_channel_request_next(), which the retained result
+ * carries back. */
 typedef struct {
     uint64_t session_seq;
     int64_t hz;
@@ -904,7 +905,8 @@ int dsd_app_scan_list_session_results_since(uint64_t after_sequence, dsd_app_sca
 int dsd_app_command_dmr_channel_set(const dsd_app_dmr_channel_set_payload* payload);
 /** A fresh request id for dsd_app_dmr_channel_set_payload::request: process-wide, never 0. Any thread. */
 uint32_t dsd_app_dmr_channel_request_next(void);
-/** Copy the newest retained channel-set result. Returns 1 if one exists, 0 otherwise (out is zeroed) or for NULL out. */
+/** Copy the newest retained channel-set result. Returns 1 if one exists, 0 otherwise (out is zeroed) or for NULL
+ * out. */
 int dsd_app_dmr_channel_set_result_get(dsd_app_dmr_channel_set_result* out);
 /** dsd_app_tg_export_results_since() for channel-set results: every DSD_APP_CMD_DMR_CHANNEL_SET the queue took gets
  * one, a refusal, an invalid payload and a request dropped unapplied included. */

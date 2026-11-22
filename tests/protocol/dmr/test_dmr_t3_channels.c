@@ -1496,7 +1496,7 @@ missing_log_tap(dsd_neo_log_level_t level, const char* text, void* ctx) {
     if (strncmp(text, "NOTICE: DMR Tier III: channel ", 30) == 0) {
         g_missing_notices++;
         DSD_SNPRINTF(g_missing_notice, sizeof g_missing_notice, "%s", text);
-    } else if (strncmp(text, "NOTICE: DMR Tier III: ", 22) == 0) {
+    } else if (strncmp(text, "NOTICE: DMR Tier III: ", 22) == 0 || strncmp(text, "NOTICE: DMR Tier III (", 22) == 0) {
         g_missing_summaries++;
         DSD_SNPRINTF(g_missing_summary, sizeof g_missing_summary, "%s", text);
     }
@@ -1563,7 +1563,8 @@ test_unmapped_grant_recorded_once_per_channel(void) {
     assert(bit_set(l->missing, 12U) && bit_set(l->checked, 12U) && bit_set(l->reported, 12U));
     const uint32_t rev = l->revision;
 
-    /* The same channel again, on the other slot as a private data grant: one channel, one notice, the newest details. */
+    /* The same channel again, on the other slot as a private data grant: one channel, one notice, the newest
+     * details. */
     dsd_decode_clock_test_set_ns(UINT64_C(9000) * UINT64_C(1000000));
     send_grant(51U, 12U, 0U);
     assert(dmr_t3_missing_count(&g_state) == 1U);
@@ -1609,6 +1610,16 @@ test_count_exact_past_16_details(void) {
     dmr_t3_missing_log_summary(&g_state);
     assert(g_missing_summaries == 1 && strstr(g_missing_summary, "20 channels") != NULL);
     assert(strstr(g_missing_summary, "(+4 more)") != NULL);
+
+    /* A target named at such length that the summary does not fit says it was cut. */
+    char target[400];
+    DSD_MEMSET(target, 'x', sizeof target - 1U);
+    target[sizeof target - 1U] = '\0';
+    dmr_t3_missing_log_summary_for(l, target);
+    assert(g_missing_summaries == 2 && strstr(g_missing_summary, "20 channels") != NULL);
+    const size_t len = strlen(g_missing_summary);
+    assert(len > 4U && strcmp(g_missing_summary + len - 4U, "...\n") == 0);
+    assert(strstr(g_missing_summary, "(+4 more)") == NULL);
 }
 
 static void
@@ -2185,7 +2196,8 @@ test_tier3_and_evidence_per_target(void) {
     assert(dmr_t3_cc_confirmed_hz(&g_state) == 0); /* a retune: heard again before it is used */
 }
 
-/* A checked standard grant or C_BCAST names the site Tier III; a manufacturer's grant or a RAS-accepted one does not. */
+/* A checked standard grant or C_BCAST names the site Tier III; a manufacturer's grant or a RAS-accepted one does
+ * not. */
 static void
 test_tier3_from_checked_grant_and_bcast(void) {
     reset_missing();

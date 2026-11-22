@@ -28,6 +28,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/types.h>
 #include "test_support.h"
 
 static const long CC_HZ = 451000000L;
@@ -112,7 +113,8 @@ __wrap_getFrameSync(dsd_opts* opts, dsd_state* state) {
     long base_hz = 0;
     assert(dmr_t3_overlay_get(state, 12U, NULL, &base_hz) == DMR_T3_OVERLAY_SET && base_hz == 451012500L);
 
-    /* Grants in that frame: hidden 13 is not followed (nor recorded as missing), 12 resolves to the user's frequency. */
+    /* Grants in that frame: hidden 13 is not followed (nor recorded as missing), 12 resolves to the user's
+     * frequency. */
     dsd_trunk_tuning_hooks_set((dsd_trunk_tuning_hooks){.tune_to_freq_request = tune_request});
     state->synctype = DSD_SYNC_DMR_BS_DATA_POS;
     state->lastsynctype = DSD_SYNC_DMR_BS_DATA_POS;

@@ -474,6 +474,11 @@ dmr_t3_missing_log_summary_for(const dmr_t3_missing_ledger* ledger, const char* 
     }
     size_t used = (size_t)n;
     dmr_t3_missing_append_channels(msg, sizeof msg, &used, ledger, total);
+    if (used >= sizeof msg) {
+        /* Cut (a target named at great length): say so rather than end on a partial channel number. */
+        static const char k_cut[] = "...";
+        DSD_MEMCPY(msg + sizeof msg - sizeof k_cut, k_cut, sizeof k_cut);
+    }
     LOG_INFO("NOTICE: %s\n", msg);
 }
 

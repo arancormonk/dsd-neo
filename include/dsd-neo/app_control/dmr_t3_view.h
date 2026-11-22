@@ -10,9 +10,9 @@
  * The UI snapshot (<dsd-neo/app_control/snapshot.h>) carries an owned copy of the DMR module's channel record: where
  * each channel map row came from, the channels granted without a frequency (the missing-channel ledger), the user's
  * channels over the map (set and hidden), whether the site was named Tier III, and the control channel frequency
- * checked evidence names on the current carrier. Both snapshot hops copy it, and each copies the record's body (origins,
- * ledger, overlay rows) only when its content moved: the state instance, the parked trunk-scan target, the channel
- * revision, the ledger's revision or the channel map's sequence. Only the decoder thread writes the source.
+ * checked evidence names on the current carrier. Both snapshot hops copy it, and each copies the record's body
+ * (origins, ledger, overlay rows) only when its content moved: the state instance, the parked trunk-scan target, the
+ * channel revision, the ledger's revision or the channel map's sequence. Only the decoder thread writes the source.
  *
  * dsd_app_dmr_t3_view() reads it from a snapshot; a live decoder state carries none.
  */

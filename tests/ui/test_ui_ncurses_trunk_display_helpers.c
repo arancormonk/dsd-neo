@@ -450,8 +450,8 @@ test_t3_missing_rows_are_capped(void) {
     assert(strstr(g_output, "... and 3 more channels with no frequency") != NULL);
 }
 
-/* Tier III rows show by LPCN in decimal, each LPCN listed even when two share a frequency; the positional rows stay. P25
-   keeps its hex. */
+/* Tier III rows show by LPCN in decimal, each LPCN listed even when two share a frequency; the positional rows stay.
+   P25 keeps its hex. */
 static void
 test_t3_mapped_rows_decimal_and_distinct(void) {
     static dsd_opts opts;

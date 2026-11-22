@@ -2405,7 +2405,7 @@ test_scan_hold_option(void) {
 /* Discussion #900 F3: a saved DMR system's own Tier III channels travel in its start as --dmr-chan-overrides, a file in
  * the app's private folder (lpcn,frequency_hz rows, 0 = hidden). Only a saved system's start carries it, only for a
  * DMR system with entries, and never with a trunk scan, which the decoder refuses it under. */
-QVariantMap
+static QVariantMap
 tier3_system() {
     auto sys = usb_system();
     sys["uid"] = QStringLiteral("0b6a3f0e-6c3d-4f7e-9a51-3d1c2b4a5e6f");
@@ -2418,7 +2418,7 @@ tier3_system() {
     return sys;
 }
 
-void
+static void
 test_dmr_channels_csv(void) {
     const SessionArgPrefs prefs;
     auto sys = tier3_system();
@@ -2427,16 +2427,19 @@ test_dmr_channels_csv(void) {
     sys["dmrChannels"] = QVariantList();
     expect("no channels, no file", dsd_qt::session_args_dmr_channels_csv(sys, prefs).isEmpty());
     /* Every decode set that frames DMR passes them (src/runtime/decode_mode.c): Auto, saved as "" or -fa, a flag with
-       no -f selector (the engine's default, Auto), and TDMA (-ft, P25 with DMR). */
-    for (const QString& flag : {QString(), QStringLiteral("-fa"), QStringLiteral("-mq"), QStringLiteral("-ft -^")}) {
+       no -f selector (the engine's default, Auto), TDMA (-ft, P25 with DMR) and DMR mono (-fr, which the CLI takes
+       as the DMR preset). With several -f selectors the CLI keeps the last one. */
+    for (const QString& flag : {QString(), QStringLiteral("-fa"), QStringLiteral("-mq"), QStringLiteral("-ft -^"),
+                                QStringLiteral("-fr"), QStringLiteral("-fr -mq"), QStringLiteral("-fi -fs")}) {
         sys = tier3_system();
         sys["decodeFlag"] = flag;
         expect(qPrintable(QStringLiteral("a decode set with DMR passes them: '%1'").arg(flag)),
                dsd_qt::session_args_dmr_channels_csv(sys, prefs)
                    == QByteArray("lpcn,frequency_hz\n12,0\n40,451137500\n"));
     }
-    for (const QString& flag : {QStringLiteral("-fi"), QStringLiteral("-f1 -mq"), QStringLiteral("-fT"),
-                                QStringLiteral("-fA"), QStringLiteral("-fh")}) {
+    for (const QString& flag :
+         {QStringLiteral("-fi"), QStringLiteral("-f1 -mq"), QStringLiteral("-fT"), QStringLiteral("-fA"),
+          QStringLiteral("-fh"), QStringLiteral("-fs -fi"), QStringLiteral("-fr -fh")}) {
         sys = tier3_system();
         sys["decodeFlag"] = flag;
         expect(qPrintable(QStringLiteral("not for a decode set without DMR: '%1'").arg(flag)),
@@ -2470,7 +2473,7 @@ test_dmr_channels_csv(void) {
              .contains(QStringLiteral("--dmr-chan-overrides")));
 }
 
-void
+static void
 test_dmr_channels_start(void) {
     class Host : public dsd_qt::DecoderHost {
       public:

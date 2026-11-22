@@ -414,8 +414,8 @@ app_lookup_trunk_chan_map(const dsd_state* state, const char* tok) {
     return 0;
 }
 
-/* The channel map's frequency for DMR channel @p channel (a Tier III LPCN, or a Connect Plus LCN); 0 for channel 0, which
-   names none. */
+/* The channel map's frequency for DMR channel @p channel (a Tier III LPCN, or a Connect Plus LCN); 0 for channel 0,
+   which names none. */
 static long int
 app_dmr_observed_channel_freq(const dsd_state* state, uint32_t channel) {
     if (channel == 0U || channel >= (uint32_t)DSD_TRUNK_CHAN_MAP_SIZE) {

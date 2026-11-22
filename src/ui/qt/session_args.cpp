@@ -1404,7 +1404,7 @@ app_owned_error_category(SessionArgsError error) {
 /* The category the start screen maps a refusal by; empty for None. */
 static QString
 error_category(SessionArgsError error) {
-    const QString owned = app_owned_error_category(error);
+    QString owned = app_owned_error_category(error);
     if (!owned.isEmpty()) {
         return owned;
     }

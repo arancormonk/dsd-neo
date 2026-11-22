@@ -193,16 +193,18 @@ typedef struct {
  * Edit channel @p lpcn (1..4094): SET it to @p hz, HIDE it, or RESTORE the row the entry replaced (no entry: nothing to
  * do). With @p check nonzero the edit is refused, changing nothing, unless the live row is @p expected_hz with origin
  * @p expected_origin (dmr_t3_chan_origin(), USER for a hidden row) and the network generation is @p generation; with
- * @p check 0 (a start-up file) none of them is compared. Refused under a trunk scan (dsd_opts::trunk_scan_enabled),
- * and a SET or HIDE that would give a channel past DMR_T3_OVERLAY_MAX_ROWS an entry is FULL. An applied change bumps the revision, reconciles the missing-channel ledger and redoes the heuristic estimates.
+ * @p check 0 (a start-up file) none of them is compared. Refused under a trunk scan (dsd_opts::trunk_scan_enabled), and
+ * a SET or HIDE that would give a channel past DMR_T3_OVERLAY_MAX_ROWS an entry is FULL. An applied change bumps the
+ * revision, reconciles the missing-channel ledger and redoes the heuristic estimates.
  */
 dmr_t3_set_result dmr_t3_overlay_apply(dsd_opts* opts, dsd_state* state, uint16_t lpcn, dmr_t3_overlay_op op, long hz,
                                        long expected_hz, uint8_t expected_origin, uint32_t generation, int check);
 
 /**
  * Apply the user's channels file @p path (--dmr-chan-overrides: `lpcn,frequency_hz` rows, 0 hides the channel;
- * <dsd-neo/core/dmr_chan_overrides_csv.h>) unchecked, after the channel map loaded. A row the file gets wrong, or
- * one past the DMR_T3_OVERLAY_MAX_ROWS channels the overlay holds, is skipped with a warning. Returns the rows applied, or -1 when the file cannot be read or a trunk scan runs.
+ * <dsd-neo/core/dmr_chan_overrides_csv.h>) unchecked, after the channel map loaded. A row the file gets wrong, or one
+ * past the DMR_T3_OVERLAY_MAX_ROWS channels the overlay holds, is skipped with a warning. Returns the rows applied, or
+ * -1 when the file cannot be read or a trunk scan runs.
  */
 int dmr_t3_overlay_load_csv(dsd_opts* opts, dsd_state* state, const char* path);
 
@@ -246,12 +248,13 @@ int dmr_t3_tier3_unchecked_seen(const dsd_state* state);
 /**
  * A checked C_ALOHA or C_SYS_Parms was received on the carrier the receiver is on: while no call is followed
  * (dsd_opts::trunk_is_tuned 0) and the tuned frequency is known (dsd_opts_tuned_freq_hz()), that frequency is this
- * carrier's TSCC until the receiver leaves it (dsd_state::carrier_seq moves). Also notes Tier III. The caller judges the
- * provenance. Decoder thread only.
+ * carrier's TSCC until the receiver leaves it (dsd_state::carrier_seq moves). Also notes Tier III. The caller judges
+ * the provenance. Decoder thread only.
  */
 void dmr_t3_cc_note_evidence(const dsd_opts* opts, dsd_state* state);
 
-/** The TSCC frequency dmr_t3_cc_note_evidence() recorded on the current carrier, or 0 when none or the receiver left it. */
+/** The TSCC frequency dmr_t3_cc_note_evidence() recorded on the current carrier, or 0 when none or the receiver left
+ * it. */
 long dmr_t3_cc_confirmed_hz(const dsd_state* state);
 
 /** Whether the DMR module recorded anything for @p state (its extension exists). */
@@ -265,8 +268,9 @@ void dmr_t3_overlay_discard(dsd_state* state);
 
 /**
  * One trunk-scan target's (or Signal search session's) channel provenance: the origins, the trust bytes
- * (dsd_state::dmr_lcn_trust), the rows the air holds (dsd_state::dmr_lcn_ota), the generation and revision, and the missing-channel ledger. syscode is the last
- * checked system code (valid when syscode_valid), the baseline a later checked one is compared against.
+ * (dsd_state::dmr_lcn_trust), the rows the air holds (dsd_state::dmr_lcn_ota), the generation and revision, the
+ * missing-channel ledger and the Tier III flags. syscode is the last checked system code (valid when syscode_valid),
+ * the baseline a later checked one is compared against.
  */
 typedef struct {
     uint8_t origin[0x1000];

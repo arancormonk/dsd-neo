@@ -88,6 +88,7 @@ ModalSheet {
     // The channel, the network and the session as the record has them now;
     // what was typed stays.
     function reread() {
+        var was = opened;
         var lpcn = adding ? number : opened.lpcn;
         if (lpcn > 0)
             opened = channels.channel(lpcn);
@@ -96,7 +97,11 @@ ModalSheet {
             listed = opened.originCode > 0;
         generation = channels.generation;
         session = channels.session;
-        removeArmed = false;
+        // An armed Remove asks again only when the channel it would remove
+        // changed: another channel's update leaves it armed.
+        if (opened.lpcn !== was.lpcn || opened.originCode !== was.originCode || opened.hz !== was.hz
+                || opened.hidden !== was.hidden)
+            removeArmed = false;
     }
     Connections {
         target: sheet.channels

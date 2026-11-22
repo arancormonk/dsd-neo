@@ -50,11 +50,10 @@ typedef enum DSD_ATTR_PACKED dsd_state_ext_id {
     DSD_STATE_EXT_ENGINE_START_MS = 0,
     DSD_STATE_EXT_ENGINE_TRUNK_CC_CANDIDATES = 1,
     /*
-     * Core facilities use dedicated slots rather than expanding `dsd_state`.
-     * Engine owns 0, 1, 3 and 7; core owns 2, 4, 5 and 8, and 13 and 14 (taken from the io range); runtime owns 6, and 15
-     * (taken from the io range); DSP owns 9, 10 and 11 (taken from the core range, as runtime took 6 from the engine
-     * range) and 12 (taken from the io range); app-control owns 16 and 18, from the ui range; core owns 17, also from the
-     * ui range.
+     * Core facilities use dedicated slots rather than expanding `dsd_state`. Engine owns 0, 1, 3 and 7; core owns 2, 4,
+     * 5 and 8, and 13 and 14 (taken from the io range); runtime owns 6, and 15 (taken from the io range); DSP owns 9,
+     * 10 and 11 (taken from the core range, as runtime took 6 from the engine range) and 12 (taken from the io range);
+     * app-control owns 16 and 18, from the ui range; core owns 17, also from the ui range.
      */
     DSD_STATE_EXT_CORE_TG_POLICY = 2,
     DSD_STATE_EXT_ENGINE_TRUNK_SCAN = 3,

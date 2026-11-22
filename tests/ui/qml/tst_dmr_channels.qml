@@ -459,6 +459,31 @@ Item {
             compare(retry.session, "6");
         }
 
+        // After a stale refusal the editor follows the record, but an armed Remove asks again only when the channel it
+        // would remove changed: an update to another channel leaves it armed.
+        function test_stale_keeps_remove_armed_for_other_channels() {
+            openSheet(view({}));
+            tap(row("channelsChannelRow", 20));
+            tryCompare(edit, "visible", true);
+            type(findChild(edit, "channelEditFrequency"), "451.1500");
+            tap(findChild(edit, "channelEditSave"));
+            commands.answerDmrChannel({result: "stale"});
+            tryCompare(findChild(edit, "channelEditMessage"), "text", "This channel changed while you were editing it. Check it, then try again.");
+            var remove = findChild(edit, "channelEditRemove");
+            tap(remove);
+            compare(remove.text, "Tap again to remove");
+            var other = view({revision: 10});
+            other.channels[4] = {lpcn: 23, origin: 4, hz: 451362500};
+            testContext.setDmrChannelsView(other);
+            wait(20);
+            compare(remove.text, "Tap again to remove", "another channel moved: still armed");
+            var moved = view({revision: 11});
+            moved.channels[1] = {lpcn: 20, origin: 2, hz: 451162500, baseHz: 451100000};
+            testContext.setDmrChannelsView(moved);
+            tryCompare(remove, "text", "Remove", 2000, "this channel moved: asks again");
+            compare(commands.dmrChannelRequests().length, 1, "nothing more was sent");
+        }
+
         // Remove of a channel of yours with no frequency to go back to: its row goes once the record has the edit,
         // and the focus does not follow it there; it lands on Add channel.
         function test_remove_focus_does_not_follow_a_vanishing_row() {
@@ -513,15 +538,23 @@ Item {
             compare(item("channelsStatus").text, "", "a new edit says its own outcome");
             edit.visible = false;
             sheet.visible = false;
+            var before = sheet.announcements;
             commands.answerDmrChannel({result: "ok"});
             compare(sheet.followLpcn, 0, "nothing to follow in a closed sheet");
+            compare(sheet.announcements, before, "nothing read out while the sheet is closed");
             sheet.open();
             tryCompare(sheet, "visible", true);
             compare(item("channelsStatus").text, "Not kept: this session is not a saved system.");
             verify(item("channelsStatus").visible);
+            tryCompare(sheet, "announcements", before + 1);
+            compare(sheet.announced, "Not kept: this session is not a saved system.", "read out once it opens");
+            wait(20);
+            compare(sheet.announcements, before + 1, "once");
             sheet.visible = false;
             sheet.open();
             compare(item("channelsStatus").text, "", "gone once it was on screen");
+            wait(20);
+            compare(sheet.announcements, before + 1, "nothing left to read out");
         }
 
         // Every save error, in its words.

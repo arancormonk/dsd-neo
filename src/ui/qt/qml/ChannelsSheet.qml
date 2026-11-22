@@ -23,11 +23,19 @@ ModalSheet {
         channels.active = visible;
         followLpcn = 0;
         // A status is kept until it was on screen: one that came while the
-        // sheet was closed is still there when it opens again.
-        if (visible)
+        // sheet was closed is still there when it opens again, and is read
+        // out once then, as it would have been had the sheet been open.
+        if (visible) {
             statusSeen = status.length > 0;
-        else if (statusSeen)
+            if (statusSeen)
+                Qt.callLater(sheet.announceKept);
+        } else if (statusSeen) {
             setStatus("", false);
+        }
+    }
+    function announceKept() {
+        if (visible && status.length > 0)
+            Navigation.announce(sheet, statusLine, status);
     }
     Component.onDestruction: channels.active = false
     function open() {
