@@ -359,6 +359,10 @@ class MetricsModel : public QObject {
     Q_PROPERTY(bool squelchGateOpen READ squelchGateOpen NOTIFY controlChanged)
     /* Whether the level the configured default keeps (beneath an auto squelch too) gates nothing. */
     Q_PROPERTY(bool configuredSquelchLevelOff READ configuredSquelchLevelOff NOTIFY controlChanged)
+    /* Issue #899 (B15): whether that level is one the app's own controls make, Off or a whole dB from -120 to -1
+     * (dsd_squelch_level_is_whole_db()), and that whole dB (0 for Off or another level). Only such a level is saved. */
+    Q_PROPERTY(bool configuredSquelchLevelWhole READ configuredSquelchLevelWhole NOTIFY controlChanged)
+    Q_PROPERTY(int configuredSquelchLevelWholeDb READ configuredSquelchLevelWholeDb NOTIFY controlChanged)
     /* Whether the input is audio (issue #628): the squelch above is a level or the noise squelch, edited from the
      * monitor's Squelch row rather than the Radio sheet. */
     Q_PROPERTY(bool squelchAudioInput READ squelchAudioInput NOTIFY controlChanged)
@@ -1178,8 +1182,9 @@ class MetricsModel : public QObject {
     }
 
     /**
-     * @brief Whether the default may be the noise squelch: not on the AM monitor on its own (-fM, no scan running),
-     * which refuses it (dsd_squelch_noise_has_no_fm()).
+     * @brief Whether the default may be the noise squelch: not on the AM monitor on its own (-fM, no scan running) of
+     * an audio input, which refuses it (dsd_squelch_noise_has_no_fm()). A radio input's AM monitor takes it and runs
+     * it as auto with the same margin (issue #899 D4), so a switch back to NFM runs Noise again.
      */
     bool
     squelchNoiseOffered() const {
@@ -1202,6 +1207,18 @@ class MetricsModel : public QObject {
     bool
     configuredSquelchLevelOff() const {
         return m_view.configured_squelch_level_off;
+    }
+
+    /** @brief Whether the configured level is Off or a whole dB from -120 to -1: one the app saves (issue #899). */
+    bool
+    configuredSquelchLevelWhole() const {
+        return m_view.configured_squelch_level_whole;
+    }
+
+    /** @brief The configured level as that whole dB, or 0 for Off or a level that is not one. */
+    int
+    configuredSquelchLevelWholeDb() const {
+        return m_view.configured_squelch_level_whole_db;
     }
 
     /**
@@ -2447,6 +2464,7 @@ class MetricsModel : public QObject {
         int tuner_gain_db = 0;
         int tuner_gain_configured_db = 0;
         int configured_squelch_margin_db = 0;
+        int configured_squelch_level_whole_db = 0;
         int effective_squelch_margin_db = 0;
         int ppm = 0;
         int enc_lockout_count = 0;
@@ -2502,6 +2520,7 @@ class MetricsModel : public QObject {
         bool effective_squelch_noise = false;
         bool squelch_noise_offered = false;
         bool configured_squelch_level_off = false;
+        bool configured_squelch_level_whole = false;
         bool squelch_audio_input = false;
         bool persist_tg_lockouts = true;
         bool snr_valid = false;
@@ -2732,7 +2751,9 @@ class MetricsModel : public QObject {
                    && effective_squelch_margin_db == other.effective_squelch_margin_db
                    && configured_squelch_noise == other.configured_squelch_noise
                    && effective_squelch_noise == other.effective_squelch_noise
-                   && configured_squelch_level_off == other.configured_squelch_level_off;
+                   && configured_squelch_level_off == other.configured_squelch_level_off
+                   && configured_squelch_level_whole == other.configured_squelch_level_whole
+                   && configured_squelch_level_whole_db == other.configured_squelch_level_whole_db;
         }
 
         bool

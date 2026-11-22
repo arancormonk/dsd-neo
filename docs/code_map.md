@@ -7244,7 +7244,8 @@ the stream-notice hooks' pattern: one that fails to initialize leaves the hook u
   `noise +10 dB (quieting 23 dB)`, `(starting)`, and `(as auto: floor -78.3 dB)` where the floor tracker runs a NOISE
   setting (an AM channel, a channel with no band above voice), which `dsd_app_squelch_view_dynamic_status()` gives
   alone as it does AUTO's. Qt adds `configuredSquelchNoise`/`effectiveSquelchNoise` and `squelchNoiseOffered` (false on
-  the AM monitor on its own), and the radio panel's choice becomes `dB | Auto | Noise` (Noise on an nfm row only,
+  an audio input's AM monitor on its own; a radio's AM monitor offers it and runs it as auto, issue #899 D4, so the
+  sheet keeps showing and stepping Noise while its status line reads `as auto: ...`), and the radio panel's choice becomes `dB | Auto | Noise` (Noise on an nfm row only,
   `CommandBridge::setSquelchNoise()`); the previews carry `squelch_mode` (Qt `squelchNoise`) beside the margin. On
   audio input the metrics model publishes the same squelch values, flagged `squelchAudioInput`: the monitor's
   `SQUELCH` row reads `squelchReadout` and opens `SquelchSheet.qml` (`dB | Noise`, no Auto; "This channel" under a

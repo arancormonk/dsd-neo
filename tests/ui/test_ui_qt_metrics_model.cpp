@@ -3433,6 +3433,30 @@ main(int argc, char** argv) {
            !model.configuredSquelchAuto() && !model.effectiveSquelchAuto() && model.squelchAutoStatus().isEmpty());
     expect("a level keeps the margin Auto starts from again", model.configuredSquelchMarginDb() == 7);
     expect("the level beneath is a threshold", !model.configuredSquelchLevelOff());
+    /* Issue #899 (B15): the app saves only a level its own controls make, Off or a whole dB from -120 to -1, read from
+     * the configured power, not from the -120 dB display floor. */
+    expect("-80 dB is a whole dB", model.configuredSquelchLevelWhole() && model.configuredSquelchLevelWholeDb() == -80);
+    const double whole_level = opts.rtl_squelch_level;
+
+    struct {
+        double level;
+        bool whole;
+        int db;
+    } const whole_cases[] = {{dsd_squelch_level_from_sql(-65.5), false, 0},
+                             {dsd_squelch_level_from_sql(-120.0), true, -120},
+                             {dsd_squelch_level_from_sql(-130.0), false, 0},
+                             {dsd_squelch_level_from_sql(-1.0), true, -1},
+                             {1.0, false, 0},
+                             {0.0, true, 0}};
+
+    for (const auto& c : whole_cases) {
+        opts.rtl_squelch_level = c.level;
+        model.refresh(&opts, &state);
+        expect("the whole-dB reading",
+               model.configuredSquelchLevelWhole() == c.whole && model.configuredSquelchLevelWholeDb() == c.db);
+    }
+    opts.rtl_squelch_level = whole_level;
+    model.refresh(&opts, &state);
 
     /* The auto squelch (issue #518 follow-up): whether each setting is AUTO, its margin and what the one in force
      * shows come from the same view, and the level beneath it stays what dB goes back to. */
@@ -3486,9 +3510,16 @@ main(int argc, char** argv) {
     state.squelch_noise_active = 0;
     state.squelch_noise_measured = 0;
     model.refresh(&opts, &state);
-    expect("the AM monitor offers no Noise", !model.squelchNoiseOffered());
+    /* Issue #899 D4: a radio input's AM monitor takes Noise and runs it as auto; audio input's refuses it. */
+    expect("the radio AM monitor offers Noise", model.squelchNoiseOffered());
     expect("a noise setting on AM runs as auto",
            model.squelchAutoStatus() == QStringLiteral("as auto: floor -79.0 dB"));
+    expect("and stays noise", model.configuredSquelchNoise() && !model.configuredSquelchAuto());
+    opts.audio_in_type = AUDIO_IN_WAV;
+    model.refresh(&opts, &state);
+    expect("the PCM AM monitor offers no Noise", !model.squelchNoiseOffered());
+    opts.audio_in_type = AUDIO_IN_RTL;
+    model.refresh(&opts, &state);
     opts.analog_demod = DSD_ANALOG_DEMOD_FM;
     state.squelch_noise_quieting_cdb = 0;
     opts.rtl_squelch_mode = DSD_SQUELCH_MODE_AUTO;

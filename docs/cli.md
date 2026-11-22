@@ -1589,10 +1589,10 @@ their sensitivity in.
   (`-fM`) of a radio input a noise setting runs as auto with the same N, whatever set it (`--squelch noise`, an input
   spec, the config, a live edit from the terminal), and the engine says so at startup (`NOTICE: The noise squelch needs
   an FM channel; this AM channel runs auto+10dB.`). The setting stays noise, so a switch back to `-fA` runs the noise
-  squelch again. (`-fM --squelch noise` used to stop at startup.) The radio panel offers no Noise there, an `am` row
-  or `am-conventional` target refuses `--squelch noise`, and an `am` row that inherits a noise default runs it as
-  auto. Like auto, it is off on digital channels. On audio input it learns its reference from the
-  input itself ([below](#noise-squelch-on-audio-input)).
+  squelch again. (`-fM --squelch noise` used to stop at startup.) The app's Radio panel offers Noise there too, and its
+  status line says `as auto`. An `am` row or `am-conventional` target refuses `--squelch noise`, and an `am` row that
+  inherits a noise default runs it as auto. Like auto, it is off on digital channels. On audio input it learns its
+  reference from the input itself ([below](#noise-squelch-on-audio-input)).
 - The M17 encoder's monitor runs it as the FM monitor does, or as auto where its channel has no band.
 - EDACS analog voice runs it as auto, and the engine says so (`EDACS analog voice runs the noise squelch as
   auto+NdB`): the FSK discriminator EDACS reads is slowly centred on the carrier and scaled to counts, not the radians

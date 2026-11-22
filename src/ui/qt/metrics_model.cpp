@@ -1056,6 +1056,8 @@ MetricsModel::fillSquelchOverride(View& next, const dsd_opts* opts_snapshot, con
         next.configured_squelch_margin_db = 0;
         next.effective_squelch_margin_db = 0;
         next.configured_squelch_level_off = false;
+        next.configured_squelch_level_whole = false;
+        next.configured_squelch_level_whole_db = 0;
         next.squelch_auto_status.clear();
         next.squelch_gate_open = false;
         return;
@@ -1072,11 +1074,16 @@ MetricsModel::fillSquelchOverride(View& next, const dsd_opts* opts_snapshot, con
     next.effective_squelch_auto = squelch.effective_auto != 0U;
     next.configured_squelch_noise = squelch.configured_noise != 0U;
     next.effective_squelch_noise = squelch.effective_noise != 0U;
-    next.squelch_noise_offered = dsd_squelch_noise_has_no_fm(opts_snapshot, snapshot) == 0;
+    /* Issue #899 D4: a radio input's AM monitor runs a noise setting as auto, so only audio input refuses it there. */
+    next.squelch_noise_offered = dsd_squelch_noise_has_no_fm(opts_snapshot, snapshot) == 0
+                                 || dsd_squelch_input_kind(opts_snapshot) == DSD_SQUELCH_INPUT_RADIO;
     /* A level setting keeps the margin it had, which Auto or Noise starts from again. */
     next.configured_squelch_margin_db = squelch.configured_margin_db;
     next.effective_squelch_margin_db = squelch.effective_margin_db;
     next.configured_squelch_level_off = dsd_squelch_is_off(squelch.configured_level);
+    int whole_db = 0;
+    next.configured_squelch_level_whole = dsd_squelch_level_is_whole_db(squelch.configured_level, &whole_db) == 1;
+    next.configured_squelch_level_whole_db = next.configured_squelch_level_whole ? whole_db : 0;
     char status[40];
     (void)dsd_app_squelch_view_dynamic_status(&squelch, status, sizeof status);
     next.squelch_auto_status = QString::fromUtf8(status);
