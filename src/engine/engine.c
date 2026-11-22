@@ -4534,8 +4534,8 @@ live_scanner_y_note_checked(dsd_state* state, double now_m, dsd_engine_scan_owne
 }
 
 /* Whether the refusal @p owner holds for the typed simplex row on air still stands (issue #890): the refused
-   transmission is the call active on its slot. Bound at the first boundary after the refused report to that call's
-   transmission_epoch (the report's frame observed it); dropped once the slot holds no active call (the transmission
+   transmission is the call active on its slot. Bound at the boundary of the refused report's own frame, every
+   boundary asking, to that call's transmission_epoch (the report's frame observed it); dropped once the slot holds no active call (the transmission
    ended, or it was never a call the decoder tracks) or another transmission's call, so a later call keeps the
    open-verdict wait the -Y rule gives it. */
 static int
@@ -4589,6 +4589,9 @@ live_scanner_y_note_frame_content(dsd_state* state, double now_m) {
     dsd_engine_scan_owner* owner =
         typed ? DSD_STATE_EXT_GET_AS(dsd_engine_scan_owner, state, DSD_STATE_EXT_ENGINE_TRUNK_SCAN) : NULL;
     const int admitted = owner && owner->y_admitted_seq != owner->y_admitted_seen;
+    /* A refusal binds to the call its own frame observed at this boundary, whatever that frame noted (a refused PROVEN
+       frame resolves no open verdict here), or lapses: so it can never bind a later call. */
+    const int refused = live_scanner_y_refusal_stands(state, owner);
     if (state->scan_y_content_seq == state->scan_y_content_seen
         && state->scan_y_partial_seq == state->scan_y_partial_seen
         && state->scan_y_unchecked_seq == state->scan_y_unchecked_seen && !admitted) {
@@ -4602,7 +4605,7 @@ live_scanner_y_note_frame_content(dsd_state* state, double now_m) {
         live_scanner_y_note_checked(state, now_m, typed ? owner : NULL, typed);
     }
     if (state->scan_y_partial_seq != state->scan_y_partial_seen) {
-        live_scanner_y_note_partial(state, now_m, live_scanner_y_refusal_stands(state, owner));
+        live_scanner_y_note_partial(state, now_m, refused);
     }
 }
 
