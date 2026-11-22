@@ -760,6 +760,30 @@ test_foreign_sacch_segments_never_release_the_call(dsd_opts* opts, dsd_state* st
 }
 
 /*
+ * Late entry on a composite Type-C channel carrying a call (issue #903): before anything identified the system, its
+ * shared LICH values read as a Type-D RTCH2, but no checked SCCH said Type-D, so a CRC-valid FACCH1 VCALL to 0x1805
+ * keeps the full 16-bit ID as Type-C does (6149, no "pp-iiii" prefix text), for policy and keys as for the display.
+ */
+static int
+test_composite_late_entry_keeps_full_ids(dsd_opts* opts, dsd_state* state) {
+    uint8_t vcall[80];
+    int rc = 0;
+    clear_state(opts, state);
+    DSD_MEMSET(vcall, 0, sizeof(vcall));
+    call_message(vcall, 0x01U, 0x1864U, 0x1805U);
+    send_frame(opts, state, LICH_COMPOSITE_FACCH1_PAIR, 0x21U, vcall, NULL);
+    send_frame(opts, state, LICH_COMPOSITE_FACCH1_PAIR, 0x21U, vcall, NULL);
+    dsd_call_snapshot call;
+    const int has_call = dsd_call_state_get(state, 0U, &call);
+    rc |= expect_long("late entry: call", has_call, 1L);
+    rc |= expect_long("late entry: target", has_call ? (long)call.ota_target_id : -1L, 0x1805L);
+    rc |= expect_long("late entry: policy target", has_call ? (long)call.policy_target_id : -1L, 0x1805L);
+    rc |= expect_long("late entry: source", has_call ? (long)call.ota_source_id : -1L, 0x1864L);
+    rc |= expect_long("late entry: no prefix text", has_call ? (long)(call.target_text[0] != '\0') : -1L, 0L);
+    return rc;
+}
+
+/*
  * An SCCH that passed its short CRC on a composite frame read as Type-D during startup left the "Type-D" category; once
  * a CCH_INFO says Type-C, a VCALL decodes with the Type-C layout (16-bit IDs), not the IDAS one (11-bit IDs and a
  * repeater number).
@@ -840,6 +864,7 @@ main(void) {
     rc |= test_foreign_cac_frame_on_followed_channel(opts, state);
     rc |= test_type_c_drops_the_type_d_misreading(opts, state);
     rc |= test_foreign_sacch_segments_never_complete_a_vcall(opts, state);
+    rc |= test_composite_late_entry_keeps_full_ids(opts, state);
     rc |= test_foreign_sacch_segments_never_release_the_call(opts, state);
     rc |= test_type_c_drops_the_type_d_category(opts, state);
     rc |= test_short_site_messages_do_not_say_type_c(opts, state);

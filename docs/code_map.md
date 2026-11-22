@@ -12434,24 +12434,26 @@ Call frequency and access-code provenance (issue #575). A call's canonical `freq
 - NXDN Type-D addresses (`nxdn_internal.h`: `nxdn_typed_full_id()`, `nxdn_typed_low_id()`, `nxdn_typed_prefix()`,
   `nxdn_typed_id_text()`). A Type-D unit or group ID is 11 bits under a 5-bit Home Repeater / Prefix (TS 1-E
   6.6.6-6.6.8). The VCALL, the SD (0x38) and packet (0x09) data call headers and the SCCH INFO4/INFO3/INFO2 carry the
-  prefix. The VCALL, VCALL_IV and data header layouts follow the channel the frame's LICH selected
-  (`nxdn_location_is_type_d()`: an RTCH2 Type-D, any other channel not), so a late-entry FACCH VCALL before any SCCH
-  reads its prefix and conventional traffic invents none under an old "Type-D" category; only an element decoded with no
-  frame falls back to that category. Every numeric ID the protocol publishes stays the 11-bit ID, the policy namespace
-  (decision D7): `ota_target_id`, `policy_target_id`, `ota_source_id`, `dmr_lrrp_source/target` (position attribution),
-  the scan-activity hook, and the keys, lockouts, skips and holds, including the NXDN48 destination-key fallback. So an
-  existing group list, key file or lockout behaves as it did. The prefix travels as text, "pp-iiii" (`03-0005`), in the
-  call's `target_text`/`source_text` (hence the event row's `tgt_str`/`src_str` and the per-call WAV name,
-  `TGT_03-0005_SRC_03-0100`), on the SCCH busy message's recent-activity row, on the NXDN event line
-  (`watchdog_event_current_build_event_nxdn()`, so `-J` and the terminal history) and the live terminal TGT/SRC line
-  (`ui_render_nxdn_tgt_src_line()`), and on the data call's row and its notice line (`nxdn_dcall_watchdog()`, from the
-  header's prefixes `dsd_state::nxdn_data_type_d`/`_source_prefix`/`_target_prefix`, `nxdn_data_call_note_prefixes()`).
-  Because call identity compares known text, group 5 under prefixes 3 and 7 are two calls with one policy row. The text
-  only spells the numeric target, so it is no name of its own (`dsd_call_target_text_is_name()`): the Monitor headline
-  (`call_view.c`), the Qt history row (`call_history_model.cpp`) and the rdio-scanner tag (`rdio_export.c`) name such a
-  call by its list entry, else its channel, else the text, as they name a bare number. The GPS data notice
-  (`nxdn_gps_publish()`, core) and position fixes carry no prefix text. `nxdn_typed_full_id()` is for producers that key
-  identity, not policy, by the full address.
+  prefix. The VCALL, VCALL_IV and data header layouts split an address into its prefix and 11-bit ID only on positive
+  Type-D evidence (`nxdn_location_is_type_d()`): the "Type-D" category a CRC-checked SCCH set, on an RTCH2 frame or an
+  element decoded with no frame. A frame whose LICH names another channel, a site Type-C decoded, and an RTCH2 reading
+  with no SCCH yet (which a composite Type-C channel's shared LICH values also give on late entry) keep the full 16-bit
+  ID with no prefix text, as Type-C does, for policy and keys too. Every numeric ID the protocol publishes stays the
+  11-bit ID, the policy namespace (decision D7): `ota_target_id`, `policy_target_id`, `ota_source_id`,
+  `dmr_lrrp_source/target` (position attribution), the scan-activity hook, and the keys, lockouts, skips and holds,
+  including the NXDN48 destination-key fallback. So an existing group list, key file or lockout behaves as it did. The
+  prefix travels as text, "pp-iiii" (`03-0005`), in the call's `target_text`/`source_text` (hence the event row's
+  `tgt_str`/`src_str` and the per-call WAV name, `TGT_03-0005_SRC_03-0100`), on the SCCH busy message's recent-activity
+  row, on the NXDN event line (`watchdog_event_current_build_event_nxdn()`, so `-J` and the terminal history) and the
+  live terminal TGT/SRC line (`ui_render_nxdn_tgt_src_line()`), and on the data call's row and its notice line
+  (`nxdn_dcall_watchdog()`, from the header's prefixes `dsd_state::nxdn_data_type_d`/`_source_prefix`/`_target_prefix`,
+  `nxdn_data_call_note_prefixes()`). Because call identity compares known text, group 5 under prefixes 3 and 7 are two
+  calls with one policy row. The text only spells the numeric target, so it is no name of its own
+  (`dsd_call_target_text_is_name()`): the Monitor headline (`call_view.c`), the Qt history row
+  (`call_history_model.cpp`) and the rdio-scanner tag (`rdio_export.c`) name such a call by its list entry, else its
+  channel, else the text, as they name a bare number. The GPS data notice (`nxdn_gps_publish()`, core) and position
+  fixes carry no prefix text. `nxdn_typed_full_id()` is for producers that key identity, not policy, by the full
+  address.
 - NXDN site identity (`nxdn_element.c`). `NXDN_Elements_Content_decode()` is handed buffers of every channel's size,
   down to the 26 elements of a non-superframe SACCH whose 6-bit CRC passes noise one time in 64, so each parser checks
   the length it was given before reading (`nxdn_element_has_bits()`: SRV_INFO 72, 80 on Type-D; VCALL/TX_REL/DISC 64;

@@ -156,15 +156,21 @@ nxdn_call_type_opens_call(uint8_t call_type) {
     return (call_type & 0x7U) != 2U ? 1 : 0;
 }
 
-/* Whether a message decodes in the Type-D (IDAS) layout, as the VCALL, VCALL_IV and data header layouts take it: the
- * channel this frame's own LICH selected (dsd_state::nxdn_frame_channel), an RTCH2 Type-D and any other channel not, so
- * a late-entry FACCH VCALL before any SCCH reads its prefixes, and conventional traffic never invents one from a "Type-D"
- * category an earlier SCCH left (issue #903). With no frame decoding (an element handed over alone), the location
- * category an SCCH set. */
+/* Whether a message decodes in the Type-D (IDAS) layout, as the VCALL, VCALL_IV and data header layouts take it, which
+ * splits an address into its prefix and 11-bit ID (issue #903): only on positive Type-D evidence, the "Type-D" location
+ * category a CRC-checked SCCH set (nxdn_scch_prepare_type_d(), kept past its frame only on a confirmed transmission),
+ * on an RTCH2 frame or with no frame decoding (an element handed over alone). A frame whose LICH names another channel,
+ * and a site Type-C decoded (dsd_nxdn_type_c()), never take it from a category an earlier SCCH left. An RTCH2 reading
+ * with no SCCH yet, which a composite Type-C channel's shared LICH values (0x71, 0x73) also give on late entry, keeps
+ * the full 16-bit ID as Type-C does, with no prefix. */
 static int
 nxdn_location_is_type_d(const dsd_state* state) {
-    if (state->nxdn_frame_channel != (uint8_t)NXDN_FRAME_CHANNEL_NONE) {
-        return state->nxdn_frame_channel == (uint8_t)NXDN_FRAME_CHANNEL_TYPE_D ? 1 : 0;
+    if (dsd_nxdn_type_c(state)) {
+        return 0;
+    }
+    if (state->nxdn_frame_channel != (uint8_t)NXDN_FRAME_CHANNEL_NONE
+        && state->nxdn_frame_channel != (uint8_t)NXDN_FRAME_CHANNEL_TYPE_D) {
+        return 0;
     }
     return strcmp(state->nxdn_location_category, "Type-D") == 0 ? 1 : 0;
 }
