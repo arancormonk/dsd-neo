@@ -1233,6 +1233,30 @@ test_companion_media_change_is_a_new_call(dsd_opts* opts, dsd_state* st) {
     return rc;
 }
 
+/* Companion voice heard before a media change re-followed the slot is not the new assignment's: companion voice at
+   3.90 s, a data grant at 0 s then a voice grant at 3.95 s on the followed slot, a tick at 4.05 s. Once the companion
+   is quiet, the voice assignment holds its own acquisition window (to 7.95 s), not a hangtime tail from 3.90 s. */
+static int
+test_pre_grant_companion_voice_keeps_acquisition(dsd_opts* opts, dsd_state* st) {
+    init_env(opts, st, 2.0);
+    opts->frame_dmr = 1;
+    grant_op(opts, st, 51U, LPCN_A, 0, 300, 1); // PD_GRANT at 0 s
+    clock_at(3.90);
+    voice(opts, st, 1);
+    clock_at(3.95);
+    grant_op(opts, st, 48U, LPCN_A, 0, 300, 1); // PV_GRANT, same radio, carrier and slot
+    clock_at(4.05);
+    dmr_sm_tick_ctx(sm(), opts, st);
+    clock_at(6.05);
+    dmr_sm_tick_ctx(sm(), opts, st);
+    int rc = expect_true("pre-grant companion voice ends no acquisition",
+                         sm()->state == DMR_SM_TUNED && sm()->vc_freq_hz == VC_A && sm()->t_voice_m <= 0.0);
+    clock_at(8.0);
+    dmr_sm_tick_ctx(sm(), opts, st);
+    rc |= expect_true("the acquisition window still closes", sm()->state != DMR_SM_TUNED);
+    return rc;
+}
+
 int
 main(void) {
     dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(*opts));
@@ -1281,6 +1305,7 @@ main(void) {
     rc |= test_data_grant_never_binds_a_voice_call(opts, st);
     rc |= test_awaiting_data_grant_never_binds_later_voice(opts, st);
     rc |= test_companion_media_change_is_a_new_call(opts, st);
+    rc |= test_pre_grant_companion_voice_keeps_acquisition(opts, st);
 
     dsd_trunk_tuning_hooks_set((dsd_trunk_tuning_hooks){0});
     dsd_decode_clock_use_system();

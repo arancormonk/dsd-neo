@@ -2006,9 +2006,13 @@ tick_tuned(dmr_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, double now_m, do
     clear_stale_voice_slots(ctx, now_m);
 
     if (has_voice_activity(ctx)) {
-        // Each active slot's activity is the time of its last accepted voice (handle_voice_sync()).
+        /* Each active slot's activity is the time of its last accepted voice (handle_voice_sync()). Activity from
+           before the follow (a companion call heard before a media change re-followed the slot, or on a carrier
+           adopted in place) holds the carrier while it is live, but is no evidence for the followed grant: it never
+           ends that grant's acquisition. */
         for (int s = 0; s < 2; s++) {
-            if (ctx->slots[s].voice_active && ctx->slots[s].last_active_m > ctx->t_voice_m) {
+            if (ctx->slots[s].voice_active && ctx->slots[s].last_active_m >= ctx->t_tune_m
+                && ctx->slots[s].last_active_m > ctx->t_voice_m) {
                 ctx->t_voice_m = ctx->slots[s].last_active_m;
             }
         }

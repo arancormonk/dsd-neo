@@ -13508,7 +13508,9 @@ Private per-protocol modules worth knowing about:
   - Busy view (`dmr_sm_describe_held_calls()`). TUNED: the tick's own retention rule, factored out of `tick_tuned()`
     without changing the tick (`dmr_sm_tuned_retention()`): live voice on an admitted slot (0.2 s stale) whatever the
     hangtime, the hangtime tail (a tail no admitted slot is in holds nothing), acquisition before the first voice (the
-    grant timeout; a carrier a channel status selected, Cap+ or XPT, keeps `DMR_CAPPLUS_SEED_WINDOW_S`), and a receive
+    grant timeout; a carrier a channel status selected, Cap+ or XPT, keeps `DMR_CAPPLUS_SEED_WINDOW_S`; activity from
+    before the follow, such as companion voice heard before a media change re-followed the slot, holds while it is
+    live but never ends that acquisition: only the slots' activity since `t_tune_m` moves `t_voice_m`), and a receive
     check still pending on a carrier no slot of which the policy admits yet (not once its verified code is rejected).
     Before the first voice the held slots are the grant's slot; for a slotless status follow (Cap+), each slot the
     status selected (`dmr_sm_note_status_follow()`) or seeded (`dmr_sm_capplus_seed_arm()`), tracked apart from identity
