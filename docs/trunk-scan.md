@@ -1226,8 +1226,11 @@ turned it on).
   its mode's width. An untyped `-Y` row is judged in every width of the decoders the session runs, and is silent only
   if it is silent in all of them. With the analog monitor on beside digital decoders (`-8`) the monitor's width is
   judged too, on an untyped row and on a typed digital row or target alike, since the monitor plays there as well; an
-  `-8` monitor with no NFM width set gets those rows and targets no check. Judging more widths can only mean fewer
-  skips, never an extra one.
+  `-8` monitor with no NFM width set gets those rows and targets no check. Every width in a reading must read silent
+  for the channel to be skipped, but judging another width is not only an added test: it changes the measurement
+  itself (the transform size follows the narrowest width), so the other widths' levels move too. In rendered noise
+  with a weak tone near the channel, 12.5 kHz alone read 5.015 dB (busy) while 12.5 kHz with a 5 kHz analog width read
+  4.996 dB (silent): adding a width can add a skip.
 - An ongoing DMR transmission from a single radio sends a 27.5 ms burst every 60 ms (ETSI TS 102 361-1 clauses 4.2.2
   and 10.2.3). Back-to-back slices of at most 13.75 ms hold one slice wholly inside one of those bursts at any phase
   once there are at least ceil(32.5 / slice length) + 2 of them: six at the check's slice lengths. The nine slices of
@@ -1235,8 +1238,10 @@ turned it on).
   about an ongoing train of bursts: a single short burst (a wake-up, a data or status burst) can fall outside the
   reading (see the [limits](#limits)).
 - The threshold and the rest of the measurement come from a calibration against DSD-neo's own reception: a signal
-  1 dB weaker than the weakest one DSD-neo still receives was never read as silent in testing, in any mode, width or
-  supported sample rate, with or without busy neighbours (10,316 signal conditions, 30.9 million trials). Every NFM
+  1 dB weaker than the weakest one DSD-neo still receives was never read as silent in the earlier calibration's tested
+  conditions, in any mode, width or supported sample rate (10,316 signal conditions, 30.9 million trials). Those
+  conditions were the RTL-SDR capture geometry, with busy neighbours at 1.536 Msps only, rendered rather than
+  received; they do not cover the raised-sideband case under "Limits" below. Every NFM
   width was tested with both a narrow-band transmitter (one made for 12.5 kHz channels) and a wide-band one (made for
   25 kHz channels), each with a test tone and with speech-like audio. Noise alone on a flat noise floor read silent in
   every test (1,136 noise conditions, 3.41 million trials). The method and figures are in
@@ -1344,9 +1349,9 @@ brackets below), and the log says how to fix it; see
 [What the screens and the log show](#what-the-screens-and-the-log-show).
 
 - An Airspy through SoapySDR (`-i soapy:driver=airspy`), at any rate (`rate`): use the native Airspy input
-  (`-i airspy`), which is checked at 2.5, 3, 6 and 10 MS/s. A SoapySDR device reached through a proxy
-  (`driver=remote`), or whose driver does not say which device it is, gets no check at any rate either, since it may
-  be an Airspy (`rate`). A
+  (`-i airspy`), which is checked at 2.5, 3, 6 and 10 MS/s. A SoapySDR device reached through SoapyRemote (named or
+  found by discovery), or opened by a SoapySDR module dsd-neo does not know, gets no check at any rate either, since
+  it may be an Airspy (`rate`). A
   HackRF through SoapySDR is checked at the 10 MS/s it normally runs (a HackRF moved to a lower rate near the top of
   the tuning range is checked only if that rate is one the check covers).
 - An RTL-SDR whose tuner takes offset tuning (an E4000, for example), which DSD-neo turns on by default over USB and
@@ -1439,8 +1444,13 @@ Turning the setting on accepts these:
   transmission can be skipped.
 - The calibration used steady signals (with the power droop inside a DMR burst), not fading: a signal that fades
   through the whole reading, from a radio on the move for example, can read silent and be skipped.
-- An always-keyed channel (a control channel, a repeater that never drops) is never skipped, so the setting saves
-  nothing there.
+- A channel left clear while transmitters or a raised floor fill much of the band round it and its sides (about three
+  quarters of the band, sometimes less) reads quieter by about the raise, which the check cannot see; a raise of
+  1.5 dB is enough for a signal DSD-neo receives to read silent and be skipped (docs/signal-search.md "Limits").
+- An always-keyed channel (a control channel, a repeater that never drops) is normally not skipped, since its carrier
+  reads busy at every visit and the setting saves nothing there. That holds only while the reading sees the carrier:
+  a weak one in a band raised round it (the raised-sideband limit above) can still read silent and be skipped before
+  the decoder hears it.
 - Busy neighbours were tested 12.5 or 25 kHz away, on one side and on both, from 5 to 50 dB stronger than the wanted
   signal, and never made a signal DSD-neo can receive read silent. Those tests used a P25 Phase 1 neighbour at
   1.536 Msps only; other sample rates and other kinds of neighbour were not tested.
