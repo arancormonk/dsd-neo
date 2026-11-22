@@ -455,6 +455,20 @@ Item {
             verify(!header.truncated);
         }
 
+        // Issue #901 r2 C1 (the class): a paused scan's line drops the noun, then the count, to fit, but a screen
+        // reader hears the whole line, which has no width to fit.
+        function test_paused_header_is_read_whole() {
+            var header = findChild(screen, "scanTargetHeader");
+            root.width = 360;
+            Ui.Theme.fontScale = 1.6;
+            testContext.setMetric("scanKind", 1);
+            testContext.setMetric("scanEntryCount", 12);
+            testContext.setMetric("scanResumable", true);
+            testContext.setMetric("scanPaused", true);
+            tryCompare(header, "text", "SCAN PAUSED");
+            tryCompare(header.Accessible, "name", "SCAN PAUSED · 12 channels");
+        }
+
         // Issue #575: the tuned frequency is the signal strip's first reading in
         // every mode, plain, scanning and holding, while there is one. The header
         // is not where it goes, so the header reads exactly as it did.

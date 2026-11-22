@@ -750,11 +750,18 @@ Item {
                 // scan starts or stops or is held or released; otherwise the target
                 // it is on is read at most every 5 s.
                 LiveText {
+                    id: scanTargetLine
                     width: parent.width
                     height: screen.headerMetaBox
                     verticalAlignment: Text.AlignVCenter
                     objectName: "scanTargetHeader"
                     step: screen.scanPaused ? "paused" : metrics.scanRotationActive ? ["scan", metrics.scanHold].join("|") : text
+                    // A paused scan's line drops its noun, then its count, to
+                    // fit; speech has no width, so it hears the whole line
+                    // (issue #901 r2 C1).
+                    speech: function () {
+                        return screen.scanPaused ? Util.oneLine(screen.pausedScanText(Number.POSITIVE_INFINITY)) : scanTargetLine.text;
+                    }
                     // One line in its box (r2 B1): a break in a target's or
                     // system's name is a space.
                     text: Util.oneLine(screen.scanPaused ? screen.pausedScanText(width) : screen.scanningText() || (screen.system ? Util.monitorMeta(screen.system) : ""))
