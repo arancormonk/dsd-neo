@@ -201,6 +201,21 @@ double dsd_engine_scan_visit_deadline_m(const dsd_opts* opts, const dsd_state* s
 /** Non-zero when the per-visit cap says the -Y visit is over and the scan must advance. */
 int dsd_engine_scan_visit_expired(const dsd_opts* opts, const dsd_state* state, double now_m);
 
+/** Whether the -Y row on air holds only on activity the scan's policy table admits (issue #890; docs/trunk-scan.md, "A
+ * typed row follows the same rules as the target of its type"): a typed row of a simplex digital class (ysf, dstar,
+ * dpmr, m17, tetra-dmo), whose frame-boundary content time moves only with an admitted report
+ * (dsd_engine_scan_y_typed_activity()), not with every checked frame. An untyped row, and a row of any other
+ * class, holds on what its protocols checked, as before. One scope read. 0 for a NULL state. */
+int dsd_engine_scan_y_row_holds_on_admitted(const dsd_state* state);
+/** A simplex digital family's checked activity report (the -Y row hook, dsd_trunk_scan_row_activity_hook_set(); issue
+ * #890): noted as the -Y row's admitted activity when the -Y scan runs (no trunk scan), the row on air is a typed row of
+ * the report's family (dsd_engine_scan_y_row_holds_on_admitted()), the report is an observation of that row's
+ * landed visit and current carrier (dsd_state_scan_observation_origin()), the receive policy lets @p protocol and
+ * @p slot through, and the scan's policy table admits @p identity (dsd_scan_activity_policy_allows()). Decoder thread;
+ * a few loads otherwise. */
+void dsd_engine_scan_y_typed_activity(const dsd_opts* opts, const dsd_state* state, int protocol, int slot,
+                                      const dsd_trunk_scan_activity_identity* identity);
+
 #ifdef __cplusplus
 }
 #endif

@@ -10,6 +10,7 @@
 #include <dsd-neo/core/receive_types.h>
 #include <dsd-neo/core/safe_api.h>
 #include <dsd-neo/core/state.h>
+#include <dsd-neo/core/state_ext.h>
 #include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/core/talkgroup_policy.h>
 #include <dsd-neo/dsp/analog_rx.h>
@@ -26,6 +27,7 @@
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/state_fwd.h"
 #include "scan_landing.h"
+#include "scan_owner.h"
 #include "scan_quiet.h"
 
 /* Checked voice must have run this long before it counts: D-STAR and ProVoice run the
@@ -871,4 +873,51 @@ dsd_scan_receive_should_leave(const dsd_opts* opts, const dsd_state* state, doub
     const double acquire_s =
         (double)scan_voice_resolve_ms(opts->scan_voice_qualify_ms, DSD_SCAN_VOICE_DEFAULT_QUALIFY_MS) / 1000.0;
     return now_m - arrived_m >= acquire_s;
+}
+
+int
+dsd_engine_scan_y_row_holds_on_admitted(const dsd_state* state) {
+    if (!state) {
+        return 0;
+    }
+    switch (dsd_scan_mode_active(state)) {
+        case DSD_SCAN_MODE_DPMR:
+        case DSD_SCAN_MODE_DSTAR:
+        case DSD_SCAN_MODE_YSF:
+        case DSD_SCAN_MODE_M17:
+        case DSD_SCAN_MODE_TETRA_DMO: return 1;
+        default: return 0;
+    }
+}
+
+/* Whether the report being made is an observation of the -Y row landed now (issue #890): a row landing is in force and
+   the report's frame was read on it, on the current carrier, so a frame of the row before, or one a carrier boundary
+   cut, holds nothing. */
+static int
+scan_y_observation_on_row(const dsd_state* state) {
+    const dsd_engine_scan_landing* landing = dsd_engine_scan_landing_get(state);
+    if (state->scan_landing_visit == 0U || !landing || landing->by != DSD_ENGINE_SCAN_LANDING_ROW) {
+        return 0;
+    }
+    dsd_scan_observation_origin origin;
+    return dsd_state_scan_observation_origin(state, &origin) && dsd_state_scan_observation_is_current(state, &origin);
+}
+
+void
+dsd_engine_scan_y_typed_activity(const dsd_opts* opts, const dsd_state* state, int protocol, int slot,
+                                 const dsd_trunk_scan_activity_identity* identity) {
+    if (!opts || !state || !identity || opts->scanner_mode != 1 || opts->trunk_scan_enabled == 1
+        || !dsd_engine_scan_y_row_holds_on_admitted(state)
+        || !dsd_scan_mode_family_has_protocol((int)dsd_scan_mode_active(state), protocol)
+        || !scan_y_observation_on_row(state) || !dsd_receive_allows(opts, state, protocol, slot)
+        || !dsd_scan_activity_policy_allows(opts, state, protocol, identity)) {
+        return;
+    }
+    /* The owner is the engine's own extension, apart from the state the report only reads, as the trunk scan's
+       coordinator is for its targets' holds. */
+    dsd_engine_scan_owner* owner =
+        (dsd_engine_scan_owner*)dsd_state_ext_get_const(state, DSD_STATE_EXT_ENGINE_TRUNK_SCAN);
+    if (owner) {
+        owner->y_admitted_seq++;
+    }
 }

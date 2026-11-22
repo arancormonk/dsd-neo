@@ -18271,6 +18271,70 @@ test_y_tetra_holds_only_on_checked_content(void) {
     return rc;
 }
 
+/* Issue #890: a typed simplex -Y row holds on what the scan's policy table admits, as a target of its type does
+   (docs/trunk-scan.md): on a typed tetra-dmo row under the default --no-data-calls, frames whose checked content is
+   CRC-valid short data (each a PROVEN note and a data report the table refuses) give no fresh hangtime, so the row
+   leaves at the first frame boundary past -t and noCarrier() steps; frames whose report is a clear voice call the
+   table admits hold it while they come. */
+static const dsd_trunk_scan_activity_identity* g_y_admit_identity = NULL;
+
+static int
+y_admit_observer(const dsd_opts* opts, const dsd_state* state) {
+    if (g_y_admit_identity) {
+        dsd_trunk_scan_hook_digital_conventional_activity(opts, state, DSD_SYNC_TETRA_SB_POS, -1, g_y_admit_identity);
+    }
+    return 0;
+}
+
+static int
+y_admit_case(int voice) {
+    const char* what = voice ? "typed -Y TETRA row, an admitted voice call" : "typed -Y TETRA row, refused short data";
+    dsd_opts* opts = NULL;
+    dsd_state* state = NULL;
+    if (init_test_runtime(&opts, &state) != 0) {
+        return 1;
+    }
+    int rc = y_tetra_start(opts, state, what);
+    y_tetra_published(4, 0);
+    dsd_trunk_scan_row_activity_hook_set(dsd_engine_scan_y_typed_activity);
+    dsd_trunk_scan_activity_identity id;
+    DSD_MEMSET(&id, 0, sizeof id);
+    id.known = DSD_SCAN_ACTIVITY_KNOWN_SOURCE | DSD_SCAN_ACTIVITY_KNOWN_TARGET | DSD_SCAN_ACTIVITY_KNOWN_DATA
+               | DSD_SCAN_ACTIVITY_KNOWN_ENCRYPTED | (voice ? DSD_SCAN_ACTIVITY_KNOWN_PARTY : 0U);
+    id.source = 100U;
+    id.target = voice ? 0x800001U : 300U;
+    id.data_call = (uint8_t)(voice ? 0U : 1U);
+    g_y_admit_identity = &id;
+    g_process_frame_observer = y_admit_observer;
+    yc_age(state, 1);
+    g_frame_sync_type = DSD_SYNC_TETRA_SB_POS;
+    const int tunes = g_rtl_tune_calls;
+    run_synced_frames_noting(opts, state, 5, -1, DSD_CONTENT_EVIDENCE_PROVEN, 0U);
+    char label[200];
+    DSD_SNPRINTF(label, sizeof label, "%s: frames %d (content %u), tunes %d", what, g_frame_count,
+                 (unsigned)state->scan_y_content_seq, g_rtl_tune_calls - tunes);
+    if (voice) {
+        rc |= expect_true(label, g_frame_count == 6 && g_rtl_tune_calls == tunes && state->scan_row_index == 1);
+    } else {
+        rc |= expect_true(label, g_frame_count == 1 && state->scan_y_content_seq > 0U);
+        noCarrier(opts, state);
+        DSD_SNPRINTF(label, sizeof label, "%s: and noCarrier() steps off the row (row %d)", what,
+                     state->scan_row_index);
+        rc |= expect_true(label, g_rtl_tune_calls == tunes + 1 && state->scan_row_index == 2);
+    }
+    g_process_frame_observer = NULL;
+    g_y_admit_identity = NULL;
+    dsd_trunk_scan_row_activity_hook_set(NULL);
+    g_frame_sync_type = DSD_SYNC_NXDN_POS;
+    y_tetra_finish(opts, state);
+    return rc;
+}
+
+static int
+test_y_typed_row_holds_on_admitted_activity(void) {
+    return y_admit_case(0) | y_admit_case(1);
+}
+
 /* Issue #890: a TETRA synchronisation burst whose BSCH passed, dispatched through the real processFrame(), with a carrier
    boundary (a replay retune) or an input interruption inside its block 2 read. The decoder drops it (TETRA_BURST_CUT
    pins what it leaves), and the frame settles as any frame cut so (process_frame_settle_verdict()): UNPRODUCTIVE across
@@ -18350,6 +18414,7 @@ test_scan_quiet_decisions(void) {
     rc |= test_y_quiet_released_hold_republished();
     rc |= test_y_frames_with_no_checked_content_leave();
     rc |= test_y_tetra_holds_only_on_checked_content();
+    rc |= test_y_typed_row_holds_on_admitted_activity();
     rc |= test_tetra_cut_burst_settles_unproven();
     rc |= test_y_quiet_open_analog_carrier_stays();
     rc |= test_y_quiet_typed_row_judges_the_monitor(12500);

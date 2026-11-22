@@ -103,6 +103,12 @@ typedef struct {
        did not step after all gets no second yield for the same pair, so a held row is never reset at every frame. */
     uint64_t y_frame_yield_epoch;
     int64_t y_frame_yield_mark_ms;
+    /* The -Y typed simplex row's admitted activity (issue #890; channel_scan.c): y_admitted_seq moves with every
+       protocol report the scan's policy table admits for the typed ysf, dstar, dpmr, m17 or tetra-dmo row on air, on
+       its landed visit (dsd_engine_channel_scan_typed_activity()); y_admitted_seen is the last one the -Y frame
+       boundary turned into dsd_state::scan_y_content_m. Such a row holds on these alone, not on every PROVEN note. */
+    uint64_t y_admitted_seq;
+    uint64_t y_admitted_seen;
     /* A sync awaiting its frame's verdict (issue #834 R1; scan_quiet.c), moved only while skip-silent is on.
        frame_pending: the frame sync returned a sync whose frame has not ended yet. frame_evidence, frame_hold_ms: the
        strongest content note that frame made so far (DSD_CONTENT_EVIDENCE_*, 0 for none) and its longest PARTIAL hold.

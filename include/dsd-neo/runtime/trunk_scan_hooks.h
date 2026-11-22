@@ -235,10 +235,21 @@ void dsd_trunk_scan_hook_p25_conventional_activity(const dsd_opts* opts, const d
  * privacy and encryption restrictions for every family, and nothing held while such a restriction depends on a field
  * @p identity does not know. Make it only from content that passed the protocol's CRC/FEC gate, at the point that
  * gate made the identity's fields known. Unlike the reports above it adds no Signal search evidence: each of these
- * protocols notes its own. No-op when trunk scan is not installed.
+ * protocols notes its own. The same report also reaches the -Y row hook (dsd_trunk_scan_row_activity_hook_set()),
+ * through which a typed -Y row of the family holds by the same table. No-op for each hook not installed.
  */
 void dsd_trunk_scan_hook_digital_conventional_activity(const dsd_opts* opts, const dsd_state* state, int protocol,
                                                        int slot, const dsd_trunk_scan_activity_identity* identity);
+
+/** A typed -Y row's hold on a simplex digital family's checked activity (issue #890): what a
+ * dsd_trunk_scan_hook_digital_conventional_activity() report hands the -Y scan, which holds its typed ysf, dstar,
+ * dpmr, m17 or tetra-dmo row only on a report its policy table admits. */
+typedef void (*dsd_trunk_scan_row_activity_fn)(const dsd_opts* opts, const dsd_state* state, int protocol, int slot,
+                                               const dsd_trunk_scan_activity_identity* identity);
+
+/** Install the -Y row hook (NULL: none). The engine installs it with its frame-sync hooks: unlike the trunk-scan table
+ * (dsd_trunk_scan_hooks_set()), which exists only while a trunk scan runs, it is in force for every -Y scan. */
+void dsd_trunk_scan_row_activity_hook_set(dsd_trunk_scan_row_activity_fn fn);
 
 /**
  * @brief Path of the channel map belonging to the currently parked scan target.

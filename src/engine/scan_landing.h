@@ -64,6 +64,10 @@ enum { DSD_ENGINE_SCAN_LANDING_NONE = 0, DSD_ENGINE_SCAN_LANDING_ROW = 1, DSD_EN
    stay's, and neither counts for it nor delays its step. */
 static inline void
 dsd_engine_scan_landing_forget_y_notes(dsd_state* state) {
+    dsd_engine_scan_owner* owner = DSD_STATE_EXT_GET_AS(dsd_engine_scan_owner, state, DSD_STATE_EXT_ENGINE_TRUNK_SCAN);
+    if (owner) {
+        owner->y_admitted_seen = owner->y_admitted_seq;
+    }
     state->scan_y_content_seen = state->scan_y_content_seq;
     state->scan_y_partial_seen = state->scan_y_partial_seq;
     state->scan_y_unchecked_seen = state->scan_y_unchecked_seq;

@@ -4516,27 +4516,47 @@ live_scanner_y_frames_carry_nothing(const dsd_opts* opts, const dsd_state* state
     return !owner || owner->y_frame_yield_epoch != *out_epoch || owner->y_frame_yield_mark_ms != *out_mark_ms;
 }
 
+/* Checked content, or on a typed simplex row (@p typed) an admitted report @p owner has not seen yet, since the last
+   boundary: the content time (only an admitted report's on a typed row), and the open verdict resolved. */
+static void
+live_scanner_y_note_checked(dsd_state* state, double now_m, dsd_engine_scan_owner* owner, int typed) {
+    const int admitted = owner && owner->y_admitted_seq != owner->y_admitted_seen;
+    state->scan_y_content_seen = state->scan_y_content_seq;
+    if (!typed || admitted) {
+        state->scan_y_content_m = now_m;
+    }
+    if (admitted) {
+        owner->y_admitted_seen = owner->y_admitted_seq;
+    }
+    state->scan_y_partial_seen = state->scan_y_partial_seq;
+    state->scan_y_partial_hold_ms = 0U;
+    state->scan_y_partial_until_m = -1.0;
+}
+
 /* What the frames since the last boundary noted, for the -Y step: checked content and an unchecked protocol's frame
    become their time (the frame's end), and a verdict still open (PARTIAL) the end of its hold, bounded by
    SCAN_QUIET_PENDING_MAX_MS. Proof dominates, as in dsd_engine_scan_quiet_note_evidence(): checked content resolves
    the open verdict, so the hold it started ends there, and a PARTIAL note of the same frame starts none. */
 static void
 live_scanner_y_note_frame_content(dsd_state* state, double now_m) {
+    /* A typed simplex row holds on the activity the policy table admitted for it alone (issue #890,
+       dsd_engine_scan_y_typed_activity()): its checked content still settles an open verdict, but only an
+       admitted report becomes its content time. */
+    const int typed = dsd_engine_scan_y_row_holds_on_admitted(state);
+    dsd_engine_scan_owner* owner =
+        typed ? DSD_STATE_EXT_GET_AS(dsd_engine_scan_owner, state, DSD_STATE_EXT_ENGINE_TRUNK_SCAN) : NULL;
+    const int admitted = owner && owner->y_admitted_seq != owner->y_admitted_seen;
     if (state->scan_y_content_seq == state->scan_y_content_seen
         && state->scan_y_partial_seq == state->scan_y_partial_seen
-        && state->scan_y_unchecked_seq == state->scan_y_unchecked_seen) {
+        && state->scan_y_unchecked_seq == state->scan_y_unchecked_seen && !admitted) {
         return;
     }
     if (state->scan_y_unchecked_seq != state->scan_y_unchecked_seen) {
         state->scan_y_unchecked_seen = state->scan_y_unchecked_seq;
         state->scan_y_unchecked_m = now_m;
     }
-    if (state->scan_y_content_seq != state->scan_y_content_seen) {
-        state->scan_y_content_seen = state->scan_y_content_seq;
-        state->scan_y_content_m = now_m;
-        state->scan_y_partial_seen = state->scan_y_partial_seq;
-        state->scan_y_partial_hold_ms = 0U;
-        state->scan_y_partial_until_m = -1.0;
+    if (state->scan_y_content_seq != state->scan_y_content_seen || admitted) {
+        live_scanner_y_note_checked(state, now_m, typed ? owner : NULL, typed);
     }
     if (state->scan_y_partial_seq != state->scan_y_partial_seen) {
         state->scan_y_partial_seen = state->scan_y_partial_seq;
