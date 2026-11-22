@@ -619,35 +619,66 @@ CommandBridge::setTunerGain(int gain_db) const {
     return accepted(dsd_app_command_set_i32(DSD_APP_CMD_RTL_SET_GAIN, static_cast<int32_t>(gain_db)));
 }
 
-bool
-// cppcheck-suppress functionStatic -- Q_INVOKABLE members cannot be static (Qt meta-object)
-CommandBridge::setSquelchDb(double db) const {
-    return accepted(dsd_app_command_set_double(DSD_APP_CMD_RTL_SET_SQL_DB, db));
-}
-
 namespace {
 
+/* Issue #899: the next squelch request's tag, a positive int, so QML compares it with the metrics reading as the same
+   number; process-wide, so no two requests share one across sessions. */
+uint32_t
+nextSquelchRequest() {
+    static std::atomic<quint32> next{1};
+    uint32_t id = next.fetch_add(1) & 0x7fffffffU;
+    if (!id) {
+        id = next.fetch_add(1) & 0x7fffffffU;
+    }
+    return id;
+}
+
+/* Submit a configured-default squelch setting, tagged: its tag once queued (the decoder answers it through
+   MetricsModel::configuredSquelchRequestAnswered), 0 when the queue refused it. */
+int
+submitSquelchSetting(dsd_app_squelch_setting_payload payload) {
+    payload.request_id = nextSquelchRequest();
+    if (!accepted(dsd_app_command_submit(DSD_APP_CMD_RTL_SET_SQL_SETTING, &payload, sizeof payload))) {
+        return 0;
+    }
+    return static_cast<int>(payload.request_id);
+}
+
 /* A dynamic setting for the configured default: AUTO with its margin, or NOISE with its quieting. */
-bool
+int
 submitDynamicSquelch(int mode, int marginDb) {
     if (marginDb < DSD_SQUELCH_MARGIN_MIN_DB || marginDb > DSD_SQUELCH_MARGIN_MAX_DB) {
-        return false;
+        return 0;
     }
     dsd_app_squelch_setting_payload payload = {};
     payload.mode = mode;
     payload.margin_db = marginDb;
-    return accepted(dsd_app_command_submit(DSD_APP_CMD_RTL_SET_SQL_SETTING, &payload, sizeof payload));
+    return submitSquelchSetting(payload);
 }
 
 } // namespace
 
-bool
+int
+// cppcheck-suppress functionStatic -- Q_INVOKABLE members cannot be static (Qt meta-object)
+CommandBridge::setSquelchDb(double db) const {
+    if (!std::isfinite(db)) {
+        return 0;
+    }
+    /* As DSD_APP_CMD_RTL_SET_SQL_DB stores it (svc_rtl_set_sql_db()): 0 dB or more is off, anything below a threshold
+       in dB. Sent as the whole setting so the request carries its tag. */
+    dsd_app_squelch_setting_payload payload = {};
+    payload.mode = DSD_SQUELCH_MODE_LEVEL;
+    payload.level = db >= 0.0 ? 0.0 : dsd_squelch_level_from_sql(db);
+    return submitSquelchSetting(payload);
+}
+
+int
 // cppcheck-suppress functionStatic -- Q_INVOKABLE members cannot be static (Qt meta-object)
 CommandBridge::setSquelchAuto(int marginDb) const {
     return submitDynamicSquelch(DSD_SQUELCH_MODE_AUTO, marginDb);
 }
 
-bool
+int
 // cppcheck-suppress functionStatic -- Q_INVOKABLE members cannot be static (Qt meta-object)
 CommandBridge::setSquelchNoise(int marginDb) const {
     return submitDynamicSquelch(DSD_SQUELCH_MODE_NOISE, marginDb);
@@ -660,22 +691,17 @@ CommandBridge::restoreSquelchLevel() const {
     if (dsd_app_squelch_view_get(dsd_app_get_latest_opts_snapshot(), dsd_app_get_latest_snapshot(), &view) != 0) {
         return {};
     }
-    /* A positive int tag, so QML compares it with the metrics reading as the same number. */
-    static std::atomic<quint32> nextRequest{1};
     dsd_app_squelch_setting_payload payload = {};
     payload.mode = DSD_SQUELCH_MODE_LEVEL;
     payload.level = view.configured_level;
-    payload.request_id = nextRequest.fetch_add(1) & 0x7fffffffU;
-    if (!payload.request_id) {
-        payload.request_id = nextRequest.fetch_add(1) & 0x7fffffffU;
-    }
-    if (!accepted(dsd_app_command_submit(DSD_APP_CMD_RTL_SET_SQL_SETTING, &payload, sizeof payload))) {
+    const int request = submitSquelchSetting(payload);
+    if (!request) {
         return {};
     }
     int whole_db = 0;
     const bool whole = dsd_squelch_level_is_whole_db(payload.level, &whole_db) == 1;
     QVariantMap asked;
-    asked.insert(QStringLiteral("request"), static_cast<int>(payload.request_id));
+    asked.insert(QStringLiteral("request"), request);
     asked.insert(QStringLiteral("off"), dsd_squelch_is_off(payload.level) != 0);
     asked.insert(QStringLiteral("whole"), whole);
     asked.insert(QStringLiteral("db"), whole ? whole_db : 0);

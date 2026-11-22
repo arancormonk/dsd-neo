@@ -15827,16 +15827,27 @@ Build files: `src/protocol/CMakeLists.txt` and per‑protocol `src/protocol/<nam
     start." (it promises nothing about what that start runs: Advanced arguments or the input decide). A clear or
     squelch save that fails sets `squelchStoreError`, shown by both sheets whatever the setting (Auto and Noise too),
     apart from the level-only warning, until a clear or squelch save succeeds; the audio sheet's save note shows it in
-    place of "Squelch changes here are saved to this system.". The note or the failure is read out
-    (`Navigation.announce()`), and a keyboard focus the hidden button held goes to the chosen squelch segment, or with
-    none chosen (a held setting) the first enabled one (`SegmentedControl.focusSegment()`). A squelch level is saved only in a
-    form the app's controls make (B15, fail-closed): Off or a whole dB from -120 to -1, read from the configured power
+    place of "Squelch changes here are saved to this system.". The squelch's failures are its own: `error` ("Could not
+    save Radio settings.") is set and cleared only by saves that carry another setting, and a squelch request does not
+    clear it, so a successful removal clears the squelch failure it answers without hiding another setting's. The
+    note or the failure is read out (`Navigation.announce()`), and a keyboard focus the hidden button held goes to the
+    chosen squelch segment, or with none chosen (a held setting) the first enabled one
+    (`SegmentedControl.focusSegment()`). A squelch level is saved only in a form the app's controls make (B15, fail-closed): Off or a whole dB from -120 to -1, read from the configured power
     (`MetricsModel::configuredSquelchLevelWhole`/`configuredSquelchLevelWholeDb`, `dsd_squelch_level_is_whole_db()`),
-    and a stepped level confirms only on that same whole dB. The level the dB choice brings back from Auto/Noise
-    (`{mode: "level", restore: true, request, off, whole, db}`, as `restoreSquelchLevel()` submitted it) confirms only
-    on a snapshot whose `configuredSquelchRequestAnswered` is its `request` and only on that same Off or whole dB; an
-    answer on another level (refused, or set since by another source) settles it with nothing saved. It is saved when
-    it has the app's form; otherwise nothing is saved and `squelchLevelError`
+    and a stepped level confirms only on that same whole dB. Every persisted squelch edit carries its request's tag:
+    `CommandBridge::setSquelchDb()`/`setSquelchAuto()`/`setSquelchNoise()` return it (a positive int, 0 when not
+    queued; a level goes as a tagged `RTL_SET_SQL_SETTING`, stored as `RTL_SET_SQL_DB` stores it), as
+    `restoreSquelchLevel()` returns `{request, off, whole, db}` for the level the dB choice brings back from
+    Auto/Noise. A request confirms only on a snapshot whose `configuredSquelchRequestAnswered` is its `request`, never
+    on one still marked `squelchAnalogDefault` (an edit the decoder takes ends the default), and only on that same
+    setting (mode and margin, or Off or whole dB); an answer on another setting (refused, or set since by another
+    source) settles it with nothing saved, and a request superseded before the decoder reached it (the queue coalesces
+    setters) is never answered, so nothing of it is saved. `MetricsModel` shows a new answer only with a configured
+    setting of the same generation (issue #899 r2): under a scan scope the configured setting is the scope's, in the
+    state snapshot the decoder publishes after the options, so the answer waits until the scope's setting equals the
+    one the options hold; under a row's own squelch, where nothing in the options can vouch for it, until a row
+    without one or the scope's end (`squelch_answer_consistent()`; `UI_QT_METRICS_MODEL` covers a deferred state
+    publication). It is saved when it has the app's form; otherwise nothing is saved and `squelchLevelError`
     ("This level was set outside the app, so it is not saved.") shows under the squelch controls, only while a fixed
     level is the setting; the next squelch request (a step or a mode change) clears it. A dynamic save
     stores only the dynamic choice. The steppers of both sheets (`Util.squelchStep()`) always ask for a whole dB,

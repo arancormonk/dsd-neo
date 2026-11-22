@@ -1034,17 +1034,54 @@ MetricsModel::fillTunerGain(View& next, const dsd_opts* opts_snapshot, const dsd
     next.tuner_gain_row_override = gain_view && gain.row_override != 0U;
 }
 
+namespace {
+
+/* Issue #899: whether the configured squelch the two snapshots show is of the generation the options snapshot's answer
+ * tag is. The decoder publishes its options first and its state after, which a watchdog tick can put off, and under a
+ * scan scope (-Y, trunk scan) that is not suspended the configured setting is the scope's, in the state snapshot: a poll
+ * between the two publications pairs a new answer with the old setting. dsd_opts holds the configured setting outside
+ * a scope and while the analog default is in force, one snapshot with the answer. In a scope with no row squelch of its
+ * own the options' fields are the configured setting the edit stored, so the scope's must be the same setting; under a
+ * row's own squelch the options hold the row's, and nothing in them vouches for the scope's. */
+bool
+squelch_answer_consistent(const dsd_opts* opts, const dsd_state* state, const dsd_app_squelch_view& view) {
+    const dsd_scan_settings* scope = dsd_scan_mode_configured_view(state);
+    if (scope == nullptr || view.analog_default != 0U) {
+        return true;
+    }
+    if (view.row_override != 0U) {
+        return false;
+    }
+    dsd_squelch_setting configured{};
+    configured.mode = scope->rtl_squelch_mode;
+    configured.level = scope->rtl_squelch_level;
+    configured.margin_db = scope->rtl_squelch_margin_db;
+    const dsd_squelch_setting stored = dsd_squelch_setting_of_opts(opts);
+    return dsd_squelch_setting_equal(&configured, &stored) == 1;
+}
+
+} // namespace
+
+/* Issue #899: the decoder's answer to the last tagged squelch request, read whatever the input, so an answer is never
+ * lost to an input that shows no squelch. A new answer is shown only with a configured setting of its own generation
+ * (squelch_answer_consistent()): until then the previous answer stands, so a caller waiting on the request neither
+ * confirms nor refuses it on the setting from before it. */
+int
+MetricsModel::squelchAnswerShown(const dsd_opts* opts_snapshot, bool consistent) const {
+    const int answered =
+        opts_snapshot != nullptr ? static_cast<int>(opts_snapshot->rtl_squelch_request_answered & 0x7fffffffU) : 0;
+    return (answered == 0 || consistent) ? answered : m_view.configured_squelch_request_answered;
+}
+
 /* Issue #521: the configured/effective pair, the off decisions, the row badge and the readout
  * text all come from the same app_control view the terminal's SQL readout uses, so the two
  * frontends cannot disagree about a row. On radio and audio input alike (issue #628). */
 void
-MetricsModel::fillSquelchOverride(View& next, const dsd_opts* opts_snapshot, const dsd_state* snapshot) {
+MetricsModel::fillSquelchOverride(View& next, const dsd_opts* opts_snapshot, const dsd_state* snapshot) const {
     dsd_app_squelch_view squelch{};
-    /* Issue #899: read whatever the input, so a request's answer is never lost to an input that shows no squelch. */
-    next.configured_squelch_request_answered =
-        opts_snapshot != nullptr ? static_cast<int>(opts_snapshot->rtl_squelch_request_answered & 0x7fffffffU) : 0;
     if ((!next.radio_input && !next.squelch_audio_input)
         || dsd_app_squelch_view_get(opts_snapshot, snapshot, &squelch) != 0) {
+        next.configured_squelch_request_answered = squelchAnswerShown(opts_snapshot, true);
         next.configured_squelch_db = 0.0;
         next.effective_squelch_db = 0.0;
         next.configured_squelch_off = false;
@@ -1066,6 +1103,8 @@ MetricsModel::fillSquelchOverride(View& next, const dsd_opts* opts_snapshot, con
         next.squelch_gate_open = false;
         return;
     }
+    next.configured_squelch_request_answered =
+        squelchAnswerShown(opts_snapshot, squelch_answer_consistent(opts_snapshot, snapshot, squelch));
     next.configured_squelch_db = dsd_app_squelch_db_or_off(squelch.configured_level);
     next.effective_squelch_db = dsd_app_squelch_db_or_off(squelch.effective_level);
     next.configured_squelch_off = squelch.configured_off != 0U;

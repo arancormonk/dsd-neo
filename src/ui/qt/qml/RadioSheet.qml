@@ -541,11 +541,15 @@ ModalSheet {
         pendingSquelch = db;
         squelchTtl.restart();
         // A row keeps its margin through a level, for a switch back to Auto.
-        if (rowSquelch)
+        if (rowSquelch) {
             rowEdit(commands.scanRowFieldSquelch, commands.scanRowEditSet,
                 {"squelchDb": Math.round(db), "squelchMarginDb": margin});
-        else if (commands.setSquelchDb(db))
-            settingRequested("squelch", {mode: "level", db: db, off: db >= 0});
+            return;
+        }
+        // The request's tag: what is saved waits for the decoder's answer to it.
+        var request = commands.setSquelchDb(db);
+        if (request)
+            settingRequested("squelch", {mode: "level", db: db, off: db >= 0, request: request});
     }
 
     /**
@@ -557,15 +561,15 @@ ModalSheet {
         pendingSquelchMode = mode;
         pendingSquelchMargin = margin;
         squelchTtl.restart();
-        if (rowSquelch)
+        if (rowSquelch) {
             rowEdit(commands.scanRowFieldSquelch, commands.scanRowEditSet,
                 {"squelchMode": mode, "squelchMarginDb": margin});
-        else if (mode === commands.squelchModeNoise) {
-            if (commands.setSquelchNoise(margin))
-                settingRequested("squelch", {mode: "noise", margin: margin});
-        } else if (commands.setSquelchAuto(margin)) {
-            settingRequested("squelch", {mode: "auto", margin: margin});
+            return;
         }
+        var noise = mode === commands.squelchModeNoise;
+        var request = noise ? commands.setSquelchNoise(margin) : commands.setSquelchAuto(margin);
+        if (request)
+            settingRequested("squelch", {mode: noise ? "noise" : "auto", margin: margin, request: request});
     }
 
     /**

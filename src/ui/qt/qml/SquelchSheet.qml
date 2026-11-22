@@ -180,20 +180,27 @@ ModalSheet {
         pendingSquelch = db;
         squelchTtl.restart();
         // A row keeps its margin through a level, for a switch back to Noise.
-        if (rowSquelch)
+        if (rowSquelch) {
             rowEdit(sheet.bridge.scanRowEditSet, {"squelchDb": Math.round(db), "squelchMarginDb": margin});
-        else if (sheet.bridge.setSquelchDb(db))
-            settingRequested("squelch", {mode: "level", db: db, off: db >= 0});
+            return;
+        }
+        // The request's tag: what is saved waits for the decoder's answer to it.
+        var request = sheet.bridge.setSquelchDb(db);
+        if (request)
+            settingRequested("squelch", {mode: "level", db: db, off: db >= 0, request: request});
     }
     /** Ask for the noise squelch with @p margin dB of quieting, on the row or the default. */
     function requestSquelchNoise(margin) {
         pendingSquelch = NaN;
         pendingSquelchMargin = margin;
         squelchTtl.restart();
-        if (rowSquelch)
+        if (rowSquelch) {
             rowEdit(sheet.bridge.scanRowEditSet, {"squelchMode": sheet.bridge.squelchModeNoise, "squelchMarginDb": margin});
-        else if (sheet.bridge.setSquelchNoise(margin))
-            settingRequested("squelch", {mode: "noise", margin: margin});
+            return;
+        }
+        var request = sheet.bridge.setSquelchNoise(margin);
+        if (request)
+            settingRequested("squelch", {mode: "noise", margin: margin, request: request});
     }
     /** Nudge the noise squelch's margin, 1 dB a step within the range the engine takes. */
     function stepSquelchMargin(delta) {

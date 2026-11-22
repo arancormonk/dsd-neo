@@ -2004,37 +2004,39 @@ class CommandRecorder : public QObject {
         return true;
     }
 
-    Q_INVOKABLE bool
+    /* As CommandBridge, each squelch setter returns its request's tag once queued (0 when refused), which the decoder
+       answers through configuredSquelchRequestAnswered (a test sets it, lastSquelchRequest()). */
+    Q_INVOKABLE int
     setSquelchDb(double db) {
         m_last_squelch_db = db;
         m_squelch_calls++;
-        return m_radio_accepted;
+        return m_radio_accepted ? ++m_last_squelch_request : 0;
     }
 
     /* Refuses a margin out of range, as CommandBridge does. */
-    Q_INVOKABLE bool
+    Q_INVOKABLE int
     setSquelchAuto(int marginDb) {
         if (marginDb < DSD_SQUELCH_MARGIN_MIN_DB || marginDb > DSD_SQUELCH_MARGIN_MAX_DB) {
-            return false;
+            return 0;
         }
         m_last_squelch_margin_db = marginDb;
         m_squelch_auto_calls++;
-        return m_radio_accepted;
+        return m_radio_accepted ? ++m_last_squelch_request : 0;
     }
 
     /* Refuses a margin out of range, as CommandBridge does. */
-    Q_INVOKABLE bool
+    Q_INVOKABLE int
     setSquelchNoise(int marginDb) {
         if (marginDb < DSD_SQUELCH_MARGIN_MIN_DB || marginDb > DSD_SQUELCH_MARGIN_MAX_DB) {
-            return false;
+            return 0;
         }
         m_last_squelch_margin_db = marginDb;
         m_squelch_noise_calls++;
-        return m_radio_accepted;
+        return m_radio_accepted ? ++m_last_squelch_request : 0;
     }
 
-    /* As CommandBridge: the level the configured default keeps, read from the `metrics` readings, tagged with a request
-       the decoder answers through configuredSquelchRequestAnswered (a test sets it); null when refused. */
+    /* As CommandBridge: the level the configured default keeps, read from the `metrics` readings, tagged as the
+       setters' requests are; null when refused. */
     Q_INVOKABLE QVariant
     restoreSquelchLevel() {
         m_restore_squelch_calls++;
@@ -2043,7 +2045,7 @@ class CommandRecorder : public QObject {
         }
         const bool whole = metricReadings->value(QStringLiteral("configuredSquelchLevelWhole")).toBool();
         QVariantMap asked;
-        asked.insert(QStringLiteral("request"), ++m_last_restore_request);
+        asked.insert(QStringLiteral("request"), ++m_last_squelch_request);
         asked.insert(QStringLiteral("off"),
                      metricReadings->value(QStringLiteral("configuredSquelchLevelOff")).toBool());
         asked.insert(QStringLiteral("whole"), whole);
@@ -2293,8 +2295,8 @@ class CommandRecorder : public QObject {
     }
 
     int
-    lastRestoreRequest() const {
-        return m_last_restore_request;
+    lastSquelchRequest() const {
+        return m_last_squelch_request;
     }
 
     int
@@ -2508,7 +2510,7 @@ class CommandRecorder : public QObject {
     int m_squelch_noise_calls = 0;
     int m_squelch_auto_calls = 0;
     int m_restore_squelch_calls = 0;
-    int m_last_restore_request = 0; // never reset, as the bridge's tags keep counting across sessions
+    int m_last_squelch_request = 0; // never reset, as the bridge's tags keep counting across sessions
     int m_last_nfm_bandwidth_hz = -1;
     int m_nfm_bandwidth_calls = 0;
     int m_last_modulation = -1;
@@ -6814,10 +6816,10 @@ class Setup : public QObject {
         return (m_commands != nullptr) ? m_commands->restoreSquelchCalls() : -1;
     }
 
-    /** @brief The tag of the last level restore submitted (issue #899), which a case answers through the metrics. */
+    /** @brief The tag of the last squelch request submitted (issue #899), which a case answers through the metrics. */
     Q_INVOKABLE int
-    lastRestoreSquelchRequest() const {
-        return (m_commands != nullptr) ? m_commands->lastRestoreRequest() : -1;
+    lastSquelchRequest() const {
+        return (m_commands != nullptr) ? m_commands->lastSquelchRequest() : -1;
     }
 
     /** @brief The last NFM channel width the Radio sheet asked for (issue #525), and how many times it asked. */

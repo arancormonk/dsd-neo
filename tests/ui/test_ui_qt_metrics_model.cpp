@@ -3164,6 +3164,78 @@ test_block_label_patched_call() {
     dsd_state_ext_free_all(&state);
 }
 
+/* Issue #899 (final-diff review r2): a squelch request's answer comes from the options snapshot, but under a scan scope
+ * the configured setting it confirms comes from the scope, in the state snapshot, which the decoder publishes after the
+ * options and a watchdog tick can put off. The answer is shown only with the configured setting of its own generation:
+ * a deferred state publication holds the previous answer, so the Radio sheet's save neither confirms on the setting
+ * from before the request nor drops it as refused. */
+static void
+test_squelch_answer_one_generation() {
+    static dsd_opts opts;
+    static dsd_state state;
+    static dsd_state published; // what the frontend reads: the state the decoder last published
+    initOpts(&opts);
+    initState(&state);
+    initState(&published);
+    opts.audio_in_type = AUDIO_IN_RTL;
+    opts.analog_only = 1;
+    opts.rtl_squelch_mode = DSD_SQUELCH_MODE_NOISE;
+    opts.rtl_squelch_margin_db = 10;
+    dsd_qt::MetricsModel model;
+    expect("an NFM scan scope",
+           dsd_scan_mode_begin(&opts, &state) == 0 && dsd_scan_mode_enter(&opts, &state, DSD_SCAN_MODE_NFM) == 0);
+    dsd_scan_mode_copy_snapshot(&published, &state);
+    model.refresh(&opts, &published);
+    expect("the scope's configured noise +10, nothing answered", model.configuredSquelchNoise()
+                                                                     && model.configuredSquelchMarginDb() == 10
+                                                                     && model.configuredSquelchRequestAnswered() == 0);
+
+    /* The decoder takes a tagged edit to noise +14 and publishes its options; the state's publication is put off. */
+    const dsd_squelch_setting edit = dsd_squelch_setting_dynamic(DSD_SQUELCH_MODE_NOISE, 14);
+    expect("the edit lands", dsd_scan_mode_set_configured_squelch_setting(&opts, &state, &edit) == 1);
+    opts.rtl_squelch_request_answered = 7U;
+    model.refresh(&opts, &published);
+    expect("a deferred state publication holds the answer back",
+           model.configuredSquelchRequestAnswered() == 0 && model.configuredSquelchMarginDb() == 10);
+    dsd_scan_mode_copy_snapshot(&published, &state);
+    model.refresh(&opts, &published);
+    expect("shown with the setting from after it", model.configuredSquelchRequestAnswered() == 7
+                                                       && model.configuredSquelchNoise()
+                                                       && model.configuredSquelchMarginDb() == 14);
+    /* A refused request changes nothing: both snapshots already agree, so its answer shows at once. */
+    opts.rtl_squelch_request_answered = 8U;
+    model.refresh(&opts, &published);
+    expect("an answer that changed nothing shows at once", model.configuredSquelchRequestAnswered() == 8);
+
+    /* Under a row's own squelch the options hold the row's, and nothing there vouches for the scope's setting: the
+       answer waits until it can be checked, here the scope's end. */
+    dsd_scan_option_values row{};
+    row.present = DSD_SCAN_OPT_SQUELCH;
+    row.squelch_db = -60;
+    expect("a row with its own squelch", dsd_scan_mode_options(&opts, &state, &row) == 0);
+    dsd_scan_mode_copy_snapshot(&published, &state);
+    model.refresh(&opts, &published);
+    const dsd_squelch_setting beneath = dsd_squelch_setting_dynamic(DSD_SQUELCH_MODE_NOISE, 16);
+    expect("the edit goes beneath the row", dsd_scan_mode_set_configured_squelch_setting(&opts, &state, &beneath) == 0);
+    opts.rtl_squelch_request_answered = 9U;
+    model.refresh(&opts, &published);
+    expect("under the row, a deferred publication holds it back", model.squelchRowOverride()
+                                                                      && model.configuredSquelchRequestAnswered() == 8
+                                                                      && model.configuredSquelchMarginDb() == 14);
+    dsd_scan_mode_copy_snapshot(&published, &state);
+    model.refresh(&opts, &published);
+    expect("and so does one that has landed, which nothing can tell apart",
+           model.configuredSquelchRequestAnswered() == 8 && model.configuredSquelchMarginDb() == 16);
+    dsd_scan_mode_leave(&opts, &state);
+    dsd_scan_mode_copy_snapshot(&published, &state);
+    model.refresh(&opts, &published);
+    expect("the row gone, the answer shows with its setting",
+           !model.squelchRowOverride() && model.configuredSquelchRequestAnswered() == 9
+               && model.configuredSquelchNoise() && model.configuredSquelchMarginDb() == 16);
+    freeState(&published);
+    freeState(&state);
+}
+
 int
 main(int argc, char** argv) {
     QCoreApplication app(argc, argv);
@@ -3197,6 +3269,7 @@ main(int argc, char** argv) {
     test_receive_filter_status();
     test_tone_filter();
     test_tone_filter_editor_setting();
+    test_squelch_answer_one_generation();
     test_direct_key_presence();
     test_decryption_metadata();
     test_block_label_radio_blocked();

@@ -366,8 +366,11 @@ class MetricsModel : public QObject {
      * (dsd_squelch_level_is_whole_db()), and that whole dB (0 for Off or another level). Only such a level is saved. */
     Q_PROPERTY(bool configuredSquelchLevelWhole READ configuredSquelchLevelWhole NOTIFY controlChanged)
     Q_PROPERTY(int configuredSquelchLevelWholeDb READ configuredSquelchLevelWholeDb NOTIFY controlChanged)
-    /* Issue #899: the tag of the last tagged squelch request the decoder handled (CommandBridge::restoreSquelchLevel()),
-     * 0 for none: a snapshot showing a request's tag was taken after it. */
+    /* Issue #899: the tag of the last tagged squelch request the decoder handled (CommandBridge's squelch setters and
+     * restoreSquelchLevel()), 0 for none: a snapshot showing a request's tag was taken after it, and its configured
+     * squelch readings are of the same generation. A new tag waits for the state snapshot to carry the configured
+     * setting from after it (under a scan scope the configured setting is the state's, published after the options),
+     * and under a row's own squelch for a row without one or the scope's end, which is when that can be checked. */
     Q_PROPERTY(int configuredSquelchRequestAnswered READ configuredSquelchRequestAnswered NOTIFY controlChanged)
     /* Whether the input is audio (issue #628): the squelch above is a level or the noise squelch, edited from the
      * monitor's Squelch row rather than the Radio sheet. */
@@ -2850,7 +2853,10 @@ class MetricsModel : public QObject {
     void fillDecoderView(View& next, const dsd_opts* opts_snapshot, const dsd_state* snapshot, double now_m);
     /** @brief The configured/effective squelch pair and the row badge (#521). */
     static void fillTunerGain(View& next, const dsd_opts* opts_snapshot, const dsd_state* snapshot);
-    static void fillSquelchOverride(View& next, const dsd_opts* opts_snapshot, const dsd_state* snapshot);
+    void fillSquelchOverride(View& next, const dsd_opts* opts_snapshot, const dsd_state* snapshot) const;
+    /** @brief The squelch request answer to show (issue #899): the options snapshot's when the configured setting
+     * shown with it is of its generation (@p consistent), else the one shown before. */
+    int squelchAnswerShown(const dsd_opts* opts_snapshot, bool consistent) const;
     static void fillScanRow(View& next, const dsd_opts* opts_snapshot, const dsd_state* snapshot);
     /** @brief The analog channel width in force and the configured one (#525), the analog (nfm or am) scan row on air
      * (#526), and on audio input with a rigctl peer the passband and what an unset width stands for (#621). */

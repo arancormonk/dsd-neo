@@ -525,7 +525,8 @@ test_restore_level_says_what_it_asked(dsd_qt::AppPrefs& prefs) {
     expect("the restore says the level it asked for",
            asked.isValid() && request > 0 && !level.value(QStringLiteral("off")).toBool()
                && level.value(QStringLiteral("whole")).toBool() && level.value(QStringLiteral("db")).toInt() == -60);
-    expect("not answered before the decoder handles it", opts->rtl_squelch_request_answered == 0U);
+    expect("not answered before the decoder handles it",
+           opts->rtl_squelch_request_answered != static_cast<uint32_t>(request));
     expect("the decoder handles it", live.drain() == 1 && squelchIs(opts, DSD_SQUELCH_MODE_LEVEL, 0, -60.0));
     expect("and answers its tag", opts->rtl_squelch_request_answered == static_cast<uint32_t>(request));
     expect("off beneath noise",
@@ -535,6 +536,39 @@ test_restore_level_says_what_it_asked(dsd_qt::AppPrefs& prefs) {
     expect("comes back as off with a new tag",
            off.value(QStringLiteral("off")).toBool() && off.value(QStringLiteral("request")).toInt() != request
                && live.drain() == 1 && squelchIs(opts, DSD_SQUELCH_MODE_LEVEL, 0, 0.0));
+}
+
+/* Issue #899 (final-diff review r2): every squelch edit the Radio and Squelch sheets save is tagged, not only a
+ * restore: each setter returns its request's tag, which the decoder answers once it handles that request, so the
+ * sheets save a setting only on the decoder's answer to it. A level goes as the whole setting, stored as the dB setter
+ * always stored it (0 dB or more is off). */
+void
+test_every_squelch_edit_is_tagged(dsd_qt::AppPrefs& prefs) {
+    dsd_qt::CommandBridge bridge;
+    const QVariantMap explore{{QStringLiteral("sourceType"), QStringLiteral("usb")},
+                              {QStringLiteral("freqMhz"), QStringLiteral("851.375")}};
+    bool ok = false;
+    LiveStart live(prefs, explore, QStringLiteral("explore"), &ok);
+    dsd_opts* opts = live.decoder.opts.get();
+    expect("an Explore start parses", ok);
+    const int level = bridge.setSquelchDb(-60.0);
+    expect("a level edit is tagged", level > 0 && opts->rtl_squelch_request_answered != static_cast<uint32_t>(level));
+    expect("and answered once handled", live.drain() == 1 && squelchIs(opts, DSD_SQUELCH_MODE_LEVEL, 0, -60.0)
+                                            && opts->rtl_squelch_request_answered == static_cast<uint32_t>(level));
+    const int noise = bridge.setSquelchNoise(12);
+    expect("a noise edit, with a tag of its own", noise > level);
+    expect("answered", live.drain() == 1 && squelchIs(opts, DSD_SQUELCH_MODE_NOISE, 12, -60.0)
+                           && opts->rtl_squelch_request_answered == static_cast<uint32_t>(noise));
+    const int automatic = bridge.setSquelchAuto(14);
+    expect("an auto edit too", automatic > noise && live.drain() == 1
+                                   && squelchIs(opts, DSD_SQUELCH_MODE_AUTO, 14, -60.0)
+                                   && opts->rtl_squelch_request_answered == static_cast<uint32_t>(automatic));
+    const int off = bridge.setSquelchDb(0.0);
+    expect("0 dB is off", off > automatic && live.drain() == 1 && squelchIs(opts, DSD_SQUELCH_MODE_LEVEL, 14, 0.0)
+                              && opts->rtl_squelch_request_answered == static_cast<uint32_t>(off));
+    expect("a margin the decoder cannot take is not sent",
+           bridge.setSquelchNoise(31) == 0 && bridge.setSquelchAuto(2) == 0 && live.drain() == 0);
+    expect("nor a level that is no number", bridge.setSquelchDb(std::nan("")) == 0 && live.drain() == 0);
 }
 
 /* Issue #899: the app's default squelch follows a live decode switch on the decoder, with the switch itself: one
@@ -1486,6 +1520,7 @@ main(int argc, char** argv) {
         test_live_commands(prefs, sessions);
         test_live_decode_switch_squelch(prefs);
         test_restore_level_says_what_it_asked(prefs);
+        test_every_squelch_edit_is_tagged(prefs);
         test_reattached_decode_switch_squelch(prefs);
         test_live_unknown_only_first(prefs, sessions);
         test_live_record_on_keeps_extra_hold(prefs, sessions);
