@@ -12612,14 +12612,11 @@ Call frequency and access-code provenance (issue #575). A call's canonical `freq
     conventional scan. A data call header holds the scan as a data call of any call type, private for 100/110/111 and
     reported as group for every other type, 010/011/101 included. 010 is a TX_REL's alone, so a VCALL or assignment of
     it opens no call. Under `--enc-lockout` every corroborated encrypted VCALL without a key is dropped (the
-    synthesized DISC), but only 000/001 and 100 take a session-long lockout entry: an interconnect or speed dial
-    endpoint is a PSTN ID or a radio behind the gateway, so 110/111 (and 011/101) take a skip of that one call
-    (`nxdn_vcall_suppress_encrypted_call()`, `dsd_state::nxdn_enc_skip_*`, 15 s from its last corroborated VCALL):
-    an assignment of the same call type, source and destination is not followed again (`nxdn_enc_skip_matches()`).
-    Any other call to or from either number is, and nothing is skipped under `--enc-follow`; it is apart from the
-    operator's call skips. A Type-D busy message names no call type or source, so it is not matched (decided limit:
-    the next encrypted VCALL drops a re-followed call again). CC Option bit 6 is Intra/Inter and prints
-    "Inter-System".
+    synthesized DISC), and its endpoint takes a session-long lockout entry in its class's namespace
+    (`nxdn_call_type_locks_endpoint()`, `nxdn_vcall_suppress_encrypted_call()`): 000/001 the talkgroup, 100, 110 and
+    111 the called number as a radio, so for the session the lockout also skips other private calls through that
+    number (as before the call types were classified). 011/101 have no class and lock nothing out. CC Option bit 6 is
+    Intra/Inter and prints "Inter-System".
   - The receiver's frequency (`nxdn_receiver_freq()`): the valid route, else the tuned voice channel, else the
     tuner's own (`dsd_opts_tuned_freq_hz()`), else, rigctl on an audio input, the peer's, asked through the
     hunt's per-tuning-generation attribution (`nxdn_cc_hunt_receiver_frequency()`: one rigctl round trip per

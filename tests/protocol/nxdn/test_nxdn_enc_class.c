@@ -495,70 +495,36 @@ test_republish_leaves_another_protocols_call_alone(void) {
     dsd_state_ext_free_all(&state);
 }
 
-/* The lockout entry is the call type's endpoint: an individual call (100) locks its called radio out, never a talkgroup
-   of that number. An interconnect (110) or speed dial (111) call's endpoint is a PSTN ID or a radio behind the
-   gateway, so it takes no session-long lockout entry in either namespace; nor does a call of generic voice (011,
-   101). */
+/* The lockout entry is the call type's endpoint in its class's namespace: an individual (100), interconnect (110) or
+   speed dial (111) call locks its called number out as a radio, never a talkgroup of that number; a group call (000,
+   001) its talkgroup. A call of generic voice (011, 101) is dropped all the same but locks nothing out. */
 static void
 test_vcall_lockout_endpoint_by_call_type(void) {
-    static dsd_opts opts;
-    static dsd_state state;
-    static Event_History_I history[2];
-    uint8_t bits[96];
+    static const struct {
+        uint8_t call_type;
+        int group; /* -1: no lockout entry */
+    } cases[] = {{0x00U, 1}, {0x01U, 1}, {0x04U, 0}, {0x06U, 0}, {0x07U, 0}, {0x03U, -1}, {0x05U, -1}};
 
-    dsd_call_snapshot call;
-    reset_fixture(&opts, &state, history);
-    build_typed_vcall(bits, 0x04U, 2U, 5U, 100U, 1234U);
-    NXDN_Elements_Content_decode(&opts, &state, bits, sizeof(bits));
-    NXDN_Elements_Content_decode(&opts, &state, bits, sizeof(bits));
-    assert(dsd_enc_lockout_entry_active(&state, 1234U, 0));
-    assert(!dsd_enc_lockout_lookup(&state, 1234U, 1, NULL));
-    assert(dsd_call_state_get(&state, 0U, &call) > 0 && call.phase == DSD_CALL_PHASE_ENDED); // the forced DISC
-    dsd_state_ext_free_all(&state);
-
-    // Dropped all the same (the forced DISC ends the call), skipped as a call, never locked out for the session.
-    static const uint8_t no_lockout[] = {0x03U, 0x05U, 0x06U, 0x07U};
-    for (size_t i = 0; i < sizeof(no_lockout); i++) {
-        reset_fixture(&opts, &state, history);
-        build_typed_vcall(bits, no_lockout[i], 2U, 5U, 100U, 1234U);
-        NXDN_Elements_Content_decode(&opts, &state, bits, sizeof(bits));
-        assert(dsd_call_state_get(&state, 0U, &call) > 0 && call.phase == DSD_CALL_PHASE_ACTIVE);
-        assert(state.nxdn_enc_skip_valid == 0U);
-        NXDN_Elements_Content_decode(&opts, &state, bits, sizeof(bits));
-        assert(dsd_call_state_get(&state, 0U, &call) > 0 && call.phase == DSD_CALL_PHASE_ENDED);
-        assert(!dsd_enc_lockout_lookup(&state, 1234U, 0, NULL));
-        assert(!dsd_enc_lockout_lookup(&state, 1234U, 1, NULL));
-        /* The call alone, never an operator call skip of its number (issue #903). */
-        assert(state.nxdn_enc_skip_valid == 1U && state.nxdn_enc_skip_target == 1234U
-               && state.nxdn_enc_skip_source == 100U && state.nxdn_enc_skip_call_type == no_lockout[i]);
-        assert(!dsd_tg_policy_call_skip_active(&state, 1234U, dsd_decode_now_mono_s()));
-        dsd_state_ext_free_all(&state);
+    for (size_t i = 0; i < sizeof(cases) / sizeof(cases[0]); i++) {
+        dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(*opts));
+        dsd_state* state = (dsd_state*)calloc(1, sizeof(*state));
+        Event_History_I* history = (Event_History_I*)calloc(2, sizeof(*history));
+        assert(opts != NULL && state != NULL && history != NULL);
+        uint8_t bits[96];
+        dsd_call_snapshot call;
+        reset_fixture(opts, state, history);
+        build_typed_vcall(bits, cases[i].call_type, 2U, 5U, 100U, 1234U);
+        NXDN_Elements_Content_decode(opts, state, bits, sizeof(bits));
+        NXDN_Elements_Content_decode(opts, state, bits, sizeof(bits));
+        assert(dsd_call_state_get(state, 0U, &call) > 0 && call.phase == DSD_CALL_PHASE_ENDED); // the forced DISC
+        assert(dsd_enc_lockout_lookup(state, 1234U, 1, NULL) == (cases[i].group == 1));
+        assert(dsd_enc_lockout_lookup(state, 1234U, 0, NULL) == (cases[i].group == 0));
+        assert(dsd_tg_policy_call_skip_empty(state));
+        dsd_state_ext_free_all(state);
+        free(history);
+        free(state);
+        free(opts);
     }
-}
-
-/* An encrypted interconnect call (110) under --enc-lockout leaves no session-long lockout on its endpoint, but is still
-   dropped and skipped as a call. */
-static void
-test_vcall_interconnect_no_endpoint_lockout(void) {
-    static dsd_opts opts;
-    static dsd_state state;
-    static Event_History_I history[2];
-    uint8_t bits[96];
-
-    reset_fixture(&opts, &state, history);
-    build_typed_vcall(bits, 0x06U, 3U, 9U, 100U, 4321U);
-    for (int i = 0; i < 3; i++) {
-        NXDN_Elements_Content_decode(&opts, &state, bits, sizeof(bits));
-    }
-    assert(state.dmr_encL == 1);
-    assert(!dsd_enc_lockout_lookup(&state, 4321U, 0, NULL));
-    assert(!dsd_enc_lockout_lookup(&state, 4321U, 1, NULL));
-    // Still suppressed: dropped by the forced DISC and skipped as a call for a short while.
-    dsd_call_snapshot call;
-    assert(dsd_call_state_get(&state, 0U, &call) > 0 && call.phase == DSD_CALL_PHASE_ENDED);
-    assert(state.nxdn_enc_skip_valid == 1U && state.nxdn_enc_skip_target == 4321U
-           && state.nxdn_enc_skip_call_type == 6U);
-    dsd_state_ext_free_all(&state);
 }
 
 int
@@ -569,7 +535,6 @@ main(void) {
     test_force_and_reset();
     test_vcall_enc_lockout_requires_corroboration();
     test_vcall_lockout_endpoint_by_call_type();
-    test_vcall_interconnect_no_endpoint_lockout();
     test_lone_contradicting_vcall_does_not_flap_established_clear();
     test_vcall_cipher_received_once_corroborated();
     test_forced_cipher_is_not_received();

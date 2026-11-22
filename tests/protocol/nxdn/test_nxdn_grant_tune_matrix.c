@@ -2765,8 +2765,9 @@ send_encrypted_vcall(uint8_t call_type, uint16_t target) {
 }
 
 /* Under --enc-lockout an encrypted interconnect call (110) without a key is dropped like any other (the synthesized
- * DISC takes the receiver back to the control channel), but locks nothing out for the session: a short call skip keeps
- * the next assignment of the same call from re-following it, and once that lapses the target is followed again. */
+ * DISC takes the receiver back to the control channel) and locks its called number out for the session in the private
+ * namespace: the same call, a later one, and a clear individual call through that number are not followed again. Under
+ * --enc-follow the lockout is suspended. */
 static int
 nxdn_run_encrypted_interconnect_dropped_case(void) {
     static const char* const name = "encrypted-interconnect-dropped";
@@ -2785,56 +2786,21 @@ nxdn_run_encrypted_interconnect_dropped_case(void) {
     send_encrypted_vcall(6U, 1234U);
     rc |= nxdn_expect(g_tune_cc_count == 1 && g_opts.trunk_is_tuned == 0, name, "drop",
                       "the corroborated encrypted call is dropped back to the control channel");
-    rc |= nxdn_expect(!dsd_enc_lockout_lookup(&g_state, 1234U, 0, NULL)
+    rc |= nxdn_expect(dsd_enc_lockout_lookup(&g_state, 1234U, 0, NULL)
                           && !dsd_enc_lockout_lookup(&g_state, 1234U, 1, NULL),
-                      name, "drop", "no session-long lockout entry");
+                      name, "drop", "the called number is locked out as a radio");
     at_seconds(12001.0);
     send_typed_assignment(0x04U, 6U, 0U, 1234U, 16U);
-    rc |= nxdn_expect(g_tune_count == 1, name, "skip", "the same call is not followed again at once");
-    rc |= nxdn_expect(dsd_tg_policy_call_skip_empty(&g_state), name, "skip", "no operator call skip is armed");
+    rc |= nxdn_expect(g_tune_count == 1, name, "same", "the same call is not followed again");
     at_seconds(12020.0);
     g_state.last_vc_sync_time = dsd_decode_time() - 4;
     send_typed_assignment(0x04U, 6U, 0U, 1234U, 16U);
-    rc |= nxdn_expect(g_tune_count == 2, name, "lapsed", "a later assignment of the target is followed");
-    return rc;
-}
-
-/* The skip an encrypted interconnect call takes is that call's alone (issue #903): within its 15 s, a clear individual
- * call to the same number, an interconnect call from another radio, and the same call under --enc-follow are all
- * followed. */
-static int
-nxdn_run_encrypted_interconnect_skip_scope_case(void) {
-    static const char* const name = "encrypted-interconnect-skip-scope";
-    int rc = 0;
-    for (int variant = 0; variant < 3; variant++) {
-        type_c_fixture();
-        g_opts.trunk_tune_enc_calls = 0; /* --enc-lockout */
-        at_seconds(13000.0);
-        send_typed_assignment(0x04U, 6U, 0U, 1234U, 16U);
-        at_seconds(13000.2);
-        voice_live();
-        send_encrypted_vcall(6U, 1234U);
-        at_seconds(13000.4);
-        voice_live();
-        send_encrypted_vcall(6U, 1234U);
-        rc |= nxdn_expect(g_tune_cc_count == 1 && g_opts.trunk_is_tuned == 0, name, "drop", "the call is dropped");
-        at_seconds(13001.0);
-        g_state.last_vc_sync_time = dsd_decode_time() - 4;
-        if (variant == 0) {
-            send_typed_assignment(0x04U, 4U, 0U, 1234U, 16U); /* a clear individual call to 1234 */
-            rc |= nxdn_expect(g_tune_count == 2, name, "individual", "another call to the number is followed");
-        } else if (variant == 1) {
-            const nxdn_case c = {"", NXDN_MATRIX_TYPE_C, 0x04U, 6U, 2200U, 1234U, 16U, 0, 0, 0, 0, 0, 0, 0};
-            uint8_t message[128];
-            build_vcall_assgn(message, &c);
-            NXDN_decode_VCALL_ASSGN(&g_opts, &g_state, message); /* from another radio */
-            rc |= nxdn_expect(g_tune_count == 2, name, "other-source", "another radio's call is followed");
-        } else {
-            g_opts.trunk_tune_enc_calls = 1; /* --enc-follow */
-            send_typed_assignment(0x04U, 6U, 0U, 1234U, 16U);
-            rc |= nxdn_expect(g_tune_count == 2, name, "enc-follow", "the same call is followed under --enc-follow");
-        }
-    }
+    rc |= nxdn_expect(g_tune_count == 1, name, "session", "nor later in the session");
+    send_typed_assignment(0x04U, 4U, 0U, 1234U, 16U);
+    rc |= nxdn_expect(g_tune_count == 1, name, "number", "nor another private call through the number");
+    g_opts.trunk_tune_enc_calls = 1; /* --enc-follow */
+    send_typed_assignment(0x04U, 6U, 0U, 1234U, 16U);
+    rc |= nxdn_expect(g_tune_count == 2, name, "enc-follow", "followed again under --enc-follow");
     return rc;
 }
 
@@ -3116,7 +3082,6 @@ main(void) {
     rc |= nxdn_run_call_type_labels_case();
     rc |= nxdn_run_type_d_private_busy_label_case();
     rc |= nxdn_run_encrypted_interconnect_dropped_case();
-    rc |= nxdn_run_encrypted_interconnect_skip_scope_case();
 #ifdef NXDN_MATRIX_REAL_CALL_STATE
     rc |= nxdn_run_assignment_activity_kind_case();
     rc |= nxdn_run_release_reply_keeps_dwell_case();
