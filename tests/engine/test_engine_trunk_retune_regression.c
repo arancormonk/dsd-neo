@@ -755,6 +755,28 @@ rtl_stream_get_cqpsk_status(int* cqpsk_enable, int* cqpsk_timing_active) {
     return 0;
 }
 
+/* Issue #890: the stream's receive requests (dsd_engine_scan_tetra_chain_settled_other()): none queued, so what the
+   stream publishes is settled. */
+uint32_t
+rtl_stream_receive_request_seq(void) {
+    return 0U;
+}
+
+int
+rtl_stream_receive_request_outcome(uint32_t seq) {
+    (void)seq;
+    return RTL_STREAM_RX_REQUEST_SETTLED;
+}
+
+/* Issue #890: the CQPSK choice of the row last timed (scan_mode.c), none in this fixture: the decoder's rf_mod
+   decides. */
+int
+dsd_scan_mode_timed_cqpsk(const dsd_state* state, int* out_cqpsk) {
+    (void)state;
+    (void)out_cqpsk;
+    return 0;
+}
+
 int
 rtl_stream_get_symbol_profile_full(int* out_symbol_rate_hz, int* out_levels, int* out_channel_profile) {
     if (out_symbol_rate_hz) {

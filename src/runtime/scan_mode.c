@@ -52,6 +52,11 @@ typedef struct {
      * later timings until the engine spends it on the row's retune (dsd_scan_mode_take_timed_digital_family()), which
      * carries the digital family by it; a row's entry clears it. Decoder thread only. */
     int timed_digital_family;
+    /* The CQPSK choice the row's symbol timing used (issue #890): 1 or 0 when the row makes its own
+     * (scan_scope_cqpsk_choice()), -1 when it lands with the decoder's. Set by every timing of a row, a row
+     * dsd_scan_mode_prepare() stages included, so the retune prepared next for that row queues the chain its timing
+     * assumed (dsd_scan_mode_timed_cqpsk()). Decoder thread only. */
+    int timed_cqpsk;
 } scan_scope;
 
 static const char* const mode_names[] = {"",      "p25", "dmr", "nxdn96", "nxdn48", "dpmr",
@@ -544,13 +549,22 @@ dsd_scan_mode_configured_digital(const dsd_opts* opts, const dsd_state* state) {
  * family by (dsd_engine_prepare_digital_family()), with the CQPSK state its landing profile queues
  * (dsd_engine_trunk_scan_active_class_landing()): the decoder is timed, and a republish asks, for the CQPSK state the
  * tune lands. A -Y row of the same modes, and a P25 target with no modulation, make no choice of their own: they land
- * with @p decoder_cqpsk where an open of the mode would, DSD_NEO_CQPSK deciding when set. */
+ * with @p decoder_cqpsk where an open of the mode would, DSD_NEO_CQPSK deciding when set. A -Y tetra-dmo row is the
+ * exception (issue #890): its class has one chain, the CQPSK one, whatever a global -m lock puts on rf_mod, so it lands
+ * there as a tetra-dmo-conventional target does (docs/trunk-scan.md: a lock may keep its slicer setting, while the
+ * chain stays the class's). */
 static int
 scan_scope_cqpsk_choice(const dsd_opts* opts, const scan_scope* scope, int decoder_cqpsk, int* out_cqpsk) {
     *out_cqpsk = decoder_cqpsk ? 1 : 0;
-    if (!scope || opts->trunk_scan_enabled != 1 || scope->mode == DSD_SCAN_MODE_INHERIT
-        || dsd_scan_mode_is_analog(scope->mode)) {
+    if (!scope || scope->mode == DSD_SCAN_MODE_INHERIT || dsd_scan_mode_is_analog(scope->mode)) {
         return 0;
+    }
+    if (opts->trunk_scan_enabled != 1) {
+        if (scope->mode != DSD_SCAN_MODE_TETRA_DMO) {
+            return 0;
+        }
+        *out_cqpsk = 1;
+        return 1;
     }
     if (scope->mode == DSD_SCAN_MODE_P25) {
         return (scope->modulation == DSD_SCAN_MODULATION_AUTO || scope->modulation == DSD_SCAN_MODULATION_C4FM
@@ -632,6 +646,18 @@ dsd_scan_mode_cqpsk_explicit(const dsd_opts* opts, const dsd_state* state, int* 
 }
 
 int
+dsd_scan_mode_timed_cqpsk(const dsd_state* state, int* out_cqpsk) {
+    const scan_scope* scope = state ? scan_scope_get(state) : NULL;
+    if (!scope || scope->timed_cqpsk < 0) {
+        return 0;
+    }
+    if (out_cqpsk) {
+        *out_cqpsk = scope->timed_cqpsk ? 1 : 0;
+    }
+    return 1;
+}
+
+int
 dsd_scan_mode_take_timed_digital_family(const dsd_state* state) {
     scan_scope* scope = scan_scope_get(state);
     if (!scope || !scope->timed_digital_family) {
@@ -651,9 +677,12 @@ scan_scope_apply_timing(const dsd_opts* opts, dsd_state* state, const scan_scope
     const int clock_hz = dsd_scan_mode_is_analog(scope->mode) ? 0 : profile.symbol_rate_hz;
     int landing_cqpsk = 0;
     const int cqpsk_explicit = scan_scope_cqpsk_choice(opts, scope, state->rf_mod == 1, &landing_cqpsk);
-    const int rate_hz =
-        scan_timing_rate_hz(opts, scan_scope_get(state), scan_configured_digital(opts, scope->configured.analog_only),
-                            clock_hz, landing_cqpsk, cqpsk_explicit);
+    scan_scope* live = scan_scope_get(state);
+    if (live) {
+        live->timed_cqpsk = cqpsk_explicit ? landing_cqpsk : -1;
+    }
+    const int rate_hz = scan_timing_rate_hz(opts, live, scan_configured_digital(opts, scope->configured.analog_only),
+                                            clock_hz, landing_cqpsk, cqpsk_explicit);
     state->samplesPerSymbol = dsd_opts_compute_sps_rate(opts, profile.symbol_rate_hz, rate_hz);
     state->symbolCenter = dsd_opts_symbol_center(state->samplesPerSymbol);
     state->sps_hunt_idx = (int)profile.sps_profile_index;
@@ -974,6 +1003,7 @@ dsd_scan_mode_begin(const dsd_opts* opts, dsd_state* state) {
     }
     dsd_scan_settings_capture(opts, state, &scope->configured);
     scope->configured_mode = dsd_infer_decode_mode_preset_exact(opts);
+    scope->timed_cqpsk = -1; /* no row timed yet */
     (void)dsd_state_ext_set(state, DSD_STATE_EXT_RUNTIME_SCAN_MODE, scope, free);
     return 0;
 }

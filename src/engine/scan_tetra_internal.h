@@ -26,6 +26,7 @@ typedef enum {
     DSD_ENGINE_TETRA_ROW_LPF,          /**< DSD_NEO_CHANNEL_LPF=0 turns off the channel filter the chain runs */
     DSD_ENGINE_TETRA_ROW_TED,          /**< the TED timing the stream applied disagrees with the rate */
     DSD_ENGINE_TETRA_ROW_UPLINK,       /**< --tetra-uplink: the downlink chain never runs */
+    DSD_ENGINE_TETRA_ROW_CHAIN,        /**< the stream settled on another receive profile than TETRA's chain */
 } dsd_engine_tetra_row;
 
 /** Room for every dsd_engine_scan_tetra_row_text() text. */
@@ -36,9 +37,10 @@ typedef enum {
  * the TETRA downlink chain decides it runs (dsd_demod_tetra_chain_wanted()): a radio I/Q input DSD-neo tunes (an
  * RTL-SDR, rtl_tcp, SoapySDR or Airspy source; not audio input, a rigctl peer behind audio input, an I/Q replay or an
  * I/Q stream another program sends), no --tetra-uplink, the channel filter not forced off, a known DSP rate in TETRA's
- * domain (dsd_tetra_dsp_rate_runs()), and, once the row has @p landed, the TED timing the stream applied for it
- * (dsd_engine_scan_tetra_ted_sps(): the override in force and the TED's own samples per symbol) equal to the rate over
- * the symbol rate. Prospectively (@p landed 0: while another family is on air) the TED is not judged, since the row's
+ * domain (dsd_tetra_dsp_rate_runs()), and, once the row has @p landed, the TETRA chain itself: a stream settled on
+ * another receive profile (dsd_engine_scan_tetra_chain_settled_other()) is CHAIN, and the TED timing the stream applied
+ * for it (dsd_engine_scan_tetra_ted_sps(): the override in force and the TED's own samples per symbol) must equal the
+ * rate over the symbol rate. Prospectively (@p landed 0: while another family is on air) the TED is not judged, since the row's
  * landing sets its own TED and clears the override another family's tune left. The same for every tetra-dmo row of the
  * session: nothing of a row's own takes part. A few loads; decoder thread.
  */

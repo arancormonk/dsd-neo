@@ -537,6 +537,25 @@ __wrap_rtl_stream_get_ted_sps(void) {
 
 static void land_outstanding_tune(fake_retune* r, dsd_trunk_tune_result result);
 
+/* Issue #890: the stream's last receive request and what became of it (dsd_engine_scan_tetra_chain_settled_other()):
+   none queued, so what the stream publishes is settled, unless a case says a request is still pending. */
+static uint32_t g_rtl_rx_request_seq = 0U;
+static int g_rtl_rx_request_outcome = RTL_STREAM_RX_REQUEST_SETTLED;
+
+uint32_t __wrap_rtl_stream_receive_request_seq(void);
+int __wrap_rtl_stream_receive_request_outcome(uint32_t seq);
+
+uint32_t
+__wrap_rtl_stream_receive_request_seq(void) {
+    return g_rtl_rx_request_seq;
+}
+
+int
+__wrap_rtl_stream_receive_request_outcome(uint32_t seq) {
+    (void)seq;
+    return g_rtl_rx_request_outcome;
+}
+
 int
 __wrap_rtl_stream_get_ted_sps_override(void) {
     if (g_fail_in_flight_at_tune_snapshot) {
@@ -13747,6 +13766,95 @@ y_tetra_on_air_case(int held, int cause) {
     return rc;
 }
 
+/* Issue #890: a typed tetra-dmo row lands on its class's chain under a global -mc lock: the CQPSK chain with the TETRA
+   channel profile, not the FSK discriminator with the wide filter the lock's C4FM rf_mod would give it. */
+static int
+y_tetra_locked_chain_case(void) {
+    const char* name = "-Y TETRA row under -mc";
+    dsd_opts* opts = NULL;
+    dsd_state* state = NULL;
+    if (init_test_runtime(&opts, &state) != 0) {
+        return 1;
+    }
+    opts->mod_c4fm = 1;
+    opts->mod_qpsk = 0;
+    opts->mod_gfsk = 0;
+    opts->mod_cli_lock = 1;
+    state->rf_mod = 0;
+    int rc = y_tetra_start(opts, state, name);
+    char detail[160];
+    DSD_SNPRINTF(detail, sizeof detail, "the landing's chain (cqpsk %d, %d sym/s, profile %d)", g_rtl_cqpsk_enable,
+                 g_rtl_symbol_rate_hz, g_rtl_channel_profile);
+    rc |= expect_case(name, detail,
+                      g_rtl_cqpsk_enable == 1 && g_rtl_symbol_rate_hz == 18000
+                          && g_rtl_channel_profile == DSD_RTL_STREAM_CHANNEL_PROFILE_TETRA);
+    y_tetra_finish(opts, state);
+    return rc;
+}
+
+/* Issue #890: a typed tetra-dmo row whose stream settled on another receive profile (the FSK discriminator with the
+   wide filter) cannot decode TETRA, though it publishes no TED timing to disagree with: while a receive request is still
+   pending the published profile is the stream before it and the row waits; once settled, it owes the departure. */
+static int
+y_tetra_settled_other_case(void) {
+    const char* name = "-Y TETRA row on another chain";
+    dsd_opts* opts = NULL;
+    dsd_state* state = NULL;
+    if (init_test_runtime(&opts, &state) != 0) {
+        return 1;
+    }
+    int rc = y_tetra_start(opts, state, name);
+    g_rtl_cqpsk_enable = 0;
+    g_rtl_symbol_rate_hz = 4800;
+    g_rtl_symbol_levels = 4;
+    g_rtl_channel_profile = RTL_STREAM_CHANNEL_PROFILE_WIDE;
+    g_rtl_ted_sps = 0;
+    g_rtl_ted_sps_override = 0;
+    g_rtl_rx_request_seq = 7U;
+    g_rtl_rx_request_outcome = RTL_STREAM_RX_REQUEST_PENDING;
+    dsd_engine_channel_scan_tetra_judge(opts, state);
+    rc |= expect_case(name, "a request still pending: it waits", !dsd_engine_channel_scan_on_departing_row(state));
+    g_rtl_rx_request_outcome = RTL_STREAM_RX_REQUEST_SETTLED;
+    dsd_engine_channel_scan_tetra_judge(opts, state);
+    rc |= expect_case(name, "settled on another profile: it departs", dsd_engine_channel_scan_on_departing_row(state));
+    g_rtl_rx_request_seq = 0U;
+    y_tetra_finish(opts, state);
+    return rc;
+}
+
+/* Issue #890: a frequency typed for the typed tetra-dmo row on air reads the scan's landed verdict: with the TED timing
+   the stream applied found wrong (5 samples per symbol at 72 kHz), the row is no pick and its go-to is refused, not
+   held while the scan leaves it; with the timing right it is the row on air, held. */
+static int
+y_tetra_entry_reads_the_on_air_verdict_case(void) {
+    const char* name = "-Y TETRA row, a typed frequency";
+    dsd_opts* opts = NULL;
+    dsd_state* state = NULL;
+    if (init_test_runtime(&opts, &state) != 0) {
+        return 1;
+    }
+    int rc = y_tetra_start(opts, state, name);
+    y_tetra_published(5, 0);
+    dsd_engine_channel_scan_tetra_judge(opts, state);
+    dsd_scan_entry_match_t match;
+    DSD_MEMSET(&match, 0, sizeof match);
+    const int picked = dsd_engine_scan_entry_match(opts, state, 425012500U, &match);
+    char detail[160];
+    DSD_SNPRINTF(detail, sizeof detail, "a TED that disagrees: no pick (picked %d, reason %d)", picked,
+                 (int)match.reason);
+    rc |= expect_case(name, detail, picked == 0 && match.reason == DSD_SCAN_ENTRY_TETRA_CHAIN);
+    const dsd_scan_goto_result go = dsd_engine_channel_scan_goto_row(opts, state, 1);
+    DSD_SNPRINTF(detail, sizeof detail, "and its go-to is no hold (result %d)", (int)go);
+    rc |= expect_case(name, detail, go != DSD_SCAN_GOTO_HOLDING && !state->lcn_scan_entry_hold);
+    y_tetra_published(4, 0);
+    dsd_engine_channel_scan_tetra_judge(opts, state);
+    DSD_MEMSET(&match, 0, sizeof match);
+    rc |= expect_case(name, "the timing right: the row on air",
+                      dsd_engine_scan_entry_match(opts, state, 425012500U, &match) == 1 && match.row == 1);
+    y_tetra_finish(opts, state);
+    return rc;
+}
+
 /* The departure's step whose tune fails late (a timeout, then FAILED): the receiver stays on the TETRA row with the
    cause it had, named once (no second log line or status line), and the next try waits the step cadence the step
    paced, not the next pass. */
@@ -13861,7 +13969,8 @@ test_avoided_row_departs_under_a_carrier(void) {
     return untyped_departure_case(1) | untyped_departure_case(0) | departure_nowhere_to_go_case()
            | departure_without_a_carrier_case() | typed_departure_case() | y_tetra_on_air_case(0, 0)
            | y_tetra_on_air_case(1, 0) | y_tetra_on_air_case(0, 1) | y_tetra_on_air_case(1, 1)
-           | y_tetra_late_failure_case() | y_tetra_paused_case();
+           | y_tetra_late_failure_case() | y_tetra_paused_case() | y_tetra_locked_chain_case()
+           | y_tetra_settled_other_case() | y_tetra_entry_reads_the_on_air_verdict_case();
 }
 
 /* The scan holds row @p row of the walk list, marked an entry hold, as the row committed (issue #644). */

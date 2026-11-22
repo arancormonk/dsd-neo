@@ -1580,8 +1580,13 @@ dsd_engine_prepare_scan_profile(const dsd_opts* opts, dsd_state* state, long int
         if (dsd_engine_conventional_scan_active(opts)) {
             const int rate = dsd_frame_sync_active_profile_symbol_rate_hz(state);
             const int levels = dsd_frame_sync_active_profile_levels(state);
-            dsd_engine_prepare_retune_profile_for_target(opts, state, (uint32_t)freq, state->rf_mod == 1, rate, levels,
-                                                         dsd_rtl_channel_profile_for(opts, rate, levels, state->rf_mod),
+            /* The row's chain: its class's own where it has one (a tetra-dmo row runs only the CQPSK chain with the
+               TETRA filter, issue #890, whatever a global -m lock left on rf_mod), as the row's timing assumed it, else
+               the decoder's. The row is staged here, not yet the scope's, so its timing's record answers for it. */
+            int class_cqpsk = 0;
+            const int rf_mod = dsd_scan_mode_timed_cqpsk(state, &class_cqpsk) ? (class_cqpsk ? 1 : 0) : state->rf_mod;
+            dsd_engine_prepare_retune_profile_for_target(opts, state, (uint32_t)freq, rf_mod == 1, rate, levels,
+                                                         dsd_rtl_channel_profile_for(opts, rate, levels, rf_mod),
                                                          ted_sps, 0);
         } else {
             dsd_engine_prepare_cc_rtl_chain(opts, state, freq, ted_sps);
@@ -1642,6 +1647,31 @@ dsd_engine_scan_tetra_ted_sps(const dsd_opts* opts, const dsd_state* state, int*
 #else
     (void)opts;
     (void)state;
+#endif
+}
+
+int
+dsd_engine_scan_tetra_chain_settled_other(const dsd_opts* opts, const dsd_state* state) {
+#ifdef USE_RADIO
+    if (!opts || !state || opts->audio_in_type != AUDIO_IN_RTL || !state->rtl_ctx) {
+        return 0;
+    }
+    /* A receive request the demod thread has not taken yet may still bring the TETRA profile: what the stream
+       publishes is the stream before it (rtl_stream_receive_request_outcome()). */
+    const uint32_t seq = rtl_stream_receive_request_seq();
+    if (seq != 0U && rtl_stream_receive_request_outcome(seq) == RTL_STREAM_RX_REQUEST_PENDING) {
+        return 0;
+    }
+    int symbol_rate_hz = 0;
+    int channel_profile = 0;
+    int cqpsk = 0;
+    (void)rtl_stream_get_symbol_profile_full(&symbol_rate_hz, NULL, &channel_profile);
+    (void)rtl_stream_get_cqpsk_status(&cqpsk, NULL);
+    return !cqpsk || symbol_rate_hz != DSD_TETRA_SYMBOL_RATE_HZ || channel_profile != RTL_STREAM_CHANNEL_PROFILE_TETRA;
+#else
+    (void)opts;
+    (void)state;
+    return 0;
 #endif
 }
 

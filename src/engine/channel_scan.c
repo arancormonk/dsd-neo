@@ -1181,13 +1181,19 @@ dsd_engine_channel_scan_tetra_judge(const dsd_opts* opts, dsd_state* state) {
 }
 
 /* Why the scan skips -Y row @p row at every visit as a TETRA DMO row (issue #890 D5): a typed tetra-dmo row whose chain
-   cannot run at @p dsp_rate_hz (dsd_engine_scan_tetra_row_check(), judged prospectively); OK for any other row, an
-   untyped row under a configured -fT included. */
+   cannot run at @p dsp_rate_hz (dsd_engine_scan_tetra_row_check()); OK for any other row, an untyped row under a
+   configured -fT included. One answer for every path that asks (a step, a frequency typed, a hold, the on-air judge):
+   the row on air is judged by what the stream applied for it (landed, as dsd_engine_channel_scan_tetra_judge() judges
+   it), so a frequency entry or hold on a row whose TED or chain the scan already found wrong is refused, not held;
+   every other row prospectively, since its landing sets its own TED and chain. */
 static dsd_engine_tetra_row
 channel_scan_row_tetra_skip(const dsd_opts* opts, const dsd_state* state, int row, int dsp_rate_hz) {
-    return dsd_channel_mode_get(state, (size_t)row) == DSD_SCAN_MODE_TETRA_DMO
-               ? dsd_engine_scan_tetra_row_check(opts, state, dsp_rate_hz, 0)
-               : DSD_ENGINE_TETRA_ROW_OK;
+    if (dsd_channel_mode_get(state, (size_t)row) != DSD_SCAN_MODE_TETRA_DMO) {
+        return DSD_ENGINE_TETRA_ROW_OK;
+    }
+    /* Landed as the judge takes it: the -Y scan running, no step of its own in flight, the row the one on air. */
+    const int on_air = channel_scan_tetra_judging(opts, state) != NULL && row == channel_scan_on_air_row(state);
+    return dsd_engine_scan_tetra_row_check(opts, state, dsp_rate_hz, on_air);
 }
 
 dsd_scan_entry_reason

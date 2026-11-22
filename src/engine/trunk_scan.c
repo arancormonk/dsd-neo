@@ -7533,9 +7533,25 @@ dsd_engine_trunk_scan_resume_locked(dsd_opts* opts, dsd_state* state) {
     return dsd_engine_trunk_scan_resume_ex_locked(opts, state, NULL);
 }
 
+/* Why the scan cannot visit TETRA DMO target @p rt at DSP rate @p rate_hz (issue #890), the one answer a typed
+   frequency's pick and its published reason read: the target on air with its park landed
+   (dsd_engine_trunk_scan_target_confirmed()) by what the stream applied for it, its landed verdict
+   (trunk_scan_judge_tetra_on_air() judges it the same way), so a frequency typed for a target the scan is already
+   leaving for its TED or chain is refused rather than held; any other target prospectively
+   (trunk_scan_type_tetra_skip()), since its park sets its own TED and chain. OK for any other type. */
+static dsd_engine_tetra_row
+trunk_scan_target_tetra_skip(const dsd_opts* opts, const dsd_state* state, const dsd_trunk_scan_coord* coord,
+                             const dsd_trunk_scan_target_runtime* rt, int rate_hz) {
+    if (!trunk_scan_type_is_tetra(rt->target.type)) {
+        return DSD_ENGINE_TETRA_ROW_OK;
+    }
+    const int on_air = dsd_engine_trunk_scan_target_confirmed(state, (int)(rt - coord->targets));
+    return dsd_engine_scan_tetra_row_check(opts, state, rate_hz, on_air);
+}
+
 /* Why target @p rt is no pick for a typed frequency (issue #644 D5), or DSD_SCAN_ENTRY_OK: the rotation's own rules
-   (trunk_scan_target_in_rotation(), the width skip at @p rate_hz, a TETRA DMO target's chain, issue #890), but not its
-   cooldown: the pick is explicit. */
+   (trunk_scan_target_in_rotation(), the width skip at @p rate_hz, a TETRA DMO target's chain, issue #890,
+   trunk_scan_target_tetra_skip()), but not its cooldown: the pick is explicit. */
 static dsd_scan_entry_reason
 trunk_scan_entry_reason(const dsd_opts* opts, const dsd_state* state, const dsd_trunk_scan_coord* coord,
                         const dsd_trunk_scan_target_runtime* rt, int rate_hz) {
@@ -7545,7 +7561,7 @@ trunk_scan_entry_reason(const dsd_opts* opts, const dsd_state* state, const dsd_
     if ((rt->lists & coord->lists_on) == 0U) {
         return DSD_SCAN_ENTRY_LIST_OFF;
     }
-    const dsd_engine_tetra_row tetra = trunk_scan_type_tetra_skip(opts, state, rt->target.type, rate_hz);
+    const dsd_engine_tetra_row tetra = trunk_scan_target_tetra_skip(opts, state, coord, rt, rate_hz);
     if (tetra != DSD_ENGINE_TETRA_ROW_OK) {
         return dsd_engine_scan_tetra_entry_reason(tetra);
     }
@@ -7571,13 +7587,29 @@ trunk_scan_publish_entry_on_air(dsd_state* state, const dsd_trunk_scan_coord* co
     }
 }
 
+/* The TETRA DMO part of the published entry reasons' cache key (issue #890): the targets' eligibility moves with
+   settings no counter of the cache follows, and the target on air with what the stream applied for it
+   (trunk_scan_target_tetra_skip()), so both answers key it. 0 for a session with no TETRA DMO target. */
+static int
+trunk_scan_entry_tetra_key(const dsd_opts* opts, const dsd_state* state, const dsd_trunk_scan_coord* coord,
+                           int rate_hz) {
+    if (!coord->has_tetra) {
+        return 0;
+    }
+    int key = (int)dsd_engine_scan_tetra_row_check(opts, state, rate_hz, 0);
+    const int on_air = state->trunk_scan_entry_on_air;
+    if (on_air >= 0 && (size_t)on_air < coord->count) {
+        key |= (int)trunk_scan_target_tetra_skip(opts, state, coord, &coord->targets[on_air], rate_hz) << 8;
+    }
+    return key;
+}
+
 static void
 trunk_scan_publish_entry_reasons(const dsd_opts* opts, dsd_state* state, dsd_trunk_scan_coord* coord) {
     trunk_scan_publish_entry_on_air(state, coord);
     const int rate_hz = dsd_engine_scan_dsp_rate_hz(opts, state);
     const double now_s = dsd_realtime_mono_s();
-    /* The TETRA DMO targets' eligibility moves with settings no counter here follows (issue #890). */
-    const int tetra = coord->has_tetra ? (int)dsd_engine_scan_tetra_row_check(opts, state, rate_hz, 0) : 0;
+    const int tetra = trunk_scan_entry_tetra_key(opts, state, coord, rate_hz);
     if (coord->entry_decided && coord->entry_rate_hz == rate_hz && coord->entry_lists_seq == coord->lists_seq
         && coord->entry_avoid_rev == state->trunk_scan_avoid_rev && coord->entry_edit_seq == coord->edit_seq
         && coord->entry_tetra == tetra && now_s < coord->entry_recheck_s) {

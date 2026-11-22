@@ -387,6 +387,12 @@ int dsd_scan_mode_timed_digital_family(const dsd_state* state);
  * scan scope attached to @p state; the pointer is const only because that scope lives in the state's extension slot,
  * as with dsd_scan_mode_target_modulation(). Decoder thread only, with the live state. */
 int dsd_scan_mode_take_timed_digital_family(const dsd_state* state);
+/** Whether the row the scan scope last timed made its own CQPSK choice (issue #890), with that choice in @p out_cqpsk
+ * (may be NULL): the choice dsd_scan_mode_cqpsk_explicit() gives, recorded by the row's timing, so it names a row
+ * dsd_scan_mode_prepare() staged too, before its tune commits it (a -Y tetra-dmo row: the CQPSK chain, whatever a -m
+ * lock left on rf_mod). The retune prepared for that row queues its chain by it. 0 with no scope, before any row was
+ * timed, and for a row that lands with the decoder's CQPSK state. Decoder thread only. */
+int dsd_scan_mode_timed_cqpsk(const dsd_state* state, int* out_cqpsk);
 /** Whether the scan scope's row is a --trunk-scan target that makes its own CQPSK choice (issue #583): P25 with a
  * modulation value (auto, c4fm or cqpsk), or any other digital class (issue #890); and the CQPSK state the row lands
  * with, in @p out_cqpsk (may be NULL). A P25 target's own state is the modulation its decoder runs (state->rf_mod == 1,
@@ -397,8 +403,9 @@ int dsd_scan_mode_take_timed_digital_family(const dsd_state* state);
  * it (dsd_scan_mode_symbol_timing_rate_hz(), which takes it over its caller's CQPSK state), the engine's retune for the
  * target carries it (dsd_engine_trunk_scan_cqpsk_explicit(), the same rule, and the landing profile's CQPSK state),
  * and a live republish of the row times the decoder, asks for the landing and publishes its symbol profile with it
- * (svc_publish_symbol_profile()). Returns 0 without opts or a scope, for a -Y row (no --trunk-scan), and for a P25
- * target with no modulation, which land where an open of the mode would: @p out_cqpsk is then the decoder's
+ * (svc_publish_symbol_profile()). Returns 0 without opts or a scope, for a -Y row (no --trunk-scan) of any class but
+ * tetra-dmo (whose one chain is the CQPSK one, issue #890), and for a P25 target with no modulation, which land where
+ * an open of the mode would: @p out_cqpsk is then the decoder's
  * (state->rf_mod == 1), which DSD_NEO_CQPSK overrides at a landing when set. */
 int dsd_scan_mode_cqpsk_explicit(const dsd_opts* opts, const dsd_state* state, int* out_cqpsk);
 /** Read/update configured receive defaults without disturbing the active row's decoder. */

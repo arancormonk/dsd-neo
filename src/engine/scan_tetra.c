@@ -52,6 +52,9 @@ dsd_engine_scan_tetra_row_check(const dsd_opts* opts, const dsd_state* state, in
         return DSD_ENGINE_TETRA_ROW_RATE;
     }
     if (landed) {
+        if (dsd_engine_scan_tetra_chain_settled_other(opts, state)) {
+            return DSD_ENGINE_TETRA_ROW_CHAIN;
+        }
         int override_sps = 0;
         int applied_sps = 0;
         dsd_engine_scan_tetra_ted_sps(opts, state, &override_sps, &applied_sps);
@@ -71,7 +74,8 @@ dsd_engine_scan_tetra_entry_reason(dsd_engine_tetra_row why) {
         case DSD_ENGINE_TETRA_ROW_RATE: return DSD_SCAN_ENTRY_TETRA_RATE;
         case DSD_ENGINE_TETRA_ROW_LPF:
         case DSD_ENGINE_TETRA_ROW_TED:
-        case DSD_ENGINE_TETRA_ROW_UPLINK: return DSD_SCAN_ENTRY_TETRA_CHAIN;
+        case DSD_ENGINE_TETRA_ROW_UPLINK:
+        case DSD_ENGINE_TETRA_ROW_CHAIN: return DSD_SCAN_ENTRY_TETRA_CHAIN;
     }
     return DSD_SCAN_ENTRY_TETRA_CHAIN;
 }
@@ -97,6 +101,10 @@ scan_tetra_row_reason_text(dsd_engine_tetra_row why, int brief) {
         case DSD_ENGINE_TETRA_ROW_UPLINK:
             return brief ? "TETRA DMO does not run with --tetra-uplink"
                          : "TETRA DMO decodes the downlink chain, which --tetra-uplink turns off";
+        case DSD_ENGINE_TETRA_ROW_CHAIN:
+            return brief ? "TETRA DMO's receive chain is not running"
+                         : "TETRA DMO needs the CQPSK chain with the TETRA channel filter, and the stream runs another "
+                           "receive profile";
         case DSD_ENGINE_TETRA_ROW_OK:
         case DSD_ENGINE_TETRA_ROW_RATE: break;
     }

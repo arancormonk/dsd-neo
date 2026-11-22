@@ -117,6 +117,16 @@ dsd_engine_scan_tetra_ted_sps(const dsd_opts* opts, const dsd_state* state, int*
     }
 }
 
+/* Whether the stream settled on another receive profile than TETRA's (trunk_tuning.c, issue #890): what a test sets. */
+static int g_tetra_chain_other;
+
+int
+dsd_engine_scan_tetra_chain_settled_other(const dsd_opts* opts, const dsd_state* state) {
+    (void)opts;
+    (void)state;
+    return g_tetra_chain_other;
+}
+
 /* The live receive-family requests the RTL front end has accepted (trunk_tuning.c). A case standing in for a command
  * that makes one (the width command, a config apply) moves it. */
 static uint32_t g_family_requests;

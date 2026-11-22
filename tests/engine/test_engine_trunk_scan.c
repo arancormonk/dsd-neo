@@ -191,6 +191,16 @@ dsd_engine_scan_tetra_ted_sps(const dsd_opts* opts, const dsd_state* state, int*
     }
 }
 
+/* Whether the stream settled on another receive profile than TETRA's (trunk_tuning.c, issue #890): what a test sets. */
+static int g_tetra_chain_other;
+
+int
+dsd_engine_scan_tetra_chain_settled_other(const dsd_opts* opts, const dsd_state* state) {
+    (void)opts;
+    (void)state;
+    return g_tetra_chain_other;
+}
+
 /* When the RTL input came back from its last retune's mute (trunk_tuning.c): 0 none, -1 still muted. */
 static double g_scan_listening_since_m;
 
@@ -16535,8 +16545,9 @@ test_digital_target_after_nfm_timed_for_digital_family(void) {
  * P25 with a modulation value (auto, c4fm or cqpsk) or any other digital class (DMR/NXDN at either rate, and the
  * simplex classes, issue #890: dPMR, D-STAR, YSF and M17 with CQPSK off, TETRA DMO with it on, whatever the caller's
  * CQPSK state), and the landing rate is asked with cqpsk_explicit set then. A P25 target without a modulation, and a
- * -Y row of any of those modes, are asked without it: they land where an open of the mode would, as DSD_NEO_CQPSK
- * says. */
+ * -Y row of any of those modes but TETRA DMO, are asked without it: they land where an open of the mode would, as
+ * DSD_NEO_CQPSK says. A -Y tetra-dmo row runs only its class's CQPSK chain, whatever a -m lock left on rf_mod, so it
+ * makes the choice as its target type does (issue #890). */
 static int
 test_symbol_timing_explicit_follows_the_scope(void) {
     static dsd_opts opts;
@@ -16573,7 +16584,7 @@ test_symbol_timing_explicit_follows_the_scope(void) {
         {0, DSD_SCAN_MODE_NXDN96, DSD_SCAN_MODULATION_INHERIT, 0, 0},
         {0, DSD_SCAN_MODE_NXDN48, DSD_SCAN_MODULATION_INHERIT, 0, 0},
         {0, DSD_SCAN_MODE_YSF, DSD_SCAN_MODULATION_INHERIT, 0, 0},
-        {0, DSD_SCAN_MODE_TETRA_DMO, DSD_SCAN_MODULATION_INHERIT, 0, 0},
+        {0, DSD_SCAN_MODE_TETRA_DMO, DSD_SCAN_MODULATION_INHERIT, 1, 1},
     };
 
     int test_rc = 0;
@@ -17699,6 +17710,52 @@ test_tetra_dmo_failed_departure_keeps_its_cause(void) {
         rc = 1;
     }
     g_scan_tune_to_freq_failures_remaining = 0;
+    tetra_rig_finish(&opts, &state, dir, path);
+    return rc;
+}
+
+/* A frequency typed for the TETRA DMO target on air reads the scan's landed verdict (issue #890): with its TED timing
+ * found wrong on air and its departure's park failed, so the receiver is still on it, the typed frequency is no pick
+ * (TETRA chain), not a hold the scan is about to break; with the timing right again it is the target on air. */
+static int
+test_tetra_dmo_entry_reads_the_on_air_verdict(void) {
+    char dir[DSD_TEST_PATH_MAX];
+    char path[DSD_TEST_PATH_MAX];
+    char err[512] = {0};
+    static dsd_opts opts;
+    static dsd_state state;
+    static const char k_body[] = "dmo,tetra-dmo-conventional,425000000,,250,250,,,,,,,\n"
+                                 "dmr,dmr-conventional,461000000,,250,250,,,,,,,\n";
+    int rc =
+        tetra_rig_start(&opts, &state, dir, sizeof dir, path, sizeof path, k_body, 72000, err, sizeof err, NULL, 0U)
+        != 0;
+    g_tetra_ted_applied = 5;
+    g_scan_tune_to_freq_failures_remaining = 1; /* the departure's park of dmr */
+    dsd_test_capture_stderr cap;
+    const int captured = dsd_test_capture_stderr_begin(&cap, "trunkscantetraentry") == 0;
+    tick_at(&opts, &state, 0.1);
+    if (captured) {
+        (void)dsd_test_capture_stderr_end(&cap);
+    }
+    dsd_scan_entry_match_t match;
+    DSD_MEMSET(&match, 0, sizeof match);
+    const int stayed = dsd_engine_trunk_scan_active_index(&state) == 0U;
+    const int picked = dsd_engine_scan_entry_match(&opts, &state, 425000000U, &match);
+    if (rc || !stayed || picked != 0 || match.reason != DSD_SCAN_ENTRY_TETRA_CHAIN) {
+        DSD_FPRINTF(stderr, "TETRA entry on air: rc %d stayed %d picked %d reason %d\n", rc, stayed, picked,
+                    (int)match.reason);
+        rc = 1;
+    }
+    g_tetra_ted_applied = 4;
+    tick_at(&opts, &state, 0.2);
+    DSD_MEMSET(&match, 0, sizeof match);
+    if (dsd_engine_scan_entry_match(&opts, &state, 425000000U, &match) != 1 || match.row != 0 || !match.on_air) {
+        DSD_FPRINTF(stderr, "TETRA entry, timing right: reason %d row %d on air %d\n", (int)match.reason, match.row,
+                    match.on_air);
+        rc = 1;
+    }
+    g_scan_tune_to_freq_failures_remaining = 0;
+    g_tetra_ted_applied = 0;
     tetra_rig_finish(&opts, &state, dir, path);
     return rc;
 }
@@ -29611,6 +29668,7 @@ main(void) {
     rc |= run_with_default_tune_hook(test_tetra_dmo_start_refused_when_nothing_can_be_visited);
     rc |= run_with_default_tune_hook(test_tetra_dmo_target_on_air_judged_again);
     rc |= run_with_default_tune_hook(test_tetra_dmo_failed_departure_keeps_its_cause);
+    rc |= run_with_default_tune_hook(test_tetra_dmo_entry_reads_the_on_air_verdict);
     rc |= run_with_default_tune_hook(test_tetra_state_held_across_mixed_hops);
     rc |= run_with_default_tune_hook(test_tetra_entry_reasons_follow_the_chain);
     rc |= run_with_default_tune_hook(test_nfm_target_width_skipped_under_channel_lpf_override);

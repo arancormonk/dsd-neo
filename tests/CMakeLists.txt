@@ -9676,6 +9676,8 @@ if(NOT APPLE AND (CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang"))
             "-Wl,--wrap=rtl_stream_get_symbol_profile_full"
             "-Wl,--wrap=rtl_stream_get_ted_sps"
             "-Wl,--wrap=rtl_stream_get_ted_sps_override"
+            "-Wl,--wrap=rtl_stream_receive_request_seq"
+            "-Wl,--wrap=rtl_stream_receive_request_outcome"
             "-Wl,--wrap=rtl_stream_output_rate"
             "-Wl,--wrap=rtl_stream_output_rate_for_family"
             "-Wl,--wrap=rtl_stream_prepare_retune_profile_for_target_with_gain"
