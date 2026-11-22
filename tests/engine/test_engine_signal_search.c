@@ -33,6 +33,7 @@
 #include <dsd-neo/runtime/signal_search.h>
 #include <dsd-neo/runtime/signal_search_avoids.h>
 #include <dsd-neo/runtime/signal_search_hooks.h>
+#include <dsd-neo/runtime/squelch.h>
 #include <dsd-neo/runtime/telemetry.h>
 #include <dsd-neo/runtime/trunk_scan_hooks.h>
 #include <stddef.h>
@@ -259,11 +260,25 @@ rtl_stream_airspy_controls(const dsd_airspy_config* cfg) {
     return 0;
 }
 
+/* Issue #899: the squelch handed to the receiver, and what it held at the last live family request. */
+static int squelch_pushes;
+static dsd_squelch_setting squelch_pushed;
+static int squelch_pushes_at_family = -1;
+static dsd_squelch_setting squelch_at_family;
+
+static void
+record_squelch_push(const dsd_squelch_setting* setting) {
+    ++squelch_pushes;
+    squelch_pushed = *setting;
+}
+
 int
 rtl_stream_request_analog_profile(int f, int kind, int width) {
     (void)kind;
     (void)width;
     family = f;
+    squelch_pushes_at_family = squelch_pushes;
+    squelch_at_family = squelch_pushed;
     return 0;
 }
 
@@ -732,6 +747,45 @@ test_restore_retune_carries_family(dsd_opts* o, dsd_state* s, dsd_signal_search_
     assert(status.phase == DSD_SEARCH_STOPPED && o->analog_only == 1);
     o->analog_only = 0;
     o->analog_nfm_bandwidth_hz = 0;
+}
+
+/* Issue #899: Stop gives an NFM session with the analog default its gate back before the live family request of the
+   restore, so the restored analog channel never runs under the search's gate: the receiver holds Noise +10 when the
+   family is asked for, and the options hold the default in force. */
+static void
+test_restore_hands_back_the_analog_default_first(dsd_opts* o, dsd_state* s, dsd_signal_search_config* config) {
+    char error[192];
+    live = 1;
+    o->rtlsdr_center_freq = 100000000;
+    o->analog_only = 1;
+    o->analog_demod = DSD_ANALOG_DEMOD_FM;
+    o->squelch_default_mode = DSD_SQUELCH_MODE_NOISE;
+    o->squelch_default_margin_db = 10;
+    assert(dsd_squelch_analog_default_sync(o, s) == 1 && o->squelch_default_state == DSD_SQUELCH_DEFAULT_APPLIED);
+    dsd_rtl_stream_metrics_hooks hooks;
+    DSD_MEMSET(&hooks, 0, sizeof(hooks));
+    hooks.set_channel_squelch_setting = record_squelch_push;
+    dsd_rtl_stream_metrics_hooks_set(&hooks);
+    squelch_pushes = 0;
+    config->session_id = 53;
+    assert(dsd_engine_signal_search_start(o, s, config, observer, NULL, error, sizeof(error)) == 0);
+    tick(o, s);
+    assert(o->squelch_default_state != DSD_SQUELCH_DEFAULT_APPLIED);
+    squelch_pushes_at_family = -1;
+    act(o, s, DSD_SEARCH_ACTION_STOP);
+    land(o, s); // the span tune the start queued; the restore follows it
+    const dsd_squelch_setting noise10 = dsd_squelch_setting_dynamic(DSD_SQUELCH_MODE_NOISE, 10);
+    assert(target == 100000000 && family == DSD_RX_FAMILY_ANALOG && squelch_pushes_at_family > 0);
+    assert(dsd_squelch_setting_equal(&squelch_at_family, &noise10) == 1);
+    assert(o->squelch_default_state == DSD_SQUELCH_DEFAULT_APPLIED);
+    land(o, s); // the restore tune
+    assert(status.phase == DSD_SEARCH_STOPPED && o->squelch_default_state == DSD_SQUELCH_DEFAULT_APPLIED);
+    assert(dsd_squelch_setting_equal(&squelch_pushed, &noise10) == 1);
+    dsd_rtl_stream_metrics_hooks_set(NULL);
+    (void)dsd_squelch_analog_default_release(o);
+    o->squelch_default_mode = DSD_SQUELCH_MODE_LEVEL;
+    o->squelch_default_state = DSD_SQUELCH_DEFAULT_IDLE;
+    o->analog_only = 0;
 }
 
 /* Fresh input never trips the stall timeout when its timestamp advances during the read. The timeout uses real
@@ -4010,6 +4064,7 @@ main(void) {
     test_error_is_a_carrier_boundary(o, s, &config);
     test_auto_baseline_dispatches_dmr(o, s, &config);
     test_restore_retune_carries_family(o, s, &config);
+    test_restore_hands_back_the_analog_default_first(o, s, &config);
     test_capture_freshness(o, s, &config);
     test_request_failure_messages(o, s, &config);
     test_clipping_span_skipped(o, s);

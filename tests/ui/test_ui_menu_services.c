@@ -55,6 +55,7 @@
 #include <dsd-neo/runtime/receive_policy.h>
 #include <dsd-neo/runtime/scan_mode.h>
 #include <dsd-neo/runtime/scan_options.h>
+#include <dsd-neo/runtime/squelch.h>
 #include <math.h>
 #include <sndfile.h>
 #include <stdint.h>
@@ -705,6 +706,9 @@ static int g_rtl_start_clears_latch = 0;
 /* Issue #578: whether the last create was handed an I/Q capture request, and how many creates were. */
 static int g_rtl_create_capture = -1;
 static int g_rtl_create_captures = 0;
+/* The squelch the last create opened on: the setting and whether it was the analog default (issue #899). */
+static dsd_squelch_setting g_rtl_create_squelch;
+static int g_rtl_create_squelch_default = -1;
 static int g_rtltcp_autotune_result = 0;
 
 /* No rigctl peer is asked anything here (issue #621): the width and -B services' follow finds none, and
@@ -832,6 +836,10 @@ rtl_stream_create(dsd_opts* opts, RtlSdrContext** out_ctx) {
     g_rtl_create_calls++;
     g_rtl_create_capture = opts ? opts->iq_capture_requested : -1;
     g_rtl_create_captures += g_rtl_create_capture == 1;
+    if (opts) {
+        g_rtl_create_squelch = dsd_squelch_setting_of_opts(opts);
+        g_rtl_create_squelch_default = opts->squelch_default_state == DSD_SQUELCH_DEFAULT_APPLIED;
+    }
     if (out_ctx) {
         *out_ctx = g_rtl_create_result == 0 ? (RtlSdrContext*)out_ctx : NULL;
     }
@@ -1615,6 +1623,67 @@ test_tune_and_start_run_the_carrier_boundary(void) {
     rc |= expect_int("that it opened again", g_scan_stream_reopened_opened, 1);
     state.rtl_ctx = NULL;
     reset_rtl_restart_stubs();
+    return rc;
+}
+
+/* Issue #899: a failed change's recovery under a suspended -Y scope reopens the stream on the squelch the row ran, not
+ * the configured one the suspend put back: an nfm row with no squelch of its own on a DMR session opens on the analog
+ * default it ran (Noise +10), one with its own level on that level. Once the stream opened the configured standing is
+ * back, for the resume to put the row over. */
+static int
+recovery_opens_on_the_row_squelch(const char* label, const dsd_scan_option_values* row, dsd_squelch_setting want,
+                                  int want_default) {
+    dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(*opts));
+    dsd_state* state = (dsd_state*)calloc(1, sizeof(*state));
+    if (!opts || !state) {
+        free(opts);
+        free(state);
+        return expect_int(label, 0, 1);
+    }
+    reset_rtl_restart_stubs();
+    opts->audio_in_type = AUDIO_IN_RTL;
+    opts->frame_dmr = 1;
+    opts->squelch_default_mode = DSD_SQUELCH_MODE_NOISE;
+    opts->squelch_default_margin_db = 10;
+    int rc = expect_int(label, dsd_scan_mode_enter(opts, state, DSD_SCAN_MODE_NFM), 0);
+    rc |= expect_int(label, dsd_scan_mode_options(opts, state, row), 0);
+    rc |= expect_int(label, dsd_scan_mode_suspend(opts, state), 1);
+    const dsd_squelch_setting configured = dsd_squelch_setting_of_opts(opts);
+    rc |= expect_int(label, dsd_squelch_setting_is_off(&configured), 1);
+    g_rtl_create_result = 0;
+    g_rtl_start_result = 0;
+    g_rtl_create_squelch_default = -1;
+    rc |= expect_int(label, svc_rtl_restart_recovery_locked(opts, state, 1, 0, NULL, NULL), 0);
+    if (!dsd_squelch_setting_equal(&g_rtl_create_squelch, &want) || g_rtl_create_squelch_default != want_default) {
+        DSD_FPRINTF(stderr,
+                    "%s: opened on mode %d margin %d level %g default %d, want mode %d margin %d level %g "
+                    "default %d\n",
+                    label, g_rtl_create_squelch.mode, g_rtl_create_squelch.margin_db, g_rtl_create_squelch.level,
+                    g_rtl_create_squelch_default, want.mode, want.margin_db, want.level, want_default);
+        rc |= 1;
+    }
+    const dsd_squelch_setting after = dsd_squelch_setting_of_opts(opts);
+    rc |= expect_int(label, dsd_squelch_setting_equal(&after, &configured), 1);
+    rc |= expect_int(label, opts->squelch_default_state == DSD_SQUELCH_DEFAULT_APPLIED, 0);
+    (void)dsd_scan_mode_resume(opts, state);
+    dsd_scan_mode_leave(opts, state);
+    state->rtl_ctx = NULL;
+    reset_rtl_restart_stubs();
+    dsd_state_ext_free_all(state);
+    free(state);
+    free(opts);
+    return rc;
+}
+
+static int
+test_recovery_under_a_suspended_scope_opens_on_the_row_squelch(void) {
+    int rc = recovery_opens_on_the_row_squelch("inheriting nfm row", NULL,
+                                               dsd_squelch_setting_dynamic(DSD_SQUELCH_MODE_NOISE, 10), 1);
+    dsd_scan_option_values own = {0};
+    own.present = DSD_SCAN_OPT_SQUELCH;
+    own.squelch_db = -60;
+    rc |= recovery_opens_on_the_row_squelch("nfm row with its own level", &own,
+                                            dsd_squelch_setting_of_level(dsd_squelch_level_from_sql(-60.0)), 0);
     return rc;
 }
 
@@ -3417,6 +3486,7 @@ main(void) {
     rc |= test_rtl_row_destination();
 #ifdef USE_RADIO
     rc |= test_rtl_restart_quiesces_p25_retunes();
+    rc |= test_recovery_under_a_suspended_scope_opens_on_the_row_squelch();
     rc |= test_tune_and_start_run_the_carrier_boundary();
     rc |= test_tune_notes_a_timed_out_tune();
     rc |= test_locked_restarts();
