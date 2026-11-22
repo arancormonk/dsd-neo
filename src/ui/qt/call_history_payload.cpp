@@ -642,8 +642,9 @@ raw_texts_differ(const QString& a, const QString& b) {
  * @brief Whether two rows' known identities agree (issue #800): one protocol family, one reception system and one
  * sender system (B5: two conventional systems on two frequencies, or two channels of one NAC, are two calls; a trunked
  * call on two voice channels is one), one source text (B3: two callsign callers to one destination are two calls,
- * whatever their display names) and one raw target text (B4, as an update is checked: fragment_call_compatible()). An identity either row does not know is no conflict, which keeps the merge older rows
- * always had.
+ * whatever their display names) and one raw target text (B4, as an update is checked: fragment_call_compatible()), and
+ * never a DCR call against a numbered party (call_history_dcr_meets_numbered_party(), issue #903). An identity either
+ * row does not know is no conflict, which keeps the merge older rows always had.
  */
 bool
 rows_identity_compatible(const CallHistoryModel::Row& existing, const CallHistoryModel::Row& row) {
@@ -651,7 +652,10 @@ rows_identity_compatible(const CallHistoryModel::Row& existing, const CallHistor
            && call_history_scopes_compatible(existing.rxScope, row.rxScope)
            && call_history_scopes_compatible(existing.sourceScope, row.sourceScope)
            && !raw_texts_differ(existing.sourceText, row.sourceText)
-           && !raw_texts_differ(existing.targetText, row.targetText);
+           && !raw_texts_differ(existing.targetText, row.targetText)
+           && !call_history_dcr_meets_numbered_party(
+               existing.protocol, existing.tg, existing.src, existing.targetText.simplified().toUtf8().constData(),
+               row.protocol, row.tg, row.src, row.targetText.simplified().toUtf8().constData());
 }
 
 bool

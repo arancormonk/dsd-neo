@@ -28,6 +28,7 @@
 
 using dsd_qt::call_history_access_code_known;
 using dsd_qt::call_history_call_channel_known;
+using dsd_qt::call_history_dcr_meets_numbered_party;
 using dsd_qt::call_history_duration_secs;
 using dsd_qt::call_history_fold_adopts;
 using dsd_qt::call_history_freq_known;
@@ -560,6 +561,28 @@ test_site_fold_order_limit(void) {
     expect_int("site 2 first: it holds the system-only fragment and site 2", rows[0].fragments, 0x5);
 }
 
+/* Issue #903: a DCR row ("JPN DCR", no talkgroup) and a row that knows a party by number, its source alone included,
+ * are two calls each way round, as the call layer splits them; two DCR rows, or a DCR row and one naming nobody, are
+ * not kept apart by this rule, nor is the text on another protocol. */
+void
+test_dcr_meets_numbered_party(void) {
+    const int nxdn = DSD_SYNC_NXDN_POS;
+    expect("dcr vs source-only", call_history_dcr_meets_numbered_party(nxdn, 0U, 0U, "JPN DCR", nxdn, 0U, 123U, ""),
+           true);
+    expect("source-only vs dcr", call_history_dcr_meets_numbered_party(nxdn, 0U, 123U, "", nxdn, 0U, 0U, "JPN DCR"),
+           true);
+    expect("dcr vs talkgroup", call_history_dcr_meets_numbered_party(nxdn, 0U, 0U, "JPN DCR", nxdn, 5U, 0U, "03-0005"),
+           true);
+    expect("dcr vs dcr", call_history_dcr_meets_numbered_party(nxdn, 0U, 0U, "JPN DCR", nxdn, 0U, 0U, "JPN DCR"),
+           false);
+    expect("dcr vs nobody", call_history_dcr_meets_numbered_party(nxdn, 0U, 0U, "JPN DCR", nxdn, 0U, 0U, ""), false);
+    expect("text on another protocol",
+           call_history_dcr_meets_numbered_party(DSD_SYNC_DSTAR_VOICE_POS, 0U, 0U, "JPN DCR", nxdn, 0U, 123U, ""),
+           false);
+    expect("row of no known protocol", call_history_dcr_meets_numbered_party(-1, 0U, 0U, "JPN DCR", -1, 0U, 123U, ""),
+           false);
+}
+
 /* A fragment's GPS unit as the fold sees it: its key, its provenance, and a name to tell it by. */
 struct GpsFragment {
     const char* name;
@@ -887,6 +910,7 @@ main(void) {
     test_known_predicates();
     test_seen_fill_ratchet();
     test_site_fold_rules();
+    test_dcr_meets_numbered_party();
     test_seen_site_ratchet();
     test_seen_site_text_digest();
     test_site_fold_order_limit();

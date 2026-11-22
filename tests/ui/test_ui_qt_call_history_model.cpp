@@ -614,6 +614,40 @@ test_dcr_row_is_logged_by_name(void) {
                && model.data(model.index(0), CallHistoryModel::NameRole).toString() == QStringLiteral("JPN DCR"));
 }
 
+/* Issue #903: a DCR call ("JPN DCR", no numeric party) and an NXDN call that knows a party by number, here only its
+ * source, are two calls, as the call layer splits them (call_state_dcr_meets_numbered_party()): two adjacent rows on
+ * one named channel stay two rows, each way round. Two DCR rows still fold. */
+void
+test_dcr_and_numbered_rows_stay_apart(void) {
+    for (int pass = 0; pass < 2; pass++) {
+        const bool dcrFirst = pass == 1;
+        resetStorage();
+        RingFixture ring;
+        CallHistoryModel model;
+        const time_t when = 1754500700;
+        const time_t later = when + 4;
+        Event_History* dcr =
+            ring.commit(0, 0, 0, dcrFirst ? when : later, dcrFirst ? when + 3 : later + 3, "JPN DCR", "", "Dispatch");
+        dcr->systype = DSD_SYNC_NXDN_POS;
+        model.refresh(ring.state);
+        Event_History* numbered =
+            ring.commit(0, 0, 123, dcrFirst ? later : when, dcrFirst ? later + 3 : when + 3, "", "", "Dispatch");
+        numbered->systype = DSD_SYNC_NXDN_POS;
+        model.refresh(ring.state);
+        expect(dcrFirst ? "dcr then source-only: two rows" : "source-only then dcr: two rows", model.count() == 2);
+    }
+
+    resetStorage();
+    RingFixture ring;
+    CallHistoryModel model;
+    const time_t when = 1754500800;
+    ring.commit(0, 0, 0, when, when + 3, "JPN DCR", "", "Dispatch")->systype = DSD_SYNC_NXDN_POS;
+    model.refresh(ring.state);
+    ring.commit(0, 0, 0, when + 4, when + 7, "JPN DCR", "", "Dispatch")->systype = DSD_SYNC_NXDN_POS;
+    model.refresh(ring.state);
+    expect("two dcr fragments fold", model.count() == 1);
+}
+
 /* Issue #903: an NXDN Type-D group's "pp-iiii" text only spells its numeric talkgroup, so the row is named as a bare
  * number is (dsd_call_target_text_is_name()): its list name, else the channel it was heard on, else the text. A text
  * target with no number and an M17 callsign keep naming their rows over the channel. */
@@ -7814,6 +7848,7 @@ main(int argc, char** argv) {
     test_channel_label_is_its_own_role();
     test_type_d_text_yields_to_names();
     test_dcr_row_is_logged_by_name();
+    test_dcr_and_numbered_rows_stay_apart();
     test_type_d_prefixes_do_not_merge();
     test_target_ids_read_as_their_names();
     test_target_names_outlive_their_session();

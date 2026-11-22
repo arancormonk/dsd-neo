@@ -17228,7 +17228,9 @@ Qt Quick frontend (`src/ui/qt`):
       or its absence, and M17's `UNKNOWN` source names nobody), `sourceScope` (`pos.scope` and its discriminator, set
       with or without a position) and `rxScope` (`rx_scope`). Merging (`rows_mergeable()`) treats two different known raw source texts as
       two calls whatever their aliases (B3), compares the raw target text before a name (`row_destination()`, B4; two known raw target texts
-      that differ are two calls with a talkgroup too, `rows_identity_compatible()`), and
+      that differ are two calls with a talkgroup too, `rows_identity_compatible()`), keeps an NXDN DCR row ("JPN DCR",
+      no talkgroup) apart from a row that knows a party by number, its source alone included
+      (`call_history_dcr_meets_numbered_party()`, as the core's `call_state_dcr_meets_numbered_party()`; issue #903), and
       requires compatible protocol families (`call_history_protocol_family()`, the core's `dsd_sync_protocol_family()`
       plus YSF, dPMR and X2-TDMA polarities) and scopes (`call_history_scopes_compatible()`, B5): an unknown scope
       matches any; two scopes of the same strength (`call_history_scope_strength()`: feed-only frequency, then NAC /
