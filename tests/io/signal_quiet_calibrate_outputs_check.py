@@ -14,13 +14,17 @@ three trials each of the four ".../1536k/grid0" conditions (one analog, three no
 - A --dump or --trial-log that cannot be opened (a directory) stops the run before it starts: nonzero, nothing written.
 - One whose writes do not land (/dev/full, where present) exits nonzero once the run ends.
 - The driver attests what it ran on one "run:" line (phase, salt, veto, guard, threshold, estimator, geometry,
-  response, depression, ADC), and --bounds carries each condition's metadata (group, kind, rate, classes, widths,
-  S/N, the run's columns) and an occupied capture's asked and achieved share, contrast and placement.
+  response, depression, ADC, and for a --windows run its sub-window count), and --bounds carries each condition's
+  metadata (group, kind, rate, classes, widths, S/N, the run's columns) and an occupied capture's asked and achieved
+  share, contrast and placement.
+- A run that completes prints one "complete:" record: the run line's fields, the trials, conditions and rows, and the
+  sha256 of the CSV, dump and trial log it closed, which match the files.
 - The late groups (--add cross, raised) only append: the conditions of --add masks,occupancy keep their order and
   names (and so their seeds), and cross adds the -8 masks crossed with neighbours, offsets and droop.
 """
 import argparse
 import csv
+import hashlib
 import math
 import os
 from pathlib import Path
@@ -180,6 +184,14 @@ def check_attestation(driver, root):
     want = "run: phase=validate salt=9 veto=0.05 guard=8.7 threshold=5 estimator=trimmed default,flat,0.0,none"
     if done.returncode != 0 or want not in done.stderr.splitlines():
         return fail(f"attestation: exit {done.returncode}, {[l for l in done.stderr.splitlines() if l.startswith('run:')]}")
+    records = [line for line in done.stderr.splitlines() if line.startswith("complete: ")]
+    digest = {k: hashlib.sha256((root / f"attest{ext}").read_bytes()).hexdigest() if ext else ""
+              for k, ext in (("csv", ".csv"), ("dump", ""), ("log", ""))}
+    fields = dict(f.split("=", 1) for f in records[0].split() if "=" in f) if len(records) == 1 else {}
+    if (len(records) != 1 or not records[0].startswith("complete: " + want[len("run: "):])
+            or fields.get("trials") != str(TRIALS) or fields.get("rows") != "4" or fields.get("conditions") != "4"
+            or fields.get("csv") != digest["csv"] or fields.get("dump") != "none" or fields.get("log") != "none"):
+        return fail(f"completion record {records}")
     with (root / "attest-bounds.csv").open(newline="") as f:
         rows = list(csv.DictReader(f))
     columns = ["condition", "bound", "scale", "group", "kind", "rate_hz", "classes", "analog_width_hz",
@@ -190,6 +202,14 @@ def check_attestation(driver, root):
     noise = [r for r in rows if r["condition"] == "noise/12k5/1536k/grid0"]
     if len(noise) != 1 or noise[0]["kind"] != "noise" or noise[0]["group"] != "noise" or noise[0]["rate_hz"] != "1536000":
         return fail(f"bounds metadata {noise}")
+    short = run(driver, root, root / "attest-short.csv",
+                ["--seed-salt", "9", "--occupancy-veto", "0.05", "--windows", "3"])
+    lines = short.stderr.splitlines()
+    want_short = want + " windows=3"
+    completed = [line for line in lines if line.startswith("complete: " + want_short[len("run: "):] + " trials=")]
+    if short.returncode != 0 or want_short not in lines or len(completed) != 1:
+        return fail(f"--windows attestation: exit {short.returncode}, "
+                    f"{[l for l in lines if l.startswith(('run:', 'complete:'))]}")
     return 0
 
 

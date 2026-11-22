@@ -1276,6 +1276,119 @@ run_columns(const Options& o) {
     return text;
 }
 
+/* What the run executes, as the run and completion lines print it: phase, salt, veto, guard, threshold, estimator,
+   the run's tag columns and, for a --windows run only, its sub-window count (a run of the calibrated nine prints the
+   line it always did). */
+std::string
+run_text(const Options& o) {
+    char windows[24] = "";
+    if (g_windows) {
+        DSD_SNPRINTF(windows, sizeof(windows), " windows=%d", g_windows);
+    }
+    char text[256];
+    DSD_SNPRINTF(text, sizeof(text), "phase=%s salt=%ld veto=%.6g guard=%.6g threshold=%.6g estimator=%s %s%s",
+                 o.phase.c_str(), o.seed_salt, o.occupancy_veto, o.guard, o.threshold,
+                 o.estimator == DSD_SIGNAL_QUIET_FLOOR_TRIMMED_MEAN   ? "trimmed"
+                 : o.estimator == DSD_SIGNAL_QUIET_FLOOR_LOWEST_BLOCK ? "lowest"
+                                                                      : "both",
+                 run_columns(o).c_str(), windows);
+    return text;
+}
+
+/* SHA-256 of the file at @p path as lowercase hex (FIPS 180-4), "" when it cannot be read: the completion record's
+   digests of the outputs the run closed. */
+std::string
+file_sha256(const std::string& path) {
+    static const uint32_t k[64] = {
+        0x428a2f98, 0x71374491, 0xb5c0fbcf, 0xe9b5dba5, 0x3956c25b, 0x59f111f1, 0x923f82a4, 0xab1c5ed5,
+        0xd807aa98, 0x12835b01, 0x243185be, 0x550c7dc3, 0x72be5d74, 0x80deb1fe, 0x9bdc06a7, 0xc19bf174,
+        0xe49b69c1, 0xefbe4786, 0x0fc19dc6, 0x240ca1cc, 0x2de92c6f, 0x4a7484aa, 0x5cb0a9dc, 0x76f988da,
+        0x983e5152, 0xa831c66d, 0xb00327c8, 0xbf597fc7, 0xc6e00bf3, 0xd5a79147, 0x06ca6351, 0x14292967,
+        0x27b70a85, 0x2e1b2138, 0x4d2c6dfc, 0x53380d13, 0x650a7354, 0x766a0abb, 0x81c2c92e, 0x92722c85,
+        0xa2bfe8a1, 0xa81a664b, 0xc24b8b70, 0xc76c51a3, 0xd192e819, 0xd6990624, 0xf40e3585, 0x106aa070,
+        0x19a4c116, 0x1e376c08, 0x2748774c, 0x34b0bcb5, 0x391c0cb3, 0x4ed8aa4a, 0x5b9cca4f, 0x682e6ff3,
+        0x748f82ee, 0x78a5636f, 0x84c87814, 0x8cc70208, 0x90befffa, 0xa4506ceb, 0xbef9a3f7, 0xc67178f2};
+    uint32_t h[8] = {0x6a09e667, 0xbb67ae85, 0x3c6ef372, 0xa54ff53a, 0x510e527f, 0x9b05688c, 0x1f83d9ab, 0x5be0cd19};
+    const auto rotr = [](uint32_t x, int n) { return (x >> n) | (x << (32 - n)); };
+    const auto block = [&](const unsigned char* p) {
+        uint32_t w[64];
+        for (int i = 0; i < 16; ++i) {
+            w[i] = (uint32_t)p[4 * i] << 24 | (uint32_t)p[4 * i + 1] << 16 | (uint32_t)p[4 * i + 2] << 8 | p[4 * i + 3];
+        }
+        for (int i = 16; i < 64; ++i) {
+            const uint32_t s0 = rotr(w[i - 15], 7) ^ rotr(w[i - 15], 18) ^ (w[i - 15] >> 3);
+            const uint32_t s1 = rotr(w[i - 2], 17) ^ rotr(w[i - 2], 19) ^ (w[i - 2] >> 10);
+            w[i] = w[i - 16] + s0 + w[i - 7] + s1;
+        }
+        uint32_t a = h[0], b = h[1], c = h[2], d = h[3], e = h[4], f = h[5], g = h[6], hh = h[7];
+        for (int i = 0; i < 64; ++i) {
+            const uint32_t t1 = hh + (rotr(e, 6) ^ rotr(e, 11) ^ rotr(e, 25)) + ((e & f) ^ (~e & g)) + k[i] + w[i];
+            const uint32_t t2 = (rotr(a, 2) ^ rotr(a, 13) ^ rotr(a, 22)) + ((a & b) ^ (a & c) ^ (b & c));
+            hh = g;
+            g = f;
+            f = e;
+            e = d + t1;
+            d = c;
+            c = b;
+            b = a;
+            a = t1 + t2;
+        }
+        h[0] += a;
+        h[1] += b;
+        h[2] += c;
+        h[3] += d;
+        h[4] += e;
+        h[5] += f;
+        h[6] += g;
+        h[7] += hh;
+    };
+    FILE* in = dsd_fopen_private(path.c_str(), "rb");
+    if (!in) {
+        return std::string();
+    }
+    std::vector<unsigned char> buf(1 << 16);
+    uint64_t total = 0;
+    size_t carry = 0;
+    for (;;) {
+        const size_t got = fread(buf.data() + carry, 1, buf.size() - carry, in);
+        const size_t have = carry + got;
+        total += got;
+        size_t off = 0;
+        for (; off + 64 <= have; off += 64) {
+            block(buf.data() + off);
+        }
+        carry = have - off;
+        std::copy(buf.begin() + (ptrdiff_t)off, buf.begin() + (ptrdiff_t)have, buf.begin());
+        if (got == 0) {
+            break;
+        }
+    }
+    const bool failed = ferror(in) != 0;
+    fclose(in);
+    if (failed) {
+        return std::string();
+    }
+    unsigned char tail[128] = {};
+    std::copy(buf.begin(), buf.begin() + (ptrdiff_t)carry, tail);
+    tail[carry] = 0x80;
+    const size_t len = carry + 1 + 8 <= 64 ? 64 : 128;
+    const uint64_t bits = total * 8;
+    for (int i = 0; i < 8; ++i) {
+        tail[len - 1 - i] = (unsigned char)(bits >> (8 * i));
+    }
+    block(tail);
+    if (len == 128) {
+        block(tail + 64);
+    }
+    std::string hex;
+    char part[9];
+    for (uint32_t v : h) {
+        DSD_SNPRINTF(part, sizeof(part), "%08x", v);
+        hex += part;
+    }
+    return hex;
+}
+
 /* Whether @p c belongs to the pilot mode @p m: its own conditions, and its class's or width's noise-only ones. */
 bool
 pilot_match(const Condition& c, const Mode& m) {
@@ -2189,7 +2302,25 @@ run_trials(const Options& o, const Inputs& in, const std::vector<size_t>& chosen
     ok = close_output(f, o.out) && ok;
     ok = close_output(dump, o.dump) && ok;
     ok = close_output(log, o.trial_log) && ok;
-    return ok ? 0 : 1;
+    if (!ok) {
+        return 1;
+    }
+    /* The completion record: what ran, how much, and the digests of the three files this run closed, so a checker can
+       tell these outputs from another run's beside this log. */
+    size_t rows = 0;
+    for (size_t i : chosen) {
+        (void)i;
+        rows += o.phase == "select" ? 2 : 1;
+    }
+    const auto digest = [](const std::string& path) { return path.empty() ? std::string("none") : file_sha256(path); };
+    const std::string csv = digest(o.out), dumped = digest(o.dump), logged = digest(o.trial_log);
+    if (csv.empty() || dumped.empty() || logged.empty()) {
+        DSD_FPRINTF(stderr, "cannot read back the outputs for the completion record\n");
+        return 1;
+    }
+    DSD_FPRINTF(stderr, "complete: %s trials=%ld conditions=%zu rows=%zu csv=%s dump=%s log=%s\n", run_text(o).c_str(),
+                o.trials, chosen.size(), rows, csv.c_str(), dumped.c_str(), logged.c_str());
+    return 0;
 }
 
 /* In-width power of @p x around @p centre_hz (Hann-windowed transform of the first transform_points() samples). */
@@ -2846,12 +2977,7 @@ main(int argc, char** argv) {
     DSD_FPRINTF(stderr, "%zu of %zu conditions, %ld trials each, %zu waveform(s) from %zu source row(s)\n",
                 chosen.size(), all.size(), o.trials, waves.size(), sources.size());
     /* What this run executes, for the campaign's checker to hold to the plan. */
-    DSD_FPRINTF(stderr, "run: phase=%s salt=%ld veto=%.6g guard=%.6g threshold=%.6g estimator=%s %s\n", o.phase.c_str(),
-                o.seed_salt, o.occupancy_veto, o.guard, o.threshold,
-                o.estimator == DSD_SIGNAL_QUIET_FLOOR_TRIMMED_MEAN   ? "trimmed"
-                : o.estimator == DSD_SIGNAL_QUIET_FLOOR_LOWEST_BLOCK ? "lowest"
-                                                                     : "both",
-                run_columns(o).c_str());
+    DSD_FPRINTF(stderr, "run: %s\n", run_text(o).c_str());
     if (!o.bounds.empty() && write_bounds(o.bounds, all, o) != 0) {
         return 1;
     }
