@@ -1363,6 +1363,14 @@ int svc_rtl_set_sql_setting(dsd_opts* opts, const dsd_state* state, const dsd_sq
  */
 void svc_rtl_push_squelch(const dsd_opts* opts);
 
+/**
+ * @brief Hand a running radio receiver the squelch of the channel it produces (issue #899): the analog default where it
+ * belongs (dsd_squelch_analog_default_sync()), and under a scan scope a command suspended the row's, resolved over the
+ * squelch the command left (dsd_scan_mode_suspended_row_squelch()), never the configured squelch the options hold
+ * meanwhile. Always pushes; nothing off a radio input. Decoder thread.
+ */
+void svc_rtl_push_channel_squelch(dsd_opts* opts, const dsd_state* state);
+
 #ifdef __cplusplus
 }
 #endif

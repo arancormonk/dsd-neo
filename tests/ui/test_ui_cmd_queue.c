@@ -16796,6 +16796,125 @@ test_streams_and_channels_open_on_the_analog_default(void) {
 }
 #endif
 
+#ifdef DSD_NEO_TEST_RTL_WRAP
+/* A DMR session (Off) on a running SoapySDR device with --squelch-analog-default noise+10 and an nfm row of a -Y list
+   on air, which inherits the default: the receiver was told noise +10. */
+static int
+start_inherited_nfm_row(dsd_opts* opts, dsd_state* state, void** fake_ctx, const char* label) {
+    init_stream_replan_context(opts, state, fake_ctx, "soapy", 48, 48000);
+    const dsd_squelch_setting off = dsd_squelch_setting_of_level(0.0);
+    dsd_squelch_setting_store(opts, &off);
+    int rc = expect_int(label, dsd_squelch_analog_default_parse(opts, "noise+10", NULL, 0U), 0);
+    rc |= submit_decode_mode(opts, state, DSDCFG_MODE_DMR, label);
+    opts->scanner_mode = 1;
+    rc |= expect_int(label, dsd_scan_mode_enter(opts, state, DSD_SCAN_MODE_NFM), 0);
+    rc |= expect_int(label, dsd_scan_mode_options(opts, state, NULL), 0);
+    rc |= expect_true(label, opts->squelch_default_state == DSD_SQUELCH_DEFAULT_APPLIED);
+    reset_config_rtl_wrap();
+    g_config_rtl_open_ok = 1;
+    g_cmd_squelch_pushes = 0;
+    g_cmd_squelch_pushed = -1.0;
+    g_cmd_squelch_setting_pushes = 0;
+    DSD_MEMSET(&g_cmd_squelch_setting_pushed, 0, sizeof g_cmd_squelch_setting_pushed);
+    return rc;
+}
+
+static void
+free_inherited_nfm_row(dsd_opts* opts, dsd_state* state) {
+    dsd_scan_mode_leave(opts, state);
+    opts->scanner_mode = 0;
+    reset_config_rtl_wrap();
+    state->rtl_ctx = NULL;
+    freeState(state);
+    free(state);
+    free(opts);
+}
+
+/*
+ * Issue #899 (review round 3): a config apply runs with the scan row's scope suspended, the options holding the
+ * configured squelch, which dsd_squelch_analog_default_sync() leaves alone then. On the inherited nfm row
+ * (start_inherited_nfm_row()), a same-device SoapySDR [input] with no squelch keys keeps the device running and hands
+ * it the row's noise +10, never the configured Off: before the fix it was told Off until the resume, and the samples
+ * between ran ungated. One with squelch keys ends the default, so the inheriting row runs the config's -60 dB. A config
+ * that reopens the device (another SoapySDR device) opens it on the row's noise +10, not the configured Off. Each time
+ * the row runs what the receiver was told once the scope resumes.
+ */
+static int
+test_config_apply_under_a_row_keeps_its_gate(void) {
+    static void* fake_ctx[2];
+    dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(*opts));
+    dsd_state* state = (dsd_state*)calloc(1, sizeof(*state));
+    if (!opts || !state) {
+        free(opts);
+        free(state);
+        return expect_true("row gate: fixtures", 0);
+    }
+    int rc = start_inherited_nfm_row(opts, state, fake_ctx, "row gate: in place");
+    dsdneoUserConfig cfg;
+    DSD_MEMSET(&cfg, 0, sizeof cfg);
+    cfg.has_input = 1;
+    cfg.input_source = DSDCFG_INPUT_SOAPY;
+    rc |= submit_config(opts, state, &cfg, "row gate: in place");
+    rc |= expect_int("row gate: in place, nothing reopened", g_config_rtl_creates, 0);
+    if (g_cmd_squelch_pushes != 0 || g_cmd_squelch_setting_pushes < 1 || !pushed_default()) {
+        DSD_FPRINTF(stderr,
+                    "row gate: in place, the receiver was told %d levels (last %g) and %d settings (last mode %d "
+                    "margin %d); want noise +10 only\n",
+                    g_cmd_squelch_pushes, g_cmd_squelch_pushed, g_cmd_squelch_setting_pushes,
+                    g_cmd_squelch_setting_pushed.mode, g_cmd_squelch_setting_pushed.margin_db);
+        rc |= 1;
+    }
+    rc |= expect_true("row gate: in place, the row runs it",
+                      opts->rtl_squelch_mode == DSD_SQUELCH_MODE_NOISE && opts->rtl_squelch_margin_db == 10
+                          && opts->squelch_default_state == DSD_SQUELCH_DEFAULT_APPLIED);
+    free_inherited_nfm_row(opts, state);
+
+    opts = (dsd_opts*)calloc(1, sizeof(*opts));
+    state = (dsd_state*)calloc(1, sizeof(*state));
+    if (!opts || !state) {
+        free(opts);
+        free(state);
+        return expect_true("row gate: fixtures", 0);
+    }
+    rc |= start_inherited_nfm_row(opts, state, fake_ctx, "row gate: keys");
+    cfg.rtl_sql = -60;
+    cfg.rtl_sql_is_set = 1;
+    rc |= submit_config(opts, state, &cfg, "row gate: keys");
+    rc |= expect_true("row gate: keys, the receiver runs them last",
+                      g_cmd_squelch_pushes >= 1 && g_cmd_squelch_any_order == g_cmd_squelch_level_order);
+    rc |= expect_squelch_db("row gate: keys, the receiver's level", g_cmd_squelch_pushed, -60.0);
+    rc |= expect_true("row gate: keys end the default", opts->squelch_default_state == DSD_SQUELCH_DEFAULT_ENDED
+                                                            && opts->rtl_squelch_mode == DSD_SQUELCH_MODE_LEVEL);
+    rc |= expect_squelch_db("row gate: keys, the row runs them", opts->rtl_squelch_level, -60.0);
+    free_inherited_nfm_row(opts, state);
+
+    opts = (dsd_opts*)calloc(1, sizeof(*opts));
+    state = (dsd_state*)calloc(1, sizeof(*state));
+    if (!opts || !state) {
+        free(opts);
+        free(state);
+        return expect_true("row gate: fixtures", 0);
+    }
+    rc |= start_inherited_nfm_row(opts, state, fake_ctx, "row gate: reopen");
+    DSD_MEMSET(&cfg, 0, sizeof cfg);
+    cfg.has_input = 1;
+    cfg.input_source = DSDCFG_INPUT_SOAPY;
+    DSD_SNPRINTF(cfg.soapy_args, sizeof cfg.soapy_args, "%s", "driver=airspyhf");
+    rc |= submit_config(opts, state, &cfg, "row gate: reopen");
+    rc |= expect_int("row gate: reopen, one open", g_config_rtl_creates, 1);
+    if (g_config_rtl_create_squelch_mode != DSD_SQUELCH_MODE_NOISE || g_config_rtl_create_squelch_margin != 10) {
+        DSD_FPRINTF(stderr, "row gate: reopen, the device opened on squelch mode %d margin %d, want noise +10\n",
+                    g_config_rtl_create_squelch_mode, g_config_rtl_create_squelch_margin);
+        rc |= 1;
+    }
+    rc |= expect_true("row gate: reopen, the row runs it",
+                      opts->rtl_squelch_mode == DSD_SQUELCH_MODE_NOISE
+                          && opts->squelch_default_state == DSD_SQUELCH_DEFAULT_APPLIED);
+    free_inherited_nfm_row(opts, state);
+    return rc;
+}
+#endif
+
 /*
  * A live switch from the FM monitor to AM (issue #524) is a decode-mode change like any other: it forgets a received
  * CTCSS tone or DCS code (issues #522, #523) through the acquisition reset, so the AM monitor, which detects neither,
@@ -32352,6 +32471,7 @@ main(void) {
     rc |= test_decode_mode_set_runs_the_analog_default();
 #ifdef DSD_NEO_TEST_RTL_WRAP
     rc |= test_streams_and_channels_open_on_the_analog_default();
+    rc |= test_config_apply_under_a_row_keeps_its_gate();
 #endif
     rc |= test_decode_mode_set_am_clears_received_tone();
     rc |= test_am_bandwidth_set_applies_live();

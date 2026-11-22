@@ -4515,11 +4515,11 @@ apply_cfg_live_rtl_ppm_request(dsd_opts* opts, const dsdneoUserConfig* cfg, int 
 }
 
 /* The squelch a config staged, handed to a receiver that keeps running: what its channel runs, the analog default
-   where it belongs (issue #899), so no block of it runs under the config's bare value first. */
+   where it belongs (issue #899), and under a scan row's suspended scope the row's over what the config left
+   (svc_rtl_push_channel_squelch()), so no block of it runs under the config's bare value first. */
 static void
 apply_cfg_push_squelch(dsd_opts* opts, const dsd_state* state) {
-    (void)dsd_squelch_analog_default_sync(opts, state);
-    svc_rtl_push_squelch(opts);
+    svc_rtl_push_channel_squelch(opts, state);
 }
 
 /* The DSP bandwidth request, squelch and monitor volume a radio [input] applies, a raw I/Q stream's included. */
@@ -6943,7 +6943,7 @@ decode_mode_toast_applied(const dsd_opts* opts, dsd_state* state, dsdneoUserDeco
 static void
 ui_sync_analog_default_squelch(dsd_opts* opts, const dsd_state* state) {
     if (opts && dsd_squelch_analog_default_sync(opts, state) && opts->audio_in_type == AUDIO_IN_RTL) {
-        svc_rtl_push_squelch(opts);
+        svc_rtl_push_channel_squelch(opts, state);
     }
 }
 

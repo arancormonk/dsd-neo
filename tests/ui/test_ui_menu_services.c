@@ -1629,10 +1629,12 @@ test_tune_and_start_run_the_carrier_boundary(void) {
 /* Issue #899: a failed change's recovery under a suspended -Y scope reopens the stream on the squelch the row ran, not
  * the configured one the suspend put back: an nfm row with no squelch of its own on a DMR session opens on the analog
  * default it ran (Noise +10), one with its own level on that level. Once the stream opened the configured standing is
- * back, for the resume to put the row over. */
+ * back, for the resume to put the row over. A change that ended the default while the scope was suspended (@p
+ * end_default: a failed config reopen whose squelch keys ended it, review round 3) leaves the inheriting row on the
+ * session's Off beneath it, not on the default the row ran before the change. */
 static int
 recovery_opens_on_the_row_squelch(const char* label, const dsd_scan_option_values* row, dsd_squelch_setting want,
-                                  int want_default) {
+                                  int want_default, int end_default) {
     dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(*opts));
     dsd_state* state = (dsd_state*)calloc(1, sizeof(*state));
     if (!opts || !state) {
@@ -1648,6 +1650,9 @@ recovery_opens_on_the_row_squelch(const char* label, const dsd_scan_option_value
     int rc = expect_int(label, dsd_scan_mode_enter(opts, state, DSD_SCAN_MODE_NFM), 0);
     rc |= expect_int(label, dsd_scan_mode_options(opts, state, row), 0);
     rc |= expect_int(label, dsd_scan_mode_suspend(opts, state), 1);
+    if (end_default) {
+        dsd_squelch_analog_default_end(opts);
+    }
     const dsd_squelch_setting configured = dsd_squelch_setting_of_opts(opts);
     rc |= expect_int(label, dsd_squelch_setting_is_off(&configured), 1);
     g_rtl_create_result = 0;
@@ -1665,6 +1670,7 @@ recovery_opens_on_the_row_squelch(const char* label, const dsd_scan_option_value
     const dsd_squelch_setting after = dsd_squelch_setting_of_opts(opts);
     rc |= expect_int(label, dsd_squelch_setting_equal(&after, &configured), 1);
     rc |= expect_int(label, opts->squelch_default_state == DSD_SQUELCH_DEFAULT_APPLIED, 0);
+    rc |= expect_int(label, opts->squelch_default_state == DSD_SQUELCH_DEFAULT_ENDED, end_default);
     (void)dsd_scan_mode_resume(opts, state);
     dsd_scan_mode_leave(opts, state);
     state->rtl_ctx = NULL;
@@ -1678,12 +1684,15 @@ recovery_opens_on_the_row_squelch(const char* label, const dsd_scan_option_value
 static int
 test_recovery_under_a_suspended_scope_opens_on_the_row_squelch(void) {
     int rc = recovery_opens_on_the_row_squelch("inheriting nfm row", NULL,
-                                               dsd_squelch_setting_dynamic(DSD_SQUELCH_MODE_NOISE, 10), 1);
+                                               dsd_squelch_setting_dynamic(DSD_SQUELCH_MODE_NOISE, 10), 1, 0);
     dsd_scan_option_values own = {0};
     own.present = DSD_SCAN_OPT_SQUELCH;
     own.squelch_db = -60;
-    rc |= recovery_opens_on_the_row_squelch("nfm row with its own level", &own,
-                                            dsd_squelch_setting_of_level(dsd_squelch_level_from_sql(-60.0)), 0);
+    const dsd_squelch_setting own_level = dsd_squelch_setting_of_level(dsd_squelch_level_from_sql(-60.0));
+    rc |= recovery_opens_on_the_row_squelch("nfm row with its own level", &own, own_level, 0, 0);
+    rc |= recovery_opens_on_the_row_squelch("inheriting nfm row, the default ended", NULL,
+                                            dsd_squelch_setting_of_level(0.0), 0, 1);
+    rc |= recovery_opens_on_the_row_squelch("nfm row with its own level, the default ended", &own, own_level, 0, 1);
     return rc;
 }
 

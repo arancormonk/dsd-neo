@@ -1026,12 +1026,35 @@ dsd_scan_mode_suspend(dsd_opts* opts, dsd_state* state) {
 }
 
 int
-dsd_scan_mode_suspended_squelch(const dsd_state* state, dsd_squelch_standing* out) {
+dsd_scan_mode_suspended_row_squelch(const dsd_opts* opts, const dsd_state* state, dsd_squelch_standing* out) {
     const scan_scope* scope = scan_scope_get(state);
-    if (!scope || !scope->suspended || !out) {
+    if (!scope || !scope->suspended || !opts || !out) {
         return 0;
     }
-    *out = scope->effective_squelch;
+    /* The session's standing as the command left it: its configured squelch, the default ended or still pending. */
+    dsd_squelch_standing_capture(opts, out);
+    if ((scope->options.present & DSD_SCAN_OPT_SQUELCH) != 0U) {
+        /* The row's own option, which no command changes while the scope is suspended: what the fields ran then. */
+        out->level = scope->effective_squelch.level;
+        out->mode = scope->effective_squelch.mode;
+        out->margin_db = scope->effective_squelch.margin_db;
+        return 1;
+    }
+    /* The analog default ran on the row (an analog row of a radio input with no squelch of its own) and nothing has
+       ended it since: it runs over the configured squelch as its base. A default that was not in force on the row, or
+       that the command ended, leaves the configured squelch. */
+    if (scope->effective_squelch.default_state == DSD_SQUELCH_DEFAULT_APPLIED
+        && dsd_squelch_analog_default_pending(opts) && dsd_opts_input_is_radio(opts)) {
+        if (out->default_state != DSD_SQUELCH_DEFAULT_APPLIED) {
+            out->base_level = out->level;
+            out->base_mode = out->mode;
+            out->base_margin_db = out->margin_db;
+            out->default_state = DSD_SQUELCH_DEFAULT_APPLIED;
+        }
+        const dsd_squelch_setting setting = dsd_squelch_analog_default_setting(opts);
+        out->mode = setting.mode;
+        out->margin_db = setting.margin_db;
+    }
     return 1;
 }
 

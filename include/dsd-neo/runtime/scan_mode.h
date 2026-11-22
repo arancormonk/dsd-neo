@@ -150,10 +150,13 @@ dsd_scan_mode dsd_scan_mode_row(const dsd_state* state);
  * dsd_scan_mode_resume() puts back when the row compares unchanged. NULL unless the scope is suspended. Decoder thread
  * only. */
 const dsd_scan_settings* dsd_scan_mode_suspended_effective(const dsd_state* state);
-/** The squelch fields and the analog default's standing when the scope was suspended (the row's effective squelch,
- * which dsd_scan_mode_suspended_effective() holds only as the configured one, issue #899) into @p out: 1, or 0 when
- * the scope is not suspended. Decoder thread only. */
-int dsd_scan_mode_suspended_squelch(const dsd_state* state, dsd_squelch_standing* out);
+/** The squelch the row a suspended scope holds runs over @p opts as they stand now (issue #899), as fields and the
+ * analog default's standing, into @p out: the row's own option, else the analog default where it ran on the row when
+ * the scope was suspended and is still pending (a command's squelch keys or edit ended it) on a radio input, over the
+ * configured squelch, else that configured squelch. What a stream opened, or a receiver told, while the command runs
+ * must hold, since dsd_squelch_analog_default_sync() leaves the options alone then; the resume puts it in the options.
+ * 1, or 0 when no scope is suspended (the options then hold what the channel runs once synced). Decoder thread only. */
+int dsd_scan_mode_suspended_row_squelch(const dsd_opts* opts, const dsd_state* state, dsd_squelch_standing* out);
 /** Hand the receiver @p setting on a radio input, ahead of the row it belongs to (a -Y row's retune, so its samples
  * never run under the gate of the row before, issue #899), or back after a retune that did not move: only when it
  * differs from what the receiver holds (a transition's origin, else @p on_air, what the row on air runs), and the
