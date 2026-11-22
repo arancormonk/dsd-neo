@@ -1537,7 +1537,9 @@ history row at its frequency; the TETRA rows show their protocol (`TETRA`, `TETR
 names 408.03125 MHz; `Direct`), and the live status shows them confirmed while their carrier is on; the noise visit
 confirms nothing and ends unresolved; the reloaded history matches; the source only ever runs at 1.152 MHz; and a
 confirmed TETRA visit leaves 2.1 s after its carrier stops (1.8 to 3.6 s; the runs measured 2.0 to 2.15 s, and the
-analog and DMR visits 0.5 to 0.8 s). Each run lasts until every transmitter has been visited, stopped and left; the
+analog and DMR visits 0.5 to 0.8 s), except the presence signal's, which leaves in the same window after its first
+confirmation, its train still on for about 2 s of that: a presence signal never refreshes the visit's activity (a run
+measured 2.11 s; one that refreshed it would stay about 4.1 s). Each run lasts until every transmitter has been visited, stopped and left; the
 rig stops when the script creates its stop file (`DSD_SEARCH_RIG_STOP`), not on a signal, so it still prints the
 history.
 The DMO call is bursty and passes the RF detector only at some burst phases, so it is often found on a later pass. With

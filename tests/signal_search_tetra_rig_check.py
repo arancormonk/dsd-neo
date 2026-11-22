@@ -35,7 +35,9 @@ Checks: every transmitter is visited and has one history row at its frequency; t
 their protocol, access code and site line, and the live status shows them confirmed while their carrier is on; the
 noise is not confirmed, and its visit ends "digital unresolved"; the history read back from the journal matches the live
 one; the front end ran the source at the 72 kHz capture rate alone; and a confirmed TETRA visit leaves the channel
-TETRA_QUIET_S (2.1 s) after its carrier stops, not the 0.5 s an ordinary visit would, within LEAVE_PAD_S.
+TETRA_QUIET_S (2.1 s) after its carrier stops, not the 0.5 s an ordinary visit would, within LEAVE_PAD_S. A presence
+signal never refreshes the visit's activity, so pres_on leaves TETRA_QUIET_S after its first confirmation, with its
+train still on, not 2.1 s after it stops.
 
 Usage: signal_search_tetra_rig_check.py RIG FIXTURE_DIR [--keep DIR] [--only a|b]
 Exit 0 on success, 1 on a failed check, 77 when numpy is missing. Serves the loopback interface only and never opens
@@ -221,12 +223,28 @@ def landing_pass(record, tx):
     return None
 
 
+def presence_only(tx):
+    """Whether @p tx confirms as a presence signal, which never holds a visit."""
+    return tx.expect is not None and tx.expect[2] is not None and "presence" in tx.expect[2].pattern
+
+
+def departure_from(record, tx):
+    """(the scene time a departure is measured from, its name): the stop for a transmitter whose activity holds the
+    visit; for a presence signal, which never refreshes the visit's activity, its first confirmation. (None, name)
+    when there is none."""
+    if not presence_only(tx):
+        return tx.stop_at, "its carrier stopped"
+    confirmed = tcp_bench.confirm_time(record, tx)
+    return (None if confirmed is None else tx.landed + confirmed), "its first confirmation"
+
+
 def departure(record, tx):
-    """Seconds from the transmitter's stop to the first retune after it, or None."""
-    if tx.stop_at is None:
+    """Seconds from departure_from() to the first retune after it, or None."""
+    since, _name = departure_from(record, tx)
+    if since is None:
         return None
-    later = [t for t, _wall, _centre, _rate in record["tunes"] if t > tx.stop_at]
-    return later[0] - tx.stop_at if later else None
+    later = [t for t, _wall, _centre, _rate in record["tunes"] if t > since]
+    return later[0] - since if later else None
 
 
 def check_row(tx, rows, failures):
@@ -285,14 +303,14 @@ def check(record):
                 failures.append(f"{tx.id}: landed on pass {landed}, not by pass {DMO_MAX_PASS}")
         if tx.expect is None or not tx.expect[0] or not tx.expect[0].startswith("TETRA"):
             continue
-        # A presence signal never holds a visit: it leaves 2.1 s after the confirmation, not after the stop.
-        if tx.expect[2] is not None and "presence" in tx.expect[2].pattern:
-            continue
+        # A presence signal never holds a visit: it leaves 2.1 s after its first confirmation, while its train is
+        # still on (one that refreshed the visit would stay until 2.1 s after the stop, about 4 s after it).
         left = departure(record, tx)
+        _since, since_name = departure_from(record, tx)
         if left is None:
-            failures.append(f"{tx.id}: no retune after its carrier stopped")
+            failures.append(f"{tx.id}: no retune after {since_name}")
         elif not TETRA_QUIET_S - LEAVE_EARLY_S <= left <= TETRA_QUIET_S + LEAVE_PAD_S:
-            failures.append(f"{tx.id}: left {left:.2f} s after its carrier stopped, not about {TETRA_QUIET_S} s")
+            failures.append(f"{tx.id}: left {left:.2f} s after {since_name}, not about {TETRA_QUIET_S} s")
     return failures
 
 
@@ -306,6 +324,7 @@ def report(record):
                           f"site={r['site']!r}" for r in mine)
         landed = "never" if tx.landed is None else f"{tx.landed:6.2f} s"
         left_text = "-" if left is None else f"{left:.2f} s"
+        since = "confirmation" if presence_only(tx) else "stop"
         confirm = tcp_bench.confirm_time(record, tx)
         confirm_text = "-" if confirm is None else f"{confirm:.2f} s"
         phase = ""
@@ -315,7 +334,7 @@ def report(record):
             phase = (f" (pass {landing_pass(record, tx)}, found at phase {tx.phase_at(found) * 1000:.1f} ms, landed at "
                      f"{tx.phase_at(landing) * 1000:.1f} ms)")
         print(f"  {tx.id:8s} {tx.frequency / 1e6:10.5f} MHz landed {landed}{phase} confirmed {confirm_text} later, "
-              f"left {left_text} after stop: {shown}")
+              f"left {left_text} after {since}: {shown}")
 
 
 def main():
