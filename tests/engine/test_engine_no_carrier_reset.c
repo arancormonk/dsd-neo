@@ -9229,9 +9229,8 @@ preamble_csbk_address_bits(dsd_opts* opts, dsd_state* state) {
  * the manufacturer and branding it announced, so a replay forgets them at the same capture time however fast it is
  * read. Driven through the TEST decode clock with no real time passing, on a trunked setup that follows no voice
  * channel (nothing to preserve): the XPT identity stands at decode +10 s and is gone at +11 s. The address layout is
- * no branding: it follows the carrier's checked trunking system in the received identity record, which the no-carrier
- * pass keeps (stale) on the same carrier, so a Preamble CSBK still reads XPT's 16-bit addresses; a carrier boundary's
- * reset of the record returns it to the standard 24-bit ones.
+ * no branding: it follows the carrier's checked trunking system in the received identity record only while that is
+ * fresh, so after the no-carrier pass a Preamble CSBK reads the standard 24-bit addresses until fresh evidence.
  */
 static int
 test_dmr_stale_follow_clear_runs_on_the_decode_clock(void) {
@@ -9259,10 +9258,7 @@ test_dmr_stale_follow_clear_runs_on_the_decode_clock(void) {
     noCarrier(opts, state);
     rc |= expect_true("stale-follow: +11 s clears manufacturer and branding",
                       state->dmr_mfid == -1 && state->dmr_branding[0] == '\0' && state->dmr_branding_sub[0] == '\0');
-    rc |= expect_true("stale-follow: the same carrier's checked XPT system still reads 16-bit addresses",
-                      preamble_csbk_address_bits(opts, state) == 16);
-    dsd_rxid_reset(state);
-    rc |= expect_true("stale-follow: after a carrier boundary a Preamble CSBK reads 24-bit addresses",
+    rc |= expect_true("stale-follow: then a Preamble CSBK reads 24-bit addresses",
                       preamble_csbk_address_bits(opts, state) == 24);
 
     dsd_decode_clock_use_system();
@@ -9273,7 +9269,8 @@ test_dmr_stale_follow_clear_runs_on_the_decode_clock(void) {
 /*
  * The conventional control for the case above: without trunking, noCarrier() drops the branding at every pass
  * whatever the clock says, while the manufacturer id still waits out more than 10 s of decode time since the last
- * control-channel sync.
+ * control-channel sync. The input may be an external scanner's, which moves to another channel with no carrier
+ * boundary the decoder sees: the XPT record the pass leaves stale selects no 16-bit layout.
  */
 static int
 test_dmr_mfid_clear_runs_on_the_decode_clock_without_trunking(void) {
@@ -9292,6 +9289,8 @@ test_dmr_mfid_clear_runs_on_the_decode_clock_without_trunking(void) {
     noCarrier(opts, state);
     rc |= expect_true("conventional: branding cleared at every pass",
                       state->dmr_branding[0] == '\0' && state->dmr_branding_sub[0] == '\0');
+    rc |= expect_true("conventional: the stale XPT record selects no 16-bit layout",
+                      preamble_csbk_address_bits(opts, state) == 24);
     rc |= expect_true("conventional: manufacturer kept at +0 s", state->dmr_mfid == 0x68);
     decode_clock_at_ms(10000U);
     noCarrier(opts, state);

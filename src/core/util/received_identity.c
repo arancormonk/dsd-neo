@@ -72,7 +72,8 @@ rxid_record(dsd_state* state) {
     return &state->rx_id;
 }
 
-/* The record @p family's note goes into: a record of another family is dropped first. */
+/* The record @p family's note goes into: a record of another family is dropped first. A checked note of another
+   family than DMR confirms that protocol on the carrier: a DMR layout held across its sync goes. */
 static dsd_received_identity*
 rxid_for(dsd_state* state, dsd_rxid_family family) {
     if (family == DSD_RXID_FAMILY_NONE || family == DSD_RXID_FAMILY_OTHER) {
@@ -81,6 +82,9 @@ rxid_for(dsd_state* state, dsd_rxid_family family) {
     dsd_received_identity* const id = rxid_record(state);
     if (id == NULL) {
         return NULL;
+    }
+    if (family != DSD_RXID_FAMILY_DMR) {
+        state->rx_dmr_layout_held = (uint8_t)DSD_RXID_DMR_TRUNK_NONE;
     }
     if (id->family != (uint8_t)family) {
         if (id->family != (uint8_t)DSD_RXID_FAMILY_NONE) {
@@ -137,6 +141,39 @@ dsd_rxid_reset(dsd_state* state) {
         state->rx_id_trunk_tune_pending = 0U; /* a retune of the carrier left, whose code is gone with the rest */
         state->rx_sync_protocol = 0U;         /* nothing heard on the carrier reached yet */
         state->rx_p25_phase = 0U;             /* rx_phase_seq never goes back: the epoch moved instead */
+        state->rx_dmr_layout_held = (uint8_t)DSD_RXID_DMR_TRUNK_NONE;
+    }
+}
+
+/* The parts of one DMR trunking system a checked message notes fresh: what selects the address layout. The Capacity
+   Max marker is set valid, never fresh. */
+#define RXID_DMR_LAYOUT_PARTS                                                                                          \
+    (DSD_RXID_DMR_REST_LSN | DSD_RXID_DMR_SITE_TEXT | DSD_RXID_DMR_NET | DSD_RXID_DMR_SITE | DSD_RXID_DMR_BRAND        \
+     | DSD_RXID_DMR_T3_SYSCODE | DSD_RXID_DMR_XPT_FREE_LCN)
+
+/* The trunking system a DMR record's fresh trunking parts name, else NONE. */
+static uint8_t
+rxid_dmr_fresh_trunk(const dsd_received_identity* id) {
+    if (id->family != (uint8_t)DSD_RXID_FAMILY_DMR || (id->fresh & RXID_DMR_LAYOUT_PARTS) == 0U) {
+        return (uint8_t)DSD_RXID_DMR_TRUNK_NONE;
+    }
+    return id->dmr_trunk;
+}
+
+uint8_t
+dsd_rxid_dmr_layout_trunk(const dsd_state* state) {
+    if (state == NULL) {
+        return (uint8_t)DSD_RXID_DMR_TRUNK_NONE;
+    }
+    const uint8_t trunk = rxid_dmr_fresh_trunk(&state->rx_id);
+    return trunk != (uint8_t)DSD_RXID_DMR_TRUNK_NONE ? trunk : state->rx_dmr_layout_held;
+}
+
+void
+dsd_rxid_note_confirmed_frame(dsd_state* state, int synctype) {
+    const dsd_rxid_family family = dsd_rxid_family_for_sync(synctype);
+    if (state != NULL && family != DSD_RXID_FAMILY_NONE && family != DSD_RXID_FAMILY_DMR) {
+        state->rx_dmr_layout_held = (uint8_t)DSD_RXID_DMR_TRUNK_NONE;
     }
 }
 
@@ -171,6 +208,11 @@ dsd_rxid_note_sync(dsd_state* state, int synctype) {
        M17 BERT frame): what was heard under the last one, a D-STAR header's naming among it, holds no longer. */
     if ((id->family != (uint8_t)DSD_RXID_FAMILY_NONE && id->family != (uint8_t)family)
         || (state->rx_sync_protocol != 0U && state->rx_sync_protocol != protocol)) {
+        /* The sync may be noise: the DMR layout the record's fresh parts name holds until the frame is confirmed. */
+        const uint8_t trunk = rxid_dmr_fresh_trunk(id);
+        if (trunk != (uint8_t)DSD_RXID_DMR_TRUNK_NONE) {
+            state->rx_dmr_layout_held = trunk;
+        }
         rxid_clear(id);
     }
     state->rx_sync_protocol = protocol;
@@ -188,6 +230,7 @@ void
 dsd_rxid_mark_stale(dsd_state* state) {
     if (state != NULL) {
         state->rx_id.fresh = 0U;
+        state->rx_dmr_layout_held = (uint8_t)DSD_RXID_DMR_TRUNK_NONE;
     }
 }
 
@@ -267,6 +310,7 @@ dsd_rxid_note_access(dsd_state* state, dsd_rxid_family family, uint8_t kind, uin
         /* Another system on this carrier: another identity, though the old one had sent nothing but its code. */
         rxid_drop(id, rxid_system_parts(id->family));
         id->epoch++;
+        state->rx_dmr_layout_held = (uint8_t)DSD_RXID_DMR_TRUNK_NONE;
     }
     id->access_kind = kind;
     id->access = value;
@@ -811,6 +855,9 @@ dsd_rxid_note_cc_freq(dsd_state* state, dsd_rxid_family family, uint32_t freq_hz
 
 void
 dsd_rxid_forget_system(dsd_state* state, dsd_rxid_family family, int with_access) {
+    if (state != NULL && family == DSD_RXID_FAMILY_DMR) {
+        state->rx_dmr_layout_held = (uint8_t)DSD_RXID_DMR_TRUNK_NONE;
+    }
     if (state != NULL && family != DSD_RXID_FAMILY_NONE && state->rx_id.family == (uint8_t)family) {
         rxid_invalidate(&state->rx_id, rxid_system_parts(state->rx_id.family) | (with_access ? DSD_RXID_ACCESS : 0U));
     }
@@ -837,6 +884,9 @@ dsd_rxid_note_decoder_settings(const dsd_opts* opts, dsd_state* state) {
         return;
     }
     dsd_received_identity* const id = &state->rx_id;
+    if (!rxid_family_decoded(opts, (uint8_t)DSD_RXID_FAMILY_DMR)) {
+        state->rx_dmr_layout_held = (uint8_t)DSD_RXID_DMR_TRUNK_NONE;
+    }
     if (id->family == (uint8_t)DSD_RXID_FAMILY_NONE) {
         return;
     }

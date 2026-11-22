@@ -424,6 +424,42 @@ check_received_identity_follows_the_protocol(void) {
     free(opts);
 }
 
+/* A sync of another protocol may be noise (multi-protocol decoding): it drops the DMR record as before, but the address
+   layout a checked Capacity Plus note named holds across an NXDN frame its decoder did not confirm and across DMR
+   frames, and an NXDN frame its decoder confirmed ends it. */
+static void
+check_unconfirmed_sync_keeps_the_dmr_layout(void) {
+    dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(*opts));
+    dsd_state* state = (dsd_state*)calloc(1, sizeof(*state));
+    assert(opts != NULL);
+    assert(state != NULL);
+    dsd_rxid_note_dmr_brand(state, "Capacity Plus");
+    assert(dsd_rxid_dmr_layout_trunk(state) == (uint8_t)DSD_RXID_DMR_TRUNK_CAPACITY_PLUS);
+
+    state->synctype = DSD_SYNC_NXDN_POS;
+    g_handler_verdict = DSD_FRAME_VERDICT_UNPRODUCTIVE;
+    g_called_handler = TEST_HANDLER_NONE;
+    processFrame(opts, state);
+    assert(g_called_handler == TEST_HANDLER_NXDN);
+    assert(state->rx_id.family == (uint8_t)DSD_RXID_FAMILY_NONE);
+    assert(dsd_rxid_dmr_layout_trunk(state) == (uint8_t)DSD_RXID_DMR_TRUNK_CAPACITY_PLUS);
+
+    state->synctype = DSD_SYNC_DMR_BS_DATA_POS;
+    g_handler_verdict = DSD_FRAME_VERDICT_PRODUCTIVE;
+    g_called_handler = TEST_HANDLER_NONE;
+    processFrame(opts, state);
+    assert(g_called_handler == TEST_HANDLER_DMR);
+    assert(dsd_rxid_dmr_layout_trunk(state) == (uint8_t)DSD_RXID_DMR_TRUNK_CAPACITY_PLUS);
+
+    state->synctype = DSD_SYNC_NXDN_NEG;
+    g_called_handler = TEST_HANDLER_NONE;
+    processFrame(opts, state);
+    assert(g_called_handler == TEST_HANDLER_NXDN);
+    assert(dsd_rxid_dmr_layout_trunk(state) == (uint8_t)DSD_RXID_DMR_TRUNK_NONE);
+    free(state);
+    free(opts);
+}
+
 /* Issue #800 (g62-r7): through the real dispatch, a frame of another protocol is another reception even when neither
    protocol notes any identity: D-STAR, an M17 BERT frame, then D-STAR again move the received identity's epoch at each
    switch (a D-STAR header heard before the M17 frame names no call after it); D-STAR frames in a row keep it. */
@@ -617,6 +653,7 @@ check_trunk_tune_inside_the_frame_keeps_the_next_burst(void) {
 int
 main(void) {
     check_received_identity_follows_the_protocol();
+    check_unconfirmed_sync_keeps_the_dmr_layout();
     check_protocol_switch_moves_the_reception();
     check_tolerant_p25p1_word_leaves_the_identity();
     check_trunk_tune_drop_applied_around_the_frame();

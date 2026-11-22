@@ -11,6 +11,7 @@
  * them raw, with the Connect Plus network in full and the Capacity Plus site from its checked messages.
  */
 
+#include <dsd-neo/core/access_code.h>
 #include <dsd-neo/core/bit_packing.h>
 #include <dsd-neo/core/call_state.h>
 #include <dsd-neo/core/crc_provenance.h>
@@ -1185,6 +1186,43 @@ test_capplus_slco_selects_layout(dsd_opts* opts, dsd_state* state) {
     return rc;
 }
 
+/* The Cap+ address layout counts while the carrier's checked evidence is fresh: a checked 0x3E status names Capacity
+   Plus even with rest LSN 0; the no-carrier pass (an external scanner may have moved to another channel) returns the
+   standard layout until fresh evidence; a sync of another protocol whose frame is not confirmed (NXDN noise in
+   multi-protocol mode) keeps it, and a checked note of that protocol ends it. */
+static int
+test_capplus_layout_counts_while_fresh(dsd_opts* opts, dsd_state* state) {
+    // Target bits 32..55 0x000123, source bits 56..79 0x020123: Cap+ reads target 291 and source 291, the standard
+    // layout source 131363 (rest LSN 2 as its high byte).
+    static const uint8_t k_private_preamble[12] = {0x3D, 0x00, 0x00, 0x00, 0x00, 0x01, 0x23, 0x02, 0x01, 0x23, 0, 0};
+    static const uint8_t k_status_rest0[12] = {0x3E, 0x10, 0xC0, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00};
+    static const uint8_t k_status_rest1[12] = {0x3E, 0x10, 0xC1, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00};
+    int rc = 0;
+    clear_record(state);
+    rc |= csbk_send(opts, state, k_status_rest0, 0U);
+    rc |= csbk_send(opts, state, k_private_preamble, 0U);
+    rc |= expect_log("a checked 0x3e with rest lsn 0 selects the cap+ layout", "Source: 291 - Target: 291");
+
+    dsd_rxid_mark_stale(state);
+    rc |= csbk_send(opts, state, k_private_preamble, 0U);
+    rc |= expect_log("a stale record after the no-carrier pass selects the standard layout", "Source: 131363");
+
+    rc |= csbk_send(opts, state, k_status_rest1, 0U);
+    dsd_rxid_note_sync(state, DSD_SYNC_NXDN_POS);
+    rc |= csbk_send(opts, state, k_private_preamble, 0U);
+    rc |= expect_log("an unconfirmed foreign sync keeps the cap+ layout", "Source: 291 - Target: 291");
+    dsd_rxid_note_sync(state, DSD_SYNC_DMR_BS_DATA_POS);
+    dsd_rxid_note_access(state, DSD_RXID_FAMILY_DMR, (uint8_t)DSD_ACCESS_CODE_COLOR_CODE, 1U);
+    dsd_rxid_note_sync(state, DSD_SYNC_NXDN_NEG);
+    rc |= csbk_send(opts, state, k_private_preamble, 0U);
+    rc |= expect_log("dmr bursts and another noise sync keep the cap+ layout", "Source: 291 - Target: 291");
+    dsd_rxid_note_nxdn_location(state, 2U, 0x12U, 3U);
+    rc |= csbk_send(opts, state, k_private_preamble, 0U);
+    rc |= expect_log("a checked note of the other protocol ends the cap+ layout", "Source: 131363");
+    clear_record(state);
+    return rc;
+}
+
 static int
 test_capmax_numbering(dsd_opts* opts, dsd_state* state) {
     int rc = 0;
@@ -1210,6 +1248,7 @@ test_site_numbers(dsd_opts* opts, dsd_state* state) {
     rc |= test_capplus_slco_reserved_bits_no_site(opts, state);
     rc |= test_capplus_slco_and_3b_agree(opts, state);
     rc |= test_capplus_slco_selects_layout(opts, state);
+    rc |= test_capplus_layout_counts_while_fresh(opts, state);
     rc |= test_capmax_numbering(opts, state);
     set_dmrla(opts, 1, 0);
     g_search_running = 1;

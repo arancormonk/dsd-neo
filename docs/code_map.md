@@ -4556,10 +4556,13 @@ suite runs under this compiler.
   every retune of an advance failed puts back the record the advance started with (the coordinator's `rollback_rx_id`,
   taken with the scratch snapshot, again after a forced release); `processFrame()` calls `dsd_rxid_note_sync()` before
   each dispatched frame, so a frame of another protocol family (YSF, D-STAR, X2-TDMA included, which note nothing) drops
-  the record, and a frame of another protocol than the last one's (`dsd_state::rx_sync_protocol`: the family, or for a
-  protocol that notes nothing the protocol itself) moves the epoch even when neither noted anything (issue #800, fail
-  closed: a D-STAR call, an M17 BERT frame and D-STAR again are three receptions, so a D-STAR header's naming and every
-  multi-fragment report's origin end at the switch; both P25 phases, every DMR burst and both polarities are one
+  the record (the DMR trunking system its fresh parts named stays held for the DMR address layout,
+  `dsd_state::rx_dmr_layout_held`, until a frame of another protocol is confirmed, `dsd_rxid_note_confirmed_frame()`
+  after the handler's productive verdict, or noted, or another DMR colour code, the no-carrier pass, the DMR reset or a
+  carrier boundary), and a frame of another protocol than the last one's (`dsd_state::rx_sync_protocol`: the family, or
+  for a protocol that notes nothing the protocol itself) moves the epoch even when neither noted anything (issue #800,
+  fail closed: a D-STAR call, an M17 BERT frame and D-STAR again are three receptions, so a D-STAR header's naming and
+  every multi-fragment report's origin end at the switch; both P25 phases, every DMR burst and both polarities are one
   protocol, but a P25 sync of the other phase than the last P25 sync moves `dsd_state::rx_phase_seq`, and so the
   reception generation, keeping the record; an applied retune starts the carrier reached's phase afresh, so a Phase 2
   voice channel a Phase 1 control channel granted moves the generation once, by the retune); the no-carrier pass's last step (`dsd_engine_no_carrier_identity_stale()`, under the guard; a pass that
@@ -13415,11 +13418,16 @@ Private per-protocol modules worth knowing about:
   `dmr_cspdu_cap_plus_3e_set_branding()`, `dmr_cspdu_con_plus_set_branding()`: a RAS-accepted LC or CSBK never sets
   them). Those strings are display text only. The address layout later LCs, data headers and preamble CSBKs are read
   with (Capacity Plus and XPT 16-bit, otherwise the standard 24-bit) has one source, the carrier's current checked
-  trunking system in the received identity record (`dmr_address_layout_of()`, `dmr_address_layout.h`: `rx_id.dmr_trunk`
-  with a checked trunk part valid), so every checked word that names a system selects its layout (a Capacity Plus short
-  LC, a checked Motorola group voice LC naming a rest channel, a checked 0x3E status, a checked XPT alert, CSBK or short
-  LC), a checked note of another system (a Connect Plus short LC after a Capacity Plus one) replaces it, the no-carrier
-  pass keeps it (stale) on the same carrier and a carrier boundary resets it. Only a voice channel user opens a call,
+  trunking system as the received identity names it (`dmr_address_layout_of()`, `dmr_address_layout.h`:
+  `dsd_rxid_dmr_layout_trunk()`, `rx_id.dmr_trunk` while a checked trunk part is fresh), so every checked word that
+  names a system selects its layout (a Capacity Plus short LC, a checked Motorola group voice LC naming a rest channel,
+  a checked 0x3E status, its rest LSN 0 included, a checked XPT alert, CSBK or short LC), a checked note of another
+  system (a Connect Plus short LC after a Capacity Plus one) replaces it, and it counts only while fresh: after the
+  no-carrier pass (on an untrunked input, an external scanner's move to another channel may be the only sign) the
+  standard layout holds until fresh checked evidence, and a carrier boundary resets it. A sync of another protocol whose
+  frame is not confirmed (noise in multi-protocol decoding) drops the record but leaves the layout
+  (`dsd_state::rx_dmr_layout_held`); only that protocol's confirmed frame or checked note ends it. Only a voice channel
+  user opens a call,
   holds the scan, arms or releases the encryption lockout, moves the slot's encryption classification or ends its voice
   hold, and shows its parties and service options (emergency, encrypted, priority) on the terminal; any other LC shows
   its FLCO, FID and raw payload (`dmr_flco_print_non_voice_lc()`) (`dmr_flco_opens_voice_call()`, fixed once per LC as

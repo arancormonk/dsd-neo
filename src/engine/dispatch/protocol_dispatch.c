@@ -127,6 +127,12 @@ processFrame(dsd_opts* opts, dsd_state* state) {
         state->sps_hunt_last_frame_verdict = (int)handler->handle_frame(opts, state);
         state->frame_dispatch_active = 0;
         process_frame_settle_verdict(state, carrier_seq, unchecked && process_frame_may_be_a_call(synctype));
+        /* A frame its decoder confirmed, on the carrier it was read on and uninterrupted, confirms its protocol here: a
+           DMR address layout held across its sync, which may have been noise, goes. */
+        if (state->sps_hunt_last_frame_verdict == DSD_FRAME_VERDICT_PRODUCTIVE
+            || state->sps_hunt_last_frame_verdict == DSD_FRAME_VERDICT_PROFILE_PROVEN) {
+            dsd_rxid_note_confirmed_frame(state, synctype);
+        }
     }
 }
 

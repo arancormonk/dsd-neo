@@ -57,6 +57,12 @@
  * Commands that forget or reinterpret a site forget it here too: the DMR reset (dsd_rxid_forget_system()), and a
  * committed change of the decode mode or the EDACS addressing mode (dsd_rxid_note_decoder_settings()).
  *
+ * The DMR address layout (16-bit Capacity Plus and Hytera XPT addresses, dsd_rxid_dmr_layout_trunk()) is read from
+ * the record's DMR trunking parts while they are fresh. Noise passes a sync word: a sync of another protocol drops the
+ * record before its frame is confirmed (multi-protocol decoding), so the trunking system its fresh parts named is held
+ * (dsd_state::rx_dmr_layout_held) until another protocol's frame is confirmed (dsd_rxid_note_confirmed_frame()) or its
+ * checked note arrives, another DMR access code, the no-carrier pass, the DMR reset or a carrier boundary.
+ *
  * Plain integers and characters only: the record rides the dsd_state snapshot copy range (ui_snapshot.c pins it).
  *
  * Threading: written on the decoder thread only, and wherever the P25 watchdog's tick could run beside it, under the
@@ -308,6 +314,15 @@ void dsd_rxid_note_dmr_t3_capmax_unchecked(dsd_state* state, uint8_t model, uint
 /** 1 when @p state's record is DMR and holds the Capacity Max marker for exactly @p model and @p net; else 0 (NULL
  * too). */
 int dsd_rxid_dmr_t3_is_capmax(const dsd_state* state, uint8_t model, uint16_t net);
+/** The DMR trunking system (dsd_rxid_dmr_trunk) whose address layout DMR decoding reads with: the record's while one
+ * of its trunking parts is fresh (rest LSN, site text, network, site, brand, Tier III system code or XPT free LCN; the
+ * Capacity Max marker is never fresh), else the one held across a sync of another protocol whose frame was not
+ * confirmed (dsd_state::rx_dmr_layout_held), else NONE (also for NULL). A stale record (the no-carrier pass, which an
+ * external scanner's move to another channel may be the only sign of) names none until fresh checked evidence. */
+uint8_t dsd_rxid_dmr_layout_trunk(const dsd_state* state);
+/** The frame of @p synctype that processFrame() dispatched was confirmed (its handler's verdict productive, on the
+ * carrier it was read on): a frame of another protocol than DMR ends a DMR layout held across its sync. */
+void dsd_rxid_note_confirmed_frame(dsd_state* state, int synctype);
 /** The DMR decoder confirmed RAS on this carrier (dmr_ras_note_signature()): sets DSD_RXID_DMR_RAS. It notes no decoded
  * field, so it neither moves the epoch nor names another system. */
 void dsd_rxid_note_dmr_ras(dsd_state* state);

@@ -1910,13 +1910,17 @@ dmr_cspdu_cap_plus_3e_update_multiblock(dsd_state* state, const uint8_t cs_pdu_b
 
 static void
 dmr_cspdu_cap_plus_3e_sync_rest(const dsd_opts* opts, dsd_state* state, const dmr_cap_plus_3e_ctx* ctx) {
-    if (!dmr_cap_plus_rest_lsn_valid(ctx->rest_channel)) {
-        return;
-    }
-    // Before the change test: an unchanged repeat proves the rest channel again.
+    const int rest_valid = dmr_cap_plus_rest_lsn_valid(ctx->rest_channel);
+    // A checked status names Capacity Plus whether or not it names a usable rest channel; before the change test, an
+    // unchanged repeat proves the rest channel again.
     if (dmr_csbk_crc_checked(state)) {
-        dsd_rxid_note_dmr_rest_lsn(state, ctx->rest_channel);
+        if (rest_valid) {
+            dsd_rxid_note_dmr_rest_lsn(state, ctx->rest_channel);
+        }
         dsd_rxid_note_dmr_brand(state, "Capacity Plus");
+    }
+    if (!rest_valid) {
+        return;
     }
     if (ctx->rest_channel != state->dmr_rest_channel) {
         state->dmr_rest_channel = ctx->rest_channel;

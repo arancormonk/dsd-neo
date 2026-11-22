@@ -1157,6 +1157,60 @@ test_protocol_switch_moves_the_epoch(void) {
     free(state);
 }
 
+/* The DMR address layout (dsd_rxid_dmr_layout_trunk()): the record's fresh trunking parts name it, a stale record none;
+   a sync of another protocol holds the system across the record's drop until another protocol's frame is confirmed or
+   its checked note comes, another DMR colour code, the no-carrier pass, the DMR reset or a carrier boundary. */
+static void
+hold_capplus(dsd_state* state) {
+    dsd_rxid_reset(state);
+    dsd_rxid_note_access(state, DSD_RXID_FAMILY_DMR, DSD_ACCESS_CODE_COLOR_CODE, 1U);
+    dsd_rxid_note_dmr_brand(state, "Capacity Plus");
+    dsd_rxid_note_sync(state, DSD_SYNC_NXDN_POS);
+}
+
+static void
+test_dmr_layout_lifecycle(void) {
+    dsd_state* state = new_state();
+    const unsigned long cap = (unsigned long)DSD_RXID_DMR_TRUNK_CAPACITY_PLUS;
+    expect_u("layout: empty", dsd_rxid_dmr_layout_trunk(state), 0U);
+    expect_u("layout: NULL", dsd_rxid_dmr_layout_trunk(NULL), 0U);
+    dsd_rxid_note_dmr_xpt_free_lcn(state, 3U);
+    expect_u("layout: fresh xpt", dsd_rxid_dmr_layout_trunk(state), (unsigned long)DSD_RXID_DMR_TRUNK_XPT);
+    dsd_rxid_mark_stale(state);
+    expect_u("layout: stale record names none", dsd_rxid_dmr_layout_trunk(state), 0U);
+
+    hold_capplus(state);
+    expect_u("layout: held across a foreign sync", dsd_rxid_dmr_layout_trunk(state), cap);
+    dsd_rxid_note_sync(state, DSD_SYNC_DMR_BS_DATA_POS);
+    dsd_rxid_note_access(state, DSD_RXID_FAMILY_DMR, DSD_ACCESS_CODE_COLOR_CODE, 1U);
+    expect_u("layout: held across the same colour code", dsd_rxid_dmr_layout_trunk(state), cap);
+    dsd_rxid_note_confirmed_frame(state, DSD_SYNC_DMR_BS_DATA_POS);
+    expect_u("layout: a confirmed DMR frame keeps it", dsd_rxid_dmr_layout_trunk(state), cap);
+    dsd_rxid_note_access(state, DSD_RXID_FAMILY_DMR, DSD_ACCESS_CODE_COLOR_CODE, 2U);
+    expect_u("layout: another colour code ends it", dsd_rxid_dmr_layout_trunk(state), 0U);
+
+    hold_capplus(state);
+    dsd_rxid_note_dmr_t3_syscode(state, 0x1234U);
+    expect_u("layout: a checked Tier III code replaces it", dsd_rxid_dmr_layout_trunk(state),
+             (unsigned long)DSD_RXID_DMR_TRUNK_TIER3);
+    hold_capplus(state);
+    dsd_rxid_note_confirmed_frame(state, DSD_SYNC_NXDN_POS);
+    expect_u("layout: a confirmed foreign frame ends it", dsd_rxid_dmr_layout_trunk(state), 0U);
+    hold_capplus(state);
+    dsd_rxid_note_access(state, DSD_RXID_FAMILY_NXDN, DSD_ACCESS_CODE_RAN, 5U);
+    expect_u("layout: a checked foreign note ends it", dsd_rxid_dmr_layout_trunk(state), 0U);
+    hold_capplus(state);
+    dsd_rxid_mark_stale(state);
+    expect_u("layout: the no-carrier pass ends it", dsd_rxid_dmr_layout_trunk(state), 0U);
+    hold_capplus(state);
+    dsd_rxid_forget_system(state, DSD_RXID_FAMILY_DMR, 1);
+    expect_u("layout: the DMR reset ends it", dsd_rxid_dmr_layout_trunk(state), 0U);
+    hold_capplus(state);
+    dsd_rxid_reset(state);
+    expect_u("layout: a carrier boundary ends it", dsd_rxid_dmr_layout_trunk(state), 0U);
+    free(state);
+}
+
 int
 main(void) {
     test_parts_and_reset();
@@ -1185,6 +1239,7 @@ main(void) {
     test_dmr_t3_capmax_marker_lifecycle();
     test_dmr_t3_capmax_marker_epoch();
     test_protocol_switch_moves_the_epoch();
+    test_dmr_layout_lifecycle();
     dsd_rxid_reset(NULL);
     dsd_rxid_note_sync(NULL, DSD_SYNC_DMR_BS_DATA_POS);
     if (g_fail) {
