@@ -13674,9 +13674,9 @@ y_count_text(const char* text, const char* needle) {
     return n;
 }
 
-/* A typed -Y list (DMR, TETRA DMO, DMR) on the fake 72 kHz radio, stepped onto its TETRA row: 0 when it is on air. */
+/* y_tetra_start() with rows 0 and 2 of the modes @p first and @p last (the TETRA DMO row is row 1). */
 static int
-y_tetra_start(dsd_opts* opts, dsd_state* state, const char* what) {
+y_tetra_start_rows(dsd_opts* opts, dsd_state* state, const char* what, dsd_scan_mode first, dsd_scan_mode last) {
     int rc = 0;
     reset_rtl_profile_fakes();
     dsd_trunk_tuning_requests_reset();
@@ -13695,9 +13695,9 @@ y_tetra_start(dsd_opts* opts, dsd_state* state, const char* what) {
     state->trunk_lcn_freq[1] = 425012500;
     state->trunk_lcn_freq[2] = 462012500;
     rc |= expect_case(what, "rows typed",
-                      dsd_channel_mode_set(state, 0, DSD_SCAN_MODE_DMR) == 0
+                      dsd_channel_mode_set(state, 0, first) == 0
                           && dsd_channel_mode_set(state, 1, DSD_SCAN_MODE_TETRA_DMO) == 0
-                          && dsd_channel_mode_set(state, 2, DSD_SCAN_MODE_DMR) == 0);
+                          && dsd_channel_mode_set(state, 2, last) == 0);
     state->last_cc_sync_time = time(NULL);
     noCarrier(opts, state);
     state->last_cc_sync_time -= 11;
@@ -13708,6 +13708,12 @@ y_tetra_start(dsd_opts* opts, dsd_state* state, const char* what) {
                       state->scan_row_index == 1 && opts->frame_tetra == 1
                           && dsd_engine_channel_scan_on_air_row(state) == 1);
     return rc;
+}
+
+/* A typed -Y list (DMR, TETRA DMO, DMR) on the fake 72 kHz radio, stepped onto its TETRA row: 0 when it is on air. */
+static int
+y_tetra_start(dsd_opts* opts, dsd_state* state, const char* what) {
+    return y_tetra_start_rows(opts, state, what, DSD_SCAN_MODE_DMR, DSD_SCAN_MODE_DMR);
 }
 
 static void
@@ -13788,6 +13794,53 @@ y_tetra_locked_chain_case(void) {
     rc |= expect_case(name, detail,
                       g_rtl_cqpsk_enable == 1 && g_rtl_symbol_rate_hz == 18000
                           && g_rtl_channel_profile == DSD_RTL_STREAM_CHANNEL_PROFILE_TETRA);
+    y_tetra_finish(opts, state);
+    return rc;
+}
+
+/* Issue #890: a blank row after the tetra-dmo row runs the configured decoder's chain, here the FSK discriminator of
+   the configured C4FM decoder: the CQPSK choice the TETRA row's timing recorded is not the blank row's. */
+static int
+y_tetra_then_blank_row_case(void) {
+    const char* name = "-Y blank row after a TETRA row";
+    dsd_opts* opts = NULL;
+    dsd_state* state = NULL;
+    if (init_test_runtime(&opts, &state) != 0) {
+        return 1;
+    }
+    state->rf_mod = 0;
+    int rc = y_tetra_start_rows(opts, state, name, DSD_SCAN_MODE_DMR, DSD_SCAN_MODE_INHERIT);
+    state->last_cc_sync_time -= 11;
+    noCarrier(opts, state);
+    char detail[160];
+    DSD_SNPRINTF(detail, sizeof detail, "on the blank row with the configured chain (row %d, cqpsk %d, profile %d)",
+                 dsd_engine_channel_scan_on_air_row(state), g_rtl_cqpsk_enable, g_rtl_channel_profile);
+    rc |= expect_case(name, detail,
+                      dsd_engine_channel_scan_on_air_row(state) == 2 && g_rtl_cqpsk_enable == 0
+                          && g_rtl_channel_profile != DSD_RTL_STREAM_CHANNEL_PROFILE_TETRA);
+    y_tetra_finish(opts, state);
+    return rc;
+}
+
+/* Issue #890: the tetra-dmo row after an nfm row switches the front end back to the digital family with its CQPSK
+   choice its own, so the stream lands the CQPSK chain whatever DSD_NEO_CQPSK says. */
+static int
+y_tetra_after_nfm_row_case(void) {
+    const char* name = "-Y TETRA row after an nfm row";
+    dsd_opts* opts = NULL;
+    dsd_state* state = NULL;
+    if (init_test_runtime(&opts, &state) != 0) {
+        return 1;
+    }
+    int rc = y_tetra_start_rows(opts, state, name, DSD_SCAN_MODE_NFM, DSD_SCAN_MODE_DMR);
+    const int at = tune_log_index_for(425012500U);
+    char detail[160];
+    DSD_SNPRINTF(detail, sizeof detail, "its family switch is explicit (family %d, cqpsk %d, explicit %d)",
+                 at >= 0 ? g_tune_log_family[at] : -9, at >= 0 ? g_tune_log_cqpsk[at] : -9,
+                 at >= 0 ? g_tune_log_explicit[at] : -9);
+    rc |= expect_case(name, detail,
+                      at >= 0 && g_tune_log_family[at] == DSD_RX_FAMILY_DIGITAL && g_tune_log_cqpsk[at] == 1
+                          && g_tune_log_explicit[at] == 1);
     y_tetra_finish(opts, state);
     return rc;
 }
@@ -13970,7 +14023,8 @@ test_avoided_row_departs_under_a_carrier(void) {
            | departure_without_a_carrier_case() | typed_departure_case() | y_tetra_on_air_case(0, 0)
            | y_tetra_on_air_case(1, 0) | y_tetra_on_air_case(0, 1) | y_tetra_on_air_case(1, 1)
            | y_tetra_late_failure_case() | y_tetra_paused_case() | y_tetra_locked_chain_case()
-           | y_tetra_settled_other_case() | y_tetra_entry_reads_the_on_air_verdict_case();
+           | y_tetra_settled_other_case() | y_tetra_entry_reads_the_on_air_verdict_case()
+           | y_tetra_then_blank_row_case() | y_tetra_after_nfm_row_case();
 }
 
 /* The scan holds row @p row of the walk list, marked an entry hold, as the row committed (issue #644). */

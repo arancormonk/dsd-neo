@@ -696,16 +696,19 @@ dsd_engine_prepare_scan_analog_profile(const dsd_opts* opts, const dsd_state* st
  * request queued before it (a width edit for the analog target). It is attached when the retune carries that family
  * (@p lands_digital_family, the preparation's dsd_engine_retune_lands_digital_family(): the row was timed for that
  * landing, or the front end runs the analog family or outstanding work lands a family); a digital-only session never
- * does, so it retunes as it always has. It says whether the profile's CQPSK state is a trunk-scan target's own
- * choice (dsd_engine_trunk_scan_cqpsk_explicit()), which the stream then lands over DSD_NEO_CQPSK (issue #583); the
- * stream ignores that for a profile that leaves the CQPSK state alone. */
+ * does, so it retunes as it always has. It says whether the profile's CQPSK state is the target's own choice, which
+ * the stream then lands over DSD_NEO_CQPSK (issue #583): a trunk-scan target's (dsd_engine_trunk_scan_cqpsk_explicit())
+ * or, with @p row_cqpsk_explicit, the -Y row's its timing recorded (dsd_scan_mode_timed_cqpsk(): a tetra-dmo row's
+ * CQPSK chain, issue #890), so a tetra-dmo row after an nfm row lands its chain whatever DSD_NEO_CQPSK says. The stream
+ * ignores that for a profile that leaves the CQPSK state alone. */
 static void
-dsd_engine_prepare_digital_family(const dsd_state* state, long int freq, int lands_digital_family) {
+dsd_engine_prepare_digital_family(const dsd_state* state, long int freq, int lands_digital_family,
+                                  int row_cqpsk_explicit) {
     if (!lands_digital_family) {
         return;
     }
-    const rtl_stream_retune_analog_profile digital = {DSD_RX_FAMILY_DIGITAL, DSD_ANALOG_DEMOD_FM, 0,
-                                                      dsd_engine_trunk_scan_cqpsk_explicit(state)};
+    const int cqpsk_explicit = row_cqpsk_explicit || dsd_engine_trunk_scan_cqpsk_explicit(state);
+    const rtl_stream_retune_analog_profile digital = {DSD_RX_FAMILY_DIGITAL, DSD_ANALOG_DEMOD_FM, 0, cqpsk_explicit};
     (void)rtl_stream_prepare_retune_analog_profile_for_target((uint32_t)freq, &digital);
 }
 
@@ -1522,7 +1525,7 @@ engine_trunk_tune_to_cc_request_once(dsd_opts* opts, dsd_state* state, long int 
 #ifdef USE_RADIO
         const int lands_digital_family = dsd_engine_retune_lands_digital_family(opts, state, 1);
         dsd_engine_prepare_cc_rtl_chain(opts, state, freq, ted_sps);
-        dsd_engine_prepare_digital_family(state, freq, lands_digital_family);
+        dsd_engine_prepare_digital_family(state, freq, lands_digital_family, 0);
 #endif
     }
     result = dsd_engine_tune_with_backend(opts, state, freq, request_id);
@@ -1577,21 +1580,24 @@ dsd_engine_prepare_scan_profile(const dsd_opts* opts, dsd_state* state, long int
     }
     if (ted_sps > 0) {
         const int lands_digital_family = dsd_engine_retune_lands_digital_family(opts, state, 1);
+        int row_explicit = 0;
         if (dsd_engine_conventional_scan_active(opts)) {
             const int rate = dsd_frame_sync_active_profile_symbol_rate_hz(state);
             const int levels = dsd_frame_sync_active_profile_levels(state);
             /* The row's chain: its class's own where it has one (a tetra-dmo row runs only the CQPSK chain with the
                TETRA filter, issue #890, whatever a global -m lock left on rf_mod), as the row's timing assumed it, else
-               the decoder's. The row is staged here, not yet the scope's, so its timing's record answers for it. */
+               the decoder's. The row is staged here, not yet the scope's, so its timing's record answers for it; the
+               family switch out of an analog row carries the same choice. */
             int class_cqpsk = 0;
-            const int rf_mod = dsd_scan_mode_timed_cqpsk(state, &class_cqpsk) ? (class_cqpsk ? 1 : 0) : state->rf_mod;
+            row_explicit = dsd_scan_mode_timed_cqpsk(state, &class_cqpsk);
+            const int rf_mod = row_explicit ? (class_cqpsk ? 1 : 0) : state->rf_mod;
             dsd_engine_prepare_retune_profile_for_target(opts, state, (uint32_t)freq, rf_mod == 1, rate, levels,
                                                          dsd_rtl_channel_profile_for(opts, rate, levels, rf_mod),
                                                          ted_sps, 0);
         } else {
             dsd_engine_prepare_cc_rtl_chain(opts, state, freq, ted_sps);
         }
-        dsd_engine_prepare_digital_family(state, freq, lands_digital_family);
+        dsd_engine_prepare_digital_family(state, freq, lands_digital_family, row_explicit);
     }
     return 0;
 }

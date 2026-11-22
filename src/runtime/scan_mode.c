@@ -758,6 +758,13 @@ scan_scope_apply_decoder(dsd_opts* opts, dsd_state* state, const scan_scope* sco
     dsd_decode_mode_profile profile;
     if (scan_scope_apply_row_decoder(opts, state, scope, how, &profile)) {
         scan_scope_apply_timing(opts, state, scope, profile);
+        return;
+    }
+    /* A blank row runs the configured decoder with its timing, and so its chain: no choice of its own, so none a row
+       timed before it left on the live scope (issue #890) answers for it. */
+    scan_scope* live = scan_scope_get(state);
+    if (live) {
+        live->timed_cqpsk = -1;
     }
 }
 
@@ -1487,6 +1494,7 @@ dsd_scan_mode_prepare(dsd_opts* opts, dsd_state* state, dsd_scan_mode mode, cons
     scan_scope* live = scan_scope_get(state);
     if (live) {
         live->timed_digital_family = 0;
+        live->timed_cqpsk = -1; /* until the staged row's timing records its own choice */
     }
     dsd_scan_settings effective;
     dsd_scan_settings_capture(opts, state, &effective);
