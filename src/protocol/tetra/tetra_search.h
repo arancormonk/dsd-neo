@@ -45,8 +45,10 @@
  *
  * The first gate to open names the detection. A latched withdrawal (DSD_SEARCH_SITE_NOTE_TETRA_WITHDRAW, sent once)
  * takes the hit's site and access back for the rest of the visit when its identity turns ambiguous: a second BSCH
- * identity on the carrier in the visit, a SYSINFO under the gate seed naming another location area or main carrier, a
- * gate cell's sharing mode turning out not 00 after its site was sent, or the other mode's gate opening. An identity
+ * identity on the carrier in the visit, a SYSINFO under the gate seed naming another main carrier (a change
+ * between none, one this decoder cannot name and a frequency included) or, beside a CA main carrier, another location
+ * area (with no CA main carrier the location area, an associated CA cell's, tells no cell apart: EN 300 392-2 clause
+ * 23.6.9), a gate cell's sharing mode turning out not 00 after its site was sent, or the other mode's gate opening. An identity
  * ambiguous before gate A opens (a second BSCH identity observed first) confirms "TETRA" with no access text and sends
  * no site, the withdrawal right after it, so no publication ever carries its colour code. After the
  * gate that named the detection opened, every burst that carries its mode's content refreshes the visit's activity

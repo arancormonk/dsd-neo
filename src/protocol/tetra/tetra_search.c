@@ -340,7 +340,19 @@ note_block_sysinfo(tetra_search_t* sr, const uint8_t* bits, int len) {
     sr->burst_sysinfo.valid = 1;
 }
 
-/* A SYSINFO under the open gate's seed: the first supplies the site, one naming another location area or main carrier
+/* Whether two SYSINFOs under the gate seed name other cells: another main carrier, or a change between none, one this
+ * decoder cannot name and one it can; or, beside a CA main carrier, another location area. With no CA main carrier
+ * (band 0, carrier 0) the location area is the associated CA cell's, of which there is none (EN 300 392-2 clause
+ * 23.6.9), and the site shows none (site_tetra_format()): its bits tell no cell apart. */
+static int
+sysinfo_other_cell(const tetra_search_sysinfo* a, const tetra_search_sysinfo* b) {
+    if (a->main_state != b->main_state || a->main_hz != b->main_hz) {
+        return 1;
+    }
+    return a->main_state != DSD_SEARCH_TETRA_MAIN_NO_CA && a->la != b->la;
+}
+
+/* A SYSINFO under the open gate's seed: the first supplies the site, one naming another cell (sysinfo_other_cell())
  * withdraws it. A colour code 0 cell's SYSINFO is no one cell's. */
 static void
 gate_sysinfo(const dsd_state* state, tetra_search_t* sr) {
@@ -353,7 +365,7 @@ gate_sysinfo(const dsd_state* state, tetra_search_t* sr) {
         tmo_site(state, sr);
         return;
     }
-    if (si->la != sr->sysinfo.la || si->main_state != sr->sysinfo.main_state || si->main_hz != sr->sysinfo.main_hz) {
+    if (sysinfo_other_cell(si, &sr->sysinfo)) {
         withdraw(state, sr);
     }
 }
