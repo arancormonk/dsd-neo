@@ -1603,7 +1603,12 @@ Item {
                     text: otherIdentityText.text
                 }
 
-                MicroLabel {
+                // Drawn text only, in MicroLabel's look: no node of its own
+                // (r4 F3). It comes and goes with the room the line has, and a
+                // node that did raised a hide or show at each fit change and,
+                // hidden, still renamed with each lead-slot change; the
+                // identity line, the strip's one stable node, reads the slot.
+                Text {
                     id: otherSlotLabel
                     objectName: "otherSlotLabel"
                     // Idle, the label is all the line holds.
@@ -1614,16 +1619,25 @@ Item {
                     width: Math.min(implicitWidth, Math.max(0, parent.width - 2 * Theme.cardPadding))
                     elide: Text.ElideRight
                     text: screen.stripIdle ? qsTr("SLOT %1 · idle").arg(screen.stripSlot) : qsTr("SLOT %1").arg(screen.otherSlot)
+                    textFormat: Text.PlainText
+                    font.family: Theme.mono
+                    font.pixelSize: Theme.fontSize(11)
+                    font.letterSpacing: Theme.fontSize(11) * 0.18
+                    font.capitalization: Font.AllUppercase
+                    color: Theme.textSubdued
                 }
 
                 ReadableText {
                     id: otherIdentityText
                     objectName: "otherSlotIdentity"
-                    visible: !screen.stripIdle
-                    // With its tags, which sit beside it (issue #782), and its slot where the label is not drawn:
-                    // each even where the line has no room to draw it, since the kind of call is not something to
-                    // drop for a screen reader.
-                    Accessible.name: !navigationAllowed || !visible ? "" : [otherSlotLabel.visible ? "" : otherSlotLabel.text, text, screen.otherPrivate || otherPrivateTag.visible ? otherPrivateTag.label : "", screen.otherEmergency || otherEmergencyTag.visible ? otherEmergencyTag.label : "", screen.otherEnc || otherEncTag.visible ? otherEncTag.label : ""].filter(function (part) {
+                    // The strip's one node, shown with the panel whatever the
+                    // line draws (r4 F3): idle, it reads the idle state (its own
+                    // text is empty, the label draws it); with a call, the slot,
+                    // the call and its tags, each even where the line has no
+                    // room to draw it, since the kind of call is not something
+                    // to drop for a screen reader (issue #782). Unnamed while
+                    // covered.
+                    Accessible.name: !navigationAllowed || !visible ? "" : [otherSlotLabel.text, text, screen.otherPrivate || otherPrivateTag.visible ? otherPrivateTag.label : "", screen.otherEmergency || otherEmergencyTag.visible ? otherEmergencyTag.label : "", screen.otherEnc || otherEncTag.visible ? otherEncTag.label : ""].filter(function (part) {
                         return part.length > 0;
                     }).join(", ")
                     anchors.left: otherSlotPanel.plan.label ? otherSlotLabel.right : parent.left
@@ -1636,7 +1650,7 @@ Item {
                     height: screen.otherIdentityBox
                     verticalAlignment: Text.AlignVCenter
                     // One line in its box (r2 B1): a break in a name is a space.
-                    text: Util.oneLine(screen.otherIdentity)
+                    text: screen.stripIdle ? "" : Util.oneLine(screen.otherIdentity)
                     maximumLineCount: 1
                     font.family: Theme.sans
                     font.pixelSize: Theme.fontSize(14)
@@ -1692,7 +1706,9 @@ Item {
                     implicitHeight: 48
                     height: 48
                     text: qsTr("Skip")
-                    accessibleName: qsTr("Skip this call on slot %1").arg(screen.otherSlot)
+                    // Unnamed while covered or hidden (r4 F3: a lead-slot change
+                    // under the session's Settings renamed it).
+                    accessibleName: navigationAllowed && visible ? qsTr("Skip this call on slot %1").arg(screen.otherSlot) : ""
                     // Idle: nothing to skip. Hidden, its place kept so the strip reads the same either way.
                     visible: !screen.stripIdle
                     enabled: decoderHost.running
@@ -1708,7 +1724,8 @@ Item {
                     width: 48
                     height: 48
                     icon: "more"
-                    accessibleName: qsTr("More actions for slot %1").arg(screen.otherSlot)
+                    // Unnamed while covered or hidden, as Skip.
+                    accessibleName: navigationAllowed && visible ? qsTr("More actions for slot %1").arg(screen.otherSlot) : ""
                     visible: !screen.stripIdle
                     enabled: decoderHost.running
                     onClicked: otherSlotMenu.openForOtherSlot()

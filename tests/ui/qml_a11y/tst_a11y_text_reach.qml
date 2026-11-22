@@ -337,6 +337,8 @@ Item {
                 reason: "\"+N\", how many saved names the line leaves out; the saved line's name reads every one of them."},
             {file: "ScanAvoidSheet.qml", name: "entryLabel", readBy: function (text) { return findNear(text, "scanAvoidPutBack"); },
                 reason: "Its Put back reads the entry in its name (\"Put back Row 1  851.012500 MHz  Fire Dispatch\"), the row's one node."},
+            {file: "MonitorScreen.qml", name: "otherSlotLabel", readBy: function (text) { return findNear(text, "otherSlotIdentity"); },
+                reason: "The other slot's label is drawn only while the line has room; the identity line, the strip's one node, reads it (issue #901 r4 F3)."},
             {file: "MonitorScreen.qml", name: /^(liveLabelProbe|titleLineProbe|titleLatinProbe)$/,
                 reason: "Sizing probes, never shown (visible: false); only the every-branch pass shows them."}
         ]

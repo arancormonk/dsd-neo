@@ -164,6 +164,112 @@ Item {
             testContext.useLifecycleHost(false);
         }
 
+        // Issue #901 r4 F3: the other slot's optional label is drawn text with no node of its own. One stable node,
+        // the identity line, reads the slot with the call (or the idle state). At 320 dp a short identity left room
+        // for the label and a long one did not, so each change hid or showed the label's node; hidden, it still
+        // took the label's text as its name, so six lead-slot changes renamed it six times, under the session's
+        // Settings too. Now neither a fit change nor a lead-slot change shows, hides or renames anything but the
+        // identity line, whose name holds the slot whether the label is drawn or not, and which says nothing while
+        // the Monitor is covered.
+        function setSlotCall(slot, name) {
+            var p = "slot" + slot;
+            var v = {};
+            v[p + "CallKind"] = 2;
+            v[p + "CallName"] = name;
+            v[p + "TgText"] = name;
+            v[p + "TgId"] = 4000 + slot;
+            v[p + "TgLabel"] = name;
+            v[p + "SrcText"] = "700" + slot;
+            v[p + "ProtocolLabel"] = "DMR";
+            v[p + "CallSeconds"] = 12;
+            v[p + "CallState"] = 2;
+            testContext.setMetrics(v);
+        }
+        function test_g_other_slot_label_has_no_node_of_its_own() {
+            var monitor = findChild(app, "monitorScreen");
+            var panel = findChild(monitor, "otherSlotPanel");
+            var label = findChild(monitor, "otherSlotLabel");
+            var identity = findChild(monitor, "otherSlotIdentity");
+            var width = app.width;
+            app.width = 320;
+            try {
+                setSlotCall(1, "4001");
+                setSlotCall(2, "4002");
+                testContext.setMetrics({leadSlot: 1});
+                waitForRendering(app.contentItem);
+                wait(20);
+                verify(panel.visible, "the other slot's strip is shown");
+                verify(panel.plan.label, "a short identity leaves the label room");
+                var node = testContext.accessibleNode(identity);
+                verify(node.exists && node.inTree, "the identity line is a node");
+                var unread = [];
+                var noteRead = function (when) {
+                    var name = testContext.accessibleNode(identity).name;
+                    if (!/SLOT 2/.test(name))
+                        unread.push(when + ": " + name);
+                };
+                noteRead("label drawn");
+                testContext.startAccessibilityCount();
+                for (var i = 0; i < 3; ++i) {
+                    setSlotCall(2, "Dispatcher North Zone Seven Long");
+                    waitForRendering(app.contentItem);
+                    verify(!panel.plan.label, "a long identity leaves the label out");
+                    noteRead("label left out");
+                    setSlotCall(2, "4002");
+                    waitForRendering(app.contentItem);
+                    verify(panel.plan.label, "a short identity draws it again");
+                }
+                for (i = 0; i < 6; ++i) {
+                    testContext.setMetrics({leadSlot: i % 2 === 0 ? 2 : 1});
+                    waitForRendering(app.contentItem);
+                }
+                var counts = testContext.accessibilityCount();
+                testContext.stopAccessibilityCount();
+                compare(showHide(label), 0, "the label showed or hid: " + churn(counts));
+                compare(testContext.accessibilityCountWithin(label, "NameChanged"), 0, "the label renamed: " + churn(counts));
+                compare(showHide(panel), 0, "the strip showed or hid something: " + churn(counts));
+                compare(unread.length, 0, "the identity line does not read the slot: " + JSON.stringify(unread));
+                // The sweep: every optional item the strip, the hero's subline and a call row draw by fit is drawn
+                // text or a drawn tag with no node in the tree, which its node-owning line reads instead, so a fit
+                // change raises nothing from it.
+                callHistory.push("TODAY");
+                var list = findChild(monitor, "recentCallsList");
+                tryVerify(function () { return list.itemAtIndex(0) !== null; }, 1000, "a call row");
+                var optional = [label, findChild(monitor, "otherPrivateTag"), findChild(monitor, "otherEmergencyTag"),
+                                findChild(monitor, "otherEncTag")];
+                for (var name of ["heroPrivateTag", "heroIds", "heroIdentityNote", "heroEmergencyTag", "heroEncTag",
+                                  "heroAlgorithm", "heroChannel"])
+                    optional.push(findChild(monitor, name));
+                for (name of ["rowEmergencyTag", "rowRecordingGlyph", "rowEncTag", "callRowTime", "callRowName", "callRowMeta"])
+                    optional.push(findChild(list.itemAtIndex(0), name));
+                for (var item of optional) {
+                    verify(item !== null, "an optional item is missing");
+                    verify(!testContext.accessibleNode(item).inTree, item.objectName + " has a node of its own");
+                }
+                // Covered by the session's Settings: the identity says nothing and nothing in the strip renames.
+                app.sessionDestination = "settings";
+                tryVerify(function () { return !Ui.Navigation.allows(identity); }, 1000, "the Settings cover the Monitor");
+                waitForRendering(app.contentItem);
+                compare(testContext.accessibleNode(identity).name, "", "covered, the identity is unnamed");
+                testContext.startAccessibilityCount();
+                for (i = 0; i < 6; ++i) {
+                    testContext.setMetrics({leadSlot: i % 2 === 0 ? 2 : 1});
+                    setSlotCall(2, i % 2 === 0 ? "Dispatcher North Zone Seven Long" : "4002");
+                    waitForRendering(app.contentItem);
+                }
+                counts = testContext.accessibilityCount();
+                testContext.stopAccessibilityCount();
+                compare(testContext.accessibilityCountWithin(panel, "NameChanged"), 0, "covered, the strip renamed: " + churn(counts));
+                compare(showHide(panel), 0, "covered, the strip showed or hid: " + churn(counts));
+            } finally {
+                testContext.stopAccessibilityCount();
+                app.sessionDestination = "";
+                app.width = width;
+                testContext.setMetrics({leadSlot: 0, slot1CallState: 0, slot2CallState: 0, slot1CallName: "", slot2CallName: "",
+                    slot1TgText: "", slot2TgText: "", slot1TgLabel: "", slot2TgLabel: "", slot1SrcText: "", slot2SrcText: ""});
+            }
+        }
+
         // A tick that changes no reading costs nothing. Qt already keeps it so (an equal model is not reloaded, an
         // equal name not announced); this guards it.
         function test_a_steady_ticks_raise_nothing() {
@@ -248,12 +354,14 @@ Item {
 
         // A rotation that mixes two-slot DMR with single-slot NXDN and P25 keeps the monitor's layout still once it
         // has visited a two-slot carrier: the slot strip's place stays reserved, so the scan buttons and the call
-        // list never move, and no geometry change reaches an accessibility client on a hop. The slot label itself
-        // comes and goes with the carrier, which is the slot's truth, and is the one thing allowed to show or hide.
+        // list never move, and no geometry change reaches an accessibility client on a hop. The slot's node comes
+        // and goes with the carrier, which is the slot's truth, and is the one thing allowed to show or hide: the
+        // identity line, which reads the idle state too (issue #901 r4 F3: the label it replaced as that node is
+        // drawn text now).
         function test_d_two_slot_hops_leave_the_monitor_still() {
             var monitor = findChild(app, "monitorScreen");
             verify(monitor !== null && monitor.visible, "the monitor is on screen");
-            var label = findChild(monitor, "otherSlotLabel");
+            var label = findChild(monitor, "otherSlotIdentity");
             var still = ["scanHoldButton", "scanAvoidButton", "scanPrevButton", "scanNextButton", "recentCallsList"].map(function (name) {
                 var found = findChild(monitor, name);
                 verify(found !== null && found.visible, name + " must be on screen");
@@ -264,15 +372,15 @@ Item {
             testContext.startAccessibilityCount();
             for (var i = 1; i <= hops; ++i) {
                 testContext.publishTarget(reading(i));
-                compare(label.visible, i % 3 === 0, "hop " + i + ": the slot label follows the carrier");
+                compare(label.visible, i % 3 === 0, "hop " + i + ": the slot's node follows the carrier");
             }
             var counts = testContext.accessibilityCount();
             for (var item of still)
                 compare(testContext.accessibilityCountWithin(item, "LocationChanged"), 0, item.objectName + ": "
                         + JSON.stringify(counts.chains));
             var shown = showHide(app.contentItem) - showHide(label);
-            compare(shown, 0, "only the slot label shows or hides: " + churn(counts));
-            // The label hides on every hop away from DMR (Qt reports its return as a creation, which Android does not
+            compare(shown, 0, "only the slot's node shows or hides: " + churn(counts));
+            // The slot's node hides on every hop away from DMR (Qt reports its return as a creation, which Android does not
             // forward), and never more than once per carrier change.
             var changes = 2 * Math.floor(hops / 3);
             verify(showHide(label) >= changes / 2 && showHide(label) <= changes, churn(counts));
@@ -334,7 +442,8 @@ Item {
         // heard on its own (tst_a11y_paced_names.qml holds a flapping step to the floor).
         function test_f_hops_with_details_open_rename_once_each() {
             var monitor = findChild(app, "monitorScreen");
-            var label = findChild(monitor, "otherSlotLabel");
+            // The slot's node (r4 F3), as in case D.
+            var label = findChild(monitor, "otherSlotIdentity");
             var closed = closedSheets();
             var floor = Ui.Navigation.speechStepFloorMs;
             Ui.Navigation.speechStepFloorMs = 1;
@@ -361,7 +470,7 @@ Item {
             var counts = testContext.accessibilityCount();
             testContext.stopAccessibilityCount();
             Ui.Navigation.speechStepFloorMs = floor;
-            compare(showHide(monitor) - showHide(label), 0, "only the slot label shows or hides: " + churn(counts));
+            compare(showHide(monitor) - showHide(label), 0, "only the slot's node shows or hides: " + churn(counts));
             compare(testContext.accessibilityCountWithin(monitor, "LocationChanged"), 0, JSON.stringify(counts.chains));
             // Each hop moves to another carrier, so the strip (its FREQ) renames once a hop, and nothing more than once.
             var renames = renamesByOwner(counts);

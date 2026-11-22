@@ -210,7 +210,12 @@ Item {
             var panel = item("otherSlotPanel");
             verify(panel.visible);
             compare(item("otherSlotLabel").text, "SLOT " + slot + " · idle");
-            verify(!item("otherSlotIdentity").visible);
+            // The identity line is the strip's one node, idle too (issue #901 r4 F3): it draws nothing and
+            // reads the idle state the label draws.
+            var identity = item("otherSlotIdentity");
+            verify(identity.visible, "the strip's node is kept while idle");
+            compare(identity.text, "", "idle, the identity line draws nothing");
+            compare(identity.Accessible.name, "SLOT " + slot + " · idle");
             var skip = item("otherSlotSkip");
             var more = item("otherSlotMore");
             verify(!skip.visible && !more.visible);

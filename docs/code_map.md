@@ -17520,11 +17520,18 @@ Qt Quick frontend (`src/ui/qt`):
   algorithm, channel; the ids first get min(their width, 96), then EMERGENCY, PRIVATE, ENC and the algorithm text
   (`ALG nn · KID nnnn`, cut to no less than `ALG nn…`, else left out), then the channel (at least min(its width,
   48), only after every status drawn), and only then do the ids grow into what is left, so a long name never pushes
-  a short channel off the line. What is left out stays in the accessible text: the strip identity's name carries the
-  slot (while its label is
-  not drawn), PRIVATE, EMERGENCY and ENC (each tag's `label`, which `EmergencyTag` and `EncTag` now have as
+  a short channel off the line. What is left out stays in the accessible text. Every optional item the plans draw by
+  fit is drawn text or a drawn tag with no node of its own (r4 F3; the hero's subline items and a call row's right
+  side already were): the strip's `SLOT n` label is a plain `Text` in MicroLabel's look, since as a MicroLabel it
+  hid or showed its node at each fit change (a short to a long identity at 320 dp) and, hidden, renamed with each
+  lead-slot change, under the session's Settings too. The strip's one stable node is the identity line, shown with
+  the panel, idle included (it then draws nothing and reads `SLOT n · idle`): its name carries the slot always,
+  PRIVATE, EMERGENCY and ENC (each tag's `label`, which `EmergencyTag` and `EncTag` now have as
   `PrivateTag` had), and the hero reads its subline from `heroSublineSpeech()`, every part the call has. The strip's
-  identity line is a fixed box (`otherIdentityBox`, `LineBoxes`). On a 320 px phone a long name can leave the strip's
+  identity line is a fixed box (`otherIdentityBox`, `LineBoxes`). The identity line, Skip and More are unnamed
+  while covered or hidden (`UI_QT_QML_A11Y_CHURN` `test_g_other_slot_label_has_no_node_of_its_own`: no show, hide
+  or rename from the label across fit and lead-slot changes, none in the strip while covered, and no optional item
+  of the strip, the hero's subline or a call row in the tree). On a 320 px phone a long name can leave the strip's
   identity alone on its line (decided limit: the status words are still heard, and the hero shows its own call's).
   Tests: `tst_monitor_call_identity.qml`, `tst_monitor_other_slot.qml`, `tst_monitor_status_lines.qml`
   (320/360/411 at text 1.0, 1.6 and 2.0), `UI_QT_METRICS_MODEL`
