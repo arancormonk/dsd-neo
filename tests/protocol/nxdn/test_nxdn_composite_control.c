@@ -20,6 +20,7 @@
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/state_ext.h>
 #include <dsd-neo/core/synctype_ids.h>
+#include <dsd-neo/core/unit_activity.h>
 #include <dsd-neo/protocol/nxdn/nxdn.h>
 #include <dsd-neo/protocol/nxdn/nxdn_const.h>
 #include <dsd-neo/protocol/nxdn/nxdn_deperm.h>
@@ -1581,6 +1582,43 @@ test_type_d_frame_cch_info_keeps_the_control_channel(dsd_opts* opts, dsd_state* 
     return rc;
 }
 
+/* How many unit activity rows the session's ring holds. */
+static int
+unit_activity_rows(const dsd_state* state) {
+    dsd_unit_activity rows[8];
+    dsd_unit_activity_read_meta meta;
+    return dsd_unit_activity_read(state, 0U, 0U, rows, 8, &meta);
+}
+
+/*
+ * The unit activity a frame's FACCH1 carries reads the frame's own classification (issue #903): on late entry, a local
+ * composite frame (LICH 0x71, Type-C unknown) carries an accepted REG_RESP for unit 1001 in its first FACCH1 and this
+ * site's CCH_INFO in its second. The frame is composite before either half acts, so the registration is recorded,
+ * whichever half carries it.
+ */
+static int
+test_first_half_unit_activity_reads_the_frame_verdict(dsd_opts* opts, dsd_state* state) {
+    uint8_t reg[80];
+    uint8_t cch[80];
+    int rc = 0;
+    DSD_MEMSET(reg, 0, sizeof(reg));
+    put_bits(reg, 2U, 0x20U, 6U);   // REG_RESP
+    put_bits(reg, 13U, 1U, 2U);     // Location ID category 01: Local
+    put_bits(reg, 15U, 77U, 17U);   // system code
+    put_bits(reg, 32U, 1001U, 16U); // unit
+    put_bits(reg, 48U, 200U, 16U);  // group
+    put_bits(reg, 64U, 0x01U, 8U);  // Cause (MM): accepted
+    cch_info(cch, SITE_A, 0x20U, 5U);
+    for (int reg_first = 1; reg_first >= 0; reg_first--) {
+        clear_state(opts, state);
+        opts->trunk_enable = 1;
+        send_frame(opts, state, LICH_COMPOSITE_FACCH1_PAIR, 0x21U, reg_first ? reg : cch, reg_first ? cch : reg);
+        rc |= expect_long(reg_first ? "unit activity in the first half" : "unit activity in the second half",
+                          unit_activity_rows(state), 1L);
+    }
+    return rc;
+}
+
 int
 main(void) {
     dsd_opts* opts = calloc(1, sizeof(*opts));
@@ -1630,6 +1668,7 @@ main(void) {
     rc |= test_foreign_frame_keeps_the_followed_cipher(opts, state);
     rc |= test_foreign_frame_completes_no_spacing_proof(opts, state);
     rc |= test_type_d_frame_cch_info_keeps_the_control_channel(opts, state);
+    rc |= test_first_half_unit_activity_reads_the_frame_verdict(opts, state);
     dsd_trunk_tuning_hooks_set((dsd_trunk_tuning_hooks){0});
     dsd_decode_clock_use_system();
 

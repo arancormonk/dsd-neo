@@ -3411,8 +3411,9 @@ suite runs under this compiler.
       the gateway as the INFRASTRUCTURE actor, authentication with no actor (the challenge is no identity and not
       keyed). Motorola ARS (an exact ARS message on a checked DMR data PDU, `dmr_ars_note_activity()`): device / user
       registration and deregistration as REPORT rows of the sending radio. Test: `DMR_UNIT_ACTIVITY`.
-    - NXDN (`nxdn_unit_activity.c`, `nxdn_ua_dispatch()`; Type-C only: a CAC, or a composite control channel once
-      Type-C decoded, never Type-D or a traffic channel; a message shorter than its mandatory part adds no row):
+    - NXDN (`nxdn_unit_activity.c`, `nxdn_ua_dispatch()`; Type-C only: a CAC, or a frame the frame decoder classified a
+      composite control channel's (once Type-C decoded, or by the frame's own CCH_INFO, whichever FACCH1 half carries
+      the message, issue #903), never Type-D or a traffic channel; a message shorter than its mandatory part adds no row):
       REG_RESP 0x20, REG_C_RESP 0x22 ("Logout response"; no second source confirms which cause a successful clear
       carries, so a success is result UNKNOWN, the cause kept as the reason) and GRP_REG_RESP
       0x24 with Cause (MM) as the reason (location accepted with the group failed or refused is a registration

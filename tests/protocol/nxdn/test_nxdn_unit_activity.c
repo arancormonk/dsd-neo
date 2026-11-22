@@ -418,10 +418,11 @@ test_channel_gates(dsd_opts* opts, dsd_state* state) {
     build_rem_con(e, 0x34U, 1U, 0U, 1001U, 2002U, 0U);
     run_elements(opts, state, e, CAC_ELEMENTS, (uint8_t)NXDN_FRAME_CHANNEL_TRAFFIC);
     expect_no_row(state, "traffic channel remote control");
-    /* A composite control channel only once its frames read as Type-C. */
+    /* A frame the frame decoder classified composite (issue #903): its own CCH_INFO made it one before Type-C was
+       noted, or Type-C was known. The classification decides, not the site's Type-C note. */
     dsd_nxdn_forget_carrier_system(state);
     run_elements(opts, state, e, CAC_ELEMENTS, (uint8_t)NXDN_FRAME_CHANNEL_COMPOSITE);
-    expect_no_row(state, "composite channel before Type-C");
+    (void)one_row(state, &r, "composite frame before Type-C is noted");
     dsd_nxdn_note_type_c(state);
     run_elements(opts, state, e, CAC_ELEMENTS, (uint8_t)NXDN_FRAME_CHANNEL_COMPOSITE);
     (void)one_row(state, &r, "composite channel after Type-C");
