@@ -28092,6 +28092,20 @@ if(Python3_Interpreter_FOUND)
         TOOLS_BENCH_SCAN_SKIP_SILENT
         PROPERTIES SKIP_RETURN_CODE 77 TIMEOUT 120
     )
+    # tools/bench_signal_search_tcp.py's rig bookkeeping, which ENGINE_SIGNAL_SEARCH_TETRA_RIG shares (issue #748): a
+    # landing is the first live status after the tune lands, a run folder is absolute and holds no earlier journal,
+    # and the load average is optional. numpy, as above.
+    add_test(
+        NAME TOOLS_BENCH_SIGNAL_SEARCH_TCP
+        COMMAND
+            ${Python3_EXECUTABLE}
+            ${PROJECT_SOURCE_DIR}/tests/tools/test_bench_signal_search_tcp.py
+        WORKING_DIRECTORY ${PROJECT_SOURCE_DIR}
+    )
+    set_tests_properties(
+        TOOLS_BENCH_SIGNAL_SEARCH_TCP
+        PROPERTIES SKIP_RETURN_CODE 77 TIMEOUT 120
+    )
     # The report's per-repeat pairing of the analog columns (issue #518), on canned
     # summaries. Stdlib only, so it runs wherever Python does.
     add_test(

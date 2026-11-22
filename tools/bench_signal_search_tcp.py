@@ -196,8 +196,18 @@ def children_cpu_s():
     return usage.ru_utime + usage.ru_stime
 
 
-# The status phases dsd-neo_test_signal_search_rig prints (dsd_signal_search_phase): a hit is being visited.
-VISIT_PHASES = (2, 3, 4, 5)
+# The status phases dsd-neo_test_signal_search_rig prints (dsd_signal_search_phase) once a visit has landed: identifying,
+# listening and held. Tuning (2) is published with the hit when the tune is queued, before the receiver hears the
+# channel, so it is no landing.
+LANDED_PHASES = (3, 4, 5)
+
+
+def landed_hit(message):
+    """The hit of a rig status line that shows a live visit landed on it (a landed phase, a hit, not ended), or None."""
+    if not message or message.get("rig") != "status" or message.get("phase") not in LANDED_PHASES:
+        return None
+    hit = message.get("hit") or {}
+    return hit if hit.get("hit_id") and not hit.get("ended") else None
 
 
 def capture_rate(dsp_khz):
@@ -211,7 +221,7 @@ def capture_rate(dsp_khz):
 
 def read_rig(pipe, lines, scene, transmitters):
     """The rig's lines, stamped with the scene time and the monotonic time they arrived; marks each transmitter's first
-    landing."""
+    landing: the first status of a live visit to it once the tune has landed (landed_hit())."""
     for raw in pipe:
         text = raw.decode("utf-8", "replace").rstrip("\r\n")
         stamp = scene.sample_time
@@ -224,13 +234,12 @@ def read_rig(pipe, lines, scene, transmitters):
             except ValueError:
                 message = None
         lines.append((stamp, time.monotonic(), text, message))
-        if not message or message.get("rig") != "status":
+        hit = landed_hit(message)
+        if hit is None:
             continue
-        hit = message["hit"]
-        if message["phase"] in VISIT_PHASES and hit["hit_id"]:
-            for tx in transmitters:
-                if tx.landed is None and tx.owns(hit["frequency_hz"]):
-                    tx.landed = stamp
+        for tx in transmitters:
+            if tx.landed is None and tx.owns(hit["frequency_hz"]):
+                tx.landed = stamp
 
 
 def run_rig(rig, transmitters, ranges, dsp_khz, work, seconds, done=None, passes=1000, perf=False, seed=748):

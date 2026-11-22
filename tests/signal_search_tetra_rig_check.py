@@ -213,9 +213,10 @@ def run(args, name, specs, work):
 
 
 def landing_pass(record, tx):
-    """The pass of the search's first visit to @p tx, or None."""
+    """The pass the search first landed on @p tx in (tcp_bench.landed_hit()), or None."""
     for _t, _wall, m in tcp_bench.rig_messages(record, "status"):
-        if m["phase"] in tcp_bench.VISIT_PHASES and m["hit"]["hit_id"] and tx.owns(m["hit"]["frequency_hz"]):
+        hit = tcp_bench.landed_hit(m)
+        if hit is not None and tx.owns(hit["frequency_hz"]):
             return m["pass"]
     return None
 
