@@ -1014,13 +1014,15 @@ dmr_cspdu_pf0_p_clear_log_status(const dsd_state* state, int clear, int csbk_fid
     return clear;
 }
 
-/* The release a clear asks the machine for: of @p slot (-1: the carrier), forced for the reasons that force it. Only
-   while a call is followed: on the control channel (a composite TSCC's payload slot) the latch would outlive the
-   clear and release the next followed grant on its first tick. */
+/* The release a clear asks the machine for: of @p slot (-1: the carrier), forced for the reasons that force it. The
+   latch only while the machine follows a call: on the control channel (a composite TSCC's payload slot, or an idle XPT
+   status that marked the receiver tuned) it would outlive the clear and release the next followed grant on its first
+   tick. */
 static void
 dmr_cspdu_pf0_p_clear_emit_release(dsd_opts* opts, dsd_state* state, int clear, int slot) {
     if (state->trunk_cc_freq != 0 && opts->trunk_is_tuned == 1) {
-        if (clear == 1 || clear == 2 || clear == 3 || clear == 4 || clear == 5) {
+        if (dmr_sm_follows_call(dmr_sm_get_ctx())
+            && (clear == 1 || clear == 2 || clear == 3 || clear == 4 || clear == 5)) {
             state->trunk_sm_force_release = 1;
         }
         watchdog_event_current(opts, state, 0);
@@ -1084,12 +1086,26 @@ dmr_cspdu_pf0_p_clear_note_tscc(dsd_opts* opts, dsd_state* state, const uint8_t 
    to it (its talkgroup, either party of a private call, or every MS). */
 static int
 dmr_cspdu_pf0_p_clear_for_followed_call(const dsd_state* state, const dmr_cspdu_p_clear_fields* f) {
-    const dmr_sm_ctx_t* ctx = dmr_sm_get_ctx();
+    dmr_sm_ctx_t* ctx = dmr_sm_get_ctx();
     const int slot = state->currentslot & 1;
     if (f->gi == 0U && (f->target == DMR_CSBK_ALLMSI || f->target == DMR_CSBK_ALLMSID)) {
         return dmr_sm_follows_slot(ctx, slot);
     }
-    return dmr_sm_names_followed_call(ctx, slot, f->gi, f->target);
+    return dmr_sm_names_followed_call(ctx, state, slot, f->gi, f->target);
+}
+
+/* The addressed slot's canonical call ends with its clear, and its row with it: a companion slot that keeps the carrier
+   keeps its own call, and this one would otherwise stay live wherever its terminator LC was missed. A clear whose
+   check could not pass (an MBC header that failed, a RAS signature not accepted) ends it recoverably, as an unverified
+   terminator does. */
+static void
+dmr_cspdu_pf0_p_clear_end_slot_call(dsd_opts* opts, dsd_state* state) {
+    const uint8_t slot = (uint8_t)(state->currentslot & 1);
+    const int checked = dmr_csbk_crc_checked(state) || dmr_csbk_ras_accepted(opts, state);
+    if (dsd_call_state_end_ex(state, slot, 0.0, checked ? DSD_CALL_END_EXPLICIT : DSD_CALL_END_UNVERIFIED_TERMINATOR)
+        > 0) {
+        dsd_event_sync_slot(opts, state, slot);
+    }
 }
 
 /* P_CLEAR (TS 102 361-4 §7.1.1.3.2). The standard one (FID 0) is read as Table 7.30: it applies only on the followed
@@ -1120,10 +1136,12 @@ dmr_cspdu_pf0_handle_p_clear(dsd_opts* opts, dsd_state* state, const uint8_t cs_
         return;
     }
     if (addressed && !dmr_cspdu_pf0_p_clear_for_followed_call(state, &f)) {
-        const dmr_sm_ctx_t* ctx = dmr_sm_get_ctx();
-        const int following = dmr_sm_follows_slot(ctx, 0) || dmr_sm_follows_slot(ctx, 1);
-        DSD_FPRINTF(stderr, "%s", following ? " not for the followed call;" : " no followed call;");
+        DSD_FPRINTF(stderr, "%s",
+                    dmr_sm_follows_call(dmr_sm_get_ctx()) ? " not for the followed call;" : " no followed call;");
         return;
+    }
+    if (addressed) {
+        dmr_cspdu_pf0_p_clear_end_slot_call(opts, state);
     }
     dmr_cspdu_pf0_p_clear_mark_slots_idle(state);
     clear = dmr_cspdu_pf0_p_clear_log_status(state, clear, csbk_fid, pslot, oslot);

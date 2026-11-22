@@ -2837,6 +2837,11 @@ dmr_sm_follows(const dmr_sm_ctx_t* ctx, long freq_hz) {
 }
 
 int
+dmr_sm_follows_call(const dmr_sm_ctx_t* ctx) {
+    return ctx && ctx->state == DMR_SM_TUNED;
+}
+
+int
 dmr_sm_follows_slot(const dmr_sm_ctx_t* ctx, int slot) {
     return ctx && ctx->state == DMR_SM_TUNED && slot >= 0 && slot <= 1 && (ctx->vc_slot < 0 || ctx->vc_slot == slot);
 }
@@ -2851,18 +2856,21 @@ dmr_sm_identity_addressed(const dmr_sm_slot_ctx_t* id, int is_group, uint32_t ta
     return !id->judged_group && (id->target == target || (id->source != 0U && id->source == target));
 }
 
+/* The slot's own record names the call on it now (brought up to date with its canonical call first): a checked LC
+   that named another call since the grant outranks the grant. The grant's identity stands only for a slot whose record
+   names nothing on the followed carrier (a slotless grant before its voice). */
 int
-dmr_sm_names_followed_call(const dmr_sm_ctx_t* ctx, int slot, int is_group, uint32_t target) {
+dmr_sm_names_followed_call(dmr_sm_ctx_t* ctx, const dsd_state* state, int slot, int is_group, uint32_t target) {
     if (!dmr_sm_follows_slot(ctx, slot) || target == 0U) {
         return 0;
     }
-    dmr_sm_slot_ctx_t grant;
-    if (dmr_sm_grant_identity(ctx, &grant) && dmr_sm_identity_addressed(&grant, is_group, target)) {
-        return 1;
-    }
+    dmr_sm_slot_identity_refresh(ctx, state, slot, dsd_decode_now_mono_s());
     const dmr_sm_slot_ctx_t* rec = &ctx->slots[slot];
-    return dmr_sm_slot_identity_known(rec) && rec->carrier_hz == ctx->vc_freq_hz
-           && dmr_sm_identity_addressed(rec, is_group, target);
+    if (dmr_sm_slot_identity_known(rec) && rec->carrier_hz == ctx->vc_freq_hz) {
+        return dmr_sm_identity_addressed(rec, is_group, target);
+    }
+    dmr_sm_slot_ctx_t grant;
+    return dmr_sm_grant_identity(ctx, &grant) && dmr_sm_identity_addressed(&grant, is_group, target);
 }
 
 long

@@ -13461,13 +13461,17 @@ Private per-protocol modules worth knowing about:
 - DMR P_CLEAR addressing (`dmr_csbk.c`, `dmr_trunk_sm.c`; TS 102 361-4 Table 7.30). A standard P_CLEAR (FID 0) applies
   only when received on the followed call's slot (`dmr_sm_follows_slot()`: either slot before a slotless grant's first
   voice) and addressed to that call (`dmr_sm_names_followed_call()`: G/I 1 and its talkgroup, G/I 0 and either party of
-  a private call, as the grant or the slot's identity names it; or G/I 0 and ALLMSI 0xFFFED4 or ALLMSID 0xFFFFFF).
+  a private call; or G/I 0 and ALLMSI 0xFFFED4 or ALLMSID 0xFFFFFF). The call is the one the slot's identity record
+  names now on the followed carrier (refreshed against its canonical call first), so a checked voice LC naming another
+  call since the grant replaces the grant's identity; the grant's identity counts only while the slot names none.
   Otherwise it prints "not for the followed call" ("no followed call" when nothing is followed) and changes nothing: no
-  burst hint, activity, force latch or release. Applied, it releases its own slot only, so a busy companion slot keeps
-  the carrier. The synthesized lockout clear (`dmr_cspdu_release_channel()`) and another FID's opcode 46 keep the
-  carrier-wide release unread. Any clear arms `trunk_sm_force_release` only while a call is followed
-  (`trunk_is_tuned`): on a composite TSCC's payload slot a latched force would release the next followed grant on its
-  first tick. A checked or RAS-accepted clear naming another TSCC than the control channel (a mapped LPCN, or a valid
+  burst hint, activity, call end, force latch or release. Applied, it ends its own slot's canonical call (EXPLICIT;
+  recoverable as an unverified terminator when neither checked nor RAS-accepted) and syncs its row, and releases its
+  own slot only, so a busy companion slot keeps the carrier and its call. The synthesized lockout clear
+  (`dmr_cspdu_release_channel()`) and another FID's opcode 46 keep the carrier-wide release unread. Any clear arms
+  `trunk_sm_force_release` only while the machine follows a call (`dmr_sm_follows_call()`, TUNED): on a composite
+  TSCC's payload slot, or after an idle XPT status marked the receiver tuned (`trunk_is_tuned`) on the control channel,
+  a latched force would release the next followed grant on its first tick. A checked or RAS-accepted clear naming another TSCC than the control channel (a mapped LPCN, or a valid
   appended block, which the map also learns) makes it a current-site hunt candidate, whether or not it is for the
   followed call; the release still returns where the machine returns. Tests: `DMR_T3_FORCE_RELEASE`,
   `DMR_T3_MOVE_RELEASE`, `DMR_GRANT_POLICY`, `DMR_T3_CHANNELS`.

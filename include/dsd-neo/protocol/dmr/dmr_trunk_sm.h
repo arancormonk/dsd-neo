@@ -398,15 +398,20 @@ dmr_sm_tune_to_cc(dsd_opts* opts, dsd_state* state, long freq_hz, uint64_t* out_
 /** @brief Whether the machine follows a call on @p freq_hz (TUNED there). */
 int dmr_sm_follows(const dmr_sm_ctx_t* ctx, long freq_hz);
 
+/** @brief Whether the machine follows a call (TUNED to its carrier), whatever the tuner reads. */
+int dmr_sm_follows_call(const dmr_sm_ctx_t* ctx);
+
 /** @brief Whether the machine follows a call on timeslot @p slot (0 or 1) of the carrier it is TUNED to: the followed
  *  call's slot, or either slot before a slotless grant's first voice names one. */
 int dmr_sm_follows_slot(const dmr_sm_ctx_t* ctx, int slot);
 
 /** @brief Whether an address received on @p slot of the followed carrier names the followed call (a P_CLEAR's, TS
  *  102 361-4 Table 7.30): dmr_sm_follows_slot(), and @p target the followed call's talkgroup when @p is_group, or
- *  either party of a followed private call when not, as the followed grant or the slot's own identity names the call.
+ *  either party of a followed private call when not. The call is the one the slot's own identity names now (a checked
+ *  LC naming another call since the grant replaces the grant's), brought up to date with @p state's canonical call;
+ *  the followed grant's identity only when the slot names none on the followed carrier.
  */
-int dmr_sm_names_followed_call(const dmr_sm_ctx_t* ctx, int slot, int is_group, uint32_t target);
+int dmr_sm_names_followed_call(dmr_sm_ctx_t* ctx, const dsd_state* state, int slot, int is_group, uint32_t target);
 
 /** @brief Hand a call that a Capacity Plus channel status followed through the tuning hooks (already tuned to
  *  @p freq_hz) to the machine, which then owns its hangtime, grant timeout and return as for a grant. @p receiver_hz is

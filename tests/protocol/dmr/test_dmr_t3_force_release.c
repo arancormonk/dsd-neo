@@ -6,8 +6,10 @@
 /*
  * P_CLEAR on a payload channel (TS 102 361-4 Table 7.30): it releases the followed call only when received on that
  * call's slot and addressed to it (its talkgroup, either party of a private call, or ALLMSI); a busy companion slot
- * keeps the carrier; a checked clear naming another TSCC makes it a hunt candidate; TG Hold forces the release, and the
- * encryption lockout's synthesized clear always applies. Frequencies are invented.
+ * keeps the carrier and its call while the cleared slot's call ends; the slot's call is the one its latest checked LC
+ * names; a checked clear naming another TSCC makes it a hunt candidate; TG Hold forces the release, and the encryption
+ * lockout's synthesized clear always applies, arming the forced release only while a call is followed. Frequencies are
+ * invented.
  */
 
 #include <dsd-neo/protocol/dmr/dmr_utils_api.h>
@@ -300,6 +302,44 @@ test_p_clear_busy_companion_kept(void) {
     assert(ctx->slots[1].voice_active == 1);
     assert(state.dmrburstL == 9);
     assert(state.dmrburstR == 16);
+    // The cleared slot's call ends (its terminator LC may never come); the companion's stays live.
+    dsd_call_snapshot ts1;
+    dsd_call_snapshot ts2;
+    assert(dsd_call_state_get(&state, 0U, &ts1) > 0 && ts1.phase == DSD_CALL_PHASE_ENDED);
+    assert(ts1.end_reason == (uint8_t)DSD_CALL_END_EXPLICIT);
+    assert(dsd_call_state_get(&state, 1U, &ts2) > 0 && ts2.phase == DSD_CALL_PHASE_ACTIVE);
+    assert(ts2.policy_target_id == 4321U);
+
+    // A clear whose check could not pass (a RAS signature on a carrier where RAS is not confirmed) ends it recoverably.
+    follow_group_ts1();
+    observe_call(1U, DSD_CALL_KIND_GROUP_VOICE, 4321U, 43U);
+    state.dmrburstR = 16;
+    state.event_crc_invalid[0] = DSD_CRC_RAS_UNVERIFIED;
+    send_pclear(0U, 0U, 1U, 1234U);
+    state.event_crc_invalid[0] = 0U;
+    assert(dsd_call_state_get(&state, 0U, &ts1) > 0 && ts1.phase == DSD_CALL_PHASE_ENDED);
+    assert(ts1.end_reason == (uint8_t)DSD_CALL_END_UNVERIFIED_TERMINATOR);
+    assert(dsd_call_state_get(&state, 1U, &ts2) > 0 && ts2.phase == DSD_CALL_PHASE_ACTIVE);
+}
+
+/* A checked voice LC named another call on the followed slot since the grant: the slot's call is that one now, so a
+   clear naming the grant's talkgroup is not for it, and one naming the LC's is. */
+static void
+test_p_clear_matches_slot_lc_identity(void) {
+    follow_group_ts1();
+    observe_call(0U, DSD_CALL_KIND_GROUP_VOICE, 5678U, 51U);
+    dmr_sm_note_lc_identity(&opts, &state, 0, DSD_CALL_KIND_GROUP_VOICE, 5678U, 51U);
+    const dmr_sm_ctx_t* ctx = dmr_sm_get_ctx();
+    assert(ctx->slots[0].prov == (uint8_t)DMR_SM_ID_LC && ctx->slots[0].target == 5678U);
+
+    send_pclear(0U, 0U, 1U, 1234U); // the grant's talkgroup
+    assert(opts.trunk_is_tuned == 1);
+    assert(state.dmrburstL == 16);
+    dsd_call_snapshot ts1;
+    assert(dsd_call_state_get(&state, 0U, &ts1) > 0 && ts1.phase == DSD_CALL_PHASE_ACTIVE);
+
+    send_pclear(0U, 0U, 1U, 5678U); // the slot's call
+    assert(opts.trunk_is_tuned == 0);
 }
 
 /* A checked clear naming another TSCC makes it a hunt candidate; the release still returns to the control channel.
@@ -402,6 +442,34 @@ test_on_cc_clear_arms_no_forced_release(void) {
     check_on_cc_clear_arms_no_forced_release(0x10U);
 }
 
+/* An idle XPT status marks the receiver tuned (RTL or rigctl input) while the machine stays on the control channel.
+   The encryption lockout's synthesized clear there arms no forced release, so the next followed grant is kept; while a
+   call is followed the same clear still releases it. */
+static void
+test_xpt_idle_tuned_lockout_clear_arms_no_forced_release(void) {
+    init_env();
+    dmr_sm_note_cc_activity(&opts, &state, CC_HZ);
+    assert(dmr_sm_get_ctx()->state == DMR_SM_ON_CC);
+    opts.trunk_is_tuned = 1; // as dmr_cspdu_xpt_update_cc_from_input() leaves it
+    state.dmrburstL = 9;
+    state.dmrburstR = 9;
+    state.currentslot = 0;
+    dmr_cspdu_release_channel(&opts, &state);
+    assert(state.trunk_sm_force_release == 0);
+    assert(dmr_sm_get_ctx()->state == DMR_SM_ON_CC);
+
+    opts.trunk_is_tuned = 0;
+    dmr_sm_emit_group_grant_slot(&opts, &state, VC_HZ, /*lpcn*/ 20, /*slot*/ 0, /*tg*/ 1234, /*src*/ 42);
+    assert(opts.trunk_is_tuned == 1);
+    dmr_sm_tick_ctx(dmr_sm_get_ctx(), &opts, &state);
+    dmr_sm_tick_ctx(dmr_sm_get_ctx(), &opts, &state);
+    assert(opts.trunk_is_tuned == 1);
+
+    dmr_cspdu_release_channel(&opts, &state);
+    assert(opts.trunk_is_tuned == 0);
+    assert(state.trunk_sm_force_release == 0); // the release it forced took the latch
+}
+
 int
 main(int argc, char** argv) {
     (void)argc;
@@ -416,10 +484,12 @@ main(int argc, char** argv) {
     test_p_clear_unrelated_target_ignored();
     test_p_clear_allmsi_releases();
     test_p_clear_busy_companion_kept();
+    test_p_clear_matches_slot_lc_identity();
     test_p_clear_named_tscc_becomes_candidate();
     test_synth_lockout_clear_still_releases();
     test_vendor_fid_clear_unchanged();
     test_on_cc_clear_arms_no_forced_release();
+    test_xpt_idle_tuned_lockout_clear_arms_no_forced_release();
     dsd_trunk_tuning_hooks_set((dsd_trunk_tuning_hooks){0});
     dsd_state_ext_free_all(&state);
     printf("DMR_T3_FORCE_RELEASE: OK\n");
