@@ -1090,7 +1090,7 @@ static void
 M17decodeLSFMeta(const dsd_opts* opts, dsd_state* state, const struct m17_lsf_result* res,
                  const m17_lsf_carrier* carrier, struct m17_meta_text_assembler* text) {
     //Decode Meta Data when not ENC (if meta field is populated with something)
-    if (res->et != 0U || res->has_meta == 0U) {
+    if (state == NULL || res == NULL || res->et != 0U || res->has_meta == 0U) {
         return;
     }
     if (!m17_can_matches_state(state)) {

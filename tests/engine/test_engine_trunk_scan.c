@@ -16632,7 +16632,7 @@ test_simplex_target_types_parse_and_diagnostics(void) {
     };
 
     int test_rc = 0;
-    dsd_trunk_scan_target_list list;
+    dsd_trunk_scan_target_list list = {0};
     char err[DSD_TRUNK_SCAN_ROW_ERROR_MAX] = {0};
     char body[512];
     for (size_t i = 0; i < sizeof types / sizeof types[0]; i++) {

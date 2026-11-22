@@ -36,6 +36,9 @@
 #include "scan_landing.h"
 #include "test_env.h"
 #include "test_support.h"
+#if defined(DSD_TEST_WRAP_SCAN_DSP_RATE)
+#include "test_engine_scan_entry_seams.h"
+#endif
 
 enum {
     k_fire_hz = 154430000,
@@ -563,10 +566,8 @@ test_trunk_target_unconfirmed_by_a_tune_or_a_reopen(void) {
    none runs here; the match only reads it. */
 static int g_scan_dsp_rate_hz;
 
-int __wrap_dsd_engine_scan_dsp_rate_hz(const dsd_opts* opts, const dsd_state* state);
-
 int
-__wrap_dsd_engine_scan_dsp_rate_hz(const dsd_opts* opts, const dsd_state* state) {
+scan_entry_dsp_rate_hz(const dsd_opts* opts, const dsd_state* state) {
     (void)opts;
     (void)state;
     return g_scan_dsp_rate_hz;

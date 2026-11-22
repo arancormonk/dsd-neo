@@ -431,6 +431,11 @@ typedef struct {
     uint64_t entry_avoid_rev;
     uint32_t entry_edit_seq;
     double entry_recheck_s;
+    /* The TETRA DMO target and cause last named in the log and on the status line (issue #890), so a failed departure's
+       fallback onto it, or its next visit, does not name the same cause again; a landing that finds its chain running
+       forgets it. coord->count for none. */
+    size_t tetra_named_target;
+    int tetra_named_cause;
     /* Whether any target is a TETRA DMO row (issue #890), counted once the targets are built, and what their shared
        eligibility was when the entry reasons were last decided (dsd_engine_scan_tetra_row_check()), which a TED
        override or --tetra-uplink moves without a rate change. */
@@ -441,11 +446,6 @@ typedef struct {
        override that makes it ineligible on air owes a departure as a list switched off does
        (trunk_scan_active_out_of_rotation()). A rate the reopening radio has not published yet sends nothing away. */
     int active_tetra_skip;
-    /* The TETRA DMO target and cause last named in the log and on the status line (issue #890), so a failed departure's
-       fallback onto it, or its next visit, does not name the same cause again; a landing that finds its chain running
-       forgets it. coord->count for none. */
-    size_t tetra_named_target;
-    int tetra_named_cause;
     /* Set by a walk and a resume around each attempt (trunk_scan_walk_to(), trunk_scan_resume_attempt()): the switch
        judges the park for the DMR calls' privacy and voice hold once its retune is accepted, not at the restore, so a
        failed attempt the walk or resume goes on from, or rolls back from, judges nothing (trunk_scan_judge_park()). The
@@ -6910,20 +6910,20 @@ trunk_scan_start_target(const dsd_opts* opts, const dsd_state* state, const dsd_
     (DSD_ANALOG_ERROR_TEXT_MAX > DSD_ENGINE_TETRA_ROW_TEXT_MAX ? DSD_ANALOG_ERROR_TEXT_MAX                             \
                                                                : DSD_ENGINE_TETRA_ROW_TEXT_MAX)
 
-/* Why target @p rt is skipped at every visit at DSP rate @p rate_hz, in @p why: its TETRA DMO chain's reason (the full
+/* Why target @p rt is skipped at every visit at DSP rate @p rate_hz, in @p out: its TETRA DMO chain's reason (the full
    text, @p brief 0, or the status line's), else its width's. */
 static void
 trunk_scan_skip_text(const dsd_opts* opts, const dsd_state* state, const dsd_trunk_scan_target_runtime* rt, int rate_hz,
-                     int brief, char* why, size_t why_size) {
+                     int brief, char* out, size_t out_size) {
     const dsd_engine_tetra_row tetra = trunk_scan_type_tetra_skip(opts, state, rt->target.type, rate_hz);
     if (tetra != DSD_ENGINE_TETRA_ROW_OK) {
-        dsd_engine_scan_tetra_row_text(opts, tetra, rate_hz, brief, why, why_size);
+        dsd_engine_scan_tetra_row_text(opts, tetra, rate_hz, brief, out, out_size);
         return;
     }
     dsd_scan_option_values scratch;
     (void)dsd_engine_scan_analog_width_skipped(opts, state, trunk_scan_target_values(rt, &scratch),
                                                dsd_scan_mode_analog_kind(trunk_scan_target_mode(rt->target.type)),
-                                               rate_hz, why, why_size);
+                                               rate_hz, out, out_size);
 }
 
 /* A start none of whose targets in the rotation the scan can visit (trunk_scan_start_target()), refused in @p err with
