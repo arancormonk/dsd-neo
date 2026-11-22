@@ -494,8 +494,12 @@ Item {
             sheet.savesToSystem = true;
             sheet.savedSquelch = "noise+17";
             verify(clear.visible);
-            compare(clear.text, "Use app default");
-            compare(clear.Accessible.name, "Use App Default Squelch for This System");
+            // Issue #899 (final-diff review r2): it removes the saved override, which promises nothing about the
+            // app default (Advanced arguments can decide the next start), as the audio sheet's button says.
+            compare(clear.text, "Remove saved squelch");
+            compare(clear.Accessible.name, "Remove Saved Squelch From This System");
+            verify(clear.Accessible.name.toLowerCase().indexOf(clear.text.toLowerCase()) >= 0,
+                "the spoken name contains the label");
             verify(clear.height >= 48);
             verify(clear.width < sheet.width / 2, "a content-width button, as This channel's Use default");
             var row = findChild(sheet, "radioSquelchClearRow");
@@ -604,6 +608,30 @@ Item {
             testContext.setMetric("squelchAnalogDefault", false);
             tryCompare(status, "text", "quieting 23 dB");
             tryCompare(value.Accessible, "name", "noise +10 dB (quieting 23 dB)");
+        }
+
+        // Issue #899 (final-diff review r2): "This channel" on an analog scan row that inherits the default shows the
+        // same marker, the shared decision (metrics.squelchAnalogDefault): the reading there is still the default's.
+        // A row edit outstanding hides it, as an edit of the default does.
+        function test_default_marker_on_an_inheriting_row() {
+            testContext.setMetric("squelchAnalogDefault", true);
+            setNoise(true, true, 10, "quieting 23 dB");
+            onAir(true, squelchField | widthField | commands.scanRowFieldTone);
+            testContext.setMetric("scanRowSynced", true);
+            findChild(sheet, "radioScope").selected(1);
+            verify(sheet.rowSquelch);
+            var value = findChild(sheet, "radioSquelchValue");
+            var status = findChild(sheet, "radioSquelchAutoStatus");
+            compare(value.text, "noise +10 dB");
+            verify(status.visible);
+            compare(status.text, "default; quieting 23 dB");
+            tryCompare(value.Accessible, "name", "noise +10 dB (default; quieting 23 dB)");
+            findChild(sheet, "radioSquelchUp").clicked();
+            compare(testContext.lastScanRowEdit().value.squelchMarginDb, 11, "the row's own edit");
+            verify(status.text.indexOf("default") < 0, "no marker while the row's edit is outstanding");
+            findChild(sheet, "radioScope").selected(0);
+            sheet.forgetRequests();
+            onAir(false, 0);
         }
     }
 }

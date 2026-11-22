@@ -69,7 +69,7 @@ A squelch you set while listening (the Radio or Squelch sheet, the terminal, the
 control API), a saved squelch, or a `--squelch` in Extra decoder arguments is
 yours for the rest of the session: picking a mode never changes it, Off included.
 While the default is the squelch in force, the Radio sheet marks it **default**
-under the squelch reading.
+under the squelch reading, on **This channel** of a scan entry that uses it too.
 
 It does not apply to digital decodes (P25, DMR, NXDN, TETRA and the rest, EDACS's
 analog calls included), which run with the squelch off as before, or to audio and

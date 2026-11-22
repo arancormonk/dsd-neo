@@ -15819,9 +15819,9 @@ Build files: `src/protocol/CMakeLists.txt` and per‑protocol `src/protocol/<nam
     saved control out ("Clear saved squelch", issue #899 B11), keeping the others. Issue #899: the audio-input
     `SquelchSheet` saves through the same object as the Radio sheet (B7: `settingRequested`, `savesToSystem`,
     `saveError` through `MonitorScreen` to `radioPersistence.request()`; "This channel" edits are the session's), and
-    both sheets offer a content-width clear button while the saved system has one (`Main.sessionSavedSquelch`): "Use
-    app default" on the Radio sheet, "Remove saved squelch" on the audio-input sheet (no app default applies there),
-    accessible name "Clear This System's Saved Squelch", with "Applies from the next start." under it.
+    both sheets offer a content-width clear button while the saved system has one (`Main.sessionSavedSquelch`):
+    "Remove saved squelch", accessible name "Remove Saved Squelch From This System" (it promises nothing about the app
+    default: Advanced arguments or the input can decide the next start), with "Applies from the next start." under it.
     `clearSquelch()` drops a squelch request still waiting before `clearRadioSetting()`, so an older one cannot put the
     key back, and `squelchCleared` shows the note until the next squelch request: "Saved squelch cleared for the next
     start." (it promises nothing about what that start runs: Advanced arguments or the input decide). A clear or
@@ -15853,9 +15853,11 @@ Build files: `src/protocol/CMakeLists.txt` and per‑protocol `src/protocol/<nam
     stores only the dynamic choice. The steppers of both sheets (`Util.squelchStep()`) always ask for a whole dB,
     never step against their direction (-5 dB is the top a step makes; a level above it set elsewhere stays), stop on
     the -120 dB floor before Off, and take a row's own level down to -120 dB too. A user squelch edit on either sheet is
-    an explicit squelch in the decoder, which ends the analog default there. `UI_QT_PERSISTENCE`, `UI_QT_SESSION_ARGS`,
-    `UI_QT_SCAN_LIST_TARGETS` and the Radio persistence QML test cover disk reload, restart, validation and temporary
-    scopes.
+    an explicit squelch in the decoder, which ends the analog default there. The Radio sheet's `default` marker
+    (`squelchDefaultInForce`) is `metrics.squelchAnalogDefault`, the shared decision, under "This channel" too on an
+    analog row that inherits the default, hidden only while an edit is outstanding. `UI_QT_PERSISTENCE`,
+    `UI_QT_SESSION_ARGS`, `UI_QT_SCAN_LIST_TARGETS` and the Radio persistence QML test cover disk reload, restart,
+    validation and temporary scopes.
   - Qt/Android default squelch (issue #899): `AppPrefs::squelch` (`radio/squelch`, portable; exactly `off`, `auto+N` or
     `noise+N`, N 3..30, `app_squelch_default_valid()` in `app_squelch_default.h`; `noise+10` when absent or damaged, a
     refused write writes nothing, a valid one repairs damage; a backup without it restores the default) maps to

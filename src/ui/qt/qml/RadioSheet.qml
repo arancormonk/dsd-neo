@@ -178,8 +178,10 @@ ModalSheet {
         && metrics.squelchAutoStatus !== undefined) ? metrics.squelchAutoStatus : ""
     // Issue #899: the squelch in force is the app's default from Settings
     // (nothing set one for this session), marked "default" as the terminal's
-    // readout marks it. An edit ends it, so a request outstanding hides it.
-    readonly property bool squelchDefaultInForce: !rowSquelch && isNaN(pendingSquelch) && isNaN(pendingSquelchMargin)
+    // readout marks it, the shared decision: under "This channel" too, on an
+    // analog row that inherits it. An edit ends it (a row's own squelch
+    // overrides it), so a request outstanding hides it.
+    readonly property bool squelchDefaultInForce: isNaN(pendingSquelch) && isNaN(pendingSquelchMargin)
         && metrics.squelchAnalogDefault === true
     // What the reading's status line shows and the reading's speech adds in
     // brackets: the default marker, then the dynamic squelch's status.
@@ -1015,8 +1017,8 @@ ModalSheet {
             OutlineButton {
                 id: squelchClearButton
                 objectName: "radioSquelchClearSaved"
-                text: qsTr("Use app default")
-                accessibleName: qsTr("Use App Default Squelch for This System")
+                text: qsTr("Remove saved squelch")
+                accessibleName: qsTr("Remove Saved Squelch From This System")
                 onClicked: sheet.clearSavedSquelch(activeFocus)
             }
             ReadableText {
