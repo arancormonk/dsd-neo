@@ -10,6 +10,11 @@ Item {
         property int edits: 0
         property int removes: 0
         property var last: []
+        // Issue #903: the remembered list's forgets (TalkgroupListModel::forgetTalkgroupOf()).
+        property var forgets: []
+        function forgetTalkgroupOf(owner, id) {
+            forgets = forgets.concat([[owner, id]]);
+        }
         function setTalkgroupPolicy(a, b, c, g, changes, index, pattern) {
             edits++;
             last = [a, b, c, g, changes, index, pattern];
@@ -47,6 +52,8 @@ Item {
             testContext.resetCommands();
             verify(loader.item !== null, "edit sheet must load");
             loader.item.bridge = recorder;
+            loader.item.heardList = recorder;
+            recorder.forgets = [];
             loader.item.openRow(42, 49, "Dispatch", true, true, 25, false, "18446744073709551614", 9);
             recorder.edits = 0;
             recorder.removes = 0;
@@ -191,7 +198,9 @@ Item {
                 listed: true,
                 priority: 50,
                 preempt: true,
-                temporaryAvoidCount: 0
+                temporaryAvoidCount: 0,
+                lastHeard: 0,
+                remembered: false
             });
             verify(card !== null);
             compare(findChild(card, "talkgroupBadge").text, "42 · Priority 50 · Preempt");
@@ -349,6 +358,36 @@ Item {
             compare(saveSpy.signalArguments[0][1], 9);
             sheet.canSaveList = false;
             verify(!button.visible);
+        }
+
+        // Issue #903: Forget this talkgroup is on a remembered card only, asks with a second tap as Remove does, and
+        // forgets the number for the owner the sheet opened with.
+        function test_forget_only_on_remembered_cards() {
+            var sheet = loader.item;
+            var forget = findChild(sheet, "forgetTalkgroup");
+            verify(forget !== null);
+            verify(!forget.visible, "a listed row opened without the remembered flag has nothing to forget");
+            sheet.openRow(55, 55, "", true, false, 0, false, "7", 2, true, -1, "", false, "owner-a");
+            verify(!forget.visible, "a card heard only this session has nothing to forget");
+            sheet.openRow(55, 55, "", true, false, 0, false, "7", 2, true, -1, "", true, "owner-a");
+            verify(forget.visible);
+            compare(forget.text, "Forget this talkgroup");
+            verify(forget.height >= 48);
+            waitForRendering(sheet);
+            mouseClick(forget);
+            compare(forget.text, "Tap again to forget");
+            compare(recorder.forgets.length, 0);
+            // A reopen starts unarmed.
+            sheet.openRow(55, 55, "", true, false, 0, false, "7", 2, true, -1, "", true, "owner-a");
+            compare(forget.text, "Forget this talkgroup");
+            waitForRendering(sheet);
+            mouseClick(forget);
+            waitForRendering(sheet);
+            mouseClick(forget);
+            compare(recorder.forgets, [["owner-a", 55]]);
+            verify(!sheet.visible);
+            compare(recorder.edits, 0);
+            compare(recorder.removes, 0);
         }
     }
 }

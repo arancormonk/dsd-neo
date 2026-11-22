@@ -6,6 +6,8 @@ import "Util.js" as Util
 ModalSheet {
     id: sheet
     property var bridge: commands
+    // Issue #903: the remembered talkgroups a Forget goes to (the screen's list model).
+    property var heardList: typeof talkgroups !== "undefined" ? talkgroups : null
     // A form sheet (issue #718): an outside tap keeps it; Cancel, Back and Escape ask first.
     closesOnOutsideTap: false
     property string backendMessage: metrics.uiMessage
@@ -21,6 +23,10 @@ ModalSheet {
     property bool listed: false
     property var original: ({})
     property bool removeArmed: false
+    // Issue #903: a card the system remembers, and the system (its uid) it was on when the sheet opened.
+    property bool remembered: false
+    property string owner: ""
+    property bool forgetArmed: false
     property bool submitted: false
     property string saveMessage: ""
     property var observedCrypto: ({})
@@ -37,8 +43,9 @@ ModalSheet {
     signal saveListRequested(string context, int generation)
 
     // @p record is the row's record flag (issue #708); a heard talkgroup without a
-    // row records whenever it is tuned, so it reads as listening.
-    function openRow(start, end, name, listening, isListed, priority, preempt, context, generation, record, index, rowPattern) {
+    // row records whenever it is tuned, so it reads as listening. @p isRemembered
+    // and @p heardOwner (issue #903): a card remembered on saved system @p heardOwner.
+    function openRow(start, end, name, listening, isListed, priority, preempt, context, generation, record, index, rowPattern, isRemembered, heardOwner) {
         var patternText = rowPattern || "";
         observedCrypto = patternText.length === 0 && typeof talkgroups !== "undefined" && typeof talkgroups.observedDecryption === "function" ? talkgroups.observedDecryption(Number(start)) : ({});
         idStart = start;
@@ -61,6 +68,9 @@ ModalSheet {
         priorityValue = priority;
         preemptToggle.checked = preempt;
         removeArmed = false;
+        remembered = isRemembered === true;
+        owner = heardOwner || "";
+        forgetArmed = false;
         submitted = false;
         localMessage = "";
         visible = true;
@@ -244,6 +254,28 @@ ModalSheet {
                 sheet.visible = false;
                 Qt.inputMethod.hide();
             }
+        }
+    }
+    // Issue #903: a remembered card leaves the system's list (every variant of
+    // its number); a later call brings it back. Asked with a second tap, as Remove is.
+    OutlineButton {
+        objectName: "forgetTalkgroup"
+        width: parent.width
+        height: Math.max(48, implicitHeight)
+        visible: sheet.remembered
+        text: sheet.forgetArmed ? qsTr("Tap again to forget") : qsTr("Forget this talkgroup")
+        onClicked: {
+            if (sheet.submitted || !sheet.heardList)
+                return;
+            if (!sheet.forgetArmed) {
+                sheet.forgetArmed = true;
+                return;
+            }
+            sheet.forgetArmed = false;
+            sheet.heardList.forgetTalkgroupOf(sheet.owner, Number(sheet.idStart));
+            sheet.submitted = true;
+            sheet.visible = false;
+            Qt.inputMethod.hide();
         }
     }
     OutlineButton {

@@ -19167,6 +19167,23 @@ Qt Quick frontend (`src/ui/qt`):
     in as new the next serial, an update keeps its fragment's; not persisted, so a reloaded row is 0). A later call
     shows the card again; an update of a call already logged (its end extending) does not. The marks are in memory,
     per owner, and a new `historySession` drops them.
+  - The screen (issue #903; `qml/TalkgroupsScreen.qml`, `TalkgroupCard.qml`, `TalkgroupEditSheet.qml`). A remembered
+    card's second line is "Last heard %1" (`MapText.agoText()` to the minute on `metrics.decodeNowMs`, with the
+    screen's minute `ageTick`; a time ahead of the decode clock by its date and time); a card heard only this session
+    keeps "Heard in this session". A heard card has no name line, and its switch reads "Listen to talkgroup %1" with
+    the line in its description. The edit sheet opens with the card's `remembered` flag and `viewedOwner`
+    (`openRow()`'s last two arguments) and offers **Forget this talkgroup** (a second tap, as Remove) on a remembered
+    card only, through `forgetTalkgroupOf()` with that owner. The footer's last row holds **Save talkgroup list**
+    (`saveOffered`: the owner's `canSaveList`, not `scanRowRefusesSave`, decoder running; the sheet's button uses the
+    same property) and **Clear remembered talkgroups…** (any viewed owner, remembering or not), side by side as the
+    bulk actions are. Clear asks first, naming the saved system (`savedSystems.getByUid()`), and clears the owner it
+    captured when it asked. With `remembering` on, the session-only note says heard talkgroups are remembered. The
+    saved-system editor (`WizardScreen.qml`, Trunking data) has the **Remember heard talkgroups** switch
+    (`rememberTalkgroups`, on for a new system, kept by an edit, in the draft fingerprint), and Home's store notice
+    names `heard_talkgroups.json` "Remembered talkgroups" (`Util.storeLabel()`). Tests: `UI_QT_QML_CALL_LISTS`
+    (`tst_talkgroups_screen.qml`, `tst_talkgroup_edit_sheet.qml`, `tst_wizard_src.qml`, `tst_home_store_notices.qml`;
+    the fixture's `CallLogStore` is a `HeardTalkgroupSource` over a production `HeardTalkgroupStore`),
+    `UI_QT_QML_A11Y_CHURN` (`tst_a11y_talkgroups.qml`).
   - Granular updates. Dirty flags (the policy's version, the store's `ownerChanged()` for the viewed owner, any
     history change, the viewed owner, the session) gate every read: an idle tick reads and signals nothing. An observe
     names the entries it changed (`ownerChanged(owner, entries)`: the one added or moved and any the cap evicted; empty

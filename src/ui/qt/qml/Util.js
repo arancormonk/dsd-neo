@@ -726,9 +726,9 @@ function notIncludedText(items) {
 
 // Issue #828: the name the app gives each file a backup reads (the five stores,
 // the Signal search avoid file and the settings file) and each other file Home's
-// store notice card can name (call history's, the Signal search history), for
-// messages that name a file that couldn't be read. A name not listed is shown
-// as it is.
+// store notice card can name (call history's, the Signal search history, the
+// remembered talkgroups of issue #903), for messages that name a file that
+// couldn't be read. A name not listed is shown as it is.
 function storeLabel(fileName) {
     switch (String(fileName || "")) {
     case "call_history.json":
@@ -751,6 +751,8 @@ function storeLabel(fileName) {
         return qsTr("Signal search permanent avoids")
     case "dsd-neo-app.ini":
         return qsTr("Settings")
+    case "heard_talkgroups.json":
+        return qsTr("Remembered talkgroups")
     }
     return String(fileName || "")
 }

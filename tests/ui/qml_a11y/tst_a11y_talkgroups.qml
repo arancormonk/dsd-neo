@@ -251,7 +251,8 @@ Item {
             var component = Qt.createComponent(uiDir + "/TalkgroupCard.qml");
             compare(component.status, Component.Ready, component.errorString());
             var card = component.createObject(screen.parent, {width: 300, idText: "1234", name: "Fire Dispatch",
-                tags: "Law", listening: true, listed: true, priority: 2, preempt: true, temporaryAvoidCount: 1});
+                tags: "Law", listening: true, listed: true, priority: 2, preempt: true, temporaryAvoidCount: 1,
+                lastHeard: 0, remembered: false});
             verify(card !== null);
             var node = testContext.accessibleNode(findChild(card, "talkgroupListeningSwitch"));
             compare(node.name, "Listen to Fire Dispatch, talkgroup 1234");
@@ -261,6 +262,14 @@ Item {
             card.listed = false;
             node = testContext.accessibleNode(findChild(card, "talkgroupListeningSwitch"));
             compare(node.description, "Heard in this session");
+            // Issue #903: a remembered card's last heard, read with the talkgroup as it is drawn; a heard card has no
+            // name to read.
+            card.name = "";
+            card.remembered = true;
+            card.lastHeard = Math.floor(metrics.decodeNowMs / 1000) - 7200;
+            node = testContext.accessibleNode(findChild(card, "talkgroupListeningSwitch"));
+            compare(node.name, "Listen to talkgroup 1234");
+            compare(node.description, "Last heard 2 h ago");
             card.destroy();
         }
 

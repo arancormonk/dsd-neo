@@ -36,7 +36,7 @@ Item {
         // The Airspy fields' typing counts before it commits (they commit on
         // editingFinished, and an emptied gain index never does). The gain
         // text counts only under Set, the one mode that saves it.
-        return JSON.stringify([sourceType, airspySettings, wizardAirspy.pendingText(), hostText, portText, fileText, freqText, decodeFlag, trunking, gainMode, gainMode === 2 ? gainText : "", ppmText, hangtimeText, bwText, biasTee, extraText, nameText, chanCsvPath, groupCsvPath, keyCsvPath, keyCsvHex, encKeyType, encForceKey, p25BandplanCsvPath, srcCsvPath, decryptionProfileUid]);
+        return JSON.stringify([sourceType, airspySettings, wizardAirspy.pendingText(), hostText, portText, fileText, freqText, decodeFlag, trunking, gainMode, gainMode === 2 ? gainText : "", ppmText, hangtimeText, bwText, biasTee, extraText, nameText, chanCsvPath, groupCsvPath, rememberTalkgroups, keyCsvPath, keyCsvHex, encKeyType, encForceKey, p25BandplanCsvPath, srcCsvPath, decryptionProfileUid]);
     }
     // Whether leaving now would lose something typed or picked.
     function hasUnsavedDraft() {
@@ -121,6 +121,8 @@ Item {
     // only for the system being edited. See applyRadioReference().
     property bool chanCsvGenerated: false
     property bool groupCsvGenerated: false
+    // Issue #903: the system remembers the talkgroups it hears (on for a new one).
+    property bool rememberTalkgroups: true
     property string keyCsvPath: ""
     property bool keyCsvHex: false
     // WP-D2: the editor is the sole owner of the draft key text.
@@ -379,6 +381,7 @@ Item {
         nameField.text = "";
         chanCsvPath = "";
         groupCsvPath = "";
+        rememberTalkgroups = true;
         keyCsvPath = "";
         keyCsvHex = false;
         encryptionEditor.reset();
@@ -431,6 +434,7 @@ Item {
         nameField.text = "";
         chanCsvPath = "";
         groupCsvPath = "";
+        rememberTalkgroups = true;
         keyCsvPath = "";
         keyCsvHex = false;
         encryptionEditor.reset();
@@ -492,6 +496,8 @@ Item {
         groupCsvPath = sys.groupCsvPath;
         chanCsvGenerated = generatedByRadioReference(chanCsvPath);
         groupCsvGenerated = generatedByRadioReference(groupCsvPath);
+        // An older saved system has no answer: it remembers.
+        rememberTalkgroups = sys.rememberTalkgroups !== false;
         keyCsvPath = sys.keyCsvPath;
         keyCsvHex = sys.keyCsvHex;
         encryptionEditor.reset();
@@ -743,6 +749,7 @@ Item {
             decryptionProfileUid: decryptionProfileUid,
             chanCsvPath: chanCsvPath,
             groupCsvPath: groupCsvPath,
+            rememberTalkgroups: rememberTalkgroups,
             keyCsvPath: keyCsvPath,
             keyCsvHex: keyCsvHex,
             encKeyType: encryptionEditor.clearingKey ? "" : encKeyType,
@@ -1604,6 +1611,18 @@ Item {
                             target: "group"
                             path: wizard.groupCsvPath
                             showDivider: true
+                        }
+
+                        // Issue #903: what the Talkgroups screen keeps for this system between sessions.
+                        ToggleRow {
+                            objectName: "wizardRememberTalkgroups"
+                            title: qsTr("Remember heard talkgroups")
+                            subtitle: qsTr("Talkgroups heard on this system stay on its Talkgroups screen. Kept on this device only.")
+                            checked: wizard.rememberTalkgroups
+                            showDivider: true
+                            onToggled: function (state) {
+                                wizard.rememberTalkgroups = state;
+                            }
                         }
 
                         CsvPickerRow {

@@ -267,7 +267,7 @@ Item {
                     {file: "signal-search-history.v1", state: "leftInPlace", kept: ""}]);
             }},
             {file: "TalkgroupCard", properties: {idText: "100", name: "Fire dispatch", tags: "Fire", listening: true,
-                listed: true, priority: 2, preempt: true, temporaryAvoidCount: 1}},
+                listed: true, priority: 2, preempt: true, temporaryAvoidCount: 1, lastHeard: 0, remembered: false}},
             {file: "TalkgroupEditSheet"},
             {file: "TalkgroupSaveFlow"},
             {file: "TalkgroupsScreen"},
