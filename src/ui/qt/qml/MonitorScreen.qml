@@ -1207,9 +1207,9 @@ Item {
                         // PRIVATE, ENC and the algorithm text, which may be cut
                         // to no less than its "ALG nn" part. The first that does
                         // not fit ends the run, so a lower one is never drawn in
-                        // place of a higher one. The ids take what is left, up
-                        // to their width; the channel ends the line in what
-                        // remains. Left to right: PRIVATE, ids, EMERGENCY, ENC,
+                        // place of a higher one. Then the channel, after every
+                        // status drawn, and last the ids grow into what is
+                        // left, up to their width. Left to right: PRIVATE, ids, EMERGENCY, ENC,
                         // algorithm, channel. Every word is still in the hero's
                         // accessible text (heroSublineSpeech).
                         width: parent.width
@@ -1260,20 +1260,25 @@ Item {
                                     stopped = true;
                                 }
                             }
-                            // What is left: the ids grow to their width, then the channel.
+                            // The channel after every status, never in place of
+                            // one left out, and before the ids grow: a long name
+                            // does not push a short channel off the line.
+                            if (!stopped && heroChannelText.shown) {
+                                var channelRoom = room - used - (count > 0 ? gap : 0);
+                                var channelNatural = Math.ceil(heroChannelMetrics.advanceWidth);
+                                if (channelRoom >= Math.min(channelNatural, 48)) {
+                                    shown.channel = Math.min(channelNatural, channelRoom);
+                                    used += (count > 0 ? gap : 0) + shown.channel;
+                                    ++count;
+                                }
+                            }
+                            // Last, what is left: the ids grow to their width.
                             var spare = room - used;
                             for (var grown of leads) {
                                 var more = Math.min(grown.natural - grown.width, Math.max(0, spare));
                                 grown.width += more;
                                 spare -= more;
                                 shown[grown.key] = grown.width;
-                            }
-                            // Last of all: never in place of a status left out.
-                            if (!stopped && heroChannelText.shown) {
-                                var channelRoom = spare - (count > 0 ? gap : 0);
-                                var channelNatural = Math.ceil(heroChannelMetrics.advanceWidth);
-                                if (channelRoom >= Math.min(channelNatural, 48))
-                                    shown.channel = Math.min(channelNatural, channelRoom);
                             }
                             return shown;
                         }

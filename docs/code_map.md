@@ -17475,8 +17475,9 @@ Qt Quick frontend (`src/ui/qt`):
   min(its width, 96), then EMERGENCY, the `SLOT n` label, PRIVATE and ENC each while it fits in the room up to Skip, and
   the identity takes the rest and elides. The idle strip keeps its label. The hero reads PRIVATE, ids, EMERGENCY, ENC,
   algorithm, channel; the ids first get min(their width, 96), then EMERGENCY, PRIVATE, ENC and the algorithm text
-  (`ALG nn · KID nnnn`, cut to no less than `ALG nn…`, else left out), and the channel only after every status
-  drawn. What is left out stays in the accessible text: the strip identity's name carries the slot (while its label is
+  (`ALG nn · KID nnnn`, cut to no less than `ALG nn…`, else left out), then the channel (at least min(its width,
+  48), only after every status drawn), and only then do the ids grow into what is left, so a long name never pushes
+  a short channel off the line. What is left out stays in the accessible text: the strip identity's name carries the slot (while its label is
   not drawn), PRIVATE, EMERGENCY and ENC (each tag's `label`, which `EmergencyTag` and `EncTag` now have as
   `PrivateTag` had), and the hero reads its subline from `heroSublineSpeech()`, every part the call has. The strip's
   identity line is a fixed box (`otherIdentityBox`, `LineBoxes`). On a 320 px phone a long name can leave the strip's

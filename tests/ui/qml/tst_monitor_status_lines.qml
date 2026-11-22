@@ -335,5 +335,38 @@ Item {
             settle();
             compare(hero.height, waitingHeight, "the hero's height without tags");
         }
+
+        // A long source name and a short channel, no tags, at 320 dp: the channel is drawn after the ids' minimum
+        // and the ids take what is left, rather than the ids taking every spare pixel first and leaving the channel
+        // out (issue #901 G5).
+        function test_hero_channel_beside_long_ids_data() {
+            return [{tag: "320x1300@1", width: 320, height: 1300, scale: 1.0}, {tag: "320x600@1", width: 320, height: 600, scale: 1.0}];
+        }
+        function test_hero_channel_beside_long_ids(data) {
+            root.width = data.width;
+            root.height = data.height;
+            Ui.Theme.fontScale = data.scale;
+            setCall(1, {kind: 3, name: "Dispatcher 7", tgLabel: "Dispatcher 7", tg: "2001234", id: 2001234,
+                        src: "County Fire and Rescue North Battalion (1234567)", channel: "Tac 3"});
+            m("leadSlot", 1);
+            settle();
+            var ids = item("heroIds");
+            var channel = item("heroChannel");
+            var subline = ids.parent.parent;
+            verify(ids.visible);
+            var lead = Math.min(naturalWidth(ids.text, ids.font), 96);
+            verify(naturalWidth(ids.text, ids.font) > subline.width, "the ids are wider than the subline");
+            verify(channel.visible, "the channel is left out beside long ids");
+            compare(channel.width, Math.ceil(naturalWidth(channel.text, channel.font)), "the channel whole");
+            verify(ids.width >= lead - 0.5, "ids " + ids.width + " under their minimum " + lead);
+            var a = rectIn(ids, subline);
+            var b = rectIn(channel, subline);
+            verifyInside(b, subline, "the subline");
+            verifyClear([a, b]);
+            // The ids take the rest of the line.
+            verify(Math.abs(b.x + b.w - subline.width) < 1.5, "the line is not filled: " + (b.x + b.w) + " of " + subline.width);
+            clearCall(1);
+            m("leadSlot", 0);
+        }
     }
 }
