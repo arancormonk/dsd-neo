@@ -1532,17 +1532,19 @@ alone is `auto+10`), so one setting suits every receiver and every channel of a 
   the Airspy serial, the gain, PPM, DSP bandwidth or bias tee keeps them apart, and every other spec (SoapySDR,
   `--iq-replay`) counts whole. The spec names an RTL-SDR dongle by its index, so a different dongle at the same index
   can take a floor learned on the one before.
-- Restarts. A retune to another channel starts the windows over and moves to that channel's floor. Any receiver
-  restart on the same channel keeps its floor but starts closed: Stop and Start in the app, a stream reopen, an rtl_tcp
-  reconnect, a USB recovery, an input overflow gap (an Airspy driver overflow, a full input buffer dropping samples), an
-  FM/AM switch on one frequency, a same-frequency retune or PPM change, a switch from a digital decode back to NFM or
-  AM, and a spell under another squelch setting. The gate the last stream left open, and the windows and floor
-  evidence from before the restart, do not count. Until a 40 ms window after the restart has been classed as noise or
-  carrier, the floor does not open on signal strength alone, so idle noise louder than before stays muted. A carrier
-  present from the restart opens at the first window's end, 20 ms later than it would mid-stream; one keyed partway
-  into that window can wait for the next, up to 80 ms after the restart. So under `auto`, a carrier that goes on
-  through an FM/AM switch, a same-frequency retune, a PPM change or an input overflow gap is muted for up to 40 ms
-  (80 ms at worst) before it plays again; the noise squelch starts over closed at all of these too.
+- Restarts. A retune to another channel starts the windows over and moves to that channel's floor, which gates at once,
+  even when the retune comes right after a restart. Any receiver restart on the same channel keeps its floor but starts
+  closed: Stop and Start in the app, a stream reopen, an rtl_tcp reconnect, a USB recovery, an input overflow gap (an
+  Airspy driver overflow, a full input buffer dropping samples), an FM/AM switch on one frequency, a same-frequency
+  retune or PPM change, a switch from a digital decode back to NFM or AM, and a spell under another squelch setting.
+  Stop and Start onto another channel whose floor is remembered starts closed on that floor the same way. The gate the
+  last stream left open, and the windows and floor evidence from before the restart, do not count. Until a 40 ms window
+  after the restart has been classed as noise or carrier, the floor does not open on signal strength alone, so idle
+  noise louder than before stays muted. A carrier present from the restart opens at the first window's end, 20 ms later
+  than it would mid-stream; one keyed partway into that window can wait for the next, up to 80 ms after the restart. So
+  under `auto`, a carrier that goes on through an FM/AM switch, a same-frequency retune, a PPM change or an input
+  overflow gap is muted for up to 40 ms (80 ms at worst) before it plays again; the noise squelch starts over closed at
+  all of these too.
 - Where it runs: the analog monitors (`-fA`, `-fM`, `nfm` and `am` scan rows, `nfm-conventional` and
   `am-conventional` targets) on a radio input (RTL-SDR, rtl_tcp, SoapySDR, Airspy, `--iq-replay`). On a digital
   channel it is off: CRC and FEC already decide what is traffic there, and a control channel never shows its noise. On

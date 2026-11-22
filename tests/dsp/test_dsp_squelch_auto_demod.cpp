@@ -511,6 +511,75 @@ stream_restart_starts_the_evidence_over(void) {
     return rc;
 }
 
+/* The restart hold and the floor cache (issue #899): a new stream onto a channel whose floor comes from the cache
+   (learn A, visit B, Stop, Start on A: the IO layer marks the open, squelch_new_stream, and resets the filters) holds
+   like one onto a floor it kept, so idle noise louder than A's floor opens nothing; a restart on A, then a retune to B
+   before a window classified, leaves A's hold behind, and B's cached floor opens on a carrier at its first sub-window;
+   and a move to a cached floor with no gap holds nothing. */
+int
+stream_restart_hold_follows_the_context(void) {
+    const int rate = 24000;
+    const int64_t freq_a = 162475000;
+    const int64_t freq_b = 172475000;
+    int rc = 0;
+    long first = -1;
+    const std::vector<float> noise = make_signal(rate, 1.0, 0.0, 0.0, 0, 0x899B10ULL);
+    const std::vector<float> idle = make_signal(rate, 0.2, 0.0, 0.0, 0, 0x899B11ULL);
+    {
+        demod_state* s = new_monitor(0, rate, 1, 12500);
+        if (!s) {
+            return fail("alloc");
+        }
+        (void)count_opens(s, noise, 1000, &first);
+        s->squelch_context.freq_hz = freq_b;
+        (void)count_opens(s, noise, 1000, &first);
+        if (s->squelch_floor.state != DSD_SQUELCH_FLOOR_KNOWN) {
+            rc |= fail("no floor on the second channel");
+        }
+        s->squelch_context.freq_hz = freq_a;
+        s->squelch_new_stream = 1;
+        dsd_demod_reset_filter_state(s);
+        const long opens = count_opens(s, scaled(idle, 13.0), 1000, &first);
+        if (opens != 0) {
+            DSD_FPRINTF(stderr,
+                        "squelch auto demod: %ld samples open on louder noise after a new stream on a cached floor\n",
+                        opens);
+            rc |= 1;
+        }
+        free_monitor(s);
+    }
+    {
+        demod_state* s = new_monitor(0, rate, 1, 12500);
+        if (!s) {
+            return fail("alloc");
+        }
+        s->squelch_context.freq_hz = freq_b;
+        (void)count_opens(s, noise, 1000, &first);
+        s->squelch_context.freq_hz = freq_a;
+        (void)count_opens(s, noise, 1000, &first);
+        if (s->squelch_floor.restart_hold || s->squelch_floor.state != DSD_SQUELCH_FLOOR_KNOWN) {
+            rc |= fail("a move to a cached floor with no gap held the gate, or found no floor");
+        }
+        dsd_demod_reset_filter_state(s);
+        (void)run_block(s, noise.data(), 300);
+        if (!s->squelch_floor.restart_hold) {
+            rc |= fail("no hold after the restart");
+        }
+        s->squelch_context.freq_hz = freq_b;
+        dsd_demod_reset_filter_state(s);
+        const std::vector<float> carrier = make_signal(rate, 0.0, 0.3, 0.0, 0, 0x899B12ULL);
+        (void)count_opens(s, carrier, 1000, &first);
+        if (first < 0 || first > (30L * rate) / 1000L) {
+            DSD_FPRINTF(stderr,
+                        "squelch auto demod: a carrier on a cached floor after a restart and a retune opened at %ld\n",
+                        first);
+            rc |= 1;
+        }
+        free_monitor(s);
+    }
+    return rc;
+}
+
 /* The per-channel floors age with the stream in every mode: under the level squelch and off the analog monitor (a
    digital channel) the cache's clock runs on, so a floor cached before is stale when its channel comes back. */
 int
@@ -1277,6 +1346,7 @@ main(void) {
     rc |= context_moves_the_floor();
     rc |= stream_restart_closes_the_gate();
     rc |= stream_restart_starts_the_evidence_over();
+    rc |= stream_restart_hold_follows_the_context();
     rc |= cache_ages_in_every_mode();
     rc |= idle_floor_goes_stale();
     rc |= am_detector_follows_the_flags();

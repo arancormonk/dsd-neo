@@ -1253,6 +1253,41 @@ test_stream_restart_evidence(void) {
     assert(status_of(&r.t[0]).state == DSD_SQUELCH_FLOOR_KNOWN && !r.ever_learning[0]);
 }
 
+/* The restart hold belongs to the context it was armed on (issue #899): a stream restart on A, then a move to B
+   before a window has classified, lets B's own floor gate at once; a carrier there opens at the first sub-window. */
+static void
+test_stream_restart_hold_left_with_its_context(void) {
+    static channel ch;
+    static source s;
+    static runner r;
+    static dsd_squelch_floor_cache c;
+    const int margin = 10;
+    const int rate = 24000;
+    channel_make(&ch, rate, 12500, NULL, 0);
+    DSD_MEMSET(&c, 0, sizeof c);
+    source_init(&s, &ch, 0x899A0BULL, 1e-3);
+    runner_init(&r, &ch, &margin, 1);
+    dsd_squelch_floor* t = &r.t[0];
+    const dsd_squelch_floor_key a = key_at(162475000);
+    const dsd_squelch_floor_key b = key_at(172475000);
+    dsd_squelch_floor_change_context(t, &c, NULL, &b);
+    runner_run(&r, &s, 1.0);
+    assert(status_of(t).state == DSD_SQUELCH_FLOOR_KNOWN);
+    dsd_squelch_floor_change_context(t, &c, &b, &a);
+    runner_run(&r, &s, 1.0);
+    assert(status_of(t).state == DSD_SQUELCH_FLOOR_KNOWN);
+
+    dsd_squelch_floor_stream_restart(t);
+    runner_run(&r, &s, (double)sub_len(rate) / (double)rate);
+    assert(t->restart_hold);
+    dsd_squelch_floor_change_context(t, &c, &a, &b);
+    assert(status_of(t).state == DSD_SQUELCH_FLOOR_SEEDED && !t->restart_hold);
+    runner_mark(&r);
+    source_fm(&s, 20.0, 0.0, 1000.0, 2500.0);
+    runner_run(&r, &s, 0.2);
+    assert(r.first_open[0] == sub_len(rate));
+}
+
 /* ------------------------------------------------------------------------------------------------ odd corners */
 
 static void
@@ -1330,6 +1365,7 @@ main(void) {
     test_seeding();
     test_stream_restart_gate();
     test_stream_restart_evidence();
+    test_stream_restart_hold_left_with_its_context();
     test_set_plan();
     test_cache();
     test_change_context();

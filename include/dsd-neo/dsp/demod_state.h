@@ -326,6 +326,9 @@ struct demod_state {
     int result_flags_active;
     /* 1 when the previous block ran the tracker, and the context it ran in. */
     int squelch_auto_ran;
+    /* Set by the IO layer at a stream open, cleared by the next block: a floor the cache seeds for the context that block
+       takes is held as one kept through a restart (issue #899). */
+    int squelch_new_stream;
     int squelch_context_applied_set;
     dsd_squelch_floor_key squelch_context_applied;
     /* The floor cache's clock when the tracker last ran: its floor ages from there while it does not. */

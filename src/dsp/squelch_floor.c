@@ -757,6 +757,8 @@ dsd_squelch_floor_change_context(dsd_squelch_floor* t, dsd_squelch_floor_cache* 
         dsd_squelch_floor_cache_store(c, prev, t->floor_power / t->plan.noise_gain);
     }
     sqf_restart_windows(t);
+    /* A restart's hold was for the floor it kept, which is left behind with its context. */
+    t->restart_hold = 0;
     double density = 0.0;
     const int found = (c && next) ? dsd_squelch_floor_cache_find(c, next, &density) : 0;
     if (found != 0 && t->plan.valid && t->plan.noise_gain > 0.0) {

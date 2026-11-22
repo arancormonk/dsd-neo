@@ -371,6 +371,11 @@ expect_output_kind(const char* label, const dsd_opts& opts, int want_kind, int w
 
     rtl_demod_init_for_mode(demod, &output, &opts, 48000);
     int rc = 0;
+    /* Every open marks a new stream for the auto squelch's cached floors (issue #899). */
+    if (demod->squelch_new_stream != 1) {
+        DSD_FPRINTF(stderr, "%s: the open did not mark a new stream for the auto squelch\n", label);
+        rc = 1;
+    }
     if (demod->output_kind != want_kind) {
         DSD_FPRINTF(stderr, "%s: got output_kind=%d want=%d\n", label, demod->output_kind, want_kind);
         rc = 1;

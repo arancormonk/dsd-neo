@@ -39,7 +39,8 @@
  * confirmation or a shift's run. A kept floor does not open on power alone until a 40 ms window after the boundary
  * classes NOISE or CARRIER, so idle noise louder than before cannot open the gate. A carrier present from the boundary
  * opens at the first window's end, 20 ms later than it would mid-stream; one keyed inside that window makes it
- * UNDECIDED and opens at the next window's end, at most 80 ms after the boundary.
+ * UNDECIDED and opens at the next window's end, at most 80 ms after the boundary. A move to another context drops the
+ * hold; a new stream whose first context takes a floor from the cache holds it the same way (demod_pipeline.cpp).
  */
 
 #ifndef DSD_NEO_INCLUDE_DSD_NEO_DSP_SQUELCH_FLOOR_H_
@@ -268,8 +269,8 @@ int dsd_squelch_floor_key_equal(const dsd_squelch_floor_key* a, const dsd_squelc
 
 /**
  * @brief Move @p t to context @p next from @p prev (NULL: none yet): a KNOWN floor is remembered for @p prev, then
- * @p next's own floor seeds the tracker, or a neighbour's provisionally, or it starts LEARNING. No-op when the contexts
- * are the same.
+ * @p next's own floor seeds the tracker, or a neighbour's provisionally, or it starts LEARNING. A stream restart's hold
+ * (dsd_squelch_floor_stream_restart()) is dropped with the context it was for. No-op when the contexts are the same.
  */
 void dsd_squelch_floor_change_context(dsd_squelch_floor* t, dsd_squelch_floor_cache* c,
                                       const dsd_squelch_floor_key* prev, const dsd_squelch_floor_key* next);
