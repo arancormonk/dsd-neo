@@ -16098,9 +16098,11 @@ Qt Quick frontend (`src/ui/qt`):
   same-name scan lists with equal counts look alike (a scan list has no source facts), and so do two entries whose
   drawn settings are the same. Also decided (r4 F5): two different long titles that compact cuts to the same text
   ("County Emergency Dispatch East" and "… West" both "County Emerg…" at 320 dp) are not shared titles, so with
-  matching source facts their compact cards look alike. The full card cuts its title too, so it does not tell them
-  apart either (r5 H6); the whole name is in the title's accessible name, which a screen reader reads, and in the
-  card's More menu, which opens titled by it.
+  matching source facts their compact cards look alike. The full card also cuts its title, at its own width, so it
+  is not guaranteed to tell such names apart either (r5 H6, r6 J7: at 320 dp "County Dispatch East" and "… West" both
+  draw "County Dispat…" in the 132 px compact title and fit in the 188 px full one, but longer names cut alike in
+  both); the reliable ways to tell them apart are the whole name in the title's accessible name, which a screen
+  reader reads, and the card's More menu, which opens titled by it.
   The
   site chooser stays reachable: the card's More menu, and a long press, offer **Sites** for every grouped card, one
   site included, in both views (`manageCard(…, hasSites)` → `manageMenu.openFor(row, name, rrLinked, hasSites)`, which
@@ -17522,6 +17524,11 @@ Qt Quick frontend (`src/ui/qt`):
   they always had (the strip `max(56, its line boxes and tags + 8)`, 56 up to text 2.0; the hero's from its fixed
   lines), and what does not fit is left out in a fixed order, the first item that does not fit ending the run so a
   lower one is never drawn in place of a higher one (`plan` on `otherSlotPanel` and `heroSubline`, from widths only).
+  Each width is the line's as drawn: a fitted line (VerticalFit, below) is measured at the size it is drawn in, by a
+  hidden `FittedLine` twin (the drawn line's text, font and box, fitted the same way, sized by nothing a plan sets, so
+  no binding loop) whose `fittedFont` the plan's `TextMetrics` read (r6 J1: measured at the size asked for, a Tibetan
+  private-call name drawn in 31 of the 132 px before Skip at 320 dp left the 77 px EMERGENCY tag out, and the hero
+  left ENC out beside fitted ids; `tst_monitor_status_lines.qml` `test_fitted_lines_plan_at_their_drawn_size`).
   The strip reads label, identity, PRIVATE, EMERGENCY, ENC, then Skip and More; the identity first gets
   min(its width, 96), then EMERGENCY, the `SLOT n` label, PRIVATE and ENC each while it fits in the room up to Skip, and
   the identity takes the rest and elides. The idle strip keeps its label. The hero reads PRIVATE, ids, EMERGENCY, ENC,
@@ -17533,9 +17540,15 @@ Qt Quick frontend (`src/ui/qt`):
   side already were): the strip's `SLOT n` label is a plain `Text` in MicroLabel's look, since as a MicroLabel it
   hid or showed its node at each fit change (a short to a long identity at 320 dp) and, hidden, renamed with each
   lead-slot change, under the session's Settings too. The strip's one stable node is the line itself
-  (`otherSlotNode`, an Item from the panel's left edge up to Skip that holds the label, the identity and the tags,
-  all drawn text): shown with the panel, idle included, so a touch on the drawn label or the identity finds it (r5 H2:
-  as the identity line's node it began after the label, and a touch on the label found the window). Idle it reads
+  (`otherSlotNode`, an Item from the panel's left edge that holds the label, the identity and the tags, all drawn
+  text, up to Skip during a call and the panel's whole width while idle, when Skip and More are hidden): shown with
+  the panel, idle included, so a touch on the drawn label or the identity finds it (r5 H2: as the identity line's
+  node it began after the label, and a touch on the label found the window; r6 J2: stopping at Skip's hidden place
+  while idle, it cut "SLOT 2 · idle", 223 px, to 102 at 320 dp and 2.0, so the strip tests check `!truncated` on the
+  label as well as its hit target). Its name is built from the call's state (`stripIdle`, the slot, the identity
+  and the flags), never from what its children show, so a call ending renames it once (r6 J3: built from the label's
+  text and the identity's visibility it was renamed "SLOT 2 · idle, TG 4002", then "SLOT 2 · idle";
+  `UI_QT_QML_A11Y_CHURN` `test_h2_the_strip_renames_once_as_its_call_ends` records each name it takes). Idle it reads
   only the label's `SLOT n · idle` (r5 H1: an ended call's kind and flags, kept through its hold by
   `slotCallView()`, were read as `SLOT 2 · idle, PRIVATE, EMERGENCY, ENC`); with a call its name carries the slot,
   the identity and PRIVATE, EMERGENCY and ENC (each tag's `label`, which `EmergencyTag` and `EncTag` now have as
@@ -17833,19 +17846,31 @@ Qt Quick frontend (`src/ui/qt`):
   Text.VerticalFit`, `minimumPixelSize` a third of the size, a fixed `height`), so a script that stands taller
   (Tibetan stacks) is drawn smaller inside the box, never over its neighbours: the title and the "+ N lists" line,
   the scan target, timing and roaming lines, the hero's ids, identity note, algorithm and channel (each as tall as
-  the subline's reservation, `heroSublineHeight`, and the Row too, never its children's natural heights), the
+  the subline's reservation, `heroSublineHeight`, and the Row too, never its children's natural heights; the
+  reservation holds the tags and the `LineBoxes` boxes of the subline's fonts, mono 13, sans 13 and mono 11, so
+  Latin, CJK and emoji keep their size in it: r6 J4, from the base mono face alone a CJK channel was drawn at 23 of
+  its 26 px under Noto CJK at 2.0), the
   strip's identity and a `subtitleReading` `DisclosureRow`'s answer; on Listen, a card's title and one-line
   supporting line (`titleBox`, `sourceBox`, `LineBoxes`; a shared title's wrapping supporting line keeps its lines,
   measured by an unfitted hidden twin, `sourceWrapProbe`, never by its own implicit height, which the fit changes:
-  that was a binding loop with Noto CJK, where the box and the line differ)
+  that was a binding loop with Noto CJK, where the box and the line differ; the line reads the probe's `height`, which
+  it takes from its text, never the `implicitHeight` getter, r6 J6, as the meta line's holder reads that line's)
   and a scan list's name. r5 H3: a Tibetan scan target at 2.0 drew a 62 px line in the 29 px meta box, over the
   title, and a Tibetan hero channel made the subline Row 74 px tall in its 34 px reservation, pushing the ids 20 px
   down across the compact hero's border (`tst_monitor_status_lines.qml` `test_tall_scripts_fit_their_line_boxes`,
   `tst_home_compact_cards.qml` `test_tall_script_card_lines_fit_their_boxes`). The painted headline (a Canvas) is
   not a Text and keeps its size. The card boxes are the base face's lines with the app's fonts on a desktop host
-  (title 23, source 16 px at 1.0: cards as before); with Noto CJK as the fallback they are 25 and 17, so a compact
-  card is 70 px, not 68 (decided, as the call rows' S2 limit; `compactHeight()` in the test checks the boxes and
-  padding, and 68 where the boxes are within 2 px of the Latin lines). The title changes only with the session, never
+  (title 23, source 16 px at 1.0: cards as before, 68 px compact); with Noto CJK as the fallback they are taller (25
+  and 17 at 1.0, 25 and 18 at `QT_SCALE_FACTOR=1.25`), so a compact card is a few px taller, 70 or 71 px, not 68,
+  and a scan list's 68 or 69 (decided, as the call rows' S2 limit). The tests derive a compact card's height from the measured lines, padding and
+  Play's floor (`compactHeight()` for a system's card: title and source boxes; `compactListHeight()` for a scan
+  list's: the name's box and the count line), and hold it to 68 px only where the base face's own lines are the boxes
+  and give 68 (r6 J5: a 2 px tolerance had demanded 68 of a 69 px card, and the scan-list test 68 outright). Only a
+  script that stands taller than a box is drawn smaller in it: Latin, CJK and emoji keep their pixel size in every
+  fixed box (`test_fallback_faces_keep_their_size` on the Monitor, `test_fallback_faces_keep_their_size_in_cards`).
+  Measured exception with the host's fonts: an emoji directly before a full stop ("🚒.wav") stands 1 px taller than
+  the box, since another face draws that stop, and is drawn 1 px smaller. The header's "+ N lists" line keeps the
+  Latin box: it holds app text only. The title changes only with the session, never
   with traffic, so its box
   (`titleLineBox`) is the session name's own line in the title font (`titleLineProbe`, `sessionLine` on one line), at
   least the Latin line it always had (`titleLatinProbe`, "Ag"; `titleCountBox`, which the "+ N lists" line keeps), and
