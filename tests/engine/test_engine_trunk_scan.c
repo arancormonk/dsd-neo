@@ -17814,6 +17814,49 @@ test_tetra_dmo_two_targets_named_once_and_published(void) {
     return rc;
 }
 
+/* A TETRA DMO target named for a cause, then found healthy at a later landing, is named again when the cause comes back
+ * (issue #890): every park starts the on-air verdict at OK, so the healthy return must forget the cause the target was
+ * named for, or the recurrence would leave it unnamed in the log and on the status line. */
+static int
+test_tetra_dmo_warning_rearms_after_a_healthy_return(void) {
+    char dir[DSD_TEST_PATH_MAX];
+    char path[DSD_TEST_PATH_MAX];
+    char err[512] = {0};
+    dsd_opts* opts = g_case_opts;
+    dsd_state* state = g_case_state;
+    static const char k_body[] = "dmo,tetra-dmo-conventional,425000000,,250,250,,,,,,,\n"
+                                 "dmr,dmr-conventional,461000000,,250,250,,,,,,,\n";
+    int rc =
+        tetra_rig_start(opts, state, dir, sizeof dir, path, sizeof path, k_body, 72000, err, sizeof err, NULL, 0U) != 0;
+    dsd_test_capture_stderr cap;
+    char log[8192] = {0};
+    const int captured = dsd_test_capture_stderr_begin(&cap, "trunkscantetrarearm") == 0;
+    g_tetra_ted_applied = 5;
+    tick_at(opts, state, 0.1);
+    const int left = dsd_engine_trunk_scan_active_index(state) == 1U;
+    g_tetra_ted_applied = 4;
+    rc |= expect_control_rc("advance back", dsd_engine_trunk_scan_control(opts, state, DSD_TRUNK_SCAN_CONTROL_ADVANCE),
+                            0);
+    tick_at(opts, state, 0.2);
+    const int healthy = dsd_engine_trunk_scan_active_index(state) == 0U;
+    g_tetra_ted_applied = 5;
+    tick_at(opts, state, 0.3);
+    const int left_again = dsd_engine_trunk_scan_active_index(state) == 1U;
+    if (captured) {
+        (void)dsd_test_capture_stderr_end(&cap);
+        (void)dsd_test_capture_stderr_read(&cap, log, sizeof log);
+    }
+    const int named = count_text(log, "WARNING: Trunk scan target 'dmo': TETRA DMO needs the TED timed");
+    if (rc || !left || !healthy || !left_again || named != 2) {
+        DSD_FPRINTF(stderr, "TETRA warning rearm: rc %d left %d healthy %d left again %d named %d\n", rc, left, healthy,
+                    left_again, named);
+        rc = 1;
+    }
+    g_tetra_ted_applied = 0;
+    tetra_rig_finish(opts, state, dir, path);
+    return rc;
+}
+
 /* The TETRA state across a mixed list (issue #890 A4): a session with a TETRA DMO target holds the extension from its
  * first park, so no hop frees or replaces it; every park starts it cold (the visit reset, TETRA after TETRA included);
  * a pause into manual decoding and the stop let it go cold, freeing it when the settings in force run no TETRA. A
@@ -29772,6 +29815,7 @@ main(void) {
     rc |= run_with_default_tune_hook(test_tetra_dmo_entry_reads_the_on_air_verdict);
     rc |= run_with_default_tune_hook(test_tetra_dmo_list_toggle_reads_the_on_air_verdict);
     rc |= run_with_default_tune_hook(test_tetra_dmo_two_targets_named_once_and_published);
+    rc |= run_with_default_tune_hook(test_tetra_dmo_warning_rearms_after_a_healthy_return);
     rc |= run_with_default_tune_hook(test_tetra_state_held_across_mixed_hops);
     rc |= run_with_default_tune_hook(test_tetra_entry_reasons_follow_the_chain);
     rc |= run_with_default_tune_hook(test_nfm_target_width_skipped_under_channel_lpf_override);

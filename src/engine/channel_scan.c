@@ -1222,13 +1222,18 @@ dsd_engine_channel_scan_tetra_judge(const dsd_opts* opts, dsd_state* state) {
        stream applied, which dsd_engine_scan_tetra_ted_sps() reads only once the TETRA profile is the published one. */
     const int rate_hz = dsd_engine_scan_dsp_rate_hz(opts, state);
     const dsd_engine_tetra_row why = dsd_engine_scan_tetra_row_check(opts, state, rate_hz, 1);
+    /* The row found healthy on air forgets the cause it was last named for, ahead of the unchanged-verdict shortcut:
+       a visit to another row in between leaves tetra_skip at OK with this row's number, so a healthy return would
+       otherwise keep the old cause and a recurrence of it would leave unnamed. */
+    if (why == DSD_ENGINE_TETRA_ROW_OK) {
+        channel_scan_tetra_named_forget(state, scan, row);
+    }
     if ((int)why == scan->tetra_skip && row == scan->tetra_skip_row) {
         return;
     }
     scan->tetra_skip = (int)why;
     scan->tetra_skip_row = row;
     if (why == DSD_ENGINE_TETRA_ROW_OK) {
-        channel_scan_tetra_named_forget(state, scan, row);
         return;
     }
     if (dsd_engine_scan_tetra_row_waits(why)) {

@@ -5839,12 +5839,17 @@ trunk_scan_judge_tetra_on_air(const dsd_opts* opts, dsd_state* state, dsd_trunk_
     const int rate_hz = dsd_engine_scan_dsp_rate_hz(opts, state);
     const int landed = dsd_engine_scan_landing_is_target(state, (int)coord->active, coord->session);
     const dsd_engine_tetra_row why = dsd_engine_scan_tetra_row_check(opts, state, rate_hz, landed);
+    /* A landing found healthy forgets the cause the target was last named for, ahead of the unchanged-verdict
+       shortcut: every park starts active_tetra_skip at OK, so a healthy return would otherwise keep the old cause and
+       a recurrence of it would leave unnamed. Only a landed verdict proves the chain runs. */
+    if (why == DSD_ENGINE_TETRA_ROW_OK && landed) {
+        rt->tetra_named_cause = (int)DSD_ENGINE_TETRA_ROW_OK;
+    }
     if ((int)why == coord->active_tetra_skip) {
         return;
     }
     coord->active_tetra_skip = (int)why;
     if (why == DSD_ENGINE_TETRA_ROW_OK) {
-        rt->tetra_named_cause = (int)DSD_ENGINE_TETRA_ROW_OK;
         return;
     }
     if (dsd_engine_scan_tetra_row_waits(why)) {
