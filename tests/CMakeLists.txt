@@ -21996,6 +21996,25 @@ if(DSD_HAS_RADIO)
                     PROPERTIES LABELS "scan-rig" SKIP_RETURN_CODE 77 TIMEOUT 240
                 )
             endif()
+            # Signal search identifies TETRA end to end (issue #748): dsd-neo_test_signal_search_rig runs the search
+            # the app starts (app-control queue, observer and history store) at the 72 kHz DSP bandwidth on the same
+            # paced rtl_tcp scene, with the real-air TETRA call and marginal control channel fixtures, a synthetic
+            # two-carrier cell, the tetra_dmo_call_synth_72k direct mode call and band-limited noise, after an analog
+            # and an Auto visit. It checks each detection's protocol, access code and site line, the history read back
+            # from the journal, and the 2.1 s quiet time after a confirmed TETRA carrier stops. Two runs, about 80 s in
+            # real time. numpy, so CTest reports it skipped where the tests' Python has none.
+            add_test(
+                NAME ENGINE_SIGNAL_SEARCH_TETRA_RIG
+                COMMAND
+                    ${Python3_EXECUTABLE}
+                    ${CMAKE_CURRENT_SOURCE_DIR}/signal_search_tetra_rig_check.py
+                    $<TARGET_FILE:dsd-neo_test_signal_search_rig>
+                    ${_DSD_NEO_IQ_FIXTURE_DIR}
+            )
+            set_tests_properties(
+                ENGINE_SIGNAL_SEARCH_TETRA_RIG
+                PROPERTIES LABELS "scan-rig" SKIP_RETURN_CODE 77 TIMEOUT 300
+            )
         endif()
     endif()
 
@@ -29146,6 +29165,13 @@ if(DSD_HAS_RADIO)
     target_link_libraries(
         dsd-neo_test_signal_search_bench
         PRIVATE dsd-neo_engine dsd-neo_feature_radio ${LIBS}
+    )
+    # The Signal search the app starts (app-control queue, observer and history store) on the decoder a command line
+    # configures, for the paced rtl_tcp rigs: ENGINE_SIGNAL_SEARCH_TETRA_RIG and tools/bench_signal_search_tcp.py.
+    add_executable(dsd-neo_test_signal_search_rig engine/signal_search_rig.cpp)
+    target_link_libraries(
+        dsd-neo_test_signal_search_rig
+        PRIVATE dsd-neo_app_control dsd-neo_engine dsd-neo_feature_radio ${LIBS}
     )
 endif()
 if(DSD_ENABLE_QT_UI)

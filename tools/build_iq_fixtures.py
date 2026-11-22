@@ -1350,6 +1350,25 @@ def load_cu8_fixture(path):
     return centered[0::2] + 1j * centered[1::2]
 
 
+def load_fixture_iq(sidecar_path):
+    """Read a committed fixture in its own sample format (cu8, or little-endian cs16) from its sidecar.
+
+    Returns (samples, sample_rate_hz, center_frequency_hz), the samples complex baseband with full scale at 1.
+    """
+    with open(sidecar_path, encoding="utf-8") as handle:
+        metadata = json.load(handle)
+    data_path = os.path.join(os.path.dirname(sidecar_path), metadata["data_file"])
+    sample_format = metadata.get("sample_format")
+    if sample_format == "cu8":
+        samples = load_cu8_fixture(data_path)
+    elif sample_format == "cs16" and metadata.get("endianness") == "little":
+        raw = np.fromfile(data_path, dtype="<i2").astype(np.float64) / 32768.0
+        samples = raw[0::2] + 1j * raw[1::2]
+    else:
+        raise ValueError(f"{sidecar_path}: no reader for {sample_format} ({metadata.get('endianness')})")
+    return samples, int(metadata["sample_rate_hz"]), int(metadata["center_frequency_hz"])
+
+
 def simulcast_two_ray(samples, delay_samples, amp2, cfo_hz, phase2, sample_rate=SAMPLE_RATE_HZ):
     """Sum the signal with a delayed, attenuated copy cfo_hz off in frequency at sample_rate (48 kHz by default)."""
     if delay_samples > 0:
