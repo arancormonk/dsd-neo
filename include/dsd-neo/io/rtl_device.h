@@ -451,6 +451,18 @@ int32_t rtl_device_signal_rotation_hz(const struct rtl_device* dev, int fs4_shif
 int rtl_device_signal_geometry(const struct rtl_device* dev);
 
 /**
+ * @brief The receiver behind @p dev's captures (dsd_signal_capture.receiver, a dsd_signal_capture_receiver value).
+ *
+ * DSD_SIGNAL_RECEIVER_SOAPY_AIRSPY for a SoapySDR device whose opened device reported an Airspy's driver or hardware
+ * key (an Airspy HF+ is not one); the requested profile and the device arguments play no part, so a bare -i soapy that
+ * opened an Airspy is one and a profile asked for on another device is not. DSD_SIGNAL_RECEIVER_OTHER for everything
+ * else (a native Airspy included: its own policy, DSD_SIGNAL_GEOMETRY_AIRSPY_CENTRED) and NULL.
+ *
+ * Reads only what the device was opened with, so any thread may ask while the device exists.
+ */
+int rtl_device_signal_receiver(const struct rtl_device* dev);
+
+/**
  * @brief Query the current device sample rate.
  *
  * USB backend returns the actual rate reported by librtlsdr

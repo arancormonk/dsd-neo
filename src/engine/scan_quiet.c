@@ -945,13 +945,17 @@ quiet_landed_capture(scan_quiet_check* c, dsd_signal_capture* cap) {
    covered, the default one with the Fs/4 shift (rotation a quarter of the rate, the channel that far from the hardware
    centre) or a native Airspy's centred capture (tuned on the channel: no rotation, no offset). Anything else (centred
    I/Q under the default policy, an offset-tuned E4000, the shift off, any other rotation or an unknown policy) is
-   TUNER; a covered geometry at a rate its policy did not validate is RATE. */
+   TUNER; a covered geometry at a rate its policy did not validate is RATE, and so is a SoapySDR Airspy at any rate. */
 static uint8_t
 quiet_capture_receiver_reason(const dsd_signal_capture* cap) {
     if (cap->geometry == DSD_SIGNAL_GEOMETRY_DEFAULT) {
         if (cap->rate_hz == 0U || cap->rotation_hz != (int32_t)(cap->rate_hz / 4U)
             || cap->capture_offset_hz != cap->rotation_hz) {
             return (uint8_t)DSD_SCAN_QUIET_REASON_TUNER;
+        }
+        /* A SoapySDR Airspy: no check at any of its rates (DSD_SIGNAL_RECEIVER_SOAPY_AIRSPY). */
+        if (cap->receiver != DSD_SIGNAL_RECEIVER_OTHER) {
+            return (uint8_t)DSD_SCAN_QUIET_REASON_RATE;
         }
         return dsd_signal_quiet_rate_supported(cap->rate_hz) ? (uint8_t)DSD_SCAN_QUIET_REASON_NONE
                                                              : (uint8_t)DSD_SCAN_QUIET_REASON_RATE;
@@ -1242,7 +1246,7 @@ static int
 quiet_capture_equal(const dsd_signal_capture* a, const dsd_signal_capture* b) {
     return a->generation == b->generation && a->rate_hz == b->rate_hz && a->capture_hz == b->capture_hz
            && a->capture_offset_hz == b->capture_offset_hz && a->rotation_hz == b->rotation_hz && a->gain == b->gain
-           && a->drops == b->drops && a->geometry == b->geometry;
+           && a->drops == b->drops && a->geometry == b->geometry && a->receiver == b->receiver;
 }
 
 /* For a reconciled READY result past the class and revision checks: the tap's capture and the live output

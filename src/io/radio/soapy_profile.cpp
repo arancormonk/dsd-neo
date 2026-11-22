@@ -327,6 +327,15 @@ soapy_select_profile_id(const SoapyProfileSelection& selection) {
 }
 
 bool
+soapy_identity_is_airspy(const std::string& driver_key, const std::string& hardware_key) {
+    SoapyProfileId id = SoapyProfileId::Generic;
+    if (detect_profile_from_text(driver_key, &id) || detect_profile_from_text(hardware_key, &id)) {
+        return id == SoapyProfileId::Airspy;
+    }
+    return false;
+}
+
+bool
 soapy_stream_format_parse_name(const std::string& value, SoapyStreamFormat* out_format) {
     if (!out_format) {
         return false;

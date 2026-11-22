@@ -67,6 +67,10 @@ int rtl_device_test_rate_queries(int backend, uint32_t device_rate_hz, uint32_t 
                                  uint32_t* out_written_hz);
 /* rtl_device_signal_geometry() of a device converting as @p conversion says (NULL: no device). */
 int rtl_device_test_signal_geometry(const rtl_device_test_conversion* conversion);
+/* rtl_device_signal_receiver() of a device on @p backend (RTL_DEVICE_TEST_BACKEND_*) whose opened SoapySDR device
+   reported @p driver_key and @p hardware_key, with @p requested_profile asked for. */
+int rtl_device_test_signal_receiver(int backend, const char* driver_key, const char* hardware_key,
+                                    const char* requested_profile);
 /* The floats that device's cu8 conversion makes of @p len (even, at most 64) bytes, starting at Fs/4 phase 0: 0, or -1
    on bad arguments. */
 int rtl_device_test_widen_cu8(const rtl_device_test_conversion* conversion, int fs4_shift_active,

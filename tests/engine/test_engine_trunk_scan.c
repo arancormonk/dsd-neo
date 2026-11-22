@@ -28249,6 +28249,21 @@ test_scan_quiet_capture_policies(void) {
     c.capture_offset_hz = 100000;
     c.capture_hz = k_qt_hz_a + 100000U;
     rc |= qt_expect("centred policy off the channel: refused", quiet_measures_capture(&opts, &state, &c) == 0);
+    /* A SoapySDR Airspy's capture, the Fs/4 shift exact, at every Airspy rate: refused (No check: rate); the same
+       capture from another SoapySDR device is measured. */
+    static const uint32_t k_airspy_rates[] = {2500000U, 3000000U, 6000000U, 10000000U};
+    for (size_t i = 0; i < sizeof k_airspy_rates / sizeof k_airspy_rates[0]; i++) {
+        const uint32_t rate = k_airspy_rates[i];
+        c = shifted;
+        c.rate_hz = rate;
+        c.rotation_hz = (int32_t)(rate / 4U);
+        c.capture_offset_hz = c.rotation_hz;
+        c.capture_hz = k_qt_hz_a + rate / 4U;
+        rc |= qt_expect("another SoapySDR device at an Airspy rate is measured",
+                        quiet_measures_capture(&opts, &state, &c) == 1);
+        c.receiver = DSD_SIGNAL_RECEIVER_SOAPY_AIRSPY;
+        rc |= qt_expect("a SoapySDR Airspy is refused", quiet_measures_capture(&opts, &state, &c) == 0);
+    }
     quiet_rig_finish(&opts, &state, dir, path);
     return rc;
 }

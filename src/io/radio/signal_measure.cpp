@@ -149,7 +149,7 @@ static bool
 same_capture(const dsd_signal_capture& a, const dsd_signal_capture& b) {
     return a.rate_hz == b.rate_hz && a.capture_hz == b.capture_hz && a.generation == b.generation
            && a.rotation_hz == b.rotation_hz && a.drops == b.drops && a.gain == b.gain
-           && a.capture_offset_hz == b.capture_offset_hz && a.geometry == b.geometry;
+           && a.capture_offset_hz == b.capture_offset_hz && a.geometry == b.geometry && a.receiver == b.receiver;
 }
 
 /* Why the capture @p now is not the request's @p asked: dropped samples alone, any other change, or neither. */
@@ -1612,6 +1612,7 @@ quiet_arm(dsd_signal_quiet_detector* detector, const dsd_signal_quiet_request* r
     if (!request || !request->request_id || !std::isfinite(params.threshold_db) || !std::isfinite(params.guard_db)
         || !(params.occupancy_max_share >= 0.0f && params.occupancy_max_share <= 1.0f)
         || !std::isfinite(params.centred_threshold_db) || params.centred_threshold_db < 0.0f
+        || request->capture.receiver != DSD_SIGNAL_RECEIVER_OTHER
         || (params.floor_estimator != DSD_SIGNAL_QUIET_FLOOR_TRIMMED_MEAN
             && params.floor_estimator != DSD_SIGNAL_QUIET_FLOOR_LOWEST_BLOCK)
         || request->windows > DSD_SIGNAL_QUIET_WINDOWS_MAX || !quiet_widths(*request, widths, &count)

@@ -30,6 +30,16 @@ typedef enum {
     DSD_SIGNAL_GEOMETRY_AIRSPY_CENTRED = 1,
 } dsd_signal_capture_geometry;
 
+/** The receiver behind a capture, where the quiet measurement treats it apart (dsd_signal_capture.receiver). */
+typedef enum {
+    /** Any receiver the measurement's policy covers as its geometry says. */
+    DSD_SIGNAL_RECEIVER_OTHER = 0,
+    /** An Airspy opened through SoapySDR (its driver or hardware key names an Airspy; an Airspy HF+ is not one). Its
+     * captures run the default policy at the Fs/4 shift, but its passband leaves the reference under or over the
+     * channel's noise by an amount nobody has measured, so a quiet request on one is refused at every rate. */
+    DSD_SIGNAL_RECEIVER_SOAPY_AIRSPY = 1,
+} dsd_signal_capture_receiver;
+
 typedef struct {
     uint32_t rate_hz, capture_hz, generation;
     /** Applied complex ingest rotation in Hz (positive j^n is +Fs/4). */
@@ -45,6 +55,9 @@ typedef struct {
      * A capture change: a request armed or a report waiting under one policy fails on a capture of another. Last, so a
      * positional initialiser of the fields before it keeps its meaning. */
     uint8_t geometry;
+    /** A dsd_signal_capture_receiver value, set by the source (rtl_device_signal_receiver()); 0 for any other. A capture
+     * change, as the geometry is. */
+    uint8_t receiver;
 } dsd_signal_capture;
 
 typedef struct {

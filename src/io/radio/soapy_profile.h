@@ -95,6 +95,9 @@ constexpr double kSoapyHfVhfSplitHz = 32000000.0;
 const SoapyProfile& soapy_profile_by_id(SoapyProfileId id);
 bool soapy_profile_parse_name(const std::string& value, SoapyProfileId* out_id);
 SoapyProfileId soapy_select_profile_id(const SoapyProfileSelection& selection);
+/* Whether the opened device whose driver reported @p driver_key and @p hardware_key is an Airspy: its keys alone, as
+   the profile detection reads them (an Airspy HF+ is not one), never a requested profile or the device arguments. */
+bool soapy_identity_is_airspy(const std::string& driver_key, const std::string& hardware_key);
 
 bool soapy_stream_format_parse_name(const std::string& value, SoapyStreamFormat* out_format);
 const char* soapy_stream_format_name(SoapyStreamFormat format);

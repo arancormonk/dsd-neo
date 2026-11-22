@@ -846,6 +846,27 @@ test_signal_geometries() {
     for (const conversion* c : {&usb, &tcp, &soapy, &replay_cf32, &replay_cu8, (const conversion*)nullptr}) {
         assert(rtl_device_test_signal_geometry(c) == DSD_SIGNAL_GEOMETRY_DEFAULT);
     }
+
+    /* A SoapySDR Airspy is named by the opened device's keys, whatever profile was asked for; any other device, or an
+       Airspy's keys on another backend, is not. */
+    struct ReceiverCase {
+        int backend;
+        const char *driver_key, *hardware_key, *profile;
+        int want;
+    };
+
+    static const ReceiverCase receivers[] = {
+        {RTL_DEVICE_TEST_BACKEND_SOAPY, "Airspy", "Airspy", "", DSD_SIGNAL_RECEIVER_SOAPY_AIRSPY},
+        {RTL_DEVICE_TEST_BACKEND_SOAPY, "Airspy", "Airspy", "generic", DSD_SIGNAL_RECEIVER_SOAPY_AIRSPY},
+        {RTL_DEVICE_TEST_BACKEND_SOAPY, "HackRF", "HackRF One", "airspy", DSD_SIGNAL_RECEIVER_OTHER},
+        {RTL_DEVICE_TEST_BACKEND_SOAPY, "AirspyHF", "AirspyHF+", "", DSD_SIGNAL_RECEIVER_OTHER},
+        {RTL_DEVICE_TEST_BACKEND_SOAPY, "rtlsdr", "Generic RTL2832U", "", DSD_SIGNAL_RECEIVER_OTHER},
+        {RTL_DEVICE_TEST_BACKEND_AIRSPY, "Airspy", "Airspy", "", DSD_SIGNAL_RECEIVER_OTHER},
+        {RTL_DEVICE_TEST_BACKEND_USB, "Airspy", "Airspy", "", DSD_SIGNAL_RECEIVER_OTHER},
+    };
+    for (const ReceiverCase& r : receivers) {
+        assert(rtl_device_test_signal_receiver(r.backend, r.driver_key, r.hardware_key, r.profile) == r.want);
+    }
 }
 
 /* Signal search on a native Airspy capture, tuned on the channel: the channel at the capture centre measures (the live
@@ -1722,6 +1743,20 @@ test_quiet_occupancy(dsd_signal_quiet_detector* d) {
     }
 }
 
+/* A SoapySDR Airspy's capture is refused (no check at any rate): its passband leaves the reference under or over the
+   channel's noise by an amount nobody has measured. The same capture from any other device is measured. */
+static void
+test_quiet_soapy_airspy(dsd_signal_quiet_detector* d) {
+    for (uint32_t rate : {2500000U, 3000000U, 6000000U, 10000000U}) {
+        auto q = quiet_request(rate, DSD_SIGNAL_QUIET_CLASS_12K5);
+        dsd_signal_request_failure failure = DSD_SIGNAL_REQUEST_OK;
+        assert(dsd_signal_quiet_detector_begin(d, &q, nullptr, &failure) == 0);
+        q.capture.receiver = DSD_SIGNAL_RECEIVER_SOAPY_AIRSPY;
+        assert(dsd_signal_quiet_detector_begin(d, &q, nullptr, &failure) == -1);
+        assert(failure == DSD_SIGNAL_REQUEST_UNSUPPORTED);
+    }
+}
+
 /* A native Airspy's centred capture is judged against its own threshold (3.2 dB): a channel reading between it and the
    default 5.0 dB is busy there, while the same samples read through the Fs/4 shift are quiet. With the centred
    threshold at 0 the default one judges the centred capture too. */
@@ -2375,6 +2410,7 @@ test_quiet(const dsd_signal_measure_request& r) {
     test_quiet_centred_depressed_floor(d);
     test_quiet_occupancy(d);
     test_quiet_centred_threshold(d);
+    test_quiet_soapy_airspy(d);
     test_quiet_centred_requests(d);
     test_quiet_failures(d);
     test_quiet_spans(d);

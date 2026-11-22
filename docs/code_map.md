@@ -11103,8 +11103,16 @@ Runtime controls (via `include/dsd-neo/io/rtl_stream_c.h`):
   hardware-DC guard there and a channel the Airspy is tuned on measures (Signal search's live
   level of a landed visit included); it claims nothing about spurs or overload. Unlike the clip
   level it is a capture field: `same_capture()` compares it, so a policy change fails a request
-  in collection and a completed report waiting to be read, as any capture change does. It is
-  the last field, so positional initialisers of the ones before it keep their meaning.
+  in collection and a completed report waiting to be read, as any capture change does.
+  The receiver (`dsd_signal_capture.receiver`, from `rtl_device_signal_receiver()`, set beside
+  the geometry and compared the same way) is `DSD_SIGNAL_RECEIVER_SOAPY_AIRSPY` for a SoapySDR
+  device whose opened device reported an Airspy's driver or hardware key
+  (`dsdneo::soapy_identity_is_airspy()`: the profile detection's keywords on the keys alone, an
+  Airspy HF+ excluded, never the requested profile or the device arguments), else 0. The quiet
+  detector refuses such a capture and the scan gives it no check at any rate (`No check: rate`):
+  its passband leaves the reference under or over the channel's noise by an amount nobody has
+  measured. Geometry and receiver are the last fields, so positional initialisers of the ones
+  before them keep their meaning.
   The rotation (`dsd_signal_capture.rotation_hz`, from `rtl_device_signal_rotation_hz()`) is
   the Fs/4 shift the fed samples carry: a live capture's rate / 4 while the shift is active;
   an I/Q replay's own, whatever the live flags say: 0 for a recording made without the

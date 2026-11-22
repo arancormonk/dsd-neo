@@ -884,6 +884,14 @@ rtl_device_signal_rotation_hz(const struct rtl_device* dev, int fs4_shift_active
 }
 
 int
+rtl_device_signal_receiver(const struct rtl_device* dev) {
+    return dev && dev->backend == RTL_BACKEND_SOAPY
+                   && dsdneo::soapy_identity_is_airspy(dev->soapy_driver_key, dev->soapy_hardware_key)
+               ? DSD_SIGNAL_RECEIVER_SOAPY_AIRSPY
+               : DSD_SIGNAL_RECEIVER_OTHER;
+}
+
+int
 rtl_device_signal_geometry(const struct rtl_device* dev) {
     return dev && dev->backend == RTL_BACKEND_AIRSPY ? DSD_SIGNAL_GEOMETRY_AIRSPY_CENTRED : DSD_SIGNAL_GEOMETRY_DEFAULT;
 }
@@ -3291,6 +3299,18 @@ rtl_device_test_rate_queries(int backend, uint32_t device_rate_hz, uint32_t requ
         return -1;
     }
     return rtl_device_rate_written_for(&dev, requested_hz, out_written_hz);
+}
+
+extern "C" int
+rtl_device_test_signal_receiver(int backend, const char* driver_key, const char* hardware_key,
+                                const char* requested_profile) {
+    rtl_device dev{};
+    dev.backend = backend;
+    DSD_SNPRINTF(dev.soapy_driver_key, sizeof(dev.soapy_driver_key), "%s", driver_key ? driver_key : "");
+    DSD_SNPRINTF(dev.soapy_hardware_key, sizeof(dev.soapy_hardware_key), "%s", hardware_key ? hardware_key : "");
+    DSD_SNPRINTF(dev.soapy_requested_profile, sizeof(dev.soapy_requested_profile), "%s",
+                 requested_profile ? requested_profile : "");
+    return rtl_device_signal_receiver(&dev);
 }
 
 extern "C" int
