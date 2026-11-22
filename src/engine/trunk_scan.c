@@ -196,8 +196,8 @@ typedef struct {
     uint8_t dmr_confidence_voice_count[2];
     uint8_t dmr_confidence_mismatch_count;
     double dmr_confidence_voice_m[2];
-    uint8_t dmr_lcn_trust[0x1000];
-    /* Where each of the target's Tier III channel rows came from, beside their trust (discussion #900). */
+    /* Where each of the target's Tier III channel rows came from, with their trust and the control channels its
+       network named (discussion #900). */
     dmr_t3_chan_target_snapshot dmr_chan;
     long int nxdn_grant_freq;
     dsd_nxdn_follow_route nxdn_follow;
@@ -2156,7 +2156,6 @@ trunk_scan_save_p25_identity_snapshot(const dsd_state* state, dsd_trunk_scan_sna
     } else {
         snapshot->trunk_lcn_freq_ext_count = 0;
     }
-    DSD_MEMCPY(snapshot->dmr_lcn_trust, state->dmr_lcn_trust, sizeof(snapshot->dmr_lcn_trust));
     dmr_t3_chan_save(state, &snapshot->dmr_chan);
     snapshot->p25_vc_cqpsk_pref = state->p25_vc_cqpsk_pref;
     snapshot->p25_vc_cqpsk_override = state->p25_vc_cqpsk_override;
@@ -2189,7 +2188,6 @@ trunk_scan_restore_p25_identity_snapshot(dsd_state* state, const dsd_trunk_scan_
     DSD_MEMCPY(state->trunk_vc_freq, snapshot->trunk_vc_freq, sizeof(state->trunk_vc_freq));
     trunk_scan_restore_enc_lockout_snapshot(state, snapshot);
     DSD_MEMCPY(state->trunk_lcn_freq, snapshot->trunk_lcn_freq, sizeof(state->trunk_lcn_freq));
-    DSD_MEMCPY(state->dmr_lcn_trust, snapshot->dmr_lcn_trust, sizeof(state->dmr_lcn_trust));
     dmr_t3_chan_restore(state, &snapshot->dmr_chan);
     state->p25_vc_cqpsk_pref = snapshot->p25_vc_cqpsk_pref;
     state->p25_vc_cqpsk_override = snapshot->p25_vc_cqpsk_override;

@@ -13,6 +13,7 @@
 #define DSD_NEO_SRC_PROTOCOL_DMR_DMR_T3_CHANNELS_INTERNAL_H_
 
 #include <dsd-neo/core/state_fwd.h>
+#include <dsd-neo/runtime/trunk_cc_candidates.h>
 
 #include <stdint.h>
 #include <time.h>
@@ -37,9 +38,13 @@ typedef struct {
     uint8_t origin[0x1000];
     uint32_t generation;
     uint32_t revision;
-    /* The last system code a checked C_ALOHA named, the baseline of a network change (its MODEL and NET). */
+    /* The last system code a checked C_ALOHA or SYS_Parms short LC named, the baseline of a network change (its MODEL
+       and NET). */
     uint16_t syscode;
     uint8_t syscode_valid;
+    /* The control channels this network's signalling named, oldest first (dmr_t3_chan_add_cc_candidate()). */
+    uint8_t cc_candidate_count;
+    long cc_candidates[DSD_TRUNK_CC_CANDIDATES_MAX];
 } dmr_ext_t;
 
 /* The extension, or NULL when nothing allocated it yet. */
@@ -56,9 +61,13 @@ int dmr_t3_chan_origin_is_ota(unsigned origin);
  * whether any row went. */
 int dmr_t3_chan_drop_rows(dsd_state* state, dmr_ext_t* ext, int (*drop)(unsigned origin));
 
-/* A checked C_ALOHA named @p syscode for the control channel the receiver is on: a code whose MODEL or NET differs from
- * the last checked one's is a network change (dmr_t3_chan_network_changed()); another SITE of the same network is
- * none. */
+/* A checked C_ALOHA, or a C_SYS_Parms or P_SYS_Parms short LC, named @p syscode for the carrier the receiver is on: a
+ * code whose MODEL or NET differs from the last checked one's is a network change (dmr_t3_chan_network_changed());
+ * another SITE of the same network is none. */
 void dmr_t3_chan_note_checked_syscode(dsd_state* state, uint16_t syscode);
+
+/* A checked or RAS-accepted PDU named @p freq_hz as a control channel of this network: it becomes a current-site hunt
+ * candidate, and the DMR record keeps it so a carrier loss does not lose it (dmr_t3_chan_reseed_cc_candidates()). */
+void dmr_t3_chan_add_cc_candidate(dsd_state* state, long freq_hz);
 
 #endif /* DSD_NEO_SRC_PROTOCOL_DMR_DMR_T3_CHANNELS_INTERNAL_H_ */

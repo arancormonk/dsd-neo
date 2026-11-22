@@ -1591,6 +1591,11 @@ struct dsd_state {
     // DMR Tier III: simple provenance/trust for learned LCN->freq mappings
     // 0=unset, 1=learned (unconfirmed), 2=trusted (confirmed on-current-site CC)
     uint8_t dmr_lcn_trust[0x1000];
+    /* DMR Tier III: one bit per LPCN row (row l in byte l / 8, bit l % 8) that the DMR over-the-air writer set and no
+       other writer has set since. dsd_state_set_trunk_chan_freq() clears a row's bit on every write, so a row another
+       protocol or an import wrote is no longer the air's: DMR neither replaces it nor drops it on a network change
+       (discussion #900 F2). Core owns the bit so the shared setter can clear it without knowing the DMR module. */
+    uint8_t dmr_lcn_ota[0x1000 / 8];
     // DMR late entry MI
     uint64_t late_entry_mi_fragment[2][8][3];
     // Multi-key array
@@ -3845,8 +3850,32 @@ dsd_state_nxdn_dfa_untag(dsd_state* state, uint32_t channel) {
     learned->count = count;
 }
 
+/* Whether the DMR over-the-air writer holds channel map row @p channel (dsd_state::dmr_lcn_ota). */
+static inline int
+dsd_state_dmr_lcn_ota_get(const dsd_state* state, uint32_t channel) {
+    if (channel >= 8U * (uint32_t)sizeof state->dmr_lcn_ota) {
+        return 0;
+    }
+    return (state->dmr_lcn_ota[channel >> 3U] >> (channel & 7U)) & 1U;
+}
+
+/* Mark row @p channel as the DMR over-the-air writer's (@p held nonzero) or nobody's in particular. */
+static inline void
+dsd_state_dmr_lcn_ota_set(dsd_state* state, uint32_t channel, int held) {
+    if (channel >= 8U * (uint32_t)sizeof state->dmr_lcn_ota) {
+        return;
+    }
+    const uint8_t bit = (uint8_t)(1U << (channel & 7U));
+    if (held) {
+        state->dmr_lcn_ota[channel >> 3U] |= bit;
+    } else {
+        state->dmr_lcn_ota[channel >> 3U] &= (uint8_t)~bit;
+    }
+}
+
 /* Set one channel map row. Every writer but the NXDN DFA resolver (dsd_nxdn_dfa_learn()) sets a row it owns, so the
-   row leaves the DFA record and no later parameter change drops it. */
+   row leaves the DFA record and no later parameter change drops it; the same goes for the DMR over-the-air record
+   (dsd_state::dmr_lcn_ota), whose writer marks the row again after this. */
 static inline void
 dsd_state_set_trunk_chan_freq(dsd_state* state, uint32_t channel, long int freq) {
     if (!state || !dsd_state_trunk_chan_valid(channel)) {
@@ -3855,6 +3884,7 @@ dsd_state_set_trunk_chan_freq(dsd_state* state, uint32_t channel, long int freq)
     if (state->nxdn_dfa_learned.count != 0U) {
         dsd_state_nxdn_dfa_untag(state, channel);
     }
+    dsd_state_dmr_lcn_ota_set(state, channel, 0);
 
     const long int old_freq = state->trunk_chan_map[channel];
     if (old_freq == freq) {

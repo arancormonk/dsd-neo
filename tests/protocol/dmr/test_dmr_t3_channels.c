@@ -381,6 +381,71 @@ test_estimates_dropped_when_anchor_changes(void) {
     assert(g_state.trunk_chan_map[11] == 451025000L);
 }
 
+/* An estimate a SITE PDU confirms at the frequency it already holds is promoted in place: the model through the anchors
+   is unchanged, so no estimate is dropped and filled again. One revision, no map write (the map sequence stays), no
+   notice. */
+static void
+test_estimate_confirmed_in_place(void) {
+    reset();
+    g_opts.dmr_t3_heuristic_fill = 1;
+    assert(dmr_t3_chan_learn(&g_opts, &g_state, 10U, 451000000L, DMR_CHAN_ORIGIN_SITE) == 1);
+    assert(dmr_t3_chan_learn(&g_opts, &g_state, 20U, 451125000L, DMR_CHAN_ORIGIN_SITE) == 1);
+    for (uint16_t l = 11U; l <= 19U; l++) {
+        assert(dmr_t3_chan_origin(&g_state, l) == DMR_CHAN_ORIGIN_ESTIMATE);
+        assert(g_state.trunk_chan_map[l] == 451000000L + (long)(l - 10U) * 12500L);
+    }
+    const uint32_t rev = dmr_t3_chan_revision(&g_state);
+    const uint64_t seq = g_state.trunk_chan_map_seq;
+    const uint64_t before0 = pushes(0);
+    const uint64_t before1 = pushes(1);
+
+    assert(dmr_t3_chan_learn(&g_opts, &g_state, 15U, 451062500L, DMR_CHAN_ORIGIN_SITE) == 1);
+    assert(dmr_t3_chan_revision(&g_state) == rev + 1U);
+    assert(g_state.trunk_chan_map_seq == seq);
+    assert(pushes(0) == before0 && pushes(1) == before1);
+    assert(dmr_t3_chan_origin(&g_state, 15U) == DMR_CHAN_ORIGIN_SITE && g_state.dmr_lcn_trust[15] == 2U);
+    for (uint16_t l = 11U; l <= 19U; l++) {
+        assert(g_state.trunk_chan_map[l] == 451000000L + (long)(l - 10U) * 12500L);
+        assert(l == 15U || dmr_t3_chan_origin(&g_state, l) == DMR_CHAN_ORIGIN_ESTIMATE);
+    }
+
+    /* A confirmation at another frequency is a real anchor change: the estimates are redone. */
+    assert(dmr_t3_chan_learn(&g_opts, &g_state, 16U, 451080000L, DMR_CHAN_ORIGIN_SITE) == 1);
+    assert(g_state.trunk_chan_map_seq != seq);
+}
+
+/* A row another writer sets after the air (P25's channel cache, its IDEN invalidation, an import) is no longer the
+   air's, at any frequency: it reads as FILE, DMR does not replace it, and a network change leaves it. */
+static void
+test_foreign_write_disowns_row(void) {
+    reset();
+    assert(dmr_t3_chan_learn(&g_opts, &g_state, 30U, 452000000L, DMR_CHAN_ORIGIN_SITE) == 1);
+    assert(dmr_t3_chan_learn(&g_opts, &g_state, 32U, 452025000L, DMR_CHAN_ORIGIN_SITE) == 1);
+    dsd_state_set_trunk_chan_freq(&g_state, 30U, 853012500L); /* another protocol's frequency */
+    dsd_state_set_trunk_chan_freq(&g_state, 32U, 452025000L); /* the same frequency, written by another */
+    assert(dmr_t3_chan_origin(&g_state, 30U) == DMR_CHAN_ORIGIN_FILE);
+    assert(dmr_t3_chan_origin(&g_state, 32U) == DMR_CHAN_ORIGIN_FILE);
+    assert(dmr_t3_chan_learn(&g_opts, &g_state, 30U, 452050000L, DMR_CHAN_ORIGIN_SITE) == 0);
+    assert(g_state.trunk_chan_map[30] == 853012500L);
+    dmr_t3_chan_network_changed(&g_opts, &g_state);
+    assert(g_state.trunk_chan_map[30] == 853012500L && dmr_t3_chan_origin(&g_state, 30U) == DMR_CHAN_ORIGIN_FILE);
+    assert(g_state.trunk_chan_map[32] == 452025000L && dmr_t3_chan_origin(&g_state, 32U) == DMR_CHAN_ORIGIN_FILE);
+
+    /* P25's IDEN 0 update clears channels 0x000-0xFFF; the channel cache then fills one of them. */
+    assert(dmr_t3_chan_learn(&g_opts, &g_state, 31U, 452012500L, DMR_CHAN_ORIGIN_SITE) == 1);
+    dsd_state_p25_invalidate_iden_chan_map(&g_state, 0);
+    assert(g_state.trunk_chan_map[31] == 0L && dmr_t3_chan_origin(&g_state, 31U) == DMR_CHAN_ORIGIN_NONE);
+    dsd_state_set_trunk_chan_freq(&g_state, 31U, 853025000L);
+    assert(dmr_t3_chan_origin(&g_state, 31U) == DMR_CHAN_ORIGIN_FILE);
+    dmr_t3_chan_network_changed(&g_opts, &g_state);
+    assert(g_state.trunk_chan_map[31] == 853025000L && dmr_t3_chan_origin(&g_state, 31U) == DMR_CHAN_ORIGIN_FILE);
+
+    /* A row the air learns into an empty row afterwards is the air's again. */
+    assert(dmr_t3_chan_learn(&g_opts, &g_state, 33U, 452037500L, DMR_CHAN_ORIGIN_SITE) == 1);
+    dmr_t3_chan_network_changed(&g_opts, &g_state);
+    assert(g_state.trunk_chan_map[33] == 0L);
+}
+
 static void
 test_network_change_drops_ota_rows_keeps_file_user(void) {
     reset();
@@ -1107,6 +1172,8 @@ main(void) {
     test_neighbour_never_trust2();
     test_estimates_dropped_when_anchor_changes();
     test_network_change_drops_ota_rows_keeps_file_user();
+    test_estimate_confirmed_in_place();
+    test_foreign_write_disowns_row();
     test_learned_notice_on_receiving_slot();
     test_cc_vc_cc_trip_keeps_learned_rows();
     test_other_site_same_network_keeps_rows();

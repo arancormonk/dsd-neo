@@ -13,9 +13,12 @@
  * differs. UNVERIFIED, NEIGHBOUR and ESTIMATE only fill empty rows. A nonzero row with no recorded origin (a map loaded
  * before any of this was recorded) counts as FILE.
  *
- * The origins, a network generation and a revision live in the DMR module's state extension
- * (DSD_STATE_EXT_PROTO_DMR_RC) and are saved per trunk-scan target beside dsd_state::dmr_lcn_trust. Decoder thread
- * only.
+ * A row another writer (an import, another protocol) sets afterwards is no longer the air's: dsd_state_set_trunk_chan_freq()
+ * clears its bit in dsd_state::dmr_lcn_ota, and the row then reads as FILE, which DMR neither replaces nor drops.
+ *
+ * The origins, a network generation, a revision and the control channels the air named live in the DMR module's state
+ * extension (DSD_STATE_EXT_PROTO_DMR_RC); with dsd_state::dmr_lcn_trust and dsd_state::dmr_lcn_ota they are saved per
+ * trunk-scan target and per Signal search session. Decoder thread only.
  */
 
 #ifndef DSD_NEO_INCLUDE_DSD_NEO_PROTOCOL_DMR_DMR_T3_CHANNELS_H_
@@ -23,6 +26,7 @@
 
 #include <dsd-neo/core/opts_fwd.h>
 #include <dsd-neo/core/state_fwd.h>
+#include <dsd-neo/runtime/trunk_cc_candidates.h>
 
 #include <stdint.h>
 
@@ -51,7 +55,8 @@ typedef enum {
  */
 int dmr_t3_chan_learn(dsd_opts* opts, dsd_state* state, uint16_t lpcn, long freq_hz, dmr_chan_origin_e origin);
 
-/** The origin of @p lpcn's row: NONE for an empty row, FILE for a nonzero row with none recorded. */
+/** The origin of @p lpcn's row: NONE for an empty row, FILE for a nonzero row with none recorded or one another writer
+ * set after the air. */
 dmr_chan_origin_e dmr_t3_chan_origin(const dsd_state* state, uint16_t lpcn);
 
 /** After a channel map import or reload replaced the map: nonzero rows become FILE, the others NONE. */
@@ -68,6 +73,20 @@ void dmr_t3_chan_note_map_cleared(dsd_state* state);
  */
 void dmr_t3_chan_network_changed(dsd_opts* opts, dsd_state* state);
 
+/**
+ * A carrier loss emptied the control channel hunt's candidate list (noCarrier()): the control channels this network's
+ * checked or RAS-accepted signalling named (an announced TSCC, a Move TSCC, a P_CLEAR's TSCC, a voted or neighbour
+ * site's) go back into it, so the hunt still finds a TSCC announced before the loss. Also puts them back after a
+ * restore. Never allocates the DMR record.
+ */
+void dmr_t3_chan_reseed_cc_candidates(dsd_state* state);
+
+/**
+ * The control channels the air named leave the hunt's candidate list and the DMR record: a network change runs this,
+ * and so does a session re-pointed at another system.
+ */
+void dmr_t3_chan_forget_cc_candidates(const dsd_state* state);
+
 /** The network generation: bumps on every network change. */
 uint32_t dmr_t3_chan_generation(const dsd_state* state);
 
@@ -75,23 +94,31 @@ uint32_t dmr_t3_chan_generation(const dsd_state* state);
 uint32_t dmr_t3_chan_revision(const dsd_state* state);
 
 /**
- * One trunk-scan target's channel provenance. syscode is the last checked system code (valid when syscode_valid), the
- * baseline a later checked one is compared against.
+ * One trunk-scan target's (or Signal search session's) channel provenance: the origins, the trust bytes
+ * (dsd_state::dmr_lcn_trust), the rows the air holds (dsd_state::dmr_lcn_ota), the control channels the air named
+ * (cc_candidates, oldest first), the generation and revision. syscode is the last checked system code (valid when
+ * syscode_valid), the baseline a later checked one is compared against.
  */
 typedef struct {
     uint8_t origin[0x1000];
+    uint8_t trust[0x1000];
+    uint8_t ota[0x1000 / 8];
+    long cc_candidates[DSD_TRUNK_CC_CANDIDATES_MAX];
     uint32_t generation;
     uint32_t revision;
     uint16_t syscode;
     uint8_t syscode_valid;
+    uint8_t cc_candidate_count;
 } dmr_t3_chan_target_snapshot;
 
 /** Save the parked target's provenance. */
 void dmr_t3_chan_save(const dsd_state* state, dmr_t3_chan_target_snapshot* out);
 
 /**
- * Restore a target's provenance. The revision goes past both the current one and the saved one, so a reader comparing
- * revisions sees the switch.
+ * Restore a target's provenance, the map rows being restored beside it. The revision goes past both the current one
+ * and the saved one, so a reader comparing revisions sees the switch. The hunt's candidate list is the caller's: a
+ * trunk-scan target keeps its own, and a caller with none to restore runs dmr_t3_chan_forget_cc_candidates() before and
+ * dmr_t3_chan_reseed_cc_candidates() after.
  */
 void dmr_t3_chan_restore(dsd_state* state, const dmr_t3_chan_target_snapshot* in);
 

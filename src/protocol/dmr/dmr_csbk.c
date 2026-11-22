@@ -45,7 +45,6 @@
 #include <dsd-neo/runtime/colors.h>
 #include <dsd-neo/runtime/frame_sync_hooks.h>
 #include <dsd-neo/runtime/rigctl_query_hooks.h>
-#include <dsd-neo/runtime/trunk_cc_candidates.h>
 #include <dsd-neo/runtime/trunk_scan_hooks.h>
 #include <dsd-neo/runtime/trunk_tuning_hooks.h>
 #include <inttypes.h>
@@ -431,7 +430,7 @@ dmr_cspdu_pf0_note_absolute_tscc(dsd_opts* opts, dsd_state* state, uint16_t chan
     }
     (void)dmr_csbk_learn_channel(opts, state, chan, freq, 0);
     if (freq != state->trunk_cc_freq) {
-        (void)dsd_trunk_cc_candidates_add(state, freq, 1, DSD_TRUNK_CC_CANDIDATE_CURRENT_SITE);
+        dmr_t3_chan_add_cc_candidate(state, freq);
     }
 }
 
@@ -1079,7 +1078,7 @@ dmr_cspdu_pf0_p_clear_note_tscc(dsd_opts* opts, dsd_state* state, const uint8_t 
     }
     DSD_FPRINTF(stderr, " (%.6f MHz);", (double)freq / 1000000.0);
     if (freq != state->trunk_cc_freq && (dmr_csbk_crc_checked(state) || dmr_csbk_ras_accepted(opts, state))) {
-        (void)dsd_trunk_cc_candidates_add(state, freq, 1, DSD_TRUNK_CC_CANDIDATE_CURRENT_SITE);
+        dmr_t3_chan_add_cc_candidate(state, freq);
     }
 }
 

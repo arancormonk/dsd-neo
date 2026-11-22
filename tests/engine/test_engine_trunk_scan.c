@@ -74,6 +74,7 @@
 #include <dsd-neo/runtime/scan_mode.h>
 #include <dsd-neo/runtime/scan_options.h>
 #include <dsd-neo/runtime/scan_row_edit.h>
+#include <dsd-neo/runtime/trunk_cc_candidates.h>
 #include <dsd-neo/runtime/trunk_scan_hooks.h>
 #include <dsd-neo/runtime/trunk_tuning_hooks.h>
 #include <dsd-neo/runtime/tuner_owner.h>
@@ -87,6 +88,7 @@
 #if !DSD_PLATFORM_WIN_NATIVE
 #include <unistd.h>
 #endif
+#include "../../src/protocol/dmr/dmr_t3_channels_internal.h"
 #include "analog_tone_policy.h"
 #include "frame_sync_internal.h"
 #include "manual_tune_pending.h"
@@ -2099,6 +2101,84 @@ test_dmr_channel_origins_restore_per_target(void) {
         || dmr_t3_chan_learn(&opts, &state, 12U, 452012500L, DMR_CHAN_ORIGIN_SITE) != 0) {
         DSD_FPRINTF(stderr, "dmr origins: target B's file row not restored (%ld, origin %d)\n",
                     state.trunk_chan_map[12], (int)dmr_t3_chan_origin(&state, 12U));
+        test_rc = 1;
+    }
+
+    dsd_engine_trunk_scan_shutdown(&opts, &state);
+    trunk_scan_test_clear_now();
+    cleanup_paths(dir, target_path, NULL);
+    return test_rc;
+}
+
+static int
+scan_candidate_listed(const dsd_state* state, long freq) {
+    const dsd_trunk_cc_candidates* cc = dsd_trunk_cc_candidates_peek(state);
+    for (int i = 0; cc != NULL && i < cc->count; i++) {
+        if (cc->candidates[i] == freq) {
+            return 1;
+        }
+    }
+    return 0;
+}
+
+/* Channel map row 0, which the used-channel list never holds, is the target's own (discussion #900 review): a DMR
+   target's key-0 control seed (a channel map file's CHNULL row) never reaches a P25 target, where channel 0x0000 (IDEN
+   0, channel 0) is checked against the map before the IDEN arithmetic, and a P25 target's own channel 0 frequency comes
+   back with it. The control channels a DMR network named stay with their target too: the carrier-loss reseed on
+   another target brings none back. */
+static int
+test_chan_map_zero_and_dmr_candidates_per_target(void) {
+    char dir[DSD_TEST_PATH_MAX];
+    char target_path[DSD_TEST_PATH_MAX];
+    if (make_runtime_targets("a,dmr-trunk,452000000,,250,,tier iii\n"
+                             "b,p25-trunk,851000000,,250,,\n",
+                             target_path, sizeof target_path, dir, sizeof dir)
+        != 0) {
+        return 1;
+    }
+
+    static dsd_opts opts;
+    static dsd_state state;
+    reset_scan_opts_state(&opts, &state);
+    DSD_SNPRINTF(opts.trunk_scan_lists[0].path, sizeof opts.trunk_scan_lists[0].path, "%s", target_path);
+    opts.trunk_scan_list_count = 1;
+
+    char err[256] = {0};
+    trunk_scan_test_set_now(0.0);
+    int test_rc = 0;
+    if (dsd_engine_trunk_scan_init(&opts, &state, err, sizeof err) != 0
+        || dsd_engine_trunk_scan_active_index(&state) != 0) {
+        DSD_FPRINTF(stderr, "row 0: scan init failed err=%s\n", err);
+        test_rc = 1;
+    }
+    dsd_state_set_trunk_chan_freq(&state, 0U, 452500000L);
+    dmr_t3_chan_add_cc_candidate(&state, 452750000L);
+
+    trunk_scan_test_set_now(0.26);
+    dsd_engine_trunk_scan_tick(&opts, &state);
+    dmr_t3_chan_reseed_cc_candidates(&state); /* as noCarrier() does on the P25 target */
+    if (dsd_engine_trunk_scan_active_index(&state) != 1 || state.trunk_chan_map[0] != 0
+        || scan_candidate_listed(&state, 452750000L)) {
+        DSD_FPRINTF(stderr, "row 0: target A's key-0 seed or control channel leaked into P25 target B (%ld)\n",
+                    state.trunk_chan_map[0]);
+        test_rc = 1;
+    }
+    /* P25's channel cache for IDEN 0 channel 0, as process_channel_to_freq() writes it. */
+    dsd_state_set_trunk_chan_freq(&state, 0U, 851000000L);
+
+    trunk_scan_test_set_now(0.52);
+    dsd_engine_trunk_scan_tick(&opts, &state);
+    dmr_t3_chan_reseed_cc_candidates(&state);
+    if (dsd_engine_trunk_scan_active_index(&state) != 0 || state.trunk_chan_map[0] != 452500000L
+        || !scan_candidate_listed(&state, 452750000L)) {
+        DSD_FPRINTF(stderr, "row 0: target A's key-0 seed or control channel not restored (%ld)\n",
+                    state.trunk_chan_map[0]);
+        test_rc = 1;
+    }
+    trunk_scan_test_set_now(0.78);
+    dsd_engine_trunk_scan_tick(&opts, &state);
+    if (dsd_engine_trunk_scan_active_index(&state) != 1 || state.trunk_chan_map[0] != 851000000L) {
+        DSD_FPRINTF(stderr, "row 0: target B's channel 0 not restored (%ld)\n", state.trunk_chan_map[0]);
         test_rc = 1;
     }
 
@@ -27257,6 +27337,7 @@ main(void) {
     rc |= run_with_default_tune_hook(test_parser_refuses_a_non_utf8_id);
     rc |= run_with_default_tune_hook(test_coordinator_idle_rotation_and_state_restore);
     rc |= run_with_default_tune_hook(test_dmr_channel_origins_restore_per_target);
+    rc |= run_with_default_tune_hook(test_chan_map_zero_and_dmr_candidates_per_target);
     rc |= run_with_default_tune_hook(test_assoc_trunk_scan_restore);
     rc |= run_with_default_tune_hook(test_unit_activity_ring_spans_trunk_scan_switch);
     rc |= run_with_default_tune_hook(test_target_patch_clock_survives_other_reception);

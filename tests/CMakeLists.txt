@@ -14276,6 +14276,8 @@ add_executable(
     dsd-neo_test_dmr_t3_sm_clamp
     protocol/dmr/test_dmr_t3_sm_clamp.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_trunk_sm.c
+    # The control channels a DMR network named, which the machine's neighbour updates record (discussion #900).
+    ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_t3_channels.c
     ${PROJECT_SOURCE_DIR}/tests/test_support/dmr_carrier_leave_stubs.c
     ${PROJECT_SOURCE_DIR}/src/core/util/dsd_state_trunk_lcn.c
     ${PROJECT_SOURCE_DIR}/src/core/util/dsd_state_lcn_nav.c
@@ -14311,6 +14313,8 @@ add_executable(
     dsd-neo_test_dmr_t3_sm_release
     protocol/dmr/test_dmr_t3_sm_release.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_trunk_sm.c
+    # The control channels a DMR network named, which the machine's neighbour updates record (discussion #900).
+    ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_t3_channels.c
     ${PROJECT_SOURCE_DIR}/tests/test_support/dmr_carrier_leave_stubs.c
     ${PROJECT_SOURCE_DIR}/src/core/util/dsd_state_trunk_lcn.c
     ${PROJECT_SOURCE_DIR}/src/core/util/dsd_state_lcn_nav.c
@@ -14346,6 +14350,8 @@ add_executable(
     dsd-neo_test_dmr_t3_sm_return_to_cc_matrix
     protocol/dmr/test_dmr_t3_sm_return_to_cc_matrix.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_trunk_sm.c
+    # The control channels a DMR network named, which the machine's neighbour updates record (discussion #900).
+    ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_t3_channels.c
     ${PROJECT_SOURCE_DIR}/tests/test_support/dmr_carrier_leave_stubs.c
     ${PROJECT_SOURCE_DIR}/src/core/util/dsd_state_trunk_lcn.c
     ${PROJECT_SOURCE_DIR}/src/core/util/dsd_state_lcn_nav.c
@@ -14385,6 +14391,8 @@ add_executable(
     dsd-neo_test_dmr_t3_shim
     protocol/dmr/test_dmr_t3_shim.c
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_trunk_sm.c
+    # The control channels a DMR network named, which the machine's neighbour updates record (discussion #900).
+    ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_t3_channels.c
     ${PROJECT_SOURCE_DIR}/tests/test_support/dmr_carrier_leave_stubs.c
     ${PROJECT_SOURCE_DIR}/src/core/util/dsd_state_trunk_lcn.c
     ${PROJECT_SOURCE_DIR}/src/core/util/dsd_state_lcn_nav.c
@@ -28798,6 +28806,8 @@ if(DSD_HAS_RADIO)
         ${PROJECT_SOURCE_DIR}/src/engine/signal_search.c
         ${PROJECT_SOURCE_DIR}/src/engine/signal_search_protocol.c
         ${PROJECT_SOURCE_DIR}/src/engine/p25_site_snapshot.c
+        # The DMR channel provenance the session keeps across visits (discussion #900).
+        ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_t3_channels.c
         # The session's P25 patch table, kept aside while the search visits other carriers.
         ${PROJECT_SOURCE_DIR}/src/core/util/p25_patch_state.c
         ${PROJECT_SOURCE_DIR}/src/core/util/receive.c

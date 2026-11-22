@@ -13,6 +13,7 @@
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/state_ext.h>
 #include <dsd-neo/protocol/dmr/dmr_t3_channels.h>
+#include <dsd-neo/runtime/trunk_cc_candidates.h>
 #include <stdint.h>
 #include <stdlib.h>
 #include "dmr_call_channel.h"
@@ -54,6 +55,20 @@ dmr_t3_chan_origin_is_ota(unsigned origin) {
     return origin >= (unsigned)DMR_CHAN_ORIGIN_SITE && origin <= (unsigned)DMR_CHAN_ORIGIN_ESTIMATE;
 }
 
+/* The origin a recorded byte names; a byte no origin has (none is ever written) reads as FILE, which nothing over the air
+   replaces. */
+static dmr_chan_origin_e
+dmr_t3_chan_origin_of_byte(uint8_t origin) {
+    switch (origin) {
+        case DMR_CHAN_ORIGIN_USER: return DMR_CHAN_ORIGIN_USER;
+        case DMR_CHAN_ORIGIN_SITE: return DMR_CHAN_ORIGIN_SITE;
+        case DMR_CHAN_ORIGIN_UNVERIFIED: return DMR_CHAN_ORIGIN_UNVERIFIED;
+        case DMR_CHAN_ORIGIN_NEIGHBOUR: return DMR_CHAN_ORIGIN_NEIGHBOUR;
+        case DMR_CHAN_ORIGIN_ESTIMATE: return DMR_CHAN_ORIGIN_ESTIMATE;
+        default: return DMR_CHAN_ORIGIN_FILE;
+    }
+}
+
 dmr_chan_origin_e
 dmr_t3_chan_origin(const dsd_state* state, uint16_t lpcn) {
     if (state == NULL || lpcn >= DMR_T3_ROWS || state->trunk_chan_map[lpcn] == 0) {
@@ -61,7 +76,12 @@ dmr_t3_chan_origin(const dsd_state* state, uint16_t lpcn) {
     }
     const dmr_ext_t* ext = dmr_ext_get(state);
     const uint8_t origin = ext != NULL ? ext->origin[lpcn] : (uint8_t)DMR_CHAN_ORIGIN_NONE;
-    return origin == (uint8_t)DMR_CHAN_ORIGIN_NONE ? DMR_CHAN_ORIGIN_FILE : (dmr_chan_origin_e)origin;
+    /* A row another writer set after the air is that writer's, as a file's is. */
+    if (origin == (uint8_t)DMR_CHAN_ORIGIN_NONE
+        || (dmr_t3_chan_origin_is_ota(origin) && !dsd_state_dmr_lcn_ota_get(state, lpcn))) {
+        return DMR_CHAN_ORIGIN_FILE;
+    }
+    return dmr_t3_chan_origin_of_byte(origin);
 }
 
 int
@@ -69,6 +89,11 @@ dmr_t3_chan_drop_rows(dsd_state* state, dmr_ext_t* ext, int (*drop)(unsigned ori
     int dropped = 0;
     for (unsigned l = 1U; l <= DMR_T3_MAX_LCN; l++) {
         if (!drop(ext->origin[l])) {
+            continue;
+        }
+        if (!dsd_state_dmr_lcn_ota_get(state, l)) {
+            /* Another writer set the row after the air: it stays theirs, and the air's record of it goes. */
+            ext->origin[l] = (uint8_t)DMR_CHAN_ORIGIN_NONE;
             continue;
         }
         dsd_state_set_trunk_chan_freq(state, l, 0);
@@ -89,6 +114,7 @@ dmr_t3_chan_note_map_loaded(dsd_state* state) {
         const int file_row = dmr_t3_lpcn_is_channel(l) && state->trunk_chan_map[l] != 0;
         ext->origin[l] = (uint8_t)(file_row ? DMR_CHAN_ORIGIN_FILE : DMR_CHAN_ORIGIN_NONE);
     }
+    DSD_MEMSET(state->dmr_lcn_ota, 0, sizeof(state->dmr_lcn_ota));
     ext->revision++;
 }
 
@@ -99,13 +125,72 @@ dmr_t3_chan_note_map_cleared(dsd_state* state) {
         return;
     }
     DSD_MEMSET(ext->origin, 0, sizeof(ext->origin));
+    DSD_MEMSET(state->dmr_lcn_ota, 0, sizeof(state->dmr_lcn_ota));
     ext->revision++;
 }
 
-/* What the air taught goes with the network it came from; the next checked system code starts a new baseline. */
+void
+dmr_t3_chan_add_cc_candidate(dsd_state* state, long freq_hz) {
+    if (state == NULL || freq_hz <= 0) {
+        return;
+    }
+    (void)dsd_trunk_cc_candidates_add(state, freq_hz, 1, DSD_TRUNK_CC_CANDIDATE_CURRENT_SITE);
+    dmr_ext_t* ext = dmr_ext_get_or_create(state);
+    if (ext == NULL) {
+        return;
+    }
+    unsigned count = ext->cc_candidate_count;
+    if (count > (unsigned)DSD_TRUNK_CC_CANDIDATES_MAX) {
+        count = 0U;
+    }
+    for (unsigned k = 0U; k < count; k++) {
+        if (ext->cc_candidates[k] == freq_hz) {
+            return;
+        }
+    }
+    if (count == (unsigned)DSD_TRUNK_CC_CANDIDATES_MAX) {
+        /* Full: the oldest goes, as the shared list drops it. */
+        for (unsigned k = 1U; k < count; k++) {
+            ext->cc_candidates[k - 1U] = ext->cc_candidates[k];
+        }
+        count--;
+    }
+    ext->cc_candidates[count] = freq_hz;
+    ext->cc_candidate_count = (uint8_t)(count + 1U);
+}
+
+void
+dmr_t3_chan_reseed_cc_candidates(dsd_state* state) {
+    const dmr_ext_t* ext = dmr_ext_get(state);
+    if (ext == NULL || ext->cc_candidate_count > (uint8_t)DSD_TRUNK_CC_CANDIDATES_MAX) {
+        return;
+    }
+    for (unsigned k = 0U; k < ext->cc_candidate_count; k++) {
+        (void)dsd_trunk_cc_candidates_add(state, ext->cc_candidates[k], 0, DSD_TRUNK_CC_CANDIDATE_CURRENT_SITE);
+    }
+}
+
+void
+dmr_t3_chan_forget_cc_candidates(const dsd_state* state) {
+    dmr_ext_t* ext = dmr_ext_get(state);
+    if (ext == NULL) {
+        return;
+    }
+    const unsigned count =
+        ext->cc_candidate_count <= (uint8_t)DSD_TRUNK_CC_CANDIDATES_MAX ? ext->cc_candidate_count : 0U;
+    for (unsigned k = 0U; k < count; k++) {
+        (void)dsd_trunk_cc_candidates_remove(state, ext->cc_candidates[k]);
+    }
+    DSD_MEMSET(ext->cc_candidates, 0, sizeof(ext->cc_candidates));
+    ext->cc_candidate_count = 0U;
+}
+
+/* What the air taught goes with the network it came from, the control channels it named with it; the next checked
+   system code starts a new baseline. */
 static void
 dmr_t3_chan_drop_network(dsd_state* state, dmr_ext_t* ext) {
     (void)dmr_t3_chan_drop_rows(state, ext, dmr_t3_chan_origin_is_ota);
+    dmr_t3_chan_forget_cc_candidates(state);
     ext->generation++;
     ext->revision++;
     ext->syscode_valid = 0U;
@@ -162,11 +247,18 @@ dmr_t3_chan_save(const dsd_state* state, dmr_t3_chan_target_snapshot* out) {
         return;
     }
     DSD_MEMSET(out, 0, sizeof(*out));
+    if (state == NULL) {
+        return;
+    }
+    DSD_MEMCPY(out->trust, state->dmr_lcn_trust, sizeof(out->trust));
+    DSD_MEMCPY(out->ota, state->dmr_lcn_ota, sizeof(out->ota));
     const dmr_ext_t* ext = dmr_ext_get(state);
     if (ext == NULL) {
         return;
     }
     DSD_MEMCPY(out->origin, ext->origin, sizeof(out->origin));
+    DSD_MEMCPY(out->cc_candidates, ext->cc_candidates, sizeof(out->cc_candidates));
+    out->cc_candidate_count = ext->cc_candidate_count;
     out->generation = ext->generation;
     out->revision = ext->revision;
     out->syscode = ext->syscode;
@@ -178,9 +270,12 @@ dmr_t3_chan_restore(dsd_state* state, const dmr_t3_chan_target_snapshot* in) {
     if (state == NULL || in == NULL) {
         return;
     }
+    DSD_MEMCPY(state->dmr_lcn_trust, in->trust, sizeof(state->dmr_lcn_trust));
+    DSD_MEMCPY(state->dmr_lcn_ota, in->ota, sizeof(state->dmr_lcn_ota));
     dmr_ext_t* ext = dmr_ext_get(state);
     /* A snapshot with no revision recorded nothing (every change bumps it): with no record here either, none is due. */
-    if (ext == NULL && in->revision == 0U && in->generation == 0U && in->syscode_valid == 0U) {
+    if (ext == NULL && in->revision == 0U && in->generation == 0U && in->syscode_valid == 0U
+        && in->cc_candidate_count == 0U) {
         return;
     }
     ext = dmr_ext_get_or_create(state);
@@ -188,6 +283,9 @@ dmr_t3_chan_restore(dsd_state* state, const dmr_t3_chan_target_snapshot* in) {
         return;
     }
     DSD_MEMCPY(ext->origin, in->origin, sizeof(ext->origin));
+    DSD_MEMCPY(ext->cc_candidates, in->cc_candidates, sizeof(ext->cc_candidates));
+    ext->cc_candidate_count =
+        in->cc_candidate_count <= (uint8_t)DSD_TRUNK_CC_CANDIDATES_MAX ? in->cc_candidate_count : 0U;
     ext->generation = in->generation;
     ext->revision = (ext->revision > in->revision ? ext->revision : in->revision) + 1U;
     ext->syscode = in->syscode;

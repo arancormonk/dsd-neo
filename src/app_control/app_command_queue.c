@@ -7454,6 +7454,7 @@ rr_apply_tune(dsd_opts* opts, dsd_state* state, const dsd_app_rr_apply_payload* 
 static void
 rr_apply_reacquire(dsd_opts* opts, dsd_state* state) {
     dsd_trunk_cc_candidates_reset(state);
+    dmr_t3_chan_forget_cc_candidates(state); // the control channels the old DMR network named, kept across carrier loss
     nxdn_cc_hunt_note_system_replaced(state);
     dmr_sm_note_system_replaced(dmr_sm_get_ctx()); // an XPT site the old system was is not the new one
     tetra_sm_forget_moves(state);                  // the main carriers the TETRA machine moved to were the old system's

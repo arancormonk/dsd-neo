@@ -182,7 +182,12 @@ Generated (do not edit/commit):
     not the code changed (an IDEN update a visit took before its network status is stamped with the code in force), so
     a hand-set `-X` code or an imported channel map comes back and nothing a visit learned reaches the next. The proof
     (`p2_cc_verified`) is never restored: the boundary cleared it, and a code proven on another carrier proves nothing
-    here. A channel map that moved gets a new `trunk_chan_map_seq`. The P25 patch table is not part of the site: Start
+    here. A channel map that moved gets a new `trunk_chan_map_seq`. Start also saves the DMR Tier III provenance of the
+    map rows (`dmr_t3_chan_save()`: origins, trust, the rows the air holds, the network baseline and the control
+    channels the network named), and every restore puts it back with the rows: a visit that hears another network's
+    checked system code drops the session's learned rows, and the departure brings them back as they were, the visit's
+    DMR candidates out of the hunt list and the session's back in (discussion #900). The P25 patch table is not part of
+    the site: Start
     saves the session's whole (`dsd_p25_patch_snapshot`, owner, listening clock and sequence counter with it), every
     departure's boundary empties it, so each visit starts with an empty, unowned table and a voice-only visit to
     another system naming the same supergroup number inherits neither the session's members nor its KEY=0, and only
@@ -1264,7 +1269,10 @@ TDMA flags, the IDEN tables, the band plan, the explicit TDMA channel flags, the
 channel map, and what `p25_update_system_identity()` drops with the IDEN tables on a change of system: the pending
 announcements, which resolve against whatever IDEN tables the state holds, the secondary control channels and the
 site's protection, services, LRA and network-active broadcasts) is `dsd_p25_site_snapshot` in
-`src/engine/p25_site_snapshot.{c,h}`, which Signal search also saves once per session (see Signal search). Trunk scan
+`src/engine/p25_site_snapshot.{c,h}`, which Signal search also saves once per session (see Signal search). The channel
+map row 0, which `trunk_chan_map_used[]` never lists, is saved and restored on its own (`chan_map_zero`): P25 IDEN 0
+channel 0 and a channel map file's key 0 (a DMR Tier III control seed) both land there, so neither reaches another
+target. Trunk scan
 keeps the session's hand-set flag across a restore, and keeps the code's proof, the NAC, the modulation and the call
 state in its own snapshot fields, and the target's P25 patch table (entries, owner, listening clock, sequence counter)
 as a `dsd_p25_patch_snapshot`: another target's reception never moves it, and a restore breaks the clock's continuity.
@@ -4753,6 +4761,12 @@ suite runs under this compiler.
       never write the row heard, but each probe drops the backward retry, as a forward start. Tests:
       `RUNTIME_TRUNK_CC_CANDIDATES`, `APP_COMMAND_QUEUE`, `P25_SM_HUNT_DEFERRED`, `ENGINE_DMR_CC_RECOVERY`,
       `NXDN_CC_HUNT`.
+    - `noCarrier()` empties the list; P25 and NXDN candidates go with the carrier. The DMR candidates (an announced or
+      moved-to TSCC, a P_CLEAR's TSCC, a voted or neighbour site's) are also kept in the DMR record
+      (`dmr_t3_chan_add_cc_candidate()`), which puts its network's back right after (`dmr_t3_chan_reseed_cc_candidates()`),
+      so a hunt after the loss still finds a TSCC announced before it. They leave with the network: a DMR network change
+      and a RadioReference re-point take them out (`dmr_t3_chan_forget_cc_candidates()`, through
+      `dsd_trunk_cc_candidates_remove()`), and each trunk-scan target keeps its own.
   - Config system (schema, expansion, user config), logging, memory helpers, rings, RT scheduling
     - Floating-point mode (`include/dsd-neo/runtime/fp_mode.h`, `src/runtime/fp_mode.c`, issue #672 B12):
       `DSD_NEO_FTZ_DAZ` is a start-time setting. `dsd_bootstrap_apply_fp_mode()` (`bootstrap/system.c`, called from
@@ -13373,19 +13387,27 @@ Private per-protocol modules worth knowing about:
   The learned ("DMR TIII: Learned channel 12 -> 451.012500 MHz;") and changed notices post on the receiving burst's
   slot with its CRC flags, so `--slot-allow` and the `[RAS]` marker apply. The env-only heuristic fill anchors on every
   row that is no estimate and writes its rows as ESTIMATE through the writer; any anchor that appears, moves or goes
-  drops every estimate and fills again. A network change (`dmr_t3_chan_network_changed()`) drops the SITE, UNVERIFIED,
-  NEIGHBOUR and ESTIMATE rows with their trust bytes and bumps the generation; FILE and USER rows stay. It is a checked
-  C_ALOHA whose system code names another network than the last checked one, MODEL or NET differing (another SITE of
+  drops every estimate and fills again, except an estimate confirmed at the frequency it holds, which is promoted in
+  place (it lies on the model line between the first and last anchors, so the model is unchanged). A row another
+  writer sets after the air (P25's channel cache or IDEN invalidation, an import, NXDN) is no longer the air's: the
+  shared setter `dsd_state_set_trunk_chan_freq()` clears the row's bit in the core-owned `dsd_state::dmr_lcn_ota`
+  (which the DMR writer sets after it writes), and the row then reads as FILE, so DMR neither replaces nor drops it.
+  A network change (`dmr_t3_chan_network_changed()`) drops the SITE, UNVERIFIED,
+  NEIGHBOUR and ESTIMATE rows with their trust bytes, and the control channels the network named, and bumps the
+  generation; FILE and USER rows stay. It is a checked
+  C_ALOHA, C_SYS_Parms or P_SYS_Parms short LC whose system code names another network than the last checked one,
+  MODEL or NET differing (another SITE of
   the same network is none: the channel plan is the network's, TS 102 361-4 §6.1.2;
   `dmr_t3_chan_note_checked_syscode()`), or an operator boundary: every app-control tune boundary
   (`svc_operator_carrier_boundary()`: a frequency entry, a cycle with trunking off, a config or RadioReference apply
   that moves the receiver), a source or input switch boundary (`dsd_engine_carrier_boundary()`), and an operator move
   that keeps trunking (`ui_user_move_leaves_network()`: a CC selection of another system, a candidate or channel cycle;
   a Return-to-CC keeps them). A `-Y` step, a replay retune, a signal search visit, a stream gap and a trunked CC ->
-  voice -> CC trip change nothing. Trunk scan saves and restores the origins, generation, revision and system-code
-  baseline per target beside `dmr_lcn_trust` (`dmr_t3_chan_save()`/`_restore()`); the revision moves on every row or
-  origin change and past both sides on a restore. Tests: `DMR_T3_CHANNELS`, `ENGINE_TRUNK_SCAN`, `ENGINE_STREAM_GAP`,
-  `ENGINE_SIGNAL_SEARCH`, `APP_COMMAND_QUEUE`.
+  voice -> CC trip change nothing. Trunk scan per target and Signal search per session save and restore the origins,
+  trust bytes, `dmr_lcn_ota`, control channel candidates, generation, revision and system-code baseline together
+  (`dmr_t3_chan_target_snapshot`, `dmr_t3_chan_save()`/`_restore()`); the revision moves on every row or origin change
+  and past both sides on a restore. Tests: `DMR_T3_CHANNELS`, `DMR_SEARCH_SITE_NOTES`, `ENGINE_TRUNK_SCAN`,
+  `ENGINE_STREAM_GAP`, `ENGINE_SIGNAL_SEARCH`, `ENGINE_DMR_CC_RECOVERY`, `APP_COMMAND_QUEUE`.
 - Tier III MBC assembly and absolute parameters (`dmr_block.c`, `dmr_abs_params.{c,h}`, `dmr_csbk.c`, discussion #900
   B7). An MBC is consecutive bursts on one slot of one carrier (TS 102 361-1 §7.4.0): its header (data type 4) arms
   the slot (`dsd_state::dmr_mbc_armed`) and stamps its position (`dmr_mbc_clock`/`_epoch`/`_carrier`: the
