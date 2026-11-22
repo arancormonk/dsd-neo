@@ -5412,10 +5412,9 @@ test_nxdn_encryption_line_redacts_the_seed(void) {
    prefixes apart; a party with no text still prints as its number. */
 static void
 test_nxdn_line_shows_type_d_text(void) {
-    static dsd_state state;
-    static dsd_opts opts;
-    DSD_MEMSET(&state, 0, sizeof(state));
-    DSD_MEMSET(&opts, 0, sizeof(opts));
+    dsd_state* state = calloc(1, sizeof(*state));
+    dsd_opts* opts = calloc(1, sizeof(*opts));
+    assert(state != NULL && opts != NULL);
     dsd_call_observation nxdn = {.protocol = DSD_SYNC_NXDN_POS,
                                  .slot = 0,
                                  .kind = DSD_CALL_KIND_GROUP_VOICE,
@@ -5424,22 +5423,24 @@ test_nxdn_line_shows_type_d_text(void) {
                                  .ota_source_id = 100};
     DSD_SNPRINTF(nxdn.target_text, sizeof(nxdn.target_text), "%s", "07-0005");
     DSD_SNPRINTF(nxdn.source_text, sizeof(nxdn.source_text), "%s", "07-0100");
-    assert(dsd_call_state_observe(&state, &nxdn, DSD_CALL_BOUNDARY_BEGIN) == 1);
+    assert(dsd_call_state_observe(state, &nxdn, DSD_CALL_BOUNDARY_BEGIN) == 1);
     reset_printw_capture();
-    ui_render_nxdn_tgt_src_line(&opts, &state);
+    ui_render_nxdn_tgt_src_line(opts, state);
     assert_capture_contains("TGT: [07-0005]");
     assert_capture_contains("SRC: [07-0100]");
-    assert(dsd_call_state_end(&state, 0U, 0.0) == 1);
+    assert(dsd_call_state_end(state, 0U, 0.0) == 1);
     nxdn.target_text[0] = '\0';
     nxdn.source_text[0] = '\0';
     nxdn.ota_target_id = 1201;
     nxdn.policy_target_id = 1201;
-    assert(dsd_call_state_observe(&state, &nxdn, DSD_CALL_BOUNDARY_BEGIN) == 1);
+    assert(dsd_call_state_observe(state, &nxdn, DSD_CALL_BOUNDARY_BEGIN) == 1);
     reset_printw_capture();
-    ui_render_nxdn_tgt_src_line(&opts, &state);
+    ui_render_nxdn_tgt_src_line(opts, state);
     assert_capture_contains("TGT: [ 1201]");
     assert_capture_contains("SRC: [  100]");
-    dsd_state_ext_free_all(&state);
+    dsd_state_ext_free_all(state);
+    free(state);
+    free(opts);
 }
 
 /* Issue #637: the NXDN line shows the decoder's alias only for admitted reception and names the call by the service the
