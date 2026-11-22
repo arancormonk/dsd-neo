@@ -30,7 +30,9 @@ and end frequencies use MHz; channel step and channel bandwidth use Hz. Fraction
 steps have an integer numerator and denominator: **25,000 / 3** preserves exact
 8⅓ kHz spacing. Each channel is rounded from the range origin independently.
 Overlapping ranges retain their order; frequencies already visited in a pass are
-suppressed until the next pass.
+suppressed until the next pass. A TETRA range and a range of another kind keep
+their own record of that, so where they overlap each visits a frequency once per
+pass; **Skip** still covers every range.
 
 | Setting | Default and behavior |
 | --- | --- |
@@ -38,9 +40,9 @@ suppressed until the next pass.
 | Minimum RF level | Optional dBFS threshold; when enabled, both RF conditions must pass |
 | NFM bandwidth / listening squelch | 16,000 Hz / `noise+10`; existing Auto fallback on narrow channels |
 | AM bandwidth / listening squelch | 6,000 Hz / `auto+10` |
-| Digital identification | Explicit Auto for NFM, or a selected existing profile; analog-only is available |
-| Probe duration | 3 seconds after fresh tuned samples arrive; adjustable from 2 to 10 seconds |
-| Quiet time | Resume after 500 ms without relevant carrier or validated digital activity; an analog visit counts it from the monitor's first verdict on the landed channel (at most 3 seconds after landing) |
+| Digital identification | Explicit Auto for NFM, a selected existing profile, or TETRA (NFM only; see [TETRA identification](#tetra-identification)); analog-only is available |
+| Probe duration | 3 seconds after fresh tuned samples arrive (choosing TETRA sets 4); adjustable from 2 to 10 seconds |
+| Quiet time | Resume after 500 ms without relevant carrier or validated digital activity, 2.1 seconds on a confirmed TETRA detection; an analog visit counts it from the monitor's first verdict on the landed channel (at most 3 seconds after landing) |
 | Maximum visit | 30 seconds; adjustable through 600 seconds, or 0 to disable |
 | Gain | Inherit the session, or use the backend's range controls; Airspy has its own gain controls. When the search warns that the receiver is overloaded, Pause, lower this, then Resume |
 
@@ -217,8 +219,8 @@ monitored digitally and shows no tone. The analog monitor decodes no digital, an
 digital carrier's repeated frames can read there as a false tone or code (measured cases
 under Digital carriers in [Received tone](cli.md#received-tone-ctcss-on-the-analog-monitor)).
 So a tone on an NFM detection can be false when the carrier is digital and Signal search
-could not confirm it: on an analog-only range, under a profile without that protocol, a
-signal too weak to confirm, or TETRA, which Signal search does not identify. The
+could not confirm it: on an analog-only range, under a profile without that protocol (Auto
+never includes TETRA), or a signal too weak to confirm. The
 detection shows the latest tone until one has been held for 1 s, and from then on the
 last tone held that long; the ended detection keeps it. Holding 1 s does not make a tone
 real: a false tone held that long becomes the detection's tone, and a real tone heard
@@ -346,6 +348,164 @@ previous call was still active, is attributed to the previous call. A convention
 Phase 1 call's HDU always precedes its first LDU1, so after a missed TDU its HDU is the
 previous call's. History keeps the call details, slot and encryption the detection last
 showed.
+
+## TETRA identification
+
+Choose **TETRA** under **Digital identification** in the range editor to find
+TETRA carriers. Only NFM ranges offer it. Choosing it sets the channel bandwidth
+to 25,000 Hz and the probe to 4 seconds. Both stay editable, and a range opened
+again keeps the values you saved. Auto never includes TETRA, so a TETRA carrier
+on an Auto range is monitored as NFM.
+
+TETRA needs a 72 kHz DSP bandwidth (four samples per symbol). A search with an
+enabled TETRA range starts at 72 kHz, and any other search at 48 kHz. The default
+bandwidth in Settings › Bandwidth never applies to Signal search. A 72 kHz
+search runs every range at 72 kHz, its Auto and analog ranges too (see [Other
+protocols at 72 kHz](#other-protocols-at-72-khz)). Start is refused, with the
+reason, when TETRA cannot run:
+
+- the session already decodes TETRA: **Stop TETRA decoding before Signal search**;
+- the DSP bandwidth is not 72 kHz, `--tetra-uplink` is on, the channel filter is
+  off (`DSD_NEO_CHANNEL_LPF=0`), or a symbol timing override does not match
+  72 kHz;
+- a paused 48 kHz search whose edited ranges now enable TETRA cannot take it on
+  at **Resume**: **To identify TETRA, stop the search and start it again (this
+  clears the session's avoids and learned Phase 2 codes)**.
+
+### What confirms TETRA
+
+A TETRA visit always tunes the TETRA profile, whatever `-m` lock the decoder
+holds, and starts the TETRA decoder with nothing from an earlier visit. Only what
+the visit itself receives counts:
+
+- A trunked (TMO) carrier is confirmed as **TETRA** by a synchronization burst
+  whose check (CRC) passes and whose system code is a trunked one, then one more
+  checked downlink block scrambled with that cell's own code (its MCC, MNC and
+  colour code). A cell with colour code 0 shares its scrambling with every other
+  such cell, so there it takes a second synchronization burst of the same cell,
+  from a later burst. Uplink bursts, speech and the access field (AACH) never
+  confirm anything.
+- A direct mode (DMO) carrier is confirmed as **TETRA DMO** by one DMO
+  synchronization burst whose two blocks both pass their checks, with system code
+  1100 or 1101 and a valid layout. A reserved DMO code never confirms.
+
+The first mode that confirms names the detection.
+
+### What a TETRA detection shows
+
+A trunked detection shows **TETRA · confirmed**, the colour code as its access
+code (**CC 1**), and the cell's site from its system information broadcast
+(SYSINFO), main carrier first:
+**Main carrier 426.70000 MHz · MCC 228 · MNC 8889 · LA 1**. The location area
+(LA) shows only when the broadcast carries it. **No main carrier** stands in when
+the cell says it has none. A cell on colour code 0 shows only **MCC 228 · MNC
+8889**: all such cells scramble the same way, so no broadcast can be tied to the
+cell that confirmed. While the cell says it shares its carrier with other cells,
+no site is shown; the access code still is.
+
+The main carrier is the carrier the cell advertises for conventional access, and
+every carrier of the cell broadcasts it, so the line reads the same on each of
+them. Compare it with the detection's own frequency:
+
+- the same frequency: the search found the cell's main carrier. In normal mode
+  its first timeslot carries the cell's control channel;
+- another frequency: the search found another carrier of the cell (traffic, for
+  example). To follow the cell's control channel, use the main carrier instead.
+
+Signal search does not decide this for you. A detection's frequency is the
+search's channel, not the transmitter's measured centre, and TETRA still decodes
+10 kHz off its carrier, so the frequency cannot prove which carrier it is. A cell
+that uses direct access (DA) can name the main carrier and LA of its
+conventional-access cell.
+
+A DMO detection shows **TETRA DMO · confirmed** and how the call travels, from a
+checked DMO synchronization burst: **Direct**, **Via repeater**, **Via gateway**
+or **Via repeater/gateway**, following the latest one. A detection confirmed only
+by a repeater's or gateway's presence signal shows **presence signal** instead.
+A DMO detection has no access code.
+
+A TETRA detection never shows call details (talkgroup, source, slot, encryption),
+a DMO network identity (MNI), a repeater or gateway address, a DM colour code
+(it carries the sender's address) or any SSI.
+
+The site and access code are withdrawn together, for the rest of the visit, when
+a second cell identity appears on the carrier, when the same cell's broadcast
+changes its LA or main carrier, or when the other TETRA mode also confirms. The
+detection stays **TETRA · confirmed**, and history and the CSV export keep it
+withdrawn.
+
+A confirmed TETRA visit ends 2.1 seconds after the last checked TETRA signalling
+(one multiframe and one lost frame), not 500 ms, so a control channel's quiet
+moments do not end it. On a DMO carrier only a call keeps the visit going (its
+checked signalling or speech); a presence signal, reservation signalling and
+encrypted signalling (DM-2-C) identify the carrier but do not hold it. A control
+channel never stops, so with **Maximum visit** set to 0 a confirmed TETRA control
+channel keeps the receiver until you move on, as a P25 control channel does.
+
+**Save as system** and **Explore here** turn a TETRA or TETRA DMO detection into
+a TETRA system (`-fT`) at a 72 kHz bandwidth, on the visited frequency. Every
+other detection gets 48 kHz, also from a 72 kHz search. A saved TETRA system's
+label matches a detection within half its 25 kHz carrier.
+
+### Other protocols at 72 kHz
+
+In a 72 kHz search the FSK protocols (P25 Phase 1 C4FM, DMR, NXDN, dPMR, YSF,
+M17, D-STAR) are resampled to 48 kHz for decoding, as every digital session at
+72 kHz is (`digital_resample`, [CLI](cli.md)), so the probe finds them as at
+48 kHz. In the probe replays (`tests/engine/search_schedule_replay.c`, landings 0,
+350, 700, 1100 and 1500 ms into each capture, run at 48 and at 72 kHz), every
+capture was identified at every landing at both rates, and the times stayed
+within about 0.15 seconds: P25 Phase 1 control channels within 0.2 seconds, DMR,
+NXDN96, YSF and M17 within 0.6, P25 Phase 2, NXDN48 and dPMR within 2.6.
+ProVoice, which keeps 72 kHz, needs about 0.3 seconds more than at 48 kHz (about
+4.4 seconds). Analog monitoring runs at 72 kHz too.
+
+### Measured times and costs
+
+Measured on 2026-11-21 with `tools/bench_signal_search_tcp.py --rig` on a paced
+loopback rtl_tcp source, Linux Release builds, at the capture rates an RTL-SDR
+runs (1.536 Msps for a 48 kHz search, 1.152 Msps for 72 kHz), four runs of each
+on a shared machine under changing load (medians; 10 runs for the 25 kHz empty
+pass at 48 kHz):
+
+| Case | 48 kHz search | 72 kHz search |
+| --- | ---: | ---: |
+| Empty pass, 450–460 MHz, 12.5 kHz steps, 16 kHz width | 3.42 s, 22 spans | 5.52 s, 31 spans |
+| Empty pass, 450–460 MHz, 25 kHz steps and width (the TETRA preset) | 4.05 s, 26 spans | 7.29 s, 41 spans |
+| Landing to confirmed: DMR, P25 Phase 1 control channel, weak DMR (20 dB) | 0.34, 0.22, 0.32 s | 0.38, 0.24, 0.35 s |
+| Landing to confirmed: real-air TETRA call, marginal real-air TETRA control channel, DMO call | — | 0.20, 0.19, 0.26 s |
+
+A 72 kHz search captures less of the band at a time, so each span covers less (at
+a 25 kHz width, 249 kHz instead of 399 kHz), and each span takes a little longer
+to settle (0.18 instead of 0.16 seconds): a wide range takes 60 to 80 % longer
+per pass. Against the release before TETRA identification, on the same ranges at
+the same rate, pass times agreed within 1 % and every detection confirmed in about
+the same time. The decoder used about 1 to 2 % of one core in every case, too
+little to compare more closely than the spread between runs, and no run dropped
+input. In the four TETRA runs the DMO call was found on the first pass three times
+and on the second once.
+
+### TETRA limits
+
+- Which carrier is the main carrier is left to you (see above).
+- Whether the main carrier runs in normal or minimum mode, and which timeslots
+  carry common secondary control channels, is not shown: the access field (AACH)
+  that says so has no check.
+- A colour code 0 cell shows no LA or main carrier.
+- A carrier shared by several cells shows no site.
+- Two cells with the same identity on one frequency (co-channel reuse) and a
+  simulcast network look like one cell.
+- QAM (TEDS) channels are not identified. A direct-access cell's π/4 channels are.
+- Uplink frequencies are not identified.
+- A DMO carrier sends in bursts (about 29 % of the time in one traffic pattern),
+  and the RF detector needs energy in two measurements in a row, so a pass can miss
+  it and a later pass find it, depending on where its bursts fall. Between calls a direct channel is silent, and a
+  repeater's or gateway's presence signal, when it sends one, can be up to 61.2
+  seconds apart.
+- A TETRA range added to a running 48 kHz search needs Stop and Start.
+- Earlier releases do not know TETRA ranges: they skip them when loading and drop
+  them at their next save.
+- With **Maximum visit** 0 a TETRA control channel keeps the receiver (see above).
 
 ## Controls, history and saved systems
 
@@ -937,6 +1097,22 @@ python3 tools/bench_signal_search_tcp.py build/dev-debug/tests/dsd-neo_test_sign
 It emits paced NFM-modulated I/Q at a fixed RF frequency, responds to rtl_tcp
 frequency/rate commands and checks the first detected frequency and the 100 ms RF
 publication target. It does not enable searching in production I/Q replay.
+
+`ENGINE_SIGNAL_SEARCH_TETRA_RIG` (label `scan-rig`) runs whole searches the way
+the app starts them (the app-control queue, observer and history store) on a paced
+rtl_tcp scene of real-air and synthetic TETRA fixtures, after an analog and an Auto
+visit, and checks each detection's protocol, access code and site line, the history
+read back, and the 2.1-second quiet time (see `docs/testing.md`). The same rig takes
+the measurements under [Measured times and costs](#measured-times-and-costs)
+(`--scene empty`, `empty25`, `candidates` or `tetra`, `--bw 48` or `72`):
+
+```sh
+cmake --preset dev-release -B build/release-tests -DBUILD_TESTING=ON
+cmake --build build/release-tests --target dsd-neo_test_signal_search_rig
+python3 tools/bench_signal_search_tcp.py --rig build/release-tests/tests/dsd-neo_test_signal_search_rig \
+  --bw 72 --scene tetra --out /tmp/search-tetra
+python3 tools/bench_signal_search_tcp.py --summary /tmp/search-*
+```
 
 Local Linux Debug measurements on 2026-10-12, RTL-SDR USB device 0 at 1.536 Msps,
 hardware gain auto, 801 channels, 16 kHz channel width and 15 dB sensitivity:

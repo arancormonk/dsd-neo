@@ -1461,7 +1461,7 @@ One row per detection in the history, newest first.
 | `frequency_hz`, `frequency_mhz` | The frequency in hertz, and in megahertz with six decimals. |
 | `listen_mode` | `am` or `nfm`: how the range listens, for digital detections too. |
 | `identification` | `confirmed` (checked digital signalling), `unresolved` (a digital range that was not confirmed), or `rf-only` (an analog range, detected by power only). |
-| `protocol`, `access`, `tone`, `site`, `encryption` | The detection's last values, as the screen shows them. Empty when it never had one. |
+| `protocol`, `access`, `tone`, `site`, `encryption` | The detection's last values, as the screen shows them. Empty when it never had one. A TETRA site's `Main carrier` is the conventional-access main carrier the cell advertises, not a check of the detection's own frequency (see [TETRA identification](signal-search.md#tetra-identification)). |
 | `slot` | `1` or `2`, empty when there is none. |
 | `target`, `source` | The call's talkgroup and source, as text when DSD-neo received a name, else the number. |
 | `power_dbfs`, `noise_dbfs` | Levels in dBFS with one decimal. Empty when not measured. |
