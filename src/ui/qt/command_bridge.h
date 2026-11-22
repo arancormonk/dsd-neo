@@ -33,6 +33,7 @@ class QTemporaryFile;
 namespace dsd_qt {
 class DecryptionProfileProvider;
 class RecordingStatus;
+class SavedSystemsModel;
 class ScanAvoidListModel;
 
 class CommandBridge : public QObject {
@@ -141,12 +142,20 @@ class CommandBridge : public QObject {
      * model's network generation and @p session its command session (empty: the one open now). The decoder refuses an
      * edit whose row, network or session moved on (stale), or one under a trunk scan.
      *
+     * @p systemUid is the saved system the session runs as the edit is sent (empty: a session that keeps nothing, an
+     * edit for this run only). It is captured here: once the decoder applied the edit, this bridge keeps it on that
+     * system (SavedSystemsModel::applyDmrChannelEdit()), whatever the session runs by then.
+     *
      * @return Whether it was queued; then lastDmrChannelRequest() names it, and dmrChannelResultReceived() carries its
      *         answer. False, sending nothing, for a channel, operation, SET frequency (100000..2147483647 Hz), origin
      *         (0..255) or session that cannot be one, or a queue that refused it.
      */
     Q_INVOKABLE bool setDmrChannel(int lpcn, int op, qint64 hz, qint64 expectedHz, int expectedOrigin,
-                                   quint32 generation, const QString& session = QString());
+                                   quint32 generation, const QString& systemUid = QString(),
+                                   const QString& session = QString());
+
+    /** @brief Where an applied channel edit is kept (the saved systems); nullptr: nowhere, saved is false. */
+    void setSavedSystems(SavedSystemsModel* systems);
 
     QVariantMap
     dmrChannelResult() const {
@@ -487,7 +496,9 @@ class CommandBridge : public QObject {
      * @brief The decoder answered one of this bridge's setDmrChannel() requests: {request, lpcn, op, hz (what a SET
      * asked for, else 0), code (dsd_app_dmr_channel_set_code), result (dmrChannelResultKey()), revision (the channel
      * revision after it; a model whose revision is behind does not show it yet), session (decimal), sequence
-     * (decimal)}. Only an "ok" answer is one to keep on the saved system (SavedSystemsModel::applyDmrChannelEdit()).
+     * (decimal), systemUid (the one setDmrChannel() captured), saved (an "ok" edit was kept on that system),
+     * saveError ("" when saved or nothing was to be kept: not "ok", or no system; else applyDmrChannelEdit()'s error,
+     * "not-saved" for a failed write, or "no-store" with no saved systems set)}.
      */
     void dmrChannelResultReceived(const QVariantMap& result);
     void dmrChannelResultChanged();
@@ -517,7 +528,12 @@ class CommandBridge : public QObject {
         int lpcn = 0;
         int op = 0;
         qint64 hz = 0;
+        QString systemUid;
     };
+
+    /* The answer map for @p r, the request @p q it answers; an "ok" one kept on its system first. */
+    QVariantMap dmrChannelAnswer(const dsd_app_dmr_channel_set_result& r, const DmrChannelRequest& q);
+    QPointer<SavedSystemsModel> m_savedSystems;
 
     QList<DmrChannelRequest> m_dmrChannelRequests;
     quint64 m_dmrChannelCursor = 0;

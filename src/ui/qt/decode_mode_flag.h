@@ -58,6 +58,25 @@ decode_mode_for_flag(const QString& flag) {
 }
 
 /**
+ * @brief Whether a saved decode flag's decode set includes DMR (discussion #900 F3): the preset its -f token selects
+ * (decode_mode_for_flag()) frames DMR, or it has no -f token at all ("", "-mq"), which leaves the engine's default,
+ * Auto.
+ *
+ * The presets that frame DMR are the ones src/runtime/decode_mode.c sets frame_dmr for: Auto (-fa), DMR (-fs), DMR
+ * mono and TDMA (-ft, P25 with DMR). A -f token the CLI takes no preset from (the EDACS selectors) frames none.
+ */
+inline bool
+decode_flag_decodes_dmr(const QString& flag) {
+    const QStringList tokens = flag.split(QLatin1Char(' '), Qt::SkipEmptyParts);
+    const bool selects = std::any_of(tokens.cbegin(), tokens.cend(), [](const QString& token) {
+        return token.startsWith(QLatin1String("-f")) && token.size() == 3;
+    });
+    const int mode = selects ? decode_mode_for_flag(flag) : static_cast<int>(DSDCFG_MODE_AUTO);
+    return mode == DSDCFG_MODE_AUTO || mode == DSDCFG_MODE_DMR || mode == DSDCFG_MODE_DMR_MONO
+           || mode == DSDCFG_MODE_TDMA;
+}
+
+/**
  * @brief Whether @p token is one the app itself writes into a saved decode flag.
  *
  * The allowlist is what the producers write, read from their code:

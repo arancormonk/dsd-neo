@@ -5,9 +5,9 @@
 
 #include <QPair>
 #include <utility>
+#include "decode_mode_flag.h"
 #include "decoder_host.h"
 #include "decryption_profile_provider.h"
-#include "json_store.h"
 #include "radio_settings.h"
 #include "recording_sessions.h"
 #include "saved_systems_model.h"
@@ -1207,7 +1207,7 @@ session_args_extra_error(const QString& tokens, const SessionArgPrefs& prefs) {
 
 QByteArray
 session_args_dmr_channels_csv(const QVariantMap& system, const SessionArgPrefs& prefs) {
-    if (!decode_flag_names(system.value(QStringLiteral("decodeFlag")).toString(), QStringLiteral("-fs"))) {
+    if (!decode_flag_decodes_dmr(system.value(QStringLiteral("decodeFlag")).toString())) {
         return {};
     }
     const QStringList options =
@@ -1451,7 +1451,7 @@ SessionArgsBuilder::prepareDmrChannels(QVariantMap* input) const {
     if (m_systems != nullptr && m_systems->rowForUid(uid) >= 0) {
         input->insert(QStringLiteral("dmrChannels"), m_systems->dmrChannels(uid));
     }
-    const QString path = json_store_path(QStringLiteral("dmr_channels/") + uid + QStringLiteral(".csv"));
+    const QString path = SavedSystemsModel::dmrChannelsFilePath(uid);
     const QByteArray csv = session_args_dmr_channels_csv(*input, session_args_prefs(m_prefs));
     if (csv.isEmpty()) {
         QFile::remove(path);

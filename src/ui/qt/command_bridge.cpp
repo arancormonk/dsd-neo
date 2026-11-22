@@ -56,6 +56,7 @@
 #include "decode_mode_flag.h"
 #include "decryption_profile_provider.h"
 #include "recording_status.h"
+#include "saved_systems_model.h"
 #include "scan_avoid_list_model.h"
 #include "session_args.h"
 
@@ -1326,9 +1327,14 @@ CommandBridge::dmrChannelResultKey(int code) {
     }
 }
 
+void
+CommandBridge::setSavedSystems(SavedSystemsModel* systems) {
+    m_savedSystems = systems;
+}
+
 bool
 CommandBridge::setDmrChannel(int lpcn, int op, qint64 hz, qint64 expectedHz, int expectedOrigin, quint32 generation,
-                             const QString& session) {
+                             const QString& systemUid, const QString& session) {
     if (!dmr_channel_args_valid(lpcn, op, hz, expectedOrigin)) {
         return false;
     }
@@ -1355,10 +1361,37 @@ CommandBridge::setDmrChannel(int lpcn, int op, qint64 hz, qint64 expectedHz, int
     if (m_dmrChannelRequests.size() >= kDmrChannelRequestsMax) {
         m_dmrChannelRequests.removeFirst();
     }
-    m_dmrChannelRequests.append({payload.request, lpcn, op, payload.hz});
+    m_dmrChannelRequests.append({payload.request, lpcn, op, payload.hz, systemUid});
     m_lastDmrChannelRequest = payload.request;
     Q_EMIT lastDmrChannelRequestChanged();
     return true;
+}
+
+QVariantMap
+CommandBridge::dmrChannelAnswer(const dsd_app_dmr_channel_set_result& r, const DmrChannelRequest& q) {
+    bool saved = false;
+    QString saveError;
+    if (r.code == DSD_APP_DMR_CHANNEL_SET_OK && !q.systemUid.isEmpty()) {
+        if (m_savedSystems) {
+            const QVariantMap kept = m_savedSystems->applyDmrChannelEdit(q.systemUid, q.lpcn, q.op, q.hz);
+            saved = kept.value(QStringLiteral("ok")).toBool();
+            saveError = kept.value(QStringLiteral("error")).toString();
+        } else {
+            saveError = QStringLiteral("no-store");
+        }
+    }
+    return {{QStringLiteral("request"), QVariant::fromValue<quint32>(r.request)},
+            {QStringLiteral("lpcn"), q.lpcn},
+            {QStringLiteral("op"), q.op},
+            {QStringLiteral("hz"), QVariant::fromValue<qint64>(q.hz)},
+            {QStringLiteral("code"), r.code},
+            {QStringLiteral("result"), dmrChannelResultKey(r.code)},
+            {QStringLiteral("revision"), QVariant::fromValue<quint32>(r.revision)},
+            {QStringLiteral("session"), QString::number(r.session_seq)},
+            {QStringLiteral("sequence"), QString::number(r.sequence)},
+            {QStringLiteral("systemUid"), q.systemUid},
+            {QStringLiteral("saved"), saved},
+            {QStringLiteral("saveError"), saveError}};
 }
 
 void
@@ -1376,16 +1409,9 @@ CommandBridge::pollDmrChannelResults() {
             if (mine == m_dmrChannelRequests.cend()) {
                 continue;
             }
-            m_dmrChannelResult = {{QStringLiteral("request"), QVariant::fromValue<quint32>(r.request)},
-                                  {QStringLiteral("lpcn"), mine->lpcn},
-                                  {QStringLiteral("op"), mine->op},
-                                  {QStringLiteral("hz"), QVariant::fromValue<qint64>(mine->hz)},
-                                  {QStringLiteral("code"), r.code},
-                                  {QStringLiteral("result"), dmrChannelResultKey(r.code)},
-                                  {QStringLiteral("revision"), QVariant::fromValue<quint32>(r.revision)},
-                                  {QStringLiteral("session"), QString::number(r.session_seq)},
-                                  {QStringLiteral("sequence"), QString::number(r.sequence)}};
+            const DmrChannelRequest request = *mine;
             m_dmrChannelRequests.erase(mine);
+            m_dmrChannelResult = dmrChannelAnswer(r, request);
             Q_EMIT dmrChannelResultChanged();
             Q_EMIT dmrChannelResultReceived(m_dmrChannelResult);
         }

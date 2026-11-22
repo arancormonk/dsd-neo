@@ -2086,6 +2086,8 @@ test_dmr_channels_round_trip() {
     }
     expect("dmr channels: an edit of another field keeps them",
            model.update(0, {{"name", "Renamed"}}) && model.get(0).value("dmrChannels") == want);
+    /* Ruling (discussion #900 review): a retune that ends the RadioReference provenance keeps the entries, since a
+       user may retune within the same network; only an edit that carries the list replaces it. */
     expect("dmr channels: a tuning change ends the provenance and keeps them",
            model.update(0, {{"freqMhz", "451.0250"}}) && model.get(0).value("rrSid").toInt() == 0
                && model.get(0).value("dmrChannels") == want);
@@ -2160,6 +2162,18 @@ test_dmr_channel_edit() {
            error(model.applyDmrChannelEdit(uid, 40, set, 99999)) == "invalid"
                && error(model.applyDmrChannelEdit(uid, 40, set, 2147483648LL)) == "invalid");
     expect("channel edit: no such operation", error(model.applyDmrChannelEdit(uid, 40, 4, 451150000)) == "invalid");
+    expect("channel edit: a system without DMR", model.add({{"name", "NXDN"}, {"decodeFlag", "-fi"}}));
+    const QString nxdn = model.get(model.count() - 1).value("uid").toString();
+    expect("channel edit: is refused, its starts would never pass the entry",
+           error(model.applyDmrChannelEdit(nxdn, 40, set, 451150000)) == "not-dmr"
+               && model.dmrChannels(nxdn).isEmpty());
+    expect("channel edit: an Auto system", model.add({{"name", "Auto"}, {"decodeFlag", ""}}));
+    const QString autoUid = model.get(model.count() - 1).value("uid").toString();
+    expect("channel edit: is kept, Auto decodes DMR",
+           ok(model.applyDmrChannelEdit(autoUid, 40, set, 451150000))
+               && model.dmrChannels(autoUid) == dmr_channels({{40, 451150000}}));
+    expect("channel edit: the extra systems removed",
+           model.remove(model.rowForUid(nxdn)) && model.remove(model.rowForUid(autoUid)));
 
     QVariantList full;
     for (int lpcn = 1; lpcn <= 256; ++lpcn) {
@@ -2177,6 +2191,16 @@ test_dmr_channel_edit() {
            error(model.applyDmrChannelEdit(uid, 255, set, 451000000)) == "not-saved");
     expect("channel edit: and changes nothing", model.dmrChannels(uid) == kept && log.isEmpty());
     expect("channel edit: store unblocked", unblock_systems_store());
+
+    /* The channels file a start wrote for the system goes with it. */
+    const QString file = SavedSystemsModel::dmrChannelsFilePath(uid);
+    QDir().mkpath(QFileInfo(file).absolutePath());
+    QFile written(file);
+    expect("channel edit: a start's file",
+           written.open(QIODevice::WriteOnly) && written.write("lpcn,frequency_hz\n") > 0);
+    written.close();
+    expect("channel edit: the system removed", model.remove(model.rowForUid(uid)));
+    expect("channel edit: and its file", !QFileInfo::exists(file));
     empty_systems(model);
 }
 

@@ -153,20 +153,23 @@ relative(const QString& path) {
 }
 
 /**
- * Whether @p name is a file the app generates under decryption/ or scan_lists/, written out here apart from the
- * apply's own rule: a compiled profile's key file, or a scan list's CSV.
+ * Whether @p name is a file the app generates under decryption/, scan_lists/ or dmr_channels/, written out here apart
+ * from the apply's own rule: a compiled profile's key file, a scan list's CSV, or a saved system's Tier III channels.
  */
 bool
 generated(const QString& name) {
     static const QRegularExpression pattern(QStringLiteral(
-        "^decryption/[A-Za-z0-9_-]+/[0-9a-f-]{36}\\.(hex|dec|map)\\.csv$|^scan_lists/[A-Za-z0-9_-]+(/[^/]+)?\\.csv$"));
+        "^decryption/[A-Za-z0-9_-]+/[0-9a-f-]{36}\\.(hex|dec|map)\\.csv$|^scan_lists/[A-Za-z0-9_-]+(/[^/]+)?\\.csv$"
+        "|^dmr_channels/[0-9a-f-]{36}\\.csv$"));
     return pattern.match(name).hasMatch();
 }
 
-/** Files under decryption/ and scan_lists/ the app never generates, which every apply keeps byte-identical. */
+/** Files under decryption/, scan_lists/ and dmr_channels/ the app never generates, which every apply keeps
+ * byte-identical. */
 const char* const kUnknownBesideGenerated[] = {
-    "scan_lists/notes.txt", "scan_lists/sub dir/list.csv",  "scan_lists/Not a list.csv",
-    "decryption/stray.wav", "decryption/managed/notes.txt", "decryption/managed/0123abcd-not-a-uuid.hex.csv",
+    "scan_lists/notes.txt",   "scan_lists/sub dir/list.csv",  "scan_lists/Not a list.csv",
+    "decryption/stray.wav",   "decryption/managed/notes.txt", "decryption/managed/0123abcd-not-a-uuid.hex.csv",
+    "dmr_channels/notes.txt", "dmr_channels/not-a-uuid.csv",
 };
 
 QString
@@ -636,6 +639,9 @@ make_old(TestHost& host, const Backup& b, const QString& external) {
     expect("generated scan list file in its folder", write_file(at("scan_lists/old-uid/Old list.csv"), "id,type\n"));
     // The rule is the app's layout: any CSV in a uid-shaped folder of scan_lists/ is generated, a list behind it or not.
     expect("a CSV in a uid-shaped folder", write_file(at("scan_lists/sub/list.csv"), "id,type\n"));
+    // Discussion #900: a saved system's Tier III channels, written at each of its starts.
+    expect("generated Tier III channels file",
+           write_file(at("dmr_channels/0b6a3f0e-6c3d-4f7e-9a51-3d1c2b4a5e6f.csv"), "lpcn,frequency_hz\n12,0\n"));
     // Beside what the app generates there, files it never does: someone else's, so every apply keeps them.
     for (const char* name : kUnknownBesideGenerated) {
         expect(QStringLiteral("unknown file %1").arg(QLatin1String(name)),
@@ -1204,10 +1210,11 @@ check_applied_content(const Backup& b, const Old& old) {
     for (const QString& name : got.files.keys()) {
         generatedLeft = generatedLeft || generated(name);
     }
-    expect("every generated file in decryption/ and scan_lists/ is gone", !generatedLeft);
+    expect("every generated file in decryption/, scan_lists/ and dmr_channels/ is gone", !generatedLeft);
     expect("what the app never generated there is kept, with its directories",
            read_file(at("scan_lists/notes.txt")) == "not generated: scan_lists/notes.txt\n"
                && read_file(at("decryption/managed/notes.txt")) == "not generated: decryption/managed/notes.txt\n"
+               && read_file(at("dmr_channels/notes.txt")) == "not generated: dmr_channels/notes.txt\n"
                && QFileInfo(at("scan_lists/sub dir")).isDir());
     expect("a directory that held only generated files goes", !QFileInfo::exists(at("decryption/old-only")));
     expect("a CSV in a uid-shaped scan_lists/ folder counts as generated and goes",

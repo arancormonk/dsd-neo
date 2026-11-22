@@ -2104,7 +2104,9 @@ test_positions_poll_without_redraw() {
 /* Discussion #900 F3: a channel edit from the Channels sheet goes through the real bridge and queue as
  * DSD_APP_CMD_DMR_CHANNEL_SET against the row the sheet read. The controller's tick reports this bridge's answers once
  * each, with what was asked (the frequency included) and never another caller's, and the sheet's model reads the row
- * the decoder holds now from the next snapshot. A request the stop dropped is answered too. */
+ * the decoder holds now from the next snapshot, and from the held one as soon as the sheet opens. An applied edit is
+ * kept on the saved system named when it was sent, whatever the session runs by its answer; a failed write says so.
+ * A request the stop dropped is answered too. */
 static void
 test_dmr_channel_bridge() {
     static dsd_opts opts;
@@ -2119,8 +2121,14 @@ test_dmr_channel_bridge() {
     dsd_qt::CommandBridge bridge;
     dsd_qt::UiController controller(&host, nullptr, nullptr, nullptr);
     controller.setCommandBridge(&bridge);
+    dsd_qt::SavedSystemsModel systems;
+    while (systems.count() > 0 && systems.remove(0)) {}
+    check(systems.add({{"name", "Site A"}, {"decodeFlag", "-fs"}})
+          && systems.add({{"name", "Site B"}, {"decodeFlag", ""}}));
+    const QString siteA = systems.get(0).value("uid").toString();
+    const QString siteB = systems.get(1).value("uid").toString();
+    bridge.setSavedSystems(&systems);
     dsd_qt::DmrChannelsModel channels;
-    channels.setActive(true);
     controller.setDmrChannels(&channels);
     controller.setPollIntervalMs(50);
     const auto tick = [&]() {
@@ -2137,7 +2145,11 @@ test_dmr_channel_bridge() {
     QObject::connect(&bridge, &dsd_qt::CommandBridge::dmrChannelResultReceived,
                      [&answers](const QVariantMap& result) { answers.append(result); });
     tick();
-    check(channels.channel(18).value("originCode").toInt() == DSD_UI_DMR_T3_ORIGIN_SITE);
+    check(channels.channels().isEmpty()); // closed: nothing read
+    channels.setActive(true);             // opened: the held snapshot at once, no tick needed
+    check(channels.channel(18).value("originCode").toInt() == DSD_UI_DMR_T3_ORIGIN_SITE
+          && !channels.session().isEmpty());
+    channels.setSessionSystemUid(siteA);
     const QVariantMap row = channels.channel(12);
     const quint32 generation = channels.generation();
     const qint64 rowHz = row.value("hz").toLongLong();
@@ -2148,11 +2160,12 @@ test_dmr_channel_bridge() {
     check(!bridge.setDmrChannel(12, 4, 451137500, rowHz, rowOrigin, generation));                // no such operation
     check(!bridge.setDmrChannel(12, DSD_UI_DMR_T3_OP_SET, 99999, rowHz, rowOrigin, generation)); // nor frequency
     check(!bridge.setDmrChannel(12, DSD_UI_DMR_T3_OP_SET, 451137500, rowHz, 256, generation));   // nor origin
-    check(!bridge.setDmrChannel(12, DSD_UI_DMR_T3_OP_SET, 451137500, rowHz, rowOrigin, generation,
+    check(!bridge.setDmrChannel(12, DSD_UI_DMR_T3_OP_SET, 451137500, rowHz, rowOrigin, generation, siteA,
                                 QStringLiteral("not a session")));
     check(dsd_app_drain_cmds(&opts, &state) == 0);
 
-    check(bridge.setDmrChannel(12, DSD_UI_DMR_T3_OP_SET, 451137500, rowHz, rowOrigin, generation, channels.session()));
+    check(bridge.setDmrChannel(12, DSD_UI_DMR_T3_OP_SET, 451137500, rowHz, rowOrigin, generation,
+                               channels.sessionSystemUid(), channels.session()));
     const quint32 request = bridge.lastDmrChannelRequest();
     check(request != 0U);
     check(dsd_app_drain_cmds(&opts, &state) == 1);
@@ -2174,6 +2187,10 @@ test_dmr_channel_bridge() {
           && ok.value("op").toInt() == DSD_UI_DMR_T3_OP_SET && ok.value("hz").toLongLong() == 451137500
           && ok.value("code").toInt() == DSD_APP_DMR_CHANNEL_SET_OK && ok.value("result").toString() == "ok"
           && ok.value("revision").toUInt() == revisionAfter);
+    check(ok.value("systemUid").toString() == siteA && ok.value("saved").toBool()
+          && ok.value("saveError").toString().isEmpty());
+    const auto entry = [](int lpcn, qint64 hz) { return QVariant(QVariantMap{{"lpcn", lpcn}, {"hz", hz}}); };
+    check(systems.dmrChannels(siteA) == QVariantList({entry(12, 451137500)}));
     check(bridge.dmrChannelResult() == ok);
     check(channels.channel(12).value("originCode").toInt() == DSD_UI_DMR_T3_ORIGIN_USER
           && channels.channel(12).value("hz").toLongLong() == 451137500
@@ -2181,22 +2198,60 @@ test_dmr_channel_bridge() {
     check(channels.revision() == dmr_t3_chan_revision(&state));
 
     /* Against the row as it was: stale, and nothing changes. */
-    check(bridge.setDmrChannel(12, DSD_UI_DMR_T3_OP_HIDE, 0, rowHz, rowOrigin, generation, channels.session()));
+    check(bridge.setDmrChannel(12, DSD_UI_DMR_T3_OP_HIDE, 0, rowHz, rowOrigin, generation, siteA, channels.session()));
     check(dsd_app_drain_cmds(&opts, &state) == 1);
     tick();
     check(answers.size() == 2 && answers.value(1).value("result").toString() == "stale"
           && answers.value(1).value("code").toInt() == DSD_APP_DMR_CHANNEL_SET_STALE);
+    check(!answers.value(1).value("saved").toBool() && answers.value(1).value("saveError").toString().isEmpty());
     check(state.trunk_chan_map[12] == 451137500L);
+    check(systems.dmrChannels(siteA).size() == 1); // a refusal keeps nothing
     tick();
     check(answers.size() == 2); // each answer once
+
+    /* Sent while the session ran site A, answered after it runs site B: kept on site A. */
+    const QVariantMap eighteen = channels.channel(18);
+    check(bridge.setDmrChannel(18, DSD_UI_DMR_T3_OP_HIDE, 0, eighteen.value("hz").toLongLong(),
+                               eighteen.value("originCode").toInt(), channels.generation(), channels.sessionSystemUid(),
+                               channels.session()));
+    channels.setSessionSystemUid(siteB);
+    check(dsd_app_drain_cmds(&opts, &state) == 1);
+    tick();
+    check(answers.size() == 3 && answers.value(2).value("result").toString() == "ok"
+          && answers.value(2).value("systemUid").toString() == siteA && answers.value(2).value("saved").toBool());
+    check(systems.dmrChannels(siteA) == QVariantList({entry(12, 451137500), entry(18, 0)})
+          && systems.dmrChannels(siteB).isEmpty());
+
+    /* A session that keeps nothing: applied, kept nowhere, no error. */
+    check(
+        bridge.setDmrChannel(19, DSD_UI_DMR_T3_OP_SET, 451150000, 0, DSD_UI_DMR_T3_ORIGIN_NONE, channels.generation()));
+    check(dsd_app_drain_cmds(&opts, &state) == 1);
+    tick();
+    check(answers.size() == 4 && answers.value(3).value("result").toString() == "ok"
+          && !answers.value(3).value("saved").toBool() && answers.value(3).value("saveError").toString().isEmpty());
+
+    /* The write fails: applied live, and the answer says it was not kept. */
+    const QString store = dsd_qt::json_store_path(QStringLiteral("saved_systems.json"));
+    check(QFile::rename(store, store + QStringLiteral(".aside")) && QDir().mkdir(store));
+    check(bridge.setDmrChannel(18, DSD_UI_DMR_T3_OP_RESTORE, 0, 0, DSD_UI_DMR_T3_ORIGIN_USER, channels.generation(),
+                               siteA));
+    check(dsd_app_drain_cmds(&opts, &state) == 1);
+    tick();
+    check(answers.size() == 5 && answers.value(4).value("result").toString() == "ok"
+          && !answers.value(4).value("saved").toBool()
+          && answers.value(4).value("saveError").toString() == "not-saved");
+    check(systems.dmrChannels(siteA).size() == 2);
+    check(QDir().rmdir(store) && QFile::rename(store + QStringLiteral(".aside"), store));
 
     /* Queued and never applied: the stop drops it, and the stop's edge reports that. */
     check(bridge.setDmrChannel(12, DSD_UI_DMR_T3_OP_RESTORE, 0, 451137500, DSD_UI_DMR_T3_ORIGIN_USER, generation));
     dsd_app_frontend_runtime_stop();
     host.setPhase(Host::Idle);
-    check(answers.size() == 3 && answers.value(2).value("result").toString() == "dropped"
-          && answers.value(2).value("op").toInt() == DSD_UI_DMR_T3_OP_RESTORE);
+    check(answers.size() == 6 && answers.value(5).value("result").toString() == "dropped"
+          && answers.value(5).value("op").toInt() == DSD_UI_DMR_T3_OP_RESTORE
+          && !answers.value(5).value("saved").toBool());
     check(channels.channels().isEmpty()); // a stopped session lists nothing
+    while (systems.count() > 0 && systems.remove(0)) {}
     freeState(&state);
 }
 

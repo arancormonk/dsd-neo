@@ -2426,9 +2426,22 @@ test_dmr_channels_csv(void) {
            dsd_qt::session_args_dmr_channels_csv(sys, prefs) == QByteArray("lpcn,frequency_hz\n12,0\n40,451137500\n"));
     sys["dmrChannels"] = QVariantList();
     expect("no channels, no file", dsd_qt::session_args_dmr_channels_csv(sys, prefs).isEmpty());
-    sys = tier3_system();
-    sys["decodeFlag"] = QStringLiteral("-ft");
-    expect("not for another protocol", dsd_qt::session_args_dmr_channels_csv(sys, prefs).isEmpty());
+    /* Every decode set that frames DMR passes them (src/runtime/decode_mode.c): Auto, saved as "" or -fa, a flag with
+       no -f selector (the engine's default, Auto), and TDMA (-ft, P25 with DMR). */
+    for (const QString& flag : {QString(), QStringLiteral("-fa"), QStringLiteral("-mq"), QStringLiteral("-ft -^")}) {
+        sys = tier3_system();
+        sys["decodeFlag"] = flag;
+        expect(qPrintable(QStringLiteral("a decode set with DMR passes them: '%1'").arg(flag)),
+               dsd_qt::session_args_dmr_channels_csv(sys, prefs)
+                   == QByteArray("lpcn,frequency_hz\n12,0\n40,451137500\n"));
+    }
+    for (const QString& flag : {QStringLiteral("-fi"), QStringLiteral("-f1 -mq"), QStringLiteral("-fT"),
+                                QStringLiteral("-fA"), QStringLiteral("-fh")}) {
+        sys = tier3_system();
+        sys["decodeFlag"] = flag;
+        expect(qPrintable(QStringLiteral("not for a decode set without DMR: '%1'").arg(flag)),
+               dsd_qt::session_args_dmr_channels_csv(sys, prefs).isEmpty());
+    }
     sys = tier3_system();
     sys["extraArgs"] = QStringLiteral("--trunk-scan /data/targets.csv");
     expect("not with a trunk scan among the extra options",

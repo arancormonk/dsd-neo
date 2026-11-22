@@ -239,6 +239,27 @@ UiController::pollCommandResults() {
 }
 
 void
+UiController::setDmrChannels(DmrChannelsModel* model) {
+    if (m_dmrChannels != nullptr) {
+        disconnect(m_dmrChannels, nullptr, this, nullptr);
+    }
+    m_dmrChannels = model;
+    if (m_dmrChannels != nullptr) {
+        connect(m_dmrChannels, &DmrChannelsModel::activeChanged, this, &UiController::onDmrChannelsActiveChanged);
+    }
+}
+
+void
+UiController::onDmrChannelsActiveChanged() {
+    if (m_dmrChannels == nullptr || !m_dmrChannels->active() || !sessionIsLive()) {
+        return;
+    }
+    // The GUI thread's one reader (this file), between ticks: the same held buffers a tick reads.
+    m_dmrChannels->refresh(dsd_app_get_latest_opts_snapshot(), dsd_app_get_latest_snapshot(),
+                           dsd_app_command_session_generation());
+}
+
+void
 UiController::setCommandBridge(CommandBridge* commands) {
     m_commands = commands;
 }

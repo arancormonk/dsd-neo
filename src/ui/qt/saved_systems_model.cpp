@@ -11,6 +11,7 @@
 #include "site_groups.h"
 
 #include <QByteArray>
+#include <QFile>
 #include <QHash>
 #include <QJsonArray>
 #include <QJsonObject>
@@ -27,6 +28,7 @@
 
 #include <dsd-neo/app_control/dmr_t3_view.h>
 #include <dsd-neo/runtime/log.h>
+#include "decode_mode_flag.h"
 #include "json_store.h"
 #include "radio_settings.h"
 #include "realtime_clock.h"
@@ -738,6 +740,8 @@ SavedSystemsModel::rowFromMap(const QVariantMap& map, const Row& base) {
     map_take_bool(map, QStringLiteral("keyCsvHex"), &row.keyCsvHex);
     map_take_string(map, QStringLiteral("p25BandplanCsvPath"), &row.p25BandplanCsvPath);
     map_take_string(map, QStringLiteral("srcCsvPath"), &row.srcCsvPath);
+    /* Only an edit that carries the list replaces it: a retune that ends the RadioReference provenance keeps it (the
+       user may retune within the same network), as does a decode flag change. */
     if (map.contains(QStringLiteral("dmrChannels"))) {
         row.dmrChannels = validDmrChannels(map.value(QStringLiteral("dmrChannels")));
     }
@@ -814,6 +818,11 @@ SavedSystemsModel::validDmrChannels(const QVariant& raw) {
     return dmr_channel_list(entries);
 }
 
+QString
+SavedSystemsModel::dmrChannelsFilePath(const QString& uid) {
+    return json_store_path(QStringLiteral("dmr_channels/") + uid + QStringLiteral(".csv"));
+}
+
 QVariantList
 SavedSystemsModel::dmrChannels(const QString& uid) const {
     const int row = rowForUid(uid);
@@ -828,6 +837,10 @@ SavedSystemsModel::applyDmrChannelEdit(const QString& uid, int lpcn, int op, qin
     }
     if (!dmr_channel_edit_valid(lpcn, op, hz)) {
         return dmr_channel_edit_result("invalid");
+    }
+    // The start passes the entries only for a system that decodes DMR (session_args_dmr_channels_csv()).
+    if (!decode_flag_decodes_dmr(m_rows.at(row).decodeFlag)) {
+        return dmr_channel_edit_result("not-dmr");
     }
     QMap<int, qint64> entries = dmr_channel_map(m_rows.at(row).dmrChannels);
     if (op == DSD_UI_DMR_T3_OP_RESTORE) {
@@ -1055,9 +1068,14 @@ SavedSystemsModel::remove(int row) {
         return false;
     }
     const QString file = m_rows.at(row).filePath;
+    const QString uid = m_rows.at(row).uid;
     beginRemoveRows(QModelIndex(), row, row);
     m_rows = std::move(next);
     endRemoveRows();
+    // The Tier III channels file its starts wrote (SessionArgsBuilder) goes with it.
+    if (!canonicalUid(uid).isEmpty()) {
+        QFile::remove(dmrChannelsFilePath(uid));
+    }
     Q_EMIT sitesChanged();
     Q_EMIT countChanged();
     releaseReplayIfUnused(file);

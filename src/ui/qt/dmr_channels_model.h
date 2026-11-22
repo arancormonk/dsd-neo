@@ -34,7 +34,8 @@ namespace dsd_qt {
 
 class DmrChannelsModel : public QObject {
     Q_OBJECT
-    /** @brief The sheet is open: only then is the snapshot read. */
+    /** @brief The sheet is open: only then is the snapshot read. Opening it reads the held snapshot at once
+     *  (UiController, on activeChanged), so the sheet never shows the rows of an earlier opening. */
     Q_PROPERTY(bool active READ active WRITE setActive NOTIFY activeChanged)
     /**
      * @brief The channels granted without a frequency, the most recently heard first and then the rest by channel:

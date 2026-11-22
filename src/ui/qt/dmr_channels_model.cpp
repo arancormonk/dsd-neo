@@ -50,17 +50,27 @@ group_name(const dsd_state* snapshot, uint32_t tg) {
                : QString();
 }
 
-/* The overlay row of @p lpcn, or nullptr: the rows are by LPCN ascending. */
-const dsd_ui_dmr_t3_overlay_row*
-overlay_row(const dsd_ui_dmr_t3_view& view, uint16_t lpcn) {
-    const uint16_t count = view.overlay_count <= DSD_UI_DMR_T3_OVERLAY_MAX_ROWS ? view.overlay_count : 0U;
-    for (uint16_t i = 0; i < count; ++i) {
-        if (view.overlay[i].lpcn == lpcn) {
-            return &view.overlay[i];
+/* The overlay rows, by LPCN ascending, walked once beside a walk of the LPCNs. */
+class OverlayCursor {
+  public:
+    explicit OverlayCursor(const dsd_ui_dmr_t3_view& view)
+        : m_rows(view.overlay),
+          m_count(view.overlay_count <= DSD_UI_DMR_T3_OVERLAY_MAX_ROWS ? view.overlay_count : 0U) {}
+
+    /* The row of @p lpcn, or nullptr; @p lpcn never goes down between calls. */
+    const dsd_ui_dmr_t3_overlay_row*
+    at(uint16_t lpcn) {
+        while (m_next < m_count && m_rows[m_next].lpcn < lpcn) {
+            ++m_next;
         }
+        return m_next < m_count && m_rows[m_next].lpcn == lpcn ? &m_rows[m_next] : nullptr;
     }
-    return nullptr;
-}
+
+  private:
+    const dsd_ui_dmr_t3_overlay_row* m_rows;
+    uint16_t m_count;
+    uint16_t m_next = 0;
+};
 
 /* Ledger channel @p lpcn as a row: with the latest grant that named it while the ledger details it. */
 QVariantMap
@@ -230,6 +240,7 @@ DmrChannelsModel::rebuild(const dsd_ui_dmr_t3_view& view, const dsd_state* snaps
             recent.append(missing_row(view, lpcn, snapshot));
         }
     }
+    OverlayCursor overlay(view);
     for (uint16_t lpcn = 1U; lpcn <= static_cast<uint16_t>(maxChannel()); ++lpcn) {
         if (dsd_app_dmr_t3_view_missing_has(&view, lpcn)) {
             const QVariantMap row = missing_row(view, lpcn, snapshot);
@@ -242,7 +253,7 @@ DmrChannelsModel::rebuild(const dsd_ui_dmr_t3_view& view, const dsd_state* snaps
         if (origin == DSD_UI_DMR_T3_ORIGIN_NONE) {
             continue;
         }
-        const dsd_ui_dmr_t3_overlay_row* entry = overlay_row(view, lpcn);
+        const dsd_ui_dmr_t3_overlay_row* entry = overlay.at(lpcn);
         const bool hidden = entry != nullptr && entry->hidden != 0U;
         rows.append(QVariantMap{
             {QStringLiteral("lpcn"), lpcn},
