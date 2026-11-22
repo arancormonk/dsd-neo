@@ -1466,8 +1466,11 @@ Item {
                                     // where it names the endpoint, file, frequency and mode.
                                     wrapMode: card.sharedTitle ? Text.Wrap : Text.NoWrap
                                     maximumLineCount: card.sharedTitle ? undefined : 1
-                                    // One line: its box, fitted (r5 H3); wrapping: its lines.
-                                    height: card.sharedTitle ? implicitHeight : card.sourceBox
+                                    // One line: its box, fitted (r5 H3); wrapping: its lines, as
+                                    // the unfitted probe below measures them, never this Text's
+                                    // own implicit height, which the fit changes (a binding loop
+                                    // where the box and the line differ: Noto CJK).
+                                    height: card.sharedTitle ? sourceWrapProbe.implicitHeight : card.sourceBox
                                     verticalAlignment: Text.AlignVCenter
                                     fontSizeMode: card.sharedTitle ? Text.FixedSize : Text.VerticalFit
                                     minimumPixelSize: Math.max(4, Math.floor(font.pixelSize / 3))
@@ -1551,6 +1554,18 @@ Item {
                                 }
                             }
 
+                            // A shared title's supporting line as it wraps, unfitted, for that
+                            // line's height (r5 H3). Never shown; empty for other cards.
+                            Text {
+                                id: sourceWrapProbe
+                                objectName: "savedSystemSourceProbe"
+                                visible: false
+                                width: sourceLine.width
+                                text: card.sharedTitle ? sourceLine.text : ""
+                                textFormat: Text.PlainText
+                                wrapMode: Text.Wrap
+                                font: sourceLine.font
+                            }
                             ReadableText {
                                 id: refreshHintText
                                 objectName: "savedSystemRefreshHint"

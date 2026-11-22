@@ -17835,7 +17835,9 @@ Qt Quick frontend (`src/ui/qt`):
   the scan target, timing and roaming lines, the hero's ids, identity note, algorithm and channel (each as tall as
   the subline's reservation, `heroSublineHeight`, and the Row too, never its children's natural heights), the
   strip's identity and a `subtitleReading` `DisclosureRow`'s answer; on Listen, a card's title and one-line
-  supporting line (`titleBox`, `sourceBox`, `LineBoxes`; a shared title's wrapping supporting line keeps its lines)
+  supporting line (`titleBox`, `sourceBox`, `LineBoxes`; a shared title's wrapping supporting line keeps its lines,
+  measured by an unfitted hidden twin, `sourceWrapProbe`, never by its own implicit height, which the fit changes:
+  that was a binding loop with Noto CJK, where the box and the line differ)
   and a scan list's name. r5 H3: a Tibetan scan target at 2.0 drew a 62 px line in the 29 px meta box, over the
   title, and a Tibetan hero channel made the subline Row 74 px tall in its 34 px reservation, pushing the ids 20 px
   down across the compact hero's border (`tst_monitor_status_lines.qml` `test_tall_scripts_fit_their_line_boxes`,
