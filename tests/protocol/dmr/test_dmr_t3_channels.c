@@ -1163,6 +1163,108 @@ test_c_bcast_bad_abs_params_no_effect(void) {
     assert(no_effect_since_prepare());
 }
 
+/* With the colour-code gate locked, an accepted control PDU from proving bursts stamps the gate's evidence
+   (dsd_state::dmr_confidence_lock_m) and counts as activity; MBC headers whose continuation never arrives do neither
+   (discussion #900), however many. */
+static void
+test_unfinished_mbc_headers_note_no_lock_evidence(void) {
+    reset_bursts();
+    g_state.dmr_confidence_locked = 1;
+    g_state.dmr_confidence_color_code = 0U;
+    g_state.dmr_confidence_lock_m = 0.0;
+    g_state.scan_y_content_seq = 0U;
+    dsd_decode_clock_test_set_ns(UINT64_C(40) * UINT64_C(1000000000));
+    for (int i = 0; i < 4; i++) {
+        send_csbk_or_header(0, 49U, 0x0FFFU, 1);
+    }
+    assert(g_state.dmr_confidence_lock_m < 0.5);
+    assert(g_state.scan_y_content_seq == 0U);
+    assert(not_followed(0U));
+
+    send_csbk_or_header(0, 25U, 0U, 0); /* a C_ALOHA */
+    assert(g_state.dmr_confidence_lock_m > 1.0);
+    assert(g_state.scan_y_content_seq == 1U);
+    dsd_trunk_tuning_hooks_set((dsd_trunk_tuning_hooks){0});
+}
+
+/* Usable absolute parameters (CHAN @p chan, 451 MHz plus @p rx_step steps) in the continuation block of @p bits. */
+static void
+put_abs_params(uint8_t* bits, uint16_t chan, uint16_t rx_step) {
+    put_bits(bits, 112, 0U, 4);
+    put_bits(bits, 118, chan & 0x0FFFU, 12);
+    put_bits(bits, 130, 451U, 10);
+    put_bits(bits, 140, rx_step & 0x1FFFU, 13);
+    put_bits(bits, 153, 451U, 10);
+    put_bits(bits, 163, rx_step & 0x1FFFU, 13);
+}
+
+/* A grant, C_MOVE or standard P_CLEAR naming a logical channel is a single CSBK (TS 102 361-4 §7.1.1.1.1.2,
+   §7.1.1.1.3, §7.1.1.3.2): the same PDU as an MBC, even with a continuation that matches its header, is the wrong form
+   and refused before any effect: no activity row, no tune, no heartbeat or anchor. */
+static void
+test_logical_channel_mbc_is_malformed(void) {
+    reset_bursts();
+    g_state.trunk_chan_map[12] = 451150000L;
+    prepare_no_effect_check();
+    uint8_t block[1][96];
+    send_csbk_or_header(0, 49U, 12U, 1);
+    build_abs_block(block[0], 49U, 12U, 451U, 9000U);
+    put_bits(block[0], 16, 3U, 4); /* Cdeftype 3 */
+    send_continuations(0, block, 1U, 0);
+    assert(no_effect_since_prepare());
+    assert(g_state.trunk_vc_freq[0] == 0L && g_opts.trunk_is_tuned == 0);
+
+    reset_bursts();
+    g_state.trunk_chan_map[12] = 451150000L;
+    prepare_no_effect_check();
+    send_csbk_or_header(0, 49U, 12U, 1);
+    build_abs_block(block[0], 49U, 12U, 451U, 1200U);
+    send_continuations(0, block, 1U, 0);
+    assert(no_effect_since_prepare());
+    assert(g_state.trunk_vc_freq[0] == 0L && g_opts.trunk_is_tuned == 0);
+
+    static const struct {
+        uint8_t opcode;
+        size_t field;
+    } others[] = {{57U, 44U}, {46U, 16U}};
+
+    for (size_t i = 0; i < sizeof others / sizeof others[0]; i++) {
+        reset();
+        dmr_sm_init(&g_opts, &g_state);
+        prepare_no_effect_check();
+        uint8_t bits[256];
+        uint8_t bytes[48];
+        build_pf0(bits, bytes, others[i].opcode);
+        put_bits(bits, others[i].field, 12U, 12);
+        put_abs_params(bits, 12U, 1200U);
+        dispatch_mbc(bits, bytes, others[i].opcode);
+        assert(no_effect_since_prepare());
+    }
+
+    /* The single CSBK naming the logical channel is followed. */
+    reset_bursts();
+    g_state.trunk_chan_map[12] = 451150000L;
+    send_csbk_or_header(0, 49U, 12U, 0);
+    assert(g_state.trunk_vc_freq[0] == 451150000L);
+    dsd_trunk_tuning_hooks_set((dsd_trunk_tuning_hooks){0});
+}
+
+/* A Chan_Freq whose header CH and BC_AP CHAN name different channels contradicts itself: refused before any effect,
+   neither learned nor a heartbeat, an anchor or activity. */
+static void
+test_chan_freq_contradiction_no_effect(void) {
+    reset();
+    dmr_sm_init(&g_opts, &g_state);
+    prepare_no_effect_check();
+    send_c_bcast_mbc(5U, 131U, 132U, 451U, 1200U, 0U);
+    assert(no_effect_since_prepare());
+    assert(g_state.trunk_chan_map[131] == 0L && g_state.trunk_chan_map[132] == 0L);
+    send_c_bcast_mbc(5U, 131U, 131U, 451U, 1200U, 0U);
+    assert(g_state.trunk_chan_map[131] == 451150000L);
+    assert(g_state.last_cc_sync_time_m > 1.0);
+    dsd_state_trunk_lcn_free(&g_state);
+}
+
 int
 main(void) {
     test_site_overrides_estimate_and_unverified();
@@ -1199,6 +1301,9 @@ main(void) {
     test_announced_candidates_need_checked_content();
     test_vote_now_ac_unavailable_still_decodes_channel();
     test_adjacent_absolute_is_neighbour_fill_only();
+    test_unfinished_mbc_headers_note_no_lock_evidence();
+    test_logical_channel_mbc_is_malformed();
+    test_chan_freq_contradiction_no_effect();
     dsd_state_ext_free_all(&g_state);
     printf("DMR_T3_CHANNELS: OK\n");
     return 0;

@@ -54,6 +54,7 @@
 #include <time.h>
 #include "dmr_abs_params.h"
 #include "dmr_call_channel.h"
+#include "dmr_confidence.h"
 #include "dmr_crc_provenance.h"
 #include "dmr_reason.h"
 #include "dmr_t3_channels_internal.h"
@@ -1317,9 +1318,9 @@ dmr_cspdu_pf0_c_bcast_ann_wd_freq(const dsd_state* state, uint16_t bcast_ch) {
 }
 
 /* The MBC form of Ann_WD_TSCC (TS 102 361-4 §7.2.19.1): a header and a BC_AP announcing or withdrawing one TSCC,
-   whatever BCAST_CH1 holds. The BC_AP teaches the channel map CHAN's frequency (SITE) either way; only an announced
-   TSCC (AW_FLAG1 0) becomes a hunt candidate, and only from a checked or RAS-accepted PDU. A withdraw removes no
-   candidate an earlier announcement added (a decided limit). */
+   whatever BCAST_CH1 holds. Only an announced TSCC (AW_FLAG1 0), from a checked or RAS-accepted PDU, teaches the
+   channel map CHAN's frequency (SITE) and becomes a hunt candidate: a withdrawal may name a frequency the channel no
+   longer has, so it writes nothing. A withdraw removes no candidate an earlier announcement added (a decided limit). */
 static void
 dmr_cspdu_pf0_c_bcast_ann_wd_absolute(dsd_opts* opts, dsd_state* state, const uint8_t cs_pdu_bits[],
                                       const dmr_cspdu_pf0_c_bcast_fields* f, uint8_t cc_ch1, uint8_t aw_flag1) {
@@ -1327,14 +1328,12 @@ dmr_cspdu_pf0_c_bcast_ann_wd_absolute(dsd_opts* opts, dsd_state* state, const ui
     dmr_cspdu_pf0_c_bcast_print_add_remove(aw_flag1);
     dmr_cspdu_pf0_c_bcast_abs_freqs abs_freqs;
     if (!dmr_cspdu_pf0_c_bcast_abs(cs_pdu_bits, f, 0, 1, &abs_freqs)
-        || (!dmr_csbk_crc_checked(state) && !dmr_csbk_ras_accepted(opts, state))) {
+        || (!dmr_csbk_crc_checked(state) && !dmr_csbk_ras_accepted(opts, state)) || aw_flag1 != 0U) {
         return;
     }
     (void)dmr_csbk_learn_channel(opts, state, abs_freqs.lpchannum, abs_freqs.freqr, 0);
-    if (aw_flag1 == 0U) {
-        const long cand[1] = {abs_freqs.freqr};
-        dmr_sm_on_neighbor_update(opts, state, cand, 1);
-    }
+    const long cand[1] = {abs_freqs.freqr};
+    dmr_sm_on_neighbor_update(opts, state, cand, 1);
 }
 
 /* Ann_WD_TSCC (TS 102 361-4 §7.2.19.1, Table 7.69): up to two TSCCs as logical channels, BCAST_CH1/2 (Parms2 bits
@@ -1446,20 +1445,13 @@ dmr_cspdu_pf0_c_bcast_handle_local_time(const dmr_cspdu_pf0_c_bcast_fields* f) {
 }
 
 /* The LPCN a Chan_Freq announces: its header's CH when that names a channel, else its BC_AP's CHAN; 0 when neither
-   names one, or when both do and differ (printed: the PDU contradicts itself). */
+   names one. One whose two name different channels never gets here (dmr_cspdu_c_bcast_contradicts()). */
 static uint16_t
 dmr_cspdu_pf0_c_bcast_chan_freq_lpcn(uint16_t header_ch, uint16_t bcap_chan) {
-    const int header_named = dmr_t3_lpcn_is_channel(header_ch);
-    const int bcap_named = dmr_t3_lpcn_is_channel(bcap_chan);
-    if (header_named && bcap_named && header_ch != bcap_chan) {
-        DSD_FPRINTF(stderr, " Inconsistent channels (header %u, BC_AP %u); ignored;", (unsigned)header_ch,
-                    (unsigned)bcap_chan);
-        return 0U;
-    }
-    if (header_named) {
+    if (dmr_t3_lpcn_is_channel(header_ch)) {
         return header_ch;
     }
-    return bcap_named ? bcap_chan : 0U;
+    return dmr_t3_lpcn_is_channel(bcap_chan) ? bcap_chan : 0U;
 }
 
 /* Chan_Freq (TS 102 361-4 §7.2.19.6, Table 7.78) is always an MBC header and a BC_AP: CH (header bits 68-79) names
@@ -3099,10 +3091,27 @@ dmr_cspdu_init_cc_anchor(const dsd_opts* opts, dsd_state* state) {
 }
 
 /* Opcodes whose MBC form appends absolute parameters (CG_AP, MV_AP, BC_AP: TS 102 361-4 Tables 7.16, 7.18, 7.21):
-   C_BCAST, P_CLEAR, the channel grants and C_MOVE. Their handlers run whatever the feature set. */
+   C_BCAST, the standard P_CLEAR, the channel grants and C_MOVE. Their handlers run whatever the feature set, except
+   P_CLEAR: another feature set's opcode 46 is the manufacturer's, its content opaque (dmr_cspdu_pf0_handle_p_clear()). */
 static int
-dmr_cspdu_appends_abs_params(int csbk_o) {
-    return csbk_o == 40 || csbk_o == 46 || (csbk_o >= 48 && csbk_o <= 57);
+dmr_cspdu_appends_abs_params(int csbk_o, int csbk_fid) {
+    return csbk_o == 40 || (csbk_o == 46 && csbk_fid == 0) || (csbk_o >= 48 && csbk_o <= 57);
+}
+
+/* The channel field of a PDU that names its channel by one, or -1: bits 16-27 of a channel grant or a standard
+   P_CLEAR (Table 7.30), the Physical Channel Number (bits 44-55) of a C_MOVE. Each is a logical channel sent as a
+   single CSBK, or 0xFFF heading an MBC (§7.1.1.1.1, §7.1.1.1.3, §7.1.1.3.2). Opcode 56 on MS-sourced data is
+   BS_Dwn_Act, not a grant. */
+static int
+dmr_cspdu_channel_field(const dsd_state* state, const uint8_t cs_pdu_bits[], int csbk_o, int csbk_fid) {
+    if ((csbk_o == 46 && csbk_fid == 0)
+        || dmr_t3_grant_is_grant_opcode(csbk_o, state->synctype != DSD_SYNC_DMR_MS_DATA)) {
+        return (int)convert_bits_into_output(&cs_pdu_bits[16], 12);
+    }
+    if (csbk_o == 57) {
+        return (int)convert_bits_into_output(&cs_pdu_bits[44], 12);
+    }
+    return -1;
 }
 
 /* 1 when the C_BCAST names a channel by the absolute parameters it appends (TS 102 361-4 §7.2.19): Ann_WD_TSCC in its
@@ -3118,38 +3127,57 @@ dmr_cspdu_c_bcast_uses_abs_params(const uint8_t cs_pdu_bits[], const dmr_cspdu_s
     }
 }
 
-/* 1 when the PDU names its channel by the absolute parameters of an appended block (LPCN 0xFFF "defines a Multi Block
-   Control"): a channel grant or P_CLEAR on LPCN 0xFFF (bits 16-27), a C_MOVE on Physical Channel Number 0xFFF (bits
-   44-55), or such a C_BCAST. Opcode 56 on MS-sourced data is BS_Dwn_Act, not a grant. */
+/* 1 when a C_BCAST says something no handler may act on: a single-block Ann_WD_TSCC naming the absolute escape as
+   BCAST_CH1 or BCAST_CH2 (bits 56-67, 68-79), whose frequency only an MBC carries (§7.2.19.1), or a Chan_Freq whose
+   header CH (bits 68-79) and BC_AP CHAN (bits 118-129) both name channels and differ (§7.2.19.6). */
 static int
-dmr_cspdu_uses_abs_params(const dsd_state* state, const uint8_t cs_pdu_bits[], int csbk_o,
-                          const dmr_cspdu_shape* shape) {
-    if (csbk_o == 46 || dmr_t3_grant_is_grant_opcode(csbk_o, state->synctype != DSD_SYNC_DMR_MS_DATA)) {
-        return convert_bits_into_output(&cs_pdu_bits[16], 12) == 0xFFFU;
+dmr_cspdu_c_bcast_contradicts(const uint8_t cs_pdu_bits[], const dmr_cspdu_shape* shape) {
+    const uint32_t ch_a = (uint32_t)convert_bits_into_output(&cs_pdu_bits[56], 12);
+    const uint32_t ch_b = (uint32_t)convert_bits_into_output(&cs_pdu_bits[68], 12);
+    switch (convert_bits_into_output(&cs_pdu_bits[16], 5)) {
+        case 0: return shape->is_mbc == 0U && (ch_a == 0xFFFU || ch_b == 0xFFFU);
+        case 5: {
+            const uint32_t bcap_chan = (uint32_t)convert_bits_into_output(&cs_pdu_bits[118], 12);
+            return shape->is_mbc != 0U && dmr_t3_lpcn_is_channel(ch_b) && dmr_t3_lpcn_is_channel(bcap_chan)
+                   && ch_b != bcap_chan;
+        }
+        default: return 0;
     }
-    if (csbk_o == 57) {
-        return convert_bits_into_output(&cs_pdu_bits[44], 12) == 0xFFFU;
+}
+
+/* 1 when an MBC's form is wrong whatever its content: more continuations than TS 102 361-1 §7.4.0 allows, or none;
+   for an absolute-parameter opcode, a continuation that is not exactly one last block carrying its header's CSBKO. */
+static int
+dmr_cspdu_mbc_shape_malformed(int csbk_o, int csbk_fid, const dmr_cspdu_shape* shape) {
+    if (shape->continuations < 1U || shape->continuations > 3U) {
+        return 1;
     }
-    return csbk_o == 40 && dmr_cspdu_c_bcast_uses_abs_params(cs_pdu_bits, shape);
+    return dmr_cspdu_appends_abs_params(csbk_o, csbk_fid) && !dmr_abs_params_shape_ok(shape);
 }
 
 /* A PDU no handler may act on, refused before any of its effects (scan activity, the control channel heartbeat and
-   anchor included): an MBC of more continuations than TS 102 361-1 §7.4.0 allows, or none; an MBC of an
-   absolute-parameter opcode whose continuation is not exactly one last block carrying its header's CSBKO; or an
-   unprotected PDU that names its channel by absolute parameters without usable ones (dmr_abs_params_decode(): that
-   one continuation, Cdeftype 0 and a receive frequency inside Table C.7), a single CSBK on 0xFFF among them. */
+   anchor included): an MBC of the wrong shape (dmr_cspdu_mbc_shape_malformed()); a grant, standard P_CLEAR or C_MOVE
+   naming a logical channel as an MBC, which only a single CSBK may; a C_BCAST that contradicts itself
+   (dmr_cspdu_c_bcast_contradicts()); or an unprotected PDU that names its channel by absolute parameters without
+   usable ones (dmr_abs_params_decode(): that one continuation, Cdeftype 0 and a receive frequency inside Table C.7), a
+   single CSBK on 0xFFF among them. */
 static int
-dmr_cspdu_malformed(const dsd_state* state, const uint8_t cs_pdu_bits[], int csbk_o, int csbk_pf,
+dmr_cspdu_malformed(const dsd_state* state, const uint8_t cs_pdu_bits[], int csbk_o, int csbk_fid, int csbk_pf,
                     const dmr_cspdu_shape* shape) {
-    if (shape->is_mbc) {
-        if (shape->continuations < 1U || shape->continuations > 3U) {
-            return 1;
-        }
-        if (dmr_cspdu_appends_abs_params(csbk_o) && !dmr_abs_params_shape_ok(shape)) {
-            return 1;
-        }
+    if (shape->is_mbc && dmr_cspdu_mbc_shape_malformed(csbk_o, csbk_fid, shape)) {
+        return 1;
     }
-    if (csbk_pf != 0 || !dmr_cspdu_uses_abs_params(state, cs_pdu_bits, csbk_o, shape)) {
+    if (csbk_pf != 0) {
+        return 0;
+    }
+    const int chan = dmr_cspdu_channel_field(state, cs_pdu_bits, csbk_o, csbk_fid);
+    if (shape->is_mbc && chan >= 0 && dmr_t3_lpcn_is_channel((uint32_t)chan)) {
+        return 1;
+    }
+    if (csbk_o == 40 && dmr_cspdu_c_bcast_contradicts(cs_pdu_bits, shape)) {
+        return 1;
+    }
+    if (chan != 0xFFF && !(csbk_o == 40 && dmr_cspdu_c_bcast_uses_abs_params(cs_pdu_bits, shape))) {
         return 0;
     }
     dmr_abs_params ap;
@@ -3176,15 +3204,17 @@ dmr_cspdu_dispatch(dsd_opts* opts, dsd_state* state, uint8_t cs_pdu_bits[], uint
     csbk_pf = dmr_cspdu_apply_protect_flag_checks(IrrecoverableErrors, csbk_o, csbk_fid, csbk_pf);
 
     const dmr_cspdu_shape* const shape = dmr_cspdu_current_shape();
-    if (dmr_cspdu_malformed(state, cs_pdu_bits, csbk_o, csbk_pf, shape)) {
+    if (dmr_cspdu_malformed(state, cs_pdu_bits, csbk_o, csbk_fid, csbk_pf, shape)) {
         DSD_FPRINTF(stderr, "%s", KRED);
         DSD_FPRINTF(stderr, "\n Malformed Control Signalling Block (CSBKO %02X); ignored", csbk_o);
         DSD_FPRINTF(stderr, "%s", KNRM);
         return;
     }
-    /* Activity for a scan quiet check (issue #834), from the bursts that proved it, now the PDU is not refused. */
+    /* Activity for a scan quiet check (issue #834), from the bursts that proved it, now the PDU is not refused: with
+       the colour-code gate's evidence those bursts deferred (dmr_confidence_note_control_burst()). */
     if (shape->proves_content) {
         dsd_frame_sync_hook_content_evidence(opts, state, DSD_CONTENT_EVIDENCE_PROVEN, 0U);
+        dmr_confidence_note_control_accepted(state);
     }
 
     if (IrrecoverableErrors == 0 && CRCCorrect == 1) {

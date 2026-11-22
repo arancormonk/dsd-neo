@@ -685,7 +685,7 @@ ann_wd_tscc(uint16_t ch1, uint16_t ch2, uint8_t aw1, uint8_t aw2, uint16_t abs_c
 
 /* A site with no channel list hunts the TSCCs its Ann_WD_TSCC announces (discussion #900 B5; a radio does the same),
    never one it withdraws: in the logical form only the channel marked add, in the MBC form the one TSCC its BC_AP
-   names. The CSBKs arrive after the carrier loss, since noCarrier() empties the candidate list. */
+   names, which only an announcement teaches the map. The CSBKs arrive after the carrier loss, since noCarrier() empties the candidate list. */
 static int
 dmr_hunt_takes_announced_not_withdrawn_tscc(void) {
     if (setup(0.0f)) {
@@ -715,8 +715,8 @@ dmr_hunt_takes_announced_not_withdrawn_tscc(void) {
                  "ann_wd: the hunt probes the logical channel marked add");
     rc |= expect(dmr_probe_once(ctx, DSD_TRUNK_TUNE_RESULT_FAILED) == 457000000L,
                  "ann_wd: then the absolute TSCC announced");
-    rc |= expect(g_state.trunk_chan_map[12] == 458000000L && g_state.trunk_chan_map[13] == 457000000L,
-                 "ann_wd: the absolute TSCCs' channels are learned");
+    rc |= expect(g_state.trunk_chan_map[12] == 0L && g_state.trunk_chan_map[13] == 457000000L,
+                 "ann_wd: the absolute TSCC announced is learned, the withdrawn one is not");
     cleanup();
     return rc;
 }

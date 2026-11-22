@@ -251,7 +251,46 @@ test_ann_wd_withdraw_not_added(void) {
     init_env(&opts, &state);
     send_ann_wd_mbc(&opts, &state, 0x0FFFU, 1U, 23U, 853U, 4200U);
     rc |= expect_true("ann_wd absolute withdraw: no candidate", candidates_count(&state) == 0);
-    rc |= expect_true("ann_wd absolute withdraw: frequency still learned", state.trunk_chan_map[23] == 853525000L);
+    rc |= expect_true("ann_wd absolute withdraw: nothing learned", state.trunk_chan_map[23] == 0L);
+
+    /* A withdrawal may name a frequency the channel no longer has: the newer mapping stays. */
+    send_ann_wd_mbc(&opts, &state, 0x0FFFU, 0U, 24U, 853U, 4400U);
+    rc |= expect_true("ann_wd absolute add: learned", state.trunk_chan_map[24] == 853550000L);
+    send_ann_wd_mbc(&opts, &state, 0x0FFFU, 1U, 24U, 853U, 4800U);
+    rc |= expect_true("ann_wd absolute withdraw: newer mapping kept", state.trunk_chan_map[24] == 853550000L);
+    dsd_state_ext_free_all(&state);
+    return rc;
+}
+
+/* The single-block form names TSCCs as logical channels only: one naming the absolute escape as BCAST_CH1 or
+   BCAST_CH2 lacks the block that frequency needs, and the whole announcement is refused before any effect (no control
+   channel heartbeat, no candidate for the other half). */
+static int
+test_ann_wd_single_block_escape_refused(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    static const uint16_t pairs[2][2] = {{0x0FFFU, 11U}, {11U, 0x0FFFU}};
+    uint8_t bits[256];
+    uint8_t bytes[48];
+    int rc = 0;
+
+    for (size_t i = 0; i < 2U; i++) {
+        init_env(&opts, &state);
+        state.trunk_chan_map[11] = 852500000L;
+        build_ann_wd_tscc(bits, bytes, pairs[i][0], pairs[i][1], 0U, 0U);
+        dmr_cspdu(&opts, &state, bits, bytes, 1U, 0U);
+        rc |= expect_true("ann_wd single escape: no heartbeat", state.last_cc_sync_time == 0);
+        rc |= expect_true("ann_wd single escape: no candidate", candidates_count(&state) == 0);
+        dsd_state_ext_free_all(&state);
+    }
+
+    /* Both halves logical: accepted. */
+    init_env(&opts, &state);
+    state.trunk_chan_map[11] = 852500000L;
+    build_ann_wd_tscc(bits, bytes, 0U, 11U, 0U, 0U);
+    dmr_cspdu(&opts, &state, bits, bytes, 1U, 0U);
+    rc |= expect_true("ann_wd single logical: heartbeat", state.last_cc_sync_time != 0);
+    rc |= expect_true("ann_wd single logical: candidate", candidate_present(&state, 852500000L));
     dsd_state_ext_free_all(&state);
     return rc;
 }
@@ -398,6 +437,7 @@ main(void) {
     dsd_state_ext_free_all(&state);
     rc |= test_ann_wd_absolute_learns_and_adds();
     rc |= test_ann_wd_withdraw_not_added();
+    rc |= test_ann_wd_single_block_escape_refused();
     if (rc == 0) {
         printf("DMR_T3_ANN_WD_TSCC: OK\n");
     }

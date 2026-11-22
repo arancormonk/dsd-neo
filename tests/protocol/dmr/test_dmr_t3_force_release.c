@@ -449,6 +449,21 @@ test_vendor_fid_clear_unchanged(void) {
     assert(opts.trunk_is_tuned == 0);
 }
 
+/* A manufacturer's opcode 46 is no Table 7.30 P_CLEAR: 0xFFF in its bits 16-27 is its own content, not the absolute
+   escape. The single CSBK keeps the control channel warm and takes the legacy carrier-wide release. */
+static void
+test_vendor_fid_clear_fff_bits_not_refused(void) {
+    follow_group_ts1();
+    uint8_t bits[256];
+    uint8_t bytes[48];
+    build_pclear_fid(bits, bytes, 0x10U, 0x0FFFU, 1U, 999U, 77U);
+    state.currentslot = 0;
+    state.last_cc_sync_time = 0;
+    dmr_cspdu(&opts, &state, bits, bytes, 1, 0);
+    assert(state.last_cc_sync_time != 0);
+    assert(opts.trunk_is_tuned == 0);
+}
+
 /* On the control channel (nothing followed, composite TSCC: the companion slot is the idle TSCC), a P_CLEAR on the
    payload slot, standard (FID @p fid 0, any address) or a manufacturer's, arms no forced release: a latched one would
    release the next followed grant on its first tick. */
@@ -525,6 +540,7 @@ main(int argc, char** argv) {
     test_p_clear_named_tscc_becomes_candidate();
     test_synth_lockout_clear_still_releases();
     test_vendor_fid_clear_unchanged();
+    test_vendor_fid_clear_fff_bits_not_refused();
     test_on_cc_clear_arms_no_forced_release();
     test_xpt_idle_tuned_lockout_clear_arms_no_forced_release();
     dsd_trunk_tuning_hooks_set((dsd_trunk_tuning_hooks){0});

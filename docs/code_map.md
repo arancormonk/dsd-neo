@@ -13418,15 +13418,21 @@ Private per-protocol modules worth knowing about:
   (`dmr_cspdu_shape`: continuations, header and first continuation CSBKO, that continuation's LB, and whether its
   bursts prove scan activity) through `dmr_cspdu_ex()`, and `dmr_cspdu_malformed()` refuses, before scan activity,
   the control channel heartbeat, the anchor or any handler: an MBC of no continuation or more than three; one of an
-  absolute-parameter opcode (C_BCAST, P_CLEAR, the grants, C_MOVE: whatever the FID) whose continuation is not exactly
-  one last block carrying its header's CSBKO; and an unprotected PDU that names its channel by absolute parameters
-  (a grant or P_CLEAR on LPCN 0xFFF, a C_MOVE on PCN 0xFFF, Ann_WD_TSCC's MBC form, Chan_Freq, Vote_Now and
+  absolute-parameter opcode (C_BCAST, the grants and C_MOVE whatever the FID; P_CLEAR only under FID 0, since another
+  feature set's opcode 46 is the manufacturer's and keeps the legacy carrier-wide release) whose continuation is not
+  exactly one last block carrying its header's CSBKO; a grant, standard P_CLEAR or C_MOVE naming a logical channel
+  (1..4094) as an MBC, which the spec sends as a single CSBK (§7.1.1.1.1, §7.1.1.1.3, §7.1.1.3.2); a single-block
+  Ann_WD_TSCC naming 0xFFF as BCAST_CH1 or BCAST_CH2 (the whole PDU, neither half acted on); a Chan_Freq whose header
+  CH and BC_AP CHAN name different channels; and an unprotected PDU that names its channel by absolute parameters
+  (a grant or standard P_CLEAR on LPCN 0xFFF, a C_MOVE on PCN 0xFFF, Ann_WD_TSCC's MBC form, Chan_Freq, Vote_Now and
   Adjacent_Site on 0xFFF) whose parameters `dmr_abs_params_decode()` cannot use, a single block on 0xFFF among them.
   `dmr_abs_params_decode()` is the one decoder of CG_AP, MV_AP, BC_AP and VN_AP (Cdeftype 0 only; a receive
   frequency outside Table C.7, 50..999 MHz and 0..7999 steps of 125 Hz, is no frequency). A grant's valid frequency
   whose CHAN is 0 or 4095 is tuned and shown but names no channel to learn. A CSBK or MBC header notes its scan
   activity evidence (`dsd_frame_sync_hook_content_evidence()`) only once `dmr_cspdu_ex()` accepts its PDU (an MBC
-  also accepted as a whole; `dsd_state::dmr_mbc_header_proven`). The MBC's CRC provenance (checked, RAS-accepted or
+  also accepted as a whole; `dsd_state::dmr_mbc_header_proven`), and so does the colour-code gate for every control
+  burst (CSBK, MBC header, continuation: `dmr_confidence_note_control_burst()` counts the code toward the lock but
+  defers PROVEN, the `dmr_confidence_lock_m` stamp and the search evidence to `dmr_confidence_note_control_accepted()`). The MBC's CRC provenance (checked, RAS-accepted or
   failed) rides the slot's `event_crc_invalid` as a CSBK's does. Tests: `DMR_T3_CHANNELS`, `DMR_T3_MOVE_RELEASE`,
   `DMR_T3_CMOVE`, `DMR_EVENT_CRC`, `DMR_RELAXED_HEADER_IP`, `DMR_BS_SYNC_TIMES`, `DMR_MS_DATA`,
   `ENGINE_NO_CARRIER_RESET`.
@@ -13502,10 +13508,11 @@ Private per-protocol modules worth knowing about:
   `dmr_csbk_learn_channel()` and adds hunt candidates (`dmr_sm_on_neighbor_update()`, current site, never the control
   channel the receiver is on) only from a checked or RAS-accepted PDU. Ann_WD_TSCC (Table 7.69): the single-block form
   names up to two TSCCs as logical channels, and only a mapped one marked add (AW_FLAG 0) becomes a candidate; the MBC
-  form's BC_AP teaches the map its one TSCC either way and adds it only on add; withdrawing the control channel the
+  form's BC_AP teaches the map its one TSCC and adds it only on add (a withdrawal writes nothing: it may name a
+  frequency the channel no longer has); withdrawing the control channel the
   receiver is on moves it to the other one announced. A withdraw removes no candidate an earlier announcement added
   (decided limit). Chan_Freq (Table 7.78) is always an MBC: its header CH names the channel, or 0xFFF leaves it to the
-  BC_AP's CHAN (both naming channels that differ: printed as inconsistent, ignored); a new or changed row also joins the
+  BC_AP's CHAN (both naming channels that differ: refused before dispatch); a new or changed row also joins the
   learned hunt list once, unless the user supplied the list, and the candidates. Vote_Now and Adjacent_Site (Tables
   7.71, 7.79) decode whatever the AC-info-available bit says (it qualifies only Active_connection, §6.7.1.3); an
   absolute entry is a neighbour's frequency (NEIGHBOUR, fill-only) and a candidate. Tests: `DMR_T3_CHANNELS`,
@@ -13875,7 +13882,7 @@ Private per-protocol modules worth knowing about:
   `P25_P2_XCCH_HELPERS`.
 - `src/protocol/dmr/dmr_confidence.{c,h}` — colour-code and voice-burst confidence, so a burst has to be corroborated
   before DMR decodes or unmutes it. Every evidence point also stamps `dsd_state::dmr_confidence_lock_m` with the
-  decode time (never cleared, not even by `dmr_confidence_reset()`), which a startup control-channel hunt reads as
+  decode time (a control burst's only once its PDU passes the control gate, `dmr_confidence_note_control_accepted()`) (never cleared, not even by `dmr_confidence_reset()`), which a startup control-channel hunt reads as
   validated content (issue #703). A relock onto another colour code resets the RAS evidence (`dmr_ras_reset()`).
   MS/direct voice (`dmr_ms.c`) goes through it as BS voice does (issue #834): the EMB has QR(16,7,6) and no checksum
   (TS 102 361-1 Table B.1), and about one noise word in four decodes to some colour code, so an EMB's code is the
