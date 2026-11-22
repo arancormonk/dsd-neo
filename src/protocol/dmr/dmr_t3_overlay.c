@@ -44,13 +44,18 @@ dmr_t3_overlay_expected(const dsd_state* state, uint16_t lpcn, long expected_hz,
 }
 
 /* SET or HIDE @p l; returns 1 when it changed, 0 when it already was so, -1 for a new entry the overlay has no room
-   for. A new entry keeps the row it replaces. */
+   for. A new entry keeps the row it replaces. The same entry again lays it over the live row once more when another
+   writer changed that row (a P25 IDEN invalidation empties it), so the editor's repeat repairs it. */
 static int
 dmr_t3_overlay_put(dsd_state* state, dmr_ext_t* ext, uint16_t l, dmr_t3_overlay_op op, long hz) {
     dmr_t3_overlay* o = &ext->overlay;
     const long want_hz = op == DMR_T3_OVERLAY_SET ? hz : 0;
     if (o->op[l] == (uint8_t)op && o->hz[l] == want_hz) {
-        return 0;
+        if (state->trunk_chan_map[l] == want_hz && ext->origin[l] == (uint8_t)DMR_CHAN_ORIGIN_USER) {
+            return 0;
+        }
+        dmr_t3_overlay_write_live(state, ext, l);
+        return 1;
     }
     if (o->op[l] == 0U) {
         if (o->count >= (uint16_t)DMR_T3_OVERLAY_MAX_ROWS) {

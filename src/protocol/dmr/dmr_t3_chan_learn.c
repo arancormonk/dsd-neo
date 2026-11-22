@@ -90,8 +90,12 @@ typedef struct {
     int anchors;
 } dmr_heuristic_anchor_stats;
 
+/* A row with a live frequency that is no estimate: a hidden channel (USER at no frequency) anchors nothing. */
 static int
 dmr_heuristic_is_anchor(const dsd_state* state, int l) {
+    if (state->trunk_chan_map[l] <= 0) {
+        return 0;
+    }
     const dmr_chan_origin_e origin = dmr_t3_chan_origin(state, (uint16_t)l);
     return origin != DMR_CHAN_ORIGIN_NONE && origin != DMR_CHAN_ORIGIN_ESTIMATE;
 }
@@ -214,12 +218,11 @@ dmr_t3_chan_learn(dsd_opts* opts, dsd_state* state, uint16_t lpcn, long freq_hz,
         return 0;
     }
     /* The writer's own row is no takeover (dsd_state_set_trunk_chan_freq() would count one): its bit goes first. */
+    const uint64_t seq_before = state->trunk_chan_map_seq;
     dsd_state_dmr_lcn_ota_set(state, lpcn, 0);
     dsd_state_set_trunk_chan_freq(state, lpcn, freq_hz);
     dsd_state_dmr_lcn_ota_set(state, lpcn, 1);
-    if (cur_hz == 0) {
-        dmr_t3_missing_forget(ext, lpcn);
-    }
+    dmr_t3_missing_note_written(state, ext, lpcn, seq_before);
     ext->origin[lpcn] = (uint8_t)origin;
     state->dmr_lcn_trust[lpcn] = dmr_t3_chan_trust(opts, state, origin);
     ext->revision++;

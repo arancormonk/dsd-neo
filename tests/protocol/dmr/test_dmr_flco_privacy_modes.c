@@ -36,6 +36,7 @@
 #include <math.h>
 #include <stdint.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include <time.h>
 
@@ -3755,36 +3756,37 @@ test_completed_slco_tier3_site_parameters_update_state(void) {
    its TSCC until the receiver leaves it; P_SYS_PARMS (a payload channel's) names Tier III only. */
 static void
 test_completed_slco_sys_parms_note_tier3(void) {
-    static dsd_opts opts;
-    static dsd_state state;
+    dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(*opts));
+    dsd_state* state = (dsd_state*)calloc(1, sizeof(*state));
+    assert(opts != NULL && state != NULL);
     uint8_t slco[36];
 
-    DSD_MEMSET(&opts, 0, sizeof(opts));
-    DSD_MEMSET(&state, 0, sizeof(state));
-    opts.audio_in_type = AUDIO_IN_RTL;
-    opts.rtlsdr_center_freq = 451000000U;
+    opts->audio_in_type = AUDIO_IN_RTL;
+    opts->rtlsdr_center_freq = 451000000U;
     DSD_MEMSET(slco, 0, sizeof(slco));
     write_bits_u64(slco, 0U, 0x2U, 4U);
     write_bits_u64(slco, 4U, 1U, 2U);
     write_bits_u64(slco, 6U, 17U, 7U);
     write_bits_u64(slco, 13U, 3U, 5U);
-    run_completed_slco(&opts, &state, slco);
-    assert(dmr_t3_tier3_seen(&state));
-    assert(dmr_t3_cc_confirmed_hz(&state) == 451000000L);
-    state.carrier_seq++;
-    assert(dmr_t3_cc_confirmed_hz(&state) == 0);
-    dsd_state_ext_free_all(&state);
+    run_completed_slco(opts, state, slco);
+    assert(dmr_t3_tier3_seen(state));
+    assert(dmr_t3_cc_confirmed_hz(state) == 451000000L);
+    state->carrier_seq++;
+    assert(dmr_t3_cc_confirmed_hz(state) == 0);
+    dsd_state_ext_free_all(state);
 
-    DSD_MEMSET(&state, 0, sizeof(state));
+    DSD_MEMSET(state, 0, sizeof(*state));
     DSD_MEMSET(slco, 0, sizeof(slco));
     write_bits_u64(slco, 0U, 0x3U, 4U);
     write_bits_u64(slco, 4U, 1U, 2U);
     write_bits_u64(slco, 6U, 17U, 7U);
     write_bits_u64(slco, 13U, 3U, 5U);
-    run_completed_slco(&opts, &state, slco);
-    assert(dmr_t3_tier3_seen(&state));
-    assert(dmr_t3_cc_confirmed_hz(&state) == 0);
-    dsd_state_ext_free_all(&state);
+    run_completed_slco(opts, state, slco);
+    assert(dmr_t3_tier3_seen(state));
+    assert(dmr_t3_cc_confirmed_hz(state) == 0);
+    dsd_state_ext_free_all(state);
+    free(state);
+    free(opts);
 }
 
 static void

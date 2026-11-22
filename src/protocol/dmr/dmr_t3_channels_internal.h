@@ -12,6 +12,7 @@
 #ifndef DSD_NEO_SRC_PROTOCOL_DMR_DMR_T3_CHANNELS_INTERNAL_H_
 #define DSD_NEO_SRC_PROTOCOL_DMR_DMR_T3_CHANNELS_INTERNAL_H_
 
+#include <dsd-neo/core/opts_fwd.h>
 #include <dsd-neo/core/state_fwd.h>
 #include <dsd-neo/protocol/dmr/dmr_t3_channels.h>
 
@@ -42,8 +43,10 @@ typedef struct {
        change (its MODEL and NET). */
     uint16_t syscode;
     uint8_t syscode_valid;
-    /* The channels granted without a frequency (dmr_t3_missing_note_grant()). */
+    /* The channels granted without a frequency (dmr_t3_missing_note_grant()), and dsd_state::trunk_chan_map_seq when it
+       was last reconciled with the map (dmr_t3_missing_sync()): another writer moving the map moves the sequence. */
     dmr_t3_missing_ledger missing;
+    uint64_t missing_map_seq;
     /* The user's channels over the map (dmr_t3_overlay.c). */
     dmr_t3_overlay overlay;
     /* A message named the site Tier III this session (dmr_t3_note_tier3()): a checked one (tier3), or one -F accepted
@@ -78,6 +81,9 @@ void dmr_t3_chan_anchors_changed(dsd_opts* opts, dsd_state* state, dmr_ext_t* ex
 /* Whether @p lpcn is hidden by the user (an overlay HIDE entry). */
 int dmr_t3_overlay_hidden(const dmr_ext_t* ext, uint16_t lpcn);
 
+/* Whether @p lpcn has an overlay entry (SET or HIDE): the row is the user's, whatever another writer left in it. */
+int dmr_t3_overlay_has_entry(const dmr_ext_t* ext, uint16_t lpcn);
+
 /* Keep the live row as overlay entry @p l's base (its frequency, origin and trust); called with the row not
  * overlaid. */
 void dmr_t3_overlay_take_base(const dsd_state* state, dmr_ext_t* ext, uint16_t l);
@@ -85,8 +91,10 @@ void dmr_t3_overlay_take_base(const dsd_state* state, dmr_ext_t* ext, uint16_t l
 /* Lay overlay entry @p l over the live row: the user's frequency, or none for a hidden channel, as USER, trust 0. */
 void dmr_t3_overlay_write_live(dsd_state* state, dmr_ext_t* ext, uint16_t l);
 
-/* Row @p lpcn gained a frequency: it leaves the missing-channel ledger (the one-row dmr_t3_missing_reconcile()). */
-void dmr_t3_missing_forget(dmr_ext_t* ext, uint16_t lpcn);
+/* DMR's own writer just wrote row @p lpcn, dsd_state::trunk_chan_map_seq being @p seq_before until then: a row that
+ * now has a frequency leaves the ledger, and when another writer moved the map since the last reconcile the whole
+ * ledger is reconciled (dmr_t3_missing_reconcile()). */
+void dmr_t3_missing_note_written(const dsd_state* state, dmr_ext_t* ext, uint16_t lpcn, uint64_t seq_before);
 
 /* A checked C_ALOHA or standard C_BCAST, or a C_SYS_Parms or P_SYS_Parms short LC, named @p syscode for the carrier
  * the receiver is on: a code whose MODEL or NET differs from the last checked one's is a network change

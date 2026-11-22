@@ -2056,6 +2056,99 @@ test_overlay_hidden_channel_leaves_ledger(void) {
     assert(dmr_t3_missing_count(&g_state) == 1U && g_missing_notices == 2);
 }
 
+/* Review gate b-r1 E1/E3: the user's entry decides a grant's channel before the shared map does. A P25 IDEN 0
+   invalidation (another protocol's writer) empties rows 0..4095, the user's set row among them: a logical grant for it
+   is still followed on the user's frequency, never recorded as missing, and the same SET again lays the entry over the
+   live row once more. An absolute grant for a hidden channel is not followed (nor learned into the row), and one for a
+   set channel follows the user's frequency, not the advertised one. */
+static void
+test_overlay_governs_grants_over_the_shared_map(void) {
+    reset_bursts();
+    assert(overlay_edit(12U, DMR_T3_OVERLAY_SET, 451137500L) == DMR_T3_SET_OK);
+    dsd_state_p25_invalidate_iden_chan_map(&g_state, 0);
+    assert(g_state.trunk_chan_map[12] == 0L && dmr_t3_chan_origin(&g_state, 12U) == DMR_CHAN_ORIGIN_USER);
+    send_grant(49U, 12U, 0U);
+    assert(g_opts.trunk_is_tuned == 1 && g_state.trunk_vc_freq[0] == 451137500L);
+    assert(dmr_t3_missing_count(&g_state) == 0U);
+    /* Nothing over the air takes the emptied row while the entry holds it. */
+    assert(dmr_t3_chan_learn(&g_opts, &g_state, 12U, 451250000L, DMR_CHAN_ORIGIN_SITE) == 0);
+    assert(g_state.trunk_chan_map[12] == 0L);
+
+    /* The editor's repeat of the same SET repairs the live row. */
+    const uint32_t rev = dmr_t3_chan_revision(&g_state);
+    assert(overlay_edit(12U, DMR_T3_OVERLAY_SET, 451137500L) == DMR_T3_SET_OK);
+    assert(g_state.trunk_chan_map[12] == 451137500L && dmr_t3_chan_origin(&g_state, 12U) == DMR_CHAN_ORIGIN_USER);
+    assert(dmr_t3_chan_revision(&g_state) != rev);
+
+    /* Absolute grants: hidden 126 is not followed and its row stays empty; set 127 follows the user's frequency. */
+    reset_bursts();
+    assert(overlay_edit(126U, DMR_T3_OVERLAY_HIDE, 0L) == DMR_T3_SET_OK);
+    send_abs_grant_mbc(0, 49U, 126U, 451U, 700U);
+    assert(not_followed(126U) && dmr_t3_chan_origin(&g_state, 126U) == DMR_CHAN_ORIGIN_USER);
+    assert(dmr_t3_missing_count(&g_state) == 0U);
+    reset_bursts();
+    assert(overlay_edit(127U, DMR_T3_OVERLAY_SET, 451162500L) == DMR_T3_SET_OK);
+    send_abs_grant_mbc(0, 49U, 127U, 451U, 700U);
+    assert(g_opts.trunk_is_tuned == 1 && g_state.trunk_vc_freq[0] == 451162500L);
+    assert(g_state.trunk_chan_map[127] == 451162500L && dmr_t3_chan_origin(&g_state, 127U) == DMR_CHAN_ORIGIN_USER);
+    /* With no entry the advertised frequency is followed, as before. */
+    reset_bursts();
+    send_abs_grant_mbc(0, 49U, 128U, 451U, 700U);
+    assert(g_opts.trunk_is_tuned == 1 && g_state.trunk_vc_freq[0] == 451087500L);
+    dsd_trunk_tuning_hooks_set((dsd_trunk_tuning_hooks){0});
+}
+
+/* Review gate b-r1 E2: a hidden channel (the user's row at no frequency) is no heuristic anchor. With channel 10 hidden
+   and 12 the only mapped row, the fill has one anchor and invents nothing for 11. */
+static void
+test_hidden_channel_anchors_no_estimate(void) {
+    reset();
+    g_opts.dmr_t3_heuristic_fill = 1;
+    assert(overlay_edit(10U, DMR_T3_OVERLAY_HIDE, 0L) == DMR_T3_SET_OK);
+    assert(dmr_t3_chan_learn(&g_opts, &g_state, 12U, 450000000L, DMR_CHAN_ORIGIN_SITE) == 1);
+    assert(g_state.trunk_chan_map[11] == 0L && dmr_t3_chan_origin(&g_state, 11U) == DMR_CHAN_ORIGIN_NONE);
+    /* Two real anchors still fill the gap between them. */
+    assert(dmr_t3_chan_learn(&g_opts, &g_state, 14U, 450025000L, DMR_CHAN_ORIGIN_SITE) == 1);
+    assert(g_state.trunk_chan_map[13] == 450012500L && dmr_t3_chan_origin(&g_state, 13U) == DMR_CHAN_ORIGIN_ESTIMATE);
+    assert(g_state.trunk_chan_map[11] == 0L);
+}
+
+/* Review gate b-r1 E6: another writer of the shared map (P25's frequency cache, a -Y visit, a replay) fills a missing
+   channel's row without a reconcile. The next map change DMR sees reconciles every outstanding channel, not only its
+   own: a learned row, the exit summary, and a save each catch up. A mapped grant does no reconcile. */
+static void
+test_missing_reconciled_after_other_writers(void) {
+    reset_missing();
+    send_grant(49U, 12U, 0U);
+    send_grant(49U, 14U, 0U);
+    send_grant(49U, 16U, 0U);
+    assert(dmr_t3_missing_count(&g_state) == 3U);
+    dsd_state_set_trunk_chan_freq(&g_state, 12U, 451150000L);
+    /* DMR learns another channel: 12 goes with it. */
+    assert(dmr_t3_chan_learn(&g_opts, &g_state, 13U, 451162500L, DMR_CHAN_ORIGIN_SITE) == 1);
+    dmr_t3_missing_ledger* l = missing_copy();
+    assert(dmr_t3_missing_count(&g_state) == 2U && !bit_set(l->missing, 12U) && bit_set(l->missing, 14U));
+    assert(l->detail_count == 2U);
+
+    /* The exit summary reconciles first: 14 filled by another writer is not reported. */
+    dsd_state_set_trunk_chan_freq(&g_state, 14U, 451175000L);
+    g_missing_summaries = 0;
+    dmr_t3_missing_log_summary(&g_state);
+    assert(g_missing_summaries == 1 && strstr(g_missing_summary, " 14") == NULL);
+    assert(strstr(g_missing_summary, ": 16\n") != NULL && dmr_t3_missing_count(&g_state) == 1U);
+
+    /* A save does too, so a parked target's ledger matches its map. */
+    dsd_state_set_trunk_chan_freq(&g_state, 16U, 451200000L);
+    static dmr_t3_chan_target_snapshot saved;
+    dmr_t3_chan_save(&g_state, &saved);
+    assert(!bit_set(saved.missing.missing, 16U) && dmr_t3_missing_count(&g_state) == 0U);
+
+    /* Nothing moved: a sync changes nothing. */
+    const uint32_t rev = dmr_t3_missing_revision(&g_state);
+    dmr_t3_missing_sync(&g_state);
+    assert(dmr_t3_missing_revision(&g_state) == rev);
+}
+
 /* Write @p text to a new temporary file named into @p path. */
 static void
 write_temp_csv(char* path, size_t size, const char* text) {
@@ -2307,6 +2400,9 @@ main(void) {
     test_overlay_load_csv_past_the_cap();
     test_hide_followed_channel_keeps_call();
     test_overlay_hidden_channel_leaves_ledger();
+    test_overlay_governs_grants_over_the_shared_map();
+    test_hidden_channel_anchors_no_estimate();
+    test_missing_reconciled_after_other_writers();
     test_overlay_load_csv_rows();
     test_chan_freq_inconsistent_channels_ignored();
     test_chan_freq_learned_notice_and_origin();

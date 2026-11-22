@@ -124,6 +124,10 @@ typedef struct {
        network baseline and the control channels it named): it comes back with the map rows it describes, so a visit
        that heard another network leaves the session's rows as they were (discussion #900 F2). */
     dmr_t3_chan_target_snapshot session_dmr_chan;
+    /* The rows the user's channel entries replaced, as Start found them: a visit that hears another network drops the
+       ones the air taught, and RESTORE back on the session must return them (discussion #900 F3). The entries
+       themselves stay live, since no edit applies during a search. */
+    dmr_t3_overlay_bases session_dmr_bases;
     /* The session's P25 patch table as Start found it (with its owner, listening clock and sequence counter): every
        departure's boundary empties the table, so each visit starts with none, and only the return to the session puts
        this one back (search_return_site()). */
@@ -453,6 +457,7 @@ search_restore_site(search_coord* c, dsd_state* state) {
     const uint64_t seq = state->trunk_chan_map_seq;
     dsd_p25_site_snapshot_restore(state, &c->session_site);
     dmr_t3_chan_restore(state, &c->session_dmr_chan);
+    dmr_t3_overlay_bases_restore(state, &c->session_dmr_bases);
     if (seq != c->session_site.trunk_chan_map_seq) {
         state->trunk_chan_map_seq = seq + 1U;
         c->session_site.trunk_chan_map_seq = state->trunk_chan_map_seq;
@@ -733,6 +738,7 @@ dsd_engine_signal_search_start(dsd_opts* opts, dsd_state* state, const dsd_signa
     search_start_profile(opts, state);
     dsd_p25_patch_snapshot_save(state, &c->session_patches);
     dmr_t3_chan_save(state, &c->session_dmr_chan);
+    dmr_t3_overlay_bases_save(state, &c->session_dmr_bases);
     /* A session site saved without its channel map would empty the map at every departure: no search then. */
     if (dsd_p25_site_snapshot_save(state, &c->session_site) || dsd_scan_mode_begin(opts, state)
         || dsd_engine_scan_own(state, 1, c, search_coord_free)) {

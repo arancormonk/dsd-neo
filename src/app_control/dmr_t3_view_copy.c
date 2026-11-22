@@ -116,6 +116,9 @@ dsd_app_dmr_t3_view_publish(dsd_ui_dmr_t3_view* dst, dsd_app_dmr_t3_view_mark* m
         return 0;
     }
     dmr_t3_view_note_target(mark, src);
+    /* The live state, on the decoder thread: a row another writer filled since the last reconcile leaves the ledger
+       before it is shown. */
+    dmr_t3_missing_sync(src);
     const uint8_t present = dmr_t3_chan_recorded(src) ? 1U : 0U;
     const uint32_t revision = dmr_t3_chan_revision(src);
     const uint32_t missing_revision = dmr_t3_missing_revision(src);

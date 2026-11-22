@@ -79,12 +79,18 @@ dmr_t3_overlay_hidden(const dmr_ext_t* ext, uint16_t lpcn) {
     return ext != NULL && lpcn < DMR_T3_ROWS && ext->overlay.op[lpcn] == (uint8_t)DMR_T3_OVERLAY_HIDE;
 }
 
+int
+dmr_t3_overlay_has_entry(const dmr_ext_t* ext, uint16_t lpcn) {
+    return ext != NULL && lpcn < DMR_T3_ROWS && ext->overlay.op[lpcn] != 0U;
+}
+
 /* dmr_t3_chan_origin() with the extension @p ext (NULL for none) already looked up; @p lpcn is below DMR_T3_ROWS. */
 static dmr_chan_origin_e
 dmr_t3_chan_row_origin(const dsd_state* state, const dmr_ext_t* ext, uint16_t lpcn) {
     if (state->trunk_chan_map[lpcn] == 0) {
-        /* A hidden row is the user's: nothing over the air fills it. */
-        return dmr_t3_overlay_hidden(ext, lpcn) ? DMR_CHAN_ORIGIN_USER : DMR_CHAN_ORIGIN_NONE;
+        /* A hidden row is the user's, and so is a set one another writer emptied (a P25 IDEN invalidation): nothing over
+           the air fills either. */
+        return dmr_t3_overlay_has_entry(ext, lpcn) ? DMR_CHAN_ORIGIN_USER : DMR_CHAN_ORIGIN_NONE;
     }
     const uint8_t origin = ext != NULL ? ext->origin[lpcn] : (uint8_t)DMR_CHAN_ORIGIN_NONE;
     /* A row another writer set after the air is that writer's, as a file's is. */
@@ -251,8 +257,54 @@ dmr_t3_overlay_count(const dsd_state* state) {
     return ext != NULL ? (size_t)ext->overlay.count : 0U;
 }
 
+int
+dmr_t3_overlay_resolve(const dsd_state* state, uint16_t lpcn, long* hz) {
+    const dmr_ext_t* ext = dmr_ext_get(state);
+    if (ext == NULL || lpcn >= DMR_T3_ROWS || hz == NULL) {
+        return 0;
+    }
+    const uint8_t op = ext->overlay.op[lpcn];
+    if (op == 0U) {
+        return 0;
+    }
+    *hz = op == (uint8_t)DMR_T3_OVERLAY_SET ? ext->overlay.hz[lpcn] : 0;
+    return 1;
+}
+
 void
-dmr_t3_overlay_discard(dsd_state* state) {
+dmr_t3_overlay_bases_save(const dsd_state* state, dmr_t3_overlay_bases* out) {
+    if (out == NULL) {
+        return;
+    }
+    DSD_MEMSET(out, 0, sizeof(*out));
+    const dmr_ext_t* ext = dmr_ext_get(state);
+    if (ext == NULL) {
+        return;
+    }
+    DSD_MEMCPY(out->base_hz, ext->overlay.base_hz, sizeof(out->base_hz));
+    DSD_MEMCPY(out->base_origin, ext->overlay.base_origin, sizeof(out->base_origin));
+    DSD_MEMCPY(out->base_trust, ext->overlay.base_trust, sizeof(out->base_trust));
+}
+
+void
+dmr_t3_overlay_bases_restore(const dsd_state* state, const dmr_t3_overlay_bases* in) {
+    dmr_ext_t* ext = dmr_ext_get(state);
+    if (ext == NULL || in == NULL || ext->overlay.count == 0U) {
+        return;
+    }
+    dmr_t3_overlay* o = &ext->overlay;
+    for (unsigned l = 1U; l <= DMR_T3_MAX_LCN; l++) {
+        if (o->op[l] != 0U) {
+            o->base_hz[l] = in->base_hz[l];
+            o->base_origin[l] = in->base_origin[l];
+            o->base_trust[l] = in->base_trust[l];
+        }
+    }
+    ext->revision++;
+}
+
+void
+dmr_t3_overlay_discard(const dsd_state* state) {
     dmr_ext_t* ext = dmr_ext_get(state);
     if (ext != NULL && ext->overlay.count != 0U) {
         DSD_MEMSET(&ext->overlay, 0, sizeof(ext->overlay));
@@ -338,8 +390,8 @@ dmr_t3_missing_note_grant(dsd_opts* opts, dsd_state* state, uint16_t lpcn, const
         return;
     }
     dmr_ext_t* ext = dmr_ext_get_or_create(state);
-    if (ext == NULL || dmr_t3_overlay_hidden(ext, lpcn)) {
-        return; /* the user hid it: no frequency is wanted */
+    if (ext == NULL || dmr_t3_overlay_has_entry(ext, lpcn)) {
+        return; /* the user hid it (no frequency is wanted) or set it (the grant follows theirs) */
     }
     dmr_t3_missing_ledger* l = &ext->missing;
     dmr_t3_missing_bit_set(l->missing, lpcn);
@@ -363,7 +415,8 @@ dmr_t3_missing_note_grant(dsd_opts* opts, dsd_state* state, uint16_t lpcn, const
     }
 }
 
-void
+/* Row @p lpcn gained a frequency: it leaves the ledger (the one-row dmr_t3_missing_reconcile()). */
+static void
 dmr_t3_missing_forget(dmr_ext_t* ext, uint16_t lpcn) {
     dmr_t3_missing_ledger* l = &ext->missing;
     if (!dmr_t3_lpcn_is_channel(lpcn) || !dmr_t3_missing_bit(l->missing, lpcn)) {
@@ -382,9 +435,10 @@ dmr_t3_missing_reconcile(const dsd_state* state) {
         return;
     }
     dmr_t3_missing_ledger* l = &ext->missing;
+    ext->missing_map_seq = state->trunk_chan_map_seq;
     int changed = 0;
     for (uint16_t c = 1U; c <= (uint16_t)DMR_T3_MAX_LCN; c++) {
-        if (dmr_t3_missing_bit(l->missing, c) && (state->trunk_chan_map[c] != 0 || dmr_t3_overlay_hidden(ext, c))) {
+        if (dmr_t3_missing_bit(l->missing, c) && (state->trunk_chan_map[c] != 0 || dmr_t3_overlay_has_entry(ext, c))) {
             dmr_t3_missing_bit_clear(l->missing, c);
             dmr_t3_missing_bit_clear(l->checked, c);
             changed = 1;
@@ -394,6 +448,26 @@ dmr_t3_missing_reconcile(const dsd_state* state) {
         dmr_t3_missing_prune_details(l);
         l->revision++;
     }
+}
+
+void
+dmr_t3_missing_sync(const dsd_state* state) {
+    const dmr_ext_t* ext = dmr_ext_get(state);
+    if (ext != NULL && ext->missing_map_seq != state->trunk_chan_map_seq) {
+        dmr_t3_missing_reconcile(state);
+    }
+}
+
+void
+dmr_t3_missing_note_written(const dsd_state* state, dmr_ext_t* ext, uint16_t lpcn, uint64_t seq_before) {
+    if (ext->missing_map_seq != seq_before) {
+        dmr_t3_missing_reconcile(state); /* another writer moved the map first: every channel is checked */
+        return;
+    }
+    if (state->trunk_chan_map[lpcn] != 0) {
+        dmr_t3_missing_forget(ext, lpcn);
+    }
+    ext->missing_map_seq = state->trunk_chan_map_seq;
 }
 
 size_t
@@ -484,6 +558,7 @@ dmr_t3_missing_log_summary_for(const dmr_t3_missing_ledger* ledger, const char* 
 
 void
 dmr_t3_missing_log_summary(const dsd_state* state) {
+    dmr_t3_missing_sync(state);
     const dmr_ext_t* ext = dmr_ext_get(state);
     if (ext != NULL) {
         dmr_t3_missing_log_summary_for(&ext->missing, NULL);
@@ -628,6 +703,8 @@ dmr_t3_chan_save(const dsd_state* state, dmr_t3_chan_target_snapshot* out) {
     if (state == NULL) {
         return;
     }
+    /* The ledger is saved against the map it is saved with: a row another writer filled leaves it first. */
+    dmr_t3_missing_sync(state);
     DSD_MEMCPY(out->trust, state->dmr_lcn_trust, sizeof(out->trust));
     DSD_MEMCPY(out->ota, state->dmr_lcn_ota, sizeof(out->ota));
     out->revision = dmr_t3_chan_revision(state); // the one a reader sees, the takeovers included

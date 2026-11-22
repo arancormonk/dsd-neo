@@ -683,6 +683,22 @@ test_dmr_t3_view_idle_refresh_copies_nothing(void) {
     free_session_state(st);
 }
 
+/* Review gate b-r1 E6: another protocol's writer (P25's frequency cache, say) fills a missing channel's row with no
+   DMR write after it. The snapshot reconciles the ledger before copying it, so no frontend lists the channel both as
+   mapped and as having no frequency. */
+static void
+test_dmr_t3_view_reconciles_rows_other_writers_filled(void) {
+    dsd_state* st = new_session_state();
+    (void)stage_dmr_t3(st, 12U, 1234U, 18U, 5U, 3U);
+    const dsd_ui_dmr_t3_view* view = dmr_t3_view_after_publish(st);
+    assert(dsd_app_dmr_t3_view_missing_has(view, 12U) && dsd_app_dmr_t3_view_missing_count(view) == 1U);
+    dsd_state_set_trunk_chan_freq(st, 12U, 451150000L);
+    view = dmr_t3_view_after_publish(st);
+    assert(!dsd_app_dmr_t3_view_missing_has(view, 12U) && dsd_app_dmr_t3_view_missing_count(view) == 0U);
+    assert(view->missing.detail_count == 0U && dmr_t3_missing_count(st) == 0U);
+    free_session_state(st);
+}
+
 /* Review Focus 3: two trunk-scan targets whose records sit at equal revisions never alias (A -> B -> A), nor do two
    sessions at equal revisions. */
 static void
@@ -1259,6 +1275,7 @@ main(void) {
     test_render_range_carries_every_field();
     test_dmr_t3_view_carries_the_record();
     test_dmr_t3_view_idle_refresh_copies_nothing();
+    test_dmr_t3_view_reconciles_rows_other_writers_filled();
     test_dmr_t3_view_keys_on_target_and_session();
 
     puts("UI_SNAPSHOT_EVENT_HISTORY: OK");

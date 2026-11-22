@@ -5170,9 +5170,9 @@ dsd_engine_cleanup(dsd_opts* opts, dsd_state* state) {
     // Under trunk scan each target owns a channel map and its ledgers, so the coordinator logs one
     // summary per target from its snapshots as it shuts down. A paused scan's targets are in their
     // snapshots too, and the live ledgers are the manual session's own (issue #671).
-    if (!dsd_trunk_scan_owns_tuner(opts, state)) {
+    const int log_session_ledgers = !dsd_trunk_scan_owns_tuner(opts, state);
+    if (log_session_ledgers) {
         nxdn_trunk_diag_log_summary(opts, state);
-        dmr_t3_missing_log_summary(state);
     }
     dsd_engine_cleanup_codec2(state);
     dsd_engine_finalize_calls(opts, state);
@@ -5189,6 +5189,11 @@ dsd_engine_cleanup(dsd_opts* opts, dsd_state* state) {
     /* The final call snapshots are taken: a session that ended during a Signal search visit gets its own P25 site back
        now, so the band plan export below never writes a visited system's IDEN tables (issue #804). */
     dsd_engine_signal_search_release_site(state);
+    /* The DMR Tier III ledger is the session's again only now: a Signal search visit's site was installed until the
+       release above (discussion #900 F1). */
+    if (log_session_ledgers) {
+        dmr_t3_missing_log_summary(state);
+    }
     // Before the scan coordinator goes: the parked targets' IDEN tables live in its snapshots.
     if (opts->p25_bandplan_export_file[0] != '\0') {
         const int rows = dsd_engine_p25_bandplan_export(opts, state, opts->p25_bandplan_export_file);

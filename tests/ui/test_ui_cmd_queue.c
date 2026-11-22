@@ -26392,85 +26392,92 @@ dmr_channel_edit_result(dsd_opts* opts, dsd_state* state, const dsd_app_dmr_chan
    moved on, under a trunk scan or for a payload it cannot take, and every request answered through its result. */
 static int
 test_dmr_channel_set_command(void) {
-    static dsd_opts opts;
-    static dsd_state state;
-    init_test_context(&opts, &state);
+    dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(*opts));
+    dsd_state* state = (dsd_state*)calloc(1, sizeof(*state));
+    if (opts == NULL || state == NULL) {
+        free(opts);
+        free(state);
+        return 1;
+    }
+    init_test_context(opts, state);
     char map[DSD_TEST_PATH_MAX];
     int rc = make_group_file(map, sizeof map, "dsd_dmr_overlay_map", "channel,freq\n12,451012500\n13,451025000\n");
     if (rc != 0) {
-        freeState(&state);
+        freeState(state);
+        free(state);
+        free(opts);
         return 1;
     }
     post_string(DSD_APP_CMD_IMPORT_CHANNEL_MAP, map);
-    rc |= expect_int("overlay map import drained", dsd_app_drain_cmds(&opts, &state), 1);
+    rc |= expect_int("overlay map import drained", dsd_app_drain_cmds(opts, state), 1);
 
-    dsd_app_dmr_channel_set_payload p = dmr_channel_edit(&state, 12U, DMR_T3_OVERLAY_SET, 451137500);
-    rc |= expect_int("channel set applied", dmr_channel_edit_result(&opts, &state, &p, sizeof p),
+    dsd_app_dmr_channel_set_payload p = dmr_channel_edit(state, 12U, DMR_T3_OVERLAY_SET, 451137500);
+    rc |= expect_int("channel set applied", dmr_channel_edit_result(opts, state, &p, sizeof p),
                      DSD_APP_DMR_CHANNEL_SET_OK);
     rc |=
         expect_true("channel set is live and the user's",
-                    state.trunk_chan_map[12] == 451137500L && dmr_t3_chan_origin(&state, 12U) == DMR_CHAN_ORIGIN_USER);
+                    state->trunk_chan_map[12] == 451137500L && dmr_t3_chan_origin(state, 12U) == DMR_CHAN_ORIGIN_USER);
     dsd_app_dmr_channel_set_result last;
     rc |= expect_true("the result carries the channel revision", dsd_app_dmr_channel_set_result_get(&last) == 1
-                                                                     && last.revision == dmr_t3_chan_revision(&state)
+                                                                     && last.revision == dmr_t3_chan_revision(state)
                                                                      && last.session_seq == p.session_seq);
 
     /* Stale: the row moved on, its origin, the network, the session. Nothing changes. */
-    p = dmr_channel_edit(&state, 13U, DMR_T3_OVERLAY_HIDE, 0);
+    p = dmr_channel_edit(state, 13U, DMR_T3_OVERLAY_HIDE, 0);
     p.expected_hz = 451012500;
-    rc |= expect_int("a moved row is stale", dmr_channel_edit_result(&opts, &state, &p, sizeof p),
+    rc |= expect_int("a moved row is stale", dmr_channel_edit_result(opts, state, &p, sizeof p),
                      DSD_APP_DMR_CHANNEL_SET_STALE);
-    p = dmr_channel_edit(&state, 13U, DMR_T3_OVERLAY_HIDE, 0);
+    p = dmr_channel_edit(state, 13U, DMR_T3_OVERLAY_HIDE, 0);
     p.expected_origin = (uint8_t)DMR_CHAN_ORIGIN_SITE;
-    rc |= expect_int("another origin is stale", dmr_channel_edit_result(&opts, &state, &p, sizeof p),
+    rc |= expect_int("another origin is stale", dmr_channel_edit_result(opts, state, &p, sizeof p),
                      DSD_APP_DMR_CHANNEL_SET_STALE);
-    p = dmr_channel_edit(&state, 13U, DMR_T3_OVERLAY_HIDE, 0);
+    p = dmr_channel_edit(state, 13U, DMR_T3_OVERLAY_HIDE, 0);
     p.generation++;
-    rc |= expect_int("another network is stale", dmr_channel_edit_result(&opts, &state, &p, sizeof p),
+    rc |= expect_int("another network is stale", dmr_channel_edit_result(opts, state, &p, sizeof p),
                      DSD_APP_DMR_CHANNEL_SET_STALE);
-    p = dmr_channel_edit(&state, 13U, DMR_T3_OVERLAY_HIDE, 0);
+    p = dmr_channel_edit(state, 13U, DMR_T3_OVERLAY_HIDE, 0);
     p.session_seq++;
-    rc |= expect_int("another session is stale", dmr_channel_edit_result(&opts, &state, &p, sizeof p),
+    rc |= expect_int("another session is stale", dmr_channel_edit_result(opts, state, &p, sizeof p),
                      DSD_APP_DMR_CHANNEL_SET_STALE);
-    p = dmr_channel_edit(&state, 15U, DMR_T3_OVERLAY_HIDE, -1);
-    rc |= expect_int("a HIDE's frequency is not read", dmr_channel_edit_result(&opts, &state, &p, sizeof p),
+    p = dmr_channel_edit(state, 15U, DMR_T3_OVERLAY_HIDE, -1);
+    rc |= expect_int("a HIDE's frequency is not read", dmr_channel_edit_result(opts, state, &p, sizeof p),
                      DSD_APP_DMR_CHANNEL_SET_OK);
     rc |= expect_true("the HIDE applied",
-                      state.trunk_chan_map[15] == 0L && dmr_t3_chan_origin(&state, 15U) == DMR_CHAN_ORIGIN_USER);
-    rc |= expect_true("stale edits change nothing", state.trunk_chan_map[13] == 451025000L
-                                                        && dmr_t3_chan_origin(&state, 13U) == DMR_CHAN_ORIGIN_FILE);
+                      state->trunk_chan_map[15] == 0L && dmr_t3_chan_origin(state, 15U) == DMR_CHAN_ORIGIN_USER);
+    rc |= expect_true("stale edits change nothing", state->trunk_chan_map[13] == 451025000L
+                                                        && dmr_t3_chan_origin(state, 13U) == DMR_CHAN_ORIGIN_FILE);
 
     /* Invalid: no such channel or frequency, a short payload. */
-    p = dmr_channel_edit(&state, 4095U, DMR_T3_OVERLAY_HIDE, 0);
-    rc |= expect_int("channel 4095 is invalid", dmr_channel_edit_result(&opts, &state, &p, sizeof p),
+    p = dmr_channel_edit(state, 4095U, DMR_T3_OVERLAY_HIDE, 0);
+    rc |= expect_int("channel 4095 is invalid", dmr_channel_edit_result(opts, state, &p, sizeof p),
                      DSD_APP_DMR_CHANNEL_SET_INVALID);
-    p = dmr_channel_edit(&state, 13U, DMR_T3_OVERLAY_SET, INT64_C(4294967296));
-    rc |= expect_int("a frequency no row holds is invalid", dmr_channel_edit_result(&opts, &state, &p, sizeof p),
+    p = dmr_channel_edit(state, 13U, DMR_T3_OVERLAY_SET, INT64_C(4294967296));
+    rc |= expect_int("a frequency no row holds is invalid", dmr_channel_edit_result(opts, state, &p, sizeof p),
                      DSD_APP_DMR_CHANNEL_SET_INVALID);
     /* An operation the overlay does not have, as a frontend's payload byte carries it. */
-    p = dmr_channel_edit(&state, 13U, DMR_T3_OVERLAY_HIDE, 0);
+    p = dmr_channel_edit(state, 13U, DMR_T3_OVERLAY_HIDE, 0);
     p.op = 0U;
-    rc |= expect_int("operation 0 is invalid", dmr_channel_edit_result(&opts, &state, &p, sizeof p),
+    rc |= expect_int("operation 0 is invalid", dmr_channel_edit_result(opts, state, &p, sizeof p),
                      DSD_APP_DMR_CHANNEL_SET_INVALID);
     p.op = 4U;
-    rc |= expect_int("operation 4 is invalid", dmr_channel_edit_result(&opts, &state, &p, sizeof p),
+    rc |= expect_int("operation 4 is invalid", dmr_channel_edit_result(opts, state, &p, sizeof p),
                      DSD_APP_DMR_CHANNEL_SET_INVALID);
-    p = dmr_channel_edit(&state, 13U, DMR_T3_OVERLAY_HIDE, 0);
-    rc |= expect_int("a short payload is invalid", dmr_channel_edit_result(&opts, &state, &p, sizeof p - 4U),
+    p = dmr_channel_edit(state, 13U, DMR_T3_OVERLAY_HIDE, 0);
+    rc |= expect_int("a short payload is invalid", dmr_channel_edit_result(opts, state, &p, sizeof p - 4U),
                      DSD_APP_DMR_CHANNEL_SET_INVALID);
 
     /* Refused under a trunk scan: its targets' channels are read-only. */
-    opts.trunk_scan_enabled = 1;
-    p = dmr_channel_edit(&state, 13U, DMR_T3_OVERLAY_HIDE, 0);
-    rc |= expect_int("refused under trunk scan", dmr_channel_edit_result(&opts, &state, &p, sizeof p),
+    opts->trunk_scan_enabled = 1;
+    p = dmr_channel_edit(state, 13U, DMR_T3_OVERLAY_HIDE, 0);
+    rc |= expect_int("refused under trunk scan", dmr_channel_edit_result(opts, state, &p, sizeof p),
                      DSD_APP_DMR_CHANNEL_SET_TRUNK_SCAN);
-    opts.trunk_scan_enabled = 0;
-    rc |= expect_true("the trunk scan refusal changes nothing", state.trunk_chan_map[13] == 451025000L);
+    opts->trunk_scan_enabled = 0;
+    rc |= expect_true("the trunk scan refusal changes nothing", state->trunk_chan_map[13] == 451025000L);
 
     /* A request the stop discards unapplied is answered too. */
     dsd_app_dmr_channel_set_result before;
     (void)dsd_app_dmr_channel_set_result_get(&before);
-    p = dmr_channel_edit(&state, 13U, DMR_T3_OVERLAY_HIDE, 0);
+    p = dmr_channel_edit(state, 13U, DMR_T3_OVERLAY_HIDE, 0);
     rc |= expect_int("dropped edit queued", dsd_app_command_dmr_channel_set(&p), DSD_APP_COMMAND_SUBMIT_QUEUED);
     dsd_app_frontend_runtime_stop();
     dsd_app_dmr_channel_set_result dropped[2];
@@ -26478,7 +26485,9 @@ test_dmr_channel_set_command(void) {
                       dsd_app_dmr_channel_set_results_since(before.sequence, dropped, 2) == 1
                           && dropped[0].request == p.request && dropped[0].code == DSD_APP_DMR_CHANNEL_SET_DROPPED);
     rc |= expect_int("a NULL edit is rejected", dsd_app_command_dmr_channel_set(NULL), DSD_APP_COMMAND_SUBMIT_REJECTED);
-    freeState(&state);
+    freeState(state);
+    free(state);
+    free(opts);
     (void)remove(map);
     return rc;
 }
@@ -26487,49 +26496,58 @@ test_dmr_channel_set_command(void) {
    and its clear, through the real import services; RESTORE then returns the reloaded file's row. */
 static int
 test_dmr_channel_overlay_reapplied_after_reload(void) {
-    static dsd_opts opts;
-    static dsd_state state;
-    init_test_context(&opts, &state);
+    dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(*opts));
+    dsd_state* state = (dsd_state*)calloc(1, sizeof(*state));
+    if (opts == NULL || state == NULL) {
+        free(opts);
+        free(state);
+        return 1;
+    }
+    init_test_context(opts, state);
     char map[DSD_TEST_PATH_MAX];
     int rc = make_group_file(map, sizeof map, "dsd_dmr_overlay_reload", "channel,freq\n12,451012500\n13,451025000\n");
     if (rc != 0) {
-        freeState(&state);
+        freeState(state);
+        free(state);
+        free(opts);
         return 1;
     }
     post_string(DSD_APP_CMD_IMPORT_CHANNEL_MAP, map);
-    rc |= expect_int("reload map import drained", dsd_app_drain_cmds(&opts, &state), 1);
-    dsd_app_dmr_channel_set_payload p = dmr_channel_edit(&state, 12U, DMR_T3_OVERLAY_SET, 451137500);
-    rc |= expect_int("reload: channel 12 set", dmr_channel_edit_result(&opts, &state, &p, sizeof p),
+    rc |= expect_int("reload map import drained", dsd_app_drain_cmds(opts, state), 1);
+    dsd_app_dmr_channel_set_payload p = dmr_channel_edit(state, 12U, DMR_T3_OVERLAY_SET, 451137500);
+    rc |= expect_int("reload: channel 12 set", dmr_channel_edit_result(opts, state, &p, sizeof p),
                      DSD_APP_DMR_CHANNEL_SET_OK);
-    p = dmr_channel_edit(&state, 13U, DMR_T3_OVERLAY_HIDE, 0);
-    rc |= expect_int("reload: channel 13 hidden", dmr_channel_edit_result(&opts, &state, &p, sizeof p),
+    p = dmr_channel_edit(state, 13U, DMR_T3_OVERLAY_HIDE, 0);
+    rc |= expect_int("reload: channel 13 hidden", dmr_channel_edit_result(opts, state, &p, sizeof p),
                      DSD_APP_DMR_CHANNEL_SET_OK);
 
     const char* refreshed = "channel,freq\n12,451012600\n13,451025100\n14,451037500\n";
     rc |= write_file_bytes(map, refreshed, strlen(refreshed));
     post_string(DSD_APP_CMD_IMPORT_CHANNEL_MAP_RELOAD, map);
-    rc |= expect_int("overlay map reload drained", dsd_app_drain_cmds(&opts, &state), 1);
+    rc |= expect_int("overlay map reload drained", dsd_app_drain_cmds(opts, state), 1);
     rc |=
         expect_true("the reload keeps channel 12 the user's",
-                    state.trunk_chan_map[12] == 451137500L && dmr_t3_chan_origin(&state, 12U) == DMR_CHAN_ORIGIN_USER);
+                    state->trunk_chan_map[12] == 451137500L && dmr_t3_chan_origin(state, 12U) == DMR_CHAN_ORIGIN_USER);
     rc |= expect_true("the reload keeps channel 13 hidden",
-                      state.trunk_chan_map[13] == 0L && dmr_t3_chan_origin(&state, 13U) == DMR_CHAN_ORIGIN_USER);
-    rc |= expect_true("the reload's new row loads", state.trunk_chan_map[14] == 451037500L);
-    p = dmr_channel_edit(&state, 13U, DMR_T3_OVERLAY_RESTORE, 0);
-    rc |= expect_int("reload: channel 13 restored", dmr_channel_edit_result(&opts, &state, &p, sizeof p),
+                      state->trunk_chan_map[13] == 0L && dmr_t3_chan_origin(state, 13U) == DMR_CHAN_ORIGIN_USER);
+    rc |= expect_true("the reload's new row loads", state->trunk_chan_map[14] == 451037500L);
+    p = dmr_channel_edit(state, 13U, DMR_T3_OVERLAY_RESTORE, 0);
+    rc |= expect_int("reload: channel 13 restored", dmr_channel_edit_result(opts, state, &p, sizeof p),
                      DSD_APP_DMR_CHANNEL_SET_OK);
     rc |=
         expect_true("restore returns the reloaded file's row",
-                    state.trunk_chan_map[13] == 451025100L && dmr_t3_chan_origin(&state, 13U) == DMR_CHAN_ORIGIN_FILE);
+                    state->trunk_chan_map[13] == 451025100L && dmr_t3_chan_origin(state, 13U) == DMR_CHAN_ORIGIN_FILE);
 
     rc |= expect_int("overlay map clear queued", post_empty(DSD_APP_CMD_IMPORT_CHANNEL_MAP_CLEAR),
                      DSD_APP_COMMAND_SUBMIT_QUEUED);
-    rc |= expect_int("overlay map clear drained", dsd_app_drain_cmds(&opts, &state), 1);
+    rc |= expect_int("overlay map clear drained", dsd_app_drain_cmds(opts, state), 1);
     rc |= expect_true("the clear keeps the user's channel",
-                      state.trunk_chan_map[12] == 451137500L && state.trunk_chan_map[13] == 0L
-                          && state.trunk_chan_map[14] == 0L && dmr_t3_overlay_count(&state) == 1U);
+                      state->trunk_chan_map[12] == 451137500L && state->trunk_chan_map[13] == 0L
+                          && state->trunk_chan_map[14] == 0L && dmr_t3_overlay_count(state) == 1U);
     dsd_app_frontend_runtime_stop();
-    freeState(&state);
+    freeState(state);
+    free(state);
+    free(opts);
     (void)remove(map);
     return rc;
 }

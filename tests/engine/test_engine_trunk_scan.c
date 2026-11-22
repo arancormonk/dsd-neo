@@ -57,6 +57,7 @@
 #include <dsd-neo/platform/sockets.h>
 #include <dsd-neo/protocol/dmr/dmr.h>
 #include <dsd-neo/protocol/dmr/dmr_t3_channels.h>
+#include <dsd-neo/protocol/dmr/dmr_t3_grant.h>
 #include <dsd-neo/protocol/dmr/dmr_trunk_sm.h>
 #include <dsd-neo/protocol/nxdn/nxdn_trunk_diag.h>
 #include <dsd-neo/protocol/p25/p25_cc_activity.h>
@@ -2213,50 +2214,56 @@ test_dmr_missing_ledger_per_target(void) {
         return 1;
     }
 
-    static dsd_opts opts;
-    static dsd_state state;
-    reset_scan_opts_state(&opts, &state);
-    DSD_SNPRINTF(opts.trunk_scan_lists[0].path, sizeof opts.trunk_scan_lists[0].path, "%s", target_path);
-    opts.trunk_scan_list_count = 1;
+    dsd_opts* opts = calloc(1, sizeof(*opts));
+    dsd_state* state = calloc(1, sizeof(*state));
+    if (!opts || !state) {
+        free(opts);
+        free(state);
+        cleanup_paths(dir, target_path, NULL);
+        return 1;
+    }
+    reset_scan_opts_state(opts, state);
+    DSD_SNPRINTF(opts->trunk_scan_lists[0].path, sizeof opts->trunk_scan_lists[0].path, "%s", target_path);
+    opts->trunk_scan_list_count = 1;
 
     char err[256] = {0};
     trunk_scan_test_set_now(0.0);
     int test_rc = 0;
-    if (dsd_engine_trunk_scan_init(&opts, &state, err, sizeof err) != 0
-        || dsd_engine_trunk_scan_active_index(&state) != 0) {
+    if (dsd_engine_trunk_scan_init(opts, state, err, sizeof err) != 0
+        || dsd_engine_trunk_scan_active_index(state) != 0) {
         DSD_FPRINTF(stderr, "dmr missing: scan init failed err=%s\n", err);
         test_rc = 1;
     }
 
     const dmr_t3_grant_class group = {1U, 0U, 2002U, 1001U};
-    dmr_t3_missing_note_grant(&opts, &state, 12U, &group, 0U, 0);
-    if (!dmr_missing_only(&state, 12U)) {
+    dmr_t3_missing_note_grant(opts, state, 12U, &group, 0U, 0);
+    if (!dmr_missing_only(state, 12U)) {
         DSD_FPRINTF(stderr, "dmr missing: target A did not record LPCN 12\n");
         test_rc = 1;
     }
     trunk_scan_test_set_now(0.26);
-    dsd_engine_trunk_scan_tick(&opts, &state);
-    if (dsd_engine_trunk_scan_active_index(&state) != 1 || dmr_t3_missing_count(&state) != 0U) {
+    dsd_engine_trunk_scan_tick(opts, state);
+    if (dsd_engine_trunk_scan_active_index(state) != 1 || dmr_t3_missing_count(state) != 0U) {
         DSD_FPRINTF(stderr, "dmr missing: target A's LPCN 12 leaked into B\n");
         test_rc = 1;
     }
-    dmr_t3_missing_note_grant(&opts, &state, 30U, &group, 1U, 1);
+    dmr_t3_missing_note_grant(opts, state, 30U, &group, 1U, 1);
     trunk_scan_test_set_now(0.52);
-    dsd_engine_trunk_scan_tick(&opts, &state);
-    if (dsd_engine_trunk_scan_active_index(&state) != 0 || !dmr_missing_only(&state, 12U)) {
+    dsd_engine_trunk_scan_tick(opts, state);
+    if (dsd_engine_trunk_scan_active_index(state) != 0 || !dmr_missing_only(state, 12U)) {
         DSD_FPRINTF(stderr, "dmr missing: target A's ledger not restored\n");
         test_rc = 1;
     }
     trunk_scan_test_set_now(0.78);
-    dsd_engine_trunk_scan_tick(&opts, &state);
-    if (dsd_engine_trunk_scan_active_index(&state) != 1 || !dmr_missing_only(&state, 30U)) {
+    dsd_engine_trunk_scan_tick(opts, state);
+    if (dsd_engine_trunk_scan_active_index(state) != 1 || !dmr_missing_only(state, 30U)) {
         DSD_FPRINTF(stderr, "dmr missing: target B's ledger not restored\n");
         test_rc = 1;
     }
 
     g_dmr_missing_summaries = 0;
     dsd_neo_log_set_tap(trunk_scan_test_log_tap, NULL);
-    dsd_engine_trunk_scan_shutdown(&opts, &state);
+    dsd_engine_trunk_scan_shutdown(opts, state);
     if (g_dmr_missing_summaries != 2 || strstr(g_dmr_missing_summary[0], "(a)") == NULL
         || strstr(g_dmr_missing_summary[0], " 12") == NULL || strstr(g_dmr_missing_summary[1], "(b)") == NULL
         || strstr(g_dmr_missing_summary[1], " 30 (unchecked)") == NULL) {
@@ -2264,6 +2271,11 @@ test_dmr_missing_ledger_per_target(void) {
                     g_dmr_missing_summary[0], g_dmr_missing_summary[1]);
         test_rc = 1;
     }
+    dsd_state_trunk_lcn_free(state);
+    dsd_state_trunk_scan_avoids_free(state);
+    dsd_state_ext_free_all(state);
+    free(state);
+    free(opts);
     trunk_scan_test_clear_now();
     cleanup_paths(dir, target_path, NULL);
     return test_rc;
@@ -2283,44 +2295,55 @@ test_dmr_overlay_never_crosses_targets(void) {
         return 1;
     }
 
-    static dsd_opts opts;
-    static dsd_state state;
-    reset_scan_opts_state(&opts, &state);
-    DSD_SNPRINTF(opts.trunk_scan_lists[0].path, sizeof opts.trunk_scan_lists[0].path, "%s", target_path);
-    opts.trunk_scan_list_count = 1;
+    dsd_opts* opts = calloc(1, sizeof(*opts));
+    dsd_state* state = calloc(1, sizeof(*state));
+    if (!opts || !state) {
+        free(opts);
+        free(state);
+        cleanup_paths(dir, target_path, NULL);
+        return 1;
+    }
+    reset_scan_opts_state(opts, state);
+    DSD_SNPRINTF(opts->trunk_scan_lists[0].path, sizeof opts->trunk_scan_lists[0].path, "%s", target_path);
+    opts->trunk_scan_list_count = 1;
 
     char err[256] = {0};
     trunk_scan_test_set_now(0.0);
     int test_rc = 0;
-    if (dsd_engine_trunk_scan_init(&opts, &state, err, sizeof err) != 0
-        || dsd_engine_trunk_scan_active_index(&state) != 0) {
+    if (dsd_engine_trunk_scan_init(opts, state, err, sizeof err) != 0
+        || dsd_engine_trunk_scan_active_index(state) != 0) {
         DSD_FPRINTF(stderr, "dmr overlay: scan init failed err=%s\n", err);
         test_rc = 1;
     }
     /* A live edit is refused under the scan. */
-    if (dmr_t3_overlay_apply(&opts, &state, 12U, DMR_T3_OVERLAY_SET, 452137500L, 0L, 0U, 0U, 1)
+    if (dmr_t3_overlay_apply(opts, state, 12U, DMR_T3_OVERLAY_SET, 452137500L, 0L, 0U, 0U, 1)
         != DMR_T3_SET_TRUNK_SCAN) {
         DSD_FPRINTF(stderr, "dmr overlay: an edit under trunk scan was not refused\n");
         test_rc = 1;
     }
-    (void)dmr_t3_overlay_apply(NULL, &state, 12U, DMR_T3_OVERLAY_SET, 452137500L, 0L, 0U, 0U, 0);
-    (void)dmr_t3_overlay_apply(NULL, &state, 13U, DMR_T3_OVERLAY_HIDE, 0L, 0L, 0U, 0U, 0);
+    (void)dmr_t3_overlay_apply(NULL, state, 12U, DMR_T3_OVERLAY_SET, 452137500L, 0L, 0U, 0U, 0);
+    (void)dmr_t3_overlay_apply(NULL, state, 13U, DMR_T3_OVERLAY_HIDE, 0L, 0L, 0U, 0U, 0);
     trunk_scan_test_set_now(0.26);
-    dsd_engine_trunk_scan_tick(&opts, &state);
-    if (dsd_engine_trunk_scan_active_index(&state) != 1 || dmr_t3_overlay_count(&state) != 0U
-        || state.trunk_chan_map[12] != 0 || dmr_t3_chan_origin(&state, 13U) != DMR_CHAN_ORIGIN_NONE) {
+    dsd_engine_trunk_scan_tick(opts, state);
+    if (dsd_engine_trunk_scan_active_index(state) != 1 || dmr_t3_overlay_count(state) != 0U
+        || state->trunk_chan_map[12] != 0 || dmr_t3_chan_origin(state, 13U) != DMR_CHAN_ORIGIN_NONE) {
         DSD_FPRINTF(stderr, "dmr overlay: target A's channels leaked into B\n");
         test_rc = 1;
     }
-    (void)dmr_t3_overlay_apply(NULL, &state, 12U, DMR_T3_OVERLAY_SET, 453137500L, 0L, 0U, 0U, 0);
+    (void)dmr_t3_overlay_apply(NULL, state, 12U, DMR_T3_OVERLAY_SET, 453137500L, 0L, 0U, 0U, 0);
     trunk_scan_test_set_now(0.52);
-    dsd_engine_trunk_scan_tick(&opts, &state);
-    if (dsd_engine_trunk_scan_active_index(&state) != 0 || dmr_t3_overlay_count(&state) != 0U
-        || dmr_t3_overlay_get(&state, 12U, NULL, NULL) != 0 || dmr_t3_overlay_get(&state, 13U, NULL, NULL) != 0) {
+    dsd_engine_trunk_scan_tick(opts, state);
+    if (dsd_engine_trunk_scan_active_index(state) != 0 || dmr_t3_overlay_count(state) != 0U
+        || dmr_t3_overlay_get(state, 12U, NULL, NULL) != 0 || dmr_t3_overlay_get(state, 13U, NULL, NULL) != 0) {
         DSD_FPRINTF(stderr, "dmr overlay: an overlay came back with target A\n");
         test_rc = 1;
     }
-    dsd_engine_trunk_scan_shutdown(&opts, &state);
+    dsd_engine_trunk_scan_shutdown(opts, state);
+    dsd_state_trunk_lcn_free(state);
+    dsd_state_trunk_scan_avoids_free(state);
+    dsd_state_ext_free_all(state);
+    free(state);
+    free(opts);
     trunk_scan_test_clear_now();
     cleanup_paths(dir, target_path, NULL);
     return test_rc;

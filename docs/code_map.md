@@ -187,7 +187,8 @@ Generated (do not edit/commit):
     ledger and the Tier III flags), and every restore puts it back with the rows: a visit that hears another network's
     checked system code drops the session's learned rows, and the departure brings them back as they were (discussion
     #900). The user's Tier III channels are not part of it: a search refuses every edit, and the overlay stays over the
-    session's rows throughout. The P25 patch table is not part of the
+    session's rows throughout; only the rows its entries replaced (`dmr_t3_overlay_bases`, saved at Start) come back
+    with every restore, since a visit that heard another network dropped the ones the air taught from them. The P25 patch table is not part of the
     site: Start
     saves the session's whole (`dsd_p25_patch_snapshot`, owner, listening clock and sequence counter with it), every
     departure's boundary empties it, so each visit starts with an empty, unowned table and a voice-only visit to
@@ -13449,10 +13450,15 @@ Private per-protocol modules worth knowing about:
   then unverified and `checked` clear); never an MS-sourced, manufacturer's, failed or synthesized one, and never a
   channel the user hid. The first grant for a channel on a network logs `DMR Tier III: channel 12 has no frequency;
   dsd-neo cannot retune to its calls` (` (unchecked)` for RAS only). Every map or overlay change reconciles it
-  (`dmr_t3_missing_reconcile()`, `dmr_t3_missing_forget()` from the learner): a channel that now has a frequency, or
-  that the user hid, leaves it, and none joins it. A network change empties it, `reported` included; nothing else clears
+  (`dmr_t3_missing_reconcile()`): a channel that now has a frequency, or that the user gave an entry, leaves it, and
+  none joins it. The extension keeps the `trunk_chan_map_seq` of the last reconcile (`missing_map_seq`), so a row
+  another writer filled (P25's frequency cache, a `-Y` visit, a replay) leaves it too: the learner reconciles the
+  whole set when the sequence moved before its own write (`dmr_t3_missing_note_written()`, else only its row), and
+  `dmr_t3_missing_sync()` does at the UI snapshot copy, the exit summary and `dmr_t3_chan_save()`; a mapped grant does
+  none of it. A network change empties it, `reported` included; nothing else clears
   `reported`. Trunk scan per target and Signal search per session save and restore it with the provenance. At exit
-  `dmr_t3_missing_log_summary()` (engine, a single system) or `trunk_scan_log_missing_channel_summaries()` (each parked
+  `dmr_t3_missing_log_summary()` (engine, a single system, after `dsd_engine_signal_search_release_site()` gives back
+  a session that ended during a visit its own ledger) or `trunk_scan_log_missing_channel_summaries()` (each parked
   target, named by its id) logs one line, `DMR Tier III: 3 channels were granted with no frequency, so dsd-neo could not
   follow their calls: 7, 9 (unchecked), 12`, at most the detail count listed and then `(+n more)`, ending `...` when a
   long target id cut it. Tests: `DMR_T3_CHANNELS`, `DMR_GRANT_POLICY`, `ENGINE_TRUNK_SCAN`.
@@ -13461,9 +13467,16 @@ Private per-protocol modules worth knowing about:
   map in the same extension (`dmr_t3_overlay`, at most `DMR_T3_OVERLAY_MAX_ROWS` = 256 entries; a new one past them is
   FULL). A trunk scan refuses every edit and the start-up file, so no target has an overlay: the target snapshot does
   not carry one and the target switch empties it (`dmr_t3_overlay_discard()`). `dmr_t3_chan_restore()` itself leaves the
-  overlay, so a Signal search session's entries stay over the session's rows. SET puts the user's frequency in the live
+  overlay, so a Signal search session's entries stay over the session's rows (their bases are kept with the session:
+  `dmr_t3_overlay_bases_save()`/`_restore()`). SET puts the user's frequency in the live
   row, HIDE empties it (no grant for it is followed, and none is recorded as missing), both as USER with trust 0, which
-  nothing over the air replaces (`dmr_t3_chan_origin()` reads a hidden row as USER); the row they replaced (its
+  nothing over the air replaces (`dmr_t3_chan_origin()` reads an empty row with an entry as USER, a hidden one or a set
+  one another writer emptied). A grant's channel is resolved through the overlay first (`dmr_t3_overlay_resolve()`, one
+  extension lookup and the per-LPCN op byte, the only overlay read on the grant path): a logical grant and an absolute
+  grant's CdefParms LPCN alike follow the entry's frequency for SET and are not followed for HIDE, and only a channel
+  with no entry reads the shared map (or the absolute grant's own frequency), so another writer of the map (a P25 IDEN
+  invalidation empties rows 0..4095) never decides a channel the user set or hid. The same SET or HIDE again writes the
+  live row once more when another writer changed it, so the editor's repeat repairs it; the row they replaced (its
   frequency, the origin it read as and its trust) is kept as the entry's base, and RESTORE puts it back, a row the air
   taught with its `dmr_lcn_ota` bit. The overlay writes rows as DMR's own writer, so no takeover is counted, and a USER
   row is protected as a FILE row is: no over-the-air origin replaces it and a network change keeps it.
@@ -13484,8 +13497,8 @@ Private per-protocol modules worth knowing about:
   rows and rows past 256 channels skipped with a warning; Tier III sessions only, the map being shared with the other
   trunking protocols) is applied unchecked by the engine after the map loads and before the first frame
   (`import_dmr_chan_overrides_if_needed()`); it cannot be combined with `--trunk-scan` and has no INI key. Tests:
-  `DMR_T3_CHANNELS`, `APP_COMMAND_QUEUE`, `ENGINE_TRUNK_SCAN`, `ENGINE_DMR_CHAN_OVERRIDES`, `RUNTIME_CLI_PARSE`,
-  `RUNTIME_CLI_COMPACT`, `FUZZ_CORE_CSV_IMPORT`.
+  `DMR_T3_CHANNELS`, `APP_COMMAND_QUEUE`, `ENGINE_TRUNK_SCAN`, `ENGINE_DMR_CHAN_OVERRIDES`, `ENGINE_SIGNAL_SEARCH`,
+  `RUNTIME_CLI_PARSE`, `RUNTIME_CLI_COMPACT`, `FUZZ_CORE_CSV_IMPORT`, `CORE_INIT_STATE` (`initOpts()` clears the path).
 - Tier III identity and control channel evidence (`dmr_t3_channels.c`, discussion #900 F3). `dmr_t3_note_tier3()`
   records that a message named the site Tier III: a C_ALOHA (any FID), an SLC C_SYS_Parms/P_SYS_Parms, or a standard
   (FID 0, BS-sourced) grant or C_BCAST (`dmr_csbk_note_tier3()`). A checked one sets `tier3`, the identity; one -F

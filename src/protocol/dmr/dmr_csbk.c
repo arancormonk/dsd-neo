@@ -262,7 +262,8 @@ dmr_cspdu_abs_params(const uint8_t cs_pdu_bits[], dmr_abs_params* ap) {
 
 /* An absolute grant (LPCN 0xFFF): its frequency in @p freq and the LPCN its CdefParms define in @p chan (0 or 4095
    name no channel). 0 when its parameters are unusable: then it names no frequency and is neither shown nor
-   followed. */
+   followed. The user's entry for that LPCN decides over the advertised frequency (dmr_t3_overlay_resolve()): a set
+   channel is followed on theirs, a hidden one not at all. */
 static int
 dmr_cspdu_pf0_parse_absolute_grant(dsd_opts* opts, dsd_state* state, uint8_t cs_pdu_bits[], long int* freq,
                                    uint16_t* chan) {
@@ -276,6 +277,7 @@ dmr_cspdu_pf0_parse_absolute_grant(dsd_opts* opts, dsd_state* state, uint8_t cs_
     *freq = ap.rx_hz;
     *chan = ap.chan;
     (void)dmr_csbk_learn_channel(opts, state, ap.chan, ap.rx_hz, 0);
+    (void)dmr_t3_overlay_resolve(state, ap.chan, freq);
     return 1;
 }
 
@@ -310,14 +312,15 @@ dmr_cspdu_pf0_print_channel_kind(uint16_t lpchannum) {
 }
 
 /* The grant's frequency in @p freq, and for the absolute escape the LPCN its CdefParms define in @p mbc_lpchannum.
-   0 for an absolute grant whose parameters are unusable. */
+   0 for an absolute grant whose parameters are unusable. A logical grant's channel is the user's entry first
+   (dmr_t3_overlay_resolve(): theirs, or none for a hidden one), then the channel map. */
 static int
 dmr_cspdu_pf0_resolve_frequency(dsd_opts* opts, dsd_state* state, uint8_t cs_pdu_bits[], uint16_t lpchannum,
                                 long int* freq, uint16_t* mbc_lpchannum) {
     if (lpchannum == 0xFFF) {
         return dmr_cspdu_pf0_parse_absolute_grant(opts, state, cs_pdu_bits, freq, mbc_lpchannum);
     }
-    if (lpchannum != 0) {
+    if (lpchannum != 0 && !dmr_t3_overlay_resolve(state, lpchannum, freq)) {
         *freq = state->trunk_chan_map[lpchannum];
     }
     return 1;
@@ -332,10 +335,13 @@ dmr_cspdu_pf0_call_channel(uint16_t lpchannum, uint16_t mbc_lpchannum) {
     return dmr_t3_lpcn_is_channel(channel) ? channel : 0U;
 }
 
+/* @p channel is the grant's call channel (dmr_cspdu_pf0_call_channel()). */
 static void
-dmr_cspdu_pf0_print_frequency(uint16_t lpchannum, long int freq) {
+dmr_cspdu_pf0_print_frequency(const dsd_state* state, uint16_t lpchannum, uint16_t channel, long int freq) {
     if (freq != 0) {
         DSD_FPRINTF(stderr, "\n  Frequency: %.6lf MHz", (double)freq / 1000000.0);
+    } else if (dmr_t3_overlay_get(state, channel, NULL, NULL) == DMR_T3_OVERLAY_HIDE) {
+        DSD_FPRINTF(stderr, "\n  Channel Hidden in Your Channel List;");
     } else if (lpchannum != 0 && lpchannum != 0xFFF) {
         DSD_FPRINTF(stderr, "\n  Frequency Not Found in Channel Map;");
     }
@@ -446,7 +452,8 @@ dmr_cspdu_pf0_handle_grants(dsd_opts* opts, dsd_state* state, uint8_t cs_pdu_bit
     if (!dmr_cspdu_pf0_resolve_frequency(opts, state, cs_pdu_bits, lpchannum, &freq, &mbc_lpchannum)) {
         return;
     }
-    dmr_cspdu_pf0_print_frequency(lpchannum, freq);
+    const uint16_t call_channel = dmr_cspdu_pf0_call_channel(lpchannum, mbc_lpchannum);
+    dmr_cspdu_pf0_print_frequency(state, lpchannum, call_channel, freq);
     if (freq == 0 && dmr_t3_lpcn_is_channel(lpchannum)) {
         dmr_cspdu_pf0_note_missing_channel(opts, state, csbk_fid, lpchannum, &grant, lcn);
     }
@@ -458,8 +465,7 @@ dmr_cspdu_pf0_handle_grants(dsd_opts* opts, dsd_state* state, uint8_t cs_pdu_bit
         return;
     }
 
-    dmr_cspdu_pf0_try_dispatch_grant(opts, state, cs_pdu_bits, cs_pdu, &grant,
-                                     dmr_cspdu_pf0_call_channel(lpchannum, mbc_lpchannum), freq);
+    dmr_cspdu_pf0_try_dispatch_grant(opts, state, cs_pdu_bits, cs_pdu, &grant, call_channel, freq);
 }
 
 /* The TSCC an absolute C_MOVE's MV_AP or an absolute P_CLEAR's appended block names (CHAN @p chan, which may name no

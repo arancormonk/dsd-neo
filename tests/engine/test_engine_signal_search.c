@@ -26,6 +26,7 @@
 #include <dsd-neo/io/rtl_stream_c.h>
 #include <dsd-neo/io/signal_measure.h>
 #include <dsd-neo/protocol/dmr/dmr_t3_channels.h>
+#include <dsd-neo/protocol/dmr/dmr_t3_grant.h>
 #include <dsd-neo/protocol/p25/p25_cc_candidates.h>
 #include <dsd-neo/runtime/analog_channel.h>
 #include <dsd-neo/runtime/control_pump.h>
@@ -3105,15 +3106,28 @@ test_hardset_restored(dsd_opts* o, dsd_state* s, const dsd_signal_search_config*
    session saved (discussion #900 F2). A visit that hears another network's checked system code (the entry point a
    checked C_ALOHA or SYS_Parms short LC calls) drops the session's rows; the departure brings the row back as SITE
    with its trust and the session's baseline with it. */
-enum { LEARNED_CHANNEL = 9, USER_CHANNEL = 10 };
+enum { LEARNED_CHANNEL = 9, USER_CHANNEL = 10, OVERLAID_CHANNEL = 11 };
 
 /* The user's entry is still there over the session's row: no restore takes the live overlay away. */
 static int
 user_dmr_row_kept(const dsd_state* s) {
     long hz = 0;
     return s->trunk_chan_map[USER_CHANNEL] == 852112500 && dmr_t3_chan_origin(s, USER_CHANNEL) == DMR_CHAN_ORIGIN_USER
-           && dmr_t3_overlay_count(s) == 1U && dmr_t3_overlay_get(s, USER_CHANNEL, &hz, NULL) == DMR_T3_OVERLAY_SET
+           && dmr_t3_overlay_count(s) == 2U && dmr_t3_overlay_get(s, USER_CHANNEL, &hz, NULL) == DMR_T3_OVERLAY_SET
            && hz == 852112500;
+}
+
+/* The user's entry over a row the session's site taught keeps that row as its base (review gate b-r1 E4): a visit
+   that heard another network dropped it, and the return to the session puts it back. */
+static int
+overlaid_dmr_base_back(const dsd_state* s) {
+    const dmr_ext_t* ext = dmr_ext_get(s);
+    long hz = 0;
+    long base_hz = 0;
+    return dmr_t3_overlay_get(s, OVERLAID_CHANNEL, &hz, &base_hz) == DMR_T3_OVERLAY_SET && hz == 852137500
+           && base_hz == 852025000 && s->trunk_chan_map[OVERLAID_CHANNEL] == 852137500 && ext != NULL
+           && ext->overlay.base_origin[OVERLAID_CHANNEL] == (uint8_t)DMR_CHAN_ORIGIN_SITE
+           && ext->overlay.base_trust[OVERLAID_CHANNEL] == 2U;
 }
 
 static int
@@ -3148,26 +3162,76 @@ test_learned_dmr_channel_survives_visits(dsd_opts* o, dsd_state* s, const dsd_si
     ext->overlay.hz[USER_CHANNEL] = 852112500;
     ext->overlay.count = 1U;
     dmr_t3_overlay_write_live(s, ext, USER_CHANNEL);
+    /* And an entry over a row the site taught, laid as dmr_t3_overlay_apply() lays a new one: its base is that SITE
+       row, which RESTORE returns. */
+    dsd_state_set_trunk_chan_freq(s, OVERLAID_CHANNEL, 852025000);
+    dsd_state_dmr_lcn_ota_set(s, OVERLAID_CHANNEL, 1);
+    ext->origin[OVERLAID_CHANNEL] = (uint8_t)DMR_CHAN_ORIGIN_SITE;
+    s->dmr_lcn_trust[OVERLAID_CHANNEL] = 2U;
+    dmr_t3_overlay_take_base(s, ext, OVERLAID_CHANNEL);
+    ext->overlay.op[OVERLAID_CHANNEL] = (uint8_t)DMR_T3_OVERLAY_SET;
+    ext->overlay.hz[OVERLAID_CHANNEL] = 852137500;
+    ext->overlay.count = 2U;
+    dmr_t3_overlay_write_live(s, ext, OVERLAID_CHANNEL);
+    assert(overlaid_dmr_base_back(s));
     const uint32_t session_generation = dmr_t3_chan_generation(s);
     start_tag_session(o, s, &one);
     visit_strongest(o, s);
     assert(boundary_kind == DSD_CARRIER_BOUNDARY_TUNE);
     visit_hears_network_b(s, session_generation);
+    long dropped_base = 1;
+    assert(dmr_t3_overlay_get(s, OVERLAID_CHANNEL, NULL, &dropped_base) == DMR_T3_OVERLAY_SET && dropped_base == 0);
     next_visit(o, s);
     assert(boundary_kind == DSD_CARRIER_BOUNDARY_TUNE);
-    assert(learned_dmr_row_back(s, session_generation) && user_dmr_row_kept(s));
+    assert(learned_dmr_row_back(s, session_generation) && user_dmr_row_kept(s) && overlaid_dmr_base_back(s));
     /* Back on the session's network baseline: its own code is no network change. */
     dmr_t3_chan_note_checked_syscode(s, 0x1223U);
     assert(learned_dmr_row_back(s, session_generation));
     visit_hears_network_b(s, session_generation);
     stop_tag_session(o, s);
     assert(learned_dmr_row_back(s, session_generation));
-    assert(user_dmr_row_kept(s));
+    assert(user_dmr_row_kept(s) && overlaid_dmr_base_back(s));
     s->dmr_lcn_trust[LEARNED_CHANNEL] = 0U;
+    dsd_state_set_trunk_chan_freq(s, OVERLAID_CHANNEL, 0);
     dmr_t3_overlay_discard(s);
     dsd_state_set_trunk_chan_freq(s, USER_CHANNEL, 0);
     dmr_t3_chan_note_map_cleared(s);
     ext->syscode_valid = 0U;
+    session_site(s, 0, 0, 0);
+}
+
+/* A standard group grant for channel @p lpcn with no frequency, as the CSBK handler records it. */
+static void
+note_missing_dmr_channel(dsd_opts* o, dsd_state* s, uint16_t lpcn) {
+    dmr_t3_grant_class cls;
+    DSD_MEMSET(&cls, 0, sizeof cls);
+    cls.group = 1U;
+    cls.recipient = 1001U;
+    cls.caller = 2002U;
+    dmr_t3_missing_note_grant(o, s, lpcn, &cls, 0U, 0);
+}
+
+/* Review gate b-r1 E7: a session that ends during a visit keeps the visit's site, its DMR ledger included, until the
+   engine's teardown releases it. Only then is the live ledger the session's own, so the exit summary is logged after
+   the release (dsd_engine_cleanup()): before it, the visit's channel would be reported and the session's not. */
+static void
+test_shutdown_during_visit_returns_the_dmr_ledger(dsd_opts* o, dsd_state* s, const dsd_signal_search_config* config) {
+    const dsd_signal_search_config one = tag_config(config, 88, 1, 0);
+    session_site(s, CODE_A, 0, 0);
+    note_missing_dmr_channel(o, s, 12U);
+    start_tag_session(o, s, &one);
+    visit_strongest(o, s);
+    dmr_t3_chan_network_changed(o, s); /* the visit hears another network */
+    note_missing_dmr_channel(o, s, 30U);
+    dsd_engine_signal_search_shutdown(o, s);
+    dmr_t3_missing_ledger ledger;
+    dmr_t3_missing_copy(s, &ledger);
+    assert(dmr_t3_missing_count(s) == 1U && (ledger.missing[30 >> 3] & (1U << (30 & 7))) != 0U);
+    dsd_signal_search_visit_clear(); // the engine's teardown, after its last close
+    dsd_engine_signal_search_release_site(s);
+    dmr_t3_missing_copy(s, &ledger);
+    assert(dmr_t3_missing_count(s) == 1U && (ledger.missing[12 >> 3] & (1U << (12 & 7))) != 0U);
+    dmr_t3_chan_network_changed(o, s);
     session_site(s, 0, 0, 0);
 }
 
@@ -3620,6 +3684,7 @@ test_p25_site_and_codes(dsd_opts* o, dsd_state* s, const dsd_signal_search_confi
     test_unknown_identity_restored(o, s, config);
     test_verified_seed_at_start_not_restored_as_proof(o, s, config);
     test_shutdown_during_active_call(o, s, config);
+    test_shutdown_during_visit_returns_the_dmr_ledger(o, s, config);
     test_patches_stay_with_session(o, s, config);
     test_departure_mid_recovery_drops_pending(o, s, config);
     test_code_list_bound_dedupe_order(o, s, config);
