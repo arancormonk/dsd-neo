@@ -4535,18 +4535,24 @@ live_scanner_y_note_checked(dsd_state* state, double now_m, dsd_engine_scan_owne
 
 /* Whether the refusal @p owner holds for the typed simplex row on air still stands (issue #890): the refused
    transmission is the call active on its slot. Bound at the boundary of the refused report's own frame, every
-   boundary asking, to that call's transmission_epoch (the report's frame observed it); dropped once the slot holds no active call (the transmission
-   ended, or it was never a call the decoder tracks) or another transmission's call, so a later call keeps the
-   open-verdict wait the -Y rule gives it. */
+   boundary asking, to that call's transmission_epoch, and only when that frame observed a call (@p frame_observed:
+   dsd_state::scan_y_call_seq moved since the boundary before), so a report with no call of its own (an M17 LICH pair
+   the CAN filter refused, before any link setup) never binds to a call an earlier transmission left active; dropped
+   once the slot holds no active call (the transmission ended, or it was never a call the decoder tracks) or another
+   transmission's call, so a later call keeps the open-verdict wait the -Y rule gives it. */
 static int
-live_scanner_y_refusal_stands(const dsd_state* state, dsd_engine_scan_owner* owner) {
+live_scanner_y_refusal_stands(const dsd_state* state, dsd_engine_scan_owner* owner, int frame_observed) {
     if (!owner || owner->y_refused == 0U) {
         return 0;
     }
     dsd_call_snapshot call;
     const int active =
         dsd_call_state_get(state, owner->y_refused_slot, &call) > 0 && call.phase == DSD_CALL_PHASE_ACTIVE;
-    if (active && owner->y_refused_epoch == 0U) {
+    if (owner->y_refused_epoch == 0U) {
+        if (!active || !frame_observed) {
+            owner->y_refused = 0U;
+            return 0;
+        }
         owner->y_refused_epoch = call.transmission_epoch;
     }
     if (!active || call.transmission_epoch != owner->y_refused_epoch) {
@@ -4591,7 +4597,12 @@ live_scanner_y_note_frame_content(dsd_state* state, double now_m) {
     const int admitted = owner && owner->y_admitted_seq != owner->y_admitted_seen;
     /* A refusal binds to the call its own frame observed at this boundary, whatever that frame noted (a refused PROVEN
        frame resolves no open verdict here), or lapses: so it can never bind a later call. */
-    const int refused = live_scanner_y_refusal_stands(state, owner);
+    int frame_observed = 0;
+    if (owner) {
+        frame_observed = state->scan_y_call_seq != owner->y_call_seq_mark;
+        owner->y_call_seq_mark = state->scan_y_call_seq;
+    }
+    const int refused = live_scanner_y_refusal_stands(state, owner, frame_observed);
     if (state->scan_y_content_seq == state->scan_y_content_seen
         && state->scan_y_partial_seq == state->scan_y_partial_seen
         && state->scan_y_unchecked_seq == state->scan_y_unchecked_seen && !admitted) {

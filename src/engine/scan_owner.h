@@ -109,14 +109,16 @@ typedef struct {
        turned into dsd_state::scan_y_content_m. Such a row holds on these alone, not on every PROVEN note. y_refused:
        the row's last such report was refused (by the receive filter or the policy table), on call slot
        y_refused_slot, so an open verdict (PARTIAL, an M17 packet chunk waiting on its end's CRC) of that transmission
-       renews no -Y wait. The mark is the refused transmission's alone: the -Y frame boundary binds it to that slot's
-       active call (y_refused_epoch, its dsd_call_snapshot::transmission_epoch; 0 until bound) and drops it once that
-       call is no longer the one active there, so a later call keeps its open-verdict wait
-       (live_scanner_y_refusal_stands()). An admitted report and a landing clear it
+       renews no -Y wait. The mark is the refused transmission's alone: the refused frame's -Y boundary binds it to that
+       slot's active call (y_refused_epoch, its dsd_call_snapshot::transmission_epoch; 0 until bound) only when that
+       frame observed a call (dsd_state::scan_y_call_seq moved since the boundary before, y_call_seq_mark), else it
+       lapses, and it drops once that call is no longer the one active there, so a later call keeps its open-verdict
+       wait (live_scanner_y_refusal_stands()). An admitted report and a landing clear it
        (dsd_engine_scan_landing_forget_y_notes()). */
     uint64_t y_admitted_seq;
     uint64_t y_admitted_seen;
     uint64_t y_refused_epoch;
+    uint32_t y_call_seq_mark;
     uint8_t y_refused;
     uint8_t y_refused_slot;
     /* A sync awaiting its frame's verdict (issue #834 R1; scan_quiet.c), moved only while skip-silent is on.
