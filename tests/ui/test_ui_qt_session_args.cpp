@@ -2445,6 +2445,30 @@ test_dmr_channels_csv(void) {
         expect(qPrintable(QStringLiteral("not for a decode set without DMR: '%1'").arg(flag)),
                dsd_qt::session_args_dmr_channels_csv(sys, prefs).isEmpty());
     }
+    /* The decode flag is the first of the -f selectors on the command line; the system's extra options and then the
+       app's follow it, and the last one wins. */
+    sys = tier3_system();
+    sys["decodeFlag"] = QString();
+    sys["extraArgs"] = QStringLiteral("-fp");
+    expect("Auto overridden by -fp in the system's extras: none",
+           dsd_qt::session_args_dmr_channels_csv(sys, prefs).isEmpty());
+    SessionArgPrefs fpPrefs;
+    fpPrefs.extraArgs = QStringLiteral("-fp");
+    sys.remove("extraArgs");
+    expect("or in the app's: none", dsd_qt::session_args_dmr_channels_csv(sys, fpPrefs).isEmpty());
+    sys["decodeFlag"] = QStringLiteral("-fp");
+    sys["extraArgs"] = QStringLiteral("-fs");
+    expect("-fp overridden by -fs in the extras: passed", !dsd_qt::session_args_dmr_channels_csv(sys, prefs).isEmpty());
+    SessionArgPrefs fsPrefs;
+    fsPrefs.extraArgs = QStringLiteral("-fs");
+    sys.remove("extraArgs");
+    expect("or the app's: passed", !dsd_qt::session_args_dmr_channels_csv(sys, fsPrefs).isEmpty());
+    sys["extraArgs"] = QStringLiteral("-fi");
+    expect("the app's extras come last: -fi then -fs passes",
+           !dsd_qt::session_args_dmr_channels_csv(sys, fsPrefs).isEmpty());
+    sys["extraArgs"] = QStringLiteral("-fs");
+    expect("and -fs then -fp does not", dsd_qt::session_args_dmr_channels_csv(sys, fpPrefs).isEmpty());
+
     sys = tier3_system();
     sys["extraArgs"] = QStringLiteral("--trunk-scan /data/targets.csv");
     expect("not with a trunk scan among the extra options",

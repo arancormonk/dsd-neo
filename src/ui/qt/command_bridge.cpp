@@ -19,6 +19,7 @@
 #include <dsd-neo/runtime/scan_mode.h>
 #include <stddef.h>
 #include <utility>
+#include "app_prefs.h"
 #include "command_bridge.h"
 
 #include <QByteArray>
@@ -1328,8 +1329,9 @@ CommandBridge::dmrChannelResultKey(int code) {
 }
 
 void
-CommandBridge::setSavedSystems(SavedSystemsModel* systems) {
+CommandBridge::setSavedSystems(SavedSystemsModel* systems, const AppPrefs* prefs) {
     m_savedSystems = systems;
+    m_prefs = prefs;
 }
 
 bool
@@ -1373,7 +1375,8 @@ CommandBridge::dmrChannelAnswer(const dsd_app_dmr_channel_set_result& r, const D
     QString saveError;
     if (r.code == DSD_APP_DMR_CHANNEL_SET_OK && !q.systemUid.isEmpty()) {
         if (m_savedSystems) {
-            const QVariantMap kept = m_savedSystems->applyDmrChannelEdit(q.systemUid, q.lpcn, q.op, q.hz);
+            const QVariantMap kept = m_savedSystems->applyDmrChannelEdit(
+                q.systemUid, q.lpcn, q.op, q.hz, m_prefs != nullptr ? m_prefs->extraArgs() : QString());
             saved = kept.value(QStringLiteral("ok")).toBool();
             saveError = kept.value(QStringLiteral("error")).toString();
         } else {

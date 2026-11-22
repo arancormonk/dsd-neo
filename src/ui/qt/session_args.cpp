@@ -1207,7 +1207,8 @@ session_args_extra_error(const QString& tokens, const SessionArgPrefs& prefs) {
 
 QByteArray
 session_args_dmr_channels_csv(const QVariantMap& system, const SessionArgPrefs& prefs) {
-    if (!decode_flag_decodes_dmr(system.value(QStringLiteral("decodeFlag")).toString())) {
+    if (!decode_flag_decodes_dmr(system.value(QStringLiteral("decodeFlag")).toString(),
+                                 system.value(QStringLiteral("extraArgs")).toString(), prefs.extraArgs)) {
         return {};
     }
     const QStringList options =

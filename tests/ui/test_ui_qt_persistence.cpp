@@ -2167,6 +2167,16 @@ test_dmr_channel_edit() {
     expect("channel edit: is refused, its starts would never pass the entry",
            error(model.applyDmrChannelEdit(nxdn, 40, set, 451150000)) == "not-dmr"
                && model.dmrChannels(nxdn).isEmpty());
+    expect("channel edit: an Auto system whose extras say -fp",
+           model.add({{"name", "Extras"}, {"decodeFlag", ""}, {"extraArgs", "-fp"}}));
+    const QString fpSystem = model.get(model.count() - 1).value("uid").toString();
+    expect("channel edit: is refused too", error(model.applyDmrChannelEdit(fpSystem, 40, set, 451150000)) == "not-dmr");
+    expect("channel edit: and by the app's extras",
+           error(model.applyDmrChannelEdit(uid, 40, set, 451150000, "-fp")) == "not-dmr");
+    expect("channel edit: an -fp system the extras turn to -fs",
+           model.add({{"name", "Back"}, {"decodeFlag", "-fp"}, {"extraArgs", "-fs"}}));
+    expect("channel edit: is kept",
+           ok(model.applyDmrChannelEdit(model.get(model.count() - 1).value("uid").toString(), 40, set, 451150000)));
     expect("channel edit: an Auto system", model.add({{"name", "Auto"}, {"decodeFlag", ""}}));
     const QString autoUid = model.get(model.count() - 1).value("uid").toString();
     expect("channel edit: is kept, Auto decodes DMR",

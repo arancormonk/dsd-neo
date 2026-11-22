@@ -830,7 +830,7 @@ SavedSystemsModel::dmrChannels(const QString& uid) const {
 }
 
 QVariantMap
-SavedSystemsModel::applyDmrChannelEdit(const QString& uid, int lpcn, int op, qint64 hz) {
+SavedSystemsModel::applyDmrChannelEdit(const QString& uid, int lpcn, int op, qint64 hz, const QString& appExtraArgs) {
     const int row = rowForUid(uid);
     if (row < 0) {
         return dmr_channel_edit_result("no-system");
@@ -839,7 +839,7 @@ SavedSystemsModel::applyDmrChannelEdit(const QString& uid, int lpcn, int op, qin
         return dmr_channel_edit_result("invalid");
     }
     // The start passes the entries only for a system that decodes DMR (session_args_dmr_channels_csv()).
-    if (!decode_flag_decodes_dmr(m_rows.at(row).decodeFlag)) {
+    if (!decode_flag_decodes_dmr(m_rows.at(row).decodeFlag, m_rows.at(row).extraArgs, appExtraArgs)) {
         return dmr_channel_edit_result("not-dmr");
     }
     QMap<int, qint64> entries = dmr_channel_map(m_rows.at(row).dmrChannels);

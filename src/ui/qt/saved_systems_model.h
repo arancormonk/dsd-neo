@@ -111,10 +111,12 @@ class SavedSystemsModel : public QAbstractListModel {
      *
      * @return {ok: bool, error: ""} on success, a restore of a channel with no entry included; otherwise ok false and
      *         error "no-system" (no such uid), "invalid" (no such channel, frequency or operation), "not-dmr" (its
-     *         decode set has no DMR, decode_flag_decodes_dmr(): a start would never pass the entry), "full" (a 257th
+     *         effective decode set has no DMR, decode_flag_decodes_dmr() over its decode flag, its extra options and
+     *         @p appExtraArgs, the app-wide ones: a start would never pass the entry), "full" (a 257th
      *         channel) or "not-saved" (the save failed; nothing changed). One dataChanged follows a change.
      */
-    Q_INVOKABLE QVariantMap applyDmrChannelEdit(const QString& uid, int lpcn, int op, qint64 hz);
+    Q_INVOKABLE QVariantMap applyDmrChannelEdit(const QString& uid, int lpcn, int op, qint64 hz,
+                                                const QString& appExtraArgs = QString());
 
     /** Fills names and county links a place lacks from what is already known (no network); may leave it as it was. */
     using PlaceNameFill = std::function<void(QVariantMap& place)>;

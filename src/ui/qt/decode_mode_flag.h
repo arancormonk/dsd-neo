@@ -20,6 +20,7 @@
 #include <QChar>
 #include <QLatin1String>
 #include <QList>
+#include <QRegularExpression>
 #include <QString>
 #include <QStringList>
 #include <Qt>
@@ -66,10 +67,16 @@ decode_mode_for_flag(const QString& flag) {
  * The presets that frame DMR are the ones src/runtime/decode_mode.c sets frame_dmr for: Auto (-fa), DMR (-fs), DMR
  * mono and TDMA (-ft, P25 with DMR). The CLI takes -fr (the single-slot mono decoder) as the DMR preset. A -f token
  * the CLI takes no preset from (the EDACS selectors) frames none.
+ *
+ * The decode flag is only the first of the options the start puts on the command line: the system's extra options
+ * and then the app-wide ones follow it (session_args.cpp append_flag_args()), and an -f among them overrides it. So
+ * the judgement is over the three in that order, @p systemExtra then @p appExtra, and the last -f of all wins.
  */
 inline bool
-decode_flag_decodes_dmr(const QString& flag) {
-    const QStringList tokens = flag.split(QLatin1Char(' '), Qt::SkipEmptyParts);
+decode_flag_decodes_dmr(const QString& flag, const QString& systemExtra = QString(),
+                        const QString& appExtra = QString()) {
+    const QStringList tokens = (flag + QLatin1Char(' ') + systemExtra + QLatin1Char(' ') + appExtra)
+                                   .split(QRegularExpression(QStringLiteral("\\s+")), Qt::SkipEmptyParts);
     const auto last = std::find_if(tokens.crbegin(), tokens.crend(), [](const QString& token) {
         return token.startsWith(QLatin1String("-f")) && token.size() == 3;
     });
