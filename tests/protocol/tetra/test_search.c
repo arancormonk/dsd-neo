@@ -771,6 +771,25 @@ test_gate_a_withdrawals(void) {
     sb(&s, &k_shared, NULL, 0);
     check(g_log.notes == 2 && withdrawals() == 1, "shared: sharing seen after the site withdraws it");
     session_close(&s);
+
+    /* Sharing is the visit's word on the cell, not the pending observation's: a yield between the cell's BSCHs drops
+     * the observation, and the next BSCH reporting 00 still opens the gate with no site. A carrier boundary keeps it as
+     * well, within the one visit. */
+    for (int boundary = 0; boundary <= 1; boundary++) {
+        s = session_open();
+        sb(&s, &k_shared, NULL, 0);
+        if (boundary) {
+            carrier_boundary(&s);
+        } else {
+            hunt_interrupted(&s);
+        }
+        sb_sysinfo(&s, &k_a, LA_A);
+        check(tmo_evidence(COL_A) && g_log.notes == 0,
+              boundary ? "shared: kept across a carrier boundary in the visit" : "shared: kept across a yield");
+        sb_sysinfo(&s, &k_a, LA_A);
+        check(g_log.notes == 0 && withdrawals() == 0, "shared: no site later in the visit either");
+        session_close(&s);
+    }
 }
 
 /* What gate A does not take: a reserved SYNC after confirmation changes nothing; a burst an input interruption cut is

@@ -243,37 +243,43 @@ note_identity(tetra_search_t* sr, const tetra_search_cell* c) {
     }
 }
 
-/* A BSCH after gate A opened: the gate cell's keeps the visit active, and one whose carrier is shared withholds the site
- * (withdrawing one already sent); another cell's withdraws the identity. */
+/* A checked BSCH whose SYNC sharing mode is not 00: the carrier is shared, so the gate cell shows no site, and one sent
+ * already goes. It holds for the rest of the visit, whatever becomes of the observation gate A waits on (a yield or an
+ * interruption that drops it proves nothing of the cell): while the visit saw one BSCH identity it is that cell's
+ * word, and a second identity makes the visit's identity ambiguous anyway. */
 static void
-bsch_after_gate(const dsd_state* state, tetra_search_t* sr, const tetra_search_cell* c, uint8_t sharing) {
+note_sharing(const dsd_state* state, tetra_search_t* sr, uint8_t sharing) {
+    if (sharing == 0u || sr->shared) {
+        return;
+    }
+    sr->shared = 1;
+    if (sr->gate_a && sr->note_sent) {
+        withdraw(state, sr);
+    }
+}
+
+/* A BSCH after gate A opened: the gate cell's keeps the visit active; another cell's withdraws the identity. */
+static void
+bsch_after_gate(const dsd_state* state, tetra_search_t* sr, const tetra_search_cell* c) {
     if (!cell_same(&sr->cell, c)) {
         withdraw(state, sr);
         return;
     }
     search_mark_activity(sr, DSD_SEARCH_TETRA_TMO);
-    if (sharing != 0u && !sr->shared) {
-        sr->shared = 1;
-        if (sr->note_sent) {
-            withdraw(state, sr);
-        }
-    }
 }
 
 /* A BSCH before gate A opened: it becomes the observation, or, for a colour code 0 cell, a second one of the same
  * identity from a later burst opens the gate. One burst reported twice is one observation. */
 static void
-bsch_before_gate(const dsd_state* state, tetra_search_t* sr, const tetra_search_cell* c, uint8_t sharing) {
+bsch_before_gate(const dsd_state* state, tetra_search_t* sr, const tetra_search_cell* c) {
     const int same = sr->obs_valid && cell_same(&sr->obs, c);
     if (same && sr->burst <= sr->obs_burst) {
         return;
     }
     if (same && c->colour == 0u) {
-        sr->shared = (uint8_t)(sr->shared || sharing != 0u);
         gate_a_open(state, sr, *c);
         return;
     }
-    sr->shared = (uint8_t)((same && sr->shared) || sharing != 0u);
     sr->obs = *c;
     sr->obs_burst = sr->burst;
     sr->obs_carrier_seq = sr->burst_carrier_seq;
@@ -292,10 +298,11 @@ tetra_search_note_bsch(dsd_state* state, const uint8_t* bits, int len) {
     }
     const tetra_search_cell c = {tetra_compute_scramb_seed(p.mcc, p.mnc, p.colour), p.mcc, p.mnc, p.colour};
     note_identity(sr, &c);
+    note_sharing(state, sr, p.sharing_mode);
     if (sr->gate_a) {
-        bsch_after_gate(state, sr, &c, p.sharing_mode);
+        bsch_after_gate(state, sr, &c);
     } else {
-        bsch_before_gate(state, sr, &c, p.sharing_mode);
+        bsch_before_gate(state, sr, &c);
     }
 }
 

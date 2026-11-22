@@ -30,8 +30,9 @@
  * its D-MLE-SYSINFO (table 21.65): the location area and the advertised main carrier (band 0 and carrier 0: no CA main
  * carrier, note 3; band 0 otherwise or 10 to 15: none; 1 to 9: its downlink frequency). A SYSINFO in an SCH/F, or one
  * without the D-MLE part, sets and withdraws nothing (the decoder's MAC still applies it). A colour code 0 cell shows
- * MCC and MNC only. A gate cell whose SYNC sharing mode is not 00 shows no site (carrier, MCCH or traffic carrier
- * sharing put several cells' bursts on one carrier).
+ * MCC and MNC only. A gate cell whose SYNC sharing mode is not 00 in any checked BSCH of the visit shows no site
+ * (carrier, MCCH or traffic carrier sharing put several cells' bursts on one carrier), whatever became of the
+ * observation in between.
  *
  * Direct mode (gate D). One DSB whose SCH/S passed its CRC with system code 1100 or 1101 (the reserved direct mode
  * codes never count), SYNC PDU type 00 (DMAC-SYNC) or 01 (DPRES-SYNC) read by its parser, frame number 1 to 18 and an
@@ -112,7 +113,8 @@ typedef struct {
     uint8_t first_valid;
     uint8_t two_cells;
 
-    /* Gate A: its cell, its SYNC sharing mode seen other than 00, and the first SYSINFO under its seed. */
+    /* Gate A: its cell and the first SYSINFO under its seed; and whether a checked BSCH of the visit showed a SYNC
+     * sharing mode other than 00 (the visit's one identity's, kept whatever becomes of the observation). */
     tetra_search_cell cell;
     tetra_search_sysinfo sysinfo;
     uint8_t gate_a;
