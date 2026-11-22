@@ -469,11 +469,11 @@ test_p_clear_private_reverse_leg(void) {
     }
 }
 
-/* Under DMR mono playout (-fr) a clear of the followed TS1 call while TS2's accepted voice keeps the receiver on the
-   carrier plays TS2 for as long as it holds it; the followed slot stays TS1 for P_CLEAR addressing, and voice on TS1
-   again plays TS1. */
+/* Decided limit (discussion #900): under DMR mono playout (-fr) a clear of the followed TS1 call while TS2's accepted
+   voice keeps the receiver on the carrier leaves playout on the followed slot. TS2 is not played until the receiver
+   moves, and the followed slot stays TS1 for P_CLEAR addressing. */
 static void
-test_p_clear_mono_plays_busy_companion(void) {
+test_p_clear_mono_stays_on_followed_slot(void) {
     dsd_decode_clock_use_test(k_t0_ns);
     clock_at_ms(0U);
     follow_group_ts1();
@@ -485,86 +485,13 @@ test_p_clear_mono_plays_busy_companion(void) {
     const dmr_sm_ctx_t* ctx = dmr_sm_get_ctx();
     assert(state.dmr_mono_slot == 0);
     send_pclear(0U, 0U, 1U, 1234U);
-    assert(opts.trunk_is_tuned == 1);
-    assert(ctx->vc_slot == 0);
-    assert(state.dmr_mono_slot == 1);
-    clock_at_ms(30U);
-    accepted_voice_sync(1U);
-    assert(state.dmr_mono_slot == 1);
-    send_pclear(1U, 0U, 1U, 4321U); // still not the followed call's slot
     assert(opts.trunk_is_tuned == 1 && ctx->vc_slot == 0);
-    clock_at_ms(60U);
-    accepted_voice_sync(0U);
     assert(state.dmr_mono_slot == 0);
-    clock_at_ms(90U);
-    accepted_voice_sync(1U); // TS1 is live again: it keeps the playout
-    assert(state.dmr_mono_slot == 0);
-
-    // The companion busy at the clear, its voice not accepted yet: playout goes to it at its first accepted voice while
-    // TS1 stays silent.
-    clock_at_ms(1000U);
-    follow_group_ts1();
-    opts.dmr_mono = 1;
-    state.dmrburstR = 16;
-    accepted_voice_sync(0U);
-    send_pclear(0U, 0U, 1U, 1234U);
+    clock_at_ms(30U);
+    accepted_voice_sync(1U);
     assert(opts.trunk_is_tuned == 1 && state.dmr_mono_slot == 0);
-    clock_at_ms(1030U);
-    observe_call(1U, DSD_CALL_KIND_GROUP_VOICE, 4321U, 43U);
-    accepted_voice_sync(1U);
-    assert(state.dmr_mono_slot == 1);
-    dsd_decode_clock_use_system();
-}
-
-/* Follow TS1 under -fr with TS2's call live, then clear TS1: playout goes to TS2 (on the TEST clock, at 0 ms). */
-static void
-follow_ts1_and_clear_to_companion(void) {
-    clock_at_ms(0U);
-    follow_group_ts1();
-    opts.dmr_mono = 1;
-    opts.trunk_tune_data_calls = 1;
-    observe_call(1U, DSD_CALL_KIND_GROUP_VOICE, 4321U, 43U);
-    state.dmrburstR = 16;
-    accepted_voice_sync(0U);
-    accepted_voice_sync(1U);
-    send_pclear(0U, 0U, 1U, 1234U);
-    assert(opts.trunk_is_tuned == 1 && state.dmr_mono_slot == 1);
-}
-
-/* After the clear hands playout to TS2, packet data on the cleared TS1 holds the receiver but plays nothing: TS2's next
-   voice keeps the playout. Only voice accepted on TS1 after the clear takes it back. */
-static void
-test_p_clear_mono_data_keeps_companion(void) {
-    dsd_decode_clock_use_test(k_t0_ns);
-    follow_ts1_and_clear_to_companion();
-    const dmr_sm_ctx_t* ctx = dmr_sm_get_ctx();
-    clock_at_ms(30U);
-    dmr_sm_emit_data_sync(&opts, &state, 0);
-    assert(ctx->slots[0].voice_active == 1); // data still holds the receiver
-    clock_at_ms(40U);
-    accepted_voice_sync(1U);
-    assert(state.dmr_mono_slot == 1);
-    clock_at_ms(70U);
-    accepted_voice_sync(0U);
-    assert(state.dmr_mono_slot == 0);
-    dsd_decode_clock_use_system();
-}
-
-/* After the handoff, a voice sync on TS1 whose voice the colour-code gate has not accepted since the clear (bootstrap)
-   does not take playout back; TS1's next accepted voice does. */
-static void
-test_p_clear_mono_bootstrap_sync_keeps_companion(void) {
-    dsd_decode_clock_use_test(k_t0_ns);
-    follow_ts1_and_clear_to_companion();
-    clock_at_ms(30U);
-    dmr_sm_emit_voice_sync(&opts, &state, 0); // TS1's last accepted voice is the cleared call's
-    assert(state.dmr_mono_slot == 1);
-    clock_at_ms(40U);
-    accepted_voice_sync(1U);
-    assert(state.dmr_mono_slot == 1);
-    clock_at_ms(70U);
-    accepted_voice_sync(0U);
-    assert(state.dmr_mono_slot == 0);
+    send_pclear(1U, 0U, 1U, 4321U); // still not the followed call's slot
+    assert(opts.trunk_is_tuned == 1 && ctx->vc_slot == 0 && state.dmr_mono_slot == 0);
     dsd_decode_clock_use_system();
 }
 
@@ -730,9 +657,7 @@ main(int argc, char** argv) {
     test_p_clear_private_data_grant_is_not_voice_repeat();
     test_p_clear_in_place_grant_matching_slot_lc();
     test_p_clear_private_reverse_leg();
-    test_p_clear_mono_plays_busy_companion();
-    test_p_clear_mono_data_keeps_companion();
-    test_p_clear_mono_bootstrap_sync_keeps_companion();
+    test_p_clear_mono_stays_on_followed_slot();
     test_p_clear_named_tscc_becomes_candidate();
     test_synth_lockout_clear_still_releases();
     test_vendor_fid_clear_unchanged();

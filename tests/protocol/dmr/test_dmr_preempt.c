@@ -12,6 +12,7 @@
 
 #include <dsd-neo/protocol/dmr/dmr_utils_api.h>
 
+#include <dsd-neo/core/call_channel.h>
 #include <dsd-neo/core/call_state.h>
 #include <dsd-neo/core/crc_provenance.h>
 #include <dsd-neo/core/events.h>
@@ -782,8 +783,9 @@ test_in_place_group_grant_never_binds_private_call(dsd_opts* opts, dsd_state* st
 
 /* A private data grant from 3003 to 2002 in place on the followed slot of a private voice call from 1001 to 2002 is
    another call (its kind and parties differ, though it names the same destination): it starts a dwell of its own and
-   is not bound to the voice call's transmission. A p50 preempt elsewhere is refused within that dwell, though the voice
-   call (p100) it replaced was past its own, and taken once the data call's dwell ran out. */
+   is not bound to the voice call's transmission. Once that voice call ends, the slot's hangtime is the data grant's: a
+   p50 preempt elsewhere is refused within its dwell, though the voice call (p100) it replaced was past its own, and
+   taken once the data call's dwell ran out. */
 static int
 test_in_place_private_data_grant_starts_its_own_dwell(dsd_opts* opts, dsd_state* st) {
     init_env(opts, st, 2.0);
@@ -806,12 +808,12 @@ test_in_place_private_data_grant_starts_its_own_dwell(dsd_opts* opts, dsd_state*
     rc |= expect_true("the data grant is not bound to the voice call", sm()->slots[0].call_epoch != voice_epoch);
     rc |= expect_true("the data grant's dwell runs from its assignment",
                       fabs(sm()->slots[0].follow_m - assigned_m) < 1e-6);
+    clock_at(1.02);
+    (void)dsd_call_state_end_ex(st, 0U, dsd_decode_now_mono_s(), DSD_CALL_END_TERMINATOR);
     clock_at(1.05);
-    voice(opts, st, 0);
     tv_grant(opts, st, LPCN_B, 0, 50, 5);
     rc |= expect_true("a p50 preempt within the data call's dwell is refused", vc(st) == VC_A);
     clock_at(1.8);
-    voice(opts, st, 0);
     tv_grant(opts, st, LPCN_B, 0, 50, 5);
     rc |= expect_true("the p50 preempt past the data call's dwell is followed", vc(st) == VC_B && sm()->vc_tg == 50);
     return rc;
@@ -930,12 +932,64 @@ test_deferred_data_grant_never_binds_late_entry_voice(dsd_opts* opts, dsd_state*
     return rc;
 }
 
-/* Under -F a RAS-accepted grant tunes LPCN 16; a checked LC then names another call on its slot, and a verified
-   absolute grant (CdefParms CHAN 0) confirms that call in place on the same frequency. The followed call's identity
-   reads verified now, but its channel is still the RAS grant's: a companion-slot LC that inherits it publishes it as
-   unverified. */
+/* A low-priority private data grant in place on the companion slot, then two LC-less voice transmissions there: the
+   grant waits for its own call, and it never stands for that voice. The voice call is unknown, so a p50 preempt
+   elsewhere is refused past every dwell (an unknown call is protected), not judged against the data grant's p10. */
 static int
-test_in_place_grant_keeps_channel_provenance(dsd_opts* opts, dsd_state* st) {
+test_unbound_data_grant_never_describes_voice(dsd_opts* opts, dsd_state* st) {
+    init_env(opts, st, 2.0);
+    seed_row(st, 100, "A", 10, 0);
+    seed_row(st, 2002, "A", 10, 0);
+    seed_row(st, 3003, "A", 10, 0);
+    seed_row(st, 50, "A", 50, 1);
+    tv_grant(opts, st, LPCN_A, 0, 100, 1);
+    clock_at(0.2);
+    private_grant(opts, st, 51U, LPCN_A, 1, 2002, 3003);
+    int rc = expect_true("the data grant names the companion slot",
+                         vc(st) == VC_A && sm()->slots[1].data_call == 1U && sm()->slots[1].call_epoch == 0U);
+    clock_at(0.3);
+    voice(opts, st, 0);
+    canonical_call_begins(st, 1, 0U, 0U);
+    voice(opts, st, 1);
+    clock_at(0.6);
+    (void)dsd_call_state_end_ex(st, 1U, dsd_decode_now_mono_s(), DSD_CALL_END_TERMINATOR);
+    clock_at(0.7);
+    canonical_call_begins(st, 1, 0U, 0U);
+    voice(opts, st, 1);
+    rc |= expect_true("the data grant still awaits its call",
+                      sm()->slots[1].data_call == 1U && sm()->slots[1].call_epoch == 0U);
+    clock_at(1.5);
+    voice(opts, st, 0);
+    voice(opts, st, 1);
+    tv_grant(opts, st, LPCN_B, 0, 50, 5);
+    rc |= expect_true("the p50 preempt is refused over the unknown voice call", vc(st) == VC_A && sm()->vc_tg == 100);
+    return rc;
+}
+
+/* A followed private data grant's slot carries LC-less voice: that voice is another call, and the first voice sync
+   gives it nothing of the data grant's (no talker, no target, no private voice class). */
+static int
+test_data_grant_never_names_late_entry_voice(dsd_opts* opts, dsd_state* st) {
+    init_env(opts, st, 2.0);
+    private_grant(opts, st, 51U, LPCN_A, 0, 2002, 3003);
+    int rc = expect_true("the data grant is followed", vc(st) == VC_A && sm()->vc_data_call == 1);
+    clock_at(0.3);
+    canonical_call_begins(st, 0, 0U, 0U);
+    voice(opts, st, 0);
+    dsd_call_snapshot call;
+    rc |= expect_true("the late-entry voice stays anonymous",
+                      dsd_call_state_get(st, 0U, &call) > 0 && call.phase == DSD_CALL_PHASE_ACTIVE
+                          && call.kind == DSD_CALL_KIND_VOICE && call.ota_source_id == 0U && call.ota_target_id == 0U
+                          && call.policy_target_id == 0U);
+    return rc;
+}
+
+/* Under -F a RAS-accepted grant tunes LPCN 16; a checked LC then names another call on its slot, and a verified
+   absolute grant (CdefParms CHAN 0) confirms that call in place on the same frequency. The followed call reads
+   verified now, and its channel is unknown (the grant named none): neither the followed slot's call nor a companion
+   LC's publishes the RAS grant's channel. */
+static int
+test_in_place_chan0_grant_drops_channel(dsd_opts* opts, dsd_state* st) {
     init_env(opts, st, 2.0);
     st->currentslot = 0;
     st->event_crc_invalid[0] = (uint8_t)DSD_CRC_RAS_UNVERIFIED;
@@ -949,19 +1003,50 @@ test_in_place_grant_keeps_channel_provenance(dsd_opts* opts, dsd_state* st) {
     dmr_sm_event_t ev = dmr_sm_ev_group_grant(VC_A, 0, 200, 2);
     ev.slot = 0;
     rc |= expect_true("the absolute grant is in place", dmr_sm_submit_grant(opts, st, &ev) == DMR_SM_GRANT_IN_PLACE);
-    rc |= expect_true("the followed call reads verified, its channel kept",
-                      sm()->vc_tg == 200 && sm()->vc_crc_flags == 0U && sm()->vc_lpcn == (int)LPCN_A);
+    rc |= expect_true("the followed call reads verified, its channel unknown",
+                      sm()->vc_tg == 200 && sm()->vc_crc_flags == 0U && sm()->vc_lpcn == 0
+                          && sm()->vc_channel_kind == (uint8_t)DSD_CALL_CHANNEL_NONE);
+    voice(opts, st, 0);
+    dsd_call_snapshot call;
+    rc |= expect_true("the followed slot's call publishes no channel",
+                      dsd_call_state_get(st, 0U, &call) > 0 && call.policy_target_id == 200U && call.channel == 0U);
     clock_at(0.4);
     canonical_call_begins(st, 1, 300U, 3U);
     dmr_sm_note_lc_identity(opts, st, 1, DSD_CALL_KIND_GROUP_VOICE, 300U, 3U);
-    rc |= expect_true("the companion LC inherits the channel with its RAS provenance",
-                      sm()->slots[1].channel == (int)LPCN_A
-                          && (sm()->slots[1].channel_crc_flags & DSD_CRC_RAS_UNVERIFIED) != 0U);
+    rc |= expect_true("the companion LC inherits no channel", sm()->slots[1].channel == 0);
     voice(opts, st, 1);
+    rc |= expect_true("the companion call publishes no channel",
+                      dsd_call_state_get(st, 1U, &call) > 0 && call.policy_target_id == 300U && call.channel == 0U);
+    return rc;
+}
+
+/* After a CHAN 0 in-place grant made the followed channel unknown, a RAS-accepted in-place grant naming LPCN 16 on the
+   followed slot gives the followed call that channel with its own provenance: the call publishes LPCN 16 as
+   RAS-unverified. */
+static int
+test_in_place_grant_names_channel_with_its_provenance(dsd_opts* opts, dsd_state* st) {
+    init_env(opts, st, 2.0);
+    st->currentslot = 0;
+    tv_grant(opts, st, LPCN_A, 0, 100, 1);
+    clock_at(0.2);
+    dmr_sm_event_t ev = dmr_sm_ev_group_grant(VC_A, 0, 200, 2);
+    ev.slot = 0;
+    int rc = expect_true("the absolute grant is in place", dmr_sm_submit_grant(opts, st, &ev) == DMR_SM_GRANT_IN_PLACE);
+    rc |= expect_true("its channel is unknown", sm()->vc_tg == 200 && sm()->vc_lpcn == 0);
+    clock_at(0.3);
+    st->event_crc_invalid[0] = (uint8_t)DSD_CRC_RAS_UNVERIFIED;
+    tv_grant(opts, st, LPCN_A, 0, 300, 3);
+    st->event_crc_invalid[0] = 0U;
+    rc |= expect_true("the RAS grant names the channel", sm()->vc_tg == 300 && sm()->vc_lpcn == (int)LPCN_A
+                                                             && sm()->vc_crc_flags == (uint8_t)DSD_CRC_RAS_UNVERIFIED);
+    clock_at(0.4);
+    voice(opts, st, 0);
+    uint32_t target = 0U;
+    const uint8_t crc = slot0_call_crc(st, &target);
     dsd_call_snapshot call;
-    rc |= expect_true("the companion call publishes the channel as unverified",
-                      dsd_call_state_get(st, 1U, &call) > 0 && call.channel == LPCN_A
-                          && (call.crc_invalid & DSD_CRC_RAS_UNVERIFIED) != 0U);
+    rc |= expect_true("the call publishes the channel as RAS-unverified",
+                      target == 300U && crc == (uint8_t)DSD_CRC_RAS_UNVERIFIED && dsd_call_state_get(st, 0U, &call) > 0
+                          && call.channel == LPCN_A);
     return rc;
 }
 
@@ -1142,7 +1227,10 @@ main(void) {
     rc |= test_composite_grant_adopts_resident_calls(opts, st);
     rc |= test_in_place_data_grant_never_binds_late_entry_voice(opts, st);
     rc |= test_deferred_data_grant_never_binds_late_entry_voice(opts, st);
-    rc |= test_in_place_grant_keeps_channel_provenance(opts, st);
+    rc |= test_unbound_data_grant_never_describes_voice(opts, st);
+    rc |= test_data_grant_never_names_late_entry_voice(opts, st);
+    rc |= test_in_place_chan0_grant_drops_channel(opts, st);
+    rc |= test_in_place_grant_names_channel_with_its_provenance(opts, st);
     rc |= test_radio_block_keeps_followed_call(opts, st);
 
     dsd_trunk_tuning_hooks_set((dsd_trunk_tuning_hooks){0});

@@ -2359,9 +2359,14 @@ suite runs under this compiler.
   (`src/protocol/dmr/dmr_crc_provenance.h`; `dmr_dheader()` maps a 0/1 verdict), stores RAS-accepted confirmed blocks
   as `DMR_DATA_BLOCK_CRC_RAS` in `data_block_crc_valid`, and folds them back into bits for the packet
   (`dmr_block_type1_block_crc_flags()`, `dmr_block_type2_crc_flags()` for MBC/UDT). A trunk grant's provenance rides in
-  `dmr_sm_ctx_t::vc_crc_flags` to the call `handle_voice_sync()` publishes later, outside the burst's scope; the
-  channel it named (`vc_lpcn`) keeps its own in `vc_channel_crc_flags`, which an in-place grant renews only when it
-  names that channel again (one with CdefParms CHAN 0 vouches for no channel).
+  `dmr_sm_ctx_t::vc_crc_flags` to the call `handle_voice_sync()` publishes later, outside the burst's scope, and vouches
+  for the channel it named (`vc_lpcn`) too. An accepted in-place grant on the followed slot replaces both: the channel
+  it names, or, when it names none (an absolute grant's CdefParms CHAN 0), an unknown channel (`vc_lpcn` 0), never the
+  replaced grant's channel under the new grant's provenance. A repeat of the followed grant changes nothing, so a
+  channel made unknown stays unknown until the next follow. Decided limit (discussion #900): where several pieces of
+  evidence feed one call (the grant, a checked LC, a status, the channel a slot record inherited), the call's CRC flags
+  are the OR of theirs, so a call may read `[RAS]` when any of its evidence was RAS-accepted, even after a verified
+  grant confirmed the rest.
 - API note (DMR UDP services, issue #746): the IPv4 (SAP 4, `decode_ip_pdu()`, shared with P25) and compressed
   UDP/IPv4 (SAP 3, `dmr_udp_comp_pdu()`) paths in `src/protocol/dmr/dmr_pdu.c` decode a datagram through one port
   dispatch, `dmr_udp_service_dispatch()`: the destination port when a decoder claims it, else a source port that names
@@ -13511,18 +13516,16 @@ Private per-protocol modules worth knowing about:
   companion slot keeps the carrier. Decided limit (discussion #900): a P_CLEAR is matched to the call as dsd-neo
   followed it; a later call on the same slot, or a busy companion slot, is left to hangtime (a voice LC naming another
   call renames nothing, and the followed slot stays the cleared one, so the companion's own clear is not for the
-  followed call). A P_CLEAR stops following a slot; the call record ends on its terminator or timeout. Under DMR mono
-  playout (`-fr`) the cleared followed slot hands playout (`dmr_mono_slot`, never `vc_slot`) to the companion's accepted
-  voice while the followed slot is silent (`vc_slot_cleared`, `dmr_sm_mono_playout_note()`), and back when the followed
-  slot speaks again with voice accepted after the clear (`vc_clear_voice_m`). Playout follows only the colour-code
-  gate's per-slot voice stamp (`dmr_confidence_voice_m`, `dmr_sm_slot_speaks()`): packet data on the cleared slot (which
-  still holds the receiver, `handle_data_sync()`) and a voice sync whose voice the gate has not accepted never move it. The synthesized lockout clear (`dmr_cspdu_release_channel()`) and another FID's opcode 46 keep the
-  carrier-wide release unread. Any clear arms `trunk_sm_force_release` only while the machine follows a call
-  (`dmr_sm_follows_call()`, TUNED): on a composite TSCC's payload slot, or after an idle XPT status marked the receiver
-  tuned (`trunk_is_tuned`) on the control channel, a latched force would release the next followed grant on its first
-  tick. A checked or RAS-accepted clear naming another TSCC than the control channel (a mapped LPCN, or a valid
-  appended block, which the map also learns) makes it a current-site hunt candidate, whether or not it is for the
-  followed call; the release still returns where the machine returns. Tests: `DMR_T3_FORCE_RELEASE`,
+  followed call). A P_CLEAR stops following a slot; the call record ends on its terminator or timeout. Decided limit
+  (discussion #900): with DMR mono (`-fr`), after the followed slot clears while the other slot keeps the receiver,
+  that slot's audio is not played until the receiver moves (mono playout, `dmr_mono_slot`, stays on `vc_slot`; main
+  left the carrier at that point). The synthesized lockout clear (`dmr_cspdu_release_channel()`) and another FID's
+  opcode 46 keep the carrier-wide release unread. Any clear arms `trunk_sm_force_release` only while the machine
+  follows a call (`dmr_sm_follows_call()`, TUNED): on a composite TSCC's payload slot, or after an idle XPT status
+  marked the receiver tuned (`trunk_is_tuned`) on the control channel, a latched force would release the next followed
+  grant on its first tick. A checked or RAS-accepted clear naming another TSCC than the control channel (a mapped
+  LPCN, or a valid appended block, which the map also learns) makes it a current-site hunt candidate, whether or not
+  it is for the followed call; the release still returns where the machine returns. Tests: `DMR_T3_FORCE_RELEASE`,
   `DMR_T3_MOVE_RELEASE`, `DMR_GRANT_POLICY`, `DMR_T3_CHANNELS`.
 - Tier III channel announcements (C_BCAST, `dmr_csbk.c`; TS 102 361-4 §7.2.19). Each learns through
   `dmr_csbk_learn_channel()` and adds hunt candidates (`dmr_sm_on_neighbor_update()`, current site, never the control
@@ -13587,14 +13590,19 @@ Private per-protocol modules worth knowing about:
     the call the slot names keeps record and follow time (on the followed slot it still becomes the grant identity), and
     a repeat of the grant followed there changes nothing. The first voice never publishes the grant identity over a
     checked LC bound to the slot's active call (`dmr_sm_slot_lc_holds_call()`): the LC's talker and transmission stay,
-    so an in-place grant naming that call changes only the P_CLEAR addresses. A repeat is the same class and kind (group or private, voice
+    so an in-place grant naming that call changes only the P_CLEAR addresses. Nor does it publish a data grant's
+    identity (`vc_data_call`): voice on that slot is another call and stays as the voice names it (anonymous without an
+    LC). A repeat is the same class and kind (group or private, voice
     or data) and the same talkgroup, or for a private call the same two parties (either way round,
     `dmr_sm_call_keys_match()`): a private data grant from another sender to the same unit is another call. The same
     rule decides whether a naming keeps the slot's follow time (`dmr_sm_slot_name()`) and whether the active canonical
     call is the named one to bind to (`dmr_sm_call_names_other()`, with what that call does not name yet left open), so
     such a call starts its own dwell and awaits its own transmission. Late-entry voice without an LC
     (`DSD_CALL_KIND_VOICE`) counts as voice there, and the same rule applies when an awaiting record binds to the next
-    transmission (`dmr_sm_slot_identity_refresh()`), so a data grant never binds a voice call. A status's in-place entry
+    transmission (`dmr_sm_slot_identity_refresh()`), so a data grant never binds a voice call. An unbound data grant
+    (the slot's record or the followed grant's) never describes the slot's active transmission to the ledger
+    (`dmr_sm_data_grant_not_slot_call()`): that call is unknown, so the gate protects it as any unknown call, never
+    judged by the data grant's priority or follow time. A status's in-place entry
     (origin STATUS) replaces only a seed or grant identity, never a checked LC's on that carrier.
   - Slot identities (`dmr_sm_slot_ctx_t`: target, source, kind, provenance SEED/GRANT/LC, policy class, channel,
     carrier, follow time, and `crc_flags`, the DSD_CRC_* bits of what named it: the grant's or status's burst, a Cap+

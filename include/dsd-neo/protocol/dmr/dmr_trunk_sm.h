@@ -169,7 +169,9 @@ typedef struct {
 
     // Voice channel context (valid when state == DMR_SM_TUNED)
     long vc_freq_hz;
-    int vc_lpcn;             // the followed call's channel (0: none), named once by the grant that tuned it
+    /* The followed call's channel (0: none or unknown): the grant that tuned it, or the latest in-place grant accepted
+       on the followed slot (one naming no channel, an absolute grant's CdefParms CHAN 0, makes it unknown). */
+    int vc_lpcn;
     uint8_t vc_channel_kind; // dsd_call_channel_kind of vc_lpcn
     int vc_tg;
     int vc_dst;
@@ -186,10 +188,6 @@ typedef struct {
     // published later, at voice sync and outside that burst's scope, so its provenance travels with it.
     int cc_hunt_index;
     uint8_t vc_crc_flags;
-    /* DSD_CRC_* bits of what named vc_lpcn: the grant that tuned the channel, or the latest in-place grant that named
-       that channel again. An in-place grant naming no channel renames the followed call (vc_crc_flags) but not the
-       channel, which keeps its own provenance wherever it is published. */
-    uint8_t vc_channel_crc_flags;
 
     // Timing (monotonic only)
     double t_tune_m; // Time of last VC tune
@@ -238,13 +236,6 @@ typedef struct {
        matched to (dmr_sm_names_followed_call()). Unlike vc_identity_known it outlives a new transmission on the slot
        (a private call's reverse leg), and it goes only when those addresses are replaced or cleared. */
     int vc_addresses_known;
-    /* An addressed P_CLEAR ended the followed slot's call while the machine stays on the carrier: under DMR mono
-       playout the companion slot's accepted voice is played while it holds the receiver and the followed slot is
-       silent (vc_slot itself stays, for P_CLEAR addressing). Cleared by the next follow or release. */
-    int vc_slot_cleared;
-    /* The cleared slot's last accepted voice stamp (dsd_state::dmr_confidence_voice_m) at that clear: the followed slot
-       takes mono playout back only with voice accepted after it. */
-    double vc_clear_voice_m;
 
     // An operator move (dmr_sm_cold_start_note_retune()) outside a startup hunt: the listening window on the new
     // frequency starts at cc_moved_m, or later when frames were still gated by a tune the move superseded, which
