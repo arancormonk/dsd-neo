@@ -655,5 +655,90 @@ Item {
                 }
             }
         }
+
+        // Issue #901 r6 J4: the faces a line box holds keep their size in it. The hero's subline reserved the base
+        // mono face's line and the tags only, so with Noto CJK as the fallback at 2.0 a channel "返" was drawn at 23
+        // px instead of 26 while the Latin ids stayed at 26. Every fixed line box is the Latin, CJK and emoji box
+        // (LineBoxes) or the text's own line, so only a taller script (Tibetan) is drawn smaller: Latin, CJK and emoji
+        // in the hero's ids, channel, algorithm and identity note, the strip's identity, the header's title, count,
+        // scan target and timing lines and the disclosure's answer each keep their pixel size, and the hero is the
+        // budget's.
+        function test_fallback_faces_keep_their_size_data() {
+            return tallLinesData();
+        }
+        function test_fallback_faces_keep_their_size(data) {
+            root.width = data.width;
+            root.height = 1400;
+            Ui.Theme.fontScale = data.scale;
+            fakePrefs.compactView = data.compact;
+            var keeps = function (line, what) {
+                verify(line.visible, data.tag + ": " + what + " is drawn");
+                compare(line.fontInfo.pixelSize, line.font.pixelSize, data.tag + ": " + what + " keeps its size");
+                verify(line.contentHeight <= line.height + 0.5, data.tag + ": " + what + " draws " + line.contentHeight + " px in its "
+                       + line.height + " px box");
+            };
+            try {
+                m("twoSlotCarrier", true);
+                m("scanRotationActive", true);
+                m("scanTargetOrdinal", 2);
+                m("scanTargetCount", 3);
+                m("scanTimingVisible", true);
+                tc.monitor.otherListCount = 1;
+                for (var script of [{tag: "Latin", text: "Ag North"}, {tag: "CJK", text: "返回"}, {tag: "emoji", text: "🚒"}]) {
+                    var what = function (name) {
+                        return name + " (" + script.tag + ")";
+                    };
+                    tc.monitor.system = {name: script.text, sourceType: "usb"};
+                    tc.monitor.scanTargetName = script.text;
+                    m("scanStayPhrase", script.text);
+                    setCall(1, {kind: 2, name: "Fire Dispatch", tg: "4001", id: 4001, src: script.text, channel: script.text});
+                    setCall(2, {kind: 2, name: script.text, tg: script.text, id: 4002, src: "7002"});
+                    m("leadSlot", 1);
+                    testContext.setMetric("uiMessage", script.text);
+                    settle();
+                    keeps(item("heroIds"), what("the hero's ids"));
+                    keeps(item("heroChannel"), what("the hero's channel"));
+                    keeps(item("otherSlotIdentity"), what("the strip's identity"));
+                    keeps(item("monitorHeaderTitle"), what("the title"));
+                    var count = item("monitorHeaderTitleCount");
+                    if (count.parent.visible)
+                        keeps(count, what("the list count"));
+                    keeps(item("scanTargetHeader"), what("the scan target"));
+                    keeps(item("scanTimingRow"), what("the timing line"));
+                    var answer = null;
+                    (function walk(n) {
+                        if (n.text !== undefined && n.text === script.text && n.fontSizeMode === Text.VerticalFit)
+                            answer = n;
+                        for (var c of n.children || [])
+                            walk(c);
+                    })(item("monitorDetailsRow"));
+                    verify(answer !== null, what("the answer") + " is drawn");
+                    keeps(answer, what("the disclosure's answer"));
+                    var subline = item("heroIds").parent;
+                    compare(subline.height, tc.monitor.heroSublineHeight, what("the subline Row's height"));
+                    compare(item("monitorHero").height, tc.monitor.heroCompact ? tc.monitor.heroCompactHeight : tc.monitor.heroFullHeight,
+                            what("the hero is the budget's"));
+                }
+                // The algorithm beside ENC, and the TETRA note, in their faces.
+                setCall(1, {kind: 2, name: "Fire Dispatch", tg: "4001", id: 4001, src: "7", enc: true, encText: "ALG 84 · KID 0001"});
+                settle();
+                keeps(item("heroAlgorithm"), "the algorithm");
+                clearCall(1);
+                setCall(1, {kind: 2, protocol: "TETRA"});
+                settle();
+                keeps(item("heroIdentityNote"), "the identity note");
+            } finally {
+                testContext.setMetric("uiMessage", "");
+                tc.monitor.scanTargetName = "";
+                tc.monitor.system = null;
+                tc.monitor.otherListCount = 0;
+                fakePrefs.compactView = false;
+                m("scanRotationActive", false);
+                m("scanTimingVisible", false);
+                m("scanStayPhrase", "");
+                m("scanTargetOrdinal", 0);
+                m("scanTargetCount", 0);
+            }
+        }
     }
 }

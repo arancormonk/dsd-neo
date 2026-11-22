@@ -368,7 +368,12 @@ Item {
     // rows' time slot, so a ticking age never changes what a row draws.
     readonly property string rowTimeProbe: [qsTr("now"), "59m", "23h", "999d", "99y"].join("\n")
     readonly property real heroMicroHeight: Math.ceil(heroMicroMetrics.height)
-    readonly property real heroSublineHeight: Math.ceil(Math.max(heroSublineMetrics.height, heroEncTag.implicitHeight, heroEmergencyTag.implicitHeight, heroPrivateTag.implicitHeight))
+    // The hero's subline: its tags, and the line boxes (LineBoxes: Latin, CJK
+    // and emoji) of its fonts, the ids' and channel's mono 13, the identity
+    // note's sans 13 and the algorithm's mono 11, so only a script that stands
+    // taller than the box is drawn smaller in it (r6 J4: from the base mono
+    // face alone, a CJK channel was drawn at 23 px of its 26 under Noto CJK).
+    readonly property real heroSublineHeight: Math.ceil(Math.max(heroSublineMetrics.height, LineBoxes.lineHeight(Theme.mono, Theme.fontSize(13), Font.Normal), LineBoxes.lineHeight(Theme.sans, Theme.fontSize(13), Font.Normal), LineBoxes.lineHeight(Theme.mono, Theme.fontSize(11), Font.Normal), heroEncTag.implicitHeight, heroEmergencyTag.implicitHeight, heroPrivateTag.implicitHeight))
     readonly property real heroFullHeight: 2 * 14 + heroMicroHeight + 6 + Math.ceil(Theme.fontSize(40)) + 6 + heroSublineHeight + 6 + Math.max(26, Math.ceil(heroDurationMetrics.height))
     readonly property real heroCompactHeight: 2 * 12 + heroMicroHeight + 4 + Math.ceil(Theme.fontSize(30)) + 4 + heroSublineHeight
     readonly property real stripHeight: {
@@ -528,11 +533,6 @@ Item {
         font: monitorTitle.font
         text: screen.sessionLine
     }
-    FontMetrics {
-        id: heroMicroMetrics
-        font.family: Theme.mono
-        font.pixelSize: Theme.fontSize(11)
-    }
     // A fixed line box's text as it is drawn (issue #901 r6 J1): the drawn
     // line's text, font and box, fitted as that line fits them, so a script
     // that stands taller than its box (Tibetan) is measured at the smaller
@@ -553,6 +553,11 @@ Item {
         maximumLineCount: 1
         fontSizeMode: Text.VerticalFit
         minimumPixelSize: drawn ? drawn.minimumPixelSize : 4
+    }
+    FontMetrics {
+        id: heroMicroMetrics
+        font.family: Theme.mono
+        font.pixelSize: Theme.fontSize(11)
     }
     FontMetrics {
         id: heroSublineMetrics

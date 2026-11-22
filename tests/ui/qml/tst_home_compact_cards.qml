@@ -919,6 +919,48 @@ Item {
             fuzzyCompare(other.height, loop.height, 0.5, data.tag + ": the taller script grew the list's card");
         }
 
+        // Issue #901 r6 J4 (the sweep): the card boxes are the Latin, CJK and emoji box (LineBoxes), so only a script
+        // that stands taller is drawn smaller in them. A CJK or emoji system name and file, and a scan list's name,
+        // keep their pixel size in both views at 1.0 and 2.0. (An emoji directly before a full stop, "🚒.wav", stands
+        // 1 px taller than the box with the host's fonts, where another face draws that stop, and is drawn 1 px smaller;
+        // the file names here put a word between them.)
+        function test_fallback_faces_keep_their_size_in_cards_data() {
+            return test_tall_script_card_lines_fit_their_boxes_data();
+        }
+        function test_fallback_faces_keep_their_size_in_cards(data) {
+            prefs.compactView = data.compact;
+            root.width = 320;
+            Ui.Theme.fontScale = data.scale;
+            var scripts = ["返回", "🚒"];
+            for (var text of scripts) {
+                add(text, {sourceType: "file", filePath: "/captures/" + text + " unit.wav"});
+                verify(scanLists.add({name: text, sourceType: "rtltcp", host: "127.0.0.1", port: 1234,
+                    entries: [{kind: "freq", name: "Simplex", protocol: "p25", freqMhz: "851.5", enabled: true}]}));
+            }
+            settle();
+            var keeps = function (line, what) {
+                compare(line.fontInfo.pixelSize, line.font.pixelSize, data.tag + ": " + what + " keeps its size");
+                verify(line.contentHeight <= line.height + 0.5, data.tag + ": " + what + " draws " + line.contentHeight + " px in its "
+                       + line.height + " px box");
+            };
+            for (text of scripts) {
+                var card = cardOf(text);
+                keeps(part(card, "savedSystemTitle"), text + "'s title");
+                keeps(part(card, "savedSystemSource"), text + "'s source line");
+            }
+            home.showSection("scanLists");
+            settle();
+            tryCompare(home, "restorePending", false);
+            var named = 0;
+            for (var child of findChild(home, "listenScanListsSection").children) {
+                if (child.objectName === "scanListCard" && child.visible) {
+                    keeps(part(child, "scanListTitle"), child.listName + "'s list name");
+                    ++named;
+                }
+            }
+            compare(named, scripts.length);
+        }
+
         // G2: with a screen reader on, a resize that draws or leaves out a card's site button (no rebuild, no tab or
         // sheet change) owes Android's copy of the tree one refresh, and it is given: exactly one per change, the
         // owed flag cleared.
