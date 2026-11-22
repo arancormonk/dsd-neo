@@ -422,8 +422,8 @@ Item {
                 verify(spoken.indexOf("EMERGENCY") >= 0, at + ": EMERGENCY unsaid: " + spoken);
             if (row.enc)
                 verify(spoken.indexOf("ENC") >= 0, at + ": ENC unsaid: " + spoken);
-            else
-                verify(spoken.indexOf(row.rightText) >= 0, at + ": the time unsaid: " + spoken);
+            // The time is said on every row, ENC's included, drawn or not.
+            verify(spoken.indexOf(row.rightText) >= 0, at + ": the time unsaid: " + spoken);
             if (row.hasRecording)
                 verify(row.node.Accessible.name.indexOf("has a recording") >= 0, at + ": the recording unsaid: " + spoken);
             return {drawn: drawn, dropped: dropped};
@@ -548,8 +548,10 @@ Item {
             }
         }
 
-        // The ENC tag keeps the place of the time, with the glyph 8 px before
-        // it where both are drawn.
+        // The ENC tag keeps the place of the time, as on main, with the glyph
+        // 8 px before it where both are drawn; the time it stands in for is
+        // still said (issue #901 G3: an encrypted Monitor row's age was neither
+        // drawn nor said).
         function test_enc_keeps_the_place_of_the_time() {
             Ui.Theme.fontScale = 1.0;
             pane.width = 420;
@@ -561,6 +563,8 @@ Item {
                 var encRect = rectOf(enc, tightEnc);
                 compare(encRect.x + encRect.width, tightEnc.width - 18, "ENC ends at the row's margin");
                 compare(rectOf(glyph, tightEnc).x + glyph.width + 8, encRect.x, "the glyph sits just before ENC");
+                compare(tightEnc.node.Accessible.name, "Fire Dispatch North, has a recording");
+                compare(tightEnc.node.Accessible.description, "TG 4001 · SRC 7001, ENC, 09:41");
             } finally {
                 pane.width = 280;
             }

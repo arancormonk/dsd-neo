@@ -17823,7 +17823,8 @@ Qt Quick frontend (`src/ui/qt`):
   and the call's flags: a ticking age ("9m" to "10m") never makes the time or the glyph come and go (a band 30-46 px
   wide at every text size when the slot was the age's own width), and nothing shows or hides for a screen reader as
   the minutes pass. What is not drawn is still read: the node's name carries "has a recording", and its description
-  the meta line, EMERGENCY (the tag's `label`), ENC and the time, each once, drawn or not. Decided limit: at 280 px
+  the meta line, EMERGENCY (the tag's `label`), ENC and the time, each once, drawn or not. On an encrypted row ENC
+  takes the time's place on the face, as on main, so the time is never a drawn candidate there, but it is said. Decided limit: at 280 px
   (Home's Recent pane) a recorded emergency call drops its glyph at text 1.0 and its time from 1.6; History's
   emergency rows on a 360 dp phone keep their time up to 1.6 and the whole frequency on the meta line up to 1.3
   (from 1.6 it still leads the line, cut). Decided limit (D10): a rarer script whose glyphs stand

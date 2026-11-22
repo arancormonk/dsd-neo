@@ -52,7 +52,9 @@ Item {
     // tags and its time, each once: a tag the meta line already says (History
     // puts EMERGENCY and "encrypted" there) and a time the caller's name
     // already reads are left out. A tag's word comes from the tag itself,
-    // drawn or not (issue #901 B7: a narrow row may leave it out).
+    // drawn or not (issue #901 B7: a narrow row may leave it out). The time
+    // is said on an encrypted row too, where ENC takes its place on the row's
+    // face (G3).
     readonly property string emergencyWords: emergency ? emergencyTag.label : ""
     function activate() {
         if (interactive && enabled && Navigation.allows(row))
@@ -143,7 +145,7 @@ Item {
         Accessible.description: !row.reachable ? "" : [row.metaText,
             row.emergencyWords.length > 0 && row.metaText.indexOf(row.emergencyWords) < 0 ? row.emergencyWords : "",
             row.enc && row.metaText.indexOf(qsTr("encrypted")) < 0 ? encTag.label : "",
-            !row.enc && row.accessibleName.indexOf(row.rightText) < 0 ? row.rightText : ""].filter(function (part) {
+            row.rightText.length > 0 && row.accessibleName.indexOf(row.rightText) < 0 ? row.rightText : ""].filter(function (part) {
             return part.length > 0;
         }).join(", ")
         Accessible.focusable: row.reachable
