@@ -22094,6 +22094,57 @@ test_refused_switch_between_fm_and_am_puts_the_mode_back(void) {
     return rc;
 }
 
+/*
+ * Issue #899 (review round 3): an FM-to-AM switch refused where it landed, on an NFM session running the analog default:
+ * the drain that puts the decoder back on Analog publishes it with the default in force, noise +10 marked as the
+ * default, as the live options hold it, so the Radio sheet never shows the restored fields' Off without the marker
+ * (before the fix the publication came before the sync, and the empty drain after it published nothing).
+ */
+static int
+test_refused_fm_to_am_landing_publishes_the_analog_default(void) {
+    static void* fake_ctx[2];
+    dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(*opts));
+    dsd_state* state = (dsd_state*)calloc(1, sizeof(*state));
+    if (!opts || !state) {
+        free(opts);
+        free(state);
+        return expect_true("fm -> am default: fixtures", 0);
+    }
+    init_nfm_session_with_am_width(opts, state, (RtlSdrContext*)fake_ctx, 15000);
+    int rc = expect_int("fm -> am default: option", dsd_squelch_analog_default_parse(opts, "noise+10", NULL, 0U), 0);
+    (void)dsd_app_drain_cmds(opts, state);
+    rc |= expect_true("fm -> am default: in force on NFM", opts->squelch_default_state == DSD_SQUELCH_DEFAULT_APPLIED);
+    reset_rx_family_wrap();
+    g_fake_analog_family = 1;
+    rc |= submit_decode_mode(opts, state, DSDCFG_MODE_AM, "fm -> am default: am");
+    rc |= expect_int("fm -> am default: on AM while pending", opts->analog_demod, DSD_ANALOG_DEMOD_AM);
+    demod_thread_refuses_analog_keeping_kind(1, DSD_ANALOG_DEMOD_FM, 0);
+    rc |= expect_int("fm -> am default: settled on an empty drain", dsd_app_drain_cmds(opts, state), 0);
+    const dsd_opts* published = dsd_app_get_latest_opts_snapshot();
+    rc |= expect_true("fm -> am default: back on Analog",
+                      opts->analog_only == 1 && opts->analog_demod == DSD_ANALOG_DEMOD_FM
+                          && opts->rtl_squelch_mode == DSD_SQUELCH_MODE_NOISE
+                          && opts->squelch_default_state == DSD_SQUELCH_DEFAULT_APPLIED);
+    if (!published || published->analog_demod != DSD_ANALOG_DEMOD_FM
+        || published->rtl_squelch_mode != DSD_SQUELCH_MODE_NOISE || published->rtl_squelch_margin_db != 10
+        || published->squelch_default_state != DSD_SQUELCH_DEFAULT_APPLIED) {
+        DSD_FPRINTF(stderr,
+                    "fm -> am default: published kind %d squelch mode %d margin %d default %d, want FM noise +10 "
+                    "as the default\n",
+                    published ? published->analog_demod : -1, published ? published->rtl_squelch_mode : -1,
+                    published ? published->rtl_squelch_margin_db : -1,
+                    published ? published->squelch_default_state : -1);
+        rc |= 1;
+    }
+    g_fake_analog_family = 0;
+    reset_rx_family_wrap();
+    state->rtl_ctx = NULL;
+    freeState(state);
+    free(state);
+    free(opts);
+    return rc;
+}
+
 /* The toggles a switch between FM and AM can meet before the front end refuses it where it lands: each changes a
    setting the switch is compared by, and none asks the front end for a receive profile of its own. */
 static const struct {
@@ -32575,6 +32626,7 @@ main(void) {
     rc |= test_refused_switch_onto_analog_retimes_the_mode();
     rc |= test_nfm_width_changes_held_to_channel_lpf_off();
     rc |= test_refused_switch_between_fm_and_am_puts_the_mode_back();
+    rc |= test_refused_fm_to_am_landing_publishes_the_analog_default();
     rc |= test_refused_switch_after_an_unpublished_toggle_puts_the_mode_back();
     rc |= test_refused_switch_after_a_pending_switch_puts_the_running_mode_back();
     rc |= test_refused_switch_after_a_taken_switch_puts_the_running_mode_back();

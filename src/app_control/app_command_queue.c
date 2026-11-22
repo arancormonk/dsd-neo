@@ -11606,6 +11606,7 @@ ui_settle_refused_row_edit(dsd_opts* opts, dsd_state* state, const svc_monitor_r
         return 0;
     }
     ui_set_toast(state, 5, "%s", row_notice);
+    ui_sync_analog_default_squelch(opts, state);
     dsd_telemetry_publish_opts_snapshot(opts);
     dsd_telemetry_publish_snapshot(state);
     return 1;
@@ -11691,6 +11692,9 @@ ui_settle_receive_requests(dsd_opts* opts, dsd_state* state) {
         }
     }
     if (changed) {
+        /* The settings put back run their squelch, the analog default where it belongs (issue #899), before the
+           frontends see them. */
+        ui_sync_analog_default_squelch(opts, state);
         dsd_telemetry_publish_opts_snapshot(opts);
         dsd_telemetry_publish_snapshot(state);
     }
