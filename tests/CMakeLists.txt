@@ -28152,6 +28152,63 @@ if(DSD_ENABLE_QT_UI)
     )
 endif()
 
+# Issue #899: the app's generated mixed scan list (a DMR and an NFM frequency row, the Settings default squelch) run by
+# the real engine on a running rtl_tcp receiver: an in-process server plays committed fixtures for the frequency the
+# stream tunes, and the real trunk-scan coordinator rotates the rows on it. Real time, about 30 s.
+if(DSD_ENABLE_QT_UI AND DSD_HAS_RADIO AND NOT WIN32)
+    add_executable(
+        dsd-neo_test_engine_trunk_scan_running_receiver
+        engine/test_engine_trunk_scan_running_receiver.cpp
+        test_support/rtl_tcp_fixture_server.cpp
+        ${PROJECT_SOURCE_DIR}/src/ui/qt/scan_list_targets.cpp
+        ${PROJECT_SOURCE_DIR}/src/ui/qt/session_args.cpp
+        ${PROJECT_SOURCE_DIR}/src/ui/qt/decoder_host.cpp
+        ${PROJECT_SOURCE_DIR}/src/ui/qt/document_import_transport.cpp
+        ${PROJECT_SOURCE_DIR}/src/ui/qt/document_save_transport.cpp
+        ${PROJECT_SOURCE_DIR}/src/ui/qt/import_names.cpp
+        ${PROJECT_SOURCE_DIR}/src/ui/qt/site_groups.cpp
+        ${PROJECT_SOURCE_DIR}/src/ui/qt/saved_systems_model.cpp
+        ${PROJECT_SOURCE_DIR}/src/ui/qt/replay_store.cpp
+        ${PROJECT_SOURCE_DIR}/src/ui/qt/import_service.cpp
+        ${PROJECT_SOURCE_DIR}/src/ui/qt/json_store.cpp
+        ${PROJECT_SOURCE_DIR}/src/ui/qt/app_prefs.cpp
+    )
+    target_include_directories(
+        dsd-neo_test_engine_trunk_scan_running_receiver
+        PRIVATE ${PROJECT_SOURCE_DIR}/include ${PROJECT_SOURCE_DIR}/src/ui/qt
+    )
+    target_link_libraries(
+        dsd-neo_test_engine_trunk_scan_running_receiver
+        PRIVATE
+            Qt6::Gui
+            ${_DSD_RUNTIME_CONFIG_APPLY_LIBS}
+            dsd-neo_feature_radio
+            dsd-neo_io_radio
+            ${LIBS}
+            dsd-neo_test_support
+    )
+    target_compile_definitions(
+        dsd-neo_test_engine_trunk_scan_running_receiver
+        PRIVATE
+            QT_NO_KEYWORDS
+            "DSD_NEO_TEST_IQ_FIXTURE_DIR=\"${PROJECT_SOURCE_DIR}/tests/fixtures/iq\""
+    )
+    set_target_properties(
+        dsd-neo_test_engine_trunk_scan_running_receiver
+        PROPERTIES AUTOMOC ON
+    )
+    add_test(
+        NAME ENGINE_TRUNK_SCAN_RUNNING_RECEIVER
+        COMMAND dsd-neo_test_engine_trunk_scan_running_receiver
+    )
+    # Skipped (77) when the decoder cannot keep real time, as under the sanitizers: the scan's dwell runs on the real
+    # clock, so its timing-bound checks would judge a slowed decoder, not the squelch.
+    set_tests_properties(
+        ENGINE_TRUNK_SCAN_RUNNING_RECEIVER
+        PROPERTIES LABELS "iq-decode" TIMEOUT 120 SKIP_RETURN_CODE 77
+    )
+endif()
+
 # Compile the in-process SDK double with the upstream declarations, without DLL
 # import/export attributes: its symbols are defined in the test executable.
 set(_AIRSPY_TEST_SDK "${CMAKE_CURRENT_BINARY_DIR}/airspy-test-sdk")
