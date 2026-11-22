@@ -13521,9 +13521,13 @@ Private per-protocol modules worth knowing about:
   (publish) or `content_seq` moved (consume), so an idle refresh copies none and two targets at equal revisions never
   alias. Frontends read it with `dsd_app_dmr_t3_view(snapshot)`; a live state has none. The terminal's Channels panel
   (`ui_print_learned_lcns()`) opens while the ledger holds a channel, with the toggle off and in monitor mode too
-  (`ui_channels_panel_open()`), lists up to eight as `CH 12: no frequency (TG 1234, slot 1)`, and when
-  `dsd_app_dmr_t3_view_shows_lpcns()` holds (Tier III named, checked or RAS-accepted) lists the map by LPCN ascending in
-  decimal, each LPCN even when two share a frequency; positional rows stay, P25 and Connect Plus rows keep hex. The call
+  (`ui_channels_panel_open()`), lists up to eight as `CH 12: no frequency (TG 1234, slot 1)` (a row past the details
+  reads `(unchecked)` from the checked set when no checked grant named it), and when
+  `dsd_app_dmr_t3_view_lists_lpcns()` holds (`dsd_app_dmr_t3_view_shows_lpcns()`: Tier III named, checked or
+  RAS-accepted, or a ledger or overlay entry; and the receiver is on a DMR system now, by the snapshot's sync, or before
+  any sync DMR the only trunking protocol decoded) lists the map by LPCN ascending in decimal, each LPCN even when two
+  share a frequency; positional rows stay, P25 and Connect Plus rows keep hex, a P25 map after a move from a Tier III
+  site included (the flags hold for the session). The call
   view's VC lookup (`app_recent_activity_vc_freq()`) takes a DMR activity row's channel from its observation, never its
   decimal text. Tests: `APP_CONTROL_SNAPSHOT_EVENT_HISTORY`, `APP_CONTROL_CALL_VIEW`,
   `UI_NCURSES_TRUNK_DISPLAY_HELPERS`, `UI_NCURSES_PRINTER_HELPERS`.

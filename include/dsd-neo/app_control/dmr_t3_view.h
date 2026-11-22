@@ -20,6 +20,7 @@
 #ifndef DSD_NEO_INCLUDE_DSD_NEO_APP_CONTROL_DMR_T3_VIEW_H_
 #define DSD_NEO_INCLUDE_DSD_NEO_APP_CONTROL_DMR_T3_VIEW_H_
 
+#include <dsd-neo/core/opts_fwd.h>
 #include <dsd-neo/core/state_fwd.h>
 
 #include <stddef.h>
@@ -125,6 +126,14 @@ size_t dsd_app_dmr_t3_view_missing_count(const dsd_ui_dmr_t3_view* view);
  * or the ledger or the user's overlay holds a channel. 0 for NULL.
  */
 int dsd_app_dmr_t3_view_shows_lpcns(const dsd_ui_dmr_t3_view* view);
+
+/**
+ * Whether the channel map in @p snapshot shows as Tier III LPCNs now: dsd_app_dmr_t3_view_shows_lpcns() for @p view, and
+ * the system the receiver is on is DMR (the snapshot's synctype, else its lastsynctype; before any sync, DMR is the only
+ * trunking protocol @p opts decodes). The Tier III flags hold for the session, so after a move to another system its
+ * map keeps that system's numbering (P25's IDEN form, its channels past 4094 included). 0 for any NULL.
+ */
+int dsd_app_dmr_t3_view_lists_lpcns(const dsd_ui_dmr_t3_view* view, const dsd_opts* opts, const dsd_state* snapshot);
 
 #ifdef __cplusplus
 }

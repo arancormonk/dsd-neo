@@ -3802,24 +3802,25 @@ test_patch_and_slot_helpers(void) {
    menu toggle off; the toggle still opens it, and compact mode never shows it. */
 static void
 test_channels_panel_opens_for_missing_t3_channels(void) {
-    static dsd_opts opts;
-    static dsd_state state;
+    dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(*opts));
+    dsd_state* state = (dsd_state*)calloc(1, sizeof(*state));
+    assert(opts != NULL && state != NULL);
     static dsd_ui_dmr_t3_view view;
-    DSD_MEMSET(&opts, 0, sizeof(opts));
-    DSD_MEMSET(&state, 0, sizeof(state));
     DSD_MEMSET(&view, 0, sizeof(view));
-    assert(ui_channels_panel_open(&opts, &state) == 0);
-    state.state_ext[DSD_STATE_EXT_APP_DMR_T3_VIEW] = &view;
+    assert(ui_channels_panel_open(opts, state) == 0);
+    state->state_ext[DSD_STATE_EXT_APP_DMR_T3_VIEW] = &view;
     view.present = 1U;
-    assert(ui_channels_panel_open(&opts, &state) == 0);
+    assert(ui_channels_panel_open(opts, state) == 0);
     view.missing.missing[12 >> 3] = (uint8_t)(1U << (12 & 7));
-    assert(ui_channels_panel_open(&opts, &state) == 1);
-    opts.frontend_terminal_display.terminal_compact = 1;
-    assert(ui_channels_panel_open(&opts, &state) == 0);
-    opts.frontend_terminal_display.terminal_compact = 0;
+    assert(ui_channels_panel_open(opts, state) == 1);
+    opts->frontend_terminal_display.terminal_compact = 1;
+    assert(ui_channels_panel_open(opts, state) == 0);
+    opts->frontend_terminal_display.terminal_compact = 0;
     view.missing.missing[12 >> 3] = 0U;
-    opts.frontend_display.show_channels = 1;
-    assert(ui_channels_panel_open(&opts, &state) == 1);
+    opts->frontend_display.show_channels = 1;
+    assert(ui_channels_panel_open(opts, state) == 1);
+    free(state);
+    free(opts);
 }
 
 static void

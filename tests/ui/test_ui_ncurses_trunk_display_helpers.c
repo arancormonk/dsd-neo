@@ -10,6 +10,7 @@
 #include <curses.h>
 #include <stdarg.h>
 #include <stdint.h>
+#include <stdlib.h>
 #include <string.h>
 
 #if defined(DSD_USE_PDCURSES)
@@ -378,6 +379,25 @@ test_find_channel_for_frequency_uses_tracked_entries_only(void) {
 
 /* ---- DMR Tier III (discussion #900 F3, B11) ---- */
 
+/* Heap options and state for one case: dsd_state is megabytes, and a static one would hold them all run long. */
+typedef struct {
+    dsd_opts* opts;
+    dsd_state* state;
+} t3_fixture;
+
+static t3_fixture
+t3_fixture_new(void) {
+    t3_fixture f = {(dsd_opts*)calloc(1, sizeof(dsd_opts)), (dsd_state*)calloc(1, sizeof(dsd_state))};
+    assert(f.opts != NULL && f.state != NULL);
+    return f;
+}
+
+static void
+t3_fixture_free(t3_fixture* f) {
+    free(f->opts);
+    free(f->state);
+}
+
 static dsd_ui_dmr_t3_view g_t3;
 
 static void
@@ -392,6 +412,12 @@ t3_missing(uint16_t lpcn) {
     g_t3.missing.missing[lpcn >> 3] = (uint8_t)(g_t3.missing.missing[lpcn >> 3] | (1U << (lpcn & 7U)));
 }
 
+/* A checked grant named @p lpcn (its bit in the checked set). */
+static void
+t3_checked(uint16_t lpcn) {
+    g_t3.missing.checked[lpcn >> 3] = (uint8_t)(g_t3.missing.checked[lpcn >> 3] | (1U << (lpcn & 7U)));
+}
+
 static void
 t3_detail(uint16_t lpcn, uint8_t slot, uint8_t group, uint32_t recipient) {
     dsd_ui_dmr_t3_missing_detail* d = &g_t3.missing.details[g_t3.missing.detail_count++];
@@ -404,72 +430,69 @@ t3_detail(uint16_t lpcn, uint8_t slot, uint8_t group, uint32_t recipient) {
 /* The panel opens for missing channels with trunking off (monitor mode) and an empty map, and lists them in decimal. */
 static void
 test_t3_missing_channels_open_the_panel(void) {
-    static dsd_opts opts;
-    static dsd_state state;
-    DSD_MEMSET(&opts, 0, sizeof opts);
-    DSD_MEMSET(&state, 0, sizeof state);
-    state.synctype = DSD_SYNC_DMR_BS_DATA_POS;
-    attach_t3(&state);
+    t3_fixture f = t3_fixture_new();
+    f.state->synctype = DSD_SYNC_DMR_BS_DATA_POS;
+    attach_t3(f.state);
     t3_missing(12U);
     t3_detail(12U, 0U, 1U, 1234U);
-    t3_missing(40U); /* past the details: in the set only */
+    t3_checked(12U);
+    t3_missing(40U); /* past the details: in the sets only, a checked grant named it */
+    t3_checked(40U);
+    t3_missing(42U); /* past the details too, named by RAS-accepted grants only (review gate b-r1 T2) */
     t3_missing(41U);
     t3_detail(41U, 1U, 0U, 5678U);
     g_t3.missing.details[1].data = 1U;
     g_t3.missing.details[1].unverified = 1U;
 
     reset_render_capture();
-    ui_print_learned_lcns(&opts, &state);
+    ui_print_learned_lcns(f.opts, f.state);
     assert(g_header_calls == 1);
     assert(strstr(g_output, "CH 12: no frequency (TG 1234, slot 1)\n") != NULL);
     assert(strstr(g_output, "CH 41: no frequency (radio 5678, data, slot 2, unchecked)\n") != NULL);
     assert(strstr(g_output, "CH 40: no frequency\n") != NULL);
+    assert(strstr(g_output, "CH 42: no frequency (unchecked)\n") != NULL);
     assert(strstr(g_output, "CH 000C") == NULL && strstr(g_output, "CH 0028") == NULL);
 
     /* Nothing missing, trunking off: no panel. */
     DSD_MEMSET(g_t3.missing.missing, 0, sizeof g_t3.missing.missing);
     reset_render_capture();
-    ui_print_learned_lcns(&opts, &state);
+    ui_print_learned_lcns(f.opts, f.state);
     assert(g_header_calls == 0 && g_output[0] == '\0');
+    t3_fixture_free(&f);
 }
 
 /* Past the cap the rest are counted, not listed. */
 static void
 test_t3_missing_rows_are_capped(void) {
-    static dsd_opts opts;
-    static dsd_state state;
-    DSD_MEMSET(&opts, 0, sizeof opts);
-    DSD_MEMSET(&state, 0, sizeof state);
-    attach_t3(&state);
+    t3_fixture f = t3_fixture_new();
+    attach_t3(f.state);
     for (uint16_t l = 100U; l < (uint16_t)(100U + UI_TRUNK_MAX_MISSING_PRINT + 3U); l++) {
         t3_missing(l);
     }
     reset_render_capture();
-    ui_print_learned_lcns(&opts, &state);
+    ui_print_learned_lcns(f.opts, f.state);
     assert(count_substring(g_output, ": no frequency") == UI_TRUNK_MAX_MISSING_PRINT);
     assert(strstr(g_output, "... and 3 more channels with no frequency") != NULL);
+    t3_fixture_free(&f);
 }
 
 /* Tier III rows show by LPCN in decimal, each LPCN listed even when two share a frequency; the positional rows stay.
    P25 keeps its hex. */
 static void
 test_t3_mapped_rows_decimal_and_distinct(void) {
-    static dsd_opts opts;
-    static dsd_state state;
-    DSD_MEMSET(&opts, 0, sizeof opts);
-    DSD_MEMSET(&state, 0, sizeof state);
-    opts.trunk_enable = 1;
-    state.synctype = DSD_SYNC_DMR_BS_DATA_POS;
-    attach_t3(&state);
+    t3_fixture f = t3_fixture_new();
+    f.opts->trunk_enable = 1;
+    f.state->synctype = DSD_SYNC_DMR_BS_DATA_POS;
+    attach_t3(f.state);
     g_t3.tier3 = 1U;
-    add_trunk_channel(&state, 18U, 451225000L);
-    add_trunk_channel(&state, 12U, 451150000L);
-    add_trunk_channel(&state, 19U, 451225000L); /* the same frequency as 18 */
-    state.trunk_lcn_freq[0] = 451150000L;       /* positional, mapped as 12 */
-    state.trunk_lcn_freq[1] = 451500000L;       /* positional only */
+    add_trunk_channel(f.state, 18U, 451225000L);
+    add_trunk_channel(f.state, 12U, 451150000L);
+    add_trunk_channel(f.state, 19U, 451225000L); /* the same frequency as 18 */
+    f.state->trunk_lcn_freq[0] = 451150000L;     /* positional, mapped as 12 */
+    f.state->trunk_lcn_freq[1] = 451500000L;     /* positional only */
 
     reset_render_capture();
-    ui_print_learned_lcns(&opts, &state);
+    ui_print_learned_lcns(f.opts, f.state);
     assert(strstr(g_output, "CH 12: 451.150000 MHz") != NULL);
     assert(strstr(g_output, "CH 18: 451.225000 MHz") != NULL);
     assert(strstr(g_output, "CH 19: 451.225000 MHz") != NULL);
@@ -484,16 +507,56 @@ test_t3_mapped_rows_decimal_and_distinct(void) {
     g_t3.tier3 = 0U;
     g_t3.tier3_unchecked = 1U;
     reset_render_capture();
-    ui_print_learned_lcns(&opts, &state);
+    ui_print_learned_lcns(f.opts, f.state);
     assert(strstr(g_output, "CH 12: 451.150000 MHz") != NULL && strstr(g_output, "CH 000C") == NULL);
 
     /* Without Tier III identity (a P25 or Connect Plus map) the rows keep their hex and frequency dedupe. */
     g_t3.tier3_unchecked = 0U;
     reset_render_capture();
-    ui_print_learned_lcns(&opts, &state);
+    ui_print_learned_lcns(f.opts, f.state);
     assert(strstr(g_output, "CH 0012: 451.225000 MHz") != NULL);
     assert(strstr(g_output, "CH 0013:") == NULL);
     assert(strstr(g_output, "CH 000C: 451.150000 MHz") != NULL);
+    t3_fixture_free(&f);
+}
+
+/* Review gate b-r1 T1: the Tier III flags hold for the session, so a move from a Tier III site to a P25 system keeps
+   them; the P25 map then keeps its IDEN numbering, its channels past 4094 included. Before any sync the decoded modes
+   decide. */
+static void
+test_t3_numbering_follows_the_current_system(void) {
+    t3_fixture f = t3_fixture_new();
+    f.opts->trunk_enable = 1;
+    attach_t3(f.state);
+    g_t3.tier3 = 1U;
+    add_trunk_channel(f.state, 12U, 851150000L);
+    add_trunk_channel(f.state, 0x100AU, 852250000L);
+    f.state->synctype = DSD_SYNC_NONE;
+    f.state->lastsynctype = DSD_SYNC_P25P1_POS;
+    reset_render_capture();
+    ui_print_learned_lcns(f.opts, f.state);
+    assert(strstr(g_output, "CH 000C: 851.150000 MHz") != NULL);
+    assert(strstr(g_output, "CH 100A: 852.250000 MHz") != NULL);
+    assert(strstr(g_output, "CH 12:") == NULL);
+
+    /* Back on a DMR carrier: Tier III numbering. */
+    f.state->synctype = DSD_SYNC_DMR_BS_DATA_POS;
+    reset_render_capture();
+    ui_print_learned_lcns(f.opts, f.state);
+    assert(strstr(g_output, "CH 12: 851.150000 MHz") != NULL && strstr(g_output, "CH 000C") == NULL);
+
+    /* No sync yet: DMR the only trunking protocol decoded reads Tier III; P25 decoded too keeps the hex. */
+    f.state->synctype = DSD_SYNC_NONE;
+    f.state->lastsynctype = DSD_SYNC_NONE;
+    f.opts->frame_dmr = 1;
+    reset_render_capture();
+    ui_print_learned_lcns(f.opts, f.state);
+    assert(strstr(g_output, "CH 12: 851.150000 MHz") != NULL);
+    f.opts->frame_p25p1 = 1;
+    reset_render_capture();
+    ui_print_learned_lcns(f.opts, f.state);
+    assert(strstr(g_output, "CH 000C: 851.150000 MHz") != NULL && strstr(g_output, "CH 12:") == NULL);
+    t3_fixture_free(&f);
 }
 
 int
@@ -510,6 +573,7 @@ main(void) {
     test_t3_missing_channels_open_the_panel();
     test_t3_missing_rows_are_capped();
     test_t3_mapped_rows_decimal_and_distinct();
+    test_t3_numbering_follows_the_current_system();
     return 0;
 }
 

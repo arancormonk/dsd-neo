@@ -215,12 +215,14 @@ ui_trunk_missing_detail(const dsd_ui_dmr_t3_view* view, uint16_t lpcn) {
     return NULL;
 }
 
-/* "CH 12: no frequency (TG 1234, slot 1)": the channel and the latest grant that named it, when the ledger kept it. */
+/* "CH 12: no frequency (TG 1234, slot 1)": the channel and the latest grant that named it, when the ledger kept it.
+   Without a detail the checked set still says whether a checked grant named it. */
 static void
-ui_trunk_print_missing_row(uint16_t lpcn, const dsd_ui_dmr_t3_missing_detail* d) {
+ui_trunk_print_missing_row(const dsd_ui_dmr_t3_view* view, uint16_t lpcn, const dsd_ui_dmr_t3_missing_detail* d) {
     ui_print_lborder_green();
     if (d == NULL) {
-        printw(" CH %u: no frequency\n", (unsigned)lpcn);
+        const int checked = (view->missing.checked[lpcn >> 3] >> (lpcn & 7U)) & 1U;
+        printw(" CH %u: no frequency%s\n", (unsigned)lpcn, checked ? "" : " (unchecked)");
         return;
     }
     printw(" CH %u: no frequency (%s %u%s, slot %u%s)\n", (unsigned)lpcn, d->group ? "TG" : "radio",
@@ -238,13 +240,13 @@ ui_trunk_render_missing(const dsd_ui_dmr_t3_view* view, size_t total) {
     for (uint8_t i = 0; i < details && printed < UI_TRUNK_MAX_MISSING_PRINT; i++) {
         const dsd_ui_dmr_t3_missing_detail* d = &view->missing.details[i];
         if (dsd_app_dmr_t3_view_missing_has(view, d->lpcn)) {
-            ui_trunk_print_missing_row(d->lpcn, d);
+            ui_trunk_print_missing_row(view, d->lpcn, d);
             printed++;
         }
     }
     for (uint16_t lpcn = 1U; lpcn <= UI_TRUNK_T3_MAX_LPCN && printed < UI_TRUNK_MAX_MISSING_PRINT; lpcn++) {
         if (dsd_app_dmr_t3_view_missing_has(view, lpcn) && ui_trunk_missing_detail(view, lpcn) == NULL) {
-            ui_trunk_print_missing_row(lpcn, NULL);
+            ui_trunk_print_missing_row(view, lpcn, NULL);
             printed++;
         }
     }
@@ -323,7 +325,8 @@ ui_print_learned_lcns(const dsd_opts* opts, const dsd_state* state) {
     ui_trunk_set_base_color(state);
 
     ui_trunk_render_state render = {0};
-    const int t3_lpcns = dsd_app_dmr_t3_view_shows_lpcns(t3);
+    /* Tier III numbering only while the receiver is on a DMR system: a P25 map keeps its IDEN form after a move. */
+    const int t3_lpcns = dsd_app_dmr_t3_view_lists_lpcns(t3, opts, state);
 
     if (missing > 0U) {
         ui_trunk_render_missing(t3, missing);
