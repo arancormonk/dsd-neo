@@ -965,11 +965,14 @@ dmr_flco_motorola_opens_voice_call(uint8_t flco) {
     return flco != 0x08U && flco != 0x28U && flco != 0x29U && (flco < 0x14U || flco > 0x18U);
 }
 
-// Hytera (FID 0x68): every FLCO dmr_flco() reads as a call, all but Hytera Enhanced privacy (0x02), the XPT call alert
-// (0x09) and the other Hytera LCs it names without reading (0x13, 0x2E, 0x2F, 0x31).
+// Hytera (FID 0x68): every FLCO dmr_flco() reads as a call, all but Hytera Enhanced privacy (0x02), the talker alias
+// and GPS LCs it decodes under this FID as under FID 0 (0x04..0x08, in any LC type: their bits are no party), the XPT
+// call alert (0x09) and the other Hytera LCs it names without reading (0x13, 0x2E, 0x2F, 0x31).
 static int
 dmr_flco_hytera_opens_voice_call(uint8_t flco) {
-    return flco != 0x02U && flco != 0x09U && flco != 0x13U && flco != 0x2EU && flco != 0x2FU && flco != 0x31U;
+    const int metadata = flco >= 0x04U && flco <= 0x08U;
+    return !metadata && flco != 0x02U && flco != 0x09U && flco != 0x13U && flco != 0x2EU && flco != 0x2FU
+           && flco != 0x31U;
 }
 
 // TS 102 361-2 Table B.1: Grp_V_Ch_Usr and UU_V_Ch_Usr are the only FID 0 voice channel users.

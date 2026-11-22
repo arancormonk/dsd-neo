@@ -136,6 +136,13 @@ fid0_flco_01_opens_no_call(void) {
     state = new_state();
     assert(!run_header(opts, state, 0x13U, 0x00U, 0x00U, 0x123U, 0x456U, &call) || call.phase != DSD_CALL_PHASE_ACTIVE);
     free_state(state);
+    // Nor a Hytera talker alias or GPS FLCO (FID 0x68, 0x04..0x08) in a header.
+    for (uint8_t flco = 0x04U; flco <= 0x08U; flco++) {
+        state = new_state();
+        assert(!run_header(opts, state, flco, 0x68U, 0x00U, 0x123U, 0x456U, &call)
+               || call.phase != DSD_CALL_PHASE_ACTIVE);
+        free_state(state);
+    }
     // Nor a Capacity Max talker alias or GPS FLCO (FID 0x10, 0x14..0x18) in a header: its bits are no group address.
     for (uint8_t flco = 0x14U; flco <= 0x18U; flco++) {
         state = new_state();
@@ -212,6 +219,10 @@ opens_voice_call_table(void) {
     assert(dmr_flco_opens_voice_call(0x68U, 0x00U, 0));
     assert(dmr_flco_opens_voice_call(0x68U, 0x03U, 0));
     assert(!dmr_flco_opens_voice_call(0x68U, 0x02U, 0));
+    // Its talker alias and GPS LCs (0x04..0x08, as under FID 0) are no voice user in any LC type.
+    for (uint8_t flco = 0x04U; flco <= 0x08U; flco++) {
+        assert(!dmr_flco_opens_voice_call(0x68U, flco, 0));
+    }
     assert(!dmr_flco_opens_voice_call(0x68U, 0x09U, 0));
     assert(!dmr_flco_opens_voice_call(0x68U, 0x13U, 0));
     assert(!dmr_flco_opens_voice_call(0x68U, 0x2EU, 0));
