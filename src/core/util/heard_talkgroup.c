@@ -58,8 +58,8 @@ heard_tg_qualifiers_ok(const dsd_heard_tg_input* in) {
         case DSD_HEARD_TG_P25: return in->p25_supergroup ? 0 : 1;
         case DSD_HEARD_TG_NXDN_C:
             /* Call types 000/001 only; inter-system (CC Option bit 6) is not a local talkgroup. */
-            return ((in->nxdn_call_type == 0u || in->nxdn_call_type == 1u) && !in->nxdn_inter_system) ? 1 : 0;
-        case DSD_HEARD_TG_NXDN_CONV: return in->nxdn_call_type == 1u ? 1 : 0;
+            return ((in->nxdn_type_bits == 0u || in->nxdn_type_bits == 1u) && !in->nxdn_inter_system) ? 1 : 0;
+        case DSD_HEARD_TG_NXDN_CONV: return in->nxdn_type_bits == 1u ? 1 : 0;
         default: return 1;
     }
 }
@@ -75,7 +75,7 @@ dsd_heard_tg_ordinary(const dsd_heard_tg_input* in) {
            Call types 000/001 only (Table 6.6-15), as on Type-C: no other call type names a group. */
         uint32_t prefix = in->id >> 11;
         uint32_t id11 = in->id & 0x7FFu;
-        const int group_call = in->nxdn_call_type == 0u || in->nxdn_call_type == 1u;
+        const int group_call = in->nxdn_type_bits == 0u || in->nxdn_type_bits == 1u;
         return (group_call && prefix <= 30u && id11 >= 1u && id11 <= 2000u) ? 1 : 0;
     }
     for (size_t i = 0; i < sizeof kRanges / sizeof kRanges[0]; i++) {

@@ -3371,7 +3371,7 @@ nxdn_heard_note_pending_type_d(const dsd_opts* opts, dsd_state* state) {
     DSD_MEMSET(&in, 0, sizeof in);
     in.variant = DSD_HEARD_TG_NXDN_D;
     in.id = held.full_id;
-    in.nxdn_call_type = held.call_type;
+    in.nxdn_type_bits = held.call_type;
     in.nxdn_inter_system = held.inter_system;
     dsd_call_state_note_verified_target(opts, state, 0U, held.transmission, &in);
 }
@@ -3402,13 +3402,13 @@ nxdn_vcall_note_heard_group(const dsd_opts* opts, dsd_state* state, const struct
     in.variant = variant;
     in.id = variant == DSD_HEARD_TG_NXDN_D ? nxdn_typed_full_id(info->dst_prefix, info->destination_id)
                                            : (uint32_t)info->destination_id;
-    in.nxdn_call_type = info->call_type;
+    in.nxdn_type_bits = info->call_type;
     in.nxdn_inter_system = (uint8_t)((info->cc_option & 0x40U) != 0U);
     const uint64_t transmission = dsd_call_snapshot_transmission(call);
     if (variant == DSD_HEARD_TG_NXDN_D && !nxdn_confirm_scch_confirmed(state)) {
         state->nxdn_heard_pending.transmission = transmission;
         state->nxdn_heard_pending.full_id = in.id;
-        state->nxdn_heard_pending.call_type = in.nxdn_call_type;
+        state->nxdn_heard_pending.call_type = in.nxdn_type_bits;
         state->nxdn_heard_pending.inter_system = in.nxdn_inter_system;
         return;
     }
