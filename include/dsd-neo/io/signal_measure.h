@@ -175,8 +175,9 @@ typedef enum {
 
 typedef struct {
     /** A sub-window is below when its channel power over the noise it is judged against across the same bins,
-     * (S+N)/N in dB, is less than this: the capture-wide noise reference, or on a DSD_SIGNAL_GEOMETRY_AIRSPY_CENTRED
-     * capture the lower of that reference and the class's sideband floor. */
+     * (S+N)/N in dB, is less than this (centred_threshold_db on a DSD_SIGNAL_GEOMETRY_AIRSPY_CENTRED capture when set):
+     * the capture-wide noise reference, or on a centred capture the lower of that reference and the class's sideband
+     * floor. */
     float threshold_db;
     /** A dsd_signal_quiet_floor_estimator value. */
     int floor_estimator;
@@ -192,6 +193,9 @@ typedef struct {
      * lowers every ratio judged against it; this voids such a reading rather than judging it. 0 turns it off; at most
      * 1. */
     float occupancy_max_share;
+    /** The threshold for a DSD_SIGNAL_GEOMETRY_AIRSPY_CENTRED capture in place of threshold_db; 0 means threshold_db.
+     * Finite, not negative. */
+    float centred_threshold_db;
 } dsd_signal_quiet_params;
 
 typedef struct {

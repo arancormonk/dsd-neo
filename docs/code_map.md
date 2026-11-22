@@ -11151,7 +11151,10 @@ Runtime controls (via `include/dsd-neo/io/rtl_stream_c.h`):
   reset, never for drops or gain. `dsd_signal_quiet_detector_*` is the measurement (the shared
   tap runs one with `dsd_signal_quiet_params_default()`, the shipped `DSD_SIGNAL_QUIET_THRESHOLD_DB` (5.0 dB),
   `DSD_SIGNAL_QUIET_FLOOR_ESTIMATOR` (the trimmed mean), `DSD_SIGNAL_QUIET_GUARD_DB` (8.7 dB) and
-  `DSD_SIGNAL_QUIET_OCCUPANCY_SHARE` (0.05: the occupancy check, below);
+  `DSD_SIGNAL_QUIET_OCCUPANCY_SHARE` (0.05: the occupancy check, below), and for a native Airspy's centred capture
+  `DSD_SIGNAL_QUIET_CENTRED_THRESHOLD_DB` (3.2 dB, `dsd_signal_quiet_params.centred_threshold_db`, 0 meaning the
+  default threshold: its calibration rendered a floor 2 dB lower round the channel, which no reference outside the
+  channel sees);
   `tests/io/signal_quiet_calibrate.cpp`, a manual build-only driver, chose all three and drives its own detectors with
   explicit parameters; docs/signal-search.md "Quiet-channel calibration"). The domain is exactly the rendered cells:
   `dsd_signal_quiet_rate_supported(rate)` (every class) and `dsd_signal_quiet_analog_supported(kind, width, rate)`

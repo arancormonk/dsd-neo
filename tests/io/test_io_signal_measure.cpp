@@ -894,7 +894,7 @@ constexpr float kQuietSigma = 0.01f;
    1.5 dB over the capture-wide reference, whichever floor estimator the guard uses), and every transmitter meant to
    read busy is at least 9 dB over its noise in the class judged. The floor guard is out of reach (100 dB) so these
    scenes judge the ratio alone; test_quiet_floor_guard() covers the guard. */
-constexpr dsd_signal_quiet_params kQuietTestParams = {8.0f, DSD_SIGNAL_QUIET_FLOOR_LOWEST_BLOCK, 100.0f, 0.0f};
+constexpr dsd_signal_quiet_params kQuietTestParams = {8.0f, DSD_SIGNAL_QUIET_FLOOR_LOWEST_BLOCK, 100.0f, 0.0f, 0.0f};
 
 /* A request for the channel landed Fs/4 below the tuner centre, as the RTL chain lands it. */
 dsd_signal_quiet_request
@@ -1397,20 +1397,24 @@ test_quiet_requests(dsd_signal_quiet_detector* d) {
     }
     assert(dsd_signal_quiet_detector_begin(d, nullptr, nullptr, &failure) == -1);
     assert(dsd_signal_quiet_detector_begin(nullptr, &narrow, nullptr, &failure) == -1);
-    for (const dsd_signal_quiet_params& p :
-         {dsd_signal_quiet_params{4.0f, 2, 3.0f, 0.0f}, dsd_signal_quiet_params{4.0f, -1, 3.0f, 0.0f},
-          dsd_signal_quiet_params{std::numeric_limits<float>::quiet_NaN(), DSD_SIGNAL_QUIET_FLOOR_LOWEST_BLOCK, 3.0f,
-                                  0.0f},
-          dsd_signal_quiet_params{std::numeric_limits<float>::infinity(), DSD_SIGNAL_QUIET_FLOOR_LOWEST_BLOCK, 3.0f,
-                                  0.0f},
-          dsd_signal_quiet_params{4.0f, DSD_SIGNAL_QUIET_FLOOR_LOWEST_BLOCK, std::numeric_limits<float>::quiet_NaN(),
-                                  0.0f},
-          dsd_signal_quiet_params{4.0f, DSD_SIGNAL_QUIET_FLOOR_LOWEST_BLOCK, std::numeric_limits<float>::infinity(),
-                                  0.0f},
-          dsd_signal_quiet_params{4.0f, DSD_SIGNAL_QUIET_FLOOR_LOWEST_BLOCK, 3.0f,
-                                  std::numeric_limits<float>::quiet_NaN()},
-          dsd_signal_quiet_params{4.0f, DSD_SIGNAL_QUIET_FLOOR_LOWEST_BLOCK, 3.0f, -0.01f},
-          dsd_signal_quiet_params{4.0f, DSD_SIGNAL_QUIET_FLOOR_LOWEST_BLOCK, 3.0f, 1.01f}}) {
+    const dsd_signal_quiet_params good{4.0f, DSD_SIGNAL_QUIET_FLOOR_LOWEST_BLOCK, 3.0f, 0.0f, 0.0f};
+    assert(dsd_signal_quiet_detector_begin(d, &narrow, &good, &failure) == 0);
+    const float nan = std::numeric_limits<float>::quiet_NaN(), inf = std::numeric_limits<float>::infinity();
+    std::vector<dsd_signal_quiet_params> malformed(13, good);
+    malformed[0].floor_estimator = 2;
+    malformed[1].floor_estimator = -1;
+    malformed[2].threshold_db = nan;
+    malformed[3].threshold_db = inf;
+    malformed[4].guard_db = nan;
+    malformed[5].guard_db = inf;
+    malformed[6].occupancy_max_share = nan;
+    malformed[7].occupancy_max_share = -0.01f;
+    malformed[8].occupancy_max_share = 1.01f;
+    malformed[9].centred_threshold_db = nan;
+    malformed[10].centred_threshold_db = inf;
+    malformed[11].centred_threshold_db = -0.5f;
+    malformed[12].occupancy_max_share = inf;
+    for (const dsd_signal_quiet_params& p : malformed) {
         assert(dsd_signal_quiet_detector_begin(d, &narrow, &p, &failure) == -1);
         assert(failure == DSD_SIGNAL_REQUEST_UNSUPPORTED);
     }
@@ -1423,6 +1427,8 @@ test_quiet_requests(dsd_signal_quiet_detector* d) {
     assert(std::fabs(shipped.threshold_db - 5.0f) < 1e-6f);
     assert(shipped.floor_estimator == DSD_SIGNAL_QUIET_FLOOR_TRIMMED_MEAN);
     assert(std::fabs(shipped.guard_db - 8.7f) < 1e-6f);
+    // A native Airspy's centred capture is judged at 3.2 dB, its own calibration's threshold.
+    assert(std::fabs(shipped.centred_threshold_db - 3.2f) < 1e-6f);
     // The domain is exactly the rendered cells: every rendered rate, and at each the Radio sheet's widths of each kind,
     // rendered as that kind only; nothing between, no other kind.
     const uint32_t rendered_rates[] = {960000u,  1024000u, 1152000u, 1200000u, 1280000u, 1440000u, 1536000u, 1600000u,
@@ -1716,6 +1722,36 @@ test_quiet_occupancy(dsd_signal_quiet_detector* d) {
     }
 }
 
+/* A native Airspy's centred capture is judged against its own threshold (3.2 dB): a channel reading between it and the
+   default 5.0 dB is busy there, while the same samples read through the Fs/4 shift are quiet. With the centred
+   threshold at 0 the default one judges the centred capture too. */
+static void
+test_quiet_centred_threshold(dsd_signal_quiet_detector* d) {
+    const dsd_signal_quiet_params shipped = dsd_signal_quiet_params_default();
+    dsd_signal_quiet_params single = shipped;
+    single.centred_threshold_db = 0;
+    const double width = DSD_SIGNAL_QUIET_WIDTH_12K5_HZ;
+    for (uint32_t rate : {2500000U, 10000000U}) {
+        const auto centred = quiet_centred_request(rate, DSD_SIGNAL_QUIET_CLASS_12K5);
+        const auto shifted = quiet_request(rate, DSD_SIGNAL_QUIET_CLASS_12K5);
+        const size_t pairs = quiet_request_pairs(centred);
+        for (unsigned seed = 161; seed <= 163; ++seed) {
+            auto iq = quiet_noise(pairs, seed);
+            quiet_add_fm(iq, rate, 0, quiet_amplitude(1.5, rate, width), {});
+            const auto native = quiet_run(d, centred, iq, 4096, &shipped);
+            assert(native.failure == DSD_SIGNAL_MEASURE_OK && native.valid);
+            assert(native.max_ratio_db > shipped.centred_threshold_db + 0.2f
+                   && native.max_ratio_db < shipped.threshold_db - 0.2f);
+            assert(!native.quiet);
+            const auto default_policy = quiet_run(d, shifted, iq, 4096, &shipped);
+            assert(default_policy.valid && default_policy.quiet);
+            const auto one_threshold = quiet_run(d, centred, iq, 4096, &single);
+            assert(one_threshold.valid && one_threshold.quiet);
+            assert(std::abs(one_threshold.max_ratio_db - native.max_ratio_db) < 1e-6f);
+        }
+    }
+}
+
 /* What the centred policy admits: exactly the native Airspy rates, refused at any other rate (a request there, or a
    rate between them), and no policy but the two known ones. A policy change mid-request fails it as a capture
    change. */
@@ -1939,8 +1975,8 @@ static void
 test_quiet_estimators(dsd_signal_quiet_detector* d) {
     const uint32_t rate = 1536000;
     const auto q = quiet_request(rate, DSD_SIGNAL_QUIET_CLASS_12K5);
-    const dsd_signal_quiet_params trimmed{30.0f, DSD_SIGNAL_QUIET_FLOOR_TRIMMED_MEAN, 100.0f, 0.0f};
-    const dsd_signal_quiet_params lowest{30.0f, DSD_SIGNAL_QUIET_FLOOR_LOWEST_BLOCK, 100.0f, 0.0f};
+    const dsd_signal_quiet_params trimmed{30.0f, DSD_SIGNAL_QUIET_FLOOR_TRIMMED_MEAN, 100.0f, 0.0f, 0.0f};
+    const dsd_signal_quiet_params lowest{30.0f, DSD_SIGNAL_QUIET_FLOOR_LOWEST_BLOCK, 100.0f, 0.0f, 0.0f};
     for (unsigned seed = 1; seed <= 4; ++seed) {
         auto iq = quiet_noise(quiet_request_pairs(q), 90 + seed);
         for (size_t i = 2; seed % 2 == 0 && i < iq.size(); ++i) {
@@ -2338,6 +2374,7 @@ test_quiet(const dsd_signal_measure_request& r) {
     test_quiet_airspy_centred(d);
     test_quiet_centred_depressed_floor(d);
     test_quiet_occupancy(d);
+    test_quiet_centred_threshold(d);
     test_quiet_centred_requests(d);
     test_quiet_failures(d);
     test_quiet_spans(d);

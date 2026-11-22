@@ -1405,9 +1405,9 @@ dsd_signal_detector_feed(dsd_signal_detector* detector, const float* iq, size_t 
    rounded down; noise alone rises at most 2.4 dB.
    Judged against the reference, the threshold's interval is (2.02, 5.08] dB and the threshold is its top, rounded
    down. */
-#define DSD_SIGNAL_QUIET_THRESHOLD_DB    5.0f
-#define DSD_SIGNAL_QUIET_FLOOR_ESTIMATOR DSD_SIGNAL_QUIET_FLOOR_TRIMMED_MEAN
-#define DSD_SIGNAL_QUIET_GUARD_DB        8.7f
+#define DSD_SIGNAL_QUIET_THRESHOLD_DB         5.0f
+#define DSD_SIGNAL_QUIET_FLOOR_ESTIMATOR      DSD_SIGNAL_QUIET_FLOOR_TRIMMED_MEAN
+#define DSD_SIGNAL_QUIET_GUARD_DB             8.7f
 /* The occupancy check (dsd_signal_quiet_params.occupancy_max_share): a sub-window whose reference bins stand over the
    noise's 98th percentile more than 5% more often than noise alone puts them there is void. When a share p of the
    reference span stands well over the noise, the lower quartile the reference takes lands on the 0.25 / (1 - p)
@@ -1416,7 +1416,13 @@ dsd_signal_detector_feed(dsd_signal_detector* detector, const float* iq, size_t 
    Simulated over 6 to 32 transforms and 2,000 to 14,000 bins, a reading the check keeps is at most about 0.3 dB low
    (a floor raised by only 2.6 to 3 dB over part of the span, which moves fewer bins over the percentile), and noise
    alone never reaches it (its share stays under 1.5%). It only voids readings, so it never adds a quiet verdict. */
-#define DSD_SIGNAL_QUIET_OCCUPANCY_SHARE 0.05f
+#define DSD_SIGNAL_QUIET_OCCUPANCY_SHARE      0.05f
+/* A native Airspy's centred capture (DSD_SIGNAL_GEOMETRY_AIRSPY_CENTRED) is judged at its own threshold. Its
+   calibration rendered the Airspy's passband in hardware coordinates, and a floor 2 dB lower over the three channel
+   widths round the channel (which no reference taken outside the channel can see) lowered every reading by about
+   2 dB: the lowest valid active reading over every response and rate was 3.79 dB, and the highest noise-only 95th
+   percentile 2.50 dB, so the interval is (2.50, 3.29] dB and the threshold its top, rounded down. */
+#define DSD_SIGNAL_QUIET_CENTRED_THRESHOLD_DB 3.2f
 /* The capture rates and analog widths the calibration rendered and validated; nothing between them is admitted. Rates:
    the RTL rate planner's (1.024, 1.152, 1.536 Msps for every selectable DSP bandwidth, rtl_sdr_fm.cpp
    rtl_downsample_passes_for_rate_in()), an Airspy's (2.5, 3, 6, 10 MS/s), and the common RTL-SDR rates a SoapySDR
@@ -1524,6 +1530,7 @@ dsd_signal_quiet_params_default(void) {
     params.floor_estimator = DSD_SIGNAL_QUIET_FLOOR_ESTIMATOR;
     params.guard_db = DSD_SIGNAL_QUIET_GUARD_DB;
     params.occupancy_max_share = DSD_SIGNAL_QUIET_OCCUPANCY_SHARE;
+    params.centred_threshold_db = DSD_SIGNAL_QUIET_CENTRED_THRESHOLD_DB;
     return params;
 }
 
@@ -1604,6 +1611,7 @@ quiet_arm(dsd_signal_quiet_detector* detector, const dsd_signal_quiet_request* r
     double span = 0;
     if (!request || !request->request_id || !std::isfinite(params.threshold_db) || !std::isfinite(params.guard_db)
         || !(params.occupancy_max_share >= 0.0f && params.occupancy_max_share <= 1.0f)
+        || !std::isfinite(params.centred_threshold_db) || params.centred_threshold_db < 0.0f
         || (params.floor_estimator != DSD_SIGNAL_QUIET_FLOOR_TRIMMED_MEAN
             && params.floor_estimator != DSD_SIGNAL_QUIET_FLOOR_LOWEST_BLOCK)
         || request->windows > DSD_SIGNAL_QUIET_WINDOWS_MAX || !quiet_widths(*request, widths, &count)
@@ -1791,7 +1799,11 @@ quiet_finish_window(dsd_signal_quiet_detector* detector) {
     result.floor_dbfs = (float)detector->max_floor_db;
     result.floor_rise_db = (float)detector->max_rise_db;
     result.occupancy_share = (float)detector->max_occupancy;
-    result.quiet = result.valid && result.max_ratio_db < detector->params.threshold_db;
+    const float threshold = detector->request.capture.geometry == DSD_SIGNAL_GEOMETRY_AIRSPY_CENTRED
+                                    && detector->params.centred_threshold_db > 0.0f
+                                ? detector->params.centred_threshold_db
+                                : detector->params.threshold_db;
+    result.quiet = result.valid && result.max_ratio_db < threshold;
     return 1;
 }
 
