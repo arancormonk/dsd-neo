@@ -91,6 +91,19 @@ class HeardTalkgroupStore : public QObject, public HeardTalkgroupSink {
     /** @brief @p ownerUid's entries, heard most recently first (ties: lower variant, then lower id). */
     QVector<Entry> entriesFor(const QString& ownerUid) const;
 
+    /** @brief An entry's key (variant << 32 | id), as ownerChanged() names it, and its parts. */
+    static quint64 entryKey(int variant, quint32 id);
+    static int entryVariant(quint64 key);
+    static quint32 entryId(quint64 key);
+
+    /** @brief @p ownerUid's entry @p key's last heard into @p last; false (@p last untouched) when there is none.
+     * One lookup. */
+    bool entryLast(const QString& ownerUid, quint64 key, qint64* last) const;
+
+    /** @brief @p visit(key, last) for each of @p ownerUid's entries, in no order (entriesFor() without its copy and
+     * sort). */
+    void visitEntries(const QString& ownerUid, const std::function<void(quint64, qint64)>& visit) const;
+
     /**
      * @brief The talkgroup number a policy row and the Talkgroups screen know entry @p id of @p variant by: an NXDN
      * Type-D id (`prefix << 11 | id`) by its 11-bit id, as the call state numbers it; every other id as it is.
@@ -144,8 +157,11 @@ class HeardTalkgroupStore : public QObject, public HeardTalkgroupSink {
 #endif
 
   Q_SIGNALS:
-    /** @brief @p ownerUid's entries changed (an observe, forget, clear or purge). */
-    void ownerChanged(const QString& ownerUid);
+    /**
+     * @brief @p ownerUid's entries changed. @p entries names the ones that did (entryKey()) when an observe changed
+     * them: the entry it added or moved and any the cap evicted for it. Empty: any may have (a forget, clear or purge).
+     */
+    void ownerChanged(const QString& ownerUid, const QVector<quint64>& entries);
 
   private:
     struct Times {
@@ -159,10 +175,11 @@ class HeardTalkgroupStore : public QObject, public HeardTalkgroupSink {
     void load();
     /** Takes one v:1 element; false when it breaks the schema. */
     bool takeStored(const QJsonValue& value);
-    /** Evicts @p entries down to the cap, oldest first. */
-    static void evictOverCap(OwnerEntries& entries);
-    /** Notes a change to @p ownerUid's entries: the state is owed, and ownerChanged() is sent. */
-    void changed(const QString& ownerUid);
+    /** Evicts @p entries down to the cap, oldest first; @return the keys it evicted. */
+    static QVector<quint64> evictOverCap(OwnerEntries& entries);
+    /** Notes a change to @p ownerUid's entries (@p entries as ownerChanged() names them): the state is owed, and
+     * ownerChanged() is sent. */
+    void changed(const QString& ownerUid, const QVector<quint64>& entries = {});
     /** Queues a write of the whole state as it is now. */
     void queueWrite();
     /** Every entry, as one flat list a write can own. */

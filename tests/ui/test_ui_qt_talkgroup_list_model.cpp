@@ -874,6 +874,17 @@ test_remembered_cards_at_session_start() {
     history.refresh(fixture.state, fixture.opts);
     model.refresh(fixture.opts, fixture.state);
     expect("903 start: a newer call moves last heard", lastHeard(model, 501) == 4001 && remembered(model, 501));
+    // Allow-list mode: a remembered card is an unlisted talkgroup, not tuned, and nothing is written to the table.
+    fixture.opts->trunk_use_allow_list = 1;
+    model.refresh(fixture.opts, fixture.state);
+    expect("903 allow list: remembered cards are not tuned",
+           model.count() == 2 && !model.data(find(model, 501), TalkgroupListModel::ListeningRole).toBool()
+               && !model.data(find(model, 502), TalkgroupListModel::ListeningRole).toBool()
+               && model.notTunedCount() == 2 && remembered(model, 501));
+    expect("903 allow list: nothing is added to the policy table", dsd_tg_policy_entry_count(fixture.state) == 0);
+    fixture.opts->trunk_use_allow_list = 0;
+    model.refresh(fixture.opts, fixture.state);
+    expect("903 allow list off: tuned again", model.notTunedCount() == 0);
     // A system remembering nothing new still shows what it remembers.
     held.store.setOwnerPolicy([](const QString&) { return false; });
     model.refresh(fixture.opts, fixture.state);
@@ -997,6 +1008,19 @@ test_variants_one_card_and_forget() {
     expect("903 clear: no card is left, without a reset", model.count() == 0 && sig.resets == 0 && sig.removes >= 1);
     model.refresh(fixture.opts, fixture.state);
     expect("903 clear: none comes back from this session's calls", model.count() == 0);
+    // Type-D end to end: the store's full id and the call's 11-bit number are one card, and Forget takes both.
+    const quint32 typeD99 = (5U << 11) | 99U;
+    held.store.observe(kSysA, DSD_HEARD_TG_NXDN_D, typeD99, 1000);
+    fixture.commit(99, 6000);
+    history.refresh(fixture.state, fixture.opts);
+    model.refresh(fixture.opts, fixture.state);
+    expect("903 type-d: the remembered entry and the call are one card", model.count() == 1 && remembered(model, 99)
+                                                                             && lastHeard(model, 99) == 6001
+                                                                             && !find(model, typeD99).isValid());
+    model.forgetTalkgroup(99);
+    model.refresh(fixture.opts, fixture.state);
+    expect("903 type-d: forget takes the entry and hides the call",
+           model.count() == 0 && held.store.entriesFor(kSysA).isEmpty());
     // An edit sheet that captured the owner forgets for it even after the view moved on.
     held.store.observe(kSysB, DSD_HEARD_TG_P25, 88, 1000);
     model.forgetTalkgroupOf(kSysB, 88);
@@ -1108,6 +1132,37 @@ test_two_thousand_remembered() {
                && model.data(model.index(1999, 0), TalkgroupListModel::IdStartRole).toULongLong() == 11999U);
     expect("903 cap: inserted as one run, no reset", sig.inserts == 1 && sig.insertedRows == 2000 && sig.resets == 0);
     sig.take();
+    // Review r1: one sighting of a remembered talkgroup is one store lookup, one number merged and one row signal.
+    int changedRow = -1;
+    QObject::connect(&model, &QAbstractItemModel::dataChanged, &model,
+                     [&changedRow](const QModelIndex& first, const QModelIndex&) { changedRow = first.row(); });
+    const auto quiet = model.workCountsForTest();
+    held.store.observe(kSysA, DSD_HEARD_TG_P25, 10500, 150000);
+    model.refresh(fixture.opts, fixture.state);
+    const auto one = model.workCountsForTest();
+    expect("903 cap: a sighting is one dataChanged on its card",
+           sig.changes == 1 && sig.inserts == 0 && sig.removes == 0 && sig.resets == 0
+               && changedRow == find(model, 10500).row() && lastHeard(model, 10500) == 150000);
+    expect("903 cap: a sighting reads one entry and merges one number, no whole read",
+           one.entriesRead == quiet.entriesRead + 1 && one.numbersMerged == quiet.numbersMerged + 1
+               && one.rememberedReads == quiet.rememberedReads && one.listedReads == quiet.listedReads
+               && one.wholeListUpdates == quiet.wholeListUpdates && one.historyReads == quiet.historyReads);
+    // A timing smoke check: 500 sightings, each followed by a poll (generous: a debug build on a loaded host).
+    const uint64_t began = dsd_realtime_mono_ms();
+    for (quint32 i = 0; i < 500U; ++i) {
+        held.store.observe(kSysA, DSD_HEARD_TG_P25, 10000U + (i * 7U) % 2000U, 160000 + static_cast<qint64>(i));
+        model.refresh(fixture.opts, fixture.state);
+    }
+    const uint64_t spent = dsd_realtime_mono_ms() - began;
+    const auto many = model.workCountsForTest();
+    expect("903 cap: 500 sightings take one entry and one number each",
+           many.entriesRead == one.entriesRead + 500 && many.numbersMerged == one.numbersMerged + 500
+               && many.rememberedReads == one.rememberedReads && many.wholeListUpdates == one.wholeListUpdates);
+    if (spent > 2000U) {
+        DSD_FPRINTF(stderr, "903 cap: 500 sightings took %llu ms\n", static_cast<unsigned long long>(spent));
+    }
+    expect("903 cap: 500 sightings in under 2 s", spent <= 2000U);
+    sig.take();
     const auto start = model.workCountsForTest();
     fixture.commit(5, time(nullptr));
     history.refresh(fixture.state, fixture.opts);
@@ -1115,11 +1170,15 @@ test_two_thousand_remembered() {
     expect("903 cap: a new talkgroup heard is one insert",
            sig.inserts == 1 && sig.insertedRows == 1 && sig.removes == 0 && sig.resets == 0 && sig.changes == 0
                && find(model, 5).row() == 0 && model.workCountsForTest().wholeListUpdates == start.wholeListUpdates);
+    expect("903 cap: a call merges only its own number, the store is not read",
+           model.workCountsForTest().numbersMerged == start.numbersMerged + 1
+               && model.workCountsForTest().entriesRead == start.entriesRead && model.notTunedCount() == 0);
     sig.take();
-    held.store.observe(kSysA, DSD_HEARD_TG_P25, 12000, 200000); // over the cap: the oldest, 10000, goes
+    const quint32 oldest = held.store.entriesFor(kSysA).constLast().id; // what the cap evicts next
+    held.store.observe(kSysA, DSD_HEARD_TG_P25, 12000, 200000);
     model.refresh(fixture.opts, fixture.state);
     expect("903 cap: an eviction is one remove and one insert",
-           sig.removes == 1 && sig.inserts == 1 && sig.resets == 0 && !find(model, 10000).isValid()
+           sig.removes == 1 && sig.inserts == 1 && sig.resets == 0 && !find(model, oldest).isValid()
                && find(model, 12000).isValid() && model.count() == 2001);
     sig.take();
     for (int i = 0; i < 5; ++i) {

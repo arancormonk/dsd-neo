@@ -37,6 +37,7 @@
 #include <dsd-neo/core/opts_fwd.h>
 #include <dsd-neo/core/state_fwd.h>
 #include <memory>
+#include <optional>
 #include <stdint.h>
 // Qt template conversions require this in some consumers; IWYU's answer depends on instantiation.
 #include <type_traits> // IWYU pragma: keep
@@ -197,9 +198,12 @@ class TalkgroupListModel : public QAbstractListModel {
         int rememberedReads = 0;
         int historyReads = 0;
         int wholeListUpdates = 0;
+        /* Store entries taken in (a whole read visits each; an observe's change one), and numbers merged into a card. */
+        int entriesRead = 0;
+        int numbersMerged = 0;
     };
 
-    WorkCounts
+    const WorkCounts&
     workCountsForTest() const {
         return m_work;
     }
@@ -281,16 +285,34 @@ class TalkgroupListModel : public QAbstractListModel {
     void readListed(const dsd_state* snapshot, bool allowListedOnly, QSet<QString>& categoryTags);
     /** @brief The heard set read through the history's role names, for a history without HeardTalkgroupSource. */
     QList<HeardTalkgroupRow> heardFromRoles() const;
+    /** One heard number's new state: its card, or none. */
+    using HeardChanges = QHash<uint32_t, std::optional<Heard>>;
+
+    /** @brief Read the viewed owner's store entries whole (HeardTalkgroupStore::visitEntries()). */
     void readRemembered();
-    void readTransient();
-    /** @brief The heard set: the remembered numbers and this session's, less what a forget or clear hid. */
+    /** @brief Take in entry @p key (present with @p last, or gone); @return its number (0: none). */
+    uint32_t noteRemembered(quint64 key, bool present, qint64 last);
+    /** @brief Look up the entries an observe named (one store lookup each), adding their numbers to @p named. */
+    void patchRemembered(QSet<uint32_t>& named);
+    /** @brief Read the history's heard set, adding the numbers whose fragments moved to @p named. */
+    void readTransient(QSet<uint32_t>& named);
+    /** @brief Number @p id's card now: its remembered entries and this session's fragments, less what a forget or
+     * clear hid; none when neither is left. */
+    std::optional<Heard> heardOf(uint32_t id) const;
+    /** @brief The heard set: the remembered numbers and this session's (heardOf() for each). */
     QHash<uint32_t, Heard> mergeHeard() const;
     /** @brief A card for heard number @p id. */
     Row heardRow(uint32_t id, const Heard& heard, const dsd_state* snapshot) const;
     /** @brief The listed rows and a card for each uncovered number of @p heard, in list order. */
     QVector<Row> wholeList(const QHash<uint32_t, Heard>& heard, const dsd_state* snapshot) const;
-    /** @brief Apply @p heard to the heard cards row by row; false (nothing changed) when too much moved for that. */
-    bool patchHeard(const QHash<uint32_t, Heard>& heard, const dsd_state* snapshot);
+    /** @brief Apply @p changes to the heard cards row by row, and to the heard set; false (nothing changed) when too
+     * many cards come or go for that. */
+    bool applyHeard(const HeardChanges& changes, const dsd_state* snapshot);
+    /** @brief Sort @p changes into the cards that go, come and change; a number a listed row covers has no card. */
+    void sortHeardChanges(const HeardChanges& changes, QVector<uint32_t>& gone, QVector<uint32_t>& added,
+                          QVector<uint32_t>& changed) const;
+    /** @brief Make the heard set what @p changes say. */
+    void takeHeardChanges(const HeardChanges& changes);
     /** @brief The row of heard card @p id, or -1. */
     int heardRowIndex(uint32_t id) const;
     void removeRowAt(int row);
@@ -345,8 +367,11 @@ class TalkgroupListModel : public QAbstractListModel {
     std::unique_ptr<TalkgroupCoverage> m_coverage;
     bool m_heardListening = true;
     bool m_heardRecord = true;
-    /* The viewed owner's remembered numbers (HeardTalkgroupStore::policyId()) and their newest last heard. */
+    /* The viewed owner's remembered numbers (HeardTalkgroupStore::policyId()) and their newest last heard, the
+       entries behind each (key -> last), and the entries an observe changed since they were read. */
     QHash<uint32_t, qint64> m_remembered;
+    QHash<uint32_t, QHash<quint64, qint64>> m_rememberedKeys;
+    QVector<quint64> m_rememberedChanged;
     /* This session's numbers the viewed owner owns, with their newest time and ingest serial. */
     QHash<uint32_t, QPair<qint64, quint64>> m_transient;
     /* The heard set the rows show (mergeHeard()). */
@@ -358,7 +383,7 @@ class TalkgroupListModel : public QAbstractListModel {
     QHash<QString, QHash<quint32, QVariantMap>> m_observedCrypto;
     QString m_persistenceScope = QStringLiteral("session");
 #ifdef DSD_NEO_TEST_HOOKS
-    WorkCounts m_work;
+    mutable WorkCounts m_work;
 #endif
 };
 

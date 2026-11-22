@@ -19168,13 +19168,18 @@ Qt Quick frontend (`src/ui/qt`):
     shows the card again; an update of a call already logged (its end extending) does not. The marks are in memory,
     per owner, and a new `historySession` drops them.
   - Granular updates. Dirty flags (the policy's version, the store's `ownerChanged()` for the viewed owner, any
-    history change, the viewed owner, the session) gate every read: an idle tick reads and signals nothing. Only the
+    history change, the viewed owner, the session) gate every read: an idle tick reads and signals nothing. An observe
+    names the entries it changed (`ownerChanged(owner, entries)`: the one added or moved and any the cap evicted; empty
+    for a forget, clear or purge, which are read whole through `visitEntries()`), and the model looks each up
+    (`entryLast()`, one hash lookup) and merges only its number (`heardOf()`); a history change merges only the numbers
+    whose fragments moved (the history's heard set compared with the last one). So one call on an owner with 2000
+    remembered talkgroups is one entry read, one number merged and one row signal, never a pass over the cards. Only the
     heard cards that moved are patched: a changed last heard or remembered flag is one `dataChanged`, a card heard or
-    gone one row insert or remove at its sorted place. More than 32 inserts and removes at once (a session's start with
+    gone one row insert or remove at its binary-searched place, with the not-tuned count kept as it goes. More than 32 inserts and removes at once (a session's start with
     a long remembered list, an owner change), and any policy change, go through a whole-list compare (`diffRows()`:
     rows matched by kind, bounds, pattern and occurrence, removed and inserted a run at a time, the rest changed in
     place), so a heard card that gains a listed row is changed where it is. A new policy context (another table, a
-    target hop) is a reset, as before (#782). `workCountsForTest()` counts the reads and whole-list updates. Tests:
+    target hop) is a reset, as before (#782). `workCountsForTest()` counts the reads, entries read, numbers merged and whole-list updates. Tests:
     `UI_QT_TALKGROUP_LIST_MODEL` (`test_remembered_cards_at_session_start`, `test_transient_follows_the_target_on_air`
     with a relaunch, `test_variants_one_card_and_forget`, `test_listed_rows_cover_remembered`,
     `test_incremental_updates`, `test_two_thousand_remembered`, `test_crypto_lookup_scoped_to_owner`),

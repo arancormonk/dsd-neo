@@ -125,7 +125,7 @@ HeardTalkgroupStore::load() {
         }
     }
     for (OwnerEntries& entries : m_owners) {
-        evictOverCap(entries);
+        (void)evictOverCap(entries);
     }
     if (dropped > 0) {
         LOG_WARN("%s: %d remembered talkgroup entries were not valid and are dropped.\n", qUtf8Printable(m_fileName),
@@ -156,11 +156,12 @@ HeardTalkgroupStore::takeStored(const QJsonValue& value) {
     return true;
 }
 
-void
+QVector<quint64>
 HeardTalkgroupStore::evictOverCap(OwnerEntries& entries) {
+    QVector<quint64> evicted;
     const qsizetype excess = entries.size() - kMaxEntriesPerOwner;
     if (excess <= 0) {
-        return;
+        return evicted;
     }
     // Oldest last heard first, ties to the lower variant, then the lower id: the key orders by variant, then id.
     QVector<QPair<qint64, quint64>> order;
@@ -171,7 +172,9 @@ HeardTalkgroupStore::evictOverCap(OwnerEntries& entries) {
     std::nth_element(order.begin(), order.begin() + (excess - 1), order.end());
     for (qsizetype i = 0; i < excess; ++i) {
         entries.remove(order.at(i).second);
+        evicted.append(order.at(i).second);
     }
+    return evicted;
 }
 
 bool
@@ -204,10 +207,11 @@ HeardTalkgroupStore::observe(const QString& ownerUid, int variant, quint32 id, q
     const auto it = entries.find(key);
     if (it == entries.end()) {
         entries.insert(key, {whenSecs, whenSecs});
-        evictOverCap(entries);
+        QVector<quint64> touched = evictOverCap(entries);
         // A late observation older than every kept one is what the cap evicts: nothing changed.
         if (entries.contains(key)) {
-            changed(ownerUid);
+            touched.append(key);
+            changed(ownerUid, touched);
         }
         return;
     }
@@ -216,7 +220,47 @@ HeardTalkgroupStore::observe(const QString& ownerUid, int variant, quint32 id, q
     }
     it->first = qMin(it->first, whenSecs);
     it->last = qMax(it->last, whenSecs);
-    changed(ownerUid);
+    changed(ownerUid, {key});
+}
+
+quint64
+HeardTalkgroupStore::entryKey(int variant, quint32 id) {
+    return entry_key(variant, id);
+}
+
+int
+HeardTalkgroupStore::entryVariant(quint64 key) {
+    return key_variant(key);
+}
+
+quint32
+HeardTalkgroupStore::entryId(quint64 key) {
+    return key_id(key);
+}
+
+bool
+HeardTalkgroupStore::entryLast(const QString& ownerUid, quint64 key, qint64* last) const {
+    const auto owner = m_owners.constFind(ownerUid);
+    if (owner == m_owners.cend()) {
+        return false;
+    }
+    const auto it = owner->constFind(key);
+    if (it == owner->cend()) {
+        return false;
+    }
+    *last = it->last;
+    return true;
+}
+
+void
+HeardTalkgroupStore::visitEntries(const QString& ownerUid, const std::function<void(quint64, qint64)>& visit) const {
+    const auto owner = m_owners.constFind(ownerUid);
+    if (owner == m_owners.cend()) {
+        return;
+    }
+    for (auto it = owner->cbegin(); it != owner->cend(); ++it) {
+        visit(it.key(), it->last);
+    }
 }
 
 QVector<HeardTalkgroupStore::Entry>
@@ -305,9 +349,9 @@ HeardTalkgroupStore::purgeMissingOwners(const QSet<QString>& liveUids) {
 }
 
 void
-HeardTalkgroupStore::changed(const QString& ownerUid) {
+HeardTalkgroupStore::changed(const QString& ownerUid, const QVector<quint64>& entries) {
     m_generation++;
-    Q_EMIT ownerChanged(ownerUid);
+    Q_EMIT ownerChanged(ownerUid, entries);
 }
 
 bool

@@ -27,6 +27,7 @@
 #include <dsd-neo/runtime/tuner_owner.h>
 #include <iterator>
 #include <limits>
+#include <optional>
 #include <string.h>
 #include <utility>
 
@@ -261,11 +262,18 @@ TalkgroupListModel::setHeardStore(HeardTalkgroupStore* store) {
     if (store == nullptr) {
         return;
     }
-    connect(store, &HeardTalkgroupStore::ownerChanged, this, [this](const QString& owner) {
-        if (owner == m_viewedOwner) {
-            m_rememberedDirty = true;
-        }
-    });
+    connect(store, &HeardTalkgroupStore::ownerChanged, this,
+            [this](const QString& owner, const QVector<quint64>& entries) {
+                if (owner != m_viewedOwner) {
+                    return;
+                }
+                // An observe names the entries it changed; anything else is read whole.
+                if (entries.isEmpty()) {
+                    m_rememberedDirty = true;
+                } else {
+                    m_rememberedChanged.append(entries);
+                }
+            });
     connect(store, &QObject::destroyed, this, [this]() { m_rememberedDirty = true; });
 }
 
@@ -368,7 +376,7 @@ TalkgroupListModel::refresh(const dsd_opts* opts_snapshot, const dsd_state* snap
         m_listedDirty = true;
     }
     // An idle tick: nothing the list shows moved, so nothing is read.
-    if (!m_listedDirty && !m_rememberedDirty && !m_transientDirty) {
+    if (!m_listedDirty && !m_rememberedDirty && !m_transientDirty && m_rememberedChanged.isEmpty()) {
         return;
     }
 
@@ -387,25 +395,46 @@ void
 TalkgroupListModel::readDirty(const dsd_state* snapshot, bool allowListedOnly, bool newTable) {
     const int oldCount = count();
     const bool listedRead = m_listedDirty;
+    // A policy change can cover or uncover any card, and a whole store read can change any: every number is compared.
+    // Otherwise only the numbers an observe or the history named are.
+    const bool everyNumber = m_listedDirty || m_rememberedDirty;
     if (m_listedDirty) {
         m_shownContextId = m_contextId;
         QSet<QString> categoryTags;
         readListed(snapshot, allowListedOnly, categoryTags);
         updateCategories(categoryTags);
     }
+    QSet<uint32_t> named;
     if (m_rememberedDirty) {
         readRemembered();
+    } else {
+        patchRemembered(named);
     }
     if (m_transientDirty) {
-        readTransient();
+        readTransient(named);
     }
-    QHash<uint32_t, Heard> heard = mergeHeard();
-    // A policy change can cover or uncover any card: the whole list is compared. Otherwise only the heard cards move.
-    if (listedRead || !patchHeard(heard, snapshot)) {
+    HeardChanges changes;
+    if (everyNumber) {
+        const QHash<uint32_t, Heard> heard = mergeHeard();
+        for (auto it = m_heard.cbegin(); it != m_heard.cend(); ++it) {
+            if (!heard.contains(it.key())) {
+                changes.insert(it.key(), std::nullopt);
+            }
+        }
+        for (auto it = heard.cbegin(); it != heard.cend(); ++it) {
+            changes.insert(it.key(), it.value());
+        }
+    } else {
+        for (const uint32_t id : named) {
+            changes.insert(id, heardOf(id));
+        }
+    }
+    if (listedRead || !applyHeard(changes, snapshot)) {
+        QHash<uint32_t, Heard> heard = mergeHeard();
         replaceRows(wholeList(heard, snapshot), newTable);
+        m_heard = std::move(heard);
+        updateCounts(oldCount);
     }
-    m_heard = std::move(heard);
-    updateCounts(oldCount);
 }
 
 QVector<TalkgroupListModel::Row>
@@ -509,18 +538,11 @@ TalkgroupListModel::heardFromRoles() const {
 void
 TalkgroupListModel::readRemembered() {
     m_remembered.clear();
+    m_rememberedKeys.clear();
+    m_rememberedChanged.clear();
     if (m_store != nullptr && !m_viewedOwner.isEmpty()) {
         // One card per talkgroup number: the variants of a number (and Type-D's prefixes) are one card.
-        const QVector<HeardTalkgroupStore::Entry> entries = m_store->entriesFor(m_viewedOwner);
-        m_remembered.reserve(entries.size());
-        for (const HeardTalkgroupStore::Entry& entry : entries) {
-            const uint32_t id = HeardTalkgroupStore::policyId(entry.variant, entry.id);
-            if (id == 0U) {
-                continue;
-            }
-            qint64& last = m_remembered[id];
-            last = qMax(last, entry.last);
-        }
+        m_store->visitEntries(m_viewedOwner, [this](quint64 key, qint64 last) { noteRemembered(key, true, last); });
     }
     m_rememberedDirty = false;
 #ifdef DSD_NEO_TEST_HOOKS
@@ -528,47 +550,132 @@ TalkgroupListModel::readRemembered() {
 #endif
 }
 
+uint32_t
+TalkgroupListModel::noteRemembered(quint64 key, bool present, qint64 last) {
+    const uint32_t id =
+        HeardTalkgroupStore::policyId(HeardTalkgroupStore::entryVariant(key), HeardTalkgroupStore::entryId(key));
+    if (id == 0U) {
+        return 0U;
+    }
+    if (present) {
+        m_rememberedKeys[id].insert(key, last);
+    } else {
+        const auto held = m_rememberedKeys.find(id);
+        if (held != m_rememberedKeys.end()) {
+            held->remove(key);
+            if (held->isEmpty()) {
+                m_rememberedKeys.erase(held);
+            }
+        }
+    }
+    const auto held = m_rememberedKeys.constFind(id);
+    if (held == m_rememberedKeys.cend()) {
+        m_remembered.remove(id);
+    } else {
+        m_remembered.insert(id, *std::max_element(held->cbegin(), held->cend()));
+    }
+#ifdef DSD_NEO_TEST_HOOKS
+    ++m_work.entriesRead;
+#endif
+    return id;
+}
+
 void
-TalkgroupListModel::readTransient() {
-    m_transient.clear();
+TalkgroupListModel::patchRemembered(QSet<uint32_t>& named) {
+    // The entries an observe named, each one lookup in the store.
+    for (const quint64 key : std::as_const(m_rememberedChanged)) {
+        qint64 last = 0;
+        const bool present = m_store != nullptr && m_store->entryLast(m_viewedOwner, key, &last);
+        const uint32_t id = noteRemembered(key, present, last);
+        if (id != 0U) {
+            named.insert(id);
+        }
+    }
+    m_rememberedChanged.clear();
+}
+
+void
+TalkgroupListModel::readTransient(QSet<uint32_t>& named) {
+    QHash<uint32_t, QPair<qint64, quint64>> transient;
     if (m_history != nullptr) {
         const QList<HeardTalkgroupRow> heard = m_heardSource != nullptr
                                                    ? m_heardSource->heardTalkgroups(m_historySession, m_viewedOwner)
                                                    : heardFromRoles();
-        m_transient.reserve(heard.size());
+        transient.reserve(heard.size());
         for (const HeardTalkgroupRow& row : heard) {
-            m_transient.insert(row.id, qMakePair(row.last, row.serial));
+            transient.insert(row.id, qMakePair(row.last, row.serial));
         }
     }
+    // The numbers whose fragments moved: as many as the history holds, never the remembered cards.
+    for (auto it = m_transient.cbegin(); it != m_transient.cend(); ++it) {
+        if (!transient.contains(it.key())) {
+            named.insert(it.key());
+        }
+    }
+    for (auto it = transient.cbegin(); it != transient.cend(); ++it) {
+        const auto old = m_transient.constFind(it.key());
+        if (old == m_transient.cend() || old.value() != it.value()) {
+            named.insert(it.key());
+        }
+    }
+    m_transient = std::move(transient);
     m_transientDirty = false;
 #ifdef DSD_NEO_TEST_HOOKS
     ++m_work.historyReads;
 #endif
 }
 
+std::optional<TalkgroupListModel::Heard>
+TalkgroupListModel::heardOf(uint32_t id) const {
+#ifdef DSD_NEO_TEST_HOOKS
+    ++m_work.numbersMerged;
+#endif
+    std::optional<Heard> card;
+    const auto remembered = m_remembered.constFind(id);
+    if (remembered != m_remembered.cend()) {
+        card = Heard{remembered.value(), true};
+    }
+    const auto transient = m_transient.constFind(id);
+    if (transient == m_transient.cend()) {
+        return card;
+    }
+    // A forget or clear hid the fragments it found: only one ingested after it shows the number again.
+    const quint64 serial = transient->second;
+    const auto cleared = m_clearedThrough.constFind(m_viewedOwner);
+    if (cleared != m_clearedThrough.cend() && serial <= cleared.value()) {
+        return card;
+    }
+    const auto forgotten = m_forgotten.constFind(m_viewedOwner);
+    if (forgotten != m_forgotten.cend()) {
+        const auto hidden = forgotten->constFind(id);
+        if (hidden != forgotten->cend() && serial <= hidden.value()) {
+            return card;
+        }
+    }
+    if (!card) {
+        card = Heard{};
+    }
+    card->last = qMax(card->last, transient->first);
+    return card;
+}
+
 QHash<uint32_t, TalkgroupListModel::Heard>
 TalkgroupListModel::mergeHeard() const {
     QHash<uint32_t, Heard> heard;
     heard.reserve(m_remembered.size() + m_transient.size());
-    for (auto it = m_remembered.cbegin(); it != m_remembered.cend(); ++it) {
-        heard.insert(it.key(), Heard{it.value(), true});
-    }
-    // A forget or clear hid the fragments it found: only one ingested after it shows the number again.
-    const auto forgotten = m_forgotten.constFind(m_viewedOwner);
-    const auto cleared = m_clearedThrough.constFind(m_viewedOwner);
-    for (auto it = m_transient.cbegin(); it != m_transient.cend(); ++it) {
-        const quint64 serial = it.value().second;
-        if (cleared != m_clearedThrough.cend() && serial <= cleared.value()) {
-            continue;
-        }
-        if (forgotten != m_forgotten.cend()) {
-            const auto hidden = forgotten->constFind(it.key());
-            if (hidden != forgotten->cend() && serial <= hidden.value()) {
-                continue;
+    const auto note = [this, &heard](uint32_t id) {
+        if (!heard.contains(id)) {
+            const std::optional<Heard> card = heardOf(id);
+            if (card) {
+                heard.insert(id, *card);
             }
         }
-        Heard& card = heard[it.key()];
-        card.last = qMax(card.last, it.value().first);
+    };
+    for (auto it = m_remembered.cbegin(); it != m_remembered.cend(); ++it) {
+        note(it.key());
+    }
+    for (auto it = m_transient.cbegin(); it != m_transient.cend(); ++it) {
+        note(it.key());
     }
     return heard;
 }
@@ -619,47 +726,80 @@ TalkgroupListModel::removeRowAt(int row) {
     endRemoveRows();
 }
 
+void
+TalkgroupListModel::sortHeardChanges(const HeardChanges& changes, QVector<uint32_t>& gone, QVector<uint32_t>& added,
+                                     QVector<uint32_t>& changed) const {
+    for (auto it = changes.cbegin(); it != changes.cend(); ++it) {
+        const auto old = m_heard.constFind(it.key());
+        const bool had = old != m_heard.cend();
+        const bool has = it.value().has_value();
+        // Nothing to touch: no card before or after, the same card, or a number a listed row covers.
+        if ((!had && !has) || (had && has && old.value() == *it.value()) || m_coverage->covers(it.key())) {
+            continue;
+        }
+        if (had && has) {
+            changed.push_back(it.key());
+        } else {
+            (had ? gone : added).push_back(it.key());
+        }
+    }
+}
+
+void
+TalkgroupListModel::takeHeardChanges(const HeardChanges& changes) {
+    for (auto it = changes.cbegin(); it != changes.cend(); ++it) {
+        if (it.value()) {
+            m_heard.insert(it.key(), *it.value());
+        } else {
+            m_heard.remove(it.key());
+        }
+    }
+}
+
 bool
-TalkgroupListModel::patchHeard(const QHash<uint32_t, Heard>& heard, const dsd_state* snapshot) {
+TalkgroupListModel::applyHeard(const HeardChanges& changes, const dsd_state* snapshot) {
     QVector<uint32_t> gone;
     QVector<uint32_t> added;
     QVector<uint32_t> changed;
-    for (auto it = m_heard.cbegin(); it != m_heard.cend(); ++it) {
-        if (!heard.contains(it.key()) && !m_coverage->covers(it.key())) {
-            gone.push_back(it.key());
-        }
-    }
-    for (auto it = heard.cbegin(); it != heard.cend(); ++it) {
-        const auto old = m_heard.constFind(it.key());
-        const bool isNew = old == m_heard.cend();
-        if ((isNew || !(old.value() == it.value())) && !m_coverage->covers(it.key())) {
-            (isNew ? added : changed).push_back(it.key());
-        }
-    }
+    sortHeardChanges(changes, gone, added, changed);
     if (gone.size() + added.size() > kHeardPatchLimit) {
         return false;
     }
+    const int oldCount = count();
+    const int oldNotTuned = m_notTunedCount;
     for (const uint32_t id : gone) {
         const int row = heardRowIndex(id);
         if (row >= 0) {
+            m_notTunedCount -= m_rows.at(row).listening ? 0 : 1;
             removeRowAt(row);
         }
     }
     for (const uint32_t id : added) {
-        Row row = heardRow(id, heard.value(id), snapshot);
+        const std::optional<Heard> card = changes.value(id);
+        if (!card) {
+            continue;
+        }
+        Row row = heardRow(id, *card, snapshot);
         const int at = static_cast<int>(std::lower_bound(m_rows.cbegin(), m_rows.cend(), row, rowListedBefore<Row>)
                                         - m_rows.cbegin());
+        m_notTunedCount += row.listening ? 0 : 1;
         beginInsertRows(QModelIndex(), at, at);
         m_rows.insert(at, std::move(row));
         endInsertRows();
     }
     for (const uint32_t id : changed) {
+        const std::optional<Heard> card = changes.value(id);
         const int row = heardRowIndex(id);
-        if (row >= 0) {
-            m_rows[row].lastHeard = heard.value(id).last;
-            m_rows[row].remembered = heard.value(id).remembered;
+        if (card && row >= 0) {
+            m_rows[row].lastHeard = card->last;
+            m_rows[row].remembered = card->remembered;
             Q_EMIT dataChanged(index(row, 0), index(row, 0), {LastHeardRole, RememberedRole});
         }
+    }
+    // Every number of the changes, covered ones too, is what it is now.
+    takeHeardChanges(changes);
+    if (oldCount != count() || oldNotTuned != m_notTunedCount) {
+        Q_EMIT countChanged();
     }
     return true;
 }
@@ -879,6 +1019,8 @@ TalkgroupListModel::clear() {
     m_listed.clear();
     m_coverage = std::make_unique<TalkgroupCoverage>();
     m_remembered.clear();
+    m_rememberedKeys.clear();
+    m_rememberedChanged.clear();
     m_transient.clear();
     m_heard.clear();
     setViewedOwner(QString());
