@@ -92,6 +92,22 @@ dmr_t3_overlay_drop(dsd_state* state, dmr_ext_t* ext, uint16_t l) {
     return 1;
 }
 
+/* Make the edit of @p lpcn the overlay holds: SET or HIDE it (dmr_t3_overlay_put()), or RESTORE it
+   (dmr_t3_overlay_drop()). Returns 1 when it changed, 0 when nothing did, -1 for a new entry past the cap. */
+static int
+dmr_t3_overlay_change(dsd_state* state, dmr_ext_t* ext, uint16_t lpcn, dmr_t3_overlay_op op, long hz) {
+    return op == DMR_T3_OVERLAY_RESTORE ? dmr_t3_overlay_drop(state, ext, lpcn)
+                                        : dmr_t3_overlay_put(state, ext, lpcn, op, hz);
+}
+
+/* After the overlay changed: the revision moves, the ledger is reconciled and the heuristic estimates are redone. */
+static void
+dmr_t3_overlay_settle(dsd_opts* opts, dsd_state* state, dmr_ext_t* ext) {
+    ext->revision++;
+    dmr_t3_missing_reconcile(state);
+    dmr_t3_chan_anchors_changed(opts, state, ext, DMR_T3_ANCHORS_FROM_USER);
+}
+
 dmr_t3_set_result
 dmr_t3_overlay_apply(dsd_opts* opts, dsd_state* state, uint16_t lpcn, dmr_t3_overlay_op op, long hz, long expected_hz,
                      uint8_t expected_origin, uint32_t generation, int check) {
@@ -108,31 +124,38 @@ dmr_t3_overlay_apply(dsd_opts* opts, dsd_state* state, uint16_t lpcn, dmr_t3_ove
     if (ext == NULL) {
         return DMR_T3_SET_INVALID; /* out of memory: nothing could hold the entry */
     }
-    const int changed = op == DMR_T3_OVERLAY_RESTORE ? dmr_t3_overlay_drop(state, ext, lpcn)
-                                                     : dmr_t3_overlay_put(state, ext, lpcn, op, hz);
+    const int changed = dmr_t3_overlay_change(state, ext, lpcn, op, hz);
     if (changed < 0) {
         return DMR_T3_SET_FULL;
     }
     if (changed > 0) {
-        ext->revision++;
-        dmr_t3_missing_reconcile(state);
-        dmr_t3_chan_anchors_changed(opts, state, ext, DMR_T3_ANCHORS_FROM_USER);
+        dmr_t3_overlay_settle(opts, state, ext);
     }
     return DMR_T3_SET_OK;
 }
 
 typedef struct {
-    dsd_opts* opts;
     dsd_state* state;
+    dmr_ext_t* ext;
     int applied;
+    int changed;
 } dmr_t3_overlay_load_ctx;
 
+/* One row of the file: its entry only. The ledger and the estimates are settled once, after the last row. */
 static int
 dmr_t3_overlay_load_row(uint16_t lpcn, long hz, void* ctx) {
     dmr_t3_overlay_load_ctx* c = (dmr_t3_overlay_load_ctx*)ctx;
     const dmr_t3_overlay_op op = hz == 0 ? DMR_T3_OVERLAY_HIDE : DMR_T3_OVERLAY_SET;
-    if (dmr_t3_overlay_apply(c->opts, c->state, lpcn, op, hz, 0, 0U, 0U, 0) != DMR_T3_SET_OK) {
+    if (!dmr_t3_overlay_args_valid(lpcn, op, hz)) {
         return -1;
+    }
+    const int changed = dmr_t3_overlay_change(c->state, c->ext, lpcn, op, hz);
+    if (changed < 0) {
+        return -1;
+    }
+    if (changed > 0) {
+        c->ext->revision++;
+        c->changed = 1;
     }
     c->applied++;
     return 0;
@@ -147,10 +170,22 @@ dmr_t3_overlay_load_csv(dsd_opts* opts, dsd_state* state, const char* path) {
         LOG_ERROR("--dmr-chan-overrides cannot be combined with --trunk-scan\n");
         return -1;
     }
-    dmr_t3_overlay_load_ctx ctx = {opts, state, 0};
-    if (dsd_csv_dmr_chan_overrides_read(path, dmr_t3_overlay_load_row, &ctx) < 0) {
+    dmr_ext_t* ext = dmr_ext_get_or_create(state);
+    if (ext == NULL) {
+        return -1; /* out of memory: nothing could hold the entries */
+    }
+    dmr_t3_overlay_load_ctx ctx = {state, ext, 0, 0};
+    const int taken = dsd_csv_dmr_chan_overrides_read(path, dmr_t3_overlay_load_row, &ctx);
+    /* The whole file is one change: the ledger reconciled and the estimates redone once, not per row (rows a failed
+       read already took included). */
+    if (ctx.changed) {
+        dmr_t3_missing_reconcile(state);
+        dmr_t3_chan_anchors_changed(opts, state, ext, DMR_T3_ANCHORS_FROM_USER);
+    }
+    if (taken < 0) {
         return -1;
     }
+    ext->overrides_applied = 1U;
     LOG_INFO("NOTICE: Applied %d DMR Tier III channel entr%s from %s\n", ctx.applied, ctx.applied == 1 ? "y" : "ies",
              path);
     return ctx.applied;

@@ -3789,6 +3789,41 @@ test_completed_slco_sys_parms_note_tier3(void) {
     free(opts);
 }
 
+/* Review gate b-r3 R5: the site can move its TSCC while the receiver stays on the carrier. A checked P_SYS_PARMS
+   after a checked C_SYS_PARMS names the carrier a payload channel: the TSCC evidence ends, Tier III stays known. A
+   composite control channel's P_SYS_PARMS (Comp_CC set) keeps it. */
+static void
+test_completed_slco_p_sys_parms_ends_cc_evidence(void) {
+    dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(*opts));
+    dsd_state* state = (dsd_state*)calloc(1, sizeof(*state));
+    assert(opts != NULL && state != NULL);
+    uint8_t c_sys[36];
+    uint8_t p_sys[36];
+    opts->audio_in_type = AUDIO_IN_RTL;
+    opts->rtlsdr_center_freq = 451000000U;
+    DSD_MEMSET(c_sys, 0, sizeof(c_sys));
+    write_bits_u64(c_sys, 0U, 0x2U, 4U);
+    write_bits_u64(c_sys, 4U, 1U, 2U);
+    write_bits_u64(c_sys, 6U, 17U, 7U);
+    write_bits_u64(c_sys, 13U, 3U, 5U);
+    DSD_MEMCPY(p_sys, c_sys, sizeof(p_sys));
+    write_bits_u64(p_sys, 0U, 0x3U, 4U);
+
+    run_completed_slco(opts, state, c_sys);
+    assert(dmr_t3_cc_confirmed_hz(state) == 451000000L);
+    run_completed_slco(opts, state, p_sys);
+    assert(dmr_t3_cc_confirmed_hz(state) == 0 && dmr_t3_tier3_seen(state));
+    run_completed_slco(opts, state, c_sys);
+    assert(dmr_t3_cc_confirmed_hz(state) == 451000000L);
+
+    p_sys[18] = 1U; /* Comp_CC: a composite control channel */
+    run_completed_slco(opts, state, p_sys);
+    assert(dmr_t3_cc_confirmed_hz(state) == 451000000L);
+    dsd_state_ext_free_all(state);
+    free(state);
+    free(opts);
+}
+
 static void
 test_completed_slco_activity_uses_each_slot_value(void) {
     static dsd_opts opts;
@@ -4328,6 +4363,7 @@ main(void) {
     test_row_with_wrong_material_is_not_applied();
     test_completed_slco_tier3_site_parameters_update_state();
     test_completed_slco_sys_parms_note_tier3();
+    test_completed_slco_p_sys_parms_ends_cc_evidence();
     test_completed_slco_activity_uses_each_slot_value();
     test_completed_slco_connect_plus_and_xpt_update_site_state();
     test_completed_slco_capacity_plus_hold_returns_to_rest_channel();

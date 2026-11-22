@@ -10,8 +10,9 @@
  * The UI snapshot (<dsd-neo/app_control/snapshot.h>) carries an owned copy of the DMR module's channel record: where
  * each channel map row came from, the frequency DMR uses for each channel (the user's entry over the shared map row),
  * the channels granted without a frequency (the missing-channel ledger), the user's channels over the map (set and
- * hidden), whether the site was named Tier III and whether the carrier names another system now, and the control
- * channel frequency checked evidence names on the current carrier. Both snapshot hops copy it, and each copies the
+ * hidden), whether the site was named Tier III and whether the carrier names another system now, whether the
+ * --dmr-chan-overrides file applied to this session, and the control channel frequency checked evidence names on the
+ * current carrier. Both snapshot hops copy it, and each copies the
  * record's body (origins, frequencies, ledger, overlay rows) only when its content moved: the state instance, the
  * parked trunk-scan target, the channel revision, the ledger's revision or the channel map's sequence. Only the decoder
  * thread writes the source.
@@ -108,6 +109,9 @@ typedef struct {
                                     dsd_rxid_dmr_trunk_named()) or another protocol's. Its map is that system's, so
                                     no Tier III numbering or editor applies; tier3 and tier3_unchecked read 0. 0 while
                                     the carrier named nothing yet */
+    uint8_t overrides_applied; /**< the --dmr-chan-overrides file applied to this session (dmr_t3_overrides_applied()):
+                                    0 with no file, and when the engine skipped it (a session that does not decode
+                                    DMR, or a trunk scan), whatever dsd_opts::dmr_chan_overrides_file holds */
     uint64_t state_id;         /**< dsd_state::state_instance of the source */
     uint32_t target_id;        /**< moves whenever the parked trunk-scan target changes; never repeats in a process */
     uint32_t revision;         /**< dmr_t3_chan_revision(): bumps on any row, origin or overlay change */

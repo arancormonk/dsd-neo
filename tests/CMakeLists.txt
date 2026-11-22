@@ -351,6 +351,17 @@ target_link_libraries(
 # (dmr_csbk.c, dmr_ars.c) without the core ring; DMR_UNIT_ACTIVITY links the real producers. Also no-op LIP and
 # Cellocator service decoders for tests that compile dmr_pdu.c and define neither. The targets that need it are listed
 # once, after they are defined (_dsd_dmr_decoder_stub_targets).
+# The DMR module's channel query (dmr_t3_chan_effective_hz()) for tests that compile the call view without the module.
+add_library(
+    dsd-neo_test_dmr_t3_effective_stub
+    STATIC
+    ${PROJECT_SOURCE_DIR}/tests/test_support/dmr_t3_effective_stub.c
+)
+target_include_directories(
+    dsd-neo_test_dmr_t3_effective_stub
+    PRIVATE ${PROJECT_SOURCE_DIR}/include
+)
+
 add_library(
     dsd-neo_test_dmr_decoder_stubs
     STATIC
@@ -3797,7 +3808,15 @@ add_executable(
     dsd-neo_test_app_control_call_view
     ui/test_app_control_call_view.c
     ${PROJECT_SOURCE_DIR}/src/app_control/call_view.c
+    ${PROJECT_SOURCE_DIR}/src/app_control/dmr_t3_effective.c
+    ${PROJECT_SOURCE_DIR}/src/app_control/dmr_t3_view.c
+    ${PROJECT_SOURCE_DIR}/src/core/util/received_identity.c
     ${PROJECT_SOURCE_DIR}/src/core/util/synctype.c
+)
+# The call view reads the frequency DMR Tier III uses (dmr_t3_effective.c); the DMR module's query is stubbed.
+target_link_libraries(
+    dsd-neo_test_app_control_call_view
+    PRIVATE dsd-neo_test_dmr_t3_effective_stub
 )
 target_include_directories(
     dsd-neo_test_app_control_call_view
@@ -4115,8 +4134,16 @@ add_executable(
     ui/test_app_control_notification_status.c
     ${PROJECT_SOURCE_DIR}/src/app_control/notification_status.c
     ${PROJECT_SOURCE_DIR}/src/app_control/call_view.c
+    ${PROJECT_SOURCE_DIR}/src/app_control/dmr_t3_effective.c
+    ${PROJECT_SOURCE_DIR}/src/app_control/dmr_t3_view.c
+    ${PROJECT_SOURCE_DIR}/src/core/util/received_identity.c
     ${PROJECT_SOURCE_DIR}/src/core/audio/audio_activity.c
     ${PROJECT_SOURCE_DIR}/src/core/util/synctype.c
+)
+# The call view reads the frequency DMR Tier III uses (dmr_t3_effective.c); the DMR module's query is stubbed.
+target_link_libraries(
+    dsd-neo_test_app_control_notification_status
+    PRIVATE dsd-neo_test_dmr_t3_effective_stub
 )
 target_include_directories(
     dsd-neo_test_app_control_notification_status
@@ -4170,8 +4197,15 @@ if(DSD_ENABLE_TERMINAL_UI)
         dsd-neo_test_ui_ncurses_p25_display_helpers
         ui/test_ui_ncurses_p25_display_helpers.c
         ${PROJECT_SOURCE_DIR}/src/app_control/call_view.c
+        ${PROJECT_SOURCE_DIR}/src/app_control/dmr_t3_effective.c
+        ${PROJECT_SOURCE_DIR}/src/app_control/dmr_t3_view.c
         ${PROJECT_SOURCE_DIR}/src/app_control/p25_metrics.c
         ${PROJECT_SOURCE_DIR}/src/core/util/received_identity.c
+    )
+    # The call view reads the frequency DMR Tier III uses (dmr_t3_effective.c); the DMR module's query is stubbed.
+    target_link_libraries(
+        dsd-neo_test_ui_ncurses_p25_display_helpers
+        PRIVATE dsd-neo_test_dmr_t3_effective_stub
     )
     target_compile_definitions(
         dsd-neo_test_ui_ncurses_p25_display_helpers
@@ -4221,6 +4255,7 @@ if(DSD_ENABLE_TERMINAL_UI)
             ${PROJECT_SOURCE_DIR}/src/core/util/dsd_state_lcn_nav.c
             ${PROJECT_SOURCE_DIR}/src/app_control/access_code_view.c
             ${PROJECT_SOURCE_DIR}/src/app_control/call_view.c
+            ${PROJECT_SOURCE_DIR}/src/app_control/dmr_t3_effective.c
             ${PROJECT_SOURCE_DIR}/src/app_control/crc_policy_view.c
             ${PROJECT_SOURCE_DIR}/src/app_control/dmr_ras_view.c
             ${PROJECT_SOURCE_DIR}/src/app_control/dmr_t3_view.c
@@ -4244,6 +4279,11 @@ if(DSD_ENABLE_TERMINAL_UI)
             ${PROJECT_SOURCE_DIR}/src/runtime/rtl_stream_io_hooks.c
             ${PROJECT_SOURCE_DIR}/src/runtime/rtl_stream_metrics_hooks.c
             ${PROJECT_SOURCE_DIR}/src/runtime/squelch.c
+        )
+        # The call view reads the frequency DMR Tier III uses (dmr_t3_effective.c); the DMR module's query is stubbed.
+        target_link_libraries(
+            ${_target}
+            PRIVATE dsd-neo_test_dmr_t3_effective_stub
         )
         target_compile_definitions(${_target} PRIVATE NCURSES_REENTRANT=0)
         target_include_directories(
@@ -5149,7 +5189,15 @@ add_executable(
     dsd-neo_test_ui_qt_call_line
     ui/test_ui_qt_call_line.cpp
     ${PROJECT_SOURCE_DIR}/src/app_control/call_view.c
+    ${PROJECT_SOURCE_DIR}/src/app_control/dmr_t3_effective.c
+    ${PROJECT_SOURCE_DIR}/src/app_control/dmr_t3_view.c
+    ${PROJECT_SOURCE_DIR}/src/core/util/received_identity.c
     ${PROJECT_SOURCE_DIR}/src/core/util/synctype.c
+)
+# The call view reads the frequency DMR Tier III uses (dmr_t3_effective.c); the DMR module's query is stubbed.
+target_link_libraries(
+    dsd-neo_test_ui_qt_call_line
+    PRIVATE dsd-neo_test_dmr_t3_effective_stub
 )
 target_include_directories(
     dsd-neo_test_ui_qt_call_line
@@ -5545,6 +5593,7 @@ if(DSD_ENABLE_QT_UI)
         ${PROJECT_SOURCE_DIR}/src/app_control/access_code_view.c
         ${PROJECT_SOURCE_DIR}/src/app_control/analog_width_view.c
         ${PROJECT_SOURCE_DIR}/src/app_control/call_view.c
+        ${PROJECT_SOURCE_DIR}/src/app_control/dmr_t3_effective.c
         ${PROJECT_SOURCE_DIR}/src/app_control/crc_policy_view.c
         ${PROJECT_SOURCE_DIR}/src/app_control/dmr_ras_view.c
         ${PROJECT_SOURCE_DIR}/src/app_control/dmr_t3_view.c
@@ -5561,6 +5610,11 @@ if(DSD_ENABLE_QT_UI)
         ${PROJECT_SOURCE_DIR}/src/app_control/site_identity_view.c
         ${PROJECT_SOURCE_DIR}/src/app_control/site_identity_record.c
         ${PROJECT_SOURCE_DIR}/src/app_control/tetra_view.c
+    )
+    # The call view reads the frequency DMR Tier III uses (dmr_t3_effective.c); the DMR module's query is stubbed.
+    target_link_libraries(
+        dsd-neo_test_ui_qt_metrics_model
+        PRIVATE dsd-neo_test_dmr_t3_effective_stub
     )
     target_include_directories(
         dsd-neo_test_ui_qt_metrics_model
@@ -6831,6 +6885,7 @@ add_executable(
     ${PROJECT_SOURCE_DIR}/src/app_control/ui_snapshot.c
     ${PROJECT_SOURCE_DIR}/src/app_control/dmr_t3_view.c
     ${PROJECT_SOURCE_DIR}/src/app_control/dmr_t3_view_copy.c
+    ${PROJECT_SOURCE_DIR}/src/app_control/dmr_t3_effective.c
     ${PROJECT_SOURCE_DIR}/src/app_control/position_view.c
     ${PROJECT_SOURCE_DIR}/src/core/gps/position_feed.c
     ${PROJECT_SOURCE_DIR}/src/runtime/trunk_cc_candidates.c
@@ -6886,6 +6941,7 @@ add_executable(
     ${PROJECT_SOURCE_DIR}/src/app_control/ui_snapshot.c
     ${PROJECT_SOURCE_DIR}/src/app_control/dmr_t3_view.c
     ${PROJECT_SOURCE_DIR}/src/app_control/dmr_t3_view_copy.c
+    ${PROJECT_SOURCE_DIR}/src/app_control/dmr_t3_effective.c
     ${PROJECT_SOURCE_DIR}/src/app_control/position_view.c
     ${PROJECT_SOURCE_DIR}/src/core/gps/position_feed.c
     ${PROJECT_SOURCE_DIR}/src/runtime/trunk_cc_candidates.c
@@ -6940,6 +6996,7 @@ add_executable(
     ${PROJECT_SOURCE_DIR}/src/app_control/ui_snapshot.c
     ${PROJECT_SOURCE_DIR}/src/app_control/dmr_t3_view.c
     ${PROJECT_SOURCE_DIR}/src/app_control/dmr_t3_view_copy.c
+    ${PROJECT_SOURCE_DIR}/src/app_control/dmr_t3_effective.c
     ${PROJECT_SOURCE_DIR}/src/app_control/position_view.c
     ${PROJECT_SOURCE_DIR}/src/core/gps/position_feed.c
     ${PROJECT_SOURCE_DIR}/src/runtime/trunk_cc_candidates.c
@@ -7013,6 +7070,7 @@ add_executable(
     ${PROJECT_SOURCE_DIR}/src/app_control/ui_snapshot.c
     ${PROJECT_SOURCE_DIR}/src/app_control/dmr_t3_view.c
     ${PROJECT_SOURCE_DIR}/src/app_control/dmr_t3_view_copy.c
+    ${PROJECT_SOURCE_DIR}/src/app_control/dmr_t3_effective.c
     ${PROJECT_SOURCE_DIR}/src/app_control/position_view.c
     ${PROJECT_SOURCE_DIR}/src/core/gps/position_feed.c
     ${PROJECT_SOURCE_DIR}/src/runtime/trunk_cc_candidates.c
@@ -7050,6 +7108,9 @@ add_executable(
     ui/test_ui_opts_snapshot.c
     ${PROJECT_SOURCE_DIR}/src/app_control/ui_opts_snapshot.c
     ${PROJECT_SOURCE_DIR}/src/app_control/call_view.c
+    ${PROJECT_SOURCE_DIR}/src/app_control/dmr_t3_effective.c
+    ${PROJECT_SOURCE_DIR}/src/app_control/dmr_t3_view.c
+    ${PROJECT_SOURCE_DIR}/src/core/util/received_identity.c
     ${PROJECT_SOURCE_DIR}/src/app_control/recording_view.c
     ${PROJECT_SOURCE_DIR}/src/core/file/wav_journal.c
     ${PROJECT_SOURCE_DIR}/src/core/file/wav_recording.c
@@ -7057,6 +7118,11 @@ add_executable(
     ${PROJECT_SOURCE_DIR}/src/app_control/telemetry_observers.c
     ${PROJECT_SOURCE_DIR}/src/core/util/synctype.c
     ${PROJECT_SOURCE_DIR}/tests/test_support/p25_tick_guard_stub.c
+)
+# The call view reads the frequency DMR Tier III uses (dmr_t3_effective.c); the DMR module's query is stubbed.
+target_link_libraries(
+    dsd-neo_test_app_control_opts_snapshot
+    PRIVATE dsd-neo_test_dmr_t3_effective_stub
 )
 target_include_directories(
     dsd-neo_test_app_control_opts_snapshot

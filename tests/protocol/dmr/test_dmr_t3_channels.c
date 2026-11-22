@@ -2310,6 +2310,30 @@ test_overlay_load_csv_rows(void) {
     assert(dmr_t3_overlay_count(&g_state) == 3U);
 }
 
+/* Review gate b-r3 R4: the overrides file is one change. With the heuristic fill on, every row is laid over the map
+   first and the estimates are redone once for the whole file: one fill notice, not one per row that moved an anchor. */
+static void
+test_overlay_load_csv_settles_once(void) {
+    reset_missing();
+    g_opts.dmr_t3_heuristic_fill = 1;
+    char path[DSD_TEST_PATH_MAX];
+    /* Five anchors on one 12.5 kHz plan, the outer two first: each later row would have redone the fill. */
+    write_temp_csv(path, sizeof path, "1,450000000\n41,450500000\n11,450125000\n21,450250000\n31,450375000\n");
+    const uint64_t before = pushes(0);
+    const uint32_t revision = dmr_t3_chan_revision(&g_state);
+    assert(dmr_t3_overlay_load_csv(&g_opts, &g_state, path) == 5);
+    assert(pushes(0) == before + 1U);
+    assert(strstr(newest_row(0), "DMR TIII: Heuristic filled 36 LCNs") != NULL);
+    assert(g_state.trunk_chan_map[2] == 450012500L && dmr_t3_chan_origin(&g_state, 2U) == DMR_CHAN_ORIGIN_ESTIMATE);
+    assert(g_state.trunk_chan_map[40] == 450487500L && dmr_t3_chan_origin(&g_state, 40U) == DMR_CHAN_ORIGIN_ESTIMATE);
+    /* The anchors are the user's, each kept over the empty row it replaced. */
+    long base_hz = -1;
+    assert(dmr_t3_overlay_get(&g_state, 11U, NULL, &base_hz) == DMR_T3_OVERLAY_SET && base_hz == 0L);
+    assert(dmr_t3_chan_origin(&g_state, 11U) == DMR_CHAN_ORIGIN_USER && dmr_t3_overrides_applied(&g_state));
+    assert(dmr_t3_chan_revision(&g_state) != revision);
+    (void)remove(path);
+}
+
 /* ---- Tier III identity and TSCC evidence (F3 "Use control channel frequency", B4 metrics) ---- */
 
 /* A checked C_ALOHA heard on the carrier the receiver is on, with no call followed, names that carrier the TSCC until
@@ -2511,6 +2535,7 @@ main(void) {
     test_anchors_resolve_the_overlay();
     test_user_fill_notice_is_a_system_notice();
     test_overlay_load_csv_rows();
+    test_overlay_load_csv_settles_once();
     test_chan_freq_inconsistent_channels_ignored();
     test_chan_freq_learned_notice_and_origin();
     test_chan_freq_user_list_not_appended();

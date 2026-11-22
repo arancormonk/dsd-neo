@@ -216,8 +216,10 @@ dmr_t3_set_result dmr_t3_overlay_apply(dsd_opts* opts, dsd_state* state, uint16_
 /**
  * Apply the user's channels file @p path (--dmr-chan-overrides: `lpcn,frequency_hz` rows, 0 hides the channel;
  * <dsd-neo/core/dmr_chan_overrides_csv.h>) unchecked, after the channel map loaded. A row the file gets wrong, or one
- * past the DMR_T3_OVERLAY_MAX_ROWS channels the overlay holds, is skipped with a warning. Returns the rows applied, or
- * -1 when the file cannot be read or a trunk scan runs.
+ * past the DMR_T3_OVERLAY_MAX_ROWS channels the overlay holds, is skipped with a warning. The file is one change: every
+ * row is laid over the map first, then the revision has moved, the missing-channel ledger is reconciled and the
+ * heuristic estimates are redone once (dmr_t3_overlay_apply() does both per edit). Returns the rows applied, or -1 when
+ * the file cannot be read or a trunk scan runs; once read, dmr_t3_overrides_applied() is 1.
  */
 int dmr_t3_overlay_load_csv(dsd_opts* opts, dsd_state* state, const char* path);
 
@@ -304,12 +306,24 @@ int dmr_t3_tier3_unchecked_seen(const dsd_state* state);
  */
 void dmr_t3_cc_note_evidence(const dsd_opts* opts, dsd_state* state);
 
+/**
+ * A checked P_SYS_Parms was received on the carrier the receiver is on: the site names it a payload channel. Unless
+ * @p composite (its Comp_CC bit: a composite control channel, which carries both) is set, the TSCC evidence
+ * dmr_t3_cc_note_evidence() recorded ends, so the carrier is no longer offered as the control channel. The caller
+ * judges the provenance. It writes @p state's DMR extension, so decoder thread only.
+ */
+void dmr_t3_cc_note_payload_channel(const dsd_state* state, int composite);
+
 /** The TSCC frequency dmr_t3_cc_note_evidence() recorded on the current carrier, or 0 when none, the receiver left it
  * (a carrier boundary or a trunk retune since) or a trunk tune is pending (dsd_trunk_tuning_frame_is_current()). */
 long dmr_t3_cc_confirmed_hz(const dsd_state* state);
 
 /** Whether the DMR module recorded anything for @p state (its extension exists). */
 int dmr_t3_chan_recorded(const dsd_state* state);
+
+/** Whether the --dmr-chan-overrides file applied to this session: dmr_t3_overlay_load_csv() read it. 0 when the session
+ * had none or the engine skipped it (a session that does not decode DMR, or a trunk scan). */
+int dmr_t3_overrides_applied(const dsd_state* state);
 
 /**
  * Forget every entry, leaving the live rows as they are: a trunk-scan target's map and origins were just restored

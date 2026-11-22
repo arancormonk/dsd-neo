@@ -19,6 +19,7 @@
 
 #include "command_dispatch.h"
 #include "dmr_channel_commands.h"
+#include "dmr_t3_view_internal.h"
 #include "dsd-neo/core/opts_fwd.h"
 
 /* The protocol's answers pass through unchanged (each side + 0: an int, so no enum types are compared). */
@@ -152,6 +153,12 @@ dsd_app_apply_dmr_channel_set(dsd_opts* opts, dsd_state* state, const struct dsd
     const long hz = set ? (long)p.hz : 0;
     if (p.session_seq == 0U || p.session_seq != dsd_app_command_session_generation()) {
         return DSD_APP_DMR_CHANNEL_SET_STALE;
+    }
+    /* The carrier names another system (a Connect Plus or P25 site, say): the shared map is that system's, and an edit
+       of an unchanged row would retune its grants. Judged here, on the decoder thread, so an edit the editor sent
+       before the identity arrived cannot slip through. */
+    if (dsd_app_dmr_t3_other_system_here(state)) {
+        return DSD_APP_DMR_CHANNEL_SET_OTHER_SYSTEM;
     }
     const dmr_t3_set_result r = dmr_t3_overlay_apply(opts, state, p.lpcn, (dmr_t3_overlay_op)p.op, hz,
                                                      (long)p.expected_hz, p.expected_origin, p.generation, 1);

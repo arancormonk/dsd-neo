@@ -511,7 +511,7 @@ dmr_cspdu_pf0_handle_move(dsd_opts* opts, dsd_state* state, uint8_t cs_pdu_bits[
             freq = ap.rx_hz;
         }
     } else if (dmr_t3_lpcn_is_channel(pcn)) {
-        freq = state->trunk_chan_map[pcn];
+        freq = dmr_t3_chan_effective_hz(state, pcn);
     }
 
     DSD_FPRINTF(stderr, "\n");
@@ -1101,8 +1101,9 @@ dmr_cspdu_pf0_p_clear_parse(const uint8_t cs_pdu_bits[], dmr_cspdu_p_clear_field
     f->source = (uint32_t)convert_bits_into_output(&cs_pdu_bits[56], 24);
 }
 
-/* The TSCC a P_CLEAR sends its addressed parties to, printed: a logical channel the map knows, or the appended
-   block's (dmr_cspdu_pf0_note_absolute_tscc()). Another TSCC than the control channel becomes a current-site hunt
+/* The TSCC a P_CLEAR sends its addressed parties to, printed: a logical channel at the frequency DMR uses for it
+   (dmr_t3_chan_effective_hz(): the user's entry over the shared map row), or the appended block's
+   (dmr_cspdu_pf0_note_absolute_tscc()). Another TSCC than the control channel becomes a current-site hunt
    candidate when the clear was checked or RAS-accepted; where the release returns stays the machine's. */
 static void
 dmr_cspdu_pf0_p_clear_note_tscc(dsd_opts* opts, dsd_state* state, const uint8_t cs_pdu_bits[], uint16_t lpcn) {
@@ -1118,7 +1119,7 @@ dmr_cspdu_pf0_p_clear_note_tscc(dsd_opts* opts, dsd_state* state, const uint8_t 
         dmr_cspdu_pf0_note_absolute_tscc(opts, state, ap.chan, ap.rx_hz);
         return;
     }
-    const long freq = dmr_t3_lpcn_is_channel(lpcn) ? state->trunk_chan_map[lpcn] : 0L;
+    const long freq = dmr_t3_chan_effective_hz(state, lpcn);
     DSD_FPRINTF(stderr, " TSCC: %u", (unsigned)lpcn);
     if (freq <= 0) {
         DSD_FPRINTF(stderr, ";");
@@ -1360,11 +1361,11 @@ dmr_cspdu_pf0_c_bcast_try_switch_tscc(dsd_opts* opts, dsd_state* state, long f1,
     }
 }
 
-/* The frequency the channel map holds for a logical Ann_WD_TSCC channel: 0 for CHNULL, the escape or an unmapped
-   one. */
+/* The frequency DMR uses for a logical Ann_WD_TSCC channel (dmr_t3_chan_effective_hz(): the user's entry over the
+   shared map row): 0 for CHNULL, the escape, an unmapped or a hidden one. */
 static long
 dmr_cspdu_pf0_c_bcast_ann_wd_freq(const dsd_state* state, uint16_t bcast_ch) {
-    return dmr_t3_lpcn_is_channel(bcast_ch) ? state->trunk_chan_map[bcast_ch] : 0L;
+    return dmr_t3_chan_effective_hz(state, bcast_ch);
 }
 
 /* The MBC form of Ann_WD_TSCC (TS 102 361-4 §7.2.19.1): a header and a BC_AP announcing or withdrawing one TSCC,

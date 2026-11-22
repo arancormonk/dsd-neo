@@ -134,12 +134,15 @@ __wrap_getFrameSync(dsd_opts* opts, dsd_state* state) {
     if (!g_expect_applied) {
         /* Not this session's: no entry was made, and a map's rows are the map file's. */
         assert(dmr_t3_overlay_count(state) == 0U && dmr_t3_chan_origin(state, 12U) != DMR_CHAN_ORIGIN_USER);
+        /* Review gate b-r3 R6: the path stays set, and the record says the file did not apply. */
+        assert(opts->dmr_chan_overrides_file[0] != '\0' && !dmr_t3_overrides_applied(state));
         assert(opts->chan_in_file[0] == '\0'
                || (state->trunk_chan_map[12] == 451012500L && state->trunk_chan_map[13] == 451025000L));
         dsd_exitflag_store(1);
         return DSD_SYNC_NONE;
     }
-    /* The first frame: the user's rows already lie over the file's. */
+    /* The first frame: the user's rows already lie over the file's, and the record says the file applied. */
+    assert(dmr_t3_overrides_applied(state));
     assert(state->trunk_chan_map[12] == 451137500L && dmr_t3_chan_origin(state, 12U) == DMR_CHAN_ORIGIN_USER);
     assert(state->trunk_chan_map[13] == 0L && dmr_t3_chan_origin(state, 13U) == DMR_CHAN_ORIGIN_USER);
     assert(state->trunk_chan_map[14] == 451037500L && dmr_t3_chan_origin(state, 14U) == DMR_CHAN_ORIGIN_FILE);
@@ -241,7 +244,7 @@ test_overrides_skipped_under_trunk_scan(const char* overrides) {
     assert(dsd_engine_run_with_lifecycle(opts, state, NULL) != 0);
     assert(g_skip_notices == 1 && g_overrides_refusals == 0 && g_scan_start_errors == 1 && g_sync_calls == 0);
     assert(strstr(g_skip_notice, "a trunk scan uses each target's own channel map") != NULL);
-    assert(dmr_t3_overlay_count(state) == 0U);
+    assert(dmr_t3_overlay_count(state) == 0U && !dmr_t3_overrides_applied(state));
     freeState(state);
     free(state);
     free(opts);

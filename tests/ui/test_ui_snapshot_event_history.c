@@ -4,6 +4,7 @@
  */
 
 #include <assert.h>
+#include <dsd-neo/app_control/call_view.h>
 #include <dsd-neo/app_control/dmr_t3_view.h>
 #include <dsd-neo/app_control/notification_status.h>
 #include <dsd-neo/app_control/snapshot.h>
@@ -726,6 +727,71 @@ test_dmr_t3_view_carries_the_effective_frequency(void) {
     free_session_state(st);
 }
 
+/* The user's entry for @p lpcn as dmr_t3_overlay_apply() lays it over the row as it is: SET at @p hz, or HIDE for 0. */
+static void
+user_entry(dsd_state* state, uint16_t lpcn, long hz) {
+    dmr_ext_t* ext = dmr_ext_get_or_create(state);
+    assert(ext != NULL && ext->overlay.op[lpcn] == 0U);
+    dmr_t3_overlay_take_base(state, ext, lpcn);
+    ext->overlay.op[lpcn] = (uint8_t)(hz != 0 ? DMR_T3_OVERLAY_SET : DMR_T3_OVERLAY_HIDE);
+    ext->overlay.hz[lpcn] = hz;
+    ext->overlay.count++;
+    dmr_t3_overlay_write_live(state, ext, lpcn);
+}
+
+/* Review gate b-r3 R6: the view says whether the overrides file applied to this session, in both hops, whatever the
+   options' path holds (the engine leaves it set when it skipped the file). */
+static void
+test_dmr_t3_view_carries_overrides_applied(void) {
+    dsd_state* st = new_session_state();
+    dmr_ext_t* ext = stage_dmr_t3(st, 12U, 1234U, 18U, 5U, 3U);
+    const dsd_ui_dmr_t3_view* view = dmr_t3_view_after_publish(st);
+    assert(view->overrides_applied == 0U);
+    ext->overrides_applied = 1U;
+    view = dmr_t3_view_after_publish(st);
+    assert(view->overrides_applied == 1U && dmr_t3_overrides_applied(st));
+    free_session_state(st);
+}
+
+/* Review gate b-r3 R2: the call view's voice-channel fallback reads a Tier III grant's channel at the frequency DMR
+   uses (the user's entry over the shared row), on the live state as on a snapshot: a hidden channel whose shared row
+   another protocol filled names no frequency, and a set one whose row was emptied names the user's. On a carrier
+   naming another system (Connect Plus) the shared row decides. */
+static void
+test_vc_freq_reads_the_tier3_channel_dmr_uses(void) {
+    dsd_state* st = new_session_state();
+    (void)stage_dmr_t3(st, 12U, 1234U, 18U, 5U, 3U);
+    user_entry(st, 13U, 0L);
+    user_entry(st, 14U, 451175000L);
+    dsd_state_set_trunk_chan_freq(st, 13U, 451162500L);
+    dsd_state_set_trunk_chan_freq(st, 14U, 0L);
+    dsd_call_observation grant = dsd_call_observation_data(DSD_SYNC_DMR_BS_DATA_POS, 0U, 2002U, 1234U);
+    grant.kind = DSD_CALL_KIND_GROUP_VOICE;
+    grant.channel = 13U;
+    grant.frequency_hz = 0;
+    assert(dsd_recent_activity_publish(st, 0U, &grant, "Active Group Ch: 13 TG: 1234; ", 0U) > 0);
+    assert(dsd_app_vc_freq(st) == 0L);
+    (void)dmr_t3_view_after_publish(st);
+    assert(dsd_app_vc_freq(dsd_app_get_latest_snapshot()) == 0L);
+
+    grant.channel = 14U;
+    assert(dsd_recent_activity_publish(st, 0U, &grant, "Active Group Ch: 14 TG: 1234; ", 0U) > 0);
+    assert(dsd_app_vc_freq(st) == 451175000L);
+    (void)dmr_t3_view_after_publish(st);
+    assert(dsd_app_vc_freq(dsd_app_get_latest_snapshot()) == 451175000L);
+
+    grant.channel = 13U;
+    assert(dsd_recent_activity_publish(st, 0U, &grant, "Active Group Ch: 13 TG: 1234; ", 0U) > 0);
+    st->rx_id.family = (uint8_t)DSD_RXID_FAMILY_DMR;
+    st->rx_id.valid = DSD_RXID_DMR_SITE | DSD_RXID_DMR_NET;
+    st->rx_id.dmr_trunk = (uint8_t)DSD_RXID_DMR_TRUNK_CONNECT_PLUS;
+    assert(dsd_app_vc_freq(st) == 451162500L);
+    (void)dmr_t3_view_after_publish(st);
+    assert(dsd_app_vc_freq(dsd_app_get_latest_snapshot()) == 451162500L);
+    DSD_MEMSET(&st->rx_id, 0, sizeof st->rx_id);
+    free_session_state(st);
+}
+
 /* Review gate b-r2 C5: Tier III numbering and the editor belong to the current Tier III system. A Connect Plus site
    reached later in the same session (or another protocol's system) reads tier3 0 and lists no LPCNs, though the
    session's flags hold; back on a Tier III site, or on a carrier that named nothing yet, they hold again. */
@@ -1352,6 +1418,8 @@ main(void) {
     test_dmr_t3_view_carries_the_effective_frequency();
     test_dmr_t3_view_follows_the_current_system();
     test_dmr_t3_view_keys_on_target_and_session();
+    test_dmr_t3_view_carries_overrides_applied();
+    test_vc_freq_reads_the_tier3_channel_dmr_uses();
 
     puts("UI_SNAPSHOT_EVENT_HISTORY: OK");
     dsd_state_ext_free_all(state);

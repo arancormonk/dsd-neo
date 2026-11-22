@@ -704,6 +704,14 @@ dmr_t3_cc_note_evidence(const dsd_opts* opts, dsd_state* state) {
     ext->cc_evidence_hz = hz;
 }
 
+void
+dmr_t3_cc_note_payload_channel(const dsd_state* state, int composite) {
+    dmr_ext_t* ext = dmr_ext_get(state);
+    if (ext != NULL && !composite) {
+        ext->cc_evidence = 0U;
+    }
+}
+
 long
 dmr_t3_cc_confirmed_hz(const dsd_state* state) {
     const dmr_ext_t* ext = dmr_ext_get(state);
@@ -721,6 +729,12 @@ dmr_t3_cc_confirmed_hz(const dsd_state* state) {
 int
 dmr_t3_chan_recorded(const dsd_state* state) {
     return dmr_ext_get(state) != NULL;
+}
+
+int
+dmr_t3_overrides_applied(const dsd_state* state) {
+    const dmr_ext_t* ext = dmr_ext_get(state);
+    return ext != NULL && ext->overrides_applied != 0U;
 }
 
 uint32_t

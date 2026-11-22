@@ -254,7 +254,7 @@ test_lcn_rendering_uses_map_channel_and_fallback(void) {
     ui_trunk_mark_freq_seen(&render, 851012500L);
 
     reset_render_capture();
-    ui_trunk_render_lcn_freqs(&state, state.trunk_chan_map_used_count, &render, 0);
+    ui_trunk_render_lcn_freqs(&state, state.trunk_chan_map_used_count, &render, NULL);
 
     assert(strstr(g_output, "CH 1234:") == NULL);
     assert(strstr(g_output, "CH ----: 852.012500 MHz") != NULL);
@@ -262,7 +262,7 @@ test_lcn_rendering_uses_map_channel_and_fallback(void) {
 
     DSD_MEMSET(&render, 0, sizeof render);
     reset_render_capture();
-    ui_trunk_render_lcn_freqs(&state, state.trunk_chan_map_used_count, &render, 0);
+    ui_trunk_render_lcn_freqs(&state, state.trunk_chan_map_used_count, &render, NULL);
     assert(strstr(g_output, "CH 1234: 851.012500 MHz") != NULL);
     assert(strstr(g_output, "CH ----: 852.012500 MHz") != NULL);
     assert(render.seen_count == 2);
@@ -616,6 +616,36 @@ test_t3_map_shows_the_effective_frequency(void) {
     t3_fixture_free(&f);
 }
 
+/* Review gate b-r3 R2: the Tier III panel lists the channels DMR uses even when the shared map holds none (a P25 IDEN
+   invalidation emptied it under the user's entry), and a positional row is named by the LPCN DMR uses that frequency
+   for, never by a hidden channel whose shared row another protocol filled. */
+static void
+test_t3_map_lists_effective_rows_with_an_empty_shared_map(void) {
+    t3_fixture f = t3_fixture_new();
+    f.opts->trunk_enable = 1;
+    f.state->synctype = DSD_SYNC_DMR_BS_DATA_POS;
+    attach_t3(f.state);
+    g_t3.tier3 = 1U;
+    g_t3.channel_hz[12] = 451137500L; /* the user's entry; the shared map is empty */
+    assert(f.state->trunk_chan_map_used_count == 0U);
+    reset_render_capture();
+    ui_print_learned_lcns(f.opts, f.state);
+    assert(strstr(g_output, "Channels") != NULL);
+    assert(strstr(g_output, "CH 12: 451.137500 MHz") != NULL);
+
+    /* A positional row at a hidden channel's shared frequency names no channel; one at a set channel's names it. */
+    add_trunk_channel(f.state, 13U, 451162500L);
+    g_t3.channel_hz[13] = 0L;
+    f.state->trunk_lcn_freq[0] = 451162500L;
+    f.state->trunk_lcn_freq[1] = 451137500L;
+    reset_render_capture();
+    ui_print_learned_lcns(f.opts, f.state);
+    assert(strstr(g_output, "CH 13:") == NULL);
+    assert(strstr(g_output, "CH ----: 451.162500 MHz") != NULL);
+    assert(strstr(g_output, "CH 12: 451.137500 MHz") != NULL);
+    t3_fixture_free(&f);
+}
+
 int
 main(void) {
     test_public_guards_do_not_render();
@@ -632,6 +662,7 @@ main(void) {
     test_t3_mapped_rows_decimal_and_distinct();
     test_t3_numbering_follows_the_current_system();
     test_t3_map_shows_the_effective_frequency();
+    test_t3_map_lists_effective_rows_with_an_empty_shared_map();
     return 0;
 }
 

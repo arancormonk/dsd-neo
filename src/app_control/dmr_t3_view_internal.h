@@ -47,6 +47,19 @@ int dsd_app_dmr_t3_view_consume(dsd_ui_dmr_t3_view* dst, const dsd_ui_dmr_t3_vie
 /* Point @p snapshot's slot at @p view (storage the snapshot module owns; no cleanup). */
 void dsd_app_dmr_t3_view_attach(dsd_state* snapshot, dsd_ui_dmr_t3_view* view);
 
+/* 1 while the carrier's received identity (dsd_state::rx_id of the live decoder state @p state) names a system that is
+ * not Tier III: another protocol's, or another DMR trunking system (Capacity Plus, Connect Plus, XPT;
+ * dsd_rxid_dmr_trunk_named()). 0 while the carrier named nothing yet, and for NULL. The view's other_system_here, and
+ * what refuses a channel edit (DSD_APP_DMR_CHANNEL_SET_OTHER_SYSTEM) on the decoder thread. */
+uint8_t dsd_app_dmr_t3_other_system_here(const dsd_state* state);
+
+/* The frequency DMR Tier III uses for channel @p channel of @p state, a snapshot or the live decoder state: the user's
+ * entry over the shared map row (dmr_t3_chan_effective_hz(); a snapshot's view carries it as channel_hz), so a hidden
+ * channel has none, whatever another protocol left in the row. While the carrier names another system
+ * (dsd_app_dmr_t3_other_system_here(), a Connect Plus LCN, say), or for a channel past the LPCNs, the shared map row.
+ * 0 for channel 0 and NULL. */
+long dsd_app_dmr_t3_channel_hz(const dsd_state* state, uint32_t channel);
+
 #ifdef __cplusplus
 }
 #endif

@@ -9,6 +9,7 @@
 
 #include <assert.h>
 #include <dsd-neo/app_control/call_view.h>
+#include <dsd-neo/app_control/dmr_t3_view.h>
 #include <dsd-neo/core/analog_mode.h>
 #include <dsd-neo/core/call_state.h>
 #include <dsd-neo/core/opts.h>
@@ -735,6 +736,31 @@ test_vc_freq_tier3_uses_the_observed_channel(void) {
     destroy_state(state);
 }
 
+/* Review gate b-r3 R2: on a snapshot, a Tier III observation's channel reads the frequency DMR uses (the view's
+   channel_hz: the user's entry over the shared row), so a hidden channel whose shared row another protocol filled names
+   none. On a carrier naming another system (a Connect Plus LCN) the shared row decides, and so it does with no
+   record. */
+static void
+test_vc_freq_tier3_reads_the_view_channel(void) {
+    dsd_state* state = make_state();
+    static dsd_ui_dmr_t3_view view;
+    DSD_MEMSET(&view, 0, sizeof view);
+    view.present = 1U;
+    state->state_ext[DSD_STATE_EXT_APP_DMR_T3_VIEW] = &view;
+    state->trunk_chan_map[12] = 451150000L; /* another protocol's row under the user's hidden channel */
+    publish_activity(state, DSD_SYNC_DMR_BS_DATA_POS, 12U, "Active Group Ch: 12 (TDMA S1) TG: 1234; ");
+    assert(dsd_app_vc_freq(state) == 0L);
+    view.channel_hz[12] = 451137500L; /* set by the user */
+    assert(dsd_app_vc_freq(state) == 451137500L);
+    view.other_system_here = 1U;
+    assert(dsd_app_vc_freq(state) == 451150000L);
+    view.other_system_here = 0U;
+    view.present = 0U;
+    assert(dsd_app_vc_freq(state) == 451150000L);
+    state->state_ext[DSD_STATE_EXT_APP_DMR_T3_VIEW] = NULL;
+    destroy_state(state);
+}
+
 /* P25 notices keep their hex iden-channel text, and the text lookup stays. */
 static void
 test_vc_freq_p25_notice_reads_hex(void) {
@@ -1256,6 +1282,7 @@ main(void) {
     test_vc_freq_falls_back_through_the_chain();
     test_vc_freq_tier3_uses_the_observed_channel();
     test_vc_freq_p25_notice_reads_hex();
+    test_vc_freq_tier3_reads_the_view_channel();
     test_cc_freq_prefers_trunk_over_p25();
     test_freq_helpers_are_null_safe();
     test_lead_slot_prefers_earliest_active_then_lowest_ended();

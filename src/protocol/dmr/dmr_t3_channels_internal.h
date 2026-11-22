@@ -47,8 +47,10 @@ typedef struct {
        was last reconciled with the map (dmr_t3_missing_sync()): another writer moving the map moves the sequence. */
     dmr_t3_missing_ledger missing;
     uint64_t missing_map_seq;
-    /* The user's channels over the map (dmr_t3_overlay.c). */
+    /* The user's channels over the map (dmr_t3_overlay.c), and whether the --dmr-chan-overrides file applied to this
+       session (dmr_t3_overlay_load_csv() read it). */
     dmr_t3_overlay overlay;
+    uint8_t overrides_applied;
     /* A message named the site Tier III this session (dmr_t3_note_tier3()): a checked one (tier3), or one -F accepted
        as RAS (tier3_unchecked, display only); saved per trunk-scan target. */
     uint8_t tier3;

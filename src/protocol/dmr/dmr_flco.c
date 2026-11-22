@@ -2286,8 +2286,11 @@ dmr_slco_handle_p_sys_parms(dsd_state* state, uint8_t slco_bits[], const dmr_slc
     /* Checked as C_SYS_PARMS is (dmr_slco()): a payload channel of the network whose code it names. */
     dmr_t3_chan_note_checked_syscode(state, syscode);
     dmr_tiii_note_search_site(state, syscode, data->dmrla);
-    /* Checked as C_SYS_PARMS is: a Tier III payload channel's. */
+    /* Checked as C_SYS_PARMS is: a Tier III payload channel's. Unless it is a composite control channel (Comp_CC), the
+       carrier is no TSCC, whatever an earlier C_ALOHA or C_SYS_PARMS here said: the site may have moved its TSCC away
+       while the receiver stayed. */
     dmr_t3_note_tier3(state, 1);
+    dmr_t3_cc_note_payload_channel(state, data->reg);
 }
 
 static int

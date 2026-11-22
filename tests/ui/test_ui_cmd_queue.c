@@ -10603,6 +10603,11 @@ test_commands_that_need_the_frame_loop(void) {
     dsd_app_scan_avoid_remove_payload put_back;
     DSD_MEMSET(&put_back, 0, sizeof put_back);
     put_back.kind = DSD_APP_SCAN_AVOID_KIND_LCN;
+    dsd_app_dmr_channel_set_payload channel_edit;
+    DSD_MEMSET(&channel_edit, 0, sizeof channel_edit);
+    channel_edit.lpcn = 12U;
+    channel_edit.op = DMR_T3_OVERLAY_SET;
+    channel_edit.hz = 451137500;
 
     const struct {
         const void* payload;
@@ -10647,6 +10652,8 @@ test_commands_that_need_the_frame_loop(void) {
         {NULL, 0U, "clear avoids", DSD_APP_CMD_SCAN_AVOID_CLEAR, 0},
         {&put_back, sizeof put_back, "put back", DSD_APP_CMD_SCAN_AVOID_REMOVE, 0},
         {NULL, 0U, "avoid", DSD_APP_CMD_SCAN_AVOID, 1},
+        /* Review gate b-r3 R3: a Tier III channel edit changes only the map, so a DMR voice loop keeps its call. */
+        {&channel_edit, sizeof channel_edit, "DMR channel edit", DSD_APP_CMD_DMR_CHANNEL_SET, 0},
     };
 
     for (size_t i = 0; i < sizeof(cases) / sizeof(cases[0]); i++) {
@@ -26473,6 +26480,43 @@ test_dmr_channel_set_command(void) {
                      DSD_APP_DMR_CHANNEL_SET_TRUNK_SCAN);
     opts->trunk_scan_enabled = 0;
     rc |= expect_true("the trunk scan refusal changes nothing", state->trunk_chan_map[13] == 451025000L);
+
+    /* Review gate b-r3 R1: refused while the carrier names another system, its map being that system's. An edit the
+       editor queued before a Connect Plus identity arrived is judged as it is applied, on the decoder thread. */
+    dsd_app_dmr_channel_set_result queued_before;
+    (void)dsd_app_dmr_channel_set_result_get(&queued_before);
+    p = dmr_channel_edit(state, 13U, DMR_T3_OVERLAY_SET, 451162500);
+    rc |= expect_int("an edit queued before the identity", dsd_app_command_dmr_channel_set(&p),
+                     DSD_APP_COMMAND_SUBMIT_QUEUED);
+    state->rx_id.family = (uint8_t)DSD_RXID_FAMILY_DMR;
+    state->rx_id.valid = DSD_RXID_DMR_SITE | DSD_RXID_DMR_NET;
+    state->rx_id.dmr_trunk = (uint8_t)DSD_RXID_DMR_TRUNK_CONNECT_PLUS;
+    (void)dsd_app_drain_cmds(opts, state);
+    dsd_app_dmr_channel_set_result other[2];
+    rc |= expect_true("refused on a Connect Plus carrier",
+                      dsd_app_dmr_channel_set_results_since(queued_before.sequence, other, 2) == 1
+                          && other[0].request == p.request && other[0].code == DSD_APP_DMR_CHANNEL_SET_OTHER_SYSTEM);
+    DSD_MEMSET(&state->rx_id, 0, sizeof state->rx_id);
+    state->rx_id.family = (uint8_t)DSD_RXID_FAMILY_P25;
+    state->rx_id.valid = DSD_RXID_P25_SYSID;
+    p = dmr_channel_edit(state, 13U, DMR_T3_OVERLAY_HIDE, 0);
+    rc |= expect_int("refused on a P25 carrier", dmr_channel_edit_result(opts, state, &p, sizeof p),
+                     DSD_APP_DMR_CHANNEL_SET_OTHER_SYSTEM);
+    rc |= expect_true("the other-system refusals change nothing",
+                      state->trunk_chan_map[13] == 451025000L && dmr_t3_chan_origin(state, 13U) == DMR_CHAN_ORIGIN_FILE
+                          && dmr_t3_overlay_get(state, 13U, NULL, NULL) == 0);
+    /* Back on a Tier III carrier, or one that named nothing yet: edits apply again. */
+    DSD_MEMSET(&state->rx_id, 0, sizeof state->rx_id);
+    state->rx_id.family = (uint8_t)DSD_RXID_FAMILY_DMR;
+    state->rx_id.valid = DSD_RXID_DMR_T3_SYSCODE;
+    state->rx_id.dmr_trunk = (uint8_t)DSD_RXID_DMR_TRUNK_TIER3;
+    p = dmr_channel_edit(state, 13U, DMR_T3_OVERLAY_SET, 451162500);
+    rc |= expect_int("applied on a Tier III carrier", dmr_channel_edit_result(opts, state, &p, sizeof p),
+                     DSD_APP_DMR_CHANNEL_SET_OK);
+    p = dmr_channel_edit(state, 13U, DMR_T3_OVERLAY_RESTORE, 0);
+    rc |= expect_int("restored on a Tier III carrier", dmr_channel_edit_result(opts, state, &p, sizeof p),
+                     DSD_APP_DMR_CHANNEL_SET_OK);
+    DSD_MEMSET(&state->rx_id, 0, sizeof state->rx_id);
 
     /* A request the stop discards unapplied is answered too. */
     dsd_app_dmr_channel_set_result before;

@@ -22,6 +22,7 @@ target_sources(
         dmr_ras_view.c
         dmr_t3_view.c
         dmr_t3_view_copy.c
+        dmr_t3_effective.c
         p25_network.c # WP-F2
         p25_metrics.c
         trunk_scan_validate.c

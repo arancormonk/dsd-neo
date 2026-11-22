@@ -11778,6 +11778,9 @@ static const int k_deferred_commands[] = {
     DSD_APP_CMD_RTL_SET_AUTO_PPM,
     /* A runtime config re-parse (a terminal environment edit): the options fields it applies are read where used. */
     DSD_APP_CMD_RUNTIME_CONFIG_APPLY,
+    /* A Tier III channel edit (discussion #900 F3) changes only the map: it takes effect from the next grant, and a
+       call already followed keeps its carrier, so it waits for the carrier to end rather than finalize that call. */
+    DSD_APP_CMD_DMR_CHANNEL_SET,
     /* Put back and clear (issue #672) are judged by their payload: command_scan_flag_edit_needs_frame_loop(). Avoid
        stays out: it steps the scan off the channel on air. */
 };

@@ -11,7 +11,6 @@
  */
 
 #include <dsd-neo/app_control/dmr_t3_view.h>
-#include <dsd-neo/core/received_identity.h>
 #include <dsd-neo/core/safe_api.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/state_ext.h>
@@ -93,21 +92,6 @@ dmr_t3_view_copy_overlay(dsd_ui_dmr_t3_view* dst, const dsd_state* src) {
     }
 }
 
-/* The receiver is on a system that is not Tier III: the carrier's received identity names another protocol's system,
-   or another DMR trunking system. A carrier that named nothing yet (a reset record) is none. */
-static uint8_t
-dmr_t3_view_other_system_here(const dsd_state* src) {
-    const uint8_t family = src->rx_id.family;
-    if (family == (uint8_t)DSD_RXID_FAMILY_NONE) {
-        return 0U;
-    }
-    if (family != (uint8_t)DSD_RXID_FAMILY_DMR) {
-        return 1U;
-    }
-    const uint8_t trunk = dsd_rxid_dmr_trunk_named(src);
-    return trunk != (uint8_t)DSD_RXID_DMR_TRUNK_NONE && trunk != (uint8_t)DSD_RXID_DMR_TRUNK_TIER3 ? 1U : 0U;
-}
-
 /* The parked trunk-scan target: a new id is a new target_id. */
 static void
 dmr_t3_view_note_target(dsd_app_dmr_t3_view_mark* mark, const dsd_state* src) {
@@ -139,9 +123,10 @@ dsd_app_dmr_t3_view_publish(dsd_ui_dmr_t3_view* dst, dsd_app_dmr_t3_view_mark* m
     const uint32_t revision = dmr_t3_chan_revision(src);
     const uint32_t missing_revision = dmr_t3_missing_revision(src);
     const long cc_hz = dmr_t3_cc_confirmed_hz(src);
-    const uint8_t other = dmr_t3_view_other_system_here(src);
+    const uint8_t other = dsd_app_dmr_t3_other_system_here(src);
     dst->present = present;
     dst->other_system_here = other;
+    dst->overrides_applied = dmr_t3_overrides_applied(src) ? 1U : 0U;
     dst->tier3 = !other && dmr_t3_tier3_seen(src) ? 1U : 0U;
     dst->tier3_unchecked = !other && dmr_t3_tier3_unchecked_seen(src) ? 1U : 0U;
     dst->cc_hz = cc_hz;
@@ -187,6 +172,7 @@ dsd_app_dmr_t3_view_consume(dsd_ui_dmr_t3_view* dst, const dsd_ui_dmr_t3_view* s
     }
     dst->present = src->present;
     dst->other_system_here = src->other_system_here;
+    dst->overrides_applied = src->overrides_applied;
     dst->tier3 = src->tier3;
     dst->tier3_unchecked = src->tier3_unchecked;
     dst->cc_confirmed_here = src->cc_confirmed_here;
