@@ -2878,14 +2878,15 @@ ui_render_call_info_ysf(const dsd_state* state) {
 }
 
 /* The Channels panel shows when the menu toggle is on, or on its own while Tier III channels were granted with no
-   frequency (discussion #900 F3): the receiver cannot follow their calls, so the panel says which. Never compact. */
+   frequency (discussion #900 F3): the receiver cannot follow their calls, so the panel says which. Never compact, and
+   not for them on a carrier that names another system (dsd_app_dmr_t3_view_missing_shown(), as Qt's NO FREQ). */
 static int
 ui_channels_panel_open(const dsd_opts* opts, const dsd_state* state) {
     if (opts->frontend_terminal_display.terminal_compact != 0) {
         return 0;
     }
     return opts->frontend_display.show_channels == 1
-           || dsd_app_dmr_t3_view_missing_count(dsd_app_dmr_t3_view(state)) > 0U;
+           || dsd_app_dmr_t3_view_missing_shown(dsd_app_dmr_t3_view(state)) > 0U;
 }
 
 static int

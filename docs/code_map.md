@@ -13546,18 +13546,19 @@ Private per-protocol modules worth knowing about:
   (publish) or `content_seq` moved (consume), so an idle refresh copies none and two targets at equal revisions never
   alias. Frontends read it with `dsd_app_dmr_t3_view(snapshot)`; a live state has none. The terminal's Channels panel
   (`ui_print_learned_lcns()`) opens while the ledger holds a channel, with the toggle off and in monitor mode too
-  (`ui_channels_panel_open()`), lists up to eight as `CH 12: no frequency (TG 1234, slot 1)` (a row past the details
-  reads `(unchecked)` from the checked set when no checked grant named it), and when
-  `dsd_app_dmr_t3_view_lists_lpcns()` holds (`dsd_app_dmr_t3_view_shows_lpcns()`: Tier III named, checked or
-  RAS-accepted, or a ledger or overlay entry, and no other system named on the carrier (`other_system_here`); and the
-  receiver is on a DMR system now, by the snapshot's sync, or before any sync DMR the only trunking protocol decoded)
-  lists the map by LPCN ascending in decimal from `channel_hz` (a hidden channel is not listed, a set one shows the
-  user's frequency), each LPCN even when two share a frequency; positional rows stay, P25 and Connect Plus rows keep
-  hex, a P25 map after a move from a Tier III site and a Connect Plus site reached after one included (the session's
-  flags hold, the view's do not). The call
-  view's VC lookup (`app_recent_activity_vc_freq()`) takes a DMR activity row's channel from its observation, never its
-  decimal text. Tests: `APP_CONTROL_SNAPSHOT_EVENT_HISTORY`, `APP_CONTROL_CALL_VIEW`,
-  `UI_NCURSES_TRUNK_DISPLAY_HELPERS`, `UI_NCURSES_PRINTER_HELPERS`.
+  (`ui_channels_panel_open()`); both read `dsd_app_dmr_t3_view_missing_shown()`, the ledger's count unless the carrier
+  names another system (`other_system_here`), as Qt's NO FREQ does. It lists up to eight as
+  `CH 12: no frequency (TG 1234, slot 1)` (a row past the details reads `(unchecked)` from the checked set when no
+  checked grant named it), and when `dsd_app_dmr_t3_view_lists_lpcns()` holds (`dsd_app_dmr_t3_view_shows_lpcns()`: Tier
+  III named, checked or RAS-accepted, or a ledger or overlay entry, and no other system named on the carrier
+  (`other_system_here`); and the receiver is on a DMR system now, by the snapshot's sync, or before any sync DMR the
+  only trunking protocol decoded) lists the map by LPCN ascending in decimal from `channel_hz` (a hidden channel is not
+  listed, a set one shows the user's frequency), each LPCN even when two share a frequency; positional rows stay, P25
+  and Connect Plus rows keep hex, a P25 map after a move from a Tier III site and a Connect Plus site reached after one
+  included (the session's flags hold, the view's do not). The call view's VC lookup (`app_recent_activity_vc_freq()`)
+  takes a DMR activity row's channel from its observation, never its decimal text. Tests:
+  `APP_CONTROL_SNAPSHOT_EVENT_HISTORY`, `APP_CONTROL_CALL_VIEW`, `UI_NCURSES_TRUNK_DISPLAY_HELPERS`,
+  `UI_NCURSES_PRINTER_HELPERS`.
 - Tier III MBC assembly and absolute parameters (`dmr_block.c`, `dmr_abs_params.{c,h}`, `dmr_csbk.c`, discussion #900
   B7). An MBC is consecutive bursts on one slot of one carrier (TS 102 361-1 §7.4.0): its header (data type 4) arms
   the slot (`dsd_state::dmr_mbc_armed`) and stamps its position (`dmr_mbc_clock`/`_epoch`/`_carrier`: the
@@ -17720,7 +17721,8 @@ Qt Quick frontend (`src/ui/qt`):
   moved, and a list is published only when it differs (#782). `MetricsModel` adds `noFreqCount` (the ledger's count),
   `dmrTier3` (checked Tier III identity, or a start that passed a saved system's channels) and `dmrUserChannels` (the
   live overlay holds rows; never Tier III identity), all three off while the view's `other_system_here` says the
-  carrier names another system. `CommandBridge::setDmrChannel()` sends
+  carrier names another system (`noFreqCount` is `dsd_app_dmr_t3_view_missing_shown()`, which the terminal's Channels
+  panel reads too). `CommandBridge::setDmrChannel()` sends
   `DSD_APP_CMD_DMR_CHANNEL_SET` against the row as read, capturing the saved system; `pollDmrChannelResults()` (each
   tick, `UiController::pollCommandResults()`) reads the retained results and, for an OK edit, keeps it on that system
   with `SavedSystemsModel::applyDmrChannelEdit()` (persisted first; never the channel map file or the RadioReference
@@ -17749,8 +17751,8 @@ Qt Quick frontend (`src/ui/qt`):
   rereads the channel and keeps what was typed, disarming Remove only when the opened channel changed. Under a trunk
   scan both are read-only. The Site sheet's "Channels" button (DMR with `dmrTier3` or `dmrUserChannels`) and the
   Monitor's `NO FREQ n` reading (`noFreqRow`, `Theme.alert`, hidden at 0, also in the collapsed summary) open the sheet,
-  and so does the Monitor's "Tier III channels" row (`monitorChannelsRow`, while `dmrUserChannels`, before any site
-  identity too); it and the Site row take Tab, Space and Enter.
+  and so does the Monitor's "Tier III channels" row (`monitorChannelsRow`, while `dmrUserChannels` and NO FREQ is
+  hidden, before any site identity too); it and the Site row take Tab, Space and Enter.
   Tests: `UI_QT_DMR_CHANNELS_MODEL`, `UI_QT_CONTROLLER`, `UI_QT_METRICS_MODEL`, `UI_QT_PERSISTENCE`,
   `UI_QT_SESSION_ARGS`, `UI_QT_BACKUP_APPLY`, `UI_QT_QML_DMR_CHANNELS` (`tst_dmr_channels.qml`), `UI_QT_QML_A11Y_CHURN`
   (`tst_a11y_dmr_channels.qml`).

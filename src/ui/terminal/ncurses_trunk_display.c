@@ -310,7 +310,7 @@ ui_print_learned_lcns(const dsd_opts* opts, const dsd_state* state) {
     }
     /* Tier III channels granted without a frequency open the panel with trunking off too (monitor mode). */
     const dsd_ui_dmr_t3_view* t3 = dsd_app_dmr_t3_view(state);
-    const size_t missing = dsd_app_dmr_t3_view_missing_count(t3);
+    const size_t missing = dsd_app_dmr_t3_view_missing_shown(t3);
     if (opts->trunk_enable != 1 && missing == 0U) {
         return;
     }

@@ -3816,6 +3816,12 @@ test_channels_panel_opens_for_missing_t3_channels(void) {
     opts->frontend_terminal_display.terminal_compact = 1;
     assert(ui_channels_panel_open(opts, state) == 0);
     opts->frontend_terminal_display.terminal_compact = 0;
+    /* A carrier naming another system (Connect Plus, or P25 under Auto) has that system's map: the Tier III channels
+       missing a frequency are not listed there, as Qt's NO FREQ is hidden. */
+    view.other_system_here = 1U;
+    assert(ui_channels_panel_open(opts, state) == 0);
+    view.other_system_here = 0U;
+    assert(ui_channels_panel_open(opts, state) == 1);
     view.missing.missing[12 >> 3] = 0U;
     opts->frontend_display.show_channels = 1;
     assert(ui_channels_panel_open(opts, state) == 1);

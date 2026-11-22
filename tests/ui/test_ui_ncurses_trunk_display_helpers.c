@@ -458,6 +458,23 @@ test_t3_missing_channels_open_the_panel(void) {
     assert(strstr(g_output, "CH 42: no frequency (unchecked)\n") != NULL);
     assert(strstr(g_output, "CH 000C") == NULL && strstr(g_output, "CH 0028") == NULL);
 
+    /* A carrier naming another system: its map, no Tier III channel listed as missing (as Qt's NO FREQ); with
+       trunking off and no map, no panel. */
+    g_t3.other_system_here = 1U;
+    reset_render_capture();
+    ui_print_learned_lcns(f.opts, f.state);
+    assert(g_header_calls == 0 && g_output[0] == '\0');
+    f.opts->trunk_enable = 1;
+    f.state->trunk_chan_map[12] = 451012500L;
+    f.state->trunk_chan_map_used_count = 1U;
+    reset_render_capture();
+    ui_print_learned_lcns(f.opts, f.state);
+    assert(g_header_calls == 1 && strstr(g_output, "no frequency") == NULL);
+    f.opts->trunk_enable = 0;
+    f.state->trunk_chan_map[12] = 0;
+    f.state->trunk_chan_map_used_count = 0U;
+    g_t3.other_system_here = 0U;
+
     /* Nothing missing, trunking off: no panel. */
     DSD_MEMSET(g_t3.missing.missing, 0, sizeof g_t3.missing.missing);
     reset_render_capture();

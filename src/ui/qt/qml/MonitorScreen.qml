@@ -1862,16 +1862,17 @@ Item {
             }
 
             // Discussion #900 F3: the Tier III Channels sheet, while the live
-            // channel list holds channels of the user's (set or hidden). Before
-            // the site names itself there is no Site row, and with every grant
-            // given a frequency no NO FREQ reading: this stays the way to
-            // correct a saved frequency, by tap, key or screen reader.
+            // channel list holds channels of the user's (set or hidden) and the
+            // NO FREQ reading, which opens the same sheet, is hidden: one entry
+            // at a time. Before the site names itself there is no Site row, and
+            // with every grant given a frequency no NO FREQ reading: this stays
+            // the way to correct a saved frequency, by tap, key or screen reader.
             UiPanel {
                 id: channelsRow
                 objectName: "monitorChannelsRow"
                 width: parent.width
                 height: Math.max(Theme.minimumTouchSize, channelsLabel.implicitHeight + 20)
-                visible: metrics.dmrUserChannels === true
+                visible: metrics.dmrUserChannels === true && metrics.noFreqCount === 0
                 // Held while it has the focus (see OutlineButton).
                 activeFocusOnTab: (Navigation.allows(channelsRow) && visible) || activeFocus
                 Accessible.role: Accessible.Button

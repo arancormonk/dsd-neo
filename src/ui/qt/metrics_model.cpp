@@ -536,7 +536,7 @@ MetricsModel::fillListeningControlView(View& next, const dsd_opts* opts_snapshot
        channel map: no Tier III Channels route opens there, the saved system's channels file included. */
     const bool t3_here = t3_present && t3->other_system_here == 0U;
     const bool t3_elsewhere = t3_present && !t3_here;
-    next.no_freq_count = t3_here ? static_cast<int>(dsd_app_dmr_t3_view_missing_count(t3)) : 0;
+    next.no_freq_count = static_cast<int>(dsd_app_dmr_t3_view_missing_shown(t3));
     const bool saved_channels = opts_snapshot->dmr_chan_overrides_file[0] != '\0';
     next.dmr_tier3 = (t3_here && t3->tier3 != 0U) || (!t3_elsewhere && saved_channels);
     next.dmr_user_channels = t3_here && t3->overlay_count > 0U;

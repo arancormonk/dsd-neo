@@ -45,6 +45,14 @@ dsd_app_dmr_t3_view_missing_count(const dsd_ui_dmr_t3_view* view) {
     return n;
 }
 
+size_t
+dsd_app_dmr_t3_view_missing_shown(const dsd_ui_dmr_t3_view* view) {
+    if (view == NULL || view->present == 0U || view->other_system_here != 0U) {
+        return 0U;
+    }
+    return dsd_app_dmr_t3_view_missing_count(view);
+}
+
 int
 dsd_app_dmr_t3_view_shows_lpcns(const dsd_ui_dmr_t3_view* view) {
     if (view == NULL || view->present == 0U || view->other_system_here != 0U) {

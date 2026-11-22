@@ -135,6 +135,13 @@ int dsd_app_dmr_t3_view_missing_has(const dsd_ui_dmr_t3_view* view, uint16_t lpc
 size_t dsd_app_dmr_t3_view_missing_count(const dsd_ui_dmr_t3_view* view);
 
 /**
+ * How many ledger channels the frontends list and count (the terminal's Channels panel, Qt's NO FREQ): the ledger's
+ * count while the view records the session and the carrier names no other system, else 0. A carrier naming another
+ * system (other_system_here) has that system's map, so no Tier III channel is missing a frequency there. 0 for NULL.
+ */
+size_t dsd_app_dmr_t3_view_missing_shown(const dsd_ui_dmr_t3_view* view);
+
+/**
  * Whether the channel map shows as Tier III LPCNs, in decimal: the site was named Tier III (checked or RAS-accepted),
  * or the ledger or the user's overlay holds a channel, and the receiver is not on another system now
  * (other_system_here). 0 for NULL.

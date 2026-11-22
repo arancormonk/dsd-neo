@@ -917,7 +917,8 @@ Item {
 
         // The Monitor keeps a way to the sheet while the live list holds channels of the user's, before the site
         // names itself (no Site row) and with every grant given a frequency (no NO FREQ): by key, tap and screen
-        // reader. The Site row opens its sheet from the keyboard too.
+        // reader. It gives way to NO FREQ, which opens the same sheet. The Site row opens its sheet from the keyboard
+        // too.
         function test_monitor_channels_entry() {
             monitor.visible = true;
             var entry = monitorItem("monitorChannelsRow");
@@ -941,6 +942,12 @@ Item {
             tap(entry);
             tryCompare(monitorItem("channelsSheet"), "visible", true);
             monitorItem("channelsSheet").visible = false;
+            // One entry at a time: NO FREQ opens the same sheet.
+            testContext.setMetric("noFreqCount", 2);
+            tryCompare(monitorItem("noFreqRow"), "visible", true);
+            tryCompare(entry, "visible", false);
+            testContext.setMetric("noFreqCount", 0);
+            tryCompare(entry, "visible", true);
             testContext.setMetric("dmrUserChannels", false);
             tryCompare(entry, "visible", false);
 
