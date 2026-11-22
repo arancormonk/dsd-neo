@@ -16079,10 +16079,9 @@ Qt Quick frontend (`src/ui/qt`):
   when it refreshes, or when no screen reader is on). The timer restarts on Home's `visible` and `section` and on
   `Navigation`'s `topModal`, `layers` and `rootSurfaces` while a refresh is owed. So an ordinary refresh noted while a
   sheet is open is given when the sheet closes, and one noted just before Home was hidden is given on return. D11:
-  `resetListenPlaces()` forgets the Systems and Scan lists places (`sectionScroll`); when one of those tabs is current
-  the owned 0 ms `listenToStart` cancels the place chase and any flick, lays the body out and moves it to `originY`,
-  hidden or not, and does nothing while a restore is owed (the restore lands at the top anyway). Explore keeps its
-  place.
+  `resetListenPlaces()` forgets every Listen tab's place (`sectionScroll`: Systems, Scan lists and Explore), and the
+  owned 0 ms `listenToStart` cancels the place chase and any flick on the current tab, lays the body out and moves it
+  to `originY`, hidden or not, and does nothing while a restore is owed (the restore lands at the top anyway).
   Keyboard focus moving onto a control in the body restarts the owned `revealFocusTimer`, which reveals
   `activeFocusItem` through `Theme.revealFocus(scrollBody, scrollBody.contentItem, item)`; the timer lets a stronger
   scroll writer cancel a pending reveal (the precedence is under Listen tabs, above). `Theme.revealFocus` maps the
@@ -17785,7 +17784,7 @@ Qt Quick frontend (`src/ui/qt`):
   (`UI_QT_QML_A11Y_CHURN` `test_m8_closed_session_menu_ignores_a_density_change`). The Monitor and Home read
   an injected `prefsStore.compactView` first, else `prefs.compactView`; History reads `prefs`. A change puts each list
   it reaches back at its start (D11): the Monitor's calls (above), History's log and Home's Recent activity ("Call
-  rows" below), and Listen's Systems and Scan lists tabs ("Listen body layout"). The QML fixture's `prefs` map
+  rows" below), and every Listen tab ("Listen body layout"). The QML fixture's `prefs` map
   carries `compactView: false`, and the real key is set back to off for each test file. Tests: `UI_QT_PERSISTENCE`
   (`test_compact_view_pref`, `test_prefs_key_table`), `UI_QT_BACKUP_ARCHIVE` (left out of a backup and dropped from
   an edited one), `UI_QT_QML_CALL_LISTS` (`tst_settings_layout.qml` `test_compact_view_row` at text 1.0 and 2.0,

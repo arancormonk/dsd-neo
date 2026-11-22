@@ -2185,20 +2185,20 @@ Item {
             recentList.positionViewAtBeginning();
         }
     }
-    // Issue #901 (D11): the Systems and Scan lists tabs open at the top after
-    // a change of density, the one shown at once (once its cards have their
-    // new height), hidden or not.
+    // Issue #901 (D11): every Listen tab (Systems, Scan lists, Explore) opens
+    // at the top after a change of density, the one shown at once (once its
+    // cards have their new height), hidden or not.
     function resetListenPlaces() {
         delete sectionScroll.systems;
         delete sectionScroll.scanLists;
-        if (section === "systems" || section === "scanLists")
-            listenToStart.restart();
+        delete sectionScroll.explore;
+        listenToStart.restart();
     }
     Timer {
         id: listenToStart
         interval: 0
         onTriggered: {
-            if (screen.restorePending || (screen.section !== "systems" && screen.section !== "scanLists"))
+            if (screen.restorePending)
                 return;
             placeChase.active = false;
             scrollBody.cancelFlick();

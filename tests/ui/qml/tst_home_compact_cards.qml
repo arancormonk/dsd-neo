@@ -552,9 +552,8 @@ Item {
             tryCompare(count, "text", "2 entries");
         }
 
-        // D11: a change of Compact view puts the Systems and Scan lists tabs back at their top, the one shown at once
-        // and the other when it is next shown, with Home shown or hidden. Explore, whose rows the density does not
-        // change, keeps its place.
+        // D11: a change of Compact view puts every Listen tab back at its top (Systems, Scan lists and Explore), the
+        // one shown at once and the others when next shown, with Home shown or hidden.
         function test_density_change_resets_listen_places_data() {
             return [{tag: "shown", hidden: false}, {tag: "hidden", hidden: true}];
         }
@@ -607,14 +606,32 @@ Item {
             tryCompare(home, "restorePending", false);
             settle();
             fuzzyCompare(body.contentY, body.originY, 0.5, "the Scan lists tab at its top");
-            // Explore keeps its place: the density change is not its.
+            // Explore, left part way down before the change, opens at its top too.
             root.height = 360;
             Ui.Theme.fontScale = 2.0;
             home.showSection("explore");
             settle();
             tryCompare(home, "restorePending", false);
             settle();
-            fuzzyCompare(body.contentY, explorePlace, 0.5, "Explore kept its place");
+            verify(explorePlace > body.originY + 20, "Explore was left part way down");
+            fuzzyCompare(body.contentY, body.originY, 0.5, "Explore at its top");
+        }
+
+        // D11 with Explore shown: a change of Compact view puts it at its top at once.
+        function test_density_change_resets_explore_shown() {
+            root.height = 360;
+            Ui.Theme.fontScale = 2.0;
+            home.showSection("explore");
+            settle();
+            tryCompare(home, "restorePending", false);
+            var body = findChild(home, "dongleScrollBody");
+            var room = body.contentHeight - body.height;
+            verify(room > 40, "Explore scrolls at this height: " + room);
+            body.contentY = body.originY + Math.round(room / 2);
+            prefs.compactView = !prefs.compactView;
+            tryVerify(function () {
+                return Math.abs(body.contentY - body.originY) < 0.5;
+            }, 1000, "Explore at its top: " + body.contentY);
         }
 
         // The card stride, top to top, at 411 x 914 and normal text, in both views (logged for the PR).
