@@ -374,8 +374,11 @@ Item {
             compare(forget.text, "Forget this talkgroup");
             verify(forget.height >= 48);
             waitForRendering(sheet);
+            var heard = sheet.announcements;
             mouseClick(forget);
             compare(forget.text, "Tap again to forget");
+            compare(sheet.announced, "Tap again to forget", "TalkBack hears the armed question");
+            compare(sheet.announcements, heard + 1);
             compare(recorder.forgets.length, 0);
             // A reopen starts unarmed.
             sheet.openRow(55, 55, "", true, false, 0, false, "7", 2, true, -1, "", true, "owner-a");

@@ -26,7 +26,6 @@
 #include <QList>
 #include <QMap>
 #include <QObject>
-#include <QPair>
 #include <QPointer>
 #include <QString>
 #include <QStringList>
@@ -68,6 +67,8 @@ class TalkgroupListModel : public QAbstractListModel {
     Q_PROPERTY(QString viewedOwner READ viewedOwner NOTIFY viewedOwnerChanged)
     /* Issue #903: the viewed owner learns the talkgroups it hears (it exists with rememberTalkgroups on). */
     Q_PROPERTY(bool remembering READ remembering NOTIFY rememberingChanged)
+    /* Issue #903: the viewed owner has a remembered entry (what Clear would remove), learning or not. */
+    Q_PROPERTY(bool hasRemembered READ hasRemembered NOTIFY hasRememberedChanged)
 
   public:
     enum Role {
@@ -161,6 +162,11 @@ class TalkgroupListModel : public QAbstractListModel {
         return m_remembering;
     }
 
+    bool
+    hasRemembered() const {
+        return m_hasRemembered;
+    }
+
     /** @brief The remembered talkgroups (not owned; it outlives this model, or is null). */
     void setHeardStore(HeardTalkgroupStore* store);
 
@@ -216,6 +222,7 @@ class TalkgroupListModel : public QAbstractListModel {
     void historySessionChanged();
     void viewedOwnerChanged();
     void rememberingChanged();
+    void hasRememberedChanged();
 
   private:
     void updatePersistence(const dsd_opts* opts_snapshot, const dsd_state* snapshot, bool allowListChanged,
@@ -290,6 +297,8 @@ class TalkgroupListModel : public QAbstractListModel {
 
     /** @brief Read the viewed owner's store entries whole (HeardTalkgroupStore::visitEntries()). */
     void readRemembered();
+    /** @brief hasRemembered() from the remembered numbers held now, signalled when it changes. */
+    void noteHasRemembered();
     /** @brief Take in entry @p key (present with @p last, or gone); @return its number (0: none). */
     uint32_t noteRemembered(quint64 key, bool present, qint64 last);
     /** @brief Look up the entries an observe named (one store lookup each), adding their numbers to @p named. */
@@ -356,6 +365,7 @@ class TalkgroupListModel : public QAbstractListModel {
     QPointer<HeardTalkgroupStore> m_store;
     QString m_viewedOwner;
     bool m_remembering = false;
+    bool m_hasRemembered = false;
     /* What must be read again: the policy's rows, the viewed owner's store entries, the history's fragments. */
     bool m_listedDirty = true;
     /* The policy context the listed rows were read from (invalidateForTarget() keeps it; clear() drops it). */

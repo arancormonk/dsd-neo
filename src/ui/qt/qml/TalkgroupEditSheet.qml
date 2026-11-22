@@ -27,6 +27,9 @@ ModalSheet {
     property bool remembered: false
     property string owner: ""
     property bool forgetArmed: false
+    // What the sheet last read out, and how many (Navigation.announce()).
+    property string announced: ""
+    property int announcements: 0
     property bool submitted: false
     property string saveMessage: ""
     property var observedCrypto: ({})
@@ -259,6 +262,7 @@ ModalSheet {
     // Issue #903: a remembered card leaves the system's list (every variant of
     // its number); a later call brings it back. Asked with a second tap, as Remove is.
     OutlineButton {
+        id: forgetButton
         objectName: "forgetTalkgroup"
         width: parent.width
         height: Math.max(48, implicitHeight)
@@ -269,6 +273,8 @@ ModalSheet {
                 return;
             if (!sheet.forgetArmed) {
                 sheet.forgetArmed = true;
+                // TalkBack hears the question the button now asks.
+                Navigation.announce(sheet, forgetButton, qsTr("Tap again to forget"));
                 return;
             }
             sheet.forgetArmed = false;

@@ -10,7 +10,9 @@
 #include <QDir>
 #include <QFile>
 #include <QHash>
+#include <QLatin1String>
 #include <QList>
+#include <QMap>
 #include <QObject>
 #include <QSettings>
 #include <QStandardPaths>
@@ -18,7 +20,10 @@
 #include <QStringList>
 #include <QTemporaryDir>
 #include <QVariant>
+#include <QVariantList>
+#include <QVariantMap>
 #include <Qt>
+#include <QtGlobal>
 #include <dsd-neo/core/call_state.h>
 #include <dsd-neo/core/heard_talkgroup.h>
 #include <dsd-neo/core/opts.h>
@@ -829,8 +834,9 @@ struct Store {
     }
 };
 
-const QString kSysA = QStringLiteral("sys-a");
-const QString kSysB = QStringLiteral("sys-b");
+// Views, not QStrings: a constant initialiser that cannot throw.
+constexpr QLatin1String kSysA("sys-a");
+constexpr QLatin1String kSysB("sys-b");
 
 qint64
 lastHeard(const TalkgroupListModel& model, uint32_t id) {
@@ -984,9 +990,15 @@ test_variants_one_card_and_forget() {
     expect("903 variants: one card for the number, one for the other group",
            model.count() == 2 && find(model, 77).isValid() && find(model, typeD).isValid());
     expect("903 variants: the card's last heard is its newest variant's", lastHeard(model, 77) == 3000);
+    expect("903 has remembered: the viewed system remembers some", model.hasRemembered());
+    int hasRememberedSignals = 0;
+    QObject::connect(&model, &TalkgroupListModel::hasRememberedChanged, &model,
+                     [&hasRememberedSignals]() { ++hasRememberedSignals; });
     Signals sig(model);
     model.forgetTalkgroup(77);
-    expect("903 forget: every variant of the number goes from the store", [&held, typeD]() {
+    expect("903 has remembered: a forget that leaves an entry keeps it",
+           model.hasRemembered() && hasRememberedSignals == 0);
+    expect("903 forget: every variant of the number goes from the store", [&]() {
         const auto entries = held.store.entriesFor(kSysA);
         return entries.size() == 1 && entries.at(0).variant == DSD_HEARD_TG_P25 && entries.at(0).id == typeD;
     }());
@@ -1006,6 +1018,7 @@ test_variants_one_card_and_forget() {
     model.clearRemembered();
     expect("903 clear: the store holds nothing for the system", held.store.entriesFor(kSysA).isEmpty());
     expect("903 clear: no card is left, without a reset", model.count() == 0 && sig.resets == 0 && sig.removes >= 1);
+    expect("903 has remembered: a clear ends it at once", !model.hasRemembered() && hasRememberedSignals == 1);
     model.refresh(fixture.opts, fixture.state);
     expect("903 clear: none comes back from this session's calls", model.count() == 0);
     // Type-D end to end: the store's full id and the call's 11-bit number are one card, and Forget takes both.
@@ -1017,10 +1030,12 @@ test_variants_one_card_and_forget() {
     expect("903 type-d: the remembered entry and the call are one card", model.count() == 1 && remembered(model, 99)
                                                                              && lastHeard(model, 99) == 6001
                                                                              && !find(model, typeD99).isValid());
+    expect("903 has remembered: an entry read again", model.hasRemembered() && hasRememberedSignals == 2);
     model.forgetTalkgroup(99);
+    expect("903 has remembered: forgetting the last entry ends it at once", !model.hasRemembered());
     model.refresh(fixture.opts, fixture.state);
     expect("903 type-d: forget takes the entry and hides the call",
-           model.count() == 0 && held.store.entriesFor(kSysA).isEmpty());
+           model.count() == 0 && held.store.entriesFor(kSysA).isEmpty() && !model.hasRemembered());
     // An edit sheet that captured the owner forgets for it even after the view moved on.
     held.store.observe(kSysB, DSD_HEARD_TG_P25, 88, 1000);
     model.forgetTalkgroupOf(kSysB, 88);

@@ -19173,11 +19173,17 @@ Qt Quick frontend (`src/ui/qt`):
     keeps "Heard in this session". A heard card has no name line, and its switch reads "Listen to talkgroup %1" with
     the line in its description. The edit sheet opens with the card's `remembered` flag and `viewedOwner`
     (`openRow()`'s last two arguments) and offers **Forget this talkgroup** (a second tap, as Remove) on a remembered
-    card only, through `forgetTalkgroupOf()` with that owner. The footer's last row holds **Save talkgroup list**
-    (`saveOffered`: the owner's `canSaveList`, not `scanRowRefusesSave`, decoder running; the sheet's button uses the
-    same property) and **Clear remembered talkgroups…** (any viewed owner, remembering or not), side by side as the
-    bulk actions are. Clear asks first, naming the saved system (`savedSystems.getByUid()`), and clears the owner it
-    captured when it asked. With `remembering` on, the session-only note says heard talkgroups are remembered. The
+    card only, through `forgetTalkgroupOf()` with that owner; its armed "Tap again to forget" is read out
+    (`Navigation.announce()`). The footer's last row holds **Save talkgroup list** (`saveOffered`: the owner's
+    `canSaveList`, not `scanRowRefusesSave`, decoder running; the sheet's button uses the same property) and **Clear
+    remembered talkgroups…** (`hasRemembered`: the viewed owner has an entry, remembering or not), side by side as the
+    bulk actions are. With a screen reader on (#860) neither is shown or hidden by a scan hop: Save shows while the
+    owner offers it and the decoder runs, Clear always, each disabled where it does not apply. Clear asks first
+    ("Forget the talkgroups remembered for %1?", naming the saved system through `savedSystems.getByUid()`), and
+    clears the owner it captured when it asked. With `remembering` on in session scope, the session-only note says
+    heard talkgroups are remembered and the scope note gives way to it (a scan row keeps its own). `hasRemembered`
+    follows the remembered numbers the model holds: read with them, and dropped at once by a forget or clear of the
+    viewed owner (`noteHasRemembered()`). The
     saved-system editor (`WizardScreen.qml`, Trunking data) has the **Remember heard talkgroups** switch
     (`rememberTalkgroups`, on for a new system, kept by an edit, in the draft fingerprint), and Home's store notice
     names `heard_talkgroups.json` "Remembered talkgroups" (`Util.storeLabel()`). Tests: `UI_QT_QML_CALL_LISTS`

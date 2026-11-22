@@ -6,6 +6,7 @@
 #include "heard_talkgroup_store.h"
 
 #include <QCoreApplication>
+#include <QDebug>
 #include <QGuiApplication>
 #include <QJsonObject>
 #include <QJsonValue>

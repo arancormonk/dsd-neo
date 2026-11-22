@@ -273,6 +273,33 @@ Item {
             card.destroy();
         }
 
+        // Issue #903 (#860): with a screen reader on, the footer's list actions hold still while a scan hops between a
+        // system that remembers talkgroups and a target no saved system owns: Clear stays where it is, disabled where
+        // there is nothing to clear, and no node is shown or hidden.
+        function test_list_actions_hold_still_under_a_screen_reader() {
+            verify(screenReader.active, "this run has a screen reader on");
+            screen.visible = true;
+            testContext.setHostRunning(true);
+            var owner = "903-a11y-owner";
+            var clear = item("clearRememberedTalkgroups");
+            verify(clear.visible && !clear.enabled, "shown, and disabled with nothing to clear");
+            testContext.setTalkgroupRemembering(owner, true);
+            testContext.rememberTalkgroup(owner, 1, 4242, 300);
+            testContext.setTalkgroupOwnerOnAir(owner);
+            tryCompare(clear, "enabled", true);
+            waitForRendering(screen);
+            testContext.startAccessibilityCount();
+            for (var i = 0; i < switches; ++i) {
+                testContext.setTalkgroupOwnerOnAir(i % 2 === 0 ? "" : owner);
+                verify(clear.visible, "Clear stays on hop " + i);
+                compare(clear.enabled, i % 2 !== 0, "Clear applies only on the system's hops");
+            }
+            compare(showHide(clear.parent), 0, churn());
+            testContext.stopAccessibilityCount();
+            testContext.resetRememberedTalkgroups();
+            testContext.setHostRunning(false);
+        }
+
         // An edit opened on table B carries B's policy version; a hop to table A under it leaves it at that, and
         // the decoder's version check refuses it as stale, as it always has.
         function test_edit_keeps_the_version_it_opened_with() {

@@ -386,15 +386,18 @@ Item {
             verify(!sheet.visible);
         }
 
-        // Issue #903: Clear is offered for a saved system on air (remembering or not), asks first naming that system,
-        // and clears that system's list.
+        // Issue #903: Clear is offered while the saved system on air has something remembered (remembering or not), asks
+        // first naming that system, and clears that system's list.
         function test_clear_remembered_talkgroups() {
             var screen = screenLoader.item;
             var clear = findChild(screen, "clearRememberedTalkgroups");
             var confirm = findChild(screen, "clearRememberedConfirm");
             verify(clear !== null && confirm !== null);
+            verify(!screenReader.active, "this run has no screen reader");
             verify(!clear.visible, "no saved system on air: nothing to clear");
             var uid = viewRememberingOwner("Test North");
+            verify(!talkgroups.hasRemembered);
+            verify(!clear.visible, "a system that remembers nothing yet: nothing to clear");
             testContext.rememberTalkgroup(uid, 1, 4242, 300);
             testContext.rememberTalkgroup(uid, 1, 4343, 600);
             tryCompare(clear, "visible", true);
@@ -406,7 +409,8 @@ Item {
 
             tap(clear);
             tryCompare(confirm, "visible", true);
-            compare(findChild(confirm, "clearRememberedQuestion").text, "Clear the remembered talkgroups of Test North?");
+            compare(findChild(confirm, "clearRememberedQuestion").text, "Forget the talkgroups remembered for Test North?");
+            compare(findChild(confirm, "confirmClearRemembered").text, "Forget remembered talkgroups");
             var cancel = findChild(confirm, "cancelClearRemembered");
             tap(cancel);
             verify(!confirm.visible);
@@ -423,6 +427,10 @@ Item {
             tryVerify(function () {
                 return !clear.visible;
             });
+            // On air again with its list cleared: still nothing to clear.
+            testContext.setTalkgroupOwnerOnAir(uid);
+            tryCompare(talkgroups, "viewedOwner", uid);
+            verify(!talkgroups.hasRemembered && !clear.visible);
         }
 
         // Issue #903: the footer offers Save talkgroup list while the list lasts for this session only, never on a scan
@@ -455,14 +463,24 @@ Item {
             tryCompare(save, "visible", false);
         }
 
-        // Issue #903: with a system remembering what it hears, the session note says so; otherwise it keeps its text.
+        // Issue #903: with a system remembering what it hears, the session note says so, alone (the scope note gives way
+        // to it); otherwise both keep their text. A scan row keeps its own scope note.
         function test_session_note_says_remembered() {
             var note = findChild(screenLoader.item, "sessionOnlyNote");
+            var scope = findChild(screenLoader.item, "talkgroupScopeNote");
             compare(note.text, "Changes last for this session. Give the system a talkgroup list to keep them.");
+            verify(scope.visible);
             var uid = viewRememberingOwner("Test North");
             tryCompare(note, "text", "Talkgroups heard on this system are remembered. Save a talkgroup list to keep names and listen settings.");
+            verify(note.visible);
+            tryCompare(scope, "visible", false);
+            testContext.setTalkgroupScanScope(true);
+            tryCompare(scope, "visible", true);
+            testContext.setTalkgroupScanScope(false);
+            tryCompare(scope, "visible", false);
             testContext.setTalkgroupRemembering(uid, false);
             tryCompare(note, "text", "Changes last for this session. Give the system a talkgroup list to keep them.");
+            tryCompare(scope, "visible", true);
         }
 
         function test_session_note_tracks_group_file_configuration() {

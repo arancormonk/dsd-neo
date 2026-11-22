@@ -31,11 +31,11 @@
 #include <QHash>
 #include <QJsonArray>
 #include <QJsonValue>
+#include <QList>
 #include <QObject>
 #include <QSet>
 #include <QString>
 #include <QThreadPool>
-#include <QVector>
 #include <QtGlobal>
 #include <atomic>
 #include <functional>

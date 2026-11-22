@@ -8,8 +8,10 @@
 #include "heard_talkgroup_store.h"
 
 #include <QByteArray>
+#include <QChar>
 #include <QDebug>
 #include <QHash>
+#include <QPair>
 #include <QSet>
 #include <QVariant>
 #include <algorithm>
@@ -413,6 +415,7 @@ TalkgroupListModel::readDirty(const dsd_state* snapshot, bool allowListedOnly, b
     if (m_transientDirty) {
         readTransient(named);
     }
+    noteHasRemembered();
     HeardChanges changes;
     if (everyNumber) {
         const QHash<uint32_t, Heard> heard = mergeHeard();
@@ -971,12 +974,26 @@ TalkgroupListModel::dropHeard(const QString& owner, const QSet<uint32_t>& ids, b
     dropRows(drop);
     if (all) {
         m_heard.clear();
+        m_remembered.clear();
+        m_rememberedKeys.clear();
     } else {
         for (const uint32_t id : ids) {
             m_heard.remove(id);
+            m_remembered.remove(id);
+            m_rememberedKeys.remove(id);
         }
     }
     updateCounts(oldCount);
+    noteHasRemembered();
+}
+
+void
+TalkgroupListModel::noteHasRemembered() {
+    const bool has = !m_remembered.isEmpty();
+    if (has != m_hasRemembered) {
+        m_hasRemembered = has;
+        Q_EMIT hasRememberedChanged();
+    }
 }
 
 void
@@ -1023,6 +1040,7 @@ TalkgroupListModel::clear() {
     m_rememberedChanged.clear();
     m_transient.clear();
     m_heard.clear();
+    noteHasRemembered();
     setViewedOwner(QString());
     m_listedDirty = true;
     m_rememberedDirty = true;

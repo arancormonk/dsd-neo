@@ -69,11 +69,11 @@ Item {
     ModalSheet {
         id: clearConfirm
         objectName: "clearRememberedConfirm"
-        accessibleName: qsTr("Clear remembered talkgroups")
+        accessibleName: qsTr("Forget remembered talkgroups")
         ReadableText {
             objectName: "clearRememberedQuestion"
             width: parent.width
-            text: qsTr("Clear the remembered talkgroups of %1?").arg(screen.clearOwnerName)
+            text: qsTr("Forget the talkgroups remembered for %1?").arg(screen.clearOwnerName)
             textFormat: Text.PlainText
             wrapMode: Text.Wrap
             color: Theme.textPrimary
@@ -81,7 +81,7 @@ Item {
         }
         ReadableText {
             width: parent.width
-            text: qsTr("This removes them from this screen. Talkgroups heard after this are remembered again. A saved talkgroup list is not changed.")
+            text: qsTr("Talkgroups heard after this are remembered again. A saved talkgroup list is not changed.")
             wrapMode: Text.Wrap
             color: Theme.textSecondary
             font.pixelSize: Theme.fontSize(13)
@@ -90,7 +90,7 @@ Item {
             objectName: "confirmClearRemembered"
             width: parent.width
             height: Math.max(48, implicitHeight)
-            text: qsTr("Clear remembered talkgroups")
+            text: qsTr("Forget remembered talkgroups")
             onClicked: {
                 talkgroups.clearRememberedOf(screen.clearOwner);
                 clearConfirm.visible = false;
@@ -401,6 +401,8 @@ Item {
         ReadableText {
             objectName: "talkgroupScopeNote"
             width: parent.width
+            // Issue #903: in session scope with remembering on, the session note below says it all.
+            visible: !(talkgroups.remembering && !talkgroups.persistent && talkgroups.persistenceScope !== "scan")
             // In scan scope edits are not written, but a learned radio alias still goes to the target's own list.
             text: talkgroups.persistenceScope === "scan" ? qsTr("Edits last for this session; learned names may still be added to this target's list") : talkgroups.persistent ? qsTr("Edits are saved to the attached CSV and affect other systems sharing it") : qsTr("This session · save a talkgroup list to keep edits")
             wrapMode: Text.Wrap
@@ -460,15 +462,18 @@ Item {
 
         // Issue #903: the list's own actions, side by side as the bulk actions
         // are, so the cards keep their room on a phone; either alone takes the row.
+        // With a screen reader on, a scan hop changes neither (#860: the layout
+        // holds still); each is disabled instead where it does not apply.
         Row {
             id: listActions
 
             width: parent.width
             spacing: 10
+            readonly property bool steady: typeof screenReader !== "undefined" && screenReader !== null && screenReader.active
             // Read from the conditions, not the buttons' visible (false while this row is hidden).
-            readonly property bool showSave: screen.saveOffered
-            // Offered for a saved system on air, remembering or not (what it remembered before stays).
-            readonly property bool showClear: talkgroups.viewedOwner.length > 0
+            readonly property bool showSave: steady ? screen.canSaveList && decoderHost.running : screen.saveOffered
+            // The system on air has something remembered, remembering or not (what it remembered before stays).
+            readonly property bool showClear: steady || talkgroups.hasRemembered
             readonly property bool both: showSave && showClear
             readonly property real cellHeight: Math.max(showSave ? footerSave.implicitHeight : 0, showClear ? clearRemembered.implicitHeight : 0)
             visible: showSave || showClear
@@ -480,6 +485,7 @@ Item {
                 width: listActions.both ? (parent.width - 10) / 2 : parent.width
                 height: listActions.cellHeight
                 visible: listActions.showSave
+                enabled: screen.saveOffered
                 wrapMode: Text.WordWrap
                 text: screen.saveListText
                 onClicked: screen.saveListRequested(talkgroups.policyContext, talkgroups.policyGeneration)
@@ -490,6 +496,7 @@ Item {
                 width: listActions.both ? (parent.width - 10) / 2 : parent.width
                 height: listActions.cellHeight
                 visible: listActions.showClear
+                enabled: talkgroups.hasRemembered
                 wrapMode: Text.WordWrap
                 text: qsTr("Clear remembered talkgroups…")
                 onClicked: screen.requestClearRemembered()
