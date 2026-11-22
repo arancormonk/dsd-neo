@@ -24,8 +24,10 @@
  * The NFM row carries a dwell of its own, 3.5 s: a session's first landing on an analog row brings its first samples
  * 0.8 to 2 s late in a Debug build (the demodulator designs the noise squelch's plan, tens of ms when optimized; later
  * landings take it from the cache and play in about 0.15 s), and a shorter dwell can expire before its speech.
- * Real time, about 30 s; a decoder that cannot keep real time (a sanitizer build) is reported as a skip (77). POSIX
- * only (the server's loopback sockets).
+ * Real time, about 30 s. A receiver that delivers no samples, or a scan that never leaves its first row, fails on any
+ * host. A host too slow for the real-time dwell (a sanitizer build), measured before the session by timing a noise
+ * squelch plan design and not from anything the receiver or the scan did, is reported as a skip (77). POSIX only (the
+ * server's loopback sockets).
  */
 #include <QByteArray>
 #include <QCoreApplication>
@@ -38,12 +40,15 @@
 #include <QVariant>
 #include <QVariantList>
 #include <QVariantMap>
+#include <algorithm>
 #include <atomic>
 #include <cmath>
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <iterator>
+#include <memory>
 #include <mutex>
 #include <string>
 #include <thread>
@@ -55,7 +60,9 @@ extern "C" {
 #include <dsd-neo/core/init.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/power.h>
+#include <dsd-neo/core/safe_api.h>
 #include <dsd-neo/core/state.h>
+#include <dsd-neo/dsp/nfm_noise_squelch.h>
 #include <dsd-neo/engine/engine.h>
 #include <dsd-neo/io/rtl_stream_c.h>
 #include <dsd-neo/platform/sockets.h>
@@ -78,9 +85,10 @@ constexpr double kNfmNoiseLeadS = 0.8;
 constexpr double kNfmGatedAtLeastS = 0.4;
 constexpr double kOutputRateHz = 48000.0;
 constexpr uint64_t kDeadlineMs = 45000U;
-/* The share of real time the decoder must keep for the timing-bound checks to mean anything: the scan's dwell and
-   hold run on the real clock, so a decoder that falls behind (a sanitizer build) leaves rows before their air plays. */
-constexpr double kRealTimeShareMin = 0.8;
+/* The longest plan design (planDesignMs()) under which the timing-bound checks mean anything: the scan's dwell and hold
+   run on the real clock, so a host that takes longer (a sanitizer build, about 400 ms here, against 104 ms for a
+   Debug build) leaves the first analog row before its air plays (a first landing waiting 3.5 s or more). */
+constexpr uint64_t kPlanDesignMaxMs = 200U;
 /* CTest's SKIP_RETURN_CODE for this test. */
 constexpr int kSkipped = 77;
 
@@ -92,7 +100,7 @@ void
 expect(bool ok, const char* what, int visit) {
     if (!ok) {
         ++failures;
-        std::fprintf(stderr, "running receiver: %s (visit %d)\n", what, visit);
+        DSD_FPRINTF(stderr, "running receiver: %s (visit %d)\n", what, visit);
     }
 }
 
@@ -335,8 +343,8 @@ watch(std::atomic<int>* done) {
             nfm += seen[i].freq_hz == kNfmHz ? 1 : 0;
         }
         if ((dmr >= 2 && nfm >= 2) || dsd_realtime_mono_ms() - start > kDeadlineMs) {
-            std::fprintf(stderr, "running receiver: stopping after %llu ms\n",
-                         static_cast<unsigned long long>(dsd_realtime_mono_ms() - start));
+            DSD_FPRINTF(stderr, "running receiver: stopping after %llu ms\n",
+                        static_cast<unsigned long long>(dsd_realtime_mono_ms() - start));
             dsd_exitflag_store(1);
             return;
         }
@@ -347,10 +355,10 @@ QString
 writeList(const QTemporaryDir& dir, const QVariantMap& list, const QVariantList& systems) {
     const auto generated = dsd_qt::scan_list_targets(list, systems);
     if (!generated.ok || generated.targetCount != 2) {
-        std::fprintf(stderr, "running receiver: the list did not generate\n");
+        DSD_FPRINTF(stderr, "running receiver: the list did not generate\n");
         return QString();
     }
-    std::fprintf(stderr, "running receiver: generated list:\n%s", generated.csv.constData());
+    DSD_FPRINTF(stderr, "running receiver: generated list:\n%s", generated.csv.constData());
     const QString path = dir.filePath(QStringLiteral("rotation.csv"));
     QFile file(path);
     if (!file.open(QIODevice::WriteOnly) || file.write(generated.csv) != generated.csv.size()) {
@@ -367,7 +375,7 @@ visitMs(const Visit& v) {
 
 void
 printVisit(const Visit& v, int n, const char* note) {
-    std::fprintf(
+    DSD_FPRINTF(
         stderr,
         "visit %d%s: %u Hz %llu ms (first samples after %llu ms), samples %llu, reads %llu flagged %llu "
         "closed %llu (before open %llu) noise-squelch reads %llu dynamic reads %llu voice %llu monitor %llu "
@@ -379,20 +387,36 @@ printVisit(const Visit& v, int n, const char* note) {
         static_cast<unsigned long long>(v.closed_before_open), static_cast<unsigned long long>(v.noise_squelch_reads),
         static_cast<unsigned long long>(v.dynamic_reads), static_cast<unsigned long long>(v.digital_audio),
         static_cast<unsigned long long>(v.analog_audio), static_cast<unsigned long long>(v.analog_audio_while_gated));
-    std::fprintf(stderr, "visit %d: reads under an off level %llu, under the session's -1 dB level %llu\n", n,
-                 static_cast<unsigned long long>(v.off_reads), static_cast<unsigned long long>(v.session_level_reads));
+    DSD_FPRINTF(stderr, "visit %d: reads under an off level %llu, under the session's -1 dB level %llu\n", n,
+                static_cast<unsigned long long>(v.off_reads), static_cast<unsigned long long>(v.session_level_reads));
 }
 
-/* The share of real time the decoder kept over the judged visits: what it read against the time they took. */
-double
-realTimeShare(const std::vector<Visit>& seen) {
+/* The samples the decoder read over the whole run, every visit included. */
+uint64_t
+samplesRead(void) {
+    std::lock_guard<std::mutex> hold(g_lock);
     uint64_t samples = 0U;
-    uint64_t ms = 0U;
-    for (size_t i = 0; i + 1U < seen.size(); ++i) {
-        samples += seen[i].samples;
-        ms += visitMs(seen[i]);
+    for (const auto& v : g_visits) {
+        samples += v.samples;
     }
-    return ms > 0U ? static_cast<double>(samples) / (static_cast<double>(ms) * kOutputRateHz / 1000.0) : 0.0;
+    return samples;
+}
+
+/* The host's speed, measured apart from the receiver and the scan: the time this build takes to design the noise
+   squelch's plan for a 48 kHz channel (its 2 s calibration on fixed-seed noise), the work the session's first landing
+   on an analog row waits for (about 8 to 13 times this, with the receiver's cascade and threads). The median of three
+   designs, so one stall of a busy host neither skips nor admits a run. */
+uint64_t
+planDesignMs(void) {
+    const auto plan = std::make_unique<dsd_noise_squelch_plan>();
+    uint64_t ms[3] = {0U, 0U, 0U};
+    for (uint64_t& one : ms) {
+        const uint64_t start = dsd_realtime_mono_ms();
+        (void)dsd_noise_squelch_plan_design(plan.get(), nullptr, 0, nullptr, 0, 48000);
+        one = dsd_realtime_mono_ms() - start;
+    }
+    std::sort(std::begin(ms), std::end(ms));
+    return ms[1];
 }
 
 void
@@ -462,7 +486,7 @@ sessionArgs(const QTemporaryDir& dir, int port) {
     QStringList args =
         dsd_qt::session_args_scan_build_lists(list, QStringLiteral("461.1125"), QStringList{path}, prefs, &error);
     if (path.isEmpty() || args.isEmpty() || !error.isEmpty()) {
-        std::fprintf(stderr, "running receiver: no session: %s\n", error.toUtf8().constData());
+        DSD_FPRINTF(stderr, "running receiver: no session: %s\n", error.toUtf8().constData());
         return {};
     }
     /* No sound card here: the speaker is the UDP hook the start installs. */
@@ -476,7 +500,7 @@ sessionArgs(const QTemporaryDir& dir, int port) {
 /* Bootstrap and run the engine on @p args until the watcher stops it; the engine's result. */
 int
 runSession(const QStringList& args) {
-    std::fprintf(stderr, "running receiver: dsd-neo %s\n", args.join(QLatin1Char(' ')).toUtf8().constData());
+    DSD_FPRINTF(stderr, "running receiver: dsd-neo %s\n", args.join(QLatin1Char(' ')).toUtf8().constData());
     QList<QByteArray> storage{QByteArray("dsd-neo")};
     for (const auto& arg : args) {
         storage << arg.toUtf8();
@@ -499,7 +523,7 @@ runSession(const QStringList& args) {
             == DSD_BOOTSTRAP_CONTINUE) {
             rc = dsd_engine_run_with_lifecycle(opts, state, &hooks);
         } else {
-            std::fprintf(stderr, "running receiver: the session did not start (%d)\n", rc);
+            DSD_FPRINTF(stderr, "running receiver: the session did not start (%d)\n", rc);
             rc = 1;
         }
         done.store(1);
@@ -517,6 +541,10 @@ int
 main(int argc, char** argv) {
     QCoreApplication app(argc, argv);
     g_saved_level = argc > 1 && std::strcmp(argv[1], "--saved-digital-under-level") == 0;
+    /* Measured before the session starts, so nothing else of the test competes with it. */
+    const uint64_t design_ms = planDesignMs();
+    DSD_FPRINTF(stderr, "running receiver: a noise squelch plan design takes %llu ms here\n",
+                static_cast<unsigned long long>(design_ms));
     if (dsd_socket_init() != 0) {
         return 1;
     }
@@ -527,7 +555,7 @@ main(int argc, char** argv) {
     dsd_test::RtlTcpFixtureServer server;
     std::string why;
     if (!server.start(DSD_NEO_TEST_IQ_FIXTURE_DIR, rows, {{"noise_floor", 0.0, 0.0}}, &why)) {
-        std::fprintf(stderr, "running receiver: fixture server: %s\n", why.c_str());
+        DSD_FPRINTF(stderr, "running receiver: fixture server: %s\n", why.c_str());
         return 1;
     }
     QTemporaryDir dir;
@@ -536,17 +564,28 @@ main(int argc, char** argv) {
     server.stop();
     dsd_socket_cleanup();
     if (rc != 0) {
-        std::fprintf(stderr, "running receiver: the engine ended with %d\n", rc);
+        DSD_FPRINTF(stderr, "running receiver: the engine ended with %d\n", rc);
         return 1;
     }
     const std::vector<Visit> seen = settled_visits();
-    const double share = realTimeShare(seen);
-    if (share < kRealTimeShareMin) {
+    const uint64_t samples = samplesRead();
+    /* A receiver that delivers nothing, or a scan that never leaves its first row, fails whatever the host's speed. */
+    if (samples == 0U || seen.size() < 2U) {
         for (size_t i = 0; i < seen.size(); ++i) {
             printVisit(seen[i], static_cast<int>(i), "");
         }
-        std::fprintf(stderr, "running receiver: SKIPPED: the decoder kept %.0f%% of real time (needs %.0f%%)\n",
-                     share * 100.0, kRealTimeShareMin * 100.0);
+        DSD_FPRINTF(stderr, "running receiver: %s\n",
+                    samples == 0U ? "the receiver delivered no samples" : "the scan never left its first row");
+        return 1;
+    }
+    if (design_ms > kPlanDesignMaxMs) {
+        for (size_t i = 0; i < seen.size(); ++i) {
+            printVisit(seen[i], static_cast<int>(i), "");
+        }
+        DSD_FPRINTF(stderr,
+                    "running receiver: SKIPPED: this host designs a noise squelch plan in %llu ms (real time needs "
+                    "%llu ms or less)\n",
+                    static_cast<unsigned long long>(design_ms), static_cast<unsigned long long>(kPlanDesignMaxMs));
         return kSkipped;
     }
     checkVisits(seen);
