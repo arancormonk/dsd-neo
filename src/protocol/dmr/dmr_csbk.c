@@ -1614,6 +1614,12 @@ dmr_cspdu_pf0_handle_c_bcast(dsd_opts* opts, dsd_state* state, uint8_t cs_pdu_bi
     dmr_cspdu_pf0_c_bcast_fields f;
     dmr_cspdu_pf0_c_bcast_parse(cs_pdu_bits, &f);
     dmr_cspdu_pf0_c_bcast_print_type(f.a_type);
+    /* A standard C_BCAST's System Identity Code (bits 40-55, Table 7.20) is the transmitting site's, whatever it
+       announces (Vote_Now's and Adjacent_Site's BParms1 is the one that names another site): checked, its MODEL and NET
+       are the network baseline before anything the announcement teaches is learned under it. */
+    if (csbk_fid == 0 && dmr_csbk_crc_checked(state)) {
+        dmr_t3_chan_note_checked_syscode(state, f.syscode);
+    }
     dmr_cspdu_pf0_c_bcast_dispatch(opts, state, cs_pdu_bits, csbk_fid, &f);
     dmr_cspdu_pf0_c_bcast_print_payload(opts, &f);
 }

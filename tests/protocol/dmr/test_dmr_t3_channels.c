@@ -45,6 +45,8 @@ static const long CC_HZ = 451000000L;
 static dsd_opts g_opts;
 static dsd_state g_state;
 static Event_History_I g_history[2];
+/* The System Identity Code (bits 40-53) send_c_bcast_mbc() puts in its header; reset() makes it 0. */
+static uint16_t g_bcast_syscode;
 
 static void
 reset(void) {
@@ -62,6 +64,7 @@ reset(void) {
     g_opts.trunk_tune_data_calls = 1;
     g_opts.trunk_is_tuned = 0;
     g_state.trunk_cc_freq = CC_HZ;
+    g_bcast_syscode = 0U;
 }
 
 static uint64_t
@@ -129,6 +132,7 @@ send_c_bcast_mbc(uint8_t type, uint16_t header_ch, uint16_t bcap_chan, uint16_t 
     uint8_t bytes[48];
     build_pf0(bits, bytes, 40U);
     put_bits(bits, 16, type & 0x1FU, 5);
+    put_bits(bits, 40, g_bcast_syscode & 0x3FFFU, 14);
     bits[56] = (uint8_t)(ac_info & 1U);
     put_bits(bits, 68, header_ch & 0x0FFFU, 12);
     put_bits(bits, 112, 0U, 4);
@@ -1163,6 +1167,67 @@ test_c_bcast_bad_abs_params_no_effect(void) {
     assert(no_effect_since_prepare());
 }
 
+/* A single-block C_BCAST of announcement @p type, feature set @p fid, whose System Identity Code (bits 40-53) is
+   @p syscode and whose BParms1 (bits 21-34) is @p bparms1. */
+static void
+send_c_bcast_single(uint8_t type, uint8_t fid, uint16_t syscode, uint16_t bparms1) {
+    uint8_t bits[256];
+    uint8_t bytes[48];
+    build_pf0(bits, bytes, 40U);
+    bytes[1] = fid;
+    put_bits(bits, 8, fid, 8);
+    put_bits(bits, 16, type & 0x1FU, 5);
+    put_bits(bits, 21, bparms1 & 0x3FFFU, 14);
+    put_bits(bits, 40, syscode & 0x3FFFU, 14);
+    dmr_cspdu(&g_opts, &g_state, bits, bytes, 1U, 0U);
+}
+
+/* A checked standard C_BCAST names the transmitting site in its header (TS 102 361-4 Table 7.20): network B's arriving
+   before B's C_ALOHA drops what network A taught first, and a Chan_Freq it carries is learned under B, which B's
+   C_ALOHA keeps. Vote_Now's or Adjacent_Site's BParms1 names another site: no change. A manufacturer's C_BCAST and a
+   RAS-accepted one are no checked standard identity. */
+static void
+test_c_bcast_system_code_is_the_network_baseline(void) {
+    reset();
+    dmr_sm_init(&g_opts, &g_state);
+    send_aloha(0x1234U); /* network A: Small, NET 0x11 */
+    g_bcast_syscode = 0x1234U;
+    send_chan_freq(150U, 451U, 2400U);
+    assert(g_state.trunk_chan_map[150] == 451300000L);
+    const uint32_t gen = dmr_t3_chan_generation(&g_state);
+
+    send_c_bcast_single(6U, 0U, 0x1234U, 0x1254U); /* Adjacent_Site naming network B */
+    send_c_bcast_single(3U, 0x10U, 0x1254U, 0U);   /* a manufacturer's */
+    g_opts.aggressive_framesync = 0;
+    g_state.dmr_ras_signatures = 2U;
+    g_state.event_crc_invalid[0] = DSD_CRC_RAS_UNVERIFIED;
+    send_c_bcast_single(3U, 0U, 0x1254U, 0U); /* RAS-accepted */
+    g_state.event_crc_invalid[0] = 0U;
+    assert(g_state.trunk_chan_map[150] == 451300000L);
+    assert(dmr_t3_chan_generation(&g_state) == gen);
+
+    send_c_bcast_single(3U, 0U, 0x1254U, 0U); /* network B's Local_Time: Small, NET 0x12 */
+    assert(g_state.trunk_chan_map[150] == 0L);
+    assert(dmr_t3_chan_generation(&g_state) == gen + 1U);
+
+    g_bcast_syscode = 0x1254U;
+    send_chan_freq(151U, 451U, 2500U);
+    assert(g_state.trunk_chan_map[151] == 451312500L);
+    send_aloha(0x1254U);
+    assert(g_state.trunk_chan_map[151] == 451312500L);
+    assert(dmr_t3_chan_origin(&g_state, 151U) == DMR_CHAN_ORIGIN_SITE);
+
+    /* B's Chan_Freq arriving first after A also lands under B. */
+    reset();
+    dmr_sm_init(&g_opts, &g_state);
+    send_aloha(0x1234U);
+    g_bcast_syscode = 0x1254U;
+    send_chan_freq(152U, 451U, 2600U);
+    send_aloha(0x1254U);
+    assert(g_state.trunk_chan_map[152] == 451325000L);
+    dsd_state_trunk_lcn_free(&g_state);
+}
+
 /* With the colour-code gate locked, an accepted control PDU from proving bursts stamps the gate's evidence
    (dsd_state::dmr_confidence_lock_m) and counts as activity; MBC headers whose continuation never arrives do neither
    (discussion #900), however many. */
@@ -1301,6 +1366,7 @@ main(void) {
     test_announced_candidates_need_checked_content();
     test_vote_now_ac_unavailable_still_decodes_channel();
     test_adjacent_absolute_is_neighbour_fill_only();
+    test_c_bcast_system_code_is_the_network_baseline();
     test_unfinished_mbc_headers_note_no_lock_evidence();
     test_logical_channel_mbc_is_malformed();
     test_chan_freq_contradiction_no_effect();

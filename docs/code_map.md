@@ -13392,7 +13392,9 @@ Private per-protocol modules worth knowing about:
   (which the DMR writer sets after it writes), and the row then reads as FILE, so DMR neither replaces nor drops it.
   A network change (`dmr_t3_chan_network_changed()`) drops the SITE, UNVERIFIED, NEIGHBOUR and ESTIMATE rows with
   their trust bytes and bumps the generation; FILE and USER rows stay, and so does the hunt's candidate list. It is a
-  checked C_ALOHA, C_SYS_Parms or P_SYS_Parms short LC whose system code names another network than the last checked
+  checked C_ALOHA, standard (FID 0) C_BCAST (its header's System Identity Code, bits 40-55, Table 7.20, is the
+  transmitting site's, noted before the announcement is handled; Vote_Now's and Adjacent_Site's BParms1 names another
+  site and is no note), C_SYS_Parms or P_SYS_Parms short LC whose system code names another network than the last checked
   one, MODEL or NET differing (another SITE of the same network is none: the channel plan is the network's, TS 102 361-4 §6.1.2;
   `dmr_t3_chan_note_checked_syscode()`), or an operator boundary: every app-control tune boundary
   (`svc_operator_carrier_boundary()`: a frequency entry, a cycle with trunking off, a config or RadioReference apply
