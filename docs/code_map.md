@@ -17524,11 +17524,13 @@ Qt Quick frontend (`src/ui/qt`):
   they always had (the strip `max(56, its line boxes and tags + 8)`, 56 up to text 2.0; the hero's from its fixed
   lines), and what does not fit is left out in a fixed order, the first item that does not fit ending the run so a
   lower one is never drawn in place of a higher one (`plan` on `otherSlotPanel` and `heroSubline`, from widths only).
-  Each width is the line's as drawn: a fitted line (VerticalFit, below) is measured at the size it is drawn in, by a
-  hidden `FittedLine` twin (the drawn line's text, font and box, fitted the same way, sized by nothing a plan sets, so
-  no binding loop) whose `fittedFont` the plan's `TextMetrics` read (r6 J1: measured at the size asked for, a Tibetan
-  private-call name drawn in 31 of the 132 px before Skip at 320 dp left the 77 px EMERGENCY tag out, and the hero
-  left ENC out beside fitted ids; `tst_monitor_status_lines.qml` `test_fitted_lines_plan_at_their_drawn_size`).
+  Each text is measured at the size it asks for (its natural advance in its own font). A fitted line (VerticalFit,
+  below) is never wider than that, so nothing overflows. Decided limit (r7 K1, with the other left-out extras): beside
+  a name or ids in a taller script, drawn smaller to fit their box, a tag that would have fitted in the width the
+  smaller text leaves can be left out (a Tibetan private-call name at 320 dp drew in 31 of the 132 px before Skip,
+  and EMERGENCY, 77 px, was left out); it is still heard (`tst_monitor_status_lines.qml`
+  `test_tall_script_lines_keep_the_plan`: no overlap or overflow, the order kept, and the first item left out did not
+  fit beside the text at its asked-for size).
   The strip reads label, identity, PRIVATE, EMERGENCY, ENC, then Skip and More; the identity first gets
   min(its width, 96), then EMERGENCY, the `SLOT n` label, PRIVATE and ENC each while it fits in the room up to Skip, and
   the identity takes the rest and elides. The idle strip keeps its label. The hero reads PRIVATE, ids, EMERGENCY, ENC,

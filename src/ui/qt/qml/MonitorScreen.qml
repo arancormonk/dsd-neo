@@ -537,27 +537,6 @@ Item {
         font: monitorTitle.font
         text: screen.sessionLine
     }
-    // A fixed line box's text as it is drawn (issue #901 r6 J1): the drawn
-    // line's text, font and box, fitted as that line fits them, so a script
-    // that stands taller than its box (Tibetan) is measured at the smaller
-    // size VerticalFit draws it in. The strip's and the hero's plans measured
-    // such a line at the size asked for, twice its drawn width, and left out a
-    // tag that fitted beside it. Never shown, and sized by nothing a plan
-    // sets (only the box, never the width), so a plan reads it with no
-    // binding loop.
-    component FittedLine: Text {
-        property Text drawn: null
-        // The drawn line's font at the fitted size.
-        readonly property font fittedFont: Qt.font({family: font.family, weight: font.weight, pixelSize: fontInfo.pixelSize})
-        visible: false
-        text: drawn ? drawn.text : ""
-        textFormat: Text.PlainText
-        font: drawn ? drawn.font : Qt.font({})
-        height: drawn ? drawn.height : 0
-        maximumLineCount: 1
-        fontSizeMode: Text.VerticalFit
-        minimumPixelSize: drawn ? drawn.minimumPixelSize : 4
-    }
     FontMetrics {
         id: heroMicroMetrics
         font.family: Theme.mono
@@ -1404,53 +1383,33 @@ Item {
                             }
                             return shown;
                         }
-                        // Each line measured at the size it is drawn in (r6 J1:
-                        // ids in a taller script, fitted to the subline, left
-                        // ENC out beside them).
-                        FittedLine {
-                            id: heroIdsFit
-                            drawn: heroIdsText
-                        }
-                        FittedLine {
-                            id: heroNoteFit
-                            drawn: heroIdentityNote
-                        }
-                        FittedLine {
-                            id: heroAlgorithmFit
-                            drawn: heroAlgorithm
-                        }
-                        FittedLine {
-                            id: heroChannelFit
-                            drawn: heroChannelText
-                        }
                         TextMetrics {
                             id: heroIdsMetrics
-                            font: heroIdsFit.fittedFont
+                            font: heroIdsText.font
                             text: heroIdsText.text
                         }
                         TextMetrics {
                             id: heroNoteMetrics
-                            font: heroNoteFit.fittedFont
+                            font: heroIdentityNote.font
                             text: heroIdentityNote.text
                         }
                         TextMetrics {
                             id: heroAlgorithmMetrics
-                            font: heroAlgorithmFit.fittedFont
+                            font: heroAlgorithm.font
                             text: heroAlgorithm.text
                         }
                         // "ALG 84" of "ALG 84 · KID 0001", what tells AES from RC4,
                         // with the "…" a cut text ends in: right-eliding fits the
                         // ellipsis inside the width, so "ALG 84" alone came out
                         // "ALG 8…".
-                        // In the whole text's fitted size, which is what draws it cut.
                         TextMetrics {
                             id: heroAlgorithmPartMetrics
-                            font: heroAlgorithmFit.fittedFont
+                            font: heroAlgorithm.font
                             text: heroAlgorithm.text.split(" · ")[0] + "…"
                         }
                         TextMetrics {
                             id: heroChannelMetrics
-                            font: heroChannelFit.fittedFont
+                            font: heroChannelText.font
                             text: heroChannelText.text
                         }
 
@@ -1695,14 +1654,9 @@ Item {
                     }
                     return shown;
                 }
-                // The identity measured at the size it is drawn in (r6 J1).
-                FittedLine {
-                    id: otherIdentityFit
-                    drawn: otherIdentityText
-                }
                 TextMetrics {
                     id: otherIdentityMetrics
-                    font: otherIdentityFit.fittedFont
+                    font: otherIdentityText.font
                     text: otherIdentityText.text
                 }
 

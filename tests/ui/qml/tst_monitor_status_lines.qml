@@ -79,7 +79,8 @@ Item {
         }
         // A lower item is never drawn while a higher one is left out, and the
         // first one left out could not have fitted in the room the lead item
-        // had beyond its minimum.
+        // had beyond its minimum. An item over that room by any amount is
+        // rightly left out, so the half pixel is allowed on that side (r7 K4).
         function verifyPriority(order, gap, spare, what) {
             var dropped = null;
             for (var part of order) {
@@ -87,7 +88,7 @@ Item {
                     verify(dropped === null, part.objectName + " drawn while " + (dropped ? dropped.objectName : "") + " is not (" + what + ")");
                 } else if (dropped === null) {
                     dropped = part;
-                    verify(gap + part.implicitWidth > spare + 0.5, part.objectName + " was left out with room for it (" + what + ", spare " + spare + ")");
+                    verify(gap + part.implicitWidth > spare - 0.5, part.objectName + " was left out with room for it (" + what + ", spare " + spare + ")");
                 }
             }
         }
@@ -327,7 +328,8 @@ Item {
                 // Cut, the algorithm needs its "ALG 84" and the ellipsis.
                 var algCut = Math.min(naturalWidth(algorithm.text, algorithm.font), naturalWidth("ALG 84…", algorithm.font));
                 var need = 8 + (dropped === algorithm ? algCut : dropped.implicitWidth);
-                verify(need > spare + 0.5, dropped.objectName + " was left out with room for it (spare " + spare + ")");
+                // Over the room by any amount, it is rightly left out (r7 K4).
+                verify(need > spare - 0.5, dropped.objectName + " was left out with room for it (spare " + spare + ")");
             }
 
             // Every status word is heard.
@@ -557,8 +559,6 @@ Item {
             testContext.setMetric("uiMessage", "");
         }
 
-        // ---- r6: what a fitted line draws ----
-
         // The width @p text takes in @p font, as the plans measure it (TextMetrics' advance).
         function advanceOf(text, font) {
             var mirror = Qt.createQmlObject("import QtQuick; TextMetrics {}", root);
@@ -568,28 +568,15 @@ Item {
             mirror.destroy();
             return width;
         }
-        // The font a fitted @p line is drawn in: its own, at the size VerticalFit chose.
-        function drawnFont(line) {
-            return Qt.font({family: line.font.family, weight: line.font.weight, pixelSize: line.fontInfo.pixelSize});
-        }
-        // Whether @p line's text stands taller than its box at the size asked for, so the fit draws it smaller.
-        function standsTaller(line) {
-            var mirror = Qt.createQmlObject("import QtQuick; Text { visible: false; textFormat: Text.PlainText }", root);
-            mirror.font = line.font;
-            mirror.text = line.text;
-            var taller = mirror.implicitHeight > line.height + 0.5;
-            mirror.destroy();
-            return taller;
-        }
 
-        // Issue #901 r6 J1: the plans measure a fitted line at the size it is drawn in. VerticalFit draws a taller
-        // script smaller, but the strip's and the hero's plans measured the identity and the ids at the size asked
-        // for: at 320 dp and 1.0 a Tibetan private-call name drew in 31 px of the 132 px before Skip, and the 77 px
-        // EMERGENCY tag was left out although both fit; the hero left ENC out beside fitted ids the same way. With a
-        // Tibetan name and source on a private emergency encrypted call: the line is drawn smaller (where a face
-        // draws the script taller than its box), the lead takes min(its drawn width, 96), and the first item left
-        // out could not have fitted beside what is drawn.
-        function test_fitted_lines_plan_at_their_drawn_size_data() {
+        // Issue #901 r7 K1 (decided limit): the plans measure each text at the size it asks for, also where VerticalFit
+        // draws a taller script smaller, so beside a Tibetan name or ids a tag that would have fitted beside the
+        // smaller text can be left out, and is still heard. With a Tibetan name and source on a private emergency
+        // encrypted call at 320/360/411 dp and 1.0/1.6/2.0: nothing overlaps or leaves its line, every drawn item comes
+        // before every left-out one, and the first left out did not fit beside the lead at min(its asked-for width,
+        // 96). An item over the room by any amount is rightly left out, so the half-pixel tolerance is on the
+        // accepting side (r7 K4).
+        function test_tall_script_lines_keep_the_plan_data() {
             var rows = [];
             for (var w of [320, 360, 411]) {
                 for (var s of [1, 1.6, 2])
@@ -597,7 +584,7 @@ Item {
             }
             return rows;
         }
-        function test_fitted_lines_plan_at_their_drawn_size(data) {
+        function test_tall_script_lines_keep_the_plan(data) {
             var tall = "བོད་སྐད";
             root.width = data.width;
             root.height = 1300;
@@ -610,13 +597,22 @@ Item {
             settle();
 
             // The strip: EMERGENCY, the label, PRIVATE, ENC after the identity's lead, up to Skip.
+            var panel = item("otherSlotPanel");
             var identity = item("otherSlotIdentity");
+            var skip = item("otherSlotSkip");
             verify(identity.visible);
-            if (standsTaller(identity))
-                verify(identity.fontInfo.pixelSize < identity.font.pixelSize, data.tag + ": the identity is drawn smaller");
-            var drawnWidth = Math.ceil(advanceOf(identity.text, drawnFont(identity)));
-            var room = item("otherSlotSkip").x - 10 - Ui.Theme.cardPadding;
-            var used = Math.min(drawnWidth, 96);
+            var rects = [];
+            for (var drawn of [item("otherSlotLabel"), identity, item("otherPrivateTag"), item("otherEmergencyTag"), item("otherEncTag"), skip, item("otherSlotMore")]) {
+                if (!drawn.visible)
+                    continue;
+                var r = rectIn(drawn, panel);
+                verifyInside(r, panel, "the strip");
+                rects.push(r);
+            }
+            verifyClear(rects);
+            verify(identity.contentWidth <= identity.width + 0.5, data.tag + ": the identity draws " + identity.contentWidth + " px in " + identity.width);
+            var room = skip.x - 10 - Ui.Theme.cardPadding;
+            var used = Math.min(Math.ceil(advanceOf(identity.text, identity.font)), 96);
             var dropped = null;
             for (var part of [item("otherEmergencyTag"), item("otherSlotLabel"), item("otherPrivateTag"), item("otherEncTag")]) {
                 if (part.visible) {
@@ -624,34 +620,42 @@ Item {
                     used += 10 + part.implicitWidth;
                 } else if (dropped === null) {
                     dropped = part;
-                    verify(used + 10 + part.implicitWidth > room + 0.5, data.tag + ": " + part.objectName + " (" + part.implicitWidth
-                           + " px) left out beside an identity drawn " + drawnWidth + " px wide, " + used + " of " + room + " px used");
+                    verify(used + 10 + part.implicitWidth > room - 0.5, data.tag + ": " + part.objectName + " (" + part.implicitWidth
+                           + " px) left out with room for it, " + used + " of " + room + " px used");
                 }
             }
-            if (drawnWidth <= identity.width + 0.5)
-                verify(!identity.truncated, data.tag + ": the identity is cut in room for it");
+            var spoken = item("otherSlotNode").Accessible.name;
+            for (var word of ["PRIVATE", "EMERGENCY", "ENC"])
+                verify(spoken.indexOf(word) >= 0, data.tag + ": '" + word + "' missing from: " + spoken);
 
             // The hero: EMERGENCY, PRIVATE, ENC, then the algorithm (no less than "ALG 84…"), after the ids' lead.
             var ids = item("heroIds");
             var subline = ids.parent;
             verify(ids.visible);
-            if (standsTaller(ids))
-                verify(ids.fontInfo.pixelSize < ids.font.pixelSize, data.tag + ": the ids are drawn smaller");
-            var idsWidth = Math.ceil(advanceOf(ids.text, drawnFont(ids)));
-            used = Math.min(idsWidth, 96);
-            dropped = null;
+            rects = [];
             var algorithm = item("heroAlgorithm");
+            for (drawn of [ids, item("heroPrivateTag"), item("heroEmergencyTag"), item("heroEncTag"), algorithm, item("heroChannel")]) {
+                if (!drawn.visible)
+                    continue;
+                r = rectIn(drawn, subline);
+                verifyInside(r, subline, "the subline");
+                rects.push(r);
+            }
+            verifyClear(rects);
+            verify(ids.contentWidth <= ids.width + 0.5, data.tag + ": the ids draw " + ids.contentWidth + " px in " + ids.width);
+            used = Math.min(Math.ceil(advanceOf(ids.text, ids.font)), 96);
+            dropped = null;
             for (part of [item("heroEmergencyTag"), item("heroPrivateTag"), item("heroEncTag"), algorithm]) {
                 var need = part === algorithm
-                        ? Math.min(Math.ceil(advanceOf(algorithm.text, drawnFont(algorithm))), Math.ceil(advanceOf("ALG 84…", drawnFont(algorithm))))
+                        ? Math.min(Math.ceil(advanceOf(algorithm.text, algorithm.font)), Math.ceil(advanceOf("ALG 84…", algorithm.font)))
                         : part.implicitWidth;
                 if (part.visible) {
                     verify(dropped === null, data.tag + ": " + part.objectName + " drawn while " + (dropped ? dropped.objectName : "") + " is not");
                     used += 8 + (part === algorithm ? part.width : need);
                 } else if (dropped === null) {
                     dropped = part;
-                    verify(used + 8 + need > subline.width + 0.5, data.tag + ": " + part.objectName + " (" + need + " px) left out beside ids drawn "
-                           + idsWidth + " px wide, " + used + " of " + subline.width + " px used");
+                    verify(used + 8 + need > subline.width - 0.5, data.tag + ": " + part.objectName + " (" + need + " px) left out with room for it, "
+                           + used + " of " + subline.width + " px used");
                 }
             }
         }
