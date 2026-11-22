@@ -64,16 +64,16 @@ run_calc(const char* csv, char* out, size_t out_size) {
     (void)fflush(stdout);
     assert(dsd_dup2(saved, DSD_STDOUT_FILENO) >= 0);
     dsd_close(saved);
-    remove(csv_path);
+    (void)dsd_remove_file(csv_path);
 
-    FILE* f = fopen(out_path, "rb");
+    FILE* f = dsd_fopen_existing_regular_file(out_path, "rb");
     assert(f != NULL);
     DSD_MEMSET(out, 0, out_size);
     const size_t got = fread(out, 1U, out_size - 1U, f);
     assert(!ferror(f));
     out[got] = '\0';
     (void)fclose(f);
-    remove(out_path);
+    (void)dsd_remove_file(out_path);
     return rc;
 }
 
@@ -136,6 +136,11 @@ test_results_outside_range_or_off_grid_print_nothing(void) {
     /* explicit step, one input off the grid */
     set_anchor("851.025", "10", "12500");
     expect_error("f\n851012500\n851025000\n851040000\n");
+    /* the configured anchor itself must be a valid LCN */
+    set_anchor("451.0125", "4095", "12500");
+    expect_error("f\n451000000\n");
+    set_anchor("451.0125", "0", "12500");
+    expect_error("f\n451000000\n");
     clear_dmr_t3_env();
 }
 

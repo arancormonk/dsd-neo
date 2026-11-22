@@ -242,6 +242,10 @@ apply_anchor(const dsdneoRuntimeConfig* cfg, long long* ref_freq, long long* ref
         return 3;
     }
     if (cfg->dmr_t3_cc_freq_is_set) {
+        if (cfg->dmr_t3_cc_lcn < 1 || cfg->dmr_t3_cc_lcn > 4094) {
+            LOG_ERROR("LCN calc: DSD_NEO_DMR_T3_CC_LCN %lld is outside 1..4094.\n", (long long)cfg->dmr_t3_cc_lcn);
+            return 3;
+        }
         *ref_freq = cfg->dmr_t3_cc_freq_hz;
         *ref_lcn = cfg->dmr_t3_cc_lcn;
     }

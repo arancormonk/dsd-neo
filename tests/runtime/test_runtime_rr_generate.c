@@ -1191,6 +1191,16 @@ test_chan_tier3_control_seeds(void) {
            warned(&warnings, "RadioReference lists no channel number for 1 frequency; add it in the app"));
     free(text);
     dsd_rr_warning_list_free(&warnings);
+
+    /* A site that claims frequencies it does not carry is treated as empty, not dereferenced. */
+    site_init(&site, one_missing, 2U);
+    site.freqs = NULL;
+    text = NULL;
+    DSD_MEMSET(&warnings, 0, sizeof(warnings));
+    expect("tier3 null freqs generated",
+           dsd_rr_generate_chan_csv(DSD_RR_PROTO_DMR_TIER3, &site, 1U, &text, &len, &warnings) == 0);
+    free(text);
+    dsd_rr_warning_list_free(&warnings);
 }
 
 static void

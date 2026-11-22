@@ -956,6 +956,9 @@ rr_tier3_seed_written(const dsd_rr_site* site, int pass, size_t idx) {
  */
 static void
 rr_tier3_seed_controls(const dsd_rr_site* site, const rr_chan_row* rows, size_t count, rr_text* text) {
+    if (!site->freqs) {
+        return;
+    }
     for (int pass = 0; pass < 2; pass++) {
         for (size_t i = 0; i < site->freq_count; i++) {
             const long long freq_hz = site->freqs[i].freq_hz;
