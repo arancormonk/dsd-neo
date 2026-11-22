@@ -6214,6 +6214,17 @@ frame_sync_entry_ends_call(dsd_opts* opts, dsd_state* state, time_t now, int* ou
     return 0;
 }
 
+/* A Signal search probe asked the hunt to give way: an interruption, as a read that left for a command, with the history
+   and any dPMR frame being read dropped. No sync. */
+static int
+frame_sync_yield_to_search(dsd_state* state) {
+    dsd_state_raise_input_interrupt(state, DSD_INTERRUPT_SEARCH);
+    frame_sync_history_drop(state);
+    frame_sync_dpmr_forget(state);
+    frame_sync_sps_hunt_mark_return(state);
+    return DSD_SYNC_NONE;
+}
+
 int
 getFrameSync(dsd_opts* opts, dsd_state* state) {
     const time_t now = dsd_decode_time();
@@ -6247,11 +6258,7 @@ getFrameSync(dsd_opts* opts, dsd_state* state) {
                 return frame_sync_hand_back_after_tick(state);
             }
             if (dsd_frame_sync_hook_signal_search_should_yield(opts, state)) {
-                dsd_state_raise_input_interrupt(state, DSD_INTERRUPT_SEARCH);
-                frame_sync_history_drop(state);
-                frame_sync_dpmr_forget(state);
-                frame_sync_sps_hunt_mark_return(state);
-                return DSD_SYNC_NONE;
+                return frame_sync_yield_to_search(state);
             }
             /* A trunk-scan target's idle dwell ran out inside the pass (discussion #717). On dead air the hunt hands
                back once per 1800-symbol pass, so a dwell checked only between passes ran up to a pass long (375 ms at
