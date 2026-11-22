@@ -427,8 +427,9 @@ Generated (do not edit/commit):
     (`dsd_scan_activity_policy_allows()`, also the simplex reports' rule): known data/party/encryption restrictions and
     an unknown field a restriction depends on (F9: withheld), no talkgroup policy for the callsign families (YSF,
     D-STAR, M17), and for the numeric ones nothing anonymous under a Hold, the allow list or a blocked known source. A
-    dPMR call keeps its IDs as dial-string text only, so its voice reaches the table anonymous (a decided limit: under a
-    Hold or the allow list voice-only holds no dPMR row; its protocol reports carry the numeric IDs).
+    dPMR call carries its stations' raw 24-bit IDs as `ota_target_id`/`ota_source_id` beside the dial strings
+    (`dpmr_publish_header_call()`, `dpmr_publish_frame_observation()`, from a checked header or bound pair only), so its
+    voice is judged by them, as its protocol reports are; a station nothing checked yet is unknown.
     `dsd_scan_tg_hold_call_active()` takes only a call of the row's family too, and on a `tetra-dmo` row only an
     admitted direct mode talkspurt whose checked speech is of this visit (F7), for both the -Y and the trunk-scan visit
     cap. It never matches a call of a callsign family (M17, D-STAR, YSF: `dsd_scan_activity_protocol_is_callsign()`),
@@ -14627,7 +14628,9 @@ Private per-protocol modules worth knowing about:
   5.5.19.1, Table 5.71: MI_TYPE 111, WU counting down to the normal header), as the off-air `dpmr` fixture's nine do.
   IDs print as dialled strings (`dpmr_convert_air_interface_id()`): the B2 place values, "n******" and "*******" for
   the All Talkgroup IDs F8339C..F833A6 (A.1.2.3.3, Tables A.3, A.4), and '#' with six hex digits for an ID no dialled
-  string maps to. An FS2 frame publishes before it prints, so its line shows the identity it bound.
+  string maps to; the call keeps the raw 24-bit IDs too (`ota_target_id` the called, `ota_source_id` the calling
+  station), which the talkgroup and radio policy (audio, `--scan-voice-only`) and the numeric history fields read (an
+  ID of 0 is no ID there). An FS2 frame publishes before it prints, so its line shows the identity it bound.
   `-Z` prints each FS2 frame's two CCH CRC-7 verdicts (`CCH OK/ERR`). A checked end frame reports
   PROVEN, ends the dPMR call as `DSD_CALL_END_TERMINATOR`, forgets the transmission's confirmation and scrambling
   (`dpmr_confirm_reset()`, so a false FS2 on the carrier's tail must prove itself again) and closes the capture; nothing

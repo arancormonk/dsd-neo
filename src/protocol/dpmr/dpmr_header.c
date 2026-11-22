@@ -258,6 +258,10 @@ dpmr_publish_header_call(dsd_opts* opts, dsd_state* state, const dpmr_header* he
                   sizeof(observation.target_text) - 1U);
     dsd_strncpy_s(observation.source_text, sizeof(observation.source_text), calling,
                   sizeof(observation.source_text) - 1U);
+    /* The checked MI's raw 24-bit IDs as the call's numbers (issue #890), beside the dial strings shown: the policies
+       that read the call (the voice-only scan's, the audio gate's) judge it by them, as the activity reports are. */
+    observation.ota_target_id = header->called_id & 0xFFFFFFU;
+    observation.ota_source_id = header->calling_id & 0xFFFFFFU;
     /* A header opens its transmission (dsd_call_boundary: a voice header is per-transmission evidence); a repeat of the
        header that opened it goes on with it. */
     (void)dsd_call_state_observe(state, &observation, continues ? DSD_CALL_BOUNDARY_CONTINUE : DSD_CALL_BOUNDARY_BEGIN);

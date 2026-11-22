@@ -669,6 +669,75 @@ test_pair_reports_keep_the_calls_checked_stations(void) {
     }
 }
 
+/* Issue #890: the call a checked dPMR header or bound frame pair publishes carries the stations' raw 24-bit air
+   interface IDs as numbers (ota_target_id the called, ota_source_id the calling station) beside the dial strings it
+   shows, so a policy that reads the call (the voice-only scan's, the audio gate's) judges it by them, as the activity
+   reports are judged. A pair names one station; the call keeps the other its header or other pair named. A frame with a
+   failed half names none. */
+static void
+test_published_call_carries_checked_ids(void) {
+    uint32_t called = 0U;
+    uint32_t calling = 0U;
+    reference_frame_stations(&called, &calling);
+    dsd_opts* opts = g_opts;
+    dsd_state* state = g_state;
+    dsd_call_snapshot call;
+
+    /* A header: both stations. */
+    DSD_MEMSET(opts, 0, sizeof(*opts));
+    DSD_MEMSET(state, 0, sizeof(*state));
+    state->synctype = DSD_SYNC_DPMR_FS1_POS;
+    dpmr_header header;
+    DSD_MEMSET(&header, 0, sizeof(header));
+    header.message_type = DPMR_MT_COMMUNICATIONS_START;
+    header.called_id = called;
+    header.calling_id = calling;
+    header.mode = 0U;
+    header.color_code = -1;
+    dpmr_process_header(opts, state, &header, 0);
+    DSD_MEMSET(&call, 0, sizeof(call));
+    expect_int("header call", dsd_call_state_get(state, 0U, &call) > 0, 1);
+    expect_int("header call target id", (long)call.ota_target_id, (long)called);
+    expect_int("header call source id", (long)call.ota_source_id, (long)calling);
+    expect_int("header call keeps its dial strings", call.target_text[0] != '\0' && call.source_text[0] != '\0', 1);
+    run_frame(opts, state, DPMR_REF_FRAMES[0].body_dibits, sizeof(DPMR_REF_FRAMES[0].body_dibits));
+    DSD_MEMSET(&call, 0, sizeof(call));
+    (void)dsd_call_state_get(state, 0U, &call);
+    expect_int("called pair keeps the header's caller", (long)call.ota_source_id, (long)calling);
+    expect_int("called pair's target id", (long)call.ota_target_id, (long)called);
+
+    /* Frame pairs alone: each names its station, the call gathers both. */
+    DSD_MEMSET(opts, 0, sizeof(*opts));
+    DSD_MEMSET(state, 0, sizeof(*state));
+    state->synctype = DSD_SYNC_DPMR_FS2_POS;
+    run_frame(opts, state, DPMR_REF_FRAMES[0].body_dibits, sizeof(DPMR_REF_FRAMES[0].body_dibits));
+    DSD_MEMSET(&call, 0, sizeof(call));
+    expect_int("called pair call", dsd_call_state_get(state, 0U, &call) > 0, 1);
+    expect_int("called pair target id", (long)call.ota_target_id, (long)called);
+    expect_int("called pair names no caller", (long)call.ota_source_id, 0L);
+    run_frame(opts, state, DPMR_REF_FRAMES[1].body_dibits, sizeof(DPMR_REF_FRAMES[1].body_dibits));
+    DSD_MEMSET(&call, 0, sizeof(call));
+    (void)dsd_call_state_get(state, 0U, &call);
+    expect_int("calling pair source id", (long)call.ota_source_id, (long)calling);
+    expect_int("calling pair keeps the target id", (long)call.ota_target_id, (long)called);
+
+    /* A frame with a failed half names nobody. */
+    DSD_MEMSET(opts, 0, sizeof(*opts));
+    DSD_MEMSET(state, 0, sizeof(*state));
+    state->synctype = DSD_SYNC_DPMR_FS2_POS;
+    state->dpmr_confirmed = 1;
+    uint8_t body[372];
+    DSD_MEMCPY(body, DPMR_REF_FRAMES[0].body_dibits, sizeof(body));
+    body[0] ^= 2U;
+    body[3] ^= 2U;
+    run_frame(opts, state, body, sizeof(body));
+    DSD_MEMSET(&call, 0, sizeof(call));
+    if (dsd_call_state_get(state, 0U, &call) > 0) {
+        expect_int("failed half: no target id", (long)call.ota_target_id, 0L);
+        expect_int("failed half: no source id", (long)call.ota_source_id, 0L);
+    }
+}
+
 int
 main(void) {
     g_opts = (dsd_opts*)calloc(1U, sizeof(*g_opts));
@@ -691,6 +760,7 @@ main(void) {
     test_a_corrected_bit_error_still_passes_and_two_do_not();
     test_checked_frames_and_headers_report_to_trunk_scan();
     test_pair_reports_keep_the_calls_checked_stations();
+    test_published_call_carries_checked_ids();
     free(g_state);
     free(g_opts);
 

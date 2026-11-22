@@ -1157,7 +1157,8 @@ rules:
 
 With `--scan-voice-only` a target holds only on speech its decoder decoded cleanly on this visit, clear or decrypted,
 and only voice of the target's own mode counts: a YSF target takes YSF voice, a `tetra-dmo` target only direct mode
-TETRA speech. Encrypted voice without a key never counts, in any mode. Voice heard
+TETRA speech. Encrypted voice without a key never counts, in any mode. A dPMR call's voice is judged by the 24-bit
+called and calling IDs its checked header or frame pairs named, as its reports are. Voice heard
 on the visit before (on another target, or before this target's retune landed) holds nothing. TETRA voice that is
 muted for policy or encryption is never decoded, so it never holds a target.
 

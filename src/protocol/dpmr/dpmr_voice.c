@@ -428,6 +428,12 @@ dpmr_publish_frame_observation(dsd_state* state) {
         dpmr_convert_air_interface_id(f->BoundIdValue, identity);
         char* text = f->BoundIdKind == DPMR_FRAME_ID_CALLED ? observation.target_text : observation.source_text;
         dsd_strncpy_s(text, DSD_CALL_IDENTITY_TEXT_SIZE, identity, DSD_CALL_IDENTITY_TEXT_SIZE - 1U);
+        /* And its raw 24-bit ID as the call's number (issue #890): the call keeps the other station's. */
+        if (f->BoundIdKind == DPMR_FRAME_ID_CALLED) {
+            observation.ota_target_id = f->BoundIdValue & 0xFFFFFFU;
+        } else {
+            observation.ota_source_id = f->BoundIdValue & 0xFFFFFFU;
+        }
     }
     return dsd_call_state_observe(state, &observation, DSD_CALL_BOUNDARY_CONTINUE) > 0;
 }
