@@ -50,6 +50,15 @@ bound_rings(HeardOwners* owners) {
     }
 }
 
+/* Keep the newest kHeardOwnerSessions sessions. */
+void
+prune_sessions(HeardOwners* owners) {
+    while (owners->sessions.size() > kHeardOwnerSessions) {
+        const QList<qint64> kept = owners->sessions.keys();
+        owners->sessions.remove(*std::min_element(kept.cbegin(), kept.cend()));
+    }
+}
+
 QString
 channel_of(const Event_History* item) {
     return QString::fromUtf8(item->channel_label,
@@ -59,7 +68,7 @@ channel_of(const Event_History* item) {
 } // namespace
 
 qint64
-heard_owners_bind_ring(HeardOwners* owners, quint64 ring, qint64 session) {
+heard_owners_bind_ring(HeardOwners* owners, quint64 ring, qint64 session, bool bind) {
     if (owners == nullptr || ring == 0U) {
         return session;
     }
@@ -67,9 +76,22 @@ heard_owners_bind_ring(HeardOwners* owners, quint64 ring, qint64 session) {
     if (bound != owners->rings.constEnd()) {
         return bound.value();
     }
+    if (!bind) {
+        return kHeardNoSession;
+    }
     owners->rings.insert(ring, session);
     bound_rings(owners);
     return session;
+}
+
+HeardProof
+heard_item_proof(const Event_History* item) {
+    HeardProof proof;
+    if (item->heard_variant != 0U && item->heard_id != 0U) {
+        proof.variant = item->heard_variant;
+        proof.id = item->heard_id;
+    }
+    return proof;
 }
 
 bool
@@ -94,10 +116,7 @@ heard_owner_of(const HeardOwners& owners, qint64 session, const Event_History* i
 void
 heard_owners_set_session(HeardOwners* owners, qint64 session, const HeardSessionOwners& who) {
     owners->sessions.insert(session, who);
-    while (owners->sessions.size() > kHeardOwnerSessions) {
-        const QList<qint64> kept = owners->sessions.keys();
-        owners->sessions.remove(*std::min_element(kept.cbegin(), kept.cend()));
-    }
+    prune_sessions(owners);
     bound_rings(owners);
 }
 
@@ -164,10 +183,7 @@ heard_owners_from_text(const QString& text) {
             owners.rings.insert(ring, it.value().toInteger());
         }
     }
-    while (owners.sessions.size() > kHeardOwnerSessions) {
-        const QList<qint64> kept = owners.sessions.keys();
-        owners.sessions.remove(*std::min_element(kept.cbegin(), kept.cend()));
-    }
+    prune_sessions(&owners);
     bound_rings(&owners);
     return owners;
 }

@@ -1391,6 +1391,10 @@ class TestUiController : public QObject {
     // cppcheck-suppress functionStatic // Qt meta-object entry point must remain an instance method.
     flushHistory() {}
 
+    Q_INVOKABLE void
+    // cppcheck-suppress functionStatic // Qt meta-object entry point must remain an instance method.
+    flushHistoryBeforeStart() {}
+
   Q_SIGNALS:
     void autoStartRequested(const QString& kind, const QString& uid, const QStringList& companions);
     void decryptionResultChanged();
@@ -2632,11 +2636,13 @@ class CallLogStore : public QAbstractListModel {
         setSessionUid(uid);
     }
 
-    /** @brief Who owns the session's calls (CallHistoryModel::setSessionOwnersFromMap(), issue #903), kept for a case
-     * to read: {session, single, scan}. */
+    /** @brief A start on a system with its owners (CallHistoryModel::beginSessionWithOwners(), issue #903); the
+     * owners are kept for a case to read: {session, single, scan}. */
     Q_INVOKABLE void
-    setSessionOwnersFromMap(qlonglong session, const QString& singleOwnerUid, const QVariantMap& scanEntryOwner) {
-        m_sessionOwners = QVariantMap{{QStringLiteral("session"), session},
+    beginSessionWithOwners(const QString& label, const QString& uid, const QString& singleOwnerUid,
+                           const QVariantMap& scanEntryOwner) {
+        beginSessionOn(label, uid);
+        m_sessionOwners = QVariantMap{{QStringLiteral("session"), m_session},
                                       {QStringLiteral("single"), singleOwnerUid},
                                       {QStringLiteral("scan"), scanEntryOwner}};
     }

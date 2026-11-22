@@ -22,6 +22,8 @@
 #include <QString>
 #include <QtGlobal>
 #include <dsd-neo/core/state.h>
+#include <limits>
+#include <stdint.h>
 
 namespace dsd_qt {
 
@@ -55,11 +57,16 @@ struct HeardSighting {
 /** @brief The most distinct talkgroups held for a sink not yet set; further ones are dropped. */
 constexpr int kHeardPendingMax = 20000;
 
+/** @brief The session a ring read before any session owned it belongs to: none, so its rows have no owner. */
+constexpr qint64 kHeardNoSession = std::numeric_limits<qint64>::min();
+
 /**
- * @brief The session ring @p ring belongs to: the one it is bound to, else @p session, which it is bound to now. A ring
- * of no identity (0), or no @p owners, binds nothing and reads @p session.
+ * @brief The session ring @p ring belongs to: the one it is bound to, else @p session, which it is bound to now, or,
+ * without @p bind, kHeardNoSession, leaving it unbound (the flush before a start: a ring not yet bound can only be the
+ * starting run's, which the coming session owns). A ring of no identity (0), or no @p owners, binds nothing and reads
+ * @p session.
  */
-qint64 heard_owners_bind_ring(HeardOwners* owners, quint64 ring, qint64 session);
+qint64 heard_owners_bind_ring(HeardOwners* owners, quint64 ring, qint64 session, bool bind = true);
 
 /** @brief Whether @p item carries a proof that may be learnt: a verified talkgroup, live input, not operator tuned. */
 bool heard_item_learnable(const Event_History* item);
@@ -78,6 +85,15 @@ QString heard_owners_to_text(const HeardOwners& owners);
 
 /** @brief What heard_owners_to_text() wrote; anything it cannot read is left out. */
 HeardOwners heard_owners_from_text(const QString& text);
+
+/** @brief A ring row's verified talkgroup proof: a variant and a non-zero id together, else none (0 and 0). */
+struct HeardProof {
+    uint8_t variant = 0U;
+    quint32 id = 0U;
+};
+
+/** @brief The proof @p item carries (HeardProof). */
+HeardProof heard_item_proof(const Event_History* item);
 
 /** @brief Note @p id of @p variant heard on @p owner at @p when in @p pending (bounded by kHeardPendingMax). */
 void heard_pending_note(QHash<QString, HeardSighting>* pending, const QString& owner, int variant, quint32 id,

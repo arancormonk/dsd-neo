@@ -183,6 +183,7 @@ CallHistoryTap::start(Context context) {
         const std::lock_guard<std::mutex> lock(m_mutex);
         m_batchPollsRun = m_batchPolls;
         m_stop = false;
+        m_bindNewRings = true;
         m_pollNow = false;
         m_polling = false;
     }
@@ -192,13 +193,14 @@ CallHistoryTap::start(Context context) {
 }
 
 CallHistoryTap::Result
-CallHistoryTap::stop() {
+CallHistoryTap::stop(bool bindNewRings) {
     if (!m_running) {
         return Result();
     }
     {
         const std::lock_guard<std::mutex> lock(m_mutex);
         m_stop = true;
+        m_bindNewRings = bindNewRings;
     }
     m_wake.notify_all();
     m_thread.join();
@@ -242,6 +244,7 @@ CallHistoryTap::run() {
     while (!m_stop) {
         m_polling = true;
         m_pollNow = false;
+        m_bindNewRingsRun = m_bindNewRings;
         lock.unlock();
         poll();
         lock.lock();
@@ -251,6 +254,7 @@ CallHistoryTap::run() {
         // Real time: a wait, never compared with anything decoded.
         m_wake.wait_for(lock, std::chrono::milliseconds(m_pollMs), [this]() { return m_stop || m_pollNow; });
     }
+    m_bindNewRingsRun = m_bindNewRings;
     lock.unlock();
     // The commits since the last poll (a stop while in the background leaves the final rings published), then
     // everything held.
@@ -288,6 +292,7 @@ CallHistoryTap::slotWalk(int slot, const dsd_app_history_tap_meta& meta) {
     // Issue #903: as refresh() resolves a row's owner, by the session its ring is bound to.
     walk.heardOwners = &m_context.heardOwners;
     walk.optsPublished = meta.opts_published != 0;
+    walk.bindNewRings = m_bindNewRingsRun;
     walk.cleared = clear.active && (!clear.pending || m_clearBound[slot]);
     walk.clearedThrough = clear.pushSeq[slot];
     return walk;
@@ -324,7 +329,8 @@ CallHistoryTap::poll() {
         // The walk goes newest first; each slot's rows are held oldest first, so a backlog the spill cannot take
         // loses its oldest rows (a poll's slot 0 rows before its slot 1 rows).
         for (auto it = fresh.crbegin(); it != fresh.crend(); ++it) {
-            m_pending.append(CallHistoryModel::spillLine(*it));
+            m_pending.append(it->clearedProof ? CallHistoryModel::clearedProofLine(*it)
+                                              : CallHistoryModel::spillLine(*it));
         }
         // A seen entry that changed with no row to spill (an older build's entry taking its site text digest): this
         // copy of the seen map goes at stop, so the change goes to the model through the spill.

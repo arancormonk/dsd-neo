@@ -137,6 +137,12 @@ class UiController : public QObject {
      */
     Q_INVOKABLE void flushHistory();
 
+    /**
+     * @brief flushHistory() for Main's accepted start, before it begins the new session (issue #903): a ring no session
+     * owns yet stays unbound (CallHistoryModel::refresh()), since it can only be the starting run's.
+     */
+    Q_INVOKABLE void flushHistoryBeforeStart();
+
   Q_SIGNALS:
     void autoStartRequested(const QString& kind, const QString& uid, const QStringList& companions);
     void pollIntervalChanged();

@@ -145,6 +145,14 @@ UiController::flushHistory() {
 }
 
 void
+UiController::flushHistoryBeforeStart() {
+    if (m_history == nullptr) {
+        return;
+    }
+    m_history->refresh(dsd_app_get_latest_snapshot(), dsd_app_get_latest_opts_snapshot(), false);
+}
+
+void
 UiController::onSessionStateChanged() {
     const DecoderHost::SessionState previous = m_session;
     m_session = m_host->sessionState();

@@ -1405,11 +1405,10 @@ prove_newest(Decoder& decoder, int slot, uint32_t id, bool live = true) {
     item->live_input = live ? 1U : 0U;
 }
 
-/* Main.startWithMap's accepted start on saved system @p uid: the session, then its owner. */
+/* Main.startWithMap's accepted start on saved system @p uid: the session with its owner, in one call. */
 void
 start_saved(CallHistoryModel& model, const QString& uid) {
-    model.beginSessionOn(uid, uid);
-    model.setSessionOwners(model.session(), uid, {});
+    model.beginSessionWithOwners(uid, uid, uid, {});
 }
 
 /* Issue #903 (r3 finding 1): a suspended phone spills 1,001 distinct verified groups, more than History's 1,000 rows.
@@ -1538,6 +1537,93 @@ test_heard_tap_learns_only_owned_live_calls(void) {
     expect("tap learning: every call is in History", model.count() == 4);
     expect("tap learning: only the owned target's live call is handed on",
            sink.seen.size() == 1 && sink.count(QStringLiteral("sys-a"), 43200U) == 1);
+}
+
+/* Issue #903 (review, Important 1): a start accepted while the app is away publishes the new run's ring before the
+ * session changes hands. The tap's last poll at that handoff leaves the unbound ring alone, so the new session owns it:
+ * B's call is B's, not A's. */
+void
+test_heard_new_ring_at_the_session_handoff(void) {
+    resetStorage();
+    RecordingHeardSink sink;
+    CallHistoryModel model;
+    start_tap(model);
+    model.setHeardSink(&sink);
+    start_saved(model, QStringLiteral("sys-a"));
+    const time_t when = 1755700000;
+    Decoder a;
+    a.commit(0, 44100U, 99U, when);
+    prove_newest(a, 0, 44100U);
+    a.publish();
+    gui_ingest(model);
+    set_app_state(Qt::ApplicationHidden);
+    Decoder b; // B's ring is published at once
+    start_saved(model, QStringLiteral("sys-b"));
+    b.commit(0, 44101U, 100U, when + 60);
+    prove_newest(b, 0, 44101U);
+    b.publish();
+    model.waitForBackgroundPollForTest();
+    set_app_state(Qt::ApplicationActive);
+    gui_ingest(model);
+    expect("handoff ring: A's call is A's", sink.count(QStringLiteral("sys-a"), 44100U) == 1);
+    expect("handoff ring: B's call is B's", sink.count(QStringLiteral("sys-b"), 44101U) == 1 && sink.seen.size() == 2);
+}
+
+/* Issue #903 (review, Minor 1): a Clear while the tap runs (the app hidden, its loop running) hands the tap off first,
+ * so the verified talkgroups it found still reach the remembered list; the rows themselves are cleared. */
+void
+test_heard_clear_while_the_tap_runs(void) {
+    resetStorage();
+    RecordingHeardSink sink;
+    CallHistoryModel model;
+    start_tap(model);
+    model.setHeardSink(&sink);
+    start_saved(model, QStringLiteral("sys-a"));
+    const time_t when = 1755800000;
+    Decoder decoder;
+    gui_ingest(model);
+    set_app_state(Qt::ApplicationHidden);
+    decoder.commit(0, 44200U, 99U, when);
+    prove_newest(decoder, 0, 44200U);
+    decoder.publish();
+    model.waitForBackgroundPollForTest();
+    model.clearAll();
+    expect("clear while away: the tap's group is learnt", sink.count(QStringLiteral("sys-a"), 44200U) == 1);
+    expect("clear while away: the log is empty and the tap runs again",
+           model.count() == 0 && model.backgroundCaptureRunningForTest());
+    set_app_state(Qt::ApplicationActive);
+    gui_ingest(model);
+    expect("clear while away: nothing comes back, nothing twice", model.count() == 0 && sink.seen.size() == 1);
+}
+
+/* Issue #903 (review, Minor 4): a proof that arrives while the app is away, on a row History's Clear covers, reaches
+ * the remembered list through the spill (clearedProofLine()), once, and the row stays cleared. */
+void
+test_heard_cleared_row_proof_through_the_tap(void) {
+    resetStorage();
+    RecordingHeardSink sink;
+    CallHistoryModel model;
+    start_tap(model);
+    model.setHeardSink(&sink);
+    start_saved(model, QStringLiteral("sys-a"));
+    const time_t when = 1755900000;
+    Decoder decoder;
+    decoder.commit(0, 44300U, 99U, when);
+    decoder.state->event_history_s[0].Event_History_Items[1].live_input = 1U;
+    decoder.publish();
+    gui_ingest(model);
+    model.clearAll();
+    set_app_state(Qt::ApplicationSuspended);
+    prove_newest(decoder, 0, 44300U);
+    decoder.state->event_history_s[0].commit_rev++;
+    decoder.state->event_history_s[0].revision++;
+    decoder.publish();
+    model.waitForBackgroundPollForTest();
+    set_app_state(Qt::ApplicationActive);
+    gui_ingest(model);
+    expect("cleared through the tap: the late proof is learnt once",
+           sink.seen.size() == 1 && sink.count(QStringLiteral("sys-a"), 44300U) == 1);
+    expect("cleared through the tap: the row stays cleared", model.count() == 0);
 }
 
 /* Copy every file under @p from into @p to, keeping the folders (a process's disk at one instant). */
@@ -1691,6 +1777,9 @@ main(int argc, char** argv) {
     test_heard_tap_learns_only_owned_live_calls();
     test_heard_teardown_backlog_reaches_the_sink();
     test_heard_forget_after_a_fold_survives_a_death();
+    test_heard_new_ring_at_the_session_handoff();
+    test_heard_clear_while_the_tap_runs();
+    test_heard_cleared_row_proof_through_the_tap();
 
     QDir(dataDir).removeRecursively();
     if (g_failures != 0) {

@@ -870,19 +870,35 @@ CallHistoryModel::beginSessionOn(const QString& label, const QString& uid) {
 }
 
 void
+CallHistoryModel::beginSessionWithOwners(const QString& label, const QString& uid, const QString& singleOwnerUid,
+                                         const QVariantMap& scanEntryOwner) {
+    HeardSessionOwners who;
+    who.single = singleOwnerUid;
+    for (auto it = scanEntryOwner.constBegin(); it != scanEntryOwner.constEnd(); ++it) {
+        const QString owner = it.value().toString();
+        if (!it.key().isEmpty() && !owner.isEmpty()) {
+            who.scan.insert(it.key(), owner);
+        }
+    }
+    changeSession(label, uid, true, &who);
+}
+
+void
 CallHistoryModel::setSessionSystem(const QString& label, const QString& uid) {
     changeSession(label, uid, false);
 }
 
 void
-CallHistoryModel::changeSession(const QString& label, const QString& uid, bool begin) {
+CallHistoryModel::changeSession(const QString& label, const QString& uid, bool begin,
+                                const HeardSessionOwners* owners) {
     const bool labelMoved = label != m_sessionLabel;
     const bool uidMoved = uid != m_sessionUid;
     if (!labelMoved && !uidMoved && !begin) {
         return;
     }
     // One handoff for every field: a tap started again between them would attribute what it finds to half the change.
-    const bool resumeTap = handOffBackgroundCaptureForSession();
+    // A new session's ring is not yet read: the tap's last poll leaves a ring no session owns unbound.
+    const bool resumeTap = handOffBackgroundCaptureForSession(begin);
     if (labelMoved) {
         m_sessionLabel = label;
         m_settings.setValue(QLatin1String(kSessionLabelKey), label);
@@ -893,6 +909,10 @@ CallHistoryModel::changeSession(const QString& label, const QString& uid, bool b
     }
     if (begin) {
         advanceSession();
+    }
+    if (begin && owners != nullptr) {
+        heard_owners_set_session(&m_heardOwners, m_session, *owners);
+        saveHeardOwners();
     }
     resumeBackgroundCapture(resumeTap);
     if (labelMoved) {
@@ -1207,9 +1227,9 @@ row_take_site(CallHistoryModel::Row& row, const Event_History* item) {
  * variant and a non-zero id together, or none. Pure, as everything the background tap's walk calls must be. */
 void
 row_take_heard(CallHistoryModel::Row& row, const Event_History* item) {
-    const bool proven = item->heard_variant != 0U && item->heard_id != 0U;
-    row.heardVariant = proven ? item->heard_variant : static_cast<uint8_t>(0U);
-    row.heardId = proven ? item->heard_id : 0U;
+    const HeardProof proof = heard_item_proof(item);
+    row.heardVariant = proof.variant;
+    row.heardId = proof.id;
     row.liveInput = item->live_input != 0U;
 }
 
@@ -1494,10 +1514,42 @@ CallHistoryModel::seenReadOf(const Event_History* item) {
                                      item->pos.flags, item->pos.kind, item->pos.rev, item->pos.proc_instance);
     read.identity = item_identity_digest(item);
     read.identityKnown = true;
-    read.heardVariant = item->heard_variant != 0U && item->heard_id != 0U ? item->heard_variant : 0U;
-    read.heardId = read.heardVariant != 0U ? item->heard_id : 0U;
+    const HeardProof proof = heard_item_proof(item);
+    read.heardVariant = proof.variant;
+    read.heardId = proof.id;
     read.liveInput = item->live_input != 0U;
     return read;
+}
+
+void
+CallHistoryModel::noteClearedProof(const Event_History* item, int slot, qulonglong seq, quint64 instance,
+                                   const RingWalk& walk, qint64 session, QList<FreshRow>& fresh) {
+    if (walk.heardOwners == nullptr || !walk.optsPublished || !heard_item_learnable(item)) {
+        return;
+    }
+    const qint64 start = static_cast<qint64>(item->event_start_time);
+    const qint64 end = static_cast<qint64>(item->event_time);
+    const QString key = seen_key(slot, seq, start > 0 ? start : end, item->target_id, ring_item_display_kind(item));
+    const auto seen = walk.seen->find(key);
+    if (seen == walk.seen->end() || (seen->ring != 0U && seen->ring != instance) || seen->heardVariant != 0U) {
+        return;
+    }
+    const HeardProof proof = heard_item_proof(item);
+    seen->heardVariant = proof.variant;
+    seen->heardId = proof.id;
+    seen->liveInput = true;
+    FreshRow sighting;
+    sighting.clearedProof = true;
+    sighting.key = key;
+    sighting.seen = *seen;
+    sighting.heardOwner = heard_owner_of(*walk.heardOwners, session, item);
+    sighting.row.when = start > 0 ? start : end;
+    sighting.row.end = start > 0 && end >= start ? end : 0;
+    sighting.row.heardVariant = proof.variant;
+    sighting.row.heardId = proof.id;
+    if (!sighting.heardOwner.isEmpty()) {
+        fresh.append(sighting);
+    }
 }
 
 bool
@@ -1519,7 +1571,7 @@ CallHistoryModel::walkRing(const Event_History_I& ring, int slot, const RingWalk
     const qulonglong pushSeq = static_cast<qulonglong>(ring.push_seq);
     const quint64 instance = static_cast<quint64>(ring.instance);
     // Issue #903: the ring belongs to the session it was first read in, so its late rows keep that session's owners.
-    const qint64 heardSession = heard_owners_bind_ring(walk.heardOwners, instance, walk.session);
+    const qint64 heardSession = heard_owners_bind_ring(walk.heardOwners, instance, walk.session, walk.bindNewRings);
     // Index 0 is the still-active staged row; only committed rows are finished
     // calls that belong in a log.
     for (int idx = 1; idx < DSD_EVENT_HISTORY_LEN; idx++) {
@@ -1537,6 +1589,8 @@ CallHistoryModel::walkRing(const Event_History_I& ring, int slot, const RingWalk
             // push order, never by stamps. Whatever the ring takes in after the clear is
             // new, however old its stamps (a replay's are the capture's). A call still
             // airing when Clear was tapped commits later, and so it is new activity.
+            // Issue #903: a proof that came after the clear is still a talkgroup heard.
+            noteClearedProof(item, slot, seq, instance, walk, heardSession, fresh);
             continue;
         }
         const SeenState read = seenReadOf(item);
@@ -1577,12 +1631,13 @@ CallHistoryModel::walkRing(const Event_History_I& ring, int slot, const RingWalk
 
 QList<CallHistoryModel::FreshRow>
 CallHistoryModel::collectFresh(const dsd_state* snapshot, const bool scan[2], const QString& systemUid,
-                               bool optsPublished, bool* seenSettled) {
+                               const RingWalk& heard, bool* seenSettled) {
     QList<FreshRow> fresh;
     RingWalk walk;
     walk.seen = &m_seen;
-    walk.heardOwners = &m_heardOwners;
-    walk.optsPublished = optsPublished;
+    walk.heardOwners = heard.heardOwners;
+    walk.optsPublished = heard.optsPublished;
+    walk.bindNewRings = heard.bindNewRings;
     walk.seenSettled = seenSettled;
     walk.session = m_session;
     walk.sessionLabel = m_sessionLabel;
@@ -3036,19 +3091,6 @@ CallHistoryModel::setSessionOwners(qint64 session, const QString& singleOwnerUid
     resumeBackgroundCapture(resumeTap);
 }
 
-void
-CallHistoryModel::setSessionOwnersFromMap(qlonglong session, const QString& singleOwnerUid,
-                                          const QVariantMap& scanEntryOwner) {
-    QHash<QString, QString> scan;
-    for (auto it = scanEntryOwner.constBegin(); it != scanEntryOwner.constEnd(); ++it) {
-        const QString owner = it.value().toString();
-        if (!it.key().isEmpty() && !owner.isEmpty()) {
-            scan.insert(it.key(), owner);
-        }
-    }
-    setSessionOwners(session, singleOwnerUid, scan);
-}
-
 bool
 CallHistoryModel::settleSpill() {
     const bool resumeTap = handOffBackgroundCaptureForSession();
@@ -3212,11 +3254,11 @@ CallHistoryModel::trimToCapacity() {
 }
 
 void
-CallHistoryModel::refresh(const dsd_state* snapshot, const dsd_opts* opts_snapshot) {
+CallHistoryModel::refresh(const dsd_state* snapshot, const dsd_opts* opts_snapshot, bool bindNewRings) {
     // The first ingest after the app returns takes over from the background tap: what the tap found is folded in
     // before this read, so the walk below finds those rows seen, and anything newer it finds itself.
     if (m_handoffOwed) {
-        handOffBackgroundCapture();
+        handOffBackgroundCapture(bindNewRings);
     }
     if (snapshot == nullptr || snapshot->event_history_s == nullptr) {
         return;
@@ -3244,8 +3286,12 @@ CallHistoryModel::refresh(const dsd_state* snapshot, const dsd_opts* opts_snapsh
     // establish identity.
     bool seenSettled = false;
     const QHash<quint64, qint64> ringsBound = m_heardOwners.rings;
-    const QList<FreshRow> fresh = collectFresh(snapshot, scan, opts_snapshot != nullptr ? m_sessionUid : QString(),
-                                               opts_snapshot != nullptr, &seenSettled);
+    RingWalk heard;
+    heard.heardOwners = &m_heardOwners;
+    heard.optsPublished = opts_snapshot != nullptr;
+    heard.bindNewRings = bindNewRings;
+    const QList<FreshRow> fresh =
+        collectFresh(snapshot, scan, opts_snapshot != nullptr ? m_sessionUid : QString(), heard, &seenSettled);
     if (m_heardOwners.rings != ringsBound) {
         // A ring read for the first time is bound to this session (issue #903), for good.
         saveHeardOwners();
@@ -3261,6 +3307,11 @@ CallHistoryModel::refresh(const dsd_state* snapshot, const dsd_opts* opts_snapsh
 
     bool rowsChanged = false;
     for (const FreshRow& item : fresh) {
+        if (item.clearedProof) {
+            noteHeard(item.heardOwner, item.row.heardVariant, item.row.heardId,
+                      item.row.end > 0 ? item.row.end : item.row.when);
+            continue;
+        }
         rowsChanged = ingestReading(item.row, item.isUpdate, item.again, item.heardOwner) || rowsChanged;
     }
     rowsChanged = trimToCapacity() || rowsChanged;
@@ -3300,17 +3351,13 @@ CallHistoryModel::pruneSeenMap(SeenMap& seen) {
 void
 CallHistoryModel::clearAll() {
     // A clear while the background tap runs (the app hidden but its loop running) covers what the tap read too: the
-    // tap stops, its read position joins the model's, and it starts again behind the new mark. Everything spilled so
-    // far is cleared rows, and so is what the tap could not write.
-    // A tap the app's return already owes a handoff (no ingest since) is handed off instead: stopped, its clear
-    // adopted and its spill folded, as the next ingest would have, and it stays stopped in the foreground.
+    // tap is handed off (stopped, its read position joining the model's, its spill and what it could not write folded
+    // in) before the rows go, and it starts again behind the new mark. Everything it found is cleared rows; folded
+    // first, their verified talkgroups still reach the remembered list (issue #903), and the rings it bound stay bound.
+    // A tap the app's return already owes a handoff (no ingest since) stays stopped in the foreground.
     const bool tapWasRunning = m_tap && m_tap->running();
     const bool resumeTap = tapWasRunning && !m_handoffOwed;
-    if (resumeTap) {
-        const CallHistoryTap::Result tapped = m_tap->stop();
-        takeTapReadPosition(tapped.read, tapped.pushSeq, tapped.ring);
-        adoptSessionOrdinals(tapped.ordinals);
-    } else if (tapWasRunning) {
+    if (tapWasRunning) {
         handOffBackgroundCapture();
     }
     m_handoffOwed = false;
@@ -4447,20 +4494,20 @@ CallHistoryModel::takeTapReadPosition(bool read, const qulonglong pushSeq[2], qu
 }
 
 void
-CallHistoryModel::handOffBackgroundCapture() {
+CallHistoryModel::handOffBackgroundCapture(bool bindNewRings) {
     m_handoffOwed = false;
     if (!m_tap || !m_tap->running()) {
         return;
     }
     // What the tap's last append could not write (the spill still unwritable) is folded with the spill: only the model
     // has it now.
-    if (foldSpill(stopBackgroundCapture())) {
+    if (foldSpill(stopBackgroundCapture(bindNewRings))) {
         Q_EMIT countChanged();
     }
 }
 
 bool
-CallHistoryModel::handOffBackgroundCaptureForSession() {
+CallHistoryModel::handOffBackgroundCaptureForSession(bool beginning) {
     // A start that completes while the app is away (a deferred restart, a USB start's continuation) changes the
     // session, label or system the tap attributes its rows to; it holds a copy of the old ones. What it found so far
     // folds in under them now, and a tap the app's return already owes a handoff stays stopped, as in clearAll().
@@ -4468,7 +4515,7 @@ CallHistoryModel::handOffBackgroundCaptureForSession() {
         return false;
     }
     const bool resume = !m_handoffOwed;
-    handOffBackgroundCapture();
+    handOffBackgroundCapture(!beginning);
     return resume;
 }
 
@@ -4480,8 +4527,8 @@ CallHistoryModel::resumeBackgroundCapture(bool resume) {
 }
 
 QByteArray
-CallHistoryModel::stopBackgroundCapture() {
-    const CallHistoryTap::Result tapped = m_tap->stop();
+CallHistoryModel::stopBackgroundCapture(bool bindNewRings) {
+    const CallHistoryTap::Result tapped = m_tap->stop(bindNewRings);
     // A clear before the next ingest covers what the tap read.
     takeTapReadPosition(tapped.read, tapped.pushSeq, tapped.ring);
     // Before any spill line folds: the ordinals the tap gave are the rings' for good, and so are the sessions it bound
@@ -4696,6 +4743,10 @@ CallHistoryModel::pruneSeenWhileFolding() {
 
 void
 CallHistoryModel::foldSettledSeen(const QString& key, const QJsonObject& line, bool* folded) {
+    if (!key.isEmpty() && line.value(QLatin1String("cleared")).toBool()) {
+        foldClearedProof(key, line, folded);
+        return;
+    }
     if (key.isEmpty() || !line.value(QLatin1String("settled")).toBool()) {
         return;
     }
@@ -4709,6 +4760,33 @@ CallHistoryModel::foldSettledSeen(const QString& key, const QJsonObject& line, b
     entry->siteText = seen.siteText;
     entry->siteTextKnown = true;
     *folded = true; // the seen store is owed a save
+}
+
+void
+CallHistoryModel::foldClearedProof(const QString& key, const QJsonObject& line, bool* folded) {
+    const SeenState seen = seenEntryFromJson(line.value(QLatin1String("seen")).toObject());
+    const QString owner = line.value(QLatin1String("ho")).toString();
+    const auto entry = m_seen.find(key);
+    if (seen.heardVariant == 0U || owner.isEmpty() || entry == m_seen.end() || entry->heardVariant != 0U) {
+        return;
+    }
+    entry->heardVariant = seen.heardVariant;
+    entry->heardId = seen.heardId;
+    entry->liveInput = seen.liveInput;
+    noteHeard(owner, seen.heardVariant, seen.heardId, json_i64_or(line, "when", 0));
+    *folded = true; // the seen store is owed a save
+}
+
+QByteArray
+CallHistoryModel::clearedProofLine(const FreshRow& fresh) {
+    QJsonObject obj;
+    obj.insert(QLatin1String("v"), 1);
+    obj.insert(QLatin1String("key"), fresh.key);
+    obj.insert(QLatin1String("seen"), seenEntryToJson(fresh.seen));
+    obj.insert(QLatin1String("cleared"), true);
+    obj.insert(QLatin1String("ho"), fresh.heardOwner);
+    obj.insert(QLatin1String("when"), fresh.row.end > 0 ? fresh.row.end : fresh.row.when);
+    return QJsonDocument(obj).toJson(QJsonDocument::Compact) + '\n';
 }
 
 QByteArray

@@ -1993,7 +1993,7 @@ Window {
         // The previous session may have committed calls since the last 250 ms
         // tick; ingest them under its own label before the label changes hands,
         // or its tail calls read as the new system's.
-        uiController.flushHistory();
+        uiController.flushHistoryBeforeStart();
         // A new decode session on this system, begun after its predecessor's tail is
         // logged above, in one call: the history's background capture never runs on
         // a label, system or session only partly changed.
@@ -2001,11 +2001,12 @@ Window {
         // not the whole log. They select the rows the history logs in it, not rows
         // stamped after a clock reading: a replay's calls carry the capture's time,
         // and the decode clock may not have moved to it yet.
-        callHistory.beginSessionOn(sys.name, (!scan && sys.uid) ? sys.uid : "");
-        // Issue #903: who owns the verified talkgroups this session hears, bound to the session just begun: the
-        // saved system a saved-system start runs, or each scan target's own; Explore and Signal search own none.
-        callHistory.setSessionOwnersFromMap(callHistory.session, (!scan && row >= 0) ? (sys.uid || "") : "",
-                                            scan ? mainRoot.sessionTargetOwners() : ({}));
+        // Issue #903: with who owns the verified talkgroups it hears: the saved
+        // system a saved-system start runs, or each scan target's own;
+        // Explore and Signal search own none.
+        callHistory.beginSessionWithOwners(sys.name, (!scan && sys.uid) ? sys.uid : "",
+                                           (!scan && row >= 0) ? (sys.uid || "") : "",
+                                           scan ? mainRoot.sessionTargetOwners() : ({}));
         monitorView.historySession = callHistory.session;
         talkgroups.historySession = callHistory.session;
     }

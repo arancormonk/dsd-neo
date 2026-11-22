@@ -215,6 +215,14 @@ class CallHistoryModel : public QAbstractListModel, public HeardTalkgroupSource 
      */
     Q_INVOKABLE void beginSessionOn(const QString& label, const QString& uid);
 
+    /**
+     * @brief beginSessionOn() with the new session's owners (setSessionOwners(): @p singleOwnerUid, and
+     * @p scanEntryOwner mapping each scan target id to a saved system's uid), all under the one handoff of the
+     * background tap, so it never runs on the session without them (issue #903). Main.startWithMap()'s call.
+     */
+    Q_INVOKABLE void beginSessionWithOwners(const QString& label, const QString& uid, const QString& singleOwnerUid,
+                                            const QVariantMap& scanEntryOwner);
+
     /** @brief The session's system, label and uid together, the session itself kept (beginSessionOn()). */
     Q_INVOKABLE void setSessionSystem(const QString& label, const QString& uid);
 
@@ -357,10 +365,6 @@ class CallHistoryModel : public QAbstractListModel, public HeardTalkgroupSource 
      */
     bool settleSpill();
 
-    /** @brief setSessionOwners() for QML: @p scanEntryOwner maps each target id to a saved system's uid (a string). */
-    Q_INVOKABLE void setSessionOwnersFromMap(qlonglong session, const QString& singleOwnerUid,
-                                             const QVariantMap& scanEntryOwner);
-
     /**
      * @brief Whether the app came back from the background with the tap still running.
      *
@@ -388,8 +392,13 @@ class CallHistoryModel : public QAbstractListModel, public HeardTalkgroupSource 
      * rows are eligible is each row's own stamp (issue #671): a call heard under a
      * running scan, including one enabled through extra arguments, never is, and a
      * call heard while the operator held the tuner is filed as Exploring.
+     *
+     * Issue #903: without @p bindNewRings (the flush before a start, UiController::flushHistoryBeforeStart()), a ring
+     * no session owns yet stays unbound and its rows get no owner: after the host accepted a start, such a ring can only
+     * be the starting run's, which the coming session owns (setSessionOwners()). That holds for the handoff of a tap
+     * the read stops too.
      */
-    void refresh(const dsd_state* snapshot, const dsd_opts* opts_snapshot = nullptr);
+    void refresh(const dsd_state* snapshot, const dsd_opts* opts_snapshot = nullptr, bool bindNewRings = true);
 
     /**
      * @brief Empty the log, and keep the rows the session's ring still holds out of it.
@@ -920,6 +929,10 @@ class CallHistoryModel : public QAbstractListModel, public HeardTalkgroupSource 
          * the ring was read; empty when the reading is not the first to carry the fragment's proof or may not be
          * learnt. A spill line carries it (`ho`). */
         QString heardOwner;
+        /* Issue #903: not a row to ingest: a proof that arrived after a clear on a row the clear covers, which the
+         * clear keeps out of the log but which is still a talkgroup heard (noteClearedProof()). Its row holds only the
+         * proof and the fragment's span. A spill line of its own (clearedProofLine()). */
+        bool clearedProof = false;
     };
 
     using SeenMap = QHash<QString, SeenState>;
@@ -937,6 +950,7 @@ class CallHistoryModel : public QAbstractListModel, public HeardTalkgroupSource 
         QList<QString>* settledKeys = nullptr; // the keys of those entries, for the background tap to spill
         HeardOwners* heardOwners = nullptr;    // issue #903: the owners, and the rings bound to their sessions
         bool optsPublished = false;            // options were published: a row's owner can be established
+        bool bindNewRings = true;              // a ring no session owns yet is bound to this one (refresh())
     };
 
     /** @brief noteSeen() verdicts. */
@@ -966,6 +980,14 @@ class CallHistoryModel : public QAbstractListModel, public HeardTalkgroupSource 
     static SeenState seenReadOf(const Event_History* item);
     /** @brief Whether the seen entry @p key of ring @p ring already holds a proof (an earlier reading carried one). */
     static bool seenProven(const SeenMap& seen, const QString& key, quint64 ring);
+    /**
+     * @brief For a row of ring @p instance (@p slot, push stamp @p seq) a clear covers: when it now carries a learnable
+     * proof its seen entry, of this ring, lacked (the checked message came after the clear), record the proof in that
+     * entry and, when its owner resolves, append a FreshRow::clearedProof to @p fresh. A row the seen map does not know
+     * (its entry lost, or rebuilt without the cleared rows) gives nothing: fail closed.
+     */
+    static void noteClearedProof(const Event_History* item, int slot, qulonglong seq, quint64 instance,
+                                 const RingWalk& walk, qint64 session, QList<FreshRow>& fresh);
     /** @brief The owner a fresh reading @p item of ring session @p session is handed to, or empty (FreshRow). */
     static QString freshHeardOwner(const RingWalk& walk, qint64 session, const Event_History* item, bool provenBefore);
 
@@ -978,7 +1000,7 @@ class CallHistoryModel : public QAbstractListModel, public HeardTalkgroupSource 
 
     /** @brief Scan the flagged slots' rings for rows not seen before, or seen but advanced. */
     QList<FreshRow> collectFresh(const dsd_state* snapshot, const bool scan[2], const QString& systemUid,
-                                 bool optsPublished, bool* seenSettled);
+                                 const RingWalk& heard, bool* seenSettled);
 
     /**
      * @brief Absorb @p row into a same-target row among the newest @p scanRows when the two
@@ -1083,6 +1105,9 @@ class CallHistoryModel : public QAbstractListModel, public HeardTalkgroupSource 
      * took reaches the seen store. A build that predates it skips the line (no row).
      */
     static QByteArray settledSeenLine(const QString& key, const SeenState& seen);
+    /** @brief One spill line for a FreshRow::clearedProof: its key, seen entry (with the proof), owner (`ho`) and time
+     * (`when`), and `cleared`; no row. */
+    static QByteArray clearedProofLine(const FreshRow& fresh);
     /** @brief Bound @p seen once it is well past what the ring could resurrect. */
     static void pruneSeenMap(SeenMap& seen);
 
@@ -1101,16 +1126,18 @@ class CallHistoryModel : public QAbstractListModel, public HeardTalkgroupSource 
     void onApplicationStateChanged(Qt::ApplicationState state);
     /** @brief Start the background tap on what the model knows now (the app is leaving the screen). */
     void startBackgroundCapture();
-    /** @brief Stop the background tap, take the clear it settled and the ring position it read, and fold in its spill. */
-    void handOffBackgroundCapture();
+    /** @brief Stop the background tap, take the clear it settled and the ring position it read, and fold in its spill.
+     * Without @p bindNewRings its last poll binds no ring no session owns yet (refresh()). */
+    void handOffBackgroundCapture(bool bindNewRings = true);
     /** @brief Hand off the running tap before the session it attributes rows to changes; @return whether it should
-     * start again on the new one (the app still away), for resumeBackgroundCapture(). */
-    bool handOffBackgroundCaptureForSession();
+     * start again on the new one (the app still away), for resumeBackgroundCapture(). @p beginning: a new session
+     * begins, so the tap's last poll binds no new ring to the one ending. */
+    bool handOffBackgroundCaptureForSession(bool beginning = false);
     /** @brief Start the tap again on the changed session when handOffBackgroundCaptureForSession() said so. */
     void resumeBackgroundCapture(bool resume);
     /** @brief Stop the running background tap and take the clear it settled and the ring position it read; @return the
      * lines it could not write to the spill. */
-    QByteArray stopBackgroundCapture();
+    QByteArray stopBackgroundCapture(bool bindNewRings = true);
     /** @brief Take the ring position the tap read last as this model's last read, if the tap read any. */
     void takeTapReadPosition(bool read, const qulonglong pushSeq[2], quint64 ring);
     /** @brief Take the session ordinals @p ordinals gave rings this model has none for (the tap's, a spill line's). */
@@ -1139,6 +1166,9 @@ class CallHistoryModel : public QAbstractListModel, public HeardTalkgroupSource 
     /** @brief For a settled spill @p line (settledSeenLine()), give the seen entry @p key the site text digest it
      * carries, if the entry has none; any other line is passed over. */
     void foldSettledSeen(const QString& key, const QJsonObject& line, bool* folded);
+    /** @brief For a clearedProofLine() @p line: when the seen entry @p key still has no proof, give it the line's and
+     * hand the talkgroup to the sink (issue #903); once, so a refold adds nothing. */
+    void foldClearedProof(const QString& key, const QJsonObject& line, bool* folded);
     /** @brief Whether the clear mark (@p cleared: it applies) covers the spilled @p row its tap found as @p seen. */
     bool spilledRowCleared(bool cleared, const Row& row, const SeenState& seen) const;
     /** @brief pruneSeen() within a fold, and forget the twins taken that only the entries it dropped recorded. */
@@ -1159,9 +1189,10 @@ class CallHistoryModel : public QAbstractListModel, public HeardTalkgroupSource 
 
     /** @brief Arm m_dayTimer for the next local midnight. */
     void scheduleDayRollover();
-    /** @brief Move the session's label and uid to @p label and @p uid, and begin a new session when @p begin, under one
-     * handoff of the background tap. */
-    void changeSession(const QString& label, const QString& uid, bool begin);
+    /** @brief Move the session's label and uid to @p label and @p uid, and begin a new session when @p begin, with
+     * @p owners as its owners when given (issue #903), under one handoff of the background tap. */
+    void changeSession(const QString& label, const QString& uid, bool begin,
+                       const HeardSessionOwners* owners = nullptr);
     /** @brief beginSession()'s step: the next session number, and the clear and read position a start keeps. */
     void advanceSession();
     /** @brief Whether the clear mark covers rows of the ring being read (settleClear() has bound or dropped it). */

@@ -8067,9 +8067,8 @@ test_heard_scan_targets_own_their_calls(void) {
     RecordingHeardSink sink;
     CallHistoryModel model;
     model.setHeardSink(&sink);
-    model.beginSessionOn(QStringLiteral("County scan"), QString());
-    model.setSessionOwnersFromMap(model.session(), QString(),
-                                  QVariantMap{{QStringLiteral("entry-a"), QStringLiteral("sys-a")}});
+    model.beginSessionWithOwners(QStringLiteral("County scan"), QString(), QString(),
+                                 QVariantMap{{QStringLiteral("entry-a"), QStringLiteral("sys-a")}});
     const time_t when = 1754604000;
     prove(ring.commit(0, 7401, 901, when, when + 4, "", "", "entry-a"), 7401)->scan_member = 1U;
     prove(ring.commit(0, 7402, 902, when + 30, when + 34, "", "", "entry-shared"), 7402)->scan_member = 1U;
@@ -8078,6 +8077,64 @@ test_heard_scan_targets_own_their_calls(void) {
     model.refresh(ring.state, opts.get());
     expect("scan owner: only the named target's call is handed on, to its system",
            model.count() == 4 && sink.seen.size() == 1 && sink.has("sys-a", 7401, when + 4));
+}
+
+/* Issue #903 (review, Important 1): Main's flush before a start runs after the host accepted it, so the latest snapshot
+ * can already be the starting run's ring. That flush leaves a ring no session owns unbound: the new session owns it,
+ * and its calls go to the new saved system, not the old one. The old run's ring stays the old session's. */
+void
+test_heard_new_ring_at_the_pre_start_flush(void) {
+    resetStorage();
+    RingFixture ringA;
+    RingFixture ringB;
+    auto opts = std::make_unique<dsd_opts>();
+    RecordingHeardSink sink;
+    CallHistoryModel model;
+    model.setHeardSink(&sink);
+    model.beginSessionWithOwners(QStringLiteral("System A"), QStringLiteral("sys-a"), QStringLiteral("sys-a"), {});
+    const time_t when = 1754606000;
+    prove(ringA.commit(0, 7601, 1101, when, when + 4), 7601);
+    model.refresh(ringA.state, opts.get());
+    // The host accepted B's start and published B's ring before Main's flush read it.
+    model.refresh(ringB.state, opts.get(), false);
+    model.beginSessionWithOwners(QStringLiteral("System B"), QStringLiteral("sys-b"), QStringLiteral("sys-b"), {});
+    prove(ringB.commit(0, 7602, 1102, when + 30, when + 34), 7602);
+    model.refresh(ringB.state, opts.get());
+    expect("pre-start flush: the starting run's ring is the new session's",
+           sink.seen.size() == 2 && sink.has("sys-b", 7602, when + 34));
+    prove(ringA.commit(0, 7603, 1103, when + 60, when + 64), 7603);
+    model.refresh(ringA.state, opts.get());
+    expect("pre-start flush: the old run's late call is still the old session's",
+           sink.seen.size() == 3 && sink.has("sys-a", 7603, when + 64));
+}
+
+/* Issue #903 (review, Minor 4): History's Clear hides rows; it does not un-hear a talkgroup. A row the clear covers
+ * whose proof arrives after the clear is learnt, once, and stays out of the log. A cleared row the seen map does not
+ * know gives nothing. */
+void
+test_heard_late_proof_on_a_cleared_row(void) {
+    resetStorage();
+    RingFixture ring;
+    auto opts = std::make_unique<dsd_opts>();
+    RecordingHeardSink sink;
+    CallHistoryModel model;
+    model.setHeardSink(&sink);
+    model.beginSessionWithOwners(QStringLiteral("System A"), QStringLiteral("sys-a"), QStringLiteral("sys-a"), {});
+    const time_t when = 1754607000;
+    Event_History* item = ring.commit(0, 7701, 1201, when, when + 4);
+    item->live_input = 1U;
+    model.refresh(ring.state, opts.get());
+    model.clearAll();
+    expect("cleared proof: the clear empties the log", model.count() == 0);
+    prove(item, 7701);
+    ring.touchCommitted(0);
+    model.refresh(ring.state, opts.get());
+    expect("cleared proof: the late proof is learnt", sink.seen.size() == 1 && sink.has("sys-a", 7701, when + 4));
+    expect("cleared proof: the row stays cleared", model.count() == 0);
+    item->event_time = when + 8;
+    ring.touchCommitted(0);
+    model.refresh(ring.state, opts.get());
+    expect("cleared proof: once", sink.seen.size() == 1);
 }
 
 /* Issue #903: the proof and the live latch are saved with the row and its parts, and read back; a row an older build
@@ -8324,6 +8381,8 @@ main(int argc, char** argv) {
     test_heard_owner_follows_the_ring();
     test_heard_scan_targets_own_their_calls();
     test_heard_fields_round_trip();
+    test_heard_new_ring_at_the_pre_start_flush();
+    test_heard_late_proof_on_a_cleared_row();
 
     QDir(dataDir).removeRecursively();
     if (g_failures != 0) {
