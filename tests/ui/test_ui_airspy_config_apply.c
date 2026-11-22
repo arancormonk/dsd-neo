@@ -537,12 +537,13 @@ test_config_failure_keeps_the_analog_default(void) {
             || (!keys
                 && (opts->squelch_default_base_mode != DSD_SQUELCH_MODE_LEVEL
                     || opts->squelch_default_base_level > 0.0))) {
-            fprintf(stderr,
-                    "failed %s config %s squelch keys: default state %d, fields mode %d level %g, base mode %d level "
-                    "%g; want state %d, mode %d over an Off\n",
-                    reopen ? "reopen" : "in-place", keys ? "with" : "without", opts->squelch_default_state,
-                    opts->rtl_squelch_mode, opts->rtl_squelch_level, opts->squelch_default_base_mode,
-                    opts->squelch_default_base_level, want_state, want_mode);
+            DSD_FPRINTF(
+                stderr,
+                "failed %s config %s squelch keys: default state %d, fields mode %d level %g, base mode %d level "
+                "%g; want state %d, mode %d over an Off\n",
+                reopen ? "reopen" : "in-place", keys ? "with" : "without", opts->squelch_default_state,
+                opts->rtl_squelch_mode, opts->rtl_squelch_level, opts->squelch_default_base_mode,
+                opts->squelch_default_base_level, want_state, want_mode);
             assert(0);
         }
         /* A switch to a digital decode then runs the session's own Off, never the default's noise. */

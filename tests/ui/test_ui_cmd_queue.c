@@ -12288,7 +12288,7 @@ test_squelch_setting_request_answered(void) {
     rc |= expect_int("untagged drained", dsd_app_drain_cmds(opts, state), 1);
     rc |= expect_int("an untagged request leaves the answer", (int)opts->rtl_squelch_request_answered, 9);
     dsd_rtl_stream_metrics_hooks_set(NULL);
-    dsd_state_ext_free_all(state);
+    freeState(state);
     free(state);
     free(opts);
     return rc;
