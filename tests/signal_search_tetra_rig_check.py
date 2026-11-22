@@ -333,7 +333,11 @@ def main():
         work = args.keep if args.keep else Path(scratch)
         work.mkdir(parents=True, exist_ok=True)
         for name, specs in runs:
-            record = run(args, name, specs, work)
+            try:
+                record = run(args, name, specs, work)
+            except ValueError as refused:
+                print(f"error: {refused}", file=sys.stderr)
+                return 2
             report(record)
             failed = check(record)
             if args.keep:

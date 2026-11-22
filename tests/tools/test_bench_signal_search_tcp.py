@@ -6,6 +6,7 @@
   or held), not the tuning status the engine publishes with the hit when it queues the tune, nor an ended visit.
 - A rig folder is made absolute before the child is told its paths, since the child runs inside it: a relative --out
   once sent it looking for results/results/stop.
+- A folder that already holds a rig journal is refused: the rig would reopen it and count the earlier run's rows.
 
 These run in seconds and never start a decoder or serve a scene.
 """
@@ -136,6 +137,30 @@ class Folder(unittest.TestCase):
         self.assertEqual(Path(seen["cwd"]), work)
         self.assertEqual(seen["env"]["DSD_SEARCH_RIG_STORE"], str(work / "history.jsonl"))
         self.assertEqual(seen["env"]["DSD_SEARCH_RIG_STOP"], str(work / "stop"))
+
+    def test_an_earlier_journal_is_refused(self):
+        for name in (bench.RIG_JOURNAL, bench.RIG_JOURNAL + ".v2"):
+            folder = self.root / f"run-{len(name)}"
+            folder.mkdir()
+            (folder / name).write_bytes(b"")
+            with self.assertRaises(ValueError) as refused:
+                bench.prepare_rig_folder(folder)
+            self.assertIn(name, str(refused.exception))
+
+    def test_other_files_are_kept(self):
+        folder = self.root / "kept"
+        folder.mkdir()
+        (folder / "result.json").write_text("{}", encoding="utf-8")
+        self.assertEqual(bench.prepare_rig_folder(folder), folder)
+
+    def test_rig_main_refuses_an_earlier_journal(self):
+        folder = self.root / "out"
+        folder.mkdir()
+        (folder / bench.RIG_JOURNAL).write_bytes(b"")
+        args = unittest.mock.Mock(out=Path("out"))
+        with unittest.mock.patch.object(bench, "run_rig") as run_rig, unittest.mock.patch("sys.stderr"):
+            self.assertEqual(bench.rig_main(args), 2)
+        run_rig.assert_not_called()
 
 
 if __name__ == "__main__":

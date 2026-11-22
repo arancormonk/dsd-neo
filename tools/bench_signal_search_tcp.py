@@ -200,6 +200,8 @@ def children_cpu_s():
 # listening and held. Tuning (2) is published with the hit when the tune is queued, before the receiver hears the
 # channel, so it is no landing.
 LANDED_PHASES = (3, 4, 5)
+# The history journal's name in a rig folder; the store keeps files beside it under names that start with it.
+RIG_JOURNAL = "history.jsonl"
 
 
 def landed_hit(message):
@@ -212,9 +214,13 @@ def landed_hit(message):
 
 def prepare_rig_folder(work):
     """@p work as an absolute folder, made if missing, for one rig run. The child runs inside it, so every path it is
-    given must be absolute."""
+    given must be absolute. Refuses (ValueError) a folder that already holds a rig journal: the rig would reopen it and
+    report the earlier run's detections as this run's."""
     work = Path(work).resolve()
     work.mkdir(parents=True, exist_ok=True)
+    earlier = sorted(p.name for p in work.iterdir() if p.name.startswith(RIG_JOURNAL))
+    if earlier:
+        raise ValueError(f"{work} already holds a rig journal ({', '.join(earlier)}): give each run a new folder")
     return work
 
 
@@ -266,7 +272,7 @@ def run_rig(rig, transmitters, ranges, dsp_khz, work, seconds, done=None, passes
         tx.at_rate(rate)
     env = {k: v for k, v in os.environ.items() if not k.startswith("DSD_NEO_")}
     env.update(
-        DSD_SEARCH_RIG_STORE=str(work / "history.jsonl"),
+        DSD_SEARCH_RIG_STORE=str(work / RIG_JOURNAL),
         DSD_SEARCH_RIG_RANGES=";".join(",".join(str(v) for v in r) for r in ranges),
         DSD_SEARCH_RIG_PASSES=str(passes),
         DSD_SEARCH_RIG_SECONDS=str(int(seconds) + 10),
@@ -366,7 +372,11 @@ def scene_setup(name):
 
 
 def rig_main(args):
-    out = prepare_rig_folder(args.out)
+    try:
+        out = prepare_rig_folder(args.out)
+    except ValueError as refused:
+        print(f"error: {refused}", file=sys.stderr)
+        return 2
     transmitters, ranges, _ = scene_setup(args.scene)
     passes = args.passes + 1 if not transmitters else 1000
 
