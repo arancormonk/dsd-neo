@@ -300,6 +300,12 @@ Item {
                 reason: "The trunking switch reads its title as its name and the rule under it as its description."},
             {file: "ScanListScreen.qml", name: "skipSilentHelp", readBy: function (text) { return findNear(text, "scanSkipSilent"); },
                 reason: "The Skip silent channels checkbox reads the help under it as its description."},
+            {file: "EncTag.qml", name: "tag", when: idleStripTag,
+                reason: "A tag on the idle second-slot strip, shown only by the every-branch pass: the strip draws its tags only with a call, when its node names each flag the call has from the call's state (issue #901 r5 H1, r6 J3)."},
+            {file: "EmergencyTag.qml", name: "tag", when: idleStripTag,
+                reason: "A tag on the idle second-slot strip, shown only by the every-branch pass: the strip draws its tags only with a call, when its node names each flag the call has from the call's state (issue #901 r5 H1, r6 J3)."},
+            {file: "PrivateTag.qml", name: "tag", when: idleStripTag,
+                reason: "A tag on the idle second-slot strip, shown only by the every-branch pass: the strip draws its tags only with a call, when its node names each flag the call has from the call's state (issue #901 r5 H1, r6 J3)."},
             {file: "EncTag.qml", name: "tag", when: function (text) {
                     // The call row the tag is in, however deep (its text sits inside the row's node).
                     var row = text.parent;
@@ -356,6 +362,18 @@ Item {
                     return found;
             }
             return null;
+        }
+        // Whether @p text is a tag's word on the second-slot strip while the strip is idle (MonitorScreen's
+        // stripIdle), where only the every-branch pass shows a tag.
+        function idleStripTag(text) {
+            var node = text.parent ? text.parent.parent : null;
+            if (node === null || node.objectName !== "otherSlotNode")
+                return false;
+            for (var at = node; at; at = at.parent) {
+                if (at.stripIdle !== undefined)
+                    return at.stripIdle === true;
+            }
+            return false;
         }
         // The field after a caption in its column: a PlexTextField's input or a FrequencyField's.
         function fieldBelow(text) {
