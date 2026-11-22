@@ -13515,8 +13515,8 @@ Private per-protocol modules worth knowing about:
     without changing the tick (`dmr_sm_tuned_retention()`): live voice on an admitted slot (0.2 s stale) whatever the
     hangtime, the hangtime tail (a tail no admitted slot is in holds nothing), acquisition before the first voice (the
     grant timeout; a carrier a channel status selected, Cap+ or XPT, keeps `DMR_CAPPLUS_SEED_WINDOW_S`; activity from
-    before the follow, such as companion voice heard before a media change re-followed the slot, holds while it is
-    live but never ends that acquisition: only the slots' activity since `t_tune_m` moves `t_voice_m`), and a receive
+    before the follow, such as companion voice heard on a carrier adopted in place, holds while it is live but never
+    ends that acquisition: only the slots' activity since `t_tune_m` moves `t_voice_m`), and a receive
     check still pending on a carrier no slot of which the policy admits yet (not once its verified code is rejected).
     Before the first voice the held slots are the grant's slot; for a slotless status follow (Cap+), each slot the
     status selected (`dmr_sm_note_status_follow()`) or seeded (`dmr_sm_capplus_seed_arm()`), tracked apart from identity
@@ -13547,17 +13547,14 @@ Private per-protocol modules worth knowing about:
     grant's: a RAS-accepted reassignment under `-F` reads unverified, a verified one verified); a repeat of the call the
     slot names, or of the grant followed there, keeps record and follow time. A grant that changes the media of the
     followed slot's assignment (a data grant for a slot followed for voice, a voice grant for one followed for data,
-    `dmr_sm_grant_changes_followed_media()`) is no reassignment in place: the follow it replaces is released (the slot's
-    record and voice timers) and the grant followed as any grant is, on the carrier the receiver is on, without a tune
-    (`dmr_sm_refollow_slot()`, `dmr_sm_adopt_grant()`, which `dmr_sm_follow_grant()` runs after its tune): its own tune
-    time and acquisition window, channel and CRC provenance, publication latch and record, and a fresh choice of the
-    call it names. The voice sync publishes the followed grant's identity only into a call that names nothing yet
-    (`dmr_sm_grant_publishable()` for the voice's slot, checked again at the sync): a call a voice LC named since the
-    grant (its header comes before the first voice sync) keeps its caller, and the grant is spent, never renaming or
-    splitting that call. The named call the slot carried when a media change re-followed it
-    (`vc_replaced_transmission`) is the replaced assignment's, not one named since: active or ended, it never spends the
-    grant, whose caller the voice sync publishes. A status's in-place entry (origin STATUS) replaces only a seed or
-    grant identity, never a checked LC's on that carrier.
+    `dmr_sm_grant_changes_followed_media()`) ends the follow as a release does (`do_release()`, `grant-media-change`,
+    REFUSED): the receiver returns to the control channel, the calls there end, and the grant repeated on the control
+    channel is followed through the normal path (`dmr_sm_follow_grant()`), with its own tune, acquisition window,
+    channel, CRC provenance, record and call (a new transmission, whatever its parties). The voice sync publishes the
+    followed grant's identity only into a call that names nothing yet (`dmr_sm_grant_publishable()` for the voice's
+    slot, checked again at the sync): a call a voice LC named since the grant (its header comes before the first voice
+    sync) keeps its caller, and the grant is spent, never renaming or splitting that call. A status's in-place entry
+    (origin STATUS) replaces only a seed or grant identity, never a checked LC's on that carrier.
   - Slot identities (`dmr_sm_slot_ctx_t`: target, source, kind, provenance SEED/GRANT/LC, policy class, channel,
     carrier, follow time, and `crc_flags`, the DSD_CRC_* bits of what named it: the grant's or status's burst, a Cap+
     status's every fragment, a seed's, the LC's scope) come from the followed grant (a slotless grant's at its first

@@ -63,7 +63,9 @@ typedef enum {
 typedef enum {
     DMR_SM_GRANT_FOLLOWED = 0, // the receiver was tuned to it
     DMR_SM_GRANT_IN_PLACE = 1, // already on its carrier: nothing to tune
-    DMR_SM_GRANT_REFUSED = 2,  // policy, receive admission, channel map or trust refused it
+    /* Policy, receive admission, channel map or trust refused it; or it changed the followed slot's media, which ends
+       the follow as a release does (its repeat is followed from the control channel). */
+    DMR_SM_GRANT_REFUSED = 2,
     DMR_SM_GRANT_BUSY = 3,     // the receiver holds a call the grant may neither hold over nor preempt
     DMR_SM_GRANT_DEFERRED = 4, // the tune was not accepted: nothing changed
 } dmr_sm_grant_result_e;
@@ -178,11 +180,6 @@ typedef struct {
     int vc_slot;
     int vc_is_group;
     int vc_identity_published;
-    /* The named call the followed slot carried when a media change re-followed it (dmr_sm_refollow_slot(): that slot's
-       dsd_call_snapshot_transmission(), 0 for none and for every other follow). It is the assignment the grant
-       replaced, so it never spends the grant's publication: only a call named since does
-       (dmr_sm_grant_publishable()). */
-    uint64_t vc_replaced_transmission;
     int vc_status_follow; // a Capacity Plus status followed it: its release goes to the latest announced rest channel
     /* Bit s: the status that followed this carrier selected or seeded slot s. Before the first voice those slots hold
        the carrier whatever their identity is now (a private LSN, or a seed a later status made unknown, holds it as a
@@ -468,7 +465,8 @@ dmr_sm_displace_e dmr_sm_may_displace(const dmr_sm_busy_view_t* view, const dsd_
  *
  * A candidate on another carrier while the receiver is held (or @ref dmr_sm_event_t::caller_busy) is followed only by
  * Hold over a non-held call or by preemption; a decision-less event never is. One on the carrier already followed
- * (IN_PLACE) names the call of its slot.
+ * (IN_PLACE) names the call of its slot, unless it changes the followed slot's media (data for a voice follow, or the
+ * reverse): that ends the follow as a release does (REFUSED), and its repeat on the control channel is followed anew.
  */
 dmr_sm_grant_result_e dmr_sm_submit_grant(dsd_opts* opts, dsd_state* state, const dmr_sm_event_t* ev);
 
