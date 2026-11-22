@@ -269,12 +269,12 @@ test_second_group_scrambler_bridge_unmutes_with_key(void) {
     state.synctype = DSD_SYNC_DPMR_FS3_POS;
     state.R = 0x12345ULL;
     state.nxdn_payload_mi = 0x8888ULL;
-    state.dPMRVoiceFS2Frame.FrameNumbering[0] = 1;
+    state.dPMRVoiceFS2Frame.FrameNumbering[0] = 0;
     /* A verified data half plays nothing (a failed one's mode is not trusted, issue #903). */
     state.dPMRVoiceFS2Frame.CommunicationMode[0] = 2;
     state.dPMRVoiceFS2Frame.Version[0] = 3;
     state.dPMRVoiceFS2Frame.CCHDataCrcOk[0] = 1;
-    state.dPMRVoiceFS2Frame.FrameNumbering[1] = 0;
+    state.dPMRVoiceFS2Frame.FrameNumbering[1] = 1;
     state.dPMRVoiceFS2Frame.CommunicationMode[1] = 5;
     state.dPMRVoiceFS2Frame.Version[1] = 3;
     state.dPMRVoiceFS2Frame.CCHDataCrcOk[1] = 1;
@@ -505,6 +505,20 @@ test_failed_cch_frame_number_does_not_reset_the_scrambler(void) {
     set_half(state, 1, 1U, 1U, 0U, 3U, 0U);
     rc |= expect_int("verified frame 1 plays", play_frame(fx.opts, state, 0xDEF0ULL), 8);
     rc |= expect_u64("verified frame 1 reloads", g_mbe_mi[0], 0ULL);
+
+    /* Halves that both pass but name different pairs (FN 0 with FN 3) place nothing: no reload, and no prediction
+       for the next frame. */
+    set_half(state, 0, 1U, 0U, 0U, 3U, 0U);
+    set_half(state, 1, 1U, 3U, 0U, 3U, 0U);
+    rc |= expect_int("disagreeing halves play", play_frame(fx.opts, state, 0xEF01ULL), 8);
+    rc |= expect_u64("disagreeing halves keep the register", g_mbe_mi[0], 0xEF01ULL);
+    rc |= expect_int("disagreeing halves drop the prediction", state->dpmr_expected_pair, 0);
+
+    /* A passing second half reading FN 0 cannot be frame 2, so it never reloads the second half. */
+    set_half(state, 0, 0U, 1U, 0U, 3U, 0U);
+    set_half(state, 1, 1U, 0U, 0U, 3U, 0U);
+    rc |= expect_int("misplaced second half plays", play_frame(fx.opts, state, 0xF012ULL), 8);
+    rc |= expect_u64("misplaced second half keeps the register", g_mbe_mi[4], 0xF012ULL);
     release_fixture(&fx);
     return rc;
 }

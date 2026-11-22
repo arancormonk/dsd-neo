@@ -378,11 +378,13 @@ dpmr_half_voice_mode(const dPMRVoiceFS2Frame_t* f, int o) {
 
 /* The frame number half @p o holds by a CCH CRC-7 that passed (issue #903): its own, else the one its pair partner's
  * implies, since frames 1 and 2, and 3 and 4, share one FS2 (TS 102 658 Figure 5.4); -1 for none. A failed half's own
- * number is not trusted. */
+ * number is not trusted, and neither is a passing one its position cannot carry: the first half is frame 1 or 3 (FN 0
+ * or 2), the second frame 2 or 4 (FN 1 or 3). */
 static int
 dpmr_half_checked_frame_number(const dPMRVoiceFS2Frame_t* f, int o) {
     if (f->CCHDataCrcOk[o] != 0U) {
-        return (int)f->FrameNumbering[o];
+        const int own = (int)f->FrameNumbering[o];
+        return (own >= 0 && own <= 3 && (own & 1) == o) ? own : -1;
     }
     const int other = 1 - o;
     if (f->CCHDataCrcOk[other] == 0U) {
@@ -397,18 +399,17 @@ dpmr_half_checked_frame_number(const dPMRVoiceFS2Frame_t* f, int o) {
 }
 
 /* Which pair of the superframe this frame's checked halves place it in: 0 for frames 1/2 (FN 0/1), 1 for frames 3/4
- * (FN 2/3), -1 when neither half's checked frame number says. */
+ * (FN 2/3), -1 when neither half's checked frame number says, or when the two name different pairs. */
 static int
 dpmr_frame_checked_pair(const dPMRVoiceFS2Frame_t* f) {
     const int first = dpmr_half_checked_frame_number(f, 0);
-    if (first == 0 || first == 2) {
-        return first / 2;
-    }
     const int second = dpmr_half_checked_frame_number(f, 1);
-    if (second == 1 || second == 3) {
-        return second / 2;
+    const int first_pair = first >= 0 ? first / 2 : -1;
+    const int second_pair = second >= 0 ? second / 2 : -1;
+    if (first_pair >= 0 && second_pair >= 0 && first_pair != second_pair) {
+        return -1;
     }
-    return -1;
+    return first_pair >= 0 ? first_pair : second_pair;
 }
 
 /* Where the scrambler reloads from the key (FN 0, frame 1), per half (issue #903): at a checked frame number 0, or, in
@@ -437,7 +438,8 @@ dpmr_resolve_scrambler_reload(dsd_state* state) {
     state->dpmr_expected_pair = next;
     for (int o = 0; o < NB_OF_DPMR_VOICE_FRAME_TO_DECODE; o++) {
         const int predicted_first = o == 0 && none_checked && pair == 0;
-        f->ScramblerReload[o] = (dpmr_half_checked_frame_number(f, o) == 0 || predicted_first) ? 1U : 0U;
+        const int own_zero = pair == 0 && dpmr_half_checked_frame_number(f, o) == 0;
+        f->ScramblerReload[o] = (own_zero || predicted_first) ? 1U : 0U;
     }
 }
 
