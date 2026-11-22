@@ -676,11 +676,13 @@ mixedAnalogRotation() {
 // squelch it should on air. With an Advanced session level (--squelch -1) the starter gives no default, so plain rows
 // inherit the level, but the P25 row with a saved dynamic squelch runs off, as it ran on its own; with no Advanced
 // squelch plain analog rows run the app's default (noise as auto on AM) and plain digital rows the session's off.
+namespace {
 struct RowSquelch {
     int mode;
     int margin;
     int db; // the LEVEL's whole dB; 0 is off
 };
+} // namespace
 
 static bool
 squelchIs(const dsd_opts* opts, const RowSquelch& want) {

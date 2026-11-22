@@ -1165,7 +1165,7 @@ test_stream_restart_gate(void) {
         runner_run(&r, &s, (double)key_ms / 1000.0);
         source_fm(&s, 20.0, 0.0, 1000.0, 2500.0);
         runner_run(&r, &s, 0.3);
-        assert(r.first_open[0] >= key_ms * (rate / 1000) && r.first_open[0] <= 2 * window_len(rate));
+        assert(r.first_open[0] >= (int64_t)key_ms * (rate / 1000) && r.first_open[0] <= 2 * (int64_t)window_len(rate));
         assert(r.opens[0] == r.samples - r.mark - (uint64_t)r.first_open[0]);
         const double ms = (double)r.first_open[0] * 1000.0 / (double)rate;
         worst_ms = ms > worst_ms ? ms : worst_ms;

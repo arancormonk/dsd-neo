@@ -9,6 +9,7 @@
 #include <dsd-neo/core/key_set.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/opts_fwd.h>
+#include <dsd-neo/core/power.h>
 #include <dsd-neo/core/safe_api.h>
 #include <dsd-neo/core/scan_profile.h>
 #include <dsd-neo/core/source_alias.h>

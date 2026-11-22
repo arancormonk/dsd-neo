@@ -31,6 +31,7 @@
 #include <QVariantList>
 #include <QVariantMap>
 #include <Qt>
+#include <QtGlobal>
 #include <cmath>
 #include <cstdio>
 #include <dsd-neo/app_control/commands.h>
@@ -45,6 +46,7 @@
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/state_fwd.h>
 #include <dsd-neo/core/wav_recording.h>
+#include <dsd-neo/runtime/analog_channel.h>
 #include <dsd-neo/runtime/bootstrap.h>
 #include <dsd-neo/runtime/cli.h>
 #include <dsd-neo/runtime/config.h>

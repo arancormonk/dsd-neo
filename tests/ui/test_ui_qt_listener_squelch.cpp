@@ -38,6 +38,7 @@
  */
 
 #include <QByteArray>
+#include <QChar>
 #include <QCoreApplication>
 #include <QDir>
 #include <QFile>
@@ -45,6 +46,7 @@
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QList>
+#include <QMap>
 #include <QStandardPaths>
 #include <QString>
 #include <QStringList>
@@ -52,24 +54,28 @@
 #include <QVariant>
 #include <QVariantList>
 #include <QVariantMap>
+#include <Qt>
+#include <QtGlobal>
 #include <cmath>
 #include <cstdio>
-#include <cstring>
 #include <dsd-neo/app_control/frontend_runtime.h>
 #include <dsd-neo/core/init.h>
 #include <dsd-neo/core/opts.h>
+#include <dsd-neo/core/opts_fwd.h>
+#include <dsd-neo/core/power.h>
 #include <dsd-neo/core/safe_api.h>
 #include <dsd-neo/core/state.h>
+#include <dsd-neo/core/state_fwd.h>
 #include <dsd-neo/engine/engine.h>
 #include <dsd-neo/runtime/bootstrap.h>
 #include <dsd-neo/runtime/config.h>
 #include <dsd-neo/runtime/input_spec.h>
 #include <dsd-neo/runtime/scan_mode.h>
 #include <dsd-neo/runtime/scan_options.h>
-#include <dsd-neo/runtime/squelch.h>
 #include <dsd-neo/runtime/udp_audio_hooks.h>
 #include <memory>
 #include <stdint.h>
+#include <utility>
 #include "../test_support/qt_test_paths.h"
 #include "app_prefs.h"
 #include "command_bridge.h"
@@ -77,11 +83,11 @@
 #include "scan_list_starter.h"
 #include "scan_lists_model.h"
 #include "session_args.h"
-#include "squelch_default_policy.h"
 
 #ifdef USE_RADIO
 #include <dsd-neo/engine/scan_voice_gate.h>
 #include <dsd-neo/io/rtl_stream_c.h>
+#include <dsd-neo/io/rtl_stream_fwd.h>
 #include <dsd-neo/runtime/rtl_stream_io_hooks.h>
 #include <dsd-neo/runtime/rtl_stream_metrics_hooks.h>
 #endif

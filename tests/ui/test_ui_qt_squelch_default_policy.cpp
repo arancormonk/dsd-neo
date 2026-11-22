@@ -11,11 +11,12 @@
  */
 
 #include <QCoreApplication>
-#include <QMetaObject>
+#include <QMetaType>
 #include <QObject>
 #include <QString>
 #include <cstdio>
 #include <dsd-neo/core/safe_api.h>
+#include <initializer_list>
 
 #include "squelch_default_policy.h"
 

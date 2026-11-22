@@ -10,6 +10,7 @@
  * without touching CLI or environment precedence.
  */
 
+#include <cmath>
 #include <dsd-neo/core/analog_tone.h>
 #include <dsd-neo/core/frontend_types.h>
 #include <dsd-neo/core/opts.h>
@@ -31,7 +32,6 @@
 #include <dsd-neo/runtime/scan_options.h>
 #include <dsd-neo/runtime/squelch.h>
 #include <errno.h>
-#include <math.h>
 #include <memory>
 #include <stdint.h>
 #include <stdio.h>

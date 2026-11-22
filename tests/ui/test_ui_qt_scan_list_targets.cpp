@@ -1,9 +1,11 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include <QByteArray>
+#include <QChar>
 #include <QCoreApplication>
 #include <QJsonArray>
 #include <QJsonObject>
 #include <QJsonValue>
+#include <QLatin1String>
 #include <QList>
 #include <QMap>
 #include <QPair>
@@ -12,6 +14,7 @@
 #include <QVariant>
 #include <QVariantList>
 #include <QVariantMap>
+#include <Qt>
 #include <QtGlobal>
 #include <cstdio>
 #include <dsd-neo/runtime/analog_channel.h>
