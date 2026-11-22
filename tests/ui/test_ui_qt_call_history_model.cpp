@@ -595,10 +595,10 @@ test_type_d_prefixes_do_not_merge(void) {
     expect("type-d same prefix folds", model.count() == 2);
 }
 
-/* Issue #903: a confirmed DCR call names no party and has no channel name, but its protocol checked it as traffic
- * (confirmed_anonymous): history keeps it, where a bare sync's identity-less row is dropped. */
+/* Issue #903: a confirmed DCR call names no party; its call publishes the text identity "JPN DCR" with no number, so
+ * history keeps the row under that name (never "Call to 0"), where a bare sync's identity-less row is dropped. */
 void
-test_confirmed_anonymous_row_is_logged(void) {
+test_dcr_row_is_logged_by_name(void) {
     resetStorage();
     RingFixture ring;
     CallHistoryModel model;
@@ -606,11 +606,12 @@ test_confirmed_anonymous_row_is_logged(void) {
     ring.commit(0, 0, 0, when, when + 3)->systype = DSD_SYNC_NXDN_POS;
     model.refresh(ring.state);
     expect("identity-less nxdn row dropped", model.count() == 0);
-    Event_History* dcr = ring.commit(0, 0, 0, when + 100, when + 103);
-    dcr->systype = DSD_SYNC_NXDN_POS;
-    dcr->confirmed_anonymous = 1U;
+    ring.commit(0, 0, 0, when + 100, when + 103, "JPN DCR")->systype = DSD_SYNC_NXDN_POS;
     model.refresh(ring.state);
-    expect("confirmed anonymous row logged", model.count() == 1);
+    expect("dcr row logged", model.count() == 1);
+    expect("dcr row named",
+           model.count() == 1
+               && model.data(model.index(0), CallHistoryModel::NameRole).toString() == QStringLiteral("JPN DCR"));
 }
 
 /* Issue #903: an NXDN Type-D group's "pp-iiii" text only spells its numeric talkgroup, so the row is named as a bare
@@ -7812,7 +7813,7 @@ main(int argc, char** argv) {
     test_marked_and_serviced_notice_titles();
     test_channel_label_is_its_own_role();
     test_type_d_text_yields_to_names();
-    test_confirmed_anonymous_row_is_logged();
+    test_dcr_row_is_logged_by_name();
     test_type_d_prefixes_do_not_merge();
     test_target_ids_read_as_their_names();
     test_target_names_outlive_their_session();

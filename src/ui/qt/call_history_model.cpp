@@ -1050,10 +1050,8 @@ ring_item_display_kind(const Event_History* item) {
         // identity is its CSV name is still a call the operator heard — or the
         // scan channel it was heard on, which is the only name encrypted
         // traffic on a conventional list ever gets.
-        // A confirmed anonymous call (an NXDN DCR call) names no party but is real traffic its protocol checked.
         if (item->target_id == 0U && item->tgt_str[0] == '\0' && item->t_name[0] == '\0'
-            && item->channel_label[0] == '\0' && item->service_label[0] == '\0' && item->systype != DSD_SYNC_ANALOG
-            && item->confirmed_anonymous == 0U) {
+            && item->channel_label[0] == '\0' && item->service_label[0] == '\0' && item->systype != DSD_SYNC_ANALOG) {
             return -1;
         }
         return CallHistoryModel::KindVoice;

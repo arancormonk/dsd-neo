@@ -3,6 +3,7 @@
  * Copyright (C) 2026 by arancormonk <180709949+arancormonk@users.noreply.github.com>
  */
 
+#include <dsd-neo/core/call_state.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/synctype_ids.h>
@@ -1545,6 +1546,40 @@ test_sidecar_service_name_keeps_numeric_identity(void) {
         rc = 1;
     }
     free(hist);
+    return rc;
+}
+
+// Issue #903: a confirmed NXDN DCR recording names no party (target and source 0, "JPN DCR" its text identity), but
+// rdio-scanner needs a talkgroup: it is filed under its channel frequency in kHz, as a conventional analog call is,
+// tagged "JPN DCR", its radio left unknown. With no known frequency it has no talkgroup and is not exported.
+static int
+test_sidecar_dcr_files_under_channel_khz(void) {
+    int rc = 0;
+    for (int has_freq = 1; has_freq >= 0; has_freq--) {
+        Event_History_I* hist = calloc(1, sizeof(*hist));
+        if (!hist) {
+            return 1;
+        }
+        Event_History* item = &hist->Event_History_Items[0];
+        item->systype = DSD_SYNC_NXDN_POS;
+        item->gi = -1;
+        item->event_time = (time_t)1700000600;
+        item->freq_hz = has_freq ? 469012500 : 0;
+        DSD_SNPRINTF(item->tgt_str, sizeof item->tgt_str, "%s", DSD_CALL_NXDN_DCR_TARGET_TEXT);
+        char body[4096];
+        const int exported = export_sidecar_body(hist, 1, 0, 0, body, sizeof body);
+        if (has_freq) {
+            if (exported != 0 || !strstr(body, "\"talkgroup\": 469012")
+                || !strstr(body, "\"talkgroup_tag\": \"JPN DCR\"") || strstr(body, "\"src\":") != NULL) {
+                DSD_FPRINTF(stderr, "dcr sidecar: want talkgroup 469012 tagged JPN DCR, source 0\n%s\n", body);
+                rc = 1;
+            }
+        } else if (exported == 0) {
+            DSD_FPRINTF(stderr, "dcr sidecar with no frequency must not export\n");
+            rc = 1;
+        }
+        free(hist);
+    }
     return rc;
 }
 
@@ -3152,6 +3187,7 @@ main(void) {
     rc |= test_sidecar_private_fallback_and_malformed_wav_duration();
     rc |= test_sidecar_channel_label_fallback();
     rc |= test_sidecar_type_d_text_yields_to_names();
+    rc |= test_sidecar_dcr_files_under_channel_khz();
     rc |= test_sidecar_freq_comes_from_the_row_frequency();
     rc |= test_sidecar_start_time_sources();
     rc |= test_analog_sidecar_fields();

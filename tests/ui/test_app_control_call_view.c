@@ -990,20 +990,26 @@ test_type_d_text_yields_to_names(void) {
     destroy_state(state);
 }
 
-/* Issue #903: a confirmed DCR call names no party, but its protocol checked it as traffic (confirmed_anonymous): it is
- * shown as a call, where a bare NXDN sync's provisional epoch stays idle. */
+/* Issue #903: a confirmed DCR call names no party but publishes the text identity "JPN DCR": shown as a call under that
+ * name, where a bare NXDN sync's identity-less provisional epoch stays idle. */
 static void
-test_confirmed_anonymous_call_is_shown(void) {
-    for (int confirmed = 0; confirmed <= 1; confirmed++) {
+test_dcr_call_is_shown_by_name(void) {
+    for (int dcr = 0; dcr <= 1; dcr++) {
         dsd_state* state = make_state();
         dsd_call_observation observation = dsd_call_observation_data(DSD_SYNC_NXDN_POS, 0U, 0U, 0U);
         observation.kind = DSD_CALL_KIND_VOICE;
-        observation.confirmed_anonymous = (uint8_t)confirmed;
         observation.observed_m = 10.0;
+        if (dcr) {
+            DSD_SNPRINTF(observation.target_text, sizeof(observation.target_text), "%s", DSD_CALL_NXDN_DCR_TARGET_TEXT);
+        }
         assert(dsd_call_state_observe(state, &observation, DSD_CALL_BOUNDARY_BEGIN) > 0);
         dsd_app_slot_call view;
         dsd_app_slot_call_view(state, 0U, 10.5, &view);
-        assert(view.state == (confirmed ? DSD_APP_CALL_LINE_ACTIVE : DSD_APP_CALL_LINE_IDLE));
+        assert(view.state == (dcr ? DSD_APP_CALL_LINE_ACTIVE : DSD_APP_CALL_LINE_IDLE));
+        if (dcr) {
+            assert(strcmp(view.name, "JPN DCR") == 0);
+            assert(view.tg_id == 0U);
+        }
         destroy_state(state);
     }
 }
@@ -1285,7 +1291,7 @@ main(void) {
     test_source_id_and_label_split();
     test_target_label_independent_of_headline();
     test_type_d_text_yields_to_names();
-    test_confirmed_anonymous_call_is_shown();
+    test_dcr_call_is_shown_by_name();
     test_unknown_numeric_target_has_no_text();
     test_tetra_identityless_epoch_still_shows();
     test_source_labels_keep_identity();

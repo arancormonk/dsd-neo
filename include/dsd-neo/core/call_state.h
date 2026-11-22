@@ -20,6 +20,7 @@
 #include <stddef.h>
 
 #include <stdint.h>
+#include <string.h>
 
 #ifdef __cplusplus
 extern "C" {
@@ -154,12 +155,6 @@ typedef struct {
      */
     uint8_t analog_mode;
     /**
-     * Set when the protocol checked this identity-less voice as real traffic, not a bare sync: an NXDN DCR call's
-     * CRC-checked SB0 SACCH2 on a confirmed transmission, which names no party. The epoch takes it
-     * (dsd_call_snapshot::confirmed_anonymous) and keeps it.
-     */
-    uint8_t confirmed_anonymous;
-    /**
      * Set on a BEGIN observation: @ref receive_seed is the receive identity the call is heard with, used instead of
      * the live publication (dsd_receive_identity_current()), and the call's service name is the seed's. The analog
      * tracker hands over the tone it confirmed before the call qualified, which the live publication may since have
@@ -176,6 +171,16 @@ typedef struct {
     double start_wall;
     double observed_m;
 } dsd_call_observation;
+
+/** The text identity a confirmed NXDN DCR call publishes as its target: DCR names no party this decoder reads. */
+#define DSD_CALL_NXDN_DCR_TARGET_TEXT "JPN DCR"
+
+/** Whether a call of @p protocol with @p numeric_target and @p target_text is a confirmed NXDN DCR call. */
+static inline int
+dsd_call_is_nxdn_dcr(int protocol, uint64_t numeric_target, const char* target_text) {
+    return DSD_SYNC_IS_NXDN(protocol) && numeric_target == 0U && target_text != NULL
+           && strcmp(target_text, DSD_CALL_NXDN_DCR_TARGET_TEXT) == 0;
+}
 
 /**
  * Whether a call's target text (dsd_call_snapshot::target_text, Event_History::tgt_str) is the call's own name, ranked
@@ -331,12 +336,6 @@ typedef struct {
      * kept for it: the demodulator the call was heard through, or unknown on audio input. 0 on every other protocol.
      */
     uint8_t analog_mode;
-    /**
-     * A voice call that names no party but that its protocol checked as real traffic
-     * (dsd_call_observation::confirmed_anonymous): the call view shows it and history keeps it, as for a protocol
-     * whose voice is anonymous. It is no identity: it never makes an ended call reacquirable. Kept for the epoch.
-     */
-    uint8_t confirmed_anonymous;
     dsd_call_crypto_state crypto;
     uint16_t service_options;
     uint16_t kid;

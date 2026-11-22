@@ -332,6 +332,19 @@ call_state_begin_specializes_provisional_voice(const dsd_call_snapshot* current,
     return dsd_call_state_protocol_family(current->protocol) == dsd_call_state_protocol_family(observation->protocol);
 }
 
+// A target known only by number and one known only by text are two calls: no protocol names one call's target each
+// way in turn (an NXDN DCR call's "JPN DCR" after a named NXDN call, or a named call after it; issue #903). A target
+// either side does not know at all is no change.
+static int
+call_state_target_forms_differ(uint64_t old_target, const char* old_text, uint64_t new_target, const char* new_text) {
+    const int old_named = call_state_text_is_known(old_text);
+    const int new_named = call_state_text_is_known(new_text);
+    if (old_target != 0U && !old_named) {
+        return new_target == 0U && new_named;
+    }
+    return old_target == 0U && old_named && new_target != 0U && !new_named;
+}
+
 // True when the observation names a different call than the one the slot holds.
 // An absent field on either side is not a change: protocols fill identity in
 // over several bursts, and a partial re-description must not fork the epoch.
@@ -344,6 +357,9 @@ call_state_observation_changes_identity(const dsd_call_snapshot* current, const 
     const uint64_t old_target = call_state_effective_target_snapshot(current);
     const uint64_t new_target = call_state_effective_target_observation(observation);
     if (old_target != 0U && new_target != 0U && old_target != new_target) {
+        return 1;
+    }
+    if (call_state_target_forms_differ(old_target, current->target_text, new_target, observation->target_text)) {
         return 1;
     }
     if (call_state_kind_changed(current->kind, observation->kind)) {
@@ -570,7 +586,6 @@ call_state_seed_reacquired_snapshot(dsd_call_snapshot* snapshot, const dsd_call_
     snapshot->channel = previous->channel;
     snapshot->channel_kind = previous->channel_kind;
     snapshot->analog_mode = previous->analog_mode;
-    snapshot->confirmed_anonymous = previous->confirmed_anonymous;
     snapshot->frequency_hz = previous->frequency_hz;
     snapshot->reacquire_rx_id = previous->reacquire_rx_id;
     snapshot->crypto = previous->crypto;
@@ -684,9 +699,6 @@ call_state_apply_observation(dsd_call_snapshot* snapshot, const dsd_call_observa
         snapshot->emergency = observation->emergency;
         snapshot->priority = observation->priority;
         snapshot->has_service_metadata = 1U;
-    }
-    if (observation->confirmed_anonymous != 0U) {
-        snapshot->confirmed_anonymous = 1U;
     }
 }
 

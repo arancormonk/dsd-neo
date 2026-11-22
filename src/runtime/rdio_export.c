@@ -757,18 +757,35 @@ dsd_rdio_staged_row(const Event_History_I* event_struct) {
     return event_struct ? &event_struct->Event_History_Items[0] : NULL;
 }
 
+/* rdio-scanner's own convention for a conventional channel: its frequency in kHz. A frequency under 1 kHz names no
+   channel, and one whose kHz do not fit the field is as unknown as none (0). */
+static uint32_t
+dsd_rdio_channel_khz(const Event_History* event) {
+    const int64_t khz = event->freq_hz / 1000;
+    return (khz > 0 && khz <= (int64_t)UINT32_MAX) ? (uint32_t)khz : 0U;
+}
+
 uint32_t
 dsd_rdio_analog_talkgroup(const dsd_opts* opts, const Event_History* event) {
     if (!event || event->systype != DSD_SYNC_ANALOG) {
         return 0U;
     }
-    // rdio-scanner's own convention for a conventional channel: its frequency in kHz. A frequency under 1 kHz names
-    // no channel, and one whose kHz do not fit the field is as unknown as none.
-    const int64_t khz = event->freq_hz / 1000;
-    if (khz > 0 && khz <= (int64_t)UINT32_MAX) {
-        return (uint32_t)khz;
+    const uint32_t khz = dsd_rdio_channel_khz(event);
+    if (khz != 0U) {
+        return khz;
     }
     return (opts && opts->rdio_analog_talkgroup > 0) ? (uint32_t)opts->rdio_analog_talkgroup : 0U;
+}
+
+/* The export-only talkgroup a digital recording with no numeric target is filed under: a confirmed NXDN DCR call
+   (dsd_call_is_nxdn_dcr()), which names no party, under its channel frequency in kHz as a conventional analog call is
+   (issue #903); 0 for any other row, or a DCR row heard at no known frequency. Its parties stay anonymous. */
+static uint32_t
+dsd_rdio_channel_talkgroup(const Event_History* event) {
+    if (!dsd_call_is_nxdn_dcr(event->systype, event->target_id, event->tgt_str)) {
+        return 0U;
+    }
+    return dsd_rdio_channel_khz(event);
 }
 
 int
@@ -855,7 +872,7 @@ dsd_rdio_meta_fields_from_event(const dsd_opts* opts, const Event_History* event
         dsd_rdio_analog_meta_fields(opts, event, out);
         return;
     }
-    out->talkgroup = event->target_id;
+    out->talkgroup = event->target_id != 0U ? event->target_id : dsd_rdio_channel_talkgroup(event);
     out->source = event->source_id;
     out->encrypted = event->enc ? 1 : 0;
 

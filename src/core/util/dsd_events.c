@@ -132,7 +132,6 @@ init_event_history(Event_History_I* event_struct, uint8_t start, uint8_t stop) {
         event_struct->Event_History_Items[i].channel = 0;
         event_struct->Event_History_Items[i].call_channel_kind = (uint8_t)DSD_CALL_CHANNEL_NONE;
         event_struct->Event_History_Items[i].analog_mode = (uint8_t)DSD_ANALOG_MODE_UNKNOWN;
-        event_struct->Event_History_Items[i].confirmed_anonymous = 0U;
         event_struct->Event_History_Items[i].freq_hz = 0;
         event_struct->Event_History_Items[i].access_code_kind = (uint8_t)DSD_ACCESS_CODE_NONE;
         event_struct->Event_History_Items[i].access_code = 0;
@@ -223,8 +222,6 @@ push_event_history(Event_History_I* event_struct) {
         event_struct->Event_History_Items[i].call_channel_kind =
             event_struct->Event_History_Items[i - 1].call_channel_kind;
         event_struct->Event_History_Items[i].analog_mode = event_struct->Event_History_Items[i - 1].analog_mode;
-        event_struct->Event_History_Items[i].confirmed_anonymous =
-            event_struct->Event_History_Items[i - 1].confirmed_anonymous;
         event_struct->Event_History_Items[i].freq_hz = event_struct->Event_History_Items[i - 1].freq_hz;
         event_struct->Event_History_Items[i].access_code_kind =
             event_struct->Event_History_Items[i - 1].access_code_kind;
@@ -752,9 +749,7 @@ watchdog_event_capture_render_env(const dsd_state* state, uint8_t slot, const ds
     // is sticky for named_call; media_active is cleared when the call ends, so saw_media must
     // remember earlier renders itself; the end verdict only exists once the phase is ENDED, and
     // the epoch-boundary memset of the whole env resets all three.
-    /* A confirmed anonymous call (DCR) names no party but is real traffic its protocol checked: its row stands. */
-    env->named_call =
-        (uint8_t)(dsd_call_state_snapshot_has_identity(call) != 0 || (call != NULL && call->confirmed_anonymous != 0U));
+    env->named_call = (uint8_t)(dsd_call_state_snapshot_has_identity(call) != 0);
     env->saw_media = (uint8_t)(env->saw_media != 0U || (call != NULL && call->media_active != 0U));
     // Only the terminator reasons are positive over-the-air evidence a transmission ended.
     // EXPLICIT is deliberately excluded: the engine ends epochs EXPLICIT on every retune and
@@ -1159,7 +1154,6 @@ watchdog_event_merge_identity_fields(Event_History* retained, const Event_Histor
     if (retained->analog_mode == (uint8_t)DSD_ANALOG_MODE_UNKNOWN) {
         retained->analog_mode = staged->analog_mode;
     }
-    retained->confirmed_anonymous = (uint8_t)(retained->confirmed_anonymous | staged->confirmed_anonymous);
     if (retained->gi < 0 && staged->gi >= 0) {
         retained->gi = staged->gi;
     }
@@ -1728,8 +1722,7 @@ typedef struct {
     char service_label[DSD_SERVICE_LABEL_SIZE];
     /* The call's received identity beside its service label: an analog row prints its confirmed tone from it. */
     dsd_receive_identity receive_identity;
-    uint8_t analog_mode;         /* dsd_analog_mode of an analog call; unknown otherwise */
-    uint8_t confirmed_anonymous; /* dsd_call_snapshot::confirmed_anonymous */
+    uint8_t analog_mode; /* dsd_analog_mode of an analog call; unknown otherwise */
     uint8_t channel_label_resolved;
     uint8_t operator_tuned;
     uint8_t scan_member;
@@ -1884,7 +1877,6 @@ watchdog_event_current_init_base(const dsd_state* state, uint8_t slot, const dsd
     DSD_SNPRINTF(ctx->service_label, sizeof(ctx->service_label), "%s", call->service_label);
     ctx->receive_identity = call->receive_identity;
     ctx->analog_mode = call->analog_mode;
-    ctx->confirmed_anonymous = call->confirmed_anonymous;
     ctx->kind = call->kind;
     ctx->category = call->kind == DSD_CALL_KIND_DATA ? DSD_EVENT_CATEGORY_DATA : DSD_EVENT_CATEGORY_VOICE;
     ctx->crypto = call->crypto;
@@ -2494,7 +2486,6 @@ watchdog_event_current_update_item(const dsd_opts* opts, dsd_state* state, uint8
     item->channel = ctx->channel;
     item->call_channel_kind = ctx->channel_kind;
     item->analog_mode = ctx->analog_mode;
-    item->confirmed_anonymous = ctx->confirmed_anonymous;
     item->freq_hz = ctx->freq_hz;
     item->access_code_kind = ctx->access_code_kind;
     item->access_code = ctx->access_code;
@@ -3204,7 +3195,6 @@ watchdog_event_ctx_from_row(const dsd_call_event_render_env* env, const Event_Hi
     DSD_SNPRINTF(ctx->service_label, sizeof(ctx->service_label), "%s", item->service_label);
     ctx->receive_identity = item->receive_identity;
     ctx->analog_mode = item->analog_mode;
-    ctx->confirmed_anonymous = item->confirmed_anonymous;
     ctx->channel_label_resolved = item->channel_label_resolved;
     ctx->operator_tuned = item->operator_tuned;
     ctx->scan_member = item->scan_member;

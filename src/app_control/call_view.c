@@ -62,9 +62,6 @@ call_reads_encrypted(const dsd_call_snapshot* call) {
  * protocol has. Suppressed, their transmissions would play audio and log history rows
  * while every status surface said nothing was happening.
  *
- * A call its protocol confirmed as real traffic though it names no party (confirmed_anonymous: an NXDN DCR call's
- * checked SB0 SACCH2, issue #903) is exempt too, unlike a bare NXDN sync's provisional epoch.
- *
  * TETRA is exempt for another reason (issue #773): it never opens an epoch on a bare sync.
  * Its calls publish only from a CRC-checked carrier, and speech heard before any D-SETUP
  * named a party is published as a voice call with no identity -- a real transmission that
@@ -74,7 +71,7 @@ call_reads_encrypted(const dsd_call_snapshot* call) {
 static int
 call_has_no_identity(const dsd_call_snapshot* call) {
     if (DSD_SYNC_IS_X2TDMA(call->protocol) || DSD_SYNC_IS_PROVOICE(call->protocol) || call->protocol == DSD_SYNC_ANALOG
-        || DSD_SYNC_IS_TETRA(call->protocol) || call->confirmed_anonymous != 0U) {
+        || DSD_SYNC_IS_TETRA(call->protocol)) {
         return 0;
     }
     return call->ota_target_id == 0U && call->policy_target_id == 0U && call->target_text[0] == '\0'

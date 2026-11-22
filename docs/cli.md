@@ -379,7 +379,9 @@ Windows console runs:
   it changes the value. INI: `[recording] analog_preroll_ms`. What it holds, and the limits, are under [Where an NFM
   recording starts](#where-an-nfm-recording-starts---analog-record-preroll-ms).
 - `--rdio-mode <off|dirwatch|api|both>` Enable rdio-scanner export from finalized per-call WAV calls, digital calls and
-  conventional analog calls ([Analog calls in rdio-scanner](#analog-calls-in-rdio-scanner))
+  conventional analog calls ([Analog calls in rdio-scanner](#analog-calls-in-rdio-scanner)). An NXDN DCR call names
+  no talkgroup or radio, so it goes under the frequency it was heard on in kHz, tagged `JPN DCR`, with no radio; one
+  heard at no known frequency is not exported.
 - `--rdio-system-id <N>` Set rdio-scanner system ID (required for API upload mode)
 - `--rdio-analog-system-id <N>` rdio-scanner system ID for conventional NFM calls, 0 to 65535. 0, the default, uses
   `--rdio-system-id`. With it set, API uploads of NFM calls work even when `--rdio-system-id` is not set. INI:

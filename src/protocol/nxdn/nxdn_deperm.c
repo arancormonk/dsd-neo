@@ -811,22 +811,6 @@ nxdn_store_sacch2_frame(dsd_state* state, const uint8_t* trellis_buf, const stru
     }
 }
 
-/* The boundary a confirmed DCR SB0 observes: a fresh anonymous epoch when the live NXDN call names a party (a named
- * call whose release was missed: DCR speech is not its parties'), else the epoch going on, which is DCR's own or the
- * provisional one its voice opened. */
-static dsd_call_boundary
-nxdn_dcr_call_boundary(const dsd_state* state) {
-    dsd_call_snapshot call;
-    if (dsd_call_state_get(state, 0U, &call) <= 0 || call.phase != DSD_CALL_PHASE_ACTIVE
-        || !DSD_SYNC_IS_NXDN(call.protocol)) {
-        return DSD_CALL_BOUNDARY_CONTINUE;
-    }
-    const int named = call.kind != DSD_CALL_KIND_VOICE || call.ota_target_id != 0U || call.policy_target_id != 0U
-                      || call.ota_source_id != 0U || call.source_text[0] != '\0' || call.target_text[0] != '\0'
-                      || call.route_text[0][0] != '\0' || call.route_text[1][0] != '\0';
-    return named ? DSD_CALL_BOUNDARY_BEGIN : DSD_CALL_BOUNDARY_CONTINUE;
-}
-
 static void
 nxdn_update_sacch2_identity_state(const dsd_opts* opts, dsd_state* state, const struct nxdn_sacch2_fields* fields) {
     if (fields->sf_fb && state->M == 1) {
@@ -846,15 +830,16 @@ nxdn_update_sacch2_identity_state(const dsd_opts* opts, dsd_state* state, const 
     state->nxdn_last_ran = 7;
     state->nxdn_last_ran_stand_in = 1U;
     if (nxdn_dcr_is_sb0_message_type(fields->sf_mes)) {
-        /* Call traffic decoded, but DCR names no group or radio this decoder reads: identity-less voice, labelled
-         * "JPN DCR" below, never a made-up target or source (issue #903). */
-        const dsd_call_observation observation = {
+        /* Call traffic decoded, but DCR names no group or radio this decoder reads: no numeric target or source,
+         * never a made-up one, and the text identity "JPN DCR", which names the call as a callsign does and tells it
+         * apart from a named NXDN call (issue #903). */
+        dsd_call_observation observation = {
             .protocol = DSD_SYNC_NXDN_POS,
             .slot = 0U,
             .kind = DSD_CALL_KIND_VOICE,
-            .confirmed_anonymous = 1U,
         };
-        (void)dsd_call_state_observe(state, &observation, nxdn_dcr_call_boundary(state));
+        DSD_SNPRINTF(observation.target_text, sizeof(observation.target_text), "%s", DSD_CALL_NXDN_DCR_TARGET_TEXT);
+        (void)dsd_call_state_observe(state, &observation, DSD_CALL_BOUNDARY_CONTINUE);
         dsd_event_sync_slot((dsd_opts*)opts, state, 0U);
         dsd_call_snapshot call;
         if (dsd_call_state_get(state, 0U, &call) > 0 && call.phase == DSD_CALL_PHASE_ACTIVE) {

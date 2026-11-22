@@ -18,6 +18,7 @@
 #include <dsd-neo/protocol/nxdn/nxdn_const.h>
 #include <dsd-neo/protocol/nxdn/nxdn_deperm.h>
 #include <dsd-neo/protocol/nxdn/nxdn_lfsr.h>
+#include <dsd-neo/runtime/decode_clock.h>
 #include <dsd-neo/runtime/signal_search_hooks.h>
 #include <dsd-neo/runtime/trunk_scan_hooks.h>
 #include <stdint.h>
@@ -549,19 +550,28 @@ test_sacch_state_update(void) {
     return rc;
 }
 
-/* DCR after a named NXDN call whose release was missed (issue #903): the first confirmed SB0 opens a fresh anonymous
- * epoch, never one carrying the named call's group and radio; the SB0s after it continue that epoch. */
-static int
-test_sacch2_dcr_after_named_call_starts_its_own(void) {
+/* One confirmed DCR SB0 frame (sf_mes 0x01) on @p state. */
+static void
+dcr_sb0(dsd_state* state) {
     static const uint8_t m_data[5] = {0xA1U, 0xB2U, 0xC3U, 0xD4U, 0xE5U};
-    static Event_History_I histories[2];
     static dsd_opts opts;
-    static dsd_state state;
     uint8_t trellis[32];
-    int rc = 0;
+    make_sacch2_trellis(trellis, 1U, 0U, 0x01U);
+    nxdn_confirm_begin_frame(state);
+    nxdn_handle_sacch2(&opts, state, trellis, m_data, 0x2AU, 0x2AU);
+}
 
-    DSD_MEMSET(&opts, 0, sizeof(opts));
-    init_sacch2_state(&state, histories);
+/* A DCR call ("JPN DCR", no numeric party) and a named NXDN call are two calls (issue #903), however they meet: DCR
+ * after a named call whose release was missed, DCR within the 0.5 s reacquisition window after a named call ended by
+ * sync loss, and a named VCALL after a DCR call. The SB0s of one DCR call continue it. */
+static int
+test_sacch2_dcr_and_named_calls_stay_apart(void) {
+    static Event_History_I histories[2];
+    dsd_state* state = (dsd_state*)calloc(1, sizeof(*state));
+    if (state == NULL) {
+        return 1;
+    }
+    int rc = 0;
     const dsd_call_observation named = {
         .protocol = DSD_SYNC_NXDN_POS,
         .slot = 0U,
@@ -570,30 +580,47 @@ test_sacch2_dcr_after_named_call_starts_its_own(void) {
         .policy_target_id = 500U,
         .ota_source_id = 123U,
     };
-    rc |= expect_int("dcr-after-named-opens", dsd_call_state_observe(&state, &named, DSD_CALL_BOUNDARY_BEGIN), 1);
     dsd_call_snapshot call;
-    (void)dsd_call_state_get(&state, 0U, &call);
-    const uint64_t named_epoch = call.epoch;
+    for (int sync_loss = 0; sync_loss <= 1; sync_loss++) {
+        init_sacch2_state(state, histories);
+        dsd_decode_clock_test_set_ns(1000000000000ULL);
+        rc |= expect_int("dcr-named-opens", dsd_call_state_observe(state, &named, DSD_CALL_BOUNDARY_BEGIN), 1);
+        (void)dsd_call_state_get(state, 0U, &call);
+        const uint64_t named_epoch = call.epoch;
+        if (sync_loss) {
+            (void)dsd_call_state_end_ex(state, 0U, dsd_decode_now_mono_s(), DSD_CALL_END_SYNC_LOSS);
+            dsd_decode_clock_test_set_ns(1000200000000ULL); /* 0.2 s later: inside the reacquisition window */
+        }
+        dcr_sb0(state);
+        dcr_sb0(state);
+        const char* tag = sync_loss ? "dcr-after-sync-loss" : "dcr-after-missed-release";
+        char label[96];
+        DSD_SNPRINTF(label, sizeof label, "%s-call", tag);
+        rc |= expect_int(label, dsd_call_state_get(state, 0U, &call), 1);
+        DSD_SNPRINTF(label, sizeof label, "%s-new-epoch", tag);
+        rc |= expect_int(label, call.epoch != named_epoch && call.phase == DSD_CALL_PHASE_ACTIVE, 1);
+        DSD_SNPRINTF(label, sizeof label, "%s-target", tag);
+        rc |= expect_int(label, (int)call.ota_target_id, 0);
+        DSD_SNPRINTF(label, sizeof label, "%s-source", tag);
+        rc |= expect_int(label, (int)call.ota_source_id, 0);
+        DSD_SNPRINTF(label, sizeof label, "%s-text", tag);
+        rc |= expect_str(label, call.target_text, "JPN DCR");
+        const uint64_t dcr_epoch = call.epoch;
+        dcr_sb0(state);
+        (void)dsd_call_state_get(state, 0U, &call);
+        DSD_SNPRINTF(label, sizeof label, "%s-continues", tag);
+        rc |= expect_int(label, call.epoch == dcr_epoch, 1);
 
-    make_sacch2_trellis(trellis, 1U, 0U, 0x01U);
-    nxdn_confirm_begin_frame(&state);
-    nxdn_handle_sacch2(&opts, &state, trellis, m_data, 0x2AU, 0x2AU);
-    nxdn_confirm_begin_frame(&state);
-    nxdn_handle_sacch2(&opts, &state, trellis, m_data, 0x2AU, 0x2AU);
-    rc |= expect_int("dcr-after-named-canonical", dsd_call_state_get(&state, 0U, &call), 1);
-    rc |= expect_int("dcr-after-named-new-epoch", call.epoch != named_epoch, 1);
-    rc |= expect_int("dcr-after-named-kind", call.kind, DSD_CALL_KIND_VOICE);
-    rc |= expect_int("dcr-after-named-target", (int)call.ota_target_id, 0);
-    rc |= expect_int("dcr-after-named-policy-target", (int)call.policy_target_id, 0);
-    rc |= expect_int("dcr-after-named-source", (int)call.ota_source_id, 0);
-    rc |= expect_int("dcr-after-named-confirmed-anonymous", call.confirmed_anonymous, 1);
-    const uint64_t dcr_epoch = call.epoch;
-
-    nxdn_confirm_begin_frame(&state);
-    nxdn_handle_sacch2(&opts, &state, trellis, m_data, 0x2AU, 0x2AU);
-    rc |= expect_int("dcr-after-named-continues", dsd_call_state_get(&state, 0U, &call), 1);
-    rc |= expect_int("dcr-after-named-same-epoch", call.epoch == dcr_epoch, 1);
-    dsd_state_ext_free_all(&state);
+        /* A named call after the DCR call is another call too. */
+        rc |= expect_int("named-after-dcr-observed",
+                         dsd_call_state_observe(state, &named, DSD_CALL_BOUNDARY_CONTINUE) >= 0, 1);
+        (void)dsd_call_state_get(state, 0U, &call);
+        rc |= expect_int("named-after-dcr-new-epoch", call.epoch != dcr_epoch && call.ota_target_id == 500U, 1);
+        rc |= expect_str("named-after-dcr-no-dcr-text", call.target_text, "");
+        dsd_state_ext_free_all(state);
+    }
+    dsd_decode_clock_use_system();
+    free(state);
     return rc;
 }
 
@@ -638,8 +665,8 @@ test_sacch2_state_update(void) {
     rc |= expect_int("sacch2-single-canonical", dsd_call_state_get(&state, 0U, &call), 1);
     /* DCR carries no decoded group or radio: the call is identity-less voice, never a made-up group (issue #903). */
     rc |= expect_int("sacch2-single-kind", call.kind, DSD_CALL_KIND_VOICE);
-    /* Confirmed traffic, unlike a bare sync's provisional epoch: shown and kept though it names nobody. */
-    rc |= expect_int("sacch2-single-confirmed-anonymous", call.confirmed_anonymous, 1);
+    /* Named by text, as a callsign names a call: shown and kept, and never another call's (issue #903). */
+    rc |= expect_str("sacch2-single-target-text", call.target_text, "JPN DCR");
     rc |= expect_int("sacch2-single-target", (int)call.ota_target_id, 0);
     rc |= expect_int("sacch2-single-policy-target", (int)call.policy_target_id, 0);
     rc |= expect_int("sacch2-single-source", (int)call.ota_source_id, 0);
@@ -651,9 +678,8 @@ test_sacch2_state_update(void) {
     rc |= expect_str("sacch2-single-alias", state.generic_talker_alias[0], "JPN DCR");
     rc |= expect_int("sacch2-single-event-protocol", histories[0].Event_History_Items[0].systype, DSD_SYNC_NXDN_POS);
     rc |= expect_int("sacch2-single-event-target", histories[0].Event_History_Items[0].target_id, 0);
+    rc |= expect_str("sacch2-single-event-target-text", histories[0].Event_History_Items[0].tgt_str, "JPN DCR");
     rc |= expect_int("sacch2-single-event-source", histories[0].Event_History_Items[0].source_id, 0);
-    rc |= expect_int("sacch2-single-event-confirmed-anonymous", histories[0].Event_History_Items[0].confirmed_anonymous,
-                     1);
     rc |= expect_int("sacch2-single-event-encrypted", histories[0].Event_History_Items[0].enc, 1);
     rc |= expect_int("sacch2-single-event-algid", histories[0].Event_History_Items[0].enc_alg, 1);
     rc |= expect_int("sacch2-single-event-key", histories[0].Event_History_Items[0].enc_key, 0);
@@ -1761,7 +1787,7 @@ main(void) {
     rc |= test_bit_window_and_state_helpers();
     rc |= test_sacch_state_update();
     rc |= test_sacch2_state_update();
-    rc |= test_sacch2_dcr_after_named_call_starts_its_own();
+    rc |= test_sacch2_dcr_and_named_calls_stay_apart();
     rc |= test_sacch2_release_ends_an_nxdn_call_only();
     rc |= test_ran_after_dcr_stand_in_is_an_access_code();
     rc |= test_cac_crc_failure_reset();
