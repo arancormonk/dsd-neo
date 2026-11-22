@@ -13390,6 +13390,11 @@ Private per-protocol modules worth knowing about:
   writer sets after the air (P25's channel cache or IDEN invalidation, an import, NXDN) is no longer the air's: the
   shared setter `dsd_state_set_trunk_chan_freq()` clears the row's bit in the core-owned `dsd_state::dmr_lcn_ota`
   (which the DMR writer sets after it writes), and the row then reads as FILE, so DMR neither replaces nor drops it.
+  The setter also raises the core-owned `dsd_state::dmr_lcn_rows_changed` when it changes a row 0..4095 (its frequency
+  or its `dmr_lcn_ota` bit) for any writer but DMR's (`dmr_t3_chan_set_row()` keeps it as it was); the next checked
+  control PDU (`dmr_t3_chan_settle()`, before its handlers, so a grant never resolves through a stale estimate) clears
+  it and, with the fill on, drops every estimate and fills again: a row another writer set, moved or removed may be an
+  anchor. Nothing changed costs one byte test.
   A network change (`dmr_t3_chan_network_changed()`) drops the SITE, UNVERIFIED, NEIGHBOUR and ESTIMATE rows with
   their trust bytes and bumps the generation; FILE and USER rows stay, and so does the hunt's candidate list. It is a
   checked C_ALOHA, standard (FID 0) C_BCAST (its header's System Identity Code, bits 40-55, Table 7.20, is the

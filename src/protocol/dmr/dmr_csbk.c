@@ -3234,6 +3234,7 @@ dmr_cspdu_dispatch(dsd_opts* opts, dsd_state* state, uint8_t cs_pdu_bits[], uint
         dmr_sm_note_cc_heartbeat(opts, state);
 
         dmr_cspdu_init_cc_anchor(opts, state);
+        dmr_t3_chan_settle(opts, state);
 
         dmr_cspdu_handle_pf0(opts, state, cs_pdu_bits, cs_pdu, csbk_pf, csbk_o, csbk_fid);
         dmr_cspdu_handle_cap_plus(opts, state, cs_pdu_bits, cs_pdu, csbk_o, csbk_fid);

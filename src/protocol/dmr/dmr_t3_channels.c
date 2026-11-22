@@ -83,6 +83,13 @@ dmr_t3_chan_origin(const dsd_state* state, uint16_t lpcn) {
     return dmr_t3_chan_origin_of_byte(origin);
 }
 
+void
+dmr_t3_chan_set_row(dsd_state* state, uint16_t lpcn, long hz) {
+    const uint8_t rows_changed = state->dmr_lcn_rows_changed;
+    dsd_state_set_trunk_chan_freq(state, lpcn, hz);
+    state->dmr_lcn_rows_changed = rows_changed;
+}
+
 int
 dmr_t3_chan_drop_rows(dsd_state* state, dmr_ext_t* ext, int (*drop)(unsigned origin)) {
     int dropped = 0;
@@ -95,7 +102,7 @@ dmr_t3_chan_drop_rows(dsd_state* state, dmr_ext_t* ext, int (*drop)(unsigned ori
             ext->origin[l] = (uint8_t)DMR_CHAN_ORIGIN_NONE;
             continue;
         }
-        dsd_state_set_trunk_chan_freq(state, l, 0);
+        dmr_t3_chan_set_row(state, (uint16_t)l, 0);
         state->dmr_lcn_trust[l] = 0U;
         ext->origin[l] = (uint8_t)DMR_CHAN_ORIGIN_NONE;
         dropped = 1;

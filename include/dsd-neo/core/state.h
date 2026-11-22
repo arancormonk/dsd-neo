@@ -1596,6 +1596,11 @@ struct dsd_state {
        protocol or an import wrote is no longer the air's: DMR neither replaces it nor drops it on a network change
        (discussion #900 F2). Core owns the bit so the shared setter can clear it without knowing the DMR module. */
     uint8_t dmr_lcn_ota[0x1000 / 8];
+    /* DMR Tier III: nonzero once dsd_state_set_trunk_chan_freq() changed a row 0..4095 (its frequency, or its
+       dmr_lcn_ota bit) for a writer other than DMR's over-the-air one, which restores it around its own writes. DMR
+       clears it at its next control PDU, dropping and filling its heuristic estimates again first: a row another
+       protocol or an import set, changed or removed may be an anchor they were drawn through. */
+    uint8_t dmr_lcn_rows_changed;
     // DMR late entry MI
     uint64_t late_entry_mi_fragment[2][8][3];
     // Multi-key array
@@ -3875,7 +3880,8 @@ dsd_state_dmr_lcn_ota_set(dsd_state* state, uint32_t channel, int held) {
 
 /* Set one channel map row. Every writer but the NXDN DFA resolver (dsd_nxdn_dfa_learn()) sets a row it owns, so the
    row leaves the DFA record and no later parameter change drops it; the same goes for the DMR over-the-air record
-   (dsd_state::dmr_lcn_ota), whose writer marks the row again after this. */
+   (dsd_state::dmr_lcn_ota), whose writer marks the row again after this. A change to a row 0..4095 raises
+   dsd_state::dmr_lcn_rows_changed. */
 static inline void
 dsd_state_set_trunk_chan_freq(dsd_state* state, uint32_t channel, long int freq) {
     if (!state || !dsd_state_trunk_chan_valid(channel)) {
@@ -3884,9 +3890,13 @@ dsd_state_set_trunk_chan_freq(dsd_state* state, uint32_t channel, long int freq)
     if (state->nxdn_dfa_learned.count != 0U) {
         dsd_state_nxdn_dfa_untag(state, channel);
     }
+    const long int old_freq = state->trunk_chan_map[channel];
+    if (channel < 8U * (uint32_t)sizeof state->dmr_lcn_ota
+        && (old_freq != freq || dsd_state_dmr_lcn_ota_get(state, channel))) {
+        state->dmr_lcn_rows_changed = 1U;
+    }
     dsd_state_dmr_lcn_ota_set(state, channel, 0);
 
-    const long int old_freq = state->trunk_chan_map[channel];
     if (old_freq == freq) {
         return;
     }

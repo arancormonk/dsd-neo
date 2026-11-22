@@ -1330,6 +1330,36 @@ test_chan_freq_contradiction_no_effect(void) {
     dsd_state_trunk_lcn_free(&g_state);
 }
 
+/* With the heuristic fill on, an estimate drawn through a row another writer set does not outlive that row: when that
+   writer removes or moves it through the shared setter, the next control PDU drops the estimates and fills again from
+   the anchors left. DMR's own writes leave nothing to redo. */
+static void
+test_foreign_anchor_change_redoes_estimates(void) {
+    reset();
+    dmr_sm_init(&g_opts, &g_state);
+    g_opts.dmr_t3_heuristic_fill = 1;
+    dsd_state_set_trunk_chan_freq(&g_state, 10U, 451000000L); /* another protocol's row */
+    assert(dmr_t3_chan_learn(&g_opts, &g_state, 12U, 451025000L, DMR_CHAN_ORIGIN_SITE) == 1);
+    assert(g_state.trunk_chan_map[11] == 451012500L);
+    assert(dmr_t3_chan_origin(&g_state, 11U) == DMR_CHAN_ORIGIN_ESTIMATE);
+    assert(g_state.dmr_lcn_rows_changed == 0U);
+
+    dsd_state_set_trunk_chan_freq(&g_state, 10U, 0L); /* that writer removes it */
+    send_aloha(0x1234U);
+    assert(g_state.trunk_chan_map[11] == 0L);
+    assert(dmr_t3_chan_origin(&g_state, 11U) == DMR_CHAN_ORIGIN_NONE);
+
+    dsd_state_set_trunk_chan_freq(&g_state, 10U, 451000000L); /* back: the estimate returns */
+    send_aloha(0x1234U);
+    assert(g_state.trunk_chan_map[11] == 451012500L);
+
+    dsd_state_set_trunk_chan_freq(&g_state, 12U, 451050000L); /* another writer moves DMR's anchor */
+    send_aloha(0x1234U);
+    assert(g_state.trunk_chan_map[11] == 451025000L);
+    assert(dmr_t3_chan_origin(&g_state, 11U) == DMR_CHAN_ORIGIN_ESTIMATE);
+    assert(g_state.dmr_lcn_rows_changed == 0U);
+}
+
 int
 main(void) {
     test_site_overrides_estimate_and_unverified();
@@ -1370,6 +1400,7 @@ main(void) {
     test_unfinished_mbc_headers_note_no_lock_evidence();
     test_logical_channel_mbc_is_malformed();
     test_chan_freq_contradiction_no_effect();
+    test_foreign_anchor_change_redoes_estimates();
     dsd_state_ext_free_all(&g_state);
     printf("DMR_T3_CHANNELS: OK\n");
     return 0;
