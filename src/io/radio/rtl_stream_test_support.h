@@ -2122,6 +2122,14 @@ int rtl_stream_test_external_landing_filter_state(rtl_stream_test_external_landi
 int rtl_device_test_tcp_staged_slice_across_discard(int discard, int* out_old_bytes_reached_ring);
 /* A bare rtl_tcp stand-in device (no connection, no reader) to stand as the stream's open device, whose reader's
  * pending restart (tcp_restart_pending) rtl_device_test_tcp_take_restart_pending() reads and clears. */
+/* An rtl_tcp reader stages half a slice, passes its restart check with none pending, and then a landing purges the
+ * input before the chunk that completes the slice: @p out_ring_floats is what the ring took, 0 when the staged bytes
+ * went with the purge. Returns 0 when it ran. */
+int rtl_device_test_tcp_staged_slice_across_purge(int* out_ring_floats);
+/* The reader's next chunk (four bytes) behind the I byte it held from the last read, with (@p restart) or without a
+ * retune's restart pending: the bytes left to process into @p out (@p out_len of them) and the held count after. */
+int rtl_device_test_tcp_held_byte_across_restart(int restart, unsigned char* out, size_t out_cap, size_t* out_len,
+                                                 size_t* out_held);
 struct rtl_device* rtl_device_test_tcp_staging_device(void);
 int rtl_device_test_tcp_take_restart_pending(struct rtl_device* dev);
 void rtl_device_test_tcp_staging_device_free(struct rtl_device* dev);
@@ -2137,6 +2145,8 @@ typedef struct rtl_stream_test_external_profileless_phase {
     int input_purged;         /* 1 when the landing asked for the input ring's purge */
     int staged_discarded;     /* 1 when it asked the open rtl_tcp device's reader to drop its staged slice */
     int filters_cleared;      /* 1 when it started the channel filter over (its pending samples were seeded stale) */
+    int discriminator_reset;  /* 1 when the discriminator's previous I/Q sample went (seeded valid) */
+    int resampler_reset;      /* 1 when the output resampler started over (its phase was seeded) */
 } rtl_stream_test_external_profileless_phase;
 
 typedef struct rtl_stream_test_external_profileless_block_result {

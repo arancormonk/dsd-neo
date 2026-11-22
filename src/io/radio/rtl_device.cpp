@@ -526,6 +526,8 @@ struct rtl_device {
     unsigned char* tcp_pending = nullptr;
     size_t tcp_pending_len = 0U;
     size_t tcp_pending_cap = 0U;
+    /* The input ring's discard generation when the staged slice began: its commit keeps it (a purge since drops it). */
+    uint64_t tcp_pending_generation = 0U;
     dsd_mutex_t soapy_lock{};
     dsd_mutex_t tcp_metrics_lock{};
     /* TCP connection quality metrics (lag resilience) */
@@ -1257,9 +1259,24 @@ rtl_u8_write_result(int ring_exhausted, int generation_stale) {
     return generation_stale ? 2 : ring_exhausted;
 }
 
+/* rtl_write_u8_to_ring(), committing against @p staged_generation (non-NULL) rather than the generation the write
+ * finds: bytes staged before a purge (an rtl_tcp reader's partial slice, rtl_tcp_store_remainder()) are as stale as the
+ * ring's when it is requested, even if the slice completes after it, so the commit fails and they go. */
+static int rtl_write_u8_to_ring_since(struct rtl_device* s, unsigned char* src, size_t len, int fs4_shift_active,
+                                      int use_two_pass, int combine_rotate_active, int count_full_reserve,
+                                      dsd_input_level_cu8_moments* moments, const uint64_t* staged_generation);
+
 static int
 rtl_write_u8_to_ring(struct rtl_device* s, unsigned char* src, size_t len, int fs4_shift_active, int use_two_pass,
                      int combine_rotate_active, int count_full_reserve, dsd_input_level_cu8_moments* moments) {
+    return rtl_write_u8_to_ring_since(s, src, len, fs4_shift_active, use_two_pass, combine_rotate_active,
+                                      count_full_reserve, moments, NULL);
+}
+
+static int
+rtl_write_u8_to_ring_since(struct rtl_device* s, unsigned char* src, size_t len, int fs4_shift_active, int use_two_pass,
+                           int combine_rotate_active, int count_full_reserve, dsd_input_level_cu8_moments* moments,
+                           const uint64_t* staged_generation) {
     if (!s || !s->input_ring || !src || len == 0) {
         return 0;
     }
@@ -1273,7 +1290,8 @@ rtl_write_u8_to_ring(struct rtl_device* s, unsigned char* src, size_t len, int f
     int generation_stale = 0;
 
     while (rtl_capture_u8_byte_carry_ready_bytes(need, &carry) >= 2U) {
-        uint64_t discard_generation = input_ring_discard_generation(s->input_ring);
+        uint64_t discard_generation =
+            staged_generation ? *staged_generation : input_ring_discard_generation(s->input_ring);
         float *p1 = NULL, *p2 = NULL;
         size_t n1 = 0, n2 = 0;
         size_t ready = rtl_capture_u8_byte_carry_ready_bytes(need, &carry);
@@ -7263,8 +7281,10 @@ rtl_tcp_fill_pending_slice(struct rtl_device* s, const unsigned char* u8, size_t
         consumed += take;
     }
     if (s->tcp_pending_len == slice) {
-        int ring_status = rtl_write_u8_to_ring(s, s->tcp_pending, slice, policy->fs4_shift_active, policy->use_two_pass,
-                                               policy->combine_rotate_active, 1, NULL);
+        const uint64_t staged = s->tcp_pending_generation;
+        int ring_status =
+            rtl_write_u8_to_ring_since(s, s->tcp_pending, slice, policy->fs4_shift_active, policy->use_two_pass,
+                                       policy->combine_rotate_active, 1, NULL, &staged);
         s->tcp_pending_len = 0U;
         if (ring_status == 2) {
             if (moments && take < len) {
@@ -7316,6 +7336,7 @@ rtl_tcp_store_remainder(struct rtl_device* s, const unsigned char* data, size_t 
     }
     rtl_tcp_copy_cu8_with_moments(s->tcp_pending, data, rem, moments);
     s->tcp_pending_len = rem;
+    s->tcp_pending_generation = input_ring_discard_generation(s->input_ring);
 }
 
 static void
@@ -7511,13 +7532,32 @@ rtl_tcp_drop_buffered_for_retune(struct rtl_device* s) {
     rtl_stream_input_level_reset();
 }
 
-/* The reader's side of a retune's request (tcp_restart_pending): drop what it buffered before its next chunk. */
-static void
+/* The reader's side of a retune's request (tcp_restart_pending): drop what it buffered before its next chunk. Returns 1
+ * when it did. */
+static int
 rtl_tcp_take_restart(struct rtl_device* s) {
     if (s->tcp_restart_pending.load(std::memory_order_relaxed)
         && s->tcp_restart_pending.exchange(0, std::memory_order_acq_rel)) {
         rtl_tcp_drop_buffered_for_retune(s);
+        return 1;
     }
+    return 0;
+}
+
+/* The bytes to process at the front of @p u8: the @p *held odd byte (the I of a pair whose Q had not come) and the @p r
+ * received behind it. A retune's restart pending drops the staged slice (rtl_tcp_take_restart()) and the held I too,
+ * with the Q that completes it (the first byte received), so no pair straddles the boundary and the next pair starts
+ * on an I. */
+static uint32_t
+rtl_tcp_chunk_after_restart(struct rtl_device* s, unsigned char* u8, size_t* held, uint32_t r) {
+    uint32_t total = (uint32_t)*held + r;
+    if (rtl_tcp_take_restart(s) && *held != 0U) {
+        const uint32_t drop = total < 2U ? total : 2U;
+        DSD_MEMMOVE(u8, u8 + drop, total - drop);
+        total -= drop;
+        *held = 0U;
+    }
+    return total;
 }
 
 /* One receive on @p conn into the loop buffer after its first @p held bytes; @p timed_out set when it ended for the
@@ -7617,8 +7657,10 @@ rtl_tcp_reader_empty_read(struct rtl_device* s, struct rtl_tcp_conn** conn, stru
  * go through rtl_tcp_process_pairs(), and an odd last byte stays at the front for its Q. */
 static void
 rtl_tcp_reader_process_chunk(struct rtl_device* s, struct rtl_tcp_loop_state* st, int r, size_t* held, int* skip_odd) {
-    rtl_tcp_take_restart(s);
-    uint32_t total = (uint32_t)*held + (uint32_t)r;
+    uint32_t total = rtl_tcp_chunk_after_restart(s, st->u8, held, (uint32_t)r);
+    if (total == 0U) {
+        return;
+    }
     if (*skip_odd) {
         *skip_odd = 0;
         DSD_MEMMOVE(st->u8, st->u8 + 1, total - 1U);
@@ -13680,6 +13722,56 @@ rtl_device_test_tcp_staged_slice_across_discard(int discard, int* out_old_bytes_
         same = std::fabs(with_old[i] - fresh_only[i]) <= 1e-6f;
     }
     *out_old_bytes_reached_ring = same ? 0 : 1;
+    return 0;
+}
+
+extern "C" int
+rtl_device_test_tcp_staged_slice_across_purge(int* out_ring_floats) {
+    if (!out_ring_floats) {
+        return -1;
+    }
+    input_ring_state ring{};
+    if (input_ring_init(&ring, 64U) != 0) {
+        return -2;
+    }
+    rtl_device dev{};
+    dev.input_ring = &ring;
+    dev.backend = RTL_BACKEND_TCP;
+    dev.buf_len = 4U;
+    rtl_u8_transform_policy_state policy{0, 0, 0};
+    /* Half a 4-byte slice from the channel left, staged before the purge. */
+    unsigned char old_bytes[2] = {91U, 92U};
+    rtl_tcp_reassemble_and_submit(&dev, old_bytes, (uint32_t)sizeof old_bytes, &policy, NULL);
+    /* The reader passed its restart check (none pending yet), and then the landing purged the input. */
+    (void)rtl_tcp_take_restart(&dev);
+    input_ring_request_discard(&ring);
+    /* The chunk that completes the slice: the channel landed on. */
+    unsigned char fresh[2] = {10U, 20U};
+    rtl_tcp_reassemble_and_submit(&dev, fresh, (uint32_t)sizeof fresh, &policy, NULL);
+    *out_ring_floats = (int)input_ring_used(&ring);
+    free(dev.tcp_pending);
+    input_ring_destroy(&ring);
+    return 0;
+}
+
+extern "C" int
+rtl_device_test_tcp_held_byte_across_restart(int restart, unsigned char* out, size_t out_cap, size_t* out_len,
+                                             size_t* out_held) {
+    if (!out || !out_len || !out_held || out_cap < 8U) {
+        return -1;
+    }
+    rtl_device dev{};
+    dev.backend = RTL_BACKEND_TCP;
+    if (restart) {
+        rtl_device_discard_staged_input(&dev);
+    }
+    /* The I of a pair held from the last read (the channel left), then four bytes received. */
+    unsigned char u8[8] = {0xAAU, 1U, 2U, 3U, 4U};
+    size_t held = 1U;
+    const uint32_t total = rtl_tcp_chunk_after_restart(&dev, u8, &held, 4U);
+    DSD_MEMCPY(out, u8, total);
+    *out_len = total;
+    *out_held = held;
     return 0;
 }
 

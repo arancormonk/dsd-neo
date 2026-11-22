@@ -9446,9 +9446,11 @@ the stream-notice hooks' pattern: one that fails to initialize leaves the hook u
   (`g_external_output_freq_hz`): every external landing, with a profile or without, parks the demod thread under the
   reconfigure gate (so no block's output write can publish a head loaded before the flush) and flushes the output,
   moving its generation, and purges the input I/Q captured before it (`controller_request_input_purge()`, as a
-  controller retune does, and `rtl_device_discard_staged_input()`, which drops an rtl_tcp reader's partial slice as
-  the device's own retune does; a landing with no profile also starts the filters over, their held-back samples being
-  the old channel's), unless the last external landing was on the same frequency since the last finalize; a
+  controller retune does, and `rtl_device_discard_staged_input()`, which drops an rtl_tcp reader's partial slice and
+  the I byte it holds as the device's own retune does; a staged slice also commits against the discard generation it
+  was staged under, so one completed after the purge goes too. A landing with no profile also starts the demodulator
+  over as a retune does: filters and their held-back samples, the output resampler, the FSK modem and the
+  discriminator's previous sample), unless the last external landing was on the same frequency since the last finalize; a
   repeated rigctl tune to the channel the peer is on keeps the output and the decoder's symbol cache, and since it has
   nothing to rewrite it takes the gate without raising its flag, so a block in flight keeps its whole output. The
   engine also says whether the peer moved (`peer_moved`: it was sent another frequency than

@@ -605,11 +605,27 @@ test_setfreq_success_failure_and_cache(void) {
     /* Nothing went out: the peer cannot have moved. */
     assert(RigctlFrequencyMoves() == moves + 2U);
 
+    /* On the connection that confirmed a frequency, a send that wrote nothing leaves that confirmation: a repeat of the
+       confirmed frequency still sends nothing. */
+    reset_stubs();
+    push_response("RPRT 0\n");
+    assert(SetFreq(113, 851075000L));
+    assert(RigctlConfirmedFreq(113) == 851075000U);
+    const uint64_t confirmed_moves = RigctlFrequencyMoves();
+    g_send_result = -1;
+    assert(!SetFreq(113, 851087500L));
+    assert(RigctlConfirmedFreq(113) == 851075000U);
+    g_send_result = -2;
+    const size_t commands = g_command_count;
+    assert(SetFreq(113, 851075000L));
+    assert(g_command_count == commands);
+    assert(RigctlFrequencyMoves() == confirmed_moves);
+
     reset_stubs();
     g_send_result = 2;
     assert(!SetFreq(112, 851062500L));
     /* Part of the request went out: the peer may have taken something. */
-    assert(RigctlFrequencyMoves() == moves + 3U);
+    assert(RigctlFrequencyMoves() == confirmed_moves + 1U);
     return 0;
 }
 

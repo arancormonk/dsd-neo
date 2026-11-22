@@ -14623,6 +14623,21 @@ rtl_stream_external_retune_flushes(uint32_t target_freq_hz, int peer_moved) {
    before its next block): the I/Q it holds was captured before the peer moved, and a block made from it would publish
    the old channel under the new generation. Only what arrives after this boundary feeds the output, so the next
    landing on this frequency may keep it. */
+/* A landing with no profile that moved the device: what the demodulator holds from the channel left goes, as a
+   controller retune's reset does for the output it runs (demod_reset_histories_for_output_mode()): the input filters
+   and their held-back samples, the output resampler's delay line, the FSK modem's history, and the discriminator's
+   previous I/Q sample, so its first output does not span two channels. The demod thread is parked. */
+static void
+rtl_stream_reset_demod_for_external_move(void) {
+    rtl_demod_clear_filter_histories(&demod);
+    demod_reset_histories_for_output_mode(&demod);
+    /* Whatever output it runs: the delay line holds the channel left's samples on every path. */
+    rtl_demod_reset_resampler_state(&demod);
+    demod.fm_demod_history_valid = 0;
+    demod.pre_r = 0.0f;
+    demod.pre_j = 0.0f;
+}
+
 static void
 rtl_stream_flush_for_external_retune(void) {
     controller_request_input_purge();
@@ -14650,7 +14665,7 @@ rtl_stream_apply_pending_retune_profile_for_target(uint32_t target_freq_hz, int 
             gate = rtl_stream_park_demod_under_gate(gate);
             /* The filters' history and the samples they hold back for look-ahead are the channel left's: the first
                block from the new channel would centre outputs on them, under the new generation. */
-            rtl_demod_clear_filter_histories(&demod);
+            rtl_stream_reset_demod_for_external_move();
             rtl_stream_flush_for_external_retune();
         }
         rtl_stream_leave_demod_family_switch_gate(gate);
@@ -20915,6 +20930,10 @@ profileless_landing_race_phase(uint32_t target_hz, int peer_moved, rtl_stream_te
     g_ring_purge_pending.store(0, std::memory_order_release);
     (void)rtl_device_test_tcp_take_restart_pending(rtl_device_handle);
     family_test_seed_stale_filter_histories();
+    demod.fm_demod_history_valid = 1;
+    demod.pre_r = 0.5f;
+    demod.pre_j = -0.5f;
+    demod.resamp_phase = 3;
     if (!demod_enter_processing_block(&controller)) {
         return -1;
     }
@@ -20938,6 +20957,8 @@ profileless_landing_race_phase(uint32_t target_hz, int peer_moved, rtl_stream_te
     out->input_purged = g_ring_purge_pending.exchange(0, std::memory_order_acq_rel);
     out->staged_discarded = rtl_device_test_tcp_take_restart_pending(rtl_device_handle);
     out->filters_cleared = (family_test_channel_hist_clear() && family_test_hb_hist_clear()) ? 1 : 0;
+    out->discriminator_reset = demod.fm_demod_history_valid == 0 ? 1 : 0;
+    out->resampler_reset = demod.resamp_phase == 0 ? 1 : 0;
     return started ? 0 : -2;
 }
 
