@@ -278,23 +278,6 @@ dsd_call_state_note_checked_media(dsd_state* state, uint8_t slot, int protocol, 
 }
 
 int
-dsd_call_state_forget_numeric_identity(dsd_state* state, uint8_t slot) {
-    if (state == NULL || slot >= DSD_CALL_STATE_SLOT_COUNT) {
-        return -1;
-    }
-    stub_select_state(state);
-    dsd_call_snapshot* call = &g_stub_calls[slot];
-    if (call->epoch == 0U || call->phase != DSD_CALL_PHASE_ACTIVE
-        || (call->ota_target_id == 0U && call->ota_source_id == 0U && call->policy_target_id == 0U)) {
-        return 0;
-    }
-    call->ota_target_id = 0U;
-    call->ota_source_id = 0U;
-    call->policy_target_id = 0U;
-    return 1;
-}
-
-int
 dsd_call_state_end_ex(dsd_state* state, uint8_t slot, double observed_m, dsd_call_end_reason reason) {
     if (state == NULL || slot >= DSD_CALL_STATE_SLOT_COUNT) {
         return -1;

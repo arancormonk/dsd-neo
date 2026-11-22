@@ -223,15 +223,8 @@ dpmr_publish_header_call(dsd_opts* opts, dsd_state* state, const dpmr_header* he
     observation.ota_target_id = header->called_id & 0xFFFFFFU;
     observation.ota_source_id = header->calling_id & 0xFFFFFFU;
     /* A header opens its transmission (dsd_call_boundary: a voice header is per-transmission evidence); a repeat of the
-       header that opened it goes on with it, except on a reacquired epoch (one the call store reopened after a sync
-       loss, seeded with the ended call's IDs): the header then begins an epoch whose IDs are its own (issue #890), as
-       only those are policy evidence (dpmr_forget_reacquired_ids()). */
-    dsd_call_snapshot open_call;
-    const int reacquired = dsd_call_state_get(state, 0U, &open_call) > 0 && open_call.phase == DSD_CALL_PHASE_ACTIVE
-                           && DSD_SYNC_IS_DPMR(open_call.protocol)
-                           && open_call.epoch != dsd_call_snapshot_transmission(&open_call);
-    (void)dsd_call_state_observe(state, &observation,
-                                 continues && !reacquired ? DSD_CALL_BOUNDARY_CONTINUE : DSD_CALL_BOUNDARY_BEGIN);
+       header that opened it goes on with it. */
+    (void)dsd_call_state_observe(state, &observation, continues ? DSD_CALL_BOUNDARY_CONTINUE : DSD_CALL_BOUNDARY_BEGIN);
     /* The transmission's scrambling, as a CRC-verified CCH half's Version would set it (issue #655). */
     const int scrambled = header->version == 3U;
     state->dpmr_scrambled = scrambled ? 2U : 1U;

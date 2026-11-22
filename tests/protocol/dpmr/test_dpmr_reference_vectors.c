@@ -34,6 +34,7 @@
 #include <dsd-neo/fec/block_codes.h>
 #include <dsd-neo/protocol/dpmr/dpmr.h>
 #include <dsd-neo/protocol/dpmr/dpmr_data.h>
+#include <dsd-neo/runtime/decode_clock.h>
 #include <dsd-neo/runtime/trunk_scan_hooks.h>
 #include <stdbool.h>
 #include <stdint.h>
@@ -705,13 +706,32 @@ test_stations_come_only_from_the_calls_header(void) {
 }
 
 #ifdef DPMR_TEST_REAL_CALL_STORE /* the stubs model no reacquisition */
+/* The event layer's hook (dsd_event_sync_slot()), which the call store build defines here: whether any sync while armed
+   saw the slot's call carry a number, as the staged history row and the recording export would read it. */
+static int g_sync_armed;
+static int g_sync_saw_numbers;
+
+void
+dsd_event_sync_slot(dsd_opts* opts, dsd_state* state, uint8_t slot) {
+    (void)opts;
+    dsd_call_snapshot call;
+    if (g_sync_armed && dsd_call_state_get(state, slot, &call) > 0
+        && (call.ota_target_id != 0U || call.ota_source_id != 0U || call.policy_target_id != 0U)) {
+        g_sync_saw_numbers = 1;
+    }
+}
+
+enum { DPMR_TEST_DECODE_T0_MS = 1000000 };
+
 /* Issue #890, on the production call store: after a sync loss ends a dPMR call, the call store reacquires it within
-   its window and seeds the reopened epoch with the ended call's IDs. Those are no header of this reception: the same
-   radio's next transmission whose header was missed would be judged by the old destination. The reopened epoch keeps
-   its texts but no numbers, and its pairs report anonymous; a header that goes on with it begins an epoch whose IDs
-   are its own again. */
+   its window. The ended call's numbers are no header of this reception: the same radio's next transmission whose
+   header was missed would be judged by the old destination. The reopened epoch is seeded with its texts but no
+   numbers, so no reader sees them, the event layer's sync for the reopening frame included; its pairs report
+   anonymous; a header that goes on with it names them again. The decode clock is fixed, so the gap the reacquisition
+   window judges is the test's own (80 ms, one frame), not the scheduler's. */
 static void
 test_reacquired_call_is_anonymous(void) {
+    dsd_decode_clock_use_test((uint64_t)DPMR_TEST_DECODE_T0_MS * 1000000ULL);
     uint32_t called = 0U;
     uint32_t calling = 0U;
     reference_frame_stations(&called, &calling);
@@ -737,8 +757,13 @@ test_reacquired_call_is_anonymous(void) {
     const uint64_t header_epoch = call.epoch;
 
     (void)dsd_call_state_end_ex(state, 0U, 0.0, DSD_CALL_END_SYNC_LOSS);
+    dsd_decode_clock_test_set_ns(((uint64_t)DPMR_TEST_DECODE_T0_MS + 80U) * 1000000ULL);
     dsd_test_scan_activity_reset();
+    g_sync_armed = 1;
+    g_sync_saw_numbers = 0;
     run_frame(opts, state, DPMR_REF_FRAMES[1].body_dibits, sizeof(DPMR_REF_FRAMES[1].body_dibits));
+    g_sync_armed = 0;
+    expect_int("reacquired: no sync saw the ended call's numbers", g_sync_saw_numbers, 0);
     DSD_MEMSET(&call, 0, sizeof(call));
     expect_int("reacquired: a call", dsd_call_state_get(state, 0U, &call) > 0, 1);
     expect_int("reacquired: the store reopened the ended call",
@@ -747,16 +772,16 @@ test_reacquired_call_is_anonymous(void) {
     expect_int("reacquired: its texts kept", call.target_text[0] != '\0' && call.source_text[0] != '\0', 1);
     expect_stations("reacquired pair", 0, 0U, 0, 0U);
 
-    /* A header that goes on with the reacquired call names its stations again, in an epoch of its own. */
+    /* A header that goes on with the reacquired call names its stations again. */
     dpmr_process_header(opts, state, &header, 1);
     DSD_MEMSET(&call, 0, sizeof(call));
     (void)dsd_call_state_get(state, 0U, &call);
-    expect_int("header after the reacquisition: its own epoch", call.epoch == dsd_call_snapshot_transmission(&call), 1);
     expect_int("header after the reacquisition: its numbers",
                call.ota_target_id == called && call.ota_source_id == calling, 1);
     dsd_test_scan_activity_reset();
     run_frame(opts, state, DPMR_REF_FRAMES[0].body_dibits, sizeof(DPMR_REF_FRAMES[0].body_dibits));
     expect_stations("pair after that header", 1, called, 1, calling);
+    dsd_decode_clock_use_system();
 }
 #endif
 

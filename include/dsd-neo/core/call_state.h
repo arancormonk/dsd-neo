@@ -629,14 +629,6 @@ int dsd_call_state_update_media(dsd_state* state, uint8_t slot, int media_active
  */
 int dsd_call_state_note_checked_media(dsd_state* state, uint8_t slot, int protocol, double observed_m);
 /**
- * Forget the numeric identity (ota_target_id, ota_source_id, policy_target_id) of the active epoch on @p slot, keeping
- * its texts and everything else (issue #890): for a protocol whose IDs only a checked message of this epoch may name
- * to the talkgroup and radio policy, when the epoch holds IDs no such message named (a reacquired epoch seeded with
- * the one that ended). Returns 1 when IDs were forgotten, 0 when the slot holds no active epoch or no numeric
- * identity, -1 on bad arguments. Decoder thread.
- */
-int dsd_call_state_forget_numeric_identity(dsd_state* state, uint8_t slot);
-/**
  * dsd_call_state_note_checked_media() for a TETRA speech frame (issue #890), which also names the mode its burst was
  * read in: @p direct 1 for direct mode (EN 300 396), 0 for trunked mode. The span keeps the mode
  * (dsd_call_snapshot::checked_media_tetra_direct), and a frame of the other mode starts it again, as a frame of

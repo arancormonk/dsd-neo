@@ -430,10 +430,11 @@ Generated (do not edit/commit):
     dPMR call carries its stations' raw 24-bit IDs as `ota_target_id`/`ota_source_id` beside the dial strings only
     when the checked header that opened it named them (`dpmr_publish_header_call()`; frame pairs never set them), so its
     voice is judged by them, as its protocol reports are; a call no checked header opened is anonymous (a decided
-    limit: under a Hold or the allow list it holds nothing). An epoch the call store reacquired after a sync loss is
-    seeded with the ended call's IDs, which no header of this reception named: dPMR forgets them on it
-    (`dpmr_forget_reacquired_ids()`, `dsd_call_state_forget_numeric_identity()`, texts kept), and a header that goes on
-    with such an epoch begins one of its own.
+    limit: under a Hold or the allow list it holds nothing). An epoch the call store reacquires after a sync loss is
+    seeded with the ended call's identity, but for dPMR not its numbers (`call_state_numbers_need_own_header()` in
+    `call_state_seed_reacquired_snapshot()`; the texts carry for display): no header of this reception named them, so
+    no reader of the reopened epoch, the event layer's staged row and the recording export included, takes them as
+    this reception's; a header that goes on with the epoch names them again.
     `dsd_scan_tg_hold_call_active()` takes only a call of the row's family too, and on a `tetra-dmo` row only an
     admitted direct mode talkspurt whose checked speech is of this visit (F7), for both the -Y and the trunk-scan visit
     cap. It never matches a call of a callsign family (M17, D-STAR, YSF: `dsd_scan_activity_protocol_is_callsign()`),

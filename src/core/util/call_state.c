@@ -553,14 +553,27 @@ call_state_reacquires_ended_epoch(const dsd_call_snapshot* current, const dsd_ca
            && call_state_reacquire_site_fits(current, live, observation);
 }
 
+// Whether only a checked message of the epoch itself may give a call of @p protocol its numeric identity (issue #890):
+// a dPMR call's numbers are the Communications_Start header's that opened it, and a reacquired epoch heard none, so a
+// headerless reopen (a new transmission from the same radio whose header was missed looks the same) does not inherit
+// them. Its texts still carry, for display.
+static int
+call_state_numbers_need_own_header(int protocol) {
+    return DSD_SYNC_IS_DPMR(protocol);
+}
+
 // Carry the ending call's identity and metadata into the reopened epoch. Without this the UI and
 // the staged history row blank out across the gap and have to relearn everything the previous
-// segment already decoded.
+// segment already decoded. A family whose numbers only its own epoch's header may name keeps them
+// out (call_state_numbers_need_own_header()), so no reader of the reopened epoch, the event layer
+// included, sees them as this reception's.
 static void
 call_state_seed_reacquired_snapshot(dsd_call_snapshot* snapshot, const dsd_call_snapshot* previous) {
-    snapshot->ota_source_id = previous->ota_source_id;
-    snapshot->ota_target_id = previous->ota_target_id;
-    snapshot->policy_target_id = previous->policy_target_id;
+    if (!call_state_numbers_need_own_header(previous->protocol)) {
+        snapshot->ota_source_id = previous->ota_source_id;
+        snapshot->ota_target_id = previous->ota_target_id;
+        snapshot->policy_target_id = previous->policy_target_id;
+    }
     DSD_MEMCPY(snapshot->source_text, previous->source_text, sizeof(snapshot->source_text));
     DSD_MEMCPY(snapshot->target_text, previous->target_text, sizeof(snapshot->target_text));
     DSD_MEMCPY(snapshot->route_text, previous->route_text, sizeof(snapshot->route_text));
@@ -1136,31 +1149,6 @@ call_state_note_checked_media(dsd_state* state, uint8_t slot, int protocol, uint
 int
 dsd_call_state_note_checked_media(dsd_state* state, uint8_t slot, int protocol, double observed_m) {
     return call_state_note_checked_media(state, slot, protocol, 0U, observed_m);
-}
-
-int
-dsd_call_state_forget_numeric_identity(dsd_state* state, uint8_t slot) {
-    if (!state || slot >= DSD_CALL_STATE_SLOT_COUNT) {
-        return -1;
-    }
-    dsd_call_state_ext* ext = dsd_call_state_ext_get(state, 0);
-    if (!ext) {
-        return -1;
-    }
-    dsd_call_state_ext_lock(ext);
-    dsd_call_snapshot* snapshot = &ext->calls.slots[slot];
-    if (snapshot->epoch == 0U || snapshot->phase != DSD_CALL_PHASE_ACTIVE
-        || (snapshot->ota_target_id == 0U && snapshot->ota_source_id == 0U && snapshot->policy_target_id == 0U)) {
-        dsd_call_state_ext_unlock(ext);
-        return 0;
-    }
-    snapshot->ota_target_id = 0U;
-    snapshot->ota_source_id = 0U;
-    snapshot->policy_target_id = 0U;
-    snapshot->revision = call_state_next_nonzero(snapshot->revision);
-    ext->calls.revision = call_state_next_nonzero(ext->calls.revision);
-    dsd_call_state_ext_unlock(ext);
-    return 1;
 }
 
 int
