@@ -129,6 +129,21 @@ Item {
         id: naturalName
     }
 
+    // A Latin line alone in the row's two fonts: what the base face draws,
+    // without the taller fallback faces the line boxes also hold.
+    Text {
+        id: latinNameLine
+        visible: false
+        text: "Ag"
+        font: Ui.LineBoxes.callRowNameFont
+    }
+    Text {
+        id: latinMetaLine
+        visible: false
+        text: "Ag"
+        font: Ui.LineBoxes.callRowMetaFont
+    }
+
     // A Monitor row, whose time is an age that ticks (Util.shortAge).
     Ui.CallRow {
         id: ageRow
@@ -271,8 +286,14 @@ Item {
             }
         }
 
-        // D5: a compact row is about 52 px at 1x against about 64 by default,
-        // and never under a touch target; a default row never under 58.
+        // D5: a compact row halves the default row's padding (6 px above and
+        // below its lines against 12) and is never under a touch target; a
+        // default row is never under 58. Both are their two line boxes, as
+        // drawn, plus that padding (issue #901 r3 S2: never one host's pixels).
+        // Where the boxes are the base face's lines (within 2 px; a fallback
+        // face for the boxes' CJK and emoji probe draws no taller), that is
+        // about 52 px at 1x against about 64; a taller fallback face (Noto
+        // CJK: 68 and 56) makes those two numbers impossible, never the rule.
         function test_compact_height_data() {
             return [{tag: "1.0", scale: 1.0}, {tag: "1.3", scale: 1.3}, {tag: "1.6", scale: 1.6}, {tag: "2.0", scale: 2.0}];
         }
@@ -280,14 +301,26 @@ Item {
             Ui.Theme.fontScale = data.scale;
             waitForRendering(scripts);
             var normal = latin.height;
+            var lines = findChild(latin, "callRowName").height + 3 + findChild(latin, "callRowMeta").height;
             verify(normal >= Ui.Theme.rowHeight, "a default row under " + Ui.Theme.rowHeight + ": " + normal);
+            compare(normal, Math.max(Ui.Theme.rowHeight, lines + 2 * 12), "a default row: its lines and 12 px each side");
             setCompact(true);
             waitForRendering(scripts);
+            var lines2 = findChild(latin, "callRowName").height + 3 + findChild(latin, "callRowMeta").height;
+            compare(lines2, lines, "compact keeps the line boxes");
             verify(latin.height >= Ui.Theme.minimumTouchSize, "a compact row under a touch target: " + latin.height);
             verify(latin.height < normal, "compact is no smaller: " + latin.height + " vs " + normal);
+            compare(latin.height, Math.max(Ui.Theme.minimumTouchSize, lines + 2 * 6), "a compact row: its lines and 6 px each side");
             if (data.scale === 1.0) {
-                verify(Math.abs(latin.height - 52) <= 2, "a compact row at 1x: " + latin.height);
-                verify(Math.abs(normal - 64) <= 2, "a default row at 1x: " + normal);
+                compare(normal - latin.height, 12, "compact is 12 px shorter at 1x");
+                var latinLines = latinNameLine.implicitHeight + 3 + latinMetaLine.implicitHeight;
+                if (lines - latinLines <= 2) {
+                    verify(Math.abs(latin.height - 52) <= 2, "a compact row at 1x: " + latin.height);
+                    verify(Math.abs(normal - 64) <= 2, "a default row at 1x: " + normal);
+                } else {
+                    console.log("a fallback face makes the line boxes " + (lines - latinLines) + " px taller than the base face's lines: rows "
+                        + normal + " and " + latin.height + " px");
+                }
             }
             // Same lines in either density, and the right side stays.
             var name = findChild(latin, "callRowName");

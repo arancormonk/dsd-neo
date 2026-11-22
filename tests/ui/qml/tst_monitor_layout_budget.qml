@@ -24,6 +24,21 @@ Item {
         property bool compactView: false
     }
 
+    // A Latin line alone in the call row's two fonts: what the base face
+    // draws, without the taller fallback faces the row's line boxes hold.
+    Text {
+        id: latinName
+        visible: false
+        text: "Ag"
+        font: Ui.LineBoxes.callRowNameFont
+    }
+    Text {
+        id: latinMeta
+        visible: false
+        text: "Ag"
+        font: Ui.LineBoxes.callRowMetaFont
+    }
+
     Loader {
         id: loader
 
@@ -96,6 +111,15 @@ Item {
         }
         function viewportY(target) {
             return target.mapToItem(tc.list, 0, 0).y;
+        }
+        // Issue #901 r3 S2: how much taller than the base face's own lines the
+        // fallback faces (the boxes' CJK and emoji probe) make a call row's two
+        // line boxes. 0 to 2 px with the app's fonts on most hosts; with Noto
+        // CJK as the fallback 6 (68 px default rows), which the fixed boxes
+        // keep (decided), so a guarantee sized for the base face can be
+        // impossible there.
+        function fallbackExcess() {
+            return Ui.LineBoxes.callRowNameBox() + Ui.LineBoxes.callRowMetaBox() - latinName.implicitHeight - latinMeta.implicitHeight;
         }
 
         function initTestCase() {
@@ -494,9 +518,15 @@ Item {
                     compare(built.height, row, "row " + i);
                 }
                 compare(tc.monitor.labelShown, !data.injected && tc.monitor.tier < 4, "the label");
+                // The tier from the rows as measured: the first, from where the
+                // density starts its search, whose call space holds two of them.
+                var expected = data.injected ? 2 : 0;
+                while (expected < 4 && tc.monitor.callSpaceFor(expected) < 2 * tc.list.itemAtIndex(0).height)
+                    ++expected;
+                compare(tc.monitor.tier, expected, "the tier for " + tc.list.itemAtIndex(0).height + " px rows");
                 if (data.injected)
                     verify(tc.monitor.tier >= 2, "the compact search");
-                else
+                else if (fallbackExcess() <= 2)
                     compare(tc.monitor.tier, 0, "a 360 dp phone at normal text is tier 0 by default");
             } finally {
                 testContext.setPrefs("compactView", false);
@@ -554,7 +584,20 @@ Item {
             verify(tc.monitor.tier <= 4);
             if (data.tier >= 0)
                 compare(tc.monitor.tier, data.tier);
-            verify(fullRowsVisible() >= 2, fullRowsVisible() + " rows visible in tier " + tc.monitor.tier);
+            // Two whole rows wherever the fonts allow it: with the base face's
+            // lines always, and with a taller fallback face wherever even the
+            // tightest tier's call space holds two. Where it does not (Noto CJK,
+            // 360x690 with the slot strip and the scan controls: 131 px for two
+            // 68 px rows) the tier still holds one whole call (S2, decided).
+            var rows = fullRowsVisible();
+            if (fallbackExcess() <= 2 || tc.monitor.callSpaceFor(4) >= 2 * tc.monitor.callRowHeight) {
+                verify(rows >= 2, rows + " rows visible in tier " + tc.monitor.tier);
+            } else {
+                compare(tc.monitor.tier, 4, "the tightest tier before scrolling everything");
+                verify(rows >= 1, rows + " rows visible in tier " + tc.monitor.tier);
+                console.log(data.tag + ": a fallback face " + fallbackExcess() + " px taller leaves " + tc.monitor.callSpaceFor(4)
+                    + " px for " + tc.monitor.callRowHeight + " px rows: one whole call");
+            }
         }
 
         // Call traffic never changes the tier, and the hero's box is reserved:

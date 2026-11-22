@@ -17874,7 +17874,19 @@ Qt Quick frontend (`src/ui/qt`):
   DemiBold; `callRowMetaBox()`, mono 12), in the fonts `LineBoxes` gives (`callRowNameFont`, `callRowMetaFont`),
   centred, unclipped. A row is always these two lines: its `implicitHeight` is `LineBoxes.callRowHeight(compact)`,
   name + 3 + meta + twice the padding (12, or 6 when `compact`), at least `Theme.rowHeight` (a compact row at least
-  `Theme.minimumTouchSize`); about 65 px by default and 53 compact at text 1.0. Fonts and density only, never the
+  `Theme.minimumTouchSize`); about 65 px by default and 53 compact at text 1.0 with the app's fonts on a desktop host.
+  Decided (issue #901 r3 S2): the boxes stay fixed whatever face draws their probe, so a taller fallback face makes
+  every row taller: with Noto CJK as the fallback (Android's) the boxes are 24 and 17 px, a default row ~68 px and a
+  compact one ~56, and on a 360x690 phone at normal text with the slot strip and the scan controls the tightest tier
+  (4) leaves 131 px, one whole call, not two. Tests assert the measured boxes, padding and tier budget, never one
+  host's pixels: `test_compact_height` checks each row against its two drawn boxes plus 12 or 6 px a side and the
+  12 px between the two densities, and the "about 52 and 64" numbers only where the boxes are within 2 px of the base
+  face's own Latin lines; `tst_monitor_layout_budget.qml` computes the expected tier from the measured row height
+  (`test_injected_density_wins`, still tier 0 at 360 dp with the base face's lines) and keeps
+  `test_phone_portrait_guarantees`' two rows wherever the fonts allow it (base-face lines, or a tier whose call space
+  holds two), else one whole call in tier 4; `tst_monitor_roaming.qml` expects the roaming line below the actions
+  where the header's boxes reach past them. Each was checked with only Liberation and with Liberation and Noto CJK as
+  the fontconfig fonts. Fonts and density only, never the
   row's width or call, so every row of a view has the one height the Monitor's budget, History's `rowHeight` and
   `FollowLatest.rowHeight` read (`FollowLatest` keeps `Theme.rowHeight` by default, as Activity and the Map's List
   use it). Narrow rows (B7, "keep heights, drop extras", as the Monitor strip and hero): `CallRow.plan` decides what
