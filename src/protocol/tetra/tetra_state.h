@@ -164,6 +164,8 @@ typedef struct {
     uint32_t rx_qual_start;
     uint32_t burst_carrier_seq; /* dsd_state::carrier_seq as the open burst began: a read that crossed a carrier
                                    boundary or an input interruption is lost (dsd_state_frame_read_lost()) */
+    uint32_t burst_epoch;       /* dsd_state::symbol_clock_epoch as the open burst began: a read a stream flush crossed
+                                   (which moves neither the carrier count nor the interruption flag) is lost too */
     uint8_t burst_open;         /* a burst is being decoded (tetra_confirm_burst_begin() to _end()) */
     uint8_t burst_stale;        /* the carrier was reset while the burst was open: its blocks are the last carrier's */
     uint8_t burst_proven;       /* the open (or last) burst decoded a block whose CRC passed */

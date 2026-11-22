@@ -63,6 +63,7 @@ typedef enum {
     CUT_BOUNDARY =
         0, /* a replay retune inside the read: the carrier boundary forgets the carrier and counts a new one */
     CUT_INTERRUPT = 1, /* an input interruption: the read is cut, the carrier the same */
+    CUT_FLUSH = 2,     /* a stream flush: the symbol clock's epoch moves, with no new carrier and no interruption */
 } cut_kind;
 
 static cut_kind g_cut_kind = CUT_BOUNDARY;
@@ -79,8 +80,10 @@ next_dibit(dsd_state* state) {
             tetra_forget_carrier(state);
             dsd_rxid_reset(state);
             state->carrier_seq++;
-        } else {
+        } else if (g_cut_kind == CUT_INTERRUPT) {
             state->input_interrupted = 1;
+        } else {
+            state->symbol_clock_epoch++;
         }
     }
     return g_tail[g_pos++] & 3;
@@ -427,6 +430,25 @@ test_sb_tail(int cut_at, cut_kind kind) {
     session_close(&s);
 }
 
+/* A stream flush inside the read (the RTL reader dropped what the input held, or the input or its profile changed)
+   moves the symbol clock's epoch and nothing else: the carrier count and the interruption flag stay. The symbols after
+   it are another stretch of the stream, so the read is lost all the same: a DSB, whether the hard or only the soft
+   decision decoded its SCH/S, applies neither its SCH/S from before the flush nor its SCH/H from after it, and a
+   trunked SB takes on neither its BSCH nor its block 2. The flush comes on the first dibit of the tail. */
+static void
+test_flush_in_the_tail(void) {
+    for (int soft_only = 0; soft_only <= 1; soft_only++) {
+        session s = session_open();
+        const uint32_t epoch = s.state->rx_id.epoch;
+        (void)dsb(&s, 1, soft_only, 0, CUT_FLUSH);
+        assert(g_cuts == 1 && g_pos == TAIL_DIBITS);
+        expect_nothing_of_the_dsb(
+            &s, epoch, soft_only ? "soft-only DSB, stream flush in its tail" : "DSB, stream flush in its tail");
+        session_close(&s);
+    }
+    test_sb_tail(0, CUT_FLUSH);
+}
+
 /* A lost burst publishes nothing: after a direct mode carrier, the trunked SB a carrier boundary cut leaves the
    publication as the boundary left it, never relabelled as the trunked mode the decoder starts the next carrier in
    until a burst of that carrier says so. */
@@ -510,6 +532,7 @@ main(void) {
     test_sb_tail(SB_BB_DIBITS + 60, CUT_BOUNDARY);
     test_sb_tail(3, CUT_BOUNDARY);
     test_sb_tail(SB_BB_DIBITS + 60, CUT_INTERRUPT);
+    test_flush_in_the_tail();
     DSD_FPRINTF(stdout, "TETRA_BURST_CUT: OK\n");
     return 0;
 }

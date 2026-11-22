@@ -1027,9 +1027,10 @@ tetra_process_sb(dsd_opts* opts, dsd_state* state) {
         return;
     }
     if (!tetra_confirm_burst_current(state)) {
-        /* A carrier boundary inside the read (a replay retune) or an input interruption lost the burst: its BSCH, or
-         * the DSB only the soft decision decodes, is the last carrier's, so neither its network and colour code nor
-         * its polarity is taken on for the carrier the receiver is on now. */
+        /* A carrier boundary inside the read (a replay retune), a stream flush or an input interruption lost the
+         * burst: its BSCH, or the DSB only the soft decision decodes, and the rest of its read are not one
+         * transmission's, so neither its network and colour code nor its polarity is taken on for the carrier the
+         * receiver is on now. */
         state->tetra_sync.sb1_soft_valid = 0;
         return;
     }
