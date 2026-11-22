@@ -172,9 +172,9 @@ rtl_maybe_apply_demod_profile(const dsd_opts* opts, const dsd_state* state, cons
        profile lands at (issue #806), which digital_resample can leave below that rate. */
     const int ted_sps =
         dsd_opts_compute_sps_rate(opts, profile->symbol_rate_hz, frame_sync_current_demod_rate(opts, state));
-    (void)dsd_rtl_stream_metrics_hook_apply_demod_profile(dsd_scan_mode_chain_rf_mod(opts, state) == 1,
-                                                          profile->symbol_rate_hz, profile->levels,
-                                                          rtl_profile_for_sps_profile(opts, state, profile), ted_sps);
+    (void)dsd_rtl_stream_metrics_hook_apply_demod_profile(
+        dsd_scan_mode_chain_rf_mod(opts, state) == 1, dsd_scan_mode_cqpsk_explicit(opts, state, NULL),
+        profile->symbol_rate_hz, profile->levels, rtl_profile_for_sps_profile(opts, state, profile), ted_sps);
 }
 
 static void

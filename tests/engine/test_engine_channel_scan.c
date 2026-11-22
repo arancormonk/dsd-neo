@@ -208,7 +208,8 @@ static int expected_frontend_levels = 2;
 static int expected_frontend_sps = 10;
 
 static int
-restore_frontend(int cqpsk, int rate, int levels, int filter, int sps) {
+restore_frontend(int cqpsk, int cqpsk_explicit, int rate, int levels, int filter, int sps) {
+    (void)cqpsk_explicit;
     assert(cqpsk == 0 && rate == expected_frontend_rate && levels == expected_frontend_levels
            && sps == expected_frontend_sps);
     assert(filter == DSD_RTL_STREAM_CHANNEL_PROFILE_6K25);
@@ -957,7 +958,8 @@ record_analog_restore(int family, int kind, int width_hz) {
 }
 
 static int
-record_digital_restore(int cqpsk, int rate, int levels, int filter, int sps) {
+record_digital_restore(int cqpsk, int cqpsk_explicit, int rate, int levels, int filter, int sps) {
+    (void)cqpsk_explicit;
     (void)cqpsk;
     (void)rate;
     (void)levels;

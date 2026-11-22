@@ -6989,7 +6989,9 @@ test_typed_scan_digital_row_after_nfm_timed_for_digital(void) {
 static int g_leave_demod_ted_sps = 0;
 
 static int
-record_leave_demod_profile(int cqpsk_enable, int symbol_rate_hz, int levels, int channel_profile, int ted_sps) {
+record_leave_demod_profile(int cqpsk_enable, int cqpsk_explicit, int symbol_rate_hz, int levels, int channel_profile,
+                           int ted_sps) {
+    (void)cqpsk_explicit;
     (void)cqpsk_enable;
     (void)symbol_rate_hz;
     (void)levels;

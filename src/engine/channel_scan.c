@@ -1811,7 +1811,7 @@ channel_scan_restore_frontend(const dsd_opts* opts, dsd_state* state, int row_ti
     } else {
         (void)dsd_rtl_stream_metrics_hook_apply_analog_profile(DSD_RX_FAMILY_DIGITAL, DSD_ANALOG_DEMOD_FM, 0);
     }
-    (void)dsd_rtl_stream_metrics_hook_apply_demod_profile(state->rf_mod == 1, profile.symbol_rate_hz, profile.levels,
+    (void)dsd_rtl_stream_metrics_hook_apply_demod_profile(state->rf_mod == 1, 0, profile.symbol_rate_hz, profile.levels,
                                                           filter, state->samplesPerSymbol);
     return 0;
 }

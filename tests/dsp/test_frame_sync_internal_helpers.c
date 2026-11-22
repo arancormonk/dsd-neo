@@ -3245,6 +3245,8 @@ static int g_profile_rate = 0;
 static int g_profile_levels = 0;
 static int g_profile_channel = 0;
 static int g_profile_cqpsk = 0;
+/* Whether the last profile the frame sync published carried the scan row's own CQPSK choice (issue #890). */
+static int g_profile_explicit = -1;
 static int g_profile_ted_sps = 0;
 
 static double
@@ -3278,7 +3280,9 @@ fake_output_rate_hz(void) {
 }
 
 static int
-fake_apply_demod_profile(int cqpsk_enable, int symbol_rate_hz, int levels, int channel_profile, int ted_sps) {
+fake_apply_demod_profile(int cqpsk_enable, int cqpsk_explicit, int symbol_rate_hz, int levels, int channel_profile,
+                         int ted_sps) {
+    g_profile_explicit = cqpsk_explicit;
     g_profile_set_calls++;
     g_profile_cqpsk = cqpsk_enable;
     g_profile_rate = symbol_rate_hz;
@@ -4758,10 +4762,11 @@ lock_reapply_tetra_case(int trunk_scan) {
     reset_fake_profile_capture();
     dsd_frame_sync_test_apply_cli_mod_lock(opts, state);
     assert(state->rf_mod == 0);
-    if (g_profile_set_calls < 1 || g_profile_cqpsk != 1 || g_profile_rate != 18000
+    if (g_profile_set_calls < 1 || g_profile_cqpsk != 1 || g_profile_explicit != 1 || g_profile_rate != 18000
         || g_profile_channel != DSD_RTL_STREAM_CHANNEL_PROFILE_TETRA) {
-        DSD_FPRINTF(stderr, "FAIL tetra-dmo %s under -mc: the lock republished cqpsk %d, %d sym/s, profile %d\n",
-                    trunk_scan ? "target" : "row", g_profile_cqpsk, g_profile_rate, g_profile_channel);
+        DSD_FPRINTF(
+            stderr, "FAIL tetra-dmo %s under -mc: the lock republished cqpsk %d (explicit %d), %d sym/s, profile %d\n",
+            trunk_scan ? "target" : "row", g_profile_cqpsk, g_profile_explicit, g_profile_rate, g_profile_channel);
         assert(0);
     }
     dsd_scan_mode_leave(opts, state);
@@ -4770,7 +4775,7 @@ lock_reapply_tetra_case(int trunk_scan) {
     state->rf_mod = 1;
     reset_fake_profile_capture();
     dsd_frame_sync_test_apply_cli_mod_lock(opts, state);
-    assert(state->rf_mod == 0 && g_profile_set_calls >= 1 && g_profile_cqpsk == 0);
+    assert(state->rf_mod == 0 && g_profile_set_calls >= 1 && g_profile_cqpsk == 0 && g_profile_explicit == trunk_scan);
     dsd_scan_mode_leave(opts, state);
     dsd_state_ext_free_all(state);
     dsd_rtl_stream_metrics_hooks_set(NULL);
