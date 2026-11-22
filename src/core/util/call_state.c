@@ -744,6 +744,7 @@ dsd_call_state_observe(dsd_state* state, const dsd_call_observation* observation
         return -1;
     }
     dsd_call_state_ext_lock(ext);
+    ext->observation_seq[slot]++;
     dsd_call_snapshot* snapshot = &ext->calls.slots[slot];
     const double now_m = call_state_observed_m(observation->observed_m);
     dsd_receive_identity received;
@@ -1255,6 +1256,21 @@ dsd_call_state_get(const dsd_state* state, uint8_t slot, dsd_call_snapshot* out)
     atomic_fetch_add(&g_call_state_snapshot_copies, 1);
 #endif
     return out->epoch != 0U ? 1 : 0;
+}
+
+uint32_t
+dsd_call_state_observation_seq(const dsd_state* state, uint8_t slot) {
+    if (!state || slot >= DSD_CALL_STATE_SLOT_COUNT) {
+        return 0U;
+    }
+    const dsd_call_state_ext* ext = dsd_call_state_ext_peek(state);
+    if (!ext) {
+        return 0U;
+    }
+    dsd_call_state_ext_lock(ext);
+    const uint32_t seq = ext->observation_seq[slot];
+    dsd_call_state_ext_unlock(ext);
+    return seq;
 }
 
 int

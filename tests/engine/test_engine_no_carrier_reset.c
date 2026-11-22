@@ -18580,7 +18580,9 @@ test_y_tetra_holds_only_on_checked_content(void) {
    @p partial 3 the refused frame is a checked (PROVEN) one and another call begins at the next frame, whose open
    verdicts keep the row too (the refusal binds at its own frame's boundary, never to the call after it); with
    @p partial 4 the refused report's frame observes no call while an earlier transmission's call is still active (its
-   end missed), and the open verdicts keep the row (a refusal binds only to a call its own frame observed). So does
+   end missed), and the open verdicts keep the row (a refusal binds only to a call its own frame observed); with
+   @p partial 5 the decoder also refreshes that stale call's media at the refused frame, which is no observation, and
+   the row is kept the same way. So does
    a voice call the table would admit but the protocol's own receive filter refused (@p receive_refused: M17's CAN
    filter, reported refused rather than not at all): the row leaves the same way. */
 static const dsd_trunk_scan_activity_identity* g_y_admit_identity = NULL;
@@ -18611,6 +18613,11 @@ y_admit_observer(const dsd_opts* opts, const dsd_state* state) {
         g_frame_evidence = DSD_CONTENT_EVIDENCE_PARTIAL;
         g_frame_evidence_hold_ms = 80U;
     }
+    if (st && g_y_admit_stale_call == 2 && g_frame_count >= 1) {
+        /* The decoder still refreshes the old call's media (M17's retained CAN: m17_mark_stream_media()), which is no
+           observation of the reported transmission. */
+        (void)dsd_call_state_update_media(st, 0U, 1, dsd_decode_now_mono_s());
+    }
     if (st && g_y_admit_call && g_frame_count == 0) {
         dsd_call_observation call = dsd_call_observation_data(DSD_SYNC_TETRA_SB_POS, 0U, 100U, 300U);
         call.observed_m = dsd_decode_now_mono_s();
@@ -18639,6 +18646,7 @@ static int
 y_admit_case(int voice, int partial, int receive_refused) {
     const char* what = receive_refused ? "typed -Y TETRA row, a voice call its receive filter refused, open verdicts"
                        : voice         ? "typed -Y TETRA row, an admitted voice call"
+                       : partial == 5  ? "typed -Y TETRA row, a refused report beside a stale call's media refresh"
                        : partial == 4  ? "typed -Y TETRA row, a refused report with no call of its own"
                        : partial == 3  ? "typed -Y TETRA row, a new call after a refused checked frame"
                        : partial == 2  ? "typed -Y TETRA row, a later call after refused data"
@@ -18662,8 +18670,8 @@ y_admit_case(int voice, int partial, int receive_refused) {
     id.receive_refused = (uint8_t)(receive_refused ? 1U : 0U);
     g_y_admit_identity = &id;
     g_y_admit_state = state;
-    g_y_admit_call = partial != 0 && partial != 4;
-    g_y_admit_stale_call = partial == 4;
+    g_y_admit_call = partial != 0 && partial < 4;
+    g_y_admit_stale_call = partial == 5 ? 2 : partial == 4;
     g_y_admit_call_ends = partial == 3 ? 2 : partial == 2;
     g_process_frame_observer = y_admit_observer;
     if (partial < 2) {
@@ -18703,7 +18711,7 @@ y_admit_case(int voice, int partial, int receive_refused) {
 static int
 test_y_typed_row_holds_on_admitted_activity(void) {
     return y_admit_case(0, 0, 0) | y_admit_case(1, 0, 0) | y_admit_case(0, 1, 0) | y_admit_case(0, 2, 0)
-           | y_admit_case(0, 3, 0) | y_admit_case(0, 4, 0) | y_admit_case(1, 1, 1);
+           | y_admit_case(0, 3, 0) | y_admit_case(0, 4, 0) | y_admit_case(0, 5, 0) | y_admit_case(1, 1, 1);
 }
 
 /* Issue #890: a TETRA synchronisation burst whose BSCH passed, dispatched through the real processFrame(), with a carrier

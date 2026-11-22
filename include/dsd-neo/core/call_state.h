@@ -690,6 +690,13 @@ int dsd_call_state_get(const dsd_state* state, uint8_t slot, dsd_call_snapshot* 
  * only compares them across a step and needs no snapshot copy. Returns as dsd_call_state_get().
  */
 int dsd_call_state_get_revision(const dsd_state* state, uint8_t slot, uint64_t* epoch, uint64_t* revision);
+/**
+ * How many observations slot @p slot has taken (dsd_call_state_observe(), an identical repeat included), a count that
+ * wraps and that only a caller comparing it across a step reads: an observation is a decoder's checked content naming
+ * the slot's call, which a media refresh (dsd_call_state_update_media()) never is, since it may refresh a call an
+ * earlier transmission left active (issue #890). 0 with no call store or a bad slot.
+ */
+uint32_t dsd_call_state_observation_seq(const dsd_state* state, uint8_t slot);
 int dsd_call_state_copy_snapshot(const dsd_state* state, dsd_call_state_snapshot* out);
 int dsd_call_state_restore_snapshot(dsd_state* state, const dsd_call_state_snapshot* snapshot);
 int dsd_call_context_copy_snapshot(const dsd_state* state, dsd_call_context_snapshot* out);
