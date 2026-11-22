@@ -1080,8 +1080,9 @@ no pick. Checking the list itself (Qt, `--validate-config`) does not look at the
   the radio applied for it and that the radio runs the TETRA receive chain, and checks again all the time. If the rate
   changes, or the timing does not match it, or the radio settled on another receive chain, the scan leaves it at once
   for the next one that can be visited, even under a hold, which stays and keeps where it lands. A radio that is
-  reopening keeps it. Each target or row is named once for the scan session: later visits it leaves for the same or
-  another reason are not named again. Typing the frequency of a target or row the
+  reopening keeps it. Each target or row is named once for the scan session, at the start, on air or when the DSP
+  rate changes, whichever comes first: later visits it leaves for the same or another reason are not named again. The
+  status line still lists it among the targets skipped at every visit. Typing the frequency of a target or row the
   scan is leaving for this reason is refused with the same reason, rather than held, and so is switching off the
   last other list when the target on air is one the scan is leaving.
 - **A start that can visit nothing is refused.** When no target in the lists that are on can be visited (every one is

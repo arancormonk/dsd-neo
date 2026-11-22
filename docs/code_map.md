@@ -773,7 +773,11 @@ Generated (do not edit/commit):
       still resolves an open verdict there. A refused report also marks the row (`dsd_engine_scan_owner::y_refused`,
       `y_refused_slot`), for the refused transmission alone: the refused frame's own boundary binds the mark to the call
       active on that slot (every boundary asks, `live_scanner_y_note_frame_content()`, whatever the frame noted, so a
-      refused checked frame binds too, never the call after it: `y_admit_case(0, 3)`) (`y_refused_epoch`, the call's `transmission_epoch`), and `live_scanner_y_refusal_stands()` drops it
+      refused checked frame binds too, never the call after it: `y_admit_case(0, 3)`) (`y_refused_epoch`, the call's
+      `transmission_epoch`), and only when that frame observed a call (`dsd_state::scan_y_call_seq` moved since the
+      boundary before, `dsd_engine_scan_owner::y_call_seq_mark`): a report with no call of its own (an M17 LICH pair the
+      CAN filter refused before any link setup) lets the mark lapse rather than bind to a call an earlier transmission
+      left active (`y_admit_case(0, 4)`). `live_scanner_y_refusal_stands()` drops it
       once that slot holds no active call or another transmission's, as do the next admitted report and a landing.
       While it stands an open verdict renews no `-Y` wait (`live_scanner_y_note_partial()`), so the chunks of an M17
       packet the table refused, each a PARTIAL note waiting on the packet's end CRC, do not keep the row past `-t`; a
@@ -1090,7 +1094,10 @@ the CLI/config options live in `docs/trunk-scan.md`; `include/dsd-neo/engine/tru
   owes the departure a target out of the rotation owes (ahead of an operator's hold,
   `dsd_engine_trunk_scan_departure_due()` included), named once per target for the scan session in the log and on the
   status line (`dsd_trunk_scan_target_runtime::tetra_warned`, whatever the cause and however often the rotation
-  returns; a decided simplification, nothing re-arms it). One answer for
+  returns; a decided simplification, nothing re-arms it). The list-wide checks share that record: the start
+  (`trunk_scan_warn_targets()`, whose named targets the start marks once their runtimes exist) and the rate recheck
+  (`trunk_scan_recheck_analog_targets()`) name a target only when it was not named yet, and mark it; the status line
+  still counts every target skipped (`test_tetra_dmo_named_once_across_checks`). One answer for
   every entry path: `trunk_scan_target_tetra_skip()` judges the target on air with its park landed
   (`dsd_engine_trunk_scan_target_confirmed()`) landed, every other target prospectively, for a go-to, a hold and the
   published entry reasons, whose cache keys on the on-air verdict and, with a TETRA DMO target, on the target on air
@@ -1121,7 +1128,9 @@ the CLI/config options live in `docs/trunk-scan.md`; `include/dsd-neo/engine/tru
   trunk scan), by what the stream applied for the row the receiver is on (a step off it that failed leaves it there);
   while a step of the scan's own is in flight the cause is kept, so a step that fails late leaves the departure paced
   as the step paced it; a row is named once for the scan session, whatever the cause (`channel_scan::tetra_warned`,
-  the rows named on the list in force, read only when a row is about to be named and dropped when the list changes).
+  the rows named on the list in force, read only when a row is about to be named and dropped when the list changes),
+  the list-wide width check included (`channel_scan_warn_row_tetra()`, which still counts the row skipped on the
+  status line, `y_tetra_rate_change_named_once_case()`).
   A non-waiting
   cause is kept in the extension (`tetra_skip`, `tetra_skip_row`) and makes the row owe its departure as an avoided row
   does
