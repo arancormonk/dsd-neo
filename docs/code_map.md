@@ -2359,7 +2359,9 @@ suite runs under this compiler.
   (`src/protocol/dmr/dmr_crc_provenance.h`; `dmr_dheader()` maps a 0/1 verdict), stores RAS-accepted confirmed blocks
   as `DMR_DATA_BLOCK_CRC_RAS` in `data_block_crc_valid`, and folds them back into bits for the packet
   (`dmr_block_type1_block_crc_flags()`, `dmr_block_type2_crc_flags()` for MBC/UDT). A trunk grant's provenance rides in
-  `dmr_sm_ctx_t::vc_crc_flags` to the call `handle_voice_sync()` publishes later, outside the burst's scope.
+  `dmr_sm_ctx_t::vc_crc_flags` to the call `handle_voice_sync()` publishes later, outside the burst's scope; the
+  channel it named (`vc_lpcn`) keeps its own in `vc_channel_crc_flags`, which an in-place grant renews only when it
+  names that channel again (one with CdefParms CHAN 0 vouches for no channel).
 - API note (DMR UDP services, issue #746): the IPv4 (SAP 4, `decode_ip_pdu()`, shared with P25) and compressed
   UDP/IPv4 (SAP 3, `dmr_udp_comp_pdu()`) paths in `src/protocol/dmr/dmr_pdu.c` decode a datagram through one port
   dispatch, `dmr_udp_service_dispatch()`: the destination port when a decoder claims it, else a source port that names
@@ -13512,7 +13514,9 @@ Private per-protocol modules worth knowing about:
   followed call). A P_CLEAR stops following a slot; the call record ends on its terminator or timeout. Under DMR mono
   playout (`-fr`) the cleared followed slot hands playout (`dmr_mono_slot`, never `vc_slot`) to the companion's accepted
   voice while the followed slot is silent (`vc_slot_cleared`, `dmr_sm_mono_playout_note()`), and back when the followed
-  slot speaks again. The synthesized lockout clear (`dmr_cspdu_release_channel()`) and another FID's opcode 46 keep the
+  slot speaks again with voice accepted after the clear (`vc_clear_voice_m`). Playout follows only the colour-code
+  gate's per-slot voice stamp (`dmr_confidence_voice_m`, `dmr_sm_slot_speaks()`): packet data on the cleared slot (which
+  still holds the receiver, `handle_data_sync()`) and a voice sync whose voice the gate has not accepted never move it. The synthesized lockout clear (`dmr_cspdu_release_channel()`) and another FID's opcode 46 keep the
   carrier-wide release unread. Any clear arms `trunk_sm_force_release` only while the machine follows a call
   (`dmr_sm_follows_call()`, TUNED): on a composite TSCC's payload slot, or after an idle XPT status marked the receiver
   tuned (`trunk_is_tuned`) on the control channel, a latched force would release the next followed grant on its first
@@ -13581,12 +13585,16 @@ Private per-protocol modules worth knowing about:
     announcement's CRC provenance, `vc_crc_flags`, which the first voice publishes it with, never the replaced
     grant's: a RAS-accepted reassignment under `-F` reads unverified, a verified one verified); a repeat of
     the call the slot names keeps record and follow time (on the followed slot it still becomes the grant identity), and
-    a repeat of the grant followed there changes nothing. A repeat is the same class and kind (group or private, voice
+    a repeat of the grant followed there changes nothing. The first voice never publishes the grant identity over a
+    checked LC bound to the slot's active call (`dmr_sm_slot_lc_holds_call()`): the LC's talker and transmission stay,
+    so an in-place grant naming that call changes only the P_CLEAR addresses. A repeat is the same class and kind (group or private, voice
     or data) and the same talkgroup, or for a private call the same two parties (either way round,
     `dmr_sm_call_keys_match()`): a private data grant from another sender to the same unit is another call. The same
     rule decides whether a naming keeps the slot's follow time (`dmr_sm_slot_name()`) and whether the active canonical
     call is the named one to bind to (`dmr_sm_call_names_other()`, with what that call does not name yet left open), so
-    such a call starts its own dwell and awaits its own transmission. A status's in-place entry
+    such a call starts its own dwell and awaits its own transmission. Late-entry voice without an LC
+    (`DSD_CALL_KIND_VOICE`) counts as voice there, and the same rule applies when an awaiting record binds to the next
+    transmission (`dmr_sm_slot_identity_refresh()`), so a data grant never binds a voice call. A status's in-place entry
     (origin STATUS) replaces only a seed or grant identity, never a checked LC's on that carrier.
   - Slot identities (`dmr_sm_slot_ctx_t`: target, source, kind, provenance SEED/GRANT/LC, policy class, channel,
     carrier, follow time, and `crc_flags`, the DSD_CRC_* bits of what named it: the grant's or status's burst, a Cap+

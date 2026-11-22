@@ -186,6 +186,10 @@ typedef struct {
     // published later, at voice sync and outside that burst's scope, so its provenance travels with it.
     int cc_hunt_index;
     uint8_t vc_crc_flags;
+    /* DSD_CRC_* bits of what named vc_lpcn: the grant that tuned the channel, or the latest in-place grant that named
+       that channel again. An in-place grant naming no channel renames the followed call (vc_crc_flags) but not the
+       channel, which keeps its own provenance wherever it is published. */
+    uint8_t vc_channel_crc_flags;
 
     // Timing (monotonic only)
     double t_tune_m; // Time of last VC tune
@@ -238,6 +242,9 @@ typedef struct {
        playout the companion slot's accepted voice is played while it holds the receiver and the followed slot is
        silent (vc_slot itself stays, for P_CLEAR addressing). Cleared by the next follow or release. */
     int vc_slot_cleared;
+    /* The cleared slot's last accepted voice stamp (dsd_state::dmr_confidence_voice_m) at that clear: the followed slot
+       takes mono playout back only with voice accepted after it. */
+    double vc_clear_voice_m;
 
     // An operator move (dmr_sm_cold_start_note_retune()) outside a startup hunt: the listening window on the new
     // frequency starts at cc_moved_m, or later when frames were still gated by a tune the move superseded, which

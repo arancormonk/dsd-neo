@@ -122,6 +122,14 @@ static const long VC_HZ = 852000000L;
 static dsd_opts opts;
 static dsd_state state;
 
+static const uint64_t k_t0_ns = 1000000000000000000ULL; // the TEST clock's origin, far from any platform reading
+
+/* The decode clock's TEST source at @p ms after its origin. */
+static void
+clock_at_ms(uint64_t ms) {
+    dsd_decode_clock_test_set_ns(k_t0_ns + (ms * 1000000ULL));
+}
+
 static void
 init_env(void) {
     dsd_state_ext_free_all(&state);
@@ -413,20 +421,30 @@ test_p_clear_in_place_grant_matching_slot_lc(void) {
     send_pclear(0U, 0U, 1U, 5678U);
     assert(opts.trunk_is_tuned == 0);
 
-    init_env();
-    dmr_sm_emit_indiv_grant_slot(&opts, &state, VC_HZ, /*lpcn*/ 20, /*slot*/ 0, /*dst*/ 101, /*src*/ 102);
-    assert(opts.trunk_is_tuned == 1);
-    observe_call(0U, DSD_CALL_KIND_PRIVATE_VOICE, 2002U, 3003U);
-    dmr_sm_note_lc_identity(&opts, &state, 0, DSD_CALL_KIND_PRIVATE_VOICE, 2002U, 3003U);
-    dmr_sm_emit_indiv_grant_slot(&opts, &state, VC_HZ, /*lpcn*/ 20, /*slot*/ 0, /*dst*/ 3003, /*src*/ 2002);
-    assert(ctx->vc_dst == 3003 && ctx->vc_src == 2002 && ctx->vc_is_group == 0);
-    assert(ctx->slots[0].prov == (uint8_t)DMR_SM_ID_LC);
-    state.dmrburstL = 16;
-    state.dmrburstR = 9;
-    send_pclear(0U, 0U, 0U, 101U); // a party of the call first followed: stale
-    assert(opts.trunk_is_tuned == 1);
-    send_pclear(0U, 0U, 0U, 2002U);
-    assert(opts.trunk_is_tuned == 0);
+    for (int party = 0; party < 2; party++) {
+        init_env();
+        dmr_sm_emit_indiv_grant_slot(&opts, &state, VC_HZ, /*lpcn*/ 20, /*slot*/ 0, /*dst*/ 101, /*src*/ 102);
+        assert(opts.trunk_is_tuned == 1);
+        observe_call(0U, DSD_CALL_KIND_PRIVATE_VOICE, 2002U, 3003U);
+        dmr_sm_note_lc_identity(&opts, &state, 0, DSD_CALL_KIND_PRIVATE_VOICE, 2002U, 3003U);
+        dsd_call_snapshot call;
+        assert(dsd_call_state_get(&state, 0U, &call) > 0);
+        const uint64_t lc_epoch = dsd_call_snapshot_transmission(&call);
+        dmr_sm_emit_indiv_grant_slot(&opts, &state, VC_HZ, /*lpcn*/ 20, /*slot*/ 0, /*dst*/ 3003, /*src*/ 2002);
+        assert(ctx->vc_dst == 3003 && ctx->vc_src == 2002 && ctx->vc_is_group == 0);
+        assert(ctx->slots[0].prov == (uint8_t)DMR_SM_ID_LC);
+        // The first voice sync publishes nothing over the LC: its talker 3003 stays, in the same transmission.
+        accepted_voice_sync(0U);
+        assert(dsd_call_state_get(&state, 0U, &call) > 0 && call.phase == DSD_CALL_PHASE_ACTIVE);
+        assert(dsd_call_snapshot_transmission(&call) == lc_epoch);
+        assert(call.ota_source_id == 3003U && call.ota_target_id == 2002U);
+        state.dmrburstL = 16;
+        state.dmrburstR = 9;
+        send_pclear(0U, 0U, 0U, 101U); // a party of the call first followed: stale
+        assert(opts.trunk_is_tuned == 1);
+        send_pclear(0U, 0U, 0U, party == 0 ? 2002U : 3003U);
+        assert(opts.trunk_is_tuned == 0);
+    }
 }
 
 /* A private call's reverse leg (an embedded LC naming the other party as the talker) opens a new transmission on the
@@ -456,6 +474,8 @@ test_p_clear_private_reverse_leg(void) {
    again plays TS1. */
 static void
 test_p_clear_mono_plays_busy_companion(void) {
+    dsd_decode_clock_use_test(k_t0_ns);
+    clock_at_ms(0U);
     follow_group_ts1();
     opts.dmr_mono = 1;
     observe_call(1U, DSD_CALL_KIND_GROUP_VOICE, 4321U, 43U);
@@ -468,26 +488,84 @@ test_p_clear_mono_plays_busy_companion(void) {
     assert(opts.trunk_is_tuned == 1);
     assert(ctx->vc_slot == 0);
     assert(state.dmr_mono_slot == 1);
+    clock_at_ms(30U);
     accepted_voice_sync(1U);
     assert(state.dmr_mono_slot == 1);
     send_pclear(1U, 0U, 1U, 4321U); // still not the followed call's slot
     assert(opts.trunk_is_tuned == 1 && ctx->vc_slot == 0);
+    clock_at_ms(60U);
     accepted_voice_sync(0U);
     assert(state.dmr_mono_slot == 0);
+    clock_at_ms(90U);
     accepted_voice_sync(1U); // TS1 is live again: it keeps the playout
     assert(state.dmr_mono_slot == 0);
 
     // The companion busy at the clear, its voice not accepted yet: playout goes to it at its first accepted voice while
     // TS1 stays silent.
+    clock_at_ms(1000U);
     follow_group_ts1();
     opts.dmr_mono = 1;
     state.dmrburstR = 16;
     accepted_voice_sync(0U);
     send_pclear(0U, 0U, 1U, 1234U);
     assert(opts.trunk_is_tuned == 1 && state.dmr_mono_slot == 0);
+    clock_at_ms(1030U);
     observe_call(1U, DSD_CALL_KIND_GROUP_VOICE, 4321U, 43U);
     accepted_voice_sync(1U);
     assert(state.dmr_mono_slot == 1);
+    dsd_decode_clock_use_system();
+}
+
+/* Follow TS1 under -fr with TS2's call live, then clear TS1: playout goes to TS2 (on the TEST clock, at 0 ms). */
+static void
+follow_ts1_and_clear_to_companion(void) {
+    clock_at_ms(0U);
+    follow_group_ts1();
+    opts.dmr_mono = 1;
+    opts.trunk_tune_data_calls = 1;
+    observe_call(1U, DSD_CALL_KIND_GROUP_VOICE, 4321U, 43U);
+    state.dmrburstR = 16;
+    accepted_voice_sync(0U);
+    accepted_voice_sync(1U);
+    send_pclear(0U, 0U, 1U, 1234U);
+    assert(opts.trunk_is_tuned == 1 && state.dmr_mono_slot == 1);
+}
+
+/* After the clear hands playout to TS2, packet data on the cleared TS1 holds the receiver but plays nothing: TS2's next
+   voice keeps the playout. Only voice accepted on TS1 after the clear takes it back. */
+static void
+test_p_clear_mono_data_keeps_companion(void) {
+    dsd_decode_clock_use_test(k_t0_ns);
+    follow_ts1_and_clear_to_companion();
+    const dmr_sm_ctx_t* ctx = dmr_sm_get_ctx();
+    clock_at_ms(30U);
+    dmr_sm_emit_data_sync(&opts, &state, 0);
+    assert(ctx->slots[0].voice_active == 1); // data still holds the receiver
+    clock_at_ms(40U);
+    accepted_voice_sync(1U);
+    assert(state.dmr_mono_slot == 1);
+    clock_at_ms(70U);
+    accepted_voice_sync(0U);
+    assert(state.dmr_mono_slot == 0);
+    dsd_decode_clock_use_system();
+}
+
+/* After the handoff, a voice sync on TS1 whose voice the colour-code gate has not accepted since the clear (bootstrap)
+   does not take playout back; TS1's next accepted voice does. */
+static void
+test_p_clear_mono_bootstrap_sync_keeps_companion(void) {
+    dsd_decode_clock_use_test(k_t0_ns);
+    follow_ts1_and_clear_to_companion();
+    clock_at_ms(30U);
+    dmr_sm_emit_voice_sync(&opts, &state, 0); // TS1's last accepted voice is the cleared call's
+    assert(state.dmr_mono_slot == 1);
+    clock_at_ms(40U);
+    accepted_voice_sync(1U);
+    assert(state.dmr_mono_slot == 1);
+    clock_at_ms(70U);
+    accepted_voice_sync(0U);
+    assert(state.dmr_mono_slot == 0);
+    dsd_decode_clock_use_system();
 }
 
 /* A checked clear naming another TSCC makes it a hunt candidate; the release still returns to the control channel.
@@ -653,6 +731,8 @@ main(int argc, char** argv) {
     test_p_clear_in_place_grant_matching_slot_lc();
     test_p_clear_private_reverse_leg();
     test_p_clear_mono_plays_busy_companion();
+    test_p_clear_mono_data_keeps_companion();
+    test_p_clear_mono_bootstrap_sync_keeps_companion();
     test_p_clear_named_tscc_becomes_candidate();
     test_synth_lockout_clear_still_releases();
     test_vendor_fid_clear_unchanged();
