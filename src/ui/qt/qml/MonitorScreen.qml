@@ -422,9 +422,10 @@ Item {
     }
     // B12: a scan of several lists is titled "<name> + N lists". Where the
     // title's room in tier t cannot hold the count and a readable part of the
-    // name (max(96, 35% of the room)), the count takes a second line of the
-    // header's whole width, below the header actions, and the name has the
-    // first line to itself, elided. The room is measured with the actions the
+    // name (max(96, 35% of the room), but never more than the whole name, so
+    // a short title that fits keeps one line: r2 E1), the count takes a
+    // second line of the header's whole width, below the header actions, and
+    // the name has the first line to itself, elided. The room is measured with the actions the
     // tier shows and the pill at its widest label, so LIVE turning STOPPING…
     // never changes the form.
     readonly property string titleCountText: withOtherLists("").trim()
@@ -435,7 +436,8 @@ Item {
         // The heading's own width: its 12 px right margin, stacked or beside
         // the actions.
         var room = row - 12 - (headerStackedFor(t) ? 0 : headerActionsWidthFor(wideHeaderActionsFor(t)));
-        return room < titleSuffixMetrics.advanceWidth + Math.max(96, 0.35 * room);
+        var name = Math.min(Math.ceil(titleNameProbe.advanceWidth), Math.max(96, 0.35 * room));
+        return room < titleSuffixMetrics.advanceWidth + name;
     }
     // Beside the actions the count line starts below them.
     function titleCountPad(t) {
@@ -499,6 +501,13 @@ Item {
         text: "Ag"
         textFormat: Text.PlainText
         font: monitorTitle.font
+    }
+    // The session name's whole width in the title font, for the title's form
+    // (titleTwoLine()); never elided, so it follows the name and the font only.
+    TextMetrics {
+        id: titleNameProbe
+        font: monitorTitle.font
+        text: screen.sessionLine
     }
     FontMetrics {
         id: heroMicroMetrics

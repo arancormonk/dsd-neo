@@ -179,6 +179,8 @@ Item {
                 else
                     verify(title.text.indexOf(" + 7 lists") > 0, "the count is on the title's line: " + title.text);
                 compare(title.Accessible.name.indexOf(" + 7 lists") > 0, true);
+                // Read whole: the name the line cuts, then the count (r2 C1).
+                compare(title.Accessible.name, name + " + 7 lists");
                 compare(findChild(screen, "monitorHeader").height, screen.headerBarHeight(screen.tier));
             } finally {
                 screen.otherListCount = 0;
@@ -220,7 +222,8 @@ Item {
             tryVerify(function () { return count.visible; }, 1000, "the count's line");
             compare(count.text, "+ 7 lists");
             verify(!count.truncated, "the count was cut");
-            compare(title.Accessible.name, title.text + " + 7 lists");
+            // Read whole: the name the line cuts, then the count (r2 C1).
+            compare(title.Accessible.name, name + " + 7 lists");
             // Inside the header, and clear of the actions and of each other.
             var parts = [title, count, findChild(screen, "sessionOptionsButton"), findChild(screen, "monitorLiveStatus")];
             var rects = parts.map(function (part) {
@@ -248,6 +251,28 @@ Item {
             screen.otherListCount = 0;
             tryVerify(function () { return !count.visible; }, 1000, "the count's line stays for one list");
             compare(header.height, screen.headerBarHeight(screen.tier));
+        }
+
+        // Issue #901 r2 C1: the heading is read whole. Compact view at 320 x 914 cut the name on the title's line
+        // ("County Fire E… + 7 lists"), and the spoken heading lost the words that tell similar lists apart.
+        function test_cut_title_is_read_whole() {
+            var store = Qt.createQmlObject("import QtQuick; QtObject { property bool monitorDetailsExpanded: false; property bool compactView: true }", root);
+            var kept = screen.prefsStore;
+            screen.prefsStore = store;
+            try {
+                screen.system = {name: "County Fire East", sourceType: "usb"};
+                screen.otherListCount = 7;
+                testContext.setHostRunning(true);
+                root.width = 320;
+                root.height = 914;
+                waitForRendering(screen);
+                var title = findChild(screen, "monitorHeaderTitle");
+                verify(title.text.indexOf("…") > 0, "the name is cut on the line: " + title.text);
+                compare(title.Accessible.name, "County Fire East + 7 lists");
+            } finally {
+                screen.prefsStore = kept;
+                store.destroy();
+            }
         }
 
         // Issue #901 r2 B1: every header line is one line in its fixed box. A line break in a session name, a scan
