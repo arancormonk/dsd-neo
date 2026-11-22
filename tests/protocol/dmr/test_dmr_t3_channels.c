@@ -1474,6 +1474,7 @@ test_save_restore_keeps_effective_revision(void) {
 /* ---- Missing-channel ledger (F1) ---- */
 
 static int g_override_warnings;
+static int g_override_cap_warnings;
 static int g_missing_notices;
 static char g_missing_notice[256];
 static int g_missing_summaries;
@@ -1488,6 +1489,7 @@ missing_log_tap(dsd_neo_log_level_t level, const char* text, void* ctx) {
     }
     if (strncmp(text, "WARNING: DMR channel overrides file ", 36) == 0) {
         g_override_warnings++;
+        g_override_cap_warnings += strstr(text, " names more than 256 channels; skipping.") != NULL ? 1 : 0;
         return;
     }
     if (strncmp(text, "NOTICE: DMR Tier III: channel ", 30) == 0) {
@@ -1951,9 +1953,11 @@ test_overlay_network_change_keeps_user_rows(void) {
     assert(g_state.dmr_lcn_trust[12] == 0U);
 }
 
-/* Review Focus 3: a trunk-scan target's overlay goes and comes back with it, never shown on another target. */
+/* Review Focus 3: the overlay is the global map's, never a trunk-scan target's. A save never carries it and a restore
+   never brings one back or takes the live one away (a Signal search session restores its own provenance over the same
+   overlay); the trunk-scan target switch empties it with dmr_t3_overlay_discard(). */
 static void
-test_overlay_save_restore_per_target(void) {
+test_overlay_cleared_by_target_restore(void) {
     reset();
     assert(overlay_edit(12U, DMR_T3_OVERLAY_SET, 451137500L) == DMR_T3_SET_OK);
     static dmr_t3_chan_target_snapshot a;
@@ -1961,11 +1965,38 @@ test_overlay_save_restore_per_target(void) {
     dmr_t3_chan_save(&g_state, &a);
     DSD_MEMSET(&b, 0, sizeof b);
     dmr_t3_chan_restore(&g_state, &b);
+    assert(dmr_t3_overlay_count(&g_state) == 1U && dmr_t3_overlay_get(&g_state, 12U, NULL, NULL) == DMR_T3_OVERLAY_SET);
+    const uint32_t rev = dmr_t3_chan_revision(&g_state);
+    dmr_t3_overlay_discard(&g_state);
     assert(dmr_t3_overlay_count(&g_state) == 0U && dmr_t3_overlay_get(&g_state, 12U, NULL, NULL) == 0);
+    assert(dmr_t3_chan_revision(&g_state) != rev);
+    assert(overlay_edit(13U, DMR_T3_OVERLAY_HIDE, 0L) == DMR_T3_SET_OK);
     dmr_t3_chan_restore(&g_state, &a);
-    long hz = 0;
-    assert(dmr_t3_overlay_count(&g_state) == 1U && dmr_t3_overlay_get(&g_state, 12U, &hz, NULL) == DMR_T3_OVERLAY_SET);
-    assert(hz == 451137500L);
+    assert(dmr_t3_overlay_count(&g_state) == 1U && dmr_t3_overlay_get(&g_state, 12U, NULL, NULL) == 0);
+    assert(dmr_t3_overlay_get(&g_state, 13U, NULL, NULL) == DMR_T3_OVERLAY_HIDE);
+    dmr_t3_overlay_discard(&g_state);
+    assert(dmr_t3_overlay_count(&g_state) == 0U && dmr_t3_overlay_get(&g_state, 13U, NULL, NULL) == 0);
+}
+
+/* At most DMR_T3_OVERLAY_MAX_ROWS channels have an entry: one more SET or HIDE is FULL and changes nothing; an edit of
+   a channel that has one, a RESTORE, and a new entry after a RESTORE still apply. */
+static void
+test_overlay_bounded(void) {
+    reset();
+    for (uint16_t l = 1U; l <= (uint16_t)DMR_T3_OVERLAY_MAX_ROWS; l++) {
+        assert(overlay_edit(l, DMR_T3_OVERLAY_SET, 451000000L + (long)l * 12500L) == DMR_T3_SET_OK);
+    }
+    assert(dmr_t3_overlay_count(&g_state) == (size_t)DMR_T3_OVERLAY_MAX_ROWS);
+    const uint16_t next = (uint16_t)(DMR_T3_OVERLAY_MAX_ROWS + 1);
+    const uint32_t rev = dmr_t3_chan_revision(&g_state);
+    assert(overlay_edit(next, DMR_T3_OVERLAY_SET, 455000000L) == DMR_T3_SET_FULL);
+    assert(overlay_edit(next, DMR_T3_OVERLAY_HIDE, 0L) == DMR_T3_SET_FULL);
+    assert(g_state.trunk_chan_map[next] == 0L && dmr_t3_chan_origin(&g_state, next) == DMR_CHAN_ORIGIN_NONE);
+    assert(dmr_t3_chan_revision(&g_state) == rev && dmr_t3_overlay_count(&g_state) == (size_t)DMR_T3_OVERLAY_MAX_ROWS);
+    assert(overlay_edit(1U, DMR_T3_OVERLAY_HIDE, 0L) == DMR_T3_SET_OK);
+    assert(overlay_edit(2U, DMR_T3_OVERLAY_RESTORE, 0L) == DMR_T3_SET_OK);
+    assert(overlay_edit(next, DMR_T3_OVERLAY_HIDE, 0L) == DMR_T3_SET_OK);
+    assert(dmr_t3_overlay_count(&g_state) == (size_t)DMR_T3_OVERLAY_MAX_ROWS);
 }
 
 /* Review Focus 5: hiding the channel of the call being followed leaves the call on its carrier; the next grant naming
@@ -2023,6 +2054,32 @@ write_temp_csv(char* path, size_t size, const char* text) {
     const size_t len = strlen(text);
     assert(dsd_write(fd, text, len) == (ssize_t)len);
     assert(dsd_close(fd) == 0);
+}
+
+/* A file naming more channels than the overlay holds: the rows past the cap are skipped with a warning; a later row
+   for a channel already taken still applies. */
+static void
+test_overlay_load_csv_past_the_cap(void) {
+    reset_missing();
+    static char text[16384];
+    size_t used = 0;
+    for (unsigned l = 1U; l <= (unsigned)DMR_T3_OVERLAY_MAX_ROWS + 2U; l++) {
+        used += (size_t)DSD_SNPRINTF(text + used, sizeof text - used, "%u,%ld\n", l, 451000000L + (long)l * 12500L);
+    }
+    DSD_SNPRINTF(text + used, sizeof text - used, "1,0\n");
+    char path[DSD_TEST_PATH_MAX];
+    write_temp_csv(path, sizeof path, text);
+    g_override_warnings = 0;
+    g_override_cap_warnings = 0;
+    assert(dmr_t3_overlay_load_csv(&g_opts, &g_state, path) == DMR_T3_OVERLAY_MAX_ROWS + 1);
+    assert(dmr_t3_overlay_count(&g_state) == (size_t)DMR_T3_OVERLAY_MAX_ROWS);
+    assert(dmr_t3_overlay_get(&g_state, 1U, NULL, NULL) == DMR_T3_OVERLAY_HIDE);
+    assert(dmr_t3_overlay_get(&g_state, (uint16_t)DMR_T3_OVERLAY_MAX_ROWS, NULL, NULL) == DMR_T3_OVERLAY_SET);
+    assert(dmr_t3_overlay_get(&g_state, (uint16_t)(DMR_T3_OVERLAY_MAX_ROWS + 1), NULL, NULL) == 0);
+    assert(g_state.trunk_chan_map[DMR_T3_OVERLAY_MAX_ROWS + 2] == 0L);
+    /* Two rows past the cap skipped by the reader itself, and the repeated channel 1 reported. */
+    assert(g_override_warnings == 3 && g_override_cap_warnings == 2);
+    (void)remove(path);
 }
 
 /* The --dmr-chan-overrides file: a header, set and hide rows, and every malformed row skipped with a warning. */
@@ -2111,7 +2168,9 @@ main(void) {
     test_overlay_refused_under_trunk_scan();
     test_overlay_reapplied_after_reload();
     test_overlay_network_change_keeps_user_rows();
-    test_overlay_save_restore_per_target();
+    test_overlay_cleared_by_target_restore();
+    test_overlay_bounded();
+    test_overlay_load_csv_past_the_cap();
     test_hide_followed_channel_keeps_call();
     test_overlay_hidden_channel_leaves_ledger();
     test_overlay_load_csv_rows();

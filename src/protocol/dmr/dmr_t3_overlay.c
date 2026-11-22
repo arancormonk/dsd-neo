@@ -21,6 +21,9 @@
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/state_fwd.h"
 
+_Static_assert(DSD_DMR_CHAN_OVERRIDES_MAX_ROWS + 0 == DMR_T3_OVERLAY_MAX_ROWS + 0,
+               "the start-up file holds no more channels than the overlay");
+
 static int
 dmr_t3_overlay_args_valid(uint16_t lpcn, dmr_t3_overlay_op op, long hz) {
     if (!dmr_t3_lpcn_is_channel(lpcn)) {
@@ -40,7 +43,8 @@ dmr_t3_overlay_expected(const dsd_state* state, uint16_t lpcn, long expected_hz,
            && expected_origin == (uint8_t)dmr_t3_chan_origin(state, lpcn);
 }
 
-/* SET or HIDE @p l; returns whether anything changed. A new entry keeps the row it replaces. */
+/* SET or HIDE @p l; returns 1 when it changed, 0 when it already was so, -1 for a new entry the overlay has no room
+   for. A new entry keeps the row it replaces. */
 static int
 dmr_t3_overlay_put(dsd_state* state, dmr_ext_t* ext, uint16_t l, dmr_t3_overlay_op op, long hz) {
     dmr_t3_overlay* o = &ext->overlay;
@@ -49,6 +53,9 @@ dmr_t3_overlay_put(dsd_state* state, dmr_ext_t* ext, uint16_t l, dmr_t3_overlay_
         return 0;
     }
     if (o->op[l] == 0U) {
+        if (o->count >= (uint16_t)DMR_T3_OVERLAY_MAX_ROWS) {
+            return -1; /* full: the caller refuses it */
+        }
         dmr_t3_overlay_take_base(state, ext, l);
         o->count++;
     }
@@ -97,7 +104,10 @@ dmr_t3_overlay_apply(dsd_opts* opts, dsd_state* state, uint16_t lpcn, dmr_t3_ove
     }
     const int changed = op == DMR_T3_OVERLAY_RESTORE ? dmr_t3_overlay_drop(state, ext, lpcn)
                                                      : dmr_t3_overlay_put(state, ext, lpcn, op, hz);
-    if (changed) {
+    if (changed < 0) {
+        return DMR_T3_SET_FULL;
+    }
+    if (changed > 0) {
         ext->revision++;
         dmr_t3_missing_reconcile(state);
         dmr_t3_chan_anchors_changed(opts, state, ext);

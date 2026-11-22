@@ -2269,18 +2269,11 @@ test_dmr_missing_ledger_per_target(void) {
     return test_rc;
 }
 
-/* Whether the live state shows LPCN @p lpcn as the user's entry @p op with frequency @p hz (0 for HIDE). */
+/* Review Focus 3 (discussion #900 F3): the user's channels are the global map's and never a target's. A live edit is
+   refused under the scan, and even an overlay seeded on target A (unchecked, as no path under a scan can) is emptied
+   by the next target switch: it never shows on B, nor comes back with A. */
 static int
-dmr_overlay_shows(const dsd_state* state, uint16_t lpcn, int op, long hz) {
-    long user_hz = -1;
-    return dmr_t3_overlay_get(state, lpcn, &user_hz, NULL) == op && user_hz == hz && state->trunk_chan_map[lpcn] == hz
-           && dmr_t3_chan_origin(state, lpcn) == DMR_CHAN_ORIGIN_USER;
-}
-
-/* Review Focus 3 (discussion #900 F3): two DMR targets that share LPCN numbers each keep their own user's channels: A's
-   set 12 and hidden 13 and B's set 12 go and come back with their target and never show on the other. */
-static int
-test_dmr_overlay_per_target(void) {
+test_dmr_overlay_never_crosses_targets(void) {
     char dir[DSD_TEST_PATH_MAX];
     char target_path[DSD_TEST_PATH_MAX];
     if (make_runtime_targets("a,dmr-trunk,452000000,,250,,tier iii\n"
@@ -2304,7 +2297,7 @@ test_dmr_overlay_per_target(void) {
         DSD_FPRINTF(stderr, "dmr overlay: scan init failed err=%s\n", err);
         test_rc = 1;
     }
-    /* A live edit is refused under the scan; the targets' entries are seeded unchecked, as a start-up file would. */
+    /* A live edit is refused under the scan. */
     if (dmr_t3_overlay_apply(&opts, &state, 12U, DMR_T3_OVERLAY_SET, 452137500L, 0L, 0U, 0U, 1)
         != DMR_T3_SET_TRUNK_SCAN) {
         DSD_FPRINTF(stderr, "dmr overlay: an edit under trunk scan was not refused\n");
@@ -2322,17 +2315,9 @@ test_dmr_overlay_per_target(void) {
     (void)dmr_t3_overlay_apply(NULL, &state, 12U, DMR_T3_OVERLAY_SET, 453137500L, 0L, 0U, 0U, 0);
     trunk_scan_test_set_now(0.52);
     dsd_engine_trunk_scan_tick(&opts, &state);
-    if (dsd_engine_trunk_scan_active_index(&state) != 0 || dmr_t3_overlay_count(&state) != 2U
-        || !dmr_overlay_shows(&state, 12U, DMR_T3_OVERLAY_SET, 452137500L)
-        || !dmr_overlay_shows(&state, 13U, DMR_T3_OVERLAY_HIDE, 0L)) {
-        DSD_FPRINTF(stderr, "dmr overlay: target A's channels not restored\n");
-        test_rc = 1;
-    }
-    trunk_scan_test_set_now(0.78);
-    dsd_engine_trunk_scan_tick(&opts, &state);
-    if (dsd_engine_trunk_scan_active_index(&state) != 1 || dmr_t3_overlay_count(&state) != 1U
-        || !dmr_overlay_shows(&state, 12U, DMR_T3_OVERLAY_SET, 453137500L)) {
-        DSD_FPRINTF(stderr, "dmr overlay: target B's channel not restored\n");
+    if (dsd_engine_trunk_scan_active_index(&state) != 0 || dmr_t3_overlay_count(&state) != 0U
+        || dmr_t3_overlay_get(&state, 12U, NULL, NULL) != 0 || dmr_t3_overlay_get(&state, 13U, NULL, NULL) != 0) {
+        DSD_FPRINTF(stderr, "dmr overlay: an overlay came back with target A\n");
         test_rc = 1;
     }
     dsd_engine_trunk_scan_shutdown(&opts, &state);
@@ -27491,7 +27476,7 @@ main(void) {
     rc |= run_with_default_tune_hook(test_coordinator_idle_rotation_and_state_restore);
     rc |= run_with_default_tune_hook(test_dmr_channel_origins_restore_per_target);
     rc |= run_with_default_tune_hook(test_dmr_missing_ledger_per_target);
-    rc |= run_with_default_tune_hook(test_dmr_overlay_per_target);
+    rc |= run_with_default_tune_hook(test_dmr_overlay_never_crosses_targets);
     rc |= run_with_default_tune_hook(test_chan_map_zero_per_target);
     rc |= run_with_default_tune_hook(test_assoc_trunk_scan_restore);
     rc |= run_with_default_tune_hook(test_unit_activity_ring_spans_trunk_scan_switch);

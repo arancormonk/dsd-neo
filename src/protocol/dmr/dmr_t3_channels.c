@@ -196,6 +196,7 @@ dmr_t3_overlay_reapply(dsd_state* state) {
         }
         dmr_t3_overlay_write_live(state, ext, l);
     }
+    /* As dmr_t3_chan_note_map_loaded(), no heuristic estimate is redone here: the fill runs at the next learned row. */
     ext->revision++;
     dmr_t3_missing_reconcile(state);
 }
@@ -224,6 +225,15 @@ size_t
 dmr_t3_overlay_count(const dsd_state* state) {
     const dmr_ext_t* ext = dmr_ext_get(state);
     return ext != NULL ? (size_t)ext->overlay.count : 0U;
+}
+
+void
+dmr_t3_overlay_discard(dsd_state* state) {
+    dmr_ext_t* ext = dmr_ext_get(state);
+    if (ext != NULL && ext->overlay.count != 0U) {
+        DSD_MEMSET(&ext->overlay, 0, sizeof(ext->overlay));
+        ext->revision++;
+    }
 }
 
 /* ---- Missing-channel ledger ---- */
@@ -527,7 +537,6 @@ dmr_t3_chan_save(const dsd_state* state, dmr_t3_chan_target_snapshot* out) {
     out->syscode = ext->syscode;
     out->syscode_valid = ext->syscode_valid;
     DSD_MEMCPY(&out->missing, &ext->missing, sizeof(out->missing));
-    DSD_MEMCPY(&out->overlay, &ext->overlay, sizeof(out->overlay));
 }
 
 void
@@ -540,7 +549,7 @@ dmr_t3_chan_restore(dsd_state* state, const dmr_t3_chan_target_snapshot* in) {
     dmr_ext_t* ext = dmr_ext_get(state);
     /* A snapshot with no revision recorded nothing (every change bumps it): with no record here either, none is due. */
     if (ext == NULL && in->revision == 0U && in->generation == 0U && in->syscode_valid == 0U
-        && in->missing.revision == 0U && in->overlay.count == 0U) {
+        && in->missing.revision == 0U) {
         return;
     }
     ext = dmr_ext_get_or_create(state);
@@ -559,5 +568,4 @@ dmr_t3_chan_restore(dsd_state* state, const dmr_t3_chan_target_snapshot* in) {
         (ext->missing.revision > in->missing.revision ? ext->missing.revision : in->missing.revision) + 1U;
     DSD_MEMCPY(&ext->missing, &in->missing, sizeof(ext->missing));
     ext->missing.revision = missing_revision;
-    DSD_MEMCPY(&ext->overlay, &in->overlay, sizeof(ext->overlay));
 }

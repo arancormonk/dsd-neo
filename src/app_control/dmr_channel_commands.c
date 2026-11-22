@@ -26,6 +26,7 @@ _Static_assert(DSD_APP_DMR_CHANNEL_SET_OK + 0 == DMR_T3_SET_OK + 0, "OK is the o
 _Static_assert(DSD_APP_DMR_CHANNEL_SET_STALE + 0 == DMR_T3_SET_STALE + 0, "STALE is the overlay's");
 _Static_assert(DSD_APP_DMR_CHANNEL_SET_TRUNK_SCAN + 0 == DMR_T3_SET_TRUNK_SCAN + 0, "TRUNK_SCAN is the overlay's");
 _Static_assert(DSD_APP_DMR_CHANNEL_SET_INVALID + 0 == DMR_T3_SET_INVALID + 0, "INVALID is the overlay's");
+_Static_assert(DSD_APP_DMR_CHANNEL_SET_FULL + 0 == DMR_T3_SET_FULL + 0, "FULL is the overlay's");
 
 static dsd_mutex_t result_mutex;
 static atomic_int mutex_state = 0;
@@ -142,15 +143,17 @@ dsd_app_apply_dmr_channel_set(dsd_opts* opts, dsd_state* state, const struct dsd
     }
     dsd_app_dmr_channel_set_payload p;
     DSD_MEMCPY(&p, command->data, sizeof p);
-    /* The row the editor read holds a long; a value no long holds names no row. */
-    if (p.expected_hz < (int64_t)LONG_MIN || p.expected_hz > (int64_t)LONG_MAX || p.hz < 0
-        || p.hz > (int64_t)DMR_T3_OVERLAY_MAX_HZ) {
+    /* The row the editor read holds a long; a value no long holds names no row. Only a SET carries a frequency. */
+    const int set = p.op == (uint8_t)DMR_T3_OVERLAY_SET;
+    if (p.expected_hz < (int64_t)LONG_MIN || p.expected_hz > (int64_t)LONG_MAX
+        || (set && (p.hz < 0 || p.hz > (int64_t)DMR_T3_OVERLAY_MAX_HZ))) {
         return DSD_APP_DMR_CHANNEL_SET_INVALID;
     }
+    const long hz = set ? (long)p.hz : 0;
     if (p.session_seq == 0U || p.session_seq != dsd_app_command_session_generation()) {
         return DSD_APP_DMR_CHANNEL_SET_STALE;
     }
-    const dmr_t3_set_result r = dmr_t3_overlay_apply(opts, state, p.lpcn, (dmr_t3_overlay_op)p.op, (long)p.hz,
+    const dmr_t3_set_result r = dmr_t3_overlay_apply(opts, state, p.lpcn, (dmr_t3_overlay_op)p.op, hz,
                                                      (long)p.expected_hz, p.expected_origin, p.generation, 1);
     if (r == DMR_T3_SET_OK) {
         dmr_channel_set_log(&p);

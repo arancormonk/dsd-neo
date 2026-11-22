@@ -22,6 +22,7 @@ typedef struct {
     const char* filename;
     unsigned row;
     int data_rows; /* non-blank lines seen so far, this one included */
+    int channels;  /* distinct channels taken so far */
     uint8_t seen[(DMR_CHAN_OVERRIDE_MAX_LPCN + 8) / 8];
 } dmr_chan_override_reader;
 
@@ -66,15 +67,24 @@ dmr_chan_override_parse(const dmr_chan_override_reader* r, char* line, uint16_t*
     return 1;
 }
 
-/* A channel given again: reported, and the later row is used. */
-static void
+/* Whether the row for @p lpcn is taken: a channel given again is reported and its later row is used; a new channel
+   past DSD_DMR_CHAN_OVERRIDES_MAX_ROWS is reported and skipped. */
+static int
 dmr_chan_override_note_seen(dmr_chan_override_reader* r, uint16_t lpcn) {
     const uint8_t bit = (uint8_t)(1U << (lpcn & 7U));
     if ((r->seen[lpcn >> 3] & bit) != 0U) {
         LOG_WARN("WARNING: DMR channel overrides file '%s' row %u gives channel %u again; the later row is used.\n",
                  r->filename, r->row, (unsigned)lpcn);
+        return 1;
+    }
+    if (r->channels >= DSD_DMR_CHAN_OVERRIDES_MAX_ROWS) {
+        LOG_WARN("WARNING: DMR channel overrides file '%s' row %u names more than %d channels; skipping.\n",
+                 r->filename, r->row, DSD_DMR_CHAN_OVERRIDES_MAX_ROWS);
+        return 0;
     }
     r->seen[lpcn >> 3] = (uint8_t)(r->seen[lpcn >> 3] | bit);
+    r->channels++;
+    return 1;
 }
 
 int
@@ -106,7 +116,9 @@ dsd_csv_dmr_chan_overrides_read(const char* path, dsd_dmr_chan_override_row_fn r
         if (!dmr_chan_override_parse(&r, buffer, &lpcn, &hz)) {
             continue;
         }
-        dmr_chan_override_note_seen(&r, lpcn);
+        if (!dmr_chan_override_note_seen(&r, lpcn)) {
+            continue;
+        }
         if (row(lpcn, hz, ctx) == 0) {
             taken++;
         } else {

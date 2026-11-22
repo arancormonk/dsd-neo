@@ -13430,14 +13430,18 @@ Private per-protocol modules worth knowing about:
   takeover count included), and a restore moves that effective revision past both. Tests: `DMR_T3_CHANNELS`,
   `DMR_SEARCH_SITE_NOTES`, `ENGINE_TRUNK_SCAN`, `ENGINE_STREAM_GAP`, `ENGINE_SIGNAL_SEARCH`, `APP_COMMAND_QUEUE`.
 - Tier III "your channels" overlay (`dmr_t3_overlay.c`, the overlay helpers in `dmr_t3_channels.c`,
-  `<dsd-neo/protocol/dmr/dmr_t3_channels.h>`, discussion #900 F3). The user's entries lie over the channel map in the
-  same extension (`dmr_t3_overlay`, saved per trunk-scan target with the origins): SET puts the user's frequency in the
-  live row, HIDE empties it (no grant for it is followed, and none is recorded as missing), both as USER with trust 0,
+  `<dsd-neo/protocol/dmr/dmr_t3_channels.h>`, discussion #900 F3). The user's entries lie over the one global channel
+  map in the same extension (`dmr_t3_overlay`, at most `DMR_T3_OVERLAY_MAX_ROWS` = 256 entries; a new one past them
+  is FULL). A trunk scan refuses every edit and the start-up file, so no target has an overlay: the target snapshot
+  does not carry one and the target switch empties it (`dmr_t3_overlay_discard()`). `dmr_t3_chan_restore()` itself
+  leaves the overlay, so a Signal search session's entries stay over the session's rows. SET puts the user's frequency
+  in the live row, HIDE empties it (no grant for it is followed, and none is recorded as missing), both as USER with trust 0,
   which nothing over the air replaces (`dmr_t3_chan_origin()` reads a hidden row as USER); the row they replaced (its
-  frequency, origin and trust) is kept as the entry's base, and RESTORE puts it back. `chan_map_adopt()` and
+  frequency, the origin it read as and its trust) is kept as the entry's base, and RESTORE puts it back, a row the air
+  taught with its `dmr_lcn_ota` bit; the overlay writes the row as DMR's own writer, so no takeover is counted. `chan_map_adopt()` and
   `svc_clear_channel_map()` call `dmr_t3_overlay_reapply()` after the origin notes, so an import, a reload (what an RR
   refresh posts), an RR apply and a clear take the new row as the base and lay the entry over it again; a row still
-  USER keeps its base, so a second re-apply changes nothing. A network change drops what the air taught from the bases
+  USER keeps its base, so a second re-apply changes nothing; like the origin note, it redoes no heuristic estimate. A network change drops what the air taught from the bases
   too, and the entries stay. `dmr_t3_overlay_apply()` refuses an unknown channel, operation or frequency (INVALID), a
   trunk scan (TRUNK_SCAN), and with `check` an edit whose expected row, origin or network generation is not the live
   one (STALE); an applied edit bumps the revision, reconciles the ledger and redoes the heuristic estimates. A followed
@@ -13445,10 +13449,11 @@ Private per-protocol modules worth knowing about:
   `DSD_APP_CMD_DMR_CHANNEL_SET` (`src/app_control/dmr_channel_commands.c`): the payload carries the row as the editor
   read it plus the command session generation (another session is STALE) and a request id from
   `dsd_app_dmr_channel_request_next()`; every request the queue took gets a retained result
-  `{sequence, session_seq, request, code, revision, lpcn, op}`, the code `dmr_t3_set_result` plus app-control's
-  `SEARCH` and `DROPPED`, handed back along `apply_cmd()` in `ui_cmd_result_codes`. Not in the control API. At start,
+  `{sequence, session_seq, request, code, revision, lpcn, op}`, the code `dmr_t3_set_result` (OK, STALE, TRUNK_SCAN,
+  INVALID, FULL) plus app-control's `SEARCH` and `DROPPED`; `hz` is checked only for SET, handed back along `apply_cmd()` in `ui_cmd_result_codes`. Not in the control API. At start,
   `--dmr-chan-overrides <csv>` (`lpcn,frequency_hz`, 0 hides; read by `<dsd-neo/core/dmr_chan_overrides_csv.h>`,
-  bad rows skipped with a warning) is applied unchecked by the engine after the map loads and before the first frame
+  bad rows and rows past 256 channels skipped with a warning; Tier III sessions only, the map being shared with the
+  other trunking protocols) is applied unchecked by the engine after the map loads and before the first frame
   (`import_dmr_chan_overrides_if_needed()`); it cannot be combined with `--trunk-scan` and has no INI key. Tests:
   `DMR_T3_CHANNELS`, `APP_COMMAND_QUEUE`, `ENGINE_TRUNK_SCAN`, `ENGINE_DMR_CHAN_OVERRIDES`, `RUNTIME_CLI_PARSE`,
   `RUNTIME_CLI_COMPACT`, `FUZZ_CORE_CSV_IMPORT`.

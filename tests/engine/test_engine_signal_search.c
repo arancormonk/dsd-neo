@@ -3105,7 +3105,16 @@ test_hardset_restored(dsd_opts* o, dsd_state* s, const dsd_signal_search_config*
    session saved (discussion #900 F2). A visit that hears another network's checked system code (the entry point a
    checked C_ALOHA or SYS_Parms short LC calls) drops the session's rows; the departure brings the row back as SITE
    with its trust and the session's baseline with it. */
-enum { LEARNED_CHANNEL = 9 };
+enum { LEARNED_CHANNEL = 9, USER_CHANNEL = 10 };
+
+/* The user's entry is still there over the session's row: no restore takes the live overlay away. */
+static int
+user_dmr_row_kept(const dsd_state* s) {
+    long hz = 0;
+    return s->trunk_chan_map[USER_CHANNEL] == 852112500 && dmr_t3_chan_origin(s, USER_CHANNEL) == DMR_CHAN_ORIGIN_USER
+           && dmr_t3_overlay_count(s) == 1U && dmr_t3_overlay_get(s, USER_CHANNEL, &hz, NULL) == DMR_T3_OVERLAY_SET
+           && hz == 852112500;
+}
 
 static int
 learned_dmr_row_back(const dsd_state* s, uint32_t session_generation) {
@@ -3134,6 +3143,11 @@ test_learned_dmr_channel_survives_visits(dsd_opts* o, dsd_state* s, const dsd_si
     dsd_state_dmr_lcn_ota_set(s, LEARNED_CHANNEL, 1);
     ext->origin[LEARNED_CHANNEL] = (uint8_t)DMR_CHAN_ORIGIN_SITE;
     s->dmr_lcn_trust[LEARNED_CHANNEL] = 2U;
+    /* And the user's own entry for another channel, as dmr_t3_overlay_apply() lays it: the session's restore keeps it. */
+    ext->overlay.op[USER_CHANNEL] = (uint8_t)DMR_T3_OVERLAY_SET;
+    ext->overlay.hz[USER_CHANNEL] = 852112500;
+    ext->overlay.count = 1U;
+    dmr_t3_overlay_write_live(s, ext, USER_CHANNEL);
     const uint32_t session_generation = dmr_t3_chan_generation(s);
     start_tag_session(o, s, &one);
     visit_strongest(o, s);
@@ -3141,14 +3155,17 @@ test_learned_dmr_channel_survives_visits(dsd_opts* o, dsd_state* s, const dsd_si
     visit_hears_network_b(s, session_generation);
     next_visit(o, s);
     assert(boundary_kind == DSD_CARRIER_BOUNDARY_TUNE);
-    assert(learned_dmr_row_back(s, session_generation));
+    assert(learned_dmr_row_back(s, session_generation) && user_dmr_row_kept(s));
     /* Back on the session's network baseline: its own code is no network change. */
     dmr_t3_chan_note_checked_syscode(s, 0x1223U);
     assert(learned_dmr_row_back(s, session_generation));
     visit_hears_network_b(s, session_generation);
     stop_tag_session(o, s);
     assert(learned_dmr_row_back(s, session_generation));
+    assert(user_dmr_row_kept(s));
     s->dmr_lcn_trust[LEARNED_CHANNEL] = 0U;
+    dmr_t3_overlay_discard(s);
+    dsd_state_set_trunk_chan_freq(s, USER_CHANNEL, 0);
     dmr_t3_chan_note_map_cleared(s);
     ext->syscode_valid = 0U;
     session_site(s, 0, 0, 0);

@@ -2189,6 +2189,7 @@ trunk_scan_restore_p25_identity_snapshot(dsd_state* state, const dsd_trunk_scan_
     trunk_scan_restore_enc_lockout_snapshot(state, snapshot);
     DSD_MEMCPY(state->trunk_lcn_freq, snapshot->trunk_lcn_freq, sizeof(state->trunk_lcn_freq));
     dmr_t3_chan_restore(state, &snapshot->dmr_chan);
+    dmr_t3_overlay_discard(state); /* the user's channels are the one global map's: a target has none */
     state->p25_vc_cqpsk_pref = snapshot->p25_vc_cqpsk_pref;
     state->p25_vc_cqpsk_override = snapshot->p25_vc_cqpsk_override;
     state->p25_p1_validated_rf_mod = snapshot->p25_p1_validated_rf_mod;

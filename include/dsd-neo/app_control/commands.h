@@ -767,7 +767,8 @@ typedef struct {
 
 /** DSD_APP_CMD_DMR_CHANNEL_SET (discussion #900 F3): set, hide or restore Tier III channel @c lpcn (1..4094).
  * @c op is a dmr_t3_overlay_op (<dsd-neo/protocol/dmr/dmr_t3_channels.h>: 1 SET, 2 HIDE, 3 RESTORE) and @c hz SET's
- * frequency (100000..2147483647 Hz; ignored otherwise). The rest is the row as the editor read it, so an edit made
+ * frequency (100000..2147483647 Hz; ignored, not checked, for HIDE and RESTORE). At most 256 channels have an entry
+ * (DMR_T3_OVERLAY_MAX_ROWS): a SET or HIDE of one more is refused FULL; an edit of a channel that has one never is. The rest is the row as the editor read it, so an edit made
  * against a row that changed since is refused (STALE), changing nothing: @c session_seq is
  * dsd_app_command_session_generation(), @c generation dmr_t3_chan_generation(), @c expected_hz the row's live
  * frequency (0 for none or hidden) and @c expected_origin its dmr_chan_origin_e (USER for a hidden row). @c request is
@@ -784,15 +785,16 @@ typedef struct {
     uint32_t pad; /* explicit, so the payload carries no indeterminate padding */
 } dsd_app_dmr_channel_set_payload;
 
-/** What one DSD_APP_CMD_DMR_CHANNEL_SET did. 0 to 3 are dmr_t3_overlay_apply()'s answers (dmr_t3_set_result); the
+/** What one DSD_APP_CMD_DMR_CHANNEL_SET did. 0 to 4 are dmr_t3_overlay_apply()'s answers (dmr_t3_set_result); the
  * rest are app-control's, for a request that never reached it. */
 typedef enum {
     DSD_APP_DMR_CHANNEL_SET_OK = 0,         /**< Applied, or the row already was so */
     DSD_APP_DMR_CHANNEL_SET_STALE = 1,      /**< The session, the network or the row is not the one the editor read */
     DSD_APP_DMR_CHANNEL_SET_TRUNK_SCAN = 2, /**< A trunk scan runs: its targets' channels are read-only */
     DSD_APP_DMR_CHANNEL_SET_INVALID = 3,    /**< No such channel, operation or frequency, or a short payload */
-    DSD_APP_DMR_CHANNEL_SET_SEARCH = 4,     /**< Signal search runs: refused with every receiver command */
-    DSD_APP_DMR_CHANNEL_SET_DROPPED = 5,    /**< Never applied: the session stopped or the queue overflowed first */
+    DSD_APP_DMR_CHANNEL_SET_FULL = 4,       /**< A new channel past the 256 the user's list holds: remove one first */
+    DSD_APP_DMR_CHANNEL_SET_SEARCH = 5,     /**< Signal search runs: refused with every receiver command */
+    DSD_APP_DMR_CHANNEL_SET_DROPPED = 6,    /**< Never applied: the session stopped or the queue overflowed first */
 } dsd_app_dmr_channel_set_code;
 
 /** The retained outcome of one DSD_APP_CMD_DMR_CHANNEL_SET: the request as submitted and what it did. @c sequence is

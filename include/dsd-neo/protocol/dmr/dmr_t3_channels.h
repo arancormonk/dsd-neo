@@ -150,7 +150,10 @@ void dmr_t3_missing_log_summary_for(const dmr_t3_missing_ledger* ledger, const c
  * replaced (its frequency, origin and trust) is kept beside it, so RESTORE puts that back. A channel map import, reload
  * or clear replaces the base and dmr_t3_overlay_reapply() lays the overlay over the new one; a network change drops
  * only what the air taught, from the base too, and the overlay stays. An edit takes effect from the next grant that
- * names the channel: a call already followed keeps its carrier. Decoder thread only. */
+ * names the channel: a call already followed keeps its carrier. At most DMR_T3_OVERLAY_MAX_ROWS channels have an
+ * entry. The overlay belongs to the one global channel map: a trunk scan refuses every edit and the start-up file, so
+ * a trunk-scan target never has one, and the target switch empties it (dmr_t3_overlay_discard()). Decoder thread
+ * only. */
 
 /** What an overlay edit does to its channel. */
 typedef enum { DMR_T3_OVERLAY_SET = 1, DMR_T3_OVERLAY_HIDE = 2, DMR_T3_OVERLAY_RESTORE = 3 } dmr_t3_overlay_op;
@@ -160,11 +163,15 @@ typedef enum {
     DMR_T3_SET_OK = 0,         /**< Applied, or nothing to change */
     DMR_T3_SET_STALE = 1,      /**< The row, its origin or the network generation is not the one expected */
     DMR_T3_SET_TRUNK_SCAN = 2, /**< A trunk scan runs: its targets' maps are not edited */
-    DMR_T3_SET_INVALID = 3     /**< No such channel, operation or frequency */
+    DMR_T3_SET_INVALID = 3,    /**< No such channel, operation or frequency */
+    DMR_T3_SET_FULL = 4        /**< A new entry past DMR_T3_OVERLAY_MAX_ROWS: remove one first */
 } dmr_t3_set_result;
 
 /** The frequencies a SET takes, in Hz (100 kHz .. 2147.483647 MHz). */
 enum { DMR_T3_OVERLAY_MIN_HZ = 100000, DMR_T3_OVERLAY_MAX_HZ = 2147483647 };
+
+/** The most channels the overlay holds an entry for (SET or HIDE). */
+enum { DMR_T3_OVERLAY_MAX_ROWS = 256 };
 
 /** The overlay, per LPCN: op is 0 (no entry), SET or HIDE; hz the SET frequency; base_* the row it replaced. */
 typedef struct {
@@ -180,16 +187,16 @@ typedef struct {
  * Edit channel @p lpcn (1..4094): SET it to @p hz, HIDE it, or RESTORE the row the entry replaced (no entry: nothing to
  * do). With @p check nonzero the edit is refused, changing nothing, unless the live row is @p expected_hz with origin
  * @p expected_origin (dmr_t3_chan_origin(), USER for a hidden row) and the network generation is @p generation; with
- * @p check 0 (a start-up file) none of them is compared. Refused under a trunk scan (dsd_opts::trunk_scan_enabled).
- * An applied change bumps the revision, reconciles the missing-channel ledger and redoes the heuristic estimates.
+ * @p check 0 (a start-up file) none of them is compared. Refused under a trunk scan (dsd_opts::trunk_scan_enabled),
+ * and a SET or HIDE that would give a channel past DMR_T3_OVERLAY_MAX_ROWS an entry is FULL. An applied change bumps the revision, reconciles the missing-channel ledger and redoes the heuristic estimates.
  */
 dmr_t3_set_result dmr_t3_overlay_apply(dsd_opts* opts, dsd_state* state, uint16_t lpcn, dmr_t3_overlay_op op, long hz,
                                        long expected_hz, uint8_t expected_origin, uint32_t generation, int check);
 
 /**
  * Apply the user's channels file @p path (--dmr-chan-overrides: `lpcn,frequency_hz` rows, 0 hides the channel;
- * <dsd-neo/core/dmr_chan_overrides_csv.h>) unchecked, after the channel map loaded. A row the file gets wrong is
- * skipped with a warning. Returns the rows applied, or -1 when the file cannot be read or a trunk scan runs.
+ * <dsd-neo/core/dmr_chan_overrides_csv.h>) unchecked, after the channel map loaded. A row the file gets wrong, or
+ * one past the DMR_T3_OVERLAY_MAX_ROWS channels the overlay holds, is skipped with a warning. Returns the rows applied, or -1 when the file cannot be read or a trunk scan runs.
  */
 int dmr_t3_overlay_load_csv(dsd_opts* opts, dsd_state* state, const char* path);
 
@@ -209,6 +216,12 @@ int dmr_t3_overlay_get(const dsd_state* state, uint16_t lpcn, long* hz, long* ba
 size_t dmr_t3_overlay_count(const dsd_state* state);
 
 /**
+ * Forget every entry, leaving the live rows as they are: a trunk-scan target's map and origins were just restored
+ * (dmr_t3_chan_restore()), and no user's channel crosses to a target.
+ */
+void dmr_t3_overlay_discard(dsd_state* state);
+
+/**
  * One trunk-scan target's (or Signal search session's) channel provenance: the origins, the trust bytes
  * (dsd_state::dmr_lcn_trust), the rows the air holds (dsd_state::dmr_lcn_ota), the generation and revision, and the missing-channel ledger. syscode is the last
  * checked system code (valid when syscode_valid), the baseline a later checked one is compared against.
@@ -222,16 +235,16 @@ typedef struct {
     uint16_t syscode;
     uint8_t syscode_valid;
     dmr_t3_missing_ledger missing;
-    dmr_t3_overlay overlay;
 } dmr_t3_chan_target_snapshot;
 
-/** Save the parked target's provenance, ledger and overlay. */
+/** Save the parked target's provenance and ledger (never the overlay, which no target has). */
 void dmr_t3_chan_save(const dsd_state* state, dmr_t3_chan_target_snapshot* out);
 
 /**
- * Restore a target's provenance, ledger and overlay, the map rows being restored beside it. Each revision goes past
- * both the current one and the saved one, so a reader comparing revisions sees the switch. The hunt's candidate list is
- * not part of it.
+ * Restore a target's provenance and ledger, the map rows being restored beside it. Each revision goes past both the
+ * current one and the saved one, so a reader comparing revisions sees the switch. The hunt's candidate list is not part
+ * of it, and neither is the overlay, which stays the live session's: a Signal search session's comes back over the
+ * session's map rows; trunk scan empties it with dmr_t3_overlay_discard().
  */
 void dmr_t3_chan_restore(dsd_state* state, const dmr_t3_chan_target_snapshot* in);
 

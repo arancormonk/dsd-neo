@@ -94,8 +94,8 @@ Under `--trunk-scan` the channel being heard is labelled by the target `id` inst
 
 Target list limits and validation:
 
-- No fixed target-count limit. Each parked target reserves a snapshot of decoder state (about 100 KB; the exact size
-  depends on the build), and the list is capped by a 256 MB budget for those snapshots - about 2,400 targets. A CSV
+- No fixed target-count limit. Each parked target reserves a snapshot of decoder state (about 122 KB; the exact size
+  depends on the build), and the list is capped by a 256 MB budget for those snapshots - about 2,100 targets. A CSV
   past the cap is rejected while parsing, with an error naming this build's per-target size and target cap.
 - Blank rows are skipped.
 - Every data row must contain the seven fields above.
@@ -674,8 +674,8 @@ written to its file.
 - The lists are the files loaded at start: none can be added or removed while the scan runs, and a config loaded
   meanwhile changes them only at the next start. To keep a list ready, load it switched off and switch it on when you
   need it.
-- Memory: every target of every list, on or off, keeps its own snapshot of decoder state (about 100 KB), and the lists
-  together share the one budget under [Target CSV](#target-csv) (about 2,400 targets), where a target several lists
+- Memory: every target of every list, on or off, keeps its own snapshot of decoder state (about 122 KB), and the lists
+  together share the one budget under [Target CSV](#target-csv) (about 2,100 targets), where a target several lists
   hold counts once.
 - Lists are a trunk-scan feature. A `-Y` conventional scan has none: it takes one channel map, and a second `-C` is
   refused.

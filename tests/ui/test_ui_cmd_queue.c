@@ -26432,6 +26432,11 @@ test_dmr_channel_set_command(void) {
     p.session_seq++;
     rc |= expect_int("another session is stale", dmr_channel_edit_result(&opts, &state, &p, sizeof p),
                      DSD_APP_DMR_CHANNEL_SET_STALE);
+    p = dmr_channel_edit(&state, 15U, DMR_T3_OVERLAY_HIDE, -1);
+    rc |= expect_int("a HIDE's frequency is not read", dmr_channel_edit_result(&opts, &state, &p, sizeof p),
+                     DSD_APP_DMR_CHANNEL_SET_OK);
+    rc |= expect_true("the HIDE applied",
+                      state.trunk_chan_map[15] == 0L && dmr_t3_chan_origin(&state, 15U) == DMR_CHAN_ORIGIN_USER);
     rc |= expect_true("stale edits change nothing", state.trunk_chan_map[13] == 451025000L
                                                         && dmr_t3_chan_origin(&state, 13U) == DMR_CHAN_ORIGIN_FILE);
 
