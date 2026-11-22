@@ -852,6 +852,27 @@ Item {
         // time is not known (when 0) shows no age, where it read "20833d"; an age of 1000 days or more reads whole
         // years, capped at 99y. Through the Monitor's own rows at 411 dp and text 2.0: drawn inside the slot, clear of
         // EMERGENCY.
+        // Issue #901 r2 C2: an encrypted call named "Snow Patrol" aged "now" said no age: the row searched its name
+        // for the age, and "now" is in "Snow". The Monitor says which fields its meta line holds ("encrypted"), and
+        // the row says the age and the emergency itself.
+        function test_03i_an_age_inside_the_name_is_still_said() {
+            var nowMs = Date.UTC(2026, 10, 21, 12, 0, 0)
+            try {
+                testContext.setMetric("decodeNowMs", nowMs)
+                callHistory.pushAt(nowMs / 1000 - 5)
+                verify(callHistory.nameNewest("Snow Patrol", "County", true, true))
+                tc.list.positionViewAtBeginning()
+                var row = null
+                tryVerify(function () { row = tc.list.itemAtIndex(0); return row !== null && row.name === "Snow Patrol" }, 5000)
+                compare(row.rightText, "now")
+                var description = row.node.Accessible.description
+                verify(row.metaText.indexOf("encrypted") >= 0, row.metaText)
+                compare(description, row.metaText + ", EMERGENCY, now", "the age and the tag are said; ENC once, in the meta line")
+            } finally {
+                testContext.setMetric("decodeNowMs", Date.now())
+            }
+        }
+
         function test_03h_an_age_fits_its_slot() {
             var nowMs = Date.UTC(2026, 10, 21, 12, 0, 0)
             var nowSecs = nowMs / 1000

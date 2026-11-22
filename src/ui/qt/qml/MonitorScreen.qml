@@ -2057,6 +2057,9 @@ Item {
             // forces the minute-by-minute refresh while the decoder is quiet.
             rightText: (screen.ageTick, Util.shortAge(model.when, metrics.decodeNowMs))
             enc: model.enc
+            // A call's meta line says "encrypted" (a notice's does not); the
+            // tag and the age are said by the row (r2 C2).
+            metaSaysEnc: model.kind !== 1
             emergency: model.emergency
             hasRecording: model.hasRecording
         }

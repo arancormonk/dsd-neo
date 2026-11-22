@@ -597,6 +597,12 @@ Item {
             // the row's description, already leads with it. A row with no start
             // time has no time to read.
             accessibleName: model.timeText.length > 0 ? model.name + ", " + model.timeText : model.name
+            // What the meta line and the name above already say (r2 C2): a
+            // call's meta line names EMERGENCY and "encrypted" (a notice's
+            // does not), and the name the time.
+            metaSaysEmergency: model.kind !== 1
+            metaSaysEnc: model.kind !== 1
+            nameSaysTime: true
             onActivated: detailSheet.open(callHistory.recordFor(model.uid))
         }
     }

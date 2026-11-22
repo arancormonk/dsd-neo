@@ -3110,6 +3110,27 @@ class CallLogStore : public QAbstractListModel {
         return name;
     }
 
+    /**
+     * @brief Give the newest row the call name @p name and the system name @p systemName, and mark it encrypted
+     *        and an emergency as @p enc and @p emergency say (issue #901 r2 C2: names that hold a field's words).
+     * @return false with no rows.
+     */
+    Q_INVOKABLE bool
+    nameNewest(const QString& name, const QString& systemName, bool enc, bool emergency) {
+        if (m_rows.isEmpty()) {
+            return false;
+        }
+        m_rows[0].name = name;
+        m_rows[0].systemName = systemName;
+        m_rows[0].enc = enc;
+        m_rows[0].emergency = emergency;
+        const QModelIndex idx = index(0);
+        Q_EMIT dataChanged(idx, idx,
+                           {CallHistoryModel::NameRole, CallHistoryModel::SystemNameRole, CallHistoryModel::EncRole,
+                            CallHistoryModel::EmergencyRole});
+        return true;
+    }
+
     /** @brief The newest row's `when`, 0 with no rows: the stamps are fixed, so a case ages rows against it. */
     Q_INVOKABLE qint64
     newestWhen() const {

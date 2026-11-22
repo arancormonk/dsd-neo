@@ -141,6 +141,58 @@ Item {
         hasRecording: true
     }
 
+    // Words in a caller's own text that look like the row's fields (r2 C2):
+    // an age "now" inside a name, "encrypted" inside a system's name, and a
+    // History-like row whose caller says its meta line and name already carry
+    // EMERGENCY, the encryption and the time.
+    Column {
+        id: speech
+
+        x: 740
+        y: 100
+        width: 420
+
+        Ui.CallRow {
+            id: snowPatrol
+            width: speech.width
+            name: "Snow Patrol"
+            metaText: "TG 4001 · SRC 7001 · encrypted"
+            rightText: "now"
+            enc: true
+            metaSaysEnc: true
+        }
+        Ui.CallRow {
+            id: unencrypted
+            width: speech.width
+            name: "Fire Dispatch"
+            metaText: "Unencrypted Ops"
+            rightText: "09:41"
+            enc: true
+            emergency: true
+        }
+        Ui.CallRow {
+            id: emergencyName
+            width: speech.width
+            name: "EMERGENCY Net"
+            metaText: "TG 4001"
+            rightText: "09:41"
+            emergency: true
+        }
+        Ui.CallRow {
+            id: historyLike
+            width: speech.width
+            name: "Fire Dispatch"
+            accessibleName: "Fire Dispatch, 09:41"
+            metaText: "EMERGENCY · TG 4001 · encrypted"
+            rightText: "09:41"
+            enc: true
+            emergency: true
+            metaSaysEmergency: true
+            metaSaysEnc: true
+            nameSaysTime: true
+        }
+    }
+
     // A store a screen is handed in place of the app's preferences.
     QtObject {
         id: homeStore
@@ -570,6 +622,20 @@ Item {
             }
         }
 
+        // Issue #901 r2 C2: which fields the row's name and meta line already say comes from the caller's flags,
+        // never from searching their text. An encrypted call named "Snow Patrol" aged "now" said no age ("now" is in
+        // "Snow"); a Home system named "Unencrypted Ops" kept an encrypted row from saying ENC; a name with EMERGENCY
+        // in it kept the tag unsaid. A caller that does put a field in its text says so, and it is said once.
+        function test_speech_follows_the_callers_flags() {
+            waitForRendering(speech);
+            compare(snowPatrol.node.Accessible.name, "Snow Patrol");
+            compare(snowPatrol.node.Accessible.description, "TG 4001 · SRC 7001 · encrypted, now");
+            compare(unencrypted.node.Accessible.description, "Unencrypted Ops, EMERGENCY, ENC, 09:41");
+            compare(emergencyName.node.Accessible.description, "TG 4001, EMERGENCY, 09:41");
+            compare(historyLike.node.Accessible.name, "Fire Dispatch, 09:41");
+            compare(historyLike.node.Accessible.description, "EMERGENCY · TG 4001 · encrypted");
+        }
+
         // A wide row is unchanged: the right side beside the lines.
         function test_wide_form_keeps_the_right_side_beside_the_lines() {
             Ui.Theme.fontScale = 1.0;
@@ -603,6 +669,21 @@ Item {
             verify(!findChild(tagged, "rowRecordingGlyph").visible, "the glyph is drawn at 280 px at 2x");
             compare(tagged.node.Accessible.name, name);
             compare(tagged.node.Accessible.description, description);
+        }
+
+        // Issue #901 r2 C2: Home's Recent rows show the system's name as their meta line, which the row never
+        // searches: a system named "Unencrypted Ops" no longer keeps an encrypted call from saying ENC.
+        function test_home_recent_says_enc_beside_any_system_name() {
+            callHistory.push("TODAY");
+            verify(callHistory.nameNewest("Fire Dispatch", "Unencrypted Ops", true, false));
+            home.active = true;
+            home.item.prefsStore = homeStore;
+            waitForRendering(home.item);
+            var list = findChild(home.item, "homeRecentList");
+            var row = null;
+            tryVerify(function () { row = list.itemAtIndex(0); return row !== null && row.name === "Fire Dispatch"; });
+            compare(row.metaText, "Unencrypted Ops");
+            compare(row.node.Accessible.description, "Unencrypted Ops, ENC, " + row.rightText);
         }
 
         // D6 and D11 on Home's Recent pane: its rows follow the store the

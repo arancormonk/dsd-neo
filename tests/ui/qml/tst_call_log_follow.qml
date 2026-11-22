@@ -485,6 +485,30 @@ Item {
             verify(tc.startsWith(row.node.Accessible.description, "851.0125 MHz · "), row.node.Accessible.description)
         }
 
+        // Issue #901 r2 C2: History's rows say each field once from what the screen puts in its own text (the meta
+        // line's EMERGENCY and "encrypted", the time in the name), never from searching the call's words: an
+        // encrypted emergency call named "EMERGENCY Unencrypted" still says ENC's word once and the tag once.
+        function test_06p_fields_said_once_by_the_callers_flags() {
+            callHistory.pushEncrypted("TODAY")
+            verify(callHistory.nameNewest("EMERGENCY Unencrypted now", "County", true, true))
+            var row = null
+            tryVerify(function () { row = tc.list.itemAtIndex(0); return row !== null && row.name === "EMERGENCY Unencrypted now" })
+            var time = row.rightText
+            verify(time.length > 0)
+            compare(row.node.Accessible.name, "EMERGENCY Unencrypted now, " + time, "the name says the time")
+            var description = row.node.Accessible.description
+            compare(description, row.metaText, "the meta line already says EMERGENCY and encrypted: " + description)
+            verify(row.metaText.indexOf("EMERGENCY") === 0 && row.metaText.indexOf("encrypted") > 0, row.metaText)
+            // A notice's meta line is its payload, which says nothing of the row's flags even where its words do: an
+            // emergency notice whose text reads "EMERGENCY drill" still says the tag.
+            callHistory.pushTunedNotice(4001, 7001, "EMERGENCY drill", "", 0, "", "")
+            var notice = callHistory.nameNewest("Text message", "County", false, true)
+            verify(notice)
+            tryVerify(function () { row = tc.list.itemAtIndex(0); return row !== null && row.name === "Text message" })
+            verify(row.metaText.indexOf("EMERGENCY drill") >= 0, row.metaText)
+            compare(row.node.Accessible.description, row.metaText + ", EMERGENCY")
+        }
+
         // Review focus: a long DMR line on a 360 px phone wraps between its
         // parts, never inside one ("Net | 3", "Conn|ect"), nothing is clipped,
         // and a screen reader reads the line whole.

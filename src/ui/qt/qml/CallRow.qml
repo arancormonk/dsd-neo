@@ -49,9 +49,9 @@ Item {
     readonly property Item node: rowNode
     Accessible.ignored: !reachable
     // What the row shows besides its name (issue #782): the meta line, its
-    // tags and its time, each once: a tag the meta line already says (History
-    // puts EMERGENCY and "encrypted" there) and a time the caller's name
-    // already reads are left out. A tag's word comes from the tag itself,
+    // tags and its time, each once: a tag the caller says its meta line
+    // already holds (metaSaysEmergency, metaSaysEnc) and a time its name
+    // already reads (nameSaysTime) are left out. A tag's word comes from the tag itself,
     // drawn or not (issue #901 B7: a narrow row may leave it out). The time
     // is said on an encrypted row too, where ENC takes its place on the row's
     // face (G3).
@@ -74,6 +74,15 @@ Item {
     property string name: ""
     property string metaText: ""
     property string rightText: ""
+    // Which of the row's fields its caller already puts in the meta line or
+    // the accessible name (issue #901 r2 C2): History's meta line says
+    // EMERGENCY and "encrypted", the Monitor's "encrypted", and History's
+    // name its time. Set from how the caller builds that text, never found by
+    // searching it: a call named "Snow Patrol" holds "now", and a system named
+    // "Unencrypted Ops" holds "encrypted".
+    property bool metaSaysEmergency: false
+    property bool metaSaysEnc: false
+    property bool nameSaysTime: false
     property bool enc: false
     property bool emergency: false
     property bool showDivider: true
@@ -143,9 +152,9 @@ Item {
         Accessible.role: row.interactive ? Accessible.Button : Accessible.StaticText
         Accessible.name: !row.reachable ? "" : row.hasRecording ? qsTr("%1, has a recording").arg(row.accessibleName) : row.accessibleName
         Accessible.description: !row.reachable ? "" : [row.metaText,
-            row.emergencyWords.length > 0 && row.metaText.indexOf(row.emergencyWords) < 0 ? row.emergencyWords : "",
-            row.enc && row.metaText.indexOf(qsTr("encrypted")) < 0 ? encTag.label : "",
-            row.rightText.length > 0 && row.accessibleName.indexOf(row.rightText) < 0 ? row.rightText : ""].filter(function (part) {
+            row.emergencyWords.length > 0 && !row.metaSaysEmergency ? row.emergencyWords : "",
+            row.enc && !row.metaSaysEnc ? encTag.label : "",
+            row.rightText.length > 0 && !row.nameSaysTime ? row.rightText : ""].filter(function (part) {
             return part.length > 0;
         }).join(", ")
         Accessible.focusable: row.reachable
