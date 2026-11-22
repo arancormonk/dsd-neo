@@ -38,6 +38,10 @@
  *   scan-row-off      the same list with the Settings default Off: the row runs no squelch and the idle channel holds
  *                     the scan (the control).
  *
+ * Nothing in the fixture sets the startup squelch: the squelch the channel runs is read at the lifecycle's start (the
+ * engine's setup and its stream open done) and, as the receiver ran it, from the dynamic squelch's status at the first
+ * block the decoder reads, so the production startup path is what each case checks.
+ *
  * Not covered here: the scan coordinator stepping between rows (an I/Q replay cannot retune; the rows' settings on air
  * through the real coordinator are ENGINE_TRUNK_SCAN_SCAN_LIST's), and the stream after a live switch back to a
  * digital decode (UI_QT_SESSION_ARGS_PARSE checks the squelch is then exactly off).
@@ -166,10 +170,19 @@ segmentAt(double ms) {
 
 /* The decoder's reads, counted into stream time at the output rate in force when each was made; the scanners' hold
    signal is sampled after each one, and the live switch is made once its stream time has come. */
+/* What the receiver ran on the first block the decoder read: the dynamic squelch's status as the demod thread published
+   it, so the production startup path is what is seen, not a value the fixture set. */
+int g_firstReadSeen = 0;
+rtl_stream_squelch_status g_firstReadStatus = {};
+
 int
 countingReadEx(void* ctx, float* out, uint8_t* flags, size_t count, int* outGot) {
     const int rc = rtl_stream_read_ex(static_cast<RtlSdrContext*>(ctx), out, flags, count, outGot);
     const unsigned int rate = dsd_rtl_stream_metrics_hook_output_rate_hz();
+    if (rc >= 0 && outGot != nullptr && *outGot > 0 && !g_firstReadSeen) {
+        g_firstReadSeen = 1;
+        (void)rtl_stream_get_squelch_status(&g_firstReadStatus);
+    }
     if (rc >= 0 && outGot != nullptr && *outGot > 0 && rate > 0U) {
         g_heard.readMs += static_cast<double>(*outGot) * 1000.0 / static_cast<double>(rate);
         const int hold = dsd_scan_analog_carrier_open(g_opts, g_state);
@@ -232,11 +245,21 @@ captureBlast(const dsd_opts* opts, dsd_state* state, size_t nbytes, const void* 
     g_heard.audibleDbfs.append(qMakePair(g_heard.readMs, dbfs));
 }
 
+/* The squelch the session's channel ran when the lifecycle started, the engine's setup and the stream's open done. */
+int g_startMode = -1;
+int g_startMargin = -1;
+double g_startLevel = -1.0;
+int g_startDefault = -1;
+
 /* After the engine installed its hooks and opened its (null) output: the monitor goes to the capture. */
 int
 listenerStart(dsd_opts* opts, dsd_state* state, void* context) {
     (void)state;
     (void)context;
+    g_startMode = opts->rtl_squelch_mode;
+    g_startMargin = opts->rtl_squelch_margin_db;
+    g_startLevel = opts->rtl_squelch_level;
+    g_startDefault = opts->squelch_default_state == DSD_SQUELCH_DEFAULT_APPLIED ? 1 : 0;
     opts->audio_out = 1;
     opts->audio_out_type = 8;
     dsd_udp_audio_hooks audio = {};
@@ -401,16 +424,8 @@ listen(const QStringList& appArgs, const QString& capture, int wantMode, int wan
     if (before != nullptr && !before(opts, state, rowOptions)) {
         return false;
     }
-    /* The squelch the engine's setup hands the receiver (dsd_engine_setup_io()), from what the command line left. */
-    (void)dsd_squelch_analog_default_sync(opts, state);
-    const bool inDefault = opts->squelch_default_state == DSD_SQUELCH_DEFAULT_APPLIED;
-    if (!squelchIs(opts, wantMode, wantMargin) || inDefault != byDefault) {
-        DSD_FPRINTF(stderr, "  squelch mode %d margin %d level %g default %d, want mode %d margin %d default %d\n",
-                    opts->rtl_squelch_mode, opts->rtl_squelch_margin_db, opts->rtl_squelch_level, inDefault ? 1 : 0,
-                    wantMode, wantMargin, byDefault ? 1 : 0);
-    }
-    expect("the channel runs the squelch it should before it runs",
-           squelchIs(opts, wantMode, wantMargin) && inDefault == byDefault);
+    /* Nothing here sets the startup squelch: the engine's setup and its stream open resolve it, seen at the lifecycle's
+       start and, as the receiver ran it, at the first read. */
     g_opts = opts;
     g_state = state;
     dsd_app_frontend_runtime_start(opts, state);
@@ -425,6 +440,26 @@ listen(const QStringList& appArgs, const QString& capture, int wantMode, int wan
                 g_heard.audibleMs[kAfter], g_heard.firstAudibleMs, g_heard.lastAudibleMs, g_heard.holdSeen[kIdle],
                 g_heard.holdSeen[kCarrier], g_heard.holdSeen[kAfter], g_heard.holdAtEnd);
     expect("the engine runs the capture to its end", rc == 0 && g_heard.readMs > kCarrierEndMs + kAfterMs - 100.0);
+    const auto at_start = std::make_unique<dsd_opts>();
+    at_start->rtl_squelch_mode = g_startMode;
+    at_start->rtl_squelch_margin_db = g_startMargin;
+    at_start->rtl_squelch_level = g_startLevel;
+    const bool inDefault = g_startDefault == 1;
+    if (!squelchIs(at_start.get(), wantMode, wantMargin) || inDefault != byDefault) {
+        DSD_FPRINTF(stderr, "  squelch mode %d margin %d level %g default %d, want mode %d margin %d default %d\n",
+                    g_startMode, g_startMargin, g_startLevel, g_startDefault, wantMode, wantMargin, byDefault ? 1 : 0);
+    }
+    expect("the channel runs the squelch it should when the engine starts",
+           squelchIs(at_start.get(), wantMode, wantMargin) && inDefault == byDefault);
+    /* The receiver ran it from its first block: the noise squelch for a noise setting on the FM monitor, nothing
+       dynamic under a level or Off. */
+    const bool wantNoise = wantMode == DSD_SQUELCH_MODE_NOISE;
+    if (!g_firstReadSeen || (g_firstReadStatus.active == 1) != (wantMode != DSD_SQUELCH_MODE_LEVEL)
+        || (wantNoise && g_firstReadStatus.noise != 1)) {
+        DSD_FPRINTF(stderr, "  first read %d: receiver squelch active %d noise %d, want mode %d\n", g_firstReadSeen,
+                    g_firstReadStatus.active, g_firstReadStatus.noise, wantMode);
+        expect("the receiver runs that squelch from the first block the decoder reads", false);
+    }
     return true;
 }
 
