@@ -73,11 +73,11 @@ m17_confirm_reset(dsd_state* state) {
     if (ext) {
         DSD_MEMSET(&ext->adata, 0, sizeof(ext->adata));
         DSD_MEMSET(&ext->text_meta, 0, sizeof(ext->text_meta));
-        /* The scan side's copy of the checked LSF, its dispute and its reconfirmation (issue #890): no binding outlives
+        /* The scan side's copy of the checked LSF, its dispute and its RF continuity (issue #890): no binding outlives
            the transmission. */
         DSD_MEMSET(ext->lsf_checked_head, 0, sizeof(ext->lsf_checked_head));
         ext->lsf_disputed = 0U;
-        ext->lsf_reconfirmed = 0U;
+        ext->lsf_unbroken = 0U;
         ext->pkt_armed = 0U;
         ext->pkt_ref_symbol = 0U;
         ext->ip_stream_last_ms = 0U;

@@ -3327,8 +3327,8 @@ struct dsd_state {
      *   only rising), so a datagram delivered again or late is dropped before anything (m17_ip_take_stream_frame()). */
     uint8_t m17_lsf_checked;
     /* The scan side's copy of the checked LSF's DST, SRC and TYPE, its dispute by a clean LICH chunk and its
-     * reconfirmation since the RF stream was last continuous (issue #890) are M17's own: they live in the M17 state
-     * extension (src/protocol/m17/m17_state_ext.h, lsf_checked_head, lsf_disputed, lsf_reconfirmed, rf_frame_*), out of
+     * continuity since the RF stream was bound (issue #890) are M17's own: they live in the M17 state
+     * extension (src/protocol/m17/m17_state_ext.h, lsf_checked_head, lsf_disputed, lsf_unbroken, rf_frame_*), out of
      * every frontend's snapshot. With no extension the binding vouches for nothing (fail closed). */
     uint16_t m17_signature_voice_next;
     uint8_t m17_signature_voice_gap;

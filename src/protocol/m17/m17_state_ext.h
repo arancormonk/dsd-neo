@@ -109,18 +109,18 @@ typedef struct m17_state_ext {
        packed MSB first). lsf_disputed: a clean LICH chunk of the stream has since disagreed with them
        (m17_lich_note_other_link()): another transmission whose boundary went unheard, or a Golay miscorrection; a
        disputed binding is no identity of the call for a scan hold until an LSF is checked again, and the decoder's
-       checked fields are left as they are. lsf_reconfirmed: which of the LICH chunks that carry those bits (0 to 2, bit
-       k for chunk k) agreed with the checked LSF since the RF stream was last continuous with it; a checked LSF sets all
-       three, a stream frame that does not end one M17 frame after the RF frame before it clears them (a frame lost, or
-       another transmission's frames after a missed EOS, EOT and LSF frame, which take at least three frame periods),
-       and each clean chunk 0 to 2 that agrees sets its own again. The binding vouches for the stream
-       (m17_link_setup_vouched(): its scan report's fields, its checked speech) only while it is undisputed and all three
-       are set. All three are emptied at every transmission boundary (m17_confirm_reset()). rf_frame_valid,
+       checked fields are left as they are. lsf_unbroken: RF continuity has not broken since the checked LSF bound the
+       transmission; set by a checked LSF, cleared by an RF LSF or stream frame that does not end one M17 frame after
+       the RF frame before it (a frame lost, or another transmission's frames after a missed EOS, EOT and LSF frame,
+       which take at least three frame periods; m17_note_rf_frame_end(), which also drops the LICH chunks held from
+       before the break). The binding vouches for the stream (m17_link_setup_vouched(): its scan report's fields, its
+       checked speech) only while it is undisputed and unbroken. All three are emptied at every transmission boundary
+       (m17_confirm_reset()). rf_frame_valid,
        rf_frame_symbol, rf_frame_epoch: where the last RF LSF or stream frame M17 read whole ended
        (dsd_state::symbolcnt, dsd_state::symbol_clock_epoch; m17_note_rf_frame_end()). */
     uint8_t lsf_checked_head[14];
     uint8_t lsf_disputed;
-    uint8_t lsf_reconfirmed;
+    uint8_t lsf_unbroken;
     uint8_t rf_frame_valid;
     uint32_t rf_frame_symbol;
     uint32_t rf_frame_epoch;

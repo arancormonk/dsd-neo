@@ -972,14 +972,14 @@ test_disputed_link_setup_earns_no_checked_speech(void) {
 }
 #endif
 
-/* Issue #890: a checked LSF vouches for a stream only while the RF stream stays continuous with it, or every LICH chunk
-   that carries its DST, SRC and TYPE (0 to 2) has agreed with it again since. After a clear voice transmission on CAN 5,
-   three frame periods pass unheard (its EOS frame, the EOT and the next LSF frame), then another transmission from the
-   same station on CAN 7, which differs from the first only in chunk 2, joined at chunk 3: its chunks 3, 4, 5, 0 and 1
-   report anonymous, never CAN 5's encryption or type, and chunk 2 disputes the binding. The first transmission itself
-   after the same gap (a fade) reports anonymous until its chunks 0 to 2 agreed again, then with the bound values. */
+/* Issue #890: any break in RF continuity voids the scan side's binding until the next LSF whose CRC passes, an LSF
+   frame or one the LICH rebuilds from chunks received after the break. After a clear voice transmission on CAN 5,
+   three frame periods pass unheard (its EOS frame, the EOT and the next LSF frame). The same transmission after such a
+   fade, joined at chunk 3, reports anonymous until its six chunks after the break rebuild its LSF (at the next chunk
+   5), then with the bound values; another transmission from the same station on CAN 7 does too (its chunk 2 disputes
+   the old binding meanwhile), then with its own rebuilt LSF's CAN 7. */
 static void
-stale_link_setup_case(int same_transmission) {
+rf_gap_case(int same_transmission) {
     dsd_opts* opts = g_opts;
     dsd_state* state = g_state;
     uint8_t lsf_bits[TEST_M17_LSF_BITS];
@@ -1001,7 +1001,7 @@ stale_link_setup_case(int same_transmission) {
     assert(g_test_scan_activity.count >= 1 && g_test_scan_activity.last.known == bound);
     state->symbolcnt += 3U * 192U;
     const uint8_t* next = same_transmission ? lsf_bits : can7_bits;
-    static const uint8_t k_order[] = {3U, 4U, 5U, 0U, 1U};
+    static const uint8_t k_order[] = {3U, 4U, 5U, 0U, 1U, 2U, 3U, 4U};
     int reports = 0;
     for (size_t i = 0U; i < sizeof(k_order); i++) {
         const int before = g_test_scan_activity.count;
@@ -1012,27 +1012,103 @@ stale_link_setup_case(int same_transmission) {
             assert(g_test_scan_activity.last.known == 0U);
         }
     }
-    assert(reports >= 1 && !lsf_disputed(state));
-    load_stream_frame(next, 2U, 11U);
+    assert(reports >= 1 && lsf_disputed(state) == !same_transmission);
+    load_stream_frame(next, 5U, 14U);
     (void)processM17STR(opts, state);
-    if (same_transmission) {
-        assert(!lsf_disputed(state) && g_test_scan_activity.last.known == bound);
-    } else {
-        assert(lsf_disputed(state) && g_test_scan_activity.last.known == 0U);
+    assert(!lsf_disputed(state) && g_test_scan_activity.last.known == bound);
+    assert(state->m17_can == (same_transmission ? 5U : 7U));
+    finish(state);
+}
+
+/* Issue #890: an LSF frame whose CRC fails never vouches. Under a CAN 5 filter, after a checked CAN 5 transmission and
+   a missed end (three frame periods unheard), a CAN 7 transmission's LSF frame fails its CRC: the CAN 7 stream frames
+   after it, continuous with that failed frame, report refused (their CAN unknown under the filter), never as CAN 5. */
+static void
+test_failed_lsf_after_a_gap_vouches_nothing(void) {
+    dsd_opts* opts = g_opts;
+    dsd_state* state = g_state;
+    uint8_t lsf_bits[TEST_M17_LSF_BITS];
+    uint8_t can7_bits[TEST_M17_LSF_BITS];
+    build_lsf_bits(lsf_bits);
+    build_lsf_bits_with(can7_bits, m17_encode_b40_callsign(0ULL, "AB1CD"), m17_encode_b40_callsign(0ULL, "EF2GH"),
+                        m17_compose_frame_info(1U, 2U, 0U, 0U, 7U, 0U, 0U));
+    uint8_t can7_bad[TEST_M17_LSF_BITS];
+    DSD_MEMCPY(can7_bad, can7_bits, sizeof(can7_bad));
+    can7_bad[200] ^= 1U; /* a META bit after the CRC was attached: the CRC fails */
+    prepare(opts, state);
+    dsd_test_scan_activity_install();
+    state->m17_can_en = 5;
+    state->synctype = DSD_SYNC_M17_LSF_POS;
+    load_lsf_frame(lsf_bits);
+    assert(processM17LSF(opts, state) == 1);
+    state->synctype = DSD_SYNC_M17_STR_POS;
+    for (uint16_t fn = 0U; fn < 6U; fn++) {
+        load_stream_frame(lsf_bits, (uint8_t)fn, fn);
+        (void)processM17STR(opts, state);
     }
+    assert(g_test_scan_activity.last.known != 0U && g_test_scan_activity.last.receive_refused == 0U);
+    state->symbolcnt += 3U * 192U;
+    state->synctype = DSD_SYNC_M17_LSF_POS;
+    load_lsf_frame(can7_bad);
+    (void)processM17LSF(opts, state);
+    state->synctype = DSD_SYNC_M17_STR_POS;
+    dsd_test_scan_activity_reset();
+    for (uint16_t fn = 0U; fn < 2U; fn++) {
+        load_stream_frame(can7_bits, (uint8_t)fn, fn);
+        (void)processM17STR(opts, state);
+    }
+    assert(g_test_scan_activity.count >= 1 && g_test_scan_activity.last.receive_refused == 1U
+           && g_test_scan_activity.last.known == 0U);
+    finish(state);
+}
+
+/* Issue #890: LICH chunks held from before a break in RF continuity are dropped. A stream joined late (no LSF frame),
+   confirmed by its first LICH pair, holds chunks up to 2 of its second cycle; then six frame periods pass unheard, then
+   chunks 3 to 5: the chunks never rebuild an LSF across the break, so the stream stays unchecked and its reports
+   anonymous. Without the break the same frames rebuild the LSF and bind it. */
+static void
+lich_gap_case(int gap) {
+    dsd_opts* opts = g_opts;
+    dsd_state* state = g_state;
+    uint8_t lsf_bits[TEST_M17_LSF_BITS];
+    build_lsf_bits(lsf_bits);
+    prepare(opts, state);
+    dsd_test_scan_activity_install();
+    state->synctype = DSD_SYNC_M17_STR_POS;
+    for (uint16_t fn = 0U; fn < 9U; fn++) {
+        load_stream_frame(lsf_bits, (uint8_t)(fn % 6U), fn);
+        (void)processM17STR(opts, state);
+    }
+    assert(state->m17_lsf_checked == 0U);
+    if (gap) {
+        state->symbolcnt += 6U * 192U;
+    }
+    for (uint16_t fn = 9U; fn < 12U; fn++) {
+        load_stream_frame(lsf_bits, (uint8_t)(fn % 6U), fn);
+        (void)processM17STR(opts, state);
+    }
+    assert(state->m17_lsf_checked == (uint8_t)!gap);
+    assert(g_test_scan_activity.count >= 1);
+    assert((g_test_scan_activity.last.known == 0U) == gap);
     finish(state);
 }
 
 static void
-test_stale_link_setup_needs_its_identity_chunks_again(void) {
-    stale_link_setup_case(0);
-    stale_link_setup_case(1);
+test_lich_chunks_do_not_cross_a_gap(void) {
+    lich_gap_case(1);
+    lich_gap_case(0);
+}
+
+static void
+test_rf_gap_voids_the_link_setup_until_a_checked_lsf(void) {
+    rf_gap_case(0);
+    rf_gap_case(1);
 }
 
 #ifdef USE_CODEC2
 /* Issue #890: the same rule for speech. Under a scan, after a checked LSF for CAN 5 and three unheard frame periods,
-   another transmission from the same station on CAN 7, joined at chunk 3, plays but earns no checked media while its
-   chunk 2 has not agreed. */
+   another transmission from the same station on CAN 7, joined at chunk 3, plays but earns no checked media until an
+   LSF is checked again. */
 static void
 test_stale_link_setup_earns_no_checked_speech(void) {
     dsd_opts* opts = g_opts;
@@ -1347,7 +1423,9 @@ main(void) {
     test_disputed_link_setup_earns_no_checked_speech();
 #endif
     test_checked_content_reports_to_trunk_scan();
-    test_stale_link_setup_needs_its_identity_chunks_again();
+    test_rf_gap_voids_the_link_setup_until_a_checked_lsf();
+    test_failed_lsf_after_a_gap_vouches_nothing();
+    test_lich_chunks_do_not_cross_a_gap();
 #ifdef USE_CODEC2
     test_stale_link_setup_earns_no_checked_speech();
 #endif

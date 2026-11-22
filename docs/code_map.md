@@ -6012,15 +6012,16 @@ the implementations from `dsd_engine_trunk_scan_init()` and clears them again on
   packet CRC, a clean LICH pair; only `m17_lsf_checked` values an applied LSF bound, withdrawn while a clean LICH
   chunk disputes the checked DST/SRC/TYPE (`m17_state_ext::lsf_disputed`, a missed boundary; `m17_link_setup_vouched()`, which
   the voice-only checked speech asks too, so a disputed stream's speech earns no checked media), and gone from the frame after a
-  decoded EOS (the boundary reset, `m17_confirm_reset()`, drops `m17_lsf_checked` and the dispute with it). Only
-  chunks 0 to 2 carry those bits, so the binding vouches only while the RF stream stays continuous with it (each stream
-  frame ending one M17 frame, 192 symbols within 32, after the RF frame before in one symbol clock epoch,
-  `m17_note_rf_frame_end()`, `m17_state_ext::rf_frame_symbol`/`_epoch`) or each of chunks 0 to 2 agreed with it again
-  since (`m17_state_ext::lsf_reconfirmed`, set whole by a checked LSF, cleared by a discontinuity, a bit for each
-  agreeing chunk): after a missed EOS, EOT and LSF frame (at least three frame periods unheard) a new transmission
-  differing only in chunk 2 (its CAN or encryption) reports anonymous until its chunk 2 disputes it, however long that
-  chunk fails its Golay check, and a frame lost inside one transmission withholds its fields until the three chunks
-  were heard clean again. These scan-side fields (`lsf_checked_head`, `lsf_disputed`, `lsf_reconfirmed`, `rf_frame_*`)
+  decoded EOS (the boundary reset, `m17_confirm_reset()`, drops `m17_lsf_checked` and the dispute with it). Any break
+  in RF continuity voids the binding too (decided, fail closed): an RF LSF or stream frame that does not end one M17
+  frame (192 symbols, within 32) after the RF frame before it in one symbol clock epoch (`m17_note_rf_frame_end()`,
+  `m17_state_ext::rf_frame_symbol`/`_epoch`) clears `m17_state_ext::lsf_unbroken` and drops the LICH chunks held
+  from before it (`m17_lich_reset()`), and only the next LSF whose CRC passes binds again: an LSF frame, or one the
+  LICH rebuilds from chunks received after the break; an LSF frame whose CRC fails binds nothing, so it never vouches.
+  A missed EOS, EOT and LSF frame leaves at least three frame periods unheard, so a new transmission is never credited
+  with the old LSF's CAN, encryption or type; a frame lost inside one transmission withholds its fields, and its
+  speech's checked-media credit, until its LSF is checked again (at least one six-frame LICH cycle). These scan-side
+  fields (`lsf_checked_head`, `lsf_disputed`, `lsf_unbroken`, `rf_frame_*`)
   are M17's own state in its extension, out of every frontend's snapshot, and emptied by `m17_confirm_reset()`; with no
   extension (out of memory) the binding vouches for nothing. The receive CAN gate `m17_can_en` is kept: a CAN it refuses, or cannot tell, is reported
   with `receive_refused` set, which the policy table refuses (`dsd_scan_activity_policy_allows()`), so a typed -Y row

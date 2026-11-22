@@ -1225,7 +1225,7 @@ test_stream_voice_replaces_foreign_active_call(void) {
     if (link == NULL) {
         return 1;
     }
-    link->lsf_reconfirmed = 0x7U; /* every identity chunk agreed since the stream was continuous */
+    link->lsf_unbroken = 1U; /* no break in RF continuity since the LSF was checked */
     link->lsf_disputed = 1U;
     err |= expect_int("disputed-LSF M17 voice dispatches under a scan",
                       m17_dispatch_stream_payload(opts, state, payload_bits, M17_REF_STREAM_FN, processed_bits),
@@ -6235,10 +6235,10 @@ expect_link_setup_unknown(const char* boundary, const dsd_state* state) {
     }
     /* The scan side's copy of the checked LSF and its dispute go with it (issue #890). */
     if (link != NULL
-        && (link->lsf_disputed != 0U || link->lsf_reconfirmed != 0U
+        && (link->lsf_disputed != 0U || link->lsf_unbroken != 0U
             || memcmp(link->lsf_checked_head, zero_head, sizeof(zero_head)) != 0)) {
-        DSD_FPRINTF(stderr, "%s: scan binding left: disputed %u reconfirmed %u head[0] %02X\n", boundary,
-                    (unsigned)link->lsf_disputed, (unsigned)link->lsf_reconfirmed, (unsigned)link->lsf_checked_head[0]);
+        DSD_FPRINTF(stderr, "%s: scan binding left: disputed %u unbroken %u head[0] %02X\n", boundary,
+                    (unsigned)link->lsf_disputed, (unsigned)link->lsf_unbroken, (unsigned)link->lsf_checked_head[0]);
         err = 1;
     }
     return err;

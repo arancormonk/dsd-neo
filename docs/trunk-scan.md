@@ -1147,10 +1147,11 @@ rules:
   read: an encrypted DM-2-C burst under such a code holds nothing.
 - M17: a decoded end of stream, or a clean LICH that disagrees with the checked link setup's callsigns or type
   (another transmission whose end was missed), makes the reports after it anonymous until a link setup is checked
-  again. Only the first three LICH parts carry those fields, so after any gap in the stream (frames lost, or a missed
-  end and link setup) the reports stay anonymous, and its speech does not count for `--scan-voice-only`, until each of
-  those three parts has been heard clean and agreed with the checked link setup again. A transmission that changed
-  only its CAN or encryption is therefore never credited with the old link setup's fields.
+  again. Any gap in the stream (frames lost, or a missed end and link setup) does the same: the reports stay
+  anonymous, and the speech does not count for `--scan-voice-only`, until a link setup passes its check again (a link
+  setup frame, or one rebuilt from the LICH parts heard after the gap, at least six frames). A link setup that fails
+  its check never counts. A transmission that changed only its CAN or encryption is therefore never credited with the
+  old link setup's fields.
 - dPMR and TETRA DMO calls go through the talkgroup and radio lists like DMR calls. A report with no target ID (a
   dPMR frame that names only the caller, an encrypted DM-2-C burst) holds nothing while a talkgroup Hold or the allow
   list is on, or when the radio list blocks its known source.
