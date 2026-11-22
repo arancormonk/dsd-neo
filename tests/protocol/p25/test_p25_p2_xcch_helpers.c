@@ -1895,24 +1895,30 @@ set_roaming_voice_identity(uint32_t unit) {
    LCCH's span, which the VPDU pass, clearing p2_is_lcch as it ends, would otherwise leave to the SACCH's. */
 static int
 test_lcch_mac_active_identity_parses_within_the_lcch(void) {
-    static dsd_opts opts;
-    static dsd_state state;
+    dsd_opts* opts = (dsd_opts*)calloc(1U, sizeof(dsd_opts));
+    dsd_state* state = (dsd_state*)calloc(1U, sizeof(dsd_state));
+    if (!opts || !state) {
+        free(opts);
+        free(state);
+        return 1;
+    }
     unsigned long long int mac[24] = {0};
-    DSD_MEMSET(&opts, 0, sizeof(opts));
-    DSD_MEMSET(&state, 0, sizeof(state));
     reset_stubs();
     g_voice_identity_span = 0;
-    state.p2_is_lcch = 1;
-    p25p2_xcch_handle_sacch_mac_active(&opts, &state, 0, mac);
+    state->p2_is_lcch = 1;
+    p25p2_xcch_handle_sacch_mac_active(opts, state, 0, mac);
     int rc = expect_int("lcch MAC_ACTIVE reached the VPDU pass on the lcch", g_vpdu_saw_lcch, 1);
     rc |=
         expect_int("lcch MAC_ACTIVE identity parsed within the lcch span", g_voice_identity_span, P25P2_MAC_SPAN_LCCH);
     reset_stubs();
     g_voice_identity_span = 0;
-    p25p2_xcch_handle_sacch_mac_active(&opts, &state, 0, mac);
+    p25p2_xcch_handle_sacch_mac_active(opts, state, 0, mac);
     rc |= expect_int("sacch MAC_ACTIVE identity parsed within the sacch span", g_voice_identity_span,
                      P25P2_MAC_SPAN_SACCH);
     reset_stubs();
+    dsd_state_ext_free_all(state);
+    free(state);
+    free(opts);
     return rc;
 }
 

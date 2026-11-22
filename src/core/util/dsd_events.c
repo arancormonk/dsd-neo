@@ -4029,6 +4029,20 @@ dsd_event_enrich_committed_alias(const dsd_opts* opts, dsd_state* state, uint8_t
                                    "Enriched: ", rendered, item, &added);
 }
 
+// A call that withdrew its earlier talker's home (dsd_call_source_home::withdrawn): an alias written to its row now is
+// the new talker's, so the row lets the home go with it. Above all on a committed row (a notice committed the
+// reacquired segment before the withdrawal): left with the old home, the terminator's merge would read the staged
+// row's withdrawal as a replacement of that home and put the staged row's empty alias over the new one.
+static void
+dsd_event_enrich_follow_home_withdrawal(const dsd_call_snapshot* call, Event_History* item) {
+    if (call->source_home.valid != 0U || call->source_home.withdrawn == 0U) {
+        return;
+    }
+    item->src_home_key = 0U;
+    item->src_home[0] = '\0';
+    item->src_home_withdrawn = 1U;
+}
+
 // Caller holds the call-state lock. Write the enrichment into the row the epoch found, staged or committed.
 static void
 dsd_event_enrich_row_locked(const dsd_opts* opts, dsd_state* state, uint8_t slot, dsd_call_state_ext* ext,
@@ -4037,6 +4051,9 @@ dsd_event_enrich_row_locked(const dsd_opts* opts, dsd_state* state, uint8_t slot
     Event_History* item = &state->event_history_s[slot].Event_History_Items[history_index];
     const int alias_changed =
         kind == DSD_EVENT_ENRICH_ALIAS && strncmp(item->alias, value, sizeof(item->alias) - 1U) != 0;
+    if (kind == DSD_EVENT_ENRICH_ALIAS) {
+        dsd_event_enrich_follow_home_withdrawal(call, item);
+    }
     dsd_event_enrich_apply(state, slot, epoch, item, value, kind);
     if (state->event_crc_invalid[slot]) {
         dsd_event_enrich_mark_crc(ext, call, item, state->event_crc_invalid[slot]);

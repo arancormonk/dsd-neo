@@ -5129,6 +5129,70 @@ test_reacq_merge_carries_a_withdrawn_home(void) {
     return rc;
 }
 
+// As test_reacq_merge_carries_a_withdrawn_home(), but a call notice commits the reacquired segment into the row before
+// the abbreviated voice user withdraws the home, so the withdrawal and the new talker's alias land on the committed row
+// itself: the terminator's merge keeps that alias rather than putting back the staged row's empty one.
+static int
+test_reacq_merge_keeps_an_alias_written_after_the_withdrawal(void) {
+    dsd_opts* opts = (dsd_opts*)calloc(1U, sizeof(dsd_opts));
+    dsd_state* state = (dsd_state*)calloc(1U, sizeof(dsd_state));
+    Event_History_I* event_history = (Event_History_I*)calloc(2U, sizeof(Event_History_I));
+    assert(opts != NULL && state != NULL && event_history != NULL);
+    reset_fixture(opts, state, event_history);
+    state->nac = 0x293;
+    note_p25_site(state);
+    assert(observe_roaming_call_unit(state, DSD_CALL_BOUNDARY_BEGIN, 1234567U) == 1);
+    dsd_event_sync_slot(opts, state, 0U);
+    dsd_call_snapshot call;
+    assert(dsd_call_state_get(state, 0U, &call) == 1);
+    assert(dsd_event_enrich_alias(state, 0U, DSD_SYNC_P25P2_POS, call.epoch, "FIRSTRADIO") >= 0);
+    assert(end_test_call(state, 0U, DSD_CALL_END_SYNC_LOSS) == 1);
+    dsd_event_sync_slot(opts, state, 0U);
+    assert(observe_roaming_call_unit(state, DSD_CALL_BOUNDARY_CONTINUE, 1234567U) == 1);
+    dsd_event_sync_slot(opts, state, 0U);
+    assert(dsd_call_state_get(state, 0U, &call) == 1);
+    assert(dsd_event_emit_call_notice_nonfinalizing(opts, state, 0U, &call, "NOTICE") == 1);
+    const dsd_call_observation abbreviated = {
+        .protocol = DSD_SYNC_P25P2_POS,
+        .slot = 0U,
+        .kind = DSD_CALL_KIND_GROUP_VOICE,
+        .ota_target_id = 100U,
+        .policy_target_id = 100U,
+        .ota_source_id = 3002U,
+        .has_service_metadata = 1U,
+        .observed_m = g_observed_m,
+    };
+    g_observed_m += 0.1;
+    assert(dsd_call_state_observe(state, &abbreviated, DSD_CALL_BOUNDARY_CONTINUE) == 0);
+    int dropped = 0;
+    assert(dsd_call_state_note_source_address(state, 0U, DSD_SYNC_P25P2_POS, 3002U, &dropped) == 1);
+    assert(dropped == 1);
+    assert(dsd_call_state_get(state, 0U, &call) == 1);
+    assert(dsd_event_enrich_alias(state, 0U, DSD_SYNC_P25P2_POS, call.epoch, "") >= 0);
+    assert(dsd_event_enrich_alias(state, 0U, DSD_SYNC_P25P2_POS, call.epoch, "NEWTALKER") >= 0);
+    dsd_event_sync_slot(opts, state, 0U);
+    assert(end_test_call(state, 0U, DSD_CALL_END_TERMINATOR) == 1);
+    dsd_event_sync_slot(opts, state, 0U);
+    int rc = 0;
+    int found = 0;
+    for (int i = 1; i < 10; i++) {
+        const Event_History* row = &event_history[0].Event_History_Items[i];
+        if (row->source_id != 3002U) {
+            continue;
+        }
+        found = 1;
+        rc |= expect_int("the committed row keeps the new talker's alias", strstr(row->alias, "NEWTALKER") != NULL, 1);
+        rc |= expect_int("the committed row drops the roamer's alias", strstr(row->alias, "FIRSTRADIO") == NULL, 1);
+        rc |= expect_int("the committed row drops the roamer's home", row->src_home_key == 0U, 1);
+    }
+    rc |= expect_int("the working address's row", found, 1);
+    dsd_state_ext_free_all(state);
+    free(event_history);
+    free(state);
+    free(opts);
+    return rc;
+}
+
 // A replacement roaming radio whose home differs only by WACN (the same `unit@system` text) is still another radio:
 // the merged row takes its alias, not the first radio's, and the event log reports the new alias.
 static int
@@ -9846,6 +9910,7 @@ main(void) {
     rc |= test_reacq_merge_keeps_roaming_home();
     rc |= test_reacq_merge_takes_the_replacement_home();
     rc |= test_reacq_merge_carries_a_withdrawn_home();
+    rc |= test_reacq_merge_keeps_an_alias_written_after_the_withdrawal();
     rc |= test_reacq_merge_logs_the_replacement_alias();
     rc |= test_reacq_merge_refuses_conflict();
     rc |= test_row_channel_fill_only_with_kind();
