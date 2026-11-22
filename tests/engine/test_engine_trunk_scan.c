@@ -17742,6 +17742,7 @@ test_tetra_dmo_entry_reads_the_on_air_verdict(void) {
     tick_at(opts, state, 0.1);
     if (captured) {
         (void)dsd_test_capture_stderr_end(&cap);
+        (void)remove(cap.path); /* the warning is not checked here; a read would remove the file */
     }
     dsd_scan_entry_match_t match;
     DSD_MEMSET(&match, 0, sizeof match);
