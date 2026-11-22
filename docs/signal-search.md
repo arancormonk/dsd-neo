@@ -1325,7 +1325,8 @@ The check runs only where the calibration rendered and validated it, matched exa
 ### Driver and conditions
 
 `dsd-neo_test_signal_quiet_calibrate` (`tests/io/signal_quiet_calibrate.cpp`, built with the tests) runs the
-stand-alone quiet detector, the one the shared tap runs. CTest never runs a calibration with it:
+stand-alone quiet detector, the one the shared tap runs. CTest never runs a calibration with it, only two short checks
+of the driver itself: `IO_SIGNAL_QUIET_CALIBRATE_OUTPUTS` checks its outputs on rendered tones, and
 `IO_SIGNAL_QUIET_CALIBRATE_CHOOSE` runs one condition at a time on a tiny source set, to check that the driver refuses
 a source too short for a condition it renders (one `--filter` selects for the phase, `--phase snr` included) and no
 other. Its signals are the reception tool's own clean sources (`--export-sources DIR`), interpolated to the capture

@@ -6,8 +6,9 @@
 /* Calibration driver for the scan skip-silent check's quiet threshold (issue #834), run by hand: it runs the
  * stand-alone quiet detector, the one the shared tap runs, over hundreds of rendered conditions and thousands of
  * trials each, minutes on every core. docs/signal-search.md "Quiet-channel calibration" gives the method and results.
- * CTest runs it only on one condition at a time over a tiny source set (IO_SIGNAL_QUIET_CALIBRATE_CHOOSE), to check
- * that it refuses a short source a chosen condition uses and no other.
+ * CTest runs it only for two short checks of the driver itself: its outputs on rendered tones
+ * (IO_SIGNAL_QUIET_CALIBRATE_OUTPUTS), and one condition at a time over a tiny source set
+ * (IO_SIGNAL_QUIET_CALIBRATE_CHOOSE), to check that it refuses a short source a chosen condition uses and no other.
  *
  *   dsd-neo_test_signal_quiet_calibrate --phase select|validate|snr|cost --out FILE [--sources DIR] [--trials N]
  *       [--jobs N] [--threshold DB --estimator trimmed|lowest] [--guard DB] [--filter TEXT] [--dump FILE]

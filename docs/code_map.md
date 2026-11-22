@@ -11177,8 +11177,10 @@ Runtime controls (via `include/dsd-neo/io/rtl_stream_c.h`):
   `DSD_SIGNAL_QUIET_CENTRED_THRESHOLD_DB` (3.2 dB, `dsd_signal_quiet_params.centred_threshold_db`, 0 meaning the
   default threshold: its calibration rendered a floor 2 dB lower round the channel, which no reference outside the
   channel sees);
-  `tests/io/signal_quiet_calibrate.cpp`, a manual build-only driver, chose all three and drives its own detectors with
-  explicit parameters; docs/signal-search.md "Quiet-channel calibration"). The domain is exactly the rendered cells:
+  `tests/io/signal_quiet_calibrate.cpp`, a manual driver whose runs CTest leaves out (it checks only the driver's
+  outputs, `IO_SIGNAL_QUIET_CALIBRATE_OUTPUTS`, and its short-source refusals, `IO_SIGNAL_QUIET_CALIBRATE_CHOOSE`),
+  chose all three and drives its own detectors with explicit parameters; docs/signal-search.md "Quiet-channel
+  calibration"). The domain is exactly the rendered cells:
   `dsd_signal_quiet_rate_supported(rate)` (every class) and `dsd_signal_quiet_analog_supported(kind, width, rate)`
   (`kind` a `dsd_analog_demod`) match the calibrated capture rates and widths of that kind exactly
   (`kQuietNfmWidthsHz`: the Radio sheet's NFM steps plus 10, 12 and 15 kHz; `kQuietAmWidthsHz`: its AM steps plus
