@@ -2311,6 +2311,40 @@ test_restore_place() {
 }
 
 /**
+ * Discussion #900 F3: a saved system's DMR Tier III channels go through the backup and its restore as they were saved
+ * (a hidden one included), and the restored model loads them; the system's channel map file stays its own field.
+ */
+void
+test_restore_dmr_channels() {
+    put_back(Tree());
+    const QVariantList channels{QVariantMap{{"lpcn", 12}, {"hz", 0}}, QVariantMap{{"lpcn", 40}, {"hz", 451137500}}};
+    {
+        dsd_qt::SavedSystemsModel systems;
+        expect("dmr channels: a Tier III system", systems.add({{"name", "Tier III"},
+                                                               {"sourceType", "usb"},
+                                                               {"decodeFlag", "-fs"},
+                                                               {"trunking", true},
+                                                               {"dmrChannels", channels}}));
+    }
+    const auto built = dsd_qt::backup::backup_build_archive(dsd_qt::backup::backup_take_snapshot(), nullptr);
+    const dsd_qt::backup::ParseResult parsed = dsd_qt::backup::backup_parse_archive(built.archive, root());
+    expect("dmr channels: the backup builds and parses",
+           built.error == BackupError::None && parsed.error == BackupError::None);
+    const QJsonArray rows = parsed.stores.value("saved_systems.json");
+    expect("dmr channels: the backup carries them",
+           rows.size() == 1
+               && dsd_qt::SavedSystemsModel::validDmrChannels(rows.at(0).toObject().value("dmrChannels").toVariant())
+                      == channels);
+    const Tree tree = capture();
+    stage_over(parsed, built.archive, tree);
+    expect("dmr channels: applied", apply().outcome == ApplyOutcome::Applied);
+    dsd_qt::SavedSystemsModel restored;
+    expect("dmr channels: the restored system keeps them",
+           restored.rowCount() == 1 && restored.get(0).value("dmrChannels") == channels
+               && restored.get(0).value("chanCsvPath").toString().isEmpty());
+}
+
+/**
  * Two restores in a row: B, exported from a restored A, is restored over it. The second restore's journal owns
  * exactly what the first restore wrote (the moved "-1" bundle and the files with free names included), the stores and
  * the generated folders; its only owned roots are A's two bundles, so no wider root gains deletion authority, and
@@ -2454,6 +2488,7 @@ main(int argc, char** argv) {
         test_bundle_named_from_outside(host, old);
         test_restore_keeps_import_named_file(host);
         test_restore_place();
+        test_restore_dmr_channels();
     }
     dsd_app_signal_search_store_close();
 

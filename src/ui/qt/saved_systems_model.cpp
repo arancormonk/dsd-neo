@@ -25,6 +25,7 @@
 #include <cmath>
 #include <limits>
 
+#include <dsd-neo/app_control/dmr_t3_view.h>
 #include <dsd-neo/runtime/log.h>
 #include "json_store.h"
 #include "radio_settings.h"
@@ -737,7 +738,121 @@ SavedSystemsModel::rowFromMap(const QVariantMap& map, const Row& base) {
     map_take_bool(map, QStringLiteral("keyCsvHex"), &row.keyCsvHex);
     map_take_string(map, QStringLiteral("p25BandplanCsvPath"), &row.p25BandplanCsvPath);
     map_take_string(map, QStringLiteral("srcCsvPath"), &row.srcCsvPath);
+    if (map.contains(QStringLiteral("dmrChannels"))) {
+        row.dmrChannels = validDmrChannels(map.value(QStringLiteral("dmrChannels")));
+    }
     return row;
+}
+
+namespace {
+
+/* One stored Tier III channel entry: true with @p lpcn and @p hz for a valid one. */
+bool
+dmr_channel_entry(const QVariant& raw, int* lpcn, qint64* hz) {
+    if (raw.typeId() != QMetaType::QVariantMap) {
+        return false;
+    }
+    const QVariantMap entry = raw.toMap();
+    bool hzOk = false;
+    *hz = entry.value(QStringLiteral("hz")).toLongLong(&hzOk);
+    return stored_int(entry.value(QStringLiteral("lpcn")), lpcn) && *lpcn >= 1 && *lpcn <= DSD_UI_DMR_T3_ROWS - 2
+           && hzOk && (*hz == 0 || (*hz >= DSD_UI_DMR_T3_MIN_HZ && *hz <= DSD_UI_DMR_T3_MAX_HZ));
+}
+
+QVariantList
+dmr_channel_list(const QMap<int, qint64>& entries) {
+    QVariantList out;
+    for (auto it = entries.cbegin(); it != entries.cend(); ++it) {
+        out.append(QVariantMap{{QStringLiteral("lpcn"), it.key()}, {QStringLiteral("hz"), it.value()}});
+    }
+    return out;
+}
+
+QMap<int, qint64>
+dmr_channel_map(const QVariantList& list) {
+    QMap<int, qint64> entries;
+    for (const QVariant& value : list) {
+        int lpcn = 0;
+        qint64 hz = 0;
+        if (dmr_channel_entry(value, &lpcn, &hz) && !entries.contains(lpcn)) {
+            entries.insert(lpcn, hz);
+        }
+    }
+    return entries;
+}
+
+/* Whether a channel edit names a channel, an operation and, for a SET, a frequency it can keep. */
+bool
+dmr_channel_edit_valid(int lpcn, int op, qint64 hz) {
+    const bool lpcnOk = lpcn >= 1 && lpcn <= DSD_UI_DMR_T3_ROWS - 2;
+    const bool hzOk = op != DSD_UI_DMR_T3_OP_SET || (hz >= DSD_UI_DMR_T3_MIN_HZ && hz <= DSD_UI_DMR_T3_MAX_HZ);
+    const bool opOk = op == DSD_UI_DMR_T3_OP_SET || op == DSD_UI_DMR_T3_OP_HIDE || op == DSD_UI_DMR_T3_OP_RESTORE;
+    return lpcnOk && hzOk && opOk;
+}
+
+QVariantMap
+dmr_channel_edit_result(const char* error) {
+    return {{QStringLiteral("ok"), *error == '\0'}, {QStringLiteral("error"), QString::fromLatin1(error)}};
+}
+
+} // namespace
+
+QVariantList
+SavedSystemsModel::validDmrChannels(const QVariant& raw) {
+    if (raw.typeId() != QMetaType::QVariantList) {
+        return {};
+    }
+    QMap<int, qint64> entries;
+    for (const QVariant& value : raw.toList()) {
+        int lpcn = 0;
+        qint64 hz = 0;
+        if (entries.size() < DSD_UI_DMR_T3_OVERLAY_MAX_ROWS && dmr_channel_entry(value, &lpcn, &hz)
+            && !entries.contains(lpcn)) {
+            entries.insert(lpcn, hz);
+        }
+    }
+    return dmr_channel_list(entries);
+}
+
+QVariantList
+SavedSystemsModel::dmrChannels(const QString& uid) const {
+    const int row = rowForUid(uid);
+    return row >= 0 ? m_rows.at(row).dmrChannels : QVariantList();
+}
+
+QVariantMap
+SavedSystemsModel::applyDmrChannelEdit(const QString& uid, int lpcn, int op, qint64 hz) {
+    const int row = rowForUid(uid);
+    if (row < 0) {
+        return dmr_channel_edit_result("no-system");
+    }
+    if (!dmr_channel_edit_valid(lpcn, op, hz)) {
+        return dmr_channel_edit_result("invalid");
+    }
+    QMap<int, qint64> entries = dmr_channel_map(m_rows.at(row).dmrChannels);
+    if (op == DSD_UI_DMR_T3_OP_RESTORE) {
+        if (entries.remove(lpcn) == 0) {
+            return dmr_channel_edit_result("");
+        }
+    } else {
+        if (!entries.contains(lpcn) && entries.size() >= DSD_UI_DMR_T3_OVERLAY_MAX_ROWS) {
+            return dmr_channel_edit_result("full");
+        }
+        entries.insert(lpcn, op == DSD_UI_DMR_T3_OP_SET ? hz : 0);
+    }
+    const QVariantList channels = dmr_channel_list(entries);
+    if (channels == m_rows.at(row).dmrChannels) {
+        return dmr_channel_edit_result("");
+    }
+    auto next = m_rows;
+    next[row].dmrChannels = channels;
+    if (!saveRows(next)) {
+        return dmr_channel_edit_result("not-saved");
+    }
+    m_rows = std::move(next);
+    const QModelIndex idx = index(row);
+    Q_EMIT dataChanged(idx, idx);
+    return dmr_channel_edit_result("");
 }
 
 QString
@@ -786,6 +901,7 @@ SavedSystemsModel::mapFromRow(const Row& row) const {
     map.insert(QStringLiteral("keyCsvHex"), row.keyCsvHex);
     map.insert(QStringLiteral("p25BandplanCsvPath"), row.p25BandplanCsvPath);
     map.insert(QStringLiteral("srcCsvPath"), row.srcCsvPath);
+    map.insert(QStringLiteral("dmrChannels"), row.dmrChannels);
     return map;
 }
 

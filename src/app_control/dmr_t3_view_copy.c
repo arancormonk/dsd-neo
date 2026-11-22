@@ -26,6 +26,20 @@ _Static_assert(sizeof(((dmr_t3_missing_ledger*)0)->missing) == DSD_UI_DMR_T3_SET
                           == DSD_UI_DMR_T3_MISSING_DETAILS * sizeof(((dmr_t3_missing_ledger*)0)->details[0])
                    && (int)DMR_T3_OVERLAY_MAX_ROWS == (int)DSD_UI_DMR_T3_OVERLAY_MAX_ROWS,
                "the view's sizes must match the DMR module's");
+_Static_assert((int)DMR_CHAN_ORIGIN_NONE == (int)DSD_UI_DMR_T3_ORIGIN_NONE
+                   && (int)DMR_CHAN_ORIGIN_FILE == (int)DSD_UI_DMR_T3_ORIGIN_FILE
+                   && (int)DMR_CHAN_ORIGIN_USER == (int)DSD_UI_DMR_T3_ORIGIN_USER
+                   && (int)DMR_CHAN_ORIGIN_SITE == (int)DSD_UI_DMR_T3_ORIGIN_SITE
+                   && (int)DMR_CHAN_ORIGIN_UNVERIFIED == (int)DSD_UI_DMR_T3_ORIGIN_UNVERIFIED
+                   && (int)DMR_CHAN_ORIGIN_NEIGHBOUR == (int)DSD_UI_DMR_T3_ORIGIN_NEIGHBOUR
+                   && (int)DMR_CHAN_ORIGIN_ESTIMATE == (int)DSD_UI_DMR_T3_ORIGIN_ESTIMATE,
+               "the view's origins must be dmr_chan_origin_e's");
+_Static_assert((int)DMR_T3_OVERLAY_SET == (int)DSD_UI_DMR_T3_OP_SET
+                   && (int)DMR_T3_OVERLAY_HIDE == (int)DSD_UI_DMR_T3_OP_HIDE
+                   && (int)DMR_T3_OVERLAY_RESTORE == (int)DSD_UI_DMR_T3_OP_RESTORE
+                   && (long)DMR_T3_OVERLAY_MIN_HZ == (long)DSD_UI_DMR_T3_MIN_HZ
+                   && (long)DMR_T3_OVERLAY_MAX_HZ == (long)DSD_UI_DMR_T3_MAX_HZ,
+               "the view's operations and frequency bounds must be the DMR module's");
 
 /* Both counters only move, so a value is never seen twice in a process. Written under the snapshot lock. */
 static uint32_t g_target_epoch;

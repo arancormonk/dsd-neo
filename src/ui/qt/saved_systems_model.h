@@ -89,6 +89,28 @@ class SavedSystemsModel : public QAbstractListModel {
      */
     static QVariantMap validPlace(const QVariant& raw);
 
+    /**
+     * @brief @p raw as stored DMR Tier III channels (discussion #900 F3): `[{lpcn, hz}]`, the user's channels over the
+     * channel map, hz 0 for a hidden one. Only valid entries (a map with a whole lpcn 1..4094 and hz 0 or
+     * 100000..2147483647), the first for each channel, at most 256, by channel ascending; an empty list for anything
+     * else.
+     */
+    static QVariantList validDmrChannels(const QVariant& raw);
+
+    /** @brief The saved system @p uid's DMR Tier III channels (validDmrChannels()'s form); empty for an unknown uid. */
+    Q_INVOKABLE QVariantList dmrChannels(const QString& uid) const;
+
+    /**
+     * @brief Keep one channel edit the decoder accepted (DSD_APP_DMR_CHANNEL_SET_OK) on saved system @p uid: @p op 1
+     * sets channel @p lpcn to @p hz, 2 hides it (hz 0; @p hz not read), 3 drops its entry. Persists first, and touches
+     * no other field: never the channel map file or the RadioReference provenance.
+     *
+     * @return {ok: bool, error: ""} on success, a restore of a channel with no entry included; otherwise ok false and
+     *         error "no-system" (no such uid), "invalid" (no such channel, frequency or operation), "full" (a 257th
+     *         channel) or "not-saved" (the save failed; nothing changed). One dataChanged follows a change.
+     */
+    Q_INVOKABLE QVariantMap applyDmrChannelEdit(const QString& uid, int lpcn, int op, qint64 hz);
+
     /** Fills names and county links a place lacks from what is already known (no network); may leave it as it was. */
     using PlaceNameFill = std::function<void(QVariantMap& place)>;
     /** @brief The fill add() and update() run on a place whose ids are new, before they save. Empty = none. */
@@ -354,6 +376,7 @@ class SavedSystemsModel : public QAbstractListModel {
         bool keyCsvHex = false;
         QString p25BandplanCsvPath;
         QString srcCsvPath;
+        QVariantList dmrChannels; // validDmrChannels()'s form
     };
 
     static void fillRowKey(const QVariantMap& map, Row& row);

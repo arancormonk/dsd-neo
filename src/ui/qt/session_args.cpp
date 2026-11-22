@@ -7,6 +7,7 @@
 #include <utility>
 #include "decoder_host.h"
 #include "decryption_profile_provider.h"
+#include "json_store.h"
 #include "radio_settings.h"
 #include "recording_sessions.h"
 #include "saved_systems_model.h"
@@ -21,13 +22,17 @@
 #include <QByteArray>
 #include <QChar>
 #include <QDir>
+#include <QFile>
 #include <QFileInfo>
+#include <QIODevice>
 #include <QLatin1String>
 #include <QList>
 #include <QMap>
 #include <QMetaType>
 #include <QRegularExpression>
+#include <QSaveFile>
 #include <QVariant>
+#include <QVariantList>
 #include <Qt>
 #include <QtGlobal>
 
@@ -338,6 +343,11 @@ append_csv_args(QStringList& args, const QVariantMap& system) {
     const QString src = system.value(QStringLiteral("srcCsvPath")).toString();
     if (!src.isEmpty()) {
         args << QStringLiteral("--src-csv") << src;
+    }
+    // Discussion #900 F3: the file the start wrote from the saved system's DMR Tier III channels.
+    const QString overrides = system.value(QStringLiteral("dmrChanOverridesPath")).toString();
+    if (!overrides.isEmpty()) {
+        args << QStringLiteral("--dmr-chan-overrides") << overrides;
     }
 }
 
@@ -876,6 +886,8 @@ constexpr SessionArgsErrorText k_error_texts[] = {
                                   "to 72 kHz, or choose another decode mode."},
     {SessionArgsError::IqStreamExtra, "An I/Q stream input is not available from saved systems yet. Run dsd-neo from "
                                       "the command line, or remove the -i option from the extra decoder arguments."},
+    {SessionArgsError::DmrChannels, "The channels you entered for this system could not be saved for the start. "
+                                    "Check that the device has free storage, then try again."},
 };
 
 constexpr std::size_t k_error_text_count = sizeof k_error_texts / sizeof k_error_texts[0];
@@ -1193,6 +1205,30 @@ session_args_extra_error(const QString& tokens, const SessionArgPrefs& prefs) {
     return session_args_recording_extra_error(tokens, prefs.recordCalls, prefs.recordingUnavailable);
 }
 
+QByteArray
+session_args_dmr_channels_csv(const QVariantMap& system, const SessionArgPrefs& prefs) {
+    if (!decode_flag_names(system.value(QStringLiteral("decodeFlag")).toString(), QStringLiteral("-fs"))) {
+        return {};
+    }
+    const QStringList options =
+        option_tokens(system.value(QStringLiteral("extraArgs")).toString() + QLatin1Char(' ') + prefs.extraArgs);
+    if (std::any_of(options.cbegin(), options.cend(),
+                    [](const QString& token) { return long_option_is(token, QLatin1String("--trunk-scan")); })) {
+        return {};
+    }
+    const QVariantList rows = SavedSystemsModel::validDmrChannels(system.value(QStringLiteral("dmrChannels")));
+    if (rows.isEmpty()) {
+        return {};
+    }
+    QByteArray csv("lpcn,frequency_hz\n");
+    for (const QVariant& row : rows) {
+        const QVariantMap entry = row.toMap();
+        csv += QByteArray::number(entry.value(QStringLiteral("lpcn")).toInt()) + ','
+               + QByteArray::number(entry.value(QStringLiteral("hz")).toLongLong()) + '\n';
+    }
+    return csv;
+}
+
 QStringList
 session_args_build(const QVariantMap& system, const SessionArgPrefs& prefs, SessionArgsError* error) {
     if (error != nullptr) {
@@ -1353,9 +1389,25 @@ SessionArgsBuilder::buildArgs(const QVariantMap& system, SessionArgsError* error
     return session_args_build(input, prefs, error);
 }
 
+/* The categories of what the app keeps for itself at a start: the call recording's options (issue #708), an I/Q
+   stream (issue #743) and the saved system's Tier III channels file (discussion #900); empty for any other error. */
+static QString
+app_owned_error_category(SessionArgsError error) {
+    return error == SessionArgsError::CallRecordingOption || error == SessionArgsError::CallRecordingNoStorage
+               ? QStringLiteral("call-recording-option")
+           : error == SessionArgsError::CallRecordingStaticWav ? QStringLiteral("call-recording-static-wav")
+           : error == SessionArgsError::IqStreamExtra          ? QStringLiteral("iq-stream-extra")
+           : error == SessionArgsError::DmrChannels            ? QStringLiteral("dmr-channels")
+                                                               : QString();
+}
+
 /* The category the start screen maps a refusal by; empty for None. */
 static QString
 error_category(SessionArgsError error) {
+    const QString owned = app_owned_error_category(error);
+    if (!owned.isEmpty()) {
+        return owned;
+    }
     return error == SessionArgsError::Frequency          ? QStringLiteral("frequency")
            : error == SessionArgsError::Ppm              ? QStringLiteral("ppm")
            : error == SessionArgsError::Hangtime         ? QStringLiteral("hangtime")
@@ -1365,12 +1417,8 @@ error_category(SessionArgsError error) {
            : error == SessionArgsError::TetraNeedsIq     ? QStringLiteral("tetra-needs-iq")
            : error == SessionArgsError::TetraRate        ? QStringLiteral("tetra-rate")
            : error == SessionArgsError::RecordingMissing ? QStringLiteral("recording-missing")
-           : error == SessionArgsError::CallRecordingOption || error == SessionArgsError::CallRecordingNoStorage
-               ? QStringLiteral("call-recording-option")
-           : error == SessionArgsError::CallRecordingStaticWav ? QStringLiteral("call-recording-static-wav")
-           : error == SessionArgsError::IqStreamExtra          ? QStringLiteral("iq-stream-extra")
-           : error == SessionArgsError::None                   ? QString()
-                                                               : QStringLiteral("encryption");
+           : error == SessionArgsError::None             ? QString()
+                                                         : QStringLiteral("encryption");
 }
 
 /* The start check's verdict. */
@@ -1393,10 +1441,46 @@ SessionArgsBuilder::build(const QVariantMap& system) const {
     return validationResult(error);
 }
 
+bool
+SessionArgsBuilder::prepareDmrChannels(QVariantMap* input) const {
+    const QString uid = SavedSystemsModel::canonicalUid(input->value(QStringLiteral("uid")).toString());
+    if (uid.isEmpty()) {
+        return true;
+    }
+    // The saved system's own entries, not whatever copy of them the map the start was handed carries.
+    if (m_systems != nullptr && m_systems->rowForUid(uid) >= 0) {
+        input->insert(QStringLiteral("dmrChannels"), m_systems->dmrChannels(uid));
+    }
+    const QString path = json_store_path(QStringLiteral("dmr_channels/") + uid + QStringLiteral(".csv"));
+    const QByteArray csv = session_args_dmr_channels_csv(*input, session_args_prefs(m_prefs));
+    if (csv.isEmpty()) {
+        QFile::remove(path);
+        return true;
+    }
+    QSaveFile file(path);
+    if (!QDir().mkpath(QFileInfo(path).absolutePath()) || !file.open(QIODevice::WriteOnly)
+        || !file.setPermissions(QFileDevice::ReadOwner | QFileDevice::WriteOwner) || file.write(csv) != csv.size()
+        || !file.commit()) {
+        return false;
+    }
+    input->insert(QStringLiteral("dmrChanOverridesPath"), path);
+    return true;
+}
+
 QStringList
 SessionArgsBuilder::buildForStart(const QVariantMap& system, const DecoderHost* host, const QString& kind,
                                   SessionArgsError* error, bool* recording) const {
     QStringList args = buildArgs(system, error);
+    // Discussion #900 F3: a saved system starts with its own Tier III channels; Explore and a search with none.
+    QVariantMap input = system;
+    if (*error == SessionArgsError::None && kind == QLatin1String("saved")) {
+        if (!prepareDmrChannels(&input)) {
+            *error = SessionArgsError::DmrChannels;
+            *recording = false;
+            return {};
+        }
+        args = buildArgs(input, error);
+    }
     *recording = *error == SessionArgsError::None && host != nullptr && m_recordingSessions != nullptr;
     if (*recording) {
         // A saved system records into its own folder; Explore and Signal search share one, whatever uid the map
@@ -1407,7 +1491,7 @@ SessionArgsBuilder::buildForStart(const QVariantMap& system, const DecoderHost* 
             m_recordingSessions->beginSession(saved ? QStringLiteral("saved") : QStringLiteral("explore"), uid,
                                               system.value(QStringLiteral("name")).toString());
         // Built again either way: with no folder, an extra -P would record outside the app's storage and is refused.
-        args = buildArgs(system, error, folder, folder.isEmpty());
+        args = buildArgs(input, error, folder, folder.isEmpty());
     }
     return args;
 }

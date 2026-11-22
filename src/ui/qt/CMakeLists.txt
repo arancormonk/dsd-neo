@@ -44,6 +44,7 @@ target_sources(
         decoder_host.cpp
         decryption_profiles_model.cpp
         diagnostics_log.cpp
+        dmr_channels_model.cpp # Discussion #900
         document_import_transport.cpp
         document_save_transport.cpp
         imported_files_model.cpp

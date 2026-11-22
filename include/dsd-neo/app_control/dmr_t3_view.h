@@ -37,6 +37,26 @@ enum {
     DSD_UI_DMR_T3_OVERLAY_MAX_ROWS = 256, /**< the most channels the user's overlay holds */
 };
 
+/** The values origin[] holds, dmr_chan_origin_e's, for a frontend that reads no protocol header. */
+enum {
+    DSD_UI_DMR_T3_ORIGIN_NONE = 0,       /**< no frequency */
+    DSD_UI_DMR_T3_ORIGIN_FILE = 1,       /**< the channel map file */
+    DSD_UI_DMR_T3_ORIGIN_USER = 2,       /**< the user's overlay (set, or hidden) */
+    DSD_UI_DMR_T3_ORIGIN_SITE = 3,       /**< checked over the air on this site */
+    DSD_UI_DMR_T3_ORIGIN_UNVERIFIED = 4, /**< over the air, accepted as RAS only */
+    DSD_UI_DMR_T3_ORIGIN_NEIGHBOUR = 5,  /**< a neighbour site's announcement */
+    DSD_UI_DMR_T3_ORIGIN_ESTIMATE = 6,   /**< the heuristic fill */
+};
+
+/** DSD_APP_CMD_DMR_CHANNEL_SET's operations, dmr_t3_overlay_op's values, and the frequencies a SET takes. */
+enum {
+    DSD_UI_DMR_T3_OP_SET = 1,
+    DSD_UI_DMR_T3_OP_HIDE = 2,
+    DSD_UI_DMR_T3_OP_RESTORE = 3,
+    DSD_UI_DMR_T3_MIN_HZ = 100000,
+    DSD_UI_DMR_T3_MAX_HZ = 2147483647,
+};
+
 /** One ledger channel with the latest grant that named it (dmr_t3_missing_detail). */
 typedef struct {
     uint16_t lpcn;          /**< 1..4094 */

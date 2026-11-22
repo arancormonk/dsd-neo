@@ -38,6 +38,7 @@
 #include <cstring>
 #include <dsd-neo/app_control/call_view.h>
 #include <dsd-neo/app_control/commands.h>
+#include <dsd-neo/app_control/dmr_t3_view.h>
 #include <dsd-neo/app_control/frontend_runtime.h>
 #include <dsd-neo/app_control/history_tap.h>
 #include <dsd-neo/app_control/position_view.h>
@@ -61,6 +62,7 @@ extern "C" {
 #include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/core/talkgroup_policy.h>
 #include <dsd-neo/core/unit_activity.h>
+#include <dsd-neo/protocol/dmr/dmr_t3_channels.h>
 #include <dsd-neo/runtime/analog_tones.h>
 #include <dsd-neo/runtime/decode_clock.h>
 #include <dsd-neo/runtime/log.h>
@@ -84,6 +86,7 @@ extern "C" {
 #include "decoder_host.h"
 #include "decryption_profiles_model.h"
 #include "diagnostics_log.h"
+#include "dmr_channels_model.h"
 #include "json_store.h"
 #include "metrics_model.h"
 #include "p25_network_model.h"
@@ -2098,6 +2101,105 @@ test_positions_poll_without_redraw() {
 
 } // namespace
 
+/* Discussion #900 F3: a channel edit from the Channels sheet goes through the real bridge and queue as
+ * DSD_APP_CMD_DMR_CHANNEL_SET against the row the sheet read. The controller's tick reports this bridge's answers once
+ * each, with what was asked (the frequency included) and never another caller's, and the sheet's model reads the row
+ * the decoder holds now from the next snapshot. A request the stop dropped is answered too. */
+static void
+test_dmr_channel_bridge() {
+    static dsd_opts opts;
+    static dsd_state state;
+    initOpts(&opts);
+    initState(&state);
+    opts.audio_in_type = AUDIO_IN_PULSE;
+    opts.audio_out_type = 9;
+    dsd_app_frontend_runtime_start(nullptr, nullptr);
+    check(dmr_t3_chan_learn(&opts, &state, 18U, 451012500L, DMR_CHAN_ORIGIN_SITE) == 1);
+    Host host;
+    dsd_qt::CommandBridge bridge;
+    dsd_qt::UiController controller(&host, nullptr, nullptr, nullptr);
+    controller.setCommandBridge(&bridge);
+    dsd_qt::DmrChannelsModel channels;
+    channels.setActive(true);
+    controller.setDmrChannels(&channels);
+    controller.setPollIntervalMs(50);
+    const auto tick = [&]() {
+        dsd_app_telemetry_publish_opts_snapshot(&opts);
+        dsd_app_telemetry_publish_snapshot(&state);
+        dsd_app_request_redraw();
+        QEventLoop loop;
+        QTimer::singleShot(65, &loop, &QEventLoop::quit);
+        controller.start();
+        loop.exec();
+        controller.stop();
+    };
+    QList<QVariantMap> answers;
+    QObject::connect(&bridge, &dsd_qt::CommandBridge::dmrChannelResultReceived,
+                     [&answers](const QVariantMap& result) { answers.append(result); });
+    tick();
+    check(channels.channel(18).value("originCode").toInt() == DSD_UI_DMR_T3_ORIGIN_SITE);
+    const QVariantMap row = channels.channel(12);
+    const quint32 generation = channels.generation();
+    const qint64 rowHz = row.value("hz").toLongLong();
+    const int rowOrigin = row.value("originCode").toInt();
+
+    check(!bridge.setDmrChannel(0, DSD_UI_DMR_T3_OP_SET, 451137500, rowHz, rowOrigin, generation)); // no such channel
+    check(!bridge.setDmrChannel(4095, DSD_UI_DMR_T3_OP_HIDE, 0, rowHz, rowOrigin, generation));
+    check(!bridge.setDmrChannel(12, 4, 451137500, rowHz, rowOrigin, generation));                // no such operation
+    check(!bridge.setDmrChannel(12, DSD_UI_DMR_T3_OP_SET, 99999, rowHz, rowOrigin, generation)); // nor frequency
+    check(!bridge.setDmrChannel(12, DSD_UI_DMR_T3_OP_SET, 451137500, rowHz, 256, generation));   // nor origin
+    check(!bridge.setDmrChannel(12, DSD_UI_DMR_T3_OP_SET, 451137500, rowHz, rowOrigin, generation,
+                                QStringLiteral("not a session")));
+    check(dsd_app_drain_cmds(&opts, &state) == 0);
+
+    check(bridge.setDmrChannel(12, DSD_UI_DMR_T3_OP_SET, 451137500, rowHz, rowOrigin, generation, channels.session()));
+    const quint32 request = bridge.lastDmrChannelRequest();
+    check(request != 0U);
+    check(dsd_app_drain_cmds(&opts, &state) == 1);
+    check(state.trunk_chan_map[12] == 451137500L);
+    const uint32_t revisionAfter = dmr_t3_chan_revision(&state);
+    /* Another caller's request is not this bridge's to report. */
+    dsd_app_dmr_channel_set_payload other = {};
+    other.session_seq = dsd_app_command_session_generation();
+    other.request = dsd_app_dmr_channel_request_next();
+    other.lpcn = 13U;
+    other.op = DSD_UI_DMR_T3_OP_HIDE;
+    other.generation = generation;
+    check(dsd_app_command_dmr_channel_set(&other) == DSD_APP_COMMAND_SUBMIT_QUEUED);
+    check(dsd_app_drain_cmds(&opts, &state) == 1);
+    tick();
+    check(answers.size() == 1);
+    const QVariantMap ok = answers.value(0);
+    check(ok.value("request").toUInt() == request && ok.value("lpcn").toInt() == 12
+          && ok.value("op").toInt() == DSD_UI_DMR_T3_OP_SET && ok.value("hz").toLongLong() == 451137500
+          && ok.value("code").toInt() == DSD_APP_DMR_CHANNEL_SET_OK && ok.value("result").toString() == "ok"
+          && ok.value("revision").toUInt() == revisionAfter);
+    check(bridge.dmrChannelResult() == ok);
+    check(channels.channel(12).value("originCode").toInt() == DSD_UI_DMR_T3_ORIGIN_USER
+          && channels.channel(12).value("hz").toLongLong() == 451137500
+          && !channels.channel(12).value("missing").toBool());
+    check(channels.revision() == dmr_t3_chan_revision(&state));
+
+    /* Against the row as it was: stale, and nothing changes. */
+    check(bridge.setDmrChannel(12, DSD_UI_DMR_T3_OP_HIDE, 0, rowHz, rowOrigin, generation, channels.session()));
+    check(dsd_app_drain_cmds(&opts, &state) == 1);
+    tick();
+    check(answers.size() == 2 && answers.value(1).value("result").toString() == "stale"
+          && answers.value(1).value("code").toInt() == DSD_APP_DMR_CHANNEL_SET_STALE);
+    check(state.trunk_chan_map[12] == 451137500L);
+    tick();
+    check(answers.size() == 2); // each answer once
+
+    /* Queued and never applied: the stop drops it, and the stop's edge reports that. */
+    check(bridge.setDmrChannel(12, DSD_UI_DMR_T3_OP_RESTORE, 0, 451137500, DSD_UI_DMR_T3_ORIGIN_USER, generation));
+    dsd_app_frontend_runtime_stop();
+    host.setPhase(Host::Idle);
+    check(answers.size() == 3 && answers.value(2).value("result").toString() == "dropped"
+          && answers.value(2).value("op").toInt() == DSD_UI_DMR_T3_OP_RESTORE);
+    check(channels.channels().isEmpty()); // a stopped session lists nothing
+    freeState(&state);
+}
+
 int
 main(int argc, char** argv) {
     dsd_qt::applyQmlGcPolicy();
@@ -2123,6 +2225,7 @@ main(int argc, char** argv) {
     test_nfm_bandwidth_bridge();
     test_am_bandwidth_bridge();
     test_reload_bridge();
+    test_dmr_channel_bridge();
     test_tone_filter_bridge();
     test_scan_row_edit_bridge();
     test_scan_step_bridge();

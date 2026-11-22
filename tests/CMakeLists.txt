@@ -5547,6 +5547,7 @@ if(DSD_ENABLE_QT_UI)
         ${PROJECT_SOURCE_DIR}/src/app_control/call_view.c
         ${PROJECT_SOURCE_DIR}/src/app_control/crc_policy_view.c
         ${PROJECT_SOURCE_DIR}/src/app_control/dmr_ras_view.c
+        ${PROJECT_SOURCE_DIR}/src/app_control/dmr_t3_view.c
         ${PROJECT_SOURCE_DIR}/src/app_control/scan_avoid_view.c
         ${PROJECT_SOURCE_DIR}/src/app_control/scan_list_rows.c
         ${PROJECT_SOURCE_DIR}/src/app_control/scan_list_view.c
@@ -26914,6 +26915,7 @@ if(DSD_ENABLE_QT_UI)
         ${PROJECT_SOURCE_DIR}/src/ui/qt/import_service.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/app_prefs.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/p25_network_model.cpp # WP-F2
+        ${PROJECT_SOURCE_DIR}/src/ui/qt/dmr_channels_model.cpp # Discussion #900
         # WP-D1: exercise the real bridge through the retained export result.
         ${PROJECT_SOURCE_DIR}/src/ui/qt/command_bridge.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/recording_status.cpp
@@ -27963,6 +27965,23 @@ if(DSD_ENABLE_QT_UI)
     add_test(
         NAME UI_QT_P25_NETWORK_MODEL
         COMMAND dsd-neo_test_ui_qt_p25_network_model
+    )
+    # Discussion #900 F3: the DMR Tier III Channels sheet's model over a synthetic view.
+    add_executable(
+        dsd-neo_test_ui_qt_dmr_channels_model
+        ui/test_ui_qt_dmr_channels_model.cpp
+    )
+    target_include_directories(
+        dsd-neo_test_ui_qt_dmr_channels_model
+        PRIVATE ${PROJECT_SOURCE_DIR}/src/ui/qt
+    )
+    target_link_libraries(
+        dsd-neo_test_ui_qt_dmr_channels_model
+        PRIVATE dsd-neo_ui_qt ${_DSD_RUNTIME_CONFIG_APPLY_LIBS} ${LIBS}
+    )
+    add_test(
+        NAME UI_QT_DMR_CHANNELS_MODEL
+        COMMAND dsd-neo_test_ui_qt_dmr_channels_model
     )
     # The Activity screen's model over the unit activity ring and view.
     add_executable(

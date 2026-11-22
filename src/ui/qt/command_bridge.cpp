@@ -10,7 +10,9 @@
 #include <QStringList>
 #include <QVariant>
 #include <QtGlobal>
+#include <algorithm>
 #include <cmath>
+#include <dsd-neo/app_control/dmr_t3_view.h>
 #include <dsd-neo/app_control/rx_tone_view.h>
 #include <dsd-neo/core/opts_fwd.h>
 #include <dsd-neo/core/receive_types.h>
@@ -76,7 +78,11 @@ send_setting_unless_none(int command, int value) {
 
 } // namespace
 
-CommandBridge::CommandBridge(QObject* parent) : QObject(parent) {}
+CommandBridge::CommandBridge(QObject* parent) : QObject(parent) {
+    /* Answers published before this bridge existed were never its own. */
+    dsd_app_dmr_channel_set_result latest = {};
+    m_dmrChannelCursor = dsd_app_dmr_channel_set_result_get(&latest) ? latest.sequence : 0U;
+}
 
 CommandBridge::~CommandBridge() = default;
 
@@ -1288,6 +1294,102 @@ CommandBridge::setTalkgroupSelection(bool listening, const QString& context, uns
     }
     m_selectionFiles.append(file);
     return true;
+}
+
+/* Discussion #900 F3: the Channels sheet's edits. */
+namespace {
+
+/* The most requests waiting for an answer: every queued one gets one, so only a lost answer leaves one waiting. */
+constexpr qsizetype kDmrChannelRequestsMax = 64;
+
+bool
+dmr_channel_args_valid(int lpcn, int op, qint64 hz, int expectedOrigin) {
+    const bool lpcnOk = lpcn >= 1 && lpcn <= DSD_UI_DMR_T3_ROWS - 2;
+    const bool opOk = op == DSD_UI_DMR_T3_OP_SET || op == DSD_UI_DMR_T3_OP_HIDE || op == DSD_UI_DMR_T3_OP_RESTORE;
+    const bool hzOk = op != DSD_UI_DMR_T3_OP_SET || (hz >= DSD_UI_DMR_T3_MIN_HZ && hz <= DSD_UI_DMR_T3_MAX_HZ);
+    return lpcnOk && opOk && hzOk && expectedOrigin >= 0 && expectedOrigin <= 255;
+}
+
+} // namespace
+
+QString
+CommandBridge::dmrChannelResultKey(int code) {
+    switch (code) {
+        case DSD_APP_DMR_CHANNEL_SET_OK: return QStringLiteral("ok");
+        case DSD_APP_DMR_CHANNEL_SET_STALE: return QStringLiteral("stale");
+        case DSD_APP_DMR_CHANNEL_SET_TRUNK_SCAN: return QStringLiteral("trunk-scan");
+        case DSD_APP_DMR_CHANNEL_SET_INVALID: return QStringLiteral("invalid");
+        case DSD_APP_DMR_CHANNEL_SET_FULL: return QStringLiteral("full");
+        case DSD_APP_DMR_CHANNEL_SET_SEARCH: return QStringLiteral("search");
+        case DSD_APP_DMR_CHANNEL_SET_DROPPED: return QStringLiteral("dropped");
+        default: return QStringLiteral("unknown");
+    }
+}
+
+bool
+CommandBridge::setDmrChannel(int lpcn, int op, qint64 hz, qint64 expectedHz, int expectedOrigin, quint32 generation,
+                             const QString& session) {
+    if (!dmr_channel_args_valid(lpcn, op, hz, expectedOrigin)) {
+        return false;
+    }
+    dsd_app_dmr_channel_set_payload payload = {};
+    if (session.isEmpty()) {
+        payload.session_seq = dsd_app_command_session_generation();
+    } else {
+        bool sessionOk = false;
+        payload.session_seq = session.toULongLong(&sessionOk);
+        if (!sessionOk) {
+            return false;
+        }
+    }
+    payload.request = dsd_app_dmr_channel_request_next();
+    payload.generation = generation;
+    payload.hz = op == DSD_UI_DMR_T3_OP_SET ? hz : 0;
+    payload.expected_hz = expectedHz;
+    payload.lpcn = static_cast<uint16_t>(lpcn);
+    payload.op = static_cast<uint8_t>(op);
+    payload.expected_origin = static_cast<uint8_t>(expectedOrigin);
+    if (dsd_app_command_dmr_channel_set(&payload) != DSD_APP_COMMAND_SUBMIT_QUEUED) {
+        return false;
+    }
+    if (m_dmrChannelRequests.size() >= kDmrChannelRequestsMax) {
+        m_dmrChannelRequests.removeFirst();
+    }
+    m_dmrChannelRequests.append({payload.request, lpcn, op, payload.hz});
+    m_lastDmrChannelRequest = payload.request;
+    Q_EMIT lastDmrChannelRequestChanged();
+    return true;
+}
+
+void
+CommandBridge::pollDmrChannelResults() {
+    constexpr int cap = 16;
+    dsd_app_dmr_channel_set_result results[cap];
+    int n = 0;
+    do {
+        n = dsd_app_dmr_channel_set_results_since(m_dmrChannelCursor, results, cap);
+        for (int i = 0; i < n; ++i) {
+            const dsd_app_dmr_channel_set_result& r = results[i];
+            m_dmrChannelCursor = qMax(m_dmrChannelCursor, r.sequence);
+            const auto mine = std::find_if(m_dmrChannelRequests.cbegin(), m_dmrChannelRequests.cend(),
+                                           [&r](const DmrChannelRequest& q) { return q.request == r.request; });
+            if (mine == m_dmrChannelRequests.cend()) {
+                continue;
+            }
+            m_dmrChannelResult = {{QStringLiteral("request"), QVariant::fromValue<quint32>(r.request)},
+                                  {QStringLiteral("lpcn"), mine->lpcn},
+                                  {QStringLiteral("op"), mine->op},
+                                  {QStringLiteral("hz"), QVariant::fromValue<qint64>(mine->hz)},
+                                  {QStringLiteral("code"), r.code},
+                                  {QStringLiteral("result"), dmrChannelResultKey(r.code)},
+                                  {QStringLiteral("revision"), QVariant::fromValue<quint32>(r.revision)},
+                                  {QStringLiteral("session"), QString::number(r.session_seq)},
+                                  {QStringLiteral("sequence"), QString::number(r.sequence)}};
+            m_dmrChannelRequests.erase(mine);
+            Q_EMIT dmrChannelResultChanged();
+            Q_EMIT dmrChannelResultReceived(m_dmrChannelResult);
+        }
+    } while (n == cap);
 }
 
 } // namespace dsd_qt

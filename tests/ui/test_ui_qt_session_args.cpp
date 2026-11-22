@@ -14,6 +14,9 @@
 #include <QChar>
 #include <QCoreApplication>
 #include <QDir>
+#include <QFile>
+#include <QFileInfo>
+#include <QIODevice>
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
@@ -29,6 +32,7 @@
 #include <QTemporaryDir>
 #include <QUrl>
 #include <QVariant>
+#include <QVariantList>
 #include <QVariantMap>
 #include <QtGlobal>
 #include <cmath>
@@ -1906,8 +1910,8 @@ test_every_error_has_text() {
             g_failures++;
         }
     }
-    expect("the last error value is an I/Q stream in the extra options",
-           dsd_qt::SessionArgsErrorLast == SessionArgsError::IqStreamExtra);
+    expect("the last error value is a Tier III channel file that could not be written",
+           dsd_qt::SessionArgsErrorLast == SessionArgsError::DmrChannels);
     expect("a value past the last one has no text",
            dsd_qt::session_args_error_text(static_cast<SessionArgsError>(last + 1)).isEmpty());
 }
@@ -2398,6 +2402,139 @@ test_scan_hold_option(void) {
                .isEmpty());
 }
 
+/* Discussion #900 F3: a saved DMR system's own Tier III channels travel in its start as --dmr-chan-overrides, a file in
+ * the app's private folder (lpcn,frequency_hz rows, 0 = hidden). Only a saved system's start carries it, only for a
+ * DMR system with entries, and never with a trunk scan, which the decoder refuses it under. */
+QVariantMap
+tier3_system() {
+    auto sys = usb_system();
+    sys["uid"] = QStringLiteral("0b6a3f0e-6c3d-4f7e-9a51-3d1c2b4a5e6f");
+    sys["name"] = QStringLiteral("Tier III");
+    sys["decodeFlag"] = QStringLiteral("-fs");
+    sys["trunking"] = true;
+    sys["dmrChannels"] =
+        QVariantList{QVariantMap{{"lpcn", 40}, {"hz", 451137500}}, QVariantMap{{"lpcn", 12}, {"hz", 0}},
+                     QVariantMap{{"lpcn", 5000}, {"hz", 451000000}}};
+    return sys;
+}
+
+void
+test_dmr_channels_csv(void) {
+    const SessionArgPrefs prefs;
+    auto sys = tier3_system();
+    expect("the system's channels, valid ones, by channel",
+           dsd_qt::session_args_dmr_channels_csv(sys, prefs) == QByteArray("lpcn,frequency_hz\n12,0\n40,451137500\n"));
+    sys["dmrChannels"] = QVariantList();
+    expect("no channels, no file", dsd_qt::session_args_dmr_channels_csv(sys, prefs).isEmpty());
+    sys = tier3_system();
+    sys["decodeFlag"] = QStringLiteral("-ft");
+    expect("not for another protocol", dsd_qt::session_args_dmr_channels_csv(sys, prefs).isEmpty());
+    sys = tier3_system();
+    sys["extraArgs"] = QStringLiteral("--trunk-scan /data/targets.csv");
+    expect("not with a trunk scan among the extra options",
+           dsd_qt::session_args_dmr_channels_csv(sys, prefs).isEmpty());
+    sys["extraArgs"] = QStringLiteral("--trunk-scan=/data/targets.csv");
+    expect("in either form", dsd_qt::session_args_dmr_channels_csv(sys, prefs).isEmpty());
+    sys.remove("extraArgs");
+    SessionArgPrefs scanPrefs;
+    scanPrefs.extraArgs = QStringLiteral("--trunk-scan /data/targets.csv");
+    expect("nor among the app's", dsd_qt::session_args_dmr_channels_csv(sys, scanPrefs).isEmpty());
+    sys["extraArgs"] = QStringLiteral("--trunk-scan-dwell-ms 900");
+    expect("another option that starts the same is no trunk scan",
+           !dsd_qt::session_args_dmr_channels_csv(sys, prefs).isEmpty());
+
+    sys = tier3_system();
+    expect("an argv names no file the start did not write",
+           !session_args_build(sys, prefs, nullptr).contains(QStringLiteral("--dmr-chan-overrides")));
+    sys["dmrChanOverridesPath"] = QStringLiteral("/data/dmr_channels/a.csv");
+    const QStringList args = session_args_build(sys, prefs, nullptr);
+    const qsizetype at = args.indexOf(QStringLiteral("--dmr-chan-overrides"));
+    expect("the start's file is passed", at >= 0 && args.value(at + 1) == QStringLiteral("/data/dmr_channels/a.csv"));
+    QVariantMap list{{"name", "Scan"}, {"sourceType", "usb"}, {"dmrChannels", tier3_system().value("dmrChannels")}};
+    expect(
+        "a scan list's argv never names one",
+        !dsd_qt::session_args_scan_build(list, QStringLiteral("851.375"), QStringLiteral("/data/t.csv"), prefs, nullptr)
+             .contains(QStringLiteral("--dmr-chan-overrides")));
+}
+
+void
+test_dmr_channels_start(void) {
+    class Host : public dsd_qt::DecoderHost {
+      public:
+        QStringList received;
+        int starts = 0;
+
+        bool
+        isRunning() const override {
+            return false;
+        }
+
+        QString
+        statusText() const override {
+            return {};
+        }
+
+        bool
+        start(const QStringList& args) override {
+            received = args;
+            starts++;
+            return true;
+        }
+
+        void
+        stop() override {}
+    } host;
+
+    dsd_qt::SavedSystemsModel systems;
+    while (systems.count() > 0 && systems.remove(0)) {}
+    auto saved = tier3_system();
+    saved.remove("uid");
+    expect("a saved Tier III system", systems.add(saved));
+    QVariantMap sys = systems.get(0);
+    const QString uid = sys.value("uid").toString();
+    const QString path = dsd_qt::json_store_path(QStringLiteral("dmr_channels/") + uid + QStringLiteral(".csv"));
+    dsd_qt::SessionArgsBuilder builder(nullptr);
+    builder.setSavedSystems(&systems);
+
+    sys.remove("dmrChannels"); // the start reads the saved system's own, not a stale copy
+    auto result = builder.start(sys, &host, QStringLiteral("saved"));
+    const qsizetype at = host.received.indexOf(QStringLiteral("--dmr-chan-overrides"));
+    expect("a saved Tier III start passes its channels",
+           result.value("started").toBool() && at >= 0 && host.received.value(at + 1) == path);
+    QFile file(path);
+    expect("in a file of the app's",
+           file.open(QIODevice::ReadOnly) && file.readAll() == QByteArray("lpcn,frequency_hz\n12,0\n40,451137500\n"));
+    file.close();
+#ifdef Q_OS_UNIX
+    expect("that only the app reads",
+           (QFileInfo(path).permissions() & (QFileDevice::ReadGroup | QFileDevice::ReadOther)) == 0);
+#endif
+
+    (void)builder.start(sys, &host, QStringLiteral("explore"));
+    expect("an Explore start with the system's uid passes none",
+           !host.received.contains(QStringLiteral("--dmr-chan-overrides")));
+    expect("a validation writes nothing and passes none", builder.build(sys).value("ok").toBool());
+
+    expect("the channels removed", systems.applyDmrChannelEdit(uid, 12, 3, 0).value("ok").toBool()
+                                       && systems.applyDmrChannelEdit(uid, 40, 3, 0).value("ok").toBool());
+    (void)builder.start(sys, &host, QStringLiteral("saved"));
+    expect("a system with none passes none", !host.received.contains(QStringLiteral("--dmr-chan-overrides")));
+    expect("and leaves no stale file", !QFileInfo::exists(path));
+
+    expect("a channel again", systems.applyDmrChannelEdit(uid, 40, 1, 451137500).value("ok").toBool());
+    const QString folder = QFileInfo(path).absolutePath();
+    expect("the folder blocked", QDir(folder).removeRecursively() && QFile(folder).open(QIODevice::WriteOnly));
+    host.starts = 0;
+    result = builder.start(sys, &host, QStringLiteral("saved"));
+    expect("a file that cannot be written refuses the start",
+           !result.value("ok").toBool() && !result.value("started").toBool() && host.starts == 0
+               && result.value("error").toString() == QStringLiteral("dmr-channels")
+               && result.value("errorText").toString()
+                      == dsd_qt::session_args_error_text(SessionArgsError::DmrChannels));
+    expect("the folder unblocked", QFile::remove(folder));
+    while (systems.count() > 0 && systems.remove(0)) {}
+}
+
 int
 main(int argc, char** argv) {
     QCoreApplication app(argc, argv);
@@ -2453,6 +2590,8 @@ main(int argc, char** argv) {
     test_grouped_hex_keys();
     test_scan_lists_argv();
     test_scan_join_conflict();
+    test_dmr_channels_csv();
+    test_dmr_channels_start();
     if (g_failures != 0) {
         DSD_FPRINTF(stderr, "%d failure(s)\n", g_failures);
         return 1;

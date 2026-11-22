@@ -2042,6 +2042,144 @@ empty_systems(SavedSystemsModel& model) {
     expect("the systems empty", model.count() == 0);
 }
 
+/* Discussion #900 F3: a saved system's DMR Tier III channels ({lpcn, hz}, hz 0 = hidden) as they come back: valid
+ * entries only, one per channel, by channel; from disk after a reload; through edits of other fields, a tuning change
+ * that ends the RadioReference provenance included. */
+QVariantList
+dmr_channels(std::initializer_list<std::pair<int, qint64>> rows) {
+    QVariantList out;
+    for (const auto& row : rows) {
+        out.append(QVariantMap{{"lpcn", row.first}, {"hz", row.second}});
+    }
+    return out;
+}
+
+void
+test_dmr_channels_round_trip() {
+    SavedSystemsModel model;
+    empty_systems(model);
+    const QVariantList given{
+        QVariantMap{{"lpcn", 40}, {"hz", 451137500}},     QVariantMap{{"lpcn", 12}, {"hz", 0}},
+        QVariantMap{{"lpcn", 12}, {"hz", 451200000}}, // a second entry for 12
+        QVariantMap{{"lpcn", 4095}, {"hz", 451000000}},   QVariantMap{{"lpcn", 0}, {"hz", 451000000}},
+        QVariantMap{{"lpcn", 7}, {"hz", 99999}},          QVariantMap{{"lpcn", 8}, {"hz", 2147483648LL}},
+        QVariantMap{{"lpcn", "nine"}, {"hz", 451000000}}, QVariant(QStringLiteral("not a row"))};
+    expect("dmr channels: a Tier III system", model.add({{"name", "Tier III"},
+                                                         {"sourceType", "usb"},
+                                                         {"freqMhz", "451.0125"},
+                                                         {"decodeFlag", "-fs"},
+                                                         {"trunking", true},
+                                                         {"chanCsvPath", "/data/imports/t3.csv"},
+                                                         {"rrSid", 12},
+                                                         {"rrSiteId", 16863},
+                                                         {"siteName", "North"},
+                                                         {"dmrChannels", given}}));
+    expect("dmr channels: a system without any", model.add({{"name", "Plain"}}));
+    const QVariantList want = dmr_channels({{12, 0}, {40, 451137500}});
+    expect("dmr channels: valid entries, one per channel, by channel", model.get(0).value("dmrChannels") == want);
+    expect("dmr channels: read by uid", model.dmrChannels(model.get(0).value("uid").toString()) == want);
+    expect("dmr channels: none is an empty list", model.get(1).value("dmrChannels").toList().isEmpty());
+    {
+        SavedSystemsModel reloaded;
+        expect("dmr channels: a reload returns them",
+               reloaded.get(0).value("dmrChannels") == want && reloaded.get(1).value("dmrChannels").toList().isEmpty());
+    }
+    expect("dmr channels: an edit of another field keeps them",
+           model.update(0, {{"name", "Renamed"}}) && model.get(0).value("dmrChannels") == want);
+    expect("dmr channels: a tuning change ends the provenance and keeps them",
+           model.update(0, {{"freqMhz", "451.0250"}}) && model.get(0).value("rrSid").toInt() == 0
+               && model.get(0).value("dmrChannels") == want);
+    expect("dmr channels: an edit that carries the list stores it",
+           model.update(0, {{"dmrChannels", dmr_channels({{3, 451050000}})}})
+               && model.get(0).value("dmrChannels") == dmr_channels({{3, 451050000}}));
+    expect("dmr channels: a copy of the system carries them",
+           model.add(model.get(0)) && model.get(2).value("dmrChannels") == dmr_channels({{3, 451050000}}));
+    SavedSystemsModel reloaded;
+    expect("dmr channels: the edits persist", reloaded.get(0).value("dmrChannels") == dmr_channels({{3, 451050000}})
+                                                  && reloaded.get(0).value("name") == "Renamed");
+    empty_systems(model);
+}
+
+/* An edit the decoder accepted is kept on its saved system: set, hide and restore of one channel, saved first, no
+ * other field touched (the channel map file and the RadioReference provenance above all). A failed save says so and
+ * changes nothing. */
+void
+test_dmr_channel_edit() {
+    using Op = int;
+    const Op set = 1, hide = 2, restore = 3;
+    SavedSystemsModel model;
+    empty_systems(model);
+    expect("channel edit: a Tier III system", model.add({{"name", "Tier III"},
+                                                         {"decodeFlag", "-fs"},
+                                                         {"chanCsvPath", "/data/imports/t3.csv"},
+                                                         {"rrSid", 12},
+                                                         {"rrSiteId", 16863},
+                                                         {"siteName", "North"},
+                                                         {"dmrChannels", dmr_channels({{12, 0}})}}));
+    const QString uid = model.get(0).value("uid").toString();
+    const QVariantMap before = model.get(0);
+    QStringList log;
+    record_signals(model, log);
+    const auto ok = [](const QVariantMap& r) {
+        return r.value("ok").toBool() && r.value("error").toString().isEmpty();
+    };
+    const auto error = [](const QVariantMap& r) {
+        return r.value("ok").toBool() ? QString() : r.value("error").toString();
+    };
+
+    expect("channel edit: a set is kept", ok(model.applyDmrChannelEdit(uid, 40, set, 451137500)));
+    expect("channel edit: by channel", model.get(0).value("dmrChannels") == dmr_channels({{12, 0}, {40, 451137500}}));
+    expect("channel edit: one dataChanged", log == QStringList{"dataChanged"});
+    expect("channel edit: a second set replaces it",
+           ok(model.applyDmrChannelEdit(uid, 40, set, 451150000))
+               && model.dmrChannels(uid) == dmr_channels({{12, 0}, {40, 451150000}}));
+    expect("channel edit: a hide keeps the channel at 0, its frequency not read",
+           ok(model.applyDmrChannelEdit(uid, 7, hide, -5))
+               && model.dmrChannels(uid) == dmr_channels({{7, 0}, {12, 0}, {40, 451150000}}));
+    expect("channel edit: a restore drops the entry",
+           ok(model.applyDmrChannelEdit(uid, 12, restore, 0))
+               && model.dmrChannels(uid) == dmr_channels({{7, 0}, {40, 451150000}}));
+    log.clear();
+    expect("channel edit: restoring a channel with no entry changes nothing",
+           ok(model.applyDmrChannelEdit(uid, 12, restore, 0)) && log.isEmpty());
+    QVariantMap after = model.get(0);
+    for (const char* key : {"chanCsvPath", "rrSid", "rrSiteId", "siteName", "name", "decodeFlag", "place"}) {
+        expect(qPrintable(QStringLiteral("channel edit: leaves %1 alone").arg(QLatin1String(key))),
+               after.value(QLatin1String(key)) == before.value(QLatin1String(key)));
+    }
+    {
+        SavedSystemsModel reloaded;
+        expect("channel edit: the edits persist", reloaded.dmrChannels(uid) == dmr_channels({{7, 0}, {40, 451150000}}));
+    }
+
+    expect("channel edit: an unknown system",
+           error(model.applyDmrChannelEdit("no-such-uid", 40, set, 451150000)) == "no-system");
+    expect("channel edit: no such channel", error(model.applyDmrChannelEdit(uid, 0, set, 451150000)) == "invalid"
+                                                && error(model.applyDmrChannelEdit(uid, 4095, hide, 0)) == "invalid");
+    expect("channel edit: no such frequency",
+           error(model.applyDmrChannelEdit(uid, 40, set, 99999)) == "invalid"
+               && error(model.applyDmrChannelEdit(uid, 40, set, 2147483648LL)) == "invalid");
+    expect("channel edit: no such operation", error(model.applyDmrChannelEdit(uid, 40, 4, 451150000)) == "invalid");
+
+    QVariantList full;
+    for (int lpcn = 1; lpcn <= 256; ++lpcn) {
+        full.append(QVariantMap{{"lpcn", lpcn}, {"hz", 0}});
+    }
+    expect("channel edit: 256 entries",
+           model.update(0, {{"dmrChannels", full}}) && model.dmrChannels(uid).size() == 256);
+    expect("channel edit: one more is refused", error(model.applyDmrChannelEdit(uid, 300, hide, 0)) == "full");
+    expect("channel edit: one it holds is not", ok(model.applyDmrChannelEdit(uid, 256, set, 451000000)));
+
+    log.clear();
+    const QVariantList kept = model.dmrChannels(uid);
+    expect("channel edit: store blocked", block_systems_store());
+    expect("channel edit: a failed save says so",
+           error(model.applyDmrChannelEdit(uid, 255, set, 451000000)) == "not-saved");
+    expect("channel edit: and changes nothing", model.dmrChannels(uid) == kept && log.isEmpty());
+    expect("channel edit: store unblocked", unblock_systems_store());
+    empty_systems(model);
+}
+
 /* A removal whose save fails changes nothing: the card stays, and anything that follows rows out (a pinned shortcut)
  * keeps it, because the system is still there on the next launch. A saved removal signals rows, sites, then count. */
 void
@@ -4180,6 +4318,8 @@ main(int argc, char** argv) {
     test_clear_csv_path_clears_geography();
     test_load_drops_orphan_position();
     test_invalidate_path_provenance();
+    test_dmr_channels_round_trip();
+    test_dmr_channel_edit();
     test_apply_place_names();
     test_place_name_cache();
     test_reimport_keeps_place_names();

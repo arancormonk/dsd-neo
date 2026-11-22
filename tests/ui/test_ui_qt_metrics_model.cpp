@@ -33,6 +33,7 @@
 
 #include <dsd-neo/app_control/call_view.h>
 #include <dsd-neo/app_control/commands.h>
+#include <dsd-neo/app_control/dmr_t3_view.h>
 #include <dsd-neo/app_control/frontend.h>
 #include <dsd-neo/app_control/rtl_gain_view.h>
 #include <dsd-neo/app_control/rx_tone_view.h>
@@ -3164,10 +3165,53 @@ test_block_label_patched_call() {
     dsd_state_ext_free_all(&state);
 }
 
+/* Discussion #900 F3: the Monitor's NO FREQ count is the ledger's (the channels past its details included), and the
+   Channels entry opens on a verified Tier III identity or a session started with the saved system's Tier III channels;
+   a RAS-only identity is display only. Both ride the control group. */
+static void
+test_dmr_tier3_readings() {
+    static dsd_opts opts;
+    static dsd_state state;
+    static dsd_ui_dmr_t3_view view;
+    initOpts(&opts);
+    initState(&state);
+    DSD_MEMSET(&view, 0, sizeof view);
+    dsd_qt::MetricsModel model;
+    int control = 0;
+    QObject::connect(&model, &dsd_qt::MetricsModel::controlChanged, [&control]() { ++control; });
+    model.refresh(&opts, &state);
+    expect("no view: no Tier III, nothing missing", !model.dmrTier3() && model.noFreqCount() == 0);
+    state.state_ext[DSD_STATE_EXT_APP_DMR_T3_VIEW] = &view;
+    view.present = 1U;
+    view.tier3_unchecked = 1U;
+    for (uint16_t lpcn : {12U, 40U, 900U}) {
+        view.missing.missing[lpcn >> 3] = static_cast<uint8_t>(view.missing.missing[lpcn >> 3] | (1U << (lpcn & 7U)));
+    }
+    view.missing.detail_count = 1U;
+    view.missing.details[0].lpcn = 12U;
+    const int before = control;
+    model.refresh(&opts, &state);
+    expect("every ledger channel is counted", model.noFreqCount() == 3 && control == before + 1);
+    expect("a RAS-only identity opens no editor", !model.dmrTier3());
+    view.tier3 = 1U;
+    model.refresh(&opts, &state);
+    expect("a verified identity does", model.dmrTier3() && control == before + 2);
+    view.tier3 = 0U;
+    DSD_SNPRINTF(opts.dmr_chan_overrides_file, sizeof opts.dmr_chan_overrides_file, "%s", "/data/dmr_channels/a.csv");
+    model.refresh(&opts, &state);
+    expect("so does a session started with the saved system's channels", model.dmrTier3());
+    opts.dmr_chan_overrides_file[0] = '\0';
+    view.present = 0U;
+    model.refresh(&opts, &state);
+    expect("a view with no record reads none", !model.dmrTier3() && model.noFreqCount() == 0);
+    state.state_ext[DSD_STATE_EXT_APP_DMR_T3_VIEW] = nullptr;
+}
+
 int
 main(int argc, char** argv) {
     QCoreApplication app(argc, argv);
     test_new_target_drops_sync_hold_in_one_publication();
+    test_dmr_tier3_readings();
     test_tetra_rows();
     test_slot_kind_and_labels();
     test_scan_row();

@@ -198,6 +198,12 @@ class MetricsModel : public QObject {
     Q_PROPERTY(bool audioMuted READ audioMuted NOTIFY controlChanged)
     Q_PROPERTY(qulonglong heldTg READ heldTg NOTIFY controlChanged)
     Q_PROPERTY(int encLockoutCount READ encLockoutCount NOTIFY controlChanged)
+    /* Discussion #900 F3: the Monitor's NO FREQ count, the DMR Tier III channels granted without a frequency (the
+       app-control Tier III view's ledger, the channels past its details included), and whether the session is a Tier
+       III one the Channels sheet edits: an identity checked messages named Tier III (never a RAS-only one), or a
+       session started with a saved system's Tier III channels (--dmr-chan-overrides). */
+    Q_PROPERTY(int noFreqCount READ noFreqCount NOTIFY controlChanged)
+    Q_PROPERTY(bool dmrTier3 READ dmrTier3 NOTIFY controlChanged)
     Q_PROPERTY(bool persistTgLockouts READ persistTgLockouts NOTIFY controlChanged)
     Q_PROPERTY(qulonglong temporaryTgAvoidCount READ temporaryTgAvoidCount NOTIFY controlChanged)
     Q_PROPERTY(qulonglong callSkipCount READ callSkipCount NOTIFY controlChanged)
@@ -1525,6 +1531,16 @@ class MetricsModel : public QObject {
         return m_view.enc_lockout_count;
     }
 
+    int
+    noFreqCount() const {
+        return m_view.no_freq_count;
+    }
+
+    bool
+    dmrTier3() const {
+        return m_view.dmr_tier3;
+    }
+
     /**
      * @brief Whether a scan rotation is running that hold and avoid can act on.
      *
@@ -2450,6 +2466,8 @@ class MetricsModel : public QObject {
         int effective_squelch_margin_db = 0;
         int ppm = 0;
         int enc_lockout_count = 0;
+        int no_freq_count = 0;
+        bool dmr_tier3 = false;
         int scan_avoid_count = 0;
         int scan_target_ordinal = 0;
         int scan_target_count = 0;
@@ -2761,11 +2779,16 @@ class MetricsModel : public QObject {
         bool
         controlEquals(const View& other) const {
             return receive_status == other.receive_status && audio_muted == other.audio_muted
-                   && held_tg == other.held_tg && enc_lockout_count == other.enc_lockout_count && inputKindEquals(other)
-                   && trunking_enabled == other.trunking_enabled && scanner_mode == other.scanner_mode
-                   && scanControlEquals(other) && scan_mode == other.scan_mode && decode_mode == other.decode_mode
-                   && decryptionEquals(other) && radioControlsEqual(other) && tgLockoutsEqual(other)
-                   && relaxedCrcEquals(other);
+                   && held_tg == other.held_tg && enc_lockout_count == other.enc_lockout_count && dmrTier3Equals(other)
+                   && inputKindEquals(other) && trunking_enabled == other.trunking_enabled
+                   && scanner_mode == other.scanner_mode && scanControlEquals(other) && scan_mode == other.scan_mode
+                   && decode_mode == other.decode_mode && decryptionEquals(other) && radioControlsEqual(other)
+                   && tgLockoutsEqual(other) && relaxedCrcEquals(other);
+        }
+
+        bool
+        dmrTier3Equals(const View& other) const {
+            return no_freq_count == other.no_freq_count && dmr_tier3 == other.dmr_tier3;
         }
 
         bool
