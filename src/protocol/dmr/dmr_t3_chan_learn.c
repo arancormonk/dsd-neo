@@ -189,28 +189,13 @@ dmr_t3_chan_origin_is_estimate(unsigned origin) {
     return origin == (unsigned)DMR_CHAN_ORIGIN_ESTIMATE;
 }
 
-/* An anchor appeared, moved or went (here, or through another writer: dmr_t3_chan_settle()): every estimate goes, and
-   the fill runs again from the anchors left. */
+/* An anchor appeared, moved or went: every estimate goes, and the fill runs again from the anchors left. */
 static void
 dmr_t3_chan_anchors_changed(dsd_opts* opts, dsd_state* state, dmr_ext_t* ext) {
-    state->dmr_lcn_rows_changed = 0U; /* what another writer changed is redone here too */
     if (dmr_t3_chan_drop_rows(state, ext, dmr_t3_chan_origin_is_estimate)) {
         ext->revision++;
     }
     dmr_heuristic_fill(opts, state);
-}
-
-void
-dmr_t3_chan_settle(dsd_opts* opts, dsd_state* state) {
-    if (state == NULL || state->dmr_lcn_rows_changed == 0U) {
-        return;
-    }
-    state->dmr_lcn_rows_changed = 0U;
-    dmr_ext_t* ext = dmr_ext_get(state);
-    if (opts == NULL || !opts->dmr_t3_heuristic_fill || ext == NULL) {
-        return; /* no fill, or nothing learned over the air: no estimate to redo */
-    }
-    dmr_t3_chan_anchors_changed(opts, state, ext);
 }
 
 int
@@ -228,7 +213,7 @@ dmr_t3_chan_learn(dsd_opts* opts, dsd_state* state, uint16_t lpcn, long freq_hz,
     if (ext == NULL) {
         return 0;
     }
-    dmr_t3_chan_set_row(state, lpcn, freq_hz);
+    dsd_state_set_trunk_chan_freq(state, lpcn, freq_hz);
     dsd_state_dmr_lcn_ota_set(state, lpcn, 1);
     ext->origin[lpcn] = (uint8_t)origin;
     state->dmr_lcn_trust[lpcn] = dmr_t3_chan_trust(opts, state, origin);

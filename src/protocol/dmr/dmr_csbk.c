@@ -1092,7 +1092,7 @@ dmr_cspdu_pf0_p_clear_for_followed_call(const dsd_state* state, const dmr_cspdu_
     if (f->gi == 0U && (f->target == DMR_CSBK_ALLMSI || f->target == DMR_CSBK_ALLMSID)) {
         return dmr_sm_follows_slot(ctx, slot);
     }
-    return dmr_sm_names_followed_call(ctx, state, slot, f->gi, f->target);
+    return dmr_sm_names_followed_call(ctx, slot, f->gi, f->target);
 }
 
 /* P_CLEAR (TS 102 361-4 §7.1.1.3.2). The standard one (FID 0) is read as Table 7.30: it applies only on the followed
@@ -3234,7 +3234,6 @@ dmr_cspdu_dispatch(dsd_opts* opts, dsd_state* state, uint8_t cs_pdu_bits[], uint
         dmr_sm_note_cc_heartbeat(opts, state);
 
         dmr_cspdu_init_cc_anchor(opts, state);
-        dmr_t3_chan_settle(opts, state);
 
         dmr_cspdu_handle_pf0(opts, state, cs_pdu_bits, cs_pdu, csbk_pf, csbk_o, csbk_fid);
         dmr_cspdu_handle_cap_plus(opts, state, cs_pdu_bits, cs_pdu, csbk_o, csbk_fid);

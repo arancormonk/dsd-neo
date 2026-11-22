@@ -1791,22 +1791,6 @@ handle_data_sync(dmr_sm_ctx_t* ctx, const dsd_opts* opts, dsd_state* state, int 
     sm_log(opts, "data-sync");
 }
 
-/* The followed slot's call was cleared (@p slot) while the companion slot's call goes on: the receiver stays for that
-   call, so the companion is the slot followed now, and its own clear (or one to every MS) applies there. The cleared
-   grant's identity names nothing on it. */
-static void
-dmr_sm_follow_companion(dmr_sm_ctx_t* ctx, dsd_state* state, int slot) {
-    const int other = slot ^ 1;
-    if (ctx->vc_slot != slot || !ctx->slots[other].voice_active) {
-        return;
-    }
-    dmr_sm_drop_grant_identity(ctx, slot);
-    ctx->vc_slot = other;
-    if (state) {
-        state->dmr_mono_slot = other;
-    }
-}
-
 static void
 handle_release(dmr_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, int slot) {
     if (!ctx) {
@@ -1828,7 +1812,6 @@ handle_release(dmr_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, int slot) {
         ctx->slots[1].voice_active = 0;
     } else {
         ctx->slots[slot].voice_active = 0;
-        dmr_sm_follow_companion(ctx, state, slot);
     }
 
     sm_log(opts, "release-requested");
@@ -2863,64 +2846,17 @@ dmr_sm_follows_slot(const dmr_sm_ctx_t* ctx, int slot) {
     return ctx && ctx->state == DMR_SM_TUNED && slot >= 0 && slot <= 1 && (ctx->vc_slot < 0 || ctx->vc_slot == slot);
 }
 
-/* Whether identity @p id is the call an address of class @p is_group and @p target names: its talkgroup, or either
-   party of a private call. */
-static int
-dmr_sm_identity_addressed(const dmr_sm_slot_ctx_t* id, int is_group, uint32_t target) {
-    if (is_group) {
-        return id->judged_group && id->target == target;
-    }
-    return !id->judged_group && (id->target == target || (id->source != 0U && id->source == target));
-}
-
-/* The live call on @p slot of the followed carrier: its canonical call while active, a voice call naming a target,
-   begun since the receiver arrived there (t_carrier_m). */
-static int
-dmr_sm_slot_live_call(const dmr_sm_ctx_t* ctx, const dsd_state* state, int slot, dsd_call_snapshot* call) {
-    if (!state || dsd_call_state_get(state, (uint8_t)slot, call) <= 0 || call->phase != DSD_CALL_PHASE_ACTIVE
-        || call->started_m < ctx->t_carrier_m) {
-        return 0;
-    }
-    if (call->kind != DSD_CALL_KIND_GROUP_VOICE && call->kind != DSD_CALL_KIND_PRIVATE_VOICE) {
-        return 0;
-    }
-    return call->ota_target_id != 0U || call->policy_target_id != 0U;
-}
-
-/* Whether live call @p call is the one an address of class @p is_group and @p target names: its talkgroup, or either
-   party of a private call. */
-static int
-dmr_sm_call_addressed(const dsd_call_snapshot* call, int is_group, uint32_t target) {
-    const uint64_t id = call->ota_target_id != 0U ? call->ota_target_id : call->policy_target_id;
-    if (is_group) {
-        return call->kind == DSD_CALL_KIND_GROUP_VOICE && id == target;
-    }
-    return call->kind == DSD_CALL_KIND_PRIVATE_VOICE && (id == target || call->ota_source_id == target);
-}
-
-/* The call on the slot now: its live call first, unless the slot's own record is bound to that very call (brought up
-   to date with its canonical call first). A record that names another call than the live one (an in-place grant still
-   awaiting its call) never stands for the live call. With no live call, the slot's record names the call (a checked LC
-   that named another call since the grant outranks the grant), and the grant's identity stands only for a slot whose
-   record names nothing on the followed carrier (a slotless grant before its voice). */
+/* The followed call as the machine records it (vc_*: the followed grant's identity, or the in-place grant's that
+   renamed the followed slot's call since). */
 int
-dmr_sm_names_followed_call(dmr_sm_ctx_t* ctx, const dsd_state* state, int slot, int is_group, uint32_t target) {
-    if (!dmr_sm_follows_slot(ctx, slot) || target == 0U) {
+dmr_sm_names_followed_call(const dmr_sm_ctx_t* ctx, int slot, int is_group, uint32_t target) {
+    if (!dmr_sm_follows_slot(ctx, slot) || target == 0U || !ctx->vc_identity_known) {
         return 0;
     }
-    dmr_sm_slot_identity_refresh(ctx, state, slot, dsd_decode_now_mono_s());
-    const dmr_sm_slot_ctx_t* rec = &ctx->slots[slot];
-    const int rec_known = dmr_sm_slot_identity_known(rec) && rec->carrier_hz == ctx->vc_freq_hz;
-    dsd_call_snapshot live;
-    if (dmr_sm_slot_live_call(ctx, state, slot, &live)
-        && !(rec_known && rec->call_epoch == dsd_call_snapshot_transmission(&live))) {
-        return dmr_sm_call_addressed(&live, is_group, target);
+    if (is_group) {
+        return ctx->vc_is_group && (uint32_t)ctx->vc_tg == target;
     }
-    if (rec_known) {
-        return dmr_sm_identity_addressed(rec, is_group, target);
-    }
-    dmr_sm_slot_ctx_t grant;
-    return dmr_sm_grant_identity(ctx, &grant) && dmr_sm_identity_addressed(&grant, is_group, target);
+    return !ctx->vc_is_group && ((uint32_t)ctx->vc_dst == target || (uint32_t)ctx->vc_src == target);
 }
 
 long

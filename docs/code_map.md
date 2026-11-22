@@ -13386,15 +13386,12 @@ Private per-protocol modules worth knowing about:
   slot with its CRC flags, so `--slot-allow` and the `[RAS]` marker apply. The env-only heuristic fill anchors on every
   row that is no estimate and writes its rows as ESTIMATE through the writer; any anchor that appears, moves or goes
   drops every estimate and fills again, except an estimate confirmed at the frequency it holds, which is promoted in
-  place (it lies on the model line between the first and last anchors, so the model is unchanged). A row another
+  place (it lies on the model line between the first and last anchors, so the model is unchanged). Decided limit
+  (discussion #900): with `DSD_NEO_DMR_T3_HEUR` on, estimates are recomputed when DMR itself changes an anchor row; a
+  change by a channel map import or another protocol is not noticed until then. A row another
   writer sets after the air (P25's channel cache or IDEN invalidation, an import, NXDN) is no longer the air's: the
   shared setter `dsd_state_set_trunk_chan_freq()` clears the row's bit in the core-owned `dsd_state::dmr_lcn_ota`
   (which the DMR writer sets after it writes), and the row then reads as FILE, so DMR neither replaces nor drops it.
-  The setter also raises the core-owned `dsd_state::dmr_lcn_rows_changed` when it changes a row 0..4095 (its frequency
-  or its `dmr_lcn_ota` bit) for any writer but DMR's (`dmr_t3_chan_set_row()` keeps it as it was); the next checked
-  control PDU (`dmr_t3_chan_settle()`, before its handlers, so a grant never resolves through a stale estimate) clears
-  it and, with the fill on, drops every estimate and fills again: a row another writer set, moved or removed may be an
-  anchor. Nothing changed costs one byte test.
   A network change (`dmr_t3_chan_network_changed()`) drops the SITE, UNVERIFIED, NEIGHBOUR and ESTIMATE rows with
   their trust bytes and bumps the generation; FILE and USER rows stay, and so does the hunt's candidate list. It is a
   checked C_ALOHA, standard (FID 0) C_BCAST (its header's System Identity Code, bits 40-55, Table 7.20, is the
@@ -13492,18 +13489,16 @@ Private per-protocol modules worth knowing about:
 - DMR P_CLEAR addressing (`dmr_csbk.c`, `dmr_trunk_sm.c`; TS 102 361-4 Table 7.30). A standard P_CLEAR (FID 0) applies
   only when received on the followed call's slot (`dmr_sm_follows_slot()`: either slot before a slotless grant's first
   voice) and addressed to that call (`dmr_sm_names_followed_call()`: G/I 1 and its talkgroup, G/I 0 and either party of
-  a private call; or G/I 0 and ALLMSI 0xFFFED4 or ALLMSID 0xFFFFFF). The call is the slot's live call first: its
-  active canonical voice call, begun since the receiver arrived on the carrier, unless the slot's identity record is
-  bound to that very call, so an in-place grant for another call that has not bound yet never stands for the live one.
-  With no live call it is the one the slot's identity record names now on the followed carrier (refreshed against its
-  canonical call first), so a checked voice LC naming another call since the grant replaces the grant's identity; the
-  grant's identity counts only while the slot names none. Otherwise it prints "not for the followed call" ("no
-  followed call" when nothing is followed) and changes nothing: no burst hint, activity, force latch or release.
-  Applied, it clears its own slot's burst hint and the machine's voice flag for that slot only, so a busy companion
-  slot keeps the carrier; the companion then becomes the followed slot (`dmr_sm_follow_companion()`: `vc_slot` and the
-  mono slot move, the cleared grant's identity is dropped), so its own clear, or one to every MS, applies there next.
-  Decided limit (discussion #900): a P_CLEAR stops following a slot; the call record ends on its terminator or
-  timeout. The synthesized lockout clear (`dmr_cspdu_release_channel()`) and another FID's opcode 46 keep the
+  a private call; or G/I 0 and ALLMSI 0xFFFED4 or ALLMSID 0xFFFFFF), as the machine records the call (`vc_tg`,
+  `vc_dst`, `vc_src`, `vc_is_group` and `vc_slot`: the followed grant's identity, or the in-place grant's that named
+  another call on the followed slot since). Otherwise it prints "not for the followed call" ("no followed call" when
+  nothing is followed) and changes nothing: no burst hint, activity, force latch or release. Applied, it clears its
+  own slot's burst hint and the machine's voice flag for that slot only, so a busy companion slot keeps the carrier.
+  Decided limit (discussion #900): a P_CLEAR is matched to the call as dsd-neo followed it; a later call on the same
+  slot, or a busy companion slot, is left to hangtime (a voice LC naming another call renames nothing, and the
+  followed slot stays the cleared one, so the companion's own clear is not for the followed call). A P_CLEAR stops
+  following a slot; the call record ends on its terminator or timeout. The synthesized lockout clear
+  (`dmr_cspdu_release_channel()`) and another FID's opcode 46 keep the
   carrier-wide release unread. Any clear arms `trunk_sm_force_release` only while the machine follows a call
   (`dmr_sm_follows_call()`, TUNED): on a composite TSCC's payload slot, or after an idle XPT status marked the receiver
   tuned (`trunk_is_tuned`) on the control channel, a latched force would release the next followed grant on its first

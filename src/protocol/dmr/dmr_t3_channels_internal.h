@@ -12,7 +12,6 @@
 #ifndef DSD_NEO_SRC_PROTOCOL_DMR_DMR_T3_CHANNELS_INTERNAL_H_
 #define DSD_NEO_SRC_PROTOCOL_DMR_DMR_T3_CHANNELS_INTERNAL_H_
 
-#include <dsd-neo/core/opts_fwd.h>
 #include <dsd-neo/core/state_fwd.h>
 
 #include <stdint.h>
@@ -54,10 +53,6 @@ dmr_ext_t* dmr_ext_get_or_create(dsd_state* state);
  * the writer takes and a network change drops. */
 int dmr_t3_chan_origin_is_ota(unsigned origin);
 
-/* Set row @p lpcn to @p hz as the over-the-air writer: through dsd_state_set_trunk_chan_freq(), leaving
- * dsd_state::dmr_lcn_rows_changed as it was (the writer redoes its estimates itself). */
-void dmr_t3_chan_set_row(dsd_state* state, uint16_t lpcn, long hz);
-
 /* Empty the LPCN 1..4094 rows whose recorded origin @p drop accepts, with their trust bytes and origins. Returns
  * whether any row went. */
 int dmr_t3_chan_drop_rows(dsd_state* state, dmr_ext_t* ext, int (*drop)(unsigned origin));
@@ -66,10 +61,5 @@ int dmr_t3_chan_drop_rows(dsd_state* state, dmr_ext_t* ext, int (*drop)(unsigned
  * the receiver is on: a code whose MODEL or NET differs from the last checked one's is a network change
  * (dmr_t3_chan_network_changed()); another SITE of the same network is none. */
 void dmr_t3_chan_note_checked_syscode(dsd_state* state, uint16_t syscode);
-
-/* Before a control PDU is handled: when another writer changed a row since (dsd_state::dmr_lcn_rows_changed), the
- * heuristic estimates go and the fill runs again from the anchors left (with the fill on and a record to hold them).
- * Clears the flag. One byte test when nothing changed. */
-void dmr_t3_chan_settle(dsd_opts* opts, dsd_state* state);
 
 #endif /* DSD_NEO_SRC_PROTOCOL_DMR_DMR_T3_CHANNELS_INTERNAL_H_ */

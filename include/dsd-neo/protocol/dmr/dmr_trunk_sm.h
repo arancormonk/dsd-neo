@@ -407,12 +407,10 @@ int dmr_sm_follows_slot(const dmr_sm_ctx_t* ctx, int slot);
 
 /** @brief Whether an address received on @p slot of the followed carrier names the followed call (a P_CLEAR's, TS
  *  102 361-4 Table 7.30): dmr_sm_follows_slot(), and @p target the followed call's talkgroup when @p is_group, or
- *  either party of a followed private call when not. The call is the slot's live call in @p state's canonical layer
- *  (an active voice call begun since the receiver arrived), unless the slot's own identity is bound to it; with no live
- *  call, the one the slot's own identity names now (a checked LC naming another call since the grant replaces the
- *  grant's); the followed grant's identity only when the slot names none on the followed carrier.
+ *  either party of a followed private call when not, as the machine records the call (the followed grant's identity,
+ *  or an in-place grant's on the followed slot since). A call a later LC names on the slot is not matched.
  */
-int dmr_sm_names_followed_call(dmr_sm_ctx_t* ctx, const dsd_state* state, int slot, int is_group, uint32_t target);
+int dmr_sm_names_followed_call(const dmr_sm_ctx_t* ctx, int slot, int is_group, uint32_t target);
 
 /** @brief Hand a call that a Capacity Plus channel status followed through the tuning hooks (already tuned to
  *  @p freq_hz) to the machine, which then owns its hangtime, grant timeout and return as for a grant. @p receiver_hz is
