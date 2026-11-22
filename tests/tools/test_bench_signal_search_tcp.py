@@ -10,12 +10,17 @@
 - The load average is optional metadata: None where the platform has none (Windows), not an AttributeError.
 - A transmitter loops its content seamlessly: a block that crosses the end of the content continues from its start,
   not with noise for the rest of the block.
+- A run records why it stopped (the child exited, the scene was done, or --seconds ran out). An empty-scene run that
+  did not measure the passes asked for is incomplete: it exits non-zero and --summary leaves it out, rather than count
+  a run with no passes and only its startup's CPU time.
 
 These run in seconds and never start a decoder or serve a scene.
 """
 
+import contextlib
 import importlib
 import importlib.util
+import io
 import json
 import os
 import sys
@@ -221,6 +226,98 @@ class Loop(unittest.TestCase):
         iq = self.block_at(400)
         expected = short[(400 + np.arange(self.scan_bench.BLOCK)) % len(short)]
         self.assertLess(float(np.max(np.abs(np.angle(iq * np.conj(expected))))), 0.05)
+
+
+class FakeScene:
+    port = 1
+    sample_time = 0.0
+    tunes = []
+    thread = unittest.mock.Mock()
+
+    def __init__(self, *_args, **_kwargs):
+        pass
+
+    def close(self):
+        pass
+
+
+def fake_process(exits):
+    """A stand-in child that runs until its stop file appears (exits False) or has already exited (exits True)."""
+
+    class FakeProcess:
+        stdout = iter(())
+
+        def __init__(self, _cmd, **kwargs):
+            self.stop = Path(kwargs["env"]["DSD_SEARCH_RIG_STOP"])
+            self.returncode = 0 if exits else None
+
+        def poll(self):
+            return self.returncode
+
+        def wait(self, timeout=None):
+            self.returncode = 0
+            return 0
+
+    return FakeProcess
+
+
+def pass_status(t, number):
+    return (t, 0.0, "", {"rig": "status", "pass": number, "hit": {}})
+
+
+class Completion(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory(prefix="bench-search-")
+        self.addCleanup(self.tmp.cleanup)
+        self.root = Path(self.tmp.name).resolve()
+
+    def run_rig(self, exits, done=None, seconds=0.3, name="run"):
+        scan_bench = importlib.import_module("bench_scan_skip_silent")
+        with unittest.mock.patch.object(scan_bench, "Scene", FakeScene), unittest.mock.patch.object(
+            bench.subprocess, "Popen", fake_process(exits)
+        ):
+            return bench.run_rig("rig", [], [("r", 1, 2, 1, 1, 0, 1, 1)], 48, self.root / name, seconds, done=done)
+
+    def test_the_stop_reason_is_recorded(self):
+        self.assertEqual(self.run_rig(exits=True, name="a")["stop"], "exited")
+        self.assertEqual(self.run_rig(exits=False, done=lambda _scene: True, name="b")["stop"], "done")
+        self.assertEqual(self.run_rig(exits=False, name="c")["stop"], "timeout")
+
+    def rig_main(self, name, passes_seen, scene="empty", stop="timeout"):
+        lines = [pass_status(1.0 + k, k + 1) for k in range(passes_seen + 2)]
+        perf = {"demod_busy_pct": None, "input_drops": None}
+        record = {"exit": 0, "lines": lines, "tunes": [], "cpu_s": 1.0, "wall_s": 10.0, "perf": perf, "stop": stop}
+        args = unittest.mock.Mock(out=self.root / name, scene=scene, passes=3, bw=48, seconds=10.0, seed=1,
+                                  label="x", rig=Path("rig"))
+        with unittest.mock.patch.object(bench, "run_rig", return_value=record), contextlib.redirect_stdout(
+            io.StringIO()
+        ), contextlib.redirect_stderr(io.StringIO()):
+            rc = bench.rig_main(args)
+        return rc, json.loads((self.root / name / "result.json").read_text(encoding="utf-8"))
+
+    def test_an_empty_scene_short_of_its_passes_is_incomplete(self):
+        rc, result = self.rig_main("short", passes_seen=1)
+        self.assertNotEqual(rc, 0)
+        self.assertFalse(result["complete"])
+        self.assertEqual(result["stop"], "timeout")
+        self.assertEqual(len(result["pass_s"]), 1)
+
+    def test_an_empty_scene_with_its_passes_is_complete(self):
+        rc, result = self.rig_main("whole", passes_seen=3, stop="exited")
+        self.assertEqual(rc, 0)
+        self.assertTrue(result["complete"])
+        self.assertEqual(len(result["pass_s"]), 3)
+
+    def test_the_summary_leaves_incomplete_runs_out(self):
+        self.rig_main("short", passes_seen=0)
+        self.rig_main("whole", passes_seen=3, stop="exited")
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            bench.summary([self.root / "short", self.root / "whole"])
+        text = out.getvalue()
+        self.assertIn("runs 1 ", text)
+        self.assertIn("(n 3,", text)
+        self.assertIn("1 incomplete run left out", text)
 
 
 class LoadAverage(unittest.TestCase):

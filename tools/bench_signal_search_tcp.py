@@ -278,7 +278,9 @@ def read_rig(pipe, lines, scene, transmitters):
 def run_rig(rig, transmitters, ranges, dsp_khz, work, seconds, done=None, passes=1000, perf=False, seed=748):
     """Run dsd-neo_test_signal_search_rig on a paced scene of @p transmitters, searching @p ranges (each (name, start,
     end, step, width, digital, probe_ms, max_visit_ms)) at a @p dsp_khz DSP bandwidth, until @p passes passes have
-    ended, done(scene) says so, or @p seconds pass. Returns the run's record."""
+    ended, done(scene) says so, or @p seconds pass. Returns the run's record, whose "stop" says which ended it: "exited"
+    (the child stopped by itself: its passes ended, or it failed), "done", "timeout" (the stop file was written when
+    @p seconds ran out, so the child exits as if asked to) or "killed" (it did not exit after the stop file)."""
     # Here, not at the top: bench_scan_skip_silent imports this module.
     import bench_scan_skip_silent as scan_bench
 
@@ -311,14 +313,20 @@ def run_rig(rig, transmitters, ranges, dsp_khz, work, seconds, done=None, passes
     reader = threading.Thread(target=read_rig, args=(proc.stdout, lines, scene, transmitters), daemon=True)
     reader.start()
     started = time.monotonic()
+    stop = "timeout"
     try:
-        while proc.poll() is None and time.monotonic() - started < seconds:
+        while time.monotonic() - started < seconds:
+            if proc.poll() is not None:
+                stop = "exited"
+                break
             if done is not None and done(scene):
+                stop = "done"
                 break
             time.sleep(0.25)
         (work / "stop").write_bytes(b"")
         proc.wait(timeout=30)
     except (subprocess.TimeoutExpired, OSError):
+        stop = "killed"
         proc.kill()
         proc.wait()
     wall_s = time.monotonic() - started
@@ -327,7 +335,7 @@ def run_rig(rig, transmitters, ranges, dsp_khz, work, seconds, done=None, passes
     cpu_s = after - before if before is not None and after is not None else None
     reader.join(timeout=10)
     scene.close()
-    record = {"command": cmd, "exit": proc.returncode, "tunes": list(scene.tunes), "lines": lines,
+    record = {"command": cmd, "exit": proc.returncode, "stop": stop, "tunes": list(scene.tunes), "lines": lines,
               "cpu_s": cpu_s, "wall_s": wall_s, "dsp_khz": dsp_khz}
     if perf:
         record["perf"] = scan_bench.perf_summary(str(work / "dsd-neo-rtl-perf.csv"))
@@ -407,6 +415,9 @@ def rig_main(args):
     record = run_rig(args.rig, transmitters, ranges, args.bw, out, args.seconds, done=done, passes=passes,
                      perf=True, seed=args.seed)
     passes_s = pass_times(record)[1:] if not transmitters else []
+    # An empty scene measures its passes: one that ran out of time short of them is no measurement (its CPU figure is
+    # mostly startup), so it is incomplete, fails, and --summary leaves it out.
+    complete = bool(transmitters) or len(passes_s) >= args.passes
     rows = rig_rows(record)
     hits = {}
     for tx in transmitters:
@@ -424,6 +435,8 @@ def rig_main(args):
         "seed": args.seed,
         "bw_khz": args.bw,
         "exit": record["exit"],
+        "stop": record["stop"],
+        "complete": complete,
         "pass_s": passes_s,
         "hits": hits,
         "cpu_s": record["cpu_s"],
@@ -437,15 +450,26 @@ def rig_main(args):
     (out / "result.json").write_text(json.dumps(result, indent=1), encoding="utf-8")
     (out / "record.json").write_text(json.dumps(record, default=str), encoding="utf-8")
     print(json.dumps(result))
-    return 0 if record["exit"] == 0 else 1
+    if not complete:
+        print(f"error: incomplete run ({record['stop']}): {len(passes_s)} of {args.passes} passes measured",
+              file=sys.stderr)
+    return 0 if record["exit"] == 0 and complete else 1
 
 
 def summary(dirs):
-    """One line per (label, scene, bandwidth): medians over the runs."""
+    """One line per (label, scene, bandwidth): medians over the complete runs (an incomplete one is counted, not
+    compared)."""
     groups = {}
+    left_out = {}
     for d in dirs:
         result = json.loads((Path(d) / "result.json").read_text(encoding="utf-8"))
-        groups.setdefault((result["label"], result["scene"], result["bw_khz"]), []).append(result)
+        key = (result["label"], result["scene"], result["bw_khz"])
+        if result.get("complete", True):
+            groups.setdefault(key, []).append(result)
+        else:
+            left_out[key] = left_out.get(key, 0) + 1
+    for key, count in sorted(left_out.items()):
+        groups.setdefault(key, [])
     for (label, scene, bw), results in sorted(groups.items()):
         passes = [p for r in results for p in r["pass_s"]]
         cpu = [r["cpu_per_s"] for r in results if r["cpu_per_s"] is not None]
@@ -461,6 +485,9 @@ def summary(dirs):
             line += f"  demod busy {statistics.median(busy):.2f} %"
         if drops:
             line += f"  drops max {max(drops)}"
+        if (label, scene, bw) in left_out:
+            count = left_out[(label, scene, bw)]
+            line += f"  ({count} incomplete run{'s' if count != 1 else ''} left out)"
         print(line)
         names = sorted({name for r in results for name in r["hits"]})
         for name in names:
