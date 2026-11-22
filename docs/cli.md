@@ -1543,8 +1543,11 @@ alone is `auto+10`), so one setting suits every receiver and every channel of a 
   noise louder than before stays muted. A carrier present from the restart opens at the first window's end, 20 ms later
   than it would mid-stream; one keyed partway into that window can wait for the next, up to 80 ms after the restart. So
   under `auto`, a carrier that goes on through an FM/AM switch, a same-frequency retune, a PPM change or an input
-  overflow gap is muted for up to 40 ms (80 ms at worst) before it plays again; the noise squelch starts over closed at
-  all of these too.
+  overflow gap is muted for up to 40 ms (80 ms at worst) before it plays again, as long as it is strong enough to open
+  the gate: at least the margin over the floor. A weaker carrier that was already playing, between the closing level and
+  the opening level (up to 3 dB under the margin), stays muted after such a restart until it rises to the opening level,
+  however long it goes on: under `auto+10`, a carrier about 9 dB over the floor plays without a restart but is muted
+  after one. The noise squelch starts over closed at all of these too.
 - Where it runs: the analog monitors (`-fA`, `-fM`, `nfm` and `am` scan rows, `nfm-conventional` and
   `am-conventional` targets) on a radio input (RTL-SDR, rtl_tcp, SoapySDR, Airspy, `--iq-replay`). On a digital
   channel it is off: CRC and FEC already decide what is traffic there, and a control channel never shows its noise. On
