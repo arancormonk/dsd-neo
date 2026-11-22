@@ -160,11 +160,11 @@ typedef struct {
     int tetra_skip_row;
     /* The tetra-dmo rows named in the log and on the status line for a cause their chain cannot run with (issue #890),
        each once for the scan session, whatever the cause (list tetra_warned_list): a step off it that fails late, a
-       later visit and a later cause name nothing again. Read only when a row is about to be named. A list edit
-       renumbers the rows, so another list starts with none. */
-    int* tetra_warned;
-    size_t tetra_warned_count;
-    size_t tetra_warned_cap;
+       later visit and a later cause name nothing again. One bit per row (row r: byte r / 8, bit r % 8;
+       tetra_warned_bytes allocated), so a list-wide check over every row stays linear. A list edit renumbers the
+       rows, so another list starts with none. */
+    uint8_t* tetra_warned;
+    size_t tetra_warned_bytes;
     uint64_t tetra_warned_list;
 } channel_scan;
 
@@ -715,30 +715,39 @@ channel_scan_row_visited_analog(const dsd_state* state, int row) {
            && dsd_scan_mode_is_analog(dsd_channel_mode_get(state, (size_t)row));
 }
 
-/* Note tetra-dmo row @p row as named (channel_scan::tetra_warned). Returns 0 when it already was this session, so it is
-   not named again; 1 when it is new (a row that cannot be stored is named again at its next cause, never lost). A
-   list other than the one the rows were named on drops them all first. */
+/* Note tetra-dmo row @p row as named (channel_scan::tetra_warned, one bit per row). Returns 0 when it already was this
+   session, so it is not named again; 1 when it is new (a row that cannot be stored is named again at its next cause,
+   never lost). A list other than the one the rows were named on drops them all first. Constant time per row but for
+   the bitmap's growth, which doubles, and that clear, once per list. */
 static int
 channel_scan_tetra_warned_note(const dsd_state* state, channel_scan* scan, int row) {
     if (scan->tetra_warned_list != state->lcn_list_rev) {
         scan->tetra_warned_list = state->lcn_list_rev;
-        scan->tetra_warned_count = 0U;
-    }
-    for (size_t i = 0; i < scan->tetra_warned_count; i++) {
-        if (scan->tetra_warned[i] == row) {
-            return 0;
+        if (scan->tetra_warned) {
+            DSD_MEMSET(scan->tetra_warned, 0, scan->tetra_warned_bytes);
         }
     }
-    if (scan->tetra_warned_count == scan->tetra_warned_cap) {
-        const size_t cap = scan->tetra_warned_cap ? scan->tetra_warned_cap * 2U : 4U;
-        int* grown = (int*)realloc(scan->tetra_warned, cap * sizeof(*scan->tetra_warned));
+    /* Every caller names a row of the list (0 or more). */
+    const size_t byte = (size_t)(unsigned)row / 8U;
+    const uint8_t bit = (uint8_t)(1U << ((unsigned)row % 8U));
+    if (!scan->tetra_warned || byte >= scan->tetra_warned_bytes) {
+        const size_t held = scan->tetra_warned ? scan->tetra_warned_bytes : 0U;
+        size_t bytes = held ? held : 16U;
+        while (bytes <= byte) {
+            bytes *= 2U;
+        }
+        uint8_t* grown = (uint8_t*)realloc(scan->tetra_warned, bytes);
         if (!grown) {
             return 1;
         }
+        DSD_MEMSET(grown + held, 0, bytes - held);
         scan->tetra_warned = grown;
-        scan->tetra_warned_cap = cap;
+        scan->tetra_warned_bytes = bytes;
     }
-    scan->tetra_warned[scan->tetra_warned_count++] = row;
+    if (scan->tetra_warned[byte] & bit) {
+        return 0;
+    }
+    scan->tetra_warned[byte] = (uint8_t)(scan->tetra_warned[byte] | bit);
     return 1;
 }
 

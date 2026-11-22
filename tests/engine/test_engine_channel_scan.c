@@ -2821,6 +2821,63 @@ fake_tetra_ext_free(void* ptr) {
     g_fake_tetra_ext_frees++;
 }
 
+/* A list of many tetra-dmo rows is named row by row once for the scan session (issue #890): at a 48 kHz DSP rate the
+ * list-wide check names each of the 400 rows (more than the record's first allocation holds) exactly once, and a rate
+ * that moves to another rate TETRA cannot run at names none again, the status line still counting them. The record is
+ * one bit per row, so the check stays linear in the rows however many were named before. */
+static void
+test_tetra_dmo_rows_named_once_list_wide(void) {
+    enum { k_tetra_rows = 400 };
+
+    dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(*opts));
+    dsd_state* state = (dsd_state*)calloc(1, sizeof(*state));
+    assert(opts && state);
+    opts->scanner_mode = 1;
+    opts->audio_in_type = AUDIO_IN_RTL;
+    opts->wav_sample_rate = 48000;
+    DSD_SNPRINTF(opts->chan_in_file, sizeof opts->chan_in_file, "%s", "channels.csv");
+    assert(dsd_apply_decode_mode_preset(DSDCFG_MODE_DMR, DSD_DECODE_PRESET_PROFILE_CLI, opts, state) == 0);
+    state->samplesPerSymbol = 10;
+    assert(dsd_state_trunk_lcn_reserve(state, (size_t)k_tetra_rows + 1U) == 0);
+    state->lcn_freq_count = k_tetra_rows + 1;
+    *dsd_state_trunk_lcn_slot(state, 0) = 461000000;
+    assert(dsd_channel_mode_set(state, 0, DSD_SCAN_MODE_DMR) == 0);
+    for (int row = 1; row <= k_tetra_rows; row++) {
+        *dsd_state_trunk_lcn_slot(state, row) = 420000000L + (long)row * 12500L;
+        assert(dsd_channel_mode_set(state, (size_t)row, DSD_SCAN_MODE_TETRA_DMO) == 0);
+    }
+    g_scan_dsp_rate_hz = 48000;
+    expected_nxdn = 0;
+    tune_result = DSD_TRUNK_TUNE_RESULT_OK;
+    tune_sps_any = 1;
+    tunes = 0;
+    state->lcn_freq_roll = 0;
+    expected_tune_hz = 461000000;
+    /* The process's log tap (count_squelch_warnings()) counts every "skipped at every visit" warning. */
+    const int warnings_before = g_analog_warnings;
+    assert(dsd_engine_channel_scan_step(opts, state) == 1);
+    const int named_first = g_analog_warnings - warnings_before;
+    /* Another rate TETRA cannot run at: the list-wide check runs again and names none of them again. */
+    g_scan_dsp_rate_hz = 24000;
+    state->lcn_freq_roll = 0;
+    (void)dsd_engine_channel_scan_step(opts, state);
+    const int named_after = g_analog_warnings - warnings_before;
+    if (named_first != k_tetra_rows || named_after != k_tetra_rows) {
+        DSD_FPRINTF(stderr, "FAIL tetra-dmo rows named once list-wide: %d at 48 kHz, %d after 24 kHz (want %d)\n",
+                    named_first, named_after, (int)k_tetra_rows);
+        assert(0);
+    }
+    dsd_engine_channel_scan_leave(opts, state);
+    tune_sps_any = 0;
+    g_scan_dsp_rate_hz = 0;
+    expected_tune_hz = 150000000;
+    dsd_state_trunk_lcn_free(state);
+    dsd_state_ext_free_all(state);
+    free(state);
+    free(opts);
+    tunes = reset_count = 0;
+}
+
 /* Typed tetra-dmo rows (issue #890 D5) take the TETRA eligibility of a trunk-scan target: at a 48 kHz DSP rate the
  * row is named once, skipped at every visit with no tune, and a typed frequency is told why; at 72 kHz it lands. A list
  * with such a row holds the TETRA state from its first landing: every landing starts it cold, a DMR row's leaves it
@@ -5060,6 +5117,7 @@ main(void) {
     test_row_session_edits();
     test_entry_match_reads_the_rows_effective_width();
     test_tetra_dmo_rows();
+    test_tetra_dmo_rows_named_once_list_wide();
     test_receive_row_session_edits();
     test_pause_keeps_the_scan_and_drops_its_row();
     test_pause_in_place_forgets_the_carrier();
