@@ -224,13 +224,24 @@ size_t dmr_t3_overlay_count(const dsd_state* state);
 /* ---- Tier III identity and control channel evidence (discussion #900 F3) ---- */
 
 /**
- * A checked message named the site Tier III (a C_ALOHA, C_SYS_Parms, P_SYS_Parms, C_BCAST or standard grant): the flag
- * holds for the session and is saved per trunk-scan target. The caller judges the provenance. Decoder thread only.
+ * A message named the site Tier III (a C_ALOHA, C_SYS_Parms, P_SYS_Parms, C_BCAST or standard grant): with @p checked
+ * nonzero its CRC passed (dmr_t3_tier3_seen()), with 0 -F accepted it as RAS (dmr_t3_tier3_unchecked_seen(), which
+ * only decides how channel numbers show). Both flags hold for the session and are saved per trunk-scan target. The
+ * caller judges the provenance. Decoder thread only.
  */
-void dmr_t3_note_tier3(dsd_state* state);
+void dmr_t3_note_tier3(dsd_state* state, int checked);
+
+/**
+ * dmr_t3_note_tier3() that never allocates: nothing is recorded until the extension exists. For the grant path. It
+ * writes the flag in @p state's DMR extension, so decoder thread only.
+ */
+void dmr_t3_note_tier3_if_recorded(const dsd_state* state, int checked);
 
 /** Whether a checked message named the site Tier III this session (or on this trunk-scan target). */
 int dmr_t3_tier3_seen(const dsd_state* state);
+
+/** Whether a message -F accepted as RAS named the site Tier III this session (or on this trunk-scan target). */
+int dmr_t3_tier3_unchecked_seen(const dsd_state* state);
 
 /**
  * A checked C_ALOHA or C_SYS_Parms was received on the carrier the receiver is on: while no call is followed
@@ -266,15 +277,16 @@ typedef struct {
     uint16_t syscode;
     uint8_t syscode_valid;
     uint8_t tier3;
+    uint8_t tier3_unchecked;
     dmr_t3_missing_ledger missing;
 } dmr_t3_chan_target_snapshot;
 
-/** Save the parked target's provenance, ledger and Tier III flag (never the overlay, which no target has, nor the
+/** Save the parked target's provenance, ledger and Tier III flags (never the overlay, which no target has, nor the
  * control channel evidence, which the retune ends). */
 void dmr_t3_chan_save(const dsd_state* state, dmr_t3_chan_target_snapshot* out);
 
 /**
- * Restore a target's provenance, ledger and Tier III flag, the map rows being restored beside it, and drop the control
+ * Restore a target's provenance, ledger and Tier III flags, the map rows being restored beside it, and drop the control
  * channel evidence. Each revision goes past both the current one and the saved one, so a reader comparing revisions
  * sees the switch. The hunt's candidate list is not part of it, and neither is the overlay, which stays the live
  * session's: a Signal search session's comes back over the session's map rows; trunk scan empties it with

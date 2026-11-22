@@ -33,7 +33,7 @@ static uint64_t g_content_seq;
 
 static void
 dmr_t3_view_copy_missing(dsd_ui_dmr_t3_missing* dst, const dsd_state* src) {
-    static dmr_t3_missing_ledger ledger; /* under the snapshot lock; too large for the decoder's stack */
+    dmr_t3_missing_ledger ledger;
     dmr_t3_missing_copy(src, &ledger);
     DSD_MEMCPY(dst->missing, ledger.missing, sizeof(dst->missing));
     DSD_MEMCPY(dst->checked, ledger.checked, sizeof(dst->checked));
@@ -108,6 +108,7 @@ dsd_app_dmr_t3_view_publish(dsd_ui_dmr_t3_view* dst, dsd_app_dmr_t3_view_mark* m
     const long cc_hz = dmr_t3_cc_confirmed_hz(src);
     dst->present = present;
     dst->tier3 = dmr_t3_tier3_seen(src) ? 1U : 0U;
+    dst->tier3_unchecked = dmr_t3_tier3_unchecked_seen(src) ? 1U : 0U;
     dst->cc_hz = cc_hz;
     dst->cc_confirmed_here = cc_hz != 0 ? 1U : 0U;
     dst->state_id = src->state_instance;
@@ -149,6 +150,7 @@ dsd_app_dmr_t3_view_consume(dsd_ui_dmr_t3_view* dst, const dsd_ui_dmr_t3_view* s
     }
     dst->present = src->present;
     dst->tier3 = src->tier3;
+    dst->tier3_unchecked = src->tier3_unchecked;
     dst->cc_confirmed_here = src->cc_confirmed_here;
     dst->cc_hz = src->cc_hz;
     dst->state_id = src->state_id;

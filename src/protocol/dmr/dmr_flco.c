@@ -2287,7 +2287,7 @@ dmr_slco_handle_p_sys_parms(dsd_state* state, uint8_t slco_bits[], const dmr_slc
     dmr_t3_chan_note_checked_syscode(state, syscode);
     dmr_tiii_note_search_site(state, syscode, data->dmrla);
     /* Checked as C_SYS_PARMS is: a Tier III payload channel's. */
-    dmr_t3_note_tier3(state);
+    dmr_t3_note_tier3(state, 1);
 }
 
 static int

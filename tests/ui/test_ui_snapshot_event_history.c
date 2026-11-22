@@ -649,6 +649,13 @@ test_dmr_t3_view_carries_the_record(void) {
     assert(view->cc_confirmed_here == 1U && view->cc_hz == 451000000L);
     assert(dsd_app_dmr_t3_view_shows_lpcns(view));
 
+    /* A RAS-only Tier III site still shows its channels as LPCNs; its flag is display only. */
+    ext->tier3 = 0U;
+    ext->tier3_unchecked = 1U;
+    view = dmr_t3_view_after_publish(st);
+    assert(view->tier3 == 0U && view->tier3_unchecked == 1U);
+    ext->tier3 = 1U;
+
     /* The receiver left the carrier: the evidence goes stale, though no body moved. */
     st->carrier_seq++;
     view = dmr_t3_view_after_publish(st);

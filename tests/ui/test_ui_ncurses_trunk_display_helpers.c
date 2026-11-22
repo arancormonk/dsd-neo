@@ -441,7 +441,7 @@ test_t3_missing_rows_are_capped(void) {
     DSD_MEMSET(&opts, 0, sizeof opts);
     DSD_MEMSET(&state, 0, sizeof state);
     attach_t3(&state);
-    for (uint16_t l = 100U; l < 100U + UI_TRUNK_MAX_MISSING_PRINT + 3U; l++) {
+    for (uint16_t l = 100U; l < (uint16_t)(100U + UI_TRUNK_MAX_MISSING_PRINT + 3U); l++) {
         t3_missing(l);
     }
     reset_render_capture();
@@ -480,8 +480,15 @@ test_t3_mapped_rows_decimal_and_distinct(void) {
     assert(strstr(g_output, "CH 18:") < strstr(g_output, "CH 19:"));
     assert(strstr(g_output, "CH 0012") == NULL);
 
-    /* Without Tier III identity (a P25 or Connect Plus map) the rows keep their hex and frequency dedupe. */
+    /* A RAS site under -F names Tier III only through RAS-accepted messages: its rows read decimal too. */
     g_t3.tier3 = 0U;
+    g_t3.tier3_unchecked = 1U;
+    reset_render_capture();
+    ui_print_learned_lcns(&opts, &state);
+    assert(strstr(g_output, "CH 12: 451.150000 MHz") != NULL && strstr(g_output, "CH 000C") == NULL);
+
+    /* Without Tier III identity (a P25 or Connect Plus map) the rows keep their hex and frequency dedupe. */
+    g_t3.tier3_unchecked = 0U;
     reset_render_capture();
     ui_print_learned_lcns(&opts, &state);
     assert(strstr(g_output, "CH 0012: 451.225000 MHz") != NULL);

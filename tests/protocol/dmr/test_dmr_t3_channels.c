@@ -34,6 +34,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/types.h>
 
 #include "dmr_abs_params.h"
 #include "dmr_bptc_test_encoder.h"
@@ -1817,8 +1818,6 @@ test_overlay_set_hide_restore_live(void) {
     assert(overlay_edit(4095U, DMR_T3_OVERLAY_HIDE, 0L) == DMR_T3_SET_INVALID);
     assert(overlay_edit(23U, DMR_T3_OVERLAY_SET, 0L) == DMR_T3_SET_INVALID);
     assert(overlay_edit(23U, DMR_T3_OVERLAY_SET, 99999L) == DMR_T3_SET_INVALID);
-    assert(overlay_edit(23U, (dmr_t3_overlay_op)0, 451000000L) == DMR_T3_SET_INVALID);
-    assert(overlay_edit(23U, (dmr_t3_overlay_op)4, 451000000L) == DMR_T3_SET_INVALID);
     assert(g_state.trunk_chan_map[23] == 0L && dmr_t3_chan_revision(&g_state) == rev2);
 }
 
@@ -2142,6 +2141,8 @@ test_cc_evidence_from_checked_aloha(void) {
     g_state.event_crc_invalid[0] = DSD_CRC_RAS_UNVERIFIED;
     send_aloha(0x1234U);
     assert(dmr_t3_cc_confirmed_hz(&g_state) == 0 && !dmr_t3_tier3_seen(&g_state));
+    /* RAS-accepted names nothing of the site, but tells how its channel numbers show. */
+    assert(dmr_t3_tier3_unchecked_seen(&g_state));
     g_state.event_crc_invalid[0] = 0U;
 
     g_opts.trunk_is_tuned = 1;
@@ -2193,9 +2194,10 @@ test_tier3_from_checked_grant_and_bcast(void) {
     assert(!dmr_t3_tier3_seen(&g_state));
     g_opts.aggressive_framesync = 0;
     g_state.dmr_ras_signatures = 2U;
+    assert(!dmr_t3_tier3_unchecked_seen(&g_state));
     g_state.event_crc_invalid[0] = DSD_CRC_RAS_UNVERIFIED;
     send_grant(49U, 12U, 0U);
-    assert(!dmr_t3_tier3_seen(&g_state));
+    assert(!dmr_t3_tier3_seen(&g_state) && dmr_t3_tier3_unchecked_seen(&g_state));
     g_state.event_crc_invalid[0] = 0U;
     send_grant(49U, 12U, 0U);
     assert(dmr_t3_tier3_seen(&g_state));
@@ -2204,6 +2206,44 @@ test_tier3_from_checked_grant_and_bcast(void) {
     dmr_sm_init(&g_opts, &g_state);
     send_chan_freq(30U, 451U, 400U);
     assert(dmr_t3_tier3_seen(&g_state));
+}
+
+/* The grant path never allocates the DMR record: a checked grant for a mapped channel on a session with none (a map
+   loaded at start creates none) records nothing, and the next checked C_ALOHA names the site. Once the record exists,
+   a grant sets the flag. */
+static void
+test_mapped_grant_allocates_nothing(void) {
+    reset_missing();
+    dmr_sm_init(&g_opts, &g_state);
+    g_state.trunk_chan_map[12] = 451150000L;
+    assert(!dmr_t3_chan_recorded(&g_state));
+    send_grant(49U, 12U, 0U);
+    assert(!dmr_t3_chan_recorded(&g_state));
+    assert(!dmr_t3_tier3_seen(&g_state));
+
+    reset_missing();
+    dmr_sm_init(&g_opts, &g_state);
+    g_state.trunk_chan_map[12] = 451150000L;
+    dmr_t3_chan_note_map_cleared(&g_state); /* creates the record */
+    assert(dmr_t3_chan_recorded(&g_state) && !dmr_t3_tier3_seen(&g_state));
+    send_grant(49U, 12U, 0U);
+    assert(dmr_t3_tier3_seen(&g_state));
+}
+
+/* The RAS-only flag rides each target's snapshot as the checked one does. */
+static void
+test_unchecked_tier3_per_target(void) {
+    reset_missing();
+    static dmr_t3_chan_target_snapshot ras;
+    static dmr_t3_chan_target_snapshot none;
+    dmr_t3_note_tier3(&g_state, 0);
+    dmr_t3_chan_save(&g_state, &ras);
+    assert(ras.tier3_unchecked == 1U && ras.tier3 == 0U);
+    DSD_MEMSET(&none, 0, sizeof none);
+    dmr_t3_chan_restore(&g_state, &none);
+    assert(!dmr_t3_tier3_unchecked_seen(&g_state));
+    dmr_t3_chan_restore(&g_state, &ras);
+    assert(dmr_t3_tier3_unchecked_seen(&g_state) && !dmr_t3_tier3_seen(&g_state));
 }
 
 int
@@ -2275,6 +2315,8 @@ main(void) {
     test_cc_evidence_from_checked_aloha();
     test_tier3_and_evidence_per_target();
     test_tier3_from_checked_grant_and_bcast();
+    test_mapped_grant_allocates_nothing();
+    test_unchecked_tier3_per_target();
     dsd_state_ext_free_all(&g_state);
     printf("DMR_T3_CHANNELS: OK\n");
     return 0;

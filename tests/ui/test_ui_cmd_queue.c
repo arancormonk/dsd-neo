@@ -26447,6 +26447,14 @@ test_dmr_channel_set_command(void) {
     p = dmr_channel_edit(&state, 13U, DMR_T3_OVERLAY_SET, INT64_C(4294967296));
     rc |= expect_int("a frequency no row holds is invalid", dmr_channel_edit_result(&opts, &state, &p, sizeof p),
                      DSD_APP_DMR_CHANNEL_SET_INVALID);
+    /* An operation the overlay does not have, as a frontend's payload byte carries it. */
+    p = dmr_channel_edit(&state, 13U, DMR_T3_OVERLAY_HIDE, 0);
+    p.op = 0U;
+    rc |= expect_int("operation 0 is invalid", dmr_channel_edit_result(&opts, &state, &p, sizeof p),
+                     DSD_APP_DMR_CHANNEL_SET_INVALID);
+    p.op = 4U;
+    rc |= expect_int("operation 4 is invalid", dmr_channel_edit_result(&opts, &state, &p, sizeof p),
+                     DSD_APP_DMR_CHANNEL_SET_INVALID);
     p = dmr_channel_edit(&state, 13U, DMR_T3_OVERLAY_HIDE, 0);
     rc |= expect_int("a short payload is invalid", dmr_channel_edit_result(&opts, &state, &p, sizeof p - 4U),
                      DSD_APP_DMR_CHANNEL_SET_INVALID);

@@ -110,11 +110,22 @@ dmr_csbk_learn_channel(dsd_opts* opts, dsd_state* state, uint16_t lpcn, long fre
     return dmr_t3_chan_learn(opts, state, lpcn, freq, neighbour ? DMR_CHAN_ORIGIN_NEIGHBOUR : origin);
 }
 
-/* A checked standard CSBK the site sent (a grant or a C_BCAST) names it Tier III (dmr_t3_note_tier3()). */
+/* A standard CSBK the site sent (a grant or a C_BCAST) names it Tier III (dmr_t3_note_tier3()): checked when its CRC
+   passed, unchecked when -F accepted it as RAS. A grant (@p grant) never allocates the record for it
+   (dmr_t3_note_tier3_if_recorded()): the grant path stays allocation-free. */
 static void
-dmr_csbk_note_tier3(dsd_state* state, int csbk_fid) {
-    if (csbk_fid == 0 && !DSD_SYNC_IS_DMR_MS(state->synctype) && dmr_csbk_crc_checked(state)) {
-        dmr_t3_note_tier3(state);
+dmr_csbk_note_tier3(const dsd_opts* opts, dsd_state* state, int csbk_fid, int grant) {
+    if (csbk_fid != 0 || DSD_SYNC_IS_DMR_MS(state->synctype)) {
+        return;
+    }
+    const int checked = dmr_csbk_crc_checked(state);
+    if (!checked && !dmr_csbk_ras_accepted(opts, state)) {
+        return;
+    }
+    if (grant) {
+        dmr_t3_note_tier3_if_recorded(state, checked);
+    } else {
+        dmr_t3_note_tier3(state, checked);
     }
 }
 
@@ -385,11 +396,11 @@ dmr_cspdu_pf0_try_dispatch_grant(dsd_opts* opts, dsd_state* state, uint8_t cs_pd
     dmr_csbk_handle(&res, opts, state);
 }
 
-/* A grant for channel @p lpcn whose row has no frequency goes to the missing-channel ledger
+/* A grant for channel @p channel whose row has no frequency goes to the missing-channel ledger
    (dmr_t3_missing_note_grant()) when it is a standard grant the site sent that passed its CRC, or that -F accepted as
    RAS (then unchecked); never one an MS sent, a manufacturer's, a failed one or the decoder's own. */
 static void
-dmr_cspdu_pf0_note_missing_channel(dsd_opts* opts, dsd_state* state, int csbk_fid, uint16_t lpcn,
+dmr_cspdu_pf0_note_missing_channel(dsd_opts* opts, dsd_state* state, int csbk_fid, uint16_t channel,
                                    const dmr_t3_grant_class* grant, uint8_t slot) {
     if (csbk_fid != 0 || DSD_SYNC_IS_DMR_MS(state->synctype)) {
         return;
@@ -398,7 +409,7 @@ dmr_cspdu_pf0_note_missing_channel(dsd_opts* opts, dsd_state* state, int csbk_fi
     if (!checked && !dmr_csbk_ras_accepted(opts, state)) {
         return;
     }
-    dmr_t3_missing_note_grant(opts, state, lpcn, grant, slot, !checked);
+    dmr_t3_missing_note_grant(opts, state, channel, grant, slot, !checked);
 }
 
 /* A channel grant (TS 102 361-4 §7.1.1.1.1). Opcode 56 on MS-sourced data is BS_Dwn_Act, never a grant. The console
@@ -436,10 +447,10 @@ dmr_cspdu_pf0_handle_grants(dsd_opts* opts, dsd_state* state, uint8_t cs_pdu_bit
         return;
     }
     dmr_cspdu_pf0_print_frequency(lpchannum, freq);
-    dmr_csbk_note_tier3(state, csbk_fid);
     if (freq == 0 && dmr_t3_lpcn_is_channel(lpchannum)) {
         dmr_cspdu_pf0_note_missing_channel(opts, state, csbk_fid, lpchannum, &grant, lcn);
     }
+    dmr_csbk_note_tier3(opts, state, csbk_fid, 1);
 
     dmr_cspdu_pf0_publish_active_grant(state, lcn, lpchannum, mbc_lpchannum, freq, &grant, st2);
 
@@ -1644,7 +1655,7 @@ dmr_cspdu_pf0_handle_c_bcast(dsd_opts* opts, dsd_state* state, uint8_t cs_pdu_bi
     DSD_FPRINTF(stderr, "\n");
     DSD_FPRINTF(stderr, " Announcements (C_BCAST)");
 
-    dmr_csbk_note_tier3(state, csbk_fid);
+    dmr_csbk_note_tier3(opts, state, csbk_fid, 0);
     dmr_cspdu_pf0_c_bcast_fields f;
     dmr_cspdu_pf0_c_bcast_parse(cs_pdu_bits, &f);
     dmr_cspdu_pf0_c_bcast_print_type(f.a_type);
@@ -3525,6 +3536,9 @@ dmr_decode_syscode(const dsd_opts* opts, dsd_state* state, const uint8_t* cs_pdu
             /* A C_ALOHA comes from a Tier III control channel: this carrier, where the receiver is tuned. */
             dsd_rxid_note_cc_freq(state, DSD_RXID_FAMILY_DMR, dsd_opts_tuned_freq_hz(opts));
             dmr_t3_cc_note_evidence(opts, state);
+        } else if (dmr_csbk_ras_accepted(opts, state)) {
+            /* RAS-accepted: names nothing of the site, but tells how its channel numbers show. */
+            dmr_t3_note_tier3(state, 0);
         }
     } else if (type == 1) {
         dmr_syscode_print_type1(code.model_name, net, site_label, syscode);

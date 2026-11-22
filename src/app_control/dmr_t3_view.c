@@ -11,6 +11,7 @@
 #include <dsd-neo/app_control/dmr_t3_view.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/state_ext.h>
+#include <dsd-neo/core/state_fwd.h>
 #include <stddef.h>
 #include <stdint.h>
 
@@ -46,5 +47,6 @@ dsd_app_dmr_t3_view_shows_lpcns(const dsd_ui_dmr_t3_view* view) {
     if (view == NULL || view->present == 0U) {
         return 0;
     }
-    return view->tier3 != 0U || view->overlay_count != 0U || dsd_app_dmr_t3_view_missing_count(view) != 0U;
+    return view->tier3 != 0U || view->tier3_unchecked != 0U || view->overlay_count != 0U
+           || dsd_app_dmr_t3_view_missing_count(view) != 0U;
 }

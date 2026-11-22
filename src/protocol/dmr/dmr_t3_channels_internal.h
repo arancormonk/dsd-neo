@@ -46,8 +46,10 @@ typedef struct {
     dmr_t3_missing_ledger missing;
     /* The user's channels over the map (dmr_t3_overlay.c). */
     dmr_t3_overlay overlay;
-    /* A checked message named the site Tier III this session (dmr_t3_note_tier3()); saved per trunk-scan target. */
+    /* A message named the site Tier III this session (dmr_t3_note_tier3()): a checked one (tier3), or one -F accepted as
+       RAS (tier3_unchecked, display only); saved per trunk-scan target. */
     uint8_t tier3;
+    uint8_t tier3_unchecked;
     /* The last checked TSCC evidence on the carrier the receiver was on (dmr_t3_cc_note_evidence()): its frequency and
        dsd_state::carrier_seq then. Valid only while that count holds; never saved per target. */
     uint8_t cc_evidence;

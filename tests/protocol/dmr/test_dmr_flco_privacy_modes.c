@@ -26,6 +26,7 @@
 #include <dsd-neo/fec/block_codes.h>
 #include <dsd-neo/fec/bptc.h>
 #include <dsd-neo/protocol/dmr/dmr.h>
+#include <dsd-neo/protocol/dmr/dmr_t3_channels.h>
 #include <dsd-neo/protocol/dmr/dmr_trunk_sm.h>
 #include <dsd-neo/protocol/edacs/edacs_afs.h>
 #include <dsd-neo/protocol/nxdn/nxdn_lfsr.h>
@@ -3750,6 +3751,42 @@ test_completed_slco_tier3_site_parameters_update_state(void) {
     assert(strstr(state.dmr_site_parms, ";") != NULL);
 }
 
+/* Discussion #900 F3: a checked SLC C_SYS_PARMS names the site Tier III and, with no call followed, the tuned carrier
+   its TSCC until the receiver leaves it; P_SYS_PARMS (a payload channel's) names Tier III only. */
+static void
+test_completed_slco_sys_parms_note_tier3(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    uint8_t slco[36];
+
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    DSD_MEMSET(&state, 0, sizeof(state));
+    opts.audio_in_type = AUDIO_IN_RTL;
+    opts.rtlsdr_center_freq = 451000000U;
+    DSD_MEMSET(slco, 0, sizeof(slco));
+    write_bits_u64(slco, 0U, 0x2U, 4U);
+    write_bits_u64(slco, 4U, 1U, 2U);
+    write_bits_u64(slco, 6U, 17U, 7U);
+    write_bits_u64(slco, 13U, 3U, 5U);
+    run_completed_slco(&opts, &state, slco);
+    assert(dmr_t3_tier3_seen(&state));
+    assert(dmr_t3_cc_confirmed_hz(&state) == 451000000L);
+    state.carrier_seq++;
+    assert(dmr_t3_cc_confirmed_hz(&state) == 0);
+    dsd_state_ext_free_all(&state);
+
+    DSD_MEMSET(&state, 0, sizeof(state));
+    DSD_MEMSET(slco, 0, sizeof(slco));
+    write_bits_u64(slco, 0U, 0x3U, 4U);
+    write_bits_u64(slco, 4U, 1U, 2U);
+    write_bits_u64(slco, 6U, 17U, 7U);
+    write_bits_u64(slco, 13U, 3U, 5U);
+    run_completed_slco(&opts, &state, slco);
+    assert(dmr_t3_tier3_seen(&state));
+    assert(dmr_t3_cc_confirmed_hz(&state) == 0);
+    dsd_state_ext_free_all(&state);
+}
+
 static void
 test_completed_slco_activity_uses_each_slot_value(void) {
     static dsd_opts opts;
@@ -4288,6 +4325,7 @@ main(void) {
     test_mapped_tg_is_not_locked_out();
     test_row_with_wrong_material_is_not_applied();
     test_completed_slco_tier3_site_parameters_update_state();
+    test_completed_slco_sys_parms_note_tier3();
     test_completed_slco_activity_uses_each_slot_value();
     test_completed_slco_connect_plus_and_xpt_update_site_state();
     test_completed_slco_capacity_plus_hold_returns_to_rest_channel();

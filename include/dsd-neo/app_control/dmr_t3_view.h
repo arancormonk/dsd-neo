@@ -77,6 +77,8 @@ typedef struct {
                                     III (this session, or on this trunk-scan target) */
     uint8_t cc_confirmed_here; /**< checked TSCC evidence (C_ALOHA or C_SYS_Parms, no call followed) on the current
                                     carrier: cc_hz is this carrier's TSCC */
+    uint8_t tier3_unchecked;   /**< a message -F accepted as RAS named the site Tier III: display only (channel numbers
+                                    show in decimal), never identity */
     uint64_t state_id;         /**< dsd_state::state_instance of the source */
     uint32_t target_id;        /**< moves whenever the parked trunk-scan target changes; never repeats in a process */
     uint32_t revision;         /**< dmr_t3_chan_revision(): bumps on any row, origin or overlay change */
@@ -99,8 +101,8 @@ int dsd_app_dmr_t3_view_missing_has(const dsd_ui_dmr_t3_view* view, uint16_t lpc
 size_t dsd_app_dmr_t3_view_missing_count(const dsd_ui_dmr_t3_view* view);
 
 /**
- * Whether the channel map shows as Tier III LPCNs, in decimal: the site was named Tier III, or the ledger or the user's
- * overlay holds a channel. 0 for NULL.
+ * Whether the channel map shows as Tier III LPCNs, in decimal: the site was named Tier III (checked or RAS-accepted),
+ * or the ledger or the user's overlay holds a channel. 0 for NULL.
  */
 int dsd_app_dmr_t3_view_shows_lpcns(const dsd_ui_dmr_t3_view* view);
 

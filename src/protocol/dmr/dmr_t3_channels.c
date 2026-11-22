@@ -211,7 +211,7 @@ dmr_t3_overlay_reapply(dsd_state* state) {
     if (ext == NULL || ext->overlay.count == 0U) {
         return;
     }
-    for (uint16_t l = 1U; l <= DMR_T3_MAX_LCN; l++) {
+    for (uint16_t l = 1U; l <= (uint16_t)DMR_T3_MAX_LCN; l++) {
         if (ext->overlay.op[l] == 0U) {
             continue;
         }
@@ -383,7 +383,7 @@ dmr_t3_missing_reconcile(const dsd_state* state) {
     }
     dmr_t3_missing_ledger* l = &ext->missing;
     int changed = 0;
-    for (uint16_t c = 1U; c <= DMR_T3_MAX_LCN; c++) {
+    for (uint16_t c = 1U; c <= (uint16_t)DMR_T3_MAX_LCN; c++) {
         if (dmr_t3_missing_bit(l->missing, c) && (state->trunk_chan_map[c] != 0 || dmr_t3_overlay_hidden(ext, c))) {
             dmr_t3_missing_bit_clear(l->missing, c);
             dmr_t3_missing_bit_clear(l->checked, c);
@@ -530,18 +530,38 @@ dmr_t3_chan_note_checked_syscode(dsd_state* state, uint16_t syscode) {
     ext->syscode_valid = 1U;
 }
 
-void
-dmr_t3_note_tier3(dsd_state* state) {
-    dmr_ext_t* ext = dmr_ext_get_or_create(state);
-    if (ext != NULL) {
-        ext->tier3 = 1U;
+static void
+dmr_t3_set_tier3(dmr_ext_t* ext, int checked) {
+    if (ext == NULL) {
+        return;
     }
+    if (checked) {
+        ext->tier3 = 1U;
+    } else {
+        ext->tier3_unchecked = 1U;
+    }
+}
+
+void
+dmr_t3_note_tier3(dsd_state* state, int checked) {
+    dmr_t3_set_tier3(dmr_ext_get_or_create(state), checked);
+}
+
+void
+dmr_t3_note_tier3_if_recorded(const dsd_state* state, int checked) {
+    dmr_t3_set_tier3(dmr_ext_get(state), checked);
 }
 
 int
 dmr_t3_tier3_seen(const dsd_state* state) {
     const dmr_ext_t* ext = dmr_ext_get(state);
     return ext != NULL && ext->tier3 != 0U;
+}
+
+int
+dmr_t3_tier3_unchecked_seen(const dsd_state* state) {
+    const dmr_ext_t* ext = dmr_ext_get(state);
+    return ext != NULL && ext->tier3_unchecked != 0U;
 }
 
 void
@@ -615,6 +635,7 @@ dmr_t3_chan_save(const dsd_state* state, dmr_t3_chan_target_snapshot* out) {
     out->syscode = ext->syscode;
     out->syscode_valid = ext->syscode_valid;
     out->tier3 = ext->tier3;
+    out->tier3_unchecked = ext->tier3_unchecked;
     DSD_MEMCPY(&out->missing, &ext->missing, sizeof(out->missing));
 }
 
@@ -628,7 +649,7 @@ dmr_t3_chan_restore(dsd_state* state, const dmr_t3_chan_target_snapshot* in) {
     dmr_ext_t* ext = dmr_ext_get(state);
     /* A snapshot with no revision recorded nothing (every change bumps it): with no record here either, none is due. */
     if (ext == NULL && in->revision == 0U && in->generation == 0U && in->syscode_valid == 0U && in->tier3 == 0U
-        && in->missing.revision == 0U) {
+        && in->tier3_unchecked == 0U && in->missing.revision == 0U) {
         return;
     }
     ext = dmr_ext_get_or_create(state);
@@ -644,6 +665,7 @@ dmr_t3_chan_restore(dsd_state* state, const dmr_t3_chan_target_snapshot* in) {
     ext->syscode = in->syscode;
     ext->syscode_valid = in->syscode_valid;
     ext->tier3 = in->tier3;
+    ext->tier3_unchecked = in->tier3_unchecked;
     /* The target's carrier is another: what was heard on the one left names no TSCC here. */
     ext->cc_evidence = 0U;
     const uint32_t missing_revision =
