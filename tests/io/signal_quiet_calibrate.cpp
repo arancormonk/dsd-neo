@@ -1551,7 +1551,7 @@ run_batch(const std::vector<size_t>& batch, const Scene& scene, const Options& o
             if (!select && e != o.estimator) {
                 continue;
             }
-            const dsd_signal_quiet_params params{select ? 0.0f : (float)o.threshold, e, (float)o.guard};
+            const dsd_signal_quiet_params params{select ? 0.0f : (float)o.threshold, e, (float)o.guard, 0.0f};
             out.trials[e][(size_t)trial] = judge(c, trial, w.detectors[e], params, samples);
         }
         if (--bins.left == 0) {

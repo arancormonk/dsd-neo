@@ -11150,7 +11150,8 @@ Runtime controls (via `include/dsd-neo/io/rtl_stream_c.h`):
   from one snapshot under `tap_mutex`) moves with every change of generation, centre or capture offset and at a
   reset, never for drops or gain. `dsd_signal_quiet_detector_*` is the measurement (the shared
   tap runs one with `dsd_signal_quiet_params_default()`, the shipped `DSD_SIGNAL_QUIET_THRESHOLD_DB` (5.0 dB),
-  `DSD_SIGNAL_QUIET_FLOOR_ESTIMATOR` (the trimmed mean) and `DSD_SIGNAL_QUIET_GUARD_DB` (8.7 dB);
+  `DSD_SIGNAL_QUIET_FLOOR_ESTIMATOR` (the trimmed mean), `DSD_SIGNAL_QUIET_GUARD_DB` (8.7 dB) and
+  `DSD_SIGNAL_QUIET_OCCUPANCY_SHARE` (0.05: the occupancy check, below);
   `tests/io/signal_quiet_calibrate.cpp`, a manual build-only driver, chose all three and drives its own detectors with
   explicit parameters; docs/signal-search.md "Quiet-channel calibration"). The domain is exactly the rendered cells:
   `dsd_signal_quiet_rate_supported(rate)` (every class) and `dsd_signal_quiet_analog_supported(kind, width, rate)`
@@ -11170,7 +11171,14 @@ Runtime controls (via `include/dsd-neo/io/rtl_stream_c.h`):
   takes a capture-wide noise reference from the same transforms (`wide_reference()`: the lower quartile of the bins
   whose hardware offset, folded as `measure_channel()` folds it under the ingest rotation, clears DC, stays inside the
   policy's span and lies outside the channel; scaled to the Gaussian mean; computed in `prefix` before the prefix
-  sums). Under the default policy the span is ±0.45 Fs (`kQuietReferenceSpan`) at any rate. Under
+  sums). The same pass counts the bins over the 98th percentile that reference implies for noise: their share less
+  the 2% noise puts there is the sub-window's occupancy (`dsd_signal_quiet_result.occupancy_share` reports the
+  highest), and one over `dsd_signal_quiet_params.occupancy_max_share` leaves the request invalid, never quiet
+  (issue #834 B7: transmitters or a raised floor over a share p of the span lift the quartile to the
+  0.25 / (1 - p) quantile of the noise left, so the reference reads high and every ratio low; a floor with a lower
+  part, such as a resampler's transition band inside the span, also trips it, a speed cost; 0 turns the check off,
+  as the calibration driver's own parameters do unless asked). Under the default policy the span is ±0.45 Fs
+  (`kQuietReferenceSpan`) at any rate. Under
   `DSD_SIGNAL_GEOMETRY_AIRSPY_CENTRED` there is no DC exclusion and the span is the rate's in
   `kQuietAirspyCentredSpans`, the one table of the centred policy's admitted rates (2.5 and 3 MS/s ±0.25 Fs, 6 and
   10 MS/s ±0.375 Fs; an Airspy's passband is not flat to 0.45 Fs); a centred request at any other rate, or a policy

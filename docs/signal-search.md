@@ -1359,9 +1359,17 @@ Each sub-window takes a capture-wide noise reference from the same transforms: t
 powers whose hardware offset (the bin's frequency less the ingest rotation, folded into ±half the rate) clears the
 hardware DC guard, stays inside 0.45 of the rate and lies outside the channel's widest class, scaled to the mean that
 quartile implies for Gaussian noise averaged over the sub-window's transforms (a chi-square of twice as many degrees
-of freedom, by the Wilson-Hilferty approximation). A low quartile of the whole span stays on the noise while
-transmitters fill up to three quarters of it, and the scaling makes noise alone read about 0 dB at every rate and
+of freedom, by the Wilson-Hilferty approximation). The scaling makes noise alone read about 0 dB at every rate and
 width. The ratio is the channel's power over that reference across the channel's bins.
+
+That scaling holds only while the span's bins are noise. When transmitters or a raised floor fill a share of the span,
+the lower quartile lands higher up the noise that is left, and the reference reads high: about 0.1 dB at a tenth of
+the span, 0.4 to 0.6 dB at a third and 0.8 to 1.1 dB at a half, so every channel reads that much quieter. Each
+sub-window therefore also counts the share of the span's bins over the 98th percentile the reference implies for
+noise; when that share is more than 5% over the 2% noise alone puts there, the request is invalid and the channel is
+never skipped (`DSD_SIGNAL_QUIET_OCCUPANCY_SHARE`). A reading the check keeps is at most about 0.3 dB low in
+simulation, and noise alone stays under 1.5%. A floor with a lower part inside the span trips it too: a speed cost,
+never a missed signal.
 
 The first calibration judged the ratio against the local floor instead, Signal search's trimmed mean of the eight
 sideband blocks 1.5 to 3 widths out. Neighbours on both sides 25 kHz away at +10 to +25 dB lifted that floor by 3 to

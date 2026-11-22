@@ -113,12 +113,20 @@ class Feeder {
   private:
     void
     run() {
-        const std::vector<float> iq = noise(kTransferPairs, 10);
+        /* Sixteen different transfers in turn: one transfer repeated is periodic, not noise, and its spectrum fails
+           the quiet measurement's occupancy check. */
+        std::vector<std::vector<float>> transfers;
+        for (unsigned seed = 10; seed < 26; ++seed) {
+            transfers.push_back(noise(kTransferPairs, seed));
+        }
+        size_t next = 0;
         while (!stop_.load()) {
+            const std::vector<float>& iq = transfers[next];
             if (!deliver(iq.data(), kTransferPairs)) {
                 dsd_sleep_ms(1);
                 continue;
             }
+            next = (next + 1) % transfers.size();
             const uint64_t produced = live_sequence().input_produced;
             for (int waited = 0; waited < 50 && !stop_.load() && live_sequence().demod_idle_consumed < produced;
                  ++waited) {

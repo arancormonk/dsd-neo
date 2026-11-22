@@ -22,6 +22,7 @@
 #include <stdint.h>
 #include <stdlib.h>
 #include <thread>
+#include <utility>
 #include <vector>
 #include "rtl_fft_cache.h"
 #include "rtl_stream_test_support.h"
@@ -893,7 +894,7 @@ constexpr float kQuietSigma = 0.01f;
    1.5 dB over the capture-wide reference, whichever floor estimator the guard uses), and every transmitter meant to
    read busy is at least 9 dB over its noise in the class judged. The floor guard is out of reach (100 dB) so these
    scenes judge the ratio alone; test_quiet_floor_guard() covers the guard. */
-constexpr dsd_signal_quiet_params kQuietTestParams = {8.0f, DSD_SIGNAL_QUIET_FLOOR_LOWEST_BLOCK, 100.0f};
+constexpr dsd_signal_quiet_params kQuietTestParams = {8.0f, DSD_SIGNAL_QUIET_FLOOR_LOWEST_BLOCK, 100.0f, 0.0f};
 
 /* A request for the channel landed Fs/4 below the tuner centre, as the RTL chain lands it. */
 dsd_signal_quiet_request
@@ -1309,7 +1310,9 @@ test_quiet_floor_guard(dsd_signal_quiet_detector* d) {
    (which the reference leaves out), and hardware +0.04..+0.21 Fs. Folded by the record's rotation, the low bins are
    about a fifth of the bins the reference counts, so its lower quartile stays on the raised floor round the channel
    (at hardware -0.1 Fs) and the request is valid. Folded by Fs/4 instead, the edges would count and the low bins
-   would pass a quarter: the reference would fall 20 dB and the guard void the request. */
+   would pass a quarter: the reference would fall 20 dB and the guard void the request. The occupancy check is off:
+   a two-level floor like this one moves the quartile off the level it scales from and voids the reading there too
+   (test_quiet_occupancy() covers that check), and this test reads the guard's fold alone. */
 static void
 test_quiet_floor_guard_rotation(dsd_signal_quiet_detector* d) {
     const uint32_t rate = 1536000;
@@ -1317,7 +1320,8 @@ test_quiet_floor_guard_rotation(dsd_signal_quiet_detector* d) {
     q.capture.rotation_hz = 0;
     q.capture.capture_offset_hz = 0;
     q.capture.capture_hz = kQuietChannel + rate / 10;
-    const dsd_signal_quiet_params shipped = dsd_signal_quiet_params_default();
+    dsd_signal_quiet_params shipped = dsd_signal_quiet_params_default();
+    shipped.occupancy_max_share = 0;
     const auto noise = quiet_shaped_noise(q, quiet_request_pairs(q), 99,
                                           [](double f) { return std::abs(f) >= 0.45 || (f >= 0.04 && f < 0.21); });
     const auto result = quiet_run(d, q, noise, 4096, &shipped);
@@ -1394,11 +1398,19 @@ test_quiet_requests(dsd_signal_quiet_detector* d) {
     assert(dsd_signal_quiet_detector_begin(d, nullptr, nullptr, &failure) == -1);
     assert(dsd_signal_quiet_detector_begin(nullptr, &narrow, nullptr, &failure) == -1);
     for (const dsd_signal_quiet_params& p :
-         {dsd_signal_quiet_params{4.0f, 2, 3.0f}, dsd_signal_quiet_params{4.0f, -1, 3.0f},
-          dsd_signal_quiet_params{std::numeric_limits<float>::quiet_NaN(), DSD_SIGNAL_QUIET_FLOOR_LOWEST_BLOCK, 3.0f},
-          dsd_signal_quiet_params{std::numeric_limits<float>::infinity(), DSD_SIGNAL_QUIET_FLOOR_LOWEST_BLOCK, 3.0f},
-          dsd_signal_quiet_params{4.0f, DSD_SIGNAL_QUIET_FLOOR_LOWEST_BLOCK, std::numeric_limits<float>::quiet_NaN()},
-          dsd_signal_quiet_params{4.0f, DSD_SIGNAL_QUIET_FLOOR_LOWEST_BLOCK, std::numeric_limits<float>::infinity()}}) {
+         {dsd_signal_quiet_params{4.0f, 2, 3.0f, 0.0f}, dsd_signal_quiet_params{4.0f, -1, 3.0f, 0.0f},
+          dsd_signal_quiet_params{std::numeric_limits<float>::quiet_NaN(), DSD_SIGNAL_QUIET_FLOOR_LOWEST_BLOCK, 3.0f,
+                                  0.0f},
+          dsd_signal_quiet_params{std::numeric_limits<float>::infinity(), DSD_SIGNAL_QUIET_FLOOR_LOWEST_BLOCK, 3.0f,
+                                  0.0f},
+          dsd_signal_quiet_params{4.0f, DSD_SIGNAL_QUIET_FLOOR_LOWEST_BLOCK, std::numeric_limits<float>::quiet_NaN(),
+                                  0.0f},
+          dsd_signal_quiet_params{4.0f, DSD_SIGNAL_QUIET_FLOOR_LOWEST_BLOCK, std::numeric_limits<float>::infinity(),
+                                  0.0f},
+          dsd_signal_quiet_params{4.0f, DSD_SIGNAL_QUIET_FLOOR_LOWEST_BLOCK, 3.0f,
+                                  std::numeric_limits<float>::quiet_NaN()},
+          dsd_signal_quiet_params{4.0f, DSD_SIGNAL_QUIET_FLOOR_LOWEST_BLOCK, 3.0f, -0.01f},
+          dsd_signal_quiet_params{4.0f, DSD_SIGNAL_QUIET_FLOOR_LOWEST_BLOCK, 3.0f, 1.01f}}) {
         assert(dsd_signal_quiet_detector_begin(d, &narrow, &p, &failure) == -1);
         assert(failure == DSD_SIGNAL_REQUEST_UNSUPPORTED);
     }
@@ -1606,6 +1618,100 @@ test_quiet_centred_depressed_floor(dsd_signal_quiet_detector* d) {
             assert(std::abs(local_rule.power_dbfs - local_rule.floor_dbfs - local_rule.max_ratio_db) < 1e-3f);
             assert(local_rule.floor_dbfs < reference_rule.floor_dbfs - 1.0f);
             assert(local_rule.floor_rise_db > -depth_db - 1.0f && local_rule.floor_rise_db < -0.5f);
+        }
+    }
+}
+
+namespace {
+/* Noise (kQuietSigma) raised by @p raise_db over @p share of @p q's capture-wide reference span (its hardware span
+   less the channel), placed clear of the channel and its sidebands (4 widths a side): on the upper side of a channel
+   at the Fs/4 shift, or split between both sides of a centred one. */
+std::vector<float>
+quiet_occupied_noise(const dsd_signal_quiet_request& q, double width, double share, double raise_db, unsigned seed) {
+    const double rate = q.capture.rate_hz;
+    const bool centred = q.capture.geometry == DSD_SIGNAL_GEOMETRY_AIRSPY_CENTRED;
+    const double span = centred ? (rate < 5e6 ? 0.25 : 0.375) : 0.45;
+    const double channel = centred ? 0.0 : -0.25 * rate, clear = 4 * width;
+    const double length = share * (2 * span * rate - width);
+    return quiet_banded_noise(q.capture.rate_hz, quiet_request_pairs(q), seed, [&](double f) {
+        double hardware = f - q.capture.rotation_hz;
+        hardware -= rate * std::floor((hardware + rate / 2) / rate);
+        const double from = hardware - channel;
+        const bool raised = centred ? (std::abs(from) > clear && std::abs(from) < clear + length / 2)
+                                    : (from > clear && from < clear + length);
+        return raised ? raise_db : 0.0;
+    });
+}
+} // namespace
+
+/* The occupancy check: a capture whose reference span is partly filled by a raised floor (transmitters, or a floor
+   raised over part of the band) clear of the channel and its sidebands lifts the reference off the noise and lowers
+   the channel's ratio. With the shipped parameters such a reading is invalid, never quiet: noise alone and a weak
+   channel that the check off reads quiet. Clean noise and a channel clearly over the threshold stay valid (a clean
+   control), the share is reported either way, the check's edge sits at 5% of the span over what noise alone puts
+   there, and an occupied sub-window voids the whole reading. Both geometries. */
+static void
+test_quiet_occupancy(dsd_signal_quiet_detector* d) {
+    const dsd_signal_quiet_params shipped = dsd_signal_quiet_params_default();
+    dsd_signal_quiet_params off = shipped;
+    off.occupancy_max_share = 0;
+    assert(shipped.occupancy_max_share > 0.049f && shipped.occupancy_max_share < 0.051f);
+    const double width = DSD_SIGNAL_QUIET_WIDTH_12K5_HZ;
+    const dsd_signal_quiet_request requests[] = {quiet_request(1536000, DSD_SIGNAL_QUIET_CLASS_12K5),
+                                                 quiet_centred_request(2500000, DSD_SIGNAL_QUIET_CLASS_12K5)};
+    for (const dsd_signal_quiet_request& q : requests) {
+        const uint32_t rate = q.capture.rate_hz;
+        const size_t pairs = quiet_request_pairs(q);
+        for (unsigned seed = 151; seed <= 153; ++seed) {
+            /* Clean control. */
+            const auto clean = quiet_noise(pairs, seed);
+            const auto quiet = quiet_run(d, q, clean, 4096, &shipped);
+            assert(quiet.failure == DSD_SIGNAL_MEASURE_OK && quiet.valid && quiet.quiet);
+            assert(quiet.occupancy_share < 0.02f);
+            auto carrier = clean;
+            quiet_add_fm(carrier, rate, 0, quiet_amplitude(9, rate, width), {});
+            const auto busy = quiet_run(d, q, carrier, 4096, &shipped);
+            assert(busy.failure == DSD_SIGNAL_MEASURE_OK && busy.valid && !busy.quiet);
+
+            /* Half the span 10 dB up, and 70% of it 3 dB up: invalid with the check on. Off, noise alone still reads
+               quiet and the ratio of a weak channel falls. */
+            for (const auto& scene : {std::make_pair(0.5, 10.0), std::make_pair(0.7, 3.0)}) {
+                const auto noise = quiet_occupied_noise(q, width, scene.first, scene.second, seed);
+                const auto voided = quiet_run(d, q, noise, 4096, &shipped);
+                assert(voided.failure == DSD_SIGNAL_MEASURE_OK && !voided.valid && !voided.quiet);
+                assert(voided.occupancy_share > shipped.occupancy_max_share);
+                const auto unchecked = quiet_run(d, q, noise, 4096, &off);
+                assert(unchecked.valid && unchecked.quiet);
+                assert(std::abs(unchecked.occupancy_share - voided.occupancy_share) < 1e-6f);
+                auto weak = noise;
+                quiet_add_fm(weak, rate, 0, quiet_amplitude(4, rate, width), {});
+                auto weak_clean = clean;
+                quiet_add_fm(weak_clean, rate, 0, quiet_amplitude(4, rate, width), {});
+                const auto lowered = quiet_run(d, q, weak, 4096, &off);
+                const auto reference = quiet_run(d, q, weak_clean, 4096, &off);
+                assert(lowered.valid && reference.valid);
+                if (q.capture.geometry == DSD_SIGNAL_GEOMETRY_DEFAULT) {
+                    assert(lowered.max_ratio_db < reference.max_ratio_db - 0.4f);
+                }
+                const auto weak_voided = quiet_run(d, q, weak, 4096, &shipped);
+                assert(!weak_voided.valid && !weak_voided.quiet);
+            }
+
+            /* The edge: 2% of the span 10 dB up stays valid, 9% does not; the share reads what is raised (a little more:
+               the bins the DC guard leaves out). */
+            const auto few = quiet_run(d, q, quiet_occupied_noise(q, width, 0.02, 10, seed), 4096, &shipped);
+            assert(few.valid && few.occupancy_share > 0.01f && few.occupancy_share < 0.04f);
+            const auto many = quiet_run(d, q, quiet_occupied_noise(q, width, 0.09, 10, seed), 4096, &shipped);
+            assert(!many.valid && !many.quiet && many.occupancy_share > 0.07f && many.occupancy_share < 0.11f);
+
+            /* One occupied sub-window of nine voids the reading. */
+            const auto occupied = quiet_occupied_noise(q, width, 0.5, 10, seed);
+            auto one = clean;
+            const size_t window = quiet_window_pairs(q);
+            std::copy(occupied.begin() + (ptrdiff_t)(2 * 4 * window), occupied.begin() + (ptrdiff_t)(2 * 5 * window),
+                      one.begin() + (ptrdiff_t)(2 * 4 * window));
+            const auto one_voided = quiet_run(d, q, one, 4096, &shipped);
+            assert(!one_voided.valid && !one_voided.quiet);
         }
     }
 }
@@ -1833,8 +1939,8 @@ static void
 test_quiet_estimators(dsd_signal_quiet_detector* d) {
     const uint32_t rate = 1536000;
     const auto q = quiet_request(rate, DSD_SIGNAL_QUIET_CLASS_12K5);
-    const dsd_signal_quiet_params trimmed{30.0f, DSD_SIGNAL_QUIET_FLOOR_TRIMMED_MEAN, 100.0f};
-    const dsd_signal_quiet_params lowest{30.0f, DSD_SIGNAL_QUIET_FLOOR_LOWEST_BLOCK, 100.0f};
+    const dsd_signal_quiet_params trimmed{30.0f, DSD_SIGNAL_QUIET_FLOOR_TRIMMED_MEAN, 100.0f, 0.0f};
+    const dsd_signal_quiet_params lowest{30.0f, DSD_SIGNAL_QUIET_FLOOR_LOWEST_BLOCK, 100.0f, 0.0f};
     for (unsigned seed = 1; seed <= 4; ++seed) {
         auto iq = quiet_noise(quiet_request_pairs(q), 90 + seed);
         for (size_t i = 2; seed % 2 == 0 && i < iq.size(); ++i) {
@@ -2231,6 +2337,7 @@ test_quiet(const dsd_signal_measure_request& r) {
     test_quiet_geometry(d);
     test_quiet_airspy_centred(d);
     test_quiet_centred_depressed_floor(d);
+    test_quiet_occupancy(d);
     test_quiet_centred_requests(d);
     test_quiet_failures(d);
     test_quiet_spans(d);

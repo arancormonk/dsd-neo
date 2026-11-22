@@ -349,9 +349,23 @@ expect_quiet_result(const char* label, const char* what, uint32_t frequency_hz, 
     if (ok) {
         return 0;
     }
-    DSD_FPRINTF(stderr, "FAIL: %s: the %s at %u Hz measured valid %u quiet %u, (S+N)/N %.1f dB, floor rise %.1f dB\n",
+    DSD_FPRINTF(stderr,
+                "FAIL: %s: the %s at %u Hz measured valid %u quiet %u, (S+N)/N %.1f dB, floor rise %.1f dB, occupancy "
+                "%.3f\n",
                 label, what, (unsigned)frequency_hz, (unsigned)r.valid, (unsigned)r.quiet, (double)r.max_ratio_db,
-                (double)r.floor_rise_db);
+                (double)r.floor_rise_db, (double)r.occupancy_share);
+    return 1;
+}
+
+/* A quiet result at @p frequency_hz that the occupancy check voided: not valid, not quiet, its share over the shipped
+ * edge. */
+static int
+expect_void_result(const char* label, const char* what, uint32_t frequency_hz, const dsd_signal_quiet_result& r) {
+    if (!r.valid && !r.quiet && r.occupancy_share > dsd_signal_quiet_params_default().occupancy_max_share) {
+        return 0;
+    }
+    DSD_FPRINTF(stderr, "FAIL: %s: the %s at %u Hz measured valid %u quiet %u, occupancy %.3f; want it voided\n", label,
+                what, (unsigned)frequency_hz, (unsigned)r.valid, (unsigned)r.quiet, (double)r.occupancy_share);
     return 1;
 }
 
@@ -367,6 +381,15 @@ expect_tone_bins(RtlSdrContext* ctx, const GeometryCase& c) {
     dsd_signal_quiet_result empty;
     if (measure_quiet(ctx, c.label, busy_hz, &busy) != 0 || measure_quiet(ctx, c.label, empty_hz, &empty) != 0) {
         return 1;
+    }
+    if (c.fs4_shift && c.explicit_bandwidth) {
+        /* The shifted recording resampled to kRateHz keeps its rotation of a quarter of the recorded rate, so the
+           resampler's transition band falls inside the span the reference folds by that rotation: a part of the span
+           stands lower than the rest, and the occupancy check voids both readings (never quiet). A scan never
+           measures a replay (callers key on the input in force), and the default policy needs the rotation at a
+           quarter of the capture rate. */
+        return expect_void_result(c.label, "tone's channel", busy_hz, busy)
+               | expect_void_result(c.label, "empty channel", empty_hz, empty);
     }
     return expect_quiet_result(c.label, "tone's channel", busy_hz, busy, 0)
            | expect_quiet_result(c.label, "empty channel", empty_hz, empty, 1);

@@ -185,6 +185,13 @@ typedef struct {
      * channel (a front-end floor that is far from flat across the capture, or strong transmitters crowding the
      * sidebands). Finite. */
     float guard_db;
+    /** A sub-window is invalid (never quiet) when more of the capture-wide reference's bins stand over the noise than
+     * noise alone puts there: when the share of them above the 98th percentile the reference implies for noise, less
+     * the 2% noise puts there, is over this. A capture partly filled by transmitters or a raised floor lifts the
+     * reference's lower quartile off the noise (it lands on a higher quantile of the noise that is left) and so
+     * lowers every ratio judged against it; this voids such a reading rather than judging it. 0 turns it off; at most
+     * 1. */
+    float occupancy_max_share;
 } dsd_signal_quiet_params;
 
 typedef struct {
@@ -227,12 +234,16 @@ typedef struct {
      * valid. 0 when no class fits or no bin of the capture qualified for the reference; the result is then not valid
      * either. */
     float floor_rise_db;
+    /** The highest share over any sub-window of the reference's bins standing over its noise, beyond what noise alone
+     * puts there (dsd_signal_quiet_params.occupancy_max_share); 0 when no bin of the capture qualified. Reported
+     * whether or not the check is on. */
+    float occupancy_share;
     /** dsd_realtime_mono_ns() when the analysis that completed (or failed) the request finished, after the feed held
      * the tap; shared tap only, else 0. */
     uint64_t completed_realtime_ns;
 } dsd_signal_quiet_result;
 
-/** The shipped threshold, floor estimator and floor guard the shared tap measures with (calibrated:
+/** The shipped thresholds, floor estimator, floor guard and occupancy check the shared tap measures with (calibrated:
  * docs/signal-search.md "Quiet-channel calibration"). */
 dsd_signal_quiet_params dsd_signal_quiet_params_default(void);
 
