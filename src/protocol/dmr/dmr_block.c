@@ -1716,7 +1716,8 @@ dmr_block_type2_set_lb_pf(dmr_block_assembler_ctx* ctx) {
 /* An MBC is its header and the continuation blocks received after it: ctx->blockcounter of them at its last block
    (ctx->blocks never goes below one, so it cannot tell a header that is its own last block, which carries no
    continuation, from one that has one). A header-only MBC is rejected before any continuation byte is checked: the
-   assembly buffer past the header holds nothing this MBC sent. */
+   assembly buffer past the header holds nothing this MBC sent. A rejected MBC ends its assembly
+   (dmr_block_assembler()), so no later continuation is taken for its header or appended to it. */
 static uint8_t DSD_ATTR_USED
 dmr_block_type2_length_ok(dmr_block_assembler_ctx* ctx) {
     if (ctx->is_udt || (ctx->blockcounter >= 1 && ctx->blockcounter <= 4)) {
@@ -1955,6 +1956,7 @@ dmr_block_assembler(dsd_opts* opts, dsd_state* state, uint8_t block_bytes[], uin
         dmr_block_assembler_handle_type1(&ctx);
     } else if (ctx.type == 2) {
         if (!dmr_block_assembler_handle_type2(&ctx)) {
+            dmr_block_assembler_reset_type2(&ctx); // a rejected MBC disarms the assembly
             return;
         }
     }

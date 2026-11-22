@@ -13596,7 +13596,9 @@ Private per-protocol modules worth knowing about:
     CdefParms LPCN when that is 1..4094, else no channel, and the channel map learns only that range; the CdefParms are
     read only when the MBC assembler handed the continuation over, `dmr_cspdu_mbc()`'s `appended_blocks`, the count
     of continuation blocks it received (an MBC header that is its own last block is rejected before any continuation
-    byte is checked, so bytes an unfinished MBC left in the assembly buffer are never read), so an
+    byte is checked, so bytes an unfinished MBC left in the assembly buffer are never read, and any rejected MBC ends
+    its assembly, `dmr_block_assembler_reset_type2()`, so later orphan continuations are never taken for its header or
+    dispatched, under `-F` included), so an
     absolute grant heard as a standalone CSBK names no frequency, is not followed and teaches the map nothing,
     `test_t3_absolute_grant_needs_its_block()` in `DMR_T3_CMOVE`), a Connect Plus
     LCN, a Cap+ or XPT LSN. The machine, the published call, the slot records and the policy routes see the same value,

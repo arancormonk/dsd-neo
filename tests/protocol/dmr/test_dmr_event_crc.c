@@ -484,6 +484,36 @@ test_t3_mbc_header_only_reads_no_stale_block(dsd_opts* opts, dsd_state* state) {
     return rc;
 }
 
+/* A header-only MBC's rejection disarms the assembly: orphan continuations that follow are no MBC. Under -F (relaxed
+   CRC handling, where a checked last continuation is accepted with any header the assembly holds), a checked grant
+   header with its LB bit set, then a continuation carrying an absolute grant header's bytes, then a checked last
+   continuation naming LPCN 304: the second is never taken as a header, so nothing is dispatched and LPCN 304 is never
+   learned. */
+static int
+test_t3_mbc_header_only_disarms_the_assembly(dsd_opts* opts, dsd_state* state) {
+    state->currentslot = 0;
+    state->synctype = DSD_SYNC_DMR_BS_DATA_POS;
+    opts->aggressive_framesync = 0;
+    send_mbc_grant_header(opts, state, 1);
+    uint8_t orphan[12] = {0x31, 0x00, 0xFF, 0xF0, 0x00, 0x03, 0xE9, 0x00, 0x07, 0xD2, 0, 0};
+    uint8_t orphan_bits[96];
+    unpack(orphan, orphan_bits, sizeof orphan);
+    send_burst_bits(opts, state, orphan_bits, k_no_reserved, 0x05);
+    uint8_t block[96] = {0};
+    block[0] = 1U;                 // LB: the last block
+    put_bits(block, 22, 12, 304U); // logical channel the absolute parameters describe (CSBK bits 118..129)
+    put_bits(block, 57, 10, 851U); // RX MHz (CSBK bits 153..162)
+    put_bits(block, 67, 13, 100U); // RX 125 Hz steps (CSBK bits 163..175)
+    put_bits(block, 80, 16, (uint32_t)dsd_crc_ccitt16_bits(block, 80));
+    send_burst_bits(opts, state, block, k_no_reserved, 0x05);
+    if (state->trunk_chan_map[304] != 0) {
+        DSD_FPRINTF(stderr, "FAIL: orphan continuations after a header-only MBC act as one (LPCN 304 -> %ld)\n",
+                    state->trunk_chan_map[304]);
+        return 1;
+    }
+    return 0;
+}
+
 /* A checked C_MOVE header (TS 102 361-4 Table 7.17: Backoff 2, PCN 0xFFF, MS 0) through the burst handler, as data
    type @p databurst with CRC mask @p mask. LB is clear: it claims an appended MV_AP block. */
 static void
@@ -1426,6 +1456,7 @@ main(void) {
     rc |= test_t3_mbc_grant_channel_provenance(opts, state);
     rc |= test_t3_cmove_appended_block(opts, state);
     rc |= test_t3_mbc_header_only_reads_no_stale_block(opts, state);
+    rc |= test_t3_mbc_header_only_disarms_the_assembly(opts, state);
     dsd_state_ext_free_all(state);
     free(state->event_history_s);
     free(state);
