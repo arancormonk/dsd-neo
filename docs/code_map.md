@@ -14132,7 +14132,10 @@ Private per-protocol modules worth knowing about:
   scrambling rule (`dsd_state::dpmr_voice_mode`, `dPMRVoiceFS2Frame.VoiceMode[]`, forgotten at the same boundaries):
   a failed half reading a data mode does not cut an established voice call, and one reading a voice mode does not
   play a data transmission. The scrambler reloads (FN 0) only on a checked frame number, the half's own or the one
-  its verified pair partner implies (`dpmr_half_checked_frame_number()`); `FrameNumbering[]` and
+  its verified pair partner implies (`dpmr_half_checked_frame_number()`), or, in a frame neither half of which
+  checked, at the first half of the pair the cadence predicts (`dsd_state::dpmr_expected_pair`: a placed frame says
+  the next on-time FS2 carries the other pair; `dpmr_confirm_note_frame_start()` drops it at any gap, and the
+  boundaries with the scrambling). `dPMRVoiceFS2Frame.ScramblerReload[]` holds the result; `FrameNumbering[]` and
   `CommunicationMode[]` stay the raw fields. The called ID can be a radio or a group, so the console labels it
   `Called=`, not `TG=`. `dpmr_convert_air_interface_id()` maps B2 dial strings only up to `DPMR_AI_ID_DIAL_STRING_MAX`
   (0xDF6767, "999****"); a higher ID renders as its 8-digit decimal number (hex in a buffer under

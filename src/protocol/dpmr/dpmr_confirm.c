@@ -34,6 +34,7 @@ dpmr_scrambling_reset(dsd_state* state) {
     if (state != NULL) {
         state->dpmr_scrambled = 0U;
         state->dpmr_voice_mode = 0U;
+        state->dpmr_expected_pair = 0U;
     }
 }
 
@@ -50,6 +51,8 @@ dpmr_confirm_note_frame_start(dsd_state* state, uint32_t frame_symbol) {
     state->dpmr_confirm_last_frame_valid = 1;
     if (!runs_on) {
         state->dpmr_confirm_weak_streak = 0;
+        /* Which superframe pair comes next holds only while the frames run on (issue #903). */
+        state->dpmr_expected_pair = 0U;
     }
 }
 

@@ -376,6 +376,71 @@ dpmr_half_voice_mode(const dPMRVoiceFS2Frame_t* f, int o) {
     return (mode == 0U || mode == 1U || mode == 5U) ? 2U : 1U;
 }
 
+/* The frame number half @p o holds by a CCH CRC-7 that passed (issue #903): its own, else the one its pair partner's
+ * implies, since frames 1 and 2, and 3 and 4, share one FS2 (TS 102 658 Figure 5.4); -1 for none. A failed half's own
+ * number is not trusted. */
+static int
+dpmr_half_checked_frame_number(const dPMRVoiceFS2Frame_t* f, int o) {
+    if (f->CCHDataCrcOk[o] != 0U) {
+        return (int)f->FrameNumbering[o];
+    }
+    const int other = 1 - o;
+    if (f->CCHDataCrcOk[other] == 0U) {
+        return -1;
+    }
+    const int partner = (int)f->FrameNumbering[other];
+    const int partner_second = (partner & 1) != 0;
+    if (o == 0) {
+        return partner_second ? partner - 1 : -1;
+    }
+    return partner_second ? -1 : partner + 1;
+}
+
+/* Which pair of the superframe this frame's checked halves place it in: 0 for frames 1/2 (FN 0/1), 1 for frames 3/4
+ * (FN 2/3), -1 when neither half's checked frame number says. */
+static int
+dpmr_frame_checked_pair(const dPMRVoiceFS2Frame_t* f) {
+    const int first = dpmr_half_checked_frame_number(f, 0);
+    if (first == 0 || first == 2) {
+        return first / 2;
+    }
+    const int second = dpmr_half_checked_frame_number(f, 1);
+    if (second == 1 || second == 3) {
+        return second / 2;
+    }
+    return -1;
+}
+
+/* Where the scrambler reloads from the key (FN 0, frame 1), per half (issue #903): at a checked frame number 0, or, in
+ * a frame neither of whose halves checked, at the first half of the pair the transmission's cadence predicts. A
+ * verified pair says the next on-time FS2 carries the other one, so a failed FN 0/1 pair after a verified FN 2/3 one
+ * still reloads where the transmission's register does, instead of descrambling a whole superframe with the old one.
+ * The failed CCH's own bits never decide it, and dpmr_confirm_note_frame_start() drops the prediction at any gap in the
+ * cadence (dsd_state::dpmr_expected_pair). */
+static void
+dpmr_resolve_scrambler_reload(dsd_state* state) {
+    dPMRVoiceFS2Frame_t* f = &state->dPMRVoiceFS2Frame;
+    const int checked = dpmr_frame_checked_pair(f);
+    /* Only a frame with no passing half takes the prediction: one whose passing half reads a number its position
+     * cannot carry is placed nowhere. */
+    const int none_checked = f->CCHDataCrcOk[0] == 0U && f->CCHDataCrcOk[1] == 0U;
+    int pair = checked;
+    if (checked < 0 && none_checked) {
+        pair = (int)state->dpmr_expected_pair - 1;
+    }
+    uint8_t next = 0U; /* the pair after this frame's: none, or the other one */
+    if (pair == 0) {
+        next = 2U;
+    } else if (pair == 1) {
+        next = 1U;
+    }
+    state->dpmr_expected_pair = next;
+    for (int o = 0; o < NB_OF_DPMR_VOICE_FRAME_TO_DECODE; o++) {
+        const int predicted_first = o == 0 && none_checked && pair == 0;
+        f->ScramblerReload[o] = (dpmr_half_checked_frame_number(f, o) == 0 || predicted_first) ? 1U : 0U;
+    }
+}
+
 /* Which halves of the frame are scrambled (issue #655), and which carry voice (issue #903), in order: a half whose CCH
  * CRC-7 passed by its own Version (3 is scrambled) and Communication Mode, and the transmission learns them; a half
  * whose CRC failed by the transmission's last verified half, or, when none has verified yet, by the other half of this
@@ -383,7 +448,8 @@ dpmr_half_voice_mode(const dPMRVoiceFS2Frame_t* f, int o) {
  * confirmation standing, so a scrambled call after a clear one must not play its first undecodable halves as clear).
  * Unverified bits never decide it: a failed half reading Version 3 does not scramble a clear call, one reading 0 does
  * not unscramble a scrambled one, one reading a data mode does not cut a voice call, and one reading a voice mode does
- * not play a data transmission. */
+ * not play a data transmission. It also places the frame in its superframe for the scrambler's reload
+ * (dpmr_resolve_scrambler_reload()). */
 void
 dpmr_resolve_half_scrambling(dsd_state* state) {
     dPMRVoiceFS2Frame_t* f = &state->dPMRVoiceFS2Frame;
@@ -404,6 +470,7 @@ dpmr_resolve_half_scrambling(dsd_state* state) {
         f->Scrambled[o] = known == 2U ? DPMR_HALF_SCRAMBLED : known == 1U ? DPMR_HALF_CLEAR : DPMR_HALF_UNVERIFIED;
         f->VoiceMode[o] = voice == 2U ? 1U : 0U;
     }
+    dpmr_resolve_scrambler_reload(state);
 }
 
 static void DSD_ATTR_USED
@@ -504,32 +571,12 @@ dpmr_publish_call(dsd_opts* opts, dsd_state* state) {
     dsd_event_sync_slot(opts, state, 0U);
 }
 
-/* The frame number half @p o holds by a CCH CRC-7 that passed (issue #903): its own, else the one its pair partner's
- * implies, since frames 1 and 2, and 3 and 4, share one FS2 (TS 102 658 Figure 5.4); -1 for none. A failed half's own
- * number is not trusted. */
-static int
-dpmr_half_checked_frame_number(const dPMRVoiceFS2Frame_t* f, int o) {
-    if (f->CCHDataCrcOk[o] != 0U) {
-        return (int)f->FrameNumbering[o];
-    }
-    const int other = 1 - o;
-    if (f->CCHDataCrcOk[other] == 0U) {
-        return -1;
-    }
-    const int partner = (int)f->FrameNumbering[other];
-    const int partner_second = (partner & 1) != 0;
-    if (o == 0) {
-        return partner_second ? partner - 1 : -1;
-    }
-    return partner_second ? -1 : partner + 1;
-}
-
 void
 dpmr_play_voice_frames(dsd_opts* opts, dsd_state* state, char ambe_fr[NB_OF_DPMR_VOICE_FRAME_TO_DECODE * 4][4][24]) {
     uint32_t start = 0;
     uint32_t end = 4;
     for (short o = 0; o < 2; o++) {
-        if (dpmr_half_checked_frame_number(&state->dPMRVoiceFS2Frame, o) == 0) {
+        if (state->dPMRVoiceFS2Frame.ScramblerReload[o] != 0U) {
             state->nxdn_payload_mi = 0; /* the scrambler reloads from the key (shared with NXDN) */
             state->nxdn_iv_on_air = 0U;
         }

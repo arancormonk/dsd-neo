@@ -1035,6 +1035,11 @@ typedef struct {
        5), by the same rule as Scrambled: its own mode when its CRC-7 passed, else the transmission's last verified
        half's or this frame's other one; 0 for a data mode or no verified half. CommunicationMode is the raw field. */
     unsigned int VoiceMode[NB_OF_DPMR_VOICE_FRAME_TO_DECODE];
+    /* Per half (dpmr_resolve_half_scrambling(), issue #903): 1 when the scrambler reloads from the key before the
+       half: its checked frame number is 0 (its own, or the one its verified pair partner implies), or, with neither half
+       checked, it is the first half of the pair dsd_state::dpmr_expected_pair predicts. FrameNumbering is the raw
+       field. */
+    unsigned int ScramblerReload[NB_OF_DPMR_VOICE_FRAME_TO_DECODE];
     unsigned int CommsFormat[NB_OF_DPMR_VOICE_FRAME_TO_DECODE];
     unsigned int EmergencyPriority[NB_OF_DPMR_VOICE_FRAME_TO_DECODE];
     unsigned int Reserved[NB_OF_DPMR_VOICE_FRAME_TO_DECODE];
@@ -2337,6 +2342,11 @@ struct dsd_state {
     /* Whether the current dPMR transmission's last CRC-verified CCH half signalled a voice mode (issue #903): 0 none
        yet, 1 no (data), 2 yes. A half whose CRC-7 failed takes it; the same boundaries as dpmr_scrambled forget it. */
     uint8_t dpmr_voice_mode;
+    /* The superframe pair the next on-time dPMR FS2 frame carries, from the last frame placed in its superframe
+       (issue #903): 0 none, 1 frames 1/2 (FN 0/1), 2 frames 3/4 (FN 2/3). A frame neither of whose CCH halves checked
+       takes it, so the scrambler still reloads at frame 1; a gap in the frame cadence (dpmr_confirm_note_frame_start())
+       and the boundaries that forget dpmr_scrambled drop it. */
+    uint8_t dpmr_expected_pair;
 
     /* How recently a dPMR CCH CRC-7 passed, for the SPS hunt's profile accounting
      * (src/engine/dispatch/dispatch_dpmr.c). The flag, not the stamp, opens the window,

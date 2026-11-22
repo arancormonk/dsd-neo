@@ -80,7 +80,8 @@ void dpmr_confirm_reset(dsd_state* state);
  *
  * @p frame_symbol is dsd_state::symbolcnt at the same point of every frame. A frame runs on only from one read
  * DPMR_CONFIRM_FRAME_SYMBOLS (within the slip) before it; one that does not starts the weak streak over, so two weak
- * frames confirm only when the second follows the first. Without this call a frame runs on (the unit tests' frames,
+ * frames confirm only when the second follows the first, and drops the predicted superframe pair
+ * (dsd_state::dpmr_expected_pair, issue #903). Without this call a frame runs on (the unit tests' frames,
  * one after another).
  */
 void dpmr_confirm_note_frame_start(dsd_state* state, uint32_t frame_symbol);

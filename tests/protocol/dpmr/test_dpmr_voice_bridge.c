@@ -25,7 +25,9 @@
 #include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
+#include "dpmr_confirm.h"
 #include "dpmr_internal.h"
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/state_fwd.h"
@@ -382,56 +384,128 @@ set_half(dsd_state* state, int o, unsigned crc_ok, unsigned fn, unsigned mode, u
     f->EmergencyPriority[o] = ep;
 }
 
+/* A zeroed decoder fixture on the heap, as dsd_state and dsd_opts are everywhere (AGENTS.md); NULL on failure. The
+   call-state stub's extension is static storage with no cleanup, so release_fixture() frees the state alone. */
+typedef struct {
+    dsd_opts* opts;
+    dsd_state* state;
+} bridge_fixture;
+
+static void
+release_fixture(bridge_fixture* fx) {
+    free(fx->opts);
+    free(fx->state);
+    fx->opts = NULL;
+    fx->state = NULL;
+}
+
+static int
+new_fixture(bridge_fixture* fx) {
+    fx->opts = calloc(1, sizeof(*fx->opts));
+    fx->state = calloc(1, sizeof(*fx->state));
+    if (fx->opts == NULL || fx->state == NULL) {
+        DSD_FPRINTF(stderr, "fixture allocation failed\n");
+        release_fixture(fx);
+        return 1;
+    }
+    return 0;
+}
+
 /* Play the frame set_half() built, with the scrambler's working register at @p mi; how many vocoder frames ran. */
 static int
-play_frame(dsd_state* state, unsigned long long mi) {
-    static dsd_opts opts;
+play_frame(dsd_opts* opts, dsd_state* state, unsigned long long mi) {
     char ambe_fr[NB_OF_DPMR_VOICE_FRAME_TO_DECODE * 4][4][24];
-    DSD_MEMSET(&opts, 0, sizeof(opts));
     DSD_MEMSET(ambe_fr, 0, sizeof(ambe_fr));
     reset_capture();
     state->synctype = DSD_SYNC_DPMR_FS2_POS;
     state->nxdn_payload_mi = mi;
     dpmr_resolve_half_scrambling(state);
-    dpmr_play_voice_frames(&opts, state, ambe_fr);
+    dpmr_play_voice_frames(opts, state, ambe_fr);
     return (int)g_mbe_calls;
 }
 
 /* Issue #903: the frame number of a CCH half whose CRC-7 failed is not trusted, so it never reloads the scrambler
    (FN 0, frame 1). A faded middle half reading 0 left the running register for the rest of the superframe reloaded
    from the key. A failed half's position still follows from its pair partner when that one passed: frames 1/2 and 3/4
-   share one FS2 (TS 102 658 Figure 5.4), so a passing frame 2 makes the half before it frame 1. */
+   share one FS2 (TS 102 658 Figure 5.4), so a passing frame 2 makes the half before it frame 1. With neither half
+   checked, the transmission's cadence places the frame: a verified FN 2/3 pair means the next on-time FS2 carries
+   FN 0/1, so the scrambler reloads there rather than descrambling a whole superframe with the old register. A gap in
+   the cadence drops that prediction. */
 static int
 test_failed_cch_frame_number_does_not_reset_the_scrambler(void) {
-    static dsd_state state;
-    DSD_MEMSET(&state, 0, sizeof(state));
+    bridge_fixture fx;
+    if (new_fixture(&fx) != 0) {
+        return 1;
+    }
+    dsd_state* state = fx.state;
     int rc = 0;
 
     /* A faded frame 3 reading FN 0, its frame 4 verified. */
-    set_half(&state, 0, 0U, 0U, 0U, 3U, 0U);
-    set_half(&state, 1, 1U, 3U, 0U, 3U, 0U);
-    rc |= expect_int("faded middle half plays", play_frame(&state, 0x1234ULL), 8);
+    set_half(state, 0, 0U, 0U, 0U, 3U, 0U);
+    set_half(state, 1, 1U, 3U, 0U, 3U, 0U);
+    rc |= expect_int("faded middle half plays", play_frame(fx.opts, state, 0x1234ULL), 8);
     for (int i = 0; i < 8; i++) {
         rc |= expect_u64("faded middle half keeps the register", g_mbe_mi[i], 0x1234ULL);
     }
 
-    /* Both halves failed, the first reading FN 0: the transmission's learned scrambling plays them, unreloaded. */
-    set_half(&state, 0, 0U, 0U, 0U, 3U, 0U);
-    set_half(&state, 1, 0U, 1U, 0U, 3U, 0U);
-    rc |= expect_int("failed pair plays", play_frame(&state, 0x5678ULL), 8);
-    rc |= expect_u64("failed pair keeps the register", g_mbe_mi[0], 0x5678ULL);
+    /* On time, the next pair fails both checks, its first half reading FN 2: the cadence makes it frames 1/2. */
+    set_half(state, 0, 0U, 2U, 0U, 3U, 0U);
+    set_half(state, 1, 0U, 3U, 0U, 3U, 0U);
+    rc |= expect_int("predicted frames 1/2 play", play_frame(fx.opts, state, 0x5678ULL), 8);
+    rc |= expect_u64("predicted frame 1 reloads", g_mbe_mi[0], 0ULL);
+    /* And the pair after it, failed again with its first half reading FN 0, is frames 3/4. */
+    set_half(state, 0, 0U, 0U, 0U, 3U, 0U);
+    set_half(state, 1, 0U, 1U, 0U, 3U, 0U);
+    rc |= expect_int("predicted frames 3/4 play", play_frame(fx.opts, state, 0x6789ULL), 8);
+    rc |= expect_u64("predicted frame 3 keeps the register", g_mbe_mi[0], 0x6789ULL);
+
+    /* The prediction is for frames 1/2 now, but this frame's verified half reads FN 1, which a first half cannot
+       carry: a passing half outranks the cadence, so nothing places the frame and nothing reloads. */
+    set_half(state, 0, 1U, 1U, 0U, 3U, 0U);
+    set_half(state, 1, 0U, 0U, 0U, 3U, 0U);
+    rc |= expect_int("misplaced verified half plays", play_frame(fx.opts, state, 0x7777ULL), 8);
+    rc |= expect_u64("misplaced verified half keeps the register", g_mbe_mi[0], 0x7777ULL);
+    rc |= expect_int("misplaced verified half drops the prediction", state->dpmr_expected_pair, 0);
+
+    /* A verified frames 3/4 predicts frames 1/2, but a gap in the cadence (here the first FS2 timed; equally one off
+       the frame spacing) drops that: nothing places the failed pair after it. */
+    set_half(state, 0, 1U, 2U, 0U, 3U, 0U);
+    set_half(state, 1, 1U, 3U, 0U, 3U, 0U);
+    rc |= expect_int("verified frames 3/4 play", play_frame(fx.opts, state, 0x6789ULL), 8);
+    rc |= expect_int("verified frames 3/4 predict frames 1/2", state->dpmr_expected_pair, 1);
+    dpmr_confirm_note_frame_start(state, 100U);
+    rc |= expect_int("gap drops the prediction", state->dpmr_expected_pair, 0);
+    set_half(state, 0, 0U, 0U, 0U, 3U, 0U);
+    set_half(state, 1, 0U, 1U, 0U, 3U, 0U);
+    rc |= expect_int("unplaced pair plays", play_frame(fx.opts, state, 0x789AULL), 8);
+    rc |= expect_u64("unplaced pair keeps the register", g_mbe_mi[0], 0x789AULL);
 
     /* A failed frame 1 that misread its number, behind a verified frame 2: the pair places it, and it reloads. */
-    set_half(&state, 0, 0U, 2U, 0U, 3U, 0U);
-    set_half(&state, 1, 1U, 1U, 0U, 3U, 0U);
-    rc |= expect_int("placed frame 1 plays", play_frame(&state, 0x9ABCULL), 8);
+    set_half(state, 0, 0U, 2U, 0U, 3U, 0U);
+    set_half(state, 1, 1U, 1U, 0U, 3U, 0U);
+    rc |= expect_int("placed frame 1 plays", play_frame(fx.opts, state, 0x9ABCULL), 8);
     rc |= expect_u64("placed frame 1 reloads", g_mbe_mi[0], 0ULL);
 
+    /* Frames that run on keep the prediction: frames 3/4 (no reload), then 1/2 (reload), both failed. */
+    dpmr_confirm_note_frame_start(state, 100U + DPMR_CONFIRM_FRAME_SYMBOLS);
+    set_half(state, 0, 0U, 0U, 0U, 3U, 0U);
+    set_half(state, 1, 0U, 1U, 0U, 3U, 0U);
+    rc |= expect_int("on-time frames 3/4 play", play_frame(fx.opts, state, 0xABCDULL), 8);
+    rc |= expect_u64("on-time frame 3 keeps the register", g_mbe_mi[0], 0xABCDULL);
+    dpmr_confirm_note_frame_start(state, 100U + (2U * DPMR_CONFIRM_FRAME_SYMBOLS) + DPMR_CONFIRM_FRAME_SYMBOLS_SLIP);
+    rc |= expect_int("on-time frames 1/2 play", play_frame(fx.opts, state, 0xBCDEULL), 8);
+    rc |= expect_u64("on-time frame 1 reloads", g_mbe_mi[0], 0ULL);
+
+    /* A transmission boundary drops it too. */
+    dpmr_scrambling_reset(state);
+    rc |= expect_int("boundary drops the prediction", state->dpmr_expected_pair, 0);
+
     /* A verified frame 1 reloads. */
-    set_half(&state, 0, 1U, 0U, 0U, 3U, 0U);
-    set_half(&state, 1, 1U, 1U, 0U, 3U, 0U);
-    rc |= expect_int("verified frame 1 plays", play_frame(&state, 0xDEF0ULL), 8);
+    set_half(state, 0, 1U, 0U, 0U, 3U, 0U);
+    set_half(state, 1, 1U, 1U, 0U, 3U, 0U);
+    rc |= expect_int("verified frame 1 plays", play_frame(fx.opts, state, 0xDEF0ULL), 8);
     rc |= expect_u64("verified frame 1 reloads", g_mbe_mi[0], 0ULL);
+    release_fixture(&fx);
     return rc;
 }
 
@@ -440,25 +514,30 @@ test_failed_cch_frame_number_does_not_reset_the_scrambler(void) {
    transmission's payload as speech. */
 static int
 test_failed_cch_mode_does_not_switch_voice(void) {
-    static dsd_state state;
-    DSD_MEMSET(&state, 0, sizeof(state));
+    bridge_fixture fx;
+    if (new_fixture(&fx) != 0) {
+        return 1;
+    }
+    dsd_state* state = fx.state;
     int rc = 0;
 
-    set_half(&state, 0, 0U, 0U, 2U, 0U, 0U);
-    set_half(&state, 1, 1U, 1U, 0U, 0U, 0U);
-    rc |= expect_int("failed data-mode half in a voice call plays", play_frame(&state, 0ULL), 8);
-    set_half(&state, 0, 0U, 2U, 3U, 0U, 0U);
-    set_half(&state, 1, 0U, 3U, 4U, 0U, 0U);
-    rc |= expect_int("failed data-mode pair in a voice call plays", play_frame(&state, 0ULL), 8);
+    set_half(state, 0, 0U, 0U, 2U, 0U, 0U);
+    set_half(state, 1, 1U, 1U, 0U, 0U, 0U);
+    rc |= expect_int("failed data-mode half in a voice call plays", play_frame(fx.opts, state, 0ULL), 8);
+    set_half(state, 0, 0U, 2U, 3U, 0U, 0U);
+    set_half(state, 1, 0U, 3U, 4U, 0U, 0U);
+    rc |= expect_int("failed data-mode pair in a voice call plays", play_frame(fx.opts, state, 0ULL), 8);
 
     /* The next transmission carries data, which a verified pair says. */
-    dpmr_scrambling_reset(&state);
-    set_half(&state, 0, 1U, 0U, 2U, 0U, 0U);
-    set_half(&state, 1, 1U, 1U, 2U, 0U, 0U);
-    rc |= expect_int("verified data plays nothing", play_frame(&state, 0ULL), 0);
-    set_half(&state, 0, 0U, 2U, 0U, 0U, 0U);
-    set_half(&state, 1, 0U, 3U, 1U, 0U, 0U);
-    rc |= expect_int("failed voice-mode pair in a data transmission plays nothing", play_frame(&state, 0ULL), 0);
+    dpmr_scrambling_reset(state);
+    set_half(state, 0, 1U, 0U, 2U, 0U, 0U);
+    set_half(state, 1, 1U, 1U, 2U, 0U, 0U);
+    rc |= expect_int("verified data plays nothing", play_frame(fx.opts, state, 0ULL), 0);
+    set_half(state, 0, 0U, 2U, 0U, 0U, 0U);
+    set_half(state, 1, 0U, 3U, 1U, 0U, 0U);
+    rc |=
+        expect_int("failed voice-mode pair in a data transmission plays nothing", play_frame(fx.opts, state, 0ULL), 0);
+    release_fixture(&fx);
     return rc;
 }
 
@@ -466,58 +545,61 @@ test_failed_cch_mode_does_not_switch_voice(void) {
    confirmed transmission set or cleared emergency and replaced the service options. */
 static int
 test_failed_cch_changes_no_service_metadata(void) {
-    static dsd_opts opts;
-    static dsd_state state;
-    DSD_MEMSET(&opts, 0, sizeof(opts));
-    DSD_MEMSET(&state, 0, sizeof(state));
+    bridge_fixture fx;
+    if (new_fixture(&fx) != 0) {
+        return 1;
+    }
+    dsd_opts* opts = fx.opts;
+    dsd_state* state = fx.state;
     int rc = 0;
     dsd_call_snapshot call;
 
-    state.synctype = DSD_SYNC_DPMR_FS2_POS;
-    state.dpmr_confirmed = 1;
-    state.dPMRVoiceFS2Frame.ColorCode[0] = (unsigned int)(-1);
+    state->synctype = DSD_SYNC_DPMR_FS2_POS;
+    state->dpmr_confirmed = 1;
+    state->dPMRVoiceFS2Frame.ColorCode[0] = (unsigned int)(-1);
 
     /* Verified: voice + slow data, clear, no emergency. */
-    set_half(&state, 0, 1U, 0U, 1U, 0U, 0U);
-    set_half(&state, 1, 1U, 1U, 1U, 0U, 0U);
-    dpmr_resolve_half_scrambling(&state);
-    dpmr_publish_call(&opts, &state);
-    rc |= expect_int("verified call", dsd_call_state_get(&state, 0U, &call) > 0, 1);
+    set_half(state, 0, 1U, 0U, 1U, 0U, 0U);
+    set_half(state, 1, 1U, 1U, 1U, 0U, 0U);
+    dpmr_resolve_half_scrambling(state);
+    dpmr_publish_call(opts, state);
+    rc |= expect_int("verified call", dsd_call_state_get(state, 0U, &call) > 0, 1);
     rc |= expect_int("verified no emergency", call.emergency, 0);
     rc |= expect_int("verified service options", call.service_options, 0x10);
     rc |= expect_int("verified has metadata", call.has_service_metadata, 1);
     const uint64_t epoch = call.epoch;
 
     /* Both halves failed, reading emergency, data mode, another version and format. */
-    set_half(&state, 0, 0U, 2U, 2U, 2U, 1U);
-    set_half(&state, 1, 0U, 3U, 2U, 2U, 1U);
-    state.dPMRVoiceFS2Frame.CommsFormat[0] = 3U;
-    dpmr_resolve_half_scrambling(&state);
-    dpmr_publish_call(&opts, &state);
-    (void)dsd_call_state_get(&state, 0U, &call);
+    set_half(state, 0, 0U, 2U, 2U, 2U, 1U);
+    set_half(state, 1, 0U, 3U, 2U, 2U, 1U);
+    state->dPMRVoiceFS2Frame.CommsFormat[0] = 3U;
+    dpmr_resolve_half_scrambling(state);
+    dpmr_publish_call(opts, state);
+    (void)dsd_call_state_get(state, 0U, &call);
     rc |= expect_int("failed pair sets no emergency", call.emergency, 0);
     rc |= expect_int("failed pair keeps service options", call.service_options, 0x10);
     rc |= expect_int("failed pair keeps the call", call.epoch == epoch, 1);
 
     /* The first half failed reading emergency; the second verified none, in voice mode. */
-    set_half(&state, 0, 0U, 0U, 2U, 2U, 1U);
-    set_half(&state, 1, 1U, 1U, 0U, 0U, 0U);
-    dpmr_resolve_half_scrambling(&state);
-    dpmr_publish_call(&opts, &state);
-    (void)dsd_call_state_get(&state, 0U, &call);
+    set_half(state, 0, 0U, 0U, 2U, 2U, 1U);
+    set_half(state, 1, 1U, 1U, 0U, 0U, 0U);
+    dpmr_resolve_half_scrambling(state);
+    dpmr_publish_call(opts, state);
+    (void)dsd_call_state_get(state, 0U, &call);
     rc |= expect_int("verified second half: no emergency", call.emergency, 0);
     rc |= expect_int("verified second half: its service options", call.service_options, 0x00);
 
     /* A verified emergency sets it, and a failed half reading none does not clear it. */
-    set_half(&state, 1, 1U, 1U, 0U, 0U, 1U);
-    dpmr_publish_call(&opts, &state);
-    (void)dsd_call_state_get(&state, 0U, &call);
+    set_half(state, 1, 1U, 1U, 0U, 0U, 1U);
+    dpmr_publish_call(opts, state);
+    (void)dsd_call_state_get(state, 0U, &call);
     rc |= expect_int("verified emergency", call.emergency, 1);
-    set_half(&state, 0, 0U, 2U, 0U, 0U, 0U);
-    set_half(&state, 1, 0U, 3U, 0U, 0U, 0U);
-    dpmr_publish_call(&opts, &state);
-    (void)dsd_call_state_get(&state, 0U, &call);
+    set_half(state, 0, 0U, 2U, 0U, 0U, 0U);
+    set_half(state, 1, 0U, 3U, 0U, 0U, 0U);
+    dpmr_publish_call(opts, state);
+    (void)dsd_call_state_get(state, 0U, &call);
     rc |= expect_int("failed halves keep the emergency", call.emergency, 1);
+    release_fixture(&fx);
     return rc;
 }
 
