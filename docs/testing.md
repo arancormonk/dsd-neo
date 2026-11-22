@@ -1525,8 +1525,10 @@ span measurements and the landings meet them at every phase; each must be found 
 `Direct`, by pass 64. The RF detector needs a burst across both of its 10 ms windows, so most phases are missed: in
 two runs the measurement that found a call had its bursts 14.2 ms after the tune for 5 of 8 calls, 28.3 ms for 2 and
 42.5 ms for 1, and never at the other five phases (the windows shift by a block or so from tune to tune); over five
-runs the 20 calls landed on passes 1 to 15 and confirmed 0.3 to 1.3 s after landing, at landing phases from 21.2 to
-49.6 ms. A presence signal train (DPRES-SYNC from a
+runs the 20 calls landed on passes 1 to 15, at landing phases from 21.2 to 49.6 ms. A landing is the first status
+after the tune has landed, not the tuning status the engine publishes when it queues the tune (0.13 to 0.19 s
+earlier); counted so, 12 calls over three runs confirmed 0.16 to 0.83 s after landing, 10 of them in 0.16 or
+0.17 s. A presence signal train (DPRES-SYNC from a
 type 2 repeater in slots 1 and 3) heard on its visit confirms as `TETRA DMO`, `presence signal`; the same train
 switched off at the search's landing tune (the visit tunes a quarter of the capture rate below its channel, which no
 span measurement does) confirms nothing and ends unresolved. The checks: each transmitter is visited and has one
@@ -1543,7 +1545,10 @@ the TETRA quiet time set to 500 ms the awgn visit left 0.47 s after its carrier 
 About 2 to 3 minutes in real time (a run stops at 180 s); the CTest TIMEOUT is 420 s.
 
 `tools/bench_signal_search_tcp.py --rig` runs the same rig for measurements (see [Signal search
-verification](signal-search.md#verification-and-measured-limits)).
+verification](signal-search.md#verification-and-measured-limits)). `TOOLS_BENCH_SIGNAL_SEARCH_TCP` checks the
+bookkeeping the two share on canned lines and a stand-in child: the landing, an absolute run folder (the child runs
+inside it), the refusal of a folder that holds an earlier run's journal, and an optional load average.
+`ENGINE_SIGNAL_SEARCH_RIG_LIMIT_*` check that the rig refuses a negative, overflowing, zero or over-a-day limit.
 
 #### Received tone (CTCSS) on the analog monitor
 
