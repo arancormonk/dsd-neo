@@ -7629,6 +7629,10 @@ apply_rr_import(dsd_opts* opts, dsd_state* state, const struct dsd_app_command* 
            (decode_mode_apply_value() -> reset_call_tracking()), so the followed channel's buffered audio plays under its
            talkgroup (issue #575). The import runs under the P25 SM tick guard. */
         svc_operator_carrier_boundary(opts, state, 1);
+    } else {
+        /* No tuner moves, but the committed system still replaces the old one: the DMR network baseline and what the
+           old network taught go, so the new system's first checked system code is no change of network. */
+        dmr_t3_chan_network_changed(opts, state);
     }
     (void)svc_leave_channel_scan(opts, state);
     char note[DSD_TETRA_RATE_ADVICE_BRIEF_MAX];

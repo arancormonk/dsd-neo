@@ -21,6 +21,7 @@
 #include <dsd-neo/io/rtl_stream_c.h>
 #include <dsd-neo/platform/file_compat.h>
 #include <dsd-neo/platform/input_backlog.h>
+#include <dsd-neo/protocol/dmr/dmr_t3_channels.h>
 #include <dsd-neo/runtime/analog_channel.h>
 #include <dsd-neo/runtime/config.h>
 #include <dsd-neo/runtime/decode_mode.h>
@@ -36,6 +37,7 @@
 #include "../../src/app_control/commands_internal.h"
 #include "../../src/app_control/services.h"
 #include "../../src/engine/manual_tune_pending.h"
+#include "../../src/protocol/dmr/dmr_t3_channels_internal.h"
 #include "../../src/protocol/tetra/tetra_state.h"
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/state_fwd.h"
@@ -1815,6 +1817,40 @@ test_apply_drops_an_owner_the_mode_cannot_decode(void) {
     return rc;
 }
 
+/* An import that moves no tuner (no frequency) still replaces the system: the DMR network baseline of the old one goes,
+   so a checked system code of the new system, whatever its network, drops none of the rows learned after the apply
+   (discussion #900). */
+static int
+test_apply_without_tune_resets_the_dmr_network(void) {
+    int rc = 0;
+    static dsd_opts opts;
+    static dsd_state state;
+    dsd_app_rr_apply_payload p;
+
+    init_test_context(&opts, &state);
+    DSD_MEMSET(&p, 0, sizeof p);
+    p.decode_mode = (int32_t)DSDCFG_MODE_DMR;
+    p.trunking = 1U;
+    p.tune_hz = 0U;
+
+    /* A first import puts the session in DMR; the second is the re-apply this is about, which changes no mode. */
+    rc |= expect_int("first dmr import queued", dsd_app_command_set_rr_apply(&p), DSD_APP_COMMAND_SUBMIT_QUEUED);
+    rc |= expect_int("first dmr import drained", dsd_app_drain_cmds(&opts, &state), 1);
+    dmr_t3_chan_note_checked_syscode(&state, 0x0000U); /* the old system's network */
+    rc |= expect_int("old network learns a row",
+                     dmr_t3_chan_learn(&opts, &state, 10U, 451012500L, DMR_CHAN_ORIGIN_SITE), 1);
+    rc |= expect_int("tuneless dmr import queued", dsd_app_command_set_rr_apply(&p), DSD_APP_COMMAND_SUBMIT_QUEUED);
+    rc |= expect_int("tuneless dmr import drained", dsd_app_drain_cmds(&opts, &state), 1);
+    rc |= expect_int("the old network's row went with the apply", (int)state.trunk_chan_map[10], 0);
+
+    rc |= expect_int("new system learns a row", dmr_t3_chan_learn(&opts, &state, 11U, 451037500L, DMR_CHAN_ORIGIN_SITE),
+                     1);
+    dmr_t3_chan_note_checked_syscode(&state, 0x1000U); /* the new system's first checked C_ALOHA: another network */
+    rc |= expect_int("the row learned after the apply stays", (int)(state.trunk_chan_map[11] == 451037500L), 1);
+    freeState(&state);
+    return rc;
+}
+
 int
 main(void) {
     int rc = 0;
@@ -1835,6 +1871,7 @@ main(void) {
 #endif
     rc |= test_rr_account_set();
     rc |= test_apply_drops_an_owner_the_mode_cannot_decode();
+    rc |= test_apply_without_tune_resets_the_dmr_network();
     rc |= test_apply_tetra_accepted();
     rc |= test_apply_tetra_airspy_at_72();
 #ifdef DSD_NEO_TEST_IO_CONTROL_WRAP
