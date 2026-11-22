@@ -624,6 +624,84 @@ test_sacch2_dcr_and_named_calls_stay_apart(void) {
     return rc;
 }
 
+/* A DCR call and an NXDN call known only by its source (an IDAS INFO3's talker, a VCALL to the null destination) are two
+ * calls too (issue #903), each way: DCR after such a call whose release was missed or that sync loss ended 0.2 s
+ * before, and such a call after a DCR call, never carry the other's talker or "JPN DCR". A provisional voice call that
+ * names no party at all still takes DCR's name in its own epoch. */
+static int
+test_sacch2_dcr_and_source_only_calls_stay_apart(void) {
+    static Event_History_I histories[2];
+    dsd_state* state = (dsd_state*)calloc(1, sizeof(*state));
+    if (state == NULL) {
+        return 1;
+    }
+    int rc = 0;
+    static const dsd_call_kind k_kinds[] = {DSD_CALL_KIND_GROUP_VOICE, DSD_CALL_KIND_VOICE};
+    dsd_call_snapshot call;
+    char label[96];
+    for (size_t k = 0U; k < sizeof(k_kinds) / sizeof(k_kinds[0]); k++) {
+        const dsd_call_observation source_only = {
+            .protocol = DSD_SYNC_NXDN_POS,
+            .slot = 0U,
+            .kind = k_kinds[k],
+            .ota_source_id = 123U,
+        };
+        for (int sync_loss = 0; sync_loss <= 1; sync_loss++) {
+            init_sacch2_state(state, histories);
+            dsd_decode_clock_test_set_ns(1000000000000ULL);
+            (void)dsd_call_state_observe(state, &source_only, DSD_CALL_BOUNDARY_BEGIN);
+            (void)dsd_call_state_get(state, 0U, &call);
+            const uint64_t named_epoch = call.epoch;
+            if (sync_loss) {
+                (void)dsd_call_state_end_ex(state, 0U, dsd_decode_now_mono_s(), DSD_CALL_END_SYNC_LOSS);
+                dsd_decode_clock_test_set_ns(1000200000000ULL); /* 0.2 s later: inside the reacquisition window */
+            }
+            dcr_sb0(state);
+            dcr_sb0(state);
+            const char* tag = sync_loss ? "dcr-after-source-only-sync-loss" : "dcr-after-source-only-missed-release";
+            DSD_SNPRINTF(label, sizeof label, "%s-%zu-call", tag, k);
+            rc |= expect_int(label, dsd_call_state_get(state, 0U, &call), 1);
+            DSD_SNPRINTF(label, sizeof label, "%s-%zu-new-epoch", tag, k);
+            rc |= expect_int(label, call.epoch != named_epoch && call.phase == DSD_CALL_PHASE_ACTIVE, 1);
+            DSD_SNPRINTF(label, sizeof label, "%s-%zu-source", tag, k);
+            rc |= expect_int(label, (int)call.ota_source_id, 0);
+            DSD_SNPRINTF(label, sizeof label, "%s-%zu-text", tag, k);
+            rc |= expect_str(label, call.target_text, "JPN DCR");
+
+            /* A source-only call after the DCR call is another call. */
+            const uint64_t dcr_epoch = call.epoch;
+            (void)dsd_call_state_observe(state, &source_only, DSD_CALL_BOUNDARY_CONTINUE);
+            (void)dsd_call_state_get(state, 0U, &call);
+            DSD_SNPRINTF(label, sizeof label, "%s-%zu-source-only-after-dcr-new-epoch", tag, k);
+            rc |= expect_int(label, call.epoch != dcr_epoch && call.ota_source_id == 123U, 1);
+            DSD_SNPRINTF(label, sizeof label, "%s-%zu-source-only-after-dcr-no-dcr-text", tag, k);
+            rc |= expect_str(label, call.target_text, "");
+            dsd_state_ext_free_all(state);
+        }
+    }
+
+    /* A provisional voice call naming nobody takes DCR's name as its own. */
+    init_sacch2_state(state, histories);
+    dsd_decode_clock_test_set_ns(1000000000000ULL);
+    const dsd_call_observation provisional = {
+        .protocol = DSD_SYNC_NXDN_POS,
+        .slot = 0U,
+        .kind = DSD_CALL_KIND_VOICE,
+    };
+    (void)dsd_call_state_observe(state, &provisional, DSD_CALL_BOUNDARY_BEGIN);
+    rc |= expect_int("dcr-provisional-call", dsd_call_state_get(state, 0U, &call), 1);
+    const uint64_t provisional_epoch = call.epoch;
+    dcr_sb0(state);
+    dcr_sb0(state);
+    (void)dsd_call_state_get(state, 0U, &call);
+    rc |= expect_int("dcr-provisional-same-epoch", call.epoch == provisional_epoch, 1);
+    rc |= expect_str("dcr-provisional-text", call.target_text, "JPN DCR");
+    dsd_state_ext_free_all(state);
+    dsd_decode_clock_use_system();
+    free(state);
+    return rc;
+}
+
 static int
 test_sacch2_state_update(void) {
     static const uint8_t m_data[5] = {0xA1U, 0xB2U, 0xC3U, 0xD4U, 0xE5U};
@@ -1788,6 +1866,7 @@ main(void) {
     rc |= test_sacch_state_update();
     rc |= test_sacch2_state_update();
     rc |= test_sacch2_dcr_and_named_calls_stay_apart();
+    rc |= test_sacch2_dcr_and_source_only_calls_stay_apart();
     rc |= test_sacch2_release_ends_an_nxdn_call_only();
     rc |= test_ran_after_dcr_stand_in_is_an_access_code();
     rc |= test_cac_crc_failure_reset();

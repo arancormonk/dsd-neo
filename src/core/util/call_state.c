@@ -345,6 +345,33 @@ call_state_target_forms_differ(uint64_t old_target, const char* old_text, uint64
     return old_target == 0U && old_named && new_target != 0U && !new_named;
 }
 
+// An NXDN DCR call names no party by number, only its text identity "JPN DCR" (issue #903): a call that knows a party by
+// number, its source alone included (an IDAS INFO3's talker, a VCALL to the null destination), is another call, each
+// way. A call that names no party at all (a provisional voice call) is no change: it takes DCR's name.
+static int
+call_state_dcr_meets_numbered_party(const dsd_call_snapshot* current, const dsd_call_observation* observation,
+                                    uint64_t old_target, uint64_t new_target) {
+    const int old_dcr = dsd_call_is_nxdn_dcr(current->protocol, old_target, current->target_text);
+    const int new_dcr = dsd_call_is_nxdn_dcr(observation->protocol, new_target, observation->target_text);
+    const int old_numbered = old_target != 0U || current->ota_source_id != 0U;
+    const int new_numbered = new_target != 0U || observation->ota_source_id != 0U;
+    return (old_dcr && new_numbered) || (new_dcr && old_numbered);
+}
+
+// Whether the observation's target contradicts the call's: two numeric targets that differ, a target known only by
+// number against one known only by text (call_state_target_forms_differ()), or DCR's text identity against a numbered
+// party (call_state_dcr_meets_numbered_party()).
+static int
+call_state_target_contradicts(const dsd_call_snapshot* current, const dsd_call_observation* observation) {
+    const uint64_t old_target = call_state_effective_target_snapshot(current);
+    const uint64_t new_target = call_state_effective_target_observation(observation);
+    if (old_target != 0U && new_target != 0U && old_target != new_target) {
+        return 1;
+    }
+    return call_state_target_forms_differ(old_target, current->target_text, new_target, observation->target_text)
+           || call_state_dcr_meets_numbered_party(current, observation, old_target, new_target);
+}
+
 // True when the observation names a different call than the one the slot holds.
 // An absent field on either side is not a change: protocols fill identity in
 // over several bursts, and a partial re-description must not fork the epoch.
@@ -354,12 +381,7 @@ call_state_observation_changes_identity(const dsd_call_snapshot* current, const 
         && dsd_call_state_protocol_family(current->protocol) != dsd_call_state_protocol_family(observation->protocol)) {
         return 1;
     }
-    const uint64_t old_target = call_state_effective_target_snapshot(current);
-    const uint64_t new_target = call_state_effective_target_observation(observation);
-    if (old_target != 0U && new_target != 0U && old_target != new_target) {
-        return 1;
-    }
-    if (call_state_target_forms_differ(old_target, current->target_text, new_target, observation->target_text)) {
+    if (call_state_target_contradicts(current, observation)) {
         return 1;
     }
     if (call_state_kind_changed(current->kind, observation->kind)) {
