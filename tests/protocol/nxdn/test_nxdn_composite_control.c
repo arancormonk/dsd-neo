@@ -1054,6 +1054,52 @@ test_same_frame_cch_info_cancels_provisional_type_d(dsd_opts* opts, dsd_state* s
     return rc;
 }
 
+/* The live call's source (-1: no call). */
+static long
+live_call_source(const dsd_state* state) {
+    dsd_call_snapshot call;
+    return dsd_call_state_get(state, 0U, &call) == 1 ? (long)call.ota_source_id : -1L;
+}
+
+/*
+ * A composite frame's SCCH reading acts only once the frame's other channels could not rule Type-D out (issue #903).
+ * On a confirmed reception whose call is from 99 (two Type-C RTCH frames, LICH 0x31), a composite frame (LICH 0x71, read
+ * as a Type-D RTCH2 until Type-C is known) whose SACCH also passes the short SCCH check as an INFO3 naming 03-0100
+ * carries a CCH_INFO in its first FACCH1: the INFO3 was a misreading, and the call keeps source 99. The same frame with
+ * idle FACCH1s still gives the call its INFO3 source.
+ */
+static int
+test_same_frame_cch_info_discards_provisional_scch(dsd_opts* opts, dsd_state* state) {
+    static const char* const variants[2] = {"idle frame", "cch_info in the frame"};
+    int rc = 0;
+    for (int with_cch = 1; with_cch >= 0; with_cch--) {
+        uint8_t vcall[80];
+        uint8_t scch[25];
+        uint8_t cch[80];
+        char label[128];
+        clear_state(opts, state);
+        opts->trunk_enable = 1;
+        state->synctype = DSD_SYNC_NXDN_POS;
+        DSD_MEMSET(vcall, 0, sizeof(vcall));
+        call_message(vcall, 0x01U, 99U, 0x1805U);
+        send_frame(opts, state, 0x31U, 0x21U, vcall, NULL);
+        send_frame(opts, state, 0x31U, 0x21U, vcall, NULL);
+        DSD_SNPRINTF(label, sizeof(label), "provisional scch (%s): call from 99", variants[with_cch]);
+        rc |= expect_long(label, live_call_source(state), 99L);
+
+        state->last_vc_sync_time = dsd_decode_time(); /* the call's voice is live: an INFO3 updates its source */
+        info3_scch(scch);
+        cch_info(cch, SITE_A, 0x20U, 5U);
+        build_frame_scch(LICH_COMPOSITE_FACCH1_PAIR, scch, 0U, with_cch ? cch : NULL, NULL);
+        (void)nxdn_frame(opts, state);
+        DSD_SNPRINTF(label, sizeof(label), "provisional scch (%s): Type-C known", variants[with_cch]);
+        rc |= expect_long(label, dsd_nxdn_type_c(state), with_cch ? 1L : 0L);
+        DSD_SNPRINTF(label, sizeof(label), "provisional scch (%s): call source", variants[with_cch]);
+        rc |= expect_long(label, live_call_source(state), with_cch ? 99L : 100L);
+    }
+    return rc;
+}
+
 int
 main(void) {
     dsd_opts* opts = calloc(1, sizeof(*opts));
@@ -1087,6 +1133,7 @@ main(void) {
     rc |= test_own_scch_outranks_type_c_site(opts, state);
     rc |= test_failed_scch_keeps_fresh_type_d_on_rtch2(opts, state);
     rc |= test_same_frame_cch_info_cancels_provisional_type_d(opts, state);
+    rc |= test_same_frame_cch_info_discards_provisional_scch(opts, state);
     dsd_trunk_tuning_hooks_set((dsd_trunk_tuning_hooks){0});
     dsd_decode_clock_use_system();
 

@@ -12538,6 +12538,10 @@ Call frequency and access-code provenance (issue #575). A call's canonical `freq
   a whole CCH_INFO, or a whole SITE_INFO on a frame not read as Type-D, messages Type-D does not send; one too short for
   its layout, such as a non-superframe SACCH's 26 elements, says nothing), and as Type-D until then: a session that
   starts on a composite control channel during a call reads its first frames as Type-D until one of those decodes.
+  On such a frame an SCCH that passes its check names the Type-D layout for the frame's other channels at once, but
+  its messages (a talker or target, a busy tune, the area, an INFO1's cipher) act only once those channels decoded,
+  and not at all when one of them said Type-C (`nxdn_frame_scch_provisional()`, `NXDN_decode_scch_deferred()`): that
+  "SCCH" was the composite frame's SACCH passing the short check.
   Noting Type-C drops the IDAS System ID and Site Code (state and received identity) a composite SRV_INFO read as
   Type-D left, and the "Type-D" category an SCCH misread on such a frame left (the VCALL and IV parsers read it as the
   IDAS layout). The context is the carrier's: an operator move (`dsd_engine_carrier_boundary()`, never

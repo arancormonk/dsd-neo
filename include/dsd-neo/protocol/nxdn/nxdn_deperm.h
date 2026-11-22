@@ -33,6 +33,14 @@ typedef struct nxdn_channel_result {
     /** A CRC-passing SCCH whose content NXDN TS 1-E does not define (nxdn_scch_content_valid()): the Type-D layout it
         names stays with this frame. */
     uint8_t scch_invalid;
+    /** A CRC-passing SCCH on a frame whose LICH is also a composite control channel's (nxdn_deperm_scch_soft()'s
+        @p defer): only the Type-D layout it names was taken for the frame's other channels, and its messages act once
+        they decoded, unless one of them said Type-C (nxdn_frame(), NXDN_decode_scch_deferred()). */
+    uint8_t scch_deferred;
+    /** Whether the transmission was confirmed when that SCCH passed its check, as its messages are judged. */
+    uint8_t scch_acts;
+    /** That SCCH's 32 trellis bits (25 content bits, the CRC-7 and the tail). */
+    uint8_t scch_bits[32];
 } nxdn_channel_result;
 
 void nxdn_descramble_with_seed(uint8_t dibits[], int len, uint16_t seed);
@@ -54,8 +62,12 @@ void nxdn_deperm_facch2_udch_soft(dsd_opts* opts, dsd_state* state, uint8_t bits
 void nxdn_deperm_facch3_udch2_soft(dsd_opts* opts, dsd_state* state, uint8_t bits[288], const uint8_t reliab[288],
                                    uint8_t type);
 
+/**
+ * @brief Decode a frame's SCCH. With @p defer set, a CRC-passing SCCH only names the frame's Type-D layout: its
+ * messages wait in the result (nxdn_channel_result::scch_deferred) for NXDN_decode_scch_deferred().
+ */
 nxdn_channel_result nxdn_deperm_scch_soft(dsd_opts* opts, dsd_state* state, uint8_t bits[60], const uint8_t reliab[60],
-                                          uint8_t direction);
+                                          uint8_t direction, uint8_t defer);
 
 void nxdn_deperm_cac_soft(dsd_opts* opts, dsd_state* state, uint8_t bits[300], const uint8_t reliab[300]);
 
@@ -79,6 +91,11 @@ void NXDN_SACCH_Full_decode(dsd_opts* opts, dsd_state* state);
 void NXDN_Elements_Content_decode(dsd_opts* opts, dsd_state* state, const uint8_t* ElementsContent,
                                   size_t elements_bits);
 void NXDN_decode_scch(dsd_opts* opts, dsd_state* state, const uint8_t* Message, uint8_t direction);
+/**
+ * @brief Act on the SCCH nxdn_deperm_scch_soft() deferred (nxdn_channel_result::scch_deferred), as NXDN_decode_scch()
+ * would have when it passed its check: judged by the confirmation it saw then (nxdn_channel_result::scch_acts).
+ */
+void NXDN_decode_scch_deferred(dsd_opts* opts, dsd_state* state, const nxdn_channel_result* result, uint8_t direction);
 void NXDN_decode_VCALL_ASSGN(dsd_opts* opts, dsd_state* state, const uint8_t* Message);
 
 uint8_t crc6(const uint8_t buf[], int len);

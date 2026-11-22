@@ -324,7 +324,7 @@ dsd_mbe_out_close_protocol(dsd_opts* opts, dsd_state* state, int slot_mask, int 
 nxdn_channel_result
 nxdn_deperm_sacch_soft(dsd_opts* opts, dsd_state* state, uint8_t bits[60], const uint8_t reliab[60]) {
     (void)opts;
-    nxdn_channel_result result = {0U, 0U};
+    nxdn_channel_result result = {0};
     nxdn_stub_note_crc(state, g_stub_sacch_ok, NXDN_EVIDENCE_WEAK);
     if (g_stub_sacch_ok && g_stub_scch_places_register != 0ULL) {
         /* A checked superframe SACCH (nxdn_handle_sacch_superframe()) gives its position to the frame, placing nothing
@@ -343,10 +343,12 @@ nxdn_deperm_sacch_soft(dsd_opts* opts, dsd_state* state, uint8_t bits[60], const
 }
 
 nxdn_channel_result
-nxdn_deperm_scch_soft(dsd_opts* opts, dsd_state* state, uint8_t bits[60], const uint8_t reliab[60], uint8_t direction) {
+nxdn_deperm_scch_soft(dsd_opts* opts, dsd_state* state, uint8_t bits[60], const uint8_t reliab[60], uint8_t direction,
+                      uint8_t defer) {
     (void)bits;
     (void)reliab;
-    nxdn_channel_result result = {0U, 0U};
+    (void)defer;
+    nxdn_channel_result result = {0};
     /* Content TS 1-E does not define is no evidence (nxdn_deperm_scch_soft()). */
     nxdn_stub_note_crc(state, g_stub_scch_ok && !g_stub_scch_invalid, NXDN_EVIDENCE_WEAK);
     g_scch_calls++;
@@ -366,6 +368,15 @@ nxdn_deperm_scch_soft(dsd_opts* opts, dsd_state* state, uint8_t bits[60], const 
     }
     g_facch_part_mask |= (int)direction << 8;
     return result;
+}
+
+/* The stub SCCH defers nothing (nxdn_channel_result::scch_deferred stays 0). */
+void
+NXDN_decode_scch_deferred(dsd_opts* opts, dsd_state* state, const nxdn_channel_result* result, uint8_t direction) {
+    (void)opts;
+    (void)state;
+    (void)result;
+    (void)direction;
 }
 
 /* The positioning a verified SCCH's frame position asks for (nxdn_deperm.c): here the register value the test names,

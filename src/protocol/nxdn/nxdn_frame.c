@@ -657,11 +657,23 @@ nxdn_frame_left_carrier(const nxdn_frame_ctx* ctx) {
            || dsd_trunk_tuning_pending_request() != ctx->tune_pending_request;
 }
 
+/* Whether the frame's SCCH reading is provisional: its LICH is also a composite control channel's (RTCH_C), which reads
+   as a Type-D RTCH2 only until Type-C is known (nxdn_apply_lich_profile()), so a later channel of the frame can still
+   show that the "SCCH" was a composite frame's SACCH passing the short check (dsd_nxdn_note_type_c()). */
+static int
+nxdn_frame_scch_provisional(const nxdn_frame_ctx* ctx) {
+    return ctx->scch
+           && nxdn_find_lich_profile(k_nxdn_composite_lich_profiles,
+                                     sizeof(k_nxdn_composite_lich_profiles) / sizeof(k_nxdn_composite_lich_profiles[0]),
+                                     ctx->lich)
+                  != NULL;
+}
+
 static void
 nxdn_decode_scch_channels(dsd_opts* opts, dsd_state* state, const nxdn_frame_ctx* ctx) {
     if (ctx->scch) {
-        *ctx->result =
-            nxdn_deperm_scch_soft(opts, state, (uint8_t*)ctx->sacch_bits, (uint8_t*)ctx->sacch_reliab, ctx->direction);
+        *ctx->result = nxdn_deperm_scch_soft(opts, state, (uint8_t*)ctx->sacch_bits, (uint8_t*)ctx->sacch_reliab,
+                                             ctx->direction, (uint8_t)nxdn_frame_scch_provisional(ctx));
         if (nxdn_frame_left_carrier(ctx)) {
             return;
         }
@@ -736,7 +748,12 @@ nxdn_decode_control_channels(dsd_opts* opts, dsd_state* state, nxdn_frame_ctx* c
             return 1;
         }
     }
-    return 0;
+    /* A provisional SCCH (nxdn_frame_scch_provisional()) named only the frame's layout so far: its messages act now
+       that the frame's other channels decoded, unless one of them said Type-C, which shows it was no SCCH. */
+    if (!dsd_nxdn_type_c(state)) {
+        NXDN_decode_scch_deferred(opts, state, ctx->result, ctx->direction);
+    }
+    return nxdn_frame_left_carrier(ctx);
 }
 
 /* Decode the frame's signalling channels (nxdn_decode_control_channels()). The "Type-D" layout an SCCH names
@@ -931,7 +948,7 @@ nxdn_frame(dsd_opts* opts, dsd_state* state) {
     int frame_proved = 0;
     int frame_read = 0; // the body reached the confirmation gate
 
-    nxdn_channel_result result = {0U, 0U};
+    nxdn_channel_result result = {0};
 
     nxdn_note_fsw_anchor(state);
     nxdn_frame_ctx_init(&ctx);

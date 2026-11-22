@@ -1530,7 +1530,7 @@ test_scch_crc_gates_scrambler_reload(void) {
         state->nxdn_cipher_type = 1U;
         state->nxdn_payload_mi = 0x1234ULL; /* partway through the superframe */
         make_scch_soft_bits(bits, payload, corrupt);
-        const nxdn_channel_result result = nxdn_deperm_scch_soft(opts, state, bits, reliab, 1U);
+        const nxdn_channel_result result = nxdn_deperm_scch_soft(opts, state, bits, reliab, 1U, 0U);
         rc |= expect_int(corrupt ? "scch-bad-crc-no-position" : "scch-good-crc-first-frame", result.seed_part,
                          corrupt ? 0 : 1);
         rc |= expect_int("scch-decoder-leaves-register", state->nxdn_payload_mi == 0x1234ULL ? 1 : 0, 1);
@@ -1547,7 +1547,7 @@ test_scch_crc_gates_scrambler_reload(void) {
     state->nxdn_cipher_type = 1U;
     state->nxdn_payload_mi = 0x1234ULL;
     make_scch_soft_bits(bits, payload, 0);
-    const nxdn_channel_result third = nxdn_deperm_scch_soft(opts, state, bits, reliab, 1U);
+    const nxdn_channel_result third = nxdn_deperm_scch_soft(opts, state, bits, reliab, 1U, 0U);
     rc |= expect_int("scch-good-crc-third-frame", third.seed_part, 3);
     nxdn_prepare_sacch_payload_seed(state, third.seed_part - 1);
     rc |= expect_int("scch-placement-two-frames-on",
@@ -1650,7 +1650,7 @@ test_scch_undefined_content_confirms_nothing(void) {
         for (uint32_t frame = 0U; frame < 3U; frame++) {
             nxdn_confirm_note_frame_start(state, 1000U + (frame * 192U), frame == 0U ? 1 : 0, 0);
             nxdn_confirm_begin_frame(state);
-            (void)nxdn_deperm_scch_soft(opts, state, bits, reliab, c->inbound ? 0U : 1U);
+            (void)nxdn_deperm_scch_soft(opts, state, bits, reliab, c->inbound ? 0U : 1U, 0U);
             nxdn_confirm_end_frame(opts, state);
         }
         rc |= expect_int(c->tag, nxdn_confirm_is_confirmed(state), (int)c->valid);

@@ -377,7 +377,7 @@ nxdn_handle_sacch_superframe(dsd_opts* opts, dsd_state* state, const uint8_t* tr
 nxdn_channel_result
 nxdn_handle_sacch(dsd_opts* opts, dsd_state* state, const uint8_t* trellis_buf, const uint8_t* m_data, uint8_t crc,
                   uint8_t check) {
-    nxdn_channel_result result = {0U, 0U};
+    nxdn_channel_result result = {0};
     if (crc != check) {
         nxdn_reset_sacch_segments(state);
     }
@@ -1528,11 +1528,28 @@ nxdn_deperm_facch2_udch_soft(dsd_opts* opts, dsd_state* state, uint8_t bits[348]
 }
 
 /*
+ * A CRC-passing SCCH whose messages wait for the rest of its frame (nxdn_deperm_scch_soft()'s defer): it names the
+ * "Type-D" layout the frame's other channels read now, as nxdn_scch_prepare_type_d() does, and the confirmation its
+ * messages are judged by is the one it saw.
+ */
+static void
+nxdn_scch_defer(dsd_state* state, const uint8_t* trellis_buf, int valid, nxdn_channel_result* result) {
+    dsd_nxdn_note_type_d_layout(state);
+    if (valid) {
+        state->nxdn_frame_type_d_scch = 1U;
+    }
+    result->scch_deferred = 1U;
+    result->scch_acts = (uint8_t)nxdn_confirm_is_confirmed(state);
+    DSD_MEMCPY(result->scch_bits, trellis_buf, sizeof(result->scch_bits));
+}
+
+/*
  * Soft-decision SCCH depermute/decode path.
  */
 nxdn_channel_result
-nxdn_deperm_scch_soft(dsd_opts* opts, dsd_state* state, uint8_t bits[60], const uint8_t reliab[60], uint8_t direction) {
-    nxdn_channel_result result = {0U, 0U};
+nxdn_deperm_scch_soft(dsd_opts* opts, dsd_state* state, uint8_t bits[60], const uint8_t reliab[60], uint8_t direction,
+                      uint8_t defer) {
+    nxdn_channel_result result = {0};
     DSD_FPRINTF(stderr, "%s", KYEL);
     DSD_FPRINTF(stderr, " SCCH");
 
@@ -1587,7 +1604,11 @@ nxdn_deperm_scch_soft(dsd_opts* opts, dsd_state* state, uint8_t bits[60], const 
         } else {
             result.scch_invalid = 1U;
         }
-        NXDN_decode_scch(opts, state, trellis_buf, direction);
+        if (defer) {
+            nxdn_scch_defer(state, trellis_buf, valid, &result);
+        } else {
+            NXDN_decode_scch(opts, state, trellis_buf, direction);
+        }
     }
 
     DSD_FPRINTF(stderr, "%s", KNRM);

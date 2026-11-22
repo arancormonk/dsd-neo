@@ -4189,13 +4189,14 @@ nxdn_scch_handle_info1(dsd_opts* opts, dsd_state* state, const struct nxdn_scch_
                               DSD_CALL_ENC_OBSERVED_NONE);
 }
 
-/* One SCCH (NXDN TS 1-E §6.5): its structure names the message, INFO4 to INFO1, each decoded on its own. */
-void
-NXDN_decode_scch(dsd_opts* opts, dsd_state* state, const uint8_t* Message, uint8_t direction) {
+/* One SCCH (NXDN TS 1-E §6.5): its structure names the message, INFO4 to INFO1, each decoded on its own; it acts only
+ * on a transmission @p acts says was confirmed. */
+static void
+nxdn_decode_scch_acting(dsd_opts* opts, dsd_state* state, const uint8_t* Message, uint8_t direction, int acts) {
     const time_t now = dsd_decode_time();
     struct nxdn_scch_info info;
     nxdn_scch_parse(Message, direction, now, &info);
-    info.acts = nxdn_confirm_is_confirmed(state);
+    info.acts = acts;
     info.reserved_prefix = (uint8_t)nxdn_scch_names_reserved_prefix(&info);
     info.problem = nxdn_scch_content_problem(Message, direction);
     info.diagnostic_only = (uint8_t)(info.problem != NULL);
@@ -4215,6 +4216,18 @@ NXDN_decode_scch(dsd_opts* opts, dsd_state* state, const uint8_t* Message, uint8
     }
     if (info.opcode == 0x07U || info.opcode == 0x03U) {
         nxdn_scch_handle_info1(opts, state, &info);
+    }
+}
+
+void
+NXDN_decode_scch(dsd_opts* opts, dsd_state* state, const uint8_t* Message, uint8_t direction) {
+    nxdn_decode_scch_acting(opts, state, Message, direction, nxdn_confirm_is_confirmed(state));
+}
+
+void
+NXDN_decode_scch_deferred(dsd_opts* opts, dsd_state* state, const nxdn_channel_result* result, uint8_t direction) {
+    if (result != NULL && result->scch_deferred != 0U) {
+        nxdn_decode_scch_acting(opts, state, result->scch_bits, direction, result->scch_acts != 0U);
     }
 }
 
