@@ -1126,6 +1126,88 @@ Item {
             }
         }
 
+        // Issue #901 (r2 D1): Compact view flipped in the session's Settings, which covers the Monitor without hiding
+        // it, re-laid out and scrolled the Monitor's calls behind it: at 320 dp and text 1.6 with 250 calls and the
+        // list at row 160, eight window-level hides, each a blocking query of Android's bridge. The Monitor keeps its
+        // model but takes the new density only once it is in reach again: while covered a flip raises no show or
+        // hide anywhere and moves nothing; uncovered, the rows take the new height once and the list goes to its
+        // start. A flip and a flip back under the cover leave nothing to apply. The session's History and Home are
+        // hidden meanwhile (their lists detached), so they have nothing to lay out either.
+        function test_m9_covered_monitor_takes_the_density_when_shown() {
+            var monitor = findChild(app, "monitorScreen");
+            var list = findChild(monitor, "recentCallsList");
+            var width = app.width;
+            prefs.compactView = false;
+            app.width = 320;
+            Ui.Theme.fontScale = 1.6;
+            try {
+                callHistory.clearAll();
+                callHistory.pushMany(250, "TODAY");
+                tryCompare(list, "count", 250);
+                verify(monitor.visible && !monitor.compactView);
+                var fullRow = monitor.callRowHeight;
+                list.positionViewAtIndex(160, ListView.Beginning);
+                waitForRendering(app.contentItem);
+                var deep = list.contentY;
+                verify(deep - list.originY > 100 * fullRow, "the list is deep in the calls: " + deep);
+                app.sessionDestination = "settings";
+                tryVerify(function () { return !Ui.Navigation.allows(list); }, 1000, "the session's Settings cover the Monitor");
+                verify(monitor.visible, "covered, not hidden");
+                for (var name of ["homeScreen", "idleHistoryScreen", "sessionHistoryScreen"])
+                    verify(!findChild(app, name).visible, name + " is hidden under the session's Settings");
+                waitForRendering(app.contentItem);
+                wait(50);
+
+                for (var on of [true, false, true]) {
+                    testContext.startAccessibilityCount();
+                    prefs.compactView = on;
+                    wait(0);
+                    waitForRendering(app.contentItem);
+                    wait(50);
+                    var counts = testContext.accessibilityCount();
+                    testContext.stopAccessibilityCount();
+                    compare(typed(counts, "ObjectShow") + typed(counts, "ObjectHide"), 0,
+                            "covered, a flip to " + on + " raised shows or hides: " + churn(counts));
+                    verify(!monitor.compactView, "covered, the Monitor keeps the density it shows");
+                    compare(monitor.callRowHeight, fullRow);
+                    compare(list.contentY, deep, "covered, the list did not move");
+                }
+
+                // Uncovered: the new density once, and the list at its start.
+                app.sessionDestination = "";
+                tryVerify(function () { return Ui.Navigation.allows(list); }, 1000, "the Monitor in reach again");
+                tryVerify(function () { return monitor.compactView; }, 1000, "uncovered, the Monitor takes compact view");
+                verify(monitor.callRowHeight < fullRow, "compact rows are shorter");
+                tryVerify(function () { return Math.abs(list.contentY - list.originY) < 1; }, 1000,
+                          "the list at its start: " + list.contentY + " vs " + list.originY);
+                waitForRendering(app.contentItem);
+                var row = list.itemAtIndex(0);
+                verify(row !== null && Math.abs(row.height - monitor.callRowHeight) < 0.5, "the rows at the compact height");
+
+                // A flip and a flip back under the cover: nothing to apply, the list stays where it is.
+                list.positionViewAtIndex(160, ListView.Beginning);
+                waitForRendering(app.contentItem);
+                deep = list.contentY;
+                app.sessionDestination = "settings";
+                tryVerify(function () { return !Ui.Navigation.allows(list); }, 1000);
+                prefs.compactView = false;
+                prefs.compactView = true;
+                app.sessionDestination = "";
+                tryVerify(function () { return Ui.Navigation.allows(list); }, 1000);
+                waitForRendering(app.contentItem);
+                wait(50);
+                verify(monitor.compactView);
+                compare(list.contentY, deep, "no change to apply: the list keeps its place");
+            } finally {
+                testContext.stopAccessibilityCount();
+                app.sessionDestination = "";
+                prefs.compactView = false;
+                Ui.Theme.resetFontScale();
+                app.width = width;
+                callHistory.clearAll();
+            }
+        }
+
         // B11 (issue #901): a card's heading and controls (the section heading, the site button, Play, More, a scan
         // list's Play and More) carry no name or description while covered by a sheet or hidden with Home, as while
         // held: Android keeps the nodes it already fetched, and reads a covered node's cached interface by what it says

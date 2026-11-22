@@ -523,11 +523,28 @@ Item {
     property bool localDetailsExpanded: false
     property bool detailsExpanded: prefsStore && prefsStore.monitorDetailsExpanded !== undefined ? prefsStore.monitorDetailsExpanded === true : localDetailsExpanded
     // Issue #901: Compact view (AppPrefs ui/compactView), read from the same
-    // store, else the app's prefs. The one value the budget, the rows' form
-    // and height and the follower's row height all read.
-    readonly property bool compactView: prefsStore && prefsStore.compactView !== undefined ? prefsStore.compactView === true : (typeof prefs !== "undefined" && !!prefs && prefs.compactView === true)
+    // store, else the app's prefs.
+    readonly property bool compactViewSetting: prefsStore && prefsStore.compactView !== undefined ? prefsStore.compactView === true : (typeof prefs !== "undefined" && !!prefs && prefs.compactView === true)
+    // The density the Monitor lays out in: the one value the budget, the
+    // rows' form and height and the follower's row height all read. It
+    // follows the setting while the Monitor is in reach, or hidden (its list
+    // then holds no rows). Under a screen or sheet that covers it without
+    // hiding it (the session's Settings, where the setting changes) it keeps
+    // the density it shows and takes the new one once uncovered (r2 D1): a
+    // re-layout of the rows under the cover raised a hide for each row it
+    // dropped, each a blocking query of Android's bridge ("Hidden lists").
+    readonly property bool densityInReach: Navigation.allows(screen) || !visible
+    property bool compactView: false
+    Binding {
+        target: screen
+        property: "compactView"
+        value: screen.compactViewSetting
+        when: screen.densityInReach
+        restoreMode: Binding.RestoreNone
+    }
     // Issue #901 (D11): a change of density puts the calls back at their
-    // start, the list header in view; the focus stays where it is. Deferred so
+    // start, the list header in view; the focus stays where it is (a change
+    // made under a cover, once it is applied). Deferred so
     // the rows and the tier take their new heights first, by a timer the
     // screen owns, so nothing runs after it closes; the rows are laid out at
     // their new height before the view is placed, or the start it found was
