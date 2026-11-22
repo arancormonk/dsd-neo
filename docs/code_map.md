@@ -17847,9 +17847,10 @@ Qt Quick frontend (`src/ui/qt`):
   (Tibetan stacks) is drawn smaller inside the box, never over its neighbours: the title and the "+ N lists" line,
   the scan target, timing and roaming lines, the hero's ids, identity note, algorithm and channel (each as tall as
   the subline's reservation, `heroSublineHeight`, and the Row too, never its children's natural heights; the
-  reservation holds the tags and the `LineBoxes` boxes of the subline's fonts, mono 13, sans 13 and mono 11, so
-  Latin, CJK and emoji keep their size in it: r6 J4, from the base mono face alone a CJK channel was drawn at 23 of
-  its 26 px under Noto CJK at 2.0), the
+  reservation holds the tags and the `LineBoxes` boxes of the fonts that draw received or imported text, mono 13
+  and mono 11, so Latin, CJK and emoji keep their size in it: r6 J4, from the base mono face alone a CJK channel was
+  drawn at 24 of its 26 px under Noto CJK at 2.0; the identity note is app text, whose sans 13 Latin line that box
+  holds, so the host's hero keeps its height), the
   strip's identity and a `subtitleReading` `DisclosureRow`'s answer; on Listen, a card's title and one-line
   supporting line (`titleBox`, `sourceBox`, `LineBoxes`; a shared title's wrapping supporting line keeps its lines,
   measured by an unfitted hidden twin, `sourceWrapProbe`, never by its own implicit height, which the fit changes:

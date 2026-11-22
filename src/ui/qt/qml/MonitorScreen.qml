@@ -369,11 +369,15 @@ Item {
     readonly property string rowTimeProbe: [qsTr("now"), "59m", "23h", "999d", "99y"].join("\n")
     readonly property real heroMicroHeight: Math.ceil(heroMicroMetrics.height)
     // The hero's subline: its tags, and the line boxes (LineBoxes: Latin, CJK
-    // and emoji) of its fonts, the ids' and channel's mono 13, the identity
-    // note's sans 13 and the algorithm's mono 11, so only a script that stands
-    // taller than the box is drawn smaller in it (r6 J4: from the base mono
-    // face alone, a CJK channel was drawn at 23 px of its 26 under Noto CJK).
-    readonly property real heroSublineHeight: Math.ceil(Math.max(heroSublineMetrics.height, LineBoxes.lineHeight(Theme.mono, Theme.fontSize(13), Font.Normal), LineBoxes.lineHeight(Theme.sans, Theme.fontSize(13), Font.Normal), LineBoxes.lineHeight(Theme.mono, Theme.fontSize(11), Font.Normal), heroEncTag.implicitHeight, heroEmergencyTag.implicitHeight, heroPrivateTag.implicitHeight))
+    // and emoji) of the fonts that draw received or imported text, the ids'
+    // and channel's mono 13 and the algorithm's mono 11, so only a script that
+    // stands taller than the box is drawn smaller in it (r6 J4: from the base
+    // mono face alone, a CJK channel was drawn at 24 px of its 26 under Noto
+    // CJK at 2.0). The identity note is app text (no translator is installed),
+    // whose sans 13 Latin line the mono box holds; its own box, a CJK line
+    // taller than the Latin one, would grow the hero on a desktop host by 1 px
+    // at 2.0 for text it never draws.
+    readonly property real heroSublineHeight: Math.ceil(Math.max(heroSublineMetrics.height, LineBoxes.lineHeight(Theme.mono, Theme.fontSize(13), Font.Normal), LineBoxes.lineHeight(Theme.mono, Theme.fontSize(11), Font.Normal), heroEncTag.implicitHeight, heroEmergencyTag.implicitHeight, heroPrivateTag.implicitHeight))
     readonly property real heroFullHeight: 2 * 14 + heroMicroHeight + 6 + Math.ceil(Theme.fontSize(40)) + 6 + heroSublineHeight + 6 + Math.max(26, Math.ceil(heroDurationMetrics.height))
     readonly property real heroCompactHeight: 2 * 12 + heroMicroHeight + 4 + Math.ceil(Theme.fontSize(30)) + 4 + heroSublineHeight
     readonly property real stripHeight: {
