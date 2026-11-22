@@ -482,7 +482,7 @@ test_serial_cli_override(void) {
  * before the apply: before the fix the in-place failure put noise back in the squelch fields with the default marked
  * out, so the next sync took noise as the session's own and a digital decode kept it. A config whose squelch keys
  * ended the default keeps it ended after either failure, over the Off the session had beneath it, never the default's
- * noise left as a squelch someone set.
+ * noise left as a squelch someone set, and an Airspy that keeps running after the in-place failure runs that Off.
  */
 static void
 test_config_failure_keeps_the_analog_default(void) {
@@ -529,7 +529,16 @@ test_config_failure_keeps_the_analog_default(void) {
         cmd->n = sizeof(*cfg);
         DSD_MEMCPY(cmd->data, cfg, sizeof(*cfg));
         test_creates = 0;
+        test_squelches = 0;
+        test_sql = -1.0f;
         assert(apply_config_cmd(opts, state, cmd) == UI_CMD_APPLY_FAILED);
+        /* The Airspy that keeps running is told the Off the ended default leaves (review round 3): before the fix it
+           was never told, and ran the default's noise behind an Off readout. */
+        if (keys && !reopen && (test_squelches < 1 || !dsd_squelch_is_off((double)test_sql))) {
+            DSD_FPRINTF(stderr, "failed in-place config with squelch keys: %d level pushes, last %g; want Off pushed\n",
+                        test_squelches, (double)test_sql);
+            assert(0);
+        }
         const int want_state = keys ? DSD_SQUELCH_DEFAULT_ENDED : DSD_SQUELCH_DEFAULT_APPLIED;
         const int want_mode = keys ? DSD_SQUELCH_MODE_LEVEL : DSD_SQUELCH_MODE_NOISE;
         if (opts->squelch_default_state != want_state || opts->rtl_squelch_mode != want_mode

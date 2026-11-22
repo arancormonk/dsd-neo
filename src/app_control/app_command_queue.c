@@ -5043,7 +5043,9 @@ apply_cfg_radio_input_tuned(dsd_opts* opts, dsd_state* state, const dsdneoUserCo
     } else {
         rc = svc_airspy_apply_config_locked(opts, state, &cfg->airspy, &tuning);
         if (rc != 0 && config_ended) {
+            /* The Airspy keeps running: it runs the session's squelch beneath the default from here on too. */
             dsd_squelch_analog_default_end(opts);
+            svc_rtl_push_channel_squelch(opts, state);
         }
     }
     apply_cfg_live_rtl_ppm_request(opts, cfg, in->audio_in_type);
