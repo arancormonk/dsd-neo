@@ -11854,18 +11854,18 @@ run_squelch_default_args(int argc, const char* const* args, dsd_opts* opts, int*
 static int
 test_squelch_analog_default_option(void) {
     static const struct {
-        int argc;
         const char* args[4];
+        int argc;
         int mode;
         int margin;
         int ended;
     } good[] = {
-        {2, {"--squelch-analog-default", "noise+12"}, DSD_SQUELCH_MODE_NOISE, 12, 0},
-        {1, {"--squelch-analog-default=auto"}, DSD_SQUELCH_MODE_AUTO, 10, 0},
-        {1, {"--squelch-analog-default=off"}, DSD_SQUELCH_MODE_LEVEL, 0, 0},
-        {3, {"--squelch-analog-default", "noise", "--squelch=off"}, DSD_SQUELCH_MODE_NOISE, 10, 1},
-        {3, {"--squelch=-60", "--squelch-analog-default", "noise+10"}, DSD_SQUELCH_MODE_NOISE, 10, 1},
-        {4, {"--squelch", "noise+10", "--squelch-analog-default", "noise+10"}, DSD_SQUELCH_MODE_NOISE, 10, 1},
+        {{"--squelch-analog-default", "noise+12"}, 2, DSD_SQUELCH_MODE_NOISE, 12, 0},
+        {{"--squelch-analog-default=auto"}, 1, DSD_SQUELCH_MODE_AUTO, 10, 0},
+        {{"--squelch-analog-default=off"}, 1, DSD_SQUELCH_MODE_LEVEL, 0, 0},
+        {{"--squelch-analog-default", "noise", "--squelch=off"}, 3, DSD_SQUELCH_MODE_NOISE, 10, 1},
+        {{"--squelch=-60", "--squelch-analog-default", "noise+10"}, 3, DSD_SQUELCH_MODE_NOISE, 10, 1},
+        {{"--squelch", "noise+10", "--squelch-analog-default", "noise+10"}, 4, DSD_SQUELCH_MODE_NOISE, 10, 1},
     };
 
     static const struct {

@@ -3016,15 +3016,15 @@ test_snapshot_squelch_level_whole_db(void) {
     enum level_kind { LEVEL_DB, LEVEL_LINEAR_ONE, LEVEL_OFF };
 
     static const struct {
-        level_kind kind;
-        double db; /* LEVEL_DB: the level in dB */
-        int sql;
+        double db;          /* LEVEL_DB: the level in dB */
         const char* warned; /* NULL: no warning */
+        level_kind kind;
+        int sql;
     } cases[] = {
-        {LEVEL_DB, -0.25, -1, "-0.25 dB"},      {LEVEL_LINEAR_ONE, 0.0, -1, "0.00 dB"},
-        {LEVEL_DB, -65.5, -66, "-65.50 dB"},    {LEVEL_DB, -4.49, -4, "-4.49 dB"},
-        {LEVEL_DB, -60.0, -60, NULL},           {LEVEL_OFF, 0.0, 0, NULL},
-        {LEVEL_DB, -160.0, -120, "-160.00 dB"},
+        {-0.25, "-0.25 dB", LEVEL_DB, -1},      {0.0, "0.00 dB", LEVEL_LINEAR_ONE, -1},
+        {-65.5, "-65.50 dB", LEVEL_DB, -66},    {-4.49, "-4.49 dB", LEVEL_DB, -4},
+        {-60.0, NULL, LEVEL_DB, -60},           {0.0, NULL, LEVEL_OFF, 0},
+        {-160.0, "-160.00 dB", LEVEL_DB, -120},
     };
 
     auto opts_storage = std::unique_ptr<dsd_opts>(new dsd_opts{});

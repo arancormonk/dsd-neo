@@ -16532,7 +16532,7 @@ test_decode_mode_set_runs_the_analog_default(void) {
     static dsd_opts opts;
     static dsd_state state;
     static void* fake_ctx[2];
-    int rc = start_squelch_default_session(&opts, &state, fake_ctx);
+    int rc = start_squelch_default_session(&opts, &state, (void*)fake_ctx);
 
     reset_rx_family_wrap();
     g_cmd_squelch_setting_pushes = 0;
@@ -16600,7 +16600,9 @@ test_decode_mode_set_runs_the_analog_default(void) {
                                                                 && opts.rtl_squelch_mode == DSD_SQUELCH_MODE_LEVEL
                                                                 && dsd_squelch_is_off(opts.rtl_squelch_level));
     /* A refused edit ends nothing. */
-    rc |= start_squelch_default_session(&opts, &state, fake_ctx);
+    state.rtl_ctx = NULL;
+    freeState(&state);
+    rc |= start_squelch_default_session(&opts, &state, (void*)fake_ctx);
     rc |= expect_true("default: bad margin queued", submit_squelch_setting(DSD_SQUELCH_MODE_AUTO, 2, 0.0) > 0);
     rc |= expect_int("default: bad margin drained", dsd_app_drain_cmds(&opts, &state), 1);
     rc |= expect_int("default: a refused edit ends nothing", opts.squelch_default_state, DSD_SQUELCH_DEFAULT_IDLE);
@@ -16617,7 +16619,7 @@ test_decode_mode_set_runs_the_analog_default(void) {
         return expect_true("default: temp directory", 0);
     }
     rc |= write_pcm16_wav("input.wav", 48000U, 8U);
-    rc |= start_squelch_default_session(&opts, &state, fake_ctx);
+    rc |= start_squelch_default_session(&opts, &state, (void*)fake_ctx);
     reset_rx_family_wrap();
     rc |= submit_decode_mode(&opts, &state, DSDCFG_MODE_ANALOG, "default: nfm before the input change");
     rc |= expect_int("default: in before the input change", opts.squelch_default_state, DSD_SQUELCH_DEFAULT_APPLIED);
