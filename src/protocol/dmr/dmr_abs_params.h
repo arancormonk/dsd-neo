@@ -22,14 +22,17 @@ extern "C" {
 #endif
 
 /* What the PDU being handled was assembled from. A single CSBK has is_mbc 0 and no continuation. An MBC has its
-   header's CSBKO, the number of continuation blocks after the header (1..3, TS 102 361-1 §7.4.0), and the first
-   continuation's CSBKO and last-block bit (CSBK bits 98..103 and 96). */
+   header's CSBKO, the number of continuation blocks received after the header (1..3 are well formed, TS 102 361-1
+   §7.4.0), and the first continuation's CSBKO and last-block bit (CSBK bits 98..103 and 96). proves_content is 1 when
+   the bursts it came from prove content to a scan quiet check (a CSBK or MBC header by its own check, or a RAS
+   signature -F accepts; an MBC also accepted as a whole): dmr_cspdu_ex() notes it only for a PDU it does not refuse. */
 typedef struct {
     uint8_t is_mbc;
     uint8_t continuations;
     uint8_t header_csbko;
     uint8_t cont_csbko;
     uint8_t cont_lb;
+    uint8_t proves_content;
 } dmr_cspdu_shape;
 
 /* Absolute channel parameters (Cdeftype 0): the LPCN they define (CHAN, which may be 0 or 4095: a frequency that names

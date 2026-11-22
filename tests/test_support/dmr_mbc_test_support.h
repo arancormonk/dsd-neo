@@ -26,7 +26,7 @@ dsd_test_dmr_cspdu_mbc(dsd_opts* opts, dsd_state* state, uint8_t* bits, uint8_t*
     for (int i = 0; i < 6; i++) {
         bits[98 + i] = (uint8_t)((csbko >> (5 - i)) & 1U);
     }
-    const dmr_cspdu_shape shape = {1U, 1U, csbko, csbko, 1U};
+    const dmr_cspdu_shape shape = {1U, 1U, csbko, csbko, 1U, 0U};
     dmr_cspdu_ex(opts, state, bits, bytes, 1U, 0U, &shape);
 }
 

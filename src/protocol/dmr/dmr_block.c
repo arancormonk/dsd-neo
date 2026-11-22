@@ -1716,16 +1716,17 @@ dmr_block_type2_set_lb_pf(dmr_block_assembler_ctx* ctx) {
     }
 }
 
-/* An MBC is a header and one to three continuations (TS 102 361-1 §7.4.0); a UDT has its own bound. A longer one is
-   refused, and its assembly ends: a continuation after it joins nothing. */
+/* An MBC is a header and one to three continuations (TS 102 361-1 §7.4.0), counted as received (a header whose last
+   block bit is set ends with none); a UDT has its own bound. Any other count is refused, and its assembly ends: a
+   continuation after it joins nothing. */
 static uint8_t DSD_ATTR_USED
 dmr_block_type2_length_ok(dmr_block_assembler_ctx* ctx) {
-    if (ctx->is_udt || (ctx->blocks >= 1 && ctx->blocks <= 3)) {
+    if (ctx->is_udt || (ctx->blockcounter >= 1 && ctx->blockcounter <= 3)) {
         return 1;
     }
 
     DSD_FPRINTF(stderr, "%s", KRED);
-    DSD_FPRINTF(stderr, "\n Slot %d - MBC aggregate length out of bounds: %d", ctx->slot + 1, ctx->blocks);
+    DSD_FPRINTF(stderr, "\n Slot %d - MBC aggregate length out of bounds: %d", ctx->slot + 1, ctx->blockcounter);
     DSD_FPRINTF(stderr, "%s", KNRM);
     ctx->state->data_block_crc_valid[ctx->slot][0] = 0;
     ctx->state->dmr_mbc_armed[ctx->slot] = 0;
@@ -1821,10 +1822,11 @@ dmr_block_type2_dispatch(dmr_block_assembler_ctx* ctx) {
         const uint8_t* const sf = ctx->state->dmr_pdu_sf[ctx->slot];
         const dmr_cspdu_shape shape = {
             .is_mbc = 1U,
-            .continuations = (uint8_t)ctx->blocks,
+            .continuations = ctx->blockcounter,
             .header_csbko = (uint8_t)(sf[0] & 0x3FU),
             .cont_csbko = (uint8_t)(sf[ctx->block_len] & 0x3FU),
             .cont_lb = (uint8_t)(sf[ctx->block_len] >> 7),
+            .proves_content = (uint8_t)(accepted && ctx->state->dmr_mbc_header_proven[ctx->slot]),
         };
         const uint8_t saved_crc_invalid = ctx->state->event_crc_invalid[ctx->slot];
         ctx->state->event_crc_invalid[ctx->slot] |= crc_flags;
@@ -1940,20 +1942,53 @@ dmr_block_assembler_finalize(dmr_block_assembler_ctx* ctx) {
     }
 }
 
+/* A slot's next burst is one TDMA frame (two 144-symbol bursts) after its last (TS 102 361-1 §4.2). The grid's slips
+   move a burst by a few symbols either way; a burst missed in between moves it a whole frame. */
+#define DMR_MBC_NEXT_BURST_SYMBOLS 288U
+#define DMR_MBC_POSITION_TOLERANCE 12U
+
+static void
+dmr_block_mbc_arm(dsd_state* state, uint8_t slot) {
+    state->dmr_mbc_armed[slot] = 1;
+    state->dmr_mbc_clock[slot] = state->symbol_clock;
+    state->dmr_mbc_epoch[slot] = state->symbol_clock_epoch;
+    state->dmr_mbc_carrier[slot] = state->carrier_seq;
+}
+
+/* 1 when the slot is armed and this burst is the slot's next one after the MBC's last block, on the same carrier and
+   symbol timeline. */
+static int
+dmr_block_mbc_is_next_burst(const dsd_state* state, uint8_t slot) {
+    if (!state->dmr_mbc_armed[slot] || state->dmr_mbc_epoch[slot] != state->symbol_clock_epoch
+        || state->dmr_mbc_carrier[slot] != state->carrier_seq) {
+        return 0;
+    }
+    const uint64_t since = state->symbol_clock - state->dmr_mbc_clock[slot];
+    return since >= (uint64_t)(DMR_MBC_NEXT_BURST_SYMBOLS - DMR_MBC_POSITION_TOLERANCE)
+           && since <= (uint64_t)(DMR_MBC_NEXT_BURST_SYMBOLS + DMR_MBC_POSITION_TOLERANCE);
+}
+
 /* An MBC is consecutive bursts on one slot of one carrier (TS 102 361-1 §7.4.0): its header (data type 4) arms the
-   slot, and a continuation (data type 5) joins it only while armed. The burst handler disarms the slot on any other
-   burst there, as do the voice readers, a sync loss and a retune (dmr_reset_blocks()). Returns 0 for a continuation
-   that joins nothing, which is dropped. */
+   slot, and a continuation (data type 5) joins it only while armed and only as the slot's next burst after the MBC's
+   last block. The burst handler disarms the slot on any other burst there, as do the voice readers, a sync loss and a
+   retune (dmr_reset_blocks()); a burst the decoder never saw is caught by its position. Returns 0 for a continuation
+   that joins nothing, which is dropped and ends the assembly. */
 static int
 dmr_block_mbc_continuity(dsd_state* state, uint8_t slot, uint8_t databurst) {
     if (databurst == 0x04) {
-        state->dmr_mbc_armed[slot] = 1;
+        dmr_block_mbc_arm(state, slot);
         return 1;
     }
-    if (databurst != 0x05 || state->dmr_mbc_armed[slot]) {
+    if (databurst != 0x05) {
         return 1;
     }
-    DSD_FPRINTF(stderr, "\n Slot %d - MBC continuation without its header on this slot; dropped;", slot + 1);
+    if (dmr_block_mbc_is_next_burst(state, slot)) {
+        dmr_block_mbc_arm(state, slot);
+        return 1;
+    }
+    DSD_FPRINTF(stderr, "\n Slot %d - MBC continuation not the next burst after its header on this slot; dropped;",
+                slot + 1);
+    state->dmr_mbc_armed[slot] = 0;
     return 0;
 }
 

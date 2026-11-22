@@ -200,6 +200,9 @@ static void
 send_burst_bits(dsd_opts* opts, dsd_state* state, const uint8_t bits[96], const uint8_t reserved[3],
                 uint8_t databurst) {
     uint8_t info[196];
+    // Each burst is its slot's next one, a TDMA frame (288 symbols) after the last: an MBC continuation joins its
+    // header only there.
+    state->symbol_clock += 288U;
     dmr_test_encode_bptc_196x96(bits, reserved, info);
     dmr_data_burst_handler(opts, state, info, databurst, NULL);
 }

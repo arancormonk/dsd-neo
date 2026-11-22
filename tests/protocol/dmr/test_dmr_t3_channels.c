@@ -107,7 +107,7 @@ dispatch_mbc(uint8_t* bits, uint8_t* bytes, uint8_t opcode) {
     bits[96] = 1U;
     put_bits(bits, 98, opcode & 0x3FU, 6);
     bytes[12] = (uint8_t)(0x80U | (opcode & 0x3FU));
-    const dmr_cspdu_shape shape = {1U, 1U, (uint8_t)(opcode & 0x3FU), (uint8_t)(opcode & 0x3FU), 1U};
+    const dmr_cspdu_shape shape = {1U, 1U, (uint8_t)(opcode & 0x3FU), (uint8_t)(opcode & 0x3FU), 1U, 0U};
     dmr_cspdu_ex(&g_opts, &g_state, bits, bytes, 1U, 0U, &shape);
 }
 
@@ -692,21 +692,35 @@ unpack_bytes(const uint8_t* bytes, uint8_t* bits, size_t count) {
     }
 }
 
+/* The symbol clock at @p slot's next burst: bursts alternate slots every 144 symbols, TS1 on even burst positions and
+   TS2 on odd, so a slot's next burst is one TDMA frame (288 symbols) after its last when no burst is skipped. A burst
+   the decoder misses is one this never dispatches: the clock moves past it all the same. */
+static void
+advance_to_slot(uint8_t slot) {
+    uint64_t pos = g_state.symbol_clock + 144U;
+    if (((pos / 144U) & 1U) != (slot & 1U)) {
+        pos += 144U;
+    }
+    g_state.symbol_clock = pos;
+}
+
 static void
 send_burst(uint8_t slot, const uint8_t bits[96], uint8_t databurst) {
     uint8_t info[196];
+    advance_to_slot(slot);
     g_state.currentslot = slot;
     dmr_test_encode_bptc_196x96(bits, k_no_reserved, info);
     dmr_data_burst_handler(&g_opts, &g_state, info, databurst, NULL);
 }
 
-/* A CSBK (@p mbc_header 0: LB 1, mask 0xA5A5, data type 3) or an MBC header (LB 0, mask 0xAAAA, data type 4) of
-   opcode @p csbko naming channel @p chan (bits 16..27), talkgroup 1001 and source 2002. */
+/* A control burst of opcode @p csbko naming channel @p chan (bits 16..27), talkgroup 1001 and source 2002, with
+   last-block bit @p lb: a CSBK (@p mbc_header 0: mask 0xA5A5, data type 3) or an MBC header (mask 0xAAAA, data
+   type 4). */
 static void
-send_csbk_or_header(uint8_t slot, uint8_t csbko, uint16_t chan, int mbc_header) {
+send_control_burst(uint8_t slot, uint8_t csbko, uint16_t chan, int mbc_header, uint8_t lb) {
     uint8_t bytes[12] = {0};
     uint8_t bits[96];
-    bytes[0] = (uint8_t)((mbc_header ? 0x00U : 0x80U) | (csbko & 0x3FU));
+    bytes[0] = (uint8_t)((lb ? 0x80U : 0x00U) | (csbko & 0x3FU));
     bytes[2] = (uint8_t)(chan >> 4);
     bytes[3] = (uint8_t)((chan & 0x0FU) << 4);
     bytes[5] = 0x03; /* target (bits 32..55): TG 1001 */
@@ -719,6 +733,12 @@ send_csbk_or_header(uint8_t slot, uint8_t csbko, uint16_t chan, int mbc_header) 
     bytes[11] = (uint8_t)crc;
     unpack_bytes(bytes, bits, sizeof bytes);
     send_burst(slot, bits, mbc_header ? 0x04U : 0x03U);
+}
+
+/* A CSBK (@p mbc_header 0: LB 1) or an MBC header (LB 0) through send_control_burst(). */
+static void
+send_csbk_or_header(uint8_t slot, uint8_t csbko, uint16_t chan, int mbc_header) {
+    send_control_burst(slot, csbko, chan, mbc_header, mbc_header ? 0U : 1U);
 }
 
 /* A continuation carrying CdefParms: CSBKO @p csbko, CHAN @p chan, RX @p rx_mhz plus @p rx_step 125 Hz steps (TX the
@@ -818,7 +838,8 @@ test_mbc_header_then_other_same_slot_burst_disarms(void) {
     dsd_trunk_tuning_hooks_set((dsd_trunk_tuning_hooks){0});
 }
 
-/* The other slot's bursts between the header and its continuation leave the assembly alone. */
+/* The other slot's burst between the header and its continuation, and between continuations, leaves the assembly
+   alone. */
 static void
 test_companion_slot_traffic_does_not_disarm(void) {
     reset_bursts();
@@ -827,11 +848,60 @@ test_companion_slot_traffic_does_not_disarm(void) {
     DSD_MEMSET(idle, 0, sizeof idle);
     send_csbk_or_header(0, 49U, 0x0FFFU, 1);
     send_csbk_or_header(1, 25U, 0U, 0);
-    send_burst(1, idle, 0x09U);
     build_abs_block(block[0], 49U, 121U, 451U, 200U);
     send_continuations(0, block, 1U, 0);
     assert(g_state.trunk_vc_freq[0] == 451025000L);
     assert(g_state.trunk_chan_map[121] == 451025000L);
+
+    /* A three-block C_ALOHA with idle bursts on TS1 between its bursts on TS2 still assembles and is accepted: it
+       counts once as scan activity. */
+    reset_bursts();
+    send_csbk_or_header(1, 25U, 0U, 1);
+    uint8_t blocks[2][96];
+    build_abs_block(blocks[0], 25U, 0U, 0U, 0U);
+    build_abs_block(blocks[1], 25U, 0U, 0U, 0U);
+    put_bits(blocks[1], 0, 1U, 1);
+    uint8_t all[2 * 96];
+    DSD_MEMCPY(all, blocks[0], 96);
+    DSD_MEMCPY(all + 96, blocks[1], 96);
+    put_bits(blocks[1], 80, dsd_crc_ccitt16_bits(all, 2U * 96U - 16U), 16);
+    const uint32_t seq = g_state.scan_y_content_seq;
+    send_burst(0, idle, 0x09U);
+    send_burst(1, blocks[0], 0x05);
+    send_burst(0, idle, 0x09U);
+    send_burst(1, blocks[1], 0x05);
+    assert(g_state.scan_y_content_seq == seq + 1U);
+    dsd_trunk_tuning_hooks_set((dsd_trunk_tuning_hooks){0});
+}
+
+/* A continuation joins only as its slot's next burst (discussion #900 B7): header A on TS1, A's continuation and B's
+   header both missed while TS2's bursts keep arriving, then B's continuation: no grant, no map write, no tune. */
+static void
+test_mbc_missed_same_slot_bursts_disarm(void) {
+    uint8_t idle[96];
+    DSD_MEMSET(idle, 0, sizeof idle);
+    for (int missed = 1; missed <= 2; missed++) {
+        reset_bursts();
+        uint8_t block[1][96];
+        send_csbk_or_header(0, 49U, 0x0FFFU, 1); /* A's header */
+        send_burst(1, idle, 0x09U);
+        for (int m = 0; m < missed; m++) {
+            send_burst(1, idle, 0x09U); /* TS1's burst between these two never decoded */
+        }
+        build_abs_block(block[0], 49U, 128U, 451U, 900U); /* B's continuation */
+        send_continuations(0, block, 1U, 0);
+        assert(not_followed(128U));
+        assert(activity_rows() == 0);
+    }
+
+    /* The same continuation one frame after the header is followed. */
+    reset_bursts();
+    uint8_t block[1][96];
+    send_csbk_or_header(0, 49U, 0x0FFFU, 1);
+    send_burst(1, idle, 0x09U);
+    build_abs_block(block[0], 49U, 128U, 451U, 900U);
+    send_continuations(0, block, 1U, 0);
+    assert(g_state.trunk_vc_freq[0] == 451112500L && g_state.trunk_chan_map[128] == 451112500L);
     dsd_trunk_tuning_hooks_set((dsd_trunk_tuning_hooks){0});
 }
 
@@ -925,10 +995,9 @@ test_absolute_grant_two_block_mbc_still_follows(void) {
     dsd_trunk_tuning_hooks_set((dsd_trunk_tuning_hooks){0});
 }
 
-/* A malformed MBC has no side effect at all: no control channel heartbeat, no anchor, nothing published. */
+/* No control channel heartbeat, anchor or scan activity since prepare_no_effect_check(). */
 static void
-test_malformed_mbc_no_cc_heartbeat(void) {
-    reset_bursts();
+prepare_no_effect_check(void) {
     g_state.trunk_cc_freq = 0L;
     g_opts.audio_in_type = AUDIO_IN_RTL;
     g_opts.rtlsdr_center_freq = 451500000U;
@@ -936,18 +1005,96 @@ test_malformed_mbc_no_cc_heartbeat(void) {
     dsd_decode_clock_test_set_ns(UINT64_C(5000) * UINT64_C(1000000000));
     g_state.last_cc_sync_time = 0;
     g_state.last_cc_sync_time_m = 0.0;
-    send_abs_grant_mbc(0, 0U, 127U, 451U, 800U);
-    assert(g_state.last_cc_sync_time == 0);
-    assert(g_state.last_cc_sync_time_m < 0.5 && g_state.last_cc_sync_time_m > -0.5);
-    assert(g_state.trunk_cc_freq == 0L);
-    assert(activity_rows() == 0);
-    assert(g_state.trunk_chan_map[127] == 0L);
+    g_state.scan_y_content_seq = 0U;
+}
 
-    /* The same MBC well formed does keep the control channel warm and anchors it. */
+static int
+no_effect_since_prepare(void) {
+    return g_state.last_cc_sync_time == 0 && g_state.last_cc_sync_time_m < 0.5 && g_state.last_cc_sync_time_m > -0.5
+           && g_state.trunk_cc_freq == 0L && g_state.scan_y_content_seq == 0U && activity_rows() == 0;
+}
+
+/* A malformed MBC has no side effect at all: no control channel heartbeat, no anchor, no scan activity, nothing
+   published. Malformed are a continuation of another CSBKO, and absolute parameters that are not usable: a receive
+   frequency outside Table C.7 or a reserved Cdeftype (TS 102 361-4 Table 7.103). */
+static void
+test_malformed_mbc_no_cc_heartbeat(void) {
+    for (int variant = 0; variant < 3; variant++) {
+        reset_bursts();
+        prepare_no_effect_check();
+        uint8_t block[1][96];
+        send_csbk_or_header(0, 49U, 0x0FFFU, 1);
+        build_abs_block(block[0], variant == 0 ? 0U : 49U, 127U, variant == 1 ? 49U : 451U, 800U);
+        if (variant == 2) {
+            put_bits(block[0], 16, 3U, 4); /* Cdeftype 3 */
+        }
+        send_continuations(0, block, 1U, 0);
+        assert(no_effect_since_prepare());
+        assert(g_state.trunk_chan_map[127] == 0L);
+    }
+    reset_bursts();
+    prepare_no_effect_check();
+
+    /* The same MBC well formed does keep the control channel warm, anchors it and counts as scan activity. */
     send_abs_grant_mbc(0, 49U, 127U, 451U, 800U);
     assert(g_state.last_cc_sync_time_m > 1.0);
     assert(g_state.trunk_cc_freq == 451500000L);
+    assert(g_state.scan_y_content_seq == 1U);
     dsd_trunk_tuning_hooks_set((dsd_trunk_tuning_hooks){0});
+}
+
+/* An MBC header whose last-block bit is set has no continuation: nothing dispatches, so a header-only C_ALOHA under
+   relaxed CRC refreshes nothing, and a continuation after it joins nothing. */
+static void
+test_header_only_mbc_refreshes_nothing(void) {
+    reset_bursts();
+    prepare_no_effect_check();
+    send_control_burst(0, 25U, 0U, 1, 1U);
+    assert(no_effect_since_prepare());
+    uint8_t block[1][96];
+    build_abs_block(block[0], 25U, 0U, 0U, 0U);
+    send_continuations(0, block, 1U, 0);
+    assert(no_effect_since_prepare());
+}
+
+/* The scan's activity evidence (issue #834) waits for the control PDU's verdict: a CSBK or MBC the gate refuses keeps
+   no -Y step on the channel; an accepted one counts once. */
+static void
+test_scan_activity_only_from_accepted_control(void) {
+    reset_bursts();
+    g_state.scan_y_content_seq = 0U;
+    send_csbk_or_header(0, 49U, 0x0FFFU, 0);      /* single-block grant on the absolute escape */
+    send_abs_grant_mbc(1, 0U, 129U, 451U, 1000U); /* continuation of another CSBKO */
+    assert(g_state.scan_y_content_seq == 0U);
+    send_csbk_or_header(0, 25U, 0U, 0); /* a C_ALOHA */
+    assert(g_state.scan_y_content_seq == 1U);
+    dsd_trunk_tuning_hooks_set((dsd_trunk_tuning_hooks){0});
+}
+
+/* C_BCAST announcements that name a channel by BC_AP or VN_AP (Ann_WD_TSCC's MBC form, Vote_Now and Adjacent_Site on
+   0xFFF, Chan_Freq) are refused before any effect when the parameters are unusable; usable ones keep the control
+   channel warm. A single-block Chan_Freq has no BC_AP at all. */
+static void
+test_c_bcast_bad_abs_params_no_effect(void) {
+    static const uint8_t types[] = {0U, 2U, 5U, 6U};
+    for (size_t i = 0; i < sizeof types; i++) {
+        reset();
+        prepare_no_effect_check();
+        send_c_bcast_mbc(types[i], 0x0FFFU, 141U, 49U, 0U, 1U);
+        assert(no_effect_since_prepare());
+        assert(g_state.trunk_chan_map[141] == 0L);
+        send_c_bcast_mbc(types[i], 0x0FFFU, 141U, 451U, 0U, 1U);
+        assert(g_state.last_cc_sync_time_m > 1.0);
+    }
+    reset();
+    prepare_no_effect_check();
+    uint8_t bits[256];
+    uint8_t bytes[48];
+    build_pf0(bits, bytes, 40U);
+    put_bits(bits, 16, 5U, 5);
+    put_bits(bits, 68, 142U, 12);
+    dmr_cspdu(&g_opts, &g_state, bits, bytes, 1U, 0U);
+    assert(no_effect_since_prepare());
 }
 
 int
@@ -966,6 +1113,7 @@ main(void) {
     test_save_restore_round_trip();
     test_mbc_header_then_other_same_slot_burst_disarms();
     test_companion_slot_traffic_does_not_disarm();
+    test_mbc_missed_same_slot_bursts_disarm();
     test_single_csbk_0xfff_is_malformed();
     test_continuation_csbko_mismatch_rejected();
     test_four_continuations_rejected();
@@ -973,6 +1121,9 @@ main(void) {
     test_abs_rx_valid_chan_zero_tunes_without_learning();
     test_absolute_grant_two_block_mbc_still_follows();
     test_malformed_mbc_no_cc_heartbeat();
+    test_header_only_mbc_refreshes_nothing();
+    test_scan_activity_only_from_accepted_control();
+    test_c_bcast_bad_abs_params_no_effect();
     test_chan_freq_header_fff_uses_bcap_chan();
     test_chan_freq_inconsistent_channels_ignored();
     test_chan_freq_learned_notice_and_origin();

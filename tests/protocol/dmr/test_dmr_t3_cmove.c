@@ -360,8 +360,8 @@ test_logical_move_tscc_is_informational(dsd_opts* opts, dsd_state* state) {
 #define MV_TSCC_HZ 453500000L // 453 MHz + 4000 x 125 Hz
 
 /* An absolute Move TSCC learns the TSCC its MV_AP names, SITE when checked and UNVERIFIED when -F accepted it as RAS,
-   and adds it as a current-site candidate unless it is the control channel the receiver is on; one whose CRC failed,
-   or a single block naming 0xFFF (no MV_AP), does neither. None of them retunes. */
+   and adds it as a current-site candidate unless it is the control channel the receiver is on; one whose CRC failed
+   does neither, and a single block naming 0xFFF (no MV_AP) is refused. None of them retunes. */
 static void
 test_absolute_move_tscc_learns_the_tscc(dsd_opts* opts, dsd_state* state) {
     static const struct {
@@ -395,12 +395,12 @@ test_absolute_move_tscc_learns_the_tscc(dsd_opts* opts, dsd_state* state) {
         assert(listed && (flags & DSD_TRUNK_CC_CANDIDATE_CURRENT_SITE) != 0U);
     }
 
-    // A single-block C_MOVE naming 0xFFF carries no MV_AP: malformed, it only prints.
+    // A single-block C_MOVE naming 0xFFF carries no MV_AP: malformed, it is refused before any of its effects.
     move_env(opts, state);
     const move_tscc single = {.pcn = 0xFFFU, .ms = 4321U};
     csbk_move_tscc_captured(opts, state, &single);
-    assert(strstr(g_out, "Move TSCC: MS 4321") != NULL);
-    assert(strstr(g_out, "MBC Absolute Parameters missing or out of range;") != NULL);
+    assert(strstr(g_out, "Malformed Control Signalling Block (CSBKO 39); ignored") != NULL);
+    assert(strstr(g_out, "Move TSCC: MS 4321") == NULL);
     assert(state->trunk_chan_map[0x0123U] == 0 && candidates_count(state) == 0);
 
     // A move naming the control channel the receiver is on teaches the map its channel, but it is no candidate.

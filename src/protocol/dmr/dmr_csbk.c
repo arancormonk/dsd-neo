@@ -43,6 +43,7 @@
 #include <dsd-neo/protocol/dmr/dmr_trunk_sm.h>
 #include <dsd-neo/protocol/dmr/dmr_utils_api.h>
 #include <dsd-neo/runtime/colors.h>
+#include <dsd-neo/runtime/frame_sync_hooks.h>
 #include <dsd-neo/runtime/rigctl_query_hooks.h>
 #include <dsd-neo/runtime/trunk_cc_candidates.h>
 #include <dsd-neo/runtime/trunk_scan_hooks.h>
@@ -3138,11 +3139,39 @@ dmr_cspdu_appends_abs_params(int csbk_o) {
     return csbk_o == 40 || csbk_o == 46 || (csbk_o >= 48 && csbk_o <= 57);
 }
 
-/* A PDU no handler may act on, refused before any of its effects (the control channel heartbeat and anchor included):
-   an MBC of more continuations than TS 102 361-1 §7.4.0 allows, or of an absolute-parameter opcode whose continuation
-   is not exactly one last block carrying its header's CSBKO; or an unprotected single-block channel grant naming the
-   absolute escape (LPCN 0xFFF "defines a Multi Block Control", so it has no appended block). Opcode 56 on MS-sourced
-   data is BS_Dwn_Act, not a grant. */
+/* 1 when the C_BCAST names a channel by the absolute parameters it appends (TS 102 361-4 §7.2.19): Ann_WD_TSCC in its
+   MBC form, Chan_Freq always (Table 7.78), Vote_Now (VN_AP) and Adjacent_Site (BC_AP) on channel 0xFFF (bits 68-79). */
+static int
+dmr_cspdu_c_bcast_uses_abs_params(const uint8_t cs_pdu_bits[], const dmr_cspdu_shape* shape) {
+    switch (convert_bits_into_output(&cs_pdu_bits[16], 5)) {
+        case 0: return shape->is_mbc != 0U;
+        case 5: return 1;
+        case 2:
+        case 6: return convert_bits_into_output(&cs_pdu_bits[68], 12) == 0xFFFU;
+        default: return 0;
+    }
+}
+
+/* 1 when the PDU names its channel by the absolute parameters of an appended block (LPCN 0xFFF "defines a Multi Block
+   Control"): a channel grant or P_CLEAR on LPCN 0xFFF (bits 16-27), a C_MOVE on Physical Channel Number 0xFFF (bits
+   44-55), or such a C_BCAST. Opcode 56 on MS-sourced data is BS_Dwn_Act, not a grant. */
+static int
+dmr_cspdu_uses_abs_params(const dsd_state* state, const uint8_t cs_pdu_bits[], int csbk_o,
+                          const dmr_cspdu_shape* shape) {
+    if (csbk_o == 46 || dmr_t3_grant_is_grant_opcode(csbk_o, state->synctype != DSD_SYNC_DMR_MS_DATA)) {
+        return convert_bits_into_output(&cs_pdu_bits[16], 12) == 0xFFFU;
+    }
+    if (csbk_o == 57) {
+        return convert_bits_into_output(&cs_pdu_bits[44], 12) == 0xFFFU;
+    }
+    return csbk_o == 40 && dmr_cspdu_c_bcast_uses_abs_params(cs_pdu_bits, shape);
+}
+
+/* A PDU no handler may act on, refused before any of its effects (scan activity, the control channel heartbeat and
+   anchor included): an MBC of more continuations than TS 102 361-1 §7.4.0 allows, or none; an MBC of an
+   absolute-parameter opcode whose continuation is not exactly one last block carrying its header's CSBKO; or an
+   unprotected PDU that names its channel by absolute parameters without usable ones (dmr_abs_params_decode(): that
+   one continuation, Cdeftype 0 and a receive frequency inside Table C.7), a single CSBK on 0xFFF among them. */
 static int
 dmr_cspdu_malformed(const dsd_state* state, const uint8_t cs_pdu_bits[], int csbk_o, int csbk_pf,
                     const dmr_cspdu_shape* shape) {
@@ -3150,15 +3179,18 @@ dmr_cspdu_malformed(const dsd_state* state, const uint8_t cs_pdu_bits[], int csb
         if (shape->continuations < 1U || shape->continuations > 3U) {
             return 1;
         }
-        return dmr_cspdu_appends_abs_params(csbk_o) && !dmr_abs_params_shape_ok(shape);
+        if (dmr_cspdu_appends_abs_params(csbk_o) && !dmr_abs_params_shape_ok(shape)) {
+            return 1;
+        }
     }
-    if (csbk_pf != 0 || !dmr_t3_grant_is_grant_opcode(csbk_o, state->synctype != DSD_SYNC_DMR_MS_DATA)) {
+    if (csbk_pf != 0 || !dmr_cspdu_uses_abs_params(state, cs_pdu_bits, csbk_o, shape)) {
         return 0;
     }
-    return convert_bits_into_output(&cs_pdu_bits[16], 12) == 0xFFFU;
+    dmr_abs_params ap;
+    return !dmr_abs_params_decode(cs_pdu_bits, shape, &ap);
 }
 
-static const dmr_cspdu_shape k_dmr_cspdu_single_shape = {0U, 0U, 0U, 0U, 0U};
+static const dmr_cspdu_shape k_dmr_cspdu_single_shape = {0U, 0U, 0U, 0U, 0U, 0U};
 
 /* The shape of the PDU dmr_cspdu_ex() is dispatching; NULL outside one. Decoder thread only. */
 static const dmr_cspdu_shape* s_dmr_cspdu_shape;
@@ -3177,11 +3209,16 @@ dmr_cspdu_dispatch(dsd_opts* opts, dsd_state* state, uint8_t cs_pdu_bits[], uint
 
     csbk_pf = dmr_cspdu_apply_protect_flag_checks(IrrecoverableErrors, csbk_o, csbk_fid, csbk_pf);
 
-    if (dmr_cspdu_malformed(state, cs_pdu_bits, csbk_o, csbk_pf, dmr_cspdu_current_shape())) {
+    const dmr_cspdu_shape* const shape = dmr_cspdu_current_shape();
+    if (dmr_cspdu_malformed(state, cs_pdu_bits, csbk_o, csbk_pf, shape)) {
         DSD_FPRINTF(stderr, "%s", KRED);
         DSD_FPRINTF(stderr, "\n Malformed Control Signalling Block (CSBKO %02X); ignored", csbk_o);
         DSD_FPRINTF(stderr, "%s", KNRM);
         return;
+    }
+    /* Activity for a scan quiet check (issue #834), from the bursts that proved it, now the PDU is not refused. */
+    if (shape->proves_content) {
+        dsd_frame_sync_hook_content_evidence(opts, state, DSD_CONTENT_EVIDENCE_PROVEN, 0U);
     }
 
     if (IrrecoverableErrors == 0 && CRCCorrect == 1) {

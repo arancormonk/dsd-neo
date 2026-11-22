@@ -345,7 +345,7 @@ test_p_clear_named_tscc_becomes_candidate(void) {
     put_bits(bits, 140, 5000U, 13);
     put_bits(bits, 153, 851U, 10); // RX MHz
     put_bits(bits, 163, 5000U, 13);
-    const dmr_cspdu_shape shape = {1U, 1U, 46U, 46U, 1U};
+    const dmr_cspdu_shape shape = {1U, 1U, 46U, 46U, 1U, 0U};
     state.currentslot = 0;
     dmr_cspdu_ex(&opts, &state, bits, bytes, 1U, 0U, &shape);
     assert(candidate_count(851625000L) == 1);

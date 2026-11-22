@@ -13388,20 +13388,29 @@ Private per-protocol modules worth knowing about:
   `ENGINE_SIGNAL_SEARCH`, `APP_COMMAND_QUEUE`.
 - Tier III MBC assembly and absolute parameters (`dmr_block.c`, `dmr_abs_params.{c,h}`, `dmr_csbk.c`, discussion #900
   B7). An MBC is consecutive bursts on one slot of one carrier (TS 102 361-1 §7.4.0): its header (data type 4) arms
-  the slot (`dsd_state::dmr_mbc_armed`), and a continuation (data type 5) joins only an armed slot, else it is dropped.
-  Any other burst on the slot (`dmr_data_burst_handler_origin()`), a voice burst there (`dmr_bs.c`, `dmr_ms.c`), the
-  end of the MBC, a refused length, a sync loss or retune (`dmr_reset_blocks()`) and the no-carrier reset disarm it;
-  the other slot's bursts do not. A non-UDT MBC holds one to three continuations and its CRC covers exactly those
-  blocks. The assembler hands the PDU over with its shape (`dmr_cspdu_shape`: continuations, header and first
-  continuation CSBKO, that continuation's LB) through `dmr_cspdu_ex()`, and `dmr_cspdu_malformed()` refuses, before
-  the control channel heartbeat, the anchor or any handler, an MBC of no continuation or more than three, one of an
+  the slot (`dsd_state::dmr_mbc_armed`) and stamps its position (`dmr_mbc_clock`/`_epoch`/`_carrier`: the
+  `symbol_clock`, its epoch and `carrier_seq`), and a continuation (data type 5) joins only an armed slot and only as
+  the slot's next burst, one TDMA frame (288 symbols, ±12 for grid slips) after the MBC's last block on the same
+  carrier and timeline, else it is dropped and the slot disarmed. A burst the decoder missed disarms nothing, but it
+  moves the clock a frame on, so a continuation after it joins nothing. Any other burst on the slot
+  (`dmr_data_burst_handler_origin()`), a voice burst there (`dmr_bs.c`, `dmr_ms.c`), the end of the MBC, a refused
+  length, a sync loss or retune (`dmr_reset_blocks()`) and the no-carrier reset disarm it; the other slot's bursts do
+  not. A non-UDT MBC holds one to three continuations, counted as received (a header whose LB is set has none and is
+  refused), and its CRC covers exactly those blocks. The assembler hands the PDU over with its shape
+  (`dmr_cspdu_shape`: continuations, header and first continuation CSBKO, that continuation's LB, and whether its
+  bursts prove scan activity) through `dmr_cspdu_ex()`, and `dmr_cspdu_malformed()` refuses, before scan activity,
+  the control channel heartbeat, the anchor or any handler: an MBC of no continuation or more than three; one of an
   absolute-parameter opcode (C_BCAST, P_CLEAR, the grants, C_MOVE: whatever the FID) whose continuation is not exactly
-  one last block carrying its header's CSBKO, and an unprotected single-block grant naming the absolute escape 0xFFF
-  (`dmr_t3_grant_is_grant_opcode()`). `dmr_abs_params_decode()` is the one decoder of CG_AP, MV_AP and BC_AP
-  (Cdeftype 0 only; a receive frequency outside Table C.7, 50..999 MHz and 0..7999 steps of 125 Hz, is no
-  frequency). A grant's valid frequency whose CHAN is 0 or 4095 is tuned and shown but names no channel to learn. The
-  MBC's CRC provenance (checked, RAS-accepted or failed) rides the slot's `event_crc_invalid` as a CSBK's does. Tests:
-  `DMR_T3_CHANNELS`, `DMR_EVENT_CRC`, `DMR_RELAXED_HEADER_IP`, `DMR_BS_SYNC_TIMES`, `DMR_MS_DATA`,
+  one last block carrying its header's CSBKO; and an unprotected PDU that names its channel by absolute parameters
+  (a grant or P_CLEAR on LPCN 0xFFF, a C_MOVE on PCN 0xFFF, Ann_WD_TSCC's MBC form, Chan_Freq, Vote_Now and
+  Adjacent_Site on 0xFFF) whose parameters `dmr_abs_params_decode()` cannot use, a single block on 0xFFF among them.
+  `dmr_abs_params_decode()` is the one decoder of CG_AP, MV_AP, BC_AP and VN_AP (Cdeftype 0 only; a receive
+  frequency outside Table C.7, 50..999 MHz and 0..7999 steps of 125 Hz, is no frequency). A grant's valid frequency
+  whose CHAN is 0 or 4095 is tuned and shown but names no channel to learn. A CSBK or MBC header notes its scan
+  activity evidence (`dsd_frame_sync_hook_content_evidence()`) only once `dmr_cspdu_ex()` accepts its PDU (an MBC
+  also accepted as a whole; `dsd_state::dmr_mbc_header_proven`). The MBC's CRC provenance (checked, RAS-accepted or
+  failed) rides the slot's `event_crc_invalid` as a CSBK's does. Tests: `DMR_T3_CHANNELS`, `DMR_T3_MOVE_RELEASE`,
+  `DMR_T3_CMOVE`, `DMR_EVENT_CRC`, `DMR_RELAXED_HEADER_IP`, `DMR_BS_SYNC_TIMES`, `DMR_MS_DATA`,
   `ENGINE_NO_CARRIER_RESET`.
 - Capacity Plus identity (`dmr_flco.c`, `dmr_csbk.c`, `dmr_trunk_sm.c`). Cap+ talkgroups are 8-bit (1..255) and
   radio IDs 16-bit. The FID 0x10 FLCO 0x04 group voice LC carries the talkgroup at bits 40..47, a 5-bit rest LSN at

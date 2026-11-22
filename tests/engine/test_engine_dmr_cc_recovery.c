@@ -679,7 +679,7 @@ ann_wd_tscc(uint16_t ch1, uint16_t ch2, uint8_t aw1, uint8_t aw2, uint16_t abs_c
     put_csbk_bits(bits, 118U, abs_chan, 12U);
     put_csbk_bits(bits, 130U, abs_mhz, 10U);
     put_csbk_bits(bits, 153U, abs_mhz, 10U);
-    const dmr_cspdu_shape shape = {1U, 1U, 40U, 40U, 1U};
+    const dmr_cspdu_shape shape = {1U, 1U, 40U, 40U, 1U, 0U};
     dmr_cspdu_ex(&g_opts, &g_state, bits, bytes, 1, 0, &shape);
 }
 

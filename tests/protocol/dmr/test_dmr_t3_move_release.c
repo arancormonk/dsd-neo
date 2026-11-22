@@ -190,8 +190,18 @@ main(int argc, char** argv) {
     assert(state.dmrburstR == 16);
     assert(state.dmrburstL == 9);
 
-    // Step 3: P_CLEAR on the followed call's slot, then SM should return to CC immediately
+    // Step 3: a single-block P_CLEAR for the followed call naming LPCN 0xFFF has no appended block: it is malformed,
+    // and refused before any of its effects, so the call is not released.
     state.currentslot = 1;
+    build_pclear(bits, bytes, 1001U);
+    for (int i = 0; i < 12; i++) {
+        bits[16 + i] = 1U;
+    }
+    dmr_cspdu(&opts, &state, bits, bytes, /*crc ok*/ 1, /*errs*/ 0);
+    assert(opts.trunk_is_tuned == 1);
+    assert(state.trunk_vc_freq[0] == f1);
+
+    // Step 4: P_CLEAR on the followed call's slot, then SM should return to CC immediately
     build_pclear(bits, bytes, 1001U);
     dmr_cspdu(&opts, &state, bits, bytes, /*crc ok*/ 1, /*errs*/ 0);
 

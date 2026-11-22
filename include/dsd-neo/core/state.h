@@ -2234,6 +2234,15 @@ struct dsd_state {
     /* 1 while the slot's last burst was an MBC header or one of its continuations: only then does a continuation join
      * that MBC. Any other burst on the slot, a sync loss or a retune (dmr_reset_blocks()) disarms it. */
     uint8_t dmr_mbc_armed[2];
+    /* Where the slot's MBC took its last block (header or continuation): symbol_clock, symbol_clock_epoch and
+     * carrier_seq then. A continuation joins only as the slot's next burst, one TDMA frame on: a burst the decoder
+     * missed disarms nothing, but it moves the clock a frame further. */
+    uint64_t dmr_mbc_clock[2];
+    uint32_t dmr_mbc_epoch[2];
+    uint32_t dmr_mbc_carrier[2];
+    /* 1 when the slot's MBC header proved content by its own check (or a RAS signature -F accepts): the scan's
+     * activity evidence, noted only once the assembled MBC passes the control PDU gate. */
+    uint8_t dmr_mbc_header_proven[2];
     uint8_t dmr_pdu_sf
         [2][24 * 128]; //unified pdu 'superframe' //[slot][byte] -- increased capacity to 127(+1) full rate blocks
     uint8_t cap_plus_csbk_bits[2][12 * 8 * 8]; //CSBK Cap+ FL initial and appended block bit storage, by slot

@@ -170,7 +170,7 @@ send_ann_wd_mbc(dsd_opts* opts, dsd_state* state, uint16_t bcast_ch1, uint8_t aw
     write_bits_u32(bits, 140U, rx_step & 0x1FFFU, 13U);
     write_bits_u32(bits, 153U, rx_mhz & 0x03FFU, 10U);
     write_bits_u32(bits, 163U, rx_step & 0x1FFFU, 13U);
-    const dmr_cspdu_shape shape = {1U, 1U, 40U, 40U, 1U};
+    const dmr_cspdu_shape shape = {1U, 1U, 40U, 40U, 1U, 0U};
     dmr_cspdu_ex(opts, state, bits, bytes, 1U, 0U, &shape);
 }
 
