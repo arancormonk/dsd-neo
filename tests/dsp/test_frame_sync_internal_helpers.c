@@ -4734,6 +4734,56 @@ test_p25p1_lock_wins_over_a_watchdog_notice(void) {
     dsd_rtl_stream_metrics_hooks_set(NULL);
 }
 
+/* Issue #890: a -Y tetra-dmo row (@p trunk_scan 0) or a tetra-dmo-conventional target (1) under -mc. The TETRA hunt
+ * runs the decoder on rf_mod 1; at the next getFrameSync() entry the lock puts rf_mod back on C4FM and republishes the
+ * profile, which keeps the row's own chain: the CQPSK chain with the TETRA filter its landing queued, not the FSK
+ * discriminator with the wide filter. A DMR row under the same lock runs the FSK discriminator either way. */
+static void
+lock_reapply_tetra_case(int trunk_scan) {
+    dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(*opts));
+    dsd_state* state = (dsd_state*)calloc(1, sizeof(*state));
+    assert(opts && state);
+    const dsd_rtl_stream_metrics_hooks hooks = {.output_rate_hz = fake_output_rate_hz,
+                                                .apply_demod_profile = fake_apply_demod_profile};
+    dsd_rtl_stream_metrics_hooks_set(&hooks);
+    opts->audio_in_type = AUDIO_IN_RTL;
+    opts->scanner_mode = 1;
+    opts->trunk_scan_enabled = trunk_scan;
+    opts->mod_cli_lock = 1;
+    opts->mod_c4fm = 1;
+    state->rtl_ctx = (struct RtlSdrContext*)state;
+    assert(dsd_scan_mode_enter(opts, state, DSD_SCAN_MODE_TETRA_DMO) == 0);
+    state->sps_hunt_idx = DSD_FRAME_SYNC_SPS_PROFILE_18000_4;
+    state->rf_mod = 1; /* the TETRA hunt's slicing */
+    reset_fake_profile_capture();
+    dsd_frame_sync_test_apply_cli_mod_lock(opts, state);
+    assert(state->rf_mod == 0);
+    if (g_profile_set_calls < 1 || g_profile_cqpsk != 1 || g_profile_rate != 18000
+        || g_profile_channel != DSD_RTL_STREAM_CHANNEL_PROFILE_TETRA) {
+        DSD_FPRINTF(stderr, "FAIL tetra-dmo %s under -mc: the lock republished cqpsk %d, %d sym/s, profile %d\n",
+                    trunk_scan ? "target" : "row", g_profile_cqpsk, g_profile_rate, g_profile_channel);
+        assert(0);
+    }
+    dsd_scan_mode_leave(opts, state);
+    assert(dsd_scan_mode_enter(opts, state, DSD_SCAN_MODE_DMR) == 0);
+    state->sps_hunt_idx = DSD_FRAME_SYNC_SPS_PROFILE_4800_4;
+    state->rf_mod = 1;
+    reset_fake_profile_capture();
+    dsd_frame_sync_test_apply_cli_mod_lock(opts, state);
+    assert(state->rf_mod == 0 && g_profile_set_calls >= 1 && g_profile_cqpsk == 0);
+    dsd_scan_mode_leave(opts, state);
+    dsd_state_ext_free_all(state);
+    dsd_rtl_stream_metrics_hooks_set(NULL);
+    free(state);
+    free(opts);
+}
+
+static void
+test_lock_reapply_keeps_a_tetra_row_chain(void) {
+    lock_reapply_tetra_case(0);
+    lock_reapply_tetra_case(1);
+}
+
 /* An accepted tune retires a CQPSK probe in flight, with no comparison running: a tune on the decoder thread
  * (dsd_frame_sync_p25p1_mod_compare_end_for_tune()) and a watchdog tune's reconciled notice alike. The chain the tune
  * chose is the receiver's from there, and the trial's handback, whose dwell the tune left, must not switch it. */
@@ -5780,6 +5830,7 @@ main(void) {
     test_p25p1_stale_validation_opens_no_comparison();
     test_p25p1_tunes_retire_a_probe();
     test_p25p1_lock_wins_over_a_watchdog_notice();
+    test_lock_reapply_keeps_a_tetra_row_chain();
     test_p25p1_chain_steps_race_watchdog_tunes();
     test_p25p1_sync_reasserts_cqpsk_demod_profile();
     test_rtl_symbol_profile_selection();

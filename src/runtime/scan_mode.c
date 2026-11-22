@@ -646,6 +646,21 @@ dsd_scan_mode_cqpsk_explicit(const dsd_opts* opts, const dsd_state* state, int* 
 }
 
 int
+dsd_scan_mode_chain_rf_mod(const dsd_opts* opts, const dsd_state* state) {
+    if (!state) {
+        return 0;
+    }
+    int row_cqpsk = 0;
+    if (!dsd_scan_mode_cqpsk_explicit(opts, state, &row_cqpsk)) {
+        return state->rf_mod;
+    }
+    if (row_cqpsk) {
+        return 1;
+    }
+    return state->rf_mod == 1 ? 2 : state->rf_mod;
+}
+
+int
 dsd_scan_mode_timed_cqpsk(const dsd_state* state, int* out_cqpsk) {
     const scan_scope* scope = state ? scan_scope_get(state) : NULL;
     if (!scope || scope->timed_cqpsk < 0) {

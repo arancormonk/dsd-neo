@@ -408,6 +408,15 @@ int dsd_scan_mode_timed_cqpsk(const dsd_state* state, int* out_cqpsk);
  * an open of the mode would: @p out_cqpsk is then the decoder's
  * (state->rf_mod == 1), which DSD_NEO_CQPSK overrides at a landing when set. */
 int dsd_scan_mode_cqpsk_explicit(const dsd_opts* opts, const dsd_state* state, int* out_cqpsk);
+/** The modulation whose receive chain the front end runs for the scan row on air (dsd_state::rf_mod's values: 0 C4FM,
+ * 1 CQPSK, 2 GFSK), the one rule every symbol-profile publish of a row follows (issue #890): the decoder's own
+ * (state->rf_mod) unless the row makes its own CQPSK choice (dsd_scan_mode_cqpsk_explicit()): then CQPSK when that
+ * choice is on (a -Y or trunk-scan tetra-dmo row whatever a -m lock left on rf_mod), else the FSK discriminator, as
+ * GFSK where the decoder sits on CQPSK (a trunk-scan DMR or NXDN target under -mq) and the decoder's own otherwise. A
+ * -m lock keeps owning symbol slicing through rf_mod; the chain stays the row's. The frame sync's profile publishes
+ * (a hunt step, the lock's reapply at getFrameSync() entry, a timing step) and a live republish
+ * (svc_publish_symbol_profile()) all read it, so none undoes the chain the row's landing queued. 0 without state. */
+int dsd_scan_mode_chain_rf_mod(const dsd_opts* opts, const dsd_state* state);
 /** Read/update configured receive defaults without disturbing the active row's decoder. */
 void dsd_scan_mode_configured_receive(const dsd_opts* opts, const dsd_state* state, dsd_receive_policy* out);
 int dsd_scan_mode_set_configured_receive(dsd_opts* opts, dsd_state* state, const dsd_receive_policy* policy);
