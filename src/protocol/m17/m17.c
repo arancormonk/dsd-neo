@@ -379,6 +379,14 @@ m17_lich_note_other_link(dsd_state* state, uint8_t counter, const uint8_t* chunk
     }
 }
 
+/* Whether the transmission's link setup vouches for it (issue #890): a checked LSF bound its CAN, encryption and type
+   (dsd_state::m17_lsf_checked) and no clean LICH chunk has disputed it since (m17_lich_note_other_link()). Everything
+   the scan takes from the binding asks here: the activity report's fields and the speech it credits. */
+static int
+m17_link_setup_vouched(const dsd_state* state) {
+    return state->m17_lsf_checked != 0U && state->m17_lsf_disputed == 0U;
+}
+
 /* Checked M17 content to trunk scan's policy table (issue #890): an LSF whose CRC passed (its frame's, or rebuilt whole
    from the LICH), a packet whose CRC passed (@p packet) or a stream frame whose clean LICH completed a pair. What the
    report says of the call is only the checked link setup bound to the transmission (dsd_state::m17_lsf_checked: its
@@ -390,7 +398,7 @@ m17_lich_note_other_link(dsd_state* state, uint8_t counter, const uint8_t* chunk
    policy, and has no party bit. A BERT frame (a test) and an LSF -F decodes despite a failed CRC never report. */
 static void
 m17_report_scan_activity(const dsd_opts* opts, const dsd_state* state, int packet) {
-    const int checked = state->m17_lsf_checked != 0U && state->m17_lsf_disputed == 0U;
+    const int checked = m17_link_setup_vouched(state);
     if (state->m17_can_en >= 0 && (!checked || !m17_can_filter_allows(state->m17_can_en, state->m17_can))) {
         return;
     }
@@ -1285,9 +1293,11 @@ static int s_m17_network_frame;
  * Speech Codec2 decoded from what this station received, about to play (issue #890). A network frame's media is its
  * decoded speech, never the datagram alone, so the canonical call's media is marked here for it (an RF frame's was
  * marked with the frame, m17_mark_stream_media()). Speech counts as the transmission's checked speech only once a
- * checked LSF bound its type, encryption and CAN (m17_lsf_checked): under -F a relaxed LSF, or the LICH alone, may
- * name an encrypted stream clear voice and play its ciphertext, which is no speech to credit. Returns 1 for checked
- * speech: any checked-speech credit belongs behind it.
+ * checked LSF bound its type, encryption and CAN (m17_lsf_checked), and not while a clean LICH chunk disputes that
+ * binding (m17_link_setup_vouched()): under -F a relaxed LSF, or the LICH alone, may name an encrypted stream clear
+ * voice and play its ciphertext, and after a missed EOT and LSF frame the next transmission (encrypted, or on another
+ * CAN) plays under the last one's fields; neither is speech to credit. Credit resumes once an LSF is checked again.
+ * Returns 1 for checked speech: any checked-speech credit belongs behind it.
  */
 static int
 m17_note_received_speech(const dsd_opts* opts, dsd_state* state) {
@@ -1298,7 +1308,7 @@ m17_note_received_speech(const dsd_opts* opts, dsd_state* state) {
             dsd_event_sync_slot((dsd_opts*)opts, state, 0U);
         }
     }
-    return state->m17_lsf_checked != 0U;
+    return m17_link_setup_vouched(state);
 }
 
 /* Decoded Codec2 voice plays through the digital voice output the other modes use (issue #658): the adapter runs the
@@ -1318,7 +1328,8 @@ m17_play_codec2_voice(const dsd_opts* opts, dsd_state* state, const short* sampl
     static const dsd_voice_frame_info k_tx_monitor = {(uint8_t)DSD_VOICE_MEDIA_TX_MONITOR, 1U, 1U, 0U};
     if (!s_m17_monitoring_local_tx) {
         /* Received speech Codec2 decoded marks a network call's media (m17_note_received_speech()), and is the scan's
-           voice credit (issue #890) only as checked speech: a checked LSF bound its type, encryption and CAN. The media
+           voice credit (issue #890) only as checked speech: a checked LSF bound its type, encryption and CAN, and no
+           clean LICH has disputed it since. The media
            mark before the payload is decoded, which a build without Codec2 makes too, is no credit. */
         const int checked_speech = m17_note_received_speech(opts, state);
         if (checked_speech && dsd_scan_uses_checked_media(opts, state)) {

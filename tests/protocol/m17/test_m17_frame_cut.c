@@ -929,6 +929,41 @@ test_packet_frames_before_their_crc_are_partial(void) {
     }
 }
 
+#ifdef USE_CODEC2
+/* Issue #890: under a scan, Codec2 speech is the call's checked media only while a checked LSF vouches for the
+   transmission. After a clear voice stream's checked LSF frame, a stream whose first clean LICH chunk disagrees with it
+   (another station on CAN 7, its EOT and LSF frame missed) plays under the old fields but earns no checked media, on
+   that frame or the next; the same LSF's own stream frames earn it at once. */
+static void
+test_disputed_link_setup_earns_no_checked_speech(void) {
+    dsd_opts* opts = g_opts;
+    dsd_state* state = g_state;
+    uint8_t lsf_bits[TEST_M17_LSF_BITS];
+    uint8_t other_bits[TEST_M17_LSF_BITS];
+    build_lsf_bits(lsf_bits);
+    build_lsf_bits_with(other_bits, m17_encode_b40_callsign(0ULL, "XY9ZZ"), m17_encode_b40_callsign(0ULL, "QR7ST"),
+                        m17_compose_frame_info(1U, 2U, 0U, 0U, 7U, 0U, 0U));
+    for (int disputed = 0; disputed <= 1; disputed++) {
+        prepare(opts, state);
+        opts->trunk_scan_enabled = 1;
+        state->synctype = DSD_SYNC_M17_LSF_POS;
+        load_lsf_frame(lsf_bits);
+        assert(processM17LSF(opts, state) == 1);
+        state->synctype = DSD_SYNC_M17_STR_POS;
+        const int decodes_before = g_codec2_decodes;
+        for (uint16_t fn = 0U; fn < 2U; fn++) {
+            load_stream_frame(disputed ? other_bits : lsf_bits, (uint8_t)fn, fn);
+            (void)processM17STR(opts, state);
+        }
+        assert(g_codec2_decodes > decodes_before);
+        assert(state->m17_lsf_disputed == (uint8_t)disputed);
+        const dsd_call_snapshot call = m17_call(state);
+        assert((call.checked_media_updated_m > 0.0) == !disputed);
+        finish(state);
+    }
+}
+#endif
+
 /* Issue #890: what an M17 transmission reports to trunk scan's policy table. A link setup frame whose CRC passed reports
    the checked values it binds (encryption, voice stream); a clean LICH reports once it completes a pair with the frame
    before it, anonymous before any LSF was checked and with the bound values after one; the LSF the six LICH chunks
@@ -1194,6 +1229,9 @@ main(void) {
     test_bert_frame_cut_by_an_input_interruption_counts_nothing();
     test_frames_split_by_a_carrier_boundary_are_dropped();
     test_packet_frames_before_their_crc_are_partial();
+#ifdef USE_CODEC2
+    test_disputed_link_setup_earns_no_checked_speech();
+#endif
     test_checked_content_reports_to_trunk_scan();
     test_eos_ends_the_scan_binding();
     test_bert_on_a_typed_row_is_profile_only();

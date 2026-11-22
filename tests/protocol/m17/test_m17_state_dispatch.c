@@ -1218,7 +1218,16 @@ test_stream_voice_replaces_foreign_active_call(void) {
                       M17_STREAM_CLEAR_DISPATCHED);
     (void)get_m17_call(state, &call);
     err |= expect_int("unchecked-LSF M17 speech earns no checked media", call.checked_media_updated_m > 0.0, 0);
+    /* A checked LSF a clean LICH chunk has since disputed (another transmission after a missed EOT and LSF frame) vouches
+       for nothing: its speech plays but earns no checked media either. */
     state->m17_lsf_checked = 1U;
+    state->m17_lsf_disputed = 1U;
+    err |= expect_int("disputed-LSF M17 voice dispatches under a scan",
+                      m17_dispatch_stream_payload(opts, state, payload_bits, M17_REF_STREAM_FN, processed_bits),
+                      M17_STREAM_CLEAR_DISPATCHED);
+    (void)get_m17_call(state, &call);
+    err |= expect_int("disputed-LSF M17 speech earns no checked media", call.checked_media_updated_m > 0.0, 0);
+    state->m17_lsf_disputed = 0U;
     err |= expect_int(
         "checked-LSF M17 voice dispatches under a scan",
         m17_dispatch_stream_payload(opts, state, payload_bits, (uint16_t)(M17_REF_STREAM_FN + 1U), processed_bits),

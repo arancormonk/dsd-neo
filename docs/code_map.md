@@ -5956,7 +5956,8 @@ the implementations from `dsd_engine_trunk_scan_init()` and clears them again on
   `dpmr_scan_source` for the scan visit and carrier it was named under: a pair naming another station than the one
   kept begins another call, whose other station is unknown, and the transmission boundaries forget them), M17 `m17_report_scan_activity()` (direct and rebuilt LSF,
   packet CRC, a clean LICH pair; only `m17_lsf_checked` values an applied LSF bound, withdrawn while a clean LICH
-  chunk disputes the checked DST/SRC/TYPE (`m17_lsf_disputed`, a missed boundary), and gone from the frame after a
+  chunk disputes the checked DST/SRC/TYPE (`m17_lsf_disputed`, a missed boundary; `m17_link_setup_vouched()`, which
+  the voice-only checked speech asks too, so a disputed stream's speech earns no checked media), and gone from the frame after a
   decoded EOS (the boundary reset, `m17_confirm_reset()`, drops `m17_lsf_checked` and the dispute with it). Only
   chunks 0 to 2 carry those bits, so a decided fail-open limit: after a missed EOS and EOT, a new transmission whose
   chunks 3 to 5 come first can still
@@ -14371,10 +14372,13 @@ Private per-protocol modules worth knowing about:
   a stream ID reused by the same station with no end received between is not taken; after the table first filled, a
   network stream whose first frames were lost is not joined until its station starts another. A checked IP frame plays on its own check; its decoded speech marks the call's media
   (`m17_note_received_speech()`), which also returns whether the speech is checked speech (a checked LSF bound its type,
-  encryption and CAN, `m17_lsf_checked`: under -F a relaxed LSF or the LICH alone may name ciphertext clear voice), and
-  only checked speech earns the scan's checked media (`dsd_call_state_note_checked_media()` behind it and
-  `dsd_scan_uses_checked_media()` in `m17_play_codec2_voice()`; `M17_STATE_DISPATCH` "unchecked-LSF M17 speech earns no
-  checked media"). The 1600 bit/s arbitrary data is assembled per six-frame group and emptied at a stream change
+  encryption and CAN, `m17_lsf_checked`, and no clean LICH chunk has disputed it since, `m17_lsf_disputed`, both
+  through `m17_link_setup_vouched()`: under -F a relaxed LSF or the LICH alone may name ciphertext clear voice, and
+  after a missed EOT and LSF frame the next transmission plays under the last one's fields; credit resumes at the next
+  checked LSF), and only checked speech earns the scan's checked media (`dsd_call_state_note_checked_media()` behind it
+  and `dsd_scan_uses_checked_media()` in `m17_play_codec2_voice()`; `M17_STATE_DISPATCH` "unchecked-LSF M17 speech
+  earns no checked media", "disputed-LSF M17 speech earns no checked media"; `M17_FRAME_CUT`
+  `test_disputed_link_setup_earns_no_checked_speech`, a Codec2 build). The 1600 bit/s arbitrary data is assembled per six-frame group and emptied at a stream change
   (`m17_stream_1600_arbitrary_assemble()`, `m17_state_ext::adata`: decoder scratch, in the M17 state extension and so
   never in a frontend's snapshot). Text META has one assembler per transmission, and a block joins only its own
   transmission's, and only from content whose check passed (decided, issue #890): the RF transmission's or the admitted
