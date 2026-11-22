@@ -3839,15 +3839,21 @@ nxdn_scch_named_kind(const dsd_call_snapshot* call, uint32_t target_id, dsd_call
     return call->kind;
 }
 
-/* Whether an SCCH naming @p target_id (its text @p target_text, "pp-iiii") names another call than @p call: another
- * target, by its prefix as by its ID (issue #903). A call no target named yet takes the message's. */
+/* Whether an SCCH naming @p target_id (its text @p target_text, "pp-iiii") of class @p kind (its G/U bit;
+ * DSD_CALL_KIND_UNKNOWN when it has none) names another call than @p call: another target, by its prefix as by its ID,
+ * or another class, a unit 03-0005 after a group 03-0005 (issue #903). A call no target named yet takes the
+ * message's. */
 static int
-nxdn_scch_names_new_call(const dsd_call_snapshot* call, uint16_t target_id, const char* target_text) {
+nxdn_scch_names_new_call(const dsd_call_snapshot* call, uint16_t target_id, const char* target_text,
+                         dsd_call_kind kind) {
     if (target_id == 0U || call->ota_target_id == 0U) {
         return 0;
     }
+    const int classed = (call->kind == DSD_CALL_KIND_GROUP_VOICE || call->kind == DSD_CALL_KIND_PRIVATE_VOICE)
+                        && (kind == DSD_CALL_KIND_GROUP_VOICE || kind == DSD_CALL_KIND_PRIVATE_VOICE);
     return call->ota_target_id != target_id
-           || (call->target_text[0] != '\0' && strcmp(call->target_text, target_text) != 0);
+           || (call->target_text[0] != '\0' && strcmp(call->target_text, target_text) != 0)
+           || (classed && call->kind != kind);
 }
 
 /* What the live call @p call carries into an SCCH's observation: its talker (unless the message names one) and its
@@ -3890,8 +3896,8 @@ nxdn_scch_carry_crypto_media(dsd_state* state, const dsd_call_snapshot* call, in
  * Repeater / Prefix, "pp-iiii", nxdn_typed_id_text()), and @p kind when the message classifies it
  * (a busy message's G/U bit; DSD_CALL_KIND_UNKNOWN keeps the call's for the same target, and gives a new target no
  * class, nxdn_scch_named_kind()), so a later unclassified message for the same target reads the class this one
- * verified, never a previous call's. A message naming another target is another call: it carries none of the previous
- * call's talker, emergency or crypto (nxdn_scch_names_new_call()). */
+ * verified, never a previous call's. A message naming another target or class is another call: it carries none of the
+ * previous call's talker, emergency or crypto (nxdn_scch_names_new_call()). */
 static void
 nxdn_scch_enrich_identity(dsd_state* state, uint16_t source_id, uint16_t target_id, uint8_t prefix,
                           dsd_call_kind kind) {
@@ -3902,7 +3908,7 @@ nxdn_scch_enrich_identity(dsd_state* state, uint16_t source_id, uint16_t target_
     }
     char target_text[DSD_CALL_IDENTITY_TEXT_SIZE];
     nxdn_typed_id_text(target_text, sizeof(target_text), prefix, target_id);
-    const int new_call = nxdn_scch_names_new_call(&call, target_id, target_text);
+    const int new_call = nxdn_scch_names_new_call(&call, target_id, target_text, kind);
     dsd_call_observation observation = {
         .protocol = call.protocol,
         .slot = 0U,

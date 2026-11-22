@@ -2835,12 +2835,12 @@ type_d_prefix_call_allowed(const dsd_call_snapshot* call) {
     return decision.tune_allowed ? 1 : 0;
 }
 
-/* An INFO2 naming another target, 07-0005 after an emergency DES call 03-0005 from 03-0100, is another call (issue
- * #903): it carries neither that call's talker, its emergency flag nor its crypto. An INFO3 for the same call still
- * keeps them. */
+/* An INFO2 naming another call after an emergency DES group call 03-0005 from 03-0100 (issue #903): another target,
+ * 07-0005, or another class, unit 03-0005 by its G/U bit. That call carries neither the group call's talker, its
+ * emergency flag nor its crypto. An INFO3 for the same call still keeps them. */
 static int
-nxdn_run_type_d_new_target_drops_old_call_case(void) {
-    static const char* const name = "type-d-new-target-drops-old-call";
+nxdn_run_type_d_new_call_case(const char* variant, uint8_t rep2, uint8_t gu, const char* text, dsd_call_kind kind) {
+    static const char* const name = "type-d-new-call-drops-old-call";
     const nxdn_case busy = {
         "type-d-new-target", NXDN_MATRIX_TYPE_D, 0U, 0U, 0U, 0U, 0U, 0, 0, 0, 6U, 3U, 5U, 938012500L,
     };
@@ -2869,24 +2869,38 @@ nxdn_run_type_d_new_target_drops_old_call_case(void) {
     }
     dsd_call_snapshot call;
     rc |= nxdn_expect(dsd_call_state_get(&g_state, 0U, &call) == 1 && call.emergency == 1U && call.ota_source_id == 100U
-                          && call.crypto != DSD_CALL_CRYPTO_UNKNOWN && call.crypto != DSD_CALL_CRYPTO_CLEAR,
-                      name, "vcall", "an encrypted emergency call 03-0005 from 03-0100");
+                          && call.kind == DSD_CALL_KIND_GROUP_VOICE && call.crypto != DSD_CALL_CRYPTO_UNKNOWN
+                          && call.crypto != DSD_CALL_CRYPTO_CLEAR,
+                      name, variant, "an encrypted emergency group call 03-0005 from 03-0100");
 
     at_seconds(9500.3);
     voice_live();
     send_scch_prefixed(1U, 6U, 3U, 100U); /* INFO3: the same call's talker */
     rc |= nxdn_expect(dsd_call_state_get(&g_state, 0U, &call) == 1 && call.emergency == 1U
                           && call.crypto != DSD_CALL_CRYPTO_UNKNOWN,
-                      name, "info3", "the same call keeps its emergency and crypto");
+                      name, variant, "the same call keeps its emergency and crypto");
 
     at_seconds(9500.4);
     voice_live();
-    send_scch_prefixed(2U, 6U, 7U, 5U); /* INFO2: 07-0005 */
-    rc |= nxdn_expect(dsd_call_state_get(&g_state, 0U, &call) == 1 && strcmp(call.target_text, "07-0005") == 0, name,
-                      "info2", "the call is 07-0005");
-    rc |= nxdn_expect(call.ota_source_id == 0U && call.source_text[0] == '\0', name, "info2", "no talker carried");
-    rc |= nxdn_expect(call.emergency == 0U && call.has_service_metadata == 0U, name, "info2", "no emergency carried");
-    rc |= nxdn_expect(call.crypto == DSD_CALL_CRYPTO_UNKNOWN, name, "info2", "no crypto carried");
+    uint8_t message[32];
+    build_scch_identity(message, 2U, 6U, 5U);
+    write_bits_u32(message, 8U, rep2, 5U);
+    message[24] = gu;
+    NXDN_decode_scch(&g_opts, &g_state, message, 1U);
+    rc |= nxdn_expect(dsd_call_state_get(&g_state, 0U, &call) == 1 && strcmp(call.target_text, text) == 0
+                          && call.kind == kind,
+                      name, variant, "the call INFO2 names");
+    rc |= nxdn_expect(call.ota_source_id == 0U && call.source_text[0] == '\0', name, variant, "no talker carried");
+    rc |= nxdn_expect(call.emergency == 0U && call.has_service_metadata == 0U, name, variant, "no emergency carried");
+    rc |= nxdn_expect(call.crypto == DSD_CALL_CRYPTO_UNKNOWN, name, variant, "no crypto carried");
+    return rc;
+}
+
+static int
+nxdn_run_type_d_new_target_drops_old_call_case(void) {
+    int rc = 0;
+    rc |= nxdn_run_type_d_new_call_case("other-prefix", 7U, 0U, "07-0005", DSD_CALL_KIND_GROUP_VOICE);
+    rc |= nxdn_run_type_d_new_call_case("unit-of-same-number", 3U, 1U, "03-0005", DSD_CALL_KIND_PRIVATE_VOICE);
     return rc;
 }
 
