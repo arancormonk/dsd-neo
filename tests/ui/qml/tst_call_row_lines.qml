@@ -65,7 +65,7 @@ Item {
         Ui.CallRow {
             id: tall
             width: scripts.width
-            // A script whose lines stand taller than the box (D10's limit).
+            // A script whose line stands taller than the box (drawn smaller to fit it: r4 F2).
             name: "བོད་སྐད་ཀྱི་རྒྱུད"
             metaText: "TG 4001 · SRC 7001"
             rightText: "09:41"
