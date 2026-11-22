@@ -7073,6 +7073,7 @@ class Setup : public QObject {
         prefs[QStringLiteral("acceptedStartCompanions")] = QStringList();
         prefs[QStringLiteral("acceptedStartKind")] = QString();
         prefs[QStringLiteral("acceptedStartUid")] = QString();
+        prefs[QStringLiteral("acceptedStartSquelch")] = QString(); // issue #899
         /* Issue #644: the accepted scan session's targets, none before a start. */
         prefs[QStringLiteral("acceptedStartTargets")] = QVariantList();
         prefs[QStringLiteral("lastLat")] = 0.0;

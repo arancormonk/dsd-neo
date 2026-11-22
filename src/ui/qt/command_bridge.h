@@ -369,9 +369,9 @@ class CommandBridge : public QObject {
      *        the same decode-chip flag a saved system stores, so the mapping from
      *        flag to preset exists once and is the CLI's own.
      *
-     * Issue #899: once sent, squelchDefaults() says whether the app's default squelch comes in with it (a switch to NFM
-     * or AM in a session that started digital) or goes out (back to a digital mode, leaving the squelch off), and that
-     * is sent after it.
+     * Issue #899: once sent, and while squelchDefaults() says the squelch is the app's, the app's default squelch follows
+     * it (DSD_APP_CMD_RTL_SQL_DEFAULT_FOLLOW, queued after it): in on a switch to NFM or AM over an off squelch, out on a
+     * switch to a digital mode over the default, and nothing where the decoder refused the switch.
      */
     Q_INVOKABLE bool setDecodeMode(int mode) const;
 

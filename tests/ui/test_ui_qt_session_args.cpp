@@ -2472,8 +2472,8 @@ test_default_squelch_spec(void) {
     expect("and owns the session's squelch", dsd_qt::session_args_squelch_default(saved, prefs).ownSquelch
                                                  && !dsd_qt::session_args_squelch_default(saved, prefs).inSpec);
 
-    for (const QString& extra : {QStringLiteral("--squelch off"), QStringLiteral("--squelch=auto+20"),
-                                 QStringLiteral("--squelch-db -70"), QStringLiteral("-Z --squelch-db=-70")}) {
+    for (const QString& extra :
+         {QStringLiteral("--squelch off"), QStringLiteral("--squelch=auto+20"), QStringLiteral("-Z --squelch -70")}) {
         QVariantMap own = nfm;
         own["extraArgs"] = extra;
         expect("a system's Advanced squelch keeps the field at 0",
@@ -2518,6 +2518,24 @@ test_default_squelch_spec(void) {
     later["extraArgs"] = "-ft";
     expect("and Advanced -ft after an NFM flag starts digital",
            input_spec(session_args_build(later, prefs, nullptr)) == QStringLiteral("rtl:0:851.375M:30:0:48:0:2"));
+    // The saved decode choice is appended after the extra options (-ma <flag>, Auto as -fa), so it is the start's.
+    QVariantMap savedChoice = nfm;
+    savedChoice["decodeFlag"] = "-ft";
+    savedChoice["extraArgs"] = "-fA";
+    savedChoice["radioSettings"] = QVariantMap{{"decodeFlag", "-ft"}};
+    QStringList choiceArgs = session_args_build(savedChoice, prefs, nullptr);
+    expect("a saved P25 choice after Advanced -fA starts digital: no default",
+           input_spec(choiceArgs) == QStringLiteral("rtl:0:851.375M:30:0:48:0:2")
+               && choiceArgs.mid(choiceArgs.size() - 2) == QStringList({"-ma", "-ft"}));
+    savedChoice["decodeFlag"] = "";
+    savedChoice["radioSettings"] = QVariantMap{{"decodeFlag", ""}};
+    expect("so does a saved Auto choice",
+           input_spec(session_args_build(savedChoice, prefs, nullptr)) == QStringLiteral("rtl:0:851.375M:30:0:48:0:2"));
+    savedChoice["decodeFlag"] = "-fA";
+    savedChoice["extraArgs"] = "";
+    savedChoice["radioSettings"] = QVariantMap{{"decodeFlag", "-fA"}};
+    expect("and a saved NFM choice starts analog", input_spec(session_args_build(savedChoice, prefs, nullptr))
+                                                       == QStringLiteral("rtl:0:851.375M:30:0:48:noise+10:2"));
 }
 
 /* Issue #899 (B17): the app appends the decode choices and a saved squelch after the extra options, as their last
@@ -2601,15 +2619,15 @@ test_start_tells_squelch_policy(void) {
     QVariantMap explore = usb_system();
     expect("an Explore start on Auto",
            builder.start(explore, &host, QStringLiteral("explore")).value("started").toBool());
-    expect("brings the default in on a switch to NFM", policy.decodeModeChanged(true) == Action::PushDefault
+    expect("brings the default in on a switch to NFM", policy.decodeModeChanged(true) == Action::DefaultIfOff
                                                            && policy.defaultSetting() == QStringLiteral("noise+10"));
-    expect("and takes it out on a switch back to P25", policy.decodeModeChanged(false) == Action::PushOff);
+    expect("and takes it out on a switch back to P25", policy.decodeModeChanged(false) == Action::OffIfDefault);
 
     QVariantMap nfm = usb_system();
     nfm["decodeFlag"] = "-fA";
     (void)builder.start(nfm, &host, QStringLiteral("saved"));
-    expect("an NFM start has the default in force: a switch to P25 takes it out",
-           policy.decodeModeChanged(false) == Action::PushOff);
+    expect("an NFM start is the app's: a switch to P25 takes the default out",
+           policy.decodeModeChanged(false) == Action::OffIfDefault);
 
     QVariantMap saved = nfm;
     saved["radioSettings"] = QVariantMap{{"squelch", "auto+20"}};

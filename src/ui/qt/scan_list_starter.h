@@ -3,12 +3,14 @@
 #define DSD_NEO_UI_QT_SCAN_LIST_STARTER_H
 #include <QList>
 #include <QObject>
+#include <QPointer>
 #include <QString>
 #include <QStringList>
 #include <QVariantList>
 #include <QVariantMap>
 #include <functional>
 #include <utility>
+#include "squelch_default_policy.h"
 Q_MOC_INCLUDE("decoder_host.h")
 
 namespace dsd_qt {
@@ -17,7 +19,6 @@ class SavedSystemsModel;
 class DecryptionProfileProvider;
 class DecoderHost;
 class RecordingSessions;
-class SquelchDefaultPolicy;
 
 /**
  * @brief The file name, without ".csv", a manual scan list's generated targets are written under (issue #697): the
@@ -133,7 +134,7 @@ class ScanListStarter : public QObject {
     const SavedSystemsModel* m_systems;
     DecryptionProfileProvider* m_profiles = nullptr;
     RecordingSessions* m_recordingSessions = nullptr;
-    SquelchDefaultPolicy* m_squelchDefaults = nullptr;
+    QPointer<SquelchDefaultPolicy> m_squelchDefaults;
 };
 } // namespace dsd_qt
 #endif

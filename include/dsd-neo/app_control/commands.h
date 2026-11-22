@@ -395,7 +395,11 @@ enum dsd_app_command_id {
     DSD_APP_CMD_SIGNAL_SEARCH_CONTROL = 713, // payload: dsd_signal_search_control
     // Internal (not in the control API): the terminal menu re-parsed the DSD_NEO_* environment on its own thread, and
     // the decoder now applies the runtime config's options fields (dsd_apply_runtime_config_to_opts()) to its options.
-    DSD_APP_CMD_RUNTIME_CONFIG_APPLY = 714 // no payload
+    DSD_APP_CMD_RUNTIME_CONFIG_APPLY = 714, // no payload
+    // Internal (not in the control API, issue #899): the app's default squelch following a decode switch the app asked
+    // for, queued right after it. It applies only where that switch left the decoder and only over the squelch the app
+    // expects, and quietly, so the switch's own message stands (dsd_app_squelch_follow_payload).
+    DSD_APP_CMD_RTL_SQL_DEFAULT_FOLLOW = 715 // payload: dsd_app_squelch_follow_payload
 };
 
 /* DSD_APP_CMD_RTL_SET_SQL_SETTING: mode is dsd_squelch_mode (core/power.h); level the LEVEL threshold in mean-power
@@ -405,6 +409,22 @@ typedef struct {
     int32_t margin_db;
     double level;
 } dsd_app_squelch_setting_payload;
+
+/* DSD_APP_CMD_RTL_SQL_DEFAULT_FOLLOW actions. */
+enum {
+    /* On the analog monitor (dsd_opts_is_analog_family()) with the configured squelch off: put the default in. */
+    DSD_APP_SQL_FOLLOW_DEFAULT_IF_OFF = 1,
+    /* Off the analog monitor with the configured squelch exactly the default: put the squelch off (level 0). */
+    DSD_APP_SQL_FOLLOW_OFF_IF_DEFAULT = 2,
+};
+
+/* DSD_APP_CMD_RTL_SQL_DEFAULT_FOLLOW: action is a DSD_APP_SQL_FOLLOW_* value; mode (DSD_SQUELCH_MODE_AUTO or
+   DSD_SQUELCH_MODE_NOISE) and margin_db (3..30) are the app's default squelch. Anything else is refused unapplied. */
+typedef struct {
+    int32_t action;
+    int32_t mode;
+    int32_t margin_db;
+} dsd_app_squelch_follow_payload;
 
 /* A single edit is merged into decoder-owned settings, avoiding stale snapshot writes. */
 typedef struct {

@@ -535,8 +535,8 @@ session_args_extra_sets_preroll(const QString& tokens) {
 
 bool
 session_args_extra_sets_squelch(const QString& tokens) {
-    return extra_sets_long_option(tokens, QLatin1String("--squelch"))
-           || extra_sets_long_option(tokens, QLatin1String("--squelch-db"));
+    /* --squelch-db is a scan row's option only (scan_options.c): the decoder's command line has none. */
+    return extra_sets_long_option(tokens, QLatin1String("--squelch"));
 }
 
 namespace {
@@ -1095,11 +1095,16 @@ session_args_squelch_default(const QVariantMap& system, const SessionArgPrefs& p
     SessionArgsSquelchDefault out;
     out.eligible =
         is_radio_source(system.value(QStringLiteral("sourceType")).toString()) && !extra_replaces_input(extra);
-    out.ownSquelch = system.value(QStringLiteral("radioSettings")).toMap().contains(QStringLiteral("squelch"))
-                     || session_args_extra_sets_squelch(extra);
-    /* The decode flag stands before the extra options in the argv (append_flag_args()), and a saved decode choice is
-       the same flag (session_args_build() refuses one that is not). */
-    const bool analog = starts_analog(system.value(QStringLiteral("decodeFlag")).toString() + QLatin1Char(' ') + extra);
+    const QVariantMap radio = system.value(QStringLiteral("radioSettings")).toMap();
+    out.ownSquelch = radio.contains(QStringLiteral("squelch")) || session_args_extra_sets_squelch(extra);
+    /* In argv order: the decode flag before the extra options (append_flag_args()), and a saved decode choice after them
+       (radio_settings_append(): its flag, or -fa for Auto), which the parser keeps over both. */
+    QString decode = system.value(QStringLiteral("decodeFlag")).toString() + QLatin1Char(' ') + extra;
+    if (radio.contains(QStringLiteral("decodeFlag"))) {
+        const QString saved = radio.value(QStringLiteral("decodeFlag")).toString();
+        decode += QLatin1Char(' ') + (saved.isEmpty() ? QStringLiteral("-fa") : saved);
+    }
+    const bool analog = starts_analog(decode);
     out.inSpec = out.eligible && !out.ownSquelch && analog && app_squelch_default_valid(prefs.squelchDefault)
                  && prefs.squelchDefault != QLatin1String("off");
     return out;
@@ -1581,7 +1586,7 @@ SessionArgsBuilder::noteSessionSquelch(bool started, const QVariantMap& system, 
         m_squelchDefaults->sessionStartedWithoutDefault();
         return;
     }
-    m_squelchDefaults->sessionStarted(prefs.squelchDefault, standing.inSpec, standing.ownSquelch);
+    m_squelchDefaults->sessionStarted(prefs.squelchDefault, standing.ownSquelch);
 }
 
 void

@@ -744,22 +744,26 @@ CommandBridge::setDecodeMode(int mode) const {
 
 void
 CommandBridge::followSquelchDefault(SquelchDefaultPolicy::Action action) const {
-    if (action == SquelchDefaultPolicy::Action::PushDefault) {
-        // Queued after the decode switch, so the decoder applies it to the analog channel the switch opens. Noise on
-        // an AM channel runs as auto, as the engine runs it everywhere, and stays noise for a switch on to NFM.
-        const QByteArray text = m_squelchDefaults->defaultSetting().toUtf8();
-        dsd_squelch_setting setting{};
-        if (dsd_squelch_setting_parse(text.constData(), &setting, nullptr, 0U) == 0
-            && dsd_squelch_setting_is_dynamic(&setting)) {
-            (void)submitDynamicSquelch(setting.mode, setting.margin_db);
-        }
-    } else if (action == SquelchDefaultPolicy::Action::PushOff) {
-        // Off exactly as the session started with it: the level field 0 of its spec.
-        dsd_app_squelch_setting_payload payload = {};
-        payload.mode = DSD_SQUELCH_MODE_LEVEL;
-        payload.level = 0.0;
-        (void)accepted(dsd_app_command_submit(DSD_APP_CMD_RTL_SET_SQL_SETTING, &payload, sizeof payload));
+    if (action == SquelchDefaultPolicy::Action::None) {
+        return;
     }
+    // Queued right after the decode switch. The decoder applies it only where the switch left it (on the analog
+    // monitor going in, off it going out) and only over the squelch the app expects (off going in, the default going
+    // out), so a refused switch or a squelch set meanwhile elsewhere is left as it is, and quietly: the switch's own
+    // message stands. Noise on an AM channel runs as auto, as the engine runs it everywhere, and stays noise for a switch
+    // on to NFM.
+    const QByteArray text = m_squelchDefaults->defaultSetting().toUtf8();
+    dsd_squelch_setting setting{};
+    if (dsd_squelch_setting_parse(text.constData(), &setting, nullptr, 0U) != 0
+        || !dsd_squelch_setting_is_dynamic(&setting)) {
+        return;
+    }
+    dsd_app_squelch_follow_payload payload = {};
+    payload.action = action == SquelchDefaultPolicy::Action::DefaultIfOff ? DSD_APP_SQL_FOLLOW_DEFAULT_IF_OFF
+                                                                          : DSD_APP_SQL_FOLLOW_OFF_IF_DEFAULT;
+    payload.mode = setting.mode;
+    payload.margin_db = setting.margin_db;
+    (void)accepted(dsd_app_command_submit(DSD_APP_CMD_RTL_SQL_DEFAULT_FOLLOW, &payload, sizeof payload));
 }
 
 int

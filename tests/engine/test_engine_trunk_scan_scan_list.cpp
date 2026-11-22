@@ -700,7 +700,7 @@ generatedRowSquelch(const QString& extraArgs, const QString& fallback, const QLi
     const QVariantList systems{QVariantMap{{"uid", "nfmlevel"},
                                            {"decodeFlag", "-fA"},
                                            {"freqMhz", "155.1"},
-                                           {"radioSettings", QVariantMap{{"squelch", "-95"}}}},
+                                           {"radioSettings", QVariantMap{{"squelch", "-110"}}}},
                                QVariantMap{{"uid", "amnoise"},
                                            {"decodeFlag", "-fM"},
                                            {"freqMhz", "118.3"},
@@ -802,7 +802,7 @@ generatedRowSquelchCases() {
     const int automatic = DSD_SQUELCH_MODE_AUTO;
     const int noise = DSD_SQUELCH_MODE_NOISE;
     generatedRowSquelch(QStringLiteral("--squelch -1"), QString(),
-                        {{level, 0, -95},
+                        {{level, 0, -110},
                          {automatic, 17, 0},
                          {level, 0, 0},
                          {level, 0, -66},
@@ -810,7 +810,7 @@ generatedRowSquelchCases() {
                          {level, 0, -1},
                          {level, 0, -1}});
     generatedRowSquelch(QString(), QStringLiteral("noise+10"),
-                        {{level, 0, -95},
+                        {{level, 0, -110},
                          {automatic, 17, 0},
                          {level, 0, 0},
                          {level, 0, -66},

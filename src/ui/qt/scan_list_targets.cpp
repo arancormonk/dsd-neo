@@ -312,17 +312,15 @@ dynamicText(int mode, int marginDb) {
            + QString::number(marginDb);
 }
 
-/* The lowest level a row takes, in whole dB; 0 there is off. */
-constexpr int kRowSquelchMinDb = -120;
-
-/* An active level (a mean power above 0) as a row takes it: whole dB, kRowSquelchMinDb..-1 (never 0, which a row reads
-   as off); @p rounded set when that is not the level itself. */
+/* An active level as a row takes it: the whole dB the config export writes (dsd_squelch_level_whole_db(): nearest,
+   -120..-1, never 0, which a row reads as off); @p rounded set when that is not the level itself
+   (dsd_squelch_level_is_whole_db()), the same rule the Radio sheet saves by. */
 QString
 rowLevelText(double level, bool* rounded) {
-    const double db = 10.0 * std::log10(level);
-    const double whole = std::isfinite(db) ? std::clamp(std::round(db), double(kRowSquelchMinDb), -1.0) : -1.0;
-    *rounded = !std::isfinite(db) || std::fabs(db - whole) > 1e-6;
-    return QString::number(static_cast<int>(whole));
+    int db = -1;
+    (void)dsd_squelch_level_whole_db(level, &db);
+    *rounded = dsd_squelch_level_is_whole_db(level, nullptr) == 0;
+    return QString::number(db);
 }
 
 /* The --squelch value target @p target's row carries (issue #899, B13; see scan_list_targets()), or empty for none. */

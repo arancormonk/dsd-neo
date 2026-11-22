@@ -18,6 +18,7 @@
 #define DSD_NEO_SRC_UI_QT_SESSION_ARGS_H_
 
 #include <QObject>
+#include <QPointer>
 #include <QString>
 #include <QStringList>
 #include <QVariantMap>
@@ -25,6 +26,7 @@
 
 #include <dsd-neo/core/opts.h>
 #include "app_squelch_default.h"
+#include "squelch_default_policy.h"
 Q_MOC_INCLUDE("decoder_host.h")
 
 namespace dsd_qt {
@@ -34,7 +36,6 @@ class DecoderHost;
 class SavedSystemsModel;
 class DecryptionProfileProvider;
 class RecordingSessions;
-class SquelchDefaultPolicy;
 
 /** @brief The app-wide defaults a saved system's overrides fall back to. */
 struct SessionArgPrefs {
@@ -185,7 +186,7 @@ constexpr SessionArgsError SessionArgsErrorLast = SessionArgsError::ExtraIncompl
 bool session_args_extra_incomplete(const QString& tokens);
 
 /**
- * @brief Whether the extra options @p tokens set the squelch themselves (--squelch or --squelch-db, in either form),
+ * @brief Whether the extra options @p tokens set the squelch themselves (--squelch, in either form),
  * read as session_args_extra_sets_pause_hold() reads the pause hold (issue #899).
  */
 bool session_args_extra_sets_squelch(const QString& tokens);
@@ -195,7 +196,7 @@ struct SessionArgsSquelchDefault {
     /* The session's input is a radio spec the app builds (RTL-SDR USB, rtl_tcp, Airspy), which the extra options do
        not replace (-i, --iq-replay): only there does the app give a squelch. */
     bool eligible = false;
-    /* A saved Radio-sheet squelch, or --squelch / --squelch-db among the extra options, names the squelch. */
+    /* A saved Radio-sheet squelch, or --squelch among the extra options, names the squelch. */
     bool ownSquelch = false;
     /* The spec's squelch field carries prefs.squelchDefault: eligible, no squelch of its own, an analog start (the last decode
        preset the argv names is NFM, -fA, or AM, -fM) and a default that is not off. */
@@ -455,7 +456,7 @@ class SessionArgsBuilder : public QObject {
     const SavedSystemsModel* m_systems = nullptr;
     DecryptionProfileProvider* m_profiles = nullptr;
     RecordingSessions* m_recordingSessions = nullptr;
-    SquelchDefaultPolicy* m_squelchDefaults = nullptr;
+    QPointer<SquelchDefaultPolicy> m_squelchDefaults;
 };
 
 } // namespace dsd_qt

@@ -1319,6 +1319,19 @@ scoped `-G`, and direct keys use scoped `-b`/`-H`/`-1`/`-R` so their activation 
 mute/force semantics match standalone sessions. Key CSVs use `keys_hex_csv` or
 `keys_dec_csv`; frontend generation never uses `single_key_*`.
 
+Each generated row carries a squelch its row type takes (issue #899). A saved system's own squelch goes to its row
+as the row runs it: noise on an `am` row as `auto` with the same margin, a dynamic squelch on a digital row as
+`off`, and a level as whole dB from `-120` to `-1` (a level that is not a whole dB is rounded, and the list says
+so). An `nfm` or `am` row with no squelch of its own gets the app's default from Settings (`--squelch noise+10`
+unless changed there; `auto+N` on an `am` row), unless the app's Advanced arguments set the squelch for the whole
+session, which those rows then run.
+
+An imported target CSV (a list whose targets come from a file) runs what the file says: the app does not rewrite a
+file it imported, so an `nfm-conventional` or `am-conventional` row with no `--squelch` of its own runs the session's
+squelch, which a scan session starts off. Such a row plays receiver hiss and holds the scan on noise. To give it the
+default, add the option to the row's `options` cell, for example
+`fire,nfm-conventional,155475000,,,,,,,,,,"Fire",--squelch noise+10` (or `--squelch auto+10` on an `am` row).
+
 The generator refuses comma, double quote and line breaks in file paths. Spaces
 are supported: an options cell contains `-G "absolute path/group list.csv"`
 directly, without CSV-doubling those quotes. The engine target parser strips outer

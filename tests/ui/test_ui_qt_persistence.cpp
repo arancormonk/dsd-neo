@@ -3130,6 +3130,8 @@ test_prefs_key_table(void) {
          "map/viewport"},
         // Issue #899: the squelch analog sessions start with.
         {"squelch", QStringLiteral("auto+14"), "radio/squelch"},
+        // Issue #899: who owns the accepted session's squelch.
+        {"acceptedStartSquelch", QStringLiteral("app:noise+10"), "listen/acceptedStartSquelch"},
     };
     QStringList covered;
     int writable = 0;
@@ -3210,6 +3212,7 @@ test_prefs_key_table(void) {
     const QStringList wantLocal = {
         QStringLiteral("listen/acceptedStartCompanions"),
         QStringLiteral("listen/acceptedStartKind"),
+        QStringLiteral("listen/acceptedStartSquelch"),
         QStringLiteral("listen/acceptedStartTargets"),
         QStringLiteral("listen/acceptedStartUid"),
         QStringLiteral("listen/lastStartedCompanions"),

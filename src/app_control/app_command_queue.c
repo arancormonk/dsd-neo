@@ -2777,6 +2777,46 @@ ui_cmd_handle_rtl_set_sql_setting(dsd_opts* opts, dsd_state* state, const struct
     return ui_cmd_apply_status_from_service_rc(rc);
 }
 
+/* Whether the configured squelch is what a DSD_APP_CMD_RTL_SQL_DEFAULT_FOLLOW @p p expects before it acts: off for
+   DEFAULT_IF_OFF, exactly the default for OFF_IF_DEFAULT. */
+static int
+ui_cmd_sql_follow_expected(const dsd_app_squelch_view* view, const dsd_app_squelch_follow_payload* p) {
+    if (p->action == DSD_APP_SQL_FOLLOW_DEFAULT_IF_OFF) {
+        return view->configured_off && !view->configured_auto && !view->configured_noise;
+    }
+    const int same_mode = p->mode == DSD_SQUELCH_MODE_NOISE ? view->configured_noise : view->configured_auto;
+    return same_mode && view->configured_margin_db == p->margin_db;
+}
+
+/* DSD_APP_CMD_RTL_SQL_DEFAULT_FOLLOW (issue #899): after a decode switch the app asked for, its default squelch comes
+   in (the decoder is on the analog monitor and the configured squelch is off) or goes out (it is off the monitor and
+   the configured squelch is the default). A switch the decoder refused, or a squelch someone else set meanwhile (the
+   control API, a config), leaves it unapplied. No toast: the switch's own message (its refusal, the TETRA rate advice)
+   is the one the operator reads. */
+static int
+ui_cmd_handle_rtl_sql_default_follow(dsd_opts* opts, const dsd_state* state, const struct dsd_app_command* c) {
+    dsd_app_squelch_follow_payload p;
+    if (!state || c->n != sizeof p) {
+        return UI_CMD_APPLY_INVALID_PAYLOAD;
+    }
+    DSD_MEMCPY(&p, c->data, sizeof p);
+    const int known_action =
+        p.action == DSD_APP_SQL_FOLLOW_DEFAULT_IF_OFF || p.action == DSD_APP_SQL_FOLLOW_OFF_IF_DEFAULT;
+    if (!known_action || !dsd_squelch_mode_is_dynamic(p.mode) || p.margin_db < DSD_SQUELCH_MARGIN_MIN_DB
+        || p.margin_db > DSD_SQUELCH_MARGIN_MAX_DB) {
+        return UI_CMD_APPLY_INVALID_PAYLOAD;
+    }
+    const int want_analog = p.action == DSD_APP_SQL_FOLLOW_DEFAULT_IF_OFF;
+    dsd_app_squelch_view view;
+    if (dsd_opts_is_analog_family(opts) != want_analog || dsd_app_squelch_view_get(opts, state, &view) != 0
+        || !ui_cmd_sql_follow_expected(&view, &p)) {
+        return UI_CMD_APPLY_COMPLETED;
+    }
+    const dsd_squelch_setting setting =
+        want_analog ? dsd_squelch_setting_dynamic(p.mode, p.margin_db) : dsd_squelch_setting_of_level(0.0);
+    return ui_cmd_apply_status_from_service_rc(svc_rtl_set_sql_setting(opts, state, &setting));
+}
+
 static int
 apply_cmd_io_and_import_squelch(dsd_opts* opts, dsd_state* state, const struct dsd_app_command* c) {
     static const struct dsd_app_command_handler_entry k_handlers[] = {
@@ -2785,6 +2825,9 @@ apply_cmd_io_and_import_squelch(dsd_opts* opts, dsd_state* state, const struct d
     };
     if (!opts || !c) {
         return 0;
+    }
+    if (c->id == DSD_APP_CMD_RTL_SQL_DEFAULT_FOLLOW) {
+        return ui_cmd_handle_rtl_sql_default_follow(opts, state, c);
     }
     return ui_cmd_apply_handler_table(k_handlers, sizeof k_handlers / sizeof k_handlers[0], opts, state, c);
 }
@@ -5570,6 +5613,7 @@ static const struct ui_cmd_payload_min_size_rule k_ui_cmd_payload_min_size_rules
     {DSD_APP_CMD_INPUT_WARN_DB_SET, sizeof(double)},
     {DSD_APP_CMD_RTL_SET_SQL_DB, sizeof(double)},
     {DSD_APP_CMD_RTL_SET_SQL_SETTING, sizeof(dsd_app_squelch_setting_payload)},
+    {DSD_APP_CMD_RTL_SQL_DEFAULT_FOLLOW, sizeof(dsd_app_squelch_follow_payload)},
     {DSD_APP_CMD_HANGTIME_SET, sizeof(double)},
     {DSD_APP_CMD_CONST_GATE_DELTA, sizeof(float)},
     {DSD_APP_CMD_UDP_OUT_CFG, sizeof(dsd_app_endpoint_payload)},
@@ -11717,6 +11761,7 @@ static const int k_deferred_commands[] = {
     DSD_APP_CMD_PPM_DELTA,
     DSD_APP_CMD_RTL_SET_SQL_DB,
     DSD_APP_CMD_RTL_SET_SQL_SETTING,
+    DSD_APP_CMD_RTL_SQL_DEFAULT_FOLLOW,
     DSD_APP_CMD_RTL_SET_VOL_MULT,
     DSD_APP_CMD_RTL_SET_BIAS_TEE,
     DSD_APP_CMD_RTLTCP_SET_AUTOTUNE,

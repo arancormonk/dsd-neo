@@ -39,6 +39,11 @@ class AppPrefs : public QObject {
      * auto-start: a recreated Activity takes the identity of the session it finds running from these. Device-local. */
     Q_PROPERTY(QString acceptedStartKind READ acceptedStartKind WRITE setAcceptedStartKind NOTIFY acceptedStartChanged)
     Q_PROPERTY(QString acceptedStartUid READ acceptedStartUid WRITE setAcceptedStartUid NOTIFY acceptedStartChanged)
+    /* Issue #899: who owns the accepted session's squelch (SquelchDefaultPolicy::record(): "app:noise+10", "user",
+     * "session"), written as it changes, so a recreated Activity takes it back (SquelchDefaultPolicy::adopt()).
+     * Device-local. */
+    Q_PROPERTY(QString acceptedStartSquelch READ acceptedStartSquelch WRITE setAcceptedStartSquelch NOTIFY
+                   acceptedStartChanged)
     /* Issue #697: the other scan lists a scan session scans with its list (the UID above), in list order: the rest of
      * the session's identity, written with acceptedStart* and lastStarted* (acceptedStartCompanions,
      * lastStartedCompanions), empty for every other start. Device-local: a backup carries no list identity a restore
@@ -207,6 +212,8 @@ class AppPrefs : public QObject {
     void setAcceptedStartKind(const QString& value);
     QString acceptedStartUid() const;
     void setAcceptedStartUid(const QString& value);
+    QString acceptedStartSquelch() const;
+    void setAcceptedStartSquelch(const QString& value);
     QStringList acceptedStartCompanions() const;
     void setAcceptedStartCompanions(const QStringList& value);
     QStringList lastStartedCompanions() const;

@@ -83,6 +83,11 @@ header_command_ids(int* ids, size_t cap) {
             if (value == DSD_APP_CMD_RUNTIME_CONFIG_APPLY) {
                 continue;
             }
+            /* The app's default squelch following a decode switch it asked for (issue #899): a frontend's own
+               follow-up, which an API client sets with rtl_set_sql_setting. */
+            if (value == DSD_APP_CMD_RTL_SQL_DEFAULT_FOLLOW) {
+                continue;
+            }
             assert(n < cap);
             ids[n++] = value;
         }
