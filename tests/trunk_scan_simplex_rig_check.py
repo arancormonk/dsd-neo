@@ -34,7 +34,9 @@ and hold run on its real clock, and the paced source catches up after a blocked 
 visit end early or late by about the stall. What keeps a slow runner passing is the slack: LEAVE_PAD_S on every bound,
 an idle visit's bound (DWELL_MS and LEAVE_PAD_S, 5 s) far under the visit cap (15 s) a held trunked target would run to,
 and a held visit's bound well under what the session defaults would give. The run's wall time is bounded by --seconds
-and the CTest TIMEOUT.
+and the CTest TIMEOUT. A visit's profile is judged only on the metrics read before the API was closed, so the visit the
+run's end cuts short is judged on what was read of it. The API is the decoder's own once it says it listens on the
+port: a port another loopback test took first fails the decoder's bind, and the run starts again on another one.
 
 Usage: trunk_scan_simplex_rig_check.py DSD_NEO FIXTURE_DIR [--seconds S] [--keep DIR] [--explore]
 Exit 0 on success, 1 on a failed check, 77 when numpy is missing (the rig needs it). Serves the loopback interface
@@ -90,6 +92,8 @@ SETTLE_S = 0.3
 END_GUARD_S = 0.3
 # A visit this long or longer has metrics lines enough to show its profile.
 READABLE_S = 0.9
+# Runs started again when another process takes the API port before the decoder binds it (wait_for_api()).
+API_PORT_ATTEMPTS = 3
 SANITIZER = re.compile(r"AddressSanitizer|UndefinedBehaviorSanitizer|ThreadSanitizer|LeakSanitizer|runtime error:")
 TMO_BSCH = re.compile(r"\[TETRA BSCH\] MCC=460 MNC=4242")
 
@@ -197,6 +201,32 @@ def free_port():
     port = probe.getsockname()[1]
     probe.close()
     return port
+
+
+class PortTaken(Exception):
+    """The API port free_port() found was bound by another process before the decoder could bind it."""
+
+
+def wait_for_api(proc, output, port, deadline_s=20.0):
+    """Wait until the decoder says it listens on @p port, so the API connected to is its own and no other test's that
+    took the port between free_port() and the decoder's bind. PortTaken when its bind failed; RuntimeError when it
+    exited or said neither in time."""
+    listening = f"API: listening on 127.0.0.1:{port}"
+    refused = (f"API: failed to bind 127.0.0.1:{port}", f"API: failed to listen on 127.0.0.1:{port}")
+    until = time.monotonic() + deadline_s
+    seen = 0
+    while time.monotonic() < until:
+        lines = list(output)
+        for _t, line in lines[seen:]:
+            if listening in line:
+                return
+            if any(text in line for text in refused):
+                raise PortTaken(port)
+        seen = len(lines)
+        if proc.poll() is not None:
+            raise RuntimeError(f"the decoder exited with {proc.returncode} before its API listened")
+        time.sleep(0.05)
+    raise RuntimeError(f"the decoder did not say it listens on API port {port} within {deadline_s:.0f} s")
 
 
 def write_targets(rows, path):
@@ -326,7 +356,9 @@ def run(args, rows, work):
     reader = threading.Thread(target=stamp_output, args=(proc.stdout, output), daemon=True)
     reader.start()
     api = None
+    metrics_end = None
     try:
+        wait_for_api(proc, output, api_port)
         api = Api(api_port)
         started = time.monotonic()
         while proc.poll() is None and time.monotonic() - started < args.seconds:
@@ -334,6 +366,8 @@ def run(args, rows, work):
                 break
             time.sleep(0.25)
     finally:
+        # The metrics stop here: no visit's profile can be read past it.
+        metrics_end = time.monotonic()
         if api is not None:
             api.close()
         proc.terminate()
@@ -351,6 +385,7 @@ def run(args, rows, work):
         "tunes": list(scene.tunes),
         "commanded": list(scene.commanded),
         "end": end,
+        "metrics_end": metrics_end,
         "api": api.lines if api is not None else [],
         "output": output,
     }
@@ -376,9 +411,12 @@ def command_visits(commanded, end, rows):
     return out
 
 
-def check_profile(row, visit, lines):
-    """None when the visit (a command_visits() entry) landed row's profile, else what it showed."""
+def check_profile(row, visit, lines, metrics_end):
+    """None when the visit (a command_visits() entry) landed row's profile, else what it showed. Only the part of the
+    visit the metrics were collected for counts (up to @p metrics_end): a visit the run's end cut short there is judged
+    as long as it was read."""
     _row, w0, w1 = visit
+    w1 = min(w1, metrics_end)
     shown = [profile_of(m, row.profile) for t, m in lines if w0 + SETTLE_S <= t < w1 - END_GUARD_S]
     landed = next((i for i, p in enumerate(shown) if p == row.profile), None)
     if landed is None:
@@ -417,7 +455,7 @@ def check(record, rows, explore):
             failures.append(f"{row.id}: {len(whole)} whole visit(s); the run needs two of every target")
             continue
         for visit in (v for v in command_visits(record["commanded"], record["end"][1], rows) if v[0] is row):
-            wrong = check_profile(row, visit, record["api"])
+            wrong = check_profile(row, visit, record["api"], record["metrics_end"])
             if wrong:
                 at = visit[1] - record["commanded"][0][0]
                 failures.append(f"{row.id}: the visit commanded {at:.2f} s in {wrong}")
@@ -453,7 +491,17 @@ def main():
     with tempfile.TemporaryDirectory(prefix="scan-rig-") as scratch:
         work = args.keep if args.keep else Path(scratch)
         work.mkdir(parents=True, exist_ok=True)
-        record = run(args, rows, work)
+        # Another loopback test may bind the API port free_port() found before the decoder does: a run whose decoder
+        # could not bind it starts again on another port.
+        for attempt in range(API_PORT_ATTEMPTS):
+            try:
+                record = run(args, rows, work)
+                break
+            except PortTaken as taken:
+                print(f"NOTE: API port {taken} was taken before the decoder bound it (attempt {attempt + 1})")
+        else:
+            print(f"FAIL: every API port of {API_PORT_ATTEMPTS} attempts was taken before the decoder bound it")
+            return 1
         if args.keep:
             (work / "record.json").write_text(json.dumps(record, default=str), encoding="utf-8")
         failures = check(record, rows, args.explore)
