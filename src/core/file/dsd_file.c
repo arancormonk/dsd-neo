@@ -1231,7 +1231,9 @@ wav_rename_build_metadata(const Event_History* event_item, const dsd_analog_wav_
     } else if (gi == 1) {
         DSD_SNPRINTF(metadata->gi_str, sizeof(metadata->gi_str), "%s", "PRIVATE");
     }
-    metadata->is_string = (metadata->src_str[0] != '\0') ? 1 : 0;
+    /* Each party by its text where it has one, else by its number (issue #903): a Type-D call named by its target
+       message alone keeps the target's "pp-iiii" prefix with no source decoded. */
+    metadata->is_string = (metadata->src_str[0] != '\0' || metadata->tgt_str[0] != '\0') ? 1 : 0;
     if (metadata->is_analog) {
         wav_rename_analog_from(event_item, analog_name, metadata);
     }
@@ -1246,9 +1248,14 @@ wav_rename_build_final_filename(char* out, size_t out_cap, const char* dir, cons
         DSD_SNPRINTF(out, out_cap, "%s/%s_%s_%05d_%s%s.wav", dir, metadata->datestr, metadata->timestr,
                      metadata->random_number, metadata->analog_part, metadata->service);
     } else if (metadata->is_string == 1) {
+        char tgt[16];
+        char src[16];
+        DSD_SNPRINTF(tgt, sizeof tgt, "%u", metadata->target_id);
+        DSD_SNPRINTF(src, sizeof src, "%u", metadata->source_id);
         DSD_SNPRINTF(out, out_cap, "%s/%s_%s_%05d_%s%s_%s_TGT_%s_SRC_%s.wav", dir, metadata->datestr, metadata->timestr,
-                     metadata->random_number, metadata->sys_str, metadata->service, metadata->gi_str, metadata->tgt_str,
-                     metadata->src_str);
+                     metadata->random_number, metadata->sys_str, metadata->service, metadata->gi_str,
+                     metadata->tgt_str[0] != '\0' ? metadata->tgt_str : tgt,
+                     metadata->src_str[0] != '\0' ? metadata->src_str : src);
     } else {
         DSD_SNPRINTF(out, out_cap, "%s/%s_%s_%05d_%s%s_%s_TGT_%d_SRC_%d.wav", dir, metadata->datestr, metadata->timestr,
                      metadata->random_number, metadata->sys_str, metadata->service, metadata->gi_str,

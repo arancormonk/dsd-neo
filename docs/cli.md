@@ -326,7 +326,8 @@ Windows console runs:
   `|`, control characters, a byte that is not part of valid UTF-8) and dots and spaces replaced with `_`; the call
   history and rdio-scanner metadata keep them as received. An NXDN Type-D (IDAS) call names its group and radio
   under their home repeater prefix, `TGT_03-0005_SRC_03-0100` for group 5 and radio 100 under prefix 3, as the call
-  history shows them; a Type-D call whose source never decoded keeps the numeric form, `TGT_5_SRC_0`.
+  history shows them. Each party is named by its text where it has one and by its number otherwise, so a Type-D call
+  whose source never decoded is `TGT_03-0005_SRC_0`.
   A recording whose write falls short (a full disk) ends there and is published with what it holds;
   one that does not close cleanly keeps its `TEMP_` name. A slot file that fails to open opens again at the slot's
   next call end. Each kind of failure (open, write, close, rename) is logged the first time in a run and counted after.

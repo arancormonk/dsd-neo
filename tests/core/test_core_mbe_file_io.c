@@ -3392,6 +3392,54 @@ test_close_and_rename_wav_preserves_nonempty_event_file(void) {
     return rc;
 }
 
+/* Issue #903: each party in a WAV name by its text where it has one, else by its number: a Type-D call named by its
+ * target message alone keeps the target's prefix with no source decoded. */
+static int
+test_close_and_rename_wav_names_each_party(void) {
+    int rc = 0;
+    char dir[DSD_TEST_PATH_MAX];
+    if (!dsd_test_mkdtemp(dir, sizeof dir, "dsdneo_wav_party")) {
+        DSD_FPRINTF(stderr, "dsd_test_mkdtemp failed: %s\n", strerror(errno));
+        return 1;
+    }
+    char path[DSD_TEST_PATH_MAX];
+    DSD_MEMSET(path, 0, sizeof path);
+    SNDFILE* wav = open_wav_file(dir, path, sizeof path, 8000, 0);
+    rc |= expect_true("party rename source wav opened", wav != NULL);
+    if (wav) {
+        rc |= expect_true("party rename wrote pcm samples", write_wav_test_samples(wav));
+        static Event_History_I history;
+        DSD_MEMSET(&history, 0, sizeof history);
+        Event_History* item = &history.Event_History_Items[0];
+        item->event_time = (time_t)1700002000;
+        item->gi = 0;
+        item->target_id = 5U;
+        DSD_SNPRINTF(item->sysid_string, sizeof item->sysid_string, "%s", "SYS-D");
+        DSD_SNPRINTF(item->tgt_str, sizeof item->tgt_str, "%s", "03-0005");
+        rc |= expect_true("party rename returns null",
+                          close_and_rename_wav_file_ex(wav, NULL, path, dir, &history, 0, 1, NULL) == NULL);
+        char renamed[DSD_TEST_PATH_MAX];
+        renamed[0] = '\0';
+        char datestr[9];
+        char timestr[7];
+        (void)dsd_format_local_datetime(item->event_time, DSD_LOCAL_DATETIME_DATE_COMPACT, datestr, sizeof datestr);
+        (void)dsd_format_local_datetime(item->event_time, DSD_LOCAL_DATETIME_TIME_COMPACT, timestr, sizeof timestr);
+        int found = 0;
+        for (unsigned int n = 0; n <= UINT16_MAX && !found; n++) {
+            DSD_SNPRINTF(renamed, sizeof renamed, "%s/%s_%s_%05u_SYS-D_GROUP_TGT_03-0005_SRC_0.wav", dir, datestr,
+                         timestr, n);
+            found = file_size_or_negative(renamed) > 0;
+        }
+        rc |= expect_true("party rename keeps the target text and the source number", found);
+        if (found) {
+            (void)remove(renamed);
+        }
+    }
+    (void)remove(path);
+    (void)remove_dir(dir);
+    return rc;
+}
+
 static int
 test_close_and_rename_wav_numeric_and_failure_paths(void) {
     int rc = 0;
@@ -4415,6 +4463,7 @@ main(void) {
     rc |= test_close_and_rename_wav_removes_header_only_files();
     rc |= test_close_and_rename_wav_preserves_nonempty_event_file();
     rc |= test_close_and_rename_wav_numeric_and_failure_paths();
+    rc |= test_close_and_rename_wav_names_each_party();
     rc |= test_close_and_rename_wav_exports_rdio_sidecar();
     rc |= test_close_and_rename_wav_replaces_unsafe_identity_characters();
     rc |= test_close_and_rename_wav_stream_off_skips_export();
