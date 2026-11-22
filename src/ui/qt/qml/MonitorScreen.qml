@@ -425,9 +425,9 @@ Item {
     // name (max(96, 35% of the room), but never more than the whole name, so
     // a short title that fits keeps one line: r2 E1), the count takes a
     // second line of the header's whole width, below the header actions, and
-    // the name has the first line to itself, elided. The room is measured with the actions the
-    // tier shows and the pill at its widest label, so LIVE turning STOPPING…
-    // never changes the form.
+    // the name has the first line to itself, elided. The room is measured
+    // with the actions the tier shows and the pill at its widest label, so
+    // LIVE turning STOPPING… never changes the form.
     readonly property string titleCountText: withOtherLists("").trim()
     function titleTwoLine(t) {
         if (otherListCount <= 0)
