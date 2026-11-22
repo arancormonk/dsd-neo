@@ -256,40 +256,6 @@ dsd_trunk_cc_candidates_set_cooldown(const dsd_state* state, long freq_hz, doubl
     }
 }
 
-int
-dsd_trunk_cc_candidates_remove(const dsd_state* state, long freq_hz) {
-    if (!state || freq_hz == 0) {
-        return 0;
-    }
-
-    dsd_trunk_cc_candidates* cc =
-        DSD_STATE_EXT_GET_AS(dsd_trunk_cc_candidates, state, DSD_STATE_EXT_ENGINE_TRUNK_CC_CANDIDATES);
-    if (!cc || !dsd_trunk_cc_candidates_has_valid_count(cc)) {
-        return 0;
-    }
-
-    for (int k = 0; k < cc->count; k++) {
-        if (cc->candidates[k] != freq_hz) {
-            continue;
-        }
-        for (int j = k + 1; j < cc->count; j++) {
-            cc->candidates[j - 1] = cc->candidates[j];
-            cc->flags[j - 1] = cc->flags[j];
-            cc->cool_until[j - 1] = cc->cool_until[j];
-        }
-        cc->count--;
-        cc->candidates[cc->count] = 0;
-        cc->flags[cc->count] = 0;
-        cc->cool_until[cc->count] = 0.0;
-        /* The walk goes on from the entry after the last one handed out, wherever the removal moved it. */
-        if (cc->idx > k) {
-            cc->idx--;
-        }
-        return 1;
-    }
-    return 0;
-}
-
 void
 dsd_trunk_cc_candidates_reset(const dsd_state* state) {
     if (!state) {

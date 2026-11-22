@@ -3333,16 +3333,12 @@ no_carrier_reset_p25_metrics(dsd_state* state) {
     state->p25_p2_rs_ess_corr = 0;
 }
 
-/* The candidate list empties with the carrier; the control channels the DMR network's own signalling named go back in
-   at once, so a hunt after the loss still finds a TSCC announced before it (discussion #900). They leave with the
-   network (dmr_t3_chan_forget_cc_candidates()), never with the carrier. */
 static void
 no_carrier_reset_p25_cc_cache(dsd_state* state) {
     dsd_trunk_cc_candidates* cc_candidates = dsd_trunk_cc_candidates_get(state);
     if (cc_candidates) {
         cc_candidates->count = 0;
         cc_candidates->idx = 0;
-        dmr_t3_chan_reseed_cc_candidates(state);
     }
     state->p25_cc_cache_loaded = 0;
 }

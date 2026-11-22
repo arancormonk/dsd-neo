@@ -45,6 +45,7 @@
 #include <dsd-neo/runtime/colors.h>
 #include <dsd-neo/runtime/frame_sync_hooks.h>
 #include <dsd-neo/runtime/rigctl_query_hooks.h>
+#include <dsd-neo/runtime/trunk_cc_candidates.h>
 #include <dsd-neo/runtime/trunk_scan_hooks.h>
 #include <dsd-neo/runtime/trunk_tuning_hooks.h>
 #include <inttypes.h>
@@ -55,7 +56,6 @@
 #include "dmr_call_channel.h"
 #include "dmr_crc_provenance.h"
 #include "dmr_reason.h"
-#include "dmr_slot_end.h"
 #include "dmr_t3_channels_internal.h"
 #include "dmr_tiii_site.h"
 #include "dmr_unit_activity.h"
@@ -430,7 +430,7 @@ dmr_cspdu_pf0_note_absolute_tscc(dsd_opts* opts, dsd_state* state, uint16_t chan
     }
     (void)dmr_csbk_learn_channel(opts, state, chan, freq, 0);
     if (freq != state->trunk_cc_freq) {
-        dmr_t3_chan_add_cc_candidate(state, freq);
+        (void)dsd_trunk_cc_candidates_add(state, freq, 1, DSD_TRUNK_CC_CANDIDATE_CURRENT_SITE);
     }
 }
 
@@ -1078,7 +1078,7 @@ dmr_cspdu_pf0_p_clear_note_tscc(dsd_opts* opts, dsd_state* state, const uint8_t 
     }
     DSD_FPRINTF(stderr, " (%.6f MHz);", (double)freq / 1000000.0);
     if (freq != state->trunk_cc_freq && (dmr_csbk_crc_checked(state) || dmr_csbk_ras_accepted(opts, state))) {
-        dmr_t3_chan_add_cc_candidate(state, freq);
+        (void)dsd_trunk_cc_candidates_add(state, freq, 1, DSD_TRUNK_CC_CANDIDATE_CURRENT_SITE);
     }
 }
 
@@ -1092,18 +1092,6 @@ dmr_cspdu_pf0_p_clear_for_followed_call(const dsd_state* state, const dmr_cspdu_
         return dmr_sm_follows_slot(ctx, slot);
     }
     return dmr_sm_names_followed_call(ctx, state, slot, f->gi, f->target);
-}
-
-/* The addressed slot's call ends with its clear, as a terminator ends it (dmr_slot_end_call()): its row, its live
-   crypto, talkgroup key autoload and alias/GPS metadata. A companion slot that keeps the carrier keeps its own call and
-   fields, and this one would otherwise stay live wherever its terminator LC was missed. A clear whose check could not
-   pass (an MBC header that failed, a RAS signature not accepted) ends it recoverably and keeps the metadata, as an
-   unverified terminator does. */
-static void
-dmr_cspdu_pf0_p_clear_end_slot_call(dsd_opts* opts, dsd_state* state) {
-    const int checked = dmr_csbk_crc_checked(state) || dmr_csbk_ras_accepted(opts, state);
-    dmr_slot_end_call(opts, state, (uint8_t)(state->currentslot & 1),
-                      checked ? DSD_CALL_END_EXPLICIT : DSD_CALL_END_UNVERIFIED_TERMINATOR, checked);
 }
 
 /* P_CLEAR (TS 102 361-4 §7.1.1.3.2). The standard one (FID 0) is read as Table 7.30: it applies only on the followed
@@ -1137,9 +1125,6 @@ dmr_cspdu_pf0_handle_p_clear(dsd_opts* opts, dsd_state* state, const uint8_t cs_
         DSD_FPRINTF(stderr, "%s",
                     dmr_sm_follows_call(dmr_sm_get_ctx()) ? " not for the followed call;" : " no followed call;");
         return;
-    }
-    if (addressed) {
-        dmr_cspdu_pf0_p_clear_end_slot_call(opts, state);
     }
     dmr_cspdu_pf0_p_clear_mark_slots_idle(state);
     clear = dmr_cspdu_pf0_p_clear_log_status(state, clear, csbk_fid, pslot, oslot);
@@ -1277,50 +1262,15 @@ dmr_cspdu_pf0_c_bcast_abs(const uint8_t cs_pdu_bits[], const dmr_cspdu_pf0_c_bca
     return 1;
 }
 
-/*
- * Ceiling on frequencies learned from site broadcasts. Held at the embedded slot count so
- * over-the-air data can never drive a heap allocation; the reserve call below keeps the
- * function correct if that ever changes.
- */
-enum { DMR_CSBK_LEARNED_LCN_MAX = DSD_TRUNK_LCN_EMBEDDED };
-
-/*
- * Remember a frequency announced by C_BCAST Chan_Freq as a control-channel hunt candidate.
- *
- * Appends distinct frequencies rather than writing modulo a fixed window: the scan list is no
- * longer capped at a handful of slots, so a modular write would clobber a learned entry and
- * assigning the count would truncate the list to the window size. An operator-supplied map is
- * left untouched entirely - it is positional (index i is LCN i+1), so appending site-announced
- * frequencies to it would break that numbering, and the announced channel is already recorded
- * in the sparse channel map by the caller either way.
- */
-static void
-dmr_cspdu_pf0_c_bcast_track_freq(const dsd_opts* opts, dsd_state* state, long freqr) {
-    if (freqr == 0 || dsd_state_trunk_lcn_user_list_present(opts, state)) {
-        return;
-    }
-    dsd_state_trunk_lcn_count_raise(state, 0);
-    for (int i = 0; i < state->lcn_freq_count; i++) {
-        if (*dsd_state_trunk_lcn_slot_const(state, i) == freqr) {
-            return;
-        }
-    }
-    if (state->lcn_freq_count >= DMR_CSBK_LEARNED_LCN_MAX) {
-        return;
-    }
-    if (dsd_state_trunk_lcn_freq_write(state, state->lcn_freq_count, freqr) != 0) {
-        return;
-    }
-    dsd_state_trunk_lcn_count_raise(state, state->lcn_freq_count + 1);
-}
-
+/* A Chan_Freq names a logical channel's physical frequency (TS 102 361-4 §6.7.1.6), not a TSCC (Ann_WD_TSCC announces
+   those, §6.7.1.1): it goes into the sparse channel map, never into the positional channel list (-Y, the channel
+   cycle), whose rows are the user's. */
 static void
 dmr_cspdu_pf0_c_bcast_maybe_store_channel(dsd_opts* opts, dsd_state* state, uint16_t a_channel, long freqr) {
     if (a_channel == 0 || a_channel == 0xFFF || freqr == 0
         || !dmr_csbk_learn_channel(opts, state, a_channel, freqr, 0)) {
         return;
     }
-    dmr_cspdu_pf0_c_bcast_track_freq(opts, state, freqr);
     const long cand[1] = {freqr};
     dmr_sm_on_neighbor_update(opts, state, cand, 1);
 }

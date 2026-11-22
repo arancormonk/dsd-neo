@@ -452,11 +452,7 @@ static void
 search_restore_site(search_coord* c, dsd_state* state) {
     const uint64_t seq = state->trunk_chan_map_seq;
     dsd_p25_site_snapshot_restore(state, &c->session_site);
-    /* The hunt's candidate list is no part of the session site: the control channels a visit's DMR signalling named
-       leave it, and the session's go back. */
-    dmr_t3_chan_forget_cc_candidates(state);
     dmr_t3_chan_restore(state, &c->session_dmr_chan);
-    dmr_t3_chan_reseed_cc_candidates(state);
     if (seq != c->session_site.trunk_chan_map_seq) {
         state->trunk_chan_map_seq = seq + 1U;
         c->session_site.trunk_chan_map_seq = state->trunk_chan_map_seq;

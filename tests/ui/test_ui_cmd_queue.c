@@ -6620,9 +6620,9 @@ test_scan_avoid_counts_width_skipped_rows_out(void) {
 }
 
 /*
- * Issue #697: Clear channel map leaves -Y on, with no list of the user's. Channels a DMR site announces are then
- * appended to the list (dmr_cspdu_pf0_c_bcast_track_freq()), and they are no list to scan: neither the per-visit cap nor
- * the voice gate ends a reception for them, and none of them is somewhere to go.
+ * Issue #697: Clear channel map leaves -Y on, with no list of the user's. Rows another source then puts in the list (a
+ * protocol's control channel seed) are no list to scan: neither the per-visit cap nor the voice gate ends a reception
+ * for them, and none of them is somewhere to go.
  */
 static int
 test_clear_channel_map_leaves_learned_channels_unscanned(void) {

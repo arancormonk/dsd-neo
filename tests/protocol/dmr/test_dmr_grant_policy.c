@@ -2765,18 +2765,13 @@ main(void) {
     build_c_bcast_chan_freq(bits, bytes, 77U, 451U, 100U);
     dsd_test_dmr_cspdu_mbc(&pf0_opts, &pf0_st, bits, bytes);
     rc |= expect_true("c_bcast channel frequency learned", pf0_st.trunk_chan_map[77] == 451012500L);
-    rc |= expect_true("c_bcast channel frequency tracked", pf0_st.trunk_lcn_freq[0] == 451012500L);
-    rc |= expect_true("c_bcast first learned frequency sets count", pf0_st.lcn_freq_count == 1);
-
-    /* Distinct announcements append rather than writing modulo a fixed window, and a repeat of
-     * an already-tracked frequency is not appended twice. */
+    /* A Chan_Freq names a logical channel's frequency, not a TSCC (TS 102 361-4 §6.7.1.6): nothing reaches the
+     * positional list, which stays the user's (discussion #900). */
+    rc |= expect_true("c_bcast channel frequency not in the list", pf0_st.lcn_freq_count == 0);
     build_c_bcast_chan_freq(bits, bytes, 78U, 451U, 300U);
     dsd_test_dmr_cspdu_mbc(&pf0_opts, &pf0_st, bits, bytes);
-    rc |= expect_true("c_bcast second frequency appended", pf0_st.trunk_lcn_freq[1] == 451037500L);
-    rc |= expect_true("c_bcast second frequency raises count", pf0_st.lcn_freq_count == 2);
-    build_c_bcast_chan_freq(bits, bytes, 79U, 451U, 300U);
-    dsd_test_dmr_cspdu_mbc(&pf0_opts, &pf0_st, bits, bytes);
-    rc |= expect_true("c_bcast duplicate frequency not appended", pf0_st.lcn_freq_count == 2);
+    rc |= expect_true("c_bcast second channel learned", pf0_st.trunk_chan_map[78] == 451037500L);
+    rc |= expect_true("c_bcast second channel not in the list", pf0_st.lcn_freq_count == 0);
     dsd_state_ext_free_all(&pf0_st);
 
     /* An imported channel map is positional operator intent: a site broadcast must neither write

@@ -591,7 +591,8 @@ test_save_restore_round_trip(void) {
 /* ---- C_BCAST announcements (B4, B6) ---- */
 
 /* Chan_Freq always carries a BC_AP (TS 102 361-4 §7.2.19.6): a header CH of 0xFFF leaves the channel to the BC_AP's
-   CHAN, learned and appended to the hunt list as any other. */
+   CHAN, learned as any other. It names a logical channel's frequency, not a TSCC (§6.7.1.6), so the positional list
+   never takes it (discussion #900). */
 static void
 test_chan_freq_header_fff_uses_bcap_chan(void) {
     reset();
@@ -600,7 +601,7 @@ test_chan_freq_header_fff_uses_bcap_chan(void) {
     assert(g_state.trunk_chan_map[130] == 451125000L);
     assert(dmr_t3_chan_origin(&g_state, 130U) == DMR_CHAN_ORIGIN_SITE);
     assert(g_state.trunk_chan_map[0xFFF] == 0L);
-    assert(hunt_list_count(451125000L) == 1);
+    assert(hunt_list_count(451125000L) == 0 && g_state.lcn_freq_count == 0);
     assert(candidate_count(451125000L) == 1);
 
     /* Neither the header nor the BC_AP names a channel: nothing is learned. */
@@ -629,8 +630,8 @@ test_chan_freq_inconsistent_channels_ignored(void) {
     dsd_state_trunk_lcn_free(&g_state);
 }
 
-/* A checked Chan_Freq is a SITE row with its learned notice; announced again it changes nothing and the hunt list
-   holds its frequency once. */
+/* A checked Chan_Freq is a SITE row with its learned notice; announced again it changes nothing. The positional list
+   never holds it. */
 static void
 test_chan_freq_learned_notice_and_origin(void) {
     reset();
@@ -644,7 +645,7 @@ test_chan_freq_learned_notice_and_origin(void) {
     assert(strstr(newest_row(0), "DMR TIII: Learned channel 135 -> 451.187500 MHz;") != NULL);
     send_chan_freq(135U, 451U, 1500U);
     assert(pushes(0) == before + 1U);
-    assert(hunt_list_count(451187500L) == 1 && g_state.lcn_freq_count == 1);
+    assert(hunt_list_count(451187500L) == 0 && g_state.lcn_freq_count == 0);
     assert(candidate_count(451187500L) == 1);
     dsd_state_trunk_lcn_free(&g_state);
 }

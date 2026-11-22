@@ -685,8 +685,7 @@ ann_wd_tscc(uint16_t ch1, uint16_t ch2, uint8_t aw1, uint8_t aw2, uint16_t abs_c
 
 /* A site with no channel list hunts the TSCCs its Ann_WD_TSCC announces (discussion #900 B5; a radio does the same),
    never one it withdraws: in the logical form only the channel marked add, in the MBC form the one TSCC its BC_AP
-   names. The CSBKs arrive after the carrier loss here; dmr_hunt_keeps_tscc_announced_before_loss() covers the other
-   order. */
+   names. The CSBKs arrive after the carrier loss, since noCarrier() empties the candidate list. */
 static int
 dmr_hunt_takes_announced_not_withdrawn_tscc(void) {
     if (setup(0.0f)) {
@@ -718,75 +717,6 @@ dmr_hunt_takes_announced_not_withdrawn_tscc(void) {
                  "ann_wd: then the absolute TSCC announced");
     rc |= expect(g_state.trunk_chan_map[12] == 458000000L && g_state.trunk_chan_map[13] == 457000000L,
                  "ann_wd: the absolute TSCCs' channels are learned");
-    cleanup();
-    return rc;
-}
-
-/* A checked C_ALOHA naming system code @p syscode (bits 40-53). */
-static void
-aloha_code(uint16_t syscode) {
-    uint8_t bits[256] = {0};
-    uint8_t bytes[48] = {0};
-    bytes[0] = 0x80U | 25U;
-    bits[0] = 1U;
-    put_csbk_bits(bits, 2U, 25U, 6U);
-    put_csbk_bits(bits, 40U, syscode & 0x3FFFU, 14U);
-    g_state.synctype = g_state.lastsynctype = DSD_SYNC_DMR_BS_DATA_POS;
-    dmr_cspdu(&g_opts, &g_state, bits, bytes, 1, 0);
-}
-
-static int
-dmr_candidate_listed(long freq) {
-    const dsd_trunk_cc_candidates* cc = dsd_trunk_cc_candidates_peek(&g_state);
-    for (int i = 0; cc != NULL && i < cc->count; i++) {
-        if (cc->candidates[i] == freq) {
-            return 1;
-        }
-    }
-    return 0;
-}
-
-/* Discussion #900 review: the TSCCs a network announced before the carrier loss are still hunted after it, in a
-   standalone trunking session with no channel list (noCarrier() empties the shared candidate list; the DMR record puts
-   its network's control channels back). A checked code of another network (MODEL or NET) takes them out of the hunt,
-   and a later carrier loss does not bring them back. */
-static int
-dmr_hunt_keeps_tscc_announced_before_loss(void) {
-    if (setup(0.0f)) {
-        cleanup();
-        return 1;
-    }
-    dsd_engine_trunk_scan_shutdown(&g_opts, &g_state);
-    g_opts.trunk_scan_enabled = 0;
-    g_opts.trunk_enable = 1;
-    g_opts.frame_dmr = 1;
-    g_state.trunk_cc_freq = 451000000L;
-    g_state.lcn_freq_count = 0;
-    g_state.trunk_chan_map[11] = 456000000L;
-    dmr_sm_ctx_t* ctx = dmr_sm_get_ctx();
-    dmr_sm_init_ctx(ctx, &g_opts, &g_state);
-    aloha_code(0x1234U); /* Small model, NET 0x11 */
-    ann_wd_tscc(0x0FFFU, 0U, 0U, 0U, 13U, 457U);
-    ann_wd_tscc(11U, 0U, 0U, 0U, 0U, 0U);
-    g_state.synctype = DSD_SYNC_NONE;
-    noCarrier(&g_opts, &g_state);
-    int rc = expect(dsd_trunk_dmr_recovery_allowed(&g_opts, &g_state), "before loss: DMR owns the recovery");
-    rc |= expect(dmr_candidate_listed(457000000L) && dmr_candidate_listed(456000000L),
-                 "before loss: the TSCCs announced before the loss are candidates after it");
-    rc |= expect(dmr_probe_once(ctx, DSD_TRUNK_TUNE_RESULT_FAILED) == 457000000L,
-                 "before loss: the hunt probes the absolute TSCC announced first");
-    rc |= expect(dmr_probe_once(ctx, DSD_TRUNK_TUNE_RESULT_FAILED) == 456000000L,
-                 "before loss: then the logical TSCC announced");
-
-    aloha_code(0x2254U); /* Large model: another network */
-    rc |= expect(!dmr_candidate_listed(457000000L) && !dmr_candidate_listed(456000000L),
-                 "network change: the old network's TSCCs leave the hunt");
-    g_state.synctype = DSD_SYNC_NONE;
-    noCarrier(&g_opts, &g_state);
-    rc |= expect(!dmr_candidate_listed(457000000L) && !dmr_candidate_listed(456000000L),
-                 "network change: a carrier loss does not bring them back");
-    const long probe = dmr_probe_once(ctx, DSD_TRUNK_TUNE_RESULT_FAILED);
-    rc |= expect(probe != 457000000L && probe != 456000000L, "network change: the hunt goes to neither");
     cleanup();
     return rc;
 }
@@ -2976,7 +2906,6 @@ main(void) {
     rc |= dmr_probe_drops_the_back_retry();
     rc |= dmr_deferred_candidate_probe_is_retried();
     rc |= dmr_hunt_takes_announced_not_withdrawn_tscc();
-    rc |= dmr_hunt_keeps_tscc_announced_before_loss();
     rc |= cap_plus_rest_recovery();
     rc |= switch_while_probe_pending();
     rc |= standalone_recovery();

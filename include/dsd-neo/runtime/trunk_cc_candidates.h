@@ -90,16 +90,6 @@ void dsd_trunk_cc_candidates_restore(const dsd_state* state, const dsd_trunk_cc_
 void dsd_trunk_cc_candidates_set_cooldown(const dsd_state* state, long freq_hz, double until_monotonic_s);
 
 /**
- * @brief Take @p freq_hz out of the candidate list of @p state, if it is there.
- *
- * The entries after it move up one place and the walk keeps its position among the rest, so the next pick is the one
- * that would have come after the last one handed out. The add/use counters stay. Never allocates the list.
- *
- * @return 1 when an entry went; 0 otherwise.
- */
-int dsd_trunk_cc_candidates_remove(const dsd_state* state, long freq_hz);
-
-/**
  * @brief Forget every CC candidate for @p state, including the add/use counters.
  *
  * Used when the session is re-pointed at a different system: the old system's

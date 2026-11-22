@@ -24,7 +24,6 @@
 #include <dsd-neo/runtime/trunk_tuning_hooks.h>
 #include <stdint.h>
 #include <stdio.h>
-#include "dmr_t3_channels_internal.h"
 #include "dmr_vcrypt.h"
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/safe_api.h"
@@ -3038,6 +3037,6 @@ dmr_sm_on_neighbor_update(dsd_opts* opts, dsd_state* state, const long* freqs, i
         if (f == 0 || f == state->trunk_cc_freq) {
             continue;
         }
-        dmr_t3_chan_add_cc_candidate(state, f);
+        (void)dsd_trunk_cc_candidates_add(state, f, 1, DSD_TRUNK_CC_CANDIDATE_CURRENT_SITE);
     }
 }

@@ -35,7 +35,6 @@
 #include <dsd-neo/runtime/signal_search_avoids.h>
 #include <dsd-neo/runtime/signal_search_hooks.h>
 #include <dsd-neo/runtime/telemetry.h>
-#include <dsd-neo/runtime/trunk_cc_candidates.h>
 #include <dsd-neo/runtime/trunk_scan_hooks.h>
 #include <stddef.h>
 #include <stdint.h>
@@ -3104,40 +3103,23 @@ test_hardset_restored(dsd_opts* o, dsd_state* s, const dsd_signal_search_config*
 /* A DMR Tier III channel the session learned from its site survives the search's visits with its origin and trust: a
    visit's boundary is a tune, which keeps them, and the departure's restore puts the row back with the provenance the
    session saved (discussion #900 F2). A visit that hears another network's checked system code (the entry point a
-   checked C_ALOHA or SYS_Parms short LC calls) drops the session's rows and the control channels its network named;
-   the departure brings the row back as SITE with its trust, the session's baseline and candidates with it, and the
-   visit's candidate goes. */
+   checked C_ALOHA or SYS_Parms short LC calls) drops the session's rows; the departure brings the row back as SITE
+   with its trust and the session's baseline with it. */
 enum { LEARNED_CHANNEL = 9 };
-
-static const long SESSION_TSCC_HZ = 853000000L;
-static const long VISIT_TSCC_HZ = 854000000L;
-
-static int
-search_candidate_listed(const dsd_state* s, long freq) {
-    const dsd_trunk_cc_candidates* cc = dsd_trunk_cc_candidates_peek(s);
-    for (int i = 0; cc != NULL && i < cc->count; i++) {
-        if (cc->candidates[i] == freq) {
-            return 1;
-        }
-    }
-    return 0;
-}
 
 static int
 learned_dmr_row_back(const dsd_state* s, uint32_t session_generation) {
     return s->trunk_chan_map[LEARNED_CHANNEL] == 852012500 && s->dmr_lcn_trust[LEARNED_CHANNEL] == 2U
            && dmr_t3_chan_origin(s, LEARNED_CHANNEL) == DMR_CHAN_ORIGIN_SITE
-           && dmr_t3_chan_generation(s) == session_generation && search_candidate_listed(s, SESSION_TSCC_HZ)
-           && !search_candidate_listed(s, VISIT_TSCC_HZ);
+           && dmr_t3_chan_generation(s) == session_generation;
 }
 
-/* Network B's checked code reaches the visit: the session's rows and candidates go, and B names a TSCC of its own. */
+/* Network B's checked code reaches the visit: the session's rows go. */
 static void
 visit_hears_network_b(dsd_state* s, uint32_t session_generation) {
     dmr_t3_chan_note_checked_syscode(s, 0x2254U); /* Large model: another MODEL than the session's */
     assert(s->trunk_chan_map[LEARNED_CHANNEL] == 0 && s->dmr_lcn_trust[LEARNED_CHANNEL] == 0U);
-    assert(dmr_t3_chan_generation(s) == session_generation + 1U && !search_candidate_listed(s, SESSION_TSCC_HZ));
-    dmr_t3_chan_add_cc_candidate(s, VISIT_TSCC_HZ);
+    assert(dmr_t3_chan_generation(s) == session_generation + 1U);
 }
 
 static void
@@ -3152,7 +3134,6 @@ test_learned_dmr_channel_survives_visits(dsd_opts* o, dsd_state* s, const dsd_si
     dsd_state_dmr_lcn_ota_set(s, LEARNED_CHANNEL, 1);
     ext->origin[LEARNED_CHANNEL] = (uint8_t)DMR_CHAN_ORIGIN_SITE;
     s->dmr_lcn_trust[LEARNED_CHANNEL] = 2U;
-    dmr_t3_chan_add_cc_candidate(s, SESSION_TSCC_HZ);
     const uint32_t session_generation = dmr_t3_chan_generation(s);
     start_tag_session(o, s, &one);
     visit_strongest(o, s);
@@ -3168,7 +3149,6 @@ test_learned_dmr_channel_survives_visits(dsd_opts* o, dsd_state* s, const dsd_si
     stop_tag_session(o, s);
     assert(learned_dmr_row_back(s, session_generation));
     s->dmr_lcn_trust[LEARNED_CHANNEL] = 0U;
-    dmr_t3_chan_forget_cc_candidates(s);
     dmr_t3_chan_note_map_cleared(s);
     ext->syscode_valid = 0U;
     session_site(s, 0, 0, 0);

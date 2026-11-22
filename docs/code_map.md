@@ -183,11 +183,10 @@ Generated (do not edit/commit):
     a hand-set `-X` code or an imported channel map comes back and nothing a visit learned reaches the next. The proof
     (`p2_cc_verified`) is never restored: the boundary cleared it, and a code proven on another carrier proves nothing
     here. A channel map that moved gets a new `trunk_chan_map_seq`. Start also saves the DMR Tier III provenance of the
-    map rows (`dmr_t3_chan_save()`: origins, trust, the rows the air holds, the network baseline and the control
-    channels the network named), and every restore puts it back with the rows: a visit that hears another network's
-    checked system code drops the session's learned rows, and the departure brings them back as they were, the visit's
-    DMR candidates out of the hunt list and the session's back in (discussion #900). The P25 patch table is not part of
-    the site: Start
+    map rows (`dmr_t3_chan_save()`: origins, trust, the rows the air holds and the network baseline), and every restore
+    puts it back with the rows: a visit that hears another network's checked system code drops the session's learned
+    rows, and the departure brings them back as they were (discussion #900). The P25 patch table is not part of the
+    site: Start
     saves the session's whole (`dsd_p25_patch_snapshot`, owner, listening clock and sequence counter with it), every
     departure's boundary empties it, so each visit starts with an empty, unowned table and a voice-only visit to
     another system naming the same supergroup number inherits neither the session's members nor its KEY=0, and only
@@ -458,9 +457,11 @@ Generated (do not edit/commit):
     row landed or since traffic the policy passed, this traffic before a blocked or unlisted value was confirmed
     included, or a trunk-scan hold) is waited out, and with nowhere to go leave the ordinary `-t`, hold and dwell rules
     to run.
-  - -Y rotates only a list of the user's (issue #697): channels a site announces while none is loaded (DMR C_BCAST,
-    `dmr_cspdu_pf0_c_bcast_track_freq()`, which appends only while `dsd_state_trunk_lcn_user_list_present()` is false,
-    at start or after Clear channel map) never make -Y step or end a reception. Without a user list
+  - -Y rotates only a list of the user's (issue #697): rows that are not the user's while none is loaded
+    (`dsd_state_trunk_lcn_user_list_present()` false, at start or after Clear channel map: a protocol's control channel
+    seed) never make -Y step or end a reception. A DMR C_BCAST Chan_Freq is no such row: it names a logical channel's
+    frequency, not a TSCC (TS 102 361-4 §6.7.1.6; Ann_WD_TSCC announces those, §6.7.1.1), so it reaches only the
+    sparse channel map, never the positional list (discussion #900; before, it was appended there with no user list). Without a user list
     `no_carrier_step_scanner_mode_if_needed()` (`engine.c`) admits no timed step, `dsd_scan_voice_gate_owns_step()` is
     false, and `dsd_engine_channel_scan_has_other_row()` finds nowhere to go, so neither the receive-filter yield nor
     the tone-rejection step fires. The per-visit cap re-arms (`scan_visit_rearms()`) unless
@@ -1270,9 +1271,10 @@ channel map, and what `p25_update_system_identity()` drops with the IDEN tables 
 announcements, which resolve against whatever IDEN tables the state holds, the secondary control channels and the
 site's protection, services, LRA and network-active broadcasts) is `dsd_p25_site_snapshot` in
 `src/engine/p25_site_snapshot.{c,h}`, which Signal search also saves once per session (see Signal search). The channel
-map row 0, which `trunk_chan_map_used[]` never lists, is saved and restored on its own (`chan_map_zero`): P25 IDEN 0
-channel 0 and a channel map file's key 0 (a DMR Tier III control seed) both land there, so neither reaches another
-target. Trunk scan
+map row 0, which `trunk_chan_map_used[]` never lists, is saved and restored on its own (`chan_map_zero`), so P25 IDEN 0
+channel 0 never reaches another target. A channel map file's key-0 row (a DMR Tier III control seed) never lands there:
+the importer (`csv_chan_import_apply_field()`) gives it only its positional slot, so it cannot answer a P25 channel
+0x0000 lookup in a mixed session either. Trunk scan
 keeps the session's hand-set flag across a restore, and keeps the code's proof, the NAC, the modulation and the call
 state in its own snapshot fields, and the target's P25 patch table (entries, owner, listening clock, sequence counter)
 as a `dsd_p25_patch_snapshot`: another target's reception never moves it, and a restore breaks the clock's continuity.
@@ -2168,8 +2170,7 @@ suite runs under this compiler.
   `dsd_state_trunk_lcn_freq_write()` (moves `lcn_avoid_rev` only when the row is avoided and its value changes) and
   `dsd_state_trunk_lcn_count_raise()` (never lowers the count; flags it brings into the list are counted and move
   `lcn_avoid_rev`): the P25 row-0 seeds (`p25_trunk_sm.c`, `p25_lcw.c`, `p25p1_tsbk.c`, `p25p1_pdu_trunking.c`,
-  `p25p2_vpdu.c`, `p25_cc_candidates.c`), the P25 Phase 2 secondary-CC rows, the DMR learned-frequency append
-  (`dmr_csbk.c`), the NXDN CCH_INFO row 0, the EDACS 0 Hz LCN capture, the channel-map import (`dsd_import.c`) and the
+  `p25p2_vpdu.c`, `p25_cc_candidates.c`), the P25 Phase 2 secondary-CC rows, the NXDN CCH_INFO row 0, the EDACS 0 Hz LCN capture, the channel-map import (`dsd_import.c`) and the
   trunk-scan target seed. `dsd_state_trunk_lcn_name_set()` moves `lcn_avoid_rev` when an avoided row's name changes.
   `dsd_state_trunk_lcn_avoid_set()`/`_clear()` keep the saturating `lcn_avoid_count` and the exact `size_t`
   `lcn_avoid_total` and move `lcn_avoid_rev` only when a flag changes. The storage helpers (`_reserve()`, `_free()`,
@@ -4761,12 +4762,9 @@ suite runs under this compiler.
       never write the row heard, but each probe drops the backward retry, as a forward start. Tests:
       `RUNTIME_TRUNK_CC_CANDIDATES`, `APP_COMMAND_QUEUE`, `P25_SM_HUNT_DEFERRED`, `ENGINE_DMR_CC_RECOVERY`,
       `NXDN_CC_HUNT`.
-    - `noCarrier()` empties the list; P25 and NXDN candidates go with the carrier. The DMR candidates (an announced or
-      moved-to TSCC, a P_CLEAR's TSCC, a voted or neighbour site's) are also kept in the DMR record
-      (`dmr_t3_chan_add_cc_candidate()`), which puts its network's back right after (`dmr_t3_chan_reseed_cc_candidates()`),
-      so a hunt after the loss still finds a TSCC announced before it. They leave with the network: a DMR network change
-      and a RadioReference re-point take them out (`dmr_t3_chan_forget_cc_candidates()`, through
-      `dsd_trunk_cc_candidates_remove()`), and each trunk-scan target keeps its own.
+    - `noCarrier()` empties the list, DMR's candidates (an announced or moved-to TSCC, a P_CLEAR's TSCC, a voted or
+      neighbour site's) with the rest, and a DMR network change does not take them out. Decided limit (discussion
+      #900): control channels a site announces are hunt candidates until the next carrier loss, as before.
   - Config system (schema, expansion, user config), logging, memory helpers, rings, RT scheduling
     - Floating-point mode (`include/dsd-neo/runtime/fp_mode.h`, `src/runtime/fp_mode.c`, issue #672 B12):
       `DSD_NEO_FTZ_DAZ` is a start-time setting. `dsd_bootstrap_apply_fp_mode()` (`bootstrap/system.c`, called from
@@ -5436,7 +5434,7 @@ suite runs under this compiler.
     over every value below it. A row with `map_need` 0 (TETRA) generates no channel map: `dsd_rr_generate_chan_csv()`
     returns 0 with no text and keeps the trunked "first site only" warning. Tier III rows are keyed by `ch_id` only
     (`lcn` is a row ordinal there) and every marked control frequency no row holds is seeded under key 0 (CHNULL,
-    never a grant's channel, only a hunt-list slot); Connect Plus keeps its `999,<cc>` seed (issue #900). The live
+    never a grant's channel, only a hunt-list slot: the importer writes no channel map row 0 for a key-0 row); Connect Plus keeps its `999,<cc>` seed (issue #900). The live
     import (`svc_import_channel_map()`) takes a file with a usable channel row or a usable positional slot, so such
     a seed-only map loads; zero-frequency placeholders count for neither.
     The SOAP parser never narrows a number: every integer leaf goes through a 64-bit bounded parse
@@ -13392,22 +13390,20 @@ Private per-protocol modules worth knowing about:
   writer sets after the air (P25's channel cache or IDEN invalidation, an import, NXDN) is no longer the air's: the
   shared setter `dsd_state_set_trunk_chan_freq()` clears the row's bit in the core-owned `dsd_state::dmr_lcn_ota`
   (which the DMR writer sets after it writes), and the row then reads as FILE, so DMR neither replaces nor drops it.
-  A network change (`dmr_t3_chan_network_changed()`) drops the SITE, UNVERIFIED,
-  NEIGHBOUR and ESTIMATE rows with their trust bytes, and the control channels the network named, and bumps the
-  generation; FILE and USER rows stay. It is a checked
-  C_ALOHA, C_SYS_Parms or P_SYS_Parms short LC whose system code names another network than the last checked one,
-  MODEL or NET differing (another SITE of
-  the same network is none: the channel plan is the network's, TS 102 361-4 §6.1.2;
+  A network change (`dmr_t3_chan_network_changed()`) drops the SITE, UNVERIFIED, NEIGHBOUR and ESTIMATE rows with
+  their trust bytes and bumps the generation; FILE and USER rows stay, and so does the hunt's candidate list. It is a
+  checked C_ALOHA, C_SYS_Parms or P_SYS_Parms short LC whose system code names another network than the last checked
+  one, MODEL or NET differing (another SITE of the same network is none: the channel plan is the network's, TS 102 361-4 §6.1.2;
   `dmr_t3_chan_note_checked_syscode()`), or an operator boundary: every app-control tune boundary
   (`svc_operator_carrier_boundary()`: a frequency entry, a cycle with trunking off, a config or RadioReference apply
   that moves the receiver), a source or input switch boundary (`dsd_engine_carrier_boundary()`), and an operator move
   that keeps trunking (`ui_user_move_leaves_network()`: a CC selection of another system, a candidate or channel cycle;
   a Return-to-CC keeps them). A `-Y` step, a replay retune, a signal search visit, a stream gap and a trunked CC ->
   voice -> CC trip change nothing. Trunk scan per target and Signal search per session save and restore the origins,
-  trust bytes, `dmr_lcn_ota`, control channel candidates, generation, revision and system-code baseline together
+  trust bytes, `dmr_lcn_ota`, generation, revision and system-code baseline together
   (`dmr_t3_chan_target_snapshot`, `dmr_t3_chan_save()`/`_restore()`); the revision moves on every row or origin change
   and past both sides on a restore. Tests: `DMR_T3_CHANNELS`, `DMR_SEARCH_SITE_NOTES`, `ENGINE_TRUNK_SCAN`,
-  `ENGINE_STREAM_GAP`, `ENGINE_SIGNAL_SEARCH`, `ENGINE_DMR_CC_RECOVERY`, `APP_COMMAND_QUEUE`.
+  `ENGINE_STREAM_GAP`, `ENGINE_SIGNAL_SEARCH`, `APP_COMMAND_QUEUE`.
 - Tier III MBC assembly and absolute parameters (`dmr_block.c`, `dmr_abs_params.{c,h}`, `dmr_csbk.c`, discussion #900
   B7). An MBC is consecutive bursts on one slot of one carrier (TS 102 361-1 §7.4.0): its header (data type 4) arms
   the slot (`dsd_state::dmr_mbc_armed`) and stamps its position (`dmr_mbc_clock`/`_epoch`/`_carrier`: the
@@ -13487,15 +13483,14 @@ Private per-protocol modules worth knowing about:
   names now on the followed carrier (refreshed against its canonical call first), so a checked voice LC naming another
   call since the grant replaces the grant's identity; the grant's identity counts only while the slot names none.
   Otherwise it prints "not for the followed call" ("no followed call" when nothing is followed) and changes nothing: no
-  burst hint, activity, call end, force latch or release. Applied, it ends its own slot's call through
-  `dmr_slot_end_call()` (`dmr_slot_end.c`, the terminator LC's own end): EXPLICIT, or recoverable as an unverified
-  terminator (crypto stashed for a heal, alias/GPS metadata kept) when neither checked nor RAS-accepted; the row syncs
-  and that slot's live crypto, talkgroup key autoload and metadata reset. It releases its own slot only, so a busy
-  companion slot keeps the carrier, its call and its encryption state. The synthesized lockout clear
-  (`dmr_cspdu_release_channel()`) and another FID's opcode 46 keep the carrier-wide release unread. Any clear arms
-  `trunk_sm_force_release` only while the machine follows a call (`dmr_sm_follows_call()`, TUNED): on a composite
-  TSCC's payload slot, or after an idle XPT status marked the receiver tuned (`trunk_is_tuned`) on the control channel,
-  a latched force would release the next followed grant on its first tick. A checked or RAS-accepted clear naming another TSCC than the control channel (a mapped LPCN, or a valid
+  burst hint, activity, force latch or release. Applied, it clears its own slot's burst hint and the machine's voice
+  flag for that slot only, so a busy companion slot keeps the carrier.
+  Decided limit (discussion #900): a P_CLEAR stops following a slot; the call record ends on its terminator or
+  timeout. The synthesized lockout clear (`dmr_cspdu_release_channel()`) and another FID's opcode 46 keep the
+  carrier-wide release unread. Any clear arms `trunk_sm_force_release` only while the machine follows a call
+  (`dmr_sm_follows_call()`, TUNED): on a composite TSCC's payload slot, or after an idle XPT status marked the receiver
+  tuned (`trunk_is_tuned`) on the control channel, a latched force would release the next followed grant on its first
+  tick. A checked or RAS-accepted clear naming another TSCC than the control channel (a mapped LPCN, or a valid
   appended block, which the map also learns) makes it a current-site hunt candidate, whether or not it is for the
   followed call; the release still returns where the machine returns. Tests: `DMR_T3_FORCE_RELEASE`,
   `DMR_T3_MOVE_RELEASE`, `DMR_GRANT_POLICY`, `DMR_T3_CHANNELS`.
