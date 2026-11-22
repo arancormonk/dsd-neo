@@ -1232,8 +1232,9 @@ tetra_dmo_format_mni(uint32_t mni, char* buf, size_t buf_len) {
 }
 
 /* Who sent a presence signal: its address and MNI, SCH/H elements shown only once its CRC passed and it was read, else
- * the kind of equipment alone; then its link, which a gateway's master/slave link flag gives only while it provides a
- * DM-REP function (EN 300 396-5 table 5). */
+ * the kind of equipment alone; then its link. A DM-GATE's master/slave link flag means something only while it provides
+ * a DM-REP function (EN 300 396-5 table 5); a DM-REP/GATE has both links whatever its DM-REP function, and sends its
+ * free-channel presence signal on the slave link (clause 13.4.6.2.1 note 1). */
 static void
 dmo_put_presence_station(dmo_text* t, const tetra_dmo_pres_t* p, int gateway) {
     if (p->parsed) {
@@ -1247,7 +1248,7 @@ dmo_put_presence_station(dmo_text* t, const tetra_dmo_pres_t* p, int gateway) {
     } else {
         dmo_put(t, "%s", gateway ? "gateway" : "repeater");
     }
-    if (!gateway || p->dmrep) {
+    if (p->comm_type != 2u || p->dmrep) {
         dmo_put(t, " %s", p->ms_link ? "master" : "slave");
     }
 }
