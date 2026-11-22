@@ -78,6 +78,12 @@ Item {
     // Compact view: 6 px above and below the lines instead of 12, floored at
     // a touch target instead of Theme.rowHeight.
     property bool compact: false
+    // The widest times the view shows, one per line: the time's slot is that
+    // wide whatever the row's own time says, so an age that ticks from "9m"
+    // to "10m" never changes what the row draws (plan). "00:00" for HH:mm;
+    // the Monitor gives its ages.
+    property string timeWidthProbe: "00:00"
+    readonly property real timeSlotWidth: LineBoxes.callRowTimeWidth(timeWidthProbe)
 
     implicitHeight: LineBoxes.callRowHeight(compact)
 
@@ -87,7 +93,9 @@ Item {
     // only while it still fits, the first that does not ending the run, so a
     // lower one is never drawn in place of a higher one. `width` is the drawn
     // right side's, with the gaps the anchors below put between its items.
-    // Widths only, never the items' positions, so no binding loops.
+    // Widths only, never the items' positions, so no binding loops; the time
+    // counts as its fixed slot (timeSlotWidth), never its text, so the plan
+    // follows the width, the fonts and the call's flags only.
     readonly property var plan: {
         var room = Math.max(0, width - 18 - 12 - 18);
         var least = Math.min(Math.ceil(nameMetrics.advanceWidth), 96);
@@ -112,7 +120,7 @@ Item {
     // right edge, the glyph 8 px before that, EMERGENCY 8 px before the glyph
     // or 6 before ENC or the time.
     function rightWidth(drawn) {
-        var end = drawn.enc ? encTag.implicitWidth : drawn.time ? timeText.implicitWidth : 0;
+        var end = drawn.enc ? encTag.implicitWidth : drawn.time ? timeSlotWidth : 0;
         var endDrawn = drawn.enc || drawn.time;
         var glyph = drawn.recording ? recordingGlyph.implicitWidth + (endDrawn ? 8 : 0) : 0;
         var tag = drawn.emergency ? emergencyTag.implicitWidth + (drawn.recording ? 8 : endDrawn ? 6 : 0) : 0;
@@ -231,6 +239,11 @@ Item {
                 visible: row.plan.time
                 anchors.right: parent.right
                 anchors.verticalCenter: parent.verticalCenter
+                // Its fixed slot, the time drawn at its right. A time wider
+                // than the view's probe (an age past 999 days) draws past the
+                // slot's left edge, unclipped.
+                width: row.timeSlotWidth
+                horizontalAlignment: Text.AlignRight
                 text: row.rightText
                 font: LineBoxes.callRowMetaFont
                 color: Theme.textSubdued

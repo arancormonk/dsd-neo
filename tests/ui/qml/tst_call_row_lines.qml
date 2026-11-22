@@ -129,6 +129,18 @@ Item {
         id: naturalName
     }
 
+    // A Monitor row, whose time is an age that ticks (Util.shortAge).
+    Ui.CallRow {
+        id: ageRow
+        x: 740
+        width: 322
+        name: "Fire Dispatch North"
+        metaText: "TG 4001 · SRC 7001"
+        rightText: "now"
+        emergency: true
+        hasRecording: true
+    }
+
     // A store a screen is handed in place of the app's preferences.
     QtObject {
         id: homeStore
@@ -291,8 +303,10 @@ Item {
         // before that, EMERGENCY 8 px before the glyph or 6 before ENC or the
         // time.
         function rightWidthOf(row, drawn) {
+            // The time counts as its slot, the view's widest time.
             var w = function (n) {
-                return findChild(row, n).implicitWidth;
+                var item = findChild(row, n);
+                return n === "callRowTime" ? item.width : item.implicitWidth;
             };
             var has = function (n) {
                 return drawn.indexOf(n) >= 0;
@@ -406,6 +420,57 @@ Item {
                 return checkPlan(row, "count").drawn.length;
             };
             verify(count(tightShort) >= count(tight), "a short name drew less");
+        }
+
+        // A Monitor row's age ticks ("now", "9m", "10m", ..., "999d"): what the row draws never follows it. The time
+        // has the slot of the view's widest age, so the plan and the drawn set are the same for every age at every
+        // width, here 220 to 460 px (322 px is a 360 dp phone's Monitor row), where the age's own width once made the
+        // time and the glyph come and go in a band 30 to 46 px wide.
+        function test_age_ticks_never_change_the_plan_data() {
+            return [{tag: "1.0", scale: 1.0}, {tag: "1.6", scale: 1.6}, {tag: "2.0", scale: 2.0}];
+        }
+        function test_age_ticks_never_change_the_plan(data) {
+            Ui.Theme.fontScale = data.scale;
+            // The Monitor's ages, one per line (MonitorScreen.rowTimeProbe).
+            if (ageRow.timeWidthProbe !== undefined)
+                ageRow.timeWidthProbe = [qsTr("now"), "59m", "23h", "999d"].join("\n");
+            var ages = ["now", "1m", "9m", "10m", "59m", "1h", "23h", "1d", "999d"];
+            var drawnNow = function () {
+                return JSON.stringify({plan: ageRow.plan, tag: findChild(ageRow, "rowEmergencyTag").visible,
+                    time: findChild(ageRow, "callRowTime").visible, glyph: findChild(ageRow, "rowRecordingGlyph").visible,
+                    name: Math.round(findChild(ageRow, "callRowName").width)});
+            };
+            var changed = [];
+            var timeDrawn = 0;
+            try {
+                for (var w = 220; w <= 460; w += 2) {
+                    ageRow.width = w;
+                    ageRow.rightText = ages[0];
+                    var first = drawnNow();
+                    if (findChild(ageRow, "callRowTime").visible)
+                        ++timeDrawn;
+                    for (var age of ages.slice(1)) {
+                        ageRow.rightText = age;
+                        var now = drawnNow();
+                        if (now !== first)
+                            changed.push(w + " px \"" + age + "\": " + now + " vs \"now\": " + first);
+                    }
+                }
+                compare(changed.length, 0, "the drawn set follows the age: " + changed.slice(0, 3).join("; "));
+                verify(timeDrawn > 0, "the time is never drawn");
+                // Where it is drawn, the age sits right-aligned in its slot, ending at the row's margin.
+                ageRow.width = 460;
+                ageRow.rightText = "9m";
+                waitForRendering(ageRow);
+                var time = findChild(ageRow, "callRowTime");
+                verify(time.visible);
+                compare(rectOf(time, ageRow).x + time.width, ageRow.width - 18);
+                verify(time.contentWidth <= time.width + 0.5, "the age is wider than its slot");
+                checkPlan(ageRow, "460 px \"9m\"");
+            } finally {
+                ageRow.width = 322;
+                ageRow.rightText = "now";
+            }
         }
 
         // Row heights are the density's and the fonts', never the width's or

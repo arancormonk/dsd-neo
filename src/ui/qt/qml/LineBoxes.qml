@@ -37,7 +37,8 @@ Item {
     // Probes made so far, keyed by font: never shown, only measured. A plain
     // cache: a binding that reads a box depends on the probe's own size. It
     // only grows, and is bounded: one probe per font revision, family, size
-    // and weight a box is read in, all with the one probe text.
+    // and weight a box is read in, with the line probe text or one of the
+    // views' fixed time probes (callRowTimeWidth()), never a call's text.
     property var probes: ({})
     readonly property Component probeComponent: Component {
         Text {
@@ -87,6 +88,12 @@ Item {
     }
     function callRowMetaBox() {
         return lineHeight(Theme.mono, Theme.fontSize(12), Font.Normal);
+    }
+    // The time slot at a row's right: the widest of @p timeProbe's lines (the
+    // widest times the view shows, one per line) in the meta font. Fixed per
+    // view, so a ticking age never changes what a row draws.
+    function callRowTimeWidth(timeProbe) {
+        return Math.ceil(probe(timeProbe, Theme.mono, Theme.fontSize(12), Font.Normal).implicitWidth);
     }
     // Above and below the lines, each.
     function callRowPadding(compact) {

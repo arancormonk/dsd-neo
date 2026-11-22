@@ -17814,7 +17814,13 @@ Qt Quick frontend (`src/ui/qt`):
   the run, so a lower item is never drawn while a higher one is left out. Left to right the side reads EMERGENCY (8
   px before the glyph, else 6 before ENC or the time), the glyph (8 px before ENC or the time), then ENC or the time
   at the 18 px margin; `plan.width` is that side's width and the name and meta lines take the rest and elide. Widths
-  only, never positions, so nothing loops. What is not drawn is still read: the node's name carries "has a
+  only, never positions, so nothing loops. The time counts as a fixed slot, `timeSlotWidth` =
+  `LineBoxes.callRowTimeWidth(timeWidthProbe)`, the widest line of the view's widest times (`00:00` by default for
+  History and Home's HH:mm; the Monitor passes `rowTimeProbe`, `now`, `59m`, `23h`, `999d`, the widest
+  `Util.shortAge()` forms), with the time drawn right-aligned in it. So the plan follows only the width, the fonts
+  and the call's flags: a ticking age ("9m" to "10m") never makes the time or the glyph come and go (a band 30-46 px
+  wide at every text size when the slot was the age's own width), and nothing shows or hides for a screen reader as
+  the minutes pass. Limit: an age past 999 days draws past the slot's left edge, unclipped. What is not drawn is still read: the node's name carries "has a
   recording", and its description the meta line, EMERGENCY (the tag's `label`), ENC and the time, each once, drawn
   or not. Decided limit: at 280 px (Home's Recent pane) a recorded emergency call drops its glyph at text 1.0 and
   its time from 1.6; History's emergency rows on a 360 dp phone keep their time up to 1.6. Decided limit (D10): a rarer script whose glyphs stand taller than the box (Tibetan stacks) is drawn
@@ -17824,7 +17830,8 @@ Qt Quick frontend (`src/ui/qt`):
   the Monitor's `listToStart`; without it a log read deep was placed against the old layout and stayed off its top)
   and puts the list at its newest call, so a list hidden through the change comes back there too. Tests:
   `UI_QT_QML_CALL_LISTS` (`tst_call_row_lines.qml`: Latin, emoji, CJK and Tibetan rows of one height at 1.0/1.6/2.0
-  in both densities, the compact floor, `test_b7_extras_give_way` and `test_height_follows_neither_width_nor_call`
+  in both densities, the compact floor, `test_b7_extras_give_way`, `test_age_ticks_never_change_the_plan` (one drawn
+  set for every age at 220-460 px, 1.0/1.6/2.0) and `test_height_follows_neither_width_nor_call`
   (the plan's minimum, order, priority and containment, one height at 200 to 640 px), the accessible text whatever
   is drawn, `test_box_holds_the_drawn_line`, Home's injected density and its reset from deep, drawn at the top;
   `tst_call_log_follow.qml` `test_13_compact_rows`, `test_14_a_density_change_returns_to_the_newest_call` (the day's
