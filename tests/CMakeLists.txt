@@ -6501,6 +6501,9 @@ if(DSD_ENABLE_QT_UI)
             # WP-F2: real network fixture, using only the snapshot-copy facade.
             ${PROJECT_SOURCE_DIR}/src/ui/qt/p25_network_model.cpp
             ${PROJECT_SOURCE_DIR}/src/app_control/p25_network.c
+            # Discussion #900 F3: the Channels sheet's production model over a synthetic Tier III view.
+            ${PROJECT_SOURCE_DIR}/src/ui/qt/dmr_channels_model.cpp
+            ${PROJECT_SOURCE_DIR}/src/app_control/dmr_t3_view.c
             # The Activity screen's production model over the real view.
             ${PROJECT_SOURCE_DIR}/src/ui/qt/unit_activity_model.cpp
             ${PROJECT_SOURCE_DIR}/src/app_control/unit_activity_view.c
@@ -6701,6 +6704,7 @@ if(DSD_ENABLE_QT_UI)
                 monitor_receiver
                 document_picker
                 file_browser
+                dmr_channels
         )
             string(TOUPPER "${_case}" _case_upper)
             add_test(

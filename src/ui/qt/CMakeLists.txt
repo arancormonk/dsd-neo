@@ -202,6 +202,8 @@ qt_add_resources(
         qml/ActionMenu.qml
         qml/MonitorScreen.qml
         qml/NetworkSheet.qml
+        qml/ChannelsSheet.qml
+        qml/ChannelEditSheet.qml
         qml/OnboardingScreen.qml
         qml/OutlineButton.qml
         qml/PassbandSheet.qml

@@ -25,6 +25,13 @@ Column {
     property int pixelSize: 32
     /** Whether the text currently satisfies the validator. */
     readonly property alias acceptableInput: field.acceptableInput
+    /** Whether a typed value is one the caller takes, and what the field says
+     *  when it is not: any input spec's range by default. A caller with a
+     *  narrower range (a DMR channel's) passes its own check and words. */
+    property var accepts: function (text) {
+        return sessionArgs.freqValid(text);
+    }
+    property string invalidText: qsTr("Enter a frequency from 0.000001 to 4294.967295 MHz")
 
     /** Emitted when the field is committed from the keyboard. */
     signal accepted
@@ -80,9 +87,10 @@ Column {
     }
 
     ReadableText {
+        objectName: "frequencyFieldInvalid"
         width: parent.width
-        visible: field.text.length > 0 && !sessionArgs.freqValid(field.text)
-        text: qsTr("Enter a frequency from 0.000001 to 4294.967295 MHz")
+        visible: field.text.length > 0 && !root.accepts(field.text)
+        text: root.invalidText
         wrapMode: Text.Wrap
         color: Theme.alert
         font.pixelSize: Theme.fontSize(12)

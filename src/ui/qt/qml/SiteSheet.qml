@@ -9,6 +9,8 @@ ModalSheet {
     spacing: 14
 
     signal networkRequested
+    // Discussion #900 F3: the Tier III Channels sheet, which Monitor owns.
+    signal channelsRequested
 
     function hex(value, width) {
         return Number(value).toString(16).toUpperCase().padStart(width, "0");
@@ -425,6 +427,15 @@ ModalSheet {
         text: qsTr("Network")
         visible: metrics.siteProtocol === "P25"
         onClicked: sheet.networkRequested()
+    }
+    // A DMR Tier III site's channels: the ones its grants named with no
+    // frequency here, and the ones that have one.
+    OutlineButton {
+        objectName: "siteChannelsButton"
+        width: parent.width
+        text: qsTr("Channels")
+        visible: metrics.siteProtocol === "DMR" && metrics.dmrTier3 === true
+        onClicked: sheet.channelsRequested()
     }
     OutlineButton {
         id: relaxedCrcButton

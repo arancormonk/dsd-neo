@@ -80,6 +80,7 @@
 #include <condition_variable>
 #include <ctime>
 #include <dsd-neo/app_control/commands.h>
+#include <dsd-neo/app_control/dmr_t3_view.h>
 #include <dsd-neo/app_control/scan_list_view.h>
 #include <dsd-neo/core/alias_learn.h>
 #include <dsd-neo/core/analog_tone.h>
@@ -118,6 +119,7 @@
 #include "decode_mode_flag.h"
 #include "decoder_host.h"
 #include "diagnostics_log.h"
+#include "dmr_channels_model.h" // Discussion #900 F3
 #include "document_import_transport.h"
 #include "imported_files_model.h"
 #include "input_commit.h"
@@ -1426,6 +1428,8 @@ class CommandRecorder : public QObject {
     Q_PROPERTY(int squelchMarginMinDb READ squelchMarginMinDb CONSTANT)
     Q_PROPERTY(int squelchMarginMaxDb READ squelchMarginMaxDb CONSTANT)
     Q_PROPERTY(int squelchMarginDefaultDb READ squelchMarginDefaultDb CONSTANT)
+    /* Discussion #900 F3: as CommandBridge publishes the newest queued channel edit. */
+    Q_PROPERTY(quint32 lastDmrChannelRequest READ lastDmrChannelRequest NOTIFY lastDmrChannelRequestChanged)
     quint64 m_next_key_request = 1;
     QString m_last_key_request;
     QVariantList m_last_selection;
@@ -1735,6 +1739,67 @@ class CommandRecorder : public QObject {
     setPersistTgLockouts(bool value) {
         m_lockout_requests.append(value);
         return m_lockout_accepted;
+    }
+
+    /* Discussion #900 F3: a DMR Tier III channel edit, recorded as {request, lpcn, op, hz, expectedHz, expectedOrigin,
+     * generation, systemUid, session}. Queued unless setDmrChannelAccepted(false); a case answers it with
+     * answerDmrChannel(), as the bridge's poll would. */
+    Q_INVOKABLE bool
+    setDmrChannel(int lpcn, int op, qint64 hz, qint64 expectedHz, int expectedOrigin, quint32 generation,
+                  const QString& systemUid = QString(), const QString& session = QString()) {
+        if (!m_dmr_channel_accepted) {
+            return false;
+        }
+        m_last_dmr_channel_request++;
+        m_dmr_channel_requests.append(QVariantMap{{"request", m_last_dmr_channel_request},
+                                                  {"lpcn", lpcn},
+                                                  {"op", op},
+                                                  {"hz", hz},
+                                                  {"expectedHz", expectedHz},
+                                                  {"expectedOrigin", expectedOrigin},
+                                                  {"generation", generation},
+                                                  {"systemUid", systemUid},
+                                                  {"session", session}});
+        Q_EMIT lastDmrChannelRequestChanged();
+        return true;
+    }
+
+    quint32
+    lastDmrChannelRequest() const {
+        return m_last_dmr_channel_request;
+    }
+
+    Q_INVOKABLE void
+    setDmrChannelAccepted(bool accepted) {
+        m_dmr_channel_accepted = accepted;
+    }
+
+    Q_INVOKABLE QVariantList
+    dmrChannelRequests() const {
+        return m_dmr_channel_requests;
+    }
+
+    /* The answer to the newest request (or @p answer's own `request`), with CommandBridge's keys: `result` ("ok" by
+     * default), `saved` (default: a uid was sent and the result is ok), `saveError` (default ""). */
+    Q_INVOKABLE void
+    answerDmrChannel(const QVariantMap& answer) {
+        const QVariantMap asked =
+            m_dmr_channel_requests.isEmpty() ? QVariantMap() : m_dmr_channel_requests.last().toMap();
+        QVariantMap result = asked;
+        for (auto it = answer.cbegin(); it != answer.cend(); ++it) {
+            result.insert(it.key(), it.value());
+        }
+        const QString key = result.value(QStringLiteral("result"), QStringLiteral("ok")).toString();
+        result.insert(QStringLiteral("result"), key);
+        if (!answer.contains(QStringLiteral("saved"))) {
+            result.insert(QStringLiteral("saved"),
+                          key == QStringLiteral("ok")
+                              && !result.value(QStringLiteral("systemUid")).toString().isEmpty());
+        }
+        if (!answer.contains(QStringLiteral("saveError"))) {
+            result.insert(QStringLiteral("saveError"), QString());
+        }
+        Q_EMIT dmrChannelResultReceived(result);
     }
 
     /* Relaxed CRC set to a value (DSD_APP_CMD_AGGR_SYNC_TOGGLE with a payload). */
@@ -2158,6 +2223,8 @@ class CommandRecorder : public QObject {
         m_last_scan_row_edit.clear();
         m_scan_row_edit_calls = 0;
         m_lockout_accepted = true;
+        m_dmr_channel_accepted = true;
+        m_dmr_channel_requests.clear();
         m_lockout_requests.clear();
         m_relaxed_crc_accepted = true;
         m_relaxed_crc_requests.clear();
@@ -2426,6 +2493,9 @@ class CommandRecorder : public QObject {
   Q_SIGNALS:
     /* #786: as CommandBridge says it of each queued command that changes what the session follows. */
     void operatorIntentSubmitted(const QString& kind);
+    /* Discussion #900 F3: as CommandBridge says it of an answered channel edit. */
+    void dmrChannelResultReceived(const QVariantMap& result);
+    void lastDmrChannelRequestChanged();
 
   private:
     int m_lockout_slot_calls = 0;
@@ -2466,6 +2536,9 @@ class CommandRecorder : public QObject {
     QVariantList m_lockout_requests;
     bool m_relaxed_crc_accepted = true;
     QVariantList m_relaxed_crc_requests;
+    bool m_dmr_channel_accepted = true;
+    quint32 m_last_dmr_channel_request = 0;
+    QVariantList m_dmr_channel_requests;
     bool m_recording_accepted = true;
     QString m_recording_refusal;
     QVariantList m_recording_requests;
@@ -4273,6 +4346,9 @@ class Setup : public QObject {
         if (m_activity_state) {
             dsd_state_ext_free_all(m_activity_state.get());
         }
+        if (m_dmr_state) {
+            dsd_state_ext_free_all(m_dmr_state.get());
+        }
     }
 
     Q_INVOKABLE bool
@@ -4556,6 +4632,67 @@ class Setup : public QObject {
         }
         state->p25_nb_count = count;
         m_network->replaceForTarget(state);
+    }
+
+    /**
+     * @brief Discussion #900 F3: publish a DMR Tier III channel record to `dmrChannels` (the real DmrChannelsModel), as
+     * UiController's tick does from a snapshot. The model reads it only while a sheet has it active.
+     *
+     * @p spec: `missing` [{lpcn, slot (0/1, the view's), group, data, caller, recipient, agoMs (heard that long before
+     * the first record since clearDmrChannels(); absent: unknown), unverified}] newest first, `extra` [lpcn] (in the ledger past its
+     * details, named in a checked grant), `channels` [{lpcn, origin (DSD_UI_DMR_T3_ORIGIN_*), hz, hidden, baseHz}], `names` [{tg, name}], `tier3`
+     * (default true), `ccHz` (with it, cc_confirmed_here), `generation`, `revision`, `session` (default 1), `trunkScan`.
+     * Every call is a new body (content_seq moves), as a snapshot copied anew is.
+     */
+    Q_INVOKABLE void
+    setDmrChannelsView(const QVariantMap& spec) {
+        if (m_dmr_channels == nullptr) {
+            return;
+        }
+        if (!m_dmr_state) {
+            m_dmr_state = std::make_unique<dsd_state>();
+            m_dmr_opts = std::make_unique<dsd_opts>();
+            m_dmr_view = std::make_unique<dsd_ui_dmr_t3_view>();
+            m_dmr_heard_base = dsd_decode_now_mono_ms();
+        }
+        dsd_state* state = m_dmr_state.get();
+        dsd_ui_dmr_t3_view* view = m_dmr_view.get();
+        const uint64_t seq = view->content_seq + 1U;
+        DSD_MEMSET(view, 0, sizeof(*view));
+        DSD_MEMSET(state->trunk_chan_map, 0, sizeof(state->trunk_chan_map));
+        (void)dsd_tg_policy_clear(state);
+        view->present = 1U;
+        view->tier3 = spec.value(QStringLiteral("tier3"), true).toBool() ? 1U : 0U;
+        view->cc_hz = spec.value(QStringLiteral("ccHz"), 0).toLongLong();
+        view->cc_confirmed_here = view->cc_hz > 0 ? 1U : 0U;
+        view->generation = spec.value(QStringLiteral("generation"), 1).toUInt();
+        view->revision = spec.value(QStringLiteral("revision"), 1).toUInt();
+        view->content_seq = seq;
+        dmrMissing(view, spec);
+        dmrChannelRows(state, view, spec.value(QStringLiteral("channels")).toList());
+        for (const QVariant& v : spec.value(QStringLiteral("names")).toList()) {
+            const QVariantMap n = v.toMap();
+            dsd_tg_policy_entry entry = {};
+            const QByteArray name = n.value(QStringLiteral("name")).toString().toUtf8();
+            if (dsd_tg_policy_make_exact_entry(n.value(QStringLiteral("tg")).toUInt(), "A", name.constData(),
+                                               DSD_TG_POLICY_SOURCE_IMPORTED, &entry)
+                == 0) {
+                (void)dsd_tg_policy_append_exact(state, &entry);
+            }
+        }
+        state->state_ext[DSD_STATE_EXT_APP_DMR_T3_VIEW] = view;
+        m_dmr_opts->trunk_scan_enabled = spec.value(QStringLiteral("trunkScan")).toBool() ? 1 : 0;
+        m_dmr_channels->refresh(m_dmr_opts.get(), state, spec.value(QStringLiteral("session"), 1).toULongLong());
+    }
+
+    /** @brief No live session: `dmrChannels` lists nothing. The next record's heard times count from now. */
+    Q_INVOKABLE void
+    clearDmrChannels() {
+        m_dmr_heard_base = dsd_decode_now_mono_ms();
+        if (m_dmr_channels != nullptr) {
+            m_dmr_channels->clear();
+            m_dmr_channels->setSessionSystemUid(QString());
+        }
     }
 
     /**
@@ -7231,6 +7368,9 @@ class Setup : public QObject {
         metrics[QStringLiteral("callBusy")] = false;
         // Targets the encrypted lockout is skipping; 0 is the at-rest value.
         metrics[QStringLiteral("encLockoutCount")] = 0;
+        // Discussion #900 F3: the Monitor's NO FREQ count and the Site sheet's Channels entry.
+        metrics[QStringLiteral("noFreqCount")] = 0;
+        metrics[QStringLiteral("dmrTier3")] = false;
         metrics[QStringLiteral("persistTgLockouts")] = true;
         metrics[QStringLiteral("temporaryTgAvoidCount")] = 0;
         metrics[QStringLiteral("callSkipCount")] = 0;
@@ -7598,6 +7738,8 @@ class Setup : public QObject {
         ctx->setContextProperty(QStringLiteral("replayFiles"), m_replay_files);
         m_network = new dsd_qt::P25NetworkModel(engine);
         ctx->setContextProperty(QStringLiteral("p25Network"), m_network); // WP-F2
+        m_dmr_channels = new dsd_qt::DmrChannelsModel(engine);
+        ctx->setContextProperty(QStringLiteral("dmrChannels"), m_dmr_channels); // Discussion #900 F3
         // The Activity screen's production model and filter, fed by pushUnitActivity().
         m_activity = new dsd_qt::UnitActivityModel(engine);
         m_activity_view = new dsd_qt::UnitActivityFilterModel(engine);
@@ -7801,11 +7943,76 @@ class Setup : public QObject {
     dsd_qt::P25NetworkModel* m_network = nullptr;
     /* Issue #782: the snapshot hopNetwork() publishes, built on first use. */
     std::unique_ptr<dsd_state> m_network_state;
+    /* Discussion #900 F3: the Channels sheet's model, and the snapshot setDmrChannelsView() publishes to it. */
+    dsd_qt::DmrChannelsModel* m_dmr_channels = nullptr;
+    std::unique_ptr<dsd_state> m_dmr_state;
+    std::unique_ptr<dsd_opts> m_dmr_opts;
+    std::unique_ptr<dsd_ui_dmr_t3_view> m_dmr_view;
+    uint64_t m_dmr_heard_base = 0;
     dsd_qt::UnitActivityModel* m_activity = nullptr;
     dsd_qt::UnitActivityFilterModel* m_activity_view = nullptr;
     dsd_qt::PositionModel* m_positions = nullptr;
     /* The log pushUnitActivity() writes, built on first use, on a made-up P25 system. */
     std::unique_ptr<dsd_state> m_activity_state;
+
+    static void
+    dmrSetBit(uint8_t* set, unsigned lpcn) {
+        if (lpcn > 0U && lpcn < static_cast<unsigned>(DSD_UI_DMR_T3_ROWS)) {
+            set[lpcn >> 3] = static_cast<uint8_t>(set[lpcn >> 3] | (1U << (lpcn & 7U)));
+        }
+    }
+
+    void
+    dmrMissing(dsd_ui_dmr_t3_view* view, const QVariantMap& spec) const {
+        for (const QVariant& v : spec.value(QStringLiteral("missing")).toList()) {
+            const QVariantMap m = v.toMap();
+            if (view->missing.detail_count >= DSD_UI_DMR_T3_MISSING_DETAILS) {
+                break;
+            }
+            dsd_ui_dmr_t3_missing_detail& d = view->missing.details[view->missing.detail_count++];
+            d.lpcn = static_cast<uint16_t>(m.value(QStringLiteral("lpcn")).toUInt());
+            d.slot = static_cast<uint8_t>(m.value(QStringLiteral("slot")).toUInt());
+            d.group = m.value(QStringLiteral("group"), true).toBool() ? 1U : 0U;
+            d.data = m.value(QStringLiteral("data")).toBool() ? 1U : 0U;
+            d.unverified = m.value(QStringLiteral("unverified")).toBool() ? 1U : 0U;
+            d.caller = m.value(QStringLiteral("caller")).toUInt();
+            d.recipient = m.value(QStringLiteral("recipient")).toUInt();
+            d.last_heard_ms = m.contains(QStringLiteral("agoMs"))
+                                  ? m_dmr_heard_base - m.value(QStringLiteral("agoMs")).toULongLong()
+                                  : 0U;
+            dmrSetBit(view->missing.missing, d.lpcn);
+            if (d.unverified == 0U) {
+                dmrSetBit(view->missing.checked, d.lpcn);
+            }
+        }
+        for (const QVariant& v : spec.value(QStringLiteral("extra")).toList()) {
+            dmrSetBit(view->missing.missing, v.toUInt());
+            dmrSetBit(view->missing.checked, v.toUInt());
+        }
+    }
+
+    static void
+    dmrChannelRows(dsd_state* state, dsd_ui_dmr_t3_view* view, const QVariantList& rows) {
+        for (const QVariant& v : rows) {
+            const QVariantMap c = v.toMap();
+            const unsigned lpcn = c.value(QStringLiteral("lpcn")).toUInt();
+            if (lpcn == 0U || lpcn >= static_cast<unsigned>(DSD_UI_DMR_T3_ROWS)) {
+                continue;
+            }
+            const int origin = c.value(QStringLiteral("origin"), DSD_UI_DMR_T3_ORIGIN_FILE).toInt();
+            const bool hidden = c.value(QStringLiteral("hidden")).toBool();
+            const long hz = hidden ? 0L : static_cast<long>(c.value(QStringLiteral("hz")).toLongLong());
+            view->origin[lpcn] = static_cast<uint8_t>(origin);
+            state->trunk_chan_map[lpcn] = hz;
+            if (origin == DSD_UI_DMR_T3_ORIGIN_USER && view->overlay_count < DSD_UI_DMR_T3_OVERLAY_MAX_ROWS) {
+                dsd_ui_dmr_t3_overlay_row& row = view->overlay[view->overlay_count++];
+                row.lpcn = static_cast<uint16_t>(lpcn);
+                row.hidden = hidden ? 1U : 0U;
+                row.hz = hz;
+                row.base_hz = static_cast<long>(c.value(QStringLiteral("baseHz")).toLongLong());
+            }
+        }
+    }
 
     dsd_state*
     activityState() {
