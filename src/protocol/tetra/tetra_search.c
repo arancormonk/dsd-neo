@@ -41,6 +41,9 @@ enum {
     SEARCH_AB_RESERVED = 3,
     /* Repeater operating modes 11 is reserved (EN 300 396-4 clause 10.3.12). */
     SEARCH_REP_MODES_RESERVED = 3,
+    /* A presence signal's channel state 11: a gateway's registration phase (EN 300 396-5), reserved for a pure DM-REP
+       (EN 300 396-4 clause 10.3.5). */
+    SEARCH_CHANNEL_STATE_GW_REGISTRATION = 3,
 };
 
 /* The open burst's read is lost: a stream flush (the symbol clock's stream moved, which raises no interruption) or a
@@ -400,16 +403,18 @@ dmac_sync_checked(const tetra_dmo_sync_s_t* s) {
     return s->comm_type < 2u || s->ab_usage == 0u;
 }
 
-/* A DPRES-SYNC's: read by its parser with its SCH/H, frame number in range, and a channel usage its equipment may send.
- * The repeater operating modes, sent by a DM-REP and by a gateway offering the DM-REP function (EN 300 396-4 table 2,
- * EN 300 396-5 table 5), are not the reserved 11. Channel usage 01 (channel A, frequency efficient mode) or 10
- * (channel B) comes only from a type 2 repeater function: a type 1 DM-REP sends 00 (EN 300 396-4 table 2), and so does
- * a gateway, unless it serves a type 2 call of its DM-REP function (EN 300 396-5 clause 13.4.7.12). */
+/* A DPRES-SYNC's: read by its parser with its SCH/H, frame number in range, and a channel usage and channel state its
+ * equipment may send. The repeater operating modes, sent by a DM-REP and by a gateway offering the DM-REP function
+ * (EN 300 396-4 table 2, EN 300 396-5 table 5), are not the reserved 11. Channel usage 01 (channel A, frequency
+ * efficient mode) or 10 (channel B) comes only from a type 2 repeater function: a type 1 DM-REP sends 00 (EN 300 396-4
+ * table 2), and so does a gateway, unless it serves a type 2 call of its DM-REP function (EN 300 396-5 clause
+ * 13.4.7.12). Channel state 11, a gateway's registration phase, never comes from a pure DM-REP. */
 static int
 dpres_sync_checked(const uint8_t* sch_s, const uint8_t* sch_h, tetra_dmo_sync_s_t* s) {
     tetra_dmo_pres_t p;
     if (!tetra_dmo_parse_presence(sch_s, sch_h, s, &p) || !p.parsed || s->frame == 0u
-        || p.channel_usage == SEARCH_AB_RESERVED) {
+        || p.channel_usage == SEARCH_AB_RESERVED
+        || (p.comm_type == 1u && p.channel_state == SEARCH_CHANNEL_STATE_GW_REGISTRATION)) {
         return 0;
     }
     const int repeater = p.comm_type == 1u || p.dmrep != 0u;

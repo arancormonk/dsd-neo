@@ -316,9 +316,10 @@ typedef struct {
 
 static const dsb_spec k_direct = {0xD, 0, 0, 0, 3, 0, 0, 0};
 
-/* The SCH/S of @p d (EN 300 396-3 table 21; a presence signal EN 300 396-4 table 2). */
+/* The SCH/S of @p d (EN 300 396-3 table 21; a presence signal EN 300 396-4 table 2), a presence signal's channel state
+ * @p channel_state (EN 300 396-4 clause 10.3.5: 00 free, 01 occupied, 10 reserved, 11 a gateway's registration phase). */
 static ttb_block
-sch_s_of(const dsb_spec* d) {
+sch_s_in_state(const dsb_spec* d, uint32_t channel_state) {
     ttb_block b = {0};
     ttb_put(&b, d->system_code, 4);
     ttb_put(&b, d->pdu_type, 2);
@@ -331,8 +332,8 @@ sch_s_of(const dsb_spec* d) {
         ttb_put(&b, 0, 6);            /* spacing of uplink */
         ttb_put(&b, 0, 1);            /* slave link */
         ttb_put(&b, d->ab_usage, 2);  /* channel usage */
-        ttb_put(&b, 0, 2);            /* channel free */
-        ttb_put(&b, 0, 2);            /* slot 1 */
+        ttb_put(&b, channel_state, 2);
+        ttb_put(&b, 0, 2); /* slot 1 */
         ttb_put(&b, d->fn, 5);
     } else {
         ttb_put(&b, 0, 2); /* link and gateway flags */
@@ -351,6 +352,12 @@ sch_s_of(const dsb_spec* d) {
         ttb_put(&b, 0, 1);
     }
     return b;
+}
+
+/* The SCH/S of @p d, a presence signal's channel free. */
+static ttb_block
+sch_s_of(const dsb_spec* d) {
+    return sch_s_in_state(d, 0u);
 }
 
 /* The source address of every DMAC-SYNC here. */
@@ -408,12 +415,11 @@ pres_h(void) {
     return b;
 }
 
-/* A DSB of @p d whose SCH/H is @p sch_h, received wrong in its first 40 dibits with @p corrupt_h. */
+/* A DSB of SCH/S @p ss whose SCH/H is @p sch_h, received wrong in its first 40 dibits with @p corrupt_h. */
 static void
-dsb_with(session* s, const dsb_spec* d, const ttb_block* sch_h, int corrupt_h) {
-    const ttb_block ss = sch_s_of(d);
+dsb_of_blocks(session* s, const ttb_block* ss, const ttb_block* sch_h, int corrupt_h) {
     uint8_t sch_s_dibits[TTB_BSCH_DIBITS];
-    ttb_encode_bsch(ss.bits, sch_s_dibits);
+    ttb_encode_bsch(ss->bits, sch_s_dibits);
     uint8_t tail[SB_TAIL] = {0};
     ttb_encode_sch_hd(sch_h->bits, TTB_BSCH_SEED, tail);
     for (int i = 0; corrupt_h && i < 40; i++) {
@@ -422,6 +428,13 @@ dsb_with(session* s, const dsb_spec* d, const ttb_block* sch_h, int corrupt_h) {
     feed(s, tail, (int)sizeof tail);
     sb_captured(s, sch_s_dibits);
     (void)processTetraSBFrame(s->opts, s->state);
+}
+
+/* A DSB of @p d whose SCH/H is @p sch_h, received wrong in its first 40 dibits with @p corrupt_h. */
+static void
+dsb_with(session* s, const dsb_spec* d, const ttb_block* sch_h, int corrupt_h) {
+    const ttb_block ss = sch_s_of(d);
+    dsb_of_blocks(s, &ss, sch_h, corrupt_h);
 }
 
 /* A DSB of @p d carrying DM-OCCUPIED (a DMAC-SYNC), or its presence signal's SCH/H. */
@@ -983,6 +996,41 @@ test_gate_d_presence_layouts(void) {
     }
 }
 
+/* A presence signal's channel state 11 is the registration phase of a gateway (EN 300 396-5) and reserved for a pure
+ * DM-REP (EN 300 396-4 clause 10.3.5): a DM-REP's presence signal in it does not confirm, a DM-GATE's or a
+ * DM-REP/GATE's does. Every other channel state confirms from either. */
+static void
+test_gate_d_presence_channel_state(void) {
+    static const struct {
+        dsb_spec d;
+        uint32_t channel_state;
+        int confirms;
+        const char* what;
+    } k_cases[] = {
+        {{0xD, 1, 1, 0, 3, 0, 0, 0}, 3u, 0, "presence: a DM-REP's reserved channel state 11"},
+        {{0xD, 1, 1, 1, 3, 0, 2, 0}, 3u, 0, "presence: a type 2 DM-REP's reserved channel state 11 on channel A"},
+        {{0xD, 1, 2, 0, 3, 0, 0, 0}, 3u, 1, "presence: a DM-GATE in its registration phase"},
+        {{0xD, 1, 3, 0, 3, 0, 0, 0}, 3u, 1, "presence: a DM-REP/GATE in its registration phase"},
+        {{0xD, 1, 1, 0, 3, 0, 0, 0}, 1u, 1, "presence: a DM-REP's channel occupied"},
+        {{0xD, 1, 1, 0, 3, 0, 0, 0}, 2u, 1, "presence: a DM-REP's channel reserved"},
+    };
+
+    for (size_t i = 0; i < sizeof k_cases / sizeof k_cases[0]; i++) {
+        session s = session_open();
+        const ttb_block ss = sch_s_in_state(&k_cases[i].d, k_cases[i].channel_state);
+        const ttb_block h = pres_h();
+        dsb_of_blocks(&s, &ss, &h, 0);
+        dsb_of_blocks(&s, &ss, &h, 0); /* reported twice */
+        if (k_cases[i].confirms) {
+            check(dmo_evidence() && g_log.notes == 1 && dmo_note_is(last_note(), DSD_SEARCH_TETRA_ROUTE_NONE, 1),
+                  k_cases[i].what);
+        } else {
+            check(g_log.evidence == 0 && g_log.notes == 0, k_cases[i].what);
+        }
+        session_close(&s);
+    }
+}
+
 /* Mixed visits, both orders: the first gate names the detection, the other gate's opening withdraws its site and
  * access; a lone opposite-mode CRC changes nothing. */
 static void
@@ -1137,6 +1185,7 @@ main(void) {
     test_gate_d_opens();
     test_gate_d_negatives();
     test_gate_d_presence_layouts();
+    test_gate_d_presence_channel_state();
     test_mixed_visits();
     test_mixed_activity();
     test_dmo_activity();
