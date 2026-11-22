@@ -210,12 +210,11 @@ Item {
             var panel = item("otherSlotPanel");
             verify(panel.visible);
             compare(item("otherSlotLabel").text, "SLOT " + slot + " · idle");
-            // The identity line is the strip's one node, idle too (issue #901 r4 F3): it draws nothing and
-            // reads the idle state the label draws.
-            var identity = item("otherSlotIdentity");
-            verify(identity.visible, "the strip's node is kept while idle");
-            compare(identity.text, "", "idle, the identity line draws nothing");
-            compare(identity.Accessible.name, "SLOT " + slot + " · idle");
+            // The line's node is the strip's one node, idle too (issue #901 r4 F3, r5 H2): it reads the idle
+            // state the label draws, and the identity is not drawn.
+            verify(item("otherSlotNode").visible, "the strip's node is kept while idle");
+            verify(!item("otherSlotIdentity").visible, "idle, the identity is not drawn");
+            compare(item("otherSlotNode").Accessible.name, "SLOT " + slot + " · idle");
             var skip = item("otherSlotSkip");
             var more = item("otherSlotMore");
             verify(!skip.visible && !more.visible);
@@ -251,6 +250,33 @@ Item {
             compare(testContext.lastSkipSlot(), other - 1);
         }
         // Large text widens Skip rather than cutting its label short; normal text keeps the 70 px button.
+        // Issue #901 r5 H1: an ended call's flags are kept through its hold (slotCallView()), but the idle strip
+        // draws only "SLOT 2 · idle" and must say only that: its node read "SLOT 2 · idle, PRIVATE, EMERGENCY, ENC"
+        // for a private encrypted emergency call that had ended. An active call's tags are still read, drawn or not.
+        function test_idle_strip_says_no_ended_call_tags() {
+            testContext.setMetric("twoSlotCarrier", true);
+            testContext.setMetric("slot2CallKind", 3); // CALL_KIND_PRIVATE
+            testContext.setMetric("slot2CallEmergency", true);
+            testContext.setMetric("slot2CallEnc", true);
+            try {
+                waitForRendering(monitor);
+                verify(monitor.otherPrivate && monitor.otherEmergency && monitor.otherEnc, "the call's flags");
+                var active = item("otherSlotNode").Accessible.name;
+                for (var word of ["SLOT 2", "PRIVATE", "EMERGENCY", "ENC"])
+                    verify(active.indexOf(word) >= 0, "an active call reads " + word + ": " + active);
+                // Ended, held: the flags stay, the strip is idle.
+                testContext.setMetric("slot2CallState", 1);
+                waitForRendering(monitor);
+                verify(monitor.stripIdle, "the ended call leaves the strip idle");
+                verify(monitor.otherEmergency && monitor.otherEnc, "the hold keeps the flags");
+                compare(item("otherSlotLabel").text, "SLOT 2 · idle");
+                compare(item("otherSlotNode").Accessible.name, "SLOT 2 · idle", "the idle strip says only what it draws");
+            } finally {
+                testContext.setMetric("slot2CallEmergency", false);
+                testContext.setMetric("slot2CallEnc", false);
+            }
+        }
+
         function test_skip_label_fits_large_text() {
             var skip = item("otherSlotSkip");
             compare(skip.width, 70);

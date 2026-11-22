@@ -258,13 +258,13 @@ Item {
                 verify(!identity.truncated, "the name is cut");
                 // A screen reader still hears what kind of call it is.
                 for (var word of ["PRIVATE", "ENC"])
-                    verify(identity.Accessible.name.indexOf(word) >= 0, "the hidden " + word + " is not read: " + identity.Accessible.name);
+                    verify(item("otherSlotNode").Accessible.name.indexOf(word) >= 0, "the hidden " + word + " is not read: " + item("otherSlotNode").Accessible.name);
                 root.width = 411;
                 tryVerify(function () { return privateTag.visible && !enc.visible; }, 5000, "PRIVATE does not return first");
                 waitForRendering(monitor);
                 verify(!identity.truncated, "the name is cut");
                 verify(identity.x + identity.width <= privateTag.x + 0.5, "the identity runs under its PRIVATE tag");
-                verify(identity.Accessible.name.indexOf("ENC") >= 0, "the hidden ENC is not read: " + identity.Accessible.name);
+                verify(item("otherSlotNode").Accessible.name.indexOf("ENC") >= 0, "the hidden ENC is not read: " + item("otherSlotNode").Accessible.name);
                 root.width = 480;
                 tryVerify(function () { return enc.visible; }, 5000, "ENC does not return with room");
                 verify(privateTag.visible);

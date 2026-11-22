@@ -300,12 +300,6 @@ Item {
                 reason: "The trunking switch reads its title as its name and the rule under it as its description."},
             {file: "ScanListScreen.qml", name: "skipSilentHelp", readBy: function (text) { return findNear(text, "scanSkipSilent"); },
                 reason: "The Skip silent channels checkbox reads the help under it as its description."},
-            {file: "EncTag.qml", name: "tag", readBy: otherSlotIdentity,
-                reason: "Beside the other slot's call, whose identity line reads its tags."},
-            {file: "EmergencyTag.qml", name: "tag", readBy: otherSlotIdentity,
-                reason: "Beside the other slot's call, whose identity line reads its tags."},
-            {file: "PrivateTag.qml", name: "tag", readBy: otherSlotIdentity,
-                reason: "Beside the other slot's call, whose identity line reads its tags (PRIVATE even where the tag has no room)."},
             {file: "EncTag.qml", name: "tag", when: function (text) {
                     // The call row the tag is in, however deep (its text sits inside the row's node).
                     var row = text.parent;
@@ -337,8 +331,6 @@ Item {
                 reason: "\"+N\", how many saved names the line leaves out; the saved line's name reads every one of them."},
             {file: "ScanAvoidSheet.qml", name: "entryLabel", readBy: function (text) { return findNear(text, "scanAvoidPutBack"); },
                 reason: "Its Put back reads the entry in its name (\"Put back Row 1  851.012500 MHz  Fire Dispatch\"), the row's one node."},
-            {file: "MonitorScreen.qml", name: "otherSlotLabel", readBy: function (text) { return findNear(text, "otherSlotIdentity"); },
-                reason: "The other slot's label is drawn only while the line has room; the identity line, the strip's one node, reads it (issue #901 r4 F3)."},
             {file: "MonitorScreen.qml", name: /^(liveLabelProbe|titleLineProbe|titleLatinProbe)$/,
                 reason: "Sizing probes, never shown (visible: false); only the every-branch pass shows them."}
         ]
@@ -364,11 +356,6 @@ Item {
                     return found;
             }
             return null;
-        }
-        // The other slot's identity line, for a tag in the other slot's panel only.
-        function otherSlotIdentity(text) {
-            var panel = text.parent ? text.parent.parent : null;
-            return panel !== null && panel.objectName === "otherSlotPanel" ? findChild(panel, "otherSlotIdentity") : null;
         }
         // The field after a caption in its column: a PlexTextField's input or a FrequencyField's.
         function fieldBelow(text) {

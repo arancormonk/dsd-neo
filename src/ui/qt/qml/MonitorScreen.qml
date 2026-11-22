@@ -1603,87 +1603,105 @@ Item {
                     text: otherIdentityText.text
                 }
 
-                // Drawn text only, in MicroLabel's look: no node of its own
-                // (r4 F3). It comes and goes with the room the line has, and a
-                // node that did raised a hide or show at each fit change and,
-                // hidden, still renamed with each lead-slot change; the
-                // identity line, the strip's one stable node, reads the slot.
-                Text {
-                    id: otherSlotLabel
-                    objectName: "otherSlotLabel"
-                    // Idle, the label is all the line holds.
-                    visible: screen.stripIdle || otherSlotPanel.plan.label
-                    anchors.left: parent.left
-                    anchors.leftMargin: Theme.cardPadding
-                    anchors.verticalCenter: parent.verticalCenter
-                    width: Math.min(implicitWidth, Math.max(0, parent.width - 2 * Theme.cardPadding))
-                    elide: Text.ElideRight
-                    text: screen.stripIdle ? qsTr("SLOT %1 · idle").arg(screen.stripSlot) : qsTr("SLOT %1").arg(screen.otherSlot)
-                    textFormat: Text.PlainText
-                    font.family: Theme.mono
-                    font.pixelSize: Theme.fontSize(11)
-                    font.letterSpacing: Theme.fontSize(11) * 0.18
-                    font.capitalization: Font.AllUppercase
-                    color: Theme.textSubdued
-                }
-
-                ReadableText {
-                    id: otherIdentityText
-                    objectName: "otherSlotIdentity"
-                    // The strip's one node, shown with the panel whatever the
-                    // line draws (r4 F3): idle, it reads the idle state (its own
-                    // text is empty, the label draws it); with a call, the slot,
-                    // the call and its tags, each even where the line has no
-                    // room to draw it, since the kind of call is not something
-                    // to drop for a screen reader (issue #782). Unnamed while
-                    // covered.
-                    Accessible.name: !navigationAllowed || !visible ? "" : [otherSlotLabel.text, text, screen.otherPrivate || otherPrivateTag.visible ? otherPrivateTag.label : "", screen.otherEmergency || otherEmergencyTag.visible ? otherEmergencyTag.label : "", screen.otherEnc || otherEncTag.visible ? otherEncTag.label : ""].filter(function (part) {
+                // The line, up to Skip: the strip's one node (r4 F3), shown with
+                // the panel whatever it draws, and as wide as the label, the
+                // identity and the tags it reads (r5 H2: a touch on the drawn
+                // label found no node). Idle it reads only the idle state the
+                // label draws (r5 H1: an ended call's flags, kept through its
+                // hold, are not read: only what the line draws is);
+                // with a call, the slot, the call and its tags, each even where
+                // the line has no room to draw it, since the kind of call is not
+                // something to drop for a screen reader (issue #782). Unnamed
+                // while covered.
+                Item {
+                    id: otherSlotLine
+                    objectName: "otherSlotNode"
+                    readonly property bool navigationAllowed: Navigation.allows(otherSlotLine)
+                    x: 0
+                    width: otherSkip.x
+                    height: parent.height
+                    Accessible.role: Accessible.StaticText
+                    Accessible.focusable: navigationAllowed && visible
+                    Accessible.ignored: !navigationAllowed || !visible
+                    Accessible.name: !navigationAllowed || !visible ? "" : [otherSlotLabel.text, otherIdentityText.visible ? otherIdentityText.text : "", (screen.otherActive && screen.otherPrivate) || otherPrivateTag.visible ? otherPrivateTag.label : "", (screen.otherActive && screen.otherEmergency) || otherEmergencyTag.visible ? otherEmergencyTag.label : "", (screen.otherActive && screen.otherEnc) || otherEncTag.visible ? otherEncTag.label : ""].filter(function (part) {
                         return part.length > 0;
                     }).join(", ")
-                    anchors.left: otherSlotPanel.plan.label ? otherSlotLabel.right : parent.left
-                    anchors.leftMargin: otherSlotPanel.plan.label ? 10 : Theme.cardPadding
-                    anchors.right: otherPrivateTag.visible ? otherPrivateTag.left : otherEmergencyTag.visible ? otherEmergencyTag.left : otherEncTag.visible ? otherEncTag.left : otherSkip.left
-                    anchors.rightMargin: 10
-                    anchors.verticalCenter: parent.verticalCenter
-                    // A fixed line box (issue #901, D10): a name in a taller
-                    // script draws centred in it, unclipped.
-                    height: screen.otherIdentityBox
-                    verticalAlignment: Text.AlignVCenter
-                    // One line in its box (r2 B1): a break in a name is a space.
-                    text: screen.stripIdle ? "" : Util.oneLine(screen.otherIdentity)
-                    maximumLineCount: 1
-                    font.family: Theme.sans
-                    font.pixelSize: Theme.fontSize(14)
-                    font.weight: Font.DemiBold
-                    color: Theme.textPrimary
-                    elide: Text.ElideRight
-                }
 
-                PrivateTag {
-                    id: otherPrivateTag
-                    objectName: "otherPrivateTag"
-                    visible: !screen.stripIdle && otherSlotPanel.plan.privateCall
-                    anchors.right: otherEmergencyTag.visible ? otherEmergencyTag.left : otherEncTag.visible ? otherEncTag.left : otherSkip.left
-                    anchors.rightMargin: 10
-                    anchors.verticalCenter: parent.verticalCenter
-                }
+                    // Drawn text only, in MicroLabel's look: no node of its own
+                    // (r4 F3). It comes and goes with the room the line has, and a
+                    // node that did raised a hide or show at each fit change and,
+                    // hidden, still renamed with each lead-slot change; the
+                    // line's node (otherSlotNode) reads it.
+                    Text {
+                        id: otherSlotLabel
+                        objectName: "otherSlotLabel"
+                        // Idle, the label is all the line holds.
+                        visible: screen.stripIdle || otherSlotPanel.plan.label
+                        anchors.left: parent.left
+                        anchors.leftMargin: Theme.cardPadding
+                        anchors.verticalCenter: parent.verticalCenter
+                        width: Math.min(implicitWidth, Math.max(0, parent.width - 2 * Theme.cardPadding))
+                        elide: Text.ElideRight
+                        text: screen.stripIdle ? qsTr("SLOT %1 · idle").arg(screen.stripSlot) : qsTr("SLOT %1").arg(screen.otherSlot)
+                        textFormat: Text.PlainText
+                        font.family: Theme.mono
+                        font.pixelSize: Theme.fontSize(11)
+                        font.letterSpacing: Theme.fontSize(11) * 0.18
+                        font.capitalization: Font.AllUppercase
+                        color: Theme.textSubdued
+                    }
 
-                EmergencyTag {
-                    id: otherEmergencyTag
-                    objectName: "otherEmergencyTag"
-                    visible: !screen.stripIdle && otherSlotPanel.plan.emergency
-                    anchors.right: otherEncTag.visible ? otherEncTag.left : otherSkip.left
-                    anchors.rightMargin: 10
-                    anchors.verticalCenter: parent.verticalCenter
-                }
+                    // Drawn text: the line's node reads it (r5 H2).
+                    Text {
+                        id: otherIdentityText
+                        objectName: "otherSlotIdentity"
+                        visible: !screen.stripIdle
+                        anchors.left: otherSlotPanel.plan.label ? otherSlotLabel.right : parent.left
+                        anchors.leftMargin: otherSlotPanel.plan.label ? 10 : Theme.cardPadding
+                        anchors.right: otherPrivateTag.visible ? otherPrivateTag.left : otherEmergencyTag.visible ? otherEmergencyTag.left : otherEncTag.visible ? otherEncTag.left : parent.right
+                        anchors.rightMargin: 10
+                        anchors.verticalCenter: parent.verticalCenter
+                        // A fixed line box (issue #901, D10): a name in a taller
+                        // script draws centred in it, unclipped.
+                        height: screen.otherIdentityBox
+                        verticalAlignment: Text.AlignVCenter
+                        // One line in its box (r2 B1): a break in a name is a space.
+                        text: Util.oneLine(screen.otherIdentity)
+                        textFormat: Text.PlainText
+                        maximumLineCount: 1
+                        font.family: Theme.sans
+                        font.pixelSize: Theme.fontSize(14)
+                        font.weight: Font.DemiBold
+                        color: Theme.textPrimary
+                        elide: Text.ElideRight
+                    }
 
-                EncTag {
-                    id: otherEncTag
-                    objectName: "otherEncTag"
-                    visible: !screen.stripIdle && otherSlotPanel.plan.enc
-                    anchors.right: otherSkip.left
-                    anchors.rightMargin: 10
-                    anchors.verticalCenter: parent.verticalCenter
+                    PrivateTag {
+                        id: otherPrivateTag
+                        objectName: "otherPrivateTag"
+                        visible: !screen.stripIdle && otherSlotPanel.plan.privateCall
+                        anchors.right: otherEmergencyTag.visible ? otherEmergencyTag.left : otherEncTag.visible ? otherEncTag.left : parent.right
+                        anchors.rightMargin: 10
+                        anchors.verticalCenter: parent.verticalCenter
+                    }
+
+                    EmergencyTag {
+                        id: otherEmergencyTag
+                        objectName: "otherEmergencyTag"
+                        visible: !screen.stripIdle && otherSlotPanel.plan.emergency
+                        anchors.right: otherEncTag.visible ? otherEncTag.left : parent.right
+                        anchors.rightMargin: 10
+                        anchors.verticalCenter: parent.verticalCenter
+                    }
+
+                    EncTag {
+                        id: otherEncTag
+                        objectName: "otherEncTag"
+                        visible: !screen.stripIdle && otherSlotPanel.plan.enc
+                        anchors.right: parent.right
+                        anchors.rightMargin: 10
+                        anchors.verticalCenter: parent.verticalCenter
+                    }
                 }
 
                 TextMetrics {

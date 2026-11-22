@@ -213,7 +213,7 @@ Item {
             verifyPriority([emergency, label, privateTag, enc], 10, identity.width - lead, data.tag);
 
             // Every word, drawn or not.
-            var spoken = identity.Accessible.name;
+            var spoken = item("otherSlotNode").Accessible.name;
             for (var word of [identity.text, "PRIVATE", "EMERGENCY", "ENC"])
                 verify(spoken.indexOf(word) >= 0, "'" + word + "' missing from: " + spoken);
             if (!label.visible)
@@ -443,7 +443,7 @@ Item {
             verify(speech.indexOf("SRC E W") >= 0, speech);
             verify(speech.indexOf("ALG 84 KID 0001") >= 0, speech);
             verify(speech.indexOf("· E W S") >= 0, speech);
-            verify(identity.Accessible.name.indexOf("North Zone") >= 0, identity.Accessible.name);
+            verify(item("otherSlotNode").Accessible.name.indexOf("North Zone") >= 0, item("otherSlotNode").Accessible.name);
             testContext.setMetric("uiMessage", "");
         }
     }

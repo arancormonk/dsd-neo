@@ -189,7 +189,8 @@ Item {
             var monitor = findChild(app, "monitorScreen");
             var panel = findChild(monitor, "otherSlotPanel");
             var label = findChild(monitor, "otherSlotLabel");
-            var identity = findChild(monitor, "otherSlotIdentity");
+            var identity = findChild(monitor, "otherSlotNode");
+            var drawnIdentity = findChild(monitor, "otherSlotIdentity");
             var width = app.width;
             app.width = 320;
             try {
@@ -235,7 +236,7 @@ Item {
                 callHistory.push("TODAY");
                 var list = findChild(monitor, "recentCallsList");
                 tryVerify(function () { return list.itemAtIndex(0) !== null; }, 1000, "a call row");
-                var optional = [label, findChild(monitor, "otherPrivateTag"), findChild(monitor, "otherEmergencyTag"),
+                var optional = [label, drawnIdentity, findChild(monitor, "otherPrivateTag"), findChild(monitor, "otherEmergencyTag"),
                                 findChild(monitor, "otherEncTag")];
                 for (var name of ["heroPrivateTag", "heroIds", "heroIdentityNote", "heroEmergencyTag", "heroEncTag",
                                   "heroAlgorithm", "heroChannel"])
@@ -264,6 +265,43 @@ Item {
             } finally {
                 testContext.stopAccessibilityCount();
                 app.sessionDestination = "";
+                app.width = width;
+                testContext.setMetrics({leadSlot: 0, slot1CallState: 0, slot2CallState: 0, slot1CallName: "", slot2CallName: "",
+                    slot1TgText: "", slot2TgText: "", slot1TgLabel: "", slot2TgLabel: "", slot1SrcText: "", slot2SrcText: ""});
+            }
+        }
+
+        // Issue #901 r5 H2: the strip's one node covers what it reads, the slot label, the identity and the tags, and
+        // stops at Skip. It started after the drawn label (at 411 dp idle the label was at x 16-127 and the node from
+        // x 137), so a touch on the label found no node. Idle at 411 dp and with a call at 320 dp.
+        function test_h_a_touch_on_the_slot_label_finds_the_strip() {
+            var monitor = findChild(app, "monitorScreen");
+            var panel = findChild(monitor, "otherSlotPanel");
+            var label = findChild(monitor, "otherSlotLabel");
+            var drawnIdentity = findChild(monitor, "otherSlotIdentity");
+            var skip = findChild(monitor, "otherSlotSkip");
+            var width = app.width;
+            var touched = function (item) {
+                var hit = testContext.accessibleNodeAt(item, item.width / 2, item.height / 2);
+                return hit.exists && hit.object ? hit.object.objectName : "";
+            };
+            try {
+                for (var step of [{width: 411, active: false}, {width: 320, active: true}]) {
+                    app.width = step.width;
+                    setSlotCall(1, "4001");
+                    setSlotCall(2, "4002");
+                    testContext.setMetrics({leadSlot: 1, slot2CallState: step.active ? 2 : 0});
+                    waitForRendering(app.contentItem);
+                    wait(20);
+                    verify(panel.visible && label.visible, step.width + ": the label is drawn");
+                    compare(touched(label), "otherSlotNode", step.width + ": a touch on the label");
+                    if (step.active) {
+                        verify(drawnIdentity.visible);
+                        compare(touched(drawnIdentity), "otherSlotNode", "a touch on the identity");
+                        verify(touched(skip) !== "otherSlotNode", "a touch on Skip finds the line");
+                    }
+                }
+            } finally {
                 app.width = width;
                 testContext.setMetrics({leadSlot: 0, slot1CallState: 0, slot2CallState: 0, slot1CallName: "", slot2CallName: "",
                     slot1TgText: "", slot2TgText: "", slot1TgLabel: "", slot2TgLabel: "", slot1SrcText: "", slot2SrcText: ""});
@@ -356,12 +394,12 @@ Item {
         // has visited a two-slot carrier: the slot strip's place stays reserved, so the scan buttons and the call
         // list never move, and no geometry change reaches an accessibility client on a hop. The slot's node comes
         // and goes with the carrier, which is the slot's truth, and is the one thing allowed to show or hide: the
-        // identity line, which reads the idle state too (issue #901 r4 F3: the label it replaced as that node is
-        // drawn text now).
+        // strip line's node (`otherSlotNode`), which reads the idle state too (issue #901 r4 F3, r5 H2: the label
+        // it replaced as that node is drawn text now).
         function test_d_two_slot_hops_leave_the_monitor_still() {
             var monitor = findChild(app, "monitorScreen");
             verify(monitor !== null && monitor.visible, "the monitor is on screen");
-            var label = findChild(monitor, "otherSlotIdentity");
+            var label = findChild(monitor, "otherSlotNode");
             var still = ["scanHoldButton", "scanAvoidButton", "scanPrevButton", "scanNextButton", "recentCallsList"].map(function (name) {
                 var found = findChild(monitor, name);
                 verify(found !== null && found.visible, name + " must be on screen");
@@ -442,8 +480,8 @@ Item {
         // heard on its own (tst_a11y_paced_names.qml holds a flapping step to the floor).
         function test_f_hops_with_details_open_rename_once_each() {
             var monitor = findChild(app, "monitorScreen");
-            // The slot's node (r4 F3), as in case D.
-            var label = findChild(monitor, "otherSlotIdentity");
+            // The slot's node (r4 F3, r5 H2), as in case D.
+            var label = findChild(monitor, "otherSlotNode");
             var closed = closedSheets();
             var floor = Ui.Navigation.speechStepFloorMs;
             Ui.Navigation.speechStepFloorMs = 1;
