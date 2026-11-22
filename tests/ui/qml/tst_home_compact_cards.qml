@@ -535,6 +535,32 @@ Item {
             }
         }
 
+        // Issue #901 r6 J6 / r7 K6: a shared title's wrapping source line is as tall as its hidden wrap probe's height,
+        // never the probe's implicitHeight getter, which lays out pending text under the binding reading it. The probe
+        // sets no height, so the two are normally equal; given a height of its own, the line follows it, which the
+        // getter would not.
+        function test_shared_title_source_follows_its_probe() {
+            root.width = 320;
+            add("Tape Ridge", {sourceType: "file", filePath: "/captures/east-channel-01.wav"});
+            add("Tape Ridge", {sourceType: "file", filePath: "/captures/east-channel-02.wav"});
+            settle();
+            var card = cardOf("Tape Ridge");
+            verify(card.sharedTitle, "the two cards share a title");
+            var probe = findChild(card, "savedSystemSourceProbe");
+            var source = part(card, "savedSystemSource");
+            verify(probe !== null);
+            compare(source.height, probe.height, "the line is the probe's height");
+            var natural = probe.implicitHeight;
+            try {
+                probe.height = natural + 17;
+                compare(source.height, natural + 17, "the line follows the probe's height, not its implicit height");
+            } finally {
+                probe.height = undefined;
+            }
+            compare(probe.height, natural, "the probe's height is its text's again");
+            compare(source.height, natural, "and so is the line's");
+        }
+
         // Issue #901 r4 F4: in Nearest order a compact shared-title card leads its supporting line with the distance,
         // as every compact card does: two same-name one-site groups at 320 dp both led with "1 site · 851.5 MHz ·
         // Auto", their distances only on the place lines below. The place line then holds the place's name alone,
