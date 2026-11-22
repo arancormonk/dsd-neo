@@ -22,7 +22,7 @@ extern "C" {
 typedef enum {
     /** Every source but a native Airspy: a hardware-DC guard round the hardware centre (no channel within it is
      * measured), a capture-wide noise reference over +-0.45 Fs of hardware offset, and a quiet ratio judged against
-     * that reference. */
+     * the lower of that reference and the channel's sideband floor. */
     DSD_SIGNAL_GEOMETRY_DEFAULT = 0,
     /** A native Airspy, tuned on the channel (no rotation, no offset): no hardware-DC exclusion, a capture-wide
      * reference over a per-rate span, and a quiet ratio judged against the lower of that reference and the channel's
@@ -189,8 +189,7 @@ typedef enum {
 typedef struct {
     /** A sub-window is below when its channel power over the noise it is judged against across the same bins,
      * (S+N)/N in dB, is less than this (centred_threshold_db on a DSD_SIGNAL_GEOMETRY_AIRSPY_CENTRED capture when set):
-     * the capture-wide noise reference, or on a centred capture the lower of that reference and the class's sideband
-     * floor. */
+     * the lower of the capture-wide noise reference and the class's sideband floor, on every geometry. */
     float threshold_db;
     /** A dsd_signal_quiet_floor_estimator value. */
     int floor_estimator;
@@ -202,9 +201,9 @@ typedef struct {
     /** A sub-window is invalid (never quiet) when more of the capture-wide reference's bins stand over the noise than
      * noise alone puts there: when the share of them above the 98th percentile the reference implies for noise, less
      * the 2% noise puts there, is over this. A capture partly filled by transmitters or a raised floor lifts the
-     * reference's lower quartile off the noise (it lands on a higher quantile of the noise that is left) and so
-     * lowers every ratio judged against it; this voids such a reading rather than judging it. 0 turns it off; at most
-     * 1. */
+     * reference's lower quartile off the noise (it lands on a higher quantile of the noise that is left). The ratio is
+     * judged against the sideband floor where that is lower, so this matters most when the raise covers the sidebands
+     * too; it voids such a reading rather than judging it. 0 turns it off; at most 1. */
     float occupancy_max_share;
     /** The threshold for a DSD_SIGNAL_GEOMETRY_AIRSPY_CENTRED capture in place of threshold_db; 0 means threshold_db.
      * Finite, not negative. */
@@ -242,9 +241,8 @@ typedef struct {
      * stands over the guard. quiet: valid, and every sub-window of every judged class is below the threshold. */
     uint8_t valid, quiet;
     /** The highest (S+N)/N over every valid sub-window and class, with that measurement's channel power and the noise
-     * over the same bins it was judged against (dsd_signal_quiet_params.threshold_db: the capture-wide reference, or on
-     * a DSD_SIGNAL_GEOMETRY_AIRSPY_CENTRED capture the lower of it and the sideband floor), so power_dbfs - floor_dbfs
-     * is max_ratio_db (0 each when nothing was valid). */
+     * over the same bins it was judged against (dsd_signal_quiet_params.threshold_db: the lower of the capture-wide
+     * reference and the sideband floor), so power_dbfs - floor_dbfs is max_ratio_db (0 each when nothing was valid). */
     float max_ratio_db, power_dbfs, floor_dbfs;
     /** The highest sideband floor over the capture-wide noise reference in any sub-window and class whose geometry
      * fits, in dB, under either geometry policy: above the guard (dsd_signal_quiet_params.guard_db) the result is not

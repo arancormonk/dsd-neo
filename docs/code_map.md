@@ -11186,20 +11186,23 @@ Runtime controls (via `include/dsd-neo/io/rtl_stream_c.h`):
   the 2% noise puts there is the sub-window's occupancy (`dsd_signal_quiet_result.occupancy_share` reports the
   highest), and one over `dsd_signal_quiet_params.occupancy_max_share` leaves the request invalid, never quiet
   (issue #834 B7: transmitters or a raised floor over a share p of the span lift the quartile to the
-  0.25 / (1 - p) quantile of the noise left, so the reference reads high and every ratio low; a floor with a lower
-  part, such as a resampler's transition band inside the span, also trips it, a speed cost; 0 turns the check off,
-  as the calibration driver's own parameters do unless asked). Under the default policy the span is ±0.45 Fs
+  0.25 / (1 - p) quantile of the noise left, so the reference reads high; where the sidebands are clean the ratio is
+  judged against them instead, so the check matters for a raise that also covers them; a floor with a lower part,
+  such as a resampler's transition band inside the span, also trips it, a speed cost; 0 turns the check off, as the
+  calibration driver's own parameters do unless asked). Under the default policy the span is ±0.45 Fs
   (`kQuietReferenceSpan`) at any rate. Under
   `DSD_SIGNAL_GEOMETRY_AIRSPY_CENTRED` there is no DC exclusion and the span is the rate's in
   `kQuietAirspyCentredSpans`, the one table of the centred policy's admitted rates (2.5 and 3 MS/s ±0.25 Fs, 6 and
   10 MS/s ±0.375 Fs; an Airspy's passband is not flat to 0.45 Fs); a centred request at any other rate, or a policy
   the detector does not know, is refused `UNSUPPORTED` (`quiet_arm()`). The ratio, (S+N)/N, is the channel's power over
-  the noise it is judged against across the channel's bins (`quiet_judged_noise()`): the reference, so transmitters
-  beside the channel that lift its sideband floor do not lower it; on a centred capture the lower of the reference
-  and the sideband floor, which can only raise the ratio (it never adds a quiet verdict) and keeps a floor lower round
-  the channel than over the span (the passband's roll-off, ripple or tilt) from hiding a weak channel. That rule is a
+  the noise it is judged against across the channel's bins (`quiet_judged_noise()`): the lower of the reference and
+  the sideband floor, under both policies. Transmitters beside the channel that lift its sideband floor do not lower
+  it (the reference is then the lower); the lower one can only raise the ratio (it never adds a quiet verdict) and
+  keeps a floor lower round the channel than over the span (a passband's roll-off, ripple or tilt, or a broad raise of
+  part of the span too low for the occupancy check, issue #834 P-1) from hiding a weak channel. That rule is a
   conservative estimator bounded by the calibration's validated domain, not a proof: both noises can stand over the
-  channel's own, and a depression narrower than the sidebands is not seen. The sideband floor serves the floor guard
+  channel's own, and a depression narrower than the sidebands is not seen. Since the ratio reads the sideband floor,
+  the floor estimator sets it too, not only the guard. The sideband floor serves the floor guard
   under both policies, against the reference: a class whose floor stands more than `guard_db` over the reference makes
   the request invalid (never quiet), because the reference then does not stand for the noise round the channel. The
   request is quiet only when every sub-window of every class is valid and its ratio is below the threshold; the result

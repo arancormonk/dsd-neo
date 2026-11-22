@@ -1397,9 +1397,9 @@ dsd_signal_detector_feed(dsd_signal_detector* detector, const float* iq, size_t 
 }
 
 /* The shipped quiet threshold, floor estimator and floor guard, from tests/io/signal_quiet_calibrate.cpp
-   (docs/signal-search.md "Quiet-channel calibration"). The ratio is judged against the capture-wide noise reference
-   (on a native Airspy's centred capture, the lower of it and the sideband floor: quiet_judged_noise()), so the
-   estimator sets only the floor the guard compares, and on a centred capture the floor that may lower the noise. The
+   (docs/signal-search.md "Quiet-channel calibration"). The ratio is judged against the lower of the capture-wide noise
+   reference and the sideband floor (quiet_judged_noise()), so the estimator sets the floor the guard compares and the
+   floor that may lower the noise. The
    guard is 0.5 dB under the lowest floor rise of any active trial whose ratio sat within the threshold's margin when
    the ratio was judged against the sideband floor (9.23 dB, a weak NFM 8 kHz channel between +30 dB neighbours),
    rounded down; noise alone rises at most 2.4 dB.
@@ -1411,11 +1411,14 @@ dsd_signal_detector_feed(dsd_signal_detector* detector, const float* iq, size_t 
 /* The occupancy check (dsd_signal_quiet_params.occupancy_max_share): a sub-window whose reference bins stand over the
    noise's 98th percentile more than 5% more often than noise alone puts them there is void. When a share p of the
    reference span stands well over the noise, the lower quartile the reference takes lands on the 0.25 / (1 - p)
-   quantile of the noise left, so the reference reads high and every ratio low: about +0.1 dB at p = 10%, +0.4 to
-   +0.6 dB at a third, +0.8 to +1.1 dB at a half (6 to 32 transforms a sub-window; more for the narrowest widths).
-   Simulated over 6 to 32 transforms and 2,000 to 14,000 bins, a reading the check keeps is at most about 0.3 dB low
-   (a floor raised by only 2.6 to 3 dB over part of the span, which moves fewer bins over the percentile), and noise
-   alone never reaches it (its share stays under 1.5%). It only voids readings, so it never adds a quiet verdict. */
+   quantile of the noise left, so the reference reads high: about +0.1 dB at p = 10%, +0.4 to +0.6 dB at a third,
+   +0.8 to +1.1 dB at a half (6 to 32 transforms a sub-window; more for the narrowest widths). Where the sidebands stand
+   on the channel's own noise, the ratio is judged against them instead (quiet_judged_noise()), so the check is for a
+   raise that also covers the sidebands, and for a strong one it voids the reading whatever the denominator. Simulated
+   over 6 to 32 transforms and 2,000 to 14,000 bins, a reference the check keeps is at most about 0.3 dB high (a floor
+   raised by only 2.6 to 3 dB over part of the span, which moves fewer bins over the percentile; a broad raise of
+   1.5 dB moves fewer still), and noise alone never reaches it (its share stays under 1.5%). It only voids readings,
+   so it never adds a quiet verdict. */
 #define DSD_SIGNAL_QUIET_OCCUPANCY_SHARE      0.05f
 /* A native Airspy's centred capture (DSD_SIGNAL_GEOMETRY_AIRSPY_CENTRED) is judged at its own threshold. Its
    calibration rendered the Airspy's passband in hardware coordinates, and a floor 2 dB lower over the three channel
@@ -1722,17 +1725,17 @@ wide_reference(const dsd_signal_quiet_detector* detector, double* scratch, doubl
     return reference;
 }
 
-/* The noise per FFT bin a channel is judged against, scaled as @p level: the capture-wide @p reference, or on a native
-   Airspy's centred capture the lower of it and the channel's sideband floor. The lower one can only raise the ratio,
-   so it never adds a quiet verdict; it keeps a floor that sits lower round the channel than over the reference span
-   (the passband's roll-off, ripple or tilt) from hiding a weak channel. A depression narrower than the sidebands is
-   not seen, and both can stand over the channel's own noise: the rule is bounded by the validation, not a proof. */
+/* The noise per FFT bin a channel is judged against, scaled as @p level: the lower of the capture-wide @p reference and
+   the channel's sideband floor, on every geometry. The lower one can only raise the ratio, so it never adds a quiet
+   verdict. It keeps a floor that sits lower round the channel than over the reference span from hiding a weak
+   channel: a passband's roll-off, ripple or tilt, and a share of the span raised by transmitters or a broad floor too
+   low for the occupancy check to see (a raise of 1.5 dB over 70% of the span lifted the reference's quartile and read
+   a channel 0.8 dB low), whenever the sidebands stand on the channel's own noise. A depression narrower than the
+   sidebands is not seen, and both can stand over the channel's own noise: the rule is bounded by the validation, not
+   a proof. */
 static double
-quiet_judged_noise(const dsd_signal_capture& capture, double reference, const channel_level& level) {
-    if (capture.geometry == DSD_SIGNAL_GEOMETRY_AIRSPY_CENTRED && level.floor < reference) {
-        return level.floor;
-    }
-    return reference;
+quiet_judged_noise(double reference, const channel_level& level) {
+    return level.floor < reference ? level.floor : reference;
 }
 
 /* Measure one sub-window in every judged class, keeping the highest ratio and floor rise over the request. The ratio
@@ -1769,7 +1772,7 @@ quiet_measure_window(dsd_signal_quiet_detector* detector) {
         if (rise > detector->params.guard_db) {
             detector->all_valid = false;
         }
-        const double judged = quiet_judged_noise(detector->request.capture, reference * norm, level);
+        const double judged = quiet_judged_noise(reference * norm, level);
         const double power = power_db(level.signal), floor = power_db(judged * level.bins);
         if (!detector->any_valid || power - floor > detector->max_ratio_db) {
             detector->max_ratio_db = power - floor;

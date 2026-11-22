@@ -913,9 +913,11 @@ constexpr float kQuietSigma = 0.01f;
 /* The behaviour tests judge with their own threshold, not the shipped one (whose noise-only false-busy rate is up to
    5% by calibration, too often for a fixed-seed test): 8 dB is clear of every noise-only scene here (at most about
    1.5 dB over the capture-wide reference, whichever floor estimator the guard uses), and every transmitter meant to
-   read busy is at least 9 dB over its noise in the class judged. The floor guard is out of reach (100 dB) so these
+   read busy is at least 9 dB over its noise in the class judged. The ratio is judged against the lower of the
+   reference and the sideband floor, so the shipped floor estimator (the trimmed mean) is used: the lowest block reads
+   under the noise and would lift every ratio by its own spread. The floor guard is out of reach (100 dB) so these
    scenes judge the ratio alone; test_quiet_floor_guard() covers the guard. */
-constexpr dsd_signal_quiet_params kQuietTestParams = {8.0f, DSD_SIGNAL_QUIET_FLOOR_LOWEST_BLOCK, 100.0f, 0.0f, 0.0f};
+constexpr dsd_signal_quiet_params kQuietTestParams = {8.0f, DSD_SIGNAL_QUIET_FLOOR_TRIMMED_MEAN, 100.0f, 0.0f, 0.0f};
 
 /* A request for the channel landed Fs/4 below the tuner centre, as the RTL chain lands it. */
 dsd_signal_quiet_request
@@ -1611,14 +1613,14 @@ test_quiet_airspy_centred(dsd_signal_quiet_detector* d) {
 }
 
 /* A floor 2 dB lower round the channel than over the rest of the capture (the channel and its sidebands, out to 3.5
-   widths a side), with a carrier 6 dB over that local floor. Judged against the capture-wide reference alone (the
-   default policy, on the same samples at the Fs/4 shift) the channel reads about 4 dB, under the shipped threshold:
-   quiet. The centred policy judges it against the lower of the reference and the sideband floor, reads about 6 dB (the
-   highest of nine sub-windows over a floor estimated from the sidebands reads somewhat higher) and finds it busy. Its
-   floor is the sideband floor it chose, about 2 dB under the default's, and its floor rise stays measured against the
-   reference: negative, the sidebands standing under it. */
+   widths a side), with a carrier 6 dB over that local floor. The capture-wide reference reads the undepressed floor,
+   so against it alone the channel would read about 4 dB, under the shipped threshold. Both policies judge it against
+   the lower of the reference and the sideband floor: the centred one (a native Airspy's) and the default one (the same
+   samples at the Fs/4 shift) both read about 6 dB (the highest of nine sub-windows over a floor estimated from the
+   sidebands reads somewhat higher) and find it busy. Their floor is the sideband floor they chose, and their floor
+   rise stays measured against the reference: negative, the sidebands standing under it. */
 static void
-test_quiet_centred_depressed_floor(dsd_signal_quiet_detector* d) {
+test_quiet_depressed_floor(dsd_signal_quiet_detector* d) {
     const dsd_signal_quiet_params shipped = dsd_signal_quiet_params_default();
     const double width = DSD_SIGNAL_QUIET_WIDTH_12K5_HZ, depth_db = 2.0;
     for (uint32_t rate : {2500000U, 6000000U}) {
@@ -1632,19 +1634,16 @@ test_quiet_centred_depressed_floor(dsd_signal_quiet_detector* d) {
             /* (S + N_local) / N_local = 6 dB: S = (10^0.6 - 1) N_local, with N_local 2 dB under kQuietSigma's. */
             const double snr_local_db = 10 * std::log10(std::pow(10.0, 0.6) - 1);
             quiet_add_fm(iq, rate, 0, quiet_amplitude(snr_local_db - depth_db, rate, width), {});
-            /* The two readings differ in span and DC exclusion as well as in the noise the ratio is judged against,
-               but the depression (+-3.5 widths) lies far inside both spans and away from either DC guard, so both
-               references read the undepressed floor: only the denominator rule can turn the verdict, as the floor and
-               rise asserts below confirm. */
-            const auto reference_rule = quiet_run(d, shifted, iq, 4096, &shipped);
-            assert(reference_rule.failure == DSD_SIGNAL_MEASURE_OK && reference_rule.valid && reference_rule.quiet);
-            assert(std::abs(reference_rule.max_ratio_db - 4.0f) < 1.0f);
-            const auto local_rule = quiet_run(d, centred, iq, 4096, &shipped);
-            assert(local_rule.failure == DSD_SIGNAL_MEASURE_OK && local_rule.valid && !local_rule.quiet);
-            assert(local_rule.max_ratio_db > shipped.threshold_db + 0.5f && local_rule.max_ratio_db < 8.0f);
-            assert(std::abs(local_rule.power_dbfs - local_rule.floor_dbfs - local_rule.max_ratio_db) < 1e-3f);
-            assert(local_rule.floor_dbfs < reference_rule.floor_dbfs - 1.0f);
-            assert(local_rule.floor_rise_db > -depth_db - 1.0f && local_rule.floor_rise_db < -0.5f);
+            /* The depression (+-3.5 widths) lies far inside both spans and away from either DC guard, so both
+               references read the undepressed floor and only the denominator rule turns the verdict, as the floor and
+               rise asserts confirm. */
+            for (const auto* q : {&centred, &shifted}) {
+                const auto local = quiet_run(d, *q, iq, 4096, &shipped);
+                assert(local.failure == DSD_SIGNAL_MEASURE_OK && local.valid && !local.quiet);
+                assert(local.max_ratio_db > shipped.threshold_db + 0.5f && local.max_ratio_db < 8.0f);
+                assert(std::abs(local.power_dbfs - local.floor_dbfs - local.max_ratio_db) < 1e-3f);
+                assert(local.floor_rise_db > -depth_db - 1.0f && local.floor_rise_db < -0.5f);
+            }
         }
     }
 }
@@ -1672,11 +1671,11 @@ quiet_occupied_noise(const dsd_signal_quiet_request& q, double width, double sha
 } // namespace
 
 /* The occupancy check: a capture whose reference span is partly filled by a raised floor (transmitters, or a floor
-   raised over part of the band) clear of the channel and its sidebands lifts the reference off the noise and lowers
-   the channel's ratio. With the shipped parameters such a reading is invalid, never quiet: noise alone and a weak
-   channel that the check off reads quiet. Clean noise and a channel clearly over the threshold stay valid (a clean
-   control), the share is reported either way, the check's edge sits at 5% of the span over what noise alone puts
-   there, and an occupied sub-window voids the whole reading. Both geometries. */
+   raised over part of the band) clear of the channel and its sidebands lifts the reference off the noise. With the
+   shipped parameters such a reading is invalid, never quiet: noise alone, and a weak channel, which with the check off
+   reads near its clean level all the same (judged against its clean sidebands). Clean noise and a channel clearly
+   over the threshold stay valid (a clean control), the share is reported either way, the check's edge sits at 5% of
+   the span over what noise alone puts there, and an occupied sub-window voids the whole reading. Both geometries. */
 static void
 test_quiet_occupancy(dsd_signal_quiet_detector* d) {
     const dsd_signal_quiet_params shipped = dsd_signal_quiet_params_default();
@@ -1701,7 +1700,7 @@ test_quiet_occupancy(dsd_signal_quiet_detector* d) {
             assert(busy.failure == DSD_SIGNAL_MEASURE_OK && busy.valid && !busy.quiet);
 
             /* Half the span 10 dB up, and 70% of it 3 dB up: invalid with the check on. Off, noise alone still reads
-               quiet and the ratio of a weak channel falls. */
+               quiet. */
             for (const auto& scene : {std::make_pair(0.5, 10.0), std::make_pair(0.7, 3.0)}) {
                 const auto noise = quiet_occupied_noise(q, width, scene.first, scene.second, seed);
                 const auto voided = quiet_run(d, q, noise, 4096, &shipped);
@@ -1714,12 +1713,11 @@ test_quiet_occupancy(dsd_signal_quiet_detector* d) {
                 quiet_add_fm(weak, rate, 0, quiet_amplitude(4, rate, width), {});
                 auto weak_clean = clean;
                 quiet_add_fm(weak_clean, rate, 0, quiet_amplitude(4, rate, width), {});
+                /* Off, the sidebands (clean) hold the weak channel's ratio up where the reference would lower it. */
                 const auto lowered = quiet_run(d, q, weak, 4096, &off);
                 const auto reference = quiet_run(d, q, weak_clean, 4096, &off);
                 assert(lowered.valid && reference.valid);
-                if (q.capture.geometry == DSD_SIGNAL_GEOMETRY_DEFAULT) {
-                    assert(lowered.max_ratio_db < reference.max_ratio_db - 0.4f);
-                }
+                assert(lowered.max_ratio_db > reference.max_ratio_db - 0.3f);
                 const auto weak_voided = quiet_run(d, q, weak, 4096, &shipped);
                 assert(!weak_voided.valid && !weak_voided.quiet);
             }
@@ -1754,6 +1752,38 @@ test_quiet_soapy_airspy(dsd_signal_quiet_detector* d) {
         q.capture.receiver = DSD_SIGNAL_RECEIVER_SOAPY_AIRSPY;
         assert(dsd_signal_quiet_detector_begin(d, &q, nullptr, &failure) == -1);
         assert(failure == DSD_SIGNAL_REQUEST_UNSUPPORTED);
+    }
+}
+
+/* A floor raised only 1.5 dB over 70% of the reference span, clear of the channel and its sidebands, on the default
+   geometry (the RTL tap's): too low a raise for the occupancy check (few bins cross its percentile), yet enough to lift
+   the reference's quartile off the channel's own noise. Judged against the lower of the reference and the sideband
+   floor (the sidebands stand on the channel's noise), a weak channel reads what it reads on clean noise, so a signal
+   just over the threshold is not read silent; against the reference alone it read about 0.8 dB low. The check is off
+   here so the denominator alone is read; with the shipped parameters the reading is never quiet. */
+static void
+test_quiet_default_broad_raise(dsd_signal_quiet_detector* d) {
+    const dsd_signal_quiet_params shipped = dsd_signal_quiet_params_default();
+    dsd_signal_quiet_params unchecked = shipped;
+    unchecked.occupancy_max_share = 0;
+    const double width = DSD_SIGNAL_QUIET_WIDTH_12K5_HZ;
+    for (uint32_t rate : {1536000U, 2400000U}) {
+        const auto q = quiet_request(rate, DSD_SIGNAL_QUIET_CLASS_12K5);
+        const size_t pairs = quiet_request_pairs(q);
+        for (unsigned seed = 171; seed <= 174; ++seed) {
+            auto clean = quiet_noise(pairs, seed);
+            auto raised = quiet_occupied_noise(q, width, 0.7, 1.5, seed);
+            /* the same carrier on both floors, 4 dB over the channel's noise in its width */
+            quiet_add_fm(clean, rate, 0, quiet_amplitude(4, rate, width), {});
+            quiet_add_fm(raised, rate, 0, quiet_amplitude(4, rate, width), {});
+            const auto flat = quiet_run(d, q, clean, 4096, &unchecked);
+            const auto broad = quiet_run(d, q, raised, 4096, &unchecked);
+            assert(flat.failure == DSD_SIGNAL_MEASURE_OK && flat.valid && !flat.quiet);
+            assert(broad.failure == DSD_SIGNAL_MEASURE_OK && broad.valid);
+            assert(broad.max_ratio_db > flat.max_ratio_db - 0.3f);
+            assert(!broad.quiet);
+            assert(!quiet_run(d, q, raised, 4096, &shipped).quiet);
+        }
     }
 }
 
@@ -2002,8 +2032,9 @@ test_quiet_dmr_coverage() {
     }
 }
 
-/* The two floor estimators on the same samples: the ratio is judged against the capture-wide reference, so it is the
-   same under either; the lowest sideband block never reads above the trimmed mean, so its floor never rises higher.
+/* The two floor estimators on the same samples: the ratio is judged against the lower of the capture-wide reference and
+   the sideband floor, and the lowest sideband block never reads above the trimmed mean, so in every sub-window the
+   ratio under it is never lower and its floor rise lower: so are the request's highest of each.
    With the trimmed mean, a sub-window measures the channel power Signal search measures, and its sideband floor (the
    search's noise) stands over the reference by no more than the request's highest rise. */
 static void
@@ -2020,8 +2051,7 @@ test_quiet_estimators(dsd_signal_quiet_detector* d) {
         const auto by_mean = quiet_run(d, q, iq, 4096, &trimmed);
         const auto by_lowest = quiet_run(d, q, iq, 4096, &lowest);
         assert(by_mean.quiet && by_lowest.quiet);
-        assert(std::abs(by_lowest.max_ratio_db - by_mean.max_ratio_db) < 1e-6f);
-        assert(std::abs(by_lowest.floor_dbfs - by_mean.floor_dbfs) < 1e-6f);
+        assert(by_lowest.max_ratio_db > by_mean.max_ratio_db - 1e-6f);
         assert(by_lowest.floor_rise_db < by_mean.floor_rise_db);
     }
     // A carrier only in the second sub-window: the request's highest ratio is that sub-window's, which Signal search
@@ -2407,8 +2437,9 @@ test_quiet(const dsd_signal_measure_request& r) {
     test_quiet_moderate_neighbours(d);
     test_quiet_geometry(d);
     test_quiet_airspy_centred(d);
-    test_quiet_centred_depressed_floor(d);
+    test_quiet_depressed_floor(d);
     test_quiet_occupancy(d);
+    test_quiet_default_broad_raise(d);
     test_quiet_centred_threshold(d);
     test_quiet_soapy_airspy(d);
     test_quiet_centred_requests(d);

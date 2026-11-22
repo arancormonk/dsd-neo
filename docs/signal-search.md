@@ -1223,13 +1223,17 @@ Longer independent real RF captures remain useful acceptance evidence.
 
 The scan skip-silent check (issue #834) calls a landed conventional channel quiet only when every one of nine
 back-to-back sub-windows (each the smallest whole number of transforms of at least 10 ms) reads a channel power over
-the capture-wide noise reference across the same bins, (S+N)/N, below one fixed threshold in every judged width class,
-and no class's sideband floor stands over the floor guard. It shares Signal search's channel measurement.
+the lower of the capture-wide noise reference and its own sideband floor across the same bins, (S+N)/N, below one
+fixed threshold in every judged width class, no class's sideband floor stands over the floor guard, and the reference
+span is not occupied (below). It shares Signal search's channel measurement.
 `DSD_SIGNAL_QUIET_THRESHOLD_DB`, `DSD_SIGNAL_QUIET_FLOOR_ESTIMATOR` and `DSD_SIGNAL_QUIET_GUARD_DB`
 (`src/io/radio/signal_measure.cpp`) and the domain `dsd_signal_quiet_rate_supported()` /
 `dsd_signal_quiet_analog_supported()` come from the calibration below; changing the measurement means running it
 again. The figures below are from the run that added NFM 10, 12 and 15 kHz and AM 8.333 kHz and measured every NFM
-width with both transmitters, in the RTL tap's geometry; it left the measurement as it was.
+width with both transmitters, in the RTL tap's geometry; it left the measurement as it was. That run judged every
+ratio against the capture-wide reference alone. The shipped rule judges it against the lower of the reference and the
+sideband floor, which can only raise a ratio, so its active figures are lower bounds of what the shipped rule reads;
+its noise-only figures are not, and are measured again under the shipped rule.
 
 Only that nine-sub-window reading is calibrated. `--scan-skip-silent-ms` (an expert setting, see
 [Reading length (experts)](trunk-scan.md#reading-length-experts)) asks the detector for another count of sub-windows
@@ -1360,24 +1364,30 @@ powers whose hardware offset (the bin's frequency less the ingest rotation, fold
 hardware DC guard, stays inside 0.45 of the rate and lies outside the channel's widest class, scaled to the mean that
 quartile implies for Gaussian noise averaged over the sub-window's transforms (a chi-square of twice as many degrees
 of freedom, by the Wilson-Hilferty approximation). The scaling makes noise alone read about 0 dB at every rate and
-width. The ratio is the channel's power over that reference across the channel's bins.
+width. The ratio is the channel's power across the channel's bins over the lower of that reference and the channel's
+sideband floor (Signal search's trimmed mean of the eight sideband blocks 1.5 to 3 widths out), on every receiver.
+The lower one can only raise the ratio, so it never adds a quiet verdict.
 
 That scaling holds only while the span's bins are noise. When transmitters or a raised floor fill a share of the span,
 the lower quartile lands higher up the noise that is left, and the reference reads high: about 0.1 dB at a tenth of
-the span, 0.4 to 0.6 dB at a third and 0.8 to 1.1 dB at a half, so every channel reads that much quieter. Each
-sub-window therefore also counts the share of the span's bins over the 98th percentile the reference implies for
-noise; when that share is more than 5% over the 2% noise alone puts there, the request is invalid and the channel is
-never skipped (`DSD_SIGNAL_QUIET_OCCUPANCY_SHARE`). A reading the check keeps is at most about 0.3 dB low in
-simulation, and noise alone stays under 1.5%. A floor with a lower part inside the span trips it too: a speed cost,
-never a missed signal.
+the span, 0.4 to 0.6 dB at a third and 0.8 to 1.1 dB at a half. Where the channel's sidebands stand on its own noise,
+the sideband floor is then the lower and the ratio is judged against it, so the channel reads what it reads on clean
+noise: with 70% of the span raised only 1.5 dB at 1.6 Msps, judging against the reference alone let a weak M17 signal
+read 4.88 dB, under the threshold, while the lower of the two kept every reading at 5.85 dB or more over 200 trials.
+When the raise covers the sidebands too, both noises read high; each sub-window therefore also counts the share of
+the span's bins over the 98th percentile the reference implies for noise, and when that share is more than 5% over
+the 2% noise alone puts there, the request is invalid and the channel is never skipped
+(`DSD_SIGNAL_QUIET_OCCUPANCY_SHARE`). A reference the check keeps is at most about 0.3 dB high in simulation, and noise
+alone stays under 1.5%. A floor with a lower part inside the span trips it too: a speed cost, never a missed
+signal.
 
 The first calibration judged the ratio against the local floor instead, Signal search's trimmed mean of the eight
 sideband blocks 1.5 to 3 widths out. Neighbours on both sides 25 kHz away at +10 to +25 dB lifted that floor by 3 to
 8.7 dB, the wanted signal's ratio fell by as much, and a signal dsd-neo still receives read quiet: 4,771 of 3,564,000
-such trials at the 4.1 dB threshold it used then. Judged against the reference, the ratio does not move when
-neighbours raise the floor beside the channel.
+such trials at the 4.1 dB threshold it used then. Judged against the lower of the reference and that floor, the ratio
+does not move when neighbours raise the floor beside the channel: the reference is then the lower.
 
-The sideband floor (the trimmed mean) now serves only as a guard. When a class's floor stands more than
+The sideband floor (the trimmed mean) also serves as a guard. When a class's floor stands more than
 `DSD_SIGNAL_QUIET_GUARD_DB` (8.7 dB) over the reference, the reference does not stand for the noise round the channel
 (a front end whose floor is far from flat, a strong broad interferer, strong transmitters crowding the sidebands), so
 the request is invalid and the channel is never skipped. The guard was set under the first calibration, 0.5 dB under
