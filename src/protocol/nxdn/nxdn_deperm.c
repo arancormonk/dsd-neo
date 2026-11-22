@@ -271,6 +271,11 @@ nxdn_handle_sacch_non_superframe(dsd_opts* opts, dsd_state* state, const uint8_t
     DSD_MEMSET(nsf_sacch, 0, sizeof(nsf_sacch));
     DSD_MEMCPY(nsf_sacch, trellis_buf + 8, 24U);
 
+    /* The frame's register reloads from the key at its non-superframe SACCH, whatever its check said; another
+       channel's frame (dsd_state::nxdn_frame_foreign) reloads nothing: the register is the followed call's. */
+    if (!state->nxdn_frame_foreign) {
+        nxdn_reset_payload_seed_if_forced(state);
+    }
     const int sacch_crc_ok = (crc == check);
     if (sacch_crc_ok) {
         nxdn_confirm_note_evidence(state, NXDN_EVIDENCE_WEAK);
@@ -281,12 +286,10 @@ nxdn_handle_sacch_non_superframe(dsd_opts* opts, dsd_state* state, const uint8_t
         }
         state->nxdn_part_of_frame = 3;
         DSD_FPRINTF(stderr, "PF 1/1");
-        nxdn_reset_payload_seed_if_forced(state);
         NXDN_Elements_Content_decode(opts, state, nsf_sacch, sizeof(nsf_sacch));
     } else {
         state->nxdn_part_of_frame = 0;
         DSD_FPRINTF(stderr, "PF X/1");
-        nxdn_reset_payload_seed_if_forced(state);
         DSD_FPRINTF(stderr, " IDLE");
     }
 
@@ -296,9 +299,9 @@ nxdn_handle_sacch_non_superframe(dsd_opts* opts, dsd_state* state, const uint8_t
 
 /*
  * A superframe SACCH segment of another channel's control traffic (dsd_state::nxdn_frame_foreign): its check says that
- * channel is heard, and nothing of it enters the superframe being assembled. The assembly is dropped too, both ways: the
- * followed channel's segments before it and after it belong to no one superframe with it, and a superframe the next
- * followed segment completed would otherwise mix the two channels' messages.
+ * channel is heard, and nothing of it enters the superframe being assembled. The frame that carries it already broke
+ * that assembly (nxdn_frame_commit_classification()), as every frame classified foreign does: the followed channel's
+ * segments before it and after it belong to no one superframe with it.
  */
 static void
 nxdn_handle_sacch_superframe_foreign(dsd_state* state, int part_of_frame, uint8_t crc, uint8_t check) {
@@ -306,8 +309,6 @@ nxdn_handle_sacch_superframe_foreign(dsd_state* state, int part_of_frame, uint8_
         nxdn_confirm_note_evidence(state, NXDN_EVIDENCE_WEAK);
     }
     DSD_FPRINTF(stderr, "PF %d/4", part_of_frame + 1);
-    nxdn_reset_sacch_segments(state);
-    state->nxdn_part_of_frame = 0;
 }
 
 /* Returns the superframe position + 1 a CRC-verified segment gives its frame (nxdn_channel_result::seed_part), else 0. */

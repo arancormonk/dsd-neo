@@ -592,7 +592,7 @@ nxdn_step_stolen_slots(dsd_state* state, const nxdn_frame_ctx* ctx) {
 }
 
 static void
-nxdn_print_voice_or_data_and_sync_lfsr(dsd_state* state, const nxdn_frame_ctx* ctx) {
+nxdn_print_voice_or_data(const nxdn_frame_ctx* ctx) {
     if (ctx->voice == 0) {
         DSD_FPRINTF(stderr, "%s", KCYN);
         DSD_FPRINTF(stderr, "Data  ");
@@ -606,7 +606,16 @@ nxdn_print_voice_or_data_and_sync_lfsr(dsd_state* state, const nxdn_frame_ctx* c
         DSD_FPRINTF(stderr, "V%d+F%d ", 3 - ctx->facch, ctx->facch);
         DSD_FPRINTF(stderr, "%s", KNRM);
     }
+}
 
+/* The cipher slots of a frame that carries no position of its own (nxdn_frame_steps_after_signalling()), stepped
+   before its signalling. Another channel's frame (nxdn_frame_ctx::foreign) steps nothing: the cipher is the followed
+   call's, and that call's frames are not on it. */
+static void
+nxdn_step_cipher_before_signalling(dsd_state* state, const nxdn_frame_ctx* ctx) {
+    if (ctx->foreign) {
+        return;
+    }
     if (ctx->voice && ctx->facch == 1 && state->M == 1 && dsd_key_scalar_present(state, 0)) {
         nxdn_cipher_force(state, 0x1);
     }
@@ -749,12 +758,6 @@ nxdn_decode_scch_channels(dsd_opts* opts, dsd_state* state, const nxdn_frame_ctx
 static void
 nxdn_decode_sacch_cac_channels(dsd_opts* opts, dsd_state* state, const nxdn_frame_ctx* ctx) {
     if (ctx->sacch) {
-        if (ctx->reclassified) {
-            /* A frame its own FACCH1 showed composite was read as Type-D until now, whatever the frames before it
-               were: the superframe being assembled does not run on across it. */
-            DSD_MEMSET(state->nxdn_sacch_frame_segment, 1, sizeof(state->nxdn_sacch_frame_segment));
-            DSD_MEMSET(state->nxdn_sacch_frame_segcrc, 1, sizeof(state->nxdn_sacch_frame_segcrc));
-        }
         *ctx->result =
             nxdn_handle_sacch(opts, state, ctx->field.trellis, ctx->field.m_data, ctx->field.crc, ctx->field.check);
     }
@@ -973,18 +976,35 @@ nxdn_frame_left(void) {
     DSD_FPRINTF(stderr, "\n");
 }
 
-/* What the frame does before its channels are committed: the SACCH mode its LICH names, the voice/data banner and the
-   cipher slots of a frame that carries no position (nxdn_print_voice_or_data_and_sync_lfsr()), and the classification
-   the element parsers read (nxdn_frame_classify()): the channel, the Type-D layout, and whether it is another
-   channel's control traffic, whose checks may confirm nothing and whose messages may name, follow or play nothing
-   here. */
+/*
+ * Commit the frame's one classification (nxdn_frame_classify()) before anything of it acts, its confirmation included:
+ * the channel and Type-D layout the element parsers read, and whether it is another channel's control traffic
+ * (dsd_state::nxdn_frame_foreign), the one gate every effect on the followed call reads. Such a frame's checks stamp the
+ * foreign channel and confirm nothing, its spacing proves nothing (nxdn_confirm_note_frame_start()), it never touches
+ * the followed call's cipher (nxdn_step_cipher_before_signalling(), nxdn_handle_sacch(), nxdn_finish_decoded_frame()),
+ * and it breaks the SACCH superframe being assembled whatever channels it carries: the followed channel's segments
+ * before it and after it are no one superframe. So does a frame its own FACCH1 showed composite, read as Type-D until
+ * then whatever the frames before it were.
+ */
 static void
-nxdn_frame_before_channels(dsd_state* state, const nxdn_frame_ctx* ctx) {
-    nxdn_update_sacch_mode(state, ctx->lich);
-    nxdn_print_voice_or_data_and_sync_lfsr(state, ctx);
+nxdn_frame_commit_classification(dsd_state* state, const nxdn_frame_ctx* ctx) {
     state->nxdn_frame_channel = nxdn_frame_channel_of(ctx);
     state->nxdn_frame_type_d = (uint8_t)ctx->type_d;
     state->nxdn_frame_foreign = (uint8_t)ctx->foreign;
+    if (ctx->foreign || ctx->reclassified) {
+        DSD_MEMSET(state->nxdn_sacch_frame_segment, 1, sizeof(state->nxdn_sacch_frame_segment));
+        DSD_MEMSET(state->nxdn_sacch_frame_segcrc, 1, sizeof(state->nxdn_sacch_frame_segcrc));
+        state->nxdn_part_of_frame = 0;
+    }
+}
+
+/* What the frame does before its channels are committed: the SACCH mode its LICH names, the voice/data banner and the
+   cipher slots of a frame that carries no position (nxdn_step_cipher_before_signalling()). */
+static void
+nxdn_frame_before_channels(dsd_state* state, const nxdn_frame_ctx* ctx) {
+    nxdn_update_sacch_mode(state, ctx->lich);
+    nxdn_print_voice_or_data(ctx);
+    nxdn_step_cipher_before_signalling(state, ctx);
 }
 
 /* The frame body read whole: descramble and unpack it, decode its signalling, classify the frame once (issue #903),
@@ -1060,6 +1080,7 @@ nxdn_frame(dsd_opts* opts, dsd_state* state) {
     nxdn_apply_limazulu_voice_tweak(opts, state, &ctx);
 
     ctx.confirmed_before = nxdn_confirm_is_confirmed(state);
+    nxdn_frame_commit_classification(state, &ctx);
     nxdn_frame_begin_evidence(opts, state, frame_symbol);
     nxdn_frame_before_channels(state, &ctx);
     const int left_carrier = nxdn_decode_frame_channels(opts, state, &ctx);

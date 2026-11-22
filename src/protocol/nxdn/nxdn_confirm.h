@@ -78,8 +78,9 @@ void nxdn_confirm_reset(dsd_state* state);
  * next frame (nxdn_confirm_note_evidence()) unless its sync word followed another one frame before it
  * (@p sync_corroborated: dsd_state::nxdn48_accept_corroborated) or another check of the frame passed too. A strong
  * check the frame before left waiting is confirmed only by a frame read one frame after it: the spacing itself, not
- * a run the frame sync vouches for (an NXDN96 frame after a step from 2400/4). Without this call a frame runs on (the
- * unit tests' frames, one after another).
+ * a run the frame sync vouches for (an NXDN96 frame after a step from 2400/4), and never by another channel's frame
+ * (dsd_state::nxdn_frame_foreign, set before this call), which drops it. Without this call a frame runs on (the unit
+ * tests' frames, one after another).
  */
 void nxdn_confirm_note_frame_start(dsd_state* state, uint32_t frame_symbol, int sync_runs, int sync_corroborated);
 

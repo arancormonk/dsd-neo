@@ -276,6 +276,15 @@ test_quiet_check_hears_the_frame_verdict(dsd_state* state) {
     state->nxdn_frame_foreign = 1;
     expect("another channel's control traffic notes nothing", quiet_frame(&opts, state, NXDN_EVIDENCE_STRONG), 0);
     state->nxdn_frame_foreign = 0;
+    /* Another channel's frame a frame after an isolated strong check completes no spacing proof (issue #903). */
+    nxdn_confirm_reset(state);
+    nxdn_confirm_note_frame_start(state, 60000U, 0, 0);
+    (void)quiet_frame(&opts, state, NXDN_EVIDENCE_STRONG);
+    state->nxdn_frame_foreign = 1;
+    nxdn_confirm_note_frame_start(state, 60000U + NXDN_CONFIRM_FRAME_SYMBOLS, 0, 0);
+    expect("a foreign frame's spacing proves nothing", quiet_frame(&opts, state, 0), 0);
+    expect("and confirms nothing", nxdn_confirm_is_confirmed(state), 0);
+    state->nxdn_frame_foreign = 0;
     nxdn_confirm_reset(state);
     expect("no opts: nothing", quiet_frame(NULL, state, NXDN_EVIDENCE_STRONG), 0);
     dsd_frame_sync_hooks_set(NULL);

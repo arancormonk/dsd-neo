@@ -1409,6 +1409,132 @@ test_type_d_only_lich_reads_type_d(dsd_opts* opts, dsd_state* state) {
     return expect_call_target("type-d-only lich, failed scch", state, 5L, 5L, "03-0005");
 }
 
+/* An IDLE (0x10) CAC message, 147 elements. */
+static void
+idle_cac(uint8_t elements[147]) {
+    DSD_MEMSET(elements, 0, 147U);
+    put_bits(elements, 2U, 0x10U, 6U);
+}
+
+/*
+ * A frame classified as another channel's breaks the SACCH superframe whatever channels it carries (issue #903): the
+ * followed RTCH sends three segments of a VCALL, site B's control channel a CAC frame (no SACCH at all), then the
+ * followed RTCH the fourth segment. The fragments around the foreign frame are no one superframe: no VCALL is
+ * published.
+ */
+static int
+test_foreign_frame_without_sacch_breaks_the_superframe(dsd_opts* opts, dsd_state* state) {
+    uint8_t vcall[72];
+    uint8_t cac[147];
+    follow_call_to_f(opts, state);
+    call_message(vcall, 0x01U, 2100U, 1100U);
+    for (int part = 0; part < 3; part++) {
+        send_sacch_segment(opts, state, LICH_RTCH_IDLE, 0x21U, vcall, part);
+    }
+    idle_cac(cac);
+    send_cac_frame(opts, state, 0x22U, cac, sizeof(cac));
+    send_sacch_segment(opts, state, LICH_RTCH_IDLE, 0x21U, vcall, 3);
+    dsd_call_snapshot call;
+    const int has_call = dsd_call_state_get(state, 0U, &call);
+    return expect_long("foreign CAC frame: no VCALL across it", has_call && call.ota_target_id == 1100U, 0L);
+}
+
+/* The followed call's Scramble register mid-call: Scramble applied with a key (R), the register run on past it. */
+enum { FOLLOWED_KEY = 0x5A5A, FOLLOWED_REGISTER = 0x2468 };
+
+static void
+scramble_the_followed_call(dsd_state* state) {
+    state->R = FOLLOWED_KEY;
+    state->nxdn_cipher_type = nxdn_cipher_observe(state, 1U, 1);
+    state->nxdn_payload_mi = FOLLOWED_REGISTER;
+}
+
+static int
+expect_followed_cipher_untouched(const char* tag, const dsd_state* state) {
+    char label[96];
+    int rc = 0;
+    DSD_SNPRINTF(label, sizeof(label), "%s: cipher", tag);
+    rc |= expect_long(label, (long)state->nxdn_cipher_type, 1L);
+    DSD_SNPRINTF(label, sizeof(label), "%s: register", tag);
+    rc |= expect_long(label, (long)state->nxdn_payload_mi, (long)FOLLOWED_REGISTER);
+    return rc;
+}
+
+/*
+ * A frame classified as another channel's never moves the followed call's cipher (issue #903): with the followed call
+ * scrambled, site B's control channel on F sends a data frame of LICH 0x61 (a non-superframe SACCH, whose check passes,
+ * and two FACCH1s, the first a CCH_INFO), read as composite by its own CCH_INFO while Type-C is unknown, or at once once
+ * it is known, and a CAC frame. None steps the register by its stolen slots or reloads it from the key.
+ */
+static int
+test_foreign_frame_keeps_the_followed_cipher(dsd_opts* opts, dsd_state* state) {
+    uint8_t sacch[18];
+    uint8_t cch[80];
+    uint8_t cac[147];
+    int rc = 0;
+    DSD_MEMSET(sacch, 0, sizeof(sacch));
+    cch_info(cch, SITE_B, 0x20U, 5U);
+    for (int type_c = 0; type_c <= 1; type_c++) {
+        follow_call_to_f(opts, state);
+        state->nxdn_site.type_c = (uint8_t)type_c;
+        scramble_the_followed_call(state);
+        build_frame_sacch(0x61U, 0x22U, 3U, sacch, cch, NULL);
+        (void)nxdn_frame(opts, state);
+        rc |= expect_followed_cipher_untouched(type_c ? "foreign 0x61, Type-C known" : "foreign 0x61, Type-C unknown",
+                                               state);
+        rc |= expect_long(type_c ? "foreign 0x61, Type-C known: heard" : "foreign 0x61, Type-C unknown: heard",
+                          dsd_nxdn_foreign_control_last_m(state) > 0.0, 1L);
+    }
+    follow_call_to_f(opts, state);
+    scramble_the_followed_call(state);
+    idle_cac(cac);
+    send_cac_frame(opts, state, 0x22U, cac, sizeof(cac));
+    rc |= expect_followed_cipher_untouched("foreign CAC frame", state);
+    return rc;
+}
+
+/*
+ * A frame classified as another channel's completes no spacing proof of the followed transmission (issue #903): on
+ * NXDN48, an isolated frame of the followed channel (LICH 0x63, its SCCH failed, its FACCH1 checked) leaves its strong
+ * check waiting for the next frame, and site B's CAC frame comes exactly one frame later. The transmission stays
+ * unconfirmed, and the CAC is heard as another channel's.
+ */
+static int
+test_foreign_frame_completes_no_spacing_proof(dsd_opts* opts, dsd_state* state) {
+    uint8_t scch[25];
+    uint8_t cac[147];
+    int rc = 0;
+    follow_call_to_f(opts, state);
+    opts->frame_nxdn48 = 1;
+    opts->frame_nxdn96 = 0;
+    state->nxdn48_accept_corroborated = 0;
+    nxdn_confirm_reset(state);
+    info3_scch(scch);
+    state->symbolcnt = 4000;
+    build_frame_scch(0x63U, scch, 0x5AU, NULL, NULL);
+    (void)nxdn_frame(opts, state);
+    rc |= expect_long("spacing: the isolated frame waits", nxdn_confirm_is_confirmed(state), 0L);
+    state->symbolcnt = 4000 + (int)NXDN_CONFIRM_FRAME_SYMBOLS;
+    idle_cac(cac);
+    send_cac_frame(opts, state, 0x22U, cac, sizeof(cac));
+    rc |= expect_long("spacing: a foreign frame confirms nothing", nxdn_confirm_is_confirmed(state), 0L);
+    rc |= expect_long("spacing: the CAC is heard as foreign", dsd_nxdn_foreign_control_last_m(state) > 0.0, 1L);
+
+    /* Control: the followed channel's own frame one frame later confirms the waiting check. */
+    follow_call_to_f(opts, state);
+    opts->frame_nxdn48 = 1;
+    opts->frame_nxdn96 = 0;
+    nxdn_confirm_reset(state);
+    state->symbolcnt = 4000;
+    build_frame_scch(0x63U, scch, 0x5AU, NULL, NULL);
+    (void)nxdn_frame(opts, state);
+    state->symbolcnt = 4000 + (int)NXDN_CONFIRM_FRAME_SYMBOLS;
+    build_frame_scch(0x63U, scch, 0x5AU, NULL, NULL);
+    (void)nxdn_frame(opts, state);
+    rc |= expect_long("spacing: the followed channel's next frame confirms", nxdn_confirm_is_confirmed(state), 1L);
+    return rc;
+}
+
 int
 main(void) {
     dsd_opts* opts = calloc(1, sizeof(*opts));
@@ -1454,6 +1580,9 @@ main(void) {
     rc |= test_disproved_scch_joins_no_streak(opts, state);
     rc |= test_same_frame_srv_info_keeps_its_category(opts, state);
     rc |= test_type_d_only_lich_reads_type_d(opts, state);
+    rc |= test_foreign_frame_without_sacch_breaks_the_superframe(opts, state);
+    rc |= test_foreign_frame_keeps_the_followed_cipher(opts, state);
+    rc |= test_foreign_frame_completes_no_spacing_proof(opts, state);
     dsd_trunk_tuning_hooks_set((dsd_trunk_tuning_hooks){0});
     dsd_decode_clock_use_system();
 

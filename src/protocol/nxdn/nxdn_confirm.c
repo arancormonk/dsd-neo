@@ -59,9 +59,11 @@ nxdn_confirm_note_frame_start(dsd_state* state, uint32_t frame_symbol, int sync_
     }
     if (state->nxdn_confirm_strong_pending) {
         /* The frame before this one passed a strong check, and this one was read a frame after it: a transmission. A
-           frame the frame sync vouches for on its own run (NXDN96) says nothing of the frame before. */
+           frame the frame sync vouches for on its own run (NXDN96) says nothing of the frame before, and neither does
+           another channel's frame (dsd_state::nxdn_frame_foreign, committed before its start is noted): the check
+           waited for the followed transmission's next frame, and this is not one. */
         state->nxdn_confirm_strong_pending = 0;
-        if (spaced) {
+        if (spaced && !state->nxdn_frame_foreign) {
             state->nxdn_confirmed = 1;
             state->nxdn_confirm_spacing_due = 1;
         }

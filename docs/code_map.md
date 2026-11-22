@@ -12568,12 +12568,17 @@ Call frequency and access-code provenance (issue #575). A call's canonical `freq
   tuner's value while the followed one is a grant's computed frequency). A CAC (decided in
   `nxdn_handle_cac()`) or an RTCH_C frame (decided in `nxdn_frame_classify()` before anything of it is committed, one
   its own CCH_INFO showed composite included) heard there sets
-  `dsd_state::nxdn_frame_foreign` while it decodes: its checks confirm nothing and stamp
+  `dsd_state::nxdn_frame_foreign`, committed before anything of the frame acts (`nxdn_frame_commit_classification()`),
+  its confirmation included: the one gate every effect on the followed call reads. Its checks confirm nothing and stamp
   `dsd_nxdn_site_record::foreign_control_m` instead (`nxdn_confirm_note_evidence()`, read with
-  `dsd_nxdn_foreign_control_last_m()`, decode clock); no RAN, received control channel, CC hunt note or Type-C note is
-  written; its site broadcasts are printed only, every other message prints its type only (no grant, call, release or
-  control-sync effect); its superframe SACCH segment never enters the SACCH assembly, which it empties, so no superframe
-  mixes the two channels' segments; and the frame skips the decoder's own carrier-sync stamp
+  `dsd_nxdn_foreign_control_last_m()`, decode clock), and its start completes no spacing proof a strong check of the
+  frame before left waiting (`nxdn_confirm_note_frame_start()`); no RAN, received control channel, CC hunt note or Type-C
+  note is written; its site broadcasts are printed only, every other message prints its type only (no grant, call,
+  release or control-sync effect); it never touches the followed call's cipher (no stolen-slot step or forced cipher
+  before its signalling, `nxdn_step_cipher_before_signalling()`, no key reload at its non-superframe SACCH, none of the
+  positioning after it); it breaks the SACCH superframe being assembled whatever channels it carries, a CAC frame
+  included, and its own superframe segment never enters the assembly, so no superframe mixes the two channels'
+  segments; and the frame skips the decoder's own carrier-sync stamp
   (`nxdn_mark_carrier_sync_active()`) and plays no voice (the frame-sync accept stamps no sync clock for any NXDN
   sync). A call on this site's control channel itself (followed frequency equal to `p25_cc_freq` or `trunk_cc_freq`) is
   the site's own.
