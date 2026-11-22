@@ -12443,10 +12443,12 @@ Call frequency and access-code provenance (issue #575). A call's canonical `freq
   `nxdn_typed_id_text()`). A Type-D unit or group ID is 11 bits under a 5-bit Home Repeater / Prefix (TS 1-E
   6.6.6-6.6.8). The VCALL, the SD (0x38) and packet (0x09) data call headers and the SCCH INFO4/INFO3/INFO2 carry the
   prefix. The VCALL, VCALL_IV and data header layouts split an address into its prefix and 11-bit ID only on positive
-  Type-D evidence fresh on the carrier (`nxdn_location_is_type_d()`). An RTCH2 frame whose own SCCH passed its check
-  with defined content (`dsd_state::nxdn_frame_type_d_scch`) is Type-D, even on a site an older frame decoded as Type-C.
-  Otherwise the "Type-D" category a CRC-checked SCCH set counts, on an RTCH2 frame or an element decoded with no frame,
-  unless the site decoded as Type-C, and only under the received identity's epoch it was set in
+  Type-D evidence fresh on the carrier (`nxdn_location_is_type_d()`). An RTCH2 frame is Type-D when its own SCCH passed
+  its check with defined content (`dsd_state::nxdn_frame_type_d_scch`) or the carrier's "Type-D" category is fresh, even
+  on a site an older frame decoded as Type-C: there a composite LICH reads as RTCH_C, so an RTCH2 reading is one no
+  composite frame gives, and one failed SCCH keeps the carrier's fresh evidence. An element decoded with no frame takes
+  the "Type-D" category a CRC-checked SCCH set unless the site decoded as Type-C. Either way the category counts only
+  under the received identity's epoch it was set in
   (`dsd_nxdn_note_type_d_layout()`, `dsd_nxdn_type_d_layout_fresh()`): every carrier boundary, trunk-scan target switch
   and user move starts the received identity over, so another carrier's SCCH never splits this carrier's addresses,
   while a trunk follow within the system and the no-carrier pass keep it. A frame whose LICH names another channel and

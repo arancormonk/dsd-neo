@@ -231,16 +231,17 @@ build_frame_sacch(uint8_t lich, uint8_t ran, uint8_t sf, const uint8_t* sacch_el
     g_frame_pos = 0U;
 }
 
-/* An SCCH (NXDN TS 1-E Fig 4.5-1): 25 element bits, CRC-7 (crc7_scch(), the check the decoder reads at bits 25-31),
- * four tail bits, coded, punctured to 60 (each 12 coded bits lose their 6th and 12th) and permuted. */
+/* An SCCH (NXDN TS 1-E Fig 4.5-1): 25 element bits, CRC-7 (crc7_scch(), the check the decoder reads at bits 25-31,
+ * XORed with @p crc_flip: nonzero fails it), four tail bits, coded, punctured to 60 (each 12 coded bits lose their 6th
+ * and 12th) and permuted. */
 static void
-scch_encode(uint8_t out[60], const uint8_t elements[25]) {
+scch_encode(uint8_t out[60], const uint8_t elements[25], uint8_t crc_flip) {
     uint8_t trellis[36];
     uint8_t coded[72];
     uint8_t punctured[60];
     DSD_MEMSET(trellis, 0, sizeof(trellis));
     DSD_MEMCPY(trellis, elements, 25U);
-    put_bits(trellis, 25U, crc7_scch(trellis, 25), 7U);
+    put_bits(trellis, 25U, (uint32_t)(crc7_scch(trellis, 25) ^ crc_flip) & 0x7FU, 7U);
     conv_encode(trellis, 36U, coded);
     size_t n = 0;
     for (size_t i = 0; i < 72U; i++) {
@@ -253,10 +254,12 @@ scch_encode(uint8_t out[60], const uint8_t elements[25]) {
     }
 }
 
-/* An outbound Type-D RTCH2 frame (LICH @p lich): an SCCH carrying @p scch_elements where an RTCH's SACCH goes, then a
- * FACCH1 (the second half, a FACCH1 or voice by the LICH, carries IDLE). */
+/* An outbound Type-D RTCH2 frame (LICH @p lich): an SCCH carrying @p scch_elements (its CRC XORed with @p crc_flip)
+ * where an RTCH's SACCH goes, then two FACCH1s (either may be NULL for IDLE; the second half is a FACCH1 or voice by the
+ * LICH). */
 static void
-build_frame_scch(uint8_t lich, const uint8_t scch_elements[25], const uint8_t* facch_a) {
+build_frame_scch(uint8_t lich, const uint8_t scch_elements[25], uint8_t crc_flip, const uint8_t* facch_a,
+                 const uint8_t* facch_b) {
     uint8_t bits[364];
     uint8_t idle[80];
     DSD_MEMSET(bits, 0, sizeof(bits));
@@ -269,9 +272,9 @@ build_frame_scch(uint8_t lich, const uint8_t scch_elements[25], const uint8_t* f
         bits[2U * i] = (uint8_t)(((full | parity) >> (7U - i)) & 1U);
         bits[(2U * i) + 1U] = 1U;
     }
-    scch_encode(&bits[16], scch_elements);
+    scch_encode(&bits[16], scch_elements, crc_flip);
     facch1_encode(&bits[76], facch_a != NULL ? facch_a : idle);
-    facch1_encode(&bits[220], idle);
+    facch1_encode(&bits[220], facch_b != NULL ? facch_b : idle);
     for (size_t i = 0; i < 182U; i++) {
         g_frame[i] = (uint8_t)((bits[2U * i] << 1U) | bits[(2U * i) + 1U]);
     }
@@ -888,18 +891,30 @@ test_short_site_messages_do_not_say_type_c(dsd_opts* opts, dsd_state* state) {
     return rc;
 }
 
-/* A Type-D RTCH2 frame's VCALL from 03-0100 to 03-0005 (0x1864, 0x1805) whose own SCCH, an INFO3 naming the source
- * 03-0100 from repeater 6, passed its check (LICH 0x63: SCCH and FACCH1, no Type-C composite value). */
+/* An SCCH INFO3 naming the source 03-0100 from repeater 6. */
 static void
-send_type_d_vcall_frame(dsd_opts* opts, dsd_state* state, const uint8_t vcall[80]) {
-    uint8_t scch[25];
-    DSD_MEMSET(scch, 0, sizeof(scch));
+info3_scch(uint8_t scch[25]) {
+    DSD_MEMSET(scch, 0, 25U);
     put_bits(scch, 0U, 1U, 2U);     // INFO3: the source message
     put_bits(scch, 3U, 6U, 5U);     // repeater 6
     put_bits(scch, 8U, 3U, 5U);     // prefix 3
     put_bits(scch, 13U, 100U, 11U); // ID 100
-    build_frame_scch(0x63U, scch, vcall);
+}
+
+/* A Type-D RTCH2 frame's VCALL from 03-0100 to 03-0005 (0x1864, 0x1805) whose own SCCH, an INFO3 naming the source
+ * 03-0100 from repeater 6, passed its check, or failed it (@p scch_crc_flip nonzero) (LICH 0x63: SCCH and FACCH1, no
+ * Type-C composite value). */
+static void
+send_type_d_vcall_frame_scch(dsd_opts* opts, dsd_state* state, const uint8_t vcall[80], uint8_t scch_crc_flip) {
+    uint8_t scch[25];
+    info3_scch(scch);
+    build_frame_scch(0x63U, scch, scch_crc_flip, vcall, NULL);
     (void)nxdn_frame(opts, state);
+}
+
+static void
+send_type_d_vcall_frame(dsd_opts* opts, dsd_state* state, const uint8_t vcall[80]) {
+    send_type_d_vcall_frame_scch(opts, state, vcall, 0U);
 }
 
 static int
@@ -983,6 +998,35 @@ test_own_scch_outranks_type_c_site(dsd_opts* opts, dsd_state* state) {
     return rc;
 }
 
+/*
+ * Fresh Type-D evidence outlives one failed SCCH on an unambiguous RTCH2 frame (issue #903): after a Type-C CCH_INFO on
+ * the frequency and two Type-D frames whose own SCCH passed, a third LICH 0x63 frame (never a composite value) whose SCCH
+ * fails still decodes its FACCH1 VCALL in the Type-D layout, 03-0005, not as the full 16-bit 6149 the older Type-C site
+ * would give.
+ */
+static int
+test_failed_scch_keeps_fresh_type_d_on_rtch2(dsd_opts* opts, dsd_state* state) {
+    uint8_t cch[80];
+    uint8_t vcall[80];
+    int rc = 0;
+    clear_state(opts, state);
+    opts->trunk_enable = 1;
+    cch_info(cch, SITE_A, 0x20U, 5U);
+    send_frame(opts, state, LICH_COMPOSITE_FACCH1_PAIR, 0x21U, cch, NULL);
+    rc |= expect_long("failed scch: CCH_INFO says Type-C", dsd_nxdn_type_c(state), 1L);
+
+    DSD_MEMSET(vcall, 0, sizeof(vcall));
+    call_message(vcall, 0x01U, 0x1864U, 0x1805U);
+    send_type_d_vcall_frame(opts, state, vcall);
+    send_type_d_vcall_frame(opts, state, vcall);
+    rc |= expect_call_target("failed scch: checked frames", state, 5L, 5L, "03-0005");
+    rc |= expect_long("failed scch: fresh evidence", dsd_nxdn_type_d_layout_fresh(state), 1L);
+
+    send_type_d_vcall_frame_scch(opts, state, vcall, 0x5AU);
+    rc |= expect_call_target("failed scch: unambiguous rtch2 frame", state, 5L, 5L, "03-0005");
+    return rc;
+}
+
 int
 main(void) {
     dsd_opts* opts = calloc(1, sizeof(*opts));
@@ -1014,6 +1058,7 @@ main(void) {
     rc |= test_short_site_messages_do_not_say_type_c(opts, state);
     rc |= test_operator_retune_drops_type_d_evidence(opts, state);
     rc |= test_own_scch_outranks_type_c_site(opts, state);
+    rc |= test_failed_scch_keeps_fresh_type_d_on_rtch2(opts, state);
     dsd_trunk_tuning_hooks_set((dsd_trunk_tuning_hooks){0});
     dsd_decode_clock_use_system();
 

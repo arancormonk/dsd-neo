@@ -158,24 +158,22 @@ nxdn_call_type_opens_call(uint8_t call_type) {
 
 /* Whether a message decodes in the Type-D (IDAS) layout, as the VCALL, VCALL_IV and data header layouts take it, which
  * splits an address into its prefix and 11-bit ID (issue #903): only on positive Type-D evidence that is fresh on this
- * carrier. An RTCH2 frame whose own SCCH passed its check with defined content (dsd_state::nxdn_frame_type_d_scch) is
- * Type-D, a Type-C site an older frame decoded notwithstanding: that LICH value is no composite control channel's once
- * Type-C is known. Otherwise, on an RTCH2 frame or with no frame decoding (an element handed over alone), the "Type-D"
- * category a checked SCCH of this carrier set (dsd_nxdn_type_d_layout_fresh(): no carrier boundary or trunk-scan switch
- * since; kept past its frame only on a confirmed transmission, nxdn_frame()), unless the site decoded as Type-C
- * (dsd_nxdn_type_c()). A frame whose LICH names another channel never is. An RTCH2 reading with no SCCH of this
- * carrier yet, which a composite Type-C channel's shared LICH values (0x71, 0x73) also give on late entry, keeps the
- * full 16-bit ID as Type-C does, with no prefix. */
+ * carrier. An RTCH2 frame is Type-D when its own SCCH passed its check with defined content
+ * (dsd_state::nxdn_frame_type_d_scch), or when the "Type-D" category a checked SCCH of this carrier set is fresh
+ * (dsd_nxdn_type_d_layout_fresh(): no carrier boundary or trunk-scan switch since; kept past its frame only on a
+ * confirmed transmission, nxdn_frame()), a Type-C site an older frame decoded notwithstanding: once Type-C is known a
+ * composite control channel's LICH values read as RTCH_C (NXDN_FRAME_CHANNEL_COMPOSITE), so an RTCH2 reading there is
+ * one no composite frame gives, and a single failed SCCH does not undo the carrier's fresh evidence. With no frame
+ * decoding (an element handed over alone), the fresh category unless the site decoded as Type-C (dsd_nxdn_type_c()).
+ * A frame whose LICH names another channel never is. An RTCH2 reading with no SCCH of this carrier yet, which a
+ * composite Type-C channel's shared LICH values (0x71, 0x73) also give on late entry, keeps the full 16-bit ID as
+ * Type-C does, with no prefix. */
 static int
 nxdn_location_is_type_d(const dsd_state* state) {
-    if (state->nxdn_frame_channel != (uint8_t)NXDN_FRAME_CHANNEL_NONE
-        && state->nxdn_frame_channel != (uint8_t)NXDN_FRAME_CHANNEL_TYPE_D) {
-        return 0;
+    if (state->nxdn_frame_channel == (uint8_t)NXDN_FRAME_CHANNEL_TYPE_D) {
+        return state->nxdn_frame_type_d_scch != 0U || dsd_nxdn_type_d_layout_fresh(state);
     }
-    if (state->nxdn_frame_channel == (uint8_t)NXDN_FRAME_CHANNEL_TYPE_D && state->nxdn_frame_type_d_scch != 0U) {
-        return 1;
-    }
-    if (dsd_nxdn_type_c(state)) {
+    if (state->nxdn_frame_channel != (uint8_t)NXDN_FRAME_CHANNEL_NONE || dsd_nxdn_type_c(state)) {
         return 0;
     }
     return dsd_nxdn_type_d_layout_fresh(state);

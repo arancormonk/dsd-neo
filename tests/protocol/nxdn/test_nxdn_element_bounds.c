@@ -2373,10 +2373,11 @@ test_vcall_type_010_changes_no_cipher(void) {
 }
 
 /* A Type-D address splits into its prefix and 11-bit ID only on positive Type-D evidence (issue #903): the "Type-D"
- * category a checked SCCH set, on an RTCH2 frame. A late-entry FACCH VCALL or data header on an RTCH2 reading before any
+ * category a checked SCCH set, on an RTCH2 frame, a Type-C site notwithstanding (there a composite LICH reads as
+ * RTCH_C, so an RTCH2 reading is unambiguous). A late-entry FACCH VCALL or data header on an RTCH2 reading before any
  * SCCH, which a composite Type-C channel's shared LICH values also give, keeps the full 16-bit ID with no prefix text,
- * as Type-C does; so does a conventional traffic frame under a "Type-D" category an earlier SCCH left, and a site
- * Type-C decoded. */
+ * as Type-C does; so does a conventional traffic frame under a "Type-D" category an earlier SCCH left, and an element
+ * decoded with no frame on a site Type-C decoded. */
 static int
 test_type_d_split_needs_positive_evidence(void) {
     static const struct {
@@ -2388,7 +2389,9 @@ test_type_d_split_needs_positive_evidence(void) {
     } cases[] = {
         {"rtch2-late-entry", NXDN_FRAME_CHANNEL_TYPE_D, 0, 0, 0},
         {"rtch2-checked-scch", NXDN_FRAME_CHANNEL_TYPE_D, 1, 0, 1},
-        {"rtch2-type-c-site", NXDN_FRAME_CHANNEL_TYPE_D, 1, 1, 0},
+        {"rtch2-type-c-site", NXDN_FRAME_CHANNEL_TYPE_D, 1, 1, 1},
+        {"no-frame-type-c-site", NXDN_FRAME_CHANNEL_NONE, 1, 1, 0},
+        {"no-frame-checked-scch", NXDN_FRAME_CHANNEL_NONE, 1, 0, 1},
         {"conventional-stale-category", NXDN_FRAME_CHANNEL_TRAFFIC, 1, 0, 0},
         {"composite-stale-category", NXDN_FRAME_CHANNEL_COMPOSITE, 1, 0, 0},
     };
