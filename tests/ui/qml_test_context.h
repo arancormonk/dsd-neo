@@ -3096,6 +3096,20 @@ class CallLogStore : public QAbstractListModel {
         return name;
     }
 
+    /**
+     * @brief Prepend one emergency call stamped @p when (0: a call whose time is not known; issue #901, its age).
+     * @return The row's name.
+     */
+    Q_INVOKABLE QString
+    pushEmergencyAt(qint64 when) {
+        const QString name = push(QStringLiteral("TODAY"));
+        m_rows[0].emergency = true;
+        m_rows[0].when = when;
+        const QModelIndex idx = index(0);
+        Q_EMIT dataChanged(idx, idx, {CallHistoryModel::EmergencyRole, CallHistoryModel::WhenRole});
+        return name;
+    }
+
     /** @brief The newest row's `when`, 0 with no rows: the stamps are fixed, so a case ages rows against it. */
     Q_INVOKABLE qint64
     newestWhen() const {

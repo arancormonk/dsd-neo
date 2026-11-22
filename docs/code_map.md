@@ -17816,8 +17816,10 @@ Qt Quick frontend (`src/ui/qt`):
   at the 18 px margin; `plan.width` is that side's width and the name and meta lines take the rest and elide. Widths
   only, never positions, so nothing loops. The time counts as a fixed slot, `timeSlotWidth` =
   `LineBoxes.callRowTimeWidth(timeWidthProbe)`, the widest line of the view's widest times (`00:00` by default for
-  History and Home's HH:mm; the Monitor passes `rowTimeProbe`, `now`, `59m`, `23h`, `9999d`, the widest
-  `Util.shortAge()` forms), with the time drawn right-aligned in it. So the plan follows only the width, the fonts
+  History and Home's HH:mm; the Monitor passes `rowTimeProbe`, `now`, `59m`, `23h`, `999d`, `99y`, the widest of
+  each `Util.shortAge()` form), with the time drawn right-aligned in it. `Util.shortAge()` is bounded to those forms:
+  no age for a call whose time is not known (`when` 0, which read "20833d"), days up to 999, then whole years capped
+  at `99y`. So the plan follows only the width, the fonts
   and the call's flags: a ticking age ("9m" to "10m") never makes the time or the glyph come and go (a band 30-46 px
   wide at every text size when the slot was the age's own width), and nothing shows or hides for a screen reader as
   the minutes pass. What is not drawn is still read: the node's name carries "has a recording", and its description

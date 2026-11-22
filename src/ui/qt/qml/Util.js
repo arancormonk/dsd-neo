@@ -675,9 +675,13 @@ function heardText(lastHeardSecs, nowMs) {
     return qsTr("Last listened %1 days ago").arg(Math.floor(delta / 86400))
 }
 
-// Compact age for a call row's right edge: "1m", "2h", "3d". nowMs is the decode clock the
-// row's when is stamped on (metrics.decodeNowMs), not the viewer's clock.
+// Compact age for a call row's right edge: "1m", "2h", "3d", and from 1000 days whole
+// years ("3y", at most "99y"), so every age fits the slot the Monitor sizes from its widest
+// forms (issue #901). A call whose time is not known (0) has no age. nowMs is the decode
+// clock the row's when is stamped on (metrics.decodeNowMs), not the viewer's clock.
 function shortAge(whenSecs, nowMs) {
+    if (!(whenSecs > 0))
+        return ""
     var delta = Math.floor(nowMs / 1000) - whenSecs
     if (delta < 60)
         return qsTr("now")
@@ -685,7 +689,10 @@ function shortAge(whenSecs, nowMs) {
         return Math.floor(delta / 60) + "m"
     if (delta < 86400)
         return Math.floor(delta / 3600) + "h"
-    return Math.floor(delta / 86400) + "d"
+    var days = Math.floor(delta / 86400)
+    if (days < 1000)
+        return days + "d"
+    return Math.min(99, Math.floor(days / 365)) + "y"
 }
 
 // "0:07" — the monitor timer and call durations share this shape.

@@ -4,6 +4,7 @@
 import QtQuick
 import QtTest
 import "../../../src/ui/qt/qml" as Ui
+import "../../../src/ui/qt/qml/Util.js" as Util
 
 // The monitor's recent-calls pane is the same newest-first list as the history
 // log, and drifts the same way if the top is not re-asserted. It carries no
@@ -836,6 +837,59 @@ Item {
             tryVerify(function () { first = tc.list.itemAtIndex(0); return first !== null && first.rightText === "2h" },
                       5000, "two hours after the newest call on the decode clock")
             testContext.setMetric("decodeNowMs", Date.now())
+        }
+
+        // Issue #901: a row's age has a fixed slot (the widest of "now", "59m", "23h", "999d", "99y"). A call whose
+        // time is not known (when 0) shows no age, where it read "20833d"; an age of 1000 days or more reads whole
+        // years, capped at 99y. Through the Monitor's own rows at 411 dp and text 2.0: drawn inside the slot, clear of
+        // EMERGENCY.
+        function test_03h_an_age_fits_its_slot() {
+            var nowMs = Date.UTC(2026, 10, 21, 12, 0, 0)
+            var nowSecs = nowMs / 1000
+            compare(Util.shortAge(0, nowMs), "", "an unknown time")
+            compare(Util.shortAge(nowSecs - 30, nowMs), "now")
+            compare(Util.shortAge(nowSecs - 59 * 60, nowMs), "59m")
+            compare(Util.shortAge(nowSecs - 23 * 3600, nowMs), "23h")
+            compare(Util.shortAge(nowSecs - 999 * 86400, nowMs), "999d")
+            compare(Util.shortAge(nowSecs - 1000 * 86400, nowMs), "2y")
+            compare(Util.shortAge(nowSecs - 1102 * 86400, nowMs), "3y")
+            compare(Util.shortAge(1, (1 + 40000 * 86400) * 1000), "99y", "the cap")
+            compare(Util.shortAge(nowSecs + 600, nowMs), "now", "a stamp just ahead of the clock")
+            var width = root.width
+            var scale = Ui.Theme.fontScale
+            try {
+                root.width = 411
+                Ui.Theme.fontScale = 2.0
+                testContext.setMetric("decodeNowMs", nowMs)
+                for (var c of [{when: 0, age: ""}, {when: nowSecs - 1102 * 86400, age: "3y"},
+                               {when: nowSecs - 999 * 86400, age: "999d"}, {when: 1, age: "56y"}]) {
+                    var name = callHistory.pushEmergencyAt(c.when)
+                    tc.list.positionViewAtBeginning()
+                    var row = null
+                    tryVerify(function () { row = tc.list.itemAtIndex(0); return row !== null && row.name === name },
+                              5000, "the row is on top")
+                    tc.waitForRendering(tc.list)
+                    compare(row.rightText, c.age, "the age of when " + c.when)
+                    var time = findChild(row, "callRowTime")
+                    var tag = findChild(row, "rowEmergencyTag")
+                    verify(tag.visible, "EMERGENCY gave way")
+                    if (c.age === "") {
+                        verify(!time.visible, "an unknown time draws an age")
+                        continue
+                    }
+                    verify(time.visible, c.age + " is not drawn at 411 dp, text 2.0")
+                    verify(time.contentWidth <= time.width + 0.5, c.age + " is " + time.contentWidth + " px in a "
+                           + time.width + " px slot")
+                    var slotX = time.mapToItem(row, 0, 0).x
+                    var tagRight = tag.mapToItem(row, 0, 0).x + tag.width
+                    verify(tagRight + 6 - 0.5 <= slotX, "EMERGENCY runs into " + c.age + "'s slot")
+                    verify(slotX + time.width <= row.width - 18 + 0.5, c.age + " past the row's margin")
+                }
+            } finally {
+                testContext.setMetric("decodeNowMs", Date.now())
+                Ui.Theme.fontScale = scale
+                root.width = width
+            }
         }
 
         function test_04_scrolling_back_holds_the_reader_place() {
