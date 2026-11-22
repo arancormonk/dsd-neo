@@ -4485,9 +4485,17 @@ apply_cfg_live_rtl_ppm_request(dsd_opts* opts, const dsdneoUserConfig* cfg, int 
     (void)rtl_stream_request_ppm(opts, cfg->rtl_ppm);
 }
 
+/* The squelch a config staged, handed to a receiver that keeps running: what its channel runs, the analog default
+   where it belongs (issue #899), so no block of it runs under the config's bare value first. */
+static void
+apply_cfg_push_squelch(dsd_opts* opts, const dsd_state* state) {
+    (void)dsd_squelch_analog_default_sync(opts, state);
+    svc_rtl_push_squelch(opts);
+}
+
 /* The DSP bandwidth request, squelch and monitor volume a radio [input] applies, a raw I/Q stream's included. */
 static void
-apply_cfg_rtl_receive(dsd_opts* opts, const dsdneoUserConfig* cfg) {
+apply_cfg_rtl_receive(dsd_opts* opts, const dsd_state* state, const dsdneoUserConfig* cfg) {
     /* An unsupported rtl_bw_khz runs at the 48 kHz default, as at startup and as the config check warns: the loader
        keeps any integer, and the stream builds its rate from the stored bandwidth. */
     if (cfg->rtl_bw_khz) {
@@ -4514,21 +4522,21 @@ apply_cfg_rtl_receive(dsd_opts* opts, const dsdneoUserConfig* cfg) {
             cfg->rtl_sql_mode, cfg->rtl_sql_margin_db > 0 ? cfg->rtl_sql_margin_db : DSD_SQUELCH_MARGIN_DEFAULT_DB);
         dsd_squelch_setting_store(opts, &dynamic);
     }
-    svc_rtl_push_squelch(opts);
+    apply_cfg_push_squelch(opts, state);
     if (cfg->rtl_volume) {
         opts->rtl_volume_multiplier = dsd_opts_rtl_volume_multiplier_or_default(cfg->rtl_volume);
     }
 }
 
 static void
-apply_cfg_rtl_common(dsd_opts* opts, const dsdneoUserConfig* cfg) {
+apply_cfg_rtl_common(dsd_opts* opts, const dsd_state* state, const dsdneoUserConfig* cfg) {
     if (cfg->rtl_freq[0]) {
         uint32_t hz = dsd_parse_freq_hz(cfg->rtl_freq);
         if (hz > 0) {
             opts->rtlsdr_center_freq = hz;
         }
     }
-    apply_cfg_rtl_receive(opts, cfg);
+    apply_cfg_rtl_receive(opts, state, cfg);
     if (dsd_user_config_rtl_gain_is_set(cfg)) {
         opts->rtl_gain_value = cfg->rtl_gain;
     }
@@ -4623,7 +4631,7 @@ apply_cfg_rtl_hot_restart(dsd_opts* opts, dsd_state* state, const dsdneoUserConf
            or a new gain, opens with them. */
         const int rc = apply_cfg_rtl_live_gain(opts, state, cfg, before);
         if (rc == 0) {
-            svc_rtl_push_squelch(opts);
+            apply_cfg_push_squelch(opts, state);
         }
         return rc;
     }
@@ -4631,13 +4639,13 @@ apply_cfg_rtl_hot_restart(dsd_opts* opts, dsd_state* state, const dsdneoUserConf
     if (cfg_is_iq_stream_source(cfg)) {
         /* A raw I/Q stream (issue #743): no tuner keys, and the receiver is on its FREQ once it starts
            (dsd_engine_note_stream_source()). */
-        apply_cfg_rtl_receive(opts, cfg);
+        apply_cfg_rtl_receive(opts, state, cfg);
         opts->rtltcp_enabled = 0;
     } else if (cfg->input_source == DSDCFG_INPUT_RTL) {
         if (cfg->rtl_device >= 0) {
             opts->rtl_dev_index = cfg->rtl_device;
         }
-        apply_cfg_rtl_common(opts, cfg);
+        apply_cfg_rtl_common(opts, state, cfg);
         opts->rtltcp_enabled = 0;
     } else if (cfg->input_source == DSDCFG_INPUT_RTLTCP) {
         if (cfg->rtltcp_host[0]) {
@@ -4646,10 +4654,10 @@ apply_cfg_rtl_hot_restart(dsd_opts* opts, dsd_state* state, const dsdneoUserConf
         if (cfg->rtltcp_port) {
             opts->rtltcp_portno = cfg->rtltcp_port;
         }
-        apply_cfg_rtl_common(opts, cfg);
+        apply_cfg_rtl_common(opts, state, cfg);
         opts->rtltcp_enabled = 1;
     } else { // DSDCFG_INPUT_SOAPY
-        apply_cfg_rtl_common(opts, cfg);
+        apply_cfg_rtl_common(opts, state, cfg);
         opts->rtltcp_enabled = 0;
     }
     int prev_gain = 0;
@@ -10269,6 +10277,8 @@ apply_cfg_analog_profile_change(dsd_opts* opts, dsd_state* state, const cfg_rx_p
         }
         /* The part-collected monitor block holds the old kind's audio, as decode_mode_apply_value() drops it. */
         dsd_symbol_analog_block_reset(state);
+        /* The new kind's gate before its channel (issue #899), as DECODE_MODE_SET hands it. */
+        ui_sync_analog_default_squelch(opts, state);
         ui_arm_analog_entry(opts, state, 1, before->analog_kind);
         return (decode_mode_republish(opts, state, dsd_infer_decode_mode_preset(opts)) != 0
                 && ui_revert_analog_entry(opts, state, dsd_opts_analog_width_hz(opts), NULL))
@@ -10306,6 +10316,9 @@ apply_cfg_receive_family_change(dsd_opts* opts, dsd_state* state, const dsdneoUs
     }
     dsd_symbol_analog_block_reset(state);
     if (opts->audio_in_type == AUDIO_IN_RTL) {
+        /* The receiver holds the new family's gate before the family's channel is asked for (issue #899), as
+           DECODE_MODE_SET hands it: the analog default onto the monitor, the session's own off it. */
+        ui_sync_analog_default_squelch(opts, state);
         /* A switch onto the monitor the front end refuses at once goes back to the mode the session had, as
            DECODE_MODE_SET's does, and fails the apply; one refused where it lands is put back by the next drain. */
         ui_arm_analog_entry(opts, state, old_analog_only && opts->m17encoder != 1, before->analog_kind);

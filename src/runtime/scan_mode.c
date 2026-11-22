@@ -47,6 +47,9 @@ typedef struct {
     dsd_scan_option_values options;
     dsd_squelch_setting squelch_entered_from;
     scan_squelch_pending squelch_pending;
+    /* The squelch fields and the analog default's standing when a command suspended the scope: what the row ran, which
+       @c effective holds only as the configured squelch (dsd_scan_mode_suspended_squelch()). */
+    dsd_squelch_standing effective_squelch;
     /* The landing decision the row's symbol timing used (issue #583): 1 when the row was timed for the output rate the
      * digital family lands on, 0 when for the live rate. Set by every timing of the row, and held at 1 by the row's
      * later timings until the engine spends it on the row's retune (dsd_scan_mode_take_timed_digital_family()), which
@@ -1016,9 +1019,45 @@ dsd_scan_mode_suspend(dsd_opts* opts, dsd_state* state) {
         return 0;
     }
     dsd_scan_settings_capture(opts, state, &scope->effective);
+    dsd_squelch_standing_capture(opts, &scope->effective_squelch);
     dsd_scan_settings_restore(&scope->configured, opts, state);
     scope->suspended = 1;
     return 1;
+}
+
+int
+dsd_scan_mode_suspended_squelch(const dsd_state* state, dsd_squelch_standing* out) {
+    const scan_scope* scope = scan_scope_get(state);
+    if (!scope || !scope->suspended || !out) {
+        return 0;
+    }
+    *out = scope->effective_squelch;
+    return 1;
+}
+
+void
+dsd_scan_mode_push_squelch(const dsd_opts* opts, const dsd_state* state, const dsd_squelch_setting* on_air,
+                           const dsd_squelch_setting* setting) {
+    if (!opts || !on_air || !setting || opts->audio_in_type != AUDIO_IN_RTL) {
+        return;
+    }
+    scan_scope* scope = scan_scope_get(state);
+    if (!scope) {
+        if (!dsd_squelch_setting_equal(on_air, setting)) {
+            (void)dsd_rtl_stream_metrics_hook_set_channel_squelch_setting(setting);
+        }
+        return;
+    }
+    /* What the receiver holds now: the origin of a transition still pending, else what the row on air runs. */
+    const dsd_squelch_setting held =
+        scope->squelch_pending == SCAN_SQUELCH_ENTERED ? scope->squelch_entered_from : *on_air;
+    if (scope->squelch_pending == SCAN_SQUELCH_UNKNOWN || !dsd_squelch_setting_equal(&held, setting)) {
+        (void)dsd_rtl_stream_metrics_hook_set_channel_squelch_setting(setting);
+    }
+    /* The receiver holds @p setting, not what the options of the row on air say: the next settle (the row's commit, a
+       leave) judges against it, so a commit onto the same gate hands it nothing again. */
+    scope->squelch_entered_from = *setting;
+    scope->squelch_pending = SCAN_SQUELCH_ENTERED;
 }
 
 int
@@ -1408,8 +1447,12 @@ dsd_scan_mode_prepare(dsd_opts* opts, dsd_state* state, dsd_scan_mode mode, cons
     if (live) {
         live->timed_digital_family = 0;
     }
+    /* Put back exactly as they were, the squelch the receiver runs included: a capture holds the configured squelch,
+       and the analog default an analog row on air runs is not that (issue #899). */
     dsd_scan_settings effective;
     dsd_scan_settings_capture(opts, state, &effective);
+    dsd_squelch_standing effective_squelch;
+    dsd_squelch_standing_capture(opts, &effective_squelch);
     scan_scope temporary;
     DSD_MEMSET(&temporary, 0, sizeof(temporary));
     dsd_scan_mode_configured(opts, state, &temporary.configured);
@@ -1423,6 +1466,7 @@ dsd_scan_mode_prepare(dsd_opts* opts, dsd_state* state, dsd_scan_mode mode, cons
         scan_scope_apply(opts, state, &temporary, SCAN_ROW_STAGED);
         dsd_scan_settings_capture(opts, state, out);
         dsd_scan_settings_restore(&effective, opts, state);
+        dsd_squelch_standing_restore(opts, &effective_squelch);
     }
     return 0;
 }

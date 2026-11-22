@@ -5256,13 +5256,25 @@ suite runs under this compiler.
     caller pushes. Snapshots of the configured squelch take the base (`dsd_squelch_configured_fields()`: the scan
     scope's captures, config saves, the Airspy spec's kept squelch), so neither a scope's configured setting nor a save
     ever holds the default; `ui_radio_input` keeps the whole standing, so an input put back puts back whether its spec
-    ended it. `dsd_squelch_analog_default_sync()` moves it in or out and is called where the engine hands the receiver
-    its squelch: `dsd_engine_setup_io()` before the stream opens; `dsd_scan_mode_options()` (a row's commit, before its
-    one push), `dsd_scan_mode_leave()` (its options cleared, so the decoder left on air decides) and
-    `dsd_scan_mode_resume()`; `decode_mode_apply_value_noted()` once the preset is staged and before its republish, so
-    the receiver holds the default before the analog channel request; and `dsd_app_drain_cmds()` after each command and
-    each receive-request settle (`ui_sync_analog_default_squelch()`, which pushes with `svc_rtl_push_squelch()`), for
-    input changes, put-back switches and edits. It also logs the AM notice each time a NOISE setting starts running as
+    ended it. A step that puts the options back exactly (a -Y row's staging in `dsd_scan_mode_prepare()` and
+    `channel_scan_tune_staged()`, a suspended scope's restart on the profile that ran,
+    `svc_rtl_start_on_the_profile_that_ran_locked()` with `dsd_scan_mode_suspended_squelch()`) saves the fields and the
+    standing apart (`dsd_squelch_standing`), so the default a row on air runs is never swapped for the configured
+    squelch the captures hold. One rule (issue #899 r2): the receiver holds the effective squelch before any sample of a
+    new stream or channel. `dsd_squelch_analog_default_sync()` moves it in or out (`..._settle()` also pushes) at:
+    every stream open (`svc_rtl_start_locked()`, which every live open goes through: an input switch, a restart, a
+    replay re-plan, a config reopen, a recovery; `live_scanner_start_rtl_if_needed()` and `dsd_engine_setup_io()` at
+    startup), since the stream reads its squelch at the open; `dsd_scan_mode_options()` (a row's commit),
+    `dsd_scan_mode_leave()` (its options cleared, so the decoder left on air decides) and `dsd_scan_mode_resume()`;
+    `decode_mode_apply_value_noted()` and a config's family or FM/AM change (`apply_cfg_receive_family_change()`,
+    `apply_cfg_analog_profile_change()`) before their republish, and a config's squelch push to a running receiver
+    (`apply_cfg_push_squelch()`); a signal search's restore before its family request; and `dsd_app_drain_cmds()` after
+    each command and each receive-request settle (`ui_sync_analog_default_squelch()`, which pushes with
+    `svc_rtl_push_squelch()`), which is left for rollbacks (a switch put back, an input change to audio). A -Y row's gate
+    goes to the receiver ahead of its retune (`dsd_scan_mode_push_squelch()` from `channel_scan_tune_staged()`, the row's
+    own option or `dsd_squelch_analog_default_effective_on()`), so a pending tune that lands before its commit already
+    runs it, and the row on air's gate comes back when the tune moved nothing; the scope's next settle judges against
+    what was pushed. A trunk-scan target's commit pushes before its retune. It also logs the AM notice each time a NOISE setting starts running as
     AUTO on a standalone AM monitor of a radio input (`squelch_am_auto_noted`), whatever started it, never as a toast;
     `dsd_engine_setup_note_noise_squelch()` no longer says it. `dsd_app_squelch_view` sets `analog_default` while it is
     APPLIED and no row overrides, filling the configured fields from it, and `dsd_app_squelch_view_format()` reads
@@ -5271,7 +5283,9 @@ suite runs under this compiler.
     terminal does. `channel_scan_analog_squelch()` counts it for an analog row's open-squelch warning.
     Tests: `RUNTIME_SQUELCH_ANALOG_DEFAULT` (channel kinds, explicit sources, scan rows, suspend/resume, saves, the AM
     notice), `RUNTIME_CLI_PARSE`, `APP_COMMAND_QUEUE` (a live decode switch's order, refusals, explicit edits, an input
-    change), `DECODE_IQ_ANALOG_SQL_DEFAULT_*` and `DECODE_IQ_SCAN_SQL_DEFAULT_ROW` (what the monitor plays).
+    change, a stream reopened by the RTL-SDR row, a config's [mode] alone), `ENGINE_CHANNEL_SCAN` (the -Y coordinator's
+    gate at each tune, pending and failed tunes), `DECODE_IQ_ANALOG_SQL_DEFAULT_*` and `DECODE_IQ_SCAN_SQL_DEFAULT_ROW`
+    (what the monitor plays).
   - Sub-audible signalling tables and text (`include/dsd-neo/runtime/analog_tones.h`, `src/runtime/analog_tones.c`):
     the 50 CTCSS tones radios commonly offer (TIA-603-E's 39 and 11 more) and 150.0 Hz in tenths of a hertz, index
     lookup and the

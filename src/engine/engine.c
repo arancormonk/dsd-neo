@@ -4240,6 +4240,8 @@ live_scanner_start_rtl_if_needed(dsd_opts* opts, dsd_state* state) {
     if (opts->audio_in_type == AUDIO_IN_RTL) {
         dsd_opts_forget_iq_replay_center(opts);
         if (state->rtl_ctx == NULL) {
+            /* The stream opens on the squelch the options hold: the analog default where it belongs (issue #899). */
+            (void)dsd_squelch_analog_default_sync(opts, state);
             if (rtl_stream_create(opts, &state->rtl_ctx) < 0) {
                 LOG_ERROR("Failed to create radio stream.\n");
                 opts->rtl_started = 0;

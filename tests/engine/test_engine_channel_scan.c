@@ -42,6 +42,7 @@
 #include <dsd-neo/runtime/scan_mode.h>
 #include <dsd-neo/runtime/scan_options.h>
 #include <dsd-neo/runtime/scan_row_edit.h>
+#include <dsd-neo/runtime/squelch.h>
 #include <dsd-neo/runtime/trunk_tuning_hooks.h>
 #include <math.h>
 #include <stdint.h>
@@ -198,6 +199,9 @@ dsd_engine_scan_tune_moved(void) {
    a resume tunes its row as the running scan does, after the manual session's calls have ended). */
 static int tune_saw_open_call;
 static int tune_saw_scanner_mode = -1;
+/* The squelch the receiver held when the tune was issued (issue #899): what the setting hook last heard. */
+static dsd_squelch_setting g_rx_squelch;
+static dsd_squelch_setting tune_saw_rx_squelch;
 /* The frequency the next tune must ask for: every list here sits on 150 MHz unless a case lays out rows on distinct
    frequencies to see which row a step picked (issue #666). */
 static long expected_tune_hz = 150000000;
@@ -212,6 +216,7 @@ dsd_engine_scan_tune_to_freq(dsd_opts* opts, dsd_state* state, long freq, int sp
     dsd_call_snapshot open_call;
     tune_saw_open_call = dsd_call_state_get(state, 0U, &open_call) > 0 && open_call.phase == DSD_CALL_PHASE_ACTIVE;
     tune_saw_scanner_mode = opts->scanner_mode;
+    tune_saw_rx_squelch = g_rx_squelch;
     tuned_analog_only = opts->analog_only;
     tuned_nfm_width_hz = opts->analog_nfm_bandwidth_hz;
     tuned_analog_kind = opts->analog_demod;
@@ -817,6 +822,124 @@ test_row_squelch_threshold_off_inherit(void) {
     assert(g_squelch_pushes == before_edit + 2 && squelch_level_is(g_squelch_pushed, -75.0));
     /* An RTL input gates acquisition itself, so nothing needed saying. */
     assert(g_squelch_warnings == 0);
+
+    dsd_rtl_stream_metrics_hooks_set(NULL);
+    dsd_state_trunk_lcn_free(state);
+    dsd_state_ext_free_all(state);
+    free(state);
+    free(opts);
+    tunes = reset_count = 0;
+}
+
+/* Issue #899: the analog default through the real -Y coordinator, its preparation and its retune included. Rows in
+ * succession on an NFM session of a radio input with --squelch-analog-default noise+10 and no squelch of its own: an
+ * nfm row with none (the default), an am row with its own --squelch off, a dmr row (off, the session's own), an nfm row
+ * with none again, then a dmr row and an nfm row whose tunes are pending until the radio lands. The receiver holds
+ * each row's gate when its tune is issued, ahead of every sample of the new channel, and the commit leaves it there
+ * without telling it again; a tune that fails puts the gate of the row on air back. Before the fix the preparation put
+ * the configured off over the default the receiver held, so the commit onto the am and dmr rows compared off with off
+ * and told the receiver nothing (it kept noise), and the default reached an nfm row only at its commit. */
+static int g_rx_pushes;
+
+static void
+record_rx_squelch(const dsd_squelch_setting* setting) {
+    g_rx_pushes++;
+    g_rx_squelch = *setting;
+}
+
+static int
+squelch_is(const dsd_squelch_setting* got, int mode, int margin) {
+    if (mode != DSD_SQUELCH_MODE_LEVEL) {
+        return got->mode == mode && got->margin_db == margin;
+    }
+    return dsd_squelch_setting_is_off(got);
+}
+
+static void
+test_row_squelch_analog_default_rides_the_retune(void) {
+    dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(*opts));
+    dsd_state* state = (dsd_state*)calloc(1, sizeof(*state));
+    assert(opts && state);
+    opts->scanner_mode = 1;
+    opts->audio_in_type = AUDIO_IN_RTL;
+    opts->wav_sample_rate = 48000;
+    opts->analog_only = 1;
+    opts->analog_demod = DSD_ANALOG_DEMOD_FM;
+    assert(dsd_squelch_analog_default_parse(opts, "noise+10", NULL, 0U) == 0);
+    state->samplesPerSymbol = 10;
+    state->lcn_freq_count = 6;
+    const dsd_scan_mode modes[] = {DSD_SCAN_MODE_NFM, DSD_SCAN_MODE_AM,  DSD_SCAN_MODE_DMR,
+                                   DSD_SCAN_MODE_NFM, DSD_SCAN_MODE_DMR, DSD_SCAN_MODE_NFM};
+    for (int row = 0; row < 6; row++) {
+        *dsd_state_trunk_lcn_slot(state, row) = 150000000;
+        assert(dsd_channel_mode_set(state, (size_t)row, modes[row]) == 0);
+    }
+    dsd_scan_row_profile* profile = (dsd_scan_row_profile*)calloc(1, sizeof(*profile));
+    assert(profile);
+    profile->values.present = DSD_SCAN_OPT_SQUELCH;
+    profile->values.squelch_db = 0;
+    assert(dsd_channel_profile_set(state, 1, profile) == 0);
+    const dsd_rtl_stream_metrics_hooks hooks = {.output_rate_hz = output_rate,
+                                                .set_channel_squelch_setting = record_rx_squelch};
+    dsd_rtl_stream_metrics_hooks_set(&hooks);
+    /* The session as the engine's setup leaves it: the default in force on the monitor, the receiver told at open. */
+    assert(dsd_squelch_analog_default_sync(opts, state) == 1);
+    g_rx_squelch = dsd_squelch_setting_of_opts(opts);
+    g_rx_pushes = 0;
+    expected_nxdn = 0;
+    tune_result = DSD_TRUNK_TUNE_RESULT_OK;
+
+    static const struct {
+        int mode;
+        int margin;
+        int pushes;
+    } want[] = {
+        {DSD_SQUELCH_MODE_NOISE, 10, 0}, /* the nfm row runs what the session ran */
+        {DSD_SQUELCH_MODE_LEVEL, 0, 1},  /* the am row's own off */
+        {DSD_SQUELCH_MODE_LEVEL, 0, 1},  /* the dmr row: off again, nothing new */
+        {DSD_SQUELCH_MODE_NOISE, 10, 2}, /* the default, at the tune */
+    };
+
+    for (int row = 0; row < 4; row++) {
+        assert(dsd_engine_channel_scan_step(opts, state) == 1);
+        const dsd_squelch_setting on_air = dsd_squelch_setting_of_opts(opts);
+        if (!squelch_is(&tune_saw_rx_squelch, want[row].mode, want[row].margin) || g_rx_pushes != want[row].pushes
+            || !squelch_is(&on_air, want[row].mode, want[row].margin)
+            || !squelch_is(&g_rx_squelch, want[row].mode, want[row].margin)) {
+            DSD_FPRINTF(stderr,
+                        "row %d: at the tune the receiver held mode %d margin %d level %g; it holds mode %d margin %d "
+                        "after %d pushes; the row runs mode %d margin %d; want mode %d margin %d, %d pushes\n",
+                        row, tune_saw_rx_squelch.mode, tune_saw_rx_squelch.margin_db, tune_saw_rx_squelch.level,
+                        g_rx_squelch.mode, g_rx_squelch.margin_db, g_rx_pushes, on_air.mode, on_air.margin_db,
+                        want[row].mode, want[row].margin, want[row].pushes);
+            assert(0);
+        }
+    }
+    /* Pending tunes: the gate is the row's from the tune on, while the radio lands before the decoder commits. */
+    tune_result = DSD_TRUNK_TUNE_RESULT_PENDING;
+    assert(dsd_engine_channel_scan_step(opts, state) == 0);
+    assert(squelch_is(&tune_saw_rx_squelch, DSD_SQUELCH_MODE_LEVEL, 0)
+           && squelch_is(&g_rx_squelch, DSD_SQUELCH_MODE_LEVEL, 0));
+    /* The row on air until the commit is still the nfm one. */
+    const dsd_squelch_setting before_commit = dsd_squelch_setting_of_opts(opts);
+    assert(squelch_is(&before_commit, DSD_SQUELCH_MODE_NOISE, 10));
+    dsd_trunk_tuning_request_publish(request, DSD_TRUNK_TUNE_RESULT_OK);
+    assert(!dsd_engine_channel_scan_pending(opts, state));
+    assert(state->lcn_freq_roll == 5 && dsd_squelch_setting_is_off(&g_rx_squelch) && g_rx_pushes == 3);
+    assert(dsd_engine_channel_scan_step(opts, state) == 0);
+    assert(squelch_is(&tune_saw_rx_squelch, DSD_SQUELCH_MODE_NOISE, 10) && g_rx_pushes == 4);
+    dsd_trunk_tuning_request_publish(request, DSD_TRUNK_TUNE_RESULT_OK);
+    assert(!dsd_engine_channel_scan_pending(opts, state));
+    assert(state->lcn_freq_roll == 6 && squelch_is(&g_rx_squelch, DSD_SQUELCH_MODE_NOISE, 10) && g_rx_pushes == 4);
+    /* A tune that fails moves nothing: the nfm row on air gets its gate back after the am row's was handed ahead. */
+    tune_result = DSD_TRUNK_TUNE_RESULT_FAILED;
+    state->lcn_freq_roll = 1;
+    (void)dsd_engine_channel_scan_step(opts, state);
+    assert(squelch_is(&tune_saw_rx_squelch, DSD_SQUELCH_MODE_LEVEL, 0));
+    assert(squelch_is(&g_rx_squelch, DSD_SQUELCH_MODE_NOISE, 10) && g_rx_pushes == 6);
+    tune_result = DSD_TRUNK_TUNE_RESULT_OK;
+    dsd_engine_channel_scan_leave(opts, state);
+    assert(squelch_is(&g_rx_squelch, DSD_SQUELCH_MODE_NOISE, 10));
 
     dsd_rtl_stream_metrics_hooks_set(NULL);
     dsd_state_trunk_lcn_free(state);
@@ -4890,6 +5013,7 @@ main(void) {
     test_option_only_rows_and_policy_edits();
     test_row_max_visit_override_and_inherit();
     test_row_squelch_threshold_off_inherit();
+    test_row_squelch_analog_default_rides_the_retune();
     test_row_squelch_warns_once_per_row_on_pcm_input();
     test_rx_tone_row_commit_and_step_clear();
     test_nfm_rows_switch_family_width_and_sink();

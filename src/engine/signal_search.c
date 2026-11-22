@@ -33,6 +33,7 @@
 #include <dsd-neo/runtime/signal_search.h>
 #include <dsd-neo/runtime/signal_search_avoids.h>
 #include <dsd-neo/runtime/signal_search_hooks.h>
+#include <dsd-neo/runtime/squelch.h>
 #include <dsd-neo/runtime/telemetry.h>
 #include <stdint.h>
 #include <stdlib.h>
@@ -541,6 +542,9 @@ search_restore(search_coord* c, dsd_opts* opts, dsd_state* state) {
     }
     dsd_scan_mode_leave(opts, state);
     dsd_scan_settings_restore(&c->saved, opts, state);
+    /* The session's own channel comes back with its gate, the analog default included, before its family request
+       (issue #899). */
+    (void)dsd_squelch_analog_default_settle(opts, state);
     rtl_stream_enforce_tuner_autogain(c->saved_autogain);
     if (dsd_opts_audio_in_dev_is_airspy_spec(opts->audio_in_dev)) {
         (void)rtl_stream_airspy_controls(&c->saved_airspy);

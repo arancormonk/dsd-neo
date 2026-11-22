@@ -2052,6 +2052,10 @@ svc_rtl_start_locked(dsd_opts* opts, dsd_state* state) {
     /* The stream stopped before this start may have sealed its I/Q capture at a rate change (issue #806 X9), with the
        notice not drained yet: taken now, the capture stays off and its file is not opened again. */
     dsd_app_take_capture_stopped(opts, state);
+    /* The stream opens on the squelch the options hold, so they hold what this channel runs first: the analog default
+       where it belongs, whatever command brought this open (issue #899). Under a suspended scan scope the caller has
+       put back the squelch the row ran (svc_rtl_start_on_the_profile_that_ran_locked()). */
+    (void)dsd_squelch_analog_default_sync(opts, state);
     if (rtl_stream_create(opts, &state->rtl_ctx) < 0) {
         return -1;
     }
@@ -2278,9 +2282,17 @@ svc_rtl_start_on_the_profile_that_ran_locked(dsd_opts* opts, dsd_state* state) {
     }
     dsd_scan_settings configured;
     dsd_scan_settings_capture(opts, state, &configured);
+    /* The squelch too: the captures hold the configured one, and the row may have run the analog default (issue #899). */
+    dsd_squelch_standing configured_squelch;
+    dsd_squelch_standing ran_squelch;
+    dsd_squelch_standing_capture(opts, &configured_squelch);
     dsd_scan_settings_restore(ran, opts, state);
+    if (dsd_scan_mode_suspended_squelch(state, &ran_squelch)) {
+        dsd_squelch_standing_restore(opts, &ran_squelch);
+    }
     const int rc = svc_rtl_start_locked(opts, state);
     dsd_scan_settings_restore(&configured, opts, state);
+    dsd_squelch_standing_restore(opts, &configured_squelch);
     return rc;
 }
 

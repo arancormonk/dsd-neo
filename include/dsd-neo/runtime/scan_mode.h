@@ -12,6 +12,7 @@
 #include <dsd-neo/runtime/config.h>
 #include <dsd-neo/runtime/decode_mode.h>
 #include <dsd-neo/runtime/scan_options.h>
+#include <dsd-neo/runtime/squelch.h>
 #include <stddef.h>
 #include <stdint.h>
 #ifdef __cplusplus
@@ -149,7 +150,20 @@ dsd_scan_mode dsd_scan_mode_row(const dsd_state* state);
  * dsd_scan_mode_resume() puts back when the row compares unchanged. NULL unless the scope is suspended. Decoder thread
  * only. */
 const dsd_scan_settings* dsd_scan_mode_suspended_effective(const dsd_state* state);
-/** Capture/restore effective fields for a staged tune; no pointers or audio sink fields are changed. */
+/** The squelch fields and the analog default's standing when the scope was suspended (the row's effective squelch,
+ * which dsd_scan_mode_suspended_effective() holds only as the configured one, issue #899) into @p out: 1, or 0 when
+ * the scope is not suspended. Decoder thread only. */
+int dsd_scan_mode_suspended_squelch(const dsd_state* state, dsd_squelch_standing* out);
+/** Hand the receiver @p setting on a radio input, ahead of the row it belongs to (a -Y row's retune, so its samples
+ * never run under the gate of the row before, issue #899), or back after a retune that did not move: only when it
+ * differs from what the receiver holds (a transition's origin, else @p on_air, what the row on air runs), and the
+ * scope's next settle (the row's commit, a leave) judges against it, so a commit onto the same gate hands it nothing
+ * again. Decoder thread only. */
+void dsd_scan_mode_push_squelch(const dsd_opts* opts, const dsd_state* state, const dsd_squelch_setting* on_air,
+                                const dsd_squelch_setting* setting);
+/** Capture the configured squelch (never an analog default in its place) with the rest of the settings, and restore
+ * them, for a staged tune; no pointers or audio sink fields are changed. A step that must put the squelch the receiver
+ * runs back too saves it apart (dsd_squelch_standing_capture()). */
 void dsd_scan_settings_capture(const dsd_opts* opts, const dsd_state* state, dsd_scan_settings* out);
 void dsd_scan_settings_restore(const dsd_scan_settings* saved, dsd_opts* opts, dsd_state* state);
 /** Compare the acquisition-relevant settings (decoder set, modulation, inversion, slot policy, analog

@@ -738,12 +738,18 @@ channel_scan_check_rows(const dsd_opts* opts, dsd_state* state, channel_scan* sc
 
 /* The squelch an analog row runs with: its own, else the analog default on a radio input while no squelch was set
    (issue #899), else the configured one. */
+/* The squelch a row's own option sets (DSD_SCAN_OPT_SQUELCH), as dsd_scan_mode_options() stores it. */
+static dsd_squelch_setting
+channel_scan_row_own_squelch(const dsd_scan_option_values* row) {
+    return dsd_squelch_mode_is_dynamic(row->squelch_mode)
+               ? dsd_squelch_setting_dynamic(row->squelch_mode, row->squelch_margin_db)
+               : dsd_squelch_setting_of_level(dsd_squelch_level_from_sql((double)row->squelch_db));
+}
+
 static dsd_squelch_setting
 channel_scan_analog_squelch(const dsd_opts* opts, const dsd_state* state, const dsd_scan_option_values* row) {
     if (row && (row->present & DSD_SCAN_OPT_SQUELCH)) {
-        return dsd_squelch_mode_is_dynamic(row->squelch_mode)
-                   ? dsd_squelch_setting_dynamic(row->squelch_mode, row->squelch_margin_db)
-                   : dsd_squelch_setting_of_level(dsd_squelch_level_from_sql((double)row->squelch_db));
+        return channel_scan_row_own_squelch(row);
     }
     if (dsd_squelch_analog_default_pending(opts) && dsd_opts_input_is_radio(opts)) {
         return dsd_squelch_analog_default_setting(opts);
@@ -1301,15 +1307,31 @@ static dsd_trunk_tune_result
 channel_scan_tune_staged(dsd_opts* opts, dsd_state* state, channel_scan* scan, const dsd_scan_settings* next) {
     dsd_scan_settings before;
     dsd_scan_settings_capture(opts, state, &before);
+    /* The squelch the row on air runs, the analog default included, which the capture holds only as configured. */
+    dsd_squelch_standing before_squelch;
+    dsd_squelch_standing_capture(opts, &before_squelch);
+    const dsd_squelch_setting on_air = dsd_squelch_setting_of_opts(opts);
     dsd_scan_settings_restore(next, opts, state);
     scan->family_requests = dsd_engine_scan_family_requests(opts);
     scan->familyless_supersedes = dsd_engine_scan_familyless_retune_supersedes(opts);
     scan->family_attached = dsd_engine_scan_retune_attaches_family(opts, state, state->samplesPerSymbol);
     /* The output generation before the tune is issued: only a newer capture can be the row's (issue #834). */
     dsd_engine_scan_landing_note_tune(state);
+    /* The row's gate goes ahead of its retune (issue #899): the stream's retune drops what the old channel queued under
+       it, and every sample of the new channel runs under it, however long the commit waits on a pending tune. */
+    /* The options hold the row's decoder; a row's own squelch is installed with its options at the commit. */
+    const int row_has_own = scan->staged_has_values && (scan->staged_values.present & DSD_SCAN_OPT_SQUELCH) != 0U;
+    const dsd_squelch_setting row_squelch = row_has_own ? channel_scan_row_own_squelch(&scan->staged_values)
+                                                        : dsd_squelch_analog_default_effective_on(opts, 0);
+    dsd_scan_mode_push_squelch(opts, state, &on_air, &row_squelch);
     const dsd_trunk_tune_result result =
         dsd_engine_scan_tune_to_freq(opts, state, scan->row_freq, state->samplesPerSymbol, &scan->request);
     dsd_scan_settings_restore(&before, opts, state);
+    dsd_squelch_standing_restore(opts, &before_squelch);
+    if (!dsd_trunk_tune_result_is_ok(result)) {
+        /* Nothing moved: the row on air runs its own gate again. */
+        dsd_scan_mode_push_squelch(opts, state, &on_air, &on_air);
+    }
     /* A new attempt is named by its first request; a restage keeps the name. An entry waiting on the row is this
        attempt's (issue #644). */
     if (scan->attempt == 0U) {

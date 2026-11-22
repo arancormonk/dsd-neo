@@ -208,6 +208,19 @@ dsd_squelch_setting dsd_squelch_analog_default_setting(const dsd_opts* opts);
 int dsd_squelch_analog_default_wanted(const dsd_opts* opts, const dsd_state* state);
 
 /**
+ * @brief Whether the analog default belongs in force on the channel @p opts describes, with a scan row on it that sets
+ * its own squelch (@p row_has_own) or not: dsd_squelch_analog_default_wanted() for a row that is not on air yet, such as
+ * one a -Y scan stages for its next retune (the options hold that row's decoder). 0 for NULL @p opts.
+ */
+int dsd_squelch_analog_default_wanted_on(const dsd_opts* opts, int row_has_own);
+
+/**
+ * @brief The squelch the channel @p opts describes runs, its row setting its own (@p row_has_own) or not: the analog
+ * default where dsd_squelch_analog_default_wanted_on() says it belongs, else the setting the squelch fields hold.
+ */
+dsd_squelch_setting dsd_squelch_analog_default_effective_on(const dsd_opts* opts, int row_has_own);
+
+/**
  * @brief Put the analog default in or out of @p opts's squelch fields as dsd_squelch_analog_default_wanted() says, on
  * the decoder thread, at each point the engine hands the receiver its squelch (the start, a decode or input change, a
  * scan row's commit, leave and resume): the caller pushes the fields to the receiver when this returns 1. Coming in it
@@ -219,6 +232,37 @@ int dsd_squelch_analog_default_wanted(const dsd_opts* opts, const dsd_state* sta
  * receiver may still hold the default), else 0.
  */
 int dsd_squelch_analog_default_sync(dsd_opts* opts, const dsd_state* state);
+
+/**
+ * @brief dsd_squelch_analog_default_sync(), and the fields handed to the receiver when they moved and the input is a
+ * radio (dsd_rtl_stream_metrics_hook_set_channel_squelch_setting()): the one step every point that is about to run a
+ * channel or stream the squelch fields may not match yet takes before its samples flow (issue #899).
+ *
+ * @return As dsd_squelch_analog_default_sync().
+ */
+int dsd_squelch_analog_default_settle(dsd_opts* opts, const dsd_state* state);
+
+/**
+ * @brief The squelch fields of a dsd_opts and where the analog default stands, whole: what a step that puts the
+ * options back exactly as they were saves and restores (a staged scan row, a restart on the profile that ran). A
+ * dsd_scan_settings capture holds the configured squelch instead (dsd_squelch_configured_fields()).
+ */
+typedef struct {
+    double level;
+    double base_level;
+    int mode;
+    int margin_db;
+    int default_state;
+    int default_moved;
+    int base_mode;
+    int base_margin_db;
+} dsd_squelch_standing;
+
+/** @brief Save @p opts's squelch standing into @p out (zeroed for NULL @p opts). */
+void dsd_squelch_standing_capture(const dsd_opts* opts, dsd_squelch_standing* out);
+
+/** @brief Put a dsd_squelch_standing_capture() back into @p opts exactly; nothing is pushed. */
+void dsd_squelch_standing_restore(dsd_opts* opts, const dsd_squelch_standing* in);
 
 /**
  * @brief Take an applied analog default out of @p opts's squelch fields, putting the base back (nothing pushed).

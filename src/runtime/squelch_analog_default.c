@@ -13,6 +13,7 @@
 #include <dsd-neo/core/power.h>
 #include <dsd-neo/core/state_fwd.h>
 #include <dsd-neo/runtime/log.h>
+#include <dsd-neo/runtime/rtl_stream_metrics_hooks.h>
 #include <dsd-neo/runtime/scan_mode.h>
 #include <dsd-neo/runtime/scan_options.h>
 #include <dsd-neo/runtime/squelch.h>
@@ -26,9 +27,21 @@ squelch_default_row_has_own(const dsd_state* state) {
 }
 
 int
-dsd_squelch_analog_default_wanted(const dsd_opts* opts, const dsd_state* state) {
+dsd_squelch_analog_default_wanted_on(const dsd_opts* opts, int row_has_own) {
     return dsd_squelch_analog_default_pending(opts) && dsd_opts_input_is_radio(opts) && dsd_opts_is_analog_family(opts)
-           && !squelch_default_row_has_own(state) && !dsd_scan_mode_updating(state);
+           && !row_has_own;
+}
+
+dsd_squelch_setting
+dsd_squelch_analog_default_effective_on(const dsd_opts* opts, int row_has_own) {
+    return dsd_squelch_analog_default_wanted_on(opts, row_has_own) ? dsd_squelch_analog_default_setting(opts)
+                                                                   : dsd_squelch_setting_of_opts(opts);
+}
+
+int
+dsd_squelch_analog_default_wanted(const dsd_opts* opts, const dsd_state* state) {
+    return dsd_squelch_analog_default_wanted_on(opts, squelch_default_row_has_own(state))
+           && !dsd_scan_mode_updating(state);
 }
 
 /* Bring the default in: the fields' own setting becomes the base. 1 when the fields changed. */
@@ -86,5 +99,15 @@ dsd_squelch_analog_default_sync(dsd_opts* opts, const dsd_state* state) {
         changed = 1;
     }
     squelch_note_am_auto(opts, state);
+    return changed;
+}
+
+int
+dsd_squelch_analog_default_settle(dsd_opts* opts, const dsd_state* state) {
+    const int changed = dsd_squelch_analog_default_sync(opts, state);
+    if (changed && opts->audio_in_type == AUDIO_IN_RTL) {
+        const dsd_squelch_setting setting = dsd_squelch_setting_of_opts(opts);
+        (void)dsd_rtl_stream_metrics_hook_set_channel_squelch_setting(&setting);
+    }
     return changed;
 }

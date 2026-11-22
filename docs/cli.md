@@ -1723,9 +1723,12 @@ default.
   menu, the Qt/Android Radio and Squelch sheets, the control API's `rtl_set_sql_setting`), an Off or a value equal to
   the default as much as any other. A refused edit ends nothing. A scan row's own `--squelch` / `--squelch-db`, and a
   signal-search range's listening squelch, replace it for that row or those landings only.
-- It reaches the receiver at the points the engine hands the receiver its squelch (the start, a decode switch, an input
-  change, a scan row's commit, leave and resume), in the same step: on a live switch to the monitor the receiver has it
-  before the switch's channel, so no analog block runs with the squelch off.
+- It reaches the receiver before any sample of a new stream or channel: every stream open (the start, an input change
+  back to a radio, a restart, a replay re-plan, a config that reopens the input), a live decode switch or a config's
+  `[mode]` (the receiver has it before the switch's channel, and Off before a digital one), and each `-Y` row's retune
+  (the row's gate goes with the tune, so a tune that lands before the decoder commits the row already runs it) and
+  trunk-scan target. So no analog block runs with the squelch off, and no digital row runs under an analog row's
+  default.
 - What it shows: the readout names the default as the configured setting, marked `(default)` (`SQL: noise +10 dB
   (default; quieting 23 dB)`); after an explicit edit it reads as any other squelch.
 

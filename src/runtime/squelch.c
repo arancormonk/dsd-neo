@@ -662,6 +662,38 @@ dsd_squelch_configured_fields(const dsd_opts* opts, double* level, int* mode, in
     }
 }
 
+void
+dsd_squelch_standing_capture(const dsd_opts* opts, dsd_squelch_standing* out) {
+    if (!out) {
+        return;
+    }
+    DSD_MEMSET(out, 0, sizeof(*out));
+    if (!opts) {
+        return;
+    }
+    out->level = opts->rtl_squelch_level;
+    out->mode = opts->rtl_squelch_mode;
+    out->margin_db = opts->rtl_squelch_margin_db;
+    out->default_state = opts->squelch_default_state;
+    out->default_moved = opts->squelch_default_moved;
+    out->base_level = opts->squelch_default_base_level;
+    out->base_mode = opts->squelch_default_base_mode;
+    out->base_margin_db = opts->squelch_default_base_margin_db;
+}
+
+void
+dsd_squelch_standing_restore(dsd_opts* opts, const dsd_squelch_standing* in) {
+    if (!opts || !in) {
+        return;
+    }
+    squelch_default_write(opts, in->mode, in->level, in->margin_db);
+    opts->squelch_default_state = in->default_state;
+    opts->squelch_default_moved = in->default_moved;
+    opts->squelch_default_base_level = in->base_level;
+    opts->squelch_default_base_mode = in->base_mode;
+    opts->squelch_default_base_margin_db = in->base_margin_db;
+}
+
 /* Nothing running: every field at rest. */
 static void
 squelch_clear_status(dsd_state* state) {

@@ -11288,6 +11288,9 @@ test_config_refuses_scanner_under_trunk_scan(void) {
 static int g_config_rtl_creates;
 /* The threshold a stream would open with: rtl_demod_config copies it into the demod. */
 static double g_config_rtl_create_squelch = -1.0;
+/* The squelch mode and margin a stream would open with (issue #899: the analog default is in them before the open). */
+static int g_config_rtl_create_squelch_mode = -1;
+static int g_config_rtl_create_squelch_margin = -1;
 static int g_config_rtl_create_frame_p25p1 = -1;
 /* Issue #578: 1 has a create succeed, with a context of zeroed storage (the stream calls left unwrapped do nothing with
    it), so the start after it runs; 0, the default, fails every create. The device string, family and analog profile
@@ -11453,6 +11456,8 @@ int __wrap_rtl_stream_destroy(RtlSdrContext* ctx);
 int
 __wrap_rtl_stream_create(dsd_opts* opts, RtlSdrContext** out_ctx) {
     g_config_rtl_create_squelch = opts ? opts->rtl_squelch_level : -1.0;
+    g_config_rtl_create_squelch_mode = opts ? opts->rtl_squelch_mode : -1;
+    g_config_rtl_create_squelch_margin = opts ? opts->rtl_squelch_margin_db : -1;
     g_config_rtl_create_frame_p25p1 = opts ? opts->frame_p25p1 : -1;
     DSD_SNPRINTF(g_config_rtl_create_dev, sizeof g_config_rtl_create_dev, "%s", opts ? opts->audio_in_dev : "");
     g_config_rtl_create_analog_only = opts ? dsd_opts_is_analog_family(opts) : -1;
@@ -12257,28 +12262,35 @@ submit_tagged_squelch_setting(int mode, int margin_db, double level, uint32_t re
  * answer as it was. */
 static int
 test_squelch_setting_request_answered(void) {
-    static dsd_opts opts;
-    static dsd_state state;
-    init_squelch_row_context(&opts, &state);
-    int rc = expect_int("nothing answered yet", (int)opts.rtl_squelch_request_answered, 0);
+    dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(*opts));
+    dsd_state* state = (dsd_state*)calloc(1, sizeof(*state));
+    if (!opts || !state) {
+        free(opts);
+        free(state);
+        return expect_true("request answered: fixtures", 0);
+    }
+    init_squelch_row_context(opts, state);
+    int rc = expect_int("nothing answered yet", (int)opts->rtl_squelch_request_answered, 0);
     rc |= expect_true("noise queued", submit_tagged_squelch_setting(DSD_SQUELCH_MODE_NOISE, 10, 0.0, 7U) > 0);
-    rc |= expect_int("not answered before the drain", (int)opts.rtl_squelch_request_answered, 0);
-    rc |= expect_int("noise drained", dsd_app_drain_cmds(&opts, &state), 1);
-    rc |= expect_int("noise answered", (int)opts.rtl_squelch_request_answered, 7);
+    rc |= expect_int("not answered before the drain", (int)opts->rtl_squelch_request_answered, 0);
+    rc |= expect_int("noise drained", dsd_app_drain_cmds(opts, state), 1);
+    rc |= expect_int("noise answered", (int)opts->rtl_squelch_request_answered, 7);
     rc |= expect_true("level queued",
                       submit_tagged_squelch_setting(DSD_SQUELCH_MODE_LEVEL, 0, dsd_squelch_level_from_sql(-60.0), 8U)
                           > 0);
-    rc |= expect_int("level drained", dsd_app_drain_cmds(&opts, &state), 1);
-    rc |= expect_int("level answered", (int)opts.rtl_squelch_request_answered, 8);
-    rc |= expect_squelch_db("the level in force", opts.rtl_squelch_level, -60.0);
+    rc |= expect_int("level drained", dsd_app_drain_cmds(opts, state), 1);
+    rc |= expect_int("level answered", (int)opts->rtl_squelch_request_answered, 8);
+    rc |= expect_squelch_db("the level in force", opts->rtl_squelch_level, -60.0);
     rc |= expect_true("refused margin queued", submit_tagged_squelch_setting(DSD_SQUELCH_MODE_AUTO, 2, 0.0, 9U) > 0);
-    rc |= expect_int("refused margin drained", dsd_app_drain_cmds(&opts, &state), 1);
-    rc |= expect_int("a refusal is answered too", (int)opts.rtl_squelch_request_answered, 9);
+    rc |= expect_int("refused margin drained", dsd_app_drain_cmds(opts, state), 1);
+    rc |= expect_int("a refusal is answered too", (int)opts->rtl_squelch_request_answered, 9);
     rc |= expect_true("untagged queued", submit_squelch_setting(DSD_SQUELCH_MODE_AUTO, 6, 0.0) > 0);
-    rc |= expect_int("untagged drained", dsd_app_drain_cmds(&opts, &state), 1);
-    rc |= expect_int("an untagged request leaves the answer", (int)opts.rtl_squelch_request_answered, 9);
+    rc |= expect_int("untagged drained", dsd_app_drain_cmds(opts, state), 1);
+    rc |= expect_int("an untagged request leaves the answer", (int)opts->rtl_squelch_request_answered, 9);
     dsd_rtl_stream_metrics_hooks_set(NULL);
-    dsd_state_ext_free_all(&state);
+    dsd_state_ext_free_all(state);
+    free(state);
+    free(opts);
     return rc;
 }
 
@@ -16529,45 +16541,50 @@ start_squelch_default_session(dsd_opts* opts, dsd_state* state, void* fake_ctx) 
  */
 static int
 test_decode_mode_set_runs_the_analog_default(void) {
-    static dsd_opts opts;
-    static dsd_state state;
+    dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(*opts));
+    dsd_state* state = (dsd_state*)calloc(1, sizeof(*state));
     static void* fake_ctx[2];
-    int rc = start_squelch_default_session(&opts, &state, (void*)fake_ctx);
+    if (!opts || !state) {
+        free(opts);
+        free(state);
+        return expect_true("default: fixtures", 0);
+    }
+    int rc = start_squelch_default_session(opts, state, (void*)fake_ctx);
 
     reset_rx_family_wrap();
     g_cmd_squelch_setting_pushes = 0;
-    rc |= submit_decode_mode(&opts, &state, DSDCFG_MODE_ANALOG, "default: dmr -> nfm");
-    rc |= expect_true("default: in on NFM", opts.squelch_default_state == DSD_SQUELCH_DEFAULT_APPLIED
-                                                && opts.rtl_squelch_mode == DSD_SQUELCH_MODE_NOISE
-                                                && opts.rtl_squelch_margin_db == 10);
+    rc |= submit_decode_mode(opts, state, DSDCFG_MODE_ANALOG, "default: dmr -> nfm");
+    rc |= expect_true("default: in on NFM", opts->squelch_default_state == DSD_SQUELCH_DEFAULT_APPLIED
+                                                && opts->rtl_squelch_mode == DSD_SQUELCH_MODE_NOISE
+                                                && opts->rtl_squelch_margin_db == 10);
     rc |= expect_true("default: the receiver heard it", g_cmd_squelch_setting_pushes == 1 && pushed_default());
     rc |= expect_true("default: before the channel request",
                       g_analog_req_calls == 1 && g_cmd_squelch_setting_order < g_analog_req_order);
-    rc |= expect_contains("default: the switch's own message", state.ui_msg, "Decoding Analog");
+    rc |= expect_contains("default: the switch's own message", state->ui_msg, "Decoding Analog");
     dsd_app_squelch_view view;
     char readout[96];
-    rc |= expect_int("default: view", dsd_app_squelch_view_get(&opts, &state, &view), 0);
+    rc |= expect_int("default: view", dsd_app_squelch_view_get(opts, state, &view), 0);
     rc |= expect_true("default: shown as the configured setting",
                       view.analog_default == 1U && view.configured_noise == 1U && view.configured_margin_db == 10);
     rc |= expect_int("default: readout", dsd_app_squelch_view_format(&view, readout, sizeof readout), 0);
     rc |= expect_contains("default: readout marks it", readout, "noise +10 dB (default");
 
     reset_rx_family_wrap();
-    rc |= submit_decode_mode(&opts, &state, DSDCFG_MODE_AM, "default: nfm -> am");
-    rc |= expect_true("default: AM keeps it (run as auto)", opts.squelch_default_state == DSD_SQUELCH_DEFAULT_APPLIED
-                                                                && opts.rtl_squelch_mode == DSD_SQUELCH_MODE_NOISE);
-    rc |= expect_contains("default: AM's own message", state.ui_msg, "Decoding AM");
+    rc |= submit_decode_mode(opts, state, DSDCFG_MODE_AM, "default: nfm -> am");
+    rc |= expect_true("default: AM keeps it (run as auto)", opts->squelch_default_state == DSD_SQUELCH_DEFAULT_APPLIED
+                                                                && opts->rtl_squelch_mode == DSD_SQUELCH_MODE_NOISE);
+    rc |= expect_contains("default: AM's own message", state->ui_msg, "Decoding AM");
 
     reset_rx_family_wrap();
     g_fake_analog_family = 1;
     g_fake_digital_rate = 48000U;
     g_cmd_squelch_pushes = 0;
-    rc |= submit_decode_mode(&opts, &state, DSDCFG_MODE_P25P1, "default: am -> p25");
-    rc |= expect_true("default: out on P25", opts.squelch_default_state == DSD_SQUELCH_DEFAULT_IDLE
-                                                 && opts.rtl_squelch_mode == DSD_SQUELCH_MODE_LEVEL
-                                                 && dsd_squelch_is_off(opts.rtl_squelch_level));
+    rc |= submit_decode_mode(opts, state, DSDCFG_MODE_P25P1, "default: am -> p25");
+    rc |= expect_true("default: out on P25", opts->squelch_default_state == DSD_SQUELCH_DEFAULT_IDLE
+                                                 && opts->rtl_squelch_mode == DSD_SQUELCH_MODE_LEVEL
+                                                 && dsd_squelch_is_off(opts->rtl_squelch_level));
     rc |= expect_true("default: the receiver heard Off", g_cmd_squelch_pushes == 1 && pushed_off());
-    rc |= expect_int("default: off view", dsd_app_squelch_view_get(&opts, &state, &view), 0);
+    rc |= expect_int("default: off view", dsd_app_squelch_view_get(opts, state, &view), 0);
     rc |= expect_true("default: no marker on digital", view.analog_default == 0U && view.configured_off == 1U);
 
     /* Refused before anything changes: nothing for the receiver. */
@@ -16576,67 +16593,153 @@ test_decode_mode_set_runs_the_analog_default(void) {
     g_analog_check_result = -1;
     g_cmd_squelch_setting_pushes = 0;
     g_cmd_squelch_pushes = 0;
-    rc |= submit_decode_mode(&opts, &state, DSDCFG_MODE_ANALOG, "default: refused nfm");
-    rc |= expect_true("default: refused stays out", opts.analog_only == 0 && g_cmd_squelch_setting_pushes == 0
+    rc |= submit_decode_mode(opts, state, DSDCFG_MODE_ANALOG, "default: refused nfm");
+    rc |= expect_true("default: refused stays out", opts->analog_only == 0 && g_cmd_squelch_setting_pushes == 0
                                                         && g_cmd_squelch_pushes == 0
-                                                        && opts.squelch_default_state == DSD_SQUELCH_DEFAULT_IDLE);
+                                                        && opts->squelch_default_state == DSD_SQUELCH_DEFAULT_IDLE);
     /* Refused where it lands: the session's own is back with the session's decoder. */
     reset_rx_family_wrap();
     g_analog_req_result = -1;
-    rc |= submit_decode_mode(&opts, &state, DSDCFG_MODE_ANALOG, "default: put back nfm");
-    rc |= expect_true("default: put back stays out", opts.analog_only == 0
-                                                         && opts.squelch_default_state == DSD_SQUELCH_DEFAULT_IDLE
-                                                         && opts.rtl_squelch_mode == DSD_SQUELCH_MODE_LEVEL);
+    rc |= submit_decode_mode(opts, state, DSDCFG_MODE_ANALOG, "default: put back nfm");
+    rc |= expect_true("default: put back stays out", opts->analog_only == 0
+                                                         && opts->squelch_default_state == DSD_SQUELCH_DEFAULT_IDLE
+                                                         && opts->rtl_squelch_mode == DSD_SQUELCH_MODE_LEVEL);
     rc |= expect_true("default: put back, the receiver last heard Off",
                       (g_cmd_squelch_setting_pushes == 0 && g_cmd_squelch_pushes == 0) || pushed_off());
 
     /* An explicit Off from any frontend (here the control API's command) ends it: NFM then runs Off. */
     reset_rx_family_wrap();
     rc |= expect_true("default: explicit off queued", submit_squelch_setting(DSD_SQUELCH_MODE_LEVEL, 0, 0.0) > 0);
-    rc |= expect_int("default: explicit off drained", dsd_app_drain_cmds(&opts, &state), 1);
-    rc |= expect_int("default: ended", opts.squelch_default_state, DSD_SQUELCH_DEFAULT_ENDED);
-    rc |= submit_decode_mode(&opts, &state, DSDCFG_MODE_ANALOG, "default: nfm after the edit");
-    rc |= expect_true("default: NFM runs the explicit Off", opts.analog_only == 1
-                                                                && opts.rtl_squelch_mode == DSD_SQUELCH_MODE_LEVEL
-                                                                && dsd_squelch_is_off(opts.rtl_squelch_level));
+    rc |= expect_int("default: explicit off drained", dsd_app_drain_cmds(opts, state), 1);
+    rc |= expect_int("default: ended", opts->squelch_default_state, DSD_SQUELCH_DEFAULT_ENDED);
+    rc |= submit_decode_mode(opts, state, DSDCFG_MODE_ANALOG, "default: nfm after the edit");
+    rc |= expect_true("default: NFM runs the explicit Off", opts->analog_only == 1
+                                                                && opts->rtl_squelch_mode == DSD_SQUELCH_MODE_LEVEL
+                                                                && dsd_squelch_is_off(opts->rtl_squelch_level));
     /* A refused edit ends nothing. */
-    state.rtl_ctx = NULL;
-    freeState(&state);
-    rc |= start_squelch_default_session(&opts, &state, (void*)fake_ctx);
+    state->rtl_ctx = NULL;
+    freeState(state);
+    rc |= start_squelch_default_session(opts, state, (void*)fake_ctx);
     rc |= expect_true("default: bad margin queued", submit_squelch_setting(DSD_SQUELCH_MODE_AUTO, 2, 0.0) > 0);
-    rc |= expect_int("default: bad margin drained", dsd_app_drain_cmds(&opts, &state), 1);
-    rc |= expect_int("default: a refused edit ends nothing", opts.squelch_default_state, DSD_SQUELCH_DEFAULT_IDLE);
+    rc |= expect_int("default: bad margin drained", dsd_app_drain_cmds(opts, state), 1);
+    rc |= expect_int("default: a refused edit ends nothing", opts->squelch_default_state, DSD_SQUELCH_DEFAULT_IDLE);
 
     g_fake_digital_rate = 0U;
     g_analog_check_result = 0;
     g_analog_req_result = 0;
-    state.rtl_ctx = NULL;
-    freeState(&state);
+    state->rtl_ctx = NULL;
+    freeState(state);
 
     /* An input change to audio takes it out: the WAV input runs the session's Off. */
     dsd_test_temp_cwd cwd;
     if (dsd_test_temp_cwd_enter(&cwd, "dsdneo_ui_squelch_default_input") != 0) {
+        free(state);
+        free(opts);
         return expect_true("default: temp directory", 0);
     }
     rc |= write_pcm16_wav("input.wav", 48000U, 8U);
-    rc |= start_squelch_default_session(&opts, &state, (void*)fake_ctx);
+    rc |= start_squelch_default_session(opts, state, (void*)fake_ctx);
     reset_rx_family_wrap();
-    rc |= submit_decode_mode(&opts, &state, DSDCFG_MODE_ANALOG, "default: nfm before the input change");
-    rc |= expect_int("default: in before the input change", opts.squelch_default_state, DSD_SQUELCH_DEFAULT_APPLIED);
-    state.rtl_ctx = NULL;
+    rc |= submit_decode_mode(opts, state, DSDCFG_MODE_ANALOG, "default: nfm before the input change");
+    rc |= expect_int("default: in before the input change", opts->squelch_default_state, DSD_SQUELCH_DEFAULT_APPLIED);
+    state->rtl_ctx = NULL;
     rc |= expect_int("default: wav input queued", post_string(DSD_APP_CMD_INPUT_WAV_SET, "input.wav"),
                      DSD_APP_COMMAND_SUBMIT_QUEUED);
-    rc |= expect_int("default: wav input drained", dsd_app_drain_cmds(&opts, &state), 1);
-    rc |= expect_true("default: out on audio input", opts.audio_in_type == AUDIO_IN_WAV
-                                                         && opts.squelch_default_state == DSD_SQUELCH_DEFAULT_IDLE
-                                                         && opts.rtl_squelch_mode == DSD_SQUELCH_MODE_LEVEL
-                                                         && dsd_squelch_is_off(opts.rtl_squelch_level));
-    closeAudioInDevice(&opts);
-    freeState(&state);
+    rc |= expect_int("default: wav input drained", dsd_app_drain_cmds(opts, state), 1);
+    rc |= expect_true("default: out on audio input", opts->audio_in_type == AUDIO_IN_WAV
+                                                         && opts->squelch_default_state == DSD_SQUELCH_DEFAULT_IDLE
+                                                         && opts->rtl_squelch_mode == DSD_SQUELCH_MODE_LEVEL
+                                                         && dsd_squelch_is_off(opts->rtl_squelch_level));
+    closeAudioInDevice(opts);
+    freeState(state);
     (void)remove("input.wav");
     rc |= expect_int("default: temp directory removed", dsd_test_temp_cwd_leave(&cwd), 0);
+    free(state);
+    free(opts);
     return rc;
 }
+
+#ifdef DSD_NEO_TEST_RTL_WRAP
+/*
+ * Issue #899: the receiver runs the effective squelch from the first sample of every new stream and channel. A stream
+ * that opens after a command switched the input back to a radio opens on the analog default (the stream reads its
+ * squelch at the open; the command's later sync came too late), and a config whose [mode] alone puts a running digital
+ * receiver on the FM monitor hands the receiver the default before the monitor's channel request, as DECODE_MODE_SET
+ * does. Each time the default goes out the same way: an Off is pushed before a digital family is asked for.
+ */
+static int
+test_streams_and_channels_open_on_the_analog_default(void) {
+    dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(*opts));
+    dsd_state* state = (dsd_state*)calloc(1, sizeof(*state));
+    static void* fake_ctx[2];
+    if (!opts || !state) {
+        free(opts);
+        free(state);
+        return expect_true("open default: fixtures", 0);
+    }
+    /* An NFM session on an I/Q stream running the default, switched to PCM and back with the RTL-SDR row. */
+    init_stream_replan_context(opts, state, fake_ctx, k_stream_240k, 48, 48000);
+    int rc = expect_int("open default: option", dsd_squelch_analog_default_parse(opts, "noise+10", NULL, 0U), 0);
+    rc |= submit_decode_mode(opts, state, DSDCFG_MODE_ANALOG, "open default: nfm");
+    rc |= expect_int("open default: in on NFM", opts->squelch_default_state, DSD_SQUELCH_DEFAULT_APPLIED);
+    state->rtl_ctx = NULL;
+    opts->audio_in_type = AUDIO_IN_PULSE;
+    DSD_SNPRINTF(opts->audio_in_dev, sizeof opts->audio_in_dev, "%s", "pulse");
+    DSD_SNPRINTF(opts->radio_in_dev, sizeof opts->radio_in_dev, "%s", k_stream_240k);
+    rc |= expect_int("open default: pcm drain", dsd_app_drain_cmds(opts, state), 0);
+    rc |= expect_true("open default: out on PCM", opts->squelch_default_state == DSD_SQUELCH_DEFAULT_IDLE
+                                                      && opts->rtl_squelch_mode == DSD_SQUELCH_MODE_LEVEL);
+    reset_config_rtl_wrap();
+    g_config_rtl_open_ok = 1;
+    rc |= expect_int("open default: rtl row queued", post_empty(DSD_APP_CMD_RTL_ENABLE_INPUT),
+                     DSD_APP_COMMAND_SUBMIT_QUEUED);
+    rc |= expect_int("open default: rtl row drained", dsd_app_drain_cmds(opts, state), 1);
+    rc |= expect_int("open default: one open", g_config_rtl_creates, 1);
+    if (g_config_rtl_create_squelch_mode != DSD_SQUELCH_MODE_NOISE || g_config_rtl_create_squelch_margin != 10) {
+        DSD_FPRINTF(stderr, "open default: the stream opened with squelch mode %d margin %d, want noise +10\n",
+                    g_config_rtl_create_squelch_mode, g_config_rtl_create_squelch_margin);
+        rc |= 1;
+    }
+    rc |= expect_int("open default: in force after the open", opts->squelch_default_state, DSD_SQUELCH_DEFAULT_APPLIED);
+    state->rtl_ctx = NULL;
+    freeState(state);
+
+    /* A running DMR receiver; a config with only [mode] decode=analog, then one with decode=dmr. */
+    DSD_MEMSET(state, 0, sizeof(*state));
+    rc |= start_squelch_default_session(opts, state, (void*)fake_ctx);
+    reset_rx_family_wrap();
+    g_cmd_squelch_setting_pushes = 0;
+    rc |= submit_config_mode(opts, state, DSDCFG_MODE_ANALOG, "config default: analog");
+    rc |= expect_true("config default: in on NFM",
+                      opts->analog_only == 1 && opts->squelch_default_state == DSD_SQUELCH_DEFAULT_APPLIED);
+    rc |= expect_true("config default: the receiver heard it", g_cmd_squelch_setting_pushes >= 1 && pushed_default());
+    if (!(g_analog_req_calls == 1 && g_cmd_squelch_setting_order < g_analog_req_order)) {
+        DSD_FPRINTF(stderr,
+                    "config default: the default reached the receiver at %d, the analog channel request at %d (%d "
+                    "requests)\n",
+                    g_cmd_squelch_setting_order, g_analog_req_order, g_analog_req_calls);
+        rc |= 1;
+    }
+    reset_rx_family_wrap();
+    g_fake_analog_family = 1;
+    g_fake_digital_rate = 48000U;
+    g_cmd_squelch_pushes = 0;
+    rc |= submit_config_mode(opts, state, DSDCFG_MODE_DMR, "config default: dmr");
+    rc |= expect_true("config default: out on DMR",
+                      opts->analog_only == 0 && opts->squelch_default_state == DSD_SQUELCH_DEFAULT_IDLE);
+    rc |= expect_true("config default: the receiver heard Off", g_cmd_squelch_pushes >= 1 && pushed_off());
+    rc |= expect_true("config default: Off before the digital family",
+                      g_analog_req_calls == 1 && g_cmd_squelch_level_order < g_analog_req_order);
+    g_fake_analog_family = 0;
+    g_fake_digital_rate = 0U;
+    reset_config_rtl_wrap();
+    state->rtl_ctx = NULL;
+    freeState(state);
+    free(state);
+    free(opts);
+    return rc;
+}
+#endif
 
 /*
  * A live switch from the FM monitor to AM (issue #524) is a decode-mode change like any other: it forgets a received
@@ -32192,6 +32295,9 @@ main(void) {
     rc |= test_config_apply_refused_analog_profile_changes_nothing();
     rc |= test_decode_mode_set_am_switches_live();
     rc |= test_decode_mode_set_runs_the_analog_default();
+#ifdef DSD_NEO_TEST_RTL_WRAP
+    rc |= test_streams_and_channels_open_on_the_analog_default();
+#endif
     rc |= test_decode_mode_set_am_clears_received_tone();
     rc |= test_am_bandwidth_set_applies_live();
     rc |= test_config_apply_am_within_the_analog_family();
