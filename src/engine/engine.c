@@ -4533,6 +4533,30 @@ live_scanner_y_note_checked(dsd_state* state, double now_m, dsd_engine_scan_owne
     state->scan_y_partial_until_m = -1.0;
 }
 
+/* Whether the refusal @p owner holds for the typed simplex row on air still stands (issue #890): the refused
+   transmission is the call active on its slot. Bound at the first boundary after the refused report to that call's
+   transmission_epoch (the report's frame observed it); dropped once the slot holds no active call (the transmission
+   ended, or it was never a call the decoder tracks) or another transmission's call, so a later call keeps the
+   open-verdict wait the -Y rule gives it. */
+static int
+live_scanner_y_refusal_stands(const dsd_state* state, dsd_engine_scan_owner* owner) {
+    if (!owner || owner->y_refused == 0U) {
+        return 0;
+    }
+    dsd_call_snapshot call;
+    const int active =
+        dsd_call_state_get(state, owner->y_refused_slot, &call) > 0 && call.phase == DSD_CALL_PHASE_ACTIVE;
+    if (active && owner->y_refused_epoch == 0U) {
+        owner->y_refused_epoch = call.transmission_epoch;
+    }
+    if (!active || call.transmission_epoch != owner->y_refused_epoch) {
+        owner->y_refused = 0U;
+        owner->y_refused_epoch = 0U;
+        return 0;
+    }
+    return 1;
+}
+
 /* An open verdict (PARTIAL) since the last boundary: the end of its hold, bounded by SCAN_QUIET_PENDING_MAX_MS. On a
    typed simplex row whose last report the policy refused (@p refused, issue #890) it holds nothing: the transmission
    it waits on is already known to be one the row may not hold on (an M17 packet under --no-data-calls, whose chunks
@@ -4578,7 +4602,7 @@ live_scanner_y_note_frame_content(dsd_state* state, double now_m) {
         live_scanner_y_note_checked(state, now_m, typed ? owner : NULL, typed);
     }
     if (state->scan_y_partial_seq != state->scan_y_partial_seen) {
-        live_scanner_y_note_partial(state, now_m, owner != NULL && owner->y_refused != 0U);
+        live_scanner_y_note_partial(state, now_m, live_scanner_y_refusal_stands(state, owner));
     }
 }
 

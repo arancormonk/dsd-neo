@@ -921,7 +921,11 @@ dsd_engine_scan_y_typed_activity(const dsd_opts* opts, const dsd_state* state, i
     }
     const int admitted = dsd_receive_allows(opts, state, protocol, slot)
                          && dsd_scan_activity_policy_allows(opts, state, protocol, identity);
+    /* A refusal is the refused transmission's: bound to the call active on its slot at the next frame boundary
+       (live_scanner_y_refusal_stands() in engine.c), which sees the call this report's frame observed. */
     owner->y_refused = (uint8_t)(admitted ? 0U : 1U);
+    owner->y_refused_slot = (uint8_t)(slot == 1 ? 1 : 0);
+    owner->y_refused_epoch = 0U;
     if (admitted) {
         owner->y_admitted_seq++;
     }

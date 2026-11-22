@@ -68,6 +68,7 @@ dsd_engine_scan_landing_forget_y_notes(dsd_state* state) {
     if (owner) {
         owner->y_admitted_seen = owner->y_admitted_seq;
         owner->y_refused = 0U;
+        owner->y_refused_epoch = 0U;
     }
     state->scan_y_content_seen = state->scan_y_content_seq;
     state->scan_y_partial_seen = state->scan_y_partial_seq;
