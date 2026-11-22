@@ -12488,7 +12488,9 @@ Call frequency and access-code provenance (issue #575). A call's canonical `freq
   whether it places the control channel here, comes from the frame's own LICH, which `nxdn_frame()` holds in
   `dsd_state::nxdn_frame_channel` while the frame's channels decode (`nxdn_frame_channel` in
   `<dsd-neo/protocol/nxdn/nxdn.h>`: a CAC is the control channel, an RTCH_C profile a composite control channel, an
-  RTCH2 profile Type-D, anything else traffic), never from the retained "Type-D" category: only a control channel's
+  RTCH2 profile Type-D, anything else traffic; a whole CCH_INFO on a frame read as Type-D shows a composite control
+  channel's frame, which reads as RTCH_C for the rest of its channels, `nxdn_element_handle_cch_info()`), never from the
+  retained "Type-D" category: only a control channel's
   SRV_INFO, a composite one's included (TS 1-C §5.1.2), refreshes the control-channel sync and anchors the CC to the
   tuner. An outbound SCCH INFO2 has the INFO4 format (§6.5.3.3), so its idle, halt, free repeater and site
   ID messages (IDs 2046, 2045, 2044, 2041) go through the INFO4 handling (`nxdn_scch_handle_repeater_status()`) and never

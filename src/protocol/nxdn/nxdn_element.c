@@ -517,12 +517,18 @@ nxdn_element_handle_srv_info(const dsd_opts* opts, dsd_state* state, const uint8
 /* CCH_INFO and SITE_INFO are Type-C messages a Type-D system does not send (NXDN TS 1-E; independently, SDRTrunk's
  * NXDNMessageType lists no Type-D 0x18 or 0x1A): decoded whole, they say the session decodes Type-C trunking. A FACCH1 is
  * laid out alike in both readings of a composite control channel's LICH, so a CCH_INFO says it whichever reading the
- * frame took; a SITE_INFO, too long for a FACCH1, on a frame read as Type-D came through a layout of Type-D's own. */
+ * frame took; a SITE_INFO, too long for a FACCH1, on a frame read as Type-D came through a layout of Type-D's own.
+ * A CCH_INFO that says it on a frame read as Type-D shows the frame is a composite control channel's (RTCH_C): the
+ * frame's later channels (a SRV_INFO in its other FACCH1) read it as one, as the frames after it do
+ * (nxdn_apply_lich_profile()). */
 static void
 nxdn_element_handle_cch_info(dsd_opts* opts, dsd_state* state, const uint8_t* elements, size_t elements_bits) {
     // Only a whole message says it: a short one (a non-superframe SACCH's 26 elements) passed a short CRC at most.
     if (NXDN_decode_cch_info(opts, state, elements, elements_bits) && !state->nxdn_frame_foreign) {
         dsd_nxdn_note_type_c(state);
+        if (state->nxdn_frame_channel == (uint8_t)NXDN_FRAME_CHANNEL_TYPE_D) {
+            state->nxdn_frame_channel = (uint8_t)NXDN_FRAME_CHANNEL_COMPOSITE;
+        }
     }
     nxdn_element_mark_control_sync(opts, state);
 }

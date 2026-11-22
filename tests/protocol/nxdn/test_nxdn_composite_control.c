@@ -1100,6 +1100,30 @@ test_same_frame_cch_info_discards_provisional_scch(dsd_opts* opts, dsd_state* st
     return rc;
 }
 
+/*
+ * A CCH_INFO that resolves a composite frame as Type-C resolves the rest of the frame too (issue #903): on first
+ * reception of a composite frame (LICH 0x71, read as a Type-D RTCH2 until Type-C is known), the first FACCH1 carries a
+ * CCH_INFO and the second a SRV_INFO for site A. The SRV_INFO decodes with the Type-C layout, as a composite control
+ * channel's broadcast: no IDAS system or site, and the Type-C location.
+ */
+static int
+test_same_frame_cch_info_reads_srv_info_as_type_c(dsd_opts* opts, dsd_state* state) {
+    uint8_t cch[80];
+    uint8_t srv[80];
+    int rc = 0;
+    clear_state(opts, state);
+    opts->trunk_enable = 1;
+    cch_info(cch, SITE_A, 0x20U, 5U);
+    srv_info(srv, SITE_A);
+    send_frame(opts, state, LICH_COMPOSITE_FACCH1_PAIR, 0x21U, cch, srv);
+    rc |= expect_long("same-frame srv_info: Type-C known", dsd_nxdn_type_c(state), 1L);
+    rc |= expect_no_type_d_identity("same-frame srv_info", state);
+    rc |= expect_long("same-frame srv_info: site", state->nxdn_location_site_code, 0x21L);
+    rc |= expect_long("same-frame srv_info: system", (long)state->nxdn_location_sys_code, 2L);
+    rc |= expect_long("same-frame srv_info: latches this site", dsd_nxdn_site_is(state, SITE_A), 1L);
+    return rc;
+}
+
 int
 main(void) {
     dsd_opts* opts = calloc(1, sizeof(*opts));
@@ -1134,6 +1158,7 @@ main(void) {
     rc |= test_failed_scch_keeps_fresh_type_d_on_rtch2(opts, state);
     rc |= test_same_frame_cch_info_cancels_provisional_type_d(opts, state);
     rc |= test_same_frame_cch_info_discards_provisional_scch(opts, state);
+    rc |= test_same_frame_cch_info_reads_srv_info_as_type_c(opts, state);
     dsd_trunk_tuning_hooks_set((dsd_trunk_tuning_hooks){0});
     dsd_decode_clock_use_system();
 
