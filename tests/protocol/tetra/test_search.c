@@ -56,6 +56,7 @@ typedef struct {
     int access_null;
     int sync;
     int slot;
+    int notes_at_evidence; /* the site notes sent before the latest evidence */
     int notes;
     dsd_signal_search_site_note note[MAX_NOTES];
     int activity;
@@ -80,6 +81,7 @@ evidence_hook(const dsd_state* state, const char* protocol, int sync, int slot, 
     DSD_SNPRINTF(g_log.access, sizeof g_log.access, "%s", access ? access : "");
     g_log.sync = sync;
     g_log.slot = slot;
+    g_log.notes_at_evidence = g_log.notes;
 }
 
 static void
@@ -716,7 +718,8 @@ test_gate_a_across_no_carrier(void) {
 }
 
 /* What withdraws the identity, latched and sent once: another cell's BSCH, a SYSINFO under the gate seed naming another
- * location area or main carrier, two cells before the gate opened. A shared carrier shows no site. */
+ * location area or main carrier, two cells before the gate opened (which confirms TETRA with no access code and no site
+ * at all: the hit is published, and may reach the journal, before the withdrawal). A shared carrier shows no site. */
 static void
 test_gate_a_withdrawals(void) {
     session s = session_open();
@@ -743,7 +746,13 @@ test_gate_a_withdrawals(void) {
     s = session_open();
     sb(&s, &k_b, NULL, 0);
     sb_sysinfo(&s, &k_a, LA_A);
-    check(tmo_evidence(COL_A) && withdrawals() == 1, "withdraw: two cells before the gate opened");
+    check(g_log.evidence == 1 && strcmp(g_log.protocol, "TETRA") == 0 && g_log.access_null
+              && g_log.notes_at_evidence == 0,
+          "withdraw: two cells before the gate opened confirm TETRA with no access code or site");
+    check(g_log.notes == 1 && withdrawals() == 1, "withdraw: two cells before the gate opened, then withdrawn");
+    sb_sysinfo(&s, &k_a, LA_A);
+    ndb_null(&s, seed_of(COL_A));
+    check(g_log.evidence == 1 && g_log.notes == 1, "withdraw: no later site or access for the ambiguous visit");
     session_close(&s);
 
     static const sync_spec k_shared = {COL_A, 4u, 2u, 18u};

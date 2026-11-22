@@ -15886,7 +15886,8 @@ itself, so the decoder's own handling stays as it was.
 - Gate A (trunked mode): an observed BSCH (CRC, system code 0xxx, TN/FN/MN in range, once per burst by the symbol clock)
   and, for a colour code not 0, a CRC-16 downlink block under exactly its seed from its burst or later, or, for colour
   code 0, a second observed BSCH of the identity from a later burst. Evidence `"TETRA"`, the burst's sync type, access
-  `CC n`. Site: MCC, MNC and, for a colour code not 0, the location area and advertised main carrier of a half-slot
+  `CC n` (none, and no site, when a second cell was observed in the visit before the gate opened: the withdrawal
+  follows at once, but the first publication must not carry what is already ambiguous). Site: MCC, MNC and, for a colour code not 0, the location area and advertised main carrier of a half-slot
   SYSINFO under the seed (the one in the opening block supplies it); none while the gate cell's sharing mode is not 00.
 - Gate D (direct mode): one DSB with SCH/S and SCH/H CRCs, system code 1100/1101, a parsed DMAC-SYNC or DPRES-SYNC,
   frame 1-18 and a valid A/B channel usage. Evidence `"TETRA DMO"`, no access; note: the latest checked DMAC-SYNC's

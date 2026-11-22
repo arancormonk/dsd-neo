@@ -194,9 +194,17 @@ cell_same(const tetra_search_cell* a, const tetra_search_cell* b) {
     return a->mcc == b->mcc && a->mnc == b->mnc && a->colour == b->colour;
 }
 
+/* Whether the visit's identity is ambiguous as gate A opens: gate D opened first, a second cell was observed in the
+ * visit, or the identity was withdrawn already. */
+static int
+gate_a_ambiguous(const tetra_search_t* sr) {
+    return sr->gate_d || sr->two_cells || sr->withdrawn;
+}
+
 /* Gate A opens on @p cell (copied: it may be the observation). The SYSINFO of the burst that opened it, under its seed,
- * supplies its site. Its evidence names it unless gate D opened first, which is a second identity of the channel; so is
- * a second cell observed in the visit. */
+ * supplies its site. Its evidence names it unless gate D opened first, which is a second identity of the channel. An
+ * identity ambiguous already (a second cell observed in the visit) still confirms TETRA, with no access code and no
+ * site: the withdrawal follows at once, but the hit is published, and may reach the journal, before it. */
 static void
 gate_a_open(const dsd_state* state, tetra_search_t* sr, tetra_search_cell cell) {
     sr->gate_a = 1;
@@ -204,14 +212,17 @@ gate_a_open(const dsd_state* state, tetra_search_t* sr, tetra_search_cell cell) 
     if (cell.colour != 0u && sr->burst_sysinfo.valid) {
         sr->sysinfo = sr->burst_sysinfo;
     }
+    const int ambiguous = gate_a_ambiguous(sr);
     if (sr->first_mode == 0u) {
         sr->first_mode = DSD_SEARCH_TETRA_TMO;
-        char access[8];
-        DSD_SNPRINTF(access, sizeof(access), "CC %u", (unsigned)cell.colour);
-        dsd_signal_search_note_evidence_at(state, "TETRA", sr->burst_sync, -1, 0U, 0U, access);
+        char access[8] = "";
+        if (!ambiguous) {
+            DSD_SNPRINTF(access, sizeof(access), "CC %u", (unsigned)cell.colour);
+        }
+        dsd_signal_search_note_evidence_at(state, "TETRA", sr->burst_sync, -1, 0U, 0U, ambiguous ? NULL : access);
     }
     search_mark_activity(sr, DSD_SEARCH_TETRA_TMO);
-    if (sr->gate_d || sr->two_cells) {
+    if (ambiguous) {
         withdraw(state, sr);
         return;
     }
