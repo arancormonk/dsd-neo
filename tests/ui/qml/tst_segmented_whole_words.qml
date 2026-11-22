@@ -199,7 +199,7 @@ Item {
                 {
                     tag: "SettingsScreen",
                     file: "SettingsScreen.qml",
-                    count: 2
+                    count: 3
                 },
                 {
                     tag: "RadioReferenceScreen",

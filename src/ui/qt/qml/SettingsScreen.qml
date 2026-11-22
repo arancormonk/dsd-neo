@@ -1053,6 +1053,26 @@ Item {
                         }
                     }
 
+                    // Issue #899: the squelch NFM and AM sessions start with.
+                    Item {
+                        width: parent.width
+                        height: settingsSquelch.height + 16
+
+                        SquelchEditor {
+                            id: settingsSquelch
+                            x: Theme.cardPadding
+                            y: 8
+                            width: parent.width - 2 * Theme.cardPadding
+                            setting: prefs.squelch !== undefined ? prefs.squelch : Util.SQUELCH_DEFAULT
+                            modeObjectName: "settingsSquelchMode"
+                            marginObjectName: "settingsSquelchMargin"
+                            hintObjectName: "settingsSquelchHint"
+                            onChosen: function (setting) {
+                                prefs.squelch = setting;
+                            }
+                        }
+                    }
+
                     // What the engine runs: it holds the correction to +-200.
                     ValueRow {
                         title: qsTr("PPM correction")

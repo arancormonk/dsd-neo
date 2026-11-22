@@ -680,6 +680,54 @@ function squelchSummary(db, marginDb, noise) {
     return db === 0 ? qsTr("Squelch: off") : qsTr("Squelch: %1 dB").arg(db)
 }
 
+// Issue #899: the squelch the app gives analog sessions, as AppPrefs holds it
+// ("off", "auto+N" or "noise+N", N from 3 to 30 with no leading zero).
+var SQUELCH_DEFAULT = "noise+10"
+
+// That setting as {mode, margin}: mode 0 Off (margin 0), 1 Auto, 2 Noise. Null
+// for any other text.
+function parseSquelchSetting(text) {
+    if (text === "off")
+        return {mode: 0, margin: 0}
+    var found = /^(auto|noise)\+([1-9][0-9]?)$/.exec(String(text))
+    if (!found)
+        return null
+    var margin = Number(found[2])
+    if (margin < 3 || margin > 30)
+        return null
+    return {mode: found[1] === "auto" ? 1 : 2, margin: margin}
+}
+
+// The setting text for @a mode (0 Off, 1 Auto, 2 Noise) and @a margin.
+function squelchSettingText(mode, margin) {
+    if (mode === 1)
+        return "auto+" + margin
+    return mode === 2 ? "noise+" + margin : "off"
+}
+
+// The level a squelch stepper asks for next (issue #899), from the reading
+// (@a off, else @a db) by @a delta dB, or NaN when it stays: always a whole dB,
+// never against the step's direction. Off sits one step below @a floor: a step
+// down stops on the floor and the next is off (0), and a step up from off is
+// the floor. -5 dB is the last threshold a step up makes (0 is off); a level
+// above it, set elsewhere, stays.
+function squelchStep(off, db, delta, floor) {
+    if (off)
+        return delta > 0 ? floor : NaN
+    var next = Math.round(db + delta)
+    if (next < floor) {
+        if (delta > 0)
+            next = floor
+        else
+            next = db > floor + 0.001 ? floor : 0
+    } else if (next > -5) {
+        if (db >= -5 - 0.001)
+            return NaN
+        next = -5
+    }
+    return Math.abs(next - db) < 0.001 ? NaN : next
+}
+
 // An analog row's or target's own channel width, for the channel-map review and the target
 // preview (issue #526): an am row's --am-bandwidth-hz when @a am, else an nfm row's
 // --nfm-bandwidth-hz. Absent inherits the configured width of that kind.

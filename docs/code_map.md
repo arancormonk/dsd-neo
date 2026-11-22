@@ -15792,6 +15792,13 @@ Build files: `src/protocol/CMakeLists.txt` and per‑protocol `src/protocol/<nam
     and reattached switches through the real bridge and queue, a refused switch, the messages, outside edits, the
     starter's row default), `ENGINE_TRUNK_SCAN_SCAN_LIST` (generated rows through the real parser and coordinator),
     `UI_QT_PERSISTENCE`, `UI_QT_BACKUP_MODEL`, `API_COMMANDS` (the follow-up stays out of the control API).
+  - Qt/Android default squelch editor (issue #899 D5): `qml/SquelchEditor.qml` in Settings' Radio defaults, beside the
+    tuner gain, edits `prefs.squelch` only in the forms the pref holds: `[Off | Auto | Noise]` and, for Auto and Noise,
+    a `−`/`+` margin stepper (3..30 dB, `commands.squelchMarginMinDb/MaxDb`) with a help line per mode; Off keeps the
+    margin it left while the editor lives. `Util.parseSquelchSetting()`/`squelchSettingText()` read and write the text.
+    The Radio sheet tells a session that saves nothing (Explore, a scan list) that its squelch edits last until Stop
+    and that Settings sets the default, and a running signal search (`signalSearch.status`, owned, phases 1..6) that
+    the range sets the squelch. Tests: `tst_settings_squelch.qml`, `tst_radio_squelch_auto.qml`.
   - Qt/Android tuner gain: `qml/GainEditor.qml` is the one gain editor (Settings' Radio defaults, the system editor, the
     scan list editor). It shows `[Automatic | Set]`, or `[App default | Automatic | Set]` when `inheritable`, with one
     canonical `mode` in both layouts (0 App default, 1 Automatic, 2 Set). An optional `hint` sits right under the strip
