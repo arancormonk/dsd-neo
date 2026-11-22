@@ -43,6 +43,7 @@
 #include <stdio.h>
 #include <string.h>
 #include <time.h>
+#include "dmr_address_layout.h"
 #include "dmr_call_channel.h"
 #include "dmr_crc_provenance.h"
 #include "dmr_hytera.h"
@@ -342,7 +343,8 @@ dmr_flco_detect_special_modes(dmr_flco_ctx* ctx) {
     dmr_flco_detect_kirisun_le(ctx, crc_ok);
     dmr_flco_detect_hytera_xpt(ctx);
     dmr_flco_detect_invalid_hytera_enhanced(ctx);
-    if (strcmp(ctx->state->dmr_branding_sub, "XPT ") == 0) {
+    // The carrier's checked trunking system selects the address layout (dmr_address_layout.h).
+    if (dmr_address_layout_of(ctx->state) == DMR_ADDRESS_LAYOUT_XPT) {
         ctx->is_xpt = 1;
     }
 }
@@ -2417,11 +2419,6 @@ dmr_slco_handle_cap_plus(dsd_opts* opts, dsd_state* state, const dmr_slco_data* 
     DSD_FPRINTF(stderr, " SLCO Capacity Plus Site: %d - Rest LSN: %d - RS: %02X", data->capsite, data->restchannel,
                 data->cap_reserved);
     dmr_slco_note_cap_plus_site(state, data);
-    /* A completed short LC (Hamming and CRC-8) is checked evidence of Capacity Plus: it selects the Cap+ layout
-       (16-bit addresses) for later data headers and preamble CSBKs, as a checked 0x3E status does. On a RAS carrier
-       under -F the statuses never pass their own CRC, so this is the one checked word that names the layout. */
-    DSD_SNPRINTF(state->dmr_branding, sizeof(state->dmr_branding), "%s", "Motorola");
-    DSD_SNPRINTF(state->dmr_branding_sub, sizeof(state->dmr_branding_sub), "%s", "Cap+ ");
 
     const long rest = state->trunk_chan_map[data->restchannel];
     if (rest > 0) {

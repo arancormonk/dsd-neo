@@ -50,6 +50,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
+#include "dmr_address_layout.h"
 #include "dmr_call_channel.h"
 #include "dmr_crc_provenance.h"
 #include "dmr_reason.h"
@@ -898,7 +899,9 @@ dmr_cspdu_pf0_handle_preamble(const dsd_opts* opts, dsd_state* state, uint8_t cs
     DSD_FPRINTF(stderr, gi == 0 ? "Individual " : "Group ");
     DSD_FPRINTF(stderr, content == 0 ? "CSBK - " : "Data - ");
 
-    if (strcmp(state->dmr_branding_sub, "XPT ") == 0) {
+    // The carrier's checked trunking system selects the address layout (dmr_address_layout.h).
+    const dmr_address_layout layout = dmr_address_layout_of(state);
+    if (layout == DMR_ADDRESS_LAYOUT_XPT) {
         target = (uint32_t)convert_bits_into_output(&cs_pdu_bits[40], 16);
         source = (uint32_t)convert_bits_into_output(&cs_pdu_bits[64], 16);
         if (gi == 0) {
@@ -911,7 +914,7 @@ dmr_cspdu_pf0_handle_preamble(const dsd_opts* opts, dsd_state* state, uint8_t cs
         } else {
             DSD_FPRINTF(stderr, "Source: %d - Target: %d ", source, target);
         }
-    } else if (strcmp(state->dmr_branding_sub, "Cap+ ") == 0) {
+    } else if (layout == DMR_ADDRESS_LAYOUT_CAP_PLUS) {
         if (gi == 0) {
             target = (uint32_t)convert_bits_into_output(&cs_pdu_bits[40], 16);
         }

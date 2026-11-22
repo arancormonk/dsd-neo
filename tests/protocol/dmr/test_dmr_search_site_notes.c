@@ -12,11 +12,13 @@
  */
 
 #include <dsd-neo/core/bit_packing.h>
+#include <dsd-neo/core/call_state.h>
 #include <dsd-neo/core/crc_provenance.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/received_identity.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/state_ext.h>
+#include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/fec/block_codes.h>
 #include <dsd-neo/protocol/dmr/dmr.h>
 #include <dsd-neo/protocol/dmr/dmr_utils_api.h>
@@ -1126,29 +1128,59 @@ test_capmax_dmrla(dsd_opts* opts, dsd_state* state) {
     return rc;
 }
 
-/* A RAS Capacity Plus carrier under -F: its 0x3E statuses never pass their CRC, so they do not brand it, but its
-   Capacity Plus short LC passes Hamming and CRC-8 and selects the Cap+ layout (16-bit addresses) for the data headers
-   and preamble CSBKs that follow. One that fails its CRC-8 selects nothing. */
+/* The address layout (Cap+ 16-bit or standard 24-bit) of data headers and preamble CSBKs follows the carrier's current
+   checked trunking system in the received identity record, never a display string. On a RAS Capacity Plus carrier
+   under -F the 0x3E statuses never pass their CRC and select nothing; a checked Capacity Plus short LC, or a checked
+   Motorola group voice LC (FID 0x10, FLCO 0x04) naming a rest channel, selects Cap+; a checked Connect Plus short LC
+   after it selects the standard layout again. */
 static int
 test_capplus_slco_selects_layout(dsd_opts* opts, dsd_state* state) {
     // A group preamble CSBK (opcode 61) whose source bits 56..79 are 0x123456: 1193046 as 24 bits, 13398 (0x3456) as
     // the Cap+ 16-bit source.
     static const uint8_t k_preamble[12] = {0x3D, 0x00, 0x40, 0x00, 0x00, 0x00, 0x01, 0x12, 0x34, 0x56, 0x00, 0x00};
+    // An individual preamble whose target bits 32..55 are 0x000123 and source bits 56..79 0x010123: the Cap+ layout
+    // reads target 291 and source 291 (bits 64..79), the standard one source 65827, rest LSN 1 as its high byte.
+    static const uint8_t k_private_preamble[12] = {0x3D, 0x00, 0x00, 0x00, 0x00, 0x01, 0x23, 0x01, 0x01, 0x23, 0, 0};
     static const uint8_t k_status[12] = {0x3E, 0x10, 0xC1, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00};
     int rc = 0;
     clear_record(state);
-    state->dmr_branding_sub[0] = '\0';
     rc |= csbk_send(opts, state, k_status, (uint8_t)DSD_CRC_RAS_UNVERIFIED);
-    rc |= expect_int("a ras 0x3e selects no cap+ layout", strcmp(state->dmr_branding_sub, "Cap+ ") == 0, 0);
     slco_cap_plus(opts, state, 4, 5, 1);
-    rc |= expect_int("a failed cap+ short lc selects no layout", strcmp(state->dmr_branding_sub, "Cap+ ") == 0, 0);
     rc |= csbk_send(opts, state, k_preamble, 0U);
-    rc |= expect_log("standard preamble source", "Source: 1193046");
+    rc |= expect_log("a ras 0x3e and a failed short lc select no cap+ layout", "Source: 1193046");
     slco_cap_plus(opts, state, 4, 5, 0);
-    rc |= expect_text("a checked cap+ short lc selects the layout", state->dmr_branding_sub, "Cap+ ");
     rc |= csbk_send(opts, state, k_preamble, 0U);
-    rc |= expect_log("cap+ preamble source", "Source: 13398");
-    state->dmr_branding_sub[0] = '\0';
+    rc |= expect_log("a checked cap+ short lc selects the cap+ layout", "Source: 13398");
+    slco_con_plus(opts, state, 0xA, 1234, 5);
+    rc |= csbk_send(opts, state, k_preamble, 0U);
+    rc |= expect_log("a checked con+ short lc after it selects the standard layout", "Source: 1193046");
+    clear_record(state);
+
+    // A checked embedded Capacity Plus group LC (TG 7 at bits 40..47, rest LSN 1 at 51..55, radio 0x0123 at 56..71).
+    rc |= csbk_send(opts, state, k_status, (uint8_t)DSD_CRC_RAS_UNVERIFIED);
+    rc |= csbk_send(opts, state, k_private_preamble, 0U);
+    rc |= expect_log("a ras 0x3e alone selects no cap+ layout", "Source: 65827");
+    uint8_t lc[80];
+    DSD_MEMSET(lc, 0, sizeof(lc));
+    put_bits(lc, 2, 0x04U, 6);
+    put_bits(lc, 8, 0x10U, 8);
+    put_bits(lc, 40, 7U, 8);
+    put_bits(lc, 51, 1U, 5);
+    put_bits(lc, 56, 0x0123U, 16);
+    const int synctype = state->synctype;
+    state->synctype = DSD_SYNC_DMR_BS_VOICE_POS;
+    state->currentslot = 0;
+    uint32_t irr = 0;
+    dsd_test_capture_stderr cap;
+    if (log_begin(&cap) != 0) {
+        return 1;
+    }
+    dmr_flco(opts, state, lc, 1U, &irr, 3U);
+    rc |= log_end(&cap);
+    state->synctype = synctype;
+    rc |= csbk_send(opts, state, k_private_preamble, 0U);
+    rc |= expect_log("a checked cap+ group lc selects the cap+ layout", "Source: 291 - Target: 291");
+    (void)dsd_call_state_end_ex(state, 0U, 0.0, DSD_CALL_END_TERMINATOR);
     clear_record(state);
     return rc;
 }

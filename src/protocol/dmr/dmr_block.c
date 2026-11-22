@@ -33,6 +33,7 @@
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
+#include "dmr_address_layout.h"
 #include "dmr_ars.h"
 #include "dmr_block_crypto.h"
 #include "dmr_crc_provenance.h"
@@ -92,11 +93,6 @@ dmr_clear_superframe_slot(dsd_state* state, uint8_t slot) {
     for (int i = 0; i < 24 * 127; i++) {
         state->dmr_pdu_sf[slot][i] = 0;
     }
-}
-
-static uint8_t
-dmr_branding_is(const dsd_state* state, const char* value) {
-    return (uint8_t)(strcmp(state->dmr_branding_sub, value) == 0);
 }
 
 static const char*
@@ -177,7 +173,9 @@ dmr_dheader_parse_fields(const dsd_state* state, const uint8_t dheader_bits[], d
     f->poc = (uint8_t)convert_bits_into_output(&dheader_bits[12], 4) + (mpoc << 4);
     f->target = (uint32_t)convert_bits_into_output(&dheader_bits[16], 24);
     f->source = (uint32_t)convert_bits_into_output(&dheader_bits[40], 24);
-    f->is_xpt = dmr_branding_is(state, "XPT ");
+    // The carrier's checked trunking system selects the address layout (dmr_address_layout.h).
+    const dmr_address_layout layout = dmr_address_layout_of(state);
+    f->is_xpt = (uint8_t)(layout == DMR_ADDRESS_LAYOUT_XPT);
     if (f->is_xpt == 1) {
         f->target = (uint32_t)convert_bits_into_output(&dheader_bits[24], 16);
         f->source = (uint32_t)convert_bits_into_output(&dheader_bits[48], 16);
@@ -189,7 +187,7 @@ dmr_dheader_parse_fields(const dsd_state* state, const uint8_t dheader_bits[], d
             f->tg_hash = crc8(target_hash, 16);
         }
     }
-    if (dmr_branding_is(state, "Cap+ ")) {
+    if (layout == DMR_ADDRESS_LAYOUT_CAP_PLUS) {
         if (f->gi == 0) {
             f->target = (uint32_t)convert_bits_into_output(&dheader_bits[24], 16);
         }

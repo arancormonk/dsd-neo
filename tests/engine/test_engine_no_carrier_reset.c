@@ -9165,12 +9165,14 @@ test_stream_off_recording_is_kept_but_not_exported(void) {
     return rc;
 }
 
-/* The manufacturer and branding a Hytera XPT control channel leaves on the state. */
+/* The manufacturer and branding a Hytera XPT control channel leaves on the state, and the checked XPT brand its
+   received identity record notes (which selects the 16-bit address layout). */
 static void
 seed_xpt_identity(dsd_state* state) {
     state->dmr_mfid = 0x68;
     DSD_SNPRINTF(state->dmr_branding, sizeof state->dmr_branding, "%s", "  Hytera");
     DSD_SNPRINTF(state->dmr_branding_sub, sizeof state->dmr_branding_sub, "%s", "XPT ");
+    dsd_rxid_note_dmr_brand(state, "Hytera XPT");
 }
 
 static int
@@ -9225,8 +9227,10 @@ preamble_csbk_address_bits(dsd_opts* opts, dsd_state* state) {
  * The DMR stale-follow clear is a decode decision: a control channel quiet for more than 10 s of decode time forgets
  * the manufacturer and branding it announced, so a replay forgets them at the same capture time however fast it is
  * read. Driven through the TEST decode clock with no real time passing, on a trunked setup that follows no voice
- * channel (nothing to preserve): the XPT identity stands at decode +10 s and is gone at +11 s, after which a standard
- * Preamble CSBK reads 24-bit addresses instead of XPT's 16-bit ones.
+ * channel (nothing to preserve): the XPT identity stands at decode +10 s and is gone at +11 s. The address layout is
+ * no branding: it follows the carrier's checked trunking system in the received identity record, which the no-carrier
+ * pass keeps (stale) on the same carrier, so a Preamble CSBK still reads XPT's 16-bit addresses; a carrier boundary's
+ * reset of the record returns it to the standard 24-bit ones.
  */
 static int
 test_dmr_stale_follow_clear_runs_on_the_decode_clock(void) {
@@ -9254,7 +9258,10 @@ test_dmr_stale_follow_clear_runs_on_the_decode_clock(void) {
     noCarrier(opts, state);
     rc |= expect_true("stale-follow: +11 s clears manufacturer and branding",
                       state->dmr_mfid == -1 && state->dmr_branding[0] == '\0' && state->dmr_branding_sub[0] == '\0');
-    rc |= expect_true("stale-follow: then a Preamble CSBK reads 24-bit addresses",
+    rc |= expect_true("stale-follow: the same carrier's checked XPT system still reads 16-bit addresses",
+                      preamble_csbk_address_bits(opts, state) == 16);
+    dsd_rxid_reset(state);
+    rc |= expect_true("stale-follow: after a carrier boundary a Preamble CSBK reads 24-bit addresses",
                       preamble_csbk_address_bits(opts, state) == 24);
 
     dsd_decode_clock_use_system();
