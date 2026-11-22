@@ -13714,12 +13714,16 @@ y_tetra_start_rows(dsd_opts* opts, dsd_state* state, const char* what, dsd_scan_
                       dsd_channel_mode_set(state, 0, first) == 0
                           && dsd_channel_mode_set(state, 1, DSD_SCAN_MODE_TETRA_DMO) == 0
                           && dsd_channel_mode_set(state, 2, last) == 0);
+    /* The landings run the 72 kHz chain's own TED timing (4), so the TETRA row lands healthy and the fixture names no
+       cause of its own: a row is named once for the session, and a case's cause must be the one it names. */
+    g_rtl_force_ted_sps = 4;
     state->last_cc_sync_time = time(NULL);
     noCarrier(opts, state);
     state->last_cc_sync_time -= 11;
     noCarrier(opts, state);
     state->last_cc_sync_time -= 11;
     noCarrier(opts, state);
+    g_rtl_force_ted_sps = 0;
     rc |= expect_case(what, "on the TETRA row",
                       state->scan_row_index == 1 && opts->frame_tetra == 1
                           && dsd_engine_channel_scan_on_air_row(state) == 1);
@@ -13898,12 +13902,11 @@ y_tetra_two_rows_named_once_case(void) {
     return rc;
 }
 
-/* Issue #890: a tetra-dmo row named for a TED timing that disagrees, visited again after the other rows with its timing
-   right, is named again when the timing disagrees once more: the healthy return forgets the cause the row was named
-   for, though the rows in between left the on-air verdict at OK under this row's number. */
+/* Issue #890: a tetra-dmo row is named once for the scan session: named for a TED timing that disagrees, visited again
+   after the other rows with its timing right, and failing once more, it is not named again. */
 static int
-y_tetra_warning_rearms_case(void) {
-    const char* name = "-Y TETRA row named again after a healthy return";
+y_tetra_warned_once_case(void) {
+    const char* name = "-Y TETRA row named once for the session";
     dsd_opts* opts = NULL;
     dsd_state* state = NULL;
     if (init_test_runtime(&opts, &state) != 0) {
@@ -13911,7 +13914,7 @@ y_tetra_warning_rearms_case(void) {
     }
     dsd_test_capture_stderr cap;
     char log[16384] = {0};
-    const int captured = dsd_test_capture_stderr_begin(&cap, "ytetrarearm") == 0;
+    const int captured = dsd_test_capture_stderr_begin(&cap, "ytetraonce") == 0;
     int rc = y_tetra_start(opts, state, name);
     y_tetra_published(5, 0);
     dsd_engine_channel_scan_tetra_judge(opts, state);
@@ -13934,9 +13937,8 @@ y_tetra_warning_rearms_case(void) {
     }
     const int named = y_count_text(log, "TETRA DMO needs the TED timed at the DSP rate");
     char detail[160];
-    DSD_SNPRINTF(detail, sizeof detail, "named at the first visit and again after the return (back %d, %d named)", back,
-                 named);
-    rc |= expect_case(name, detail, back && named == 2);
+    DSD_SNPRINTF(detail, sizeof detail, "named at the first visit only (back %d, %d named)", back, named);
+    rc |= expect_case(name, detail, back && named == 1);
     y_tetra_finish(opts, state);
     return rc;
 }
@@ -14121,7 +14123,7 @@ test_avoided_row_departs_under_a_carrier(void) {
            | y_tetra_late_failure_case() | y_tetra_paused_case() | y_tetra_locked_chain_case()
            | y_tetra_settled_other_case() | y_tetra_entry_reads_the_on_air_verdict_case()
            | y_tetra_then_blank_row_case() | y_tetra_after_nfm_row_case() | y_tetra_two_rows_named_once_case()
-           | y_tetra_warning_rearms_case();
+           | y_tetra_warned_once_case();
 }
 
 /* The scan holds row @p row of the walk list, marked an entry hold, as the row committed (issue #644). */

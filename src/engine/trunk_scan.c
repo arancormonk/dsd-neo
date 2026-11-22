@@ -297,10 +297,10 @@ typedef struct {
      * laid over its list values wherever the target's options are read (trunk_scan_target_values(),
      * trunk_scan_target_gain()). Lasts as long as the coordinator; never written to the list. */
     dsd_scan_row_edit edit;
-    /* The cause this TETRA DMO target was last named for in the log and on the status line (issue #890), so a failed
-     * departure's fallback onto it, or its next visit, does not name the same cause again, whichever targets were named
-     * in between; a landing that finds its chain running forgets it. DSD_ENGINE_TETRA_ROW_OK (0) for none. */
-    int tetra_named_cause;
+    /* Whether this TETRA DMO target was named in the log and on the status line for a cause its chain cannot run with
+     * (issue #890): once per target for the scan session (the coordinator's life), whatever the cause, however often
+     * the rotation returns to it. */
+    int tetra_warned;
 } dsd_trunk_scan_target_runtime;
 
 /*
@@ -5823,9 +5823,9 @@ trunk_scan_note_dwell_serviced(const dsd_opts* opts, const dsd_state* state, dsd
  * flight and none landed (a failed park, the fallback onto it), prospectively. A park still in flight is judged when it
  * lands. A cause that makes it ineligible on air (a rate change, a reopen at another rate, a TED override, the channel
  * filter, --tetra-uplink) owes the departure a target out of the rotation owes (trunk_scan_active_out_of_rotation()),
- * and is named once per target and cause (dsd_trunk_scan_target_runtime::tetra_named_cause): a failed departure's fallback onto the target,
- * or its next visit, names nothing again until a landing finds its chain running. A rate the reopening radio has not
- * published yet sends nothing away. Cheap:
+ * and is named once per target for the session (dsd_trunk_scan_target_runtime::tetra_warned): a failed departure's
+ * fallback onto the target, its next visit and a later cause name nothing again, each still leaving it. A rate the
+ * reopening radio has not published yet sends nothing away. Cheap:
  * a few loads, and only while a TETRA DMO target is on air. */
 static void
 trunk_scan_judge_tetra_on_air(const dsd_opts* opts, dsd_state* state, dsd_trunk_scan_coord* coord) {
@@ -5839,12 +5839,6 @@ trunk_scan_judge_tetra_on_air(const dsd_opts* opts, dsd_state* state, dsd_trunk_
     const int rate_hz = dsd_engine_scan_dsp_rate_hz(opts, state);
     const int landed = dsd_engine_scan_landing_is_target(state, (int)coord->active, coord->session);
     const dsd_engine_tetra_row why = dsd_engine_scan_tetra_row_check(opts, state, rate_hz, landed);
-    /* A landing found healthy forgets the cause the target was last named for, ahead of the unchanged-verdict
-       shortcut: every park starts active_tetra_skip at OK, so a healthy return would otherwise keep the old cause and
-       a recurrence of it would leave unnamed. Only a landed verdict proves the chain runs. */
-    if (why == DSD_ENGINE_TETRA_ROW_OK && landed) {
-        rt->tetra_named_cause = (int)DSD_ENGINE_TETRA_ROW_OK;
-    }
     if ((int)why == coord->active_tetra_skip) {
         return;
     }
@@ -5856,10 +5850,10 @@ trunk_scan_judge_tetra_on_air(const dsd_opts* opts, dsd_state* state, dsd_trunk_
         return;
     }
     trunk_scan_arm_departure(coord);
-    if (rt->tetra_named_cause == (int)why) {
+    if (rt->tetra_warned) {
         return;
     }
-    rt->tetra_named_cause = (int)why;
+    rt->tetra_warned = 1;
     char text[DSD_ENGINE_TETRA_ROW_TEXT_MAX];
     dsd_engine_scan_tetra_row_text(opts, why, rate_hz, 0, text, sizeof text);
     LOG_WARN("WARNING: Trunk scan target '%s': %s; the scan leaves it.\n", rt->target.id, text);

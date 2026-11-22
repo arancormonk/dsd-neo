@@ -17408,10 +17408,17 @@ fake_tetra_ext_present(const dsd_state* state) {
 }
 
 /* A trunk scan over @p body (k_nfm_targets_header's columns) at DSP rate @p rate_hz, its start's log in @p log;
- * returns the init's answer, its error in @p err. */
+ * returns the init's answer, its error in @p err. @p dir and @p path start empty, so tetra_rig_finish() removes only
+ * what this made even when the temporary setup failed (2). */
 static int
 tetra_rig_start(dsd_opts* opts, dsd_state* state, char* dir, size_t dir_sz, char* path, size_t path_sz,
                 const char* body, int rate_hz, char* err, size_t err_sz, char* log, size_t log_sz) {
+    if (dir_sz > 0U) {
+        dir[0] = '\0';
+    }
+    if (path_sz > 0U) {
+        path[0] = '\0';
+    }
     if (make_temp_dir(dir, dir_sz) != 0
         || write_targets_file_with_header(dir, k_nfm_targets_header, body, path, path_sz) != 0) {
         return 2;
@@ -17452,7 +17459,7 @@ tetra_rig_finish(dsd_opts* opts, dsd_state* state, const char* dir, const char* 
     g_tetra_ted_override = 0;
     g_tetra_ted_applied = 0;
     trunk_scan_test_clear_now();
-    cleanup_paths(dir, path, NULL);
+    cleanup_paths(dir[0] != '\0' ? dir : NULL, path[0] != '\0' ? path : NULL, NULL);
 }
 
 /* A TETRA DMO target needs a TETRA DSP rate (issue #890 D3): at 48 kHz the start names it, the status line says it is
@@ -17814,11 +17821,10 @@ test_tetra_dmo_two_targets_named_once_and_published(void) {
     return rc;
 }
 
-/* A TETRA DMO target named for a cause, then found healthy at a later landing, is named again when the cause comes back
- * (issue #890): every park starts the on-air verdict at OK, so the healthy return must forget the cause the target was
- * named for, or the recurrence would leave it unnamed in the log and on the status line. */
+/* A TETRA DMO target is named once for the scan session (issue #890): named for a cause, found healthy at a later
+ * landing, then failing again, it leaves each time it fails but is not named again in the log or on the status line. */
 static int
-test_tetra_dmo_warning_rearms_after_a_healthy_return(void) {
+test_tetra_dmo_warned_once_per_session(void) {
     char dir[DSD_TEST_PATH_MAX];
     char path[DSD_TEST_PATH_MAX];
     char err[512] = {0};
@@ -17826,11 +17832,16 @@ test_tetra_dmo_warning_rearms_after_a_healthy_return(void) {
     dsd_state* state = g_case_state;
     static const char k_body[] = "dmo,tetra-dmo-conventional,425000000,,250,250,,,,,,,\n"
                                  "dmr,dmr-conventional,461000000,,250,250,,,,,,,\n";
-    int rc =
-        tetra_rig_start(opts, state, dir, sizeof dir, path, sizeof path, k_body, 72000, err, sizeof err, NULL, 0U) != 0;
+    if (tetra_rig_start(opts, state, dir, sizeof dir, path, sizeof path, k_body, 72000, err, sizeof err, NULL, 0U)
+        != 0) {
+        DSD_FPRINTF(stderr, "TETRA warned once: scan start failed: %s\n", err);
+        tetra_rig_finish(opts, state, dir, path);
+        return 1;
+    }
+    int rc = 0;
     dsd_test_capture_stderr cap;
     char log[8192] = {0};
-    const int captured = dsd_test_capture_stderr_begin(&cap, "trunkscantetrarearm") == 0;
+    const int captured = dsd_test_capture_stderr_begin(&cap, "trunkscantetraonce") == 0;
     g_tetra_ted_applied = 5;
     tick_at(opts, state, 0.1);
     const int left = dsd_engine_trunk_scan_active_index(state) == 1U;
@@ -17847,8 +17858,8 @@ test_tetra_dmo_warning_rearms_after_a_healthy_return(void) {
         (void)dsd_test_capture_stderr_read(&cap, log, sizeof log);
     }
     const int named = count_text(log, "WARNING: Trunk scan target 'dmo': TETRA DMO needs the TED timed");
-    if (rc || !left || !healthy || !left_again || named != 2) {
-        DSD_FPRINTF(stderr, "TETRA warning rearm: rc %d left %d healthy %d left again %d named %d\n", rc, left, healthy,
+    if (rc || !left || !healthy || !left_again || named != 1) {
+        DSD_FPRINTF(stderr, "TETRA warned once: rc %d left %d healthy %d left again %d named %d\n", rc, left, healthy,
                     left_again, named);
         rc = 1;
     }
@@ -29815,7 +29826,7 @@ main(void) {
     rc |= run_with_default_tune_hook(test_tetra_dmo_entry_reads_the_on_air_verdict);
     rc |= run_with_default_tune_hook(test_tetra_dmo_list_toggle_reads_the_on_air_verdict);
     rc |= run_with_default_tune_hook(test_tetra_dmo_two_targets_named_once_and_published);
-    rc |= run_with_default_tune_hook(test_tetra_dmo_warning_rearms_after_a_healthy_return);
+    rc |= run_with_default_tune_hook(test_tetra_dmo_warned_once_per_session);
     rc |= run_with_default_tune_hook(test_tetra_state_held_across_mixed_hops);
     rc |= run_with_default_tune_hook(test_tetra_entry_reasons_follow_the_chain);
     rc |= run_with_default_tune_hook(test_nfm_target_width_skipped_under_channel_lpf_override);
