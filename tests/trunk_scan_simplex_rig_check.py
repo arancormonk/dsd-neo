@@ -286,6 +286,7 @@ class Api:
         try:
             self.sock.close()
         except OSError:
+            # The decoder may already have closed the connection; closing our end is best effort.
             pass
         self.thread.join(timeout=3)
 

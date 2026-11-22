@@ -1736,7 +1736,7 @@ test_tetra_dmo_class_enters_tetra(void) {
 
     /* On a TETRA session the row keeps the decoder's state extension. */
     assert(dsd_apply_decode_mode_preset(DSDCFG_MODE_TETRA, DSD_DECODE_PRESET_PROFILE_CLI, o, s) == 0);
-    int marker = 0;
+    static int marker = 0; /* outlives the state slot that points at it */
     assert(dsd_state_ext_set(s, DSD_STATE_EXT_PROTO_TETRA, &marker, NULL) == 0);
     assert(dsd_scan_mode_enter(o, s, DSD_SCAN_MODE_TETRA_DMO) == 0);
     assert(dsd_scan_mode_options(o, s, NULL) == 0);

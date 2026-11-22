@@ -18665,7 +18665,7 @@ y_admit_case(int voice, int partial, int receive_refused) {
        of the monotonic clock before it read as long past, as the cases' own aging makes them. */
     dsd_decode_clock_use_test((uint64_t)dsd_realtime_time() * 1000000000ULL);
     dsd_trunk_scan_row_activity_hook_set(dsd_engine_scan_y_typed_activity);
-    dsd_trunk_scan_activity_identity id;
+    static dsd_trunk_scan_activity_identity id; /* the observer reads it through g_y_admit_identity */
     DSD_MEMSET(&id, 0, sizeof id);
     id.known = DSD_SCAN_ACTIVITY_KNOWN_SOURCE | DSD_SCAN_ACTIVITY_KNOWN_TARGET | DSD_SCAN_ACTIVITY_KNOWN_DATA
                | DSD_SCAN_ACTIVITY_KNOWN_ENCRYPTED | (voice ? DSD_SCAN_ACTIVITY_KNOWN_PARTY : 0U);
