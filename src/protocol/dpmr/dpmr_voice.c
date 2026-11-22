@@ -396,7 +396,7 @@ dpmr_checked_half(const dPMRVoiceFS2Frame_t* f) {
  * call and never voice. A frame with no checked half names nothing: it only keeps an open dPMR call going, never opens
  * one. */
 static int
-dpmr_publish_frame_observation(dsd_state* state) {
+dpmr_publish_frame_observation(dsd_state* state, int other_system) {
     const dPMRVoiceFS2Frame_t* f = &state->dPMRVoiceFS2Frame;
     int protocol = DSD_SYNC_IS_DPMR(state->synctype) ? state->synctype : state->lastsynctype;
     if (!DSD_SYNC_IS_DPMR(protocol)) {
@@ -435,7 +435,11 @@ dpmr_publish_frame_observation(dsd_state* state) {
             observation.ota_source_id = f->BoundIdValue & 0xFFFFFFU;
         }
     }
-    return dsd_call_state_observe(state, &observation, DSD_CALL_BOUNDARY_CONTINUE) > 0;
+    /* A verified colour code other than the open call's is another system's call on the frequency (issue #890):
+       its IDs and service are not that call's, though a pair names only one station. */
+    return dsd_call_state_observe(state, &observation,
+                                  other_system ? DSD_CALL_BOUNDARY_BEGIN : DSD_CALL_BOUNDARY_CONTINUE)
+           > 0;
 }
 
 /* Whether a dPMR call is open on the slot. */
@@ -457,12 +461,15 @@ dpmr_publish_call(dsd_opts* opts, dsd_state* state) {
        whose channel code did not decode keeps an open call's code, but a call it opens has none of its own: the code
        an earlier call left is not this one's access code (issue #890). */
     const int known = state->dPMRVoiceFS2Frame.ColorCode[0] != (unsigned int)(-1);
+    const int other_system = known && state->dpmr_color_code >= 0
+                             && (int)state->dPMRVoiceFS2Frame.ColorCode[0] != state->dpmr_color_code
+                             && dpmr_call_open(state);
     if (known) {
         dpmr_publish_color_code(state, (int)state->dPMRVoiceFS2Frame.ColorCode[0]);
     } else if (!dpmr_call_open(state) && dpmr_checked_half(&state->dPMRVoiceFS2Frame) >= 0) {
         state->dpmr_color_code = -1;
     }
-    if (dpmr_publish_frame_observation(state) && !known) {
+    if (dpmr_publish_frame_observation(state, other_system) && !known) {
         state->dpmr_color_code = -1; /* the observation began another call (another identity) */
     }
 

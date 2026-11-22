@@ -5993,8 +5993,10 @@ the implementations from `dsd_engine_trunk_scan_init()` and clears them again on
   `dpmr_report_scan_activity()` (a Communications_Start header, and an FS2 frame whose CCH halves pass
   as a bound pair, with the raw 24-bit IDs and no party; a pair names one station, so its report carries the call's
   other station as the transmission's header or other pair checked it, kept in `dsd_state::dpmr_scan_target`/
-  `dpmr_scan_source` for the scan visit and carrier it was named under: a pair naming another station than the one
-  kept begins another call, whose other station is unknown, and the transmission boundaries forget them), M17 `m17_report_scan_activity()` (direct and rebuilt LSF,
+  `dpmr_scan_source` for the scan visit, carrier, reception generation (`dsd_state_reception_generation()`: a verified
+  colour code change, another protocol's sync, a retune) and dPMR call it was named under: a pair naming another
+  station than the one kept begins another call, whose other station is unknown, a call that ended takes its stations
+  with it, and the transmission boundaries forget them), M17 `m17_report_scan_activity()` (direct and rebuilt LSF,
   packet CRC, a clean LICH pair; only `m17_lsf_checked` values an applied LSF bound, withdrawn while a clean LICH
   chunk disputes the checked DST/SRC/TYPE (`m17_lsf_disputed`, a missed boundary; `m17_link_setup_vouched()`, which
   the voice-only checked speech asks too, so a disputed stream's speech earns no checked media), and gone from the frame after a
@@ -14630,7 +14632,10 @@ Private per-protocol modules worth knowing about:
   status messages) reports PROVEN content without a call and confirms nothing: confirmation is what lets the frames
   after it publish and play, and a message that opens no call has none that may (a Communications_Start in the
   reserved mode 111 reports nothing at all). A call a header opens has the header's colour code, or none when its
-  channel code did not decode, never one an earlier call left; so has a call an FS2 frame opens. A header that
+  channel code did not decode, never one an earlier call left; so has a call an FS2 frame opens. An FS2 frame with a
+  checked half whose colour code decodes to another code than the open call's begins another call (`BEGIN`): two
+  systems can share a frequency with no retune or sync loss between them, and a pair names only one station, so the
+  open call's other station, ID and service are not the new one's. A header that
   repeats the
   open call's (same called/calling IDs and service options; colour codes that do not differ, a code the run has not
   read yet being missing, since the channel code is sent outside the MI's CRC) k message frames (k x 192 symbols,

@@ -25,6 +25,7 @@
 #include <dsd-neo/core/dibit.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/receive.h>
+#include <dsd-neo/core/received_identity.h>
 #include <dsd-neo/core/safe_api.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/sync_patterns.h>
@@ -667,6 +668,54 @@ test_pair_reports_keep_the_calls_checked_stations(void) {
         static const char* const k_tags[] = {"after a new visit", "after a carrier boundary", "after an END"};
         expect_stations(k_tags[boundary], 1, called, 0, 0U);
     }
+
+    /* Another system on the frequency, no retune and no sync loss between (issue #890): a header on colour code 13
+       names called and calling, then a calling pair on the reference frames' colour code 12, the caller the same. The
+       verified colour code change is another reception: the pair's report names the caller alone, not the first
+       system's destination. */
+    dpmr_scrambling_reset(state);
+    header.color_code = DPMR_REF_COLOUR_CODE + 1;
+    dpmr_process_header(opts, state, &header, 0);
+    header.color_code = -1;
+    uint64_t header_epoch = 0U;
+    {
+        dsd_call_snapshot opened;
+        DSD_MEMSET(&opened, 0, sizeof(opened));
+        (void)dsd_call_state_get(state, 0U, &opened);
+        header_epoch = opened.epoch;
+    }
+    dsd_test_scan_activity_reset();
+    run_frame(opts, state, DPMR_REF_FRAMES[1].body_dibits, sizeof(DPMR_REF_FRAMES[1].body_dibits));
+    expect_stations("calling pair on another colour code", 0, 0U, 1, calling);
+    /* The call the pair publishes is the second system's own: another epoch, its caller, no destination. */
+    dsd_call_snapshot call;
+    DSD_MEMSET(&call, 0, sizeof(call));
+    expect_int("another colour code: a call", dsd_call_state_get(state, 0U, &call) > 0, 1);
+    expect_int("another colour code: another call", call.epoch != header_epoch, 1);
+    expect_int("another colour code: no destination id", (long)call.ota_target_id, 0L);
+    expect_int("another colour code: the caller id", (long)call.ota_source_id, (long)calling);
+    expect_int("another colour code: no destination text", call.target_text[0] == '\0', 1);
+
+    /* A sync of another protocol between (dsd_rxid_note_sync()) is another reception too. */
+    dpmr_scrambling_reset(state);
+    dpmr_process_header(opts, state, &header, 0);
+    dsd_rxid_note_sync(state, DSD_SYNC_NXDN_POS);
+    dsd_test_scan_activity_reset();
+    run_frame(opts, state, DPMR_REF_FRAMES[0].body_dibits, sizeof(DPMR_REF_FRAMES[0].body_dibits));
+    expect_stations("called pair after another protocol's sync", 1, called, 0, 0U);
+
+    /* The call ended (a sync loss closed it) and the next frame's pair, the same called station, opens another call:
+       the ended call's caller is not this one's. */
+    dpmr_scrambling_reset(state);
+    dpmr_process_header(opts, state, &header, 0);
+    (void)dsd_call_state_end_ex(state, 0U, 0.0, DSD_CALL_END_SYNC_LOSS);
+    dsd_test_scan_activity_reset();
+    run_frame(opts, state, DPMR_REF_FRAMES[0].body_dibits, sizeof(DPMR_REF_FRAMES[0].body_dibits));
+    expect_stations("called pair of the call after an ended one", 1, called, 0, 0U);
+    /* While the call goes on, its pairs still carry each other's station. */
+    dsd_test_scan_activity_reset();
+    run_frame(opts, state, DPMR_REF_FRAMES[1].body_dibits, sizeof(DPMR_REF_FRAMES[1].body_dibits));
+    expect_stations("calling pair of that call", 1, called, 1, calling);
 }
 
 /* Issue #890: the call a checked dPMR header or bound frame pair publishes carries the stations' raw 24-bit air
