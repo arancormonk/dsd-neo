@@ -26,13 +26,13 @@
 #include <dsd-neo/runtime/config.h>
 #include <dsd-neo/runtime/decode_mode.h>
 #include <dsd-neo/runtime/rigctl_passband.h>
-#include <dsd-neo/runtime/squelch.h>
 #include <stddef.h>
 #include <stdint.h>
 #include "next_start_check.h"
 
 #ifdef USE_RADIO
 #include <dsd-neo/runtime/input_failure.h>
+#include <dsd-neo/runtime/squelch.h>
 #endif
 
 #ifdef __cplusplus
