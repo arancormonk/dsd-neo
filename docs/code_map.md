@@ -16060,7 +16060,8 @@ Qt Quick frontend (`src/ui/qt`):
   the two lines growing it, the refresh hint under everything. The title and the supporting line are one line each
   (G6: a line break in an imported name is a space, `Util.oneLine()`, and both elide), so a long name never grows the
   head; their names still read the whole text. Only the receiver line and the refresh hint wrap. A scan-list card's
-  name and count line ("Not ready · draft") are one line each the same way. The place and meta lines (the key and when last heard)
+  name and count line ("Not ready · draft") are one line each the same way. The place and meta lines (the key and when
+  last heard)
   are not drawn (`shown: !compact`; both sit in slot Items and are listed in `lackableParts`, so under a screen reader
   they are held), and the title's `Accessible.description` reads their words instead (`undrawnWords`, built from the
   card's place label and meta text, set only in compact and gated on navigation, `visible` and `held`). The site
@@ -17486,7 +17487,8 @@ Qt Quick frontend (`src/ui/qt`):
   algorithm, channel; the ids first get min(their width, 96), then EMERGENCY, PRIVATE, ENC and the algorithm text
   (`ALG nn · KID nnnn`, cut to no less than `ALG nn…`, else left out), then the channel (at least min(its width,
   48), only after every status drawn), and only then do the ids grow into what is left, so a long name never pushes
-  a short channel off the line. What is left out stays in the accessible text: the strip identity's name carries the slot (while its label is
+  a short channel off the line. What is left out stays in the accessible text: the strip identity's name carries the
+  slot (while its label is
   not drawn), PRIVATE, EMERGENCY and ENC (each tag's `label`, which `EmergencyTag` and `EncTag` now have as
   `PrivateTag` had), and the hero reads its subline from `heroSublineSpeech()`, every part the call has. The strip's
   identity line is a fixed box (`otherIdentityBox`, `LineBoxes`). On a 320 px phone a long name can leave the strip's
@@ -17835,7 +17837,8 @@ Qt Quick frontend (`src/ui/qt`):
   wide at every text size when the slot was the age's own width), and nothing shows or hides for a screen reader as
   the minutes pass. What is not drawn is still read: the node's name carries "has a recording", and its description
   the meta line, EMERGENCY (the tag's `label`), ENC and the time, each once, drawn or not. On an encrypted row ENC
-  takes the time's place on the face, as on main, so the time is never a drawn candidate there, but it is said. Decided limit: at 280 px
+  takes the time's place on the face, as on main, so the time is never a drawn candidate there, but it is said.
+  Decided limit: at 280 px
   (Home's Recent pane) a recorded emergency call drops its glyph at text 1.0 and its time from 1.6; History's
   emergency rows on a 360 dp phone keep their time up to 1.6 and the whole frequency on the meta line up to 1.3
   (from 1.6 it still leads the line, cut). Decided limit (D10): a rarer script whose glyphs stand
@@ -18707,7 +18710,8 @@ Qt Quick frontend (`src/ui/qt`):
   address or file name off the source line, which elides (issue #901 G1: two TCP cards of one title both read "TCP
   10.0…" at 320 dp and text 2.0). `rebuilt()` follows every rebuild, changed or not, after its row signals and
   `shownCountChanged`: Home answers the changes it noted there (one tree refresh for Android's bridge, given through
-  its coalescing timer). `rowForKey()` finds a card. Tests: `UI_QT_SAVED_SYSTEM_CARDS` (groups, the card's last-heard, frequency and
+  its coalescing timer). `rowForKey()` finds a card. Tests: `UI_QT_SAVED_SYSTEM_CARDS` (groups, the card's last-heard,
+  frequency and
   key-configured reads, titles against a real pin, each order and its ties, place and distance labels, search, signals,
   screen-reader holds and the location mark, one section start in a held order, a fix that lapses with no signal,
   coalescing, a random-edit mirror check, positional rows held and taken back, receiver labels for shared titles,
