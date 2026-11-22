@@ -359,7 +359,7 @@ writeList(const QTemporaryDir& dir, const QVariantMap& list, const QVariantList&
         return QString();
     }
     DSD_FPRINTF(stderr, "running receiver: generated list:\n%s", generated.csv.constData());
-    const QString path = dir.filePath(QStringLiteral("rotation.csv"));
+    QString path = dir.filePath(QStringLiteral("rotation.csv"));
     QFile file(path);
     if (!file.open(QIODevice::WriteOnly) || file.write(generated.csv) != generated.csv.size()) {
         return QString();
@@ -394,7 +394,7 @@ printVisit(const Visit& v, int n, const char* note) {
 /* The samples the decoder read over the whole run, every visit included. */
 uint64_t
 samplesRead(void) {
-    std::lock_guard<std::mutex> hold(g_lock);
+    const std::lock_guard<std::mutex> hold(g_lock);
     uint64_t samples = 0U;
     for (const auto& v : g_visits) {
         samples += v.samples;
