@@ -326,28 +326,81 @@ soapy_select_profile_id(const SoapyProfileSelection& selection) {
     return SoapyProfileId::Generic;
 }
 
+namespace {
+/* A driver name, compared whole: its identity bit, 0 for a name the table does not know. */
 uint8_t
-soapy_identity_evidence(const std::string& text) {
-    static const char* const k_airspyhf[] = {"airspyhf", "airspy hf"};
-    static const char* const k_airspy[] = {"airspy"};
-    const std::string lower = lower_copy(text);
-    if (lower.empty()) {
-        return 0U;
-    }
-    if (contains_any_lower(lower, k_airspyhf, sizeof k_airspyhf / sizeof k_airspyhf[0])) {
-        return SOAPY_IDENTITY_AIRSPY_HF;
-    }
-    if (contains_any_lower(lower, k_airspy, 1U)) {
+driver_identity(const std::string& name) {
+    static const char* const k_other[] = {"rtlsdr",   "hackrf", "sdrplay", "lime",   "limesuite",
+                                          "plutosdr", "uhd",    "sddc",    "bladerf"};
+    const std::string lower = lower_copy(name);
+    if (lower == "airspy") {
         return SOAPY_IDENTITY_AIRSPY;
     }
-    SoapyProfileId id = SoapyProfileId::Generic;
-    return detect_profile_from_text(text, &id) ? (uint8_t)SOAPY_IDENTITY_OTHER : (uint8_t)0U;
+    if (lower == "airspyhf") {
+        return SOAPY_IDENTITY_AIRSPY_HF;
+    }
+    if (lower == "remote") {
+        return SOAPY_IDENTITY_PROXY;
+    }
+    return std::any_of(std::begin(k_other), std::end(k_other), [&](const char* k) { return lower == k; })
+               ? (uint8_t)SOAPY_IDENTITY_OTHER
+               : (uint8_t)0U;
+}
+
+std::string
+trimmed(const std::string& text) {
+    const size_t first = text.find_first_not_of(" \t");
+    if (first == std::string::npos) {
+        return std::string();
+    }
+    return text.substr(first, text.find_last_not_of(" \t") - first + 1);
+}
+
+/* The arguments' selectors, key=value pairs separated by commas: driver=, remote:driver=, remote=. */
+uint8_t
+args_identity(const std::string& args) {
+    uint8_t bits = 0U;
+    size_t start = 0;
+    while (start <= args.size()) {
+        const size_t end = std::min(args.find(',', start), args.size());
+        const std::string field = args.substr(start, end - start);
+        const size_t eq = field.find('=');
+        if (eq != std::string::npos) {
+            const std::string key = lower_copy(trimmed(field.substr(0, eq)));
+            const std::string value = trimmed(field.substr(eq + 1));
+            if (key == "driver") {
+                bits |= driver_identity(value);
+            } else if (key == "remote:driver") {
+                bits |= driver_identity(value) & (SOAPY_IDENTITY_AIRSPY | SOAPY_IDENTITY_AIRSPY_HF);
+            } else if (key == "remote") {
+                bits |= SOAPY_IDENTITY_PROXY;
+            }
+        }
+        start = end + 1;
+    }
+    return bits;
+}
+} // namespace
+
+uint8_t
+soapy_identity_evidence(const std::string& driver_key, const std::string& hardware_key, const std::string& args) {
+    const std::string hardware = lower_copy(trimmed(hardware_key));
+    uint8_t bits = driver_identity(trimmed(driver_key));
+    if (hardware == "airspy" || hardware == "airspy mini" || hardware == "airspy r2") {
+        bits |= SOAPY_IDENTITY_AIRSPY;
+    } else if (hardware == "airspyhf") {
+        bits |= SOAPY_IDENTITY_AIRSPY_HF;
+    }
+    return (uint8_t)(bits | args_identity(args));
 }
 
 SoapyReceiver
 soapy_receiver_from_evidence(uint8_t evidence) {
     if (evidence & SOAPY_IDENTITY_AIRSPY) {
         return SoapyReceiver::Airspy;
+    }
+    if (evidence & SOAPY_IDENTITY_PROXY) {
+        return SoapyReceiver::Unknown;
     }
     if (evidence & (SOAPY_IDENTITY_AIRSPY_HF | SOAPY_IDENTITY_OTHER)) {
         return SoapyReceiver::NotAirspy;

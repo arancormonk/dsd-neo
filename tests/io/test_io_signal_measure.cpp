@@ -1749,9 +1749,9 @@ test_quiet_occupancy(dsd_signal_quiet_detector* d) {
 }
 
 /* A SoapySDR Airspy's capture is refused (no check at any rate): its passband leaves the reference under or over the
-   channel's noise by an amount nobody has measured. A SoapySDR device of unknown identity cannot be ruled out as one, so
-   it is refused at the rates an Airspy runs and measured at any other. The same capture from any other device is
-   measured, and a receiver value the build does not know is refused. */
+   channel's noise by an amount nobody has measured. A SoapySDR device of unknown identity (a proxy, opaque keys) cannot
+   be ruled out as one, and a proxy can deliver an Airspy at any rate, so it is refused at every rate. The same capture
+   from any other device is measured, and a receiver value the build does not know is refused. */
 static void
 test_quiet_soapy_airspy(dsd_signal_quiet_detector* d) {
     dsd_signal_request_failure failure = DSD_SIGNAL_REQUEST_OK;
@@ -1768,9 +1768,10 @@ test_quiet_soapy_airspy(dsd_signal_quiet_detector* d) {
     }
     for (uint32_t rate : {1536000U, 2400000U}) {
         auto q = quiet_request(rate, DSD_SIGNAL_QUIET_CLASS_12K5);
-        q.capture.receiver = DSD_SIGNAL_RECEIVER_SOAPY_UNKNOWN;
-        assert(dsd_signal_quiet_receiver_refused(&q.capture) == 0);
         assert(dsd_signal_quiet_detector_begin(d, &q, nullptr, &failure) == 0);
+        q.capture.receiver = DSD_SIGNAL_RECEIVER_SOAPY_UNKNOWN;
+        assert(dsd_signal_quiet_receiver_refused(&q.capture) == 1);
+        assert(dsd_signal_quiet_detector_begin(d, &q, nullptr, &failure) == -1);
         q.capture.receiver = DSD_SIGNAL_RECEIVER_SOAPY_AIRSPY;
         assert(dsd_signal_quiet_detector_begin(d, &q, nullptr, &failure) == -1);
     }

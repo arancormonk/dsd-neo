@@ -1340,8 +1340,9 @@ brackets below), and the log says how to fix it; see
 [What the screens and the log show](#what-the-screens-and-the-log-show).
 
 - An Airspy through SoapySDR (`-i soapy:driver=airspy`), at any rate (`rate`): use the native Airspy input
-  (`-i airspy`), which is checked at 2.5, 3, 6 and 10 MS/s. A SoapySDR device whose driver does not say which device
-  it is (as behind some proxies) gets no check at those four rates either, since it may be an Airspy (`rate`). A
+  (`-i airspy`), which is checked at 2.5, 3, 6 and 10 MS/s. A SoapySDR device reached through a proxy
+  (`driver=remote`), or whose driver does not say which device it is, gets no check at any rate either, since it may
+  be an Airspy (`rate`). A
   HackRF through SoapySDR is checked at the 10 MS/s it normally runs (a HackRF moved to a lower rate near the top of
   the tuning range is checked only if that rate is one the check covers).
 - An RTL-SDR whose tuner takes offset tuning (an E4000, for example), which DSD-neo turns on by default over USB and
@@ -1407,9 +1408,9 @@ setting off and on logs them again. `<channel>` is a target's label (or its id w
 - `rate`: `... channels at 3.2 Msps, a sample rate it was not calibrated for; docs/trunk-scan.md lists the rates it
   checks.` The checked rates are in the list above; on SoapySDR choose a device rate among them. An Airspy through
   SoapySDR logs `... channels on an Airspy through SoapySDR; use the native Airspy input (-i airspy) to have them
-  checked.`, and a SoapySDR device that may be an Airspy `... channels at 2.5 Msps on this SoapySDR device: its driver
-  did not say which device it is, and an Airspy, which it cannot check through SoapySDR, runs this rate. For an
-  Airspy, use the native Airspy input (-i airspy).`
+  checked.`, and a SoapySDR device that may be an Airspy `... channels on this SoapySDR device: it is reached through a
+  proxy, or its driver did not say which device it is, so an Airspy, which it cannot check through SoapySDR, cannot be
+  ruled out. For an Airspy, use the native Airspy input (-i airspy).`
 - `width`: `... <channel> <MHz> MHz at NFM 13.5 kHz, a width it was not calibrated for; set --nfm-bandwidth-hz to
   8000, 10000, 11250, 12000, 12500, 15000, 16000, 20000 or 25000 to have it checked.` (on AM: `--am-bandwidth-hz` to
   5000, 6000, 8000, 8333, 10000, 15000 or 20000), `... <channel> <MHz> MHz: it has no NFM width set; set

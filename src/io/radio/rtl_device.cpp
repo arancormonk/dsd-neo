@@ -507,8 +507,9 @@ struct rtl_device {
     char soapy_driver_key[64] = {};
     char soapy_hardware_key[128] = {};
     /* Every identity bit the opened device's lookups gave (dsdneo::soapy_identity_evidence()), latched for the handle:
-       a later lookup that throws or comes back empty adds nothing and takes nothing away. */
-    uint8_t soapy_identity_evidence = 0U;
+       a later lookup that throws or comes back empty adds nothing and takes nothing away. Atomic: configure ors bits in
+       under soapy_lock while rtl_device_signal_receiver() reads it from any thread. */
+    std::atomic<uint8_t> soapy_identity_evidence{0U};
     char soapy_native_stream_format[16] = {};
     char soapy_requested_profile[32] = {};
     char soapy_requested_antenna[64] = {};
@@ -886,12 +887,23 @@ rtl_device_signal_rotation_hz(const struct rtl_device* dev, int fs4_shift_active
     return fs4_shift_active ? (int32_t)(rate_hz / 4U) : 0;
 }
 
+#if defined(USE_SOAPYSDR) || defined(DSD_NEO_ENABLE_INTERNAL_TEST_HOOKS)
+/* Latch what the cached keys and the device arguments' selectors say about the device (rtl_device_signal_receiver()).
+   SDK-independent, so a build without SoapySDR whose test seam calls it has it too. */
+static void
+soapy_note_identity_locked(struct rtl_device* dev) {
+    dev->soapy_identity_evidence.fetch_or(
+        dsdneo::soapy_identity_evidence(dev->soapy_driver_key, dev->soapy_hardware_key, dev->soapy_args_string),
+        std::memory_order_acq_rel);
+}
+#endif
+
 int
 rtl_device_signal_receiver(const struct rtl_device* dev) {
     if (!dev || dev->backend != RTL_BACKEND_SOAPY) {
         return DSD_SIGNAL_RECEIVER_OTHER;
     }
-    switch (dsdneo::soapy_receiver_from_evidence(dev->soapy_identity_evidence)) {
+    switch (dsdneo::soapy_receiver_from_evidence(dev->soapy_identity_evidence.load(std::memory_order_acquire))) {
         case dsdneo::SoapyReceiver::Airspy: return DSD_SIGNAL_RECEIVER_SOAPY_AIRSPY;
         case dsdneo::SoapyReceiver::NotAirspy: return DSD_SIGNAL_RECEIVER_OTHER;
         default: return DSD_SIGNAL_RECEIVER_SOAPY_UNKNOWN;
@@ -3308,8 +3320,6 @@ rtl_device_test_rate_queries(int backend, uint32_t device_rate_hz, uint32_t requ
     return rtl_device_rate_written_for(&dev, requested_hz, out_written_hz);
 }
 
-static void soapy_note_identity_locked(struct rtl_device* dev);
-
 extern "C" int
 rtl_device_test_signal_receiver(int backend, const char* driver_key, const char* hardware_key,
                                 const char* requested_profile) {
@@ -4799,14 +4809,6 @@ soapy_select_profile_locked(struct rtl_device* dev) {
     selection.hardware_key = dev->soapy_hardware_key;
     selection.args = dev->soapy_args_string;
     dev->soapy_profile_id = (int)dsdneo::soapy_select_profile_id(selection);
-}
-
-/* Latch what the cached keys and the device arguments say about the device (rtl_device_signal_receiver()). */
-static void
-soapy_note_identity_locked(struct rtl_device* dev) {
-    dev->soapy_identity_evidence |= (uint8_t)(dsdneo::soapy_identity_evidence(dev->soapy_driver_key)
-                                              | dsdneo::soapy_identity_evidence(dev->soapy_hardware_key)
-                                              | dsdneo::soapy_identity_evidence(dev->soapy_args_string));
 }
 
 /* Read the opened device's keys. A lookup that throws keeps the key read before (the open's): a refresh at configure
@@ -9150,7 +9152,7 @@ rtl_device_init_common_state(struct rtl_device* dev) {
     dev->soapy_args_string[0] = '\0';
     dev->soapy_driver_key[0] = '\0';
     dev->soapy_hardware_key[0] = '\0';
-    dev->soapy_identity_evidence = 0U;
+    dev->soapy_identity_evidence.store(0U, std::memory_order_release);
     dev->soapy_native_stream_format[0] = '\0';
     dev->soapy_native_full_scale = 0.0;
     dev->soapy_cs16_full_scale = dsdneo::kSoapyCs16DefaultFullScale;
@@ -13503,6 +13505,14 @@ class RtlTestSoapyGainDevice : public SoapySDR::Device {
             throw std::runtime_error("hardware key lookup failed");
         }
         return fake_->hardware_key ? fake_->hardware_key : "";
+    }
+
+    std::vector<std::string>
+    getStreamFormats(const int direction, const size_t channel) const override {
+        (void)direction;
+        (void)channel;
+        return fake_->stream_formats ? std::vector<std::string>{SOAPY_SDR_CS16, SOAPY_SDR_CF32}
+                                     : std::vector<std::string>{};
     }
 
     std::string

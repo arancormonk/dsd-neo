@@ -409,6 +409,14 @@ test_receiver_identity_through_open(void) {
         {"an Airspy HF+", "AirspyHF", "AirspyHF+", nullptr, nullptr, 0, 0, DSD_SIGNAL_RECEIVER_OTHER},
         {"opaque keys behind a proxy", "remote", "custom", nullptr, nullptr, 0, 0, DSD_SIGNAL_RECEIVER_SOAPY_UNKNOWN},
         {"keys that never read", "Airspy", "Airspy", nullptr, nullptr, 2, 2, DSD_SIGNAL_RECEIVER_SOAPY_UNKNOWN},
+        /* The two proxy cases: an Airspy whose key lookups fail behind a proxy named for a HackRF, and opaque keys
+           behind a proxy named for an HF+ with a selector naming the Airspy behind it. */
+        {"an Airspy behind a proxy, keys failing, hostname naming a HackRF", "Airspy", "Airspy",
+         "driver=remote,remote=hackrf-lab", nullptr, 2, 2, DSD_SIGNAL_RECEIVER_SOAPY_UNKNOWN},
+        {"opaque keys behind a proxy, its selector naming the Airspy", "remote", "custom",
+         "driver=remote,remote:driver=airspy,remote=airspyhf-lab", nullptr, 0, 0, DSD_SIGNAL_RECEIVER_SOAPY_AIRSPY},
+        {"a HackRF behind a proxy named for an Airspy", "HackRF", "HackRF One", "driver=remote,remote=airspy-lab",
+         nullptr, 0, 0, DSD_SIGNAL_RECEIVER_SOAPY_UNKNOWN},
     };
     static const double only_2500k[] = {2.5e6};
     for (const IdentityCase& c : cases) {
@@ -421,6 +429,7 @@ test_receiver_identity_through_open(void) {
         fake.listed_rates = only_2500k;
         fake.listed_rate_count = 1U;
         fake.bandwidth_request_hz = -1;
+        fake.stream_formats = 1;
         fake.driver_key_throws = c.open_throws;
         fake.hardware_key_throws = c.open_throws;
         rtl_device* dev = rtl_device_test_soapy_gain_device(&fake, 0);
@@ -436,12 +445,13 @@ test_receiver_identity_through_open(void) {
         rtl_soapy_config cfg{};
         cfg.profile = c.profile;
         cfg.bandwidth_hz = -1;
-        (void)rtl_device_configure_soapy(dev, &cfg);
+        char label[160];
+        DSD_SNPRINTF(label, sizeof label, "%s: the configure succeeds", c.label);
+        expect_true(label, rtl_device_configure_soapy(dev, &cfg) == 0);
         expect_true(c.label, rtl_device_signal_receiver(dev) == c.want);
         rtl_stream_test_capture_result got{};
         got.signal_receiver = -1;
         const int opened = rtl_stream_test_open_radio_capture(RTL_STREAM_TEST_SOURCE_SOAPY, dev, opts, kCenterHz, &got);
-        char label[160];
         DSD_SNPRINTF(label, sizeof label, "%s: the stream's captures name it", c.label);
         expect_true(label, opened == 0 && got.signal_receiver == c.want);
         free(opts);

@@ -777,6 +777,8 @@ typedef struct {
        next driver_key_throws / hardware_key_throws lookups throwing; else the keys are set as configured. args: the
        device arguments it was opened with (NULL: none, a bare -i soapy). */
     int identity_from_device;
+    /* getStreamFormats() offers CS16 and CF32 (0: none, as a driver whose formats cannot be listed). */
+    int stream_formats;
     int driver_key_throws;
     int hardware_key_throws;
     const char* args;

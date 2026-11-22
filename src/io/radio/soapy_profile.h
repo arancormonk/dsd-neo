@@ -96,23 +96,27 @@ const SoapyProfile& soapy_profile_by_id(SoapyProfileId id);
 bool soapy_profile_parse_name(const std::string& value, SoapyProfileId* out_id);
 SoapyProfileId soapy_select_profile_id(const SoapyProfileSelection& selection);
 
-/* What a SoapySDR identity string (a driver key, a hardware key, the device arguments) says about the device, as bits:
-   SOAPY_IDENTITY_AIRSPY names an Airspy, SOAPY_IDENTITY_AIRSPY_HF an Airspy HF+ (its keys hold "airspy" but it is not
-   one), SOAPY_IDENTITY_OTHER another device the profile detection knows; 0 says nothing (empty, or opaque such as a
-   proxy's "remote"). */
+/* What an opened SoapySDR handle's exact identifying fields say about the device, as bits. Only these count, compared
+   whole and without case: the driver key it reported (airspy; airspyhf; remote, a proxy; or a driver the table knows:
+   rtlsdr, hackrf, sdrplay, lime, limesuite, plutosdr, uhd, sddc, bladerf), its hardware key (airspy, airspy mini,
+   airspy r2; airspyhf), and the device arguments' selectors parsed as comma-separated key=value pairs: driver= (as
+   the driver key), a proxy's remote:driver= (airspy or airspyhf only), and a remote= key, which makes it a proxy.
+   Hostnames, labels, serials and any other text say nothing. SOAPY_IDENTITY_AIRSPY names an Airspy,
+   SOAPY_IDENTITY_AIRSPY_HF an Airspy HF+, SOAPY_IDENTITY_OTHER another known driver, SOAPY_IDENTITY_PROXY a proxy. */
 enum : uint8_t {
     SOAPY_IDENTITY_AIRSPY = 1,
     SOAPY_IDENTITY_AIRSPY_HF = 2,
     SOAPY_IDENTITY_OTHER = 4,
+    SOAPY_IDENTITY_PROXY = 8,
 };
 
-uint8_t soapy_identity_evidence(const std::string& text);
+uint8_t soapy_identity_evidence(const std::string& driver_key, const std::string& hardware_key,
+                                const std::string& args);
 
-/* The device an opened SoapySDR handle is, from every identity bit its lookups gave (soapy_identity_evidence() of each
-   key and the arguments, or-ed over every lookup so a later failed or empty one takes nothing away): an Airspy as soon
-   as anything named one (a conflicting pair such as an RTL-SDR driver key with an Airspy hardware key included: the
-   Airspy is the one that cannot be ruled out); else not an Airspy when anything named another device or an HF+; else
-   unknown. */
+/* The device an opened SoapySDR handle is, from every identity bit its lookups gave (or-ed over every lookup, so a
+   later failed or empty one takes nothing away): an Airspy as soon as anything named one (a conflicting pair
+   included: the Airspy is the one that cannot be ruled out); else unknown for a proxy, which can stand for any device
+   at any rate; else not an Airspy when a known other driver or an HF+ was named; else unknown. */
 enum class SoapyReceiver : uint8_t { NotAirspy = 0, Airspy = 1, Unknown = 2 };
 SoapyReceiver soapy_receiver_from_evidence(uint8_t evidence);
 

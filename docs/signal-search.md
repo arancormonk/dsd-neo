@@ -1308,8 +1308,10 @@ The check runs only where the calibration rendered and validated it, matched exa
   through SoapySDR normally runs 10 MS/s and is checked there, on the 10 MS/s calibration, which used a flat noise floor; an
   Airspy HF+ runs its own rates below 1 MS/s and gets no check. An Airspy through SoapySDR gets no check at any rate:
   its passband leaves the reference under or over the channel's noise by an amount nobody has measured. Nor does a
-  SoapySDR device whose driver names no device (no key or device argument names one, as behind some proxies) at 2.5,
-  3, 6 or 10 MS/s, where it may be an Airspy; at any other rate it is checked as any device is.
+  SoapySDR device that cannot be ruled out as an Airspy, at any rate: one reached through a proxy (`driver=remote`),
+  which can deliver any device at any rate, or one whose driver and hardware keys name no device dsd-neo knows. Only
+  the opened device's own keys and the `driver=` selectors of the device arguments identify it; hostnames, labels and
+  serials do not.
 - A native Airspy input (`-i airspy`) delivers centred I/Q with no quarter-rate shift, tuned on the channel. It is
   checked under its own policy at 2.5, 3, 6 and 10 MS/s (`dsd_signal_quiet_airspy_centred_rate_supported()`), with
   the reference span narrowed to the flat part of its passband (±0.25 of the rate at 2.5 and 3 MS/s, ±0.375 at 6 and

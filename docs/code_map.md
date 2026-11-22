@@ -699,7 +699,7 @@ Generated (do not edit/commit):
       with offset tuning on, an E4000 by default over USB, or the shift off, and any other rotation are not covered),
       or `DSD_SIGNAL_GEOMETRY_AIRSPY_CENTRED` (a native Airspy, tuned on the channel: rotation 0, offset 0; a SoapySDR
       Airspy rotates and runs the default policy, and `dsd_signal_quiet_receiver_refused()` makes it RATE at any rate,
-      as it does a SoapySDR device of unknown identity at an Airspy rate). The verdict's WARN detail
+      as it does a SoapySDR device of unknown identity). The verdict's WARN detail
       (`quiet_capture_receiver_detail()`) says which receiver it is: TUNER on a native Airspy capture is
       `SCAN_QUIET_WARN_AIRSPY`, else `_CENTRED`; RATE is `_SOAPY_AIRSPY` or `_SOAPY_UNKNOWN` (both lines point to
       `-i airspy`) or the plain `_RATE`. A rate the policy's table did not validate is RATE
@@ -11110,21 +11110,23 @@ Runtime controls (via `include/dsd-neo/io/rtl_stream_c.h`):
   in collection and a completed report waiting to be read, as any capture change does.
   The receiver (`dsd_signal_capture.receiver`, from `rtl_device_signal_receiver()`, set beside
   the geometry and compared the same way) comes from the identity bits the SoapySDR handle's
-  lookups gave, latched on the device for the handle's life (`soapy_identity_evidence`, or-ed by
-  `soapy_cache_identity_locked()` at the open and again at configure; a lookup that throws keeps
-  the key read before, so a refresh never turns a known device into an unknown one).
-  `dsdneo::soapy_identity_evidence()` reads one string (driver key, hardware key, device
-  arguments): an Airspy HF+ first (its keys hold "airspy"), then an Airspy, then any other device
-  the profile detection knows; empty or opaque text (a proxy's "remote") says nothing. The
-  requested profile never counts. `dsdneo::soapy_receiver_from_evidence()` then gives
-  `DSD_SIGNAL_RECEIVER_SOAPY_AIRSPY` as soon as anything named an Airspy (a conflicting pair,
-  such as an RTL-SDR driver key with an Airspy hardware key, included: the Airspy cannot be ruled
-  out), `DSD_SIGNAL_RECEIVER_OTHER` (0) when something named another device or an HF+, and
-  `DSD_SIGNAL_RECEIVER_SOAPY_UNKNOWN` when nothing named anything; every other backend is 0.
-  `dsd_signal_quiet_receiver_refused()` (inline in the header, so the detector and the scan read
-  one rule) refuses a SoapySDR Airspy at any rate, an unknown SoapySDR device at the rates an
-  Airspy runs (2.5, 3, 6, 10 MS/s) and a receiver value the build does not know; the scan gives
-  those `No check: rate`. A SoapySDR Airspy's passband leaves the reference under or over the
+  lookups gave, latched on the device for the handle's life (`soapy_identity_evidence`, an
+  atomic or-ed by `soapy_note_identity_locked()` at the open and again at configure, read with
+  acquire by any thread; a lookup that throws keeps the key read before, so a refresh never
+  turns a known device into an unknown one). `dsdneo::soapy_identity_evidence()` reads only the
+  handle's exact identifying fields, compared whole without case: the driver key (airspy;
+  airspyhf; remote, a proxy; or a known driver: rtlsdr, hackrf, sdrplay, lime, limesuite,
+  plutosdr, uhd, sddc, bladerf), the hardware key (airspy, airspy mini, airspy r2; airspyhf), and
+  the device arguments parsed as comma-separated key=value pairs, of which only driver=,
+  remote:driver= (airspy or airspyhf) and a remote= key count. Hostnames, labels, serials and any
+  other text never count, nor does the requested profile.
+  `dsdneo::soapy_receiver_from_evidence()` then gives `DSD_SIGNAL_RECEIVER_SOAPY_AIRSPY` as soon
+  as anything named an Airspy (a conflicting pair included: the Airspy cannot be ruled out),
+  `DSD_SIGNAL_RECEIVER_SOAPY_UNKNOWN` for a proxy (it can stand for any device at any rate),
+  `DSD_SIGNAL_RECEIVER_OTHER` (0) when a known other driver or an HF+ was named, and UNKNOWN when
+  nothing was; every other backend is 0. `dsd_signal_quiet_receiver_refused()` (inline in the
+  header, so the detector and the scan read one rule) refuses anything but OTHER at every rate;
+  the scan gives those `No check: rate`. A SoapySDR Airspy's passband leaves the reference under or over the
   channel's noise by an amount nobody has measured. Geometry and receiver are the last fields,
   so positional initialisers of the ones before them keep their meaning.
   The rotation (`dsd_signal_capture.rotation_hz`, from `rtl_device_signal_rotation_hz()`) is

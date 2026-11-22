@@ -262,15 +262,16 @@ const uint32_t* scan_quiet_warn_widths(int kind, size_t* count);
 
 /** The receiver detail scan_quiet_format_warn() takes: why the input, the tuner or the rate has no check. */
 enum {
-    SCAN_QUIET_WARN_AUDIO = 0,         /**< INPUT: audio input */
-    SCAN_QUIET_WARN_REPLAY = 1,        /**< INPUT: an I/Q replay */
-    SCAN_QUIET_WARN_NO_RADIO = 2,      /**< INPUT: a build without radio support */
-    SCAN_QUIET_WARN_AIRSPY = 3,        /**< TUNER: a native Airspy capture that is not centred */
-    SCAN_QUIET_WARN_CENTRED = 4,       /**< TUNER: offset tuning, or the Fs/4 shift off */
-    SCAN_QUIET_WARN_STREAM = 5,        /**< INPUT: an I/Q stream (iqtcp:, iqudp:) */
-    SCAN_QUIET_WARN_RATE = 6,          /**< RATE: a rate the calibration did not validate (any other detail too) */
-    SCAN_QUIET_WARN_SOAPY_AIRSPY = 7,  /**< RATE: an Airspy through SoapySDR, at any rate */
-    SCAN_QUIET_WARN_SOAPY_UNKNOWN = 8, /**< RATE: a SoapySDR device that may be an Airspy, at an Airspy rate */
+    SCAN_QUIET_WARN_AUDIO = 0,        /**< INPUT: audio input */
+    SCAN_QUIET_WARN_REPLAY = 1,       /**< INPUT: an I/Q replay */
+    SCAN_QUIET_WARN_NO_RADIO = 2,     /**< INPUT: a build without radio support */
+    SCAN_QUIET_WARN_AIRSPY = 3,       /**< TUNER: a native Airspy capture that is not centred */
+    SCAN_QUIET_WARN_CENTRED = 4,      /**< TUNER: offset tuning, or the Fs/4 shift off */
+    SCAN_QUIET_WARN_STREAM = 5,       /**< INPUT: an I/Q stream (iqtcp:, iqudp:) */
+    SCAN_QUIET_WARN_RATE = 6,         /**< RATE: a rate the calibration did not validate (any other detail too) */
+    SCAN_QUIET_WARN_SOAPY_AIRSPY = 7, /**< RATE: an Airspy through SoapySDR, at any rate */
+    SCAN_QUIET_WARN_SOAPY_UNKNOWN =
+        8, /**< RATE: a SoapySDR device that may be an Airspy (a proxy, unknown keys), at any rate */
 };
 
 /** The channel detail scan_quiet_format_warn() takes (bits): what in the session gives MODES (the ProVoice, X2-TDMA

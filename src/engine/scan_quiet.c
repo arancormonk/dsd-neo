@@ -359,11 +359,10 @@ quiet_format_receiver_warn(char* out, size_t out_size, int rate_line, int detail
     }
     if (detail == SCAN_QUIET_WARN_SOAPY_UNKNOWN) {
         return DSD_SNPRINTF(out, out_size,
-                            "WARNING: scan: silent channel skip cannot check channels at %s Msps on this SoapySDR "
-                            "device: its driver did not say which device it is, and an Airspy, which it cannot check "
-                            "through SoapySDR, runs this rate. For an Airspy, use the native Airspy input (-i airspy). "
-                            "Normal scan timing applies.\n",
-                            rate);
+                            "WARNING: scan: silent channel skip cannot check channels on this SoapySDR device: it is "
+                            "reached through a proxy, or its driver did not say which device it is, so an Airspy, "
+                            "which it cannot check through SoapySDR, cannot be ruled out. For an Airspy, use the "
+                            "native Airspy input (-i airspy). Normal scan timing applies.\n");
     }
     return DSD_SNPRINTF(out, out_size,
                         "WARNING: scan: silent channel skip cannot check channels at %s Msps, a sample rate it was "
@@ -969,7 +968,7 @@ quiet_capture_receiver_reason(const dsd_signal_capture* cap) {
             || cap->capture_offset_hz != cap->rotation_hz) {
             return (uint8_t)DSD_SCAN_QUIET_REASON_TUNER;
         }
-        /* A SoapySDR Airspy at any rate, or a SoapySDR device that cannot be ruled out as one at an Airspy rate. */
+        /* A SoapySDR Airspy, or a SoapySDR device that cannot be ruled out as one, at any rate. */
         if (dsd_signal_quiet_receiver_refused(cap)) {
             return (uint8_t)DSD_SCAN_QUIET_REASON_RATE;
         }

@@ -28273,8 +28273,8 @@ test_scan_quiet_capture_policies(void) {
     }
     c = shifted;
     c.receiver = DSD_SIGNAL_RECEIVER_SOAPY_UNKNOWN;
-    rc |= qt_expect("a SoapySDR device of unknown identity at an RTL rate is measured",
-                    quiet_measures_capture(opts, state, &c) == 1);
+    rc |= qt_expect("a SoapySDR device of unknown identity at an RTL rate is refused (a proxy can resample an Airspy)",
+                    quiet_measures_capture(opts, state, &c) == 0);
     quiet_rig_finish(opts, state, dir, path);
     free(opts);
     return rc;
@@ -30445,8 +30445,9 @@ qt_shifted_capture(uint32_t hz, uint32_t rate_hz, uint8_t receiver) {
 }
 
 /* The receiver's reason reaches the WARN line through the trunk scan: a SoapySDR Airspy has no check at its rate and
-   the line points to the native input (-i airspy); a SoapySDR device that may be an Airspy is refused at an Airspy
-   rate with its own line, and the same unknown device at an RTL rate is measured. No line advises SoapySDR. */
+   the line points to the native input (-i airspy); a SoapySDR device that may be an Airspy is refused at every rate
+   with its own line (a proxy can deliver an Airspy at any rate), and another device at an RTL rate is measured. No
+   line advises SoapySDR. */
 static int
 test_scan_quiet_trunk_names_the_soapy_receiver(void) {
     static const char k_targets[] = "a,dmr-conventional,452000000,,2000,1000,,\n"
@@ -30481,15 +30482,23 @@ test_scan_quiet_trunk_names_the_soapy_receiver(void) {
                           DSD_SCAN_QUIET_REASON_RATE);
     rc |= qt_expect_warn("an unknown SoapySDR device: its own line", 2, DSD_SCAN_QUIET_REASON_RATE,
                          SCAN_QUIET_WARN_SOAPY_UNKNOWN, 2500000U, NULL, 0U, 0, 0U);
-    rc |= qt_expect("its line names the rate and the native input",
-                    strstr(g_qt_warn, "2.5 Msps") != NULL && strstr(g_qt_warn, "-i airspy") != NULL);
+    rc |= qt_expect("its line names the proxy and the native input",
+                    strstr(g_qt_warn, "proxy") != NULL && strstr(g_qt_warn, "-i airspy") != NULL);
 
     qt_next_target(opts, state, k_qt_hz_a, 0);
     qt_shifted_capture(k_qt_hz_a, 1536000U, DSD_SIGNAL_RECEIVER_SOAPY_UNKNOWN);
     qt_decode_at(30U);
     qt_pass(opts, state);
-    rc |= qt_expect("an unknown SoapySDR device at an RTL rate is measured",
-                    scan_quiet_phase_get(state) == SCAN_QUIET_REQUESTED && g_tap.requests == 1 && g_qt_warns == 2);
+    rc |= qt_expect_quiet(state, "an unknown SoapySDR device at an RTL rate", DSD_SCAN_QUIET_STATUS_NO_CHECK,
+                          DSD_SCAN_QUIET_REASON_RATE);
+    rc |= qt_expect("nothing requested of it", g_tap.requests == 0);
+
+    qt_next_target(opts, state, k_qt_hz_b, 0);
+    qt_shifted_capture(k_qt_hz_b, 1536000U, DSD_SIGNAL_RECEIVER_OTHER);
+    qt_decode_at(40U);
+    qt_pass(opts, state);
+    rc |= qt_expect("another SoapySDR device at an RTL rate is measured",
+                    scan_quiet_phase_get(state) == SCAN_QUIET_REQUESTED && g_tap.requests == 1);
     quiet_rig_finish(opts, state, dir, path);
     free(opts);
     return rc;
