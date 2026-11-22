@@ -56,6 +56,7 @@
 #include "dmr_call_channel.h"
 #include "dmr_crc_provenance.h"
 #include "dmr_reason.h"
+#include "dmr_slot_end.h"
 #include "dmr_t3_channels_internal.h"
 #include "dmr_tiii_site.h"
 #include "dmr_unit_activity.h"
@@ -1094,18 +1095,16 @@ dmr_cspdu_pf0_p_clear_for_followed_call(const dsd_state* state, const dmr_cspdu_
     return dmr_sm_names_followed_call(ctx, state, slot, f->gi, f->target);
 }
 
-/* The addressed slot's canonical call ends with its clear, and its row with it: a companion slot that keeps the carrier
-   keeps its own call, and this one would otherwise stay live wherever its terminator LC was missed. A clear whose
-   check could not pass (an MBC header that failed, a RAS signature not accepted) ends it recoverably, as an unverified
-   terminator does. */
+/* The addressed slot's call ends with its clear, as a terminator ends it (dmr_slot_end_call()): its row, its live
+   crypto, talkgroup key autoload and alias/GPS metadata. A companion slot that keeps the carrier keeps its own call and
+   fields, and this one would otherwise stay live wherever its terminator LC was missed. A clear whose check could not
+   pass (an MBC header that failed, a RAS signature not accepted) ends it recoverably and keeps the metadata, as an
+   unverified terminator does. */
 static void
 dmr_cspdu_pf0_p_clear_end_slot_call(dsd_opts* opts, dsd_state* state) {
-    const uint8_t slot = (uint8_t)(state->currentslot & 1);
     const int checked = dmr_csbk_crc_checked(state) || dmr_csbk_ras_accepted(opts, state);
-    if (dsd_call_state_end_ex(state, slot, 0.0, checked ? DSD_CALL_END_EXPLICIT : DSD_CALL_END_UNVERIFIED_TERMINATOR)
-        > 0) {
-        dsd_event_sync_slot(opts, state, slot);
-    }
+    dmr_slot_end_call(opts, state, (uint8_t)(state->currentslot & 1),
+                      checked ? DSD_CALL_END_EXPLICIT : DSD_CALL_END_UNVERIFIED_TERMINATOR, checked);
 }
 
 /* P_CLEAR (TS 102 361-4 §7.1.1.3.2). The standard one (FID 0) is read as Table 7.30: it applies only on the followed

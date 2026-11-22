@@ -13465,9 +13465,11 @@ Private per-protocol modules worth knowing about:
   names now on the followed carrier (refreshed against its canonical call first), so a checked voice LC naming another
   call since the grant replaces the grant's identity; the grant's identity counts only while the slot names none.
   Otherwise it prints "not for the followed call" ("no followed call" when nothing is followed) and changes nothing: no
-  burst hint, activity, call end, force latch or release. Applied, it ends its own slot's canonical call (EXPLICIT;
-  recoverable as an unverified terminator when neither checked nor RAS-accepted) and syncs its row, and releases its
-  own slot only, so a busy companion slot keeps the carrier and its call. The synthesized lockout clear
+  burst hint, activity, call end, force latch or release. Applied, it ends its own slot's call through
+  `dmr_slot_end_call()` (`dmr_slot_end.c`, the terminator LC's own end): EXPLICIT, or recoverable as an unverified
+  terminator (crypto stashed for a heal, alias/GPS metadata kept) when neither checked nor RAS-accepted; the row syncs
+  and that slot's live crypto, talkgroup key autoload and metadata reset. It releases its own slot only, so a busy
+  companion slot keeps the carrier, its call and its encryption state. The synthesized lockout clear
   (`dmr_cspdu_release_channel()`) and another FID's opcode 46 keep the carrier-wide release unread. Any clear arms
   `trunk_sm_force_release` only while the machine follows a call (`dmr_sm_follows_call()`, TUNED): on a composite
   TSCC's payload slot, or after an idle XPT status marked the receiver tuned (`trunk_is_tuned`) on the control channel,

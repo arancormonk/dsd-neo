@@ -6,10 +6,10 @@
 /*
  * P_CLEAR on a payload channel (TS 102 361-4 Table 7.30): it releases the followed call only when received on that
  * call's slot and addressed to it (its talkgroup, either party of a private call, or ALLMSI); a busy companion slot
- * keeps the carrier and its call while the cleared slot's call ends; the slot's call is the one its latest checked LC
- * names; a checked clear naming another TSCC makes it a hunt candidate; TG Hold forces the release, and the encryption
- * lockout's synthesized clear always applies, arming the forced release only while a call is followed. Frequencies are
- * invented.
+ * keeps the carrier, its call and its encryption state while the cleared slot's call ends with its own; the slot's
+ * call is the one its latest checked LC names; a checked clear naming another TSCC makes it a hunt candidate; TG Hold
+ * forces the release, and the encryption lockout's synthesized clear always applies, arming the forced release only
+ * while a call is followed. Frequencies are invented.
  */
 
 #include <dsd-neo/protocol/dmr/dmr_utils_api.h>
@@ -22,6 +22,7 @@
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/state_ext.h>
 #include <dsd-neo/core/synctype_ids.h>
+#include <dsd-neo/protocol/dmr/dmr.h>
 #include <dsd-neo/protocol/dmr/dmr_trunk_sm.h>
 #include <dsd-neo/runtime/decode_clock.h>
 #include <dsd-neo/runtime/trunk_cc_candidates.h>
@@ -295,6 +296,17 @@ test_p_clear_busy_companion_kept(void) {
     accepted_voice_sync(1U);
     const dmr_sm_ctx_t* ctx = dmr_sm_get_ctx();
     assert(ctx->slots[0].voice_active == 1 && ctx->slots[1].voice_active == 1);
+    // Both calls encrypted (invented ALG, key and MI values), with a talker alias each.
+    state.dmr_so = state.dmr_soR = 0x40U;
+    state.payload_algid = 0x21;
+    state.payload_keyid = 7;
+    state.payload_mi = 0x1122334455ULL;
+    state.payload_algidR = 0x25;
+    state.payload_keyidR = 9;
+    state.payload_miR = 0x5566778899ULL;
+    state.dmr_enc_class[0] = state.dmr_enc_class[1] = DMR_ENC_CLASS_ENC;
+    DSD_SNPRINTF(state.generic_talker_alias[0], sizeof(state.generic_talker_alias[0]), "%s", "UNIT A");
+    DSD_SNPRINTF(state.generic_talker_alias[1], sizeof(state.generic_talker_alias[1]), "%s", "UNIT B");
 
     send_pclear(0U, 0U, 1U, 1234U);
     assert(opts.trunk_is_tuned == 1);
@@ -309,16 +321,30 @@ test_p_clear_busy_companion_kept(void) {
     assert(ts1.end_reason == (uint8_t)DSD_CALL_END_EXPLICIT);
     assert(dsd_call_state_get(&state, 1U, &ts2) > 0 && ts2.phase == DSD_CALL_PHASE_ACTIVE);
     assert(ts2.policy_target_id == 4321U);
+    // The cleared slot's encryption state and alias go with its call, as on a terminator; the companion's stay.
+    assert(state.dmr_so == 0U && state.payload_algid == 0 && state.payload_keyid == 0 && state.payload_mi == 0ULL);
+    assert(state.dmr_enc_class[0] == DMR_ENC_CLASS_NONE && state.generic_talker_alias[0][0] == '\0');
+    assert(state.dmr_soR == 0x40U && state.payload_algidR == 0x25 && state.payload_keyidR == 9);
+    assert(state.payload_miR == 0x5566778899ULL && state.dmr_enc_class[1] == DMR_ENC_CLASS_ENC);
+    assert(state.generic_talker_alias[1][0] == 'U');
 
     // A clear whose check could not pass (a RAS signature on a carrier where RAS is not confirmed) ends it recoverably.
     follow_group_ts1();
     observe_call(1U, DSD_CALL_KIND_GROUP_VOICE, 4321U, 43U);
     state.dmrburstR = 16;
+    state.dmr_so = 0x40U;
+    state.payload_algid = 0x21;
+    state.payload_keyid = 7;
+    DSD_SNPRINTF(state.generic_talker_alias[0], sizeof(state.generic_talker_alias[0]), "%s", "UNIT A");
     state.event_crc_invalid[0] = DSD_CRC_RAS_UNVERIFIED;
     send_pclear(0U, 0U, 1U, 1234U);
     state.event_crc_invalid[0] = 0U;
     assert(dsd_call_state_get(&state, 0U, &ts1) > 0 && ts1.phase == DSD_CALL_PHASE_ENDED);
     assert(ts1.end_reason == (uint8_t)DSD_CALL_END_UNVERIFIED_TERMINATOR);
+    // As an unverified terminator: the crypto is stashed for a heal, then cleared; the alias stays.
+    assert(state.dmr_heal_valid[0] == 1U && state.dmr_heal_so[0] == 0x40U && state.dmr_heal_epoch[0] == ts1.epoch);
+    assert(state.dmr_so == 0U && state.payload_algid == 0 && state.payload_keyid == 0);
+    assert(state.generic_talker_alias[0][0] == 'U');
     assert(dsd_call_state_get(&state, 1U, &ts2) > 0 && ts2.phase == DSD_CALL_PHASE_ACTIVE);
 }
 
