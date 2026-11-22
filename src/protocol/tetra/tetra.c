@@ -1023,15 +1023,17 @@ tetra_process_sb(dsd_opts* opts, dsd_state* state) {
     }
     state->tetra_sync.sb1_valid = 0;
     tetra_read_dibits(opts, state, tail, tail_soft, SB_TAIL_DIBITS);
-    if (tetra_sb_try_dmo(opts, state, tail, tail_soft)) {
-        return;
-    }
     if (!tetra_confirm_burst_current(state)) {
         /* A carrier boundary inside the read (a replay retune), a stream flush or an input interruption lost the
-         * burst: its BSCH, or the DSB only the soft decision decodes, and the rest of its read are not one
+         * burst: its BSCH or SCH/S, whichever decision decodes it, and the rest of its read are not one
          * transmission's, so neither its network and colour code nor its polarity is taken on for the carrier the
-         * receiver is on now. */
+         * receiver is on now, and its block proves nothing to the frame-sync hunt: a flush alone moves no carrier
+         * that would discount the verdict (process_frame_settle_verdict()), so a block noted from before it would
+         * restart the hunt's dwell on the stretch after it. */
         state->tetra_sync.sb1_soft_valid = 0;
+        return;
+    }
+    if (tetra_sb_try_dmo(opts, state, tail, tail_soft)) {
         return;
     }
     const tetra_sb_kind kind = tetra_sb_bsch(opts, state, ts, tail, tail_soft);

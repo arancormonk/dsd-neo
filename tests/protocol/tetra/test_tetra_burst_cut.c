@@ -434,14 +434,21 @@ test_sb_tail(int cut_at, cut_kind kind) {
    moves the symbol clock's epoch and nothing else: the carrier count and the interruption flag stay. The symbols after
    it are another stretch of the stream, so the read is lost all the same: a DSB, whether the hard or only the soft
    decision decoded its SCH/S, applies neither its SCH/S from before the flush nor its SCH/H from after it, and a
-   trunked SB takes on neither its BSCH nor its block 2. The flush comes on the first dibit of the tail. */
+   trunked SB takes on neither its BSCH nor its block 2. The flush comes on the first dibit of the tail. Nor does the
+   DSB prove the profile to the frame-sync hunt: its SCH/S came before the flush, on the stretch the flush dropped, so
+   the dispatch reports it unproductive and the hunt's dwell on the new stretch is not started over by it. */
 static void
 test_flush_in_the_tail(void) {
     for (int soft_only = 0; soft_only <= 1; soft_only++) {
         session s = session_open();
         const uint32_t epoch = s.state->rx_id.epoch;
-        (void)dsb(&s, 1, soft_only, 0, CUT_FLUSH);
+        const dsd_frame_verdict verdict = dsb(&s, 1, soft_only, 0, CUT_FLUSH);
         assert(g_cuts == 1 && g_pos == TAIL_DIBITS);
+        if (verdict != DSD_FRAME_VERDICT_UNPRODUCTIVE) {
+            DSD_FPRINTF(stderr, "FAIL %s DSB, stream flush in its tail: verdict %d\n", soft_only ? "soft-only" : "hard",
+                        (int)verdict);
+        }
+        assert(verdict == DSD_FRAME_VERDICT_UNPRODUCTIVE);
         expect_nothing_of_the_dsb(
             &s, epoch, soft_only ? "soft-only DSB, stream flush in its tail" : "DSB, stream flush in its tail");
         session_close(&s);
