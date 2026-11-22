@@ -1802,6 +1802,26 @@ class CommandRecorder : public QObject {
         Q_EMIT dmrChannelResultReceived(result);
     }
 
+    /* Discussion #900 F3: the Channels sheet's "Try saving again", recorded as {systemUid, lpcn, op, hz}, answered as
+     * CommandBridge::saveDmrChannelEdit() answers: setDmrChannelSaveResult()'s map, {saved: true} until a case sets
+     * one. */
+    Q_INVOKABLE QVariantMap
+    saveDmrChannelEdit(const QString& systemUid, int lpcn, int op, qint64 hz) {
+        m_dmr_channel_saves.append(
+            QVariantMap{{"systemUid", systemUid}, {"lpcn", lpcn}, {"op", op}, {"hz", QVariant::fromValue(hz)}});
+        return m_dmr_channel_save_result;
+    }
+
+    Q_INVOKABLE void
+    setDmrChannelSaveResult(const QVariantMap& result) {
+        m_dmr_channel_save_result = result;
+    }
+
+    Q_INVOKABLE QVariantList
+    dmrChannelSaves() const {
+        return m_dmr_channel_saves;
+    }
+
     /* Relaxed CRC set to a value (DSD_APP_CMD_AGGR_SYNC_TOGGLE with a payload). */
     Q_INVOKABLE bool
     setRelaxedCrc(bool on) {
@@ -2225,6 +2245,8 @@ class CommandRecorder : public QObject {
         m_lockout_accepted = true;
         m_dmr_channel_accepted = true;
         m_dmr_channel_requests.clear();
+        m_dmr_channel_saves.clear();
+        m_dmr_channel_save_result = dmrChannelSaved();
         m_lockout_requests.clear();
         m_relaxed_crc_accepted = true;
         m_relaxed_crc_requests.clear();
@@ -2539,6 +2561,14 @@ class CommandRecorder : public QObject {
     bool m_dmr_channel_accepted = true;
     quint32 m_last_dmr_channel_request = 0;
     QVariantList m_dmr_channel_requests;
+
+    static QVariantMap
+    dmrChannelSaved() {
+        return {{"saved", true}, {"saveError", QString()}};
+    }
+
+    QVariantList m_dmr_channel_saves;
+    QVariantMap m_dmr_channel_save_result = dmrChannelSaved();
     bool m_recording_accepted = true;
     QString m_recording_refusal;
     QVariantList m_recording_requests;
@@ -7372,6 +7402,7 @@ class Setup : public QObject {
         // Discussion #900 F3: the Monitor's NO FREQ count and the Site sheet's Channels entry.
         metrics[QStringLiteral("noFreqCount")] = 0;
         metrics[QStringLiteral("dmrTier3")] = false;
+        metrics[QStringLiteral("dmrUserChannels")] = false;
         metrics[QStringLiteral("persistTgLockouts")] = true;
         metrics[QStringLiteral("temporaryTgAvoidCount")] = 0;
         metrics[QStringLiteral("callSkipCount")] = 0;

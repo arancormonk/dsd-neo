@@ -204,6 +204,10 @@ class MetricsModel : public QObject {
        session started with a saved system's Tier III channels (--dmr-chan-overrides). */
     Q_PROPERTY(int noFreqCount READ noFreqCount NOTIFY controlChanged)
     Q_PROPERTY(bool dmrTier3 READ dmrTier3 NOTIFY controlChanged)
+    /* Discussion #900 F3: the session's live channel list holds channels of the user's (set or hidden), whatever
+       named the site Tier III: the Channels sheet stays reachable from the Site sheet after the last channel without
+       a frequency that only RAS evidence named was given one. Says nothing of the site's identity (dmrTier3). */
+    Q_PROPERTY(bool dmrUserChannels READ dmrUserChannels NOTIFY controlChanged)
     Q_PROPERTY(bool persistTgLockouts READ persistTgLockouts NOTIFY controlChanged)
     Q_PROPERTY(qulonglong temporaryTgAvoidCount READ temporaryTgAvoidCount NOTIFY controlChanged)
     Q_PROPERTY(qulonglong callSkipCount READ callSkipCount NOTIFY controlChanged)
@@ -1541,6 +1545,11 @@ class MetricsModel : public QObject {
         return m_view.dmr_tier3;
     }
 
+    bool
+    dmrUserChannels() const {
+        return m_view.dmr_user_channels;
+    }
+
     /**
      * @brief Whether a scan rotation is running that hold and avoid can act on.
      *
@@ -2468,6 +2477,7 @@ class MetricsModel : public QObject {
         int enc_lockout_count = 0;
         int no_freq_count = 0;
         bool dmr_tier3 = false;
+        bool dmr_user_channels = false;
         int scan_avoid_count = 0;
         int scan_target_ordinal = 0;
         int scan_target_count = 0;
@@ -2788,7 +2798,8 @@ class MetricsModel : public QObject {
 
         bool
         dmrTier3Equals(const View& other) const {
-            return no_freq_count == other.no_freq_count && dmr_tier3 == other.dmr_tier3;
+            return no_freq_count == other.no_freq_count && dmr_tier3 == other.dmr_tier3
+                   && dmr_user_channels == other.dmr_user_channels;
         }
 
         bool

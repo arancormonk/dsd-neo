@@ -517,7 +517,8 @@ channel number, not its frequency. If DSD-neo does not know that channel's frequ
 - **Site → Channels.** On a DMR Tier III site, the Site sheet has a **Channels** button. It opens the same list:
   **No frequency** (the channels calls went to, with the talkgroup or radios and when each was last heard) and
   **Channels** (every channel that has a frequency, and where it came from: from file, yours, heard from site,
-  unchecked, from a neighbour site, estimated, or hidden).
+  unchecked, from a neighbour site, estimated, or hidden). The button also shows while you have channels of your own
+  in the list. **Channels** lists 50 at a time, by number; **Show more channels** adds the next 50.
 - **Adding a frequency.** Tap a row under **No frequency**, or **Add channel**, and type the frequency in MHz. Use the
   channel number DSD-neo shows. If your list counts each timeslot (DSD+, some RadioReference lists), take
   (number − 1) ÷ 2 and drop the remainder: 603 and 604 are both channel 301. Calls on that channel are followed from
@@ -531,7 +532,10 @@ channel number, not its frequency. If DSD-neo does not know that channel's frequ
   had before, if any.
 - **Kept per saved system.** What you enter is saved with the saved system you are listening to, and applied again
   every time that system starts. It never changes your channel map file. In Explore, or anything that is not a saved
-  system, a change lasts only until you stop listening, and the sheet says so.
+  system, a change lasts only until you stop listening, and the sheet says so. If a change could not be saved, the
+  sheet says so and offers **Try saving again**. If the system's extra decoder arguments (or the app's) already name
+  a channels file with `--dmr-chan-overrides`, that file is the one used: changes are not saved, and a start of a
+  system that has channels of yours stops and says why.
 - **Not under trunk scan.** While a trunk scan runs, the channels can be viewed but not changed.
 
 The same channels can be given to the command-line decoder with `--dmr-chan-overrides` (see

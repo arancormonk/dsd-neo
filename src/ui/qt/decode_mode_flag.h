@@ -20,12 +20,10 @@
 #include <QChar>
 #include <QLatin1String>
 #include <QList>
-#include <QRegularExpression>
 #include <QString>
 #include <QStringList>
 #include <Qt>
 #include <algorithm>
-#include <iterator>
 
 #include <dsd-neo/runtime/config.h>
 #include <dsd-neo/runtime/decode_mode.h>
@@ -57,39 +55,6 @@ decode_mode_for_flag(const QString& flag) {
     /* An empty flag is the engine's own default, the Auto preset (-fa: NXDN and every other digital mode
        except TETRA). */
     return flag.trimmed().isEmpty() ? static_cast<int>(DSDCFG_MODE_AUTO) : -1;
-}
-
-/**
- * @brief Whether a saved decode flag's decode set includes DMR (discussion #900 F3): the last -f token, as the CLI
- * applies its -f options in order and the last one sets the decode set, selects a preset that frames DMR, or it has
- * no -f token at all ("", "-mq"), which leaves the engine's default, Auto.
- *
- * The presets that frame DMR are the ones src/runtime/decode_mode.c sets frame_dmr for: Auto (-fa), DMR (-fs), DMR
- * mono and TDMA (-ft, P25 with DMR). The CLI takes -fr (the single-slot mono decoder) as the DMR preset. A -f token
- * the CLI takes no preset from (the EDACS selectors) frames none.
- *
- * The decode flag is only the first of the options the start puts on the command line: the system's extra options
- * and then the app-wide ones follow it (session_args.cpp append_flag_args()), and an -f among them overrides it. So
- * the judgement is over the three in that order, @p systemExtra then @p appExtra, and the last -f of all wins.
- */
-inline bool
-decode_flag_decodes_dmr(const QString& flag, const QString& systemExtra = QString(),
-                        const QString& appExtra = QString()) {
-    const QStringList tokens = (flag + QLatin1Char(' ') + systemExtra + QLatin1Char(' ') + appExtra)
-                                   .split(QRegularExpression(QStringLiteral("\\s+")), Qt::SkipEmptyParts);
-    const auto last = std::find_if(tokens.crbegin(), tokens.crend(), [](const QString& token) {
-        return token.startsWith(QLatin1String("-f")) && token.size() == 3;
-    });
-    if (last == tokens.crend()) {
-        return true;
-    }
-    const char selector = last->at(2).toLatin1();
-    dsdneoUserDecodeMode mode = DSDCFG_MODE_UNSET;
-    if (dsd_decode_mode_from_cli_preset(selector == 'r' ? 's' : selector, &mode) != 0) {
-        return false;
-    }
-    return mode == DSDCFG_MODE_AUTO || mode == DSDCFG_MODE_DMR || mode == DSDCFG_MODE_DMR_MONO
-           || mode == DSDCFG_MODE_TDMA;
 }
 
 /**

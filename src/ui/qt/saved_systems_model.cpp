@@ -28,7 +28,7 @@
 
 #include <dsd-neo/app_control/dmr_t3_view.h>
 #include <dsd-neo/runtime/log.h>
-#include "decode_mode_flag.h"
+#include "dmr_channels_args.h"
 #include "json_store.h"
 #include "radio_settings.h"
 #include "realtime_clock.h"
@@ -750,6 +750,43 @@ SavedSystemsModel::rowFromMap(const QVariantMap& map, const Row& base) {
 
 namespace {
 
+/* Whether @p raw is a whole number, stored in @p value when it is: an integer, or a double with no fraction (a JSON
+   number can come back as either). Not a bool, which QVariant would read as 0 or 1, not text, and not a fraction,
+   which QVariant would round: a malformed entry is skipped rather than read as another channel or a hidden one. */
+bool
+dmr_channel_whole_number(const QVariant& raw, qint64* value) {
+    switch (raw.typeId()) {
+        case QMetaType::Int:
+        case QMetaType::UInt:
+        case QMetaType::Long:
+        case QMetaType::LongLong:
+        case QMetaType::Short:
+        case QMetaType::UShort: *value = raw.toLongLong(); return true;
+        case QMetaType::ULong:
+        case QMetaType::ULongLong: {
+            const qulonglong wide = raw.toULongLong();
+            if (wide > static_cast<qulonglong>(std::numeric_limits<qint64>::max())) {
+                return false;
+            }
+            *value = static_cast<qint64>(wide);
+            return true;
+        }
+        case QMetaType::Double:
+        case QMetaType::Float: {
+            const double number = raw.toDouble();
+            double whole = 0.0;
+            const double fraction = std::modf(number, &whole);
+            // Past 2^53 a double holds no fraction to check; no channel or frequency comes near it.
+            if (!std::isfinite(number) || std::fabs(number) > 9007199254740992.0 || std::fabs(fraction) > 0.0) {
+                return false;
+            }
+            *value = static_cast<qint64>(whole);
+            return true;
+        }
+        default: return false;
+    }
+}
+
 /* One stored Tier III channel entry: true with @p lpcn and @p hz for a valid one. */
 bool
 dmr_channel_entry(const QVariant& raw, int* lpcn, qint64* hz) {
@@ -757,10 +794,14 @@ dmr_channel_entry(const QVariant& raw, int* lpcn, qint64* hz) {
         return false;
     }
     const QVariantMap entry = raw.toMap();
-    bool hzOk = false;
-    *hz = entry.value(QStringLiteral("hz")).toLongLong(&hzOk);
-    return stored_int(entry.value(QStringLiteral("lpcn")), lpcn) && *lpcn >= 1 && *lpcn <= DSD_UI_DMR_T3_ROWS - 2
-           && hzOk && (*hz == 0 || (*hz >= DSD_UI_DMR_T3_MIN_HZ && *hz <= DSD_UI_DMR_T3_MAX_HZ));
+    qint64 channel = 0;
+    if (!dmr_channel_whole_number(entry.value(QStringLiteral("lpcn")), &channel)
+        || !dmr_channel_whole_number(entry.value(QStringLiteral("hz")), hz) || channel < 1
+        || channel > DSD_UI_DMR_T3_ROWS - 2) {
+        return false;
+    }
+    *lpcn = static_cast<int>(channel);
+    return *hz == 0 || (*hz >= DSD_UI_DMR_T3_MIN_HZ && *hz <= DSD_UI_DMR_T3_MAX_HZ);
 }
 
 QVariantList
@@ -838,9 +879,17 @@ SavedSystemsModel::applyDmrChannelEdit(const QString& uid, int lpcn, int op, qin
     if (!dmr_channel_edit_valid(lpcn, op, hz)) {
         return dmr_channel_edit_result("invalid");
     }
-    // The start passes the entries only for a system that decodes DMR (session_args_dmr_channels_csv()).
-    if (!decode_flag_decodes_dmr(m_rows.at(row).decodeFlag, m_rows.at(row).extraArgs, appExtraArgs)) {
+    // The start passes the entries only for a system that decodes DMR (session_args_dmr_channels_csv()), and refuses
+    // to when the user's own options name a channels file, which the decoder would read instead.
+    const Row& kept = m_rows.at(row);
+    const QVariantMap options{{QStringLiteral("decodeFlag"), kept.decodeFlag},
+                              {QStringLiteral("extraArgs"), kept.extraArgs},
+                              {QStringLiteral("radioSettings"), kept.radioSettings}};
+    if (!dmr_channels_session_decodes_dmr(options, appExtraArgs)) {
         return dmr_channel_edit_result("not-dmr");
+    }
+    if (dmr_channels_extra_names_overrides(kept.extraArgs, appExtraArgs)) {
+        return dmr_channel_edit_result("explicit-overrides");
     }
     QMap<int, qint64> entries = dmr_channel_map(m_rows.at(row).dmrChannels);
     if (op == DSD_UI_DMR_T3_OP_RESTORE) {

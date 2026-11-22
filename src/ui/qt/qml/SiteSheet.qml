@@ -429,12 +429,14 @@ ModalSheet {
         onClicked: sheet.networkRequested()
     }
     // A DMR Tier III site's channels: the ones its grants named with no
-    // frequency here, and the ones that have one.
+    // frequency here, and the ones that have one. Also while the session has
+    // channels of the user's, entered from NO FREQ on a site only RAS named
+    // Tier III, so they stay reachable once none is left without a frequency.
     OutlineButton {
         objectName: "siteChannelsButton"
         width: parent.width
         text: qsTr("Channels")
-        visible: metrics.siteProtocol === "DMR" && metrics.dmrTier3 === true
+        visible: metrics.siteProtocol === "DMR" && (metrics.dmrTier3 === true || metrics.dmrUserChannels === true)
         onClicked: sheet.channelsRequested()
     }
     OutlineButton {

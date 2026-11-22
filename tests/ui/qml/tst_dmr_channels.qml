@@ -144,7 +144,32 @@ Item {
             testContext.setMetric("siteLine", "");
             testContext.setMetric("siteConfirmed", false);
             testContext.setMetric("dmrTier3", false);
+            testContext.setMetric("dmrUserChannels", false);
             testContext.setMetric("noFreqCount", 0);
+            if (sheet) {
+                sheet.owedSaves = {};
+                sheet.owedSaveCount = 0;
+            }
+        }
+        // Every row a list built, held ones included.
+        function allRows(name) {
+            var out = [];
+            (function collect(item) {
+                for (var k = 0; k < item.children.length; ++k) {
+                    var child = item.children[k];
+                    if (child.objectName === name)
+                        out.push(child);
+                    collect(child);
+                }
+            })(sheet);
+            return out;
+        }
+        // @p n channels heard from the site, 1..n.
+        function manyChannels(n) {
+            var out = [];
+            for (var i = 1; i <= n; ++i)
+                out.push({lpcn: i, origin: 3, hz: 450000000 + 12500 * i});
+            return out;
         }
 
         function test_sections_and_rows() {
@@ -297,7 +322,7 @@ Item {
             commands.answerDmrChannel({result: "ok", saved: false, saveError: "not-saved"});
             tryCompare(edit, "visible", false);
             var status = item("channelsStatus");
-            compare(status.text, "Changed until you stop listening, but not saved: dsd-neo could not save this system. Open the channel and apply it again.");
+            compare(status.text, "Changed until you stop listening, but not saved: dsd-neo could not save this system.");
             verify(status.visible);
             compare(status.Accessible.role, Accessible.AlertMessage);
         }
@@ -562,7 +587,8 @@ Item {
             return [
                 {tag: "not-dmr", text: "this saved system is not set to decode DMR."},
                 {tag: "full", text: "this system already keeps 256 channels of yours."},
-                {tag: "not-saved", text: "dsd-neo could not save this system. Open the channel and apply it again."}
+                {tag: "explicit-overrides", text: "the extra decoder arguments name another channels file, which dsd-neo uses instead."},
+                {tag: "not-saved", text: "dsd-neo could not save this system."}
             ];
         }
         function test_save_error_words(data) {
@@ -592,6 +618,11 @@ Item {
             siteSheet.visible = true;
             var button = monitorItem("siteChannelsButton");
             verify(!button.visible, "not Tier III");
+            // Channels of the user's, entered from NO FREQ on a site only RAS named Tier III, stay reachable.
+            testContext.setMetric("dmrUserChannels", true);
+            tryCompare(button, "visible", true);
+            testContext.setMetric("dmrUserChannels", false);
+            tryCompare(button, "visible", false);
             testContext.setMetric("dmrTier3", true);
             tryCompare(button, "visible", true);
             compare(button.text, "Channels");
@@ -600,6 +631,150 @@ Item {
             monitorItem("channelsSheet").visible = false;
             testContext.setMetric("siteProtocol", "P25");
             tryCompare(button, "visible", false);
+        }
+
+        // A site can list thousands of channels: the sheet builds a page of them, by number, and Show more channels
+        // adds the next. Rows held past a page are bounded by it, and the sheet opens on the first page again.
+        function test_channels_are_paged() {
+            openSheet(view({channels: manyChannels(4094)}));
+            var shown = words("channelsChannelRow");
+            compare(shown.length, 50);
+            compare(shown[0], "Channel 1 · 450.012500 MHz · heard from site");
+            compare(shown[49], "Channel 50 · 450.625000 MHz · heard from site");
+            compare(allRows("channelsChannelRow").length, 50, "no row built past the page");
+            var more = item("channelsShowMore");
+            verify(more.visible);
+            compare(more.text, "Show more channels");
+            tap(more);
+            tryVerify(function () { return rows("channelsChannelRow").length === 100; });
+            shown = words("channelsChannelRow");
+            compare(shown[50], "Channel 51 · 450.637500 MHz · heard from site", "in channel order");
+            compare(shown[99], "Channel 100 · 451.250000 MHz · heard from site");
+            sheet.visible = false;
+            openSheet(view({channels: manyChannels(4094)}));
+            compare(rows("channelsChannelRow").length, 50, "opened on the first page again");
+            compare(allRows("channelsChannelRow").length, 50, "and holding no rows past it");
+        }
+
+        // The last page takes Show more channels with it: the focus goes on to the first channel it added.
+        function test_last_page_moves_the_focus_on() {
+            openSheet(view({channels: manyChannels(120)}));
+            var more = item("channelsShowMore");
+            more.forceActiveFocus();
+            more.activate();
+            tryVerify(function () { return rows("channelsChannelRow").length === 100; });
+            verify(more.visible && more.activeFocus, "more to come: the focus stays on the button");
+            more.activate();
+            tryVerify(function () { return rows("channelsChannelRow").length === 120; });
+            verify(!more.visible);
+            tryVerify(function () { return row("channelsChannelRow", 101).activeFocus; }, 2000, "on the first one added");
+        }
+
+        // The editor and its discard question go with the sheet, and with the session: shown again, the sheet opens
+        // without them. An edit already sent is still answered.
+        function test_editor_closes_with_the_sheet() {
+            openSheet(view({}));
+            tap(row("channelsChannelRow", 18));
+            tryCompare(edit, "visible", true);
+            type(findChild(edit, "channelEditFrequency"), "451.0250");
+            findChild(edit, "channelEditClose").activate();
+            var discard = findChild(edit, "discardDialogDiscard");
+            tryVerify(function () { return discard !== null && discard.visible; });
+            sheet.visible = false;
+            sheet.open();
+            tryCompare(sheet, "visible", true);
+            wait(20);
+            verify(!edit.visible, "the editor did not come back with the sheet");
+            verify(!discard.visible, "nor its question");
+
+            tap(row("channelsChannelRow", 18));
+            tryCompare(edit, "visible", true);
+            type(findChild(edit, "channelEditFrequency"), "451.0250");
+            tap(findChild(edit, "channelEditSave"));
+            sheet.visible = false;
+            verify(sheet.request > 0, "the edit sent is still the sheet's");
+            commands.answerDmrChannel({result: "ok", saved: false, saveError: "no-system"});
+            compare(sheet.request, 0);
+            sheet.open();
+            tryCompare(sheet, "visible", true);
+            verify(!edit.visible);
+            compare(item("channelsStatus").text, "Changed until you stop listening, but not saved: this system is no longer in your saved systems.");
+        }
+        function test_editor_closes_with_the_session() {
+            testContext.setHostRunning(true);
+            openSheet(view({}));
+            tap(row("channelsChannelRow", 18));
+            tryCompare(edit, "visible", true);
+            type(findChild(edit, "channelEditFrequency"), "451.0250");
+            testContext.setHostRunning(false);
+            tryCompare(edit, "visible", false);
+            verify(sheet.visible, "the sheet itself is the Monitor's to close");
+        }
+
+        // A save that failed after the decoder made the change is kept: Try saving again saves it for the system the
+        // edit was sent for. It stays while the sheet is closed, and goes once saved, the focus kept in the sheet.
+        function test_try_saving_again() {
+            openSheet(view({}));
+            tap(row("channelsChannelRow", 20));
+            tryCompare(edit, "visible", true);
+            var remove = findChild(edit, "channelEditRemove");
+            tap(remove);
+            tap(remove);
+            commands.answerDmrChannel({result: "ok", saved: false, saveError: "not-saved"});
+            tryCompare(edit, "visible", false);
+            var notSaved = "Changed until you stop listening, but not saved: dsd-neo could not save this system.";
+            compare(item("channelsStatus").text, notSaved);
+            var retry = item("channelsRetrySave");
+            verify(retry.visible);
+            compare(retry.text, "Try saving again");
+            sheet.visible = false;
+            sheet.open();
+            tryCompare(sheet, "visible", true);
+            verify(retry.visible, "kept while the sheet was closed");
+            compare(item("channelsStatus").text, notSaved);
+            // Another channel's edit, saved: the one owed still is.
+            tap(row("channelsChannelRow", 22));
+            tryCompare(edit, "visible", true);
+            tap(findChild(edit, "channelEditHide"));
+            commands.answerDmrChannel({result: "ok"});
+            tryCompare(edit, "visible", false);
+            compare(item("channelsStatus").text, notSaved);
+            verify(retry.visible);
+            commands.setDmrChannelSaveResult({saved: false, saveError: "not-saved"});
+            tap(retry);
+            var saves = commands.dmrChannelSaves();
+            compare(saves.length, 1);
+            compare(saves[0].systemUid, "11111111-2222-3333-4444-555555555555");
+            compare(saves[0].lpcn, 20);
+            compare(saves[0].op, dmrChannels.opRestore);
+            compare(saves[0].hz, 0);
+            verify(retry.visible, "still not saved");
+            compare(item("channelsStatus").text, notSaved);
+            commands.setDmrChannelSaveResult({saved: true, saveError: ""});
+            retry.forceActiveFocus();
+            retry.activate();
+            compare(commands.dmrChannelSaves().length, 2);
+            verify(!retry.visible);
+            compare(item("channelsStatus").text, "Saved.");
+            compare(sheet.announced, "Saved.");
+            verify(item("channelsAddButton").activeFocus, "the focus stays in the sheet");
+        }
+
+        // The keyboard's action key in the channel number goes on to the frequency, through the field's next-field
+        // path, which keeps the keyboard open.
+        function test_number_field_goes_on_to_the_frequency() {
+            openSheet(view({}));
+            tap(item("channelsAddButton"));
+            tryCompare(edit, "visible", true);
+            var number = findChild(edit, "channelEditNumber");
+            var freq = findChild(edit, "channelEditFrequency");
+            verify(number.nextField !== null && number.nextField.input === freq, "the frequency is the next field");
+            number.input.forceActiveFocus();
+            keyClick(Qt.Key_1);
+            keyClick(Qt.Key_2);
+            keyClick(Qt.Key_Return);
+            tryVerify(function () { return freq.activeFocus; });
+            compare(number.text, "12");
         }
 
         function test_no_freq_row() {

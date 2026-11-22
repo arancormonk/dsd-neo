@@ -3167,15 +3167,18 @@ test_block_label_patched_call() {
 
 /* Discussion #900 F3: the Monitor's NO FREQ count is the ledger's (the channels past its details included), and the
    Channels entry opens on a verified Tier III identity or a session started with the saved system's Tier III channels;
-   a RAS-only identity is display only. Both ride the control group. */
+   a RAS-only identity is display only. The entry also opens while the live list holds channels of the user's, without
+   that making the site Tier III. All ride the control group. */
 static void
 test_dmr_tier3_readings() {
-    static dsd_opts opts;
-    static dsd_state state;
-    static dsd_ui_dmr_t3_view view;
+    const auto optsHolder = std::make_unique<dsd_opts>();
+    const auto stateHolder = std::make_unique<dsd_state>();
+    const auto viewHolder = std::make_unique<dsd_ui_dmr_t3_view>();
+    dsd_opts& opts = *optsHolder;
+    dsd_state& state = *stateHolder;
+    dsd_ui_dmr_t3_view& view = *viewHolder;
     initOpts(&opts);
     initState(&state);
-    DSD_MEMSET(&view, 0, sizeof view);
     dsd_qt::MetricsModel model;
     int control = 0;
     QObject::connect(&model, &dsd_qt::MetricsModel::controlChanged, [&control]() { ++control; });
@@ -3201,10 +3204,20 @@ test_dmr_tier3_readings() {
     model.refresh(&opts, &state);
     expect("so does a session started with the saved system's channels", model.dmrTier3());
     opts.dmr_chan_overrides_file[0] = '\0';
+    model.refresh(&opts, &state);
+    expect("a RAS-only site with no channels of the user's has no entry",
+           !model.dmrTier3() && !model.dmrUserChannels());
+    view.overlay_count = 1U;
+    view.overlay[0].lpcn = 12U;
+    model.refresh(&opts, &state);
+    expect("channels of the user's keep the entry open", model.dmrUserChannels() && control == before + 4);
+    expect("and do not make the site Tier III", !model.dmrTier3());
     view.present = 0U;
     model.refresh(&opts, &state);
-    expect("a view with no record reads none", !model.dmrTier3() && model.noFreqCount() == 0);
+    expect("a view with no record reads none",
+           !model.dmrTier3() && !model.dmrUserChannels() && model.noFreqCount() == 0);
     state.state_ext[DSD_STATE_EXT_APP_DMR_T3_VIEW] = nullptr;
+    freeState(&state);
 }
 
 int

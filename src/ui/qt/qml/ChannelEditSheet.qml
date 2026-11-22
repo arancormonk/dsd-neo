@@ -208,8 +208,9 @@ ModalSheet {
             regularExpression: /^\d{0,4}$/
         }
         error: text.length > 0 && !sheet.numberValid ? qsTr("Enter a channel number from 1 to 4094.") : ""
-        nextField: null
-        onAccepted: frequencyField.forceActiveFocus()
+        // The keyboard's action key goes on to the frequency, the keyboard
+        // still open.
+        nextField: frequencyField
     }
     ReadableText {
         objectName: "channelEditHelp"

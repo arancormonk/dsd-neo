@@ -2102,6 +2102,29 @@ test_dmr_channels_round_trip() {
     empty_systems(model);
 }
 
+/* Discussion #900 F3: stored channel entries are whole numbers. A backup restore or a saved-systems file hands a JSON
+ * number back as an integer or a double; a bool, a fraction or text is no channel and no frequency, and is skipped
+ * rather than read as another channel (12.7 as 13) or a hidden one (false as 0). */
+void
+test_dmr_channels_whole_numbers() {
+    const QVariant restored = QJsonDocument::fromJson(R"([{"lpcn": 12, "hz": false},
+                                                         {"lpcn": 12.7, "hz": 451000000},
+                                                         {"lpcn": true, "hz": 451000000},
+                                                         {"lpcn": 14, "hz": 451012500.5},
+                                                         {"lpcn": "15", "hz": 451025000},
+                                                         {"lpcn": 16, "hz": "451037500"},
+                                                         {"lpcn": 17.0, "hz": 451050000.0},
+                                                         {"lpcn": 18, "hz": 0},
+                                                         {"lpcn": 19, "hz": 451062500}])")
+                                  .toVariant();
+    expect("dmr channels: only whole numbers are kept",
+           SavedSystemsModel::validDmrChannels(restored) == dmr_channels({{17, 451050000}, {18, 0}, {19, 451062500}}));
+    const QVariantList typed{QVariantMap{{"lpcn", 20}, {"hz", false}}, QVariantMap{{"lpcn", 21.5}, {"hz", 0}},
+                             QVariantMap{{"lpcn", 22u}, {"hz", 451075000ULL}}};
+    expect("dmr channels: as QML or C++ hands them too",
+           SavedSystemsModel::validDmrChannels(typed) == dmr_channels({{22, 451075000}}));
+}
+
 /* An edit the decoder accepted is kept on its saved system: set, hide and restore of one channel, saved first, no
  * other field touched (the channel map file and the RadioReference provenance above all). A failed save says so and
  * changes nothing. */
@@ -2184,6 +2207,38 @@ test_dmr_channel_edit() {
                && model.dmrChannels(autoUid) == dmr_channels({{40, 451150000}}));
     expect("channel edit: the extra systems removed",
            model.remove(model.rowForUid(nxdn)) && model.remove(model.rowForUid(autoUid)));
+
+    /* The decode set is the start's: the last -f the decoder reads, the confirmed live radio setting after the extra
+       options, and getopt's "-f 1" as well as "-f1". */
+    expect("channel edit: a DMR system with a live DMR setting",
+           model.add({{"name", "Live"}, {"decodeFlag", "-fs"}, {"radioSettings", QVariantMap{{"decodeFlag", "-fs"}}}}));
+    const QString live = model.get(model.count() - 1).value("uid").toString();
+    expect("channel edit: is kept over the app's -fi, which the live setting follows",
+           ok(model.applyDmrChannelEdit(live, 40, set, 451150000, "-fi")));
+    expect("channel edit: a DMR system whose extras say -f 1",
+           model.add({{"name", "Apart"}, {"decodeFlag", "-fs"}, {"extraArgs", "-f 1"}}));
+    const QString apart = model.get(model.count() - 1).value("uid").toString();
+    expect("channel edit: is refused, it runs P25 only",
+           error(model.applyDmrChannelEdit(apart, 40, set, 451150000)) == "not-dmr");
+
+    /* The user's own channels file, named in the system's extra options or the app's, is the one the decoder reads:
+       nothing is kept that a start would not use, a restore that changes nothing included. */
+    expect("channel edit: a DMR system with its own channels file",
+           model.add({{"name", "Own file"},
+                      {"decodeFlag", "-fs"},
+                      {"extraArgs", "--dmr-chan-overrides /data/old.csv"},
+                      {"dmrChannels", dmr_channels({{12, 0}})}}));
+    const QString own = model.get(model.count() - 1).value("uid").toString();
+    expect("channel edit: is refused",
+           error(model.applyDmrChannelEdit(own, 40, set, 451150000)) == "explicit-overrides"
+               && error(model.applyDmrChannelEdit(own, 40, restore, 0)) == "explicit-overrides"
+               && model.dmrChannels(own) == dmr_channels({{12, 0}}));
+    expect("channel edit: as by the app's, in its = form",
+           error(model.applyDmrChannelEdit(live, 41, hide, 0, "--dmr-chan-overrides=/data/old.csv"))
+               == "explicit-overrides");
+    expect("channel edit: those systems removed", model.remove(model.rowForUid(live))
+                                                      && model.remove(model.rowForUid(apart))
+                                                      && model.remove(model.rowForUid(own)));
 
     QVariantList full;
     for (int lpcn = 1; lpcn <= 256; ++lpcn) {
@@ -4353,6 +4408,7 @@ main(int argc, char** argv) {
     test_load_drops_orphan_position();
     test_invalidate_path_provenance();
     test_dmr_channels_round_trip();
+    test_dmr_channels_whole_numbers();
     test_dmr_channel_edit();
     test_apply_place_names();
     test_place_name_cache();

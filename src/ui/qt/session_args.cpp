@@ -5,9 +5,10 @@
 
 #include <QPair>
 #include <utility>
-#include "decode_mode_flag.h"
+#include "cli_option_tokens.h"
 #include "decoder_host.h"
 #include "decryption_profile_provider.h"
+#include "dmr_channels_args.h"
 #include "radio_settings.h"
 #include "recording_sessions.h"
 #include "saved_systems_model.h"
@@ -41,7 +42,6 @@
 #include <dsd-neo/core/opts_fwd.h>
 #include <dsd-neo/core/trunk_scan_lists.h>
 #include <dsd-neo/runtime/analog_channel.h>
-#include <dsd-neo/runtime/cli.h>
 #include <dsd-neo/runtime/freq_parse.h>
 #include <dsd-neo/runtime/tetra_rate.h>
 
@@ -50,12 +50,6 @@
 namespace dsd_qt {
 
 namespace {
-
-/* Whether the short option @p letter takes a value, by the parser's own option string. */
-bool
-short_takes_value(QChar letter) {
-    return letter.unicode() < 0x80 && dsd_cli_short_option_takes_value(static_cast<char>(letter.unicode())) != 0;
-}
 
 bool
 short_option_grouped(const QString& token) {
@@ -68,120 +62,16 @@ short_option_grouped(const QString& token) {
     return !short_takes_value(token.at(1));
 }
 
-/* Whether getopt knows the short option @p letter, by the parser's own option string (its ':'s are no option). */
-bool
-short_known(QChar letter) {
-    return letter != QLatin1Char(':') && QLatin1String(dsd_cli_short_options()).contains(letter);
-}
-
-/* option_tokens()' first pass: the long options in @p split go to @p options, each with the value it takes stepped
- * over; @return what is left, from the first "--" on, for getopt. */
-QStringList
-long_option_tokens(const QStringList& split, QStringList* options) {
-    QStringList rest;
-    for (qsizetype i = 0; i < split.size(); ++i) {
-        const QString& token = split.at(i);
-        if (token == QLatin1String("--")) {
-            rest.append(split.mid(i));
-            break;
-        }
-        const dsd_cli_long_arity arity = dsd_cli_long_option_arity(token.toUtf8().constData());
-        if (arity == DSD_CLI_LONG_UNKNOWN) {
-            rest.append(token);
-            continue;
-        }
-        options->append(token);
-        const bool hasNext = i + 1 < split.size();
-        const bool takesNext =
-            arity == DSD_CLI_LONG_NEXT
-            || (arity == DSD_CLI_LONG_NEXT_NON_OPTION && hasNext && !split.at(i + 1).startsWith(QLatin1Char('-')));
-        if (takesNext && hasNext) {
-            ++i;
-        }
-    }
-    return rest;
-}
-
-/* option_tokens()' second pass: getopt's reading of @p rest, its options appended to @p options, and with @p values the
-   values getopt hands option @p wanted, in order. */
-void
-short_option_tokens(const QStringList& rest, QStringList* options, QChar wanted = QChar(),
-                    QStringList* values = nullptr) {
-    for (qsizetype i = 0; i < rest.size(); ++i) {
-        const QString& token = rest.at(i);
-        if (token == QLatin1String("--")) {
-            break;
-        }
-        if (token.size() < 2 || !token.startsWith(QLatin1Char('-'))) {
-            continue;
-        }
-        if (token.startsWith(QLatin1String("--"))) {
-            options->append(token);
-            break;
-        }
-        for (qsizetype at = 1; at < token.size(); ++at) {
-            const QChar letter = token.at(at);
-            if (!short_known(letter)) {
-                return;
-            }
-            options->append(QLatin1Char('-') + letter);
-            if (short_takes_value(letter)) {
-                const bool separate = at + 1 == token.size();
-                if (values != nullptr && letter == wanted && (!separate || i + 1 < rest.size())) {
-                    values->append(separate ? rest.at(i + 1) : token.mid(at + 1));
-                }
-                if (separate) {
-                    ++i;
-                }
-                break;
-            }
-        }
-    }
-}
-
-/**
- * @brief The options the parser reads in @p tokens, found as the decoder finds them, in its two passes.
- *
- * First its long options come out of the whole list wherever they stand, a short option's value position included,
- * each with the value its arity takes (dsd_cli_long_option_arity()), up to the first "--" that is no long option's
- * value, as dsd_parse_args()' pre-scan and dsd_cli_compact_args() take them; that "--" and everything after it stay, as
- * the compaction keeps them. Then getopt reads what is left, by its own rules: an element starting with '-' is a group
- * of short options, and the first of them that takes a value takes the rest of the element, or the next element
- * whatever it is ("--" included); a "--" that is no value ends the options; an operand is stepped over (glibc's getopt
- * permutes past it; one that stops there reads fewer options, never more); an unknown option ends the parse with an
- * error, and nothing after it is read. A long option the first pass does not know reaches getopt as option '-', which
- * is unknown: it is returned as typed, so its name can still be refused, and ends the parse.
- *
- * Long options are returned as typed, short ones as "-" and the letter.
- */
-QStringList
-option_tokens(const QString& tokens) {
-    const QStringList split = tokens.split(QRegularExpression(QStringLiteral("\\s+")), Qt::SkipEmptyParts);
-    QStringList options;
-    const QStringList rest = long_option_tokens(split, &options);
-    short_option_tokens(rest, &options);
-    return options;
-}
-
 /* Whether the extra options @p tokens pick an I/Q stream input (issue #743): an -i the decoder reads whose value is an
    iqtcp: or iqudp: spec, read as option_tokens() reads the options. */
 bool
 extra_names_iq_stream(const QString& tokens) {
-    const QStringList split = tokens.split(QRegularExpression(QStringLiteral("\\s+")), Qt::SkipEmptyParts);
-    QStringList options;
-    QStringList inputs;
-    short_option_tokens(long_option_tokens(split, &options), &options, QLatin1Char('i'), &inputs);
+    const QStringList inputs = short_option_values(
+        tokens.split(QRegularExpression(QStringLiteral("\\s+")), Qt::SkipEmptyParts), QLatin1Char('i'));
     return std::any_of(inputs.cbegin(), inputs.cend(), [](const QString& input) {
         const QByteArray spec = input.toUtf8();
         return dsd_opts_audio_in_dev_is_iq_stream_spec(spec.constData()) != 0;
     });
-}
-
-/** @brief Whether @p token is the long option @p name, alone or in its "=value" form. */
-bool
-long_option_is(const QString& token, QLatin1String name) {
-    return token == name
-           || (token.startsWith(name) && token.size() > name.size() && token.at(name.size()) == QLatin1Char('='));
 }
 
 /**
@@ -888,6 +778,9 @@ constexpr SessionArgsErrorText k_error_texts[] = {
                                       "the command line, or remove the -i option from the extra decoder arguments."},
     {SessionArgsError::DmrChannels, "The channels you entered for this system could not be saved for the start. "
                                     "Check that the device has free storage, then try again."},
+    {SessionArgsError::DmrChannelsShadowed,
+     "This system has channels you entered, but its extra decoder arguments or the app's name a channels file with "
+     "--dmr-chan-overrides, which would be used instead. Remove that option, then start again."},
 };
 
 constexpr std::size_t k_error_text_count = sizeof k_error_texts / sizeof k_error_texts[0];
@@ -1193,22 +1086,33 @@ session_args_source_error(const QVariantMap& system, const QString& sourceType, 
 }
 
 /* What the extra options refuse: one that could reveal keys (WP-F5), an I/Q stream input, which every check before the
-   extras would judge as the saved source (issue #743, D4), then a call recording option (issue #708). */
+   extras would judge as the saved source (issue #743, D4), a call recording option (issue #708), then, for a start
+   that passes the saved system's Tier III channels, a --dmr-chan-overrides of the user's own (discussion #900 F3: the
+   decoder keeps the last one, and the user's come after the start's, so the channels the app says are kept would be
+   ignored). @p tokens is every option the user typed, @p system's and the app's extras among them. */
 static SessionArgsError
-session_args_extra_error(const QString& tokens, const SessionArgPrefs& prefs) {
+session_args_extra_error(const QVariantMap& system, const QString& tokens, const SessionArgPrefs& prefs) {
     if (!session_args_extra_safe(tokens)) {
         return SessionArgsError::UnsafeOption;
     }
     if (extra_names_iq_stream(tokens)) {
         return SessionArgsError::IqStreamExtra;
     }
-    return session_args_recording_extra_error(tokens, prefs.recordCalls, prefs.recordingUnavailable);
+    const SessionArgsError recording =
+        session_args_recording_extra_error(tokens, prefs.recordCalls, prefs.recordingUnavailable);
+    if (recording != SessionArgsError::None) {
+        return recording;
+    }
+    return !system.value(QStringLiteral("dmrChanOverridesPath")).toString().isEmpty()
+                   && dmr_channels_extra_names_overrides(system.value(QStringLiteral("extraArgs")).toString(),
+                                                         prefs.extraArgs)
+               ? SessionArgsError::DmrChannelsShadowed
+               : SessionArgsError::None;
 }
 
 QByteArray
 session_args_dmr_channels_csv(const QVariantMap& system, const SessionArgPrefs& prefs) {
-    if (!decode_flag_decodes_dmr(system.value(QStringLiteral("decodeFlag")).toString(),
-                                 system.value(QStringLiteral("extraArgs")).toString(), prefs.extraArgs)) {
+    if (!dmr_channels_session_decodes_dmr(system, prefs.extraArgs)) {
         return {};
     }
     const QStringList options =
@@ -1245,7 +1149,7 @@ session_args_build(const QVariantMap& system, const SessionArgPrefs& prefs, Sess
     // WP-F5: never permit a saved/pasted option to reveal keys in any sink.
     const QString tokens = system.value(QStringLiteral("extraArgs")).toString() + QLatin1Char(' ') + prefs.extraArgs
                            + QLatin1Char(' ') + system.value(QStringLiteral("decodeFlag")).toString();
-    const SessionArgsError extraError = session_args_extra_error(tokens, prefs);
+    const SessionArgsError extraError = session_args_extra_error(system, tokens, prefs);
     if (extraError != SessionArgsError::None) {
         return fail(extraError);
     }
@@ -1398,8 +1302,9 @@ app_owned_error_category(SessionArgsError error) {
                ? QStringLiteral("call-recording-option")
            : error == SessionArgsError::CallRecordingStaticWav ? QStringLiteral("call-recording-static-wav")
            : error == SessionArgsError::IqStreamExtra          ? QStringLiteral("iq-stream-extra")
-           : error == SessionArgsError::DmrChannels            ? QStringLiteral("dmr-channels")
-                                                               : QString();
+           : error == SessionArgsError::DmrChannels || error == SessionArgsError::DmrChannelsShadowed
+               ? QStringLiteral("dmr-channels")
+               : QString();
 }
 
 /* The category the start screen maps a refusal by; empty for None. */

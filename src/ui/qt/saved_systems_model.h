@@ -91,9 +91,9 @@ class SavedSystemsModel : public QAbstractListModel {
 
     /**
      * @brief @p raw as stored DMR Tier III channels (discussion #900 F3): `[{lpcn, hz}]`, the user's channels over the
-     * channel map, hz 0 for a hidden one. Only valid entries (a map with a whole lpcn 1..4094 and hz 0 or
-     * 100000..2147483647), the first for each channel, at most 256, by channel ascending; an empty list for anything
-     * else.
+     * channel map, hz 0 for a hidden one. Only valid entries (a map with a whole-number lpcn 1..4094 and hz 0 or
+     * 100000..2147483647: an integer, or a double with no fraction; never a bool, text or a fraction), the first for
+     * each channel, at most 256, by channel ascending; an empty list for anything else.
      */
     static QVariantList validDmrChannels(const QVariant& raw);
 
@@ -110,10 +110,12 @@ class SavedSystemsModel : public QAbstractListModel {
      * no other field: never the channel map file or the RadioReference provenance.
      *
      * @return {ok: bool, error: ""} on success, a restore of a channel with no entry included; otherwise ok false and
-     *         error "no-system" (no such uid), "invalid" (no such channel, frequency or operation), "not-dmr" (its
-     *         effective decode set has no DMR, decode_flag_decodes_dmr() over its decode flag, its extra options and
-     *         @p appExtraArgs, the app-wide ones: a start would never pass the entry), "full" (a 257th
-     *         channel) or "not-saved" (the save failed; nothing changed). One dataChanged follows a change.
+     *         error "no-system" (no such uid), "invalid" (no such channel, frequency or operation), "not-dmr" (a
+     *         start would not decode DMR, dmr_channels_session_decodes_dmr() over its decode flag, its extra options,
+     *         @p appExtraArgs (the app-wide ones) and its live radio settings: it would never pass the entry),
+     *         "explicit-overrides" (its extra options or @p appExtraArgs name a --dmr-chan-overrides file, which the
+     *         decoder would read instead; checked before a restore that changes nothing), "full" (a 257th channel) or
+     *         "not-saved" (the save failed; nothing changed). One dataChanged follows a change.
      */
     Q_INVOKABLE QVariantMap applyDmrChannelEdit(const QString& uid, int lpcn, int op, qint64 hz,
                                                 const QString& appExtraArgs = QString());

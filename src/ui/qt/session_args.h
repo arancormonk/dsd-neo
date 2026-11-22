@@ -159,22 +159,27 @@ enum class SessionArgsError {
        the extras describes the saved source, so a start would be judged, and argued, as that source. */
     IqStreamExtra,
     /* Discussion #900 F3: the saved system's DMR Tier III channels could not be written for the start. */
-    DmrChannels
+    DmrChannels,
+    /* Discussion #900 F3: the start passes the saved system's channels, and the system's or the app's extra options
+       name a --dmr-chan-overrides file of their own, which the decoder would use instead (it keeps the last one). */
+    DmrChannelsShadowed
 };
 
 /* The last SessionArgsError value. A value added after it takes its place here, and session_args_error_text() then
  * needs its text: a static_assert there holds the text table to this value. */
-constexpr SessionArgsError SessionArgsErrorLast = SessionArgsError::DmrChannels;
+constexpr SessionArgsError SessionArgsErrorLast = SessionArgsError::DmrChannelsShadowed;
 
 /**
  * @brief The --dmr-chan-overrides file a start of @p system passes (discussion #900 F3), or empty for none: a header
  * and one `lpcn,frequency_hz` row per entry of its dmrChannels (SavedSystemsModel::validDmrChannels(), 0 = hidden),
- * by channel. Only for a system whose decode set includes DMR (decode_flag_decodes_dmr(): Auto, DMR, DMR mono,
- * TDMA) with entries, and never when the system's or the app's extra options start a trunk scan (--trunk-scan), which
- * the decoder refuses the option under.
+ * by channel. Only for a system whose start decodes DMR (dmr_channels_session_decodes_dmr() over its decode flag,
+ * its extra options, the app's and its live radio settings: Auto, DMR, DMR mono, TDMA) with entries, and never when
+ * the system's or the app's extra options start a trunk scan (--trunk-scan), which the decoder refuses the option
+ * under.
  *
- * session_args_build() passes the file a start wrote under the system's "dmrChanOverridesPath" field;
- * SessionArgsBuilder::start() writes it, for a saved system's start only.
+ * session_args_build() passes the file a start wrote under the system's "dmrChanOverridesPath" field, and refuses the
+ * start (DmrChannelsShadowed) when the system's or the app's extra options name a --dmr-chan-overrides of their own
+ * (dmr_channels_extra_names_overrides()); SessionArgsBuilder::start() writes it, for a saved system's start only.
  */
 QByteArray session_args_dmr_channels_csv(const QVariantMap& system, const SessionArgPrefs& prefs);
 

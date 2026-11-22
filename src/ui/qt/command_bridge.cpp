@@ -1370,18 +1370,31 @@ CommandBridge::setDmrChannel(int lpcn, int op, qint64 hz, qint64 expectedHz, int
 }
 
 QVariantMap
+CommandBridge::saveDmrChannelEdit(const QString& systemUid, int lpcn, int op, qint64 hz) {
+    bool saved = false;
+    QString saveError;
+    if (systemUid.isEmpty()) {
+        saveError = QStringLiteral("no-system");
+    } else if (m_savedSystems) {
+        const QVariantMap kept =
+            m_savedSystems->applyDmrChannelEdit(systemUid, lpcn, op, op == DSD_UI_DMR_T3_OP_SET ? hz : 0,
+                                                m_prefs != nullptr ? m_prefs->extraArgs() : QString());
+        saved = kept.value(QStringLiteral("ok")).toBool();
+        saveError = kept.value(QStringLiteral("error")).toString();
+    } else {
+        saveError = QStringLiteral("no-store");
+    }
+    return {{QStringLiteral("saved"), saved}, {QStringLiteral("saveError"), saveError}};
+}
+
+QVariantMap
 CommandBridge::dmrChannelAnswer(const dsd_app_dmr_channel_set_result& r, const DmrChannelRequest& q) {
     bool saved = false;
     QString saveError;
     if (r.code == DSD_APP_DMR_CHANNEL_SET_OK && !q.systemUid.isEmpty()) {
-        if (m_savedSystems) {
-            const QVariantMap kept = m_savedSystems->applyDmrChannelEdit(
-                q.systemUid, q.lpcn, q.op, q.hz, m_prefs != nullptr ? m_prefs->extraArgs() : QString());
-            saved = kept.value(QStringLiteral("ok")).toBool();
-            saveError = kept.value(QStringLiteral("error")).toString();
-        } else {
-            saveError = QStringLiteral("no-store");
-        }
+        const QVariantMap kept = saveDmrChannelEdit(q.systemUid, q.lpcn, q.op, q.hz);
+        saved = kept.value(QStringLiteral("saved")).toBool();
+        saveError = kept.value(QStringLiteral("saveError")).toString();
     }
     return {{QStringLiteral("request"), QVariant::fromValue<quint32>(r.request)},
             {QStringLiteral("lpcn"), q.lpcn},
@@ -1407,12 +1420,12 @@ CommandBridge::pollDmrChannelResults() {
         for (int i = 0; i < n; ++i) {
             const dsd_app_dmr_channel_set_result& r = results[i];
             m_dmrChannelCursor = qMax(m_dmrChannelCursor, r.sequence);
-            const auto mine = std::find_if(m_dmrChannelRequests.cbegin(), m_dmrChannelRequests.cend(),
+            const auto mine = std::find_if(m_dmrChannelRequests.begin(), m_dmrChannelRequests.end(),
                                            [&r](const DmrChannelRequest& q) { return q.request == r.request; });
-            if (mine == m_dmrChannelRequests.cend()) {
+            if (mine == m_dmrChannelRequests.end()) {
                 continue;
             }
-            const DmrChannelRequest request = *mine;
+            const DmrChannelRequest request = std::move(*mine);
             m_dmrChannelRequests.erase(mine);
             m_dmrChannelResult = dmrChannelAnswer(r, request);
             Q_EMIT dmrChannelResultChanged();

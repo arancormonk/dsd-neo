@@ -17689,24 +17689,34 @@ Qt Quick frontend (`src/ui/qt`):
   origin key: file, user, hidden, site, unchecked, neighbour, estimated), the edit's expectations (`generation`,
   `revision`, `session`, `channel(lpcn)`), `tier3`, `ccHz`/`ccConfirmedHere`, `trunkScanActive` and `sessionSystemUid`
   (Main binds the saved system the session runs); rows are rebuilt only when the view's `content_seq` or a name list
-  moved, and a list is published only when it differs (#782). `MetricsModel` adds `noFreqCount` (the ledger's count) and
-  `dmrTier3` (checked Tier III identity, or a start that passed a saved system's channels).
-  `CommandBridge::setDmrChannel()` sends `DSD_APP_CMD_DMR_CHANNEL_SET` against the row as read, capturing the saved
-  system; `pollDmrChannelResults()` (each tick, `UiController::pollCommandResults()`) reads the retained results and,
-  for an OK edit, keeps it on that system with `SavedSystemsModel::applyDmrChannelEdit()` (persisted first; never the
-  channel map file or the RadioReference provenance) before `dmrChannelResultReceived()`. A saved system keeps
-  `dmrChannels: [{lpcn, hz}]` (hz 0 hidden; `validDmrChannels()`: valid entries, the first per channel, at most 256, by
-  channel), refused for a system whose decode flag frames no DMR (`decode_flag_decodes_dmr()`: Auto, DMR, DMR mono,
-  TDMA; the last `-f` token, as the CLI). Each start of such a system writes `session_args_dmr_channels_csv()` to
-  `dmr_channels/<uid>.csv` in the app's folder and passes `--dmr-chan-overrides` (never with a trunk scan); a backup
-  carries those files as generated configuration, and removing the system deletes its file. `qml/ChannelsSheet.qml`
-  lists "No frequency" (tap adds) and "Channels" (tap edits) with an "Add channel" button; it owns the request in
-  flight, so an answer that comes while the editor or the sheet is closed is still handled, and a status kept while it
-  was closed is read out once when it opens; focus follows a channel that moves between the lists.
-  `qml/ChannelEditSheet.qml` takes a number 1..4094 and a frequency, offers "Use control channel frequency" only with
-  `ccConfirmedHere`, and shows Hide (a listed row not yours), Restore (a hidden one) or Remove (one of yours, tapped
-  twice); a STALE refusal rereads the channel and keeps what was typed, disarming Remove only when the opened channel
-  changed. Under a trunk scan both are read-only. The Site sheet's "Channels" button (DMR with `dmrTier3`) and the
+  moved, and a list is published only when it differs (#782). `MetricsModel` adds `noFreqCount` (the ledger's count),
+  `dmrTier3` (checked Tier III identity, or a start that passed a saved system's channels) and `dmrUserChannels` (the
+  live overlay holds rows; never Tier III identity). `CommandBridge::setDmrChannel()` sends
+  `DSD_APP_CMD_DMR_CHANNEL_SET` against the row as read, capturing the saved system; `pollDmrChannelResults()` (each
+  tick, `UiController::pollCommandResults()`) reads the retained results and, for an OK edit, keeps it on that system
+  with `SavedSystemsModel::applyDmrChannelEdit()` (persisted first; never the channel map file or the RadioReference
+  provenance) before `dmrChannelResultReceived()`; `saveDmrChannelEdit()` runs that save again for a captured uid. A
+  saved system keeps `dmrChannels: [{lpcn, hz}]` (hz 0 hidden; `validDmrChannels()`: whole-number entries only, never
+  a bool, text or a fraction, the first per channel, at most 256, by channel). `dmr_channels_args.h` judges a system by
+  its start's options, read as the decoder reads them (`cli_option_tokens.h`, shared with `session_args.cpp`):
+  `dmr_channels_session_decodes_dmr()` takes the last `-f` (either getopt form) over the decode flag, the system's and
+  the app's extra options and the live radio settings, in argv order (Auto, DMR, DMR mono, TDMA frame DMR);
+  `dmr_channels_extra_names_overrides()` finds the user's own `--dmr-chan-overrides`. An edit is refused `not-dmr` or
+  `explicit-overrides` by those. Each start of a DMR system with entries writes `session_args_dmr_channels_csv()` to
+  `dmr_channels/<uid>.csv` in the app's folder and passes `--dmr-chan-overrides` (never with a trunk scan); a start
+  whose extra options name their own file as well is refused (`SessionArgsError::DmrChannelsShadowed`, category
+  `dmr-channels`), since the decoder keeps the last one. A backup carries those files as generated configuration, and
+  removing the system deletes its file. `qml/ChannelsSheet.qml` lists "No frequency" (tap adds) and "Channels" (tap
+  edits; 50 rows by channel, "Show more channels" adds 50, rows held only up to the page shown, back to the first page
+  on close) with an "Add channel" button; it owns the request in flight, so an answer that comes while the editor or
+  the sheet is closed is still handled, and a status kept while it was closed is read out once when it opens; focus
+  follows a channel that moves between the lists. A save that failed after the decoder applied the edit is kept (the
+  latest per system and channel) and "Try saving again" saves it. Hiding the sheet, or the session ending, closes the
+  editor and its discard question. `qml/ChannelEditSheet.qml` takes a number 1..4094 (its action key goes on to the
+  frequency, `nextField`) and a frequency, offers "Use control channel frequency" only with `ccConfirmedHere`, and
+  shows Hide (a listed row not yours), Restore (a hidden one) or Remove (one of yours, tapped twice); a STALE refusal
+  rereads the channel and keeps what was typed, disarming Remove only when the opened channel changed. Under a trunk
+  scan both are read-only. The Site sheet's "Channels" button (DMR with `dmrTier3` or `dmrUserChannels`) and the
   Monitor's `NO FREQ n` reading (`noFreqRow`, `Theme.alert`, hidden at 0, also in the collapsed summary) open the sheet.
   Tests: `UI_QT_DMR_CHANNELS_MODEL`, `UI_QT_CONTROLLER`, `UI_QT_METRICS_MODEL`, `UI_QT_PERSISTENCE`,
   `UI_QT_SESSION_ARGS`, `UI_QT_BACKUP_APPLY`, `UI_QT_QML_DMR_CHANNELS` (`tst_dmr_channels.qml`), `UI_QT_QML_A11Y_CHURN`

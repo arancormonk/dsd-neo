@@ -19,6 +19,8 @@ Column {
     property alias text: field.text
     /** Names the input itself, for tests that address it directly. */
     property alias fieldObjectName: field.objectName
+    /** The input itself: a PlexTextField's nextField moves the focus to it. */
+    readonly property alias input: field
     /** What a screen reader calls the field; it reads the unit. */
     property string accessibleName: qsTr("Frequency in MHz")
     /** Size of the number; the unit stays at its own size beside it. */

@@ -2109,8 +2109,10 @@ test_positions_poll_without_redraw() {
  * A request the stop dropped is answered too. */
 static void
 test_dmr_channel_bridge() {
-    static dsd_opts opts;
-    static dsd_state state;
+    const auto optsHolder = std::make_unique<dsd_opts>();
+    const auto stateHolder = std::make_unique<dsd_state>();
+    dsd_opts& opts = *optsHolder;
+    dsd_state& state = *stateHolder;
     initOpts(&opts);
     initState(&state);
     opts.audio_in_type = AUDIO_IN_PULSE;
@@ -2241,7 +2243,16 @@ test_dmr_channel_bridge() {
           && !answers.value(4).value("saved").toBool()
           && answers.value(4).value("saveError").toString() == "not-saved");
     check(systems.dmrChannels(siteA).size() == 2);
+    /* Saving it again (the Channels sheet's Try saving again): still blocked, then kept once the store can be
+       written. */
+    QVariantMap again = bridge.saveDmrChannelEdit(siteA, 18, DSD_UI_DMR_T3_OP_RESTORE, 0);
+    check(!again.value("saved").toBool() && again.value("saveError").toString() == "not-saved");
     check(QDir().rmdir(store) && QFile::rename(store + QStringLiteral(".aside"), store));
+    again = bridge.saveDmrChannelEdit(siteA, 18, DSD_UI_DMR_T3_OP_RESTORE, 0);
+    check(again.value("saved").toBool() && again.value("saveError").toString().isEmpty());
+    check(systems.dmrChannels(siteA) == QVariantList({entry(12, 451137500)}));
+    again = bridge.saveDmrChannelEdit(QString(), 18, DSD_UI_DMR_T3_OP_RESTORE, 0);
+    check(!again.value("saved").toBool() && again.value("saveError").toString() == "no-system");
 
     /* Queued and never applied: the stop drops it, and the stop's edge reports that. */
     check(bridge.setDmrChannel(12, DSD_UI_DMR_T3_OP_RESTORE, 0, 451137500, DSD_UI_DMR_T3_ORIGIN_USER, generation));

@@ -22,6 +22,7 @@
 #include <dsd-neo/core/state_fwd.h>
 #include <dsd-neo/core/talkgroup_policy.h>
 #include <initializer_list>
+#include <memory>
 #include <stdint.h>
 #include <stdio.h>
 #include "dmr_channels_model.h"
@@ -38,9 +39,14 @@ expect(const char* what, bool ok) {
     }
 }
 
-static dsd_opts g_opts;
-static dsd_state g_state;
-static dsd_ui_dmr_t3_view g_view;
+/* The options, state and Tier III view every case reads, on the heap (main() owns them). */
+struct Fixture {
+    dsd_opts opts;
+    dsd_state state;
+    dsd_ui_dmr_t3_view view;
+};
+
+Fixture* g_fixture = nullptr;
 
 void
 set_bit(uint8_t* set, uint16_t lpcn) {
@@ -49,55 +55,55 @@ set_bit(uint8_t* set, uint16_t lpcn) {
 
 void
 add_detail(uint16_t lpcn, uint8_t slot, bool group, uint32_t caller, uint32_t recipient, uint64_t heard) {
-    dsd_ui_dmr_t3_missing_detail& d = g_view.missing.details[g_view.missing.detail_count++];
+    dsd_ui_dmr_t3_missing_detail& d = g_fixture->view.missing.details[g_fixture->view.missing.detail_count++];
     d.lpcn = lpcn;
     d.slot = slot;
     d.group = group ? 1U : 0U;
     d.caller = caller;
     d.recipient = recipient;
     d.last_heard_ms = heard;
-    set_bit(g_view.missing.checked, lpcn);
+    set_bit(g_fixture->view.missing.checked, lpcn);
 }
 
 void
 add_overlay(uint16_t lpcn, bool hidden, long hz, long base) {
-    dsd_ui_dmr_t3_overlay_row& row = g_view.overlay[g_view.overlay_count++];
+    dsd_ui_dmr_t3_overlay_row& row = g_fixture->view.overlay[g_fixture->view.overlay_count++];
     row.lpcn = lpcn;
     row.hidden = hidden ? 1U : 0U;
     row.hz = hz;
     row.base_hz = base;
-    g_view.origin[lpcn] = DSD_UI_DMR_T3_ORIGIN_USER;
-    g_state.trunk_chan_map[lpcn] = hidden ? 0 : hz;
+    g_fixture->view.origin[lpcn] = DSD_UI_DMR_T3_ORIGIN_USER;
+    g_fixture->state.trunk_chan_map[lpcn] = hidden ? 0 : hz;
 }
 
 /* A Tier III site: three channels granted without a frequency (12 heard last, 7 before it, 40 past the details and
  * never in a checked grant) and one channel of each origin. */
 void
 seed_view() {
-    DSD_MEMSET(&g_view, 0, sizeof g_view);
-    g_view.present = 1U;
-    g_view.tier3 = 1U;
-    g_view.cc_confirmed_here = 1U;
-    g_view.cc_hz = 451000000L;
-    g_view.generation = 3U;
-    g_view.revision = 9U;
-    g_view.content_seq = 1U;
+    DSD_MEMSET(&g_fixture->view, 0, sizeof g_fixture->view);
+    g_fixture->view.present = 1U;
+    g_fixture->view.tier3 = 1U;
+    g_fixture->view.cc_confirmed_here = 1U;
+    g_fixture->view.cc_hz = 451000000L;
+    g_fixture->view.generation = 3U;
+    g_fixture->view.revision = 9U;
+    g_fixture->view.content_seq = 1U;
     for (uint16_t lpcn : {12U, 7U, 40U}) {
-        set_bit(g_view.missing.missing, lpcn);
+        set_bit(g_fixture->view.missing.missing, lpcn);
     }
     add_detail(12U, 0U, true, 5001U, 1234U, 2000U);
     add_detail(7U, 1U, false, 5002U, 5003U, 1000U);
-    g_view.origin[18] = DSD_UI_DMR_T3_ORIGIN_FILE;
-    g_state.trunk_chan_map[18] = 451012500L;
+    g_fixture->view.origin[18] = DSD_UI_DMR_T3_ORIGIN_FILE;
+    g_fixture->state.trunk_chan_map[18] = 451012500L;
     add_overlay(20U, false, 451137500L, 451100000L);
     add_overlay(21U, true, 0, 451200000L);
     const int origins[] = {DSD_UI_DMR_T3_ORIGIN_SITE, DSD_UI_DMR_T3_ORIGIN_UNVERIFIED, DSD_UI_DMR_T3_ORIGIN_NEIGHBOUR,
                            DSD_UI_DMR_T3_ORIGIN_ESTIMATE};
     for (int i = 0; i < 4; ++i) {
-        g_view.origin[22 + i] = static_cast<uint8_t>(origins[i]);
-        g_state.trunk_chan_map[22 + i] = 451300000L + 12500L * i;
+        g_fixture->view.origin[22 + i] = static_cast<uint8_t>(origins[i]);
+        g_fixture->state.trunk_chan_map[22 + i] = 451300000L + 12500L * i;
     }
-    g_state.state_ext[DSD_STATE_EXT_APP_DMR_T3_VIEW] = &g_view;
+    g_fixture->state.state_ext[DSD_STATE_EXT_APP_DMR_T3_VIEW] = &g_fixture->view;
 }
 
 QList<int>
@@ -115,12 +121,12 @@ test_rows() {
     dsd_tg_policy_entry entry = {};
     expect("a talkgroup name",
            dsd_tg_policy_make_exact_entry(1234U, "A", "Dispatch", DSD_TG_POLICY_SOURCE_IMPORTED, &entry) == 0
-               && dsd_tg_policy_append_exact(&g_state, &entry) == 0);
+               && dsd_tg_policy_append_exact(&g_fixture->state, &entry) == 0);
     dsd_qt::DmrChannelsModel model;
-    model.refresh(&g_opts, &g_state);
+    model.refresh(&g_fixture->opts, &g_fixture->state);
     expect("closed, nothing is read", model.missing().isEmpty() && model.channels().isEmpty() && !model.present());
     model.setActive(true);
-    model.refresh(&g_opts, &g_state);
+    model.refresh(&g_fixture->opts, &g_fixture->state);
     expect("the most recently heard first, then the rest by channel",
            lpcns(model.missing()) == QList<int>({12, 7, 40}));
     expect("the reading order is by channel", lpcns(model.missingByChannel()) == QList<int>({7, 12, 40}));
@@ -173,11 +179,11 @@ test_rows() {
     expect("the identity and the control channel", model.present() && model.tier3() && !model.tier3Unchecked()
                                                        && model.ccConfirmedHere() && model.ccHz() == 451000000);
     expect("what an edit expects", model.generation() == 3U && model.revision() == 9U && model.session().isEmpty());
-    model.refresh(&g_opts, &g_state, 42U);
+    model.refresh(&g_fixture->opts, &g_fixture->state, 42U);
     expect("and the command session it was read in", model.session() == QStringLiteral("42"));
     expect("no trunk scan", !model.trunkScanActive());
-    dsd_state_ext_free_all(&g_state);
-    g_state.state_ext[DSD_STATE_EXT_APP_DMR_T3_VIEW] = &g_view;
+    dsd_state_ext_free_all(&g_fixture->state);
+    g_fixture->state.state_ext[DSD_STATE_EXT_APP_DMR_T3_VIEW] = &g_fixture->view;
 }
 
 /* Repeated grants publish nothing: the rows are rebuilt only when the body moved, and published only when they
@@ -191,52 +197,52 @@ test_no_churn() {
     QObject::connect(&model, &dsd_qt::DmrChannelsModel::missingChanged, [&]() { ++missingSignals; });
     QObject::connect(&model, &dsd_qt::DmrChannelsModel::channelsChanged, [&]() { ++channelSignals; });
     QObject::connect(&model, &dsd_qt::DmrChannelsModel::stateChanged, [&]() { ++stateSignals; });
-    model.refresh(&g_opts, &g_state);
+    model.refresh(&g_fixture->opts, &g_fixture->state);
     expect("the first read publishes each group once", missingSignals == 1 && channelSignals == 1 && stateSignals == 1);
-    model.refresh(&g_opts, &g_state);
-    g_view.content_seq++;
-    model.refresh(&g_opts, &g_state);
+    model.refresh(&g_fixture->opts, &g_fixture->state);
+    g_fixture->view.content_seq++;
+    model.refresh(&g_fixture->opts, &g_fixture->state);
     expect("the same body, or a body copied again unchanged, publishes nothing",
            missingSignals == 1 && channelSignals == 1 && stateSignals == 1);
-    g_state.trunk_chan_map[18] = 451025000L;
-    model.refresh(&g_opts, &g_state);
+    g_fixture->state.trunk_chan_map[18] = 451025000L;
+    model.refresh(&g_fixture->opts, &g_fixture->state);
     expect("rows are read only when the body moved",
            channelSignals == 1 && model.channel(18).value("hz").toLongLong() == 451012500);
-    g_view.content_seq++;
-    g_view.revision++;
-    model.refresh(&g_opts, &g_state);
+    g_fixture->view.content_seq++;
+    g_fixture->view.revision++;
+    model.refresh(&g_fixture->opts, &g_fixture->state);
     expect("a moved body is read again",
            channelSignals == 2 && model.channel(18).value("hz").toLongLong() == 451025000 && missingSignals == 1);
     expect("and the revision is published", stateSignals == 2 && model.revision() == 10U);
 
-    set_bit(g_view.missing.missing, 41U);
-    g_view.content_seq++;
-    model.refresh(&g_opts, &g_state);
+    set_bit(g_fixture->view.missing.missing, 41U);
+    g_fixture->view.content_seq++;
+    model.refresh(&g_fixture->opts, &g_fixture->state);
     expect("a channel newly missing moves only the missing rows",
            missingSignals == 2 && channelSignals == 2 && model.missingCount() == 4);
 
-    g_opts.trunk_scan_enabled = 1;
-    model.refresh(&g_opts, &g_state);
+    g_fixture->opts.trunk_scan_enabled = 1;
+    model.refresh(&g_fixture->opts, &g_fixture->state);
     expect("under a trunk scan the sheet is read only", model.trunkScanActive() && stateSignals == 3);
-    g_opts.trunk_scan_enabled = 0;
-    model.refresh(&g_opts, &g_state);
+    g_fixture->opts.trunk_scan_enabled = 0;
+    model.refresh(&g_fixture->opts, &g_fixture->state);
 
     model.setSessionSystemUid(QStringLiteral("8d3b1e7a-0000-4000-8000-000000000001"));
     expect("the session's saved system", model.sessionHasSavedSystem() && stateSignals == 5);
 
-    model.replaceForTarget(&g_opts, nullptr);
+    model.replaceForTarget(&g_fixture->opts, nullptr);
     expect("no live session: no rows", model.missing().isEmpty() && model.channels().isEmpty() && !model.present());
-    model.replaceForTarget(&g_opts, &g_state);
+    model.replaceForTarget(&g_fixture->opts, &g_fixture->state);
     expect("a new target's rows in one replacement", model.missingCount() == 4 && model.channels().size() == 7);
     model.setActive(false);
-    model.replaceForTarget(&g_opts, &g_state);
+    model.replaceForTarget(&g_fixture->opts, &g_fixture->state);
     expect("closed, a hop drops the rows", model.channels().isEmpty());
     model.setActive(true);
-    g_view.present = 0U;
-    model.refresh(&g_opts, &g_state);
+    g_fixture->view.present = 0U;
+    model.refresh(&g_fixture->opts, &g_fixture->state);
     expect("a session with no DMR record lists nothing", model.channels().isEmpty() && !model.present());
-    g_state.state_ext[DSD_STATE_EXT_APP_DMR_T3_VIEW] = nullptr;
-    model.refresh(&g_opts, &g_state);
+    g_fixture->state.state_ext[DSD_STATE_EXT_APP_DMR_T3_VIEW] = nullptr;
+    model.refresh(&g_fixture->opts, &g_fixture->state);
     expect("nor does a snapshot without the view", model.channels().isEmpty());
 }
 
@@ -257,9 +263,14 @@ test_origin_keys() {
 int
 main(int argc, char** argv) {
     QCoreApplication app(argc, argv);
+    const auto fixture = std::make_unique<Fixture>();
+    g_fixture = fixture.get();
     test_rows();
     test_no_churn();
     test_origin_keys();
+    g_fixture->state.state_ext[DSD_STATE_EXT_APP_DMR_T3_VIEW] = nullptr;
+    dsd_state_ext_free_all(&g_fixture->state);
+    g_fixture = nullptr;
     if (g_failures != 0) {
         DSD_FPRINTF(stderr, "%d failure(s)\n", g_failures);
         return 1;

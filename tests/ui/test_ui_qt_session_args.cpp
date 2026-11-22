@@ -1910,8 +1910,8 @@ test_every_error_has_text() {
             g_failures++;
         }
     }
-    expect("the last error value is a Tier III channel file that could not be written",
-           dsd_qt::SessionArgsErrorLast == SessionArgsError::DmrChannels);
+    expect("the last error value is a Tier III channel file the user's own option would shadow",
+           dsd_qt::SessionArgsErrorLast == SessionArgsError::DmrChannelsShadowed);
     expect("a value past the last one has no text",
            dsd_qt::session_args_error_text(static_cast<SessionArgsError>(last + 1)).isEmpty());
 }
@@ -2497,6 +2497,71 @@ test_dmr_channels_csv(void) {
              .contains(QStringLiteral("--dmr-chan-overrides")));
 }
 
+/* Discussion #900 F3: the decode set is the last -f the decoder reads, in the order the start puts the options on the
+   command line, the confirmed live radio settings last of all, and in either of getopt's forms. */
+static void
+test_dmr_channels_effective_decode_set(void) {
+    const QByteArray want("lpcn,frequency_hz\n12,0\n40,451137500\n");
+    const SessionArgPrefs prefs;
+    SessionArgPrefs fiPrefs;
+    fiPrefs.extraArgs = QStringLiteral("-fi");
+    auto sys = tier3_system();
+    sys["radioSettings"] = QVariantMap{{"decodeFlag", "-fs"}};
+    expect("a live DMR setting comes after the app's -fi: passed",
+           dsd_qt::session_args_dmr_channels_csv(sys, fiPrefs) == want);
+    const QStringList args = session_args_build(sys, fiPrefs, nullptr);
+    expect("as the argv has it: the live -fs after the app's -fi",
+           args.lastIndexOf(QStringLiteral("-fs")) > args.lastIndexOf(QStringLiteral("-fi")));
+    sys["extraArgs"] = QStringLiteral("-f1");
+    expect("and after the system's own -f1", dsd_qt::session_args_dmr_channels_csv(sys, prefs) == want);
+    sys = tier3_system();
+    sys["decodeFlag"] = QString();
+    sys["radioSettings"] = QVariantMap{{"decodeFlag", ""}};
+    sys["extraArgs"] = QStringLiteral("-fi");
+    expect("a live Auto setting (-fa) after the system's -fi: passed",
+           dsd_qt::session_args_dmr_channels_csv(sys, prefs) == want);
+
+    sys = tier3_system();
+    sys["extraArgs"] = QStringLiteral("-f 1");
+    expect("-f 1, the value apart, runs P25 only: none", dsd_qt::session_args_dmr_channels_csv(sys, prefs).isEmpty());
+    sys["decodeFlag"] = QStringLiteral("-fi");
+    sys["extraArgs"] = QStringLiteral("-f s");
+    expect("-f s after -fi runs DMR: passed", dsd_qt::session_args_dmr_channels_csv(sys, prefs) == want);
+    sys["decodeFlag"] = QStringLiteral("-fs");
+    sys["extraArgs"] = QStringLiteral("-C -fi");
+    expect("-fi as another option's value is no decode set: passed",
+           dsd_qt::session_args_dmr_channels_csv(sys, prefs) == want);
+}
+
+/* Discussion #900 F3: the decoder keeps the last --dmr-chan-overrides, and the user's own extra options come after the
+   file the start writes, so a start that would pass the saved system's channels and the user's own file is refused. */
+static void
+test_dmr_channels_shadowed(void) {
+    const SessionArgPrefs prefs;
+    for (const QString& extra :
+         {QStringLiteral("--dmr-chan-overrides /data/old.csv"), QStringLiteral("--dmr-chan-overrides=/data/old.csv")}) {
+        auto sys = tier3_system();
+        sys["dmrChanOverridesPath"] = QStringLiteral("/data/dmr_channels/a.csv");
+        sys["extraArgs"] = extra;
+        SessionArgsError error = SessionArgsError::None;
+        expect(qPrintable(QStringLiteral("refused with the system's '%1'").arg(extra)),
+               session_args_build(sys, prefs, &error).isEmpty() && error == SessionArgsError::DmrChannelsShadowed);
+        sys.remove("extraArgs");
+        SessionArgPrefs appPrefs;
+        appPrefs.extraArgs = extra;
+        error = SessionArgsError::None;
+        expect("and with the app's",
+               session_args_build(sys, appPrefs, &error).isEmpty() && error == SessionArgsError::DmrChannelsShadowed);
+    }
+    auto sys = tier3_system();
+    sys["extraArgs"] = QStringLiteral("--dmr-chan-overrides /data/old.csv");
+    SessionArgsError error = SessionArgsError::None;
+    expect("the user's own file alone starts",
+           !session_args_build(sys, prefs, &error).isEmpty() && error == SessionArgsError::None);
+    expect("the refusal says what to do",
+           dsd_qt::session_args_error_text(SessionArgsError::DmrChannelsShadowed).contains("--dmr-chan-overrides"));
+}
+
 static void
 test_dmr_channels_start(void) {
     class Host : public dsd_qt::DecoderHost {
@@ -2572,6 +2637,19 @@ test_dmr_channels_start(void) {
                && result.value("errorText").toString()
                       == dsd_qt::session_args_error_text(SessionArgsError::DmrChannels));
     expect("the folder unblocked", QFile::remove(folder));
+
+    /* A saved system whose extra options name a channels file of their own is refused with the start screen's
+       "dmr-channels" and the words that say why. */
+    host.starts = 0;
+    QVariantMap shadowed = sys;
+    shadowed["extraArgs"] = QStringLiteral("--dmr-chan-overrides /data/old.csv");
+    expect("channels kept again", systems.applyDmrChannelEdit(uid, 12, 2, 0).value("ok").toBool());
+    result = builder.start(shadowed, &host, QStringLiteral("saved"));
+    expect("an explicit overrides file over the saved channels refuses the start",
+           !result.value("started").toBool() && host.starts == 0
+               && result.value("error").toString() == QStringLiteral("dmr-channels")
+               && result.value("errorText").toString()
+                      == dsd_qt::session_args_error_text(SessionArgsError::DmrChannelsShadowed));
     while (systems.count() > 0 && systems.remove(0)) {}
 }
 
@@ -2631,6 +2709,8 @@ main(int argc, char** argv) {
     test_scan_lists_argv();
     test_scan_join_conflict();
     test_dmr_channels_csv();
+    test_dmr_channels_effective_decode_set();
+    test_dmr_channels_shadowed();
     test_dmr_channels_start();
     if (g_failures != 0) {
         DSD_FPRINTF(stderr, "%d failure(s)\n", g_failures);

@@ -155,6 +155,15 @@ class CommandBridge : public QObject {
                                    quint32 generation, const QString& systemUid = QString(),
                                    const QString& session = QString());
 
+    /**
+     * @brief Keep a channel edit the decoder applied on saved system @p systemUid again (the Channels sheet's "Try
+     * saving again" after a save that failed): @p op, @p lpcn and @p hz as setDmrChannel() sent them, kept as
+     * dmrChannelResultReceived() keeps an "ok" answer (SavedSystemsModel::applyDmrChannelEdit()).
+     *
+     * @return {saved, saveError}, with the answer's meanings: "no-system" also for an empty @p systemUid.
+     */
+    Q_INVOKABLE QVariantMap saveDmrChannelEdit(const QString& systemUid, int lpcn, int op, qint64 hz);
+
     /** @brief Where an applied channel edit is kept (the saved systems); nullptr: nowhere, saved is false. @p prefs
      * (may be null) supplies the app-wide extra options the edit's DMR check reads. */
     void setSavedSystems(SavedSystemsModel* systems, const AppPrefs* prefs = nullptr);

@@ -9,9 +9,10 @@ import "Util.js" as Util
 // sheet's Channels button and the Monitor's NO FREQ reading. "No frequency"
 // lists the channels the site granted calls on that have no frequency here,
 // so dsd-neo cannot follow those calls; "Channels" lists the ones that have
-// one, and where it came from. A row opens the channel editor; an edit is
-// kept on the saved system the session runs (the bridge does that once the
-// decoder applied it). Under a trunk scan the channels are read-only.
+// one, and where it came from, a page at a time. A row opens the channel
+// editor; an edit is kept on the saved system the session runs (the bridge
+// does that once the decoder applied it), and a save that failed can be tried
+// again. Under a trunk scan the channels are read-only.
 ModalSheet {
     id: sheet
     objectName: "channelsSheet"
@@ -29,9 +30,23 @@ ModalSheet {
             statusSeen = status.length > 0;
             if (statusSeen)
                 Qt.callLater(sheet.announceKept);
-        } else if (statusSeen) {
-            setStatus("", false);
+            return;
         }
+        // The editor and its question go with the sheet: hidden only through
+        // it, the editor keeps its own visible flag and would stand over the
+        // sheet, perhaps on another session, the next time it opens. An edit
+        // already sent stays the sheet's to answer (request).
+        editSheet.visible = false;
+        firstChannelPage();
+        // A save still owed keeps the words that say so.
+        if (statusSeen && owedSaveCount === 0)
+            setStatus("", false);
+    }
+    // The session ended: so does the edit, as the Talkgroups editor's does.
+    readonly property bool hostRunning: decoderHost.running
+    onHostRunningChanged: {
+        if (!hostRunning)
+            editSheet.visible = false;
     }
     function announceKept() {
         if (visible && status.length > 0)
@@ -60,6 +75,20 @@ ModalSheet {
     // the row the focus was on now holds another channel, or none.
     property int followLpcn: 0
     property double followRevision: 0
+    // The channels with a frequency a page at a time, by number: a channel
+    // map can list thousands, and each row is built when it is listed. Show
+    // more channels adds the next page; the sheet opens on the first again,
+    // and holds no rows past it.
+    readonly property int channelPageSize: 50
+    property int channelLimit: channelPageSize
+    readonly property var allChannels: channels.channels
+    readonly property var channelPage: allChannels.length > channelLimit ? allChannels.slice(0, channelLimit) : allChannels
+    // Edits the decoder made whose save failed (the saved system could not be
+    // written), the latest for each system and channel: Try saving again saves
+    // them. Kept while the sheet is closed; a save that cannot work (the system
+    // was removed, say) is not kept.
+    property var owedSaves: ({})
+    property int owedSaveCount: 0
 
     function named(name) {
         return name ? " (" + Util.oneLine(name) + ")" : "";
@@ -141,6 +170,64 @@ ModalSheet {
             return;
         editSheet.openFor(lpcn, listed);
     }
+    function showMoreChannels() {
+        var first = channelLimit;
+        var focusHere = moreButton.activeFocus;
+        channelLimit += channelPageSize;
+        // The button goes with the last page: the focus moves on to the first
+        // channel it added rather than out of the sheet.
+        if (focusHere && allChannels.length <= channelLimit)
+            Qt.callLater(sheet.focusChannelAt, first);
+    }
+    function focusChannelAt(at) {
+        var row = at < channelRows.live ? channelRepeater.itemAt(at) : null;
+        if (row)
+            row.forceActiveFocus();
+        else
+            addButton.forceActiveFocus();
+    }
+    function firstChannelPage() {
+        channelLimit = channelPageSize;
+        // Closed, no screen reader is told of rows that go.
+        if (channelRows.count > channelPageSize)
+            channelRows.remove(channelPageSize, channelRows.count - channelPageSize);
+    }
+    function owe(result) {
+        var key = result.systemUid + "|" + result.lpcn;
+        var owed = Object.assign({}, owedSaves);
+        if (result.saved !== true && String(result.saveError) === "not-saved")
+            owed[key] = {systemUid: String(result.systemUid), lpcn: Number(result.lpcn), op: Number(result.op), hz: Number(result.hz) || 0};
+        else
+            delete owed[key];
+        owedSaves = owed;
+        owedSaveCount = Object.keys(owed).length;
+    }
+    function retrySaves() {
+        var left = {};
+        var problem = "";
+        for (var key in owedSaves) {
+            var edit = owedSaves[key];
+            var kept = bridge.saveDmrChannelEdit(edit.systemUid, edit.lpcn, edit.op, edit.hz);
+            if (kept.saved === true)
+                continue;
+            if (String(kept.saveError) === "not-saved")
+                left[key] = edit;
+            else if (!problem.length)
+                problem = String(kept.saveError);
+        }
+        var hadFocus = retryButton.activeFocus;
+        owedSaves = left;
+        owedSaveCount = Object.keys(left).length;
+        if (owedSaveCount > 0)
+            setStatus(saveErrorText("not-saved"), true);
+        else if (problem.length)
+            setStatus(saveErrorText(problem), true);
+        else
+            setStatus(qsTr("Saved."), false);
+        // The button went: the focus stays in the sheet.
+        if (hadFocus && owedSaveCount === 0)
+            addButton.forceActiveFocus();
+    }
     function setStatus(text, problem) {
         status = text;
         statusProblem = problem;
@@ -157,8 +244,9 @@ ModalSheet {
                                   channels.sessionSystemUid, session))
             return 0;
         request = bridge.lastDmrChannelRequest;
-        // A new edit says its own outcome.
-        setStatus("", false);
+        // A new edit says its own outcome; a save still owed keeps its words.
+        if (owedSaveCount === 0)
+            setStatus("", false);
         return request;
     }
     function answered(result) {
@@ -185,10 +273,15 @@ ModalSheet {
         }
     }
     function applied(result) {
-        if (!result.systemUid || String(result.systemUid).length === 0)
+        var kept = result.systemUid && String(result.systemUid).length > 0;
+        if (kept)
+            owe(result);
+        if (!kept)
             setStatus(qsTr("Not kept: this session is not a saved system."), false);
         else if (result.saved !== true)
             setStatus(saveErrorText(String(result.saveError || "")), true);
+        else if (owedSaveCount > 0)
+            setStatus(saveErrorText("not-saved"), true);
         else
             setStatus("", false);
         followLpcn = visible ? Number(result.lpcn) || 0 : 0;
@@ -199,7 +292,8 @@ ModalSheet {
         var reason = error === "no-system" ? qsTr("this system is no longer in your saved systems.")
             : error === "not-dmr" ? qsTr("this saved system is not set to decode DMR.")
             : error === "full" ? qsTr("this system already keeps %1 channels of yours.").arg(channels.maxEntries)
-            : qsTr("dsd-neo could not save this system. Open the channel and apply it again.");
+            : error === "explicit-overrides" ? qsTr("the extra decoder arguments name another channels file, which dsd-neo uses instead.")
+            : qsTr("dsd-neo could not save this system.");
         return qsTr("Changed until you stop listening, but not saved: ") + reason;
     }
     function channelRowFor(lpcn) {
@@ -383,6 +477,14 @@ ModalSheet {
         font.pixelSize: Theme.fontSize(13)
         color: sheet.statusProblem ? Theme.alert : Theme.textSecondary
     }
+    OutlineButton {
+        id: retryButton
+        objectName: "channelsRetrySave"
+        width: parent.width
+        visible: sheet.owedSaveCount > 0
+        text: qsTr("Try saving again")
+        onClicked: sheet.retrySaves()
+    }
 
     MicroLabel {
         objectName: "channelsMissingLabel"
@@ -485,7 +587,7 @@ ModalSheet {
             id: channelRepeater
             model: StableRows {
                 id: channelRows
-                entries: sheet.channels.channels
+                entries: sheet.channelPage
                 holdRows: true
                 keyOf: function (c) {
                     return String(c.lpcn);
@@ -503,6 +605,15 @@ ModalSheet {
                 }
             }
         }
+    }
+    // The next page of channels (channelPageSize at a time).
+    OutlineButton {
+        id: moreButton
+        objectName: "channelsShowMore"
+        width: parent.width
+        visible: sheet.allChannels.length > sheet.channelLimit
+        text: qsTr("Show more channels")
+        onClicked: sheet.showMoreChannels()
     }
 
     OutlineButton {
