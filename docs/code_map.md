@@ -16065,8 +16065,9 @@ Qt Quick frontend (`src/ui/qt`):
   a head of max(the two lines + 24, Play + 16) px, the two lines being the title and ONE supporting line however far
   a shared title's supporting line wraps (r5 H5: two same-name replay files with 260-character paths at 320 dp and
   2.0 had Play at y 779 under a title at y 12; `test_actions_stay_on_the_head_of_a_wrapped_card`), and 12 px of
-  padding; 68 px at normal text for a card whose title
-  no other card shares, the refresh hint under everything; a shared-title card's wrapping lines (its receiver and
+  padding; with the app's fonts on a desktop, 68 px at normal text for a card whose title
+  no other card shares (an example: the height follows the line boxes, so a fallback face such as Noto CJK makes it a
+  few px taller; see "Monitor layout", the fixed line boxes), the refresh hint under everything; a shared-title card's wrapping lines (its receiver and
   place lines under the two, and its supporting line wrapping) grow it. The title and the supporting line are one line
   each (G6: a line break in an imported name is a space, `Util.oneLine()`, and both elide), so a long name never grows
   the
@@ -16144,7 +16145,8 @@ Qt Quick frontend (`src/ui/qt`):
   leading the source line), `test_more_offers_sites_when_the_button_is_left_out`,
   `test_scan_list_card_matches_the_system_card`; the scroll-across-tabs cases in
   `tst_home_dongle_status.qml` and `tst_home_pinned_strip.qml` also check after a layout while hidden;
-  `tst_home_compact_cards.qml`: compact cards at 320/360/411 x 1.0/1.6/2.0, one row, 68 px at normal text, the site
+  `tst_home_compact_cards.qml`: compact cards at 320/360/411 x 1.0/1.6/2.0, one row, the height from the measured
+  lines at every size and 68 px at normal text where the lines are the base face's own (`cardHead()`), the site
   button drawn only where the title keeps its minimum and the count leading the line otherwise, More → Sites for a
   one-site group in both views, the Nearest line, the title's description, held lines under a screen reader, compact
   scan-list cards, the D11 reset shown and hidden, `test_tab_chosen_before_the_reset_keeps_no_old_place`,
@@ -17547,12 +17549,15 @@ Qt Quick frontend (`src/ui/qt`):
   the panel, idle included, so a touch on the drawn label or the identity finds it (r5 H2: as the identity line's
   node it began after the label, and a touch on the label found the window; r6 J2: stopping at Skip's hidden place
   while idle, it cut "SLOT 2 · idle", 223 px, to 102 at 320 dp and 2.0, so the strip tests check `!truncated` on the
-  label as well as its hit target). Its name is built from the call's state (`stripIdle`, the slot, the identity
-  and the flags), never from what its children show, so a call ending renames it once (r6 J3: built from the label's
+  label as well as its hit target). Its name is built from the readings in one go (`stripSpeech()`: the lead slot,
+  the other slot's state, its identity, `slotIdentity()`, and its flags), never from what its children show or from
+  the separate `stripIdle`/`stripSlot` bindings, so a call ending renames it once (r7 K2: when the leading slot 1
+  ended and slot 2 took the hero in one snapshot, those bindings settled one after another and the node said "SLOT 2
+  · idle", the slot still on air, before "SLOT 1 · idle"; r6 J3: built from the label's
   text and the identity's visibility it was renamed "SLOT 2 · idle, TG 4002", then "SLOT 2 · idle";
-  `UI_QT_QML_A11Y_CHURN` `test_h2_the_strip_renames_once_as_its_call_ends` records each name it takes; the
-  text-reach walk's every-branch pass, which also shows the tags on an idle strip, where the app never draws them,
-  allowlists them only while `stripIdle`). Idle it reads
+  `UI_QT_QML_A11Y_CHURN` `test_h2_the_strip_renames_once_as_its_call_ends` records each name it takes as either
+  call ends and comes back; the text-reach walk's every-branch pass, which also shows the tags on an idle strip,
+  where the app never draws them, allowlists them only in that pass and only while `stripIdle`). Idle it reads
   only the label's `SLOT n · idle` (r5 H1: an ended call's kind and flags, kept through its hold by
   `slotCallView()`, were read as `SLOT 2 · idle, PRIVATE, EMERGENCY, ENC`); with a call its name carries the slot,
   the identity and PRIVATE, EMERGENCY and ENC (each tag's `label`, which `EmergencyTag` and `EncTag` now have as
@@ -17859,7 +17864,8 @@ Qt Quick frontend (`src/ui/qt`):
   supporting line (`titleBox`, `sourceBox`, `LineBoxes`; a shared title's wrapping supporting line keeps its lines,
   measured by an unfitted hidden twin, `sourceWrapProbe`, never by its own implicit height, which the fit changes:
   that was a binding loop with Noto CJK, where the box and the line differ; the line reads the probe's `height`, which
-  it takes from its text, never the `implicitHeight` getter, r6 J6, as the meta line's holder reads that line's)
+  it takes from its text, never the `implicitHeight` getter, r6 J6, as the meta line's holder reads that line's;
+  `test_shared_title_source_follows_its_probe` gives the probe a height of its own, which the getter would not follow)
   and a scan list's name. r5 H3: a Tibetan scan target at 2.0 drew a 62 px line in the 29 px meta box, over the
   title, and a Tibetan hero channel made the subline Row 74 px tall in its 34 px reservation, pushing the ids 20 px
   down across the compact hero's border (`tst_monitor_status_lines.qml` `test_tall_scripts_fit_their_line_boxes`,
@@ -17868,9 +17874,12 @@ Qt Quick frontend (`src/ui/qt`):
   (title 23, source 16 px at 1.0: cards as before, 68 px compact); with Noto CJK as the fallback they are taller (25
   and 17 at 1.0, 25 and 18 at `QT_SCALE_FACTOR=1.25`), so a compact card is a few px taller, 70 or 71 px, not 68,
   and a scan list's 68 or 69 (decided, as the call rows' S2 limit). The tests derive a compact card's height from the measured lines, padding and
-  Play's floor (`compactHeight()` for a system's card: title and source boxes; `compactListHeight()` for a scan
-  list's: the name's box and the count line), and hold it to 68 px only where the base face's own lines are the boxes
-  and give 68 (r6 J5: a 2 px tolerance had demanded 68 of a 69 px card, and the scan-list test 68 outright). Only a
+  Play's floor at every size (`cardHead()`, through `compactHeight()` for a system's card: title and source boxes,
+  and `compactListHeight()` for a scan list's: the name's box and the count line); at normal text, wherever the
+  card's lines are the base face's own (independent "Ag" probes in the same fonts), they also hold it to those
+  probes and the specified constants alone, 12 px padding and the 68 px floor, never the card's own Play: 68 px with
+  the desktop fonts (r6 J5: a 2 px tolerance had demanded 68 of a 69 px card, and the scan-list test 68 outright;
+  r7 K3: deciding from the card's own numbers whether to check 68 let a Play grown to 56 px pass). Only a
   script that stands taller than a box is drawn smaller in it: Latin, CJK and emoji keep their pixel size in every
   fixed box (`test_fallback_faces_keep_their_size` on the Monitor, `test_fallback_faces_keep_their_size_in_cards`).
   Measured exception with the host's fonts: an emoji directly before a full stop ("🚒.wav") stands 1 px taller than
