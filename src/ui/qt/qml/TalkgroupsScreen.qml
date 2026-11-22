@@ -378,12 +378,16 @@ Item {
             wrapMode: Text.Wrap
         }
 
+        // The one command line (issue #901 B3) keeps the look of the line it
+        // replaced, the app's 13 px text in the primary colour, so it grows
+        // with the text size like the rest of the screen.
         ReadableText {
             objectName: "talkgroupCommandToast"
             width: parent.width
             text: screen.commandMessage
             visible: text.length > 0
-            color: Theme.textSecondary
+            color: Theme.textPrimary
+            font.pixelSize: Theme.fontSize(13)
             wrapMode: Text.Wrap
             textFormat: Text.PlainText
         }

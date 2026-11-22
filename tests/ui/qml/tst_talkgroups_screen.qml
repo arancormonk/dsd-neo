@@ -307,6 +307,23 @@ Item {
             compare(shownCopies(refused), 0, "nor the refusal before it");
         }
 
+        // B3 (r2 E2): the one command line kept the look of the line it replaced, the app's 13 px text in the primary
+        // colour, so it grows with the text size: at text 2.0 a bulk status or an engine answer is drawn at 26 px.
+        function test_command_line_follows_the_text_size() {
+            var toast = findChild(screenLoader.item, "talkgroupCommandToast");
+            Ui.Theme.fontScale = 2;
+            testContext.setMetric("uiMessage", "Applied: 2 talkgroups listened to");
+            tryCompare(toast, "visible", true);
+            compare(toast.font.pixelSize, Ui.Theme.fontSize(13), "an engine answer at the theme's 13 px");
+            compare(toast.font.pixelSize, 26);
+            verify(Qt.colorEqual(toast.color, Ui.Theme.textPrimary), "in the primary text colour");
+            testContext.setMetric("uiMessage", "");
+            testContext.setTalkgroupSelectionAccepted(false);
+            applyBulk();
+            compare(toast.text, "The update could not be queued. Try again.");
+            compare(toast.font.pixelSize, 26, "a refusal at the same size");
+        }
+
         // B3: the engine can answer with exactly the text still shown from its last answer (the same selection applied
         // twice within the answer's life). Its count moves, so the answer replaces "Update requested", and when it
         // expires the request does not come back.
