@@ -15753,14 +15753,20 @@ Build files: `src/protocol/CMakeLists.txt` and per‑protocol `src/protocol/<nam
     saved control out ("Clear saved squelch", issue #899 B11), keeping the others. Issue #899: the audio-input
     `SquelchSheet` saves through the same object as the Radio sheet (B7: `settingRequested`, `savesToSystem`,
     `saveError` through `MonitorScreen` to `radioPersistence.request()`; "This channel" edits are the session's), and
-    both sheets offer "Clear saved squelch · next start" while the saved system has one (`Main.sessionSavedSquelch`):
+    both sheets offer a content-width clear button while the saved system has one (`Main.sessionSavedSquelch`): "Use
+    app default" on the Radio sheet, "Remove saved squelch" on the audio-input sheet (no app default applies there),
+    accessible name "Clear This System's Saved Squelch", with "Applies from the next start." under it.
     `clearSquelch()` drops a squelch request still waiting before `clearRadioSetting()`, so an older one cannot put the
-    key back, and `squelchCleared` shows the note until the next squelch request. A squelch level is saved only in a
+    key back, and `squelchCleared` shows the note until the next squelch request: "... The next start uses the default
+    from Settings." where it applies (`Main.sessionSquelchDefaultApplies`: a radio source and an analog saved decode),
+    else "... runs without a saved squelch.". The note is read out (`Navigation.announce()`), and a keyboard focus the
+    hidden button held goes to the chosen squelch segment (`SegmentedControl.focusSegment()`). A squelch level is saved only in a
     form the app's controls make (B15, fail-closed): Off or a whole dB from -120 to -1, read from the configured power
     (`MetricsModel::configuredSquelchLevelWhole`/`configuredSquelchLevelWholeDb`, `dsd_squelch_level_is_whole_db()`),
     and a stepped level confirms only on that same whole dB. The level the dB choice brings back from Auto/Noise
     (`{mode: "level", restore: true}`) is saved when it has that form; otherwise nothing is saved and `squelchError`
-    ("This level was set outside the app, so it is not saved.") shows under the squelch controls. A dynamic save
+    ("This level was set outside the app, so it is not saved.") shows under the squelch controls, only while a fixed
+    level is the setting; the next squelch request (a step or a mode change) clears it. A dynamic save
     stores only the dynamic choice. The steppers of both sheets (`Util.squelchStep()`) always ask for a whole dB,
     never step against their direction (-5 dB is the top a step makes; a level above it set elsewhere stays), stop on
     the -120 dB floor before Off, and take a row's own level down to -120 dB too. Every user squelch edit on either

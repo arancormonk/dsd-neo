@@ -23,6 +23,14 @@ Rectangle {
     // Gate first: see OutlineButton.
     Accessible.ignored: !navigationAllowed || !visible || accessibleName.length === 0
 
+    // Give the keyboard to segment @p index (the chosen one by default), for a
+    // caller whose focused control went away under it.
+    function focusSegment(index) {
+        var item = segments.itemAt(index === undefined ? currentIndex : index);
+        if (item)
+            item.forceActiveFocus();
+    }
+
     property real labelHeight: 0
     // Issue #646: every label at one size, the smallest any of them needs for
     // its words to fit (WholeWordLabel), so a shrunk label never sits beside

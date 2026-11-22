@@ -71,6 +71,7 @@ Item {
     // Issue #899 (B7, B11): what the audio-input Squelch sheet saves to, and its saved squelch, from Main.
     property bool squelchSavesToSystem: false
     property string squelchSaveError: ""
+    property string squelchLevelSaveError: ""
     property string savedSquelch: ""
     property bool savedSquelchCleared: false
     signal squelchSettingRequested(string key, var value)
@@ -2736,6 +2737,7 @@ Item {
         z: 10
         savesToSystem: screen.squelchSavesToSystem
         saveError: screen.squelchSaveError
+        squelchSaveError: screen.squelchLevelSaveError
         savedSquelch: screen.savedSquelch
         savedSquelchCleared: screen.savedSquelchCleared
         onSettingRequested: function (key, value) { screen.squelchSettingRequested(key, value); }

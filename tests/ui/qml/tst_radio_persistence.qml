@@ -225,6 +225,14 @@ Item {
             var shown = findChild(sheet, "radioSquelchSaveError");
             verify(shown.visible, "the squelch controls show it");
             compare(shown.text, sheet.squelchSaveError);
+            // A mode change clears it: Noise is saved, and the reason is gone.
+            sheet.requestSquelchDynamic(commands.squelchModeNoise, 12);
+            compare(sheet.squelchSaveError, "");
+            verify(!shown.visible);
+            testContext.setMetric("configuredSquelchNoise", true);
+            tryCompare(savedSystems.get(0), "radioSettings", {squelch: "noise+12"});
+            testContext.setMetric("configuredSquelchNoise", false);
+            verify(savedSystems.clearRadioSetting(savedSystems.get(0).uid, "squelch"));
             sheet.forgetRequests();
             testContext.setMetric("squelchDb", -65.5);
             testContext.setMetric("squelchOff", false);
@@ -285,7 +293,8 @@ Item {
             verify(!clear.visible);
             var note = findChild(sheet, "radioSquelchClearedNote");
             verify(note.visible);
-            compare(note.text, "Saved squelch cleared. The next start runs without it.");
+            compare(note.text, "Saved squelch cleared. The next start runs without a saved squelch.",
+                "a P25 system takes no app default");
             testContext.setMetric("configuredSquelchMarginDb", 12);
             testContext.setMetric("configuredSquelchNoise", true);
             wait(10);
@@ -365,7 +374,25 @@ Item {
             clear.clicked();
             compare(savedSystems.get(0).radioSettings, {});
             verify(findChild(squelch, "squelchClearedNote").visible);
+            compare(findChild(squelch, "squelchClearedNote").text,
+                "Saved squelch cleared. The next start runs without a saved squelch.");
+            compare(clear.text, "Remove saved squelch");
+            compare(clear.Accessible.name, "Remove Saved Squelch From This System");
             squelch.visible = false;
+        }
+
+        // An NFM system's next start takes the app default once its own squelch is cleared, and the note says so.
+        function test_clear_on_an_analog_system_names_the_default() {
+            decoderHost.stop();
+            verify(savedSystems.updateRadioSettings(savedSystems.get(0).uid, {squelch: "auto+12", decodeFlag: "-fA"}));
+            app.startSystem(0);
+            compare(app.startError, "");
+            sheet.open();
+            findChild(sheet, "radioSquelchClearSaved").clicked();
+            compare(savedSystems.get(0).radioSettings, {decodeFlag: "-fA"});
+            compare(findChild(sheet, "radioSquelchClearedNote").text,
+                "Saved squelch cleared. The next start uses the default from Settings.");
+            compare(sheet.announced, "Saved squelch cleared. The next start uses the default from Settings.");
         }
     }
 }

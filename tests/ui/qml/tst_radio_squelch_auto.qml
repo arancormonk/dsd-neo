@@ -492,19 +492,63 @@ Item {
             sheet.savesToSystem = true;
             sheet.savedSquelch = "noise+17";
             verify(clear.visible);
-            compare(clear.text, "Clear saved squelch · next start");
-            compare(clear.Accessible.name, "Clear Saved Squelch From the Next Start");
+            compare(clear.text, "Use app default");
+            compare(clear.Accessible.name, "Use App Default Squelch for This System");
             verify(clear.height >= 48);
+            verify(clear.width < sheet.width / 2, "a content-width button, as This channel's Use default");
+            var row = findChild(sheet, "radioSquelchClearRow");
+            var when = null;
+            for (var child of row.children)
+                if (child !== clear && child.text !== undefined)
+                    when = child;
+            compare(when.text, "Applies from the next start.");
+            // Main clears it and the persistence says so; stand in for both.
+            function cleared() {
+                sheet.savedSquelch = "";
+                sheet.savedSquelchCleared = true;
+            }
+            sheet.clearSavedSquelchRequested.connect(cleared);
             clearSpy.target = sheet;
             clearSpy.clear();
+            clear.forceActiveFocus();
+            verify(clear.activeFocus);
             clear.clicked();
+            sheet.clearSavedSquelchRequested.disconnect(cleared);
             compare(clearSpy.count, 1);
             compare(testContext.squelchCalls() + testContext.squelchNoiseCalls() + testContext.squelchAutoCalls(), 0,
                 "the running squelch is left alone");
-            sheet.savedSquelch = "";
             verify(!clear.visible);
+            var note = findChild(sheet, "radioSquelchClearedNote");
+            verify(note.visible);
+            compare(note.text, "Saved squelch cleared. The next start uses the default from Settings.");
+            compare(sheet.announced, note.text, "the note is read out");
+            var mode = findChild(sheet, "radioSquelchMode");
+            var focused = sheet.Window.activeFocusItem;
+            verify(focused !== null && focused.Accessible.name === mode.model[mode.currentIndex],
+                "the keyboard goes to the chosen squelch segment");
+            sheet.savedSquelchDefaultApplies = false;
+            compare(note.text, "Saved squelch cleared. The next start runs without a saved squelch.");
+            sheet.savedSquelchDefaultApplies = true;
+            sheet.savedSquelchCleared = false;
             sheet.savesToSystem = false;
             clearSpy.target = null;
+        }
+
+        // Issue #899 (B15): the unsaved-level reason shows only while a fixed level is the setting.
+        function test_save_error_only_under_a_level() {
+            sheet.savesToSystem = true;
+            sheet.squelchSaveError = "This level was set outside the app, so it is not saved.";
+            var shown = findChild(sheet, "radioSquelchSaveError");
+            verify(shown.visible, "under dB");
+            setNoise(true, true, 12, "quieting 23 dB");
+            verify(!shown.visible, "not under Noise");
+            setNoise(false, false, 12, "");
+            setAuto(true, true, 12, "learning");
+            verify(!shown.visible, "not under Auto");
+            setAuto(false, false, 12, "");
+            verify(shown.visible);
+            sheet.squelchSaveError = "";
+            sheet.savesToSystem = false;
         }
     }
 }

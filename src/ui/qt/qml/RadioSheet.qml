@@ -33,6 +33,12 @@ ModalSheet {
     // none), and whether Clear has taken it out for the next start.
     property string savedSquelch: ""
     property bool savedSquelchCleared: false
+    // Whether the app's default squelch applies at the system's next start
+    // (a radio source and an analog decode), which the cleared note says.
+    property bool savedSquelchDefaultApplies: true
+    // Navigation.announce()'s record of what was read out.
+    property string announced: ""
+    property int announcements: 0
     // Why a squelch change was not saved to the system, or Clear failed.
     property string squelchSaveError: ""
     signal settingRequested(string key, var value)
@@ -615,6 +621,19 @@ ModalSheet {
         squelchTtl.stop();
     }
 
+    /**
+     * Issue #899 (B11): ask for the saved squelch to go. Once it has, the
+     * note that replaces the button is read out, and a keyboard focus the
+     * button held goes to the squelch choice, so it is not lost with it.
+     */
+    function clearSavedSquelch(hadFocus) {
+        clearSavedSquelchRequested();
+        Navigation.announce(sheet, savedSquelchCleared ? squelchClearedNote : squelchSaveErrorText,
+            savedSquelchCleared ? squelchClearedNote.text : squelchSaveError);
+        if (hadFocus && savedSquelchCleared)
+            squelchModeControl.focusSegment();
+    }
+
     /** Issue #899: a user squelch edit; the app default no longer follows this session's decode switches. */
     function noteUserSquelch() {
         if (commands.squelchDefaults)
@@ -833,6 +852,7 @@ ModalSheet {
         // quieting, as a radio's squelch): the same whatever the dongle,
         // antenna or gain.
         SegmentedControl {
+            id: squelchModeControl
             objectName: "radioSquelchMode"
             visible: sheet.squelchAutoOffered
             width: parent.width
@@ -975,19 +995,34 @@ ModalSheet {
             font.pixelSize: Theme.fontSize(12)
         }
         // Issue #899 (B11): the saved system's own squelch out, from the next
-        // start; this session keeps running what it runs.
-        OutlineButton {
-            objectName: "radioSquelchClearSaved"
-            width: parent.width
-            wrapMode: Text.WordWrap
+        // start; this session keeps running what it runs. As "This channel"'s
+        // Use default: a content-width button, with when it applies under it.
+        Column {
+            objectName: "radioSquelchClearRow"
             visible: sheet.savesToSystem && !sheet.rowScope && sheet.savedSquelch.length > 0
-            text: qsTr("Clear saved squelch · next start")
-            accessibleName: qsTr("Clear Saved Squelch From the Next Start")
-            onClicked: sheet.clearSavedSquelchRequested()
+            width: parent.width
+            spacing: 4
+            OutlineButton {
+                id: squelchClearButton
+                objectName: "radioSquelchClearSaved"
+                text: qsTr("Use app default")
+                accessibleName: qsTr("Use App Default Squelch for This System")
+                onClicked: sheet.clearSavedSquelch(activeFocus)
+            }
+            ReadableText {
+                width: parent.width
+                wrapMode: Text.WordWrap
+                text: qsTr("Applies from the next start.")
+                color: Theme.textSecondary
+                font.pixelSize: Theme.fontSize(12)
+            }
         }
+        // A level the app cannot save; shown while that level is the setting.
         ReadableText {
+            id: squelchSaveErrorText
             objectName: "radioSquelchSaveError"
             visible: sheet.savesToSystem && !sheet.rowScope && sheet.squelchSaveError.length > 0
+                && !sheet.squelchDynamic
             width: parent.width
             wrapMode: Text.WordWrap
             text: sheet.squelchSaveError
@@ -995,11 +1030,14 @@ ModalSheet {
             font.pixelSize: Theme.fontSize(12)
         }
         ReadableText {
+            id: squelchClearedNote
             objectName: "radioSquelchClearedNote"
             visible: sheet.savesToSystem && !sheet.rowScope && sheet.savedSquelchCleared
             width: parent.width
             wrapMode: Text.WordWrap
-            text: qsTr("Saved squelch cleared. The next start runs without it.")
+            text: sheet.savedSquelchDefaultApplies
+                ? qsTr("Saved squelch cleared. The next start uses the default from Settings.")
+                : qsTr("Saved squelch cleared. The next start runs without a saved squelch.")
             color: Theme.textSecondary
             font.pixelSize: Theme.fontSize(12)
         }
@@ -1166,6 +1204,8 @@ ModalSheet {
                 objectName: "radioAnalogBandwidthValue"
                 width: parent.width - 116
                 anchors.verticalCenter: parent.verticalCenter
+                // "6 kHz (default)" or "12.5 kHz (DSP-limited)" wraps at large text rather than being cut.
+                wrapMode: Text.WordWrap
                 text: sheet.analogWidthReading
                 // Read aloud as the terminal prints it, row note and default included.
                 Accessible.role: Accessible.StaticText

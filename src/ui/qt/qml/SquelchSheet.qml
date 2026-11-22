@@ -31,6 +31,12 @@ ModalSheet {
     // whether Clear has taken it out for the next start.
     property string savedSquelch: ""
     property bool savedSquelchCleared: false
+    // Why a level was not saved (one set outside the app), shown only while a
+    // level is the setting; saveError is any other save failure.
+    property string squelchSaveError: ""
+    // Navigation.announce()'s record of what was read out.
+    property string announced: ""
+    property int announcements: 0
     signal settingRequested(string key, var value)
     signal clearSavedSquelchRequested()
     readonly property bool sessionRunning: decoderHost.running
@@ -230,6 +236,22 @@ ModalSheet {
         else
             forgetRequests();
     }
+    /**
+     * Issue #899 (B11): ask for the saved squelch to go. Once it has, the
+     * note that replaces the button is read out, and a keyboard focus the
+     * button held goes to the squelch choice (or the buttons, with no choice).
+     */
+    function clearSavedSquelch(hadFocus) {
+        clearSavedSquelchRequested();
+        Navigation.announce(sheet, savedSquelchCleared ? squelchClearedNote : squelchSaveNote,
+            savedSquelchCleared ? squelchClearedNote.text : squelchSaveNote.text);
+        if (!hadFocus || !savedSquelchCleared)
+            return;
+        if (squelchModeControl.visible)
+            squelchModeControl.focusSegment();
+        else
+            squelchDownButton.forceActiveFocus();
+    }
     /** Issue #899: a user squelch edit; the app default no longer follows this session's decode switches. */
     function noteUserSquelch() {
         if (sheet.bridge.squelchDefaults)
@@ -283,6 +305,7 @@ ModalSheet {
         font.pixelSize: Theme.fontSize(13)
     }
     SegmentedControl {
+        id: squelchModeControl
         objectName: "squelchMode"
         visible: sheet.squelchNoiseOffered || sheet.squelchHeld
         width: parent.width
@@ -324,6 +347,7 @@ ModalSheet {
         }
         // In Noise the buttons step the margin, 1 dB at a time.
         OutlineButton {
+            id: squelchDownButton
             objectName: "squelchDown"
             width: 48
             text: "−"
@@ -390,29 +414,47 @@ ModalSheet {
     }
     // Issue #899 (B7, B15): where a default-scope change goes, or why it did not.
     ReadableText {
+        id: squelchSaveNote
         objectName: "squelchSaveNote"
+        // The unsaved-level reason only while a level is the setting.
+        readonly property string problem: (sheet.squelchSaveError.length > 0 && !sheet.squelchNoise && !sheet.squelchAuto)
+            ? sheet.squelchSaveError : sheet.saveError
         width: parent.width
-        visible: !sheet.rowSquelch && (sheet.savesToSystem || sheet.saveError.length > 0)
-        text: sheet.saveError.length > 0 ? sheet.saveError : qsTr("Squelch changes here are saved to this system.")
+        visible: !sheet.rowSquelch && (sheet.savesToSystem || problem.length > 0)
+        text: problem.length > 0 ? problem : qsTr("Squelch changes here are saved to this system.")
         wrapMode: Text.Wrap
-        color: sheet.saveError.length > 0 ? Theme.alert : Theme.textSecondary
+        color: problem.length > 0 ? Theme.alert : Theme.textSecondary
         font.pixelSize: Theme.fontSize(13)
     }
-    // Issue #899 (B11): the saved system's own squelch out, from the next start.
-    OutlineButton {
-        objectName: "squelchClearSaved"
-        wrapMode: Text.WordWrap
+    // Issue #899 (B11): the saved system's own squelch out, from the next
+    // start. An audio input takes no app default, so the button names what it
+    // does; when it applies is under it, as on the Radio sheet.
+    Column {
+        objectName: "squelchClearRow"
         visible: sheet.savesToSystem && !sheet.rowSquelch && sheet.savedSquelch.length > 0
         width: parent.width
-        text: qsTr("Clear saved squelch · next start")
-        accessibleName: qsTr("Clear Saved Squelch From the Next Start")
-        onClicked: sheet.clearSavedSquelchRequested()
+        spacing: 4
+        OutlineButton {
+            id: squelchClearButton
+            objectName: "squelchClearSaved"
+            text: qsTr("Remove saved squelch")
+            accessibleName: qsTr("Remove Saved Squelch From This System")
+            onClicked: sheet.clearSavedSquelch(activeFocus)
+        }
+        ReadableText {
+            width: parent.width
+            wrapMode: Text.WordWrap
+            text: qsTr("Applies from the next start.")
+            color: Theme.textSecondary
+            font.pixelSize: Theme.fontSize(13)
+        }
     }
     ReadableText {
+        id: squelchClearedNote
         objectName: "squelchClearedNote"
         width: parent.width
         visible: sheet.savesToSystem && !sheet.rowSquelch && sheet.savedSquelchCleared
-        text: qsTr("Saved squelch cleared. The next start runs without it.")
+        text: qsTr("Saved squelch cleared. The next start runs without a saved squelch.")
         wrapMode: Text.Wrap
         color: Theme.textSecondary
         font.pixelSize: Theme.fontSize(13)
