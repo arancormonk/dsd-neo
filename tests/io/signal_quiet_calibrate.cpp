@@ -74,6 +74,19 @@
  * times a full one.
  * --memory-mb bounds the waveforms placed at a capture rate at once (default 8192): a rate's conditions run in batches
  * whose waveforms fit, each batch's freed before the next. Results do not depend on it.
+ * --add masks adds the analog monitor's masks (-8: a digital class beside the analog width) at every rate: each digital
+ * mode in its own class and in both, beside every analog width; each analog mode beside either digital class; noise
+ * alone under each two-class mask. --add occupancy adds occupied captures (a share of the reference span raised by
+ * 1.5 to 10 dB, clear of the channel and its sidebands) for the lowest-margin rows of each class and kind, with noise
+ * alone under each (informational: the occupancy check's speed cost). Both come after the shipped matrix, so its
+ * conditions keep their order, names and seeds.
+ * --seed-salt N gives every trial a fresh seed (0, the default, keeps the shipped calibration's); --occupancy-veto SHARE
+ * judges validation with the occupancy check (dsd_signal_quiet_params.occupancy_max_share; default 0, off; selection
+ * always runs it off and reports the share in --trial-log).
+ * --trial-log FILE writes every trial's occupancy share, samples at or over the clip level and completion status (12
+ * bytes a trial, rows in the CSV's order); --bounds FILE lists every condition's scene bound and the scale it renders
+ * at. A scene whose bound (its carriers at their waveforms' peaks plus six sigma of its densest noise) passes 0.9 is
+ * scaled down whole, which leaves every ratio as it was and every sample under the clip level.
  *
  * Every trial's samples come from its own seed (the condition's name, the phase and the trial number), so results do
  * not depend on --jobs or the batches. */
@@ -248,6 +261,7 @@ struct Waveform {
     std::vector<cf> base;
     std::vector<uint8_t> on;
     std::vector<double> psd; /* kPsdPoints bins, 0 Hz first; filled only when a response is rendered */
+    double peak = 0;         /* the highest sample magnitude at 48 kHz (scene_bound()) */
 };
 
 struct Source {
@@ -328,6 +342,9 @@ read_waveform(const std::string& dir, const std::string& row, const std::string&
     }
     w->base.resize(raw.size() / sizeof(cf));
     DSD_MEMCPY(w->base.data(), raw.data(), raw.size());
+    for (const cf& v : w->base) {
+        w->peak = std::max(w->peak, (double)std::abs(v));
+    }
     if (burst == "1") {
         std::vector<char> on;
         if (!read_file(source_path(dir, row, ".on"), &on) || on.size() != w->base.size()) {
@@ -569,7 +586,7 @@ placed_bytes(const Waveform& w, uint32_t rate) {
 
 enum Kind { ACTIVE, NOISE, INFO };
 
-enum Floor { WHITE, SLOPE, HUMP };
+enum Floor { WHITE, SLOPE, HUMP, OCCUPIED };
 
 struct Carrier {
     int source = -1;
@@ -594,12 +611,15 @@ struct Condition {
     double snr_offset_hz = 0; /* where the S/N's width is centred, from the channel */
     std::vector<Carrier> carriers;
     Floor floor = WHITE;
-    double floor_a = 0, floor_b = 0; /* SLOPE: dB per kHz; HUMP: centre offset Hz, peak dB */
+    double floor_a = 0, floor_b = 0; /* SLOPE: dB per kHz; HUMP: centre offset Hz, peak dB; OCCUPIED: -, raise dB */
+    std::vector<std::pair<double, double>> occupied; /* OCCUPIED: the raised hardware bands, Hz */
     uint8_t geometry = DSD_SIGNAL_GEOMETRY_DEFAULT;
     /* Derived */
     int span = 0;
     int record = 0; /* a shaped condition's circular record (0: rendered without a response) */
     double noise_in_width = 0;
+    double bound = 0; /* scene_bound(): the highest sample component the scene can reach */
+    double scale = 1; /* the whole scene's scale, under 1 only when the bound passes kSceneCeiling */
 };
 
 constexpr double kHumpSigmaHz = 30000;
@@ -614,6 +634,16 @@ floor_shape(const Condition& c, double from_channel_hz) {
     if (c.floor == HUMP) {
         const double d = from_channel_hz - c.floor_a;
         return 1.0 + std::pow(10.0, c.floor_b / 10.0) * std::exp(-d * d / (2 * kHumpSigmaHz * kHumpSigmaHz));
+    }
+    if (c.floor == OCCUPIED) {
+        /* Raised over hardware bands (the sample frequency less the rotation, folded), as a receiver's floor is. */
+        const double rate = c.rate, rotation = c.geometry == DSD_SIGNAL_GEOMETRY_AIRSPY_CENTRED ? 0.0 : rate / 4;
+        double hardware = from_channel_hz + c.grid_shift_hz - rotation;
+        hardware -= rate * std::floor((hardware + rate / 2) / rate);
+        const bool raised = std::any_of(c.occupied.begin(), c.occupied.end(), [&](const std::pair<double, double>& b) {
+            return hardware >= b.first && hardware < b.second;
+        });
+        return raised ? std::pow(10.0, c.floor_b / 10.0) : 1.0;
     }
     return 1.0;
 }
@@ -733,6 +763,8 @@ class_text(uint8_t classes) {
         case DSD_SIGNAL_QUIET_CLASS_6K25: return "6k25";
         case DSD_SIGNAL_QUIET_CLASS_ANALOG: return "analog";
         case DSD_SIGNAL_QUIET_CLASS_12K5 | DSD_SIGNAL_QUIET_CLASS_6K25: return "12k5+6k25";
+        case DSD_SIGNAL_QUIET_CLASS_12K5 | DSD_SIGNAL_QUIET_CLASS_ANALOG: return "12k5+analog";
+        case DSD_SIGNAL_QUIET_CLASS_6K25 | DSD_SIGNAL_QUIET_CLASS_ANALOG: return "6k25+analog";
         default: return "12k5+6k25+analog";
     }
 }
@@ -751,6 +783,7 @@ struct Builder {
     const std::vector<Mode>& modes;
     const std::vector<uint32_t>& rates;
     const std::vector<uint32_t>& scene_rates;
+    uint8_t geometry;
     std::vector<Condition> out;
 
     Condition
@@ -924,6 +957,121 @@ struct Builder {
         }
     }
 
+    /* The analog monitor's masks (-8: the decoders' class beside the analog width, scan_quiet_monitor_classes()),
+       plain scenes at every rate: each digital mode judged in its own class and every analog width, and in both digital
+       classes and every width; each analog mode judged in its width beside either digital class; noise alone under
+       each two-class mask and width. Names start with the group, so none meets an existing condition's name (or seed).
+     */
+    void
+    masks() {
+        const std::vector<Request> requests = noise_requests();
+        for (uint32_t rate : rates) {
+            for (const Request& r : requests) {
+                if (!r.width) {
+                    continue;
+                }
+                for (const Mode& m : modes) {
+                    if (m.analog) {
+                        continue;
+                    }
+                    for (uint8_t digital :
+                         {m.cls, (uint8_t)(DSD_SIGNAL_QUIET_CLASS_12K5 | DSD_SIGNAL_QUIET_CLASS_6K25)}) {
+                        Condition c = base("mask_digital", m, rate);
+                        c.classes = digital | DSD_SIGNAL_QUIET_CLASS_ANALOG;
+                        c.analog_width = r.width;
+                        add(c, std::string(class_text(c.classes)) + "/" + r.tag);
+                    }
+                }
+                for (uint8_t digital : {(uint8_t)DSD_SIGNAL_QUIET_CLASS_12K5, (uint8_t)DSD_SIGNAL_QUIET_CLASS_6K25}) {
+                    Condition c;
+                    c.group = "noise_mask";
+                    c.mode = r.tag;
+                    c.kind = NOISE;
+                    c.rate = rate;
+                    c.classes = digital | DSD_SIGNAL_QUIET_CLASS_ANALOG;
+                    c.analog_width = r.width;
+                    c.snr_width = r.width;
+                    c.name = "noise_mask/" + std::string(class_text(c.classes)) + "/" + r.tag + "/"
+                             + std::to_string(rate / 1000) + "k";
+                    out.push_back(c);
+                }
+            }
+            for (const Mode& m : modes) {
+                if (!m.analog) {
+                    continue;
+                }
+                for (uint8_t digital : {(uint8_t)DSD_SIGNAL_QUIET_CLASS_12K5, (uint8_t)DSD_SIGNAL_QUIET_CLASS_6K25}) {
+                    Condition c = base("mask_analog", m, rate);
+                    c.classes |= digital;
+                    add(c, class_text(c.classes));
+                }
+            }
+        }
+    }
+
+    /* The raised hardware bands that put @p share of the capture-wide reference's span over the noise, clear of the
+       channel and its sidebands (3.5 of the widest width a side): on the upper side first (@p both false) or half on
+       each side, each side's overflow on the other. */
+    std::vector<std::pair<double, double>>
+    occupied_bands(uint32_t rate, double widest, double share, bool both) const {
+        const bool centred = geometry == DSD_SIGNAL_GEOMETRY_AIRSPY_CENTRED;
+        const auto entry = std::find_if(std::begin(kCentredSpans), std::end(kCentredSpans),
+                                        [&](const CentredSpan& e) { return e.rate == rate; });
+        const double span = (centred && entry != std::end(kCentredSpans) ? entry->span : kDefaultSpan) * rate;
+        const double channel = centred ? 0.0 : -(double)rate / 4, clear = 3.5 * widest;
+        const double upper_room = span - (channel + clear), lower_room = (channel - clear) + span;
+        const double length = share * (2 * span - widest);
+        double up = both ? length / 2 : length, down = both ? length / 2 : 0;
+        if (up > upper_room) {
+            down += up - upper_room;
+            up = upper_room;
+        }
+        if (down > lower_room) {
+            up = std::min(upper_room, up + down - lower_room);
+            down = lower_room;
+        }
+        std::vector<std::pair<double, double>> bands;
+        if (up > 0) {
+            bands.emplace_back(channel + clear, channel + clear + up);
+        }
+        if (down > 0) {
+            bands.emplace_back(channel - clear - down, channel - clear);
+        }
+        return bands;
+    }
+
+    /* Occupied captures (issue #834 B7): a share of the reference span raised by a few dB to well over the noise, clear
+       of the channel and its sidebands, at every rate; active rows at 1 dB under reception, and (INFO, the check's
+       speed cost) noise alone under each row's class or width. */
+    void
+    occupancy(const Mode& m, Kind kind) {
+        static const double shares[] = {0.10, 0.20, 0.33, 0.50, 0.70};
+        static const double raises[] = {1.5, 3.0, 10.0};
+        for (uint32_t rate : rates) {
+            for (double share : shares) {
+                for (double raise : raises) {
+                    for (bool both : {false, true}) {
+                        Condition c = base("occupancy", m, rate);
+                        if (kind == INFO) {
+                            /* noise alone under the row's class (a digital row) or width (an analog row's tag) */
+                            const std::string tag = m.analog ? m.tag : class_text(m.cls);
+                            c.group = "noise_occupancy";
+                            c.name = c.group + "/" + tag + "/" + std::to_string(rate / 1000) + "k";
+                            c.mode = tag;
+                            c.carriers.clear();
+                        }
+                        c.kind = kind;
+                        c.floor = OCCUPIED;
+                        c.floor_b = raise;
+                        c.occupied = occupied_bands(rate, m.width_hz, share, both);
+                        add(c, "p" + std::to_string((int)std::lround(share * 100)) + "/" + signed_text(raise, 1) + "dB/"
+                                   + (both ? "both" : "upper"));
+                    }
+                }
+            }
+        }
+    }
+
     struct Request {
         uint8_t classes = 0;
         uint32_t width = 0;
@@ -983,9 +1131,10 @@ constexpr double kGuardOff = 1000;       /* a guard no floor reaches: the raw ra
 constexpr float kInvalidBusyDb = 999.0f; /* a noise-only trial the guard voided, in the select quantiles */
 
 struct Options {
-    std::string sources, phase, out, filter, dump, modes_file, pilot;
-    long trials = 0, jobs = 0, memory_mb = 8192;
-    double threshold = 0, guard = kGuardOff;
+    std::string sources, phase, out, filter, dump, modes_file, pilot, trial_log, bounds;
+    long trials = 0, jobs = 0, memory_mb = 8192, seed_salt = 0;
+    double threshold = 0, guard = kGuardOff, occupancy_veto = 0;
+    bool add_masks = false, add_occupancy = false; /* --add masks,occupancy: the groups beyond the shipped matrix */
     int estimator = -1;
     std::vector<double> neighbour_levels{30.0, 50.0};
     uint8_t geometry = DSD_SIGNAL_GEOMETRY_DEFAULT;
@@ -1022,6 +1171,48 @@ pilot_match(const Condition& c, const Mode& m) {
            || (c.kind == INFO && same_class);
 }
 
+/* The highest noise density across the capture, over the tuner noise's unit density: the response (when rendered)
+ * times the floor's shape, plus the ADC share, sampled at 2048 points. */
+double
+noise_peak_density(const Condition& c, const qs::Response& response) {
+    const qs::Placement p = placement(c);
+    const double adc = c.record && response.adc ? std::pow(10.0, response.adc_db / 10.0) : 0.0;
+    double peak = 0;
+    for (int i = 0; i < 2048; ++i) {
+        const double f = (i - 1024) * (double)c.rate / 2048;
+        const double gain = c.record ? qs::response_power(response, p, qs::hardware_hz(f, p.rotation_hz, c.rate)) : 1.0;
+        peak = std::max(peak, gain * floor_shape(c, f - channel_hz(c)) + adc);
+    }
+    return peak;
+}
+
+constexpr double kPeakMargin = 1.1;   /* a placed waveform's interpolation and a response's ringing over its peak */
+constexpr double kDroopPeak = 1.13;   /* a DMR MS droop carrier's region B at +1 dBp, in amplitude */
+constexpr double kNoisePeakSigma = 6; /* noise components this far out are not reached in any trial's samples */
+constexpr double kSceneCeiling = 0.9; /* a scene's bound is kept under this, clear of the 0.999 clip level */
+
+/* An upper bound on any sample component @p c renders, at its scale 1: every carrier's amplitude (before the
+ * response, which only lowers it) at its waveform's peak, plus kNoisePeakSigma of the noise at its densest. A scene
+ * whose bound passes kSceneCeiling is scaled down whole (Condition.scale), which leaves every ratio the detector
+ * judges as it was and keeps every sample under the clip level; the ADC share's extra noise raised the scenes with
+ * the loudest neighbours over it before (issue #834 B8). */
+double carrier_power(const Condition& c, const Carrier& k);
+
+double
+scene_bound(const Condition& c, const std::vector<Source>& sources, const std::vector<Waveform>& waves,
+            const qs::Response& response) {
+    double bound = kNoisePeakSigma * kNoiseSigma * std::sqrt(noise_peak_density(c, response));
+    for (const Carrier& k : c.carriers) {
+        if (k.source < 0) {
+            continue;
+        }
+        const Source& src = sources[(size_t)k.source];
+        const double amplitude = std::sqrt(carrier_power(c, k) / src.band_power);
+        bound += amplitude * waves[(size_t)src.wave].peak * kPeakMargin * (k.droop ? kDroopPeak : 1.0);
+    }
+    return bound;
+}
+
 void
 derive(std::vector<Condition>* all, const Options& o, const std::vector<Source>& sources,
        const std::vector<Waveform>& waves) {
@@ -1037,13 +1228,41 @@ derive(std::vector<Condition>* all, const Options& o, const std::vector<Source>&
                 k.gain = carrier_gain(c, k, waves[(size_t)s.wave], o.response);
             }
         }
+        c.bound = scene_bound(c, sources, waves, o.response);
+        c.scale = c.bound > kSceneCeiling ? kSceneCeiling / c.bound : 1.0;
+    }
+}
+
+/* The rows the occupied captures render (the lowest-margin rows of each class and kind), and the modes whose class or
+ * width their noise-only conditions take. */
+const char* const kOccupancyRows[] = {"m17",   "p25p1",   "nxdn48",       "dpmr",
+                                      "dstar", "nfm_25k", "nfm_20k_wide", "am_5k_edge"};
+const char* const kOccupancyNoise[] = {"m17", "nxdn48", "nfm_25k", "nfm_20k_wide", "am_5k_edge"};
+
+/* --add's groups, after the shipped matrix (so its conditions keep their order, names and seeds). */
+void
+add_groups(Builder* b, const Options& o) {
+    if (o.add_masks) {
+        b->masks();
+    }
+    if (!o.add_occupancy) {
+        return;
+    }
+    for (const Mode& m : b->modes) {
+        const auto named = [&](const char* name) { return m.name == name; };
+        if (std::any_of(std::begin(kOccupancyRows), std::end(kOccupancyRows), named)) {
+            b->occupancy(m, ACTIVE);
+        }
+        if (std::any_of(std::begin(kOccupancyNoise), std::end(kOccupancyNoise), named)) {
+            b->occupancy(m, INFO);
+        }
     }
 }
 
 std::vector<Condition>
 build_conditions(const std::vector<Source>& sources, const std::vector<Waveform>& waves, const std::vector<Mode>& modes,
                  const Options& o) {
-    Builder b{sources, o.neighbour_levels, modes, o.rates, o.scene_rates, {}};
+    Builder b{sources, o.neighbour_levels, modes, o.rates, o.scene_rates, o.geometry, {}};
     for (const Mode& m : modes) {
         if (m.analog) {
             b.analog(m);
@@ -1055,6 +1274,7 @@ build_conditions(const std::vector<Source>& sources, const std::vector<Waveform>
     }
     b.offset_carriers();
     b.noise_only();
+    add_groups(&b, o);
     /* Noise alone on the shaped floors: once per width (the first mode of each analog tag), and P25 Phase 1's and
        NXDN48's digital classes. */
     std::vector<std::string> floored;
@@ -1343,20 +1563,41 @@ record_trial(const Condition& c, const Worker& w) {
     return w.record.data() + (c.record - c.span) / 2;
 }
 
-/* One trial's samples (c.span of them); @p rb holds a shaped condition's bins. */
+/* One trial's samples (c.span of them), at the scene's scale (Condition.scale); @p rb holds a shaped condition's
+ * bins. */
 const cf*
 render(const Condition& c, const Scene& s, uint64_t seed, Worker& w, const RecordBins* rb) {
     Rng rng(seed);
+    cf* out = nullptr;
     if (c.record) {
         render_record(c, s, *rb, rng, w, false, true);
-        return record_trial(c, w);
+        out = w.record.data() + (c.record - c.span) / 2;
+    } else {
+        w.trial.resize((size_t)c.span);
+        render_noise(c, rng, w);
+        for (const Carrier& k : c.carriers) {
+            add_carrier(c, k, s, rng, w.trial.data(), 0, c.span);
+        }
+        out = w.trial.data();
     }
-    w.trial.resize((size_t)c.span);
-    render_noise(c, rng, w);
-    for (const Carrier& k : c.carriers) {
-        add_carrier(c, k, s, rng, w.trial.data(), 0, c.span);
+    if (c.scale < 1.0) {
+        for (int i = 0; i < c.span; ++i) {
+            out[i] *= (float)c.scale;
+        }
     }
-    return w.trial.data();
+    return out;
+}
+
+/* The samples of a trial with a component at or over the clip level the detector reads (DSD_SIGNAL_CLIP_LEVEL_DEFAULT:
+ * the driver's captures leave clip_level 0). */
+uint32_t
+clip_crossings(const cf* samples, int span) {
+    uint32_t count = 0;
+    for (int i = 0; i < span; ++i) {
+        count += std::abs(samples[i].real()) >= DSD_SIGNAL_CLIP_LEVEL_DEFAULT
+                 || std::abs(samples[i].imag()) >= DSD_SIGNAL_CLIP_LEVEL_DEFAULT;
+    }
+    return count;
 }
 
 dsd_signal_quiet_request
@@ -1390,7 +1631,13 @@ struct Verdict {
     uint8_t done = 0;          /* the request completed */
     uint8_t valid = 0;         /* geometry fits and no floor over the guard */
     uint8_t quiet = 0;
+    float occupancy = 0;    /* the result's occupancy share, when done */
+    uint32_t crossings = 0; /* samples of the trial with a component at or over the clip level (--trial-log) */
+    uint32_t status = 0;    /* TrialStatus, with the detector's reason << 8 */
 };
+
+/* Why a trial did not complete (Verdict.status, low byte): the detector's own reason is in the next byte. */
+enum TrialStatus : uint32_t { TRIAL_DONE = 0, TRIAL_REFUSED = 1, TRIAL_UNFINISHED = 2, TRIAL_FAILED = 3 };
 
 Verdict
 judge(const Condition& c, long trial, dsd_signal_quiet_detector* d, const dsd_signal_quiet_params& params,
@@ -1399,15 +1646,19 @@ judge(const Condition& c, long trial, dsd_signal_quiet_detector* d, const dsd_si
     const dsd_signal_quiet_request r = request_for(c, trial);
     dsd_signal_request_failure why = DSD_SIGNAL_REQUEST_OK;
     if (dsd_signal_quiet_detector_begin(d, &r, &params, &why) != 0) {
+        v.status = TRIAL_REFUSED | (uint32_t)why << 8;
         return v;
     }
     const int done =
         dsd_signal_quiet_detector_feed(d, reinterpret_cast<const float*>(samples), (size_t)c.span, &r.capture);
     dsd_signal_quiet_result res{};
-    if (done != 1 || dsd_signal_quiet_detector_result(d, &res) != 1) {
+    const int finished = dsd_signal_quiet_detector_result(d, &res);
+    if (done != 1 || finished != 1) {
+        v.status = finished == -1 ? TRIAL_FAILED | (uint32_t)res.failure << 8 : TRIAL_UNFINISHED;
         return v;
     }
     v.done = 1;
+    v.occupancy = res.occupancy_share;
     v.valid = res.valid;
     v.quiet = res.quiet;
     v.ratio = res.max_ratio_db;
@@ -1531,7 +1782,8 @@ void
 run_batch(const std::vector<size_t>& batch, const Scene& scene, const Options& o, const Inputs& in,
           std::vector<Outcome>* outcomes) {
     const bool select = o.phase == "select";
-    const uint64_t phase = select ? 1 : 2;
+    /* --seed-salt gives a run fresh seeds; 0 keeps the shipped calibration's. */
+    const uint64_t phase = (select ? 1U : 2U) + 16U * (uint64_t)o.seed_salt;
     const size_t trials = (size_t)o.trials;
     std::unique_ptr<SharedBins[]> shared(new SharedBins[batch.size()]);
     for (size_t i = 0; i < batch.size(); ++i) {
@@ -1547,12 +1799,15 @@ run_batch(const std::vector<size_t>& batch, const Scene& scene, const Options& o
             std::call_once(bins.built, [&] { record_bins(c, scene.response, &bins.bins); });
         }
         const cf* samples = render(c, scene, trial_seed(c, phase, trial), w, &bins.bins);
+        const uint32_t crossings = o.trial_log.empty() ? 0U : clip_crossings(samples, c.span);
         for (int e = 0; e < 2; ++e) {
             if (!select && e != o.estimator) {
                 continue;
             }
-            const dsd_signal_quiet_params params{select ? 0.0f : (float)o.threshold, e, (float)o.guard, 0.0f, 0.0f};
+            const dsd_signal_quiet_params params{select ? 0.0f : (float)o.threshold, e, (float)o.guard,
+                                                 select ? 0.0f : (float)o.occupancy_veto, 0.0f};
             out.trials[e][(size_t)trial] = judge(c, trial, w.detectors[e], params, samples);
+            out.trials[e][(size_t)trial].crossings = crossings;
         }
         if (--bins.left == 0) {
             bins.bins = RecordBins();
@@ -1668,6 +1923,30 @@ write_dump(FILE* dump, const Outcome& out, int e) {
     }
 }
 
+/* Every trial's occupancy share (float32), clip-level crossings and status (uint32 each, TrialStatus with the
+ * detector's reason << 8), 12 bytes little-endian a trial, rows in the CSV's order (--trial-log). */
+void
+write_trial_log(FILE* log, const Outcome& out, int e) {
+    if (!log) {
+        return;
+    }
+
+    struct Record {
+        float occupancy;
+        uint32_t crossings, status;
+    };
+
+    static_assert(sizeof(Record) == 12, "trial log records are 12 bytes");
+    std::vector<Record> records;
+    records.reserve(out.trials[e].size());
+    for (const Verdict& t : out.trials[e]) {
+        records.push_back(Record{t.occupancy, t.crossings, t.status});
+    }
+    if (fwrite(records.data(), sizeof(Record), records.size(), log) != records.size()) {
+        DSD_FPRINTF(stderr, "trial log write failed\n");
+    }
+}
+
 /* The distinct rates of the chosen conditions, ascending. */
 std::vector<uint32_t>
 chosen_rates(const Inputs& in, const std::vector<size_t>& chosen) {
@@ -1696,17 +1975,22 @@ run_trials(const Options& o, const Inputs& in, const std::vector<size_t>& chosen
     }
     write_header(f, o.phase == "select");
     FILE* dump = o.dump.empty() ? nullptr : dsd_fopen_private(o.dump.c_str(), "wb");
+    FILE* log = o.trial_log.empty() ? nullptr : dsd_fopen_private(o.trial_log.c_str(), "wb");
     for (size_t i : chosen) {
         for (int e = 0; e < 2; ++e) {
             if (o.phase == "select" || e == o.estimator) {
                 write_row(f, in.all[i], outcomes[i], e, o);
                 write_dump(dump, outcomes[i], e);
+                write_trial_log(log, outcomes[i], e);
             }
         }
     }
     fclose(f);
     if (dump) {
         fclose(dump);
+    }
+    if (log) {
+        fclose(log);
     }
     return 0;
 }
@@ -1970,6 +2254,40 @@ parse_rates(const char* text, std::vector<uint32_t>* out) {
     return !out->empty();
 }
 
+/* --add's comma-separated groups (masks, occupancy) into @p o; false for any other. */
+bool
+parse_groups(const char* text, Options* o) {
+    std::istringstream fields(text);
+    std::string field;
+    bool any = false;
+    while (std::getline(fields, field, ',')) {
+        if (field == "masks") {
+            o->add_masks = true;
+        } else if (field == "occupancy") {
+            o->add_occupancy = true;
+        } else {
+            return false;
+        }
+        any = true;
+    }
+    return any;
+}
+
+/* One option of the run itself (seeds, the occupancy check, added groups) into @p o; false when it does not parse. */
+bool
+parse_run_option(const std::string& key, const char* value, Options* o) {
+    if (key == "--seed-salt") {
+        return parse_count(value, 0, 1000000, &o->seed_salt);
+    }
+    if (key == "--occupancy-veto") {
+        return parse_double(value, &o->occupancy_veto) && o->occupancy_veto >= 0 && o->occupancy_veto <= 1;
+    }
+    if (key == "--add") {
+        return parse_groups(value, o);
+    }
+    return false;
+}
+
 /* One option of the run's geometry or receiver response into @p o; false when it does not parse. */
 bool
 parse_scene_option(const std::string& key, const char* value, Options* o) {
@@ -1996,7 +2314,7 @@ parse_scene_option(const std::string& key, const char* value, Options* o) {
     if (key == "--memory-mb") {
         return parse_count(value, 64, 1L << 22, &o->memory_mb);
     }
-    return false;
+    return parse_run_option(key, value, o);
 }
 
 /* One numeric option's value into @p o; false when it does not parse. */
@@ -2104,6 +2422,8 @@ parse_options(int argc, char** argv, Options* o) {
                             : key == "--dump"       ? &o->dump
                             : key == "--modes-file" ? &o->modes_file
                             : key == "--pilot"      ? &o->pilot
+                            : key == "--trial-log"  ? &o->trial_log
+                            : key == "--bounds"     ? &o->bounds
                                                     : nullptr;
         if (text) {
             *text = argv[i + 1];
@@ -2181,12 +2501,33 @@ choose(const Inputs& in, const std::vector<Mode>& modes, const Options& o, std::
     return 0;
 }
 
+/* Every condition's scene bound and scale (--bounds), "condition,bound,scale", whatever --filter chooses (so a run with
+ * a filter that matches nothing lists them all); the run says how many it scaled. */
+int
+write_bounds(const std::string& path, const std::vector<Condition>& all) {
+    FILE* f = dsd_fopen_private(path.c_str(), "w");
+    if (!f) {
+        DSD_FPRINTF(stderr, "cannot write %s\n", path.c_str());
+        return 1;
+    }
+    DSD_FPRINTF(f, "condition,bound,scale\n");
+    size_t scaled = 0;
+    for (const Condition& c : all) {
+        DSD_FPRINTF(f, "%s,%.6f,%.6f\n", c.name.c_str(), c.bound, c.scale);
+        scaled += c.scale < 1.0;
+    }
+    fclose(f);
+    DSD_FPRINTF(stderr, "%zu of %zu conditions scaled under the %.2f ceiling\n", scaled, all.size(), kSceneCeiling);
+    return 0;
+}
+
 constexpr const char* kUsage =
     "--phase select|validate|snr|cost --out FILE [--sources DIR] [--trials N] [--jobs N] "
     "[--threshold DB --estimator trimmed|lowest] [--guard DB] [--filter TEXT] [--dump FILE] "
     "[--neighbour-levels DB,DB,...] [--geometry default|centred] [--rates HZ,HZ,...] "
     "[--response flat|nominal|steeper|mirrored] [--depression DB] [--adc-noise-db DB] [--modes-file FILE] "
-    "[--pilot MODE] [--memory-mb MB] [--windows N]\n"
+    "[--pilot MODE] [--memory-mb MB] [--trial-log FILE] [--bounds FILE] [--seed-salt N] [--occupancy-veto SHARE] "
+    "[--add masks,occupancy] [--windows N]\n"
     "responses (2.5, 3, 6, 10 MS/s; tests/io/signal_quiet_scene.h): half-band 0 dB to +-0.42 Fs, -0.35 dB at "
     "+-0.45, -6.02 dB at +-0.5; nominal tuner -3 dB at -0.335/+0.302 Fs (2.5, 3 MS/s), -0.4365/+0.4035 (6), "
     "-0.4665/+0.4335 (10); steeper +-0.28 (2.5, 3), +-0.40 (6, 10); mirrored = nominal swapped; --depression DB over "
@@ -2227,6 +2568,9 @@ main(int argc, char** argv) {
     }
     DSD_FPRINTF(stderr, "%zu of %zu conditions, %ld trials each, %zu waveform(s) from %zu source row(s)\n",
                 chosen.size(), all.size(), o.trials, waves.size(), sources.size());
+    if (!o.bounds.empty() && write_bounds(o.bounds, all) != 0) {
+        return 1;
+    }
     if (o.phase == "snr") {
         return run_snr(o, in, chosen);
     }
