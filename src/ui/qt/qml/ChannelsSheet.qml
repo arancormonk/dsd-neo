@@ -21,8 +21,13 @@ ModalSheet {
     property var bridge: commands
     onVisibleChanged: {
         channels.active = visible;
+        followLpcn = 0;
+        // A status is kept until it was on screen: one that came while the
+        // sheet was closed is still there when it opens again.
         if (visible)
-            status = "";
+            statusSeen = status.length > 0;
+        else if (statusSeen)
+            setStatus("", false);
     }
     Component.onDestruction: channels.active = false
     function open() {
@@ -30,9 +35,15 @@ ModalSheet {
     }
 
     readonly property bool readOnly: channels.trunkScanActive === true
-    // What the last applied edit leaves to say: not kept, or not saved.
+    // What the last edit leaves to say: not kept, not saved, or refused after
+    // the editor closed.
     property string status: ""
     property bool statusProblem: false
+    property bool statusSeen: false
+    // The edit sent and not yet answered (CommandBridge's request id), 0 for
+    // none. Held here, not in the editor, so its answer is handled however the
+    // editor was closed or reopened meanwhile.
+    property double request: 0
     // Navigation.announce()'s record of what was read out.
     property string announced: ""
     property int announcements: 0
@@ -78,7 +89,9 @@ ModalSheet {
                 shown.push(caller + " → " + called);
                 spoken.push(qsTr("%1 to %2").arg(caller).arg(called));
             }
-            var heard = heardText(m.lastHeardMs);
+            // Not with a screen reader on: an age would rename the row as it
+            // moves on, or freeze between renames (issue #782).
+            var heard = screenReader.active ? "" : heardText(m.lastHeardMs);
             if (heard.length) {
                 shown.push(heard);
                 spoken.push(heard);
@@ -118,33 +131,68 @@ ModalSheet {
     function openEditor(lpcn, listed) {
         if (readOnly)
             return;
-        status = "";
         editSheet.openFor(lpcn, listed);
     }
-    function applied(result) {
-        if (!result.systemUid || String(result.systemUid).length === 0) {
-            status = qsTr("Not kept: this session is not a saved system.");
-            statusProblem = false;
-        } else if (result.saved !== true) {
-            status = saveErrorText(String(result.saveError || ""));
-            statusProblem = true;
-        } else {
-            status = "";
+    function setStatus(text, problem) {
+        status = text;
+        statusProblem = problem;
+        statusSeen = visible && text.length > 0;
+        if (statusSeen)
+            Navigation.announce(sheet, statusLine, text);
+    }
+    // Send an edit for the editor: the expectations are the row as it read
+    // it. Returns the request id, 0 when nothing was sent.
+    function submit(lpcn, op, hz, expected, generation, session) {
+        if (request > 0 || readOnly)
+            return 0;
+        if (!bridge.setDmrChannel(lpcn, op, hz, expected.hz || 0, expected.originCode || 0, generation,
+                                  channels.sessionSystemUid, session))
+            return 0;
+        request = bridge.lastDmrChannelRequest;
+        // A new edit says its own outcome.
+        setStatus("", false);
+        return request;
+    }
+    function answered(result) {
+        if (request <= 0 || Number(result.request) !== request)
+            return;
+        var editorSent = editSheet.visible && editSheet.sent === request;
+        request = 0;
+        if (result.result === "ok") {
+            if (editorSent)
+                editSheet.visible = false;
+            applied(result);
+            return;
         }
-        if (status.length)
-            Navigation.announce(sheet, statusLine, status);
-        followLpcn = Number(result.lpcn) || 0;
+        if (editorSent)
+            editSheet.refused(result);
+        else
+            setStatus(editSheet.refusalText(String(result.result)), true);
+    }
+    Connections {
+        target: sheet.bridge
+        ignoreUnknownSignals: true
+        function onDmrChannelResultReceived(result) {
+            sheet.answered(result);
+        }
+    }
+    function applied(result) {
+        if (!result.systemUid || String(result.systemUid).length === 0)
+            setStatus(qsTr("Not kept: this session is not a saved system."), false);
+        else if (result.saved !== true)
+            setStatus(saveErrorText(String(result.saveError || "")), true);
+        else
+            setStatus("", false);
+        followLpcn = visible ? Number(result.lpcn) || 0 : 0;
         followRevision = Number(result.revision) || 0;
         Qt.callLater(sheet.follow);
     }
     function saveErrorText(error) {
-        if (error === "no-system")
-            return qsTr("Changed for this session, but not saved: the saved system was removed.");
-        if (error === "not-dmr")
-            return qsTr("Changed for this session, but not saved: the saved system does not decode DMR.");
-        if (error === "full")
-            return qsTr("Changed for this session, but not saved: the saved system already keeps %1 channels.").arg(channels.maxEntries);
-        return qsTr("Changed for this session, but not saved: dsd-neo could not write the saved system.");
+        var reason = error === "no-system" ? qsTr("this system is no longer in your saved systems.")
+            : error === "not-dmr" ? qsTr("this saved system is not set to decode DMR.")
+            : error === "full" ? qsTr("this system already keeps %1 channels of yours.").arg(channels.maxEntries)
+            : qsTr("dsd-neo could not save this system. Open the channel and apply it again.");
+        return qsTr("Changed until you stop listening, but not saved: ") + reason;
     }
     function channelRowFor(lpcn) {
         for (var i = 0; i < channelRows.live; ++i) {
@@ -157,6 +205,11 @@ ModalSheet {
     function follow() {
         if (followLpcn <= 0 || !visible)
             return;
+        // Not before the record has the edit: until then a row of the channel
+        // can be one about to go (a channel of yours with no base frequency,
+        // removed).
+        if (channels.revision < followRevision)
+            return;
         var row = channelRowFor(followLpcn);
         if (row !== null) {
             followLpcn = 0;
@@ -164,13 +217,15 @@ ModalSheet {
             return;
         }
         // The record has the edit and no row for it (a channel of yours with
-        // no base frequency, removed): keep the place in the sheet.
-        if (channels.revision >= followRevision) {
-            followLpcn = 0;
-            var window = sheet.Window.window;
-            if (window && !Navigation.presented(window.activeFocusItem))
-                addButton.forceActiveFocus();
-        }
+        // no base frequency, removed): the place stays in the sheet, on Add
+        // channel when the focus was on the row that went.
+        followLpcn = 0;
+        var window = sheet.Window.window;
+        var focused = window ? window.activeFocusItem : null;
+        // A row whose channel went is held: not drawn at once, out of the tree
+        // by the end of the turn.
+        if (focused && (!Navigation.presented(focused) || focused.live === false || focused.opacity < 0.5))
+            addButton.forceActiveFocus();
     }
     Connections {
         target: sheet.channels
@@ -181,9 +236,8 @@ ModalSheet {
             Qt.callLater(sheet.follow);
         }
     }
-    // The ages ("last heard 2 min ago") move on while the sheet is open. Not
-    // with a screen reader on: a row is renamed only when its channel's words
-    // change (issue #782).
+    // The ages ("last heard 2 min ago") move on while the sheet is open. A
+    // screen reader is given no ages (missingWords()).
     Timer {
         interval: 30000
         repeat: true
@@ -462,14 +516,9 @@ ModalSheet {
         id: editSheet
         parent: sheet
         channels: sheet.channels
-        bridge: sheet.bridge
-        onApplied: function (result) {
-            sheet.applied(result);
-        }
-        onRefusedClosed: function (text) {
-            sheet.status = text;
-            sheet.statusProblem = true;
-            Navigation.announce(sheet, statusLine, text);
+        pending: sheet.request > 0
+        submit: function (lpcn, op, hz, expected, generation, session) {
+            return sheet.submit(lpcn, op, hz, expected, generation, session);
         }
     }
 }

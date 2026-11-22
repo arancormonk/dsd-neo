@@ -5,12 +5,14 @@ import QtQuick
 import "Util.js" as Util
 
 // Discussion #900 F3: one DMR Tier III channel's frequency, from the Channels
-// sheet. A channel already listed keeps its number; one without a frequency,
-// or a new one, takes a number 1..4094. The edit is sent against the channel
-// as it was when the editor opened (its frequency and where that came from,
-// the network and the session), so the decoder refuses it when any of those
-// moved on. While the answer is due nothing more can be sent; a refusal is
-// said here and the editor stays open; an applied edit closes it (applied()).
+// sheet. A channel from a row keeps its number; Add channel takes a number
+// 1..4094. The edit is sent against the channel as the editor read it (its
+// frequency and where that came from, the network and the session), so the
+// decoder refuses it when any of those moved on; after such a refusal the
+// editor reads the channel again and keeps what was typed. The Channels sheet
+// sends the edit (submit) and handles its answer: while it is due nothing
+// more can be sent (pending); a refusal is said here (refused()) and the
+// editor stays open; an applied edit closes it.
 ModalSheet {
     id: sheet
     objectName: "channelEditSheet"
@@ -19,23 +21,27 @@ ModalSheet {
     // A form sheet (issue #718): an outside tap keeps it; Close, Back and Escape ask first.
     closesOnOutsideTap: false
     property var channels: dmrChannels
-    property var bridge: commands
-
-    // The edit the decoder applied: CommandBridge's answer map.
-    signal applied(var result)
-    // A refusal that came after the editor was closed, for the Channels sheet to say.
-    signal refusedClosed(string text)
+    // Sends an edit: (lpcn, op, hz, expected channel, generation, session) to
+    // the request id, 0 when nothing was sent.
+    property var submit: null
+    property bool pending: false
 
     // The channel as it was when the editor opened (DmrChannelsModel::channel()),
     // and the network and session the edit expects.
     property var opened: ({lpcn: 0, valid: false, hz: 0, originCode: 0, hidden: false, yours: false})
+    // Opened from Add channel: the number is typed.
+    property bool adding: false
     property bool listed: false
     property double generation: 0
     property string session: ""
     property string initialNumber: ""
     property string initialFrequency: ""
-    property double request: 0
-    readonly property bool pending: request > 0
+    // The request this editor sent, until it is reopened.
+    property double sent: 0
+    // A refusal said the channel moved on: the editor follows the record
+    // until the next send.
+    property bool stale: false
+    property bool removeArmed: false
     property string message: ""
     // Navigation.announce()'s record of what was read out.
     property string announced: ""
@@ -53,7 +59,8 @@ ModalSheet {
     function hzInRange(hz) {
         return hz >= channels.minHz && hz <= channels.maxHz;
     }
-    readonly property int number: /^\d{1,4}$/.test(numberField.text) ? Number(numberField.text) : 0
+    readonly property int typedNumber: /^\d{1,4}$/.test(numberField.text) ? Number(numberField.text) : 0
+    readonly property int number: adding ? typedNumber : opened.lpcn
     readonly property bool numberValid: number >= channels.minChannel && number <= channels.maxChannel
     readonly property double typedHz: hzOf(frequencyField.text)
     readonly property bool frequencyValid: hzInRange(typedHz)
@@ -62,6 +69,7 @@ ModalSheet {
     // from the Channels list, which keeps its number.
     function openFor(lpcn, isListed) {
         opened = lpcn > 0 ? channels.channel(lpcn) : ({lpcn: 0, valid: false, hz: 0, originCode: 0, hidden: false, yours: false});
+        adding = lpcn <= 0;
         listed = isListed && lpcn > 0;
         generation = channels.generation;
         session = channels.session;
@@ -69,11 +77,36 @@ ModalSheet {
         initialFrequency = opened.hz > 0 ? Util.mhzValueText(opened.hz) : "";
         numberField.text = initialNumber;
         frequencyField.text = initialFrequency;
-        request = 0;
+        sent = 0;
+        stale = false;
+        removeArmed = false;
         message = "";
         open();
-        if (!listed && lpcn === 0)
+        if (adding)
             numberField.input.forceActiveFocus();
+    }
+    // The channel, the network and the session as the record has them now;
+    // what was typed stays.
+    function reread() {
+        var lpcn = adding ? number : opened.lpcn;
+        if (lpcn > 0)
+            opened = channels.channel(lpcn);
+        // The actions follow where the channel's frequency now comes from.
+        if (!adding)
+            listed = opened.originCode > 0;
+        generation = channels.generation;
+        session = channels.session;
+        removeArmed = false;
+    }
+    Connections {
+        target: sheet.channels
+        enabled: sheet.stale && sheet.visible
+        function onChannelsChanged() {
+            sheet.reread();
+        }
+        function onStateChanged() {
+            sheet.reread();
+        }
     }
     function requestClose() {
         if (!pending && (numberField.text !== initialNumber || frequencyField.text !== initialFrequency)) {
@@ -92,7 +125,7 @@ ModalSheet {
     function refusalText(result) {
         switch (result) {
         case "stale":
-            return qsTr("This channel changed before the edit arrived. Check it and try again.");
+            return qsTr("This channel changed while you were editing it. Check it, then try again.");
         case "trunk-scan":
             return qsTr("Channel editing is available when one system is running.");
         case "full":
@@ -100,11 +133,11 @@ ModalSheet {
         case "invalid":
             return qsTr("dsd-neo cannot use this channel number or frequency.");
         case "search":
-            return qsTr("Channel editing is not available while Signal search runs.");
+            return qsTr("Channels can't be changed while Signal search is running.");
         case "dropped":
-            return qsTr("The session stopped before the edit was made.");
+            return qsTr("Listening stopped before the change was made.");
         }
-        return qsTr("The decoder did not take the edit. Try again.");
+        return qsTr("dsd-neo did not make the change. Try again.");
     }
     function say(text) {
         message = text;
@@ -114,42 +147,28 @@ ModalSheet {
     // the editor opened it, or, for a number typed since, as the sheet lists
     // it now.
     function send(op, hz) {
-        if (pending || readOnly || !numberValid)
+        if (pending || readOnly || !numberValid || !submit)
             return;
         Navigation.commitComposing(true);
         var lpcn = number;
         var expected = lpcn === opened.lpcn ? opened : channels.channel(lpcn);
         message = "";
-        var ok = bridge.setDmrChannel(lpcn, op, hz, expected.hz || 0, expected.originCode || 0, generation,
-                                      channels.sessionSystemUid, session);
-        if (!ok) {
-            say(qsTr("The edit could not be sent. Try again."));
+        stale = false;
+        sent = submit(lpcn, op, hz, expected, generation, session);
+        if (sent <= 0) {
+            say(qsTr("Couldn't send the change. Try again."));
             return;
         }
-        request = bridge.lastDmrChannelRequest;
         Qt.inputMethod.hide();
     }
-    function answered(result) {
-        if (!pending || Number(result.request) !== request)
-            return;
-        request = 0;
-        if (result.result === "ok") {
-            visible = false;
-            applied(result);
-            return;
+    // The Channels sheet's call for a refusal of this editor's edit.
+    function refused(result) {
+        var key = String(result.result);
+        if (key === "stale") {
+            reread();
+            stale = true;
         }
-        var text = refusalText(String(result.result));
-        if (visible)
-            say(text);
-        else
-            refusedClosed(text);
-    }
-    Connections {
-        target: sheet.bridge
-        ignoreUnknownSignals: true
-        function onDmrChannelResultReceived(result) {
-            sheet.answered(result);
-        }
+        say(refusalText(key));
     }
 
     ReadableText {
@@ -157,7 +176,7 @@ ModalSheet {
         heading: true
         objectName: "channelEditHeading"
         width: parent.width
-        text: sheet.opened.lpcn > 0 ? qsTr("Channel %1").arg(sheet.opened.lpcn) : qsTr("Add channel")
+        text: !sheet.adding ? qsTr("Channel %1").arg(sheet.opened.lpcn) : sheet.numberValid ? qsTr("Channel %1").arg(sheet.number) : qsTr("Add channel")
         wrapMode: Text.Wrap
         color: Theme.textPrimary
         font.pixelSize: Theme.fontSize(20)
@@ -175,7 +194,8 @@ ModalSheet {
         id: numberField
         objectName: "channelEditNumber"
         width: parent.width
-        visible: !sheet.listed
+        // The number of a row is the row's.
+        visible: sheet.adding
         label: qsTr("Channel number")
         mono: true
         inputMethodHints: Qt.ImhDigitsOnly
@@ -189,7 +209,7 @@ ModalSheet {
     ReadableText {
         objectName: "channelEditHelp"
         width: parent.width
-        visible: !sheet.listed
+        visible: sheet.adding
         text: qsTr("Use the channel number dsd-neo shows. If your list counts each timeslot (DSD+, some RadioReference lists), take (number − 1) ÷ 2 and drop the remainder.")
         wrapMode: Text.Wrap
         color: Theme.textSecondary
@@ -257,9 +277,17 @@ ModalSheet {
         objectName: "channelEditRemove"
         width: parent.width
         visible: sheet.listed && sheet.opened.yours === true && !sheet.opened.hidden
-        text: qsTr("Remove")
+        // What was typed goes: asked twice, as a talkgroup's Remove is.
+        text: sheet.removeArmed ? qsTr("Tap again to remove") : qsTr("Remove")
         enabled: !sheet.pending && !sheet.readOnly
-        onClicked: sheet.send(sheet.channels.opRestore, 0)
+        onClicked: {
+            if (!sheet.removeArmed) {
+                sheet.removeArmed = true;
+                return;
+            }
+            sheet.removeArmed = false;
+            sheet.send(sheet.channels.opRestore, 0);
+        }
     }
     ReadableText {
         id: messageLine

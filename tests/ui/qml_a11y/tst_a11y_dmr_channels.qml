@@ -28,8 +28,9 @@ Item {
         when: windowShown
         readonly property var sheet: sheetLoader.item
 
-        // Channels 7, 9, 12 and 30 granted with no frequency, every one heard within the last minute, newest first in
-        // @p order; 40 past the ledger's details; and channels 18 and 20 with a frequency.
+        // Channels 7, 9, 12 and 30 granted with no frequency, heard minutes apart (@p agos, ms), newest first in @p order;
+        // 40 past the ledger's details; and channels 18 and 20 with a frequency. With a screen reader on no age is
+        // shown or read, so a grant heard again renames nothing.
         function view(order, agos) {
             var details = {
                 7: {lpcn: 7, slot: 1, group: false, caller: 5002, recipient: 5003},
@@ -41,7 +42,7 @@ Item {
                 generation: 2,
                 revision: 4,
                 missing: order.map(function (lpcn, i) {
-                    return Object.assign({agoMs: agos ? agos[i] : 1000 + i * 1000}, details[lpcn]);
+                    return Object.assign({agoMs: agos ? agos[i] : 61000 + i * 60000}, details[lpcn]);
                 }),
                 extra: [40],
                 channels: [
@@ -103,7 +104,9 @@ Item {
                 verify(r.words.indexOf("Channel " + r.channel) === 0, r.words);
             }
             compare(testContext.accessibleNode(rows("channelsMissingRow")[0]).name,
-                    "Channel 7 · slot 2 · 5002 to 5003 · last heard just now");
+                    "Channel 7 · slot 2 · 5002 to 5003");
+            for (r of missing)
+                verify(r.shownText.indexOf("last heard") < 0, "no age with a screen reader: " + r.shownText);
         }
 
         // A record published again with nothing changed, and the same channels heard again in another order (the
@@ -122,7 +125,7 @@ Item {
             }
             var orders = [[7, 30, 12, 9], [9, 7, 30, 12], [12, 9, 7, 30], [30, 12, 9, 7]];
             for (var order of orders) {
-                testContext.setDmrChannelsView(view(order, [500, 1500, 2500, 3500]));
+                testContext.setDmrChannelsView(view(order, [500, 70000, 200000, 4000000]));
                 wait(10);
             }
             var raised = churn(sheet);

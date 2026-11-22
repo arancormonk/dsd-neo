@@ -128,8 +128,12 @@ Item {
         function cleanup() {
             if (edit)
                 edit.visible = false;
-            if (sheet)
+            if (sheet) {
                 sheet.visible = false;
+                // A case that leaves its edit unanswered (the decoder always answers one).
+                sheet.request = 0;
+                sheet.setStatus("", false);
+            }
             findChild(monitor, "siteSheet").visible = false;
             findChild(monitor, "channelsSheet").visible = false;
             monitor.visible = false;
@@ -196,7 +200,9 @@ Item {
             twelve.forceActiveFocus();
             tap(twelve);
             tryCompare(edit, "visible", true);
-            compare(findChild(edit, "channelEditNumber").text, "12");
+            compare(findChild(edit, "channelEditHeading").text, "Channel 12");
+            verify(!findChild(edit, "channelEditNumber").visible, "the number is the row's");
+            verify(!findChild(edit, "channelEditHelp").visible);
             compare(findChild(edit, "channelEditFrequency").text, "");
             var save = findChild(edit, "channelEditSave");
             compare(save.text, "Add channel");
@@ -204,7 +210,6 @@ Item {
             verify(!findChild(edit, "channelEditHide").visible);
             verify(!findChild(edit, "channelEditRestore").visible);
             verify(!findChild(edit, "channelEditRemove").visible);
-            compare(findChild(edit, "channelEditHelp").text, "Use the channel number dsd-neo shows. If your list counts each timeslot (DSD+, some RadioReference lists), take (number − 1) ÷ 2 and drop the remainder.");
             type(findChild(edit, "channelEditFrequency"), "451.5");
             verify(save.inputValid);
             tap(save);
@@ -237,10 +242,12 @@ Item {
 
         function test_refusals_are_said() {
             var cases = [
-                {result: "stale", text: "This channel changed before the edit arrived. Check it and try again."},
+                {result: "stale", text: "This channel changed while you were editing it. Check it, then try again."},
                 {result: "full", text: "You already have 256 channels of your own. Remove one first."},
                 {result: "trunk-scan", text: "Channel editing is available when one system is running."},
-                {result: "dropped", text: "The session stopped before the edit was made."}
+                {result: "dropped", text: "Listening stopped before the change was made."},
+                {result: "search", text: "Channels can't be changed while Signal search is running."},
+                {result: "unknown", text: "dsd-neo did not make the change. Try again."}
             ];
             openSheet(view({}));
             for (var c of cases) {
@@ -290,7 +297,7 @@ Item {
             commands.answerDmrChannel({result: "ok", saved: false, saveError: "not-saved"});
             tryCompare(edit, "visible", false);
             var status = item("channelsStatus");
-            compare(status.text, "Changed for this session, but not saved: dsd-neo could not write the saved system.");
+            compare(status.text, "Changed until you stop listening, but not saved: dsd-neo could not save this system. Open the channel and apply it again.");
             verify(status.visible);
             compare(status.Accessible.role, Accessible.AlertMessage);
         }
@@ -336,6 +343,10 @@ Item {
             var number = findChild(edit, "channelEditNumber");
             var save = findChild(edit, "channelEditSave");
             compare(number.text, "");
+            verify(number.visible);
+            compare(findChild(edit, "channelEditHeading").text, "Add channel");
+            verify(findChild(edit, "channelEditHelp").visible);
+            compare(findChild(edit, "channelEditHelp").text, "Use the channel number dsd-neo shows. If your list counts each timeslot (DSD+, some RadioReference lists), take (number − 1) ÷ 2 and drop the remainder.");
             compare(number.error, "", "nothing typed, nothing wrong yet");
             verify(!save.inputValid);
             for (var bad of ["0", "4095"]) {
@@ -344,6 +355,7 @@ Item {
             }
             type(number, "4094");
             compare(number.error, "");
+            compare(findChild(edit, "channelEditHeading").text, "Channel 4094", "named once the number is one");
             var freq = findChild(edit, "channelEditFrequency");
             var freqError = findChild(edit, "frequencyFieldInvalid");
             for (var badHz of ["0.05", "2147.483648", "3000"]) {
@@ -376,12 +388,22 @@ Item {
                 tap(row("channelsChannelRow", e.lpcn));
                 tryCompare(edit, "visible", true);
                 compare(findChild(edit, "channelEditHeading").text, "Channel " + e.lpcn);
+                compare(findChild(edit, "channelEditRemove").text, "Remove", "disarmed when opened");
                 verify(!findChild(edit, "channelEditNumber").visible, "an existing channel keeps its number");
                 for (var name of ["channelEditHide", "channelEditRestore", "channelEditRemove"])
                     compare(findChild(edit, name).visible, name === e.shown, e.lpcn + " " + name);
                 var action = findChild(edit, e.shown);
                 compare(action.text, e.text);
+                var before = commands.dmrChannelRequests().length;
                 tap(action);
+                if (e.shown === "channelEditRemove") {
+                    // Asked twice, as a talkgroup's Remove is; Hide needs no second tap (Restore undoes it).
+                    compare(action.text, "Tap again to remove");
+                    compare(commands.dmrChannelRequests().length, before, "nothing sent on the first tap");
+                    tap(action);
+                    compare(action.text, "Remove");
+                }
+                compare(commands.dmrChannelRequests().length, before + 1);
                 var sent = lastRequest();
                 compare(sent.lpcn, e.lpcn);
                 compare(sent.op, e.op);
@@ -406,6 +428,126 @@ Item {
             wait(50);
             verify(!edit.visible);
             compare(commands.dmrChannelRequests().length, 0);
+        }
+
+        // A stale refusal reads the channel again: what was typed stays, the actions follow the channel's new origin,
+        // and the retry is sent against the record as it now is.
+        function test_stale_then_retry() {
+            openSheet(view({}));
+            tap(row("channelsChannelRow", 18));
+            tryCompare(edit, "visible", true);
+            var freq = findChild(edit, "channelEditFrequency");
+            type(freq, "451.0250");
+            tap(findChild(edit, "channelEditSave"));
+            compare(lastRequest().generation, 3);
+            // Meanwhile channel 18 became one of yours, on a new network generation and session.
+            var moved = view({generation: 4, session: 6, revision: 12});
+            moved.channels[0] = {lpcn: 18, origin: 2, hz: 451050000, baseHz: 451012500};
+            testContext.setDmrChannelsView(moved);
+            commands.answerDmrChannel({result: "stale"});
+            tryCompare(findChild(edit, "channelEditMessage"), "text", "This channel changed while you were editing it. Check it, then try again.");
+            compare(freq.text, "451.0250", "what was typed stays");
+            verify(!findChild(edit, "channelEditHide").visible);
+            verify(findChild(edit, "channelEditRemove").visible, "the actions follow the new origin");
+            tap(findChild(edit, "channelEditSave"));
+            var retry = lastRequest();
+            compare(retry.lpcn, 18);
+            compare(retry.hz, 451025000);
+            compare(retry.expectedHz, 451050000);
+            compare(retry.expectedOrigin, 2);
+            compare(retry.generation, 4);
+            compare(retry.session, "6");
+        }
+
+        // Remove of a channel of yours with no frequency to go back to: its row goes once the record has the edit,
+        // and the focus does not follow it there; it lands on Add channel.
+        function test_remove_focus_does_not_follow_a_vanishing_row() {
+            var spec = view({});
+            spec.channels.push({lpcn: 30, origin: 2, hz: 451400000});
+            openSheet(spec);
+            var thirty = row("channelsChannelRow", 30);
+            thirty.forceActiveFocus();
+            tap(thirty);
+            tryCompare(edit, "visible", true);
+            var remove = findChild(edit, "channelEditRemove");
+            tap(remove);
+            tap(remove);
+            compare(lastRequest().op, dmrChannels.opRestore);
+            commands.answerDmrChannel({result: "ok", revision: 10});
+            tryCompare(edit, "visible", false);
+            wait(20);
+            compare(sheet.followLpcn, 30, "waiting for the record");
+            verify(!item("channelsAddButton").activeFocus);
+            var gone = view({revision: 10});
+            testContext.setDmrChannelsView(gone);
+            tryVerify(function () { return item("channelsAddButton").activeFocus; }, 2000, "the focus stays in the sheet");
+            compare(sheet.followLpcn, 0);
+            verify(row("channelsChannelRow", 30) === null);
+        }
+
+        // The answer is the sheet's to handle, whatever the editor did meanwhile: a late save error shows after the
+        // editor was closed and reopened on another channel, and a "Not kept" that came while the sheet was closed is
+        // still there when it opens.
+        function test_late_answers_are_kept() {
+            openSheet(view({}));
+            tap(row("channelsChannelRow", 18));
+            tryCompare(edit, "visible", true);
+            type(findChild(edit, "channelEditFrequency"), "451.0250");
+            tap(findChild(edit, "channelEditSave"));
+            edit.visible = false;
+            tap(row("channelsChannelRow", 22));
+            tryCompare(edit, "visible", true);
+            verify(!findChild(edit, "channelEditSave").enabled, "one edit at a time");
+            commands.answerDmrChannel({result: "ok", saved: false, saveError: "no-system"});
+            wait(20);
+            verify(edit.visible, "the editor open on another channel stays");
+            compare(item("channelsStatus").text, "Changed until you stop listening, but not saved: this system is no longer in your saved systems.");
+            verify(findChild(edit, "channelEditSave").enabled);
+            edit.visible = false;
+            // Closed with the answer due.
+            dmrChannels.sessionSystemUid = "";
+            tap(row("channelsChannelRow", 22));
+            tryCompare(edit, "visible", true);
+            type(findChild(edit, "channelEditFrequency"), "451.3125");
+            tap(findChild(edit, "channelEditSave"));
+            compare(item("channelsStatus").text, "", "a new edit says its own outcome");
+            edit.visible = false;
+            sheet.visible = false;
+            commands.answerDmrChannel({result: "ok"});
+            compare(sheet.followLpcn, 0, "nothing to follow in a closed sheet");
+            sheet.open();
+            tryCompare(sheet, "visible", true);
+            compare(item("channelsStatus").text, "Not kept: this session is not a saved system.");
+            verify(item("channelsStatus").visible);
+            sheet.visible = false;
+            sheet.open();
+            compare(item("channelsStatus").text, "", "gone once it was on screen");
+        }
+
+        // Every save error, in its words.
+        function test_save_error_words_data() {
+            return [
+                {tag: "not-dmr", text: "this saved system is not set to decode DMR."},
+                {tag: "full", text: "this system already keeps 256 channels of yours."},
+                {tag: "not-saved", text: "dsd-neo could not save this system. Open the channel and apply it again."}
+            ];
+        }
+        function test_save_error_words(data) {
+            compare(sheet.saveErrorText(data.tag), "Changed until you stop listening, but not saved: " + data.text);
+        }
+
+        // Closing the sheet forgets a focus still waiting for the record.
+        function test_closing_forgets_the_follow() {
+            openSheet(view({}));
+            tap(row("channelsMissingRow", 12));
+            tryCompare(edit, "visible", true);
+            type(findChild(edit, "channelEditFrequency"), "451.5");
+            tap(findChild(edit, "channelEditSave"));
+            commands.answerDmrChannel({result: "ok", revision: 10});
+            tryCompare(edit, "visible", false);
+            compare(sheet.followLpcn, 12);
+            sheet.visible = false;
+            compare(sheet.followLpcn, 0);
         }
 
         function test_site_sheet_channels_button() {
