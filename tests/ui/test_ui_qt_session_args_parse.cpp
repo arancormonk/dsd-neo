@@ -532,10 +532,15 @@ test_live_decode_switch_squelch(dsd_qt::AppPrefs& prefs) {
         expect("Explore Auto to AM brings the default in as noise",
                bridge.setDecodeMode(DSDCFG_MODE_AM) && live.drain() == 2
                    && squelchIs(opts, DSD_SQUELCH_MODE_NOISE, 10, 0.0) && uiMessage(live).startsWith("Decoding AM"));
-        // TETRA's rate advice is the switch's message; the follow-up that takes the default out leaves it.
+        // TETRA's rate advice is the switch's message; the follow-up that takes the default out leaves it. A build
+        // without a radio front end plans no DSP rate, so gives no advice: the plain switch message stands there.
         expect("picking TETRA takes it out", bridge.setDecodeMode(DSDCFG_MODE_TETRA) && live.drain() == 2
                                                  && squelchIs(opts, DSD_SQUELCH_MODE_LEVEL, 0, 0.0));
+#ifdef USE_RADIO
         expect("and its rate advice stands", uiMessage(live).startsWith("Decoding TETRA: "));
+#else
+        expect("and its message stands", uiMessage(live) == QStringLiteral("Decoding TETRA"));
+#endif
         expect("NFM again brings it in again", bridge.setDecodeMode(DSDCFG_MODE_ANALOG) && live.drain() == 2
                                                    && squelchIs(opts, DSD_SQUELCH_MODE_NOISE, 10, 0.0));
         expect("the user's own squelch is sent", bridge.setSquelchAuto(15) && live.drain() == 1);
@@ -544,9 +549,10 @@ test_live_decode_switch_squelch(dsd_qt::AppPrefs& prefs) {
         expect("as does one back to NFM", bridge.setDecodeMode(DSDCFG_MODE_ANALOG) && live.drain() == 1
                                               && squelchIs(opts, DSD_SQUELCH_MODE_AUTO, 15, 0.0));
     }
+#ifdef USE_RADIO
     {
         // I1: a switch the decoder refuses (AM's 6 kHz channel does not fit a 6 kHz DSP bandwidth) leaves the squelch
-        // off, and its refusal is the message the operator reads.
+        // off, and its refusal is the message the operator reads. Only the radio front end checks the bandwidth.
         QVariantMap narrow = explore;
         narrow.insert(QStringLiteral("bandwidthKhz"), 6);
         bool ok = false;
@@ -562,6 +568,7 @@ test_live_decode_switch_squelch(dsd_qt::AppPrefs& prefs) {
             DSD_FPRINTF(stderr, "  ui_msg=%s\n", qPrintable(refusal));
         }
     }
+#endif
     {
         // M6: a squelch set elsewhere meanwhile (the control API, a config) is not the one the app expects: no
         // follow-up replaces it.
