@@ -9046,7 +9046,13 @@ the stream-notice hooks' pattern: one that fails to initialize leaves the hook u
   A/B'd on real captures and measured worse, so change it only with `tools/replay_ab.sh` evidence
   (`docs/testing.md`). The 2400 sym/s rules (NXDN48, dPMR: the averaging window and the slip bands) are written in
   twentieths of a symbol and follow the active profile above 10 samples per symbol (`symbol_uses_2400_grid()`), so a
-  2400 sym/s stream at 72 kHz (30) or 36 kHz (15) is timed as at 48 kHz (20); keyed on exactly 20 samples per symbol
+  2400 sym/s stream at 72 kHz (30) or 36 kHz (15) is timed as at 48 kHz (20). The bands compare a crossing index's
+  endpoint J (the crossing came after sample J - 1 and by J): back in (6/20, 10/20], forward in (10/20, 14/20]. Where
+  the edges fall on whole samples that equals taking J's whole interval; at an odd span an interval across an edge
+  goes with its endpoint (15: back 5..7, forward 8..10, pinned by DSP_SYMBOL_REPLAY
+  `test_2400_grid_rules_scale_by_time()`). Reading those intervals as across the edge was measured no better on real
+  NXDN48 at 36 kHz and lost 2 of 29 synthetic dPMR headers, and with the middle edge left still it parks the grid
+  mid-symbol (comment on `symbol_adjust_timing_nxdn()`). Keyed on exactly 20 samples per symbol
   before, the grid at 30 never slipped out of a bad starting phase (dPMR headers at 1 of 6 timing shifts). 20 samples
   per symbol keeps the rules whatever the symbol rate (4800 sym/s at 96 kHz measured better with them), and 10 and
   below keep the 4800 sym/s rules, which already serve that span. Test: `FRAME_SYNC_NXDN_FSK_PHASE` (every starting
