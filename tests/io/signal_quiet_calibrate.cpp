@@ -619,6 +619,9 @@ struct Condition {
     Floor floor = WHITE;
     double floor_a = 0, floor_b = 0; /* SLOPE: dB per kHz; HUMP: centre offset Hz, peak dB; OCCUPIED: -, raise dB */
     std::vector<std::pair<double, double>> occupied; /* OCCUPIED: the raised hardware bands, Hz */
+    double occupied_share = 0;                       /* OCCUPIED: the share of the reference span asked for */
+    double occupied_length = 0;                      /* and the band length that asks for, Hz */
+    bool occupied_both = false;                      /* asked for half on each side (else the upper side first) */
     uint8_t geometry = DSD_SIGNAL_GEOMETRY_DEFAULT;
     /* Derived */
     int span = 0;
@@ -1020,7 +1023,8 @@ struct Builder {
        raises them and leaves only the channel): on the upper side first (@p both false) or half on each side, each
        side's overflow on the other. */
     std::vector<std::pair<double, double>>
-    occupied_bands(uint32_t rate, double widest, double share, bool both, double clear_widths = 3.5) const {
+    occupied_bands(uint32_t rate, double widest, double share, bool both, double clear_widths = 3.5,
+                   double* asked_length = nullptr) const {
         const bool centred = geometry == DSD_SIGNAL_GEOMETRY_AIRSPY_CENTRED;
         const auto entry = std::find_if(std::begin(kCentredSpans), std::end(kCentredSpans),
                                         [&](const CentredSpan& e) { return e.rate == rate; });
@@ -1028,6 +1032,9 @@ struct Builder {
         const double channel = centred ? 0.0 : -(double)rate / 4, clear = clear_widths * widest;
         const double upper_room = span - (channel + clear), lower_room = (channel - clear) + span;
         const double length = share * (2 * span - widest);
+        if (asked_length) {
+            *asked_length = length;
+        }
         double up = both ? length / 2 : length, down = both ? length / 2 : 0;
         if (up > upper_room) {
             down += up - upper_room;
@@ -1070,7 +1077,9 @@ struct Builder {
                         c.kind = kind;
                         c.floor = OCCUPIED;
                         c.floor_b = raise;
-                        c.occupied = occupied_bands(rate, m.width_hz, share, both);
+                        c.occupied_share = share;
+                        c.occupied_both = both;
+                        c.occupied = occupied_bands(rate, m.width_hz, share, both, 3.5, &c.occupied_length);
                         add(c, "p" + std::to_string((int)std::lround(share * 100)) + "/" + signed_text(raise, 1) + "dB/"
                                    + (both ? "both" : "upper"));
                     }
@@ -1094,7 +1103,9 @@ struct Builder {
                         Condition c = base("raised", m, rate);
                         c.floor = OCCUPIED;
                         c.floor_b = raise;
-                        c.occupied = occupied_bands(rate, m.width_hz, share, both, 1.25);
+                        c.occupied_share = share;
+                        c.occupied_both = both;
+                        c.occupied = occupied_bands(rate, m.width_hz, share, both, 1.25, &c.occupied_length);
                         add(c, "p" + std::to_string((int)std::lround(share * 100)) + "/" + signed_text(raise, 1) + "dB/"
                                    + (both ? "both" : "upper"));
                     }
@@ -2689,19 +2700,95 @@ choose(const Inputs& in, const std::vector<Mode>& modes, const Options& o, std::
     return 0;
 }
 
-/* Every condition's scene bound and scale (--bounds), "condition,bound,scale", whatever --filter chooses (so a run with
- * a filter that matches nothing lists them all); the run says how many it scaled. */
+/* What an occupied capture actually raises, read on the detector's own reference bins (wide_reference() in
+   signal_measure.cpp: the transform's bins whose hardware offset clears the DC guard on a shifted capture, lies inside
+   the policy's span and outside the widest class round the channel): the share of those bins inside a raised band,
+   the noise contrast there after the response and the ADC noise (the mean over those bins of
+   (G R + a) / (G + a), R the raise, G the response, a the ADC share; R alone with no response), and the placement:
+   "upper" or "both" as asked, "+spilled" when an upper raise ran out of room and went on below the channel,
+   "+saturated" when the room on both sides held less than the length asked for. */
+struct OccupiedScene {
+    double achieved_share = 0, contrast_db = 0;
+    std::string placement;
+};
+
+OccupiedScene
+occupied_scene(const Condition& c, const qs::Response& response) {
+    OccupiedScene out;
+    const int n = fft_points(c);
+    const double rate = c.rate, bin = rate / n, span = reference_span(c) * rate;
+    const bool centred = c.geometry == DSD_SIGNAL_GEOMETRY_AIRSPY_CENTRED;
+    const double dc_guard = centred ? -1.0 : std::max(bin * 3, rate / 100.0);
+    const double channel = centred ? 0.0 : -rate / 4;
+    double widest = c.analog_width;
+    if (c.classes & DSD_SIGNAL_QUIET_CLASS_12K5) {
+        widest = std::max(widest, (double)DSD_SIGNAL_QUIET_WIDTH_12K5_HZ);
+    }
+    if (c.classes & DSD_SIGNAL_QUIET_CLASS_6K25) {
+        widest = std::max(widest, (double)DSD_SIGNAL_QUIET_WIDTH_6K25_HZ);
+    }
+    const bool shaped = response.shape != qs::Shape::FLAT;
+    const double raise = std::pow(10.0, c.floor_b / 10.0),
+                 adc = response.adc ? std::pow(10.0, response.adc_db / 10.0) : 0;
+    const qs::Placement p = placement(c);
+    long eligible = 0, raised = 0;
+    double contrast = 0;
+    for (int m = -n / 2; m < n / 2; ++m) {
+        const double hw = m * bin; /* the bin's hardware offset (the detector's delta) */
+        if (!(std::abs(hw) > dc_guard && std::abs(hw) < span && std::abs(hw - channel) > widest / 2)) {
+            continue;
+        }
+        ++eligible;
+        const bool in = std::any_of(c.occupied.begin(), c.occupied.end(),
+                                    [&](const std::pair<double, double>& b) { return hw >= b.first && hw < b.second; });
+        if (in) {
+            ++raised;
+            const double g = shaped ? qs::response_power(response, p, hw) : 1.0;
+            contrast += (g * raise + (shaped ? adc : 0.0)) / (g + (shaped ? adc : 0.0));
+        }
+    }
+    out.achieved_share = eligible ? (double)raised / eligible : 0.0;
+    out.contrast_db = raised ? 10 * std::log10(contrast / raised) : 0.0;
+    double placed = 0;
+    bool below = false;
+    for (const auto& b : c.occupied) {
+        placed += b.second - b.first;
+        below = below || b.second <= channel;
+    }
+    out.placement = c.occupied_both ? "both" : "upper";
+    if (!c.occupied_both && below) {
+        out.placement += "+spilled";
+    }
+    if (placed + 1.0 < c.occupied_length) {
+        out.placement += "+saturated";
+    }
+    return out;
+}
+
+/* Every condition's scene bound and scale (--bounds), whatever --filter chooses (so a run with a filter that matches
+ * nothing lists them all), with the row metadata the CSV will carry (the manifest pins it) and, for an occupied
+ * capture, what it asked for and what it raises (occupied_scene()); the run says how many it scaled. */
 int
-write_bounds(const std::string& path, const std::vector<Condition>& all) {
+write_bounds(const std::string& path, const std::vector<Condition>& all, const Options& o) {
     FILE* f = dsd_fopen_private(path.c_str(), "w");
     if (!f) {
         DSD_FPRINTF(stderr, "cannot write %s\n", path.c_str());
         return 1;
     }
-    DSD_FPRINTF(f, "condition,bound,scale\n");
+    DSD_FPRINTF(f, "condition,bound,scale,group,kind,rate_hz,classes,analog_width_hz,grid_shift_hz,snr_db,geometry,"
+                   "response,depression_db,adc_noise_db,requested_share,achieved_share,contrast_db,placement\n");
     size_t scaled = 0;
     for (const Condition& c : all) {
-        DSD_FPRINTF(f, "%s,%.6f,%.6f\n", c.name.c_str(), c.bound, c.scale);
+        DSD_FPRINTF(f, "%s,%.6f,%.6f,%s,%s,%u,%s,%u,%d,%.2f,%s,", c.name.c_str(), c.bound, c.scale, c.group.c_str(),
+                    kind_text(c.kind), c.rate, class_text(c.classes), c.analog_width, c.grid_shift_hz,
+                    c.kind == ACTIVE ? c.snr_db : 0.0, run_columns(o).c_str());
+        if (c.floor == OCCUPIED) {
+            const OccupiedScene scene = occupied_scene(c, o.response);
+            DSD_FPRINTF(f, "%.4f,%.4f,%.3f,%s\n", c.occupied_share, scene.achieved_share, scene.contrast_db,
+                        scene.placement.c_str());
+        } else {
+            DSD_FPRINTF(f, ",,,\n");
+        }
         scaled += c.scale < 1.0;
     }
     if (!close_output(f, path)) {
@@ -2758,7 +2845,14 @@ main(int argc, char** argv) {
     }
     DSD_FPRINTF(stderr, "%zu of %zu conditions, %ld trials each, %zu waveform(s) from %zu source row(s)\n",
                 chosen.size(), all.size(), o.trials, waves.size(), sources.size());
-    if (!o.bounds.empty() && write_bounds(o.bounds, all) != 0) {
+    /* What this run executes, for the campaign's checker to hold to the plan. */
+    DSD_FPRINTF(stderr, "run: phase=%s salt=%ld veto=%.6g guard=%.6g threshold=%.6g estimator=%s %s\n", o.phase.c_str(),
+                o.seed_salt, o.occupancy_veto, o.guard, o.threshold,
+                o.estimator == DSD_SIGNAL_QUIET_FLOOR_TRIMMED_MEAN   ? "trimmed"
+                : o.estimator == DSD_SIGNAL_QUIET_FLOOR_LOWEST_BLOCK ? "lowest"
+                                                                     : "both",
+                run_columns(o).c_str());
+    if (!o.bounds.empty() && write_bounds(o.bounds, all, o) != 0) {
         return 1;
     }
     if (o.phase == "snr") {

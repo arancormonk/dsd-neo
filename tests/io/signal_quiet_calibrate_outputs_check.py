@@ -13,6 +13,9 @@ three trials each of the four ".../1536k/grid0" conditions (one analog, three no
   trial whose share is over it is void for occupancy.
 - A --dump or --trial-log that cannot be opened (a directory) stops the run before it starts: nonzero, nothing written.
 - One whose writes do not land (/dev/full, where present) exits nonzero once the run ends.
+- The driver attests what it ran on one "run:" line (phase, salt, veto, guard, threshold, estimator, geometry,
+  response, depression, ADC), and --bounds carries each condition's metadata (group, kind, rate, classes, widths,
+  S/N, the run's columns) and an occupied capture's asked and achieved share, contrast and placement.
 - The late groups (--add cross, raised) only append: the conditions of --add masks,occupancy keep their order and
   names (and so their seeds), and cross adds the -8 masks crossed with neighbours, offsets and droop.
 """
@@ -171,6 +174,25 @@ def check_late_groups(driver, root):
     return 0
 
 
+def check_attestation(driver, root):
+    done = run(driver, root, root / "attest.csv",
+               ["--seed-salt", "9", "--occupancy-veto", "0.05", "--bounds", str(root / "attest-bounds.csv")])
+    want = "run: phase=validate salt=9 veto=0.05 guard=8.7 threshold=5 estimator=trimmed default,flat,0.0,none"
+    if done.returncode != 0 or want not in done.stderr.splitlines():
+        return fail(f"attestation: exit {done.returncode}, {[l for l in done.stderr.splitlines() if l.startswith('run:')]}")
+    with (root / "attest-bounds.csv").open(newline="") as f:
+        rows = list(csv.DictReader(f))
+    columns = ["condition", "bound", "scale", "group", "kind", "rate_hz", "classes", "analog_width_hz",
+               "grid_shift_hz", "snr_db", "geometry", "response", "depression_db", "adc_noise_db", "requested_share",
+               "achieved_share", "contrast_db", "placement"]
+    if not rows or list(rows[0].keys()) != columns:
+        return fail(f"bounds columns {list(rows[0].keys()) if rows else None}")
+    noise = [r for r in rows if r["condition"] == "noise/12k5/1536k/grid0"]
+    if len(noise) != 1 or noise[0]["kind"] != "noise" or noise[0]["group"] != "noise" or noise[0]["rate_hz"] != "1536000":
+        return fail(f"bounds metadata {noise}")
+    return 0
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("driver")
@@ -183,6 +205,7 @@ def main():
         rc |= check_unopenable(driver, root)
         rc |= check_full_disk(driver, root)
         rc |= check_late_groups(driver, root)
+        rc |= check_attestation(driver, root)
     return rc
 
 
