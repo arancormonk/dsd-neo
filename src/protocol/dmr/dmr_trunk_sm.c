@@ -258,8 +258,18 @@ dmr_sm_slot_call_may_heal(const dsd_state* state, int s, uint64_t epoch, double 
     return dsd_call_snapshot_transmission(&call) == epoch && dsd_call_snapshot_may_reacquire(&call, now_m);
 }
 
+/* Whether the slot's record @p rec and a naming @p named name the same assignment: the same target, policy class,
+   media (voice or data) and carrier. */
+static int
+dmr_sm_slot_names_same_assignment(const dmr_sm_slot_ctx_t* rec, const dmr_sm_slot_ctx_t* named) {
+    return rec->prov != (uint8_t)DMR_SM_ID_NONE && rec->target == named->target
+           && rec->judged_group == named->judged_group && rec->data_call == named->data_call
+           && rec->carrier_hz == named->carrier_hz;
+}
+
 /* Name the call on slot @p s (@p named, from dmr_sm_slot_identity_set()) and bind it to its canonical call. The same
-   call named again (policy class, target and carrier; a gap record only for the very call that followed it) keeps its
+   call named again (policy class, target, media and carrier; a gap record only for the very call that followed it; a
+   voice call after a data one on the same target is another assignment, dmr_sm_grant_names_call()) keeps its
    follow time and binding, so dwell runs from the conversation's first follow; another call starts at its own. Named
    again while its call is faded but may still heal (dmr_sm_slot_call_may_heal()), it keeps that binding. */
 static void
@@ -269,8 +279,7 @@ dmr_sm_slot_name(dmr_sm_ctx_t* ctx, const dsd_state* state, int s, const dmr_sm_
     dmr_sm_slot_ctx_t* rec = &ctx->slots[s];
     uint64_t floor = 0U;
     const uint64_t bound = dmr_sm_slot_call_for(ctx, state, s, named, force, &floor);
-    const int raw = rec->prov != (uint8_t)DMR_SM_ID_NONE && rec->target == named->target
-                    && rec->judged_group == named->judged_group && rec->carrier_hz == named->carrier_hz;
+    const int raw = dmr_sm_slot_names_same_assignment(rec, named);
     const int same =
         raw && (rec->gap ? (bound != 0U && bound == rec->call_epoch) : rec->kind != (uint8_t)DSD_CALL_KIND_UNKNOWN);
     const dmr_sm_slot_ctx_t prev = *rec;
@@ -2484,6 +2493,9 @@ dmr_sm_grant_reconcile_in_place(dmr_sm_ctx_t* ctx, const dsd_state* state, const
         ctx->vc_is_group = ev->is_group != 0;
         ctx->vc_data_call = data_call;
         ctx->vc_identity_known = 1;
+        // A new assignment publishes its own caller at its first voice, as a followed grant does
+        // (dmr_sm_take_grant()): never the replaced grant's publication latch, unless a call naming itself plays there.
+        ctx->vc_identity_published = dmr_sm_grant_publishable(state, ctx->vc_slot, 0) ? 0 : 1;
         // The new identity's provenance is this announcement's (dispatched inside its CSBK/MBC burst's CRC scope, as
         // dmr_sm_take_grant() reads it), never the replaced grant's: the voice sync publishes it with these flags.
         ctx->vc_crc_flags = state->event_crc_invalid[state->currentslot & 1];

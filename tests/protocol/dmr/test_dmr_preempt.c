@@ -764,6 +764,52 @@ test_in_place_media_change(dsd_opts* opts, dsd_state* st) {
     return rc;
 }
 
+/* A media change is a fully new assignment of the followed slot. Its call takes its own follow time, so the minimum
+   dwell runs from the voice grant, not from the data grant before it: a data grant at 0 s, a voice grant for the same
+   group and slot at 1.0 s, and a preempting candidate at 1.1 s keeps the receiver. And its caller is published anew: a
+   voice call that published (caller 3) and ended, then a data grant and a voice grant (caller 2) for the same group and
+   slot in hangtime, publishes caller 2 at the next voice sync. */
+static int
+test_media_change_is_a_new_assignment(dsd_opts* opts, dsd_state* st) {
+    init_env(opts, st, 2.0);
+    seed_row(st, 100, "A", 10, 0);
+    seed_row(st, 50, "A", 50, 1);
+    grant_op(opts, st, 52U, LPCN_A, 0, 100, 1); // TD_GRANT
+    clock_at(0.5);
+    voice(opts, st, 0);
+    clock_at(1.0);
+    grant_op(opts, st, 49U, LPCN_A, 0, 100, 2); // TV_GRANT, same group, carrier and slot
+    int rc =
+        expect_true("the voice grant's call follows from its own assignment",
+                    fabs(sm()->slots[0].follow_m - dsd_decode_now_mono_s()) < 1e-3 && sm()->slots[0].data_call == 0U);
+    clock_at(1.05);
+    voice(opts, st, 0);
+    clock_at(1.1);
+    tv_grant(opts, st, LPCN_B, 0, 50, 5);
+    rc |= expect_true("a preempting candidate 100 ms into the voice call waits out the dwell", vc(st) == VC_A);
+
+    init_env(opts, st, 2.0);
+    tv_grant(opts, st, LPCN_A, 0, 300, 3);
+    clock_at(0.2);
+    voice(opts, st, 0);
+    dsd_call_snapshot call;
+    rc |= expect_true("the first voice grant's caller is published",
+                      dsd_call_state_get(st, 0U, &call) > 0 && call.ota_source_id == 3U);
+    clock_at(0.5);
+    (void)dsd_call_state_end_ex(st, 0U, dsd_decode_now_mono_s(), DSD_CALL_END_TERMINATOR);
+    clock_at(0.7);
+    grant_op(opts, st, 52U, LPCN_A, 0, 300, 9); // TD_GRANT in hangtime
+    clock_at(0.9);
+    grant_op(opts, st, 49U, LPCN_A, 0, 300, 2); // TV_GRANT, caller 2
+    rc |= expect_true("the new voice assignment awaits publication", sm()->vc_identity_published == 0);
+    clock_at(1.0);
+    voice(opts, st, 0);
+    rc |= expect_true("the new voice call publishes its own caller",
+                      dsd_call_state_get(st, 0U, &call) > 0 && call.phase == DSD_CALL_PHASE_ACTIVE
+                          && call.policy_target_id == 300U && call.ota_source_id == 2U);
+    return rc;
+}
+
 /* An in-place group grant for TG 300 arrives while the followed slot still carries a private call to unit 300 (a checked
    LC names it): the private call is not the group's, whatever the number, so the grant's record awaits its own call
    instead of binding to the private one. Once the private call ends, the group's unnamed voice is that call: it stays
@@ -1044,6 +1090,7 @@ main(void) {
     rc |= test_scan_target_contexts(opts, st);
     rc |= test_in_place_reassignment(opts, st);
     rc |= test_in_place_media_change(opts, st);
+    rc |= test_media_change_is_a_new_assignment(opts, st);
     rc |= test_in_place_group_grant_never_binds_private_call(opts, st);
     rc |= test_in_place_reassignment_carries_crc_provenance(opts, st);
     rc |= test_composite_grant_adopts_resident_calls(opts, st);

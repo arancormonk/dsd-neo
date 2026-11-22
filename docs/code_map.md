@@ -13510,8 +13510,10 @@ Private per-protocol modules worth knowing about:
     the call the slot names, or of the grant followed there, keeps record and follow time. A repeat is the same
     target, policy class and media (`dmr_sm_grant_names_call()`): a grant that turns the slot from data to voice or
     from voice to data for the same target is a new assignment, so a voice grant after a data one publishes its caller
-    at the first voice, and a data grant after a voice one publishes none of the obsolete voice grant's. A status's
-    in-place entry
+    at the first voice, and a data grant after a voice one publishes none of the obsolete voice grant's. A new
+    assignment is new in full: its record takes its own follow time (`dmr_sm_slot_name()` compares the media too, so
+    the minimum dwell runs from it), and on the followed slot its publication is re-armed as a followed grant's
+    (`dmr_sm_grant_publishable()`), never the replaced grant's latch. A status's in-place entry
     (origin STATUS) replaces only a seed or grant identity, never a checked LC's on that carrier.
   - Slot identities (`dmr_sm_slot_ctx_t`: target, source, kind, provenance SEED/GRANT/LC, policy class, channel,
     carrier, follow time, and `crc_flags`, the DSD_CRC_* bits of what named it: the grant's or status's burst, a Cap+
