@@ -260,7 +260,23 @@ typedef struct {
     /** dsd_realtime_mono_ns() when the analysis that completed (or failed) the request finished, after the feed held
      * the tap; shared tap only, else 0. */
     uint64_t completed_realtime_ns;
+    /** Why a complete result is not valid, DSD_SIGNAL_QUIET_VOID_* bits over every sub-window and class (0 when it is
+     * valid, and for a failed result). */
+    uint8_t void_causes;
 } dsd_signal_quiet_result;
+
+/** dsd_signal_quiet_result.void_causes. */
+enum {
+    /** A judged class's channel or its noise sidebands do not fit the capture. */
+    DSD_SIGNAL_QUIET_VOID_GEOMETRY = 1,
+    /** No bin of the capture qualified for the noise reference. */
+    DSD_SIGNAL_QUIET_VOID_REFERENCE = 2,
+    /** A sideband floor stood over the reference by more than the guard (dsd_signal_quiet_params.guard_db). */
+    DSD_SIGNAL_QUIET_VOID_GUARD = 4,
+    /** The occupancy check: too many of the reference's bins stood over its noise
+     * (dsd_signal_quiet_params.occupancy_max_share). */
+    DSD_SIGNAL_QUIET_VOID_OCCUPANCY = 8,
+};
 
 /** The shipped thresholds, floor estimator, floor guard and occupancy check the shared tap measures with (calibrated:
  * docs/signal-search.md "Quiet-channel calibration"). */

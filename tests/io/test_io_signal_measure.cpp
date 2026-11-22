@@ -1299,6 +1299,7 @@ test_quiet_floor_guard(dsd_signal_quiet_detector* d) {
     assert(quiet_verdict(d, wide, raised_sides, unguarded));
     const auto guarded = quiet_run(d, wide, raised_sides, 4096, &shipped);
     assert(guarded.failure == DSD_SIGNAL_MEASURE_OK && !guarded.valid && !guarded.quiet);
+    assert(guarded.void_causes == DSD_SIGNAL_QUIET_VOID_GUARD);
     assert(guarded.floor_rise_db > shipped.guard_db + 10.0f);
     // A channel 12 dB over its noise between the same raised blocks is not quiet even without the guard.
     auto between = raised_sides;
@@ -1310,7 +1311,7 @@ test_quiet_floor_guard(dsd_signal_quiet_detector* d) {
             const auto q = quiet_request(r, classes);
             for (unsigned seed = 93; seed < 96; ++seed) {
                 const auto noise = quiet_run(d, q, quiet_noise(quiet_request_pairs(q), seed), 4096, &shipped);
-                assert(noise.valid && noise.floor_rise_db < shipped.guard_db);
+                assert(noise.valid && noise.floor_rise_db < shipped.guard_db && noise.void_causes == 0);
                 assert(std::abs(noise.floor_rise_db) < 2.0f);
             }
         }
@@ -1506,6 +1507,7 @@ test_quiet_geometry(dsd_signal_quiet_detector* d) {
             q.capture.capture_hz = (uint32_t)(kQuietChannel + place * rate);
             const auto result = quiet_run(d, q, quiet_noise(quiet_request_pairs(q), 61), 4096);
             assert(result.failure == DSD_SIGNAL_MEASURE_OK && !result.valid && !result.quiet);
+            assert(result.void_causes & DSD_SIGNAL_QUIET_VOID_GEOMETRY);
         }
     }
     // One class out of geometry spoils the request: a 6.25 kHz channel fits where a 25 kHz analog one does not.
@@ -1519,7 +1521,8 @@ test_quiet_geometry(dsd_signal_quiet_detector* d) {
     const auto fits = quiet_run(d, alone, noise, 4096, &kQuietTestParams);
     assert(fits.valid && fits.quiet);
     const auto spoiled = quiet_run(d, mixed, noise, 4096);
-    assert(!spoiled.valid && !spoiled.quiet);
+    assert(!spoiled.valid && !spoiled.quiet && (spoiled.void_causes & DSD_SIGNAL_QUIET_VOID_GEOMETRY));
+    assert(fits.void_causes == 0);
 }
 
 namespace {
@@ -1695,7 +1698,7 @@ test_quiet_occupancy(dsd_signal_quiet_detector* d) {
             /* Clean control. */
             const auto clean = quiet_noise(pairs, seed);
             const auto quiet = quiet_run(d, q, clean, 4096, &shipped);
-            assert(quiet.failure == DSD_SIGNAL_MEASURE_OK && quiet.valid && quiet.quiet);
+            assert(quiet.failure == DSD_SIGNAL_MEASURE_OK && quiet.valid && quiet.quiet && quiet.void_causes == 0);
             assert(quiet.occupancy_share < 0.02f);
             auto carrier = clean;
             quiet_add_fm(carrier, rate, 0, quiet_amplitude(9, rate, width), {});
@@ -1709,8 +1712,9 @@ test_quiet_occupancy(dsd_signal_quiet_detector* d) {
                 const auto voided = quiet_run(d, q, noise, 4096, &shipped);
                 assert(voided.failure == DSD_SIGNAL_MEASURE_OK && !voided.valid && !voided.quiet);
                 assert(voided.occupancy_share > shipped.occupancy_max_share);
+                assert(voided.void_causes & DSD_SIGNAL_QUIET_VOID_OCCUPANCY);
                 const auto unchecked = quiet_run(d, q, noise, 4096, &off);
-                assert(unchecked.valid && unchecked.quiet);
+                assert(unchecked.valid && unchecked.quiet && unchecked.void_causes == 0);
                 assert(std::abs(unchecked.occupancy_share - voided.occupancy_share) < 1e-6f);
                 auto weak = noise;
                 quiet_add_fm(weak, rate, 0, quiet_amplitude(4, rate, width), {});

@@ -1518,6 +1518,7 @@ struct dsd_signal_quiet_detector {
     /* Over the sub-windows so far: whether every class measured was valid, whether any was, and the highest ratio with
        its power and floor (dB). */
     bool all_valid = true, any_valid = false, any_rise = false;
+    uint8_t void_causes = 0; /* why not all valid so far (DSD_SIGNAL_QUIET_VOID_*) */
     double max_ratio_db = 0, max_power_db = 0, max_floor_db = 0, max_rise_db = 0;
     /* The highest occupancy share over the sub-windows so far (wide_reference()). */
     double max_occupancy = 0;
@@ -1646,6 +1647,7 @@ quiet_arm(dsd_signal_quiet_detector* detector, const dsd_signal_quiet_request* r
     detector->lead_left = request->lead_pairs;
     detector->all_valid = true;
     detector->any_valid = detector->any_rise = false;
+    detector->void_causes = 0;
     detector->max_ratio_db = detector->max_power_db = detector->max_floor_db = detector->max_rise_db = 0;
     detector->max_occupancy = 0;
     DSD_MEMSET(detector->power, 0, (size_t)n * sizeof(detector->power[0]));
@@ -1751,6 +1753,7 @@ quiet_measure_window(dsd_signal_quiet_detector* detector) {
     detector->max_occupancy = std::max(detector->max_occupancy, occupancy);
     if (detector->params.occupancy_max_share > 0 && occupancy > detector->params.occupancy_max_share) {
         detector->all_valid = false;
+        detector->void_causes |= DSD_SIGNAL_QUIET_VOID_OCCUPANCY;
     }
     prefix_sums(detector->power, n, detector->prefix);
     auto bins = [&](long long first, long long last) {
@@ -1762,6 +1765,7 @@ quiet_measure_window(dsd_signal_quiet_detector* detector) {
                             detector->widths[c], norm, detector->params.floor_estimator);
         if (!level.valid || reference <= 0) {
             detector->all_valid = false;
+            detector->void_causes |= !level.valid ? DSD_SIGNAL_QUIET_VOID_GEOMETRY : DSD_SIGNAL_QUIET_VOID_REFERENCE;
             continue;
         }
         const double rise = power_db(level.floor) - power_db(reference * norm);
@@ -1771,6 +1775,7 @@ quiet_measure_window(dsd_signal_quiet_detector* detector) {
         detector->any_rise = true;
         if (rise > detector->params.guard_db) {
             detector->all_valid = false;
+            detector->void_causes |= DSD_SIGNAL_QUIET_VOID_GUARD;
         }
         const double judged = quiet_judged_noise(reference * norm, level);
         const double power = power_db(level.signal), floor = power_db(judged * level.bins);
@@ -1798,6 +1803,7 @@ quiet_finish_window(dsd_signal_quiet_detector* detector) {
     quiet_finish(detector, DSD_SIGNAL_MEASURE_OK);
     dsd_signal_quiet_result& result = detector->result;
     result.valid = detector->all_valid && detector->any_valid;
+    result.void_causes = result.valid ? 0 : detector->void_causes;
     result.max_ratio_db = (float)detector->max_ratio_db;
     result.power_dbfs = (float)detector->max_power_db;
     result.floor_dbfs = (float)detector->max_floor_db;

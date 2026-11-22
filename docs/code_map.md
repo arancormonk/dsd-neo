@@ -11203,7 +11203,10 @@ Runtime controls (via `include/dsd-neo/io/rtl_stream_c.h`):
   0.25 / (1 - p) quantile of the noise left, so the reference reads high; where the sidebands are clean the ratio is
   judged against them instead, so the check matters for a raise that also covers them; a floor with a lower part,
   such as a resampler's transition band inside the span, also trips it, a speed cost; 0 turns the check off, as the
-  calibration driver's own parameters do unless asked). Under the default policy the span is ±0.45 Fs
+  calibration driver's own parameters do unless asked). An invalid complete result says why in
+  `dsd_signal_quiet_result.void_causes` (`DSD_SIGNAL_QUIET_VOID_GEOMETRY`, `_REFERENCE`, `_GUARD`,
+  `_OCCUPANCY`, or-ed over every sub-window and class; 0 when valid), which the calibration driver's
+  `--trial-log` records as the detector's own decision. Under the default policy the span is ±0.45 Fs
   (`kQuietReferenceSpan`) at any rate. Under
   `DSD_SIGNAL_GEOMETRY_AIRSPY_CENTRED` there is no DC exclusion and the span is the rate's in
   `kQuietAirspyCentredSpans`, the one table of the centred policy's admitted rates (2.5 and 3 MS/s ±0.25 Fs, 6 and
