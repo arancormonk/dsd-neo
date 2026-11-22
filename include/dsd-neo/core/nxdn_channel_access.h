@@ -205,11 +205,17 @@ dsd_nxdn_site_latch(dsd_state* state, uint32_t location_id) {
  * Note that Type-C trunking decoded here: composite control channel frames are read as Type-C from now on. Until now a
  * composite control channel's SRV_INFO could only have been read with the Type-D layout, which names an IDAS System ID
  * and Site Code out of a Type-C Location ID: whatever IDAS identity the decoder holds is dropped with the Type-D
- * reading, and with it the "Type-D" category an SCCH misread on such a frame left.
+ * reading, and with it the "Type-D" category an SCCH misread on such a frame left. The frame that says Type-C never
+ * reads as Type-D by its own SCCH either (dsd_state::nxdn_frame_type_d_scch): that SCCH was a composite frame's SACCH
+ * passing the short check, so the frame's later channels and its end keep no Type-D layout.
  */
 static inline void
 dsd_nxdn_note_type_c(dsd_state* state) {
-    if (!state || state->nxdn_site.type_c != 0U) {
+    if (!state) {
+        return;
+    }
+    state->nxdn_frame_type_d_scch = 0U;
+    if (state->nxdn_site.type_c != 0U) {
         return;
     }
     state->nxdn_site.type_c = 1U;

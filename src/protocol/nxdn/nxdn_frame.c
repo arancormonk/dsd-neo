@@ -761,7 +761,8 @@ nxdn_decode_frame_channels(dsd_opts* opts, dsd_state* state, nxdn_frame_ctx* ctx
             DSD_SNPRINTF(state->nxdn_location_category, sizeof(state->nxdn_location_category), "%s", " ");
         }
     } else if (state->nxdn_frame_type_d_scch != 0U) {
-        /* Kept, as evidence of the reception the frame's own messages left the received identity naming. */
+        /* Kept, as evidence of the reception the frame's own messages left the received identity naming; a Type-C
+           identification in the frame cleared the flag (dsd_nxdn_note_type_c()). */
         dsd_nxdn_note_type_d_layout(state);
     }
     return left_carrier;

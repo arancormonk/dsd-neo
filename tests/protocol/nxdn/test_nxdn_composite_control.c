@@ -1027,6 +1027,33 @@ test_failed_scch_keeps_fresh_type_d_on_rtch2(dsd_opts* opts, dsd_state* state) {
     return rc;
 }
 
+/*
+ * A Type-C identification cancels its own frame's provisional SCCH reading (issue #903). On first reception of a
+ * composite frame (LICH 0x71, read as a Type-D RTCH2 until Type-C is known) whose SACCH also passes the short SCCH check
+ * as a defined INFO3, the first FACCH1 carries a CCH_INFO and the second a VCALL to 0x1805: the VCALL decodes in the
+ * Type-C layout, 6149 with no prefix text, and the frame leaves no Type-D evidence behind.
+ */
+static int
+test_same_frame_cch_info_cancels_provisional_type_d(dsd_opts* opts, dsd_state* state) {
+    uint8_t scch[25];
+    uint8_t cch[80];
+    uint8_t vcall[80];
+    int rc = 0;
+    clear_state(opts, state);
+    opts->trunk_enable = 1;
+    state->synctype = DSD_SYNC_NXDN_POS;
+    info3_scch(scch);
+    cch_info(cch, SITE_A, 0x20U, 5U);
+    DSD_MEMSET(vcall, 0, sizeof(vcall));
+    call_message(vcall, 0x01U, 0x1864U, 0x1805U);
+    build_frame_scch(LICH_COMPOSITE_FACCH1_PAIR, scch, 0U, cch, vcall);
+    (void)nxdn_frame(opts, state);
+    rc |= expect_long("same-frame cch_info: Type-C known", dsd_nxdn_type_c(state), 1L);
+    rc |= expect_call_target("same-frame cch_info: vcall", state, 0x1805L, 0x1805L, "");
+    rc |= expect_long("same-frame cch_info: no Type-D evidence", dsd_nxdn_type_d_layout_fresh(state), 0L);
+    return rc;
+}
+
 int
 main(void) {
     dsd_opts* opts = calloc(1, sizeof(*opts));
@@ -1059,6 +1086,7 @@ main(void) {
     rc |= test_operator_retune_drops_type_d_evidence(opts, state);
     rc |= test_own_scch_outranks_type_c_site(opts, state);
     rc |= test_failed_scch_keeps_fresh_type_d_on_rtch2(opts, state);
+    rc |= test_same_frame_cch_info_cancels_provisional_type_d(opts, state);
     dsd_trunk_tuning_hooks_set((dsd_trunk_tuning_hooks){0});
     dsd_decode_clock_use_system();
 

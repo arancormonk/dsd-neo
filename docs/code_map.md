@@ -13949,7 +13949,9 @@ Private per-protocol modules worth knowing about:
   and the quiet check (`nxdn_confirm_end_frame()`) and starts the scanner's 2 s hold, and the frames after it, which
   only run on, neither refresh the hold nor note anything. The "Type-D" layout a content-invalid SCCH names stays with its frame even on a
   confirmed transmission (`nxdn_channel_result::scch_invalid`), though never over a Type-C site a later channel of that
-  frame verified (`dsd_nxdn_note_type_c()`). An End of Transmission (Repeater in Use / Go to Repeater
+  frame verified (`dsd_nxdn_note_type_c()`). That Type-C identification also cancels the frame's own provisional SCCH
+  reading (`dsd_state::nxdn_frame_type_d_scch`): a later FACCH1 of the frame decodes in the Type-C layout, and the
+  frame end restamps no Type-D layout. An End of Transmission (Repeater in Use / Go to Repeater
   31, Table 6.6-9) ends the sending in an INFO2 as in an INFO4 (TS 2-E Table 5.1-5, `nxdn_scch_update_busy_display()`).
   An INFO4 EOT's tuner return is the busy message's policy and tune, as before (`nxdn_scch_apply_busy_tune()`); an
   INFO2 EOT retunes nothing, as before, so the release the frame's FACCH1 carries still runs and the receiver is never
