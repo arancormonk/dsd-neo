@@ -605,6 +605,57 @@ Item {
             verify(part(draft, "scanListTitle").Accessible.name.indexOf("draft list") >= 0, "the name is said whole");
         }
 
+        // G2: with a screen reader on, a resize that draws or leaves out a card's site button (no rebuild, no tab or
+        // sheet change) owes Android's copy of the tree one refresh, and it is given: exactly one per change, the
+        // owed flag cleared.
+        function test_site_button_change_refreshes_the_tree() {
+            root.width = 320;
+            site("Single Vale", 31, 1);
+            add("Plain Vale");
+            settle();
+            savedSystemCards.screenReaderActive = true;
+            settle();
+            wait(50);
+            var rebuilt = Qt.createQmlObject("import QtTest; SignalSpy { signalName: \"rebuilt\" }", root);
+            rebuilt.target = savedSystemCards;
+            var toggles = 0;
+            var counted = null;
+            var onToggle = function () {
+                ++toggles;
+            };
+            var watch = function () {
+                if (home.systemsTreeRefresh !== null && counted !== home.systemsTreeRefresh) {
+                    counted = home.systemsTreeRefresh;
+                    counted.visibleChanged.connect(onToggle);
+                }
+            };
+            try {
+                // The refresh object exists once a refresh has been given; make sure of one first.
+                home.systemsTreeOwed = true;
+                home.refreshSystemsTree();
+                watch();
+                verify(home.systemsTreeRefresh !== null);
+                compare(home.systemsTreeOwed, false);
+                var single = cardOf("Single Vale");
+                verify(!part(single, "homeSiteChooserButton").opacity, "the button is held at 320 dp");
+                for (var step of [{width: 411, drawn: true}, {width: 320, drawn: false}]) {
+                    toggles = 0;
+                    root.width = step.width;
+                    settle();
+                    wait(50);
+                    compare(part(cardOf("Single Vale"), "homeSiteChooserButton").opacity === 1, step.drawn,
+                            step.width + " dp: the site button");
+                    compare(toggles, 1, step.width + " dp: tree refreshes");
+                    compare(home.systemsTreeOwed, false, step.width + " dp: still owed");
+                }
+                compare(rebuilt.count, 0, "the cards were rebuilt");
+            } finally {
+                if (counted !== null)
+                    counted.visibleChanged.disconnect(onToggle);
+                rebuilt.destroy();
+            }
+        }
+
         // D11: a change of Compact view puts every Listen tab back at its top (Systems, Scan lists and Explore), the
         // one shown at once and the others when next shown, with Home shown or hidden.
         function test_density_change_resets_listen_places_data() {

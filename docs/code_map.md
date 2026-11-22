@@ -16082,8 +16082,12 @@ Qt Quick frontend (`src/ui/qt`):
   and in reach (`systemsInReach()`: visible, on Systems, `Navigation.allows(listenSystemsSection)`); then the owned
   0 ms `systemsTreeTimer` lays the section out and gives it once (`refreshSystemsTree()` clears the owed flag only
   when it refreshes, or when no screen reader is on). The timer restarts on Home's `visible` and `section` and on
-  `Navigation`'s `topModal`, `layers` and `rootSurfaces` while a refresh is owed. So an ordinary refresh noted while a
-  sheet is open is given when the sheet closes, and one noted just before Home was hidden is given on return. D11:
+  `Navigation`'s `topModal`, `layers` and `rootSurfaces` while a refresh is owed, on a rebuild (`onRebuilt`, deferred
+  to the timer so the parts the rebuild then shows or holds are in the same refresh), and when a card's shown parts
+  change (`notePartsShown()`, G2: a resize or text size that draws or leaves out a site button has no rebuild to give
+  it). The controls' parts change only with the search and sort, whose rebuild gives it. So an ordinary refresh noted
+  while a sheet is open is given when the sheet closes, and one noted just before Home was hidden is given on return.
+  D11:
   `resetListenPlaces()` forgets every Listen tab's place (`sectionScroll`: Systems, Scan lists and Explore), and the
   owned 0 ms `listenToStart` cancels the place chase and any flick on the current tab, lays the body out and moves it
   to `originY`, hidden or not, and does nothing while a restore is owed (the restore lands at the top anyway).

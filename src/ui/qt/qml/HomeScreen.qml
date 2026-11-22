@@ -464,6 +464,13 @@ Item {
         if (savedSystemCards.screenReaderActive && visible && section === "systems")
             systemsTreeOwed = true;
     }
+    // A part shown or held in place (G2): also from layout alone (a resize or
+    // a text size that draws or leaves out a site button), with no rebuild
+    // to give the refresh, so it is scheduled here, coalesced with any other.
+    function notePartsShown() {
+        noteSystemsChanged();
+        refreshSystemsTreeLater();
+    }
     function systemsInReach() {
         return visible && section === "systems" && Navigation.allows(listenSystemsSection);
     }
@@ -531,8 +538,10 @@ Item {
         function onShownCountChanged() {
             screen.noteSystemsChanged();
         }
+        // Deferred to the owned timer, so the parts a rebuild then shows or
+        // holds in place (G2) are in the same one refresh.
         function onRebuilt() {
-            screen.refreshSystemsTree();
+            screen.refreshSystemsTreeLater();
         }
     }
 
@@ -1180,6 +1189,8 @@ Item {
                     onYChanged: listenSystemsSection.place()
                     onHeightChanged: listenSystemsSection.place()
                     onOpenRadioReferenceAccount: screen.openRadioReferenceAccount()
+                    // Its parts change with the search and sort, whose rebuild
+                    // gives the refresh.
                     onPartsShownChanged: screen.noteSystemsChanged()
                     onKeyboardLeft: screen.noteKeyboardLeft(null)
                     onRevealRequested: screen.revealSystemsTop()
@@ -1285,7 +1296,7 @@ Item {
                         readonly property string partsShown: lackableParts.map(function (part) {
                             return part.shown;
                         }).join()
-                        onPartsShownChanged: screen.noteSystemsChanged()
+                        onPartsShownChanged: screen.notePartsShown()
                         // A part with the keyboard that goes (held, or hidden
                         // without a screen reader) is disabled or hidden with
                         // it, and Qt drops the keyboard: this row's More
