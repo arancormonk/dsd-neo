@@ -16,7 +16,6 @@
 
 #include <QLatin1String>
 #include <QRegularExpression>
-#include <QRegularExpressionMatch>
 #include <QString>
 #include <dsd-neo/core/power.h>
 

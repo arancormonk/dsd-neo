@@ -14,6 +14,7 @@
 #include <dsd-neo/app_control/rx_tone_view.h>
 #include <dsd-neo/core/opts_fwd.h>
 #include <dsd-neo/core/receive_types.h>
+#include <dsd-neo/runtime/config.h>
 #include <dsd-neo/runtime/scan_mode.h>
 #include <stddef.h>
 #include <utility>

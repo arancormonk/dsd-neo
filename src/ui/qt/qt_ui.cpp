@@ -69,6 +69,7 @@
 #include "site_roaming_controller.h"
 #include "spectrum_model.h"
 #include "spectrum_view_item.h"
+#include "squelch_default_policy.h"
 #include "store_notices.h"
 #include "talkgroup_filter_model.h"
 #include "talkgroup_list_model.h"

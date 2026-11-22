@@ -9,6 +9,7 @@
 #include <QVariantList>
 #include <QVariantMap>
 #include <functional>
+#include <type_traits>
 #include <utility>
 #include "squelch_default_policy.h"
 Q_MOC_INCLUDE("decoder_host.h")

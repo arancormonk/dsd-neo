@@ -25,6 +25,7 @@
 #include <QtGlobal>
 
 #include <dsd-neo/core/opts.h>
+#include <type_traits>
 #include "app_squelch_default.h"
 #include "squelch_default_policy.h"
 Q_MOC_INCLUDE("decoder_host.h")
