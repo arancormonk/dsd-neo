@@ -310,9 +310,21 @@ squelchIs(const dsd_opts* opts, int mode, int margin) {
 /* What to do between the session's start-up and the engine run: commit a scan row. */
 using BeforeRun = bool (*)(dsd_opts* opts, dsd_state* state, const QString& rowOptions);
 
+/* The session's opts and state; the state's buffers (the recorded command line among them) are freed with it. */
 struct Session {
     std::unique_ptr<dsd_opts> opts = std::make_unique<dsd_opts>();
     std::unique_ptr<dsd_state> state = std::make_unique<dsd_state>();
+    bool stateInitialized = false;
+
+    Session() = default;
+    Session(const Session&) = delete;
+    Session& operator=(const Session&) = delete;
+
+    ~Session() {
+        if (stateInitialized) {
+            freeState(state.get());
+        }
+    }
 };
 
 /* Starts @p appArgs as the decoder host does, over the replay of @p capture with the app's radio spec kept, and runs
@@ -340,6 +352,7 @@ listen(const QStringList& appArgs, const QString& capture, int wantMode, int wan
     dsd_state* state = session.state.get();
     initOpts(opts);
     initState(state);
+    session.stateInitialized = true;
     int effective = 0;
     int exitCode = 0;
     if (dsd_runtime_bootstrap(static_cast<int>(storage.size()), argv.data(), opts, state, &effective, &exitCode)
