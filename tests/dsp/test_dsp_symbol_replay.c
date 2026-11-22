@@ -771,7 +771,11 @@ test_float_symbol_replay_bounds_stored_symbols(void) {
    its crossing at 6/20 of a symbol and one walking forward at 14/20; the averaging window is samples 7..13. At 30 and
    40 samples per symbol (72 and 96 kHz) the grid stops at the same 6/20 and 14/20, and the window holds the samples
    whose instants lie in 7/20..13/20. At 40 the rule once parked the grid at 13 (6.5/20), and a 96 kHz dPMR stream lost
-   2 of its 29 headers at every timing phase. 4800 sym/s keeps its GFSK rule at 40. */
+   2 of its 29 headers at every timing phase. At an odd span the band edges fall between samples, and a crossing index
+   goes with its endpoint: at 15 (36 kHz) index 5, (4, 5], across the edge at 4.5, slips back, and index 8, (7, 8],
+   across the middle at 7.5, slips forward. Reading those intervals as across an edge instead was measured no better on
+   real NXDN48 at 36 kHz and lost dPMR headers (dsd_symbol.c, symbol_adjust_timing_nxdn()). 4800 sym/s keeps its GFSK
+   rule at 40. */
 static void
 test_2400_grid_rules_scale_by_time(void) {
     dsd_state* state = (dsd_state*)calloc(1, sizeof(*state));
@@ -792,6 +796,11 @@ test_2400_grid_rules_scale_by_time(void) {
             (void)dsd_symbol_test_2400_grid(state, sps, 2400, -1, i, &in_window);
             assert(in_window == (20 * i >= 7 * sps && 20 * i <= 13 * sps));
         }
+    }
+    /* 36 kHz, index by index: back 5..7, forward 8..10; the grid stops at 4 and 11. */
+    static const int k15[] = {0, 0, 0, 0, 0, -1, -1, -1, 1, 1, 1, 0, 0, 0, 0, 0};
+    for (int j = 0; j <= 15; j++) {
+        assert(dsd_symbol_test_2400_grid(state, 15, 2400, j, 0, NULL) == k15[j]);
     }
     int in_window = -1;
     (void)dsd_symbol_test_2400_grid(state, 20, 2400, -1, 7, &in_window);

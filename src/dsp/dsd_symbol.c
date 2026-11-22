@@ -721,7 +721,14 @@ symbol_accumulate_sample(const dsd_state* state, symbol_work_ctx* work, int i, f
  */
 static inline void
 symbol_adjust_timing_nxdn(const dsd_state* state, int* i) {
-    /* 7..10 and 11..14 at 20 samples per symbol: a crossing in 6/20..10/20 or 10/20..14/20 of a symbol at any span. */
+    /* Crossing index J: the crossing came after sample J - 1 and by sample J. The bands compare the endpoint J: back
+       when it lies in (6/20, 10/20] of a symbol, forward in (10/20, 14/20], so 7..10 and 11..14 at 20 samples per
+       symbol. Where the edges fall on whole samples (20, 30, 40 and 60) that is the same as taking J when its whole
+       interval lies in the band; at an odd span an interval across an edge goes with its endpoint (at 15, index 5,
+       (4, 5], slips back, and index 8, (7, 8], forward). Reading such an interval as across the edge was measured
+       worse: taking whole intervals at the outer edges was no better on two real NXDN48 captures at 36 kHz and lost 2
+       of a synthetic dPMR stream's 29 headers at every timing phase, and leaving the middle edge's straddler still
+       too parked the grid with its crossings mid-symbol (FRAME_SYNC_NXDN_FSK_PHASE failed 10 cases). */
     const int sps = state->samplesPerSymbol;
     const int jitter20 = 20 * state->jitter;
     if (jitter20 > 6 * sps && jitter20 <= 10 * sps) {
