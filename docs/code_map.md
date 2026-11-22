@@ -13513,15 +13513,18 @@ Private per-protocol modules worth knowing about:
     is followed as before (IN_PLACE), and names its slot's call (`dmr_sm_grant_reconcile_in_place()`): another call
     there takes the slot's record with its follow time now (on the followed slot, the grant identity too, with this
     announcement's CRC provenance, `vc_crc_flags`, which the first voice publishes it with, never the replaced
-    grant's: a RAS-accepted reassignment under `-F` reads unverified, a verified one verified); a repeat of
-    the call the slot names, or of the grant followed there, keeps record and follow time. A repeat is the same
-    target, policy class and media (`dmr_sm_grant_names_call()`): a grant that turns the slot from data to voice or
-    from voice to data for the same target is a new assignment, so a voice grant after a data one publishes its caller
-    at the first voice, and a data grant after a voice one publishes none of the obsolete voice grant's. A new
-    assignment is new in full: its record takes its own follow time (`dmr_sm_slot_name()` compares the media too, so
-    the minimum dwell runs from it), and on the followed slot its publication is re-armed as a followed grant's
-    (`dmr_sm_grant_publishable()`), never the replaced grant's latch. A status's in-place entry
-    (origin STATUS) replaces only a seed or grant identity, never a checked LC's on that carrier.
+    grant's: a RAS-accepted reassignment under `-F` reads unverified, a verified one verified); a repeat of the call the
+    slot names, or of the grant followed there, keeps record and follow time. A grant that changes the media of the
+    followed slot's assignment (a data grant for a slot followed for voice, a voice grant for one followed for data,
+    `dmr_sm_grant_changes_followed_media()`) is no reassignment in place: the follow it replaces is released (the slot's
+    record and voice timers) and the grant followed as any grant is, on the carrier the receiver is on, without a tune
+    (`dmr_sm_refollow_slot()`, `dmr_sm_adopt_grant()`, which `dmr_sm_follow_grant()` runs after its tune): its own tune
+    time and acquisition window, channel and CRC provenance, publication latch and record, and a fresh choice of the
+    call it names. The voice sync publishes the followed grant's identity only into a call that names nothing yet
+    (`dmr_sm_grant_publishable()` for the voice's slot, checked again at the sync): a call a voice LC named since the
+    grant (its header comes before the first voice sync) keeps its caller, and the grant is spent, never renaming or
+    splitting that call. A status's in-place entry (origin STATUS) replaces only a seed or grant identity, never a
+    checked LC's on that carrier.
   - Slot identities (`dmr_sm_slot_ctx_t`: target, source, kind, provenance SEED/GRANT/LC, policy class, channel,
     carrier, follow time, and `crc_flags`, the DSD_CRC_* bits of what named it: the grant's or status's burst, a Cap+
     status's every fragment, a seed's, the LC's scope) come from the followed grant (a slotless grant's at its first
@@ -13541,8 +13544,9 @@ Private per-protocol modules worth knowing about:
   - Call binding. Each record is bound to the canonical call it names (`call_epoch`: that slot's
     `dsd_call_snapshot_transmission()`), so it never outlives it (`dmr_sm_slot_identity_refresh()`, run by the busy
     view, grant submission, the status reconciliations, voice sync, an LC and the tick). An LC binds to the call it was
-    published on; a grant, seed or status to the slot's active call when that names its target or nothing yet, and
-    never one of the other class (`dmr_sm_call_names_other()`: a talkgroup and a unit may share a number) (on the
+    published on; a grant, seed or status to the slot's active call when that names its target or nothing yet, and never
+    one of the other media or address class (`dmr_sm_call_names_other()`: a data naming never binds a voice call, nor a
+    voice naming a data call, and a talkgroup and a unit may share a number) (on the
     followed carrier only one begun since the receiver arrived there, `t_carrier_m`: the follow tune, or for a carrier
     adopted in place any call), else to the first call to begin on the slot after it was named; the same call named
     again while its call is faded but may still be reacquired (`dmr_sm_slot_call_may_heal()`:

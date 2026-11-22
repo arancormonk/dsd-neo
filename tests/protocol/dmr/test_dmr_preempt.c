@@ -1053,6 +1053,124 @@ test_radio_block_keeps_resident_call(dsd_opts* opts, dsd_state* st) {
     return rc;
 }
 
+/* A media change on the followed slot is a new grant, followed as any grant is, and a checked voice LC that names the
+   slot before the first voice sync names the call: a data grant for TG 300 (caller 1), then a voice grant for it
+   (caller 2), then a voice LC header naming caller 7. The voice sync publishes nothing over the LC's call: one
+   transmission, caller 7. The same holds for a voice grant followed straight from the control channel. */
+static int
+test_media_change_lc_names_the_call(dsd_opts* opts, dsd_state* st) {
+    static const char* const tags[2] = {
+        "after a media change, the checked LC's caller stands at the voice sync",
+        "on a plain follow, the checked LC's caller stands at the voice sync",
+    };
+    int rc = 0;
+    for (int variant = 0; variant < 2; variant++) {
+        init_env(opts, st, 2.0);
+        if (variant == 0) {
+            grant_op(opts, st, 52U, LPCN_A, 0, 300, 1); // TD_GRANT
+            clock_at(0.2);
+        }
+        grant_op(opts, st, 49U, LPCN_A, 0, 300, 2); // TV_GRANT, caller 2
+        clock_at(0.3);
+        canonical_call_begins(st, 0, 300, 7); // the voice LC header, as dmr_flco() publishes it
+        dmr_sm_note_lc_identity(opts, st, 0, DSD_CALL_KIND_GROUP_VOICE, 300, 7);
+        dsd_call_snapshot call;
+        const uint64_t lc_epoch = dsd_call_state_get(st, 0U, &call) > 0 ? dsd_call_snapshot_transmission(&call) : 0U;
+        clock_at(0.4);
+        voice(opts, st, 0);
+        rc |= expect_true(tags[variant], lc_epoch != 0U && dsd_call_state_get(st, 0U, &call) > 0
+                                             && call.phase == DSD_CALL_PHASE_ACTIVE && call.ota_source_id == 7U
+                                             && dsd_call_snapshot_transmission(&call) == lc_epoch && g_tunes == 1);
+    }
+    return rc;
+}
+
+/* A voice grant 3.95 s after a data grant for the same slot and radio (no payload heard) is a new assignment with its
+   own acquisition window: the tick at 4.05 s keeps the carrier. A repeat of the voice grant does not extend it. */
+static int
+test_media_change_has_its_own_acquisition_window(dsd_opts* opts, dsd_state* st) {
+    init_env(opts, st, 2.0);
+    opts->frame_dmr = 1;                        // the DMR tick runs only while DMR trunking can recover
+    grant_op(opts, st, 51U, LPCN_A, 0, 300, 1); // PD_GRANT at 0 s
+    clock_at(3.95);
+    grant_op(opts, st, 48U, LPCN_A, 0, 300, 1); // PV_GRANT, same radio, carrier and slot
+    clock_at(4.05);
+    dmr_sm_tick_ctx(sm(), opts, st);
+    int rc = expect_true("the voice assignment's acquisition runs from its grant",
+                         sm()->state == DMR_SM_TUNED && sm()->vc_freq_hz == VC_A && sm()->vc_data_call == 0);
+    clock_at(5.0);
+    grant_op(opts, st, 48U, LPCN_A, 0, 300, 1); // a repeat
+    clock_at(8.0);
+    dmr_sm_tick_ctx(sm(), opts, st);
+    rc |= expect_true("a repeat of the voice grant does not extend its window", sm()->state != DMR_SM_TUNED);
+    return rc;
+}
+
+/* The new assignment publishes its own channel with its own CRC provenance: LPCNs 16 and 19 share a frequency, a
+   RAS-accepted data grant names LPCN 16 and a checked voice grant LPCN 19, and the voice sync publishes channel 19 as
+   verified. */
+static int
+test_media_change_publishes_its_own_channel(dsd_opts* opts, dsd_state* st) {
+    init_env(opts, st, 2.0);
+    st->trunk_chan_map[0x0013] = VC_A;
+    st->currentslot = 0;
+    st->event_crc_invalid[0] = (uint8_t)DSD_CRC_RAS_UNVERIFIED;
+    grant_op(opts, st, 52U, LPCN_A, 0, 300, 1); // TD_GRANT on LPCN 16, RAS-accepted
+    st->event_crc_invalid[0] = 0U;
+    clock_at(0.2);
+    grant_op(opts, st, 49U, 0x0013U, 0, 300, 2); // TV_GRANT on LPCN 19, checked
+    int rc = expect_true("the voice assignment takes its own channel and provenance",
+                         g_tunes == 1 && sm()->vc_lpcn == 0x0013 && sm()->vc_crc_flags == 0U);
+    clock_at(0.3);
+    voice(opts, st, 0);
+    dsd_call_snapshot call;
+    rc |= expect_true("the voice sync publishes the new channel as verified",
+                      dsd_call_state_get(st, 0U, &call) > 0 && call.phase == DSD_CALL_PHASE_ACTIVE
+                          && call.channel == 0x0013U && call.crc_invalid == 0U && call.ota_source_id == 2U);
+    return rc;
+}
+
+/* A data grant never binds to an active voice call on its slot, whatever the numbers: a private data grant from radio
+   100 to radio 200 while group voice on TG 100 plays, and a private data grant to radio 300 while a private voice call
+   to radio 300 plays, each await a call of their own. The second stays known once the voice call has ended and its
+   hangtime run out, while data keeps flowing. */
+static int
+test_data_grant_never_binds_a_voice_call(dsd_opts* opts, dsd_state* st) {
+    init_env(opts, st, 2.0);
+    tv_grant(opts, st, LPCN_A, 0, 100, 1);
+    clock_at(0.2);
+    voice(opts, st, 0);
+    dsd_call_snapshot call;
+    const uint64_t group_epoch = dsd_call_state_get(st, 0U, &call) > 0 ? dsd_call_snapshot_transmission(&call) : 0U;
+    clock_at(0.4);
+    grant_op(opts, st, 51U, LPCN_A, 0, 200, 100); // PD_GRANT from radio 100 to radio 200
+    int rc = expect_true("a private data grant is not bound to the group voice call",
+                         group_epoch != 0U && sm()->slots[0].target == 200U && sm()->slots[0].data_call == 1U
+                             && sm()->slots[0].call_epoch != group_epoch);
+
+    init_env(opts, st, 2.0);
+    grant_op(opts, st, 48U, LPCN_A, 0, 300, 1); // PV_GRANT to radio 300
+    clock_at(0.2);
+    voice(opts, st, 0);
+    const uint64_t private_epoch = dsd_call_state_get(st, 0U, &call) > 0 ? dsd_call_snapshot_transmission(&call) : 0U;
+    clock_at(0.4);
+    grant_op(opts, st, 51U, LPCN_A, 0, 300, 1); // PD_GRANT to radio 300
+    rc |= expect_true("a private data grant is not bound to the private voice call",
+                      private_epoch != 0U && sm()->slots[0].data_call == 1U
+                          && sm()->slots[0].call_epoch != private_epoch);
+    clock_at(0.5);
+    (void)dsd_call_state_end_ex(st, 0U, dsd_decode_now_mono_s(), DSD_CALL_END_TERMINATOR);
+    for (int i = 1; i <= 6; i++) {
+        clock_at(0.5 + (0.5 * i));
+        dmr_sm_emit_data_sync(opts, st, 0);
+        dmr_sm_tick_ctx(sm(), opts, st);
+    }
+    rc |= expect_true("the data grant's identity outlives the voice call's hangtime",
+                      sm()->state == DMR_SM_TUNED && sm()->vc_identity_known == 1 && sm()->slots[0].target == 300U
+                          && sm()->slots[0].kind == (uint8_t)DSD_CALL_KIND_DATA);
+    return rc;
+}
+
 int
 main(void) {
     dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(*opts));
@@ -1095,6 +1213,10 @@ main(void) {
     rc |= test_in_place_reassignment_carries_crc_provenance(opts, st);
     rc |= test_composite_grant_adopts_resident_calls(opts, st);
     rc |= test_radio_block_keeps_resident_call(opts, st);
+    rc |= test_media_change_lc_names_the_call(opts, st);
+    rc |= test_media_change_has_its_own_acquisition_window(opts, st);
+    rc |= test_media_change_publishes_its_own_channel(opts, st);
+    rc |= test_data_grant_never_binds_a_voice_call(opts, st);
 
     dsd_trunk_tuning_hooks_set((dsd_trunk_tuning_hooks){0});
     dsd_decode_clock_use_system();
