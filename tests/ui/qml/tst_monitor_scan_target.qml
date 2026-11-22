@@ -253,6 +253,50 @@ Item {
             compare(header.height, screen.headerBarHeight(screen.tier));
         }
 
+        // Issue #901 r2 E1: a multi-list title that fits whole beside the actions keeps one line. The split reserved
+        // at least 96 px for the name even when the name was far shorter: "PD + 1 list" (93 px in 105) grew a
+        // 320 dp compact header from 48 to 95 px, nearly a call row, and showed nothing more.
+        function test_short_multi_list_title_keeps_one_line_data() {
+            return [{tag: "320x914 compact", width: 320, height: 914, scale: 1, compact: true},
+                    {tag: "411x914 compact", width: 411, height: 914, scale: 1, compact: true},
+                    {tag: "320x560", width: 320, height: 560, scale: 1, compact: false}];
+        }
+        function test_short_multi_list_title_keeps_one_line(data) {
+            var store = Qt.createQmlObject("import QtQuick; QtObject { property bool monitorDetailsExpanded: true; property bool compactView: " + data.compact + " }", root);
+            var kept = screen.prefsStore;
+            screen.prefsStore = store;
+            try {
+                screen.system = {name: "PD", sourceType: "usb"};
+                testContext.setHostRunning(true);
+                root.width = data.width;
+                root.height = data.height;
+                Ui.Theme.fontScale = data.scale;
+                waitForRendering(screen);
+                tryVerify(function () { return !screen.headerStacked; }, 1000, "the actions share the title's line");
+                var header = findChild(screen, "monitorHeader");
+                var title = findChild(screen, "monitorHeaderTitle");
+                var oneList = header.height;
+                screen.otherListCount = 1;
+                waitForRendering(screen);
+                compare(title.text, "PD + 1 list");
+                verify(!title.truncated, "the title is cut");
+                verify(!findChild(screen, "monitorHeaderTitleCountLine").visible, "a short title that fits took a second line");
+                compare(header.height, oneList, "the header grew for a title that fits");
+                compare(header.height, screen.headerBarHeight(screen.tier));
+                compare(title.Accessible.name, "PD + 1 list");
+                // A name too long to fit with its count still takes the two-line form.
+                if (data.width === 320) {
+                    screen.system = {name: "Countywide public safety and municipal services", sourceType: "usb"};
+                    screen.otherListCount = 7;
+                    waitForRendering(screen);
+                    tryVerify(function () { return findChild(screen, "monitorHeaderTitleCountLine").visible; }, 1000, "the long title's count line");
+                }
+            } finally {
+                screen.prefsStore = kept;
+                store.destroy();
+            }
+        }
+
         // Issue #901 r2 C1: the heading is read whole. Compact view at 320 x 914 cut the name on the title's line
         // ("County Fire E… + 7 lists"), and the spoken heading lost the words that tell similar lists apart.
         function test_cut_title_is_read_whole() {

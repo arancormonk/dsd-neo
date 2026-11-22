@@ -711,9 +711,11 @@ Item {
                     objectName: "monitorHeaderTitle"
                     text: twoLine ? titleLineMetrics.elidedText : screen.otherListCount > 0 ? screen.withOtherLists(titleNameMetrics.elidedText) : screen.sessionLine
                     maximumLineCount: 1
-                    // The heading is read as one: the name, then the count
-                    // on the line below it.
-                    Accessible.name: navigationAllowed && visible ? (twoLine ? screen.withOtherLists(text) : text) : ""
+                    // The heading is read as one, and whole: the name, then
+                    // the count (on the line below it in the two-line form).
+                    // Speech has no width, so the name is never the elided
+                    // one drawn (r2 C1).
+                    Accessible.name: navigationAllowed && visible ? screen.withOtherLists(screen.sessionLine) : ""
                     font.family: Theme.sans
                     font.pixelSize: Theme.fontSize(20)
                     font.weight: Font.DemiBold
