@@ -186,9 +186,6 @@ struct dsd_opts {
     int squelch_default_base_mode;
     int squelch_default_base_margin_db;
     int squelch_am_auto_noted;
-    /* The request_id of the last tagged DSD_APP_CMD_RTL_SET_SQL_SETTING the decoder handled (0 for none): what lets a
-       frontend tell a snapshot taken after its request from an older one (issue #899). Decoder thread only. */
-    uint32_t rtl_squelch_request_answered;
     double input_warn_db;
     time_t last_input_warn_time; // decode time of the last input-level warning
     // P25 SM unified follower configuration (CLI values override environment defaults)

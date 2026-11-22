@@ -3164,13 +3164,19 @@ test_block_label_patched_call() {
     dsd_state_ext_free_all(&state);
 }
 
-/* Issue #899 (final-diff review r2): a squelch request's answer comes from the options snapshot, but under a scan scope
- * the configured setting it confirms comes from the scope, in the state snapshot, which the decoder publishes after the
- * options and a watchdog tick can put off. The answer is shown only with the configured setting of its own generation:
- * a deferred state publication holds the previous answer, so the Radio sheet's save neither confirms on the setting
- * from before the request nor drops it as refused. */
+/* Issue #899: the decoder publishes its answer to a tagged squelch request -- the tag and whether it applied it -- in
+ * the state snapshot, the same publication as the scan scope's configured squelch. So a deferred state publication
+ * shows no answer yet (never a new answer beside the scope's old setting), a refusal shows as one, and under a scan
+ * row's own squelch an edit of the default beneath it is answered as applied as soon as it is published. */
 static void
-test_squelch_answer_one_generation() {
+publish_squelch_state(dsd_state* published, const dsd_state* state) {
+    dsd_scan_mode_copy_snapshot(published, state);
+    published->squelch_request_answered = state->squelch_request_answered;
+    published->squelch_request_applied = state->squelch_request_applied;
+}
+
+static void
+test_squelch_answer_from_the_state_publication() {
     static dsd_opts opts;
     static dsd_state state;
     static dsd_state published; // what the frontend reads: the state the decoder last published
@@ -3184,54 +3190,60 @@ test_squelch_answer_one_generation() {
     dsd_qt::MetricsModel model;
     expect("an NFM scan scope",
            dsd_scan_mode_begin(&opts, &state) == 0 && dsd_scan_mode_enter(&opts, &state, DSD_SCAN_MODE_NFM) == 0);
-    dsd_scan_mode_copy_snapshot(&published, &state);
+    publish_squelch_state(&published, &state);
     model.refresh(&opts, &published);
-    expect("the scope's configured noise +10, nothing answered", model.configuredSquelchNoise()
-                                                                     && model.configuredSquelchMarginDb() == 10
-                                                                     && model.configuredSquelchRequestAnswered() == 0);
+    expect("the scope's configured noise +10, nothing answered",
+           model.configuredSquelchNoise() && model.configuredSquelchMarginDb() == 10
+               && model.configuredSquelchRequestAnswered() == 0 && !model.configuredSquelchRequestApplied());
 
     /* The decoder takes a tagged edit to noise +14 and publishes its options; the state's publication is put off. */
     const dsd_squelch_setting edit = dsd_squelch_setting_dynamic(DSD_SQUELCH_MODE_NOISE, 14);
     expect("the edit lands", dsd_scan_mode_set_configured_squelch_setting(&opts, &state, &edit) == 1);
-    opts.rtl_squelch_request_answered = 7U;
+    state.squelch_request_answered = 7U;
+    state.squelch_request_applied = 1U;
     model.refresh(&opts, &published);
-    expect("a deferred state publication holds the answer back",
-           model.configuredSquelchRequestAnswered() == 0 && model.configuredSquelchMarginDb() == 10);
-    dsd_scan_mode_copy_snapshot(&published, &state);
+    expect("a deferred state publication shows no answer yet", model.configuredSquelchRequestAnswered() == 0);
+    publish_squelch_state(&published, &state);
     model.refresh(&opts, &published);
-    expect("shown with the setting from after it", model.configuredSquelchRequestAnswered() == 7
-                                                       && model.configuredSquelchNoise()
-                                                       && model.configuredSquelchMarginDb() == 14);
-    /* A refused request changes nothing: both snapshots already agree, so its answer shows at once. */
-    opts.rtl_squelch_request_answered = 8U;
+    expect("published: answered, applied, with the setting from after it",
+           model.configuredSquelchRequestAnswered() == 7 && model.configuredSquelchRequestApplied()
+               && model.configuredSquelchNoise() && model.configuredSquelchMarginDb() == 14);
+    /* A refused request changes nothing, and says so. */
+    state.squelch_request_answered = 8U;
+    state.squelch_request_applied = 0U;
+    publish_squelch_state(&published, &state);
     model.refresh(&opts, &published);
-    expect("an answer that changed nothing shows at once", model.configuredSquelchRequestAnswered() == 8);
+    expect("a refusal shows as one",
+           model.configuredSquelchRequestAnswered() == 8 && !model.configuredSquelchRequestApplied());
 
-    /* Under a row's own squelch the options hold the row's, and nothing there vouches for the scope's setting: the
-       answer waits until it can be checked, here the scope's end. */
+    /* Under a row's own squelch the options hold the row's: the default edit beneath it is answered as applied in the
+       same publication as the scope's setting it stored, with no wait for the row to end. */
     dsd_scan_option_values row{};
     row.present = DSD_SCAN_OPT_SQUELCH;
     row.squelch_db = -60;
     expect("a row with its own squelch", dsd_scan_mode_options(&opts, &state, &row) == 0);
-    dsd_scan_mode_copy_snapshot(&published, &state);
+    publish_squelch_state(&published, &state);
     model.refresh(&opts, &published);
     const dsd_squelch_setting beneath = dsd_squelch_setting_dynamic(DSD_SQUELCH_MODE_NOISE, 16);
     expect("the edit goes beneath the row", dsd_scan_mode_set_configured_squelch_setting(&opts, &state, &beneath) == 0);
-    opts.rtl_squelch_request_answered = 9U;
+    state.squelch_request_answered = 9U;
+    state.squelch_request_applied = 1U;
     model.refresh(&opts, &published);
-    expect("under the row, a deferred publication holds it back", model.squelchRowOverride()
-                                                                      && model.configuredSquelchRequestAnswered() == 8
-                                                                      && model.configuredSquelchMarginDb() == 14);
-    dsd_scan_mode_copy_snapshot(&published, &state);
+    expect("under the row, a deferred publication shows the older answer",
+           model.squelchRowOverride() && model.configuredSquelchRequestAnswered() == 8
+               && model.configuredSquelchMarginDb() == 14);
+    publish_squelch_state(&published, &state);
     model.refresh(&opts, &published);
-    expect("and so does one that has landed, which nothing can tell apart",
-           model.configuredSquelchRequestAnswered() == 8 && model.configuredSquelchMarginDb() == 16);
+    expect("published under the row: answered as applied, with the scope's setting",
+           model.squelchRowOverride() && model.configuredSquelchRequestAnswered() == 9
+               && model.configuredSquelchRequestApplied() && model.configuredSquelchNoise()
+               && model.configuredSquelchMarginDb() == 16);
     dsd_scan_mode_leave(&opts, &state);
-    dsd_scan_mode_copy_snapshot(&published, &state);
+    publish_squelch_state(&published, &state);
     model.refresh(&opts, &published);
-    expect("the row gone, the answer shows with its setting",
-           !model.squelchRowOverride() && model.configuredSquelchRequestAnswered() == 9
-               && model.configuredSquelchNoise() && model.configuredSquelchMarginDb() == 16);
+    expect("the row gone, the answer stands", !model.squelchRowOverride()
+                                                  && model.configuredSquelchRequestAnswered() == 9
+                                                  && model.configuredSquelchRequestApplied());
     freeState(&published);
     freeState(&state);
 }
@@ -3269,7 +3281,7 @@ main(int argc, char** argv) {
     test_receive_filter_status();
     test_tone_filter();
     test_tone_filter_editor_setting();
-    test_squelch_answer_one_generation();
+    test_squelch_answer_from_the_state_publication();
     test_direct_key_presence();
     test_decryption_metadata();
     test_block_label_radio_blocked();
@@ -3554,16 +3566,20 @@ main(int argc, char** argv) {
         int answered = 0;
         const QMetaObject::Connection counting =
             QObject::connect(&model, &dsd_qt::MetricsModel::controlChanged, [&answered] { ++answered; });
-        opts.rtl_squelch_request_answered = 41U;
+        state.squelch_request_answered = 41U;
+        state.squelch_request_applied = 1U;
         model.refresh(&opts, &state);
         QObject::disconnect(counting);
-        expect("the answer is shown, and signalled alone",
-               model.configuredSquelchRequestAnswered() == 41 && answered == 1);
+        expect("the answer is shown, and signalled alone", model.configuredSquelchRequestAnswered() == 41
+                                                               && model.configuredSquelchRequestApplied()
+                                                               && answered == 1);
         opts.audio_in_type = AUDIO_IN_SYMBOL_BIN;
         model.refresh(&opts, &state);
-        expect("whatever the input", model.configuredSquelchRequestAnswered() == 41);
+        expect("whatever the input",
+               model.configuredSquelchRequestAnswered() == 41 && model.configuredSquelchRequestApplied());
         opts.audio_in_type = AUDIO_IN_RTL;
-        opts.rtl_squelch_request_answered = 0U;
+        state.squelch_request_answered = 0U;
+        state.squelch_request_applied = 0U;
         model.refresh(&opts, &state);
     }
 

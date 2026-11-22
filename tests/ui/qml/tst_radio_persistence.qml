@@ -51,6 +51,7 @@ Item {
             testContext.setMetric("configuredSquelchLevelWholeDb", 0);
             testContext.setMetric("squelchAudioInput", false);
             testContext.setMetric("squelchAnalogDefault", false);
+            testContext.setMetric("configuredSquelchRequestApplied", false);
             testContext.setMetric("configuredSquelchRequestAnswered", 0);
             sheet.open();
         }
@@ -63,8 +64,15 @@ Item {
             testContext.setMetric("configuredSquelchLevelWholeDb", whole ? Math.round(db) : 0);
         }
 
-        // Issue #899: the decoder's answer to the last squelch request, which a snapshot taken after it shows.
+        // Issue #899: the decoder's answer to the last squelch request, which the state snapshot taken after it shows
+        // with whether it was applied, in one publication (the outcome is set first, as one refresh signals both).
         function answerSquelch() {
+            testContext.setMetric("configuredSquelchRequestApplied", true);
+            testContext.setMetric("configuredSquelchRequestAnswered", testContext.lastSquelchRequest());
+        }
+
+        function refuseSquelch() {
+            testContext.setMetric("configuredSquelchRequestApplied", false);
             testContext.setMetric("configuredSquelchRequestAnswered", testContext.lastSquelchRequest());
         }
 
@@ -281,8 +289,9 @@ Item {
             compare(savedSystems.get(0).radioSettings, {});
         }
 
-        // Issue #899: a restored level is saved only as the level asked for and on a snapshot taken after the request.
-        // Neither a snapshot from before it nor a level another source set once it was answered is saved.
+        // Issue #899: a restored level is saved only on the decoder's answer to the request, and then as the level asked
+        // for. Neither a snapshot from before it nor a refusal saves anything; an applied restore saves its level even
+        // when a later snapshot shows a level another source set since.
         function test_restore_confirms_only_its_answered_level() {
             setLevel(-60, true);
             testContext.setMetric("configuredSquelchNoise", true);
@@ -293,22 +302,33 @@ Item {
             testContext.setMetric("configuredSquelchNoise", false);
             wait(10);
             compare(savedSystems.get(0).radioSettings, {}, "a snapshot from before the request");
-            // Answered, but another source has set -80 since: nothing is saved, and the request is settled.
-            setLevel(-80, true);
-            answerSquelch();
-            wait(10);
-            compare(savedSystems.get(0).radioSettings, {}, "a level another source set");
+            // Answered as refused, on a snapshot showing -60 as asked: nothing is saved, and the request is settled.
             setLevel(-60, true);
+            refuseSquelch();
+            wait(10);
+            compare(savedSystems.get(0).radioSettings, {}, "a refused restore");
+            testContext.setMetric("configuredSquelchRequestApplied", true);
             testContext.setMetric("configuredSquelchMarginDb", 11);
             wait(10);
             compare(savedSystems.get(0).radioSettings, {}, "the settled request saves nothing later");
-            // A second restore of -55, beneath Noise again: its own answer on its own level saves it.
+            // Applied, while the snapshot already shows -80 another source set since: the level asked for is saved.
+            sheet.forgetRequests();
+            setLevel(-60, true);
+            testContext.setMetric("configuredSquelchNoise", true);
+            tryVerify(function () { return metrics.configuredSquelchNoise === true });
+            sheet.chooseSquelchMode(0);
+            testContext.setMetric("configuredSquelchNoise", false);
+            setLevel(-80, true);
+            answerSquelch();
+            tryCompare(savedSystems.get(0), "radioSettings", {squelch: "-60"});
+            verify(savedSystems.clearRadioSetting(savedSystems.get(0).uid, "squelch"));
+            // A third restore, of -55, beneath Noise again: its own answer on its own level saves it.
             sheet.forgetRequests();
             setLevel(-55, true);
             testContext.setMetric("configuredSquelchNoise", true);
             tryVerify(function () { return metrics.configuredSquelchNoise === true });
             sheet.chooseSquelchMode(0);
-            compare(testContext.restoreSquelchCalls(), 2);
+            compare(testContext.restoreSquelchCalls(), 3);
             testContext.setMetric("configuredSquelchNoise", false);
             answerSquelch();
             tryCompare(savedSystems.get(0), "radioSettings", {squelch: "-55"});
@@ -323,7 +343,8 @@ Item {
             tryCompare(savedSystems.get(0), "radioSettings", {squelch: "off"});
         }
 
-        // A stepped level confirms only on the same whole dB: -60 asked, -60.08 configured is not it.
+        // A stepped level is saved only on the decoder's answer, as the whole dB it asked for: no configured reading
+        // (-60.08 or -60) saves it before that.
         function test_level_confirms_exactly() {
             sheet.requestSquelchDb(-60);
             setLevel(-60.08, false);
@@ -355,12 +376,12 @@ Item {
             testContext.setMetric("configuredSquelchMarginDb", 10);
             wait(10);
             compare(savedSystems.get(0).radioSettings, {}, "an inherited snapshot from before the requests");
-            // Answered, but the snapshot still runs the default: the decoder did not take it (an edit it takes ends
-            // the default), so nothing is saved, and the request is settled.
-            answerSquelch();
+            // Answered as refused (the default stays in force): nothing is saved, and the request is settled.
+            refuseSquelch();
             wait(10);
-            compare(savedSystems.get(0).radioSettings, {}, "a snapshot marked as the default");
+            compare(savedSystems.get(0).radioSettings, {}, "a refused edit on the inherited default");
             testContext.setMetric("squelchAnalogDefault", false);
+            testContext.setMetric("configuredSquelchRequestApplied", true);
             wait(10);
             compare(savedSystems.get(0).radioSettings, {}, "the settled request saves nothing later");
             // A new edit the decoder takes: its answer, the default ended, the same +10 explicit now.
@@ -368,6 +389,48 @@ Item {
             sheet.requestSquelchDynamic(commands.squelchModeNoise, 10);
             answerSquelch();
             tryCompare(savedSystems.get(0), "radioSettings", {squelch: "noise+10"});
+        }
+
+        // Issue #899 (T11 concern 1): on a saved system running -Y, a default edit made while the row on air has its
+        // own squelch goes beneath the row. The decoder answers it as applied in the state snapshot that carries the
+        // scope's setting, so it is saved at once, whatever the snapshot's readings show beside the row.
+        function test_default_edit_beneath_a_row_squelch_is_saved() {
+            testContext.setMetric("scanRowActive", true);
+            testContext.setMetric("scanRowEditable", commands.scanRowFieldSquelch);
+            testContext.setMetric("scanRowSynced", true);
+            testContext.setMetric("squelchRowOverride", true);
+            sheet.rowScopeChosen = false;
+            verify(!sheet.rowSquelch, "the default, not the row");
+            sheet.requestSquelchDynamic(commands.squelchModeNoise, 12);
+            compare(testContext.lastSquelchMarginDb(), 12);
+            wait(10);
+            compare(savedSystems.get(0).radioSettings, {}, "not before the decoder answers");
+            answerSquelch();
+            tryCompare(savedSystems.get(0), "radioSettings", {squelch: "noise+12"});
+            // A level step beneath the row is saved the same way.
+            sheet.requestSquelchDb(-70);
+            answerSquelch();
+            tryCompare(savedSystems.get(0), "radioSettings", {squelch: "-70"});
+            testContext.setMetric("squelchRowOverride", false);
+            testContext.setMetric("scanRowActive", false);
+        }
+
+        // Issue #899 (T11 concern 2): a refused request saves nothing, even when it asked for the setting the snapshot
+        // already shows (here Auto +12 on a system whose saved squelch is something else).
+        function test_refused_request_for_the_setting_in_force_saves_nothing() {
+            testContext.setMetric("configuredSquelchLevelOff", false);
+            testContext.setMetric("configuredSquelchMarginDb", 12);
+            testContext.setMetric("configuredSquelchAuto", true);
+            tryVerify(function () { return metrics.configuredSquelchAuto === true });
+            sheet.settingRequested("squelch", {mode: "auto", margin: 12, request: 9100});
+            testContext.setMetric("configuredSquelchRequestApplied", false);
+            testContext.setMetric("configuredSquelchRequestAnswered", 9100);
+            wait(10);
+            compare(savedSystems.get(0).radioSettings, {}, "refused, though it is the setting in force");
+            testContext.setMetric("configuredSquelchRequestApplied", true);
+            wait(10);
+            compare(savedSystems.get(0).radioSettings, {}, "settled: nothing saved later");
+            testContext.setMetric("configuredSquelchAuto", false);
         }
 
         // A request another source superseded before the decoder reached it (an untagged API Noise +12 coalescing
@@ -404,6 +467,7 @@ Item {
             testContext.setMetric("configuredSquelchLevelOff", false);
             testContext.setMetric("configuredSquelchMarginDb", 31);
             testContext.setMetric("configuredSquelchNoise", true);
+            testContext.setMetric("configuredSquelchRequestApplied", true);
             testContext.setMetric("configuredSquelchRequestAnswered", 9000);
             var failure = "Could not save the squelch. Check available storage and try again.";
             tryCompare(sheet, "squelchStoreError", failure);

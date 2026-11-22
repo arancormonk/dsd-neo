@@ -7294,8 +7294,10 @@ the stream-notice hooks' pattern: one that fails to initialize leaves the hook u
   Qt `squelchMarginDb`). `DSD_APP_CMD_RTL_SET_SQL_SETTING` (`dsd_app_squelch_setting_payload`,
   `svc_rtl_set_sql_setting()`) sets a whole setting on the configured default as `RTL_SET_SQL_DB` sets a level (it
   coalesces only with a queued request of the same mode, so an AUTO request's margin and a LEVEL one's level both land;
-  a nonzero `request_id` is written to `dsd_opts::rtl_squelch_request_answered` once the handler has run, applied or
-  refused, so a snapshot showing it was taken after the request -- Qt `configuredSquelchRequestAnswered`, issue #899),
+  a nonzero `request_id` is written to `dsd_state::squelch_request_answered`, and whether the handler applied or refused
+  it to `dsd_state::squelch_request_applied`, once the handler has run: the state snapshot carries both with the scan
+  scope's configured squelch, so a frontend confirms an edit of any scope from one publication -- Qt
+  `configuredSquelchRequestAnswered`/`configuredSquelchRequestApplied`, issue #899),
   and a scan row edit carries `squelch_mode`/`squelch_margin_db` (AUTO on an nfm or am row only; a level edit without a
   margin keeps the one the row had, its list's or the last edited, for a switch back to Auto). The noise squelch adds
   `effective_noise`/`configured_noise` beside the AUTO flags and what it shows (`dsd_state::squelch_noise_*`):
@@ -15832,22 +15834,20 @@ Build files: `src/protocol/CMakeLists.txt` and per‑protocol `src/protocol/<nam
     clear it, so a successful removal clears the squelch failure it answers without hiding another setting's. The
     note or the failure is read out (`Navigation.announce()`), and a keyboard focus the hidden button held goes to the
     chosen squelch segment, or with none chosen (a held setting) the first enabled one
-    (`SegmentedControl.focusSegment()`). A squelch level is saved only in a form the app's controls make (B15, fail-closed): Off or a whole dB from -120 to -1, read from the configured power
-    (`MetricsModel::configuredSquelchLevelWhole`/`configuredSquelchLevelWholeDb`, `dsd_squelch_level_is_whole_db()`),
-    and a stepped level confirms only on that same whole dB. Every persisted squelch edit carries its request's tag:
+    (`SegmentedControl.focusSegment()`). A squelch level is saved only in a form the app's controls make (B15, fail-closed): Off or a whole dB from -120 to -1: a step asks for one, and a restore reads it
+    from the configured power (`MetricsModel::configuredSquelchLevelWhole`/`configuredSquelchLevelWholeDb`,
+    `dsd_squelch_level_is_whole_db()`). Every persisted squelch edit carries its request's tag:
     `CommandBridge::setSquelchDb()`/`setSquelchAuto()`/`setSquelchNoise()` return it (a positive int, 0 when not
     queued; a level goes as a tagged `RTL_SET_SQL_SETTING`, stored as `RTL_SET_SQL_DB` stores it), as
     `restoreSquelchLevel()` returns `{request, off, whole, db}` for the level the dB choice brings back from
-    Auto/Noise. A request confirms only on a snapshot whose `configuredSquelchRequestAnswered` is its `request`, never
-    on one still marked `squelchAnalogDefault` (an edit the decoder takes ends the default), and only on that same
-    setting (mode and margin, or Off or whole dB); an answer on another setting (refused, or set since by another
-    source) settles it with nothing saved, and a request superseded before the decoder reached it (the queue coalesces
-    setters) is never answered, so nothing of it is saved. `MetricsModel` shows a new answer only with a configured
-    setting of the same generation (issue #899 r2): under a scan scope the configured setting is the scope's, in the
-    state snapshot the decoder publishes after the options, so the answer waits until the scope's setting equals the
-    one the options hold; under a row's own squelch, where nothing in the options can vouch for it, until a row
-    without one or the scope's end (`squelch_answer_consistent()`; `UI_QT_METRICS_MODEL` covers a deferred state
-    publication). It is saved when it has the app's form; otherwise nothing is saved and `squelchLevelError`
+    Auto/Noise. A request is settled only on the decoder's answer to it, which the state snapshot carries
+    (`configuredSquelchRequestAnswered` is its `request`, `configuredSquelchRequestApplied` the outcome) in the same
+    publication as a scan scope's configured squelch (issue #899 r2): applied, the setting the request asked for is
+    saved, whichever scope it edited (beneath a -Y row's or trunk-scan target's own squelch too, with no wait for the
+    row to end); refused, nothing is, even a request for the setting already in force; a request superseded before the
+    decoder reached it (the queue coalesces setters) is never answered, so nothing of it is saved (`UI_QT_METRICS_MODEL`
+    covers a deferred state publication and the row case). A restore saves the level it asked for (`{off, whole, db}`).
+    It is saved when it has the app's form; otherwise nothing is saved and `squelchLevelError`
     ("This level was set outside the app, so it is not saved.") shows under the squelch controls, only while a fixed
     level is the setting; the next squelch request (a step or a mode change) clears it. A dynamic save
     stores only the dynamic choice. The steppers of both sheets (`Util.squelchStep()`) always ask for a whole dB,

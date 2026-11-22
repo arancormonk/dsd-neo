@@ -16,6 +16,7 @@
 #include <dsd-neo/app_control/scan_avoid_view.h>
 #include <dsd-neo/app_control/scan_row_view.h>
 #include <dsd-neo/app_control/signal_search.h>
+#include <dsd-neo/app_control/snapshot.h>
 #include <dsd-neo/app_control/squelch_view.h>
 #include <dsd-neo/core/access_code.h>
 #include <dsd-neo/core/airspy_config.h>
@@ -12257,9 +12258,27 @@ submit_tagged_squelch_setting(int mode, int margin_db, double level, uint32_t re
     return dsd_app_command_submit(DSD_APP_CMD_RTL_SET_SQL_SETTING, &payload, sizeof payload);
 }
 
-/* Issue #899: a tagged squelch setting is answered in the options once the decoder has handled it, applied or
- * refused, so a frontend can tell a snapshot taken after its request from an older one; an untagged one leaves the
- * answer as it was. */
+/* Issue #899: the answer to a tagged squelch request as the drain's state publication shows it: its tag and whether it
+ * was applied, with the scan scope's configured squelch from the same publication. */
+static int
+expect_published_answer(const char* label, uint32_t request, int applied) {
+    const dsd_state* snap = dsd_app_get_latest_snapshot();
+    if (!snap) {
+        return expect_true(label, 0);
+    }
+    if (snap->squelch_request_answered != request || (int)snap->squelch_request_applied != applied) {
+        DSD_FPRINTF(stderr, "%s: published answer %u applied %u, want %u applied %d\n", label,
+                    (unsigned)snap->squelch_request_answered, (unsigned)snap->squelch_request_applied,
+                    (unsigned)request, applied);
+        return 1;
+    }
+    return 0;
+}
+
+/* Issue #899: a tagged squelch setting is answered in the decoder state once the decoder has handled it, with whether
+ * it was applied or refused, and the state publication carries both; an untagged one leaves the answer as it was. A
+ * refusal says so even when the setting asked for is the one already in force, and a default edit beneath a scan row's
+ * own squelch is applied, published with the scope's configured squelch it set. */
 static int
 test_squelch_setting_request_answered(void) {
     dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(*opts));
@@ -12270,23 +12289,59 @@ test_squelch_setting_request_answered(void) {
         return expect_true("request answered: fixtures", 0);
     }
     init_squelch_row_context(opts, state);
-    int rc = expect_int("nothing answered yet", (int)opts->rtl_squelch_request_answered, 0);
+    int rc = expect_int("nothing answered yet", (int)state->squelch_request_answered, 0);
     rc |= expect_true("noise queued", submit_tagged_squelch_setting(DSD_SQUELCH_MODE_NOISE, 10, 0.0, 7U) > 0);
-    rc |= expect_int("not answered before the drain", (int)opts->rtl_squelch_request_answered, 0);
+    rc |= expect_int("not answered before the drain", (int)state->squelch_request_answered, 0);
     rc |= expect_int("noise drained", dsd_app_drain_cmds(opts, state), 1);
-    rc |= expect_int("noise answered", (int)opts->rtl_squelch_request_answered, 7);
+    rc |= expect_true("noise answered, applied",
+                      state->squelch_request_answered == 7U && state->squelch_request_applied == 1U);
+    rc |= expect_published_answer("noise answer published", 7U, 1);
     rc |= expect_true("level queued",
                       submit_tagged_squelch_setting(DSD_SQUELCH_MODE_LEVEL, 0, dsd_squelch_level_from_sql(-60.0), 8U)
                           > 0);
     rc |= expect_int("level drained", dsd_app_drain_cmds(opts, state), 1);
-    rc |= expect_int("level answered", (int)opts->rtl_squelch_request_answered, 8);
+    rc |= expect_true("level answered, applied",
+                      state->squelch_request_answered == 8U && state->squelch_request_applied == 1U);
     rc |= expect_squelch_db("the level in force", opts->rtl_squelch_level, -60.0);
     rc |= expect_true("refused margin queued", submit_tagged_squelch_setting(DSD_SQUELCH_MODE_AUTO, 2, 0.0, 9U) > 0);
     rc |= expect_int("refused margin drained", dsd_app_drain_cmds(opts, state), 1);
-    rc |= expect_int("a refusal is answered too", (int)opts->rtl_squelch_request_answered, 9);
+    rc |= expect_true("a refusal is answered, as refused",
+                      state->squelch_request_answered == 9U && state->squelch_request_applied == 0U);
+    rc |= expect_published_answer("the refusal published", 9U, 0);
     rc |= expect_true("untagged queued", submit_squelch_setting(DSD_SQUELCH_MODE_AUTO, 6, 0.0) > 0);
     rc |= expect_int("untagged drained", dsd_app_drain_cmds(opts, state), 1);
-    rc |= expect_int("an untagged request leaves the answer", (int)opts->rtl_squelch_request_answered, 9);
+    rc |= expect_true("an untagged request leaves the answer",
+                      state->squelch_request_answered == 9U && state->squelch_request_applied == 0U);
+
+    /* Audio input with Auto +6 configured (a config the decoder took before the input changed): Auto +6 asked again is
+       refused, though it is the setting in force, and the answer says refused. */
+    opts->audio_in_type = AUDIO_IN_WAV;
+    rc |= expect_true("auto +6 configured",
+                      opts->rtl_squelch_mode == DSD_SQUELCH_MODE_AUTO && opts->rtl_squelch_margin_db == 6);
+    rc |= expect_true("same auto queued", submit_tagged_squelch_setting(DSD_SQUELCH_MODE_AUTO, 6, 0.0, 10U) > 0);
+    rc |= expect_int("same auto drained", dsd_app_drain_cmds(opts, state), 1);
+    rc |= expect_true("refused though it is the setting in force",
+                      state->squelch_request_answered == 10U && state->squelch_request_applied == 0U
+                          && opts->rtl_squelch_mode == DSD_SQUELCH_MODE_AUTO && opts->rtl_squelch_margin_db == 6);
+    rc |= expect_published_answer("published as refused", 10U, 0);
+    opts->audio_in_type = AUDIO_IN_RTL;
+
+    /* Beneath a -Y row's own squelch: the default edit is applied to the scope, and the same publication shows the
+       answer and the scope's configured setting it stored. */
+    rc |= expect_int("row entered", dsd_scan_mode_enter(opts, state, DSD_SCAN_MODE_DMR), 0);
+    dsd_scan_option_values row = {0};
+    row.present = DSD_SCAN_OPT_SQUELCH;
+    row.squelch_db = -60;
+    rc |= expect_int("row installed", dsd_scan_mode_options(opts, state, &row), 0);
+    rc |= expect_true("default edit queued", submit_tagged_squelch_setting(DSD_SQUELCH_MODE_NOISE, 12, 0.0, 11U) > 0);
+    rc |= expect_int("default edit drained", dsd_app_drain_cmds(opts, state), 1);
+    rc |= expect_true("the row keeps its level", opts->rtl_squelch_mode == DSD_SQUELCH_MODE_LEVEL);
+    rc |= expect_published_answer("the default edit published as applied", 11U, 1);
+    const dsd_state* snap = dsd_app_get_latest_snapshot();
+    const dsd_scan_settings* scope = snap ? dsd_scan_mode_configured_view(snap) : NULL;
+    rc |= expect_true("with the scope's setting it stored",
+                      scope && scope->rtl_squelch_mode == DSD_SQUELCH_MODE_NOISE && scope->rtl_squelch_margin_db == 12);
+    dsd_scan_mode_leave(opts, state);
     dsd_rtl_stream_metrics_hooks_set(NULL);
     freeState(state);
     free(state);

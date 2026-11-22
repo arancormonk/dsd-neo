@@ -6,14 +6,15 @@ import QtQuick
 // may update the saved system, never an effective scan-row override.
 //
 // Issue #899 (B15): a squelch level is saved only in a form the app's own
-// controls make, Off or a whole dB from -120 to -1, read from the configured
-// level itself. A level set elsewhere (Advanced arguments, the command line)
+// controls make, Off or a whole dB from -120 to -1: a step asks for one, and
+// a restore reads it from the configured level. A level set elsewhere (Advanced arguments, the command line)
 // is not saved, and the sheet says so. A dynamic choice saves only itself.
-// Every squelch request carries the tag the bridge gave it, and is saved only
-// on a snapshot that shows the decoder answered that request, never from an
-// older one: a request superseded before the decoder reached it, or refused,
-// saves nothing. Clear (B11) removes the saved squelch for the next start and
-// drops any squelch request still waiting, so an older one cannot put it back.
+// Every squelch request carries the tag the bridge gave it, and is settled
+// only on the decoder's answer to that request, never on an older snapshot:
+// applied, the setting asked for is saved; refused, or superseded before the
+// decoder reached it, nothing is. Clear (B11) removes the saved squelch for the
+// next start and drops any squelch request still waiting, so an older one
+// cannot put it back.
 Item {
     id: persistence
     property string systemUid: ""
@@ -71,43 +72,27 @@ Item {
     // "level", db, off, request} from a step, or {mode: "level", restore:
     // true, request, off, whole, db} for the level kept beneath a dynamic
     // squelch, as CommandBridge.restoreSquelchLevel() submitted it; request is
-    // the bridge's tag. It matches only a snapshot that shows the decoder
-    // answered it, and only on the setting asked for: the same mode and
-    // margin, or the same Off or whole dB (a restore of a level the app's
-    // controls cannot make on any such level, which is then not saved). A
-    // snapshot still marked as running the app's default never matches: an
-    // edit the decoder took has ended the default there.
-    function squelchMatches(value) {
-        if (!squelchAnswered(value) || metrics.squelchAnalogDefault === true)
-            return false;
-        if (value.mode === "auto" || value.mode === "noise")
-            return (value.mode === "auto" ? metrics.configuredSquelchAuto : metrics.configuredSquelchNoise)
-                && value.margin === metrics.configuredSquelchMarginDb;
-        if (metrics.configuredSquelchAuto || metrics.configuredSquelchNoise)
-            return false;
-        if (value.off || metrics.configuredSquelchLevelOff === true)
-            return value.off === metrics.configuredSquelchLevelOff;
-        if (value.restore === true && value.whole !== true)
-            return metrics.configuredSquelchLevelWhole !== true;
-        return metrics.configuredSquelchLevelWhole === true && value.db === metrics.configuredSquelchLevelWholeDb;
-    }
-
-    // Whether the decoder has handled a squelch request: a snapshot taken
-    // after it, whose configured readings are of the same generation.
+    // the bridge's tag. The decoder answers it in the state snapshot with
+    // whether it applied it, the same publication as a scan scope's configured
+    // squelch, so the answer holds for whichever scope the request edited,
+    // beneath a scan row's own squelch too.
     function squelchAnswered(value) {
         return value.request !== undefined && value.request > 0
             && metrics.configuredSquelchRequestAnswered === value.request;
     }
 
-    // What the saved system keeps for a confirmed request, from the
-    // configured setting; "" for a level the app's controls cannot make.
+    // What the saved system keeps for an applied request: the setting it asked
+    // for; "" for a level the app's controls cannot make (a restore of such a
+    // level), which is then not saved.
     function squelchText(value) {
         if (value.mode === "auto" || value.mode === "noise")
             return value.mode + "+" + value.margin;
-        if (metrics.configuredSquelchLevelOff === true)
+        if (value.off === true)
             return "off";
-        return metrics.configuredSquelchLevelWhole === true && metrics.configuredSquelchLevelWholeDb < 0
-            ? String(metrics.configuredSquelchLevelWholeDb) : "";
+        if (value.restore === true && value.whole !== true)
+            return "";
+        var db = Number(value.db);
+        return Number.isInteger(db) && db >= -120 && db <= -1 ? String(db) : "";
     }
 
     /**
@@ -148,18 +133,19 @@ Item {
         }
         var refusedLevel = false;
         var settled = false;
-        if (next.squelch !== undefined && squelchMatches(next.squelch)) {
-            var text = squelchText(next.squelch);
-            if (text.length > 0)
-                changes.squelch = text;
-            else
-                refusedLevel = true;
+        if (next.squelch !== undefined && squelchAnswered(next.squelch)) {
+            if (metrics.configuredSquelchRequestApplied === true) {
+                var text = squelchText(next.squelch);
+                if (text.length > 0)
+                    changes.squelch = text;
+                else
+                    refusedLevel = true;
+            } else {
+                // Refused: nothing of it is saved, even when it asked for the
+                // setting already in force.
+                settled = true;
+            }
             delete next.squelch;
-        } else if (next.squelch !== undefined && squelchAnswered(next.squelch)) {
-            // Answered, and not on the level asked for: refused, or set since
-            // by something else. Nothing of it is saved.
-            delete next.squelch;
-            settled = true;
         }
         if (refusedLevel || settled)
             pending = next;

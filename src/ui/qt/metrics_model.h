@@ -367,11 +367,12 @@ class MetricsModel : public QObject {
     Q_PROPERTY(bool configuredSquelchLevelWhole READ configuredSquelchLevelWhole NOTIFY controlChanged)
     Q_PROPERTY(int configuredSquelchLevelWholeDb READ configuredSquelchLevelWholeDb NOTIFY controlChanged)
     /* Issue #899: the tag of the last tagged squelch request the decoder handled (CommandBridge's squelch setters and
-     * restoreSquelchLevel()), 0 for none: a snapshot showing a request's tag was taken after it, and its configured
-     * squelch readings are of the same generation. A new tag waits for the state snapshot to carry the configured
-     * setting from after it (under a scan scope the configured setting is the state's, published after the options),
-     * and under a row's own squelch for a row without one or the scope's end, which is when that can be checked. */
+     * restoreSquelchLevel()), 0 for none, and whether the decoder applied it (false: refused). Both come from the
+     * state snapshot, one publication with the scan scope's configured squelch, so an applied request is the
+     * configured setting of whatever scope it edited (beneath a row's own squelch too), and a refused one changed
+     * nothing, even when it asked for the setting already in force. */
     Q_PROPERTY(int configuredSquelchRequestAnswered READ configuredSquelchRequestAnswered NOTIFY controlChanged)
+    Q_PROPERTY(bool configuredSquelchRequestApplied READ configuredSquelchRequestApplied NOTIFY controlChanged)
     /* Whether the input is audio (issue #628): the squelch above is a level or the noise squelch, edited from the
      * monitor's Squelch row rather than the Radio sheet. */
     Q_PROPERTY(bool squelchAudioInput READ squelchAudioInput NOTIFY controlChanged)
@@ -1240,6 +1241,12 @@ class MetricsModel : public QObject {
     int
     configuredSquelchRequestAnswered() const {
         return m_view.configured_squelch_request_answered;
+    }
+
+    /** @brief Whether the decoder applied that request (false: refused, or none answered yet). */
+    bool
+    configuredSquelchRequestApplied() const {
+        return m_view.configured_squelch_request_applied;
     }
 
     /**
@@ -2557,6 +2564,7 @@ class MetricsModel : public QObject {
         bool squelch_off = false;
         bool squelch_row_override = false;
         bool squelch_analog_default = false;
+        bool configured_squelch_request_applied = false;
         bool configured_squelch_off = false;
         bool effective_squelch_off = false;
         bool audio_muted = false;
@@ -2784,6 +2792,7 @@ class MetricsModel : public QObject {
             return squelchSettingEquals(other) && squelch_row_override == other.squelch_row_override
                    && squelch_analog_default == other.squelch_analog_default && squelch_readout == other.squelch_readout
                    && configured_squelch_request_answered == other.configured_squelch_request_answered
+                   && configured_squelch_request_applied == other.configured_squelch_request_applied
                    && squelch_noise_offered == other.squelch_noise_offered
                    && squelch_audio_input == other.squelch_audio_input
                    && squelch_auto_status == other.squelch_auto_status && squelch_gate_open == other.squelch_gate_open;
@@ -2853,10 +2862,7 @@ class MetricsModel : public QObject {
     void fillDecoderView(View& next, const dsd_opts* opts_snapshot, const dsd_state* snapshot, double now_m);
     /** @brief The configured/effective squelch pair and the row badge (#521). */
     static void fillTunerGain(View& next, const dsd_opts* opts_snapshot, const dsd_state* snapshot);
-    void fillSquelchOverride(View& next, const dsd_opts* opts_snapshot, const dsd_state* snapshot) const;
-    /** @brief The squelch request answer to show (issue #899): the options snapshot's when the configured setting
-     * shown with it is of its generation (@p consistent), else the one shown before. */
-    int squelchAnswerShown(const dsd_opts* opts_snapshot, bool consistent) const;
+    static void fillSquelchOverride(View& next, const dsd_opts* opts_snapshot, const dsd_state* snapshot);
     static void fillScanRow(View& next, const dsd_opts* opts_snapshot, const dsd_state* snapshot);
     /** @brief The analog channel width in force and the configured one (#525), the analog (nfm or am) scan row on air
      * (#526), and on audio input with a rigctl peer the passband and what an unset width stands for (#621). */

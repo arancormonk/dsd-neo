@@ -525,10 +525,12 @@ test_restore_level_says_what_it_asked(dsd_qt::AppPrefs& prefs) {
     expect("the restore says the level it asked for",
            asked.isValid() && request > 0 && !level.value(QStringLiteral("off")).toBool()
                && level.value(QStringLiteral("whole")).toBool() && level.value(QStringLiteral("db")).toInt() == -60);
+    const dsd_state* state = live.decoder.state.get();
     expect("not answered before the decoder handles it",
-           opts->rtl_squelch_request_answered != static_cast<uint32_t>(request));
+           state->squelch_request_answered != static_cast<uint32_t>(request));
     expect("the decoder handles it", live.drain() == 1 && squelchIs(opts, DSD_SQUELCH_MODE_LEVEL, 0, -60.0));
-    expect("and answers its tag", opts->rtl_squelch_request_answered == static_cast<uint32_t>(request));
+    expect("and answers its tag, applied",
+           state->squelch_request_answered == static_cast<uint32_t>(request) && state->squelch_request_applied == 1U);
     expect("off beneath noise",
            bridge.setSquelchDb(0.0) && live.drain() == 1 && bridge.setSquelchNoise(12) && live.drain() == 1);
     dsd_telemetry_publish_opts_snapshot(opts);
@@ -551,21 +553,24 @@ test_every_squelch_edit_is_tagged(dsd_qt::AppPrefs& prefs) {
     LiveStart live(prefs, explore, QStringLiteral("explore"), &ok);
     dsd_opts* opts = live.decoder.opts.get();
     expect("an Explore start parses", ok);
+    const dsd_state* state = live.decoder.state.get();
+    const auto answered = [state](int request) {
+        return state->squelch_request_answered == static_cast<uint32_t>(request)
+               && state->squelch_request_applied == 1U;
+    };
     const int level = bridge.setSquelchDb(-60.0);
-    expect("a level edit is tagged", level > 0 && opts->rtl_squelch_request_answered != static_cast<uint32_t>(level));
-    expect("and answered once handled", live.drain() == 1 && squelchIs(opts, DSD_SQUELCH_MODE_LEVEL, 0, -60.0)
-                                            && opts->rtl_squelch_request_answered == static_cast<uint32_t>(level));
+    expect("a level edit is tagged", level > 0 && state->squelch_request_answered != static_cast<uint32_t>(level));
+    expect("and answered once handled",
+           live.drain() == 1 && squelchIs(opts, DSD_SQUELCH_MODE_LEVEL, 0, -60.0) && answered(level));
     const int noise = bridge.setSquelchNoise(12);
     expect("a noise edit, with a tag of its own", noise > level);
-    expect("answered", live.drain() == 1 && squelchIs(opts, DSD_SQUELCH_MODE_NOISE, 12, -60.0)
-                           && opts->rtl_squelch_request_answered == static_cast<uint32_t>(noise));
+    expect("answered", live.drain() == 1 && squelchIs(opts, DSD_SQUELCH_MODE_NOISE, 12, -60.0) && answered(noise));
     const int automatic = bridge.setSquelchAuto(14);
     expect("an auto edit too", automatic > noise && live.drain() == 1
-                                   && squelchIs(opts, DSD_SQUELCH_MODE_AUTO, 14, -60.0)
-                                   && opts->rtl_squelch_request_answered == static_cast<uint32_t>(automatic));
+                                   && squelchIs(opts, DSD_SQUELCH_MODE_AUTO, 14, -60.0) && answered(automatic));
     const int off = bridge.setSquelchDb(0.0);
-    expect("0 dB is off", off > automatic && live.drain() == 1 && squelchIs(opts, DSD_SQUELCH_MODE_LEVEL, 14, 0.0)
-                              && opts->rtl_squelch_request_answered == static_cast<uint32_t>(off));
+    expect("0 dB is off",
+           off > automatic && live.drain() == 1 && squelchIs(opts, DSD_SQUELCH_MODE_LEVEL, 14, 0.0) && answered(off));
     expect("a margin the decoder cannot take is not sent",
            bridge.setSquelchNoise(31) == 0 && bridge.setSquelchAuto(2) == 0 && live.drain() == 0);
     expect("nor a level that is no number", bridge.setSquelchDb(std::nan("")) == 0 && live.drain() == 0);

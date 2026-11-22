@@ -2005,7 +2005,8 @@ class CommandRecorder : public QObject {
     }
 
     /* As CommandBridge, each squelch setter returns its request's tag once queued (0 when refused), which the decoder
-       answers through configuredSquelchRequestAnswered (a test sets it, lastSquelchRequest()). */
+       answers through configuredSquelchRequestAnswered and configuredSquelchRequestApplied (a test sets them,
+       lastSquelchRequest()). */
     Q_INVOKABLE int
     setSquelchDb(double db) {
         m_last_squelch_db = db;
@@ -7396,8 +7397,10 @@ class Setup : public QObject {
         // Issue #899: the configured level as a whole dB the app saves (-120 dB here, as configuredSquelchDb).
         metrics[QStringLiteral("configuredSquelchLevelWhole")] = true;
         metrics[QStringLiteral("configuredSquelchLevelWholeDb")] = -120;
-        // Issue #899: the tag of the last tagged squelch request the decoder answered (0: none).
+        // Issue #899: the tag of the last tagged squelch request the decoder answered (0: none), and whether it was
+        // applied (false: refused).
         metrics[QStringLiteral("configuredSquelchRequestAnswered")] = 0;
+        metrics[QStringLiteral("configuredSquelchRequestApplied")] = false;
         // #628: whether the session runs on audio input, where the monitor's Squelch row edits the squelch.
         metrics[QStringLiteral("squelchAudioInput")] = false;
         // #525: the analog channel width in force (0 outside the analog preset and on PCM input),

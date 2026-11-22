@@ -287,8 +287,9 @@ class CommandBridge : public QObject {
      * @brief Set the configured default's power squelch threshold, in dB (0 or more is off).
      *
      * Issue #899: each squelch setter returns the request's tag, a positive int, once it is queued (0 when it is not),
-     * which MetricsModel::configuredSquelchRequestAnswered shows once the decoder has handled that request: what lets a
-     * caller save the setting only on the decoder's answer to it.
+     * which MetricsModel::configuredSquelchRequestAnswered shows once the decoder has handled that request, with
+     * configuredSquelchRequestApplied saying whether it applied it: what lets a caller save the setting only on the
+     * decoder's answer to it.
      */
     Q_INVOKABLE int setSquelchDb(double db) const;
 
@@ -310,9 +311,9 @@ class CommandBridge : public QObject {
      * @brief Put the configured default back on the level it kept beneath a dynamic squelch, exactly as stored (a
      * legacy linear threshold included, which a whole-dB reading cannot carry).
      *
-     * Issue #899: returns what was asked for, so a caller can confirm that level and no other -- {request, off,
+     * Issue #899: returns what was asked for, so a caller can save that level and no other -- {request, off,
      * whole, db}: the request's tag, which MetricsModel::configuredSquelchRequestAnswered shows once the decoder has
-     * handled it; whether the level is Off; whether it is a whole dB the app's controls make, and that dB (0 when it
+     * handled it (configuredSquelchRequestApplied: whether it applied it); whether the level is Off; whether it is a whole dB the app's controls make, and that dB (0 when it
      * is not). Null when nothing was submitted.
      */
     Q_INVOKABLE QVariant restoreSquelchLevel() const;
