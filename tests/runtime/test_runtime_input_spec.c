@@ -522,7 +522,9 @@ test_spec_squelch_field_refused(void) {
    args, as one out of range in the frequency place does. */
 static int
 test_soapy_frequency_after_an_empty_place_refused(void) {
-    static const char* const refused[] = {"soapy:driver=x::851M", "soapy:driver=x::851.375M:30", "soapy:::851M"};
+    /* However many empty fields come between the device args and the frequency. */
+    static const char* const refused[] = {"soapy:driver=x::851M",  "soapy:driver=x::851.375M:30", "soapy:::851M",
+                                          "soapy:driver=x:::851M", "soapy:driver=x::::851M:30",   "soapy::::851M"};
     int rc = 0;
     for (size_t i = 0; i < sizeof refused / sizeof refused[0]; i++) {
         dsd_opts* opts = alloc_seeded_opts();
@@ -572,6 +574,12 @@ test_soapy_tuning_fields_keep_their_place(void) {
         {"soapy:driver=foo:154.43M:30:0:24::1", "soapy:driver=foo", DSD_SQUELCH_MODE_AUTO, 12, 1},
         {"soapy:154.43M:30:0:24::2", "soapy", DSD_SQUELCH_MODE_AUTO, 12, 2},
         {"soapy:driver=foo:154.43M::::noise+9:1", "soapy:driver=foo", DSD_SQUELCH_MODE_NOISE, 9, 1},
+        /* Surplus empty fields at the end are no fields: the tuning stays, the interior empty slots keep their places,
+           even when the empty ones take the tail past the fields a tuning tail holds. */
+        {"soapy:driver=foo:154.43M:30:0:24:noise+17:3:", "soapy:driver=foo", DSD_SQUELCH_MODE_NOISE, 17, 3},
+        {"soapy::154.43M:30:0:24::2:::", "soapy", DSD_SQUELCH_MODE_AUTO, 12, 2},
+        {"soapy:driver=foo:154.43M::::noise+9:1:", "soapy:driver=foo", DSD_SQUELCH_MODE_NOISE, 9, 1},
+        {"soapy:driver=foo:154.43M:30:0:24:noise+17:3::::::::::::", "soapy:driver=foo", DSD_SQUELCH_MODE_NOISE, 17, 3},
     };
 
     int rc = 0;

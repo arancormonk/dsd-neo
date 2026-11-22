@@ -131,7 +131,9 @@ enum { SOFTY_TOK_MAX = 16 };
 
 /* The tail's fields, each in its place, empty ones included (dsd_spec_split_fields(), as every other spec reads its
    fields: skipping an empty one read every later field one place early). @p tail_copy keeps the tail as it was. At most
-   SOFTY_TOK_MAX are stored; *out_count is how many the tail has, which can be more. */
+   SOFTY_TOK_MAX are stored; *out_count is how many the tail has, which can be more. Empty fields at the end are not
+   counted (one is always left): a trailing colon holds no field, and strtok() read
+   `driver=x:154.43M:30:0:24:noise+17:3:` as tuning. */
 static int
 tokenize_soapy_tail(const char* raw_tail, char* tail_copy, size_t tail_copy_size, char* scratch, size_t scratch_size,
                     char* tok[SOFTY_TOK_MAX], size_t* out_count) {
@@ -145,7 +147,14 @@ tokenize_soapy_tail(const char* raw_tail, char* tail_copy, size_t tail_copy_size
     if (count < 0) {
         return -1;
     }
-    *out_count = (size_t)count;
+    /* Each colon ending the tail ends one more empty field, so the trailing empty fields are counted from the text,
+       also those past the fields stored. */
+    size_t trailing = 0;
+    for (size_t len = strlen(tail_copy); len > 0 && tail_copy[len - 1U] == ':'; len--) {
+        trailing++;
+    }
+    const size_t total = (size_t)count;
+    *out_count = trailing < total ? total - trailing : 1U;
     return 0;
 }
 
@@ -163,18 +172,22 @@ soapy_fields_all_empty(char* tok[SOFTY_TOK_MAX], size_t n) {
 enum { SOAPY_HEAD_FREQ_OUT_OF_RANGE = -2, SOAPY_HEAD_FREQ_LATE = -3 };
 
 /* Why the frequency place @p idx of the @p n stored fields holds no frequency: SOAPY_HEAD_FREQ_OUT_OF_RANGE for a
-   suffixed number out of range, SOAPY_HEAD_FREQ_LATE when the place is empty and the field after it is a suffixed
-   number (*out_idx at that number), else -1 (opaque args). A K, M or G number is never device args, so one after an
-   empty frequency place (`driver=x::851M`, which skipping empty fields once read as tuning) is a frequency one place
-   late. */
+   suffixed number out of range, SOAPY_HEAD_FREQ_LATE when the place is empty and the first field after the empty run
+   that holds anything is a suffixed number (*out_idx at that number), else -1 (opaque args). A K, M or G number is
+   never device args, so one after an empty frequency place (`driver=x::851M`, `driver=x:::851M`, which skipping empty
+   fields once read as tuning) is a frequency placed late. */
 static int
 soapy_head_not_a_frequency(char* tok[SOFTY_TOK_MAX], size_t n, size_t idx, size_t* out_idx) {
     if (is_suffixed_freq_token(tok[idx])) {
         *out_idx = idx;
         return SOAPY_HEAD_FREQ_OUT_OF_RANGE;
     }
-    if (tok[idx][0] == '\0' && idx + 1U < n && is_suffixed_freq_token(tok[idx + 1U])) {
-        *out_idx = idx + 1U;
+    size_t next = idx;
+    while (next < n && tok[next][0] == '\0') {
+        next++;
+    }
+    if (next > idx && next < n && is_suffixed_freq_token(tok[next])) {
+        *out_idx = next;
         return SOAPY_HEAD_FREQ_LATE;
     }
     return -1;
@@ -182,8 +195,8 @@ soapy_head_not_a_frequency(char* tok[SOFTY_TOK_MAX], size_t n, size_t idx, size_
 
 /* Reads the optional device args and the frequency from the @p n stored fields. Returns 0 when they parse;
    SOAPY_HEAD_FREQ_OUT_OF_RANGE, with *out_idx at the frequency token, when that place holds a suffixed number out of
-   range; SOAPY_HEAD_FREQ_LATE, with *out_idx at it, when the frequency place is empty and the field after it holds a
-   suffixed number; and -1 when the head is not shorthand (opaque args). An empty first field is a device-args place
+   range; SOAPY_HEAD_FREQ_LATE, with *out_idx at it, when the frequency place is empty and the first field after it
+   that is not empty holds a suffixed number; and -1 when the head is not shorthand (opaque args). An empty first field is a device-args place
    left empty (`soapy::154.43M`): *out_arg_tokens counts only args that are there. */
 static int
 parse_soapy_head_tokens(char* tok[SOFTY_TOK_MAX], size_t n, size_t* out_arg_tokens, size_t* out_idx,
