@@ -1892,6 +1892,12 @@ Window {
         mainRoot.pendingStartRemember = true;
         mainRoot.pendingStartHold = "";
         mainRoot.pendingStartRoam = null;
+        // Issue #903: before the host is asked, History reads the old run's
+        // last commits, binding its ring to the session ending, and holds its
+        // background capture until the new session begins (or the start gives
+        // up), so no read binds the starting run's ring to the old session.
+        callHistory.holdCaptureForStart();
+        uiController.flushHistory();
         // What the start is, said here and not read off the map: an edited Explore start can carry a saved
         // system's uid, and must not record into that system's call recordings.
         var built = scan ? scanListStarter.startLists([sys].concat(companions), decoderHost, holdTarget)
@@ -1901,8 +1907,11 @@ Window {
         if (roam)
             siteRoaming.noteStartResult(roam.roamId, built);
         // A start that does not happen carries no site choice to a later one.
-        if (!built.ok || !built.started)
+        if (!built.ok || !built.started) {
             siteRoaming.forgetSiteChoice();
+            // No session begins: History's capture goes on as before.
+            callHistory.releaseCaptureHold();
+        }
         if (!built.ok) {
             // Match the rejected field without exposing a prohibited argument or a key.
             if (scan) {

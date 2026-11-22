@@ -1539,11 +1539,20 @@ test_heard_tap_learns_only_owned_live_calls(void) {
            sink.seen.size() == 1 && sink.count(QStringLiteral("sys-a"), 43200U) == 1);
 }
 
-/* Issue #903 (review, Important 1): a start accepted while the app is away publishes the new run's ring before the
- * session changes hands. The tap's last poll at that handoff leaves the unbound ring alone, so the new session owns it:
- * B's call is B's, not A's. */
+/* Run the event loop's posted work a few times, as the turns after Main's start would. */
 void
-test_heard_new_ring_at_the_session_handoff(void) {
+spin_events(void) {
+    for (int i = 0; i < 3; i++) {
+        QCoreApplication::processEvents();
+    }
+}
+
+/* Issue #903 (re-review): Main holds History's background capture from before it asks the host for a start
+ * (holdCaptureForStart()) until the new session begins. A start accepted while the app is away publishes the new run's
+ * ring at once, and no tap poll runs in between to bind it to the old session: B's call is B's, A's is A's. A start
+ * that never begins a session releases the hold, by hand or by the next event-loop turn, and the tap runs again. */
+void
+test_heard_hold_for_start(void) {
     resetStorage();
     RecordingHeardSink sink;
     CallHistoryModel model;
@@ -1557,16 +1566,44 @@ test_heard_new_ring_at_the_session_handoff(void) {
     a.publish();
     gui_ingest(model);
     set_app_state(Qt::ApplicationHidden);
-    Decoder b; // B's ring is published at once
+    model.waitForBackgroundPollForTest();
+    // Main.startWithMap: the hold and the flush before the host is asked, the host's accept (B's ring published at
+    // once), the flush after it, then the session with its owners, all in one turn.
+    model.holdCaptureForStart();
+    expect("hold: the tap is stopped", !model.backgroundCaptureRunningForTest());
+    gui_ingest(model);
+    Decoder b;
+    model.refresh(dsd_app_get_latest_snapshot(), dsd_app_get_latest_opts_snapshot(), false);
+    expect("hold: the tap stays stopped through the accept", !model.backgroundCaptureRunningForTest());
     start_saved(model, QStringLiteral("sys-b"));
+    expect("hold: the new session starts the tap", model.backgroundCaptureRunningForTest());
     b.commit(0, 44101U, 100U, when + 60);
     prove_newest(b, 0, 44101U);
     b.publish();
     model.waitForBackgroundPollForTest();
+    spin_events();
+    expect("hold: the safety release leaves the begun session's tap running", model.backgroundCaptureRunningForTest());
     set_app_state(Qt::ApplicationActive);
     gui_ingest(model);
-    expect("handoff ring: A's call is A's", sink.count(QStringLiteral("sys-a"), 44100U) == 1);
-    expect("handoff ring: B's call is B's", sink.count(QStringLiteral("sys-b"), 44101U) == 1 && sink.seen.size() == 2);
+    expect("hold: A's call is A's", sink.count(QStringLiteral("sys-a"), 44100U) == 1);
+    expect("hold: B's call is B's", sink.count(QStringLiteral("sys-b"), 44101U) == 1 && sink.seen.size() == 2);
+
+    // Starts that never begin a session.
+    set_app_state(Qt::ApplicationHidden);
+    const qint64 session = model.session();
+    model.holdCaptureForStart();
+    expect("abandoned: the hold stops the tap", !model.backgroundCaptureRunningForTest());
+    model.releaseCaptureHold();
+    expect("abandoned: the release starts it again", model.backgroundCaptureRunningForTest());
+    model.holdCaptureForStart();
+    spin_events();
+    expect("abandoned: the next turn releases a hold nothing consumed", model.backgroundCaptureRunningForTest());
+    expect("abandoned: the session is unchanged", model.session() == session);
+    set_app_state(Qt::ApplicationActive);
+    gui_ingest(model);
+    model.holdCaptureForStart();
+    spin_events();
+    expect("abandoned: back on screen, the release leaves the tap stopped", !model.backgroundCaptureRunningForTest());
 }
 
 /* Issue #903 (review, Minor 1): a Clear while the tap runs (the app hidden, its loop running) hands the tap off first,
@@ -1777,7 +1814,7 @@ main(int argc, char** argv) {
     test_heard_tap_learns_only_owned_live_calls();
     test_heard_teardown_backlog_reaches_the_sink();
     test_heard_forget_after_a_fold_survives_a_death();
-    test_heard_new_ring_at_the_session_handoff();
+    test_heard_hold_for_start();
     test_heard_clear_while_the_tap_runs();
     test_heard_cleared_row_proof_through_the_tap();
 

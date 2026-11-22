@@ -8108,6 +8108,37 @@ test_heard_new_ring_at_the_pre_start_flush(void) {
            sink.seen.size() == 3 && sink.has("sys-a", 7603, when + 64));
 }
 
+/* Issue #903 (re-review, Minor 1): the old run's ring was never read during its run, and the new run has not published
+ * when its session begins. Main's flush before the host is asked binds the old ring to the old session, so its rows,
+ * the late one read after the new session began included, keep the old owner; the new run's ring is the new one's. */
+void
+test_heard_unread_old_ring_keeps_its_owner(void) {
+    resetStorage();
+    RingFixture ringA;
+    RingFixture ringB;
+    auto opts = std::make_unique<dsd_opts>();
+    RecordingHeardSink sink;
+    CallHistoryModel model;
+    model.setHeardSink(&sink);
+    model.beginSessionWithOwners(QStringLiteral("System A"), QStringLiteral("sys-a"), QStringLiteral("sys-a"), {});
+    const time_t when = 1754608000;
+    prove(ringA.commit(0, 7801, 1301, when, when + 4), 7801);
+    // Main.startWithMap: the hold and the flush before the host is asked, the flush after its accept (B not yet
+    // published), then the new session.
+    model.holdCaptureForStart();
+    model.refresh(ringA.state, opts.get());
+    model.refresh(ringA.state, opts.get(), false);
+    model.beginSessionWithOwners(QStringLiteral("System B"), QStringLiteral("sys-b"), QStringLiteral("sys-b"), {});
+    prove(ringA.commit(0, 7802, 1302, when + 30, when + 34), 7802);
+    model.refresh(ringA.state, opts.get());
+    expect("unread old ring: its rows keep the old owner",
+           sink.seen.size() == 2 && sink.has("sys-a", 7801, when + 4) && sink.has("sys-a", 7802, when + 34));
+    prove(ringB.commit(0, 7803, 1303, when + 60, when + 64), 7803);
+    model.refresh(ringB.state, opts.get());
+    expect("unread old ring: the new run's ring is the new owner's",
+           sink.seen.size() == 3 && sink.has("sys-b", 7803, when + 64));
+}
+
 /* Issue #903 (review, Minor 4): History's Clear hides rows; it does not un-hear a talkgroup. A row the clear covers
  * whose proof arrives after the clear is learnt, once, and stays out of the log. A cleared row the seen map does not
  * know gives nothing. */
@@ -8383,6 +8414,7 @@ main(int argc, char** argv) {
     test_heard_fields_round_trip();
     test_heard_new_ring_at_the_pre_start_flush();
     test_heard_late_proof_on_a_cleared_row();
+    test_heard_unread_old_ring_keeps_its_owner();
 
     QDir(dataDir).removeRecursively();
     if (g_failures != 0) {

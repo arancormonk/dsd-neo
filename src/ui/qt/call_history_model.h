@@ -223,6 +223,20 @@ class CallHistoryModel : public QAbstractListModel, public HeardTalkgroupSource 
     Q_INVOKABLE void beginSessionWithOwners(const QString& label, const QString& uid, const QString& singleOwnerUid,
                                             const QVariantMap& scanEntryOwner);
 
+    /**
+     * @brief Before Main asks the host for a start (issue #903): hand the background tap off now, its last poll binding
+     * the old run's ring to the session ending (no starting run's ring exists yet), and keep it stopped, so no poll
+     * between the host's accept and the new session can bind the starting run's ring to the old session.
+     *
+     * The next beginSession*() consumes the hold and starts the tap on the new session when the app is away. A start
+     * that does not begin one releases it (releaseCaptureHold()), and so does the next event-loop turn if nothing did:
+     * the start runs in one turn.
+     */
+    Q_INVOKABLE void holdCaptureForStart();
+
+    /** @brief End a holdCaptureForStart() no session began from: the tap starts again when the app is away. */
+    Q_INVOKABLE void releaseCaptureHold();
+
     /** @brief The session's system, label and uid together, the session itself kept (beginSessionOn()). */
     Q_INVOKABLE void setSessionSystem(const QString& label, const QString& uid);
 
@@ -393,10 +407,10 @@ class CallHistoryModel : public QAbstractListModel, public HeardTalkgroupSource 
      * running scan, including one enabled through extra arguments, never is, and a
      * call heard while the operator held the tuner is filed as Exploring.
      *
-     * Issue #903: without @p bindNewRings (the flush before a start, UiController::flushHistoryBeforeStart()), a ring
-     * no session owns yet stays unbound and its rows get no owner: after the host accepted a start, such a ring can only
-     * be the starting run's, which the coming session owns (setSessionOwners()). That holds for the handoff of a tap
-     * the read stops too.
+     * Issue #903: without @p bindNewRings (the flush after the host accepted a start, before the session begins:
+     * UiController::flushHistoryBeforeStart()), a ring no session owns yet stays unbound and its rows get no owner: the
+     * flush before the host was asked bound the old run's (holdCaptureForStart()), so such a ring can only be the
+     * starting run's, which the coming session owns.
      */
     void refresh(const dsd_state* snapshot, const dsd_opts* opts_snapshot = nullptr, bool bindNewRings = true);
 
@@ -1126,18 +1140,16 @@ class CallHistoryModel : public QAbstractListModel, public HeardTalkgroupSource 
     void onApplicationStateChanged(Qt::ApplicationState state);
     /** @brief Start the background tap on what the model knows now (the app is leaving the screen). */
     void startBackgroundCapture();
-    /** @brief Stop the background tap, take the clear it settled and the ring position it read, and fold in its spill.
-     * Without @p bindNewRings its last poll binds no ring no session owns yet (refresh()). */
-    void handOffBackgroundCapture(bool bindNewRings = true);
+    /** @brief Stop the background tap, take the clear it settled and the ring position it read, and fold in its spill. */
+    void handOffBackgroundCapture();
     /** @brief Hand off the running tap before the session it attributes rows to changes; @return whether it should
-     * start again on the new one (the app still away), for resumeBackgroundCapture(). @p beginning: a new session
-     * begins, so the tap's last poll binds no new ring to the one ending. */
-    bool handOffBackgroundCaptureForSession(bool beginning = false);
+     * start again on the new one (the app still away), for resumeBackgroundCapture(). */
+    bool handOffBackgroundCaptureForSession();
     /** @brief Start the tap again on the changed session when handOffBackgroundCaptureForSession() said so. */
     void resumeBackgroundCapture(bool resume);
     /** @brief Stop the running background tap and take the clear it settled and the ring position it read; @return the
      * lines it could not write to the spill. */
-    QByteArray stopBackgroundCapture(bool bindNewRings = true);
+    QByteArray stopBackgroundCapture();
     /** @brief Take the ring position the tap read last as this model's last read, if the tap read any. */
     void takeTapReadPosition(bool read, const qulonglong pushSeq[2], quint64 ring);
     /** @brief Take the session ordinals @p ordinals gave rings this model has none for (the tap's, a spill line's). */
@@ -1268,6 +1280,11 @@ class CallHistoryModel : public QAbstractListModel, public HeardTalkgroupSource 
     /* Issue #903: who owns each recent session's calls, the rings bound to them (persisted, callHistory/heardOwners),
        the sink the verified talkgroups go to, and the sightings waiting for it. */
     HeardOwners m_heardOwners;
+    /* holdCaptureForStart(): the hold, a count that retires its safety release, and whether the app is away (the last
+       application state was Suspended or Hidden), which says whether the tap starts again when the hold ends. */
+    bool m_captureHeld = false;
+    quint64 m_captureHoldRev = 0;
+    bool m_appAway = false;
     HeardTalkgroupSink* m_heardSink = nullptr;
     QHash<QString, HeardSighting> m_heardPending;
     /* Bumped by every clearAll(): a tap started before a clear settled no mark the model may adopt. */

@@ -26,6 +26,7 @@
 #include <QPair>
 #include <QSet>
 #include <QStringView>
+#include <QTimer>
 #include <QVariant>
 #include <QVariantList>
 #include <QVariantMap>
@@ -870,6 +871,29 @@ CallHistoryModel::beginSessionOn(const QString& label, const QString& uid) {
 }
 
 void
+CallHistoryModel::holdCaptureForStart() {
+    (void)handOffBackgroundCaptureForSession();
+    m_captureHeld = true;
+    const quint64 hold = ++m_captureHoldRev;
+    // A safety release: Main's start runs in one event-loop turn, and a start that began a session consumed the hold.
+    QTimer::singleShot(0, this, [this, hold]() {
+        if (m_captureHoldRev == hold) {
+            releaseCaptureHold();
+        }
+    });
+}
+
+void
+CallHistoryModel::releaseCaptureHold() {
+    if (!m_captureHeld) {
+        return;
+    }
+    m_captureHeld = false;
+    ++m_captureHoldRev;
+    resumeBackgroundCapture(m_appAway);
+}
+
+void
 CallHistoryModel::beginSessionWithOwners(const QString& label, const QString& uid, const QString& singleOwnerUid,
                                          const QVariantMap& scanEntryOwner) {
     HeardSessionOwners who;
@@ -897,8 +921,13 @@ CallHistoryModel::changeSession(const QString& label, const QString& uid, bool b
         return;
     }
     // One handoff for every field: a tap started again between them would attribute what it finds to half the change.
-    // A new session's ring is not yet read: the tap's last poll leaves a ring no session owns unbound.
-    const bool resumeTap = handOffBackgroundCaptureForSession(begin);
+    // A start's hold (holdCaptureForStart()) already stopped the tap; the new session takes it over.
+    bool resumeTap = handOffBackgroundCaptureForSession();
+    if (begin && m_captureHeld) {
+        m_captureHeld = false;
+        ++m_captureHoldRev;
+        resumeTap = m_appAway;
+    }
     if (labelMoved) {
         m_sessionLabel = label;
         m_settings.setValue(QLatin1String(kSessionLabelKey), label);
@@ -3258,7 +3287,7 @@ CallHistoryModel::refresh(const dsd_state* snapshot, const dsd_opts* opts_snapsh
     // The first ingest after the app returns takes over from the background tap: what the tap found is folded in
     // before this read, so the walk below finds those rows seen, and anything newer it finds itself.
     if (m_handoffOwed) {
-        handOffBackgroundCapture(bindNewRings);
+        handOffBackgroundCapture();
     }
     if (snapshot == nullptr || snapshot->event_history_s == nullptr) {
         return;
@@ -4432,7 +4461,8 @@ CallHistoryModel::setHistoryTapSource(CallHistoryTapSource source) {
 
 void
 CallHistoryModel::onApplicationStateChanged(Qt::ApplicationState state) {
-    if (state == Qt::ApplicationSuspended || state == Qt::ApplicationHidden) {
+    m_appAway = state == Qt::ApplicationSuspended || state == Qt::ApplicationHidden;
+    if (m_appAway) {
         saveNow();
         startBackgroundCapture();
         return;
@@ -4446,7 +4476,8 @@ CallHistoryModel::onApplicationStateChanged(Qt::ApplicationState state) {
 void
 CallHistoryModel::startBackgroundCapture() {
     m_handoffOwed = false;
-    if (!m_tap || m_tap->running()) {
+    // Held for a start (holdCaptureForStart()): the session it begins, or the release, starts the tap.
+    if (!m_tap || m_tap->running() || m_captureHeld) {
         return;
     }
     CallHistoryTap::Context context;
@@ -4494,20 +4525,20 @@ CallHistoryModel::takeTapReadPosition(bool read, const qulonglong pushSeq[2], qu
 }
 
 void
-CallHistoryModel::handOffBackgroundCapture(bool bindNewRings) {
+CallHistoryModel::handOffBackgroundCapture() {
     m_handoffOwed = false;
     if (!m_tap || !m_tap->running()) {
         return;
     }
     // What the tap's last append could not write (the spill still unwritable) is folded with the spill: only the model
     // has it now.
-    if (foldSpill(stopBackgroundCapture(bindNewRings))) {
+    if (foldSpill(stopBackgroundCapture())) {
         Q_EMIT countChanged();
     }
 }
 
 bool
-CallHistoryModel::handOffBackgroundCaptureForSession(bool beginning) {
+CallHistoryModel::handOffBackgroundCaptureForSession() {
     // A start that completes while the app is away (a deferred restart, a USB start's continuation) changes the
     // session, label or system the tap attributes its rows to; it holds a copy of the old ones. What it found so far
     // folds in under them now, and a tap the app's return already owes a handoff stays stopped, as in clearAll().
@@ -4515,7 +4546,7 @@ CallHistoryModel::handOffBackgroundCaptureForSession(bool beginning) {
         return false;
     }
     const bool resume = !m_handoffOwed;
-    handOffBackgroundCapture(!beginning);
+    handOffBackgroundCapture();
     return resume;
 }
 
@@ -4527,8 +4558,8 @@ CallHistoryModel::resumeBackgroundCapture(bool resume) {
 }
 
 QByteArray
-CallHistoryModel::stopBackgroundCapture(bool bindNewRings) {
-    const CallHistoryTap::Result tapped = m_tap->stop(bindNewRings);
+CallHistoryModel::stopBackgroundCapture() {
+    const CallHistoryTap::Result tapped = m_tap->stop();
     // A clear before the next ingest covers what the tap read.
     takeTapReadPosition(tapped.read, tapped.pushSeq, tapped.ring);
     // Before any spill line folds: the ordinals the tap gave are the rings' for good, and so are the sessions it bound

@@ -2636,11 +2636,29 @@ class CallLogStore : public QAbstractListModel {
         setSessionUid(uid);
     }
 
+    /** @brief CallHistoryModel::holdCaptureForStart() (issue #903): held until a session begins or the release. */
+    Q_INVOKABLE void
+    holdCaptureForStart() {
+        m_captureHeld = true;
+    }
+
+    Q_INVOKABLE void
+    releaseCaptureHold() {
+        m_captureHeld = false;
+    }
+
+    /** @brief Whether a start's hold is still taken, for a case to read. */
+    Q_INVOKABLE bool
+    captureHeld() const {
+        return m_captureHeld;
+    }
+
     /** @brief A start on a system with its owners (CallHistoryModel::beginSessionWithOwners(), issue #903); the
-     * owners are kept for a case to read: {session, single, scan}. */
+     * owners are kept for a case to read: {session, single, scan}. The start's hold is consumed. */
     Q_INVOKABLE void
     beginSessionWithOwners(const QString& label, const QString& uid, const QString& singleOwnerUid,
                            const QVariantMap& scanEntryOwner) {
+        m_captureHeld = false;
         beginSessionOn(label, uid);
         m_sessionOwners = QVariantMap{{QStringLiteral("session"), m_session},
                                       {QStringLiteral("single"), singleOwnerUid},
@@ -3199,6 +3217,7 @@ class CallLogStore : public QAbstractListModel {
     QString m_systemName = QStringLiteral("Test Site");
     QVariantMap m_channelNames;
     QVariantMap m_sessionOwners;
+    bool m_captureHeld = false;
     QString m_sessionUid = QStringLiteral("test-system");
     QString m_sessionLabel = QStringLiteral("Test Site");
     qint64 m_session = 0;

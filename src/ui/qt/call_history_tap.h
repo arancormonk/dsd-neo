@@ -193,9 +193,8 @@ class CallHistoryTap {
     bool start(Context context);
 
     /** @brief Poll once more, write what is held to the spill, and stop; what could not be written comes back in
-     * Result::unwritten. A tap that is not running returns {}. Without @p bindNewRings that last poll binds no ring
-     * no session owns yet (issue #903: a start is about to begin the session that owns it). */
-    Result stop(bool bindNewRings = true);
+     * Result::unwritten. A tap that is not running returns {}. */
+    Result stop();
 
     bool
     running() const {
@@ -231,7 +230,6 @@ class CallHistoryTap {
     std::condition_variable m_wake;
     std::condition_variable m_polled;
     bool m_stop = false;
-    bool m_bindNewRings = true;
     bool m_pollNow = false;
     bool m_polling = false;
     quint64 m_polls = 0;
@@ -250,8 +248,6 @@ class CallHistoryTap {
     bool m_appendFailing = false;
     bool m_dropReported = false;
     int m_batchPollsRun = 5;
-    /* The tap thread's copy of m_bindNewRings, taken under m_mutex before each poll. */
-    bool m_bindNewRingsRun = true;
 };
 
 } // namespace dsd_qt

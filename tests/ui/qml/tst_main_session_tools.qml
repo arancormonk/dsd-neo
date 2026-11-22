@@ -760,6 +760,7 @@ Item {
                 compare(owners.single, "");
                 compare(Object.keys(owners.scan).length, 1, "a frequency entry was given an owner");
                 compare(owners.scan[list.entries[0].uid], sys.uid);
+                verify(!callHistory.captureHeld(), "the scan start left History's capture held");
                 testContext.setLifecyclePhase(0);
                 app.startSystem(row);
                 owners = callHistory.sessionOwners();
@@ -771,6 +772,7 @@ Item {
                 owners = callHistory.sessionOwners();
                 compare(owners.session, callHistory.session);
                 compare(owners.single, "", "an Explore start owned its calls");
+                verify(!callHistory.captureHeld(), "the Explore start left History's capture held");
             } finally {
                 testContext.resetScanLists();
                 testContext.setLifecyclePhase(2);

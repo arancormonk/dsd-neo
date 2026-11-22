@@ -17072,12 +17072,17 @@ Qt Quick frontend (`src/ui/qt`):
     also gives, and every id when a file cannot be read, is no one's; `scan_list_entry_owner()`). Explore and Signal
     search own nothing. Owners are bound to the decoder ring (`HeardOwners::rings`): a ring belongs to the session it
     was first walked in, by the model or the tap (`heard_owners_bind_ring()`; the tap returns its bindings in
-    `Result::heardRings`), so the last call of A's ring read after B began stays A's. The flush Main runs after the host
-    accepted a start and before the session begins (`UiController::flushHistoryBeforeStart()`, `refresh(..., false)`)
-    binds no ring no session owns yet, and neither does the tap's last poll at a handoff for a new session
-    (`CallHistoryTap::stop(false)`): such a ring can only be the starting run's, so its rows then get no owner and the
-    new session binds it. Decided limit: a regular tap poll in the few milliseconds between the host's accept and
-    `beginSessionWithOwners()` while the app is away could still bind the new ring to the old session. A row heard off any scan is the
+    `Result::heardRings`), so the last call of A's ring read after B began stays A's. Before Main asks the host for a
+    start it calls `holdCaptureForStart()` (the tap handed off, its last poll binding the old run's ring to the session
+    ending, and kept stopped) and `flushHistory()` (the GUI's read binds it too, even a ring no read had met during its
+    run). No starting run's ring exists yet, so both bind only the old run's. The flush after the host's accept
+    (`UiController::flushHistoryBeforeStart()`, `refresh(..., false)`) binds no ring no session owns yet: such a ring
+    can only be the starting run's, whose rows then get no owner until the new session binds it. The next
+    `beginSession*()` consumes the hold and starts the tap on the new session when the app is away
+    (`onApplicationStateChanged()` keeps that state); a start that begins none releases it (`releaseCaptureHold()` on
+    Main's refused and failed starts, and a `QTimer::singleShot(0)` safety release a begun session retires), and a hold
+    keeps `startBackgroundCapture()` from starting the tap meanwhile. With the tap stopped from before the request until
+    the new session, no read binds the starting run's ring to the old session. A row heard off any scan is the
     single owner's; a scan member is its target's (`channel_label`), and an unnamed scan member (`-Y`) or any scan row
     of a saved-system start is no one's; a read without published options resolves none. The tap resolves the owner
     where it reads and the spill line carries it (`ho`). The newest 8 sessions' owners and their rings (at most 32) are
@@ -17098,11 +17103,11 @@ Qt Quick frontend (`src/ui/qt`):
     failed save does). Tests: `UI_QT_CALL_HISTORY_MODEL`
     (`test_heard_*`: once per fragment, live/operator/scan/no-owner/no-options gates, a late proof and a CRC revision,
     a merged conversation in both orders, the ring-bound owner across a relaunch, scan targets, the round trip, the new
-    ring at the pre-start flush, a cleared row's late proof),
+    ring at the pre-start flush, an old ring no read met during its run, a cleared row's late proof),
     `UI_QT_CALL_HISTORY_TAP` (`test_heard_*`: 1,001 groups spilled while suspended, by handoff and by process death; A's
     last call during B's start; a shared scan id, a live-to-file switch and an operator tune through the tap; the
-    teardown backlog; a Forget after a fold, then a death before History's save; a new ring at the session handoff; a
-    Clear while the tap runs; a cleared row's late proof), `UI_QT_HEARD_TALKGROUP_STORE`
+    teardown backlog; a Forget after a fold, then a death before History's save; the start's hold; a Clear while the
+    tap runs; a cleared row's late proof), `UI_QT_HEARD_TALKGROUP_STORE`
     (`test_before_edit_hook`), `UI_QT_SIGNAL_SEARCH` (`testKnownFrequencySessionTargetOwners`), `UI_QT_QML_SESSION_TOOLS`
     (`test_accepted_starts_name_their_heard_owners`).
   - Tests: `UI_QT_CALL_HISTORY_MODEL` (uids, fragments, recording roles, B6), `UI_QT_CALL_HISTORY_TAP` (300 commits
