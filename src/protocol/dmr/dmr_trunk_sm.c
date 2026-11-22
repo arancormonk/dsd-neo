@@ -1535,11 +1535,12 @@ dmr_sm_status_identity_reconcile(dmr_sm_ctx_t* ctx, const dsd_state* state, int 
     dmr_sm_slot_name(ctx, state, slot, &named, 0, now_m);
 }
 
-/* The followed grant's identity names group @p tg (a status named the followed slot's call): kept when it already does.
-   A new identity carries the naming status's CRC provenance (@p crc_flags, DSD_CRC_*), as a grant's does
-   (dmr_sm_take_grant()): the voice sync publishes it later, outside that burst's scope. */
+/* The followed grant's identity names group @p tg on LSN @p lsn (a status named the followed slot's call): kept when it
+   already does. A new identity carries the naming status's CRC provenance (@p crc_flags, DSD_CRC_*), as a grant's does
+   (dmr_sm_take_grant()): the voice sync publishes it later, outside that burst's scope. Its channel is the status's
+   LSN too, so the flags always vouch for the channel published with them, never for the replaced grant's. */
 static void
-dmr_sm_vc_identity_group(dmr_sm_ctx_t* ctx, uint32_t tg, uint8_t crc_flags) {
+dmr_sm_vc_identity_group(dmr_sm_ctx_t* ctx, uint32_t tg, int lsn, uint8_t crc_flags) {
     if (ctx->vc_identity_known && ctx->vc_is_group && (uint32_t)ctx->vc_tg == tg) {
         return;
     }
@@ -1551,6 +1552,8 @@ dmr_sm_vc_identity_group(dmr_sm_ctx_t* ctx, uint32_t tg, uint8_t crc_flags) {
     ctx->vc_identity_known = 1;
     ctx->vc_addresses_known = 1;
     ctx->vc_crc_flags = crc_flags;
+    ctx->vc_lpcn = lsn > 0 ? lsn : 0;
+    ctx->vc_channel_kind = lsn > 0 ? (uint8_t)DSD_CALL_CHANNEL_LSN : (uint8_t)DSD_CALL_CHANNEL_NONE;
 }
 
 void
@@ -1586,7 +1589,7 @@ dmr_sm_status_slot_reconcile(dmr_sm_ctx_t* ctx, const dsd_state* state, int slot
     dmr_sm_slot_name(ctx, state, slot, &named, 0, now_m);
     if (followed_slot) {
         // Reconciled from inside the status burst's CRC scope.
-        dmr_sm_vc_identity_group(ctx, tg, state ? state->event_crc_invalid[state->currentslot & 1] : 0U);
+        dmr_sm_vc_identity_group(ctx, tg, lsn, state ? state->event_crc_invalid[state->currentslot & 1] : 0U);
     }
 }
 
@@ -1799,14 +1802,15 @@ dmr_sm_slot_lc_holds_call(const dmr_sm_ctx_t* ctx, const dsd_state* state, int s
    that holds the slot's call (dmr_sm_slot_lc_holds_call()): an in-place grant naming that call
    (dmr_sm_grant_reconcile_in_place()) renames the followed call for P_CLEAR, but republishing its addresses would start
    another transmission with the grant's talker. Never for a data grant (vc_data_call): voice on its slot is another
-   call, which stays as the voice itself names it (anonymous without an LC). */
+   call, which stays as the voice itself names it (anonymous without an LC). That voice is the slot's first all the
+   same, so the one-shot is spent: a later in-place voice grant never publishes over the call playing there. */
 static void
 dmr_sm_publish_grant_identity(dmr_sm_ctx_t* ctx, dsd_state* state, int s, double now_m) {
-    if (!state || ctx->state != DMR_SM_TUNED || ctx->vc_identity_published != 0 || ctx->vc_data_call
+    if (!state || ctx->state != DMR_SM_TUNED || ctx->vc_identity_published != 0
         || (ctx->vc_slot >= 0 && ctx->vc_slot != s)) {
         return;
     }
-    if (dmr_sm_slot_lc_holds_call(ctx, state, s)) {
+    if (ctx->vc_data_call || dmr_sm_slot_lc_holds_call(ctx, state, s)) {
         ctx->vc_identity_published = 1;
         return;
     }
@@ -2251,10 +2255,33 @@ dmr_sm_data_grant_not_slot_call(const dsd_state* state, int s, const dmr_sm_slot
            && call.phase == DSD_CALL_PHASE_ACTIVE;
 }
 
+/* Whether the active call on slot @p s is on the Hold talkgroup, judged from the canonical call alone (its class,
+   target and talker, published from checked content), never from a slot record: for a slot whose identity is unknown
+   to preemption (dmr_sm_data_grant_not_slot_call()), whose call still holds the receiver by Hold. */
+static int
+dmr_sm_active_call_holds_hold(const dsd_opts* opts, const dsd_state* state, int s) {
+    dsd_call_snapshot call;
+    if (dsd_call_state_get(state, (uint8_t)s, &call) <= 0 || call.phase != DSD_CALL_PHASE_ACTIVE) {
+        return 0;
+    }
+    const int group = call.kind == DSD_CALL_KIND_GROUP_VOICE;
+    const uint64_t target = call.policy_target_id != 0U ? call.policy_target_id : call.ota_target_id;
+    if ((!group && call.kind != DSD_CALL_KIND_PRIVATE_VOICE) || target == 0U || target > UINT32_MAX
+        || call.ota_source_id > UINT32_MAX) {
+        return 0;
+    }
+    dmr_sm_slot_ctx_t voice;
+    dmr_sm_slot_identity_set(&voice, call.kind, (uint32_t)target, (uint32_t)call.ota_source_id, group, 0, DMR_SM_ID_LC,
+                             0, 0, 0.0);
+    dsd_tg_policy_decision decision;
+    return dmr_sm_slot_identity_decision(opts, state, &voice, &decision) && decision.tg_hold_match;
+}
+
 /* Describe each slot of @p members that holds a call to the preemption ledger by its identity (the slot's record on the
    held carrier, else the followed grant's); a slot that holds none, or one whose identity is unknown, is cleared. An
    unbound data grant never stands for the slot's active transmission (dmr_sm_data_grant_not_slot_call()): that call is
-   unknown. */
+   unknown, without the grant's priority or dwell, but a voice call there on the Hold talkgroup still holds by Hold
+   (dmr_sm_active_call_holds_hold()). */
 static void
 dmr_sm_describe_member_slots(const dmr_sm_ctx_t* ctx, const dsd_opts* opts, dsd_state* state, double now_m, int members,
                              dmr_sm_busy_view_t* out) {
@@ -2269,6 +2296,9 @@ dmr_sm_describe_member_slots(const dmr_sm_ctx_t* ctx, const dsd_opts* opts, dsd_
         if (!named || dmr_sm_data_grant_not_slot_call(state, s, &id)) {
             out->unknown_identity = 1;
             (void)dsd_tg_policy_clear_active_call(state, s);
+            if (named && dmr_sm_active_call_holds_hold(opts, state, s)) {
+                out->holds_hold_target = 1;
+            }
             continue;
         }
         if (dmr_sm_describe_identity(opts, state, &id, out->carrier_hz, s, now_m)) {
