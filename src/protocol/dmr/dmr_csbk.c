@@ -1087,7 +1087,7 @@ dmr_cspdu_pf0_p_clear_note_tscc(dsd_opts* opts, dsd_state* state, const uint8_t 
    to it (its talkgroup, either party of a private call, or every MS). */
 static int
 dmr_cspdu_pf0_p_clear_for_followed_call(const dsd_state* state, const dmr_cspdu_p_clear_fields* f) {
-    dmr_sm_ctx_t* ctx = dmr_sm_get_ctx();
+    const dmr_sm_ctx_t* ctx = dmr_sm_get_ctx();
     const int slot = state->currentslot & 1;
     if (f->gi == 0U && (f->target == DMR_CSBK_ALLMSI || f->target == DMR_CSBK_ALLMSID)) {
         return dmr_sm_follows_slot(ctx, slot);
