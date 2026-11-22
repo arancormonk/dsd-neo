@@ -112,12 +112,13 @@ typedef struct m17_state_ext {
        checked fields are left as they are. lsf_unbroken: RF continuity has not broken since the checked LSF bound the
        transmission; set by a checked LSF, cleared by an RF LSF or stream frame that does not end one M17 frame after
        the RF frame before it (a frame lost, or another transmission's frames after a missed EOS, EOT and LSF frame,
-       which take at least three frame periods; m17_note_rf_frame_end(), which also drops the LICH chunks held from
-       before the break). The binding vouches for the stream (m17_link_setup_vouched(): its scan report's fields, its
+       which take at least three frame periods; m17_rf_frame_check()), by an RF frame whose read was cut
+       (m17_rf_frame_cut()) and by one the symbol clock restarted inside; each break also drops the LICH chunks held
+       from before it and the weak LICH streak (m17_rf_continuity_break()). The binding vouches for the stream (m17_link_setup_vouched(): its scan report's fields, its
        checked speech) only while it is undisputed and unbroken. All three are emptied at every transmission boundary
        (m17_confirm_reset()). rf_frame_valid,
        rf_frame_symbol, rf_frame_epoch: where the last RF LSF or stream frame M17 read whole ended
-       (dsd_state::symbolcnt, dsd_state::symbol_clock_epoch; m17_note_rf_frame_end()). */
+       (dsd_state::symbolcnt, dsd_state::symbol_clock_epoch; m17_rf_frame_record()); a cut read leaves none. */
     uint8_t lsf_checked_head[14];
     uint8_t lsf_disputed;
     uint8_t lsf_unbroken;

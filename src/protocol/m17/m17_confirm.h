@@ -101,6 +101,10 @@ void m17_confirm_note_evidence(const dsd_opts* opts, dsd_state* state, m17_evide
 /** @brief Close a frame's accounting; a frame that proved nothing breaks the weak streak. */
 void m17_confirm_end_frame(dsd_state* state);
 
+/** @brief RF continuity broke (issue #890: a frame lost or cut, frames missed, the symbol clock restarted): a clean LICH
+ * before the break and one after it are no two in a row, so the weak streak starts again. */
+void m17_confirm_break_streak(dsd_state* state);
+
 /**
  * @brief A frame the decoder accepted that carries no check of its own (a packet frame before the end-of-transmission
  * frame whose CRC covers the packet) to a scan quiet check, through @p opts (issue #834): PARTIAL, held for

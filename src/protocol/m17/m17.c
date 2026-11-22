@@ -382,39 +382,63 @@ m17_lich_note_other_link(const dsd_state* state, uint8_t counter, const uint8_t*
     }
 }
 
-/* An RF LSF or stream frame M17 read whole ends here (issue #890), before anything of it is decoded. A frame that does
+/* RF continuity broke (issue #890): the scan side's binding is void until the next LSF whose CRC passes
+   (m17_state_ext::lsf_unbroken, set by m17_bind_checked_link()), the LICH chunks held from before the break are dropped,
+   so a rebuilt LSF is made only of chunks received after it, and the weak streak starts again, so a clean LICH on each
+   side of the break makes no pair (m17_confirm_break_streak()). @p g may be NULL (no extension: nothing to void). */
+static void
+m17_rf_continuity_break(dsd_state* state, m17_state_ext* g) {
+    if (g != NULL) {
+        g->lsf_unbroken = 0U;
+    }
+    m17_lich_reset(state);
+    m17_confirm_break_streak(state);
+}
+
+/* An RF LSF or stream frame M17 read whole, checked before anything of it is decoded (issue #890). A frame that does
    not end one M17 frame (192 symbols, within 32, as the strict RF packet rule measures, in one symbol clock epoch)
    after the RF frame before it follows a break in RF continuity: a frame was lost, or it is another transmission's
-   after a missed EOS, EOT and LSF frame. The break voids the scan side's binding (m17_state_ext::lsf_unbroken) until
-   the next LSF whose CRC passed: this LSF frame's own, or one the LICH rebuilds, and the LICH chunks held from before
-   the break are dropped, so that LSF is made only of chunks received after it. An LSF frame whose CRC fails binds
-   nothing, so it never vouches again. With no extension the frames' continuity cannot be told: the held chunks go at
-   every frame (fail closed). */
+   after a missed EOS, EOT and LSF frame (m17_rf_continuity_break()). An LSF frame whose CRC fails binds nothing, so it
+   never vouches again. @p g: the extension, NULL when there is none, and then the frames' continuity cannot be told:
+   the break is taken at every frame (fail closed). */
 static void
-m17_note_rf_frame_end(dsd_state* state) {
+m17_rf_frame_check(dsd_state* state, m17_state_ext* g) {
     enum { M17_RF_FRAME_SYMBOLS = 192, M17_RF_FRAME_SLACK = 32 };
 
-    m17_state_ext* g = m17_ext_st(state);
-    if (g == NULL) {
-        m17_lich_reset(state);
-        return;
-    }
-    const uint32_t since = state->symbolcnt - g->rf_frame_symbol;
-    const int continuous = g->rf_frame_valid != 0U && g->rf_frame_epoch == state->symbol_clock_epoch
+    const uint32_t since = g != NULL ? state->symbolcnt - g->rf_frame_symbol : 0U;
+    const int continuous = g != NULL && g->rf_frame_valid != 0U && g->rf_frame_epoch == state->symbol_clock_epoch
                            && since >= (uint32_t)(M17_RF_FRAME_SYMBOLS - M17_RF_FRAME_SLACK)
                            && since <= (uint32_t)(M17_RF_FRAME_SYMBOLS + M17_RF_FRAME_SLACK);
     if (!continuous) {
-        g->lsf_unbroken = 0U;
-        m17_lich_reset(state);
+        m17_rf_continuity_break(state, g);
     }
-    g->rf_frame_valid = 1U;
-    g->rf_frame_symbol = state->symbolcnt;
-    g->rf_frame_epoch = state->symbol_clock_epoch;
+}
+
+/* Where the RF frame just read ended, for the next frame's continuity check (m17_rf_frame_check()). */
+static void
+m17_rf_frame_record(const dsd_state* state, m17_state_ext* g) {
+    if (g != NULL) {
+        g->rf_frame_valid = 1U;
+        g->rf_frame_symbol = state->symbolcnt;
+        g->rf_frame_epoch = state->symbol_clock_epoch;
+    }
+}
+
+/* An RF LSF or stream frame whose read was cut (a carrier boundary, an input interruption, the input's end): a break
+   in RF continuity at once, whatever the next frame's spacing says (a cut read counts no stood-in symbols), and the
+   next frame is measured from nothing. Never makes the extension. */
+static void
+m17_rf_frame_cut(dsd_state* state) {
+    m17_state_ext* g = m17_state_ext_find(state);
+    m17_rf_continuity_break(state, g);
+    if (g != NULL) {
+        g->rf_frame_valid = 0U;
+    }
 }
 
 /* Whether the transmission's link setup vouches for it (issue #890): a checked LSF bound its CAN, encryption and type
    (dsd_state::m17_lsf_checked), no clean LICH chunk has disputed it since (m17_lich_note_other_link()), and RF
-   continuity has not broken since (m17_state_ext::lsf_unbroken, m17_note_rf_frame_end()); with no M17 extension (out
+   continuity has not broken since (m17_state_ext::lsf_unbroken, m17_rf_continuity_break()); with no M17 extension (out
    of memory) it vouches for nothing. Everything the scan takes from the binding asks here: the activity report's
    fields and the speech it credits. */
 static int
@@ -1956,16 +1980,24 @@ processM17STR(dsd_opts* opts, dsd_state* state) {
        for a frame number with its end flag set. Either way the frame is dropped, as on a sync loss: no LICH chunk, no
        evidence, no voice and no end of the call. */
     const uint32_t carrier_seq = state->carrier_seq;
+    const uint32_t epoch_at_start = state->symbol_clock_epoch;
 
     //load dibits into dibit buffer
     for (i = 0; i < 184; i++) {
         dbuf[i] = (uint8_t)get_dibit_and_analog_signal(opts, state, NULL);
     }
     if (dsd_state_frame_read_lost(state, carrier_seq)) {
+        m17_rf_frame_cut(state);
         DSD_FPRINTF(stderr, "\n");
         return 0;
     }
-    m17_note_rf_frame_end(state);
+    /* RF continuity (issue #890; the extension is made here on a stream's first frame, so a late entry's LICH can be
+       measured). A frame the symbol clock restarted inside (a stream flush during its read) is split: it follows a
+       break, and its own LICH chunk joins no assembly either (dropped below once the frame is decoded). */
+    m17_state_ext* const rf = m17_ext_st(state);
+    m17_rf_frame_check(state, rf);
+    m17_rf_frame_record(state, rf);
+    const int split = state->symbol_clock_epoch != epoch_at_start;
 
     m17_confirm_begin_frame(state);
 
@@ -2005,6 +2037,9 @@ processM17STR(dsd_opts* opts, dsd_state* state) {
             m17_report_scan_activity(opts, state, 0);
         }
         M17prepareStream(opts, state, m17_bits);
+    }
+    if (split) {
+        m17_rf_continuity_break(state, rf);
     }
     m17_confirm_end_frame(state);
 
@@ -2314,6 +2349,7 @@ processM17LSF(dsd_opts* opts, dsd_state* state) {
        stood in, through which the soft Viterbi decode can still clear the CRC and publish and confirm a link setup
        that is not this transmission's. It is dropped, as on a sync loss. */
     const uint32_t carrier_seq = state->carrier_seq;
+    const uint32_t epoch_at_start = state->symbol_clock_epoch;
     m17_capture_soft_symbols(opts, state, soft_symbols);
     /* The input ended inside the frame (a symbol or binary capture's end, a short read, shutdown, a fallback to
        another input): past the end the reader stood in silence or erasures, so the frame counts as cut. */
@@ -2321,15 +2357,24 @@ processM17LSF(dsd_opts* opts, dsd_state* state) {
     if (dsd_state_frame_read_lost(state, carrier_seq)) {
         /* No checked LSF frame: nothing a packet could be assembled behind (the strict RF packet rule). */
         m17_pkt_disarm(state);
+        m17_rf_frame_cut(state);
         DSD_FPRINTF(stderr, "\n");
         return 0;
     }
-    m17_note_rf_frame_end(state);
+    /* RF continuity (issue #890), checked without making the extension: an RF LSF frame requests it once, and only
+       once its CRC passed (m17_finalize_lsf_crc()); the frame end is recorded with whatever that left. An LSF frame the
+       symbol clock restarted inside is split: it binds nothing for the scan side, whatever its CRC says. */
+    m17_rf_frame_check(state, m17_state_ext_find(state));
 
     m17_confirm_begin_frame(state);
     m17_soft_bits_from_symbols(soft_symbols, state, m17_soft_bits);
     const int crc_err = m17_decode_lsf_soft_bits(opts, state, m17_soft_bits);
     m17_confirm_end_frame(state);
+    m17_state_ext* const rf = m17_state_ext_find(state);
+    m17_rf_frame_record(state, rf);
+    if (state->symbol_clock_epoch != epoch_at_start) {
+        m17_rf_continuity_break(state, rf);
+    }
 
     DSD_FPRINTF(stderr, "\n");
     /* The CRC is a check this frame actually ran; a transmission already proved by earlier

@@ -14326,7 +14326,7 @@ endif()
 add_test(NAME M17_GNSS_POSITION COMMAND dsd-neo_test_m17_gnss_position)
 
 # M17 frames an input interruption cut, read through GNU ld --wrap seams around the symbol readers, like the YSF DCH
-# test, and decoded by the real FEC.
+# test, and decoded by the real FEC; calloc is wrapped to count and fail the M17 extension's allocation (issue #890).
 if(NOT APPLE AND NOT WIN32 AND (CMAKE_C_COMPILER_ID MATCHES "GNU|Clang"))
     add_executable(
         dsd-neo_test_m17_frame_cut
@@ -14348,6 +14348,7 @@ if(NOT APPLE AND NOT WIN32 AND (CMAKE_C_COMPILER_ID MATCHES "GNU|Clang"))
         PRIVATE
             -Wl,--wrap=get_dibit_and_analog_signal
             -Wl,--wrap=getDibitAndSoftSymbol
+            -Wl,--wrap=calloc
     )
     add_test(NAME M17_FRAME_CUT COMMAND dsd-neo_test_m17_frame_cut)
 endif()

@@ -6017,10 +6017,15 @@ the implementations from `dsd_engine_trunk_scan_init()` and clears them again on
   the voice-only checked speech asks too, so a disputed stream's speech earns no checked media), and gone from the frame after a
   decoded EOS (the boundary reset, `m17_confirm_reset()`, drops `m17_lsf_checked` and the dispute with it). Any break
   in RF continuity voids the binding too (decided, fail closed): an RF LSF or stream frame that does not end one M17
-  frame (192 symbols, within 32) after the RF frame before it in one symbol clock epoch (`m17_note_rf_frame_end()`,
-  `m17_state_ext::rf_frame_symbol`/`_epoch`) clears `m17_state_ext::lsf_unbroken` and drops the LICH chunks held
-  from before it (`m17_lich_reset()`), and only the next LSF whose CRC passes binds again: an LSF frame, or one the
-  LICH rebuilds from chunks received after the break; an LSF frame whose CRC fails binds nothing, so it never vouches.
+  frame (192 symbols, within 32) after the RF frame before it in one symbol clock epoch (`m17_rf_frame_check()`,
+  `m17_state_ext::rf_frame_symbol`/`_epoch`), a frame whose read was cut (a carrier boundary, an input interruption
+  or the input's end, at once: `m17_rf_frame_cut()`, which also leaves no frame end to measure from) and a frame the
+  symbol clock restarted inside (split: its own LICH chunk is dropped too) each break it: `m17_rf_continuity_break()`
+  clears `m17_state_ext::lsf_unbroken`, drops the LICH chunks held from before it (`m17_lich_reset()`) and the weak
+  LICH streak (`m17_confirm_break_streak()`, so a clean LICH on each side of a break is no pair), and only the next
+  LSF whose CRC passes binds again: an LSF frame, or one the LICH rebuilds from chunks received after the break; an
+  LSF frame whose CRC fails binds nothing, so it never vouches. An RF LSF frame checks continuity without making the
+  extension and records its frame end only after its CRC decided the single request (`m17_finalize_lsf_crc()`).
   A missed EOS, EOT and LSF frame leaves at least three frame periods unheard, so a new transmission is never credited
   with the old LSF's CAN, encryption or type; a frame lost inside one transmission withholds its fields, and its
   speech's checked-media credit, until its LSF is checked again (at least one six-frame LICH cycle). These scan-side

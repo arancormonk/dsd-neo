@@ -146,6 +146,13 @@ m17_confirm_end_frame(dsd_state* state) {
 }
 
 void
+m17_confirm_break_streak(dsd_state* state) {
+    if (state) {
+        state->m17_confirm_weak_streak = 0;
+    }
+}
+
+void
 m17_confirm_note_unchecked_frame(const dsd_opts* opts, dsd_state* state) {
     if (!state || state->m17_confirm_frame_evidence != 0) {
         return;

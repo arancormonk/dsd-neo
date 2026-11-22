@@ -75,6 +75,13 @@ static size_t g_boundary_at = SIZE_MAX;
    or PCM file that ended with the fallback to another input asked for, whose stand-ins getSymbol() counts as symbols,
    so the count says the frame was read whole. */
 static size_t g_input_end_at = SIZE_MAX;
+/* The read at which the symbol clock restarts (SIZE_MAX for none): a stream flush during the frame's read
+   (dsd_state::symbol_clock_epoch), the frame's own symbols read on. */
+static size_t g_epoch_at = SIZE_MAX;
+/* The allocation the size of the M17 extension: the requests counted, and the next one failed while
+   g_fail_ext_alloc is set (issue #890: an RF LSF frame requests it once, after its CRC passed). */
+static int g_fail_ext_alloc;
+static int g_ext_alloc_requests;
 
 enum { TEST_END_EXIT = 0, TEST_END_FALLBACK = 1 };
 
@@ -133,6 +140,9 @@ next_dibit(dsd_state* state, float* symbol) {
     if (g_pos == g_interrupt_at) {
         state->input_interrupted = 1;
     }
+    if (g_pos == g_epoch_at) {
+        state->symbol_clock_epoch++;
+    }
     const int ended = g_pos >= g_input_end_at;
     if (g_pos == g_input_end_at) {
         if (g_input_end_mode == TEST_END_EXIT) {
@@ -156,6 +166,23 @@ next_dibit(dsd_state* state, float* symbol) {
         state->symbolcnt++;
     }
     return dibit;
+}
+
+// NOLINTNEXTLINE(bugprone-reserved-identifier,cert-dcl37-c,cert-dcl51-cpp,misc-use-internal-linkage)
+void* __real_calloc(size_t count, size_t size);
+// NOLINTNEXTLINE(bugprone-reserved-identifier,cert-dcl37-c,cert-dcl51-cpp,misc-use-internal-linkage)
+void* __wrap_calloc(size_t count, size_t size);
+
+void*
+__wrap_calloc(size_t count, size_t size) {
+    if (count == 1U && size == sizeof(m17_state_ext)) {
+        g_ext_alloc_requests++;
+        if (g_fail_ext_alloc != 0) {
+            g_fail_ext_alloc = 0;
+            return NULL;
+        }
+    }
+    return __real_calloc(count, size);
 }
 
 int
@@ -239,6 +266,7 @@ load_randomized_frame(const uint8_t rnd[M17_PAYLOAD_BITS]) {
     g_interrupt_at = SIZE_MAX;
     g_boundary_at = SIZE_MAX;
     g_input_end_at = SIZE_MAX;
+    g_epoch_at = SIZE_MAX;
 }
 
 static void
@@ -403,7 +431,8 @@ has_call(const dsd_state* state) {
    which the LICH's Golay blocks can take for codewords and the Viterbi decode for a frame number with its end flag
    set: a frame read entirely of them ends the call as a terminator would, one cut mid-frame stores a frame number the
    transmission never sent, and one cut late still decodes, its voice included. A cut frame is dropped: no frame number,
-   no LICH chunk, no voice, no evidence, and the call stays as it was. Decoding resumes with the next whole frame. */
+   no LICH chunk, no voice, no evidence, and the call stays as it was; the cut breaks RF continuity, so the chunks held
+   from before it go too (issue #890). Decoding resumes with the next whole frame. */
 static void
 test_stream_frame_cut_by_an_input_interruption_is_dropped(void) {
     static dsd_opts opts;
@@ -427,8 +456,8 @@ test_stream_frame_cut_by_an_input_interruption_is_dropped(void) {
     assert(strcmp(before.source_text, "EF2GH") == 0);
     const int decodes_before = g_codec2_decodes;
     const int evidence_before = g_search_evidence;
-    uint8_t lich_chunks_before[sizeof(state.m17_lsf)];
-    DSD_MEMCPY(lich_chunks_before, state.m17_lsf, sizeof(lich_chunks_before));
+    uint8_t no_chunks[sizeof(state.m17_lsf)];
+    DSD_MEMSET(no_chunks, 0, sizeof(no_chunks));
 
     static const size_t cuts[3] = {0U, 124U, 170U}; /* the whole frame; mid frame; late, the LICH still clears */
     for (size_t c = 0U; c < 3U; c++) {
@@ -447,7 +476,7 @@ test_stream_frame_cut_by_an_input_interruption_is_dropped(void) {
         assert(call.epoch == before.epoch);
         assert(g_codec2_decodes == decodes_before);
         assert(g_search_evidence == evidence_before);
-        assert(memcmp(state.m17_lsf, lich_chunks_before, sizeof(lich_chunks_before)) == 0);
+        assert(memcmp(state.m17_lsf, no_chunks, sizeof(no_chunks)) == 0 && state.m17_lich.held == 0U);
         assert(state.m17_confirmed == 1U);
     }
 
@@ -1105,6 +1134,130 @@ test_rf_gap_voids_the_link_setup_until_a_checked_lsf(void) {
     rf_gap_case(1);
 }
 
+/* A checked CAN 5 voice LSF frame and its first six stream frames, the binding vouched for (issue #890). */
+static void
+bound_stream(dsd_opts* opts, dsd_state* state, const uint8_t* lsf_bits) {
+    const uint8_t bound = DSD_SCAN_ACTIVITY_KNOWN_ENCRYPTED | DSD_SCAN_ACTIVITY_KNOWN_DATA;
+    prepare(opts, state);
+    dsd_test_scan_activity_install();
+    state->synctype = DSD_SYNC_M17_LSF_POS;
+    load_lsf_frame(lsf_bits);
+    assert(processM17LSF(opts, state) == 1);
+    state->synctype = DSD_SYNC_M17_STR_POS;
+    for (uint16_t fn = 0U; fn < 6U; fn++) {
+        load_stream_frame(lsf_bits, (uint8_t)fn, fn);
+        (void)processM17STR(opts, state);
+    }
+    assert(g_test_scan_activity.count >= 1 && g_test_scan_activity.last.known == bound);
+}
+
+/* Issue #890: a stream frame or LSF frame whose read was cut (an input interruption four symbols in, whose stand-ins
+   count no symbols, so the next frame still falls in the spacing window) breaks RF continuity at once: the next clean
+   LICH pair reports anonymous, never the old LSF's fields. */
+static void
+test_cut_read_voids_the_binding(void) {
+    dsd_opts* opts = g_opts;
+    dsd_state* state = g_state;
+    uint8_t lsf_bits[TEST_M17_LSF_BITS];
+    build_lsf_bits(lsf_bits);
+    for (int lsf_cut = 0; lsf_cut <= 1; lsf_cut++) {
+        bound_stream(opts, state, lsf_bits);
+        state->synctype = lsf_cut ? DSD_SYNC_M17_LSF_POS : DSD_SYNC_M17_STR_POS;
+        if (lsf_cut) {
+            load_lsf_frame(lsf_bits);
+        } else {
+            load_stream_frame(lsf_bits, 0U, 6U);
+        }
+        g_interrupt_at = 4U;
+        assert((lsf_cut ? processM17LSF(opts, state) : processM17STR(opts, state)) == 0);
+        state->input_interrupted = 0;
+        state->synctype = DSD_SYNC_M17_STR_POS;
+        dsd_test_scan_activity_reset();
+        for (uint16_t fn = 7U; fn < 10U; fn++) {
+            load_stream_frame(lsf_bits, (uint8_t)(fn % 6U), fn);
+            (void)processM17STR(opts, state);
+        }
+        assert(g_test_scan_activity.count >= 1 && g_test_scan_activity.last.known == 0U);
+        finish(state);
+    }
+}
+
+/* Issue #890: a stream frame the symbol clock restarted inside (a flush at the last dibit of its read) contributes no
+   LICH chunk to the assembly after the break: its chunk 0 and the next frames' chunks 1 to 5 rebuild no LSF, so the
+   reports stay anonymous at that chunk 5. */
+static void
+test_split_stream_frame_gives_no_lich_chunk(void) {
+    dsd_opts* opts = g_opts;
+    dsd_state* state = g_state;
+    uint8_t lsf_bits[TEST_M17_LSF_BITS];
+    build_lsf_bits(lsf_bits);
+    bound_stream(opts, state, lsf_bits);
+    load_stream_frame(lsf_bits, 0U, 6U);
+    g_epoch_at = M17_PAYLOAD_SYMBOLS - 1U;
+    (void)processM17STR(opts, state);
+    dsd_test_scan_activity_reset();
+    for (uint16_t fn = 7U; fn < 12U; fn++) {
+        load_stream_frame(lsf_bits, (uint8_t)(fn % 6U), fn);
+        (void)processM17STR(opts, state);
+    }
+    assert(g_test_scan_activity.count >= 1 && g_test_scan_activity.last.known == 0U);
+    finish(state);
+}
+
+/* Issue #890: one clean LICH on each side of a break in RF continuity (four frame periods unheard) is no pair: the
+   second neither confirms the stream nor reports activity. */
+static void
+test_rf_gap_breaks_the_weak_streak(void) {
+    dsd_opts* opts = g_opts;
+    dsd_state* state = g_state;
+    uint8_t lsf_bits[TEST_M17_LSF_BITS];
+    build_lsf_bits(lsf_bits);
+    prepare(opts, state);
+    dsd_test_scan_activity_install();
+    state->synctype = DSD_SYNC_M17_STR_POS;
+    load_stream_frame(lsf_bits, 0U, 0U);
+    (void)processM17STR(opts, state);
+    state->symbolcnt += 4U * 192U;
+    load_stream_frame(lsf_bits, 1U, 5U);
+    (void)processM17STR(opts, state);
+    assert(state->m17_confirmed == 0U && g_test_scan_activity.count == 0);
+    finish(state);
+}
+
+/* Issue #890: an RF LSF frame requests the M17 extension once, and only after its CRC passed. On a fresh decoder, one
+   whose CRC fails makes no extension; a checked packet-mode one whose single request fails arms nothing, so the
+   packet after it is not decoded, even though a second request would succeed. */
+static void
+test_rf_lsf_frame_requests_the_extension_once(void) {
+    dsd_opts* opts = g_opts;
+    dsd_state* state = g_state;
+    uint8_t lsf_bits[TEST_M17_LSF_BITS];
+    build_packet_lsf_bits(lsf_bits);
+    uint8_t bad_bits[TEST_M17_LSF_BITS];
+    DSD_MEMCPY(bad_bits, lsf_bits, sizeof(bad_bits));
+    bad_bits[200] ^= 1U;
+    prepare(opts, state);
+    g_ext_alloc_requests = 0;
+    state->synctype = DSD_SYNC_M17_LSF_POS;
+    load_lsf_frame(bad_bits);
+    (void)processM17LSF(opts, state);
+    assert(g_ext_alloc_requests == 0 && m17_state_ext_find(state) == NULL);
+    finish(state);
+
+    prepare(opts, state);
+    g_ext_alloc_requests = 0;
+    g_fail_ext_alloc = 1;
+    state->synctype = DSD_SYNC_M17_LSF_POS;
+    load_lsf_frame(lsf_bits);
+    (void)processM17LSF(opts, state);
+    g_fail_ext_alloc = 0;
+    assert(g_ext_alloc_requests == 1);
+    state->synctype = DSD_SYNC_M17_PKT_POS;
+    assert(load_packet_frame("HI", 0) == 1);
+    assert(processM17PKT(opts, state) == 0);
+    finish(state);
+}
+
 #ifdef USE_CODEC2
 /* Issue #890: the same rule for speech. Under a scan, after a checked LSF for CAN 5 and three unheard frame periods,
    another transmission from the same station on CAN 7, joined at chunk 3, plays but earns no checked media until an
@@ -1426,6 +1579,10 @@ main(void) {
     test_rf_gap_voids_the_link_setup_until_a_checked_lsf();
     test_failed_lsf_after_a_gap_vouches_nothing();
     test_lich_chunks_do_not_cross_a_gap();
+    test_cut_read_voids_the_binding();
+    test_split_stream_frame_gives_no_lich_chunk();
+    test_rf_gap_breaks_the_weak_streak();
+    test_rf_lsf_frame_requests_the_extension_once();
 #ifdef USE_CODEC2
     test_stale_link_setup_earns_no_checked_speech();
 #endif
