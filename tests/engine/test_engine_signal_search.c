@@ -4,6 +4,7 @@
  */
 
 #include <assert.h>
+#include <dsd-neo/app_control/commands.h>
 #include <dsd-neo/app_control/rx_tone_view.h>
 #include <dsd-neo/app_control/signal_search.h>
 #include <dsd-neo/core/access_code.h>
