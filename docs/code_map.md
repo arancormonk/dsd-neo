@@ -11208,7 +11208,8 @@ Runtime controls (via `include/dsd-neo/io/rtl_stream_c.h`):
   judged against them instead, so the check matters for a raise that also covers them; a floor with a lower part,
   such as a resampler's transition band inside the span, also trips it, a speed cost; 0 turns the check off, as the
   calibration driver's own parameters do unless asked). The check reads its level from the span itself, so it is
-  blind when a raise fills more than about three quarters of the span and the sidebands with the channel clear: the
+  blind when a raise fills much of the span (about three quarters, less with a dip at the channel; 1.5 dB is enough)
+  and the sidebands with the channel clear: the
   quartile and the sideband floor then both stand on the raise and the channel reads low by about the raise, on both
   policies (a documented limit, docs/signal-search.md "Limits"; the driver's informational `raised` group measures
   it). An invalid complete result says why in

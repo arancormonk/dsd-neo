@@ -207,9 +207,9 @@ typedef struct {
      * the 2% noise puts there, is over this. A capture partly filled by transmitters or a raised floor lifts the
      * reference's lower quartile off the noise (it lands on a higher quantile of the noise that is left). The ratio is
      * judged against the sideband floor where that is lower, so this matters most when the raise covers the sidebands
-     * too; it voids such a reading rather than judging it while part of the span stays on the noise. A raise over more
-     * than about three quarters of the span and the sidebands, the channel clear, is not seen: the level it counts
-     * against comes from the span itself (docs/signal-search.md "Limits"). 0 turns it off; at most 1. */
+     * too; it voids such a reading rather than judging it while much of the span stays on the noise. A raise over most
+     * of the span (about three quarters; less can do it) and the sidebands, the channel clear, is not seen: the level
+     * it counts against comes from the span itself (docs/signal-search.md "Limits"). 0 turns it off; at most 1. */
     float occupancy_max_share;
     /** The threshold for a DSD_SIGNAL_GEOMETRY_AIRSPY_CENTRED capture in place of threshold_db; 0 means threshold_db.
      * Finite, not negative. */

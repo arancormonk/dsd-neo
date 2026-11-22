@@ -1385,18 +1385,24 @@ read 4.88 dB, under the threshold, while the lower of the two kept every reading
 When the raise covers the sidebands too, both noises read high; each sub-window therefore also counts the share of
 the span's bins over the 98th percentile the reference implies for noise, and when that share is more than 5% over
 the 2% noise alone puts there, the request is invalid and that visit gets no skip
-(`DSD_SIGNAL_QUIET_OCCUPANCY_SHARE`). Over the shares simulated (up to 70% of the span) a reference the check keeps is
-at most about 0.3 dB high, and noise alone stays under 1.5%. A floor with a lower part inside the span trips it too:
+(`DSD_SIGNAL_QUIET_OCCUPANCY_SHARE`). A reference the check keeps can still read high: about 0.3 dB in simulation when
+2.6 to 3 dB is raised over part of the span, but a broad, low raise moves few bins over the percentile, and with 70%
+of the span raised 1.5 dB (six transforms a sub-window, 2,000 bins) the check kept every reading and the reference
+read 0.95 dB high on average. Noise alone stays under 1.5%. A floor with a lower part inside the span trips it too:
 a speed cost, never a missed signal.
 
 The check counts bins over a level it takes from the span itself, so it needs part of the span left on the noise.
-When a raise fills more than about three quarters of the span and reaches the channel's sidebands, while the channel
-itself stays clear, the lower quartile and the sideband floor both stand on the raised floor, few bins stand over the
-level they imply, and the check does not see it: the channel reads lower by about the raise, on every receiver. In
-rendered captures with 95% of the span raised 3 dB, an M17 signal 1 dB under its reception threshold read 3.96 dB on
-the RTL capture geometry (100 of 100 readings quiet at 5.0 dB) and 2.03 dB on a native Airspy with a 2 dB dip at the
-channel (99 of 100 quiet at 3.2 dB); raised 10 dB it read under 0 dB on both, and raised 1.5 dB it stayed over both
-thresholds. Such a channel can be skipped while it carries a weak signal. See Limits.
+When a raise fills much of the span and reaches the channel's sidebands, while the channel itself stays clear, the
+lower quartile and the sideband floor both stand on the raised floor, few bins stand over the level they imply, and
+the check does not see it: the channel reads lower by about the raise, on every receiver. Three quarters of the span
+is roughly where that sets in, not a boundary below which the check protects: on a native Airspy with a 2 dB dip at
+the channel, 70% of the span raised 1.5 dB already let 2 of 100 readings of an M17 signal at 5.0 dB S/N read quiet
+at 3.2 dB. In rendered captures with 95% of the span raised, an M17 signal at 6.0 dB S/N read 3.96 dB on the RTL
+capture geometry with a 3 dB raise (100 of 100 readings quiet at 5.0 dB) and 2.03 dB on the native Airspy with the
+dip (99 of 100 quiet at 3.2 dB); raised 10 dB it read under 0 dB on both. A raise of 1.5 dB is enough: the same
+signal at 5.0 dB S/N, 1 dB under its reception threshold, read quiet in 6 of 20 readings on the RTL geometry at
+1.536 Msps and 13 of 20 on the native Airspy with the dip (95% raised on both sides). Such a channel can be skipped
+while it carries a weak signal. See Limits.
 
 The first calibration judged the ratio against the local floor instead, Signal search's trimmed mean of the eight
 sideband blocks 1.5 to 3 widths out. Neighbours on both sides 25 kHz away at +10 to +25 dB lifted that floor by 3 to
@@ -1499,9 +1505,10 @@ levels: their sideband blocks hold the neighbours.
 
 - The conditions are steady signals, with the deterministic power droop inside a DMR burst; propagation fading was
   not simulated, so a signal that fades through a whole reading can read silent.
-- A channel whose capture is raised over more than about three quarters of the reference span and over its own
-  sidebands, with the channel itself clear (for example, dense weak transmitters on every channel round it but this
-  one), reads lower by about the raise, and the occupancy check does not see it. On the RTL-SDR path, on SoapySDR
+- A channel whose capture is raised over much of the reference span (about three quarters or more, though less can
+  do it: 70% on a native Airspy with a dip at the channel) and over its own sidebands, with the channel itself clear
+  (for example, dense weak transmitters on every channel round it but this one), reads lower by about the raise, and
+  the occupancy check does not see it; a raise of 1.5 dB is enough. On the RTL-SDR path, on SoapySDR
   devices and on a native Airspy alike, a weak signal on that channel can then read quiet and be skipped. The
   calibration measures this case only for information (its raised scenes); nothing bounds it.
 - A channel whose sideband floor stands more than 8.7 dB over the capture's noise is never skipped, whatever it

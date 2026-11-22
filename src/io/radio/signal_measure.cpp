@@ -1415,13 +1415,13 @@ dsd_signal_detector_feed(dsd_signal_detector* detector, const float* iq, size_t 
    +0.8 to +1.1 dB at a half (6 to 32 transforms a sub-window; more for the narrowest widths). Where the sidebands stand
    on the channel's own noise, the ratio is judged against them instead (quiet_judged_noise()), so the check is for a
    raise that also covers the sidebands, and for a strong one it voids the reading whatever the denominator while
-   enough of the span stays on the noise. It reads its level from the span itself, so once a raise fills more than
-   about three quarters of the span and the sidebands, with the channel clear, it is blind and the channel reads low by
-   about the raise (a documented limit, docs/signal-search.md "Limits"). Simulated
-   over 6 to 32 transforms and 2,000 to 14,000 bins, a reference the check keeps is at most about 0.3 dB high (a floor
-   raised by only 2.6 to 3 dB over part of the span, which moves fewer bins over the percentile; a broad raise of
-   1.5 dB moves fewer still), and noise alone never reaches it (its share stays under 1.5%). It only voids readings,
-   so it never adds a quiet verdict. */
+   enough of the span stays on the noise. It reads its level from the span itself, so once a raise fills much of the
+   span (about three quarters, less with a dip at the channel) and the sidebands, with the channel clear, it is blind
+   and the channel reads low by about the raise (a documented limit, docs/signal-search.md "Limits"). A reference it
+   keeps can read high: about 0.3 dB in simulation for a floor raised 2.6 to 3 dB over part of the span, but 0.95 dB
+   on average with 70% of the span raised only 1.5 dB (six transforms, 2,000 bins), which moves few bins over the
+   percentile. Noise alone never reaches it (its share stays under 1.5%). It only voids readings, so it never adds a
+   quiet verdict. */
 #define DSD_SIGNAL_QUIET_OCCUPANCY_SHARE      0.05f
 /* A native Airspy's centred capture (DSD_SIGNAL_GEOMETRY_AIRSPY_CENTRED) is judged at its own threshold. Its
    calibration rendered the Airspy's passband in hardware coordinates, and a floor 2 dB lower over the three channel

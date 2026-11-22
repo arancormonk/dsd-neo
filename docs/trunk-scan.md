@@ -1210,10 +1210,14 @@ turned it on).
 ### What the check measures
 
 - The receiver measures the power inside the channel and compares it with the receiver's own noise, read across the
-  whole band it takes in. It takes a low reading of that band (the level three quarters of it stand above), so other
-  transmitters in the band, busy neighbours included, do not raise it. It reads nine back-to-back slices of at least
+  whole band it takes in, or with the noise just beside the channel where that is lower. It takes a low reading of
+  the band (the level three quarters of it stand above), so other transmitters in the band, busy neighbours included,
+  do not raise it, as long as they leave much of the band on the noise: when transmitters or a raised floor fill most
+  of the band and the channel's sides too, with the channel itself clear, both noises read high, the channel reads
+  that much quieter, and a weak signal on it can be skipped (docs/signal-search.md "Limits"). It reads nine back-to-back slices of at least
   10 ms each, so the reading covers at least 90 ms (90 to 96 ms at the RTL-SDR's default 1.536 Msps, depending on the
-  channel width). The channel is silent only when every slice reads less than 5.0 dB above that noise. One busy slice
+  channel width). The channel is silent only when every slice reads less than 5.0 dB above that noise (3.2 dB on a
+  native Airspy, `-i airspy`). One busy slice
   is enough to keep the channel.
 - It also reads the noise just beside the channel, on both sides. If that stands more than 8.7 dB over the band's
   noise, the band's noise does not stand for the noise at the channel, and the check gives up (below).
