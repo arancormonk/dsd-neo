@@ -1547,7 +1547,8 @@ About 2 to 3 minutes in real time (a run stops at 180 s); the CTest TIMEOUT is 4
 `tools/bench_signal_search_tcp.py --rig` runs the same rig for measurements (see [Signal search
 verification](signal-search.md#verification-and-measured-limits)). `TOOLS_BENCH_SIGNAL_SEARCH_TCP` checks the
 bookkeeping the two share on canned lines and a stand-in child: the landing, an absolute run folder (the child runs
-inside it), the refusal of a folder that holds an earlier run's journal, and an optional load average.
+inside it), the refusal of a folder that holds an earlier run's journal, an optional load average, and a transmitter's
+seamless loop (a block that crosses the end of its content continues from its start, not with noise).
 `ENGINE_SIGNAL_SEARCH_RIG_LIMIT_*` check that the rig refuses a negative, overflowing, zero or over-a-day limit.
 
 #### Received tone (CTCSS) on the analog monitor

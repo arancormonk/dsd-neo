@@ -180,8 +180,17 @@ class Transmitter:
         return math.floor(t / self.seconds) * self.seconds
 
     def at_rate(self, rate):
+        """One loop of the content at @p rate, as long as call_at()'s period there, followed by the start of the next:
+        Scene.block() reads a whole block from where call_at() says the block starts, so a block that crosses the end
+        of a loop continues seamlessly into the next instead of filling its rest with noise."""
         if rate not in self.cache:
-            self.cache[rate] = bif.resample_to_fixture_rate(self.baseband, self.native_rate, rate).astype(np.complex64)
+            # Here, not at the top: bench_scan_skip_silent imports this module.
+            from bench_scan_skip_silent import BLOCK
+
+            one = bif.resample_to_fixture_rate(self.baseband, self.native_rate, rate)
+            # The resampler pads its input to whole resampling periods; the loop is the content's own length.
+            period = max(1, min(len(one), round(self.seconds * rate)))
+            self.cache[rate] = one[np.arange(period + BLOCK) % period].astype(np.complex64)
         return self.cache[rate]
 
 

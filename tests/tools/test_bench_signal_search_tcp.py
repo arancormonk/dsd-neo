@@ -8,6 +8,8 @@
   once sent it looking for results/results/stop.
 - A folder that already holds a rig journal is refused: the rig would reopen it and count the earlier run's rows.
 - The load average is optional metadata: None where the platform has none (Windows), not an AttributeError.
+- A transmitter loops its content seamlessly: a block that crosses the end of the content continues from its start,
+  not with noise for the rest of the block.
 
 These run in seconds and never start a decoder or serve a scene.
 """
@@ -162,6 +164,63 @@ class Folder(unittest.TestCase):
         with unittest.mock.patch.object(bench, "run_rig") as run_rig, unittest.mock.patch("sys.stderr"):
             self.assertEqual(bench.rig_main(args), 2)
         run_rig.assert_not_called()
+
+
+class SilentRng:
+    """A scene noise source that adds nothing, so a block holds only the transmitter."""
+
+    def standard_normal(self, n, dtype):
+        return bench.np.zeros(n, dtype=dtype)
+
+
+class Loop(unittest.TestCase):
+    RATE = 1152000
+
+    def setUp(self):
+        self.scan_bench = importlib.import_module("bench_scan_skip_silent")
+        np = bench.np
+        # Content at the stream rate, so no resampling: unit magnitude, a different phase on every sample, ending
+        # 1000 samples into a block.
+        self.length = 3 * self.scan_bench.BLOCK + 1000
+        phases = np.random.default_rng(1).uniform(-np.pi, np.pi, self.length)
+        self.content = np.exp(1j * phases)
+        self.tx = bench.Transmitter("tx", FREQ, samples=(self.content, self.RATE), snr_db=40.0)
+
+    def block_at(self, first):
+        """Scene.block() of a silent scene centred on the transmitter, @p first samples into a loop of its content."""
+        np = bench.np
+        scene = unittest.mock.Mock(rng=SilentRng(), channels=[self.tx], sample_index=0)
+        scene.sample_time = (2 * self.length + first) / self.RATE
+        raw = self.scan_bench.Scene.block(scene, FREQ, self.RATE)
+        out = np.frombuffer(raw, dtype="u1").astype(np.float64) - 127.5
+        return out[::2] + 1j * out[1::2]
+
+    def test_a_block_across_the_end_continues_from_the_start(self):
+        np = bench.np
+        block = self.scan_bench.BLOCK
+        first = 3 * block
+        iq = self.block_at(first)
+        # Every sample carries the transmitter (about 59 steps here), none is the scene's silence.
+        self.assertGreater(float(np.min(np.abs(iq))), 30.0)
+        # And in its phase: the last 1000 samples of the content, then its first block - 1000.
+        expected = np.concatenate([self.content[first:], self.content[: block - (self.length - first)]])
+        error = np.angle(iq * np.conj(expected))
+        self.assertLess(float(np.max(np.abs(error))), 0.05)
+
+    def test_a_block_at_the_end_starts_the_next_loop(self):
+        np = bench.np
+        iq = self.block_at(self.length)
+        expected = self.content[: self.scan_bench.BLOCK]
+        self.assertLess(float(np.max(np.abs(np.angle(iq * np.conj(expected))))), 0.05)
+
+    def test_shorter_than_a_block(self):
+        np = bench.np
+        short = self.content[:1000]
+        self.tx = bench.Transmitter("tx", FREQ, samples=(short, self.RATE), snr_db=40.0)
+        self.length = len(short)
+        iq = self.block_at(400)
+        expected = short[(400 + np.arange(self.scan_bench.BLOCK)) % len(short)]
+        self.assertLess(float(np.max(np.abs(np.angle(iq * np.conj(expected))))), 0.05)
 
 
 class LoadAverage(unittest.TestCase):
