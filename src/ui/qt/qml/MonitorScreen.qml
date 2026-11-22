@@ -185,14 +185,43 @@ Item {
     readonly property bool otherPrivate: otherSlot !== 0 && Util.callIsPrivate(otherKind)
     // The strip's one line: a talkgroup call names its talkgroup beside its name, as
     // before; a private call and a call no party named read as the hero would.
-    readonly property string otherIdentity: {
-        if (otherPrivate || Util.callIsAnonymous(otherTg, otherTgId, otherSrc, otherProtocol))
-            return Util.callHeadline(otherKind, otherName, otherTg, otherTgId, otherTgLabel, otherSrc, otherProtocol);
-        if (otherTgId > 0 && otherName === otherTg)
-            return Util.talkgroupHeadline(otherName, otherTg, otherTgId);
-        if (otherTg.length === 0)
-            return otherName;
-        return otherName.length > 0 ? otherName + " · TG " + otherTg : "TG " + otherTg;
+    readonly property string otherIdentity: slotIdentity(otherSlot)
+    // Slot @p slot's identity line, from that slot's own readings.
+    function slotIdentity(slot) {
+        if (!metrics || (slot !== 1 && slot !== 2))
+            return "";
+        var p = "slot" + slot;
+        var kind = metrics[p + "CallKind"];
+        var name = metrics[p + "CallName"];
+        var tg = metrics[p + "TgText"];
+        var tgId = metrics[p + "TgId"];
+        var tgLabel = metrics[p + "TgLabel"];
+        var src = metrics[p + "SrcText"];
+        var protocol = metrics[p + "ProtocolLabel"];
+        if (Util.callIsPrivate(kind) || Util.callIsAnonymous(tg, tgId, src, protocol))
+            return Util.callHeadline(kind, name, tg, tgId, tgLabel, src, protocol);
+        if (tgId > 0 && name === tg)
+            return Util.talkgroupHeadline(name, tg, tgId);
+        if (tg.length === 0)
+            return name;
+        return name.length > 0 ? name + " · TG " + tg : "TG " + tg;
+    }
+    // What the strip's node says, from one reading of the lead slot and the
+    // other slot's call (r7 K2): stripSlot, stripIdle and the other slot's
+    // properties are separate bindings that settle one after another, so a
+    // name built from them said "SLOT 2 · idle", the slot still on air, when
+    // the leading slot 1 ended and slot 2 took the hero in one publication.
+    // Idle, the slot alone (r5 H1); with a call, the slot, its identity and
+    // each flag it has, drawn or not (issue #782).
+    function stripSpeech() {
+        var lead = metrics ? metrics.leadSlot : 0;
+        var other = lead === 1 ? 2 : lead === 2 ? 1 : 0;
+        if (other === 0 || metrics["slot" + other + "CallState"] !== 2)
+            return qsTr("SLOT %1 · idle").arg(lead === 2 ? 1 : 2);
+        var p = "slot" + other;
+        return [qsTr("SLOT %1").arg(other), Util.oneLine(slotIdentity(other)), Util.callIsPrivate(metrics[p + "CallKind"]) ? otherPrivateTag.label : "", metrics[p + "CallEmergency"] ? otherEmergencyTag.label : "", metrics[p + "CallEnc"] ? otherEncTag.label : ""].filter(function (part) {
+            return part.length > 0;
+        }).join(", ");
     }
 
     component AvoidAction: OutlineButton {
@@ -1672,10 +1701,11 @@ Item {
                 // call, the slot, the call and its tags, each even where the
                 // line has no room to draw it, since the kind of call is not
                 // something to drop for a screen reader (issue #782). Built from
-                // the call's state, never from what the children show, so a
-                // call ending renames it once (r6 J3: the label changed before
-                // the identity hid, and the node was renamed "SLOT 2 · idle, TG
-                // 4002", then "SLOT 2 · idle"). Unnamed while covered.
+                // the readings in one go (stripSpeech()), never from what the
+                // children show, so a call ending renames it once (r6 J3: the
+                // label changed before the identity hid, and the node was
+                // renamed "SLOT 2 · idle, TG 4002", then "SLOT 2 · idle").
+                // Unnamed while covered.
                 Item {
                     id: otherSlotLine
                     objectName: "otherSlotNode"
@@ -1686,15 +1716,7 @@ Item {
                     Accessible.role: Accessible.StaticText
                     Accessible.focusable: navigationAllowed && visible
                     Accessible.ignored: !navigationAllowed || !visible
-                    Accessible.name: {
-                        if (!navigationAllowed || !visible)
-                            return "";
-                        if (screen.stripIdle)
-                            return qsTr("SLOT %1 · idle").arg(screen.stripSlot);
-                        return [qsTr("SLOT %1").arg(screen.otherSlot), Util.oneLine(screen.otherIdentity), screen.otherPrivate ? otherPrivateTag.label : "", screen.otherEmergency ? otherEmergencyTag.label : "", screen.otherEnc ? otherEncTag.label : ""].filter(function (part) {
-                            return part.length > 0;
-                        }).join(", ");
-                    }
+                    Accessible.name: !navigationAllowed || !visible ? "" : screen.stripSpeech()
 
                     // Drawn text only, in MicroLabel's look: no node of its own
                     // (r4 F3). It comes and goes with the room the line has, and a

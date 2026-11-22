@@ -318,7 +318,8 @@ Item {
         // identity's visibility, it was renamed twice when slot 2's call ended with slot 1 still on air: first to
         // "SLOT 2 · idle, 4002" (the label had changed, the identity was still shown), then to "SLOT 2 · idle". Each
         // name the node takes across the change is recorded as it is set: exactly one, the idle name, with one
-        // NameChanged from the node; and back once to the call's name as a call starts again.
+        // NameChanged from the node; and back once to the call's name as a call starts again. Also as the leading call
+        // ends and the strip turns to the other slot (r7 K2).
         function test_h2_the_strip_renames_once_as_its_call_ends() {
             var monitor = findChild(app, "monitorScreen");
             var node = findChild(monitor, "otherSlotNode");
@@ -355,6 +356,33 @@ Item {
                 compare(JSON.stringify(names), JSON.stringify(["SLOT 2, TG 4002"]), "the names the strip took as a call started");
                 owned = counts.owners["otherSlotNode"] || {};
                 compare(owned.NameChanged || 0, 1, "the strip's renames as a call started: " + churn(counts));
+                // r7 K2: the leading call ends and slot 2 takes the hero in one snapshot; the strip turns to slot 1,
+                // now idle. Its name came from separate bindings for the slot and its state, which settle one after
+                // another, and said "SLOT 2 · idle", the slot still on air, before "SLOT 1 · idle". MetricsModel takes
+                // the whole snapshot before it signals; the fixture's map signals key by key, so the case sets the
+                // ended state before the lead, which is what the first signal of a snapshot finds.
+                names = [];
+                testContext.startAccessibilityCount();
+                testContext.setMetric("slot1CallState", 1);
+                testContext.setMetric("leadSlot", 2);
+                waitForRendering(app.contentItem);
+                wait(20);
+                counts = testContext.accessibilityCount();
+                testContext.stopAccessibilityCount();
+                compare(JSON.stringify(names), JSON.stringify(["SLOT 1 · idle"]), "the names the strip took as the leading call ended");
+                owned = counts.owners["otherSlotNode"] || {};
+                compare(owned.NameChanged || 0, 1, "the strip's renames as the leading call ended: " + churn(counts));
+                // And back: slot 1 on air again under slot 2's lead, its call in the strip.
+                names = [];
+                testContext.startAccessibilityCount();
+                testContext.setMetric("slot1CallState", 2);
+                waitForRendering(app.contentItem);
+                wait(20);
+                counts = testContext.accessibilityCount();
+                testContext.stopAccessibilityCount();
+                compare(JSON.stringify(names), JSON.stringify(["SLOT 1, TG 4001"]), "the names the strip took as slot 1's call came back");
+                owned = counts.owners["otherSlotNode"] || {};
+                compare(owned.NameChanged || 0, 1, "the strip's renames as slot 1's call came back: " + churn(counts));
             } finally {
                 node.Accessible.nameChanged.disconnect(record);
                 testContext.stopAccessibilityCount();
