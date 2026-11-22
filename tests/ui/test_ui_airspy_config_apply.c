@@ -7,6 +7,7 @@
 #include <dsd-neo/runtime/cli.h>
 #include <math.h>
 #include <stdint.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include "../../src/app_control/app_command_queue.c" // NOLINT(bugprone-suspicious-include)
@@ -24,6 +25,7 @@
 #include "dsd-neo/runtime/analog_channel.h"
 #include "dsd-neo/runtime/config.h"
 #include "dsd-neo/runtime/decode_mode.h"
+#include "dsd-neo/runtime/squelch.h"
 
 /* The drain's own dispatch of a config apply; what a scan list toggle would retain does not apply to one. */
 static int
@@ -473,9 +475,99 @@ test_serial_cli_override(void) {
     }
 }
 
+/*
+ * Issue #899: a config apply that fails on a live Airspy puts the analog default back where it stood. An NFM session
+ * runs --squelch-analog-default noise+10 over its own Off. A config with no squelch keys whose Airspy controls fail
+ * (in place) or whose reopen fails (rolled back to the Airspy that ran) leaves the default in force over that Off, as
+ * before the apply: before the fix the in-place failure put noise back in the squelch fields with the default marked
+ * out, so the next sync took noise as the session's own and a digital decode kept it. A config whose squelch keys
+ * ended the default keeps it ended after either failure, over the Off the session had beneath it, never the default's
+ * noise left as a squelch someone set.
+ */
+static void
+test_config_failure_keeps_the_analog_default(void) {
+    for (int case_index = 0; case_index < 4; ++case_index) {
+        const int keys = case_index & 1;
+        const int reopen = (case_index >> 1) & 1;
+        dsd_opts* opts = calloc(1, sizeof(*opts));
+        dsd_state* state = calloc(1, sizeof(*state));
+        struct dsd_app_command* cmd = calloc(1, sizeof(*cmd));
+        dsdneoUserConfig* cfg = calloc(1, sizeof(*cfg));
+        assert(opts && state && cmd && cfg);
+        initOpts(opts);
+        initState(state);
+        opts->audio_in_type = AUDIO_IN_RTL;
+        opts->rtlsdr_center_freq = 851000000;
+        opts->rtl_dsp_bw_khz = 12;
+        opts->rtl_volume_multiplier = 2;
+        opts->rtl_squelch_level = 0.0;
+        opts->analog_only = 1;
+        opts->analog_demod = DSD_ANALOG_DEMOD_FM;
+        DSD_SNPRINTF(opts->audio_in_dev, sizeof opts->audio_in_dev, "airspy");
+        state->rtl_ctx = (RtlSdrContext*)&test_context;
+        assert(dsd_squelch_analog_default_parse(opts, "noise+10", NULL, 0U) == 0);
+        assert(dsd_squelch_analog_default_sync(opts, state) == 1);
+        assert(opts->squelch_default_state == DSD_SQUELCH_DEFAULT_APPLIED);
+        cfg->has_input = 1;
+        cfg->input_source = DSDCFG_INPUT_AIRSPY;
+        cfg->airspy = opts->airspy;
+        cfg->rtl_bw_khz = 12;
+        cfg->rtl_volume = 2;
+        cfg->has_output = 1;
+        cfg->output_backend = DSDCFG_OUTPUT_NULL;
+        if (keys) {
+            cfg->rtl_sql = -60;
+            cfg->rtl_sql_is_set = 1;
+        }
+        if (reopen) {
+            cfg->airspy.sample_rate = 2500000;
+            test_fail_create = 1;
+        } else {
+            test_fail_controls = 1;
+        }
+        cmd->id = DSD_APP_CMD_CONFIG_APPLY;
+        cmd->n = sizeof(*cfg);
+        DSD_MEMCPY(cmd->data, cfg, sizeof(*cfg));
+        test_creates = 0;
+        assert(apply_config_cmd(opts, state, cmd) == UI_CMD_APPLY_FAILED);
+        const int want_state = keys ? DSD_SQUELCH_DEFAULT_ENDED : DSD_SQUELCH_DEFAULT_APPLIED;
+        const int want_mode = keys ? DSD_SQUELCH_MODE_LEVEL : DSD_SQUELCH_MODE_NOISE;
+        if (opts->squelch_default_state != want_state || opts->rtl_squelch_mode != want_mode
+            || (keys && opts->rtl_squelch_level > 0.0)
+            || (!keys
+                && (opts->squelch_default_base_mode != DSD_SQUELCH_MODE_LEVEL
+                    || opts->squelch_default_base_level > 0.0))) {
+            fprintf(stderr,
+                    "failed %s config %s squelch keys: default state %d, fields mode %d level %g, base mode %d level "
+                    "%g; want state %d, mode %d over an Off\n",
+                    reopen ? "reopen" : "in-place", keys ? "with" : "without", opts->squelch_default_state,
+                    opts->rtl_squelch_mode, opts->rtl_squelch_level, opts->squelch_default_base_mode,
+                    opts->squelch_default_base_level, want_state, want_mode);
+            assert(0);
+        }
+        /* A switch to a digital decode then runs the session's own Off, never the default's noise. */
+        opts->analog_only = 0;
+        opts->frame_dmr = 1;
+        (void)dsd_squelch_analog_default_sync(opts, state);
+        assert(opts->rtl_squelch_mode == DSD_SQUELCH_MODE_LEVEL && !(opts->rtl_squelch_level > 0.0));
+        test_fail_controls = 0;
+        test_fail_create = 0;
+        state->rtl_ctx = NULL;
+        freeState(state);
+        free(cfg);
+        free(cmd);
+        free(state);
+        free(opts);
+    }
+}
+
 int
 main(int argc, char** argv) {
     assert(argc == 2);
+    if (strcmp(argv[1], "D899") == 0) {
+        test_config_failure_keeps_the_analog_default();
+        return 0;
+    }
     if (strcmp(argv[1], "M2") == 0) {
         test_serial_cli_override();
     } else if (strcmp(argv[1], "M11") == 0) {

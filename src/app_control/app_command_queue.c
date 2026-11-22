@@ -1702,6 +1702,28 @@ ui_restore_radio_input(dsd_opts* opts, const ui_radio_input* in) {
     opts->soapy_bandwidth_hz = in->soapy_bandwidth_hz;
 }
 
+/* The squelch fields and the analog default's standing @p in holds (issue #899), as dsd_squelch_standing_capture()
+   takes them. */
+static void
+ui_radio_input_squelch_standing(const ui_radio_input* in, dsd_squelch_standing* out) {
+    DSD_MEMSET(out, 0, sizeof(*out));
+    out->level = in->rtl_squelch_level;
+    out->mode = in->rtl_squelch_mode;
+    out->margin_db = in->rtl_squelch_margin_db;
+    out->default_state = in->squelch_default_state;
+    out->base_level = in->squelch_default_base_level;
+    out->base_mode = in->squelch_default_base_mode;
+    out->base_margin_db = in->squelch_default_base_margin_db;
+}
+
+/* Whether the config apply running over the input @p before holds ended the analog default (issue #899): its squelch
+   keys are a squelch someone set, which a rollback of its input does not undo. */
+static int
+ui_cfg_ended_default(const dsd_opts* opts, const ui_radio_input* before) {
+    return opts->squelch_default_state == DSD_SQUELCH_DEFAULT_ENDED
+           && before->squelch_default_state != DSD_SQUELCH_DEFAULT_ENDED;
+}
+
 /* Put back the configured receive settings @p before holds, the ones a config's [mode], [demod] and [analog] set: the
    decoders, modulation, inversion and slot policy, the analog monitor and its kind, both configured analog widths,
    the output name and the symbol timing, and [analog]'s tone policy. The other row-scoped options that lead the
@@ -1849,9 +1871,15 @@ ui_cfg_settle_reopen(dsd_opts* opts, dsd_state* state, int rc, const ui_cfg_roll
             return -1;
         }
     }
+    /* An input put back puts back the analog default's standing with it, unless the config ended it: its squelch keys
+       stay a squelch someone set, over the squelch the session had beneath the default (issue #899). */
+    const int config_ended = ui_cfg_ended_default(opts, &before->input);
     ui_restore_receive_settings(opts, state, &before->receive);
     ui_cfg_restore_mode_extras(opts, state, &before->mode);
     ui_restore_radio_input(opts, &before->input);
+    if (config_ended) {
+        dsd_squelch_analog_default_end(opts);
+    }
     int capture_stopped = 0;
     if (svc_rtl_restart_recovery_locked(opts, state, before->input.stream_running, before->input.iq_capture_requested,
                                         &before->input.failure, &capture_stopped)
@@ -4989,9 +5017,20 @@ apply_cfg_radio_input_tuned(dsd_opts* opts, dsd_state* state, const dsdneoUserCo
     /* The Airspy path compares the settings the config asks for with the ones the Airspy runs. */
     opts->airspy = in->airspy;
     DSD_SNPRINTF(opts->audio_in_dev, sizeof opts->audio_in_dev, "%s", in->audio_in_dev);
-    const svc_airspy_tuning tuning = {in->rtlsdr_center_freq,    in->rtl_dsp_bw_khz,   in->rtl_squelch_level,
-                                      in->rtl_volume_multiplier, in->rtl_squelch_mode, in->rtl_squelch_margin_db,
-                                      in->rtl_dsp_bw_source};
+    svc_airspy_tuning tuning;
+    DSD_MEMSET(&tuning, 0, sizeof tuning);
+    tuning.frequency = in->rtlsdr_center_freq;
+    tuning.bandwidth = in->rtl_dsp_bw_khz;
+    tuning.bandwidth_source = in->rtl_dsp_bw_source;
+    tuning.volume = in->rtl_volume_multiplier;
+    tuning.squelch = in->rtl_squelch_level;
+    tuning.squelch_mode = in->rtl_squelch_mode;
+    tuning.squelch_margin_db = in->rtl_squelch_margin_db;
+    tuning.has_squelch_standing = 1;
+    ui_radio_input_squelch_standing(in, &tuning.squelch_standing);
+    /* The config ended the analog default (its squelch keys, issue #899): a failed apply puts back the squelch the
+       session had beneath it, and keeps the default out. */
+    const int config_ended = ui_cfg_ended_default(opts, in);
     int rc = 0;
     if (!state->rtl_ctx
         || svc_airspy_settings_reopen(&in->airspy, &cfg->airspy, tuning.bandwidth, opts->rtl_dsp_bw_khz, tuning.volume,
@@ -5002,6 +5041,9 @@ apply_cfg_radio_input_tuned(dsd_opts* opts, dsd_state* state, const dsdneoUserCo
         }
     } else {
         rc = svc_airspy_apply_config_locked(opts, state, &cfg->airspy, &tuning);
+        if (rc != 0 && config_ended) {
+            dsd_squelch_analog_default_end(opts);
+        }
     }
     apply_cfg_live_rtl_ppm_request(opts, cfg, in->audio_in_type);
     return rc;

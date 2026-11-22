@@ -26,6 +26,7 @@
 #include <dsd-neo/runtime/config.h>
 #include <dsd-neo/runtime/decode_mode.h>
 #include <dsd-neo/runtime/rigctl_passband.h>
+#include <dsd-neo/runtime/squelch.h>
 #include <stddef.h>
 #include <stdint.h>
 #include "next_start_check.h"
@@ -1249,6 +1250,10 @@ typedef struct {
     int squelch_margin_db;
     /* Where the bandwidth came from (dsd_opts::rtl_dsp_bw_source), put back with it. */
     int bandwidth_source;
+    /* With @c has_squelch_standing, the squelch fields and the analog default's standing (issue #899), put back whole in
+       place of the three squelch fields above, so a failed apply leaves the default where it stood. */
+    int has_squelch_standing;
+    dsd_squelch_standing squelch_standing;
 } svc_airspy_tuning;
 
 /** Apply native settings and shared tuning together; restore prior tuning on failure.

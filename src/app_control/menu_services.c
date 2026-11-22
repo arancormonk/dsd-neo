@@ -2352,9 +2352,13 @@ static void
 svc_airspy_restore_tuning(dsd_opts* opts, const svc_airspy_tuning* tuning) {
     opts->rtlsdr_center_freq = tuning->frequency;
     dsd_opts_set_rtl_dsp_bw(opts, tuning->bandwidth, tuning->bandwidth_source);
-    opts->rtl_squelch_level = tuning->squelch;
-    opts->rtl_squelch_mode = tuning->squelch_mode;
-    opts->rtl_squelch_margin_db = tuning->squelch_margin_db;
+    if (tuning->has_squelch_standing) {
+        dsd_squelch_standing_restore(opts, &tuning->squelch_standing);
+    } else {
+        opts->rtl_squelch_level = tuning->squelch;
+        opts->rtl_squelch_mode = tuning->squelch_mode;
+        opts->rtl_squelch_margin_db = tuning->squelch_margin_db;
+    }
     opts->rtl_volume_multiplier = tuning->volume;
 }
 
@@ -2443,6 +2447,8 @@ svc_airspy_apply_live(dsd_opts* opts, dsd_state* state, const dsd_airspy_config*
             return rc;
         }
     }
+    /* What the channel runs, the analog default where it belongs (issue #899), not the bare value an apply wrote. */
+    (void)dsd_squelch_analog_default_sync(opts, state);
     if (svc_airspy_squelch_changed(previous_tuning, opts)) {
         svc_rtl_push_squelch(opts);
     }
@@ -2493,9 +2499,17 @@ svc_airspy_apply(dsd_opts* opts, dsd_state* state, const dsd_airspy_config* conf
     if (!opts) {
         return -1;
     }
-    const svc_airspy_tuning tuning = {opts->rtlsdr_center_freq,    opts->rtl_dsp_bw_khz,   opts->rtl_squelch_level,
-                                      opts->rtl_volume_multiplier, opts->rtl_squelch_mode, opts->rtl_squelch_margin_db,
-                                      opts->rtl_dsp_bw_source};
+    svc_airspy_tuning tuning;
+    DSD_MEMSET(&tuning, 0, sizeof tuning);
+    tuning.frequency = opts->rtlsdr_center_freq;
+    tuning.bandwidth = opts->rtl_dsp_bw_khz;
+    tuning.bandwidth_source = opts->rtl_dsp_bw_source;
+    tuning.volume = opts->rtl_volume_multiplier;
+    tuning.squelch = opts->rtl_squelch_level;
+    tuning.squelch_mode = opts->rtl_squelch_mode;
+    tuning.squelch_margin_db = opts->rtl_squelch_margin_db;
+    tuning.has_squelch_standing = 1;
+    dsd_squelch_standing_capture(opts, &tuning.squelch_standing);
     return svc_airspy_apply_config_impl(opts, state, config, &tuning, 0, out_capture_stopped);
 }
 

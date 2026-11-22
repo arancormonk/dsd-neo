@@ -5256,7 +5256,9 @@ suite runs under this compiler.
     caller pushes. Snapshots of the configured squelch take the base (`dsd_squelch_configured_fields()`: the scan
     scope's captures, config saves, the Airspy spec's kept squelch), so neither a scope's configured setting nor a save
     ever holds the default; `ui_radio_input` keeps the whole standing, so an input put back puts back whether its spec
-    ended it. A step that puts the options back exactly (a -Y row's staging in `dsd_scan_mode_prepare()` and
+    ended it, and so does a failed Airspy apply (`svc_airspy_tuning::squelch_standing`, in place or reopened), except
+    that a config apply whose squelch keys ended the default keeps it ended over the session's own squelch when its
+    input is rolled back (`ui_cfg_ended_default()` in `ui_cfg_settle_reopen()` and `apply_cfg_radio_input_tuned()`). A step that puts the options back exactly (a -Y row's staging in `dsd_scan_mode_prepare()` and
     `channel_scan_tune_staged()`, a suspended scope's restart on the profile that ran,
     `svc_rtl_start_on_the_profile_that_ran_locked()` with `dsd_scan_mode_suspended_squelch()`) saves the fields and the
     standing apart (`dsd_squelch_standing`), so the default a row on air runs is never swapped for the configured
