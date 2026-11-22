@@ -800,7 +800,7 @@ generatedRowSquelch(const QString& extraArgs, bool radio, const QList<RowSquelch
         opts->rigctl_sockfd != DSD_INVALID_SOCKET && dsd_engine_trunk_scan_init(opts, state, error, sizeof error) == 0;
     check(initialized);
     if (!initialized) {
-        std::fprintf(stderr, "generated row squelch initialization: %s\n", error);
+        DSD_FPRINTF(stderr, "generated row squelch initialization: %s\n", error);
     }
     if (initialized) {
         check(dsd_engine_trunk_scan_target_count(state) == static_cast<unsigned>(rows.size()));
@@ -809,9 +809,9 @@ generatedRowSquelch(const QString& extraArgs, bool radio, const QList<RowSquelch
             const RowSquelch& want = rows.at(i % rows.size());
             if (!squelchIs(opts, want)) {
                 ++failures;
-                std::fprintf(stderr, "row %d squelch (%s): mode %d margin %d level %g, want mode %d margin %d %d dB\n",
-                             static_cast<int>(i), radio ? "radio" : "audio", opts->rtl_squelch_mode,
-                             opts->rtl_squelch_margin_db, opts->rtl_squelch_level, want.mode, want.margin, want.db);
+                DSD_FPRINTF(stderr, "row %d squelch (%s): mode %d margin %d level %g, want mode %d margin %d %d dB\n",
+                            static_cast<int>(i), radio ? "radio" : "audio", opts->rtl_squelch_mode,
+                            opts->rtl_squelch_margin_db, opts->rtl_squelch_level, want.mode, want.margin, want.db);
             }
             if (radio) {
                 // The receiver runs the row's squelch, and the readout's badge says whose it is.

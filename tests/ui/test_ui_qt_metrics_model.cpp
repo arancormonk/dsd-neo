@@ -26,6 +26,7 @@
 #include <cmath>
 #include <cstring>
 #include <dsd-neo/core/receive_types.h>
+#include <memory>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -3177,9 +3178,13 @@ publish_squelch_state(dsd_state* published, const dsd_state* state) {
 
 static void
 test_squelch_answer_from_the_state_publication() {
-    static dsd_opts opts;
-    static dsd_state state;
-    static dsd_state published; // what the frontend reads: the state the decoder last published
+    /* Heap-held for the case's duration (each dsd_state is about 2 MiB). */
+    const auto opts_storage = std::make_unique<dsd_opts>();
+    const auto state_storage = std::make_unique<dsd_state>();
+    const auto published_storage = std::make_unique<dsd_state>(); // what the frontend reads: the last publication
+    dsd_opts& opts = *opts_storage;
+    dsd_state& state = *state_storage;
+    dsd_state& published = *published_storage;
     initOpts(&opts);
     initState(&state);
     initState(&published);
