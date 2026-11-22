@@ -1140,6 +1140,10 @@ Window {
     // write back to (radio controls, the decryption profile for future starts).
     readonly property string sessionSavedSystemUid: !mainRoot.exploring && !mainRoot.sessionScanList && mainRoot.sessionSystem
         && !mainRoot.sessionSystem.signalSearch ? (mainRoot.sessionSystem.uid || "") : ""
+    // Issue #899 (B11): the squelch that saved system keeps ("" for none), which the Radio and Squelch sheets clear.
+    readonly property string sessionSavedSquelch: mainRoot.sessionSavedSystemUid.length > 0
+        && mainRoot.sessionSystem.radioSettings && mainRoot.sessionSystem.radioSettings.squelch !== undefined
+        ? String(mainRoot.sessionSystem.radioSettings.squelch) : ""
     property bool awaitingSessionInitialized: false
     // What the session was started as ("scan", "explore" or "saved") and the UID
     // that names it, decided when the host accepts the start. The
@@ -2347,6 +2351,13 @@ Window {
         anchors.fill: safeArea
         system: mainRoot.sessionSystem
         sessionSystemUid: mainRoot.sessionSavedSystemUid
+        // Issue #899 (B7, B11): the audio-input Squelch sheet saves to the session's saved system, as Radio does.
+        squelchSaveError: radioPersistence.squelchError || radioPersistence.error
+        squelchSavesToSystem: radioPersistence.systemUid.length > 0
+        savedSquelch: mainRoot.sessionSavedSquelch
+        savedSquelchCleared: radioPersistence.squelchCleared
+        onSquelchSettingRequested: function (key, value) { radioPersistence.request(key, value); }
+        onClearSavedSquelchRequested: radioPersistence.clearSquelch()
         onSystemProfileSaved: function (uid) {
             if (mainRoot.sessionSavedSystemUid === uid)
                 mainRoot.sessionSystem = savedSystems.getByUid(uid);
@@ -2845,7 +2856,11 @@ Window {
         anchors.fill: safeArea
         saveError: radioPersistence.error
         savesToSystem: radioPersistence.systemUid.length > 0
+        savedSquelch: mainRoot.sessionSavedSquelch
+        savedSquelchCleared: radioPersistence.squelchCleared
+        squelchSaveError: radioPersistence.squelchError
         onSettingRequested: function (key, value) { radioPersistence.request(key, value); }
+        onClearSavedSquelchRequested: radioPersistence.clearSquelch()
     }
 
     // WP-F5 diagnostics overlay.

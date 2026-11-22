@@ -68,6 +68,13 @@ Item {
     // list, Explore or a wizard test. The key sheet may write its profile.
     property string sessionSystemUid: ""
     signal systemProfileSaved(string uid)
+    // Issue #899 (B7, B11): what the audio-input Squelch sheet saves to, and its saved squelch, from Main.
+    property bool squelchSavesToSystem: false
+    property string squelchSaveError: ""
+    property string savedSquelch: ""
+    property bool savedSquelchCleared: false
+    signal squelchSettingRequested(string key, var value)
+    signal clearSavedSquelchRequested()
     // A key sheet apply still waiting for the decoder, which outlives the
     // sheet; Main reaches the sheet only through this screen.
     readonly property bool keyApplyActive: keySheet.applyActive
@@ -2727,6 +2734,12 @@ Item {
     SquelchSheet {
         id: squelchSheet
         z: 10
+        savesToSystem: screen.squelchSavesToSystem
+        saveError: screen.squelchSaveError
+        savedSquelch: screen.savedSquelch
+        savedSquelchCleared: screen.savedSquelchCleared
+        onSettingRequested: function (key, value) { screen.squelchSettingRequested(key, value); }
+        onClearSavedSquelchRequested: screen.clearSavedSquelchRequested()
     }
 
     // #621: the passband a rigctl peer is asked for on audio input, over the monitor like the squelch editor.

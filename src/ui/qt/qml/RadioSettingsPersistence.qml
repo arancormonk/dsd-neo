@@ -4,12 +4,23 @@ import QtQuick
 // Track explicit default-control requests outside the sheet's lifetime. A queue
 // acceptance is not a decoder acceptance: only a matching configured snapshot
 // may update the saved system, never an effective scan-row override.
+//
+// Issue #899 (B15): a squelch level is saved only in a form the app's own
+// controls make, Off or a whole dB from -120 to -1, read from the configured
+// level itself. A level set elsewhere (Advanced arguments, the command line)
+// is not saved, and the sheet says so. A dynamic choice saves only itself.
+// Clear (B11) removes the saved squelch for the next start and drops any
+// squelch request still waiting, so an older one cannot put it back.
 Item {
     id: persistence
     property string systemUid: ""
     property bool active: false
     property var pending: ({})
     property string error: ""
+    // Issue #899 (B11): Clear took the saved squelch out, until the next request.
+    property bool squelchCleared: false
+    // Issue #899: why a squelch change was not saved or cleared, shown by the squelch controls.
+    property string squelchError: ""
     signal saved()
 
     onSystemUidChanged: reset()
@@ -18,6 +29,8 @@ Item {
     function reset() {
         pending = ({});
         error = "";
+        squelchCleared = false;
+        squelchError = "";
     }
 
     function request(key, value) {
@@ -36,23 +49,60 @@ Item {
         next[key] = value;
         pending = next;
         error = "";
+        if (key === "squelch") {
+            squelchCleared = false;
+            squelchError = "";
+        }
         Qt.callLater(confirm);
     }
 
+    // A level request is {mode: "level", db, off} from a step, or {mode:
+    // "level", restore: true} for the level kept beneath a dynamic squelch,
+    // which matches whatever level comes back. A stepped level matches only
+    // the same whole dB, so two requests can never confirm on one snapshot.
     function squelchMatches(value) {
         if (value.mode === "auto" || value.mode === "noise")
             return (value.mode === "auto" ? metrics.configuredSquelchAuto : metrics.configuredSquelchNoise)
                 && value.margin === metrics.configuredSquelchMarginDb;
-        return !metrics.configuredSquelchAuto && !metrics.configuredSquelchNoise
-            && value.off === metrics.configuredSquelchLevelOff
-            && (value.off || Math.abs(value.db - metrics.configuredSquelchDb) < 0.11);
+        if (metrics.configuredSquelchAuto || metrics.configuredSquelchNoise)
+            return false;
+        if (value.restore === true)
+            return true;
+        return value.off === metrics.configuredSquelchLevelOff
+            && (value.off || (metrics.configuredSquelchLevelWhole === true
+                && value.db === metrics.configuredSquelchLevelWholeDb));
     }
 
+    // What the saved system keeps for a confirmed request, from the
+    // configured setting; "" for a level the app's controls cannot make.
     function squelchText(value) {
         if (value.mode === "auto" || value.mode === "noise")
             return value.mode + "+" + value.margin;
-        // Zero dB can be the legacy linear full-scale level; CLI zero means off.
-        return value.off ? "off" : String(value.db < 0 ? value.db : Math.pow(10, value.db / 10));
+        if (metrics.configuredSquelchLevelOff === true)
+            return "off";
+        return metrics.configuredSquelchLevelWhole === true && metrics.configuredSquelchLevelWholeDb < 0
+            ? String(metrics.configuredSquelchLevelWholeDb) : "";
+    }
+
+    /**
+     * Issue #899 (B11): remove the saved system's own squelch. It applies from
+     * the next start; the session keeps what it runs. A squelch request still
+     * waiting is dropped first, so it cannot put the setting back.
+     */
+    function clearSquelch() {
+        if (systemUid.length === 0)
+            return false;
+        var next = Object.assign({}, pending);
+        delete next.squelch;
+        pending = next;
+        if (savedSystems.clearRadioSetting(systemUid, "squelch")) {
+            squelchError = "";
+            squelchCleared = true;
+            saved();
+            return true;
+        }
+        squelchError = qsTr("Could not clear the saved squelch. Check available storage and try again.");
+        return false;
     }
 
     function confirm() {
@@ -70,9 +120,18 @@ Item {
             changes.modulation = next.modulation;
             delete next.modulation;
         }
+        var refusedLevel = false;
         if (next.squelch !== undefined && squelchMatches(next.squelch)) {
-            changes.squelch = squelchText(next.squelch);
+            var text = squelchText(next.squelch);
+            if (text.length > 0)
+                changes.squelch = text;
+            else
+                refusedLevel = true;
             delete next.squelch;
+        }
+        if (refusedLevel) {
+            pending = next;
+            squelchError = qsTr("This level was set outside the app, so it is not saved.");
         }
         if (Object.keys(changes).length === 0)
             return;

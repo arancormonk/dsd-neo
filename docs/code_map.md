@@ -15750,9 +15750,23 @@ Build files: `src/protocol/CMakeLists.txt` and per‑protocol `src/protocol/<nam
     The saved decoder flag also updates wizard/list metadata; a later wizard preset replaces its saved live
     decoder/modulation override. Manual scan lists inherit saved squelch and modulation (an entry's explicit
     modulation wins; the squelch as each row runs it, below). `SavedSystemsModel::clearRadioSetting(uid, key)` takes one
-    saved control out ("Clear saved squelch", issue #899 B11), keeping the others. `UI_QT_PERSISTENCE`,
-    `UI_QT_SESSION_ARGS`, `UI_QT_SCAN_LIST_TARGETS` and the Radio persistence QML test cover disk reload, restart,
-    validation and temporary scopes.
+    saved control out ("Clear saved squelch", issue #899 B11), keeping the others. Issue #899: the audio-input
+    `SquelchSheet` saves through the same object as the Radio sheet (B7: `settingRequested`, `savesToSystem`,
+    `saveError` through `MonitorScreen` to `radioPersistence.request()`; "This channel" edits are the session's), and
+    both sheets offer "Clear saved squelch · next start" while the saved system has one (`Main.sessionSavedSquelch`):
+    `clearSquelch()` drops a squelch request still waiting before `clearRadioSetting()`, so an older one cannot put the
+    key back, and `squelchCleared` shows the note until the next squelch request. A squelch level is saved only in a
+    form the app's controls make (B15, fail-closed): Off or a whole dB from -120 to -1, read from the configured power
+    (`MetricsModel::configuredSquelchLevelWhole`/`configuredSquelchLevelWholeDb`, `dsd_squelch_level_is_whole_db()`),
+    and a stepped level confirms only on that same whole dB. The level the dB choice brings back from Auto/Noise
+    (`{mode: "level", restore: true}`) is saved when it has that form; otherwise nothing is saved and `squelchError`
+    ("This level was set outside the app, so it is not saved.") shows under the squelch controls. A dynamic save
+    stores only the dynamic choice. The steppers of both sheets (`Util.squelchStep()`) always ask for a whole dB,
+    never step against their direction (-5 dB is the top a step makes; a level above it set elsewhere stays), stop on
+    the -120 dB floor before Off, and take a row's own level down to -120 dB too. Every user squelch edit on either
+    sheet calls `commands.squelchDefaults.noteUserSquelchChange()`. `UI_QT_PERSISTENCE`, `UI_QT_SESSION_ARGS`,
+    `UI_QT_SCAN_LIST_TARGETS` and the Radio persistence QML test cover disk reload, restart, validation and temporary
+    scopes.
   - Qt/Android default squelch (issue #899): `AppPrefs::squelch` (`radio/squelch`, portable; exactly `off`, `auto+N` or
     `noise+N`, N 3..30, `app_squelch_default_valid()` in `app_squelch_default.h`; `noise+10` when absent or damaged, a
     refused write writes nothing, a valid one repairs damage; a backup without it restores the default) maps to

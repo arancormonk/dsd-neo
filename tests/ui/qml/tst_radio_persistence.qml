@@ -47,7 +47,18 @@ Item {
             testContext.setMetric("configuredSquelchOff", true);
             testContext.setMetric("configuredSquelchDb", 0);
             testContext.setMetric("configuredSquelchMarginDb", 10);
+            testContext.setMetric("configuredSquelchLevelWhole", true);
+            testContext.setMetric("configuredSquelchLevelWholeDb", 0);
+            testContext.setMetric("squelchAudioInput", false);
             sheet.open();
+        }
+
+        // Issue #899: a level the configured default keeps, as the metrics model reads it.
+        function setLevel(db, whole) {
+            testContext.setMetric("configuredSquelchDb", db);
+            testContext.setMetric("configuredSquelchLevelOff", db === 0);
+            testContext.setMetric("configuredSquelchLevelWhole", whole);
+            testContext.setMetric("configuredSquelchLevelWholeDb", whole ? Math.round(db) : 0);
         }
 
         function cleanup() {
@@ -71,8 +82,7 @@ Item {
                 var db = data.tag === "off" ? 0 : -65;
                 sheet.requestSquelchDb(db);
                 compare(testContext.lastSquelchDb(), db);
-                testContext.setMetric("configuredSquelchDb", db);
-                testContext.setMetric("configuredSquelchLevelOff", data.tag === "off");
+                setLevel(db, true);
             } else if (data.tag === "auto" || data.tag === "noise") {
                 var noise = data.tag === "noise";
                 var margin = noise ? 8 : 12;
@@ -114,8 +124,7 @@ Item {
             compare(savedSystems.get(0).radioSettings, {});
             decoderHost.stop();
             app.startSystem(0);
-            testContext.setMetric("configuredSquelchDb", -65);
-            testContext.setMetric("configuredSquelchLevelOff", false);
+            setLevel(-65, true);
             wait(10);
             compare(savedSystems.get(0).radioSettings, {}); // pending requests cannot cross a session
         }
@@ -181,8 +190,7 @@ Item {
             else
                 savedSystems.remove(0);
             sheet.requestSquelchDb(-65);
-            testContext.setMetric("configuredSquelchDb", -65);
-            testContext.setMetric("configuredSquelchLevelOff", false);
+            setLevel(-65, true);
             wait(10);
             if (data.tag === "deleted")
                 compare(savedSystems.count, 0);
@@ -197,10 +205,167 @@ Item {
             sheet.rowScopeChosen = true;
             verify(sheet.rowSquelch);
             sheet.requestSquelchDb(-65);
-            testContext.setMetric("configuredSquelchDb", -65);
-            testContext.setMetric("configuredSquelchLevelOff", false);
+            setLevel(-65, true);
             wait(10);
             compare(savedSystems.get(0).radioSettings, {});
+        }
+
+        // Issue #899 (B15): a level the app's controls cannot make -- Advanced `--squelch -65.5` -- is not saved, and
+        // the sheet says why. A step from it makes a whole dB, which is saved.
+        function test_level_set_outside_the_app_is_not_saved() {
+            setLevel(-65.5, false);
+            testContext.setMetric("configuredSquelchMarginDb", 12);
+            testContext.setMetric("configuredSquelchAuto", true);
+            tryVerify(function () { return metrics.configuredSquelchAuto === true });
+            sheet.chooseSquelchMode(0);
+            compare(testContext.restoreSquelchCalls(), 1);
+            testContext.setMetric("configuredSquelchAuto", false);
+            tryCompare(sheet, "squelchSaveError", "This level was set outside the app, so it is not saved.");
+            compare(savedSystems.get(0).radioSettings, {}, "nothing rounded into the saved system");
+            var shown = findChild(sheet, "radioSquelchSaveError");
+            verify(shown.visible, "the squelch controls show it");
+            compare(shown.text, sheet.squelchSaveError);
+            sheet.forgetRequests();
+            testContext.setMetric("squelchDb", -65.5);
+            testContext.setMetric("squelchOff", false);
+            tryVerify(function () { return metrics.squelchDb === -65.5 });
+            findChild(sheet, "radioSquelchUp").clicked();
+            compare(testContext.lastSquelchDb(), -60);
+            setLevel(-60, true);
+            tryCompare(savedSystems.get(0), "radioSettings", {squelch: "-60"});
+            compare(sheet.squelchSaveError, "");
+        }
+
+        // The level kept beneath Auto comes back and is saved when the app's controls make it.
+        function test_restored_whole_level_is_saved() {
+            setLevel(-60, true);
+            testContext.setMetric("configuredSquelchAuto", true);
+            tryVerify(function () { return metrics.configuredSquelchAuto === true });
+            sheet.chooseSquelchMode(0);
+            testContext.setMetric("configuredSquelchAuto", false);
+            tryCompare(savedSystems.get(0), "radioSettings", {squelch: "-60"});
+            // A refused restore saves nothing and the reading goes back to the engine's at once.
+            verify(savedSystems.clearRadioSetting(savedSystems.get(0).uid, "squelch"));
+            sheet.forgetRequests();
+            testContext.setMetric("configuredSquelchNoise", true);
+            tryVerify(function () { return metrics.configuredSquelchNoise === true });
+            commands.setRadioAccepted(false);
+            sheet.chooseSquelchMode(0);
+            compare(findChild(sheet, "radioSquelchMode").currentIndex, 2, "still the engine's Noise");
+            testContext.setMetric("configuredSquelchNoise", false);
+            wait(10);
+            compare(savedSystems.get(0).radioSettings, {});
+        }
+
+        // A stepped level confirms only on the same whole dB: -60 asked, -60.08 configured is not it.
+        function test_level_confirms_exactly() {
+            sheet.requestSquelchDb(-60);
+            setLevel(-60.08, false);
+            wait(10);
+            compare(savedSystems.get(0).radioSettings, {});
+            compare(sheet.squelchSaveError, "", "still waiting, no refusal");
+            setLevel(-60, true);
+            tryCompare(savedSystems.get(0), "radioSettings", {squelch: "-60"});
+        }
+
+        // Issue #899 (B11): Clear saved squelch takes the system's own squelch out for the next start, and an older
+        // squelch request still waiting cannot put it back.
+        function test_clear_saved_squelch() {
+            decoderHost.stop();
+            verify(savedSystems.updateRadioSettings(savedSystems.get(0).uid, {squelch: "noise+17"}));
+            app.startSystem(0);
+            compare(app.startError, "");
+            sheet.open();
+            var clear = findChild(sheet, "radioSquelchClearSaved");
+            verify(clear.visible);
+            sheet.requestSquelchDynamic(commands.squelchModeNoise, 12);
+            clear.clicked();
+            compare(savedSystems.get(0).radioSettings, {});
+            verify(app.sessionSystem.radioSettings.squelch === undefined, "the session's copy follows");
+            verify(!clear.visible);
+            var note = findChild(sheet, "radioSquelchClearedNote");
+            verify(note.visible);
+            compare(note.text, "Saved squelch cleared. The next start runs without it.");
+            testContext.setMetric("configuredSquelchMarginDb", 12);
+            testContext.setMetric("configuredSquelchNoise", true);
+            wait(10);
+            compare(savedSystems.get(0).radioSettings, {}, "the older request does not put it back");
+            // A newer edit saves again.
+            sheet.forgetRequests();
+            sheet.requestSquelchDynamic(commands.squelchModeNoise, 13);
+            verify(!note.visible);
+            testContext.setMetric("configuredSquelchMarginDb", 13);
+            tryCompare(savedSystems.get(0), "radioSettings", {squelch: "noise+13"});
+        }
+
+        function test_clear_failure_is_shown() {
+            decoderHost.stop();
+            verify(savedSystems.updateRadioSettings(savedSystems.get(0).uid, {squelch: "auto+12"}));
+            app.startSystem(0);
+            sheet.open();
+            var uid = savedSystems.get(0).uid;
+            savedSystems.remove(0); // the system went away under the session: nothing to clear
+            findChild(sheet, "radioSquelchClearSaved").clicked();
+            compare(sheet.squelchSaveError, "Could not clear the saved squelch. Check available storage and try again.");
+            verify(!findChild(sheet, "radioSquelchClearedNote").visible);
+            verify(uid.length > 0);
+        }
+
+        // Issue #899 (B7): the audio-input Squelch sheet saves a default-scope change to the session's saved system;
+        // "This channel" edits stay with the session, and Clear works there too.
+        function test_squelch_sheet_saves_to_its_system() {
+            decoderHost.stop();
+            while (savedSystems.count > 0)
+                savedSystems.remove(0);
+            verify(savedSystems.add({name: "Bench", sourceType: "udp", port: 7355, freqMhz: "851.5", decodeFlag: "-fA",
+                trunking: false, extraArgs: ""}));
+            app.startSystem(0);
+            compare(app.startError, "");
+            testContext.setMetric("radioInput", false);
+            testContext.setMetric("squelchAudioInput", true);
+            var squelch = findChild(app, "squelchSheet");
+            verify(squelch !== null);
+            verify(squelch.savesToSystem);
+            squelch.openEditor();
+            compare(findChild(squelch, "squelchSaveNote").text, "Squelch changes here are saved to this system.");
+            squelch.requestSquelchDb(-50);
+            setLevel(-50, true);
+            tryCompare(savedSystems.get(0), "radioSettings", {squelch: "-50"});
+            compare(testContext.userSquelchNotes(), 1);
+            squelch.requestSquelchNoise(9);
+            testContext.setMetric("configuredSquelchMarginDb", 9);
+            testContext.setMetric("configuredSquelchNoise", true);
+            tryCompare(savedSystems.get(0), "radioSettings", {squelch: "noise+9"});
+            // A refused restore of the level beneath saves nothing.
+            commands.setRadioAccepted(false);
+            squelch.chooseSquelchMode(0);
+            testContext.setMetric("configuredSquelchNoise", false);
+            wait(10);
+            compare(savedSystems.get(0).radioSettings, {squelch: "noise+9"});
+            compare(squelch.pendingSquelch.toString(), "NaN", "the reading is the engine's again");
+            commands.setRadioAccepted(true);
+            // "This channel" edits are the session's.
+            testContext.setScanRowContext({"active": true, "scanner": 1, "session": 7, "row": 2, "mode": 9,
+                "target": "fire", "label": "fire", "key": "1:7:2"});
+            testContext.setMetric("scanRowKey", "1:7:2");
+            testContext.setMetric("scanRowEditable", commands.scanRowFieldSquelch);
+            testContext.setMetric("scanRowSynced", true);
+            testContext.setMetric("scanRowActive", true);
+            squelch.chooseScope(true);
+            verify(squelch.rowSquelch);
+            squelch.requestSquelchDb(-40);
+            setLevel(-40, true);
+            wait(10);
+            compare(savedSystems.get(0).radioSettings, {squelch: "noise+9"});
+            squelch.chooseScope(false);
+            testContext.setMetric("scanRowActive", false);
+            // Clear.
+            var clear = findChild(squelch, "squelchClearSaved");
+            tryCompare(clear, "visible", true);
+            clear.clicked();
+            compare(savedSystems.get(0).radioSettings, {});
+            verify(findChild(squelch, "squelchClearedNote").visible);
+            squelch.visible = false;
         }
     }
 }
