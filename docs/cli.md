@@ -1712,9 +1712,10 @@ default.
 - In force on: the standalone `-fA` / `-fM` monitor, from the start and after any live decode switch to it (from the
   terminal, the app, the control API, or a config whose `[mode]` makes the decode analog), and a `-Y` row or trunk-scan
   target that is analog (`nfm`, `am`, `nfm-conventional`, `am-conventional`) and sets no squelch of its own, in
-  generated and imported lists alike. On AM a `noise` default runs as auto with the same N, and the engine says so each
-  time that starts (`NOTICE: The noise squelch needs an FM channel; this AM channel runs auto+10dB.`), without taking
-  the place of a decode switch's own message.
+  generated and imported lists alike. On AM a `noise` default runs as auto with the same N. On the standalone `-fM`
+  monitor the engine says so each time that starts (`NOTICE: The noise squelch needs an FM channel; this AM channel
+  runs auto+10dB.`), without taking the place of a decode switch's own message; an AM scan row or target falls back
+  to auto without a word, as it does for its own `noise` squelch.
 - Not in force: digital channels and rows, audio input, EDACS analog voice and the M17 encoder run the session's own
   squelch (off unless set), exactly as without the option, so digital decoding costs nothing more. A switch to audio
   input takes it out; a switch back to a radio input brings it back if no squelch was set meanwhile.
@@ -3011,10 +3012,11 @@ does.
   rtl_tcp sends no acknowledgement, so the gain shown is what DSD-neo sent, not one read back from the server.
 - A `gain` too large to set (above 214748364, whose tenths of a dB would not fit) is ignored with a warning, and the
   gain set before stays, as with a `gain` that is not a number.
-- A `sql` value that is neither a number, `auto[+N]` nor `noise[+N]` leaves the squelch as it was rather than switching
-  it off. A
-  disabled squelch is reported as `off` everywhere it is shown — the startup banner, the terminal input line, the DSP
-  panel — so it is never mistaken for a threshold gating at the −120 dB display floor.
+- An empty `sql` field leaves the squelch as it was (`--squelch`, or the session's). `off` and `0` are valid and
+  switch it off. Any other text that is not a number, `auto[+N]` or `noise[+N]` (`loud`, `auto+31`) stops the start
+  and `--print-config`, naming the field, as `--squelch` would refuse it. A disabled squelch is reported as `off`
+  everywhere it is shown — the startup banner, the terminal input line, the DSP panel — so it is never mistaken for a
+  threshold gating at the −120 dB display floor.
 - `--squelch <setting>` wins over `sql`, and `sql` over the config's `rtl_sql` keys.
 - A scan row or target may carry its own `--squelch-db`, or `--squelch` (the same option). It uses these same dB units
   but only the negative and `0` forms, plus `auto[+N]` on analog rows and `noise[+N]` on nfm rows: the linear positive
