@@ -13479,12 +13479,16 @@ Private per-protocol modules worth knowing about:
 - DMR P_CLEAR addressing (`dmr_csbk.c`, `dmr_trunk_sm.c`; TS 102 361-4 Table 7.30). A standard P_CLEAR (FID 0) applies
   only when received on the followed call's slot (`dmr_sm_follows_slot()`: either slot before a slotless grant's first
   voice) and addressed to that call (`dmr_sm_names_followed_call()`: G/I 1 and its talkgroup, G/I 0 and either party of
-  a private call; or G/I 0 and ALLMSI 0xFFFED4 or ALLMSID 0xFFFFFF). The call is the one the slot's identity record
-  names now on the followed carrier (refreshed against its canonical call first), so a checked voice LC naming another
-  call since the grant replaces the grant's identity; the grant's identity counts only while the slot names none.
-  Otherwise it prints "not for the followed call" ("no followed call" when nothing is followed) and changes nothing: no
-  burst hint, activity, force latch or release. Applied, it clears its own slot's burst hint and the machine's voice
-  flag for that slot only, so a busy companion slot keeps the carrier.
+  a private call; or G/I 0 and ALLMSI 0xFFFED4 or ALLMSID 0xFFFFFF). The call is the slot's live call first: its
+  active canonical voice call, begun since the receiver arrived on the carrier, unless the slot's identity record is
+  bound to that very call, so an in-place grant for another call that has not bound yet never stands for the live one.
+  With no live call it is the one the slot's identity record names now on the followed carrier (refreshed against its
+  canonical call first), so a checked voice LC naming another call since the grant replaces the grant's identity; the
+  grant's identity counts only while the slot names none. Otherwise it prints "not for the followed call" ("no
+  followed call" when nothing is followed) and changes nothing: no burst hint, activity, force latch or release.
+  Applied, it clears its own slot's burst hint and the machine's voice flag for that slot only, so a busy companion
+  slot keeps the carrier; the companion then becomes the followed slot (`dmr_sm_follow_companion()`: `vc_slot` and the
+  mono slot move, the cleared grant's identity is dropped), so its own clear, or one to every MS, applies there next.
   Decided limit (discussion #900): a P_CLEAR stops following a slot; the call record ends on its terminator or
   timeout. The synthesized lockout clear (`dmr_cspdu_release_channel()`) and another FID's opcode 46 keep the
   carrier-wide release unread. Any clear arms `trunk_sm_force_release` only while the machine follows a call

@@ -6,10 +6,11 @@
 /*
  * P_CLEAR on a payload channel (TS 102 361-4 Table 7.30): it releases the followed call only when received on that
  * call's slot and addressed to it (its talkgroup, either party of a private call, or ALLMSI); a busy companion slot
- * keeps the carrier; the slot's call is the one its latest checked LC names; the call record itself ends on its
- * terminator or timeout, not with the clear; a checked clear naming another TSCC makes it a hunt candidate; TG Hold
- * forces the release, and the encryption lockout's synthesized clear always applies, arming the forced release only
- * while a call is followed. Frequencies are invented.
+ * keeps the carrier and becomes the slot followed, where its own clear then applies; the slot's call is its live call
+ * (the one its latest checked LC names), never an in-place grant still awaiting its call; the call record itself ends
+ * on its terminator or timeout, not with the clear; a checked clear naming another TSCC makes it a hunt candidate; TG
+ * Hold forces the release, and the encryption lockout's synthesized clear always applies, arming the forced release
+ * only while a call is followed. Frequencies are invented.
  */
 
 #include <dsd-neo/protocol/dmr/dmr_utils_api.h>
@@ -288,7 +289,7 @@ test_p_clear_allmsi_releases(void) {
    carrier stays for the companion. The cleared slot's call record is left to its terminator or timeout (decided limit,
    discussion #900); the companion's stays live. */
 static void
-test_p_clear_busy_companion_kept(void) {
+follow_ts1_with_busy_companion(void) {
     follow_group_ts1();
     observe_call(1U, DSD_CALL_KIND_GROUP_VOICE, 4321U, 43U);
     state.dmrburstR = 16;
@@ -308,6 +309,28 @@ test_p_clear_busy_companion_kept(void) {
     assert(dsd_call_state_get(&state, 0U, &ts1) > 0 && ts1.phase == DSD_CALL_PHASE_ACTIVE);
     assert(dsd_call_state_get(&state, 1U, &ts2) > 0 && ts2.phase == DSD_CALL_PHASE_ACTIVE);
     assert(ts2.policy_target_id == 4321U);
+    // The cleared slot's terminator LC ends its record.
+    assert(dsd_call_state_end_ex(&state, 0U, 0.0, DSD_CALL_END_EXPLICIT) > 0);
+}
+
+/* The receiver stays for the companion's call, so the companion is the slot followed now: a later clear there, for its
+   talkgroup or to every MS, applies, and one on the cleared slot no longer does. */
+static void
+test_p_clear_busy_companion_kept(void) {
+    follow_ts1_with_busy_companion();
+    const dmr_sm_ctx_t* ctx = dmr_sm_get_ctx();
+    assert(ctx->vc_slot == 1);
+    assert(state.dmr_mono_slot == 1);
+    send_pclear(0U, 0U, 1U, 1234U); // the cleared slot: no longer followed
+    send_pclear(1U, 0U, 1U, 1234U); // the companion's slot, the old call's talkgroup: not its call
+    assert(opts.trunk_is_tuned == 1);
+    assert(state.dmrburstR == 16);
+    send_pclear(1U, 0U, 1U, 4321U);
+    assert(opts.trunk_is_tuned == 0);
+
+    follow_ts1_with_busy_companion();
+    send_pclear(1U, 0U, 0U, 0xFFFED4U);
+    assert(opts.trunk_is_tuned == 0);
 }
 
 /* A checked voice LC named another call on the followed slot since the grant: the slot's call is that one now, so a
@@ -327,6 +350,31 @@ test_p_clear_matches_slot_lc_identity(void) {
     assert(dsd_call_state_get(&state, 0U, &ts1) > 0 && ts1.phase == DSD_CALL_PHASE_ACTIVE);
 
     send_pclear(0U, 0U, 1U, 5678U); // the slot's call
+    assert(opts.trunk_is_tuned == 0);
+}
+
+/* An in-place grant for another call on the followed slot replaces the slot's record before it binds to a call: the
+   live call there is still the one the checked LC named, so a clear for the grant's talkgroup leaves it, and one for
+   the live call's applies. */
+static void
+test_p_clear_in_place_grant_does_not_clear_live_call(void) {
+    follow_group_ts1();
+    observe_call(0U, DSD_CALL_KIND_GROUP_VOICE, 5678U, 51U);
+    dmr_sm_note_lc_identity(&opts, &state, 0, DSD_CALL_KIND_GROUP_VOICE, 5678U, 51U);
+    dmr_sm_emit_group_grant_slot(&opts, &state, VC_HZ, /*lpcn*/ 20, /*slot*/ 0, /*tg*/ 6789, /*src*/ 61);
+    const dmr_sm_ctx_t* ctx = dmr_sm_get_ctx();
+    assert(ctx->slots[0].prov == (uint8_t)DMR_SM_ID_GRANT && ctx->slots[0].target == 6789U);
+    assert(ctx->slots[0].call_epoch == 0U); // awaiting its call
+    assert(opts.trunk_is_tuned == 1);
+
+    send_pclear(0U, 0U, 1U, 6789U); // the grant's talkgroup, while 5678 is live
+    assert(opts.trunk_is_tuned == 1);
+    assert(state.dmrburstL == 16);
+    dsd_call_snapshot ts1;
+    assert(dsd_call_state_get(&state, 0U, &ts1) > 0 && ts1.phase == DSD_CALL_PHASE_ACTIVE);
+    assert(ts1.policy_target_id == 5678U);
+
+    send_pclear(0U, 0U, 1U, 5678U); // the live call
     assert(opts.trunk_is_tuned == 0);
 }
 
@@ -473,6 +521,7 @@ main(int argc, char** argv) {
     test_p_clear_allmsi_releases();
     test_p_clear_busy_companion_kept();
     test_p_clear_matches_slot_lc_identity();
+    test_p_clear_in_place_grant_does_not_clear_live_call();
     test_p_clear_named_tscc_becomes_candidate();
     test_synth_lockout_clear_still_releases();
     test_vendor_fid_clear_unchanged();
