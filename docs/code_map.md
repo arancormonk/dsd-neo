@@ -13531,7 +13531,8 @@ Private per-protocol modules worth knowing about:
     follow rejected the grant's own slot) is not held at all, so the grant's identity never stands for the carrier and
     an ordinary grant elsewhere is followed; once there is voice, each slot the receive policy admits whose voice
     is live or in its hangtime tail (a slot a receive edit rejected holds nothing, its tail included), and the followed
-    grant's slot until its own first voice since the follow, within its acquisition window
+    grant's slot until its own media since the follow (`vc_media_heard`: the first voice for a voice grant, the first
+    data for a data grant; a data burst on a voice grant's slot is not its first voice), within its acquisition window
     (`dmr_sm_followed_slot_acquiring()`: voice on the companion slot ends the carrier's acquisition, not the grant's,
     so a candidate must outrank the call still to come as well). ON_CC: calls
     heard on the carrier the receiver listens on (composite TSCC payload, XPT parking, late entry) whose identity is

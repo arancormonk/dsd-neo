@@ -202,6 +202,9 @@ typedef struct {
     int vc_data_call;                      // the grant was a data call (its policy was judged with data_call set)
     double t_voice_m;                      // Time of last voice activity
     double t_cc_sync_m;                    // Time of last CC sync
+    /* The followed grant's own media (voice for a voice grant, data for a data grant) was heard on its slot since the
+       follow: from then on its acquisition no longer holds that slot in the busy view. */
+    int vc_media_heard;
 
     /* CC probes do not replace the confirmed/configured return destination.
      * These fields live in each scan target's existing DMR context. */

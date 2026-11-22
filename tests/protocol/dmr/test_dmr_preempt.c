@@ -1188,6 +1188,27 @@ test_companion_voice_keeps_acquiring_slot_held(dsd_opts* opts, dsd_state* st) {
     return rc;
 }
 
+/* Data on a voice grant's slot is not its first voice: a p90 voice grant for TS1 is followed (data following on), p10
+   voice on TS2 starts, and one data burst arrives on TS1 at 0.1 s. At 2.5 s, its tail over, the p90 call is still not
+   on the air within its acquisition window, so a p50 preempt candidate elsewhere waits. */
+static int
+test_data_burst_is_no_first_voice(dsd_opts* opts, dsd_state* st) {
+    init_env(opts, st, 2.0);
+    seed_row(st, 900, "A", 90, 0);
+    seed_row(st, 10, "A", 10, 0);
+    seed_row(st, 50, "A", 50, 1);
+    tv_grant(opts, st, LPCN_A, 0, 900, 1);
+    clock_at(0.05);
+    voice(opts, st, 1);
+    dmr_sm_note_lc_identity(opts, st, 1, DSD_CALL_KIND_GROUP_VOICE, 10, 2);
+    clock_at(0.1);
+    dmr_sm_emit_data_sync(opts, st, 0);
+    clock_at(2.5);
+    voice(opts, st, 1);
+    tv_grant(opts, st, LPCN_B, 0, 50, 5);
+    return expect_true("p50 does not outrank the p90 grant whose slot carried only data", vc(st) == VC_A);
+}
+
 /* Companion voice heard before a follow is not the followed grant's: on the composite control channel's carrier, voice
    on TS1 at 3.90 s, then at 3.95 s a grant for TS2 of that carrier, adopted in place, and ticks at 4.05 s and 6.05 s.
    Once the companion is quiet, the grant holds its own acquisition window (to 7.95 s), not a hangtime tail from
@@ -1262,6 +1283,7 @@ main(void) {
     rc |= test_companion_media_change_is_a_new_call(opts, st);
     rc |= test_companion_voice_keeps_acquiring_slot_held(opts, st);
     rc |= test_pre_grant_companion_voice_keeps_acquisition(opts, st);
+    rc |= test_data_burst_is_no_first_voice(opts, st);
 
     dsd_trunk_tuning_hooks_set((dsd_trunk_tuning_hooks){0});
     dsd_decode_clock_use_system();

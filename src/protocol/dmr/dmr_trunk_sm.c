@@ -1220,6 +1220,7 @@ dmr_sm_clear_released_carrier(dmr_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* stat
     ctx->vc_status_grant = 0;
     ctx->vc_identity_known = 0;
     ctx->vc_data_call = 0;
+    ctx->vc_media_heard = 0;
     ctx->vc_crc_flags = 0;
     ctx->t_tune_m = 0.0;
     ctx->t_carrier_m = 0.0;
@@ -1672,6 +1673,9 @@ dmr_sm_note_voice_evidence(dmr_sm_ctx_t* ctx, const dsd_state* state, int slot, 
         return;
     }
     ctx->slots[slot].voice_active = 1;
+    if (ctx->state == DMR_SM_TUNED && slot == ctx->vc_slot && !ctx->vc_data_call) {
+        ctx->vc_media_heard = 1; // a voice grant's first voice
+    }
     if (evidence_m > ctx->slots[slot].last_active_m) {
         ctx->slots[slot].last_active_m = evidence_m;
     }
@@ -1813,6 +1817,10 @@ handle_data_sync(dmr_sm_ctx_t* ctx, const dsd_opts* opts, dsd_state* state, int 
         return;
     }
     // Accepted data a followed call carries is activity, as accepted voice is: a zero hangtime holds while it flows.
+    // Only a data grant's slot takes it as its own media, though: a voice grant still awaits its first voice.
+    if (ctx->state == DMR_SM_TUNED && s == ctx->vc_slot && ctx->vc_data_call) {
+        ctx->vc_media_heard = 1;
+    }
     ctx->slots[s].voice_active = 1;
     ctx->slots[s].last_active_m = now_m;
     ctx->t_voice_m = now_m;
@@ -2133,16 +2141,16 @@ dmr_sm_tuned_holds_nothing(const dmr_sm_ctx_t* ctx, dmr_sm_hold_e hold, int memb
     return hold == DMR_SM_HOLD_TAIL || (hold == DMR_SM_HOLD_ACQUIRING && dmr_sm_acquire_slots(ctx) != 0);
 }
 
-/* Whether the followed grant's own slot still awaits its first voice since the follow, within its acquisition window.
-   Voice on the companion slot ends the carrier's acquisition (the retention rule), not the grant's: its call, not yet
-   on the air, still holds the carrier against other candidates. */
+/* Whether the followed grant's own slot still awaits its own media since the follow (its first voice for a voice grant,
+   its first data for a data grant: vc_media_heard), within its acquisition window. Voice on the companion slot ends the
+   carrier's acquisition (the retention rule), not the grant's, nor does a data burst on a voice grant's slot: its call,
+   not yet on the air, still holds the carrier against other candidates. */
 static int
 dmr_sm_followed_slot_acquiring(const dmr_sm_ctx_t* ctx, double now_m) {
     if (ctx->vc_slot < 0 || ctx->vc_slot > 1) {
         return 0;
     }
-    return ctx->slots[ctx->vc_slot].last_active_m < ctx->t_tune_m
-           && !grant_timeout_expired(ctx, now_m, dmr_sm_acquire_window(ctx));
+    return !ctx->vc_media_heard && !grant_timeout_expired(ctx, now_m, dmr_sm_acquire_window(ctx));
 }
 
 /* TUNED: which slots hold a call. Live voice or the slot's own hangtime tail, on a slot the receive policy admits (as for
@@ -2392,6 +2400,7 @@ dmr_sm_take_grant(dmr_sm_ctx_t* ctx, dsd_state* state, const dmr_sm_event_t* ev,
     ctx->vc_is_group = ev->is_group != 0;
     ctx->vc_identity_known = identity_known;
     ctx->vc_data_call = dmr_sm_event_kind(ev) == DSD_CALL_KIND_DATA;
+    ctx->vc_media_heard = 0;
     // A placeholder names no call: the voice LC will, through the canonical layer.
     ctx->vc_identity_published = (identity_known && dmr_sm_grant_publishable(state, ctx->vc_slot, leaves)) ? 0 : 1;
     ctx->vc_status_follow = 0;
