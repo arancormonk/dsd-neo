@@ -512,7 +512,9 @@ test_checked_frames_and_headers_report_to_trunk_scan(void) {
         dsd_test_scan_activity_reset();
         run_frame(opts, state, DPMR_REF_FRAMES[f].body_dibits, sizeof(DPMR_REF_FRAMES[f].body_dibits));
         const dsd_trunk_scan_activity_identity* id = &g_test_scan_activity.last;
-        const uint8_t station = f == 0 ? DSD_SCAN_ACTIVITY_KNOWN_TARGET : DSD_SCAN_ACTIVITY_KNOWN_SOURCE;
+        /* The calling pair after the called one is the same call's: the called station stays known (issue #890). */
+        const uint8_t station =
+            f == 0 ? DSD_SCAN_ACTIVITY_KNOWN_TARGET : (DSD_SCAN_ACTIVITY_KNOWN_TARGET | DSD_SCAN_ACTIVITY_KNOWN_SOURCE);
         expect_int(f == 0 ? "called pair reports" : "calling pair reports", g_test_scan_activity.count, 1);
         expect_int("a dPMR report", DSD_SYNC_IS_DPMR(g_test_scan_activity.protocol), 1);
         expect_int("one station known", id->known & (DSD_SCAN_ACTIVITY_KNOWN_TARGET | DSD_SCAN_ACTIVITY_KNOWN_SOURCE),
@@ -562,6 +564,111 @@ test_checked_frames_and_headers_report_to_trunk_scan(void) {
     expect_int("a reserved mode reports nothing", g_test_scan_activity.count, 0);
 }
 
+/* The two stations a reference frame pair names: frame 0's called station, frame 1's calling one. */
+static void
+reference_frame_stations(uint32_t* called, uint32_t* calling) {
+    dsd_opts* opts = g_opts;
+    dsd_state* state = g_state;
+    for (int f = 0; f < 2; f++) {
+        DSD_MEMSET(opts, 0, sizeof(*opts));
+        DSD_MEMSET(state, 0, sizeof(*state));
+        state->synctype = DSD_SYNC_DPMR_FS2_POS;
+        run_frame(opts, state, DPMR_REF_FRAMES[f].body_dibits, sizeof(DPMR_REF_FRAMES[f].body_dibits));
+        *(f == 0 ? called : calling) = state->dPMRVoiceFS2Frame.BoundIdValue & 0xFFFFFFU;
+    }
+}
+
+/* What the last report said of each station: 1 known with @p want, 0 unknown. */
+static void
+expect_stations(const char* tag, int target_known, uint32_t target, int source_known, uint32_t source) {
+    const dsd_trunk_scan_activity_identity* id = &g_test_scan_activity.last;
+    char what[96];
+    DSD_SNPRINTF(what, sizeof(what), "%s: target known", tag);
+    expect_int(what, (id->known & DSD_SCAN_ACTIVITY_KNOWN_TARGET) != 0U, target_known);
+    DSD_SNPRINTF(what, sizeof(what), "%s: source known", tag);
+    expect_int(what, (id->known & DSD_SCAN_ACTIVITY_KNOWN_SOURCE) != 0U, source_known);
+    if (target_known) {
+        DSD_SNPRINTF(what, sizeof(what), "%s: target", tag);
+        expect_int(what, (long)id->target, (long)target);
+    }
+    if (source_known) {
+        DSD_SNPRINTF(what, sizeof(what), "%s: source", tag);
+        expect_int(what, (long)id->source, (long)source);
+    }
+}
+
+/* Issue #890: the 0/1 and 2/3 pairs of a dPMR call alternate, each naming one station, so a report from a pair carries
+   the call's other station as its checked header or the other pair named it: a blocked caller the header named still
+   decides the talkgroup and radio policy on the called pairs after it, and a blocked destination on the calling pairs.
+   The record is the transmission's, the visit's and the carrier's: a pair naming another station begins another call
+   whose other station is unknown, and a transmission boundary, a new scan visit or a carrier boundary forgets it. A
+   station nothing checked stays unknown. */
+static void
+test_pair_reports_keep_the_calls_checked_stations(void) {
+    uint32_t called = 0U;
+    uint32_t calling = 0U;
+    reference_frame_stations(&called, &calling);
+    dsd_opts* opts = g_opts;
+    dsd_state* state = g_state;
+    DSD_MEMSET(opts, 0, sizeof(*opts));
+    DSD_MEMSET(state, 0, sizeof(*state));
+    state->synctype = DSD_SYNC_DPMR_FS2_POS;
+
+    dpmr_header header;
+    DSD_MEMSET(&header, 0, sizeof(header));
+    header.message_type = DPMR_MT_COMMUNICATIONS_START;
+    header.called_id = called;
+    header.calling_id = calling;
+    header.mode = 0U;
+    header.color_code = -1;
+    dsd_test_scan_activity_reset();
+    dpmr_process_header(opts, state, &header, 0);
+    expect_stations("header", 1, called, 1, calling);
+
+    dsd_test_scan_activity_reset();
+    run_frame(opts, state, DPMR_REF_FRAMES[0].body_dibits, sizeof(DPMR_REF_FRAMES[0].body_dibits));
+    expect_int("called pair reports", g_test_scan_activity.count, 1);
+    expect_stations("called pair after the header", 1, called, 1, calling);
+    dsd_test_scan_activity_reset();
+    run_frame(opts, state, DPMR_REF_FRAMES[1].body_dibits, sizeof(DPMR_REF_FRAMES[1].body_dibits));
+    expect_stations("calling pair after the header", 1, called, 1, calling);
+
+    /* A header naming another caller is another call: its called pair carries that caller. */
+    header.calling_id = calling ^ 0x000101U;
+    dpmr_scrambling_reset(state);
+    dpmr_process_header(opts, state, &header, 0);
+    dsd_test_scan_activity_reset();
+    run_frame(opts, state, DPMR_REF_FRAMES[0].body_dibits, sizeof(DPMR_REF_FRAMES[0].body_dibits));
+    expect_stations("called pair after another caller's header", 1, called, 1, calling ^ 0x000101U);
+
+    /* A called pair naming another station than the one recorded begins another call: no caller yet. */
+    header.called_id = called ^ 0x000202U;
+    header.calling_id = calling;
+    dpmr_scrambling_reset(state);
+    dpmr_process_header(opts, state, &header, 0);
+    dsd_test_scan_activity_reset();
+    run_frame(opts, state, DPMR_REF_FRAMES[0].body_dibits, sizeof(DPMR_REF_FRAMES[0].body_dibits));
+    expect_stations("another called station", 1, called, 0, 0U);
+
+    /* A new scan visit, a carrier boundary and a transmission boundary each forget the record. */
+    header.called_id = called;
+    for (int boundary = 0; boundary < 3; boundary++) {
+        dpmr_scrambling_reset(state);
+        dpmr_process_header(opts, state, &header, 0);
+        if (boundary == 0) {
+            state->scan_landing_visit++;
+        } else if (boundary == 1) {
+            state->carrier_seq++;
+        } else {
+            dpmr_confirm_reset(state);
+        }
+        dsd_test_scan_activity_reset();
+        run_frame(opts, state, DPMR_REF_FRAMES[0].body_dibits, sizeof(DPMR_REF_FRAMES[0].body_dibits));
+        static const char* const k_tags[] = {"after a new visit", "after a carrier boundary", "after an END"};
+        expect_stations(k_tags[boundary], 1, called, 0, 0U);
+    }
+}
+
 int
 main(void) {
     g_opts = (dsd_opts*)calloc(1U, sizeof(*g_opts));
@@ -583,6 +690,7 @@ main(void) {
     test_reference_frames_decode_through_process_dpmr_voice();
     test_a_corrected_bit_error_still_passes_and_two_do_not();
     test_checked_frames_and_headers_report_to_trunk_scan();
+    test_pair_reports_keep_the_calls_checked_stations();
     free(g_state);
     free(g_opts);
 

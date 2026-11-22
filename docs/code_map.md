@@ -5951,7 +5951,10 @@ the implementations from `dsd_engine_trunk_scan_init()` and clears them again on
   from its first byte to `dstar_tx_seq`, the reception and the scan visit by `dstar_sd_binding`, and known non-data
   presence; the RF header's DATA flag through `dstar_header_decode_soft_data()`; never the resync streak), dPMR
   `dpmr_report_scan_activity()` (a Communications_Start header, and an FS2 frame whose CCH halves pass
-  as a bound pair, with the raw 24-bit IDs and no party), M17 `m17_report_scan_activity()` (direct and rebuilt LSF,
+  as a bound pair, with the raw 24-bit IDs and no party; a pair names one station, so its report carries the call's
+  other station as the transmission's header or other pair checked it, kept in `dsd_state::dpmr_scan_target`/
+  `dpmr_scan_source` for the scan visit and carrier it was named under: a pair naming another station than the one
+  kept begins another call, whose other station is unknown, and the transmission boundaries forget them), M17 `m17_report_scan_activity()` (direct and rebuilt LSF,
   packet CRC, a clean LICH pair; only `m17_lsf_checked` values an applied LSF bound, withdrawn while a clean LICH
   chunk disputes the checked DST/SRC/TYPE (`m17_lsf_disputed`, a missed boundary), and gone from the frame after a
   decoded EOS (the boundary reset, `m17_confirm_reset()`, drops `m17_lsf_checked` and the dispute with it). Only

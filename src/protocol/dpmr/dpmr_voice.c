@@ -469,11 +469,11 @@ dpmr_publish_call(dsd_opts* opts, dsd_state* state) {
 }
 
 /* A frame whose two CCH halves passed their CRC-7 as a bound pair (dpmr_ids_are_strong(): halves 0/1 the called
-   station, 2/3 the calling one, TS 102 658 Tables 5.5 to 5.8) holds a scan target (issue #890), with the one station
-   the pair names and the service of its halves (both checked: the first's). A frame with a failed or unbound half
-   reports nothing. */
+   station, 2/3 the calling one, TS 102 658 Tables 5.5 to 5.8) holds a scan target (issue #890), with the station the
+   pair names, the call's other station as its header or the other pair checked it (dpmr_report_scan_activity()), and
+   the service of its halves (both checked: the first's). A frame with a failed or unbound half reports nothing. */
 static void
-dpmr_report_frame_scan_activity(const dsd_opts* opts, const dsd_state* state) {
+dpmr_report_frame_scan_activity(const dsd_opts* opts, dsd_state* state) {
     const dPMRVoiceFS2Frame_t* f = &state->dPMRVoiceFS2Frame;
     if (f->BoundIdKind == DPMR_FRAME_ID_NONE) {
         return;

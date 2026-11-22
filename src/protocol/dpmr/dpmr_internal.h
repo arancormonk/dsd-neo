@@ -58,7 +58,10 @@ void dpmr_publish_crypto(dsd_state* state, unsigned int scrambled, uint8_t enc_o
    5.111, no scrambler flag of the standard's) is the scrambled indication the voice path already decrypts by
    (dpmr_resolve_half_scrambling(), issue #655), so the scan's encrypted-call rule and the audio agree. dPMR has no
    group or individual bit every call carries (Table 5.4, A.1.3.3.5), so the party is unknown. */
-void dpmr_report_scan_activity(const dsd_opts* opts, const dsd_state* state, uint32_t target, int target_known,
+/* A station a report does not name is taken from the transmission's checked record of it (dsd_state::dpmr_scan_target,
+   dpmr_scan_source), which the report updates: alternating 0/1 and 2/3 pairs each name one station, and the call's
+   other one, checked by its header or the other pair, still decides the talkgroup and radio policy. */
+void dpmr_report_scan_activity(const dsd_opts* opts, dsd_state* state, uint32_t target, int target_known,
                                uint32_t source, int source_known, uint32_t mode, uint32_t version);
 
 #endif /* DSD_NEO_SRC_PROTOCOL_DPMR_DPMR_INTERNAL_H */
