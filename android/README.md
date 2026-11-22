@@ -584,10 +584,15 @@ time, system, talkgroup and radio, and an analog FM call's with the date, time, 
   every recording: export the ones you want to keep first.
 - When that storage is not available, new recordings go to DSD-neo's private storage instead, which a computer cannot
   reach (Share, Save to file and Export still can). Recordings on storage that is away stay listed and are never
-  deleted; Settings and **Call recordings** say the storage is not available.
+  deleted; Settings and **Call recordings** say the storage is not available. A delete that includes any of them (one
+  recording, a system's, **Delete all** or **Delete unfinished**) deletes nothing and says "That storage isn't
+  connected. Delete again once it's back."
 - DSD-neo manages only the recordings it made. A file you copy into these folders is never listed, counted or deleted,
   unless it is named like an unfinished recording (`TEMP_…`, below). A recording you delete from a computer leaves the
-  app's list the next time DSD-neo starts or tries to play, share or export it.
+  app's list the next time DSD-neo starts or tries to play, share or export it. DSD-neo doesn't watch for other changes
+  to these folders while it runs (files replaced, folders swapped, permissions changed). Right before a delete or the
+  storage limit removes a recording, it checks the file's size and modification time and leaves a file that doesn't
+  match; the screen then says some recordings weren't deleted.
 
 ### Playing a recording
 

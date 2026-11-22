@@ -1042,6 +1042,12 @@ function deleteFailuresText(count, reason) {
     return reason ? text + " " + qsTr("The phone said: %1").arg(reason) : text
 }
 
+// Issue #902: accepted deletes the store did not do because their storage
+// changed (read again while they waited, or another file at the path).
+function deletesCancelledText() {
+    return qsTr("Some recordings weren't deleted because their storage changed. Delete them again.")
+}
+
 // Issue #782: the words a group of plain Text items shows, for the one
 // accessible node that reads them (a reading's label and value, a strip of
 // readings). Each visible child's text in order, the parts of a nested row

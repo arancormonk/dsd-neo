@@ -303,10 +303,16 @@ Column {
         confirmDelete.target = null;
         if (!target)
             return;
+        // Issue #902: refused while storage that came back is read again, or
+        // while its storage is not connected; the recording plays on, as
+        // nothing was deleted.
+        if (recordings.deleteRecording(target.id) === false) {
+            say(recordings.deleteRefusal() === "storageAway" ? qsTr("That storage isn't connected. Delete again once it's back.") : qsTr("Recordings are still loading. Try again in a moment."), true);
+            return;
+        }
         if (decoderHost.playbackPath === target.path && decoderHost.playbackState !== 0)
             decoderHost.stopPlayback();
         playAll = false;
-        recordings.deleteRecording(target.id);
         say("", false);
     }
 

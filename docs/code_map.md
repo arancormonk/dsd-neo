@@ -16744,7 +16744,30 @@ Qt Quick frontend (`src/ui/qt`):
     Unfinished recordings, Export as zip by date preset (the selection first, then the picker; a dismissed picker
     releases it; the owner's name made file-safe by the store's folder rule), progress with Cancel, the result of its
     own selection only, deletes with confirmations, and the limit's removals and failed deletes since the screen opened,
-    and `deletesWaiting`. Issue #829: the picker (`callRecordingsExportPicker`) is a `DocumentPicker` (save,
+    and `deletesWaiting`. A preset is a range of dates (`recording_export_days()`), turned once, at the press, into
+    the instants those dates span in the press's zone (below), never by an unchecked `QDate::startOfDay()`: a date the
+    zone skipped (Pacific/Apia 2011-12-30) has no start of its own, so it spans no instant and selects nothing, and a
+    25-hour day spans all 25 hours. The press reads today once, in local time
+    (`recording_export_press_zone()`, not `QTimeZone::systemTimeZone()`, which for a POSIX TZ string such as
+    `TZ=UTC+09` names a zone the other side of UTC; `test_export_press_zone_is_local_time`), through `selectForExport()`
+    → `selectForExportAt(uid, preset, pressMs)` (today is that instant's date in the press zone; a test gives the
+    instant, `test_export_press_zone_is_local_time` at one whose local date is a day ahead of UTC's, checking the
+    returned day and what Today and Yesterday take) → `selectForExportOn(uid, preset, today, zone)`, which tests call
+    with a zone of their own, and one
+    `RecordingExportWindow` (`recording_export_window()`) holds two instants resolved there, once: the first day's
+    start and the start of the day after the last, in that zone (a skipped date starts with the next day that has a
+    start). The scan compares each start with them as integers (`recording_export_covers()`), with no conversion, so a
+    zone change during it moves no recording. Decided limits (issue #902 B6, documented, not handled): a date is taken
+    as one span of time, from its first midnight to the next date's, so a clock moved back across midnight (a zone's
+    historical rollback, as `America/St_Johns` did in 2009 and 2010, its 00:01 change going back to 23:01 of the day
+    before) puts a recording stamped in the repeated hour in the neighbouring preset day; and a time-zone change while
+    an export press resolves its window (between reading today and resolving the day's start) can shift that window,
+    as the app does not follow time-zone changes while it runs. The
+    selection returns the sampled day as `day` (`yyyy-MM-dd`), and the zip is named from it, so a press across
+    midnight names the day it selected (issue #902 B6; `UI_QT_RECORDING_STORE` `test_export_presets_on_a_skipped_date`
+    and `test_export_presets_on_a_long_day`, each skipped on a host without that zone's history,
+    `test_export_dates_follow_the_given_zone`, `tst_call_recordings_screen.qml`
+    `test_export_name_uses_the_selection_day`). Issue #829: the picker (`callRecordingsExportPicker`) is a `DocumentPicker` (save,
     `application/zip`, `suggestedName` the zip's name); one that is `unavailable` releases the selection and says its
     message as a problem, and the screen `cancel()`s it when it stops being visible (Back clears `callRecordingsOpen`
     in `Main.qml`), so the hold goes too; an export already writing runs on. Export all is enabled only while
@@ -16855,7 +16878,12 @@ Qt Quick frontend (`src/ui/qt`):
     when nothing but a torn line lies past the cursor; the rewrite's owner-only mode is best-effort (FUSE-backed storage
     may refuse it). History reads (`CallRecordingProvider`) take the store's lock; the worker lets a waiting History
     read in before each slice of 128 records of a whole-folder read, each recheck and each delete, and sums (usage,
-    limit, compaction) are taken on shared copies outside the lock. A History export reads every row's recording names
+    limit, compaction) are taken on copies outside the lock: the recordings' shared (only the worker changes them), the
+    folder table's a copy of the worker's own (`foldersCopyLocked()`), since a session start on the GUI thread writes
+    that table, and Qt finds a `QHash` unshared with a relaxed load that orders none of the worker's reads of a shared
+    copy before the write in place (issue #902; `test_session_starts_while_the_worker_publishes`: each copy a sum takes is
+    checked to share nothing with the table, `setFolderCopyHookForTest()`, and tsan-debug reports the race otherwise).
+    A History export reads every row's recording names
     at once (`recordingEntryNames()`, one list per row): one hold of the lock for the whole batch, each row's recordings
     found as `recordingsForFragments()` finds them (`fragmentEntriesLocked()`: each once, by a set; start, then publish
     order), each named by `recording_entry_name()` (`<folder name>/<file>`, a nested file keeping its sub-folders), the
@@ -16866,7 +16894,75 @@ Qt Quick frontend (`src/ui/qt`):
     `recordingEntryNames()`, the detection reads, `selectRecordings()`, `selectPath()`, `isIndexedPath()`) take it from
     a copy made as the read began (`m_committed`, `holdCommittedFolderLocked()`) until the read is complete
     (`commitFolderLocked()`, which moves the revision): a delivery the GUI handles between two slices never finds a
-    History row's or a detection's recordings gone (an open detection list closed itself). Changes reach the GUI as one
+    History row's or a detection's recordings gone (an open detection list closed itself). An export's selection and
+    every delete request (`selectForExport()`, `deleteAll()`, `deleteFolder()`, `deleteUnfinished()`,
+    `deleteRecordings()`) are refused instead unless the index is settled (`storageSettledLocked()`, one rule: the
+    store ready, no worker pass running or asked for (`m_inPass`, set as the wake clears `m_passRequested` under one
+    hold of the lock, and cleared after `publish()`; `m_passRequested`, which every session start, recheck, delete and
+    host change sets), and no folder on available storage waiting for its first read or its read again (one a session
+    start adopted with `beginSession()` between two passes, `takeCandidateFolderLocked()`, or one on storage that came
+    back). A pass covers every storage read: the roots and a returning root's listing in `rebuildRoot()`, folders read,
+    new or again, a journal replaced in place on storage that stayed mounted, and the rechecks that take gone files out
+    one at a time (`processRechecks()`, and the limit's look at what it counts, both `recheckEntries()`); a delete
+    request is refused before any recording is collected): the index then holds part of a folder, a new folder in
+    part or not yet, files no longer there, or a folder under the owner its path had before the storage came back (two
+    owners' folders swapped while it was away), and a file a newer publish replaced at the same path under its old
+    date. A delete request wakes a pass, so the next request waits for that pass to end. A delete request that names
+    any recording on storage that is not there, as the last pass found it or as the request finds it now
+    (`queueDeletesLocked()`, `rootAvailableNow()` for each root it names), is refused at once and queues nothing,
+    whole. A root a request finds missing is remembered (`m_rootsSeenAway`) and the pass it asks for lists it again in
+    full (`refreshRoots()`, `rebuildRoot()`) even when it is back before that pass, so storage that came back changed
+    (two owners' folders swapped, journals as long as the ones read) is never taken as read; a retry that finds such a
+    root, or one a pass marked away, back is refused as `loading` and asks for that read at once
+    (`test_storage_a_request_saw_missing_is_read_again`). Whole: an owner's folders, Delete all or the unfinished
+    recordings that span storage there and away delete none of them, for one simple rule (issue #902, a decision that
+    replaces issue #708's "a delete waits for its storage and runs once it is back"; `test_deletes_refused_for_storage_away`
+    and the #708 cases, each asking again once the storage is back). So nothing is asked for storage away, and nothing
+    waits across a remount. As a backstop, one rule for deletes asked earlier and not done yet (their files held by a
+    running export, the player or an upload, or storage that left during the pass that runs them): any read of storage
+    again in a pass (`Pass::reread`: a root listed in `rebuildRoot()`, a folder read in
+    `loadFolder()`, first read, read again or a journal replaced in place) drops every one of them in `runPass()`,
+    before `processDeletes()`, whether named by a journal id or by path (`file:<folder>/<file>`). The read may give a
+    path, or an id, to another owner's recording (two folders swapped while the storage was away), so a delete asked of
+    the index as it was is never applied to the index as it is: the files stay, `deletesWaiting` goes to 0, and the
+    user can ask again (issue #902 B12, a decision; `test_held_delete_dropped_by_a_reread`, swapped owners whose recordings carry no ids, B's delete held by
+    an export across the remount: nothing of A's is deleted). One check at the point of destruction covers every
+    window, those named here and any other: each entry keeps its file's identity as the read that indexed it saw it
+    (`Entry::identity`, `statOf()`: `dsd_path_file_identity()`, its kind, size and modification time, never following
+    a link), an accepted delete queues that identity with its id (`m_deleteQueue`), and `deleteEntry()` reads the path
+    again right before the unlink (`onDiskAsKnownLocked()`) and skips a file whose size or time differs, or whose name
+    cannot be read (never taken as missing), leaving it on disk and indexed (`DeleteResult::Changed`); a link or
+    anything else not a regular file at the name is left on disk and leaves the index. Either is told as a delete not
+    done (`deletesCancelled`), for a user's delete and for the limit's removal, which compares with the index's
+    identity and goes on with the next recording: a folder swapped on storage that stayed mounted, storage remounted
+    between two passes, a folder a session start adopted while a delete waited (`test_delete_checks_the_file_it_removes`,
+    `test_delete_leaves_a_folder_adopted_meanwhile`, `test_delete_of_a_name_now_a_link_is_told`,
+    `test_limit_skips_a_file_not_as_known`, `test_delete_of_an_unreadable_file_skips_it`). A journal there that cannot
+    be opened or read whole leaves its folder unread, with what the index held for it, so the store is not settled and
+    exports and deletes are refused until a later pass reads it (only a name confirmed missing is an empty journal,
+    `readJournal()`; `test_unread_journal_is_not_settled`).
+
+    Decided limit (issue #902): DSD-neo does not track outside changes to its recordings folders while it runs
+    (replacing, swapping or re-permissioning files or folders). Beyond a recording deleted from a computer (it leaves
+    the index when the player, an export, a share or the limit finds it missing), the only guards are the check right
+    before a delete's or the limit's unlink, by kind, size and modification time (seconds and nanoseconds), never the
+    device, inode, volume or file id, which FAT, exFAT and remounts renumber: another file with exactly the same size
+    and modification time counts as the recording (`test_same_size_and_time_reads_as_the_recording`), and the short
+    window between that check and the unlink is not closed. A delete that a read again drops or that finds another file
+    is told, never silently dropped: `deletesCancelled` (acknowledged with the
+    other notices) puts "Some recordings weren't deleted because their storage changed. Delete them again." on the
+    Call recordings screen and in Settings (`test_cancelled_deletes_notice`, `tst_call_recording_settings.qml`). A refused export selects and holds nothing and returns `loading`; a refused delete returns
+    false and queues nothing, and `deleteRefusal()` says why (`loading` or `storageAway`); the Call recordings screen
+    and the player say "Recordings are still loading. Try again in a moment." or "That storage isn't connected. Delete
+    again once it's back." and keep nothing of the request (`test_delete_refused_while_storage_away` in both QML
+    tests) (issue #902 B12, a decision: refuse, not merge the committed view;
+    `test_queries_between_rebuild_slices`, `test_changed_storage_is_read_before_bulk_requests`,
+    `test_journal_replaced_in_place_is_read_before_bulk_requests`, `test_bulk_requests_wait_for_a_root_being_listed`,
+    `test_requests_wait_for_an_adopted_folder` (the pass-end hook, between the two passes; taken under the lock, and a
+    pass counts as done for `waitForPassForTest()` only once its hook has returned, `m_passEnding`),
+    `test_requests_wait_for_a_recheck` (the entry-check hook, a recheck asked and the limit's look),
+    `tst_call_recordings_screen.qml` `test_refused_while_loading`). The worker's checks right before each unlink are
+    unchanged. Changes reach the GUI as one
     queued delivery at a time (`changed()`, `recordingFragmentsChanged()`, `revisionChanged()`, `limitReached()`), so a
     paused GUI thread never collects more than one.
   - Signal search detections (issue #809): `m_bySearch` maps a journal `search` key (`<session>:<hit>`) to the ids
@@ -16885,7 +16981,7 @@ Qt Quick frontend (`src/ui/qt`):
     start). Tests: `UI_QT_RECORDING_STORE` (`test_search_key_parse_and_compaction`, `test_detection_index`,
     `test_detection_root_away_keeps_membership`, `test_detection_order_newest_first`,
     `test_queries_between_rebuild_slices` (every read between slices of a rebuild, through the slice hook, the
-    batched History names included), `test_entry_names_match_zip_selection`, `test_entry_names_batch`,
+    batched History names included; an export and every delete request refused, and whole once the read is done), `test_entry_names_match_zip_selection`, `test_entry_names_batch`,
     `test_revision_coalesced_passes`, `test_detection_from_c_writer`).
   - Deletion: only indexed entries, by id (`deleteRecordings()`, `deleteFolder(uid)`, `deleteUnfinished()`,
     `deleteAll()`), on the worker. Waits while `dsd_rdio_upload_holds()` (asked outside the store's lock), the player
@@ -16924,7 +17020,9 @@ Qt Quick frontend (`src/ui/qt`):
     alone: the root is checked again first, through `rootStillAvailable()` (`rootAvailableNow()` for a root being read
     back, which is not available yet). A root found gone is marked away (`markRootAwayLocked()`: its recordings'
     fragments are announced, so History rows read them as away); nothing in it leaves the index, a request it
-    interrupted stays queued and runs once it is back, and the pass decides nothing more about it: a root marked away
+    interrupted (a delete whose storage left as it ran) stays queued while it is away and is dropped when the root is
+    read again (the B12 backstop above); a delete asked while it is away is refused at once; and the
+    pass decides nothing more about it: a root marked away
     reads as gone to `rootStillAvailable()` until a later pass reads it whole again. A read made while the root was
     gone (a short listing, a journal or files not found) is dropped, not applied. A root that comes back is listed,
     then has its folders read: a folder its listing no longer has leaves with its recordings, and one it still has keeps

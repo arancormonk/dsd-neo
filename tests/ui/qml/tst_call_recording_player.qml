@@ -753,6 +753,41 @@ Item {
             compare(calls[calls.length - 1].id, "t-2");
         }
 
+        // Issue #902: a delete the store refuses (storage that came back is read
+        // again) says so and leaves the recording playing.
+        function test_delete_refused_while_loading() {
+            openWith([rec("t-1", pathA, 12000)]);
+            testContext.publishPlayback(pathA, 2, 1000, 12000, "");
+            recordings.setLoading(true);
+            var stops = hostCallsNamed("stopPlayback").length;
+            tap("recordingDelete");
+            var confirm = findChild(sheet(), "recordingDeleteConfirm");
+            findChild(confirm, "confirmActionButton").activate();
+            verify(!confirm.visible);
+            var calls = recordings.calls();
+            compare(calls[calls.length - 1].name, "deleteRecording");
+            compare(hostCallsNamed("stopPlayback").length, stops, "nothing was deleted, so it plays on");
+            compare(item("recordingNotice").text, "Recordings are still loading. Try again in a moment.");
+            recordings.setLoading(false);
+        }
+
+        // Issue #902: a delete of a recording whose storage is not connected is
+        // refused at once; the player says so and plays on.
+        function test_delete_refused_while_storage_away() {
+            openWith([rec("t-1", pathA, 12000)]);
+            testContext.publishPlayback(pathA, 2, 1000, 12000, "");
+            recordings.setStorageAway(true);
+            var stops = hostCallsNamed("stopPlayback").length;
+            tap("recordingDelete");
+            var confirm = findChild(sheet(), "recordingDeleteConfirm");
+            findChild(confirm, "confirmActionButton").activate();
+            var calls = recordings.calls();
+            compare(calls[calls.length - 1].name, "deleteRecording");
+            compare(hostCallsNamed("stopPlayback").length, stops, "nothing was deleted, so it plays on");
+            compare(item("recordingNotice").text, "That storage isn't connected. Delete again once it's back.");
+            recordings.setStorageAway(false);
+        }
+
         function test_delete_cancelled() {
             openWith([rec("t-1", pathA, 12000)]);
             tap("recordingDelete");

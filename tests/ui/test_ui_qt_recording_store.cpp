@@ -19,6 +19,7 @@
 #include <QChar>
 #include <QCoreApplication>
 #include <QDate>
+#include <QDateTime>
 #include <QDir>
 #include <QFile>
 #include <QFileInfo>
@@ -32,17 +33,21 @@
 #include <QMap>
 #include <QModelIndex>
 #include <QObject>
+#include <QPair>
 #include <QSet>
 #include <QSignalSpy>
 #include <QStandardPaths>
 #include <QString>
 #include <QStringList>
 #include <QTemporaryDir>
+#include <QTime>
+#include <QTimeZone>
 #include <QUrl>
 #include <QVariant>
 #include <QVariantList>
 #include <QVariantMap>
 #include <QtGlobal>
+#include <algorithm>
 #include <atomic>
 #include <chrono>
 #include <dsd-neo/core/file_io.h>
@@ -158,12 +163,31 @@ struct Store {
         store.waitForPassForTest();
         QCoreApplication::processEvents();
     }
+
+    /* The deletes waiting, taken back, and the pass the request woke let finish: while the worker reads storage the
+     * next export or delete request would be refused. GUI thread only (a worker hook calls takeDeleteQueueForTest()). */
+    QStringList
+    taken() {
+        const QStringList ids = store.takeDeleteQueueForTest();
+        pass();
+        return ids;
+    }
 };
+
+/* @p bytes written to @p path, created private (dsd_fopen_private()), appended (@p mode "ab") or replacing what was
+ * there ("wb"). */
+bool
+write_private(const QString& path, const QByteArray& bytes, const char* mode) {
+    FILE* file = dsd_fopen_private(dsd_qt::platform_path(path).constData(), mode);
+    const bool written =
+        file != nullptr
+        && fwrite(bytes.constData(), 1, static_cast<size_t>(bytes.size()), file) == static_cast<size_t>(bytes.size());
+    return file != nullptr && fclose(file) == 0 && written;
+}
 
 void
 append(const QString& path, const QByteArray& bytes) {
-    QFile file(path);
-    if (!file.open(QIODevice::WriteOnly | QIODevice::Append) || file.write(bytes) != bytes.size()) {
+    if (!write_private(path, bytes, "ab")) {
         DSD_FPRINTF(stderr, "FAIL: cannot append to %s\n", qPrintable(path));
         g_failures++;
     }
@@ -171,11 +195,19 @@ append(const QString& path, const QByteArray& bytes) {
 
 void
 make_file(const QString& path, qint64 bytes) {
-    QFile file(path);
-    if (!file.open(QIODevice::WriteOnly | QIODevice::Truncate) || file.write(QByteArray(bytes, 'w')) != bytes) {
+    if (!write_private(path, QByteArray(bytes, 'w'), "wb")) {
         DSD_FPRINTF(stderr, "FAIL: cannot write %s\n", qPrintable(path));
         g_failures++;
     }
+}
+
+/* @p path's modification time moved to @p seconds since the Unix epoch, the file and its size left as they are. */
+void
+set_mtime(const QString& path, qint64 seconds) {
+    QFile f(path);
+    const bool set = f.open(QIODevice::ReadWrite)
+                     && f.setFileTime(QDateTime::fromSecsSinceEpoch(seconds), QFileDevice::FileModificationTime);
+    expect("a modification time is set", set);
 }
 
 QString
@@ -524,8 +556,9 @@ test_compaction(void) {
                                                     && s.store.hasRecordingForFragments({fragment(50)})
                                                     && s.store.hasRecordingForFragments({fragment(53)})
                                                     && s.store.hasRecordingForFragments({fragment(54)}));
-        s.store.deleteRecording(QStringLiteral("00000000000000DD-6"));
-        s.store.deleteRecording(QStringLiteral("00000000000000DD-1"));
+        // One request: a second right after would land while the pass the first woke reads storage, and be refused.
+        expect("both deletes asked",
+               s.store.deleteRecordings({QStringLiteral("00000000000000DD-6"), QStringLiteral("00000000000000DD-1")}));
         s.pass();
         expect("a session running when the store started holds every journal", s.store.compactionsForTest() == 0);
         s.store.endSession();
@@ -642,7 +675,8 @@ test_compaction_waits_for_a_run(void) {
 }
 
 /* Storage that is away is not storage that was emptied: what an unavailable root held stays indexed and untouched,
- * a delete waits for it, and it is read again when it comes back. A file missing with its root there leaves the
+ * a delete of it is refused at once (issue #902: nothing waits for storage to come back, where a read again could give
+ * its path to another recording), and it is read again when it comes back; asked again then, the delete runs. A file missing with its root there leaves the
  * index, and a file the journal never named is never managed. */
 void
 test_roots_unavailable_vs_deleted(void) {
@@ -668,9 +702,10 @@ test_roots_unavailable_vs_deleted(void) {
         expect("and the rows it belongs to are told, so a player shows the storage away",
                spied(away_news, fragment(60)) && spied(away_news, fragment(61)));
         expect("the other root is still there", s.store.available());
-        s.store.deleteRecording(QStringLiteral("00000000000000EE-1"));
+        expect("a delete of it is refused at once", !s.store.deleteRecording(QStringLiteral("00000000000000EE-1"))
+                                                        && s.store.deleteRefusal() == QLatin1String("storageAway"));
         s.pass();
-        expect("a delete waits for it", s.store.deletesWaiting() == 1 && s.store.recordingCount() == 2);
+        expect("and nothing waits", s.store.deletesWaiting() == 0 && s.store.recordingCount() == 2);
         expect("an export leaves it out",
                s.store.selectForExport(QString(), QStringLiteral("all")).value("count").toInt() == 0);
         const QString moved = s.store.beginSession(QStringLiteral("saved"), kUidA, QStringLiteral("County"));
@@ -680,9 +715,13 @@ test_roots_unavailable_vs_deleted(void) {
 
         expect("the storage comes back", QDir().rename(away, roots.dir.path() + QStringLiteral("/ext")));
         s.pass();
-        expect("read again, and the waiting delete done",
-               s.store.recordingCount() == 1 && !QFileInfo::exists(folder + QStringLiteral("/a.wav"))
+        expect("read again, nothing of it deleted",
+               s.store.recordingCount() == 2 && QFileInfo::exists(folder + QStringLiteral("/a.wav"))
                    && s.store.hasRecordingForFragments({fragment(61)}) && s.store.deletesWaiting() == 0);
+        expect("asked again, the delete runs", s.store.deleteRecording(QStringLiteral("00000000000000EE-1")));
+        s.pass();
+        expect("asked again, the recording gone",
+               s.store.recordingCount() == 1 && !QFileInfo::exists(folder + QStringLiteral("/a.wav")));
         expect("one owner, two folders, one entry",
                s.store.folders().size() == 1 && s.store.folders().value(0).toMap().value("count").toInt() == 1);
     }
@@ -731,6 +770,50 @@ test_changes_behind_the_store(void) {
     expect("the folder is gone", QDir(folder).removeRecursively());
     s.pass();
     expect("and with it its recordings", s.store.recordingCount() == 0 && s.store.folderPathsForTest().isEmpty());
+}
+
+/* Session starts on the GUI thread add and relabel folders while the worker publishes: every start wakes a pass, which
+ * sums the folder table outside the lock. The worker sums a copy of its own, so a start never writes in place into a
+ * table the worker read after letting the lock go (issue #902). Each copy a sum takes is checked to share nothing with
+ * the table (the hook, under the lock: no scheduling luck); the starts racing the passes are what the tsan-debug build
+ * reports when it does. The labels end as the last start of each owner left them. */
+void
+test_session_starts_while_the_worker_publishes(void) {
+    constexpr int kOwners = 8;
+    constexpr int kStarts = 240;
+    Roots roots;
+    Store s(roots.list(), false);
+    std::atomic<int> copies{0};
+    std::atomic<int> shared{0};
+    s.store.setFolderCopyHookForTest([&copies, &shared](bool isShared) {
+        copies++;
+        shared += isShared ? 1 : 0;
+    });
+    s.store.setLimitMb(1000); // the limit's sum takes a copy too
+    s.start();
+    int refused = 0;
+    for (int i = 0; i < kStarts; i++) {
+        const QString uid = QStringLiteral("%1-0000-4000-8000-00000000000d").arg(0x7a000000 + i % kOwners, 8, 16);
+        refused +=
+            s.store.beginSession(QStringLiteral("saved"), uid, QStringLiteral("Owner %1").arg(i)).isEmpty() ? 1 : 0;
+        s.store.endSession();
+    }
+    s.pass();
+    expect("starts during publishes: every start took a folder", refused == 0);
+    const QVariantList folders = s.store.folders();
+    QStringList names;
+    for (const QVariant& folder : folders) {
+        names.append(folder.toMap().value(QStringLiteral("name")).toString());
+    }
+    std::sort(names.begin(), names.end());
+    QStringList want;
+    for (int i = kStarts - kOwners; i < kStarts; i++) {
+        want.append(QStringLiteral("Owner %1").arg(i));
+    }
+    std::sort(want.begin(), want.end());
+    expect("starts during publishes: one folder per owner, its last label", folders.size() == kOwners && names == want);
+    expect("starts during publishes: every sum took a copy of its own", copies.load() > 0 && shared.load() == 0);
+    s.store.setFolderCopyHookForTest({});
 }
 
 /* Folders are found by their owner's full uid: a rename keeps the folder (and updates its label), two owners whose
@@ -967,23 +1050,52 @@ test_free_space_warning(void) {
 /* An export selects finished recordings by owner and date preset, oldest first, and holds them until released. */
 void
 test_export_selection(void) {
-    qint64 from = 0;
-    qint64 to = 0;
+    QDate first;
+    QDate last;
     const QDate today(2026, 10, 28);
-    const qint64 midnight = today.startOfDay().toSecsSinceEpoch();
-    // Every preset but "all" ends where tomorrow starts: a recording stamped later (a clock that ran ahead) is not "today".
-    const qint64 tomorrow = today.addDays(1).startOfDay().toSecsSinceEpoch();
-    expect("today", dsd_qt::recording_export_range(QStringLiteral("today"), today, &from, &to) && from == midnight
-                        && to == tomorrow);
-    expect("yesterday", dsd_qt::recording_export_range(QStringLiteral("yesterday"), today, &from, &to)
-                            && from == today.addDays(-1).startOfDay().toSecsSinceEpoch() && to == midnight);
-    expect("last 7 days", dsd_qt::recording_export_range(QStringLiteral("last7"), today, &from, &to)
-                              && from == today.addDays(-6).startOfDay().toSecsSinceEpoch() && to == tomorrow);
-    expect("last 30 days", dsd_qt::recording_export_range(QStringLiteral("last30"), today, &from, &to)
-                               && from == today.addDays(-29).startOfDay().toSecsSinceEpoch() && to == tomorrow);
-    expect("all", dsd_qt::recording_export_range(QStringLiteral("all"), today, &from, &to) && from < 0
-                      && to == std::numeric_limits<qint64>::max());
-    expect("nothing else", !dsd_qt::recording_export_range(QStringLiteral("week"), today, &from, &to));
+    // Every preset but "all" ends with today: a recording dated later (a clock that ran ahead) is not "today".
+    expect("today", dsd_qt::recording_export_days(QStringLiteral("today"), today, &first, &last) && first == today
+                        && last == today);
+    expect("yesterday", dsd_qt::recording_export_days(QStringLiteral("yesterday"), today, &first, &last)
+                            && first == today.addDays(-1) && last == today.addDays(-1));
+    expect("last 7 days", dsd_qt::recording_export_days(QStringLiteral("last7"), today, &first, &last)
+                              && first == today.addDays(-6) && last == today);
+    expect("last 30 days", dsd_qt::recording_export_days(QStringLiteral("last30"), today, &first, &last)
+                               && first == today.addDays(-29) && last == today);
+    expect("all", dsd_qt::recording_export_days(QStringLiteral("all"), today, &first, &last) && first.isNull()
+                      && last.isNull());
+    expect("nothing else", !dsd_qt::recording_export_days(QStringLiteral("week"), today, &first, &last));
+    expect("no day, no range", !dsd_qt::recording_export_days(QStringLiteral("today"), QDate(), &first, &last));
+    // Fixed offsets, which every host has: the window's dates are the given zone's, whatever the process's zone is.
+    for (const int offset : {-12 * 3600, 0, 13 * 3600 + 45 * 60, 14 * 3600}) {
+        const QTimeZone zone(offset);
+        const auto at = [&zone](const QDate& day, const QTime& time) {
+            return QDateTime(day, time, zone).toSecsSinceEpoch();
+        };
+        dsd_qt::RecordingExportWindow window;
+        expect("window: today", dsd_qt::recording_export_window(QStringLiteral("today"), today, zone, &window));
+        expect("covers: today's first and last second",
+               dsd_qt::recording_export_covers(window, at(today, QTime(0, 0)))
+                   && dsd_qt::recording_export_covers(window, at(today, QTime(23, 59, 59))));
+        expect("covers: not the seconds either side",
+               !dsd_qt::recording_export_covers(window, at(today, QTime(0, 0)) - 1)
+                   && !dsd_qt::recording_export_covers(window, at(today.addDays(1), QTime(0, 0))));
+        expect("window: last 30", dsd_qt::recording_export_window(QStringLiteral("last30"), today, zone, &window));
+        expect("covers: last 30's edges and middle",
+               dsd_qt::recording_export_covers(window, at(today.addDays(-29), QTime(0, 0)))
+                   && !dsd_qt::recording_export_covers(window, at(today.addDays(-29), QTime(0, 0)) - 1)
+                   && dsd_qt::recording_export_covers(window, at(today.addDays(-15), QTime(12, 0)))
+                   && dsd_qt::recording_export_covers(window, at(today, QTime(23, 59, 59)))
+                   && !dsd_qt::recording_export_covers(window, at(today.addDays(1), QTime(0, 0))));
+        expect("window: instants resolved at the press",
+               window.from == at(today.addDays(-29), QTime(0, 0)) && window.to == at(today.addDays(1), QTime(0, 0)));
+    }
+    dsd_qt::RecordingExportWindow all;
+    expect("covers: all, every start", dsd_qt::recording_export_window(QStringLiteral("all"), today, QTimeZone(0), &all)
+                                           && dsd_qt::recording_export_covers(all, 0)
+                                           && dsd_qt::recording_export_covers(all, 1754000000));
+    expect("window: no zone, no window",
+           !dsd_qt::recording_export_window(QStringLiteral("today"), today, QTimeZone(), &all));
 
     Roots roots;
     Store s(roots.list());
@@ -1016,6 +1128,226 @@ test_export_selection(void) {
     expect("released, the owner's recordings go and the other's stay",
            !QFileInfo::exists(a + QStringLiteral("/a1.wav")) && QFileInfo::exists(b + QStringLiteral("/b1.wav"))
                && s.store.recordingCount() == 1);
+}
+
+/* What an export of @p preset over every owner selects on @p today in @p zone: its zip names, its hold released at
+ * once; its day in @p day. */
+QStringList
+export_names(RecordingStore& store, const QString& preset, const QDate& today, const QTimeZone& zone,
+             QString* day = nullptr) {
+    const QVariantMap selection = store.selectForExportOn(QString(), preset, today, zone);
+    store.releaseSelection(selection.value(QStringLiteral("selection")).toInt());
+    if (day != nullptr) {
+        *day = selection.value(QStringLiteral("day")).toString();
+    }
+    return selection.value(QStringLiteral("names")).toStringList();
+}
+
+/* One recording per (file, start) in a fresh Explore folder. */
+void
+seed_dated(Store& s, const QList<QPair<QString, qint64>>& recordings) {
+    const QString folder = s.store.beginSession(QStringLiteral("explore"), QString(), QStringLiteral("Exploring"));
+    s.store.endSession();
+    int n = 0;
+    for (const auto& recording : recordings) {
+        n++;
+        record(folder, QStringLiteral("0000000000000201-%1").arg(n), recording.first, recording.second, n);
+    }
+    s.pass();
+}
+
+QStringList
+explore_names(const QStringList& files) {
+    QStringList names;
+    for (const QString& file : files) {
+        names.append(QStringLiteral("Explore/") + file);
+    }
+    return names;
+}
+
+/* Issue #902 B6: a preset's days are resolved once, at the press, to the instants they span in the press's zone.
+ * Pacific/Apia skipped 2011-12-30 (23:59:59 UTC-10 on the 29th, then 00:00 UTC+14 on the 31st): that date has no
+ * midnight of its own, so it spans no instant, where an unchecked startOfDay() bound of 0 once made Yesterday on the
+ * 31st take every older recording. The zone is given, as the press samples it; a host without its history skips the
+ * case. */
+void
+test_export_presets_on_a_skipped_date(void) {
+    const QTimeZone apia(QByteArrayLiteral("Pacific/Apia"));
+    if (!apia.isValid() || apia.offsetFromUtc(QDateTime::fromSecsSinceEpoch(1325239140, QTimeZone::UTC)) != -10 * 3600
+        || apia.offsetFromUtc(QDateTime::fromSecsSinceEpoch(1325239200, QTimeZone::UTC)) != 14 * 3600) {
+        DSD_FPRINTF(stdout,
+                    "SKIP export presets: Pacific/Apia's 2011 date-line change is not available on this host\n");
+        return;
+    }
+    const QDate today(2011, 12, 31);
+    Roots roots;
+    Store s(roots.list());
+    seed_dated(s, {{QStringLiteral("dec01.wav"), 1322776800},      // 2011-12-01 12:00 -10
+                   {QStringLiteral("dec24.wav"), 1324764000},      // 2011-12-24 12:00 -10
+                   {QStringLiteral("dec25.wav"), 1324850400},      // 2011-12-25 12:00 -10
+                   {QStringLiteral("dec29.wav"), 1325196000},      // 2011-12-29 12:00 -10
+                   {QStringLiteral("dec29-end.wav"), 1325239140},  // 2011-12-29 23:59 -10
+                   {QStringLiteral("dec31.wav"), 1325239200},      // 2011-12-31 00:00 +14
+                   {QStringLiteral("dec31-noon.wav"), 1325282400}, // 2011-12-31 12:00 +14
+                   {QStringLiteral("jan01.wav"), 1325368800}});    // 2012-01-01 12:00 +14, a clock ahead
+    QString day;
+    expect("apia: today", export_names(s.store, QStringLiteral("today"), today, apia, &day)
+                                  == explore_names({QStringLiteral("dec31.wav"), QStringLiteral("dec31-noon.wav")})
+                              && day == QStringLiteral("2011-12-31"));
+    dsd_qt::RecordingExportWindow skipped;
+    expect("apia: a skipped day spans no instant",
+           dsd_qt::recording_export_window(QStringLiteral("yesterday"), today, apia, &skipped)
+               && skipped.from == skipped.to && skipped.from == 1325239200);
+    expect("apia: yesterday was skipped, so it has none",
+           export_names(s.store, QStringLiteral("yesterday"), today, apia, &day).isEmpty()
+               && day == QStringLiteral("2011-12-31"));
+    expect("apia: last 7 days", export_names(s.store, QStringLiteral("last7"), today, apia)
+                                    == explore_names({QStringLiteral("dec25.wav"), QStringLiteral("dec29.wav"),
+                                                      QStringLiteral("dec29-end.wav"), QStringLiteral("dec31.wav"),
+                                                      QStringLiteral("dec31-noon.wav")}));
+    expect("apia: last 30 days", export_names(s.store, QStringLiteral("last30"), today, apia)
+                                     == explore_names({QStringLiteral("dec24.wav"), QStringLiteral("dec25.wav"),
+                                                       QStringLiteral("dec29.wav"), QStringLiteral("dec29-end.wav"),
+                                                       QStringLiteral("dec31.wav"), QStringLiteral("dec31-noon.wav")}));
+    expect("apia: all", export_names(s.store, QStringLiteral("all"), today, apia).size() == 8);
+    expect("apia: an unknown preset still names its day",
+           s.store.selectForExportOn(QString(), QStringLiteral("week"), today, apia)
+                   .value(QStringLiteral("day"))
+                   .toString()
+               == QStringLiteral("2011-12-31"));
+}
+
+/* Issue #902 B6: on a 25-hour day (America/Los_Angeles 2026-11-01, 01:00-02:00 twice) every recording of that date is
+ * Yesterday's on the 2nd, both 01:30s and the last half hour included, and nothing of the days either side. */
+void
+test_export_presets_on_a_long_day(void) {
+    const QTimeZone angeles(QByteArrayLiteral("America/Los_Angeles"));
+    if (!angeles.isValid()
+        || QDate(2026, 11, 1).startOfDay(angeles).secsTo(QDate(2026, 11, 2).startOfDay(angeles)) != qint64{25} * 3600) {
+        DSD_FPRINTF(stdout, "SKIP export presets: America/Los_Angeles's 2026 rules are not available on this host\n");
+        return;
+    }
+    const QDate today(2026, 11, 2);
+    Roots roots;
+    Store s(roots.list());
+    seed_dated(s, {{QStringLiteral("oct26-late.wav"), 1793082600}, // 2026-10-26 23:30 -7
+                   {QStringLiteral("oct27.wav"), 1793086200},      // 2026-10-27 00:30 -7
+                   {QStringLiteral("oct31-late.wav"), 1793514600}, // 2026-10-31 23:30 -7
+                   {QStringLiteral("nov01.wav"), 1793518200},      // 2026-11-01 00:30 -7
+                   {QStringLiteral("nov01-pdt.wav"), 1793521800},  // 2026-11-01 01:30 -7
+                   {QStringLiteral("nov01-pst.wav"), 1793525400},  // 2026-11-01 01:30 -8
+                   {QStringLiteral("nov01-late.wav"), 1793604600}, // 2026-11-01 23:30 -8
+                   {QStringLiteral("nov02.wav"), 1793608200}});    // 2026-11-02 00:30 -8
+    QString day;
+    expect("long day: today", export_names(s.store, QStringLiteral("today"), today, angeles, &day)
+                                      == explore_names({QStringLiteral("nov02.wav")})
+                                  && day == QStringLiteral("2026-11-02"));
+    expect("long day: yesterday, all 25 hours of it",
+           export_names(s.store, QStringLiteral("yesterday"), today, angeles)
+               == explore_names({QStringLiteral("nov01.wav"), QStringLiteral("nov01-pdt.wav"),
+                                 QStringLiteral("nov01-pst.wav"), QStringLiteral("nov01-late.wav")}));
+    expect("long day: last 7 days",
+           export_names(s.store, QStringLiteral("last7"), today, angeles)
+               == explore_names({QStringLiteral("oct27.wav"), QStringLiteral("oct31-late.wav"),
+                                 QStringLiteral("nov01.wav"), QStringLiteral("nov01-pdt.wav"),
+                                 QStringLiteral("nov01-pst.wav"), QStringLiteral("nov01-late.wav"),
+                                 QStringLiteral("nov02.wav")}));
+    expect("long day: last 30 days", export_names(s.store, QStringLiteral("last30"), today, angeles).size() == 8);
+}
+
+/* Issue #902 B6: the window's day boundaries come from the zone the press sampled, never the process's zone: one
+ * start is Today in UTC+14 and Yesterday in UTC-12, whatever zone the host runs in. */
+void
+test_export_dates_follow_the_given_zone(void) {
+    Roots roots;
+    Store s(roots.list());
+    const qint64 start = QDateTime(QDate(2026, 11, 21), QTime(13, 0), QTimeZone::UTC).toSecsSinceEpoch();
+    seed_dated(s, {{QStringLiteral("one.wav"), start}});
+    const QDate today(2026, 11, 22);
+    expect("zone: today in UTC+14",
+           export_names(s.store, QStringLiteral("today"), today, QTimeZone(14 * 3600)).size() == 1);
+    expect("zone: yesterday, not today, in UTC-12",
+           export_names(s.store, QStringLiteral("today"), today, QTimeZone(-12 * 3600)).isEmpty()
+               && export_names(s.store, QStringLiteral("yesterday"), today, QTimeZone(-12 * 3600)).size() == 1);
+    const QVariantMap pressed = s.store.selectForExport(QString(), QStringLiteral("all"));
+    s.store.releaseSelection(pressed.value(QStringLiteral("selection")).toInt());
+    expect("zone: the press names its own day",
+           QDate::fromString(pressed.value(QStringLiteral("day")).toString(), QStringLiteral("yyyy-MM-dd")).isValid());
+}
+
+/* Issue #902 B6: a press reads its dates in local time as the C library keeps it. For a POSIX TZ string, TZ=UTC+09
+ * means nine hours behind UTC, and so the press zone is; QTimeZone::systemTimeZone() names a zone nine hours ahead
+ * there. A host whose runtime does not take the string skips the case. */
+void
+test_export_press_zone_is_local_time(void) {
+    const bool had = qEnvironmentVariableIsSet("TZ");
+    const QByteArray previous = qgetenv("TZ");
+    const auto apply = []() {
+#ifdef _WIN32
+        _tzset();
+#else
+        tzset();
+#endif
+    };
+    qputenv("TZ", "UTC+09");
+    apply();
+    const QDateTime noon(QDate(2026, 11, 21), QTime(12, 0), QTimeZone::UTC);
+    const QTimeZone zone = dsd_qt::recording_export_press_zone();
+    if (noon.toTimeZone(QTimeZone(QTimeZone::LocalTime)).offsetFromUtc() != -9 * 3600) {
+        DSD_FPRINTF(stdout, "SKIP press zone: this host does not take the POSIX TZ string UTC+09\n");
+    } else {
+        expect("press zone: nine hours behind UTC", noon.toTimeZone(zone).offsetFromUtc() == -9 * 3600);
+        // 00:30 UTC on the 21st is the 20th here: yesterday at a noon press, not today.
+        const qint64 early = QDateTime(QDate(2026, 11, 21), QTime(0, 30), QTimeZone::UTC).toSecsSinceEpoch();
+        dsd_qt::RecordingExportWindow window;
+        const QDate today = noon.toTimeZone(zone).date();
+        expect("press zone: the day", today == QDate(2026, 11, 21));
+        expect("press zone: not today", dsd_qt::recording_export_window(QStringLiteral("today"), today, zone, &window)
+                                            && !dsd_qt::recording_export_covers(window, early));
+        expect("press zone: yesterday",
+               dsd_qt::recording_export_window(QStringLiteral("yesterday"), today, zone, &window)
+                   && dsd_qt::recording_export_covers(window, early));
+    }
+    // The press itself, at an instant whose local date is a day ahead of UTC's (TZ=UTC-09: nine hours ahead): 20:00
+    // UTC on the 21st is 05:00 on the 22nd here. Today is the 22nd, named so, and takes the recording made at 01:00
+    // here (16:00 UTC on the 21st), not the one at 23:00 here on the 21st (14:00 UTC on the 21st), as a UTC reading
+    // of today would.
+    qputenv("TZ", "UTC-09");
+    apply();
+    const QDateTime press(QDate(2026, 11, 21), QTime(20, 0), QTimeZone::UTC);
+    if (press.toTimeZone(QTimeZone(QTimeZone::LocalTime)).offsetFromUtc() != 9 * 3600) {
+        DSD_FPRINTF(stdout, "SKIP press day: this host does not take the POSIX TZ string UTC-09\n");
+    } else {
+        Roots roots;
+        Store s(roots.list());
+        const QString folder = s.store.beginSession(QStringLiteral("saved"), kUidA, QStringLiteral("County"));
+        s.store.endSession();
+        const qint64 earlyHere = QDateTime(QDate(2026, 11, 21), QTime(16, 0), QTimeZone::UTC).toSecsSinceEpoch();
+        const qint64 lateYesterday = QDateTime(QDate(2026, 11, 21), QTime(14, 0), QTimeZone::UTC).toSecsSinceEpoch();
+        record(folder, QStringLiteral("0000000000000801-1"), QStringLiteral("today.wav"), earlyHere, 1);
+        record(folder, QStringLiteral("0000000000000801-2"), QStringLiteral("yesterday.wav"), lateYesterday, 2);
+        s.pass();
+        const QVariantMap today =
+            s.store.selectForExportAt(QString(), QStringLiteral("today"), press.toMSecsSinceEpoch());
+        s.store.releaseSelection(today.value(QStringLiteral("selection")).toInt());
+        expect("press day: today is the local date",
+               today.value(QStringLiteral("day")).toString() == QLatin1String("2026-11-22"));
+        expect("press day: today takes the local day's recording",
+               today.value(QStringLiteral("names")).toStringList()
+                   == QStringList{QFileInfo(folder).fileName() + QStringLiteral("/today.wav")});
+        const QVariantMap yesterday =
+            s.store.selectForExportAt(QString(), QStringLiteral("yesterday"), press.toMSecsSinceEpoch());
+        s.store.releaseSelection(yesterday.value(QStringLiteral("selection")).toInt());
+        expect("press day: yesterday takes the day before's",
+               yesterday.value(QStringLiteral("names")).toStringList()
+                   == QStringList{QFileInfo(folder).fileName() + QStringLiteral("/yesterday.wav")});
+    }
+    if (had) {
+        qputenv("TZ", previous);
+    } else {
+        qunsetenv("TZ");
+    }
+    apply();
 }
 
 /* A host whose session state arrives by polling, as Android's does: Idle and unknown until its first poll. */
@@ -1073,13 +1405,11 @@ QString
 compactable_folder(const Roots& roots) {
     const QString folder = roots.external + QStringLiteral("/County (1a2b3c4d)");
     QDir().mkpath(folder);
-    QFile json(folder + QStringLiteral("/folder.json"));
-    if (!json.open(QIODevice::WriteOnly)
-        || json.write(QStringLiteral("{\"uid\":\"%1\",\"kind\":\"saved\",\"name\":\"County\"}\n").arg(kUidA).toUtf8())
-               < 0) {
+    if (!write_private(folder + QStringLiteral("/folder.json"),
+                       QStringLiteral("{\"uid\":\"%1\",\"kind\":\"saved\",\"name\":\"County\"}\n").arg(kUidA).toUtf8(),
+                       "wb")) {
         g_failures++;
     }
-    json.close();
     record(folder, QStringLiteral("0000000000000055-1"), QStringLiteral("live.wav"), 1754710000, 500);
     for (int i = 2; i <= 4; i++) {
         append(
@@ -1233,14 +1563,11 @@ test_folder_gone_before_its_read(void) {
         const QString first = QDir::cleanPath(compactable_folder(roots));
         const QString second = QDir::cleanPath(roots.external + QStringLiteral("/Metro (5e6f7a8b)"));
         QDir().mkpath(second);
-        QFile json(second + QStringLiteral("/folder.json"));
-        if (!json.open(QIODevice::WriteOnly)
-            || json.write(
-                   QStringLiteral("{\"uid\":\"%1\",\"kind\":\"saved\",\"name\":\"Metro\"}\n").arg(kUidC).toUtf8())
-                   < 0) {
+        if (!write_private(
+                second + QStringLiteral("/folder.json"),
+                QStringLiteral("{\"uid\":\"%1\",\"kind\":\"saved\",\"name\":\"Metro\"}\n").arg(kUidC).toUtf8(), "wb")) {
             g_failures++;
         }
-        json.close();
         std::atomic<bool> release{false};
         std::mutex heldMutex;
         QString held;
@@ -1289,10 +1616,9 @@ test_folder_gone_before_its_read(void) {
 void
 write_folder_json(const QString& folder, const QString& uid, const QString& name) {
     QDir().mkpath(folder);
-    QFile json(folder + QStringLiteral("/folder.json"));
-    if (!json.open(QIODevice::WriteOnly)
-        || json.write(QStringLiteral("{\"uid\":\"%1\",\"kind\":\"saved\",\"name\":\"%2\"}\n").arg(uid, name).toUtf8())
-               < 0) {
+    if (!write_private(folder + QStringLiteral("/folder.json"),
+                       QStringLiteral("{\"uid\":\"%1\",\"kind\":\"saved\",\"name\":\"%2\"}\n").arg(uid, name).toUtf8(),
+                       "wb")) {
         g_failures++;
     }
 }
@@ -1407,15 +1733,17 @@ test_root_gone_before_a_recheck(void) {
         countyAway = countyAway || (m.value("uid").toString() == kUidA && !m.value("available").toBool());
     }
     expect("its folder reads as away", countyAway);
-    s.store.setFolderLoadHookForTest({});
+    s.store.setTailHookForTest({});
     expect("the storage comes back", QDir().rename(away, roots.dir.path() + QStringLiteral("/ext")));
     s.pass();
     expect("read again, still there", s.store.unfinishedCount() == 1 && QFileInfo::exists(temp));
 }
 
 /* Issue #708: a delete that finds its file missing after the root went away within the pass (the USB storage left as
- * the user deleted) marks the root away, keeps the recording indexed and its delete queued, and deletes it once the
- * storage is back. Laid out as the recheck case above: no journal in the external root, so no tail notices it going. */
+ * the user deleted) marks the root away, and keeps the recording indexed and its delete queued while it is away. Laid
+ * out as the recheck case above: no journal in the external root, so no tail notices it going. The storage goes as the
+ * other root's journal is tailed, a pass that reads nothing again. Once it is back and read again, the delete is
+ * dropped (issue #902 B12: a read again drops every delete not done yet) and runs when asked again. */
 void
 test_root_gone_before_a_delete(void) {
     Roots roots;
@@ -1430,15 +1758,19 @@ test_root_gone_before_a_delete(void) {
     Store s(roots.list());
     expect("the unfinished recording is indexed", s.store.unfinishedCount() == 1);
 
+    expect("the internal root comes back", QFile::remove(internalParent));
+    const QString metro = roots.internal + QStringLiteral("/Metro (5e6f7a8b)");
+    write_folder_json(metro, QString(kUidC), QStringLiteral("Metro"));
+    s.pass();
     std::atomic<bool> moved{false};
-    s.store.setFolderLoadHookForTest([&](const QString&) {
+    s.store.setTailHookForTest([&](const QString&) {
         if (!moved.exchange(true)) {
             (void)QDir().rename(roots.dir.path() + QStringLiteral("/ext"), away);
         }
     });
-    expect("the internal root comes back", QFile::remove(internalParent));
-    write_folder_json(roots.internal + QStringLiteral("/Metro (5e6f7a8b)"), QString(kUidC), QStringLiteral("Metro"));
-    s.store.deleteRecording(QStringLiteral("unfinished:") + QDir::cleanPath(QFileInfo(temp).absoluteFilePath()));
+    record(metro, QStringLiteral("00000000000000F9-1"), QStringLiteral("m.wav"), 1754705000, 60);
+    expect("the delete asked", s.store.deleteRecording(QStringLiteral("unfinished:")
+                                                       + QDir::cleanPath(QFileInfo(temp).absoluteFilePath())));
     s.pass();
     expect("the storage went mid-pass", moved.load() && !QFileInfo::exists(temp));
     expect("the recording stays indexed, its delete waiting",
@@ -1452,8 +1784,12 @@ test_root_gone_before_a_delete(void) {
     s.store.setFolderLoadHookForTest({});
     expect("the storage comes back", QDir().rename(away, roots.dir.path() + QStringLiteral("/ext")));
     s.pass();
-    expect("the delete runs once it is back",
-           !QFileInfo::exists(temp) && s.store.unfinishedCount() == 0 && s.store.deletesWaiting() == 0);
+    expect("the delete is dropped once it is back",
+           QFileInfo::exists(temp) && s.store.unfinishedCount() == 1 && s.store.deletesWaiting() == 0);
+    expect("asked again", s.store.deleteRecording(QStringLiteral("unfinished:")
+                                                  + QDir::cleanPath(QFileInfo(temp).absoluteFilePath())));
+    s.pass();
+    expect("asked again, the delete runs", !QFileInfo::exists(temp) && s.store.unfinishedCount() == 0);
 }
 
 /* Whether the owner @p uid's folders read as away in the store's folder list. */
@@ -1469,8 +1805,8 @@ folder_away(const RecordingStore& store, const QString& uid) {
 }
 
 /* Issue #708: storage that leaves again as the store reads it back (a USB connection dropping while the root is
- * listed) is not storage emptied: its empty listing drops nothing, so its recording stays indexed and away, and the
- * delete that waits for it stays queued and runs once the storage is back for good. */
+ * listed) is not storage emptied: its empty listing drops nothing, so its recording stays indexed and away. A delete
+ * of it while it is away is refused at once (issue #902), and runs once asked again with the storage back for good. */
 void
 test_root_gone_as_it_is_read_again(void) {
     const Roots roots;
@@ -1484,9 +1820,11 @@ test_root_gone_as_it_is_read_again(void) {
     expect("read again: the recording is indexed", s.store.recordingCount() == 1);
     expect("read again: the storage goes away", QDir().rename(ext, away));
     s.pass();
-    s.store.deleteRecording(QStringLiteral("00000000000000F0-1"));
+    expect("read again: its delete is refused while it is away",
+           !s.store.deleteRecording(QStringLiteral("00000000000000F0-1"))
+               && s.store.deleteRefusal() == QLatin1String("storageAway"));
     s.pass();
-    expect("read again: its delete waits", s.store.deletesWaiting() == 1 && folder_away(s.store, kUidA));
+    expect("read again: nothing waits", s.store.deletesWaiting() == 0 && folder_away(s.store, kUidA));
 
     std::atomic<bool> moved{false};
     s.store.setRootReadHookForTest([&](const QString& root) {
@@ -1497,20 +1835,23 @@ test_root_gone_as_it_is_read_again(void) {
     expect("read again: the storage comes back", QDir().rename(away, ext));
     s.pass();
     expect("read again: and leaves as it is listed", moved.load() && !QFileInfo::exists(folder));
-    expect("read again: the recording stays indexed, its delete waiting",
-           s.store.recordingCount() == 1 && s.store.deletesWaiting() == 1);
+    expect("read again: the recording stays indexed", s.store.recordingCount() == 1 && s.store.deletesWaiting() == 0);
     expect("read again: its folder reads as away", folder_away(s.store, kUidA));
     s.store.setRootReadHookForTest({});
     expect("read again: the storage is back for good", QDir().rename(away, ext));
     s.pass();
-    expect("read again: the delete runs", !QFileInfo::exists(folder + QStringLiteral("/a.wav"))
-                                              && s.store.recordingCount() == 0 && s.store.deletesWaiting() == 0);
+    expect("read again: nothing deleted", QFileInfo::exists(folder + QStringLiteral("/a.wav"))
+                                              && s.store.recordingCount() == 1 && s.store.deletesWaiting() == 0);
+    expect("read again: asked again", s.store.deleteRecording(QStringLiteral("00000000000000F0-1")));
+    s.pass();
+    expect("read again: the delete runs",
+           !QFileInfo::exists(folder + QStringLiteral("/a.wav")) && s.store.recordingCount() == 0);
 }
 
 /* Issue #708: storage that comes back is listed whole and then has its journals read; storage that leaves again
  * during that read (after the listing, as a folder is read) is not storage emptied either. What the index held for
- * it stays until a read of its folders completes: the recording stays indexed and away, its delete stays queued, and
- * the delete runs once the storage is back for good. */
+ * it stays until a read of its folders completes: the recording stays indexed and away. A delete of it while it is
+ * away is refused at once (issue #902), and runs once asked again with the storage back for good. */
 void
 test_root_gone_as_its_folders_are_read_again(void) {
     const Roots roots;
@@ -1524,9 +1865,11 @@ test_root_gone_as_its_folders_are_read_again(void) {
     expect("folders again: the recording is indexed", s.store.recordingCount() == 1);
     expect("folders again: the storage goes away", QDir().rename(ext, away));
     s.pass();
-    s.store.deleteRecording(QStringLiteral("00000000000000F8-1"));
+    expect("folders again: its delete is refused while it is away",
+           !s.store.deleteRecording(QStringLiteral("00000000000000F8-1"))
+               && s.store.deleteRefusal() == QLatin1String("storageAway"));
     s.pass();
-    expect("folders again: its delete waits", s.store.deletesWaiting() == 1 && folder_away(s.store, kUidA));
+    expect("folders again: nothing waits", s.store.deletesWaiting() == 0 && folder_away(s.store, kUidA));
 
     std::atomic<bool> moved{false};
     s.store.setFolderLoadHookForTest([&](const QString&) {
@@ -1537,14 +1880,18 @@ test_root_gone_as_its_folders_are_read_again(void) {
     expect("folders again: the storage comes back", QDir().rename(away, ext));
     s.pass();
     expect("folders again: and leaves as its folder is read", moved.load() && !QFileInfo::exists(folder));
-    expect("folders again: the recording stays indexed, its delete waiting",
-           s.store.recordingCount() == 1 && s.store.deletesWaiting() == 1);
+    expect("folders again: the recording stays indexed",
+           s.store.recordingCount() == 1 && s.store.deletesWaiting() == 0);
     expect("folders again: its folder reads as away", folder_away(s.store, kUidA));
     s.store.setFolderLoadHookForTest({});
     expect("folders again: the storage is back for good", QDir().rename(away, ext));
     s.pass();
-    expect("folders again: the delete runs", !QFileInfo::exists(folder + QStringLiteral("/a.wav"))
-                                                 && s.store.recordingCount() == 0 && s.store.deletesWaiting() == 0);
+    expect("folders again: nothing deleted", QFileInfo::exists(folder + QStringLiteral("/a.wav"))
+                                                 && s.store.recordingCount() == 1 && s.store.deletesWaiting() == 0);
+    expect("folders again: asked again", s.store.deleteRecording(QStringLiteral("00000000000000F8-1")));
+    s.pass();
+    expect("folders again: the delete runs",
+           !QFileInfo::exists(folder + QStringLiteral("/a.wav")) && s.store.recordingCount() == 0);
 }
 
 /* Issue #708: a journal shorter than its cursor is read again from its start; storage that leaves during that read
@@ -1563,11 +1910,9 @@ test_root_gone_as_a_journal_is_read_again(void) {
     expect("reread: both recordings are indexed", s.store.recordingCount() == 2);
     {
         // Replaced behind the store's back by a shorter journal naming only the first.
-        QFile journal(journal_of(folder));
         const QByteArray line =
             publish_line(QStringLiteral("00000000000000F1-1"), QStringLiteral("a.wav"), 1754705000, 60);
-        expect("reread: the journal is replaced",
-               journal.open(QIODevice::WriteOnly | QIODevice::Truncate) && journal.write(line) == line.size());
+        expect("reread: the journal is replaced", write_private(journal_of(folder), line, "wb"));
     }
     std::atomic<bool> moved{false};
     s.store.setFolderLoadHookForTest([&](const QString&) {
@@ -1694,8 +2039,8 @@ test_root_gone_before_the_limit_removes(void) {
 }
 
 /* Issue #708: an unlink that fails because the storage went as it ran is not a refused delete: the root is marked
- * away, the recording stays indexed, its delete stays queued and no failure is counted; the delete runs once the
- * storage is back. */
+ * away, the recording stays indexed, its delete stays queued and no failure is counted. The read once the storage is
+ * back drops it (issue #902 B12), and it runs once asked again. */
 void
 test_root_gone_during_an_unlink(void) {
     const Roots roots;
@@ -1725,9 +2070,13 @@ test_root_gone_during_an_unlink(void) {
     expect("unlink: its folder reads as away", folder_away(s.store, kUidA));
     expect("unlink: the storage comes back", QDir().rename(away, ext));
     s.pass();
-    expect("unlink: the delete runs once it is back",
-           !QFileInfo::exists(folder + QStringLiteral("/a.wav")) && s.store.recordingCount() == 0
+    expect("unlink: the delete is dropped once it is back",
+           QFileInfo::exists(folder + QStringLiteral("/a.wav")) && s.store.recordingCount() == 1
                && s.store.deletesWaiting() == 0 && s.store.deleteFailures() == 0);
+    expect("unlink: asked again", s.store.deleteRecording(QStringLiteral("00000000000000F4-1")));
+    s.pass();
+    expect("unlink: the delete runs", !QFileInfo::exists(folder + QStringLiteral("/a.wav"))
+                                          && s.store.recordingCount() == 0 && s.store.deleteFailures() == 0);
 }
 
 /* Issue #708: storage that left after the last pass and before a session start is not made again under the absent
@@ -2156,8 +2505,8 @@ test_stop_during_the_first_read(void) {
     for (int i = 0; i < 30; i++) {
         const QString folder = roots.external + QStringLiteral("/F%1").arg(i);
         QDir().mkpath(folder);
-        QFile json(folder + QStringLiteral("/folder.json"));
-        if (!json.open(QIODevice::WriteOnly) || json.write(QStringLiteral("{\"uid\":\"u%1\"}\n").arg(i).toUtf8()) < 0) {
+        if (!write_private(folder + QStringLiteral("/folder.json"),
+                           QStringLiteral("{\"uid\":\"u%1\"}\n").arg(i).toUtf8(), "wb")) {
             g_failures++;
         }
     }
@@ -2363,8 +2712,10 @@ test_host_surface(void) {
     Store s(roots.list());
     ServedHost host;
     dsd_qt::recording_store_serve_host(&s.store, &host);
+    // The session stays open while this case writes the journal, as the decoder writes one only during a session: a
+    // pass a release or a recheck wakes may still be running when a line is appended, and with no session it could
+    // compact the journal over a line it had not read.
     const QString folder = s.store.beginSession(QStringLiteral("saved"), kUidA, QStringLiteral("County"));
-    s.store.endSession();
     for (int i = 1; i <= 4; i++) {
         record(folder, QStringLiteral("0000000000000099-%1").arg(i), QStringLiteral("h%1.wav").arg(i), 1754714000 + i,
                900 + i);
@@ -2502,6 +2853,7 @@ test_host_surface(void) {
     expect("a missing one is not shared", !host.shareRecording(path(7), QStringLiteral("County")));
     s.pass();
     expect("and leaves the index", !s.store.isIndexedPath(path(7)));
+    s.store.endSession();
 }
 
 /* Issue #708: the store has the user's storage limit before its first pass, and every change after. */
@@ -2840,6 +3192,47 @@ test_queries_between_rebuild_slices(void) {
                && s.store.recordingEntryNames({{fragment(1), fragment(2)}, {fragment(1)}}) == names;
     };
     expect("between slices: indexed whole", whole());
+    // Issue #902 B12: an export and each delete request take the folder whole, and are refused while it is read again.
+    const QVariantMap before = s.store.selectForExport(QString(), QStringLiteral("all"));
+    s.store.releaseSelection(before.value(QStringLiteral("selection")).toInt());
+    const QStringList exportNames = before.value(QStringLiteral("names")).toStringList();
+    expect("between slices: the export, before", exportNames.size() == 402);
+    const QString uid = s.store.folders().value(0).toMap().value(QStringLiteral("uid")).toString();
+    QStringList everyId{pendingId, keyedId};
+    for (int i = 0; i < 400; i++) {
+        everyId.append(QStringLiteral("0000000000000095-%1").arg(100 + i));
+    }
+    std::sort(everyId.begin(), everyId.end());
+    const auto exportWhole = [&s, &exportNames]() {
+        const QVariantMap selection = s.store.selectForExport(QString(), QStringLiteral("all"));
+        s.store.releaseSelection(selection.value(QStringLiteral("selection")).toInt());
+        return selection.value(QStringLiteral("names")).toStringList() == exportNames
+               && selection.value(QStringLiteral("count")).toInt() == 402
+               && selection.value(QStringLiteral("bytes")).toLongLong() == 402000;
+    };
+    // Each request is taken back before anything is deleted: the files are held meanwhile, so a pass a request wakes
+    // leaves every one of them queued, and that pass is over before the hold ends.
+    const auto deletesWhole = [&s, &uid, &everyId]() {
+        const QVariantMap held = s.store.selectRecordings(everyId);
+        const bool all = s.store.deleteAll() && s.taken() == everyId;
+        const bool folder = s.store.deleteFolder(uid) && s.taken() == everyId;
+        const bool ids = s.store.deleteRecordings(everyId) && s.taken() == everyId;
+        s.pass();
+        s.store.releaseSelection(held.value(QStringLiteral("selection")).toInt());
+        return held.value(QStringLiteral("count")).toInt() == 402 && all && folder && ids;
+    };
+    expect("between slices: the export and deletes, before", exportWhole() && deletesWhole());
+    // Refused: nothing selected or held, nothing queued, and the export says why.
+    const auto refused = [&s, &uid, &everyId]() {
+        const QVariantMap selection = s.store.selectForExport(QString(), QStringLiteral("all"));
+        const bool exportRefused = selection.value(QStringLiteral("selection")).toInt() == 0
+                                   && selection.value(QStringLiteral("count")).toInt() == 0
+                                   && selection.value(QStringLiteral("loading")).toBool();
+        const bool deletesRefused = !s.store.deleteAll() && !s.store.deleteFolder(uid)
+                                    && !s.store.deleteRecordings(everyId) && !s.store.deleteRecording(everyId.value(0))
+                                    && !s.store.deleteUnfinished();
+        return exportRefused && deletesRefused && s.store.takeDeleteQueueForTest().isEmpty();
+    };
 
     expect("between slices: the storage goes", QDir().rename(roots.dir.path() + QStringLiteral("/ext"), away));
     s.pass();
@@ -2847,12 +3240,14 @@ test_queries_between_rebuild_slices(void) {
     int slices = 0;
     int partial = 0;
     int unplayable = 0;
+    int accepted = 0;
     s.store.setSliceHookForTest([&](const QString& path) {
         if (path != folder) {
             return;
         }
         slices++;
         partial += whole() ? 0 : 1;
+        accepted += refused() ? 0 : 1;
         const int selection = s.store.selectRecordings({keyedId}).value(QStringLiteral("selection")).toInt();
         if (selection > 0) {
             s.store.releaseSelection(selection);
@@ -2865,7 +3260,822 @@ test_queries_between_rebuild_slices(void) {
     expect("between slices: read again slice by slice", slices >= 3);
     expect("between slices: every query read the folder whole", partial == 0);
     expect("between slices: the listed recording could be played", unplayable == 0);
-    expect("between slices: read again, whole", whole());
+    expect("between slices: every export and delete request was refused", accepted == 0);
+    expect("between slices: read again, whole", whole() && exportWhole() && deletesWhole());
+}
+
+/* Issue #902 B12: storage that comes back changed is read whole before any export or delete runs. While it was away
+ * two owners' folders swapped places, a recording's file was replaced by a newer publish at the same path, and a new
+ * owner's folder of 300 recordings appeared. Through every slice of that read, an export and every delete request are
+ * refused (a folder delete then would have taken the other owner's recordings, an export part of the new folder or
+ * the replaced file under its old date); once it is read, each takes exactly what it should. */
+void
+test_changed_storage_is_read_before_bulk_requests(void) {
+    constexpr int kEach = 200;
+    constexpr int kNew = 300;
+    const QDate today(2026, 11, 21);
+    const QTimeZone utc(QTimeZone::UTC);
+    const qint64 yesterdayNoon = QDateTime(today.addDays(-1), QTime(12, 0), utc).toSecsSinceEpoch();
+    const qint64 todayNoon = QDateTime(today, QTime(12, 0), utc).toSecsSinceEpoch();
+    Roots roots;
+    const QString away = roots.dir.path() + QStringLiteral("/ext-away");
+    Store s(roots.list());
+    const QString a = s.store.beginSession(QStringLiteral("saved"), kUidA, QStringLiteral("County"));
+    s.store.endSession();
+    const QString b = s.store.beginSession(QStringLiteral("saved"), kUidB, QStringLiteral("Metro"));
+    s.store.endSession();
+    const auto fill = [](const QString& folder, const QString& prefix, int count, qint64 firstStart) {
+        QByteArray journal;
+        for (int i = 0; i < count; i++) {
+            const QString file = QStringLiteral("r%1.wav").arg(i);
+            make_file(folder + QLatin1Char('/') + file, 1000);
+            journal.append(publish_line(prefix + QString::number(i), file, firstStart + i, -1));
+        }
+        append(journal_of(folder), journal);
+    };
+    fill(a, QStringLiteral("0000000000000301-"), kEach, 1754000000);
+    fill(b, QStringLiteral("0000000000000302-"), kEach, 1755000000);
+    // A's first recording is yesterday's.
+    record(a, QStringLiteral("0000000000000301-y"), QStringLiteral("y.wav"), yesterdayNoon, 1);
+    s.pass();
+    QStringList idsA;
+    QStringList idsB;
+    for (int i = 0; i < kEach; i++) {
+        idsA.append(QStringLiteral("0000000000000301-%1").arg(i));
+        idsB.append(QStringLiteral("0000000000000302-%1").arg(i));
+    }
+
+    // Away: the two folders swap places, y.wav is replaced by today's recording at the same path, and a new owner's
+    // folder appears.
+    expect("changed: the storage goes", QDir().rename(roots.dir.path() + QStringLiteral("/ext"), away));
+    s.pass();
+    const QString awayRoot = away + QStringLiteral("/Call recordings/");
+    const QString awayA = awayRoot + QFileInfo(a).fileName();
+    const QString awayB = awayRoot + QFileInfo(b).fileName();
+    record(awayA, QStringLiteral("0000000000000301-t"), QStringLiteral("y.wav"), todayNoon, 2, 2000);
+    expect("changed: the folders swap", QDir().rename(awayA, awayRoot + QStringLiteral("swap"))
+                                            && QDir().rename(awayB, awayA)
+                                            && QDir().rename(awayRoot + QStringLiteral("swap"), awayB));
+    const QString awayC = awayRoot + QStringLiteral("Newcomer (5e6f7a8b)");
+    QDir().mkpath(awayC);
+    {
+        const QJsonObject meta{{QStringLiteral("uid"), QString(kUidC)},
+                               {QStringLiteral("kind"), QStringLiteral("saved")},
+                               {QStringLiteral("name"), QStringLiteral("Newcomer")}};
+        expect("changed: a new folder", write_private(awayC + QStringLiteral("/folder.json"),
+                                                      QJsonDocument(meta).toJson(QJsonDocument::Compact), "wb"));
+    }
+    fill(awayC, QStringLiteral("0000000000000303-"), kNew, 1756000000);
+    expect("changed: the storage comes back", QDir().rename(away, roots.dir.path() + QStringLiteral("/ext")));
+
+    int slices = 0;
+    int accepted = 0;
+    s.store.setSliceHookForTest([&](const QString&) {
+        slices++;
+        const QVariantMap selection = s.store.selectForExportOn(QString(), QStringLiteral("all"), today, utc);
+        const bool exportRefused = selection.value(QStringLiteral("selection")).toInt() == 0
+                                   && selection.value(QStringLiteral("loading")).toBool();
+        const bool deletesRefused = !s.store.deleteFolder(kUidB) && !s.store.deleteFolder(kUidC) && !s.store.deleteAll()
+                                    && !s.store.deleteRecordings(idsA);
+        accepted += exportRefused && deletesRefused && s.store.takeDeleteQueueForTest().isEmpty() ? 0 : 1;
+    });
+    s.pass();
+    s.store.setSliceHookForTest({});
+    expect("changed: read slice by slice, three folders", slices >= 7);
+    expect("changed: every export and delete request was refused meanwhile", accepted == 0);
+
+    // Read whole: each owner's delete names its own recordings, wherever its folder now is.
+    QStringList wantA = idsA;
+    wantA.append(QStringLiteral("0000000000000301-t"));
+    std::sort(wantA.begin(), wantA.end());
+    std::sort(idsB.begin(), idsB.end());
+    const auto queued = [&s](bool asked) {
+        const QStringList ids = asked ? s.taken() : QStringList{QStringLiteral("refused")};
+        return ids;
+    };
+    const QVariantMap held = s.store.selectForExportOn(QString(), QStringLiteral("all"), today, utc);
+    expect("changed: the export, whole", held.value(QStringLiteral("count")).toInt() == 2 * kEach + 1 + kNew
+                                             && !held.value(QStringLiteral("loading")).toBool());
+    expect("changed: B's delete, B's recordings", queued(s.store.deleteFolder(kUidB)) == idsB);
+    expect("changed: A's delete, A's recordings and the replacement", queued(s.store.deleteFolder(kUidA)) == wantA);
+    expect("changed: the new owner's delete, all of its recordings",
+           queued(s.store.deleteFolder(kUidC)).size() == kNew);
+    s.pass();
+    s.store.releaseSelection(held.value(QStringLiteral("selection")).toInt());
+    // The replaced file is today's recording, not yesterday's.
+    expect("changed: yesterday has nothing", export_names(s.store, QStringLiteral("yesterday"), today, utc).isEmpty());
+    expect("changed: today has the replacement",
+           export_names(s.store, QStringLiteral("today"), today, utc).size() == 1);
+}
+
+/* Issue #902 B12: a journal replaced in place, on storage that stayed mounted (shorter than what was read), is read
+ * again whole. From before any of the folder is read again (the folder-load hook, ahead of its files and journal) an
+ * export and every delete request are refused: one then would export yesterday's path, now today's recording, or
+ * delete by an id the new journal no longer has. Once it is read, each takes what the new journal holds. */
+void
+test_journal_replaced_in_place_is_read_before_bulk_requests(void) {
+    const QDate today(2026, 11, 21);
+    const QTimeZone utc(QTimeZone::UTC);
+    Roots roots;
+    Store s(roots.list());
+    const QString folder = s.store.beginSession(QStringLiteral("saved"), kUidA, QStringLiteral("County"));
+    s.store.endSession();
+    const QString oldId = QStringLiteral("0000000000000401-y");
+    record(folder, oldId, QStringLiteral("y.wav"), QDateTime(today.addDays(-1), QTime(12, 0), utc).toSecsSinceEpoch(),
+           1);
+    for (int i = 0; i < 3; i++) {
+        record(folder, QStringLiteral("0000000000000401-%1").arg(i), QStringLiteral("o%1.wav").arg(i), 1754000000 + i,
+               2 + i);
+    }
+    s.pass();
+    expect("in place: yesterday's recording",
+           export_names(s.store, QStringLiteral("yesterday"), today, utc).size() == 1);
+
+    // Replaced in place: one line, today's recording at yesterday's path.
+    make_file(folder + QStringLiteral("/y.wav"), 2000);
+    {
+        const QByteArray line = publish_line(QStringLiteral("0000000000000401-t"), QStringLiteral("y.wav"),
+                                             QDateTime(today, QTime(12, 0), utc).toSecsSinceEpoch(), 9);
+        expect("in place: the journal is replaced", write_private(journal_of(folder), line, "wb"));
+    }
+    int reads = 0;
+    int accepted = 0;
+    s.store.setFolderLoadHookForTest([&](const QString& path) {
+        if (path != folder) {
+            return;
+        }
+        reads++;
+        const QVariantMap selection = s.store.selectForExportOn(QString(), QStringLiteral("yesterday"), today, utc);
+        const bool exportRefused = selection.value(QStringLiteral("selection")).toInt() == 0
+                                   && selection.value(QStringLiteral("loading")).toBool();
+        const bool deletesRefused = !s.store.deleteAll() && !s.store.deleteFolder(kUidA)
+                                    && !s.store.deleteRecording(oldId) && !s.store.deleteUnfinished();
+        accepted += exportRefused && deletesRefused && s.store.takeDeleteQueueForTest().isEmpty() ? 0 : 1;
+    });
+    s.pass();
+    s.store.setFolderLoadHookForTest({});
+    expect("in place: read again", reads == 1);
+    expect("in place: refused before the folder was read", accepted == 0);
+    expect("in place: yesterday has nothing now",
+           export_names(s.store, QStringLiteral("yesterday"), today, utc).isEmpty());
+    const QVariantMap now = s.store.selectForExportOn(QString(), QStringLiteral("today"), today, utc);
+    s.store.releaseSelection(now.value(QStringLiteral("selection")).toInt());
+    expect("in place: today has the replacement",
+           now.value(QStringLiteral("count")).toInt() == 1 && now.value(QStringLiteral("bytes")).toLongLong() == 2000);
+    expect("in place: an id the new journal lacks deletes nothing",
+           s.store.deleteRecording(oldId) && s.store.takeDeleteQueueForTest().isEmpty());
+}
+
+/* Issue #902 B12: while the worker reads storage at all, from the moment a returning root is listed, an export and
+ * every delete request are refused. Two owners whose recordings carry no journal ids (each named for its path) swap
+ * folders while the storage is away: a folder delete during the listing named the other owner's files, which kept
+ * those paths after the read. Once the pass ends, each owner's delete names its own recordings where they now are. */
+void
+test_bulk_requests_wait_for_a_root_being_listed(void) {
+    constexpr int kEach = 3;
+    Roots roots;
+    const QString away = roots.dir.path() + QStringLiteral("/ext-away");
+    Store s(roots.list());
+    const QString a = s.store.beginSession(QStringLiteral("saved"), kUidA, QStringLiteral("County"));
+    s.store.endSession();
+    const QString b = s.store.beginSession(QStringLiteral("saved"), kUidB, QStringLiteral("Metro"));
+    s.store.endSession();
+    const auto idless = [](const QString& file, qint64 start, qint64 row) {
+        QJsonObject o = QJsonDocument::fromJson(publish_line(QStringLiteral("x"), file, start, row).trimmed()).object();
+        o.remove(QStringLiteral("id"));
+        return QJsonDocument(o).toJson(QJsonDocument::Compact) + '\n';
+    };
+    for (int i = 0; i < kEach; i++) {
+        const QString file = QStringLiteral("r%1.wav").arg(i);
+        make_file(a + QLatin1Char('/') + file, 1000);
+        append(journal_of(a), idless(file, 1754000000 + i, 1 + i));
+        make_file(b + QLatin1Char('/') + file, 1000);
+        append(journal_of(b), idless(file, 1755000000 + i, 10 + i));
+    }
+    s.pass();
+    const auto ids_at = [](const QString& folder) {
+        QStringList ids;
+        for (int i = 0; i < kEach; i++) {
+            ids.append(QStringLiteral("file:") + folder + QStringLiteral("/r%1.wav").arg(i));
+        }
+        std::sort(ids.begin(), ids.end());
+        return ids;
+    };
+    // Each delete is taken back with its files held: the pass a request wakes leaves them queued, whenever it runs.
+    const auto held_delete = [&s](const QString& uid, const QStringList& ids) {
+        const QVariantMap held = s.store.selectRecordings(ids);
+        const bool asked = s.store.deleteFolder(uid);
+        const QStringList queued = asked ? s.taken() : QStringList{QStringLiteral("refused")};
+        s.store.releaseSelection(held.value(QStringLiteral("selection")).toInt());
+        s.pass();
+        return held.value(QStringLiteral("count")).toInt() == ids.size() ? queued
+                                                                         : QStringList{QStringLiteral("unheld")};
+    };
+    expect("listing: B's delete before, B's files", held_delete(kUidB, ids_at(b)) == ids_at(b));
+
+    expect("listing: the storage goes", QDir().rename(roots.dir.path() + QStringLiteral("/ext"), away));
+    s.pass();
+    const QString awayRoot = away + QStringLiteral("/Call recordings/");
+    const QString awayA = awayRoot + QFileInfo(a).fileName();
+    const QString awayB = awayRoot + QFileInfo(b).fileName();
+    expect("listing: the folders swap", QDir().rename(awayA, awayRoot + QStringLiteral("swap"))
+                                            && QDir().rename(awayB, awayA)
+                                            && QDir().rename(awayRoot + QStringLiteral("swap"), awayB));
+    expect("listing: the storage comes back", QDir().rename(away, roots.dir.path() + QStringLiteral("/ext")));
+    int listings = 0;
+    int accepted = 0;
+    s.store.setRootReadHookForTest([&](const QString&) {
+        listings++;
+        const QVariantMap all = s.store.selectForExport(QString(), QStringLiteral("all"));
+        const bool exportRefused =
+            all.value(QStringLiteral("selection")).toInt() == 0 && all.value(QStringLiteral("loading")).toBool();
+        const bool deletesRefused = !s.store.deleteFolder(kUidB) && !s.store.deleteAll()
+                                    && !s.store.deleteRecordings(ids_at(b)) && !s.store.deleteUnfinished();
+        accepted += exportRefused && deletesRefused && s.store.takeDeleteQueueForTest().isEmpty() ? 0 : 1;
+    });
+    s.pass();
+    s.store.setRootReadHookForTest({});
+    expect("listing: the root was listed again", listings >= 1);
+    expect("listing: refused while it was listed", accepted == 0);
+    // B's recordings now sit at A's former path, and A's at B's.
+    expect("listing: B's delete after, B's files where they are now", held_delete(kUidB, ids_at(a)) == ids_at(a));
+    expect("listing: A's delete after, A's files where they are now", held_delete(kUidA, ids_at(b)) == ids_at(b));
+    const QVariantMap all = s.store.selectForExport(QString(), QStringLiteral("all"));
+    s.store.releaseSelection(all.value(QStringLiteral("selection")).toInt());
+    expect("listing: Export all, whole", all.value(QStringLiteral("count")).toInt() == 2 * kEach);
+}
+
+/* Issue #902 B12: a delete asked but not done yet (its file held by an export) is dropped by any read of storage
+ * again. Two owners whose recordings carry no journal ids (each named for its path) swap folders while the storage is
+ * away, with B's delete waiting on its hold: the read back gives B's old paths to A's recordings, so the delete, if it
+ * stayed, would take A's files once the hold ended. It is dropped instead: every file stays, and nothing waits. */
+void
+test_held_delete_dropped_by_a_reread(void) {
+    constexpr int kEach = 2;
+    Roots roots;
+    const QString away = roots.dir.path() + QStringLiteral("/ext-away");
+    Store s(roots.list());
+    const QString a = s.store.beginSession(QStringLiteral("saved"), kUidA, QStringLiteral("County"));
+    s.store.endSession();
+    const QString b = s.store.beginSession(QStringLiteral("saved"), kUidB, QStringLiteral("Metro"));
+    s.store.endSession();
+    const auto idless = [](const QString& file, qint64 start, qint64 row) {
+        QJsonObject o = QJsonDocument::fromJson(publish_line(QStringLiteral("x"), file, start, row).trimmed()).object();
+        o.remove(QStringLiteral("id"));
+        return QJsonDocument(o).toJson(QJsonDocument::Compact) + '\n';
+    };
+    for (int i = 0; i < kEach; i++) {
+        const QString file = QStringLiteral("r%1.wav").arg(i);
+        make_file(a + QLatin1Char('/') + file, 1000);
+        append(journal_of(a), idless(file, 1754000000 + i, 1 + i));
+        make_file(b + QLatin1Char('/') + file, 2000);
+        append(journal_of(b), idless(file, 1755000000 + i, 10 + i));
+    }
+    s.pass();
+    QStringList idsB;
+    for (int i = 0; i < kEach; i++) {
+        idsB.append(QStringLiteral("file:") + b + QStringLiteral("/r%1.wav").arg(i));
+    }
+    // B's delete waits for the export holding its files.
+    const QVariantMap held = s.store.selectRecordings(idsB);
+    expect("held delete: B's files held", held.value(QStringLiteral("count")).toInt() == kEach);
+    expect("held delete: B's delete asked", s.store.deleteFolder(kUidB));
+    s.pass();
+    expect("held delete: waiting on the hold", s.store.deletesWaiting() == kEach);
+
+    expect("held delete: the storage goes", QDir().rename(roots.dir.path() + QStringLiteral("/ext"), away));
+    s.pass();
+    const QString awayRoot = away + QStringLiteral("/Call recordings/");
+    const QString awayA = awayRoot + QFileInfo(a).fileName();
+    const QString awayB = awayRoot + QFileInfo(b).fileName();
+    expect("held delete: the folders swap", QDir().rename(awayA, awayRoot + QStringLiteral("swap"))
+                                                && QDir().rename(awayB, awayA)
+                                                && QDir().rename(awayRoot + QStringLiteral("swap"), awayB));
+    expect("held delete: the storage comes back", QDir().rename(away, roots.dir.path() + QStringLiteral("/ext")));
+    s.pass();
+    expect("held delete: dropped by the read", s.store.deletesWaiting() == 0);
+    s.store.releaseSelection(held.value(QStringLiteral("selection")).toInt());
+    s.pass();
+    // A's recordings (1000 bytes) now at B's old path, B's (2000 bytes) at A's: all of them still there.
+    bool kept = true;
+    for (int i = 0; i < kEach; i++) {
+        const QString file = QStringLiteral("/r%1.wav").arg(i);
+        kept = kept && QFileInfo(b + file).size() == 1000 && QFileInfo(a + file).size() == 2000;
+    }
+    expect("held delete: nothing of either owner deleted", kept && s.store.recordingCount() == 2 * kEach);
+    expect("held delete: nothing waits", s.store.deletesWaiting() == 0 && s.store.takeDeleteQueueForTest().isEmpty());
+    // Said, not silently zeroed: the screens show the cancelled deletes until they are acknowledged.
+    expect("held delete: the cancellation is told", s.store.deletesCancelled() == kEach);
+    s.store.acknowledgeNotices();
+    expect("held delete: and acknowledged", s.store.deletesCancelled() == 0);
+}
+
+/* Issue #902: a delete request that names any recording on storage that is not there is refused whole, at once, and
+ * queues nothing: an owner with folders on storage there and away, Delete all and the unfinished recordings delete none
+ * of their recordings, while a delete of recordings only on storage there runs. Storage that left since the last pass
+ * is found by the request itself, and the pass it asks for marks it away. Back again, the same requests run. */
+void
+test_deletes_refused_for_storage_away(void) {
+    Roots roots;
+    const QString ext = roots.dir.path() + QStringLiteral("/ext");
+    const QString away = roots.dir.path() + QStringLiteral("/ext-away");
+    // An earlier run's unfinished recording, there as the store starts.
+    const QString made = roots.external + QStringLiteral("/County (1a2b3c4d)");
+    write_folder_json(made, QString(kUidA), QStringLiteral("County"));
+    const QString temp = made + QStringLiteral("/TEMP_20261027_120000_0123456789ABCDEF_9.wav");
+    make_file(temp, 7000);
+    Store s(roots.list());
+    const QString outer = s.store.beginSession(QStringLiteral("saved"), kUidA, QStringLiteral("County"));
+    expect("away: the owner's folder", outer == made && s.store.unfinishedCount() == 1);
+    record(outer, QStringLiteral("0000000000000601-1"), QStringLiteral("a.wav"), 1754000000, 1);
+    s.store.endSession();
+    s.pass();
+    expect("away: the storage goes", QDir().rename(ext, away));
+    s.pass();
+    const QString inner = s.store.beginSession(QStringLiteral("saved"), kUidA, QStringLiteral("County"));
+    expect("away: the owner records on the other storage", inner.startsWith(roots.internal));
+    record(inner, QStringLiteral("0000000000000601-2"), QStringLiteral("b.wav"), 1754000100, 2);
+    s.store.endSession();
+    s.pass();
+    const auto refused_away = [&s](bool asked) {
+        return !asked && s.store.deleteRefusal() == QLatin1String("storageAway")
+               && s.store.takeDeleteQueueForTest().isEmpty();
+    };
+    expect("away: the owner's delete, refused whole", refused_away(s.store.deleteFolder(QString(kUidA))));
+    expect("away: Delete all, refused whole", refused_away(s.store.deleteAll()));
+    expect("away: the unfinished recordings, refused", refused_away(s.store.deleteUnfinished()));
+    expect("away: one recording there and one away, refused",
+           refused_away(
+               s.store.deleteRecordings({QStringLiteral("0000000000000601-1"), QStringLiteral("0000000000000601-2")})));
+    s.pass();
+    expect("away: nothing waits, nothing deleted", s.store.deletesWaiting() == 0 && s.store.recordingCount() == 2
+                                                       && s.store.unfinishedCount() == 1
+                                                       && QFileInfo::exists(inner + QStringLiteral("/b.wav")));
+
+    expect("away: the storage comes back", QDir().rename(away, ext));
+    s.pass();
+    // Gone again since that pass: the request finds it, and the pass it asks for marks it away.
+    expect("away: the storage goes again", QDir().rename(ext, away));
+    expect("away: gone since the last pass, refused",
+           refused_away(s.store.deleteRecording(QStringLiteral("0000000000000601-1"))));
+    s.pass();
+    const QVariantMap outerRecording = s.store.recordingsForFragments({fragment(1)}).value(0).toMap();
+    expect("away: and marked away", !outerRecording.isEmpty() && !outerRecording.value("available").toBool());
+    expect("away: a recording only on storage there is deleted",
+           s.store.deleteRecording(QStringLiteral("0000000000000601-2")) && s.store.deleteRefusal().isEmpty());
+    s.pass();
+    expect("away: the one there gone", !QFileInfo::exists(inner + QStringLiteral("/b.wav")));
+
+    expect("away: the storage comes back again", QDir().rename(away, ext));
+    s.pass();
+    expect("away: back, the owner's delete runs", s.store.deleteFolder(QString(kUidA)));
+    s.pass();
+    expect("away: back, everything of it deleted", !QFileInfo::exists(outer + QStringLiteral("/a.wav"))
+                                                       && !QFileInfo::exists(temp) && s.store.recordingCount() == 0
+                                                       && s.store.unfinishedCount() == 0);
+}
+
+/* A publish line with no journal id (the recording is named for its path), every value of one width so two journals
+ * of these are the same length. */
+QByteArray
+idless_line(const QString& file, qint64 start, qint64 row) {
+    QJsonObject o = QJsonDocument::fromJson(publish_line(QStringLiteral("x"), file, start, row).trimmed()).object();
+    o.remove(QStringLiteral("id"));
+    return QJsonDocument(o).toJson(QJsonDocument::Compact) + '\n';
+}
+
+/* A folder.json for @p uid, written privately. */
+bool
+write_owner_json(const QString& folder, const QString& uid, const QString& name) {
+    QDir().mkpath(folder);
+    const QJsonObject meta{{QStringLiteral("uid"), uid},
+                           {QStringLiteral("kind"), QStringLiteral("saved")},
+                           {QStringLiteral("name"), name}};
+    return write_private(folder + QStringLiteral("/folder.json"), QJsonDocument(meta).toJson(QJsonDocument::Compact),
+                         "wb");
+}
+
+/* Issue #902: a delete removes only the file it was asked of. Two owners whose recordings carry no journal ids swap
+ * folders on storage that stays mounted, their journals the same length, so no pass reads either again and the index
+ * still names A's recordings at what are now B's paths. A delete of A held by an export across the swap, and one asked
+ * after it, each find another file at the path (its identity is not the one the index knew) and leave it: nothing of
+ * B's is deleted, nothing of A's either, and the screens are told the deletes did not happen. */
+void
+test_delete_checks_the_file_it_removes(void) {
+    constexpr int kEach = 2;
+    Roots roots;
+    Store s(roots.list());
+    const QString a = s.store.beginSession(QStringLiteral("saved"), kUidA, QStringLiteral("County"));
+    s.store.endSession();
+    const QString b = s.store.beginSession(QStringLiteral("saved"), kUidB, QStringLiteral("Metro"));
+    s.store.endSession();
+    for (int i = 0; i < kEach; i++) {
+        const QString file = QStringLiteral("r%1.wav").arg(i);
+        // The same size, each its own modification time: another file by the delete's check (size and time).
+        make_file(a + QLatin1Char('/') + file, 1000);
+        set_mtime(a + QLatin1Char('/') + file, 1754000000 + i);
+        append(journal_of(a), idless_line(file, 1754000000 + i, 10 + i));
+        make_file(b + QLatin1Char('/') + file, 1000);
+        set_mtime(b + QLatin1Char('/') + file, 1755000000 + i);
+        append(journal_of(b), idless_line(file, 1755000000 + i, 20 + i));
+    }
+    s.pass();
+    expect("identity: the journals are the same length",
+           read_all(journal_of(a)).size() == read_all(journal_of(b)).size());
+    QStringList idsA;
+    for (int i = 0; i < kEach; i++) {
+        idsA.append(QStringLiteral("file:") + a + QStringLiteral("/r%1.wav").arg(i));
+    }
+    const QVariantMap held = s.store.selectRecordings(idsA);
+    expect("identity: A's delete asked, held by an export", s.store.deleteFolder(QString(kUidA)));
+    s.pass();
+    expect("identity: waiting on the hold", s.store.deletesWaiting() == kEach);
+    const QString aside = roots.dir.path() + QStringLiteral("/swap");
+    expect("identity: the folders swap in place",
+           QDir().rename(a, aside) && QDir().rename(b, a) && QDir().rename(aside, b));
+    s.store.releaseSelection(held.value(QStringLiteral("selection")).toInt());
+    s.pass();
+    const auto all_there = [&a, &b]() {
+        for (int i = 0; i < kEach; i++) {
+            const QString file = QStringLiteral("/r%1.wav").arg(i);
+            if (!QFileInfo::exists(a + file) || !QFileInfo::exists(b + file)) {
+                return false;
+            }
+        }
+        return true;
+    };
+    expect("identity: the held delete removed nothing", all_there() && s.store.deletesWaiting() == 0);
+    expect("identity: and is told", s.store.deletesCancelled() == kEach);
+    // Asked again with the index still stale: refused by nothing, and still removes nothing of the other owner.
+    expect("identity: asked again", s.store.deleteFolder(QString(kUidA)));
+    s.pass();
+    expect("identity: asked again, nothing removed", all_there() && s.store.deletesCancelled() == 2 * kEach);
+}
+
+/* Issue #902: a folder a session start adopts while a delete of the owner the index still holds there waits. The
+ * folder is restored for B at A's path (its journal as long as A's, so no tail reads it), and B's session start adopts
+ * it in the middle of a pass, after the folders to read were taken; the hold on A's delete ends in the same pass. The
+ * delete finds B's file at the path and leaves it. */
+void
+test_delete_leaves_a_folder_adopted_meanwhile(void) {
+    Roots roots;
+    Store s(roots.list());
+    const QString x = s.store.beginSession(QStringLiteral("saved"), kUidA, QStringLiteral("Metro"));
+    s.store.endSession();
+    const QString c = s.store.beginSession(QStringLiteral("saved"), kUidC, QStringLiteral("Other"));
+    s.store.endSession();
+    make_file(x + QStringLiteral("/r0.wav"), 1000);
+    set_mtime(x + QStringLiteral("/r0.wav"), 1754000000);
+    append(journal_of(x), idless_line(QStringLiteral("r0.wav"), 1754000000, 10));
+    s.pass();
+    const QString idA = QStringLiteral("file:") + x + QStringLiteral("/r0.wav");
+    const QVariantMap held = s.store.selectRecordings({idA});
+    expect("adopted meanwhile: A's delete asked, held", s.store.deleteRecording(idA));
+    s.pass();
+    expect("adopted meanwhile: waiting", s.store.deletesWaiting() == 1);
+    // Restored for B at the same path: A's folder moves out of the root, B's takes its name.
+    const QString aside = roots.dir.path() + QStringLiteral("/a-aside");
+    expect("adopted meanwhile: A's folder leaves", QDir().rename(x, aside));
+    expect("adopted meanwhile: B's folder", write_owner_json(x, QString(kUidB), QStringLiteral("Metro")));
+    make_file(x + QStringLiteral("/r0.wav"), 1000);
+    set_mtime(x + QStringLiteral("/r0.wav"), 1755000000); // the same size, its own time
+    append(journal_of(x), idless_line(QStringLiteral("r0.wav"), 1755000000, 20));
+    expect("adopted meanwhile: the journals are the same length",
+           read_all(journal_of(x)).size() == read_all(journal_of(aside)).size());
+    QString adopted;
+    s.store.setTailHookForTest([&](const QString& path) {
+        if (path == c && adopted.isEmpty()) {
+            adopted = s.store.beginSession(QStringLiteral("saved"), kUidB, QStringLiteral("Metro"));
+            s.store.releaseSelection(held.value(QStringLiteral("selection")).toInt());
+        }
+    });
+    record(c, QStringLiteral("0000000000000701-1"), QStringLiteral("c.wav"), 1754000100, 30);
+    s.pass();
+    s.store.setTailHookForTest({});
+    s.store.endSession();
+    s.pass();
+    expect("adopted meanwhile: B's start took the restored folder", adopted == x);
+    expect("adopted meanwhile: B's recording stays", QFileInfo::exists(x + QStringLiteral("/r0.wav")));
+    expect("adopted meanwhile: A's too", QFileInfo::exists(aside + QStringLiteral("/r0.wav")));
+    expect("adopted meanwhile: nothing waits, the cancellation is told",
+           s.store.deletesWaiting() == 0 && s.store.deletesCancelled() == 1);
+}
+
+/* Issue #902: storage a delete request finds missing, back before any pass reads it (a quick reconnect, two owners'
+ * folders swapped meanwhile, journals the same length), is listed again in full before another delete of it is taken:
+ * the retry is refused as loading, not as storage away, and once the pass has read it the delete takes A's recordings
+ * where they are now, and nothing of B's. */
+void
+test_storage_a_request_saw_missing_is_read_again(void) {
+    constexpr int kEach = 2;
+    Roots roots;
+    const QString ext = roots.dir.path() + QStringLiteral("/ext");
+    const QString away = roots.dir.path() + QStringLiteral("/ext-away");
+    Store s(roots.list());
+    const QString a = s.store.beginSession(QStringLiteral("saved"), kUidA, QStringLiteral("County"));
+    s.store.endSession();
+    const QString b = s.store.beginSession(QStringLiteral("saved"), kUidB, QStringLiteral("Metro"));
+    s.store.endSession();
+    for (int i = 0; i < kEach; i++) {
+        const QString file = QStringLiteral("r%1.wav").arg(i);
+        make_file(a + QLatin1Char('/') + file, 1000);
+        append(journal_of(a), idless_line(file, 1754000000 + i, 10 + i));
+        make_file(b + QLatin1Char('/') + file, 2000);
+        append(journal_of(b), idless_line(file, 1755000000 + i, 20 + i));
+    }
+    s.pass();
+    int listings = 0;
+    s.store.setRootReadHookForTest([&](const QString& root) {
+        if (root.startsWith(ext + QLatin1Char('/'))) {
+            listings++;
+        }
+    });
+    expect("seen missing: the storage goes", QDir().rename(ext, away));
+    expect("seen missing: the delete finds it missing",
+           !s.store.deleteFolder(QString(kUidA)) && s.store.deleteRefusal() == QLatin1String("storageAway"));
+    const QString awayRoot = away + QStringLiteral("/Call recordings/");
+    const QString awayA = awayRoot + QFileInfo(a).fileName();
+    const QString awayB = awayRoot + QFileInfo(b).fileName();
+    expect("seen missing: the folders swap", QDir().rename(awayA, awayRoot + QStringLiteral("swap"))
+                                                 && QDir().rename(awayB, awayA)
+                                                 && QDir().rename(awayRoot + QStringLiteral("swap"), awayB));
+    expect("seen missing: the storage is back", QDir().rename(away, ext));
+    // Whichever way the worker took the request's wake (marking the root away before it came back, or listing it again
+    // after), the retry is not taken against the index as it was.
+    const int before = listings;
+    const bool retried = s.store.deleteFolder(QString(kUidA));
+    expect("seen missing: the retry, loading or after a full listing",
+           (!retried && s.store.deleteRefusal() == QLatin1String("loading")) || (retried && listings > before));
+    if (retried) {
+        (void)s.taken();
+    }
+    s.pass();
+    expect("seen missing: listed again in full", listings > 0);
+    expect("seen missing: A's delete now", s.store.deleteFolder(QString(kUidA)));
+    s.pass();
+    s.store.setRootReadHookForTest({});
+    // A's recordings (1000 bytes) are at B's old path now, B's (2000 bytes) at A's.
+    bool kept = true;
+    bool gone = true;
+    for (int i = 0; i < kEach; i++) {
+        const QString file = QStringLiteral("/r%1.wav").arg(i);
+        kept = kept && QFileInfo(a + file).size() == 2000;
+        gone = gone && !QFileInfo::exists(b + file);
+    }
+    expect("seen missing: B's recordings stay", kept);
+    expect("seen missing: A's are deleted", gone);
+}
+
+/* An export and every delete request, refused: nothing selected or held, nothing queued. */
+bool
+bulk_requests_refused(RecordingStore& store, const QString& uid) {
+    const QVariantMap selection = store.selectForExport(QString(), QStringLiteral("all"));
+    const bool exportRefused = selection.value(QStringLiteral("selection")).toInt() == 0
+                               && selection.value(QStringLiteral("count")).toInt() == 0
+                               && selection.value(QStringLiteral("loading")).toBool();
+    const bool deletesRefused = !store.deleteFolder(uid) && !store.deleteAll() && !store.deleteUnfinished();
+    return exportRefused && deletesRefused && store.takeDeleteQueueForTest().isEmpty();
+}
+
+/* Issue #902: a recording's name that became a link (to anything) before its accepted delete ran is not the file asked
+ * of: the link stays, and the delete is told as not done. */
+void
+test_delete_of_a_name_now_a_link_is_told(void) {
+#ifdef _WIN32
+    DSD_FPRINTF(stdout, "SKIP link: symbolic links need a privilege on Windows\n");
+#else
+    Roots roots;
+    Store s(roots.list());
+    const QString folder = s.store.beginSession(QStringLiteral("saved"), kUidA, QStringLiteral("County"));
+    s.store.endSession();
+    record(folder, QStringLiteral("0000000000000904-1"), QStringLiteral("r.wav"), 1754000000, 1);
+    make_file(folder + QStringLiteral("/elsewhere.bin"), 1000);
+    s.pass();
+    const QVariantMap held = s.store.selectRecordings({QStringLiteral("0000000000000904-1")});
+    expect("link: the delete asked, held", s.store.deleteRecording(QStringLiteral("0000000000000904-1")));
+    s.pass();
+    QFile::remove(folder + QStringLiteral("/r.wav"));
+    expect("link: the name is a link now",
+           QFile::link(QStringLiteral("elsewhere.bin"), folder + QStringLiteral("/r.wav")));
+    s.store.releaseSelection(held.value(QStringLiteral("selection")).toInt());
+    s.pass();
+    expect("link: the link stays", QFileInfo(folder + QStringLiteral("/r.wav")).isSymLink()
+                                       && QFileInfo::exists(folder + QStringLiteral("/elsewhere.bin")));
+    expect("link: the delete is told as not done", s.store.deletesCancelled() == 1 && s.store.deletesWaiting() == 0);
+#endif
+}
+
+/* Issue #902, a decided limit (size and modification time only): another file at a recording's name with exactly the
+ * same size and modification time is the recording, whatever its inode, and a delete removes it. One a second off, at
+ * the same size, is not: the delete skips it, leaves it on disk and is told as not done. */
+void
+test_same_size_and_time_reads_as_the_recording(void) {
+    Roots roots;
+    Store s(roots.list());
+    const QString folder = s.store.beginSession(QStringLiteral("saved"), kUidA, QStringLiteral("County"));
+    s.store.endSession();
+    const QString same = folder + QStringLiteral("/same.wav");
+    const QString later = folder + QStringLiteral("/later.wav");
+    make_file(same, 5000);
+    set_mtime(same, 1754000000);
+    make_file(later, 5000);
+    set_mtime(later, 1754000100);
+    append(journal_of(folder),
+           publish_line(QStringLiteral("0000000000000914-1"), QStringLiteral("same.wav"), 1754000000, 1));
+    append(journal_of(folder),
+           publish_line(QStringLiteral("0000000000000914-2"), QStringLiteral("later.wav"), 1754000100, 2));
+    s.pass();
+    // Each name now holds another file (a new inode) of the same size: one with the recording's time, one a second on.
+    QFile::remove(same);
+    make_file(same, 5000);
+    set_mtime(same, 1754000000);
+    QFile::remove(later);
+    make_file(later, 5000);
+    set_mtime(later, 1754000101);
+    expect("size and time: both deletes asked",
+           s.store.deleteRecordings({QStringLiteral("0000000000000914-1"), QStringLiteral("0000000000000914-2")}));
+    s.pass();
+    expect("size and time: the same size and time is removed as the recording", !QFileInfo::exists(same));
+    expect("size and time: another time is left, the delete told as not done",
+           QFileInfo::exists(later) && s.store.deletesCancelled() == 1);
+}
+
+/* Issue #902: the storage limit's removal checks each file right before its unlink as a user's delete does. With a
+ * 1 MB limit over two 600 kB recordings, the older one's file rewritten since (its time moved) is skipped, left on
+ * disk and told, and the limit goes on with the next. */
+void
+test_limit_skips_a_file_not_as_known(void) {
+    Roots roots;
+    Store s(roots.list());
+    const QString folder = s.store.beginSession(QStringLiteral("saved"), kUidA, QStringLiteral("County"));
+    s.store.endSession();
+    record(folder, QStringLiteral("0000000000000925-1"), QStringLiteral("old.wav"), 1754000000, 1, 600000);
+    record(folder, QStringLiteral("0000000000000925-2"), QStringLiteral("new.wav"), 1754000100, 2, 600000);
+    s.pass();
+    set_mtime(folder + QStringLiteral("/old.wav"), 1600000000);
+    s.store.setLimitMb(1);
+    s.pass();
+    expect("limit skip: the older file, not as known, stays and is told",
+           QFileInfo::exists(folder + QStringLiteral("/old.wav")) && s.store.deletesCancelled() == 1);
+    expect("limit skip: the limit goes on with the next",
+           !QFileInfo::exists(folder + QStringLiteral("/new.wav")) && s.store.removedByLimit() == 1);
+}
+
+/* Issue #902: a recording whose file cannot be read when its delete runs (its folder lost search permission) is never
+ * taken as missing: the delete skips it and is told, and the recording stays indexed with its journal record. */
+void
+test_delete_of_an_unreadable_file_skips_it(void) {
+    Roots roots;
+    Store s(roots.list());
+    const QString folder = s.store.beginSession(QStringLiteral("saved"), kUidA, QStringLiteral("County"));
+    s.store.endSession();
+    const QString sub = folder + QStringLiteral("/locked");
+    QDir().mkpath(sub);
+    if (!permissions_enforced(sub)) {
+        DSD_FPRINTF(stdout, "SKIP unreadable delete: this process reads any folder\n");
+        return;
+    }
+    const QString id = QStringLiteral("0000000000000926-1");
+    make_file(sub + QStringLiteral("/x.wav"), 1000);
+    append(journal_of(folder), publish_line(id, QStringLiteral("locked/x.wav"), 1754000000, 1));
+    s.pass();
+    QFile::setPermissions(sub, QFileDevice::ReadOwner | QFileDevice::WriteOwner);
+    expect("unreadable delete: asked", s.store.deleteRecording(id));
+    s.pass();
+    QFile::setPermissions(sub, QFileDevice::ReadOwner | QFileDevice::WriteOwner | QFileDevice::ExeOwner);
+    expect("unreadable delete: skipped and told, still indexed with its record",
+           QFileInfo::exists(sub + QStringLiteral("/x.wav")) && s.store.deletesCancelled() == 1
+               && s.store.recordingCount() == 1 && read_all(journal_of(folder)).contains("locked/x.wav"));
+}
+
+/* Issue #902: a folder whose journal is there but cannot be read is not read: the index would hold part of the
+ * recordings, so an export and every delete request are refused, not taken from the other owner's folder alone, until
+ * a pass reads it whole. */
+void
+test_unread_journal_is_not_settled(void) {
+    Roots roots;
+    const QString a = roots.external + QStringLiteral("/County (1a2b3c4d)");
+    const QString b = roots.external + QStringLiteral("/Metro (1a2b3c4d)");
+    expect("unread journal: two owners' folders", write_owner_json(a, QString(kUidA), QStringLiteral("County"))
+                                                      && write_owner_json(b, QString(kUidB), QStringLiteral("Metro")));
+    record(a, QStringLiteral("0000000000000908-a"), QStringLiteral("a.wav"), 1754000000, 1);
+    record(b, QStringLiteral("0000000000000908-b"), QStringLiteral("b.wav"), 1754000100, 2);
+    QFile::setPermissions(journal_of(a), QFileDevice::WriteOwner);
+    QFile probe(journal_of(a));
+    if (probe.open(QIODevice::ReadOnly)) {
+        probe.close();
+        QFile::setPermissions(journal_of(a), QFileDevice::ReadOwner | QFileDevice::WriteOwner);
+        DSD_FPRINTF(stdout, "SKIP unread journal: this process reads any file\n");
+        return;
+    }
+    Store s(roots.list());
+    expect("unread journal: requests refused",
+           bulk_requests_refused(s.store, QString(kUidB)) && s.store.deleteRefusal() == QLatin1String("loading"));
+    QFile::setPermissions(journal_of(a), QFileDevice::ReadOwner | QFileDevice::WriteOwner);
+    s.pass();
+    const QVariantMap all = s.store.selectForExport(QString(), QStringLiteral("all"));
+    s.store.releaseSelection(all.value(QStringLiteral("selection")).toInt());
+    expect("unread journal: read whole, Export all takes both", all.value(QStringLiteral("count")).toInt() == 2);
+}
+
+/* Issue #902 B12: a session start adopts a managed folder restored onto a mounted root (one the folder table did not
+ * have) after the worker collected the folders to read in that pass. The folder waits for its read in the next pass;
+ * between the two passes an export would have left it out and a delete of its owner would have queued nothing, so both
+ * are refused. Once it is read, each takes its recording. */
+void
+test_requests_wait_for_an_adopted_folder(void) {
+    const QString restoredId = QStringLiteral("0000000000000501-1");
+    Roots roots;
+    Store s(roots.list());
+    const QString a = s.store.beginSession(QStringLiteral("saved"), kUidA, QStringLiteral("County"));
+    s.store.endSession();
+    s.pass();
+    const QString c = roots.external + QStringLiteral("/Restored (5e6f7a8b)");
+    QDir().mkpath(c);
+    {
+        const QJsonObject meta{{QStringLiteral("uid"), QString(kUidC)},
+                               {QStringLiteral("kind"), QStringLiteral("saved")},
+                               {QStringLiteral("name"), QStringLiteral("Restored")}};
+        expect("adopted: a restored folder", write_private(c + QStringLiteral("/folder.json"),
+                                                           QJsonDocument(meta).toJson(QJsonDocument::Compact), "wb"));
+    }
+    record(c, restoredId, QStringLiteral("r.wav"), 1754000000, 1);
+    // New lines in A's journal: the pass tails it, after the folders to read were collected.
+    record(a, QStringLiteral("0000000000000501-a"), QStringLiteral("a.wav"), 1754000100, 2);
+    QString adopted;
+    int ends = 0;
+    int accepted = 0;
+    s.store.setTailHookForTest([&](const QString& path) {
+        if (path == a && adopted.isEmpty()) {
+            adopted = s.store.beginSession(QStringLiteral("saved"), kUidC, QStringLiteral("Restored"));
+        }
+    });
+    s.store.setPassEndHookForTest([&]() {
+        if (!adopted.isEmpty() && ends++ == 0) {
+            accepted += bulk_requests_refused(s.store, QString(kUidC)) ? 0 : 1;
+        }
+    });
+    s.pass();
+    s.store.setTailHookForTest({});
+    s.store.endSession();
+    s.pass();
+    s.store.setPassEndHookForTest({});
+    expect("adopted: the restored folder taken", adopted == c);
+    expect("adopted: refused between the passes", ends >= 1 && accepted == 0);
+    const QVariantMap all = s.store.selectForExport(QString(), QStringLiteral("all"));
+    expect("adopted: the export has its recording",
+           all.value(QStringLiteral("count")).toInt() == 2 && !all.value(QStringLiteral("loading")).toBool());
+    const bool asked = s.store.deleteFolder(QString(kUidC));
+    expect("adopted: its owner's delete queues it", asked && s.taken() == QStringList{restoredId});
+    s.store.releaseSelection(all.value(QStringLiteral("selection")).toInt());
+}
+
+/* Issue #902 B12: a recheck reads storage one recording at a time and takes the gone ones out of the index. While one
+ * runs (asked for, or the limit's look at what it counts) an export would have listed files no longer there, so an
+ * export and every delete request are refused until the pass ends. */
+void
+test_requests_wait_for_a_recheck(void) {
+    constexpr int kCount = 20;
+    Roots roots;
+    Store s(roots.list());
+    const QString a = s.store.beginSession(QStringLiteral("saved"), kUidA, QStringLiteral("County"));
+    s.store.endSession();
+    QStringList ids;
+    for (int i = 0; i < kCount; i++) {
+        ids.append(QStringLiteral("0000000000000502-%1").arg(i));
+        record(a, ids.last(), QStringLiteral("g%1.wav").arg(i), 1754000000 + i, 1 + i, 200000);
+    }
+    s.pass();
+    int checks = 0;
+    int accepted = 0;
+    s.store.setEntryCheckHookForTest([&](const QString&) {
+        checks++;
+        accepted += bulk_requests_refused(s.store, QString(kUidA)) ? 0 : 1;
+    });
+    for (int i = 0; i < kCount / 2; i++) {
+        QFile::remove(a + QStringLiteral("/g%1.wav").arg(i));
+    }
+    s.store.recheckRecordings(ids);
+    s.pass();
+    expect("recheck: asked, every recording looked at", checks == kCount);
+    expect("recheck: asked, the gone ones out", s.store.recordingCount() == kCount / 2);
+    expect("recheck: asked, refused meanwhile", accepted == 0);
+    // Gone behind the store's back, then a limit under what the index counts (2 MB) but over what is on disk (400 kB):
+    // the limit looks at every file first, and removes nothing.
+    checks = 0;
+    for (int i = kCount / 2; i < kCount - 2; i++) {
+        QFile::remove(a + QStringLiteral("/g%1.wav").arg(i));
+    }
+    s.store.setLimitMb(1);
+    s.pass();
+    s.store.setEntryCheckHookForTest({});
+    expect("recheck: the limit's look, every recording looked at", checks >= kCount / 2);
+    expect("recheck: the limit's look, the gone ones out, nothing removed",
+           s.store.recordingCount() == 2 && s.store.removedByLimit() == 0);
+    expect("recheck: the limit's look, refused meanwhile", accepted == 0);
+    const QVariantMap all = s.store.selectForExport(QString(), QStringLiteral("all"));
+    s.store.releaseSelection(all.value(QStringLiteral("selection")).toInt());
+    expect("recheck: then the export, whole", all.value(QStringLiteral("count")).toInt() == 2);
 }
 
 /* --- History CSV export: every row's recording names in one read. --- */
@@ -3131,6 +4341,7 @@ main(int argc, char** argv) {
     test_roots_unavailable_vs_deleted();
     test_changes_behind_the_store();
     test_folders_follow_their_owner();
+    test_session_starts_while_the_worker_publishes();
     test_deletion_safety();
     test_retention();
     test_free_space_warning();
@@ -3138,6 +4349,10 @@ main(int argc, char** argv) {
     test_free_space_follows_the_session();
     test_free_space_after_the_session_ends();
     test_export_selection();
+    test_export_presets_on_a_skipped_date();
+    test_export_presets_on_a_long_day();
+    test_export_dates_follow_the_given_zone();
+    test_export_press_zone_is_local_time();
     test_session_running_at_ui_load();
     test_start_does_not_wait_for_journals();
     test_folder_gone_before_its_read();
@@ -3169,6 +4384,21 @@ main(int argc, char** argv) {
     test_detection_root_away_keeps_membership();
     test_detection_order_newest_first();
     test_queries_between_rebuild_slices();
+    test_changed_storage_is_read_before_bulk_requests();
+    test_journal_replaced_in_place_is_read_before_bulk_requests();
+    test_bulk_requests_wait_for_a_root_being_listed();
+    test_held_delete_dropped_by_a_reread();
+    test_deletes_refused_for_storage_away();
+    test_delete_checks_the_file_it_removes();
+    test_delete_leaves_a_folder_adopted_meanwhile();
+    test_delete_of_a_name_now_a_link_is_told();
+    test_same_size_and_time_reads_as_the_recording();
+    test_limit_skips_a_file_not_as_known();
+    test_delete_of_an_unreadable_file_skips_it();
+    test_unread_journal_is_not_settled();
+    test_storage_a_request_saw_missing_is_read_again();
+    test_requests_wait_for_an_adopted_folder();
+    test_requests_wait_for_a_recheck();
     test_entry_names_match_zip_selection();
     test_entry_names_batch();
     test_revision_coalesced_passes();
