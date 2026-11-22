@@ -3912,11 +3912,16 @@ nxdn_scch_carry_crypto_media(dsd_state* state, const dsd_call_snapshot* call, in
     }
 }
 
-/* A numbered SCCH party during a DCR call starts another call (nxdn_scch_names_new_call()): the scrambler the DCR call
- * received (its cipher and the classification behind it) is not the new call's, whose voice plays clear until its own
- * signalling names a cipher. A scrambler the operator forced (-4: state->M with a key) stays, as at a release. */
+/* An SCCH that acts is a Type-D call's, never a DCR call's (DCR carries none): the scrambler a DCR call received (its
+ * cipher and the classification behind it, dsd_state::nxdn_cipher_dcr) is not that call's, whose voice plays clear until
+ * its own signalling names a cipher. It is forgotten once, before the SCCH's own message acts, so an INFO1 naming the
+ * new call's cipher ahead of its numbered party keeps it. A scrambler the operator forced (-4: state->M with a key)
+ * stays, as at a release. */
 static void
 nxdn_scch_forget_dcr_cipher(dsd_state* state) {
+    if (state->nxdn_cipher_dcr == 0U) {
+        return;
+    }
     state->nxdn_cipher_type = 0;
     nxdn_cipher_class_reset(state);
     if (state->M == 1 && dsd_key_scalar_present(state, 0)) {
@@ -3930,7 +3935,7 @@ nxdn_scch_forget_dcr_cipher(dsd_state* state) {
  * class, nxdn_scch_named_kind()), so a later unclassified message for the same target reads the class this one
  * verified, never a previous call's. A message naming another target or class, or any numbered party during a DCR
  * call, is another call: it carries none of the previous call's talker, target text, emergency or crypto
- * (nxdn_scch_names_new_call()), nor, after a DCR call, the scrambler it received (nxdn_scch_forget_dcr_cipher()). */
+ * (nxdn_scch_names_new_call()). */
 static void
 nxdn_scch_enrich_identity(dsd_state* state, uint16_t source_id, uint16_t target_id, uint8_t prefix,
                           dsd_call_kind kind) {
@@ -3942,9 +3947,6 @@ nxdn_scch_enrich_identity(dsd_state* state, uint16_t source_id, uint16_t target_
     char target_text[DSD_CALL_IDENTITY_TEXT_SIZE];
     nxdn_typed_id_text(target_text, sizeof(target_text), prefix, target_id);
     const int new_call = nxdn_scch_names_new_call(&call, source_id, target_id, target_text, kind);
-    if (new_call && dsd_call_is_nxdn_dcr(call.protocol, call.ota_target_id, call.target_text)) {
-        nxdn_scch_forget_dcr_cipher(state);
-    }
     dsd_call_observation observation = {
         .protocol = call.protocol,
         .slot = 0U,
@@ -4218,6 +4220,9 @@ NXDN_decode_scch(dsd_opts* opts, dsd_state* state, const uint8_t* Message, uint8
 
     DSD_FPRINTF(stderr, "\n "); //initial line break
     nxdn_scch_print_payload_label(opts, &info);
+    if (info.acts && !info.diagnostic_only) {
+        nxdn_scch_forget_dcr_cipher(state);
+    }
     nxdn_scch_prepare_type_d(opts, state, &info);
 
     if (info.opcode == 0x04U || info.opcode == 0x00U) {

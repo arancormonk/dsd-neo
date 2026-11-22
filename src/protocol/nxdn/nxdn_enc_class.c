@@ -70,6 +70,7 @@ nxdn_cipher_class_step(uint8_t* cls, uint8_t* est, uint8_t* pending, uint8_t obs
 uint8_t
 nxdn_cipher_observe(dsd_state* state, uint8_t cipher, int strong) {
     const uint8_t obs = (uint8_t)((cipher & 0x03U) + 1U);
+    state->nxdn_cipher_dcr = 0U;
     nxdn_cipher_class_step(&state->nxdn_cipher_class, &state->nxdn_cipher_class_est, &state->nxdn_cipher_class_pending,
                            obs, strong);
     nxdn_cipher_class_step(&state->nxdn_cipher_rx_class, &state->nxdn_cipher_rx_est, &state->nxdn_cipher_rx_pending,
@@ -96,6 +97,7 @@ nxdn_cipher_class_reset(dsd_state* state) {
     state->nxdn_cipher_rx_class = 0U;
     state->nxdn_cipher_rx_est = 0U;
     state->nxdn_cipher_rx_pending = 0U;
+    state->nxdn_cipher_dcr = 0U;
 }
 
 int

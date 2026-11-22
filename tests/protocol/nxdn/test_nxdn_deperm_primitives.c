@@ -1853,6 +1853,64 @@ test_sacch_superframe_position_stays_with_the_frame(void) {
     return rc;
 }
 
+/* An outbound SCCH (direction 1) from free repeaters 6 and 3: INFO1 (@p sf 3) naming the scrambler, else an INFO3 (@p sf
+ * 1) naming source 03-0123. */
+static void
+send_outbound_scch(dsd_opts* opts, dsd_state* state, uint8_t sf) {
+    uint8_t message[32];
+    DSD_MEMSET(message, 0, sizeof(message));
+    write_bits_msb(message, 0U, 2U, sf);
+    write_bits_msb(message, 3U, 5U, 6U);
+    write_bits_msb(message, 8U, 5U, 3U);
+    if (sf == 3U) {
+        write_bits_msb(message, 16U, 2U, 1U); // cipher type: scrambler
+    } else {
+        write_bits_msb(message, 13U, 11U, 123U);
+    }
+    NXDN_decode_scch(opts, state, message, 1U);
+}
+
+/*
+ * An IDAS call's own scrambler survives its numbered party (issue #903): a confirmed DCR call is received with the
+ * scrambler (its SB0 messages' cipher field), then an IDAS call's INFO1 names the scrambler and its INFO3 the numbered
+ * source. The DCR call's received cipher is not the new call's, but the INFO1's is: the call keeps the scrambler.
+ */
+static int
+test_info1_cipher_survives_the_numbered_party(void) {
+    static Event_History_I histories[2];
+    dsd_opts* opts = NULL;
+    dsd_state* state = NULL;
+    if (alloc_fixture(&opts, &state) != 0) {
+        return 1;
+    }
+    init_sacch2_state(state, histories);
+    dsd_decode_clock_test_set_ns(1000000000000ULL);
+    state->R = 0x1234ULL;
+    static const uint8_t m_data[5] = {0U};
+    uint8_t trellis[32];
+    make_sacch2_trellis(trellis, 1U, 0U, 0x01U);
+    write_bits_msb(trellis, 8U, 2U, 0x01U); // cipher: scrambler
+    for (int i = 0; i < 2; i++) {
+        nxdn_confirm_begin_frame(state);
+        nxdn_handle_sacch2(opts, state, trellis, m_data, 0x2AU, 0x2AU);
+    }
+    dsd_call_snapshot call;
+    int rc = expect_int("info1-after-dcr-dcr-call", dsd_call_state_get(state, 0U, &call), 1);
+    rc |= expect_str("info1-after-dcr-dcr-text", call.target_text, "JPN DCR");
+    rc |= expect_int("info1-after-dcr-dcr-scrambler", (int)state->nxdn_cipher_type, 1);
+
+    state->last_vc_sync_time = dsd_decode_time(); /* the carrier's voice is live */
+    send_outbound_scch(opts, state, 3U);
+    send_outbound_scch(opts, state, 1U);
+    (void)dsd_call_state_get(state, 0U, &call);
+    rc |= expect_int("info1-after-dcr-numbered-source", (int)call.ota_source_id, 123);
+    rc |= expect_int("info1-after-dcr-cipher-kept", (int)state->nxdn_cipher_type, 1);
+    rc |= expect_int("info1-after-dcr-received-scrambler", (int)state->nxdn_cipher_rx_class, 2);
+    free_fixture(opts, state);
+    dsd_decode_clock_use_system();
+    return rc;
+}
+
 int
 main(void) {
     int rc = 0;
@@ -1883,6 +1941,7 @@ main(void) {
     rc |= test_nxdn_history_mi_only_from_received_iv();
     rc |= test_sacch_superframe_position_stays_with_the_frame();
     rc |= test_nxdn_keeps_the_shared_register();
+    rc |= test_info1_cipher_survives_the_numbered_party();
 
     if (rc == 0) {
         printf("NXDN_DEPERM_PRIMITIVES: OK\n");

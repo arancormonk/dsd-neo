@@ -891,6 +891,7 @@ nxdn_sacch2_note_cipher(const dsd_opts* opts, dsd_state* state, uint8_t cipher, 
         // established: hold a contradicting observation until it repeats.
         if (acts) {
             state->nxdn_cipher_type = nxdn_cipher_observe(state, 1U, 0);
+            state->nxdn_cipher_dcr = 1U; /* the DCR call's: an SCCH's call forgets it (NXDN_decode_scch()) */
         }
         if (dsd_key_scalar_present(state, 0)) {
             char key_text[24];
