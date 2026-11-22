@@ -9041,8 +9041,9 @@ the stream-notice hooks' pattern: one that fails to initialize leaves the hook u
   (`squelch_auto_take_context()`; level, off and digital blocks before it leave it set): when that context is new and
   the cache seeds its floor, the tracker holds it as a kept one (`dsd_squelch_floor_stream_restart()`), since the sample
   time its age counts stopped while no stream ran. A retune to another centre before that drops the mark
-  (`dsd_demod_squelch_note_retune()`, from `demod_reset_on_retune()` for a frequency retune and from an external
-  backend's landing on another frequency), so the new channel's cached floor gates at once. A
+  (`dsd_demod_squelch_note_retune()`, from `demod_reset_on_retune()` for any reset but the open's own that moves the
+  centre, a hop that also lands a pending PPM correction and a replayed gap after a retune included, and from an
+  external backend's landing on another frequency), so the new channel's cached floor gates at once. A
   floor the tracker kept through a spell without running ages the same way (`demod_state::squelch_floor_active_s`):
   past `DSD_SQUELCH_FLOOR_STALE_S` it is learned again, neither kept nor stored for its channel with a fresh stamp. Inside `full_demod()` (`squelch_auto_run()`) the tracker runs on an AUTO setting on a path
   `dsd_demod_dynamic_squelch_path()` names:

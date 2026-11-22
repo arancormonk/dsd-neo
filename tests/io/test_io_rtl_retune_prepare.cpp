@@ -2990,6 +2990,38 @@ main(void) {
     failed |=
         expect_double_near("same RF rate change off TETRA leaves the mixer off", fll_retune.fll_pre_after, 0.0, 0.0);
 
+    /* Issue #899: whatever names the reset, a move to another centre drops the stream open's auto squelch mark, and only
+       the open itself or a reset on the same centre keeps it (a PPM correction carried by a hop, a replayed gap after a
+       retune). */
+    struct mark_case {
+        const char* reason;
+        uint32_t previous_center;
+        uint32_t next_center;
+        int want_mark;
+    };
+
+    const mark_case marks[] = {
+        {"ppm-correction", 770418750U, 769668750U, 0},
+        {"ppm-correction", 770418750U, 770418750U, 1},
+        {RTL_STREAM_GAP_REASON_USB_RECOVERY, 770418750U, 769668750U, 0},
+        {RTL_STREAM_GAP_REASON_USB_RECOVERY, 770418750U, 770418750U, 1},
+        {"cqpsk-reacquire", 770418750U, 770418750U, 1},
+        {"distant-frequency", 770418750U, 154430000U, 0},
+        {"fresh-stream", 0U, 770418750U, 1},
+    };
+    for (const mark_case& c : marks) {
+        rtl_stream_test_fll_mixer_retune_result r = {};
+        const int mark_rc = rtl_stream_test_fll_mixer_retune(c.reason, 0, 0.0f, 0.1f, c.previous_center, c.next_center,
+                                                             48000, 48000, &r);
+        char label[160];
+        DSD_SNPRINTF(label, sizeof label, "%s reset %u -> %u Hz: helper rc", c.reason, c.previous_center,
+                     c.next_center);
+        failed |= expect_int_eq(label, mark_rc, 0);
+        DSD_SNPRINTF(label, sizeof label, "%s reset %u -> %u Hz: the stream open's auto squelch mark", c.reason,
+                     c.previous_center, c.next_center);
+        failed |= expect_int_eq(label, r.new_stream_mark_after, c.want_mark);
+    }
+
     rtl_stream_test_fll_retune_cache_result fll_cache = {};
     rc = rtl_stream_test_fll_retune_cache_round_trip(&fll_cache);
     failed |= expect_int_eq("frequency-specific FLL cache helper rc", rc, 0);

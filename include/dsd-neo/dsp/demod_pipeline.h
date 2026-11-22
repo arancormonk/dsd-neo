@@ -328,9 +328,10 @@ float dsd_cqpsk_agc_alpha(int tetra_chain);
 void dsd_demod_reset_filter_state(struct demod_state* d);
 
 /**
- * The stream moved to another channel (a retune to another centre, not a gap or a reacquire on the same one): a
- * stream open's mark for the auto squelch (demod_state::squelch_new_stream) no longer names the channel the next
- * tracker context is on, so it goes (issue #899). The IO layer calls it where it resets the demod for such a retune.
+ * The stream moved to another channel (a reset on another centre, whatever names it, not a gap or a reacquire on the
+ * same one): a stream open's mark for the auto squelch (demod_state::squelch_new_stream) no longer names the channel
+ * the next tracker context is on, so it goes (issue #899). The IO layer calls it where it resets the demod for such a
+ * move.
  *
  * @param d Demodulator state; NULL is ignored.
  */

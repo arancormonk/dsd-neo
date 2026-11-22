@@ -3106,9 +3106,10 @@ demod_reset_on_retune(struct demod_state* s, DemodRetuneResetPlan plan) {
         demod_apply_pending_ted_override(s);
     }
     demod_reset_histories_for_output_mode(s);
-    /* A stream open's mark for the auto squelch is the channel it opened on: a retune to another drops it. */
-    if ((reason == DemodRetuneResetReason::FrequencyRetune || reason == DemodRetuneResetReason::DistantFrequencyRetune)
-        && plan.previous_center_freq_hz != plan.next_center_freq_hz) {
+    /* A stream open's mark for the auto squelch is the channel it opened on: a reset on another centre drops it,
+       whatever names the reset (a hop that also lands a pending PPM correction is labelled one, a replayed gap can
+       follow a retune). Only the open's own reset and a reset on the same centre keep it. */
+    if (reason != DemodRetuneResetReason::FreshStream && plan.previous_center_freq_hz != plan.next_center_freq_hz) {
         dsd_demod_squelch_note_retune(s);
     }
     demod_log_post_retune_state(s, plan, fll_freq_before);
@@ -13803,6 +13804,7 @@ test_capture_program_result(int rc, rtl_stream_test_capture_result* out) {
     out->published_forced = g_pub_capture_rate_forced.load(std::memory_order_relaxed);
     out->input_ring_capacity_floats = input_ring.capacity;
     out->centered_iq = dongle.centered_iq;
+    out->new_stream_mark = demod.squelch_new_stream;
 }
 
 static void
@@ -13922,6 +13924,7 @@ struct TestCaptureSession {
     int ppm_error;
     int rate_out;
     int complex_rate;
+    int squelch_new_stream;
     uint32_t applied_hz;
 };
 
@@ -13940,9 +13943,12 @@ rtl_stream_test_capture_session_begin(struct rtl_device* dev, const dsd_opts* op
     g_test_capture_session.ppm_error = load_dongle_ppm_error();
     g_test_capture_session.rate_out = demod.rate_out;
     g_test_capture_session.complex_rate = demod.complex_rate;
+    g_test_capture_session.squelch_new_stream = demod.squelch_new_stream;
     g_test_capture_session.applied_hz = controller.last_applied_freq_hz.load(std::memory_order_acquire);
     g_test_capture_session.saved = test_capture_program_enter(dev, center_hz, 0);
     store_dongle_ppm_error(0);
+    /* A stream open marks the stream for the auto squelch (rtl_demod_config.cpp); the session's start stands in. */
+    demod.squelch_new_stream = 1;
     const int rc = controller_program_initial_device(&controller, opts);
     test_capture_note_ring_rate(rc);
     /* The start's finalize ends its transaction and publishes the chain (controller_finalize_dsp_chain()). */
@@ -13986,15 +13992,16 @@ rtl_stream_test_capture_session_step(int step, uint32_t center_hz, int value, rt
         rc = capture_set_offset_tuning(value);
     }
     int completion = RTL_STREAM_TUNE_OK;
-    if (step == RTL_STREAM_TEST_CAPTURE_MANUAL_RETUNE) {
-        if (value > 0) {
+    if (step == RTL_STREAM_TEST_CAPTURE_MANUAL_RETUNE || step == RTL_STREAM_TEST_CAPTURE_MANUAL_RETUNE_PPM) {
+        const int with_ppm = step == RTL_STREAM_TEST_CAPTURE_MANUAL_RETUNE_PPM;
+        if (!with_ppm && value > 0) {
             demod.rate_in = value;
         }
         int ppm_rc = 0;
         int reconfigured = 0;
         int refused = 0;
-        rc = controller_apply_reconfigure(&controller, center_hz, load_dongle_ppm_error(), NULL, &ppm_rc, &reconfigured,
-                                          &refused);
+        rc = controller_apply_reconfigure(&controller, center_hz, with_ppm ? value : load_dongle_ppm_error(), NULL,
+                                          &ppm_rc, &reconfigured, &refused);
         completion = controller_manual_retune_completion_result(
             rc, reconfigured, refused, center_hz, controller.last_applied_freq_hz.load(std::memory_order_acquire));
     }
@@ -14056,6 +14063,7 @@ rtl_stream_test_capture_session_end(void) {
     store_dongle_ppm_error(g_test_capture_session.ppm_error);
     demod.rate_out = g_test_capture_session.rate_out;
     demod.complex_rate = g_test_capture_session.complex_rate;
+    demod.squelch_new_stream = g_test_capture_session.squelch_new_stream;
     controller.last_applied_freq_hz.store(g_test_capture_session.applied_hz, std::memory_order_release);
     rtl_stream_publish_tuner_gain();
     g_test_capture_session = TestCaptureSession{};
@@ -16785,7 +16793,9 @@ rtl_stream_test_fll_mixer_retune(const char* reason, int tetra_chain, float pre_
     test_demod.complex_rate = next_rate_out_hz;
     DemodRetuneResetPlan plan = demod_retune_reset_plan(retune_reset_reason_from_name(reason), previous_center_freq_hz,
                                                         next_center_freq_hz, previous_rate_out_hz, next_rate_out_hz);
+    test_demod.squelch_new_stream = 1;
     plan = demod_reset_on_retune(&test_demod, plan);
+    out_result->new_stream_mark_after = test_demod.squelch_new_stream;
     out_result->pre_after = test_demod.fll_band_edge_state.pre_freq;
     out_result->freq_after = test_demod.fll_band_edge_state.freq;
     out_result->phasor_re_after = test_demod.fll_band_edge_state.pre_re;

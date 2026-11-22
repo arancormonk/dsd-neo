@@ -50,6 +50,9 @@
  * input ring for 6 MS/s, and a retune whose read-back jumps above the rate the running ring holds is refused and rolled
  * back.
  *
+ * Issue #899: a retune carrying a pending PPM correction to another centre drops the stream open's auto squelch mark;
+ * one on the same centre keeps it.
+ *
  * Automatic tuner gain (B8): a capture under automatic gain records the mode and no gain, not the stale manual gain
  * librtlsdr still reports, and a replay of it reports automatic whatever its gain setters are asked. A SoapySDR device
  * reports automatic only when its driver took the automatic request, and its capture records the same.
@@ -665,6 +668,39 @@ manual_retune(uint32_t center_hz, int rate_in) {
     rtl_stream_test_capture_result out{};
     assert(rtl_stream_test_capture_session_step(RTL_STREAM_TEST_CAPTURE_MANUAL_RETUNE, center_hz, rate_in, &out) == 0);
     return out;
+}
+
+/* Issue #899: a retune that lands with a pending PPM correction moves the centre all the same, so it drops the stream
+ * open's auto squelch mark (a cached floor at the destination then opens at its first window, not held for a
+ * classified one); a PPM correction on the centre the stream opened on keeps it, as a plain hop to another centre
+ * drops it. */
+void
+test_ppm_carrying_retune_drops_open_mark(void) {
+    rig r;
+    rig_open(r, kTunerR820T);
+    rtl_stream_test_capture_result got{};
+    assert(rtl_stream_test_capture_session_step(RTL_STREAM_TEST_CAPTURE_MANUAL_RETUNE_PPM, kCenterHz, 5, &got) == 0);
+    assert(got.rc == 0 && got.applied_hz == kCenterHz);
+    if (got.new_stream_mark != 1) {
+        DSD_FPRINTF(stderr, "a same-centre PPM correction dropped the stream open's mark\n");
+        abort();
+    }
+    got = rtl_stream_test_capture_result{};
+    assert(rtl_stream_test_capture_session_step(RTL_STREAM_TEST_CAPTURE_MANUAL_RETUNE_PPM, kHopsHz[0], 9, &got) == 0);
+    assert(got.rc == 0 && got.applied_hz == kHopsHz[0] && got.completion == RTL_STREAM_TUNE_OK);
+    if (got.new_stream_mark != 0) {
+        DSD_FPRINTF(stderr, "a hop carrying a PPM correction kept the stream open's mark (%u -> %u Hz)\n", kCenterHz,
+                    kHopsHz[0]);
+        abort();
+    }
+    rig_close(r);
+
+    rig plain;
+    rig_open(plain, kTunerR820T);
+    got = manual_retune(kHopsHz[1], 0);
+    assert(got.rc == 0 && got.applied_hz == kHopsHz[1]);
+    assert(got.new_stream_mark == 0);
+    rig_close(plain);
 }
 
 /* A retune from 851 MHz to 2.2 GHz with the Fs/4 shift at 960 kS/s: the first frequency the dongle is given is the
@@ -1586,6 +1622,7 @@ main(int argc, char** argv) {
         {"fc2580_bandwidth", test_fc2580_hops_rewrite_bandwidth},
         {"safe_tuners", test_safe_tuners_skip_unchanged},
         {"unknown_tuner", test_unknown_tuner_rewrites_every_hop},
+        {"ppm_carrying_retune_open_mark", test_ppm_carrying_retune_drops_open_mark},
         {"retune_above_2147", test_retune_above_2147_mhz},
         {"start_above_2147", test_start_above_2147_mhz},
         {"retune_past_uint32", test_retune_past_uint32_refused},

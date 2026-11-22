@@ -626,6 +626,9 @@ typedef struct {
        Airspy), so no Fs/4 shift runs. */
     size_t input_ring_capacity_floats;
     int centered_iq;
+    /* The stream open's mark for the auto squelch (demod_state::squelch_new_stream), which a session's start sets as a
+       stream open does (issue #899): a retune to another centre drops it, one on the same centre keeps it. */
+    int new_stream_mark;
 } rtl_stream_test_capture_result;
 
 /* Plan every later programming for @p backend (a dsd_rate_plan_backend) in place of the open device's, -1 for the
@@ -678,6 +681,9 @@ enum {
     /* a manual retune to center_hz at demod input rate value (0: kept), applied, finalized and completed as the
        controller lands one (controller_apply_reconfigure()) */
     RTL_STREAM_TEST_CAPTURE_MANUAL_RETUNE = 6,
+    /* the same retune to center_hz carrying a pending PPM correction of value (the rate kept), as the controller lands
+       a retune queued with a PPM change */
+    RTL_STREAM_TEST_CAPTURE_MANUAL_RETUNE_PPM = 7,
 };
 
 /* The input a session's stream reader committed (@p floats past what it had) and its demodulator then took (the next
@@ -1150,6 +1156,9 @@ typedef struct rtl_stream_test_fll_mixer_retune_result {
     int reset_retained_fll;
     int restored_cached_fll;
     char reason[32]; /* the plan's reason after the reset */
+    /* The stream open's mark for the auto squelch, set before the reset: 0 once a reset of any reason but the open's
+       own (fresh-stream) moved the centre, 1 on the same centre (issue #899). */
+    int new_stream_mark_after;
 } rtl_stream_test_fll_mixer_retune_result;
 
 int rtl_stream_test_fll_mixer_retune(const char* reason, int tetra_chain, float pre_freq, float freq,
