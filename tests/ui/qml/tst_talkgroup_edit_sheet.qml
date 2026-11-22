@@ -177,8 +177,13 @@ Item {
         }
         function test_remove_requires_two_taps_and_reopen_resets() {
             var button = findChild(loader.item, "removeTalkgroup");
+            var heard = loader.item.announcements;
             mouseClick(button);
             compare(recorder.removes, 0);
+            // Issue #903: the armed question is read out, as Forget's is.
+            compare(button.text, "Tap again to remove");
+            compare(loader.item.announced, "Tap again to remove", "TalkBack hears the armed question");
+            compare(loader.item.announcements, heard + 1);
             mouseClick(button);
             compare(recorder.removes, 1);
             loader.item.openRow(42, 42, "", true, true, 0, false, "7", 1);

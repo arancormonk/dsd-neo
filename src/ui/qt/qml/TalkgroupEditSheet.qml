@@ -237,6 +237,7 @@ ModalSheet {
         onClicked: sheet.saveRow()
     }
     OutlineButton {
+        id: removeButton
         objectName: "removeTalkgroup"
         width: parent.width
         height: Math.max(48, implicitHeight)
@@ -247,6 +248,8 @@ ModalSheet {
                 return;
             if (!sheet.removeArmed) {
                 sheet.removeArmed = true;
+                // TalkBack hears the question the button now asks.
+                Navigation.announce(sheet, removeButton, qsTr("Tap again to remove"));
                 return;
             }
             sheet.removeArmed = false;
