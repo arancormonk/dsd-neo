@@ -1189,6 +1189,21 @@ test_dmr_layout_lifecycle(void) {
     dsd_rxid_note_access(state, DSD_RXID_FAMILY_DMR, DSD_ACCESS_CODE_COLOR_CODE, 2U);
     expect_u("layout: another colour code ends it", dsd_rxid_dmr_layout_trunk(state), 0U);
 
+    /* The colour code the layout was verified on qualifies it: the first DMR burst back on another code (a standard
+       co-channel repeater) ends it, though the foreign sync dropped the record's code. */
+    hold_capplus(state);
+    dsd_rxid_note_sync(state, DSD_SYNC_DMR_BS_DATA_POS);
+    dsd_rxid_note_access(state, DSD_RXID_FAMILY_DMR, DSD_ACCESS_CODE_COLOR_CODE, 2U);
+    expect_u("layout: a first returning burst of another colour code ends it", dsd_rxid_dmr_layout_trunk(state), 0U);
+    /* A layout held with no colour code known has nothing to qualify it: the first code back ends it. */
+    dsd_rxid_reset(state);
+    dsd_rxid_note_dmr_brand(state, "Capacity Plus");
+    dsd_rxid_note_sync(state, DSD_SYNC_NXDN_POS);
+    expect_u("layout: held with no colour code across a foreign sync", dsd_rxid_dmr_layout_trunk(state), cap);
+    dsd_rxid_note_sync(state, DSD_SYNC_DMR_BS_DATA_POS);
+    dsd_rxid_note_access(state, DSD_RXID_FAMILY_DMR, DSD_ACCESS_CODE_COLOR_CODE, 1U);
+    expect_u("layout: held with no colour code, the first code back ends it", dsd_rxid_dmr_layout_trunk(state), 0U);
+
     hold_capplus(state);
     dsd_rxid_note_dmr_t3_syscode(state, 0x1234U);
     expect_u("layout: a checked Tier III code replaces it", dsd_rxid_dmr_layout_trunk(state),

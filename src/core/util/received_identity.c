@@ -208,10 +208,14 @@ dsd_rxid_note_sync(dsd_state* state, int synctype) {
        M17 BERT frame): what was heard under the last one, a D-STAR header's naming among it, holds no longer. */
     if ((id->family != (uint8_t)DSD_RXID_FAMILY_NONE && id->family != (uint8_t)family)
         || (state->rx_sync_protocol != 0U && state->rx_sync_protocol != protocol)) {
-        /* The sync may be noise: the DMR layout the record's fresh parts name holds until the frame is confirmed. */
+        /* The sync may be noise: the DMR layout the record's fresh parts name holds until the frame is confirmed, with
+           the colour code it was verified on, which the first DMR burst back must carry (dsd_rxid_note_access()). */
         const uint8_t trunk = rxid_dmr_fresh_trunk(id);
         if (trunk != (uint8_t)DSD_RXID_DMR_TRUNK_NONE) {
+            const int coded = rxid_has(id, DSD_RXID_ACCESS);
             state->rx_dmr_layout_held = trunk;
+            state->rx_dmr_layout_held_access_kind = coded ? id->access_kind : (uint8_t)DSD_ACCESS_CODE_NONE;
+            state->rx_dmr_layout_held_access = coded ? id->access : 0U;
         }
         rxid_clear(id);
     }
@@ -310,6 +314,12 @@ dsd_rxid_note_access(dsd_state* state, dsd_rxid_family family, uint8_t kind, uin
         /* Another system on this carrier: another identity, though the old one had sent nothing but its code. */
         rxid_drop(id, rxid_system_parts(id->family));
         id->epoch++;
+        state->rx_dmr_layout_held = (uint8_t)DSD_RXID_DMR_TRUNK_NONE;
+    }
+    /* A held DMR layout belongs to the code it was verified on: a burst on another code (or on any, when none was
+       known) is another system, though the foreign sync left the record no code to compare. */
+    if (family == DSD_RXID_FAMILY_DMR && state->rx_dmr_layout_held != (uint8_t)DSD_RXID_DMR_TRUNK_NONE
+        && (state->rx_dmr_layout_held_access_kind != kind || state->rx_dmr_layout_held_access != value)) {
         state->rx_dmr_layout_held = (uint8_t)DSD_RXID_DMR_TRUNK_NONE;
     }
     id->access_kind = kind;

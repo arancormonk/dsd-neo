@@ -61,7 +61,8 @@
  * the record's DMR trunking parts while they are fresh. Noise passes a sync word: a sync of another protocol drops the
  * record before its frame is confirmed (multi-protocol decoding), so the trunking system its fresh parts named is held
  * (dsd_state::rx_dmr_layout_held) until another protocol's frame is confirmed (dsd_rxid_note_confirmed_frame()) or its
- * checked note arrives, another DMR access code, the no-carrier pass, the DMR reset or a carrier boundary.
+ * checked note arrives, a DMR access code other than the one the layout was verified on (the first burst back
+ * included; any code when none was known), the no-carrier pass, the DMR reset or a carrier boundary.
  *
  * Plain integers and characters only: the record rides the dsd_state snapshot copy range (ui_snapshot.c pins it).
  *

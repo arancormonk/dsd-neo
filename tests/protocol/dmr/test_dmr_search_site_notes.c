@@ -1207,6 +1207,7 @@ test_capplus_layout_counts_while_fresh(dsd_opts* opts, dsd_state* state) {
     rc |= csbk_send(opts, state, k_private_preamble, 0U);
     rc |= expect_log("a stale record after the no-carrier pass selects the standard layout", "Source: 131363");
 
+    dsd_rxid_note_access(state, DSD_RXID_FAMILY_DMR, (uint8_t)DSD_ACCESS_CODE_COLOR_CODE, 1U); // the gate's lock
     rc |= csbk_send(opts, state, k_status_rest1, 0U);
     dsd_rxid_note_sync(state, DSD_SYNC_NXDN_POS);
     rc |= csbk_send(opts, state, k_private_preamble, 0U);

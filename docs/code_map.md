@@ -4558,8 +4558,10 @@ suite runs under this compiler.
   each dispatched frame, so a frame of another protocol family (YSF, D-STAR, X2-TDMA included, which note nothing) drops
   the record (the DMR trunking system its fresh parts named stays held for the DMR address layout,
   `dsd_state::rx_dmr_layout_held`, until a frame of another protocol is confirmed, `dsd_rxid_note_confirmed_frame()`
-  after the handler's productive verdict, or noted, or another DMR colour code, the no-carrier pass, the DMR reset or a
-  carrier boundary), and a frame of another protocol than the last one's (`dsd_state::rx_sync_protocol`: the family, or
+  after the handler's productive verdict, or noted, or a DMR colour code other than the one the layout was verified on,
+  kept with it, `rx_dmr_layout_held_access*`, so the first DMR burst back on another code ends it (any code, when none
+  was known), the no-carrier pass, the DMR reset or a carrier boundary), and a frame of another protocol than the last
+  one's (`dsd_state::rx_sync_protocol`: the family, or
   for a protocol that notes nothing the protocol itself) moves the epoch even when neither noted anything (issue #800,
   fail closed: a D-STAR call, an M17 BERT frame and D-STAR again are three receptions, so a D-STAR header's naming and
   every multi-fragment report's origin end at the switch; both P25 phases, every DMR burst and both polarities are one
@@ -13439,7 +13441,8 @@ Private per-protocol modules worth knowing about:
   no-carrier pass (on an untrunked input, an external scanner's move to another channel may be the only sign) the
   standard layout holds until fresh checked evidence, and a carrier boundary resets it. A sync of another protocol whose
   frame is not confirmed (noise in multi-protocol decoding) drops the record but leaves the layout
-  (`dsd_state::rx_dmr_layout_held`); only that protocol's confirmed frame or checked note ends it. Only a voice channel
+  (`dsd_state::rx_dmr_layout_held`, with the colour code it was verified on); only that protocol's confirmed frame or
+  checked note, or a DMR burst back on another colour code, ends it. Only a voice channel
   user opens a call,
   holds the scan, arms or releases the encryption lockout, moves the slot's encryption classification or ends its voice
   hold, and shows its parties and service options (emergency, encrypted, priority) on the terminal; any other LC shows
