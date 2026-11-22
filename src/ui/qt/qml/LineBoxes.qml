@@ -36,10 +36,16 @@ Item {
 
     // Probes made so far, keyed by font: never shown, only measured. A plain
     // cache: a binding that reads a box depends on the probe's own size. It
-    // only grows, and is bounded: one probe per font revision, family, size
-    // and weight a box is read in, with the line probe text or one of the
-    // views' fixed time probes (callRowTimeWidth()), never a call's text.
-    property var probes: ({})
+    // holds the current font revision's probes only: one per family, size and
+    // weight a box is read in, with the line probe text or one of the views'
+    // fixed time probes (callRowTimeWidth()), never a call's text. A new
+    // revision (the app bumps it on every font refresh, also back to a
+    // setting it had) destroys the older ones; every binding that read them
+    // reads the revision too, so it runs again and takes a new probe. Both
+    // objects are changed in place, never reassigned: a property written in
+    // the binding that reads it would be a binding loop.
+    readonly property var probes: ({})
+    readonly property var probesMade: ({revision: -1})
     readonly property Component probeComponent: Component {
         Text {
             visible: false
@@ -59,7 +65,15 @@ Item {
     // key finds it in the cache.
     function probe(text, family, pixelSize, weight) {
         pixelSize = pixelSizeOf(pixelSize);
-        var key = [Theme.fontRevision, family, pixelSize, weight, text].join("|");
+        var revision = Theme.fontRevision;
+        if (revision !== probesMade.revision) {
+            for (var old of Object.keys(probes)) {
+                probes[old].destroy();
+                delete probes[old];
+            }
+            probesMade.revision = revision;
+        }
+        var key = [revision, family, pixelSize, weight, text].join("|");
         var made = probes[key];
         if (!made) {
             made = probeComponent.createObject(boxes, {

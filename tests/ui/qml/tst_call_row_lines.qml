@@ -277,6 +277,43 @@ Item {
             }
         }
 
+        // The probe cache keeps only the current font revision's probes: the app bumps the revision on every font
+        // refresh, also back to a setting it had, so a cache keyed by revision alone grew with each refresh.
+        function test_probe_cache_keeps_one_revision() {
+            var start = decoderHost.fontRevision;
+            var read = function () {
+                Ui.LineBoxes.callRowNameBox();
+                Ui.LineBoxes.callRowMetaBox();
+                Ui.LineBoxes.callRowTimeWidth("00:00");
+                Ui.LineBoxes.lineHeight(Ui.Theme.mono, Ui.Theme.fontSize(11), Font.Normal);
+            };
+            var probeCount = function () {
+                var made = 0;
+                for (var child of Ui.LineBoxes.children)
+                    made += child instanceof Text ? 1 : 0;
+                return made;
+            };
+            try {
+                decoderHost.fontRevision = start + 1;
+                read();
+                var once = Object.keys(Ui.LineBoxes.probes).length;
+                verify(once >= 4, "the reads made their probes: " + once);
+                for (var i = 2; i <= 21; ++i) {
+                    decoderHost.fontRevision = start + i;
+                    read();
+                }
+                wait(0);
+                var keys = Object.keys(Ui.LineBoxes.probes);
+                compare(keys.length, once, "the cache after 20 revisions: " + keys.length);
+                for (var key of keys)
+                    compare(key.split("|")[0], String(start + 21), "a probe of an older revision is kept: " + key);
+                verify(probeCount() <= once, "older probes are not destroyed: " + probeCount() + " probes");
+                compare(Ui.LineBoxes.callRowNameBox(), findChild(latin, "callRowName").height, "the row reads the current box");
+            } finally {
+                decoderHost.fontRevision = start;
+            }
+        }
+
         // D10's limit: a line in a taller script keeps its box and is still
         // drawn, centred and unclipped, not dropped or elided away.
         function test_tall_script_is_drawn_in_its_box() {
