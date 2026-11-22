@@ -15801,14 +15801,20 @@ Build files: `src/protocol/CMakeLists.txt` and per‑protocol `src/protocol/<nam
     app default" on the Radio sheet, "Remove saved squelch" on the audio-input sheet (no app default applies there),
     accessible name "Clear This System's Saved Squelch", with "Applies from the next start." under it.
     `clearSquelch()` drops a squelch request still waiting before `clearRadioSetting()`, so an older one cannot put the
-    key back, and `squelchCleared` shows the note until the next squelch request: "... The next start uses the default
-    from Settings." where it applies (`Main.sessionSquelchDefaultApplies`: a radio source and an analog saved decode),
-    else "... runs without a saved squelch.". The note is read out (`Navigation.announce()`), and a keyboard focus the
-    hidden button held goes to the chosen squelch segment (`SegmentedControl.focusSegment()`). A squelch level is saved only in a
+    key back, and `squelchCleared` shows the note until the next squelch request: "Saved squelch cleared for the next
+    start." (it promises nothing about what that start runs: Advanced arguments or the input decide). A clear or
+    squelch save that fails sets `squelchStoreError`, shown by both sheets whatever the setting (Auto and Noise too),
+    apart from the level-only warning, until a clear or squelch save succeeds; the audio sheet's save note shows it in
+    place of "Squelch changes here are saved to this system.". The note or the failure is read out
+    (`Navigation.announce()`), and a keyboard focus the hidden button held goes to the chosen squelch segment, or with
+    none chosen (a held setting) the first enabled one (`SegmentedControl.focusSegment()`). A squelch level is saved only in a
     form the app's controls make (B15, fail-closed): Off or a whole dB from -120 to -1, read from the configured power
     (`MetricsModel::configuredSquelchLevelWhole`/`configuredSquelchLevelWholeDb`, `dsd_squelch_level_is_whole_db()`),
     and a stepped level confirms only on that same whole dB. The level the dB choice brings back from Auto/Noise
-    (`{mode: "level", restore: true}`) is saved when it has that form; otherwise nothing is saved and `squelchError`
+    (`{mode: "level", restore: true, request, off, whole, db}`, as `restoreSquelchLevel()` submitted it) confirms only
+    on a snapshot whose `configuredSquelchRequestAnswered` is its `request` and only on that same Off or whole dB; an
+    answer on another level (refused, or set since by another source) settles it with nothing saved. It is saved when
+    it has the app's form; otherwise nothing is saved and `squelchLevelError`
     ("This level was set outside the app, so it is not saved.") shows under the squelch controls, only while a fixed
     level is the setting; the next squelch request (a step or a mode change) clears it. A dynamic save
     stores only the dynamic choice. The steppers of both sheets (`Util.squelchStep()`) always ask for a whole dB,

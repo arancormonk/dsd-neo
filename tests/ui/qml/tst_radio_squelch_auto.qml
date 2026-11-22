@@ -71,6 +71,8 @@ Item {
                 sheet.forgetRequests();
                 sheet.savesToSystem = false;
                 sheet.savedSquelch = "";
+                sheet.squelchSaveError = "";
+                sheet.squelchStoreError = "";
                 sheet.visible = false;
             }
             testContext.setHostRunning(false);
@@ -519,15 +521,12 @@ Item {
             verify(!clear.visible);
             var note = findChild(sheet, "radioSquelchClearedNote");
             verify(note.visible);
-            compare(note.text, "Saved squelch cleared. The next start uses the default from Settings.");
+            compare(note.text, "Saved squelch cleared for the next start.");
             compare(sheet.announced, note.text, "the note is read out");
             var mode = findChild(sheet, "radioSquelchMode");
             var focused = sheet.Window.activeFocusItem;
             verify(focused !== null && focused.Accessible.name === mode.model[mode.currentIndex],
                 "the keyboard goes to the chosen squelch segment");
-            sheet.savedSquelchDefaultApplies = false;
-            compare(note.text, "Saved squelch cleared. The next start runs without a saved squelch.");
-            sheet.savedSquelchDefaultApplies = true;
             sheet.savedSquelchCleared = false;
             sheet.savesToSystem = false;
             clearSpy.target = null;
@@ -548,6 +547,33 @@ Item {
             verify(shown.visible);
             sheet.squelchSaveError = "";
             sheet.savesToSystem = false;
+        }
+
+        // Issue #899: a saved squelch that could not be cleared or saved still applies at the next start, so that is
+        // shown whatever the setting, apart from the level-only warning, and a failed clear reads it out.
+        function test_store_error_under_any_setting() {
+            sheet.savesToSystem = true;
+            sheet.savedSquelch = "noise+12";
+            var failure = "Could not clear the saved squelch. Check available storage and try again.";
+            function failed() { sheet.squelchStoreError = failure; }
+            sheet.clearSavedSquelchRequested.connect(failed);
+            setNoise(true, true, 12, "quieting 23 dB");
+            findChild(sheet, "radioSquelchClearSaved").clicked();
+            sheet.clearSavedSquelchRequested.disconnect(failed);
+            var shown = findChild(sheet, "radioSquelchStoreError");
+            verify(shown.visible, "under Noise");
+            compare(shown.text, failure);
+            compare(shown.color, Ui.Theme.alert);
+            compare(sheet.announced, failure, "the failure is read out");
+            verify(!findChild(sheet, "radioSquelchClearedNote").visible);
+            verify(!findChild(sheet, "radioSquelchSaveError").visible, "the level-only warning stays apart");
+            setNoise(false, false, 12, "");
+            setAuto(true, true, 12, "learning");
+            verify(shown.visible, "under Auto");
+            setAuto(false, false, 12, "");
+            verify(shown.visible, "under dB");
+            sheet.squelchStoreError = "";
+            verify(!shown.visible);
         }
     }
 }

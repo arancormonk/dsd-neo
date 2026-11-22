@@ -1144,16 +1144,6 @@ Window {
     readonly property string sessionSavedSquelch: mainRoot.sessionSavedSystemUid.length > 0
         && mainRoot.sessionSystem.radioSettings && mainRoot.sessionSystem.radioSettings.squelch !== undefined
         ? String(mainRoot.sessionSystem.radioSettings.squelch) : ""
-    // Whether the app's default squelch reaches that system's next start once its own is cleared: a radio source
-    // and an analog decode (its saved Listening for choice, else its decoder), as session_args applies it.
-    readonly property bool sessionSquelchDefaultApplies: {
-        var sys = mainRoot.sessionSystem;
-        if (!sys || ["usb", "rtltcp", "airspy"].indexOf(sys.sourceType) < 0)
-            return false;
-        var flag = sys.radioSettings && sys.radioSettings.decodeFlag !== undefined ? sys.radioSettings.decodeFlag
-                                                                                  : sys.decodeFlag;
-        return flag === "-fA" || flag === "-fM";
-    }
     property bool awaitingSessionInitialized: false
     // What the session was started as ("scan", "explore" or "saved") and the UID
     // that names it, decided when the host accepts the start. The
@@ -2359,7 +2349,8 @@ Window {
         sessionSystemUid: mainRoot.sessionSavedSystemUid
         // Issue #899 (B7, B11): the audio-input Squelch sheet saves to the session's saved system, as Radio does.
         squelchSaveError: radioPersistence.error
-        squelchLevelSaveError: radioPersistence.squelchError
+        squelchLevelSaveError: radioPersistence.squelchLevelError
+        squelchStoreError: radioPersistence.squelchStoreError
         squelchSavesToSystem: radioPersistence.systemUid.length > 0
         savedSquelch: mainRoot.sessionSavedSquelch
         savedSquelchCleared: radioPersistence.squelchCleared
@@ -2865,8 +2856,8 @@ Window {
         savesToSystem: radioPersistence.systemUid.length > 0
         savedSquelch: mainRoot.sessionSavedSquelch
         savedSquelchCleared: radioPersistence.squelchCleared
-        squelchSaveError: radioPersistence.squelchError
-        savedSquelchDefaultApplies: mainRoot.sessionSquelchDefaultApplies
+        squelchSaveError: radioPersistence.squelchLevelError
+        squelchStoreError: radioPersistence.squelchStoreError
         onSettingRequested: function (key, value) { radioPersistence.request(key, value); }
         onClearSavedSquelchRequested: radioPersistence.clearSquelch()
     }

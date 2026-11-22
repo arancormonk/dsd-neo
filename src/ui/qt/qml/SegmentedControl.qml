@@ -24,11 +24,17 @@ Rectangle {
     Accessible.ignored: !navigationAllowed || !visible || accessibleName.length === 0
 
     // Give the keyboard to segment @p index (the chosen one by default), for a
-    // caller whose focused control went away under it.
+    // caller whose focused control went away under it. With none chosen, or
+    // that one disabled, the first enabled segment takes it (issue #899).
+    // Returns whether a segment has the focus.
     function focusSegment(index) {
         var item = segments.itemAt(index === undefined ? currentIndex : index);
-        if (item)
-            item.forceActiveFocus();
+        for (var i = 0; (!item || !item.enabled) && i < segments.count; ++i)
+            item = segments.itemAt(i);
+        if (!item || !item.enabled)
+            return false;
+        item.forceActiveFocus();
+        return true;
     }
 
     property real labelHeight: 0

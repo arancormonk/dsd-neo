@@ -72,6 +72,7 @@ Item {
     property bool squelchSavesToSystem: false
     property string squelchSaveError: ""
     property string squelchLevelSaveError: ""
+    property string squelchStoreError: ""
     property string savedSquelch: ""
     property bool savedSquelchCleared: false
     signal squelchSettingRequested(string key, var value)
@@ -2738,6 +2739,7 @@ Item {
         savesToSystem: screen.squelchSavesToSystem
         saveError: screen.squelchSaveError
         squelchSaveError: screen.squelchLevelSaveError
+        squelchStoreError: screen.squelchStoreError
         savedSquelch: screen.savedSquelch
         savedSquelchCleared: screen.savedSquelchCleared
         onSettingRequested: function (key, value) { screen.squelchSettingRequested(key, value); }

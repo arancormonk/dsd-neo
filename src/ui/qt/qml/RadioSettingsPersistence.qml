@@ -9,8 +9,10 @@ import QtQuick
 // controls make, Off or a whole dB from -120 to -1, read from the configured
 // level itself. A level set elsewhere (Advanced arguments, the command line)
 // is not saved, and the sheet says so. A dynamic choice saves only itself.
-// Clear (B11) removes the saved squelch for the next start and drops any
-// squelch request still waiting, so an older one cannot put it back.
+// The level kept beneath a dynamic one, put back, is saved only as the level
+// asked for and once the decoder has answered that request, never from an
+// older snapshot. Clear (B11) removes the saved squelch for the next start and
+// drops any squelch request still waiting, so an older one cannot put it back.
 Item {
     id: persistence
     property string systemUid: ""
@@ -19,8 +21,13 @@ Item {
     property string error: ""
     // Issue #899 (B11): Clear took the saved squelch out, until the next request.
     property bool squelchCleared: false
-    // Issue #899: why a squelch change was not saved or cleared, shown by the squelch controls.
-    property string squelchError: ""
+    // Issue #899: why a level was not saved (one set outside the app), shown
+    // by the squelch controls while a level is the setting.
+    property string squelchLevelError: ""
+    // Why the saved squelch could not be cleared or saved, shown whatever the
+    // setting: the saved one still applies at the next start. It stands until
+    // a clear or a squelch save succeeds.
+    property string squelchStoreError: ""
     signal saved()
 
     onSystemUidChanged: reset()
@@ -30,7 +37,8 @@ Item {
         pending = ({});
         error = "";
         squelchCleared = false;
-        squelchError = "";
+        squelchLevelError = "";
+        squelchStoreError = "";
     }
 
     function request(key, value) {
@@ -51,26 +59,37 @@ Item {
         error = "";
         if (key === "squelch") {
             squelchCleared = false;
-            squelchError = "";
+            squelchLevelError = "";
         }
         Qt.callLater(confirm);
     }
 
     // A level request is {mode: "level", db, off} from a step, or {mode:
-    // "level", restore: true} for the level kept beneath a dynamic squelch,
-    // which matches whatever level comes back. A stepped level matches only
-    // the same whole dB, so two requests can never confirm on one snapshot.
+    // "level", restore: true, request, off, whole, db} for the level kept
+    // beneath a dynamic squelch, as CommandBridge.restoreSquelchLevel()
+    // submitted it. A level matches only the same Off or whole dB, so two
+    // requests can never confirm on one snapshot; a restore also only on a
+    // snapshot that shows the decoder answered it, and one of a level the
+    // app's controls cannot make on any such level, which is then not saved.
     function squelchMatches(value) {
         if (value.mode === "auto" || value.mode === "noise")
             return (value.mode === "auto" ? metrics.configuredSquelchAuto : metrics.configuredSquelchNoise)
                 && value.margin === metrics.configuredSquelchMarginDb;
         if (metrics.configuredSquelchAuto || metrics.configuredSquelchNoise)
             return false;
-        if (value.restore === true)
-            return true;
-        return value.off === metrics.configuredSquelchLevelOff
-            && (value.off || (metrics.configuredSquelchLevelWhole === true
-                && value.db === metrics.configuredSquelchLevelWholeDb));
+        if (value.restore === true && !restoreAnswered(value))
+            return false;
+        if (value.off || metrics.configuredSquelchLevelOff === true)
+            return value.off === metrics.configuredSquelchLevelOff;
+        if (value.restore === true && value.whole !== true)
+            return metrics.configuredSquelchLevelWhole !== true;
+        return metrics.configuredSquelchLevelWhole === true && value.db === metrics.configuredSquelchLevelWholeDb;
+    }
+
+    // Whether the decoder has handled a restore request: a snapshot taken after it.
+    function restoreAnswered(value) {
+        return value.restore === true && value.request !== undefined
+            && metrics.configuredSquelchRequestAnswered === value.request;
     }
 
     // What the saved system keeps for a confirmed request, from the
@@ -96,12 +115,12 @@ Item {
         delete next.squelch;
         pending = next;
         if (savedSystems.clearRadioSetting(systemUid, "squelch")) {
-            squelchError = "";
+            squelchStoreError = "";
             squelchCleared = true;
             saved();
             return true;
         }
-        squelchError = qsTr("Could not clear the saved squelch. Check available storage and try again.");
+        squelchStoreError = qsTr("Could not clear the saved squelch. Check available storage and try again.");
         return false;
     }
 
@@ -121,6 +140,7 @@ Item {
             delete next.modulation;
         }
         var refusedLevel = false;
+        var settled = false;
         if (next.squelch !== undefined && squelchMatches(next.squelch)) {
             var text = squelchText(next.squelch);
             if (text.length > 0)
@@ -128,19 +148,28 @@ Item {
             else
                 refusedLevel = true;
             delete next.squelch;
+        } else if (next.squelch !== undefined && restoreAnswered(next.squelch)) {
+            // Answered, and not on the level asked for: refused, or set since
+            // by something else. Nothing of it is saved.
+            delete next.squelch;
+            settled = true;
         }
-        if (refusedLevel) {
+        if (refusedLevel || settled)
             pending = next;
-            squelchError = qsTr("This level was set outside the app, so it is not saved.");
-        }
+        if (refusedLevel)
+            squelchLevelError = qsTr("This level was set outside the app, so it is not saved.");
         if (Object.keys(changes).length === 0)
             return;
         pending = next;
         if (savedSystems.updateRadioSettings(systemUid, changes)) {
             error = "";
+            if (changes.squelch !== undefined)
+                squelchStoreError = "";
             saved();
         } else {
             error = qsTr("Could not save Radio settings. Check available storage and try the change again.");
+            if (changes.squelch !== undefined)
+                squelchStoreError = qsTr("Could not save the squelch. Check available storage and try again.");
         }
     }
 

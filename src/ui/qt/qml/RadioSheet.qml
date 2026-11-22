@@ -33,14 +33,15 @@ ModalSheet {
     // none), and whether Clear has taken it out for the next start.
     property string savedSquelch: ""
     property bool savedSquelchCleared: false
-    // Whether the app's default squelch applies at the system's next start
-    // (a radio source and an analog decode), which the cleared note says.
-    property bool savedSquelchDefaultApplies: true
     // Navigation.announce()'s record of what was read out.
     property string announced: ""
     property int announcements: 0
-    // Why a squelch change was not saved to the system, or Clear failed.
+    // Why a level was not saved to the system (one set outside the app),
+    // shown while a level is the setting.
     property string squelchSaveError: ""
+    // Why the saved squelch could not be cleared or saved, shown whatever the
+    // setting: the saved one still applies at the next start.
+    property string squelchStoreError: ""
     signal settingRequested(string key, var value)
     signal clearSavedSquelchRequested()
     readonly property bool sessionRunning: decoderHost.running
@@ -601,12 +602,14 @@ ModalSheet {
         // full-scale threshold reads 0 dB, which sent as dB would mean off.
         // The pending reading says what comes back until the engine's arrives;
         // a refused request leaves the engine's reading at once. What is saved
-        // is the level that comes back, if the app's controls could make it.
+        // is the level asked for, once the decoder has answered with it, if
+        // the app's controls could make it.
         pendingSquelchMargin = NaN;
         pendingSquelch = levelOff ? 0 : Math.min(db, -0.001);
         squelchTtl.restart();
-        if (commands.restoreSquelchLevel())
-            settingRequested("squelch", {mode: "level", restore: true});
+        var asked = commands.restoreSquelchLevel();
+        if (asked)
+            settingRequested("squelch", Object.assign({mode: "level", restore: true}, asked));
         else
             forgetSquelchRequest();
     }
@@ -625,8 +628,8 @@ ModalSheet {
      */
     function clearSavedSquelch(hadFocus) {
         clearSavedSquelchRequested();
-        Navigation.announce(sheet, savedSquelchCleared ? squelchClearedNote : squelchSaveErrorText,
-            savedSquelchCleared ? squelchClearedNote.text : squelchSaveError);
+        Navigation.announce(sheet, savedSquelchCleared ? squelchClearedNote : squelchStoreErrorText,
+            savedSquelchCleared ? squelchClearedNote.text : squelchStoreError);
         if (hadFocus && savedSquelchCleared)
             squelchModeControl.focusSegment();
     }
@@ -1008,6 +1011,18 @@ ModalSheet {
                 font.pixelSize: Theme.fontSize(12)
             }
         }
+        // The saved squelch could not be cleared or saved: it still applies at
+        // the next start, whatever the setting now.
+        ReadableText {
+            id: squelchStoreErrorText
+            objectName: "radioSquelchStoreError"
+            visible: sheet.savesToSystem && !sheet.rowScope && sheet.squelchStoreError.length > 0
+            width: parent.width
+            wrapMode: Text.WordWrap
+            text: sheet.squelchStoreError
+            color: Theme.alert
+            font.pixelSize: Theme.fontSize(12)
+        }
         // A level the app cannot save; shown while that level is the setting.
         ReadableText {
             id: squelchSaveErrorText
@@ -1026,9 +1041,7 @@ ModalSheet {
             visible: sheet.savesToSystem && !sheet.rowScope && sheet.savedSquelchCleared
             width: parent.width
             wrapMode: Text.WordWrap
-            text: sheet.savedSquelchDefaultApplies
-                ? qsTr("Saved squelch cleared. The next start uses the default from Settings.")
-                : qsTr("Saved squelch cleared. The next start runs without a saved squelch.")
+            text: qsTr("Saved squelch cleared for the next start.")
             color: Theme.textSecondary
             font.pixelSize: Theme.fontSize(12)
         }

@@ -34,6 +34,9 @@ ModalSheet {
     // Why a level was not saved (one set outside the app), shown only while a
     // level is the setting; saveError is any other save failure.
     property string squelchSaveError: ""
+    // Why the saved squelch could not be cleared or saved, shown whatever the
+    // setting: the saved one still applies at the next start.
+    property string squelchStoreError: ""
     // Navigation.announce()'s record of what was read out.
     property string announced: ""
     property int announcements: 0
@@ -224,12 +227,14 @@ ModalSheet {
         }
         // The default gets its level back exactly as stored. A refused request
         // leaves the engine's reading at once and saves nothing; what is saved
-        // is the level that comes back, if the app's controls could make it.
+        // is the level asked for, once the decoder has answered with it, if
+        // the app's controls could make it.
         pendingSquelchMargin = NaN;
         pendingSquelch = levelOff ? 0 : Math.min(db, -0.001);
         squelchTtl.restart();
-        if (sheet.bridge.restoreSquelchLevel())
-            settingRequested("squelch", {mode: "level", restore: true});
+        var asked = sheet.bridge.restoreSquelchLevel();
+        if (asked)
+            settingRequested("squelch", Object.assign({mode: "level", restore: true}, asked));
         else
             forgetRequests();
     }
@@ -244,9 +249,8 @@ ModalSheet {
             savedSquelchCleared ? squelchClearedNote.text : squelchSaveNote.text);
         if (!hadFocus || !savedSquelchCleared)
             return;
-        if (squelchModeControl.visible)
-            squelchModeControl.focusSegment();
-        else
+        // A held setting selects no segment: the first enabled one takes it.
+        if (!squelchModeControl.visible || !squelchModeControl.focusSegment())
             squelchDownButton.forceActiveFocus();
     }
 
@@ -408,9 +412,11 @@ ModalSheet {
     ReadableText {
         id: squelchSaveNote
         objectName: "squelchSaveNote"
-        // The unsaved-level reason only while a level is the setting.
-        readonly property string problem: (sheet.squelchSaveError.length > 0 && !sheet.squelchNoise && !sheet.squelchAuto)
-            ? sheet.squelchSaveError : sheet.saveError
+        // A saved squelch that could not be cleared or saved whatever the
+        // setting; the unsaved-level reason only while a level is the setting.
+        readonly property string problem: sheet.squelchStoreError.length > 0 ? sheet.squelchStoreError
+            : ((sheet.squelchSaveError.length > 0 && !sheet.squelchNoise && !sheet.squelchAuto)
+                ? sheet.squelchSaveError : sheet.saveError)
         width: parent.width
         visible: !sheet.rowSquelch && (sheet.savesToSystem || problem.length > 0)
         text: problem.length > 0 ? problem : qsTr("Squelch changes here are saved to this system.")
@@ -446,7 +452,7 @@ ModalSheet {
         objectName: "squelchClearedNote"
         width: parent.width
         visible: sheet.savesToSystem && !sheet.rowSquelch && sheet.savedSquelchCleared
-        text: qsTr("Saved squelch cleared. The next start runs without a saved squelch.")
+        text: qsTr("Saved squelch cleared for the next start.")
         wrapMode: Text.Wrap
         color: Theme.textSecondary
         font.pixelSize: Theme.fontSize(13)
