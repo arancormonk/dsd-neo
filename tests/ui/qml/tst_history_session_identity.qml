@@ -355,5 +355,37 @@ Item {
             compare(monitorRows(), 1)
             loader.item.sessionDestination = ""
         }
+
+        // Issue #901 (r2 D2): the Monitor's list has no current row. Handing it a model that holds calls (a session
+        // starting with calls kept from earlier ones) made Qt select row 0, before the session's filter took the
+        // old rows away, and a new call then took the keyboard from the disclosure. Every attach, a session
+        // restart's included, keeps it at -1.
+        function test_attaching_the_calls_keeps_no_current_row() {
+            loader.source = ""
+            callHistory.clearAll()
+            callHistory.pushMany(12, "TODAY")
+            loader.source = uiDir + "/Main.qml"
+            verify(loader.item !== null)
+            var monitor = findChild(loader.item, "monitorScreen")
+            var list = findChild(monitor, "recentCallsList")
+            var details = findChild(monitor, "monitorDetailsRow")
+            for (var round = 0; round < 2; ++round) {
+                loader.item.startSystem(0)
+                compare(decoderHost.sessionState, 1)
+                tryVerify(function () { return monitor.visible && list.model === monitorView }, 1000, "the session shows the Monitor")
+                compare(list.currentIndex, -1, "round " + round + ": attached with no current row")
+                details.forceActiveFocus()
+                verify(details.activeFocus, "the disclosure takes the keyboard")
+                var name = callHistory.pushAt(1262304000 + round)
+                tryVerify(function () { return monitorRows() >= 1 }, 1000, "the session's call is listed")
+                wait(50)
+                compare(list.currentIndex, -1, "round " + round + ": a new call is no current row")
+                verify(details.activeFocus, "round " + round + ": the new call took the keyboard from the disclosure")
+                // The session ends with its calls kept: Home shows, the Monitor is hidden under it.
+                decoderHost.stop()
+                tryVerify(function () { return !monitor.visible }, 2000, "no session, no Monitor")
+                tryCompare(list, "model", null)
+            }
+        }
     }
 }

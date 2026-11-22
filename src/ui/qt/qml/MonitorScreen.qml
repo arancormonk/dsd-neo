@@ -1893,6 +1893,12 @@ Item {
         // current item as rows land, which would pull keyboard focus off the
         // disclosure in its header; Tab moves between rows instead.
         currentIndex: -1
+        // Handed a model that holds rows (recentPlace's attach, a session
+        // starting with calls kept from earlier ones), the view makes row 0
+        // current, and once the session's filter took that row away the
+        // next call to land became current and took the keyboard (issue
+        // #901 r2 D2). Every attach puts it back to none.
+        onModelChanged: currentIndex = -1
         keyNavigationEnabled: false
 
         // Scrollable by assistive technology, as the body it replaced was.
