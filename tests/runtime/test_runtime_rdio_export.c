@@ -1480,6 +1480,9 @@ test_sidecar_channel_label_fallback(void) {
 static int
 export_sidecar_body_with(const dsd_opts* with_opts, const Event_History_I* hist, int wav_seconds, time_t opened,
                          time_t started, char* body, size_t body_size) {
+    if (body_size > 0U) {
+        body[0] = '\0'; // a failed export leaves an empty body, never an unread buffer
+    }
     char dir_template[DSD_TEST_PATH_MAX] = {0};
     if (!dsd_test_mkdtemp(dir_template, sizeof(dir_template), "dsdneo_rdio_export_freq")) {
         DSD_FPRINTF(stderr, "mkdtemp failed: %s\n", strerror(errno));
@@ -1566,16 +1569,21 @@ test_sidecar_dcr_files_under_channel_khz(void) {
         item->event_time = (time_t)1700000600;
         item->freq_hz = has_freq ? 469012500 : 0;
         DSD_SNPRINTF(item->tgt_str, sizeof item->tgt_str, "%s", DSD_CALL_NXDN_DCR_TARGET_TEXT);
-        char body[4096];
-        const int exported = export_sidecar_body(hist, 1, 0, 0, body, sizeof body);
+        char body[4096] = {0};
+        const int exported = has_freq ? export_sidecar_body(hist, 1, 0, 0, body, sizeof body)
+                                      : export_sidecar_body_with(NULL, hist, 1, 0, 0, body, sizeof body);
         if (has_freq) {
-            if (exported != 0 || !strstr(body, "\"talkgroup\": 469012")
-                || !strstr(body, "\"talkgroup_tag\": \"JPN DCR\"") || strstr(body, "\"src\":") != NULL) {
+            if (exported != 0) {
+                DSD_FPRINTF(stderr, "dcr sidecar: export failed (%d)\n", exported);
+                rc = 1;
+            } else if (!strstr(body, "\"talkgroup\": 469012") || !strstr(body, "\"talkgroup_tag\": \"JPN DCR\"")
+                       || strstr(body, "\"src\":") != NULL) {
                 DSD_FPRINTF(stderr, "dcr sidecar: want talkgroup 469012 tagged JPN DCR, source 0\n%s\n", body);
                 rc = 1;
             }
-        } else if (exported == 0) {
-            DSD_FPRINTF(stderr, "dcr sidecar with no frequency must not export\n");
+        } else if (exported != -1) {
+            /* -1 is the clean refusal; 0 exported the call, and -2 refused it but left a sidecar behind. */
+            DSD_FPRINTF(stderr, "dcr sidecar with no frequency must be refused cleanly (got %d)\n", exported);
             rc = 1;
         }
         free(hist);
@@ -1615,11 +1623,13 @@ test_sidecar_type_d_text_yields_to_names(void) {
         DSD_SNPRINTF(item->tgt_str, sizeof item->tgt_str, "%s", cases[i].tgt_str);
         DSD_SNPRINTF(item->t_name, sizeof item->t_name, "%s", cases[i].t_name);
         DSD_SNPRINTF(item->channel_label, sizeof item->channel_label, "%s", cases[i].channel);
-        char body[4096];
+        char body[4096] = {0};
         char want[128];
         DSD_SNPRINTF(want, sizeof want, "\"talkgroup_tag\": \"%s\"", cases[i].want);
-        if (export_sidecar_body(hist, 1, 0, 0, body, sizeof body) != 0 || !strstr(body, want)
-            || !strstr(body, "\"talkgroup\": 5")) {
+        if (export_sidecar_body(hist, 1, 0, 0, body, sizeof body) != 0) {
+            DSD_FPRINTF(stderr, "case %zu: export failed\n", i);
+            rc = 1;
+        } else if (!strstr(body, want) || !strstr(body, "\"talkgroup\": 5")) {
             DSD_FPRINTF(stderr, "case %zu: want %s\n%s\n", i, want, body);
             rc = 1;
         }
