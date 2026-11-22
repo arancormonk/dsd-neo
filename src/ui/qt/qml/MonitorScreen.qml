@@ -356,9 +356,9 @@ Item {
     // at the user's density, whatever their width.
     readonly property real callRowHeight: LineBoxes.callRowHeight(compactView)
     // The widest ages a row shows (Util.shortAge: "now", up to "59m", "23h",
-    // then days; past 999 days is the limit), one per line: the rows' time
-    // slot, so a ticking age never changes what a row draws.
-    readonly property string rowTimeProbe: [qsTr("now"), "59m", "23h", "999d"].join("\n")
+    // then days, four digits of them), one per line: the rows' time slot, so
+    // a ticking age never changes what a row draws.
+    readonly property string rowTimeProbe: [qsTr("now"), "59m", "23h", "9999d"].join("\n")
     readonly property real heroMicroHeight: Math.ceil(heroMicroMetrics.height)
     readonly property real heroSublineHeight: Math.ceil(Math.max(heroSublineMetrics.height, heroEncTag.implicitHeight, heroEmergencyTag.implicitHeight, heroPrivateTag.implicitHeight))
     readonly property real heroFullHeight: 2 * 14 + heroMicroHeight + 6 + Math.ceil(Theme.fontSize(40)) + 6 + heroSublineHeight + 6 + Math.max(26, Math.ceil(heroDurationMetrics.height))

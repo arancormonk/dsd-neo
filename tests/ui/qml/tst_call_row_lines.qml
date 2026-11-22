@@ -422,7 +422,7 @@ Item {
             verify(count(tightShort) >= count(tight), "a short name drew less");
         }
 
-        // A Monitor row's age ticks ("now", "9m", "10m", ..., "999d"): what the row draws never follows it. The time
+        // A Monitor row's age ticks ("now", "9m", "10m", ..., "1102d"): what the row draws never follows it. The time
         // has the slot of the view's widest age, so the plan and the drawn set are the same for every age at every
         // width, here 220 to 460 px (322 px is a 360 dp phone's Monitor row), where the age's own width once made the
         // time and the glyph come and go in a band 30 to 46 px wide.
@@ -433,8 +433,8 @@ Item {
             Ui.Theme.fontScale = data.scale;
             // The Monitor's ages, one per line (MonitorScreen.rowTimeProbe).
             if (ageRow.timeWidthProbe !== undefined)
-                ageRow.timeWidthProbe = [qsTr("now"), "59m", "23h", "999d"].join("\n");
-            var ages = ["now", "1m", "9m", "10m", "59m", "1h", "23h", "1d", "999d"];
+                ageRow.timeWidthProbe = [qsTr("now"), "59m", "23h", "9999d"].join("\n");
+            var ages = ["now", "1m", "9m", "10m", "59m", "1h", "23h", "1d", "999d", "1102d"];
             var drawnNow = function () {
                 return JSON.stringify({plan: ageRow.plan, tag: findChild(ageRow, "rowEmergencyTag").visible,
                     time: findChild(ageRow, "callRowTime").visible, glyph: findChild(ageRow, "rowRecordingGlyph").visible,
@@ -467,6 +467,19 @@ Item {
                 compare(rectOf(time, ageRow).x + time.width, ageRow.width - 18);
                 verify(time.contentWidth <= time.width + 0.5, "the age is wider than its slot");
                 checkPlan(ageRow, "460 px \"9m\"");
+                // A four-digit age (a call kept 1102 days) is drawn whole inside its slot, clear of EMERGENCY.
+                ageRow.rightText = "1102d";
+                waitForRendering(ageRow);
+                verify(time.visible, "the four-digit age is drawn at 460 px");
+                var slot = rectOf(time, ageRow);
+                verify(time.contentWidth <= time.width + 0.5, "\"1102d\" is " + time.contentWidth + " px in a " + time.width + " px slot");
+                var drawnLeft = slot.x + slot.width - time.contentWidth;
+                var tag = findChild(ageRow, "rowEmergencyTag");
+                verify(tag.visible);
+                var tagRect = rectOf(tag, ageRow);
+                verify(tagRect.x + tagRect.width + 6 - 0.5 <= slot.x, "EMERGENCY runs into the age's slot");
+                verify(tagRect.x + tagRect.width < drawnLeft, "EMERGENCY covers \"1102d\"");
+                checkPlan(ageRow, "460 px \"1102d\"");
             } finally {
                 ageRow.width = 322;
                 ageRow.rightText = "now";

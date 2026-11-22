@@ -16164,7 +16164,8 @@ Qt Quick frontend (`src/ui/qt`):
   out of the tree and unnamed, disabled (no Tab stop, and a tap reaches what is under it: the field under the ×), and
   with no height where a column lays it out (a plain slot `Item` takes the height, so the text keeps its own and no
   binding loop forms; a `Column` skips a child of no height, its spacing with it, so a card is as tall with a screen
-  reader as without, `tst_home_compact_cards.qml` `test_screen_reader_keeps_the_card_height`). A row's next card showed or hid ~140 such parts per sort at 300 cards, each a show or hide that
+  reader as without, `tst_home_compact_cards.qml` `test_screen_reader_keeps_the_card_height`). A row's next card
+  showed or hid ~140 such parts per sort at 300 cards, each a show or hide that
   had Qt 6.11.3's Android bridge fetch the scroll body, with every card under it, again: TalkBack was silent 73-109 s
   after each sort on the emulator. Nothing a positional change raises then tells Android its copy of the tree is
   stale (renames, held rows and held parts raise no show or hide), and TalkBack read a row's last card, and its focus,
@@ -17816,16 +17817,17 @@ Qt Quick frontend (`src/ui/qt`):
   at the 18 px margin; `plan.width` is that side's width and the name and meta lines take the rest and elide. Widths
   only, never positions, so nothing loops. The time counts as a fixed slot, `timeSlotWidth` =
   `LineBoxes.callRowTimeWidth(timeWidthProbe)`, the widest line of the view's widest times (`00:00` by default for
-  History and Home's HH:mm; the Monitor passes `rowTimeProbe`, `now`, `59m`, `23h`, `999d`, the widest
+  History and Home's HH:mm; the Monitor passes `rowTimeProbe`, `now`, `59m`, `23h`, `9999d`, the widest
   `Util.shortAge()` forms), with the time drawn right-aligned in it. So the plan follows only the width, the fonts
   and the call's flags: a ticking age ("9m" to "10m") never makes the time or the glyph come and go (a band 30-46 px
   wide at every text size when the slot was the age's own width), and nothing shows or hides for a screen reader as
-  the minutes pass. Limit: an age past 999 days draws past the slot's left edge, unclipped. What is not drawn is still read: the node's name carries "has a
-  recording", and its description the meta line, EMERGENCY (the tag's `label`), ENC and the time, each once, drawn
-  or not. Decided limit: at 280 px (Home's Recent pane) a recorded emergency call drops its glyph at text 1.0 and
-  its time from 1.6; History's emergency rows on a 360 dp phone keep their time up to 1.6. Decided limit (D10): a rarer script whose glyphs stand taller than the box (Tibetan stacks) is drawn
-  centred in it and unclipped, into the row's padding; the row keeps its height. History (both instances) and Home's
-  Recent activity pass `compact` from the preference; on a change each forgets its kept place (`KeepPlace.forget()`)
+  the minutes pass. What is not drawn is still read: the node's name carries "has a recording", and its description
+  the meta line, EMERGENCY (the tag's `label`), ENC and the time, each once, drawn or not. Decided limit: at 280 px
+  (Home's Recent pane) a recorded emergency call drops its glyph at text 1.0 and its time from 1.6; History's
+  emergency rows on a 360 dp phone keep their time up to 1.6. Decided limit (D10): a rarer script whose glyphs stand
+  taller than the box (Tibetan stacks) is drawn centred in it and unclipped, into the row's padding; the row keeps
+  its height. History (both instances) and Home's Recent activity pass `compact` from the preference; on a change each
+  forgets its kept place (`KeepPlace.forget()`)
   and an owned 0 ms timer (`logToStart`, `recentToStart`) lays the rows out at their new height (`forceLayout()`, as
   the Monitor's `listToStart`; without it a log read deep was placed against the old layout and stayed off its top)
   and puts the list at its newest call, so a list hidden through the change comes back there too. Tests:

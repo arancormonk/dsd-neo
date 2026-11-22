@@ -239,9 +239,7 @@ Item {
                 visible: row.plan.time
                 anchors.right: parent.right
                 anchors.verticalCenter: parent.verticalCenter
-                // Its fixed slot, the time drawn at its right. A time wider
-                // than the view's probe (an age past 999 days) draws past the
-                // slot's left edge, unclipped.
+                // Its fixed slot, the time drawn at its right.
                 width: row.timeSlotWidth
                 horizontalAlignment: Text.AlignRight
                 text: row.rightText
