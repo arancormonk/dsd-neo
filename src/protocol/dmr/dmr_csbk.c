@@ -73,9 +73,10 @@ dmr_csbk_crc_checked(const dsd_state* state) {
     return !s_dmr_cspdu_synthesized && state->event_crc_invalid[state->currentslot & 1] == 0U;
 }
 
-/* The Hytera XPT branding changes how later LCs, preamble CSBKs and data headers are read (a standard header's target
-   becomes 16 bits), so only a CSBK whose own CRC passed sets it: one accepted under relaxed RAS handling (-F) never
-   does, or a later clean standard header would lose its target's high bits. */
+/* The Hytera XPT branding is display text: the address layout later LCs, preamble CSBKs and data headers are read with
+   comes from the received identity's checked trunking system (dmr_address_layout_of()). Only a CSBK whose own CRC
+   passed sets the branding and notes the XPT brand there: one accepted under relaxed RAS handling (-F) never does, or a
+   later clean standard header could be read with 16-bit addresses and lose its target's high bits. */
 static void
 dmr_csbk_brand_xpt(dsd_state* state) {
     if (dmr_csbk_crc_checked(state)) {

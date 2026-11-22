@@ -316,9 +316,10 @@ dmr_flco_detect_kirisun_le(dmr_flco_ctx* ctx, int crc_ok) {
     }
 }
 
-// The XPT branding changes how later LCs, preamble CSBKs and data headers are read (a standard header's target becomes
-// 16 bits), so only an LC whose own check passed sets it: one accepted under relaxed RAS handling (-F) never does, or a
-// later clean standard header would lose its target's high bits.
+// The XPT branding is display text: the address layout later LCs, preamble CSBKs and data headers are read with comes
+// from the received identity's checked trunking system (dmr_address_layout_of()). Only an LC whose own check passed
+// sets the branding and notes the XPT brand there: one accepted under relaxed RAS handling (-F) never does, or a later
+// clean standard header could be read with 16-bit addresses and lose its target's high bits.
 static void
 dmr_flco_detect_hytera_xpt(dmr_flco_ctx* ctx) {
     if (ctx->flco == 0x09 && ctx->fid == 0x68 && dmr_flco_crc_checked(ctx)) {
