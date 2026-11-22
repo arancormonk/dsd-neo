@@ -321,7 +321,7 @@ dmr_sm_slot_identity_decision(const dsd_opts* opts, const dsd_state* state, cons
 }
 
 static int dmr_sm_grant_identity(const dmr_sm_ctx_t* ctx, dmr_sm_slot_ctx_t* out);
-static int dmr_sm_grant_publishable(const dsd_state* state, int slot, int leaves);
+static int dmr_sm_grant_publishable(const dsd_state* state, int slot, int leaves, uint64_t replaced);
 
 /* ============================================================================
  * Internal Helpers
@@ -1216,6 +1216,7 @@ dmr_sm_clear_released_carrier(dmr_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* stat
     ctx->vc_slot = -1;
     ctx->vc_is_group = 0;
     ctx->vc_identity_published = 0;
+    ctx->vc_replaced_transmission = 0U;
     ctx->vc_status_follow = 0;
     ctx->vc_status_grant = 0;
     ctx->vc_identity_known = 0;
@@ -1730,17 +1731,17 @@ dmr_sm_publish_slot_channel(const dmr_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* 
 }
 
 /* Whether a voice sync on slot @p s opens the followed grant's call: a voice grant's, not yet published, on its slot,
-   while the slot's call names nothing yet (dmr_sm_grant_publishable()). A call a voice LC named since the grant (its
-   header comes before the first voice sync) is published already as itself: the grant is spent, and its identity never
-   renames or splits that call. A data grant's is no voice call: voice on its channel is some other transmission, which
-   its own LC names. */
+   while the slot's call names nothing yet, or is the call a media change replaced (dmr_sm_grant_publishable(),
+   vc_replaced_transmission). A call a voice LC named since the grant (its header comes before the first voice sync) is
+   published already as itself: the grant is spent, and its identity never renames or splits that call. A data grant's
+   is no voice call: voice on its channel is some other transmission, which its own LC names. */
 static int
 dmr_sm_voice_sync_publishes_grant(dmr_sm_ctx_t* ctx, const dsd_state* state, int s) {
     if (ctx->state != DMR_SM_TUNED || ctx->vc_identity_published != 0 || ctx->vc_data_call != 0
         || !(ctx->vc_slot < 0 || ctx->vc_slot == s)) {
         return 0;
     }
-    if (!dmr_sm_grant_publishable(state, s, 0)) {
+    if (!dmr_sm_grant_publishable(state, s, 0, ctx->vc_replaced_transmission)) {
         ctx->vc_identity_published = 1;
         return 0;
     }
@@ -2349,25 +2350,30 @@ dmr_sm_grant_note_identity(dmr_sm_ctx_t* ctx, dsd_state* state, const dmr_sm_eve
    the carrier the receiver was on, whose calls it ended, so that call is the grant's own). A carrier adopted in place
    may already carry a call on a slot the grant may land on (its slot; either, slotless): one that names a call is
    published already as itself (the granted call on the air, or another one), and publishing the grant's identity into
-   it would rename or split it; an identity-less one the grant names, as on a carrier newly followed. */
+   it would rename or split it; an identity-less one the grant names, as on a carrier newly followed. The call
+   @p replaced names (a transmission, 0: none) is the assignment a media change replaced (dmr_sm_refollow_slot()): it
+   is not the grant's, and the grant's identity is published over it. */
 static int
-dmr_sm_grant_publishable(const dsd_state* state, int slot, int leaves) {
+dmr_sm_grant_publishable(const dsd_state* state, int slot, int leaves, uint64_t replaced) {
     if (leaves) {
         return 1;
     }
     for (int s = 0; s < 2; s++) {
         dsd_call_snapshot call;
         if ((slot < 0 || slot == s) && dsd_call_state_get(state, (uint8_t)s, &call) > 0
-            && call.phase == DSD_CALL_PHASE_ACTIVE && (call.policy_target_id != 0U || call.ota_target_id != 0U)) {
+            && call.phase == DSD_CALL_PHASE_ACTIVE && (call.policy_target_id != 0U || call.ota_target_id != 0U)
+            && (replaced == 0U || dsd_call_snapshot_transmission(&call) != replaced)) {
             return 0;
         }
     }
     return 1;
 }
 
-/* The machine's voice-channel context is the followed grant's: its carrier, identity and acquisition timers. */
+/* The machine's voice-channel context is the followed grant's: its carrier, identity and acquisition timers.
+   @p replaced: the call a media change replaced on the followed slot (dmr_sm_grant_publishable()), else 0. */
 static void
-dmr_sm_take_grant(dmr_sm_ctx_t* ctx, dsd_state* state, const dmr_sm_event_t* ev, long freq, int leaves, double now_m) {
+dmr_sm_take_grant(dmr_sm_ctx_t* ctx, dsd_state* state, const dmr_sm_event_t* ev, long freq, int leaves,
+                  uint64_t replaced, double now_m) {
     const int identity_known = dmr_sm_event_identity_known(ev);
     ctx->vc_freq_hz = freq;
     ctx->vc_lpcn = ev->lpcn;
@@ -2380,7 +2386,9 @@ dmr_sm_take_grant(dmr_sm_ctx_t* ctx, dsd_state* state, const dmr_sm_event_t* ev,
     ctx->vc_identity_known = identity_known;
     ctx->vc_data_call = dmr_sm_event_kind(ev) == DSD_CALL_KIND_DATA;
     // A placeholder names no call: the voice LC will, through the canonical layer.
-    ctx->vc_identity_published = (identity_known && dmr_sm_grant_publishable(state, ctx->vc_slot, leaves)) ? 0 : 1;
+    ctx->vc_replaced_transmission = replaced;
+    ctx->vc_identity_published =
+        (identity_known && dmr_sm_grant_publishable(state, ctx->vc_slot, leaves, replaced)) ? 0 : 1;
     ctx->vc_status_follow = 0;
     ctx->vc_status_grant = ev->origin == DMR_SM_ORIGIN_STATUS;
     // Grants are dispatched synchronously from inside the CSBK/MBC burst's CRC scope.
@@ -2397,11 +2405,11 @@ dmr_sm_take_grant(dmr_sm_ctx_t* ctx, dsd_state* state, const dmr_sm_event_t* ev,
 
 /* The machine's call becomes grant @p ev's on @p freq (@p leaves: the follow left the carrier the receiver was on): its
    voice-channel context (dmr_sm_take_grant()), the slots' records of that carrier, and the grant's identity in its
-   slot's record. */
+   slot's record (@p replaced: as dmr_sm_take_grant()). */
 static void
 dmr_sm_adopt_grant(dmr_sm_ctx_t* ctx, dsd_state* state, const dmr_sm_event_t* ev, long freq, int leaves,
-                   dmr_sm_displace_e displace, double now_m) {
-    dmr_sm_take_grant(ctx, state, ev, freq, leaves, now_m);
+                   dmr_sm_displace_e displace, uint64_t replaced, double now_m) {
+    dmr_sm_take_grant(ctx, state, ev, freq, leaves, replaced, now_m);
     dmr_sm_slots_take_carrier(ctx, freq, leaves);
     dmr_sm_grant_note_identity(ctx, state, ev, dmr_sm_event_kind(ev), dmr_sm_event_identity_known(ev), freq, displace,
                                now_m);
@@ -2437,7 +2445,7 @@ dmr_sm_follow_grant(dmr_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, const d
     } else if (leaves) {
         dmr_sm_leave_carrier(opts, state);
     }
-    dmr_sm_adopt_grant(ctx, state, ev, freq, leaves, displace, now_m);
+    dmr_sm_adopt_grant(ctx, state, ev, freq, leaves, displace, 0U, now_m);
     if (in_flight) {
         dmr_sm_leave_carrier_once_landed(ctx, request_id, receiver_hz, freq);
     }
@@ -2538,17 +2546,30 @@ dmr_sm_grant_changes_followed_media(const dmr_sm_ctx_t* ctx, const dmr_sm_event_
            && (dmr_sm_event_kind(ev) == DSD_CALL_KIND_DATA) != (ctx->vc_data_call != 0);
 }
 
+/* The transmission of the call on slot @p s that names a party now (an active call with a target), else 0. */
+static uint64_t
+dmr_sm_slot_named_transmission(const dsd_state* state, int s) {
+    dsd_call_snapshot call;
+    if (dsd_call_state_get(state, (uint8_t)s, &call) <= 0 || call.phase != DSD_CALL_PHASE_ACTIVE
+        || (call.policy_target_id == 0U && call.ota_target_id == 0U)) {
+        return 0U;
+    }
+    return dsd_call_snapshot_transmission(&call);
+}
+
 /* A grant that changes the media of the followed slot's assignment is a new grant for the slot, not a reassignment in
    place: the follow it replaces is released (the slot's record and voice timers) and the grant followed as any grant
    is, on the carrier the receiver is already on (no tune). It takes its own acquisition window, channel and provenance,
-   names the call it chooses afresh, and a voice LC that names the slot before its first voice names the caller. */
+   names the call it chooses afresh, and a voice LC that names the slot before its first voice names the caller. The
+   named call the slot carries now is the replaced assignment's, which never spends the grant's publication. */
 static dmr_sm_grant_result_e
 dmr_sm_refollow_slot(dmr_sm_ctx_t* ctx, const dsd_opts* opts, dsd_state* state, const dmr_sm_event_t* ev, long freq) {
     dmr_sm_slot_ctx_t* rec = &ctx->slots[ctx->vc_slot];
+    const uint64_t replaced = dmr_sm_slot_named_transmission(state, ctx->vc_slot);
     rec->voice_active = 0;
     rec->last_active_m = 0.0;
     dmr_sm_slot_identity_clear(rec);
-    dmr_sm_adopt_grant(ctx, state, ev, freq, 0, DMR_SM_DISPLACE_NONE, dsd_decode_now_mono_s());
+    dmr_sm_adopt_grant(ctx, state, ev, freq, 0, DMR_SM_DISPLACE_NONE, replaced, dsd_decode_now_mono_s());
     sm_log(opts, "grant-media-change");
     return DMR_SM_GRANT_IN_PLACE;
 }

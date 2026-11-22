@@ -1257,6 +1257,40 @@ test_pre_grant_companion_voice_keeps_acquisition(dsd_opts* opts, dsd_state* st) 
     return rc;
 }
 
+/* A media change's grant is spent only by an LC that names its own transmission, never by the call it replaces:
+   caller 3's voice call is published and still active when the slot is re-followed for data, then for voice (caller 2,
+   same group). Whether caller 3's call ends before the first voice sync or not, that sync publishes caller 2. */
+static int
+test_media_change_replaced_call_spends_nothing(dsd_opts* opts, dsd_state* st) {
+    int rc = 0;
+    for (int ended = 0; ended < 2; ended++) {
+        init_env(opts, st, 2.0);
+        tv_grant(opts, st, LPCN_A, 0, 300, 3);
+        clock_at(0.2);
+        voice(opts, st, 0);
+        dsd_call_snapshot call;
+        rc |= expect_true("caller 3 is published", dsd_call_state_get(st, 0U, &call) > 0 && call.ota_source_id == 3U);
+        clock_at(0.4);
+        grant_op(opts, st, 52U, LPCN_A, 0, 300, 9); // TD_GRANT
+        clock_at(0.6);
+        grant_op(opts, st, 49U, LPCN_A, 0, 300, 2); // TV_GRANT, caller 2
+        rc |= expect_true(ended ? "the voice assignment awaits publication (replaced call to end)"
+                                : "the voice assignment awaits publication (replaced call still active)",
+                          sm()->vc_identity_published == 0);
+        if (ended) {
+            clock_at(0.7);
+            (void)dsd_call_state_end_ex(st, 0U, dsd_decode_now_mono_s(), DSD_CALL_END_TERMINATOR);
+        }
+        clock_at(0.8);
+        voice(opts, st, 0);
+        rc |= expect_true(ended ? "the voice sync publishes caller 2 after the replaced call ended"
+                                : "the voice sync publishes caller 2 over the replaced call",
+                          dsd_call_state_get(st, 0U, &call) > 0 && call.phase == DSD_CALL_PHASE_ACTIVE
+                              && call.policy_target_id == 300U && call.ota_source_id == 2U);
+    }
+    return rc;
+}
+
 int
 main(void) {
     dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(*opts));
@@ -1306,6 +1340,7 @@ main(void) {
     rc |= test_awaiting_data_grant_never_binds_later_voice(opts, st);
     rc |= test_companion_media_change_is_a_new_call(opts, st);
     rc |= test_pre_grant_companion_voice_keeps_acquisition(opts, st);
+    rc |= test_media_change_replaced_call_spends_nothing(opts, st);
 
     dsd_trunk_tuning_hooks_set((dsd_trunk_tuning_hooks){0});
     dsd_decode_clock_use_system();

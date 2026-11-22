@@ -13548,8 +13548,10 @@ Private per-protocol modules worth knowing about:
     call it names. The voice sync publishes the followed grant's identity only into a call that names nothing yet
     (`dmr_sm_grant_publishable()` for the voice's slot, checked again at the sync): a call a voice LC named since the
     grant (its header comes before the first voice sync) keeps its caller, and the grant is spent, never renaming or
-    splitting that call. A status's in-place entry (origin STATUS) replaces only a seed or grant identity, never a
-    checked LC's on that carrier.
+    splitting that call. The named call the slot carried when a media change re-followed it
+    (`vc_replaced_transmission`) is the replaced assignment's, not one named since: active or ended, it never spends the
+    grant, whose caller the voice sync publishes. A status's in-place entry (origin STATUS) replaces only a seed or
+    grant identity, never a checked LC's on that carrier.
   - Slot identities (`dmr_sm_slot_ctx_t`: target, source, kind, provenance SEED/GRANT/LC, policy class, channel,
     carrier, follow time, and `crc_flags`, the DSD_CRC_* bits of what named it: the grant's or status's burst, a Cap+
     status's every fragment, a seed's, the LC's scope) come from the followed grant (a slotless grant's at its first

@@ -178,6 +178,11 @@ typedef struct {
     int vc_slot;
     int vc_is_group;
     int vc_identity_published;
+    /* The named call the followed slot carried when a media change re-followed it (dmr_sm_refollow_slot(): that slot's
+       dsd_call_snapshot_transmission(), 0 for none and for every other follow). It is the assignment the grant
+       replaced, so it never spends the grant's publication: only a call named since does
+       (dmr_sm_grant_publishable()). */
+    uint64_t vc_replaced_transmission;
     int vc_status_follow; // a Capacity Plus status followed it: its release goes to the latest announced rest channel
     /* Bit s: the status that followed this carrier selected or seeded slot s. Before the first voice those slots hold
        the carrier whatever their identity is now (a private LSN, or a seed a later status made unknown, holds it as a
