@@ -774,35 +774,38 @@ test_float_symbol_replay_bounds_stored_symbols(void) {
    2 of its 29 headers at every timing phase. 4800 sym/s keeps its GFSK rule at 40. */
 static void
 test_2400_grid_rules_scale_by_time(void) {
+    dsd_state* state = (dsd_state*)calloc(1, sizeof(*state));
+    assert(state != NULL);
     static const int kSpans[] = {20, 30, 40, 60};
     for (size_t k = 0; k < sizeof(kSpans) / sizeof(kSpans[0]); k++) {
         const int sps = kSpans[k];
         const int back_stop = (6 * sps) / 20;
         const int forward_stop = (14 * sps) / 20;
-        assert(dsd_symbol_test_2400_grid(sps, 2400, back_stop, 0, NULL) == 0);
-        assert(dsd_symbol_test_2400_grid(sps, 2400, back_stop + 1, 0, NULL) == -1);
-        assert(dsd_symbol_test_2400_grid(sps, 2400, (10 * sps) / 20, 0, NULL) == -1);
-        assert(dsd_symbol_test_2400_grid(sps, 2400, (10 * sps) / 20 + 1, 0, NULL) == 1);
-        assert(dsd_symbol_test_2400_grid(sps, 2400, forward_stop, 0, NULL) == 1);
-        assert(dsd_symbol_test_2400_grid(sps, 2400, forward_stop + 1, 0, NULL) == 0);
+        assert(dsd_symbol_test_2400_grid(state, sps, 2400, back_stop, 0, NULL) == 0);
+        assert(dsd_symbol_test_2400_grid(state, sps, 2400, back_stop + 1, 0, NULL) == -1);
+        assert(dsd_symbol_test_2400_grid(state, sps, 2400, (10 * sps) / 20, 0, NULL) == -1);
+        assert(dsd_symbol_test_2400_grid(state, sps, 2400, (10 * sps) / 20 + 1, 0, NULL) == 1);
+        assert(dsd_symbol_test_2400_grid(state, sps, 2400, forward_stop, 0, NULL) == 1);
+        assert(dsd_symbol_test_2400_grid(state, sps, 2400, forward_stop + 1, 0, NULL) == 0);
         for (int i = 0; i < sps; i++) {
             int in_window = -1;
-            (void)dsd_symbol_test_2400_grid(sps, 2400, -1, i, &in_window);
+            (void)dsd_symbol_test_2400_grid(state, sps, 2400, -1, i, &in_window);
             assert(in_window == (20 * i >= 7 * sps && 20 * i <= 13 * sps));
         }
     }
     int in_window = -1;
-    (void)dsd_symbol_test_2400_grid(20, 2400, -1, 7, &in_window);
+    (void)dsd_symbol_test_2400_grid(state, 20, 2400, -1, 7, &in_window);
     assert(in_window == 1);
-    (void)dsd_symbol_test_2400_grid(20, 2400, -1, 13, &in_window);
+    (void)dsd_symbol_test_2400_grid(state, 20, 2400, -1, 13, &in_window);
     assert(in_window == 1);
-    (void)dsd_symbol_test_2400_grid(20, 2400, -1, 14, &in_window);
+    (void)dsd_symbol_test_2400_grid(state, 20, 2400, -1, 14, &in_window);
     assert(in_window == 0);
     /* 4800 sym/s at 40 samples per symbol: the GFSK rule (centre 19), no 2400 sym/s window. */
-    assert(dsd_symbol_test_2400_grid(40, 4800, 13, 0, NULL) == 0);
-    assert(dsd_symbol_test_2400_grid(40, 4800, 19, 0, NULL) == -1);
-    (void)dsd_symbol_test_2400_grid(40, 4800, -1, 20, &in_window);
+    assert(dsd_symbol_test_2400_grid(state, 40, 4800, 13, 0, NULL) == 0);
+    assert(dsd_symbol_test_2400_grid(state, 40, 4800, 19, 0, NULL) == -1);
+    (void)dsd_symbol_test_2400_grid(state, 40, 4800, -1, 20, &in_window);
     assert(in_window == 0);
+    free(state);
 }
 
 static void

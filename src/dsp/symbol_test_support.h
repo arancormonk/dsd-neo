@@ -17,8 +17,9 @@ int dsd_symbol_test_adjust_timing_index(int samples_per_symbol, int symbol_cente
                                         int have_sync, int symbol_span, int start_i, int* jitter_after);
 /* The hunt's slip for a crossing at @p jitter on a GFSK grid of @p samples_per_symbol whose active profile runs
    @p symbol_rate_hz (2400 or 4800): -1, 0 or +1. @p in_window (optional) says whether sample @p index joins the 2400 sym/s
-   averaging window there. */
-int dsd_symbol_test_2400_grid(int samples_per_symbol, int symbol_rate_hz, int jitter, int index, int* in_window);
+   averaging window there. Sets only the fields of @p state (the caller's, on the heap) that the rules read. */
+int dsd_symbol_test_2400_grid(dsd_state* state, int samples_per_symbol, int symbol_rate_hz, int jitter, int index,
+                              int* in_window);
 float dsd_symbol_test_apply_matched_filter(const dsd_opts* opts, const dsd_state* state, float sample,
                                            int rtl_symbol_rate_output, int cqpsk_symbol_rate);
 unsigned int dsd_symbol_test_convert_analog_block_to_i16(const float* input, short* output, unsigned int count);

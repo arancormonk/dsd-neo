@@ -823,19 +823,22 @@ dsd_symbol_test_adjust_timing_index(int samples_per_symbol, int symbol_center, i
 }
 
 int
-dsd_symbol_test_2400_grid(int samples_per_symbol, int symbol_rate_hz, int jitter, int index, int* in_window) {
-    static dsd_state state;
-    DSD_MEMSET(&state, 0, sizeof(state));
-    state.samplesPerSymbol = samples_per_symbol;
-    state.symbolCenter = dsd_opts_symbol_center(samples_per_symbol);
-    state.rf_mod = 2;
-    state.sps_hunt_idx = symbol_rate_hz == 2400 ? DSD_FRAME_SYNC_SPS_PROFILE_2400_4 : DSD_FRAME_SYNC_SPS_PROFILE_4800_4;
-    state.jitter = jitter;
+dsd_symbol_test_2400_grid(dsd_state* state, int samples_per_symbol, int symbol_rate_hz, int jitter, int index,
+                          int* in_window) {
+    if (!state) {
+        return 0;
+    }
+    state->samplesPerSymbol = samples_per_symbol;
+    state->symbolCenter = dsd_opts_symbol_center(samples_per_symbol);
+    state->rf_mod = 2;
+    state->sps_hunt_idx =
+        symbol_rate_hz == 2400 ? DSD_FRAME_SYNC_SPS_PROFILE_2400_4 : DSD_FRAME_SYNC_SPS_PROFILE_4800_4;
+    state->jitter = jitter;
     if (in_window) {
-        *in_window = symbol_accumulate_nxdn_window(&state, index);
+        *in_window = symbol_accumulate_nxdn_window(state, index);
     }
     int i = 0;
-    symbol_adjust_timing_index(&state, 0, samples_per_symbol, &i);
+    symbol_adjust_timing_index(state, 0, samples_per_symbol, &i);
     return i;
 }
 
