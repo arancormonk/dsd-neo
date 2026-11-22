@@ -1362,13 +1362,18 @@ Item {
                             readonly property string placeText: [distanceText, entry.placeLabel].filter(function (part) {
                                 return part.length > 0;
                             }).join(" · ")
+                            // What the place line draws: the full card's place text; in
+                            // compact (a shared title) the place's name alone, as the
+                            // supporting line leads with the distance (r4 F4).
+                            readonly property string placeLineText: compact ? entry.placeLabel : placeText
                             readonly property string siteCountText: entry.siteCount === 1 ? qsTr("1 site") : qsTr("%1 sites").arg(entry.siteCount)
                             readonly property string sourceText: Util.systemMeta(entry)
                             // The line under the title: the site count while the site button
                             // is not drawn (either view), then the source. Compact leads with
-                            // the distance in Nearest order unless the place line is drawn,
-                            // which has it (the full card, a shared title).
-                            readonly property string supportingText: [compact && !sharedTitle ? distanceText : "", hasSites && !actionPlan.siteDrawn ? siteCountText : "", sourceText].filter(function (part) {
+                            // the distance in Nearest order, a shared title too (r4 F4: the
+                            // sort value first, where two same-name cards differ); the full
+                            // card has it on its place line.
+                            readonly property string supportingText: [compact ? distanceText : "", hasSites && !actionPlan.siteDrawn ? siteCountText : "", sourceText].filter(function (part) {
                                 return part.length > 0;
                             }).join(" · ")
                             // heardTick forces the minute-by-minute refresh.
@@ -1486,13 +1491,13 @@ Item {
                                         id: placeLine
                                         width: parent.width
                                         objectName: "savedSystemPlace"
-                                        readonly property bool shown: (!card.compact || card.sharedTitle) && card.placeText.length > 0
+                                        readonly property bool shown: (!card.compact || card.sharedTitle) && card.placeLineText.length > 0
                                         Accessible.ignored: !navigationAllowed || !visible || !shown || entry.held
                                         Accessible.name: navigationAllowed && visible && shown && !entry.held ? text : ""
                                         opacity: shown ? 1 : 0
                                         // One line (r2 B1): a break in an imported place is a space.
                                         // Cut, or whole and wrapping on a shared title (r3 S1).
-                                        text: Util.oneLine(card.placeText)
+                                        text: Util.oneLine(card.placeLineText)
                                         wrapMode: card.sharedTitle ? Text.Wrap : Text.NoWrap
                                         maximumLineCount: card.sharedTitle ? undefined : 1
                                         font.family: Theme.sans

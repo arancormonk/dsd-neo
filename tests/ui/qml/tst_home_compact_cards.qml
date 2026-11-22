@@ -441,10 +441,11 @@ Item {
                         return face(e, p.title + " #" + i);
                     });
                     verify(faces[0] !== faces[1], p.title + " cards look the same: " + JSON.stringify(faces));
-                    // The place line is drawn wherever there is a place or a distance to show.
+                    // The place line is drawn wherever it has something to show: a place or a distance on the full
+                    // card, a place's name in compact (whose supporting line leads with the distance, r4 F4).
                     for (var e of shown) {
                         var card = findChild(e, "savedSystemCard");
-                        compare(drawn(part(card, "savedSystemPlace")), card.placeText.length > 0, p.title + ": the place line");
+                        compare(drawn(part(card, "savedSystemPlace")), card.placeLineText.length > 0, p.title + ": the place line");
                     }
                 }
                 var alone = cardOf("Ridge Dispatch Alone");
@@ -456,6 +457,43 @@ Item {
                     compare(entry.sharedTitle, entry.title !== "Ridge Dispatch Alone", entry.title + ": shared");
             } finally {
                 cutTitle.destroy();
+                prefs.systemsSort = "added";
+            }
+        }
+
+        // Issue #901 r4 F4: in Nearest order a compact shared-title card leads its supporting line with the distance,
+        // as every compact card does: two same-name one-site groups at 320 dp both led with "1 site · 851.5 MHz ·
+        // Auto", their distances only on the place lines below. The place line then holds the place's name alone,
+        // so the distance is drawn and said once; with no named place it is not drawn. The full card keeps the
+        // distance on its place line.
+        function test_shared_title_nearest_leads_with_the_distance() {
+            root.width = 320;
+            testContext.setLocationSupported(true);
+            site("Near Vale", 36, 1, 10.1, 20.0, {place: {states: [{stid: 90, name: "Westmark"}], counties: [], candidateStates: [90]}});
+            site("Near Vale", 39, 1, 10.2, 20.0);
+            prefs.systemsSort = "nearest";
+            prefs.setLocationFix(10.0, 20.0, savedSystems.realtimeNowMs(), 25);
+            settle();
+            try {
+                compare(savedSystemCards.effectiveSort, "nearest");
+                var shown = entries();
+                compare(shown.length, 2);
+                var lines = shown.map(function (e) {
+                    var card = findChild(e, "savedSystemCard");
+                    var place = part(card, "savedSystemPlace");
+                    verify(e.sharedTitle, "a shared title");
+                    return {source: part(card, "savedSystemSource").text, place: place.visible && place.opacity > 0 && place.height > 0 ? place.text : ""};
+                });
+                compare(lines[0].source.indexOf("6.9 mi · 1 site · 851.5 MHz"), 0, "the distance leads: " + lines[0].source);
+                compare(lines[1].source.indexOf("13.7 mi · 1 site · 851.5 MHz"), 0, "the distance leads: " + lines[1].source);
+                compare(lines[0].place, "Westmark", "the place line names the place alone");
+                compare(lines[1].place, "", "no place, no place line");
+                verify(lines[0].source !== lines[1].source, "the two lines differ");
+                prefs.compactView = false;
+                settle();
+                var full = part(cardOf("Near Vale"), "savedSystemPlace").text;
+                verify(full.indexOf(" mi") > 0, "the full card keeps the distance on its place line: " + full);
+            } finally {
                 prefs.systemsSort = "added";
             }
         }

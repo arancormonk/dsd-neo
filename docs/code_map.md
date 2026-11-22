@@ -16081,8 +16081,10 @@ Qt Quick frontend (`src/ui/qt`):
   Shared titles (issue #901 r3 S1, `sharedTitle` below): a card whose drawn title another card draws too draws, in
   both views, every line the full card has that tells it apart: the source line (frequency, mode and trunking, or a
   TCP/UDP endpoint, or a file's whole path as saved instead of its name), the receiver line (a tuner's), and the place
-  line (place, and the distance in Nearest order, which compact then leaves off the source line, so each fact is drawn
-  and read once); each of those wraps whole (`wrapMode: Text.Wrap`, `maximumLineCount` reset, no elide), and the
+  line (the full card's place and, in Nearest order, distance; compact's `placeLineText` is the place's name alone,
+  since compact's supporting line leads with the distance for every card, a shared title too: r4 F4, two same-name
+  one-site groups at 320 dp both led with "1 site · 851.5 MHz · Auto", their distances only lower down; so each fact
+  is drawn and read once, `test_shared_title_nearest_leads_with_the_distance`); each of those wraps whole (`wrapMode: Text.Wrap`, `maximumLineCount` reset, no elide), and the
   card grows by them. The title stays one line, cut, and the meta line stays undrawn in compact (the title's
   description still reads it). Other cards are unchanged. Tests (`tst_home_compact_cards.qml`
   `test_shared_titles_draw_every_line`, 320/360/411 x 1.0/2.0, both views, Order added and Nearest): pairs that differ
