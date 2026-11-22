@@ -103,12 +103,16 @@ typedef struct {
        did not step after all gets no second yield for the same pair, so a held row is never reset at every frame. */
     uint64_t y_frame_yield_epoch;
     int64_t y_frame_yield_mark_ms;
-    /* The -Y typed simplex row's admitted activity (issue #890; channel_scan.c): y_admitted_seq moves with every
+    /* The -Y typed simplex row's admitted activity (issue #890; scan_voice_gate.c): y_admitted_seq moves with every
        protocol report the scan's policy table admits for the typed ysf, dstar, dpmr, m17 or tetra-dmo row on air, on
-       its landed visit (dsd_engine_channel_scan_typed_activity()); y_admitted_seen is the last one the -Y frame
-       boundary turned into dsd_state::scan_y_content_m. Such a row holds on these alone, not on every PROVEN note. */
+       its landed visit (dsd_engine_scan_y_typed_activity()); y_admitted_seen is the last one the -Y frame boundary
+       turned into dsd_state::scan_y_content_m. Such a row holds on these alone, not on every PROVEN note. y_refused:
+       the row's last such report was refused (by the receive filter or the policy table), so an open verdict (PARTIAL,
+       an M17 packet chunk waiting on its end's CRC) renews no -Y wait until a report is admitted again; a landing
+       clears it (dsd_engine_scan_landing_forget_y_notes()). */
     uint64_t y_admitted_seq;
     uint64_t y_admitted_seen;
+    uint8_t y_refused;
     /* A sync awaiting its frame's verdict (issue #834 R1; scan_quiet.c), moved only while skip-silent is on.
        frame_pending: the frame sync returned a sync whose frame has not ended yet. frame_evidence, frame_hold_ms: the
        strongest content note that frame made so far (DSD_CONTENT_EVIDENCE_*, 0 for none) and its longest PARTIAL hold.

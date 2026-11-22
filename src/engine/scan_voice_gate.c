@@ -909,15 +909,20 @@ dsd_engine_scan_y_typed_activity(const dsd_opts* opts, const dsd_state* state, i
     if (!opts || !state || !identity || opts->scanner_mode != 1 || opts->trunk_scan_enabled == 1
         || !dsd_engine_scan_y_row_holds_on_admitted(state)
         || !dsd_scan_mode_family_has_protocol((int)dsd_scan_mode_active(state), protocol)
-        || !scan_y_observation_on_row(state) || !dsd_receive_allows(opts, state, protocol, slot)
-        || !dsd_scan_activity_policy_allows(opts, state, protocol, identity)) {
+        || !scan_y_observation_on_row(state)) {
         return;
     }
     /* The owner is the engine's own extension, apart from the state the report only reads, as the trunk scan's
        coordinator is for its targets' holds. */
     dsd_engine_scan_owner* owner =
         (dsd_engine_scan_owner*)dsd_state_ext_get_const(state, DSD_STATE_EXT_ENGINE_TRUNK_SCAN);
-    if (owner) {
+    if (!owner) {
+        return;
+    }
+    const int admitted = dsd_receive_allows(opts, state, protocol, slot)
+                         && dsd_scan_activity_policy_allows(opts, state, protocol, identity);
+    owner->y_refused = (uint8_t)(admitted ? 0U : 1U);
+    if (admitted) {
         owner->y_admitted_seq++;
     }
 }

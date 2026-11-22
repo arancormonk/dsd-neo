@@ -18438,7 +18438,9 @@ test_y_tetra_holds_only_on_checked_content(void) {
    (docs/trunk-scan.md): on a typed tetra-dmo row under the default --no-data-calls, frames whose checked content is
    CRC-valid short data (each a PROVEN note and a data report the table refuses) give no fresh hangtime, so the row
    leaves at the first frame boundary past -t and noCarrier() steps; frames whose report is a clear voice call the
-   table admits hold it while they come. */
+   table admits hold it while they come. With @p partial the refused frames note an open verdict instead (an M17
+   packet's chunks, whose CRC only its last frame checks): a transmission the table already refused renews no wait, so
+   the row leaves the same way. */
 static const dsd_trunk_scan_activity_identity* g_y_admit_identity = NULL;
 
 static int
@@ -18450,8 +18452,10 @@ y_admit_observer(const dsd_opts* opts, const dsd_state* state) {
 }
 
 static int
-y_admit_case(int voice) {
-    const char* what = voice ? "typed -Y TETRA row, an admitted voice call" : "typed -Y TETRA row, refused short data";
+y_admit_case(int voice, int partial) {
+    const char* what = voice     ? "typed -Y TETRA row, an admitted voice call"
+                       : partial ? "typed -Y TETRA row, refused data with open verdicts"
+                                 : "typed -Y TETRA row, refused short data";
     dsd_opts* opts = NULL;
     dsd_state* state = NULL;
     if (init_test_runtime(&opts, &state) != 0) {
@@ -18472,14 +18476,16 @@ y_admit_case(int voice) {
     yc_age(state, 1);
     g_frame_sync_type = DSD_SYNC_TETRA_SB_POS;
     const int tunes = g_rtl_tune_calls;
-    run_synced_frames_noting(opts, state, 5, -1, DSD_CONTENT_EVIDENCE_PROVEN, 0U);
+    run_synced_frames_noting(opts, state, 5, -1, partial ? DSD_CONTENT_EVIDENCE_PARTIAL : DSD_CONTENT_EVIDENCE_PROVEN,
+                             partial ? 80U : 0U);
     char label[200];
-    DSD_SNPRINTF(label, sizeof label, "%s: frames %d (content %u), tunes %d", what, g_frame_count,
-                 (unsigned)state->scan_y_content_seq, g_rtl_tune_calls - tunes);
+    DSD_SNPRINTF(label, sizeof label, "%s: frames %d (content %u, open %u), tunes %d", what, g_frame_count,
+                 (unsigned)state->scan_y_content_seq, (unsigned)state->scan_y_partial_seq, g_rtl_tune_calls - tunes);
     if (voice) {
         rc |= expect_true(label, g_frame_count == 6 && g_rtl_tune_calls == tunes && state->scan_row_index == 1);
     } else {
-        rc |= expect_true(label, g_frame_count == 1 && state->scan_y_content_seq > 0U);
+        rc |= expect_true(label, g_frame_count == 1
+                                     && (partial ? state->scan_y_partial_seq > 0U : state->scan_y_content_seq > 0U));
         noCarrier(opts, state);
         DSD_SNPRINTF(label, sizeof label, "%s: and noCarrier() steps off the row (row %d)", what,
                      state->scan_row_index);
@@ -18495,7 +18501,7 @@ y_admit_case(int voice) {
 
 static int
 test_y_typed_row_holds_on_admitted_activity(void) {
-    return y_admit_case(0) | y_admit_case(1);
+    return y_admit_case(0, 0) | y_admit_case(1, 0) | y_admit_case(0, 1);
 }
 
 /* Issue #890: a TETRA synchronisation burst whose BSCH passed, dispatched through the real processFrame(), with a carrier

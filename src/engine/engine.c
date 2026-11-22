@@ -4533,6 +4533,25 @@ live_scanner_y_note_checked(dsd_state* state, double now_m, dsd_engine_scan_owne
     state->scan_y_partial_until_m = -1.0;
 }
 
+/* An open verdict (PARTIAL) since the last boundary: the end of its hold, bounded by SCAN_QUIET_PENDING_MAX_MS. On a
+   typed simplex row whose last report the policy refused (@p refused, issue #890) it holds nothing: the transmission
+   it waits on is already known to be one the row may not hold on (an M17 packet under --no-data-calls, whose chunks
+   each open a wait for the CRC at its end), while the quiet check still takes it as pending evidence. */
+static void
+live_scanner_y_note_partial(dsd_state* state, double now_m, int refused) {
+    state->scan_y_partial_seen = state->scan_y_partial_seq;
+    const uint32_t hold_ms = state->scan_y_partial_hold_ms < SCAN_QUIET_PENDING_MAX_MS ? state->scan_y_partial_hold_ms
+                                                                                       : SCAN_QUIET_PENDING_MAX_MS;
+    state->scan_y_partial_hold_ms = 0U;
+    if (refused) {
+        return;
+    }
+    const double until_m = now_m + (double)hold_ms / 1000.0;
+    if (until_m > state->scan_y_partial_until_m) {
+        state->scan_y_partial_until_m = until_m;
+    }
+}
+
 /* What the frames since the last boundary noted, for the -Y step: checked content and an unchecked protocol's frame
    become their time (the frame's end), and a verdict still open (PARTIAL) the end of its hold, bounded by
    SCAN_QUIET_PENDING_MAX_MS. Proof dominates, as in dsd_engine_scan_quiet_note_evidence(): checked content resolves
@@ -4559,15 +4578,7 @@ live_scanner_y_note_frame_content(dsd_state* state, double now_m) {
         live_scanner_y_note_checked(state, now_m, typed ? owner : NULL, typed);
     }
     if (state->scan_y_partial_seq != state->scan_y_partial_seen) {
-        state->scan_y_partial_seen = state->scan_y_partial_seq;
-        const uint32_t hold_ms = state->scan_y_partial_hold_ms < SCAN_QUIET_PENDING_MAX_MS
-                                     ? state->scan_y_partial_hold_ms
-                                     : SCAN_QUIET_PENDING_MAX_MS;
-        state->scan_y_partial_hold_ms = 0U;
-        const double until_m = now_m + (double)hold_ms / 1000.0;
-        if (until_m > state->scan_y_partial_until_m) {
-            state->scan_y_partial_until_m = until_m;
-        }
+        live_scanner_y_note_partial(state, now_m, owner != NULL && owner->y_refused != 0U);
     }
 }
 
