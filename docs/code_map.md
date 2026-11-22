@@ -16084,7 +16084,8 @@ Qt Quick frontend (`src/ui/qt`):
   line (the full card's place and, in Nearest order, distance; compact's `placeLineText` is the place's name alone,
   since compact's supporting line leads with the distance for every card, a shared title too: r4 F4, two same-name
   one-site groups at 320 dp both led with "1 site · 851.5 MHz · Auto", their distances only lower down; so each fact
-  is drawn and read once, `test_shared_title_nearest_leads_with_the_distance`); each of those wraps whole (`wrapMode: Text.Wrap`, `maximumLineCount` reset, no elide), and the
+  is drawn and read once, `test_shared_title_nearest_leads_with_the_distance`); each of those wraps whole
+  (`wrapMode: Text.Wrap`, `maximumLineCount` reset, no elide), and the
   card grows by them. The title stays one line, cut, and the meta line stays undrawn in compact (the title's
   description still reads it). Other cards are unchanged. Tests (`tst_home_compact_cards.qml`
   `test_shared_titles_draw_every_line`, 320/360/411 x 1.0/2.0, both views, Order added and Nearest): pairs that differ
@@ -16092,7 +16093,10 @@ Qt Quick frontend (`src/ui/qt`):
   `Fire\nDispatch` / `Fire Dispatch` pair; no identifying line is cut (`truncated`), the two cards' drawn lines
   differ, no fact is drawn twice, and the lines stay inside the card clear of its controls. Decided limits:
   same-name scan lists with equal counts look alike (a scan list has no source facts), and so do two entries whose
-  drawn settings are the same.
+  drawn settings are the same. Also decided (r4 F5): two different long titles that compact cuts to the same text
+  ("County Emergency Dispatch East" and "… West" both "County Emerg…" at 320 dp) are not shared titles, so with
+  matching source facts their compact cards look alike; their whole names are read, and shown on the full card and
+  in the More menu and the sheets.
   The
   site chooser stays reachable: the card's More menu, and a long press, offer **Sites** for every grouped card, one
   site included, in both views (`manageCard(…, hasSites)` → `manageMenu.openFor(row, name, rrLinked, hasSites)`, which
@@ -17949,9 +17953,15 @@ Qt Quick frontend (`src/ui/qt`):
   Decided limit: at 280 px
   (Home's Recent pane) a recorded emergency call drops its glyph at text 1.0 and its time from 1.6; History's
   emergency rows on a 360 dp phone keep their time up to 1.6 and the whole frequency on the meta line up to 1.3
-  (from 1.6 it still leads the line, cut). Decided limit (D10): a rarer script whose glyphs stand
-  taller than the box (Tibetan stacks) is drawn centred in it and unclipped, into the row's padding; the row keeps
-  its height. History (both instances) and Home's Recent activity pass `compact` from the preference; on a change each
+  (from 1.6 it still leads the line, cut). A rarer script whose line stands
+  taller than its box (Tibetan stacks, about twice the Latin line) is drawn smaller to fit it (`fontSizeMode:
+  Text.VerticalFit`, `minimumPixelSize` a third of the size, on the name and the meta line), so it stays inside the
+  row (r4 F2: in a compact list at 2.0 a Tibetan name painted 5 px above its row, across the row above, and was cut
+  at the viewport's top; it was D10's "unclipped into the padding" limit). Latin, CJK and emoji, which the box
+  holds, keep their size, the row keeps its height, and a long name is still cut at its end
+  (`tst_call_row_lines.qml` `test_tall_script_fits_its_box`). The Monitor strip's identity line and the hero keep
+  the older limit: a taller script is drawn centred in its box, unclipped. History (both instances) and Home's Recent
+  activity pass `compact` from the preference; on a change each
   forgets its kept place (`KeepPlace.forget()`)
   and an owned 0 ms timer (`logToStart`, `recentToStart`) lays the rows out at their new height (`forceLayout()`, as
   the Monitor's `listToStart`; without it a log read deep was placed against the old layout and stayed off its top)
@@ -18825,7 +18835,9 @@ Qt Quick frontend (`src/ui/qt`):
   under "Listen body layout"). This replaced a per-pair label (rounds G1 and r2 A) that named only the facts that
   differed and walked every card of a title for each card (O(n²): 1000 cards of one title took ~430 ms a rebuild).
   Decided limit: two entries whose drawn settings are the same (they differ only in a decode flag the card does not
-  draw, such as `-f1` and `-ft`, both "P25", or in a path's trailing whitespace) look alike. `rebuilt()` follows
+  draw, such as `-f1` and `-ft`, both "P25", or in a path's trailing whitespace) look alike, and so do two different
+  long titles that compact cuts to the same text with matching source facts (r4 F5; their whole names are read).
+  `rebuilt()` follows
   every rebuild, changed or not, after its row signals and
   `shownCountChanged`: Home answers the changes it noted there (one tree refresh for Android's bridge, given through
   its coalescing timer). `rowForKey()` finds a card. Tests: `UI_QT_SAVED_SYSTEM_CARDS` (groups, the card's last-heard,
