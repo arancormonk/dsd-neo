@@ -12553,8 +12553,9 @@ Call frequency and access-code provenance (issue #575). A call's canonical `freq
   half, is a checked CCH_INFO (`nxdn_facch1_says_type_c()`) is a composite frame: its field is decoded and committed
   as the SACCH it is, the SCCH reading never acts (no message, evidence, SCCH streak or position), it takes the
   composite foreign check, and its SACCH breaks the superframe being assembled. A value only Type-D has is Type-D's
-  reading, a CCH_INFO in it notwithstanding (`nxdn_element_handle_cch_info()` notes no Type-C on a frame read as
-  Type-D). The frame's "Type-D" category, the carrier's layout evidence, is noted at the frame's end only from its
+  reading, a CCH_INFO in it notwithstanding: a CCH_INFO or SITE_INFO on a frame read as Type-D is printed only
+  (`nxdn_frame_speaks_for_type_c_site()`: no Type-C note, channel access parameters, site latch, control channel,
+  return frequency or control-channel anchor). The frame's "Type-D" category, the carrier's layout evidence, is noted at the frame's end only from its
   own SCCH of defined content on a confirmed transmission (`dsd_nxdn_note_type_d_layout()`); nothing of the frame is
   rolled back.
   Noting Type-C drops the IDAS System ID and Site Code (state and received identity) a composite SRV_INFO read as

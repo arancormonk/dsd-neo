@@ -1535,6 +1535,52 @@ test_foreign_frame_completes_no_spacing_proof(dsd_opts* opts, dsd_state* state) 
     return rc;
 }
 
+/*
+ * A CCH_INFO on a frame read as Type-D moves no control channel (issue #903): the receiver follows a call to F from
+ * site A, whose DFA channel access parameters it took, and a frame of LICH 0x63 (a value only Type-D has) carries a
+ * checked DFA CCH_INFO naming site A's current control channel at another OFN. The frame is Type-D's: the return
+ * frequency and the control channel stay as they were.
+ */
+static int
+test_type_d_frame_cch_info_keeps_the_control_channel(dsd_opts* opts, dsd_state* state) {
+    uint8_t site[160];
+    uint8_t cch[80];
+    uint8_t scch[25];
+    int rc = 0;
+    follow_call_to_f(opts, state);
+    site_info(site, SITE_A);
+    put_bits(site, 88U, 1U, 1U); // RCN 1: DFA
+    put_bits(site, 89U, 2U, 2U); // step 1.25 kHz
+    put_bits(site, 91U, 1U, 3U); // base 100 MHz
+    opts->trunk_is_tuned = 0;
+    opts->rtlsdr_center_freq = CC_A_HZ;
+    send_cac(opts, state, 0x21U, site, 144U);
+    opts->trunk_is_tuned = 1;
+    opts->rtlsdr_center_freq = FOLLOWED_F_HZ;
+    rc |= expect_long("type-d cch_info: DFA parameters taken", dsd_nxdn_ca_valid(state), 1L);
+
+    DSD_MEMSET(cch, 0, sizeof(cch));
+    put_bits(cch, 2U, 0x1AU, 6U);
+    put_bits(cch, 8U, SITE_A, 24U);
+    put_bits(cch, 32U, 0x20U, 6U);  // Current
+    put_bits(cch, 40U, 2000U, 16U); // OFN1
+    put_bits(cch, 56U, 2100U, 16U); // IFN1
+    info3_scch(scch);
+    build_frame_scch(0x63U, scch, 0x5AU, cch, NULL);
+    (void)nxdn_frame(opts, state);
+    rc |= expect_long("type-d cch_info: return frequency kept", state->trunk_cc_freq, (long)CC_A_HZ);
+    rc |= expect_long("type-d cch_info: control channel kept", state->p25_cc_freq, (long)CC_A_HZ);
+
+    /* Control: the same CCH_INFO on a composite frame (LICH 0x71, Type-C known) of site A's control channel, untuned,
+       follows the control channel it names. */
+    opts->trunk_is_tuned = 0;
+    opts->rtlsdr_center_freq = CC_A_HZ;
+    state->trunk_vc_freq[0] = state->trunk_vc_freq[1] = 0;
+    send_frame(opts, state, LICH_COMPOSITE_FACCH1_PAIR, 0x21U, cch, NULL);
+    rc |= expect_long("composite cch_info: control channel followed", state->p25_cc_freq != CC_A_HZ, 1L);
+    return rc;
+}
+
 int
 main(void) {
     dsd_opts* opts = calloc(1, sizeof(*opts));
@@ -1583,6 +1629,7 @@ main(void) {
     rc |= test_foreign_frame_without_sacch_breaks_the_superframe(opts, state);
     rc |= test_foreign_frame_keeps_the_followed_cipher(opts, state);
     rc |= test_foreign_frame_completes_no_spacing_proof(opts, state);
+    rc |= test_type_d_frame_cch_info_keeps_the_control_channel(opts, state);
     dsd_trunk_tuning_hooks_set((dsd_trunk_tuning_hooks){0});
     dsd_decode_clock_use_system();
 

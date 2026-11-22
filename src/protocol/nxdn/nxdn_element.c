@@ -472,10 +472,21 @@ nxdn_element_handle_dst_info(dsd_opts* opts, dsd_state* state, const uint8_t* el
     DSD_FPRINTF(stderr, "%s", KNRM);
 }
 
+/*
+ * Whether a Type-C site message (CCH_INFO, SITE_INFO, SRV_INFO, ADJ_SITE_INFO) on the frame being decoded may speak for
+ * this site: its location, channel access parameters, Type-C note, control channel and that channel's sync. Never on a
+ * frame read as Type-D (a value only Type-D has, nxdn_frame_classify()), whose LICH such a message contradicts, nor on
+ * another channel's control traffic (dsd_state::nxdn_frame_foreign): both are printed only.
+ */
+static int
+nxdn_frame_speaks_for_type_c_site(const dsd_state* state) {
+    return state->nxdn_frame_channel != (uint8_t)NXDN_FRAME_CHANNEL_TYPE_D && !state->nxdn_frame_foreign;
+}
+
 static void
 nxdn_element_mark_control_sync(const dsd_opts* opts, dsd_state* state) {
-    if (state->nxdn_frame_foreign) {
-        return; // another control channel's broadcast: this one's sync is not refreshed by it
+    if (!nxdn_frame_speaks_for_type_c_site(state)) {
+        return; // a Type-D frame's or another control channel's broadcast: this one's sync is not refreshed by it
     }
     /* A non-superframe SACCH's 6-bit CRC hands over a message type and little else, and passes noise one time in 64:
        the sync clock and the control channel anchor wait for the transmission's confirmation (issue #398), as the
@@ -518,12 +529,12 @@ nxdn_element_handle_srv_info(const dsd_opts* opts, dsd_state* state, const uint8
  * laid out alike in both readings of a composite control channel's LICH, and a frame whose FACCH1 carries a CCH_INFO
  * was classified a composite one before anything of it acted (nxdn_frame()); a frame read as Type-D is one whose LICH
  * only Type-D has, which a CCH_INFO does not make Type-C, nor does a SITE_INFO, which came through a layout of Type-D's
- * own. */
+ * own. Either is printed only there (nxdn_frame_speaks_for_type_c_site()): no Type-C note, channel access parameters,
+ * control channel or return frequency, and no control channel sync. */
 static void
 nxdn_element_handle_cch_info(dsd_opts* opts, dsd_state* state, const uint8_t* elements, size_t elements_bits) {
     // Only a whole message says it: a short one (a non-superframe SACCH's 26 elements) passed a short CRC at most.
-    if (NXDN_decode_cch_info(opts, state, elements, elements_bits)
-        && state->nxdn_frame_channel != (uint8_t)NXDN_FRAME_CHANNEL_TYPE_D && !state->nxdn_frame_foreign) {
+    if (NXDN_decode_cch_info(opts, state, elements, elements_bits) && nxdn_frame_speaks_for_type_c_site(state)) {
         dsd_nxdn_note_type_c(state);
     }
     nxdn_element_mark_control_sync(opts, state);
@@ -531,8 +542,7 @@ nxdn_element_handle_cch_info(dsd_opts* opts, dsd_state* state, const uint8_t* el
 
 static void
 nxdn_element_handle_site_info(const dsd_opts* opts, dsd_state* state, const uint8_t* elements, size_t elements_bits) {
-    if (NXDN_decode_site_info(opts, state, elements, elements_bits)
-        && state->nxdn_frame_channel != (uint8_t)NXDN_FRAME_CHANNEL_TYPE_D && !state->nxdn_frame_foreign) {
+    if (NXDN_decode_site_info(opts, state, elements, elements_bits) && nxdn_frame_speaks_for_type_c_site(state)) {
         dsd_nxdn_note_type_c(state);
     }
     nxdn_element_mark_control_sync(opts, state);
@@ -1503,7 +1513,7 @@ nxdn_location_id_handler(dsd_state* state, uint32_t location_id, uint8_t type) {
  */
 static int
 nxdn_site_broadcast_is_this_site(const dsd_opts* opts, dsd_state* state, uint32_t location_id) {
-    if (state->nxdn_frame_channel == (uint8_t)NXDN_FRAME_CHANNEL_TYPE_D || state->nxdn_frame_foreign) {
+    if (!nxdn_frame_speaks_for_type_c_site(state)) {
         return 0;
     }
     const nxdn_location loc = nxdn_location_parse(location_id);
@@ -2511,15 +2521,17 @@ nxdn_cc_is_operator_pinned(const dsd_opts* opts, const dsd_state* state) {
 }
 
 /*
- * Whether a CCH_INFO names this site's control channel as it is or is about to be (TS 1-A §6.4.3.3): this site's
- * Location ID with Curr or New alone, as the standard asserts one flag at a time. Add and Del edit a site's hunt list
- * (Del names a channel that is no longer a candidate), and another site's control channel is never announced by Curr or
- * New: its switch reaches this site by ADJ_SITE_INFO (TS 1-C §16.5).
+ * Whether a CCH_INFO names this site's control channel as it is or is about to be (TS 1-A §6.4.3.3), on a frame that
+ * speaks for this Type-C site (nxdn_frame_speaks_for_type_c_site()): this site's Location ID with Curr or New alone, as
+ * the standard asserts one flag at a time. Add and Del edit a site's hunt list (Del names a channel that is no longer a
+ * candidate), and another site's control channel is never announced by Curr or New: its switch reaches this site by
+ * ADJ_SITE_INFO (TS 1-C §16.5).
  */
 static int
 nxdn_cch_info_names_this_control_channel(const dsd_state* state, uint32_t location_id, uint8_t channel1sts) {
     const uint8_t flags = channel1sts & 0x3CU;
-    return !state->nxdn_frame_foreign && dsd_nxdn_site_is(state, location_id) && (flags == 0x20U || flags == 0x10U);
+    return nxdn_frame_speaks_for_type_c_site(state) && dsd_nxdn_site_is(state, location_id)
+           && (flags == 0x20U || flags == 0x10U);
 }
 
 /* A channel a CCH_INFO names: this site's control channel is resolved and kept in the channel map; any other is
