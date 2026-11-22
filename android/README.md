@@ -67,6 +67,33 @@ baseline; the row's own key remains effective until rotation restores globals.
 Force mode similarly updates configuration while an explicit row override wins.
 The encryption wizard and live entry sheet are supplied by a later UI package.
 
+### Remembered talkgroups
+
+A saved system remembers the talkgroups heard on it, so its Talkgroups screen shows them again in the next session,
+even when the system has no talkgroup list. A remembered card's second line reads **Last heard** and how long ago.
+**Remember heard talkgroups** in the saved-system editor turns this on or off for that system. It is on by default,
+for systems saved before this version too. Turning it off keeps what was remembered; **Clear remembered talkgroups…**
+at the foot of the Talkgroups screen removes it, and stays available while the switch is off.
+
+Only a talkgroup the decoder verified from the call itself is remembered: the checked voice header of a P25 Phase 1
+or Phase 2 call, of a DMR call (Tier II and III, Capacity Plus, Connect Plus, Hytera XPT) or of an NXDN call, or a
+TETRA trunked group call setup followed by its speech. A grant alone, a call joined late without a header the decoder
+could check, and traffic the receive filters (NAC, color code, RAN) reject are not remembered, nor are EDACS, dPMR,
+D-STAR, YSF, M17, X2-TDMA, ProVoice or TETRA DMO calls, or reserved and all-call ids. The call must come from a live
+receiver while the session listens to a saved system: replays, Explore, a frequency you tuned by hand, `-Y` rows,
+imported trunk scan targets and frequency entries remember nothing. In a scan list, a talkgroup heard on a target
+counts for the one saved system that target came from; an id that also belongs to another system or to an imported
+target counts for none.
+
+Each saved system keeps up to 2000 talkgroups. When it holds more, the one heard longest ago goes. **Forget this
+talkgroup** in a card's edit sheet (two taps) removes one; a later call adds it back. Remembering keeps only the
+number, its protocol and when it was first and last heard. Names and listen settings belong to the talkgroup list, so
+**Save talkgroup list** (below) keeps them. Deleting a saved system removes its remembered talkgroups, and editing a
+system's frequency or mode in place keeps them. The list is written about every 30 seconds while listening, and at
+Stop, when the app goes to the background and when it quits; if Android kills the app first, the last few calls can
+be missing from it. Remembered talkgroups are kept on this device only and are not part of a backup (see
+[Backup and restore](#backup-and-restore)).
+
 ### Editing and saving talkgroups
 
 Long-press a talkgroup card to rename it, change Listening/Not tuned, set
@@ -803,7 +830,9 @@ key files, band plans, source ID lists, trunk scan targets, and the companion fi
 profiles with their keys, Signal search ranges and permanent avoids, and your settings, including the app-wide Extra
 decoder arguments and the RadioReference username and application-key override.
 
-It does not carry: call history, call recordings, replay recordings (the files replay systems play), Signal search's
+It does not carry: call history, the talkgroups saved systems remember (see
+[Remembered talkgroups](#remembered-talkgroups); a restore keeps the phone's own for each saved system the restored
+setup still has, and removes the rest), call recordings, replay recordings (the files replay systems play), Signal search's
 detection history, diagnostics, the last location fix, whether GPS roaming is on (its two distances are carried), the
 Listen tab the phone opens on and the order Listen sorts saved systems in (each phone remembers its own, and a restore
 keeps them), the Map settings, age filter and saved map area (a tile server address can hold a key; a restore keeps the
