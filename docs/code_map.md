@@ -9442,9 +9442,18 @@ the stream-notice hooks' pattern: one that fails to initialize leaves the hook u
   (`rtl_stream_apply_pending_retune_profile_for_target()`, which has no finalize) itself when it lands on another
   frequency than the last external landing that took a profile, whatever its width. A landing with no profile queued
   (a DMR or NXDN voice-channel tune) and every finalize (a stream open, a controller retune) forget that landing, so
-  the next one starts the filters over even on the same frequency. Tests:
+  the next one starts the filters over even on the same frequency. The output ring follows the tuner on its own record
+  (`g_external_output_freq_hz`): every external landing, with a profile or without, takes the reconfigure gate (so the
+  demod thread is parked and no block's output write can publish a head loaded before the flush) and flushes the
+  output, moving its generation, unless the last external landing was on the same frequency since the last finalize; a
+  repeated rigctl tune to the channel the peer is on keeps the output and the decoder's symbol cache. The engine also
+  says whether the peer moved (`peer_moved`: it was sent another frequency than `dsd_opts::rigctl_sent_freq_hz`, which
+  every rigctl leg sets), and a landing that moved it flushes the output and starts the filters over whatever the
+  records say, since a leg that lands nothing (the legacy direct return to the control channel) can move the peer
+  between two landings. Tests:
   `DSP_CHANNEL_FILTERS`, `DSP_DEMOD_MISC`, `IO_RTL_ANALOG_FAMILY_SWITCH` (`rtl_stream_test_analog_width_continuity()`),
-  `IO_RTL_RETUNE_PREPARE` (`rtl_stream_test_external_landing_filter_state()`).
+  `IO_RTL_RETUNE_PREPARE` (`rtl_stream_test_external_landing_filter_state()`,
+  `rtl_stream_test_external_profileless_landing_against_block()`), `ENGINE_TRUNK_RETUNE_REGRESSION` (`peer_moved`).
 - TETRA receive chain (`demod_pipeline.cpp`, `costas.cpp`, `firdes.cpp`; user view in `docs/cli.md`, `-fT`). A
   TETRA downlink runs a chain of its own; every other stream, and a TETRA profile whose chain cannot run, runs the
   generic CQPSK path exactly as before the chain existed.

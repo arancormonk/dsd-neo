@@ -1036,7 +1036,10 @@ dsd_engine_tune_with_backend(dsd_opts* opts, dsd_state* state, long int freq, ui
         opts->rigctl_sent_freq_hz = (uint32_t)freq;
 #ifdef USE_RADIO
         if (opts->audio_in_type == AUDIO_IN_RTL && !conventional_scan) {
-            rtl_stream_apply_pending_retune_profile_for_target((uint32_t)freq);
+            /* Moved unless the peer was last confirmed on this frequency, as dsd_engine_note_rigctl_retune() reads it:
+               a repeated tune keeps the stream's output and the decoder's cached symbols. */
+            rtl_stream_apply_pending_retune_profile_for_target((uint32_t)freq, sent_before_hz == 0U
+                                                                                   || sent_before_hz != (uint32_t)freq);
         }
 #endif
         if (!conventional_scan || opts->audio_in_type != AUDIO_IN_RTL) {

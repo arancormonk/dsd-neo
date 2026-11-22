@@ -1335,6 +1335,32 @@ test_external_backend_landing_filter_state(void) {
     failed |= expect_int_eq("external landing on the same frequency, new width: output kept", r.same_freq_flushed, 0);
     failed |=
         expect_int_eq("external landing away with no profile queued: output flushed", r.profileless_away_flushed, 1);
+    /* The peer asked again for the channel it is on: no new channel, so the output and the symbol cache stay. */
+    failed |=
+        expect_int_eq("repeated external landing with no profile queued: nothing taken", r.profileless_repeat_taken, 0);
+    failed |=
+        expect_int_eq("repeated external landing with no profile queued: output kept", r.profileless_repeat_flushed, 0);
+    /* The engine saw the peer move (another leg sent it elsewhere and no landing followed): the output is flushed. */
+    failed |=
+        expect_int_eq("external landing after the peer moved with no landing: output flushed", r.moved_back_flushed, 1);
+    return failed;
+}
+
+/* A landing with no profile queued (a rigctl peer's DMR or NXDN voice-channel tune) flushes the output the demod thread
+ * writes. It parks the demod thread first, as a landing with a profile does: a block's output write that loaded the
+ * ring's head before the flush would otherwise publish it after, putting the old channel's samples back under the new
+ * generation. */
+static int
+test_external_profileless_landing_waits_for_block(void) {
+    rtl_stream_test_external_profileless_block_result r;
+    DSD_MEMSET(&r, 0, sizeof r);
+    int failed = expect_int_eq("profile-less landing race hook",
+                               rtl_stream_test_external_profileless_landing_against_block(&r), 0);
+    failed |= expect_int_eq("profile-less landing during a block: waits for it", r.landing_waited, 1);
+    failed |= expect_int_eq("profile-less landing during a block: no flush before it ends", r.flushed_during_block, 0);
+    failed |= expect_int_eq("profile-less landing during a block: its output flushed", r.block_output_left, 0);
+    failed |= expect_int_eq("profile-less landing during a block: output flushed", r.flushed, 1);
+    failed |= expect_int_eq("profile-less landing during a block: the gate is open again", r.gate_open_after, 1);
     return failed;
 }
 
@@ -3609,6 +3635,7 @@ main(void) {
     failed |= test_external_backend_retune_lands_where_timed();
     failed |= test_external_backend_landing_waits_for_reconfiguration();
     failed |= test_external_backend_landing_filter_state();
+    failed |= test_external_profileless_landing_waits_for_block();
     failed |= test_family_landing_after_pending();
     failed |= test_live_republish_lands_where_it_was_timed();
     failed |= test_search_live_read_bound();
