@@ -22000,9 +22000,12 @@ if(DSD_HAS_RADIO)
             # the app starts (app-control queue, observer and history store) at the 72 kHz DSP bandwidth on the same
             # paced rtl_tcp scene, with the real-air TETRA call and marginal control channel fixtures, a synthetic
             # two-carrier cell, the tetra_dmo_call_synth_72k direct mode call and band-limited noise, after an analog
-            # and an Auto visit. It checks each detection's protocol, access code and site line, the history read back
-            # from the journal, and the 2.1 s quiet time after a confirmed TETRA carrier stops. Two runs, about 80 s in
-            # real time. numpy, so CTest reports it skipped where the tests' Python has none.
+            # and an Auto visit, then DMO calls whose bursts step through phases against the span measurements and the
+            # landing, and presence signal trains heard and ended at the landing. It checks each detection's protocol,
+            # access code and site line, the history read back from the journal, and the 2.1 s quiet time after a
+            # confirmed TETRA carrier stops. Two runs, about 2 to 3 minutes in real time (a DMO call can take many
+            # passes to meet its phase; the run stops at 180 s). numpy, so CTest reports it skipped where the tests'
+            # Python has none.
             add_test(
                 NAME ENGINE_SIGNAL_SEARCH_TETRA_RIG
                 COMMAND
@@ -22013,7 +22016,7 @@ if(DSD_HAS_RADIO)
             )
             set_tests_properties(
                 ENGINE_SIGNAL_SEARCH_TETRA_RIG
-                PROPERTIES LABELS "scan-rig" SKIP_RETURN_CODE 77 TIMEOUT 300
+                PROPERTIES LABELS "scan-rig" SKIP_RETURN_CODE 77 TIMEOUT 420
             )
         endif()
     endif()

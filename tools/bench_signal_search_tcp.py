@@ -134,20 +134,25 @@ class Transmitter:
     """One transmitter of a rig scene, duck-typed for bench_scan_skip_silent.Scene: its frequency, the start of what is
     on the air at a scene time, and that content at a stream rate.
 
-    The content is a committed fixture read in its own format and rate (build_iq_fixtures.load_fixture_iq()), or with
-    no fixture band-limited noise 24 kHz wide; it is looped from the start of the scene, at snr_db over the scene's
-    noise in a 12.5 kHz channel (on the power of the bursts of a burst train, not its gaps). With on_s it stops that
-    long after the search first lands on it (landed, a scene time, which run_rig() sets).
+    The content is a committed fixture read in its own format and rate (build_iq_fixtures.load_fixture_iq()), the
+    (samples, rate) given as samples, or with neither band-limited noise 24 kHz wide. It is looped from the start of
+    the scene, at snr_db over the scene's noise in a 12.5 kHz channel (on the power of the bursts of a burst train, not
+    its gaps). With on_s it stops that long after the search first lands on it (landed, a scene time, which run_rig()
+    sets).
     """
 
-    def __init__(self, name, frequency, fixture=None, snr_db=30.0, on_s=None, step=12500, fixture_dir=FIXTURE_DIR):
+    def __init__(self, name, frequency, fixture=None, snr_db=30.0, on_s=None, step=12500, fixture_dir=FIXTURE_DIR,
+                 samples=None):
         self.id = name
         self.frequency = frequency
         self.on_s = on_s
         self.step = step
         self.landed = None
+        self.scene = None  # the scene serving it, which run_rig() sets
         self.cache = {}
-        if fixture is None:
+        if samples is not None:
+            samples, rate = samples
+        elif fixture is None:
             rate = 24000
             rng = np.random.default_rng(748)
             samples = rng.standard_normal(10 * rate) + 1j * rng.standard_normal(10 * rate)
@@ -239,6 +244,7 @@ def run_rig(rig, transmitters, ranges, dsp_khz, work, seconds, done=None, passes
     scene = scan_bench.Scene(transmitters, seed=seed)
     rate = capture_rate(dsp_khz)
     for tx in transmitters:
+        tx.scene = scene
         # Resampled before the run: done on the paced source's thread, it would stall the stream.
         tx.at_rate(rate)
     env = {k: v for k, v in os.environ.items() if not k.startswith("DSD_NEO_")}
@@ -402,7 +408,8 @@ def summary(dirs):
         drops = [r["perf"]["input_drops"] for r in results if r["perf"]["input_drops"] is not None]
         line = f"{label:8s} {scene:10s} {bw:3d} kHz  runs {len(results)}"
         if passes:
-            line += f"  pass median {statistics.median(passes):.3f} s (n {len(passes)}, {min(passes):.3f}-{max(passes):.3f})"
+            line += (f"  pass median {statistics.median(passes):.3f} s (n {len(passes)}, "
+                     f"{min(passes):.3f}-{max(passes):.3f})")
         if cpu:
             line += f"  CPU {statistics.median(cpu):.4f} s/s"
         if busy:
@@ -417,7 +424,8 @@ def summary(dirs):
             text = f"    {name:8s} detected {sum(h['detected'] for h in got)}/{len(got)}"
             text += f" confirmed {sum(h['confirmed'] for h in got)}/{len(got)}"
             if times:
-                text += f" landing->confirmed median {statistics.median(times):.3f} s ({min(times):.3f}-{max(times):.3f})"
+                text += (f" landing->confirmed median {statistics.median(times):.3f} s "
+                         f"({min(times):.3f}-{max(times):.3f})")
             print(text)
 
 

@@ -3330,12 +3330,11 @@ def tetra_dmo_dnb_speech():
     return list(TETRA_DMO_P1) + [tetra_dmo_phase_adjust(after)] + after
 
 
-def tetra_dmo_slots(multiframes=TETRA_DMO_MULTIFRAMES):
-    """The call's timeslots in order: each a burst's dibits, or None for a slot the master does not send in."""
+def tetra_dmo_traffic_slots(multiframes=TETRA_DMO_MULTIFRAMES):
+    """The call's traffic, multiframe after multiframe: full-slot speech in slot 1 of frames 1 to 17 and DM-OCCUPIED in
+    slot 1 of frame 18 and slot 3 of frames 6, 12 and 18 (each a burst's dibits, or None for a slot the master does not
+    send in). A whole number of multiframes, so it repeats seamlessly."""
     slots = []
-    for frame in (17, 18):
-        for slot in (1, 2, 3, 4):
-            slots.append(tetra_dmo_dsb(slot, frame, TETRA_DMO_MSG_SETUP, countdown=18 - frame))
     speech = tetra_dmo_dnb_speech()
     for _ in range(multiframes):
         for frame in range(1, 19):
@@ -3346,20 +3345,73 @@ def tetra_dmo_slots(multiframes=TETRA_DMO_MULTIFRAMES):
                     slots.append(tetra_dmo_dsb(slot, frame, TETRA_DMO_MSG_OCCUPIED))
                 else:
                     slots.append(None)
+    return slots
+
+
+def tetra_dmo_slots(multiframes=TETRA_DMO_MULTIFRAMES):
+    """The call's timeslots in order: each a burst's dibits, or None for a slot the master does not send in."""
+    slots = []
+    for frame in (17, 18):
+        for slot in (1, 2, 3, 4):
+            slots.append(tetra_dmo_dsb(slot, frame, TETRA_DMO_MSG_SETUP, countdown=18 - frame))
+    slots += tetra_dmo_traffic_slots(multiframes)
     for frame in (1, 2):
         for slot in (1, 2, 3, 4):
             slots.append(tetra_dmo_dsb(slot, frame, TETRA_DMO_MSG_TX_CEASED) if slot in (1, 3) else None)
     return slots
 
 
-def tetra_dmo_samples():
-    """The DMO call fixture's complex samples (unnormalized), the noise included."""
+def tetra_dmo_pres_sch_s_dibits(slot, frame, comm_type=1, rep_modes=1, channel_usage=2):
+    """A DPRES-SYNC SCH/S (EN 300 396-4 table 2) of a DM-REP's free-channel presence signal in DM timeslot slot (1-4)
+    of frame (1-18), as its 60 DSB block 1 dibits: by default a type 2 repeater (operating modes 01) on channel B
+    (channel usage 10), one frequency, channel free."""
+    info = [0] * 60
+    pack_field(info, TETRA_DMO_SYSTEM_CODE, 0, 4)
+    pack_field(info, 1, 4, 2)  # SYNC PDU type: DPRES-SYNC
+    pack_field(info, comm_type, 6, 2)
+    # Not managed direct mode, the gateway flags reserved, one frequency (8 to 11).
+    pack_field(info, rep_modes, 12, 2)
+    # The uplink spacing and the slave link flag zero (14 to 20).
+    pack_field(info, channel_usage, 21, 2)
+    pack_field(info, 0, 23, 2)  # channel state: free
+    pack_field(info, slot - 1, 25, 2)
+    pack_field(info, frame, 27, 5)
+    return tetra_control_block_dibits(info, 11, 3, 120)
+
+
+def tetra_dmo_pres_sch_h_dibits(repeater=17):
+    """A DPRES-SYNC SCH/H (EN 300 396-4 table 3) from repeater address repeater, its MNI all ones (not advertised), as
+    its 108 DSB block 2 dibits."""
+    info = [0] * 124
+    pack_field(info, repeater, 0, 10)
+    pack_field(info, 0xFFFFFF, 10, 24)
+    pack_field(info, 3, 34, 2)  # validity time unit
+    return tetra_control_block_dibits(info, 101, 3, 216)
+
+
+def tetra_dmo_pres_dsb(slot, frame):
+    """A presence signal DM synchronization burst (EN 300 396-2 table 16): 235 dibits."""
+    after = list(TETRA_DMO_FC) + tetra_dmo_pres_sch_s_dibits(slot, frame) + [int(c) for c in TETRA_SSB_SYNC]
+    after += tetra_dmo_pres_sch_h_dibits() + [TETRA_DMO_TAIL]
+    return list(TETRA_DMO_P3) + [tetra_dmo_phase_adjust(after)] + after
+
+
+def tetra_dmo_pres_slots(multiframes=1):
+    """A presence signal train: a DPRES-SYNC burst in slots 1 and 3 of every frame (each a burst's dibits, or None)."""
+    return [tetra_dmo_pres_dsb(slot, frame) if slot in (1, 3) else None
+            for _ in range(multiframes) for frame in range(1, 19) for slot in (1, 2, 3, 4)]
+
+
+def tetra_dmo_samples(slots=None, lead_s=TETRA_DMO_LEAD_S, tail_s=TETRA_DMO_TAIL_S):
+    """The DMO call fixture's complex samples (unnormalized), the noise included; with slots, those timeslots (each a
+    burst's dibits or None) between lead_s and tail_s of noise instead."""
     rate = TETRA_DMO_RATE_HZ
     sps = rate // TETRA_SYMBOL_RATE
     slot_len = TETRA_SLOT_SYMBOLS * sps
-    slots = tetra_dmo_slots()
-    lead = int(round(TETRA_DMO_LEAD_S * rate))
-    count = lead + len(slots) * slot_len + int(round(TETRA_DMO_TAIL_S * rate))
+    if slots is None:
+        slots = tetra_dmo_slots()
+    lead = int(round(lead_s * rate))
+    count = lead + len(slots) * slot_len + int(round(tail_s * rate))
     rng = np.random.default_rng(TETRA_DMO_SEED)
     signal = np.zeros(count, dtype=np.complex128)
     pad = 8 * sps

@@ -23,7 +23,13 @@ Two runs (the real-air call fixtures share their carrier frequency, 426.7 MHz, w
                                                                whose site line names the other frequency
     dmo       TETRA        tetra_dmo_call_synth_72k            TETRA DMO, Direct, no access code
     noise     TETRA        band-limited noise, 24 kHz wide      a visit that confirms nothing
-  run b: tmo with tetra_call_awgn_72k (the same call at 3 dB SNR over 72 kHz), then noise again.
+  run b: tmo with tetra_call_awgn_72k (the same call at 3 dB SNR over 72 kHz), then noise again, then
+    dmo_ph0..6  TETRA      a DMO call's traffic (one burst a frame in slot 1, DM-OCCUPIED every 340 ms), its bursts
+                           at a fixed phase against each tune, an eighth of a frame (7.1 ms) on at the next, the four
+                           calls starting a quarter frame apart: each found and confirmed TETRA DMO, Direct, on some
+                           pass (by DMO_MAX_PASS), whichever phases the span measurements and the landing meet it at
+    pres_on     TETRA      a repeater's presence signal train (DPRES-SYNC in slots 1 and 3): TETRA DMO, presence signal
+    pres_end    TETRA      the same train, off from the search's landing tune on: confirms nothing, ends unresolved
 
 Checks: every transmitter is visited and has one history row at its frequency; the TETRA ones are confirmed with
 their protocol, access code and site line, and the live status shows them confirmed while their carrier is on; the
@@ -38,6 +44,7 @@ hardware.
 
 import argparse
 import json
+import math
 from pathlib import Path
 import re
 import sys
@@ -53,6 +60,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "tools"))
 
 import bench_signal_search_tcp as tcp_bench  # noqa: E402
+import build_iq_fixtures as bif  # noqa: E402
 
 DSP_KHZ = 72
 # The capture rate the RTL front end asks the source for at a 72 kHz DSP bandwidth (16 times it).
@@ -66,7 +74,15 @@ TETRA_QUIET_S = 2.1
 # quiet time still passes. Under it on the other side: the last burst before the stop can be up to a slot early.
 LEAVE_PAD_S = 1.5
 LEAVE_EARLY_S = 0.3
-RUN_SECONDS = 150
+RUN_SECONDS = 180
+# A DMO frame (four timeslots, 56.7 ms), and the step a phase-stepped DMO call's bursts move by against the tune at
+# each tune that holds it (once a pass): an eighth of a frame, 7.1 ms, finer than the RF detector's two 10 ms windows.
+DMO_FRAME_S = 4 * bif.TETRA_SLOT_SYMBOLS / bif.TETRA_SYMBOL_RATE
+DMO_PHASE_STEP_S = DMO_FRAME_S / 8
+# A call must land by this pass: eight times round its eight phases. Only about one phase in eight puts a burst across
+# both of the RF detector's 10 ms windows, and where the windows fall after a tune moves by a block or so from tune to
+# tune, so a call can miss its phase's turn: twenty calls over five runs landed on passes 1 to 15.
+DMO_MAX_PASS = 64
 # More than a run reaches: the run ends once every transmitter has been visited and left.
 PASSES = 1000
 DOT = " · "
@@ -75,13 +91,17 @@ SANITIZER = re.compile(r"AddressSanitizer|UndefinedBehaviorSanitizer|ThreadSanit
 
 def tetra_site(main, mcc, mnc):
     """The site line of a TMO cell: its main carrier first, an LA after the MNC when SYSINFO carried one."""
-    return re.compile("^" + re.escape(f"Main carrier {main}{DOT}MCC {mcc}{DOT}MNC {mnc}") + f"({re.escape(DOT)}LA \\d+)?$")
+    head = re.escape(f"Main carrier {main}{DOT}MCC {mcc}{DOT}MNC {mnc}")
+    return re.compile("^" + head + f"({re.escape(DOT)}LA \\d+)?$")
 
 
-# id, range digital (0 analog, 1 Auto, 10 TETRA), fixture (None: noise), frequency Hz, range half-width Hz, step Hz,
-# what the history row must show (protocol, access, site regex or "" for none, confirmed), how long it stays on after
-# the first landing.
+# id, range digital (0 analog, 1 Auto, 10 TETRA), fixture (None: noise; "dmo traffic" and "dmo presence" the
+# synthetic bursts of build_iq_fixtures.py), frequency Hz, range half-width Hz, step Hz, what the history row must show
+# (protocol, access, site regex or "" for none, confirmed), how long it stays on after the first landing, and how it
+# plays: looped from the scene's start (None), its bursts at a phase against each tune ("phase", the phase at the first
+# tune in eighths of a frame), or off from the search's landing tune on ("until landing").
 TMO_SITE = tetra_site("426.70000 MHz", 228, 8889)
+DIRECT = re.compile("^Direct$")
 CELL_SITE = tetra_site("408.03125 MHz", 460, 4242)
 RUN_A = (
     ("nfm", 0, "nfm_tone_synth", 446100000, 25000, 12500, None, ON_S),
@@ -91,23 +111,76 @@ RUN_A = (
      ("TETRA", "CC 44", tetra_site("467.91250 MHz", 250, 13), 1), ON_S),
     ("cell", 10, "tetra_bsch_synth_72k", 408031250, 25000, 25000, ("TETRA", "CC 17", CELL_SITE, 1), ON_S),
     ("traffic", 10, "tetra_bsch_synth_72k", 408131250, 25000, 25000, ("TETRA", "CC 17", CELL_SITE, 1), ON_S),
-    ("dmo", 10, "tetra_dmo_call_synth_72k", 433000000, 25000, 25000, ("TETRA DMO", "", re.compile("^Direct$"), 1), ON_S),
+    ("dmo", 10, "tetra_dmo_call_synth_72k", 433000000, 25000, 25000, ("TETRA DMO", "", DIRECT, 1), ON_S),
     ("noise", 10, None, 440000000, 25000, 25000, (None, None, None, 0), NOISE_ON_S),
 )
 RUN_B = (
     ("awgn", 10, "tetra_call_awgn_72k", 426700000, 50000, 25000, ("TETRA", "CC 1", TMO_SITE, 1), ON_S),
     ("noise", 10, None, 440000000, 25000, 25000, (None, None, None, 0), NOISE_ON_S),
+    # A DMO call's traffic (about 29 % of the time on air) whose bursts sit at a fixed phase against the tune, an
+    # eighth of a frame on at the next tune: four calls starting a quarter frame apart, so the span measurements and
+    # the landing meet each call at its own phases.
+    ("dmo_ph0", 10, "dmo traffic", 416000000, 25000, 25000, ("TETRA DMO", "", DIRECT, 1), ON_S, ("phase", 0)),
+    ("dmo_ph2", 10, "dmo traffic", 418000000, 25000, 25000, ("TETRA DMO", "", DIRECT, 1), ON_S, ("phase", 2)),
+    ("dmo_ph4", 10, "dmo traffic", 420000000, 25000, 25000, ("TETRA DMO", "", DIRECT, 1), ON_S, ("phase", 4)),
+    ("dmo_ph6", 10, "dmo traffic", 422000000, 25000, 25000, ("TETRA DMO", "", DIRECT, 1), ON_S, ("phase", 6)),
+    # A repeater's presence signal train: heard, it confirms as presence only (off before its 2.1 s quiet time, so
+    # one visit), and one that ends at the landing tune confirms nothing and ends unresolved.
+    ("pres_on", 10, "dmo presence", 412000000, 25000, 25000, ("TETRA DMO", "", re.compile("^presence signal$"), 1),
+     2.0),
+    ("pres_end", 10, "dmo presence", 414000000, 25000, 25000, (None, None, None, 0), 0.0, ("until landing", 0)),
 )
 # The two carriers of the synthetic cell sit in one range.
 SHARED_RANGE = {"traffic": "cell"}
+
+
+def dmo_samples(kind):
+    """One multiframe of a synthetic DMO call's traffic, or of a presence signal train, at 72 kHz (it loops
+    seamlessly)."""
+    slots = bif.tetra_dmo_traffic_slots(1) if kind == "dmo traffic" else bif.tetra_dmo_pres_slots(1)
+    return bif.tetra_dmo_samples(slots, 0.0, 0.0), bif.TETRA_DMO_RATE_HZ
 
 
 class Transmitter(tcp_bench.Transmitter):
     """A scene transmitter with what its range searches for and what its detection must show."""
 
     def __init__(self, spec, fixture_dir):
-        name, self.digital, fixture, frequency, self.half_width, step, self.expect, on_s = spec
-        super().__init__(name, frequency, fixture, snr_db=SNR_DB, on_s=on_s, step=step, fixture_dir=fixture_dir)
+        name, self.digital, fixture, frequency, self.half_width, step, self.expect, on_s = spec[:8]
+        self.play, self.start_phase = spec[8] if len(spec) > 8 else (None, 0)
+        samples = dmo_samples(fixture) if fixture and fixture.startswith("dmo ") else None
+        super().__init__(name, frequency, None if samples else fixture, snr_db=SNR_DB, on_s=on_s, step=step,
+                         fixture_dir=fixture_dir, samples=samples)
+        # How long the run goes on after its stop: a visit that heard nothing waits out its 4 s probe.
+        self.linger_s = 4.0 + LEAVE_PAD_S + 1.0 if self.play == "until landing" else TETRA_QUIET_S + LEAVE_PAD_S + 1.0
+
+    def covering_tunes(self, t):
+        """Scene times of the tunes up to @p t whose capture holds this transmitter (span measurements and visits)."""
+        return [tt for tt, _w, centre, rate in list(self.scene.tunes)
+                if tt <= t and abs(centre - self.frequency) < 0.45 * rate]
+
+    def phase_at(self, t):
+        """A phase-stepped call's phase against the tune on air at @p t: its start phase, an eighth of a frame on per
+        tune."""
+        count = len(self.covering_tunes(t))
+        return (self.start_phase + max(count - 1, 0)) * DMO_PHASE_STEP_S % DMO_FRAME_S
+
+    def landing_tunes(self):
+        """Scene times of the search's visit tunes: a visit tunes the channel a quarter of the rate below the centre
+        (the receiver's Fs/4 offset), which no span measurement does."""
+        return [tt for tt, _w, centre, rate in list(self.scene.tunes) if abs(centre - rate / 4 - self.frequency) < 1000]
+
+    def landing_tune(self, t):
+        """Whether the search's visit tune has come by @p t."""
+        return any(tt <= t for tt in self.landing_tunes())
+
+    def call_at(self, t):
+        if self.play == "until landing":
+            return None if self.landing_tune(t) else super().call_at(t)
+        if self.play != "phase" or (self.stop_at is not None and t >= self.stop_at):
+            return super().call_at(t)
+        tunes = self.covering_tunes(t)
+        origin = (tunes[-1] if tunes else 0.0) - self.phase_at(t)
+        return origin + math.floor((t - origin) / self.seconds) * self.seconds
 
 
 def ranges_of(transmitters):
@@ -130,13 +203,21 @@ def run(args, name, specs, work):
         # Every transmitter visited, stopped and given time to be left (the search keeps going round meanwhile: a
         # bursty DMO call passes the RF detector only at some burst phases).
         stops = [tx.stop_at for tx in transmitters]
-        return None not in stops and scene.sample_time > max(stops) + TETRA_QUIET_S + LEAVE_PAD_S + 1.0
+        return None not in stops and all(scene.sample_time > tx.stop_at + tx.linger_s for tx in transmitters)
 
     folder = work / name
     folder.mkdir(parents=True, exist_ok=True)
     record = tcp_bench.run_rig(args.rig, transmitters, ranges_of(transmitters), DSP_KHZ, folder, RUN_SECONDS,
                                done=done, passes=PASSES)
     return dict(record, name=name, transmitters=transmitters)
+
+
+def landing_pass(record, tx):
+    """The pass of the search's first visit to @p tx, or None."""
+    for _t, _wall, m in tcp_bench.rig_messages(record, "status"):
+        if m["phase"] in tcp_bench.VISIT_PHASES and m["hit"]["hit_id"] and tx.owns(m["hit"]["frequency_hz"]):
+            return m["pass"]
+    return None
 
 
 def departure(record, tx):
@@ -197,7 +278,14 @@ def check(record):
         confirmed = tcp_bench.confirm_time(record, tx)
         if tx.expect and tx.expect[3] and (confirmed is None or confirmed >= tx.on_s):
             failures.append(f"{tx.id}: the live status never showed it confirmed while its carrier was on")
+        if tx.play == "phase":
+            landed = landing_pass(record, tx)
+            if landed is None or landed > DMO_MAX_PASS:
+                failures.append(f"{tx.id}: landed on pass {landed}, not by pass {DMO_MAX_PASS}")
         if tx.expect is None or not tx.expect[0] or not tx.expect[0].startswith("TETRA"):
+            continue
+        # A presence signal never holds a visit: it leaves 2.1 s after the confirmation, not after the stop.
+        if tx.expect[2] is not None and "presence" in tx.expect[2].pattern:
             continue
         left = departure(record, tx)
         if left is None:
@@ -219,8 +307,14 @@ def report(record):
         left_text = "-" if left is None else f"{left:.2f} s"
         confirm = tcp_bench.confirm_time(record, tx)
         confirm_text = "-" if confirm is None else f"{confirm:.2f} s"
-        print(f"  {tx.id:8s} {tx.frequency / 1e6:10.5f} MHz landed {landed} confirmed {confirm_text} later, left "
-              f"{left_text} after stop: {shown}")
+        phase = ""
+        if tx.play == "phase" and tx.landed is not None:
+            landing = tx.landing_tunes()[0]
+            found = [t for t in tx.covering_tunes(landing) if t < landing][-1]
+            phase = (f" (pass {landing_pass(record, tx)}, found at phase {tx.phase_at(found) * 1000:.1f} ms, landed at "
+                     f"{tx.phase_at(landing) * 1000:.1f} ms)")
+        print(f"  {tx.id:8s} {tx.frequency / 1e6:10.5f} MHz landed {landed}{phase} confirmed {confirm_text} later, "
+              f"left {left_text} after stop: {shown}")
 
 
 def main():

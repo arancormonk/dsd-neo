@@ -499,7 +499,11 @@ and on the second once.
 - Uplink frequencies are not identified.
 - A DMO carrier sends in bursts (about 29 % of the time in one traffic pattern),
   and the RF detector needs energy in two measurements in a row, so a pass can miss
-  it and a later pass find it, depending on where its bursts fall. Between calls a direct channel is silent, and a
+  it and a later pass find it, depending on where its bursts fall. On a paced
+  loopback source, a call held at one burst phase against each tune and moved an
+  eighth of a frame on at the next was found within 15 passes, but only at three
+  of its eight phases; a presence signal that ends before the receiver lands
+  confirms nothing. Between calls a direct channel is silent, and a
   repeater's or gateway's presence signal, when it sends one, can be up to 61.2
   seconds apart.
 - A TETRA range added to a running 48 kHz search needs Stop and Start.

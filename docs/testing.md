@@ -1516,7 +1516,20 @@ first lands on it. Run a searches, in this order, an analog-only range (`nfm_ton
 DMR) and TETRA ranges with `tetra_call_real_air_72k` at its own carrier (426.7 MHz), `tetra_cc_marginal_real_air_144k`
 (cs16 at 144 kHz, 467.9125 MHz), a synthetic two-carrier cell (`tetra_bsch_synth_72k` on its advertised main carrier,
 408.03125 MHz, and on a traffic carrier 100 kHz above), `tetra_dmo_call_synth_72k` and band-limited noise; run b
-searches `tetra_call_awgn_72k` at 426.7 MHz and the noise again. The checks: each transmitter is visited and has one
+searches `tetra_call_awgn_72k` at 426.7 MHz and the noise again, then four DMO calls and two presence signal trains
+built from `tools/build_iq_fixtures.py`'s DMO bursts (`tetra_dmo_traffic_slots()`, `tetra_dmo_pres_slots()`; the
+committed fixture's bytes are unchanged). Each call is one multiframe of traffic looped (a burst in slot 1 of every
+frame and DM-OCCUPIED every 340 ms, about 29 % of the time on air), its bursts held at a fixed phase against each tune
+that holds it and moved an eighth of a frame (7.1 ms) on at the next, the four starting a quarter frame apart, so the
+span measurements and the landings meet them at every phase; each must be found and confirmed as `TETRA DMO`,
+`Direct`, by pass 64. The RF detector needs a burst across both of its 10 ms windows, so most phases are missed: in
+two runs the measurement that found a call had its bursts 14.2 ms after the tune for 5 of 8 calls, 28.3 ms for 2 and
+42.5 ms for 1, and never at the other five phases (the windows shift by a block or so from tune to tune); over five
+runs the 20 calls landed on passes 1 to 15 and confirmed 0.3 to 1.3 s after landing, at landing phases from 21.2 to
+49.6 ms. A presence signal train (DPRES-SYNC from a
+type 2 repeater in slots 1 and 3) heard on its visit confirms as `TETRA DMO`, `presence signal`; the same train
+switched off at the search's landing tune (the visit tunes a quarter of the capture rate below its channel, which no
+span measurement does) confirms nothing and ends unresolved. The checks: each transmitter is visited and has one
 history row at its frequency; the TETRA rows show their protocol (`TETRA`, `TETRA DMO`), access code (`CC 1`, `CC 44`,
 `CC 17`, none for DMO) and site line (`Main carrier 426.70000 MHz · MCC 228 · MNC 8889 · LA 1`; the traffic carrier's
 names 408.03125 MHz; `Direct`), and the live status shows them confirmed while their carrier is on; the noise visit
@@ -1527,7 +1540,7 @@ rig stops when the script creates its stop file (`DSD_SEARCH_RIG_STOP`), not on 
 history.
 The DMO call is bursty and passes the RF detector only at some burst phases, so it is often found on a later pass. With
 the TETRA quiet time set to 500 ms the awgn visit left 0.47 s after its carrier stopped and the case failed.
-About 80 s in real time; the CTest TIMEOUT is 300 s.
+About 2 to 3 minutes in real time (a run stops at 180 s); the CTest TIMEOUT is 420 s.
 
 `tools/bench_signal_search_tcp.py --rig` runs the same rig for measurements (see [Signal search
 verification](signal-search.md#verification-and-measured-limits)).
