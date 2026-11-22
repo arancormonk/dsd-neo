@@ -3305,13 +3305,13 @@ nxdn_vcall_apply_state(dsd_state* state, const struct nxdn_vcall_info* info) {
  * follows drops it all the same. */
 static void
 nxdn_vcall_suppress_encrypted_call(dsd_opts* opts, dsd_state* state, const struct nxdn_vcall_info* info) {
-    char note[128];
     if (!nxdn_call_type_locks_endpoint(info->call_type)) {
         return;
     }
     const int is_group = nxdn_call_type_kind(info->call_type, info->idas) == DSD_CALL_KIND_GROUP_VOICE ? 1 : 0;
     if (dsd_enc_lockout_note(state, info->destination_id, is_group, (int)state->nxdn_cipher_type,
                              (int)state->nxdn_key)) {
+        char note[128];
         DSD_SNPRINTF(note, sizeof note, "Target: %d; has been locked out; Encryption Lock Out Enabled.",
                      info->destination_id);
         dsd_event_note_current_call(opts, state, 0U, note);
