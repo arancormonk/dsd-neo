@@ -28203,8 +28203,17 @@ if(DSD_ENABLE_QT_UI AND DSD_HAS_RADIO AND NOT WIN32)
     )
     # Skipped (77) when the decoder cannot keep real time, as under the sanitizers: the scan's dwell runs on the real
     # clock, so its timing-bound checks would judge a slowed decoder, not the squelch.
+    # The same rotation with the digital row from a saved DMR system whose saved squelch is dynamic (the row's own
+    # off, B13) under an Advanced --squelch -1, which ends the analog default and which the NFM row inherits.
+    add_test(
+        NAME ENGINE_TRUNK_SCAN_RUNNING_RECEIVER_LEVEL
+        COMMAND
+            dsd-neo_test_engine_trunk_scan_running_receiver
+            --saved-digital-under-level
+    )
     set_tests_properties(
         ENGINE_TRUNK_SCAN_RUNNING_RECEIVER
+        ENGINE_TRUNK_SCAN_RUNNING_RECEIVER_LEVEL
         PROPERTIES LABELS "iq-decode" TIMEOUT 120 SKIP_RETURN_CODE 77
     )
 endif()

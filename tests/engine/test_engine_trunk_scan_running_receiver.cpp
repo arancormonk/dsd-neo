@@ -15,6 +15,12 @@
  * - NFM row (every visit, the second one being the default's return after the DMR row): the receiver runs the noise
  *   squelch, the receiver noise the visit starts on is flagged closed and none of it plays, and the speech after it
  *   plays.
+ * With --saved-digital-under-level (ENGINE_TRUNK_SCAN_RUNNING_RECEIVER_LEVEL) the digital row comes from a saved DMR
+ * system whose saved squelch is dynamic, so the generator gives the row --squelch off (B13), and the session carries
+ * an Advanced --squelch -1, which ends the analog default. Then the DMR row runs its own off and decodes, and the plain
+ * NFM row inherits the session's -1 dB level: no dynamic squelch, the default not in force, and nothing plays (the
+ * level is over every sample of the fixture, speech included).
+ *
  * The NFM row carries a dwell of its own, 3.5 s: a session's first landing on an analog row brings its first samples
  * 0.8 to 2 s late in a Debug build (the demodulator designs the noise squelch's plan, tens of ms when optimized; later
  * landings take it from the cache and play in about 0.15 s), and a shorter dwell can expire before its speech.
@@ -33,9 +39,11 @@
 #include <QVariantList>
 #include <QVariantMap>
 #include <atomic>
+#include <cmath>
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
+#include <cstring>
 #include <mutex>
 #include <string>
 #include <thread>
@@ -56,6 +64,7 @@ extern "C" {
 #include <dsd-neo/runtime/decode_clock.h>
 #include <dsd-neo/runtime/exitflag.h>
 #include <dsd-neo/runtime/rtl_stream_io_hooks.h>
+#include <dsd-neo/runtime/squelch.h>
 #include <dsd-neo/runtime/udp_audio_hooks.h>
 }
 
@@ -76,6 +85,8 @@ constexpr double kRealTimeShareMin = 0.8;
 constexpr int kSkipped = 77;
 
 int failures;
+/* The second scenario: a saved digital system's own off under an Advanced session level (see the top). */
+bool g_saved_level;
 
 void
 expect(bool ok, const char* what, int visit) {
@@ -99,6 +110,8 @@ struct Visit {
     uint64_t digital_audio = 0U;            /* decoded voice samples played */
     uint64_t analog_audio = 0U;             /* monitor samples played */
     uint64_t analog_audio_while_gated = 0U; /* monitor samples played before the first open sample */
+    uint64_t off_reads = 0U;                /* reads under a LEVEL setting that is off */
+    uint64_t session_level_reads = 0U;      /* reads under the session's -1 dB level, the default not in force */
     uint64_t first_ms = 0U;                 /* real time of the visit's first read, empty ones too */
     uint64_t first_data_ms = 0U;            /* and of its first and last read that brought samples */
     uint64_t last_ms = 0U;
@@ -123,6 +136,19 @@ tuned_row(void) {
     return g_opts != nullptr ? static_cast<uint32_t>(g_opts->rtlsdr_center_freq) : 0U;
 }
 
+/* The squelch the options hold at a read: an off level, or the session's -1 dB with the default not in force. */
+void
+note_setting(Visit* v) {
+    if (g_opts != nullptr && g_opts->rtl_squelch_mode == DSD_SQUELCH_MODE_LEVEL) {
+        const double minus1 = dsd_squelch_level_from_sql(-1.0);
+        v->off_reads += dsd_squelch_is_off(g_opts->rtl_squelch_level) ? 1U : 0U;
+        v->session_level_reads += (std::fabs(g_opts->rtl_squelch_level - minus1) <= minus1 * 1e-9
+                                   && g_opts->squelch_default_state != DSD_SQUELCH_DEFAULT_APPLIED)
+                                      ? 1U
+                                      : 0U;
+    }
+}
+
 /* After each read: the samples' flags and the receiver's dynamic squelch, on the row the decoder is on. */
 void
 note_read(int rc, const uint8_t* flags, const int* out_got) {
@@ -141,6 +167,7 @@ note_read(int rc, const uint8_t* flags, const int* out_got) {
         v->first_data_ms = v->last_ms;
     }
     v->samples += static_cast<uint64_t>(*out_got);
+    note_setting(v);
     if (have_status && st.active) {
         ++v->dynamic_reads;
         v->noise_squelch_reads += st.noise ? 1U : 0U;
@@ -317,12 +344,13 @@ watch(std::atomic<int>* done) {
 }
 
 QString
-writeList(const QTemporaryDir& dir, const QVariantMap& list) {
-    const auto generated = dsd_qt::scan_list_targets(list, QVariantList{});
+writeList(const QTemporaryDir& dir, const QVariantMap& list, const QVariantList& systems) {
+    const auto generated = dsd_qt::scan_list_targets(list, systems);
     if (!generated.ok || generated.targetCount != 2) {
         std::fprintf(stderr, "running receiver: the list did not generate\n");
         return QString();
     }
+    std::fprintf(stderr, "running receiver: generated list:\n%s", generated.csv.constData());
     const QString path = dir.filePath(QStringLiteral("rotation.csv"));
     QFile file(path);
     if (!file.open(QIODevice::WriteOnly) || file.write(generated.csv) != generated.csv.size()) {
@@ -351,6 +379,8 @@ printVisit(const Visit& v, int n, const char* note) {
         static_cast<unsigned long long>(v.closed_before_open), static_cast<unsigned long long>(v.noise_squelch_reads),
         static_cast<unsigned long long>(v.dynamic_reads), static_cast<unsigned long long>(v.digital_audio),
         static_cast<unsigned long long>(v.analog_audio), static_cast<unsigned long long>(v.analog_audio_while_gated));
+    std::fprintf(stderr, "visit %d: reads under an off level %llu, under the session's -1 dB level %llu\n", n,
+                 static_cast<unsigned long long>(v.off_reads), static_cast<unsigned long long>(v.session_level_reads));
 }
 
 /* The share of real time the decoder kept over the judged visits: what it read against the time they took. */
@@ -381,9 +411,16 @@ checkVisits(const std::vector<Visit>& seen) {
         if (v.freq_hz == kDmrHz) {
             ++dmr;
             expect(v.digital_audio > 0U, "the DMR row decodes voice", n);
+            expect(v.reads > 0U && v.off_reads == v.reads, "the DMR row runs off", n);
             expect(v.dynamic_reads == 0U, "the DMR row runs no dynamic squelch", n);
             expect(v.closed == 0U, "the DMR row flags no sample closed", n);
             expect(v.analog_audio == 0U, "the DMR row plays no monitor audio", n);
+        } else if (g_saved_level) {
+            ++nfm;
+            expect(v.reads > 0U && v.session_level_reads == v.reads,
+                   "the NFM row runs the session's -1 dB level, the default ended", n);
+            expect(v.dynamic_reads == 0U, "the NFM row runs no dynamic squelch", n);
+            expect(v.analog_audio == 0U, "nothing on the NFM row plays under -1 dB", n);
         } else {
             ++nfm;
             expect(v.noise_squelch_reads > 0U && v.noise_squelch_reads == v.dynamic_reads,
@@ -401,14 +438,26 @@ checkVisits(const std::vector<Visit>& seen) {
    squelch (noise+10); empty when it does not build. */
 QStringList
 sessionArgs(const QTemporaryDir& dir, int port) {
+    /* The digital row: a plain DMR frequency, or a saved DMR system whose saved squelch is dynamic. */
+    const QVariantMap plainDmr{{"uid", "plant"}, {"kind", "freq"}, {"protocol", "dmr"}, {"freqMhz", "461.1125"}};
+    const QVariantMap savedDmr{{"uid", "plant"}, {"kind", "system"}, {"systemUid", "plant-dmr"}};
+    const QVariantList systems{QVariantMap{{"uid", "plant-dmr"},
+                                           {"name", "Plant DMR"},
+                                           {"decodeFlag", "-fs"},
+                                           {"trunking", false},
+                                           {"freqMhz", "461.1125"},
+                                           {"radioSettings", QVariantMap{{"squelch", "auto+12"}}}}};
     const QVariantList entries{
-        QVariantMap{{"uid", "plant"}, {"kind", "freq"}, {"protocol", "dmr"}, {"freqMhz", "461.1125"}},
+        g_saved_level ? savedDmr : plainDmr,
         QVariantMap{{"uid", "ops"}, {"kind", "freq"}, {"protocol", "nfm"}, {"freqMhz", "154.43"}, {"dwellMs", 3500}}};
     const QVariantMap list{{"sourceType", "rtltcp"}, {"host", "127.0.0.1"}, {"port", port},
                            {"gainDb", 22},           {"bandwidthKhz", 48},  {"defaultDwellMs", 1000},
                            {"defaultHoldMs", 500},   {"entries", entries}};
-    const QString path = writeList(dir, list);
-    const dsd_qt::SessionArgPrefs prefs;
+    const QString path = writeList(dir, list, systems);
+    dsd_qt::SessionArgPrefs prefs;
+    if (g_saved_level) {
+        prefs.extraArgs = QStringLiteral("--squelch -1");
+    }
     QString error;
     QStringList args =
         dsd_qt::session_args_scan_build_lists(list, QStringLiteral("461.1125"), QStringList{path}, prefs, &error);
@@ -467,6 +516,7 @@ runSession(const QStringList& args) {
 int
 main(int argc, char** argv) {
     QCoreApplication app(argc, argv);
+    g_saved_level = argc > 1 && std::strcmp(argv[1], "--saved-digital-under-level") == 0;
     if (dsd_socket_init() != 0) {
         return 1;
     }

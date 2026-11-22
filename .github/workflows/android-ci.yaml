@@ -408,7 +408,7 @@ jobs:
         run: |
           # The leftover check runs whatever ctest returned; the step fails with the ctest status, else the check status.
           ctest_status=0
-          ctest --preset dev-debug -R '^(UI_QT_|ENGINE_TRUNK_SCAN_SCAN_LIST$|ENGINE_TRUNK_SCAN_RUNNING_RECEIVER$)' --parallel 2 --output-on-failure || ctest_status=$?
+          ctest --preset dev-debug -R '^(UI_QT_|ENGINE_TRUNK_SCAN_SCAN_LIST$|ENGINE_TRUNK_SCAN_RUNNING_RECEIVER(_LEVEL)?$)' --parallel 2 --output-on-failure || ctest_status=$?
           check_status=0
           tools/check_test_tmp_leftovers.sh build/dev-debug || check_status=$?
           if [ "$ctest_status" -ne 0 ]; then exit "$ctest_status"; fi
