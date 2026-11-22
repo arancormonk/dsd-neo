@@ -2,7 +2,7 @@
 """Signal search identifies TETRA on a paced rtl_tcp source, end to end (issue #748).
 
 The scene is tools/bench_scan_skip_silent.py's paced rtl_tcp source (its Scene) with transmitters of this script's
-own (tools/bench_signal_search_tcp.py's Transmitter and run_rig()). Each is a committed fixture read in its own format
+own (LoopedTransmitter, Transmitter and run_rig()). Each is a committed fixture read in its own format
 (cu8 or cs16) and rate, resampled to the capture rate the receiver asks the server for, and placed at its frequency
 relative to every tune; a receiver tuned anywhere hears the scene's noise plus every transmitter its capture holds.
 Each transmitter is on the air, looped, from the start, and stops ON_S after the search first lands on it.
@@ -51,10 +51,14 @@ import importlib
 import importlib.util
 import json
 import math
+import os
 from pathlib import Path
 import re
+import subprocess
 import sys
 import tempfile
+import threading
+import time
 
 if importlib.util.find_spec("numpy") is None:
     print(f"SKIP: the rig needs numpy, which {sys.executable} does not have")
@@ -63,15 +67,27 @@ if importlib.util.find_spec("numpy") is None:
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "tools"))
 
-tcp_bench = importlib.import_module("bench_signal_search_tcp")
+np = importlib.import_module("numpy")
 bif = importlib.import_module("build_iq_fixtures")
+scan_bench = importlib.import_module("bench_scan_skip_silent")
 # The scene's block: it plays a transmitter a whole block at a time.
-BLOCK = importlib.import_module("bench_scan_skip_silent").BLOCK
+BLOCK = scan_bench.BLOCK
+
+
+
+def capture_rate(dsp_khz):
+    """The rate the RTL front end asks an rtl_tcp server for at this DSP bandwidth (rtl_downsample_passes_for_rate_in():
+    the bandwidth times the power of two nearest 1.2 Msps)."""
+    rate = dsp_khz * 1000
+    while rate * 2 <= 1600000:
+        rate *= 2
+    return rate
+
 
 DSP_KHZ = 72
 # The capture rate the RTL front end asks the source for at a 72 kHz DSP bandwidth (16 times it).
 CAPTURE_HZ = 1152000
-assert tcp_bench.capture_rate(DSP_KHZ) == CAPTURE_HZ
+assert capture_rate(DSP_KHZ) == CAPTURE_HZ
 SNR_DB = 30.0
 ON_S = 4.0
 NOISE_ON_S = 6.0
@@ -96,6 +112,190 @@ DMO_MAX_PASS = 64
 PASSES = 1000
 DOT = " · "
 SANITIZER = re.compile(r"AddressSanitizer|UndefinedBehaviorSanitizer|ThreadSanitizer|LeakSanitizer|runtime error:")
+
+
+# The status phases dsd-neo_test_signal_search_rig prints (dsd_signal_search_phase) once a visit has landed: identifying,
+# listening and held. Tuning (2) is published with the hit when the tune is queued, before the receiver hears the
+# channel, so it is no landing.
+LANDED_PHASES = (3, 4, 5)
+# The history journal's name in a rig folder; the store keeps files beside it under names that start with it.
+RIG_JOURNAL = "history.jsonl"
+
+
+def landed_hit(message):
+    """The hit of a rig status line that shows a live visit landed on it (a landed phase, a hit, not ended), or None."""
+    if not message or message.get("rig") != "status" or message.get("phase") not in LANDED_PHASES:
+        return None
+    hit = message.get("hit") or {}
+    return hit if hit.get("hit_id") and not hit.get("ended") else None
+
+
+def prepare_rig_folder(work):
+    """@p work as an absolute folder, made if missing, for one rig run. The child runs inside it, so every path it is
+    given must be absolute. Refuses (ValueError) a folder that already holds a rig journal: the rig would reopen it and
+    report the earlier run's detections as this run's."""
+    work = Path(work).resolve()
+    work.mkdir(parents=True, exist_ok=True)
+    earlier = sorted(p.name for p in work.iterdir() if p.name.startswith(RIG_JOURNAL))
+    if earlier:
+        raise ValueError(f"{work} already holds a rig journal ({', '.join(earlier)}): give each run a new folder")
+    return work
+
+
+class LoopedTransmitter:
+    """One transmitter of a rig scene, duck-typed for bench_scan_skip_silent.Scene: its frequency, the start of what is
+    on the air at a scene time, and that content at a stream rate.
+
+    The content is a committed fixture read in its own format and rate (build_iq_fixtures.load_fixture_iq()), the
+    (samples, rate) given as samples, or with neither band-limited noise 24 kHz wide. It is looped from the start of
+    the scene, at snr_db over the scene's noise in a 12.5 kHz channel (on the power of the bursts of a burst train, not
+    its gaps). With on_s it stops that long after the search first lands on it (landed, a scene time, which run_rig()
+    sets).
+    """
+
+    def __init__(self, name, frequency, fixture, snr_db, on_s, step, fixture_dir, samples=None):
+        self.id = name
+        self.frequency = frequency
+        self.on_s = on_s
+        self.step = step
+        self.landed = None
+        self.scene = None  # the scene serving it, which run_rig() sets
+        self.cache = {}
+        if samples is not None:
+            samples, rate = samples
+        elif fixture is None:
+            rate = 24000
+            rng = np.random.default_rng(748)
+            samples = rng.standard_normal(10 * rate) + 1j * rng.standard_normal(10 * rate)
+        else:
+            samples, rate, _centre = bif.load_fixture_iq(Path(fixture_dir) / f"{fixture}.iq.json")
+            samples = samples - np.mean(samples)
+        power = np.abs(samples) ** 2
+        on = power[power > 0.1 * float(np.mean(power))]
+        self.baseband = samples / math.sqrt(float(np.mean(on))) * 10.0 ** (snr_db / 20.0)
+        self.native_rate = rate
+
+    @property
+    def seconds(self):
+        return len(self.baseband) / self.native_rate
+
+    @property
+    def stop_at(self):
+        return None if self.landed is None or self.on_s is None else self.landed + self.on_s
+
+    def owns(self, frequency):
+        return abs(frequency - self.frequency) < self.step / 2
+
+    def call_at(self, t):
+        if self.stop_at is not None and t >= self.stop_at:
+            return None
+        return math.floor(t / self.seconds) * self.seconds
+
+    def at_rate(self, rate):
+        """One loop of the content at @p rate, as long as call_at()'s period there, followed by the start of the next:
+        Scene.block() reads a whole block from where call_at() says the block starts, so a block that crosses the end
+        of a loop continues seamlessly into the next instead of filling its rest with noise."""
+        if rate not in self.cache:
+            one = bif.resample_to_fixture_rate(self.baseband, self.native_rate, rate)
+            # The resampler pads its input to whole resampling periods; the loop is the content's own length.
+            period = max(1, min(len(one), round(self.seconds * rate)))
+            self.cache[rate] = one[np.arange(period + BLOCK) % period].astype(np.complex64)
+        return self.cache[rate]
+
+
+def read_rig(pipe, lines, scene, transmitters):
+    """The rig's lines, stamped with the scene time and the monotonic time they arrived; marks each transmitter's first
+    landing: the first status of a live visit to it once the tune has landed (landed_hit())."""
+    for raw in pipe:
+        text = raw.decode("utf-8", "replace").rstrip("\r\n")
+        stamp = scene.sample_time
+        message = None
+        # The decoder shares stdout and can leave a line open ("Sync: +TETRA NDB "): a rig line follows on it.
+        at = text.find('{"rig":')
+        if at >= 0:
+            try:
+                message = json.loads(text[at:])
+            except ValueError:
+                message = None
+        lines.append((stamp, time.monotonic(), text, message))
+        hit = landed_hit(message)
+        if hit is None:
+            continue
+        for tx in transmitters:
+            if tx.landed is None and tx.owns(hit["frequency_hz"]):
+                tx.landed = stamp
+
+
+def run_rig(rig, transmitters, ranges, dsp_khz, work, seconds, done=None, passes=1000, seed=748):
+    """Run dsd-neo_test_signal_search_rig on a paced scene of @p transmitters, searching @p ranges (each (name, start,
+    end, step, width, digital, probe_ms, max_visit_ms)) at a @p dsp_khz DSP bandwidth, until @p passes passes have
+    ended, done(scene) says so, or @p seconds pass. Returns the run's record, whose "stop" says which ended it: "exited"
+    (the child stopped by itself: its passes ended, or it failed), "done", "timeout" (the stop file was written when
+    @p seconds ran out, so the child exits as if asked to) or "killed" (it did not exit after the stop file)."""
+    work = prepare_rig_folder(work)
+    scene = scan_bench.Scene(transmitters, seed=seed)
+    rate = capture_rate(dsp_khz)
+    for tx in transmitters:
+        tx.scene = scene
+        # Resampled before the run: done on the paced source's thread, it would stall the stream.
+        tx.at_rate(rate)
+    env = {k: v for k, v in os.environ.items() if not k.startswith("DSD_NEO_")}
+    env.update(
+        DSD_SEARCH_RIG_STORE=str(work / RIG_JOURNAL),
+        DSD_SEARCH_RIG_RANGES=";".join(",".join(str(v) for v in r) for r in ranges),
+        DSD_SEARCH_RIG_PASSES=str(passes),
+        DSD_SEARCH_RIG_SECONDS=str(int(seconds) + 10),
+        DSD_SEARCH_RIG_STOP=str(work / "stop"),
+    )
+    first = ranges[0][1]
+    cmd = [str(Path(rig).resolve()), "--no-config", "--frontend", "none", "-i",
+           f"rtltcp:127.0.0.1:{scene.port}:{first}:0:0:{dsp_khz}:0:1", "-o", "null"]
+    scene.thread.start()
+    lines = []
+    (work / "stop").unlink(missing_ok=True)
+    proc = subprocess.Popen(cmd, cwd=work, env=env, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+                            stderr=subprocess.STDOUT)
+    reader = threading.Thread(target=read_rig, args=(proc.stdout, lines, scene, transmitters), daemon=True)
+    reader.start()
+    started = time.monotonic()
+    stop = "timeout"
+    try:
+        while time.monotonic() - started < seconds:
+            if proc.poll() is not None:
+                stop = "exited"
+                break
+            if done is not None and done(scene):
+                stop = "done"
+                break
+            time.sleep(0.25)
+        (work / "stop").write_bytes(b"")
+        proc.wait(timeout=30)
+    except (subprocess.TimeoutExpired, OSError):
+        stop = "killed"
+        proc.kill()
+        proc.wait()
+    reader.join(timeout=10)
+    scene.close()
+    return {"command": cmd, "exit": proc.returncode, "stop": stop, "tunes": list(scene.tunes), "lines": lines,
+            "dsp_khz": dsp_khz}
+
+
+def rig_messages(record, kind):
+    return [(t, wall, m) for t, wall, _text, m in record["lines"] if m and m.get("rig") == kind]
+
+
+def rig_rows(record, kind="history"):
+    return [m["row"] for _t, _wall, m in rig_messages(record, kind)]
+
+
+def confirm_time(record, tx):
+    """Seconds of stream time from the search's first landing on @p tx to the first status that shows its hit
+    confirmed, or None."""
+    for t, _wall, m in rig_messages(record, "status"):
+        hit = m["hit"]
+        if tx.landed is not None and t >= tx.landed and hit["confirmed"] and tx.owns(hit["frequency_hz"]):
+            return t - tx.landed
+    return None
 
 
 def tetra_site(main, mcc, mnc):
@@ -181,7 +381,7 @@ def dmo_refresh_ends(kind):
     return ends, count / rate
 
 
-class Transmitter(tcp_bench.Transmitter):
+class Transmitter(LoopedTransmitter):
     """A scene transmitter with what its range searches for and what its detection must show."""
 
     def __init__(self, spec, fixture_dir):
@@ -255,15 +455,15 @@ def run(args, name, specs, work):
 
     folder = work / name
     folder.mkdir(parents=True, exist_ok=True)
-    record = tcp_bench.run_rig(args.rig, transmitters, ranges_of(transmitters), DSP_KHZ, folder, RUN_SECONDS,
+    record = run_rig(args.rig, transmitters, ranges_of(transmitters), DSP_KHZ, folder, RUN_SECONDS,
                                done=done, passes=PASSES)
     return dict(record, name=name, transmitters=transmitters)
 
 
 def landing_pass(record, tx):
-    """The pass the search first landed on @p tx in (tcp_bench.landed_hit()), or None."""
-    for _t, _wall, m in tcp_bench.rig_messages(record, "status"):
-        hit = tcp_bench.landed_hit(m)
+    """The pass the search first landed on @p tx in (landed_hit()), or None."""
+    for _t, _wall, m in rig_messages(record, "status"):
+        hit = landed_hit(m)
         if hit is not None and tx.owns(hit["frequency_hz"]):
             return m["pass"]
     return None
@@ -296,7 +496,7 @@ def departure_from(record, tx):
     confirmation; for the rest, whose downlink refreshes the visit every slot, the stop. (None, name) when there is
     none."""
     if presence_only(tx):
-        confirmed = tcp_bench.confirm_time(record, tx)
+        confirmed = confirm_time(record, tx)
         return (None if confirmed is None else tx.landed + confirmed), "its first confirmation"
     if tx.refresh_ends is not None:
         return last_refresh(tx), "its last refreshing burst"
@@ -351,7 +551,7 @@ def check(record):
     rates = {rate for _t, _w, _c, rate in record["tunes"][1:]}
     if rates != {CAPTURE_HZ}:
         failures.append(f"the front end ran the source at {sorted(rates)} Hz, not {CAPTURE_HZ} Hz alone")
-    history, reload = tcp_bench.rig_rows(record, "history"), tcp_bench.rig_rows(record, "reload")
+    history, reload = rig_rows(record, "history"), rig_rows(record, "reload")
     if [(r["frequency_hz"], r["protocol"], r["access"], r["site"], r["confirmed"]) for r in history] != [
         (r["frequency_hz"], r["protocol"], r["access"], r["site"], r["confirmed"]) for r in reload
     ]:
@@ -359,7 +559,7 @@ def check(record):
     for tx in record["transmitters"]:
         check_row(tx, history, failures)
         # Shown confirmed while the visit runs (the Now panel's "TETRA · confirmed"), not only once it ends.
-        confirmed = tcp_bench.confirm_time(record, tx)
+        confirmed = confirm_time(record, tx)
         if tx.expect and tx.expect[3] and (confirmed is None or confirmed >= tx.on_s):
             failures.append(f"{tx.id}: the live status never showed it confirmed while its carrier was on")
         if tx.play == "phase":
@@ -381,7 +581,7 @@ def check(record):
 
 def report(record):
     print(f"run {record['name']}:")
-    rows = tcp_bench.rig_rows(record, "history")
+    rows = rig_rows(record, "history")
     for tx in record["transmitters"]:
         left = departure(record, tx)
         mine = [r for r in rows if tx.owns(r["frequency_hz"])]
@@ -390,7 +590,7 @@ def report(record):
         landed = "never" if tx.landed is None else f"{tx.landed:6.2f} s"
         left_text = "-" if left is None else f"{left:.2f} s"
         since = "confirmation" if presence_only(tx) else "last refresh" if tx.refresh_ends is not None else "stop"
-        confirm = tcp_bench.confirm_time(record, tx)
+        confirm = confirm_time(record, tx)
         confirm_text = "-" if confirm is None else f"{confirm:.2f} s"
         phase = ""
         if tx.play == "phase" and tx.landed is not None:

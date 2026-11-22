@@ -467,8 +467,10 @@ ProVoice, which keeps 72 kHz, needs about 0.3 seconds more than at 48 kHz (about
 
 ### Measured times and costs
 
-Measured on 2026-11-21 with `tools/bench_signal_search_tcp.py --rig` on a paced
-loopback rtl_tcp source, Linux Release builds, at the capture rates an RTL-SDR
+Measured on 2026-11-21 with a local harness around the
+`dsd-neo_test_signal_search_rig` rig (see [Verification and measured
+limits](#verification-and-measured-limits)) on a paced loopback rtl_tcp source,
+Linux Release builds, at the capture rates an RTL-SDR
 runs (1.536 Msps for a 48 kHz search, 1.152 Msps for 72 kHz), four runs of each
 on a shared machine under changing load (medians; 10 runs for the 25 kHz empty
 pass at 48 kHz):
@@ -1123,17 +1125,11 @@ publication target. It does not enable searching in production I/Q replay.
 the app starts them (the app-control queue, observer and history store) on a paced
 rtl_tcp scene of real-air and synthetic TETRA fixtures, after an analog and an Auto
 visit, and checks each detection's protocol, access code and site line, the history
-read back, and the 2.1-second quiet time (see `docs/testing.md`). The same rig takes
-the measurements under [Measured times and costs](#measured-times-and-costs)
-(`--scene empty`, `empty25`, `candidates` or `tetra`, `--bw 48` or `72`):
-
-```sh
-cmake --preset dev-release -B build/release-tests -DBUILD_TESTING=ON
-cmake --build build/release-tests --target dsd-neo_test_signal_search_rig
-python3 tools/bench_signal_search_tcp.py --rig build/release-tests/tests/dsd-neo_test_signal_search_rig \
-  --bw 72 --scene tetra --out /tmp/search-tetra
-python3 tools/bench_signal_search_tcp.py --summary /tmp/search-*
-```
+read back, and the 2.1-second quiet time (see `docs/testing.md`). The figures under
+[Measured times and costs](#measured-times-and-costs) were taken with a local
+harness around the same rig executable, `dsd-neo_test_signal_search_rig`, on
+Release builds, playing the scenes listed there; the harness is not part of the
+repository.
 
 Local Linux Debug measurements on 2026-10-12, RTL-SDR USB device 0 at 1.536 Msps,
 hardware gain auto, 801 channels, 16 kHz channel width and 15 dB sensitivity:
