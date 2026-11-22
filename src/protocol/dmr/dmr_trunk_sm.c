@@ -2551,6 +2551,20 @@ dmr_sm_grant_changes_followed_media(const dmr_sm_ctx_t* ctx, const dmr_sm_event_
            && (dmr_sm_event_kind(ev) == DSD_CALL_KIND_DATA) != (ctx->vc_data_call != 0);
 }
 
+/* A grant that changes the media of the followed slot's assignment on the followed carrier
+   (dmr_sm_grant_changes_followed_media()) ends that assignment, whether the receiver would follow the grant or not
+   (data following off, a policy or receive gate refusing it): the follow ends as a release does, back to the control
+   channel, where a repeated grant is followed as any grant is. Returns 1 when the grant ended the assignment. */
+static int
+dmr_sm_end_changed_assignment(dmr_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, const dmr_sm_event_t* ev) {
+    if (ctx->state != DMR_SM_TUNED || !dmr_sm_grant_changes_followed_media(ctx, ev)
+        || resolve_freq(state, ev->freq_hz, ev->lpcn) != ctx->vc_freq_hz) {
+        return 0;
+    }
+    do_release(ctx, opts, state, "grant-media-change");
+    return 1;
+}
+
 static dmr_sm_grant_result_e
 dmr_sm_submit_grant_ctx(dmr_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, const dmr_sm_event_t* ev) {
     if (!ctx || !ev || !opts || !state) {
@@ -2559,6 +2573,13 @@ dmr_sm_submit_grant_ctx(dmr_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, con
     dsd_trunk_recovery_note_protocol(state, DSD_TRUNK_RECOVERY_DMR);
     // The slots' identities as of their canonical calls now: an in-place grant matches the calls they name.
     dmr_sm_slot_identities_refresh(ctx, state, dsd_decode_now_mono_s());
+
+    /* Before any admission: a media change on the followed slot ends its assignment whatever becomes of the grant. The
+       grant itself is not followed; its repeat is, as any grant is (from the control channel, with its own tune,
+       acquisition window, channel, provenance and call). */
+    if (dmr_sm_end_changed_assignment(ctx, opts, state, ev)) {
+        return DMR_SM_GRANT_REFUSED;
+    }
 
     if (ev->policy_valid && !ev->policy.tune_allowed) {
         sm_log(opts, "grant-policy-blocked");
@@ -2571,13 +2592,6 @@ dmr_sm_submit_grant_ctx(dmr_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, con
         return DMR_SM_GRANT_REFUSED;
     }
     if (resolved == DMR_SM_RESOLVE_SAME_FREQ) {
-        /* A media change on the followed slot ends its assignment: the follow ends as a release does, back to the
-           control channel, where the repeated grant is followed as any grant is (its own tune, acquisition window,
-           channel, provenance and call). */
-        if (dmr_sm_grant_changes_followed_media(ctx, ev)) {
-            do_release(ctx, opts, state, "grant-media-change");
-            return DMR_SM_GRANT_REFUSED;
-        }
         dmr_sm_grant_reconcile_in_place(ctx, state, ev, freq);
         return DMR_SM_GRANT_IN_PLACE;
     }
@@ -2595,6 +2609,15 @@ dmr_sm_submit_grant_ctx(dmr_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, con
 static void
 handle_grant(dmr_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, const dmr_sm_event_t* ev) {
     (void)dmr_sm_submit_grant_ctx(ctx, opts, state, ev);
+}
+
+int
+dmr_sm_note_grant_assignment(dsd_opts* opts, dsd_state* state, const dmr_sm_event_t* ev) {
+    if (!opts || !state || !ev || opts->trunk_enable != 1) {
+        return 0;
+    }
+    dmr_sm_ctx_t* ctx = dmr_sm_get_ctx();
+    return ctx->initialized && dmr_sm_end_changed_assignment(ctx, opts, state, ev);
 }
 
 dmr_sm_grant_result_e

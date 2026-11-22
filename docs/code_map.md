@@ -13553,16 +13553,20 @@ Private per-protocol modules worth knowing about:
     its follow time now, so its dwell runs from that grant (on the followed slot, the grant identity too, with this
     announcement's CRC provenance, `vc_crc_flags`, which the first voice publishes it with, never the replaced
     grant's: a RAS-accepted reassignment under `-F` reads unverified, a verified one verified); a repeat of the call the
-    slot names, or of the grant followed there, keeps record and follow time. A grant that changes the media of the
-    followed slot's assignment (a data grant for a slot followed for voice, a voice grant for one followed for data,
-    `dmr_sm_grant_changes_followed_media()`) ends the follow as a release does (`do_release()`, `grant-media-change`,
-    REFUSED): the receiver returns to the control channel, the calls there end, and the grant repeated on the control
-    channel is followed through the normal path (`dmr_sm_follow_grant()`), with its own tune, acquisition window,
-    channel, CRC provenance, record and call (a new transmission, whatever its parties). The voice sync publishes the
-    followed grant's identity only into a call that names nothing yet (`dmr_sm_grant_publishable()` for the voice's
-    slot, checked again at the sync): a call a voice LC named since the grant (its header comes before the first voice
-    sync) keeps its caller, and the grant is spent, never renaming or splitting that call. A status's in-place entry
-    (origin STATUS) replaces only a seed or grant identity, never a checked LC's on that carrier.
+    slot names, or of the grant followed there, keeps record and follow time. A checked grant that changes the media of
+    the followed slot's assignment on the followed carrier (a data grant for a slot followed for voice, a voice grant
+    for one followed for data, `dmr_sm_grant_changes_followed_media()`) ends that assignment before any admission,
+    whether the receiver would follow it or not: the Tier III CSBK layer hands every grant to
+    `dmr_sm_note_grant_assignment()` before its call-type switches (data following off, the default) and its policy
+    check, and `dmr_sm_submit_grant()` checks it first as well (`dmr_sm_end_changed_assignment()`, `grant-media-change`,
+    REFUSED: the grant itself is not followed). The follow ends as a release does: the receiver returns to the control
+    channel, the calls there end, and the grant repeated there is followed through the normal path
+    (`dmr_sm_follow_grant()`), with its own tune, acquisition window, channel, CRC provenance, record and call (a new
+    transmission, whatever its parties). The voice sync publishes the followed grant's identity only into a call that
+    names nothing yet (`dmr_sm_grant_publishable()` for the voice's slot, checked again at the sync): a call a voice LC
+    named since the grant (its header comes before the first voice sync) keeps its caller, and the grant is spent,
+    never renaming or splitting that call. A status's in-place entry (origin STATUS) replaces only a seed or grant
+    identity, never a checked LC's on that carrier.
   - Slot identities (`dmr_sm_slot_ctx_t`: target, source, kind, provenance SEED/GRANT/LC, policy class, channel,
     carrier, follow time, and `crc_flags`, the DSD_CRC_* bits of what named it: the grant's or status's burst, a Cap+
     status's every fragment, a seed's, the LC's scope) come from the followed grant (a slotless grant's at its first

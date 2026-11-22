@@ -510,6 +510,25 @@ dmr_cspdu_pf0_publish_active_grant(dsd_state* state, uint8_t lcn, uint16_t lpcha
     }
 }
 
+/* The grant's slot assignment, before any switch or policy refuses the grant (dmr_sm_note_grant_assignment()): a media
+   change on the followed slot ends that assignment whether the receiver follows the grant or not. Returns 1 when it
+   did: the grant itself is not followed. */
+static int
+dmr_cspdu_pf0_note_assignment(dsd_opts* opts, dsd_state* state, int csbk_o, uint8_t lcn, uint16_t call_channel,
+                              long int freq, uint32_t target, uint32_t source) {
+    const int lpcn = (int)call_channel;
+    dmr_sm_event_t ev = dmr_cspdu_pf0_is_group_grant_opcode(csbk_o)
+                            ? dmr_sm_ev_group_grant(freq, lpcn, (int)target, (int)source)
+                            : dmr_sm_ev_indiv_grant(freq, lpcn, (int)target, (int)source);
+    ev.slot = (int)(lcn & 1U);
+    ev.channel_kind = call_channel != 0U ? (uint8_t)DSD_CALL_CHANNEL_LPCN : (uint8_t)DSD_CALL_CHANNEL_NONE;
+    if (dmr_cspdu_pf0_is_data_grant_opcode(csbk_o)) {
+        ev.kind = DSD_CALL_KIND_DATA;
+    }
+    ev.origin = DMR_SM_ORIGIN_GRANT;
+    return dmr_sm_note_grant_assignment(opts, state, &ev);
+}
+
 static int
 dmr_cspdu_pf0_prepare_dispatch(const dsd_opts* opts, dsd_state* state, int* csbk_o, int* data_call, long int freq) {
     if (dmr_cspdu_pf0_should_skip_call(opts, csbk_o, data_call)) {
@@ -600,13 +619,15 @@ dmr_cspdu_pf0_handle_grants(dsd_opts* opts, dsd_state* state, uint8_t cs_pdu_bit
 
     dmr_cspdu_pf0_publish_active_grant(state, lcn, lpchannum, mbc_lpchannum, freq, target, source, csbk_o, st2);
 
+    const uint16_t call_channel = dmr_cspdu_pf0_call_channel(lpchannum, mbc_lpchannum);
     int data_call = 0;
-    if (!dmr_cspdu_pf0_prepare_dispatch(opts, state, &csbk_o, &data_call, freq)) {
+    if (dmr_cspdu_pf0_note_assignment(opts, state, csbk_o, lcn, call_channel, freq, target, source)
+        || !dmr_cspdu_pf0_prepare_dispatch(opts, state, &csbk_o, &data_call, freq)) {
         return;
     }
 
-    dmr_cspdu_pf0_try_dispatch_grant(opts, state, cs_pdu_bits, cs_pdu, csbk_o, data_call,
-                                     dmr_cspdu_pf0_call_channel(lpchannum, mbc_lpchannum), freq, target, source);
+    dmr_cspdu_pf0_try_dispatch_grant(opts, state, cs_pdu_bits, cs_pdu, csbk_o, data_call, call_channel, freq, target,
+                                     source);
 }
 
 /* The absolute escape of a C_MOVE: the TSCC's frequency is in the MV_AP block appended to the MBC header (TS 102 361-4

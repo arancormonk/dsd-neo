@@ -1188,6 +1188,51 @@ test_companion_voice_keeps_acquiring_slot_held(dsd_opts* opts, dsd_state* st) {
     return rc;
 }
 
+/* A checked grant that changes the followed slot's media ends that slot's assignment whether or not the receiver would
+   follow it: with data following off (the default), a TD_GRANT for the followed slot is not followed, and a data grant
+   or a voice grant the talkgroup policy blocks is not either; each still returns the receiver to the control channel,
+   so the voice grant repeated there is followed with a tune of its own and its first voice opens its own call. */
+static int
+test_unfollowed_media_change_ends_the_assignment(dsd_opts* opts, dsd_state* st) {
+    int rc = 0;
+    for (int variant = 0; variant < 2; variant++) {
+        init_env(opts, st, 2.0);
+        if (variant == 0) {
+            opts->trunk_tune_data_calls = 0;
+        } else {
+            seed_row(st, 400, "B", 0, 0);
+        }
+        tv_grant(opts, st, LPCN_A, 0, 300, 3);
+        clock_at(0.2);
+        voice(opts, st, 0);
+        dsd_call_snapshot call;
+        const uint64_t first = dsd_call_state_get(st, 0U, &call) > 0 ? dsd_call_snapshot_transmission(&call) : 0U;
+        clock_at(0.4);
+        grant_op(opts, st, 52U, LPCN_A, 0, variant == 0 ? 300U : 400U, 9); // TD_GRANT, not followed
+        rc |= expect_true(variant == 0 ? "an unfollowed data grant (data following off) returns to the control channel"
+                                       : "a policy-blocked data grant returns to the control channel",
+                          sm()->state == DMR_SM_ON_CC && opts->trunk_is_tuned == 0 && g_tunes == 1);
+        clock_at(0.6);
+        tv_grant(opts, st, LPCN_A, 0, 300, 3);
+        clock_at(0.8);
+        voice(opts, st, 0);
+        rc |= expect_true("the repeated voice grant opens its own call",
+                          g_tunes == 2 && dsd_call_state_get(st, 0U, &call) > 0 && call.phase == DSD_CALL_PHASE_ACTIVE
+                              && dsd_call_snapshot_transmission(&call) != first && call.policy_target_id == 300U);
+    }
+
+    init_env(opts, st, 2.0);
+    seed_row(st, 400, "B", 0, 0);
+    grant_op(opts, st, 52U, LPCN_A, 0, 300, 1); // TD_GRANT, followed for data
+    rc |= expect_true("the data grant is followed", vc(st) == VC_A && sm()->vc_data_call == 1);
+    clock_at(0.2);
+    dmr_sm_emit_data_sync(opts, st, 0);
+    clock_at(0.3);
+    tv_grant(opts, st, LPCN_A, 0, 400, 2); // a voice grant the policy blocks, for the followed slot
+    rc |= expect_true("a policy-blocked voice grant ends the data follow", sm()->state == DMR_SM_ON_CC && g_tunes == 1);
+    return rc;
+}
+
 /* Data on a voice grant's slot is not its first voice: a p90 voice grant for TS1 is followed (data following on), p10
    voice on TS2 starts, and one data burst arrives on TS1 at 0.1 s. At 2.5 s, its tail over, the p90 call is still not
    on the air within its acquisition window, so a p50 preempt candidate elsewhere waits. */
@@ -1284,6 +1329,7 @@ main(void) {
     rc |= test_companion_voice_keeps_acquiring_slot_held(opts, st);
     rc |= test_pre_grant_companion_voice_keeps_acquisition(opts, st);
     rc |= test_data_burst_is_no_first_voice(opts, st);
+    rc |= test_unfollowed_media_change_ends_the_assignment(opts, st);
 
     dsd_trunk_tuning_hooks_set((dsd_trunk_tuning_hooks){0});
     dsd_decode_clock_use_system();
