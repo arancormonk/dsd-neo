@@ -129,6 +129,13 @@ Item {
         id: naturalName
     }
 
+    // A line as a Text draws it at its own size, with no fit.
+    Text {
+        id: naturalLine
+        visible: false
+        textFormat: Text.PlainText
+    }
+
     // A Latin line alone in the row's two fonts: what the base face draws,
     // without the taller fallback faces the line boxes also hold.
     Text {
@@ -399,17 +406,68 @@ Item {
             }
         }
 
-        // D10's limit: a line in a taller script keeps its box and is still
-        // drawn, centred and unclipped, not dropped or elided away.
-        function test_tall_script_is_drawn_in_its_box() {
+        // Issue #901 r4 F2 (replacing D10's "drawn unclipped into the padding"): a line in a script that stands taller
+        // than its box (Tibetan stacks) is drawn smaller to fit the box, so it stays inside its row. In a compact
+        // list at text 2.0 a Tibetan name painted 5 px above its row, across the row above's divider, and was cut at
+        // the top of the viewport. The row keeps its height, the line its box, centred; the name is still drawn
+        // whole, and a long one is still cut at its end. Latin, CJK and emoji, which the box already holds, keep
+        // their size.
+        function test_tall_script_fits_its_box_data() {
+            var rows = [];
+            for (var scale of [1.0, 2.0]) {
+                for (var compact of [false, true])
+                    rows.push({tag: scale.toFixed(1) + (compact ? " compact" : " default"), scale: scale, compact: compact});
+            }
+            return rows;
+        }
+        function test_tall_script_fits_its_box(data) {
+            Ui.Theme.fontScale = data.scale;
+            setCompact(data.compact);
             waitForRendering(scripts);
             var name = findChild(tall, "callRowName");
+            var meta = findChild(tall, "callRowMeta");
             compare(name.height, Ui.LineBoxes.callRowNameBox());
+            compare(tall.height, Ui.LineBoxes.callRowHeight(data.compact), "the row keeps its height");
             compare(name.verticalAlignment, Text.AlignVCenter);
-            verify(!name.clip);
             compare(name.lineCount, 1);
             verify(name.contentWidth > 0, "the taller line was not drawn");
             verify(!name.truncated, "the taller line was elided");
+            verify(name.contentHeight <= name.height + 0.5, data.tag + ": the name's line " + name.contentHeight
+                   + " is taller than its box " + name.height);
+            var top = name.mapToItem(tall, 0, (name.height - name.contentHeight) / 2).y;
+            verify(top >= -0.5 && top + name.contentHeight <= tall.height + 0.5, data.tag + ": the name paints outside its row: "
+                   + top + " + " + name.contentHeight + " in " + tall.height);
+            verify(meta.contentHeight <= meta.height + 0.5, data.tag + ": the meta line is taller than its box");
+            // Where a face draws the script taller than the box (Noto Sans Tibetan on this host; a host with no
+            // Tibetan face draws boxes of the base face's height), it is drawn smaller.
+            naturalLine.font = name.font;
+            naturalLine.text = name.text;
+            if (naturalLine.implicitHeight > name.height + 0.5)
+                verify(name.fontInfo.pixelSize < name.font.pixelSize, data.tag + ": the taller line is drawn at its size, "
+                       + name.fontInfo.pixelSize);
+            else
+                console.log(data.tag + ": no face here draws the script taller than its box");
+            // The rows the box already holds keep their size and look.
+            for (var row of [latin, emoji, cjk, cjkMeta]) {
+                for (var key of ["callRowName", "callRowMeta"]) {
+                    var line = findChild(row, key);
+                    compare(line.fontInfo.pixelSize, line.font.pixelSize, row.name + " " + key + " was drawn smaller");
+                    verify(line.contentHeight <= line.height + 0.5, row.name + " " + key + " taller than its box");
+                }
+            }
+            // A long name in the taller script is still cut at its end (in a 220 px row).
+            var kept = tall.name;
+            try {
+                scripts.width = 220;
+                tall.name = "བོད་སྐད་ཀྱི་རྒྱུད་བོད་སྐད་ཀྱི་རྒྱུད་བོད་སྐད་ཀྱི་རྒྱུད་བོད་སྐད་ཀྱི་རྒྱུད་བོད་སྐད་ཀྱི་རྒྱུད";
+                waitForRendering(scripts);
+                verify(name.truncated, data.tag + ": the long name was not cut");
+                verify(name.contentWidth <= name.width + 0.5, data.tag + ": the long name runs past its width");
+                verify(name.contentHeight <= name.height + 0.5, data.tag + ": the long name is taller than its box");
+            } finally {
+                tall.name = kept;
+                scripts.width = 420;
+            }
         }
 
         // What a row's right side can carry, in the order it is drawn in

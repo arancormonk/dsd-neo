@@ -182,8 +182,11 @@ Item {
             // a line break in that text is drawn as a space.
             //
             // Each line is exactly its font's box, its text centred in it. A
-            // script that stands taller than the box (Tibetan stacks) is drawn
-            // unclipped into the row's padding: the decided limit of D10.
+            // script whose line stands taller than the box (Tibetan stacks,
+            // twice the Latin line) is drawn smaller to fit it (VerticalFit),
+            // so it stays inside the row (r4 F2: it painted across the row
+            // above and was cut at the viewport's top). The box holds Latin,
+            // CJK and emoji at their size, so those are never made smaller.
             Text {
                 objectName: "callRowName"
                 width: parent.width
@@ -192,6 +195,8 @@ Item {
                 text: Util.oneLine(row.name)
                 textFormat: Text.PlainText
                 font: LineBoxes.callRowNameFont
+                fontSizeMode: Text.VerticalFit
+                minimumPixelSize: Math.max(4, Math.floor(font.pixelSize / 3))
                 color: Theme.textPrimary
                 elide: Text.ElideRight
             }
@@ -204,6 +209,8 @@ Item {
                 text: Util.oneLine(row.metaText)
                 textFormat: Text.PlainText
                 font: LineBoxes.callRowMetaFont
+                fontSizeMode: Text.VerticalFit
+                minimumPixelSize: Math.max(4, Math.floor(font.pixelSize / 3))
                 color: Theme.textSubdued
                 elide: Text.ElideRight
             }
