@@ -1182,9 +1182,9 @@ test_cut_read_voids_the_binding(void) {
     }
 }
 
-/* Issue #890: a stream frame the symbol clock restarted inside (a flush at the last dibit of its read) contributes no
-   LICH chunk to the assembly after the break: its chunk 0 and the next frames' chunks 1 to 5 rebuild no LSF, so the
-   reports stay anonymous at that chunk 5. */
+/* Issue #890: a stream frame the symbol clock restarted inside (a flush at the last dibit of its read) is dropped as a
+   cut read is: no evidence, no open-verdict wait, no voice and no LICH chunk, so its chunk 0 and the next frames'
+   chunks 1 to 5 rebuild no LSF, and the reports stay anonymous at that chunk 5. */
 static void
 test_split_stream_frame_gives_no_lich_chunk(void) {
     dsd_opts* opts = g_opts;
@@ -1194,9 +1194,67 @@ test_split_stream_frame_gives_no_lich_chunk(void) {
     bound_stream(opts, state, lsf_bits);
     load_stream_frame(lsf_bits, 0U, 6U);
     g_epoch_at = M17_PAYLOAD_SYMBOLS - 1U;
-    (void)processM17STR(opts, state);
+    const uint32_t partial_before = state->scan_y_partial_seq;
+    const uint32_t content_before = state->scan_y_content_seq;
+    const int decodes_before = g_codec2_decodes;
+    const int reports_before = g_test_scan_activity.count;
+    assert(processM17STR(opts, state) == 0);
+    assert(state->scan_y_partial_seq == partial_before && state->scan_y_content_seq == content_before);
+    assert(g_codec2_decodes == decodes_before && g_test_scan_activity.count == reports_before);
+    assert(state->m17_lich.held == 0U && state->m17_confirm_weak_streak == 0U);
     dsd_test_scan_activity_reset();
     for (uint16_t fn = 7U; fn < 12U; fn++) {
+        load_stream_frame(lsf_bits, (uint8_t)(fn % 6U), fn);
+        (void)processM17STR(opts, state);
+    }
+    assert(g_test_scan_activity.count >= 1 && g_test_scan_activity.last.known == 0U);
+    finish(state);
+}
+
+/* Issue #890: a valid packet-mode LSF frame the symbol clock restarted inside (on its last symbol, its CRC still
+   passing) is dropped before anything of it takes effect: no call, no scan report, no packet armed. */
+static void
+test_split_lsf_frame_publishes_nothing(void) {
+    dsd_opts* opts = g_opts;
+    dsd_state* state = g_state;
+    uint8_t lsf_bits[TEST_M17_LSF_BITS];
+    build_packet_lsf_bits(lsf_bits);
+    prepare(opts, state);
+    dsd_test_scan_activity_install();
+    state->synctype = DSD_SYNC_M17_LSF_POS;
+    load_lsf_frame(lsf_bits);
+    g_epoch_at = M17_PAYLOAD_SYMBOLS - 1U;
+    assert(processM17LSF(opts, state) == 0);
+    assert(g_test_scan_activity.count == 0 && state->m17_lsf_checked == 0U && !has_call(state));
+    const m17_state_ext* g = m17_state_ext_find(state);
+    assert(g == NULL || g->pkt_armed == 0U);
+    state->synctype = DSD_SYNC_M17_PKT_POS;
+    assert(load_packet_frame("HI", 0) == 1);
+    assert(processM17PKT(opts, state) == 0);
+    finish(state);
+}
+
+/* Issue #890: a stream frame inside which the input ended (a capture's end with the fallback to another input asked
+   for, six symbols short, its stand-ins counted) is cut: it reports nothing, stores no LICH chunk and voids the
+   binding, so the next clean LICH pair reports anonymous. */
+static void
+test_stream_frame_at_the_input_end_is_cut(void) {
+    dsd_opts* opts = g_opts;
+    dsd_state* state = g_state;
+    uint8_t lsf_bits[TEST_M17_LSF_BITS];
+    build_lsf_bits(lsf_bits);
+    bound_stream(opts, state, lsf_bits);
+    load_stream_frame(lsf_bits, 0U, 6U);
+    g_input_end_mode = TEST_END_FALLBACK;
+    g_input_end_at = 178U;
+    const int reports_before = g_test_scan_activity.count;
+    assert(processM17STR(opts, state) == 0);
+    assert(state->input_interrupted == 1 && g_test_scan_activity.count == reports_before);
+    assert(state->m17_lich.held == 0U);
+    state->input_interrupted = 0;
+    state->input_fallback_pending = 0;
+    dsd_test_scan_activity_reset();
+    for (uint16_t fn = 7U; fn < 10U; fn++) {
         load_stream_frame(lsf_bits, (uint8_t)(fn % 6U), fn);
         (void)processM17STR(opts, state);
     }
@@ -1581,6 +1639,8 @@ main(void) {
     test_lich_chunks_do_not_cross_a_gap();
     test_cut_read_voids_the_binding();
     test_split_stream_frame_gives_no_lich_chunk();
+    test_split_lsf_frame_publishes_nothing();
+    test_stream_frame_at_the_input_end_is_cut();
     test_rf_gap_breaks_the_weak_streak();
     test_rf_lsf_frame_requests_the_extension_once();
 #ifdef USE_CODEC2

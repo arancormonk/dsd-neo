@@ -6032,8 +6032,9 @@ the implementations from `dsd_engine_trunk_scan_init()` and clears them again on
   in RF continuity voids the binding too (decided, fail closed): an RF LSF or stream frame that does not end one M17
   frame (192 symbols, within 32) after the RF frame before it in one symbol clock epoch (`m17_rf_frame_check()`,
   `m17_state_ext::rf_frame_symbol`/`_epoch`), a frame whose read was cut (a carrier boundary, an input interruption
-  or the input's end, at once: `m17_rf_frame_cut()`, which also leaves no frame end to measure from) and a frame the
-  symbol clock restarted inside (split: its own LICH chunk is dropped too) each break it: `m17_rf_continuity_break()`
+  or the input's end, at once: `m17_rf_frame_cut()`, which also leaves no frame end to measure from) and a stream or
+  LSF frame the symbol clock restarted inside (split between two receptions: dropped before it is decoded, as a cut
+  read is, so it publishes, reports, arms, plays and ends nothing and starts no open-verdict wait) each break it: `m17_rf_continuity_break()`
   clears `m17_state_ext::lsf_unbroken`, drops the LICH chunks held from before it (`m17_lich_reset()`) and the weak
   LICH streak (`m17_confirm_break_streak()`, so a clean LICH on each side of a break is no pair), and only the next
   LSF whose CRC passes binds again: an LSF frame, or one the LICH rebuilds from chunks received after the break; an
@@ -14388,8 +14389,8 @@ Private per-protocol modules worth knowing about:
   until the next checked LSF frame: a counter out of order, a frame lost (the spacing, which alone shows a frame lost
   just before an EOF), a frame cut by an input interruption or a carrier boundary (disarmed on the interrupted read
   itself, `processM17PKT()`, whatever the symbol count says: an interrupted read counts no stood-in symbols; the
-  input's end inside the frame counts as a cut, `dsd_state_note_input_end()` in `processM17PKT()` and
-  `processM17LSF()`: shutdown or a fallback to another input, past which the reader stood in silence or erasures), a
+  input's end inside the frame counts as a cut, `dsd_state_note_input_end()` in `processM17PKT()`, `processM17LSF()`
+  and `processM17STR()`: shutdown or a fallback to another input, past which the reader stood in silence or erasures), a
   CRC-failed LSF
   frame (it drops any buffered bytes and arms nothing, as an LSF frame never stands between one packet's chunks), a
   stream-mode LSF frame, or no extension to hold the assembly (out of memory: nothing is armed, and nothing resumes

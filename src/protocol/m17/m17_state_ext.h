@@ -113,7 +113,8 @@ typedef struct m17_state_ext {
        transmission; set by a checked LSF, cleared by an RF LSF or stream frame that does not end one M17 frame after
        the RF frame before it (a frame lost, or another transmission's frames after a missed EOS, EOT and LSF frame,
        which take at least three frame periods; m17_rf_frame_check()), by an RF frame whose read was cut
-       (m17_rf_frame_cut()) and by one the symbol clock restarted inside; each break also drops the LICH chunks held
+       (m17_rf_frame_cut(), which also drops a frame the symbol clock restarted inside or the input ended inside); each
+       break also drops the LICH chunks held
        from before it and the weak LICH streak (m17_rf_continuity_break()). The binding vouches for the stream (m17_link_setup_vouched(): its scan report's fields, its
        checked speech) only while it is undisputed and unbroken. All three are emptied at every transmission boundary
        (m17_confirm_reset()). rf_frame_valid,

@@ -1977,8 +1977,11 @@ processM17STR(dsd_opts* opts, dsd_state* state) {
        boundary that moved the carrier count meanwhile (issue #575) left the rest of it another carrier's, and an input
        interruption that cut it (a Signal search left the frame, or a live read gave up on a stalled input) left the
        rest erasures getSymbol() stood in, which the LICH's Golay blocks can take for codewords and the Viterbi decode
-       for a frame number with its end flag set. Either way the frame is dropped, as on a sync loss: no LICH chunk, no
-       evidence, no voice and no end of the call. */
+       for a frame number with its end flag set. So did the input's end inside it (a symbol or binary capture's end,
+       shutdown, a fallback to another input: dsd_state_note_input_end()), and a symbol clock restart inside its read
+       (a stream flush: the frame is split between two receptions, issue #890). Either way the frame is dropped, as on
+       a sync loss: no LICH chunk, no evidence and no wait, no voice and no end of the call, and RF continuity breaks
+       there (m17_rf_frame_cut()). */
     const uint32_t carrier_seq = state->carrier_seq;
     const uint32_t epoch_at_start = state->symbol_clock_epoch;
 
@@ -1986,18 +1989,17 @@ processM17STR(dsd_opts* opts, dsd_state* state) {
     for (i = 0; i < 184; i++) {
         dbuf[i] = (uint8_t)get_dibit_and_analog_signal(opts, state, NULL);
     }
-    if (dsd_state_frame_read_lost(state, carrier_seq)) {
+    dsd_state_note_input_end(state, dsd_exitflag_load() == 1);
+    if (dsd_state_frame_read_lost(state, carrier_seq) || state->symbol_clock_epoch != epoch_at_start) {
         m17_rf_frame_cut(state);
         DSD_FPRINTF(stderr, "\n");
         return 0;
     }
     /* RF continuity (issue #890; the extension is made here on a stream's first frame, so a late entry's LICH can be
-       measured). A frame the symbol clock restarted inside (a stream flush during its read) is split: it follows a
-       break, and its own LICH chunk joins no assembly either (dropped below once the frame is decoded). */
+       measured). */
     m17_state_ext* const rf = m17_ext_st(state);
     m17_rf_frame_check(state, rf);
     m17_rf_frame_record(state, rf);
-    const int split = state->symbol_clock_epoch != epoch_at_start;
 
     m17_confirm_begin_frame(state);
 
@@ -2037,9 +2039,6 @@ processM17STR(dsd_opts* opts, dsd_state* state) {
             m17_report_scan_activity(opts, state, 0);
         }
         M17prepareStream(opts, state, m17_bits);
-    }
-    if (split) {
-        m17_rf_continuity_break(state, rf);
     }
     m17_confirm_end_frame(state);
 
@@ -2347,14 +2346,16 @@ processM17LSF(dsd_opts* opts, dsd_state* state) {
     /* An LSF a carrier boundary split (issue #575) or an input interruption cut (a Signal search left it, or a live
        read gave up on a stalled input) decodes nothing: the rest of it is another carrier's or erasures the reader
        stood in, through which the soft Viterbi decode can still clear the CRC and publish and confirm a link setup
-       that is not this transmission's. It is dropped, as on a sync loss. */
+       that is not this transmission's. So does a symbol clock restart inside its read (split between two receptions,
+       issue #890), whose CRC may still pass. It is dropped, as on a sync loss, before anything of it is published,
+       reported or armed. */
     const uint32_t carrier_seq = state->carrier_seq;
     const uint32_t epoch_at_start = state->symbol_clock_epoch;
     m17_capture_soft_symbols(opts, state, soft_symbols);
     /* The input ended inside the frame (a symbol or binary capture's end, a short read, shutdown, a fallback to
        another input): past the end the reader stood in silence or erasures, so the frame counts as cut. */
     dsd_state_note_input_end(state, dsd_exitflag_load() == 1);
-    if (dsd_state_frame_read_lost(state, carrier_seq)) {
+    if (dsd_state_frame_read_lost(state, carrier_seq) || state->symbol_clock_epoch != epoch_at_start) {
         /* No checked LSF frame: nothing a packet could be assembled behind (the strict RF packet rule). */
         m17_pkt_disarm(state);
         m17_rf_frame_cut(state);
@@ -2362,19 +2363,14 @@ processM17LSF(dsd_opts* opts, dsd_state* state) {
         return 0;
     }
     /* RF continuity (issue #890), checked without making the extension: an RF LSF frame requests it once, and only
-       once its CRC passed (m17_finalize_lsf_crc()); the frame end is recorded with whatever that left. An LSF frame the
-       symbol clock restarted inside is split: it binds nothing for the scan side, whatever its CRC says. */
+       once its CRC passed (m17_finalize_lsf_crc()); the frame end is recorded with whatever that left. */
     m17_rf_frame_check(state, m17_state_ext_find(state));
 
     m17_confirm_begin_frame(state);
     m17_soft_bits_from_symbols(soft_symbols, state, m17_soft_bits);
     const int crc_err = m17_decode_lsf_soft_bits(opts, state, m17_soft_bits);
     m17_confirm_end_frame(state);
-    m17_state_ext* const rf = m17_state_ext_find(state);
-    m17_rf_frame_record(state, rf);
-    if (state->symbol_clock_epoch != epoch_at_start) {
-        m17_rf_continuity_break(state, rf);
-    }
+    m17_rf_frame_record(state, m17_state_ext_find(state));
 
     DSD_FPRINTF(stderr, "\n");
     /* The CRC is a check this frame actually ran; a transmission already proved by earlier
