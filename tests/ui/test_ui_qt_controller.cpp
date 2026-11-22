@@ -46,14 +46,16 @@
 #include <dsd-neo/core/access_code.h>
 #include <dsd-neo/core/analog_tone.h>
 #include <dsd-neo/core/call_state.h>
+#include <dsd-neo/core/heard_talkgroup.h>
 #include <dsd-neo/core/init.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/opts_fwd.h>
 #include <dsd-neo/core/position.h>
 #include <dsd-neo/core/received_identity.h>
 #include <dsd-neo/core/safe_api.h>
-/* The scan-list store helpers (issue #672) have no C++ linkage of their own. */
+/* The scan-list store helpers (issue #672) have no C++ linkage of their own: state.h, and events.h that includes it. */
 extern "C" {
+#include <dsd-neo/core/events.h>
 #include <dsd-neo/core/state.h>
 }
 #include <dsd-neo/core/state_ext.h>
@@ -79,11 +81,13 @@ extern "C" {
 #include "../test_support/qt_test_paths.h"
 #include "app_prefs.h"
 #include "auto_start_attachment.h"
+#include "backup_apply.h"
 #include "call_history_model.h"
 #include "command_bridge.h"
 #include "decoder_host.h"
 #include "decryption_profiles_model.h"
 #include "diagnostics_log.h"
+#include "heard_talkgroup_owners.h"
 #include "heard_talkgroup_store.h"
 #include "json_store.h"
 #include "metrics_model.h"
@@ -2039,6 +2043,254 @@ test_session_end_writes_heard_talkgroups() {
     QFile::remove(dsd_qt::json_store_path(name));
 }
 
+/* Issue #903, end to end: a saved system with no talkgroup list remembers the talkgroups it is heard on across Stop and
+ * a restart, through the parts the app runs: the decoder's call state and history row, the published snapshot, the
+ * controller's tick, History, the store following the saved systems, and the Talkgroups model. */
+
+/* One decoder run on a radio: a state of its own, so its history ring has its own identity, as each start draws one. */
+struct DecoderRun {
+    std::unique_ptr<dsd_opts> opts = std::make_unique<dsd_opts>();
+    dsd_state* state = static_cast<dsd_state*>(calloc(1, sizeof(dsd_state)));
+    double nowM = 0.0;
+
+    DecoderRun() {
+        check(state != nullptr);
+        initOpts(opts.get());
+        initState(state);
+        opts->audio_in_type = AUDIO_IN_RTL;
+        nowM = dsd_decode_now_mono_s();
+    }
+
+    ~DecoderRun() {
+        freeState(state);
+        free(state);
+    }
+
+    DecoderRun(const DecoderRun&) = delete;
+    DecoderRun& operator=(const DecoderRun&) = delete;
+
+    /* A P25 group call from its start to its terminator as the decoder runs it: the call state's begin, the voice
+     * channel's checked message proving the group when @p proven, and the end; the event layer renders and commits its
+     * history row, returned as committed. */
+    Event_History
+    call(uint32_t tg, bool proven) {
+        dsd_call_observation observation = {};
+        observation.protocol = DSD_SYNC_P25P1_POS;
+        observation.slot = 0U;
+        observation.kind = DSD_CALL_KIND_GROUP_VOICE;
+        observation.ota_target_id = tg;
+        observation.policy_target_id = tg;
+        observation.ota_source_id = 4201;
+        observation.observed_m = (nowM += 0.5);
+        check(dsd_call_state_observe(state, &observation, DSD_CALL_BOUNDARY_BEGIN) == 1);
+        dsd_event_sync_slot(opts.get(), state, 0U);
+        if (proven) {
+            dsd_call_snapshot active = {};
+            check(dsd_call_state_get(state, 0U, &active) > 0);
+            const dsd_heard_tg_input in = {DSD_HEARD_TG_P25, tg, 0, 0, 0};
+            dsd_call_state_note_verified_target(opts.get(), state, 0U, dsd_call_snapshot_transmission(&active), &in);
+        }
+        check(dsd_call_state_end_ex(state, 0U, (nowM += 2.0), DSD_CALL_END_TERMINATOR) > 0);
+        dsd_event_sync_slot(opts.get(), state, 0U);
+        return state->event_history_s[0].Event_History_Items[1];
+    }
+
+    void
+    publish() const {
+        dsd_app_telemetry_publish_opts_snapshot(opts.get());
+        dsd_app_telemetry_publish_snapshot(state);
+        dsd_app_request_redraw();
+    }
+};
+
+void
+run_ticks(dsd_qt::UiController& controller, int ms) {
+    QEventLoop loop;
+    QTimer::singleShot(ms, &loop, &QEventLoop::quit);
+    controller.start();
+    loop.exec();
+    controller.stop();
+}
+
+/* A saved-system start as Main runs it (the flush, then the session with its owner), a decoder run doing @p onAir,
+ * ticks while it runs, then Stop: the host reports Idle at its next refresh, as a stopped engine does. */
+void
+run_saved_system(Host& host, dsd_qt::UiController& controller, dsd_qt::CallHistoryModel& history,
+                 const QVariantMap& system, const std::function<void(DecoderRun&)>& onAir) {
+    const QString uid = system.value(QStringLiteral("uid")).toString();
+    controller.flushHistoryBeforeStart();
+    history.beginSessionWithOwners(system.value(QStringLiteral("name")).toString(), uid, uid, {});
+    host.setPhase(Host::Starting);
+    host.setPhase(Host::Running);
+    DecoderRun run;
+    onAir(run);
+    run.publish();
+    run_ticks(controller, 130);
+    host.onRefresh = [&host]() {
+        if (host.phase == Host::Running) {
+            host.setPhase(Host::Idle);
+        }
+    };
+    run_ticks(controller, 130);
+    host.onRefresh = {};
+}
+
+/* The decoder's verdict on a group call of each of @p tgs: tune, audio, record, stream, match and block reasons. */
+std::vector<std::vector<long long>>
+policy_verdicts(const DecoderRun& run, std::initializer_list<uint32_t> tgs) {
+    std::vector<std::vector<long long>> verdicts;
+    for (const uint32_t tg : tgs) {
+        dsd_tg_policy_decision d = {};
+        check(dsd_tg_policy_evaluate_group_call(run.opts.get(), run.state, tg, 4201, 0, 0, &d) == 0);
+        verdicts.push_back({d.tune_allowed, d.audio_allowed, d.record_allowed, d.stream_allowed, d.match,
+                            static_cast<long long>(d.block_reasons)});
+    }
+    return verdicts;
+}
+
+QModelIndex
+card_of(const dsd_qt::TalkgroupListModel& model, uint32_t id) {
+    for (int i = 0; i < model.count(); ++i) {
+        const QModelIndex idx = model.index(i, 0);
+        if (model.data(idx, dsd_qt::TalkgroupListModel::IdStartRole).toULongLong() == id) {
+            return idx;
+        }
+    }
+    return {};
+}
+
+constexpr uint32_t kE2eRemembered = 3101; // verified on live input on System A
+constexpr uint32_t kE2eUnlisted = 3999;   // never heard
+constexpr uint32_t kE2eListed = 3201;     // the allow-list session's one listed talkgroup
+
+/* What the first launch remembers: System A (no talkgroup list, remembering by default) hears one verified call on
+ * live input and four calls that must not be remembered; System B (remembering off) hears a verified one. Stop writes
+ * the store. @return the remembered call's end, its time as History hands it on. */
+qint64
+e2e_first_launch(const QString& file, QVariantMap* systemA, QVariantMap* systemB) {
+    dsd_qt::SavedSystemsModel systems;
+    check(systems.add({{"name", "System A"}}));
+    check(systems.add({{"name", "System B"}, {"rememberTalkgroups", false}}));
+    *systemA = systems.get(0);
+    *systemB = systems.get(1);
+    check(systemA->value("groupCsvPath").toString().isEmpty() && systemA->value("rememberTalkgroups").toBool());
+    dsd_qt::HeardTalkgroupStore store(file);
+    dsd_qt::heard_talkgroups_follow_systems(&store, &systems, dsd_qt::backup::ApplyOutcome::None);
+    dsd_qt::CallHistoryModel history;
+    history.setHeardSink(&store);
+    Host host;
+    host.phase = Host::Idle;
+    dsd_qt::UiController controller(&host, nullptr, &history, nullptr);
+    controller.setHeardTalkgroups(&store);
+    controller.setPollIntervalMs(50);
+    const int before = history.count();
+    qint64 provenEnd = 0;
+    run_saved_system(host, controller, history, *systemA, [&provenEnd](DecoderRun& run) {
+        const Event_History proven = run.call(kE2eRemembered, true);
+        check(proven.heard_variant == DSD_HEARD_TG_P25 && proven.heard_id == kE2eRemembered && proven.live_input);
+        provenEnd = static_cast<qint64>(proven.event_time);
+        // An unverified call: no checked message named its group.
+        check(run.call(3102, false).heard_variant == DSD_HEARD_TG_NONE);
+        // A verified call decoded off a file (a replay): its row is not live.
+        run.opts->audio_in_type = AUDIO_IN_WAV;
+        const Event_History replayed = run.call(3103, true);
+        check(replayed.heard_id == 3103 && !replayed.live_input);
+        run.opts->audio_in_type = AUDIO_IN_RTL;
+        // A verified call while the operator held the tuner.
+        run.state->operator_tuned = 1U;
+        const Event_History tuned = run.call(3104, true);
+        check(tuned.heard_id == 3104 && tuned.live_input && tuned.operator_tuned);
+        run.state->operator_tuned = 0U;
+    });
+    run_saved_system(host, controller, history, *systemB, [](DecoderRun& run) {
+        const Event_History proven = run.call(3105, true);
+        check(proven.heard_id == 3105 && proven.live_input);
+    });
+    check(history.count() == before + 5); // every call reached History
+    store.waitForWrites();
+    check(!store.dirty()); // Stop wrote it, before any teardown
+    const QJsonArray onDisk = dsd_qt::json_store_load_array(file);
+    check(onDisk.size() == 1);
+    const QJsonObject entry = onDisk.at(0).toObject();
+    check(entry.value("owner").toString() == systemA->value("uid").toString());
+    check(entry.value("id").toInteger() == kE2eRemembered && entry.value("variant").toInt() == DSD_HEARD_TG_P25);
+    check(entry.value("last").toInteger() == provenEnd);
+    return provenEnd;
+}
+
+/* The restart: the saved systems and the store read from disk, a new session on System A that has heard nothing. */
+void
+e2e_restart(const QString& file, const QVariantMap& systemA, const QVariantMap& systemB, qint64 provenEnd,
+            const DecoderRun& allowList) {
+    const QString uidA = systemA.value("uid").toString();
+    const QString uidB = systemB.value("uid").toString();
+    dsd_qt::SavedSystemsModel systems;
+    dsd_qt::HeardTalkgroupStore store(file);
+    dsd_qt::heard_talkgroups_follow_systems(&store, &systems, dsd_qt::backup::ApplyOutcome::None);
+    check(store.loaded() && store.remembering(uidA) && !store.remembering(uidB));
+    const QVector<dsd_qt::HeardTalkgroupStore::Entry> entries = store.entriesFor(uidA);
+    check(entries.size() == 1 && entries.at(0).variant == DSD_HEARD_TG_P25 && entries.at(0).id == kE2eRemembered);
+    check(entries.at(0).first == provenEnd && entries.at(0).last == provenEnd);
+    check(store.entriesFor(uidB).isEmpty());
+    dsd_qt::CallHistoryModel history;
+    history.setHeardSink(&store);
+    dsd_qt::TalkgroupListModel talkgroups(&history);
+    talkgroups.setHeardStore(&store);
+    history.beginSessionWithOwners(systemA.value("name").toString(), uidA, uidA, {});
+    talkgroups.setHistorySession(history.session());
+    const DecoderRun run;
+    talkgroups.refresh(run.opts.get(), run.state);
+    check(talkgroups.viewedOwner() == uidA && talkgroups.remembering());
+    check(talkgroups.count() == 1); // the remembered card and nothing else
+    const QModelIndex card = card_of(talkgroups, kE2eRemembered);
+    check(card.isValid() && talkgroups.data(card, dsd_qt::TalkgroupListModel::RememberedRole).toBool());
+    check(talkgroups.data(card, dsd_qt::TalkgroupListModel::LastHeardRole).toLongLong() == provenEnd);
+    check(!talkgroups.data(card, dsd_qt::TalkgroupListModel::ListedRole).toBool());
+    check(dsd_tg_policy_entry_count(run.state) == 0); // the session still has no talkgroup list
+    // The allow-list session: the listed row and the remembered card, which is unlisted and so not tuned.
+    talkgroups.refresh(allowList.opts.get(), allowList.state);
+    check(talkgroups.count() == 2 && card_of(talkgroups, kE2eListed).isValid());
+    const QModelIndex unlisted = card_of(talkgroups, kE2eRemembered);
+    check(unlisted.isValid() && talkgroups.data(unlisted, dsd_qt::TalkgroupListModel::RememberedRole).toBool()
+          && !talkgroups.data(unlisted, dsd_qt::TalkgroupListModel::ListeningRole).toBool());
+    // System B remembers nothing: its new session has no cards.
+    history.beginSessionWithOwners(systemB.value("name").toString(), uidB, uidB, {});
+    talkgroups.setHistorySession(history.session());
+    talkgroups.refresh(run.opts.get(), run.state);
+    check(talkgroups.viewedOwner() == uidB && !talkgroups.remembering() && talkgroups.count() == 0);
+}
+
+void
+test_heard_talkgroups_end_to_end() {
+    const QString file = QStringLiteral("heard_e2e.json");
+    const QString systemsFile = QStringLiteral("saved_systems.json");
+    QFile::remove(dsd_qt::json_store_path(file));
+    QFile::remove(dsd_qt::json_store_path(systemsFile));
+    // Remembering is display-only: a session with an allow list (one listed talkgroup) that records only unknown
+    // talkgroups decides every call the same before the store learnt, after, and after its reload, and keeps one row.
+    DecoderRun allowList;
+    allowList.opts->trunk_use_allow_list = 1;
+    allowList.opts->record_unknown_only = 1;
+    allowList.opts->trunk_tune_group_calls = 1;
+    dsd_tg_policy_entry listed = {};
+    check(dsd_tg_policy_make_exact_entry(kE2eListed, "A", "Listed", DSD_TG_POLICY_SOURCE_IMPORTED, &listed) == 0);
+    check(dsd_tg_policy_append_exact(allowList.state, &listed) == 0);
+    const auto verdicts = [&allowList]() {
+        return policy_verdicts(allowList, {kE2eRemembered, kE2eUnlisted, kE2eListed});
+    };
+    const auto before = verdicts();
+    check(!before.at(0).at(0) && !before.at(1).at(0) && before.at(2).at(0)); // only the listed one is tuned
+    check(before.at(0).at(2) && !before.at(2).at(2));                        // and only the unknown ones record
+    QVariantMap systemA;
+    QVariantMap systemB;
+    const qint64 provenEnd = e2e_first_launch(file, &systemA, &systemB);
+    check(verdicts() == before && dsd_tg_policy_entry_count(allowList.state) == 1);
+    e2e_restart(file, systemA, systemB, provenEnd, allowList);
+    check(verdicts() == before && dsd_tg_policy_entry_count(allowList.state) == 1);
+    QFile::remove(dsd_qt::json_store_path(file));
+    QFile::remove(dsd_qt::json_store_path(systemsFile));
+}
+
 /* The Activity screen's log: read from each redraw's snapshot while the session runs, kept across a scan hop (one log
  * spans the session), dropped when the session stops and read from the start at the next. */
 static void
@@ -2224,6 +2476,7 @@ main(int argc, char** argv) {
     test_history_handoff_after_resume_without_redraw();
     test_session_end_saves_after_final_ingest();
     test_session_end_writes_heard_talkgroups();
+    test_heard_talkgroups_end_to_end();
     test_unit_activity_follows_the_session();
     test_positions_poll_without_redraw();
     test_startup_options_wait_for_redraw();

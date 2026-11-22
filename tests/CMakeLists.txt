@@ -26972,6 +26972,8 @@ if(DSD_ENABLE_QT_UI)
         ${PROJECT_SOURCE_DIR}/src/ui/qt/ui_controller.cpp
         # Issue #903: the remembered talkgroups the tick writes.
         ${PROJECT_SOURCE_DIR}/src/ui/qt/heard_talkgroup_store.cpp
+        # Issue #903: the end-to-end case's store follows the saved systems as the app's does.
+        ${PROJECT_SOURCE_DIR}/src/ui/qt/heard_talkgroup_owners.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/unit_activity_model.cpp
         # Issue #800: the map's tracks, polled on every tick.
         ${PROJECT_SOURCE_DIR}/src/ui/qt/position_model.cpp
