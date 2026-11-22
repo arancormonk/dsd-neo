@@ -740,6 +740,71 @@ Item {
             verify(part(draft, "scanListTitle").Accessible.name.indexOf("draft list") >= 0, "the name is said whole");
         }
 
+        // Issue #901 r2 B1: a card's title, supporting line, place line and meta line draw one line in either view,
+        // and a scan-list card's name does: a line break in an imported name or place (U+2028, U+2029, a newline)
+        // is drawn as a space, so the card keeps a plain card's height and its lines their boxes. The words are all
+        // still said.
+        function test_card_lines_draw_one_line_data() {
+            var rows = [];
+            for (var compact of [false, true]) {
+                for (var scale of [1.0, 2.0]) {
+                    for (var sep of [{tag: "U+2028", s: "\u2028"}, {tag: "U+2029", s: "\u2029"}, {tag: "newline", s: "\n"}])
+                        rows.push({tag: (compact ? "compact" : "full") + " at " + scale + " " + sep.tag, compact: compact, scale: scale, sep: sep.s});
+                }
+            }
+            return rows;
+        }
+        function test_card_lines_draw_one_line(data) {
+            var breaks = /[\r\n\v\f\u0085\u2028\u2029]/;
+            prefs.compactView = data.compact;
+            root.width = 320;
+            Ui.Theme.fontScale = data.scale;
+            var place = function (name) {
+                return {states: [{stid: 90, name: name}], counties: [], candidateStates: [90]};
+            };
+            add("Plain Vale", {place: place("Westmark")});
+            add("North" + data.sep + "Ridge" + data.sep + "Fire", {place: place("West" + data.sep + "mark")});
+            verify(scanLists.add({name: "Loop", sourceType: "rtltcp", host: "127.0.0.1", port: 1234,
+                entries: [{kind: "freq", name: "Simplex", protocol: "p25", freqMhz: "851.5", enabled: true}]}));
+            verify(scanLists.add({name: "Harbor" + data.sep + "Watch", sourceType: "rtltcp", host: "127.0.0.1", port: 1234,
+                entries: [{kind: "freq", name: "Simplex", protocol: "p25", freqMhz: "851.5", enabled: true}]}));
+            settle();
+            var plain = cardOf("Plain Vale");
+            var broken = null;
+            for (var entry of entries()) {
+                if (entry.title !== "Plain Vale")
+                    broken = findChild(entry, "savedSystemCard");
+            }
+            verify(broken !== null);
+            for (var name of ["savedSystemTitle", "savedSystemSource", "savedSystemPlace", "savedSystemMeta"]) {
+                var line = part(broken, name);
+                verify(!breaks.test(line.text), name + " draws a line break: " + JSON.stringify(line.text));
+                if (line.visible && line.opacity > 0)
+                    compare(line.lineCount, 1, name + " draws one line");
+            }
+            compare(part(broken, "savedSystemTitle").text, "North Ridge Fire");
+            fuzzyCompare(broken.height, plain.height, 0.5, "a line break grows the card");
+            var spoken = part(broken, "savedSystemTitle").Accessible.name + " " + part(broken, "savedSystemTitle").Accessible.description
+                + " " + part(broken, "savedSystemPlace").Accessible.name;
+            for (var word of ["North", "Ridge", "Fire", "West"])
+                verify(spoken.indexOf(word) >= 0, "said: " + word + " in " + spoken);
+            home.showSection("scanLists");
+            settle();
+            tryCompare(home, "restorePending", false);
+            var cards = [];
+            for (var child of findChild(home, "listenScanListsSection").children) {
+                if (child.objectName === "scanListCard" && child.visible)
+                    cards.push(child);
+            }
+            compare(cards.length, 2);
+            var loop = cards[0].listName === "Loop" ? cards[0] : cards[1];
+            var harbor = loop === cards[0] ? cards[1] : cards[0];
+            var title = part(harbor, "scanListTitle");
+            compare(title.text, "Harbor Watch");
+            compare(title.lineCount, 1, "the list's name on one line");
+            fuzzyCompare(harbor.height, loop.height, 0.5, "a line break grows the list's card");
+        }
+
         // G2: with a screen reader on, a resize that draws or leaves out a card's site button (no rebuild, no tab or
         // sheet change) owes Android's copy of the tree one refresh, and it is given: exactly one per change, the
         // owed flag cleared.

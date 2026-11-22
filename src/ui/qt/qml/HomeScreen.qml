@@ -1417,9 +1417,11 @@ Item {
                                     Accessible.name: navigationAllowed && visible && !entry.held ? text : ""
                                     // D8: compact's undrawn lines, from their own words.
                                     Accessible.description: navigationAllowed && visible && !entry.held ? card.undrawnWords : ""
-                                    // Compact: one line, cut (G6); a line break in an
-                                    // imported name is a space, so its name reads it whole.
-                                    text: card.compact ? Util.oneLine(card.name) : card.name
+                                    // One line, cut, in either view (G6, r2 B1): a line
+                                    // break in an imported name is a space, so the head
+                                    // keeps its height and its name reads it whole.
+                                    text: Util.oneLine(card.name)
+                                    maximumLineCount: 1
                                     font.family: Theme.sans
                                     font.pixelSize: Theme.fontSize(17)
                                     font.weight: Font.Bold
@@ -1433,7 +1435,8 @@ Item {
                                     objectName: "savedSystemSource"
                                     Accessible.ignored: !navigationAllowed || !visible || entry.held
                                     Accessible.name: navigationAllowed && visible && !entry.held ? text : ""
-                                    text: card.compact ? Util.oneLine(card.supportingText) : card.supportingText
+                                    text: Util.oneLine(card.supportingText)
+                                    maximumLineCount: 1
                                     font.family: Theme.mono
                                     font.pixelSize: Theme.fontSize(12)
                                     color: Theme.textSubdued
@@ -1477,7 +1480,9 @@ Item {
                                         Accessible.ignored: !navigationAllowed || !visible || !shown || entry.held
                                         Accessible.name: navigationAllowed && visible && shown && !entry.held ? text : ""
                                         opacity: shown ? 1 : 0
-                                        text: card.placeText
+                                        // One line (r2 B1): a break in an imported place is a space.
+                                        text: Util.oneLine(card.placeText)
+                                        maximumLineCount: 1
                                         font.family: Theme.sans
                                         font.pixelSize: Theme.fontSize(13)
                                         color: Theme.textSecondary
@@ -1499,7 +1504,8 @@ Item {
                                         Accessible.ignored: !navigationAllowed || !visible || !shown || entry.held
                                         Accessible.name: navigationAllowed && visible && shown && !entry.held ? text : ""
                                         opacity: shown ? 1 : 0
-                                        text: card.metaText
+                                        text: Util.oneLine(card.metaText)
+                                        maximumLineCount: 1
                                         font.family: Theme.sans
                                         font.pixelSize: Theme.fontSize(13)
                                         color: Theme.textSecondary

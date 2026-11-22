@@ -39,8 +39,9 @@ UiPanel {
             id: nameText
             width: parent.width
             objectName: "scanListTitle"
-            // Compact: one line, cut, as a system card's (G6).
-            text: card.compact ? Util.oneLine(card.listName) : card.listName
+            // One line, cut, in either view, as a system card's (G6, r2 B1).
+            text: Util.oneLine(card.listName)
+            maximumLineCount: 1
             elide: Text.ElideRight
             color: Theme.textPrimary
             font.family: Theme.sans
