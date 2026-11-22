@@ -17799,8 +17799,8 @@ Qt Quick frontend (`src/ui/qt`):
   (`heroFullHeight`, `heroCompactHeight`) so waiting, a call and its end share
   one box. The list has no current item (`currentIndex: -1`, put back on every attach: "Hidden lists"): a ListView
   is a focus scope that would hand focus to it as rows land. Keyboard focus inside the list is revealed through
-  `Theme.revealFocus(list, list.contentItem, item)`, whose bounds follow `originY` when passed a view's `contentItem` (plain Flickables keep 0). `FollowLatest` measures
-  against the header's end (`latestY`): with any header in view a landing call moves nothing (ListView puts it under the
+  `Theme.revealFocus(list, list.contentItem, item)`, whose bounds follow `originY` when passed a view's
+  `contentItem` (plain Flickables keep 0). `FollowLatest` measures against the header's end (`latestY`): with any header in view a landing call moves nothing (ListView puts it under the
   header), within a row of the calls' top the newest row is kept there, below that the reading position is kept; and on
   a header resize while the header is in view it moves `contentY` so `headerAnchor` (the disclosure card) keeps its
   place on screen, keeping the list's start at the start, deferring to the release under a held finger, and measuring
