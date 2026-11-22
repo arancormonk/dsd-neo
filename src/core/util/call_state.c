@@ -1403,8 +1403,11 @@ dsd_call_state_note_source_home(dsd_state* state, uint8_t slot, int protocol, co
         return 0;
     }
     if (snapshot->source_home.valid != 0U && call_state_source_home_equal(&snapshot->source_home, home)) {
-        /* The same radio, now perhaps with a working address: the home is bound to the one it was named with last. */
-        snapshot->source_home.source = home->source;
+        /* The same radio, now perhaps with a working address: the home is bound to the one it was named with last. A
+           repeat that names no working address keeps the one the radio was named with, which it does not contradict. */
+        if (home->source != 0U) {
+            snapshot->source_home.source = home->source;
+        }
         dsd_call_state_ext_unlock(ext);
         return 1;
     }
@@ -1412,6 +1415,7 @@ dsd_call_state_note_source_home(dsd_state* state, uint8_t slot, int protocol, co
         *replaced = snapshot->source_home.valid != 0U;
     }
     snapshot->source_home = *home;
+    snapshot->source_home.withdrawn = 0U;
     snapshot->revision = call_state_next_nonzero(snapshot->revision);
     ext->calls.revision = call_state_next_nonzero(ext->calls.revision);
     dsd_call_state_ext_unlock(ext);
@@ -1441,6 +1445,7 @@ dsd_call_state_note_source_address(dsd_state* state, uint8_t slot, int protocol,
        this one fills an absent working address without a new epoch, so the call would go on naming that radio. */
     if (snapshot->source_home.valid != 0U && snapshot->source_home.source != source) {
         DSD_MEMSET(&snapshot->source_home, 0, sizeof(snapshot->source_home));
+        snapshot->source_home.withdrawn = 1U;
         snapshot->revision = call_state_next_nonzero(snapshot->revision);
         ext->calls.revision = call_state_next_nonzero(ext->calls.revision);
         if (dropped) {

@@ -161,7 +161,12 @@ dsd_call_state_note_source_home(dsd_state* state, uint8_t slot, int protocol, co
                     && (call->source_home.unit != home->unit || call->source_home.wacn != home->wacn
                         || call->source_home.sysid != home->sysid);
     }
+    const int same_radio = call->source_home.valid != 0U && call->source_home.unit == home->unit
+                           && call->source_home.wacn == home->wacn && call->source_home.sysid == home->sysid;
+    const uint32_t kept_source = (same_radio && home->source == 0U) ? call->source_home.source : home->source;
     call->source_home = *home;
+    call->source_home.source = kept_source;
+    call->source_home.withdrawn = 0U;
     return 1;
 }
 
@@ -181,6 +186,7 @@ dsd_call_state_note_source_address(dsd_state* state, uint8_t slot, int protocol,
     }
     if (call->source_home.valid != 0U && call->source_home.source != source) {
         DSD_MEMSET(&call->source_home, 0, sizeof(call->source_home));
+        call->source_home.withdrawn = 1U;
         if (dropped) {
             *dropped = 1;
         }

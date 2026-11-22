@@ -5072,6 +5072,63 @@ test_reacq_merge_takes_the_replacement_home(void) {
     return rc;
 }
 
+// A roaming radio named by its home alone, then, in the reacquired segment (no end decoded between them), another
+// radio's abbreviated voice user naming working address 3002: 3002 talks now, so the call withdraws the roamer's home
+// and its alias (dsd_call_state_note_source_address(), as p25p2_note_voice_home() does), and the merged row follows:
+// it never pairs 3002 with the roamer's home or alias.
+static int
+test_reacq_merge_carries_a_withdrawn_home(void) {
+    dsd_opts* opts = (dsd_opts*)calloc(1U, sizeof(dsd_opts));
+    dsd_state* state = (dsd_state*)calloc(1U, sizeof(dsd_state));
+    Event_History_I* event_history = (Event_History_I*)calloc(2U, sizeof(Event_History_I));
+    assert(opts != NULL && state != NULL && event_history != NULL);
+    reset_fixture(opts, state, event_history);
+    state->nac = 0x293;
+    note_p25_site(state);
+    assert(observe_roaming_call_unit(state, DSD_CALL_BOUNDARY_BEGIN, 1234567U) == 1);
+    dsd_event_sync_slot(opts, state, 0U);
+    dsd_call_snapshot call;
+    assert(dsd_call_state_get(state, 0U, &call) == 1);
+    assert(dsd_event_enrich_alias(state, 0U, DSD_SYNC_P25P2_POS, call.epoch, "FIRSTRADIO") >= 0);
+    assert(end_test_call(state, 0U, DSD_CALL_END_SYNC_LOSS) == 1);
+    dsd_event_sync_slot(opts, state, 0U);
+    assert(observe_roaming_call_unit(state, DSD_CALL_BOUNDARY_CONTINUE, 1234567U) == 1);
+    dsd_event_sync_slot(opts, state, 0U);
+    const dsd_call_observation abbreviated = {
+        .protocol = DSD_SYNC_P25P2_POS,
+        .slot = 0U,
+        .kind = DSD_CALL_KIND_GROUP_VOICE,
+        .ota_target_id = 100U,
+        .policy_target_id = 100U,
+        .ota_source_id = 3002U,
+        .has_service_metadata = 1U,
+        .observed_m = g_observed_m,
+    };
+    g_observed_m += 0.1;
+    assert(dsd_call_state_observe(state, &abbreviated, DSD_CALL_BOUNDARY_CONTINUE) == 0);
+    int dropped = 0;
+    assert(dsd_call_state_note_source_address(state, 0U, DSD_SYNC_P25P2_POS, 3002U, &dropped) == 1);
+    assert(dropped == 1);
+    assert(dsd_call_state_get(state, 0U, &call) == 1);
+    assert(dsd_event_enrich_alias(state, 0U, DSD_SYNC_P25P2_POS, call.epoch, "") >= 0);
+    dsd_event_sync_slot(opts, state, 0U);
+    assert(end_test_call(state, 0U, DSD_CALL_END_TERMINATOR) == 1);
+    dsd_event_sync_slot(opts, state, 0U);
+    int rc = expect_int("one row", committed_history_rows(&event_history[0]), 1);
+    const Event_History* merged = &event_history[0].Event_History_Items[1];
+    rc |= expect_int("the merged row names the working address", (int)merged->source_id, 3002);
+    rc |= expect_int("the merged row drops the roamer's home",
+                     merged->src_home_key == 0U && merged->src_home[0] == '\0', 1);
+    rc |= expect_int("the merged row drops the roamer's alias", strstr(merged->alias, "FIRSTRADIO") == NULL, 1);
+    rc |=
+        expect_int("the merged line does not name the roamer", strstr(merged->event_string, "1234567@2A7") == NULL, 1);
+    dsd_state_ext_free_all(state);
+    free(event_history);
+    free(state);
+    free(opts);
+    return rc;
+}
+
 // A replacement roaming radio whose home differs only by WACN (the same `unit@system` text) is still another radio:
 // the merged row takes its alias, not the first radio's, and the event log reports the new alias.
 static int
@@ -9788,6 +9845,7 @@ main(void) {
     rc |= test_reacq_merge_unions_site();
     rc |= test_reacq_merge_keeps_roaming_home();
     rc |= test_reacq_merge_takes_the_replacement_home();
+    rc |= test_reacq_merge_carries_a_withdrawn_home();
     rc |= test_reacq_merge_logs_the_replacement_alias();
     rc |= test_reacq_merge_refuses_conflict();
     rc |= test_row_channel_fill_only_with_kind();

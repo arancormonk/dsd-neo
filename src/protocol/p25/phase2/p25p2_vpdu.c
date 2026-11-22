@@ -3253,10 +3253,13 @@ BLOCK_END:
  * (10-16: WACN 20 bits, System ID 12 bits, unit ID 24 bits), as the standard extended voice users carry them. Layout as
  * OP25 (tk_p25.py, op 0xa0 mfid 0x90: sg msg[4:6], sa msg[6:9], ssuid msg[9:16]) and SDRTrunk
  * (MotorolaGroupRegroupVoiceChannelUserExtended: SOURCE_ADDRESS octet 7, SOURCE_SUID_WACN octet 10, SOURCE_SUID_ID
- * octet 14) decode it. The SUID is read only from a segment, and a transport, that hold all 16 octets. */
+ * octet 14) decode it. The SUID is read only from a segment, and a transport, that hold all 16 octets, and from a
+ * message whose length octet (octet 3, low six bits, counting the whole message) declares them: the segment length
+ * comes from the opcode's table entry, not the octet, so a shorter structure followed by another message would
+ * otherwise lend that message's octets to the SUID. */
 static int
 p25p2_vpdu_moto_regroup_ext_suid_held(const p25p2_vpdu_ctx* ctx) {
-    return ctx->len_b >= 16 && ctx->len_a + 16 <= ctx->mac_res->span;
+    return ctx->len_b >= 16 && ctx->len_a + 16 <= ctx->mac_res->span && (ctx->mac[3 + ctx->len_a] & 0x3FU) == 16U;
 }
 
 /* The 0xA0 voice user's Source SUID as the talker's home identity (p25p2_vpdu_source_home()); none when the segment

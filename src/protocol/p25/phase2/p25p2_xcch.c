@@ -179,9 +179,10 @@ p25p2_xcch_emit_checked_voice_start(dsd_opts* opts, dsd_state* state, p25_sm_eve
 }
 
 static int
-p25p2_xcch_emit_active(dsd_opts* opts, dsd_state* state, int type, int slot, const unsigned long long int mac[24]) {
+p25p2_xcch_emit_active(dsd_opts* opts, dsd_state* state, int type, int span, int slot,
+                       const unsigned long long int mac[24]) {
     struct p25p2_mac_voice_identity identity;
-    if (p25p2_mac_decode_voice_identity(type, mac, &identity) == 1) {
+    if (p25p2_mac_decode_voice_identity_span(type, span, mac, &identity) == 1) {
         p25_sm_event_t ev = identity.source_optional
                                 ? p25_sm_ev_active_call_source_absent(slot, identity.tg, identity.dst,
                                                                       identity.is_group, identity.svc_bits)
@@ -606,6 +607,9 @@ p25p2_xcch_handle_sacch_mac_active(dsd_opts* opts, dsd_state* state, uint8_t slo
 
     DSD_FPRINTF(stderr, " MAC_ACTIVE ");
     DSD_FPRINTF(stderr, "%s", KYEL);
+    /* The transport's message area, read before the VPDU pass clears p2_is_lcch: an LCCH carries fewer message octets
+       than a SACCH, and the voice identity below is parsed within the octets the CRC covered. */
+    const int span = p25p2_mac_span(1, state->p2_is_lcch == 1);
     const p25p2_retune_token token = p25p2_retune_token_now();
     process_MAC_VPDU(opts, state, 1, P25_MAC_PDU_ACTIVE, smac);
     if (p25p2_retune_token_changed(&token)) {
@@ -618,7 +622,7 @@ p25p2_xcch_handle_sacch_mac_active(dsd_opts* opts, dsd_state* state, uint8_t slo
 
     DSD_FPRINTF(stderr, "%s", KNRM);
 
-    if (!p25p2_xcch_emit_active(opts, state, 1, slot, smac)) {
+    if (!p25p2_xcch_emit_active(opts, state, 1, span, slot, smac)) {
         return;
     }
     allow_audio = p25p2_xcch_slot_audio_allowed(opts, state, slot);
@@ -742,7 +746,7 @@ p25p2_xcch_handle_facch_mac_active(dsd_opts* opts, dsd_state* state, uint8_t slo
         return;
     }
 
-    if (!p25p2_xcch_emit_active(opts, state, 0, slot, fmac)) {
+    if (!p25p2_xcch_emit_active(opts, state, 0, p25p2_mac_span(0, 0), slot, fmac)) {
         return;
     }
 

@@ -113,6 +113,7 @@ init_event_history(Event_History_I* event_struct, uint8_t start, uint8_t stop) {
         event_struct->Event_History_Items[i].src_str[0] = '\0';
         event_struct->Event_History_Items[i].src_home[0] = '\0';
         event_struct->Event_History_Items[i].src_home_key = 0U;
+        event_struct->Event_History_Items[i].src_home_withdrawn = 0U;
         event_struct->Event_History_Items[i].tgt_str[0] = '\0';
         event_struct->Event_History_Items[i].t_name[0] = '\0';
         event_struct->Event_History_Items[i].s_name[0] = '\0';
@@ -200,6 +201,8 @@ push_event_history(Event_History_I* event_struct) {
         copy_str_field(event_struct->Event_History_Items[i].src_home, event_struct->Event_History_Items[i - 1].src_home,
                        sizeof event_struct->Event_History_Items[i].src_home);
         event_struct->Event_History_Items[i].src_home_key = event_struct->Event_History_Items[i - 1].src_home_key;
+        event_struct->Event_History_Items[i].src_home_withdrawn =
+            event_struct->Event_History_Items[i - 1].src_home_withdrawn;
         copy_str_field(event_struct->Event_History_Items[i].tgt_str, event_struct->Event_History_Items[i - 1].tgt_str,
                        sizeof event_struct->Event_History_Items[i].tgt_str);
         copy_str_field(event_struct->Event_History_Items[i].t_name, event_struct->Event_History_Items[i - 1].t_name,
@@ -1336,12 +1339,20 @@ watchdog_event_rx_scope_learns(const Event_History* held_row, const Event_Histor
 /* The merged row's roaming home and alias; returns whether the alias the row logs changed. Another radio's home
    (a different full SUID) named inside the reacquired segment (two roamers, no end decoded between them) is the row's
    talker now: its home and its alias replace the first's, an empty alias included (the replacement dropped the first
-   radio's). Otherwise the home fills a row without one and the alias merges progressively. */
+   radio's). So is another radio's working address that withdrew the home (src_home_withdrawn): the row's home goes, and
+   its alias gives way to the segment's, empty or not. Otherwise the home fills a row without one and the alias merges
+   progressively. */
 static int
 watchdog_event_merge_home_and_alias(Event_History* retained, const Event_History* staged) {
+    const int home_withdrawn = staged->src_home_key == 0U && staged->src_home_withdrawn != 0U;
     const int home_replaced =
-        staged->src_home_key != 0U && retained->src_home_key != 0U && staged->src_home_key != retained->src_home_key;
-    if (staged->src_home_key != 0U && staged->src_home_key != retained->src_home_key) {
+        (staged->src_home_key != 0U && retained->src_home_key != 0U && staged->src_home_key != retained->src_home_key)
+        || (home_withdrawn && retained->src_home_key != 0U);
+    if (home_withdrawn) {
+        retained->src_home_key = 0U;
+        retained->src_home[0] = '\0';
+        retained->src_home_withdrawn = 1U;
+    } else if (staged->src_home_key != 0U && staged->src_home_key != retained->src_home_key) {
         retained->src_home_key = staged->src_home_key;
         copy_str_field(retained->src_home, staged->src_home, sizeof retained->src_home);
     } else if (retained->src_home[0] == '\0') {
@@ -1713,6 +1724,7 @@ typedef struct {
     char src_str[200];
     char src_home[24];     /* a roaming P25 radio's display-only home identity (dsd_call_state_format_home_source()) */
     uint64_t src_home_key; /* the talker's full home SUID when one was named (any working address), 0 otherwise */
+    uint8_t src_home_withdrawn; /* the call withdrew a home an earlier talker named (dsd_call_source_home::withdrawn) */
     char tgt_str[200];
     char t_name[200];
     char s_name[200];
@@ -1906,6 +1918,7 @@ watchdog_event_current_init_base(const dsd_state* state, uint8_t slot, const dsd
                                                             | (((uint64_t)call->source_home.sysid & 0xFFFU) << 24)
                                                             | (call->source_home.unit & 0xFFFFFFU)
                                                       : 0U;
+    ctx->src_home_withdrawn = (uint8_t)(call->source_home.valid == 0U && call->source_home.withdrawn != 0U);
     DSD_SNPRINTF(ctx->tgt_str, sizeof ctx->tgt_str, "%s", call->target_text);
 
     if (call->protocol == DSD_SYNC_ANALOG) {
@@ -2506,6 +2519,7 @@ watchdog_event_current_update_item(const dsd_opts* opts, dsd_state* state, uint8
     DSD_SNPRINTF(item->src_str, sizeof(item->src_str), "%s", ctx->src_str);
     DSD_SNPRINTF(item->src_home, sizeof(item->src_home), "%s", ctx->src_home);
     item->src_home_key = ctx->src_home_key;
+    item->src_home_withdrawn = ctx->src_home_withdrawn;
     DSD_SNPRINTF(item->tgt_str, sizeof(item->tgt_str), "%s", ctx->tgt_str);
     DSD_SNPRINTF(item->t_name, sizeof(item->t_name), "%s", ctx->t_name);
     DSD_SNPRINTF(item->s_name, sizeof(item->s_name), "%s", ctx->s_name);
@@ -3179,6 +3193,7 @@ watchdog_event_ctx_from_row(const dsd_call_event_render_env* env, const Event_Hi
     DSD_SNPRINTF(ctx->src_str, sizeof(ctx->src_str), "%s", item->src_str);
     DSD_SNPRINTF(ctx->src_home, sizeof(ctx->src_home), "%s", item->src_home);
     ctx->src_home_key = item->src_home_key;
+    ctx->src_home_withdrawn = item->src_home_withdrawn;
     DSD_SNPRINTF(ctx->tgt_str, sizeof(ctx->tgt_str), "%s", item->tgt_str);
     DSD_SNPRINTF(ctx->t_name, sizeof(ctx->t_name), "%s", item->t_name);
     DSD_SNPRINTF(ctx->s_name, sizeof(ctx->s_name), "%s", item->s_name);
@@ -4537,6 +4552,7 @@ watchdog_event_notice_set_gps(Event_History* item, const dsd_call_observation* o
         item->src_str[0] = '\0';
         item->src_home[0] = '\0';
         item->src_home_key = 0U;
+        item->src_home_withdrawn = 0U;
         item->tgt_str[0] = '\0';
         dsd_event_pos_write_notice(item, fix, gps);
         return;
@@ -4657,6 +4673,7 @@ dsd_event_emit_data_notice_impl(dsd_opts* opts, dsd_state* state, uint8_t slot, 
     DSD_SNPRINTF(item->src_str, sizeof(item->src_str), "%s", observation->source_text);
     item->src_home[0] = '\0';
     item->src_home_key = 0U;
+    item->src_home_withdrawn = 0U;
     DSD_SNPRINTF(item->tgt_str, sizeof(item->tgt_str), "%s", observation->target_text);
     watchdog_event_notice_payload(opts, state, event_struct, item, observation, gps, fix);
 

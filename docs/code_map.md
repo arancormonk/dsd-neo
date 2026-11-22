@@ -13739,7 +13739,12 @@ Private per-protocol modules worth knowing about:
   (`dsd_call_source_home::source`, 0 for none): a later checked voice user that names another working address and no
   home (an abbreviated form, which fills the call's absent working address without a new epoch) takes the home away
   and drops that alias too (`dsd_call_state_note_source_address()`), so the call's talker is matched by its working
-  address from then on; such an addressless voice user is `source_nonlocal` to the trunk state machine, so a
+  address from then on; the call records the withdrawal (`dsd_call_source_home::withdrawn`, carried to the history row
+  as `Event_History::src_home_withdrawn`), so a row merged across a sync loss drops the earlier radio's home and alias
+  too (`watchdog_event_merge_home_and_alias()`). A repeat of the same full SUID with no working address keeps the
+  binding it had. The 0xA0 SUID is read only when the message's length octet declares all 16 octets and the
+  transport's span holds them (the MAC_ACTIVE pass parses within the LCCH's span on an LCCH,
+  `p25p2_mac_decode_voice_identity_span()`); such an addressless voice user is `source_nonlocal` to the trunk state machine, so a
   working address the call keeps from an earlier talker loses its verdict. A P25 talker alias is learned only for a
   source the state machine's identity record positively checks under the reception now: every publication of that record
   mirrors the verdict onto the call (`p25_sm_merge_published_identity()` -> `dsd_call_state_note_source_verdict()`; in

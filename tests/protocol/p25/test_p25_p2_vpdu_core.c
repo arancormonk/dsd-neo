@@ -2915,14 +2915,14 @@ run_abbreviated_voice_user(dsd_opts* opts, dsd_state* state, int group, uint32_t
    CRC @p crc_ok: supergroup 0x1234, Source Address @p address, Source SUID WACN 0xABCDE, System ID 0x2A7, unit
    @p unit. */
 static void
-run_motorola_extended_regroup_voice_user(dsd_opts* opts, dsd_state* state, uint32_t address, uint32_t unit,
-                                         int crc_ok) {
+run_motorola_regroup_voice_user_declaring(dsd_opts* opts, dsd_state* state, uint32_t address, uint32_t unit, int crc_ok,
+                                          unsigned int declared) {
     unsigned long long int MAC[24] = {0};
     int pos = 1;
     MAC[pos++] = 0xA0;
     MAC[pos++] = 0x90;
-    MAC[pos++] = 0x10; // length: 16 octets
-    MAC[pos++] = 0x00; // SVC: clear
+    MAC[pos++] = declared; // length octet: the octets the structure declares
+    MAC[pos++] = 0x00;     // SVC: clear
     MAC[pos++] = 0x12;
     MAC[pos++] = 0x34;
     MAC[pos++] = (address >> 16) & 0xFFU;
@@ -2938,10 +2938,18 @@ run_motorola_extended_regroup_voice_user(dsd_opts* opts, dsd_state* state, uint3
     process_MAC_VPDU_crc(opts, state, 0 /* FACCH */, P25_MAC_PDU_ACTIVE, MAC, crc_ok);
 }
 
+/* As run_motorola_regroup_voice_user_declaring(), with the length octet declaring all 16 octets. */
+static void
+run_motorola_extended_regroup_voice_user(dsd_opts* opts, dsd_state* state, uint32_t address, uint32_t unit,
+                                         int crc_ok) {
+    run_motorola_regroup_voice_user_declaring(opts, state, address, unit, crc_ok, 0x10U);
+}
+
 /* A roaming radio named by its home SUID alone, then another radio's abbreviated voice user on the same call with no end
    decoded between: the second fills the absent working address without a new call, and its checked working address
    names the talker now. The first radio's home, and the alias its call showed, go. A repeat of the abbreviated voice
-   user, and an extended one from the same working address, keep what the call then names. */
+   user, and an extended one from the same working address (or with none, naming the same SUID), keep what the call
+   then names. */
 static int
 test_abbreviated_voice_user_replaces_roaming_home(int group) {
     dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(dsd_opts));
@@ -2971,6 +2979,10 @@ test_abbreviated_voice_user_replaces_roaming_home(int group) {
     /* The same radio with its working address and its home: bound to that working address, kept by its repeats. */
     run_extended_voice_user(opts, state, group, 3002U, 0x2A7U, 7654321U, 1);
     DSD_SNPRINTF(state->generic_talker_alias[0], sizeof state->generic_talker_alias[0], "%s", "WORKING");
+    /* The same SUID again with no working address: it names the same radio, so the binding to 3002 stays. */
+    run_extended_voice_user(opts, state, group, 0U, 0x2A7U, 7654321U, 1);
+    rc |= expect_true("p2_roam_abbr addressless repeat", dsd_call_state_get(state, 0U, &call) > 0);
+    rc |= expect_true("p2_roam_abbr addressless repeat keeps the binding", call.source_home.source == 3002U);
     run_abbreviated_voice_user(opts, state, group, 3002U);
     rc |= expect_true("p2_roam_abbr repeat", dsd_call_state_get(state, 0U, &call) > 0);
     rc |= expect_true("p2_roam_abbr home named with the working address kept", call.source_home.valid == 1U
@@ -3003,6 +3015,10 @@ test_motorola_extended_regroup_voice_user_home(void) {
     dsd_call_snapshot call = {0};
     rc |= expect_true("p2_moto_ext crc-failed call", dsd_call_state_get(state, 0U, &call) > 0);
     rc |= expect_true("p2_moto_ext crc-failed MAC names no home", call.source_home.valid == 0U);
+    /* A structure that declares nine octets: the octets after them are another message, never the SUID. */
+    run_motorola_regroup_voice_user_declaring(opts, state, 3002U, 1234567U, 1, 0x09U);
+    rc |= expect_true("p2_moto_ext short call", dsd_call_state_get(state, 0U, &call) > 0);
+    rc |= expect_true("p2_moto_ext short structure names no home", call.source_home.valid == 0U);
 
     run_motorola_extended_regroup_voice_user(opts, state, 3002U, 1234567U, 1);
     rc |= expect_true("p2_moto_ext call", dsd_call_state_get(state, 0U, &call) > 0);

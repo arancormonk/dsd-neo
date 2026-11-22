@@ -127,11 +127,13 @@ typedef enum {
 typedef struct {
     uint32_t wacn; /**< 20 bits. */
     uint32_t unit; /**< 24 bits; names a radio when valid. */
-    uint32_t
-        source;     /**< The working address the voice user that named it carried; 0: none (named by its home alone). */
+    /** The working address the voice user that named it carried; 0: none (named by its home alone). */
+    uint32_t source;
     uint16_t sysid; /**< 12 bits. */
     uint8_t valid;  /**< 0: no home identity. */
-    uint8_t reserved;
+    /** 1 (with valid 0): a home named an earlier talker of this call and a later voice user withdrew it
+        (dsd_call_state_note_source_address()), so a row merged from this call drops the home and alias it holds. */
+    uint8_t withdrawn;
 } dsd_call_source_home;
 
 typedef struct {
@@ -671,8 +673,9 @@ int dsd_call_state_note_source_home(dsd_state* state, uint8_t slot, int protocol
 /** A voice user that names no home identity (an abbreviated form, or an extended one whose SUID names no radio) named
  * the working address @p source on slot @p slot's ACTIVE call of @p protocol's family. A home the call holds names the
  * talker only when the voice user that named it carried @p source too: one named with another working address, or with
- * none (a roaming radio named by its home alone), is an earlier talker's, and goes. @p dropped is set to 1 when a home
- * went. Returns 1 when applied, 0 when the slot holds no such call, -1 on bad arguments (@p source 0 included). */
+ * none (a roaming radio named by its home alone), is an earlier talker's, and goes (dsd_call_source_home::withdrawn
+ * records that it went). @p dropped is set to 1 when a home went. Returns 1 when applied, 0 when the slot holds no such
+ * call, -1 on bad arguments (@p source 0 included). */
 int dsd_call_state_note_source_address(dsd_state* state, uint8_t slot, int protocol, uint32_t source, int* dropped);
 /** Mirrors the P25 trunk state machine's identity verdict on slot @p slot's call at @p epoch: @p checked 1 when its
  * record checks @p source under reception generation @p rx_gen, 0 when it withdrew or never earned it. Returns 1 when

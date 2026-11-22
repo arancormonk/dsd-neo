@@ -624,7 +624,9 @@ run_voice_identity_parse_cases(void) {
     rc |= expect_int("Motorola extended regroup type", identity.is_group, 1);
     rc |= expect_int("Motorola extended regroup service", identity.svc_bits, 0x80);
     rc |= expect_int("Motorola extended regroup zero SUID: no home", identity.home_valid, 0);
-    /* The Source SUID after the working address (octets 10-16): the talker's home identity, as in 0x21. */
+    /* The Source SUID after the working address (octets 10-16): the talker's home identity, as in 0x21, once the length
+       octet declares all 16 octets. */
+    mac[3] = 0x10;
     mac[10] = 0xAB;
     mac[11] = 0xCD;
     mac[12] = 0xE2;
@@ -638,6 +640,25 @@ run_voice_identity_parse_cases(void) {
     rc |= expect_int("Motorola extended regroup home wacn", (int)identity.home_wacn, 0xABCDE);
     rc |= expect_int("Motorola extended regroup home sysid", (int)identity.home_sysid, 0x2A7);
     rc |= expect_int("Motorola extended regroup home unit", (int)identity.home_unit, 1234567);
+    /* A structure that declares nine octets: what follows is another message, never the SUID. */
+    mac[3] = 0x09;
+    rc |= expect_int("Motorola short regroup identity present", p25p2_mac_decode_voice_identity(0, mac, &identity), 1);
+    rc |= expect_int("Motorola short regroup names no home", identity.home_valid, 0);
+    mac[3] = 0x10;
+    /* Behind a four-octet Motorola message (0xBF), the 0xA0 ends at octet 20: inside a SACCH, past an LCCH's 18. */
+    unsigned long long shifted[24] = {0};
+    shifted[1] = 0xBF;
+    shifted[2] = 0x90;
+    shifted[3] = 0x04;
+    for (int k = 1; k <= 16; k++) {
+        shifted[4 + k] = mac[k];
+    }
+    rc |= expect_int("SACCH-span regroup identity present",
+                     p25p2_mac_decode_voice_identity_span(1, P25P2_MAC_SPAN_SACCH, shifted, &identity), 1);
+    rc |= expect_int("SACCH-span regroup home", identity.home_valid, 1);
+    rc |= expect_int("LCCH-span regroup identity absent",
+                     p25p2_mac_decode_voice_identity_span(1, P25P2_MAC_SPAN_LCCH, shifted, &identity), 0);
+    rc |= expect_int("LCCH-span regroup names no home", identity.home_valid, 0);
 
     /* Extended forms: the Source Address stays the source; the Source SUID is the talker's home identity. */
     static const uint8_t k_ext_opcodes[] = {0x21u, 0x22u};
