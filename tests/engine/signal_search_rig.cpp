@@ -254,10 +254,12 @@ watch(Rig* rig) {
     }
 }
 
+/* Every row the store retains (up to DSD_SEARCH_HISTORY_LIMIT), not only the newest: a dump that left the older
+   rows out would miss them in both the live and the reopened copy alike, so the comparison could not tell. */
 void
 print_history(const char* kind) {
-    static dsd_signal_search_hit hits[64];
-    const size_t n = dsd_app_signal_search_history_get(hits, sizeof(hits) / sizeof(hits[0]));
+    std::vector<dsd_signal_search_hit> hits(DSD_SEARCH_HISTORY_LIMIT);
+    const size_t n = dsd_app_signal_search_history_get(hits.data(), hits.size());
     for (size_t i = 0; i < n; ++i) {
         print_line(kind, std::string("\"row\":") + hit_json(hits[i]));
     }
