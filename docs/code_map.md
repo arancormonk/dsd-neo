@@ -16948,8 +16948,24 @@ Qt Quick frontend (`src/ui/qt`):
     before a delete's or the limit's unlink, by kind, size and modification time (seconds and nanoseconds), never the
     device, inode, volume or file id, which FAT, exFAT and remounts renumber: another file with exactly the same size
     and modification time counts as the recording (`test_same_size_and_time_reads_as_the_recording`), and the short
-    window between that check and the unlink is not closed. A delete that a read again drops or that finds another file
-    is told, never silently dropped: `deletesCancelled` (acknowledged with the
+    window between that check and the unlink is not closed; and the check before an export or a save reads each file.
+    An export's or a save's selection carries each file as the index knows it (`sizes`, `mtimeSecs`, `mtimeNanos`, in
+    `selectLocked()`) and the reads of storage again started before it (`Selection::storageReads`, `m_storageReads`,
+    moved as a pass starts reading storage again, `noteRereadStart()`, so a transfer begun while that read is still
+    going on is refused too, `test_selection_goes_stale_as_a_read_starts`): `DecoderHost::beginTransfer()` refuses a
+    selection the store has read storage again since (`RecordingStore::selectionCurrent()`, set by
+    `recording_store_serve_host()`), and one without its files, and every transfer checks each file right before it
+    reads it (`DecoderHost::recordingInputCheck()`: the base host's save, the Android worker's count and its local save,
+    and RecordingExport's `openSelected()` with `Os.lstat()` before each ZIP entry or save, a name it cannot read
+    included). A file gone is left out as before (issue #708); any other difference (another size or time, a link, a
+    FIFO, a name that cannot be read) abandons the whole transfer with nothing kept, as `TransferChanged` (6), and the
+    file is reported so the store looks at it again: a recheck the host asks for takes the file as it is now, so the
+    next selection exports it as it is (`test_transfer_reads_only_the_files_selected`, `UI_QT_ANDROID_HOST`
+    `check_recording_transfers`, `ANDROID_RECORDING_EXPORT_JVM` `aRecordingNotTheOneSelectedAbandonsTheExport`, the QML
+    result rows); the screens say "Those recordings changed. Export again." and "This recording changed. Save it
+    again.". The limit's own look at what it counts reads sizes only, so its check before each unlink still finds a file
+    not as the index knew it. A delete that a read again drops or that finds another file is told, never silently
+    dropped: `deletesCancelled` (acknowledged with the
     other notices) puts "Some recordings weren't deleted because their storage changed. Delete them again." on the
     Call recordings screen and in Settings (`test_cancelled_deletes_notice`, `tst_call_recording_settings.qml`). A refused export selects and holds nothing and returns `loading`; a refused delete returns
     false and queues nothing, and `deleteRefusal()` says why (`loading` or `storageAway`); the Call recordings screen

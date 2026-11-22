@@ -226,7 +226,7 @@ def native_enum_matches(enum_name, prefix, source, names):
 
 def recording_transfer_codes_match():
     """#708: a call recording transfer's result crosses JNI as a plain int."""
-    names = ("DONE", "FAILED", "CANCELLED", "MISSING")
+    names = ("DONE", "FAILED", "CANCELLED", "MISSING", "CHANGED")
     return native_enum_matches("RecordingTransferResult", "Transfer", "RecordingExport.kt", names)
 
 

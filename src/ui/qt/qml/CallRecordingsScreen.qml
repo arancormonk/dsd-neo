@@ -235,6 +235,8 @@ Item {
             say(qsTr("Another export is running. Try again when it finishes."), true);
         } else if (result === 5) {
             say(qsTr("This device can't export call recordings."), true);
+        } else if (result === 6) {
+            say(qsTr("Those recordings changed. Export again."), true);
         } else {
             say(qsTr("The export couldn't be written. Try another location."), true);
         }

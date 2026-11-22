@@ -128,6 +128,7 @@ struct PlatformRecordings {
     // What the transfer saw, and its answer: guarded by mutex (a std::mutex, which TSan sees).
     QStringList paths;
     QStringList names;
+    QList<dsd_file_identity_t> expected;
     QString reference;
     QStringList answer = {QStringLiteral("0")};
     // Shares: what the worker's share saw (under mutex), and the failures it left queued (GUI thread).
@@ -668,12 +669,14 @@ DecoderHostAndroid::platformPlaybackStatus() {
 
 QStringList
 DecoderHostAndroid::platformTransferRecordings(qint64 id, const QStringList& paths, const QStringList& names,
-                                               const QString& reference, bool zip) {
+                                               const QList<dsd_file_identity_t>& expected, const QString& reference,
+                                               bool zip) {
     PlatformRecordings& r = recordings();
     {
         const std::lock_guard<std::mutex> lock(r.mutex);
         r.paths = paths;
         r.names = names;
+        r.expected = expected;
         r.reference = reference;
         r.zip = zip;
         r.onWorker = QThread::currentThread() != QCoreApplication::instance()->thread();
@@ -2616,6 +2619,26 @@ check_recording_playback() {
           "a missing file stops what plays and never reaches the player");
 }
 
+/* @p selection with each of its files as the store selects them (sizes, mtimeSecs, mtimeNanos), read now; zeros for
+ * one already gone. */
+static QVariantMap
+selected(QVariantMap selection) {
+    QVariantList sizes;
+    QVariantList secs;
+    QVariantList nanos;
+    for (const QString& path : selection.value(QStringLiteral("paths")).toStringList()) {
+        dsd_file_identity_t file{};
+        (void)dsd_path_file_identity(path.toUtf8().constData(), &file);
+        sizes.append(static_cast<qint64>(file.size));
+        secs.append(static_cast<qint64>(file.mtime_s));
+        nanos.append(static_cast<int>(file.mtime_ns));
+    }
+    selection.insert(QStringLiteral("sizes"), sizes);
+    selection.insert(QStringLiteral("mtimeSecs"), secs);
+    selection.insert(QStringLiteral("mtimeNanos"), nanos);
+    return selection;
+}
+
 /* Pump the GUI thread until the host's transfer ends, for at most about five seconds. */
 static bool
 wait_for(const std::function<bool()>& done) {
@@ -2653,7 +2676,7 @@ check_recording_transfers() {
                                    {"paths", QStringList({a, gone, b})},
                                    {"names", QStringList({"S/a.wav", "S/gone.wav", "S/b.wav"})},
                                    {"bytes", 999}};
-    check(host.exportRecordings(selection, document), "an export begins");
+    check(host.exportRecordings(selected(selection), document), "an export begins");
     check(r.entered.tryAcquire(1, 5000), "the export reaches the platform");
     check(with_transfer([](const PlatformRecordings& seen) { return seen.onWorker; }),
           "on the transfer worker, not the GUI thread");
@@ -2683,7 +2706,7 @@ check_recording_transfers() {
     with_transfer(
         [](PlatformRecordings& seen) { return seen.answer = {QStringLiteral("0"), QStringLiteral("/vanished.wav")}; });
     const qint64 first = r.transferId.load();
-    check(host.saveRecording({{"selection", 6}, {"paths", QStringList({b})}, {"bytes", 250}}, document),
+    check(host.saveRecording(selected({{"selection", 6}, {"paths", QStringList({b})}, {"bytes", 250}}), document),
           "a save begins");
     check(wait_for([&finished]() { return !finished.isEmpty(); }), "the save ends");
     check(with_transfer([&](const PlatformRecordings& seen) {
@@ -2697,17 +2720,49 @@ check_recording_transfers() {
     // Nothing there: the platform is never asked.
     finished.clear();
     const int transfers = r.transfers.load();
-    host.saveRecording({{"selection", 7}, {"paths", QStringList({gone})}}, document);
+    host.saveRecording(selected({{"selection", 7}, {"paths", QStringList({gone})}}), document);
     check(wait_for([&finished]() { return !finished.isEmpty(); }), "a save of a gone file ends");
     check(finished.value(0) == QList<int>({7, DecoderHost::TransferMissing, 1}) && r.transfers.load() == transfers,
           "as missing, without the platform");
+
+    // #902: a file that is not the one selected (here written to since) stops the whole transfer before the platform
+    // is asked, and is reported so the store looks at it again; the files go to the platform as selected.
+    finished.clear();
+    reported.clear();
+    const int asked = r.transfers.load();
+    const QVariantMap changedSelection =
+        selected({{"selection", 11}, {"paths", QStringList({a, b})}, {"names", QStringList({"S/a.wav", "S/b.wav"})}});
+    write_file(b, QByteArray(260, 'c'));
+    host.exportRecordings(changedSelection, document);
+    check(wait_for([&finished]() { return !finished.isEmpty(); }), "an export of a changed file ends");
+    check(finished.value(0).value(1) == DecoderHost::TransferChanged && r.transfers.load() == asked
+              && reported == QStringList({b}),
+          "as changed, without the platform, the changed file looked at again");
+    write_file(b, QByteArray(250, 'b')); // b as the later cases read it
+    finished.clear();
+    with_transfer(
+        [](PlatformRecordings& seen) { return seen.answer = {QStringLiteral("6"), QStringLiteral("/x.wav")}; });
+    host.exportRecordings(
+        selected({{"selection", 12}, {"paths", QStringList({a})}, {"names", QStringList({"S/a.wav"})}}), document);
+    check(wait_for([&finished]() { return !finished.isEmpty(); }), "an export the platform found changed ends");
+    check(finished.value(0).value(1) == DecoderHost::TransferChanged
+              && with_transfer([&](const PlatformRecordings& seen) {
+                     return seen.expected.size() == 1 && seen.expected.first().size == 100;
+                 }),
+          "the platform's changed answer passes through, and it was handed the file as selected");
+    with_transfer([](PlatformRecordings& seen) { return seen.answer = {QStringLiteral("0")}; });
+    finished.clear();
+    host.exportRecordings({{"selection", 13}, {"paths", QStringList({a})}, {"names", QStringList({"S/a.wav"})}},
+                          document);
+    check(wait_for([&finished]() { return !finished.isEmpty(); }), "an export with no selected files ends");
+    check(finished.value(0).value(1) == DecoderHost::TransferFailed, "and fails: nothing says what to read");
 
     // An answer the host cannot read fails.
     for (const QStringList& answer : {QStringList(), QStringList({QStringLiteral("x")}), QStringList({"9"})}) {
         finished.clear();
         with_transfer([&answer](PlatformRecordings& seen) { return seen.answer = answer; });
-        host.exportRecordings({{"selection", 8}, {"paths", QStringList({a})}, {"names", QStringList({"S/a.wav"})}},
-                              document);
+        host.exportRecordings(
+            selected({{"selection", 8}, {"paths", QStringList({a})}, {"names", QStringList({"S/a.wav"})}}), document);
         check(wait_for([&finished]() { return !finished.isEmpty(); }), "the export ends");
         check(finished.value(0).value(1) == DecoderHost::TransferFailed, "an answer that cannot be read fails");
     }
@@ -2715,13 +2770,14 @@ check_recording_transfers() {
     // A file URL: the base host's copy, still off the GUI thread; no ZIP goes there.
     finished.clear();
     const QString copy = dir.filePath(QStringLiteral("copy.wav"));
-    host.saveRecording({{"selection", 9}, {"paths", QStringList({b})}}, QUrl::fromLocalFile(copy).toString());
+    host.saveRecording(selected({{"selection", 9}, {"paths", QStringList({b})}}), QUrl::fromLocalFile(copy).toString());
     check(wait_for([&finished]() { return !finished.isEmpty(); }), "a save to a file ends");
     check(finished.value(0) == QList<int>({9, DecoderHost::TransferDone, 0}) && read_file(copy) == QByteArray(250, 'b'),
           "a save to a file URL copies the recording");
     finished.clear();
-    host.exportRecordings({{"selection", 10}, {"paths", QStringList({a})}, {"names", QStringList({"S/a.wav"})}},
-                          QUrl::fromLocalFile(dir.filePath(QStringLiteral("x.zip"))).toString());
+    host.exportRecordings(
+        selected({{"selection", 10}, {"paths", QStringList({a})}, {"names", QStringList({"S/a.wav"})}}),
+        QUrl::fromLocalFile(dir.filePath(QStringLiteral("x.zip"))).toString());
     check(wait_for([&finished]() { return !finished.isEmpty(); }), "a ZIP to a file ends");
     check(finished.value(0).value(1) == DecoderHost::TransferFailed, "a ZIP goes only into a platform document");
 
@@ -2736,8 +2792,8 @@ check_recording_transfers() {
         DecoderHostAndroid leaving;
         r.hold = true;
         with_transfer([](PlatformRecordings& seen) { return seen.answer = {QStringLiteral("2")}; });
-        leaving.exportRecordings({{"selection", 11}, {"paths", QStringList({a})}, {"names", QStringList({"S/a.wav"})}},
-                                 document);
+        leaving.exportRecordings(
+            selected({{"selection", 11}, {"paths", QStringList({a})}, {"names", QStringList({"S/a.wav"})}}), document);
         check(r.entered.tryAcquire(1, 5000), "the leaving host's export runs");
     }
     check(r.cancelled.load() == r.transferId.load(), "a host destroyed mid-transfer cancels it first");
@@ -2752,7 +2808,7 @@ check_recording_transfers() {
         hostDiagnostics = 0;
         {
             DecoderHostAndroid going;
-            going.saveRecording({{"selection", 12}, {"paths", QStringList({big})}},
+            going.saveRecording(selected({{"selection", 12}, {"paths", QStringList({big})}}),
                                 QUrl::fromLocalFile(dest).toString());
         }
         check(hostDiagnostics == 0, "a host whose file copy runs goes within its bound");
@@ -2767,8 +2823,8 @@ check_recording_transfers() {
         hostDiagnostics = 0;
         r.ignoresCancel = true;
         DecoderHostAndroid stuck;
-        stuck.exportRecordings({{"selection", 13}, {"paths", QStringList({a})}, {"names", QStringList({"S/a.wav"})}},
-                               document);
+        stuck.exportRecordings(
+            selected({{"selection", 13}, {"paths", QStringList({a})}, {"names", QStringList({"S/a.wav"})}}), document);
         check(r.entered.tryAcquire(1, 5000), "the stuck host's export runs");
     }
     check(hostDiagnostics == 1 && lastHostDiagnostic.contains(QStringLiteral("did not stop")),
@@ -2782,9 +2838,10 @@ check_recording_transfers() {
     finished.clear();
     host.abortDocumentTransfers();
     const int before = r.transfers.load();
-    check(!host.exportRecordings({{"selection", 12}, {"paths", QStringList({a})}, {"names", QStringList({"S/a.wav"})}},
-                                 document),
-          "an export after the abort does not begin");
+    check(
+        !host.exportRecordings(
+            selected({{"selection", 12}, {"paths", QStringList({a})}, {"names", QStringList({"S/a.wav"})}}), document),
+        "an export after the abort does not begin");
     check(wait_for([&finished]() { return !finished.isEmpty(); }), "and still ends");
     check(finished.value(0).value(1) == DecoderHost::TransferFailed && r.transfers.load() == before,
           "failed, without the platform");
@@ -2841,34 +2898,35 @@ check_download_discards() {
     platform() = PlatformCopies();
 
     // Recordings: an answer the platform gave settled the row; every other exit discards it.
-    check(host.saveRecording(save, row) && ended(DecoderHost::TransferDone) && take_discarded().isEmpty(),
+    check(host.saveRecording(selected(save), row) && ended(DecoderHost::TransferDone) && take_discarded().isEmpty(),
           "a saved recording leaves its row to the platform");
     with_transfer([](PlatformRecordings& seen) { return seen.answer = {QStringLiteral("1")}; });
-    check(host.exportRecordings(exported, row) && ended(DecoderHost::TransferFailed) && take_discarded().isEmpty(),
+    check(host.exportRecordings(selected(exported), row) && ended(DecoderHost::TransferFailed)
+              && take_discarded().isEmpty(),
           "a failure the platform answered settled the row there");
     with_transfer([](PlatformRecordings& seen) { return seen.answer = QStringList(); });
-    check(host.exportRecordings(exported, row) && ended(DecoderHost::TransferFailed)
+    check(host.exportRecordings(selected(exported), row) && ended(DecoderHost::TransferFailed)
               && take_discarded() == QStringList{row},
           "a transfer with no answer (a failed JNI call) discards its row");
     with_transfer([](PlatformRecordings& seen) { return seen.answer = {QStringLiteral("0")}; });
     const int transfers = r.transfers.load();
-    check(
-        host.saveRecording({{"selection", 5}, {"paths", QStringList({dir.filePath(QStringLiteral("gone.wav"))})}}, row)
-            && ended(DecoderHost::TransferMissing) && r.transfers.load() == transfers
-            && take_discarded() == QStringList{row},
-        "a transfer with every recording gone never writes, and discards its row");
+    check(host.saveRecording(
+              selected({{"selection", 5}, {"paths", QStringList({dir.filePath(QStringLiteral("gone.wav"))})}}), row)
+              && ended(DecoderHost::TransferMissing) && r.transfers.load() == transfers
+              && take_discarded() == QStringList{row},
+          "a transfer with every recording gone never writes, and discards its row");
     const QString file = QUrl::fromLocalFile(dir.filePath(QStringLiteral("x.zip"))).toString();
-    check(host.exportRecordings(exported, file) && ended(DecoderHost::TransferFailed)
+    check(host.exportRecordings(selected(exported), file) && ended(DecoderHost::TransferFailed)
               && take_discarded() == QStringList{file},
           "a ZIP refused for a file reference is discarded too");
-    check(!host.saveRecording({{"selection", 6}, {"paths", QStringList()}}, row) && ended(DecoderHost::TransferFailed)
-              && take_discarded() == QStringList{row},
+    check(!host.saveRecording(selected({{"selection", 6}, {"paths", QStringList()}}), row)
+              && ended(DecoderHost::TransferFailed) && take_discarded() == QStringList{row},
           "an empty selection is refused and discards its row");
 
     // Busy: the running transfer keeps its own row; the refused one goes.
     r.hold = true;
-    check(host.exportRecordings(exported, row) && r.entered.tryAcquire(1, 5000), "a transfer runs");
-    check(!host.saveRecording(save, other) && take_discarded() == QStringList{other},
+    check(host.exportRecordings(selected(exported), row) && r.entered.tryAcquire(1, 5000), "a transfer runs");
+    check(!host.saveRecording(selected(save), other) && take_discarded() == QStringList{other},
           "a transfer refused while another runs discards its row only");
     host.cancelRecordingTransfer();
     check(ended(DecoderHost::TransferBusy) && ended(DecoderHost::TransferDone), "the refusal, then the running end");
@@ -2876,7 +2934,7 @@ check_download_discards() {
     (void)r.returned.tryAcquire(r.returned.available());
 
     host.abortDocumentTransfers();
-    check(!host.exportRecordings(exported, row) && ended(DecoderHost::TransferFailed)
+    check(!host.exportRecordings(selected(exported), row) && ended(DecoderHost::TransferFailed)
               && take_discarded() == QStringList{row},
           "a transfer after the teardown abort discards its row");
     check(!backupSaves->writeFromFile(a, row) && take_discarded() == QStringList{row},
@@ -2971,7 +3029,7 @@ check_queued_share_holds_its_recording() {
     write_file(folder + QStringLiteral("/folder.json"),
                R"({"uid":"1a2b3c4d-0000-4000-8000-00000000000a","kind":"saved","name":"County"})"
                "\n");
-    const QString other = temp_recording(dir, "other.wav", "RIFF");
+
     const QString document = QStringLiteral("content://com.example.documents/document/calls.zip");
     reset_recordings();
     PlatformRecordings& r = recordings();
@@ -2985,6 +3043,10 @@ check_queued_share_holds_its_recording() {
     store.hostSessionReport(true, false, false);
     store.setLimitMb(0);
     store.start();
+    // The export that holds the worker is of a small recording of its own, newer than every case's, so the limit never
+    // takes it: a host serving the store transfers only a selection the store made (selectionCurrent()).
+    const QString otherId = QStringLiteral("00000000000000AB-1");
+    (void)published_recording(folder, otherId, QStringLiteral("other.wav"), 1754800000, qint64{4});
     // Each case: a recording under no limit, an export holding the worker, the share queued behind it, then the limit.
     int next = 1;
     const auto queue_share = [&](DecoderHostAndroid& host) {
@@ -3004,11 +3066,8 @@ check_queued_share_holds_its_recording() {
         check(wait_for([&host]() { return !host.recordingTransferActive(); }), "no transfer runs yet");
         r.hold = true;
         (void)r.released.tryAcquire(r.released.available());
-        check(
-            host.exportRecordings(
-                {{"selection", 1000 + next}, {"paths", QStringList({other})}, {"names", QStringList({"S/other.wav"})}},
-                document),
-            "an export holds the transfer worker");
+        check(host.exportRecordings(store.selectRecordings({otherId}), document),
+              "an export holds the transfer worker");
         check(r.entered.tryAcquire(1, 5000), "the export reaches the platform");
         const int shares = r.shares.load();
         check(host.shareRecording(path, QStringLiteral("Call recording")), "the share is queued behind it");

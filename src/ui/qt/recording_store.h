@@ -304,8 +304,9 @@ class RecordingStore : public QObject, public CallRecordingProvider, public Reco
      * (deleteRecordings()).
      *
      * @return {selection (0 when nothing matched or refused), paths, names (`<folder>/<file>`, for the zip), count,
-     * bytes, day (that reading of today, `yyyy-MM-dd`, which names the zip: a press across midnight names the day it
-     * selected), loading (true when refused while a folder is read)}.
+     * bytes, sizes, mtimeSecs and mtimeNanos (each file's size and modification time as the index knows it, which the
+     * transfer checks before it reads the file), day (that reading of today, `yyyy-MM-dd`, which names the zip: a press
+     * across midnight names the day it selected), loading (true when refused while a folder is read)}.
      */
     Q_INVOKABLE QVariantMap selectForExport(const QString& folderUid, const QString& preset);
     /** @brief selectForExport() pressed at @p pressMs (milliseconds since the Unix epoch, given rather than read):
@@ -319,6 +320,10 @@ class RecordingStore : public QObject, public CallRecordingProvider, public Reco
     /** @brief As selectRecordings(), for the recording at @p path (a share the host queued); its selection, 0 when
      * there is none to hold. */
     int selectPath(const QString& path);
+    /** @brief Whether @p selection is held and no read of storage again has started since it was made: a read again
+     * may give a path it names to another recording (two owners' folders swapped while the storage was away), so the
+     * host refuses its transfer otherwise (recording_store_serve_host(), DecoderHost::TransferChanged). */
+    bool selectionCurrent(int selection) const;
     /** @brief The export or transfer of @p selection is over: its files may be deleted again. */
     Q_INVOKABLE void releaseSelection(int selection);
     /** @brief The file the player has open, held while it plays; empty when none. */
@@ -548,6 +553,8 @@ class RecordingStore : public QObject, public CallRecordingProvider, public Reco
     /* @p root's folder table, as rebuildRoot() listed it, in place of what the index held for the root. Under the
      * store's lock. */
     void installRootTableLocked(int root, QList<Folder>& table, Pass* pass);
+    /* A pass's first read of storage again: Pass::reread, and every selection made before it goes stale at once. */
+    void noteRereadStart(Pass* pass);
     /* The journals and files of the folders the table lists but nobody read yet. */
     void loadPendingFolders(Pass* pass);
     /* Read a folder whole: its folder.json, its files and its journal. @p replace drops what the index held for it,
@@ -605,8 +612,9 @@ class RecordingStore : public QObject, public CallRecordingProvider, public Reco
     void yieldToReaders() const;
     void processRechecks(Pass* pass);
     /* Look at the files of @p ids again: a gone one leaves the index (kept when its root went: the storage-loss rule),
-     * one still there has its size read again. */
-    void recheckEntries(const QStringList& ids, Pass* pass);
+     * one still there has its size read again, and with @p takeAsNow (a recheck the host asked for) its size and time
+     * too. */
+    void recheckEntries(const QStringList& ids, Pass* pass, bool takeAsNow);
     void processDeletes(Pass* pass);
     /* @p counted: the roots a limit's total counts, each checked again before the unlink (Held when one is gone). */
     /* @p expected: the file a user's delete was asked of (its identity when the request was accepted); null for the
@@ -720,7 +728,16 @@ class RecordingStore : public QObject, public CallRecordingProvider, public Reco
     QSet<QString> m_unproven;
     QString m_compacting;
     QHash<QString, int> m_holds;
-    QHash<int, QStringList> m_selections;
+
+    /* An export's or a save's files, and m_storageReads when they were selected. */
+    struct Selection {
+        QStringList paths;
+        quint64 storageReads = 0U;
+    };
+
+    QHash<int, Selection> m_selections;
+    /* Reads of storage again started (noteRereadStart()): a selection made before one is not transferred. */
+    quint64 m_storageReads = 0U;
     int m_nextSelection = 1;
     QString m_playing;
     /* Each delete asked and not done yet, with its file's identity as the index knew it when the request was accepted. */

@@ -95,6 +95,7 @@
 #include <dsd-neo/core/trunk_scan_lists.h>
 #include <dsd-neo/core/unit_activity.h>
 #include <dsd-neo/core/unit_activity_reason.h>
+#include <dsd-neo/platform/file_compat.h>
 #include <dsd-neo/protocol/p25/p25_cc_candidates.h>
 #include <dsd-neo/runtime/analog_tones.h>
 #include <dsd-neo/runtime/decode_clock.h>
@@ -128,6 +129,7 @@
 #include "location_requests.h"
 #include "map_view_item.h"
 #include "p25_network_model.h" // WP-F2
+#include "platform_path.h"
 #include "position_model.h"
 #include "qml_backup_recorder.h"
 #include "qml_gc_policy.h"
@@ -580,9 +582,9 @@ class ImportOnlyHost : public dsd_qt::DecoderHost {
 
   protected:
     bool
-    beginRecordingTransfer(const QStringList& paths, const QStringList& names, const QString& reference,
-                           bool zip) override {
-        return holdTransfers || dsd_qt::DecoderHost::beginRecordingTransfer(paths, names, reference, zip);
+    beginRecordingTransfer(const QStringList& paths, const QStringList& names,
+                           const QList<dsd_file_identity_t>& expected, const QString& reference, bool zip) override {
+        return holdTransfers || dsd_qt::DecoderHost::beginRecordingTransfer(paths, names, expected, reference, zip);
     }
 
     /* The project's LICENSE and the index naming it and a file the package lacks, compiled in by tests/CMakeLists.txt;
@@ -3960,9 +3962,26 @@ class RecordingsFake : public QQmlPropertyMap {
                     {QStringLiteral("bytes"), 0},
                     {QStringLiteral("day"), selectionDay()}};
         }
-        return {{QStringLiteral("selection"), ++m_lastSelection}, {QStringLiteral("paths"), m_selectionPaths},
-                {QStringLiteral("names"), m_selectionPaths},      {QStringLiteral("count"), m_selectionCount},
-                {QStringLiteral("bytes"), m_selectionBytes},      {QStringLiteral("day"), selectionDay()}};
+        // Each file as a store selects it (issue #902), read now: zeros for a path with no file.
+        QVariantList sizes;
+        QVariantList secs;
+        QVariantList nanos;
+        for (const QString& path : std::as_const(m_selectionPaths)) {
+            dsd_file_identity_t file{};
+            (void)dsd_path_file_identity(dsd_qt::platform_path(path).constData(), &file);
+            sizes.append(static_cast<qint64>(file.size));
+            secs.append(static_cast<qint64>(file.mtime_s));
+            nanos.append(static_cast<int>(file.mtime_ns));
+        }
+        return {{QStringLiteral("selection"), ++m_lastSelection},
+                {QStringLiteral("paths"), m_selectionPaths},
+                {QStringLiteral("names"), m_selectionPaths},
+                {QStringLiteral("count"), m_selectionCount},
+                {QStringLiteral("bytes"), m_selectionBytes},
+                {QStringLiteral("day"), selectionDay()},
+                {QStringLiteral("sizes"), sizes},
+                {QStringLiteral("mtimeSecs"), secs},
+                {QStringLiteral("mtimeNanos"), nanos}};
     }
 
     static QString

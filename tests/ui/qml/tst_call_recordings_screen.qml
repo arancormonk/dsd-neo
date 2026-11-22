@@ -196,7 +196,8 @@ Item {
                 {tag: "cancelled", result: 2, missing: 0, text: "Export cancelled.", problem: false},
                 {tag: "missing", result: 3, missing: 12, text: "Those recordings are gone.", problem: true},
                 {tag: "busy", result: 4, missing: 0, text: "Another export is running. Try again when it finishes.", problem: true},
-                {tag: "unsupported", result: 5, missing: 0, text: "This device can't export call recordings.", problem: true}
+                {tag: "unsupported", result: 5, missing: 0, text: "This device can't export call recordings.", problem: true},
+                {tag: "changed", result: 6, missing: 1, text: "Those recordings changed. Export again.", problem: true}
             ];
         }
         function test_export_results(data) {

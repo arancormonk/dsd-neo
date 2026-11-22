@@ -8,6 +8,9 @@ package io.github.arancormonk.dsdneo
 import android.content.ContentResolver
 import android.os.CancellationSignal
 import android.os.OperationCanceledException
+import android.system.ErrnoException
+import android.system.Os
+import android.system.OsConstants
 import android.util.Log
 import java.io.File
 import java.io.FileInputStream
@@ -40,6 +43,15 @@ object RecordingExport {
     const val CANCELLED = 2
     const val MISSING = 3
 
+    /** A recording is not the file selected any more: the transfer keeps nothing, and the user exports again. */
+    const val CHANGED = 6
+
+    /** Thrown by [openSelected] at a recording that is not the file selected: the whole transfer is abandoned. */
+    internal class RecordingChangedException(val path: String) : IOException("not the recording selected: $path")
+
+    /** A recording as the store selected it: its size and modification time. */
+    internal data class Selected(val size: Long, val seconds: Long, val nanos: Long)
+
     /**
      * Entries are DEFLATED at level 0: stored blocks that still stream with data descriptors (STORED would need each
      * entry's CRC and size before its bytes). Measured on the fixture recordings (#708), BEST_SPEED shrinks 8 kHz
@@ -48,6 +60,13 @@ object RecordingExport {
      * a phone, while documents are written to local storage far faster.
      */
     private const val LEVEL = Deflater.NO_COMPRESSION
+
+    /**
+     * How a transfer opens each recording: [openSelected]. A test swaps it to feed a FIFO, which the check refuses, to
+     * hold an export between chunks.
+     */
+    @Volatile
+    internal var inputOpener: (String, Selected) -> InputStream? = ::openSelected
 
     /** One transfer: its id (DecoderHostAndroid's, rising), signal and the source bytes it has copied. */
     private class Transfer(val id: Long, val signal: CancellationSignal) {
@@ -77,13 +96,16 @@ object RecordingExport {
 
     /**
      * Write [paths] into the document [uriText] names: one ZIP whose entries are named [names] when [zip], else the
-     * one file as it is.
+     * one file as it is. [selected] holds three numbers per path, its size and its modification time's seconds and
+     * nanoseconds as the store selected it: right before each file is read it must still be that regular file, never
+     * a link; one gone is left out, and any other difference abandons the whole transfer ([CHANGED]), writing nothing.
      *
      * A Download-folder row ([DownloadsSave]) is published once written, and deleted at every other exit. Its
      * publication still answers [cancel] until it begins; a row that could not be published fails the transfer, and so
      * does one a discard took before this transfer began (never written).
      *
-     * @return the result code, then the paths found gone (a ZIP leaves them out; all gone is [MISSING]), as text.
+     * @return the result code, then the paths found gone (a ZIP leaves them out; all gone is [MISSING]) and, for
+     * [CHANGED], the one found changed, as text: the store looks at each again.
      */
     @JvmStatic
     fun transfer(
@@ -91,6 +113,7 @@ object RecordingExport {
         id: Long,
         paths: Array<String>,
         names: Array<String>,
+        selected: LongArray,
         uriText: String,
         zip: Boolean,
     ): Array<String> {
@@ -110,7 +133,7 @@ object RecordingExport {
         var result = FAILED
         try {
             try {
-                result = write(resolver, transfer, paths, names, uriText, zip, missing)
+                result = write(resolver, transfer, paths, names, selected, uriText, zip, missing)
             } finally {
                 // Still the current transfer, so a cancel reaches the publication.
                 result = settled(resolver, uriText, result, transfer.signal)
@@ -138,13 +161,21 @@ object RecordingExport {
         transfer: Transfer,
         paths: Array<String>,
         names: Array<String>,
+        selected: LongArray,
         uriText: String,
         zip: Boolean,
         missing: MutableList<String>,
     ): Int {
-        if (paths.isEmpty() || (if (zip) names.size != paths.size else paths.size != 1)) {
+        if (paths.isEmpty() || (if (zip) names.size != paths.size else paths.size != 1) ||
+            selected.size != paths.size * 3
+        ) {
             return FAILED
         }
+        val files = HashMap<String, Selected>()
+        for ((index, path) in paths.withIndex()) {
+            files[path] = Selected(selected[index * 3], selected[index * 3 + 1], selected[index * 3 + 2])
+        }
+        val open = { path: String -> inputOpener(path, files.getValue(path)) }
         val steps = object : DocumentTransfer.Steps {
             override fun check() {
                 if (DocumentTransfer.isAborted) throw IOException("document transfers were aborted")
@@ -164,9 +195,9 @@ object RecordingExport {
         return try {
             val counted = CountingOutputStream(write.output)
             val written = if (zip) {
-                writeZip(counted, paths.toList(), names.toList(), steps, ::openRecording, missing)
+                writeZip(counted, paths.toList(), names.toList(), steps, open, missing)
             } else {
-                writeOne(counted, paths[0], steps, missing)
+                writeOne(counted, paths[0], steps, open, missing)
             }
             if (written == 0) {
                 // Every recording went while the transfer ran: nothing to keep.
@@ -175,6 +206,11 @@ object RecordingExport {
             }
             write.finish(counted.count)
             DONE
+        } catch (e: RecordingChangedException) {
+            Log.w(TAG, "a call recording changed since it was selected; nothing is kept", e)
+            write.fail(e)
+            missing += e.path // the store looks at it again, so the next export takes what is there now
+            CHANGED
         } catch (e: Exception) {
             Log.w(TAG, "could not write call recordings into a document", e)
             write.fail(e)
@@ -184,6 +220,27 @@ object RecordingExport {
             write.fail(e)
             throw e
         }
+    }
+
+    /**
+     * The recording at [path] opened to read once it is checked to be the file [selected] names (a regular file, never
+     * a link, with that size and modification time), or null when it is gone; [RecordingChangedException] otherwise,
+     * a name that cannot be read included.
+     */
+    internal fun openSelected(path: String, selected: Selected): InputStream? {
+        val stat = try {
+            Os.lstat(path)
+        } catch (e: ErrnoException) {
+            if (e.errno == OsConstants.ENOENT || e.errno == OsConstants.ENOTDIR) return null
+            // No access to it, an I/O error: not the file selected as far as can be told, and the store looks again.
+            throw RecordingChangedException(path)
+        }
+        if (!OsConstants.S_ISREG(stat.st_mode) || stat.st_size != selected.size ||
+            stat.st_mtim.tv_sec != selected.seconds || stat.st_mtim.tv_nsec != selected.nanos
+        ) {
+            throw RecordingChangedException(path)
+        }
+        return openRecording(path)
     }
 
     /** A recording opened to read, or null when it is gone. */
@@ -269,10 +326,11 @@ object RecordingExport {
         output: OutputStream,
         path: String,
         steps: DocumentTransfer.Steps,
+        open: (String) -> InputStream?,
         missing: MutableList<String>,
     ): Int {
         steps.check()
-        val input = openRecording(path)
+        val input = open(path)
         if (input == null) {
             missing += path
             return 0

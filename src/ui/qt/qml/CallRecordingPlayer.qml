@@ -288,6 +288,8 @@ Column {
             say(qsTr("This recording is gone."), true);
         else if (result === 4)
             say(qsTr("An export is running. Save again when it finishes."), true);
+        else if (result === 6)
+            say(qsTr("This recording changed. Save it again."), true);
         else if (result !== 2)
             say(qsTr("Couldn't save the recording. Try another location."), true);
     }

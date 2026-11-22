@@ -18,6 +18,7 @@
 #define DSD_NEO_SRC_UI_QT_DECODER_HOST_H_
 
 #include <QHash>
+#include <QList>
 #include <QMap>
 #include <QObject>
 #include <QSet>
@@ -27,6 +28,7 @@
 #include <QVariantMap>
 #include <QtGlobal>
 #include <atomic>
+#include <dsd-neo/platform/file_compat.h>
 #include <functional>
 #include <memory>
 #include <mutex>
@@ -145,6 +147,8 @@ class DecoderHost : public QObject {
     /**
      * @brief How a recording export or save ended (recordingTransferFinished()). Missing: every file it named was
      * gone. Busy: another transfer was running. Unsupported: this host cannot write it (the base host has no zip).
+     * Changed: a file it named is not the one selected any more (another size or modification time, a link, no file),
+     * or the store read its storage again since the selection was made; nothing was kept, and the user exports again.
      */
     enum RecordingTransferResult {
         TransferDone = 0,
@@ -152,7 +156,8 @@ class DecoderHost : public QObject {
         TransferCancelled = 2,
         TransferMissing = 3,
         TransferBusy = 4,
-        TransferUnsupported = 5
+        TransferUnsupported = 5,
+        TransferChanged = 6
     };
     Q_ENUM(RecordingTransferResult)
 
@@ -444,6 +449,9 @@ class DecoderHost : public QObject {
 
     /** @brief Which paths are call recordings the store manages (shareRecording() shares nothing else). */
     void setRecordingIndex(std::function<bool(const QString&)> indexed);
+    /** @brief Whether a selection may still be transferred (RecordingStore::selectionCurrent()): an export or save of
+     * one that is not is refused as TransferChanged. None set: every selection may. */
+    void setRecordingSelectionCheck(std::function<bool(int)> current);
     /**
      * @brief How the host holds a recording the store manages while it works on it outside a selection (a share's
      * copy, queued behind an export): @p hold returns the store's selection for a path (0: not held), @p release lets
@@ -1274,16 +1282,23 @@ class DecoderHost : public QObject {
 
     /**
      * @brief Begin writing @p paths into @p reference: one zip with entries named @p names when @p zip, else the one
-     * file as it is. Nothing has looked at the files yet: the host skips the ones gone (all gone: TransferMissing),
-     * publishes the total of the ones it writes through publishRecordingTransferProgress() (it starts as the
-     * selection's), and reports its end once, with the files it found gone, through finishRecordingTransfer(), on the
-     * GUI thread.
+     * file as it is. Nothing has looked at the files yet: right before it reads each one the host checks it against
+     * @p expected (recordingInputCheck(), the file as the store selected it), skips one gone (all gone:
+     * TransferMissing) and abandons the whole transfer, writing nothing, at any other (TransferChanged, the file
+     * reported with the ones gone so the store looks at it again). It publishes
+     * the total of the ones it writes through publishRecordingTransferProgress() (it starts as the selection's), and
+     * reports its end once, with the files it found gone, through finishRecordingTransfer(), on the GUI thread.
      *
      * The base host saves a single file synchronously through copyFileToDocument(), and has no zip.
      * @return false when it could not begin (finished as TransferFailed).
      */
-    virtual bool beginRecordingTransfer(const QStringList& paths, const QStringList& names, const QString& reference,
-                                        bool zip);
+    virtual bool beginRecordingTransfer(const QStringList& paths, const QStringList& names,
+                                        const QList<dsd_file_identity_t>& expected, const QString& reference, bool zip);
+
+    /** @brief What is at a selected recording's path now: the file selected (a regular file, never a link, with the
+     * size and modification time it had), nothing (missing), or anything else, an unreadable name included. */
+    enum class RecordingInput { Selected, Missing, Changed };
+    static RecordingInput recordingInputCheck(const QString& path, const dsd_file_identity_t& expected);
 
     /** @brief Share @p path, a recording the store manages, through the platform; the base host cannot. */
     virtual bool
@@ -1297,7 +1312,8 @@ class DecoderHost : public QObject {
     void publishPlayback(const QString& path, int state, qint64 positionMs, qint64 durationMs, const QString& error);
     void publishRecordingTransferProgress(qint64 bytes, qint64 totalBytes);
     /** @brief The running transfer ended with @p result (a RecordingTransferResult); @p missing of its files were
-     * gone (reported to the store, and counted in recordingTransferFinished()). */
+     * gone, or for TransferChanged not the file selected (reported to the store, which looks at each again, and
+     * counted in recordingTransferFinished()). */
     void finishRecordingTransfer(int result, const QStringList& missing);
     /** @brief Tell the recording store these call recordings were found gone. */
     void reportRecordingsMissing(const QStringList& paths);
@@ -1389,6 +1405,7 @@ class DecoderHost : public QObject {
     QSet<qint64> m_fileSessions;
     qint64 m_fileAccessRequest = 0;
     std::function<bool(const QString&)> m_recordingIndexed;
+    std::function<bool(int)> m_recordingSelectionCurrent;
     std::function<int(const QString&)> m_recordingHold;
     std::function<void(int)> m_recordingRelease;
     SignInFillSink m_signInFill;

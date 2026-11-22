@@ -262,6 +262,16 @@ fragment(qint64 row, int slot = 0) {
     return dsd_qt::call_history_fragment_key(kRing, slot, static_cast<qulonglong>(row));
 }
 
+/* A recording published into @p folder with its file's modification time set to @p mtime first: the file is whole,
+ * time included, before its journal line can be read. */
+void
+record_at(const QString& folder, const QString& id, const QString& file, qint64 start, qint64 row, qint64 bytes,
+          qint64 mtime) {
+    make_file(folder + QLatin1Char('/') + file, bytes);
+    set_mtime(folder + QLatin1Char('/') + file, mtime);
+    append(journal_of(folder), publish_line(id, file, start, row));
+}
+
 /* A recording published into @p folder: the file and its journal line. */
 void
 record(const QString& folder, const QString& id, const QString& file, qint64 start, qint64 row, qint64 bytes = 1000) {
@@ -2617,6 +2627,10 @@ class ServedHost : public dsd_qt::DecoderHost {
     QStringList played;
     QStringList shared;
     QStringList transferred;
+    /* The files an export was handed, as the store selected them. */
+    QList<dsd_file_identity_t> selectedFiles;
+    using DecoderHost::RecordingInput;
+    using DecoderHost::recordingInputCheck;
     bool zipTransfers = true;
 
     bool
@@ -2686,11 +2700,12 @@ class ServedHost : public dsd_qt::DecoderHost {
     }
 
     bool
-    beginRecordingTransfer(const QStringList& paths, const QStringList& names, const QString& reference,
-                           bool zip) override {
+    beginRecordingTransfer(const QStringList& paths, const QStringList& names,
+                           const QList<dsd_file_identity_t>& expected, const QString& reference, bool zip) override {
         if (!zip) {
-            return DecoderHost::beginRecordingTransfer(paths, names, reference, zip);
+            return DecoderHost::beginRecordingTransfer(paths, names, expected, reference, zip);
         }
+        selectedFiles = expected;
         transferred = paths;
         return true;
     }
@@ -2854,6 +2869,89 @@ test_host_surface(void) {
     s.pass();
     expect("and leaves the index", !s.store.isIndexedPath(path(7)));
     s.store.endSession();
+}
+
+/* Issue #902: a transfer reads only the files the store selected. Each file goes to the host with its size and
+ * modification time as selected; a save whose file is another one now (here another size) writes nothing, is told as
+ * changed and has the store look again, so the next selection takes the file as it is now; a selection made before the
+ * store read its storage again (two owners' folders may have swapped) is refused as changed at once; one made after
+ * the read is saved. The check itself: the file selected, one gone, and a link or another time are told apart. */
+void
+test_transfer_reads_only_the_files_selected(void) {
+    Roots roots;
+    const QString ext = roots.dir.path() + QStringLiteral("/ext");
+    const QString away = roots.dir.path() + QStringLiteral("/ext-away");
+    Store s(roots.list());
+    ServedHost host;
+    dsd_qt::recording_store_serve_host(&s.store, &host);
+    const QString folder = s.store.beginSession(QStringLiteral("saved"), kUidA, QStringLiteral("County"));
+    s.store.endSession();
+    const QString r1 = folder + QStringLiteral("/r1.wav");
+    const QString r2 = folder + QStringLiteral("/r2.wav");
+    const QString id1 = QStringLiteral("0000000000000915-1");
+    const QString id2 = QStringLiteral("0000000000000915-2");
+    record_at(folder, id1, QStringLiteral("r1.wav"), 1754000000, 1, 1000, 1754000000);
+    record_at(folder, id2, QStringLiteral("r2.wav"), 1754000100, 2, 2000, 1754000100);
+    s.pass();
+    QSignalSpy finished(&host, &dsd_qt::DecoderHost::recordingTransferFinished);
+    const QString dest = roots.dir.path() + QStringLiteral("/saved.wav");
+    const QString destUrl = QUrl::fromLocalFile(dest).toString();
+    const auto lastResult = [&finished]() { return finished.isEmpty() ? -1 : finished.last().at(1).toInt(); };
+
+    // An export hands the host every file as selected.
+    const QVariantMap all = s.store.selectForExport(QString(kUidA), QStringLiteral("all"));
+    expect("selected: the files go with their size and time",
+           host.exportRecordings(all, QStringLiteral("content://picked/zip")) && host.selectedFiles.size() == 2
+               && host.selectedFiles.at(0).size == 1000 && host.selectedFiles.at(0).mtime_s == 1754000000
+               && host.selectedFiles.at(1).size == 2000 && host.selectedFiles.at(1).mtime_s == 1754000100);
+    host.finish(dsd_qt::DecoderHost::TransferDone);
+    s.pass();
+
+    // Another file at the name since the selection: nothing written, told as changed, and looked at again.
+    const QVariantMap one = s.store.selectRecordings({id1});
+    make_file(r1, 1500);
+    finished.clear();
+    expect("changed: the save begins", host.saveRecording(one, destUrl));
+    s.pass();
+    expect("changed: nothing written, told as changed",
+           lastResult() == dsd_qt::DecoderHost::TransferChanged && !QFileInfo::exists(dest));
+    s.pass();
+    // The store does not track outside changes: looked at again, the next selection takes the file as it is now.
+    const QVariantMap retry = s.store.selectRecordings({id1});
+    s.store.releaseSelection(retry.value(QStringLiteral("selection")).toInt());
+    expect("changed: looked at again, the next selection takes the file as it is now",
+           retry.value(QStringLiteral("sizes")).toList().value(0).toLongLong() == 1500);
+
+    // A read of the storage again between the selection and the transfer: refused at once.
+    const QVariantMap before = s.store.selectRecordings({id2});
+    expect("read again: the storage goes", QDir().rename(ext, away));
+    s.pass();
+    expect("read again: the storage comes back", QDir().rename(away, ext));
+    s.pass();
+    finished.clear();
+    expect("read again: the save is refused", !host.saveRecording(before, destUrl));
+    s.pass();
+    expect("read again: as changed, nothing written",
+           lastResult() == dsd_qt::DecoderHost::TransferChanged && !QFileInfo::exists(dest));
+    const QVariantMap after = s.store.selectRecordings({id2});
+    finished.clear();
+    expect("read again: a selection made after the read is saved", host.saveRecording(after, destUrl));
+    s.pass();
+    expect("read again: saved", lastResult() == dsd_qt::DecoderHost::TransferDone && read_all(dest) == read_all(r2));
+
+    // The check alone.
+    dsd_file_identity_t known{};
+    expect("check: a file read", dsd_path_file_identity(dsd_qt::platform_path(r2).constData(), &known) == 0);
+    using Input = ServedHost::RecordingInput;
+    expect("check: the file selected", ServedHost::recordingInputCheck(r2, known) == Input::Selected);
+    expect("check: gone",
+           ServedHost::recordingInputCheck(folder + QStringLiteral("/none.wav"), known) == Input::Missing);
+    set_mtime(r2, 1754000101);
+    expect("check: another time", ServedHost::recordingInputCheck(r2, known) == Input::Changed);
+#ifndef _WIN32
+    QFile::remove(r2);
+    expect("check: a link", QFile::link(dest, r2) && ServedHost::recordingInputCheck(r2, known) == Input::Changed);
+#endif
 }
 
 /* Issue #708: the store has the user's storage limit before its first pass, and every change after. */
@@ -3948,6 +4046,36 @@ test_delete_of_an_unreadable_file_skips_it(void) {
                && s.store.recordingCount() == 1 && read_all(journal_of(folder)).contains("locked/x.wav"));
 }
 
+/* Issue #902: a selection made before a read of storage again is stale from the moment that read starts,
+ * not only once the pass ends: a transfer begun while the read is still going on is refused. */
+void
+test_selection_goes_stale_as_a_read_starts(void) {
+    Roots roots;
+    const QString ext = roots.dir.path() + QStringLiteral("/ext");
+    const QString away = roots.dir.path() + QStringLiteral("/ext-away");
+    Store s(roots.list());
+    const QString folder = s.store.beginSession(QStringLiteral("saved"), kUidA, QStringLiteral("County"));
+    s.store.endSession();
+    record(folder, QStringLiteral("0000000000000919-1"), QStringLiteral("r.wav"), 1754000000, 1);
+    s.pass();
+    const int selection =
+        s.store.selectRecordings({QStringLiteral("0000000000000919-1")}).value(QStringLiteral("selection")).toInt();
+    expect("stale: a selection", selection > 0 && s.store.selectionCurrent(selection));
+    expect("stale: the storage goes", QDir().rename(ext, away));
+    s.pass();
+    std::atomic<int> during{-1};
+    s.store.setFolderLoadHookForTest([&](const QString&) {
+        if (during.load() < 0) {
+            during = s.store.selectionCurrent(selection) ? 1 : 0;
+        }
+    });
+    expect("stale: the storage comes back", QDir().rename(away, ext));
+    s.pass();
+    s.store.setFolderLoadHookForTest({});
+    expect("stale: refused while the read is still going on", during.load() == 0);
+    s.store.releaseSelection(selection);
+}
+
 /* Issue #902: a folder whose journal is there but cannot be read is not read: the index would hold part of the
  * recordings, so an export and every delete request are refused, not taken from the other owner's folder alone, until
  * a pass reads it whole. */
@@ -4378,6 +4506,7 @@ main(int argc, char** argv) {
     test_player_release_wakes_a_waiting_delete();
     test_held_recordings_over_the_limit_go_once_released();
     test_host_surface();
+    test_transfer_reads_only_the_files_selected();
     test_limit_follows_the_preference();
     test_search_key_parse_and_compaction();
     test_detection_index();
@@ -4396,6 +4525,7 @@ main(int argc, char** argv) {
     test_limit_skips_a_file_not_as_known();
     test_delete_of_an_unreadable_file_skips_it();
     test_unread_journal_is_not_settled();
+    test_selection_goes_stale_as_a_read_starts();
     test_storage_a_request_saw_missing_is_read_again();
     test_requests_wait_for_an_adopted_folder();
     test_requests_wait_for_a_recheck();

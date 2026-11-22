@@ -623,7 +623,10 @@ Download/DSD-neo as** the file's name (for Save to file, **Saved to Download/DSD
 that result out. Cancel still stops it until the file is finished, and a cancelled or failed export leaves nothing
 there. When the file can't be saved anywhere, the screen (or the call's sheet) says why and the recordings are free
 again, as they are when you back out of the picker or leave the screen while it is open. A recording deleted meanwhile
-is left out, and the result says how many. A recording that is playing, being exported or still waiting for an
+is left out, and the result says how many. Each recording is checked right before it goes into the file: if one was
+replaced by another file meanwhile, or the storage was disconnected and read again after you chose them, nothing is
+saved and the screen says **Those recordings changed. Export again.** (for Save to file, **This recording changed. Save
+it again.**). A recording that is playing, being exported or still waiting for an
 rdio-scanner upload is deleted once it is free.
 
 ### Storage limit

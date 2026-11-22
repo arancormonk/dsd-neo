@@ -25,15 +25,41 @@
 #include "document_import_transport.h"
 #include "document_save_transport.h"
 #include "json_store.h"
+#include "platform_path.h"
 #include "qstring_scrub.h"
 
 #include <Qt>
 #include <QtGlobal>
 #include <algorithm>
+#include <cerrno>
+#include <dsd-neo/platform/file_compat.h>
+#include <stdint.h>
 
 namespace dsd_qt {
 
 namespace {
+
+/* @p selection's files as the store selected them (sizes, mtimeSecs, mtimeNanos), one for each of @p count paths, into
+ * @p out; false when they are not all there. */
+bool
+selected_files(const QVariantMap& selection, qsizetype count, QList<dsd_file_identity_t>* out) {
+    const QVariantList sizes = selection.value(QStringLiteral("sizes")).toList();
+    const QVariantList secs = selection.value(QStringLiteral("mtimeSecs")).toList();
+    const QVariantList nanos = selection.value(QStringLiteral("mtimeNanos")).toList();
+    if (sizes.size() != count || secs.size() != count || nanos.size() != count) {
+        return false;
+    }
+    out->reserve(count);
+    for (qsizetype i = 0; i < count; i++) {
+        dsd_file_identity_t file{};
+        file.kind = 1;
+        file.size = sizes.at(i).toLongLong();
+        file.mtime_s = secs.at(i).toLongLong();
+        file.mtime_ns = static_cast<int32_t>(nanos.at(i).toInt());
+        out->append(file);
+    }
+    return true;
+}
 
 /** @brief Keep a weak reference to @p transport, dropping the expired ones; abort it when @p aborted is already set. */
 template <typename Transport>
@@ -303,9 +329,16 @@ DecoderHost::beginTransfer(const QVariantMap& selection, const QString& referenc
     if (zip && !recordingExportSupported()) {
         return refuse(TransferUnsupported);
     }
-    // A save copies one recording; a zip names each entry, so the two lists go together.
-    if (id <= 0 || reference.isEmpty() || paths.isEmpty() || (zip ? names.size() != paths.size() : paths.size() != 1)) {
+    // A save copies one recording; a zip names each entry, so the two lists go together, and every file comes with
+    // what it was when selected.
+    QList<dsd_file_identity_t> expected;
+    if (id <= 0 || reference.isEmpty() || paths.isEmpty() || (zip ? names.size() != paths.size() : paths.size() != 1)
+        || !selected_files(selection, paths.size(), &expected)) {
         return refuse(TransferFailed);
+    }
+    // The store read storage again since the selection: a path it names may now be another recording's.
+    if (m_recordingSelectionCurrent && !m_recordingSelectionCurrent(id)) {
+        return refuse(TransferChanged);
     }
     // No file is looked at here, on the GUI thread (an export may name tens of thousands): the transfer finds the ones
     // gone on its own thread, reports them at its end and publishes the total it really has.
@@ -313,7 +346,7 @@ DecoderHost::beginTransfer(const QVariantMap& selection, const QString& referenc
     m_transferBytes = 0;
     m_transferTotalBytes = selection.value(QStringLiteral("bytes")).toLongLong();
     Q_EMIT recordingTransferChanged();
-    if (!beginRecordingTransfer(paths, zip ? names : QStringList(), reference, zip)) {
+    if (!beginRecordingTransfer(paths, zip ? names : QStringList(), expected, reference, zip)) {
         discardPendingDownload(reference);
         finishRecordingTransfer(TransferFailed, {});
         return false;
@@ -322,18 +355,21 @@ DecoderHost::beginTransfer(const QVariantMap& selection, const QString& referenc
 }
 
 bool
-DecoderHost::beginRecordingTransfer(const QStringList& paths, const QStringList& names, const QString& reference,
-                                    bool zip) {
+DecoderHost::beginRecordingTransfer(const QStringList& paths, const QStringList& names,
+                                    const QList<dsd_file_identity_t>& expected, const QString& reference, bool zip) {
     (void)names;
-    if (zip || paths.size() != 1) {
+    if (zip || paths.size() != 1 || expected.size() != 1) {
         return false;
     }
-    const QFileInfo file(paths.first());
-    if (!file.isFile()) {
+    // Right before it is read: the file selected, or nothing written.
+    const RecordingInput input = recordingInputCheck(paths.first(), expected.first());
+    if (input != RecordingInput::Selected) {
         publishRecordingTransferProgress(0, 0);
-        finishRecordingTransfer(TransferMissing, paths);
+        // Either is looked at again by the store: gone, or another file the next selection must not name as it.
+        finishRecordingTransfer(input == RecordingInput::Missing ? TransferMissing : TransferChanged, paths);
         return true;
     }
+    const QFileInfo file(paths.first());
     publishRecordingTransferProgress(0, file.size());
     const bool saved = copyFileToDocument(paths.first(), reference);
     if (saved) {
@@ -653,6 +689,21 @@ DecoderHost::shareRecording(const QString& path, const QString& title) {
 void
 DecoderHost::setRecordingIndex(std::function<bool(const QString&)> indexed) {
     m_recordingIndexed = std::move(indexed);
+}
+
+void
+DecoderHost::setRecordingSelectionCheck(std::function<bool(int)> current) {
+    m_recordingSelectionCurrent = std::move(current);
+}
+
+DecoderHost::RecordingInput
+DecoderHost::recordingInputCheck(const QString& path, const dsd_file_identity_t& expected) {
+    dsd_file_identity_t now{};
+    if (dsd_path_file_identity(platform_path(path).constData(), &now) != 0) {
+        const int err = errno;
+        return err == ENOENT || err == ENOTDIR ? RecordingInput::Missing : RecordingInput::Changed;
+    }
+    return dsd_file_identity_equal(&expected, &now) != 0 ? RecordingInput::Selected : RecordingInput::Changed;
 }
 
 void

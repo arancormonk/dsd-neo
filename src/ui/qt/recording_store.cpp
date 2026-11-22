@@ -419,6 +419,8 @@ void
 recording_store_serve_host(RecordingStore* store, DecoderHost* host) {
     const QPointer<RecordingStore> guarded(store);
     host->setRecordingIndex([guarded](const QString& path) { return guarded && guarded->isIndexedPath(path); });
+    host->setRecordingSelectionCheck(
+        [guarded](int selection) { return guarded && guarded->selectionCurrent(selection); });
     host->setRecordingHold([guarded](const QString& path) { return guarded ? guarded->selectPath(path) : 0; },
                            [guarded](int selection) {
                                if (guarded) {
@@ -686,7 +688,7 @@ RecordingStore::rebuildRoot(int root, Pass* pass) {
         const std::lock_guard<std::mutex> lock(m_mutex);
         rootPath = m_roots.at(root);
     }
-    pass->reread = true;
+    noteRereadStart(pass);
     if (m_rootReadHook) {
         m_rootReadHook(rootPath);
     }
@@ -756,6 +758,17 @@ RecordingStore::installRootTableLocked(int root, QList<Folder>& table, Pass* pas
 }
 
 void
+RecordingStore::noteRereadStart(Pass* pass) {
+    if (pass->reread) {
+        return;
+    }
+    // A pass's first read of storage again: every selection made before it is stale from now on (selectionCurrent()).
+    pass->reread = true;
+    const std::lock_guard<std::mutex> lock(m_mutex);
+    m_storageReads++;
+}
+
+void
 RecordingStore::loadPendingFolders(Pass* pass) {
     struct Pending {
         QString path;
@@ -782,7 +795,7 @@ RecordingStore::loadPendingFolders(Pass* pass) {
 
 void
 RecordingStore::loadFolder(const QString& path, int root, bool replace, Pass* pass) {
-    pass->reread = true;
+    noteRereadStart(pass);
     Folder folder;
     if (!read_folder_json(path, &folder.uid, &folder.kind, &folder.name)) {
         // A root that went away since the pass began (unmounted, a USB session) took the folder.json with it: nothing
@@ -1336,11 +1349,11 @@ RecordingStore::processRechecks(Pass* pass) {
         ids = m_recheckQueue.values();
         m_recheckQueue.clear();
     }
-    recheckEntries(ids, pass);
+    recheckEntries(ids, pass, true);
 }
 
 void
-RecordingStore::recheckEntries(const QStringList& ids, Pass* pass) {
+RecordingStore::recheckEntries(const QStringList& ids, Pass* pass, bool takeAsNow) {
     for (const QString& id : ids) {
         yieldToReaders();
         if (m_entryCheckHook) {
@@ -1355,8 +1368,15 @@ RecordingStore::recheckEntries(const QStringList& ids, Pass* pass) {
             }
             const FileStat stat = statOf(it->path);
             if (stat.regular) {
-                if (stat.size != it->bytes) {
+                // Still there: its size read again. A recheck the host asked for (the player, an export or a share found
+                // it changed) takes it as it is now, the size and time the next export or delete checks; the limit's
+                // own look does not, so its check before each unlink still finds a file not as the index knew it.
+                const bool retake = takeAsNow && dsd_file_identity_equal(&stat.identity, &it->identity) == 0;
+                if (stat.size != it->bytes || retake) {
                     it->bytes = stat.size;
+                    if (retake) {
+                        it->identity = stat.identity;
+                    }
                     noteQueryChangeLocked(pass);
                 }
                 continue;
@@ -1655,7 +1675,7 @@ RecordingStore::enforceLimit(Pass* pass) {
             // manager) still counts: every file the total counts is looked at as a recheck looks, a gone one leaving
             // the index (away, not deleted, when its root went), and the total is summed again before anything goes.
             looked = true;
-            recheckEntries(usage.counted, pass);
+            recheckEntries(usage.counted, pass, false);
             recount = true;
             continue;
         }
@@ -2654,10 +2674,18 @@ RecordingStore::selectLocked(QList<const Entry*> entries) {
     });
     QStringList paths;
     QStringList names;
+    // Each file as the index knows it (size and modification time): the transfer reads only a file that still is
+    // (DecoderHost::recordingInputCheck()).
+    QVariantList sizes;
+    QVariantList mtimeSecs;
+    QVariantList mtimeNanos;
     qint64 bytes = 0;
     for (const Entry* entry : std::as_const(entries)) {
         paths.append(entry->path);
         names.append(recording_entry_name(entry->folder, entry->file));
+        sizes.append(static_cast<qint64>(entry->identity.size));
+        mtimeSecs.append(static_cast<qint64>(entry->identity.mtime_s));
+        mtimeNanos.append(static_cast<int>(entry->identity.mtime_ns));
         bytes += entry->bytes;
     }
     int selection = 0;
@@ -2666,12 +2694,13 @@ RecordingStore::selectLocked(QList<const Entry*> entries) {
         for (const QString& path : std::as_const(paths)) {
             m_holds[path]++;
         }
-        m_selections.insert(selection, paths);
+        m_selections.insert(selection, Selection{paths, m_storageReads});
     }
     return QVariantMap{
         {QStringLiteral("selection"), selection}, {QStringLiteral("paths"), paths},
         {QStringLiteral("names"), names},         {QStringLiteral("count"), static_cast<int>(paths.size())},
-        {QStringLiteral("bytes"), bytes},
+        {QStringLiteral("bytes"), bytes},         {QStringLiteral("sizes"), sizes},
+        {QStringLiteral("mtimeSecs"), mtimeSecs}, {QStringLiteral("mtimeNanos"), mtimeNanos},
     };
 }
 
@@ -2743,7 +2772,7 @@ void
 RecordingStore::releaseSelection(int selection) {
     {
         const std::lock_guard<std::mutex> lock(m_mutex);
-        const QStringList paths = m_selections.take(selection);
+        const QStringList paths = m_selections.take(selection).paths;
         for (const QString& path : paths) {
             const auto hold = m_holds.find(path);
             if (hold != m_holds.end() && --hold.value() <= 0) {
@@ -2772,6 +2801,13 @@ RecordingStore::setPlayingPath(const QString& path) {
         m_passRequested = true;
     }
     m_wake.notify_all();
+}
+
+bool
+RecordingStore::selectionCurrent(int selection) const {
+    const std::lock_guard<std::mutex> lock(m_mutex);
+    const auto it = m_selections.constFind(selection);
+    return it != m_selections.cend() && it->storageReads == m_storageReads;
 }
 
 bool

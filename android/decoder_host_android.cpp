@@ -114,6 +114,32 @@ to_java_string_array(QJniEnvironment& env, const QStringList& values) {
 }
 
 /**
+ * @brief @p files as a Java long[] of three per file, size, whole seconds and nanoseconds of the modification time
+ * (RecordingExport.transfer()'s `selected`), as a local ref the caller deletes; nullptr, with no exception left
+ * pending, when it could not be made.
+ */
+jlongArray
+to_java_file_array(QJniEnvironment& env, const QList<dsd_file_identity_t>& files) {
+    QList<jlong> values;
+    values.reserve(files.size() * 3);
+    for (const dsd_file_identity_t& file : files) {
+        values.append(static_cast<jlong>(file.size));
+        values.append(static_cast<jlong>(file.mtime_s));
+        values.append(static_cast<jlong>(file.mtime_ns));
+    }
+    jlongArray array = env->NewLongArray(static_cast<jsize>(values.size()));
+    if (env.checkAndClearExceptions() || array == nullptr) {
+        return nullptr;
+    }
+    env->SetLongArrayRegion(array, 0, static_cast<jsize>(values.size()), values.constData());
+    if (env.checkAndClearExceptions()) {
+        env->DeleteLocalRef(array);
+        return nullptr;
+    }
+    return array;
+}
+
+/**
  * @brief A Java String with @p text's UTF-16 units, as a local ref the caller deletes; nullptr, with no exception left
  * pending, when it could not be made.
  *
@@ -948,31 +974,37 @@ DecoderHostAndroid::platformPlaybackStatus() {
 
 QStringList
 DecoderHostAndroid::platformTransferRecordings(qint64 id, const QStringList& paths, const QStringList& names,
-                                               const QString& reference, bool zip) {
+                                               const QList<dsd_file_identity_t>& expected, const QString& reference,
+                                               bool zip) {
     const jobject resolver = g_content_resolver.load();
-    if (resolver == nullptr) {
+    if (resolver == nullptr || expected.size() != paths.size()) {
         return {};
     }
     /* This worker thread has no Java frame to reclaim local references, so each one goes by hand. */
     QJniEnvironment env;
-    jobjectArray files = to_java_string_array(env, paths);
+    jlongArray selected = to_java_file_array(env, expected);
+    jobjectArray files = selected == nullptr ? nullptr : to_java_string_array(env, paths);
     jobjectArray entries = files == nullptr ? nullptr : to_java_string_array(env, names);
     if (entries == nullptr) {
-        if (files != nullptr) {
-            env->DeleteLocalRef(files);
+        for (jobject made : {static_cast<jobject>(files), static_cast<jobject>(selected)}) {
+            if (made != nullptr) {
+                env->DeleteLocalRef(made);
+            }
         }
         return {};
     }
     const QJniObject uri = QJniObject::fromString(reference);
     // Must match RecordingExport.kt: @JvmStatic fun transfer(ContentResolver, Long, Array<String>, Array<String>,
-    // String, Boolean): Array<String>. The descriptor stays one literal, which tools/check_android_r8.py reads whole.
+    // LongArray, String, Boolean): Array<String>. The descriptor stays one literal, which tools/check_android_r8.py
+    // reads whole.
     // clang-format off
     const QJniObject answer = QJniObject::callStaticObjectMethod(kExportClass, "transfer",
-        "(Landroid/content/ContentResolver;J[Ljava/lang/String;[Ljava/lang/String;Ljava/lang/String;Z)[Ljava/lang/String;",
-        resolver, static_cast<jlong>(id), files, entries, uri.object(), static_cast<jboolean>(zip));
+        "(Landroid/content/ContentResolver;J[Ljava/lang/String;[Ljava/lang/String;[JLjava/lang/String;Z)[Ljava/lang/String;",
+        resolver, static_cast<jlong>(id), files, entries, selected, uri.object(), static_cast<jboolean>(zip));
     // clang-format on
     env->DeleteLocalRef(entries);
     env->DeleteLocalRef(files);
+    env->DeleteLocalRef(selected);
     return java_strings(answer);
 }
 

@@ -536,6 +536,7 @@ Item {
                 {tag: "failed", result: 1, text: "Couldn't save the recording. Try another location."},
                 {tag: "missing", result: 3, text: "This recording is gone."},
                 {tag: "busy", result: 4, text: "An export is running. Save again when it finishes."},
+                {tag: "changed", result: 6, text: "This recording changed. Save it again."},
                 {tag: "cancelled", result: 2, text: ""}
             ];
         }
