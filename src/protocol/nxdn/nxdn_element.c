@@ -1277,8 +1277,6 @@ nxdn_dcall_watchdog(dsd_opts* opts, dsd_state* state, const char* event_text) {
     dsd_event_stage_text(state, 0, event_text);
     const uint32_t source = (uint32_t)state->dmr_lrrp_source[0];
     const uint32_t target = (uint32_t)state->dmr_lrrp_target[0];
-    char comp_string[128];
-    DSD_SNPRINTF(comp_string, sizeof(comp_string), "DATA CALL SRC: %u; TGT: %u;", source, target);
     dsd_call_observation observation = dsd_call_observation_data(state->lastsynctype, 0U, source, target);
     if (state->nxdn_data_type_d != 0U) {
         /* A Type-D header's IDs are the 11-bit ones; the row names them under their prefixes (issue #903). */
@@ -1287,6 +1285,15 @@ nxdn_dcall_watchdog(dsd_opts* opts, dsd_state* state, const char* event_text) {
         nxdn_typed_id_text(observation.target_text, sizeof(observation.target_text), state->nxdn_data_target_prefix,
                            (uint16_t)target);
     }
+    /* The line -J and the terminal history keep: a party by its text where it has one, else its number. */
+    char src_buf[16];
+    char tgt_buf[16];
+    DSD_SNPRINTF(src_buf, sizeof(src_buf), "%u", source);
+    DSD_SNPRINTF(tgt_buf, sizeof(tgt_buf), "%u", target);
+    char comp_string[128];
+    DSD_SNPRINTF(comp_string, sizeof(comp_string), "DATA CALL SRC: %s; TGT: %s;",
+                 observation.source_text[0] != '\0' ? observation.source_text : src_buf,
+                 observation.target_text[0] != '\0' ? observation.target_text : tgt_buf);
     (void)dsd_event_emit_data_notice(opts, state, 0U, &observation, comp_string);
 }
 

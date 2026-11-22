@@ -12440,8 +12440,9 @@ Call frequency and access-code provenance (issue #575). A call's canonical `freq
   scan-activity hook, and the keys, lockouts, skips and holds, including the NXDN48 destination-key fallback. So an
   existing group list, key file or lockout behaves as it did. The prefix travels as text, "pp-iiii" (`03-0005`), in the
   call's `target_text`/`source_text` (hence the event row's `tgt_str`/`src_str` and the per-call WAV name,
-  `TGT_03-0005_SRC_03-0100`), on the SCCH busy message's recent-activity row, and on the data call's row
-  (`nxdn_dcall_watchdog()`, from the header's prefixes `dsd_state::nxdn_data_type_d`/`_source_prefix`/`_target_prefix`,
+  `TGT_03-0005_SRC_03-0100`), on the SCCH busy message's recent-activity row, on the NXDN event line
+  (`watchdog_event_current_build_event_nxdn()`, so `-J` and the terminal history) and the live terminal TGT/SRC line
+  (`ui_render_nxdn_tgt_src_line()`), and on the data call's row and its notice line (`nxdn_dcall_watchdog()`, from the header's prefixes `dsd_state::nxdn_data_type_d`/`_source_prefix`/`_target_prefix`,
   `nxdn_data_call_note_prefixes()`). Because call identity compares known text, group 5 under prefixes 3 and 7 are two
   calls with one policy row. The text only spells the numeric target, so it is no name of its own
   (`dsd_call_target_text_is_name()`): the Monitor headline (`call_view.c`), the Qt history row

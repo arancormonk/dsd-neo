@@ -2256,8 +2256,9 @@ run_type_d_data_header_prefix_case(const char* tag, uint8_t header_type, uint8_t
     NXDN_Elements_Content_decode(opts, state, first_bits, sizeof(first_bits));
     NXDN_Elements_Content_decode(opts, state, final_bits, sizeof(final_bits));
 
-    DSD_SNPRINTF(label, sizeof label, "%s-row-written", tag);
-    rc |= expect_int(label, strncmp(g_datacall_event, "DATA CALL SRC:", 14) == 0, 1);
+    DSD_SNPRINTF(label, sizeof label, "%s-row-line", tag);
+    rc |= expect_string(label, g_datacall_event,
+                        type_d ? "DATA CALL SRC: 03-0100; TGT: 07-0005;" : "DATA CALL SRC: 6244; TGT: 14341;");
     DSD_SNPRINTF(label, sizeof label, "%s-row-source", tag);
     rc |= expect_int(label, (int)g_datacall_src, (int)want_src);
     DSD_SNPRINTF(label, sizeof label, "%s-row-target", tag);

@@ -3092,8 +3092,18 @@ ui_render_nxdn_tgt_src_line(const dsd_opts* opts, const dsd_state* state) {
     const unsigned long target = call.ota_target_id <= ULONG_MAX ? (unsigned long)call.ota_target_id : 0UL;
     const unsigned long source = call.ota_source_id <= ULONG_MAX ? (unsigned long)call.ota_source_id : 0UL;
     printw("| ");
-    printw("TGT: [%5lu] ", target);
-    printw("SRC: [%5lu] ", source);
+    /* An IDAS (Type-D) party by its "pp-iiii" text, which tells two home repeater prefixes apart (issue #903). */
+    const int nxdn = DSD_SYNC_IS_NXDN(call.protocol);
+    if (nxdn && call.target_text[0] != '\0') {
+        printw("TGT: [%s] ", call.target_text);
+    } else {
+        printw("TGT: [%5lu] ", target);
+    }
+    if (nxdn && call.source_text[0] != '\0') {
+        printw("SRC: [%s] ", call.source_text);
+    } else {
+        printw("SRC: [%5lu] ", source);
+    }
     printw("Alias: [%s]", ui_nxdn_alias_text(opts, state));
     {
         char group_mode[8];
