@@ -408,11 +408,24 @@ receive_services_compatible(const CallHistoryModel::Row& a, const CallHistoryMod
     return a.receiveKnown || b.receiveKnown || a.service == b.service || slotJustProven;
 }
 
+namespace {
+
+/** @brief Whether one row is a DCR call and the other knows a party by number (call_history_dcr_meets_numbered_party()). */
+bool
+rows_dcr_meets_numbered_party(const CallHistoryModel::Row& a, const CallHistoryModel::Row& b) {
+    return call_history_dcr_meets_numbered_party(a.protocol, a.tg, a.src,
+                                                 a.targetText.simplified().toUtf8().constData(), b.protocol, b.tg,
+                                                 b.src, b.targetText.simplified().toUtf8().constData());
+}
+
+} // namespace
+
 /**
  * @brief Whether fragment @p row is of @p existing's call (issue #800, B2, B4 and B5): one protocol family, reception
- * system and sender system, no other numeric target or raw target text, and one receive service
- * (receive_services_compatible()). A target either does not know is no conflict: the core fills a committed call's
- * unknown target in place.
+ * system and sender system, no other numeric target or raw target text, one receive service
+ * (receive_services_compatible()), and never a DCR call against a numbered party (issue #903: an anonymous fragment
+ * that merged into a DCR row and later names a radio is another call). A target either does not know is no conflict:
+ * the core fills a committed call's unknown target in place.
  *
  * An update found by its fragment (CallHistoryModel::rowHoldingFragment()) is not merged again, so its later reading
  * may name what the merge (rows_identity_compatible(), the destination rule, receive_services_compatible()) would have
@@ -427,7 +440,7 @@ fragment_call_compatible(const CallHistoryModel::Row& existing, const CallHistor
            && call_history_protocols_compatible(existing.protocol, row.protocol)
            && call_history_scopes_compatible(existing.rxScope, row.rxScope)
            && call_history_scopes_compatible(existing.sourceScope, row.sourceScope)
-           && !raw_texts_differ(existing.targetText, row.targetText);
+           && !raw_texts_differ(existing.targetText, row.targetText) && !rows_dcr_meets_numbered_party(existing, row);
 }
 
 /**
@@ -652,10 +665,7 @@ rows_identity_compatible(const CallHistoryModel::Row& existing, const CallHistor
            && call_history_scopes_compatible(existing.rxScope, row.rxScope)
            && call_history_scopes_compatible(existing.sourceScope, row.sourceScope)
            && !raw_texts_differ(existing.sourceText, row.sourceText)
-           && !raw_texts_differ(existing.targetText, row.targetText)
-           && !call_history_dcr_meets_numbered_party(
-               existing.protocol, existing.tg, existing.src, existing.targetText.simplified().toUtf8().constData(),
-               row.protocol, row.tg, row.src, row.targetText.simplified().toUtf8().constData());
+           && !raw_texts_differ(existing.targetText, row.targetText) && !rows_dcr_meets_numbered_party(existing, row);
 }
 
 bool

@@ -648,6 +648,36 @@ test_dcr_and_numbered_rows_stay_apart(void) {
     expect("two dcr fragments fold", model.count() == 1);
 }
 
+/* Issue #903: an anonymous NXDN fragment on a named channel folds into the DCR row beside it (it names no party), but
+ * when an update of that fragment names a source, the radio never lands on the DCR row: a DCR call meets no numbered
+ * party on an update either (fragment_call_compatible()), so no "JPN DCR" row shows source 123. */
+void
+test_dcr_row_refuses_a_fragment_that_learns_a_source(void) {
+    resetStorage();
+    RingFixture ring;
+    CallHistoryModel model;
+    const time_t when = 1754500900;
+    ring.commit(0, 0, 0, when, when + 3, "JPN DCR", "", "Dispatch")->systype = DSD_SYNC_NXDN_POS;
+    model.refresh(ring.state);
+    Event_History* anonymous = ring.commit(0, 0, 0, when + 4, when + 7, "", "", "Dispatch");
+    anonymous->systype = DSD_SYNC_NXDN_POS;
+    model.refresh(ring.state);
+    expect("dcr + anonymous fragment: one row", model.count() == 1);
+
+    anonymous->source_id = 123;
+    ring.touchCommitted(0);
+    model.refresh(ring.state);
+    bool dcrWithSource = false;
+    for (int i = 0; i < model.count(); i++) {
+        const QModelIndex at = model.index(i);
+        if (model.data(at, CallHistoryModel::NameRole).toString() == QStringLiteral("JPN DCR")
+            && model.data(at, CallHistoryModel::SrcRole).toUInt() != 0U) {
+            dcrWithSource = true;
+        }
+    }
+    expect("dcr row never shows the fragment's later source", !dcrWithSource);
+}
+
 /* Issue #903: an NXDN Type-D group's "pp-iiii" text only spells its numeric talkgroup, so the row is named as a bare
  * number is (dsd_call_target_text_is_name()): its list name, else the channel it was heard on, else the text. A text
  * target with no number and an M17 callsign keep naming their rows over the channel. */
@@ -7849,6 +7879,7 @@ main(int argc, char** argv) {
     test_type_d_text_yields_to_names();
     test_dcr_row_is_logged_by_name();
     test_dcr_and_numbered_rows_stay_apart();
+    test_dcr_row_refuses_a_fragment_that_learns_a_source();
     test_type_d_prefixes_do_not_merge();
     test_target_ids_read_as_their_names();
     test_target_names_outlive_their_session();
