@@ -16048,19 +16048,25 @@ Qt Quick frontend (`src/ui/qt`):
   button is drawn only while the title keeps a flat 96 px beside it (`siteDrawn`, from natural widths: B1, a
   one-site card with Play at 320 dp left the title 72 px at text 2.0); otherwise the source line leads with
   `N sites · ` and the chooser is on More → Sites and the long press. Play and More keep their places, so the card's
-  height never follows the button: 122 px by default at normal text at any width. The full card draws a one-site
-  group's button at normal text at 320, 360 and 411 dp, as on main (a 110 px title at 320); it leaves it out for
+  height never follows the button: 122 px by default at normal text at any width while its labels fit in that box (a
+  shared-title card's wrapping lines grow it, below). The breakpoints that follow are examples for a group with Play
+  shown: the full card draws a one-site group's button at normal text at 320, 360 and 411 dp, as on main (a 110 px
+  title at 320); it leaves it out for
   10 sites at 320 dp and at larger text where the title would fall under 96. Compact draws it at 411 dp at every
-  size and not at 320 or 360 (94 px at 360). The refresh hint takes the full width 8 px below the lower
+  size and not at 320 or 360 (94 px at 360). A group with no Play shown (several sites to play) leaves the button
+  Play's room, so it can draw it where these do not (a compact two-site group at 320 dp keeps a 106 px title and
+  draws it). The refresh hint takes the full width 8 px below the lower
   of labels and actions; the card ends
-  `cardPadding` below the lowest. A card without the hint is 122 px at normal text, as before, and grows at large
-  text. The site button lines up against Play's own condition (`playShown`, the card's `playUid` being set), not
-  Play's `visible`, so a hidden card's site button stays clear of Play.
+  `cardPadding` below the lowest. A card without the hint whose labels fit is 122 px at normal text, as before, and
+  grows at large text. The site button lines up against Play's own condition (`playShown`, the card's `playUid` being
+  set), not Play's `visible`, so a hidden card's site button stays clear of Play.
   Compact view (D7) keeps the same delegate (no second Repeater or Loader) and makes each card one row: the bold
   17 px title over a supporting line, with the site button, Play and More right-aligned on the title's row, centred on
-  a head of max(the two lines + 24, Play + 16) px, and 12 px of padding; 68 px at normal text, a receiver line under
-  the two lines growing it, the refresh hint under everything. The title and the supporting line are one line each
-  (G6: a line break in an imported name is a space, `Util.oneLine()`, and both elide), so a long name never grows the
+  a head of max(the two lines + 24, Play + 16) px, and 12 px of padding; 68 px at normal text for a card whose title
+  no other card shares, the refresh hint under everything; a shared-title card's wrapping lines (its receiver and
+  place lines under the two, and its supporting line wrapping) grow it. The title and the supporting line are one line
+  each (G6: a line break in an imported name is a space, `Util.oneLine()`, and both elide), so a long name never grows
+  the
   head; their names still read the whole text. The full card's title, supporting, place and meta lines are one line
   each the same way (r2 B1, `maximumLineCount: 1`), so a break in an imported name or place never grows it either.
   Only the receiver line and the refresh hint wrap, except on a shared-title card (below). A scan-list card's name
@@ -17772,7 +17778,9 @@ Qt Quick frontend (`src/ui/qt`):
   hero, duration on the name line), 3 (live strip in the list header above the disclosure), 4 (no label) whose
   `callSpaceFor()` (viewport less the closed list header) holds two `callRowHeight`s; 4 when no tier does but 4
   leaves a row, else 5, where only Stop (and, for a lost receiver, the line above it) stays put and header, hero, strip
-  and actions move into slots at the top of the list header. Compact view (issue #901 D4; `compactView` is
+  and actions move into slots at the top of the list header. Decided (r3 S2): with a taller fallback face (Noto CJK,
+  as on Android) rows are ~68 px, so on a 360x690 phone at normal text with the slot strip and the scan controls
+  tier 4 holds one whole call, not two ("Call rows"). Compact view (issue #901 D4; `compactView` is
   `prefsStore.compactView` when the store has it, else `prefs.compactView`) starts the search at 2 and draws no label
   in any tier: `labelCandidate(t)` (`t < 4 && !compactView`) is the one rule that the budget's label part, the label,
   the 1 px `labelSpacer` standing in for it and where `recentCallsPanel` starts all follow (`labelShown`); the list
