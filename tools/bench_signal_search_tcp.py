@@ -210,6 +210,14 @@ def landed_hit(message):
     return hit if hit.get("hit_id") and not hit.get("ended") else None
 
 
+def prepare_rig_folder(work):
+    """@p work as an absolute folder, made if missing, for one rig run. The child runs inside it, so every path it is
+    given must be absolute."""
+    work = Path(work).resolve()
+    work.mkdir(parents=True, exist_ok=True)
+    return work
+
+
 def capture_rate(dsp_khz):
     """The rate the RTL front end asks an rtl_tcp server for at this DSP bandwidth (rtl_downsample_passes_for_rate_in():
     the bandwidth times the power of two nearest 1.2 Msps)."""
@@ -249,7 +257,7 @@ def run_rig(rig, transmitters, ranges, dsp_khz, work, seconds, done=None, passes
     # Here, not at the top: bench_scan_skip_silent imports this module.
     import bench_scan_skip_silent as scan_bench
 
-    work = Path(work)
+    work = prepare_rig_folder(work)
     scene = scan_bench.Scene(transmitters, seed=seed)
     rate = capture_rate(dsp_khz)
     for tx in transmitters:
@@ -358,8 +366,7 @@ def scene_setup(name):
 
 
 def rig_main(args):
-    out = Path(args.out)
-    out.mkdir(parents=True, exist_ok=True)
+    out = prepare_rig_folder(args.out)
     transmitters, ranges, _ = scene_setup(args.scene)
     passes = args.passes + 1 if not transmitters else 1000
 
