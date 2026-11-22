@@ -1529,7 +1529,8 @@ runs the 20 calls landed on passes 1 to 15, at landing phases from 21.2 to 49.6 
 after the tune has landed, not the tuning status the engine publishes when it queues the tune (0.13 to 0.19 s
 earlier); counted so, 12 calls over three runs confirmed 0.16 to 0.83 s after landing, 10 of them in 0.16 or
 0.17 s. A presence signal train (DPRES-SYNC from a
-type 2 repeater in slots 1 and 3) heard on its visit confirms as `TETRA DMO`, `presence signal`; the same train
+type 2 repeater in slots 1 and 3) heard on its visit confirms as `TETRA DMO`, `presence signal`, and stays on until
+the search leaves it (8 s after landing at most, so a later pass does not visit it again); the same train
 switched off at the search's landing tune (the visit tunes a quarter of the capture rate below its channel, which no
 span measurement does) confirms nothing and ends unresolved. The checks: each transmitter is visited and has one
 history row at its frequency; the TETRA rows show their protocol (`TETRA`, `TETRA DMO`), access code (`CC 1`, `CC 44`,
@@ -1543,8 +1544,9 @@ downlink refreshes the visit every slot, so its departure is timed from the stop
 CEASED), so a DMO departure is timed from the end of the last such burst the scene sent before the stop, from the
 fixture's own layout: the call fixture's loop has no call content for 0.64 s around its set-up, and a run whose stop
 fell 0.36 s into that gap once left 1.77 s after the stop (2.13 s after the last refresh). The presence signal's visit
-leaves in the same window after its first confirmation, its train still on for about 2 s of that: a presence signal
-never refreshes the visit's activity (a run measured 2.11 s; one that refreshed it would stay about 4.1 s). Each run lasts until every transmitter has been visited, stopped and left; the
+leaves in the same window after its first confirmation, and must leave before its train's 8 s are up: a presence
+signal never refreshes the visit's activity (a run measured 2.11 s; one that refreshed it, or that left only once the
+train stopped, would stay past the 8 s). Each run lasts until every transmitter has been visited, stopped and left; the
 rig stops when the script creates its stop file (`DSD_SEARCH_RIG_STOP`), not on a signal, so it still prints the
 history.
 The DMO call is bursty and passes the RF detector only at some burst phases, so it is often found on a later pass. With

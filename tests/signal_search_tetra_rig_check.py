@@ -28,7 +28,8 @@ Two runs (the real-air call fixtures share their carrier frequency, 426.7 MHz, w
                            at a fixed phase against each tune, an eighth of a frame (7.1 ms) on at the next, the four
                            calls starting a quarter frame apart: each found and confirmed TETRA DMO, Direct, on some
                            pass (by DMO_MAX_PASS), whichever phases the span measurements and the landing meet it at
-    pres_on     TETRA      a repeater's presence signal train (DPRES-SYNC in slots 1 and 3): TETRA DMO, presence signal
+    pres_on     TETRA      a repeater's presence signal train (DPRES-SYNC in slots 1 and 3), on until the search leaves
+                           it (PRES_ON_S at most): TETRA DMO, presence signal
     pres_end    TETRA      the same train, off from the search's landing tune on: confirms nothing, ends unresolved
 
 Checks: every transmitter is visited and has one history row at its frequency; the TETRA ones are confirmed with
@@ -40,7 +41,7 @@ retune that leaves the search's first visit to it (an early departure fails). A 
 activity refreshes only on checked call content, so a DMO visit is timed from the last such burst the scene sent before
 the stop (the call fixture's loop has no call content for 0.64 s around its set-up). A presence signal never
 refreshes the visit's activity, so pres_on leaves TETRA_QUIET_S after its first confirmation, with its train still on,
-not 2.1 s after it stops.
+and before the train's PRES_ON_S are up: a visit the train held would stay until 2.1 s after those.
 
 Usage: signal_search_tetra_rig_check.py RIG FIXTURE_DIR [--keep DIR] [--only a|b]
 Exit 0 on success, 1 on a failed check, 77 when numpy is missing. Serves the loopback interface only and never opens
@@ -109,6 +110,10 @@ DMO_PHASE_STEP_S = DMO_FRAME_S / 8
 # both of the RF detector's 10 ms windows, and where the windows fall after a tune moves by a block or so from tune to
 # tune, so a call can miss its phase's turn: twenty calls over five runs landed on passes 1 to 15.
 DMO_MAX_PASS = 64
+# The longest a presence signal train that is still being visited stays on: well past its departure window (TETRA_QUIET_S
+# plus LEAVE_PAD_S after its first confirmation), so a visit the train held, or one that left only once it stopped,
+# leaves after it and fails, and under the range's 12 s visit limit.
+PRES_ON_S = 8.0
 # More than a run reaches: the run ends once every transmitter has been visited and left.
 PASSES = 1000
 DOT = " · "
@@ -309,7 +314,8 @@ def tetra_site(main, mcc, mnc):
 # synthetic bursts of build_iq_fixtures.py), frequency Hz, range half-width Hz, step Hz, what the history row must show
 # (protocol, access, site regex or "" for none, confirmed), how long it stays on after the first landing, and how it
 # plays: looped from the scene's start (None), its bursts at a phase against each tune ("phase", the phase at the first
-# tune in eighths of a frame), or off from the search's landing tune on ("until landing").
+# tune in eighths of a frame), off from the search's landing tune on ("until landing"), or on until the search leaves
+# its first visit to it, or its time is up ("until departure").
 TMO_SITE = tetra_site("426.70000 MHz", 228, 8889)
 DIRECT = re.compile("^Direct$")
 CELL_SITE = tetra_site("408.03125 MHz", 460, 4242)
@@ -334,10 +340,11 @@ RUN_B = (
     ("dmo_ph2", 10, "dmo traffic", 418000000, 25000, 25000, ("TETRA DMO", "", DIRECT, 1), ON_S, ("phase", 2)),
     ("dmo_ph4", 10, "dmo traffic", 420000000, 25000, 25000, ("TETRA DMO", "", DIRECT, 1), ON_S, ("phase", 4)),
     ("dmo_ph6", 10, "dmo traffic", 422000000, 25000, 25000, ("TETRA DMO", "", DIRECT, 1), ON_S, ("phase", 6)),
-    # A repeater's presence signal train: heard, it confirms as presence only (off before its 2.1 s quiet time, so
-    # one visit), and one that ends at the landing tune confirms nothing and ends unresolved.
+    # A repeater's presence signal train: heard, it confirms as presence only, and the visit leaves while the train is
+    # still on (it goes off then, so the next pass does not visit it again); one that ends at the landing tune
+    # confirms nothing and ends unresolved.
     ("pres_on", 10, "dmo presence", 412000000, 25000, 25000, ("TETRA DMO", "", re.compile("^presence signal$"), 1),
-     2.0),
+     PRES_ON_S, ("until departure", 0)),
     ("pres_end", 10, "dmo presence", 414000000, 25000, 25000, (None, None, None, 0), 0.0, ("until landing", 0)),
 )
 # The two carriers of the synthetic cell sit in one range.
@@ -401,6 +408,14 @@ class Transmitter(LoopedTransmitter):
                 raise ValueError(f"{name}: {fixture} lasts {self.seconds:.6f} s, its layout {loop_s:.6f} s")
         # How long the run goes on after its stop: a visit that heard nothing waits out its 4 s probe.
         self.linger_s = 4.0 + LEAVE_PAD_S + 1.0 if self.play == "until landing" else TETRA_QUIET_S + LEAVE_PAD_S + 1.0
+
+    @property
+    def stop_at(self):
+        stop = super().stop_at
+        if self.play != "until departure" or stop is None:
+            return stop
+        left = self.leaving_tune()
+        return stop if left is None else min(stop, left)
 
     def covering_tunes(self, t):
         """Scene times of the tunes up to @p t whose capture holds this transmitter (span measurements and visits)."""
@@ -579,7 +594,11 @@ def check(record):
         if tx.expect is None or not tx.expect[0] or not tx.expect[0].startswith("TETRA"):
             continue
         # A presence signal never holds a visit: it leaves 2.1 s after its first confirmation, while its train is
-        # still on (one that refreshed the visit would stay until 2.1 s after the stop, about 4 s after it).
+        # still on (one that refreshed the visit would stay until 2.1 s after the train's PRES_ON_S are up).
+        if presence_only(tx) and tx.landed is not None:
+            leaving = tx.leaving_tune()
+            if leaving is None or leaving >= tx.landed + tx.on_s:
+                failures.append(f"{tx.id}: the visit had not left when its train stopped, {tx.on_s} s after landing")
         left = departure(record, tx)
         _since, since_name = departure_from(record, tx)
         if left is None:
