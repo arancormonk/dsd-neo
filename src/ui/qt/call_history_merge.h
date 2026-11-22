@@ -462,11 +462,19 @@ call_history_protocol_names_by_text(int protocol) {
 /**
  * @brief Whether @p text (simplified) is a raw source or target identity of a @p protocol call, rather than a display
  * placeholder: only a protocol that names calls by text has one (call_history_protocol_names_by_text()), and M17's
- * `UNKNOWN` source (the broadcast address where a callsign belongs) names nobody.
+ * `UNKNOWN` source (the broadcast address where a callsign belongs) names nobody. NXDN's text is one too: the only text
+ * it writes is an IDAS (Type-D) party's "pp-iiii", its 11-bit number qualified by its home repeater prefix (issue #903),
+ * so two prefixes of one number are two parties for the merge, as two callsigns are.
  */
 inline bool
 call_history_identity_text_is_raw(int protocol, bool source, const char* text) {
-    if (!call_history_protocol_names_by_text(protocol) || text == nullptr || text[0] == '\0') {
+    if (text == nullptr || text[0] == '\0') {
+        return false;
+    }
+    if (protocol >= 0 && protocol < static_cast<int>(DSD_POSITION_PROTOCOL_NONE) && DSD_SYNC_IS_NXDN(protocol)) {
+        return true;
+    }
+    if (!call_history_protocol_names_by_text(protocol)) {
         return false;
     }
     return !(source && protocol >= 0 && DSD_SYNC_IS_M17(protocol) && std::strcmp(text, "UNKNOWN") == 0);

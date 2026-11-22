@@ -572,6 +572,29 @@ test_marked_and_serviced_notice_titles(void) {
     expect("search finds the serviced notices by their service", view.count() == 2);
 }
 
+/* Issue #903: two NXDN Type-D calls to one 11-bit group under two prefixes, 03-0005 and 07-0005, from one radio
+ * number inside the merge window are two rows; the same prefix twice still folds into one conversation. */
+void
+test_type_d_prefixes_do_not_merge(void) {
+    resetStorage();
+    RingFixture ring;
+    CallHistoryModel model;
+    const time_t when = 1754500800;
+    Event_History* a = ring.commit(0, 5, 100, when, when + 2, "03-0005");
+    a->systype = DSD_SYNC_NXDN_POS;
+    DSD_SNPRINTF(a->src_str, sizeof(a->src_str), "%s", "03-0100");
+    Event_History* b = ring.commit(0, 5, 100, when + 3, when + 5, "07-0005");
+    b->systype = DSD_SYNC_NXDN_POS;
+    DSD_SNPRINTF(b->src_str, sizeof(b->src_str), "%s", "07-0100");
+    model.refresh(ring.state);
+    expect("type-d prefixes: two rows", model.count() == 2);
+    Event_History* c = ring.commit(0, 5, 100, when + 6, when + 8, "07-0005");
+    c->systype = DSD_SYNC_NXDN_POS;
+    DSD_SNPRINTF(c->src_str, sizeof(c->src_str), "%s", "07-0100");
+    model.refresh(ring.state);
+    expect("type-d same prefix folds", model.count() == 2);
+}
+
 /* Issue #903: a confirmed DCR call names no party and has no channel name, but its protocol checked it as traffic
  * (confirmed_anonymous): history keeps it, where a bare sync's identity-less row is dropped. */
 void
@@ -7790,6 +7813,7 @@ main(int argc, char** argv) {
     test_channel_label_is_its_own_role();
     test_type_d_text_yields_to_names();
     test_confirmed_anonymous_row_is_logged();
+    test_type_d_prefixes_do_not_merge();
     test_target_ids_read_as_their_names();
     test_target_names_outlive_their_session();
     test_reacquisition_merge_updates_in_place();
