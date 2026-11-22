@@ -2472,6 +2472,44 @@ test_tg_hold_on_a_dmo_row_needs_its_dmo_talkspurt(void) {
     fixture_free(&other);
 }
 
+/* Issue #890: a talkgroup Hold is a number, and the callsign families (YSF, D-STAR, M17) name stations by callsign: an
+   M17 destination's base-40 code (station K1A is 2731) can equal a held talkgroup by chance. No call of those families
+   stands for the Hold, neither by its target nor, for a private call, by its source, so none suspends a visit cap; a
+   numeric family's call on the held talkgroup (dPMR) still does. */
+static void
+test_tg_hold_ignores_callsign_families(void) {
+    static const struct {
+        uint64_t src;
+        uint64_t dst;
+        const char* what;
+        dsd_scan_mode mode;
+        int protocol;
+        dsd_call_kind kind;
+        int suspends;
+    } cases[] = {
+        {11U, 2731U, "M17 call to K1A (2731)", DSD_SCAN_MODE_M17, DSD_SYNC_M17_STR_POS, DSD_CALL_KIND_VOICE, 0},
+        {2731U, 12U, "M17 private call from 2731", DSD_SCAN_MODE_M17, DSD_SYNC_M17_STR_POS, DSD_CALL_KIND_PRIVATE_VOICE,
+         0},
+        {13U, 2731U, "YSF call coded 2731", DSD_SCAN_MODE_YSF, DSD_SYNC_YSF_POS, DSD_CALL_KIND_GROUP_VOICE, 0},
+        {14U, 2731U, "D-STAR call coded 2731", DSD_SCAN_MODE_DSTAR, DSD_SYNC_DSTAR_VOICE_POS, DSD_CALL_KIND_VOICE, 0},
+        {15U, 2731U, "dPMR call to 2731", DSD_SCAN_MODE_DPMR, DSD_SYNC_DPMR_FS2_POS, DSD_CALL_KIND_VOICE, 1},
+    };
+
+    for (size_t i = 0; i < sizeof(cases) / sizeof(cases[0]); i++) {
+        gate_fixture fix;
+        if (fixture_init(&fix) != 0) {
+            g_failures++;
+            return;
+        }
+        CHECK("row scope entered", dsd_scan_mode_enter(fix.opts, fix.state, cases[i].mode) == 0);
+        fix.state->scan_landing_visit = 3U;
+        fix.state->tg_hold = 2731U;
+        open_voice_epoch_proto(&fix, cases[i].protocol, 100.0, 0.15, cases[i].kind, cases[i].src, cases[i].dst);
+        CHECK(cases[i].what, dsd_scan_tg_hold_call_active(fix.opts, fix.state) == cases[i].suspends);
+        fixture_free(&fix);
+    }
+}
+
 int
 main(void) {
     test_tick_leaves_phase_alone_without_scanner_mode();
@@ -2520,6 +2558,7 @@ main(void) {
     test_voice_probe_binds_the_row_family();
     test_voice_probe_typed_row_takes_its_own_visit();
     test_tg_hold_on_a_dmo_row_needs_its_dmo_talkspurt();
+    test_tg_hold_ignores_callsign_families();
     test_visit_cap_row_change_restarts();
     test_visit_cap_needs_a_second_usable_row();
     test_visit_cap_pending_tune_does_not_fire();

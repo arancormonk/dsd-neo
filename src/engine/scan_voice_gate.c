@@ -379,9 +379,12 @@ dsd_scan_tg_hold_call_active(const dsd_opts* opts, const dsd_state* state) {
         if (dsd_call_state_get(state, (uint8_t)slot_i, &call) <= 0) {
             continue;
         }
+        /* A talkgroup is a number: a callsign family (YSF, D-STAR, M17) names its stations by callsign, whose base-40
+           M17 code can equal a held talkgroup number by chance, so none of its calls stands for a Hold, as the policy
+           table never looks them up (dsd_scan_activity_policy_allows()). */
         if (call.phase != DSD_CALL_PHASE_ACTIVE || call.kind == DSD_CALL_KIND_DATA
             || call.receive_verdict == DSD_RECEIVE_CHECKING || call.receive_verdict == DSD_RECEIVE_REJECTED
-            || !scan_tg_hold_call_on_row(opts, state, &call)) {
+            || dsd_scan_activity_protocol_is_callsign(call.protocol) || !scan_tg_hold_call_on_row(opts, state, &call)) {
             continue;
         }
         if (scan_tg_hold_matches_call(opts, state, &call, hold)) {
