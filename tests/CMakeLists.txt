@@ -28092,6 +28092,19 @@ if(Python3_Interpreter_FOUND)
         TOOLS_BENCH_SCAN_SKIP_SILENT
         PROPERTIES SKIP_RETURN_CODE 77 TIMEOUT 120
     )
+    # The TETRA search rig's transmitters loop their content seamlessly across a
+    # scene block (tests/signal_search_tetra_rig_check.py, issue #748). numpy, as above.
+    add_test(
+        NAME TOOLS_SIGNAL_SEARCH_TETRA_RIG_LOOP
+        COMMAND
+            ${Python3_EXECUTABLE}
+            ${PROJECT_SOURCE_DIR}/tests/tools/test_signal_search_tetra_rig_loop.py
+        WORKING_DIRECTORY ${PROJECT_SOURCE_DIR}
+    )
+    set_tests_properties(
+        TOOLS_SIGNAL_SEARCH_TETRA_RIG_LOOP
+        PROPERTIES SKIP_RETURN_CODE 77 TIMEOUT 120
+    )
     # The report's per-repeat pairing of the analog columns (issue #518), on canned
     # summaries. Stdlib only, so it runs wherever Python does.
     add_test(
