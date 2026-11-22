@@ -373,6 +373,106 @@ Item {
         // their fixed box. An imported channel name with line separators kept by dsd_channel_label_sanitize() drew
         // three lines (84 px) in a 29 px subline and painted into the strip. A break (U+2028, U+2029, a newline) is
         // drawn and measured as a space, and the words are all still said.
+        // Issue #901 r5 H3: every Text in a fixed line box fits its box, so a script that stands taller (Tibetan
+        // stacks) is drawn smaller there instead of over its neighbours. A Tibetan scan target at 2.0 made a 62 px
+        // line in the 29 px meta box and painted over the title; a Tibetan hero channel made the subline Row 74 px
+        // tall in its 34 px reservation and pushed the ids 20 px down across the compact hero's border. With Tibetan
+        // in the target, the timing phrase, the session name, the hero's ids and channel, the strip's identity and
+        // the disclosure's answer: each line's drawn height is within its box, the title, target and timing lines
+        // stay apart in order, the subline Row is its reservation with the ids where a Latin channel puts them, and
+        // every part stays inside its panel.
+        function tallLinesData() {
+            return [{tag: "360 at 2.0 compact", width: 360, scale: 2.0, compact: true},
+                    {tag: "360 at 2.0", width: 360, scale: 2.0, compact: false},
+                    {tag: "411 at 1.0", width: 411, scale: 1.0, compact: false}];
+        }
+        function test_tall_scripts_fit_their_line_boxes_data() {
+            return tallLinesData();
+        }
+        function test_tall_scripts_fit_their_line_boxes(data) {
+            var tall = "བོད་སྐད་ཀྱི་རྒྱུད";
+            root.width = data.width;
+            root.height = 1400;
+            Ui.Theme.fontScale = data.scale;
+            fakePrefs.compactView = data.compact;
+            try {
+                m("twoSlotCarrier", true);
+                m("scanRotationActive", true);
+                m("scanTargetOrdinal", 2);
+                m("scanTargetCount", 3);
+                m("scanTimingVisible", true);
+                m("scanStayPhrase", "Following call");
+                tc.monitor.scanTargetName = "East";
+                setCall(1, {kind: 2, name: "Fire Dispatch", tg: "4001", id: 4001, src: "7001", channel: "Tac 3"});
+                setCall(2, {kind: 2, name: "North", tg: "4002", id: 4002, src: "7002"});
+                m("leadSlot", 1);
+                settle();
+                var subline = item("heroIds").parent;
+                var latinIdsY = item("heroIds").mapToItem(subline, 0, 0).y;
+                var header = item("monitorHeader");
+                var heightBefore = header.height;
+
+                tc.monitor.scanTargetName = tall;
+                m("scanStayPhrase", tall);
+                setCall(1, {kind: 2, name: "Fire Dispatch", tg: "4001", id: 4001, src: tall, channel: tall});
+                setCall(2, {kind: 2, name: tall, tg: tall, id: 4002, src: "7002"});
+                testContext.setMetric("uiMessage", tall);
+                settle();
+                var fits = function (line, what) {
+                    verify(line.contentHeight <= line.height + 0.5, data.tag + ": " + what + " draws " + line.contentHeight
+                           + " px in its " + line.height + " px box");
+                };
+                // The header: each line within its box, in order, the header the budget's.
+                var title = item("monitorHeaderTitle");
+                var target = item("scanTargetHeader");
+                var timing = item("scanTimingRow");
+                for (var line of [title, target, timing])
+                    fits(line, line.objectName);
+                var titleRect = rectIn(title, header);
+                var targetRect = rectIn(target, header);
+                var timingRect = rectIn(timing, header);
+                verify(titleRect.y + titleRect.h <= targetRect.y + 0.5, data.tag + ": the target line meets the title");
+                verify(targetRect.y + targetRect.h <= timingRect.y + 0.5, data.tag + ": the timing line meets the target");
+                compare(header.height, heightBefore, data.tag + ": the scan's lines moved the header");
+                compare(header.height, tc.monitor.headerBarHeight(tc.monitor.tier));
+                // The hero's subline: its reservation, the ids where they were, every part inside.
+                compare(subline.height, tc.monitor.heroSublineHeight, data.tag + ": the subline Row's height");
+                compare(item("heroIds").mapToItem(subline, 0, 0).y, latinIdsY, data.tag + ": the ids moved");
+                for (var name of ["heroIds", "heroChannel"]) {
+                    var part = item(name);
+                    if (!part.visible)
+                        continue;
+                    fits(part, name);
+                    verifyInside(rectIn(part, subline), subline, "the subline");
+                }
+                verifyInside(rectIn(subline, item("monitorHero")), item("monitorHero"), "the hero");
+                // The strip's identity and the disclosure's answer.
+                var identity = item("otherSlotIdentity");
+                fits(identity, "the strip's identity");
+                verifyInside(rectIn(identity, item("otherSlotPanel")), item("otherSlotPanel"), "the strip");
+                var details = item("monitorDetailsRow");
+                var answer = null;
+                (function walk(n) {
+                    if (n.text !== undefined && n.text === tall)
+                        answer = n;
+                    for (var c of n.children || [])
+                        walk(c);
+                })(details);
+                verify(answer !== null, "the answer is drawn");
+                fits(answer, "the disclosure's answer");
+                verifyInside(rectIn(answer, details), details, "the disclosure row");
+            } finally {
+                testContext.setMetric("uiMessage", "");
+                tc.monitor.scanTargetName = "";
+                fakePrefs.compactView = false;
+                m("scanRotationActive", false);
+                m("scanTimingVisible", false);
+                m("scanStayPhrase", "");
+                m("scanTargetOrdinal", 0);
+                m("scanTargetCount", 0);
+            }
+        }
+
         function test_lines_draw_one_line_data() {
             var rows = [];
             for (var w of [320, 411]) {

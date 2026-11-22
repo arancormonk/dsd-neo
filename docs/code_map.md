@@ -16098,8 +16098,9 @@ Qt Quick frontend (`src/ui/qt`):
   same-name scan lists with equal counts look alike (a scan list has no source facts), and so do two entries whose
   drawn settings are the same. Also decided (r4 F5): two different long titles that compact cuts to the same text
   ("County Emergency Dispatch East" and "… West" both "County Emerg…" at 320 dp) are not shared titles, so with
-  matching source facts their compact cards look alike; their whole names are read, and shown on the full card and
-  in the More menu and the sheets.
+  matching source facts their compact cards look alike. The full card cuts its title too, so it does not tell them
+  apart either (r5 H6); the whole name is in the title's accessible name, which a screen reader reads, and in the
+  card's More menu, which opens titled by it.
   The
   site chooser stays reachable: the card's More menu, and a long press, offer **Sites** for every grouped card, one
   site included, in both views (`manageCard(…, hasSites)` → `manageMenu.openFor(row, name, rrLinked, hasSites)`, which
@@ -17543,7 +17544,8 @@ Qt Quick frontend (`src/ui/qt`):
   while covered or hidden (`UI_QT_QML_A11Y_CHURN` `test_g_other_slot_label_has_no_node_of_its_own`: no show, hide
   or rename from the label across fit and lead-slot changes, none in the strip while covered, and no optional item
   of the strip, the hero's subline or a call row in the tree; `test_h_a_touch_on_the_slot_label_finds_the_strip`;
-  `tst_monitor_other_slot.qml` `test_idle_strip_says_no_ended_call_tags`). On a 320 px phone a long name can leave the strip's
+  `tst_monitor_other_slot.qml` `test_idle_strip_says_no_ended_call_tags`). On a 320 px phone a long name can leave
+  the strip's
   identity alone on its line (decided limit: the status words are still heard, and the hero shows its own call's).
   Tests: `tst_monitor_call_identity.qml`, `tst_monitor_other_slot.qml`, `tst_monitor_status_lines.qml`
   (320/360/411 at text 1.0, 1.6 and 2.0), `UI_QT_METRICS_MODEL`
@@ -17827,7 +17829,22 @@ Qt Quick frontend (`src/ui/qt`):
   title, the scan target, timing and roaming lines, the hero's ids, algorithm, channel and painted headline, the
   strip's identity) draws `Util.oneLine()` of its text with `maximumLineCount: 1`, measured as drawn, and its speech
   keeps every word (r2 B1: an imported channel `E\u2028W\u2028S` drew three lines, 84 px, in a 29 px hero subline
-  and painted into the strip). The title changes only with the session, never with traffic, so its box
+  and painted into the strip). Each of those Texts also fits its box (r5 H3, as the call row's lines: `fontSizeMode:
+  Text.VerticalFit`, `minimumPixelSize` a third of the size, a fixed `height`), so a script that stands taller
+  (Tibetan stacks) is drawn smaller inside the box, never over its neighbours: the title and the "+ N lists" line,
+  the scan target, timing and roaming lines, the hero's ids, identity note, algorithm and channel (each as tall as
+  the subline's reservation, `heroSublineHeight`, and the Row too, never its children's natural heights), the
+  strip's identity and a `subtitleReading` `DisclosureRow`'s answer; on Listen, a card's title and one-line
+  supporting line (`titleBox`, `sourceBox`, `LineBoxes`; a shared title's wrapping supporting line keeps its lines)
+  and a scan list's name. r5 H3: a Tibetan scan target at 2.0 drew a 62 px line in the 29 px meta box, over the
+  title, and a Tibetan hero channel made the subline Row 74 px tall in its 34 px reservation, pushing the ids 20 px
+  down across the compact hero's border (`tst_monitor_status_lines.qml` `test_tall_scripts_fit_their_line_boxes`,
+  `tst_home_compact_cards.qml` `test_tall_script_card_lines_fit_their_boxes`). The painted headline (a Canvas) is
+  not a Text and keeps its size. The card boxes are the base face's lines with the app's fonts on a desktop host
+  (title 23, source 16 px at 1.0: cards as before); with Noto CJK as the fallback they are 25 and 17, so a compact
+  card is 70 px, not 68 (decided, as the call rows' S2 limit; `compactHeight()` in the test checks the boxes and
+  padding, and 68 where the boxes are within 2 px of the Latin lines). The title changes only with the session, never
+  with traffic, so its box
   (`titleLineBox`) is the session name's own line in the title font (`titleLineProbe`, `sessionLine` on one line), at
   least the Latin line it always had (`titleLatinProbe`, "Ag"; `titleCountBox`, which the "+ N lists" line keeps), and
   the budget uses it: a Latin name keeps the header and the tiers as they were, and a taller script grows the header
@@ -17967,8 +17984,8 @@ Qt Quick frontend (`src/ui/qt`):
   row (r4 F2: in a compact list at 2.0 a Tibetan name painted 5 px above its row, across the row above, and was cut
   at the viewport's top; it was D10's "unclipped into the padding" limit). Latin, CJK and emoji, which the box
   holds, keep their size, the row keeps its height, and a long name is still cut at its end
-  (`tst_call_row_lines.qml` `test_tall_script_fits_its_box`). The Monitor strip's identity line and the hero keep
-  the older limit: a taller script is drawn centred in its box, unclipped. History (both instances) and Home's Recent
+  (`tst_call_row_lines.qml` `test_tall_script_fits_its_box`). Every other fixed line box fits its text the same
+  way (r5 H3, under "Monitor layout"). History (both instances) and Home's Recent
   activity pass `compact` from the preference; on a change each
   forgets its kept place (`KeepPlace.forget()`)
   and an owned 0 ms timer (`logToStart`, `recentToStart`) lays the rows out at their new height (`forceLayout()`, as

@@ -15,6 +15,8 @@ UiPanel {
     property bool isDraft: false
     // Issue #901 (D7): Compact view.
     property bool compact: false
+    // The name's line box (r5 H3), as a system card's title has.
+    readonly property real titleBox: LineBoxes.lineHeight(Theme.sans, Theme.fontSize(17), Font.Bold)
 
     signal play
     signal edit
@@ -39,9 +41,15 @@ UiPanel {
             id: nameText
             width: parent.width
             objectName: "scanListTitle"
-            // One line, cut, in either view, as a system card's (G6, r2 B1).
+            // One line, cut, in either view, as a system card's (G6, r2 B1),
+            // in a fixed line box it fits (r5 H3): a name in a taller script is
+            // drawn smaller, never over the count.
             text: Util.oneLine(card.listName)
             maximumLineCount: 1
+            height: card.titleBox
+            verticalAlignment: Text.AlignVCenter
+            fontSizeMode: Text.VerticalFit
+            minimumPixelSize: Math.max(4, Math.floor(font.pixelSize / 3))
             elide: Text.ElideRight
             color: Theme.textPrimary
             font.family: Theme.sans

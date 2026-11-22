@@ -1355,6 +1355,11 @@ Item {
                             // source line, the receiver line, the place line), in either
                             // view, each wrapping whole instead of cut.
                             readonly property bool sharedTitle: entry.sharedTitle
+                            // The title's and the one-line supporting line's boxes (r5 H3):
+                            // a name or source in a taller script is drawn smaller to fit,
+                            // never over the line below.
+                            readonly property real titleBox: LineBoxes.lineHeight(Theme.sans, Theme.fontSize(17), Font.Bold)
+                            readonly property real sourceBox: LineBoxes.lineHeight(Theme.mono, Theme.fontSize(12), Font.Normal)
                             // In Nearest order, how far, when known.
                             readonly property string distanceText: savedSystemCards.effectiveSort === "nearest" ? Util.fmtDistanceKm(entry.distanceKm, !!screen.prefsStore && screen.prefsStore.metricUnits === true) : ""
                             // The distance first: Nearest sorts by it, and a long
@@ -1399,9 +1404,10 @@ Item {
                             // shared title's supporting line wraps (r5 H5: Play and More
                             // were centred halfway down a 260-character path); the lines
                             // the wrap adds grow the card below the actions.
-                            readonly property real sourceLineHeight: sourceLine.lineCount > 1 ? sourceLine.height / sourceLine.lineCount : sourceLine.height
+                            // One line is the one-line supporting line's box, so a wrapped
+                            // card's actions sit where a plain card's do.
                             readonly property var rowPlan: Util.listenCardRows(actionPlan, {compact: compact, padding: Theme.cardPadding,
-                                headLines: titleText.height + labels.spacing + sourceLineHeight, labelsHeight: labels.height,
+                                headLines: titleText.height + labels.spacing + sourceBox, labelsHeight: labels.height,
                                 siteHeight: siteButton.implicitHeight, playHeight: play.implicitHeight, moreHeight: manageButton.implicitHeight})
                             // Issue #646 B8: as tall as what it holds, so larger text grows
                             // the card instead of running its labels into the hint or past
@@ -1438,6 +1444,10 @@ Item {
                                     // keeps its height and its name reads it whole.
                                     text: Util.oneLine(card.name)
                                     maximumLineCount: 1
+                                    height: card.titleBox
+                                    verticalAlignment: Text.AlignVCenter
+                                    fontSizeMode: Text.VerticalFit
+                                    minimumPixelSize: Math.max(4, Math.floor(font.pixelSize / 3))
                                     font.family: Theme.sans
                                     font.pixelSize: Theme.fontSize(17)
                                     font.weight: Font.Bold
@@ -1456,6 +1466,11 @@ Item {
                                     // where it names the endpoint, file, frequency and mode.
                                     wrapMode: card.sharedTitle ? Text.Wrap : Text.NoWrap
                                     maximumLineCount: card.sharedTitle ? undefined : 1
+                                    // One line: its box, fitted (r5 H3); wrapping: its lines.
+                                    height: card.sharedTitle ? implicitHeight : card.sourceBox
+                                    verticalAlignment: Text.AlignVCenter
+                                    fontSizeMode: card.sharedTitle ? Text.FixedSize : Text.VerticalFit
+                                    minimumPixelSize: Math.max(4, Math.floor(font.pixelSize / 3))
                                     font.family: Theme.mono
                                     font.pixelSize: Theme.fontSize(12)
                                     color: Theme.textSubdued

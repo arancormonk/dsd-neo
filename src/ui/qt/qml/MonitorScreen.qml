@@ -730,6 +730,9 @@ Item {
                     objectName: "monitorHeaderTitle"
                     text: twoLine ? titleLineMetrics.elidedText : screen.otherListCount > 0 ? screen.withOtherLists(titleNameMetrics.elidedText) : screen.sessionLine
                     maximumLineCount: 1
+                    // Fits its box (r5 H3): a taller script is drawn smaller.
+                    fontSizeMode: Text.VerticalFit
+                    minimumPixelSize: Math.max(4, Math.floor(font.pixelSize / 3))
                     // The heading is read as one, and whole: the name, then
                     // the count (on the line below it in the two-line form).
                     // Speech has no width, so the name is never the elided
@@ -752,6 +755,8 @@ Item {
 
                     Text {
                         objectName: "monitorHeaderTitleCount"
+                        fontSizeMode: Text.VerticalFit
+                        minimumPixelSize: Math.max(4, Math.floor(font.pixelSize / 3))
                         y: screen.titleCountPad(screen.tier)
                         width: parent.width
                         height: screen.titleCountBox
@@ -790,6 +795,9 @@ Item {
                     // system's name is a space.
                     text: Util.oneLine(screen.scanPaused ? screen.pausedScanText(width) : screen.scanningText() || (screen.system ? Util.monitorMeta(screen.system) : ""))
                     maximumLineCount: 1
+                    // Fits its box (r5 H3): a taller script is drawn smaller.
+                    fontSizeMode: Text.VerticalFit
+                    minimumPixelSize: Math.max(4, Math.floor(font.pixelSize / 3))
                     font.family: Theme.mono
                     font.pixelSize: Theme.fontSize(11)
                     font.letterSpacing: 0.8
@@ -882,6 +890,9 @@ Item {
                         return Util.oneLine(out);
                     }
                     maximumLineCount: 1
+                    // Fits its box (r5 H3): a taller script is drawn smaller.
+                    fontSizeMode: Text.VerticalFit
+                    minimumPixelSize: Math.max(4, Math.floor(font.pixelSize / 3))
                     font.family: Theme.mono
                     font.pixelSize: Theme.fontSize(11)
                     font.letterSpacing: 0.8
@@ -919,6 +930,9 @@ Item {
                     // One line in its box (r2 B1); the sentence is read whole.
                     text: Util.oneLine(fullFits ? siteRoaming.headerText : siteRoaming.headerShortText)
                     maximumLineCount: 1
+                    // Fits its box (r5 H3): a taller script is drawn smaller.
+                    fontSizeMode: Text.VerticalFit
+                    minimumPixelSize: Math.max(4, Math.floor(font.pixelSize / 3))
                     Accessible.ignored: !navigationAllowed || !visible || text.length === 0
                     Accessible.focusable: navigationAllowed && visible && text.length > 0
                     Accessible.name: navigationAllowed && visible && text.length > 0 ? siteRoaming.statusText : ""
@@ -1275,6 +1289,9 @@ Item {
 
                     Row {
                         id: heroSubline
+                        // As tall as its reservation, never its children's
+                        // natural heights (r5 H3).
+                        height: parent.height
 
                         // One line of the height reserved for it (issue #901
                         // B10). The ids come first, at min(their width, 96);
@@ -1403,11 +1420,19 @@ Item {
                         Text {
                             id: heroIdsText
                             objectName: "heroIds"
+                            // The subline's reserved height, the line centred and
+                            // fitted to it (r5 H3: a Tibetan channel made the Row
+                            // 74 px tall in a 34 px reservation).
+                            height: screen.heroSublineHeight
+                            verticalAlignment: Text.AlignVCenter
                             anchors.verticalCenter: parent.verticalCenter
                             visible: text.length > 0 && heroSubline.plan.ids > 0
                             width: heroSubline.plan.ids
                             elide: Text.ElideRight
                             maximumLineCount: 1
+                            // Fits its box (r5 H3): a taller script is drawn smaller.
+                            fontSizeMode: Text.VerticalFit
+                            minimumPixelSize: Math.max(4, Math.floor(font.pixelSize / 3))
                             // One line, measured and drawn as the same text
                             // (r2 B1): a break in an imported alias is a space,
                             // the words kept for speech.
@@ -1433,7 +1458,14 @@ Item {
                         // never carry one and get no note. Prose, so the sans face.
                         Text {
                             id: heroIdentityNote
+                            fontSizeMode: Text.VerticalFit
+                            minimumPixelSize: Math.max(4, Math.floor(font.pixelSize / 3))
                             objectName: "heroIdentityNote"
+                            // The subline's reserved height, the line centred and
+                            // fitted to it (r5 H3: a Tibetan channel made the Row
+                            // 74 px tall in a 34 px reservation).
+                            height: screen.heroSublineHeight
+                            verticalAlignment: Text.AlignVCenter
                             readonly property bool shown: screen.heroAnonymous && screen.heroProtocol === "TETRA"
                             anchors.verticalCenter: parent.verticalCenter
                             visible: shown && heroSubline.plan.note > 0
@@ -1467,12 +1499,20 @@ Item {
                         Text {
                             id: heroAlgorithm
                             objectName: "heroAlgorithm"
+                            // The subline's reserved height, the line centred and
+                            // fitted to it (r5 H3: a Tibetan channel made the Row
+                            // 74 px tall in a 34 px reservation).
+                            height: screen.heroSublineHeight
+                            verticalAlignment: Text.AlignVCenter
                             readonly property bool shown: screen.heroEnc && screen.heroEncText.length > 0
                             anchors.verticalCenter: parent.verticalCenter
                             visible: shown && heroSubline.plan.algorithm > 0
                             width: heroSubline.plan.algorithm
                             elide: Text.ElideRight
                             maximumLineCount: 1
+                            // Fits its box (r5 H3): a taller script is drawn smaller.
+                            fontSizeMode: Text.VerticalFit
+                            minimumPixelSize: Math.max(4, Math.floor(font.pixelSize / 3))
                             text: Util.oneLine(screen.heroEncText)
                             font.family: Theme.mono
                             font.pixelSize: Theme.fontSize(11)
@@ -1488,12 +1528,20 @@ Item {
                         Text {
                             id: heroChannelText
                             objectName: "heroChannel"
+                            // The subline's reserved height, the line centred and
+                            // fitted to it (r5 H3: a Tibetan channel made the Row
+                            // 74 px tall in a 34 px reservation).
+                            height: screen.heroSublineHeight
+                            verticalAlignment: Text.AlignVCenter
                             readonly property bool shown: screen.heroChannel.length > 0 && screen.heroChannel !== screen.heroHeadline
                             anchors.verticalCenter: parent.verticalCenter
                             visible: shown && heroSubline.plan.channel > 0
                             width: heroSubline.plan.channel
                             elide: Text.ElideRight
                             maximumLineCount: 1
+                            // Fits its box (r5 H3): a taller script is drawn smaller.
+                            fontSizeMode: Text.VerticalFit
+                            minimumPixelSize: Math.max(4, Math.floor(font.pixelSize / 3))
                             // An imported channel name can hold line separators
                             // (dsd_channel_label_sanitize() keeps them): drawn
                             // and measured on one line (r2 B1).
@@ -1662,13 +1710,16 @@ Item {
                         anchors.rightMargin: 10
                         anchors.verticalCenter: parent.verticalCenter
                         // A fixed line box (issue #901, D10): a name in a taller
-                        // script draws centred in it, unclipped.
+                        // script is drawn smaller to fit it (r5 H3).
                         height: screen.otherIdentityBox
                         verticalAlignment: Text.AlignVCenter
                         // One line in its box (r2 B1): a break in a name is a space.
                         text: Util.oneLine(screen.otherIdentity)
                         textFormat: Text.PlainText
                         maximumLineCount: 1
+                        // Fits its box (r5 H3): a taller script is drawn smaller.
+                        fontSizeMode: Text.VerticalFit
+                        minimumPixelSize: Math.max(4, Math.floor(font.pixelSize / 3))
                         font.family: Theme.sans
                         font.pixelSize: Theme.fontSize(14)
                         font.weight: Font.DemiBold

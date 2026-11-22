@@ -19,6 +19,10 @@ Item {
         id: home
         anchors.fill: parent
     }
+    // A Latin line alone in a card's title and source fonts: what the base face draws, without the taller fallback
+    // faces the line boxes also hold (r5 H3; see compactHeight()).
+    Text { id: latinTitle; visible: false; text: "Ag"; font.family: Ui.Theme.sans; font.pixelSize: Ui.Theme.fontSize(17); font.weight: Font.Bold }
+    Text { id: latinSource; visible: false; text: "Ag"; font.family: Ui.Theme.mono; font.pixelSize: Ui.Theme.fontSize(12) }
     SignalSpy { id: played; target: home; signalName: "playSystem" }
     SignalSpy { id: sitesChosen; target: home; signalName: "chooseSites" }
     SignalSpy { id: listPlayed; target: home; signalName: "playScanList" }
@@ -141,6 +145,18 @@ Item {
         function describe(r) {
             return "[" + Math.round(r.x) + "," + Math.round(r.y) + " " + Math.round(r.w) + "x" + Math.round(r.h) + "]";
         }
+        // A compact card's height from its measured boxes (issue #901 r5 H3, as the call rows' S2 rule): its head, the
+        // title's and one supporting line's boxes with 4 px between and 12 px a side, at least Play plus 8 a side. 68 px
+        // at normal text wherever the boxes are the base face's lines (within 2 px); a taller fallback face (Noto CJK)
+        // makes the boxes, and the card, taller, which the fixed boxes keep (decided).
+        function compactHeight(card, what) {
+            var expected = Math.max(card.titleBox + 4 + card.sourceBox + 24, part(card, "savedSystemPlay").implicitHeight + 16);
+            fuzzyCompare(card.height, expected, 0.5, what + ": a compact card is its boxes and padding");
+            var excess = card.titleBox - latinTitle.implicitHeight + card.sourceBox - latinSource.implicitHeight;
+            if (Ui.Theme.fontScale === 1.0 && excess <= 2)
+                fuzzyCompare(card.height, 68, 0.5, what + ": a compact card at normal text");
+            return expected;
+        }
         // The title's minimum beside the site button (issue #901 G4): 96 px.
         function minimumTitle(card) {
             return 96;
@@ -221,7 +237,7 @@ Item {
             var source = part(single, "savedSystemSource").text;
             compare(source.indexOf("1 site · ") === 0, !drawn, "the count leads the line when the button is not drawn: " + source);
             if (data.scale === 1.0)
-                fuzzyCompare(cardOf("Plain Vale").height, 68, 0.5, "a compact card at normal text");
+                compactHeight(cardOf("Plain Vale"), "a plain card");
         }
 
         // Compact one-site card at 320 and 360 dp: one row without its site button, and More → Sites opens the chooser
@@ -640,7 +656,7 @@ Item {
                     compare(held.parent.height, 0, pair[1] + ": no height");
             }
             verify(!part(single, "homeSiteChooserButton").enabled, "the held site button takes no press");
-            fuzzyCompare(placed.height, 68, 0.5, "held lines take no room");
+            compactHeight(placed, "held lines take no room");
             prefs.compactView = false;
             settle();
             compare(part(placed, "savedSystemPlace").opacity, 1);
@@ -763,8 +779,7 @@ Item {
             for (var word of ["Northern", "interoperability", "imported name"])
                 verify(title.Accessible.name.indexOf(word) >= 0, "the title says " + word + ": " + title.Accessible.name);
             compare(part(long, "savedSystemSource").lineCount, 1);
-            if (data.scale === 1.0)
-                fuzzyCompare(long.height, 68, 0.5);
+            compactHeight(long, "a long name");
             home.showSection("scanLists");
             settle();
             tryCompare(home, "restorePending", false);
@@ -849,6 +864,59 @@ Item {
             compare(title.text, "Harbor Watch");
             compare(title.lineCount, 1, "the list's name on one line");
             fuzzyCompare(harbor.height, loop.height, 0.5, "a line break grows the list's card");
+        }
+
+        // Issue #901 r5 H3 (the Listen cards): a card's one-line title and supporting line, and a scan list's name,
+        // are fixed line boxes fitted to their text, so a name or file in a taller script (Tibetan stacks) is drawn
+        // smaller inside its box, never over the line below, and the card is as tall as a Latin one. Both views at
+        // 320 dp, text 1.0 and 2.0.
+        function test_tall_script_card_lines_fit_their_boxes_data() {
+            var rows = [];
+            for (var compact of [true, false]) {
+                for (var scale of [1.0, 2.0])
+                    rows.push({tag: (compact ? "compact" : "full") + " at " + scale, compact: compact, scale: scale});
+            }
+            return rows;
+        }
+        function test_tall_script_card_lines_fit_their_boxes(data) {
+            var tall = "བོད་སྐད་ཀྱི་རྒྱུད";
+            prefs.compactView = data.compact;
+            root.width = 320;
+            Ui.Theme.fontScale = data.scale;
+            add("Plain Vale", {sourceType: "file", filePath: "/captures/plain.wav"});
+            add(tall, {sourceType: "file", filePath: "/captures/" + tall + ".wav"});
+            verify(scanLists.add({name: "Loop", sourceType: "rtltcp", host: "127.0.0.1", port: 1234,
+                entries: [{kind: "freq", name: "Simplex", protocol: "p25", freqMhz: "851.5", enabled: true}]}));
+            verify(scanLists.add({name: tall, sourceType: "rtltcp", host: "127.0.0.1", port: 1234,
+                entries: [{kind: "freq", name: "Simplex", protocol: "p25", freqMhz: "851.5", enabled: true}]}));
+            settle();
+            var plain = cardOf("Plain Vale");
+            var card = cardOf(tall);
+            var title = part(card, "savedSystemTitle");
+            var source = part(card, "savedSystemSource");
+            for (var line of [title, source]) {
+                verify(line.contentHeight <= line.height + 0.5, data.tag + ": " + line.objectName + " draws "
+                       + line.contentHeight + " px in its " + line.height + " px box");
+                compare(line.height, part(plain, line.objectName).height, data.tag + ": " + line.objectName + "'s box");
+            }
+            verify(rectIn(title, card).y + title.height <= rectIn(source, card).y + 0.5, data.tag + ": the title meets the source line");
+            fuzzyCompare(card.height, plain.height, 0.5, data.tag + ": the taller script grew the card");
+            home.showSection("scanLists");
+            settle();
+            tryCompare(home, "restorePending", false);
+            var cards = [];
+            for (var child of findChild(home, "listenScanListsSection").children) {
+                if (child.objectName === "scanListCard" && child.visible)
+                    cards.push(child);
+            }
+            compare(cards.length, 2);
+            var loop = cards[0].listName === "Loop" ? cards[0] : cards[1];
+            var other = loop === cards[0] ? cards[1] : cards[0];
+            var name = part(other, "scanListTitle");
+            verify(name.contentHeight <= name.height + 0.5, data.tag + ": the list's name draws " + name.contentHeight
+                   + " px in its " + name.height + " px box");
+            verify(rectIn(name, other).y + name.height <= rectIn(part(other, "scanListCount"), other).y + 0.5, "the name meets the count");
+            fuzzyCompare(other.height, loop.height, 0.5, data.tag + ": the taller script grew the list's card");
         }
 
         // G2: with a screen reader on, a resize that draws or leaves out a card's site button (no rebuild, no tab or
@@ -1025,7 +1093,9 @@ Item {
             console.log("Listen card stride at 411x914 @1.0: default " + strides["default"] + " px, compact "
                 + strides.compact + " px");
             fuzzyCompare(strides["default"], 122 + Ui.Theme.gap, 0.5);
-            fuzzyCompare(strides.compact, 68 + Ui.Theme.gap, 0.5);
+            prefs.compactView = true;
+            settle();
+            fuzzyCompare(strides.compact, compactHeight(findChild(entries()[0], "savedSystemCard"), "the stride's card") + Ui.Theme.gap, 0.5);
         }
     }
 }

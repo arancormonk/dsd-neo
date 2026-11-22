@@ -107,6 +107,10 @@ Item {
             wrapMode: row.subtitleReading ? Text.NoWrap : Text.Wrap
             elide: row.subtitleReading ? Text.ElideRight : Text.ElideNone
             maximumLineCount: row.subtitleReading ? 1 : 1000
+            // A reading's line fits its box (r5 H3): an answer in a taller
+            // script is drawn smaller, never over the row's title.
+            fontSizeMode: row.subtitleReading ? Text.VerticalFit : Text.FixedSize
+            minimumPixelSize: Math.max(4, Math.floor(font.pixelSize / 3))
             // A reading's line is a fixed box (LineBoxes, issue #901 D10): its
             // font's height, never its text's, so no script a reading or an
             // answer in its place shows (the Monitor's) changes the row's
