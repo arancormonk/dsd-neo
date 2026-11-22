@@ -506,6 +506,9 @@ struct rtl_device {
     char soapy_args_string[1024] = {};
     char soapy_driver_key[64] = {};
     char soapy_hardware_key[128] = {};
+    /* Every identity bit the opened device's lookups gave (dsdneo::soapy_identity_evidence()), latched for the handle:
+       a later lookup that throws or comes back empty adds nothing and takes nothing away. */
+    uint8_t soapy_identity_evidence = 0U;
     char soapy_native_stream_format[16] = {};
     char soapy_requested_profile[32] = {};
     char soapy_requested_antenna[64] = {};
@@ -885,10 +888,14 @@ rtl_device_signal_rotation_hz(const struct rtl_device* dev, int fs4_shift_active
 
 int
 rtl_device_signal_receiver(const struct rtl_device* dev) {
-    return dev && dev->backend == RTL_BACKEND_SOAPY
-                   && dsdneo::soapy_identity_is_airspy(dev->soapy_driver_key, dev->soapy_hardware_key)
-               ? DSD_SIGNAL_RECEIVER_SOAPY_AIRSPY
-               : DSD_SIGNAL_RECEIVER_OTHER;
+    if (!dev || dev->backend != RTL_BACKEND_SOAPY) {
+        return DSD_SIGNAL_RECEIVER_OTHER;
+    }
+    switch (dsdneo::soapy_receiver_from_evidence(dev->soapy_identity_evidence)) {
+        case dsdneo::SoapyReceiver::Airspy: return DSD_SIGNAL_RECEIVER_SOAPY_AIRSPY;
+        case dsdneo::SoapyReceiver::NotAirspy: return DSD_SIGNAL_RECEIVER_OTHER;
+        default: return DSD_SIGNAL_RECEIVER_SOAPY_UNKNOWN;
+    }
 }
 
 int
@@ -3301,6 +3308,8 @@ rtl_device_test_rate_queries(int backend, uint32_t device_rate_hz, uint32_t requ
     return rtl_device_rate_written_for(&dev, requested_hz, out_written_hz);
 }
 
+static void soapy_note_identity_locked(struct rtl_device* dev);
+
 extern "C" int
 rtl_device_test_signal_receiver(int backend, const char* driver_key, const char* hardware_key,
                                 const char* requested_profile) {
@@ -3310,6 +3319,7 @@ rtl_device_test_signal_receiver(int backend, const char* driver_key, const char*
     DSD_SNPRINTF(dev.soapy_hardware_key, sizeof(dev.soapy_hardware_key), "%s", hardware_key ? hardware_key : "");
     DSD_SNPRINTF(dev.soapy_requested_profile, sizeof(dev.soapy_requested_profile), "%s",
                  requested_profile ? requested_profile : "");
+    soapy_note_identity_locked(&dev);
     return rtl_device_signal_receiver(&dev);
 }
 
@@ -4791,23 +4801,34 @@ soapy_select_profile_locked(struct rtl_device* dev) {
     dev->soapy_profile_id = (int)dsdneo::soapy_select_profile_id(selection);
 }
 
+/* Latch what the cached keys and the device arguments say about the device (rtl_device_signal_receiver()). */
+static void
+soapy_note_identity_locked(struct rtl_device* dev) {
+    dev->soapy_identity_evidence |= (uint8_t)(dsdneo::soapy_identity_evidence(dev->soapy_driver_key)
+                                              | dsdneo::soapy_identity_evidence(dev->soapy_hardware_key)
+                                              | dsdneo::soapy_identity_evidence(dev->soapy_args_string));
+}
+
+/* Read the opened device's keys. A lookup that throws keeps the key read before (the open's): a refresh at configure
+   never turns a known device into an unknown one, and its identity bits are latched either way. */
 static void
 soapy_cache_identity_locked(struct rtl_device* dev) {
     if (!dev || !dev->soapy_dev) {
         return;
     }
     try {
-        rtl_device_copy_cstr(dev->soapy_driver_key, sizeof(dev->soapy_driver_key),
-                             dev->soapy_dev->getDriverKey().c_str());
+        const std::string key = dev->soapy_dev->getDriverKey();
+        rtl_device_copy_cstr(dev->soapy_driver_key, sizeof(dev->soapy_driver_key), key.c_str());
     } catch (const std::exception&) {
-        dev->soapy_driver_key[0] = '\0';
+        /* keep the key read before */
     }
     try {
-        rtl_device_copy_cstr(dev->soapy_hardware_key, sizeof(dev->soapy_hardware_key),
-                             dev->soapy_dev->getHardwareKey().c_str());
+        const std::string key = dev->soapy_dev->getHardwareKey();
+        rtl_device_copy_cstr(dev->soapy_hardware_key, sizeof(dev->soapy_hardware_key), key.c_str());
     } catch (const std::exception&) {
-        dev->soapy_hardware_key[0] = '\0';
+        /* keep the key read before */
     }
+    soapy_note_identity_locked(dev);
     try {
         double full_scale = 0.0;
         std::string native_format = dev->soapy_dev->getNativeStreamFormat(SOAPY_SDR_RX, 0, full_scale);
@@ -9129,6 +9150,7 @@ rtl_device_init_common_state(struct rtl_device* dev) {
     dev->soapy_args_string[0] = '\0';
     dev->soapy_driver_key[0] = '\0';
     dev->soapy_hardware_key[0] = '\0';
+    dev->soapy_identity_evidence = 0U;
     dev->soapy_native_stream_format[0] = '\0';
     dev->soapy_native_full_scale = 0.0;
     dev->soapy_cs16_full_scale = dsdneo::kSoapyCs16DefaultFullScale;
@@ -13476,7 +13498,20 @@ class RtlTestSoapyGainDevice : public SoapySDR::Device {
 
     std::string
     getHardwareKey(void) const override {
+        if (fake_->hardware_key_throws > 0) {
+            fake_->hardware_key_throws--;
+            throw std::runtime_error("hardware key lookup failed");
+        }
         return fake_->hardware_key ? fake_->hardware_key : "";
+    }
+
+    std::string
+    getDriverKey(void) const override {
+        if (fake_->driver_key_throws > 0) {
+            fake_->driver_key_throws--;
+            throw std::runtime_error("driver key lookup failed");
+        }
+        return fake_->driver_key ? fake_->driver_key : "";
     }
 
   private:
@@ -13519,11 +13554,18 @@ rtl_device_test_soapy_gain_device(rtl_device_test_soapy_gain_fake* fake, int nam
         dev->soapy_format = SOAPY_FMT_CF32;
     }
     dev->soapy_requested_bandwidth_hz = fake->bandwidth_request_hz;
-    if (fake->driver_key || fake->hardware_key || fake->requested_profile) {
+    rtl_device_copy_cstr(dev->soapy_args_string, sizeof(dev->soapy_args_string), fake->args ? fake->args : "");
+    if (fake->identity_from_device) {
+        /* As the open does: the keys read from the driver, its getters' failures included. */
+        rtl_device_copy_cstr(dev->soapy_requested_profile, sizeof(dev->soapy_requested_profile),
+                             fake->requested_profile);
+        soapy_cache_identity_locked(dev);
+    } else if (fake->driver_key || fake->hardware_key || fake->requested_profile) {
         rtl_device_copy_cstr(dev->soapy_driver_key, sizeof(dev->soapy_driver_key), fake->driver_key);
         rtl_device_copy_cstr(dev->soapy_hardware_key, sizeof(dev->soapy_hardware_key), fake->hardware_key);
         rtl_device_copy_cstr(dev->soapy_requested_profile, sizeof(dev->soapy_requested_profile),
                              fake->requested_profile);
+        soapy_note_identity_locked(dev);
         soapy_select_profile_locked(dev);
     }
     return dev;

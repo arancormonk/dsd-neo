@@ -38,6 +38,10 @@ typedef enum {
      * captures run the default policy at the Fs/4 shift, but its passband leaves the reference under or over the
      * channel's noise by an amount nobody has measured, so a quiet request on one is refused at every rate. */
     DSD_SIGNAL_RECEIVER_SOAPY_AIRSPY = 1,
+    /** A SoapySDR device whose identity is unknown: no lookup of its keys or arguments named any device (failed,
+     * empty, or opaque such as a proxy's). It cannot be ruled out as an Airspy, so a quiet request on one is refused
+     * at the rates an Airspy runs (dsd_signal_quiet_receiver_refused()); at any other rate it is not an Airspy. */
+    DSD_SIGNAL_RECEIVER_SOAPY_UNKNOWN = 2,
 } dsd_signal_capture_receiver;
 
 typedef struct {
@@ -268,6 +272,25 @@ dsd_signal_quiet_params dsd_signal_quiet_params_default(void);
 int dsd_signal_quiet_rate_supported(uint32_t rate_hz);
 /** How many capture rates dsd_signal_quiet_rate_supported() admits. */
 #define DSD_SIGNAL_QUIET_RATE_COUNT 16
+
+/** 1 when @p capture's receiver gets no quiet check: a SoapySDR Airspy at any rate, a SoapySDR device of unknown
+ * identity at a rate an Airspy runs (2.5, 3, 6 or 10 MS/s), or a receiver value this build does not know; else 0. The
+ * detector refuses such a request (dsd_signal_quiet_detector_begin()), and the scan refuses the visit first: inline so
+ * both read this one rule. */
+static inline int
+dsd_signal_quiet_receiver_refused(const dsd_signal_capture* capture) {
+    if (!capture) {
+        return 1;
+    }
+    if (capture->receiver == DSD_SIGNAL_RECEIVER_OTHER) {
+        return 0;
+    }
+    if (capture->receiver == DSD_SIGNAL_RECEIVER_SOAPY_UNKNOWN) {
+        return capture->rate_hz == 2500000U || capture->rate_hz == 3000000U || capture->rate_hz == 6000000U
+               || capture->rate_hz == 10000000U;
+    }
+    return 1; /* a SoapySDR Airspy, or a value this build does not know */
+}
 
 /** 1 when the calibration validated capture rate @p rate_hz (exactly) for a DSD_SIGNAL_GEOMETRY_AIRSPY_CENTRED capture,
  * whose capture-wide reference spans a per-rate share of the capture, else 0: the native Airspy rates only. A quiet

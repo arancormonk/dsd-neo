@@ -953,8 +953,8 @@ quiet_capture_receiver_reason(const dsd_signal_capture* cap) {
             || cap->capture_offset_hz != cap->rotation_hz) {
             return (uint8_t)DSD_SCAN_QUIET_REASON_TUNER;
         }
-        /* A SoapySDR Airspy: no check at any of its rates (DSD_SIGNAL_RECEIVER_SOAPY_AIRSPY). */
-        if (cap->receiver != DSD_SIGNAL_RECEIVER_OTHER) {
+        /* A SoapySDR Airspy at any rate, or a SoapySDR device that cannot be ruled out as one at an Airspy rate. */
+        if (dsd_signal_quiet_receiver_refused(cap)) {
             return (uint8_t)DSD_SCAN_QUIET_REASON_RATE;
         }
         return dsd_signal_quiet_rate_supported(cap->rate_hz) ? (uint8_t)DSD_SCAN_QUIET_REASON_NONE

@@ -28263,7 +28263,14 @@ test_scan_quiet_capture_policies(void) {
                         quiet_measures_capture(&opts, &state, &c) == 1);
         c.receiver = DSD_SIGNAL_RECEIVER_SOAPY_AIRSPY;
         rc |= qt_expect("a SoapySDR Airspy is refused", quiet_measures_capture(&opts, &state, &c) == 0);
+        c.receiver = DSD_SIGNAL_RECEIVER_SOAPY_UNKNOWN;
+        rc |= qt_expect("a SoapySDR device that may be an Airspy is refused at an Airspy rate",
+                        quiet_measures_capture(&opts, &state, &c) == 0);
     }
+    c = shifted;
+    c.receiver = DSD_SIGNAL_RECEIVER_SOAPY_UNKNOWN;
+    rc |= qt_expect("a SoapySDR device of unknown identity at an RTL rate is measured",
+                    quiet_measures_capture(&opts, &state, &c) == 1);
     quiet_rig_finish(&opts, &state, dir, path);
     return rc;
 }

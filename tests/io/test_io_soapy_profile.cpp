@@ -139,21 +139,33 @@ expect_antenna(const char* label, const dsdneo::SoapyAntennaChoice& got, const c
     return 0;
 }
 
-/* Whether the opened device is an Airspy reads its own driver and hardware keys only: neither the requested profile nor
-   the device arguments (a bare -i soapy opens whatever device comes first). An Airspy HF+ is not an Airspy. */
+/* The identity of an opened SoapySDR device, from what its keys and arguments name: an Airspy as soon as anything names
+   one (a conflicting pair included), else not an Airspy when anything names another device or an Airspy HF+, else
+   unknown (empty or opaque keys, such as a proxy's). */
 static int
 test_airspy_identity(void) {
+    using dsdneo::SoapyReceiver;
+    const auto of = [](const char* driver, const char* hardware, const char* args) {
+        return dsdneo::soapy_receiver_from_evidence((uint8_t)(dsdneo::soapy_identity_evidence(driver)
+                                                              | dsdneo::soapy_identity_evidence(hardware)
+                                                              | dsdneo::soapy_identity_evidence(args)));
+    };
     int rc = 0;
-    rc |= expect_true("Airspy keys", dsdneo::soapy_identity_is_airspy("Airspy", "Airspy"));
-    rc |= expect_true("Airspy driver key, no hardware key", dsdneo::soapy_identity_is_airspy("airspy", ""));
-    rc |= expect_true("Airspy hardware key under another driver name",
-                      dsdneo::soapy_identity_is_airspy("remote", "AirSpy Mini"));
-    rc |= expect_true("an Airspy HF+ is not an Airspy", !dsdneo::soapy_identity_is_airspy("AirspyHF", "AirspyHF+"));
+    rc |= expect_true("Airspy keys", of("Airspy", "Airspy", "") == SoapyReceiver::Airspy);
+    rc |= expect_true("Airspy driver key, no hardware key", of("airspy", "", "") == SoapyReceiver::Airspy);
+    rc |= expect_true("Airspy hardware key behind a proxy", of("remote", "AirSpy Mini", "") == SoapyReceiver::Airspy);
+    rc |= expect_true("a conflicting pair is an Airspy", of("rtlsdr", "AirSpy Mini", "") == SoapyReceiver::Airspy);
+    rc |= expect_true("an HF+ driver with an Airspy hardware key is an Airspy",
+                      of("AirspyHF", "Airspy", "") == SoapyReceiver::Airspy);
+    rc |= expect_true("arguments naming an Airspy", of("", "", "driver=airspy") == SoapyReceiver::Airspy);
+    rc |= expect_true("an Airspy HF+ is not an Airspy", of("AirspyHF", "AirspyHF+", "") == SoapyReceiver::NotAirspy);
     rc |=
-        expect_true("an Airspy HF+ hardware key", !dsdneo::soapy_identity_is_airspy("remote", "Airspy HF+ Discovery"));
-    rc |= expect_true("an RTL-SDR", !dsdneo::soapy_identity_is_airspy("rtlsdr", "Generic RTL2832U"));
-    rc |= expect_true("a HackRF", !dsdneo::soapy_identity_is_airspy("HackRF", "HackRF One"));
-    rc |= expect_true("no keys", !dsdneo::soapy_identity_is_airspy("", ""));
+        expect_true("an Airspy HF+ hardware key", of("remote", "Airspy HF+ Discovery", "") == SoapyReceiver::NotAirspy);
+    rc |= expect_true("an RTL-SDR", of("rtlsdr", "Generic RTL2832U", "") == SoapyReceiver::NotAirspy);
+    rc |= expect_true("a HackRF", of("HackRF", "HackRF One", "") == SoapyReceiver::NotAirspy);
+    rc |= expect_true("a known driver with an opaque hardware key", of("HackRF", "", "") == SoapyReceiver::NotAirspy);
+    rc |= expect_true("no keys", of("", "", "") == SoapyReceiver::Unknown);
+    rc |= expect_true("opaque keys", of("remote", "custom", "") == SoapyReceiver::Unknown);
     return rc;
 }
 

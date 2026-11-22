@@ -34,6 +34,7 @@
 #include <dsd-neo/io/rtl_demod_config.h>
 #include <dsd-neo/io/rtl_device.h>
 #include <dsd-neo/io/rtl_stream_c.h>
+#include <dsd-neo/io/signal_measure.h>
 #include <dsd-neo/runtime/config.h>
 #include <dsd-neo/runtime/decode_clock.h>
 #include <dsd-neo/runtime/exitflag.h>
@@ -374,6 +375,78 @@ test_open_capture_and_ring(void) {
     expect_eq("HackRF capture frequency", got.capture_freq_hz, (double)kCenterHz + 2500000.0);
     expect_eq("HackRF input ring", (double)got.input_ring_capacity_floats, 8388608.0);
     expect_eq("HackRF filter after the open", hackrf.last_bandwidth_hz, 5500000.0);
+}
+
+/* The receiver an opened SoapySDR device names for its captures, through the open (its keys read from the driver), the
+ * configure (which reads them again) and the stream's open programming, which stamps the captures: latched at the
+ * open, so a lookup at configure that throws keeps an identified Airspy an Airspy and an identified HackRF a HackRF; a
+ * conflicting pair (an RTL-SDR driver key, an Airspy hardware key) and an HF+ driver with an Airspy hardware key are an
+ * Airspy (it cannot be ruled out); keys that name nothing (empty, opaque, every lookup failing) are unknown; a bare
+ * -i soapy and a profile asked for change nothing. */
+void
+test_receiver_identity_through_open(void) {
+    struct IdentityCase {
+        const char *label, *driver_key, *hardware_key, *args, *profile;
+        int open_throws;      /* lookups throwing at the open */
+        int configure_throws; /* lookups throwing at the configure */
+        int want;
+    };
+
+    static const IdentityCase cases[] = {
+        {"an Airspy whose keys fail to read at configure", "Airspy", "Airspy", "driver=airspy", nullptr, 0, 2,
+         DSD_SIGNAL_RECEIVER_SOAPY_AIRSPY},
+        {"a bare -i soapy that opened an Airspy, keys failing at configure", "Airspy", "Airspy", nullptr, nullptr, 0, 2,
+         DSD_SIGNAL_RECEIVER_SOAPY_AIRSPY},
+        {"a conflicting pair", "rtlsdr", "AirSpy Mini", nullptr, nullptr, 0, 0, DSD_SIGNAL_RECEIVER_SOAPY_AIRSPY},
+        {"an HF+ driver key with an Airspy hardware key", "AirspyHF", "Airspy", nullptr, nullptr, 0, 0,
+         DSD_SIGNAL_RECEIVER_SOAPY_AIRSPY},
+        {"an Airspy with the generic profile asked for", "Airspy", "Airspy", nullptr, "generic", 0, 0,
+         DSD_SIGNAL_RECEIVER_SOAPY_AIRSPY},
+        {"a HackRF with the Airspy profile asked for", "HackRF", "HackRF One", nullptr, "airspy", 0, 0,
+         DSD_SIGNAL_RECEIVER_OTHER},
+        {"a HackRF whose keys fail to read at configure", "HackRF", "HackRF One", nullptr, nullptr, 0, 2,
+         DSD_SIGNAL_RECEIVER_OTHER},
+        {"an Airspy HF+", "AirspyHF", "AirspyHF+", nullptr, nullptr, 0, 0, DSD_SIGNAL_RECEIVER_OTHER},
+        {"opaque keys behind a proxy", "remote", "custom", nullptr, nullptr, 0, 0, DSD_SIGNAL_RECEIVER_SOAPY_UNKNOWN},
+        {"keys that never read", "Airspy", "Airspy", nullptr, nullptr, 2, 2, DSD_SIGNAL_RECEIVER_SOAPY_UNKNOWN},
+    };
+    static const double only_2500k[] = {2.5e6};
+    for (const IdentityCase& c : cases) {
+        rtl_device_test_soapy_gain_fake fake{};
+        fake.identity_from_device = 1;
+        fake.driver_key = c.driver_key;
+        fake.hardware_key = c.hardware_key;
+        fake.args = c.args;
+        fake.requested_profile = c.profile;
+        fake.listed_rates = only_2500k;
+        fake.listed_rate_count = 1U;
+        fake.bandwidth_request_hz = -1;
+        fake.driver_key_throws = c.open_throws;
+        fake.hardware_key_throws = c.open_throws;
+        rtl_device* dev = rtl_device_test_soapy_gain_device(&fake, 0);
+        dsd_opts* opts = make_soapy_opts(-1);
+        if (!dev || !opts) {
+            free(opts);
+            rtl_device_test_soapy_gain_device_free(dev);
+            g_failures++;
+            return;
+        }
+        fake.driver_key_throws = c.configure_throws;
+        fake.hardware_key_throws = c.configure_throws;
+        rtl_soapy_config cfg{};
+        cfg.profile = c.profile;
+        cfg.bandwidth_hz = -1;
+        (void)rtl_device_configure_soapy(dev, &cfg);
+        expect_true(c.label, rtl_device_signal_receiver(dev) == c.want);
+        rtl_stream_test_capture_result got{};
+        got.signal_receiver = -1;
+        const int opened = rtl_stream_test_open_radio_capture(RTL_STREAM_TEST_SOURCE_SOAPY, dev, opts, kCenterHz, &got);
+        char label[160];
+        DSD_SNPRINTF(label, sizeof label, "%s: the stream's captures name it", c.label);
+        expect_true(label, opened == 0 && got.signal_receiver == c.want);
+        free(opts);
+        rtl_device_test_soapy_gain_device_free(dev);
+    }
 }
 
 /* The filter follows the rate: SoapySDR rewrites the rate on every retune and the bandwidth after it, so a retune
@@ -1489,6 +1562,7 @@ main(int argc, char** argv) {
         {"unchanged", test_unchanged_filters_and_rates},
         {"explicit_warns", test_explicit_narrow_bandwidth_warns},
         {"open", test_open_capture_and_ring},
+        {"receiver_identity", test_receiver_identity_through_open},
         {"filter_follows_rate", test_filter_follows_rate_on_retune},
         {"write_programs_asked_rate", test_write_programs_asked_rate},
         {"rollback_restores_saved_rate", test_rollback_restores_saved_rate},

@@ -95,9 +95,26 @@ constexpr double kSoapyHfVhfSplitHz = 32000000.0;
 const SoapyProfile& soapy_profile_by_id(SoapyProfileId id);
 bool soapy_profile_parse_name(const std::string& value, SoapyProfileId* out_id);
 SoapyProfileId soapy_select_profile_id(const SoapyProfileSelection& selection);
-/* Whether the opened device whose driver reported @p driver_key and @p hardware_key is an Airspy: its keys alone, as
-   the profile detection reads them (an Airspy HF+ is not one), never a requested profile or the device arguments. */
-bool soapy_identity_is_airspy(const std::string& driver_key, const std::string& hardware_key);
+
+/* What a SoapySDR identity string (a driver key, a hardware key, the device arguments) says about the device, as bits:
+   SOAPY_IDENTITY_AIRSPY names an Airspy, SOAPY_IDENTITY_AIRSPY_HF an Airspy HF+ (its keys hold "airspy" but it is not
+   one), SOAPY_IDENTITY_OTHER another device the profile detection knows; 0 says nothing (empty, or opaque such as a
+   proxy's "remote"). */
+enum : uint8_t {
+    SOAPY_IDENTITY_AIRSPY = 1,
+    SOAPY_IDENTITY_AIRSPY_HF = 2,
+    SOAPY_IDENTITY_OTHER = 4,
+};
+
+uint8_t soapy_identity_evidence(const std::string& text);
+
+/* The device an opened SoapySDR handle is, from every identity bit its lookups gave (soapy_identity_evidence() of each
+   key and the arguments, or-ed over every lookup so a later failed or empty one takes nothing away): an Airspy as soon
+   as anything named one (a conflicting pair such as an RTL-SDR driver key with an Airspy hardware key included: the
+   Airspy is the one that cannot be ruled out); else not an Airspy when anything named another device or an HF+; else
+   unknown. */
+enum class SoapyReceiver : uint8_t { NotAirspy = 0, Airspy = 1, Unknown = 2 };
+SoapyReceiver soapy_receiver_from_evidence(uint8_t evidence);
 
 bool soapy_stream_format_parse_name(const std::string& value, SoapyStreamFormat* out_format);
 const char* soapy_stream_format_name(SoapyStreamFormat format);

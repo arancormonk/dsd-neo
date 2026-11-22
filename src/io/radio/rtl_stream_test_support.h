@@ -641,6 +641,8 @@ typedef struct {
     /* The stream open's mark for the auto squelch (demod_state::squelch_new_stream), which a session's start sets as a
        stream open does (issue #899): a retune to another centre drops it, one on the same centre keeps it. */
     int new_stream_mark;
+    /* The receiver the open device names for its captures (rtl_device_signal_receiver()), as the tap stamps them. */
+    int signal_receiver;
 } rtl_stream_test_capture_result;
 
 /* Plan every later programming for @p backend (a dsd_rate_plan_backend) in place of the open device's, -1 for the
@@ -771,6 +773,13 @@ typedef struct {
     double readback_rate_hz;
     /* setSampleRate() takes the rate, then throws, as a driver whose write fails after it moved the rate does. */
     int rate_write_throws;
+    /* Identity: the device reads its keys from the driver as the open does (getDriverKey(), getHardwareKey()), the
+       next driver_key_throws / hardware_key_throws lookups throwing; else the keys are set as configured. args: the
+       device arguments it was opened with (NULL: none, a bare -i soapy). */
+    int identity_from_device;
+    int driver_key_throws;
+    int hardware_key_throws;
+    const char* args;
     /* The next bandwidth_write_throws setBandwidth() calls throw without taking the bandwidth. */
     int bandwidth_write_throws;
     /* The bandwidth getBandwidth() reports (0: the bandwidth last set), as a driver whose filter write did not take. */

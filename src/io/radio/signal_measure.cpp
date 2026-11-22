@@ -1615,7 +1615,7 @@ quiet_arm(dsd_signal_quiet_detector* detector, const dsd_signal_quiet_request* r
     if (!request || !request->request_id || !std::isfinite(params.threshold_db) || !std::isfinite(params.guard_db)
         || !(params.occupancy_max_share >= 0.0f && params.occupancy_max_share <= 1.0f)
         || !std::isfinite(params.centred_threshold_db) || params.centred_threshold_db < 0.0f
-        || request->capture.receiver != DSD_SIGNAL_RECEIVER_OTHER
+        || dsd_signal_quiet_receiver_refused(&request->capture)
         || (params.floor_estimator != DSD_SIGNAL_QUIET_FLOOR_TRIMMED_MEAN
             && params.floor_estimator != DSD_SIGNAL_QUIET_FLOOR_LOWEST_BLOCK)
         || request->windows > DSD_SIGNAL_QUIET_WINDOWS_MAX || !quiet_widths(*request, widths, &count)

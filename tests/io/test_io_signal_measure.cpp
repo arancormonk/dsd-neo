@@ -861,6 +861,9 @@ test_signal_geometries() {
         {RTL_DEVICE_TEST_BACKEND_SOAPY, "HackRF", "HackRF One", "airspy", DSD_SIGNAL_RECEIVER_OTHER},
         {RTL_DEVICE_TEST_BACKEND_SOAPY, "AirspyHF", "AirspyHF+", "", DSD_SIGNAL_RECEIVER_OTHER},
         {RTL_DEVICE_TEST_BACKEND_SOAPY, "rtlsdr", "Generic RTL2832U", "", DSD_SIGNAL_RECEIVER_OTHER},
+        {RTL_DEVICE_TEST_BACKEND_SOAPY, "rtlsdr", "AirSpy Mini", "", DSD_SIGNAL_RECEIVER_SOAPY_AIRSPY},
+        {RTL_DEVICE_TEST_BACKEND_SOAPY, "remote", "", "", DSD_SIGNAL_RECEIVER_SOAPY_UNKNOWN},
+        {RTL_DEVICE_TEST_BACKEND_SOAPY, "", "", "", DSD_SIGNAL_RECEIVER_SOAPY_UNKNOWN},
         {RTL_DEVICE_TEST_BACKEND_AIRSPY, "Airspy", "Airspy", "", DSD_SIGNAL_RECEIVER_OTHER},
         {RTL_DEVICE_TEST_BACKEND_USB, "Airspy", "Airspy", "", DSD_SIGNAL_RECEIVER_OTHER},
     };
@@ -1742,16 +1745,30 @@ test_quiet_occupancy(dsd_signal_quiet_detector* d) {
 }
 
 /* A SoapySDR Airspy's capture is refused (no check at any rate): its passband leaves the reference under or over the
-   channel's noise by an amount nobody has measured. The same capture from any other device is measured. */
+   channel's noise by an amount nobody has measured. A SoapySDR device of unknown identity cannot be ruled out as one, so
+   it is refused at the rates an Airspy runs and measured at any other. The same capture from any other device is
+   measured, and a receiver value the build does not know is refused. */
 static void
 test_quiet_soapy_airspy(dsd_signal_quiet_detector* d) {
+    dsd_signal_request_failure failure = DSD_SIGNAL_REQUEST_OK;
     for (uint32_t rate : {2500000U, 3000000U, 6000000U, 10000000U}) {
         auto q = quiet_request(rate, DSD_SIGNAL_QUIET_CLASS_12K5);
-        dsd_signal_request_failure failure = DSD_SIGNAL_REQUEST_OK;
+        assert(dsd_signal_quiet_detector_begin(d, &q, nullptr, &failure) == 0);
+        for (uint8_t receiver :
+             {(uint8_t)DSD_SIGNAL_RECEIVER_SOAPY_AIRSPY, (uint8_t)DSD_SIGNAL_RECEIVER_SOAPY_UNKNOWN, (uint8_t)7}) {
+            q.capture.receiver = receiver;
+            assert(dsd_signal_quiet_receiver_refused(&q.capture) == 1);
+            assert(dsd_signal_quiet_detector_begin(d, &q, nullptr, &failure) == -1);
+            assert(failure == DSD_SIGNAL_REQUEST_UNSUPPORTED);
+        }
+    }
+    for (uint32_t rate : {1536000U, 2400000U}) {
+        auto q = quiet_request(rate, DSD_SIGNAL_QUIET_CLASS_12K5);
+        q.capture.receiver = DSD_SIGNAL_RECEIVER_SOAPY_UNKNOWN;
+        assert(dsd_signal_quiet_receiver_refused(&q.capture) == 0);
         assert(dsd_signal_quiet_detector_begin(d, &q, nullptr, &failure) == 0);
         q.capture.receiver = DSD_SIGNAL_RECEIVER_SOAPY_AIRSPY;
         assert(dsd_signal_quiet_detector_begin(d, &q, nullptr, &failure) == -1);
-        assert(failure == DSD_SIGNAL_REQUEST_UNSUPPORTED);
     }
 }
 

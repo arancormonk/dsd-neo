@@ -326,13 +326,33 @@ soapy_select_profile_id(const SoapyProfileSelection& selection) {
     return SoapyProfileId::Generic;
 }
 
-bool
-soapy_identity_is_airspy(const std::string& driver_key, const std::string& hardware_key) {
-    SoapyProfileId id = SoapyProfileId::Generic;
-    if (detect_profile_from_text(driver_key, &id) || detect_profile_from_text(hardware_key, &id)) {
-        return id == SoapyProfileId::Airspy;
+uint8_t
+soapy_identity_evidence(const std::string& text) {
+    static const char* const k_airspyhf[] = {"airspyhf", "airspy hf"};
+    static const char* const k_airspy[] = {"airspy"};
+    const std::string lower = lower_copy(text);
+    if (lower.empty()) {
+        return 0U;
     }
-    return false;
+    if (contains_any_lower(lower, k_airspyhf, sizeof k_airspyhf / sizeof k_airspyhf[0])) {
+        return SOAPY_IDENTITY_AIRSPY_HF;
+    }
+    if (contains_any_lower(lower, k_airspy, 1U)) {
+        return SOAPY_IDENTITY_AIRSPY;
+    }
+    SoapyProfileId id = SoapyProfileId::Generic;
+    return detect_profile_from_text(text, &id) ? (uint8_t)SOAPY_IDENTITY_OTHER : (uint8_t)0U;
+}
+
+SoapyReceiver
+soapy_receiver_from_evidence(uint8_t evidence) {
+    if (evidence & SOAPY_IDENTITY_AIRSPY) {
+        return SoapyReceiver::Airspy;
+    }
+    if (evidence & (SOAPY_IDENTITY_AIRSPY_HF | SOAPY_IDENTITY_OTHER)) {
+        return SoapyReceiver::NotAirspy;
+    }
+    return SoapyReceiver::Unknown;
 }
 
 bool

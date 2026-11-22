@@ -14287,6 +14287,7 @@ test_capture_program_result(int rc, rtl_stream_test_capture_result* out) {
     out->input_ring_capacity_floats = input_ring.capacity;
     out->centered_iq = dongle.centered_iq;
     out->new_stream_mark = demod.squelch_new_stream;
+    out->signal_receiver = rtl_device_signal_receiver(rtl_device_handle);
 }
 
 static void
