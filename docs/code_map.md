@@ -12418,9 +12418,10 @@ Call frequency and access-code provenance (issue #575). A call's canonical `freq
   FACCH2/UDCH, SACCH, and the site information message's site code), so `dsd_access_code_current()` gives an IDAS or DCR
   call no access code, and a RAN decoded afterwards reads again. The flag marks the value rather than the carrier:
   `nxdn_location_category` "Type-D", which labels the terminal's "IDAS - Area", is set by any SCCH that passes its CRC
-  for the rest of its frame, noise included, outlives that frame only once the transmission is confirmed (below), and is
-  kept across carriers with trunking on, so it could hide a real RAN; and no state marks a DCR
-  carrier (`nxdn_dcr_sf_message_type` drops to 0xFF on every SACCH2 CRC failure and survives the carrier boundary). The
+  for the rest of its frame, noise included, and outlives that frame only once the transmission is confirmed (below).
+  The terminal reads it as IDAS only while it is fresh on the carrier (`dsd_nxdn_type_d_layout_fresh()`,
+  `ui_nxdn_is_idas()`): a carrier boundary or trunk-scan switch drops the label with the evidence. While fresh it could
+  hide a real RAN; and no state marks a DCR carrier (`nxdn_dcr_sf_message_type` drops to 0xFF on every SACCH2 CRC failure and survives the carrier boundary). The
   live displays follow the mark too: outside IDAS, whose area keeps its own label, the terminal's NXDN line prints
   `RAN: --` and the Qt site sheet shows no RAN for a stand-in, which there is DCR's 7 (`ui_render_nxdn_site_line()`,
   `MetricsModel::fillNxdnSite()`).

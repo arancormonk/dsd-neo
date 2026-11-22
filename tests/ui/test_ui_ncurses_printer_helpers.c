@@ -17,6 +17,7 @@
 #include <dsd-neo/core/access_code.h>
 #include <dsd-neo/core/analog_tone.h>
 #include <dsd-neo/core/channel_label.h>
+#include <dsd-neo/core/nxdn_channel_access.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/power.h>
 #include <dsd-neo/core/receive_types.h>
@@ -3820,6 +3821,25 @@ test_lock_and_protocol_helpers(void) {
     assert(ui_nxdn_is_idas(&state) == 1);
     DSD_SNPRINTF(state.nxdn_location_category, sizeof(state.nxdn_location_category), "Type-C");
     assert(ui_nxdn_is_idas(&state) == 0);
+    /* The IDAS label is the carrier's, as the Type-D address evidence is (issue #903): a checked SCCH's "Type-D"
+       shows "Monitoring RTCH2 Channel" until a carrier boundary or trunk-scan switch starts the received identity over;
+       the category a trunk-scan snapshot restores after that is no evidence of the carrier reached. */
+    opts.trunk_enable = 1;
+    opts.trunk_is_tuned = 0;
+    dsd_nxdn_note_type_d_layout(&state);
+    assert(ui_nxdn_is_idas(&state) == 1);
+    reset_printw_capture();
+    ui_render_nxdn_monitor_line(&opts, &state, ui_nxdn_is_idas(&state));
+    assert_capture_contains("Monitoring RTCH2 Channel");
+    dsd_rxid_reset(&state);
+    assert(strcmp(state.nxdn_location_category, "Type-D") == 0);
+    assert(ui_nxdn_is_idas(&state) == 0);
+    reset_printw_capture();
+    ui_render_nxdn_monitor_line(&opts, &state, ui_nxdn_is_idas(&state));
+    assert_capture_contains("Monitoring RCCH Channel");
+    dsd_nxdn_note_type_d_layout(&state);
+    assert(ui_nxdn_is_idas(&state) == 1);
+    opts.trunk_enable = 0;
 }
 
 static void

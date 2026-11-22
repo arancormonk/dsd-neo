@@ -42,6 +42,7 @@
 #include <dsd-neo/core/channel_label.h>
 #include <dsd-neo/core/edacs_session.h>
 #include <dsd-neo/core/events.h>
+#include <dsd-neo/core/nxdn_channel_access.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/p25_patch.h>
 #include <dsd-neo/core/power.h>
@@ -2960,9 +2961,12 @@ ui_render_active_channel_list(const dsd_opts* opts, const dsd_state* state, unsi
     }
 }
 
+/* Whether the decoder reads this carrier as IDAS (Type-D): the "Type-D" category a checked SCCH of this carrier set
+   (dsd_nxdn_type_d_layout_fresh()), never one another carrier's left, which a carrier boundary or trunk-scan switch
+   makes stale (issue #903). */
 static int
 ui_nxdn_is_idas(const dsd_state* state) {
-    return strcmp(state->nxdn_location_category, "Type-D") == 0;
+    return dsd_nxdn_type_d_layout_fresh(state);
 }
 
 /* Which site line shows: the kind of site the received identity names (IDAS parts, or a Type-C location or RAN), as the
