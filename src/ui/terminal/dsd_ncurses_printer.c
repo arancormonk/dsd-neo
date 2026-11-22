@@ -3085,6 +3085,17 @@ ui_nxdn_alias_text(const dsd_opts* opts, const dsd_state* state) {
                                                                                     : "";
 }
 
+/* A party of @p call: an NXDN IDAS (Type-D) one by its "pp-iiii" @p text, which tells two home repeater prefixes
+   apart (issue #903), any other by its number @p id. */
+static void
+ui_print_nxdn_party(const dsd_call_snapshot* call, const char* label, const char* text, unsigned long id) {
+    if (DSD_SYNC_IS_NXDN(call->protocol) && text[0] != '\0') {
+        printw("%s: [%s] ", label, text);
+    } else {
+        printw("%s: [%5lu] ", label, id);
+    }
+}
+
 static void
 ui_render_nxdn_tgt_src_line(const dsd_opts* opts, const dsd_state* state) {
     dsd_call_snapshot call;
@@ -3092,18 +3103,8 @@ ui_render_nxdn_tgt_src_line(const dsd_opts* opts, const dsd_state* state) {
     const unsigned long target = call.ota_target_id <= ULONG_MAX ? (unsigned long)call.ota_target_id : 0UL;
     const unsigned long source = call.ota_source_id <= ULONG_MAX ? (unsigned long)call.ota_source_id : 0UL;
     printw("| ");
-    /* An IDAS (Type-D) party by its "pp-iiii" text, which tells two home repeater prefixes apart (issue #903). */
-    const int nxdn = DSD_SYNC_IS_NXDN(call.protocol);
-    if (nxdn && call.target_text[0] != '\0') {
-        printw("TGT: [%s] ", call.target_text);
-    } else {
-        printw("TGT: [%5lu] ", target);
-    }
-    if (nxdn && call.source_text[0] != '\0') {
-        printw("SRC: [%s] ", call.source_text);
-    } else {
-        printw("SRC: [%5lu] ", source);
-    }
+    ui_print_nxdn_party(&call, "TGT", call.target_text, target);
+    ui_print_nxdn_party(&call, "SRC", call.source_text, source);
     printw("Alias: [%s]", ui_nxdn_alias_text(opts, state));
     {
         char group_mode[8];

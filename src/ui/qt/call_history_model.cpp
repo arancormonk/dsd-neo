@@ -1228,15 +1228,15 @@ row_take_name(CallHistoryModel::Row& row, const Event_History* item) {
         row.name = QString::fromUtf8(item->service_label);
     } else if (item->t_name[0] != '\0') {
         row.name = QString::fromUtf8(item->t_name);
-    } else if (dsd_call_target_text_is_name(item->systype, item->target_id, item->tgt_str)) {
-        row.name = QString::fromUtf8(item->tgt_str);
-    } else if (item->channel_label[0] != '\0') {
+    } else if (item->channel_label[0] != '\0'
+               && !dsd_call_target_text_is_name(item->systype, item->target_id, item->tgt_str)) {
         /* No identity of its own: the channel it was heard on is what the
          * operator recognises it by, and "Talkgroup 0" is not. So for an
-         * NXDN Type-D group, whose "pp-iiii" text only spells its number. */
+         * NXDN Type-D group, whose "pp-iiii" text only spells its number;
+         * text that names the call (a callsign) takes the branch below. */
         row.name = QString::fromUtf8(item->channel_label);
     } else if (item->tgt_str[0] != '\0') {
-        row.name = QString::fromUtf8(item->tgt_str); /* that spelling, past the channel */
+        row.name = QString::fromUtf8(item->tgt_str);
     } else {
         row.name =
             item->systype == DSD_SYNC_ANALOG ? analog_fallback_name(item->analog_mode) : target_fallback_name(row);
