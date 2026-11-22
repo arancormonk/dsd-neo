@@ -764,6 +764,31 @@ Item {
             fuzzyCompare(body.contentY, body.originY, 0.5, "Explore at its top");
         }
 
+        // Issue #901 r2 E3: the reset is owed from the change, not from the timer that applies it. A tab chosen in the
+        // same turn as the change saved the old tab's place back (Systems left at 900 reopened at 900): the tab
+        // left while the reset is owed keeps no place, so every tab opens at its top.
+        function test_tab_chosen_before_the_reset_keeps_no_old_place() {
+            root.height = 700;
+            for (var i = 0; i < 20; ++i)
+                add("Vale " + String(i).padStart(2, "0"));
+            settle();
+            var body = findChild(home, "dongleScrollBody");
+            body.contentY = Math.min(900, body.originY + body.contentHeight - body.height);
+            verify(body.contentY > body.originY + 100, "Systems scrolled down");
+            prefs.compactView = false;
+            verify(home.listenResetPending, "the reset is owed at once");
+            home.showSection("explore");
+            settle();
+            tryCompare(home, "restorePending", false);
+            verify(!home.listenResetPending, "the reset is applied");
+            fuzzyCompare(body.contentY, body.originY, 0.5, "Explore at its top");
+            home.showSection("systems");
+            settle();
+            tryCompare(home, "restorePending", false);
+            settle();
+            fuzzyCompare(body.contentY, body.originY, 0.5, "Systems at its top, not back at its old place");
+        }
+
         // D11 with Explore shown: a change of Compact view puts it at its top at once.
         function test_density_change_resets_explore_shown() {
             root.height = 360;

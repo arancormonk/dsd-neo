@@ -202,7 +202,9 @@ Item {
         // a restore is still owed: until then the body shows a range clamped
         // to the section before, which is no place the user left.
         scrollBody.cancelFlick();
-        if (!restorePending)
+        // Nor while a density reset is owed (r2 E3): the body still shows
+        // the place the reset forgot, which would be saved back.
+        if (!restorePending && !listenResetPending)
             sectionScroll[section] = clampedScroll(scrollBody.contentY);
         restorePending = true;
         ++restoreGeneration;
@@ -2201,17 +2203,22 @@ Item {
     }
     // Issue #901 (D11): every Listen tab (Systems, Scan lists, Explore) opens
     // at the top after a change of density, the one shown at once (once its
-    // cards have their new height), hidden or not.
+    // cards have their new height), hidden or not. The reset is owed from the
+    // change itself (listenResetPending) until the timer applies it, so a tab
+    // chosen in between saves no place for the tab it leaves (r2 E3).
+    property bool listenResetPending: false
     function resetListenPlaces() {
         delete sectionScroll.systems;
         delete sectionScroll.scanLists;
         delete sectionScroll.explore;
+        listenResetPending = true;
         listenToStart.restart();
     }
     Timer {
         id: listenToStart
         interval: 0
         onTriggered: {
+            screen.listenResetPending = false;
             if (screen.restorePending)
                 return;
             placeChase.active = false;
