@@ -706,6 +706,8 @@ test_stations_come_only_from_the_calls_header(void) {
 }
 
 #ifdef DPMR_TEST_REAL_CALL_STORE /* the stubs model no reacquisition */
+#include <dsd-neo/core/events.h>
+
 /* The event layer's hook (dsd_event_sync_slot()), which the call store build defines here: whether any sync while armed
    saw the slot's call carry a number, as the staged history row and the recording export would read it. */
 static int g_sync_armed;
