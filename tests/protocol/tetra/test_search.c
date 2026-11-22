@@ -673,6 +673,22 @@ test_gate_a_across_no_carrier(void) {
         session_close(&s);
     }
 
+    /* A stream flush inside the read of the corroborating burst (the input generation moves at its first symbol), with
+     * no interruption raised: the block read across it is no corroboration, and the observation goes with it. */
+    s = session_open();
+    sb(&s, &k_a, NULL, 0);
+    const uint32_t epoch = s.state->symbol_clock_epoch;
+    s.opts->pcm_input_generation++;
+    ndb_null(&s, seed_of(COL_A));
+    check(s.state->symbol_clock_epoch == epoch + 1U, "observation: the burst's read crossed a stream flush");
+    check(g_log.evidence == 0 && g_log.activity == 0, "observation: a block read across a flush confirms nothing");
+    ndb_null(&s, seed_of(COL_A));
+    check(g_log.evidence == 0, "observation: a flush inside a burst drops it");
+    sb(&s, &k_a, NULL, 0);
+    ndb_null(&s, seed_of(COL_A));
+    check(tmo_evidence(COL_A), "observation: the new stream's own pair confirms");
+    session_close(&s);
+
     /* An interruption the engine took up between two bursts is an input cut: the observation before it is dropped,
      * for colour code 0 and for a block under the seed alike, and the pair read after it confirms. */
     for (int colour = 0; colour <= 1; colour++) {

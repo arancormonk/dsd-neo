@@ -19,7 +19,8 @@
  * - colour code 0: a second observed BSCH of the same MCC, MNC and colour code from a later burst (every colour code 0
  *   cell scrambles with the predefined all-zero code, table 21.76 note 1, so a block proves nothing of the network).
  * The observation outlives the hunt's no-carrier passes (they reset the decoder's carrier evidence, not this), and is
- * dropped when the carrier count or the symbol clock's stream moves (a retune, a stream flush or gap), when an input
+ * dropped when the carrier count or the symbol clock's stream moves (a retune, a stream flush or gap: between two
+ * bursts, or inside a burst's read, which then corroborates nothing and keeps the visit no more active), when an input
  * interruption stands, cut a burst or was taken up by the engine loop since (dsd_state::input_interrupt_seq: a hunt
  * read the search interrupted between two bursts is an input cut), and at tetra_scan_visit_reset(), which the engine
  * runs at every landing and departure of a search visit.

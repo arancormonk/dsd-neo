@@ -40,11 +40,28 @@ enum {
     SEARCH_AB_RESERVED = 3,
 };
 
-/* The visit's search state, when the burst being decoded is a search visit's (tetra_search_burst_begin()). */
+/* The open burst's read is lost: a stream flush (the symbol clock's stream moved, which raises no interruption) or a
+   carrier boundary inside it, or an input interruption that cut it (dsd_state_frame_read_lost()). What it read is not
+   one transmission's, so it corroborates nothing. */
+static int
+search_burst_lost(const dsd_state* state, const tetra_search_t* sr) {
+    return sr->burst_epoch != state->symbol_clock_epoch || dsd_state_frame_read_lost(state, sr->burst_carrier_seq);
+}
+
+/* The visit's search state, when the burst being decoded is a search visit's (tetra_search_burst_begin()) and its read
+   is whole; a lost read drops the observation, whatever the burst carried. */
 static tetra_search_t*
 search_in_burst(dsd_state* state) {
     tetra_state_t* const ts = tetra_st_existing(state);
-    return (ts && ts->search.burst_open) ? &ts->search : NULL;
+    if (!ts || !ts->search.burst_open) {
+        return NULL;
+    }
+    tetra_search_t* const sr = &ts->search;
+    if (search_burst_lost(state, sr)) {
+        sr->obs_valid = 0;
+        return NULL;
+    }
+    return sr;
 }
 
 void
@@ -84,14 +101,17 @@ tetra_search_burst_begin(dsd_state* state) {
 
 void
 tetra_search_burst_end(dsd_state* state) {
-    tetra_search_t* const sr = search_in_burst(state);
-    if (!sr) {
+    tetra_state_t* const ts = tetra_st_existing(state);
+    if (!ts || !ts->search.burst_open) {
         return;
     }
+    tetra_search_t* const sr = &ts->search;
     sr->burst_open = 0;
-    /* An input interruption cut the burst: what the hunt reads next does not follow on from the observation. */
-    if (state->input_interrupted) {
+    /* A flush, a boundary or an interruption cut the burst: what the hunt reads next does not follow on from the
+       observation, and the burst keeps the visit no more active. */
+    if (search_burst_lost(state, sr)) {
         sr->obs_valid = 0;
+        return;
     }
     if (sr->burst_activity) {
         dsd_signal_search_note_activity(state);
