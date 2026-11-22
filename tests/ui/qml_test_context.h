@@ -1805,6 +1805,8 @@ class CommandRecorder : public QObject {
 
     /* The `recordingStatus` readings a refusal is noted in. */
     QQmlPropertyMap* recordingStatus = nullptr;
+    /* The `metrics` readings a restored squelch level is read from (issue #899). */
+    QQmlPropertyMap* metricReadings = nullptr;
 
     Q_INVOKABLE QVariantList
     recordingRequests() const {
@@ -2031,10 +2033,23 @@ class CommandRecorder : public QObject {
         return m_radio_accepted;
     }
 
-    Q_INVOKABLE bool
+    /* As CommandBridge: the level the configured default keeps, read from the `metrics` readings, tagged with a request
+       the decoder answers through configuredSquelchRequestAnswered (a test sets it); null when refused. */
+    Q_INVOKABLE QVariant
     restoreSquelchLevel() {
         m_restore_squelch_calls++;
-        return m_radio_accepted;
+        if (!m_radio_accepted || metricReadings == nullptr) {
+            return {};
+        }
+        const bool whole = metricReadings->value(QStringLiteral("configuredSquelchLevelWhole")).toBool();
+        QVariantMap asked;
+        asked.insert(QStringLiteral("request"), ++m_last_restore_request);
+        asked.insert(QStringLiteral("off"),
+                     metricReadings->value(QStringLiteral("configuredSquelchLevelOff")).toBool());
+        asked.insert(QStringLiteral("whole"), whole);
+        asked.insert(QStringLiteral("db"),
+                     whole ? metricReadings->value(QStringLiteral("configuredSquelchLevelWholeDb")).toInt() : 0);
+        return asked;
     }
 
     Q_INVOKABLE bool
@@ -2278,6 +2293,11 @@ class CommandRecorder : public QObject {
     }
 
     int
+    lastRestoreRequest() const {
+        return m_last_restore_request;
+    }
+
+    int
     lastNfmBandwidthHz() const {
         return m_last_nfm_bandwidth_hz;
     }
@@ -2488,6 +2508,7 @@ class CommandRecorder : public QObject {
     int m_squelch_noise_calls = 0;
     int m_squelch_auto_calls = 0;
     int m_restore_squelch_calls = 0;
+    int m_last_restore_request = 0; // never reset, as the bridge's tags keep counting across sessions
     int m_last_nfm_bandwidth_hz = -1;
     int m_nfm_bandwidth_calls = 0;
     int m_last_modulation = -1;
@@ -6793,6 +6814,12 @@ class Setup : public QObject {
         return (m_commands != nullptr) ? m_commands->restoreSquelchCalls() : -1;
     }
 
+    /** @brief The tag of the last level restore submitted (issue #899), which a case answers through the metrics. */
+    Q_INVOKABLE int
+    lastRestoreSquelchRequest() const {
+        return (m_commands != nullptr) ? m_commands->lastRestoreRequest() : -1;
+    }
+
     /** @brief The last NFM channel width the Radio sheet asked for (issue #525), and how many times it asked. */
     Q_INVOKABLE int
     lastNfmBandwidthHz() const {
@@ -7367,6 +7394,8 @@ class Setup : public QObject {
         // Issue #899: the configured level as a whole dB the app saves (-120 dB here, as configuredSquelchDb).
         metrics[QStringLiteral("configuredSquelchLevelWhole")] = true;
         metrics[QStringLiteral("configuredSquelchLevelWholeDb")] = -120;
+        // Issue #899: the tag of the last tagged squelch request the decoder answered (0: none).
+        metrics[QStringLiteral("configuredSquelchRequestAnswered")] = 0;
         // #628: whether the session runs on audio input, where the monitor's Squelch row edits the squelch.
         metrics[QStringLiteral("squelchAudioInput")] = false;
         // #525: the analog channel width in force (0 outside the analog preset and on PCM input),
@@ -7575,6 +7604,7 @@ class Setup : public QObject {
         m_commands = new CommandRecorder();
         m_commands->setParent(engine);
         m_commands->recordingStatus = m_recording_readings;
+        m_commands->metricReadings = m_metric_readings;
         ctx->setContextProperty(QStringLiteral("commands"), m_commands);
 
         /* Production models, not stand-ins. Two of these back a ListView whose

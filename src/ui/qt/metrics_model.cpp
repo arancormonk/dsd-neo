@@ -1040,6 +1040,9 @@ MetricsModel::fillTunerGain(View& next, const dsd_opts* opts_snapshot, const dsd
 void
 MetricsModel::fillSquelchOverride(View& next, const dsd_opts* opts_snapshot, const dsd_state* snapshot) {
     dsd_app_squelch_view squelch{};
+    /* Issue #899: read whatever the input, so a request's answer is never lost to an input that shows no squelch. */
+    next.configured_squelch_request_answered =
+        opts_snapshot != nullptr ? static_cast<int>(opts_snapshot->rtl_squelch_request_answered & 0x7fffffffU) : 0;
     if ((!next.radio_input && !next.squelch_audio_input)
         || dsd_app_squelch_view_get(opts_snapshot, snapshot, &squelch) != 0) {
         next.configured_squelch_db = 0.0;

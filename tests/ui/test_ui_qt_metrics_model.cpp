@@ -3475,6 +3475,24 @@ main(int argc, char** argv) {
     }
     opts.rtl_squelch_level = whole_level;
     model.refresh(&opts, &state);
+    /* Issue #899: the decoder's answer to a tagged squelch request, which tells a snapshot taken after it. */
+    expect("no request answered yet", model.configuredSquelchRequestAnswered() == 0);
+    {
+        int answered = 0;
+        const QMetaObject::Connection counting =
+            QObject::connect(&model, &dsd_qt::MetricsModel::controlChanged, [&answered] { ++answered; });
+        opts.rtl_squelch_request_answered = 41U;
+        model.refresh(&opts, &state);
+        QObject::disconnect(counting);
+        expect("the answer is shown, and signalled alone",
+               model.configuredSquelchRequestAnswered() == 41 && answered == 1);
+        opts.audio_in_type = AUDIO_IN_SYMBOL_BIN;
+        model.refresh(&opts, &state);
+        expect("whatever the input", model.configuredSquelchRequestAnswered() == 41);
+        opts.audio_in_type = AUDIO_IN_RTL;
+        opts.rtl_squelch_request_answered = 0U;
+        model.refresh(&opts, &state);
+    }
 
     /* The auto squelch (issue #518 follow-up): whether each setting is AUTO, its margin and what the one in force
      * shows come from the same view, and the level beneath it stays what dB goes back to. */

@@ -2787,6 +2787,9 @@ ui_cmd_handle_rtl_set_sql_setting(dsd_opts* opts, dsd_state* state, const struct
     setting.margin_db = payload.margin_db;
     setting.level = payload.level;
     const int rc = svc_rtl_set_sql_setting(opts, state, &setting);
+    if (payload.request_id != 0U) {
+        opts->rtl_squelch_request_answered = payload.request_id;
+    }
     ui_cmd_toast_squelch_edit(opts, state, rc);
     return ui_cmd_apply_status_from_service_rc(rc);
 }

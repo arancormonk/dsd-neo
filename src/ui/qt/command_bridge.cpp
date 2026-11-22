@@ -45,6 +45,7 @@
 #include <dsd-neo/core/safe_api.h>
 #include <dsd-neo/runtime/receive_policy.h>
 #include <dsd-neo/runtime/scan_row_edit.h>
+#include <dsd-neo/runtime/squelch.h>
 #include <stdint.h>
 
 #include <atomic>
@@ -652,17 +653,33 @@ CommandBridge::setSquelchNoise(int marginDb) const {
     return submitDynamicSquelch(DSD_SQUELCH_MODE_NOISE, marginDb);
 }
 
-bool
+QVariant
 // cppcheck-suppress functionStatic -- Q_INVOKABLE members cannot be static (Qt meta-object)
 CommandBridge::restoreSquelchLevel() const {
     dsd_app_squelch_view view{};
     if (dsd_app_squelch_view_get(dsd_app_get_latest_opts_snapshot(), dsd_app_get_latest_snapshot(), &view) != 0) {
-        return false;
+        return {};
     }
+    /* A positive int tag, so QML compares it with the metrics reading as the same number. */
+    static std::atomic<quint32> nextRequest{1};
     dsd_app_squelch_setting_payload payload = {};
     payload.mode = DSD_SQUELCH_MODE_LEVEL;
     payload.level = view.configured_level;
-    return accepted(dsd_app_command_submit(DSD_APP_CMD_RTL_SET_SQL_SETTING, &payload, sizeof payload));
+    payload.request_id = nextRequest.fetch_add(1) & 0x7fffffffU;
+    if (!payload.request_id) {
+        payload.request_id = nextRequest.fetch_add(1) & 0x7fffffffU;
+    }
+    if (!accepted(dsd_app_command_submit(DSD_APP_CMD_RTL_SET_SQL_SETTING, &payload, sizeof payload))) {
+        return {};
+    }
+    int whole_db = 0;
+    const bool whole = dsd_squelch_level_is_whole_db(payload.level, &whole_db) == 1;
+    QVariantMap asked;
+    asked.insert(QStringLiteral("request"), static_cast<int>(payload.request_id));
+    asked.insert(QStringLiteral("off"), dsd_squelch_is_off(payload.level) != 0);
+    asked.insert(QStringLiteral("whole"), whole);
+    asked.insert(QStringLiteral("db"), whole ? whole_db : 0);
+    return asked;
 }
 
 bool

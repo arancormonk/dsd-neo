@@ -399,11 +399,15 @@ enum dsd_app_command_id {
 };
 
 /* DSD_APP_CMD_RTL_SET_SQL_SETTING: mode is dsd_squelch_mode (core/power.h); level the LEVEL threshold in mean-power
-   units (0 = off), margin_db the AUTO margin or the NOISE quieting in whole dB (3..30). */
+   units (0 = off), margin_db the AUTO margin or the NOISE quieting in whole dB (3..30). request_id, when nonzero, is
+   the sender's tag for this request: once the decoder has handled it, applied or refused, dsd_opts'
+   rtl_squelch_request_answered holds it, so a snapshot that shows it was taken after the request (issue #899). 0 tags
+   nothing and leaves that field as it was. */
 typedef struct {
     int32_t mode;
     int32_t margin_db;
     double level;
+    uint32_t request_id;
 } dsd_app_squelch_setting_payload;
 
 /* A single edit is merged into decoder-owned settings, avoiding stale snapshot writes. */

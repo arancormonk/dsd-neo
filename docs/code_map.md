@@ -7268,12 +7268,15 @@ the stream-notice hooks' pattern: one that fails to initialize leaves the hook u
   state or reading changes (Qt keeps the plain text);
   Qt's `configuredSquelchAuto`/`effectiveSquelchAuto` and their margins (kept under a level setting) drive the radio
   panel's `dB | Auto` choice, whose buttons step the margin in Auto; dB puts the default back on the level it kept
-  (`CommandBridge::restoreSquelchLevel()`, the stored level whole, a legacy linear one included;
+  (`CommandBridge::restoreSquelchLevel()`, the stored level whole, a legacy linear one included; it returns what it
+  submitted, `{request, off, whole, db}`, or null;
   `configuredSquelchLevelOff` says whether it is off). The channel-map review and target
   preview carry a row's own auto squelch as `squelch_margin_db` (`dsd_csv_channel_profile`, `dsd_app_scan_csv_target`;
   Qt `squelchMarginDb`). `DSD_APP_CMD_RTL_SET_SQL_SETTING` (`dsd_app_squelch_setting_payload`,
   `svc_rtl_set_sql_setting()`) sets a whole setting on the configured default as `RTL_SET_SQL_DB` sets a level (it
-  coalesces only with a queued request of the same mode, so an AUTO request's margin and a LEVEL one's level both land),
+  coalesces only with a queued request of the same mode, so an AUTO request's margin and a LEVEL one's level both land;
+  a nonzero `request_id` is written to `dsd_opts::rtl_squelch_request_answered` once the handler has run, applied or
+  refused, so a snapshot showing it was taken after the request -- Qt `configuredSquelchRequestAnswered`, issue #899),
   and a scan row edit carries `squelch_mode`/`squelch_margin_db` (AUTO on an nfm or am row only; a level edit without a
   margin keeps the one the row had, its list's or the last edited, for a switch back to Auto). The noise squelch adds
   `effective_noise`/`configured_noise` beside the AUTO flags and what it shows (`dsd_state::squelch_noise_*`):

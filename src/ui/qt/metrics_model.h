@@ -366,6 +366,9 @@ class MetricsModel : public QObject {
      * (dsd_squelch_level_is_whole_db()), and that whole dB (0 for Off or another level). Only such a level is saved. */
     Q_PROPERTY(bool configuredSquelchLevelWhole READ configuredSquelchLevelWhole NOTIFY controlChanged)
     Q_PROPERTY(int configuredSquelchLevelWholeDb READ configuredSquelchLevelWholeDb NOTIFY controlChanged)
+    /* Issue #899: the tag of the last tagged squelch request the decoder handled (CommandBridge::restoreSquelchLevel()),
+     * 0 for none: a snapshot showing a request's tag was taken after it. */
+    Q_PROPERTY(int configuredSquelchRequestAnswered READ configuredSquelchRequestAnswered NOTIFY controlChanged)
     /* Whether the input is audio (issue #628): the squelch above is a level or the noise squelch, edited from the
      * monitor's Squelch row rather than the Radio sheet. */
     Q_PROPERTY(bool squelchAudioInput READ squelchAudioInput NOTIFY controlChanged)
@@ -1228,6 +1231,12 @@ class MetricsModel : public QObject {
     int
     configuredSquelchLevelWholeDb() const {
         return m_view.configured_squelch_level_whole_db;
+    }
+
+    /** @brief The tag of the last tagged squelch request the decoder handled, applied or refused; 0 for none. */
+    int
+    configuredSquelchRequestAnswered() const {
+        return m_view.configured_squelch_request_answered;
     }
 
     /**
@@ -2474,6 +2483,7 @@ class MetricsModel : public QObject {
         int tuner_gain_configured_db = 0;
         int configured_squelch_margin_db = 0;
         int configured_squelch_level_whole_db = 0;
+        int configured_squelch_request_answered = 0;
         int effective_squelch_margin_db = 0;
         int ppm = 0;
         int enc_lockout_count = 0;
@@ -2770,6 +2780,7 @@ class MetricsModel : public QObject {
         squelchOverrideEquals(const View& other) const {
             return squelchSettingEquals(other) && squelch_row_override == other.squelch_row_override
                    && squelch_analog_default == other.squelch_analog_default && squelch_readout == other.squelch_readout
+                   && configured_squelch_request_answered == other.configured_squelch_request_answered
                    && squelch_noise_offered == other.squelch_noise_offered
                    && squelch_audio_input == other.squelch_audio_input
                    && squelch_auto_status == other.squelch_auto_status && squelch_gate_open == other.squelch_gate_open;

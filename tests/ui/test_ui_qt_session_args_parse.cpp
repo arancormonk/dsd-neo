@@ -52,6 +52,7 @@
 #include <dsd-neo/runtime/config.h>
 #include <dsd-neo/runtime/input_spec.h>
 #include <dsd-neo/runtime/squelch.h>
+#include <dsd-neo/runtime/telemetry.h>
 #include <memory>
 #include <qtenvironmentvariables.h>
 #include <stdint.h>
@@ -500,6 +501,40 @@ struct LiveStart {
 QString
 uiMessage(const LiveStart& live) {
     return QString::fromUtf8(live.decoder.state->ui_msg);
+}
+
+/* Issue #899: the dB choice puts back the level kept beneath a dynamic squelch and says what it asked for, tagged, so
+ * the Radio sheet saves that level and only on a snapshot taken after the decoder answered the request. */
+void
+test_restore_level_says_what_it_asked(dsd_qt::AppPrefs& prefs) {
+    dsd_qt::CommandBridge bridge;
+    const QVariantMap explore{{QStringLiteral("sourceType"), QStringLiteral("usb")},
+                              {QStringLiteral("freqMhz"), QStringLiteral("851.375")}};
+    bool ok = false;
+    LiveStart live(prefs, explore, QStringLiteral("explore"), &ok);
+    dsd_opts* opts = live.decoder.opts.get();
+    expect("an Explore start parses", ok);
+    expect("a level, then noise above it", bridge.setSquelchDb(-60.0) && live.drain() == 1 && bridge.setSquelchNoise(12)
+                                               && live.drain() == 1
+                                               && squelchIs(opts, DSD_SQUELCH_MODE_NOISE, 12, 0.0));
+    dsd_telemetry_publish_opts_snapshot(opts);
+    dsd_telemetry_publish_snapshot(live.decoder.state.get());
+    const QVariant asked = bridge.restoreSquelchLevel();
+    const QVariantMap level = asked.toMap();
+    const int request = level.value(QStringLiteral("request")).toInt();
+    expect("the restore says the level it asked for",
+           asked.isValid() && request > 0 && !level.value(QStringLiteral("off")).toBool()
+               && level.value(QStringLiteral("whole")).toBool() && level.value(QStringLiteral("db")).toInt() == -60);
+    expect("not answered before the decoder handles it", opts->rtl_squelch_request_answered == 0U);
+    expect("the decoder handles it", live.drain() == 1 && squelchIs(opts, DSD_SQUELCH_MODE_LEVEL, 0, -60.0));
+    expect("and answers its tag", opts->rtl_squelch_request_answered == static_cast<uint32_t>(request));
+    expect("off beneath noise",
+           bridge.setSquelchDb(0.0) && live.drain() == 1 && bridge.setSquelchNoise(12) && live.drain() == 1);
+    dsd_telemetry_publish_opts_snapshot(opts);
+    const QVariantMap off = bridge.restoreSquelchLevel().toMap();
+    expect("comes back as off with a new tag",
+           off.value(QStringLiteral("off")).toBool() && off.value(QStringLiteral("request")).toInt() != request
+               && live.drain() == 1 && squelchIs(opts, DSD_SQUELCH_MODE_LEVEL, 0, 0.0));
 }
 
 /* Issue #899: the app's default squelch follows a live decode switch on the decoder, with the switch itself: one
@@ -1450,6 +1485,7 @@ main(int argc, char** argv) {
         test_status_readings();
         test_live_commands(prefs, sessions);
         test_live_decode_switch_squelch(prefs);
+        test_restore_level_says_what_it_asked(prefs);
         test_reattached_decode_switch_squelch(prefs);
         test_live_unknown_only_first(prefs, sessions);
         test_live_record_on_keeps_extra_hold(prefs, sessions);

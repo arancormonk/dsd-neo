@@ -12241,6 +12241,47 @@ submit_squelch_setting(int mode, int margin_db, double level) {
     return dsd_app_command_submit(DSD_APP_CMD_RTL_SET_SQL_SETTING, &payload, sizeof payload);
 }
 
+static int
+submit_tagged_squelch_setting(int mode, int margin_db, double level, uint32_t request_id) {
+    dsd_app_squelch_setting_payload payload;
+    DSD_MEMSET(&payload, 0, sizeof payload);
+    payload.mode = mode;
+    payload.margin_db = margin_db;
+    payload.level = level;
+    payload.request_id = request_id;
+    return dsd_app_command_submit(DSD_APP_CMD_RTL_SET_SQL_SETTING, &payload, sizeof payload);
+}
+
+/* Issue #899: a tagged squelch setting is answered in the options once the decoder has handled it, applied or
+ * refused, so a frontend can tell a snapshot taken after its request from an older one; an untagged one leaves the
+ * answer as it was. */
+static int
+test_squelch_setting_request_answered(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    init_squelch_row_context(&opts, &state);
+    int rc = expect_int("nothing answered yet", (int)opts.rtl_squelch_request_answered, 0);
+    rc |= expect_true("noise queued", submit_tagged_squelch_setting(DSD_SQUELCH_MODE_NOISE, 10, 0.0, 7U) > 0);
+    rc |= expect_int("not answered before the drain", (int)opts.rtl_squelch_request_answered, 0);
+    rc |= expect_int("noise drained", dsd_app_drain_cmds(&opts, &state), 1);
+    rc |= expect_int("noise answered", (int)opts.rtl_squelch_request_answered, 7);
+    rc |= expect_true("level queued",
+                      submit_tagged_squelch_setting(DSD_SQUELCH_MODE_LEVEL, 0, dsd_squelch_level_from_sql(-60.0), 8U)
+                          > 0);
+    rc |= expect_int("level drained", dsd_app_drain_cmds(&opts, &state), 1);
+    rc |= expect_int("level answered", (int)opts.rtl_squelch_request_answered, 8);
+    rc |= expect_squelch_db("the level in force", opts.rtl_squelch_level, -60.0);
+    rc |= expect_true("refused margin queued", submit_tagged_squelch_setting(DSD_SQUELCH_MODE_AUTO, 2, 0.0, 9U) > 0);
+    rc |= expect_int("refused margin drained", dsd_app_drain_cmds(&opts, &state), 1);
+    rc |= expect_int("a refusal is answered too", (int)opts.rtl_squelch_request_answered, 9);
+    rc |= expect_true("untagged queued", submit_squelch_setting(DSD_SQUELCH_MODE_AUTO, 6, 0.0) > 0);
+    rc |= expect_int("untagged drained", dsd_app_drain_cmds(&opts, &state), 1);
+    rc |= expect_int("an untagged request leaves the answer", (int)opts.rtl_squelch_request_answered, 9);
+    dsd_rtl_stream_metrics_hooks_set(NULL);
+    dsd_state_ext_free_all(&state);
+    return rc;
+}
+
 /* DSD_APP_CMD_RTL_SET_SQL_SETTING (issue #518 follow-up): the whole setting as the configured default. An auto squelch
  * reaches the demod whole, a level as a level, a margin out of range is refused, and under a row's own squelch the
  * edit waits beneath it and the save writes it. */
@@ -32123,6 +32164,7 @@ main(void) {
     rc |= test_rtl_bandwidth_held_to_am_width();
     rc |= test_squelch_commands_edit_the_configured_default();
     rc |= test_squelch_setting_command();
+    rc |= test_squelch_setting_request_answered();
     rc |= test_squelch_edit_keeps_live_acquisition();
 #endif
 #ifdef DSD_NEO_TEST_AUDIO_ENSURE_WRAP

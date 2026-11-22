@@ -302,8 +302,13 @@ class CommandBridge : public QObject {
     /**
      * @brief Put the configured default back on the level it kept beneath a dynamic squelch, exactly as stored (a
      * legacy linear threshold included, which a whole-dB reading cannot carry).
+     *
+     * Issue #899: returns what was asked for, so a caller can confirm that level and no other -- {request, off,
+     * whole, db}: the request's tag, which MetricsModel::configuredSquelchRequestAnswered shows once the decoder has
+     * handled it; whether the level is Off; whether it is a whole dB the app's controls make, and that dB (0 when it
+     * is not). Null when nothing was submitted.
      */
-    Q_INVOKABLE bool restoreSquelchLevel() const;
+    Q_INVOKABLE QVariant restoreSquelchLevel() const;
 
     /** @brief Set the dongle's crystal correction, in parts per million. */
     Q_INVOKABLE bool setPpm(int ppm) const;
