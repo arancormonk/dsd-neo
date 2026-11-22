@@ -295,11 +295,12 @@ def rig_rows(record, kind="history"):
 
 
 def confirm_time(record, tx):
-    """Seconds of stream time from the search's first landing on @p tx to the first status that shows its hit
-    confirmed, or None."""
+    """Seconds of stream time from the search's first landing on @p tx to the first status of a live visit to its hit
+    (landed_hit()) that shows it confirmed, or None. An ended hit, or a status outside a landed phase (the departure's),
+    does not count: the check is that the visit showed it confirmed while it ran."""
     for t, _wall, m in rig_messages(record, "status"):
-        hit = m["hit"]
-        if tx.landed is not None and t >= tx.landed and hit["confirmed"] and tx.owns(hit["frequency_hz"]):
+        hit = landed_hit(m)
+        if tx.landed is not None and t >= tx.landed and hit and hit["confirmed"] and tx.owns(hit["frequency_hz"]):
             return t - tx.landed
     return None
 
