@@ -818,7 +818,11 @@ scope_open_squelch(void* u, const dsd_scan_option_values* row) {
     } else if (dsd_squelch_is_off(g_scope.squelch_level)) {
         DSD_SNPRINTF(text, sizeof text, "%s", "off");
     } else {
-        DSD_SNPRINTF(text, sizeof text, "%d", (int)pwr_to_dB(g_scope.squelch_level));
+        /* The nearest whole dB from -120 to -1, which the prompt takes back: never a truncation, which can read 0 (off)
+           or fall below -120 for a level from the CLI. */
+        int db = 0;
+        (void)dsd_squelch_level_whole_db(g_scope.squelch_level, &db);
+        DSD_SNPRINTF(text, sizeof text, "%d", db);
     }
     /* Audio input takes a level or noise (issue #628): an auto setting, or noise on an am row, does not run there, so
        the prompt offers what does run: off. */

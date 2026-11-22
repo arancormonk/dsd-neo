@@ -3024,6 +3024,36 @@ test_scan_row_scope_chooser(void) {
                      "Squelch on this channel: whole dB from -120 to 0, off or noise[+N]");
     dsd_test_scan_labels_input_type(AUDIO_IN_RTL);
 
+    /* Issue #899: a row that follows a session level opens on that level's nearest whole dB from -120 to -1, so the
+       prompt takes its own prefill back: never truncated (-65.5 dB is -66, -0.25 dB is -1, not 0 = off), and a level
+       below -120 (from the CLI) opens at -120. */
+    dsd_test_scan_labels_set(DSD_SCAN_MODE_NFM);
+
+    static const struct {
+        double db;
+        const char* prefill;
+        int posted_db;
+    } inherited[] = {{-65.5, "-66", -66}, {-0.25, "-1", -1}, {-130.0, "-120", -120}, {-60.0, "-60", -60}};
+
+    for (size_t i = 0; i < sizeof inherited / sizeof inherited[0]; ++i) {
+        char what[96];
+        dsd_test_scan_labels_squelch(DSD_SQUELCH_MODE_LEVEL, 0, pow(10.0, inherited[i].db / 10.0));
+        reset_capture();
+        act_set_squelch(&ctx);
+        g_chooser.on_done(g_chooser.user, 1);
+        DSD_SNPRINTF(what, sizeof what, "a row following %.2f dB opens on", inherited[i].db);
+        rc |= expect_str(what, g_prompt.prefill, inherited[i].prefill);
+        g_prompt.str_cb(g_prompt.user, g_prompt.prefill);
+        DSD_SNPRINTF(what, sizeof what, "a row following %.2f dB takes its prefill", inherited[i].db);
+        rc |= expect_int(what, g_cmd.calls, 1);
+        if (g_cmd.calls == 1) {
+            p = cmd_scan_row_edit();
+            DSD_SNPRINTF(what, sizeof what, "a row following %.2f dB posts its prefill", inherited[i].db);
+            rc |=
+                expect_int(what, p.squelch_mode == DSD_SQUELCH_MODE_LEVEL && p.squelch_db == inherited[i].posted_db, 1);
+        }
+    }
+
     dsd_test_scan_labels_squelch(DSD_SQUELCH_MODE_LEVEL, 0, 0.0);
     dsd_test_scan_labels_set(DSD_SCAN_MODE_NFM);
     dsd_test_scan_labels_row_options(&row);

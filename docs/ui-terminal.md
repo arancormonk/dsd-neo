@@ -688,7 +688,8 @@ While a scan row or target is on air that can take a "this channel" edit (issue 
 bandwidth...`, `AM bandwidth...`, `Gain...` and `Tone filter...` rows open a chooser before their prompt: `All channels
 (default)...` goes on to the prompt above, which edits the configured default; `This channel (county-p25)...` prompts on
 what the row runs now (whole dB from -120 to 0 for the squelch, 0 = off, `auto[+N]` on an `nfm` or `am` row on a radio
-input, or `noise[+N]` on an `nfm` row; the width in Hz; the gain, 0 = AGC; a tone picker and list) and changes that row
+input, or `noise[+N]` on an `nfm` row, and a level the row follows opens as its nearest whole dB from -120 to -1, so
+the prompt takes it back; the width in Hz; the gain, 0 = AGC; a tone picker and list) and changes that row
 alone for the rest of the session; `This channel: use the default` (offered when the row's list sets the setting) makes
 it follow the configured default, and `This channel: back to the list value` (offered while it runs an edit) drops the
 edit. The edit goes to the row named when the chooser opened, at once if it is on air and from its next visit otherwise
