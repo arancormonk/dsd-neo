@@ -815,6 +815,37 @@ test_option_arity_matches_the_parser(void) {
         rc = 1;
     }
 
+    /* Issue #899: of the options that take the next argument unless it starts with '-', only --config and
+       --validate-config do without one; the parser refuses the others without theirs. */
+    static const struct {
+        const char* arg;
+        int optional;
+    } values[] = {
+        {"--config", 1},    {"--validate-config", 1},
+        {"--api", 0},       {"--api-bind", 0},
+        {"--tetra-key", 0}, {"--tetra-net", 0},
+        {"--squelch", 0},   {"--config=x.ini", 0},
+        {"--api-token", 0}, {"--rtl-udp-control-bind", 0},
+        {"--no-such", 0},
+    };
+
+    for (size_t i = 0; i < sizeof values / sizeof values[0]; i++) {
+        if (dsd_cli_long_option_value_optional(values[i].arg) != values[i].optional) {
+            DSD_FPRINTF(stderr, "FAIL: %s reads as value-optional %d\n", values[i].arg,
+                        dsd_cli_long_option_value_optional(values[i].arg));
+            rc = 1;
+        }
+    }
+    for (size_t i = 0; i < sizeof values / sizeof values[0]; i++) {
+        if (values[i].optional && dsd_cli_long_option_arity(values[i].arg) != DSD_CLI_LONG_NEXT_NON_OPTION) {
+            DSD_FPRINTF(stderr, "FAIL: %s is value-optional but not next-non-option\n", values[i].arg);
+            rc = 1;
+        }
+    }
+    if (dsd_cli_long_option_value_optional(NULL)) {
+        DSD_FPRINTF(stderr, "FAIL: NULL takes no value\n");
+        rc = 1;
+    }
     const char takes[] = "7wPcoiF";
     const int want[] = {1, 1, 0, 1, 1, 1, 0};
     for (size_t i = 0; i < sizeof want / sizeof want[0]; i++) {

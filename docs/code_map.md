@@ -15822,8 +15822,11 @@ Build files: `src/protocol/CMakeLists.txt` and per‑protocol `src/protocol/<nam
     digital row as `off`, a level as whole dB -120..-1 through `dsd_squelch_level_whole_db()`, with a warning when
     `dsd_squelch_level_is_whole_db()` says it rounded). Advanced fields that would hide what the app appends are
     refused (B17, `session_args_extra_incomplete()`, `SessionArgsError::ExtraIncomplete`, category "extra-incomplete"),
-    each field on its own, by the CLI's own arity: a `--` the long-option pass reaches, or a field ending with an option
-    still waiting for its value. Tests: `UI_QT_SESSION_ARGS`, `UI_QT_SCAN_LIST_TARGETS`, `UI_QT_SESSION_ARGS_PARSE` (live
+    each field on its own, by the CLI's own tables: a `--` the long-option pass reaches, a field ending with an option
+    that takes the next argument whatever it is, or one that takes it unless an option follows
+    (`DSD_CLI_LONG_NEXT_NON_OPTION`) with no value there, unless the CLI does without one
+    (`dsd_cli_long_option_value_optional()`: `--config`, `--validate-config`; `--api`, `--api-bind`, `--tetra-key` and
+    the rest need theirs). Tests: `UI_QT_SESSION_ARGS`, `UI_QT_SCAN_LIST_TARGETS`, `UI_QT_SESSION_ARGS_PARSE` (live
     switches, outside and user edits, a refused switch, a recreated bridge, scan rows that inherit, through the real
     bridge, queue and engine options), `ENGINE_TRUNK_SCAN_SCAN_LIST` (generated rows through the real parser and
     coordinator, on audio input and on a radio input with the receiver's squelch and the readout's badge checked each

@@ -2515,9 +2515,11 @@ test_default_squelch_option(void) {
    still waits for its value took the next token as it. Both are refused with their own error. */
 static void
 test_extra_incomplete(void) {
-    for (const QString& bad : {QStringLiteral("--squelch off --"), QStringLiteral("--squelch off --api-token"),
-                               QStringLiteral("-c"), QStringLiteral("-Z -c"), QStringLiteral("-c --"),
-                               QStringLiteral("--"), QStringLiteral("-- --squelch noise+17")}) {
+    for (const QString& bad :
+         {QStringLiteral("--squelch off --"), QStringLiteral("--squelch off --api-token"), QStringLiteral("-c"),
+          QStringLiteral("-Z -c"), QStringLiteral("-c --"), QStringLiteral("--"),
+          QStringLiteral("-- --squelch noise+17"), QStringLiteral("--api-bind"), QStringLiteral("--tetra-key"),
+          QStringLiteral("-Z --api"), QStringLiteral("--api-bind --squelch off")}) {
         expect("an extra-options field that hides what follows it is incomplete",
                dsd_qt::session_args_extra_incomplete(bad));
         QVariantMap sys = usb_system();
@@ -2537,7 +2539,7 @@ test_extra_incomplete(void) {
     for (const QString& good :
          {QString(), QStringLiteral("--squelch off --api-token --"), QStringLiteral("--squelch off"),
           QStringLiteral("-c5"), QStringLiteral("-c 5"), QStringLiteral("--config"), QStringLiteral("-Z"),
-          QStringLiteral("--squelch=noise+12 -mq")}) {
+          QStringLiteral("--squelch=noise+12 -mq"), QStringLiteral("--config -Z")}) {
         expect("a complete field is not", !dsd_qt::session_args_extra_incomplete(good));
         QVariantMap sys = usb_system();
         sys["decodeFlag"] = "-fA";
@@ -2547,6 +2549,15 @@ test_extra_incomplete(void) {
         const QStringList args = session_args_build(sys, SessionArgPrefs(), &error);
         expect("a complete field starts, the saved squelch last",
                error == SessionArgsError::None && args.mid(args.size() - 2) == QStringList({"--squelch", "noise+17"}));
+    }
+    /* The CLI's own tables say which options that take the next argument do without it (the review's "--api-bind" and
+       "--tetra-key" passed): --config and --validate-config read the default path. */
+    for (const QString& optional : {QStringLiteral("--validate-config"), QStringLiteral("--config --squelch off")}) {
+        expect("an option the CLI takes bare is complete", !dsd_qt::session_args_extra_incomplete(optional));
+    }
+    for (const QString& given : {QStringLiteral("--api-bind 127.0.0.1"), QStringLiteral("--api=4000"),
+                                 QStringLiteral("--tetra-key 262,1001,00112233445566778899")}) {
+        expect("a required value given is complete", !dsd_qt::session_args_extra_incomplete(given));
     }
     QVariantMap sys = usb_system();
     sys["extraArgs"] = "-c";

@@ -529,8 +529,20 @@ session_args_extra_sets_preroll(const QString& tokens) {
 
 namespace {
 
+/* Whether the long option @p token, which takes the next argument unless that starts with '-'
+   (DSD_CLI_LONG_NEXT_NON_OPTION), finds no value it can take there: the field ends, or an option follows. The CLI's
+   tables say which such options do without one (dsd_cli_long_option_value_optional(): --config, --validate-config). */
+bool
+long_option_misses_value(const QString& token, const QStringList& split, qsizetype i) {
+    const bool hasNext = i + 1 < split.size();
+    if (hasNext && !split.at(i + 1).startsWith(QLatin1Char('-'))) {
+        return false;
+    }
+    return !dsd_cli_long_option_value_optional(token.toUtf8().constData());
+}
+
 /* session_args_extra_incomplete()'s long-option pass, as long_option_tokens() takes the long options out: true for a
-   "--" that is no long option's value, or a long option that needs a value as the last token; @p rest gets what getopt
+   "--" that is no long option's value, or a long option that needs a value without one; @p rest gets what getopt
    reads. */
 bool
 long_pass_incomplete(const QStringList& split, QStringList* rest) {
@@ -548,8 +560,13 @@ long_pass_incomplete(const QStringList& split, QStringList* rest) {
                 return true;
             }
             ++i;
-        } else if (arity == DSD_CLI_LONG_NEXT_NON_OPTION && hasNext && !split.at(i + 1).startsWith(QLatin1Char('-'))) {
-            ++i;
+        } else if (arity == DSD_CLI_LONG_NEXT_NON_OPTION) {
+            if (long_option_misses_value(token, split, i)) {
+                return true;
+            }
+            if (hasNext && !split.at(i + 1).startsWith(QLatin1Char('-'))) {
+                ++i;
+            }
         }
     }
     return false;

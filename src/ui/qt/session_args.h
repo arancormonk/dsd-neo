@@ -177,8 +177,9 @@ constexpr SessionArgsError SessionArgsErrorLast = SessionArgsError::ExtraIncompl
  * Walked as the decoder walks its argv (option_tokens()): a "--" its long-option pass reaches, which is no long
  * option's value ("--api-token --" is one, "-c --" is not: the long pass stops at it), ends the options there, and a
  * long option that takes a value (dsd_cli_long_option_arity() DSD_CLI_LONG_NEXT) or a short one written apart from its
- * value (dsd_cli_short_option_takes_value()) as the field's last option would take the first token after the field.
- * Either is refused: the app appends the decode choices and the saved squelch after the extra options, and the saved
+ * value (dsd_cli_short_option_takes_value()) as the field's last option would take the first token after the field,
+ * and one that takes a value unless an option follows (DSD_CLI_LONG_NEXT_NON_OPTION) is refused without one unless the
+ * CLI does without it (dsd_cli_long_option_value_optional(): --config, --validate-config). Each is refused: the app appends the decode choices and the saved squelch after the extra options, and the saved
  * choice has to stay the last word.
  */
 bool session_args_extra_incomplete(const QString& tokens);
