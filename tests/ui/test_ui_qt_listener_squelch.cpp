@@ -1,0 +1,598 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+/*
+ * Copyright (C) 2026 by arancormonk <180709949+arancormonk@users.noreply.github.com>
+ */
+
+/*
+ * Issue #899, end to end: what a listener hears from a session the app starts with its default squelch. Each case
+ * builds the session's argv with the app's own builder (SessionArgsBuilder, or ScanListStarter for a scan list), starts
+ * it through dsd_runtime_bootstrap() as the decoder host does, and runs the real engine over a committed capture.
+ *
+ * The receiver is an I/Q replay, but the app's radio spec is kept: `--iq-replay` alone would put its own input in place
+ * of the `-i rtl:...` spec, and with it the spec's squelch field, which is where the app puts its default. So the spec
+ * is read as the engine reads it when the radio opens (dsd_rtl_input_spec_apply()); its squelch and volume fields stay
+ * in force, and its tuning fields are the capture's own (851.375 MHz, 48 kHz), which the replay then keeps.
+ *
+ * The capture is made from the committed fixtures: 3 s of receiver noise (noise_floor), the 9.3 s NFM speech
+ * transmission (speech_nfm_synth, a carrier from its first sample, the talker from 0.25 s), then 2 s of noise again.
+ * The monitor's audio is captured where the analog replay host takes it (the UDP analog hook) and scored per block at
+ * -40 dBFS RMS, on the stream time the decoder has read, as tests/engine/analog_replay.c does.
+ *
+ * Cases (one per process, argv[1]):
+ *   saved-nfm         an NFM saved system with no squelch of its own: the spec carries noise+10; the idle channel
+ *                     plays nothing, the transmission plays from its talker's start, nothing plays after it.
+ *   saved-nfm-off     the same with the Settings default Off: the idle channel plays its hiss (the control, which shows
+ *                     the scoring hears hiss).
+ *   explore-live-nfm  Explore on Auto, then NFM picked 1 s in through the real command bridge and queue (the switch
+ *                     and the app's follow-up command): the same as saved-nfm once switched.
+ *   scan-row          a scan list's NFM row as ScanListStarter generates it (`--squelch noise+10` in its options cell,
+ *                     read by the row parser the scan loader uses and committed as the coordinator commits a row): the
+ *                     same audio, and the scanners' hold signal (dsd_scan_analog_carrier_open()) never up on the idle
+ *                     channel, up through the transmission and down again after it.
+ *   scan-row-off      the same list with the Settings default Off: the row has no squelch and the idle channel holds
+ *                     the scan (the control).
+ *
+ * Not covered here: the scan coordinator stepping between rows (an I/Q replay cannot retune; the rows' settings on air
+ * through the real coordinator are ENGINE_TRUNK_SCAN_SCAN_LIST's), and the stream after a live switch back to a
+ * digital decode (UI_QT_SESSION_ARGS_PARSE checks the squelch is then exactly off).
+ */
+
+#include <QByteArray>
+#include <QCoreApplication>
+#include <QDir>
+#include <QFile>
+#include <QIODevice>
+#include <QJsonDocument>
+#include <QJsonObject>
+#include <QList>
+#include <QStandardPaths>
+#include <QString>
+#include <QStringList>
+#include <QTemporaryDir>
+#include <QVariant>
+#include <QVariantList>
+#include <QVariantMap>
+#include <cmath>
+#include <cstdio>
+#include <cstring>
+#include <dsd-neo/app_control/frontend_runtime.h>
+#include <dsd-neo/core/init.h>
+#include <dsd-neo/core/opts.h>
+#include <dsd-neo/core/safe_api.h>
+#include <dsd-neo/core/state.h>
+#include <dsd-neo/engine/engine.h>
+#include <dsd-neo/runtime/bootstrap.h>
+#include <dsd-neo/runtime/config.h>
+#include <dsd-neo/runtime/input_spec.h>
+#include <dsd-neo/runtime/scan_mode.h>
+#include <dsd-neo/runtime/scan_options.h>
+#include <dsd-neo/runtime/squelch.h>
+#include <dsd-neo/runtime/udp_audio_hooks.h>
+#include <memory>
+#include <stdint.h>
+#include "../test_support/qt_test_paths.h"
+#include "app_prefs.h"
+#include "command_bridge.h"
+#include "decoder_host.h"
+#include "scan_list_starter.h"
+#include "scan_lists_model.h"
+#include "session_args.h"
+#include "squelch_default_policy.h"
+
+#ifdef USE_RADIO
+#include <dsd-neo/engine/scan_voice_gate.h>
+#include <dsd-neo/io/rtl_stream_c.h>
+#include <dsd-neo/runtime/rtl_stream_io_hooks.h>
+#include <dsd-neo/runtime/rtl_stream_metrics_hooks.h>
+#endif
+
+#ifdef USE_RADIO
+namespace {
+
+int g_failures = 0;
+
+void
+expect(const char* what, bool ok) {
+    if (!ok) {
+        DSD_FPRINTF(stderr, "FAIL: %s\n", what);
+        g_failures++;
+    }
+}
+
+/* The made capture, in stream milliseconds: the idle channel, the transmission, the idle channel again. */
+constexpr double kIdleMs = 3000.0;
+constexpr double kCarrierMs = 9300.0;
+constexpr double kAfterMs = 2000.0;
+constexpr double kCarrierEndMs = kIdleMs + kCarrierMs;
+/* The squelch's closing tail and the monitor's latency after the carrier ends: not judged. */
+constexpr double kCloseMs = 100.0;
+constexpr double kAudibleDbfs = -40.0;
+constexpr int kRateHz = 48000;
+
+enum Segment { kIdle = 0, kCarrier = 1, kAfter = 2, kSegments = 3 };
+
+/* What the listener heard, and what held a scanner, by stream time. */
+struct Heard {
+    double readMs = 0.0;
+    double audibleMs[kSegments] = {0.0, 0.0, 0.0};
+    double firstAudibleMs = -1.0;
+    double lastAudibleMs = -1.0;
+    int holdSeen[kSegments] = {0, 0, 0};
+    int holdAtEnd = 0;
+    unsigned int blocks = 0U;
+};
+
+Heard g_heard;
+const dsd_opts* g_opts = nullptr;
+const dsd_state* g_state = nullptr;
+/* The live decode switch: the bridge it goes through, and the stream time it is made at (< 0: none). */
+dsd_qt::CommandBridge* g_bridge = nullptr;
+double g_switchAtMs = -1.0;
+int g_switched = 0;
+
+/* Which part of the capture @p ms falls in; -1 inside the closing tail after the carrier. */
+int
+segmentAt(double ms) {
+    if (ms < kIdleMs) {
+        return kIdle;
+    }
+    if (ms < kCarrierEndMs) {
+        return kCarrier;
+    }
+    return ms < kCarrierEndMs + kCloseMs ? -1 : kAfter;
+}
+
+/* The decoder's reads, counted into stream time at the output rate in force when each was made; the scanners' hold
+   signal is sampled after each one, and the live switch is made once its stream time has come. */
+int
+countingReadEx(void* ctx, float* out, uint8_t* flags, size_t count, int* outGot) {
+    const int rc = rtl_stream_read_ex(static_cast<RtlSdrContext*>(ctx), out, flags, count, outGot);
+    const unsigned int rate = dsd_rtl_stream_metrics_hook_output_rate_hz();
+    if (rc >= 0 && outGot != nullptr && *outGot > 0 && rate > 0U) {
+        g_heard.readMs += static_cast<double>(*outGot) * 1000.0 / static_cast<double>(rate);
+        const int hold = dsd_scan_analog_carrier_open(g_opts, g_state);
+        const int at = segmentAt(g_heard.readMs);
+        if (at >= 0 && hold) {
+            g_heard.holdSeen[at] = 1;
+        }
+        g_heard.holdAtEnd = hold;
+        if (g_bridge != nullptr && !g_switched && g_switchAtMs >= 0.0 && g_heard.readMs >= g_switchAtMs) {
+            g_switched = 1;
+            expect("NFM is picked live", g_bridge->setDecodeMode(DSDCFG_MODE_ANALOG));
+        }
+    }
+    return rc;
+}
+
+int
+countingRead(void* ctx, float* out, size_t count, int* outGot) {
+    return countingReadEx(ctx, out, nullptr, count, outGot);
+}
+
+double
+returnPwr(const void* ctx) {
+    return rtl_stream_return_pwr(static_cast<const RtlSdrContext*>(ctx));
+}
+
+/* In place of the UDP analog blaster: one monitor block of int16 mono samples at the analog sink rate. */
+void
+captureBlast(const dsd_opts* opts, dsd_state* state, size_t nbytes, const void* data) {
+    (void)state;
+    const size_t n = nbytes / sizeof(short);
+    if (data == nullptr || n == 0U) {
+        return;
+    }
+    const short* pcm = static_cast<const short*>(data);
+    double energy = 0.0;
+    for (size_t i = 0; i < n; ++i) {
+        const double s = static_cast<double>(pcm[i]) / 32768.0;
+        energy += s * s;
+    }
+    const double rms = std::sqrt(energy / static_cast<double>(n));
+    const double dbfs = rms > 0.0 ? 20.0 * std::log10(rms) : -200.0;
+    g_heard.blocks++;
+    if (!(dbfs > kAudibleDbfs)) {
+        return;
+    }
+    const double blockMs = static_cast<double>(n) * 1000.0 / static_cast<double>(dsd_opts_analog_sink_rate_hz(opts));
+    const int at = segmentAt(g_heard.readMs);
+    if (at >= 0) {
+        g_heard.audibleMs[at] += blockMs;
+    }
+    if (g_heard.firstAudibleMs < 0.0) {
+        g_heard.firstAudibleMs = g_heard.readMs;
+    }
+    g_heard.lastAudibleMs = g_heard.readMs;
+}
+
+/* After the engine installed its hooks and opened its (null) output: the monitor goes to the capture. */
+int
+listenerStart(dsd_opts* opts, dsd_state* state, void* context) {
+    (void)state;
+    (void)context;
+    opts->audio_out = 1;
+    opts->audio_out_type = 8;
+    dsd_udp_audio_hooks audio = {};
+    audio.blast_analog = captureBlast;
+    dsd_udp_audio_hooks_set(audio);
+    dsd_rtl_stream_io_hooks io = {};
+    io.read = countingRead;
+    io.read_ex = countingReadEx;
+    io.return_pwr = returnPwr;
+    dsd_rtl_stream_io_hooks_set(&io);
+    return 0;
+}
+
+void
+listenerStop(dsd_opts* opts, dsd_state* state, void* context) {
+    (void)opts;
+    (void)state;
+    (void)context;
+    dsd_udp_audio_hooks_set(dsd_udp_audio_hooks{});
+}
+
+/* @p bytes of the committed capture @p name, from @p from. */
+QByteArray
+fixtureBytes(const char* name, qsizetype from, qsizetype bytes) {
+    QFile file(QStringLiteral(DSD_NEO_TEST_IQ_FIXTURE_DIR "/%1.iq").arg(QString::fromLatin1(name)));
+    if (!file.open(QIODevice::ReadOnly)) {
+        return {};
+    }
+    const QByteArray all = file.readAll();
+    return bytes < 0 ? all.mid(from) : all.mid(from, bytes);
+}
+
+/* The listening capture in @p dir: idle noise, the transmission, idle noise; its sidecar's path, or "" on failure. */
+QString
+makeCapture(const QTemporaryDir& dir) {
+    const qsizetype perMs = 2 * kRateHz / 1000; // cu8 I/Q
+    const QByteArray idle = fixtureBytes("noise_floor", 0, static_cast<qsizetype>(kIdleMs) * perMs);
+    const QByteArray speech = fixtureBytes("speech_nfm_synth", 0, -1);
+    const QByteArray after =
+        fixtureBytes("noise_floor", static_cast<qsizetype>(kIdleMs) * perMs, static_cast<qsizetype>(kAfterMs) * perMs);
+    QFile meta(QStringLiteral(DSD_NEO_TEST_IQ_FIXTURE_DIR "/noise_floor.iq.json"));
+    if (idle.size() != static_cast<qsizetype>(kIdleMs) * perMs
+        || speech.size() != static_cast<qsizetype>(kCarrierMs) * perMs
+        || after.size() != static_cast<qsizetype>(kAfterMs) * perMs || !meta.open(QIODevice::ReadOnly)) {
+        return {};
+    }
+    QJsonObject sidecar = QJsonDocument::fromJson(meta.readAll()).object();
+    const QByteArray data = idle + speech + after;
+    sidecar.insert(QStringLiteral("data_file"), QStringLiteral("listening.iq"));
+    sidecar.insert(QStringLiteral("data_bytes"), static_cast<qint64>(data.size()));
+    sidecar.insert(QStringLiteral("notes"), QStringLiteral("noise_floor 3 s, speech_nfm_synth, noise_floor 2 s"));
+    QFile out(dir.filePath(QStringLiteral("listening.iq")));
+    QFile outMeta(dir.filePath(QStringLiteral("listening.iq.json")));
+    const bool written = out.open(QIODevice::WriteOnly) && out.write(data) == data.size()
+                         && outMeta.open(QIODevice::WriteOnly) && outMeta.write(QJsonDocument(sidecar).toJson()) > 0;
+    return written ? outMeta.fileName() : QString();
+}
+
+class Host : public dsd_qt::DecoderHost {
+  public:
+    QStringList argv;
+
+    bool
+    isRunning() const override {
+        return false;
+    }
+
+    QString
+    statusText() const override {
+        return {};
+    }
+
+    bool
+    start(const QStringList& args) override {
+        argv = args;
+        return true;
+    }
+
+    void
+    stop() override {}
+};
+
+/* The squelch the options hold: @p mode, with @p margin for a dynamic one; a LEVEL here is always off. */
+bool
+squelchIs(const dsd_opts* opts, int mode, int margin) {
+    if (opts->rtl_squelch_mode != mode) {
+        return false;
+    }
+    return mode == DSD_SQUELCH_MODE_LEVEL ? !(opts->rtl_squelch_level > 0.0) : opts->rtl_squelch_margin_db == margin;
+}
+
+/* What to do between the session's start-up and the engine run: commit a scan row. */
+using BeforeRun = bool (*)(dsd_opts* opts, dsd_state* state, const QString& rowOptions);
+
+struct Session {
+    std::unique_ptr<dsd_opts> opts = std::make_unique<dsd_opts>();
+    std::unique_ptr<dsd_state> state = std::make_unique<dsd_state>();
+};
+
+/* Starts @p appArgs as the decoder host does, over the replay of @p capture with the app's radio spec kept, and runs
+   the engine to the capture's end. @p want_mode / @p want_margin: the squelch the session must hold before it runs
+   (after @p before). Returns whether it ran. */
+bool
+listen(const QStringList& appArgs, const QString& capture, int wantMode, int wantMargin, BeforeRun before,
+       const QString& rowOptions, Session& session) {
+    const qsizetype at = appArgs.indexOf(QStringLiteral("-i"));
+    const QString spec = at >= 0 ? appArgs.value(at + 1) : QString();
+    DSD_FPRINTF(stderr, "app argv: %s\n", qPrintable(appArgs.join(QLatin1Char(' '))));
+    expect("the app built a radio spec", spec.startsWith(QStringLiteral("rtl:")));
+    QStringList args = appArgs;
+    args << QStringLiteral("--iq-replay") << capture << QStringLiteral("-o") << QStringLiteral("null");
+    QList<QByteArray> storage{QByteArray("dsd-neo")};
+    for (const QString& arg : args) {
+        storage.append(arg.toUtf8());
+    }
+    QList<char*> argv;
+    for (QByteArray& arg : storage) {
+        argv.append(arg.data());
+    }
+    argv.append(nullptr);
+    dsd_opts* opts = session.opts.get();
+    dsd_state* state = session.state.get();
+    initOpts(opts);
+    initState(state);
+    int effective = 0;
+    int exitCode = 0;
+    if (dsd_runtime_bootstrap(static_cast<int>(storage.size()), argv.data(), opts, state, &effective, &exitCode)
+            != DSD_BOOTSTRAP_CONTINUE
+        || exitCode != 0) {
+        expect("the session starts", false);
+        return false;
+    }
+    // The app's radio spec, read as the engine reads it when the radio opens; the replay keeps its own tuning.
+    char replayDev[sizeof opts->audio_in_dev];
+    DSD_SNPRINTF(replayDev, sizeof replayDev, "%s", opts->audio_in_dev);
+    const uint32_t replayFreq = opts->rtlsdr_center_freq;
+    const int replayPpm = opts->rtlsdr_ppm_error;
+    const int replayGain = opts->rtl_gain_value;
+    DSD_SNPRINTF(opts->audio_in_dev, sizeof opts->audio_in_dev, "%s", spec.toUtf8().constData());
+    const int applied = dsd_rtl_input_spec_apply(opts);
+    expect("the app's radio spec is read", applied == 1);
+    expect("on the capture's own frequency and bandwidth",
+           opts->rtlsdr_center_freq == replayFreq && opts->rtl_dsp_bw_khz == 48);
+    DSD_SNPRINTF(opts->audio_in_dev, sizeof opts->audio_in_dev, "%s", replayDev);
+    opts->rtlsdr_center_freq = replayFreq;
+    opts->rtlsdr_ppm_error = replayPpm;
+    opts->rtl_gain_value = replayGain;
+    if (before != nullptr && !before(opts, state, rowOptions)) {
+        return false;
+    }
+    if (!squelchIs(opts, wantMode, wantMargin)) {
+        DSD_FPRINTF(stderr, "  squelch mode %d margin %d level %g, want mode %d margin %d\n", opts->rtl_squelch_mode,
+                    opts->rtl_squelch_margin_db, opts->rtl_squelch_level, wantMode, wantMargin);
+    }
+    expect("the session holds the squelch it should before it runs", squelchIs(opts, wantMode, wantMargin));
+    g_opts = opts;
+    g_state = state;
+    dsd_app_frontend_runtime_start(opts, state);
+    const dsd_engine_lifecycle_hooks hooks = {listenerStart, listenerStop, nullptr};
+    const int rc = dsd_engine_run_with_lifecycle(opts, state, &hooks);
+    dsd_app_frontend_runtime_stop();
+    dsd_rtl_stream_io_hooks_set(nullptr);
+    DSD_FPRINTF(stderr,
+                "heard: read %.0f ms, %u blocks; audible %.0f / %.0f / %.0f ms (idle / transmission / after), first "
+                "%.0f ms, last %.0f ms; held %d / %d / %d, at the end %d\n",
+                g_heard.readMs, g_heard.blocks, g_heard.audibleMs[kIdle], g_heard.audibleMs[kCarrier],
+                g_heard.audibleMs[kAfter], g_heard.firstAudibleMs, g_heard.lastAudibleMs, g_heard.holdSeen[kIdle],
+                g_heard.holdSeen[kCarrier], g_heard.holdSeen[kAfter], g_heard.holdAtEnd);
+    expect("the engine runs the capture to its end", rc == 0 && g_heard.readMs > kCarrierEndMs + kAfterMs - 100.0);
+    return true;
+}
+
+/* The squelch the default leaves the listener: nothing on the idle channel before or after, the transmission from
+   its talker's start (0.25 s into the carrier; the noise squelch decides on its first 40 ms window) and most of it. */
+void
+expectQuietThenPlays() {
+    expect("the idle channel plays nothing", !(g_heard.audibleMs[kIdle] > 0.0));
+    expect("the transmission plays from its talker's start",
+           g_heard.firstAudibleMs >= kIdleMs && g_heard.firstAudibleMs <= kIdleMs + 400.0);
+    expect("and most of it plays", g_heard.audibleMs[kCarrier] >= 4000.0);
+    expect("nothing plays once it ends",
+           !(g_heard.audibleMs[kAfter] > 0.0) && g_heard.lastAudibleMs <= kCarrierEndMs + kCloseMs);
+}
+
+/* The squelch off: the idle channel's hiss plays (what the default removes), so the scoring hears it. */
+void
+expectHiss() {
+    expect("with the squelch off the idle channel plays its hiss", g_heard.audibleMs[kIdle] >= 1000.0);
+}
+
+QVariantMap
+nfmSystem() {
+    return {{QStringLiteral("uid"), QStringLiteral("sys-nfm")},
+            {QStringLiteral("name"), QStringLiteral("Simplex")},
+            {QStringLiteral("sourceType"), QStringLiteral("usb")},
+            {QStringLiteral("freqMhz"), QStringLiteral("851.375")},
+            {QStringLiteral("decodeFlag"), QStringLiteral("-fA")}};
+}
+
+int
+caseSavedNfm(dsd_qt::AppPrefs& prefs, const QString& capture, bool off) {
+    prefs.setSquelch(off ? QStringLiteral("off") : QStringLiteral("noise+10"));
+    dsd_qt::SessionArgsBuilder builder(&prefs);
+    Host host;
+    expect("the NFM saved system starts",
+           builder.start(nfmSystem(), &host, QStringLiteral("saved")).value("started").toBool());
+    expect("its spec carries the default",
+           off ? host.argv.contains(QStringLiteral("rtl:0:851.375M:30:0:48:0:2"))
+               : host.argv.contains(QStringLiteral("rtl:0:851.375M:30:0:48:noise+10:2")));
+    Session session;
+    if (listen(host.argv, capture, off ? DSD_SQUELCH_MODE_LEVEL : DSD_SQUELCH_MODE_NOISE, off ? 0 : 10, nullptr,
+               QString(), session)) {
+        if (off) {
+            expectHiss();
+        } else {
+            expectQuietThenPlays();
+        }
+    }
+    return 0;
+}
+
+/* Explore starts digital (Auto decode), so the monitor plays nothing until NFM is picked. */
+bool
+startsDigital(dsd_opts* opts, dsd_state* state, const QString& rowOptions) {
+    (void)state;
+    (void)rowOptions;
+    expect("Explore starts on a digital decode", opts->analog_only == 0);
+    return true;
+}
+
+int
+caseExploreLiveNfm(dsd_qt::AppPrefs& prefs, const QString& capture) {
+    prefs.setSquelch(QStringLiteral("noise+10"));
+    dsd_qt::CommandBridge bridge;
+    dsd_qt::SessionArgsBuilder builder(&prefs);
+    builder.setSquelchDefaults(bridge.squelchDefaults());
+    Host host;
+    const QVariantMap explore{{QStringLiteral("sourceType"), QStringLiteral("usb")},
+                              {QStringLiteral("freqMhz"), QStringLiteral("851.375")}};
+    expect("Explore starts", builder.start(explore, &host, QStringLiteral("explore")).value("started").toBool());
+    bool decodeFlag = false;
+    for (const QString& arg : host.argv) {
+        decodeFlag = decodeFlag || arg.startsWith(QStringLiteral("-f"));
+    }
+    expect("on Auto decode (no -f), its spec with the squelch off",
+           !decodeFlag && host.argv.contains(QStringLiteral("rtl:0:851.375M:30:0:48:0:2")));
+    g_bridge = &bridge;
+    g_switchAtMs = 1000.0;
+    Session session;
+    if (listen(host.argv, capture, DSD_SQUELCH_MODE_LEVEL, 0, startsDigital, QString(), session)) {
+        expect("NFM was picked 1 s into the run", g_switched == 1);
+        expect("and the app's default came in with it",
+               session.opts->analog_only == 1 && squelchIs(session.opts.get(), DSD_SQUELCH_MODE_NOISE, 10));
+        expectQuietThenPlays();
+    }
+    g_bridge = nullptr;
+    return 0;
+}
+
+/* Commits an nfm row with @p rowOptions (its options cell) as the scan coordinator commits one: the cell through the
+   row parser the scan loader uses, then the row's class and its options. */
+bool
+commitNfmRow(dsd_opts* opts, dsd_state* state, const QString& rowOptions) {
+    const QByteArray cell = rowOptions.toUtf8();
+    dsd_scan_options options = {};
+    char error[192] = "";
+    const bool parsed =
+        dsd_scan_options_parse_cell(cell.constData(), nullptr, static_cast<size_t>(cell.size()),
+                                    static_cast<unsigned int>(DSD_SCAN_MODE_NFM), 1, &options, error, sizeof error)
+        == 0;
+    if (!parsed) {
+        DSD_FPRINTF(stderr, "  row options '%s': %s\n", cell.constData(), error);
+    }
+    expect("the generated row's options parse", parsed);
+    dsd_scan_settings prepared;
+    const bool committed = parsed
+                           && dsd_scan_mode_prepare(opts, state, DSD_SCAN_MODE_NFM, &options.values, &prepared) == 0
+                           && dsd_scan_mode_enter(opts, state, DSD_SCAN_MODE_NFM) == 0
+                           && dsd_scan_mode_options(opts, state, &options.values) == 0;
+    expect("the nfm row is committed", committed);
+    return committed;
+}
+
+/* The options cell of the generated target CSV's first row, from the path after --trunk-scan in @p argv. */
+QString
+firstRowOptions(const QStringList& argv) {
+    const qsizetype at = argv.indexOf(QStringLiteral("--trunk-scan"));
+    QFile csv(argv.value(at + 1));
+    if (at < 0 || !csv.open(QIODevice::ReadOnly)) {
+        return QStringLiteral("<no target list>");
+    }
+    const QStringList lines = QString::fromUtf8(csv.readAll()).split(QLatin1Char('\n'), Qt::SkipEmptyParts);
+    const QStringList header = lines.value(0).trimmed().split(QLatin1Char(','));
+    const qsizetype column = header.indexOf(QStringLiteral("options"));
+    const QString row = lines.value(1).trimmed();
+    DSD_FPRINTF(stderr, "target row: %s\n", qPrintable(row));
+    return column < 0 ? QStringLiteral("<no options column>") : row.section(QLatin1Char(','), column, column);
+}
+
+/* The session argv without the target list, which the replay cannot scan (it cannot retune). */
+QStringList
+withoutTargetList(QStringList argv) {
+    const qsizetype at = argv.indexOf(QStringLiteral("--trunk-scan"));
+    if (at >= 0) {
+        argv.remove(at, 2);
+    }
+    return argv;
+}
+
+int
+caseScanRow(dsd_qt::AppPrefs& prefs, const QString& capture, bool off) {
+    prefs.setSquelch(off ? QStringLiteral("off") : QStringLiteral("noise+10"));
+    dsd_qt::ScanListsModel lists;
+    expect("the scan list is added", lists.add({{"name", "Simplex"},
+                                                {"sourceType", "usb"},
+                                                {"entries", QVariantList{QVariantMap{{"kind", "freq"},
+                                                                                     {"name", "Ops"},
+                                                                                     {"protocol", "nfm"},
+                                                                                     {"freqMhz", "851.375"},
+                                                                                     {"enabled", true}}}}}));
+    dsd_qt::ScanListStarter starter(&prefs, nullptr);
+    Host host;
+    expect("the scan list starts", starter.start(lists.get(lists.count() - 1), &host).value("started").toBool());
+    const QString rowOptions = firstRowOptions(host.argv);
+    expect("the generated nfm row carries the default", off ? !rowOptions.contains(QStringLiteral("--squelch"))
+                                                            : rowOptions == QStringLiteral("--squelch noise+10"));
+    Session session;
+    if (listen(withoutTargetList(host.argv), capture, off ? DSD_SQUELCH_MODE_LEVEL : DSD_SQUELCH_MODE_NOISE,
+               off ? 0 : 10, commitNfmRow, rowOptions, session)) {
+        if (off) {
+            expectHiss();
+            expect("and the idle channel holds the scan", g_heard.holdSeen[kIdle] == 1);
+        } else {
+            expectQuietThenPlays();
+            expect("the idle channel never holds the scan", g_heard.holdSeen[kIdle] == 0);
+            expect("the transmission holds it", g_heard.holdSeen[kCarrier] == 1);
+            expect("and it is let go after the transmission", g_heard.holdAtEnd == 0);
+        }
+    }
+    dsd_scan_mode_leave(session.opts.get(), session.state.get());
+    return 0;
+}
+
+} // namespace
+#endif
+
+int
+main(int argc, char** argv) {
+    QCoreApplication app(argc, argv);
+    app.setOrganizationName(QStringLiteral("dsd-neo-test"));
+    app.setApplicationName(QStringLiteral("listener-squelch-%1").arg(QCoreApplication::applicationPid()));
+    dsd_test_qt_isolate_paths();
+    const QString which = argc > 1 ? QString::fromLatin1(argv[1]) : QString();
+#ifdef USE_RADIO
+    QTemporaryDir dir;
+    const QString capture = dir.isValid() ? makeCapture(dir) : QString();
+    expect("the listening capture is made", !capture.isEmpty());
+    if (!capture.isEmpty()) {
+        dsd_qt::AppPrefs prefs;
+        if (which == QStringLiteral("saved-nfm")) {
+            caseSavedNfm(prefs, capture, false);
+        } else if (which == QStringLiteral("saved-nfm-off")) {
+            caseSavedNfm(prefs, capture, true);
+        } else if (which == QStringLiteral("explore-live-nfm")) {
+            caseExploreLiveNfm(prefs, capture);
+        } else if (which == QStringLiteral("scan-row")) {
+            caseScanRow(prefs, capture, false);
+        } else if (which == QStringLiteral("scan-row-off")) {
+            caseScanRow(prefs, capture, true);
+        } else {
+            expect("a known case", false);
+        }
+    }
+    QDir(QStandardPaths::writableLocation(QStandardPaths::AppDataLocation)).removeRecursively();
+    if (g_failures != 0) {
+        DSD_FPRINTF(stderr, "%d failure(s)\n", g_failures);
+        return 1;
+    }
+    std::puts("OK");
+    return 0;
+#else
+    (void)which;
+    std::puts("SKIP: no radio pipeline in this build");
+    return 77;
+#endif
+}

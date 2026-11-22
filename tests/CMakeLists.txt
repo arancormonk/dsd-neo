@@ -27256,6 +27256,56 @@ if(DSD_ENABLE_QT_UI)
     )
 endif()
 
+# Issue #899: what a listener hears from the sessions the app starts with its default squelch. Each case builds the
+# app's argv, starts it as the decoder host does and runs the real engine over a capture made from the committed
+# fixtures, keeping the app's radio spec (and its squelch field); one case per process. Without a radio pipeline the
+# binary exits 77 (skipped).
+if(DSD_ENABLE_QT_UI)
+    add_executable(
+        dsd-neo_test_ui_qt_listener_squelch
+        ui/test_ui_qt_listener_squelch.cpp
+    )
+    target_compile_definitions(
+        dsd-neo_test_ui_qt_listener_squelch
+        PRIVATE
+            "DSD_NEO_TEST_IQ_FIXTURE_DIR=\"${PROJECT_SOURCE_DIR}/tests/fixtures/iq\""
+    )
+    target_link_libraries(
+        dsd-neo_test_ui_qt_listener_squelch
+        PRIVATE
+            dsd-neo_ui_qt
+            ${_DSD_RUNTIME_CONFIG_APPLY_LIBS}
+            dsd-neo_feature_radio
+            ${LIBS}
+            dsd-neo_test_support
+    )
+    if(DSD_HAS_RADIO)
+        target_link_libraries(
+            dsd-neo_test_ui_qt_listener_squelch
+            PRIVATE dsd-neo_io_radio
+        )
+    endif()
+    foreach(
+        _listener_case
+        saved-nfm
+        saved-nfm-off
+        explore-live-nfm
+        scan-row
+        scan-row-off
+    )
+        string(TOUPPER "${_listener_case}" _listener_name)
+        string(REPLACE "-" "_" _listener_name "${_listener_name}")
+        add_test(
+            NAME UI_QT_LISTENER_SQUELCH_${_listener_name}
+            COMMAND dsd-neo_test_ui_qt_listener_squelch ${_listener_case}
+        )
+        set_tests_properties(
+            UI_QT_LISTENER_SQUELCH_${_listener_name}
+            PROPERTIES SKIP_RETURN_CODE 77 TIMEOUT 120
+        )
+    endforeach()
+endif()
+
 # The FFT wrapper is usable without radio hardware or an enabled SDR backend.
 # Its test runs a transform on a small-stack thread of its own, so it finds the
 # thread library here rather than through a backend that may be disabled.

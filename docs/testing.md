@@ -3136,6 +3136,41 @@ channel filter designs at; without it every plan it printed was the fallback.
 | `IO_RTL_SQUELCH_DEVICE_KEY` | The floor's device key: `rtl:`, `rtltcp:` and `airspy:` specs that differ only in start frequency, `sql` field, volume or empty fields at the end share it; the device index, host, port, Airspy serial, gain, PPM, DSP bandwidth and bias keep it apart; the bare `rtl`, `rtltcp`, `rtltcp:host:port` and `airspy:serial=...` forms, SoapySDR, I/Q replay and other specs hash whole, as before. |
 | `DSP_NOISE_SQUELCH_DEMOD` alternating-widths case | NOISE at 48 kHz over four NFM widths, three rounds: four plans designed, then each taken back bit for bit (on main one design per visit); a fifth width puts out the width run longest ago; an 8 kHz width (no band) keeps nothing and puts nothing out. |
 
+#### The app's default squelch, end to end (issue #899)
+
+`UI_QT_LISTENER_SQUELCH_*` (`tests/ui/test_ui_qt_listener_squelch.cpp`, one case per process) score what a listener
+hears from a session the app starts. Each case builds the argv with the app's own builder (`SessionArgsBuilder`, or
+`ScanListStarter` for a scan list), starts it through `dsd_runtime_bootstrap()` as the decoder host does, and runs the
+real engine over a capture made at run time from the committed fixtures: 3 s of `noise_floor`, all 9.3 s of
+`speech_nfm_synth` (a carrier from its first sample, the talker from 0.25 s), then 2 s of `noise_floor`. The input is an
+I/Q replay, but the app's `-i rtl:...` spec is read as the engine reads it when the radio opens
+(`dsd_rtl_input_spec_apply()`), so its squelch and volume fields stay in force; `--iq-replay` alone would replace the
+spec and lose the app's default. The monitor's audio is taken from the UDP analog hook, as `dsd-neo_test_analog_replay`
+takes it, and each block counts as audible above -40 dBFS RMS, on the stream time the decoder has read.
+
+| Case | What it pins |
+| --- | --- |
+| `_SAVED_NFM` | An NFM saved system with no squelch of its own: the spec carries `noise+10`; nothing plays on the idle channel, the transmission plays from 3320 ms (its talker starts at 3250 ms), 5160 ms of it audible, and nothing plays after it ends. |
+| `_SAVED_NFM_OFF` | The control: with Settings' squelch Off the same session plays 2980 of the first 3000 ms (the hiss), so the scoring hears what the default removes. |
+| `_EXPLORE_LIVE_NFM` | Explore starts on Auto decode with the squelch off; NFM is picked 1 s in through the real `CommandBridge` and app-control queue (the switch and the follow-up command). The default comes in (configured `noise+10`) and the listener hears what `_SAVED_NFM` hears. With the default Off it plays the hiss from 1153 ms (checked by mutation). |
+| `_SCAN_ROW` | A scan list's NFM row as `ScanListStarter` writes it (`--squelch noise+10` in its options cell), read by the row parser the scan loader uses and committed as the coordinator commits a row: the same audio, and the scanners' hold signal (`dsd_scan_analog_carrier_open()`) never up on the idle channel, up through the transmission, and down again once it has ended. |
+| `_SCAN_ROW_OFF` | The control: with Settings' squelch Off the row carries no squelch, the idle channel plays its hiss and holds the scan. |
+
+These cases do not step a scan between rows (an I/Q replay cannot retune; `ENGINE_TRUNK_SCAN_SCAN_LIST` checks each
+generated row's squelch on air through the real coordinator), and they do not replay a switch back to a digital decode
+(`UI_QT_SESSION_ARGS_PARSE` checks the squelch is then exactly off).
+
+Other issue #899 cases:
+
+| Case | What it pins |
+| --- | --- |
+| `UI_QT_SESSION_ARGS` | The spec's squelch field is the Settings default (`noise+10` unless changed) for NFM and AM starts on RTL-SDR, rtl_tcp and Airspy, and `0` (off) for digital and Auto starts. A saved squelch leaves the field `0` and goes last as `--squelch`. A squelch in either Advanced field, an Advanced `-i` or `--iq-replay`, or an audio, network or file source gets no default. A bare `--`, or an option missing its value at the end of an Advanced field, is a typed start error. |
+| `UI_QT_SESSION_ARGS_PARSE` squelch cases | Live decode switches through the real bridge, queue and engine options: Explore Auto to NFM or AM brings the default in (AM keeps the configured Noise, which it runs as Auto), P25, DMR or TETRA leaves it exactly off; a refused switch, a squelch the user set, one a saved system or the Advanced arguments name, and one set from outside the app are never touched; a signal search sends no default; a UI recreated over a running session takes the owner back from the accepted start. A generated scan list's NFM row carries the default unless the app's Advanced arguments set the session's squelch. |
+| `UI_QT_SQUELCH_DEFAULT_POLICY` | Who owns the squelch (the app, the user, the session) and what a decode switch sends for each, with the record a recreated UI adopts. |
+| `UI_QT_SCAN_LIST_TARGETS`, `ENGINE_TRUNK_SCAN_SCAN_LIST` | Each generated row's squelch: saved Noise on an AM row as Auto, a saved dynamic squelch on a digital row as `off`, saved levels as whole dB, and the default on analog rows with none of their own. The generated lists load through the real parser and coordinator, and each row runs its squelch on air. |
+| `UI_QT_PERSISTENCE`, `UI_QT_BACKUP_MODEL` | The `radio/squelch` preference: `noise+10` when absent or damaged, repaired on the next write, kept in backups; a restore of a backup without it brings back the default. `clearRadioSetting()` removes only the named key. |
+| `UI_MENU_ACTIONS` this-channel prefill case | The terminal "This channel" squelch prompt opens a row that follows a session level on its nearest whole dB from -120 to -1, which the prompt takes back: -65.5 dB opens as -66, -0.25 dB as -1 and -130 dB as -120 (before the fix -65, 0 and -130, which the prompt refused). |
+
 #### M17 voice output (issue #658, regression cases)
 
 | Case | What it pins |
