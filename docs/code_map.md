@@ -18822,7 +18822,7 @@ Qt Quick frontend (`src/ui/qt`):
   coalescing, a random-edit mirror check, positional rows held and taken back, receiver labels for shared titles,
   `test_shared_title_compares_the_drawn_title` (line breaks read as a space), `rebuilt()` after the rows, a 500-row
   timing check with and without a screen reader, and `test_shared_titles_rebuild_linearly`: a search rebuild over 1000
-  cards of one title within 3x plus 15 ms of one over 1000 titles, the fastest of five each).
+  cards of one title within 3x plus 15 ms of one over 1000 titles, the fastest of nine each).
 - `text_order.{h,cpp}` (`TextOrder`, the `textOrder` context object) is the one place that decides how names sort and
   match: `text_fold()` (case and accents folded, by code point), `text_compare_names()` (natural order: leading
   punctuation skipped, digit runs by value, a shorter digit run first on a tie, then the raw text, so different
