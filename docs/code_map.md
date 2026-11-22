@@ -17774,14 +17774,14 @@ Qt Quick frontend (`src/ui/qt`):
   lists and calls on the screen."), under the theme control and its note, spanning the card as the Units row does,
   and the session menu's **Compact view** row (`sessionMenuCompactView`, just before Settings), whose description
   line reads On or Off. That row flips the preference and opens nothing; the menu closes and the session-menu return
-  gives the focus back to Session options, as for every row. Its On/Off is Main's `compactViewState`, one function
-  made once that the row calls in its own binding (ActionMenu reads a function description there), so
-  `sessionMenu.actions` never reads the preference: a change with the menu closed re-runs nothing and rebuilds no
-  row, and the re-runs each metrics tick makes hand the Repeater the same function, an equal model (a function made
-  inside the list was a new one each run and rebuilt every row of the closed menu each tick; the preference read
-  there rebuilt them on each change). An ActionMenu row's name carries its description only while shown, so a
-  state that changes under the closed menu renames nothing (`UI_QT_QML_A11Y_CHURN`
-  `test_m8_closed_session_menu_ignores_a_density_change`). The Monitor and Home read
+  gives the focus back to Session options, as for every row. Its On/Off comes from the menu's `describe` function
+  (`ActionMenu.describe(key)`, used for a row whose action has no description), which the row calls in its own
+  binding, so `sessionMenu.actions` stays plain data that never reads the preference: a change with the menu closed
+  re-runs nothing and rebuilds no row, and the re-runs each metrics tick makes give the Repeater an equal model. A
+  description read in the list rebuilt every row of the closed menu on each change, and a function in the list on
+  every tick, the same function included (a list holding one never compares equal). An ActionMenu row's name
+  carries its description only while shown, so a state that changes under the closed menu renames nothing
+  (`UI_QT_QML_A11Y_CHURN` `test_m8_closed_session_menu_ignores_a_density_change`). The Monitor and Home read
   an injected `prefsStore.compactView` first, else `prefs.compactView`; History reads `prefs`. A change puts each list
   it reaches back at its start (D11): the Monitor's calls (above), History's log and Home's Recent activity ("Call
   rows" below), and Listen's Systems and Scan lists tabs ("Listen body layout"). The QML fixture's `prefs` map

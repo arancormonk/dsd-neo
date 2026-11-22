@@ -1033,16 +1033,6 @@ Window {
         item.forceActiveFocus();
         return true;
     }
-    // Issue #901: the session menu's Compact view state, "On" or "Off". One
-    // function, made once, that the menu's row calls in its own binding
-    // (ActionMenu reads a function description there): the menu's action list
-    // then never reads the preference, so a change with the menu closed does
-    // not re-run the list and rebuild its rows, and the list's own re-runs
-    // (each metrics change) hand the Repeater the same function, an equal
-    // model. A function made inside the list would be a new one each time.
-    readonly property var compactViewState: function () {
-        return prefs.compactView ? qsTr("On") : qsTr("Off");
-    }
     // The session-menu return: every screen or sheet a session-menu row
     // opens (History, Activity, Settings, Talkgroups, Diagnostics, Map,
     // Spectrum, Sites, Radio, Scan lists, Edit) gives the keyboard focus back
@@ -2768,6 +2758,13 @@ Window {
         objectName: "sessionMenu"
         anchors.fill: safeArea
         title: qsTr("Session options")
+        // Issue #901: the Compact view row's On/Off, read by the row in its
+        // own binding (ActionMenu.describe), never by the action list below:
+        // a change of the preference with the menu closed then re-runs
+        // nothing and rebuilds no row of it.
+        describe: function (key) {
+            return key === "compactView" ? (prefs.compactView ? qsTr("On") : qsTr("Off")) : "";
+        }
         actions: {
             var items = [];
             if (monitor.sitesAvailable)
@@ -2784,11 +2781,10 @@ Window {
             // Issue #800: every protocol can carry positions, so always offered.
             items.push({text: qsTr("Map"), key: "map", objectName: "sessionMenuMap"});
             items.push({text: qsTr("History"), key: "history", objectName: "sessionMenuHistory"});
-            // Issue #901: the Settings switch, one tap from the session it changes. Its state is the window's
-            // one function (compactViewState), never the preference read here: a change of it would re-run this
-            // list and rebuild every row of the closed menu.
-            items.push({text: qsTr("Compact view"), key: "compactView", objectName: "sessionMenuCompactView",
-                description: mainRoot.compactViewState});
+            // Issue #901: the Settings switch, one tap from the session it changes. Its On/Off is the menu's
+            // describe(), never the preference read here: a change of it would re-run this list and rebuild every
+            // row of the closed menu, and a function in the list is unequal to the last run's on every re-run.
+            items.push({text: qsTr("Compact view"), key: "compactView", objectName: "sessionMenuCompactView"});
             items.push({text: qsTr("Settings"), key: "settings", objectName: "sessionMenuSettings"});
             items.push({text: qsTr("Diagnostics"), key: "diagnostics", objectName: "sessionMenuDiagnostics"});
             if (mainRoot.sessionRow >= 0)

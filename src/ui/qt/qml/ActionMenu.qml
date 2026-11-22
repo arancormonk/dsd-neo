@@ -14,6 +14,13 @@ ModalSheet {
     // bindings, so what they read keeps the row current while the menu is
     // open (a state that ends meanwhile enables it in place).
     property var actions: []
+    // Optional function (key) -> description for a row whose action has no
+    // description of its own: for a state the action list must not read. The
+    // row calls it in its own binding, so the row follows the state in place,
+    // while the list stays plain data the Repeater finds equal when its
+    // binding re-runs. A function inside the list is never equal to the last
+    // run's (not even the same one), so each re-run rebuilt every row.
+    property var describe: null
     signal triggered(int index)
     signal cancelled
     accessibleName: title
@@ -27,7 +34,10 @@ ModalSheet {
         return index >= 0 && index < actions.length && actionField(index, "enabled") !== false;
     }
     function actionDescription(index) {
-        return actionField(index, "description") || "";
+        var own = actionField(index, "description");
+        if (own)
+            return own;
+        return typeof describe === "function" && index >= 0 && index < actions.length ? describe(actions[index].key) || "" : "";
     }
     function activate(index) {
         if (!visible || !actionEnabled(index))

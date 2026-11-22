@@ -1050,9 +1050,10 @@ Item {
 
         // Issue #901: Compact view flipped with the session menu closed (from Settings, or the menu's own item, which
         // closes it first) changes nothing in the closed menu: no row is rebuilt, so nothing shows or hides, and
-        // nothing in it is renamed. The item's On/Off is one function the row calls in its own binding, so the menu's
-        // action list does not read the preference, and the function keeps one identity across the list's
-        // re-evaluations (a metrics hop re-runs it). Opened, the row reads the state and follows a change in place.
+        // nothing in it is renamed. The item's On/Off is the menu's describe(), which the row calls in its own
+        // binding, so the menu's action list neither reads the preference nor holds a function, and its re-runs (each
+        // metrics tick or hop) give the Repeater an equal model. Opened, the row reads the state and follows a change
+        // in place.
         function test_m8_closed_session_menu_ignores_a_density_change() {
             testContext.setLifecyclePhase(0);
             var menu = findChild(app, "sessionMenu");
@@ -1093,17 +1094,16 @@ Item {
                         + churn(counts));
                     compare(menu.actionDescription(indexOfCompact()), on ? "On" : "Off");
                 }
-                var state = menu.actions[at].description;
-                compare(typeof state, "function", "the state is a function the row calls");
-                verify(state === app.compactViewState, "the menu holds the window's own function");
+                compare(menu.actions[at].description, undefined, "the action list holds the state");
+                compare(typeof menu.describe, "function", "the row's state comes from the menu's describe()");
                 compare(menu.actionDescription(at), "On");
-                // A metrics hop re-runs the action list: the same function comes back, and no row is rebuilt.
+                // Metrics ticks and hops re-run the action list: an equal list, no row rebuilt.
                 rowsMade = 0;
+                testContext.tickMetrics(5);
                 for (var i = 1; i <= 3; ++i)
                     testContext.publishTarget(reading(i));
                 wait(50);
-                verify(menu.actions[indexOfCompact()].description === state, "a hop made a new function");
-                compare(rowsMade, 0, "a hop rebuilt the menu's rows");
+                compare(rowsMade, 0, "a tick or a hop rebuilt the menu's rows");
                 // Open, the row says the state and follows a change in place.
                 menu.open();
                 tryCompare(menu, "visible", true);
