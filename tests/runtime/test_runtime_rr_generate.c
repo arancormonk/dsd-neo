@@ -1207,6 +1207,31 @@ test_chan_tier3_control_seeds(void) {
     dsd_rr_warning_list_free(&warnings);
 }
 
+/* Discussion #900: when the only primary control frequency has no channel number but an alternate has one, the
+   primary's key-0 seed leads, so a cold hunt reaches the known primary before it probes the alternate. */
+static void
+test_chan_tier3_seeded_primary_first(void) {
+    dsd_rr_site_freq seed_primary[3];
+    freq_set(&seed_primary[0], 1, 452412500LL, "", "5");
+    freq_set(&seed_primary[1], 2, 452512500LL, "a", "7");
+    freq_set(&seed_primary[2], 3, 452612500LL, "d", NULL);
+    dsd_rr_site site;
+    site_init(&site, seed_primary, 3U);
+    char* text = NULL;
+    size_t len = 0;
+    dsd_rr_warning_list warnings;
+    DSD_MEMSET(&warnings, 0, sizeof(warnings));
+    expect("tier3 seeded primary generated",
+           dsd_rr_generate_chan_csv(DSD_RR_PROTO_DMR_TIER3, &site, 1U, &text, &len, &warnings) == 0);
+    expect_str("tier3 seeded primary golden", text,
+               "ChannelNumber(dec),frequency(Hz) (generated from RadioReference; do not delete this line)\n"
+               "0,452612500,default cc\n"
+               "7,452512500\n"
+               "5,452412500\n");
+    free(text);
+    dsd_rr_warning_list_free(&warnings);
+}
+
 static void
 test_chan_tier3_no_false_cap(void) {
     /* The positional LCN list is heap-backed and unbounded, and DMR/NXDN rows
@@ -1879,6 +1904,7 @@ main(void) {
     test_chan_conplus();
     test_chan_tier3_fixture();
     test_chan_tier3_control_seeds();
+    test_chan_tier3_seeded_primary_first();
     test_chan_tier3_no_false_cap();
     test_chan_capplus_and_xpt();
     test_chan_nxdn();

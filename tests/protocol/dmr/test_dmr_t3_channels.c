@@ -1447,6 +1447,26 @@ test_foreign_takeover_drops_trust_and_moves_revision(void) {
     assert(dmr_t3_chan_revision(&g_state) == rev);
 }
 
+/* A target snapshot carries the revision a reader sees, the takeover count included: after one learn and one
+   same-frequency takeover it saves that revision, and restoring it, into a fresh state or over the state it came
+   from, moves the revision past it. */
+static void
+test_save_restore_keeps_effective_revision(void) {
+    reset();
+    static dmr_t3_chan_target_snapshot snap;
+    assert(dmr_t3_chan_learn(&g_opts, &g_state, 148U, 451425000L, DMR_CHAN_ORIGIN_SITE) == 1);
+    dsd_state_set_trunk_chan_freq(&g_state, 148U, 451425000L);
+    const uint32_t rev = dmr_t3_chan_revision(&g_state);
+    dmr_t3_chan_save(&g_state, &snap);
+    assert(snap.revision == rev);
+    dmr_t3_chan_restore(&g_state, &snap);
+    assert(dmr_t3_chan_revision(&g_state) > rev);
+
+    reset();
+    dmr_t3_chan_restore(&g_state, &snap);
+    assert(dmr_t3_chan_revision(&g_state) > rev);
+}
+
 int
 main(void) {
     test_site_overrides_estimate_and_unverified();
@@ -1492,6 +1512,7 @@ main(void) {
     test_single_c_bcast_without_last_block_is_malformed();
     test_p_clear_mbc_on_lpcn_zero_is_malformed();
     test_foreign_takeover_drops_trust_and_moves_revision();
+    test_save_restore_keeps_effective_revision();
     dsd_state_ext_free_all(&g_state);
     printf("DMR_T3_CHANNELS: OK\n");
     return 0;

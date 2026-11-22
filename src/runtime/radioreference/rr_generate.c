@@ -948,18 +948,20 @@ rr_tier3_seed_written(const dsd_rr_site* site, int pass, size_t idx) {
 }
 
 /**
- * @brief Emit a Tier III site's control-frequency seed rows.
+ * @brief Emit a Tier III site's control-frequency seed rows of passes @p first_pass to @p last_pass (0 primary,
+ *        1 alternate).
  *
- * Every marked primary, then alternate, control frequency the rows do not hold
- * already is written once under RR_TIER3_SEED_CHAN, after the numbered control
- * rows and ahead of the others, so the hunt list starts on a control channel.
+ * Every marked control frequency of those passes the rows do not hold already
+ * is written once under RR_TIER3_SEED_CHAN, ahead of the other rows, so the
+ * hunt list starts on a control channel.
  */
 static void
-rr_tier3_seed_controls(const dsd_rr_site* site, const rr_chan_row* rows, size_t count, rr_text* text) {
+rr_tier3_seed_controls(const dsd_rr_site* site, const rr_chan_row* rows, size_t count, int first_pass, int last_pass,
+                       rr_text* text) {
     if (!site->freqs) {
         return;
     }
-    for (int pass = 0; pass < 2; pass++) {
+    for (int pass = first_pass; pass <= last_pass; pass++) {
         for (size_t i = 0; i < site->freq_count; i++) {
             const long long freq_hz = site->freqs[i].freq_hz;
             if (rr_tier3_seed_candidate(site, pass, i) && !rr_rows_hold_freq(rows, count, freq_hz)
@@ -981,26 +983,40 @@ rr_tier3_freq_marked(const dsd_rr_site* site, int pass, long long freq_hz) {
     return 0;
 }
 
+/** @brief Emit the rows whose frequency is a marked control frequency of pass @p pass (an alternate only when it is no
+ *  primary). Returns how many it wrote. */
+static size_t
+rr_tier3_emit_marked_rows(const dsd_rr_site* site, const rr_chan_row* rows, size_t count, int pass, rr_text* text) {
+    size_t written = 0U;
+    for (size_t i = 0; i < count; i++) {
+        if (rr_tier3_freq_marked(site, pass, rows[i].freq_hz)
+            && !(pass == 1 && rr_tier3_freq_marked(site, 0, rows[i].freq_hz))) {
+            rr_text_chan_row(text, rows[i].chan, rows[i].freq_hz, NULL);
+            written++;
+        }
+    }
+    return written;
+}
+
 /**
  * @brief Emit a Tier III site's rows in hunt order.
  *
- * The rows whose frequency is a marked control frequency come first, the
- * primaries before the alternates, then the key-0 seeds of the control
- * frequencies no row holds (rr_tier3_seed_controls()), then every other row in
- * channel order. The rows hold each frequency once, and a seed only one no row
- * holds, so no frequency repeats.
+ * The rows whose frequency is a marked primary control frequency come first,
+ * or with none, the key-0 seeds of the primaries no row holds
+ * (rr_tier3_seed_controls()); then the rows of the alternates, then the seeds
+ * not written yet (the primaries', after numbered primaries, then the
+ * alternates'), then every other row in channel order. A cold hunt so reaches a
+ * known primary before any alternate. The rows hold each frequency once, and a
+ * seed only one no row holds, so no frequency repeats.
  */
 static void
 rr_tier3_emit_rows(const dsd_rr_site* site, const rr_chan_row* rows, size_t count, rr_text* text) {
-    for (int pass = 0; pass < 2; pass++) {
-        for (size_t i = 0; i < count; i++) {
-            if (rr_tier3_freq_marked(site, pass, rows[i].freq_hz)
-                && !(pass == 1 && rr_tier3_freq_marked(site, 0, rows[i].freq_hz))) {
-                rr_text_chan_row(text, rows[i].chan, rows[i].freq_hz, NULL);
-            }
-        }
+    const int numbered_primary = rr_tier3_emit_marked_rows(site, rows, count, 0, text) != 0U;
+    if (!numbered_primary) {
+        rr_tier3_seed_controls(site, rows, count, 0, 0, text);
     }
-    rr_tier3_seed_controls(site, rows, count, text);
+    (void)rr_tier3_emit_marked_rows(site, rows, count, 1, text);
+    rr_tier3_seed_controls(site, rows, count, numbered_primary ? 0 : 1, 1, text);
     for (size_t i = 0; i < count; i++) {
         if (!rr_tier3_freq_marked(site, 0, rows[i].freq_hz) && !rr_tier3_freq_marked(site, 1, rows[i].freq_hz)) {
             rr_text_chan_row(text, rows[i].chan, rows[i].freq_hz, NULL);

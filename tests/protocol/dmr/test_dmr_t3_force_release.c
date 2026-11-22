@@ -27,6 +27,7 @@
 #include <dsd-neo/runtime/decode_clock.h>
 #include <dsd-neo/runtime/trunk_cc_candidates.h>
 #include <dsd-neo/runtime/trunk_tuning_hooks.h>
+#include <math.h>
 #include <stddef.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -393,6 +394,102 @@ test_p_clear_private_data_grant_is_not_voice_repeat(void) {
     assert(ctx->vc_src == 1001 && ctx->vc_dst == 2002 && ctx->vc_data_call == 0);
 }
 
+/* An in-place grant for the call a checked LC already named on the followed slot renames the followed call all the
+   same: the slot's record (and its follow time) stays the LC's, but the clear is matched to the grant's call now, so a
+   clear for that call applies and a stale one for the call first followed does not. Group, then a private pair named
+   by the LC in the other order than the grant. */
+static void
+test_p_clear_in_place_grant_matching_slot_lc(void) {
+    follow_group_ts1();
+    observe_call(0U, DSD_CALL_KIND_GROUP_VOICE, 5678U, 51U);
+    dmr_sm_note_lc_identity(&opts, &state, 0, DSD_CALL_KIND_GROUP_VOICE, 5678U, 51U);
+    const dmr_sm_ctx_t* ctx = dmr_sm_get_ctx();
+    const double lc_follow_m = ctx->slots[0].follow_m;
+    dmr_sm_emit_group_grant_slot(&opts, &state, VC_HZ, /*lpcn*/ 20, /*slot*/ 0, /*tg*/ 5678, /*src*/ 51);
+    assert(ctx->vc_tg == 5678 && ctx->vc_is_group == 1);
+    assert(ctx->slots[0].prov == (uint8_t)DMR_SM_ID_LC && fabs(ctx->slots[0].follow_m - lc_follow_m) < 1e-9);
+    send_pclear(0U, 0U, 1U, 1234U); // the call first followed: stale
+    assert(opts.trunk_is_tuned == 1);
+    send_pclear(0U, 0U, 1U, 5678U);
+    assert(opts.trunk_is_tuned == 0);
+
+    init_env();
+    dmr_sm_emit_indiv_grant_slot(&opts, &state, VC_HZ, /*lpcn*/ 20, /*slot*/ 0, /*dst*/ 101, /*src*/ 102);
+    assert(opts.trunk_is_tuned == 1);
+    observe_call(0U, DSD_CALL_KIND_PRIVATE_VOICE, 2002U, 3003U);
+    dmr_sm_note_lc_identity(&opts, &state, 0, DSD_CALL_KIND_PRIVATE_VOICE, 2002U, 3003U);
+    dmr_sm_emit_indiv_grant_slot(&opts, &state, VC_HZ, /*lpcn*/ 20, /*slot*/ 0, /*dst*/ 3003, /*src*/ 2002);
+    assert(ctx->vc_dst == 3003 && ctx->vc_src == 2002 && ctx->vc_is_group == 0);
+    assert(ctx->slots[0].prov == (uint8_t)DMR_SM_ID_LC);
+    state.dmrburstL = 16;
+    state.dmrburstR = 9;
+    send_pclear(0U, 0U, 0U, 101U); // a party of the call first followed: stale
+    assert(opts.trunk_is_tuned == 1);
+    send_pclear(0U, 0U, 0U, 2002U);
+    assert(opts.trunk_is_tuned == 0);
+}
+
+/* A private call's reverse leg (an embedded LC naming the other party as the talker) opens a new transmission on the
+   slot, but the call followed is the same pair: a clear naming either recorded party still applies. */
+static void
+test_p_clear_private_reverse_leg(void) {
+    for (int party = 0; party < 2; party++) {
+        init_env();
+        dmr_sm_emit_indiv_grant_slot(&opts, &state, VC_HZ, /*lpcn*/ 20, /*slot*/ 0, /*dst*/ 2002, /*src*/ 1001);
+        assert(opts.trunk_is_tuned == 1);
+        state.dmrburstL = 16;
+        state.dmrburstR = 9;
+        accepted_voice_sync(0U); // publishes the grant's 1001 -> 2002
+        assert(dsd_call_state_end_ex(&state, 0U, dsd_decode_now_mono_s(), DSD_CALL_END_TERMINATOR) > 0);
+        observe_call(0U, DSD_CALL_KIND_PRIVATE_VOICE, 1001U, 2002U); // the reply: 2002 -> 1001
+        dmr_sm_note_lc_identity(&opts, &state, 0, DSD_CALL_KIND_PRIVATE_VOICE, 1001U, 2002U);
+        accepted_voice_sync(0U);
+        send_pclear(0U, 0U, 0U, 3003U); // neither party
+        assert(opts.trunk_is_tuned == 1);
+        send_pclear(0U, 0U, 0U, party == 0 ? 1001U : 2002U);
+        assert(opts.trunk_is_tuned == 0);
+    }
+}
+
+/* Under DMR mono playout (-fr) a clear of the followed TS1 call while TS2's accepted voice keeps the receiver on the
+   carrier plays TS2 for as long as it holds it; the followed slot stays TS1 for P_CLEAR addressing, and voice on TS1
+   again plays TS1. */
+static void
+test_p_clear_mono_plays_busy_companion(void) {
+    follow_group_ts1();
+    opts.dmr_mono = 1;
+    observe_call(1U, DSD_CALL_KIND_GROUP_VOICE, 4321U, 43U);
+    state.dmrburstR = 16;
+    accepted_voice_sync(0U);
+    accepted_voice_sync(1U);
+    const dmr_sm_ctx_t* ctx = dmr_sm_get_ctx();
+    assert(state.dmr_mono_slot == 0);
+    send_pclear(0U, 0U, 1U, 1234U);
+    assert(opts.trunk_is_tuned == 1);
+    assert(ctx->vc_slot == 0);
+    assert(state.dmr_mono_slot == 1);
+    accepted_voice_sync(1U);
+    assert(state.dmr_mono_slot == 1);
+    send_pclear(1U, 0U, 1U, 4321U); // still not the followed call's slot
+    assert(opts.trunk_is_tuned == 1 && ctx->vc_slot == 0);
+    accepted_voice_sync(0U);
+    assert(state.dmr_mono_slot == 0);
+    accepted_voice_sync(1U); // TS1 is live again: it keeps the playout
+    assert(state.dmr_mono_slot == 0);
+
+    // The companion busy at the clear, its voice not accepted yet: playout goes to it at its first accepted voice while
+    // TS1 stays silent.
+    follow_group_ts1();
+    opts.dmr_mono = 1;
+    state.dmrburstR = 16;
+    accepted_voice_sync(0U);
+    send_pclear(0U, 0U, 1U, 1234U);
+    assert(opts.trunk_is_tuned == 1 && state.dmr_mono_slot == 0);
+    observe_call(1U, DSD_CALL_KIND_GROUP_VOICE, 4321U, 43U);
+    accepted_voice_sync(1U);
+    assert(state.dmr_mono_slot == 1);
+}
+
 /* A checked clear naming another TSCC makes it a hunt candidate; the release still returns to the control channel.
    Neither the control channel itself, an unmapped channel nor an unchecked clear adds one. */
 static void
@@ -553,6 +650,9 @@ main(int argc, char** argv) {
     test_p_clear_matches_followed_grant();
     test_p_clear_follows_in_place_grant();
     test_p_clear_private_data_grant_is_not_voice_repeat();
+    test_p_clear_in_place_grant_matching_slot_lc();
+    test_p_clear_private_reverse_leg();
+    test_p_clear_mono_plays_busy_companion();
     test_p_clear_named_tscc_becomes_candidate();
     test_synth_lockout_clear_still_releases();
     test_vendor_fid_clear_unchanged();

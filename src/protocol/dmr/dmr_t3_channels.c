@@ -200,13 +200,13 @@ dmr_t3_chan_save(const dsd_state* state, dmr_t3_chan_target_snapshot* out) {
     }
     DSD_MEMCPY(out->trust, state->dmr_lcn_trust, sizeof(out->trust));
     DSD_MEMCPY(out->ota, state->dmr_lcn_ota, sizeof(out->ota));
+    out->revision = dmr_t3_chan_revision(state); // the one a reader sees, the takeovers included
     const dmr_ext_t* ext = dmr_ext_get(state);
     if (ext == NULL) {
         return;
     }
     DSD_MEMCPY(out->origin, ext->origin, sizeof(out->origin));
     out->generation = ext->generation;
-    out->revision = ext->revision;
     out->syscode = ext->syscode;
     out->syscode_valid = ext->syscode_valid;
 }
@@ -229,7 +229,10 @@ dmr_t3_chan_restore(dsd_state* state, const dmr_t3_chan_target_snapshot* in) {
     }
     DSD_MEMCPY(ext->origin, in->origin, sizeof(ext->origin));
     ext->generation = in->generation;
-    ext->revision = (ext->revision > in->revision ? ext->revision : in->revision) + 1U;
+    /* Past both revisions a reader saw, each the record's count plus this state's takeover count (which the snapshot
+       does not carry): the record keeps the part the takeovers do not. */
+    const uint32_t current = dmr_t3_chan_revision(state);
+    ext->revision = (current > in->revision ? current : in->revision) + 1U - state->dmr_lcn_ota_seq;
     ext->syscode = in->syscode;
     ext->syscode_valid = in->syscode_valid;
 }

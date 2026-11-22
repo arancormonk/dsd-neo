@@ -213,6 +213,21 @@ tv_grant(dsd_opts* opts, dsd_state* st, uint16_t lpcn, uint8_t slot, uint32_t tg
     dmr_cspdu(opts, st, bits, bytes, 1U, 0U);
 }
 
+/* A CRC-valid Tier III private grant through the CSBK layer: PV_GRANT (48) for voice, PD_GRANT (51) for data. */
+static void
+private_grant(dsd_opts* opts, dsd_state* st, uint8_t opcode, uint16_t lpcn, uint8_t slot, uint32_t dst, uint32_t src) {
+    uint8_t bits[256];
+    uint8_t bytes[48];
+    DSD_MEMSET(bits, 0, sizeof(bits));
+    DSD_MEMSET(bytes, 0, sizeof(bytes));
+    bytes[0] = opcode;
+    write_bits_u32(bits, 16U, lpcn, 12U);
+    bits[28] = (uint8_t)(slot & 1U);
+    write_bits_u32(bits, 32U, dst, 24U);
+    write_bits_u32(bits, 56U, src, 24U);
+    dmr_cspdu(opts, st, bits, bytes, 1U, 0U);
+}
+
 /* Accepted voice on @p slot: its own voice passed the colour-code gate just now. */
 static void
 voice(dsd_opts* opts, dsd_state* st, int slot) {
@@ -765,6 +780,43 @@ test_in_place_group_grant_never_binds_private_call(dsd_opts* opts, dsd_state* st
     return rc;
 }
 
+/* A private data grant from 3003 to 2002 in place on the followed slot of a private voice call from 1001 to 2002 is
+   another call (its kind and parties differ, though it names the same destination): it starts a dwell of its own and
+   is not bound to the voice call's transmission. A p50 preempt elsewhere is refused within that dwell, though the voice
+   call (p100) it replaced was past its own, and taken once the data call's dwell ran out. */
+static int
+test_in_place_private_data_grant_starts_its_own_dwell(dsd_opts* opts, dsd_state* st) {
+    init_env(opts, st, 2.0);
+    seed_row(st, 1001, "A", 100, 0);
+    seed_row(st, 3003, "A", 10, 0);
+    seed_row(st, 50, "A", 50, 1);
+    private_grant(opts, st, 48U, LPCN_A, 0, 2002, 1001);
+    int rc = expect_true("the private voice call is followed", vc(st) == VC_A && sm()->vc_dst == 2002);
+    clock_at(0.5);
+    voice(opts, st, 0);
+    clock_at(1.0);
+    voice(opts, st, 0);
+    dsd_call_snapshot call;
+    const uint64_t voice_epoch = dsd_call_state_get(st, 0U, &call) > 0 ? dsd_call_snapshot_transmission(&call) : 0U;
+    rc |= expect_true("the voice call is published", voice_epoch != 0U && call.ota_source_id == 1001U);
+    const double assigned_m = dsd_decode_now_mono_s();
+    private_grant(opts, st, 51U, LPCN_A, 0, 2002, 3003);
+    rc |= expect_true("the data grant names the slot",
+                      vc(st) == VC_A && sm()->slots[0].source == 3003U && sm()->slots[0].data_call == 1U);
+    rc |= expect_true("the data grant is not bound to the voice call", sm()->slots[0].call_epoch != voice_epoch);
+    rc |= expect_true("the data grant's dwell runs from its assignment",
+                      fabs(sm()->slots[0].follow_m - assigned_m) < 1e-6);
+    clock_at(1.05);
+    voice(opts, st, 0);
+    tv_grant(opts, st, LPCN_B, 0, 50, 5);
+    rc |= expect_true("a p50 preempt within the data call's dwell is refused", vc(st) == VC_A);
+    clock_at(1.8);
+    voice(opts, st, 0);
+    tv_grant(opts, st, LPCN_B, 0, 50, 5);
+    rc |= expect_true("the p50 preempt past the data call's dwell is followed", vc(st) == VC_B && sm()->vc_tg == 50);
+    return rc;
+}
+
 /* The CRC provenance of slot 0's active call (0xFF: none active). */
 static uint8_t
 slot0_call_crc(const dsd_state* st, uint32_t* target) {
@@ -993,6 +1045,7 @@ main(void) {
     rc |= test_scan_target_contexts(opts, st);
     rc |= test_in_place_reassignment(opts, st);
     rc |= test_in_place_group_grant_never_binds_private_call(opts, st);
+    rc |= test_in_place_private_data_grant_starts_its_own_dwell(opts, st);
     rc |= test_in_place_reassignment_carries_crc_provenance(opts, st);
     rc |= test_composite_grant_adopts_resident_calls(opts, st);
     rc |= test_radio_block_keeps_followed_call(opts, st);

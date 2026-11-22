@@ -13411,8 +13411,9 @@ Private per-protocol modules worth knowing about:
   voice -> CC trip change nothing. Trunk scan per target and Signal search per session save and restore the origins,
   trust bytes, `dmr_lcn_ota`, generation, revision and system-code baseline together
   (`dmr_t3_chan_target_snapshot`, `dmr_t3_chan_save()`/`_restore()`); the revision moves on every row or origin change
-  and past both sides on a restore. Tests: `DMR_T3_CHANNELS`, `DMR_SEARCH_SITE_NOTES`, `ENGINE_TRUNK_SCAN`,
-  `ENGINE_STREAM_GAP`, `ENGINE_SIGNAL_SEARCH`, `APP_COMMAND_QUEUE`.
+  and past both sides on a restore. The snapshot saves the revision a reader sees (`dmr_t3_chan_revision()`, the
+  takeover count included), and a restore moves that effective revision past both. Tests: `DMR_T3_CHANNELS`,
+  `DMR_SEARCH_SITE_NOTES`, `ENGINE_TRUNK_SCAN`, `ENGINE_STREAM_GAP`, `ENGINE_SIGNAL_SEARCH`, `APP_COMMAND_QUEUE`.
 - Tier III MBC assembly and absolute parameters (`dmr_block.c`, `dmr_abs_params.{c,h}`, `dmr_csbk.c`, discussion #900
   B7). An MBC is consecutive bursts on one slot of one carrier (TS 102 361-1 §7.4.0): its header (data type 4) arms
   the slot (`dsd_state::dmr_mbc_armed`) and stamps its position (`dmr_mbc_clock`/`_epoch`/`_carrier`: the
@@ -13499,15 +13500,19 @@ Private per-protocol modules worth knowing about:
   only when received on the followed call's slot (`dmr_sm_follows_slot()`: either slot before a slotless grant's first
   voice) and addressed to that call (`dmr_sm_names_followed_call()`: G/I 1 and its talkgroup, G/I 0 and either party of
   a private call; or G/I 0 and ALLMSI 0xFFFED4 or ALLMSID 0xFFFFFF), as the machine records the call (`vc_tg`,
-  `vc_dst`, `vc_src`, `vc_is_group` and `vc_slot`: the followed grant's identity, or the in-place grant's that named
-  another call on the followed slot since). Otherwise it prints "not for the followed call" ("no followed call" when
-  nothing is followed) and changes nothing: no burst hint, activity, force latch or release. Applied, it clears its
-  own slot's burst hint and the machine's voice flag for that slot only, so a busy companion slot keeps the carrier.
-  Decided limit (discussion #900): a P_CLEAR is matched to the call as dsd-neo followed it; a later call on the same
-  slot, or a busy companion slot, is left to hangtime (a voice LC naming another call renames nothing, and the
-  followed slot stays the cleared one, so the companion's own clear is not for the followed call). A P_CLEAR stops
-  following a slot; the call record ends on its terminator or timeout. The synthesized lockout clear
-  (`dmr_cspdu_release_channel()`) and another FID's opcode 46 keep the
+  `vc_dst`, `vc_src`, `vc_is_group` and `vc_slot`: the followed grant's identity, or the in-place grant's accepted on
+  the followed slot since, even one whose call a checked LC had named already). Those addresses stay valid
+  (`vc_addresses_known`) across a new transmission on the slot, so a private call's reverse leg is still cleared by
+  either party; only a new follow, a status follow or a release drops them. Otherwise it prints "not for the followed
+  call" ("no followed call" when nothing is followed) and changes nothing: no burst hint, activity, force latch or
+  release. Applied, it clears its own slot's burst hint and the machine's voice flag for that slot only, so a busy
+  companion slot keeps the carrier. Decided limit (discussion #900): a P_CLEAR is matched to the call as dsd-neo
+  followed it; a later call on the same slot, or a busy companion slot, is left to hangtime (a voice LC naming another
+  call renames nothing, and the followed slot stays the cleared one, so the companion's own clear is not for the
+  followed call). A P_CLEAR stops following a slot; the call record ends on its terminator or timeout. Under DMR mono
+  playout (`-fr`) the cleared followed slot hands playout (`dmr_mono_slot`, never `vc_slot`) to the companion's accepted
+  voice while the followed slot is silent (`vc_slot_cleared`, `dmr_sm_mono_playout_note()`), and back when the followed
+  slot speaks again. The synthesized lockout clear (`dmr_cspdu_release_channel()`) and another FID's opcode 46 keep the
   carrier-wide release unread. Any clear arms `trunk_sm_force_release` only while the machine follows a call
   (`dmr_sm_follows_call()`, TUNED): on a composite TSCC's payload slot, or after an idle XPT status marked the receiver
   tuned (`trunk_is_tuned`) on the control channel, a latched force would release the next followed grant on its first
@@ -13575,9 +13580,13 @@ Private per-protocol modules worth knowing about:
     there takes the slot's record with its follow time now (on the followed slot, the grant identity too, with this
     announcement's CRC provenance, `vc_crc_flags`, which the first voice publishes it with, never the replaced
     grant's: a RAS-accepted reassignment under `-F` reads unverified, a verified one verified); a repeat of
-    the call the slot names, or of the grant followed there, keeps record and follow time. A repeat is the same class
-    and kind (group or private, voice or data) and the same talkgroup, or for a private call the same two parties
-    (either way round): a private data grant from another sender to the same unit is another call. A status's in-place entry
+    the call the slot names keeps record and follow time (on the followed slot it still becomes the grant identity), and
+    a repeat of the grant followed there changes nothing. A repeat is the same class and kind (group or private, voice
+    or data) and the same talkgroup, or for a private call the same two parties (either way round,
+    `dmr_sm_call_keys_match()`): a private data grant from another sender to the same unit is another call. The same
+    rule decides whether a naming keeps the slot's follow time (`dmr_sm_slot_name()`) and whether the active canonical
+    call is the named one to bind to (`dmr_sm_call_names_other()`, with what that call does not name yet left open), so
+    such a call starts its own dwell and awaits its own transmission. A status's in-place entry
     (origin STATUS) replaces only a seed or grant identity, never a checked LC's on that carrier.
   - Slot identities (`dmr_sm_slot_ctx_t`: target, source, kind, provenance SEED/GRANT/LC, policy class, channel,
     carrier, follow time, and `crc_flags`, the DSD_CRC_* bits of what named it: the grant's or status's burst, a Cap+

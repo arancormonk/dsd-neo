@@ -230,6 +230,14 @@ typedef struct {
     // same-system re-init (dmr_sm_begin_cc_acquisition()), cleared by dmr_sm_note_system_replaced().
     int site_without_cc;
     int vc_identity_known; // vc_tg/vc_dst/vc_src name the call (not an XPT placeholder or a Cap+ status follow)
+    /* vc_tg/vc_dst/vc_src hold the addresses of the grant (or status) the machine followed, what a standard P_CLEAR is
+       matched to (dmr_sm_names_followed_call()). Unlike vc_identity_known it outlives a new transmission on the slot
+       (a private call's reverse leg), and it goes only when those addresses are replaced or cleared. */
+    int vc_addresses_known;
+    /* An addressed P_CLEAR ended the followed slot's call while the machine stays on the carrier: under DMR mono
+       playout the companion slot's accepted voice is played while it holds the receiver and the followed slot is
+       silent (vc_slot itself stays, for P_CLEAR addressing). Cleared by the next follow or release. */
+    int vc_slot_cleared;
 
     // An operator move (dmr_sm_cold_start_note_retune()) outside a startup hunt: the listening window on the new
     // frequency starts at cc_moved_m, or later when frames were still gated by a tune the move superseded, which
