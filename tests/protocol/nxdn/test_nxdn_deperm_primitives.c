@@ -550,15 +550,38 @@ test_sacch_state_update(void) {
     return rc;
 }
 
-/* One confirmed DCR SB0 frame (sf_mes 0x01) on @p state. */
+/* A heap-allocated decoder fixture (AGENTS.md: dsd_state and dsd_opts live on the heap). */
+static int
+alloc_fixture(dsd_opts** opts, dsd_state** state) {
+    *opts = (dsd_opts*)calloc(1, sizeof(**opts));
+    *state = (dsd_state*)calloc(1, sizeof(**state));
+    if (*opts == NULL || *state == NULL) {
+        free(*state);
+        free(*opts);
+        *opts = NULL;
+        *state = NULL;
+        return 1;
+    }
+    return 0;
+}
+
 static void
-dcr_sb0(dsd_state* state) {
+free_fixture(dsd_opts* opts, dsd_state* state) {
+    if (state != NULL) {
+        dsd_state_ext_free_all(state);
+    }
+    free(state);
+    free(opts);
+}
+
+/* One confirmed DCR SB0 frame (sf_mes 0x01) on the fixture's @p opts and @p state. */
+static void
+dcr_sb0(const dsd_opts* opts, dsd_state* state) {
     static const uint8_t m_data[5] = {0xA1U, 0xB2U, 0xC3U, 0xD4U, 0xE5U};
-    static dsd_opts opts;
     uint8_t trellis[32];
     make_sacch2_trellis(trellis, 1U, 0U, 0x01U);
     nxdn_confirm_begin_frame(state);
-    nxdn_handle_sacch2(&opts, state, trellis, m_data, 0x2AU, 0x2AU);
+    nxdn_handle_sacch2(opts, state, trellis, m_data, 0x2AU, 0x2AU);
 }
 
 /* A DCR call ("JPN DCR", no numeric party) and a named NXDN call are two calls (issue #903), however they meet: DCR
@@ -567,8 +590,9 @@ dcr_sb0(dsd_state* state) {
 static int
 test_sacch2_dcr_and_named_calls_stay_apart(void) {
     static Event_History_I histories[2];
-    dsd_state* state = (dsd_state*)calloc(1, sizeof(*state));
-    if (state == NULL) {
+    dsd_opts* opts = NULL;
+    dsd_state* state = NULL;
+    if (alloc_fixture(&opts, &state) != 0) {
         return 1;
     }
     int rc = 0;
@@ -591,8 +615,8 @@ test_sacch2_dcr_and_named_calls_stay_apart(void) {
             (void)dsd_call_state_end_ex(state, 0U, dsd_decode_now_mono_s(), DSD_CALL_END_SYNC_LOSS);
             dsd_decode_clock_test_set_ns(1000200000000ULL); /* 0.2 s later: inside the reacquisition window */
         }
-        dcr_sb0(state);
-        dcr_sb0(state);
+        dcr_sb0(opts, state);
+        dcr_sb0(opts, state);
         const char* tag = sync_loss ? "dcr-after-sync-loss" : "dcr-after-missed-release";
         char label[96];
         DSD_SNPRINTF(label, sizeof label, "%s-call", tag);
@@ -606,7 +630,7 @@ test_sacch2_dcr_and_named_calls_stay_apart(void) {
         DSD_SNPRINTF(label, sizeof label, "%s-text", tag);
         rc |= expect_str(label, call.target_text, "JPN DCR");
         const uint64_t dcr_epoch = call.epoch;
-        dcr_sb0(state);
+        dcr_sb0(opts, state);
         (void)dsd_call_state_get(state, 0U, &call);
         DSD_SNPRINTF(label, sizeof label, "%s-continues", tag);
         rc |= expect_int(label, call.epoch == dcr_epoch, 1);
@@ -620,7 +644,7 @@ test_sacch2_dcr_and_named_calls_stay_apart(void) {
         dsd_state_ext_free_all(state);
     }
     dsd_decode_clock_use_system();
-    free(state);
+    free_fixture(opts, state);
     return rc;
 }
 
@@ -631,8 +655,9 @@ test_sacch2_dcr_and_named_calls_stay_apart(void) {
 static int
 test_sacch2_dcr_and_source_only_calls_stay_apart(void) {
     static Event_History_I histories[2];
-    dsd_state* state = (dsd_state*)calloc(1, sizeof(*state));
-    if (state == NULL) {
+    dsd_opts* opts = NULL;
+    dsd_state* state = NULL;
+    if (alloc_fixture(&opts, &state) != 0) {
         return 1;
     }
     int rc = 0;
@@ -656,8 +681,8 @@ test_sacch2_dcr_and_source_only_calls_stay_apart(void) {
                 (void)dsd_call_state_end_ex(state, 0U, dsd_decode_now_mono_s(), DSD_CALL_END_SYNC_LOSS);
                 dsd_decode_clock_test_set_ns(1000200000000ULL); /* 0.2 s later: inside the reacquisition window */
             }
-            dcr_sb0(state);
-            dcr_sb0(state);
+            dcr_sb0(opts, state);
+            dcr_sb0(opts, state);
             const char* tag = sync_loss ? "dcr-after-source-only-sync-loss" : "dcr-after-source-only-missed-release";
             DSD_SNPRINTF(label, sizeof label, "%s-%zu-call", tag, k);
             rc |= expect_int(label, dsd_call_state_get(state, 0U, &call), 1);
@@ -691,14 +716,14 @@ test_sacch2_dcr_and_source_only_calls_stay_apart(void) {
     (void)dsd_call_state_observe(state, &provisional, DSD_CALL_BOUNDARY_BEGIN);
     rc |= expect_int("dcr-provisional-call", dsd_call_state_get(state, 0U, &call), 1);
     const uint64_t provisional_epoch = call.epoch;
-    dcr_sb0(state);
-    dcr_sb0(state);
+    dcr_sb0(opts, state);
+    dcr_sb0(opts, state);
     (void)dsd_call_state_get(state, 0U, &call);
     rc |= expect_int("dcr-provisional-same-epoch", call.epoch == provisional_epoch, 1);
     rc |= expect_str("dcr-provisional-text", call.target_text, "JPN DCR");
     dsd_state_ext_free_all(state);
     dsd_decode_clock_use_system();
-    free(state);
+    free_fixture(opts, state);
     return rc;
 }
 
@@ -1471,30 +1496,6 @@ make_scch_soft_bits(uint8_t bits[60], const uint8_t payload[25], int corrupt_crc
     for (size_t i = 0U; i < 60U; i++) {
         bits[i] = deperm[PERM_12_5[i]];
     }
-}
-
-/* A heap-allocated decoder fixture (AGENTS.md: dsd_state and dsd_opts live on the heap). */
-static int
-alloc_fixture(dsd_opts** opts, dsd_state** state) {
-    *opts = (dsd_opts*)calloc(1, sizeof(**opts));
-    *state = (dsd_state*)calloc(1, sizeof(**state));
-    if (*opts == NULL || *state == NULL) {
-        free(*state);
-        free(*opts);
-        *opts = NULL;
-        *state = NULL;
-        return 1;
-    }
-    return 0;
-}
-
-static void
-free_fixture(dsd_opts* opts, dsd_state* state) {
-    if (state != NULL) {
-        dsd_state_ext_free_all(state);
-    }
-    free(state);
-    free(opts);
 }
 
 /*
