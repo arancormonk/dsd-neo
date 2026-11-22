@@ -83,8 +83,9 @@
  * --seed-salt N gives every trial a fresh seed (0, the default, keeps the shipped calibration's); --occupancy-veto SHARE
  * judges validation with the occupancy check (dsd_signal_quiet_params.occupancy_max_share; default 0, off; selection
  * always runs it off and reports the share in --trial-log).
- * --trial-log FILE writes every trial's occupancy share, samples at or over the clip level and completion status (12
- * bytes a trial, rows in the CSV's order); --bounds FILE lists every condition's scene bound and the scale it renders
+ * --trial-log FILE writes every trial's occupancy share, samples at or over the clip level and status (12 bytes a
+ * trial, rows in the CSV's order; the status holds the completion, the detector's failure, and its decision: the result
+ * valid, quiet and why it is void, write_trial_log()); --bounds FILE lists every condition's scene bound and the scale it renders
  * at. A scene whose bound (its carriers at their waveforms' peaks plus six sigma of its densest noise) passes 0.9 is
  * scaled down whole, which leaves every ratio as it was and every sample under the clip level.
  *
@@ -1633,11 +1634,17 @@ struct Verdict {
     uint8_t quiet = 0;
     float occupancy = 0;    /* the result's occupancy share, when done */
     uint32_t crossings = 0; /* samples of the trial with a component at or over the clip level (--trial-log) */
-    uint32_t status = 0;    /* TrialStatus, with the detector's reason << 8 */
+    uint32_t status = 0;    /* TrialStatus, with the detector's reason and decision (write_trial_log()) */
 };
 
 /* Why a trial did not complete (Verdict.status, low byte): the detector's own reason is in the next byte. */
 enum TrialStatus : uint32_t { TRIAL_DONE = 0, TRIAL_REFUSED = 1, TRIAL_UNFINISHED = 2, TRIAL_FAILED = 3 };
+
+/* The detector's decision in a completed trial's status: its void causes (DSD_SIGNAL_QUIET_VOID_*) in the third byte,
+ * then the result's valid and quiet bits. */
+constexpr int kStatusVoidShift = 16;
+constexpr uint32_t kStatusValid = 1u << 24;
+constexpr uint32_t kStatusQuiet = 1u << 25;
 
 Verdict
 judge(const Condition& c, long trial, dsd_signal_quiet_detector* d, const dsd_signal_quiet_params& params,
@@ -1658,6 +1665,8 @@ judge(const Condition& c, long trial, dsd_signal_quiet_detector* d, const dsd_si
         return v;
     }
     v.done = 1;
+    v.status = TRIAL_DONE | (uint32_t)res.void_causes << kStatusVoidShift | (res.valid ? kStatusValid : 0u)
+               | (res.quiet ? kStatusQuiet : 0u);
     v.occupancy = res.occupancy_share;
     v.valid = res.valid;
     v.quiet = res.quiet;
@@ -1906,11 +1915,11 @@ write_row(FILE* f, const Condition& c, const Outcome& out, int e, const Options&
 }
 
 /* Every trial's ratio and rise as little-endian float32 pairs, rows in the CSV's order (--dump; read it with the
- * guard off, where every completed trial is valid). */
-void
+ * guard off, where every completed trial is valid). False when the write fails. */
+bool
 write_dump(FILE* dump, const Outcome& out, int e) {
     if (!dump) {
-        return;
+        return true;
     }
     std::vector<float> pairs;
     pairs.reserve(out.trials[e].size() * 2);
@@ -1920,15 +1929,19 @@ write_dump(FILE* dump, const Outcome& out, int e) {
     }
     if (fwrite(pairs.data(), sizeof(float), pairs.size(), dump) != pairs.size()) {
         DSD_FPRINTF(stderr, "dump write failed\n");
+        return false;
     }
+    return true;
 }
 
-/* Every trial's occupancy share (float32), clip-level crossings and status (uint32 each, TrialStatus with the
- * detector's reason << 8), 12 bytes little-endian a trial, rows in the CSV's order (--trial-log). */
-void
+/* Every trial's occupancy share (float32), clip-level crossings and status (uint32 each), 12 bytes little-endian a
+ * trial, rows in the CSV's order (--trial-log). The status: TrialStatus in the low byte, the detector's refusal or
+ * failure reason in the next; for a completed trial the result's void causes (DSD_SIGNAL_QUIET_VOID_*) in the third
+ * byte, valid in bit 24 and quiet in bit 25, the detector's own decision. False when the write fails. */
+bool
 write_trial_log(FILE* log, const Outcome& out, int e) {
     if (!log) {
-        return;
+        return true;
     }
 
     struct Record {
@@ -1944,7 +1957,38 @@ write_trial_log(FILE* log, const Outcome& out, int e) {
     }
     if (fwrite(records.data(), sizeof(Record), records.size(), log) != records.size()) {
         DSD_FPRINTF(stderr, "trial log write failed\n");
+        return false;
     }
+    return true;
+}
+
+/* Open @p path for the run's output (@p mode as fopen() takes it), saying so when it cannot be: an empty path is no
+ * output (null, and @p ok stays); a failure clears @p ok. */
+FILE*
+open_output(const std::string& path, const char* mode, bool* ok) {
+    if (path.empty()) {
+        return nullptr;
+    }
+    FILE* f = dsd_fopen_private(path.c_str(), mode);
+    if (!f) {
+        DSD_FPRINTF(stderr, "cannot write %s\n", path.c_str());
+        *ok = false;
+    }
+    return f;
+}
+
+/* Close @p f, written to @p path: false when it held a failed write or its last bytes fail to land (a full disk). */
+bool
+close_output(FILE* f, const std::string& path) {
+    if (!f) {
+        return true;
+    }
+    const bool failed = ferror(f) != 0;
+    if (fclose(f) != 0 || failed) {
+        DSD_FPRINTF(stderr, "write to %s failed\n", path.c_str());
+        return false;
+    }
+    return true;
 }
 
 /* The distinct rates of the chosen conditions, ascending. */
@@ -1957,8 +2001,22 @@ chosen_rates(const Inputs& in, const std::vector<size_t>& chosen) {
     return rates;
 }
 
+/* Run the chosen conditions and write the CSV, --dump and --trial-log. Every output opens before the run, so a path it
+   cannot write stops it at once; 1 when any output fails to open, write or close. */
 int
 run_trials(const Options& o, const Inputs& in, const std::vector<size_t>& chosen) {
+    bool ok = true;
+    FILE* f = open_output(o.out, "w", &ok);
+    FILE* dump = open_output(o.dump, "wb", &ok);
+    FILE* log = open_output(o.trial_log, "wb", &ok);
+    if (!ok) {
+        for (FILE* opened : {f, dump, log}) {
+            if (opened) {
+                fclose(opened);
+            }
+        }
+        return 1;
+    }
     std::vector<Outcome> outcomes(in.all.size());
     for (size_t i : chosen) {
         for (int e = 0; e < 2; ++e) {
@@ -1968,31 +2026,20 @@ run_trials(const Options& o, const Inputs& in, const std::vector<size_t>& chosen
     for (uint32_t rate : chosen_rates(in, chosen)) {
         run_rate(rate, o, in, chosen, &outcomes);
     }
-    FILE* f = dsd_fopen_private(o.out.c_str(), "w");
-    if (!f) {
-        DSD_FPRINTF(stderr, "cannot write %s\n", o.out.c_str());
-        return 1;
-    }
     write_header(f, o.phase == "select");
-    FILE* dump = o.dump.empty() ? nullptr : dsd_fopen_private(o.dump.c_str(), "wb");
-    FILE* log = o.trial_log.empty() ? nullptr : dsd_fopen_private(o.trial_log.c_str(), "wb");
     for (size_t i : chosen) {
         for (int e = 0; e < 2; ++e) {
             if (o.phase == "select" || e == o.estimator) {
                 write_row(f, in.all[i], outcomes[i], e, o);
-                write_dump(dump, outcomes[i], e);
-                write_trial_log(log, outcomes[i], e);
+                ok = write_dump(dump, outcomes[i], e) && ok;
+                ok = write_trial_log(log, outcomes[i], e) && ok;
             }
         }
     }
-    fclose(f);
-    if (dump) {
-        fclose(dump);
-    }
-    if (log) {
-        fclose(log);
-    }
-    return 0;
+    ok = close_output(f, o.out) && ok;
+    ok = close_output(dump, o.dump) && ok;
+    ok = close_output(log, o.trial_log) && ok;
+    return ok ? 0 : 1;
 }
 
 /* In-width power of @p x around @p centre_hz (Hann-windowed transform of the first transform_points() samples). */
@@ -2109,8 +2156,7 @@ run_snr(const Options& o, const Inputs& in, const std::vector<size_t>& chosen) {
                         run_columns(o).c_str());
         }
     }
-    fclose(f);
-    return 0;
+    return close_output(f, o.out) ? 0 : 1;
 }
 
 /* The capture-wide reference's span for @p c's policy and rate (signal_measure.cpp quiet_reference_span()). */
@@ -2209,8 +2255,7 @@ run_cost(const Options& o) {
                         reference_us, geometry_text(o.geometry));
         }
     }
-    fclose(f);
-    return 0;
+    return close_output(f, o.out) ? 0 : 1;
 }
 
 /* A comma-separated list of neighbour levels (dB over the wanted signal, 0 to 60, in 0.1 dB steps so each names its
@@ -2516,7 +2561,9 @@ write_bounds(const std::string& path, const std::vector<Condition>& all) {
         DSD_FPRINTF(f, "%s,%.6f,%.6f\n", c.name.c_str(), c.bound, c.scale);
         scaled += c.scale < 1.0;
     }
-    fclose(f);
+    if (!close_output(f, path)) {
+        return 1;
+    }
     DSD_FPRINTF(stderr, "%zu of %zu conditions scaled under the %.2f ceiling\n", scaled, all.size(), kSceneCeiling);
     return 0;
 }

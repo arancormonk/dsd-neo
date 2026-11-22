@@ -30233,6 +30233,22 @@ if(DSD_HAS_RADIO)
         NAME IO_SIGNAL_QUIET_SCENE
         COMMAND dsd-neo_test_io_signal_quiet_scene
     )
+    # The calibration driver's outputs: every record lands with the detector's decision, and an output it cannot
+    # open or write fails the run (io/signal_quiet_calibrate_outputs_check.py).
+    find_package(Python3 QUIET COMPONENTS Interpreter)
+    if(Python3_Interpreter_FOUND)
+        add_test(
+            NAME IO_SIGNAL_QUIET_CALIBRATE_OUTPUTS
+            COMMAND
+                ${Python3_EXECUTABLE}
+                ${CMAKE_CURRENT_SOURCE_DIR}/io/signal_quiet_calibrate_outputs_check.py
+                $<TARGET_FILE:dsd-neo_test_signal_quiet_calibrate>
+        )
+        set_tests_properties(
+            IO_SIGNAL_QUIET_CALIBRATE_OUTPUTS
+            PROPERTIES TIMEOUT 300
+        )
+    endif()
     # The shared tap forgets a stopped stream's capture, run on a real I/Q replay stream.
     add_executable(dsd-neo_test_io_rtl_signal_tap io/test_io_rtl_signal_tap.cpp)
     target_include_directories(
