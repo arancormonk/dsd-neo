@@ -1050,8 +1050,11 @@ The simplex digital types each scan one conventional channel of a mode DSD-neo a
 [csv-formats.md](csv-formats.md)). A typed row follows the same rules as the target of its type: what holds it, the
 policy table, voice-only, its keys, and for a `tetra-dmo` row the TETRA rules below (it is visited only where its
 chain runs and holds only on direct mode content). A call the policy table turns away holds a typed row no longer
-than an idle channel: short data under the default `--no-data-calls`, say, does not extend its hangtime (`-t`). A
-`tetra-dmo` row always runs the TETRA receive chain, even under a `-m` modulation option such as `-mc`. An untyped `-Y` row under a global `-fT` keeps decoding TETRA and
+than an idle channel: short data under the default `--no-data-calls`, say, does not extend its hangtime (`-t`), and
+neither do the frames of an M17 packet that was turned away, while the packet goes on. A blank row in the same list
+runs the session's own decoder and receive chain, whatever row came before it. A
+`tetra-dmo` row always runs the TETRA receive chain, even under a `-m` modulation option such as `-mc`, after an
+`nfm` row, or with `DSD_NEO_CQPSK=0`. An untyped `-Y` row under a global `-fT` keeps decoding TETRA and
 holds on checked TETRA content, trunked or direct.
 
 The Qt and Android scan lists build these targets from frequency entries and saved systems
@@ -1076,8 +1079,9 @@ no pick. Checking the list itself (Qt, `--validate-config`) does not look at the
   the radio applied for it and that the radio runs the TETRA receive chain, and checks again all the time. If the rate
   changes, or the timing does not match it, or the radio settled on another receive chain, the scan leaves it at once
   for the next one that can be visited, even under a hold, which stays and keeps where it lands. A radio that is
-  reopening keeps it. The reason is named once. Typing the frequency of a target or row the scan is leaving for this
-  reason is refused with the same reason, rather than held.
+  reopening keeps it. The reason is named once for each target or row. Typing the frequency of a target or row the
+  scan is leaving for this reason is refused with the same reason, rather than held, and so is switching off the
+  last other list when the target on air is one the scan is leaving.
 - **A start that can visit nothing is refused.** When no target in the lists that are on can be visited (every one is
   a TETRA DMO target at the wrong rate, say, or an NFM target whose width the rate cannot filter), the scan does not
   start: `--trunk-scan: no target can be visited on this input; target "a" (and 1 more): ...`, with the first target's
@@ -1170,7 +1174,8 @@ muted for policy or encryption is never decoded, so it never holds a target.
 | `dpmr-conventional` | only a scoped `-R` scrambler key (0 to 32767) in `options`, with `-4`, `--no-force-key`, `--key-profile-ref` and `--no-decryption-keys`, as a saved NXDN-scrambler system carries them; no key column or key file |
 | `m17-conventional` | none of its own: the session's keys apply, and any key option or key column is refused |
 
-A live key change from the Qt/Android key sheet follows the same table. The refusal says why, for example
+A live key change from the Qt/Android key sheet follows the same table. An M17 scrambler or M17 AES key is only ever
+the session's: a live change of the target's own keys refuses it for every target type. The refusal says why, for example
 `-R: a tetra-dmo row or target takes no key setting: it decrypts nothing`. `-Y` rows of these modes follow the same
 rules.
 

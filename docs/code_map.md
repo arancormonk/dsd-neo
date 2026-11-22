@@ -766,7 +766,10 @@ Generated (do not edit/commit):
       `dsd_scan_activity_policy_allows()`; it moves `dsd_engine_scan_owner::y_admitted_seq`), so a call the policy
       refuses (short data under `--no-data-calls`, a private call under `--no-private-calls`) holds no `-t` and the
       row leaves at its hangtime as an idle one (`test_y_typed_row_holds_on_admitted_activity()`). The checked content
-      still resolves an open verdict there. DMR, NXDN and P25 typed rows keep the checked-content rule. The `-Y`
+      still resolves an open verdict there. A refused report also marks the row (`dsd_engine_scan_owner::y_refused`,
+      cleared by the next admitted report and by a landing): while it stands an open verdict renews no `-Y` wait
+      (`live_scanner_y_note_partial()`), so the chunks of an M17 packet the table refused, each a PARTIAL note waiting
+      on the packet's end CRC, do not keep the row past `-t`; the quiet check still takes them as pending evidence. DMR, NXDN and P25 typed rows keep the checked-content rule. The `-Y`
       hangtime countdown publishes the same
       deadline (`scan_y_timing_fill_hangtime()` extends the anchor's window to
       `dsd_engine_scan_y_frames_hold_until_m()` on the decode-mono clock;
@@ -1066,19 +1069,23 @@ the CLI/config options live in `docs/trunk-scan.md`; `include/dsd-neo/engine/tru
   `dsd_engine_scan_tetra_ted_sps()` cannot see, since it reads a non-TETRA profile as no timing). Prospectively (a candidate walk while another family is on air) the TED is not
   judged: the landing sets its own and clears the override another family's tune left. It reads nothing of the row's
   own, so it is one answer for every TETRA row of the session. Document validation stays hardware-independent. In the
-  trunk scan, `trunk_scan_target_skipped()` (the analog width skip or the TETRA rule) feeds every candidate walk and
-  count (rotation, Next/Previous, the visit cap's alternate, the departure, the resume walk, avoid's and a toggle's
-  last-usable counts), `trunk_scan_entry_reason()` (go-to, `--trunk-scan-hold`, the published entry reasons, whose cache
+  trunk scan, `trunk_scan_target_skipped()` (the analog width skip or the TETRA rule, `trunk_scan_target_tetra_skip()`:
+  the target on air by its landed verdict) feeds every candidate walk and count (rotation, Next/Previous, the visit
+  cap's alternate, the departure, the resume walk, avoid's and a toggle's last-usable counts, so a list toggle or an
+  avoid never counts as usable a target on air the scan is leaving for its TED or chain), `trunk_scan_entry_reason()` (go-to, `--trunk-scan-hold`, the published entry reasons, whose cache
   also keys on the rule's answer, `entry_tetra`, so a TED override or `--tetra-uplink` republishes at the next tick),
   the start park and the retune itself (`trunk_scan_retune_active()` refuses such a target before any backend moves,
   without a "retune failed" line). The target on air is judged again at its landing and every tick
   (`trunk_scan_judge_tetra_on_air()`: landed, against the applied TED; a park in flight waits for its landing): a cause
   other than `RATE_UNKNOWN` sets `coord->active_tetra_skip`, which `trunk_scan_active_out_of_rotation()` reads, so it
   owes the departure a target out of the rotation owes (ahead of an operator's hold,
-  `dsd_engine_trunk_scan_departure_due()` included), named once in the log and on the status line. One answer for
+  `dsd_engine_trunk_scan_departure_due()` included), named once per target and cause in the log and on the status
+  line (`dsd_trunk_scan_target_runtime::tetra_named_cause`, forgotten when that target is found healthy, so two
+  targets with a lasting cause each warn once however often the rotation returns). One answer for
   every entry path: `trunk_scan_target_tetra_skip()` judges the target on air with its park landed
   (`dsd_engine_trunk_scan_target_confirmed()`) landed, every other target prospectively, for a go-to, a hold and the
-  published entry reasons, whose cache keys on the on-air verdict too; the `-Y` scan's `channel_scan_row_tetra_skip()`
+  published entry reasons, whose cache keys on the on-air verdict and, with a TETRA DMO target, on the target on air
+  (`coord->entry_on_air`), and which the tick publishes again with the on-air index whenever that target changes; the `-Y` scan's `channel_scan_row_tetra_skip()`
   does the same for the row on air (the judge's own guard, `channel_scan_tetra_judging()`), so a frequency entry
   or hold on a row the judge is leaving is refused. A resume judges the
   target it resumes at the same way first.
@@ -1104,7 +1111,8 @@ the CLI/config options live in `docs/trunk-scan.md`; `include/dsd-neo/engine/tru
   `dsd_engine_channel_scan_departure_due()`, a frame boundary's included), only while the -Y scan runs (not paused, no
   trunk scan), by what the stream applied for the row the receiver is on (a step off it that failed leaves it there);
   while a step of the scan's own is in flight the cause is kept, so a step that fails late leaves the departure paced
-  as the step paced it; a cause is named once per row and cause (`tetra_named_row`, `tetra_named_cause`). A non-waiting
+  as the step paced it; a cause is named once per row and cause (`channel_scan::tetra_named`, one entry per tetra-dmo
+  row named on the list in force, dropped when the row's chain runs or the list changes). A non-waiting
   cause is kept in the extension (`tetra_skip`, `tetra_skip_row`) and makes the row owe its departure as an avoided row
   does
   (`dsd_engine_channel_scan_on_departing_row()`, which `dsd_engine_channel_scan_hold_keeps_row()`, the departure, the
@@ -1633,10 +1641,14 @@ Tests: `tests/engine/test_engine_trunk_scan.c` (`ENGINE_TRUNK_SCAN`) and
   trunk-scan landing profile; `scan_scope_cqpsk_choice()` gives every --trunk-scan digital class but an unmodulated
   P25 its own CQPSK state (TETRA DMO on, the others off), and a `-Y` `tetra-dmo` row its own too (on: its class has
   one chain, whatever a `-m` lock left on `rf_mod`; the other `-Y` classes land with the decoder's). Each timing of a
-  row records that choice on the live scope (`scan_scope::timed_cqpsk`, `dsd_scan_mode_timed_cqpsk()`), a row
+  row records that choice on the live scope (`scan_scope::timed_cqpsk`, `dsd_scan_mode_timed_cqpsk()`; a blank row,
+  which is not timed, and every staging clear it first, so a blank row after a tetra-dmo row lands the configured
+  decoder's chain), a row
   `dsd_scan_mode_prepare()` stages included, and the `-Y` retune `dsd_engine_prepare_scan_profile()` queues for
   that row reads it, so a `-Y -mc` tetra-dmo row lands the CQPSK chain with the TETRA filter
-  (`y_tetra_locked_chain_case()`). An inherited row parked on the 18000/4 hunt profile recovers
+  (`y_tetra_locked_chain_case()`). The family switch out of an analog row carries the same choice as its own
+  (`dsd_engine_prepare_digital_family()`'s `row_cqpsk_explicit`), so the stream lands it over `DSD_NEO_CQPSK`
+  (`y_tetra_after_nfm_row_case()`). An inherited row parked on the 18000/4 hunt profile recovers
   TETRA's profile (`dsd_scan_mode_effective_profile()`). The scan quiet check has no TETRA class
   (`scan_quiet_mode_classes()` 0); a tetra-dmo row or target publishes `DSD_SCAN_QUIET_REASON_UNSUPPORTED_MODE` (7,
   "No check: mode" in both frontends, through `scan_timing_view.c`) and its own WARN line, never the missing-width
@@ -22180,7 +22192,9 @@ and overlay/replace semantics. `dsd_key_apply_mute_policy` reconciles startup an
 live mute behavior; `dsd_key_apply_force` maps the three configured force modes.
 The CLI and `KEY_DIRECT_SET`/`FORCE_KEY_SET` handlers share these helpers.
 `dsd_scan_keys_apply_direct` validates a direct edit before changing the global
-baseline without allocating or swapping live keys. An active row retains its
+baseline without allocating or swapping live keys. A target-scoped `DECRYPTION_APPLY` refuses an M17-typed direct key
+(scrambler or AES, `payload_m17_typed_key()` in `key_commands.c`, issue #890) before the key set is flattened: an M17
+key is the session's alone, and flattened it would read as a dPMR or NXDN scrambler key or an AES key. An active row retains its
 signalled key IDs and the scalar/AES state activated since row entry. `CORE_KEY_DIRECT` exercises the
 helper, real CLI parser, real command queue, and keyed/unkeyed rotation together.
 Qt's `session_args.cpp` validates saved string key types and emits discrete argv;
