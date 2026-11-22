@@ -13533,7 +13533,9 @@ Private per-protocol modules worth knowing about:
   candidate.
   - Busy view (`dmr_sm_describe_held_calls()`). TUNED: the tick's own retention rule, factored out of `tick_tuned()`
     without changing the tick (`dmr_sm_tuned_retention()`): live voice on an admitted slot (0.2 s stale) whatever the
-    hangtime, the hangtime tail (a tail no admitted slot is in holds nothing), acquisition before the first voice (the
+    hangtime, the hangtime tail (a tail no admitted slot is in holds nothing: with a slot the receive policy now rejects,
+    the tail runs from the last activity since the follow of a slot still admitted, `dmr_sm_admitted_activity_m()`, never
+    from the rejected slot's; with no such activity, the acquisition rule applies), acquisition before the first voice (the
     grant timeout; a carrier a channel status selected, Cap+ or XPT, keeps `DMR_CAPPLUS_SEED_WINDOW_S`; activity from
     before the follow, such as companion voice heard on a carrier adopted in place, holds while it is live but never
     ends that acquisition: only the slots' activity since `t_tune_m` moves `t_voice_m`), and a receive
@@ -13586,8 +13588,8 @@ Private per-protocol modules worth knowing about:
     with its voice held until its next call says how it is encrypted (`dmr_enc_class_hold_slot()`), so the replacement
     call's voice or blocks before their own signalling are neither decrypted nor addressed with the retired call's. The
     companion slot's call, crypto and decryption go on untouched. While the companion slot's call still holds the carrier by the
-    retention rule (live voice or its hangtime tail, from the companion's activity alone; the retired grant's
-    acquisition holds nothing), the receiver stays for it and that slot becomes the followed one; a repeat for the
+    retention rule (live voice or its hangtime tail, from the companion's activity alone and only while the receive
+    policy admits the companion slot itself; the retired grant's acquisition holds nothing), the receiver stays for it and that slot becomes the followed one; a repeat for the
     retired slot is then an in-place grant there. Otherwise the follow ends as a release does: the receiver returns to
     the control channel, with the force-release latch set so a return the tuner refuses or defers is asked again at the
     next tick, and the grant repeated there is followed through the normal path (`dmr_sm_follow_grant()`), with its own

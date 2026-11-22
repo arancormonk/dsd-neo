@@ -1900,14 +1900,6 @@ has_voice_activity(const dmr_sm_ctx_t* ctx) {
 }
 
 static int
-hangtime_expired(const dmr_sm_ctx_t* ctx, double now_m, double hangtime) {
-    if (ctx->t_voice_m <= 0.0) {
-        return 0;
-    }
-    return (now_m - ctx->t_voice_m) >= hangtime;
-}
-
-static int
 grant_timeout_expired(const dmr_sm_ctx_t* ctx, double now_m, double grant_timeout) {
     if (ctx->t_tune_m <= 0.0) {
         return 0;
@@ -1954,6 +1946,31 @@ dmr_sm_receive_check(dmr_sm_ctx_t* ctx, dsd_opts* opts, dsd_state* state, long f
     return 1;
 }
 
+/* The carrier's activity since the follow (t_voice_m) that a slot the receive policy admits now carried (0: none). A
+   slot a receive edit rejected holds nothing, its hangtime tail included, as in the busy view (dmr_sm_tuned_members()):
+   with one rejected, the tail runs from the last activity since the follow of a slot still admitted, never from the
+   rejected slot's, heard while it was admitted. */
+static double
+dmr_sm_admitted_activity_m(const dmr_sm_ctx_t* ctx, const dsd_opts* opts, const dsd_state* state) {
+    if (ctx->t_voice_m <= 0.0) {
+        return 0.0;
+    }
+    double latest_m = 0.0;
+    int rejected = 0;
+    for (int s = 0; s < 2; s++) {
+        const double active_m = ctx->slots[s].last_active_m;
+        if (!dsd_receive_allows(opts, state, DSD_SYNC_DMR_BS_VOICE_POS, s)) {
+            rejected = 1;
+        } else if (active_m >= ctx->t_tune_m && active_m > latest_m) {
+            latest_m = active_m;
+        }
+    }
+    if (!rejected) {
+        return ctx->t_voice_m;
+    }
+    return latest_m < ctx->t_voice_m ? latest_m : ctx->t_voice_m;
+}
+
 static int
 dmr_sm_any_slot_admitted(const dsd_opts* opts, const dsd_state* state) {
     for (int slot = 0; slot < 2; slot++) {
@@ -1965,8 +1982,10 @@ dmr_sm_any_slot_admitted(const dsd_opts* opts, const dsd_state* state) {
 }
 
 /* Why a TUNED machine keeps its carrier at @p now_m, without side effects: the rule tick_tuned() applies, shared with
-   the busy view (dmr_sm_describe_held_calls()). Live voice on an admitted slot holds whatever the hangtime; then the
-   hangtime tail from the last activity; before any voice, acquisition for @p acquire_s from the tune. A carrier no slot
+   the busy view (dmr_sm_describe_held_calls()). Live voice on an admitted slot holds whatever the hangtime; then, once
+   there was activity since the follow, the hangtime tail from the last activity on a slot the receive policy admits now
+   (dmr_sm_admitted_activity_m()); before any voice, or with only rejected activity since, acquisition for @p acquire_s
+   from the tune. A carrier no slot
    of which the receive policy admits is held while its receive check runs (the colour code still unknown), but not
    once the code verified there is rejected. */
 typedef enum {
@@ -1997,8 +2016,9 @@ dmr_sm_tuned_retention(const dmr_sm_ctx_t* ctx, const dsd_opts* opts, const dsd_
             return DMR_SM_HOLD_LIVE;
         }
     }
-    if (ctx->t_voice_m > 0.0) {
-        return hangtime_expired(ctx, now_m, hangtime) ? DMR_SM_HOLD_NONE : DMR_SM_HOLD_TAIL;
+    const double active_m = dmr_sm_admitted_activity_m(ctx, opts, state);
+    if (active_m > 0.0) {
+        return (now_m - active_m) >= hangtime ? DMR_SM_HOLD_NONE : DMR_SM_HOLD_TAIL;
     }
     return grant_timeout_expired(ctx, now_m, acquire_s) ? DMR_SM_HOLD_NONE : DMR_SM_HOLD_ACQUIRING;
 }

@@ -1419,6 +1419,48 @@ test_retired_slot_starts_fresh(dsd_opts* opts, dsd_state* st) {
     return rc;
 }
 
+/* A companion slot the receive policy rejects never keeps the receiver, its live voice or hangtime tail alike: TS1 is
+   followed for TG 300 while TS2 carries TG 100, and the receive filter then admits TS1 alone. A TD_GRANT for TS1 retires
+   TS1 and returns the receiver to the control channel, TS2's live call being one it cannot receive. Likewise on the
+   tick: once the admitted TS1 call's tail has run out, TS2's later activity, heard before the edit, holds nothing. */
+static int
+test_rejected_companion_keeps_nothing(dsd_opts* opts, dsd_state* st) {
+    init_env(opts, st, 2.0);
+    tv_grant(opts, st, LPCN_A, 0, 300, 3);
+    clock_at(0.2);
+    voice(opts, st, 0);
+    canonical_call_begins(st, 1, 100U, 1U);
+    voice(opts, st, 1);
+    dmr_sm_note_lc_identity(opts, st, 1, DSD_CALL_KIND_GROUP_VOICE, 100, 1);
+    clock_at(0.4);
+    voice(opts, st, 1);
+    int rc = expect_true("slot filter parsed",
+                         dsd_receive_edit_parse(&opts->receive, DSD_RECEIVE_SLOT, 1, "1", "", "", NULL, 0) == 0);
+    grant_op(opts, st, 52U, LPCN_A, 0, 300, 9); // TD_GRANT for TS1
+    rc |= expect_true("a rejected companion does not keep the receiver on a retired slot's carrier",
+                      sm()->state == DMR_SM_ON_CC && opts->trunk_is_tuned == 0 && g_tunes == 1);
+    DSD_MEMSET(&opts->receive, 0, sizeof(opts->receive));
+
+    init_env(opts, st, 2.0);
+    opts->frame_dmr = 1; // the DMR tick runs only while DMR trunking can recover
+    tv_grant(opts, st, LPCN_A, 0, 300, 3);
+    clock_at(0.2);
+    voice(opts, st, 0);
+    clock_at(1.0);
+    voice(opts, st, 1);
+    rc |= expect_true("slot filter parsed",
+                      dsd_receive_edit_parse(&opts->receive, DSD_RECEIVE_SLOT, 1, "1", "", "", NULL, 0) == 0);
+    clock_at(1.1);
+    dmr_sm_tick_ctx(sm(), opts, st);
+    rc |= expect_true("the admitted slot's tail keeps the carrier", sm()->state == DMR_SM_TUNED);
+    clock_at(2.3);
+    dmr_sm_tick_ctx(sm(), opts, st);
+    rc |=
+        expect_true("past the admitted slot's tail a rejected slot's tail holds nothing", sm()->state == DMR_SM_ON_CC);
+    DSD_MEMSET(&opts->receive, 0, sizeof(opts->receive));
+    return rc;
+}
+
 /* A media change's release survives a return the tuner refused: the next tick asks again, though the followed slot's
    voice tail would otherwise keep the carrier. */
 static int
@@ -1540,6 +1582,7 @@ main(void) {
     rc |= test_media_change_release_retries(opts, st);
     rc |= test_unfollowed_reassignment_ends_the_assignment(opts, st);
     rc |= test_retired_slot_starts_fresh(opts, st);
+    rc |= test_rejected_companion_keeps_nothing(opts, st);
 
     dsd_trunk_tuning_hooks_set((dsd_trunk_tuning_hooks){0});
     dsd_decode_clock_use_system();
