@@ -43,12 +43,14 @@
  * The first gate to open names the detection. A latched withdrawal (DSD_SEARCH_SITE_NOTE_TETRA_WITHDRAW, sent once)
  * takes the hit's site and access back for the rest of the visit when its identity turns ambiguous: a second BSCH
  * identity on the carrier in the visit, a SYSINFO under the gate seed naming another location area or main carrier, a
- * gate cell's sharing mode turning out not 00 after its site was sent, or the other mode's gate opening. After a gate
- * opened, every burst that carries the gate's content refreshes the visit's activity
- * (dsd_signal_search_note_activity()): a CRC-passed downlink block or BSCH of the gate identity; in direct mode a
- * checked normal burst block under the visit's DM colour code, checked direct mode speech, or a checked DMAC-SYNC the
- * call records take as a call or short data (never a presence signal, DM-2-C, a reservation, a registration or a timing
- * acknowledgement). Evidence and site notes are sent only when they change.
+ * gate cell's sharing mode turning out not 00 after its site was sent, or the other mode's gate opening. After the
+ * gate that named the detection opened, every burst that carries its mode's content refreshes the visit's activity
+ * (dsd_signal_search_note_activity()): in trunked mode a CRC-passed downlink block or BSCH of the gate identity; in
+ * direct mode a checked normal burst block under the visit's DM colour code, checked direct mode speech, or a checked
+ * DMAC-SYNC the call records take as a call or short data (never a presence signal, DM-2-C, a reservation, a
+ * registration or a timing acknowledgement). The other mode's content never does, its gate opening included: a trunked
+ * control channel that goes on after a direct mode call ended holds no TETRA DMO detection. Evidence and site notes are
+ * sent only when they change.
  *
  * Decoder thread only; the state lives in tetra_state_t::search.
  */

@@ -898,6 +898,44 @@ test_mixed_visits(void) {
     session_close(&s);
 }
 
+/* A mixed visit's activity comes from the mode that named the detection only: once the direct mode call it named ends,
+ * a trunked control channel on the carrier (gate A opening, its BSCHs, blocks and SYSINFO) keeps the visit active no
+ * more, so the visit goes quiet at its time in the tick and the in-frame yield check alike, which read only these
+ * notes. The other way round, direct mode content keeps no trunked detection active. */
+static void
+test_mixed_activity(void) {
+    session s = session_open();
+    dsb(&s, &k_direct);
+    dnb_full(&s);
+    check(dmo_evidence() && g_log.activity == 2, "mixed activity: the direct mode call keeps its visit active");
+    /* The call ends; the trunked control channel goes on. */
+    sb(&s, &k_a, NULL, 0);
+    sb_sysinfo(&s, &k_a, LA_A);
+    ndb_null(&s, seed_of(COL_A));
+    sb(&s, &k_a, NULL, 0);
+    ttb_block si = {0};
+    ttb_sysinfo(&si, CARR_MAIN, 4u, 2u, LA_A);
+    ndb(&s, seed_of(COL_A), &si, NULL);
+    check(withdrawals() == 1 && g_log.activity == 2, "mixed activity: trunked bursts keep a TETRA DMO visit no more");
+    /* A direct mode call again (the trunked BSCHs took the decoder out of direct mode). */
+    dsb(&s, &k_direct);
+    dnb_full(&s);
+    check(g_log.activity == 4, "mixed activity: direct mode content still keeps it");
+    session_close(&s);
+
+    s = session_open();
+    sb_sysinfo(&s, &k_a, LA_A);
+    check(tmo_evidence(COL_A) && g_log.activity == 1, "mixed activity: gate A's burst keeps its visit active");
+    dsb(&s, &k_direct);
+    dnb_full(&s);
+    check(withdrawals() == 1 && g_log.activity == 1, "mixed activity: direct mode content keeps a TETRA visit no more");
+    /* Trunked bursts again (the DSB took the decoder into direct mode): the BSCH, then a block. */
+    sb(&s, &k_a, NULL, 0);
+    ndb_null(&s, seed_of(COL_A));
+    check(g_log.activity == 3, "mixed activity: trunked content still keeps it");
+    session_close(&s);
+}
+
 /* Direct mode activity: a DSB the call records take as a call, a DNB block under the DM colour code; never a
  * reservation, DM-2-C or a presence signal. */
 static void
@@ -992,6 +1030,7 @@ main(void) {
     test_gate_d_opens();
     test_gate_d_negatives();
     test_mixed_visits();
+    test_mixed_activity();
     test_dmo_activity();
     test_relayed_colour_code();
     test_not_searching();

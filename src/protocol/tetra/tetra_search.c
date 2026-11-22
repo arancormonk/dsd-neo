@@ -64,6 +64,16 @@ search_in_burst(dsd_state* state) {
     return sr;
 }
 
+/* The burst carried content of @p mode (DSD_SEARCH_TETRA_TMO or _DMO): it keeps the visit active when that mode named
+   the detection. The other mode's content never does: its gate opening withdraws the identity instead, and a carrier
+   that goes on in the other mode must not hold a detection whose own transmission ended. */
+static void
+search_mark_activity(tetra_search_t* sr, uint8_t mode) {
+    if (sr->first_mode == mode) {
+        sr->burst_activity = 1;
+    }
+}
+
 void
 tetra_search_reset(dsd_state* state) {
     tetra_state_t* const ts = tetra_st_existing(state);
@@ -191,7 +201,6 @@ static void
 gate_a_open(const dsd_state* state, tetra_search_t* sr, tetra_search_cell cell) {
     sr->gate_a = 1;
     sr->cell = cell;
-    sr->burst_activity = 1;
     if (cell.colour != 0u && sr->burst_sysinfo.valid) {
         sr->sysinfo = sr->burst_sysinfo;
     }
@@ -201,6 +210,7 @@ gate_a_open(const dsd_state* state, tetra_search_t* sr, tetra_search_cell cell) 
         DSD_SNPRINTF(access, sizeof(access), "CC %u", (unsigned)cell.colour);
         dsd_signal_search_note_evidence_at(state, "TETRA", sr->burst_sync, -1, 0U, 0U, access);
     }
+    search_mark_activity(sr, DSD_SEARCH_TETRA_TMO);
     if (sr->gate_d || sr->two_cells) {
         withdraw(state, sr);
         return;
@@ -227,7 +237,7 @@ bsch_after_gate(const dsd_state* state, tetra_search_t* sr, const tetra_search_c
         withdraw(state, sr);
         return;
     }
-    sr->burst_activity = 1;
+    search_mark_activity(sr, DSD_SEARCH_TETRA_TMO);
     if (sharing != 0u && !sr->shared) {
         sr->shared = 1;
         if (sr->note_sent) {
@@ -339,7 +349,7 @@ tetra_search_note_tmo_block(dsd_state* state, uint32_t seed, const uint8_t* bits
     }
     note_block_sysinfo(sr, bits, len);
     if (sr->gate_a) {
-        sr->burst_activity = 1;
+        search_mark_activity(sr, DSD_SEARCH_TETRA_TMO);
         gate_sysinfo(state, sr);
     } else if (c->colour != 0u) {
         gate_a_open(state, sr, *c);
@@ -428,7 +438,7 @@ tetra_search_note_dsb(dsd_state* state, const uint8_t* sch_s, const uint8_t* sch
        registration, a timing acknowledgement or a presence signal. */
     const tetra_state_t* const ts = tetra_st_peek(state);
     if (!presence && ts->confirm.burst_proof == (uint8_t)DSD_TETRA_BURST_PROOF_DMO_SERVICE) {
-        sr->burst_activity = 1;
+        search_mark_activity(sr, DSD_SEARCH_TETRA_DMO);
     }
 }
 
@@ -436,6 +446,6 @@ void
 tetra_search_note_dmo_content(dsd_state* state) {
     tetra_search_t* const sr = search_in_burst(state);
     if (sr && sr->gate_d) {
-        sr->burst_activity = 1;
+        search_mark_activity(sr, DSD_SEARCH_TETRA_DMO);
     }
 }
