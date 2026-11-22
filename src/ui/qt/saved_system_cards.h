@@ -102,10 +102,9 @@ class SavedSystemCards : public QAbstractListModel {
         SectionRole,       // the section header text in place and nearest orders; "" otherwise
         SectionStartRole,  // the first shown card of its (non-empty) section
         RrLinkedRole,      // a member is a RadioReference site or has a place: Update from RadioReference applies
-        ReceiverLabelRole, // when another shown card has the same title, what tells this one apart: the receiver
-                           // ("USB", "RTL-TCP host:port", "Airspy serial", "TCP host:port", "UDP :port") or the
-                           // shortest distinct end of its file's path, then " · <freq> MHz" where the tuners'
-                           // frequencies differ and " · <mode>" where the decode modes differ; else empty
+        ReceiverLabelRole, // the receiver ("USB", "RTL-TCP host:port", "Airspy serial") of a shared-title card;
+                           // else empty (a TCP or UDP source's and a file's source line already name them)
+        SharedTitleRole,   // another shown card draws the same title (line breaks read as spaces, Util.oneLine())
         HeldRole           // a row past the shown cards, kept for a longer list (screen reader only): it reads nothing
     };
 
@@ -251,7 +250,7 @@ class SavedSystemCards : public QAbstractListModel {
         QString distanceState;
         QString section;
         QString receiver;       // what tells this receiver apart, where the meta does not ("USB"); else empty
-        QString receiverLabel;  // what tells it apart, while another shown card has the same title
+        QString receiverLabel;  // receiver, while another shown card has the same title
         QString haystack;       // system_search_text() of the members' texts, lines joined by '\n'
         QList<qint64> hz;       // the members' frequencies
         QString placeState;     // the one state's name, when the place names exactly one
@@ -271,6 +270,7 @@ class SavedSystemCards : public QAbstractListModel {
         bool refreshHint = false;
         bool sectionStart = false;
         bool rrLinked = false;
+        bool sharedTitle = false; // another shown card draws the same title
     };
 
   private:

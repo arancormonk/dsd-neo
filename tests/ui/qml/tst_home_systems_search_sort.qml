@@ -1129,9 +1129,8 @@ Item {
                 return findChild(entry, "savedSystemSource").text;
             };
             var cards = entries();
-            // The two differ in frequency too, so each says its own after the receiver (issue #901 r2 A).
-            compare(receiver(cards[0]).text, "USB · 851.0125 MHz");
-            compare(receiver(cards[1]).text, "RTL-TCP 192.168.100.250:61234 · 852.0125 MHz");
+            compare(receiver(cards[0]).text, "USB");
+            compare(receiver(cards[1]).text, "RTL-TCP 192.168.100.250:61234");
             compare(source(cards[0]).indexOf("USB"), -1, "the source line leaves the receiver to its own line");
             compare(source(cards[1]).indexOf("RTL-TCP"), -1, "which says RTL-TCP itself");
             verify(!receiver(cards[2]).visible, "a unique title has no receiver line");
@@ -1143,7 +1142,7 @@ Item {
             settle();
             var line = receiver(entries()[1]);
             verify(line.visible && line.opacity === 1, "shown");
-            compare(line.Accessible.name, "RTL-TCP 192.168.100.250:61234 · 852.0125 MHz", "read whole");
+            compare(line.Accessible.name, "RTL-TCP 192.168.100.250:61234", "read whole");
             verify(!line.truncated, "never cut");
             verify(line.width <= findChild(entries()[1], "savedSystemSource").width + 0.5, "within the labels' column");
             verify(line.contentWidth <= line.width + 0.5, "wrapped within its width: " + line.contentWidth + " > " + line.width);

@@ -16063,15 +16063,28 @@ Qt Quick frontend (`src/ui/qt`):
   (G6: a line break in an imported name is a space, `Util.oneLine()`, and both elide), so a long name never grows the
   head; their names still read the whole text. The full card's title, supporting, place and meta lines are one line
   each the same way (r2 B1, `maximumLineCount: 1`), so a break in an imported name or place never grows it either.
-  Only the receiver line and the refresh hint wrap. A scan-list card's name (in both views) and its count line
+  Only the receiver line and the refresh hint wrap, except on a shared-title card (below). A scan-list card's name
+  (in both views) and its count line
   ("Not ready · draft", in compact) are one line each the same way. The place and meta lines (the key and when
   last heard)
   are not drawn (`shown: !compact`; both sit in slot Items and are listed in `lackableParts`, so under a screen reader
   they are held), and the title's `Accessible.description` reads their words instead (`undrawnWords`, built from the
   card's place label and meta text, set only in compact and gated on navigation, `visible` and `held`). The site
   button follows the same `siteDrawn` rule against compact's row (site button, Play, More), and the supporting line
-  reads [the distance, in Nearest order] · [`N sites`, while the site button is not drawn] · `Util.systemMeta()`;
-  cards that share a title differ on their receiver line, which names what sets each apart (`receiverLabel`, below).
+  reads [the distance, in Nearest order] · [`N sites`, while the site button is not drawn] · `Util.systemMeta()`.
+  Shared titles (issue #901 r3 S1, `sharedTitle` below): a card whose drawn title another card draws too draws, in
+  both views, every line the full card has that tells it apart: the source line (frequency, mode and trunking, or a
+  TCP/UDP endpoint, or a file's whole path as saved instead of its name), the receiver line (a tuner's), and the place
+  line (place, and the distance in Nearest order, which compact then leaves off the source line, so each fact is drawn
+  and read once); each of those wraps whole (`wrapMode: Text.Wrap`, `maximumLineCount` reset, no elide), and the
+  card grows by them. The title stays one line, cut, and the meta line stays undrawn in compact (the title's
+  description still reads it). Other cards are unchanged. Tests (`tst_home_compact_cards.qml`
+  `test_shared_titles_draw_every_line`, 320/360/411 x 1.0/2.0, both views, Order added and Nearest): pairs that differ
+  only in frequency, receiver, RTL-TCP, TCP or UDP endpoint, folder, the end of a long file name, place, and a
+  `Fire\nDispatch` / `Fire Dispatch` pair; no identifying line is cut (`truncated`), the two cards' drawn lines
+  differ, no fact is drawn twice, and the lines stay inside the card clear of its controls. Decided limits:
+  same-name scan lists with equal counts look alike (a scan list has no source facts), and so do two entries whose
+  drawn settings are the same.
   The
   site chooser stays reachable: the card's More menu, and a long press, offer **Sites** for every grouped card, one
   site included, in both views (`manageCard(…, hasSites)` → `manageMenu.openFor(row, name, rrLinked, hasSites)`, which
@@ -16117,7 +16130,7 @@ Qt Quick frontend (`src/ui/qt`):
   button drawn only where the title keeps its minimum and the count leading the line otherwise, More → Sites for a
   one-site group in both views, the Nearest line, the title's description, held lines under a screen reader, compact
   scan-list cards, the D11 reset shown and hidden, `test_tab_chosen_before_the_reset_keeps_no_old_place`,
-  `test_shared_titles_look_different`, `test_card_lines_draw_one_line`, and the card stride, 135 px by default and 81
+  `test_shared_titles_draw_every_line`, `test_card_lines_draw_one_line`, and the card stride, 135 px by default and 81
   compact at 411 x 914),
   `UI_QT_QML_A11Y_CHURN` (`tst_a11y_scan_churn.qml` `test_m6_density_change_refreshes_the_tree_once`: one refresh
   per flip at 300 cards, given on return or when the sheet closes and none while elsewhere, with no delegate made and
@@ -18716,7 +18729,7 @@ Qt Quick frontend (`src/ui/qt`):
   the screen resolves to a row at click time. Roles: `key`, `leadUid`, `playUid`, `title`, `siteCount`, `name`,
   `sourceType`, `host`, `port`, `freqMhz`, `decodeFlag`, `trunking`, `filePath`, `keyConfigured`, `lastHeard`,
   `refreshHint`, `placeLabel`, `distanceKm`, `distanceState`, `section`, `sectionStart`, `rrLinked`, `receiverLabel`,
-  `held`. The card shows the
+  `sharedTitle`, `held`. The card shows the
   one non-avoided site when exactly one is left, else the lead; `playUid` is that site (the row itself outside a
   group), empty when a group has none or several to play; `siteCount` is the group size, 0 outside a group;
   `lastHeard` is the group's latest; `keyConfigured` reads the computed `SavedSystemsModel::KeyConfiguredRole`
@@ -18756,24 +18769,27 @@ Qt Quick frontend (`src/ui/qt`):
   rows and a new one goes after its new-order predecessor, until the hold ends or the user asks for a change (query,
   sort, the first fix newer than the stored one after `markLocationRequested()`; an expiry meanwhile keeps the mark), so
   TalkBack's swipe order always matches the screen; the count is read once. A held order can show a section in two runs,
-  so `sectionStart` marks only a section's first card in the shown order. `receiverLabel` is, for a card whose
-  title another shown card has (one system on two receivers, endpoints, files or frequencies), what tells it apart
-  (`mark_shared_titles()`, `shared_title_label()`), else empty: its receiver ("USB", "RTL-TCP host:port", "TCP
-  host:port", "UDP :port", "Airspy SERIAL") or, for a file, the shortest end of its path that no other file of the
-  title ends with ("east/dispatch.wav"; the whole path for the same file twice), then " · <freq> MHz" where the tuners'
-  frequencies differ and " · <mode>" (the decode label from `protocolLabels`) where the modes differ. Home shows it on
-  a line of its own under the source line, which wraps and is never cut, in both views, and `Util.systemMeta()` then
-  leaves RTL-TCP's marker and the TCP or UDP address or file name off the source line, which elides (issue #901 G1:
-  two TCP cards of one title both read "TCP 10.0…" at 320 dp and text 2.0; r2 A: two names on one USB dongle at one
-  place both read "6.9 mi ·…" over "USB" in Nearest order, and two replay files of one name in different folders
-  "Auto" over "dispatch.wav"). `rebuilt()` follows every rebuild, changed or not, after its row signals and
+  so `sectionStart` marks only a section's first card in the shown order. `sharedTitle` marks a card whose title, as
+  Home draws it, another shown card draws too (`mark_shared_titles()`: the key is `one_line()` of the title, each run
+  of line breaks a space as `Util.oneLine()` draws it, so an imported `Fire\nDispatch` and a typed `Fire Dispatch`
+  share one; one count per key, so a rebuild stays linear however many cards share a title). Such a card's
+  `receiverLabel` is its receiver ("USB", "RTL-TCP host:port", "Airspy SERIAL"); every other card's is empty, and so is
+  a TCP or UDP source's or a file's, whose source line already names its address or path. Home then draws every line
+  the full card has that tells the cards apart, in both views, each wrapping whole instead of cut (issue #901 r3 S1,
+  under "Listen body layout"). This replaced a per-pair label (rounds G1 and r2 A) that named only the facts that
+  differed and walked every card of a title for each card (O(n²): 1000 cards of one title took ~430 ms a rebuild).
+  Decided limit: two entries whose drawn settings are the same (they differ only in a decode flag the card does not
+  draw, such as `-f1` and `-ft`, both "P25", or in a path's trailing whitespace) look alike. `rebuilt()` follows
+  every rebuild, changed or not, after its row signals and
   `shownCountChanged`: Home answers the changes it noted there (one tree refresh for Android's bridge, given through
   its coalescing timer). `rowForKey()` finds a card. Tests: `UI_QT_SAVED_SYSTEM_CARDS` (groups, the card's last-heard,
   frequency and
   key-configured reads, titles against a real pin, each order and its ties, place and distance labels, search, signals,
   screen-reader holds and the location mark, one section start in a held order, a fix that lapses with no signal,
   coalescing, a random-edit mirror check, positional rows held and taken back, receiver labels for shared titles,
-  `rebuilt()` after the rows, and a 500-row timing check with and without a screen reader).
+  `test_shared_title_compares_the_drawn_title` (line breaks read as a space), `rebuilt()` after the rows, a 500-row
+  timing check with and without a screen reader, and `test_shared_titles_rebuild_linearly`: a search rebuild over 1000
+  cards of one title within 3x plus 15 ms of one over 1000 titles, the fastest of five each).
 - `text_order.{h,cpp}` (`TextOrder`, the `textOrder` context object) is the one place that decides how names sort and
   match: `text_fold()` (case and accents folded, by code point), `text_compare_names()` (natural order: leading
   punctuation skipped, digit runs by value, a shorter digit run first on a tie, then the raw text, so different

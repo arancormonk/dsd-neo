@@ -333,166 +333,129 @@ Item {
             compare(part(card, "savedSystemSource").text.indexOf("2 sites · "), 0);
         }
 
-        // One system on two receivers: compact keeps each card's receiver line, which wraps, and the card grows by it.
-        // Two TCP cards of one title differ by their addresses on their faces.
-        function test_receivers_tell_cards_apart_data() {
-            return [{tag: "320 at 1.0 compact", scale: 1.0, compact: true}, {tag: "320 at 2.0 compact", scale: 2.0, compact: true},
-                    {tag: "320 at 1.0 full", scale: 1.0, compact: false}, {tag: "320 at 2.0 full", scale: 2.0, compact: false}];
-        }
-        function test_receivers_tell_cards_apart(data) {
-            prefs.compactView = data.compact;
-            root.width = 320;
-            Ui.Theme.fontScale = data.scale;
-            site("Twin Mesa", 35, 1, undefined, undefined, {sourceType: "usb", freqMhz: "851.0125"});
-            site("Twin Mesa", 35, 1, undefined, undefined, {host: "10.20.30.40", port: 61234, freqMhz: "852.0125"});
-            // G1: endpoints and files that differ only past where the source line is cut at large text.
-            add("Wire Mesa", {sourceType: "tcp", host: "10.0.0.1", port: 7355});
-            add("Wire Mesa", {sourceType: "tcp", host: "10.0.0.2", port: 7355});
-            add("Port Mesa", {sourceType: "udp", port: 7355});
-            add("Port Mesa", {sourceType: "udp", port: 7356});
-            add("Tape Mesa", {sourceType: "file", filePath: "/captures/north-county-dispatch-recording-01.wav"});
-            add("Tape Mesa", {sourceType: "file", filePath: "/captures/north-county-dispatch-recording-02.wav"});
-            add("Plain Mesa");
-            settle();
-            var plain = cardOf("Plain Mesa");
-            for (var entry of entries()) {
-                var card = findChild(entry, "savedSystemCard");
-                if (data.compact)
-                    checkCompactCard(card, entry.title + " " + entry.y);
-                if (entry.title !== "Plain Mesa") {
-                    var line = part(card, "savedSystemReceiver");
-                    verify(line.visible && line.opacity === 1, entry.title + ": the receiver line stays");
-                    verify(!line.truncated && line.contentWidth <= line.width + 0.5, entry.title + ": never cut");
-                    // Compact grows by it; the full card holds it inside its 122 px at normal text, or grows.
-                    if (data.compact)
-                        verify(card.height >= plain.height + line.height - 0.5, entry.title + ": the card grows by it");
-                    else
-                        verify(line.mapToItem(card, 0, line.height).y <= card.height + 0.5, entry.title + ": the line inside the card");
-                }
-            }
-            // What each card draws: its source line as cut to its width, and its receiver line, which wraps whole.
-            var drawn = Qt.createQmlObject("import QtQuick; TextMetrics { elide: Text.ElideRight }", root);
-            var faces = function (title) {
-                return entries().filter(function (e) {
-                    return e.title === title;
-                }).map(function (e) {
-                    var card = findChild(e, "savedSystemCard");
-                    var receiver = part(card, "savedSystemReceiver");
-                    var source = part(card, "savedSystemSource");
-                    drawn.font = source.font;
-                    drawn.text = source.text;
-                    drawn.elideWidth = source.width;
-                    return drawn.elidedText + "|" + (receiver.visible && receiver.opacity > 0 ? receiver.text : "");
-                });
-            };
-            try {
-                for (var title of ["Twin Mesa", "Wire Mesa", "Port Mesa", "Tape Mesa"]) {
-                    var shown = faces(title);
-                    compare(shown.length, 2);
-                    verify(shown[0] !== shown[1], title + " cards differ on their faces: " + JSON.stringify(shown));
-                }
-                // The address is on the receiver line once, not again on the source line.
-                for (var e of entries()) {
-                    if (e.title !== "Wire Mesa")
-                        continue;
-                    var c = findChild(e, "savedSystemCard");
-                    var receiverText = part(c, "savedSystemReceiver").text;
-                    verify(receiverText.indexOf("TCP 10.0.0.") === 0, "the TCP card's receiver: " + receiverText);
-                    verify(part(c, "savedSystemSource").text.indexOf("10.0.0.") < 0, "the address twice");
-                }
-            } finally {
-                drawn.destroy();
-            }
-        }
-
-        // Issue #901 r2 A: two cards of one title must look different, whatever single fact tells them apart. At
-        // 320 dp and text 2.0 in Nearest order two systems of one name on one USB dongle at one place, on 151 and
-        // 851 MHz, both drew "6.9 mi ·…" over "USB"; two replay files of one name in different folders both drew
-        // "Auto" over "dispatch.wav". A card whose title another shown card shares names what sets it apart on its
-        // receiver line, which wraps and is never cut: the receiver, endpoint or file (the shortest end of its path
-        // that no other card's path shares), the frequency where theirs differ, and the decode mode where theirs
-        // differ. Each pair below differs in one fact only; the two cards' faces as drawn (each line cut as it is
-        // drawn, the receiver line whole) differ, in both views, in Order added and Nearest order.
+        // Issue #901 r3 S1: cards whose titles are drawn alike (a line break in an imported name drawn as a space
+        // included) must look different. Such a card draws every line the full card has that tells it apart, the
+        // source line, the receiver line (a tuner's) and the place line, in both views, each wrapping whole instead of
+        // cut; other cards keep their one-line compact head. Each pair below differs in one fact only: frequency,
+        // receiver, RTL-TCP, TCP and UDP endpoint, the file's folder, the end of a long file name, the place. At 320,
+        // 360 and 411 dp, text 1.0 and 2.0, compact and full, Order added and Nearest: no identifying line of theirs
+        // is cut, the two cards' lines as drawn differ, no fact is drawn twice on a card, and the card holds its lines.
         function sharedTitlePairs() {
             var at = {siteLat: 10.1, siteLon: 20.0, hasSitePos: true};
+            var place = function (name) {
+                return {place: {states: [{stid: 90, name: name}], counties: [], candidateStates: [90]}};
+            };
             return [
                 {title: "Ridge Dispatch Freq", a: {sourceType: "usb", freqMhz: "151.0000"}, b: {sourceType: "usb", freqMhz: "851.0000"}},
                 {title: "Ridge Dispatch Receiver", a: {sourceType: "usb"}, b: {sourceType: "airspy", airspy: {serial: "a1b2c3d4"}}},
-                {title: "Ridge Dispatch Endpoint", a: {sourceType: "rtltcp", host: "10.0.0.1"}, b: {sourceType: "rtltcp", host: "10.0.0.2"}},
+                {title: "Ridge Dispatch Server", a: {sourceType: "rtltcp", host: "10.0.0.1"}, b: {sourceType: "rtltcp", host: "10.0.0.2"}},
                 {title: "Ridge Dispatch Audio", a: {sourceType: "tcp", host: "10.0.0.1", port: 7355}, b: {sourceType: "tcp", host: "10.0.0.2", port: 7355}},
+                {title: "Ridge Dispatch Port", a: {sourceType: "udp", port: 7355}, b: {sourceType: "udp", port: 7356}},
                 {title: "Ridge Dispatch Folder", a: {sourceType: "file", filePath: "/east/dispatch.wav"}, b: {sourceType: "file", filePath: "/west/dispatch.wav"}},
-                {title: "Ridge Dispatch Mode", a: {sourceType: "usb", decodeFlag: "-fs"}, b: {sourceType: "usb", decodeFlag: "-fi"}}
+                {title: "Ridge Dispatch Tape", a: {sourceType: "file", filePath: "/captures/north-county-dispatch-recording-01.wav"},
+                    b: {sourceType: "file", filePath: "/captures/north-county-dispatch-recording-02.wav"}},
+                {title: "Ridge Dispatch Place", a: Object.assign({sourceType: "usb"}, place("Westmark")), b: Object.assign({sourceType: "usb"}, place("Eastmark"))},
+                // Drawn alike: an imported name's line break is drawn as a space.
+                {title: "Fire Dispatch", aName: "Fire\nDispatch", a: {sourceType: "tcp", host: "10.0.0.1", port: 7355},
+                    b: {sourceType: "tcp", host: "10.0.0.2", port: 7355}}
             ].map(function (pair) {
                 pair.a = Object.assign({}, at, pair.a);
                 pair.b = Object.assign({}, at, pair.b);
                 return pair;
             });
         }
-        function test_shared_titles_look_different_data() {
+        function test_shared_titles_draw_every_line_data() {
             var rows = [];
-            for (var sort of ["added", "nearest"]) {
-                for (var compact of [true, false]) {
-                    for (var scale of [1.0, 2.0])
-                        rows.push({tag: sort + (compact ? " compact" : " full") + " at " + scale, sort: sort, compact: compact, scale: scale});
+            for (var w of [320, 360, 411]) {
+                for (var scale of [1.0, 2.0]) {
+                    for (var compact of [true, false]) {
+                        for (var sort of ["added", "nearest"])
+                            rows.push({tag: w + " at " + scale + (compact ? " compact " : " full ") + sort, width: w, scale: scale,
+                                compact: compact, sort: sort});
+                    }
                 }
             }
             return rows;
         }
-        function test_shared_titles_look_different(data) {
+        function test_shared_titles_draw_every_line(data) {
             testContext.setLocationSupported(true);
             prefs.compactView = data.compact;
-            root.width = 320;
+            root.width = data.width;
             Ui.Theme.fontScale = data.scale;
             var pairs = sharedTitlePairs();
             for (var pair of pairs) {
-                add(pair.title, pair.a);
+                add(pair.aName || pair.title, pair.a);
                 add(pair.title, pair.b);
             }
-            add("Ridge Dispatch Alone", {sourceType: "usb"});
+            add("Ridge Dispatch Alone", {sourceType: "usb", siteLat: 10.1, siteLon: 20.0, hasSitePos: true,
+                place: {states: [{stid: 90, name: "Westmark"}], counties: [], candidateStates: [90]}});
             prefs.systemsSort = data.sort;
             if (data.sort === "nearest")
                 prefs.setLocationFix(10.0, 20.0, savedSystems.realtimeNowMs(), 25);
             settle();
             compare(savedSystemCards.effectiveSort, data.sort);
-            // A line as drawn: cut at its width where it elides, whole where it wraps; nothing where it is not shown.
-            var drawn = Qt.createQmlObject("import QtQuick; TextMetrics { elide: Text.ElideRight }", root);
-            var face = function (entry) {
+            var drawn = function (line) {
+                return line.visible && line.opacity > 0 && line.height > 0;
+            };
+            // The title as cut where it is drawn, then each identifying line, which must be drawn whole.
+            var cutTitle = Qt.createQmlObject("import QtQuick; TextMetrics { elide: Text.ElideRight }", root);
+            var face = function (entry, label) {
                 var card = findChild(entry, "savedSystemCard");
-                var lines = [];
-                for (var name of ["savedSystemTitle", "savedSystemSource", "savedSystemPlace", "savedSystemMeta"]) {
+                var title = part(card, "savedSystemTitle");
+                cutTitle.font = title.font;
+                cutTitle.text = title.text;
+                cutTitle.elideWidth = title.width;
+                var lines = [cutTitle.elidedText];
+                var facts = [];
+                for (var name of ["savedSystemSource", "savedSystemReceiver", "savedSystemPlace"]) {
                     var line = part(card, name);
-                    if (!line.visible || line.opacity === 0 || line.height === 0) {
+                    if (!drawn(line)) {
                         lines.push("");
                         continue;
                     }
-                    drawn.font = line.font;
-                    drawn.text = line.text;
-                    drawn.elideWidth = line.width;
-                    lines.push(drawn.elidedText);
+                    verify(!line.truncated, label + ": " + name + " is cut: " + JSON.stringify(line.text));
+                    verify(line.contentWidth <= line.width + 0.5, label + ": " + name + " runs past its width");
+                    if (name !== "savedSystemSource")
+                        verify(line.parent.height >= line.implicitHeight - 0.5, label + ": " + name + " is taller than its row");
+                    lines.push(line.text);
+                    facts = facts.concat(line.text.split(" · "));
                 }
-                var receiver = part(card, "savedSystemReceiver");
-                lines.push(receiver.visible && receiver.opacity > 0 ? receiver.text : "");
+                for (var i = 0; i < facts.length; ++i)
+                    verify(facts.indexOf(facts[i]) === i, label + ": " + JSON.stringify(facts[i]) + " is drawn twice: " + lines.join(" | "));
+                var labels = rectIn(title.parent, card);
+                verify(inside(labels, card), label + ": its lines " + describe(labels) + " inside the card, " + card.height);
+                for (var control of ["homeSiteChooserButton", "savedSystemPlay", "savedSystemManageButton"]) {
+                    var c = part(card, control);
+                    if (c.visible && c.opacity > 0)
+                        verify(!overlaps(rectIn(c, card), labels), label + ": " + control + " clear of the lines");
+                }
                 return lines.join(" | ");
             };
             try {
                 for (var p of pairs) {
                     var shown = entries().filter(function (e) {
-                        return e.title === p.title;
+                        return e.title === p.title || e.title === p.aName;
                     });
                     compare(shown.length, 2, p.title);
-                    var faces = shown.map(face);
+                    var faces = shown.map(function (e, i) {
+                        return face(e, p.title + " #" + i);
+                    });
                     verify(faces[0] !== faces[1], p.title + " cards look the same: " + JSON.stringify(faces));
+                    // The place line is drawn wherever there is a place or a distance to show.
                     for (var e of shown) {
-                        var receiver = part(findChild(e, "savedSystemCard"), "savedSystemReceiver");
-                        verify(receiver.visible && receiver.opacity === 1 && !receiver.truncated, p.title + ": the receiver line, whole");
-                        verify(receiver.contentWidth <= receiver.width + 0.5, p.title + ": the receiver line fits its width");
+                        var card = findChild(e, "savedSystemCard");
+                        compare(drawn(part(card, "savedSystemPlace")), card.placeText.length > 0, p.title + ": the place line");
                     }
                 }
-                // A title no other card shares draws no receiver line.
-                var alone = part(cardOf("Ridge Dispatch Alone"), "savedSystemReceiver");
-                verify(!(alone.visible && alone.opacity > 0 && alone.height > 0), "a lone title draws a receiver line");
+                var alone = cardOf("Ridge Dispatch Alone");
+                var source = part(alone, "savedSystemSource");
+                compare(source.maximumLineCount, 1, "a lone title's source line is one line");
+                compare(drawn(part(alone, "savedSystemReceiver")), false, "a lone title draws a receiver line");
+                compare(drawn(part(alone, "savedSystemPlace")), !data.compact, "a lone title's place line");
+                for (var entry of entries())
+                    compare(entry.sharedTitle, entry.title !== "Ridge Dispatch Alone", entry.title + ": shared");
             } finally {
-                drawn.destroy();
+                cutTitle.destroy();
                 prefs.systemsSort = "added";
             }
         }

@@ -1267,6 +1267,7 @@ Item {
                         required property bool sectionStart
                         required property bool rrLinked
                         required property string receiverLabel
+                        required property bool sharedTitle
                         required property bool held
                         // Rows are positional (a screen reader): a part this
                         // card lacks is held, never hidden (see the Repeater).
@@ -1349,6 +1350,11 @@ Item {
                             readonly property bool refreshHint: entry.refreshHint
                             // Issue #901 (D7): Compact view, one row a card.
                             readonly property bool compact: screen.compactView
+                            // Issue #901 r3 S1: another card draws this title. Then the card
+                            // draws every line the full card has that tells it apart (the
+                            // source line, the receiver line, the place line), in either
+                            // view, each wrapping whole instead of cut.
+                            readonly property bool sharedTitle: entry.sharedTitle
                             // In Nearest order, how far, when known.
                             readonly property string distanceText: savedSystemCards.effectiveSort === "nearest" ? Util.fmtDistanceKm(entry.distanceKm, !!screen.prefsStore && screen.prefsStore.metricUnits === true) : ""
                             // The distance first: Nearest sorts by it, and a long
@@ -1359,18 +1365,18 @@ Item {
                             readonly property string siteCountText: entry.siteCount === 1 ? qsTr("1 site") : qsTr("%1 sites").arg(entry.siteCount)
                             readonly property string sourceText: Util.systemMeta(entry)
                             // The line under the title: the site count while the site button
-                            // is not drawn (either view), then the source, so cards that share
-                            // a title still differ by their endpoint, file or frequency.
-                            // Compact leads with the distance in Nearest order (the full card
-                            // has it on its place line).
-                            readonly property string supportingText: [compact ? distanceText : "", hasSites && !actionPlan.siteDrawn ? siteCountText : "", sourceText].filter(function (part) {
+                            // is not drawn (either view), then the source. Compact leads with
+                            // the distance in Nearest order unless the place line is drawn,
+                            // which has it (the full card, a shared title).
+                            readonly property string supportingText: [compact && !sharedTitle ? distanceText : "", hasSites && !actionPlan.siteDrawn ? siteCountText : "", sourceText].filter(function (part) {
                                 return part.length > 0;
                             }).join(" · ")
                             // heardTick forces the minute-by-minute refresh.
                             readonly property string metaText: (entry.keyConfigured ? qsTr("key configured") + " · " : "") + (screen.heardTick, Util.heardText(entry.lastHeard, savedSystems.realtimeNowMs()))
-                            // D8: what compact does not draw (the place, the key and when
-                            // last heard), which the title's description reads instead.
-                            readonly property string undrawnWords: !compact ? "" : [entry.placeLabel, metaText].filter(function (part) {
+                            // D8: what compact does not draw (the place, unless the title is
+                            // shared, the key and when last heard), which the title's
+                            // description reads instead.
+                            readonly property string undrawnWords: !compact ? "" : [sharedTitle ? "" : entry.placeLabel, metaText].filter(function (part) {
                                 return part.length > 0;
                             }).join(", ")
 
@@ -1436,11 +1442,14 @@ Item {
                                     Accessible.ignored: !navigationAllowed || !visible || entry.held
                                     Accessible.name: navigationAllowed && visible && !entry.held ? text : ""
                                     text: Util.oneLine(card.supportingText)
-                                    maximumLineCount: 1
+                                    // One line, cut; whole, wrapping, on a shared title (r3 S1),
+                                    // where it names the endpoint, file, frequency and mode.
+                                    wrapMode: card.sharedTitle ? Text.Wrap : Text.NoWrap
+                                    maximumLineCount: card.sharedTitle ? undefined : 1
                                     font.family: Theme.mono
                                     font.pixelSize: Theme.fontSize(12)
                                     color: Theme.textSubdued
-                                    elide: Text.ElideRight
+                                    elide: card.sharedTitle ? Text.ElideNone : Text.ElideRight
                                 }
 
                                 // The receiver, when another card has this title
@@ -1467,7 +1476,8 @@ Item {
                                 }
 
                                 // Where it is, and in Nearest order how far. Compact
-                                // does not draw it (the title's description reads it).
+                                // draws it only for a shared title (r3 S1); otherwise the
+                                // title's description reads it.
                                 Item {
                                     width: parent.width
                                     height: placeLine.shown ? placeLine.implicitHeight : 0
@@ -1476,17 +1486,19 @@ Item {
                                         id: placeLine
                                         width: parent.width
                                         objectName: "savedSystemPlace"
-                                        readonly property bool shown: !card.compact && card.placeText.length > 0
+                                        readonly property bool shown: (!card.compact || card.sharedTitle) && card.placeText.length > 0
                                         Accessible.ignored: !navigationAllowed || !visible || !shown || entry.held
                                         Accessible.name: navigationAllowed && visible && shown && !entry.held ? text : ""
                                         opacity: shown ? 1 : 0
                                         // One line (r2 B1): a break in an imported place is a space.
+                                        // Cut, or whole and wrapping on a shared title (r3 S1).
                                         text: Util.oneLine(card.placeText)
-                                        maximumLineCount: 1
+                                        wrapMode: card.sharedTitle ? Text.Wrap : Text.NoWrap
+                                        maximumLineCount: card.sharedTitle ? undefined : 1
                                         font.family: Theme.sans
                                         font.pixelSize: Theme.fontSize(13)
                                         color: Theme.textSecondary
-                                        elide: Text.ElideRight
+                                        elide: card.sharedTitle ? Text.ElideNone : Text.ElideRight
                                     }
                                 }
 

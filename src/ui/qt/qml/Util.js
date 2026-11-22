@@ -537,28 +537,24 @@ function systemMeta(sys) {
         // picked, while the source does not appear anywhere else on the card.
         // A saved-system card whose title another card shares names its
         // receiver on a line of its own (receiverLabel: "USB", "RTL-TCP
-        // host:port", "Airspy serial", with the frequency or the decode mode
-        // where those differ: issue #901 r2 A), which says RTL-TCP itself.
+        // host:port", "Airspy serial"), which says RTL-TCP itself.
         if (sys.sourceType === "rtltcp" && !sys.receiverLabel)
             parts.push("RTL-TCP")
         var decode = decodeLabel(sys.decodeFlag)
         parts.push(sys.trunking ? decode + " trunked" : decode)
     } else if (sys.sourceType === "udp") {
-        // A card whose title another card shares names its port, address or
-        // file (the shortest end of its path no other file of the title ends
-        // with) on its receiver line, which wraps (issue #901 G1, r2 A), not
-        // here, where a long one is cut.
-        if (!sys.receiverLabel)
-            parts.push("UDP :" + sys.port)
+        parts.push("UDP :" + sys.port)
         parts.push(decodeLabel(sys.decodeFlag))
     } else if (sys.sourceType === "tcp") {
-        if (!sys.receiverLabel)
-            parts.push("TCP " + sys.host + ":" + sys.port)
+        parts.push("TCP " + sys.host + ":" + sys.port)
         parts.push(decodeLabel(sys.decodeFlag))
     } else {
         var path = sys.filePath || ""
-        if (!sys.receiverLabel)
-            parts.push(path.substring(path.lastIndexOf('/') + 1))
+        // The file's name; its whole path, as saved, on a saved-system card
+        // whose title another card shares (sharedTitle), where the line wraps
+        // (issue #901 r3 S1), so two files of one name in different folders
+        // read apart.
+        parts.push(sys.sharedTitle ? path : path.substring(path.lastIndexOf('/') + 1))
         parts.push(decodeLabel(sys.decodeFlag))
     }
     return parts.join(" · ")
@@ -578,7 +574,8 @@ function systemMeta(sys) {
 // so a one-site group keeps its button at normal text on a 320 dp phone, a
 // 110 px title, as before); otherwise the card names the count in its supporting line
 // and its More menu (and long press) offer Sites. The card's height never
-// follows it: 122 px by default and 68 compact at normal text.
+// follows it: 122 px by default and 68 compact at normal text while its
+// lines fit (a shared title's wrapping lines grow it).
 function listenCardActions(s) {
     var gap = 8
     var labelGap = 12
@@ -618,7 +615,7 @@ function listenCardActions(s) {
 // and the labels centred 10 px above the middle of that box (122 px at
 // normal text). Compact: 12 px of padding, the actions centred on a head as
 // tall as the two lines plus that padding, at least Play plus 8 above and
-// below; a receiver line under the two lines grows the card.
+// below; a receiver or place line under the two lines grows the card.
 function listenCardRows(a, s) {
     var out = {}
     if (s.compact) {

@@ -781,9 +781,9 @@ test_positional_rows() {
 }
 
 /* One system saved on two receivers is two cards with one title; each then names its receiver (the dongle, an
-   RTL-TCP or TCP server's address, a UDP port, an Airspy's serial, a file's name), on a line that is never cut, and
-   a card whose title no other shown card has names none (issue #901 G1: two TCP cards of one title read the same
-   once their source line was cut). */
+   RTL-TCP server's address, an Airspy's serial), and a card whose title no other shown card has names none. A
+   TCP or UDP source's meta already says its address, so it names none either. Both cards of a shared title are
+   marked as such, which has Home draw every line of the full card for them (issue #901 r3 S1). */
 void
 test_receiver_label_for_shared_titles() {
     Fixture f;
@@ -806,99 +806,90 @@ test_receiver_label_for_shared_titles() {
     check("receiver: each shared title names its receiver",
           f.column(SavedSystemCards::ReceiverLabelRole)
               == QStringList({QStringLiteral("USB"), QStringLiteral("RTL-TCP 192.168.1.5:1234"),
-                              QStringLiteral("Airspy A74068C82F531693"), QStringLiteral("USB"),
-                              QStringLiteral("TCP 10.0.0.9:7355"), QString()}));
+                              QStringLiteral("Airspy A74068C82F531693"), QStringLiteral("USB"), QString(), QString()}));
+    check("receiver: the shared titles are marked",
+          f.column(SavedSystemCards::SharedTitleRole)
+              == QStringList({QStringLiteral("true"), QStringLiteral("true"), QStringLiteral("true"),
+                              QStringLiteral("true"), QStringLiteral("true"), QStringLiteral("false")}));
     f.cards->setQuery(QStringLiteral("marine"));
     settle();
     check("receiver: a USB card named apart from a TCP one",
-          f.column(SavedSystemCards::ReceiverLabelRole)
-              == QStringList({QStringLiteral("USB"), QStringLiteral("TCP 10.0.0.9:7355")}));
+          f.column(SavedSystemCards::ReceiverLabelRole) == QStringList({QStringLiteral("USB"), QString()}));
     f.cards->setQuery(QStringLiteral("156.8"));
     settle();
     check("receiver: alone in the list, a card names none",
           f.column(SavedSystemCards::ReceiverLabelRole) == QStringList({QString()}));
+    check("receiver: alone in the list, a card shares no title",
+          f.column(SavedSystemCards::SharedTitleRole) == QStringList({QStringLiteral("false")}));
 }
 
-/* Network audio and files of one title name their port or file the same way (issue #901 G1). */
+/* Issue #901 r3 S1: titles are compared as Home draws them, a run of line breaks (a newline, U+2028, U+2029, CR LF)
+   read as one space. An imported "Fire\nDispatch" and a typed "Fire Dispatch" are drawn alike, so both are shared
+   titles; "Fire  Dispatch" (two spaces) and "FireDispatch" are not the same title. */
 void
-test_receiver_label_for_endpoints_and_files() {
+test_shared_title_compares_the_drawn_title() {
     Fixture f;
-    QVariantMap udpA = plain(QStringLiteral("Port Mesa"), QString());
-    udpA.insert(QStringLiteral("sourceType"), QStringLiteral("udp"));
-    udpA.insert(QStringLiteral("port"), 7355);
-    QVariantMap udpB = udpA;
-    udpB.insert(QStringLiteral("port"), 7356);
-    QVariantMap fileA = plain(QStringLiteral("Tape Mesa"), QString());
-    fileA.insert(QStringLiteral("sourceType"), QStringLiteral("file"));
-    fileA.insert(QStringLiteral("filePath"), QStringLiteral("/captures/dispatch-01.wav"));
-    QVariantMap fileB = fileA;
-    fileB.insert(QStringLiteral("filePath"), QStringLiteral("/captures/dispatch-02.wav"));
-    QVariantMap lone = fileA;
-    lone.insert(QStringLiteral("name"), QStringLiteral("Lone Tape"));
-    f.add({udpA, udpB, fileA, fileB, lone});
-    QStringList labels = f.column(SavedSystemCards::ReceiverLabelRole);
-    labels.sort();
-    check("receiver: ports and file names of shared titles",
-          labels
-              == QStringList({QString(), QStringLiteral("UDP :7355"), QStringLiteral("UDP :7356"),
-                              QStringLiteral("dispatch-01.wav"), QStringLiteral("dispatch-02.wav")}));
+    QVariantMap typed = plain(QStringLiteral("Fire Dispatch"), QStringLiteral("851.0"));
+    typed.insert(QStringLiteral("sourceType"), QStringLiteral("tcp"));
+    typed.insert(QStringLiteral("host"), QStringLiteral("10.0.0.1"));
+    typed.insert(QStringLiteral("port"), 7355);
+    QVariantMap imported = typed;
+    imported.insert(QStringLiteral("name"), QStringLiteral("Fire\nDispatch"));
+    imported.insert(QStringLiteral("host"), QStringLiteral("10.0.0.2"));
+    f.add({typed, imported, plain(QStringLiteral("Harbor\u2028Watch"), QStringLiteral("151.0")),
+           plain(QStringLiteral("Harbor\r\nWatch"), QStringLiteral("152.0")),
+           plain(QStringLiteral("Harbor\u2029\nWatch"), QStringLiteral("153.0")),
+           plain(QStringLiteral("Fire  Dispatch"), QStringLiteral("154.0")),
+           plain(QStringLiteral("FireDispatch"), QStringLiteral("155.0"))});
+    check("drawn title: seven cards", f.cards->shownCount() == 7);
+    check("drawn title: line breaks read as a space",
+          f.column(SavedSystemCards::SharedTitleRole)
+              == QStringList({QStringLiteral("true"), QStringLiteral("true"), QStringLiteral("true"),
+                              QStringLiteral("true"), QStringLiteral("true"), QStringLiteral("false"),
+                              QStringLiteral("false")}));
+    check("drawn title: the stored names are kept",
+          f.at(1, SavedSystemCards::TitleRole).toString() == QStringLiteral("Fire\nDispatch"));
 }
 
-/* Issue #901 r2 A: cards of one title that differ in one fact only name it on their receiver line: the frequency
-   where the tuners' differ, the decode mode where the modes differ, and for files the shortest end of the path no
-   other file of the title ends with (the whole path for the same file twice). A lone title names nothing. */
+/* Issue #901 r3 S1: marking shared titles counts each title once, so a rebuild over 1000 cards of one title costs
+   about what one over 1000 titles does. Each rebuild below is a search keystroke that keeps every card (two queries
+   that match them all, in turn); the fastest of five per case is compared, so one slow turn on a loaded machine
+   does not decide. The bound is 3x plus 15 ms: a linear mark stays well inside it (the cards' other work is the same
+   in both cases), while the per-pair comparison it replaced cost ~100x (430 ms against 4 ms in a debug build). */
 void
-test_receiver_label_tells_shared_titles_apart() {
-    Fixture f;
-    f.cards->setProtocolLabels({{QString(), QStringLiteral("Auto")},
-                                {QStringLiteral("-ft"), QStringLiteral("P25")},
-                                {QStringLiteral("-fs"), QStringLiteral("DMR")}});
-    QVariantMap dmr = plain(QStringLiteral("Mode Mesa"), QStringLiteral("851.0"));
-    dmr.insert(QStringLiteral("decodeFlag"), QStringLiteral("-fs"));
-    const auto file = [](const QString& name, const QString& path) {
-        QVariantMap row = plain(name, QString());
-        row.insert(QStringLiteral("sourceType"), QStringLiteral("file"));
-        row.insert(QStringLiteral("filePath"), path);
-        return row;
-    };
-    f.add({plain(QStringLiteral("Freq Mesa"), QStringLiteral("151.0")),
-           plain(QStringLiteral("Freq Mesa"), QStringLiteral("851.0")),
-           plain(QStringLiteral("Mode Mesa"), QStringLiteral("851.0")), dmr,
-           file(QStringLiteral("Tape Mesa"), QStringLiteral("/east/dispatch.wav")),
-           file(QStringLiteral("Tape Mesa"), QStringLiteral("/west/dispatch.wav")),
-           file(QStringLiteral("Deep Mesa"), QStringLiteral("/a/north/x.wav")),
-           file(QStringLiteral("Deep Mesa"), QStringLiteral("/b/north/x.wav")),
-           file(QStringLiteral("Deep Mesa"), QStringLiteral("/north/x.wav")),
-           file(QStringLiteral("Twice Mesa"), QStringLiteral("/same/x.wav")),
-           file(QStringLiteral("Twice Mesa"), QStringLiteral("/same/x.wav")),
-           plain(QStringLiteral("Lone Mesa"), QStringLiteral("151.0"))});
-    check("shared: twelve cards", f.cards->shownCount() == 12);
-    const auto pairs = [&f]() {
-        const QStringList titles = f.column(SavedSystemCards::TitleRole);
-        const QStringList labels = f.column(SavedSystemCards::ReceiverLabelRole);
-        QStringList out;
-        for (int i = 0; i < titles.size() && i < labels.size(); ++i) {
-            out.append(titles.at(i) + QStringLiteral(": ") + labels.at(i));
+test_shared_titles_rebuild_linearly() {
+    const auto fastest_rebuild = [](bool sameTitle) {
+        Fixture f;
+        QVariantList rows;
+        for (int i = 0; i < 1000; ++i) {
+            const QString name =
+                sameTitle ? QStringLiteral("Dispatch") : QStringLiteral("Dispatch %1").arg(i, 4, 10, QLatin1Char('0'));
+            rows.append(plain(name, QStringLiteral("85%1.%2").arg(i % 10).arg(i)));
         }
-        out.sort();
-        return out;
+        f.add(rows);
+        check("linear: 1000 cards", f.cards->shownCount() == 1000);
+        check("linear: shared titles marked",
+              f.at(0, SavedSystemCards::SharedTitleRole).toBool() == sameTitle
+                  && f.at(999, SavedSystemCards::SharedTitleRole).toBool() == sameTitle);
+        qint64 best = -1;
+        for (int round = 0; round < 10; ++round) {
+            QElapsedTimer timer;
+            timer.start();
+            f.cards->setQuery(round % 2 == 0 ? QStringLiteral("dispatch") : QStringLiteral("dispat"));
+            settle();
+            const qint64 ns = timer.nsecsElapsed();
+            check("linear: the search keeps every card", f.cards->shownCount() == 1000);
+            if (round > 0 && (best < 0 || ns < best)) {
+                best = ns;
+            }
+        }
+        return best;
     };
-    const QStringList all = pairs();
-    const QStringList expected = {
-        QStringLiteral("Deep Mesa: /north/x.wav"),      QStringLiteral("Deep Mesa: a/north/x.wav"),
-        QStringLiteral("Deep Mesa: b/north/x.wav"),     QStringLiteral("Freq Mesa: USB · 151.0 MHz"),
-        QStringLiteral("Freq Mesa: USB · 851.0 MHz"),   QStringLiteral("Lone Mesa: "),
-        QStringLiteral("Mode Mesa: USB · DMR"),         QStringLiteral("Mode Mesa: USB · P25"),
-        QStringLiteral("Tape Mesa: east/dispatch.wav"), QStringLiteral("Tape Mesa: west/dispatch.wav"),
-        QStringLiteral("Twice Mesa: /same/x.wav"),      QStringLiteral("Twice Mesa: /same/x.wav")};
-    check("shared: each card names what sets it apart", all == expected);
-    if (all != expected) {
-        DSD_FPRINTF(stderr, "labels: %s\n", qPrintable(all.join(QStringLiteral(" | "))));
-    }
-    f.cards->setQuery(QStringLiteral("151.0"));
-    settle();
-    check("shared: a title alone in the search names nothing",
-          pairs() == QStringList({QStringLiteral("Freq Mesa: "), QStringLiteral("Lone Mesa: ")}));
+    const qint64 distinct = fastest_rebuild(false);
+    const qint64 same = fastest_rebuild(true);
+    DSD_FPRINTF(stderr, "timing (1000 cards): rebuild with distinct titles %.1f ms, with one shared title %.1f ms\n",
+                static_cast<double>(distinct) / 1e6, static_cast<double>(same) / 1e6);
+    check("linear: one shared title rebuilds within 3x of distinct titles", same <= 3 * distinct + 15000000);
 }
 
 void
@@ -1533,8 +1524,8 @@ main(int argc, char** argv) {
     test_sort_signals();
     test_positional_rows();
     test_receiver_label_for_shared_titles();
-    test_receiver_label_for_endpoints_and_files();
-    test_receiver_label_tells_shared_titles_apart();
+    test_shared_title_compares_the_drawn_title();
+    test_shared_titles_rebuild_linearly();
     test_metadata_edit_and_hold();
     test_held_order_starts_each_section_once();
     test_place_other_sections_by_name();
