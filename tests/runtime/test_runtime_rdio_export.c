@@ -1473,10 +1473,20 @@ test_sidecar_channel_label_fallback(void) {
     return rc;
 }
 
+// What export_sidecar_body_with() saw: each outcome its own value, so a refusal is never mistaken for an export that
+// wrote nothing, nor for a fixture that never reached the exporter.
+enum {
+    SIDECAR_EXPORTED = 0,      // the exporter succeeded, and its sidecar was read into the body
+    SIDECAR_REFUSED = -1,      // the exporter refused, and left no sidecar
+    SIDECAR_REFUSED_LEFT = -2, // the exporter refused, but left a sidecar behind
+    SIDECAR_MISSING = -3,      // the exporter reported success, but no sidecar could be read
+    SIDECAR_SETUP_FAILED = -4, // the fixture (directory, paths, recording) failed: the exporter never ran
+};
+
 // Export one row's sidecar into a fresh directory under @p with_opts (NULL: DirWatch, no system) and return the sidecar's
-// body in @p body, or -1 when the export was refused (-2 if it left a sidecar anyway). The recording is an 8 kHz WAV
-// @p wav_seconds long, or with 0 a file with no RIFF header, which adds no length to stop_time, and was opened at
-// decode time @p opened (0: unknown), its first sample stamped at @p started by its recorder (0: not).
+// body in @p body, with SIDECAR_EXPORTED, or another SIDECAR_* outcome. The recording is an 8 kHz WAV @p wav_seconds
+// long, or with 0 a file with no RIFF header, which adds no length to stop_time, and was opened at decode time
+// @p opened (0: unknown), its first sample stamped at @p started by its recorder (0: not).
 static int
 export_sidecar_body_with(const dsd_opts* with_opts, const Event_History_I* hist, int wav_seconds, time_t opened,
                          time_t started, char* body, size_t body_size) {
@@ -1486,7 +1496,7 @@ export_sidecar_body_with(const dsd_opts* with_opts, const Event_History_I* hist,
     char dir_template[DSD_TEST_PATH_MAX] = {0};
     if (!dsd_test_mkdtemp(dir_template, sizeof(dir_template), "dsdneo_rdio_export_freq")) {
         DSD_FPRINTF(stderr, "mkdtemp failed: %s\n", strerror(errno));
-        return -1;
+        return SIDECAR_SETUP_FAILED;
     }
     char wav_path[DSD_TEST_PATH_MAX] = {0};
     char json_path[DSD_TEST_PATH_MAX] = {0};
@@ -1494,24 +1504,26 @@ export_sidecar_body_with(const dsd_opts* with_opts, const Event_History_I* hist,
         || dsd_test_path_join(json_path, sizeof(json_path), dir_template, "freq.json") != 0) {
         DSD_FPRINTF(stderr, "path join failed\n");
         remove_empty_dir(dir_template);
-        return -1;
+        return SIDECAR_SETUP_FAILED;
     }
     if ((wav_seconds > 0 ? write_pcm16_mono_wav(wav_path, 8000, wav_seconds) : write_dummy_wav(wav_path)) != 0) {
         remove_empty_dir(dir_template);
-        return -1;
+        return SIDECAR_SETUP_FAILED;
     }
     static dsd_opts opts;
     DSD_MEMSET(&opts, 0, sizeof(opts));
     opts.rdio_mode = DSD_RDIO_MODE_DIRWATCH;
-    int rc = 0;
-    if (dsd_rdio_export_call_ex(with_opts ? with_opts : &opts, hist, wav_path, opened, started, NULL) != 0
-        || read_file(json_path, body, body_size) != 0) {
-        rc = -1;
-    }
-    // A refused export leaves no sidecar behind.
-    if (rc != 0 && file_exists(json_path)) {
-        DSD_FPRINTF(stderr, "a refused export left a sidecar\n");
-        rc = -2;
+    const int exported = dsd_rdio_export_call_ex(with_opts ? with_opts : &opts, hist, wav_path, opened, started, NULL);
+    int rc = SIDECAR_EXPORTED;
+    if (exported != 0) {
+        // A refused export leaves no sidecar behind.
+        rc = file_exists(json_path) ? SIDECAR_REFUSED_LEFT : SIDECAR_REFUSED;
+        if (rc == SIDECAR_REFUSED_LEFT) {
+            DSD_FPRINTF(stderr, "a refused export left a sidecar\n");
+        }
+    } else if (read_file(json_path, body, body_size) != 0) {
+        DSD_FPRINTF(stderr, "the export reported success but wrote no readable sidecar\n");
+        rc = SIDECAR_MISSING;
     }
     (void)remove(json_path);
     (void)remove(wav_path);
@@ -1581,8 +1593,9 @@ test_sidecar_dcr_files_under_channel_khz(void) {
                 DSD_FPRINTF(stderr, "dcr sidecar: want talkgroup 469012 tagged JPN DCR, source 0\n%s\n", body);
                 rc = 1;
             }
-        } else if (exported != -1) {
-            /* -1 is the clean refusal; 0 exported the call, and -2 refused it but left a sidecar behind. */
+        } else if (exported != SIDECAR_REFUSED) {
+            /* Only the clean refusal: not an export, a refusal that left a sidecar, an export that wrote none, nor a
+               fixture that never reached the exporter. */
             DSD_FPRINTF(stderr, "dcr sidecar with no frequency must be refused cleanly (got %d)\n", exported);
             rc = 1;
         }
@@ -1864,7 +1877,7 @@ test_analog_talkgroup_sources(void) {
         const int got = export_sidecar_body_with(&opts, &hist, 1, 0, 0, body, sizeof body);
         const uint32_t id = dsd_rdio_analog_talkgroup(&opts, &hist.Event_History_Items[0]);
         if (!cases[i].exported) {
-            if (got != -1 || id != 0U) {
+            if (got != SIDECAR_REFUSED || id != 0U) {
                 DSD_FPRINTF(stderr, "%s: exported (%d) under %u, want no export\n", cases[i].label, got, (unsigned)id);
                 rc = 1;
             }
