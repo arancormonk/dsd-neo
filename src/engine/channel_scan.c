@@ -63,6 +63,12 @@ typedef struct {
     dsd_scan_row_edit edit;
 } channel_scan_row_edit;
 
+/* A tetra-dmo row the -Y scan named a cause for (issue #890): its row and the cause (dsd_engine_tetra_row). */
+typedef struct {
+    int row;
+    int cause;
+} channel_scan_tetra_named;
+
 typedef struct {
     uint64_t request;
     /* The list the staged row belongs to (dsd_state::lcn_list_rev) and the frequency the row held when its tune was
@@ -158,10 +164,14 @@ typedef struct {
        an operator hold. A rate the reopening radio has not published yet sends nothing away. */
     int tetra_skip;
     int tetra_skip_row;
-    /* The row and cause last named in the log and on the status line, so a step off it that fails late, or a later
-       visit with the same cause, names nothing again; a judgement that finds its chain running forgets it (-1 none). */
-    int tetra_named_row;
-    int tetra_named_cause;
+    /* The cause each tetra-dmo row was last named for in the log and on the status line (list tetra_named_list), so a
+       step off it that fails late, or a later visit with the same cause, names nothing again, whichever rows were named
+       in between; a judgement that finds a row's chain running forgets its entry. A list edit renumbers the rows, so
+       another list starts with none. */
+    channel_scan_tetra_named* tetra_named;
+    size_t tetra_named_count;
+    size_t tetra_named_cap;
+    uint64_t tetra_named_list;
 } channel_scan;
 
 static void
@@ -172,6 +182,7 @@ channel_scan_free(void* ptr) {
     }
     dsd_scan_key_change_clear(&scan->keys);
     free(scan->edits);
+    free(scan->tetra_named);
     free(scan);
 }
 
@@ -198,7 +209,6 @@ channel_scan_obtain(dsd_state* state) {
         return NULL;
     }
     scan->committed_row = -1;
-    scan->tetra_named_row = -1;
     scan->session = dsd_scan_row_edit_new_session();
     (void)dsd_state_ext_set(state, DSD_STATE_EXT_ENGINE_CHANNEL_SCAN, scan, channel_scan_free);
     return scan;
@@ -1126,16 +1136,65 @@ channel_scan_tetra_judging(const dsd_opts* opts, const dsd_state* state) {
     return scan;
 }
 
+/* The entry for tetra-dmo row @p row in the causes named on the list in force (channel_scan::tetra_named), or NULL. A
+   list other than the one the entries were named on drops them all first. */
+static channel_scan_tetra_named*
+channel_scan_tetra_named_find(const dsd_state* state, channel_scan* scan, int row) {
+    if (scan->tetra_named_list != state->lcn_list_rev) {
+        scan->tetra_named_list = state->lcn_list_rev;
+        scan->tetra_named_count = 0U;
+    }
+    for (size_t i = 0; i < scan->tetra_named_count; i++) {
+        if (scan->tetra_named[i].row == row) {
+            return &scan->tetra_named[i];
+        }
+    }
+    return NULL;
+}
+
+/* Forget the cause named for tetra-dmo row @p row: its chain runs. */
+static void
+channel_scan_tetra_named_forget(const dsd_state* state, channel_scan* scan, int row) {
+    channel_scan_tetra_named* named = channel_scan_tetra_named_find(state, scan, row);
+    if (named) {
+        *named = scan->tetra_named[--scan->tetra_named_count];
+    }
+}
+
+/* Note @p cause as named for tetra-dmo row @p row. Returns 0 when it already was, so it is not named again; 1 when it
+   is new (an entry that cannot be stored is named again at the next judgement, never lost). */
+static int
+channel_scan_tetra_named_note(const dsd_state* state, channel_scan* scan, int row, int cause) {
+    channel_scan_tetra_named* named = channel_scan_tetra_named_find(state, scan, row);
+    if (named) {
+        const int fresh = named->cause != cause;
+        named->cause = cause;
+        return fresh;
+    }
+    if (scan->tetra_named_count == scan->tetra_named_cap) {
+        const size_t cap = scan->tetra_named_cap ? scan->tetra_named_cap * 2U : 4U;
+        channel_scan_tetra_named* grown =
+            (channel_scan_tetra_named*)realloc(scan->tetra_named, cap * sizeof(*scan->tetra_named));
+        if (!grown) {
+            return 1;
+        }
+        scan->tetra_named = grown;
+        scan->tetra_named_cap = cap;
+    }
+    scan->tetra_named[scan->tetra_named_count].row = row;
+    scan->tetra_named[scan->tetra_named_count].cause = cause;
+    scan->tetra_named_count++;
+    return 1;
+}
+
 /* Name the cause @p why the tetra-dmo row @p row cannot run its chain for, once per row and cause, in the log and on
    the status line. */
 static void
 channel_scan_name_tetra_cause(const dsd_opts* opts, dsd_state* state, channel_scan* scan, int row,
                               dsd_engine_tetra_row why, int rate_hz) {
-    if (scan->tetra_named_row == row && scan->tetra_named_cause == (int)why) {
+    if (!channel_scan_tetra_named_note(state, scan, row, (int)why)) {
         return;
     }
-    scan->tetra_named_row = row;
-    scan->tetra_named_cause = (int)why;
     char label[64];
     char text[DSD_ENGINE_TETRA_ROW_TEXT_MAX];
     channel_scan_row_label(state, row, label, sizeof label);
@@ -1169,7 +1228,7 @@ dsd_engine_channel_scan_tetra_judge(const dsd_opts* opts, dsd_state* state) {
     scan->tetra_skip = (int)why;
     scan->tetra_skip_row = row;
     if (why == DSD_ENGINE_TETRA_ROW_OK) {
-        scan->tetra_named_row = scan->tetra_named_row == row ? -1 : scan->tetra_named_row;
+        channel_scan_tetra_named_forget(state, scan, row);
         return;
     }
     if (dsd_engine_scan_tetra_row_waits(why)) {

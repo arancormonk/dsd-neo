@@ -718,6 +718,10 @@ __wrap_rtl_stream_clear_pending_retune_profile(void) {
     g_pending_ted_override = 0;
 }
 
+/* Issue #890: a stream that lands every symbol profile on the FSK discriminator with the wide filter, whatever the
+   tune asked for (a case's knob). */
+static int g_rtl_force_fsk_chain = 0;
+
 static void
 apply_pending_profile(uint32_t target_freq_hz) {
     if (!g_pending_active) {
@@ -757,6 +761,10 @@ apply_pending_profile(uint32_t target_freq_hz) {
         g_rtl_symbol_rate_hz = g_pending_symbol_rate_hz;
         g_rtl_symbol_levels = g_pending_symbol_levels;
         g_rtl_channel_profile = g_pending_channel_profile;
+    }
+    if (g_rtl_force_fsk_chain) {
+        g_rtl_cqpsk_enable = 0;
+        g_rtl_channel_profile = RTL_STREAM_CHANNEL_PROFILE_WIDE;
     }
     if (g_pending_ted_sps > 0) {
         g_rtl_ted_sps = g_pending_ted_sps;
@@ -13845,6 +13853,43 @@ y_tetra_after_nfm_row_case(void) {
     return rc;
 }
 
+/* Issue #890: two tetra-dmo rows whose stream lands every visit on another chain. The scan leaves each at every
+   visit, and names each row's cause once: the cause of each row is remembered on its own, so naming the other row in
+   between does not make it new again. */
+static int
+y_tetra_two_rows_named_once_case(void) {
+    const char* name = "-Y two TETRA rows on another chain";
+    dsd_opts* opts = NULL;
+    dsd_state* state = NULL;
+    if (init_test_runtime(&opts, &state) != 0) {
+        return 1;
+    }
+    g_rtl_force_fsk_chain = 1;
+    dsd_test_capture_stderr cap;
+    char log[16384] = {0};
+    const int captured = dsd_test_capture_stderr_begin(&cap, "ytetratworows") == 0;
+    int rc = y_tetra_start_rows(opts, state, name, DSD_SCAN_MODE_DMR, DSD_SCAN_MODE_TETRA_DMO);
+    int visits = 0;
+    for (int step = 0; step < 9; step++) {
+        const int row = dsd_engine_channel_scan_on_air_row(state);
+        dsd_engine_channel_scan_tetra_judge(opts, state);
+        visits += row == 1 || row == 2;
+        state->last_cc_sync_time -= 11;
+        noCarrier(opts, state);
+    }
+    if (captured) {
+        (void)dsd_test_capture_stderr_end(&cap);
+        (void)dsd_test_capture_stderr_read(&cap, log, sizeof log);
+    }
+    g_rtl_force_fsk_chain = 0;
+    const int named = y_count_text(log, "TETRA DMO needs the CQPSK chain with the TETRA channel filter");
+    char detail[160];
+    DSD_SNPRINTF(detail, sizeof detail, "each row named once (%d TETRA visits, %d named)", visits, named);
+    rc |= expect_case(name, detail, visits >= 4 && named == 2);
+    y_tetra_finish(opts, state);
+    return rc;
+}
+
 /* Issue #890: a typed tetra-dmo row whose stream settled on another receive profile (the FSK discriminator with the
    wide filter) cannot decode TETRA, though it publishes no TED timing to disagree with: while a receive request is still
    pending the published profile is the stream before it and the row waits; once settled, it owes the departure. */
@@ -14024,7 +14069,7 @@ test_avoided_row_departs_under_a_carrier(void) {
            | y_tetra_on_air_case(1, 0) | y_tetra_on_air_case(0, 1) | y_tetra_on_air_case(1, 1)
            | y_tetra_late_failure_case() | y_tetra_paused_case() | y_tetra_locked_chain_case()
            | y_tetra_settled_other_case() | y_tetra_entry_reads_the_on_air_verdict_case()
-           | y_tetra_then_blank_row_case() | y_tetra_after_nfm_row_case();
+           | y_tetra_then_blank_row_case() | y_tetra_after_nfm_row_case() | y_tetra_two_rows_named_once_case();
 }
 
 /* The scan holds row @p row of the walk list, marked an entry hold, as the row committed (issue #644). */

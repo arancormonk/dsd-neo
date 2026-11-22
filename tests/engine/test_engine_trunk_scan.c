@@ -17760,6 +17760,62 @@ test_tetra_dmo_entry_reads_the_on_air_verdict(void) {
     return rc;
 }
 
+/* Two TETRA DMO targets whose applied TED timing stays wrong (issue #890): the scan leaves each for the other at every
+ * tick. Each target's cause is remembered on its own, so each is named once however often the rotation returns to it,
+ * and the entry reasons the frontends read always agree with the engine's own pick (dsd_engine_scan_entry_match()):
+ * the target on air by its landed verdict, the other prospectively, published again whenever the target on air
+ * changes. */
+static int
+test_tetra_dmo_two_targets_named_once_and_published(void) {
+    char dir[DSD_TEST_PATH_MAX];
+    char path[DSD_TEST_PATH_MAX];
+    char err[512] = {0};
+    static dsd_opts opts;
+    static dsd_state state;
+    static const char k_body[] = "dmoa,tetra-dmo-conventional,425000000,,250,250,,,,,,,\n"
+                                 "dmob,tetra-dmo-conventional,425500000,,250,250,,,,,,,\n";
+    static const uint32_t k_hz[2] = {425000000U, 425500000U};
+    int rc =
+        tetra_rig_start(&opts, &state, dir, sizeof dir, path, sizeof path, k_body, 72000, err, sizeof err, NULL, 0U)
+        != 0;
+    g_tetra_ted_applied = 5;
+    dsd_test_capture_stderr cap;
+    char log[16384] = {0};
+    const int captured = dsd_test_capture_stderr_begin(&cap, "trunkscantetratwo") == 0;
+    int mismatches = 0;
+    int switches = 0;
+    size_t last = dsd_engine_trunk_scan_active_index(&state);
+    for (int t = 1; t <= 8; t++) {
+        tick_at(&opts, &state, 0.1 * t);
+        const size_t now = dsd_engine_trunk_scan_active_index(&state);
+        switches += now != last;
+        last = now;
+        for (size_t i = 0; i < 2U; i++) {
+            dsd_scan_entry_match_t match;
+            DSD_MEMSET(&match, 0, sizeof match);
+            (void)dsd_engine_scan_entry_match(&opts, &state, k_hz[i], &match);
+            const int published = state.trunk_scan_entry_reason_count == 2U && state.trunk_scan_entry_reasons
+                                      ? (int)state.trunk_scan_entry_reasons[i]
+                                      : -1;
+            mismatches += published != (int)match.reason;
+        }
+    }
+    if (captured) {
+        (void)dsd_test_capture_stderr_end(&cap);
+        (void)dsd_test_capture_stderr_read(&cap, log, sizeof log);
+    }
+    const int named_a = count_text(log, "WARNING: Trunk scan target 'dmoa': TETRA DMO needs the TED timed");
+    const int named_b = count_text(log, "WARNING: Trunk scan target 'dmob': TETRA DMO needs the TED timed");
+    if (rc || switches < 4 || named_a != 1 || named_b != 1 || mismatches != 0) {
+        DSD_FPRINTF(stderr, "TETRA two targets: rc %d switches %d named a %d b %d, published reasons disagreeing %d\n",
+                    rc, switches, named_a, named_b, mismatches);
+        rc = 1;
+    }
+    g_tetra_ted_applied = 0;
+    tetra_rig_finish(&opts, &state, dir, path);
+    return rc;
+}
+
 /* The TETRA state across a mixed list (issue #890 A4): a session with a TETRA DMO target holds the extension from its
  * first park, so no hop frees or replaces it; every park starts it cold (the visit reset, TETRA after TETRA included);
  * a pause into manual decoding and the stop let it go cold, freeing it when the settings in force run no TETRA. A
@@ -21039,6 +21095,47 @@ expect_list_rc(const char* stage, int got, int want) {
         return 1;
     }
     return 0;
+}
+
+/* A list toggle's last-usable count reads the TETRA DMO target on air by its landed verdict (issue #890): with its TED
+   found wrong on air and the departure's park of the DMR target failed, so the receiver stays on it, switching the
+   DMR target's list off would leave only a target the scan is leaving, and is refused; with the timing right again it
+   is allowed. */
+static int
+test_tetra_dmo_list_toggle_reads_the_on_air_verdict(void) {
+    static const char* const names[] = {"dmo", "dmr"};
+    static const char* const bodies[] = {"dmo,tetra-dmo-conventional,425000000,,250,250,,,,,,,\n",
+                                         "dmr,dmr-conventional,461000000,,250,250,,,,,,,\n"};
+    static dsd_opts opts;
+    static dsd_state state;
+    scan_list_files files;
+    g_scan_dsp_rate_hz = 72000;
+    g_scan_tune_to_freq_failures_remaining = 0;
+    g_tetra_ted_override = 0;
+    g_tetra_ted_applied = 4;
+    if (scan_lists_init(&files, k_nfm_targets_header, names, bodies, NULL, 2, &opts, &state) != 0) {
+        return 1;
+    }
+    int rc = expect_active_target(&state, "the TETRA target first", 0U);
+    g_tetra_ted_applied = 5;                    /* a TED timing the 72 kHz chain does not run at */
+    g_scan_tune_to_freq_failures_remaining = 1; /* the departure's park of dmr */
+    dsd_test_capture_stderr cap;
+    const int captured = dsd_test_capture_stderr_begin(&cap, "trunkscantetratoggle") == 0;
+    tick_at(&opts, &state, 0.1);
+    if (captured) {
+        (void)dsd_test_capture_stderr_end(&cap);
+        (void)remove(cap.path);
+    }
+    rc |= expect_active_target(&state, "the failed departure keeps the receiver", 0U);
+    rc |= expect_list_rc("dmr's list off beside a TETRA target leaving", list_set(&opts, &state, 2, 0),
+                         DSD_TRUNK_SCAN_LIST_SET_REFUSED_LAST);
+    g_tetra_ted_applied = 4;
+    rc |= expect_list_rc("dmr's list off, the timing right", list_set(&opts, &state, 2, 0), DSD_TRUNK_SCAN_LIST_SET_OK);
+    g_scan_tune_to_freq_failures_remaining = 0;
+    g_tetra_ted_applied = 0;
+    g_scan_dsp_rate_hz = 0;
+    scan_lists_finish(&files, &opts, &state);
+    return rc;
 }
 
 /* The list on air (1-based, 0 none), whether its list is off, and the readout: n of m over the lists on. */
@@ -29669,6 +29766,8 @@ main(void) {
     rc |= run_with_default_tune_hook(test_tetra_dmo_target_on_air_judged_again);
     rc |= run_with_default_tune_hook(test_tetra_dmo_failed_departure_keeps_its_cause);
     rc |= run_with_default_tune_hook(test_tetra_dmo_entry_reads_the_on_air_verdict);
+    rc |= run_with_default_tune_hook(test_tetra_dmo_list_toggle_reads_the_on_air_verdict);
+    rc |= run_with_default_tune_hook(test_tetra_dmo_two_targets_named_once_and_published);
     rc |= run_with_default_tune_hook(test_tetra_state_held_across_mixed_hops);
     rc |= run_with_default_tune_hook(test_tetra_entry_reasons_follow_the_chain);
     rc |= run_with_default_tune_hook(test_nfm_target_width_skipped_under_channel_lpf_override);
