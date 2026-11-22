@@ -110,6 +110,14 @@ dmr_csbk_learn_channel(dsd_opts* opts, dsd_state* state, uint16_t lpcn, long fre
     return dmr_t3_chan_learn(opts, state, lpcn, freq, neighbour ? DMR_CHAN_ORIGIN_NEIGHBOUR : origin);
 }
 
+/* A checked standard CSBK the site sent (a grant or a C_BCAST) names it Tier III (dmr_t3_note_tier3()). */
+static void
+dmr_csbk_note_tier3(dsd_state* state, int csbk_fid) {
+    if (csbk_fid == 0 && !DSD_SYNC_IS_DMR_MS(state->synctype) && dmr_csbk_crc_checked(state)) {
+        dmr_t3_note_tier3(state);
+    }
+}
+
 /* The label of a grant's target as the call history names it (dsd_call_target_label_lookup(), issue #773 D4). */
 static void
 dmr_csbk_print_target_label(const dsd_state* state, dsd_call_kind kind, uint32_t id) {
@@ -272,8 +280,9 @@ dmr_cspdu_pf0_publish_grant(dsd_state* state, uint8_t lcn, uint16_t channel, lon
     } else if (call_kind == DSD_CALL_KIND_GROUP_VOICE) {
         kind = "Active Group Ch";
     }
+    /* Tier III channel numbers read as decimal, as everywhere dsd-neo shows them (discussion #900 B11). */
     char notice[DSD_RECENT_ACTIVITY_TEXT_SIZE];
-    DSD_SNPRINTF(notice, sizeof notice, "%s: %04X%s TG: %u; ", kind, channel, suf, (unsigned)grant->recipient);
+    DSD_SNPRINTF(notice, sizeof notice, "%s: %u%s TG: %u; ", kind, (unsigned)channel, suf, (unsigned)grant->recipient);
     dmr_csbk_publish_activity(state, lcn, lcn, call_kind, grant->recipient, grant->caller, channel, frequency,
                               emergency, notice);
 }
@@ -427,6 +436,7 @@ dmr_cspdu_pf0_handle_grants(dsd_opts* opts, dsd_state* state, uint8_t cs_pdu_bit
         return;
     }
     dmr_cspdu_pf0_print_frequency(lpchannum, freq);
+    dmr_csbk_note_tier3(state, csbk_fid);
     if (freq == 0 && dmr_t3_lpcn_is_channel(lpchannum)) {
         dmr_cspdu_pf0_note_missing_channel(opts, state, csbk_fid, lpchannum, &grant, lcn);
     }
@@ -1634,6 +1644,7 @@ dmr_cspdu_pf0_handle_c_bcast(dsd_opts* opts, dsd_state* state, uint8_t cs_pdu_bi
     DSD_FPRINTF(stderr, "\n");
     DSD_FPRINTF(stderr, " Announcements (C_BCAST)");
 
+    dmr_csbk_note_tier3(state, csbk_fid);
     dmr_cspdu_pf0_c_bcast_fields f;
     dmr_cspdu_pf0_c_bcast_parse(cs_pdu_bits, &f);
     dmr_cspdu_pf0_c_bcast_print_type(f.a_type);
@@ -3513,6 +3524,7 @@ dmr_decode_syscode(const dsd_opts* opts, dsd_state* state, const uint8_t* cs_pdu
             dmr_tiii_note_search_site(state, syscode, dmrla);
             /* A C_ALOHA comes from a Tier III control channel: this carrier, where the receiver is tuned. */
             dsd_rxid_note_cc_freq(state, DSD_RXID_FAMILY_DMR, dsd_opts_tuned_freq_hz(opts));
+            dmr_t3_cc_note_evidence(opts, state);
         }
     } else if (type == 1) {
         dmr_syscode_print_type1(code.model_name, net, site_label, syscode);

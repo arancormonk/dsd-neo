@@ -66,6 +66,9 @@ int dmr_t3_chan_learn(dsd_opts* opts, dsd_state* state, uint16_t lpcn, long freq
  * set after the air. */
 dmr_chan_origin_e dmr_t3_chan_origin(const dsd_state* state, uint16_t lpcn);
 
+/** dmr_t3_chan_origin() of LPCN 0..@p count - 1 into @p out (at most 0x1000 entries); 0 and 4095 read NONE. */
+void dmr_t3_chan_origins_copy(const dsd_state* state, uint8_t* out, size_t count);
+
 /** After a channel map import or reload replaced the map: nonzero rows become FILE, the others NONE. */
 void dmr_t3_chan_note_map_loaded(dsd_state* state);
 
@@ -132,6 +135,9 @@ void dmr_t3_missing_reconcile(const dsd_state* state);
 
 /** How many channels the ledger holds, the ones past its details included. */
 size_t dmr_t3_missing_count(const dsd_state* state);
+
+/** The ledger's revision (0 when nothing was recorded). */
+uint32_t dmr_t3_missing_revision(const dsd_state* state);
 
 /** Copy the ledger to @p out (all zero when nothing was recorded). */
 void dmr_t3_missing_copy(const dsd_state* state, dmr_t3_missing_ledger* out);
@@ -215,6 +221,31 @@ int dmr_t3_overlay_get(const dsd_state* state, uint16_t lpcn, long* hz, long* ba
 /** How many channels have an entry. */
 size_t dmr_t3_overlay_count(const dsd_state* state);
 
+/* ---- Tier III identity and control channel evidence (discussion #900 F3) ---- */
+
+/**
+ * A checked message named the site Tier III (a C_ALOHA, C_SYS_Parms, P_SYS_Parms, C_BCAST or standard grant): the flag
+ * holds for the session and is saved per trunk-scan target. The caller judges the provenance. Decoder thread only.
+ */
+void dmr_t3_note_tier3(dsd_state* state);
+
+/** Whether a checked message named the site Tier III this session (or on this trunk-scan target). */
+int dmr_t3_tier3_seen(const dsd_state* state);
+
+/**
+ * A checked C_ALOHA or C_SYS_Parms was received on the carrier the receiver is on: while no call is followed
+ * (dsd_opts::trunk_is_tuned 0) and the tuned frequency is known (dsd_opts_tuned_freq_hz()), that frequency is this
+ * carrier's TSCC until the receiver leaves it (dsd_state::carrier_seq moves). Also notes Tier III. The caller judges the
+ * provenance. Decoder thread only.
+ */
+void dmr_t3_cc_note_evidence(const dsd_opts* opts, dsd_state* state);
+
+/** The TSCC frequency dmr_t3_cc_note_evidence() recorded on the current carrier, or 0 when none or the receiver left it. */
+long dmr_t3_cc_confirmed_hz(const dsd_state* state);
+
+/** Whether the DMR module recorded anything for @p state (its extension exists). */
+int dmr_t3_chan_recorded(const dsd_state* state);
+
 /**
  * Forget every entry, leaving the live rows as they are: a trunk-scan target's map and origins were just restored
  * (dmr_t3_chan_restore()), and no user's channel crosses to a target.
@@ -234,17 +265,20 @@ typedef struct {
     uint32_t revision;
     uint16_t syscode;
     uint8_t syscode_valid;
+    uint8_t tier3;
     dmr_t3_missing_ledger missing;
 } dmr_t3_chan_target_snapshot;
 
-/** Save the parked target's provenance and ledger (never the overlay, which no target has). */
+/** Save the parked target's provenance, ledger and Tier III flag (never the overlay, which no target has, nor the
+ * control channel evidence, which the retune ends). */
 void dmr_t3_chan_save(const dsd_state* state, dmr_t3_chan_target_snapshot* out);
 
 /**
- * Restore a target's provenance and ledger, the map rows being restored beside it. Each revision goes past both the
- * current one and the saved one, so a reader comparing revisions sees the switch. The hunt's candidate list is not part
- * of it, and neither is the overlay, which stays the live session's: a Signal search session's comes back over the
- * session's map rows; trunk scan empties it with dmr_t3_overlay_discard().
+ * Restore a target's provenance, ledger and Tier III flag, the map rows being restored beside it, and drop the control
+ * channel evidence. Each revision goes past both the current one and the saved one, so a reader comparing revisions
+ * sees the switch. The hunt's candidate list is not part of it, and neither is the overlay, which stays the live
+ * session's: a Signal search session's comes back over the session's map rows; trunk scan empties it with
+ * dmr_t3_overlay_discard().
  */
 void dmr_t3_chan_restore(dsd_state* state, const dmr_t3_chan_target_snapshot* in);
 

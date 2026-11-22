@@ -707,6 +707,45 @@ test_vc_freq_falls_back_through_the_chain(void) {
 }
 
 static void
+publish_activity(dsd_state* state, int protocol, uint16_t channel, const char* notice) {
+    dsd_call_observation observation = dsd_call_observation_data(protocol, 0U, 2002U, 1234U);
+    observation.kind = DSD_CALL_KIND_GROUP_VOICE;
+    observation.channel = channel;
+    observation.frequency_hz = 0;
+    assert(dsd_recent_activity_publish(state, 0U, &observation, notice, 0U) > 0);
+}
+
+/* Discussion #900 B11: a Tier III notice names its channel in decimal, so its text read back as hex would name another
+   channel ("12" as 0x12 is channel 18). The lookup takes the observation's channel, and with no frequency for it
+   there is none: never another channel's. */
+static void
+test_vc_freq_tier3_uses_the_observed_channel(void) {
+    dsd_state* state = make_state();
+    state->trunk_chan_map[18] = 451225000L;
+    publish_activity(state, DSD_SYNC_DMR_BS_DATA_POS, 12U, "Active Group Ch: 12 (TDMA S1) TG: 1234; ");
+    assert(dsd_app_vc_freq(state) == 0L);
+
+    state->trunk_chan_map[12] = 451150000L;
+    assert(dsd_app_vc_freq(state) == 451150000L);
+
+    /* An unresolved channel (0) names no frequency either. */
+    publish_activity(state, DSD_SYNC_DMR_BS_DATA_POS, 0U, "Active Group Ch: 0 (TDMA S1) TG: 1234; ");
+    state->trunk_chan_map[0] = 451000000L;
+    assert(dsd_app_vc_freq(state) == 0L);
+    destroy_state(state);
+}
+
+/* P25 notices keep their hex iden-channel text, and the text lookup stays. */
+static void
+test_vc_freq_p25_notice_reads_hex(void) {
+    dsd_state* state = make_state();
+    state->trunk_chan_map[0x100A] = 851012500L;
+    publish_activity(state, DSD_SYNC_P25P1_POS, 0U, "Active Data Ch: 100A TGT: 21001; ");
+    assert(dsd_app_vc_freq(state) == 851012500L);
+    destroy_state(state);
+}
+
+static void
 test_cc_freq_prefers_trunk_over_p25(void) {
     dsd_state* state = make_state();
     assert(dsd_app_cc_freq(state) == 0L);
@@ -1215,6 +1254,8 @@ main(void) {
     test_seconds_truncation_matches_qt_adapter();
     test_vc_freq_prefers_canonical_active_p25_call();
     test_vc_freq_falls_back_through_the_chain();
+    test_vc_freq_tier3_uses_the_observed_channel();
+    test_vc_freq_p25_notice_reads_hex();
     test_cc_freq_prefers_trunk_over_p25();
     test_freq_helpers_are_null_safe();
     test_lead_slot_prefers_earliest_active_then_lowest_ended();

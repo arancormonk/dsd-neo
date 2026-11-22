@@ -11,6 +11,7 @@
  * links stay free of the emitter.
  */
 
+#include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/state_ext.h>
 #include <dsd-neo/protocol/dmr/dmr_t3_channels.h>
@@ -78,12 +79,9 @@ dmr_t3_overlay_hidden(const dmr_ext_t* ext, uint16_t lpcn) {
     return ext != NULL && lpcn < DMR_T3_ROWS && ext->overlay.op[lpcn] == (uint8_t)DMR_T3_OVERLAY_HIDE;
 }
 
-dmr_chan_origin_e
-dmr_t3_chan_origin(const dsd_state* state, uint16_t lpcn) {
-    if (state == NULL || lpcn >= DMR_T3_ROWS) {
-        return DMR_CHAN_ORIGIN_NONE;
-    }
-    const dmr_ext_t* ext = dmr_ext_get(state);
+/* dmr_t3_chan_origin() with the extension @p ext (NULL for none) already looked up; @p lpcn is below DMR_T3_ROWS. */
+static dmr_chan_origin_e
+dmr_t3_chan_row_origin(const dsd_state* state, const dmr_ext_t* ext, uint16_t lpcn) {
     if (state->trunk_chan_map[lpcn] == 0) {
         /* A hidden row is the user's: nothing over the air fills it. */
         return dmr_t3_overlay_hidden(ext, lpcn) ? DMR_CHAN_ORIGIN_USER : DMR_CHAN_ORIGIN_NONE;
@@ -95,6 +93,32 @@ dmr_t3_chan_origin(const dsd_state* state, uint16_t lpcn) {
         return DMR_CHAN_ORIGIN_FILE;
     }
     return dmr_t3_chan_origin_of_byte(origin);
+}
+
+dmr_chan_origin_e
+dmr_t3_chan_origin(const dsd_state* state, uint16_t lpcn) {
+    if (state == NULL || lpcn >= DMR_T3_ROWS) {
+        return DMR_CHAN_ORIGIN_NONE;
+    }
+    return dmr_t3_chan_row_origin(state, dmr_ext_get(state), lpcn);
+}
+
+void
+dmr_t3_chan_origins_copy(const dsd_state* state, uint8_t* out, size_t count) {
+    if (out == NULL) {
+        return;
+    }
+    if (count > DMR_T3_ROWS) {
+        count = DMR_T3_ROWS;
+    }
+    DSD_MEMSET(out, 0, count);
+    if (state == NULL) {
+        return;
+    }
+    const dmr_ext_t* ext = dmr_ext_get(state);
+    for (size_t l = 1U; l < count && l <= DMR_T3_MAX_LCN; l++) {
+        out[l] = (uint8_t)dmr_t3_chan_row_origin(state, ext, (uint16_t)l);
+    }
 }
 
 /* The row an overlay entry on @p l replaced came from what @p drop accepts: it goes too, so RESTORE returns none. */
@@ -378,6 +402,12 @@ dmr_t3_missing_count(const dsd_state* state) {
     return ext != NULL ? dmr_t3_missing_popcount(&ext->missing) : 0U;
 }
 
+uint32_t
+dmr_t3_missing_revision(const dsd_state* state) {
+    const dmr_ext_t* ext = dmr_ext_get(state);
+    return ext != NULL ? ext->missing.revision : 0U;
+}
+
 void
 dmr_t3_missing_copy(const dsd_state* state, dmr_t3_missing_ledger* out) {
     if (out == NULL) {
@@ -464,6 +494,7 @@ dmr_t3_chan_drop_network(dsd_state* state, dmr_ext_t* ext) {
     ext->generation++;
     ext->revision++;
     ext->syscode_valid = 0U;
+    ext->cc_evidence = 0U;
 }
 
 void
@@ -497,6 +528,53 @@ dmr_t3_chan_note_checked_syscode(dsd_state* state, uint16_t syscode) {
     }
     ext->syscode = syscode;
     ext->syscode_valid = 1U;
+}
+
+void
+dmr_t3_note_tier3(dsd_state* state) {
+    dmr_ext_t* ext = dmr_ext_get_or_create(state);
+    if (ext != NULL) {
+        ext->tier3 = 1U;
+    }
+}
+
+int
+dmr_t3_tier3_seen(const dsd_state* state) {
+    const dmr_ext_t* ext = dmr_ext_get(state);
+    return ext != NULL && ext->tier3 != 0U;
+}
+
+void
+dmr_t3_cc_note_evidence(const dsd_opts* opts, dsd_state* state) {
+    if (opts == NULL || state == NULL) {
+        return;
+    }
+    dmr_ext_t* ext = dmr_ext_get_or_create(state);
+    if (ext == NULL) {
+        return;
+    }
+    ext->tier3 = 1U;
+    const long hz = (long)dsd_opts_tuned_freq_hz(opts);
+    if (opts->trunk_is_tuned != 0 || hz <= 0) {
+        return; /* a followed call's carrier, or no frequency to name */
+    }
+    ext->cc_evidence = 1U;
+    ext->cc_evidence_carrier = state->carrier_seq;
+    ext->cc_evidence_hz = hz;
+}
+
+long
+dmr_t3_cc_confirmed_hz(const dsd_state* state) {
+    const dmr_ext_t* ext = dmr_ext_get(state);
+    if (ext == NULL || ext->cc_evidence == 0U || ext->cc_evidence_carrier != state->carrier_seq) {
+        return 0;
+    }
+    return ext->cc_evidence_hz;
+}
+
+int
+dmr_t3_chan_recorded(const dsd_state* state) {
+    return dmr_ext_get(state) != NULL;
 }
 
 uint32_t
@@ -536,6 +614,7 @@ dmr_t3_chan_save(const dsd_state* state, dmr_t3_chan_target_snapshot* out) {
     out->generation = ext->generation;
     out->syscode = ext->syscode;
     out->syscode_valid = ext->syscode_valid;
+    out->tier3 = ext->tier3;
     DSD_MEMCPY(&out->missing, &ext->missing, sizeof(out->missing));
 }
 
@@ -548,7 +627,7 @@ dmr_t3_chan_restore(dsd_state* state, const dmr_t3_chan_target_snapshot* in) {
     DSD_MEMCPY(state->dmr_lcn_ota, in->ota, sizeof(state->dmr_lcn_ota));
     dmr_ext_t* ext = dmr_ext_get(state);
     /* A snapshot with no revision recorded nothing (every change bumps it): with no record here either, none is due. */
-    if (ext == NULL && in->revision == 0U && in->generation == 0U && in->syscode_valid == 0U
+    if (ext == NULL && in->revision == 0U && in->generation == 0U && in->syscode_valid == 0U && in->tier3 == 0U
         && in->missing.revision == 0U) {
         return;
     }
@@ -564,6 +643,9 @@ dmr_t3_chan_restore(dsd_state* state, const dmr_t3_chan_target_snapshot* in) {
     ext->revision = (current > in->revision ? current : in->revision) + 1U - state->dmr_lcn_ota_seq;
     ext->syscode = in->syscode;
     ext->syscode_valid = in->syscode_valid;
+    ext->tier3 = in->tier3;
+    /* The target's carrier is another: what was heard on the one left names no TSCC here. */
+    ext->cc_evidence = 0U;
     const uint32_t missing_revision =
         (ext->missing.revision > in->missing.revision ? ext->missing.revision : in->missing.revision) + 1U;
     DSD_MEMCPY(&ext->missing, &in->missing, sizeof(ext->missing));

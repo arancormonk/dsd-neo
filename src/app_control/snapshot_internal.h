@@ -87,6 +87,15 @@ void dsd_app_snapshot_test_get_event_history_copy_counts(dsd_app_snapshot_event_
 /* 1 while the consumer copy holds a store that is not whole, so the next dsd_app_get_latest_snapshot() copies again
  * without a new publication. */
 int dsd_app_snapshot_test_consumer_needs_retry(void);
+
+/* How often each hop copied the DMR Tier III record's body (dmr_t3_view_internal.h) since the last reset. */
+typedef struct {
+    uint64_t source_to_published;
+    uint64_t published_to_consumer;
+} dsd_app_snapshot_dmr_t3_copy_counts;
+
+void dsd_app_snapshot_test_reset_dmr_t3_copy_counts(void);
+void dsd_app_snapshot_test_get_dmr_t3_copy_counts(dsd_app_snapshot_dmr_t3_copy_counts* counts);
 #endif
 
 #ifdef __cplusplus

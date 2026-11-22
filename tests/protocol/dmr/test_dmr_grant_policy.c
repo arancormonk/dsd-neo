@@ -2246,7 +2246,7 @@ main(void) {
     rc |= expect_true("absolute grant marks unconfirmed trust while off cc", st->dmr_lcn_trust[88] == 2U);
     rc |= expect_true("absolute grant publishes mbc lpcn activity",
                       recent_activity_matches(st, 0U, DSD_CALL_KIND_GROUP_VOICE, 3300U, 4400U, 88U,
-                                              "Active Group Ch: 0058 (TDMA S1) TG: 3300;"));
+                                              "Active Group Ch: 88 (TDMA S1) TG: 3300;"));
     rc |= expect_true("absolute grant dispatches learned frequency",
                       opts->trunk_is_tuned == 1 && st->trunk_vc_freq[0] == 452012500L);
 
@@ -2268,7 +2268,14 @@ main(void) {
     dmr_cspdu(opts, st, bits, bytes, 1U, 0U);
     rc |= expect_true("unmapped logical grant publishes activity",
                       recent_activity_matches(st, 0U, DSD_CALL_KIND_GROUP_VOICE, 3325U, 4425U, unmapped_lpcn,
-                                              "Active Group Ch: 0123 (TDMA S1) TG: 3325;"));
+                                              "Active Group Ch: 291 (TDMA S1) TG: 3325;"));
+    /* Tier III channel numbers read as decimal (discussion #900 B11): LPCN 12 is "12", never hex 000C. */
+    (void)dsd_recent_activity_clear(st, 0U);
+    build_grant(bits, bytes, 49U, 12U, 3326U, 4426U, 0U);
+    dmr_cspdu(opts, st, bits, bytes, 1U, 0U);
+    rc |= expect_true("tier III activity notice is decimal",
+                      recent_activity_matches(st, 0U, DSD_CALL_KIND_GROUP_VOICE, 3326U, 4426U, 12U,
+                                              "Active Group Ch: 12 (TDMA S1) TG: 3326;"));
     rc |= expect_true("unmapped logical grant does not tune", opts->trunk_is_tuned == 0 && st->trunk_vc_freq[0] == 0);
 
     st->trunk_chan_map[lpcn] = freq;

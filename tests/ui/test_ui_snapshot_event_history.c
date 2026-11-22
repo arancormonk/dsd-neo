@@ -4,6 +4,7 @@
  */
 
 #include <assert.h>
+#include <dsd-neo/app_control/dmr_t3_view.h>
 #include <dsd-neo/app_control/notification_status.h>
 #include <dsd-neo/app_control/snapshot.h>
 #include <dsd-neo/app_control/telemetry_observers.h>
@@ -21,6 +22,7 @@
 #include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/core/talkgroup_policy.h>
 #include <dsd-neo/core/tetra_publication.h>
+#include <dsd-neo/protocol/dmr/dmr_t3_channels.h>
 #include <dsd-neo/protocol/p25/p25_sm_watchdog.h>
 #include <dsd-neo/runtime/config.h>
 #include <dsd-neo/runtime/decode_mode.h>
@@ -33,6 +35,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include "../../src/app_control/snapshot_internal.h"
+#include "../../src/protocol/dmr/dmr_t3_channels_internal.h"
 #include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
 #include "p25_tick_guard_stub.h"
@@ -563,6 +566,152 @@ test_chan_map_gate_keys_on_the_session(void) {
     free_session_state(third);
     free_session_state(second);
     free_session_state(first);
+}
+
+/* ---- The DMR Tier III channel record (discussion #900 F3) ---- */
+
+static void
+set_missing_bit(dmr_t3_missing_ledger* l, uint16_t lpcn) {
+    l->missing[lpcn >> 3] = (uint8_t)(l->missing[lpcn >> 3] | (1U << (lpcn & 7U)));
+}
+
+/* Give @p st's DMR record one missing channel @p lpcn (a group grant for TG @p tg on slot 1) and mapped LPCN @p mapped,
+   at channel revision @p revision and ledger revision @p missing_revision. */
+static dmr_ext_t*
+stage_dmr_t3(dsd_state* st, uint16_t lpcn, uint32_t tg, uint16_t mapped, uint32_t revision, uint32_t missing_revision) {
+    dmr_ext_t* ext = dmr_ext_get_or_create(st);
+    assert(ext != NULL);
+    DSD_MEMSET(&ext->missing, 0, sizeof(ext->missing));
+    DSD_MEMSET(ext->origin, 0, sizeof(ext->origin));
+    set_missing_bit(&ext->missing, lpcn);
+    ext->missing.detail_count = 1U;
+    ext->missing.details[0].lpcn = lpcn;
+    ext->missing.details[0].slot = 1U;
+    ext->missing.details[0].group = 1U;
+    ext->missing.details[0].recipient = tg;
+    ext->missing.revision = missing_revision;
+    ext->revision = revision;
+    ext->origin[mapped] = (uint8_t)DMR_CHAN_ORIGIN_SITE;
+    dsd_state_dmr_lcn_ota_set(st, mapped, 1); /* the air's own row, as dmr_t3_chan_learn() leaves it */
+    return ext;
+}
+
+static const dsd_ui_dmr_t3_view*
+dmr_t3_view_after_publish(const dsd_state* st) {
+    dsd_app_telemetry_publish_snapshot(st);
+    const dsd_state* snap = dsd_app_get_latest_snapshot();
+    assert(snap != NULL);
+    const dsd_ui_dmr_t3_view* view = dsd_app_dmr_t3_view(snap);
+    assert(view != NULL);
+    return view;
+}
+
+static void
+assert_dmr_t3_copies(uint64_t published, uint64_t consumer) {
+    dsd_app_snapshot_dmr_t3_copy_counts counts;
+    dsd_app_snapshot_test_get_dmr_t3_copy_counts(&counts);
+    assert(counts.source_to_published == published);
+    assert(counts.published_to_consumer == consumer);
+}
+
+/* Both hops carry an owned copy: the ledger with its details, the origins, the overlay rows (hidden ones too), the Tier
+   III flag and the checked TSCC evidence, which goes stale once the receiver leaves the carrier. A live state carries
+   none. */
+static void
+test_dmr_t3_view_carries_the_record(void) {
+    dsd_state* st = new_session_state();
+    const dsd_ui_dmr_t3_view* view = dmr_t3_view_after_publish(st);
+    assert(view->present == 0U && dsd_app_dmr_t3_view_missing_count(view) == 0U);
+    assert(dsd_app_dmr_t3_view(st) == NULL);
+
+    dsd_state_set_trunk_chan_freq(st, 18U, 451225000L);
+    dmr_ext_t* ext = stage_dmr_t3(st, 12U, 1234U, 18U, 5U, 3U);
+    ext->tier3 = 1U;
+    ext->overlay.op[13] = (uint8_t)DMR_T3_OVERLAY_HIDE;
+    ext->overlay.base_hz[13] = 451162500L;
+    ext->overlay.op[14] = (uint8_t)DMR_T3_OVERLAY_SET;
+    ext->overlay.hz[14] = 451175000L;
+    ext->overlay.count = 2U;
+    ext->cc_evidence = 1U;
+    ext->cc_evidence_carrier = st->carrier_seq;
+    ext->cc_evidence_hz = 451000000L;
+    view = dmr_t3_view_after_publish(st);
+    assert(view->present == 1U && view->tier3 == 1U && view->state_id == st->state_instance);
+    assert(view->revision == 5U && view->missing.revision == 3U);
+    assert(dsd_app_dmr_t3_view_missing_has(view, 12U) && dsd_app_dmr_t3_view_missing_count(view) == 1U);
+    assert(view->missing.detail_count == 1U && view->missing.details[0].recipient == 1234U);
+    assert(view->origin[18] == (uint8_t)DMR_CHAN_ORIGIN_SITE && view->origin[12] == (uint8_t)DMR_CHAN_ORIGIN_NONE);
+    assert(view->origin[13] == (uint8_t)DMR_CHAN_ORIGIN_USER); /* hidden: no frequency, the user's row */
+    assert(view->overlay_count == 2U);
+    assert(view->overlay[0].lpcn == 13U && view->overlay[0].hidden == 1U && view->overlay[0].hz == 0);
+    assert(view->overlay[0].base_hz == 451162500L);
+    assert(view->overlay[1].lpcn == 14U && view->overlay[1].hidden == 0U && view->overlay[1].hz == 451175000L);
+    assert(view->cc_confirmed_here == 1U && view->cc_hz == 451000000L);
+    assert(dsd_app_dmr_t3_view_shows_lpcns(view));
+
+    /* The receiver left the carrier: the evidence goes stale, though no body moved. */
+    st->carrier_seq++;
+    view = dmr_t3_view_after_publish(st);
+    assert(view->cc_confirmed_here == 0U && view->cc_hz == 0);
+    assert(dsd_app_dmr_t3_view_missing_has(view, 12U));
+    free_session_state(st);
+}
+
+/* A refresh with nothing new copies no body at either hop; a moved revision copies it once at each. */
+static void
+test_dmr_t3_view_idle_refresh_copies_nothing(void) {
+    dsd_state* st = new_session_state();
+    (void)stage_dmr_t3(st, 12U, 1234U, 18U, 7U, 2U);
+    (void)dmr_t3_view_after_publish(st);
+    dsd_app_snapshot_test_reset_dmr_t3_copy_counts();
+    for (int i = 0; i < 3; i++) {
+        (void)dmr_t3_view_after_publish(st);
+        (void)dsd_app_get_latest_snapshot();
+    }
+    assert_dmr_t3_copies(0U, 0U);
+    dmr_ext_get(st)->missing.revision++;
+    (void)dmr_t3_view_after_publish(st);
+    (void)dmr_t3_view_after_publish(st);
+    assert_dmr_t3_copies(1U, 1U);
+    free_session_state(st);
+}
+
+/* Review Focus 3: two trunk-scan targets whose records sit at equal revisions never alias (A -> B -> A), nor do two
+   sessions at equal revisions. */
+static void
+test_dmr_t3_view_keys_on_target_and_session(void) {
+    dsd_state* st = new_session_state();
+    /* One map for both targets, so the map's sequence holds still and only the target tells them apart. */
+    dsd_state_set_trunk_chan_freq(st, 18U, 451225000L);
+    dsd_state_set_trunk_chan_freq(st, 22U, 451275000L);
+    DSD_SNPRINTF(st->trunk_scan_active_id, sizeof st->trunk_scan_active_id, "%s", "site-a");
+    (void)stage_dmr_t3(st, 12U, 1234U, 18U, 9U, 4U);
+    const dsd_ui_dmr_t3_view* view = dmr_t3_view_after_publish(st);
+    assert(dsd_app_dmr_t3_view_missing_has(view, 12U) && view->origin[18] == (uint8_t)DMR_CHAN_ORIGIN_SITE);
+    const uint32_t target_a = view->target_id;
+
+    DSD_SNPRINTF(st->trunk_scan_active_id, sizeof st->trunk_scan_active_id, "%s", "site-b");
+    (void)stage_dmr_t3(st, 40U, 5678U, 22U, 9U, 4U);
+    view = dmr_t3_view_after_publish(st);
+    assert(view->target_id != target_a);
+    assert(dsd_app_dmr_t3_view_missing_has(view, 40U) && !dsd_app_dmr_t3_view_missing_has(view, 12U));
+    assert(view->origin[22] == (uint8_t)DMR_CHAN_ORIGIN_SITE && view->origin[18] == (uint8_t)DMR_CHAN_ORIGIN_FILE);
+
+    DSD_SNPRINTF(st->trunk_scan_active_id, sizeof st->trunk_scan_active_id, "%s", "site-a");
+    (void)stage_dmr_t3(st, 12U, 1234U, 18U, 9U, 4U);
+    view = dmr_t3_view_after_publish(st);
+    assert(dsd_app_dmr_t3_view_missing_has(view, 12U) && !dsd_app_dmr_t3_view_missing_has(view, 40U));
+    assert(view->origin[18] == (uint8_t)DMR_CHAN_ORIGIN_SITE && view->origin[22] == (uint8_t)DMR_CHAN_ORIGIN_FILE);
+
+    /* Another session at the same target and revisions. */
+    dsd_state* next = new_session_state();
+    DSD_SNPRINTF(next->trunk_scan_active_id, sizeof next->trunk_scan_active_id, "%s", "site-a");
+    (void)stage_dmr_t3(next, 77U, 4321U, 30U, 9U, 4U);
+    view = dmr_t3_view_after_publish(next);
+    assert(dsd_app_dmr_t3_view_missing_has(view, 77U) && !dsd_app_dmr_t3_view_missing_has(view, 12U));
+    assert(view->state_id == next->state_instance);
+    free_session_state(next);
+    free_session_state(st);
 }
 
 /* Issue #672 F1: a restarted decoder's ring can be allocated at the freed ring's address and reach the revision the
@@ -1101,6 +1250,9 @@ main(void) {
     test_chan_map_gate_keys_on_the_session();
     test_history_copy_keys_on_the_ring_instance();
     test_render_range_carries_every_field();
+    test_dmr_t3_view_carries_the_record();
+    test_dmr_t3_view_idle_refresh_copies_nothing();
+    test_dmr_t3_view_keys_on_target_and_session();
 
     puts("UI_SNAPSHOT_EVENT_HISTORY: OK");
     dsd_state_ext_free_all(state);

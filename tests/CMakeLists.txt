@@ -1239,6 +1239,19 @@ dsd_neo_add_public_header_smoke_test(
   dsd-neo/app_control/dmr_ras_view.h
   CXX
 )
+# Discussion #900: the DMR Tier III channel record the snapshots carry.
+dsd_neo_add_public_header_smoke_test(
+  dsd-neo_test_headers_public_app_control_dmr_t3_view
+  HEADERS_PUBLIC_APP_CONTROL_DMR_T3_VIEW
+  dsd-neo/app_control/dmr_t3_view.h
+  C
+)
+dsd_neo_add_public_header_smoke_test(
+  dsd-neo_test_headers_public_app_control_dmr_t3_view_cxx
+  HEADERS_PUBLIC_APP_CONTROL_DMR_T3_VIEW_CXX
+  dsd-neo/app_control/dmr_t3_view.h
+  CXX
+)
 # Issue #521: the shared squelch readout.
 dsd_neo_add_public_header_smoke_test(
   dsd-neo_test_headers_public_app_control_squelch_view
@@ -4129,6 +4142,7 @@ if(DSD_ENABLE_TERMINAL_UI)
     add_executable(
         dsd-neo_test_ui_ncurses_trunk_display_helpers
         ui/test_ui_ncurses_trunk_display_helpers.c
+        ${PROJECT_SOURCE_DIR}/src/app_control/dmr_t3_view.c
     )
     target_include_directories(
         dsd-neo_test_ui_ncurses_trunk_display_helpers
@@ -4209,6 +4223,7 @@ if(DSD_ENABLE_TERMINAL_UI)
             ${PROJECT_SOURCE_DIR}/src/app_control/call_view.c
             ${PROJECT_SOURCE_DIR}/src/app_control/crc_policy_view.c
             ${PROJECT_SOURCE_DIR}/src/app_control/dmr_ras_view.c
+            ${PROJECT_SOURCE_DIR}/src/app_control/dmr_t3_view.c
             ${PROJECT_SOURCE_DIR}/src/app_control/analog_width_view.c
             ${PROJECT_SOURCE_DIR}/src/app_control/scan_avoid_view.c
             ${PROJECT_SOURCE_DIR}/src/app_control/scan_list_view.c
@@ -6809,6 +6824,8 @@ add_executable(
     ${PROJECT_SOURCE_DIR}/src/app_control/notification_status.c
     ${PROJECT_SOURCE_DIR}/src/app_control/telemetry_observers.c
     ${PROJECT_SOURCE_DIR}/src/app_control/ui_snapshot.c
+    ${PROJECT_SOURCE_DIR}/src/app_control/dmr_t3_view.c
+    ${PROJECT_SOURCE_DIR}/src/app_control/dmr_t3_view_copy.c
     ${PROJECT_SOURCE_DIR}/src/app_control/position_view.c
     ${PROJECT_SOURCE_DIR}/src/core/gps/position_feed.c
     ${PROJECT_SOURCE_DIR}/src/runtime/trunk_cc_candidates.c
@@ -6825,6 +6842,10 @@ target_include_directories(
 target_compile_definitions(
     dsd-neo_test_app_control_snapshot_event_history
     PRIVATE DSD_NEO_TEST_HOOKS
+)
+target_link_libraries(
+    dsd-neo_test_app_control_snapshot_event_history
+    PRIVATE dsd-neo_proto_dmr
 )
 target_link_libraries(
     dsd-neo_test_app_control_snapshot_event_history
@@ -6858,6 +6879,8 @@ add_executable(
     ${PROJECT_SOURCE_DIR}/src/app_control/notification_status.c
     ${PROJECT_SOURCE_DIR}/src/app_control/telemetry_observers.c
     ${PROJECT_SOURCE_DIR}/src/app_control/ui_snapshot.c
+    ${PROJECT_SOURCE_DIR}/src/app_control/dmr_t3_view.c
+    ${PROJECT_SOURCE_DIR}/src/app_control/dmr_t3_view_copy.c
     ${PROJECT_SOURCE_DIR}/src/app_control/position_view.c
     ${PROJECT_SOURCE_DIR}/src/core/gps/position_feed.c
     ${PROJECT_SOURCE_DIR}/src/runtime/trunk_cc_candidates.c
@@ -6874,6 +6897,10 @@ target_include_directories(
 target_compile_definitions(
     dsd-neo_test_app_control_snapshot_unit_activity
     PRIVATE DSD_NEO_TEST_HOOKS
+)
+target_link_libraries(
+    dsd-neo_test_app_control_snapshot_unit_activity
+    PRIVATE dsd-neo_proto_dmr
 )
 target_link_libraries(
     dsd-neo_test_app_control_snapshot_unit_activity
@@ -6906,6 +6933,8 @@ add_executable(
     ${PROJECT_SOURCE_DIR}/src/app_control/notification_status.c
     ${PROJECT_SOURCE_DIR}/src/app_control/telemetry_observers.c
     ${PROJECT_SOURCE_DIR}/src/app_control/ui_snapshot.c
+    ${PROJECT_SOURCE_DIR}/src/app_control/dmr_t3_view.c
+    ${PROJECT_SOURCE_DIR}/src/app_control/dmr_t3_view_copy.c
     ${PROJECT_SOURCE_DIR}/src/app_control/position_view.c
     ${PROJECT_SOURCE_DIR}/src/core/gps/position_feed.c
     ${PROJECT_SOURCE_DIR}/src/runtime/trunk_cc_candidates.c
@@ -6923,6 +6952,10 @@ target_include_directories(
 target_compile_definitions(
     dsd-neo_test_app_control_position_view
     PRIVATE DSD_NEO_TEST_HOOKS
+)
+target_link_libraries(
+    dsd-neo_test_app_control_position_view
+    PRIVATE dsd-neo_proto_dmr
 )
 target_link_libraries(
     dsd-neo_test_app_control_position_view
@@ -6973,6 +7006,8 @@ add_executable(
     ${PROJECT_SOURCE_DIR}/src/app_control/telemetry_observers.c
     ${PROJECT_SOURCE_DIR}/src/app_control/ui_opts_snapshot.c
     ${PROJECT_SOURCE_DIR}/src/app_control/ui_snapshot.c
+    ${PROJECT_SOURCE_DIR}/src/app_control/dmr_t3_view.c
+    ${PROJECT_SOURCE_DIR}/src/app_control/dmr_t3_view_copy.c
     ${PROJECT_SOURCE_DIR}/src/app_control/position_view.c
     ${PROJECT_SOURCE_DIR}/src/core/gps/position_feed.c
     ${PROJECT_SOURCE_DIR}/src/runtime/trunk_cc_candidates.c
@@ -6987,6 +7022,10 @@ target_include_directories(
 target_compile_definitions(
     dsd-neo_test_app_control_history_tap
     PRIVATE DSD_NEO_TEST_HOOKS
+)
+target_link_libraries(
+    dsd-neo_test_app_control_history_tap
+    PRIVATE dsd-neo_proto_dmr
 )
 target_link_libraries(
     dsd-neo_test_app_control_history_tap

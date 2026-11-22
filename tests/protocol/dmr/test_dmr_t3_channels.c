@@ -2124,6 +2124,88 @@ test_overlay_load_csv_rows(void) {
     assert(dmr_t3_overlay_count(&g_state) == 3U);
 }
 
+/* ---- Tier III identity and TSCC evidence (F3 "Use control channel frequency", B4 metrics) ---- */
+
+/* A checked C_ALOHA heard on the carrier the receiver is on, with no call followed, names that carrier the TSCC until
+   the receiver leaves it; a RAS-accepted one, one heard while a call is followed, or one with no known tuned frequency
+   does not. Tier III stays known for the session. */
+static void
+test_cc_evidence_from_checked_aloha(void) {
+    reset_missing();
+    dmr_sm_init(&g_opts, &g_state);
+    g_opts.audio_in_type = AUDIO_IN_RTL;
+    g_opts.rtlsdr_center_freq = (uint32_t)CC_HZ;
+    assert(dmr_t3_cc_confirmed_hz(&g_state) == 0 && !dmr_t3_tier3_seen(&g_state));
+
+    g_opts.aggressive_framesync = 0;
+    g_state.dmr_ras_signatures = 2U;
+    g_state.event_crc_invalid[0] = DSD_CRC_RAS_UNVERIFIED;
+    send_aloha(0x1234U);
+    assert(dmr_t3_cc_confirmed_hz(&g_state) == 0 && !dmr_t3_tier3_seen(&g_state));
+    g_state.event_crc_invalid[0] = 0U;
+
+    g_opts.trunk_is_tuned = 1;
+    send_aloha(0x1234U);
+    assert(dmr_t3_cc_confirmed_hz(&g_state) == 0);
+    assert(dmr_t3_tier3_seen(&g_state));
+    g_opts.trunk_is_tuned = 0;
+
+    send_aloha(0x1234U);
+    assert(dmr_t3_cc_confirmed_hz(&g_state) == CC_HZ);
+
+    /* The receiver left the carrier: the evidence is stale, the identity is not. */
+    g_state.carrier_seq++;
+    assert(dmr_t3_cc_confirmed_hz(&g_state) == 0);
+    assert(dmr_t3_tier3_seen(&g_state));
+
+    /* Off a radio input there is no frequency to name. */
+    g_opts.audio_in_type = 0;
+    send_aloha(0x1234U);
+    assert(dmr_t3_cc_confirmed_hz(&g_state) == 0);
+}
+
+/* The flag rides each trunk-scan target's snapshot; the evidence never crosses to another target. */
+static void
+test_tier3_and_evidence_per_target(void) {
+    reset_missing();
+    static dmr_t3_chan_target_snapshot t3;
+    static dmr_t3_chan_target_snapshot other;
+    g_opts.audio_in_type = AUDIO_IN_RTL;
+    g_opts.rtlsdr_center_freq = (uint32_t)CC_HZ;
+    send_aloha(0x1234U);
+    assert(dmr_t3_cc_confirmed_hz(&g_state) == CC_HZ && dmr_t3_tier3_seen(&g_state));
+    dmr_t3_chan_save(&g_state, &t3);
+    assert(t3.tier3 == 1U);
+    DSD_MEMSET(&other, 0, sizeof other);
+    dmr_t3_chan_restore(&g_state, &other);
+    assert(!dmr_t3_tier3_seen(&g_state) && dmr_t3_cc_confirmed_hz(&g_state) == 0);
+    dmr_t3_chan_restore(&g_state, &t3);
+    assert(dmr_t3_tier3_seen(&g_state));
+    assert(dmr_t3_cc_confirmed_hz(&g_state) == 0); /* a retune: heard again before it is used */
+}
+
+/* A checked standard grant or C_BCAST names the site Tier III; a manufacturer's grant or a RAS-accepted one does not. */
+static void
+test_tier3_from_checked_grant_and_bcast(void) {
+    reset_missing();
+    dmr_sm_init(&g_opts, &g_state);
+    send_grant_fid(49U, 12U, 0U, 0x10U);
+    assert(!dmr_t3_tier3_seen(&g_state));
+    g_opts.aggressive_framesync = 0;
+    g_state.dmr_ras_signatures = 2U;
+    g_state.event_crc_invalid[0] = DSD_CRC_RAS_UNVERIFIED;
+    send_grant(49U, 12U, 0U);
+    assert(!dmr_t3_tier3_seen(&g_state));
+    g_state.event_crc_invalid[0] = 0U;
+    send_grant(49U, 12U, 0U);
+    assert(dmr_t3_tier3_seen(&g_state));
+
+    reset_missing();
+    dmr_sm_init(&g_opts, &g_state);
+    send_chan_freq(30U, 451U, 400U);
+    assert(dmr_t3_tier3_seen(&g_state));
+}
+
 int
 main(void) {
     dsd_neo_log_set_tap(missing_log_tap, NULL);
@@ -2190,6 +2272,9 @@ main(void) {
     test_p_clear_mbc_on_lpcn_zero_is_malformed();
     test_foreign_takeover_drops_trust_and_moves_revision();
     test_save_restore_keeps_effective_revision();
+    test_cc_evidence_from_checked_aloha();
+    test_tier3_and_evidence_per_target();
+    test_tier3_from_checked_grant_and_bcast();
     dsd_state_ext_free_all(&g_state);
     printf("DMR_T3_CHANNELS: OK\n");
     return 0;

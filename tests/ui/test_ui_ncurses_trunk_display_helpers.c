@@ -19,10 +19,12 @@ WINDOW* stdscr;
 #include "pdcurses_macro_stubs.h"
 #endif
 #include "../../src/ui/terminal/ncurses_trunk_display.c"
+#include "dsd-neo/app_control/dmr_t3_view.h"
 #include "dsd-neo/core/opts.h"
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state.h"
+#include "dsd-neo/core/state_ext.h"
 #include "dsd-neo/core/state_fwd.h"
 #include "dsd-neo/core/synctype_ids.h"
 #include "dsd-neo/ui/ncurses_p25_display.h"
@@ -244,7 +246,7 @@ test_lcn_rendering_uses_map_channel_and_fallback(void) {
     ui_trunk_mark_freq_seen(&render, 851012500L);
 
     reset_render_capture();
-    ui_trunk_render_lcn_freqs(&state, state.trunk_chan_map_used_count, &render);
+    ui_trunk_render_lcn_freqs(&state, state.trunk_chan_map_used_count, &render, 0);
 
     assert(strstr(g_output, "CH 1234:") == NULL);
     assert(strstr(g_output, "CH ----: 852.012500 MHz") != NULL);
@@ -252,7 +254,7 @@ test_lcn_rendering_uses_map_channel_and_fallback(void) {
 
     DSD_MEMSET(&render, 0, sizeof render);
     reset_render_capture();
-    ui_trunk_render_lcn_freqs(&state, state.trunk_chan_map_used_count, &render);
+    ui_trunk_render_lcn_freqs(&state, state.trunk_chan_map_used_count, &render, 0);
     assert(strstr(g_output, "CH 1234: 851.012500 MHz") != NULL);
     assert(strstr(g_output, "CH ----: 852.012500 MHz") != NULL);
     assert(render.seen_count == 2);
@@ -374,6 +376,119 @@ test_find_channel_for_frequency_uses_tracked_entries_only(void) {
     assert(ui_trunk_find_channel_for_freq(&state, 1, 851012500) == -1);
 }
 
+/* ---- DMR Tier III (discussion #900 F3, B11) ---- */
+
+static dsd_ui_dmr_t3_view g_t3;
+
+static void
+attach_t3(dsd_state* state) {
+    DSD_MEMSET(&g_t3, 0, sizeof g_t3);
+    g_t3.present = 1U;
+    state->state_ext[DSD_STATE_EXT_APP_DMR_T3_VIEW] = &g_t3;
+}
+
+static void
+t3_missing(uint16_t lpcn) {
+    g_t3.missing.missing[lpcn >> 3] = (uint8_t)(g_t3.missing.missing[lpcn >> 3] | (1U << (lpcn & 7U)));
+}
+
+static void
+t3_detail(uint16_t lpcn, uint8_t slot, uint8_t group, uint32_t recipient) {
+    dsd_ui_dmr_t3_missing_detail* d = &g_t3.missing.details[g_t3.missing.detail_count++];
+    d->lpcn = lpcn;
+    d->slot = slot;
+    d->group = group;
+    d->recipient = recipient;
+}
+
+/* The panel opens for missing channels with trunking off (monitor mode) and an empty map, and lists them in decimal. */
+static void
+test_t3_missing_channels_open_the_panel(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    DSD_MEMSET(&opts, 0, sizeof opts);
+    DSD_MEMSET(&state, 0, sizeof state);
+    state.synctype = DSD_SYNC_DMR_BS_DATA_POS;
+    attach_t3(&state);
+    t3_missing(12U);
+    t3_detail(12U, 0U, 1U, 1234U);
+    t3_missing(40U); /* past the details: in the set only */
+    t3_missing(41U);
+    t3_detail(41U, 1U, 0U, 5678U);
+    g_t3.missing.details[1].data = 1U;
+    g_t3.missing.details[1].unverified = 1U;
+
+    reset_render_capture();
+    ui_print_learned_lcns(&opts, &state);
+    assert(g_header_calls == 1);
+    assert(strstr(g_output, "CH 12: no frequency (TG 1234, slot 1)\n") != NULL);
+    assert(strstr(g_output, "CH 41: no frequency (radio 5678, data, slot 2, unchecked)\n") != NULL);
+    assert(strstr(g_output, "CH 40: no frequency\n") != NULL);
+    assert(strstr(g_output, "CH 000C") == NULL && strstr(g_output, "CH 0028") == NULL);
+
+    /* Nothing missing, trunking off: no panel. */
+    DSD_MEMSET(g_t3.missing.missing, 0, sizeof g_t3.missing.missing);
+    reset_render_capture();
+    ui_print_learned_lcns(&opts, &state);
+    assert(g_header_calls == 0 && g_output[0] == '\0');
+}
+
+/* Past the cap the rest are counted, not listed. */
+static void
+test_t3_missing_rows_are_capped(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    DSD_MEMSET(&opts, 0, sizeof opts);
+    DSD_MEMSET(&state, 0, sizeof state);
+    attach_t3(&state);
+    for (uint16_t l = 100U; l < 100U + UI_TRUNK_MAX_MISSING_PRINT + 3U; l++) {
+        t3_missing(l);
+    }
+    reset_render_capture();
+    ui_print_learned_lcns(&opts, &state);
+    assert(count_substring(g_output, ": no frequency") == UI_TRUNK_MAX_MISSING_PRINT);
+    assert(strstr(g_output, "... and 3 more channels with no frequency") != NULL);
+}
+
+/* Tier III rows show by LPCN in decimal, each LPCN listed even when two share a frequency; the positional rows stay. P25
+   keeps its hex. */
+static void
+test_t3_mapped_rows_decimal_and_distinct(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    DSD_MEMSET(&opts, 0, sizeof opts);
+    DSD_MEMSET(&state, 0, sizeof state);
+    opts.trunk_enable = 1;
+    state.synctype = DSD_SYNC_DMR_BS_DATA_POS;
+    attach_t3(&state);
+    g_t3.tier3 = 1U;
+    add_trunk_channel(&state, 18U, 451225000L);
+    add_trunk_channel(&state, 12U, 451150000L);
+    add_trunk_channel(&state, 19U, 451225000L); /* the same frequency as 18 */
+    state.trunk_lcn_freq[0] = 451150000L;       /* positional, mapped as 12 */
+    state.trunk_lcn_freq[1] = 451500000L;       /* positional only */
+
+    reset_render_capture();
+    ui_print_learned_lcns(&opts, &state);
+    assert(strstr(g_output, "CH 12: 451.150000 MHz") != NULL);
+    assert(strstr(g_output, "CH 18: 451.225000 MHz") != NULL);
+    assert(strstr(g_output, "CH 19: 451.225000 MHz") != NULL);
+    assert(strstr(g_output, "CH ----: 451.500000 MHz") != NULL);
+    assert(count_substring(g_output, "451.150000") == 1);
+    /* By LPCN: 12 before 18 before 19, whatever order the map learned them in. */
+    assert(strstr(g_output, "CH 12:") < strstr(g_output, "CH 18:"));
+    assert(strstr(g_output, "CH 18:") < strstr(g_output, "CH 19:"));
+    assert(strstr(g_output, "CH 0012") == NULL);
+
+    /* Without Tier III identity (a P25 or Connect Plus map) the rows keep their hex and frequency dedupe. */
+    g_t3.tier3 = 0U;
+    reset_render_capture();
+    ui_print_learned_lcns(&opts, &state);
+    assert(strstr(g_output, "CH 0012: 451.225000 MHz") != NULL);
+    assert(strstr(g_output, "CH 0013:") == NULL);
+    assert(strstr(g_output, "CH 000C: 451.150000 MHz") != NULL);
+}
+
 int
 main(void) {
     test_public_guards_do_not_render();
@@ -385,6 +500,9 @@ main(void) {
     test_iden_rendering_restores_saved_attrs();
     test_public_render_applies_color_and_p25_legend();
     test_public_render_uses_idle_color_without_p25_legend();
+    test_t3_missing_channels_open_the_panel();
+    test_t3_missing_rows_are_capped();
+    test_t3_mapped_rows_decimal_and_distinct();
     return 0;
 }
 

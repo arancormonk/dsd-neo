@@ -414,6 +414,16 @@ app_lookup_trunk_chan_map(const dsd_state* state, const char* tok) {
     return 0;
 }
 
+/* The channel map's frequency for DMR channel @p channel (a Tier III LPCN, or a Connect Plus LCN); 0 for channel 0, which
+   names none. */
+static long int
+app_dmr_observed_channel_freq(const dsd_state* state, uint32_t channel) {
+    if (channel == 0U || channel >= (uint32_t)DSD_TRUNK_CHAN_MAP_SIZE) {
+        return 0;
+    }
+    return state->trunk_chan_map[channel];
+}
+
 static long int
 app_recent_activity_vc_freq(const dsd_state* state) {
     dsd_recent_activity_snapshot recent;
@@ -429,6 +439,15 @@ app_recent_activity_vc_freq(const dsd_state* state) {
         }
         if (entry->observation.frequency_hz > 0) {
             return (long int)entry->observation.frequency_hz;
+        }
+        /* A DMR row names its channel in the observation: a Tier III notice shows it in decimal, which the hex-first
+           text lookup below would read as another channel (discussion #900 B11). No frequency for it is none. */
+        if (DSD_SYNC_IS_DMR(entry->observation.protocol)) {
+            const long int frequency = app_dmr_observed_channel_freq(state, entry->observation.channel);
+            if (frequency != 0) {
+                return frequency;
+            }
+            continue;
         }
         const char* activity = entry->notice;
         if (!activity || activity[0] == '\0') {

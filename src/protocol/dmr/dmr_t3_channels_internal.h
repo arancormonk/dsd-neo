@@ -46,6 +46,13 @@ typedef struct {
     dmr_t3_missing_ledger missing;
     /* The user's channels over the map (dmr_t3_overlay.c). */
     dmr_t3_overlay overlay;
+    /* A checked message named the site Tier III this session (dmr_t3_note_tier3()); saved per trunk-scan target. */
+    uint8_t tier3;
+    /* The last checked TSCC evidence on the carrier the receiver was on (dmr_t3_cc_note_evidence()): its frequency and
+       dsd_state::carrier_seq then. Valid only while that count holds; never saved per target. */
+    uint8_t cc_evidence;
+    uint32_t cc_evidence_carrier;
+    long cc_evidence_hz;
 } dmr_ext_t;
 
 /* The extension, or NULL when nothing allocated it yet. */

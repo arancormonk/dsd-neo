@@ -2980,10 +2980,11 @@ suite runs under this compiler.
   I/Q replay session saves (issue #743); DSP 9, 10 and 11 (taken from the core range as runtime took 6 from the engine's): 9 is
   `DSD_STATE_EXT_DSP_ANALOG_RX`, the analog receive working state, 10 `DSD_STATE_EXT_DSP_ANALOG_AUDIO`, the analog
   monitor's audio chains, and 11 `DSD_STATE_EXT_DSP_ANALOG_SINK`, the analog sinks' converters to the sink rate;
-  app-control owns 16, from the ui range: `DSD_STATE_EXT_APP_SCAN_ENTRY`, the frequency entry whose go-to still waits on
-  its tune (issue #644); protocols own 24-31, among them 30, `DSD_STATE_EXT_PROTO_DSTAR_SLOW_DATA`, the D-STAR
+  app-control owns 16 and 18, from the ui range: 16 is `DSD_STATE_EXT_APP_SCAN_ENTRY`, the frequency entry whose go-to
+  still waits on its tune (issue #644), and 18 `DSD_STATE_EXT_APP_DMR_T3_VIEW`, set only on the UI snapshots, to the
+  DMR Tier III channel record they carry (discussion #900, below); protocols own 24-31, among them 30, `DSD_STATE_EXT_PROTO_DSTAR_SLOW_DATA`, the D-STAR
   slow-data assemblies (`src/protocol/dstar/dstar_sd_state.h`), and 31, `DSD_STATE_EXT_PROTO_M17_GNSS`, the M17 GNSS
-  META repeat state (`m17.c` `m17_gnss_state`), both issue #800. `CORE_STATE_EXT` pins these nine. Slot 25,
+  META repeat state (`m17.c` `m17_gnss_state`), both issue #800. `CORE_STATE_EXT` pins these ten. Slot 25,
   `DSD_STATE_EXT_PROTO_DMR_RC`, is the DMR module's one extension (`src/protocol/dmr/dmr_t3_channels_internal.h`): the
   RC notice dedupe and the Tier III channel provenance (discussion #900).
 - API note: the verified position feed (`<dsd-neo/core/position.h>`, `src/core/gps/position_feed.c`, state extension
@@ -13457,6 +13458,32 @@ Private per-protocol modules worth knowing about:
   (`import_dmr_chan_overrides_if_needed()`); it cannot be combined with `--trunk-scan` and has no INI key. Tests:
   `DMR_T3_CHANNELS`, `APP_COMMAND_QUEUE`, `ENGINE_TRUNK_SCAN`, `ENGINE_DMR_CHAN_OVERRIDES`, `RUNTIME_CLI_PARSE`,
   `RUNTIME_CLI_COMPACT`, `FUZZ_CORE_CSV_IMPORT`.
+- Tier III identity and control channel evidence (`dmr_t3_channels.c`, discussion #900 F3). `dmr_t3_note_tier3()`
+  records that a checked message named the site Tier III: a checked C_ALOHA (any FID) or SLC C_SYS_Parms/P_SYS_Parms,
+  or a checked standard (FID 0, BS-sourced) grant or C_BCAST (`dmr_csbk_note_tier3()`); the flag rides the target
+  snapshot (`dmr_t3_chan_target_snapshot::tier3`). `dmr_t3_cc_note_evidence()`, from the checked C_ALOHA and
+  C_SYS_Parms handlers, records the tuned frequency (`dsd_opts_tuned_freq_hz()`) as this carrier's TSCC while no call
+  is followed, with `dsd_state::carrier_seq`; `dmr_t3_cc_confirmed_hz()` returns it only while that count holds, so a
+  retune or carrier boundary makes it stale, and a network change or target restore drops it. Tier III grant activity
+  notices name the channel in decimal (`Active Group Ch: 12 (TDMA S1) TG: 1234;`, B11); Connect Plus and P25 keep
+  hex. Tests: `DMR_T3_CHANNELS`, `DMR_GRANT_POLICY`.
+- Tier III channel record in the UI snapshots (`<dsd-neo/app_control/dmr_t3_view.h>`, `src/app_control/dmr_t3_view.c`,
+  `dmr_t3_view_copy.c`, `dmr_t3_view_internal.h`, discussion #900 F3). `dsd_ui_dmr_t3_view` holds owned copies of the
+  ledger (details included), `dmr_t3_chan_origin()` per LPCN (`dmr_t3_chan_origins_copy()`), the overlay rows by LPCN
+  (hidden ones too, with their base), `tier3`, `cc_hz`/`cc_confirmed_here`, the state instance, a target id (moves
+  whenever `trunk_scan_active_id` changes), the channel revision and network generation (what
+  `DSD_APP_CMD_DMR_CHANNEL_SET` expects), and `content_seq`. `ui_snapshot.c` fills it at both hops
+  (`dsd_app_dmr_t3_view_publish()`, `dsd_app_dmr_t3_view_consume()`) and points slot 18 of each snapshot at it;
+  the body is copied only when the state instance, target, channel revision, ledger revision or channel map sequence
+  moved (publish) or `content_seq` moved (consume), so an idle refresh copies none and two targets at equal revisions
+  never alias. Frontends read it with `dsd_app_dmr_t3_view(snapshot)`; a live state has none. The terminal's
+  Channels panel (`ui_print_learned_lcns()`) opens while the ledger holds a channel, with the toggle off and in monitor
+  mode too (`ui_channels_panel_open()`), lists up to eight as `CH 12: no frequency (TG 1234, slot 1)`, and when
+  `dsd_app_dmr_t3_view_shows_lpcns()` holds lists the map by LPCN ascending in decimal, each LPCN even when two share a
+  frequency; positional rows stay, P25 and Connect Plus rows keep hex. The call view's VC lookup
+  (`app_recent_activity_vc_freq()`) takes a DMR activity row's channel from its observation, never its decimal text.
+  Tests: `APP_CONTROL_SNAPSHOT_EVENT_HISTORY`, `APP_CONTROL_CALL_VIEW`, `UI_NCURSES_TRUNK_DISPLAY_HELPERS`,
+  `UI_NCURSES_PRINTER_HELPERS`.
 - Tier III MBC assembly and absolute parameters (`dmr_block.c`, `dmr_abs_params.{c,h}`, `dmr_csbk.c`, discussion #900
   B7). An MBC is consecutive bursts on one slot of one carrier (TS 102 361-1 §7.4.0): its header (data type 4) arms
   the slot (`dsd_state::dmr_mbc_armed`) and stamps its position (`dmr_mbc_clock`/`_epoch`/`_carrier`: the
