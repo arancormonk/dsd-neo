@@ -1713,14 +1713,18 @@ dmr_block_type2_set_lb_pf(dmr_block_assembler_ctx* ctx) {
     }
 }
 
+/* An MBC is its header and the continuation blocks received after it: ctx->blockcounter of them at its last block
+   (ctx->blocks never goes below one, so it cannot tell a header that is its own last block, which carries no
+   continuation, from one that has one). A header-only MBC is rejected before any continuation byte is checked: the
+   assembly buffer past the header holds nothing this MBC sent. */
 static uint8_t DSD_ATTR_USED
 dmr_block_type2_length_ok(dmr_block_assembler_ctx* ctx) {
-    if (ctx->is_udt || (ctx->blocks >= 1 && ctx->blocks <= 4)) {
+    if (ctx->is_udt || (ctx->blockcounter >= 1 && ctx->blockcounter <= 4)) {
         return 1;
     }
 
     DSD_FPRINTF(stderr, "%s", KRED);
-    DSD_FPRINTF(stderr, "\n Slot %d - MBC aggregate length out of bounds: %d", ctx->slot + 1, ctx->blocks);
+    DSD_FPRINTF(stderr, "\n Slot %d - MBC aggregate length out of bounds: %d", ctx->slot + 1, ctx->blockcounter);
     DSD_FPRINTF(stderr, "%s", KNRM);
     ctx->state->data_block_crc_valid[ctx->slot][0] = 0;
     return 0;
@@ -1819,8 +1823,9 @@ dmr_block_type2_dispatch(dmr_block_assembler_ctx* ctx) {
                                       && ctx->state->data_header_valid[ctx->slot]);
         const uint8_t saved_crc_invalid = ctx->state->event_crc_invalid[ctx->slot];
         ctx->state->event_crc_invalid[ctx->slot] |= crc_flags;
+        // The continuation blocks received (dmr_block_type2_length_ok(): 1..4 here), not the processing length.
         dmr_cspdu_mbc(ctx->opts, ctx->state, ctx->dmr_pdu_sf_bits, ctx->state->dmr_pdu_sf[ctx->slot], accepted,
-                      accepted ? 0U : ctx->irrecoverable_errors, (uint8_t)ctx->blocks);
+                      accepted ? 0U : ctx->irrecoverable_errors, ctx->blockcounter);
         ctx->state->event_crc_invalid[ctx->slot] = saved_crc_invalid;
     }
     if (ctx->is_udt && !ctx->pf) {

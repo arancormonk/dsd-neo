@@ -437,6 +437,53 @@ test_t3_mbc_grant_channel_provenance(dsd_opts* opts, dsd_state* state) {
     return rc;
 }
 
+/* A checked MBC header for an absolute TV_GRANT (TG 1001, source 2002, TS1) whose LB bit is @p last, through the burst
+   handler. */
+static void
+send_mbc_grant_header(dsd_opts* opts, dsd_state* state, int last) {
+    uint8_t hdr[12] = {0x31, 0x00, 0xFF, 0xF0, 0x00, 0x03, 0xE9, 0x00, 0x07, 0xD2, 0, 0};
+    if (last) {
+        hdr[0] |= 0x80U;
+    }
+    uint8_t bits[96];
+    unpack(hdr, bits, sizeof hdr);
+    const uint16_t crc = (uint16_t)(ComputeCrcCCITT(bits) ^ 0xAAAAU);
+    hdr[10] = (uint8_t)(crc >> 8);
+    hdr[11] = (uint8_t)crc;
+    unpack(hdr, bits, sizeof hdr);
+    send_burst_bits(opts, state, bits, k_no_reserved, 0x04);
+}
+
+/* An MBC header that is its own last block carries no continuation, so nothing is decoded from the bytes an earlier,
+   unfinished MBC left in the assembly buffer: a checked grant header, a continuation naming LPCN 304 whose CRC16 checks
+   but whose LB bit is clear (the MBC is not finished), then a checked grant header with its LB bit set. The channel the
+   stale continuation names is never learned. */
+static int
+test_t3_mbc_header_only_reads_no_stale_block(dsd_opts* opts, dsd_state* state) {
+    state->currentslot = 0;
+    state->synctype = DSD_SYNC_DMR_BS_DATA_POS;
+    opts->aggressive_framesync = 0;
+    send_mbc_grant_header(opts, state, 0);
+    uint8_t block[96] = {0};
+    put_bits(block, 22, 12, 304U); // logical channel the absolute parameters describe (CSBK bits 118..129)
+    put_bits(block, 57, 10, 851U); // RX MHz (CSBK bits 153..162)
+    put_bits(block, 67, 13, 100U); // RX 125 Hz steps (CSBK bits 163..175)
+    put_bits(block, 80, 16, (uint32_t)dsd_crc_ccitt16_bits(block, 80));
+    send_burst_bits(opts, state, block, k_no_reserved, 0x05);
+    int rc = 0;
+    if (state->trunk_chan_map[304] != 0) {
+        DSD_FPRINTF(stderr, "FAIL: an unfinished MBC teaches the channel map nothing\n");
+        rc = 1;
+    }
+    send_mbc_grant_header(opts, state, 1);
+    if (state->trunk_chan_map[304] != 0) {
+        DSD_FPRINTF(stderr, "FAIL: a header-only MBC reads no stale continuation (LPCN 304 -> %ld)\n",
+                    state->trunk_chan_map[304]);
+        rc = 1;
+    }
+    return rc;
+}
+
 /* A checked C_MOVE header (TS 102 361-4 Table 7.17: Backoff 2, PCN 0xFFF, MS 0) through the burst handler, as data
    type @p databurst with CRC mask @p mask. LB is clear: it claims an appended MV_AP block. */
 static void
@@ -1378,6 +1425,7 @@ main(void) {
     rc |= test_confirmed_127_blocks(opts, state);
     rc |= test_t3_mbc_grant_channel_provenance(opts, state);
     rc |= test_t3_cmove_appended_block(opts, state);
+    rc |= test_t3_mbc_header_only_reads_no_stale_block(opts, state);
     dsd_state_ext_free_all(state);
     free(state->event_history_s);
     free(state);
