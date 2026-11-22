@@ -49,6 +49,7 @@
 #include <errno.h>
 #include <iterator>
 #include <limits.h>
+#include <memory>
 #include <mutex>
 #include <new>
 #if !DSD_PLATFORM_WIN_NATIVE
@@ -7510,6 +7511,15 @@ rtl_tcp_drop_buffered_for_retune(struct rtl_device* s) {
     rtl_stream_input_level_reset();
 }
 
+/* The reader's side of a retune's request (tcp_restart_pending): drop what it buffered before its next chunk. */
+static void
+rtl_tcp_take_restart(struct rtl_device* s) {
+    if (s->tcp_restart_pending.load(std::memory_order_relaxed)
+        && s->tcp_restart_pending.exchange(0, std::memory_order_acq_rel)) {
+        rtl_tcp_drop_buffered_for_retune(s);
+    }
+}
+
 /* One receive on @p conn into the loop buffer after its first @p held bytes; @p timed_out set when it ended for the
  * receive timeout alone. Where a
  * receive that timed out leaves the socket in an unknown state (Winsock, as for a send), the reader waits for data
@@ -7607,10 +7617,7 @@ rtl_tcp_reader_empty_read(struct rtl_device* s, struct rtl_tcp_conn** conn, stru
  * go through rtl_tcp_process_pairs(), and an odd last byte stays at the front for its Q. */
 static void
 rtl_tcp_reader_process_chunk(struct rtl_device* s, struct rtl_tcp_loop_state* st, int r, size_t* held, int* skip_odd) {
-    if (s->tcp_restart_pending.load(std::memory_order_relaxed)
-        && s->tcp_restart_pending.exchange(0, std::memory_order_acq_rel)) {
-        rtl_tcp_drop_buffered_for_retune(s);
-    }
+    rtl_tcp_take_restart(s);
     uint32_t total = (uint32_t)*held + (uint32_t)r;
     if (*skip_odd) {
         *skip_odd = 0;
@@ -10590,6 +10597,15 @@ rtl_usb_set_if_gain(struct rtl_device* dev, int stage, int gain_tenth_db) {
 static inline bool
 rtl_device_source_is_fixed(const struct rtl_device* dev) {
     return dev->backend == RTL_BACKEND_IQ_REPLAY || dev->backend == RTL_BACKEND_NET_IQ;
+}
+
+void
+rtl_device_discard_staged_input(struct rtl_device* dev) {
+    if (dev && dev->backend == RTL_BACKEND_TCP) {
+        /* As a retune of the device's own (rtl_device_set_frequency()): the reader drops its staged slice before its
+           next chunk, so bytes from before the boundary never complete a slice with bytes from after it. */
+        dev->tcp_restart_pending.store(1, std::memory_order_release);
+    }
 }
 
 /**
@@ -13598,6 +13614,93 @@ rtl_device_test_collect_write_moments(unsigned char* input, size_t input_len, si
     g_rtl_test_force_u8_generation_stale.store(0, std::memory_order_release);
     input_ring_destroy(&ring);
     return 0;
+}
+
+/* One rtl_tcp stand-in that holds the first @p pending bytes of @p old_bytes as a partial slice of @p slice bytes, and
+ * then receives @p fresh: with @p discard, rtl_device_discard_staged_input() comes between, as an external retune's
+ * flush does, and the reader takes it before the chunk (rtl_tcp_take_restart()). Copies the floats the ring took into
+ * @p out (at most @p cap) and returns how many, or -1. */
+static int
+rtl_device_test_tcp_staged_run(int discard, const unsigned char* old_bytes, size_t pending, const unsigned char* fresh,
+                               size_t fresh_len, size_t slice, float* out, size_t cap) {
+    input_ring_state ring{};
+    if (input_ring_init(&ring, 64U) != 0) {
+        return -1;
+    }
+    rtl_device dev{};
+    dev.input_ring = &ring;
+    dev.backend = RTL_BACKEND_TCP;
+    dev.buf_len = (uint32_t)slice;
+    if (pending > 0U) {
+        dev.tcp_pending = static_cast<unsigned char*>(malloc(slice));
+        if (!dev.tcp_pending) {
+            input_ring_destroy(&ring);
+            return -1;
+        }
+        dev.tcp_pending_cap = slice;
+        DSD_MEMCPY(dev.tcp_pending, old_bytes, pending);
+        dev.tcp_pending_len = pending;
+    }
+    if (discard) {
+        rtl_device_discard_staged_input(&dev);
+    }
+    rtl_tcp_take_restart(&dev);
+    unsigned char chunk[64];
+    const size_t n_in = fresh_len < sizeof chunk ? fresh_len : sizeof chunk;
+    DSD_MEMCPY(chunk, fresh, n_in);
+    rtl_u8_transform_policy_state policy{0, 0, 0};
+    rtl_tcp_reassemble_and_submit(&dev, chunk, (uint32_t)n_in, &policy, NULL);
+    const size_t used = input_ring_used(&ring);
+    const size_t n = used < cap ? used : cap;
+    for (size_t i = 0U; i < n; i++) {
+        out[i] = ring.buffer[(ring.tail.load() + i) % ring.capacity];
+    }
+    free(dev.tcp_pending);
+    input_ring_destroy(&ring);
+    return (int)n;
+}
+
+extern "C" int
+rtl_device_test_tcp_staged_slice_across_discard(int discard, int* out_old_bytes_reached_ring) {
+    if (!out_old_bytes_reached_ring) {
+        return -1;
+    }
+    /* Half a 4-byte slice from the channel left, then a whole slice from the channel landed on. */
+    static const unsigned char old_bytes[2] = {91U, 92U};
+    static const unsigned char fresh[4] = {10U, 20U, 30U, 40U};
+    float with_old[16] = {0.0f};
+    float fresh_only[16] = {0.0f};
+    const int n_run = rtl_device_test_tcp_staged_run(discard, old_bytes, 2U, fresh, sizeof fresh, 4U, with_old, 16U);
+    const int n_ref = rtl_device_test_tcp_staged_run(0, old_bytes, 0U, fresh, sizeof fresh, 4U, fresh_only, 16U);
+    if (n_run < 0 || n_ref < 0) {
+        return -2;
+    }
+    int same = n_run == n_ref;
+    for (int i = 0; same && i < n_run; i++) {
+        same = std::fabs(with_old[i] - fresh_only[i]) <= 1e-6f;
+    }
+    *out_old_bytes_reached_ring = same ? 0 : 1;
+    return 0;
+}
+
+extern "C" struct rtl_device*
+rtl_device_test_tcp_staging_device(void) {
+    std::unique_ptr<rtl_device> dev(new (std::nothrow) rtl_device{});
+    if (!dev) {
+        return nullptr;
+    }
+    dev->backend = RTL_BACKEND_TCP;
+    return dev.release();
+}
+
+extern "C" int
+rtl_device_test_tcp_take_restart_pending(struct rtl_device* dev) {
+    return dev ? dev->tcp_restart_pending.exchange(0, std::memory_order_acq_rel) : 0;
+}
+
+extern "C" void
+rtl_device_test_tcp_staging_device_free(struct rtl_device* dev) {
+    delete dev;
 }
 
 extern "C" int

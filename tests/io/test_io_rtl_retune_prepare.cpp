@@ -1364,12 +1364,23 @@ test_external_profileless_landing_waits_for_block(void) {
     failed |= expect_int_eq("profile-less landing during a block: output flushed", r.moved.flushed, 1);
     /* The input queued before the move holds the old channel too: the landing purges it, as a controller retune does. */
     failed |= expect_int_eq("profile-less landing during a block: input purged", r.moved.input_purged, 1);
+    /* So is an rtl_tcp reader's staged half slice, and the filter samples held back for look-ahead. */
+    failed |= expect_int_eq("profile-less landing during a block: staged slice dropped", r.moved.staged_discarded, 1);
+    failed |= expect_int_eq("profile-less landing during a block: filters start over", r.moved.filters_cleared, 1);
     /* A repeat with nothing to flush or apply leaves the block running and its whole output in place. */
     failed |= expect_int_eq("repeated landing during a block: does not park it", r.repeat.landing_waited, 0);
     failed |= expect_int_eq("repeated landing during a block: done while it runs", r.repeat.done_during_block, 1);
     failed |= expect_int_eq("repeated landing during a block: output kept", r.repeat.block_output_left, 64);
     failed |= expect_int_eq("repeated landing during a block: nothing flushed", r.repeat.flushed, 0);
     failed |= expect_int_eq("repeated landing during a block: input kept", r.repeat.input_purged, 0);
+    failed |= expect_int_eq("repeated landing during a block: staged slice kept", r.repeat.staged_discarded, 0);
+    failed |= expect_int_eq("repeated landing during a block: filters kept", r.repeat.filters_cleared, 0);
+    /* The reader's side: half a slice from the channel left never completes a slice with the landed channel's bytes. */
+    int old_reached = -1;
+    failed |= expect_int_eq("staged slice hook", rtl_device_test_tcp_staged_slice_across_discard(1, &old_reached), 0);
+    failed |= expect_int_eq("staged slice across a discard: only the new channel's bytes", old_reached, 0);
+    failed |= expect_int_eq("staged slice hook", rtl_device_test_tcp_staged_slice_across_discard(0, &old_reached), 0);
+    failed |= expect_int_eq("staged slice with no discard: the old bytes go through", old_reached, 1);
     failed |= expect_int_eq("profile-less landing during a block: the gate is open again", r.gate_open_after, 1);
     return failed;
 }

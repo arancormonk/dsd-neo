@@ -14626,6 +14626,9 @@ rtl_stream_external_retune_flushes(uint32_t target_freq_hz, int peer_moved) {
 static void
 rtl_stream_flush_for_external_retune(void) {
     controller_request_input_purge();
+    /* What the device's reader staged on the way to the ring (an rtl_tcp partial slice) is from before the boundary
+       too: it would complete a slice with bytes from after it, under the new discard generation. */
+    rtl_device_discard_staged_input(rtl_device_handle);
     rtl_stream_clear_output_ring(g_stream && g_stream->output ? g_stream->output : &output, 1);
 }
 
@@ -14645,6 +14648,9 @@ rtl_stream_apply_pending_retune_profile_for_target(uint32_t target_freq_hz, int 
         g_external_retune_freq_hz.store(0U, std::memory_order_release);
         if (flush) {
             gate = rtl_stream_park_demod_under_gate(gate);
+            /* The filters' history and the samples they hold back for look-ahead are the channel left's: the first
+               block from the new channel would centre outputs on them, under the new generation. */
+            rtl_demod_clear_filter_histories(&demod);
             rtl_stream_flush_for_external_retune();
         }
         rtl_stream_leave_demod_family_switch_gate(gate);
@@ -20907,6 +20913,8 @@ profileless_landing_race_phase(uint32_t target_hz, int peer_moved, rtl_stream_te
     r->peer_moved = peer_moved;
     r->landing_done.store(0, std::memory_order_relaxed);
     g_ring_purge_pending.store(0, std::memory_order_release);
+    (void)rtl_device_test_tcp_take_restart_pending(rtl_device_handle);
+    family_test_seed_stale_filter_histories();
     if (!demod_enter_processing_block(&controller)) {
         return -1;
     }
@@ -20928,6 +20936,8 @@ profileless_landing_race_phase(uint32_t target_hz, int peer_moved, rtl_stream_te
     out->block_output_left = (int)(ring_used(&output) > before ? ring_used(&output) - before : 0U);
     out->flushed = g_rtl_output_generation.load(std::memory_order_acquire) != generation ? 1 : 0;
     out->input_purged = g_ring_purge_pending.exchange(0, std::memory_order_acq_rel);
+    out->staged_discarded = rtl_device_test_tcp_take_restart_pending(rtl_device_handle);
+    out->filters_cleared = (family_test_channel_hist_clear() && family_test_hb_hist_clear()) ? 1 : 0;
     return started ? 0 : -2;
 }
 
@@ -20953,10 +20963,18 @@ rtl_stream_test_external_profileless_landing_against_block(rtl_stream_test_exter
     /* The stream's own last retune or open: the first landing is on a channel the output does not hold yet. */
     g_external_output_freq_hz.store(0U, std::memory_order_release);
     test_stream_set(&g_cqpsk_toggle_test_stream);
+    /* An rtl_tcp device stands as the open one, so the flush's request to its reader shows. */
+    struct rtl_device* const saved_handle = rtl_device_handle;
+    struct rtl_device* const tcp_dev = rtl_device_test_tcp_staging_device();
+    rtl_device_handle = tcp_dev;
     const uint32_t target_hz = kFamilyTestRetuneHz + 62500U;
     int rc = profileless_landing_race_phase(target_hz, 1, &out->moved);
     /* The peer asked again for the channel it is on: nothing to flush or apply. */
     rc |= profileless_landing_race_phase(target_hz, 0, &out->repeat);
+    rtl_device_handle = saved_handle;
+    rtl_device_test_tcp_staging_device_free(tcp_dev);
+    rtl_demod_clear_filter_histories(&demod);
+    rc |= tcp_dev ? 0 : -1;
     out->gate_open_after =
         (controller.retune_in_progress.load(std::memory_order_acquire) == 0 && reconfigure_gate_waiters() == 0) ? 1 : 0;
     test_stream_set(NULL);

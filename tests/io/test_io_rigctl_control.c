@@ -602,10 +602,14 @@ test_setfreq_success_failure_and_cache(void) {
     reset_stubs();
     g_send_result = -1;
     assert(!SetFreq(111, 851050000L));
+    /* Nothing went out: the peer cannot have moved. */
+    assert(RigctlFrequencyMoves() == moves + 2U);
 
     reset_stubs();
     g_send_result = 2;
     assert(!SetFreq(112, 851062500L));
+    /* Part of the request went out: the peer may have taken something. */
+    assert(RigctlFrequencyMoves() == moves + 3U);
     return 0;
 }
 

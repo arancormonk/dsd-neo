@@ -430,9 +430,12 @@ rigctl_set_freq_hz(dsd_socket_t sockfd, uint32_t freq_hz) {
     char buf[BUFSIZE + 1];
 
     DSD_SNPRINTF(buf, sizeof buf, "F %u\n", freq_hz);
-    const int outcome = Send(sockfd, buf) ? rigctl_read_freq_reply(sockfd, buf) : RIGCTL_FREQ_UNKNOWN;
-    if (outcome != RIGCTL_FREQ_REFUSED) {
-        /* Confirmed, or no complete reply: the peer moved, or may have. A refusal leaves it where it was. */
+    const size_t len = strlen(buf);
+    const int n = dsd_socket_send(sockfd, buf, len, DSD_RIGCTL_SEND_FLAGS);
+    const int outcome = (n >= 0 && (size_t)n == len) ? rigctl_read_freq_reply(sockfd, buf) : RIGCTL_FREQ_UNKNOWN;
+    if (n > 0 && outcome != RIGCTL_FREQ_REFUSED) {
+        /* Some of the request reached the peer, which confirmed it or sent no complete reply: it moved, or may have. A
+           refusal leaves it where it was, and a send that put nothing on the wire cannot have moved it. */
         (void)dsd_atomic_u64_fetch_add_release(&s_freq_moves, 1U);
     }
     if (outcome == RIGCTL_FREQ_CONFIRMED) {

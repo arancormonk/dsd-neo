@@ -2116,6 +2116,16 @@ typedef struct rtl_stream_test_external_landing_filter_result {
  * moved the stand-in peer away with no landing, then D). */
 int rtl_stream_test_external_landing_filter_state(rtl_stream_test_external_landing_filter_result* out);
 
+/* An rtl_tcp reader holding half a slice from the channel left (two bytes of four) receives a whole slice from the one
+ * landed on, with (@p discard) or without rtl_device_discard_staged_input() between, as an external retune's flush calls
+ * it. @p out_old_bytes_reached_ring is 1 when the ring took anything but the new slice alone. Returns 0 when it ran. */
+int rtl_device_test_tcp_staged_slice_across_discard(int discard, int* out_old_bytes_reached_ring);
+/* A bare rtl_tcp stand-in device (no connection, no reader) to stand as the stream's open device, whose reader's
+ * pending restart (tcp_restart_pending) rtl_device_test_tcp_take_restart_pending() reads and clears. */
+struct rtl_device* rtl_device_test_tcp_staging_device(void);
+int rtl_device_test_tcp_take_restart_pending(struct rtl_device* dev);
+void rtl_device_test_tcp_staging_device_free(struct rtl_device* dev);
+
 /* One external backend's landing with no profile queued (a rigctl peer's DMR or NXDN voice-channel tune) while the
  * demod thread runs a block that writes its output. */
 typedef struct rtl_stream_test_external_profileless_phase {
@@ -2125,6 +2135,8 @@ typedef struct rtl_stream_test_external_profileless_phase {
     int block_output_left;    /* samples of the block's output the ring held once the landing finished */
     int flushed;              /* 1 when the landing flushed the output */
     int input_purged;         /* 1 when the landing asked for the input ring's purge */
+    int staged_discarded;     /* 1 when it asked the open rtl_tcp device's reader to drop its staged slice */
+    int filters_cleared;      /* 1 when it started the channel filter over (its pending samples were seeded stale) */
 } rtl_stream_test_external_profileless_phase;
 
 typedef struct rtl_stream_test_external_profileless_block_result {
