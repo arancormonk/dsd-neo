@@ -60,7 +60,9 @@ bool SetFreq(dsd_socket_t sockfd, long int freq);
 uint32_t RigctlConfirmedFreq(dsd_socket_t sockfd);
 /**
  * @brief How many frequency requests have gone out to a rigctl peer and were not refused, on any connection: each
- * moved the peer, or may have (no complete reply). A send that put nothing on the wire counts nothing. A request for the frequency the peer last confirmed sends nothing
+ * moved the peer, or may have (no complete reply). A send that put nothing on the wire counts nothing when it failed
+ * for a moment only (interrupted, buffer full, timed out); one that lost the connection, or failed otherwise, counts as
+ * a move and forgets the frequency the peer confirmed. A request for the frequency the peer last confirmed sends nothing
  * and counts nothing. Any leg that tunes the peer (a trunk or scan tune, a manual tune, the legacy direct return to
  * the control channel) counts here, so a reader that kept the count can tell the peer moved since, even back to the
  * same frequency.

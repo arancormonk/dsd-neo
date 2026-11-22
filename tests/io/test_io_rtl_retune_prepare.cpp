@@ -1370,6 +1370,9 @@ test_external_profileless_landing_waits_for_block(void) {
     failed |=
         expect_int_eq("profile-less landing during a block: discriminator starts over", r.moved.discriminator_reset, 1);
     failed |= expect_int_eq("profile-less landing during a block: resampler starts over", r.moved.resampler_reset, 1);
+    failed |=
+        expect_int_eq("profile-less landing during a block: CQPSK history starts over", r.moved.cqpsk_history_reset, 1);
+    failed |= expect_int_eq("profile-less landing during a block: voice lane starts over", r.moved.voice_lane_reset, 1);
     /* A repeat with nothing to flush or apply leaves the block running and its whole output in place. */
     failed |= expect_int_eq("repeated landing during a block: does not park it", r.repeat.landing_waited, 0);
     failed |= expect_int_eq("repeated landing during a block: done while it runs", r.repeat.done_during_block, 1);
@@ -1380,29 +1383,25 @@ test_external_profileless_landing_waits_for_block(void) {
     failed |= expect_int_eq("repeated landing during a block: filters kept", r.repeat.filters_cleared, 0);
     failed |= expect_int_eq("repeated landing during a block: discriminator kept", r.repeat.discriminator_reset, 0);
     failed |= expect_int_eq("repeated landing during a block: resampler kept", r.repeat.resampler_reset, 0);
+    failed |= expect_int_eq("repeated landing during a block: CQPSK history kept", r.repeat.cqpsk_history_reset, 0);
+    failed |= expect_int_eq("repeated landing during a block: voice lane kept", r.repeat.voice_lane_reset, 0);
     /* The reader's side: half a slice from the channel left never completes a slice with the landed channel's bytes. */
     int old_reached = -1;
     failed |= expect_int_eq("staged slice hook", rtl_device_test_tcp_staged_slice_across_discard(1, &old_reached), 0);
     failed |= expect_int_eq("staged slice across a discard: only the new channel's bytes", old_reached, 0);
     failed |= expect_int_eq("staged slice hook", rtl_device_test_tcp_staged_slice_across_discard(0, &old_reached), 0);
     failed |= expect_int_eq("staged slice with no discard: the old bytes go through", old_reached, 1);
-    /* The landing's purge after the reader's restart check: the staged half slice is as stale as the ring was. */
-    int ring_floats = -1;
-    failed |= expect_int_eq("staged slice purge hook", rtl_device_test_tcp_staged_slice_across_purge(&ring_floats), 0);
-    failed |= expect_int_eq("staged slice purged after the restart check: none of it reaches the ring", ring_floats, 0);
-    /* The I byte held from the last read goes with its Q on a restart; the next pair starts on an I. */
-    unsigned char rest[8] = {0};
-    size_t rest_len = 0U;
-    size_t rest_held = 9U;
+    /* A chunk the reader received before the flush and is still writing lands before the flush returns, so the
+       purge after it takes it; the reader's next chunk goes whole with the I byte it held. */
+    int returned_mid_chunk = -1;
+    int chunk_done_at_return = -1;
+    int next_dropped = -1;
     failed |= expect_int_eq(
-        "held byte hook", rtl_device_test_tcp_held_byte_across_restart(1, rest, sizeof rest, &rest_len, &rest_held), 0);
-    failed |= expect_int_eq("held byte across a restart: three bytes left", (int)rest_len, 3);
-    failed |= expect_int_eq("held byte across a restart: the old I is gone", rest[0], 2);
-    failed |= expect_int_eq("held byte across a restart: nothing held", (int)rest_held, 0);
-    failed |= expect_int_eq(
-        "held byte hook", rtl_device_test_tcp_held_byte_across_restart(0, rest, sizeof rest, &rest_len, &rest_held), 0);
-    failed |= expect_int_eq("held byte with no restart: kept", (int)rest_len, 5);
-    failed |= expect_int_eq("held byte with no restart: first", rest[0], 0xAA);
+        "flush race hook",
+        rtl_device_test_tcp_flush_waits_for_chunk(&returned_mid_chunk, &chunk_done_at_return, &next_dropped), 0);
+    failed |= expect_int_eq("flush during a chunk: waits for it", returned_mid_chunk, 0);
+    failed |= expect_int_eq("flush during a chunk: the chunk landed first", chunk_done_at_return, 1);
+    failed |= expect_int_eq("flush during a chunk: the next chunk and the held byte go", next_dropped, 1);
     failed |= expect_int_eq("profile-less landing during a block: the gate is open again", r.gate_open_after, 1);
     return failed;
 }

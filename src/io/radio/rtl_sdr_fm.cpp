@@ -14626,7 +14626,10 @@ rtl_stream_external_retune_flushes(uint32_t target_freq_hz, int peer_moved) {
 /* A landing with no profile that moved the device: what the demodulator holds from the channel left goes, as a
    controller retune's reset does for the output it runs (demod_reset_histories_for_output_mode()): the input filters
    and their held-back samples, the output resampler's delay line, the FSK modem's history, and the discriminator's
-   previous I/Q sample, so its first output does not span two channels. The demod thread is parked. */
+   previous I/Q sample, so its first output does not span two channels. On the CQPSK path (a TETRA traffic grant tunes
+   with no profile) the Gardner delay line and the differential decoder's previous symbol go as a controller retune
+   resets them, and an FSK voice lane's de-emphasis (EDACS enables the lane before its voice-channel tune) starts from
+   silence. The demod thread is parked. */
 static void
 rtl_stream_reset_demod_for_external_move(void) {
     rtl_demod_clear_filter_histories(&demod);
@@ -14636,14 +14639,20 @@ rtl_stream_reset_demod_for_external_move(void) {
     demod.fm_demod_history_valid = 0;
     demod.pre_r = 0.0f;
     demod.pre_j = 0.0f;
+    demod_reset_ted_delay_for_retune(&demod);
+    demod.cqpsk_diff_prev_r = 1.0f;
+    demod.cqpsk_diff_prev_j = 0.0f;
+    demod.voice_lane_deemph_avg = 0.0f;
 }
 
 static void
 rtl_stream_flush_for_external_retune(void) {
-    controller_request_input_purge();
-    /* What the device's reader staged on the way to the ring (an rtl_tcp partial slice) is from before the boundary
-       too: it would complete a slice with bytes from after it, under the new discard generation. */
+    /* First the device's reader (rtl_tcp): it restarts, dropping its staged slice, the I byte it holds and the whole
+       chunk it next takes, and a chunk it is already writing lands before this returns, so the purge below takes it
+       too. No byte received before the next chunk boundary reaches the ring; the cost is that chunk of the new
+       channel's, a few milliseconds. */
     rtl_device_discard_staged_input(rtl_device_handle);
+    controller_request_input_purge();
     rtl_stream_clear_output_ring(g_stream && g_stream->output ? g_stream->output : &output, 1);
 }
 
@@ -20918,6 +20927,30 @@ profileless_landing_race_wait(const ProfilelessLandingRace* r) {
                : 0;
 }
 
+/* The demodulator's state a landing that moved the device starts over, seeded off its reset values. */
+static void
+profileless_landing_race_seed_demod(void) {
+    family_test_seed_stale_filter_histories();
+    demod.fm_demod_history_valid = 1;
+    demod.pre_r = 0.5f;
+    demod.pre_j = -0.5f;
+    demod.resamp_phase = 3;
+    demod.cqpsk_diff_prev_r = 0.25f;
+    demod.cqpsk_diff_prev_j = 0.75f;
+    demod.voice_lane_deemph_avg = 0.5f;
+}
+
+/* Which of the seeded state (profileless_landing_race_seed_demod()) the landing started over. */
+static void
+profileless_landing_race_note_demod(rtl_stream_test_external_profileless_phase* out) {
+    out->filters_cleared = (family_test_channel_hist_clear() && family_test_hb_hist_clear()) ? 1 : 0;
+    out->discriminator_reset = demod.fm_demod_history_valid == 0 ? 1 : 0;
+    out->resampler_reset = demod.resamp_phase == 0 ? 1 : 0;
+    out->cqpsk_history_reset =
+        (std::fabs(demod.cqpsk_diff_prev_r - 1.0f) < 1e-6f && std::fabs(demod.cqpsk_diff_prev_j) < 1e-6f) ? 1 : 0;
+    out->voice_lane_reset = std::fabs(demod.voice_lane_deemph_avg) < 1e-6f ? 1 : 0;
+}
+
 /* One landing on @p target_hz (@p peer_moved as the engine says it) while the stand-in demod thread runs a block, as
  * demod_process_block() does between its enter and leave, that writes its output once the landing finished or was seen
  * waiting. Returns 0 when the race ran. */
@@ -20929,11 +20962,7 @@ profileless_landing_race_phase(uint32_t target_hz, int peer_moved, rtl_stream_te
     r->landing_done.store(0, std::memory_order_relaxed);
     g_ring_purge_pending.store(0, std::memory_order_release);
     (void)rtl_device_test_tcp_take_restart_pending(rtl_device_handle);
-    family_test_seed_stale_filter_histories();
-    demod.fm_demod_history_valid = 1;
-    demod.pre_r = 0.5f;
-    demod.pre_j = -0.5f;
-    demod.resamp_phase = 3;
+    profileless_landing_race_seed_demod();
     if (!demod_enter_processing_block(&controller)) {
         return -1;
     }
@@ -20956,9 +20985,7 @@ profileless_landing_race_phase(uint32_t target_hz, int peer_moved, rtl_stream_te
     out->flushed = g_rtl_output_generation.load(std::memory_order_acquire) != generation ? 1 : 0;
     out->input_purged = g_ring_purge_pending.exchange(0, std::memory_order_acq_rel);
     out->staged_discarded = rtl_device_test_tcp_take_restart_pending(rtl_device_handle);
-    out->filters_cleared = (family_test_channel_hist_clear() && family_test_hb_hist_clear()) ? 1 : 0;
-    out->discriminator_reset = demod.fm_demod_history_valid == 0 ? 1 : 0;
-    out->resampler_reset = demod.resamp_phase == 0 ? 1 : 0;
+    profileless_landing_race_note_demod(out);
     return started ? 0 : -2;
 }
 
@@ -20984,6 +21011,12 @@ rtl_stream_test_external_profileless_landing_against_block(rtl_stream_test_exter
     /* The stream's own last retune or open: the first landing is on a channel the output does not hold yet. */
     g_external_output_freq_hz.store(0U, std::memory_order_release);
     test_stream_set(&g_cqpsk_toggle_test_stream);
+    /* The DMR stream runs the FSK discriminator (with the voice lane EDACS turns on): the monitor's own reset, which
+       clears the lane's de-emphasis anyway, is not what the landing relies on. */
+    const int saved_output_kind = demod.output_kind;
+    const int saved_cqpsk = demod.cqpsk_enable;
+    demod.output_kind = DSD_DEMOD_OUTPUT_FSK_DISCRIMINATOR;
+    demod.cqpsk_enable = 0;
     /* An rtl_tcp device stands as the open one, so the flush's request to its reader shows. */
     struct rtl_device* const saved_handle = rtl_device_handle;
     struct rtl_device* const tcp_dev = rtl_device_test_tcp_staging_device();
@@ -20995,6 +21028,8 @@ rtl_stream_test_external_profileless_landing_against_block(rtl_stream_test_exter
     rtl_device_handle = saved_handle;
     rtl_device_test_tcp_staging_device_free(tcp_dev);
     rtl_demod_clear_filter_histories(&demod);
+    demod.output_kind = saved_output_kind;
+    demod.cqpsk_enable = saved_cqpsk;
     rc |= tcp_dev ? 0 : -1;
     out->gate_open_after =
         (controller.retune_in_progress.load(std::memory_order_acquire) == 0 && reconfigure_gate_waiters() == 0) ? 1 : 0;

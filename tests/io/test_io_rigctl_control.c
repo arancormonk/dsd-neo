@@ -22,6 +22,7 @@
 #include <dsd-neo/runtime/decode_clock.h>
 #include <dsd-neo/runtime/log.h>
 #include <dsd-neo/runtime/scan_mode.h>
+#include <errno.h>
 #include <limits.h>
 #include <stdbool.h>
 #include <stddef.h>
@@ -58,6 +59,7 @@ static size_t g_response_count;
 static size_t g_response_index;
 static dsd_socket_t g_create_result;
 static int g_send_result;
+static int g_send_errno; /* errno a failed send leaves (EINTR: a moment's failure; EPIPE: the connection lost) */
 static int g_last_send_flags = -1;
 static int g_resolve_result;
 static int g_connect_result;
@@ -118,6 +120,7 @@ reset_stubs(void) {
     g_response_index = 0;
     g_create_result = 41;
     g_send_result = -2;
+    g_send_errno = 0;
     g_resolve_result = 0;
     g_connect_result = 0;
     g_resolve_count = 0;
@@ -341,6 +344,9 @@ dsd_socket_send(dsd_socket_t sock, const void* buf, size_t len, int flags) {
     g_commands[g_command_count][copy_len] = '\0';
     g_command_count++;
     if (g_send_result != -2) {
+        if (g_send_result < 0) {
+            errno = g_send_errno;
+        }
         return g_send_result;
     }
     return (int)len;
@@ -601,6 +607,7 @@ test_setfreq_success_failure_and_cache(void) {
 
     reset_stubs();
     g_send_result = -1;
+    g_send_errno = EINTR;
     assert(!SetFreq(111, 851050000L));
     /* Nothing went out: the peer cannot have moved. */
     assert(RigctlFrequencyMoves() == moves + 2U);
@@ -613,6 +620,7 @@ test_setfreq_success_failure_and_cache(void) {
     assert(RigctlConfirmedFreq(113) == 851075000U);
     const uint64_t confirmed_moves = RigctlFrequencyMoves();
     g_send_result = -1;
+    g_send_errno = EINTR;
     assert(!SetFreq(113, 851087500L));
     assert(RigctlConfirmedFreq(113) == 851075000U);
     g_send_result = -2;
@@ -621,11 +629,24 @@ test_setfreq_success_failure_and_cache(void) {
     assert(g_command_count == commands);
     assert(RigctlFrequencyMoves() == confirmed_moves);
 
+    /* A send that lost the connection wrote nothing too, but this connection confirms nothing any more: the
+       confirmation goes and the peer counts as moved, so a repeat of the old frequency goes out again. */
+    g_send_result = -1;
+    g_send_errno = EPIPE;
+    assert(!SetFreq(113, 851087500L));
+    assert(RigctlConfirmedFreq(113) == 0U);
+    assert(RigctlFrequencyMoves() == confirmed_moves + 1U);
+    g_send_result = -2;
+    push_response("RPRT 0\n");
+    const size_t commands_after_loss = g_command_count;
+    assert(SetFreq(113, 851075000L));
+    assert(g_command_count == commands_after_loss + 1U);
+
     reset_stubs();
     g_send_result = 2;
     assert(!SetFreq(112, 851062500L));
     /* Part of the request went out: the peer may have taken something. */
-    assert(RigctlFrequencyMoves() == confirmed_moves + 1U);
+    assert(RigctlFrequencyMoves() == confirmed_moves + 3U);
     return 0;
 }
 

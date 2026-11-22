@@ -2122,14 +2122,13 @@ int rtl_stream_test_external_landing_filter_state(rtl_stream_test_external_landi
 int rtl_device_test_tcp_staged_slice_across_discard(int discard, int* out_old_bytes_reached_ring);
 /* A bare rtl_tcp stand-in device (no connection, no reader) to stand as the stream's open device, whose reader's
  * pending restart (tcp_restart_pending) rtl_device_test_tcp_take_restart_pending() reads and clears. */
-/* An rtl_tcp reader stages half a slice, passes its restart check with none pending, and then a landing purges the
- * input before the chunk that completes the slice: @p out_ring_floats is what the ring took, 0 when the staged bytes
- * went with the purge. Returns 0 when it ran. */
-int rtl_device_test_tcp_staged_slice_across_purge(int* out_ring_floats);
-/* The reader's next chunk (four bytes) behind the I byte it held from the last read, with (@p restart) or without a
- * retune's restart pending: the bytes left to process into @p out (@p out_len of them) and the held count after. */
-int rtl_device_test_tcp_held_byte_across_restart(int restart, unsigned char* out, size_t out_cap, size_t* out_len,
-                                                 size_t* out_held);
+/* A stand-in rtl_tcp reader that passed its restart check is writing a chunk when an external flush asks it to restart
+ * (rtl_device_discard_staged_input(), on a thread of its own): @p out_flush_returned_mid_chunk is 1 when the flush
+ * returned while the chunk was still being written (it must wait), @p out_chunk_done_at_return 1 when the chunk had
+ * landed by the time it returned, and @p out_next_chunk_dropped 1 when the reader's next chunk (four bytes behind a held
+ * I byte) went whole, its pair phase kept. Returns 0 when it ran. */
+int rtl_device_test_tcp_flush_waits_for_chunk(int* out_flush_returned_mid_chunk, int* out_chunk_done_at_return,
+                                              int* out_next_chunk_dropped);
 struct rtl_device* rtl_device_test_tcp_staging_device(void);
 int rtl_device_test_tcp_take_restart_pending(struct rtl_device* dev);
 void rtl_device_test_tcp_staging_device_free(struct rtl_device* dev);
@@ -2147,6 +2146,8 @@ typedef struct rtl_stream_test_external_profileless_phase {
     int filters_cleared;      /* 1 when it started the channel filter over (its pending samples were seeded stale) */
     int discriminator_reset;  /* 1 when the discriminator's previous I/Q sample went (seeded valid) */
     int resampler_reset;      /* 1 when the output resampler started over (its phase was seeded) */
+    int cqpsk_history_reset;  /* 1 when the CQPSK differential decoder's previous symbol went (seeded off 1+0j) */
+    int voice_lane_reset;     /* 1 when the FSK voice lane's de-emphasis started from silence (seeded) */
 } rtl_stream_test_external_profileless_phase;
 
 typedef struct rtl_stream_test_external_profileless_block_result {
