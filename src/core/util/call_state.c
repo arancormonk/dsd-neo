@@ -1403,6 +1403,8 @@ dsd_call_state_note_source_home(dsd_state* state, uint8_t slot, int protocol, co
         return 0;
     }
     if (snapshot->source_home.valid != 0U && call_state_source_home_equal(&snapshot->source_home, home)) {
+        /* The same radio, now perhaps with a working address: the home is bound to the one it was named with last. */
+        snapshot->source_home.source = home->source;
         dsd_call_state_ext_unlock(ext);
         return 1;
     }
@@ -1412,6 +1414,39 @@ dsd_call_state_note_source_home(dsd_state* state, uint8_t slot, int protocol, co
     snapshot->source_home = *home;
     snapshot->revision = call_state_next_nonzero(snapshot->revision);
     ext->calls.revision = call_state_next_nonzero(ext->calls.revision);
+    dsd_call_state_ext_unlock(ext);
+    return 1;
+}
+
+int
+dsd_call_state_note_source_address(dsd_state* state, uint8_t slot, int protocol, uint32_t source, int* dropped) {
+    if (dropped) {
+        *dropped = 0;
+    }
+    if (!state || source == 0U || slot >= DSD_CALL_STATE_SLOT_COUNT || protocol == DSD_SYNC_NONE) {
+        return -1;
+    }
+    dsd_call_state_ext* ext = dsd_call_state_ext_get(state, 0);
+    if (!ext) {
+        return 0;
+    }
+    dsd_call_state_ext_lock(ext);
+    dsd_call_snapshot* snapshot = &ext->calls.slots[slot];
+    if (snapshot->epoch == 0U || snapshot->phase != DSD_CALL_PHASE_ACTIVE
+        || !dsd_call_state_update_is_protocols(snapshot, protocol)) {
+        dsd_call_state_ext_unlock(ext);
+        return 0;
+    }
+    /* A home named with another working address, or with none, is an earlier talker's: the observation that brought
+       this one fills an absent working address without a new epoch, so the call would go on naming that radio. */
+    if (snapshot->source_home.valid != 0U && snapshot->source_home.source != source) {
+        DSD_MEMSET(&snapshot->source_home, 0, sizeof(snapshot->source_home));
+        snapshot->revision = call_state_next_nonzero(snapshot->revision);
+        ext->calls.revision = call_state_next_nonzero(ext->calls.revision);
+        if (dropped) {
+            *dropped = 1;
+        }
+    }
     dsd_call_state_ext_unlock(ext);
     return 1;
 }

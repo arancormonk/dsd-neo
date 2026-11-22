@@ -120,11 +120,15 @@ typedef enum {
 /**
  * A P25 radio's home identity, its Source SUID (WACN, System ID, unit ID), as an extended voice user names it. It is
  * shown, and matched against a talker alias that names the same SUID, but it is never a local radio ID: the call's
- * ota_source_id stays the radio's working address on the system received (0 when the message names none).
+ * ota_source_id stays the radio's working address on the system received (0 when the message names none). It names
+ * the talker only while no later voice user on the call names another working address than @ref source
+ * (dsd_call_state_note_source_address()).
  */
 typedef struct {
-    uint32_t wacn;  /**< 20 bits. */
-    uint32_t unit;  /**< 24 bits; names a radio when valid. */
+    uint32_t wacn; /**< 20 bits. */
+    uint32_t unit; /**< 24 bits; names a radio when valid. */
+    uint32_t
+        source;     /**< The working address the voice user that named it carried; 0: none (named by its home alone). */
     uint16_t sysid; /**< 12 bits. */
     uint8_t valid;  /**< 0: no home identity. */
     uint8_t reserved;
@@ -664,6 +668,12 @@ int dsd_call_context_restore_snapshot(dsd_state* state, const dsd_call_context_s
  * arguments. */
 int dsd_call_state_note_source_home(dsd_state* state, uint8_t slot, int protocol, const dsd_call_source_home* home,
                                     int* replaced);
+/** A voice user that names no home identity (an abbreviated form, or an extended one whose SUID names no radio) named
+ * the working address @p source on slot @p slot's ACTIVE call of @p protocol's family. A home the call holds names the
+ * talker only when the voice user that named it carried @p source too: one named with another working address, or with
+ * none (a roaming radio named by its home alone), is an earlier talker's, and goes. @p dropped is set to 1 when a home
+ * went. Returns 1 when applied, 0 when the slot holds no such call, -1 on bad arguments (@p source 0 included). */
+int dsd_call_state_note_source_address(dsd_state* state, uint8_t slot, int protocol, uint32_t source, int* dropped);
 /** Mirrors the P25 trunk state machine's identity verdict on slot @p slot's call at @p epoch: @p checked 1 when its
  * record checks @p source under reception generation @p rx_gen, 0 when it withdrew or never earned it. Returns 1 when
  * applied, 0 when the slot holds another call. */

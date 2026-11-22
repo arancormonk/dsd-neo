@@ -166,6 +166,29 @@ dsd_call_state_note_source_home(dsd_state* state, uint8_t slot, int protocol, co
 }
 
 int
+dsd_call_state_note_source_address(dsd_state* state, uint8_t slot, int protocol, uint32_t source, int* dropped) {
+    if (dropped) {
+        *dropped = 0;
+    }
+    if (state == NULL || source == 0U || slot >= DSD_CALL_STATE_SLOT_COUNT) {
+        return -1;
+    }
+    (void)protocol;
+    stub_select_state(state);
+    dsd_call_snapshot* call = &g_stub_calls[slot];
+    if (call->epoch == 0U || call->phase != DSD_CALL_PHASE_ACTIVE) {
+        return 0;
+    }
+    if (call->source_home.valid != 0U && call->source_home.source != source) {
+        DSD_MEMSET(&call->source_home, 0, sizeof(call->source_home));
+        if (dropped) {
+            *dropped = 1;
+        }
+    }
+    return 1;
+}
+
+int
 dsd_call_state_note_source_verdict(dsd_state* state, uint8_t slot, uint64_t epoch, uint32_t source, int checked,
                                    uint64_t rx_gen) {
     if (state == NULL || slot >= DSD_CALL_STATE_SLOT_COUNT || epoch == 0U) {

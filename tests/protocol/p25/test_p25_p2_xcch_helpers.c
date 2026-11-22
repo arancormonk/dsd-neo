@@ -1913,6 +1913,19 @@ test_mac_active_voice_start_carries_roaming_home(void) {
     rc |= expect_int("target-less voice user leaves the open call's home",
                      dsd_call_state_get(state, 0U, &call) == 1 && call.source_home.unit == 7654321U, 1);
 
+    /* Another radio's abbreviated voice user on the call (no end decoded): its working address names the talker now,
+       so the roamer's home and alias go with it. */
+    DSD_SNPRINTF(state->generic_talker_alias[0], sizeof state->generic_talker_alias[0], "%s", "SECONDRADIO");
+    DSD_MEMSET(&g_voice_identity, 0, sizeof(g_voice_identity));
+    g_voice_identity.tg = 0x1234;
+    g_voice_identity.src = 3002;
+    g_voice_identity.is_group = 1;
+    rc |= expect_int("abbreviated voice user accepted", p25p2_xcch_emit_active(opts, state, 0, 0, mac), 1);
+    rc |= expect_int("abbreviated voice user names its working address",
+                     dsd_call_state_get(state, 0U, &call) == 1 && call.ota_source_id == 3002U, 1);
+    rc |= expect_int("abbreviated voice user drops the roamer's home", call.source_home.valid, 0);
+    rc |= expect_int("abbreviated voice user drops the roamer's alias", state->generic_talker_alias[0][0], '\0');
+
     g_voice_identity_result = 0;
     reset_stubs();
     dsd_state_ext_free_all(state);

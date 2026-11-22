@@ -2892,6 +2892,139 @@ run_extended_voice_user(dsd_opts* opts, dsd_state* state, int group, uint32_t ad
     process_MAC_VPDU_crc(opts, state, 0 /* FACCH */, P25_MAC_PDU_ACTIVE, MAC, crc_ok);
 }
 
+/* One abbreviated voice user on FACCH as MAC_ACTIVE with a passing CRC: group (0x01, TG 0x1234) or unit to unit (0x02,
+   target 0x012345), Source Address @p address. */
+static void
+run_abbreviated_voice_user(dsd_opts* opts, dsd_state* state, int group, uint32_t address) {
+    unsigned long long int MAC[24] = {0};
+    int pos = 1;
+    MAC[pos++] = group ? 0x01 : 0x02;
+    MAC[pos++] = 0x00; // SVC: clear
+    if (!group) {
+        MAC[pos++] = 0x01;
+    }
+    MAC[pos++] = group ? 0x12 : 0x23;
+    MAC[pos++] = group ? 0x34 : 0x45;
+    MAC[pos++] = (address >> 16) & 0xFFU;
+    MAC[pos++] = (address >> 8) & 0xFFU;
+    MAC[pos++] = address & 0xFFU;
+    process_MAC_VPDU_crc(opts, state, 0 /* FACCH */, P25_MAC_PDU_ACTIVE, MAC, 1);
+}
+
+/* One Motorola Group Regroup Voice Channel User - Extended (MFID90 0xA0, 16 octets) on FACCH as MAC_ACTIVE, its MAC
+   CRC @p crc_ok: supergroup 0x1234, Source Address @p address, Source SUID WACN 0xABCDE, System ID 0x2A7, unit
+   @p unit. */
+static void
+run_motorola_extended_regroup_voice_user(dsd_opts* opts, dsd_state* state, uint32_t address, uint32_t unit,
+                                         int crc_ok) {
+    unsigned long long int MAC[24] = {0};
+    int pos = 1;
+    MAC[pos++] = 0xA0;
+    MAC[pos++] = 0x90;
+    MAC[pos++] = 0x10; // length: 16 octets
+    MAC[pos++] = 0x00; // SVC: clear
+    MAC[pos++] = 0x12;
+    MAC[pos++] = 0x34;
+    MAC[pos++] = (address >> 16) & 0xFFU;
+    MAC[pos++] = (address >> 8) & 0xFFU;
+    MAC[pos++] = address & 0xFFU;
+    MAC[pos++] = 0xAB;
+    MAC[pos++] = 0xCD;
+    MAC[pos++] = 0xE2;
+    MAC[pos++] = 0xA7;
+    MAC[pos++] = (unit >> 16) & 0xFFU;
+    MAC[pos++] = (unit >> 8) & 0xFFU;
+    MAC[pos++] = unit & 0xFFU;
+    process_MAC_VPDU_crc(opts, state, 0 /* FACCH */, P25_MAC_PDU_ACTIVE, MAC, crc_ok);
+}
+
+/* A roaming radio named by its home SUID alone, then another radio's abbreviated voice user on the same call with no end
+   decoded between: the second fills the absent working address without a new call, and its checked working address
+   names the talker now. The first radio's home, and the alias its call showed, go. A repeat of the abbreviated voice
+   user, and an extended one from the same working address, keep what the call then names. */
+static int
+test_abbreviated_voice_user_replaces_roaming_home(int group) {
+    dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(dsd_opts));
+    dsd_state* state = (dsd_state*)calloc(1, sizeof(dsd_state));
+    int rc = 0;
+    if (!opts || !state) {
+        free(opts);
+        free(state);
+        return 1;
+    }
+    p25_sm_init_ctx(p25_sm_get_ctx(), opts, state);
+
+    run_extended_voice_user(opts, state, group, 0U, 0x2A7U, 1234567U, 1);
+    dsd_call_snapshot call = {0};
+    rc |= expect_true("p2_roam_abbr roamer's call", dsd_call_state_get(state, 0U, &call) > 0);
+    const uint64_t epoch = call.epoch;
+    rc |= expect_true("p2_roam_abbr roamer's home", call.source_home.valid == 1U && call.source_home.unit == 1234567U);
+    DSD_SNPRINTF(state->generic_talker_alias[0], sizeof state->generic_talker_alias[0], "%s", "ROAMER");
+
+    run_abbreviated_voice_user(opts, state, group, 3002U);
+    rc |= expect_true("p2_roam_abbr other radio", dsd_call_state_get(state, 0U, &call) > 0);
+    rc |= expect_true("p2_roam_abbr same call", call.epoch == epoch);
+    rc |= expect_eq_long("p2_roam_abbr working address", (long)call.ota_source_id, 3002);
+    rc |= expect_true("p2_roam_abbr roamer's home dropped", call.source_home.valid == 0U);
+    rc |= expect_true("p2_roam_abbr roamer's alias dropped", state->generic_talker_alias[0][0] == '\0');
+
+    /* The same radio with its working address and its home: bound to that working address, kept by its repeats. */
+    run_extended_voice_user(opts, state, group, 3002U, 0x2A7U, 7654321U, 1);
+    DSD_SNPRINTF(state->generic_talker_alias[0], sizeof state->generic_talker_alias[0], "%s", "WORKING");
+    run_abbreviated_voice_user(opts, state, group, 3002U);
+    rc |= expect_true("p2_roam_abbr repeat", dsd_call_state_get(state, 0U, &call) > 0);
+    rc |= expect_true("p2_roam_abbr home named with the working address kept", call.source_home.valid == 1U
+                                                                                   && call.source_home.unit == 7654321U
+                                                                                   && call.source_home.source == 3002U);
+    rc |= expect_true("p2_roam_abbr its alias kept", strcmp(state->generic_talker_alias[0], "WORKING") == 0);
+
+    dsd_state_ext_free_all(state);
+    free(state);
+    free(opts);
+    return rc;
+}
+
+/* The Motorola extended supergroup voice user (MFID90 0xA0) carries the talker's Source SUID after its working address,
+   as the standard extended forms do: the call records it as the talker's home identity, from a MAC whose CRC passed
+   only, and another radio's home there drops the earlier radio's alias. */
+static int
+test_motorola_extended_regroup_voice_user_home(void) {
+    dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(dsd_opts));
+    dsd_state* state = (dsd_state*)calloc(1, sizeof(dsd_state));
+    int rc = 0;
+    if (!opts || !state) {
+        free(opts);
+        free(state);
+        return 1;
+    }
+    p25_sm_init_ctx(p25_sm_get_ctx(), opts, state);
+
+    run_motorola_extended_regroup_voice_user(opts, state, 3002U, 1234567U, 0);
+    dsd_call_snapshot call = {0};
+    rc |= expect_true("p2_moto_ext crc-failed call", dsd_call_state_get(state, 0U, &call) > 0);
+    rc |= expect_true("p2_moto_ext crc-failed MAC names no home", call.source_home.valid == 0U);
+
+    run_motorola_extended_regroup_voice_user(opts, state, 3002U, 1234567U, 1);
+    rc |= expect_true("p2_moto_ext call", dsd_call_state_get(state, 0U, &call) > 0);
+    rc |= expect_eq_long("p2_moto_ext supergroup", (long)call.ota_target_id, 0x1234);
+    rc |= expect_eq_long("p2_moto_ext working address", (long)call.ota_source_id, 3002);
+    rc |= expect_true("p2_moto_ext home recorded", call.source_home.valid == 1U && call.source_home.unit == 1234567U
+                                                       && call.source_home.wacn == 0xABCDEU
+                                                       && call.source_home.sysid == 0x2A7U
+                                                       && call.source_home.source == 3002U);
+
+    DSD_SNPRINTF(state->generic_talker_alias[0], sizeof state->generic_talker_alias[0], "%s", "FIRSTRADIO");
+    run_motorola_extended_regroup_voice_user(opts, state, 3002U, 7654321U, 1);
+    rc |= expect_true("p2_moto_ext other home", dsd_call_state_get(state, 0U, &call) > 0);
+    rc |= expect_true("p2_moto_ext other radio's home", call.source_home.unit == 7654321U);
+    rc |= expect_true("p2_moto_ext first radio's alias dropped", state->generic_talker_alias[0][0] == '\0');
+
+    dsd_state_ext_free_all(state);
+    free(state);
+    free(opts);
+    return rc;
+}
+
 /* A roaming radio's extended voice user with Source Address 0 names it by its home SUID alone (an L3Harris site does).
    The call records that home identity for display (`unit@system`) and alias matching only: its source stays the working
    address, 0, so no local list, boundary or identity record takes a home unit ID for a local radio (issue #800). A
@@ -2971,6 +3104,9 @@ main(void) {
     rc |= test_harris_gps_source_comes_from_the_open_p25_call_only();
     rc |= test_roaming_radio_home_identity(1);
     rc |= test_roaming_radio_home_identity(0);
+    rc |= test_abbreviated_voice_user_replaces_roaming_home(1);
+    rc |= test_abbreviated_voice_user_replaces_roaming_home(0);
+    rc |= test_motorola_extended_regroup_voice_user_home();
     dsd_test_capture_stderr_end(&cap);
     if (rc != 0) {
         FILE* diagnostics = fopen(cap.path, "rb");

@@ -13719,7 +13719,8 @@ Private per-protocol modules worth knowing about:
   Phase 2 extended VCH unit-to-unit grant (0xC4/0xC6, which carries the source SUID alone); and a Phase 1 voice-user
   LC that needs a Source ID Extension (LCO $00 and LCGRGR with S set, LCO $4A). A message that carries a working
   source address as well as the home SUID names the talker by the working address, which is local: the extended voice
-  users (Group and Unit to Unit Voice Channel User - Extended, 0x21/0x22, as MAC_SIGNAL and inside
+  users (Group and Unit to Unit Voice Channel User - Extended, 0x21/0x22, and Motorola's Group Regroup Voice Channel
+  User - Extended, MFID90 0xA0, whose Source SUID is octets 10-16, as MAC_SIGNAL and inside
   MAC_PTT/MAC_ACTIVE: `p25p2_mac_decode_voice_identity()`, `p25p2_vpdu_observe_voice()`), as the extended grants that
   carry one do; the SUID is then only shown (`SUID:`), so a roaming radio's checked voice user names it like any other.
   Its Source SUID is recorded on the call as the talker's home identity (`dsd_call_snapshot::source_home`, only from a
@@ -13732,7 +13733,11 @@ Private per-protocol modules worth knowing about:
   re-render with `src_home_key`, the full SUID: a reacquired segment naming another full SUID takes the new home and
   alias, and the event log reports that alias), in the terminal call window and in the app's call view. Another radio's
   home on the same call (two roaming radios with no end decoded between them) replaces it and drops the alias the
-  earlier radio's call showed; such an addressless voice user is `source_nonlocal` to the trunk state machine, so a
+  earlier radio's call showed. The home is bound to the working address the voice user that named it carried
+  (`dsd_call_source_home::source`, 0 for none): a later checked voice user that names another working address and no
+  home (an abbreviated form, which fills the call's absent working address without a new epoch) takes the home away
+  and drops that alias too (`dsd_call_state_note_source_address()`), so the call's talker is matched by its working
+  address from then on; such an addressless voice user is `source_nonlocal` to the trunk state machine, so a
   working address the call keeps from an earlier talker loses its verdict. A P25 talker alias is learned only for a
   source the state machine's identity record positively checks under the reception now: every publication of that record
   mirrors the verdict onto the call (`p25_sm_merge_published_identity()` -> `dsd_call_state_note_source_verdict()`; in

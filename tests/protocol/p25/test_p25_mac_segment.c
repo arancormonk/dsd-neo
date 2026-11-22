@@ -623,6 +623,21 @@ run_voice_identity_parse_cases(void) {
     rc |= expect_int("Motorola extended regroup src", identity.src, 0x345678);
     rc |= expect_int("Motorola extended regroup type", identity.is_group, 1);
     rc |= expect_int("Motorola extended regroup service", identity.svc_bits, 0x80);
+    rc |= expect_int("Motorola extended regroup zero SUID: no home", identity.home_valid, 0);
+    /* The Source SUID after the working address (octets 10-16): the talker's home identity, as in 0x21. */
+    mac[10] = 0xAB;
+    mac[11] = 0xCD;
+    mac[12] = 0xE2;
+    mac[13] = 0xA7; /* WACN 0xABCDE, System ID 0x2A7 */
+    mac[14] = 0x12;
+    mac[15] = 0xD6;
+    mac[16] = 0x87; /* unit 1234567 */
+    rc |= expect_int("Motorola extended regroup SUID present", p25p2_mac_decode_voice_identity(0, mac, &identity), 1);
+    rc |= expect_int("Motorola extended regroup source stays the working address", identity.src, 0x345678);
+    rc |= expect_int("Motorola extended regroup home", identity.home_valid, 1);
+    rc |= expect_int("Motorola extended regroup home wacn", (int)identity.home_wacn, 0xABCDE);
+    rc |= expect_int("Motorola extended regroup home sysid", (int)identity.home_sysid, 0x2A7);
+    rc |= expect_int("Motorola extended regroup home unit", (int)identity.home_unit, 1234567);
 
     /* Extended forms: the Source Address stays the source; the Source SUID is the talker's home identity. */
     static const uint8_t k_ext_opcodes[] = {0x21u, 0x22u};

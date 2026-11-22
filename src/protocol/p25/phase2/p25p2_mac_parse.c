@@ -241,6 +241,13 @@ p25p2_mac_parse_span(int type, int span, const unsigned long long mac[24], struc
     return 0;
 }
 
+static void p25p2_mac_voice_home(const unsigned long long mac[24], int pos, struct p25p2_mac_voice_identity* out);
+
+/* The Motorola supergroup voice users. The extended form (0xA0, Group Regroup Voice Channel User - Extended, 16 octets)
+   carries the talker's working address at octets 7-9 and its Source SUID at octets 10-16 (WACN, System ID, unit ID),
+   as OP25 (tk_p25.py, op 0xa0 mfid 0x90: sa msg[6:9], ssuid msg[9:16]) and SDRTrunk
+   (MotorolaGroupRegroupVoiceChannelUserExtended: SOURCE_ADDRESS octet 7, SOURCE_SUID_WACN octet 10, SOURCE_SUID_ID
+   octet 14) decode it: the working address names the talker, the SUID is its home identity, as in 0x21. */
 static int
 p25p2_mac_motorola_voice_identity_segment(const unsigned long long mac[24], const struct p25p2_mac_segment* segment,
                                           struct p25p2_mac_voice_identity* out) {
@@ -261,6 +268,9 @@ p25p2_mac_motorola_voice_identity_segment(const unsigned long long mac[24], cons
         out->src = (int)((p25p2_mac_octet(mac, pos + 6) << 16) | (p25p2_mac_octet(mac, pos + 7) << 8)
                          | p25p2_mac_octet(mac, pos + 8));
         out->svc_bits = (int)p25p2_mac_octet(mac, pos + 3);
+        if (segment->length >= 16) {
+            p25p2_mac_voice_home(mac, pos + 9, out);
+        }
     } else {
         return 0;
     }

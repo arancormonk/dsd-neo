@@ -192,17 +192,23 @@ p25p2_xcch_emit_active(dsd_opts* opts, dsd_state* state, int type, int slot, con
         ev.source_nonlocal = (uint8_t)(identity.home_valid && identity.src == 0);
         const int accepted = p25p2_xcch_emit_checked_voice_start(opts, state, &ev);
         /* The voice start may open the call after the voice-user pass named its home: the call it opened carries it, and
-           only that call (one naming this voice user's target). */
+           only that call (one naming this voice user's target). A voice user that names a working address and no home
+           takes away a home an earlier talker left on that call (p25p2_note_voice_home()). */
         const uint64_t named_target = (uint64_t)(uint32_t)(identity.is_group ? identity.tg : identity.dst);
+        const uint32_t working =
+            (!identity.source_optional && p25_source_id_is_subscriber((uint64_t)(uint32_t)identity.src))
+                ? (uint32_t)identity.src
+                : 0U;
         dsd_call_snapshot published;
-        if (accepted && identity.home_valid && named_target != 0U
+        if (accepted && (identity.home_valid || working != 0U) && named_target != 0U
             && dsd_call_state_get(state, (uint8_t)slot, &published) > 0 && published.phase == DSD_CALL_PHASE_ACTIVE
             && published.ota_target_id == named_target) {
             const dsd_call_source_home home = {.wacn = identity.home_wacn,
                                                .unit = identity.home_unit,
+                                               .source = working,
                                                .sysid = (uint16_t)identity.home_sysid,
-                                               .valid = 1U};
-            p25p2_note_voice_home(opts, state, slot, &home);
+                                               .valid = (uint8_t)(identity.home_valid != 0)};
+            p25p2_note_voice_home(opts, state, slot, working, &home);
         }
         return accepted;
     }
