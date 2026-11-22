@@ -12433,8 +12433,10 @@ Call frequency and access-code provenance (issue #575). A call's canonical `freq
   only by number and one known only by text are two calls (`call_state_target_forms_differ()` in
   `call_state_observation_changes_identity()`), so a DCR call never continues or reacquires a named NXDN call, nor a
   named call a DCR call. Nor does it one known only by its source (an IDAS INFO3's talker, a VCALL to the null
-  destination), either way: "JPN DCR" meets no numbered party (`call_state_dcr_meets_numbered_party()`). A provisional
-  voice epoch, which names no party at all, still takes either. The rdio-scanner export, which needs a talkgroup,
+  destination), either way: "JPN DCR" meets no numbered party (`call_state_dcr_meets_numbered_party()`). An IDAS SCCH
+  naming a talker or target while a DCR call is live is likewise another call at the source
+  (`nxdn_scch_names_new_call()`): its observation carries neither "JPN DCR" nor the DCR call's service metadata or
+  crypto. A provisional voice epoch, which names no party at all, still takes either. The rdio-scanner export, which needs a talkgroup,
   files a DCR recording under its channel frequency in kHz as for a conventional analog call
   (`dsd_rdio_channel_talkgroup()`), its parties staying anonymous; one heard at no known frequency is not exported.
 - NXDN Type-D addresses (`nxdn_internal.h`: `nxdn_typed_full_id()`, `nxdn_typed_low_id()`, `nxdn_typed_prefix()`,

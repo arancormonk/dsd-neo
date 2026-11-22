@@ -3850,14 +3850,18 @@ nxdn_scch_named_kind(const dsd_call_snapshot* call, uint32_t target_id, dsd_call
     return call->kind;
 }
 
-/* Whether an SCCH naming @p target_id (its text @p target_text, "pp-iiii") of class @p kind (its G/U bit;
- * DSD_CALL_KIND_UNKNOWN when it has none) names another call than @p call: another class, a unit 03-0005 after a group
- * 03-0005 or after a group call to the Null Group ID (no numeric target, a talker named all the same), or another
- * target, by its prefix as by its ID (issue #903). A call of the message's class (or none known) that no target named
- * yet takes the message's. */
+/* Whether an SCCH naming @p source_id or @p target_id (its text @p target_text, "pp-iiii") of class @p kind (its G/U
+ * bit; DSD_CALL_KIND_UNKNOWN when it has none) names another call than @p call: any numbered party after a DCR call,
+ * which names none ("JPN DCR", as call_state_dcr_meets_numbered_party() splits it); another class, a unit 03-0005 after
+ * a group 03-0005 or after a group call to the Null Group ID (no numeric target, a talker named all the same), or
+ * another target, by its prefix as by its ID (issue #903). A call of the message's class (or none known) that no target
+ * named yet takes the message's. */
 static int
-nxdn_scch_names_new_call(const dsd_call_snapshot* call, uint16_t target_id, const char* target_text,
+nxdn_scch_names_new_call(const dsd_call_snapshot* call, uint16_t source_id, uint16_t target_id, const char* target_text,
                          dsd_call_kind kind) {
+    if (dsd_call_is_nxdn_dcr(call->protocol, call->ota_target_id, call->target_text)) {
+        return source_id != 0U || target_id != 0U;
+    }
     if (target_id == 0U) {
         return 0;
     }
@@ -3913,8 +3917,9 @@ nxdn_scch_carry_crypto_media(dsd_state* state, const dsd_call_snapshot* call, in
  * Repeater / Prefix, "pp-iiii", nxdn_typed_id_text()), and @p kind when the message classifies it
  * (a busy message's G/U bit; DSD_CALL_KIND_UNKNOWN keeps the call's for the same target, and gives a new target no
  * class, nxdn_scch_named_kind()), so a later unclassified message for the same target reads the class this one
- * verified, never a previous call's. A message naming another target or class is another call: it carries none of the
- * previous call's talker, emergency or crypto (nxdn_scch_names_new_call()). */
+ * verified, never a previous call's. A message naming another target or class, or any numbered party during a DCR
+ * call, is another call: it carries none of the previous call's talker, target text, emergency or crypto
+ * (nxdn_scch_names_new_call()). */
 static void
 nxdn_scch_enrich_identity(dsd_state* state, uint16_t source_id, uint16_t target_id, uint8_t prefix,
                           dsd_call_kind kind) {
@@ -3925,7 +3930,7 @@ nxdn_scch_enrich_identity(dsd_state* state, uint16_t source_id, uint16_t target_
     }
     char target_text[DSD_CALL_IDENTITY_TEXT_SIZE];
     nxdn_typed_id_text(target_text, sizeof(target_text), prefix, target_id);
-    const int new_call = nxdn_scch_names_new_call(&call, target_id, target_text, kind);
+    const int new_call = nxdn_scch_names_new_call(&call, source_id, target_id, target_text, kind);
     dsd_call_observation observation = {
         .protocol = call.protocol,
         .slot = 0U,
@@ -3938,10 +3943,10 @@ nxdn_scch_enrich_identity(dsd_state* state, uint16_t source_id, uint16_t target_
     };
     nxdn_typed_id_text(observation.source_text, sizeof(observation.source_text), prefix, source_id);
     nxdn_scch_carry_call(&observation, &call, new_call);
-    if (target_id == 0U) {
-        DSD_MEMCPY(observation.target_text, call.target_text, sizeof(observation.target_text));
-    } else {
+    if (target_id != 0U) {
         DSD_MEMCPY(observation.target_text, target_text, sizeof(observation.target_text));
+    } else if (!new_call) {
+        DSD_MEMCPY(observation.target_text, call.target_text, sizeof(observation.target_text));
     }
     DSD_MEMCPY(observation.route_text[0], call.route_text[0], sizeof(observation.route_text[0]));
     DSD_MEMCPY(observation.route_text[1], call.route_text[1], sizeof(observation.route_text[1]));

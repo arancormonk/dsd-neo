@@ -2898,6 +2898,75 @@ nxdn_run_type_d_new_call_case(const char* variant, uint16_t group, uint8_t rep2,
     return rc;
 }
 
+/* A DCR call ("JPN DCR", no numeric party) with crypto and service metadata, still live when an SCCH names a numbered
+ * party (issue #903): an INFO3 talker 03-0123 (@p sf 1) or an INFO2 target 03-0005 (@p sf 2) is another call. Its
+ * observation carries neither DCR's text identity nor DCR's service metadata or crypto, and the same message again
+ * continues that call. */
+static int
+nxdn_run_numbered_scch_after_dcr_variant(uint8_t sf, uint16_t id, const char* variant) {
+    static const char* const name = "numbered-scch-after-dcr";
+    const nxdn_case busy = {
+        "dcr-then-numbered", NXDN_MATRIX_TYPE_D, 0U, 0U, 0U, 0U, 0U, 0, 0, 0, 6U, 3U, 5U, 938012500L,
+    };
+    nxdn_setup_fixture(&busy);
+    g_opts.trunk_is_tuned = 1;
+    g_state.trunk_vc_freq[0] = g_state.trunk_vc_freq[1] = busy.expected_freq;
+    nxdn_install_hooks();
+    at_seconds(9600.0);
+    voice_live();
+    dsd_call_observation dcr = {
+        .protocol = DSD_SYNC_NXDN_POS,
+        .slot = 0U,
+        .kind = DSD_CALL_KIND_VOICE,
+        .emergency = 1U,
+        .has_service_metadata = 1U,
+    };
+    DSD_SNPRINTF(dcr.target_text, sizeof(dcr.target_text), "%s", DSD_CALL_NXDN_DCR_TARGET_TEXT);
+    (void)dsd_call_state_observe(&g_state, &dcr, DSD_CALL_BOUNDARY_BEGIN);
+    const dsd_call_crypto_update crypto = {
+        .classification = DSD_CALL_CRYPTO_ENCRYPTED_PENDING,
+        .algid = 2U,
+        .audio_permitted = 0U,
+    };
+    (void)dsd_call_state_update_crypto(&g_state, 0U, DSD_SYNC_NXDN_POS, &crypto);
+    (void)dsd_call_state_update_media(&g_state, 0U, 1, 0.0);
+    dsd_call_snapshot call;
+    int rc = nxdn_expect(dsd_call_state_get(&g_state, 0U, &call) == 1
+                             && strcmp(call.target_text, DSD_CALL_NXDN_DCR_TARGET_TEXT) == 0,
+                         name, variant, "a live DCR call");
+    const uint64_t dcr_epoch = call.epoch;
+
+    at_seconds(9600.2);
+    voice_live();
+    send_scch_prefixed(sf, 6U, 3U, id);
+    rc |= nxdn_expect(dsd_call_state_get(&g_state, 0U, &call) == 1 && call.phase == DSD_CALL_PHASE_ACTIVE
+                          && call.epoch != dcr_epoch,
+                      name, variant, "the numbered party is another call");
+    const int info3 = sf == 1U;
+    rc |= nxdn_expect(call.ota_source_id == (info3 ? id : 0U) && call.ota_target_id == (info3 ? 0U : id), name, variant,
+                      "the message's party");
+    rc |= nxdn_expect(strcmp(call.target_text, info3 ? "" : "03-0005") == 0, name, variant, "no DCR target text");
+    rc |= nxdn_expect(call.emergency == 0U && call.has_service_metadata == 0U, name, variant, "no DCR metadata");
+    rc |= nxdn_expect(call.crypto == DSD_CALL_CRYPTO_UNKNOWN, name, variant, "no DCR crypto");
+    rc |= nxdn_expect(call.media_active == 1U, name, variant, "the carrier's voice stays");
+    const uint64_t numbered_epoch = call.epoch;
+
+    at_seconds(9600.3);
+    voice_live();
+    send_scch_prefixed(sf, 6U, 3U, id);
+    rc |= nxdn_expect(dsd_call_state_get(&g_state, 0U, &call) == 1 && call.epoch == numbered_epoch, name, variant,
+                      "the same message again continues that call");
+    return rc;
+}
+
+static int
+nxdn_run_numbered_scch_after_dcr_case(void) {
+    int rc = 0;
+    rc |= nxdn_run_numbered_scch_after_dcr_variant(1U, 123U, "info3-source");
+    rc |= nxdn_run_numbered_scch_after_dcr_variant(2U, 5U, "info2-target");
+    return rc;
+}
+
 static int
 nxdn_run_type_d_new_target_drops_old_call_case(void) {
     int rc = 0;
@@ -3114,6 +3183,7 @@ main(void) {
     rc |= nxdn_run_type_d_refollow_during_fade_case();
     rc |= nxdn_run_type_d_prefix_identity_case();
     rc |= nxdn_run_type_d_new_target_drops_old_call_case();
+    rc |= nxdn_run_numbered_scch_after_dcr_case();
 #endif
 
     dsd_trunk_tuning_hooks_set((dsd_trunk_tuning_hooks){0});
