@@ -69,14 +69,15 @@ tetra_search_burst_begin(dsd_state* state) {
     sr->burst = state->symbol_clock;
     sr->burst_carrier_seq = state->carrier_seq;
     sr->burst_epoch = state->symbol_clock_epoch;
+    sr->burst_interrupt_seq = state->input_interrupt_seq;
     sr->burst_sync = DSD_SYNC_IS_TETRA(state->lastsynctype) ? state->lastsynctype : -1;
     sr->burst_activity = 0;
     sr->burst_sysinfo.valid = 0;
-    /* A retune, a stream flush or a gap since, or an input interruption standing: the observation was of another
-       carrier or stream, or the input no longer follows on from it. */
+    /* A retune, a stream flush or a gap since, or an input interruption standing or taken up since: the observation
+       was of another carrier or stream, or the input no longer follows on from it. */
     if (sr->obs_valid
         && (sr->obs_carrier_seq != sr->burst_carrier_seq || sr->obs_epoch != sr->burst_epoch
-            || state->input_interrupted)) {
+            || sr->obs_interrupt_seq != sr->burst_interrupt_seq || state->input_interrupted)) {
         sr->obs_valid = 0;
     }
 }
@@ -233,6 +234,7 @@ bsch_before_gate(const dsd_state* state, tetra_search_t* sr, const tetra_search_
     sr->obs_burst = sr->burst;
     sr->obs_carrier_seq = sr->burst_carrier_seq;
     sr->obs_epoch = sr->burst_epoch;
+    sr->obs_interrupt_seq = sr->burst_interrupt_seq;
     sr->obs_valid = 1;
 }
 

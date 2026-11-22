@@ -20,8 +20,9 @@
  *   cell scrambles with the predefined all-zero code, table 21.76 note 1, so a block proves nothing of the network).
  * The observation outlives the hunt's no-carrier passes (they reset the decoder's carrier evidence, not this), and is
  * dropped when the carrier count or the symbol clock's stream moves (a retune, a stream flush or gap), when an input
- * interruption stands or cut a burst, and at tetra_scan_visit_reset(), which the engine runs at every landing and
- * departure of a search visit.
+ * interruption stands, cut a burst or was taken up by the engine loop since (dsd_state::input_interrupt_seq: a hunt
+ * read the search interrupted between two bursts is an input cut), and at tetra_scan_visit_reset(), which the engine
+ * runs at every landing and departure of a search visit.
  *
  * Its site note (DSD_SEARCH_SITE_NOTE_TETRA, mode TMO) carries the gate BSCH's MCC and MNC and, for a colour code not 0,
  * a SYSINFO decoded under the gate seed on a half-slot channel (SCH/HD, BNCH, STCH: EN 300 392-2 clause 21.4.4.1) with
@@ -84,16 +85,19 @@ typedef struct {
     uint64_t burst;
     uint32_t burst_carrier_seq;
     uint32_t burst_epoch;
+    uint32_t burst_interrupt_seq;
     int burst_sync;
     uint8_t burst_open;
     uint8_t burst_activity;
     tetra_search_sysinfo burst_sysinfo; /* the burst's SYSINFO under the gate seed, once one passed */
 
-    /* The observed BSCH gate A waits on, while the carrier and stream it was read on last. */
+    /* The observed BSCH gate A waits on, while the carrier and stream it was read on last, with no input interruption
+     * taken up since. */
     tetra_search_cell obs;
     uint64_t obs_burst;
     uint32_t obs_carrier_seq;
     uint32_t obs_epoch;
+    uint32_t obs_interrupt_seq;
     uint8_t obs_valid;
 
     /* The visit's first observed BSCH identity, and whether another one was observed since. */

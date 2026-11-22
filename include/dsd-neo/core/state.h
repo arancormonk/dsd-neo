@@ -2941,6 +2941,10 @@ struct dsd_state {
     int input_interrupted;
     /* Why input_interrupted stands (dsd_input_interrupt_reason); the engine loop clears both. */
     int input_interrupt_reason;
+    /* The input interruptions the engine loop has taken up (dsd_state_consume_input_interrupt()): what a decoder
+       observed under one count was read before the input was cut when the count has moved since, though neither the
+       carrier count nor the symbol clock's stream did (a Signal search visit's hunt read that gave up). */
+    uint32_t input_interrupt_seq;
     /* The radio stream's discontinuity count the decoder has taken up to (D5): the symbol reader raises a stream-gap
        interruption when the samples a read returned carry a newer one, and the EDACS analog call loop and the M17
        encoder, which read the stream themselves, take it up there. The engine sets it to the stream's count at each
@@ -3820,6 +3824,18 @@ dsd_state_raise_input_interrupt(dsd_state* state, int reason) {
     if (reason > state->input_interrupt_reason) {
         state->input_interrupt_reason = reason;
     }
+}
+
+/* The engine loop takes up the input interruption that stands (live_scanner_main_pass()): the flag and its reason
+   clear, and one that stood moves input_interrupt_seq on, so what was observed before it does not join what the next
+   pass reads. */
+static inline void
+dsd_state_consume_input_interrupt(dsd_state* state) {
+    if (state->input_interrupted) {
+        state->input_interrupt_seq++;
+    }
+    state->input_interrupted = 0;
+    state->input_interrupt_reason = DSD_INTERRUPT_NONE;
 }
 
 /* The input ended while a frame was read: the session is stopping (@p exit_requested, which every input that ends with

@@ -474,6 +474,14 @@ carrier_boundary(session* s) {
     s->state->carrier_seq++;
 }
 
+/* A hunt read the Signal search interrupted between two bursts (a radio read that gave up on a stalled input), which the
+ * engine loop then takes up before the next hunt finds a burst: no carrier count or stream epoch moved. */
+static void
+hunt_interrupted(session* s) {
+    dsd_state_raise_input_interrupt(s->state, DSD_INTERRUPT_SEARCH);
+    dsd_state_consume_input_interrupt(s->state);
+}
+
 /* ---- Expectations ----------------------------------------------------------------------------------------------- */
 
 static int
@@ -662,6 +670,31 @@ test_gate_a_across_no_carrier(void) {
         check(g_log.evidence == 0, flush ? "observation: a stream flush drops it" : "observation: a retune drops it");
         sb(&s, &k_z, NULL, 0);
         check(tmo_evidence(0u), "observation: the next carrier's own pair confirms");
+        session_close(&s);
+    }
+
+    /* An interruption the engine took up between two bursts is an input cut: the observation before it is dropped,
+     * for colour code 0 and for a block under the seed alike, and the pair read after it confirms. */
+    for (int colour = 0; colour <= 1; colour++) {
+        s = session_open();
+        sb(&s, colour ? &k_a : &k_z, NULL, 0);
+        hunt_interrupted(&s);
+        if (colour) {
+            ndb_null(&s, seed_of(COL_A));
+        } else {
+            sb(&s, &k_z, NULL, 0);
+        }
+        check(g_log.evidence == 0, colour ? "observation: an interrupted hunt drops it before a block"
+                                          : "observation: an interrupted hunt drops it before a colour 0 BSCH");
+        if (colour) {
+            ndb_null(&s, seed_of(COL_A));
+            check(g_log.evidence == 0, "observation: none is left for a later block");
+            sb(&s, &k_a, NULL, 0);
+            ndb_null(&s, seed_of(COL_A));
+        } else {
+            sb(&s, &k_z, NULL, 0);
+        }
+        check(tmo_evidence(colour ? COL_A : 0u), "observation: the pair read after the interruption confirms");
         session_close(&s);
     }
 }
