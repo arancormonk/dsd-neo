@@ -736,6 +736,13 @@ dsd_demod_reset_filter_state(struct demod_state* d) {
     d->squelch_noise_ran = 0;
 }
 
+void
+dsd_demod_squelch_note_retune(struct demod_state* d) {
+    if (d) {
+        d->squelch_new_stream = 0;
+    }
+}
+
 /* The analog width the channel plan is designed for, or 0 for the profile design. Gated on the analog family's monitor
    output on its WIDE channel (dsd_demod_analog_monitor_active()), not on the profile alone: WIDE is also the digital
    fallback profile, and the M17 encoder shares the analog front end without being part of that family. CQPSK toggled
@@ -2269,15 +2276,20 @@ squelch_flag_histories_reset(struct demod_state* d) {
 /* The tracker takes the context it runs in: a gap since it last ran (a stream open or restart, a reconnect, a spell
    under another squelch) is a stream boundary, which keeps the floor, closes the gate and starts the windows over, and a
    new context moves the floor (remembered for the context left, seeded from the cache for the one taken, or learned),
-   and drops a hold a restart left on the context before. On a @p new_stream (the first block of a stream the IO layer
-   opened) a floor the cache seeds is held as a kept one is (dsd_squelch_floor_stream_restart()): the sample time its
-   age counts stopped while no stream ran, so it is no fresher than a kept floor. A retune seeds it as before. A live
+   and drops a hold a restart left on the context before. The first context it takes on a stream the IO layer opened
+   (demod_state::squelch_new_stream, which level, off and digital blocks before it leave in place) holds a floor the
+   cache seeds as a kept one is (dsd_squelch_floor_stream_restart()): the sample time its age counts stopped while no
+   stream ran, so it is no fresher than a kept floor. A retune seeds it as before, the open's mark gone with it
+   (dsd_demod_squelch_note_retune()). A live
    plan change is not a gap: the tracker takes it in squelch_floor_ensure_plan(). A floor kept through a gap ages like a
    cached one: past DSD_SQUELCH_FLOOR_STALE_S of sample time (the level squelch, digital traffic) it is learned again,
    neither kept nor stored for its channel with a fresh stamp. */
 static void
-squelch_auto_take_context(struct demod_state* d, int new_stream) {
+squelch_auto_take_context(struct demod_state* d) {
     dsd_squelch_floor* t = &d->squelch_floor;
+    /* A stream open's mark lasts until the tracker's first context on the reopened stream, whatever ran before it. */
+    const int new_stream = d->squelch_new_stream;
+    d->squelch_new_stream = 0;
     const int same =
         d->squelch_context_applied_set && dsd_squelch_floor_key_equal(&d->squelch_context_applied, &d->squelch_context);
     if (d->squelch_auto_ran && same) {
@@ -2304,7 +2316,7 @@ squelch_auto_take_context(struct demod_state* d, int new_stream) {
 
 /* Run the tracker over the block's channel samples, one flag per sample into result_flags. Nothing is zeroed. */
 static void
-squelch_auto_run(struct demod_state* d, int new_stream) {
+squelch_auto_run(struct demod_state* d) {
     dsd_squelch_floor* t = &d->squelch_floor;
     squelch_floor_ensure_plan(d);
     int margin = d->squelch_margin_db;
@@ -2316,7 +2328,7 @@ squelch_auto_run(struct demod_state* d, int new_stream) {
     if (t->margin_db != margin) {
         dsd_squelch_floor_set_margin(t, margin);
     }
-    squelch_auto_take_context(d, new_stream);
+    squelch_auto_take_context(d);
     d->squelch_auto_ran = 1;
     dsd_squelch_floor_process(t, d->lowpassed, d->lp_len >> 1, d->result_flags);
     d->squelch_floor_active_s = d->squelch_cache.clock_s;
@@ -2397,9 +2409,6 @@ squelch_cache_age(struct demod_state* d) {
    (full_demod_tetra_stream_block()) measured its channel power before its AGC ran over that output. */
 static void
 full_demod_update_channel_state(struct demod_state* d, int streamed) {
-    /* The first block of a new stream says so once, whatever squelch it runs. */
-    const int new_stream = d->squelch_new_stream;
-    d->squelch_new_stream = 0;
     squelch_cache_age(d);
     if (!streamed && d->lowpassed && d->lp_len >= 2) {
         int n = (d->lp_len > 512) ? 512 : d->lp_len;
@@ -2424,7 +2433,7 @@ full_demod_update_channel_state(struct demod_state* d, int streamed) {
     d->squelch_noise_ran = 0;
     if (squelch_auto_wanted(d)) {
         /* The auto squelch gates per sample at the decoder's sink: the block runs whole, and the level gate is off. */
-        squelch_auto_run(d, new_stream);
+        squelch_auto_run(d);
         d->channel_squelched = 0;
         d->squelch_gate_open = 1;
         return;

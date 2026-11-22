@@ -1114,6 +1114,9 @@ typedef struct rtl_stream_test_fll_retune_result {
     int reset_retained_fll;
     int restored_cached_fll;
     int distant_frequency_reason;
+    /* The stream open's mark for the auto squelch (demod_state::squelch_new_stream), set before the retune: 0 after a
+       retune to another centre drops it, 1 after one on the same centre keeps it (issue #899). */
+    int new_stream_mark_after;
 } rtl_stream_test_fll_retune_result;
 
 int rtl_stream_test_fll_retune_policy(uint32_t previous_center_freq_hz, uint32_t next_center_freq_hz,

@@ -2970,6 +2970,8 @@ main(void) {
     failed |= expect_int_eq("near RF retune keeps normal frequency reason", fll_retune.distant_frequency_reason, 0);
     failed |= expect_double_near("near RF retune clears prior-channel FLL", fll_retune.fll_freq_after, 0.0, 1e-7);
     failed |= expect_double_near("near RF retune leaves the mixer off", fll_retune.fll_pre_after, 0.0, 0.0);
+    failed |=
+        expect_int_eq("near RF retune drops a stream open's auto squelch mark", fll_retune.new_stream_mark_after, 0);
 
     fll_retune = {};
     rc = rtl_stream_test_fll_retune_policy(769668750U, 770418750U, 48000, 48000, &fll_retune);
@@ -2981,6 +2983,8 @@ main(void) {
     rc = rtl_stream_test_fll_retune_policy(770418750U, 770418750U, 48000, 60000, &fll_retune);
     failed |= expect_int_eq("same RF rate-change FLL policy helper rc", rc, 0);
     failed |= expect_int_eq("same RF rate change retains FLL", fll_retune.reset_retained_fll, 0);
+    failed |= expect_int_eq("same RF rate change keeps a stream open's auto squelch mark",
+                            fll_retune.new_stream_mark_after, 1);
     failed |= expect_double_near("same RF rate change scales FLL", fll_retune.fll_freq_after,
                                  fll_retune.fll_freq_before * 0.8, 1e-7);
     failed |=

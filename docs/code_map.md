@@ -9000,9 +9000,12 @@ the stream-notice hooks' pattern: one that fails to initialize leaves the hook u
   or CARRIER (an UNDECIDED one, zeros or a power step inside it, keeps the hold); a live plan change (`dsd_squelch_floor_set_plan()`) restarts only the windows, as before.
   A new context drops the hold with the context it was for (`dsd_squelch_floor_change_context()`), so a retune after a
   restart gates on the new channel's cached floor at once. A stream open marks `demod_state::squelch_new_stream`
-  (`rtl_demod_init_for_mode()`), which the next block consumes: when that block takes a new context and the cache
-  seeds its floor, the tracker holds it as a kept one (`dsd_squelch_floor_stream_restart()`), since the sample time its
-  age counts stopped while no stream ran. A
+  (`rtl_demod_init_for_mode()`), which only the tracker's first context after the open consumes
+  (`squelch_auto_take_context()`; level, off and digital blocks before it leave it set): when that context is new and
+  the cache seeds its floor, the tracker holds it as a kept one (`dsd_squelch_floor_stream_restart()`), since the sample
+  time its age counts stopped while no stream ran. A retune to another centre before that drops the mark
+  (`dsd_demod_squelch_note_retune()`, from `demod_reset_on_retune()` for a frequency retune and from an external
+  backend's landing on another frequency), so the new channel's cached floor gates at once. A
   floor the tracker kept through a spell without running ages the same way (`demod_state::squelch_floor_active_s`):
   past `DSD_SQUELCH_FLOOR_STALE_S` it is learned again, neither kept nor stored for its channel with a fresh stamp. Inside `full_demod()` (`squelch_auto_run()`) the tracker runs on an AUTO setting on a path
   `dsd_demod_dynamic_squelch_path()` names:

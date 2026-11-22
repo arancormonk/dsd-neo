@@ -515,7 +515,9 @@ stream_restart_starts_the_evidence_over(void) {
    (learn A, visit B, Stop, Start on A: the IO layer marks the open, squelch_new_stream, and resets the filters) holds
    like one onto a floor it kept, so idle noise louder than A's floor opens nothing; a restart on A, then a retune to B
    before a window classified, leaves A's hold behind, and B's cached floor opens on a carrier at its first sub-window;
-   and a move to a cached floor with no gap holds nothing. */
+   and a move to a cached floor with no gap holds nothing. The open's mark waits for the tracker: a level block on the
+   reopened channel before Auto comes in leaves it for Auto's first context, and a retune to another channel before
+   that (dsd_demod_squelch_note_retune(), as the IO layer calls it) drops it, so B's cached floor gates at once. */
 int
 stream_restart_hold_follows_the_context(void) {
     const int rate = 24000;
@@ -545,6 +547,55 @@ stream_restart_hold_follows_the_context(void) {
                         "squelch auto demod: %ld samples open on louder noise after a new stream on a cached floor\n",
                         opens);
             rc |= 1;
+        }
+        free_monitor(s);
+    }
+    for (int retune = 0; retune < 2; retune++) {
+        /* Learn A and B, Stop on B, reopen (on A, or with a retune to come, on B) under the level squelch (one block),
+           then Auto: with no retune between, A's cached floor holds; reopened on B and retuned to A before Auto, A's
+           cached floor gates a carrier at once. */
+        demod_state* s = new_monitor(0, rate, 1, 12500);
+        if (!s) {
+            return fail("alloc");
+        }
+        s->squelch_context.freq_hz = freq_a;
+        (void)count_opens(s, noise, 1000, &first);
+        s->squelch_context.freq_hz = freq_b;
+        (void)count_opens(s, noise, 1000, &first);
+        s->squelch_context.freq_hz = retune ? freq_b : freq_a;
+        s->squelch_new_stream = 1;
+        dsd_demod_reset_filter_state(s);
+        s->squelch_mode = DSD_SQUELCH_MODE_LEVEL;
+        (void)run_block(s, idle.data(), 1000);
+        if (!s->squelch_new_stream) {
+            rc |= fail("a level block before the tracker took the open's mark");
+        }
+        s->squelch_mode = DSD_SQUELCH_MODE_AUTO;
+        if (retune) {
+            dsd_demod_squelch_note_retune(s);
+            s->squelch_context.freq_hz = freq_a;
+            dsd_demod_reset_filter_state(s);
+            const std::vector<float> carrier = make_signal(rate, 0.0, 0.3, 0.0, 0, 0x899B13ULL);
+            (void)count_opens(s, carrier, 1000, &first);
+            if (first < 0 || first > (30L * rate) / 1000L) {
+                DSD_FPRINTF(stderr,
+                            "squelch auto demod: a carrier on a cached floor after a reopen and a retune opened at "
+                            "%ld\n",
+                            first);
+                rc |= 1;
+            }
+        } else {
+            const long opens = count_opens(s, scaled(idle, 13.0), 1000, &first);
+            if (opens != 0) {
+                DSD_FPRINTF(stderr,
+                            "squelch auto demod: %ld samples open on louder noise after a reopen, a level block and "
+                            "Auto on a cached floor\n",
+                            opens);
+                rc |= 1;
+            }
+        }
+        if (s->squelch_new_stream) {
+            rc |= fail("the tracker's first context left the open's mark");
         }
         free_monitor(s);
     }

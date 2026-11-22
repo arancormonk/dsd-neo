@@ -1537,7 +1537,9 @@ alone is `auto+10`), so one setting suits every receiver and every channel of a 
   closed: Stop and Start in the app, a stream reopen, an rtl_tcp reconnect, a USB recovery, an input overflow gap (an
   Airspy driver overflow, a full input buffer dropping samples), an FM/AM switch on one frequency, a same-frequency
   retune or PPM change, a switch from a digital decode back to NFM or AM, and a spell under another squelch setting.
-  Stop and Start onto another channel whose floor is remembered starts closed on that floor the same way. The gate the
+  Stop and Start onto another channel whose floor is remembered starts closed on that floor the same way, even when
+  the stream first runs a level squelch, Off or a digital decode there and the auto squelch comes in later without a
+  retune; a retune to another channel first gates on that channel's floor at once. The gate the
   last stream left open, and the windows and floor evidence from before the restart, do not count. Until a 40 ms window
   after the restart has been classed as noise or carrier, the floor does not open on signal strength alone, so idle
   noise louder than before stays muted. A carrier present from the restart opens at the first window's end, 20 ms later

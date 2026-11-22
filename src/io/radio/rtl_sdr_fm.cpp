@@ -3106,6 +3106,11 @@ demod_reset_on_retune(struct demod_state* s, DemodRetuneResetPlan plan) {
         demod_apply_pending_ted_override(s);
     }
     demod_reset_histories_for_output_mode(s);
+    /* A stream open's mark for the auto squelch is the channel it opened on: a retune to another drops it. */
+    if ((reason == DemodRetuneResetReason::FrequencyRetune || reason == DemodRetuneResetReason::DistantFrequencyRetune)
+        && plan.previous_center_freq_hz != plan.next_center_freq_hz) {
+        dsd_demod_squelch_note_retune(s);
+    }
     demod_log_post_retune_state(s, plan, fll_freq_before);
 #if defined(DSD_NEO_ENABLE_INTERNAL_TEST_HOOKS)
     if (s == &demod) {
@@ -14647,6 +14652,7 @@ rtl_stream_apply_pending_retune_profile_for_target(uint32_t target_freq_hz) {
     if (previous_freq_hz != target_freq_hz) {
         rtl_demod_clear_filter_histories(&demod);
         rtl_stream_clear_output_for_external_retune();
+        dsd_demod_squelch_note_retune(&demod);
     }
     rtl_stream_apply_retune_gain_profile(&profile);
     const int symbol_rate_before_hz = demod.symbol_rate_hz;
@@ -16732,7 +16738,9 @@ rtl_stream_test_fll_retune_policy(uint32_t previous_center_freq_hz, uint32_t nex
 
     *out_result = {};
     out_result->fll_freq_before = test_demod.fll_band_edge_state.freq;
+    test_demod.squelch_new_stream = 1;
     plan = demod_reset_on_retune(&test_demod, plan);
+    out_result->new_stream_mark_after = test_demod.squelch_new_stream;
     out_result->retained_fll_scale = plan.retained_fll_scale;
     out_result->reset_retained_fll = plan.reset_retained_fll ? 1 : 0;
     out_result->restored_cached_fll = plan.restore_cached_fll ? 1 : 0;

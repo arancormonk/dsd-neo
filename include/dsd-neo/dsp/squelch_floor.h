@@ -38,9 +38,11 @@
  * floor stays, the gate closes, and nothing from before the boundary counts: not the learning windows, nor a seed's
  * confirmation or a shift's run. A kept floor does not open on power alone until a 40 ms window after the boundary
  * classes NOISE or CARRIER, so idle noise louder than before cannot open the gate. A carrier present from the boundary
- * opens at the first window's end, 20 ms later than it would mid-stream; one keyed inside that window makes it
- * UNDECIDED and opens at the next window's end, at most 80 ms after the boundary. A move to another context drops the
- * hold; a new stream whose first context takes a floor from the cache holds it the same way (demod_pipeline.cpp).
+ * and strong enough to open the gate (at least the margin over the floor) opens at the first window's end, 20 ms later
+ * than it would mid-stream; one keyed inside that window makes it UNDECIDED and opens at the next window's end, at most
+ * 80 ms after the boundary. A weaker carrier that was playing before the boundary (between the closing and the opening
+ * level) stays closed after it until it reaches the opening level. A move to another context drops the hold; a new
+ * stream whose first tracker context takes a floor from the cache holds it the same way (demod_pipeline.cpp).
  */
 
 #ifndef DSD_NEO_INCLUDE_DSD_NEO_DSP_SQUELCH_FLOOR_H_
