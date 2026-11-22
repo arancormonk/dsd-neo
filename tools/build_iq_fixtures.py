@@ -3291,7 +3291,7 @@ def tetra_dmo_phase_adjust(dibits_after):
     steps of symbols SN8 to SN126, given the burst's dibits from SN8 on."""
     total = sum(TETRA_PHASE_STEP[d] for d in dibits_after[: 126 - 8 + 1])
     for dibit, step in TETRA_PHASE_STEP.items():
-        if abs(math.remainder(step + total, 2.0 * math.pi)) < 1e-9:
+        if abs((step + total) - 2.0 * math.pi * round((step + total) / (2.0 * math.pi))) < 1e-9:
             return dibit
     raise AssertionError("no phase adjustment dibit")
 

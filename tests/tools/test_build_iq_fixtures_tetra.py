@@ -209,7 +209,7 @@ class TetraDmoCall(unittest.TestCase):
     def assert_phase_adjusted(self, dibits):
         """SN7, the phase adjustment symbol, and SN8 to SN126 turn the carrier by a whole number of turns (table 18)."""
         total = sum(fixtures.TETRA_PHASE_STEP[d] for d in dibits[6:126])
-        self.assertAlmostEqual(math.remainder(total, 2.0 * math.pi), 0.0, delta=1e-9)
+        self.assertAlmostEqual(total - 2.0 * math.pi * round(total / (2.0 * math.pi)), 0.0, delta=1e-9)
 
     def test_dsb_layout(self):
         dsb = fixtures.tetra_dmo_dsb(3, 6, fixtures.TETRA_DMO_MSG_OCCUPIED)
