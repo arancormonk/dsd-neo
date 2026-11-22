@@ -4,6 +4,7 @@ import QtTest
 import "../../../src/ui/qt/qml" as Ui
 
 Item {
+    id: root
     width: 420
     height: 900
 
@@ -258,9 +259,14 @@ Item {
             testContext.setMetric("slot2CallKind", 3); // CALL_KIND_PRIVATE
             testContext.setMetric("slot2CallEmergency", true);
             testContext.setMetric("slot2CallEnc", true);
+            // r8 L4: wide enough that the plan draws all three tags beside the call, so the idle strip's hiding them is
+            // the idle rule's doing, not the room's (at 420 dp PRIVATE and ENC were left out for want of room).
+            root.width = 700;
             try {
                 waitForRendering(monitor);
                 verify(monitor.otherPrivate && monitor.otherEmergency && monitor.otherEnc, "the call's flags");
+                for (var shown of ["otherSlotLabel", "otherPrivateTag", "otherEmergencyTag", "otherEncTag"])
+                    verify(item(shown).visible, "the call's strip draws " + shown + " at 700 dp");
                 var active = item("otherSlotNode").Accessible.name;
                 for (var word of ["SLOT 2", "PRIVATE", "EMERGENCY", "ENC"])
                     verify(active.indexOf(word) >= 0, "an active call reads " + word + ": " + active);
@@ -274,8 +280,10 @@ Item {
                 // every-branch pass, which forces them visible.
                 for (var tag of ["otherPrivateTag", "otherEmergencyTag", "otherEncTag"])
                     verify(!item(tag).visible, "the idle strip draws " + tag);
+                verify(item("otherSlotLabel").visible && !item("otherSlotLabel").truncated, "the idle label, whole");
                 compare(item("otherSlotNode").Accessible.name, "SLOT 2 · idle", "the idle strip says only what it draws");
             } finally {
+                root.width = 420;
                 testContext.setMetric("slot2CallEmergency", false);
                 testContext.setMetric("slot2CallEnc", false);
             }
