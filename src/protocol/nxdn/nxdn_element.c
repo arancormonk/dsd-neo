@@ -157,22 +157,28 @@ nxdn_call_type_opens_call(uint8_t call_type) {
 }
 
 /* Whether a message decodes in the Type-D (IDAS) layout, as the VCALL, VCALL_IV and data header layouts take it, which
- * splits an address into its prefix and 11-bit ID (issue #903): only on positive Type-D evidence, the "Type-D" location
- * category a CRC-checked SCCH set (nxdn_scch_prepare_type_d(), kept past its frame only on a confirmed transmission),
- * on an RTCH2 frame or with no frame decoding (an element handed over alone). A frame whose LICH names another channel,
- * and a site Type-C decoded (dsd_nxdn_type_c()), never take it from a category an earlier SCCH left. An RTCH2 reading
- * with no SCCH yet, which a composite Type-C channel's shared LICH values (0x71, 0x73) also give on late entry, keeps
- * the full 16-bit ID as Type-C does, with no prefix. */
+ * splits an address into its prefix and 11-bit ID (issue #903): only on positive Type-D evidence that is fresh on this
+ * carrier. An RTCH2 frame whose own SCCH passed its check with defined content (dsd_state::nxdn_frame_type_d_scch) is
+ * Type-D, a Type-C site an older frame decoded notwithstanding: that LICH value is no composite control channel's once
+ * Type-C is known. Otherwise, on an RTCH2 frame or with no frame decoding (an element handed over alone), the "Type-D"
+ * category a checked SCCH of this carrier set (dsd_nxdn_type_d_layout_fresh(): no carrier boundary or trunk-scan switch
+ * since; kept past its frame only on a confirmed transmission, nxdn_frame()), unless the site decoded as Type-C
+ * (dsd_nxdn_type_c()). A frame whose LICH names another channel never is. An RTCH2 reading with no SCCH of this
+ * carrier yet, which a composite Type-C channel's shared LICH values (0x71, 0x73) also give on late entry, keeps the
+ * full 16-bit ID as Type-C does, with no prefix. */
 static int
 nxdn_location_is_type_d(const dsd_state* state) {
-    if (dsd_nxdn_type_c(state)) {
-        return 0;
-    }
     if (state->nxdn_frame_channel != (uint8_t)NXDN_FRAME_CHANNEL_NONE
         && state->nxdn_frame_channel != (uint8_t)NXDN_FRAME_CHANNEL_TYPE_D) {
         return 0;
     }
-    return strcmp(state->nxdn_location_category, "Type-D") == 0 ? 1 : 0;
+    if (state->nxdn_frame_channel == (uint8_t)NXDN_FRAME_CHANNEL_TYPE_D && state->nxdn_frame_type_d_scch != 0U) {
+        return 1;
+    }
+    if (dsd_nxdn_type_c(state)) {
+        return 0;
+    }
+    return dsd_nxdn_type_d_layout_fresh(state);
 }
 
 void
@@ -3588,8 +3594,13 @@ nxdn_scch_print_payload_label(const dsd_opts* opts, const struct nxdn_scch_info*
 static void
 nxdn_scch_prepare_type_d(const dsd_opts* opts, dsd_state* state, const struct nxdn_scch_info* info) {
     /* The layout the frame's other channels read (a FACCH1 VCALL's 11-bit IDs): set for this frame whatever its
-       confirmation, and kept past it only once the transmission is confirmed (nxdn_frame()). */
-    DSD_SNPRINTF(state->nxdn_location_category, sizeof(state->nxdn_location_category), "Type-D");
+       confirmation, and kept past it only once the transmission is confirmed (nxdn_frame()), as evidence of this
+       carrier only (dsd_nxdn_type_d_layout_fresh()). Content TS 1-E defines is this frame's own evidence, which a
+       Type-C site an older frame decoded does not overrule (nxdn_location_is_type_d()). */
+    dsd_nxdn_note_type_d_layout(state);
+    if (!info->diagnostic_only) {
+        state->nxdn_frame_type_d_scch = 1U;
+    }
     if (!info->acts || info->diagnostic_only) {
         /* SCCH carries a 7-bit CRC, which noise clears often enough that a RAN and a scan
          * hold cannot rest on one (issue #398). Content TS 1-E does not define is not valid either: its area, like

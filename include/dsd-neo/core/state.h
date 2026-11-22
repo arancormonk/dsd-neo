@@ -3023,6 +3023,10 @@ struct dsd_state {
      * control channel, dsd_nxdn_control_heard_is_foreign()): they are decoded for the log only, and their checks stamp
      * dsd_nxdn_site_record::foreign_control_m instead of confirming the transmission. */
     uint8_t nxdn_frame_foreign;
+    /* 1 while the RTCH2 frame being decoded carries its own CRC-checked SCCH of defined content
+     * (nxdn_scch_prepare_type_d()): the frame's other channels read the Type-D layout, a Type-C site an older frame
+     * decoded notwithstanding (issue #903). Set only while that frame's channels decode, as nxdn_frame_channel. */
+    uint8_t nxdn_frame_type_d_scch;
     uint8_t nxdn_sacch_frame_segment[4][18]; //part of frame by 18 bits
     uint8_t nxdn_sacch_frame_segcrc[4];
     nxdn_alias_assembly nxdn_alias_prop; /* the Kenwood alias being assembled (nxdn_alias_decode_prop()) */
@@ -3034,6 +3038,10 @@ struct dsd_state {
     //site/srv/cch info
 
     char nxdn_location_category[14];
+    /* The received identity's epoch (dsd_received_identity::epoch) the "Type-D" category above was set under
+     * (dsd_nxdn_note_type_d_layout()): the category is Type-D address evidence only while it still names that epoch,
+     * which every carrier boundary and trunk-scan target switch moves (dsd_nxdn_type_d_layout_fresh(), issue #903). */
+    uint32_t nxdn_type_d_rx_epoch;
     uint32_t nxdn_location_sys_code;
     uint16_t nxdn_location_site_code;
     /* An IDAS (Type-D) site's identity, kept apart from the Type-C location ID above, whose categories it does not

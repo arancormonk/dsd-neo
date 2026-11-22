@@ -747,6 +747,7 @@ static int
 nxdn_decode_frame_channels(dsd_opts* opts, dsd_state* state, nxdn_frame_ctx* ctx) {
     char category[sizeof(state->nxdn_location_category)];
     DSD_MEMCPY(category, state->nxdn_location_category, sizeof(category));
+    const uint32_t type_d_epoch = state->nxdn_type_d_rx_epoch;
     const uint8_t type_c_before = state->nxdn_site.type_c;
     const int left_carrier = nxdn_decode_control_channels(opts, state, ctx);
     /* An SCCH whose content TS 1-E does not define (nxdn_scch_content_valid()) names the layout for the frame's other
@@ -755,9 +756,13 @@ nxdn_decode_frame_channels(dsd_opts* opts, dsd_state* state, nxdn_frame_ctx* ctx
        reads "Type-D" again. */
     if (!nxdn_confirm_is_confirmed(state) || ctx->result->scch_invalid != 0U) {
         DSD_MEMCPY(state->nxdn_location_category, category, sizeof(category));
+        state->nxdn_type_d_rx_epoch = type_d_epoch;
         if (state->nxdn_site.type_c != type_c_before && strcmp(category, "Type-D") == 0) {
             DSD_SNPRINTF(state->nxdn_location_category, sizeof(state->nxdn_location_category), "%s", " ");
         }
+    } else if (state->nxdn_frame_type_d_scch != 0U) {
+        /* Kept, as evidence of the reception the frame's own messages left the received identity naming. */
+        dsd_nxdn_note_type_d_layout(state);
     }
     return left_carrier;
 }
@@ -909,6 +914,7 @@ nxdn_frame_before_channels(const dsd_opts* opts, dsd_state* state, nxdn_frame_ct
     nxdn_update_sacch_mode(state, ctx->lich);
     nxdn_print_voice_or_data_and_sync_lfsr(state, ctx);
     state->nxdn_frame_channel = nxdn_frame_channel_of(ctx);
+    state->nxdn_frame_type_d_scch = 0U;
     /* Decided before any channel of the frame decodes: none of its checks may confirm the transmission, and none of its
        messages may name, follow or play anything here. */
     ctx->foreign = (ctx->cac || ctx->composite) && dsd_nxdn_control_heard_is_foreign(opts, state);
@@ -985,6 +991,7 @@ nxdn_frame(dsd_opts* opts, dsd_state* state) {
     const int left_carrier = nxdn_decode_frame_channels(opts, state, &ctx);
     state->nxdn_frame_channel = (uint8_t)NXDN_FRAME_CHANNEL_NONE;
     state->nxdn_frame_foreign = 0U;
+    state->nxdn_frame_type_d_scch = 0U;
     nxdn_confirm_end_frame(opts, state);
     frame_read = 1;
     frame_proved = nxdn_confirm_frame_proved(state);
@@ -1000,6 +1007,7 @@ END:
         nxdn_confirm_frame_rejected(state);
         state->nxdn_frame_channel = (uint8_t)NXDN_FRAME_CHANNEL_NONE;
         state->nxdn_frame_foreign = 0U;
+        state->nxdn_frame_type_d_scch = 0U;
     }
     nxdn_finalize_sync_reject(state);
     /* The sticky flag, not this frame's evidence: a confirmed transmission whose current

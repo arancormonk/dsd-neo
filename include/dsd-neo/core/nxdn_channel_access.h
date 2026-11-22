@@ -224,6 +224,32 @@ dsd_nxdn_note_type_c(dsd_state* state) {
 }
 
 /**
+ * Note the "Type-D" (IDAS) layout a CRC-checked SCCH named (issue #903): the location category, as address evidence of
+ * the reception the received identity holds now (dsd_received_identity::epoch, dsd_state::nxdn_type_d_rx_epoch).
+ */
+static inline void
+dsd_nxdn_note_type_d_layout(dsd_state* state) {
+    if (!state) {
+        return;
+    }
+    DSD_SNPRINTF(state->nxdn_location_category, sizeof(state->nxdn_location_category), "%s", "Type-D");
+    state->nxdn_type_d_rx_epoch = state->rx_id.epoch;
+}
+
+/**
+ * Whether the "Type-D" category is address evidence of the carrier decoded now: set under the received identity's
+ * current epoch. Every carrier boundary (an operator tune, a source or input change, a scan step), trunk-scan target
+ * switch and user move starts the received identity over (dsd_rxid_reset()), as a sync of another protocol does, so
+ * the category another carrier's SCCH set never splits this carrier's addresses; a trunk follow within the system and
+ * the no-carrier pass keep the epoch, and the evidence with it.
+ */
+static inline int
+dsd_nxdn_type_d_layout_fresh(const dsd_state* state) {
+    return state && strcmp(state->nxdn_location_category, "Type-D") == 0
+           && state->nxdn_type_d_rx_epoch == state->rx_id.epoch;
+}
+
+/**
  * The operator moved the receiver (a tune, a source or input change, a scan step: dsd_engine_carrier_boundary(), never a
  * retune within a trunked system): the next carrier may be another system, a Type-D one among them, so what this one
  * said of the system type, and when another channel's control traffic was last heard on a followed channel, go.

@@ -12440,10 +12440,15 @@ Call frequency and access-code provenance (issue #575). A call's canonical `freq
   `nxdn_typed_id_text()`). A Type-D unit or group ID is 11 bits under a 5-bit Home Repeater / Prefix (TS 1-E
   6.6.6-6.6.8). The VCALL, the SD (0x38) and packet (0x09) data call headers and the SCCH INFO4/INFO3/INFO2 carry the
   prefix. The VCALL, VCALL_IV and data header layouts split an address into its prefix and 11-bit ID only on positive
-  Type-D evidence (`nxdn_location_is_type_d()`): the "Type-D" category a CRC-checked SCCH set, on an RTCH2 frame or an
-  element decoded with no frame. A frame whose LICH names another channel, a site Type-C decoded, and an RTCH2 reading
-  with no SCCH yet (which a composite Type-C channel's shared LICH values also give on late entry) keep the full 16-bit
-  ID with no prefix text, as Type-C does, for policy and keys too. Every numeric ID the protocol publishes stays the
+  Type-D evidence fresh on the carrier (`nxdn_location_is_type_d()`). An RTCH2 frame whose own SCCH passed its check
+  with defined content (`dsd_state::nxdn_frame_type_d_scch`) is Type-D, even on a site an older frame decoded as Type-C.
+  Otherwise the "Type-D" category a CRC-checked SCCH set counts, on an RTCH2 frame or an element decoded with no frame,
+  unless the site decoded as Type-C, and only under the received identity's epoch it was set in
+  (`dsd_nxdn_note_type_d_layout()`, `dsd_nxdn_type_d_layout_fresh()`): every carrier boundary, trunk-scan target switch
+  and user move starts the received identity over, so another carrier's SCCH never splits this carrier's addresses,
+  while a trunk follow within the system and the no-carrier pass keep it. A frame whose LICH names another channel and
+  an RTCH2 reading with no SCCH of this carrier (which a composite Type-C channel's shared LICH values also give on late
+  entry) keep the full 16-bit ID with no prefix text, as Type-C does, for policy and keys too. Every numeric ID the protocol publishes stays the
   11-bit ID, the policy namespace (decision D7): `ota_target_id`, `policy_target_id`, `ota_source_id`,
   `dmr_lrrp_source/target` (position attribution), the scan-activity hook, and the keys, lockouts, skips and holds,
   including the NXDN48 destination-key fallback. So an existing group list, key file or lockout behaves as it did. The

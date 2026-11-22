@@ -29,6 +29,7 @@
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/position.h"
 #include "dsd-neo/core/safe_api.h"
@@ -223,6 +224,54 @@ build_frame_sacch(uint8_t lich, uint8_t ran, uint8_t sf, const uint8_t* sacch_el
     sacch_encode(&bits[16], sf, ran, sacch_elements);
     facch1_encode(&bits[76], facch_a != NULL ? facch_a : idle);
     facch1_encode(&bits[220], facch_b != NULL ? facch_b : idle);
+    for (size_t i = 0; i < 182U; i++) {
+        g_frame[i] = (uint8_t)((bits[2U * i] << 1U) | bits[(2U * i) + 1U]);
+    }
+    nxdn_descramble_with_seed(g_frame, 182, 0U);
+    g_frame_pos = 0U;
+}
+
+/* An SCCH (NXDN TS 1-E Fig 4.5-1): 25 element bits, CRC-7 (crc7_scch(), the check the decoder reads at bits 25-31),
+ * four tail bits, coded, punctured to 60 (each 12 coded bits lose their 6th and 12th) and permuted. */
+static void
+scch_encode(uint8_t out[60], const uint8_t elements[25]) {
+    uint8_t trellis[36];
+    uint8_t coded[72];
+    uint8_t punctured[60];
+    DSD_MEMSET(trellis, 0, sizeof(trellis));
+    DSD_MEMCPY(trellis, elements, 25U);
+    put_bits(trellis, 25U, crc7_scch(trellis, 25), 7U);
+    conv_encode(trellis, 36U, coded);
+    size_t n = 0;
+    for (size_t i = 0; i < 72U; i++) {
+        if ((i % 12U) != 5U && (i % 12U) != 11U) {
+            punctured[n++] = coded[i];
+        }
+    }
+    for (size_t i = 0; i < 60U; i++) {
+        out[i] = punctured[PERM_12_5[i]];
+    }
+}
+
+/* An outbound Type-D RTCH2 frame (LICH @p lich): an SCCH carrying @p scch_elements where an RTCH's SACCH goes, then a
+ * FACCH1 (the second half, a FACCH1 or voice by the LICH, carries IDLE). */
+static void
+build_frame_scch(uint8_t lich, const uint8_t scch_elements[25], const uint8_t* facch_a) {
+    uint8_t bits[364];
+    uint8_t idle[80];
+    DSD_MEMSET(bits, 0, sizeof(bits));
+    DSD_MEMSET(idle, 0, sizeof(idle));
+    put_bits(idle, 2U, 0x10U, 6U); // IDLE
+
+    const uint8_t full = (uint8_t)(lich << 1U);
+    const uint8_t parity = (uint8_t)(((full >> 7U) + (full >> 6U) + (full >> 5U) + (full >> 4U)) & 1U);
+    for (size_t i = 0; i < 8U; i++) {
+        bits[2U * i] = (uint8_t)(((full | parity) >> (7U - i)) & 1U);
+        bits[(2U * i) + 1U] = 1U;
+    }
+    scch_encode(&bits[16], scch_elements);
+    facch1_encode(&bits[76], facch_a != NULL ? facch_a : idle);
+    facch1_encode(&bits[220], idle);
     for (size_t i = 0; i < 182U; i++) {
         g_frame[i] = (uint8_t)((bits[2U * i] << 1U) | bits[(2U * i) + 1U]);
     }
@@ -839,6 +888,101 @@ test_short_site_messages_do_not_say_type_c(dsd_opts* opts, dsd_state* state) {
     return rc;
 }
 
+/* A Type-D RTCH2 frame's VCALL from 03-0100 to 03-0005 (0x1864, 0x1805) whose own SCCH, an INFO3 naming the source
+ * 03-0100 from repeater 6, passed its check (LICH 0x63: SCCH and FACCH1, no Type-C composite value). */
+static void
+send_type_d_vcall_frame(dsd_opts* opts, dsd_state* state, const uint8_t vcall[80]) {
+    uint8_t scch[25];
+    DSD_MEMSET(scch, 0, sizeof(scch));
+    put_bits(scch, 0U, 1U, 2U);     // INFO3: the source message
+    put_bits(scch, 3U, 6U, 5U);     // repeater 6
+    put_bits(scch, 8U, 3U, 5U);     // prefix 3
+    put_bits(scch, 13U, 100U, 11U); // ID 100
+    build_frame_scch(0x63U, scch, vcall);
+    (void)nxdn_frame(opts, state);
+}
+
+static int
+expect_call_target(const char* tag, const dsd_state* state, long target, long policy, const char* text) {
+    dsd_call_snapshot call;
+    char label[96];
+    int rc = 0;
+    const int has_call = dsd_call_state_get(state, 0U, &call);
+    DSD_SNPRINTF(label, sizeof(label), "%s: call", tag);
+    rc |= expect_long(label, has_call, 1L);
+    DSD_SNPRINTF(label, sizeof(label), "%s: target", tag);
+    rc |= expect_long(label, has_call ? (long)call.ota_target_id : -1L, target);
+    DSD_SNPRINTF(label, sizeof(label), "%s: policy target", tag);
+    rc |= expect_long(label, has_call ? (long)call.policy_target_id : -1L, policy);
+    DSD_SNPRINTF(label, sizeof(label), "%s: target text", tag);
+    rc |= expect_long(label, has_call ? (long)(strcmp(call.target_text, text) == 0) : -1L, 1L);
+    if (has_call && strcmp(call.target_text, text) != 0) {
+        DSD_FPRINTF(stderr, "%s: target text '%s' want '%s'\n", tag, call.target_text, text);
+    }
+    return rc;
+}
+
+/*
+ * Type-D address evidence is the carrier's (issue #903): the operator retunes from a Type-D repeater, where checked
+ * SCCHs split VCALL addresses into prefix and 11-bit ID, to an unrelated Type-C composite carrier. Nothing said Type-C
+ * there yet, so its shared LICH value 0x73 reads as a Type-D RTCH2, but no SCCH of this carrier passed: a FACCH1 VCALL
+ * to 0x1805 keeps the full 16-bit ID, 6149, with no prefix text.
+ */
+static int
+test_operator_retune_drops_type_d_evidence(dsd_opts* opts, dsd_state* state) {
+    uint8_t vcall[80];
+    int rc = 0;
+    clear_state(opts, state);
+    opts->trunk_enable = 1;
+    state->synctype = DSD_SYNC_NXDN_POS; /* the voice the 0x73 frames carry is NXDN's */
+    DSD_MEMSET(vcall, 0, sizeof(vcall));
+    call_message(vcall, 0x01U, 0x1864U, 0x1805U);
+    send_type_d_vcall_frame(opts, state, vcall);
+    send_type_d_vcall_frame(opts, state, vcall);
+    rc |= expect_call_target("type-d repeater", state, 5L, 5L, "03-0005");
+
+    /* The operator's tune (dsd_engine_carrier_boundary()): the calls end, the received identity starts over and the
+       carrier's NXDN system type goes. */
+    (void)dsd_call_state_end_ex(state, 0U, dsd_decode_now_mono_s(), DSD_CALL_END_SYNC_LOSS);
+    dsd_rxid_reset(state);
+    dsd_nxdn_forget_carrier_system(state);
+    nxdn_confirm_reset(state);
+
+    send_frame(opts, state, 0x73U, 0x21U, vcall, NULL);
+    send_frame(opts, state, 0x73U, 0x21U, vcall, NULL);
+    rc |= expect_call_target("type-c carrier after the retune", state, 0x1805L, 0x1805L, "");
+    return rc;
+}
+
+/*
+ * A current checked Type-D SCCH outranks an older Type-C site (issue #903): after a Type-C CCH_INFO on the frequency, an
+ * outbound RTCH2 frame (LICH 0x63, never a composite value) whose own SCCH passed decodes its FACCH1 VCALL in the
+ * Type-D layout, 03-0005. The Type-C guard still holds for a composite frame with no SCCH of its own.
+ */
+static int
+test_own_scch_outranks_type_c_site(dsd_opts* opts, dsd_state* state) {
+    uint8_t cch[80];
+    uint8_t vcall[80];
+    int rc = 0;
+    clear_state(opts, state);
+    opts->trunk_enable = 1;
+    cch_info(cch, SITE_A, 0x20U, 5U);
+    send_frame(opts, state, LICH_COMPOSITE_FACCH1_PAIR, 0x21U, cch, NULL);
+    rc |= expect_long("own scch: CCH_INFO says Type-C", dsd_nxdn_type_c(state), 1L);
+
+    DSD_MEMSET(vcall, 0, sizeof(vcall));
+    call_message(vcall, 0x01U, 0x1864U, 0x1805U);
+    send_type_d_vcall_frame(opts, state, vcall);
+    send_type_d_vcall_frame(opts, state, vcall);
+    rc |= expect_call_target("own scch over a Type-C site", state, 5L, 5L, "03-0005");
+
+    (void)dsd_call_state_end_ex(state, 0U, dsd_decode_now_mono_s(), DSD_CALL_END_SYNC_LOSS);
+    send_frame(opts, state, LICH_COMPOSITE_FACCH1_PAIR, 0x21U, vcall, NULL);
+    send_frame(opts, state, LICH_COMPOSITE_FACCH1_PAIR, 0x21U, vcall, NULL);
+    rc |= expect_call_target("composite frame on the Type-C site", state, 0x1805L, 0x1805L, "");
+    return rc;
+}
+
 int
 main(void) {
     dsd_opts* opts = calloc(1, sizeof(*opts));
@@ -868,6 +1012,8 @@ main(void) {
     rc |= test_foreign_sacch_segments_never_release_the_call(opts, state);
     rc |= test_type_c_drops_the_type_d_category(opts, state);
     rc |= test_short_site_messages_do_not_say_type_c(opts, state);
+    rc |= test_operator_retune_drops_type_d_evidence(opts, state);
+    rc |= test_own_scch_outranks_type_c_site(opts, state);
     dsd_trunk_tuning_hooks_set((dsd_trunk_tuning_hooks){0});
     dsd_decode_clock_use_system();
 

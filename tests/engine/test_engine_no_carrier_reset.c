@@ -10117,8 +10117,9 @@ test_dmr_ras_carrier_lifetime(void) {
 /*
  * NXDN's system type is the carrier's: an operator move (a tune, a source or input change, a scan step) may land on a
  * Type-D repeater, whose frames must not read as a composite control channel's, so the Type-C context and the foreign
- * control stamp go with trunking on as off. A stream gap stays on the carrier, and keeps them; this site stays with
- * trunking on (only the untrunked forget drops it).
+ * control stamp go with trunking on as off. So does the Type-D address evidence a checked SCCH left (issue #903): the
+ * next carrier may be a Type-C one, whose 16-bit IDs must not split. A stream gap stays on the carrier, and keeps them;
+ * this site stays with trunking on (only the untrunked forget drops it).
  */
 static int
 test_operator_boundary_forgets_the_nxdn_system_type(void) {
@@ -10132,9 +10133,11 @@ test_operator_boundary_forgets_the_nxdn_system_type(void) {
     dsd_nxdn_site_latch(state, (2U << 12) | 0x21U);
     dsd_nxdn_note_type_c(state);
     state->nxdn_site.foreign_control_m = 42.0;
+    dsd_nxdn_note_type_d_layout(state);
     dsd_engine_carrier_boundary(opts, state, DSD_CARRIER_BOUNDARY_STREAM_GAP, 0);
     rc |= expect_true("nxdn-system-type: a stream gap keeps the Type-C context",
                       dsd_nxdn_type_c(state) && dsd_nxdn_foreign_control_last_m(state) > 0.0);
+    rc |= expect_true("nxdn-system-type: a stream gap keeps the Type-D evidence", dsd_nxdn_type_d_layout_fresh(state));
     static const dsd_carrier_boundary_kind k_kinds[] = {
         DSD_CARRIER_BOUNDARY_TUNE,
         DSD_CARRIER_BOUNDARY_SOURCE,
@@ -10144,9 +10147,12 @@ test_operator_boundary_forgets_the_nxdn_system_type(void) {
     for (size_t i = 0; i < sizeof(k_kinds) / sizeof(k_kinds[0]); i++) {
         dsd_nxdn_note_type_c(state);
         state->nxdn_site.foreign_control_m = 42.0;
+        dsd_nxdn_note_type_d_layout(state);
         dsd_engine_carrier_boundary(opts, state, k_kinds[i], 0);
         rc |= expect_true("nxdn-system-type: an operator move forgets the Type-C context",
                           !dsd_nxdn_type_c(state) && dsd_nxdn_foreign_control_last_m(state) == 0.0);
+        rc |= expect_true("nxdn-system-type: an operator move forgets the Type-D evidence",
+                          !dsd_nxdn_type_d_layout_fresh(state));
         rc |= expect_true("nxdn-system-type: trunking keeps this site", dsd_nxdn_site_is(state, (2U << 12) | 0x21U));
     }
     free_test_runtime(opts, state);
