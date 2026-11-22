@@ -1866,6 +1866,7 @@ send_outbound_scch(dsd_opts* opts, dsd_state* state, uint8_t sf) {
     write_bits_msb(message, 8U, 5U, 3U);
     if (sf == 3U) {
         write_bits_msb(message, 16U, 2U, 1U); // cipher type: scrambler
+        write_bits_msb(message, 18U, 6U, 5U); // key ID 5
     } else {
         write_bits_msb(message, 13U, 11U, 123U);
     }
@@ -1874,8 +1875,10 @@ send_outbound_scch(dsd_opts* opts, dsd_state* state, uint8_t sf) {
 
 /*
  * An IDAS call's own scrambler survives its numbered party (issue #903): a confirmed DCR call is received with the
- * scrambler (its SB0 messages' cipher field), then an IDAS call's INFO1 names the scrambler and its INFO3 the numbered
- * source. The DCR call's received cipher is not the new call's, but the INFO1's is: the call keeps the scrambler.
+ * scrambler (its SB0 messages' cipher field), then an IDAS call's INFO1 names the scrambler under key ID 5 and its
+ * INFO3 the numbered source. The DCR call's received cipher is not the new call's, but the INFO1's is: the call keeps
+ * the scrambler. The INFO1 is the new call's, not the DCR call's: the DCR call's crypto stays its own, and the
+ * numbered call's names the INFO1's cipher and key.
  */
 static int
 test_info1_cipher_survives_the_numbered_party(void) {
@@ -1900,14 +1903,81 @@ test_info1_cipher_survives_the_numbered_party(void) {
     int rc = expect_int("info1-after-dcr-dcr-call", dsd_call_state_get(state, 0U, &call), 1);
     rc |= expect_str("info1-after-dcr-dcr-text", call.target_text, "JPN DCR");
     rc |= expect_int("info1-after-dcr-dcr-scrambler", (int)state->nxdn_cipher_type, 1);
+    const dsd_call_snapshot dcr = call;
 
     state->last_vc_sync_time = dsd_decode_time(); /* the carrier's voice is live */
     send_outbound_scch(opts, state, 3U);
+    (void)dsd_call_state_get(state, 0U, &call);
+    rc |= expect_int("info1-after-dcr-still-the-dcr-call", call.epoch == dcr.epoch, 1);
+    rc |= expect_int("info1-after-dcr-dcr-crypto", (int)call.crypto, (int)dcr.crypto);
+    rc |= expect_int("info1-after-dcr-dcr-algid", (int)call.algid, (int)dcr.algid);
+    rc |= expect_int("info1-after-dcr-dcr-kid", (int)call.kid, (int)dcr.kid);
     send_outbound_scch(opts, state, 1U);
     (void)dsd_call_state_get(state, 0U, &call);
     rc |= expect_int("info1-after-dcr-numbered-source", (int)call.ota_source_id, 123);
+    rc |= expect_int("info1-after-dcr-numbered-call", call.epoch != dcr.epoch, 1);
+    rc |= expect_int("info1-after-dcr-numbered-crypto", call.crypto != DSD_CALL_CRYPTO_UNKNOWN, 1);
+    rc |= expect_int("info1-after-dcr-numbered-algid", (int)call.algid, 1);
+    rc |= expect_int("info1-after-dcr-numbered-kid", (int)call.kid, 5);
     rc |= expect_int("info1-after-dcr-cipher-kept", (int)state->nxdn_cipher_type, 1);
     rc |= expect_int("info1-after-dcr-received-scrambler", (int)state->nxdn_cipher_rx_class, 2);
+    free_fixture(opts, state);
+    dsd_decode_clock_use_system();
+    return rc;
+}
+
+/*
+ * A held INFO1 cipher belongs to the transmission that was starting (issue #903): a confirmed DCR call A is received
+ * with the scrambler, an IDAS INFO1 names the scrambler under key ID 5, and no numbered SCCH follows. A ends, and a
+ * clear DCR call B (its SB0 cipher field clear: no cipher observation) starts on the carrier; B's numbered INFO3 opens
+ * another call. Neither the INFO1's key nor its scrambler is that call's: it is published with no crypto, and the
+ * decoder does not descramble it.
+ */
+static int
+test_held_info1_cipher_never_lands_on_a_later_call(void) {
+    static Event_History_I histories[2];
+    dsd_opts* opts = NULL;
+    dsd_state* state = NULL;
+    if (alloc_fixture(&opts, &state) != 0) {
+        return 1;
+    }
+    init_sacch2_state(state, histories);
+    dsd_decode_clock_test_set_ns(1000000000000ULL);
+    state->R = 0x1234ULL;
+    static const uint8_t m_data[5] = {0U};
+    uint8_t trellis[32];
+    make_sacch2_trellis(trellis, 1U, 0U, 0x01U);
+    write_bits_msb(trellis, 8U, 2U, 0x01U); // cipher: scrambler
+    for (int i = 0; i < 3; i++) {
+        nxdn_confirm_begin_frame(state);
+        nxdn_handle_sacch2(opts, state, trellis, m_data, 0x2AU, 0x2AU);
+    }
+    dsd_call_snapshot call;
+    int rc = expect_int("held-info1-dcr-a", dsd_call_state_get(state, 0U, &call), 1);
+    const uint64_t dcr_a = call.epoch;
+    state->last_vc_sync_time = dsd_decode_time();
+    send_outbound_scch(opts, state, 3U);
+    rc |= expect_int("held-info1-scrambler-applied", (int)state->nxdn_cipher_type, 1);
+
+    (void)dsd_call_state_end_ex(state, 0U, dsd_decode_now_mono_s(), DSD_CALL_END_EXPLICIT);
+    dsd_decode_clock_test_set_ns(1010000000000ULL);
+    make_sacch2_trellis(trellis, 1U, 0U, 0x01U); // cipher field clear
+    for (int i = 0; i < 2; i++) {
+        nxdn_confirm_begin_frame(state);
+        nxdn_handle_sacch2(opts, state, trellis, m_data, 0x2AU, 0x2AU);
+    }
+    rc |= expect_int("held-info1-dcr-b", dsd_call_state_get(state, 0U, &call), 1);
+    rc |= expect_int("held-info1-dcr-b-is-another-call", call.epoch != dcr_a, 1);
+    rc |= expect_str("held-info1-dcr-b-text", call.target_text, "JPN DCR");
+    const uint64_t dcr_b = call.epoch;
+
+    state->last_vc_sync_time = dsd_decode_time();
+    send_outbound_scch(opts, state, 1U);
+    (void)dsd_call_state_get(state, 0U, &call);
+    rc |= expect_int("held-info1-numbered-call", call.epoch != dcr_b && call.ota_source_id == 123U, 1);
+    rc |= expect_int("held-info1-numbered-no-crypto", (int)call.crypto, DSD_CALL_CRYPTO_UNKNOWN);
+    rc |= expect_int("held-info1-numbered-no-kid", (int)call.kid, 0);
+    rc |= expect_int("held-info1-scrambler-forgotten", (int)state->nxdn_cipher_type, 0);
     free_fixture(opts, state);
     dsd_decode_clock_use_system();
     return rc;
@@ -1983,6 +2053,7 @@ main(void) {
     rc |= test_nxdn_keeps_the_shared_register();
     rc |= test_info1_cipher_survives_the_numbered_party();
     rc |= test_quarantined_contradiction_keeps_the_dcr_provenance();
+    rc |= test_held_info1_cipher_never_lands_on_a_later_call();
 
     if (rc == 0) {
         printf("NXDN_DEPERM_PRIMITIVES: OK\n");

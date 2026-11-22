@@ -919,6 +919,7 @@ nxdn_print_sacch2_complete_message(const dsd_opts* opts, dsd_state* state, const
        once the transmission is confirmed (nxdn_update_sacch2_identity_state() noted this frame's check). */
     const int acts = nxdn_confirm_is_confirmed(state);
     DSD_FPRINTF(stderr, "UC: %03d; ", user_code);
+    nxdn_cipher_drop_stale_hold(state);
     nxdn_sacch2_note_cipher(opts, state, cipher, acts);
 
     if (acts) {

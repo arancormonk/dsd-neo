@@ -109,6 +109,7 @@ nxdn_cipher_class_reset(dsd_state* state) {
     state->nxdn_cipher_rx_est = 0U;
     state->nxdn_cipher_rx_pending = 0U;
     state->nxdn_cipher_origin = (uint8_t)NXDN_CIPHER_ORIGIN_OTHER;
+    state->nxdn_cipher_held_transmission = 0U;
 }
 
 int

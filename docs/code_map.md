@@ -12443,7 +12443,15 @@ Call frequency and access-code provenance (issue #575). A call's canonical `freq
   hysteresis holds a contradiction back, `nxdn_cipher_observe_from()`) is forgotten, cipher and classification, at the
   first SCCH that acts, which no DCR call carries, before that SCCH's message acts, so the
   new call's voice is not descrambled with it, while an INFO1 naming the new call's own cipher ahead of its numbered
-  party keeps it (`nxdn_scch_forget_dcr_cipher()`; a scrambler forced with `-4` stays). A provisional voice epoch, which names no party at all, still takes either. The rdio-scanner export, which needs a talkgroup,
+  party keeps it (`nxdn_scch_forget_dcr_cipher()`; a scrambler forced with `-4` stays). Such an INFO1, heard while the
+  DCR call is still the live call, is the next call's: its cipher and key ID are not published on the DCR call but
+  held (`NXDN_CIPHER_ORIGIN_INFO1_AFTER_DCR`, bound to that DCR call's transmission,
+  `dsd_state::nxdn_cipher_held_transmission`) and published once on the call an SCCH opens from that very transmission
+  (`nxdn_scch_publish_held_cipher()`). The hold fails closed: any cipher observation since makes it another source's;
+  a carrier loss, retune or release resets it with the classification; and once the live call is anything but that
+  DCR transmission (the call ended, another DCR call, any identity change), the next SCCH or DCR SACCH-2 forgets the
+  INFO1's cipher, decoder and classification alike (`nxdn_cipher_drop_stale_hold()`), so it never reaches a later
+  call. A provisional voice epoch, which names no party at all, still takes either. The rdio-scanner export, which needs a talkgroup,
   files a DCR recording under its channel frequency in kHz as for a conventional analog call
   (`dsd_rdio_channel_talkgroup()`), its parties staying anonymous; one heard at no known frequency is not exported.
 - NXDN Type-D addresses (`nxdn_internal.h`: `nxdn_typed_full_id()`, `nxdn_typed_low_id()`, `nxdn_typed_prefix()`,

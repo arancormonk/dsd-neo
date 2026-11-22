@@ -21,6 +21,7 @@
 #include <string.h>
 #include "dsd-neo/core/safe_api.h"
 #include "nxdn_crc.h"
+#include "nxdn_internal.h"
 
 #if defined(__GNUC__) && !defined(__cplusplus)
 #pragma GCC diagnostic push
@@ -70,6 +71,11 @@ NXDN_Elements_Content_decode(dsd_opts* opts, dsd_state* state, const uint8_t* El
 void
 NXDN_SACCH_Full_decode(dsd_opts* opts, dsd_state* state) {
     (void)opts;
+    (void)state;
+}
+
+void
+nxdn_cipher_drop_stale_hold(dsd_state* state) {
     (void)state;
 }
 

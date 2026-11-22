@@ -53,6 +53,10 @@ void nxdn_data_call_drop_header(dsd_state* state);
 void nxdn_data_call_note_prefixes(dsd_state* state, uint8_t type_d, uint8_t source_prefix, uint8_t target_prefix);
 void nxdn_prepare_sacch_payload_seed(dsd_state* state, int part_of_frame);
 
+/* Forget an INFO1 cipher held for a DCR call's transmission once the live call is no longer that transmission
+   (nxdn_element.c). */
+void nxdn_cipher_drop_stale_hold(dsd_state* state);
+
 /* Whether the canonical call on slot 0 is an NXDN call: the only one an NXDN message may end or give crypto. Another
    protocol's call there is not NXDN's to touch, whatever an NXDN sync read on its carrier says. */
 static inline int
