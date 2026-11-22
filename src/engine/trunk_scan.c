@@ -3813,20 +3813,37 @@ trunk_scan_warn_analog_width(const dsd_opts* opts, const dsd_state* state, const
     }
 }
 
+/* Why the list-wide checks name a TETRA DMO target of @p type at DSP rate @p rate_hz (issue #890): its cause when the
+ * scan skips it at every visit, else DSD_ENGINE_TETRA_ROW_OK (a cause that only waits for the radio's rate included). */
+static dsd_engine_tetra_row
+trunk_scan_tetra_warn_cause(const dsd_opts* opts, const dsd_state* state, dsd_trunk_scan_target_type type,
+                            int rate_hz) {
+    const dsd_engine_tetra_row why = trunk_scan_type_tetra_skip(opts, state, type, rate_hz > 0 ? rate_hz : 0);
+    return dsd_engine_scan_tetra_row_waits(why) ? DSD_ENGINE_TETRA_ROW_OK : why;
+}
+
 /* Name a TETRA DMO target the scan skips at every visit at DSP rate @p rate_hz (issue #890), as an analog target's
  * width is named, counting it in @p skipped for the status line. A rate the radio has not published yet is named once it
- * is, should the target still be skipped then. */
+ * is, should the target still be skipped then. The log line shares the on-air judge's once-per-session record
+ * (@p warned, dsd_trunk_scan_target_runtime::tetra_warned; NULL at the start, before the runtimes exist, whose marks
+ * the start sets after), so a target named on air is not named again when the rate moves, nor the other way round;
+ * the status line still counts every target skipped. */
 static void
 trunk_scan_warn_tetra_target(const dsd_opts* opts, const dsd_state* state, const dsd_trunk_scan_target* target,
-                             int rate_hz, dsd_engine_scan_skipped* skipped) {
-    const dsd_engine_tetra_row why = trunk_scan_type_tetra_skip(opts, state, target->type, rate_hz > 0 ? rate_hz : 0);
-    if (why == DSD_ENGINE_TETRA_ROW_OK || dsd_engine_scan_tetra_row_waits(why)) {
+                             int rate_hz, int* warned, dsd_engine_scan_skipped* skipped) {
+    const dsd_engine_tetra_row why = trunk_scan_tetra_warn_cause(opts, state, target->type, rate_hz);
+    if (why == DSD_ENGINE_TETRA_ROW_OK) {
         return;
     }
     char text[DSD_ENGINE_TETRA_ROW_TEXT_MAX];
-    dsd_engine_scan_tetra_row_text(opts, why, rate_hz, 0, text, sizeof text);
-    LOG_WARN("WARNING: Trunk scan target '%s': %s; it is skipped at every visit%s.\n", target->id, text,
-             why == DSD_ENGINE_TETRA_ROW_INPUT ? "" : " until then");
+    if (!warned || !*warned) {
+        dsd_engine_scan_tetra_row_text(opts, why, rate_hz, 0, text, sizeof text);
+        LOG_WARN("WARNING: Trunk scan target '%s': %s; it is skipped at every visit%s.\n", target->id, text,
+                 why == DSD_ENGINE_TETRA_ROW_INPUT ? "" : " until then");
+    }
+    if (warned) {
+        *warned = 1;
+    }
     char label[96];
     trunk_scan_analog_target_label(target, label, sizeof label);
     dsd_engine_scan_tetra_row_text(opts, why, rate_hz, 1, text, sizeof text);
@@ -3862,7 +3879,7 @@ trunk_scan_recheck_analog_targets(const dsd_opts* opts, dsd_state* state, dsd_tr
                                          rate_hz, same_rate ? configured_changed : 0U, &skipped);
         } else if (!same_rate && trunk_scan_type_is_tetra(target->type)) {
             /* A TETRA DMO target's chain follows the rate, not a configured width (issue #890). */
-            trunk_scan_warn_tetra_target(opts, state, target, rate_hz, &skipped);
+            trunk_scan_warn_tetra_target(opts, state, target, rate_hz, &coord->targets[i].tetra_warned, &skipped);
         }
     }
     dsd_engine_scan_note_skipped_rows(state, &skipped);
@@ -4756,7 +4773,7 @@ trunk_scan_warn_targets(const dsd_opts* opts, dsd_state* state, const dsd_trunk_
                          target->id, target->row_options.squelch_db);
             }
             if (trunk_scan_type_is_tetra(target->type)) {
-                trunk_scan_warn_tetra_target(opts, state, target, check_rate_hz, &skipped);
+                trunk_scan_warn_tetra_target(opts, state, target, check_rate_hz, NULL, &skipped);
             }
             continue;
         }
@@ -7172,6 +7189,22 @@ trunk_scan_start_park(dsd_opts* opts, dsd_state* state, dsd_trunk_scan_coord* co
     return rc;
 }
 
+/* Count the TETRA DMO targets (coord->has_tetra, issue #890) and mark those the start named
+   (trunk_scan_warn_targets(), at @p checked_rate_hz, the rate the widths were checked at) as named for the session
+   (dsd_trunk_scan_target_runtime::tetra_warned), so neither the on-air judge nor a rate recheck names them again. */
+static void
+trunk_scan_note_tetra_targets(const dsd_opts* opts, const dsd_state* state, dsd_trunk_scan_coord* coord,
+                              int checked_rate_hz) {
+    for (size_t i = 0; i < coord->count; i++) {
+        dsd_trunk_scan_target_runtime* rt = &coord->targets[i];
+        const int tetra = trunk_scan_type_is_tetra(rt->target.type);
+        coord->has_tetra |= tetra;
+        rt->tetra_warned =
+            tetra
+            && trunk_scan_tetra_warn_cause(opts, state, rt->target.type, checked_rate_hz) != DSD_ENGINE_TETRA_ROW_OK;
+    }
+}
+
 int
 dsd_engine_trunk_scan_init(dsd_opts* opts, dsd_state* state, char* err, size_t err_sz) {
     if (!opts || !state || !opts->trunk_scan_enabled) {
@@ -7209,9 +7242,7 @@ dsd_engine_trunk_scan_init(dsd_opts* opts, dsd_state* state, char* err, size_t e
         trunk_scan_init_release(opts, state, coord, &list);
         return -1;
     }
-    for (size_t i = 0; i < coord->count; i++) {
-        coord->has_tetra |= trunk_scan_type_is_tetra(coord->targets[i].target.type);
-    }
+    trunk_scan_note_tetra_targets(opts, state, coord, analog_checked_rate_hz);
     const int hold = opts->trunk_scan_hold_id[0] != '\0';
     size_t start = 0U;
     if (trunk_scan_pick_start(opts, state, coord, &start, err, err_sz) != 0) {

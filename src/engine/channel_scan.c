@@ -715,11 +715,40 @@ channel_scan_row_visited_analog(const dsd_state* state, int row) {
            && dsd_scan_mode_is_analog(dsd_channel_mode_get(state, (size_t)row));
 }
 
+/* Note tetra-dmo row @p row as named (channel_scan::tetra_warned). Returns 0 when it already was this session, so it is
+   not named again; 1 when it is new (a row that cannot be stored is named again at its next cause, never lost). A
+   list other than the one the rows were named on drops them all first. */
+static int
+channel_scan_tetra_warned_note(const dsd_state* state, channel_scan* scan, int row) {
+    if (scan->tetra_warned_list != state->lcn_list_rev) {
+        scan->tetra_warned_list = state->lcn_list_rev;
+        scan->tetra_warned_count = 0U;
+    }
+    for (size_t i = 0; i < scan->tetra_warned_count; i++) {
+        if (scan->tetra_warned[i] == row) {
+            return 0;
+        }
+    }
+    if (scan->tetra_warned_count == scan->tetra_warned_cap) {
+        const size_t cap = scan->tetra_warned_cap ? scan->tetra_warned_cap * 2U : 4U;
+        int* grown = (int*)realloc(scan->tetra_warned, cap * sizeof(*scan->tetra_warned));
+        if (!grown) {
+            return 1;
+        }
+        scan->tetra_warned = grown;
+        scan->tetra_warned_cap = cap;
+    }
+    scan->tetra_warned[scan->tetra_warned_count++] = row;
+    return 1;
+}
+
 /* Name typed tetra-dmo row @p row (issue #890 D5) when the scan skips it at every visit at @p dsp_rate_hz, counting it
  * in @p skipped. A rate the radio has not published yet is named once it is, should the row still be skipped then; a
- * placeholder row is never tuned. Before channel_scan_row_tetra_skip() is defined, so its rule is asked here. */
+ * placeholder row is never tuned. Before channel_scan_row_tetra_skip() is defined, so its rule is asked here. The log
+ * line shares the on-air judge's once-per-session record (channel_scan_tetra_warned_note()), so a row named on air is
+ * not named again when the rate moves, nor the other way round; the status line still counts every row skipped. */
 static void
-channel_scan_warn_row_tetra(const dsd_opts* opts, const dsd_state* state, int row, int dsp_rate_hz,
+channel_scan_warn_row_tetra(const dsd_opts* opts, const dsd_state* state, channel_scan* scan, int row, int dsp_rate_hz,
                             dsd_engine_scan_skipped* skipped) {
     if (*dsd_state_trunk_lcn_slot_const(state, row) == 0
         || dsd_channel_mode_get(state, (size_t)row) != DSD_SCAN_MODE_TETRA_DMO) {
@@ -732,9 +761,11 @@ channel_scan_warn_row_tetra(const dsd_opts* opts, const dsd_state* state, int ro
     char label[64];
     char text[DSD_ENGINE_TETRA_ROW_TEXT_MAX];
     channel_scan_row_label(state, row, label, sizeof label);
-    dsd_engine_scan_tetra_row_text(opts, why, dsp_rate_hz, 0, text, sizeof text);
-    LOG_WARN("WARNING: %s: %s; it is skipped at every visit%s.\n", label, text,
-             why == DSD_ENGINE_TETRA_ROW_INPUT ? "" : " until then");
+    if (channel_scan_tetra_warned_note(state, scan, row)) {
+        dsd_engine_scan_tetra_row_text(opts, why, dsp_rate_hz, 0, text, sizeof text);
+        LOG_WARN("WARNING: %s: %s; it is skipped at every visit%s.\n", label, text,
+                 why == DSD_ENGINE_TETRA_ROW_INPUT ? "" : " until then");
+    }
     dsd_engine_scan_tetra_row_text(opts, why, dsp_rate_hz, 1, text, sizeof text);
     dsd_engine_scan_skipped_add(skipped, label, text);
 }
@@ -746,12 +777,13 @@ channel_scan_warn_row_tetra(const dsd_opts* opts, const dsd_state* state, int ro
  * without the log (Android) would otherwise never learn why a row is not visited. A placeholder row (frequency 0) is
  * never tuned and is left out, as dsd_engine_channel_scan_refused_rows() leaves it out. */
 static void
-channel_scan_warn_rows_width(const dsd_opts* opts, dsd_state* state, int dsp_rate_hz, unsigned configured_changed) {
+channel_scan_warn_rows_width(const dsd_opts* opts, dsd_state* state, channel_scan* scan, int dsp_rate_hz,
+                             unsigned configured_changed) {
     dsd_engine_scan_skipped skipped = {0};
     for (int row = 0; row < state->lcn_freq_count; row++) {
         /* A tetra-dmo row's chain follows the rate, not a configured width (issue #890 D5). */
         if (configured_changed == 0U) {
-            channel_scan_warn_row_tetra(opts, state, row, dsp_rate_hz, &skipped);
+            channel_scan_warn_row_tetra(opts, state, scan, row, dsp_rate_hz, &skipped);
         }
         if (!channel_scan_row_visited_analog(state, row)) {
             continue;
@@ -803,7 +835,7 @@ channel_scan_check_rows(const dsd_opts* opts, dsd_state* state, channel_scan* sc
     scan->widths_checked_rate_hz = dsp_rate_hz;
     scan->widths_checked_nfm_hz = nfm_hz;
     scan->widths_checked_am_hz = am_hz;
-    channel_scan_warn_rows_width(opts, state, dsp_rate_hz, same_rate ? configured_changed : 0U);
+    channel_scan_warn_rows_width(opts, state, scan, dsp_rate_hz, same_rate ? configured_changed : 0U);
 }
 
 /* The squelch an analog row runs with: its own, else the configured one. */
@@ -1128,33 +1160,6 @@ channel_scan_tetra_judging(const dsd_opts* opts, const dsd_state* state) {
         return NULL;
     }
     return scan;
-}
-
-/* Note tetra-dmo row @p row as named (channel_scan::tetra_warned). Returns 0 when it already was this session, so it is
-   not named again; 1 when it is new (a row that cannot be stored is named again at its next cause, never lost). A
-   list other than the one the rows were named on drops them all first. */
-static int
-channel_scan_tetra_warned_note(const dsd_state* state, channel_scan* scan, int row) {
-    if (scan->tetra_warned_list != state->lcn_list_rev) {
-        scan->tetra_warned_list = state->lcn_list_rev;
-        scan->tetra_warned_count = 0U;
-    }
-    for (size_t i = 0; i < scan->tetra_warned_count; i++) {
-        if (scan->tetra_warned[i] == row) {
-            return 0;
-        }
-    }
-    if (scan->tetra_warned_count == scan->tetra_warned_cap) {
-        const size_t cap = scan->tetra_warned_cap ? scan->tetra_warned_cap * 2U : 4U;
-        int* grown = (int*)realloc(scan->tetra_warned, cap * sizeof(*scan->tetra_warned));
-        if (!grown) {
-            return 1;
-        }
-        scan->tetra_warned = grown;
-        scan->tetra_warned_cap = cap;
-    }
-    scan->tetra_warned[scan->tetra_warned_count++] = row;
-    return 1;
 }
 
 /* Name the cause @p why the tetra-dmo row @p row cannot run its chain for, once per row for the session, in the log

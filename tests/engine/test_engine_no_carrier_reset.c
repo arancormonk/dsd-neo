@@ -13792,6 +13792,42 @@ y_tetra_on_air_case(int held, int cause) {
     return rc;
 }
 
+/* Issue #890: the -Y scan names a tetra-dmo row once for the session whichever check finds it first: the rate moves to
+   48 kHz while the row is on air, the on-air judge names it and the scan leaves it, and the list-wide width check the
+   next step runs at the new rate counts it skipped without naming it again. */
+static int
+y_tetra_rate_change_named_once_case(void) {
+    const char* name = "-Y TETRA row, the rate moved on air";
+    dsd_opts* opts = NULL;
+    dsd_state* state = NULL;
+    if (init_test_runtime(&opts, &state) != 0) {
+        return 1;
+    }
+    int rc = y_tetra_start(opts, state, name);
+    y_tetra_published(4, 0);
+    dsd_engine_channel_scan_tetra_judge(opts, state);
+    dsd_test_capture_stderr cap;
+    char log[16384] = {0};
+    const int captured = dsd_test_capture_stderr_begin(&cap, "ytetrarateonce") == 0;
+    g_rtl_request_rate_hz = 48000;
+    const int yielded = carrier_frames(opts, state, 20) == 1;
+    noCarrier(opts, state);
+    const int left = dsd_engine_channel_scan_on_air_row(state) != 1;
+    if (captured) {
+        (void)dsd_test_capture_stderr_end(&cap);
+        (void)dsd_test_capture_stderr_read(&cap, log, sizeof log);
+    }
+    const int named = y_count_text(log, "WARNING: Scan channel 2 (425.012500 MHz):");
+    char detail[160];
+    DSD_SNPRINTF(detail, sizeof detail, "named once (yielded %d, left %d, %d named)", yielded, left, named);
+    rc |= expect_case(name, detail, yielded && left && named == 1);
+    if (named != 1) {
+        DSD_FPRINTF(stderr, "%s", log);
+    }
+    y_tetra_finish(opts, state);
+    return rc;
+}
+
 /* Issue #890: a typed tetra-dmo row lands on its class's chain under a global -mc lock: the CQPSK chain with the TETRA
    channel profile, not the FSK discriminator with the wide filter the lock's C4FM rf_mod would give it. */
 static int
@@ -14123,7 +14159,7 @@ test_avoided_row_departs_under_a_carrier(void) {
            | y_tetra_late_failure_case() | y_tetra_paused_case() | y_tetra_locked_chain_case()
            | y_tetra_settled_other_case() | y_tetra_entry_reads_the_on_air_verdict_case()
            | y_tetra_then_blank_row_case() | y_tetra_after_nfm_row_case() | y_tetra_two_rows_named_once_case()
-           | y_tetra_warned_once_case();
+           | y_tetra_warned_once_case() | y_tetra_rate_change_named_once_case();
 }
 
 /* The scan holds row @p row of the walk list, marked an entry hold, as the row committed (issue #644). */
