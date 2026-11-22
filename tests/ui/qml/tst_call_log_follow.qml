@@ -37,6 +37,13 @@ Item {
         id: partWidth
     }
 
+    // A line as drawn: its text cut to its width the way the Text cuts it.
+    TextMetrics {
+        id: drawnLine
+
+        elide: Text.ElideRight
+    }
+
     TestCase {
         id: tc
 
@@ -621,10 +628,11 @@ Item {
         // larger text still (issue #901, B7) the row keeps its two lines: the
         // name keeps min(its width, 96), EMERGENCY and the time are drawn only
         // while they fit beside that, beside the lines and clear of them, and
-        // the time leaves before EMERGENCY does.
+        // the time leaves before EMERGENCY does. The frequency still leads what
+        // the meta line draws there, cut (decided limit: whole up to 1.3).
         function test_06i_an_emergency_row_keeps_the_frequency_in_view_data() {
             return [{tag: "1.0", scale: 1.0, frequency: true}, {tag: "1.3", scale: 1.3, frequency: true},
-                {tag: "1.6", scale: 1.6, frequency: true}, {tag: "2.0", scale: 2.0, frequency: false}]
+                {tag: "1.6", scale: 1.6, frequency: false}, {tag: "2.0", scale: 2.0, frequency: false}]
         }
         function test_06i_an_emergency_row_keeps_the_frequency_in_view(data) {
             var width = root.width
@@ -640,9 +648,17 @@ Item {
                 var meta = findChild(row, "callRowMeta")
                 verify(meta !== null, "the meta line is missing")
                 frequencyWidth.font = meta.font
-                if (data.frequency)
+                // What the meta line draws, as cut to its width: the frequency leads it at every size, whole up
+                // to 1.3.
+                drawnLine.font = meta.font
+                drawnLine.text = meta.text
+                drawnLine.elideWidth = meta.width
+                verify(tc.startsWith(drawnLine.elidedText, "851."), "the frequency does not lead: " + drawnLine.elidedText)
+                if (data.frequency) {
                     verify(frequencyWidth.advanceWidth <= meta.width,
                            "the frequency is elided: " + frequencyWidth.advanceWidth + " > " + meta.width)
+                    verify(tc.startsWith(drawnLine.elidedText, "851.0125 MHz"), "the frequency is cut: " + drawnLine.elidedText)
+                }
                 compare(row.height, Ui.LineBoxes.callRowHeight(false), "the row's height")
                 var name = findChild(row, "callRowName")
                 partWidth.font = name.font
@@ -651,8 +667,8 @@ Item {
                 var tag = findChild(row, "rowEmergencyTag")
                 var time = findChild(row, "callRowTime")
                 verify(tag.visible, "EMERGENCY gave way")
-                // At 1.0 and 1.3 the time is drawn too.
-                if (data.frequency)
+                // Up to 1.6 the time is drawn too.
+                if (data.scale <= 1.6)
                     verify(time.visible, "the time gave way")
                 var lines = [name, meta].map(function (line) { return tc.rectIn(line, row) })
                 for (var part of [tag, time]) {

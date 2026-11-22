@@ -17824,7 +17824,8 @@ Qt Quick frontend (`src/ui/qt`):
   the minutes pass. What is not drawn is still read: the node's name carries "has a recording", and its description
   the meta line, EMERGENCY (the tag's `label`), ENC and the time, each once, drawn or not. Decided limit: at 280 px
   (Home's Recent pane) a recorded emergency call drops its glyph at text 1.0 and its time from 1.6; History's
-  emergency rows on a 360 dp phone keep their time up to 1.6. Decided limit (D10): a rarer script whose glyphs stand
+  emergency rows on a 360 dp phone keep their time up to 1.6 and the whole frequency on the meta line up to 1.3
+  (from 1.6 it still leads the line, cut). Decided limit (D10): a rarer script whose glyphs stand
   taller than the box (Tibetan stacks) is drawn centred in it and unclipped, into the row's padding; the row keeps
   its height. History (both instances) and Home's Recent activity pass `compact` from the preference; on a change each
   forgets its kept place (`KeepPlace.forget()`)
