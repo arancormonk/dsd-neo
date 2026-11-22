@@ -854,8 +854,9 @@ test_shared_title_compares_the_drawn_title() {
 /* Issue #901 r3 S1: marking shared titles counts each title once, so a rebuild over 1000 cards of one title costs
    about what one over 1000 titles does. Each rebuild below is a search keystroke that keeps every card (two queries
    that match them all, in turn); the fastest of nine per case (after a first) is compared, so one slow turn on a
-   loaded machine does not decide. The bound is 3x plus 15 ms: a linear mark stays well inside it (the cards' other work is the same
-   in both cases), while the per-pair comparison it replaced cost ~100x (430 ms against 4 ms in a debug build). */
+   loaded machine does not decide. The bound is 3x plus 15 ms: a linear mark stays well inside it (the cards' other
+   work is the same in both cases), while the per-pair comparison it replaced cost ~30-100x (137-430 ms against
+   4 ms in a debug build). */
 void
 test_shared_titles_rebuild_linearly() {
     const auto fastest_rebuild = [](bool sameTitle) {
