@@ -1060,6 +1060,17 @@ dsd_scan_mode_push_squelch(const dsd_opts* opts, const dsd_state* state, const d
     scope->squelch_pending = SCAN_SQUELCH_ENTERED;
 }
 
+void
+dsd_scan_mode_note_receiver_squelch(const dsd_state* state, const dsd_squelch_setting* setting) {
+    scan_scope* scope = scan_scope_get(state);
+    /* A suspended scope's resume tells the receiver whatever it holds. */
+    if (!scope || !setting || scope->suspended) {
+        return;
+    }
+    scope->squelch_entered_from = *setting;
+    scope->squelch_pending = SCAN_SQUELCH_ENTERED;
+}
+
 int
 dsd_scan_mode_updating(const dsd_state* state) {
     const scan_scope* scope = scan_scope_get(state);

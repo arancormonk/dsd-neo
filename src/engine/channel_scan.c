@@ -140,6 +140,11 @@ typedef struct {
     /* The tune the staged row belongs to: the request its first tune began, which a restage of that row keeps (an
        entry waiting on the row names it, issue #644). */
     uint64_t attempt;
+    /* The gate handed to the receiver ahead of the staged row's tune (issue #899): what it runs while that tune can
+       land, which a replacement refused before anything moved hands it back with the staged row
+       (channel_scan_gate_back()). staged_gate_set 0 before any tune was staged. */
+    dsd_squelch_setting staged_gate;
+    int staged_gate_set;
     /* The request a stream stop found still able to land, and the source of the stream that stopped
        (dsd_engine_channel_scan_stream_stopping(), issue #644): the reopen after it decides whether the row is
        restaged there (dsd_engine_channel_scan_stream_reopened()). */
@@ -507,6 +512,30 @@ channel_scan_request_result(const channel_scan* scan) {
     return scan->request ? dsd_trunk_tuning_request_status(scan->request, NULL) : DSD_TRUNK_TUNE_RESULT_FAILED;
 }
 
+/* The receiver gets the gate of the row on air back (issue #899): the staged row's tune ended without landing, so the
+   gate handed over ahead of it (channel_scan_tune_staged()) runs no channel the receiver can produce. The options hold
+   the row on air's squelch, the analog default included. */
+static void
+channel_scan_gate_on_air(const dsd_opts* opts, const dsd_state* state) {
+    const dsd_squelch_setting on_air = dsd_squelch_setting_of_opts(opts);
+    dsd_scan_mode_push_squelch(opts, state, &on_air, &on_air);
+}
+
+/* The receiver gets the gate of what can land next (issue #899): the staged row's, handed over ahead of its tune, while
+   that tune can still land (a retry owed, or a request pending or completed and not committed yet), else the row on
+   air's. A go-to refused before anything moved reinstates the request staged before it with this. */
+static void
+channel_scan_gate_back(const dsd_opts* opts, const dsd_state* state, const channel_scan* scan) {
+    const dsd_trunk_tune_result result = channel_scan_request_result(scan);
+    const int can_land = scan->retry || result == DSD_TRUNK_TUNE_RESULT_PENDING || result == DSD_TRUNK_TUNE_RESULT_OK;
+    if (!scan->staged_gate_set || !can_land) {
+        channel_scan_gate_on_air(opts, state);
+        return;
+    }
+    const dsd_squelch_setting on_air = dsd_squelch_setting_of_opts(opts);
+    dsd_scan_mode_push_squelch(opts, state, &on_air, &scan->staged_gate);
+}
+
 /* An entry on a typed list's row waits on the attempt staged for it (issue #644). One naming no attempt, or one no
    longer outstanding (no request, retry or commit of it left), would wait for good: it fails here, kept for its toast,
    as its attempt's failure would have failed it. */
@@ -535,6 +564,7 @@ dsd_engine_channel_scan_pending(dsd_opts* opts, dsd_state* state) {
         if (!channel_scan_row_is_current(opts, state, scan)) {
             scan->retry = 0;
             channel_scan_note_unlanded_move(opts, state, scan, 0);
+            channel_scan_gate_on_air(opts, state);
             dsd_engine_scan_entry_intent_drop_request(state, scan->attempt);
         } else if (channel_scan_start_row_owned(opts, state, scan->row) < 0 && state->lcn_scan_resume_pending) {
             channel_scan_resume_row_failed(opts, state, scan, scan->start_failure);
@@ -558,6 +588,7 @@ dsd_engine_channel_scan_pending(dsd_opts* opts, dsd_state* state) {
     /* The row will not land. A tune that completed moved the receiver all the same (its row went out of date while it
        was outstanding), and so did a rigctl leg ahead of an RTL leg that went on asynchronously and failed. */
     channel_scan_note_unlanded_move(opts, state, scan, result == DSD_TRUNK_TUNE_RESULT_OK);
+    channel_scan_gate_on_air(opts, state);
     if (state->lcn_scan_resume_pending) {
         scan->request = 0;
         channel_scan_resume_row_failed(opts, state, scan, DSD_SCAN_RESUME_FAILED_TUNE);
@@ -1214,6 +1245,8 @@ typedef struct {
     int retry;
     int step_dir;
     uint64_t attempt;
+    dsd_squelch_setting staged_gate;
+    int staged_gate_set;
 } channel_scan_staging;
 
 /* Exchange what @p staging holds with what @p scan has staged, the keys moved, not copied. */
@@ -1238,6 +1271,8 @@ channel_scan_staging_swap(channel_scan* scan, channel_scan_staging* staging) {
     held.retry = scan->retry;
     held.step_dir = scan->step_dir;
     held.attempt = scan->attempt;
+    held.staged_gate = scan->staged_gate;
+    held.staged_gate_set = scan->staged_gate_set;
     scan->row = staging->row;
     scan->mode = staging->mode;
     scan->list_rev = staging->list_rev;
@@ -1256,6 +1291,8 @@ channel_scan_staging_swap(channel_scan* scan, channel_scan_staging* staging) {
     scan->retry = staging->retry;
     scan->step_dir = staging->step_dir;
     scan->attempt = staging->attempt;
+    scan->staged_gate = staging->staged_gate;
+    scan->staged_gate_set = staging->staged_gate_set;
     DSD_MEMCPY(staging, &held, sizeof(*staging));
     DSD_SECURE_ZERO(&held, sizeof(held));
 }
@@ -1324,14 +1361,14 @@ channel_scan_tune_staged(dsd_opts* opts, dsd_state* state, channel_scan* scan, c
     const dsd_squelch_setting row_squelch = row_has_own ? channel_scan_row_own_squelch(&scan->staged_values)
                                                         : dsd_squelch_analog_default_effective_on(opts, 0);
     dsd_scan_mode_push_squelch(opts, state, &on_air, &row_squelch);
+    scan->staged_gate = row_squelch;
+    scan->staged_gate_set = 1;
     const dsd_trunk_tune_result result =
         dsd_engine_scan_tune_to_freq(opts, state, scan->row_freq, state->samplesPerSymbol, &scan->request);
     dsd_scan_settings_restore(&before, opts, state);
     dsd_squelch_standing_restore(opts, &before_squelch);
-    if (!dsd_trunk_tune_result_is_ok(result)) {
-        /* Nothing moved: the row on air runs its own gate again. */
-        dsd_scan_mode_push_squelch(opts, state, &on_air, &on_air);
-    }
+    /* A tune refused or deferred here leaves the gate to its caller, which knows what can still land: the row on air
+       (channel_scan_tune_outcome()), or a go-to's earlier request it reinstates (channel_scan_goto_typed()). */
     /* A new attempt is named by its first request; a restage keeps the name. An entry waiting on the row is this
        attempt's (issue #644). */
     if (scan->attempt == 0U) {
@@ -1359,6 +1396,8 @@ channel_scan_tune_outcome(dsd_opts* opts, dsd_state* state, channel_scan* scan, 
      * ledger's frame gate closed until a subsequent successful request recovers.
      * When the rigctl leg did move the radio, the row ends unlanded on another carrier. */
     channel_scan_note_unlanded_move(opts, state, scan, dsd_engine_scan_tune_moved());
+    /* Nothing staged can land: the row on air runs its own gate again. */
+    channel_scan_gate_on_air(opts, state);
     scan->start_failure =
         result == DSD_TRUNK_TUNE_RESULT_DEFERRED ? DSD_SCAN_RESUME_FAILED_DEFERRED : DSD_SCAN_RESUME_FAILED_TUNE;
     channel_scan_end_calls(opts, state);
@@ -2273,6 +2312,8 @@ channel_scan_goto_typed(dsd_opts* opts, dsd_state* state, int row, int* retired)
             dsd_trunk_tuning_request_disown(staging.request);
         }
         channel_scan_staging_clear(&staging);
+        /* The gate goes back with the request: the reinstated row's while its tune can still land (issue #899). */
+        channel_scan_gate_back(opts, state, scan);
         return result == DSD_TRUNK_TUNE_RESULT_DEFERRED ? DSD_SCAN_GOTO_DEFERRED : DSD_SCAN_GOTO_REFUSED;
     }
     *retired = 1;

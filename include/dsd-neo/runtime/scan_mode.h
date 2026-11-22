@@ -161,6 +161,11 @@ int dsd_scan_mode_suspended_squelch(const dsd_state* state, dsd_squelch_standing
  * again. Decoder thread only. */
 void dsd_scan_mode_push_squelch(const dsd_opts* opts, const dsd_state* state, const dsd_squelch_setting* on_air,
                                 const dsd_squelch_setting* setting);
+/** The receiver was handed @p setting outside the scope's own entry points (issue #899): a stream opened on it, or a
+ * command pushed it. The scope's next push or settle (a row's retune or commit, a leave) judges against it, so a row
+ * whose gate differs from it is told, even when the gate handed over ahead of a pending tune was the same. Nothing while
+ * the scope is suspended (its resume tells the receiver whatever it holds) or with no scope. Decoder thread only. */
+void dsd_scan_mode_note_receiver_squelch(const dsd_state* state, const dsd_squelch_setting* setting);
 /** Capture the configured squelch (never an analog default in its place) with the rest of the settings, and restore
  * them, for a staged tune; no pointers or audio sink fields are changed. A step that must put the squelch the receiver
  * runs back too saves it apart (dsd_squelch_standing_capture()). */
