@@ -3917,13 +3917,25 @@ nxdn_scch_carry_crypto_media(dsd_state* state, const dsd_call_snapshot* call, in
     }
 }
 
+/* A numbered SCCH party during a DCR call starts another call (nxdn_scch_names_new_call()): the scrambler the DCR call
+ * received (its cipher and the classification behind it) is not the new call's, whose voice plays clear until its own
+ * signalling names a cipher. A scrambler the operator forced (-4: state->M with a key) stays, as at a release. */
+static void
+nxdn_scch_forget_dcr_cipher(dsd_state* state) {
+    state->nxdn_cipher_type = 0;
+    nxdn_cipher_class_reset(state);
+    if (state->M == 1 && dsd_key_scalar_present(state, 0)) {
+        nxdn_cipher_force(state, 0x1);
+    }
+}
+
 /* The live call takes an SCCH's source or target (0: keep the call's), named under @p prefix (the message's Home
  * Repeater / Prefix, "pp-iiii", nxdn_typed_id_text()), and @p kind when the message classifies it
  * (a busy message's G/U bit; DSD_CALL_KIND_UNKNOWN keeps the call's for the same target, and gives a new target no
  * class, nxdn_scch_named_kind()), so a later unclassified message for the same target reads the class this one
  * verified, never a previous call's. A message naming another target or class, or any numbered party during a DCR
  * call, is another call: it carries none of the previous call's talker, target text, emergency or crypto
- * (nxdn_scch_names_new_call()). */
+ * (nxdn_scch_names_new_call()), nor, after a DCR call, the scrambler it received (nxdn_scch_forget_dcr_cipher()). */
 static void
 nxdn_scch_enrich_identity(dsd_state* state, uint16_t source_id, uint16_t target_id, uint8_t prefix,
                           dsd_call_kind kind) {
@@ -3935,6 +3947,9 @@ nxdn_scch_enrich_identity(dsd_state* state, uint16_t source_id, uint16_t target_
     char target_text[DSD_CALL_IDENTITY_TEXT_SIZE];
     nxdn_typed_id_text(target_text, sizeof(target_text), prefix, target_id);
     const int new_call = nxdn_scch_names_new_call(&call, source_id, target_id, target_text, kind);
+    if (new_call && dsd_call_is_nxdn_dcr(call.protocol, call.ota_target_id, call.target_text)) {
+        nxdn_scch_forget_dcr_cipher(state);
+    }
     dsd_call_observation observation = {
         .protocol = call.protocol,
         .slot = 0U,
