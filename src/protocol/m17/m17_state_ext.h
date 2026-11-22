@@ -104,6 +104,26 @@ typedef struct m17_state_ext {
        (the input rewound or switched) is no next frame. */
     uint32_t pkt_ref_epoch;
     m17_adata_assembly adata;
+    /* The scan side's view of the checked link setup bound to the transmission (issue #890), meaningful only while
+       dsd_state::m17_lsf_checked is set. lsf_checked_head: the checked LSF's DST, SRC and TYPE (its first 112 bits,
+       packed MSB first). lsf_disputed: a clean LICH chunk of the stream has since disagreed with them
+       (m17_lich_note_other_link()): another transmission whose boundary went unheard, or a Golay miscorrection; a
+       disputed binding is no identity of the call for a scan hold until an LSF is checked again, and the decoder's
+       checked fields are left as they are. lsf_reconfirmed: which of the LICH chunks that carry those bits (0 to 2, bit
+       k for chunk k) agreed with the checked LSF since the RF stream was last continuous with it; a checked LSF sets all
+       three, a stream frame that does not end one M17 frame after the RF frame before it clears them (a frame lost, or
+       another transmission's frames after a missed EOS, EOT and LSF frame, which take at least three frame periods),
+       and each clean chunk 0 to 2 that agrees sets its own again. The binding vouches for the stream
+       (m17_link_setup_vouched(): its scan report's fields, its checked speech) only while it is undisputed and all three
+       are set. All three are emptied at every transmission boundary (m17_confirm_reset()). rf_frame_valid,
+       rf_frame_symbol, rf_frame_epoch: where the last RF LSF or stream frame M17 read whole ended
+       (dsd_state::symbolcnt, dsd_state::symbol_clock_epoch; m17_note_rf_frame_end()). */
+    uint8_t lsf_checked_head[14];
+    uint8_t lsf_disputed;
+    uint8_t lsf_reconfirmed;
+    uint8_t rf_frame_valid;
+    uint32_t rf_frame_symbol;
+    uint32_t rf_frame_epoch;
     /* The text META of the RF transmission or the admitted network stream being assembled from its blocks
        (m17_meta_text_assembler_push()), emptied at every transmission boundary (m17_confirm_reset()) so that no text
        is made of two transmissions' blocks. An MPKT has its own, on the stack. */

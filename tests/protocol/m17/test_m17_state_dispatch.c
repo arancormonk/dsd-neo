@@ -1221,14 +1221,18 @@ test_stream_voice_replaces_foreign_active_call(void) {
     /* A checked LSF a clean LICH chunk has since disputed (another transmission after a missed EOT and LSF frame) vouches
        for nothing: its speech plays but earns no checked media either. */
     state->m17_lsf_checked = 1U;
-    state->m17_lsf_reconfirmed = 0x7U; /* every identity chunk agreed since the stream was continuous */
-    state->m17_lsf_disputed = 1U;
+    m17_state_ext* link = test_m17_ext(state);
+    if (link == NULL) {
+        return 1;
+    }
+    link->lsf_reconfirmed = 0x7U; /* every identity chunk agreed since the stream was continuous */
+    link->lsf_disputed = 1U;
     err |= expect_int("disputed-LSF M17 voice dispatches under a scan",
                       m17_dispatch_stream_payload(opts, state, payload_bits, M17_REF_STREAM_FN, processed_bits),
                       M17_STREAM_CLEAR_DISPATCHED);
     (void)get_m17_call(state, &call);
     err |= expect_int("disputed-LSF M17 speech earns no checked media", call.checked_media_updated_m > 0.0, 0);
-    state->m17_lsf_disputed = 0U;
+    link->lsf_disputed = 0U;
     err |= expect_int(
         "checked-LSF M17 voice dispatches under a scan",
         m17_dispatch_stream_payload(opts, state, payload_bits, (uint16_t)(M17_REF_STREAM_FN + 1U), processed_bits),
@@ -6215,7 +6219,8 @@ static int
 expect_link_setup_unknown(const char* boundary, const dsd_state* state) {
     uint8_t zero_meta[sizeof(state->m17_meta)];
     DSD_MEMSET(zero_meta, 0, sizeof(zero_meta));
-    uint8_t zero_head[sizeof(state->m17_lsf_checked_head)];
+    const m17_state_ext* link = m17_state_ext_find(state);
+    uint8_t zero_head[sizeof(link->lsf_checked_head)];
     DSD_MEMSET(zero_head, 0, sizeof(zero_head));
     int err = 0;
     if (state->m17_lsf_checked != 0U || state->m17_str_dt != (uint8_t)TEST_STREAM_TYPE_UNKNOWN || state->m17_can != 0U
@@ -6229,9 +6234,11 @@ expect_link_setup_unknown(const char* boundary, const dsd_state* state) {
         err = 1;
     }
     /* The scan side's copy of the checked LSF and its dispute go with it (issue #890). */
-    if (state->m17_lsf_disputed != 0U || memcmp(state->m17_lsf_checked_head, zero_head, sizeof(zero_head)) != 0) {
-        DSD_FPRINTF(stderr, "%s: scan binding left: disputed %u head[0] %02X\n", boundary,
-                    (unsigned)state->m17_lsf_disputed, (unsigned)state->m17_lsf_checked_head[0]);
+    if (link != NULL
+        && (link->lsf_disputed != 0U || link->lsf_reconfirmed != 0U
+            || memcmp(link->lsf_checked_head, zero_head, sizeof(zero_head)) != 0)) {
+        DSD_FPRINTF(stderr, "%s: scan binding left: disputed %u reconfirmed %u head[0] %02X\n", boundary,
+                    (unsigned)link->lsf_disputed, (unsigned)link->lsf_reconfirmed, (unsigned)link->lsf_checked_head[0]);
         err = 1;
     }
     return err;
@@ -6335,7 +6342,10 @@ test_link_setup_boundaries_clear_the_same_set(void) {
         build_encoded_lich_chunk(lsf_bits, 1U, held);
         (void)m17_process_lich(state, opts, held);
         /* A binding a scan hold already counts as disputed (another transmission's LICH, issue #890). */
-        state->m17_lsf_disputed = 1U;
+        m17_state_ext* link = m17_state_ext_find(state);
+        if (link != NULL) {
+            link->lsf_disputed = 1U;
+        }
         const char* label;
         switch (boundary) {
             case 0: {

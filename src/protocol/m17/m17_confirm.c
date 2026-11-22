@@ -45,10 +45,6 @@ m17_confirm_reset(dsd_state* state) {
     state->m17_confirm_frame_evidence = 0;
     /* The decoded link setup: no stream type, so nothing plays, marks media or names a signature. */
     state->m17_lsf_checked = 0U;
-    /* The scan side's copy of the checked LSF and its dispute (issue #890): no binding outlives the transmission. */
-    DSD_MEMSET(state->m17_lsf_checked_head, 0, sizeof(state->m17_lsf_checked_head));
-    state->m17_lsf_disputed = 0U;
-    state->m17_lsf_reconfirmed = 0U;
     state->m17_lsf_stream_mode = 0U;
     state->m17_str_dt = (uint8_t)M17_STREAM_TYPE_UNKNOWN;
     state->m17_can = 0U;
@@ -77,6 +73,11 @@ m17_confirm_reset(dsd_state* state) {
     if (ext) {
         DSD_MEMSET(&ext->adata, 0, sizeof(ext->adata));
         DSD_MEMSET(&ext->text_meta, 0, sizeof(ext->text_meta));
+        /* The scan side's copy of the checked LSF, its dispute and its reconfirmation (issue #890): no binding outlives
+           the transmission. */
+        DSD_MEMSET(ext->lsf_checked_head, 0, sizeof(ext->lsf_checked_head));
+        ext->lsf_disputed = 0U;
+        ext->lsf_reconfirmed = 0U;
         ext->pkt_armed = 0U;
         ext->pkt_ref_symbol = 0U;
         ext->ip_stream_last_ms = 0U;

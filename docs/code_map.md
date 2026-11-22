@@ -6010,17 +6010,19 @@ the implementations from `dsd_engine_trunk_scan_init()` and clears them again on
   station than the one kept begins another call, whose other station is unknown, a call that ended takes its stations
   with it, and the transmission boundaries forget them), M17 `m17_report_scan_activity()` (direct and rebuilt LSF,
   packet CRC, a clean LICH pair; only `m17_lsf_checked` values an applied LSF bound, withdrawn while a clean LICH
-  chunk disputes the checked DST/SRC/TYPE (`m17_lsf_disputed`, a missed boundary; `m17_link_setup_vouched()`, which
+  chunk disputes the checked DST/SRC/TYPE (`m17_state_ext::lsf_disputed`, a missed boundary; `m17_link_setup_vouched()`, which
   the voice-only checked speech asks too, so a disputed stream's speech earns no checked media), and gone from the frame after a
   decoded EOS (the boundary reset, `m17_confirm_reset()`, drops `m17_lsf_checked` and the dispute with it). Only
   chunks 0 to 2 carry those bits, so the binding vouches only while the RF stream stays continuous with it (each stream
   frame ending one M17 frame, 192 symbols within 32, after the RF frame before in one symbol clock epoch,
-  `m17_note_rf_frame_end()`, `dsd_state::m17_rf_frame_symbol`/`_epoch`) or each of chunks 0 to 2 agreed with it again
-  since (`dsd_state::m17_lsf_reconfirmed`, set whole by a checked LSF, cleared by a discontinuity, a bit for each
+  `m17_note_rf_frame_end()`, `m17_state_ext::rf_frame_symbol`/`_epoch`) or each of chunks 0 to 2 agreed with it again
+  since (`m17_state_ext::lsf_reconfirmed`, set whole by a checked LSF, cleared by a discontinuity, a bit for each
   agreeing chunk): after a missed EOS, EOT and LSF frame (at least three frame periods unheard) a new transmission
   differing only in chunk 2 (its CAN or encryption) reports anonymous until its chunk 2 disputes it, however long that
   chunk fails its Golay check, and a frame lost inside one transmission withholds its fields until the three chunks
-  were heard clean again. The receive CAN gate `m17_can_en` is kept: a CAN it refuses, or cannot tell, is reported
+  were heard clean again. These scan-side fields (`lsf_checked_head`, `lsf_disputed`, `lsf_reconfirmed`, `rf_frame_*`)
+  are M17's own state in its extension, out of every frontend's snapshot, and emptied by `m17_confirm_reset()`; with no
+  extension (out of memory) the binding vouches for nothing. The receive CAN gate `m17_can_en` is kept: a CAN it refuses, or cannot tell, is reported
   with `receive_refused` set, which the policy table refuses (`dsd_scan_activity_policy_allows()`), so a typed -Y row
   sets `y_refused` and renews no wait on the packet chunks' open verdicts (they still note them for a quiet check);
   never BERT)
@@ -14435,7 +14437,7 @@ Private per-protocol modules worth knowing about:
   a stream ID reused by the same station with no end received between is not taken; after the table first filled, a
   network stream whose first frames were lost is not joined until its station starts another. A checked IP frame plays on its own check; its decoded speech marks the call's media
   (`m17_note_received_speech()`), which also returns whether the speech is checked speech (a checked LSF bound its type,
-  encryption and CAN, `m17_lsf_checked`, and no clean LICH chunk has disputed it since, `m17_lsf_disputed`, both
+  encryption and CAN, `m17_lsf_checked`, and no clean LICH chunk has disputed it since, `m17_state_ext::lsf_disputed`, both
   through `m17_link_setup_vouched()`: under -F a relaxed LSF or the LICH alone may name ciphertext clear voice, and
   after a missed EOT and LSF frame the next transmission plays under the last one's fields; credit resumes at the next
   checked LSF), and only checked speech earns the scan's checked media (`dsd_call_state_note_checked_media()` behind it

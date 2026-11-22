@@ -128,6 +128,7 @@ static void M17decodeLSFFields(dsd_state* state, const struct m17_lsf_result* re
 static void m17_retire_if_ended(dsd_state* state);
 static void m17_pkt_arm(dsd_state* state, m17_state_ext* g);
 static void m17_pkt_disarm(dsd_state* state);
+static m17_state_ext* m17_ext_st(dsd_state* state);
 static int m17_lsf_result_usable(const struct m17_lsf_result* res);
 static void M17logLSFSummary(const struct m17_lsf_result* res);
 static void M17storeLSFMeta(dsd_state* state, const struct m17_lsf_result* res);
@@ -360,61 +361,67 @@ enum { M17_LICH_HEAD_CHUNKS = 3U, M17_LICH_HEAD_MASK = (1U << M17_LICH_HEAD_CHUN
 
 /* A clean LICH chunk @p counter checked against the checked LSF bound to the transmission (issue #890). Bits of its
    DST, SRC and TYPE that disagree make the chunk another transmission's (its EOT and its LSF frame went unheard) or a
-   Golay miscorrection: either way the binding is disputed (dsd_state::m17_lsf_disputed), so a scan hold takes nothing
+   Golay miscorrection: either way the binding is disputed (m17_state_ext::lsf_disputed), so a scan hold takes nothing
    of the last checked LSF's CAN, encryption or type for it until an LSF is checked again. A chunk 0 to 2 that agrees
-   in all of them reconfirms its part of the binding (dsd_state::m17_lsf_reconfirmed). The decoder's checked fields
+   in all of them reconfirms its part of the binding (m17_state_ext::lsf_reconfirmed). The decoder's checked fields
    stay (a relaxed LSF still replaces none of them). The META bits are left out: a transmission's META may change from
    LSF to LSF (text, GNSS). */
 static void
-m17_lich_note_other_link(dsd_state* state, uint8_t counter, const uint8_t* chunk) {
-    if (state->m17_lsf_checked == 0U || state->m17_lsf_disputed != 0U || counter >= M17_LICH_HEAD_CHUNKS) {
+m17_lich_note_other_link(const dsd_state* state, uint8_t counter, const uint8_t* chunk) {
+    m17_state_ext* g = m17_state_ext_find(state);
+    if (g == NULL || state->m17_lsf_checked == 0U || g->lsf_disputed != 0U || counter >= M17_LICH_HEAD_CHUNKS) {
         return;
     }
-    const size_t head_bits = sizeof(state->m17_lsf_checked_head) * 8U;
+    const size_t head_bits = sizeof(g->lsf_checked_head) * 8U;
     for (size_t i = 0; i < M17_LICH_CHUNK_BITS; i++) {
         const size_t bit = ((size_t)counter * M17_LICH_CHUNK_BITS) + i;
         if (bit >= head_bits) {
             break;
         }
-        const uint8_t checked = (uint8_t)((state->m17_lsf_checked_head[bit / 8U] >> (7U - (bit % 8U))) & 1U);
+        const uint8_t checked = (uint8_t)((g->lsf_checked_head[bit / 8U] >> (7U - (bit % 8U))) & 1U);
         if ((chunk[i] & 1U) != checked) {
-            state->m17_lsf_disputed = 1U;
+            g->lsf_disputed = 1U;
             return;
         }
     }
-    state->m17_lsf_reconfirmed |= (uint8_t)(1U << counter);
+    g->lsf_reconfirmed |= (uint8_t)(1U << counter);
 }
 
 /* An RF LSF or stream frame M17 read whole ends here (issue #890). A stream frame that does not end one M17 frame
    (192 symbols, within 32, as the strict RF packet rule measures, in one symbol clock epoch) after the RF frame before
    it is not known to be the same transmission's: a frame was lost, or the frames are another transmission's after a
    missed EOS, EOT and LSF frame. Its link setup's identity chunks must then agree again before the binding vouches for
-   it (dsd_state::m17_lsf_reconfirmed). */
+   it (m17_state_ext::lsf_reconfirmed). With no extension nothing is recorded: nothing vouches then either. */
 static void
-m17_note_rf_frame_end(dsd_state* state, int stream_frame) {
+m17_note_rf_frame_end(const dsd_state* state, int stream_frame) {
     enum { M17_RF_FRAME_SYMBOLS = 192, M17_RF_FRAME_SLACK = 32 };
 
-    const uint32_t since = state->symbolcnt - state->m17_rf_frame_symbol;
-    const int continuous = state->m17_rf_frame_valid != 0U && state->m17_rf_frame_epoch == state->symbol_clock_epoch
+    m17_state_ext* g = m17_state_ext_find(state);
+    if (g == NULL) {
+        return;
+    }
+    const uint32_t since = state->symbolcnt - g->rf_frame_symbol;
+    const int continuous = g->rf_frame_valid != 0U && g->rf_frame_epoch == state->symbol_clock_epoch
                            && since >= (uint32_t)(M17_RF_FRAME_SYMBOLS - M17_RF_FRAME_SLACK)
                            && since <= (uint32_t)(M17_RF_FRAME_SYMBOLS + M17_RF_FRAME_SLACK);
     if (stream_frame && !continuous) {
-        state->m17_lsf_reconfirmed = 0U;
+        g->lsf_reconfirmed = 0U;
     }
-    state->m17_rf_frame_valid = 1U;
-    state->m17_rf_frame_symbol = state->symbolcnt;
-    state->m17_rf_frame_epoch = state->symbol_clock_epoch;
+    g->rf_frame_valid = 1U;
+    g->rf_frame_symbol = state->symbolcnt;
+    g->rf_frame_epoch = state->symbol_clock_epoch;
 }
 
 /* Whether the transmission's link setup vouches for it (issue #890): a checked LSF bound its CAN, encryption and type
    (dsd_state::m17_lsf_checked), no clean LICH chunk has disputed it since (m17_lich_note_other_link()), and every
-   identity chunk agreed with it since the RF stream was last continuous with it (dsd_state::m17_lsf_reconfirmed,
-   m17_note_rf_frame_end()). Everything the scan takes from the binding asks here: the activity report's fields and
+   identity chunk agreed with it since the RF stream was last continuous with it (m17_state_ext::lsf_reconfirmed,
+   m17_note_rf_frame_end()); with no M17 extension (out of memory) it vouches for nothing. Everything the scan takes from the binding asks here: the activity report's fields and
    the speech it credits. */
 static int
 m17_link_setup_vouched(const dsd_state* state) {
-    return state->m17_lsf_checked != 0U && state->m17_lsf_disputed == 0U
-           && (state->m17_lsf_reconfirmed & M17_LICH_HEAD_MASK) == M17_LICH_HEAD_MASK;
+    const m17_state_ext* g = m17_state_ext_find(state);
+    return g != NULL && state->m17_lsf_checked != 0U && g->lsf_disputed == 0U
+           && (g->lsf_reconfirmed & M17_LICH_HEAD_MASK) == M17_LICH_HEAD_MASK;
 }
 
 /* Checked M17 content to trunk scan's policy table (issue #890): an LSF whose CRC passed (its frame's, or rebuilt whole
@@ -644,6 +651,29 @@ static int s_m17_monitoring_local_tx;
    so it is checked: its values bind to the transmission (dsd_state::m17_lsf_checked) and it names the call. One that
    failed (decoded under -F) applies only while no checked LSF bound the transmission; after that it is shown and
    nothing more (issue #890). Returns 1 when a checked LSF was applied. */
+/* A checked LSF binds the transmission for the scan side (m17_state_ext::lsf_checked_head, undisputed, every identity
+   chunk confirmed). The extension is the LSF's own result when its frame obtained one (m17_lsf_carrier::ext_given),
+   else requested here; with none the binding vouches for nothing (m17_link_setup_vouched()). */
+static void
+m17_bind_checked_link(dsd_state* state, const m17_lsf_carrier* carrier) {
+    m17_state_ext* g = carrier->ext_given != 0U ? carrier->ext : m17_ext_st(state);
+    if (g == NULL) {
+        return;
+    }
+    g->lsf_disputed = 0U;
+    g->lsf_reconfirmed = (uint8_t)M17_LICH_HEAD_MASK;
+    if (g->rf_frame_valid == 0U) {
+        /* An extension made for this LSF has no RF frame end yet: the LSF is the frame just read (an LSF frame, or the
+           stream frame whose LICH rebuilt it), so the next stream frame is measured from here. */
+        g->rf_frame_valid = 1U;
+        g->rf_frame_symbol = state->symbolcnt;
+        g->rf_frame_epoch = state->symbol_clock_epoch;
+    }
+    for (size_t i = 0; i < sizeof(g->lsf_checked_head); i++) {
+        g->lsf_checked_head[i] = (uint8_t)convert_bits_into_output(&state->m17_lsf[i * 8U], 8);
+    }
+}
+
 static int
 M17decodeLSF(const dsd_opts* opts, dsd_state* state, int publish_canonical, const m17_lsf_carrier* carrier) {
     struct m17_lsf_result res;
@@ -665,11 +695,7 @@ M17decodeLSF(const dsd_opts* opts, dsd_state* state, int publish_canonical, cons
     }
     if (publish_canonical != 0) {
         state->m17_lsf_checked = 1U;
-        state->m17_lsf_disputed = 0U;
-        state->m17_lsf_reconfirmed = (uint8_t)M17_LICH_HEAD_MASK;
-        for (size_t i = 0; i < sizeof(state->m17_lsf_checked_head); i++) {
-            state->m17_lsf_checked_head[i] = (uint8_t)convert_bits_into_output(&state->m17_lsf[i * 8U], 8);
-        }
+        m17_bind_checked_link(state, carrier);
         /* Only an LSF whose CRC passed names the carrier's CAN: -F decodes one that failed, never as identity. It
            is noted before the call is published, so a CAN that moves the received identity to another epoch
            opens the call on that reception, the one the same LSF's META position is admitted against. */
@@ -4855,7 +4881,7 @@ typedef struct {
 
 _Static_assert(sizeof(((m17_link_setup_held*)0)->lsf) == sizeof(((dsd_state*)0)->m17_lsf), "the LSF bits fit");
 _Static_assert(sizeof(((m17_link_setup_held*)0)->meta) == sizeof(((dsd_state*)0)->m17_meta), "the META fits");
-_Static_assert(sizeof(((m17_link_setup_held*)0)->checked_head) == sizeof(((dsd_state*)0)->m17_lsf_checked_head),
+_Static_assert(sizeof(((m17_link_setup_held*)0)->checked_head) == sizeof(((m17_state_ext*)0)->lsf_checked_head),
                "the checked LSF head fits");
 
 static void
@@ -4863,9 +4889,16 @@ m17_link_setup_hold(const dsd_state* state, m17_link_setup_held* held) {
     DSD_MEMCPY(held->lsf, state->m17_lsf, sizeof(held->lsf));
     DSD_MEMCPY(held->meta, state->m17_meta, sizeof(held->meta));
     held->checked = state->m17_lsf_checked;
-    DSD_MEMCPY(held->checked_head, state->m17_lsf_checked_head, sizeof(held->checked_head));
-    held->disputed = state->m17_lsf_disputed;
-    held->reconfirmed = state->m17_lsf_reconfirmed;
+    const m17_state_ext* g = m17_state_ext_find(state);
+    if (g != NULL) {
+        DSD_MEMCPY(held->checked_head, g->lsf_checked_head, sizeof(held->checked_head));
+        held->disputed = g->lsf_disputed;
+        held->reconfirmed = g->lsf_reconfirmed;
+    } else {
+        DSD_MEMSET(held->checked_head, 0, sizeof(held->checked_head));
+        held->disputed = 0U;
+        held->reconfirmed = 0U;
+    }
     held->str_dt = state->m17_str_dt;
     held->can = state->m17_can;
     held->enc = state->m17_enc;
@@ -4879,9 +4912,12 @@ m17_link_setup_give_back(dsd_state* state, const m17_link_setup_held* held) {
     DSD_MEMCPY(state->m17_lsf, held->lsf, sizeof(held->lsf));
     DSD_MEMCPY(state->m17_meta, held->meta, sizeof(held->meta));
     state->m17_lsf_checked = held->checked;
-    DSD_MEMCPY(state->m17_lsf_checked_head, held->checked_head, sizeof(held->checked_head));
-    state->m17_lsf_disputed = held->disputed;
-    state->m17_lsf_reconfirmed = held->reconfirmed;
+    m17_state_ext* g = m17_state_ext_find(state);
+    if (g != NULL) {
+        DSD_MEMCPY(g->lsf_checked_head, held->checked_head, sizeof(held->checked_head));
+        g->lsf_disputed = held->disputed;
+        g->lsf_reconfirmed = held->reconfirmed;
+    }
     state->m17_str_dt = held->str_dt;
     state->m17_can = held->can;
     state->m17_enc = held->enc;

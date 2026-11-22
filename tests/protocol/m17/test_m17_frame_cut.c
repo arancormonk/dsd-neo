@@ -38,6 +38,7 @@
 #include "dsd-neo/core/state_fwd.h"
 #include "m17_algorithms.h"
 #include "m17_internal.h"
+#include "m17_state_ext.h"
 #include "scan_activity_capture.h"
 #include "test_support.h"
 
@@ -339,6 +340,13 @@ load_bert_frame(uint16_t* lfsr) {
     m17_prbs9_fill_bits(lfsr, type1, M17_BERT_PAYLOAD_BITS);
     (void)m17_bert_encode_type1_bits(type1, rnd, NULL);
     load_randomized_frame(rnd);
+}
+
+/* Whether a clean LICH chunk has disputed the checked link setup (m17_state_ext::lsf_disputed); 0 with no extension. */
+static int
+lsf_disputed(const dsd_state* state) {
+    const m17_state_ext* g = m17_state_ext_find(state);
+    return g != NULL && g->lsf_disputed != 0U;
 }
 
 /* A fresh decoder on symbols at +-1 and +-3, its thresholds centred on 0, the search's evidence counted. */
@@ -956,7 +964,7 @@ test_disputed_link_setup_earns_no_checked_speech(void) {
             (void)processM17STR(opts, state);
         }
         assert(g_codec2_decodes > decodes_before);
-        assert(state->m17_lsf_disputed == (uint8_t)disputed);
+        assert(lsf_disputed(state) == disputed);
         const dsd_call_snapshot call = m17_call(state);
         assert((call.checked_media_updated_m > 0.0) == !disputed);
         finish(state);
@@ -1004,13 +1012,13 @@ stale_link_setup_case(int same_transmission) {
             assert(g_test_scan_activity.last.known == 0U);
         }
     }
-    assert(reports >= 1 && state->m17_lsf_disputed == 0U);
+    assert(reports >= 1 && !lsf_disputed(state));
     load_stream_frame(next, 2U, 11U);
     (void)processM17STR(opts, state);
     if (same_transmission) {
-        assert(state->m17_lsf_disputed == 0U && g_test_scan_activity.last.known == bound);
+        assert(!lsf_disputed(state) && g_test_scan_activity.last.known == bound);
     } else {
-        assert(state->m17_lsf_disputed == 1U && g_test_scan_activity.last.known == 0U);
+        assert(lsf_disputed(state) && g_test_scan_activity.last.known == 0U);
     }
     finish(state);
 }
@@ -1121,7 +1129,7 @@ test_checked_content_reports_to_trunk_scan(void) {
         state->synctype = DSD_SYNC_M17_STR_POS;
         load_stream_frame(other_bits, 0U, 0U);
         (void)processM17STR(opts, state);
-        assert(state->m17_lsf_checked == 1U && state->m17_lsf_disputed == 1U);
+        assert(state->m17_lsf_checked == 1U && lsf_disputed(state));
         load_stream_frame(other_bits, 1U, 1U);
         (void)processM17STR(opts, state);
         assert(g_test_scan_activity.count >= 1 && g_test_scan_activity.last.known == 0U);
@@ -1136,7 +1144,7 @@ test_checked_content_reports_to_trunk_scan(void) {
         for (uint16_t fn = 0U; fn < 6U; fn++) {
             load_stream_frame(lsf_bits, (uint8_t)fn, fn);
             (void)processM17STR(opts, state);
-            assert(state->m17_lsf_checked == 1U && state->m17_lsf_disputed == 0U);
+            assert(state->m17_lsf_checked == 1U && !lsf_disputed(state));
         }
         /* A disputed binding is withdrawn from the CAN filter too: an unknown CAN under a filter holds nothing. */
         state->m17_can_en = 5;
@@ -1152,8 +1160,8 @@ test_checked_content_reports_to_trunk_scan(void) {
         (void)processM17STR(opts, state);
         load_stream_frame(other_bits2, 1U, 7U);
         (void)processM17STR(opts, state);
-        assert(state->m17_lsf_disputed == 1U && g_test_scan_activity.count >= 1
-               && g_test_scan_activity.last.receive_refused == 1U && g_test_scan_activity.last.known == 0U);
+        assert(lsf_disputed(state) && g_test_scan_activity.count >= 1 && g_test_scan_activity.last.receive_refused == 1U
+               && g_test_scan_activity.last.known == 0U);
         finish(state);
     }
 
