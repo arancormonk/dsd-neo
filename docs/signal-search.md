@@ -461,15 +461,18 @@ label matches a detection within half its 25 kHz carrier.
 
 ### Other protocols at 72 kHz
 
-In a 72 kHz search the FSK protocols (P25 Phase 1 C4FM, DMR, NXDN, dPMR, YSF,
-M17, D-STAR, ProVoice) decode at 72 kHz, as any RTL-SDR session at 72 kHz does
-(`digital_resample`, [CLI](cli.md)). In the probe replays
+In a 72 kHz search on an RTL-SDR or rtl_tcp with the default `digital_resample`
+(`auto`), the FSK protocols (P25 Phase 1 C4FM, DMR, NXDN, dPMR, YSF, M17, D-STAR,
+ProVoice) decode at 72 kHz. With `on` they are resampled to 48 kHz, and a radio
+that sets its own capture rate can be resampled to 48 kHz for ProVoice (72,000 /
+9,600 is not a whole number); see `digital_resample` in the [CLI](cli.md). In the probe replays
 (`tests/engine/search_schedule_replay.c`, landings 0, 350, 700, 1100 and 1500 ms
 into each capture, run at 48 and at 72 kHz), every capture was identified at
 every landing at both rates, and each capture's fastest and slowest landing
 moved by at most 0.16 seconds: P25 Phase 1 control channels within 0.2 seconds,
 DMR, NXDN96, YSF and M17 within 0.6, P25 Phase 2, NXDN48 and dPMR within 2.6.
-ProVoice needs about 0.3 seconds more than at 48 kHz (about 4.4 seconds). Once a
+ProVoice was not in that sweep; an earlier sweep with other landings identified it
+in 4.1 to 4.5 seconds at 72 kHz and 4.0 to 4.4 at 48 kHz. Once a
 visit listens, DMR makes more errors at 72 kHz than at 48 kHz, and a synthetic
 dPMR signal reads fewer checked control halves (the figures are under
 `digital_resample`); neither changed what was identified. Analog monitoring runs
@@ -489,7 +492,7 @@ pass at 48 kHz):
 | --- | ---: | ---: |
 | Empty pass, 450–460 MHz, 12.5 kHz steps, 16 kHz width | 3.42 s, 22 spans | 5.52 s, 31 spans |
 | Empty pass, 450–460 MHz, 25 kHz steps and width (the TETRA preset) | 4.05 s, 26 spans | 7.29 s, 41 spans |
-| Landing to confirmed: DMR, P25 Phase 1 control channel, weak DMR (20 dB) | 0.19, 0.09, 0.22 s | 0.20, 0.08, 0.22 s |
+| Landing to confirmed: DMR, P25 Phase 1 control channel, weak DMR (20 dB) | 0.19, 0.09, 0.22 s | 0.20, 0.07, 0.22 s |
 | Landing to confirmed: real-air TETRA call, marginal real-air TETRA control channel, DMO call | — | 0.06, 0.06, 0.19 s |
 
 Landing to confirmed counts from the first status after the tune has landed,
@@ -501,7 +504,7 @@ seconds, the DMO call in 0.05 to 0.54 seconds, depending on where in its looped
 call the landing falls. The rig with the gap, run alternately with it under the
 same load, read the same within that spread. The 72 kHz DMR and P25 figures were
 measured again on 2026-11-22 with DMR and P25 decoded at 72 kHz, over four runs
-(load average 150 to 550); 48 kHz runs alongside them read 0.20, 0.08 and 0.21
+(load average 150 to 550); 48 kHz runs alongside them read 0.19, 0.07 and 0.21
 seconds.
 
 A 72 kHz search captures less of the band at a time, so each span covers less (at
@@ -509,9 +512,10 @@ a 25 kHz width, 249 kHz instead of 399 kHz), and each span takes a little longer
 to settle (0.18 instead of 0.16 seconds): a wide range takes 60 to 80 % longer
 per pass. Against the release before TETRA identification, on the same ranges at
 the same rate, pass times agreed within 1 % and every detection confirmed in about
-the same time. The decoder used about 1 to 2 % of one core in every case, too
-little to compare more closely than the spread between runs, and no run dropped
-input. In the eight TETRA runs the DMO call was found on passes 1 to 6 (a pass of
+the same time. In those comparison runs the decoder used about 1 to 2 % of one
+core in every case, too little to compare more closely than the spread between
+runs, and no run dropped input; the 2026-11-22 reruns, on a much busier machine,
+read 3 to 6 %, which reflects the load rather than the decoder. In the eight TETRA runs the DMO call was found on passes 1 to 6 (a pass of
 its 50 kHz range takes about half a second): its bursts meet the RF detector only
 at some phases.
 
