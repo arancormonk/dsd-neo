@@ -2110,8 +2110,7 @@ test_dmr_channel_origins_restore_per_target(void) {
 
 /* Channel map row 0, which the used-channel list never holds, is the target's own (discussion #900 review): what
    another target left there never reaches a P25 target, where channel 0x0000 (IDEN 0, channel 0) is checked against
-   the map before the IDEN arithmetic, and a P25 target's own channel 0 frequency comes back with it. (A channel map
-   file's key-0 row never writes row 0: CORE_CSV_IMPORT.) */
+   the map before the IDEN arithmetic, and a P25 target's own channel 0 frequency comes back with it. */
 static int
 test_chan_map_zero_per_target(void) {
     char dir[DSD_TEST_PATH_MAX];

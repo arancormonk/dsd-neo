@@ -781,18 +781,6 @@ dsd_csv_channel_has_slot(const char* channel) {
     return channel && csv_chan_parse_key(channel, &parsed) && parsed >= 0 && parsed < 0xFFFF;
 }
 
-/* Parse a row's frequency into @p freq and map it under @p chan_number; returns whether it is usable. A key-0 row is
-   positional only (a control channel seed at the front of the hunt list): channel map row 0 stays as it was, so a DMR
-   seed never answers a P25 lookup of channel 0x0000 in the same session. */
-static int
-csv_chan_import_map_freq(dsd_state* state, long int chan_number, const char* field, long int* freq) {
-    const int usable = parse_dec_long_strict(field, freq) && csv_chan_freq_plausible(*freq);
-    if (usable && chan_number != 0) {
-        dsd_state_set_trunk_chan_freq(state, (uint32_t)chan_number, *freq);
-    }
-    return usable;
-}
-
 static int
 csv_chan_import_apply_field(dsd_state* state, int field_count, const char* field, long int* chan_number,
                             int* freq_parsed) {
@@ -817,8 +805,9 @@ csv_chan_import_apply_field(dsd_state* state, int field_count, const char* field
     }
 
     long int freq = 0;
-    const int usable = csv_chan_import_map_freq(state, *chan_number, field, &freq);
+    const int usable = parse_dec_long_strict(field, &freq) && csv_chan_freq_plausible(freq);
     if (usable) {
+        dsd_state_set_trunk_chan_freq(state, (uint32_t)*chan_number, freq);
         if (freq_parsed) {
             *freq_parsed = 1;
         }

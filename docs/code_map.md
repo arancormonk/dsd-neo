@@ -1272,9 +1272,9 @@ announcements, which resolve against whatever IDEN tables the state holds, the s
 site's protection, services, LRA and network-active broadcasts) is `dsd_p25_site_snapshot` in
 `src/engine/p25_site_snapshot.{c,h}`, which Signal search also saves once per session (see Signal search). The channel
 map row 0, which `trunk_chan_map_used[]` never lists, is saved and restored on its own (`chan_map_zero`), so P25 IDEN 0
-channel 0 never reaches another target. A channel map file's key-0 row (a DMR Tier III control seed) never lands there:
-the importer (`csv_chan_import_apply_field()`) gives it only its positional slot, so it cannot answer a P25 channel
-0x0000 lookup in a mixed session either. Trunk scan
+channel 0 never reaches another target. A Tier III RadioReference file's key-0 control-channel rows also fill channel 0
+of the shared map, so in one session that decodes both DMR and P25, a P25 grant for channel 0 can resolve to that row
+until the site's band plan arrives; trunk-scan targets keep their own channel 0. Trunk scan
 keeps the session's hand-set flag across a restore, and keeps the code's proof, the NAC, the modulation and the call
 state in its own snapshot fields, and the target's P25 patch table (entries, owner, listening clock, sequence counter)
 as a `dsd_p25_patch_snapshot`: another target's reception never moves it, and a restore breaks the clock's continuity.
@@ -5434,7 +5434,7 @@ suite runs under this compiler.
     over every value below it. A row with `map_need` 0 (TETRA) generates no channel map: `dsd_rr_generate_chan_csv()`
     returns 0 with no text and keeps the trunked "first site only" warning. Tier III rows are keyed by `ch_id` only
     (`lcn` is a row ordinal there) and every marked control frequency no row holds is seeded under key 0 (CHNULL,
-    never a grant's channel, only a hunt-list slot: the importer writes no channel map row 0 for a key-0 row); Connect Plus keeps its `999,<cc>` seed (issue #900). The live
+    never a grant's channel, only a hunt-list slot); Connect Plus keeps its `999,<cc>` seed (issue #900). The live
     import (`svc_import_channel_map()`) takes a file with a usable channel row or a usable positional slot, so such
     a seed-only map loads; zero-frequency placeholders count for neither.
     The SOAP parser never narrows a number: every integer leaf goes through a 64-bit bounded parse

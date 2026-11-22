@@ -2127,10 +2127,10 @@ test_channel_import_accepts_hex_and_iden_chan_keys(void) {
     return failed;
 }
 
-/* A key-0 row (a DMR Tier III control channel seed, as RadioReference generates it) is positional only: it takes its
-   slot at the front of the list, and channel map row 0, a P25 channel 0x0000's, stays as it was (discussion #900). */
+/* A key-0 row (a DMR Tier III control channel seed, as RadioReference generates it) takes its slot at the front of the
+   list and also writes channel map row 0, so a hand-written P25 row "0,<Hz>" keeps mapping channel 0x0000. */
 static int
-test_channel_import_key_zero_is_positional_only(void) {
+test_channel_import_key_zero_writes_map_row_zero(void) {
     int failed = 0;
     dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(*opts));
     dsd_state* state = (dsd_state*)calloc(1, sizeof(*state));
@@ -2164,8 +2164,8 @@ test_channel_import_key_zero_is_positional_only(void) {
         DSD_FPRINTF(stderr, "key zero: import failed\n");
         failed = 1;
     }
-    if (state->trunk_chan_map[0] != 0L) {
-        DSD_FPRINTF(stderr, "key zero: channel map row 0 written (%ld)\n", state->trunk_chan_map[0]);
+    if (state->trunk_chan_map[0] != 451212500L) {
+        DSD_FPRINTF(stderr, "key zero: channel map row 0 is %ld\n", state->trunk_chan_map[0]);
         failed = 1;
     }
     if (state->trunk_chan_map[5] != 451012500L || state->trunk_chan_map_used_count != 1U) {
@@ -3261,7 +3261,7 @@ main(void) {
     if (test_channel_import_accepts_hex_and_iden_chan_keys() != 0) {
         return 1;
     }
-    if (test_channel_import_key_zero_is_positional_only() != 0) {
+    if (test_channel_import_key_zero_writes_map_row_zero() != 0) {
         return 1;
     }
     if (test_p25_bandplan_import_rows_units_and_seed() != 0) {
