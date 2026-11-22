@@ -916,9 +916,12 @@ Android session whose saved extra arguments carry one refuses to start the same 
 - EDACS/ProVoice: `-fh` (standard), `-fH` (with ESK 0xA0)
   - Custom AFS bit splits: `-fh344`, `-fH434`
 - EDACS EA/ProVoice: `-fe` (standard), `-fE` (with ESK 0xA0)
-- dPMR: `-fm`. A checked dPMR call carries its stations' 24-bit air interface IDs as numbers (shown as dial strings),
-  so group lists (`-G`), a talkgroup Hold, the allow list and `--scan-voice-only` judge it by those numbers: the
-  called station is the talkgroup and the calling station the radio. Known limits of its header and end frame reading: a header whose first MI copy is damaged and whose
+- dPMR: `-fm`. A dPMR call whose header was received carries the header's 24-bit air interface IDs as numbers
+  (shown as dial strings), so group lists (`-G`), a talkgroup Hold, the allow list and `--scan-voice-only` judge it by
+  those numbers: the called station is the talkgroup and the calling station the radio. A call joined after its
+  header has no numbers (its voice frames still show the stations), so a talkgroup Hold, the allow list and
+  voice-only scanning under either treat it as unknown and do not hold it; a frame on another colour code ends the
+  call, and the next call is unknown until its own header. Known limits of its header and end frame reading: a header whose first MI copy is damaged and whose
   24 symbols before the second copy happen to look like a header sync word can be missed, or shown 30 ms late with a
   wrong colour code, and an end frame right after it is then missed; a false header sync word exactly 72 symbols
   before a real header whose own sync word is badly faded can be shown in its place, 30 ms early with a wrong colour

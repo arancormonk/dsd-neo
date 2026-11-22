@@ -1133,7 +1133,7 @@ rules:
 | YSF | not used (callsigns) | DT 1 is data | CM 3 (individual) is private, CM 0 (group/CQ) group, CM 1 (radio ID) never known | never encrypted |
 | D-STAR | not used (callsigns) | the header's DATA flag; a D-PRS record is never data (presence of its voice transmission) | never known | never encrypted |
 | M17 | not used (callsigns); the receive CAN filter still applies | packet mode and data streams | never known | the checked LSF's encryption type |
-| dPMR | the 24-bit called and calling IDs as numbers (the dial string is only shown) | the checked communications mode | never known (dPMR has no group bit) | scrambled, as the decoder reads it (Version 3, which TS 102 658 calls manufacturer specific) |
+| dPMR | the 24-bit called and calling IDs as numbers (the dial string is only shown), from the Communications_Start header that opened the call; a call joined without its header is anonymous | the checked communications mode | never known (dPMR has no group bit) | scrambled, as the decoder reads it (Version 3, which TS 102 658 calls manufacturer specific) |
 | TETRA DMO | the GSSI or ISSI and the source ISSI from the call set-up | short data and circuit mode data (circuit modes 1 to 7; a reserved mode, 9 to 15, is of unknown kind); an encrypted DM-2-C burst is never data (presence) | the set-up's call type; acknowledged short data (DM-SDS DATA) is private, unacknowledged (DM-SDS UDATA) never known | the call's security class; a DM-2-C burst is encrypted |
 
 - A setting that limits a field holds nothing while that field is unknown: with data calls off (`--no-data-calls`,
@@ -1153,8 +1153,10 @@ rules:
   its check never counts. A transmission that changed only its CAN or encryption is therefore never credited with the
   old link setup's fields.
 - dPMR and TETRA DMO calls go through the talkgroup and radio lists like DMR calls. A report with no target ID (a
-  dPMR frame that names only the caller, an encrypted DM-2-C burst) holds nothing while a talkgroup Hold or the allow
-  list is on, or when the radio list blocks its known source.
+  dPMR call whose header was not received, an encrypted DM-2-C burst) holds nothing while a talkgroup Hold or the
+  allow list is on, or when the radio list blocks its known source. A dPMR call's IDs come only from the header that
+  opened it; its voice frames confirm the call but never name its stations, and a frame on another colour code ends
+  the call, so a dPMR call joined after its header, or after a colour code change, is anonymous until its own header.
 - The M17 CAN filter: with a receive CAN set, a target holds only on a checked LSF of that CAN; an LSF of another CAN,
   and LICH frames before any checked LSF, hold nothing. On a typed `m17` row such a transmission also does not keep
   the row past `-t`, a long packet of another CAN included.
@@ -1167,7 +1169,8 @@ rules:
 With `--scan-voice-only` a target holds only on speech its decoder decoded cleanly on this visit, clear or decrypted,
 and only voice of the target's own mode counts: a YSF target takes YSF voice, a `tetra-dmo` target only direct mode
 TETRA speech. Encrypted voice without a key never counts, in any mode. A dPMR call's voice is judged by the 24-bit
-called and calling IDs its checked header or frame pairs named, as its reports are. Voice heard
+called and calling IDs the checked header that opened the call named, as its reports are; a call joined without its
+header holds nothing under a talkgroup Hold or the allow list. Voice heard
 on the visit before (on another target, or before this target's retune landed) holds nothing. TETRA voice that is
 muted for policy or encryption is never decoded, so it never holds a target.
 

@@ -25,6 +25,7 @@
 #include <dsd-neo/core/constants.h>
 #include <dsd-neo/core/dibit.h>
 #include <dsd-neo/core/events.h>
+#include <dsd-neo/core/file_io.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/opts_fwd.h>
 #include <dsd-neo/core/receive.h>
@@ -396,7 +397,7 @@ dpmr_checked_half(const dPMRVoiceFS2Frame_t* f) {
  * call and never voice. A frame with no checked half names nothing: it only keeps an open dPMR call going, never opens
  * one. */
 static int
-dpmr_publish_frame_observation(dsd_state* state, int other_system) {
+dpmr_publish_frame_observation(dsd_state* state) {
     const dPMRVoiceFS2Frame_t* f = &state->dPMRVoiceFS2Frame;
     int protocol = DSD_SYNC_IS_DPMR(state->synctype) ? state->synctype : state->lastsynctype;
     if (!DSD_SYNC_IS_DPMR(protocol)) {
@@ -428,18 +429,10 @@ dpmr_publish_frame_observation(dsd_state* state, int other_system) {
         dpmr_convert_air_interface_id(f->BoundIdValue, identity);
         char* text = f->BoundIdKind == DPMR_FRAME_ID_CALLED ? observation.target_text : observation.source_text;
         dsd_strncpy_s(text, DSD_CALL_IDENTITY_TEXT_SIZE, identity, DSD_CALL_IDENTITY_TEXT_SIZE - 1U);
-        /* And its raw 24-bit ID as the call's number (issue #890): the call keeps the other station's. */
-        if (f->BoundIdKind == DPMR_FRAME_ID_CALLED) {
-            observation.ota_target_id = f->BoundIdValue & 0xFFFFFFU;
-        } else {
-            observation.ota_source_id = f->BoundIdValue & 0xFFFFFFU;
-        }
+        /* The dial string is shown; the call's numbers (ota_target_id, ota_source_id), which the talkgroup and radio
+           policy read, come only from the checked header that opened the call (issue #890). */
     }
-    /* A verified colour code other than the open call's is another system's call on the frequency (issue #890):
-       its IDs and service are not that call's, though a pair names only one station. */
-    return dsd_call_state_observe(state, &observation,
-                                  other_system ? DSD_CALL_BOUNDARY_BEGIN : DSD_CALL_BOUNDARY_CONTINUE)
-           > 0;
+    return dsd_call_state_observe(state, &observation, DSD_CALL_BOUNDARY_CONTINUE) > 0;
 }
 
 /* Whether a dPMR call is open on the slot. */
@@ -450,6 +443,28 @@ dpmr_call_open(const dsd_state* state) {
            && DSD_SYNC_IS_DPMR(call.protocol);
 }
 
+/* A verified colour code change ends the open dPMR call (issue #890): an FS2 frame with a checked CCH half whose
+   channel code decodes to another code than the call's is another system's transmission on the frequency, which two
+   systems can share with no retune or sync loss between them. The call ends as at a new call's header (its capture
+   closes) and its transmission's confirmation, scrambling, service and scrambler place go with it
+   (dpmr_confirm_reset()), before this frame's halves are resolved, so this frame and the next open a call of their
+   own, anonymous until its own checked header names its stations. A frame no half of which passed its CRC-7 changes
+   nothing: its code is not verified. */
+static void
+dpmr_end_call_on_colour_change(dsd_opts* opts, dsd_state* state) {
+    const dPMRVoiceFS2Frame_t* f = &state->dPMRVoiceFS2Frame;
+    if (dpmr_checked_half(f) < 0 || f->ColorCode[0] == (unsigned int)(-1) || state->dpmr_color_code < 0
+        || (int)f->ColorCode[0] == state->dpmr_color_code || !dpmr_call_open(state)) {
+        return;
+    }
+    if (dsd_call_state_end_ex(state, 0U, 0.0, DSD_CALL_END_EXPLICIT) > 0) {
+        dsd_event_sync_slot(opts, state, 0U);
+    }
+    dsd_mbe_out_close_protocol(opts, state, DSD_MBE_OUT_SLOT1, DSD_SYNC_DPMR_FS1_POS);
+    dpmr_confirm_reset(state);
+    state->dpmr_color_code = -1;
+}
+
 void
 dpmr_publish_call(dsd_opts* opts, dsd_state* state) {
     if (!dpmr_confirm_is_confirmed(state)) {
@@ -457,19 +472,19 @@ dpmr_publish_call(dsd_opts* opts, dsd_state* state) {
          * proved itself; publishing them would put a call row on the air alone (#407). */
         return;
     }
-    /* The colour code is published on the confirmed path whether or not a caller identity decoded with it. A frame
+    /* The colour code is published on the confirmed path from a frame with a checked CCH half, whether or not a caller
+       identity decoded with it (issue #890): a frame no half of which passed its CRC-7 leaves the open call's code as
+       it is, so the code stays the call's until a checked frame changes it (dpmr_end_call_on_colour_change()). A frame
        whose channel code did not decode keeps an open call's code, but a call it opens has none of its own: the code
-       an earlier call left is not this one's access code (issue #890). */
-    const int known = state->dPMRVoiceFS2Frame.ColorCode[0] != (unsigned int)(-1);
-    const int other_system = known && state->dpmr_color_code >= 0
-                             && (int)state->dPMRVoiceFS2Frame.ColorCode[0] != state->dpmr_color_code
-                             && dpmr_call_open(state);
+       an earlier call left is not this one's access code. */
+    const int checked = dpmr_checked_half(&state->dPMRVoiceFS2Frame) >= 0;
+    const int known = checked && state->dPMRVoiceFS2Frame.ColorCode[0] != (unsigned int)(-1);
     if (known) {
         dpmr_publish_color_code(state, (int)state->dPMRVoiceFS2Frame.ColorCode[0]);
-    } else if (!dpmr_call_open(state) && dpmr_checked_half(&state->dPMRVoiceFS2Frame) >= 0) {
+    } else if (!dpmr_call_open(state) && checked) {
         state->dpmr_color_code = -1;
     }
-    if (dpmr_publish_frame_observation(state, other_system) && !known) {
+    if (dpmr_publish_frame_observation(state) && !known) {
         state->dpmr_color_code = -1; /* the observation began another call (another identity) */
     }
 
@@ -482,18 +497,27 @@ dpmr_publish_call(dsd_opts* opts, dsd_state* state) {
 }
 
 /* A frame whose two CCH halves passed their CRC-7 as a bound pair (dpmr_ids_are_strong(): halves 0/1 the called
-   station, 2/3 the calling one, TS 102 658 Tables 5.5 to 5.8) holds a scan target (issue #890), with the station the
-   pair names, the call's other station as its header or the other pair checked it (dpmr_report_scan_activity()), and
-   the service of its halves (both checked: the first's). A frame with a failed or unbound half reports nothing. */
+   station, 2/3 the calling one, TS 102 658 Tables 5.5 to 5.8) holds a scan target (issue #890) with the service of
+   its halves (both checked: the first's). Its stations are the ones the checked header that opened the call named
+   (the call's ota_target_id and ota_source_id, which nothing else sets): a pair confirms the call, but never names its
+   stations to the policy, so a call no checked header opened is anonymous, and a pair naming another station than
+   the header did has already begun another call (dpmr_publish_call(), before this). A frame with a failed or unbound
+   half reports nothing. */
 static void
-dpmr_report_frame_scan_activity(const dsd_opts* opts, dsd_state* state) {
+dpmr_report_frame_scan_activity(const dsd_opts* opts, const dsd_state* state) {
     const dPMRVoiceFS2Frame_t* f = &state->dPMRVoiceFS2Frame;
     if (f->BoundIdKind == DPMR_FRAME_ID_NONE) {
         return;
     }
-    const int called = f->BoundIdKind == DPMR_FRAME_ID_CALLED;
-    dpmr_report_scan_activity(opts, state, f->BoundIdValue, called, f->BoundIdValue, !called, f->CommunicationMode[0],
-                              f->Version[0]);
+    dsd_call_snapshot call;
+    uint64_t target = 0U;
+    uint64_t source = 0U;
+    if (dpmr_shown_call(state, &call)) {
+        target = call.ota_target_id <= 0xFFFFFFU ? call.ota_target_id : 0U;
+        source = call.ota_source_id <= 0xFFFFFFU ? call.ota_source_id : 0U;
+    }
+    dpmr_report_scan_activity(opts, state, (uint32_t)target, target != 0U, (uint32_t)source, source != 0U,
+                              f->CommunicationMode[0], f->Version[0]);
 }
 
 /* Whether half @p o's payload frame carries speech in a Voice and attached data call (M = 101, TS 102 658 §5.5.7 Table
@@ -665,9 +689,11 @@ processdPMRvoice(dsd_opts* opts, dsd_state* state) {
     /* Evidence is noted before anything is published, so the frame that completes a weak
      * streak still publishes itself rather than waiting for the next one. A signal search hears
      * the confirmation at dpmr_confirm_end_frame(), after the publication. */
+    dpmr_decode_cch_frames(state, &ctx);
+    /* Another system's transmission ends the call before this frame's evidence and halves are judged. */
+    dpmr_end_call_on_colour_change(opts, state);
     dpmr_confirm_note_frame_start(state, frame_symbol);
     dpmr_confirm_begin_frame(state);
-    dpmr_decode_cch_frames(state, &ctx);
     dpmr_note_cch_evidence(state, &ctx);
     dpmr_resolve_half_scrambling(state);
 

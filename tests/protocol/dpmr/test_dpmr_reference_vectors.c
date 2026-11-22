@@ -23,6 +23,7 @@
 #include <dsd-neo/core/audio.h>
 #include <dsd-neo/core/call_state.h>
 #include <dsd-neo/core/dibit.h>
+#include <dsd-neo/core/file_io.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/receive.h>
 #include <dsd-neo/core/received_identity.h>
@@ -96,6 +97,18 @@ processMbeFrame(dsd_opts* opts, dsd_state* state, dsd_voice_protocol protocol, c
 void
 dsd_mbe_nxdn_scramble_skip_voice_frame(dsd_state* state) {
     (void)state;
+}
+
+/* The capture close a colour code change makes (dpmr_end_call_on_colour_change()): counted, nothing to close. */
+static int g_capture_closes;
+
+void
+dsd_mbe_out_close_protocol(dsd_opts* opts, dsd_state* state, int slot_mask, int synctype) {
+    (void)opts;
+    (void)state;
+    (void)slot_mask;
+    (void)synctype;
+    g_capture_closes++;
 }
 
 /* As core/receive.c does: the owner generic output paths judge while dPMR plays through NXDN's decoder. */
@@ -498,10 +511,10 @@ test_a_corrected_bit_error_still_passes_and_two_do_not(void) {
 }
 
 /* Issue #890: a frame whose two CCH halves passed their CRC-7 as a bound pair reports the call to trunk scan's policy
-   table with the one station the pair names, by its raw 24-bit air interface ID (frame numbers 0/1 the called, 2/3 the
-   calling one), its service and scrambling from the checked Communications Mode and Version, and no party (dPMR has
-   no group bit every call carries); a frame with a failed half reports nothing. A checked Communications_Start header
-   reports both stations; another message type reports nothing. */
+   table with its service and scrambling from the checked Communications Mode and Version and no party (dPMR has no
+   group bit every call carries), but names no station: a call no checked header opened is anonymous. A frame with a
+   failed half reports nothing. A checked Communications_Start header reports both stations by their raw 24-bit air
+   interface IDs; another message type reports nothing. */
 static void
 test_checked_frames_and_headers_report_to_trunk_scan(void) {
     dsd_opts* opts = g_opts;
@@ -513,15 +526,10 @@ test_checked_frames_and_headers_report_to_trunk_scan(void) {
         dsd_test_scan_activity_reset();
         run_frame(opts, state, DPMR_REF_FRAMES[f].body_dibits, sizeof(DPMR_REF_FRAMES[f].body_dibits));
         const dsd_trunk_scan_activity_identity* id = &g_test_scan_activity.last;
-        /* The calling pair after the called one is the same call's: the called station stays known (issue #890). */
-        const uint8_t station =
-            f == 0 ? DSD_SCAN_ACTIVITY_KNOWN_TARGET : (DSD_SCAN_ACTIVITY_KNOWN_TARGET | DSD_SCAN_ACTIVITY_KNOWN_SOURCE);
         expect_int(f == 0 ? "called pair reports" : "calling pair reports", g_test_scan_activity.count, 1);
         expect_int("a dPMR report", DSD_SYNC_IS_DPMR(g_test_scan_activity.protocol), 1);
-        expect_int("one station known", id->known & (DSD_SCAN_ACTIVITY_KNOWN_TARGET | DSD_SCAN_ACTIVITY_KNOWN_SOURCE),
-                   station);
-        expect_int("its raw ID", (long)(f == 0 ? id->target : id->source),
-                   (long)(state->dPMRVoiceFS2Frame.BoundIdValue & 0xFFFFFFU));
+        expect_int("no header: no station known",
+                   id->known & (DSD_SCAN_ACTIVITY_KNOWN_TARGET | DSD_SCAN_ACTIVITY_KNOWN_SOURCE), 0);
         expect_int("no party", id->known & DSD_SCAN_ACTIVITY_KNOWN_PARTY, 0);
         expect_int("service and scrambling known",
                    id->known & (DSD_SCAN_ACTIVITY_KNOWN_DATA | DSD_SCAN_ACTIVITY_KNOWN_ENCRYPTED),
@@ -598,14 +606,13 @@ expect_stations(const char* tag, int target_known, uint32_t target, int source_k
     }
 }
 
-/* Issue #890: the 0/1 and 2/3 pairs of a dPMR call alternate, each naming one station, so a report from a pair carries
-   the call's other station as its checked header or the other pair named it: a blocked caller the header named still
-   decides the talkgroup and radio policy on the called pairs after it, and a blocked destination on the calling pairs.
-   The record is the transmission's, the visit's and the carrier's: a pair naming another station begins another call
-   whose other station is unknown, and a transmission boundary, a new scan visit or a carrier boundary forgets it. A
-   station nothing checked stays unknown. */
+/* Issue #890: a dPMR call's stations, for its scan reports and the call the policy reads, come only from the checked
+   Communications_Start header that opened it. Its 0/1 and 2/3 pairs confirm it and report it with both of the header's
+   stations; a pair naming another station than the header begins another call, anonymous; so is a call a frame opens
+   after the last one ended (a sync loss), and every call no header opened. A verified colour code change (a frame with
+   a checked half on another code) ends the open call explicitly, with its stations, before the frame is judged. */
 static void
-test_pair_reports_keep_the_calls_checked_stations(void) {
+test_stations_come_only_from_the_calls_header(void) {
     uint32_t called = 0U;
     uint32_t calling = 0U;
     reference_frame_stations(&called, &calling);
@@ -614,6 +621,7 @@ test_pair_reports_keep_the_calls_checked_stations(void) {
     DSD_MEMSET(opts, 0, sizeof(*opts));
     DSD_MEMSET(state, 0, sizeof(*state));
     state->synctype = DSD_SYNC_DPMR_FS2_POS;
+    dsd_call_snapshot call;
 
     dpmr_header header;
     DSD_MEMSET(&header, 0, sizeof(header));
@@ -621,170 +629,66 @@ test_pair_reports_keep_the_calls_checked_stations(void) {
     header.called_id = called;
     header.calling_id = calling;
     header.mode = 0U;
-    header.color_code = -1;
+    header.color_code = DPMR_REF_COLOUR_CODE;
     dsd_test_scan_activity_reset();
     dpmr_process_header(opts, state, &header, 0);
     expect_stations("header", 1, called, 1, calling);
-
-    dsd_test_scan_activity_reset();
-    run_frame(opts, state, DPMR_REF_FRAMES[0].body_dibits, sizeof(DPMR_REF_FRAMES[0].body_dibits));
-    expect_int("called pair reports", g_test_scan_activity.count, 1);
-    expect_stations("called pair after the header", 1, called, 1, calling);
-    dsd_test_scan_activity_reset();
-    run_frame(opts, state, DPMR_REF_FRAMES[1].body_dibits, sizeof(DPMR_REF_FRAMES[1].body_dibits));
-    expect_stations("calling pair after the header", 1, called, 1, calling);
-
-    /* A header naming another caller is another call: its called pair carries that caller. */
-    header.calling_id = calling ^ 0x000101U;
-    dpmr_scrambling_reset(state);
-    dpmr_process_header(opts, state, &header, 0);
-    dsd_test_scan_activity_reset();
-    run_frame(opts, state, DPMR_REF_FRAMES[0].body_dibits, sizeof(DPMR_REF_FRAMES[0].body_dibits));
-    expect_stations("called pair after another caller's header", 1, called, 1, calling ^ 0x000101U);
-
-    /* A called pair naming another station than the one recorded begins another call: no caller yet. */
-    header.called_id = called ^ 0x000202U;
-    header.calling_id = calling;
-    dpmr_scrambling_reset(state);
-    dpmr_process_header(opts, state, &header, 0);
-    dsd_test_scan_activity_reset();
-    run_frame(opts, state, DPMR_REF_FRAMES[0].body_dibits, sizeof(DPMR_REF_FRAMES[0].body_dibits));
-    expect_stations("another called station", 1, called, 0, 0U);
-
-    /* A new scan visit, a carrier boundary and a transmission boundary each forget the record. */
-    header.called_id = called;
-    for (int boundary = 0; boundary < 3; boundary++) {
-        dpmr_scrambling_reset(state);
-        dpmr_process_header(opts, state, &header, 0);
-        if (boundary == 0) {
-            state->scan_landing_visit++;
-        } else if (boundary == 1) {
-            state->carrier_seq++;
-        } else {
-            dpmr_confirm_reset(state);
-        }
-        dsd_test_scan_activity_reset();
-        run_frame(opts, state, DPMR_REF_FRAMES[0].body_dibits, sizeof(DPMR_REF_FRAMES[0].body_dibits));
-        static const char* const k_tags[] = {"after a new visit", "after a carrier boundary", "after an END"};
-        expect_stations(k_tags[boundary], 1, called, 0, 0U);
-    }
-
-    /* Another system on the frequency, no retune and no sync loss between (issue #890): a header on colour code 13
-       names called and calling, then a calling pair on the reference frames' colour code 12, the caller the same. The
-       verified colour code change is another reception: the pair's report names the caller alone, not the first
-       system's destination. */
-    dpmr_scrambling_reset(state);
-    header.color_code = DPMR_REF_COLOUR_CODE + 1;
-    dpmr_process_header(opts, state, &header, 0);
-    header.color_code = -1;
-    uint64_t header_epoch = 0U;
-    {
-        dsd_call_snapshot opened;
-        DSD_MEMSET(&opened, 0, sizeof(opened));
-        (void)dsd_call_state_get(state, 0U, &opened);
-        header_epoch = opened.epoch;
-    }
-    dsd_test_scan_activity_reset();
-    run_frame(opts, state, DPMR_REF_FRAMES[1].body_dibits, sizeof(DPMR_REF_FRAMES[1].body_dibits));
-    expect_stations("calling pair on another colour code", 0, 0U, 1, calling);
-    /* The call the pair publishes is the second system's own: another epoch, its caller, no destination. */
-    dsd_call_snapshot call;
-    DSD_MEMSET(&call, 0, sizeof(call));
-    expect_int("another colour code: a call", dsd_call_state_get(state, 0U, &call) > 0, 1);
-    expect_int("another colour code: another call", call.epoch != header_epoch, 1);
-    expect_int("another colour code: no destination id", (long)call.ota_target_id, 0L);
-    expect_int("another colour code: the caller id", (long)call.ota_source_id, (long)calling);
-    expect_int("another colour code: no destination text", call.target_text[0] == '\0', 1);
-
-    /* A sync of another protocol between (dsd_rxid_note_sync()) is another reception too. */
-    dpmr_scrambling_reset(state);
-    dpmr_process_header(opts, state, &header, 0);
-    dsd_rxid_note_sync(state, DSD_SYNC_NXDN_POS);
-    dsd_test_scan_activity_reset();
-    run_frame(opts, state, DPMR_REF_FRAMES[0].body_dibits, sizeof(DPMR_REF_FRAMES[0].body_dibits));
-    expect_stations("called pair after another protocol's sync", 1, called, 0, 0U);
-
-    /* The call ended (a sync loss closed it) and the next frame's pair, the same called station, opens another call:
-       the ended call's caller is not this one's. */
-    dpmr_scrambling_reset(state);
-    dpmr_process_header(opts, state, &header, 0);
-    (void)dsd_call_state_end_ex(state, 0U, 0.0, DSD_CALL_END_SYNC_LOSS);
-    dsd_test_scan_activity_reset();
-    run_frame(opts, state, DPMR_REF_FRAMES[0].body_dibits, sizeof(DPMR_REF_FRAMES[0].body_dibits));
-    expect_stations("called pair of the call after an ended one", 1, called, 0, 0U);
-    /* While the call goes on, its pairs still carry each other's station. */
-    dsd_test_scan_activity_reset();
-    run_frame(opts, state, DPMR_REF_FRAMES[1].body_dibits, sizeof(DPMR_REF_FRAMES[1].body_dibits));
-    expect_stations("calling pair of that call", 1, called, 1, calling);
-}
-
-/* Issue #890: the call a checked dPMR header or bound frame pair publishes carries the stations' raw 24-bit air
-   interface IDs as numbers (ota_target_id the called, ota_source_id the calling station) beside the dial strings it
-   shows, so a policy that reads the call (the voice-only scan's, the audio gate's) judges it by them, as the activity
-   reports are judged. A pair names one station; the call keeps the other its header or other pair named. A frame with a
-   failed half names none. */
-static void
-test_published_call_carries_checked_ids(void) {
-    uint32_t called = 0U;
-    uint32_t calling = 0U;
-    reference_frame_stations(&called, &calling);
-    dsd_opts* opts = g_opts;
-    dsd_state* state = g_state;
-    dsd_call_snapshot call;
-
-    /* A header: both stations. */
-    DSD_MEMSET(opts, 0, sizeof(*opts));
-    DSD_MEMSET(state, 0, sizeof(*state));
-    state->synctype = DSD_SYNC_DPMR_FS1_POS;
-    dpmr_header header;
-    DSD_MEMSET(&header, 0, sizeof(header));
-    header.message_type = DPMR_MT_COMMUNICATIONS_START;
-    header.called_id = called;
-    header.calling_id = calling;
-    header.mode = 0U;
-    header.color_code = -1;
-    dpmr_process_header(opts, state, &header, 0);
     DSD_MEMSET(&call, 0, sizeof(call));
     expect_int("header call", dsd_call_state_get(state, 0U, &call) > 0, 1);
     expect_int("header call target id", (long)call.ota_target_id, (long)called);
     expect_int("header call source id", (long)call.ota_source_id, (long)calling);
     expect_int("header call keeps its dial strings", call.target_text[0] != '\0' && call.source_text[0] != '\0', 1);
-    run_frame(opts, state, DPMR_REF_FRAMES[0].body_dibits, sizeof(DPMR_REF_FRAMES[0].body_dibits));
-    DSD_MEMSET(&call, 0, sizeof(call));
-    (void)dsd_call_state_get(state, 0U, &call);
-    expect_int("called pair keeps the header's caller", (long)call.ota_source_id, (long)calling);
-    expect_int("called pair's target id", (long)call.ota_target_id, (long)called);
+    const uint64_t header_epoch = call.epoch;
 
-    /* Frame pairs alone: each names its station, the call gathers both. */
-    DSD_MEMSET(opts, 0, sizeof(*opts));
-    DSD_MEMSET(state, 0, sizeof(*state));
-    state->synctype = DSD_SYNC_DPMR_FS2_POS;
-    run_frame(opts, state, DPMR_REF_FRAMES[0].body_dibits, sizeof(DPMR_REF_FRAMES[0].body_dibits));
-    DSD_MEMSET(&call, 0, sizeof(call));
-    expect_int("called pair call", dsd_call_state_get(state, 0U, &call) > 0, 1);
-    expect_int("called pair target id", (long)call.ota_target_id, (long)called);
-    expect_int("called pair names no caller", (long)call.ota_source_id, 0L);
-    run_frame(opts, state, DPMR_REF_FRAMES[1].body_dibits, sizeof(DPMR_REF_FRAMES[1].body_dibits));
-    DSD_MEMSET(&call, 0, sizeof(call));
-    (void)dsd_call_state_get(state, 0U, &call);
-    expect_int("calling pair source id", (long)call.ota_source_id, (long)calling);
-    expect_int("calling pair keeps the target id", (long)call.ota_target_id, (long)called);
-
-    /* A frame with a failed half names nobody. */
-    DSD_MEMSET(opts, 0, sizeof(*opts));
-    DSD_MEMSET(state, 0, sizeof(*state));
-    state->synctype = DSD_SYNC_DPMR_FS2_POS;
-    state->dpmr_confirmed = 1;
-    uint8_t body[372];
-    DSD_MEMCPY(body, DPMR_REF_FRAMES[0].body_dibits, sizeof(body));
-    body[0] ^= 2U;
-    body[3] ^= 2U;
-    run_frame(opts, state, body, sizeof(body));
-    DSD_MEMSET(&call, 0, sizeof(call));
-    if (dsd_call_state_get(state, 0U, &call) > 0) {
-        expect_int("failed half: no target id", (long)call.ota_target_id, 0L);
-        expect_int("failed half: no source id", (long)call.ota_source_id, 0L);
+    for (int f = 0; f < 2; f++) {
+        dsd_test_scan_activity_reset();
+        run_frame(opts, state, DPMR_REF_FRAMES[f].body_dibits, sizeof(DPMR_REF_FRAMES[f].body_dibits));
+        expect_int("pair reports", g_test_scan_activity.count, 1);
+        expect_stations(f == 0 ? "called pair after the header" : "calling pair after the header", 1, called, 1,
+                        calling);
     }
+    DSD_MEMSET(&call, 0, sizeof(call));
+    (void)dsd_call_state_get(state, 0U, &call);
+    expect_int("pairs go on with the header's call", call.epoch == header_epoch, 1);
+
+    /* A header naming another called station: its called pair (the reference one) is another call, anonymous. */
+    dpmr_scrambling_reset(state);
+    header.called_id = called ^ 0x000202U;
+    dpmr_process_header(opts, state, &header, 0);
+    header.called_id = called;
+    dsd_test_scan_activity_reset();
+    run_frame(opts, state, DPMR_REF_FRAMES[0].body_dibits, sizeof(DPMR_REF_FRAMES[0].body_dibits));
+    expect_stations("a pair naming another station", 0, 0U, 0, 0U);
+    DSD_MEMSET(&call, 0, sizeof(call));
+    (void)dsd_call_state_get(state, 0U, &call);
+    expect_int("that pair's call has no ids", call.ota_target_id == 0U && call.ota_source_id == 0U, 1);
+
+    /* The call ended (a sync loss closed it) and the next frame's pair opens another call: anonymous. */
+    dpmr_scrambling_reset(state);
+    dpmr_process_header(opts, state, &header, 0);
+    (void)dsd_call_state_end_ex(state, 0U, 0.0, DSD_CALL_END_SYNC_LOSS);
+    dsd_test_scan_activity_reset();
+    run_frame(opts, state, DPMR_REF_FRAMES[1].body_dibits, sizeof(DPMR_REF_FRAMES[1].body_dibits));
+    expect_stations("the call after an ended one", 0, 0U, 0, 0U);
+
+    /* A verified colour code change: a header on colour code 13, then the reference frames on 12, the caller the same.
+       The header's call ends explicitly before the frame is judged; the frame's call is another, anonymous. */
+    dpmr_confirm_reset(state);
+    header.color_code = DPMR_REF_COLOUR_CODE + 1;
+    dpmr_process_header(opts, state, &header, 0);
+    DSD_MEMSET(&call, 0, sizeof(call));
+    (void)dsd_call_state_get(state, 0U, &call);
+    const uint64_t code13_epoch = call.epoch;
+    g_capture_closes = 0;
+    dsd_test_scan_activity_reset();
+    run_frame(opts, state, DPMR_REF_FRAMES[1].body_dibits, sizeof(DPMR_REF_FRAMES[1].body_dibits));
+    expect_stations("calling pair on another colour code", 0, 0U, 0, 0U);
+    DSD_MEMSET(&call, 0, sizeof(call));
+    expect_int("another colour code: a call", dsd_call_state_get(state, 0U, &call) > 0, 1);
+    expect_int("another colour code: another call", call.epoch != code13_epoch, 1);
+    expect_int("another colour code: no ids", call.ota_target_id == 0U && call.ota_source_id == 0U, 1);
+    expect_int("another colour code: its own code", state->dpmr_color_code, DPMR_REF_COLOUR_CODE);
+    expect_int("another colour code: the capture closed", g_capture_closes, 1);
 }
 
 int
@@ -808,8 +712,7 @@ main(void) {
     test_reference_frames_decode_through_process_dpmr_voice();
     test_a_corrected_bit_error_still_passes_and_two_do_not();
     test_checked_frames_and_headers_report_to_trunk_scan();
-    test_pair_reports_keep_the_calls_checked_stations();
-    test_published_call_carries_checked_ids();
+    test_stations_come_only_from_the_calls_header();
     free(g_state);
     free(g_opts);
 

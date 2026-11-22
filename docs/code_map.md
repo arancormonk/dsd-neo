@@ -427,9 +427,10 @@ Generated (do not edit/commit):
     (`dsd_scan_activity_policy_allows()`, also the simplex reports' rule): known data/party/encryption restrictions and
     an unknown field a restriction depends on (F9: withheld), no talkgroup policy for the callsign families (YSF,
     D-STAR, M17), and for the numeric ones nothing anonymous under a Hold, the allow list or a blocked known source. A
-    dPMR call carries its stations' raw 24-bit IDs as `ota_target_id`/`ota_source_id` beside the dial strings
-    (`dpmr_publish_header_call()`, `dpmr_publish_frame_observation()`, from a checked header or bound pair only), so its
-    voice is judged by them, as its protocol reports are; a station nothing checked yet is unknown.
+    dPMR call carries its stations' raw 24-bit IDs as `ota_target_id`/`ota_source_id` beside the dial strings only
+    when the checked header that opened it named them (`dpmr_publish_header_call()`; frame pairs never set them), so its
+    voice is judged by them, as its protocol reports are; a call no checked header opened is anonymous (a decided
+    limit: under a Hold or the allow list it holds nothing).
     `dsd_scan_tg_hold_call_active()` takes only a call of the row's family too, and on a `tetra-dmo` row only an
     admitted direct mode talkspurt whose checked speech is of this visit (F7), for both the -Y and the trunk-scan visit
     cap. It never matches a call of a callsign family (M17, D-STAR, YSF: `dsd_scan_activity_protocol_is_callsign()`),
@@ -6002,13 +6003,10 @@ the implementations from `dsd_engine_trunk_scan_init()` and clears them again on
   D-STAR `dstar_report_scan_activity()` (RF header, slow-data header and D-PRS record CRCs; a D-PRS record is bound
   from its first byte to `dstar_tx_seq`, the reception and the scan visit by `dstar_sd_binding`, and known non-data
   presence; the RF header's DATA flag through `dstar_header_decode_soft_data()`; never the resync streak), dPMR
-  `dpmr_report_scan_activity()` (a Communications_Start header, and an FS2 frame whose CCH halves pass
-  as a bound pair, with the raw 24-bit IDs and no party; a pair names one station, so its report carries the call's
-  other station as the transmission's header or other pair checked it, kept in `dsd_state::dpmr_scan_target`/
-  `dpmr_scan_source` for the scan visit, carrier, reception generation (`dsd_state_reception_generation()`: a verified
-  colour code change, another protocol's sync, a retune) and dPMR call it was named under: a pair naming another
-  station than the one kept begins another call, whose other station is unknown, a call that ended takes its stations
-  with it, and the transmission boundaries forget them), M17 `m17_report_scan_activity()` (direct and rebuilt LSF,
+  `dpmr_report_scan_activity()` (a Communications_Start header with its raw 24-bit IDs, and an FS2 frame whose CCH
+  halves pass as a bound pair, with no party; a pair confirms the call but names no station: its report carries the
+  stations the checked header that opened the open call named (the call's `ota_target_id`/`ota_source_id`), none when
+  no header did, and a pair naming another station than that header has already begun another, anonymous call), M17 `m17_report_scan_activity()` (direct and rebuilt LSF,
   packet CRC, a clean LICH pair; only `m17_lsf_checked` values an applied LSF bound, withdrawn while a clean LICH
   chunk disputes the checked DST/SRC/TYPE (`m17_state_ext::lsf_disputed`, a missed boundary; `m17_link_setup_vouched()`, which
   the voice-only checked speech asks too, so a disputed stream's speech earns no checked media), and gone from the frame after a
@@ -14654,10 +14652,14 @@ Private per-protocol modules worth knowing about:
   status messages) reports PROVEN content without a call and confirms nothing: confirmation is what lets the frames
   after it publish and play, and a message that opens no call has none that may (a Communications_Start in the
   reserved mode 111 reports nothing at all). A call a header opens has the header's colour code, or none when its
-  channel code did not decode, never one an earlier call left; so has a call an FS2 frame opens. An FS2 frame with a
-  checked half whose colour code decodes to another code than the open call's begins another call (`BEGIN`): two
-  systems can share a frequency with no retune or sync loss between them, and a pair names only one station, so the
-  open call's other station, ID and service are not the new one's. A header that
+  channel code did not decode, never one an earlier call left; so has a call an FS2 frame opens. Only a frame with a
+  checked CCH half publishes its colour code, so the code stays the open call's until a verified change: an FS2 frame
+  with a checked half whose colour code decodes to another code than the open call's is another system's transmission
+  (two systems can share a frequency with no retune or sync loss between them), and ends the call before the frame's
+  evidence, scrambling and service are judged (`dpmr_end_call_on_colour_change()`: `DSD_CALL_END_EXPLICIT`, the
+  capture closed, `dpmr_confirm_reset()`), so the frame's transmission proves itself again and its call is a new,
+  anonymous one; the channel code is sent outside the CRC, so a misread code that still decodes ends the call too. A
+  header that
   repeats the
   open call's (same called/calling IDs and service options; colour codes that do not differ, a code the run has not
   read yet being missing, since the channel code is sent outside the MI's CRC) k message frames (k x 192 symbols,
@@ -14667,9 +14669,9 @@ Private per-protocol modules worth knowing about:
   5.5.19.1, Table 5.71: MI_TYPE 111, WU counting down to the normal header), as the off-air `dpmr` fixture's nine do.
   IDs print as dialled strings (`dpmr_convert_air_interface_id()`): the B2 place values, "n******" and "*******" for
   the All Talkgroup IDs F8339C..F833A6 (A.1.2.3.3, Tables A.3, A.4), and '#' with six hex digits for an ID no dialled
-  string maps to; the call keeps the raw 24-bit IDs too (`ota_target_id` the called, `ota_source_id` the calling
-  station), which the talkgroup and radio policy (audio, `--scan-voice-only`) and the numeric history fields read (an
-  ID of 0 is no ID there). An FS2 frame publishes before it prints, so its line shows the identity it bound.
+  string maps to; a call a checked header opened keeps the header's raw 24-bit IDs too (`ota_target_id` the called,
+  `ota_source_id` the calling station), which the talkgroup and radio policy (audio, `--scan-voice-only`, scan
+  reports) and the numeric history fields read (an ID of 0 is no ID there); a frame pair's identity is shown only. An FS2 frame publishes before it prints, so its line shows the identity it bound.
   `-Z` prints each FS2 frame's two CCH CRC-7 verdicts (`CCH OK/ERR`). A checked end frame reports
   PROVEN, ends the dPMR call as `DSD_CALL_END_TERMINATOR`, forgets the transmission's confirmation and scrambling
   (`dpmr_confirm_reset()`, so a false FS2 on the carrier's tail must prove itself again) and closes the capture; nothing

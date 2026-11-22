@@ -2417,23 +2417,6 @@ struct dsd_state {
        (issue #890). Learned from checked frame numbers, kept by dPMR alone (a frame before confirmation writes no NXDN
        state), applied to nxdn_payload_mi when a confirmed scrambled half plays; the same boundaries forget it. */
     uint8_t dpmr_scramble_place;
-    /* The called (dpmr_scan_target) and calling (dpmr_scan_source) stations, raw 24-bit air interface IDs, that the
-       transmission's checked content named for trunk scan's activity reports (issue #890): a checked Communications_Start
-       header names both, a bound frame pair one. dpmr_scan_ids_known holds DSD_SCAN_ACTIVITY_KNOWN_TARGET and
-       _SOURCE for those named; dpmr_scan_ids_visit and _carrier_seq the scan observation origin they were named under
-       (dsd_state_scan_observation_origin()), dpmr_scan_ids_rx_gen the reception generation
-       (dsd_state_reception_generation(): a verified colour code change, a sync of another protocol, a retune) and
-       dpmr_scan_ids_call_epoch the dPMR call they belong to (0 while none was open). A later frame's pair that names
-       one station is reported with the other from here while all of these are unchanged and the station it names is
-       the one recorded; a pair naming another one begins another call, whose other station is unknown. The same
-       boundaries forget them. */
-    uint32_t dpmr_scan_target;
-    uint32_t dpmr_scan_source;
-    uint64_t dpmr_scan_ids_visit;
-    uint64_t dpmr_scan_ids_rx_gen;
-    uint64_t dpmr_scan_ids_call_epoch;
-    uint32_t dpmr_scan_ids_carrier_seq;
-    uint8_t dpmr_scan_ids_known;
 
     /* How recently a dPMR CCH CRC-7 passed, for the SPS hunt's profile accounting
      * (src/engine/dispatch/dispatch_dpmr.c). The flag, not the stamp, opens the window,

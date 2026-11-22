@@ -104,81 +104,9 @@ dpmr_call_kind_for_mode(uint32_t mode) {
     return DSD_CALL_KIND_UNKNOWN;
 }
 
-/* The epoch of the dPMR call open on the slot, 0 for none. */
-static uint64_t
-dpmr_open_call_epoch(const dsd_state* state) {
-    dsd_call_snapshot call;
-    if (dsd_call_state_get(state, 0U, &call) > 0 && call.phase == DSD_CALL_PHASE_ACTIVE
-        && DSD_SYNC_IS_DPMR(call.protocol)) {
-        return call.epoch;
-    }
-    return 0U;
-}
-
-/* Whether the record was made in another reception than this report's: another scan visit or carrier, another
-   reception generation (a verified colour code change: another system on the frequency; a sync of another protocol; a
-   retune), or another dPMR call than the one open now (the last one ended, and the frame that opened this one names one
-   station only). A record made while no call was open is the next call's. */
-static int
-dpmr_scan_ids_stale(const dsd_state* state, const dsd_scan_observation_origin* origin, uint64_t rx_gen,
-                    uint64_t call_epoch) {
-    return state->dpmr_scan_ids_visit != origin->visit || state->dpmr_scan_ids_carrier_seq != origin->carrier_seq
-           || state->dpmr_scan_ids_rx_gen != rx_gen
-           || (state->dpmr_scan_ids_call_epoch != 0U && call_epoch != 0U
-               && state->dpmr_scan_ids_call_epoch != call_epoch);
-}
-
-/* Merge the stations a report names into the transmission's checked record, and fill those it does not name from it
-   (dpmr_report_scan_activity()). A record of another reception (dpmr_scan_ids_stale()) is forgotten first; a station
-   named that differs from the one recorded begins another call, whose other station is not the recorded one. A
-   report whose origin is gone (a frame a boundary cut) neither reads nor writes the record. Each report comes after
-   its frame or header published what it checked (its colour code, its call), so the record is judged against them. */
-static void
-dpmr_scan_ids_merge(dsd_state* state, uint32_t* target, int* target_known, uint32_t* source, int* source_known) {
-    dsd_scan_observation_origin origin;
-    if (!dsd_state_scan_observation_origin(state, &origin)) {
-        return;
-    }
-    const uint64_t rx_gen = dsd_state_reception_generation(state);
-    const uint64_t call_epoch = dpmr_open_call_epoch(state);
-    if (dpmr_scan_ids_stale(state, &origin, rx_gen, call_epoch)) {
-        state->dpmr_scan_ids_known = 0U;
-        state->dpmr_scan_ids_visit = origin.visit;
-        state->dpmr_scan_ids_carrier_seq = origin.carrier_seq;
-        state->dpmr_scan_ids_rx_gen = rx_gen;
-        state->dpmr_scan_ids_call_epoch = 0U;
-    }
-    if (call_epoch != 0U) {
-        state->dpmr_scan_ids_call_epoch = call_epoch;
-    }
-    const uint8_t known_target = DSD_SCAN_ACTIVITY_KNOWN_TARGET;
-    const uint8_t known_source = DSD_SCAN_ACTIVITY_KNOWN_SOURCE;
-    const uint32_t named_target = *target & 0xFFFFFFU;
-    const uint32_t named_source = *source & 0xFFFFFFU;
-    if ((*target_known && (state->dpmr_scan_ids_known & known_target) && state->dpmr_scan_target != named_target)
-        || (*source_known && (state->dpmr_scan_ids_known & known_source) && state->dpmr_scan_source != named_source)) {
-        state->dpmr_scan_ids_known = 0U; /* another call */
-    }
-    if (*target_known) {
-        state->dpmr_scan_target = named_target;
-        state->dpmr_scan_ids_known |= known_target;
-    } else if (state->dpmr_scan_ids_known & known_target) {
-        *target = state->dpmr_scan_target;
-        *target_known = 1;
-    }
-    if (*source_known) {
-        state->dpmr_scan_source = named_source;
-        state->dpmr_scan_ids_known |= known_source;
-    } else if (state->dpmr_scan_ids_known & known_source) {
-        *source = state->dpmr_scan_source;
-        *source_known = 1;
-    }
-}
-
 void
-dpmr_report_scan_activity(const dsd_opts* opts, dsd_state* state, uint32_t target, int target_known, uint32_t source,
-                          int source_known, uint32_t mode, uint32_t version) {
-    dpmr_scan_ids_merge(state, &target, &target_known, &source, &source_known);
+dpmr_report_scan_activity(const dsd_opts* opts, const dsd_state* state, uint32_t target, int target_known,
+                          uint32_t source, int source_known, uint32_t mode, uint32_t version) {
     dsd_trunk_scan_activity_identity identity;
     DSD_MEMSET(&identity, 0, sizeof(identity));
     identity.known = DSD_SCAN_ACTIVITY_KNOWN_ENCRYPTED;
